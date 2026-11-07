@@ -1,0 +1,233 @@
+{
+  "schema": 1,
+  "version": "335",
+  "publishedAt": "2026-11-07T17:55:00.909Z",
+  "notes": "矩陣層組合層",
+  "files": {
+    "renderer/index.html": {
+      "md5": "039acc67493d2d42bae493dc9822621a",
+      "path": "v2/renderer/index.html"
+    },
+    "renderer/bootstrap.js": {
+      "md5": "a9953cd7275f9fe213f27d062f660e1a",
+      "path": "v2/renderer/bootstrap.js"
+    },
+    "renderer/floating-assistant.js": {
+      "md5": "9f852e91e056debae467d2b2a39edae0",
+      "path": "v2/renderer/floating-assistant.js",
+      "parts": [
+        {
+          "path": "v2/parts/floating-assistant.js.000",
+          "md5": "441cf5cbc9fb7bea02bd0fbfbc6c6a79",
+          "size": 4194304
+        },
+        {
+          "path": "v2/parts/floating-assistant.js.001",
+          "md5": "6dbd9f30d276c62e7b34ee6022ee4867",
+          "size": 4194304
+        },
+        {
+          "path": "v2/parts/floating-assistant.js.002",
+          "md5": "cc9b564639ce973029bb136917463ddd",
+          "size": 2781879
+        }
+      ]
+    },
+    "renderer/floating-assistant.min.js": {
+      "md5": "9f852e91e056debae467d2b2a39edae0",
+      "path": "v2/renderer/floating-assistant.min.js",
+      "parts": [
+        {
+          "path": "v2/parts/floating-assistant.min.js.000",
+          "md5": "441cf5cbc9fb7bea02bd0fbfbc6c6a79",
+          "size": 4194304
+        },
+        {
+          "path": "v2/parts/floating-assistant.min.js.001",
+          "md5": "6dbd9f30d276c62e7b34ee6022ee4867",
+          "size": 4194304
+        },
+        {
+          "path": "v2/parts/floating-assistant.min.js.002",
+          "md5": "cc9b564639ce973029bb136917463ddd",
+          "size": 2781879
+        }
+      ]
+    },
+    "renderer/vendor/midigenai/LICENSE": {
+      "md5": "99eb9c75e3dddbe23104e4cb8e5d8168",
+      "path": "v2/renderer/vendor/midigenai/LICENSE"
+    },
+    "renderer/vendor/midigenai/attributes.mjs": {
+      "md5": "1596c456f30ac128b844544d0ddcc47e",
+      "path": "v2/renderer/vendor/midigenai/attributes.mjs"
+    },
+    "renderer/vendor/midigenai/generator.mjs": {
+      "md5": "09f3c65bda0308b5f4998301edda2c8c",
+      "path": "v2/renderer/vendor/midigenai/generator.mjs"
+    },
+    "renderer/vendor/midigenai/midi.mjs": {
+      "md5": "87bbec17c769aec7008f52b1f05016e6",
+      "path": "v2/renderer/vendor/midigenai/midi.mjs"
+    },
+    "renderer/vendor/midigenai/midigen-prompt.mjs": {
+      "md5": "a2fa11dbfdbc0716a92d43c2f5889d2a",
+      "path": "v2/renderer/vendor/midigenai/midigen-prompt.mjs"
+    },
+    "renderer/vendor/midigenai/midigen-web.mjs": {
+      "md5": "484d48a9a7667560dd7a32d7cf2bf0cc",
+      "path": "v2/renderer/vendor/midigenai/midigen-web.mjs"
+    },
+    "renderer/vendor/midigenai/tasks.mjs": {
+      "md5": "46a0dd78663beda7e1f30ca79c18a73e",
+      "path": "v2/renderer/vendor/midigenai/tasks.mjs"
+    },
+    "renderer/vendor/midigenai/tokenizer.mjs": {
+      "md5": "9393ba9b93552b63a74f21091c961f40",
+      "path": "v2/renderer/vendor/midigenai/tokenizer.mjs"
+    },
+    "renderer/vendor/spessasynth/SPESSASYNTH-LICENSE.txt": {
+      "md5": "3b83ef96387f14655fc854ddc3c6bd57",
+      "path": "v2/renderer/vendor/spessasynth/SPESSASYNTH-LICENSE.txt"
+    },
+    "renderer/vendor/spessasynth/spessasynth-lib.js": {
+      "md5": "bace1fd56e9bfee4d4428922bff4fd1d",
+      "path": "v2/renderer/vendor/spessasynth/spessasynth-lib.js"
+    },
+    "renderer/vendor/spessasynth/spessasynth-processor.min.js": {
+      "md5": "46e4dcfc964128aa7bdf41509df4aba8",
+      "path": "v2/renderer/vendor/spessasynth/spessasynth-processor.min.js"
+    },
+    "renderer/vendor/three/3MFLoader.js": {
+      "md5": "d00d9a65406125b59005ae45743a62bd",
+      "path": "v2/renderer/vendor/three/3MFLoader.js"
+    },
+    "renderer/vendor/three/FBXLoader.js": {
+      "md5": "1f41c7848bef78d6cc2db7c5f1091f07",
+      "path": "v2/renderer/vendor/three/FBXLoader.js"
+    },
+    "renderer/vendor/three/LICENSE": {
+      "md5": "39aa4e61c1aaad915b3ca57ddbb559f4",
+      "path": "v2/renderer/vendor/three/LICENSE"
+    },
+    "renderer/vendor/three/OBJLoader.js": {
+      "md5": "a0d3f6d1bfcf2fdbf6b169e6bb9d1024",
+      "path": "v2/renderer/vendor/three/OBJLoader.js"
+    },
+    "renderer/vendor/three/OrbitControls.js": {
+      "md5": "98d0f30d2f372eb8ddd748a23a6763c8",
+      "path": "v2/renderer/vendor/three/OrbitControls.js"
+    },
+    "renderer/vendor/three/SHA256SUMS.txt": {
+      "md5": "81c5b75f4c2018bd6b3d41ede2165721",
+      "path": "v2/renderer/vendor/three/SHA256SUMS.txt"
+    },
+    "renderer/vendor/three/STLLoader.js": {
+      "md5": "52a5d333f21a0f81081e576f7f092489",
+      "path": "v2/renderer/vendor/three/STLLoader.js"
+    },
+    "renderer/vendor/three/fflate.min.js": {
+      "md5": "179550d75b31328ce07fcee0fefbd2d6",
+      "path": "v2/renderer/vendor/three/fflate.min.js"
+    },
+    "renderer/vendor/three/three.min.js": {
+      "md5": "eb8549863a97355411c3259a3f93b8e1",
+      "path": "v2/renderer/vendor/three/three.min.js"
+    },
+    "browser-control-server.js": {
+      "md5": "8babb3ebf7c056f0d1e88b41409b34ed"
+    },
+    "browser-search.js": {
+      "md5": "8e9ac296eee4fa8f61b2168a631dc75a"
+    },
+    "ci-fetch.js": {
+      "md5": "959c90918baaf57e599069dc03bea526"
+    },
+    "cli-format.js": {
+      "md5": "d46fea05645d9de9dbd32dd04225872c"
+    },
+    "coding-edit.js": {
+      "md5": "d74fe48f9bc94a1af740f1bcfa1fdab8"
+    },
+    "coding-tools.js": {
+      "md5": "239cbb92b2a1ec4eb3070eeeed4b4e6e"
+    },
+    "coding-workspace.js": {
+      "md5": "b5d608933d2b95bd042adff14f774b53"
+    },
+    "computer-png.js": {
+      "md5": "1ba4b721fc9cb3d3bb02920d2dfc6fee"
+    },
+    "computer-remote.js": {
+      "md5": "c2eec722c13752a87183ad24d6dcec83"
+    },
+    "computer-use-atspi.js": {
+      "md5": "853ebd07fc29d418d68878aedc21609d"
+    },
+    "computer-use-elements.js": {
+      "md5": "7d1c69f625380f0ca3d1da2404c2bba9"
+    },
+    "computer-use-ipc.js": {
+      "md5": "f9e4a3e401c7a14008b4f196484ddeab",
+      "path": "v2/computer-use-ipc.js"
+    },
+    "computer-use-linux-parse.js": {
+      "md5": "3043510974d92d0e0dce90a41ab21d6b"
+    },
+    "computer-use-linux.js": {
+      "md5": "8bfe40c9e328e424a4a5d318ed2689a3"
+    },
+    "computer-use-safety.js": {
+      "md5": "e4692e079b30c1d241e43ce1df996b97"
+    },
+    "computer-use-uia.js": {
+      "md5": "51e1c0b2f744866be4703af8799c2b42"
+    },
+    "computer-use-win-cs.js": {
+      "md5": "a37a312d0224a2f57eaf12782233ebdf"
+    },
+    "computer-use-windows.js": {
+      "md5": "973156674025724e247045d8bcfa07b7"
+    },
+    "computer-use.js": {
+      "md5": "c3921fbbd2cb159988fe0da0877c0fe1"
+    },
+    "computer-ws.js": {
+      "md5": "1b25bb55f5f1334fa5f041408f3009af"
+    },
+    "edge-tts.js": {
+      "md5": "135b186b61de5963ae2d3852fb70de5b"
+    },
+    "fsx-sync.js": {
+      "md5": "f14777175ba4a3b4d3197c00befc7e82"
+    },
+    "judge-core.js": {
+      "md5": "94f3bdfd43f2da943628bdec06427029",
+      "path": "v2/judge-core.js"
+    },
+    "judge-runner.js": {
+      "md5": "bd225b8c18a98712fceca91a440746c0",
+      "path": "v2/judge-runner.js"
+    },
+    "local-proxy.js": {
+      "md5": "079907734ca86f14e31fb6be41b8e2ca"
+    },
+    "main-ext.js": {
+      "md5": "e202664dff677e5c5a32f0dbb9b747c6",
+      "path": "v2/main-ext.js"
+    },
+    "rfb-client.js": {
+      "md5": "1ad7d8a545166f0e965d3f5008b94ccb"
+    },
+    "rfb-codec.js": {
+      "md5": "08f2ada7bc710642e7d29fbff63ee4f1"
+    },
+    "sqlite-engine.js": {
+      "md5": "ff9d39366459c465271e617b00abb76e"
+    },
+    "preload.js": {
+      "md5": "652cf48492c9044c6e48ba162ba1f151",
+      "path": "v2/preload.js"
+    }
+  }
+}
