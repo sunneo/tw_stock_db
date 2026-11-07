@@ -223,8 +223,8 @@
    "names": [
     "FaMatrixL0"
    ],
-   "size": 9372,
-   "md5": "fca9c8724ed55dc7db9f45a7173ec082"
+   "size": 9787,
+   "md5": "9741fb8d6a6024163c67c79048fc6fca"
   },
   "teachercheck": {
    "file": "chunks/teachercheck.js",
@@ -423,16 +423,16 @@
    "names": [
     "FaPyUmlPipeline"
    ],
-   "size": 7951,
-   "md5": "4d4b439b3f0f0f73577336d9ada12ba3"
+   "size": 7975,
+   "md5": "487976709656c8f4be7bd299a7d4d2cd"
   },
   "codeagent": {
    "file": "chunks/codeagent.js",
    "names": [
     "FaCodeAgent"
    ],
-   "size": 14757,
-   "md5": "477cd4a26424fe7cd9aae23cf2202a6e"
+   "size": 14984,
+   "md5": "796300a4bf6a05825c58adb11176301f"
   },
   "view": {
    "file": "chunks/view.js",
@@ -1428,7 +1428,7 @@
   }
  },
  "core": {
-  "size": 5622226,
-  "md5": "a26fb22bc845f4fb028795d77dfb23c4"
+  "size": 5622250,
+  "md5": "70b9afc3aa3ad2a49d21e9003d8194de"
  }
 }
