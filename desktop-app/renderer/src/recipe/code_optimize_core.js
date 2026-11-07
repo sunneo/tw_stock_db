@@ -66,21 +66,40 @@
         detect(src) { const m = /^([ \t]+)[^\n]*\bsum\(\s*(\w+)\[([^\]:\n]+):([^\]:\n]+)\]\s*\)/m.exec(src); return m && !/^\s*$/.test(m[2]) ? { arr: m[2] } : null; },
         rewrite(src, p) { const a = p.arr; let s = src.replace(new RegExp('\\bsum\\(\\s*' + esc(a) + '\\[([^\\]:\\n]+):([^\\]:\\n]+)\\]\\s*\\)', 'g'), '(' + a + '_pre[$2] - ' + a + '_pre[$1])'); const asg = new RegExp('^([ \\t]*)' + esc(a) + '\\s*=\\s*.+$', 'm').exec(s); if (!asg) return null; return s.replace(asg[0], asg[0] + '\n' + asg[1] + a + '_pre = [0]\n' + asg[1] + 'for _v in ' + a + ':\n' + asg[1] + '    ' + a + '_pre.append(' + a + '_pre[-1] + _v)'); },
     };
-    const RULES = [listAsSet, queuePop, memoRec, strConcat, sortedExtreme, readonlyIn, countLoop, listConcat, rangeSum];
+    // ---- 10. lst.insert(0, x) → deque.appendleft ----
+    const insertFront = {
+        id: 'insert-front', name: 'list.insert(0, x) 往前插 → deque.appendleft(x)', before: 'O(n²)（每次搬整個 list）', after: 'O(n)', memory: '同階',
+        detect(src) { const out = []; for (const m of src.matchAll(/(?<![\w.])([A-Za-z_]\w*)\.insert\(\s*0\s*,/g)) { const v = m[1]; if (out.includes(v)) continue; if (new RegExp('(?<![\\w.])' + esc(v) + '\\[').test(src)) continue; if (new RegExp('(?<![\\w.])' + esc(v) + '\\.(?:sort|reverse|index|remove|extend|count)\\b').test(src)) continue; if (!new RegExp('^[ \\t]*' + esc(v) + '\\s*=\\s*(?:\\[.*\\]|list\\(.*\\))\\s*$', 'm').test(src)) continue; out.push(v); } return out.length ? { vars: out } : null; },
+        rewrite(src, p) { let s = addImport(src, 'from collections import deque'); for (const v of p.vars) s = s.replace(new RegExp('^([ \\t]*' + esc(v) + '\\s*=\\s*)(\\[.*\\]|list\\(.*\\))\\s*$', 'm'), '$1deque($2)').replace(new RegExp('(?<![\\w.])' + esc(v) + '\\.insert\\(\\s*0\\s*,\\s*', 'g'), v + '.appendleft('); return s; },
+    };
+    // ---- 11. sum([...])／max([...])… → 產生器（不建中間 list；any／all 還能提早停） ----
+    const genexp = {
+        id: 'listcomp-genexp', name: 'sum／min／max／any／all 吃 list 推導式 → 改成產生器運算式', before: '時間同階（any／all 可提早停）', after: '同上', memory: 'O(n) → O(1)（不建中間 list）',
+        detect(src) { return /\b(?:sum|min|max|any|all)\(\[[^\[\]\n]*\bfor\b[^\[\]\n]*\]\)/.test(src) ? {} : null; },
+        rewrite(src) { return src.replace(/\b(sum|min|max|any|all)\(\[([^\[\]\n]*\bfor\b[^\[\]\n]*)\]\)/g, '$1($2)'); },
+    };
+    // ---- 12. k in d.keys() → k in d ----
+    const keysIn = {
+        id: 'keys-in', name: 'k in d.keys() → k in d', before: '（py3 已 O(1)，少一層呼叫；舊寫法 list(d.keys()) 才是 O(n)）', after: 'O(1)', memory: '不建 keys 視圖／list',
+        detect(src) { return /\bin\s+(?:list\(\s*)?\w+\.keys\(\)\s*\)?\s*(?::|\band\b|\bor\b|\))/.test(src) ? {} : null; },
+        rewrite(src) { return src.replace(/\bin\s+(?:list\(\s*)?(\w+)\.keys\(\)\s*\)?(?=\s*(?::|\band\b|\bor\b|\)))/g, 'in $1'); },
+    };
+    const RULES = [listAsSet, queuePop, memoRec, strConcat, sortedExtreme, readonlyIn, countLoop, listConcat, rangeSum, insertFront, genexp, keysIn];
     const detectAll = (src) => RULES.map((r) => { let p = null; try { p = r.detect(src); } catch (e) { p = null; } return p ? { id: r.id, name: r.name, before: r.before, after: r.after, memory: r.memory, params: p } : null; }).filter(Boolean);
     async function optimize(o) {
         let cur = String(o.source); const applied = [], skipped = []; const inputs = (o.inputs || []).slice(0, 12); const run = o.run; const note = [];
         if (typeof run !== 'function' || !inputs.length) return { ok: false, source: cur, applied, skipped, notes: ['沒有執行器或沒有輸入，無法驗證輸出一致，所以不改程式'], detected: detectAll(cur) };
         const base = []; for (const i of inputs) { const r = await run(cur, i); if (!r || r.ok === false) return { ok: false, source: cur, applied, skipped, notes: ['原程式在給的輸入上就跑不過（' + String((r && r.err) || '') .slice(0, 80) + '），不動'], detected: detectAll(cur) }; base.push(String(r.out).trim()); }
-        const tm = async (src) => { if (o.bigInput == null) return null; const t = []; for (let k = 0; k < 2; k++) { const r = await run(src, o.bigInput); if (!r || r.ok === false) return Infinity; t.push(r.ms); } return Math.min(...t); };
-        let t0 = await tm(cur);
+        const tm = async (src) => { if (o.bigInput == null) return null; const t = []; let mem = null; for (let k = 0; k < 2; k++) { const r = await run(src, o.bigInput); if (!r || r.ok === false) return { ms: Infinity, mem: null }; t.push(r.ms); if (r.mem != null) mem = mem == null ? r.mem : Math.min(mem, r.mem); } return { ms: Math.min(...t), mem }; };
+        let m0 = await tm(cur); let t0 = m0 ? m0.ms : null;
         for (const r of RULES) {
             let p = null; try { p = r.detect(cur); } catch (e) { p = null; } if (!p) continue;
             let next = null; try { next = r.rewrite(cur, p); } catch (e) { next = null; } if (!next || next === cur) { skipped.push({ id: r.id, reason: '認得但改寫失敗' }); continue; }
             let same = true; for (let k = 0; k < inputs.length && same; k++) { const x = await run(next, inputs[k]); if (!x || x.ok === false || String(x.out).trim() !== base[k]) same = false; }
             if (!same) { skipped.push({ id: r.id, reason: '改完輸出和原本不同或跑不過，退回' }); continue; }
-            let t1 = await tm(next); if (t0 != null && t1 != null && t1 > t0 * 1.2 + 15) { skipped.push({ id: r.id, reason: '量時間：改完比原本慢（' + Math.round(t0) + 'ms → ' + Math.round(t1) + 'ms），退回' }); continue; }
-            applied.push({ id: r.id, name: r.name, before: r.before, after: r.after, memory: r.memory, ms: t0 != null ? [Math.round(t0), Math.round(t1)] : null, speedup: t0 != null && t1 ? Math.round((t0 / Math.max(t1, 1)) * 10) / 10 : null }); cur = next; t0 = t1 != null ? t1 : t0;
+            const m1 = await tm(next); let t1 = m1 ? m1.ms : null; if (m0 && m1 && m0.mem != null && m1.mem != null && m1.mem > m0.mem * 1.5 + 5000) { skipped.push({ id: r.id, reason: '量記憶體：改完峰值變大（' + Math.round(m0.mem / 1024) + 'MB → ' + Math.round(m1.mem / 1024) + 'MB），退回' }); continue; }
+            if (t0 != null && t1 != null && t1 > t0 * 1.2 + 15) { skipped.push({ id: r.id, reason: '量時間：改完比原本慢（' + Math.round(t0) + 'ms → ' + Math.round(t1) + 'ms），退回' }); continue; }
+            applied.push({ id: r.id, name: r.name, before: r.before, after: r.after, memory: r.memory, ms: t0 != null ? [Math.round(t0), Math.round(t1)] : null, mem: m0 && m1 && m0.mem != null && m1.mem != null ? [m0.mem, m1.mem] : null, speedup: t0 != null && t1 ? Math.round((t0 / Math.max(t1, 1)) * 10) / 10 : null }); cur = next; if (m1) { m0 = m1; t0 = t1; }
         }
         note.push('輸出一致只在 ' + inputs.length + ' 組輸入上驗證（不是等價證明）；' + (o.bigInput != null ? '有量時間（大輸入）' : '沒有量時間'));
         return { ok: true, changed: applied.length > 0, source: cur, applied, skipped, notes: note, detected: detectAll(String(o.source)) };
@@ -89,7 +108,7 @@
         if (!r) return '沒有結果'; const L = [];
         if (!r.ok) return '沒有優化：' + (r.notes || []).join('；');
         if (!r.applied.length) L.push('沒有找到可以安全換掉的慢寫法' + (r.detected && r.detected.length ? '（認得 ' + r.detected.map((d) => d.name).join('、') + '，但改完驗證沒過）' : ''));
-        for (const a of r.applied) L.push('✔ ' + a.name + '：' + a.before + ' → ' + a.after + '；記憶體：' + a.memory + (a.ms ? '；實測 ' + a.ms[0] + 'ms → ' + a.ms[1] + 'ms（約 ' + a.speedup + ' 倍）' : ''));
+        for (const a of r.applied) L.push('✔ ' + a.name + '：' + a.before + ' → ' + a.after + '；記憶體：' + a.memory + (a.ms ? '；實測 ' + a.ms[0] + 'ms → ' + a.ms[1] + 'ms（約 ' + a.speedup + ' 倍）' : '') + (a.mem ? '；峰值記憶體 ' + Math.round(a.mem[0] / 1024) + 'MB → ' + Math.round(a.mem[1] / 1024) + 'MB' : ''));
         for (const s of r.skipped) L.push('✘ ' + s.id + '：' + s.reason);
         L.push((r.notes || []).join('；')); return L.join('\n');
     }
