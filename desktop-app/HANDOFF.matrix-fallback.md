@@ -90,3 +90,6 @@
 - embed／build 會改寫 `renderer/floating-assistant*.js`、`web-lazy/`，整個檔案都會變：build 前先確認 `git status` 沒有別人未提交的 `renderer/src` 變更；build 與提交盡量連續做完，不要讓半途的 build 產物留在工作樹。
 - 發布（`scripts/publish.sh`）由協調 session（hungfu.lee 帳號）統一做，因為它會 `git add -A renderer scripts web-lazy`，把工作樹裡所有未提交的東西一起發出去（v313 就因此誤發了別人做到一半的改動）。你提交完通知協調 session，等它發。
 - 若你用的是 stevenyc.huang 帳號，沒有 `ssh hungfu.lee`：提交用你自己的帳號在同一個倉庫提交（需要該目錄的寫入權限與 git `safe.directory` 設定）；做不到就把變更留在工作樹並通知協調 session 代為提交。
+
+## 程式優化（2026-11-08，v332，非矩陣層但同一批工作）
+見 `DESIGN.code-optimize.md`：`optimize_code` 工具、9 條慢寫法→優化寫法對照表、輸出一致才收＋量時間。下一步：接題型家族（暴力→雜湊範式）、記憶體量測、更多規則。
