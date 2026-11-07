@@ -207,8 +207,8 @@
    "names": [
     "FaMatrixSynth"
    ],
-   "size": 24114,
-   "md5": "fc6fdfc21f8d39862be150d2ebc23731"
+   "size": 24328,
+   "md5": "c031ded14a111fe63c79a56db6237ad9"
   },
   "matrixgraph": {
    "file": "chunks/matrixgraph.js",
@@ -225,6 +225,14 @@
    ],
    "size": 9787,
    "md5": "9741fb8d6a6024163c67c79048fc6fca"
+  },
+  "matrixedit": {
+   "file": "chunks/matrixedit.js",
+   "names": [
+    "FaMatrixEdit"
+   ],
+   "size": 4684,
+   "md5": "f3e67ecec0841acb75f077353e412b5c"
   },
   "teachercheck": {
    "file": "chunks/teachercheck.js",
@@ -431,16 +439,16 @@
    "names": [
     "FaPyUmlPipeline"
    ],
-   "size": 7975,
-   "md5": "487976709656c8f4be7bd299a7d4d2cd"
+   "size": 7997,
+   "md5": "46078b320b83ffc89d3a0a4e17b5cc21"
   },
   "codeagent": {
    "file": "chunks/codeagent.js",
    "names": [
     "FaCodeAgent"
    ],
-   "size": 15255,
-   "md5": "8a3ad0334adaaf33d4db62682cce608f"
+   "size": 15380,
+   "md5": "b7efc507ab16b644b7eef4ad768c494d"
   },
   "view": {
    "file": "chunks/view.js",
@@ -1436,7 +1444,7 @@
   }
  },
  "core": {
-  "size": 5622316,
-  "md5": "b8a6993543ffe35c314d1b1ebe4c87d9"
+  "size": 5622464,
+  "md5": "cb3a515766fcfa0c4f550c146fd7206c"
  }
 }
