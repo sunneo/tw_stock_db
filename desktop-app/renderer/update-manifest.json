@@ -1,12 +1,12 @@
 {
   "schema": 1,
   "baseVersion": "1.1.0",
-  "generatedAt": "2026-11-07T00:45:56.100Z",
+  "generatedAt": "2026-11-07T00:58:22.030Z",
   "files": {
     "renderer/index.html": "039acc67493d2d42bae493dc9822621a",
     "renderer/bootstrap.js": "a9953cd7275f9fe213f27d062f660e1a",
-    "renderer/floating-assistant.js": "8d85436d49933d112e7ec207bbff732c",
-    "renderer/floating-assistant.min.js": "8d85436d49933d112e7ec207bbff732c",
+    "renderer/floating-assistant.js": "9f530310eb666e00996183afa016b3c7",
+    "renderer/floating-assistant.min.js": "9f530310eb666e00996183afa016b3c7",
     "renderer/vendor/midigenai/LICENSE": "99eb9c75e3dddbe23104e4cb8e5d8168",
     "renderer/vendor/midigenai/attributes.mjs": "1596c456f30ac128b844544d0ddcc47e",
     "renderer/vendor/midigenai/generator.mjs": "09f3c65bda0308b5f4998301edda2c8c",
@@ -61,8 +61,8 @@
   "sizes": {
     "renderer/index.html": 5741,
     "renderer/bootstrap.js": 202259,
-    "renderer/floating-assistant.js": 11130417,
-    "renderer/floating-assistant.min.js": 11130417,
+    "renderer/floating-assistant.js": 11135519,
+    "renderer/floating-assistant.min.js": 11135519,
     "renderer/vendor/midigenai/LICENSE": 1070,
     "renderer/vendor/midigenai/attributes.mjs": 9065,
     "renderer/vendor/midigenai/generator.mjs": 11160,

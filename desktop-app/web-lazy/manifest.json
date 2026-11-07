@@ -418,6 +418,14 @@
    "size": 7337,
    "md5": "dcc10803fd9a3ea961fa1c7d169f2f98"
   },
+  "domainlf": {
+   "file": "chunks/domainlf.js",
+   "names": [
+    "FaDomainLinuxfmt"
+   ],
+   "size": 5086,
+   "md5": "ae82b2989952577b4afd4fe808dd6020"
+  },
   "pyumlpipeline": {
    "file": "chunks/pyumlpipeline.js",
    "names": [
@@ -1428,7 +1436,7 @@
   }
  },
  "core": {
-  "size": 5622250,
-  "md5": "70b9afc3aa3ad2a49d21e9003d8194de"
+  "size": 5622316,
+  "md5": "b8a6993543ffe35c314d1b1ebe4c87d9"
  }
 }
