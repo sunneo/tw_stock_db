@@ -207,8 +207,8 @@
    "names": [
     "FaMatrixSynth"
    ],
-   "size": 23102,
-   "md5": "fa222e84080a502ea660c118c4462313"
+   "size": 24114,
+   "md5": "fc6fdfc21f8d39862be150d2ebc23731"
   },
   "matrixgraph": {
    "file": "chunks/matrixgraph.js",
@@ -217,6 +217,14 @@
    ],
    "size": 24709,
    "md5": "45059748f9d402843cc9a82e810522a2"
+  },
+  "matrixl0": {
+   "file": "chunks/matrixl0.js",
+   "names": [
+    "FaMatrixL0"
+   ],
+   "size": 9372,
+   "md5": "fca9c8724ed55dc7db9f45a7173ec082"
   },
   "teachercheck": {
    "file": "chunks/teachercheck.js",
@@ -1420,7 +1428,7 @@
   }
  },
  "core": {
-  "size": 5622108,
-  "md5": "3c9c444345345bf606681ceae6c774ee"
+  "size": 5622226,
+  "md5": "a26fb22bc845f4fb028795d77dfb23c4"
  }
 }
