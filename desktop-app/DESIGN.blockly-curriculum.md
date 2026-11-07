@@ -56,7 +56,7 @@
 | tar／gzip／xz／BMP 二進位格式（讀寫對偶） | ✔ | `tar.*`、`gzip.*`、`bmp.*`、`xz.*` | 73deb981 |
 | 校驗碼／位元流／LZ77／霍夫曼／固定霍夫曼 inflate／LZMA 範圍解碼 | ✔ | | 73deb981 |
 | 樣式比對（glob、正規式子集）、算式求值、直譯器、堆疊 VM、argv 切分、環境展開 | ✔ | | 73deb981 |
-| sed／awk／cut／sort／uniq／wc／tr／head／tail／diff／join 行為 | ◐ | `domain_linuxtext_core.js`：除 diff／join 外✔；兩段輸入工具另在 `domain_twofile_core.js`：cat -n 兩檔、comm／diff（只在 A／B／共同、去重、排序、個數）、join（inner／left）、paste、cmp；train 10/10、新 holdout 4/4。注意：舊 Linux holdout lx-cat-two 的敘述已被當 train 教過（cat-cont），所以 bench_linux_all 58→59 不算泛化，泛化看新 holdout ho-cat（換措辭） | ✔ |
+| sed／awk／cut／sort／uniq／wc／tr／head／tail／diff／join 行為 | ◐ | `domain_linuxtext_core.js`：除 diff／join 外✔；兩段輸入工具另在 `domain_twofile_core.js`：cat -n 兩檔、comm／diff（只在 A／B／共同、去重、排序、個數）、join（inner／left）、paste、cmp；train 10/10、新 holdout 4/4。注意：`bench_coverage.js` 不載入領域包（只量核心範式），所以 bench_linux_all 58→59 來自讀取器的「兩個檔案各是一行 k 加 k 行」改寫（通用），不是 twofile 骨架；lx-cat-two 的敘述另被當 train（cat-cont）教進 twofile 測試，領域包層面不算泛化，泛化看新 holdout ho-cat（換措辭）。領域包的數字以各自 test.js 為準，宿主是否接上以 `scripts/e2e/matrix_graph.e2e.mjs` 為準 | ✔ |
 | 文字剖析：CSV／JSON 子集／INI／log 解析、printf 格式化、strftime | ✗ | | P1 |
 | 檔案 IO／行程／管線／信號／socket 的**語意模擬**（open flags、fd 表、dup2 重導向、pipe 緩衝、信號遮罩、socket 狀態機） | ✗ | 輸入「系統呼叫序列」，輸出狀態／輸出（純函式，不真呼叫） | P1 |
 | 動態霍夫曼 inflate、LZMA match 解碼、LZMA2、BCJ、BMP RLE／32 位元遮罩、tar PAX | ✗ | 超出多半（DESIGN.blockly-gaps.md G14） | P3 |
@@ -98,4 +98,4 @@
 
 - 共用測試 harness：`domain_harness.js`（種子 `{id, want, st, rw, ref, gen, split}`，`split:'holdout'` 只量測；`DBG=1`／`ONLY=id,...` 環境變數除錯）。新包只要寫骨架檔＋種子檔。
 - 讀取器配套小修：字串輸入可帶名稱（「輸入一個字串 s」）、同名重複清單改名（a、b…）、「查詢字串」不再當整數、`rle-pair` 對解碼題否決、領域條目可標 `pri:true` 比內建工具詞彙（lines-map）優先。
-- 台面上還沒做（linuxsem 已做：fd 表／管線／信號遮罩／TCP 狀態機，train 11/11、新 holdout 4/4；未做：socket 全套、行程樹 fork／wait／exec、信號處理常式巢狀）：程序／fd／管線／信號／socket 的語意模擬、進階圖與樹（MST、SCC、Bellman-Ford、LCA…）、資料結構的 AVL／跳躍表／稀疏表。見 `DESIGN.TODO.md`。
+- 台面上還沒做（linuxfmt 已做：樣板變數展開、區塊對齊計數、範式前綴碼三個參數化家族，train 6/6、新 holdout 3/4（${名稱:-預設} 誠實未解）；舊 Linux holdout 的 exec-env／tar-blocks／canonical-huffman 敘述已被當 train 教過，不再算 holdout；仍未解：xz-header、bmp-write8（規格太具體，只能靠第三層介面）。linuxsem 已做：fd 表／管線／信號遮罩／TCP 狀態機，train 11/11、新 holdout 4/4；未做：socket 全套、行程樹 fork／wait／exec、信號處理常式巢狀）：程序／fd／管線／信號／socket 的語意模擬、進階圖與樹（MST、SCC、Bellman-Ford、LCA…）、資料結構的 AVL／跳躍表／稀疏表。見 `DESIGN.TODO.md`。
