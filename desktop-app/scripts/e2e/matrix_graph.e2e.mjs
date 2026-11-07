@@ -31,6 +31,10 @@ const out = await page.evaluate(async () => {
   res.p4 = await run('linuxfmt 領域包·tar 區塊', { text: stB, problem: { id: 'b', tests: T([['511\n', '2\n'], ['0\n', '1\n'], ['513\n', '3\n']]), hidden: T([['512\n', '2\n'], ['1024\n', '3\n'], ['1\n', '2\n'], ['4096\n', '9\n']]), checker: 'tokens' } });
   const stP = '第一行 n，接著 n 行是檔案 A 的每一行文字；再來一行 m，接著 m 行是檔案 B 的每一行文字。仿 paste：把兩個檔案逐行並排，每行是 A 的第 i 行、一個 Tab、B 的第 i 行；較短的檔案用空字串補。';
   res.p5 = await run('twofile 領域包·paste', { text: stP, problem: { id: 'p', tests: T([['2\na\nb\n1\nc\n', 'a\tc\nb\t\n'], ['1\nx\n2\ny\nz\n', 'x\ty\n\tz\n']]), hidden: T([['3\na\nb\nc\n3\nd\ne\nf\n', 'a\td\nb\te\nc\tf\n'], ['1\nq\n1\nr\n', 'q\tr\n']]), checker: 'tokens' } });
+  // 矩陣 → code edit：DFA 合成後整理成可編輯版（editable，source 有狀態註解）
+  const hs = (x) => (x.includes('11') ? 'no' : 'yes'); const mkD = (xs) => xs.map((x) => ({ in: x + '\n', out: hs(x) + '\n' }));
+  res.m3 = await run('矩陣→可編輯·DFA', { text: '輸入由 0、1 組成的字串，若含有子字串 "11" 印 no，否則印 yes。', problem: { id: 'd', tests: mkD(['0101', '0110', '1', '0']), hidden: mkD(['11', '1011', '0000', '1010101', '110', '011', '10']), checker: 'tokens' } });
+  res.m3.hasStateComment = null; try { const rr = await fa._codeOffline({ text: '輸入由 0、1 組成的字串，若含有子字串 "11" 印 no，否則印 yes。', problem: { id: 'd', tests: mkD(['0101', '0110', '1', '0']), hidden: mkD(['11', '1011', '0000', '1010101', '110', '011', '10']), checker: 'tokens' } }, bridge); res.m3.hasStateComment = /狀態 0：起點/.test(rr.source || ''); res.m3.editable = rr.matrix && rr.matrix.editable; } catch (e) { res.m3.err = String(e.message || e).slice(0, 100); }
   return res;
 });
 console.log(JSON.stringify(out, null, 1)); console.log('頁面錯誤：', errs.length, errs.slice(0, 3)); await app.close();

@@ -13501,7 +13501,7 @@ const holder = {};
     // ---- 註冊表：矩陣層「認多少補多少」——補一種範本／一種形狀＝註冊一個模組（FaMatrixSynth.register），不必改 synth() ----
     // 模組合約：fn({statement, examples, budget}) → 同步或 Promise 的 {ok, source, kind, level, size, tried, ambiguous, desc, matrixForm, reason}。
     // order 小的先試（便宜、保證會停的先；容易過度擬合的公式枚舉放最後）；模組丟例外只算它自己失敗，不影響其他模組。
-    const REGISTRY = [];
+    const REGISTRY = []; let EDITOR = null; const setEditor = (fn) => { EDITOR = typeof fn === 'function' ? fn : null; };
     function register(name, fn, opts) { const i = REGISTRY.findIndex((x) => x.name === name); const ent = { name, fn, order: (opts && opts.order != null) ? opts.order : 50, level: (opts && opts.level) || null, note: (opts && opts.note) || '' }; if (i >= 0) REGISTRY[i] = ent; else REGISTRY.push(ent); REGISTRY.sort((a, b) => a.order - b.order); return ent; }
     function unregister(name) { const i = REGISTRY.findIndex((x) => x.name === name); if (i >= 0) REGISTRY.splice(i, 1); return i >= 0; }
     const list = () => REGISTRY.map((x) => ({ name: x.name, order: x.order, level: x.level, note: x.note }));
@@ -13518,10 +13518,11 @@ const holder = {};
             // 模組可以多給幾個「範例全對」的候選（alternatives，由好到差）：judge（含隱藏測資）退掉第一個時，依序再試
             if (o.judge && Array.isArray(r.alternatives)) { let hit = null; for (const alt of r.alternatives.slice(0, 40)) { if (!alt || !alt.ok) continue; const va = await o.judge(alt.source); steps[steps.length - 1].altTried = (steps[steps.length - 1].altTried || 0) + 1; if (va.verdict === 'AC') { hit = Object.assign(alt, { explain: alt.desc, blocks: null, matrixForm: alt.matrixForm || null, verdict: 'AC', verified: !alt.ambiguous, holdout: ex.length, steps, ms: Date.now() - t0 }); break; } } if (hit) { best = hit; break; } }
         }
+        if (best && EDITOR) { try { const e = await EDITOR(best, o.judge || null); if (e && e.source) { best.originalSource = best.source; best.source = e.source; best.editable = true; if (e.form) best.matrixForm = e.form; } } catch (err) { /* 整理失敗就保留原程式 */ } }
         if (best) return best;
         return { ok: false, reason: steps.map((s) => s.by + '：' + (s.reason || s.verdict)).join('；'), steps, ms: Date.now() - t0 };
     }
-    return { synth, register, unregister, list, synthRecurrence, synthDFA, synthFormula, synthTemplate, inferShape, kmpDFA };
+    return { synth, setEditor, register, unregister, list, synthRecurrence, synthDFA, synthFormula, synthTemplate, inferShape, kmpDFA };
 });
 
 }).call(null, undefined, holder);
@@ -13779,6 +13780,83 @@ return holder.FaMatrixL0;
 })();
 /* MATRIXL0-END */
 try { if (FaMatrixL0 && FaMatrixSynth) FaMatrixL0.install(FaMatrixSynth); } catch (e) { /* L0 補強模組裝不上就維持原樣 */ }
+/* MATRIXEDIT-BEGIN */
+const FaMatrixEdit = (function () {
+const holder = {};
+(function (module, self) {
+/* 矩陣層 → code edit（DESIGN.matrix-fallback.md §11）：把矩陣層合成出來的程式整理成「人看得懂、能繼續用區塊／UML 編輯」的樣子。純函式 UMD。
+ *   toEditable(res) → { source, explain, form, changed }
+ *       dfa：轉移表拆成一列一個狀態，旁邊註明「狀態 q ＝ 讀過什麼之後」（取到達該狀態的最短字串）；
+ *       recurrence：遞推式與初值寫成註解，矩陣乘法移到最上層的 mat_mul（區塊編輯器不能處理巢狀 def）；
+ *       其他（公式／條件／格子／圖／方陣範本）：加一行說明註解，巢狀 def 一律搬到最上層（缺的外部變數改成參數）。
+ *   extractForm(source) → 從（可能被使用者改過的）程式讀回矩陣型態 {kind:'dfa', delta, start, accept?}／{kind:'recurrence', coef, init, offset, mod}；讀不回來回 null＝已離開矩陣模式，降級成一般 Python 區塊。
+ *   install(FaMatrixSynth)：註冊成 synth() 的編輯器——結果交 judge 再驗一次（含隱藏測資），過了才換成可編輯版，沒過就保留原樣（不靜默覆蓋）。
+ * 往返要求：形態 → 可編輯程式 → 形態 相同；可編輯程式與原程式在同一組輸入上輸出相同（測試條件）。 */
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaMatrixEdit = factory(); })(typeof self !== 'undefined' ? self : this, function () {
+    'use strict';
+    const lines = (s) => String(s).replace(/\n+$/, '').split('\n');
+    // ---- 巢狀 def 搬到最上層：函式體用到 main 裡賦值過的名稱時，加成參數 ----
+    function hoistNested(src) {
+        const L = lines(src); if (!/^def main\(\):/.test(L[0])) return { source: src, hoisted: [] };
+        const assigned = new Set(); for (const l of L.slice(1)) { const m = /^ {4}([A-Za-z_]\w*(?:\s*,\s*[A-Za-z_]\w*)*)\s*=[^=]/.exec(l); if (m) m[1].split(/\s*,\s*/).forEach((x) => assigned.add(x)); }
+        const out = [L[0]]; const top = []; const hoisted = []; let i = 1;
+        while (i < L.length) {
+            const dm = /^ {4}def (\w+)\(([^)]*)\):\s*$/.exec(L[i]);
+            if (!dm) { out.push(L[i]); i++; continue; }
+            const body = []; i++; while (i < L.length && (/^ {8}/.test(L[i]) || L[i].trim() === '')) { body.push(L[i].replace(/^ {4}/, '')); i++; }
+            const params = dm[2].split(',').map((x) => x.trim()).filter(Boolean); const txt = body.join('\n'); const free = [...assigned].filter((v) => new RegExp('(?<![\\w.])' + v + '(?!\\w)').test(txt) && !params.includes(v));
+            top.push('def ' + dm[1] + '(' + params.concat(free).join(', ') + '):', ...body, ''); hoisted.push({ name: dm[1], extra: free });
+        }
+        let main = out.join('\n'); for (const h of hoisted) main = main.replace(new RegExp('(?<![\\w.])' + h.name + '\\(([^()]*(?:\\([^()]*\\)[^()]*)*)\\)', 'g'), (m, a) => h.name + '(' + a + (h.extra.length ? ', ' + h.extra.join(', ') : '') + ')');
+        return { source: (top.length ? top.join('\n') + '\n' : '') + main + '\n', hoisted };
+    }
+    // ---- DFA：每個狀態的代表字串（BFS 最短、字元由小到大） ----
+    function stateNames(delta, start) { const rep = { [start]: '' }; const q = [start]; for (let i = 0; i < q.length; i++) { const s = q[i]; for (const ch of Object.keys(delta[s] || {}).sort()) { const t = delta[s][ch]; if (!(t in rep)) { rep[t] = rep[s] + ch; q.push(t); } } } return rep; }
+    function dfaToEditable(res) {
+        const f = res.matrixForm; const L = lines(res.source); const ti = L.findIndex((l) => /^ {4}T = \[/.test(l)); if (ti < 0) return null;
+        const rep = stateNames(f.delta, f.start); const acc = new Set(f.accept || []);
+        const tbl = f.delta.map((r, q) => '        {' + Object.keys(r).map((c) => JSON.stringify(c) + ': ' + r[c]).join(', ') + '},  # 狀態 ' + q + (q === f.start ? '：起點' : (q in rep ? '：讀過 "' + rep[q] + '" 之後' : '：（走不到）')) + (acc.has(q) ? '（接受）' : ''));
+        const out = L.slice(0, ti).concat(['    # 轉移表：T[狀態][字元] ＝ 下一個狀態；一列一個狀態，要改規則就改這裡', '    T = ['].concat(tbl, ['    ]'], L.slice(ti + 1)));
+        return out.join('\n') + '\n';
+    }
+    function recurrenceToEditable(res) {
+        const f = res.matrixForm; let s = res.source; const h = hoistNested(s); s = h.source.replace(/(?<![\w.])mul\(/g, 'mat_mul(');
+        const d = f.coef.length; const term = (c, i) => c + '×b(k−' + i + ')'; const rec = 'b(k) = ' + f.coef.map((c, i) => term(c, i + 1)).join(' + ') + '；初值 ' + f.init.map((x, i) => 'b(' + i + ')=' + x).join('、') + '；輸入 n 時輸出 b(n' + (f.offset ? '−' + f.offset : '') + (d > 1 ? '+' + (d - 1) : '') + ')' + (f.mod ? '，結果取模 ' + f.mod : '');
+        return s.replace(/^(def main\(\):\n)/m, '$1    # 線性遞推（矩陣快速冪）：' + rec + '\n');
+    }
+    function toEditable(res) {
+        if (!res || !res.ok || !res.source) return null; const f = res.matrixForm || {}; let src = null;
+        try { if (f.kind === 'dfa') src = dfaToEditable(res); else if (f.kind === 'recurrence') src = recurrenceToEditable(res); } catch (e) { src = null; }
+        if (!src) { const h = hoistNested(res.source); src = h.source; if (res.desc) src = src.replace(/^((?:def \w+\([^)]*\):\n(?:[ \t].*\n|\n)*)*def main\(\):\n)/m, '$1    # 矩陣層合成：' + String(res.desc).replace(/\n/g, ' ') + '\n'); }
+        return { source: src, explain: res.desc || '', form: extractForm(src) || res.matrixForm || null, changed: src !== res.source };
+    }
+    // ---- 讀回形態 ----
+    function extractForm(src) {
+        const s = String(src); const mT = /^ {4}T = \[\n([\s\S]*?)^ {4}\]\n/m.exec(s);
+        if (mT) { try { const body = mT[1].split('\n').map((l) => l.replace(/#.*$/, '').trim()).filter(Boolean).join(' ').replace(/,\s*$/, ''); const delta = JSON.parse('[' + body + ']'); const st = /^ {4}q = (\d+)$/m.exec(s); const ac = /print\([^\n]* if q in (\[[\d, ]*\])/.exec(s); if (!Array.isArray(delta) || !st) return null; const o = { kind: 'dfa', start: Number(st[1]), delta }; if (ac) o.accept = JSON.parse(ac[1]); return o; } catch (e) { return null; } }
+        const c = /^ {4}coef = (\[[-\d, ]*\])$/m.exec(s), i = /^ {4}init = (\[[-\d, ]*\])$/m.exec(s); if (c && i) { try { const off = /int\(input\(\)\) - (\d+)/.exec(s); const m = /^ {4}M = (None|\d+)$/m.exec(s); return { kind: 'recurrence', coef: JSON.parse(c[1]), init: JSON.parse(i[1]), offset: off ? Number(off[1]) : 0, mod: m && m[1] !== 'None' ? Number(m[1]) : null }; } catch (e) { return null; } }
+        return null;
+    }
+    // 使用者改了形態（轉移表、係數、初值）→ 直接改程式裡那幾行，不重新合成
+    function applyForm(src, form) {
+        let s = String(src);
+        if (form.kind === 'dfa') { const rep = stateNames(form.delta, form.start); const tbl = form.delta.map((r, q) => '        {' + Object.keys(r).map((c) => JSON.stringify(c) + ': ' + r[c]).join(', ') + '},  # 狀態 ' + q + (q === form.start ? '：起點' : q in rep ? '：讀過 "' + rep[q] + '" 之後' : '：（走不到）')); s = s.replace(/^ {4}T = \[\n[\s\S]*?^ {4}\]\n/m, '    T = [\n' + tbl.join('\n') + '\n    ]\n').replace(/^ {4}q = \d+$/m, '    q = ' + form.start); if (form.accept) s = s.replace(/(if q in )\[[\d, ]*\]/, '$1' + JSON.stringify(form.accept)); }
+        else if (form.kind === 'recurrence') s = s.replace(/^ {4}coef = .*$/m, '    coef = ' + JSON.stringify(form.coef).replace(/,/g, ', ')).replace(/^ {4}init = .*$/m, '    init = ' + JSON.stringify(form.init).replace(/,/g, ', ')).replace(/^ {4}d = \d+$/m, '    d = ' + form.coef.length);
+        return s;
+    }
+    function install(M) {
+        if (!M || !M.setEditor) return false;
+        M.setEditor(async (res, judge) => { const e = toEditable(res); if (!e || !e.changed) return null; if (judge) { const v = await judge(e.source); if (v.verdict !== 'AC') return null; } return e; });
+        return true;
+    }
+    return { toEditable, extractForm, applyForm, hoistNested, stateNames, install };
+});
+
+}).call(null, undefined, holder);
+return holder.FaMatrixEdit;
+})();
+/* MATRIXEDIT-END */
+try { if (FaMatrixEdit && FaMatrixSynth) FaMatrixEdit.install(FaMatrixSynth); } catch (e) { /* 整理成可編輯版裝不上就維持原程式 */ }
 /* TEACHERCHECK-BEGIN */
 const FaTeacherCheck = (function () {
 const holder = {};
@@ -17085,7 +17163,7 @@ const holder = {};
         const tryMatrix = async (prev) => {
             if (!o.Matrix || !o.examples || !o.examples.length) return null; const m = await o.Matrix.synth({ statement: o.statement, examples: o.examples, judge: o.judge, budget: o.matrixBudget });
             if (!m.ok) return { failed: true, reason: m.reason, steps: m.steps }; if (m.verdict !== 'AC' && m.verdict !== 'UNCHECKED') return { failed: true, reason: '矩陣層候選沒通過沙盒：' + m.verdict, steps: m.steps };
-            return Object.assign({}, prev || {}, { ok: true, source: m.source, model: null, usedModel: false, verdict: m.verdict, cnl: { solve: m.desc }, matrix: { kind: m.kind, level: m.level, size: m.size, tried: m.tried, ambiguous: m.ambiguous, verified: m.verified, desc: m.desc, steps: m.steps, suggest: m.suggest || null } });
+            return Object.assign({}, prev || {}, { ok: true, source: m.source, model: null, usedModel: false, verdict: m.verdict, cnl: { solve: m.desc }, matrix: { kind: m.kind, level: m.level, size: m.size, tried: m.tried, ambiguous: m.ambiguous, verified: m.verified, desc: m.desc, steps: m.steps, suggest: m.suggest || null, editable: !!m.editable } });
         };
         if (!intent) { const mx = await tryMatrix(); if (mx && mx.ok) return Object.assign({ rounds: [{ by: 'matrix', kind: mx.matrix.kind, verdict: mx.verdict }], steps: 0, forced: 0 }, mx); return { ok: false, reason: '這份 UML 不是算法題讀取器讀出來的（沒有意圖）' + (mx && mx.reason ? '；矩陣層：' + mx.reason : '') }; }
         const umlOps = o.uml.model.classes.flatMap((c) => c.ops.map((x) => ({ name: snake(x.name), params: x.params.map((p) => p.name) })));
@@ -17322,7 +17400,7 @@ const holder = {};
     function formatReport(r) {
         if (!r) return '沒有結果';
         const how = r.verified ? '已用測試驗證（全部通過）' : (r.verdict === 'CHECKED' ? '**只通過編譯／語法檢查，沒有驗證行為是否正確**' : (r.ok ? '未驗證' : '沒有完成'));
-        const L1 = [(r.mode === 'edit' ? '修改現有程式（' : '寫程式（' + (r.mode === 'offline' ? '離線組合' + (r.offline && r.offline.paradigm ? '：範式 ' + r.offline.paradigm : r.offline && r.offline.lesson ? '：課 ' + r.offline.lesson : r.offline && r.offline.recipe ? '：配方 ' + r.offline.recipe : r.offline && r.offline.matrix ? '：矩陣層 ' + r.offline.matrix.level + '／' + r.offline.matrix.kind + (r.offline.onlyExamples ? '（只過範例，沒有獨立驗證' + (r.offline.matrix.suggest && r.offline.matrix.suggest.length ? '；補這幾筆輸入的正確輸出就能分出候選：' + r.offline.matrix.suggest.slice(0, 4).map((x) => '「' + String(x).replace(/\n/g, ' ／ ') + '」').join('、') : '') + '）' : '') : '') : r.mode === 'project' ? '依 UML 專案模式' : '題目模式') + '，') + r.lang + '）：' + (r.ok ? (r.mode === 'edit' ? '修改完成' : '產生完成') : '沒有完成') + '；' + how + '。'];
+        const L1 = [(r.mode === 'edit' ? '修改現有程式（' : '寫程式（' + (r.mode === 'offline' ? '離線組合' + (r.offline && r.offline.paradigm ? '：範式 ' + r.offline.paradigm : r.offline && r.offline.lesson ? '：課 ' + r.offline.lesson : r.offline && r.offline.recipe ? '：配方 ' + r.offline.recipe : r.offline && r.offline.matrix ? '：矩陣層 ' + r.offline.matrix.level + '／' + r.offline.matrix.kind + (r.offline.matrix.editable ? '（已整理成可編輯版：有註解、無巢狀函式，可在區塊／UML 繼續改）' : '') + (r.offline.onlyExamples ? '（只過範例，沒有獨立驗證' + (r.offline.matrix.suggest && r.offline.matrix.suggest.length ? '；補這幾筆輸入的正確輸出就能分出候選：' + r.offline.matrix.suggest.slice(0, 4).map((x) => '「' + String(x).replace(/\n/g, ' ／ ') + '」').join('、') : '') + '）' : '') : '') : r.mode === 'project' ? '依 UML 專案模式' : '題目模式') + '，') + r.lang + '）：' + (r.ok ? (r.mode === 'edit' ? '修改完成' : '產生完成') : '沒有完成') + '；' + how + '。'];
         if (r.mode === 'edit' && r.edits && r.edits.length) L1.push('改了 ' + r.edits.length + ' 處：\n' + r.edits.map((e) => '- ' + (e.by === 'rewrite' ? '重寫函式 ' + e.fn : (e.desc || '語法修正')) + (e.line ? '（第 ' + e.line + ' 行）' : '')).join('\n'));
         if (r.route && r.mode !== 'edit') L1.push('路線：' + (r.route.route === 'uml' ? '需求偏大，先設計 UML' + (r.design ? '（' + r.design.classes.length + ' 個類別）' : '') + '，再逐類別實作' : '直接切成函式寫') + (r.route.by === 'model' ? '（模型決定）' : r.route.by === 'caller' ? '（呼叫端指定）' : '') + (r.route.reasons && r.route.reasons.length ? '：' + r.route.reasons.slice(0, 3).join('、') : '') + '。');
         if (r.plan && r.plan.length) L1.push('函式：' + r.plan.map((x) => x.name).join(' → '));
@@ -108633,7 +108711,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         if (!r.ok) return { ok: false, reason: r.reason, tried: r.tried, rounds: r.rounds };
         // 誠實標示：矩陣層是「用範例合成」的，只對著範例驗證時 AC 不是獨立驗證（範例是學的資料）；有獨立的隱藏測資並通過、且沒有多個候選，才算 verified
         const mx = r.matrix || null; const independent = !!(o.problem && Array.isArray(o.problem.hidden) && o.problem.hidden.length); const mxVerified = !!(mx && mx.verified && !mx.ambiguous && independent);
-        return { ok: true, rounds: r.rounds, source: r.source + '\nmain()\n', verdict: r.verdict, by: mx ? 'matrix' : r.recipe ? 'recipe' : r.lesson ? 'lesson' : r.paradigm ? 'paradigm' : 'blocks', recipe: r.recipe, lesson: r.lesson, paradigm: r.paradigm, slots: r.slots, tried: r.tried, usedModel: r.usedModel, matrix: mx ? { level: mx.level, kind: mx.kind, desc: mx.desc, verified: mxVerified, ambiguous: !!mx.ambiguous, suggest: mx.suggest || null } : undefined, verified: mx ? mxVerified : true, onlyExamples: mx ? !mxVerified : false };
+        return { ok: true, rounds: r.rounds, source: r.source + '\nmain()\n', verdict: r.verdict, by: mx ? 'matrix' : r.recipe ? 'recipe' : r.lesson ? 'lesson' : r.paradigm ? 'paradigm' : 'blocks', recipe: r.recipe, lesson: r.lesson, paradigm: r.paradigm, slots: r.slots, tried: r.tried, usedModel: r.usedModel, matrix: mx ? { level: mx.level, kind: mx.kind, desc: mx.desc, verified: mxVerified, ambiguous: !!mx.ambiguous, suggest: mx.suggest || null, editable: !!mx.editable } : undefined, verified: mx ? mxVerified : true, onlyExamples: mx ? !mxVerified : false };
     }
     // a: { task（需求文字）, language, tests:[{in,out}], uml（DSL 文字）, use_last_design, source（任意現有程式碼）, goal, driver, model, _gen（CoLU 計畫裡直接給模型） }
     async _codeAgent(a) {

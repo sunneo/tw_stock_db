@@ -225,6 +225,9 @@ fallback: { stage: 'reader'|'recipe'|'lesson'|'paradigm'|'matrix'|'online'|'colu
 - `blocks`：預留，之後放反編譯得到的區塊 CNL（路 B）；目前為 null；
 - `matrixForm`：預留，放機器可讀的矩陣／轉移表（`{kind, coef, init, mod}`／`{kind:'dfa', delta, start, accept}`），讓編輯迴圈能直接更新而不重新合成。
 
+### 11.5b 實作狀態（2026-11-08，v331）
+**更正：反編譯是為了 code edit，不是評估用**（舊檔頭「評估用，不進產品」的註解是錯的）。`matrix_edit_core.js` 已接進產品：`synth()` 的結果會經 `setEditor` 整理成可編輯版（DFA 轉移表一列一個狀態並註明「讀過什麼之後」、遞推式寫成註解且矩陣乘法移到最上層 `mat_mul`、其他範本的巢狀 def 搬到最上層），交 judge 重驗（含隱藏測資）過了才替換，沒過保留原樣；結果帶 `editable`、`originalSource`、`matrixForm`。`extractForm`／`applyForm` 讀回與直接修改形態（改係數、轉移表、接受集 → 行為跟著變，不用重新合成）；形態讀不回來＝降級成一般 Python 區塊。經既有 Python→UML 路徑 raw 語句為 0，往返穩定且輸出相同（`matrix_edit.test.js`）。未做：狀態機 UML 圖種（`uml_core` 是否能表達待查）、VM／ReLU 的 blocks 直接產生（路 B）、graph／grid 範本的形態編輯。
+
 ### 11.6 順序與限制
 - 排在「矩陣層有進步」之後（待辦 3 的 L1～L3 做穩、基準有數字）才實作；不要先做。
 - 沒有 VM→結構化 CNL 的反編譯（§14.8），L4 以上的 `blocks` 暫時給不出來。

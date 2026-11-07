@@ -235,7 +235,7 @@
     // ---- 註冊表：矩陣層「認多少補多少」——補一種範本／一種形狀＝註冊一個模組（FaMatrixSynth.register），不必改 synth() ----
     // 模組合約：fn({statement, examples, budget}) → 同步或 Promise 的 {ok, source, kind, level, size, tried, ambiguous, desc, matrixForm, reason}。
     // order 小的先試（便宜、保證會停的先；容易過度擬合的公式枚舉放最後）；模組丟例外只算它自己失敗，不影響其他模組。
-    const REGISTRY = [];
+    const REGISTRY = []; let EDITOR = null; const setEditor = (fn) => { EDITOR = typeof fn === 'function' ? fn : null; };
     function register(name, fn, opts) { const i = REGISTRY.findIndex((x) => x.name === name); const ent = { name, fn, order: (opts && opts.order != null) ? opts.order : 50, level: (opts && opts.level) || null, note: (opts && opts.note) || '' }; if (i >= 0) REGISTRY[i] = ent; else REGISTRY.push(ent); REGISTRY.sort((a, b) => a.order - b.order); return ent; }
     function unregister(name) { const i = REGISTRY.findIndex((x) => x.name === name); if (i >= 0) REGISTRY.splice(i, 1); return i >= 0; }
     const list = () => REGISTRY.map((x) => ({ name: x.name, order: x.order, level: x.level, note: x.note }));
@@ -252,8 +252,9 @@
             // 模組可以多給幾個「範例全對」的候選（alternatives，由好到差）：judge（含隱藏測資）退掉第一個時，依序再試
             if (o.judge && Array.isArray(r.alternatives)) { let hit = null; for (const alt of r.alternatives.slice(0, 40)) { if (!alt || !alt.ok) continue; const va = await o.judge(alt.source); steps[steps.length - 1].altTried = (steps[steps.length - 1].altTried || 0) + 1; if (va.verdict === 'AC') { hit = Object.assign(alt, { explain: alt.desc, blocks: null, matrixForm: alt.matrixForm || null, verdict: 'AC', verified: !alt.ambiguous, holdout: ex.length, steps, ms: Date.now() - t0 }); break; } } if (hit) { best = hit; break; } }
         }
+        if (best && EDITOR) { try { const e = await EDITOR(best, o.judge || null); if (e && e.source) { best.originalSource = best.source; best.source = e.source; best.editable = true; if (e.form) best.matrixForm = e.form; } } catch (err) { /* 整理失敗就保留原程式 */ } }
         if (best) return best;
         return { ok: false, reason: steps.map((s) => s.by + '：' + (s.reason || s.verdict)).join('；'), steps, ms: Date.now() - t0 };
     }
-    return { synth, register, unregister, list, synthRecurrence, synthDFA, synthFormula, synthTemplate, inferShape, kmpDFA };
+    return { synth, setEditor, register, unregister, list, synthRecurrence, synthDFA, synthFormula, synthTemplate, inferShape, kmpDFA };
 });

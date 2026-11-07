@@ -1,4 +1,4 @@
-/* 反編譯器（評估用，不進產品）：把矩陣／機器／ReLU 決策樹／VM 程式「讀回」人看得懂的形式。對應 DESIGN.matrix-algorithms.md 第 14 節。
+/* 反編譯器（為了 code edit：讓矩陣生成的東西人看得懂、能繼續編輯；產品端的可編輯整理在 matrix_edit_core.js）：把矩陣／機器／ReLU 決策樹／VM 程式「讀回」人看得懂的形式。對應 DESIGN.matrix-algorithms.md 第 14 節。
  *   矩陣 → 遞推式（特徵多項式，Cayley–Hamilton；伴隨矩陣直接讀最後一列）
  *   one-hot 轉移矩陣 → DFA → 狀態圖（文字、Graphviz dot）→ 正規表示式（狀態消去法）
  *   ReLU 決策樹 → if／else（可執行的 JS 原始碼＋中文受控自然語言）
