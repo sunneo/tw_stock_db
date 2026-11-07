@@ -26,6 +26,11 @@ const out = await page.evaluate(async () => {
   // 矩陣層 L0 補強（multi）：秒數換成時分秒（常數 3600／60 來自「秒」領域先驗，不在敘述數字裡）
   const stS = '輸入一個秒數 s（0 到 99999）。輸出對應的時、分、秒三個整數（分與秒都是 0 到 59），以空白分隔。'; const sec = (x) => Math.floor(x / 3600) + ' ' + Math.floor((x % 3600) / 60) + ' ' + (x % 60) + '\n'; const mkS = (xs) => xs.map((x) => ({ in: x + '\n', out: sec(x) }));
   res.m2 = await run('L0 multi·秒數換時分秒', { text: stS, problem: { id: 's', tests: mkS([3958, 10749]), hidden: mkS([0, 59, 60, 3599, 3600, 86399, 99999, 45296]), checker: 'tokens' } });
+  // 領域包 linuxfmt：tar 區塊數；領域包 twofile：paste 逐行並排
+  const stB = '輸入一行檔案大小 s（位元組）。tar 以 512 位元組為區塊：一個檔案佔 1 個標頭區塊，加上資料區塊（資料補 0 補到 512 的倍數，s=0 沒有資料區塊）。輸出這個檔案佔用的區塊數。';
+  res.p4 = await run('linuxfmt 領域包·tar 區塊', { text: stB, problem: { id: 'b', tests: T([['511\n', '2\n'], ['0\n', '1\n'], ['513\n', '3\n']]), hidden: T([['512\n', '2\n'], ['1024\n', '3\n'], ['1\n', '2\n'], ['4096\n', '9\n']]), checker: 'tokens' } });
+  const stP = '第一行 n，接著 n 行是檔案 A 的每一行文字；再來一行 m，接著 m 行是檔案 B 的每一行文字。仿 paste：把兩個檔案逐行並排，每行是 A 的第 i 行、一個 Tab、B 的第 i 行；較短的檔案用空字串補。';
+  res.p5 = await run('twofile 領域包·paste', { text: stP, problem: { id: 'p', tests: T([['2\na\nb\n1\nc\n', 'a\tc\nb\t\n'], ['1\nx\n2\ny\nz\n', 'x\ty\n\tz\n']]), hidden: T([['3\na\nb\nc\n3\nd\ne\nf\n', 'a\td\nb\te\nc\tf\n'], ['1\nq\n1\nr\n', 'q\tr\n']]), checker: 'tokens' } });
   return res;
 });
 console.log(JSON.stringify(out, null, 1)); console.log('頁面錯誤：', errs.length, errs.slice(0, 3)); await app.close();
