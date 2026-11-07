@@ -126,7 +126,8 @@
     function synthFormula(o) {
         const exs = o.examples.map((e) => ({ i: e.in.trim().split(/\s+/), o: e.out.trim() })); if (!exs.length || exs.some((e) => e.i.length !== exs[0].i.length || !e.i.every(isInt) || !isInt(e.o))) return { ok: false, reason: '不是「k 個整數進、一個整數出」' };
         const k = exs[0].i.length; if (k < 1 || k > 6) return { ok: false, reason: '輸入整數個數不在 1..6' };
-        const stmt = String(o.statement).replace(/[（(][^）)]*[）)]/g, ''); const consts = [...new Set([1, 2].concat((stmt.match(/\d+/g) || []).map(Number).filter((x) => x <= 1000)))].slice(0, 8);
+        const stmt = String(o.statement).replace(/[（(][^）)]*[）)]/g, ''); const CNN = { 兩: 2, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10 }; const wc = []; for (const m of stmt.matchAll(/([兩二三四五六七八九十])\s*(?:個|位|數|人|科|項|次|門|邊)/g)) wc.push(CNN[m[1]]); for (const [re, cs] of [[/秒|分鐘|小時|時間|時分/, [60, 3600, 24]], [/星期|週|周/, [7]], [/公分|公尺|百分|%|百分比/, [100]], [/月份|幾月/, [12, 30]], [/年份|閏年|世紀/, [100, 400]], [/各位|位數|十進位/, [10]]]) if (re.test(String(o.statement))) wc.push(...cs);
+        const consts = [...new Set([1, 2].concat((stmt.match(/\d+/g) || []).map(Number).filter((x) => x <= 1000), wc, k >= 2 ? [k] : []))].slice(0, 10);
         // 輸入：範例＋探針（固定的偽隨機小整數；只用來剪枝，不當正確性依據）
         let sd = 99; const rn = (a, b) => { sd = (Math.imul(sd, 1103515245) + 12345) & 0x7fffffff; return a + ((sd >>> 8) % (b - a + 1)); };
         const pts = exs.map((e) => e.i.map(Number)); const nEx = pts.length; for (let t = 0; t < 12; t++) pts.push(Array.from({ length: k }, () => rn(-9, 20)));
@@ -136,15 +137,15 @@
         for (let v = 0; v < k; v++) add(1, 'x' + v, pts.map((p) => p[v])); for (const c of consts) add(1, String(c), pts.map(() => c));
         if (k >= 3) for (let r = 0; r < k; r++) add(2, 'sorted([' + Array.from({ length: k }, (_, i) => 'x' + i).join(', ') + '])[' + r + ']', pts.map((p) => p.slice().sort((a, b) => a - b)[r]));
         const OPS = [['+', (a, b) => a + b, 1], ['-', (a, b) => a - b, 0], ['*', (a, b) => a * b, 1], ['//', (a, b) => (b === 0 ? NaN : Math.floor(a / b)), 0], ['%', (a, b) => (b === 0 ? NaN : ((a % b) + b) % b), 0], ['min', (a, b) => Math.min(a, b), 1], ['max', (a, b) => Math.max(a, b), 1]];
-        for (let n = 2; n <= 9 && !hits.length; n++) {
+        let firstN = 0; for (let n = 2; n <= 9 && (!hits.length || (n <= firstN + 2 && hits.length < 12)); n++) { if (hits.length && !firstN) firstN = n - 1;
             if (n >= 2) for (const a of bySize[n - 1] || []) { add(n, 'abs(' + a.expr + ')', a.vals.map(Math.abs)); }
             for (let i = 1; i <= n - 2; i++) { const j = n - 1 - i; for (const a of bySize[i] || []) for (const b of bySize[j] || []) for (const [op, f, comm] of OPS) {
                 if (tried > budget) return { ok: false, reason: '枚舉預算用盡（大小 ' + n + '）', tried };
                 if (comm && i > j) continue; const vals = a.vals.map((x, t) => f(x, b.vals[t])); const m = op === 'min' || op === 'max'; add(n, m ? op + '(' + a.expr + ', ' + b.expr + ')' : '(' + a.expr + ' ' + op + ' ' + b.expr + ')', vals); } }
         }
         if (!hits.length) return { ok: false, reason: '大小≤9 的整數公式裡沒有符合所有範例的', tried };
-        const h = hits[0]; const vars = Array.from({ length: k }, (_, i) => 'x' + i).join(', ');
-        return { ok: true, source: 'def main():\n    ' + vars + (k === 1 ? ', ' : '') + ' = map(int, input().split())\n    print(' + h.expr + ')\n', kind: 'formula', level: 'L0', size: h.expr.length, tried, ambiguous: hits.length > 1 && new Set(hits.map((x) => x.vals.join(','))).size > 1, desc: '公式 ' + h.expr, matrixForm: { kind: 'formula', expr: h.expr } };
+        const vars = Array.from({ length: k }, (_, i) => 'x' + i).join(', '); const mk = (h) => ({ ok: true, source: 'def main():\n    ' + vars + (k === 1 ? ', ' : '') + ' = map(int, input().split())\n    print(' + h.expr + ')\n', kind: 'formula', level: 'L0', size: h.expr.length, tried, ambiguous: hits.length > 1 && new Set(hits.map((x) => x.vals.join(','))).size > 1, desc: '公式 ' + h.expr, matrixForm: { kind: 'formula', expr: h.expr } });
+        const h0 = mk(hits[0]); h0.alternatives = hits.slice(1, 10).map(mk); return h0;
     }
     // ---- L3～L6：範本庫（計數器／堆疊／字串／清單的小範本；每個範本＝JS 預言機＋Python 程式，敘述關鍵字當先驗，對所有範例驗證）----
     // 這不是證明涵蓋：只是把「Blockly 範式骨架沒有、但常見」的小題型放進去，輸入形狀固定四種（int／str／k＋str／n＋清單）。
@@ -248,6 +249,8 @@
             steps.push({ by: name, ok: r.ok, reason: r.reason, tried: r.tried }); if (!r.ok) continue;
             let v = { verdict: 'UNCHECKED' }; if (o.judge) v = await o.judge(r.source); steps[steps.length - 1].verdict = v.verdict;
             if (v.verdict === 'AC' || v.verdict === 'UNCHECKED') { best = Object.assign(r, { explain: r.desc, blocks: null, matrixForm: r.matrixForm || null, verdict: v.verdict, verified: v.verdict === 'AC' && !r.ambiguous, holdout: ex.length, steps, ms: Date.now() - t0 }); break; }
+            // 模組可以多給幾個「範例全對」的候選（alternatives，由好到差）：judge（含隱藏測資）退掉第一個時，依序再試
+            if (o.judge && Array.isArray(r.alternatives)) { let hit = null; for (const alt of r.alternatives.slice(0, 40)) { if (!alt || !alt.ok) continue; const va = await o.judge(alt.source); steps[steps.length - 1].altTried = (steps[steps.length - 1].altTried || 0) + 1; if (va.verdict === 'AC') { hit = Object.assign(alt, { explain: alt.desc, blocks: null, matrixForm: alt.matrixForm || null, verdict: 'AC', verified: !alt.ambiguous, holdout: ex.length, steps, ms: Date.now() - t0 }); break; } } if (hit) { best = hit; break; } }
         }
         if (best) return best;
         return { ok: false, reason: steps.map((s) => s.by + '：' + (s.reason || s.verdict)).join('；'), steps, ms: Date.now() - t0 };
