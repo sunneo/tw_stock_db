@@ -23,6 +23,9 @@ const out = await page.evaluate(async () => {
   // 領域包 linuxsem：TCP 最終狀態
   const stT = '第一行 q，之後 q 行事件：passive_open、active_open、syn、synack、ack、fin、close、timeout。TCP 連線從 CLOSED 開始，依標準狀態機換狀態（LISTEN、SYN_SENT、SYN_RCVD、ESTABLISHED、FIN_WAIT_1、FIN_WAIT_2、TIME_WAIT、CLOSE_WAIT、LAST_ACK、CLOSED）；目前狀態沒有定義的事件直接忽略。輸出最後的狀態。';
   res.p3 = await run('linuxsem 領域包·TCP', { text: stT, problem: { id: 't', tests: T([['3\npassive_open\nsyn\nack\n', 'ESTABLISHED\n'], ['2\nactive_open\nclose\n', 'CLOSED\n']]), hidden: T([['5\npassive_open\nsyn\nack\nclose\nack\n', 'FIN_WAIT_2\n'], ['1\nfin\n', 'CLOSED\n']]), checker: 'tokens' } });
+  // 矩陣層 L0 補強（multi）：秒數換成時分秒（常數 3600／60 來自「秒」領域先驗，不在敘述數字裡）
+  const stS = '輸入一個秒數 s（0 到 99999）。輸出對應的時、分、秒三個整數（分與秒都是 0 到 59），以空白分隔。'; const sec = (x) => Math.floor(x / 3600) + ' ' + Math.floor((x % 3600) / 60) + ' ' + (x % 60) + '\n'; const mkS = (xs) => xs.map((x) => ({ in: x + '\n', out: sec(x) }));
+  res.m2 = await run('L0 multi·秒數換時分秒', { text: stS, problem: { id: 's', tests: mkS([3958, 10749]), hidden: mkS([0, 59, 60, 3599, 3600, 86399, 99999, 45296]), checker: 'tokens' } });
   return res;
 });
 console.log(JSON.stringify(out, null, 1)); console.log('頁面錯誤：', errs.length, errs.slice(0, 3)); await app.close();
