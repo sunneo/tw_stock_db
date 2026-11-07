@@ -19,6 +19,8 @@ async function run(f) { const out = []; for (const p of load(f)) { const ex = p.
     // 5 題範本沒有的題型（gcd、階乘、冪取模、兩數和奇偶）必須誠實失敗，不能被說成 verified。
     const h5 = await run('heldout5_l0.jsonl'); const v5 = h5.filter((y) => y.verified).length; console.log('heldout5 verified ' + v5 + '/' + h5.length); assert.ok(v5 >= 4, 'heldout5 下限 4：' + v5);
     for (const id of ['h5-gcd', 'h5-fact', 'h5-powmod', 'h5-sum-parity']) { const y = h5.find((z) => z.id === id); assert.ok(y && !y.verified, id + ' 不能是 verified'); }
+    // 主動要更多範例（資料面）：2 個範例湊出 ambiguous 候選時，要給出「前幾名候選答案不一致」的輸入讓使用者補輸出
+    { const leap = load('heldout5_l0.jsonl').find((p) => p.id === 'h5-leap'); const r = L0.synthPredicate({ statement: leap.statement, examples: leap.tests.slice(0, 2) }); assert.ok(r.ok && r.ambiguous, 'leap 兩個範例必須標 ambiguous'); assert.ok(Array.isArray(r.suggest) && r.suggest.length >= 1, '要給 suggest'); assert.ok(r.suggest.every((s) => /^-?\d+$/.test(s)), 'suggest 是可以直接當輸入的整數'); }
     const bad = await S.synth({ statement: '輸入一些東西，輸出答案。', examples: [{ in: '1 2\n3 4\n', out: '5\n' }] }); assert.ok(!bad.ok || !bad.verified, '不認得的形狀不能被說成 verified');
     const none = await G.synthGraph({ statement: '第一行 n m，接著 m 行 u v。', examples: [] }); assert.strictEqual(none.ok, false);
     console.log('7 passed, 0 failed'); process.exit(0);
