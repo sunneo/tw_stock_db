@@ -85,7 +85,12 @@
         return dist;
     }
     function boolAdj(n, edges, directed) { const A = zeros(n, n, SR.bool); for (let i = 0; i < n; i++) A[i][i] = 1; for (const [u, v] of edges) { A[u][v] = 1; if (!directed) A[v][u] = 1; } return A; }
+    // 注意：transitiveClosure 只給 A^(2^k)——A 必須已含單位矩陣（boolAdj 有加）才是「自反傳遞閉包」；A 不含單位矩陣時它不是閉包（判環就會錯）。
     const transitiveClosure = (A) => { let R = A; for (let len = 1; len < A.length; len *= 2) R = matMul(R, R, SR.bool); return R; };
+    // G8：不管 A 有沒有單位矩陣都正確的版本。reflexiveReach＝(A∨I)^(2^k)；hasCycle＝A·reach 的對角線（走一步再走到回自己）。
+    const reflexiveReach = (A) => { const n = A.length; const R0 = A.map((r, i) => r.map((x, j) => (x || i === j ? 1 : 0))); let R = R0; for (let len = 1; len < n; len *= 2) R = matMul(R, R, SR.bool); return R; };
+    function hasCycle(n, edges) { const A = zeros(n, n, SR.bool); for (const [u, v] of edges) A[u][v] = 1; const P = matMul(A, reflexiveReach(A), SR.bool); for (let i = 0; i < n; i++) if (P[i][i]) return true; return false; }
+    function hasCycleUndirected(n, edges) { const comp = componentsViaClosure(n, edges); return edges.length > n - comp; } // 無向簡單圖：邊數超過森林的 n−分量數就有環
     function componentsViaClosure(n, edges) { const R = transitiveClosure(boolAdj(n, edges, false)); return new Set(R.map((r) => r.join(''))).size; }
     function componentsUnionFind(n, edges) { const p = Array.from({ length: n }, (_, i) => i); const f = (x) => (p[x] === x ? x : (p[x] = f(p[x]))); for (const [u, v] of edges) p[f(u)] = f(v); return new Set(p.map((_, i) => f(i))).size; }
     const closureBfs = (n, edges, directed) => { const adj = Array.from({ length: n }, () => []); for (const [u, v] of edges) { adj[u].push(v); if (!directed) adj[v].push(u); } return Array.from({ length: n }, (_, s) => { const seen = new Array(n).fill(0); seen[s] = 1; const q = [s]; while (q.length) { const u = q.pop(); for (const v of adj[u]) if (!seen[v]) { seen[v] = 1; q.push(v); } } return seen; }); };
@@ -270,7 +275,7 @@
     return {
         P, INF, mulmod, powmod, invmod, SR, zeros, identity, matMul, matPow, matEq, matAdd, scanPrefix, scanSequential, productChunked,
         dfaRun, dfaMatrices, dfaRunMatrix, dfaCountMatrix, dfaCountBrute, DFAS, randomDfa,
-        weightMatrix, minPlusClosure, floyd, dijkstra, boolAdj, transitiveClosure, componentsViaClosure, componentsUnionFind, closureBfs, gridShortestMinPlus, gridShortestBfs, coinMinPlus, coinDp,
+        weightMatrix, minPlusClosure, floyd, dijkstra, boolAdj, transitiveClosure, reflexiveReach, hasCycle, hasCycleUndirected, componentsViaClosure, componentsUnionFind, closureBfs, gridShortestMinPlus, gridShortestBfs, coinMinPlus, coinDp,
         berlekampMassey, companion, nthTerm, seqByRecurrence,
         actionMatrix, gotoMatrix, sparsity, lrDriveByMatrix, boundedStackConfigs,
         cfgRecognize,

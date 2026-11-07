@@ -69,6 +69,24 @@ const rstr = (alpha, n) => Array.from({ length: n }, () => alpha[ri(0, alpha.len
     check('種子題 components：閉包列去重的個數＝並查集（80 張隨機圖）', comp);
 }
 
+// ③b G8：判環要用 A·reach 的對角線（A^(2^k) 不含單位矩陣時不是閉包）
+{
+    const dfsCycle = (n, edges) => { const adj = Array.from({ length: n }, () => []); for (const [u, v] of edges) adj[u].push(v); const st = new Array(n).fill(0); const go = (u) => { st[u] = 1; for (const v of adj[u]) { if (st[v] === 1) return true; if (st[v] === 0 && go(v)) return true; } st[u] = 2; return false; }; for (let i = 0; i < n; i++) if (st[i] === 0 && go(i)) return true; return false; };
+    let okD = true, okR = true, okU = true;
+    for (let t = 0; t < 300; t++) {
+        const n = ri(1, 9), m = ri(0, 12); const edges = Array.from({ length: m }, () => [ri(0, n - 1), ri(0, n - 1)]);
+        if (M.hasCycle(n, edges) !== dfsCycle(n, edges)) okD = false;
+        const A = M.boolAdj(n, edges, true).map((r, i) => r.map((x, j) => (i === j ? 0 : x))); if (!M.matEq(M.reflexiveReach(A), M.closureBfs(n, edges.filter(([u, v]) => u !== v), true))) okR = false;
+        const simple = []; const seen = new Set(); for (const [u, v] of edges) { if (u === v) continue; const k = Math.min(u, v) + ',' + Math.max(u, v); if (!seen.has(k)) { seen.add(k); simple.push([u, v]); } }
+        const p = Array.from({ length: n }, (_, i) => i); const f = (x) => (p[x] === x ? x : (p[x] = f(p[x]))); let cyc = false; for (const [u, v] of simple) { if (f(u) === f(v)) cyc = true; else p[f(u)] = f(v); }
+        if (M.hasCycleUndirected(n, simple) !== cyc) okU = false;
+    }
+    check('G8 有向判環＝A·reach 對角線（對照 DFS，300 張，含自環）', okD);
+    check('G8 reflexiveReach 不要求 A 含單位矩陣（對照 BFS 閉包）', okR);
+    check('G8 無向簡單圖判環：邊數＞n−分量數（對照並查集）', okU);
+    check('G8 回歸：只有 A^(2^k)（不含 I）時 transitiveClosure 抓不到自環／環的對角線，hasCycle 才是對的', M.hasCycle(2, [[0, 1], [1, 0]]) === true && M.hasCycle(3, [[0, 1], [1, 2]]) === false);
+}
+
 // ④ 線性遞推：Berlekamp–Massey → 伴隨矩陣 → matPow
 {
     const P = M.P; const iter = (init, coefs, n) => M.seqByRecurrence(init, coefs, n, P);

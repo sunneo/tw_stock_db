@@ -399,7 +399,7 @@ fallback: { stage: 'reader'|'recipe'|'lesson'|'paradigm'|'matrix'|'online'|'colu
 | G4 | 位元組／位元級輸入輸出 | 十六進位字串→位元組向量→位元流（低位先讀）；輸出反向 | 無 | Linux 約 15 題 |
 | G2 | **GF(2) 半環** | **已存在**：`SR.count(2)`；缺的是範本與合成器（用單位向量探測、高斯消去由範例解線性映射） | 【實測】`crc_js.js` | CRC 類 |
 | G7 | 可變／動態表（動態霍夫曼建表、LZMA 機率表） | VM 陣列夠，缺範本 | 【推論】 | DEFLATE 動態 |
-| G8 | 閉包函式修正版 | `transitiveClosure` 只給 `A^(2^k)`；加 `reflexiveReach` 與 `hasCycle`＝`A·reach` 對角線 | 【實測】錯 4/500 | 圖題、死結 |
+| G8 | 閉包函式修正版 | `transitiveClosure` 只給 `A^(2^k)`；加 `reflexiveReach` 與 `hasCycle`＝`A·reach` 對角線 | 【實測】錯 4/500 | 圖題、死結 | ✔已做（2026-11-07）：`matrix_forms_core.js` 加 `reflexiveReach`／`hasCycle`／`hasCycleUndirected`，`transitiveClosure` 註明 A 必須含單位矩陣；`matrix_forms.test.js` ③b 對 DFS／BFS／並查集各 300 張隨機圖全對 |
 | G9 | Petri 網／向量加法系統模擬器 | count 半環線性 `M'=M+C·f` | 【推論】 | OS 同步 |
 | G10 | 結點配置慣例＋可讀反編譯（樹／鏈結／雜湊） | VM 陣列堆＋free list；反編譯回結構體 UML | 【推論】 | 資料結構樹類 |
 
