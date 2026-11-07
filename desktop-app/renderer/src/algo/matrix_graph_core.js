@@ -1,0 +1,116 @@
+/* 矩陣層模組：邊表／格子形狀推斷＋圖與格子範本（純函式 UMD，不問模型）。藉 FaMatrixSynth.register 接進去，不改 synth()。
+ *   install(FaMatrixSynth) 註冊兩個模組：'graph'（order 30，L3 半環／圖範本）與 'grid'（order 35，格子恆等變換與計數範本）。
+ * 輸入形狀（從敘述的「第一行 n m …」加範例推，不靠讀取器）：
+ *   圖：首行 n m [k] [s t]；接著 m 行 u v [w]；最後可有一行 s t。有向／無向看敘述（有向、→／無向）；節點從 0 或 1 看敘述。
+ *   格子：首行 r c；接著 r 行，每行 c 個以空白分隔的整數，或 c 個字元。方陣：首行 n [k]；接著 n 行（A）、可再 n 行（B）。
+ * 範本由敘述關鍵字加範例驗證選出；同分且全對的候選回 ambiguous:true。輸出 Python 是半環矩陣運算（路徑計數＝(+,×)、最短步數＝(min,+)、可達＝布林閉包）或標準走訪。
+ * 這不是證明涵蓋：只認這些形狀與範本，其他一律誠實回 ok:false。 */
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaMatrixGraph = factory(); })(typeof self !== 'undefined' ? self : this, function () {
+    'use strict';
+    const isInt = (s) => /^-?\d+$/.test(s);
+    const ints = (l) => l.trim().split(/\s+/).filter(Boolean).map((x) => (isInt(x) ? Number(x) : NaN));
+    const modOf = (st) => (/10\s*\^\s*9\s*\+\s*7|1000000007|1e9\s*\+\s*7/i.test(st) ? 1000000007 : /998244353/.test(st) ? 998244353 : null);
+    const norm = (s) => String(s).trim().split(/\s+/).join(' ');
+    // ---- 圖 ----
+    function hdrNames(st) { const m = /(?:第一行|第\s*1\s*行|首行|輸入的第一行)\s*((?:[a-z]\s*)+?)(?=[，,。：:；;（(]|接|再|之後|表示|是|$)/.exec(st); return m ? m[1].trim().split(/\s+/) : null; }
+    function parseGraph(st, raw, names) {
+        const L = String(raw).replace(/\s+$/, '').split('\n'); const h = ints(L[0]); if (h.some(Number.isNaN) || h.length !== names.length) return null;
+        const v = {}; names.forEach((nm, i) => { v[nm] = h[i]; }); if (v.n === undefined || v.m === undefined) return null;
+        const E = L.slice(1, 1 + v.m).map(ints); if (E.length !== v.m || E.some((e) => e.some(Number.isNaN) || (e.length !== 2 && e.length !== 3) || e.length !== E[0].length)) return null;
+        const rest = L.slice(1 + v.m); let tail = null; if (rest.length === 1 && rest[0].trim()) { tail = ints(rest[0]); if (tail.some(Number.isNaN)) return null; } else if (rest.length) return null;
+        return { v, E, tail, w: v.m ? E[0].length === 3 : false };
+    }
+    const baseOf = (st) => (/節點\s*0\s*(?:\.\.|～|~|到|至)|0\s*\.\.\s*n\s*-\s*1|編號從\s*0|0\s*到\s*n\s*-\s*1/.test(st) ? 0 : 1);
+    const dirOf = (st) => (/無向/.test(st) ? false : /有向|→|->/.test(st) ? true : null);
+    const INF = Infinity;
+    function build(g, B, directed) { const n = g.v.n; const adj = Array.from({ length: n }, () => []); for (const e of g.E) { const u = e[0] - B, f = e[1] - B; if (u < 0 || f < 0 || u >= n || f >= n) return null; const w = e.length > 2 ? e[2] : 1; adj[u].push([f, w]); if (!directed) adj[f].push([u, w]); } return adj; }
+    function bfs(adj, s) { const d = adj.map(() => -1); d[s] = 0; const q = [s]; for (let i = 0; i < q.length; i++) for (const [y] of adj[q[i]]) if (d[y] < 0) { d[y] = d[q[i]] + 1; q.push(y); } return d; }
+    function topo(adj) { const n = adj.length; const indeg = Array(n).fill(0); adj.forEach((a) => a.forEach(([y]) => indeg[y]++)); const ord = []; const st = []; for (let i = 0; i < n; i++) if (!indeg[i]) st.push(i); while (st.length) { const x = st.pop(); ord.push(x); for (const [y] of adj[x]) if (--indeg[y] === 0) st.push(y); } return ord.length === n ? ord : null; }
+    function matMulMod(A, B, M) { const n = A.length; const C = Array.from({ length: n }, () => Array(n).fill(0n)); for (let i = 0; i < n; i++) for (let k = 0; k < n; k++) { const a = A[i][k]; if (!a) continue; for (let j = 0; j < n; j++) C[i][j] = (C[i][j] + a * B[k][j]) % M; } return C; }
+    // 每個範本：name、kw、need（'w' 要權重、'k' 要 header 的 k、'st' 要 s 與 t）、dir（要求方向 true／false／undefined）、js(ctx) → 輸出字串（或 null＝不適用）、py(ctx) → 程式行（接在讀入之後，已有 n、adj、s0、t0、MOD）、out（'int'／'list'／'bool'）
+    const GT = [
+        { name: 'DAG 路徑數（(+,×) 半環）', kw: /路徑(?:條數|數)|幾條路徑|走法數|有幾種走法/, dir: true, noK: true, out: 'int', js: (c) => { const o = topo(c.adj); if (!o) return null; const f = Array(c.n).fill(0n); f[c.s0] = 1n; const M = BigInt(c.M || 0); for (const x of o) for (const [y] of c.adj[x]) { f[y] += f[x]; if (M) f[y] %= M; } return String(f[c.t0]); }, py: () => ['f = [0] * n', 'f[s0] = 1', 'order = []', 'indeg = [0] * n', 'for u in range(n):', '    for v, w in adj[u]:', '        indeg[v] += 1', 'st = [i for i in range(n) if indeg[i] == 0]', 'while st:', '    x = st.pop()', '    order.append(x)', '    for v, w in adj[x]:', '        indeg[v] -= 1', '        if indeg[v] == 0:', '            st.append(v)', 'for x in order:', '    for v, w in adj[x]:', '        f[v] = (f[v] + f[x]) % MOD if MOD else f[v] + f[x]', 'r = f[t0]'] },
+        { name: '恰好 k 步的走法數（(+,×) 矩陣冪）', kw: /恰好走?\s*k\s*步|k\s*步.*走法|長度(?:恰)?為\s*k/, dir: true, need: 'k', out: 'int', js: (c) => { const M = BigInt(c.M || 0); let R = Array.from({ length: c.n }, (_, i) => Array.from({ length: c.n }, (_, j) => (i === j ? 1n : 0n))); let A = Array.from({ length: c.n }, () => Array(c.n).fill(0n)); c.adj.forEach((a, u) => a.forEach(([v]) => { A[u][v] += 1n; })); let e = c.k; const mm = (X, Y) => (M ? matMulMod(X, Y, M) : X.map((r, i) => Y[0].map((_, j) => r.reduce((s, x, k) => s + x * Y[k][j], 0n)))); while (e > 0) { if (e & 1) R = mm(R, A); A = mm(A, A); e = Math.floor(e / 2); } return String(R[c.s0][c.t0]); }, py: () => ['def mm(X, Y):', '    return [[sum(X[i][t] * Y[t][j] for t in range(n)) % MOD if MOD else sum(X[i][t] * Y[t][j] for t in range(n)) for j in range(n)] for i in range(n)]', 'A = [[0] * n for _ in range(n)]', 'for u in range(n):', '    for v, w in adj[u]:', '        A[u][v] += 1', 'R = [[1 if i == j else 0 for j in range(n)] for i in range(n)]', 'e = k', 'while e > 0:', '    if e & 1:', '        R = mm(R, A)', '    A = mm(A, A)', '    e >>= 1', 'r = R[s0][t0]'] },
+        { name: '最少邊數（(min,+) 半環／BFS）', kw: /最少(?:要)?經過幾條邊|最少邊數|最短(?:路徑)?(?:的)?(?:邊數|步數)|最少(?:要)?(?:走)?幾步|最少(?:要)?走幾條邊/, out: 'int', noW: true, js: (c) => String(bfs(c.adj, c.s0)[c.t0]), py: () => ['dist = [-1] * n', 'dist[s0] = 0', 'q = [s0]', 'for x in q:', '    for y, w in adj[x]:', '        if dist[y] < 0:', '            dist[y] = dist[x] + 1', '            q.append(y)', 'r = dist[t0]'] },
+        { name: '到每個節點的最少邊數', kw: /依序輸出節點.*最少邊數|到每個節點.*最少/, out: 'list', noW: true, js: (c) => bfs(c.adj, c.s0).join(' '), py: () => ['dist = [-1] * n', 'dist[s0] = 0', 'q = [s0]', 'for x in q:', '    for y, w in adj[x]:', '        if dist[y] < 0:', '            dist[y] = dist[x] + 1', '            q.append(y)', 'r = dist'] },
+        { name: '有環判斷（有向，拓撲／閉包對角線）', kw: /有沒有環|有環|環/, dir: true, out: 'bool', js: (c) => !topo(c.adj), py: () => ['indeg = [0] * n', 'for u in range(n):', '    for v, w in adj[u]:', '        indeg[v] += 1', 'st = [i for i in range(n) if indeg[i] == 0]', 'seen = 0', 'while st:', '    x = st.pop()', '    seen += 1', '    for v, w in adj[x]:', '        indeg[v] -= 1', '        if indeg[v] == 0:', '            st.append(v)', 'r = seen < n'] },
+        { name: '有環判斷（無向，並查集）', kw: /有沒有環|有環|環/, dir: false, out: 'bool', js: (c) => { const p = Array.from({ length: c.n }, (_, i) => i); const f = (x) => { while (p[x] !== x) { p[x] = p[p[x]]; x = p[x]; } return x; }; for (const e of c.g.E) { const a = f(e[0] - c.B), b = f(e[1] - c.B); if (a === b) return true; p[a] = b; } return false; }, py: () => ['p = list(range(n))', 'r = False', 'for e in E:', '    a = e[0] - B', '    b = e[1] - B', '    while p[a] != a:', '        p[a] = p[p[a]]', '        a = p[a]', '    while p[b] != b:', '        p[b] = p[p[b]]', '        b = p[b]', '    if a == b:', '        r = True', '    else:', '        p[a] = b'] },
+        { name: 'DAG 最長路（(max,+) 半環）', kw: /最長(?:路徑)?/, dir: true, need: 'w', out: 'int', js: (c) => { const o = topo(c.adj); if (!o) return null; const d = Array(c.n).fill(-INF); d[c.s0] = 0; for (const x of o) if (d[x] > -INF) for (const [y, w] of c.adj[x]) d[y] = Math.max(d[y], d[x] + w); return String(d[c.t0] === -INF ? -1 : d[c.t0]); }, py: () => ['NEG = -10 ** 18', 'd = [NEG] * n', 'd[s0] = 0', 'indeg = [0] * n', 'for u in range(n):', '    for v, w in adj[u]:', '        indeg[v] += 1', 'st = [i for i in range(n) if indeg[i] == 0]', 'while st:', '    x = st.pop()', '    for v, w in adj[x]:', '        if d[x] > NEG and d[x] + w > d[v]:', '            d[v] = d[x] + w', '        indeg[v] -= 1', '        if indeg[v] == 0:', '            st.append(v)', 'r = -1 if d[t0] == NEG else d[t0]'] },
+        { name: '可達節點數（布林閉包）', kw: /最多能到達|可以到達|能到達幾個|可達/, dir: true, out: 'int', noW: true, js: (c) => String(bfs(c.adj, c.s0).filter((x) => x >= 0).length), py: () => ['seen = [False] * n', 'seen[s0] = True', 'st = [s0]', 'while st:', '    x = st.pop()', '    for y, w in adj[x]:', '        if not seen[y]:', '            seen[y] = True', '            st.append(y)', 'r = sum(seen)'] },
+        { name: '最短路（(min,+) 半環，Dijkstra）', kw: /最短距離|最短路|最短路徑長/, need: 'w', out: 'int', js: (c) => { const d = Array(c.n).fill(INF); d[c.s0] = 0; const done = Array(c.n).fill(false); for (let it = 0; it < c.n; it++) { let u = -1; for (let i = 0; i < c.n; i++) if (!done[i] && d[i] < INF && (u < 0 || d[i] < d[u])) u = i; if (u < 0) break; done[u] = true; for (const [y, w] of c.adj[u]) if (d[u] + w < d[y]) d[y] = d[u] + w; } return String(d[c.t0] === INF ? -1 : d[c.t0]); }, py: () => ['import heapq', 'INFD = float("inf")', 'd = [INFD] * n', 'd[s0] = 0', 'pq = [(0, s0)]', 'while pq:', '    du, u = heapq.heappop(pq)', '    if du > d[u]:', '        continue', '    for v, w in adj[u]:', '        if du + w < d[v]:', '            d[v] = du + w', '            heapq.heappush(pq, (d[v], v))', 'r = -1 if d[t0] == INFD else d[t0]'] },
+        { name: '各節點度數', kw: /度數/, dir: false, out: 'list', noW: true, js: (c) => c.adj.map((a) => a.length).join(' '), py: () => ['r = [len(adj[i]) for i in range(n)]'] },
+        { name: '入度為 0 的節點數', kw: /入度.*0|入度為\s*0/, dir: true, out: 'int', noW: true, js: (c) => { const d = Array(c.n).fill(0); c.adj.forEach((a) => a.forEach(([y]) => d[y]++)); return String(d.filter((x) => x === 0).length); }, py: () => ['indeg = [0] * n', 'for u in range(n):', '    for v, w in adj[u]:', '        indeg[v] += 1', 'r = indeg.count(0)'] },
+        { name: '能否從 s 走到 t', kw: /能否|如果能從|可否|是否(?:能|可)/, dir: true, need: 'st', out: 'bool', js: (c) => bfs(c.adj, c.s0)[c.t0] >= 0, py: () => ['seen = [False] * n', 'seen[s0] = True', 'st = [s0]', 'while st:', '    x = st.pop()', '    for y, w in adj[x]:', '        if not seen[y]:', '            seen[y] = True', '            st.append(y)', 'r = seen[t0]'] },
+        { name: '最大連通分量大小', kw: /最大的連通分量|連通分量.*最大|最大連通/, dir: false, out: 'int', noW: true, js: (c) => { const seen = Array(c.n).fill(false); let best = 0; for (let s = 0; s < c.n; s++) { if (seen[s]) continue; seen[s] = true; const st = [s]; let k = 0; while (st.length) { const x = st.pop(); k++; for (const [y] of c.adj[x]) if (!seen[y]) { seen[y] = true; st.push(y); } } best = Math.max(best, k); } return String(best); }, py: () => ['seen = [False] * n', 'r = 0', 'for s in range(n):', '    if seen[s]:', '        continue', '    seen[s] = True', '    st = [s]', '    k = 0', '    while st:', '        x = st.pop()', '        k += 1', '        for y, w in adj[x]:', '            if not seen[y]:', '                seen[y] = True', '                st.append(y)', '    r = max(r, k)'] },
+        { name: '字典序最小拓撲排序', kw: /拓撲/, dir: true, out: 'list', noW: true, js: (c) => { const n = c.n; const indeg = Array(n).fill(0); c.adj.forEach((a) => a.forEach(([y]) => indeg[y]++)); const out = []; const ready = []; for (let i = 0; i < n; i++) if (!indeg[i]) ready.push(i); while (ready.length) { ready.sort((a, b) => a - b); const x = ready.shift(); out.push(x + c.B); for (const [y] of c.adj[x]) if (--indeg[y] === 0) ready.push(y); } return out.length === n ? out.join(' ') : null; }, py: () => ['import heapq', 'indeg = [0] * n', 'for u in range(n):', '    for v, w in adj[u]:', '        indeg[v] += 1', 'hp = [i for i in range(n) if indeg[i] == 0]', 'heapq.heapify(hp)', 'r = []', 'while hp:', '    x = heapq.heappop(hp)', '    r.append(x + B)', '    for v, w in adj[x]:', '        indeg[v] -= 1', '        if indeg[v] == 0:', '            heapq.heappush(hp, v)'], offsetOut: true },
+    ];
+    function labelsOf(st, exs) { const outs = [...new Set(exs.map((e) => norm(e.out)))]; const caps = [...st.matchAll(/(?:輸出|印出|印)\s*([A-Za-z_]+)|[，,、]\s*([A-Z][A-Z_]+)/g)].map((m) => m[1] || m[2]); const ordered = []; for (const w of caps.concat([...st.matchAll(/\b([A-Z][A-Z_]+)\b/g)].map((m) => m[1]))) if (!ordered.includes(w)) ordered.push(w); return { outs, ordered }; }
+    function synthGraph(o) {
+        const st = String(o.statement), exs = o.examples || []; if (!exs.length) return { ok: false, reason: '沒有範例' };
+        const names = hdrNames(st); if (!names || names[0] !== 'n' || names[1] !== 'm') return { ok: false, reason: '敘述沒有「第一行 n m …」的圖輸入形狀' };
+        const B = baseOf(st); const sd = dirOf(st); const gs = exs.map((e) => parseGraph(st, e.in, names)); if (gs.some((g) => !g)) return { ok: false, reason: '範例不是「n m ＋ m 條邊」的邊表' };
+        const M = modOf(st); const hits = []; let tried = 0; const { outs, ordered } = labelsOf(st, exs);
+        for (const t of GT) {
+            if (t.need === 'w' && !gs[0].w) continue; if (t.noW && gs[0].w) continue; if (t.need === 'k' && gs[0].v.k === undefined) continue; if (t.noK && gs[0].v.k !== undefined) continue;
+            if (t.need === 'st' && !(gs[0].v.s !== undefined || (gs[0].tail && gs[0].tail.length === 2))) continue;
+            const dirs = t.dir !== undefined ? (sd === null || sd === t.dir ? [t.dir] : []) : (sd === null ? [true, false] : [sd]); for (const directed of dirs) {
+                tried++; const ctxs = gs.map((g) => { const adj = build(g, B, directed); if (!adj) return null; const sv = g.v.s !== undefined ? g.v.s : g.tail && g.tail.length >= 2 ? g.tail[0] : B; const tv = g.v.t !== undefined ? g.v.t : g.tail && g.tail.length >= 2 ? g.tail[1] : g.v.n - 1 + B; return { g, n: g.v.n, adj, B, M, k: g.v.k, s0: sv - B, t0: tv - B }; }); if (ctxs.some((c) => !c)) continue;
+                let vals; try { vals = ctxs.map((c) => t.js(c)); } catch (e) { continue; } if (vals.some((v) => v === null || v === undefined)) continue;
+                let yes = null, no = null;
+                if (t.out === 'bool') { const ls = outs.length === 2 ? outs : outs.concat(ordered.filter((x) => !outs.includes(x))).slice(0, 2); if (ls.length < 2) continue; const cand = ordered.filter((x) => ls.includes(x)); const pairs = cand.length === 2 ? [[cand[0], cand[1]]] : [[ls[0], ls[1]], [ls[1], ls[0]]]; let f = false; for (const [y, n_] of pairs) if (exs.every((e, i) => norm(e.out) === (vals[i] ? y : n_))) { yes = y; no = n_; f = true; break; } if (!f) continue; }
+                else if (!exs.every((e, i) => norm(e.out) === norm(String(vals[i])))) continue;
+                hits.push({ t, directed, yes, no, score: t.kw.test(st) ? 2 : 0 });
+            }
+        }
+        if (!hits.length) return { ok: false, reason: '圖範本庫（' + GT.length + ' 個）裡沒有符合所有範例的', tried };
+        hits.sort((a, b) => b.score - a.score); const h = hits[0], t = h.t; const unique = hits.length === 1 || h.score > hits[1].score;
+        const g0 = gs[0]; const rd = ['    h = input().split()']; names.forEach((nm, i) => rd.push('    ' + nm + ' = int(h[' + i + '])')); rd.push('    E = [tuple(map(int, input().split())) for _ in range(m)]');
+        const hasTail = g0.tail && g0.tail.length === 2 && g0.v.s === undefined; if (hasTail) rd.push('    s, t = map(int, input().split())');
+        const s0 = (g0.v.s !== undefined || hasTail) ? 's - B' : '0', t0 = (g0.v.t !== undefined || hasTail) ? 't - B' : 'n - 1';
+        const pre = ['    B = ' + B, '    MOD = ' + (M || 0), '    adj = [[] for _ in range(n)]', '    for e in E:', '        u = e[0] - B', '        v = e[1] - B', '        w = e[2] if len(e) > 2 else 1', '        adj[u].append((v, w))'].concat(h.directed ? [] : ['        adj[v].append((u, w))'], ['    s0 = ' + s0, '    t0 = ' + t0]);
+        const body = t.py().map((l) => '    ' + l);
+        const pr = t.out === 'bool' ? '    print(' + JSON.stringify(h.yes) + ' if r else ' + JSON.stringify(h.no) + ')' : t.out === 'list' ? "    print(' '.join(map(str, r)))" : '    print(r)';
+        const src = ['def main():'].concat(rd, pre, body, [pr]).join('\n') + '\n';
+        return { ok: true, source: src, kind: 'graph', level: 'L3', size: t.py().length, tried, ambiguous: !unique, desc: '圖範本：' + t.name, matrixForm: { kind: 'graph', name: t.name, directed: h.directed } };
+    }
+    // ---- 格子 ----
+    function parseGrid(raw) {
+        const L = String(raw).replace(/\s+$/, '').split('\n'); const h = ints(L[0]); if (h.length !== 2 || h.some(Number.isNaN)) return null; const [r, c] = h; const rows = L.slice(1); if (rows.length !== r) return null;
+        const toks = rows.map((l) => l.trim().split(/\s+/)); if (toks.every((t) => t.length === c && t.every(isInt)) && !(c > 1 && false)) return { r, c, kind: 'int', G: toks.map((t) => t.map(Number)) };
+        if (rows.every((l) => l.length === c && !/\s/.test(l))) return { r, c, kind: 'chr', G: rows.map((l) => [...l]) }; return null;
+    }
+    const outG = (G, kind) => G.map((row) => row.join(kind === 'int' ? ' ' : '')).join('\n');
+    const tr = (G) => G[0].map((_, j) => G.map((row) => row[j]));
+    const rot = (G) => tr(G).map((row) => row.slice().reverse());
+    function islands(G, ch) { const r = G.length, c = G[0].length; const seen = G.map((row) => row.map(() => false)); let k = 0; for (let i = 0; i < r; i++) for (let j = 0; j < c; j++) { if (seen[i][j] || G[i][j] !== ch) continue; k++; const st = [[i, j]]; seen[i][j] = true; while (st.length) { const [x, y] = st.pop(); for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) { const a = x + dx, b = y + dy; if (a >= 0 && b >= 0 && a < r && b < c && !seen[a][b] && G[a][b] === ch) { seen[a][b] = true; st.push([a, b]); } } } } return k; }
+    const GR = [
+        { name: '轉置', kw: /轉置/, js: (g) => outG(tr(g.G), g.kind), py: ['R = [list(x) for x in zip(*G)]'], show: 'grid' },
+        { name: '上下翻轉', kw: /上下(?:顛倒|翻轉)|垂直翻轉/, js: (g) => outG(g.G.slice().reverse(), g.kind), py: ['R = G[::-1]'], show: 'grid' },
+        { name: '左右翻轉', kw: /左右(?:顛倒|翻轉)|水平翻轉|鏡射/, js: (g) => outG(g.G.map((row) => row.slice().reverse()), g.kind), py: ['R = [row[::-1] for row in G]'], show: 'grid' },
+        { name: '順時針旋轉 90 度', kw: /順時針.*90|旋轉\s*90/, js: (g) => outG(rot(g.G), g.kind), py: ['R = [list(x)[::-1] for x in zip(*G)]'], show: 'grid' },
+        { name: '逆時針旋轉 90 度', kw: /逆時針.*90/, js: (g) => outG(tr(g.G).reverse(), g.kind), py: ['R = [list(x) for x in zip(*G)][::-1]'], show: 'grid' },
+        { name: '旋轉 180 度', kw: /180/, js: (g) => outG(g.G.slice().reverse().map((row) => row.slice().reverse()), g.kind), py: ['R = [row[::-1] for row in G[::-1]]'], show: 'grid' },
+        { name: '每列總和', kw: /每一列.*總和|每列.*和|列.*總和/, kind: 'int', js: (g) => g.G.map((row) => row.reduce((a, b) => a + b, 0)).join('\n'), py: ['R = [sum(row) for row in G]'], show: 'lines' },
+        { name: '每欄總和', kw: /每一欄.*總和|每欄.*和|欄.*總和|每一行.*總和/, kind: 'int', js: (g) => tr(g.G).map((row) => row.reduce((a, b) => a + b, 0)).join(' '), py: ['R = [sum(x) for x in zip(*G)]'], show: 'row' },
+        { name: '全部總和', kw: /總和|加總/, kind: 'int', js: (g) => String(g.G.flat().reduce((a, b) => a + b, 0)), py: ['R = sum(sum(row) for row in G)'], show: 'one' },
+        { name: '最大值', kw: /最大/, kind: 'int', js: (g) => String(Math.max(...g.G.flat())), py: ['R = max(max(row) for row in G)'], show: 'one' },
+        { name: '某字元個數', kw: /個數|幾個|有多少/, kind: 'chr', needCh: true, js: (g, ch) => String(g.G.flat().filter((x) => x === ch).length), py: (ch) => ['R = sum(row.count(' + JSON.stringify(ch) + ') for row in G)'], show: 'one' },
+        { name: '四連通島嶼數', kw: /島|連通|相連/, kind: 'chr', needCh: true, js: (g, ch) => String(islands(g.G, ch)), py: (ch) => ['seen = [[False] * c for _ in range(r)]', 'R = 0', 'for i in range(r):', '    for j in range(c):', '        if seen[i][j] or G[i][j] != ' + JSON.stringify(ch) + ':', '            continue', '        R += 1', '        seen[i][j] = True', '        st = [(i, j)]', '        while st:', '            x, y = st.pop()', '            for a, b in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)):', '                if 0 <= a < r and 0 <= b < c and not seen[a][b] and G[a][b] == ' + JSON.stringify(ch) + ':', '                    seen[a][b] = True', '                    st.append((a, b))'], show: 'one' },
+    ];
+    function charCands(st, exs) { const q = [...st.matchAll(/[「"'『]\s*(\S)\s*[」"'』]/g)].map((m) => m[1]); const sym = [...new Set([...st].filter((x) => /[#.*@+oOxX]/.test(x)))]; const seen = [...new Set(exs.flatMap((e) => [...e.in.split('\n').slice(1).join('')].filter((x) => !/\s/.test(x))))]; return [...new Set(q.concat(sym.filter((x) => seen.includes(x)), seen))].slice(0, 6); }
+    function synthGrid(o) {
+        const st = String(o.statement), exs = o.examples || []; if (!exs.length) return { ok: false, reason: '沒有範例' };
+        const gs = exs.map((e) => parseGrid(e.in)); if (gs.some((g) => !g) || gs.some((g) => g.kind !== gs[0].kind)) return { ok: false, reason: '範例不是「r c ＋ r 行」的格子' };
+        const kind = gs[0].kind; const hits = []; let tried = 0;
+        for (const t of GR) { if (t.kind && t.kind !== kind) continue; const chs = t.needCh ? charCands(st, exs) : [null]; for (const ch of chs) { tried++; let vals; try { vals = gs.map((g) => t.js(g, ch)); } catch (e) { continue; } if (exs.every((e, i) => norm(e.out) === norm(vals[i]))) hits.push({ t, ch, score: (t.kw.test(st) ? 2 : 0) + (ch && st.includes(ch) ? 1 : 0) }); } }
+        if (!hits.length) return { ok: false, reason: '格子範本庫（' + GR.length + ' 個）裡沒有符合所有範例的', tried };
+        hits.sort((a, b) => b.score - a.score); const h = hits[0], t = h.t; const unique = hits.length === 1 || h.score > hits[1].score;
+        const rd = ['    r, c = map(int, input().split())', kind === 'int' ? '    G = [list(map(int, input().split())) for _ in range(r)]' : '    G = [input().strip() for _ in range(r)]'];
+        const py = typeof t.py === 'function' ? t.py(h.ch) : t.py; const sep = kind === 'int' ? "' '" : "''";
+        const pr = { grid: ['    for row in R:', '        print(' + sep + '.join(map(str, row)))'], lines: ['    for x in R:', '        print(x)'], row: ["    print(' '.join(map(str, R)))"], one: ['    print(R)'] }[t.show];
+        const src = ['def main():'].concat(rd, py.map((l) => '    ' + l), pr).join('\n') + '\n';
+        return { ok: true, source: src, kind: 'grid', level: 'L4', size: py.length, tried, ambiguous: !unique, desc: '格子範本：' + t.name, matrixForm: { kind: 'grid', name: t.name } };
+    }
+    function install(M) { if (!M || !M.register) return false; M.register('graph', synthGraph, { order: 30, level: 'L3', note: '邊表形狀＋圖範本（半環矩陣冪／走訪）' }); M.register('grid', synthGrid, { order: 35, level: 'L4', note: '格子形狀＋變換／計數範本' }); return true; }
+    return { install, synthGraph, synthGrid, parseGraph, parseGrid, hdrNames, GT, GR };
+});

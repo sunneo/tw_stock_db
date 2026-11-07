@@ -6,6 +6,7 @@ const U_ = path.join(__dirname, '..', '..', 'renderer', 'src', 'uml');
 const r = (f) => require(path.join(U_, f));
 const C2U = r('py_code2uml_core.js'), PBL = r('py_blocks_core.js'), RU = r('py_blocks_rules_core.js'), PB = r('py_body_core.js'), UC = r('uml_core.js'), AI = r('algo_intent_core.js'), PL = r('py_uml_pipeline_core.js'), CH = r('py_cnl_choose_core.js'), PAR = r('py_paradigms_core.js'), LS = r('py_lessons_core.js'), BI = r('py_lessons_builtin.js');
 const MX = require(path.join(__dirname, '..', '..', 'renderer', 'src', 'algo', 'matrix_synth_core.js'));
+try { require(path.join(__dirname, '..', '..', 'renderer', 'src', 'algo', 'matrix_graph_core.js')).install(MX); } catch (e) { /* 沒有 graph／grid 模組就只量原本的矩陣層 */ }
 const MODE = (arg0('--mode') || 'A').toUpperCase();
 const DIR = process.env.FA_TS_DIR || path.join(os.homedir(), '.cache', 'fa-ts');
 function arg0(k) { const i = process.argv.indexOf(k); return i > 0 ? process.argv[i + 1] : null; }
