@@ -18,6 +18,7 @@ Continue from the handoff document at desktop-app/HANDOFF.long-run-todo.md. Read
 
 1. **矩陣與 Blockly**
    - 1a 多數題目看不到區塊：`write_code` 離線組合（`_codeOffline`，floating-assistant.js 約 113015–113080，`_matrixBlocksObj`）只在讀取器讀不出／範式沒解出才走矩陣層。第一步：範式解出後也跑矩陣層，輸出一致時附上驗證過的區塊。
+   - **1a 偵察結果（handoff 1，尚未改碼）**：矩陣層只在 `FaPyUmlPipeline.buildFromUML`（renderer/src/uml/py_uml_pipeline_core.js 第 48–52 行 `tryMatrix`，第 63、101 行呼叫）當後備。做法：在 `_codeOffline`（floating-assistant.js 約 113014）若 `!r.matrix && hasMatrix && exs.length`，另跑 `FaMatrixSynth.synth({statement, examples:exs, judge, budget})`；`m.ok` 且 verdict AC/UNCHECKED 且在可見範例上輸出與 `r.source` 一致，才用 `_matrixBlocksFromResult(m.source, {matrixForm:m.matrixForm, kind:m.kind}, exs)` 附上區塊（`matrix.verified` 仍需獨立隱藏測資）。注意 synth 有枚舉預算（預設 20–30 萬候選），要設較小 `budget:{candidates:…}` 避免拖慢。完成後跑 §4 的回歸四項。筆記：side-session-notes/local_7ab7fc32-…/note-1a-recon.md。
    - 1b 沒有區塊畫面，只回受控自然語言：給 `matrix_blocks` 工具（約 73004）做區塊顯示卡片／畫面。
    - 1c 狀態機圖種收編進 `renderer/src/uml/uml_core`（並有畫面）；1d VM 區塊接進 `write_code`。
    - 1e Blockly 教學補：socket 全套、exec／環境變數、信號處理常式巢狀。holdout 未解題不可教。新 domain pack 要五個註冊點＋自己的 holdout＋`scripts/e2e/matrix_graph.e2e.mjs` 一行。
