@@ -80,6 +80,16 @@ const run = (exe, args, input, timeout) => { const r = cp.spawnSync(exe, args, {
         assert.ok(total >= 5, '至少要有幾個註解被測到：' + total); notes.push('區塊往返保留註解 ' + total + ' 個（含獨立註解與行尾註解）');
         const em = bridge.emit(through(SAMPLES[0]).p.python, 'nodejs', 'c'); assert.ok(/walk the list/.test(em.code) && /accumulator/.test(em.code), em.code);
     });
+    await t('註解往返後在 nodejs／java／c 輸出都找得到（java 預設把非 ASCII 逸出成 \\uXXXX，還原後比對；行尾與區塊內註解都算）', () => {
+        const unesc = (s) => s.replace(/\\u([0-9a-fA-F]{4})/g, (_, h) => String.fromCharCode(parseInt(h, 16)));
+        let n = 0;
+        for (const s of SAMPLES) {
+            const a = bridge.fromPython(s.py); if (!a.comments.length) continue;
+            const p = bridge.program(a.funcs.map((f) => ({ name: f.name, params: f.params, cnl: f.cnl })), { ctx: a.ctx }); const texts = a.comments.map((c) => c.text.replace(/^#\s*/, ''));
+            for (const lang of s.langs) { const e = bridge.emit(p.python, lang, s.id); assert.ok(e.ok, s.id + lang); const code = unesc(e.code); texts.forEach((tx) => { assert.ok(code.includes(tx), s.id + ' → ' + lang + ' 缺註解「' + tx + '」'); n++; }); }
+        }
+        notes.push('註解在 nodejs／java／c 輸出共比對 ' + n + ' 筆全部找到');
+    });
     await t('壞的受控自然語言：不丟例外，回報解析錯誤', () => {
         const p = bridge.program([{ name: 'main', params: [], cnl: '這不是任何已知的區塊 @@@' }]); assert.strictEqual(p.ok, false);
         const e = bridge.blocksToTarget([{ name: 'main', params: [], cnl: '這不是任何已知的區塊 @@@' }], 'nodejs'); assert.strictEqual(e.ok, false); assert.ok(e.diags.length);
