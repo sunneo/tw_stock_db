@@ -18,9 +18,11 @@ const path = require('path');
 const core = (() => { try { return require('./judge-core.js'); } catch (e) { return require('./renderer/src/recipe/judge_core.js'); } })();
 
 const sh = (cmd, args) => ({ cmd, args });
+const PY = process.platform === 'win32' ? 'python' : 'python3';
 // 每種語言：file（原始檔名）、compile(dir)→null 或 {cmd,args}、run(dir)→{cmd,args}、detect（版本探測）、probe（可選，真的跑一個空程式，證明這台機器跑得起來）
 const LANGS = {
-    python: { file: 'main.py', detect: ['python3', ['--version']], check: (d) => sh('python3', ['-m', 'py_compile', path.join(d, 'main.py')]), run: (d) => sh('python3', [path.join(d, 'main.py')]) },
+    // Windows 的 python3 只是 Microsoft Store 的空殼，真的直譯器叫 python；其他平台叫 python3
+    python: { file: 'main.py', detect: [PY, ['--version']], check: (d) => sh(PY, ['-m', 'py_compile', path.join(d, 'main.py')]), run: (d) => sh(PY, [path.join(d, 'main.py')]) },
     nodejs: { file: 'main.js', detect: ['node', ['--version']], check: (d) => sh('node', ['--check', path.join(d, 'main.js')]), run: (d) => sh('node', [path.join(d, 'main.js')]) },
     c: { file: 'main.c', detect: ['gcc', ['--version']], check: (d) => sh('gcc', ['-fsyntax-only', path.join(d, 'main.c')]), compile: (d) => sh('gcc', ['-O2', '-o', path.join(d, 'a.out'), path.join(d, 'main.c'), '-lm']), run: (d) => sh(path.join(d, 'a.out'), []) },
     cpp: { file: 'main.cpp', detect: ['g++', ['--version']], check: (d) => sh('g++', ['-std=c++17', '-fsyntax-only', path.join(d, 'main.cpp')]), compile: (d) => sh('g++', ['-O2', '-std=c++17', '-o', path.join(d, 'a.out'), path.join(d, 'main.cpp')]), run: (d) => sh(path.join(d, 'a.out'), []) },
