@@ -12,7 +12,7 @@ const TSDIR = path.join(__dirname, '..', '..', 'vendor', 'tree-sitter');
         const pl = fs.readFileSync(path.join(__dirname, '..', 'uml', 'py_uml_pipeline_core.js'), 'utf8'); assert.ok(/matrixForm: m\.matrixForm \|\| null/.test(pl) && fa.includes('editable: !!m.editable, matrixForm: m.matrixForm || null'), '管線沒帶 matrixForm');
     });
     await t('宿主：matrix_blocks 工具註冊並列在 coding 領域；離線組合把區塊放進 matrix.blocks；有 _matrixBlocksTool／_matrixBlocksFromResult', () => {
-        assert.ok(/registerOptional\('matrix_blocks'/.test(fa) && /async _matrixBlocksTool\(a\)/.test(fa) && /async _matrixBlocksFromResult\(/.test(fa) && /mxBlocks = mx \? await this\._matrixBlocksFromResult\(r\.source, mx, exs\)/.test(fa));
+        assert.ok(/registerOptional\('matrix_blocks'/.test(fa) && /async _matrixBlocksTool\(a\)/.test(fa) && /async _matrixBlocksFromResult\(/.test(fa) && /mxBlocks = mx \? await this\._matrixBlocksFromResult\(mxSource, mx, exs\)/.test(fa));
         const dom = /coding: \{\s*enabled: true,[\s\S]*?toolNames: \[([^\]]*)\]/.exec(fa)[1]; assert.ok(dom.includes("'matrix_blocks'")); assert.ok(/CP: typeof FaMatrixCompose !== 'undefined'/.test(fa));
     });
     if (!fs.existsSync(path.join(TSDIR, 'tree-sitter-python.wasm'))) { console.log('略過語法樹部分'); console.log(pass + ' passed, ' + fail + ' failed'); process.exit(fail ? 1 : 0); }
