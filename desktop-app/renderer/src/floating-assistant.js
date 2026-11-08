@@ -18169,7 +18169,12 @@ const holder = {};
             const c3 = choose(ps3, 'ws'); if (c3 && c3.pos != null) return mkOk(c3.pos, 'fuzzy', h.ops, 0); if (c3 && c3.ambiguous) return { kind: 'ambiguous', cands: c3.ambiguous, total: c3.total, stage: 'ws', ops: h.ops, loose: true };
         }
         // 已經套用過？（新側精確出現、舊側找不到）
-        if (nw.length && nw.some((s) => /\S/.test(s))) { const ps = findAll(nw, cur, st.from, wsCmp); const okp = prof.indentSensitive ? ps.filter((p) => relIndentOk(nw, cur, p)) : ps; if (okp.length === 1 || (okp.length > 1 && exp != null && okp.includes(exp))) return { kind: 'already', pos: okp.length === 1 ? okp[0] : exp, len: nw.length }; }
+        for (let fz = 0; fz <= 2; fz++) { // 使用者改過脈絡時，去掉兩端 1～2 行脈絡再比（要求剩下的裡面有新增的行，否則不算證據）
+            const ops = h.ops.filter((x) => x.t !== '-'); let a0 = 0, a1 = ops.length; for (let k = 0; k < fz && a0 < a1 && ops[a0].t === ' '; k++) a0++; for (let k = 0; k < fz && a1 > a0 && ops[a1 - 1].t === ' '; k++) a1--;
+            const seg = ops.slice(a0, a1); if (!seg.some((x) => x.t === '+' && /\S/.test(x.s))) continue; const sl = seg.map((x) => x.s); if (sl.filter((s) => /\S/.test(s)).length < 2) continue; // 只有一行證據太薄（可能剛好別處有同樣的行）
+            const ps = findAll(sl, cur, st.from, wsCmp); const okp = prof.indentSensitive ? ps.filter((p) => relIndentOk(sl, cur, p)) : ps;
+            if (okp.length === 1 || (okp.length > 1 && exp != null && okp.includes(exp + a0))) return { kind: 'already', pos: okp.length === 1 ? okp[0] : exp + a0, len: sl.length };
+        }
         // ④ 去掉兩端 1～2 行脈絡（使用者改過脈絡）
         for (let fz = 1; fz <= 2; fz++) {
             const ops = h.ops.slice(); let lead = 0, tail = 0;

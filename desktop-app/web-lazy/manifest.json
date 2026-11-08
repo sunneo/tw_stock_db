@@ -239,8 +239,16 @@
    "names": [
     "FaMatrixCompose"
    ],
-   "size": 13663,
-   "md5": "0383c420f2864fadeab7774e4ce552d6"
+   "size": 13669,
+   "md5": "2b66ce39fdc23ec4ce926abedf51044a"
+  },
+  "stepsplit": {
+   "file": "chunks/stepsplit.js",
+   "names": [
+    "FaStepSplit"
+   ],
+   "size": 11337,
+   "md5": "c1f0920703a97f352edd3ac87fb2f444"
   },
   "teachercheck": {
    "file": "chunks/teachercheck.js",
@@ -447,8 +455,8 @@
    "names": [
     "FaPyUmlPipeline"
    ],
-   "size": 7997,
-   "md5": "46078b320b83ffc89d3a0a4e17b5cc21"
+   "size": 9087,
+   "md5": "1902777f1be0e04315391c784522f5ce"
   },
   "codeagent": {
    "file": "chunks/codeagent.js",
@@ -465,6 +473,14 @@
    ],
    "size": 12548,
    "md5": "131917cb728e9bb8518802f369370827"
+  },
+  "codepatch": {
+   "file": "chunks/codepatch.js",
+   "names": [
+    "FaCodePatch"
+   ],
+   "size": 24406,
+   "md5": "b88bb4cfe5ee135b105ea4fe50442ec8"
   },
   "view": {
    "file": "chunks/view.js",
@@ -1442,6 +1458,14 @@
    "size": 30803,
    "md5": "a240bef32f25a28535de8de0b768b52c"
   },
+  "ytnet": {
+   "file": "chunks/ytnet.js",
+   "names": [
+    "FaYtNet"
+   ],
+   "size": 2886,
+   "md5": "27aea06e12421210f8298671ebaa4c3c"
+  },
   "umlview": {
    "file": "chunks/umlview.js",
    "names": [
@@ -1460,7 +1484,7 @@
   }
  },
  "core": {
-  "size": 5625785,
-  "md5": "50b6fd7cd9bbfcbab175da6ce5836ecc"
+  "size": 5631986,
+  "md5": "155d70cd2a75e5b95c36e39f8e3b7e02"
  }
 }
