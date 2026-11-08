@@ -216,4 +216,15 @@ c++／c#／ruby／perl 的輸出器與樣板實跑；java／c 的「進」；浮
 3. c 的實跑沒驗（這台 C 編譯器沒設系統標頭路徑，屬環境問題）；java／c 只涵蓋樣本用到的 26% 標準操作。
 4. 區塊內容超出樣本範圍（類別、例外、生成式）時，通用「程式」區塊會帶原生語法，輸出器照舊拒絕並說明——沒有驗證過更大的區塊程式集。
 5. `styleCheck` 用文字樣式比對，不是語法樹；只看函式名與簡單賦值／for 變數。
-6. 還沒接進 code edit 畫面與 `floating-assistant.js`（管理者統一接線）。
+6. ~~還沒接進 `floating-assistant.js`~~ → 已接（見 §9）；行為卡接進 code edit 見 §10（若尚未寫出表示還沒做完）。
+
+## 9. 接進產品：`convert_code` 工具（2026-11-08）
+
+- **嵌入**：`scripts/embed-code-ui.js` 的 `embedIr()` 把 `renderer/src/ir/` 十一個模組（`ir_core`、`ir_ops`、`ir_prep`、`ir_in_python`、`ir_out_js/java/c/python`、`ir_design`、`ir_behavior`、`ir_blocks`）放進同一個 holder，嵌入成 `floating-assistant.js` 的 `FaIrBundle`（`/* IR-BEGIN */…/* IR-END */`）。模組彼此用 `root.FaIr…` 互相找，所以必須共用 holder，不能像其他模組各自一個 holder。**改來源模組後要重跑 embed**（`ir_wire.test.js` 會比對嵌入版與來源逐字一致）。
+- **宿主**：`_irBridge()`（用離線寫程式同一個 Python 剖析器＋`FaPyBlocks`、`FaPyCode2Uml` 組出橋，快取）、`_codeConvert(a)`。
+- **工具** `convert_code`（程式設計領域 `coding` 的 toolNames）：`source`（Python）或 `blocks`（`[{name, params, cnl}]`）→ `target`：`nodejs`／`java`／`c`／`python`；`action:"to_blocks"` 把 Python 拆成區塊（受控自然語言）；`keep_blocks` 先經過區塊再轉（驗證往返與註解掛回）；`tests` 有給就用本機判題器實際編譯執行轉出的程式並對輸出（`verified`／`verdict`），沒給或沒有判題器就標 `verified:null` 與原因。不支援的目標（c++／c#／ruby／perl）與輸出器拒絕的寫法如實拒絕，診斷列在 `diags`，不硬翻。**這是轉換工具，不是第二個寫程式入口**：寫新程式仍只有 `write_code`。
+- **`/code`**：新增子指令 `轉換／轉成／convert`（也可貼 Python 程式並說「轉成 java」），`code_slash_core.js` 的 `convert` 路由；目標語言只認有輸出器的，來源非 Python 或目標沒輸出器時列為缺項。
+- **順手修的真 bug**：Python 來源在模組層直接寫 `main()`（沒有 `__name__` 守衛）時，輸出器除了保留這行又補一次進入呼叫，轉出的 nodejs 會跑兩遍（真 Electron 實跑時抓到，判題 RE）。`ir_in_python_core` 現在把模組層的 `main()` 當進入點（註解保留），輸出只呼叫一次。
+
+**我驗證的**：`ir_wire.test.js`（嵌入版與來源一致、嵌入版橋 10 個樣本 nodejs 實跑與 Python 一致、不支援的如實拒絕）；`code_slash.test.js`（轉換路由）；真 Electron：`scripts/eval/code_convert.eval.js`（`node scripts/eval/real_electron.run.js code_convert`），結果見下方提交說明與 `STATUS.md`。
+**沒驗證 / 待改善**：java／c 轉出的程式只有帶 `tests` 才會實跑，這台 C 編譯器標頭路徑問題使 c 實跑失敗屬環境；沒有型別標註的 Python 轉 java／c 會被拒（輸出器要明確型別）；來源只收 Python；`convert_code` 沒接進離線訓練器的規則（AI 或 `/code` 才呼叫）。

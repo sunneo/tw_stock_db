@@ -19,7 +19,6 @@
 ### 多語言中間語言與函式行為（`DESIGN.core-ir.md`）
 - c++、c#、ruby、perl 輸出器與樣板只有目錄，沒實跑；java／c 的「進」（抽回設計）、nodejs 反向沒做。
 - 行為描述與行為卡還沒接進程式碼編輯介面（要做成 AI 可呼叫的唯讀工具）。
-- 區塊轉中間語言的橋（`ir_blocks_core.js`）還沒接進 `floating-assistant.js`。
 - 註解保存：行被改寫／搬動／刪除的規則已做（`a53b519b`），其餘節點類型的註解錨定待驗證。
 
 ### 矩陣與 Blockly（`DESIGN.matrix-fallback.md`、`HANDOFF.blockly-teach.md`）

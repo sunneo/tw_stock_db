@@ -2,7 +2,7 @@
 
 ## 做了什麼（已上線的設計）
 - `/code <一句話>`（`renderer/src/recipe/code_slash_core.js`，嵌入為 `FaCodeSlash`）：**程式**決定該呼叫哪個程式設計工具與欄位，不問模型。
-  - 子指令：寫→`write_code`、修→`fix_code`、優化→`optimize_code`、合併→`merge_patch`、設計→`uml_design`、解釋→`explain_code`；也可不加動詞：沒貼程式當作寫、有 diff 區塊＋程式當作合併、貼了程式提到優化就優化、其餘貼了程式當作修。
+  - 子指令：寫→`write_code`、修→`fix_code`、優化→`optimize_code`、合併→`merge_patch`、轉換→`convert_code`（轉成 nodejs／java／c／python，見 `DESIGN.core-ir.md` §9）、設計→`uml_design`、解釋→`explain_code`；也可不加動詞：沒貼程式當作寫、有 diff 區塊＋程式當作合併、貼了程式提到優化就優化、其餘貼了程式當作修。
   - 欄位只從文字抽（``` 程式區塊、```diff、```in／```out 成對測資、語言標記）；抽不到就在回覆裡列出缺什麼，不編造。
   - 只有一個入口：真正的寫與驗收都在工具裡（`write_code` 領域不開思考；離線小模型只在工具內答封閉選擇題）。`/code` 本身沒有第二條寫程式路徑。
 - 離線訓練器 `core_rules` 多一條 `code_write` 規則（種子版本 v12→v13，已安裝的機器會重新播種）：一般說「寫一個函式…」「用 python 寫程式…」會直接選 `write_code`。**實測原因**：加之前走語意相似度，「寫一個函式，輸入兩個整數印出總和」會選到 `list_ai_functions`。

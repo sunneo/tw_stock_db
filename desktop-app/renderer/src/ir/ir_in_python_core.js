@@ -298,7 +298,12 @@
             body.push(s);
         }
         // 移除只為了保留註解而留下的空 pass
-        ir.body = body.filter((s) => !(s.k === 'pass' && !s.c)); if (!ir.entry && IR.funcs(ir).some((x) => x.name === 'main')) ir.entry = 'main';
+        ir.body = body.filter((s) => !(s.k === 'pass' && !s.c));
+        if (!ir.entry && IR.funcs(ir).some((x) => x.name === 'main')) {
+            ir.entry = 'main'; // 模組層直接寫 main()（沒有 __name__ 守衛）：改成進入點，輸出器會自己補一次呼叫，不然會跑兩遍
+            const ci = ir.body.findIndex((s) => s.k === 'expr' && s.e && s.e.k === 'call' && s.e.fn === 'main' && !(s.e.args || []).length);
+            if (ci >= 0) { const cs = ir.body[ci]; if (cs.c) ir.body[ci] = { k: 'pass', c: cs.c }; else ir.body.splice(ci, 1); }
+        }
         return { ir, coverage: cov, diags };
     }
     return { fromTree, tyOfText };

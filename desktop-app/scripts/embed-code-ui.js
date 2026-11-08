@@ -206,6 +206,15 @@ function embedUml() {
     }
 }
 embedUml();
+(function embedIr() { // 跨語言中間語言＋區塊橋＋行為卡：十一個模組共用同一個 holder（彼此用 root.FaIr… 互相找），整包放進 FaIrBundle
+    const files = ['ir_core', 'ir_ops_core', 'ir_prep_core', 'ir_in_python_core', 'ir_out_js_core', 'ir_out_java_core', 'ir_out_c_core', 'ir_out_python_core', 'ir_design_core', 'ir_behavior_core', 'ir_blocks_core'];
+    const a = src.indexOf('/* IR-BEGIN */'), b = src.indexOf('/* IR-END */');
+    if (a < 0 || b < 0) { console.log('略過 FaIrBundle：floating-assistant.js 還沒有 IR 標記'); return; }
+    let body = ''; let total = 0;
+    for (const f of files) { const core = fs.readFileSync(path.join(root, 'renderer/src/ir', f + '.js'), 'utf8').replace(/\r\n/g, '\n'); total += core.length; body += '(function (module, self) {\n' + core + '\n}).call(null, undefined, holder);\n'; }
+    src = src.slice(0, a) + '/* IR-BEGIN */\nconst FaIrBundle = (function () {\nconst holder = {};\n' + body + 'return holder;\n})();\n' + src.slice(b);
+    console.log('已更新 FaIrBundle（' + files.length + ' 個模組、' + total + ' 字元）');
+})();
 (function embedCodePatch() { // merge diff patcher（獨立一段，不和 embedUml 的長清單混在一起）
     const core = fs.readFileSync(path.join(root, 'renderer/src/recipe/code_patch_core.js'), 'utf8').replace(/\r\n/g, '\n');
     const a = src.indexOf('/* CODEPATCH-BEGIN */'), b = src.indexOf('/* CODEPATCH-END */');

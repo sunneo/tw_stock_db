@@ -1549,7 +1549,7 @@ const SUBAGENT_DOMAIN_REGISTRY = {
     coding: {
         enabled: true,
         label: '程式設計（評估／需求分析／設計計畫／git patch實作／語法檢查／測試／發佈，可中斷恢復）',
-        toolNames: ['uml_to_code', 'design_choices', 'uml_design', 'uml_guide', 'uml_edit', 'write_code', 'fix_code', 'optimize_code', 'merge_patch', 'intent_parse', 'uml_to_wasm', 'plan_route', 'ask_user_card', 'log_learn', 'log_ask', 'mix_understand', 'mix_highlight', 'glue_list', 'glue_define', 'glue_report', 'list_file_access_points', 'fap_list_files', 'fap_find_file', 'repo_map', 'repo_ask', 'repo_sql', 'repo_read_doc', 'repo_wiki', 'explain_code', 'behavior_define', 'coding_workspace', 'coding_read_file', 'apply_git_patch', 'git_inspect', 'git_commit', 'git_push', 'coding_task_state', 'coding_run_check', 'coding_run_tests', 'terminal_create', 'terminal_list', 'terminal_run', 'terminal_get_text', 'terminal_cp_to', 'terminal_cp_from', 'browser_search', 'fetch_web_page', 'article_outline', 'article_section'],
+        toolNames: ['uml_to_code', 'design_choices', 'uml_design', 'uml_guide', 'uml_edit', 'write_code', 'fix_code', 'optimize_code', 'merge_patch', 'convert_code', 'intent_parse', 'uml_to_wasm', 'plan_route', 'ask_user_card', 'log_learn', 'log_ask', 'mix_understand', 'mix_highlight', 'glue_list', 'glue_define', 'glue_report', 'list_file_access_points', 'fap_list_files', 'fap_find_file', 'repo_map', 'repo_ask', 'repo_sql', 'repo_read_doc', 'repo_wiki', 'explain_code', 'behavior_define', 'coding_workspace', 'coding_read_file', 'apply_git_patch', 'git_inspect', 'git_commit', 'git_push', 'coding_task_state', 'coding_run_check', 'coding_run_tests', 'terminal_create', 'terminal_list', 'terminal_run', 'terminal_get_text', 'terminal_cp_to', 'terminal_cp_from', 'browser_search', 'fetch_web_page', 'article_outline', 'article_section'],
         systemPrompt: _faBuildCodingSystemPrompt({ kind: 'web' }),
     },
     // tw_stock_db客製: 2026-09-20使用者要求——skills domain：建立Claude格式的skill（SKILL.md＋scripts/references）。
@@ -17918,7 +17918,7 @@ const holder = {};
 (function (module, self) {
 /* /code 指令的路由（純函式 UMD，不問模型）：把「寫程式」類的一句話，由程式決定該呼叫哪一個程式設計工具、欄位怎麼填。
  *   classify(text) → { ok, sub, tool, args, why, missing:[…], usage? }
- *     sub：write／fix／optimize／merge／design／explain／help
+ *     sub：write／fix／optimize／merge／convert／design／explain／help
  *     先看開頭子指令（寫、修、優化、合併、設計、解釋、help），沒有就看整段文字的證據：
  *       有 diff 區塊（```diff 或含 @@）＋另一個程式區塊 → merge_patch；有程式區塊＋「優化／加速／變慢」→ optimize_code；
  *       有程式區塊＋「錯／修／不能跑／bug」或沒說要做什麼 → fix_code；沒有程式區塊 → write_code（預設）。
@@ -17927,12 +17927,13 @@ const holder = {};
  *   TOOLS：這個指令會用到的工具名單（測試用來核對工具真的存在、描述裡有講到何時用）。 */
 (function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaCodeSlash = factory(); })(typeof self !== 'undefined' ? self : this, function () {
     'use strict';
-    const TOOLS = ['write_code', 'fix_code', 'optimize_code', 'merge_patch', 'uml_design', 'explain_code'];
+    const TOOLS = ['write_code', 'fix_code', 'optimize_code', 'merge_patch', 'convert_code', 'uml_design', 'explain_code'];
     const SUBS = [
         ['write', /^(?:write|寫|寫一個|做|產生|生成|新寫|幫我寫)(?=\s|$|[，,：:])/i, 'write_code'],
         ['fix', /^(?:fix|debug|修|修復|修正|除錯|修理)(?=\s|$|[，,：:])/i, 'fix_code'],
         ['optimize', /^(?:optimi[sz]e|優化|最佳化|加速)(?=\s|$|[，,：:])/i, 'optimize_code'],
         ['merge', /^(?:merge|patch|合併|套用修補|合併修補|套用)(?=\s|$|[，,：:])/i, 'merge_patch'],
+        ['convert', /^(?:convert|translate|port|轉換|轉成|轉為|翻成|移植)(?=\s|$|[，,：:])/i, 'convert_code'],
         ['design', /^(?:design|uml|設計|畫設計)(?=\s|$|[，,：:])/i, 'uml_design'],
         ['explain', /^(?:explain|extract|解釋|說明|抽回設計|抽設計|讀懂)(?=\s|$|[，,：:])/i, 'explain_code']
     ];
@@ -17942,6 +17943,7 @@ const holder = {};
         '・修：/code 修 ＋ 貼一段 ``` 程式 ```（有測資會連行為一起修）\n' +
         '・優化：/code 優化 ＋ ``` 程式 ``` ＋ ``` 測資 ```（只換輸出一致的寫法）\n' +
         '・合併修補：/code 合併 ＋ ``` 目前的程式 ``` ＋ ```diff 修補 ```（合併後驗證，失敗整份回滾）\n' +
+        '・轉換語言：/code 轉成 nodejs ＋ ``` Python 程式 ```（可轉 nodejs／java／c／python；附 ```in／```out 測資會實際執行驗證；不是寫程式，寫仍用上面「寫」）\n' +
         '・設計：/code 設計 顧客可以加入購物車並結帳（先出 UML 設計）\n' +
         '・解釋／從程式看回設計：/code 解釋 ＋ ``` 程式 ```\n' +
         '也可以直接打需求，不加動詞：沒貼程式就當作「寫」，貼了程式就看你有沒有說優化或修。';
@@ -17956,6 +17958,16 @@ const holder = {};
         return tests;
     }
     function langOf(text, bs) { const b = bs.find((x) => LANG_FENCE[x.tag]); if (b) return LANG_FENCE[b.tag]; return undefined; }
+    // 轉換的目標語言：只認有輸出器的（nodejs／java／c／python）；提到其他語言時回 { unsupported }
+    function targetOf(prose) {
+        const t = String(prose || '');
+        if (/c\+\+|cpp|c#|csharp|ruby|perl/i.test(t)) return { unsupported: (/c\+\+|cpp/i.exec(t) || /c#|csharp/i.exec(t) || /ruby/i.exec(t) || /perl/i.exec(t))[0] };
+        if (/node(?:js)?|javascript|\bjs\b/i.test(t)) return { target: 'nodejs' };
+        if (/java(?!script)/i.test(t)) return { target: 'java' };
+        if (/(?:^|[^a-z+#])c(?:\s*語言|\s*language|(?![a-z+#0-9]))/i.test(t)) return { target: 'c' };
+        if (/python|\bpy\b/i.test(t)) return { target: 'python' };
+        return {};
+    }
     function classify(text) {
         let raw = String(text == null ? '' : text).replace(/\r\n/g, '\n').trim();
         if (!raw || /^(?:help|\?|說明|幫助)$/i.test(raw)) return { ok: true, sub: 'help', tool: null, args: {}, missing: [], usage: USAGE, why: '沒有內容或要說明' };
@@ -17966,6 +17978,7 @@ const holder = {};
         if (!sub) {
             if (diff && code.length) { sub = 'merge'; tool = 'merge_patch'; why = '有 diff 區塊和一份程式'; }
             else if (code.length && /優化|加速|變快|太慢|效能|optimi[sz]e|faster|slow/i.test(prose)) { sub = 'optimize'; tool = 'optimize_code'; why = '貼了程式並提到優化／太慢'; }
+            else if (code.length && /轉成|轉換成|轉為|翻成|改寫成|移植到|convert (?:it )?to|translate (?:it )?to|port (?:it )?to/i.test(prose) && (targetOf(prose).target || targetOf(prose).unsupported)) { sub = 'convert'; tool = 'convert_code'; why = '貼了程式並要轉成別的語言'; }
             else if (code.length && /解釋|說明|在做什麼|看懂|explain|what does/i.test(prose) && !/修|錯|bug|fix/i.test(prose)) { sub = 'explain'; tool = 'explain_code'; why = '貼了程式並要解釋'; }
             else if (code.length) { sub = 'fix'; tool = 'fix_code'; why = '貼了程式（沒說要優化或解釋，當作要修）'; }
             else if (/^(?:設計|畫).{0,6}(?:uml|系統)/i.test(prose) || /(?:uml|類別圖|系統設計)/i.test(prose) && !/寫一個|函式|演算法/.test(prose)) { sub = 'design'; tool = 'uml_design'; why = '提到 UML／系統設計'; }
@@ -17976,6 +17989,11 @@ const holder = {};
         else if (tool === 'fix_code') { if (code[0]) args.source = code[0].body; else missing.push('要修的程式（用 ``` 包起來）'); if (prose) args.goal = prose; if (lang) args.language = lang; if (tests.length) args.tests = tests; }
         else if (tool === 'optimize_code') { if (code[0]) args.source = code[0].body; else missing.push('要優化的 Python 程式（用 ``` 包起來）'); if (tests.length) args.tests = tests; else missing.push('測資（```in 輸入``` 緊接 ```out 輸出```，優化要靠它確認輸出一致）'); }
         else if (tool === 'merge_patch') { if (code[0]) args.source = code[0].body; else missing.push('目前的程式（用 ``` 包起來）'); if (diff) args.diff = diff.body; else missing.push('要合併的 diff（```diff 區塊）'); if (lang) args.language = lang; if (tests.length) args.tests = tests; }
+        else if (tool === 'convert_code') {
+            if (code[0]) { args.source = code[0].body; const fl = langOf(rest, bs); if (fl && fl !== 'python') missing.push('來源目前只支援 Python（你貼的是 ' + fl + '）'); } else missing.push('要轉換的 Python 程式（用 ``` 包起來）');
+            const tg = targetOf(prose); if (tg.target) args.target = tg.target; else missing.push(tg.unsupported ? '目標語言（支援 nodejs、java、c、python；' + tg.unsupported + ' 目前沒有輸出器）' : '目標語言（nodejs、java、c 或 python）');
+            if (tests.length) args.tests = tests;
+        }
         else if (tool === 'uml_design') { args.scenario = prose; if (!prose) missing.push('情境（例如「顧客可以加入購物車並結帳」）'); }
         else if (tool === 'explain_code') { if (code[0]) { args.text = code[0].body; if (lang) args.lang = lang; } else missing.push('要解釋的程式（用 ``` 包起來）'); }
         return { ok: !missing.length, sub, tool, args, why, missing, usage: missing.length ? USAGE : undefined };
@@ -18662,6 +18680,1917 @@ const holder = {};
 return holder.FaCodePatch;
 })();
 /* CODEPATCH-END */
+/* IR-BEGIN */
+const FaIrBundle = (function () {
+const holder = {};
+(function (module, self) {
+/* 核心中間語言（Core IR）：語言中立、保留結構化控制流／運算式／型別／註解的程式樹（JSON）。純函式 UMD，不碰 I/O。
+ * 設計見 DESIGN.core-ir.md。各語言的「進」（原始碼→IR）與「出」（IR→原始碼）各自獨立成檔，只有這一層（IR 本身、標準操作目錄、型別推斷）共用。
+ *
+ *   IR 形狀：{ ir:'fa-core-ir', v:1, src:{lang, file?}, name, imports:[...], body:[節點], entry?:函式名 }
+ *   節點共通欄位：k（種類）、pos:[起行,起欄,迄行,迄欄]（原檔位置，1 起算行、0 起算欄；選用）、c:{b:[前置註解…], a:行尾註解, sp:前面空行數}（trivia，選用）
+ *   宣告／敘述：func{name,params:[{name,ty,def?}],ret,doc?,body}  assign{to,val,decl?,ty?}  aug{to,op,val}  if{cond,then,else}
+ *              while{cond,body}  forrange{var,from,to,step,body}  foreach{var,iter,body}  ret{val?}  brk  cont  pass  expr{e}
+ *              raise{val?}  comment{s}（獨立成行的註解）  native{lang,src,why}（原樣保留的原生區塊／運算式，不翻譯）
+ *   運算式：lit{t:int|float|str|bool|none,v}  name{v}  bin{op,l,r}  un{op,e}  cmp{op,l,r}  logic{op:and|or,l,r}  not{e}
+ *          index{o,i}  call{op,args}（標準操作，op 是目錄 id，接收者是 args[0]）  call{fn,args}（使用者函式）
+ *          list{items}  dict{items:[[k,v]…]}  cond{c,a,b}  native{lang,src}
+ *   型別 ty：{t:'int'|'float'|'str'|'bool'|'void'|'any'|'unknown'} 或 {t:'list'|'dict'|'set'|'tuple', a:[…]}；unknown＝動態語言沒標註且推不出，any＝明確的任意型別 */
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaIr = factory(); })(typeof self !== 'undefined' ? self : this, function () {
+    'use strict';
+    const VERSION = 1;
+    const STMT = ['func', 'assign', 'aug', 'if', 'while', 'forrange', 'foreach', 'ret', 'brk', 'cont', 'pass', 'expr', 'raise', 'comment', 'native', 'declare', 'import'];
+    const EXPR = ['lit', 'name', 'bin', 'un', 'cmp', 'logic', 'not', 'index', 'call', 'list', 'dict', 'cond', 'native'];
+    const PRIM = ['int', 'float', 'str', 'bool', 'void', 'any', 'unknown'], GEN = ['list', 'dict', 'set', 'tuple'];
+    const BINOPS = ['+', '-', '*', '/', '//', '%', '**', '&', '|', '^', '<<', '>>'], CMPOPS = ['==', '!=', '<', '<=', '>', '>=', 'in', 'not in', 'is', 'is not'];
+
+    const T = { int: { t: 'int' }, float: { t: 'float' }, str: { t: 'str' }, bool: { t: 'bool' }, void: { t: 'void' }, any: { t: 'any' }, unknown: { t: 'unknown' } };
+    const list = (e) => ({ t: 'list', a: [e || T.unknown] }), dict = (k, v) => ({ t: 'dict', a: [k || T.unknown, v || T.unknown] }), set = (e) => ({ t: 'set', a: [e || T.unknown] });
+    const tyEq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+    const tyStr = (t) => !t ? '?' : (t.a ? t.t + '<' + t.a.map(tyStr).join(',') + '>' : t.t);
+    // 'list<int>'、'dict<str,list<int>>' → 型別；沒寫或不認得 → unknown
+    function tyParse(s) {
+        s = String(s).replace(/\s+/g, ''); let i = 0;
+        const one = () => { const m = /^[a-z_]+/.exec(s.slice(i)); if (!m) return T.unknown; i += m[0].length; const t = m[0]; if (s[i] === '<') { i++; const a = [one()]; while (s[i] === ',') { i++; a.push(one()); } if (s[i] === '>') i++; return { t, a }; } return PRIM.indexOf(t) >= 0 ? { t } : T.unknown; };
+        return one();
+    }
+    // 兩個型別合流（賦值多處）：相同取原；unknown 讓位；int 與 float 取 float；其餘 any
+    function tyJoin(a, b) {
+        if (!a || a.t === 'unknown') return b || T.unknown; if (!b || b.t === 'unknown') return a; if (tyEq(a, b)) return a;
+        if ((a.t === 'int' && b.t === 'float') || (a.t === 'float' && b.t === 'int')) return T.float;
+        if (a.t === b.t && a.a && b.a && a.a.length === b.a.length) return { t: a.t, a: a.a.map((x, i) => tyJoin(x, b.a[i])) };
+        return T.any;
+    }
+
+    // ---- 建構 ----
+    const mod = (o) => Object.assign({ ir: 'fa-core-ir', v: VERSION, src: { lang: 'unknown' }, name: 'Module', imports: [], body: [] }, o || {});
+    const lit = (t, v) => ({ k: 'lit', t, v }), nm = (v) => ({ k: 'name', v });
+    const call = (op, args) => ({ k: 'call', op, args: args || [] }), ucall = (fn, args) => ({ k: 'call', fn, args: args || [] });
+
+    // ---- 走訪 ----
+    const KIDS = { func: ['body'], if: ['then', 'else'], while: ['body'], forrange: ['body'], foreach: ['body'] };
+    function walkStmts(body, fn, depth) { depth = depth || 0; (body || []).forEach((s) => { fn(s, depth); (KIDS[s.k] || []).forEach((f) => { if (s[f]) walkStmts(s[f], fn, depth + 1); }); }); }
+    const EKEYS = ['e', 'l', 'r', 'o', 'i', 'c', 'a', 'b', 'val', 'to', 'cond', 'from', 'step', 'iter'];
+    function walkExpr(e, fn) {
+        if (!e || typeof e !== 'object') return; if (Array.isArray(e)) { e.forEach((x) => walkExpr(x, fn)); return; }
+        if (e.k) fn(e);
+        if (e.args) e.args.forEach((x) => walkExpr(x, fn)); if (e.items) e.items.forEach((x) => walkExpr(x, fn));
+        if (e.k === 'dict') (e.items || []).forEach((p) => { walkExpr(p[0], fn); walkExpr(p[1], fn); });
+        if (e.k !== 'func') EKEYS.forEach((f) => { if (e[f] && typeof e[f] === 'object' && e[f].k && !STMT_ONLY[e[f].k]) walkExpr(e[f], fn); });
+    }
+    const STMT_ONLY = { func: 1, assign: 1, aug: 1, if: 1, while: 1, forrange: 1, foreach: 1, ret: 1, brk: 1, cont: 1, pass: 1, expr: 1, raise: 1, comment: 1, declare: 1 };
+    // 每個敘述上的運算式欄位
+    const SFIELDS = { assign: ['to', 'val'], aug: ['to', 'val'], if: ['cond'], while: ['cond'], forrange: ['from', 'to', 'step'], foreach: ['iter'], ret: ['val'], expr: ['e'], raise: ['val'], declare: [] };
+    function eachExpr(body, fn) { walkStmts(body, (s) => { (SFIELDS[s.k] || []).forEach((f) => { if (s[f]) walkExpr(s[f], fn); }); (s.params || []).forEach((p) => { if (p.def) walkExpr(p.def, fn); }); }); }
+    function funcs(ir) { return (ir.body || []).filter((s) => s.k === 'func'); }
+
+    // ---- 驗證 ----
+    function validate(ir, opts) {
+        const errors = [], ops = opts && opts.ops; const err = (m, n) => errors.push(m + (n && n.pos ? '（第 ' + n.pos[0] + ' 行）' : ''));
+        if (!ir || typeof ir !== 'object') return { ok: false, errors: ['不是物件'] };
+        if (ir.ir !== 'fa-core-ir') err('缺 ir 標記'); if (typeof ir.v !== 'number' || ir.v > VERSION) err('版本不支援：' + ir.v);
+        if (!Array.isArray(ir.body)) { err('body 要是陣列'); return { ok: false, errors }; }
+        const chkTy = (t, where) => { if (t == null) return; if (typeof t !== 'object' || (PRIM.indexOf(t.t) < 0 && GEN.indexOf(t.t) < 0)) return err('型別不合法 ' + JSON.stringify(t) + ' @' + where); if (GEN.indexOf(t.t) >= 0 && (!Array.isArray(t.a) || !t.a.length)) err('型別 ' + t.t + ' 缺型別參數 @' + where); (t.a || []).forEach((x) => chkTy(x, where)); };
+        const chkPos = (n) => { if (n.pos && !(Array.isArray(n.pos) && n.pos.length === 4 && n.pos.every(Number.isInteger))) err('pos 要是 4 個整數', n); };
+        const chkC = (n) => { if (!n.c) return; if (n.c.b && (!Array.isArray(n.c.b) || n.c.b.some((x) => typeof x !== 'string'))) err('c.b 要是字串陣列', n); if (n.c.a != null && typeof n.c.a !== 'string') err('c.a 要是字串', n); };
+        const ex = (e, where) => {
+            if (!e || typeof e !== 'object') return err('運算式缺失 @' + where); if (EXPR.indexOf(e.k) < 0) return err('不認得的運算式種類 ' + e.k + ' @' + where, e); chkPos(e); chkTy(e.ty, where);
+            switch (e.k) {
+                case 'lit': if (['int', 'float', 'str', 'bool', 'none'].indexOf(e.t) < 0) err('lit.t 不合法 ' + e.t, e); break;
+                case 'name': if (typeof e.v !== 'string' || !e.v) err('name 缺 v', e); break;
+                case 'bin': if (BINOPS.indexOf(e.op) < 0) err('bin 運算子不合法 ' + e.op, e); ex(e.l, where); ex(e.r, where); break;
+                case 'cmp': if (CMPOPS.indexOf(e.op) < 0) err('cmp 運算子不合法 ' + e.op, e); ex(e.l, where); ex(e.r, where); break;
+                case 'logic': if (e.op !== 'and' && e.op !== 'or') err('logic 運算子要是 and／or', e); ex(e.l, where); ex(e.r, where); break;
+                case 'un': if (['-', '+', '~'].indexOf(e.op) < 0) err('un 運算子不合法', e); ex(e.e, where); break;
+                case 'not': ex(e.e, where); break;
+                case 'index': ex(e.o, where); ex(e.i, where); break;
+                case 'call': if (!e.op === !e.fn) err('call 要有 op（標準操作）或 fn（使用者函式）其中之一', e); if (e.op && ops && !ops.has(e.op)) err('標準操作不在目錄：' + e.op, e); (e.args || []).forEach((a) => ex(a, where)); break;
+                case 'list': (e.items || []).forEach((a) => ex(a, where)); break;
+                case 'dict': (e.items || []).forEach((p) => { if (!Array.isArray(p) || p.length !== 2) err('dict.items 要是 [k,v] 對', e); else { ex(p[0], where); ex(p[1], where); } }); break;
+                case 'cond': ex(e.c, where); ex(e.a, where); ex(e.b, where); break;
+                case 'native': if (!e.lang || typeof e.src !== 'string') err('native 要有 lang 與 src', e); break;
+            }
+        };
+        const block = (body, where) => {
+            if (!Array.isArray(body)) return err('區塊要是陣列 @' + where);
+            body.forEach((s) => {
+                if (!s || STMT.indexOf(s.k) < 0) return err('不認得的敘述種類 ' + (s && s.k) + ' @' + where, s); chkPos(s); chkC(s);
+                switch (s.k) {
+                    case 'func': if (!s.name) err('func 缺 name', s); (s.params || []).forEach((p) => { if (!p.name) err('參數缺 name', s); chkTy(p.ty, s.name); if (p.def) ex(p.def, s.name); }); chkTy(s.ret, s.name); block(s.body, s.name); break;
+                    case 'assign': ex(s.to, where); ex(s.val, where); chkTy(s.ty, where); break;
+                    case 'aug': ex(s.to, where); ex(s.val, where); if (BINOPS.indexOf(s.op) < 0) err('aug 運算子不合法', s); break;
+                    case 'if': ex(s.cond, where); block(s.then, where); if (s.else) block(s.else, where); break;
+                    case 'while': ex(s.cond, where); block(s.body, where); break;
+                    case 'forrange': if (!s.var) err('forrange 缺 var', s); ex(s.from, where); ex(s.to, where); if (s.step) ex(s.step, where); block(s.body, where); break;
+                    case 'foreach': if (!s.var) err('foreach 缺 var', s); ex(s.iter, where); block(s.body, where); break;
+                    case 'ret': if (s.val) ex(s.val, where); break;
+                    case 'expr': ex(s.e, where); break;
+                    case 'raise': if (s.val) ex(s.val, where); break;
+                    case 'comment': if (typeof s.s !== 'string') err('comment 缺 s', s); break;
+                    case 'native': if (!s.lang || typeof s.src !== 'string') err('native 要有 lang 與 src', s); break;
+                    case 'declare': if (!s.name) err('declare 缺 name', s); chkTy(s.ty, where); break;
+                    case 'import': if (typeof s.src !== 'string') err('import 缺 src（原文）', s); break;
+                }
+            });
+        };
+        block(ir.body, '模組'); return { ok: !errors.length, errors };
+    }
+
+    // ---- 序列化：鍵固定順序（k 最前、pos／c 最後），同一棵樹永遠得到同一段文字，方便 diff 與比對 ----
+    const LAST = ['ty', 'pos', 'c'];
+    function canon(x) {
+        if (Array.isArray(x)) return x.map(canon); if (!x || typeof x !== 'object') return x;
+        const keys = Object.keys(x).filter((k) => x[k] !== undefined && x[k] !== null).sort((a, b) => { const ra = a === 'k' ? -1 : LAST.indexOf(a) >= 0 ? 100 + LAST.indexOf(a) : 0, rb = b === 'k' ? -1 : LAST.indexOf(b) >= 0 ? 100 + LAST.indexOf(b) : 0; return ra - rb || (a < b ? -1 : a > b ? 1 : 0); });
+        const o = {}; keys.forEach((k) => { o[k] = canon(x[k]); }); return o;
+    }
+    const stringify = (ir, indent) => JSON.stringify(canon(ir), null, indent == null ? 0 : indent);
+    function parse(text, opts) { let ir; try { ir = JSON.parse(text); } catch (e) { return { ok: false, errors: ['JSON 解析失敗：' + e.message] }; } const v = validate(ir, opts); return v.ok ? { ok: true, ir } : { ok: false, errors: v.errors }; }
+    const clone = (x) => JSON.parse(JSON.stringify(x));
+    // 去掉 pos／c／ty（比較「語意」相同用）
+    function strip(x, keepTrivia) { if (Array.isArray(x)) return x.map((y) => strip(y, keepTrivia)); if (!x || typeof x !== 'object') return x; const o = {}; Object.keys(x).forEach((k) => { if (k === 'pos' || k === 'ty' || (!keepTrivia && (k === 'c'))) return; o[k] = strip(x[k], keepTrivia); }); return o; }
+    function comments(ir) { const out = []; walkStmts(ir.body, (s) => { if (s.c) { (s.c.b || []).forEach((t) => out.push(t)); if (s.c.a) out.push(s.c.a); } if (s.k === 'comment') out.push(s.s); if (s.k === 'func' && s.doc) out.push(s.doc); }); return out; }
+
+    return { VERSION, STMT, EXPR, T, list, dict, set, tyEq, tyStr, tyParse, tyJoin, mod, lit, nm, call, ucall, walkStmts, walkExpr, eachExpr, funcs, validate, stringify, parse, clone, strip, comments, canon, BINOPS, CMPOPS };
+});
+
+}).call(null, undefined, holder);
+(function (module, self) {
+/* 標準函式庫通用轉接層：以「語意操作」為單位的語言中立目錄。純函式 UMD。設計見 DESIGN.core-ir.md 第 3 節。
+ *
+ * 一個操作 = { id, p:[參數型別], r:回傳型別, sem:語意（純度／副作用／錯誤行為／複雜度）, pit:[陷阱], cells:{語言→樣板}, h:{語言→[輔助函式 id]}, need:{語言→[匯入]} }
+ * 語言鍵：py nodejs java c cpp cs rb pl（py＝Python，nodejs＝JavaScript／Node.js，cs＝C#，rb＝Ruby，pl＝Perl）。
+ * 樣板：字串，$N＝第 N 個引數原文，@N＝第 N 個引數（必要時加括號，當接收者用），$*＝第 1 個起的其餘引數用逗號連起來；
+ *       物件 {int:…,str:…,'*':…}＝依第 0 個引數的型別分派（list／dict／set／str／int／float／bool）；null＝這個語言沒有精準對應（見 cells 的註解與 degrade）。
+ * 型別字串：'int'、'list<$e0>'（$e0＝第 0 個引數的元素型別）、'$k0'／'$v0'（字典的鍵／值型別）、'$0'（第 0 個引數的型別）、'$j'（所有引數型別合流）。
+ * 每個操作列出語意差異與陷阱 pit，供轉換時提醒、及「無法精準對應」時降級（degrade）。 */
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(typeof require === 'function' ? require('./ir_core.js') : root.FaIr); else root.FaIrOps = factory(root.FaIr); })(typeof self !== 'undefined' ? self : this, function (IR) {
+    'use strict';
+    const LANGS = ['py', 'nodejs', 'java', 'c', 'cpp', 'cs', 'rb', 'pl'];
+    const LANG_OF = { python: 'py', nodejs: 'nodejs', javascript: 'nodejs', java: 'java', c: 'c', cpp: 'cpp', csharp: 'cs', ruby: 'rb', perl: 'pl' };
+    const OPS = {};
+    // 簡寫：cells 用 [py, nodejs, java, c, cpp, cs, rb, pl] 的陣列
+    function O(id, p, r, sem, cells, extra) {
+        const c = {}; LANGS.forEach((l, i) => { c[l] = cells[i] === undefined ? null : cells[i]; });
+        OPS[id] = Object.assign({ id, p, r, sem, cells: c, pit: [], h: {}, need: {} }, extra || {});
+    }
+    const PURE = '純函式', E_ERR = (s) => '錯誤：' + s;
+
+    // ---------- 輸入輸出 ----------
+    O('io.print_line', ['any'], 'void', '副作用：標準輸出＋換行', ['print($0)',
+        { bool: 'console.log($0 ? "True" : "False")', '*': 'console.log($0)' },
+        { bool: 'System.out.println(@0 ? "True" : "False")', '*': 'System.out.println($0)' },
+        { int: 'printf("%lld\\n", (long long)($0))', str: 'puts($0)', bool: 'puts(@0 ? "True" : "False")', '*': 'printf("%g\\n", (double)($0))' },
+        { bool: 'std::cout << (@0 ? "True" : "False") << "\\n"', '*': 'std::cout << ($0) << "\\n"' },
+        { bool: 'Console.WriteLine(@0 ? "True" : "False")', '*': 'Console.WriteLine($0)' },
+        { bool: 'puts(@0 ? "True" : "False")', '*': 'puts($0)' }, 'print "$0\\n"'],
+    { stmt: true, pit: ['Python 的布林印成 True／False，其他語言多是小寫 true／false，要明確轉', '浮點數的列印格式各語言不同（Python 用最短可還原表示，Java 用科學記號門檻不同，C 用 %g）→ 需要固定位數時用 fmt.fixed', 'JavaScript 的整數超過 2^53 會失精度或印成科學記號'] });
+    O('io.read_line', [], 'str', '副作用：讀標準輸入一行（不含換行）；到檔尾 Python 丟 EOFError', ['input()', 'fa_readLine()', 'fa_readLine()', 'fa_readLine()', 'fa_readLine()', 'Console.ReadLine()', 'gets.chomp', 'do { my $l = <STDIN>; chomp $l; $l }'],
+        { h: { nodejs: ['fa_readLine'], java: ['fa_readLine'], c: ['fa_readLine'], cpp: ['fa_readLine'] }, pit: ['檔尾行為：Python 丟例外，Java readLine 回 null，C fgets 回 NULL，Ruby gets 回 nil——轉換時統一成「檔尾回空字串」並標註', '行尾的 \\r（Windows 換行）Python 的 input 會保留，要由呼叫端 strip'] });
+    O('io.read_all', [], 'str', '副作用：讀完標準輸入', ['sys.stdin.read()', 'require("fs").readFileSync(0, "utf8")', 'fa_readAll()', 'fa_readAll()', null, 'Console.In.ReadToEnd()', '$stdin.read', 'do { local $/; <STDIN> }'], { h: { java: ['fa_readAll'], c: ['fa_readAll'] }, need: { py: ['sys'] }, pit: ['位元組與字元：Python 依區域編碼解碼，C 是原始位元組'] });
+
+    // ---------- 轉型 ----------
+    O('conv.int', ['any'], 'int', '字串→整數會剖析（失敗丟錯）；浮點→整數朝零截斷', [
+        'int($0)',
+        { str: 'fa_parseInt($0)', '*': 'Math.trunc($0)' },
+        { str: 'Long.parseLong(@0.trim())', float: '(long)($0)', bool: '($0 ? 1L : 0L)', '*': '(long)($0)' },
+        { str: 'strtoll($0, NULL, 10)', '*': '(long long)($0)' },
+        { str: 'std::stoll($0)', '*': '(long long)($0)' },
+        { str: 'long.Parse($0)', '*': '(long)($0)' },
+        { str: 'Integer($0)', '*': '@0.to_i' }, 'int($0)'],
+    { h: { nodejs: ['fa_parseInt'] }, pit: ['JavaScript parseInt 會吃前綴 "12abc"→12，Python 丟 ValueError → 用嚴格剖析輔助函式', 'C strtoll 失敗不丟錯（回 0）；要檢查需看 endptr——目前降級為不檢查並標註', '浮點轉整數是朝零截斷（int(-2.7)=-2），不是 floor'] });
+    O('conv.float', ['any'], 'float', '字串→浮點（失敗丟錯）', ['float($0)', { str: 'Number($0)', '*': '$0' }, { str: 'Double.parseDouble(@0.trim())', '*': '(double)($0)' }, { str: 'strtod($0, NULL)', '*': '(double)($0)' }, { str: 'std::stod($0)', '*': '(double)($0)' }, 'double.Parse($0)', 'Float($0)', '($0 + 0)'], { pit: ['Number("") 是 0 而 Python 丟錯'] });
+    O('conv.str', ['any'], 'str', '轉成字串', ['str($0)', { bool: '($0 ? "True" : "False")', '*': 'String($0)' }, { bool: '(@0 ? "True" : "False")', int: 'Long.toString($0)', '*': 'String.valueOf($0)' }, { int: 'fa_itoa($0)', '*': null }, { int: 'std::to_string($0)', '*': 'std::to_string($0)' }, '$0.ToString()', '$0.to_s', '"$0"'], { h: { c: ['fa_itoa'] }, pit: ['布林 True／False 的大小寫', '浮點的字串表示各語言不同'] });
+    O('conv.bool', ['any'], 'bool', '真值判斷（Python 的 bool(x)：0、空字串、空容器為 False）', ['bool($0)', { int: '($0 !== 0)', str: '($0.length > 0)', list: '($0.length > 0)', '*': 'Boolean($0)' }, { int: '($0 != 0)', str: '(!@0.isEmpty())', list: '(!@0.isEmpty())', '*': '($0 != 0)' }, { int: '($0 != 0)', str: '(@0[0] != 0)', list: '(@0.n > 0)', '*': '($0 != 0)' }, '($0 != 0)', '($0 != 0)', null, null], { pit: ['JavaScript 的空陣列 [] 是真值（Python 為假）', 'JavaScript 的 "0" 是真值'] });
+
+    // ---------- 數值 ----------
+    O('num.abs', ['int'], '$0', PURE, ['abs($0)', 'Math.abs($0)', 'Math.abs($0)', { float: 'fabs($0)', '*': 'llabs($0)' }, 'std::abs($0)', 'Math.Abs($0)', '@0.abs', 'abs($0)'], { pit: ['Java／C 的 abs(最小整數) 溢位仍是負數；Python 整數無上限'] });
+    O('num.min', ['int', 'int'], '$j', PURE, ['min($0, $1)', 'Math.min($0, $1)', 'Math.min($0, $1)', { float: 'fmin($0, $1)', '*': 'fa_min($0, $1)' }, 'std::min($0, $1)', 'Math.Min($0, $1)', '[$0, $1].min', 'List::Util::min($0, $1)'], { h: { c: ['fa_min'] }, need: { pl: ['List::Util'] }, pit: ['含 NaN 時各語言結果不同'] });
+    O('num.max', ['int', 'int'], '$j', PURE, ['max($0, $1)', 'Math.max($0, $1)', 'Math.max($0, $1)', { float: 'fmax($0, $1)', '*': 'fa_max($0, $1)' }, 'std::max($0, $1)', 'Math.Max($0, $1)', '[$0, $1].max', 'List::Util::max($0, $1)'], { h: { c: ['fa_max'] }, need: { pl: ['List::Util'] } });
+    O('list.min', ['list<T>'], '$e0', E_ERR('空串列丟 ValueError'), ['min($0)', 'Math.min(...$0)', 'Collections.min($0)', 'fa_list_min($0)', '*std::min_element(@0.begin(), @0.end())', 'Enumerable.Min($0)', '@0.min', 'List::Util::min(@{$0})'], { h: { c: ['fa_list_min'] }, need: { pl: ['List::Util'] }, pit: ['空串列：JavaScript 回 Infinity、C++ 未定義、Python／Java 丟錯', 'JavaScript 展開運算子在元素數十萬以上會爆堆疊'] });
+    O('list.max', ['list<T>'], '$e0', E_ERR('空串列丟 ValueError'), ['max($0)', 'Math.max(...$0)', 'Collections.max($0)', 'fa_list_max($0)', '*std::max_element(@0.begin(), @0.end())', 'Enumerable.Max($0)', '@0.max', 'List::Util::max(@{$0})'], { h: { c: ['fa_list_max'] }, need: { pl: ['List::Util'] }, pit: ['同 list.min'] });
+    O('list.sum', ['list<int>'], '$e0', PURE + '；O(n)', ['sum($0)', '$0.reduce((a, b) => a + b, 0)', '$0.stream().mapToLong(Long::longValue).sum()', 'fa_list_sum($0)', 'std::accumulate(@0.begin(), @0.end(), 0LL)', 'Enumerable.Sum($0)', '@0.sum', 'List::Util::sum0(@{$0})'], { h: { c: ['fa_list_sum'] }, need: { pl: ['List::Util'] }, pit: ['整數溢位：Python 無上限，Java／C 為 64 位元環繞，JavaScript 超過 2^53 失精度', '浮點加總的順序影響結果（Python 3.12 起 sum 用補償加總）'] });
+    O('int.floordiv', ['int', 'int'], 'int', E_ERR('除以 0'), ['$0 // $1', 'Math.floor(@0 / @1)', 'Math.floorDiv($0, $1)', 'fa_floordiv($0, $1)', 'fa_floordiv($0, $1)', 'fa_floordiv($0, $1)', '@0.div($1)', 'POSIX::floor($0 / $1)'], { h: { c: ['fa_floordiv'], cpp: ['fa_floordiv'], cs: ['fa_floordiv'] }, need: { pl: ['POSIX'] }, pit: ['Python 的 // 是向負無限取整（-7//2=-4），C／C++／C#／Java 的 / 是朝零截斷（-7/2=-3）→ 用 floorDiv', 'JavaScript 用浮點除法，超過 2^53 的整數不精確', '除以 0：Python／Java／C#／Ruby 丟錯，JavaScript 得 Infinity，C 是未定義行為'] });
+    O('int.mod', ['int', 'int'], 'int', E_ERR('除以 0'), ['$0 % $1', '((@0 % @1) + $1) % @1', 'Math.floorMod($0, $1)', 'fa_mod($0, $1)', 'fa_mod($0, $1)', 'fa_mod($0, $1)', '@0 % $1', '$0 % $1'], { h: { c: ['fa_mod'], cpp: ['fa_mod'], cs: ['fa_mod'] }, pit: ['Python／Ruby／Perl 的 % 結果與除數同號（-7%3=2），C／C++／C#／Java／JavaScript 與被除數同號（-7%3=-1）→ 用 floorMod', 'JavaScript 的括號寫法在被除數很大時仍有浮點精度問題'] });
+    O('num.div', ['num', 'num'], 'float', E_ERR('除以 0（Python）'), ['$0 / $1', '$0 / $1', '((double)@0 / @1)', '((double)@0 / @1)', '((double)@0 / @1)', '((double)@0 / @1)', '@0.fdiv($1)', '$0 / $1'], { pit: ['Python 3 的 / 永遠是浮點除法；Java／C 兩個整數相除是整數除法，必須轉 double', '除以 0：Python 丟錯，其他語言得 Infinity／NaN'] });
+    O('int.pow', ['int', 'int'], 'int', PURE + '；負指數 Python 會變浮點', ['$0 ** $1', 'Math.pow($0, $1)', 'fa_ipow($0, $1)', 'fa_ipow($0, $1)', 'fa_ipow($0, $1)', '(long)Math.Pow($0, $1)', '$0 ** $1', '$0 ** $1'], { h: { java: ['fa_ipow'], c: ['fa_ipow'] }, pit: ['Python 的整數次方無上限；Java／C 為 64 位元環繞；JavaScript 為浮點'] });
+    O('math.sqrt', ['float'], 'float', E_ERR('負數 Python 丟 ValueError，其他回 NaN'), ['math.sqrt($0)', 'Math.sqrt($0)', 'Math.sqrt($0)', 'sqrt($0)', 'std::sqrt($0)', 'Math.Sqrt($0)', 'Math.sqrt($0)', 'sqrt($0)'], { need: { py: ['math'] }, pit: ['負數：Python 丟錯、其他回 NaN'] });
+    O('math.floor', ['float'], 'int', PURE, ['math.floor($0)', 'Math.floor($0)', '(long)Math.floor($0)', '(long long)floor($0)', '(long long)std::floor($0)', '(long)Math.Floor($0)', '@0.floor', 'POSIX::floor($0)'], { need: { py: ['math'], pl: ['POSIX'] } });
+    O('math.ceil', ['float'], 'int', PURE, ['math.ceil($0)', 'Math.ceil($0)', '(long)Math.ceil($0)', '(long long)ceil($0)', '(long long)std::ceil($0)', '(long)Math.Ceiling($0)', '@0.ceil', 'POSIX::ceil($0)'], { need: { py: ['math'], pl: ['POSIX'] } });
+    O('math.gcd', ['int', 'int'], 'int', PURE, ['math.gcd($0, $1)', 'fa_gcd($0, $1)', 'fa_gcd($0, $1)', 'fa_gcd($0, $1)', 'std::gcd($0, $1)', '(long)System.Numerics.BigInteger.GreatestCommonDivisor($0, $1)', '@0.gcd($1)', 'fa_gcd($0, $1)'], { h: { nodejs: ['fa_gcd'], java: ['fa_gcd'], c: ['fa_gcd'] }, need: { py: ['math'] }, pit: ['結果恆為非負；gcd(0,0)=0'] });
+    O('num.round', ['float'], 'int', '銀行家捨入（四捨六入五成雙）', ['round($0)', 'fa_roundEven($0)', '(long)Math.rint($0)', '(long long)nearbyint($0)', '(long long)std::nearbyint($0)', '(long)Math.Round($0, MidpointRounding.ToEven)', '@0.round(half: :even)', 'sprintf("%.0f", $0)'], { h: { nodejs: ['fa_roundEven'] }, pit: ['Python 的 round 是五成雙（round(2.5)=2、round(3.5)=4）；JavaScript Math.round 是四捨五入且負數往正無限（Math.round(-0.5) 為 -0、Math.round(2.5)=3）'] });
+    O('fmt.fixed', ['float', 'int'], 'str', '固定小數位格式化（精確的二進位值、五成雙）', ['"%.*f" % ($1, $0)', 'fa_fixed($0, $1)', 'new java.math.BigDecimal($0).setScale((int)($1), java.math.RoundingMode.HALF_EVEN).toPlainString()', 'fa_fixed($0, $1)', null, '$0.ToString("F" + $1, System.Globalization.CultureInfo.InvariantCulture)', '"%.#{$1}f" % $0', 'sprintf("%.${1}f", $0)'], { h: { nodejs: ['fa_fixed'], c: ['fa_fixed'] }, pit: ['JavaScript 的 toFixed 在「精確平手」時進位（0.125.toFixed(2) 得 0.13，Python 與 C 是 0.12；實測）——用精確展開＋五成雙的輔助函式', 'Java 的 String.format("%.2f") 用「四捨五入（HALF_UP）」對十進位展開，0.125→0.13，而 Python／C 是 0.12——用 BigDecimal(精確值)＋HALF_EVEN 才對得上', '負的接近零（-0.001）Python 印 -0.00，Java 的 BigDecimal 路徑印 0.00（未處理）；無窮大與 NaN 各語言寫法不同', '區域設定：C# 要指定 InvariantCulture，否則小數點可能變逗號'] });
+    O('rand.randint', ['int', 'int'], 'int', '副作用：亂數；含兩端', ['random.randint($0, $1)', '($0 + Math.floor(Math.random() * ($1 - $0 + 1)))', '($0 + new Random().nextInt((int)($1 - $0 + 1)))', '($0 + rand() % ($1 - $0 + 1))', null, 'new Random().Next((int)$0, (int)$1 + 1)', 'rand($0..$1)', '($0 + int(rand($1 - $0 + 1)))'], { need: { py: ['random'] }, pit: ['亂數種子與演算法各語言不同，同種子不會得到同序列；C 的 rand()%n 有取模偏差'] });
+    O('time.now_seconds', [], 'float', '副作用：讀時鐘；自 1970 起的秒（浮點）', ['time.time()', 'Date.now() / 1000', 'System.currentTimeMillis() / 1000.0', '(double)time(NULL)', null, 'DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0', 'Time.now.to_f', 'time()'], { need: { py: ['time'] }, pit: ['C 的 time() 只有整數秒'] });
+
+    // ---------- 容器共通 ----------
+    O('coll.len', ['any'], 'int', PURE + '；O(1)（C 的字串 O(n)）', [
+        'len($0)',
+        { dict: '@0.size', set: '@0.size', '*': '@0.length' },
+        { str: '(long)@0.length()', '*': '(long)@0.size()' },
+        { str: '(long long)strlen($0)', list: '@0.n', '*': null },
+        '(long long)@0.size()',
+        { str: '@0.Length', '*': '@0.Count' }, '@0.length', { list: 'scalar(@{$0})', dict: 'scalar(keys %{$0})', '*': 'length($0)' }],
+    { pit: ['字串長度的單位：Python 數 Unicode 碼位，Java／JavaScript 數 UTF-16 碼元（emoji 算 2），C 數位元組（UTF-8 中文算 3）——含非 ASCII 時結果不同，需要使用者確認或改用碼位計數'] });
+    O('coll.contains', ['any', 'any'], 'bool', PURE + '；list/str O(n)、dict/set O(1)', [
+        '$1 in $0',
+        { dict: '@0.has($1)', set: '@0.has($1)', '*': '@0.includes($1)' },
+        { dict: '@0.containsKey($1)', '*': '@0.contains($1)' },
+        { str: '(strstr($0, $1) != NULL)', list: 'fa_list_contains($0, $1)', '*': null },
+        { dict: '(@0.count($1) > 0)', str: '(@0.find($1) != std::string::npos)', '*': '(std::find(@0.begin(), @0.end(), $1) != @0.end())' },
+        { dict: '@0.ContainsKey($1)', '*': '@0.Contains($1)' }, { dict: '@0.key?($1)', '*': '@0.include?($1)' }, { dict: 'exists $0->{$1}', '*': 'scalar(grep { $_ == $1 } @{$0})' }],
+    { h: { c: ['fa_list_contains'] }, pit: ['JavaScript 的 includes 對 NaN 為真而 == 為假；陣列 includes 用嚴格相等，無自動轉型', '字串的 in 是子字串判斷，串列的 in 是元素相等'] });
+
+    // ---------- 串列 ----------
+    O('list.new', [], 'list<unknown>', '空串列', ['[]', '[]', 'new ArrayList<>()', 'fa_new()', '{}', 'new List<T>()', '[]', '[]'], { emit: 'node', h: { c: ['fa_new'] } });
+    O('list.filled', ['T', 'int'], 'list<$0>', PURE + '；O(n)', ['[$0] * $1', 'new Array($1).fill($0)', 'new ArrayList<>(Collections.nCopies((int)($1), $0))', 'fa_filled($0, $1)', 'std::vector<decltype($0)>($1, $0)', 'Enumerable.Repeat($0, (int)$1).ToList()', 'Array.new($1, $0)', '[($0) x $1]'], { h: { c: ['fa_filled'] }, pit: ['元素是可變物件時所有位置共用同一個參考（[[0]*m]*n 的經典陷阱）——Python 與 JavaScript fill 相同，Java nCopies 也相同，轉換時語意一致但常是 bug 來源'] });
+    O('list.append', ['list<T>', 'T'], 'void', '副作用：就地加到尾端；攤銷 O(1)', ['@0.append($1)', '@0.push($1)', '@0.add($1)', 'fa_push(&$0, $1)', '@0.push_back($1)', '@0.Add($1)', '@0.push($1)', 'push @{$0}, $1'], { stmt: true, h: { c: ['fa_push'] }, pit: ['C：串列以值傳入函式時，對參數 append 不會回到呼叫端（別名語意不同）——轉換器對「參數被 append」標記為不支援，需要改傳指標'] });
+    O('list.pop', ['list<T>'], '$e0', E_ERR('空串列丟 IndexError'), ['@0.pop()', 'fa_pop($0)', '@0.remove(@0.size() - 1)', 'fa_pop(&$0)', null, 'fa_pop($0)', '@0.pop', 'pop @{$0}'], { h: { nodejs: ['fa_pop'], c: ['fa_pop'], cs: [] }, pit: ['空串列：JavaScript 回 undefined 不丟錯 → 用輔助函式補丟錯'] });
+    O('list.insert', ['list<T>', 'int', 'T'], 'void', '副作用；O(n)', ['@0.insert($1, $2)', '@0.splice($1, 0, $2)', '@0.add((int)($1), $2)', null, '@0.insert(@0.begin() + ($1), $2)', '@0.Insert((int)$1, $2)', '@0.insert($1, $2)', 'splice(@{$0}, $1, 0, $2)'], { stmt: true, pit: ['索引超出範圍時 Python 夾到尾端，Java 丟 IndexOutOfBounds'] });
+    O('list.reverse', ['list<T>'], 'void', '副作用：就地反轉', ['@0.reverse()', '@0.reverse()', 'Collections.reverse($0)', 'fa_list_reverse($0)', 'std::reverse(@0.begin(), @0.end())', '@0.Reverse()', '@0.reverse!', '@{$0} = reverse @{$0}'], { stmt: true, h: { c: ['fa_list_reverse'] } });
+    O('list.sorted', ['list<T>'], 'list<$e0>', '回傳新串列，穩定排序；O(n log n)', ['sorted($0)', { str: '[...@0].sort()', '*': '[...@0].sort((a, b) => a - b)' }, 'fa_sorted($0)', 'fa_sorted($0)', 'fa_sorted($0)', 'Enumerable.OrderBy($0, x => x).ToList()', '@0.sort', 'sort { $a <=> $b } @{$0}'], { h: { java: ['fa_sorted'], c: ['fa_sorted'] }, pit: ['JavaScript 預設 sort 是字串字典序（[10,9,1].sort()→[1,10,9]）：數字必須給比較函式', 'C 的 qsort 不穩定；排序鍵相同的記錄會改變相對順序（純整數看不出來）', '字串排序：Python 依碼位，Java／JavaScript 依 UTF-16 碼元，C 依位元組——非 ASCII 時順序可能不同', 'Perl 的 sort 預設是字串字典序，數字要用 <=>'] });
+    O('list.index_of', ['list<T>', 'T'], 'int', E_ERR('找不到 Python 丟 ValueError，其他回 -1'), ['@0.index($1)', '@0.indexOf($1)', '(long)@0.indexOf($1)', null, null, '@0.IndexOf($1)', '@0.index($1)', null], { pit: ['找不到：Python 丟錯，其他語言回 -1——語意不同，轉換時需補檢查'] });
+    O('list.copy', ['list<T>'], '$0', '淺拷貝', ['list($0)', '[...$0]', 'new ArrayList<>($0)', 'fa_list_copy($0)', '$0', 'new List<T>($0)', '@0.dup', '[@{$0}]'], { h: { c: ['fa_list_copy'] } });
+    O('list.get', ['list<T>', 'int'], '$e0', E_ERR('越界 IndexError；Python 允許負索引'), ['$0[$1]', '$0[$1]', '$0.get((int)($1))', '$0.d[$1]', '$0[$1]', '$0[$1]', '$0[$1]', '$0->[$1]'], { pit: ['負索引：Python a[-1] 是最後一個；JavaScript 得 undefined，Java 丟例外，C 是未定義行為——轉換器對字面負索引改寫成 len-k；變數索引需要使用者確認', '越界：JavaScript 得 undefined 不丟錯，C 未定義'] });
+    O('list.set', ['list<T>', 'int', 'T'], 'void', '副作用', ['$0[$1] = $2', '$0[$1] = $2', '$0.set((int)($1), $2)', '$0.d[$1] = $2', '$0[$1] = $2', '$0[$1] = $2', '$0[$1] = $2', '$0->[$1] = $2'], { stmt: true });
+    O('list.slice', ['list<T>', 'int', 'int'], 'list<$e0>', '回傳新串列；範圍夾在邊界內', ['$0[$1:$2]', '@0.slice($1, $2)', 'new ArrayList<>($0.subList((int)Math.max(0, $1), (int)Math.min($0.size(), $2)))', null, null, '@0.GetRange((int)$1, (int)($2 - $1))', '@0[$1...$2]', '[@{$0}[$1..$2-1]]'], { pit: ['Java subList 越界丟例外而 Python 夾邊界；subList 是原串列的「視圖」，不是拷貝，要包 new ArrayList'] });
+
+    // ---------- 字串 ----------
+    O('str.char_at', ['str', 'int'], 'str', E_ERR('越界'), ['$0[$1]', '$0[$1]', 'String.valueOf($0.charAt((int)($1)))', '$0[$1]', 'std::string(1, $0[$1])', '$0[(int)$1].ToString()', '$0[$1]', 'substr($0, $1, 1)'], { pit: ['C：結果是 char 而不是長度 1 的字串，只能與另一個 char 比較；轉換器限制只在比較時使用', '字元的單位同 coll.len（碼位 vs 碼元 vs 位元組）'] });
+    O('str.split_ws', ['str'], 'list<str>', '依任意空白切開並丟掉空欄位', ['$0.split()', 'fa_splitWs($0)', 'fa_splitWs($0)', null, null, '$0.Split((char[])null, StringSplitOptions.RemoveEmptyEntries)', '$0.split', "split(' ', $0)"], { h: { nodejs: ['fa_splitWs'], java: ['fa_splitWs'] }, pit: ['JavaScript 的 split(/\\s+/) 對前導空白會產生空欄位——輔助函式先 trim', 'C 沒有字串串列型別 → 常見組合 split+int 請用 str.split_ints'] });
+    O('str.split_sep', ['str', 'str'], 'list<str>', '依分隔字串切開（保留空欄位）', ['$0.split($1)', '$0.split($1)', 'fa_split($0, $1)', null, null, '$0.Split($1)', '$0.split($1, -1)', 'split(quotemeta($1), $0, -1)'], { h: { java: ['fa_split'] }, pit: ['Java 的 String.split 吃正規表示式且丟掉結尾空欄位——輔助函式用 Pattern.quote 且 limit=-1', 'Ruby 預設也會丟掉結尾空欄位，要給 -1'] });
+    O('str.split_ints', ['str'], 'list<int>', '慣用語：list(map(int, s.split()))；依空白切開並轉整數', ['list(map(int, $0.split()))', 'fa_splitInts($0)', 'fa_splitInts($0)', 'fa_splitInts($0)', null, 'Array.ConvertAll($0.Split((char[])null, StringSplitOptions.RemoveEmptyEntries), long.Parse).ToList()', '$0.split.map(&:to_i)', 'map { int($_) } split(" ", $0)'], { h: { nodejs: ['fa_splitInts'], java: ['fa_splitInts'], c: ['fa_splitInts'] }, pit: ['慣用語被認出來才能在沒有字串串列型別的 C 裡表達'] });
+    O('str.strip', ['str'], 'str', PURE, ['$0.strip()', '$0.trim()', '$0.trim()', 'fa_strip($0)', null, '$0.Trim()', '$0.strip', '($0 =~ s/^\\s+|\\s+$//gr)'], { h: { c: ['fa_strip'] }, pit: ['空白字元的定義略有不同（Java trim 只去 <=U+0020）'] });
+    O('str.upper', ['str'], 'str', PURE, ['$0.upper()', '$0.toUpperCase()', '$0.toUpperCase(Locale.ROOT)', null, null, '$0.ToUpperInvariant()', '$0.upcase', 'uc($0)'], { pit: ['特殊字元（德文 ß→SS）與土耳其語 i 的區域問題；Java 要指定 Locale.ROOT'] });
+    O('str.lower', ['str'], 'str', PURE, ['$0.lower()', '$0.toLowerCase()', '$0.toLowerCase(Locale.ROOT)', null, null, '$0.ToLowerInvariant()', '$0.downcase', 'lc($0)'], {});
+    O('str.join', ['str', 'list<str>'], 'str', PURE, ['$0.join($1)', '@1.join($0)', 'String.join($0, $1)', null, null, 'string.Join($0, $1)', '@1.join($0)', 'join($0, @{$1})'], { pit: ['Python 的 join 要求每項都是字串，其他語言的 join 會自動轉型——輸入含數字時要先 conv.str'] });
+    O('str.join_num', ['str', 'list<int>'], 'str', '慣用語：sep.join(map(str, 整數串列))', ['$0.join(map(str, $1))', '@1.join($0)', 'fa_joinNums($0, $1)', 'fa_joinNums($0, $1)', null, 'string.Join($0, $1)', '@1.join($0)', 'join($0, @{$1})'], { h: { java: ['fa_joinNums'], c: ['fa_joinNums'] }, pit: ['元素若是布林，Python 會印 True／False，其他語言是 true／false——本慣用語只對整數串列成立'] });
+    O('list.sort', ['list<T>'], 'void', '副作用：就地排序，穩定', ['@0.sort()', { str: '@0.sort()', '*': '@0.sort((a, b) => a - b)' }, 'Collections.sort($0)', 'fa_sort($0)', 'std::sort(@0.begin(), @0.end())', '@0.Sort()', '@0.sort!', '@{$0} = sort { $a <=> $b } @{$0}'], { stmt: true, h: { c: ['fa_sort'] }, pit: ['同 list.sorted 的穩定性與預設字典序陷阱'] });
+    O('str.replace',['str', 'str', 'str'], 'str', PURE + '（全部取代，不是正規表示式）', ['$0.replace($1, $2)', '$0.split($1).join($2)', '$0.replace($1, $2)', null, null, '$0.Replace($1, $2)', '$0.gsub($1, $2)', '($0 =~ s/\\Q$1\\E/$2/gr)'], { pit: ['JavaScript replace 只換第一個、replaceAll 要 Node 15+、字串取代要避開正規表示式的特殊字元；Ruby gsub 的第一參數字串當字面值但第二參數的反斜線有特殊意義'] });
+    O('str.startswith', ['str', 'str'], 'bool', PURE, ['$0.startswith($1)', '$0.startsWith($1)', '$0.startsWith($1)', '(strncmp($0, $1, strlen($1)) == 0)', '(@0.rfind($1, 0) == 0)', '$0.StartsWith($1, StringComparison.Ordinal)', '$0.start_with?($1)', '(index($0, $1) == 0)'], { pit: ['C#：StartsWith(string) 預設用文化比較，要指定 Ordinal'] });
+    O('str.endswith', ['str', 'str'], 'bool', PURE, ['$0.endswith($1)', '$0.endsWith($1)', '$0.endsWith($1)', null, null, '$0.EndsWith($1, StringComparison.Ordinal)', '$0.end_with?($1)', null], {});
+    O('str.find', ['str', 'str'], 'int', '找不到回 -1', ['$0.find($1)', '$0.indexOf($1)', '(long)$0.indexOf($1)', 'fa_find($0, $1)', '(long long)(int)@0.find($1)', '$0.IndexOf($1, StringComparison.Ordinal)', '($0.index($1) || -1)', 'index($0, $1)'], { h: { c: ['fa_find'] }, pit: ['Ruby 的 index 找不到回 nil，位置 0 在 Ruby 是真值但需注意 ||'] });
+    O('str.concat', ['str', 'str'], 'str', PURE + '；產生新字串（迴圈內連接是 O(n²)）', ['$0 + $1', '$0 + $1', '$0 + $1', 'fa_concat($0, $1)', '$0 + $1', '$0 + $1', '$0 + $1', '$0 . $1'], { h: { c: ['fa_concat'] }, pit: ['C 的 fa_concat 配置新記憶體且不釋放（洩漏）；Perl 用 . 而不是 +', 'Java／JavaScript／C# 的字串加整數會自動轉型而 Python 丟 TypeError——轉換器只在兩邊都是 str 時用本操作'] });
+    O('str.repeat', ['str', 'int'], 'str', PURE, ['$0 * $1', '$0.repeat($1)', '$0.repeat((int)($1))', null, null, 'string.Concat(Enumerable.Repeat($0, (int)$1))', '$0 * $1', '$0 x $1'], { pit: ['負次數：Python 回空字串，JavaScript／Java 丟例外；Java 的 String.repeat 要 JDK 11'] });
+    O('str.slice', ['str', 'int', 'int'], 'str', PURE + '（範圍夾在邊界內）', ['$0[$1:$2]', '$0.slice($1, $2)', 'fa_slice($0, $1, $2)', null, '@0.substr($1, $2 - $1)', '$0.Substring((int)$1, (int)($2 - $1))', '$0[$1...$2]', 'substr($0, $1, $2 - $1)'], { h: { java: ['fa_slice'] }, pit: ['Java／C# 的 substring 越界丟例外而 Python 夾邊界 → 輔助函式先夾邊界'] });
+    O('str.is_digit', ['str'], 'bool', PURE, ['$0.isdigit()', '/^[0-9]+$/.test($0)', '$0.matches("[0-9]+")', null, null, '$0.All(char.IsDigit)', '$0.match?(/\\A\\d+\\z/)', '($0 =~ /^[0-9]+$/)'], { pit: ['Python isdigit 對其他文字的數字（如全形數字）也為真；空字串為假'] });
+    O('str.char_code', ['str'], 'int', '碼位', ['ord($0)', '$0.codePointAt(0)', '(long)$0.codePointAt(0)', '(long long)(unsigned char)$0[0]', null, '(long)char.ConvertToUtf32($0, 0)', '$0.ord', 'ord($0)'], { pit: ['C 只取第一個位元組'] });
+    O('str.from_code', ['int'], 'str', PURE, ['chr($0)', 'String.fromCodePoint($0)', 'new String(Character.toChars((int)($0)))', null, null, 'char.ConvertFromUtf32((int)$0)', '$0.chr(Encoding::UTF_8)', 'chr($0)'], {});
+
+    // ---------- 字典／集合 ----------
+    O('dict.new', [], 'dict<unknown,unknown>', '空字典（插入順序）', ['{}', 'new Map()', 'new LinkedHashMap<>()', null, '{}', 'new Dictionary<K,V>()', '{}', '{}'], { emit: 'node', pit: ['Java HashMap 不保證順序，要保留 Python 的插入順序必須用 LinkedHashMap；C 沒有內建雜湊表（轉換器標為不支援，或需要附帶執行階段函式庫）'] });
+    O('dict.get', ['dict<K,V>', 'K'], '$v0', E_ERR('缺鍵 KeyError'), ['$0[$1]', 'fa_dget($0, $1)', 'fa_dget($0, $1)', null, '$0.at($1)', '$0[$1]', '$0.fetch($1)', '$0->{$1}'], { h: { nodejs: ['fa_dget'], java: ['fa_dget'] }, pit: ['Java Map.get 缺鍵回 null（拆箱時 NPE）、JavaScript Map.get 回 undefined——輔助函式補丟錯', '鍵的相等：JavaScript Map 用 SameValueZero，物件鍵是參考相等；Java 用 equals/hashCode'] });
+    O('dict.get_default', ['dict<K,V>', 'K', 'V'], '$v0', PURE, ['$0.get($1, $2)', '(@0.has($1) ? @0.get($1) : $2)', '@0.getOrDefault($1, $2)', null, null, '@0.GetValueOrDefault($1, $2)', '@0.fetch($1, $2)', '($0->{$1} // $2)'], { pit: ['值為 None/null 時 getOrDefault 與 Python 的 get 行為不同（Python 回 None，Java 回預設值）'] });
+    O('dict.put', ['dict<K,V>', 'K', 'V'], 'void', '副作用', ['$0[$1] = $2', '@0.set($1, $2)', '@0.put($1, $2)', null, '$0[$1] = $2', '$0[$1] = $2', '$0[$1] = $2', '$0->{$1} = $2'], { stmt: true });
+    O('dict.delete', ['dict<K,V>', 'K'], 'void', E_ERR('缺鍵 KeyError'), ['del $0[$1]', '@0.delete($1)', '@0.remove($1)', null, '@0.erase($1)', '@0.Remove($1)', '@0.delete($1)', 'delete $0->{$1}'], { stmt: true, pit: ['缺鍵時只有 Python 丟錯，其他語言靜默'] });
+    O('dict.sorted_keys', ['dict<K,V>'], 'list<$k0>', '依鍵排序的鍵串列', ['sorted($0)', '[...@0.keys()].sort((a, b) => a - b)', 'new ArrayList<>(new TreeMap<>($0).keySet())', null, null, '@0.Keys.OrderBy(k => k).ToList()', '@0.keys.sort', 'sort { $a <=> $b } keys %{$0}'], { pit: ['JavaScript 的 sort 預設字典序——數字鍵必須給比較函式'] });
+    O('dict.keys', ['dict<K,V>'], 'list<$k0>', '插入順序的鍵', ['list($0.keys())', '[...@0.keys()]', 'new ArrayList<>($0.keySet())', null, null, '@0.Keys.ToList()', '@0.keys', 'keys %{$0}'], { pit: ['Perl 的 keys 順序不保證；Java 需 LinkedHashMap 才保證插入順序'] });
+    O('set.add', ['set<T>', 'T'], 'void', '副作用', ['@0.add($1)', '@0.add($1)', '@0.add($1)', null, '@0.insert($1)', '@0.Add($1)', '@0.add($1)', '$0->{$1} = 1'], { stmt: true });
+
+    // ---------- 檔案、JSON、正規表示式 ----------
+    O('file.read_all', ['str'], 'str', '副作用：讀檔；找不到丟錯', ['open($0, encoding="utf-8").read()', 'require("fs").readFileSync($0, "utf8")', 'new String(java.nio.file.Files.readAllBytes(java.nio.file.Paths.get($0)), java.nio.charset.StandardCharsets.UTF_8)', 'fa_readFile($0)', null, 'File.ReadAllText($0)', 'File.read($0)', 'do { local $/; open(my $f, "<", $0) or die; <$f> }'], { h: { c: ['fa_readFile'] }, pit: ['編碼：Python open 預設用區域編碼，要明確指定 utf-8；換行轉換（Windows）', 'Java 8 沒有 Files.readString'] });
+    O('file.write_all', ['str', 'str'], 'void', '副作用：覆寫檔案', ['open($0, "w", encoding="utf-8").write($1)', 'require("fs").writeFileSync($0, $1)', 'java.nio.file.Files.write(java.nio.file.Paths.get($0), $1.getBytes(java.nio.charset.StandardCharsets.UTF_8))', null, null, 'File.WriteAllText($0, $1)', 'File.write($0, $1)', 'do { open(my $f, ">", $0) or die; print $f $1; close $f }'], { stmt: true, pit: ['Python 的 open(...).write 不保證立刻關檔（靠垃圾回收），其他語言通常立即寫入'] });
+    O('regex.search', ['str', 'str'], 'bool', '字串中是否有符合；正規表示式', ['re.search($1, $0) is not None', 'new RegExp($1).test($0)', 'java.util.regex.Pattern.compile($1).matcher($0).find()', null, 'std::regex_search($0, std::regex($1))', 'System.Text.RegularExpressions.Regex.IsMatch($0, $1)', '$0.match?(Regexp.new($1))', '($0 =~ /$1/)'], { need: { py: ['re'] }, pit: ['正規表示式方言不同：lookbehind、命名群組語法（Python (?P<n>)、JavaScript (?<n>)）、\\d 是否含 Unicode、POSIX 字元類別、跳脫規則；轉換器只保證簡單子集（字元類、量詞、群組、錨點），其餘標原生區塊並請使用者確認'] });
+    O('json.dumps', ['any'], 'str', PURE + '（鍵順序依插入）', ['json.dumps($0)', 'JSON.stringify($0)', null, null, null, 'System.Text.Json.JsonSerializer.Serialize($0)', '$0.to_json', 'encode_json($0)'], { need: { py: ['json'], rb: ['json'], pl: ['JSON::PP'] }, pit: ['Python 預設分隔符是 ", " 與 ": "（有空白），JavaScript 是無空白；ensure_ascii 預設不同（Python 逸出非 ASCII）；NaN／Infinity 的處理不同', 'Java 標準函式庫沒有 JSON → 需要第三方函式庫（降級：標原生區塊並請使用者決定）'] });
+    O('json.loads', ['str'], 'any', E_ERR('格式錯誤丟錯'), ['json.loads($0)', 'JSON.parse($0)', null, null, null, 'System.Text.Json.JsonSerializer.Deserialize<object>($0)', 'JSON.parse($0)', 'decode_json($0)'], { need: { py: ['json'], rb: ['json'], pl: ['JSON::PP'] }, pit: ['大整數：JavaScript 超過 2^53 失精度；Python 保留；浮點與整數的區分（1 vs 1.0）'] });
+
+    // ---------- 輔助函式（各語言各一份；輸出器依用到的操作貼在檔案開頭）----------
+    const HELPERS = {
+        nodejs: {
+            fa_readLine: 'const __fa_lines = require("fs").readFileSync(0, "utf8").split("\\n"); let __fa_li = 0;\nfunction fa_readLine() { return __fa_li < __fa_lines.length ? __fa_lines[__fa_li++].replace(/\\r$/, "") : ""; }',
+            fa_parseInt: 'function fa_parseInt(s) { if (!/^\\s*[+-]?\\d+\\s*$/.test(s)) throw new Error("invalid literal for int(): " + s); return parseInt(s, 10); }',
+            fa_splitWs: 'function fa_splitWs(s) { s = s.trim(); return s === "" ? [] : s.split(/\\s+/); }',
+            fa_splitInts: 'function fa_splitInts(s) { s = s.trim(); return s === "" ? [] : s.split(/\\s+/).map(fa_parseInt); }',
+            fa_pop: 'function fa_pop(a) { if (a.length === 0) throw new Error("pop from empty list"); return a.pop(); }',
+            fa_dget: 'function fa_dget(m, k) { if (!m.has(k)) throw new Error("KeyError: " + k); return m.get(k); }',
+            fa_gcd: 'function fa_gcd(a, b) { a = Math.abs(a); b = Math.abs(b); while (b) { const t = a % b; a = b; b = t; } return a; }',
+            fa_fixed: 'function fa_fixed(x, d) { if (!isFinite(x)) return Number.isNaN(x) ? "nan" : (x < 0 ? "-inf" : "inf"); const neg = x < 0 || Object.is(x, -0), ax = Math.abs(x); if (ax >= 1e21) return (neg ? "-" : "") + BigInt(ax).toString() + (d > 0 ? "." + "0".repeat(d) : ""); const s = ax.toFixed(Math.min(100, d + 30)); const dot = s.indexOf("."), ip = s.slice(0, dot), fp = s.slice(dot + 1), keep = fp.slice(0, d), rest = fp.slice(d); let up = false; if (rest.length) { const c = rest.charCodeAt(0) - 48; if (c > 5) up = true; else if (c === 5) up = /[1-9]/.test(rest.slice(1)) ? true : (Number((ip + keep).slice(-1)) % 2 === 1); } let digits = (ip + keep).split(""); if (up) { let i = digits.length - 1; while (i >= 0) { if (digits[i] === "9") { digits[i] = "0"; i--; } else { digits[i] = String(Number(digits[i]) + 1); break; } } if (i < 0) digits.unshift("1"); } const all = digits.join(""), il = all.length - d; return (neg ? "-" : "") + all.slice(0, il) + (d > 0 ? "." + all.slice(il) : ""); }',
+            fa_roundEven: 'function fa_roundEven(x) { const r = Math.round(x); return (Math.abs(x % 1) === 0.5 && r % 2 !== 0) ? r - 1 : r; }'
+        },
+        java: {
+            fa_readLine: 'static BufferedReader __br = new BufferedReader(new InputStreamReader(System.in));\n    static String fa_readLine() { try { String l = __br.readLine(); return l == null ? "" : l.replaceAll("\\\\r$", ""); } catch (IOException e) { throw new RuntimeException(e); } }',
+            fa_readAll: 'static String fa_readAll() { try { return new String(System.in.readAllBytes(), "UTF-8"); } catch (IOException e) { throw new RuntimeException(e); } }',
+            fa_splitWs: 'static List<String> fa_splitWs(String s) { s = s.trim(); return s.isEmpty() ? new ArrayList<String>() : new ArrayList<String>(Arrays.asList(s.split("\\\\s+"))); }',
+            fa_splitInts: 'static List<Long> fa_splitInts(String s) { List<Long> r = new ArrayList<>(); for (String t : fa_splitWs(s)) r.add(Long.parseLong(t)); return r; }',
+            fa_joinNums: 'static String fa_joinNums(String sep, List<Long> a) { StringBuilder sb = new StringBuilder(); for (int i = 0; i < a.size(); i++) { if (i > 0) sb.append(sep); sb.append(a.get(i)); } return sb.toString(); }',
+            fa_split: 'static List<String> fa_split(String s, String sep) { return new ArrayList<String>(Arrays.asList(s.split(java.util.regex.Pattern.quote(sep), -1))); }',
+            fa_sorted: 'static <T extends Comparable<T>> List<T> fa_sorted(List<T> a) { List<T> r = new ArrayList<>(a); Collections.sort(r); return r; }',
+            fa_dget: 'static <K, V> V fa_dget(Map<K, V> m, K k) { if (!m.containsKey(k)) throw new RuntimeException("KeyError: " + k); return m.get(k); }',
+            fa_ipow: 'static long fa_ipow(long b, long e) { long r = 1; while (e > 0) { if ((e & 1) == 1) r *= b; b *= b; e >>= 1; } return r; }',
+            fa_gcd: 'static long fa_gcd(long a, long b) { a = Math.abs(a); b = Math.abs(b); while (b != 0) { long t = a % b; a = b; b = t; } return a; }',
+            fa_slice: 'static String fa_slice(String s, long a, long b) { long n = s.length(); if (a < 0) a = Math.max(0, a + n); if (b < 0) b = Math.max(0, b + n); a = Math.min(a, n); b = Math.min(b, n); return a >= b ? "" : s.substring((int) a, (int) b); }'
+        },
+        c: {
+            fa_list: 'typedef struct { long long *d; long long n, cap; } IL;',
+            fa_new: 'static IL fa_new(void) { IL l = {0, 0, 0}; return l; }',
+            fa_push: 'static void fa_push(IL *l, long long v) { if (l->n == l->cap) { l->cap = l->cap ? l->cap * 2 : 8; l->d = (long long *)realloc(l->d, l->cap * sizeof(long long)); } l->d[l->n++] = v; }',
+            fa_pop: 'static long long fa_pop(IL *l) { if (l->n == 0) { fprintf(stderr, "pop from empty list\\n"); exit(1); } return l->d[--l->n]; }',
+            fa_filled: 'static IL fa_filled(long long x, long long n) { IL l = fa_new(); for (long long i = 0; i < n; i++) fa_push(&l, x); return l; }',
+            fa_list_copy: 'static IL fa_list_copy(IL a) { IL l = fa_new(); for (long long i = 0; i < a.n; i++) fa_push(&l, a.d[i]); return l; }',
+            fa_list_sum: 'static long long fa_list_sum(IL a) { long long s = 0; for (long long i = 0; i < a.n; i++) s += a.d[i]; return s; }',
+            fa_list_min: 'static long long fa_list_min(IL a) { if (a.n == 0) { fprintf(stderr, "min() of empty list\\n"); exit(1); } long long m = a.d[0]; for (long long i = 1; i < a.n; i++) if (a.d[i] < m) m = a.d[i]; return m; }',
+            fa_list_max: 'static long long fa_list_max(IL a) { if (a.n == 0) { fprintf(stderr, "max() of empty list\\n"); exit(1); } long long m = a.d[0]; for (long long i = 1; i < a.n; i++) if (a.d[i] > m) m = a.d[i]; return m; }',
+            fa_list_contains: 'static int fa_list_contains(IL a, long long x) { for (long long i = 0; i < a.n; i++) if (a.d[i] == x) return 1; return 0; }',
+            fa_list_reverse: 'static void fa_list_reverse(IL a) { for (long long i = 0, j = a.n - 1; i < j; i++, j--) { long long t = a.d[i]; a.d[i] = a.d[j]; a.d[j] = t; } }',
+            fa_sorted: 'static int fa_cmp(const void *x, const void *y) { long long a = *(const long long *)x, b = *(const long long *)y; return a < b ? -1 : a > b; }\nstatic IL fa_sorted(IL a) { IL l = fa_list_copy(a); if (l.n > 1) qsort(l.d, l.n, sizeof(long long), fa_cmp); return l; }',
+            fa_sort: 'static int fa_cmp2(const void *x, const void *y) { long long a = *(const long long *)x, b = *(const long long *)y; return a < b ? -1 : a > b; }\nstatic void fa_sort(IL a) { if (a.n > 1) qsort(a.d, a.n, sizeof(long long), fa_cmp2); }',
+            fa_joinNums: 'static char *fa_joinNums(const char *sep, IL a) { size_t cap = 64 + (size_t)a.n * 24 + (size_t)(a.n > 0 ? a.n - 1 : 0) * strlen(sep), n = 0; char *s = (char *)malloc(cap); s[0] = 0; for (long long i = 0; i < a.n; i++) { if (i) { strcpy(s + n, sep); n += strlen(sep); } n += (size_t)sprintf(s + n, "%lld", a.d[i]); } return s; }',
+            fa_min: 'static long long fa_min(long long a, long long b) { return a < b ? a : b; }',
+            fa_max: 'static long long fa_max(long long a, long long b) { return a > b ? a : b; }',
+            fa_floordiv: 'static long long fa_floordiv(long long a, long long b) { if (b == 0) { fprintf(stderr, "division by zero\\n"); exit(1); } long long q = a / b; if ((a % b != 0) && ((a < 0) != (b < 0))) q--; return q; }',
+            fa_mod: 'static long long fa_mod(long long a, long long b) { if (b == 0) { fprintf(stderr, "modulo by zero\\n"); exit(1); } long long r = a % b; if (r != 0 && ((r < 0) != (b < 0))) r += b; return r; }',
+            fa_ipow: 'static long long fa_ipow(long long b, long long e) { long long r = 1; while (e > 0) { if (e & 1) r *= b; b *= b; e >>= 1; } return r; }',
+            fa_gcd: 'static long long fa_gcd(long long a, long long b) { if (a < 0) a = -a; if (b < 0) b = -b; while (b) { long long t = a % b; a = b; b = t; } return a; }',
+            fa_readLine: 'static char *fa_readLine(void) { size_t cap = 256, n = 0; char *s = (char *)malloc(cap); int ch; while ((ch = getchar()) != EOF && ch != \'\\n\') { if (n + 1 >= cap) { cap *= 2; s = (char *)realloc(s, cap); } s[n++] = (char)ch; } if (n && s[n - 1] == \'\\r\') n--; s[n] = 0; return s; }',
+            fa_readAll: 'static char *fa_readAll(void) { size_t cap = 4096, n = 0; char *s = (char *)malloc(cap); int ch; while ((ch = getchar()) != EOF) { if (n + 1 >= cap) { cap *= 2; s = (char *)realloc(s, cap); } s[n++] = (char)ch; } s[n] = 0; return s; }',
+            fa_splitInts: 'static IL fa_splitInts(const char *s) { IL l = fa_new(); char *e; while (1) { while (*s == \' \' || *s == \'\\t\' || *s == \'\\r\') s++; if (!*s) break; long long v = strtoll(s, &e, 10); if (e == s) { fprintf(stderr, "invalid literal for int()\\n"); exit(1); } fa_push(&l, v); s = e; } return l; }',
+            fa_itoa: 'static char *fa_itoa(long long v) { char *s = (char *)malloc(32); snprintf(s, 32, "%lld", v); return s; }',
+            fa_concat: 'static char *fa_concat(const char *a, const char *b) { size_t x = strlen(a), y = strlen(b); char *s = (char *)malloc(x + y + 1); memcpy(s, a, x); memcpy(s + x, b, y + 1); return s; }',
+            fa_strip: 'static char *fa_strip(const char *a) { while (*a == \' \' || *a == \'\\t\' || *a == \'\\n\' || *a == \'\\r\') a++; size_t n = strlen(a); while (n && (a[n - 1] == \' \' || a[n - 1] == \'\\t\' || a[n - 1] == \'\\n\' || a[n - 1] == \'\\r\')) n--; char *s = (char *)malloc(n + 1); memcpy(s, a, n); s[n] = 0; return s; }',
+            fa_find: 'static long long fa_find(const char *a, const char *b) { const char *p = strstr(a, b); return p ? (long long)(p - a) : -1; }',
+            fa_fixed: 'static char *fa_fixed(double x, long long d) { char *s = (char *)malloc(400); snprintf(s, 400, "%.*f", (int)d, x); return s; }',
+            fa_readFile: 'static char *fa_readFile(const char *p) { FILE *f = fopen(p, "rb"); if (!f) { fprintf(stderr, "cannot open file\\n"); exit(1); } fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET); char *s = (char *)malloc(n + 1); size_t r = fread(s, 1, n, f); s[r] = 0; fclose(f); return s; }'
+        }
+    };
+    // 輔助函式的相依（先貼被依賴的）
+    const HDEPS = { c: { fa_new: ['fa_list'], fa_push: ['fa_list'], fa_pop: ['fa_list'], fa_filled: ['fa_new', 'fa_push'], fa_list_copy: ['fa_new', 'fa_push'], fa_list_sum: ['fa_list'], fa_list_min: ['fa_list'], fa_list_max: ['fa_list'], fa_list_contains: ['fa_list'], fa_list_reverse: ['fa_list'], fa_sorted: ['fa_list_copy'], fa_sort: ['fa_list'], fa_joinNums: ['fa_list'], fa_splitInts: ['fa_new', 'fa_push'] }, java: { fa_splitInts: ['fa_splitWs'] }, nodejs: { fa_splitInts: ['fa_parseInt'] } };
+
+    // ---------- 查表 ----------
+    const has = (id) => !!OPS[id];
+    const get = (id) => OPS[id] || null;
+    const ids = () => Object.keys(OPS);
+    const baseOf = (ty) => (ty && ty.t) || 'unknown';
+    function pick(cell, argTys) {
+        if (cell == null || typeof cell === 'string') return cell;
+        const b = baseOf(argTys && argTys[0]); if (cell[b] !== undefined) return cell[b];
+        if (b === 'unknown' || b === 'any') { return cell['*'] !== undefined ? cell['*'] : null; }
+        return cell['*'] !== undefined ? cell['*'] : null;
+    }
+    // 回傳型別：依引數型別代入
+    function retType(op, argTys) {
+        const o = OPS[op]; if (!o) return IR.T.unknown; const r = o.r; const a0 = (argTys && argTys[0]) || IR.T.unknown;
+        if (r === '$j') return (argTys || []).reduce((acc, t, i) => (i === 0 ? t : IR.tyJoin(acc, t)), IR.T.unknown);
+        if (/\$/.test(r)) {
+            const elem = (a0.a && a0.a[0]) || (a0.t === 'str' ? IR.T.str : IR.T.unknown);
+            const tys = { e0: elem, k0: (a0.t === 'dict' && a0.a[0]) || IR.T.unknown, v0: (a0.t === 'dict' && a0.a[1]) || IR.T.unknown, 0: a0, 1: (argTys && argTys[1]) || IR.T.unknown };
+            const sub = (s) => s.replace(/\$(e0|k0|v0|0|1)/g, (m, k) => '@@' + k + '@@'); const s = sub(r);
+            const m = /^@@(e0|k0|v0|0|1)@@$/.exec(s); if (m) return tys[m[1]];
+            const m2 = /^(list|set)<@@(e0|k0|v0|0|1)@@>$/.exec(s); if (m2) return { t: m2[1], a: [tys[m2[2]]] };
+            return IR.tyParse(r.replace(/\$\w+/g, 'unknown'));
+        }
+        return IR.tyParse(r);
+    }
+    // 展開樣板。args：[{raw, atom}]。回傳 {code, helpers, needs, missing}
+    function render(op, lang, args, argTys) {
+        const o = OPS[op]; const L = LANG_OF[lang] || lang; if (!o) return { code: null, missing: '不認得的操作 ' + op };
+        const cell = pick(o.cells[L], argTys || []); if (cell == null) return { code: null, missing: op + ' 在 ' + lang + ' 沒有精準對應' + (argTys && argTys[0] ? '（引數型別 ' + IR.tyStr(argTys[0]) + '）' : '') };
+        const code = cell.replace(/([$@])(\d|\*)/g, (m, sig, n) => { if (n === '*') return args.slice(1).map((a) => a.raw).join(', '); const a = args[+n]; if (!a) return m; return sig === '@' ? a.atom : a.raw; });
+        return { code, helpers: (o.h[L] || []).slice(), needs: (o.need[L] || []).slice() };
+    }
+    // 一段運算式文字是不是「原子」（可直接當接收者／運算元，不必再加括號）：最外層（括號外、引號外）沒有空白，且不以一元運算子開頭
+    function atomic(s) {
+        s = String(s); if (/^[-+!~*&]/.test(s)) return false; let depth = 0, q = null;
+        for (let i = 0; i < s.length; i++) {
+            const ch = s[i];
+            if (q) { if (ch === '\\') i++; else if (ch === q) q = null; continue; }
+            if (ch === '"' || ch === "'" || ch === '`') { q = ch; continue; }
+            if ('([{'.indexOf(ch) >= 0) depth++; else if (')]}'.indexOf(ch) >= 0) depth--; else if (depth === 0 && /\s/.test(ch)) return false;
+        }
+        return true;
+    }
+    // 展開輔助函式相依；回傳依序要貼的程式
+    function helperSource(lang, idsUsed) {
+        const L = LANG_OF[lang] || lang, tbl = HELPERS[L] || {}, deps = (HDEPS[L] || {}), seen = [], out = [];
+        const add = (id) => { if (seen.indexOf(id) >= 0) return; seen.push(id); (deps[id] || []).forEach(add); if (tbl[id] != null) out.push(tbl[id]); };
+        idsUsed.forEach(add); return out;
+    }
+    // 該語言的覆蓋：沒有精準對應的操作清單
+    function coverage() { const out = {}; LANGS.forEach((l) => { const n = ids().filter((id) => { const c = OPS[id].cells[l]; return c != null && !(typeof c === 'object' && Object.keys(c).every((k) => c[k] == null)); }).length; out[l] = { mapped: n, total: ids().length }; }); return out; }
+
+    // ---------- Python 原始碼的辨識表（Python「進」模組用）：慣用寫法 → 操作 id ----------
+    const PY = {
+        func: { len: 'coll.len', int: 'conv.int', float: 'conv.float', str: 'conv.str', bool: 'conv.bool', abs: 'num.abs', sum: 'list.sum', round: 'num.round', chr: 'str.from_code', ord: 'str.char_code', input: 'io.read_line' },
+        func2: { min: 'num.min', max: 'num.max', pow: 'int.pow' },        // 兩個引數時
+        func1: { min: 'list.min', max: 'list.max', sorted: 'list.sorted' },  // 一個引數時
+        method: { append: 'list.append', pop: 'list.pop', insert: 'list.insert', reverse: 'list.reverse', index: 'list.index_of', copy: 'list.copy', strip: 'str.strip', upper: 'str.upper', lower: 'str.lower', replace: 'str.replace', startswith: 'str.startswith', endswith: 'str.endswith', find: 'str.find', keys: 'dict.keys', add: 'set.add', isdigit: 'str.is_digit' },
+        module: { 'math.sqrt': 'math.sqrt', 'math.floor': 'math.floor', 'math.ceil': 'math.ceil', 'math.gcd': 'math.gcd', 'random.randint': 'rand.randint', 'time.time': 'time.now_seconds', 'json.dumps': 'json.dumps', 'json.loads': 'json.loads', 'sys.stdin.read': 'io.read_all' }
+    };
+
+    return { LANGS, LANG_OF, OPS, HELPERS, PY, has, get, ids, pick, retType, render, helperSource, atomic, coverage, count: () => ids().length };
+});
+
+}).call(null, undefined, holder);
+(function (module, self) {
+/* IR 共用的三道處理（語言中立，輸出給任何目標語言之前都要跑）：
+ *   infer  型別推斷：標註優先、其次由字面值／操作回傳型別／賦值合流推出；推不出的標 unknown（靜態語言的輸出器遇到 unknown 會要求標註）
+ *   lower  降低：把「依型別才有意義的運算子」換成標準操作（// % / ** 字串相加 in 等），真值判斷展開成明確的布林，字面負索引改成 len-k
+ *          ——這一步讓每個有語意差異的地方都落在標準操作目錄裡，輸出器不必各自猜
+ *   scope  宣告：第一次賦值標 decl（靜態語言需要宣告），在分支裡第一次賦值但分支外也用到的變數提升到函式開頭
+ * 全部是純函式；prepare(ir) 回傳 {ir(新的樹), diags}，不改傳入的樹。 */
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(require('./ir_core.js'), require('./ir_ops_core.js')); else root.FaIrPrep = factory(root.FaIr, root.FaIrOps); })(typeof self !== 'undefined' ? self : this, function (IR, OPS) {
+    'use strict';
+    const T = IR.T;
+
+    function infer(ir) {
+        const funcs = {}; IR.funcs(ir).forEach((f) => { funcs[f.name] = f; });
+        const ret = (f) => (f.ret && f.ret.t !== 'unknown' ? f.ret : (f._ret || T.unknown));
+        function ex(e, env, fx) {
+            if (!e) return T.unknown; let ty = T.unknown;
+            switch (e.k) {
+                case 'lit': ty = e.t === 'int' ? T.int : e.t === 'float' ? T.float : e.t === 'str' ? T.str : e.t === 'bool' ? T.bool : T.any; break;
+                case 'name': ty = env[e.v] || T.unknown; break;
+                case 'bin': {
+                    const a = ex(e.l, env, fx), b = ex(e.r, env, fx);
+                    if (e.op === '/') ty = T.float; else if (['&', '|', '^', '<<', '>>'].indexOf(e.op) >= 0) ty = T.int;
+                    else if (e.op === '+' && a.t === 'str' && b.t === 'str') ty = T.str;
+                    else if (e.op === '+' && a.t === 'list') ty = a;
+                    else if (e.op === '*' && a.t === 'list') ty = a; else if (e.op === '*' && b.t === 'list') ty = b;
+                    else if (e.op === '*' && (a.t === 'str' || b.t === 'str')) ty = T.str;
+                    else if (e.op === '**') ty = a.t === 'int' && b.t === 'int' ? T.int : T.float;
+                    else ty = IR.tyJoin(a, b); break;
+                }
+                case 'un': ty = ex(e.e, env, fx); break;
+                case 'not': ex(e.e, env, fx); ty = T.bool; break;
+                case 'cmp': ex(e.l, env, fx); ex(e.r, env, fx); ty = T.bool; break;
+                case 'logic': { const a = ex(e.l, env, fx), b = ex(e.r, env, fx); ty = a.t === 'bool' && b.t === 'bool' ? T.bool : IR.tyJoin(a, b); break; }
+                case 'index': { const o = ex(e.o, env, fx); ex(e.i, env, fx); ty = o.t === 'list' ? o.a[0] : o.t === 'str' ? T.str : o.t === 'dict' ? o.a[1] : T.unknown; break; }
+                case 'list': { let el = T.unknown; (e.items || []).forEach((x, i) => { const t = ex(x, env, fx); el = i === 0 ? t : IR.tyJoin(el, t); }); ty = IR.list(el); break; }
+                case 'dict': { let kt = T.unknown, vt = T.unknown; (e.items || []).forEach((p, i) => { const a = ex(p[0], env, fx), b = ex(p[1], env, fx); kt = i === 0 ? a : IR.tyJoin(kt, a); vt = i === 0 ? b : IR.tyJoin(vt, b); }); ty = IR.dict(kt, vt); break; }
+                case 'cond': ex(e.c, env, fx); ty = IR.tyJoin(ex(e.a, env, fx), ex(e.b, env, fx)); break;
+                case 'call': {
+                    const at = (e.args || []).map((a) => ex(a, env, fx));
+                    if (e.op) {
+                        ty = OPS.retType(e.op, at);
+                        // 就地加入元素：回頭補齊變數的元素型別
+                        const r0 = e.args[0];
+                        if (r0 && r0.k === 'name' && at[0].t === 'list' && at[0].a[0].t === 'unknown') {
+                            if (e.op === 'list.append' && at[1]) env[r0.v] = IR.list(at[1]); else if (e.op === 'list.insert' && at[2]) env[r0.v] = IR.list(at[2]);
+                        }
+                        if (e.op === 'dict.put' && r0 && r0.k === 'name' && at[0].t === 'dict' && (at[0].a[0].t === 'unknown' || at[0].a[1].t === 'unknown')) env[r0.v] = IR.dict(at[0].a[0].t === 'unknown' ? at[1] : at[0].a[0], at[0].a[1].t === 'unknown' ? at[2] : at[0].a[1]);
+                    } else { const f = funcs[e.fn]; ty = f ? ret(f) : T.unknown; }
+                    break;
+                }
+                case 'native': ty = e.ty || T.unknown; break;
+            }
+            e.ty = ty; return ty;
+        }
+        function block(body, env, fx) {
+            (body || []).forEach((s) => {
+                switch (s.k) {
+                    case 'assign': {
+                        const vt = ex(s.val, env, fx);
+                        if (s.to.k === 'name') { const t = s.ty || vt; env[s.to.v] = env[s.to.v] ? (s.ty ? s.ty : IR.tyJoin(env[s.to.v], t)) : t; s.to.ty = env[s.to.v]; }
+                        else if (s.to.k === 'index') { const o = ex(s.to.o, env, fx); ex(s.to.i, env, fx); if (s.to.o.k === 'name' && o.t === 'dict') env[s.to.o.v] = IR.dict(o.a[0].t === 'unknown' ? s.to.i.ty : o.a[0], o.a[1].t === 'unknown' ? vt : o.a[1]); s.to.ty = vt; }
+                        break;
+                    }
+                    case 'aug': ex(s.to, env, fx); ex(s.val, env, fx); break;
+                    case 'if': ex(s.cond, env, fx); block(s.then, env, fx); block(s.else, env, fx); break;
+                    case 'while': ex(s.cond, env, fx); block(s.body, env, fx); break;
+                    case 'forrange': ex(s.from, env, fx); ex(s.to, env, fx); if (s.step) ex(s.step, env, fx); env[s.var] = T.int; block(s.body, env, fx); break;
+                    case 'foreach': { const it = ex(s.iter, env, fx); env[s.var] = it.t === 'list' ? it.a[0] : it.t === 'str' ? T.str : it.t === 'dict' ? it.a[0] : T.unknown; block(s.body, env, fx); break; }
+                    case 'ret': { const t = s.val ? ex(s.val, env, fx) : T.void; fx.rets.push(t); break; }
+                    case 'expr': ex(s.e, env, fx); break;
+                    case 'raise': if (s.val) ex(s.val, env, fx); break;
+                }
+            });
+        }
+        for (let pass = 0; pass < 3; pass++) {
+            IR.funcs(ir).forEach((f) => {
+                const env = {}; (f.params || []).forEach((p) => { env[p.name] = p.ty || T.unknown; }); const fx = { rets: [] };
+                block(f.body, env, fx); f.locals = env;
+                if (!f.ret || f.ret.t === 'unknown') { f._ret = fx.rets.length ? fx.rets.reduce((a, b) => IR.tyJoin(a, b)) : T.void; }
+            });
+        }
+        // 模組層敘述（非函式）
+        const menv = {}; const fx0 = { rets: [] }; block(ir.body.filter((s) => s.k !== 'func'), menv, fx0); ir.locals = menv;
+        IR.funcs(ir).forEach((f) => { if ((!f.ret || f.ret.t === 'unknown') && f._ret) { f.ret = f._ret; } delete f._ret; });
+        return ir;
+    }
+
+    function lower(ir, diags) {
+        const d = (m, n) => diags.push({ level: 'warn', msg: m, pos: n && n.pos });
+        const callOp = (op, args, node) => { const c = { k: 'call', op, args }; if (node && node.pos) c.pos = node.pos; c.ty = OPS.retType(op, args.map((a) => a.ty || T.unknown)); return c; };
+        const mk = (e, ty) => { e.ty = ty; return e; };
+        const isLitNeg = (e) => e && e.k === 'un' && e.op === '-' && e.e.k === 'lit' && e.e.t === 'int';
+        // 真值：把任意型別在布林情境下變成明確的布林
+        function truthy(e) {
+            e = lx(e); const t = e.ty || T.unknown;
+            if (t.t === 'bool') return e;
+            if (t.t === 'int') return mk({ k: 'cmp', op: '!=', l: e, r: mk({ k: 'lit', t: 'int', v: '0' }, T.int) }, T.bool);
+            if (t.t === 'float') return mk({ k: 'cmp', op: '!=', l: e, r: mk({ k: 'lit', t: 'float', v: '0.0' }, T.float) }, T.bool);
+            if (t.t === 'str' || t.t === 'list' || t.t === 'dict' || t.t === 'set') return mk({ k: 'cmp', op: '>', l: callOp('coll.len', [e], e), r: mk({ k: 'lit', t: 'int', v: '0' }, T.int) }, T.bool);
+            d('真值判斷的型別未知（' + IR.tyStr(t) + '），保留原樣', e); return e;
+        }
+        function boolCtx(e) {
+            if (e.k === 'logic') return mk({ k: 'logic', op: e.op, l: boolCtx(e.l), r: boolCtx(e.r), pos: e.pos }, T.bool);
+            if (e.k === 'not') return mk({ k: 'not', e: boolCtx(e.e), pos: e.pos }, T.bool);
+            return truthy(e);
+        }
+        function lx(e) {
+            if (!e || typeof e !== 'object') return e;
+            switch (e.k) {
+                case 'bin': {
+                    const l = lx(e.l), r = lx(e.r), a = l.ty || T.unknown, b = r.ty || T.unknown; let out = null;
+                    if (e.op === '//') { if (a.t === 'int' && b.t === 'int') out = callOp('int.floordiv', [l, r], e); else d('// 只支援整數（運算元型別 ' + IR.tyStr(a) + '、' + IR.tyStr(b) + '）', e); }
+                    else if (e.op === '%') { if (a.t === 'int' && b.t === 'int') out = callOp('int.mod', [l, r], e); else d('% 只支援整數', e); }
+                    else if (e.op === '/') out = callOp('num.div', [l, r], e);
+                    else if (e.op === '**') { if (a.t === 'int' && b.t === 'int') out = callOp('int.pow', [l, r], e); else d('** 只支援整數', e); }
+                    else if (e.op === '+' && a.t === 'str' && b.t === 'str') out = callOp('str.concat', [l, r], e);
+                    else if (e.op === '*' && a.t === 'str' && b.t === 'int') out = callOp('str.repeat', [l, r], e);
+                    else if (e.op === '*' && a.t === 'list' && l.k === 'list' && l.items.length === 1 && b.t === 'int') out = callOp('list.filled', [l.items[0], r], e);
+                    else if (e.op === '*' && b.t === 'list' && r.k === 'list' && r.items.length === 1 && a.t === 'int') out = callOp('list.filled', [r.items[0], l], e);
+                    else if (e.op === '+' && (a.t === 'list' || b.t === 'list')) d('串列相加尚未支援', e);
+                    if (out) { out.ty = out.op === 'int.floordiv' || out.op === 'int.mod' ? T.int : (e.ty || out.ty); if (e.pos) out.pos = e.pos; if (e.op === '/') out.ty = T.float; return out; }
+                    return Object.assign({}, e, { l, r });
+                }
+                case 'cmp': {
+                    const l = lx(e.l), r = lx(e.r);
+                    if (e.op === 'in' || e.op === 'not in') { const c = callOp('coll.contains', [r, l], e); c.ty = T.bool; return e.op === 'in' ? c : mk({ k: 'not', e: c, pos: e.pos }, T.bool); }
+                    if (e.op === 'is' || e.op === 'is not') { d('is 比較只支援與 None，其他語言以 == null 表示（目前保留）', e); }
+                    return Object.assign({}, e, { l, r });
+                }
+                case 'logic': return Object.assign({}, e, { l: lx(e.l), r: lx(e.r) });
+                case 'not': return Object.assign({}, e, { e: boolCtx(e.e) });
+                case 'un': return Object.assign({}, e, { e: lx(e.e) });
+                case 'cond': return Object.assign({}, e, { c: boolCtx(e.c), a: lx(e.a), b: lx(e.b) });
+                case 'index': {
+                    const o = lx(e.o); let i = lx(e.i);
+                    if (isLitNeg(e.i) || (i.k === 'lit' && i.t === 'int' && /^-/.test(i.v))) {
+                        const k = isLitNeg(e.i) ? e.i.e : mk({ k: 'lit', t: 'int', v: i.v.replace(/^-/, '') }, T.int);
+                        if (o.k === 'name') i = mk({ k: 'bin', op: '-', l: callOp('coll.len', [o], e), r: k }, T.int); else d('負索引的接收者不是單純變數，無法改寫為 len-k', e);
+                    }
+                    return Object.assign({}, e, { o, i });
+                }
+                case 'call': {
+                    const args = (e.args || []).map(lx); const out = Object.assign({}, e, { args });
+                    if (e.op === 'list.slice' && args[0] && args[0].ty && args[0].ty.t === 'str') { out.op = 'str.slice'; out.ty = T.str; }
+                    if (e.op === 'list.slice' && args[0] && args[0].ty && args[0].ty.t === 'list') out.ty = args[0].ty;
+                    if (e.op === 'list.sorted' &&args[0] && args[0].ty && args[0].ty.t === 'dict') { out.op = 'dict.sorted_keys'; out.ty = OPS.retType(out.op, [args[0].ty]); }
+                    return out;
+                }
+                case 'list': return Object.assign({}, e, { items: e.items.map(lx) });
+                case 'dict': return Object.assign({}, e, { items: e.items.map((p) => [lx(p[0]), lx(p[1])]) });
+                default: return e;
+            }
+        }
+        function ls(body) {
+            return (body || []).map((s) => {
+                const o = Object.assign({}, s);
+                switch (s.k) {
+                    case 'assign': o.val = lx(s.val); o.to = s.to.k === 'index' ? Object.assign({}, s.to, { o: lx(s.to.o), i: lx(s.to.i) }) : s.to; break;
+                    case 'aug': {
+                        o.val = lx(s.val); o.to = s.to.k === 'index' ? Object.assign({}, s.to, { o: lx(s.to.o), i: lx(s.to.i) }) : s.to;
+                        // 需要依型別換成標準操作的複合賦值（//= %= /= **= 字串 +=）展開成一般賦值
+                        const probe = lx({ k: 'bin', op: s.op, l: o.to, r: s.val, pos: s.pos, ty: undefined });
+                        if (probe.k === 'call') { delete o.op; o.k = 'assign'; o.val = probe; }
+                        break;
+                    }
+                    case 'if': o.cond = boolCtx(s.cond); o.then = ls(s.then); o.else = s.else ? ls(s.else) : s.else; break;
+                    case 'while': o.cond = boolCtx(s.cond); o.body = ls(s.body); break;
+                    case 'forrange': o.from = lx(s.from); o.to = lx(s.to); if (s.step) o.step = lx(s.step); o.body = ls(s.body); break;
+                    case 'foreach': o.iter = lx(s.iter); o.body = ls(s.body); break;
+                    case 'ret': if (s.val) o.val = lx(s.val); break;
+                    case 'expr': o.e = lx(s.e); break;
+                    case 'func': o.body = ls(s.body); break;
+                    case 'raise': if (s.val) o.val = lx(s.val); break;
+                }
+                return o;
+            });
+        }
+        return Object.assign({}, ir, { body: ls(ir.body) });
+    }
+
+    // 宣告：第一次賦值 decl:true；分支內第一次賦值但分支外也用到 → 提升到函式開頭（declare）
+    function scope(ir) {
+        function fn(f) {
+            const declared = {}; (f.params || []).forEach((p) => { declared[p.name] = true; });
+            const first = {}; const refs = {}; let bid = 0;
+            const refE = (e, stack) => IR.walkExpr(e, (n) => { if (n.k === 'name') (refs[n.v] = refs[n.v] || []).push(stack); });
+            function walk(body, stack) {
+                (body || []).forEach((s) => {
+                    const myStack = stack;
+                    switch (s.k) {
+                        case 'assign': refE(s.val, myStack); if (s.to.k === 'name') { if (!declared[s.to.v] && !first[s.to.v]) first[s.to.v] = { stmt: s, stack: myStack }; (refs[s.to.v] = refs[s.to.v] || []).push(myStack); } else refE(s.to, myStack); break;
+                        case 'aug': refE(s.to, myStack); refE(s.val, myStack); break;
+                        case 'if': refE(s.cond, myStack); walk(s.then, myStack.concat(++bid)); walk(s.else, myStack.concat(++bid)); break;
+                        case 'while': refE(s.cond, myStack); walk(s.body, myStack.concat(++bid)); break;
+                        case 'forrange': refE(s.from, myStack); refE(s.to, myStack); if (s.step) refE(s.step, myStack); declared[s.var] = true; walk(s.body, myStack.concat(++bid)); break;
+                        case 'foreach': refE(s.iter, myStack); declared[s.var] = true; walk(s.body, myStack.concat(++bid)); break;
+                        case 'ret': case 'expr': case 'raise': refE(s.val || s.e, myStack); break;
+                    }
+                });
+            }
+            walk(f.body, []);
+            const hoist = [];
+            Object.keys(first).forEach((v) => {
+                const fi = first[v], s = fi.stmt; const ty = (f.locals && f.locals[v]) || s.ty || (s.val && s.val.ty) || T.unknown;
+                s.decl = true; s.ty = ty;
+                if (fi.stack.length) { const id = fi.stack[fi.stack.length - 1]; if ((refs[v] || []).some((st) => st.indexOf(id) < 0)) { s.decl = false; hoist.push({ k: 'declare', name: v, ty }); } }
+            });
+            if (hoist.length) f.body = hoist.concat(f.body);
+        }
+        IR.funcs(ir).forEach(fn); return ir;
+    }
+
+    function prepare(ir0, opts) {
+        const diags = []; let ir = IR.clone(ir0); infer(ir); ir = lower(ir, diags); infer(ir); scope(ir); return { ir, diags };
+    }
+    return { infer, lower, scope, prepare };
+});
+
+}).call(null, undefined, holder);
+(function (module, self) {
+/* Python「進」：tree-sitter 語法樹 → 核心 IR。純函式 UMD，Python 專屬（每個語言各自一份「進」）。
+ * 輸入節點是 tree-sitter（web-tree-sitter 或 node-tree-sitter）的節點。
+ *   fromTree(rootNode, {source, name, file}) → { ir, coverage:{stmts, natives, comments, comments_kept}, diags }
+ * 保留：註解（前置／行尾／獨立成行／函式標頭行尾）、docstring、空行（sp）、來源位置（pos）。
+ * 認得的慣用寫法會變成標準操作（見 ir_ops_core.js 的 PY 表）；不認得的整句收成 native（原文＋語言），不丟。 */
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(require('./ir_core.js'), require('./ir_ops_core.js')); else root.FaIrInPython = factory(root.FaIr, root.FaIrOps); })(typeof self !== 'undefined' ? self : this, function (IR, OPS) {
+    'use strict';
+    const T = IR.T;
+    function tyOfText(s) {
+        s = String(s || '').replace(/\s+/g, ''); if (!s) return T.unknown; let i = 0;
+        const one = () => {
+            const m = /^[A-Za-z_][A-Za-z_0-9.]*/.exec(s.slice(i)); if (!m) return T.unknown; i += m[0].length; const n = m[0].replace(/^typing\./, '').toLowerCase(); let a = null;
+            if (s[i] === '[') { i++; a = [one()]; while (s[i] === ',') { i++; a.push(one()); } if (s[i] === ']') i++; }
+            if (n === 'int') return T.int; if (n === 'float') return T.float; if (n === 'str') return T.str; if (n === 'bool') return T.bool; if (n === 'none') return T.void; if (n === 'any') return T.any;
+            if (n === 'list' || n === 'sequence') return IR.list(a && a[0]); if (n === 'dict') return IR.dict(a && a[0], a && a[1]); if (n === 'set') return IR.set(a && a[0]);
+            return T.unknown;
+        };
+        return one();
+    }
+    function unescape(s) { return s.replace(/\\(n|t|r|0|\\|'|"|a|b|f|v)/g, (m, c) => ({ n: '\n', t: '\t', r: '\r', 0: '\0', '\\': '\\', "'": "'", '"': '"', a: '\x07', b: '\b', f: '\f', v: '\v' }[c])); }
+
+    function fromTree(rootNode, opts) {
+        opts = opts || {}; const src = String(opts.source || ''); const cov = { stmts: 0, natives: 0, comments: 0, comments_kept: 0 }; const diags = [];
+        const txt = (n) => (n.text != null ? n.text : src.slice(n.startIndex, n.endIndex));
+        const f = (n, name) => n.childForFieldName(name);
+        const named = (n) => (n.namedChildren || n.children.filter((c) => c.isNamed()));
+        const pos = (n) => [n.startPosition.row + 1, n.startPosition.column, n.endPosition.row + 1, n.endPosition.column];
+        const at = (o, n) => { o.pos = pos(n); return o; };
+        const diag = (m, n) => diags.push({ level: 'warn', msg: m, pos: n ? pos(n) : undefined });
+        const dedent = (t, col) => t.split('\n').map((l, i) => (i === 0 ? l : l.slice(Math.min(col, l.length - l.trimStart().length)))).join('\n');
+        const nativeE = (n, why) => { cov.natives++; diag('運算式收成原生區塊：' + (why || n.type), n); return at({ k: 'native', lang: 'python', src: txt(n), why: why || n.type }, n); };
+        const nativeS = (n, why) => { cov.natives++; diag('敘述收成原生區塊：' + (why || n.type), n); return at({ k: 'native', lang: 'python', src: dedent(txt(n), n.startPosition.column), why: why || n.type }, n); };
+        const L = (t, v) => ({ k: 'lit', t, v });
+        const call = (op, args, n) => { const c = { k: 'call', op, args }; if (n) c.pos = pos(n); return c; };
+
+        function str(n) {
+            const parts = []; let hasInterp = false;
+            for (const c of n.children) {
+                if (c.type === 'string_content') parts.push({ s: txt(c) });
+                else if (c.type === 'interpolation') { hasInterp = true; parts.push({ e: c }); }
+                else if (c.type === 'escape_sequence') parts.push({ s: txt(c) });
+            }
+            const start = n.children.find((c) => c.type === 'string_start'); const pre = start ? txt(start).replace(/["']+$/, '').toLowerCase() : '';
+            if (!hasInterp) { let v = parts.map((p) => p.s).join(''); if (pre.indexOf('r') < 0) v = unescape(v); return at(L('str', v), n); }
+            // f-string：{x}→str(x)，{x:.2f}→fixed(x,2)；其餘格式說明收成原生
+            let acc = null; const push = (e) => { acc = acc ? call('str.concat', [acc, e], n) : e; };
+            for (const p of parts) {
+                if (p.s != null) { push(L('str', unescape(p.s.replace(/\{\{/g, '{').replace(/\}\}/g, '}')))); continue; }
+                const ie = f(p.e, 'expression') || named(p.e)[0], spec = f(p.e, 'format_specifier') || named(p.e).find((x) => x.type === 'format_specifier'); const v = ex(ie);
+                if (!spec) { push(call('conv.str', [v], p.e)); continue; }
+                const m = /^\.(\d+)f$/.exec(txt(spec).replace(/^:/, '')); if (m) { push(call('fmt.fixed', [v, L('int', m[1])], p.e)); continue; }
+                return nativeE(n, 'f-string 格式說明 ' + txt(spec));
+            }
+            return acc || L('str', '');
+        }
+
+        function argsOf(n) { const a = f(n, 'arguments'); return a ? named(a).filter((c) => c.type !== 'comment') : []; }
+        function call_(n) {
+            const fn = f(n, 'function'); const args = argsOf(n); const kw = args.filter((a) => a.type === 'keyword_argument' || a.type === 'list_splat' || a.type === 'dictionary_splat');
+            const pa = args.filter((a) => kw.indexOf(a) < 0);
+            if (kw.length) return nativeE(n, '關鍵字引數');
+            if (fn.type === 'identifier') {
+                const name = txt(fn);
+                if (name === 'print') {
+                    if (!pa.length) return call('io.print_line', [L('str', '')], n);
+                    let parts = pa.map((a) => { const e = ex(a); return call('conv.str', [e], a); });
+                    parts = parts.reduce((acc, p, i) => (i === 0 ? p : call('str.concat', [call('str.concat', [acc, L('str', ' ')], n), p], n)), null);
+                    return call('io.print_line', [pa.length === 1 ? ex(pa[0]) : parts], n);
+                }
+                if (name === 'list' && pa.length === 1) {
+                    const m = pa[0];
+                    if (m.type === 'call' && txt(f(m, 'function')) === 'map') { const ma = argsOf(m); if (ma.length === 2 && txt(ma[0]) === 'int') { const sp = ma[1]; if (sp.type === 'call' && f(sp, 'function').type === 'attribute' && txt(f(f(sp, 'function'), 'attribute')) === 'split' && !argsOf(sp).length) return call('str.split_ints', [ex(f(f(sp, 'function'), 'object'))], n); } return nativeE(n, 'list(map(...)) 非 int(split) 慣用語'); }
+                    return call('list.copy', [ex(pa[0])], n);
+                }
+                if (name === 'range') return nativeE(n, 'range 只支援在 for 的標頭');
+                if ((name === 'min' || name === 'max') && pa.length >= 2) { return pa.map(ex).reduce((acc, e) => call(OPS.PY.func2[name], [acc, e], n)); }
+                if (OPS.PY.func1[name] && pa.length === 1) return call(OPS.PY.func1[name], [ex(pa[0])], n);
+                if (OPS.PY.func2[name] && pa.length === 2 && name === 'pow') return call(OPS.PY.func2[name], pa.map(ex), n);
+                if (OPS.PY.func[name]) { if (name === 'input') return call('io.read_line', [], n); if (pa.length === 1) return call(OPS.PY.func[name], [ex(pa[0])], n); }
+                return at({ k: 'call', fn: name, args: pa.map(ex) }, n);
+            }
+            if (fn.type === 'attribute') {
+                const obj = f(fn, 'object'), attr = txt(f(fn, 'attribute')), dotted = txt(fn);
+                if (OPS.PY.module[dotted]) { const id = OPS.PY.module[dotted]; return call(id, pa.map(ex), n); }
+                if (obj.type === 'string' && attr === 'format') { const t = str(obj); const m = t.k === 'lit' && /^\{:\.(\d+)f\}$/.exec(t.v); if (m && pa.length === 1) return call('fmt.fixed', [ex(pa[0]), L('int', m[1])], n); return nativeE(n, 'str.format 非 {:.Nf} 形式'); }
+                const r = ex(obj);
+                if (attr === 'split') return pa.length === 0 ? call('str.split_ws', [r], n) : pa.length === 1 ? call('str.split_sep', [r, ex(pa[0])], n) : nativeE(n, 'split 引數');
+                if (attr === 'join' && pa.length === 1) { const a0 = pa[0]; if (a0.type === 'call' && txt(f(a0, 'function')) === 'map' && argsOf(a0).length === 2 && txt(argsOf(a0)[0]) === 'str') return call('str.join_num', [r, ex(argsOf(a0)[1])], n); return call('str.join', [r, ex(a0)], n); }
+                if (attr === 'get' && pa.length === 2) return call('dict.get_default', [r, ex(pa[0]), ex(pa[1])], n);
+                if (attr === 'sort' && pa.length === 0) return call('list.sort', [r], n);
+                if (attr === 'pop' && pa.length === 0) return call('list.pop', [r], n);
+                if (OPS.PY.method[attr] && attr !== 'pop') { const id = OPS.PY.method[attr]; const want = OPS.get(id).p.length - 1; if (pa.length === want) return call(id, [r].concat(pa.map(ex)), n); }
+                return nativeE(n, '方法 ' + attr + '（' + pa.length + ' 個引數）不在標準操作目錄');
+            }
+            return nativeE(n, '呼叫的目標不是名稱或方法');
+        }
+
+        function ex(n) {
+            if (!n) return null;
+            switch (n.type) {
+                case 'identifier': return at({ k: 'name', v: txt(n) }, n);
+                case 'integer': return at(L('int', txt(n).replace(/_/g, '')), n);
+                case 'float': return at(L('float', txt(n).replace(/_/g, '')), n);
+                case 'true': return at(L('bool', 'true'), n); case 'false': return at(L('bool', 'false'), n); case 'none': return at(L('none', 'None'), n);
+                case 'string': return str(n);
+                case 'concatenated_string': { const ps = named(n).map(str); return ps.reduce((a, b) => (a.k === 'lit' && b.k === 'lit' ? L('str', a.v + b.v) : call('str.concat', [a, b], n))); }
+                case 'parenthesized_expression': return ex(named(n).filter((c) => c.type !== 'comment')[0]);
+                case 'call': return call_(n);
+                case 'binary_operator': {
+                    const op = txt(f(n, 'operator')); const l = f(n, 'left'), r = f(n, 'right');
+                    if (op === '%' && l.type === 'string') return nativeE(n, '字串 % 格式化');
+                    if (IR.BINOPS.indexOf(op) < 0) return nativeE(n, '運算子 ' + op);
+                    return at({ k: 'bin', op, l: ex(l), r: ex(r) }, n);
+                }
+                case 'boolean_operator': return at({ k: 'logic', op: txt(f(n, 'operator')), l: ex(f(n, 'left')), r: ex(f(n, 'right')) }, n);
+                case 'not_operator': return at({ k: 'not', e: ex(f(n, 'argument')) }, n);
+                case 'unary_operator': { const op = txt(f(n, 'operator')); if (['-', '+', '~'].indexOf(op) < 0) return nativeE(n); return at({ k: 'un', op, e: ex(f(n, 'argument')) }, n); }
+                case 'comparison_operator': {
+                    const ops = []; const operands = []; let cur = [];
+                    for (const c of n.children) { if (c.isNamed() && c.type !== 'comment') { operands.push(c); if (cur.length) { ops.push(cur.join(' ')); cur = []; } } else if (!c.isNamed()) cur.push(c.type); }
+                    const cmps = operands.slice(1).map((r, i) => { if (IR.CMPOPS.indexOf(ops[i]) < 0) return null; return at({ k: 'cmp', op: ops[i], l: ex(operands[i]), r: ex(r) }, n); });
+                    if (cmps.some((c) => !c)) return nativeE(n, '比較運算子');
+                    return cmps.reduce((a, b) => at({ k: 'logic', op: 'and', l: a, r: b }, n));
+                }
+                case 'conditional_expression': { const k = named(n).filter((c) => c.type !== 'comment'); return at({ k: 'cond', a: ex(k[0]), c: ex(k[1]), b: ex(k[2]) }, n); }
+                case 'list': return at({ k: 'list', items: named(n).filter((c) => c.type !== 'comment').map(ex) }, n);
+                case 'dictionary': return at({ k: 'dict', items: named(n).filter((c) => c.type === 'pair').map((p) => [ex(f(p, 'key')), ex(f(p, 'value'))]) }, n);
+                case 'subscript': {
+                    const v = f(n, 'value'), sub = n.childForFieldName('subscript'); const subs = named(n).filter((c) => c.id !== v.id && c.type !== 'comment');
+                    if (subs.length === 1 && subs[0].type === 'slice') {
+                        const sl = subs[0]; const parts = sl.children.filter((c) => c.type !== ':'); const hasStep = sl.children.filter((c) => c.type === ':').length > 1 && named(sl).length > 2;
+                        const ns = named(sl); const colon = sl.children.findIndex((c) => c.type === ':'); let lo = null, hi = null;
+                        sl.children.forEach((c, i) => { if (c.isNamed() && c.type !== 'comment') { if (i < colon) lo = c; else if (hi == null) hi = c; } });
+                        if (hasStep || ns.length > 2) return nativeE(n, '切片有 step');
+                        const o = ex(v); if (o.k !== 'name') return nativeE(n, '切片的接收者不是單純變數');
+                        return call('list.slice', [o, lo ? ex(lo) : L('int', '0'), hi ? ex(hi) : call('coll.len', [o], n)], n);
+                    }
+                    if (subs.length !== 1) return nativeE(n, '多重索引');
+                    return at({ k: 'index', o: ex(v), i: ex(subs[0]) }, n);
+                }
+                default: return nativeE(n);
+            }
+        }
+
+        // ---- 敘述 ----
+        function rangeOf(r) {
+            if (r.type !== 'call' || txt(f(r, 'function')) !== 'range') return null; const a = argsOf(r); if (a.length < 1 || a.length > 3) return null;
+            const ex_ = a.map(ex); const from = a.length === 1 ? L('int', '0') : ex_[0], to = a.length === 1 ? ex_[0] : ex_[1]; const step = a.length === 3 ? ex_[2] : null;
+            if (step) { const lit = step.k === 'lit' && step.t === 'int' ? +step.v : (step.k === 'un' && step.op === '-' && step.e.k === 'lit' && step.e.t === 'int' ? -step.e.v : null); if (lit == null || lit === 0) return null; }
+            return { from, to, step };
+        }
+        function docOf(blockNode) {
+            const k = named(blockNode).filter((c) => c.type !== 'comment')[0];
+            if (k && k.type === 'expression_statement') { const s = named(k)[0]; if (s && s.type === 'string' && !named(s).some((c) => c.type === 'interpolation')) return { node: k, text: str(s).v }; }
+            return null;
+        }
+        function stmt(n) {
+            cov.stmts++; let out;
+            switch (n.type) {
+                case 'expression_statement': {
+                    const e = named(n).filter((c) => c.type !== 'comment'); const x = e[0];
+                    if (!x) return [];
+                    if (x.type === 'assignment') return assign(x, n);
+                    if (x.type === 'augmented_assignment') {
+                        const op = txt(f(x, 'operator')).replace(/=$/, ''); if (IR.BINOPS.indexOf(op) < 0) return [nativeS(n, '複合賦值 ' + op)];
+                        return [at({ k: 'aug', to: ex(f(x, 'left')), op, val: ex(f(x, 'right')) }, n)];
+                    }
+                    out = at({ k: 'expr', e: ex(x) }, n); if (out.e.k === 'native') return [nativeS(n)]; return [out];
+                }
+                case 'if_statement': return [ifS(n)];
+                case 'while_statement': { if (f(n, 'alternative')) return [nativeS(n, 'while-else')]; const w = at({ k: 'while', cond: ex(f(n, 'condition')), body: blk(n, 'body') }, n); return [attach(w, n, w.body)]; }
+                case 'for_statement': {
+                    const left = f(n, 'left'), right = f(n, 'right'); if (f(n, 'alternative')) return [nativeS(n, 'for-else')];
+                    if (left.type !== 'identifier') return [nativeS(n, 'for 的迴圈變數不是單一名稱')];
+                    const rg = rangeOf(right);
+                    if (rg) { const o = at({ k: 'forrange', var: txt(left), from: rg.from, to: rg.to, step: rg.step, body: blk(n, 'body') }, n); return [attach(o, n, o.body)]; }
+                    if (right.type === 'call' && txt(f(right, 'function')) === 'range') return [nativeS(n, 'range 的 step 不是整數常數')];
+                    const it = ex(right); if (it.k === 'native') return [nativeS(n, '走訪的對象')];
+                    { const o = at({ k: 'foreach', var: txt(left), iter: it, body: blk(n, 'body') }, n); return [attach(o, n, o.body)]; }
+                }
+                case 'return_statement': { const e = named(n).filter((c) => c.type !== 'comment')[0]; if (e && (e.type === 'expression_list' || e.type === 'tuple')) return [nativeS(n, '回傳多個值')]; return [at({ k: 'ret', val: e ? ex(e) : undefined }, n)]; }
+                case 'break_statement': return [at({ k: 'brk' }, n)]; case 'continue_statement': return [at({ k: 'cont' }, n)]; case 'pass_statement': return [at({ k: 'pass' }, n)];
+                case 'raise_statement': { const e = named(n).filter((c) => c.type !== 'comment')[0]; let msg; if (e && e.type === 'call') { const a = argsOf(e); if (a[0]) msg = ex(a[0]); } return [at({ k: 'raise', val: msg }, n)]; }
+                case 'function_definition': return [func(n)];
+                case 'import_statement': case 'import_from_statement': return [at({ k: 'import', src: txt(n) }, n)];
+                default: return [nativeS(n)];
+            }
+        }
+        let tmpN = 0;
+        function assign(x, stmtNode) {
+            const left = f(x, 'left'), right = f(x, 'right'), type = f(x, 'type');
+            if (!right) return [nativeS(stmtNode, '只有宣告沒有值')];
+            if (right.type === 'assignment') {   // 連鎖 a = b = v
+                const inner = assign(right, stmtNode); const last = right.childForFieldName('left'); if (left.type === 'identifier' && last && last.type === 'identifier') return inner.concat([at({ k: 'assign', to: ex(left), val: ex(last) }, stmtNode)]); return [nativeS(stmtNode, '連鎖賦值')];
+            }
+            if (left.type === 'pattern_list' || left.type === 'tuple_pattern') {
+                // 慣用語：a, b = map(int, input().split()) → 一個整數串列暫存＋逐一取值（所有目標語言都表達得了，不需要「字串串列」型別）
+                if (right.type === 'call' && txt(f(right, 'function')) === 'map') {
+                    const ma = argsOf(right);
+                    if (ma.length === 2 && txt(ma[0]) === 'int' && ma[1].type === 'call' && f(ma[1], 'function').type === 'attribute' && txt(f(f(ma[1], 'function'), 'attribute')) === 'split' && !argsOf(ma[1]).length) {
+                        const tmp = '__t' + (tmpN++); const lsx = named(left); const outx = [at({ k: 'assign', to: { k: 'name', v: tmp }, val: call('str.split_ints', [ex(f(f(ma[1], 'function'), 'object'))], right) }, stmtNode)];
+                        lsx.forEach((l, i) => outx.push(at({ k: 'assign', to: ex(l), val: { k: 'index', o: { k: 'name', v: tmp }, i: L('int', String(i)) } }, stmtNode))); return outx;
+                    }
+                }
+                const ls = named(left), rs = right.type === 'expression_list' || right.type === 'tuple' ? named(right) : null;
+                if (rs && rs.length === ls.length) {   // 同時賦值：先全部算進暫存，再逐一寫回（交換 a[i], a[j] = a[j], a[i]）
+                    const out = []; const tmps = rs.map((r) => { const t = '__t' + (tmpN++); out.push(at({ k: 'assign', to: { k: 'name', v: t }, val: ex(r) }, stmtNode)); return t; });
+                    ls.forEach((l, i) => out.push(at({ k: 'assign', to: ex(l), val: { k: 'name', v: tmps[i] } }, stmtNode))); return out;
+                }
+                return [nativeS(stmtNode, '解構賦值')];
+            }
+            if (left.type !== 'identifier' && left.type !== 'subscript') return [nativeS(stmtNode, '賦值目標 ' + left.type)];
+            const o = at({ k: 'assign', to: ex(left), val: ex(right) }, stmtNode); if (type) o.ty = tyOfText(txt(type)); return [o];
+        }
+        function ifS(n) {
+            const o = at({ k: 'if', cond: ex(f(n, 'condition')), then: blk(n, 'consequence') }, n); attach(o, n, o.then);
+            const alts = n.children.filter((c) => c.type === 'elif_clause' || c.type === 'else_clause'); let cur = o;
+            // 夾在區塊之間的註解（# mid）：掛到下一個子句第一個敘述的前置註解
+            let pendingC = [];
+            for (const c of n.children) {
+                if (c.type === 'comment') { if (c.startPosition.row !== n.startPosition.row) { pendingC.push(commentText(c)); cov.comments++; } continue; }
+                if (c.type === 'elif_clause') {
+                    const e = at({ k: 'if', cond: ex(f(c, 'condition')), then: blk(c, 'consequence') }, c); attach(e, c, e.then); cur.else = [e]; cur = e;
+                    if (pendingC.length) { prependC(e, pendingC); pendingC = []; }
+                } else if (c.type === 'else_clause') {
+                    const eb = f(c, 'body') || named(c).filter((x) => x.type === 'block')[0]; cur.else = block(eb, c.startPosition.row);
+                    if (cur.else.hdr && cur.else.hdr.length) { cur.else.unshift({ k: 'comment', s: cur.else.hdr.join(' ') }); }
+                    if (pendingC.length && cur.else.length) { prependC(cur.else[0], pendingC); pendingC = []; }
+                }
+            }
+            if (pendingC.length) { cov.comments_kept += 0; diag('if 之間的註解沒有地方掛：' + pendingC.join(' | '), n); }
+            if (alts.length === 0) delete o.else; return o;
+        }
+        function prependC(node, list) { node.c = node.c || {}; node.c.b = list.concat(node.c.b || []); cov.comments_kept += list.length; }
+        const commentText = (c) => txt(c).replace(/^#\s?/, '');
+
+        // 區塊：把註解依位置掛成 前置／行尾／獨立
+        function block(bn, headerRow) {
+            if (!bn) return []; const out = []; let pending = []; let prev = null, prevEnd = -1; const hdr = []; out.hdr = hdr;
+            const kids = bn.children;
+            for (const c of kids) {
+                if (!c.isNamed()) continue;
+                if (c.type === 'comment') {
+                    cov.comments++; const row = c.startPosition.row, t = commentText(c);
+                    if (headerRow != null && row === headerRow && !prev) { hdr.push(t); cov.comments_kept++; continue; }
+                    if (prev && row === prevEnd) { prev.c = prev.c || {}; prev.c.a = prev.c.a ? prev.c.a + ' ' + t : t; cov.comments_kept++; } else pending.push({ t, row });
+                    continue;
+                }
+                const ss = stmt(c); if (!ss.length) continue;
+                const lastRowBefore = pending.length ? pending[pending.length - 1].row : prevEnd;
+                const gap = prevEnd >= 0 || pending.length ? c.startPosition.row - lastRowBefore - 1 : 0;
+                const first = ss[0];
+                if (pending.length) { first.c = first.c || {}; first.c.b = pending.map((p) => p.t).concat(first.c.b || []); cov.comments_kept += pending.length; const g0 = pending[0].row - (prevEnd >= 0 ? prevEnd : pending[0].row) - 1; if (g0 > 0 && prevEnd >= 0) first.c.sp = 1; pending = []; }
+                else if (gap > 0 && prevEnd >= 0) { first.c = first.c || {}; first.c.sp = 1; }
+                if (first.c && first.c.sp == null && 0) first.c.sp = 0;
+                ss.forEach((s) => out.push(s)); prev = ss[ss.length - 1]; prevEnd = c.endPosition.row;
+            }
+            if (pending.length) pending.forEach((p) => { out.push({ k: 'comment', s: p.t }); cov.comments_kept++; });
+            return out;
+        }
+        function func(n) {
+            const name = txt(f(n, 'name')), ps = f(n, 'parameters'), rt = f(n, 'return_type'), body = f(n, 'body');
+            const params = named(ps).filter((c) => c.type !== 'comment').map((p) => {
+                if (p.type === 'identifier') return { name: txt(p) };
+                if (p.type === 'typed_parameter') return { name: txt(named(p)[0]), ty: tyOfText(txt(f(p, 'type'))) };
+                if (p.type === 'default_parameter') return { name: txt(f(p, 'name')), def: ex(f(p, 'value')) };
+                if (p.type === 'typed_default_parameter') return { name: txt(f(p, 'name')), ty: tyOfText(txt(f(p, 'type'))), def: ex(f(p, 'value')) };
+                diag('不支援的參數形式 ' + p.type, p); return { name: txt(p) };
+            });
+            const doc = docOf(body);
+            const o = at({ k: 'func', name, params, ret: rt ? tyOfText(txt(rt)) : undefined, body: [] }, n);
+            const hdrRow = n.startPosition.row;
+            const kids = doc ? body.children.filter((c) => c.startIndex !== doc.node.startIndex) : body.children;
+            o.body = block({ children: kids }, hdrRow);
+            attach(o, n, o.body);
+            if (doc) o.doc = doc.text; return o;
+        }
+        // 標頭行尾註解（def／if／for／while 那一行最後面的 # …）：可能長在複合敘述節點上，也可能是區塊的第一個子節點
+        function attach(o, n, arr) {
+            const hs = [], lead = [];
+            n.children.forEach((c) => {
+                if (c.type !== 'comment') return; cov.comments++; cov.comments_kept++;
+                // 在 else／elif 之後的註解由 ifS 處理；這裡只收「標頭那行」與「標頭到第一個敘述之間」的註解
+                if (c.startPosition.row === n.startPosition.row) hs.push(commentText(c)); else if (arr && arr.length && c.startPosition.row < n.children.filter((x) => x.type === 'block' || x.type === 'else_clause' || x.type === 'elif_clause').map((x) => x.startPosition.row).concat([1e9])[0] + 0) lead.push(commentText(c));
+                else if (arr && !arr.length) lead.push(commentText(c)); else { cov.comments_kept--; cov.comments--; }
+            });
+            ((arr && arr.hdr) || []).forEach((t) => hs.push(t)); if (hs.length) { o.c = o.c || {}; o.c.a = hs.join(' '); }
+            if (lead.length && arr) { if (arr.length) { arr[0].c = arr[0].c || {}; arr[0].c.b = lead.concat(arr[0].c.b || []); } else arr.push({ k: 'comment', s: lead.join(' ') }); }
+            return o;
+        }
+        const blk = (n, key) => block(f(n, key), n.startPosition.row);
+        // 模組層
+        const ir = IR.mod({ src: { lang: 'python', file: opts.file }, name: opts.name || 'Module' });
+        const top = block(rootNode, undefined); const body = [];
+        for (const s of top) {
+            if (s.k === 'if' && s.cond.k === 'cmp' && s.cond.l.k === 'name' && s.cond.l.v === '__name__' && s.then.length === 1 && s.then[0].k === 'expr' && s.then[0].e.k === 'call' && s.then[0].e.fn) { ir.entry = s.then[0].e.fn; if (s.c) body.push({ k: 'pass', c: s.c }); continue; }
+            if (s.k === 'import') ir.imports.push(s.src);
+            body.push(s);
+        }
+        // 移除只為了保留註解而留下的空 pass
+        ir.body = body.filter((s) => !(s.k === 'pass' && !s.c));
+        if (!ir.entry && IR.funcs(ir).some((x) => x.name === 'main')) {
+            ir.entry = 'main'; // 模組層直接寫 main()（沒有 __name__ 守衛）：改成進入點，輸出器會自己補一次呼叫，不然會跑兩遍
+            const ci = ir.body.findIndex((s) => s.k === 'expr' && s.e && s.e.k === 'call' && s.e.fn === 'main' && !(s.e.args || []).length);
+            if (ci >= 0) { const cs = ir.body[ci]; if (cs.c) ir.body[ci] = { k: 'pass', c: cs.c }; else ir.body.splice(ci, 1); }
+        }
+        return { ir, coverage: cov, diags };
+    }
+    return { fromTree, tyOfText };
+});
+
+}).call(null, undefined, holder);
+(function (module, self) {
+/* JavaScript（Node.js）「出」：核心 IR（已過 FaIrPrep.prepare）→ 原始碼。純函式 UMD，JavaScript 專屬。
+ *   emit(ir, {}) → { code, diags, helpers }   diags 的 level：error＝這段沒辦法精準翻譯（程式不可信）、warn＝已翻但有語意差異要提醒
+ * 註解：前置註解、行尾註解、獨立註解、docstring（轉成 JSDoc）、空行都保留。 */
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(require('./ir_core.js'), require('./ir_ops_core.js')); else root.FaIrOutJs = factory(root.FaIr, root.FaIrOps); })(typeof self !== 'undefined' ? self : this, function (IR, OPS) {
+    'use strict';
+    const RESERVED = new Set(['arguments', 'eval', 'class', 'new', 'delete', 'var', 'let', 'const', 'function', 'this', 'typeof', 'void', 'with', 'yield', 'await', 'default', 'switch', 'case', 'export', 'import', 'null', 'undefined', 'in', 'of', 'do', 'try', 'catch', 'finally', 'throw', 'enum', 'super', 'static', 'public', 'private', 'Math', 'String', 'Number', 'Map', 'Set', 'Array', 'Object', 'JSON', 'console', 'require', 'module']);
+    const safe = (n) => (RESERVED.has(n) ? n + '_' : n);
+    const PREC = { cond: 3, or: 4, and: 5, '|': 6, '^': 7, '&': 8, eq: 9, rel: 10, shift: 11, '+': 12, '-': 12, '*': 13, '/': 13, '%': 13, un: 15, atom: 20 };
+    const jsStr = (s) => JSON.stringify(s).split(String.fromCharCode(0x2028)).join("\u2028").split(String.fromCharCode(0x2029)).join("\u2029");
+
+    function emit(ir) {
+        const diags = [], used = []; let uid = 0; let fn = null;
+        const diag = (level, msg, n) => diags.push({ level, msg, pos: n && n.pos });
+        const useH = (hs) => hs.forEach((h) => { if (used.indexOf(h) < 0) used.push(h); });
+        const wrap = (x, min) => (x.p < min ? '(' + x.s + ')' : x.s);
+        const atom = (s) => (OPS.atomic(s) ? s : '(' + s + ')');
+        const defaultOf = (t) => (!t ? 'undefined' : t.t === 'int' || t.t === 'float' ? '0' : t.t === 'str' ? '""' : t.t === 'bool' ? 'false' : t.t === 'list' ? '[]' : t.t === 'dict' ? 'new Map()' : t.t === 'set' ? 'new Set()' : 'null');
+
+        function opCall(op, args, tys, n) {
+            const r = OPS.render(op, 'nodejs', args.map((a) => ({ raw: a.s, atom: a.p >= PREC.atom ? a.s : atom(a.s) })), tys);
+            if (r.code == null) { diag('error', r.missing, n); return { s: '/* 無法翻譯 ' + op + ' */ undefined', p: PREC.atom }; }
+            useH(r.helpers); return { s: r.code, p: OPS.atomic(r.code) ? PREC.atom : PREC.cond };
+        }
+        function ex(e) {
+            switch (e.k) {
+                case 'lit':
+                    if (e.t === 'int') { if (e.v.replace(/^0[xob]/i, '').length > 15 && !/^0[xob]/i.test(e.v)) diag('warn', '整數常數 ' + e.v + ' 可能超過 JavaScript 的安全整數範圍（2^53）', e); return { s: e.v, p: PREC.atom }; }
+                    if (e.t === 'float') return { s: e.v, p: PREC.atom }; if (e.t === 'str') return { s: jsStr(e.v), p: PREC.atom }; if (e.t === 'bool') return { s: e.v, p: PREC.atom }; return { s: 'null', p: PREC.atom };
+                case 'name': return { s: safe(e.v), p: PREC.atom };
+                case 'bin': {
+                    if (['&', '|', '^', '<<', '>>'].indexOf(e.op) >= 0) diag('warn', '位元運算在 JavaScript 是 32 位元有號整數，與 Python 的任意長度整數不同；數值超過 2^31 結果會錯', e);
+                    const p = e.op === '<<' || e.op === '>>' ? PREC.shift : PREC[e.op]; const l = ex(e.l), r = ex(e.r);
+                    return { s: wrap(l, p) + ' ' + e.op + ' ' + wrap(r, p + 1), p };
+                }
+                case 'un': { const x = ex(e.e); return { s: e.op + wrap(x, PREC.un), p: PREC.un }; }
+                case 'not': { const x = ex(e.e); return { s: '!' + wrap(x, PREC.un), p: PREC.un }; }
+                case 'logic': { const p = e.op === 'and' ? PREC.and : PREC.or; const l = ex(e.l), r = ex(e.r); return { s: wrap(l, p) + (e.op === 'and' ? ' && ' : ' || ') + wrap(r, p + 1), p }; }
+                case 'cmp': {
+                    const l = ex(e.l), r = ex(e.r); const ty = e.l.ty && e.l.ty.t; let op = e.op;
+                    if (ty === 'list' || ty === 'dict' || (e.r.ty && (e.r.ty.t === 'list' || e.r.ty.t === 'dict'))) diag('warn', '串列／字典用 ' + op + ' 比較：Python 比內容，JavaScript 比參考', e);
+                    op = { '==': '===', '!=': '!==', is: '===', 'is not': '!==' }[op] || op; const p = /[=]=/.test(op) ? PREC.eq : PREC.rel;
+                    return { s: wrap(l, p) + ' ' + op + ' ' + wrap(r, p + 1), p };
+                }
+                case 'cond': { const c = ex(e.c), a = ex(e.a), b = ex(e.b); return { s: wrap(c, PREC.cond + 1) + ' ? ' + wrap(a, PREC.cond) + ' : ' + wrap(b, PREC.cond), p: PREC.cond }; }
+                case 'list': return { s: '[' + e.items.map((x) => ex(x).s).join(', ') + ']', p: PREC.atom };
+                case 'dict': return { s: e.items.length ? 'new Map([' + e.items.map((p) => '[' + ex(p[0]).s + ', ' + ex(p[1]).s + ']').join(', ') + '])' : 'new Map()', p: PREC.atom };
+                case 'index': {
+                    const o = ex(e.o), i = ex(e.i); const t = e.o.ty && e.o.ty.t;
+                    const op = t === 'dict' ? 'dict.get' : t === 'str' ? 'str.char_at' : 'list.get'; if (t === 'unknown' || !t) diag('warn', '索引的對象型別未知，當成串列', e);
+                    return opCall(op, [o, i], [e.o.ty, e.i.ty], e);
+                }
+                case 'call': {
+                    const args = (e.args || []).map(ex);
+                    if (e.fn) return { s: safe(e.fn) + '(' + args.map((a) => a.s).join(', ') + ')', p: PREC.atom };
+                    return opCall(e.op, args, (e.args || []).map((a) => a.ty), e);
+                }
+                case 'native': if (e.lang === 'nodejs') return { s: e.src, p: 0 }; diag('error', '原生區塊（' + e.lang + '）無法翻成 JavaScript：' + e.src.split('\n')[0], e); return { s: 'undefined /* NATIVE ' + e.lang + ' */', p: PREC.atom };
+            }
+            diag('error', '不認得的運算式 ' + e.k, e); return { s: 'undefined', p: PREC.atom };
+        }
+
+        const out = []; const ind = (d) => '    '.repeat(d);
+        const cmt = (s) => '// ' + s;
+        function pre(s, d) {
+            if (s.c && s.c.sp) out.push('');
+            ((s.c && s.c.b) || []).forEach((t) => out.push(ind(d) + cmt(t)));
+        }
+        const post = (s) => (s.c && s.c.a ? ' // ' + s.c.a : '');
+        function mutated(name, body) {
+            let m = false;
+            IR.walkStmts(body, (s) => {
+                if ((s.k === 'assign' || s.k === 'aug') && s.to.k === 'name' && s.to.v === name) m = true; if ((s.k === 'forrange' || s.k === 'foreach') && s.var === name) m = true;
+                (SF[s.k] || []).forEach((f) => { if (s[f]) IR.walkExpr(s[f], (x) => { if (x.k === 'call' && x.op && /^(list\.(append|pop|insert|sort|reverse)|dict\.(put|delete)|set\.add)$/.test(x.op) && x.args[0] && x.args[0].k === 'name' && x.args[0].v === name) m = true; }); });
+            });
+            return m;
+        }
+        const SF = { assign: ['to', 'val'], aug: ['to', 'val'], if: ['cond'], while: ['cond'], expr: ['e'], ret: ['val'] };
+        function stable(e, body) { if (e.k === 'lit') return true; if (e.k === 'name') return !mutated(e.v, body); if (e.k === 'call' && e.op === 'coll.len' && e.args[0].k === 'name') return !mutated(e.args[0].v, body); if (e.k === 'bin') return stable(e.l, body) && stable(e.r, body); return false; }
+
+        function block(body, d) { (body || []).forEach((s) => stmt(s, d)); }
+        function stmt(s, d) {
+            pre(s, d); const I = ind(d);
+            switch (s.k) {
+                case 'comment': out.push(I + cmt(s.s)); return;
+                case 'pass': if (s.c && s.c.a) out.push(I + cmt(s.c.a)); return;
+                case 'import': if (s.c && s.c.a) out.push(I + cmt(s.c.a)); return;
+                case 'declare': out.push(I + 'let ' + safe(s.name) + ' = ' + defaultOf(s.ty) + ';'); return;
+                case 'assign': {
+                    let line;
+                    if (s.to.k === 'index') { const o = ex(s.to.o), i = ex(s.to.i), v = ex(s.val); const t = s.to.o.ty && s.to.o.ty.t; const r = opCall(t === 'dict' ? 'dict.put' : 'list.set', [o, i, v], [s.to.o.ty, s.to.i.ty, s.val.ty], s); line = r.s; }
+                    else line = (s.decl ? 'let ' : '') + safe(s.to.v) + ' = ' + ex(s.val).s;
+                    out.push(I + line + ';' + post(s)); return;
+                }
+                case 'aug': { const t = ex(s.to), v = ex(s.val); out.push(I + t.s + ' ' + s.op + '= ' + v.s + ';' + post(s)); return; }
+                case 'expr': out.push(I + ex(s.e).s + ';' + post(s)); return;
+                case 'ret': out.push(I + 'return' + (s.val ? ' ' + ex(s.val).s : '') + ';' + post(s)); return;
+                case 'brk': out.push(I + 'break;' + post(s)); return; case 'cont': out.push(I + 'continue;' + post(s)); return;
+                case 'raise': out.push(I + 'throw new Error(' + (s.val ? ex(s.val).s : '"error"') + ');' + post(s)); return;
+                case 'if': {
+                    out.push(I + 'if (' + ex(s.cond).s + ') {' + post(s)); block(s.then, d + 1);
+                    let cur = s;
+                    while (cur.else && cur.else.length === 1 && cur.else[0].k === 'if' && !(cur.else[0].c && (cur.else[0].c.b || cur.else[0].c.sp))) { cur = cur.else[0]; out.push(I + '} else if (' + ex(cur.cond).s + ') {' + post(cur)); block(cur.then, d + 1); }
+                    if (cur.else && cur.else.length) { out.push(I + '} else {'); block(cur.else, d + 1); }
+                    out.push(I + '}'); return;
+                }
+                case 'while': out.push(I + 'while (' + ex(s.cond).s + ') {' + post(s)); block(s.body, d + 1); out.push(I + '}'); return;
+                case 'forrange': {
+                    const v = safe(s.var); const stepLit = s.step ? (s.step.k === 'lit' ? +s.step.v : -s.step.e.v) : 1; const neg = stepLit < 0;
+                    let to = ex(s.to); if (!stable(s.to, s.body)) { const t = '__to' + (++uid); out.push(I + 'const ' + t + ' = ' + to.s + ';'); to = { s: t, p: PREC.atom }; }
+                    out.push(I + 'for (let ' + v + ' = ' + ex(s.from).s + '; ' + v + (neg ? ' > ' : ' < ') + wrap(to, PREC.rel + 1) + '; ' + v + (stepLit === 1 ? '++' : stepLit === -1 ? '--' : ' += ' + stepLit) + ') {' + post(s));
+                    block(s.body, d + 1); out.push(I + '}'); return;
+                }
+                case 'foreach': { const it = ex(s.iter); const dict = s.iter.ty && s.iter.ty.t === 'dict'; out.push(I + 'for (const ' + safe(s.var) + ' of ' + (dict ? atom(it.s) + '.keys()' : it.s) + ') {' + post(s)); block(s.body, d + 1); out.push(I + '}'); return; }
+                case 'native': if (s.lang === 'nodejs') { s.src.split('\n').forEach((l) => out.push(I + l)); return; } diag('error', '原生區塊（' + s.lang + '）無法翻成 JavaScript：' + s.src.split('\n')[0], s); out.push(I + '/* NATIVE(' + s.lang + '):'); s.src.split('\n').forEach((l) => out.push(I + ' * ' + l.replace(/\*\//g, '* /'))); out.push(I + ' */'); out.push(I + 'throw new Error("untranslated native block");'); return;
+                case 'func': {
+                    if (s.doc) { out.push(I + '/**'); s.doc.split('\n').forEach((l) => out.push(I + ' * ' + l.replace(/\*\//g, '* /'))); out.push(I + ' */'); }
+                    const prev = fn; fn = s; out.push(I + 'function ' + safe(s.name) + '(' + s.params.map((p) => safe(p.name) + (p.def ? ' = ' + ex(p.def).s : '')).join(', ') + ') {' + post(s)); block(s.body, d + 1); out.push(I + '}'); fn = prev; return;
+                }
+            }
+            diag('error', '不認得的敘述 ' + s.k, s);
+        }
+        const body = ir.body; let first = true;
+        const mainOut = [];
+        body.forEach((s) => { if (s.k === 'func' && !first && !(s.c && s.c.sp)) out.push(''); first = false; stmt(s, 0); });
+        if (ir.entry) { out.push(''); out.push(safe(ir.entry) + '();'); }
+        const hs = OPS.helperSource('nodejs', used);
+        const head = hs.length ? hs.join('\n') + '\n\n' : '';
+        return { code: '"use strict";\n' + head + out.join('\n') + '\n', diags, helpers: used };
+    }
+    return { emit };
+});
+
+}).call(null, undefined, holder);
+(function (module, self) {
+/* Java「出」：核心 IR（已過 FaIrPrep.prepare）→ 原始碼（單一檔案、類別 Main、靜態方法）。純函式 UMD，Java 專屬。
+ *   emit(ir, {asciiComments}) → { code, diags, helpers }
+ * 型別對照：int→long、float→double、bool→boolean、str→String、list<T>→List<包裝型別>、dict<K,V>→Map<K,V>（LinkedHashMap，保留插入順序）。
+ * 型別未知（unknown）＝動態語言沒標註又推不出，靜態語言必須要型別 → 報 error 請使用者標註，不亂猜。 */
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(require('./ir_core.js'), require('./ir_ops_core.js')); else root.FaIrOutJava = factory(root.FaIr, root.FaIrOps); })(typeof self !== 'undefined' ? self : this, function (IR, OPS) {
+    'use strict';
+    const RESERVED = new Set(['abstract', 'assert', 'boolean', 'byte', 'case', 'catch', 'char', 'class', 'const', 'default', 'do', 'double', 'enum', 'extends', 'final', 'finally', 'float', 'goto', 'implements', 'import', 'instanceof', 'int', 'interface', 'long', 'native', 'new', 'package', 'private', 'protected', 'public', 'short', 'static', 'strictfp', 'super', 'switch', 'synchronized', 'this', 'throw', 'throws', 'transient', 'try', 'void', 'volatile', 'null', 'true', 'false', 'String', 'List', 'Map', 'Math', 'System', 'Long', 'Object', 'Main']);
+    const safe = (n) => (RESERVED.has(n) ? n + '_' : n);
+    const PREC = { cond: 3, or: 4, and: 5, '|': 6, '^': 7, '&': 8, eq: 9, rel: 10, shift: 11, '+': 12, '-': 12, '*': 13, '/': 13, '%': 13, un: 15, atom: 20 };
+    const BOX = { long: 'Long', double: 'Double', boolean: 'Boolean' };
+    const javaStr = (s) => '"' + String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t').replace(/[^\x20-\x7e]/g, (c) => { const x = c.charCodeAt(0).toString(16); return '\\u' + '0000'.slice(x.length) + x; }) + '"';
+
+    function emit(ir, opts) {
+        opts = opts || {}; const diags = [], used = []; let fn = null;
+        // javac 預設用平台編碼讀原始檔（Windows 繁中是 Big5），註解裡的非 ASCII 字元要逸出成 \uXXXX 才在任何環境都能編譯；產品端若固定傳 -encoding UTF-8，可關掉 asciiComments
+        const cm = (s) => (opts.asciiComments === false ? String(s) : String(s).replace(/\\u/g, '\\u005cu').replace(/[^\x20-\x7e]/g, (c) => { const x = c.charCodeAt(0).toString(16); return '\\u' + '0000'.slice(x.length) + x; }));
+        const diag = (level, msg, n) => diags.push({ level, msg, pos: n && n.pos });
+        const useH = (hs) => hs.forEach((h) => { if (used.indexOf(h) < 0) used.push(h); });
+        const wrap = (x, min) => (x.p < min ? '(' + x.s + ')' : x.s);
+        const atom = (s) => (OPS.atomic(s) ? s : '(' + s + ')');
+        function ty(t, boxed, n) {
+            if (!t) { diag('error', '型別缺失', n); return 'Object'; }
+            switch (t.t) {
+                case 'int': return boxed ? 'Long' : 'long'; case 'float': return boxed ? 'Double' : 'double'; case 'bool': return boxed ? 'Boolean' : 'boolean'; case 'str': return 'String'; case 'void': return 'void';
+                case 'list': return 'List<' + ty(t.a[0], true, n) + '>'; case 'dict': return 'Map<' + ty(t.a[0], true, n) + ', ' + ty(t.a[1], true, n) + '>'; case 'set': return 'Set<' + ty(t.a[0], true, n) + '>';
+                case 'any': return 'Object';
+                default: diag('error', 'Java 需要明確型別，但這裡是 ' + IR.tyStr(t) + '（動態語言沒標註又推不出）——請在來源加型別標註', n); return 'Object';
+            }
+        }
+        const defaultOf = (t) => (t.t === 'int' ? '0L' : t.t === 'float' ? '0.0' : t.t === 'bool' ? 'false' : t.t === 'str' ? '""' : t.t === 'list' ? 'new ArrayList<>()' : t.t === 'dict' ? 'new LinkedHashMap<>()' : t.t === 'set' ? 'new HashSet<>()' : 'null');
+        const unbox = (x, t) => (t && (t.t === 'int' || t.t === 'float' || t.t === 'bool') ? { s: '((' + (t.t === 'int' ? 'long' : t.t === 'float' ? 'double' : 'boolean') + ') ' + atom(x.s) + ')', p: PREC.atom } : x);
+
+        function opCall(op, args, tys, n) {
+            const r = OPS.render(op, 'java', args.map((a) => ({ raw: a.s, atom: a.p >= PREC.atom ? a.s : atom(a.s) })), tys);
+            if (r.code == null) { diag('error', r.missing, n); return { s: '/* 無法翻譯 ' + op + ' */ null', p: PREC.atom }; }
+            useH(r.helpers); return { s: r.code, p: OPS.atomic(r.code) ? PREC.atom : PREC.cond };
+        }
+        function ex(e) {
+            switch (e.k) {
+                case 'lit':
+                    if (e.t === 'int') return { s: e.v + 'L', p: PREC.atom }; if (e.t === 'float') return { s: e.v, p: PREC.atom }; if (e.t === 'str') return { s: javaStr(e.v), p: PREC.atom }; if (e.t === 'bool') return { s: e.v, p: PREC.atom }; return { s: 'null', p: PREC.atom };
+                case 'name': return { s: safe(e.v), p: PREC.atom };
+                case 'bin': { const p = e.op === '<<' || e.op === '>>' ? PREC.shift : PREC[e.op]; const l = ex(e.l), r = ex(e.r); return { s: wrap(l, p) + ' ' + e.op + ' ' + wrap(r, p + 1), p }; }
+                case 'un': { const x = ex(e.e); return { s: e.op + wrap(x, PREC.un), p: PREC.un }; }
+                case 'not': { const x = ex(e.e); return { s: '!' + wrap(x, PREC.un), p: PREC.un }; }
+                case 'logic': { const p = e.op === 'and' ? PREC.and : PREC.or; const l = ex(e.l), r = ex(e.r); return { s: wrap(l, p) + (e.op === 'and' ? ' && ' : ' || ') + wrap(r, p + 1), p }; }
+                case 'cmp': {
+                    const l = ex(e.l), r = ex(e.r); const lt = e.l.ty && e.l.ty.t, rt = e.r.ty && e.r.ty.t;
+                    if (e.op === 'is' || e.op === 'is not' || (e.r.k === 'lit' && e.r.t === 'none')) return { s: wrap(l, PREC.eq + 1) + (e.op === '!=' || e.op === 'is not' ? ' != ' : ' == ') + 'null', p: PREC.eq };
+                    if (['==', '!='].indexOf(e.op) >= 0 && (lt === 'str' || lt === 'list' || lt === 'dict' || lt === 'set')) { const eq = atom(l.s) + '.equals(' + r.s + ')'; return { s: e.op === '==' ? eq : '!' + eq, p: e.op === '==' ? PREC.atom : PREC.un }; }
+                    if (['<', '<=', '>', '>='].indexOf(e.op) >= 0 && lt === 'str') return { s: atom(l.s) + '.compareTo(' + r.s + ') ' + e.op + ' 0', p: PREC.rel };
+                    const p = e.op === '==' || e.op === '!=' ? PREC.eq : PREC.rel; return { s: wrap(l, p) + ' ' + e.op + ' ' + wrap(r, p + 1), p };
+                }
+                case 'cond': { const c = ex(e.c), a = ex(e.a), b = ex(e.b); return { s: wrap(c, PREC.cond + 1) + ' ? ' + wrap(a, PREC.cond) + ' : ' + wrap(b, PREC.cond), p: PREC.cond }; }
+                case 'list': {
+                    if (!e.items.length) return { s: 'new ArrayList<>()', p: PREC.atom };
+                    return { s: 'new ArrayList<>(Arrays.asList(' + e.items.map((x) => ex(x).s).join(', ') + '))', p: PREC.atom };
+                }
+                case 'dict': if (!e.items.length) return { s: 'new LinkedHashMap<>()', p: PREC.atom }; diag('error', '非空字典字面值尚未支援（Java 沒有保持順序的字面值）', e); return { s: 'null', p: PREC.atom };
+                case 'index': {
+                    const o = ex(e.o), i = ex(e.i); const t = e.o.ty && e.o.ty.t;
+                    const op = t === 'dict' ? 'dict.get' : t === 'str' ? 'str.char_at' : 'list.get'; if (!t || t === 'unknown') diag('warn', '索引的對象型別未知，當成串列', e);
+                    const r = opCall(op, [o, i], [e.o.ty, e.i.ty], e); return t === 'str' ? r : unbox(r, e.ty);
+                }
+                case 'call': {
+                    const args = (e.args || []).map(ex);
+                    if (e.fn) return { s: safe(e.fn) + '(' + args.map((a) => a.s).join(', ') + ')', p: PREC.atom };
+                    const r = opCall(e.op, args, (e.args || []).map((a) => a.ty), e);
+                    return /^(list\.pop|dict\.get_default|list\.min|list\.max)$/.test(e.op) ? unbox(r, e.ty) : r;
+                }
+                case 'native': diag('error', '原生區塊（' + e.lang + '）無法翻成 Java：' + e.src.split('\n')[0], e); return { s: 'null /* NATIVE ' + e.lang + ' */', p: PREC.atom };
+            }
+            diag('error', '不認得的運算式 ' + e.k, e); return { s: 'null', p: PREC.atom };
+        }
+
+        const out = []; const ind = (d) => '    '.repeat(d);
+        function pre(s, d) { if (s.c && s.c.sp) out.push(''); ((s.c && s.c.b) || []).forEach((t) => out.push(ind(d) + '// ' + cm(t))); }
+        const post = (s) => (s.c && s.c.a ? ' // ' + cm(s.c.a) : '');
+        const SF = { assign: ['to', 'val'], aug: ['to', 'val'], if: ['cond'], while: ['cond'], expr: ['e'], ret: ['val'] };
+        function mutated(name, body) {
+            let m = false;
+            IR.walkStmts(body, (s) => {
+                if ((s.k === 'assign' || s.k === 'aug') && s.to.k === 'name' && s.to.v === name) m = true; if ((s.k === 'forrange' || s.k === 'foreach') && s.var === name) m = true;
+                (SF[s.k] || []).forEach((f) => { if (s[f]) IR.walkExpr(s[f], (x) => { if (x.k === 'call' && x.op && /^(list\.(append|pop|insert|sort|reverse)|dict\.(put|delete)|set\.add)$/.test(x.op) && x.args[0] && x.args[0].k === 'name' && x.args[0].v === name) m = true; }); });
+            });
+            return m;
+        }
+        function stable(e, body) { if (e.k === 'lit') return true; if (e.k === 'name') return !mutated(e.v, body); if (e.k === 'call' && e.op === 'coll.len' && e.args[0].k === 'name') return !mutated(e.args[0].v, body); if (e.k === 'bin') return stable(e.l, body) && stable(e.r, body); return false; }
+        let uid = 0;
+        function block(body, d) { (body || []).forEach((s) => stmt(s, d)); }
+        function stmt(s, d) {
+            pre(s, d); const I = ind(d);
+            switch (s.k) {
+                case 'comment': out.push(I + '// ' + cm(s.s)); return;
+                case 'pass': case 'import': if (s.c && s.c.a) out.push(I + '// ' + cm(s.c.a)); return;
+                case 'declare': out.push(I + ty(s.ty, false, s) + ' ' + safe(s.name) + ' = ' + defaultOf(s.ty) + ';'); return;
+                case 'assign': {
+                    let line;
+                    if (s.to.k === 'index') { const t = s.to.o.ty && s.to.o.ty.t; line = opCall(t === 'dict' ? 'dict.put' : 'list.set', [ex(s.to.o), ex(s.to.i), ex(s.val)], [s.to.o.ty, s.to.i.ty, s.val.ty], s).s; }
+                    else { let v = ex(s.val); if (s.val.k === 'list' && !s.val.items.length || (s.val.k === 'dict' && !s.val.items.length)) v = { s: defaultOf(s.ty || s.val.ty), p: 0 }; line = (s.decl ? ty(s.ty, false, s) + ' ' : '') + safe(s.to.v) + ' = ' + v.s; }
+                    out.push(I + line + ';' + post(s)); return;
+                }
+                case 'aug': {
+                    const t = ex(s.to), v = ex(s.val);
+                    if (s.to.k === 'index') { const tt = s.to.o.ty && s.to.o.ty.t; const cur = ex(s.to); const nv = cur.s + ' ' + s.op + ' ' + wrap(v, PREC[s.op] + 1); out.push(I + opCall(tt === 'dict' ? 'dict.put' : 'list.set', [ex(s.to.o), ex(s.to.i), { s: nv, p: PREC[s.op] }], [s.to.o.ty, s.to.i.ty, s.val.ty], s).s + ';' + post(s)); return; }
+                    out.push(I + t.s + ' ' + s.op + '= ' + v.s + ';' + post(s)); return;
+                }
+                case 'expr': out.push(I + ex(s.e).s + ';' + post(s)); return;
+                case 'ret': out.push(I + 'return' + (s.val ? ' ' + ex(s.val).s : '') + ';' + post(s)); return;
+                case 'brk': out.push(I + 'break;' + post(s)); return; case 'cont': out.push(I + 'continue;' + post(s)); return;
+                case 'raise': out.push(I + 'throw new RuntimeException(' + (s.val ? ex(s.val).s : '"error"') + ');' + post(s)); return;
+                case 'if': {
+                    out.push(I + 'if (' + ex(s.cond).s + ') {' + post(s)); block(s.then, d + 1); let cur = s;
+                    while (cur.else && cur.else.length === 1 && cur.else[0].k === 'if' && !(cur.else[0].c && (cur.else[0].c.b || cur.else[0].c.sp))) { cur = cur.else[0]; out.push(I + '} else if (' + ex(cur.cond).s + ') {' + post(cur)); block(cur.then, d + 1); }
+                    if (cur.else && cur.else.length) { out.push(I + '} else {'); block(cur.else, d + 1); }
+                    out.push(I + '}'); return;
+                }
+                case 'while': out.push(I + 'while (' + ex(s.cond).s + ') {' + post(s)); block(s.body, d + 1); out.push(I + '}'); return;
+                case 'forrange': {
+                    const v = safe(s.var); const stepLit = s.step ? (s.step.k === 'lit' ? +s.step.v : -s.step.e.v) : 1; const neg = stepLit < 0;
+                    let to = ex(s.to); if (!stable(s.to, s.body)) { const t = '__to' + (++uid); out.push(I + 'final long ' + t + ' = ' + to.s + ';'); to = { s: t, p: PREC.atom }; }
+                    out.push(I + 'for (long ' + v + ' = ' + ex(s.from).s + '; ' + v + (neg ? ' > ' : ' < ') + wrap(to, PREC.rel + 1) + '; ' + v + (stepLit === 1 ? '++' : stepLit === -1 ? '--' : ' += ' + stepLit + 'L') + ') {' + post(s));
+                    block(s.body, d + 1); out.push(I + '}'); return;
+                }
+                case 'foreach': {
+                    const it = ex(s.iter); const t = s.iter.ty; let et = (fn && fn.locals && fn.locals[s.var]) || (t && t.a && t.a[0]);
+                    const dict = t && t.t === 'dict'; out.push(I + 'for (' + ty(et, false, s) + ' ' + safe(s.var) + ' : ' + (dict ? atom(it.s) + '.keySet()' : it.s) + ') {' + post(s)); block(s.body, d + 1); out.push(I + '}'); return;
+                }
+                case 'native': diag('error', '原生區塊（' + s.lang + '）無法翻成 Java：' + s.src.split('\n')[0], s); out.push(I + '/* NATIVE(' + s.lang + '):'); s.src.split('\n').forEach((l) => out.push(I + ' * ' + l.replace(/\*\//g, '* /'))); out.push(I + ' */'); out.push(I + 'throw new RuntimeException("untranslated native block");'); return;
+                case 'func': {
+                    const prev = fn; fn = s;
+                    if (s.doc) { out.push(I + '/**'); s.doc.split('\n').forEach((l) => out.push(I + ' * ' + cm(l.replace(/\*\//g, '* /')))); out.push(I + ' */'); }
+                    out.push(I + 'static ' + ty(s.ret || IR.T.void, false, s) + ' ' + safe(s.name) + '(' + s.params.map((p) => ty(p.ty, false, s) + ' ' + safe(p.name)).join(', ') + ') {' + post(s)); block(s.body, d + 1); out.push(I + '}'); fn = prev; return;
+                }
+            }
+            diag('error', '不認得的敘述 ' + s.k, s);
+        }
+        let first = true;
+        ir.body.forEach((s) => {
+            if (s.k === 'func') { if (!first && !(s.c && s.c.sp)) out.push(''); first = false; stmt(s, 1); return; }
+            if (s.k === 'comment' || s.k === 'pass' || s.k === 'import') { stmt(s, 1); return; }
+            if (s.k === 'assign' && s.to.k === 'name') { pre(s, 1); out.push('    static ' + ty(s.ty || s.val.ty, false, s) + ' ' + safe(s.to.v) + ' = ' + ex(s.val).s + ';' + post(s)); return; }
+            diag('error', '模組層的 ' + s.k + ' 敘述尚未支援', s);
+        });
+        const hs = OPS.helperSource('java', used);
+        const lines = ['import java.io.*;', 'import java.util.*;', '', 'public class Main {'];
+        hs.forEach((h) => h.split('\n').forEach((l) => lines.push('    ' + l.replace(/^    /, ''))));
+        if (hs.length) lines.push('');
+        out.forEach((l) => lines.push(l));
+        if (ir.entry) { lines.push(''); lines.push('    public static void main(String[] args) {'); lines.push('        ' + safe(ir.entry) + '();'); lines.push('    }'); }
+        lines.push('}'); return { code: lines.join('\n') + '\n', diags, helpers: used };
+    }
+    return { emit };
+});
+
+}).call(null, undefined, holder);
+(function (module, self) {
+/* C「出」：核心 IR（已過 FaIrPrep.prepare）→ C99 原始碼。純函式 UMD，C 專屬。
+ *   emit(ir) → { code, diags, helpers }
+ * 支援子集（誠實）：long long、double、bool（int）、唯讀字串（char*）、整數串列（IL 結構＋輔助函式）。
+ * 不支援（報 error，不亂翻）：字典／集合、非整數串列、串列的串列、字串走訪、字串索引結果當值用（只能比較）、對「參數」做 append／pop／insert（C 以值傳結構，別名語意不同）。 */
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(require('./ir_core.js'), require('./ir_ops_core.js')); else root.FaIrOutC = factory(root.FaIr, root.FaIrOps); })(typeof self !== 'undefined' ? self : this, function (IR, OPS) {
+    'use strict';
+    const RESERVED = new Set(['auto', 'break', 'case', 'char', 'const', 'continue', 'default', 'do', 'double', 'else', 'enum', 'extern', 'float', 'for', 'goto', 'if', 'inline', 'int', 'long', 'register', 'restrict', 'return', 'short', 'signed', 'sizeof', 'static', 'struct', 'switch', 'typedef', 'union', 'unsigned', 'void', 'volatile', 'while', 'main', 'abs', 'exit', 'printf', 'puts', 'sqrt', 'floor', 'ceil', 'round', 'pow', 'index', 'time', 'rand', 'free', 'malloc', 'signal', 'remove', 'rename', 'y0', 'y1', 'j0', 'j1', 'gcd', 'IL', 'bool', 'true', 'false', 'NULL', 'stdin', 'stdout', 'stderr']);
+    const safe = (n) => (RESERVED.has(n) ? 'u_' + n : n);
+    const PREC = { cond: 3, or: 4, and: 5, '|': 6, '^': 7, '&': 8, eq: 9, rel: 10, shift: 11, '+': 12, '-': 12, '*': 13, '/': 13, '%': 13, un: 15, atom: 20 };
+    const cStr = (s) => '"' + String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t').replace(/\?/g, '\\?') + '"';
+
+    function emit(ir) {
+        const diags = [], used = []; let fn = null;
+        const diag = (level, msg, n) => diags.push({ level, msg, pos: n && n.pos });
+        const useH = (hs) => hs.forEach((h) => { if (used.indexOf(h) < 0) used.push(h); });
+        const wrap = (x, min) => (x.p < min ? '(' + x.s + ')' : x.s);
+        const atom = (s) => (OPS.atomic(s) ? s : '(' + s + ')');
+        function ty(t, n) {
+            if (!t) { diag('error', '型別缺失', n); return 'long long'; }
+            switch (t.t) {
+                case 'int': return 'long long'; case 'float': return 'double'; case 'bool': return 'int'; case 'str': return 'char *'; case 'void': return 'void';
+                case 'list': if (t.a[0].t === 'int') { useH(['fa_list']); return 'IL'; } diag('error', 'C 只支援整數串列，這裡是 ' + IR.tyStr(t), n); return 'IL';
+                case 'dict': case 'set': diag('error', 'C 沒有內建的字典／集合，需要附帶執行階段函式庫（本轉換器不支援）：' + IR.tyStr(t), n); return 'void *';
+                default: diag('error', 'C 需要明確型別，但這裡是 ' + IR.tyStr(t) + '——請在來源加型別標註', n); return 'long long';
+            }
+        }
+        const defaultOf = (t) => (t.t === 'list' ? 'fa_new()' : t.t === 'str' ? '""' : '0');
+        const isChar = (e) => e.k === 'index' && e.o.ty && e.o.ty.t === 'str';
+        function opCall(op, args, tys, n, argNodes) {
+            // 對參數 append／pop／insert：別名語意不同
+            if (/^list\.(append|pop|insert)$/.test(op) && argNodes && argNodes[0] && argNodes[0].k === 'name' && fn && fn.params.some((p) => p.name === argNodes[0].v)) diag('error', 'C：對函式參數 ' + argNodes[0].v + ' 做 ' + op + '——串列以值傳入，增減元素不會回到呼叫端（需改傳指標，本轉換器不支援）', n);
+            const r = OPS.render(op, 'c', args.map((a) => ({ raw: a.s, atom: a.p >= PREC.atom ? a.s : atom(a.s) })), tys);
+            if (r.code == null) { diag('error', r.missing, n); return { s: '/* 無法翻譯 ' + op + ' */ 0', p: PREC.atom }; }
+            useH(r.helpers); return { s: r.code, p: OPS.atomic(r.code) ? PREC.atom : PREC.cond };
+        }
+        function ex(e) {
+            switch (e.k) {
+                case 'lit':
+                    if (e.t === 'int') return { s: e.v, p: PREC.atom }; if (e.t === 'float') return { s: e.v, p: PREC.atom }; if (e.t === 'str') return { s: cStr(e.v), p: PREC.atom }; if (e.t === 'bool') return { s: e.v === 'true' ? '1' : '0', p: PREC.atom }; return { s: 'NULL', p: PREC.atom };
+                case 'name': return { s: safe(e.v), p: PREC.atom };
+                case 'bin': { const p = e.op === '<<' || e.op === '>>' ? PREC.shift : PREC[e.op]; const l = ex(e.l), r = ex(e.r); return { s: wrap(l, p) + ' ' + e.op + ' ' + wrap(r, p + 1), p }; }
+                case 'un': { const x = ex(e.e); return { s: e.op + wrap(x, PREC.un), p: PREC.un }; }
+                case 'not': { const x = ex(e.e); return { s: '!' + wrap(x, PREC.un), p: PREC.un }; }
+                case 'logic': { const p = e.op === 'and' ? PREC.and : PREC.or; const l = ex(e.l), r = ex(e.r); return { s: wrap(l, p) + (e.op === 'and' ? ' && ' : ' || ') + wrap(r, p + 1), p }; }
+                case 'cmp': {
+                    const lt = e.l.ty && e.l.ty.t, rt = e.r.ty && e.r.ty.t;
+                    if (isChar(e.l) || isChar(e.r)) {   // 字元比較：s[i] 是 char
+                        const side = (x) => (isChar(x) ? ex(x).s : (x.k === 'lit' && x.t === 'str' && x.v.length === 1 ? "'" + (x.v === "'" || x.v === '\\' ? '\\' + x.v : x.v) + "'" : (diag('error', 'C：字串索引的結果只能與另一個字元或長度 1 的字串常數比較', e), '0')));
+                        const op = { '==': '==', '!=': '!=', is: '==', 'is not': '!=' }[e.op] || e.op; return { s: side(e.l) + ' ' + op + ' ' + side(e.r), p: PREC.eq };
+                    }
+                    const l = ex(e.l), r = ex(e.r);
+                    if (lt === 'str' && rt === 'str') { const c = 'strcmp(' + l.s + ', ' + r.s + ')'; const op = { is: '==', 'is not': '!=' }[e.op] || e.op; return { s: c + ' ' + op + ' 0', p: PREC.rel }; }
+                    if (lt === 'list' || lt === 'dict') diag('error', 'C：串列／字典不能用 ' + e.op + ' 比較內容', e);
+                    const p = e.op === '==' || e.op === '!=' ? PREC.eq : PREC.rel; const op = { is: '==', 'is not': '!=' }[e.op] || e.op; return { s: wrap(l, p) + ' ' + op + ' ' + wrap(r, p + 1), p };
+                }
+                case 'cond': { const c = ex(e.c), a = ex(e.a), b = ex(e.b); return { s: wrap(c, PREC.cond + 1) + ' ? ' + wrap(a, PREC.cond) + ' : ' + wrap(b, PREC.cond), p: PREC.cond }; }
+                case 'list': if (!e.items.length) { useH(['fa_new']); return { s: 'fa_new()', p: PREC.atom }; } diag('error', 'C：非空串列字面值尚未支援', e); return { s: 'fa_new()', p: PREC.atom };
+                case 'dict': diag('error', 'C 不支援字典', e); return { s: 'NULL', p: PREC.atom };
+                case 'index': {
+                    const o = ex(e.o), i = ex(e.i); const t = e.o.ty && e.o.ty.t; if (t === 'dict') { diag('error', 'C 不支援字典', e); return { s: '0', p: PREC.atom }; }
+                    return opCall(t === 'str' ? 'str.char_at' : 'list.get', [o, i], [e.o.ty, e.i.ty], e);
+                }
+                case 'call': {
+                    const args = (e.args || []).map(ex);
+                    if (e.fn) return { s: safe(e.fn) + '(' + args.map((a) => a.s).join(', ') + ')', p: PREC.atom };
+                    if (e.op === 'str.char_at') { diag('error', 'C：str.char_at 只能用於比較', e); }
+                    return opCall(e.op, args, (e.args || []).map((a) => a.ty), e, e.args);
+                }
+                case 'native': diag('error', '原生區塊（' + e.lang + '）無法翻成 C：' + e.src.split('\n')[0], e); return { s: '0 /* NATIVE ' + e.lang + ' */', p: PREC.atom };
+            }
+            diag('error', '不認得的運算式 ' + e.k, e); return { s: '0', p: PREC.atom };
+        }
+
+        const out = []; const ind = (d) => '    '.repeat(d);
+        function pre(s, d) { if (s.c && s.c.sp) out.push(''); ((s.c && s.c.b) || []).forEach((t) => out.push(ind(d) + '/* ' + t.replace(/\*\//g, '* /') + ' */')); }
+        const post = (s) => (s.c && s.c.a ? ' /* ' + s.c.a.replace(/\*\//g, '* /') + ' */' : '');
+        const SF = { assign: ['to', 'val'], aug: ['to', 'val'], if: ['cond'], while: ['cond'], expr: ['e'], ret: ['val'] };
+        function mutated(name, body) {
+            let m = false;
+            IR.walkStmts(body, (s) => {
+                if ((s.k === 'assign' || s.k === 'aug') && s.to.k === 'name' && s.to.v === name) m = true; if ((s.k === 'forrange' || s.k === 'foreach') && s.var === name) m = true;
+                (SF[s.k] || []).forEach((f) => { if (s[f]) IR.walkExpr(s[f], (x) => { if (x.k === 'call' && x.op && /^(list\.(append|pop|insert|sort|reverse)|dict\.(put|delete)|set\.add)$/.test(x.op) && x.args[0] && x.args[0].k === 'name' && x.args[0].v === name) m = true; }); });
+            });
+            return m;
+        }
+        function stable(e, body) { if (e.k === 'lit') return true; if (e.k === 'name') return !mutated(e.v, body); if (e.k === 'call' && e.op === 'coll.len' && e.args[0].k === 'name') return !mutated(e.args[0].v, body); if (e.k === 'bin') return stable(e.l, body) && stable(e.r, body); return false; }
+        let uid = 0;
+        function block(body, d) { (body || []).forEach((s) => stmt(s, d)); }
+        function stmt(s, d) {
+            pre(s, d); const I = ind(d);
+            switch (s.k) {
+                case 'comment': out.push(I + '/* ' + s.s.replace(/\*\//g, '* /') + ' */'); return;
+                case 'pass': case 'import': if (s.c && s.c.a) out.push(I + '/* ' + s.c.a + ' */'); return;
+                case 'declare': out.push(I + ty(s.ty, s) + ' ' + safe(s.name) + ' = ' + defaultOf(s.ty) + ';'); if (s.ty.t === 'list') useH(['fa_new']); return;
+                case 'assign': {
+                    let line;
+                    if (s.to.k === 'index') { const t = s.to.o.ty && s.to.o.ty.t; if (t === 'dict') { diag('error', 'C 不支援字典', s); line = '/* dict put */'; } else line = opCall('list.set', [ex(s.to.o), ex(s.to.i), ex(s.val)], [s.to.o.ty, s.to.i.ty, s.val.ty], s).s; }
+                    else {
+                        const t = s.ty || s.val.ty || IR.T.unknown; if (t.t === 'list' && s.val.k === 'name') diag('warn', 'C：串列賦值 ' + s.to.v + ' = ' + s.val.v + ' 是結構複製，兩者共用同一塊記憶體，之後各自 append 會分岔（Python 是同一個物件）', s);
+                        if (isChar(s.val)) diag('error', 'C：字串索引的結果不能當值使用', s);
+                        line = (s.decl ? ty(t, s) + ' ' : '') + safe(s.to.v) + ' = ' + ex(s.val).s;
+                    }
+                    out.push(I + line + ';' + post(s)); return;
+                }
+                case 'aug': {
+                    if (s.to.k === 'index') { const cur = ex(s.to); out.push(I + opCall('list.set', [ex(s.to.o), ex(s.to.i), { s: cur.s + ' ' + s.op + ' ' + wrap(ex(s.val), PREC[s.op] + 1), p: PREC[s.op] }], [s.to.o.ty, s.to.i.ty, s.val.ty], s).s + ';' + post(s)); return; }
+                    out.push(I + ex(s.to).s + ' ' + s.op + '= ' + ex(s.val).s + ';' + post(s)); return;
+                }
+                case 'expr': out.push(I + ex(s.e).s + ';' + post(s)); return;
+                case 'ret': out.push(I + 'return' + (s.val ? ' ' + ex(s.val).s : '') + ';' + post(s)); return;
+                case 'brk': out.push(I + 'break;' + post(s)); return; case 'cont': out.push(I + 'continue;' + post(s)); return;
+                case 'raise': out.push(I + 'fprintf(stderr, "error\\n"); exit(1);' + post(s)); return;
+                case 'if': {
+                    out.push(I + 'if (' + ex(s.cond).s + ') {' + post(s)); block(s.then, d + 1); let cur = s;
+                    while (cur.else && cur.else.length === 1 && cur.else[0].k === 'if' && !(cur.else[0].c && (cur.else[0].c.b || cur.else[0].c.sp))) { cur = cur.else[0]; out.push(I + '} else if (' + ex(cur.cond).s + ') {' + post(cur)); block(cur.then, d + 1); }
+                    if (cur.else && cur.else.length) { out.push(I + '} else {'); block(cur.else, d + 1); }
+                    out.push(I + '}'); return;
+                }
+                case 'while': out.push(I + 'while (' + ex(s.cond).s + ') {' + post(s)); block(s.body, d + 1); out.push(I + '}'); return;
+                case 'forrange': {
+                    const v = safe(s.var); const stepLit = s.step ? (s.step.k === 'lit' ? +s.step.v : -s.step.e.v) : 1; const neg = stepLit < 0;
+                    let to = ex(s.to); if (!stable(s.to, s.body)) { const t = '__to' + (++uid); out.push(I + 'const long long ' + t + ' = ' + to.s + ';'); to = { s: t, p: PREC.atom }; }
+                    out.push(I + 'for (long long ' + v + ' = ' + ex(s.from).s + '; ' + v + (neg ? ' > ' : ' < ') + wrap(to, PREC.rel + 1) + '; ' + v + (stepLit === 1 ? '++' : stepLit === -1 ? '--' : ' += ' + stepLit) + ') {' + post(s));
+                    block(s.body, d + 1); out.push(I + '}'); return;
+                }
+                case 'foreach': {
+                    const t = s.iter.ty; if (!t || t.t !== 'list' || t.a[0].t !== 'int') { diag('error', 'C：只支援走訪整數串列，這裡是 ' + IR.tyStr(t), s); return; }
+                    const it = ex(s.iter); const ix = '__i' + (++uid); const base = atom(it.s);
+                    out.push(I + 'for (long long ' + ix + ' = 0; ' + ix + ' < ' + base + '.n; ' + ix + '++) {' + post(s)); out.push(ind(d + 1) + 'long long ' + safe(s.var) + ' = ' + base + '.d[' + ix + '];'); block(s.body, d + 1); out.push(I + '}'); return;
+                }
+                case 'native': diag('error', '原生區塊（' + s.lang + '）無法翻成 C：' + s.src.split('\n')[0], s); out.push(I + '/* NATIVE(' + s.lang + '): ' + s.src.split('\n')[0].replace(/\*\//g, '* /') + ' */'); return;
+                case 'func': {
+                    const prev = fn; fn = s;
+                    if (s.doc) { out.push(I + '/* ' + s.doc.replace(/\*\//g, '* /') + ' */'); }
+                    out.push(I + 'static ' + ty(s.ret || IR.T.void, s) + ' ' + safe(s.name) + '(' + (s.params.length ? s.params.map((p) => ty(p.ty, s) + ' ' + safe(p.name)).join(', ') : 'void') + ') {' + post(s)); block(s.body, d + 1); out.push(I + '}'); fn = prev; return;
+                }
+            }
+            diag('error', '不認得的敘述 ' + s.k, s);
+        }
+        const protos = []; let first = true;
+        IR.funcs(ir).forEach((f) => { const save = diags.length; protos.push('static ' + ty(f.ret || IR.T.void, f) + ' ' + safe(f.name) + '(' + (f.params.length ? f.params.map((p) => ty(p.ty, f) + ' ' + safe(p.name)).join(', ') : 'void') + ');'); diags.length = save; });
+        ir.body.forEach((s) => {
+            if (s.k === 'func') { if (!first && !(s.c && s.c.sp)) out.push(''); first = false; stmt(s, 0); return; }
+            if (s.k === 'comment' || s.k === 'pass' || s.k === 'import') { stmt(s, 0); return; }
+            if (s.k === 'assign' && s.to.k === 'name') { pre(s, 0); out.push('static ' + ty(s.ty || s.val.ty, s) + ' ' + safe(s.to.v) + ' = ' + ex(s.val).s + ';' + post(s)); return; }
+            diag('error', '模組層的 ' + s.k + ' 敘述尚未支援', s);
+        });
+        const hs = OPS.helperSource('c', used);
+        const lines = ['#include <stdio.h>', '#include <stdlib.h>', '#include <string.h>', '#include <math.h>', ''];
+        hs.forEach((h) => lines.push(h)); if (hs.length) lines.push('');
+        protos.forEach((p) => lines.push(p)); if (protos.length) lines.push('');
+        out.forEach((l) => lines.push(l));
+        if (ir.entry) { lines.push(''); lines.push('int main(void) {'); lines.push('    ' + safe(ir.entry) + '();'); lines.push('    return 0;'); lines.push('}'); }
+        return { code: lines.join('\n') + '\n', diags, helpers: used };
+    }
+    return { emit };
+});
+
+}).call(null, undefined, holder);
+(function (module, self) {
+/* Python「出」：核心 IR → Python 原始碼。純函式 UMD，Python 專屬。
+ * 用途：①證明 IR 沒有丟資訊（Python → IR → Python 後輸出一致）；②編修迴圈的最後一步（改過的 IR 產生回 Python，再交給 diff patcher 合併進原檔）。
+ *   emit(ir, {annotate:true}) → { code, diags } */
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(require('./ir_core.js'), require('./ir_ops_core.js')); else root.FaIrOutPython = factory(root.FaIr, root.FaIrOps); })(typeof self !== 'undefined' ? self : this, function (IR, OPS) {
+    'use strict';
+    const PREC = { cond: 1, or: 2, and: 3, not: 4, cmp: 5, '|': 6, '^': 7, '&': 8, shift: 9, '+': 10, '-': 10, '*': 11, '/': 11, '//': 11, '%': 11, un: 12, '**': 13, atom: 20 };
+    const pyStr = (s) => { let q = '"'; return q + String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t') + q; };
+    function emit(ir, opts) {
+        opts = opts || {}; const diags = [], needMods = []; let typing = {};
+        const diag = (level, msg, n) => diags.push({ level, msg, pos: n && n.pos });
+        const wrap = (x, min) => (x.p < min ? '(' + x.s + ')' : x.s);
+        const atom = (s) => (OPS.atomic(s) ? s : '(' + s + ')');
+        function ty(t) {
+            if (!t) return null;
+            switch (t.t) {
+                case 'int': return 'int'; case 'float': return 'float'; case 'bool': return 'bool'; case 'str': return 'str'; case 'void': return 'None'; case 'any': typing.Any = 1; return 'Any';
+                case 'list': { const a = ty(t.a[0]); if (!a) return null; typing.List = 1; return 'List[' + a + ']'; }
+                case 'dict': { const a = ty(t.a[0]), b = ty(t.a[1]); if (!a || !b) return null; typing.Dict = 1; return 'Dict[' + a + ', ' + b + ']'; }
+                case 'set': { const a = ty(t.a[0]); if (!a) return null; typing.Set = 1; return 'Set[' + a + ']'; }
+                default: return null;
+            }
+        }
+        function opCall(op, args, tys, n) {
+            const r = OPS.render(op, 'python', args.map((a) => ({ raw: a.s, atom: a.p >= PREC.atom ? a.s : atom(a.s) })), tys);
+            if (r.code == null) { diag('error', r.missing, n); return { s: 'None', p: PREC.atom }; }
+            r.needs.forEach((m) => { if (needMods.indexOf(m) < 0) needMods.push(m); }); return { s: r.code, p: OPS.atomic(r.code) ? PREC.atom : PREC.cond };
+        }
+        function ex(e) {
+            switch (e.k) {
+                case 'lit': if (e.t === 'bool') return { s: e.v === 'true' ? 'True' : 'False', p: PREC.atom }; if (e.t === 'none') return { s: 'None', p: PREC.atom }; if (e.t === 'str') return { s: pyStr(e.v), p: PREC.atom }; return { s: e.v, p: PREC.atom };
+                case 'name': return { s: e.v, p: PREC.atom };
+                case 'bin': { const p = e.op === '<<' || e.op === '>>' ? PREC.shift : PREC[e.op]; const l = ex(e.l), r = ex(e.r); const right = e.op === '**'; return { s: wrap(l, right ? p + 1 : p) + ' ' + e.op + ' ' + wrap(r, right ? p : p + 1), p }; }
+                case 'un': { const x = ex(e.e); return { s: e.op + wrap(x, PREC.un), p: PREC.un }; }
+                case 'not': { const x = ex(e.e); return { s: 'not ' + wrap(x, PREC.not), p: PREC.not }; }
+                case 'logic': { const p = e.op === 'and' ? PREC.and : PREC.or; const l = ex(e.l), r = ex(e.r); return { s: wrap(l, p) + ' ' + e.op + ' ' + wrap(r, p + 1), p }; }
+                case 'cmp': { const l = ex(e.l), r = ex(e.r); return { s: wrap(l, PREC.cmp + 1) + ' ' + e.op + ' ' + wrap(r, PREC.cmp + 1), p: PREC.cmp }; }
+                case 'cond': { const c = ex(e.c), a = ex(e.a), b = ex(e.b); return { s: wrap(a, PREC.cond + 1) + ' if ' + wrap(c, PREC.cond + 1) + ' else ' + wrap(b, PREC.cond), p: PREC.cond }; }
+                case 'list': return { s: '[' + e.items.map((x) => ex(x).s).join(', ') + ']', p: PREC.atom };
+                case 'dict': return { s: '{' + e.items.map((p) => ex(p[0]).s + ': ' + ex(p[1]).s).join(', ') + '}', p: PREC.atom };
+                case 'index': return { s: atom(ex(e.o).s) + '[' + ex(e.i).s + ']', p: PREC.atom };
+                case 'call': {
+                    const args = (e.args || []).map(ex); if (e.fn) return { s: e.fn + '(' + args.map((a) => a.s).join(', ') + ')', p: PREC.atom };
+                    if (e.op === 'fmt.fixed' && e.args[1].k === 'lit') return { s: '"{:.' + e.args[1].v + 'f}".format(' + args[0].s + ')', p: PREC.atom };   // 位數是常數時用 str.format，與常見寫法（及 Python 進模組的辨識）一致
+                    return opCall(e.op, args, (e.args || []).map((a) => a.ty), e);
+                }
+                case 'native': if (e.lang === 'python') return { s: e.src, p: 0 }; diag('error', '原生區塊（' + e.lang + '）不是 Python', e); return { s: 'None', p: PREC.atom };
+            }
+            return { s: 'None', p: PREC.atom };
+        }
+        const out = []; const ind = (d) => '    '.repeat(d);
+        function pre(s, d) { if (s.c && s.c.sp) out.push(''); ((s.c && s.c.b) || []).forEach((t) => out.push(ind(d) + '# ' + t)); }
+        const post = (s) => (s.c && s.c.a ? '  # ' + s.c.a : '');
+        function block(body, d, force) { const n0 = out.length; (body || []).forEach((s) => stmt(s, d)); if (out.length === n0 && force !== false) out.push(ind(d) + 'pass'); }
+        function stmt(s, d) {
+            pre(s, d); const I = ind(d);
+            switch (s.k) {
+                case 'comment': out.push(I + '# ' + s.s); return;
+                case 'pass': if (s.c && s.c.a) out.push(I + '# ' + s.c.a); return;
+                case 'import': out.push(I + s.src + post(s)); return;
+                case 'declare': return;
+                case 'assign': {
+                    let line;
+                    if (s.to.k === 'index') { line = atom(ex(s.to.o).s) + '[' + ex(s.to.i).s + '] = ' + ex(s.val).s; }
+                    else { const t = s.decl && s.ty && s.val.k === 'list' && !s.val.items.length ? ty(s.ty) : null; line = s.to.v + (t ? ': ' + t : '') + ' = ' + ex(s.val).s; }
+                    out.push(I + line + post(s)); return;
+                }
+                case 'aug': out.push(I + ex(s.to).s + ' ' + s.op + '= ' + ex(s.val).s + post(s)); return;
+                case 'expr': out.push(I + ex(s.e).s + post(s)); return;
+                case 'ret': out.push(I + 'return' + (s.val ? ' ' + ex(s.val).s : '') + post(s)); return;
+                case 'brk': out.push(I + 'break' + post(s)); return; case 'cont': out.push(I + 'continue' + post(s)); return;
+                case 'raise': out.push(I + 'raise Exception(' + (s.val ? ex(s.val).s : '') + ')' + post(s)); return;
+                case 'if': {
+                    out.push(I + 'if ' + ex(s.cond).s + ':' + post(s)); block(s.then, d + 1); let cur = s;
+                    while (cur.else && cur.else.length === 1 && cur.else[0].k === 'if' && !(cur.else[0].c && (cur.else[0].c.b || cur.else[0].c.sp))) { cur = cur.else[0]; out.push(I + 'elif ' + ex(cur.cond).s + ':' + post(cur)); block(cur.then, d + 1); }
+                    if (cur.else && cur.else.length) { out.push(I + 'else:'); block(cur.else, d + 1); } return;
+                }
+                case 'while': out.push(I + 'while ' + ex(s.cond).s + ':' + post(s)); block(s.body, d + 1); return;
+                case 'forrange': {
+                    const a = ex(s.from).s, b = ex(s.to).s; const st = s.step ? ', ' + ex(s.step).s : ''; const args = (a === '0' && !st) ? b : a + ', ' + b + st;
+                    out.push(I + 'for ' + s.var + ' in range(' + args + '):' + post(s)); block(s.body, d + 1); return;
+                }
+                case 'foreach': out.push(I + 'for ' + s.var + ' in ' + ex(s.iter).s + ':' + post(s)); block(s.body, d + 1); return;
+                case 'native': if (s.lang === 'python') { s.src.split('\n').forEach((l) => out.push(I + l)); return; } diag('error', '原生區塊（' + s.lang + '）不是 Python', s); out.push(I + 'pass  # NATIVE ' + s.lang); return;
+                case 'func': {
+                    const ps = s.params.map((p) => { const t = opts.annotate !== false ? ty(p.ty) : null; return p.name + (t ? ': ' + t : '') + (p.def ? (t ? ' = ' : '=') + ex(p.def).s : ''); }).join(', ');
+                    const rt = opts.annotate !== false && s.ret ? ty(s.ret) : null;
+                    out.push(I + 'def ' + s.name + '(' + ps + ')' + (rt ? ' -> ' + rt : '') + ':' + post(s));
+                    if (s.doc) out.push(ind(d + 1) + '"""' + s.doc + '"""'); block(s.body, d + 1, !s.doc); return;
+                }
+            }
+            diag('error', '不認得的敘述 ' + s.k, s);
+        }
+        let prevFunc = false;
+        ir.body.forEach((s, i) => {
+            if (s.k === 'func' && out.length) { const need = (s.c && s.c.sp) ? 0 : 2; for (let k = 0; k < need; k++) out.push(''); } else if (prevFunc && s.k !== 'func') { out.push(''); out.push(''); }
+            stmt(s, 0); prevFunc = s.k === 'func';
+        });
+        if (ir.entry) { out.push(''); out.push(''); out.push('if __name__ == "__main__":'); out.push('    ' + ir.entry + '()'); }
+        const have = ir.body.filter((s) => s.k === 'import').map((s) => s.src).join('\n'); const head = []; needMods.forEach((m) => { if (!new RegExp('\\bimport\\s+' + m + '\\b').test(have)) head.push('import ' + m); }); const tn = Object.keys(typing).sort(); if (tn.length && !/from\s+typing\s+import/.test(have)) head.push('from typing import ' + tn.join(', '));
+        return { code: (head.length ? head.join('\n') + '\n\n\n' : '') + out.join('\n') + '\n', diags };
+    }
+    return { emit };
+});
+
+}).call(null, undefined, holder);
+(function (module, self) {
+/* 抽回設計：核心 IR → 設計（函式簽名、呼叫關係、標準操作用量、每個函式的語意摘要、副作用、資料流）→ UML 模型（uml_core 形狀）；
+ * 以及對設計的編修（改名、改參數／回傳型別）回寫到 IR——之後交給各語言「出」重新產生程式碼。純函式 UMD，語言中立。
+ *   extract(ir) → { module, entry, functions:[…], callGraph:[[from,to]], stdUsage:{op:[fn…]}, effects:[…] }
+ *   toUmlModel(design, {moduleName}) → uml_core 模型（單一類別放模組層函式，使用案例＝入口的呼叫順序）
+ *   applyEdit(ir, edit) → { ok, ir, errors }   edit: {kind:'rename_function'|'set_param_type'|'set_return'|'add_param', …} */
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(require('./ir_core.js'), require('./ir_ops_core.js')); else root.FaIrDesign = factory(root.FaIr, root.FaIrOps); })(typeof self !== 'undefined' ? self : this, function (IR, OPS) {
+    'use strict';
+    const EFFECT_WORDS = [['標準輸入', '讀標準輸入'], ['標準輸出', '寫標準輸出'], ['讀檔', '讀檔'], ['覆寫檔案', '寫檔'], ['時鐘', '讀時鐘'], ['亂數', '亂數'], ['就地', '就地修改參數或變數']];
+    function effectsOf(op) { const o = OPS.get(op); if (!o) return []; const out = []; const sem = o.sem || ''; EFFECT_WORDS.forEach((w) => { if (sem.indexOf(w[0]) >= 0) out.push(w[1]); }); return out; }
+    function typeName(t) { return t ? IR.tyStr(t) : '未標註'; }
+
+    function extract(ir) {
+        const fns = IR.funcs(ir); const names = {}; fns.forEach((f) => { names[f.name] = true; });
+        const functions = [], callGraph = [], stdUsage = {}, effects = {};
+        fns.forEach((f) => {
+            const calls = {}, std = {}, eff = {}; let loops = 0, branches = 0, returns = 0, natives = 0;
+            IR.walkStmts(f.body, (s) => { if (s.k === 'while' || s.k === 'forrange' || s.k === 'foreach') loops++; if (s.k === 'if') branches++; if (s.k === 'ret') returns++; if (s.k === 'native') natives++; });
+            IR.eachExpr(f.body, (e) => {
+                if (e.k === 'call' && e.fn && names[e.fn]) calls[e.fn] = (calls[e.fn] || 0) + 1;
+                if (e.k === 'call' && e.op) { std[e.op] = (std[e.op] || 0) + 1; effectsOf(e.op).forEach((x) => { eff[x] = 1; }); (stdUsage[e.op] = stdUsage[e.op] || {})[f.name] = 1; }
+                if (e.k === 'native') natives++;
+            });
+            // 巢狀迴圈深度
+            let maxDepth = 0; (function dive(body, d) { (body || []).forEach((s) => { const isLoop = s.k === 'while' || s.k === 'forrange' || s.k === 'foreach'; if (isLoop) { maxDepth = Math.max(maxDepth, d + 1); dive(s.body, d + 1); } else { ['then', 'else', 'body'].forEach((k) => dive(s[k], d)); } }); })(f.body, 0);
+            const info = {
+                name: f.name, params: (f.params || []).map((p) => ({ name: p.name, type: typeName(p.ty) })), returns: typeName(f.ret), doc: f.doc || '', comment: [(f.c && f.c.a) || ''].concat((f.body[0] && f.body[0].c && f.body[0].c.b) || []).filter(Boolean),
+                calls: Object.keys(calls), std: Object.keys(std).map((op) => ({ op, count: std[op], sem: (OPS.get(op) || {}).sem || '' })), effects: Object.keys(eff), pure: !Object.keys(eff).length && !natives,
+                loops, branches, loopDepth: maxDepth, natives, pos: f.pos || null
+            };
+            const eq = (fields) => fields.filter(Boolean).join('；');
+            info.summary = eq([
+                '函式 ' + f.name + '(' + info.params.map((p) => p.name + ': ' + p.type).join(', ') + ') → ' + info.returns,
+                info.doc ? '說明：' + info.doc : '',
+                info.std.length ? '用到標準操作：' + info.std.map((s) => s.op + (s.count > 1 ? '×' + s.count : '')).join('、') : '沒有用到標準操作',
+                info.calls.length ? '呼叫：' + info.calls.join('、') : '',
+                loops || branches ? '含 ' + loops + ' 個迴圈（最深 ' + maxDepth + ' 層）、' + branches + ' 個分支' : '直線程式',
+                info.effects.length ? '副作用：' + info.effects.join('、') : '無副作用（純函式）',
+                natives ? '有 ' + natives + ' 處原生區塊（未翻譯）' : ''
+            ]);
+            Object.keys(calls).forEach((c) => callGraph.push([f.name, c])); info.effects.forEach((x) => { effects[x] = 1; });
+            functions.push(info);
+        });
+        const usage = {}; Object.keys(stdUsage).forEach((op) => { usage[op] = Object.keys(stdUsage[op]); });
+        return { module: ir.name, entry: ir.entry || null, functions, callGraph, stdUsage: usage, effects: Object.keys(effects) };
+    }
+
+    // IR 型別 → uml_core 的型別 {base,args}
+    function umlType(t) {
+        if (!t || t.t === 'unknown') return { base: 'any', args: [] };
+        const m = { int: 'int', float: 'float', str: 'str', bool: 'bool', void: 'void', any: 'any' };
+        if (m[t.t]) return { base: m[t.t], args: [] };
+        const nm = { list: 'List', dict: 'Map', set: 'Set', tuple: 'List' }[t.t]; return { base: nm, args: (t.a || []).map(umlType) };
+    }
+    const PASCAL = (s) => String(s).replace(/(^|[^A-Za-z0-9]+)([A-Za-z0-9])/g, (m, a, b) => b.toUpperCase()).replace(/^[^A-Za-z]+/, '') || 'Module';
+    function toUmlModel(design, opts, ir) {
+        const cls = PASCAL((opts && opts.moduleName) || design.module);
+        const fnIR = {}; if (ir) IR.funcs(ir).forEach((f) => { fnIR[f.name] = f; });
+        const ops = design.functions.map((f) => {
+            const src = fnIR[f.name];
+            return { name: f.name, params: f.params.map((p, i) => ({ name: p.name, type: umlType(src && src.params[i] && src.params[i].ty) })), returns: umlType(src && src.ret), visibility: '+', static: true, steps: [f.summary], doc: f.doc || f.summary };
+        });
+        const steps = []; if (design.entry) { const e = design.functions.find((f) => f.name === design.entry); if (e) e.calls.forEach((c) => steps.push({ from: 'User', to: cls, msg: c, args: [], returns: '' })); }
+        return { name: cls, actors: ['User'], classes: [{ name: cls, kind: 'class', attrs: [], ops, values: [] }], relations: [], usecases: [{ name: design.entry || 'main', actor: 'User', steps }] };
+    }
+
+    // ---- 編修設計 → 回寫 IR ----
+    function applyEdit(ir0, edit) {
+        const ir = IR.clone(ir0); const errors = []; const fn = (n) => IR.funcs(ir).find((f) => f.name === n);
+        const mapCalls = (fnName, fnNew) => IR.eachExpr(ir.body, (e) => { if (e.k === 'call' && e.fn === fnName) e.fn = fnNew; });
+        switch (edit && edit.kind) {
+            case 'rename_function': {
+                const f = fn(edit.from); if (!f) { errors.push('找不到函式 ' + edit.from); break; } if (fn(edit.to)) { errors.push('已經有函式 ' + edit.to); break; } if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(edit.to || '')) { errors.push('名稱不合法：' + edit.to); break; }
+                f.name = edit.to; mapCalls(edit.from, edit.to); if (ir.entry === edit.from) ir.entry = edit.to; break;
+            }
+            case 'set_return': { const f = fn(edit.fn); if (!f) { errors.push('找不到函式 ' + edit.fn); break; } f.ret = IR.tyParse(edit.type); break; }
+            case 'set_param_type': { const f = fn(edit.fn); const p = f && f.params.find((x) => x.name === edit.param); if (!p) { errors.push('找不到參數 ' + edit.fn + '.' + edit.param); break; } p.ty = IR.tyParse(edit.type); break; }
+            case 'add_param': {
+                const f = fn(edit.fn); if (!f) { errors.push('找不到函式 ' + edit.fn); break; } if (edit.default == null) { errors.push('新增參數必須給預設值（否則既有的呼叫會壞）'); break; }
+                // 目標語言不一定有預設參數（Java、C 都沒有）→ 在每個呼叫處明確補上預設值，簽名不帶預設
+                f.params.push({ name: edit.name, ty: IR.tyParse(edit.type) }); IR.eachExpr(ir.body, (e) => { if (e.k === 'call' && e.fn === edit.fn) e.args.push(IR.clone(edit.default)); }); break;
+            }
+            default: errors.push('不認得的編修：' + (edit && edit.kind));
+        }
+        if (errors.length) return { ok: false, ir: ir0, errors };
+        const v = IR.validate(ir, { ops: { has: OPS.has } }); if (!v.ok) return { ok: false, ir: ir0, errors: v.errors };
+        return { ok: true, ir, errors: [] };
+    }
+    // ---- UML 模型的差異（uml_edit 編修前後）→ IR 編修 ----
+    // 刪掉一個操作＝刪函式（還有人呼叫就拒絕並說明）；新增一個操作＝加一個函式骨架（body 是「待實作」原生區塊，之後交寫程式管線補）；
+    // 改名在 UML 是「刪＋加」，這裡以「參數與型別完全相同、名稱不同」推斷為改名，推斷不出就當刪加。
+    function modelOps(model) { const out = {}; (model.classes || []).forEach((c) => (c.ops || []).forEach((o) => { out[o.name] = o; })); return out; }
+    const sigOf = (o) => (o.params || []).map((p) => p.name + ':' + JSON.stringify(p.type)).join(',') + '->' + JSON.stringify(o.returns);
+    function diffModels(before, after) {
+        const a = modelOps(before), b = modelOps(after), added = Object.keys(b).filter((n) => !a[n]), removed = Object.keys(a).filter((n) => !b[n]); const renamed = [];
+        removed.slice().forEach((r) => { const m = added.find((n) => sigOf(b[n]) === sigOf(a[r])); if (m) { renamed.push({ from: r, to: m }); added.splice(added.indexOf(m), 1); removed.splice(removed.indexOf(r), 1); } });
+        return { added, removed, renamed };
+    }
+    function applyModelDiff(ir0, before, after) {
+        const d = diffModels(before, after); let ir = IR.clone(ir0); const errors = [], log = [];
+        d.renamed.forEach((r) => { const x = applyEdit(ir, { kind: 'rename_function', from: r.from, to: r.to }); if (x.ok) { ir = x.ir; log.push('改名 ' + r.from + ' → ' + r.to); } else errors.push(x.errors.join(';')); });
+        d.removed.forEach((n) => {
+            const callers = []; IR.funcs(ir).forEach((f) => { if (f.name !== n) IR.eachExpr(f.body, (e) => { if (e.k === 'call' && e.fn === n && callers.indexOf(f.name) < 0) callers.push(f.name); }); });
+            if (callers.length) { errors.push('不能刪除 ' + n + '：還被 ' + callers.join('、') + ' 呼叫'); return; } ir.body = ir.body.filter((s) => !(s.k === 'func' && s.name === n)); if (ir.entry === n) ir.entry = undefined; log.push('刪除函式 ' + n);
+        });
+        const bo = modelOps(after);
+        d.added.forEach((n) => {
+            const o = bo[n]; const back = (t) => { if (!t || t.base === 'any') return IR.T.unknown; const m = { int: 'int', float: 'float', str: 'str', bool: 'bool', void: 'void' }[t.base]; if (m) return { t: m }; const g = { List: 'list', Map: 'dict', Set: 'set' }[t.base]; return g ? { t: g, a: (t.args || []).map(back) } : IR.T.unknown; };
+            ir.body.push({ k: 'func', name: n, params: (o.params || []).map((p) => ({ name: p.name, ty: back(p.type) })), ret: back(o.returns), doc: o.doc || undefined, body: [{ k: 'native', lang: 'todo', src: '待實作：' + n, why: '由設計新增的函式骨架，尚無內容' }] }); log.push('新增函式骨架 ' + n);
+        });
+        if (errors.length) return { ok: false, ir: ir0, errors, log };
+        const v = IR.validate(ir, { ops: { has: OPS.has } }); return v.ok ? { ok: true, ir, errors: [], log } : { ok: false, ir: ir0, errors: v.errors, log };
+    }
+    return { extract, toUmlModel, applyEdit, diffModels, applyModelDiff, umlType, effectsOf };
+});
+
+}).call(null, undefined, holder);
+(function (module, self) {
+/* 行為描述（第一層）：每個函式一份語言中立的描述——簽名、說明與註解、呼叫關係、用到的標準操作（與完整中間語言共用同一份操作目錄）、
+ * 副作用、控制流摘要、行為分類。來源有兩條：
+ *   ① describe：現有行為分析器（FaBeh2，tree-sitter，11 種語言）的函式紀錄＋輕量簽名抽取＋由操作目錄反向建的「呼叫名稱→標準操作」索引（不需要完整節點樹）
+ *   ② fromIr：從完整中間語言（ir_design_core.extract）轉成同一個形狀（第二層：行為描述是中間語言的上層摘要）
+ * 純函式 UMD。設計見 DESIGN.core-ir.md 第 4 節。 */
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(require('./ir_core.js'), require('./ir_ops_core.js'), require('./ir_design_core.js')); else root.FaIrBehavior = factory(root.FaIr, root.FaIrOps, root.FaIrDesign); })(typeof self !== 'undefined' ? self : this, function (IR, OPS, DES) {
+    'use strict';
+    const VERSION = 1;
+    // ---- 反向索引：語言 → 呼叫名稱 → [操作 id]（由目錄的樣板自動建，不另維護）----
+    function cellsOf(c) { return c == null ? [] : typeof c === 'string' ? [c] : Object.keys(c).map((k) => c[k]).filter((x) => typeof x === 'string'); }
+    function buildIndex() {
+        const idx = {};
+        OPS.LANGS.forEach((L) => {
+            const m = (idx[L] = {}); const put = (name, id) => { (m[name] = m[name] || []); if (m[name].indexOf(id) < 0) m[name].push(id); };
+            OPS.ids().forEach((id) => {
+                const o = OPS.get(id);
+                cellsOf(o.cells[L]).forEach((tpl0) => {
+                    const tpl = tpl0.replace(/^\((?:long long|long|double|int)\)\s*/, '').replace(/^\*/, ''); let mm;
+                    if ((mm = /^[@$]\d\.([A-Za-z_]\w*)\(/.exec(tpl))) put('.' + mm[1], id);         // 方法：@0.push(...)
+                    else if ((mm = /^([A-Za-z_][\w.]*)\(/.exec(tpl))) put(mm[1], id);                  // 函式或模組函式：len(...)、Math.floor(...)
+                });
+                (o.h[L] || []).forEach((h) => put(h, id));                                            // 輔助函式（中間語言輸出器貼的 fa_xxx）
+            });
+        });
+        return idx;
+    }
+    let INDEX = null; const index = () => INDEX || (INDEX = buildIndex());
+    // 行為分析器給的呼叫文字（"input().split"、"console.log"、"t.split"、"total"）→ 候選操作
+    function recognize(lang, callText) {
+        const L = OPS.LANG_OF[lang] || lang, ix = index()[L] || {}; const t = String(callText).replace(/\(\)/g, '');
+        if (ix[t]) return ix[t].slice();
+        const last = t.split('.').pop(); if (t.indexOf('.') >= 0 && ix['.' + last]) return ix['.' + last].slice();
+        if (t.indexOf('.') < 0 && ix[t]) return ix[t].slice(); return [];
+    }
+    const CAT_EFFECT = { logging_output: '寫標準輸出', file_io: '讀寫檔', network: '網路', process: '啟動行程', random: '亂數' };
+
+    // ---- 簽名抽取（tree-sitter；python 與 javascript 兩種，其餘語言沿用行為分析器，只有名稱與行號）----
+    function sigsFromTree(lang, rootNode, src) {
+        const out = {}; const txt = (n) => (n.text != null ? n.text : src.slice(n.startIndex, n.endIndex)); const named = (n) => n.namedChildren || n.children.filter((c) => c.isNamed());
+        const walk = (n) => {
+            if (lang === 'python' && n.type === 'function_definition') {
+                const ps = n.childForFieldName('parameters'), rt = n.childForFieldName('return_type'), body = n.childForFieldName('body');
+                const params = named(ps).filter((c) => c.type !== 'comment').map((p) => (p.type === 'identifier' ? { name: txt(p) } : p.type === 'typed_parameter' ? { name: txt(named(p)[0]), type: txt(p.childForFieldName('type')) } : { name: txt(p.childForFieldName('name') || p) }));
+                const f0 = named(body).filter((c) => c.type !== 'comment')[0]; const doc = f0 && f0.type === 'expression_statement' && named(f0)[0] && named(f0)[0].type === 'string' ? txt(named(f0)[0]).replace(/^["']{1,3}|["']{1,3}$/g, '') : '';
+                out[txt(n.childForFieldName('name'))] = { params, ret: rt ? txt(rt) : null, doc };
+            }
+            if (lang === 'javascript' && (n.type === 'function_declaration' || n.type === 'method_definition')) {
+                const ps = n.childForFieldName('parameters'); out[txt(n.childForFieldName('name'))] = { params: named(ps).filter((c) => c.type !== 'comment').map((p) => ({ name: txt(p) })), ret: null, doc: '' };
+            }
+            named(n).forEach(walk);
+        };
+        // 靜態語言：java／c／c++／c#（型別在簽名上，直接收）
+        const walkS = (n) => {
+            let hit = false;
+            if (lang === 'java' && n.type === 'method_declaration') {
+                const ps = n.childForFieldName('parameters'); out[txt(n.childForFieldName('name'))] = { params: named(ps).filter((p) => /formal_parameter|spread_parameter/.test(p.type)).map((p) => ({ name: txt(p.childForFieldName('name')), type: txt(p.childForFieldName('type')) })), ret: txt(n.childForFieldName('type')), doc: '' }; hit = true;
+            }
+            if ((lang === 'c' || lang === 'cpp') && n.type === 'function_definition') {
+                let d = n.childForFieldName('declarator'); while (d && d.type !== 'function_declarator' && d.childForFieldName('declarator')) d = d.childForFieldName('declarator');
+                if (d && d.type === 'function_declarator') {
+                    const nm = d.childForFieldName('declarator'); const ps = d.childForFieldName('parameters');
+                    out[txt(nm).split('::').pop()] = { params: named(ps).filter((p) => p.type === 'parameter_declaration').map((p) => { const dd = p.childForFieldName('declarator'); let nn = dd; while (nn && nn.childForFieldName && nn.childForFieldName('declarator')) nn = nn.childForFieldName('declarator'); const ptr = dd ? (txt(dd).match(/^[*&]+/) || [''])[0] : ''; return { name: nn ? txt(nn).replace(/^[*&\s]+|\[.*$/g, '') : '', type: txt(p.childForFieldName('type')) + ptr }; }), ret: txt(n.childForFieldName('type')), doc: '' }; hit = true;
+                }
+            }
+            if (lang === 'csharp' && n.type === 'method_declaration') {
+                const ps = n.childForFieldName('parameters'); out[txt(n.childForFieldName('name'))] = { params: named(ps).filter((p) => p.type === 'parameter').map((p) => ({ name: txt(p.childForFieldName('name')), type: txt(p.childForFieldName('type')) })), ret: txt(n.childForFieldName('type') || n.childForFieldName('returns')), doc: '' }; hit = true;
+            }
+            named(n).forEach(walkS); return hit;
+        };
+        if (lang === 'java' || lang === 'c' || lang === 'cpp' || lang === 'csharp') { walkS(rootNode); return out; }
+        walk(rootNode); return out;
+    }
+
+    // ---- ① 由行為分析器的函式紀錄建行為描述 ----
+    function describe(lang, fnRec, sig, definedNames) {
+        const defined = {}; (definedNames || []).forEach((n) => { defined[n] = 1; });
+        const calls = [], std = [], lib = []; const seen = {};
+        (fnRec.all_calls || []).forEach((c) => {
+            const base = String(c).replace(/\(\)/g, '').split('.').pop();
+            if (defined[base] && !seen['u' + base]) { seen['u' + base] = 1; calls.push(base); return; }
+            const cand = recognize(lang, c);
+            if (cand.length) cand.forEach((id) => { if (!seen[id]) { seen[id] = 1; std.push({ op: id, via: c, ambiguous: cand.length > 1 }); } });
+            else if (!seen['l' + c]) { seen['l' + c] = 1; lib.push(c); }
+        });
+        const effects = []; std.forEach((s) => DES.effectsOf(s.op).forEach((e) => { if (effects.indexOf(e) < 0) effects.push(e); }));
+        Object.keys(fnRec.behaviors || {}).forEach((cat) => { if (CAT_EFFECT[cat] && effects.indexOf(CAT_EFFECT[cat]) < 0 && cat !== 'string_formatting') effects.push(CAT_EFFECT[cat]); });
+        return {
+            v: VERSION, level: 1, lang, name: fnRec.name, pos: [fnRec.line, fnRec.end_line], params: (sig && sig.params) || null, ret: (sig && sig.ret) || null,
+            doc: (sig && sig.doc) || fnRec.leading_comment_text || '', calls, std, lib, behaviors: Object.keys(fnRec.behaviors || {}),
+            control: { loops: fnRec.loop_count, branches: fnRec.branch_count, complexity: fnRec.complexity }, effects,
+            pure: effects.length === 0 && lib.length === 0 ? true : (effects.length === 0 ? 'unknown' : false)
+        };
+    }
+    // ---- ② 由完整中間語言轉成同一個形狀 ----
+    function fromIr(ir) {
+        const d = DES.extract(ir);
+        return d.functions.map((f) => ({
+            v: VERSION, level: 2, lang: (ir.src && ir.src.lang) || 'unknown', name: f.name, pos: f.pos ? [f.pos[0], f.pos[2]] : null, params: f.params.map((p) => ({ name: p.name, type: p.type })), ret: f.returns, doc: f.doc || '',
+            calls: f.calls.slice(), std: f.std.map((s) => ({ op: s.op, via: s.op, ambiguous: false })), lib: [], behaviors: [], control: { loops: f.loops, branches: f.branches, complexity: f.branches + f.loops + 1 }, effects: f.effects.slice(), pure: f.pure
+        }));
+    }
+    // 兩份描述（不同來源或不同語言）的一致程度
+    function agree(a, b) {
+        const eq = (x, y) => JSON.stringify(x.slice().sort()) === JSON.stringify(y.slice().sort());
+        const sa = a.std.map((s) => s.op), sb = b.std.map((s) => s.op); const inter = sa.filter((x) => sb.indexOf(x) >= 0).length, uni = new Set(sa.concat(sb)).size;
+        return { name: a.name === b.name, calls: eq(a.calls, b.calls), loops: a.control.loops === b.control.loops, effects: eq(a.effects, b.effects), stdJaccard: uni ? inter / uni : 1, arity: !a.params || !b.params || a.params.length === b.params.length };
+    }
+    // 沒有函式本體時，只靠行為描述能產生的東西：簽名＋說明＋註解＋「用到哪些標準操作」的提示，本體留待實作（誠實：不重現行為）
+    function skeleton(bd, lang) {
+        const doc = [bd.doc, bd.std.length ? '用到標準操作：' + bd.std.map((s) => s.op).join('、') : '', bd.effects.length ? '副作用：' + bd.effects.join('、') : ''].filter(Boolean);
+        const names = (bd.params || []).map((p) => p.name);
+        if (lang === 'nodejs') return '/**\n' + doc.map((l) => ' * ' + l).join('\n') + '\n */\nfunction ' + bd.name + '(' + names.join(', ') + ') {\n    throw new Error("待實作：" + "' + bd.name + '");\n}\n';
+        if (lang === 'java') { const T = { int: 'long', float: 'double', str: 'String', bool: 'boolean' }; const ty = (t) => { t = String(t || ''); const m = /^list<(\w+)>$/.exec(t) || /^List\[(\w+)\]$/.exec(t); if (m) return 'List<' + ({ int: 'Long', float: 'Double', str: 'String', bool: 'Boolean' }[m[1]] || 'Object') + '>'; return T[t] || 'Object'; };
+            return '    /**\n' + doc.map((l) => '     * ' + l.replace(/\*\//g, '* /').replace(/[^\x20-\x7e]/g, (c) => '\\u' + ('0000' + c.charCodeAt(0).toString(16)).slice(-4))).join('\n') + '\n     */\n    static ' + ty(bd.ret === 'None' ? 'void' : bd.ret).replace('Object', 'void') + ' ' + bd.name + '(' + (bd.params || []).map((p) => ty(p.type) + ' ' + p.name).join(', ') + ') {\n        throw new RuntimeException("待實作：' + bd.name + '");\n    }\n'; }
+        return null;
+    }
+    // 行為卡：一個函式一張，給人看（只讀，不產生程式碼）
+    function card(bd) {
+        const sig = bd.name + '(' + (bd.params ? bd.params.map((p) => p.name + (p.type ? ': ' + p.type : '')).join(', ') : '…') + ')' + (bd.ret ? ' → ' + bd.ret : '');
+        const L = ['### ' + sig, ''];
+        if (bd.doc) L.push(bd.doc, '');
+        L.push('- 位置：' + (bd.pos ? '第 ' + bd.pos[0] + '–' + bd.pos[1] + ' 行' : '未知') + '；來源層級 ' + bd.level + (bd.level === 1 ? '（行為分析器）' : '（完整中間語言）'));
+        L.push('- 控制流：' + bd.control.loops + ' 個迴圈、' + bd.control.branches + ' 個分支、複雜度 ' + bd.control.complexity);
+        L.push('- 呼叫：' + (bd.calls.length ? bd.calls.join('、') : '沒有呼叫本檔其他函式'));
+        L.push('- 標準操作：' + (bd.std.length ? bd.std.map((s) => s.op + (s.ambiguous ? '（候選）' : '')).join('、') : '無'));
+        if (bd.lib && bd.lib.length) L.push('- 未認得的呼叫：' + bd.lib.join('、'));
+        L.push('- 副作用：' + (bd.effects.length ? bd.effects.join('、') : bd.pure === 'unknown' ? '看不出（有未認得的呼叫）' : '無（純函式）'));
+        if (bd.behaviors && bd.behaviors.length) L.push('- 行為分類：' + bd.behaviors.join('、'));
+        return L.join('\n');
+    }
+    return { VERSION, index, recognize, sigsFromTree, describe, fromIr, agree, skeleton, card };
+});
+
+}).call(null, undefined, holder);
+(function (module, self) {
+'use strict';
+/* 區塊 ↔ 中間語言 ↔ 目標語言 的橋（純模組；依賴由呼叫端注入，不碰 floating-assistant.js）。
+ * 區塊的範本庫（py_blocks_core）是 Python 專屬，所以走的路是：
+ *   區塊（或受控自然語言）→ 區塊的程式碼產生（Python）→ 中間語言 → 目標語言（nodejs／java／c／python）
+ *   程式碼（Python）→ 區塊／受控自然語言（反推）
+ *   區塊／程式碼 → 函式行為卡（ir_behavior 的第二層），供 code edit 把程式抽回設計
+ * 區塊樹裡「通用的程式區塊」（stmt）本來就能表達任何 Python，所以橋本身不會因為區塊種類而失敗；
+ * 失敗只會出現在 Python → 中間語言（不支援的語法會變成原生區塊）→ 目標語言（輸出器拒絕）這兩關，診斷如實帶回。
+ *
+ *   make({ parseTree, C2U, B, IN, PREP, OUT, BD, DES, IR }) → bridge
+ *   bridge.program(funcs)            funcs: [{name, params:[名稱], blocks | cnl}] → { python, funcs }
+ *   bridge.fromPython(src)           → { funcs:[{name, params, blocks, cnl, stats}], coverage }
+ *   bridge.toIr(python, name)        → { ir, diags, coverage }
+ *   bridge.emit(python, lang)        → { ok, code, diags }   （lang：nodejs／java／c／python）
+ *   bridge.blocksToTarget(funcs, lang)
+ *   bridge.cards(python)             → 函式行為卡陣列（level 2，含每個函式用到的區塊範本）
+ *   bridge.cardText(card)            → 白話卡片
+ *   bridge.styleCheck(python)        → 函式名／變數名的命名風格一致性（缺口 F）
+ */
+(function (root, factory) {
+    if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaIrBlocks = factory();
+})(typeof self !== 'undefined' ? self : this, function () {
+    function make(env) {
+        const { parseTree, C2U, B, IN, PREP, OUT, BD, DES } = env;
+        const anyT = { base: 'any', args: [] };
+        const mkOp = (name, params, body) => ({ name, params: (params || []).map((x) => ({ name: x, type: anyT })), returns: anyT, visibility: '+', static: true, body });
+        const blocksOf = (f) => {
+            if (f.blocks) return { ok: true, blocks: f.blocks, errors: [] };
+            const pr = B.parseCNL(f.cnl || ''); return { ok: pr.ok, blocks: pr.blocks, errors: pr.errors || [] };
+        };
+        // 區塊 → Python（所有函式；有名為 main 的函式就在最後呼叫它）
+        // 行內註解（trivia）旁路：區塊樹沒有註解節點，所以從原始碼收集註解，記下它掛的「那一行程式」（行尾註解＝同一行；獨立註解＝下一行程式），
+        // 區塊產生 Python 後再掛回。掛回的規則（依序，前一關掛上就不再往下；每個目標行同一種註解只能被掛一次）：
+        //   ① 同一函式內，去空白／括號／引號統一後完全相同的行（搬動、重排、沒改的行都在這關；同樣的行依出現順序一一對應）
+        //   ② 同一函式內，字詞重疊率（Jaccard）≥ 0.5 的最像的行（改寫過的行；同分取離原位置最近的）
+        //   ③ 函式內程式行數沒變時，原位置的那一行（整行被改得面目全非但位置沒動）
+        //   ④ 都對不上＝那行被刪了：獨立註解保留，掛到原位置（超出就最後一行）之前，因為它多半在說明一整段；
+        //      行尾註解只描述那一行，所以不留在程式裡，計入 orphans（可用 keepOrphans 改成當獨立註解留在函式尾）
+        //   函式本身被刪／改名時，在整份程式的所有行裡找（①②），仍對不上就同 ④（找不到位置的獨立註解附在檔尾）
+        const NL = String.fromCharCode(10), SPC = String.fromCharCode(32), TAB = String.fromCharCode(9);
+        const normLine = (t) => String(t).trim().split(" ").join("").split("(").join("").split(")").join("").split(String.fromCharCode(34)).join(String.fromCharCode(39));
+        const isBlank = (l) => !String(l).trim();
+        const isCommentLine = (l) => String(l).trim().charAt(0) === "#";
+        const indentOf = (l) => l.length - l.trimStart().length;
+        // 把程式行分成函式範圍：[{name, start, end(含)}]；模組層（縮排 0 的非 def 行）name 為空字串
+        function funcRanges(lines) {
+            const out = []; let cur = null;
+            lines.forEach((l, i) => {
+                if (isBlank(l)) return; const top = l.charAt(0) !== SPC && l.charAt(0) !== TAB;
+                const m = top && /^(?:async +)?def +([A-Za-z_][A-Za-z0-9_]*)/.exec(l);
+                if (m) { cur = { name: m[1], start: i, end: i }; out.push(cur); return; }
+                if (top && !isCommentLine(l)) { cur = { name: "", start: i, end: i }; out.push(cur); return; }
+                if (cur) cur.end = i;
+            });
+            return out;
+        }
+        const codeLinesIn = (lines, r) => { const a = []; for (let i = r.start; i <= r.end; i++) if (!isBlank(lines[i]) && !isCommentLine(lines[i])) a.push(i); return a; };
+        const toks = (t) => { const s = {}; (String(t).match(/[A-Za-z_][A-Za-z0-9_]*|[0-9]+|[^ A-Za-z0-9_]/g) || []).forEach((x) => { s[x] = 1; }); return s; };
+        const jaccard = (a, b) => { const A = toks(a), B2 = toks(b); let i = 0, u = 0; Object.keys(A).forEach((k) => { if (B2[k]) i++; }); u = Object.keys(A).length + Object.keys(B2).length - i; return u ? i / u : 0; };
+        function collectComments(src, rootNode) {
+            const lines = String(src).split(NL), raw = [], ranges = funcRanges(lines);
+            (function walk(n) { if (n.type === "comment") { raw.push({ row: n.startPosition.row, col: n.startPosition.column, text: n.text }); return; } for (let i = 0; i < n.childCount; i++) walk(n.child(i)); })(rootNode);
+            return raw.map((c) => {
+                const code = (lines[c.row] || "").slice(0, c.col), trail = code.trim().length > 0; let arow = trail ? c.row : -1;
+                if (!trail) { for (let r = c.row + 1; r < lines.length; r++) { const t = lines[r].trim(); if (t && t[0] !== "#") { arow = r; break; } } }
+                const anchorRaw = arow >= 0 ? (trail ? code : lines[arow]).trim() : ""; const rg = ranges.find((r) => arow >= r.start && arow <= r.end) || null;
+                const cl = rg ? codeLinesIn(lines, rg) : [];
+                return { text: c.text, trail, anchor: normLine(anchorRaw), anchorRaw, fn: rg ? rg.name : null, ord: rg ? cl.indexOf(arow) : -1, fnLines: cl.length };
+            });
+        }
+        function attachComments(python, comments, opts) {
+            opts = opts || {}; const lines = String(python).split(NL), ranges = funcRanges(lines), used = {}, placeAt = new Array((comments || []).length), how = new Array((comments || []).length);
+            const rangeOf = (c) => ranges.filter((r) => r.name === c.fn);
+            const candidates = (c, wide) => { const rs = wide ? [{ start: 0, end: lines.length - 1 }] : rangeOf(c); const a = []; rs.forEach((r) => { for (let i = r.start; i <= r.end; i++) if (!isBlank(lines[i]) && !isCommentLine(lines[i])) a.push(i); }); return a; };
+            const key = (c, i) => (c.trail ? "t" : "o") + i;
+            // ① 完全相同（先在同函式，再全檔）
+            (comments || []).forEach((c, ci) => { if (!c.anchor) return; for (const wide of [false, true]) { const hit = candidates(c, wide).find((i) => !used[key(c, i)] && normLine(lines[i]) === c.anchor); if (hit != null) { used[key(c, hit)] = 1; placeAt[ci] = hit; how[ci] = "exact"; return; } } });
+            // ② 最像的（改寫過）
+            (comments || []).forEach((c, ci) => { if (placeAt[ci] != null || !c.anchorRaw) return; for (const wide of [false, true]) {
+                let best = -1, bs = 0; const cl = candidates(c, wide); cl.forEach((i, k) => { if (used[key(c, i)]) return; const s = jaccard(c.anchorRaw, lines[i]) - Math.abs(k - c.ord) * 1e-4; if (jaccard(c.anchorRaw, lines[i]) >= 0.5 && s > bs) { bs = s; best = i; } });
+                if (best >= 0) { used[key(c, best)] = 1; placeAt[ci] = best; how[ci] = "similar"; return; } } });
+            // ③ 行數沒變：原位置
+            (comments || []).forEach((c, ci) => { if (placeAt[ci] != null || c.ord < 0) return; const cl = candidates(c, false); if (cl.length === c.fnLines && cl[c.ord] != null && !used[key(c, cl[c.ord])]) { used[key(c, cl[c.ord])] = 1; placeAt[ci] = cl[c.ord]; how[ci] = "position"; } });
+            // ④ 被刪
+            const orphans = [], tail = [], before = {}, fnTail = {}; let placed = 0;
+            (comments || []).forEach((c, ci) => {
+                if (placeAt[ci] != null) { const i = placeAt[ci]; placed++; if (c.trail) lines[i] = lines[i] + "  " + c.text; else (before[i] = before[i] || []).push(c.text); return; }
+                if (c.trail) { if (opts.keepOrphans) { const r = rangeOf(c)[0]; if (r) { (fnTail[r.end] = fnTail[r.end] || []).push(c.text); placed++; return; } tail.push(c.text); return; } orphans.push({ text: c.text, fn: c.fn, was: c.anchorRaw }); return; }
+                const cl = candidates(c, false); if (cl.length && c.ord >= 0) { const i = cl[Math.min(c.ord, cl.length - 1)]; (before[i] = before[i] || []).push(c.text); placed++; how[ci] = "clamped"; return; }
+                tail.push(c.text);
+            });
+            const out = []; lines.forEach((l, i) => {
+                if (before[i]) { const ind = l.slice(0, indentOf(l)); before[i].forEach((t) => out.push(ind + t)); } out.push(l);
+                if (fnTail[i]) { const ind = SPC.repeat(4); fnTail[i].forEach((t) => out.push(ind + t)); }
+            });
+            tail.forEach((t) => out.push(t));
+            const cnt = (k) => how.filter((x) => x === k).length;
+            return { python: out.join(NL), placed, unplaced: tail.length, orphans, by: { exact: cnt("exact"), similar: cnt("similar"), position: cnt("position"), clamped: cnt("clamped") } };
+        }
+
+        function program(funcs, opts) {
+            const ctx = opts && opts.ctx; const errors = [], bodies = {};
+            for (const f of funcs) { const r = blocksOf(f); if (!r.ok) { errors.push({ func: f.name, errors: r.errors }); continue; } bodies[f.name] = { body: B.toIR(r.blocks), params: f.params }; }
+            if (errors.length) return { ok: false, errors, python: '' };
+            // 有原模型（fromPython 的 ctx）就沿用它的 import、型別標註、模組層敘述；只換函式本體。沒有就從頭組一個最小模型
+            // 注意：不能複製 ctx——model.order 裡的項目指向同一批 op 物件，複製（JSON）會讓 order 帶著舊本體，換掉的函式本體就不會輸出。
+            // 所以直接換 op.body，產生完再還原。
+            const m = ctx || { name: 'M', actors: [], relations: [], usecases: [], prelude: [], order: [], classes: [{ name: 'M', kind: 'class', attrs: [], values: [], ops: [] }] };
+            const saved = [], seen = {}, extra = [];
+            m.classes.forEach((c) => c.ops.forEach((op) => { if (bodies[op.name]) { saved.push([op, op.body]); op.body = bodies[op.name].body; seen[op.name] = 1; } }));
+            Object.keys(bodies).forEach((n) => { if (!seen[n]) { const op = mkOp(n, bodies[n].params, bodies[n].body); m.classes[0].ops.push(op); extra.push(op); if (m.order && m.order.length) m.order.push({ t: 'f', o: op }); } });
+            let python; try { python = C2U.toPython(m); } finally { saved.forEach((x) => { x[0].body = x[1]; }); extra.forEach((op) => { const i = m.classes[0].ops.indexOf(op); if (i >= 0) m.classes[0].ops.splice(i, 1); if (m.order) { const j = m.order.findIndex((it) => it.o === op); if (j >= 0) m.order.splice(j, 1); } }); }
+            let commentStats = { placed: 0, unplaced: 0 };
+            const trivia = (opts && opts.comments) || (ctx && ctx.trivia); if (trivia && trivia.length) { const a = attachComments(python, trivia, opts); python = a.python; commentStats = { placed: a.placed, unplaced: a.unplaced, orphans: a.orphans, by: a.by }; } if (!ctx && bodies.main) python += '\nmain()\n';
+            return { ok: true, errors: [], python, comments: commentStats };
+        }
+        function fromPython(src) {
+            const tree = parseTree(src); const u = C2U.fromTree(tree.rootNode, { source: src });
+            const funcs = [];
+            u.model.classes.forEach((c) => c.ops.forEach((op) => {
+                const blocks = B.fromIR(op.body); funcs.push({ name: op.name, params: op.params.map((p) => p.name), sig: { params: op.params, ret: op.ret }, blocks, cnl: B.toCNL(blocks), stats: B.stats(blocks) });
+            }));
+            const comments = collectComments(src, tree.rootNode); u.model.trivia = comments;
+            return { funcs, coverage: u.coverage, ctx: u.model, comments };
+        }
+        function toIr(python, name) {
+            const tree = parseTree(python); const r = IN.fromTree(tree.rootNode, { source: python, name: name || 'blocks' });
+            const prep = PREP.prepare(r.ir); return { ir: prep.ir, diags: (r.diags || []).concat(prep.diags || []), coverage: r.coverage };
+        }
+        function emit(python, lang, name) {
+            if (!OUT[lang]) return { ok: false, code: '', diags: [{ level: 'error', msg: '不支援的目標語言：' + lang }] };
+            const r = toIr(python, name); const em = OUT[lang].emit(r.ir);
+            const diags = r.diags.concat(em.diags || []);
+            return { ok: !diags.some((d) => d.level === 'error'), code: em.code, diags };
+        }
+        function blocksToTarget(funcs, lang, name) {
+            const p = program(funcs); if (!p.ok) return { ok: false, code: '', diags: p.errors.map((e) => ({ level: 'error', msg: '區塊解析失敗：' + e.func + ' ' + JSON.stringify(e.errors.slice(0, 2)) })), python: '' };
+            const e = emit(p.python, lang, name); e.python = p.python; return e;
+        }
+        // 行為卡：中間語言（第二層）＋ 該函式的區塊範本使用統計
+        function cards(python, name) {
+            const ir = toIr(python, name).ir; const cs = BD.fromIr(ir); let fp = null;
+            try { fp = fromPython(python); } catch (e) { fp = null; }
+            return cs.map((c) => { const f = fp && fp.funcs.find((x) => x.name === c.name); return Object.assign({}, c, { blocks: f ? { total: f.stats.blocks, generic: f.stats.generic, byTemplate: f.stats.byTemplate } : null }); });
+        }
+        const cardText = (c) => BD.card(c) + (c.blocks ? '\n- 區塊：共 ' + c.blocks.total + ' 個（通用程式區塊 ' + c.blocks.generic + ' 個）' : '');
+
+        // 命名風格一致性（思考堆疊缺口 F 的離線版，純程式）：函式名、變數名各自算「主流風格」占比；單字（無大小寫與底線之分）不算
+        const styleOf = (n) => (/^[A-Z][A-Z0-9_]+$/.test(n) && /_/.test(n) ? 'upper' : /_/.test(n) ? 'snake' : /^[a-z]+[A-Z]/.test(n) ? 'camel' : /^[A-Z][a-z]/.test(n) && /[a-z][A-Z]/.test(n) ? 'pascal' : null);
+        function styleCheck(python) {
+            const fn = [], vars = [];
+            const ID = '[A-Za-z_][A-Za-z0-9_]*', IDS = ID + '(?: *, *' + ID + ')*';
+            const reDef = new RegExp('^ *def +(' + ID + ')'), reAsg = new RegExp('^ *(' + IDS + ') *(?:[-+*/%]|//|[*][*])?=(?!=)'), reFor = new RegExp('^ *for +(' + IDS + ') +in ');
+            String(python).split(String.fromCharCode(10)).forEach((l) => {
+                let m = reDef.exec(l); if (m) fn.push(m[1]);
+                m = reAsg.exec(l); if (m) m[1].split(',').forEach((x) => vars.push(x.trim()));
+                m = reFor.exec(l); if (m) m[1].split(',').forEach((x) => vars.push(x.trim()));
+            });
+            const share = (names) => { const st = names.map(styleOf).filter(Boolean); if (st.length < 2) return { score: 1, dominant: st[0] || null, mixed: [] }; const cnt = {}; st.forEach((x) => { cnt[x] = (cnt[x] || 0) + 1; }); const dom = Object.keys(cnt).sort((a, b) => cnt[b] - cnt[a])[0]; return { score: cnt[dom] / st.length, dominant: dom, mixed: names.filter((n) => { const k = styleOf(n); return k && k !== dom; }) }; };
+            const f = share(fn), v = share(vars.filter((x, i, a) => a.indexOf(x) === i)); return { functions: f, variables: v, score: Math.min(f.score, v.score), ok: f.score === 1 && v.score === 1 };
+        }
+        return { collectComments, attachComments, styleCheck, program, fromPython, toIr, emit, blocksToTarget, cards, cardText };
+    }
+    return { make };
+});
+
+}).call(null, undefined, holder);
+return holder;
+})();
+/* IR-END */
 /* VIEW-BEGIN */
 const FaView = (function () {
 const holder = {};
@@ -65593,7 +67522,7 @@ class FloatingAssistant {
         // /offline-trainer-by-ai 的別名：/teacher-loop（老師迴圈——線上模型當老師，確保「小模型＋離線訓練器＋FSM」離線自己能做對；做法完全沿用 /offline-trainer-by-ai）
         { const e = this.slashCommands.get('/offline-trainer-by-ai'); if (e) ['/teacher-loop'].forEach((al) => this.slashCommands.set(al, Object.assign({}, e, { cmd: al, desc: '（等於 /offline-trainer-by-ai）' + e.desc }))); }
         // /code：寫程式的前導。程式（FaCodeSlash）決定叫哪個程式設計工具與欄位，工具本身才是唯一入口（write_code 領域不開思考；離線小模型只答工具裡的封閉選擇題）
-        this.register_slash_command('/code', '<寫／修／優化／合併／設計／解釋> <一句話，可附 ``` 程式 ```>',
+        this.register_slash_command('/code', '<寫／修／優化／合併／轉換／設計／解釋> <一句話，可附 ``` 程式 ```>',
             '寫程式前導：/code 寫一個函式…（寫，離線小模型也能一步一步寫並真的編譯跑測資驗收）、/code 修 ＋程式、/code 優化 ＋程式與測資、/code 合併 ＋程式與 diff（合併後驗證，失敗回滾）、/code 設計 情境（先出 UML）、/code 解釋 ＋程式。不加動詞時：沒貼程式當作寫、貼了程式當作修。不打參數看完整用法。',
             async (argsText, run) => {
                 const r = run || this; const raw = String(argsText || '').trim();
@@ -65605,7 +67534,7 @@ class FloatingAssistant {
                 const tool = this.tools[c.tool]; if (!tool) { say('⚠️ 這個版本沒有「' + c.tool + '」工具（版本太舊或程式設計領域被停用了）。'); return; }
                 let res; try { res = JSON.parse(await tool.callback.call(r, JSON.stringify(c.args))); } catch (e) { say('⚠️ ' + c.tool + ' 失敗：' + String((e && e.message) || e)); return; }
                 const body = res && (res.report || res.markdown || res.summary || res.text) ? String(res.report || res.markdown || res.summary || res.text) : (res && res.ok === false ? '⚠️ ' + (res.error || res.reason || '做不出來') : '```json\n' + JSON.stringify(res, null, 2).slice(0, 4000) + '\n```');
-                const code = res && typeof res.source === 'string' && res.source ? '\n\n```\n' + res.source + '\n```' : '';
+                const code = res && typeof res.source === 'string' && res.source ? '\n\n```\n' + res.source + '\n```' : (res && c.tool === 'convert_code' && typeof res.code === 'string' && res.code ? '\n\n```' + (res.target || '') + '\n' + res.code + '\n```' : '');
                 say('🧭 /code → ' + c.tool + '（' + c.why + '）\n\n' + body + code);
             });
         this.register_slash_command(
@@ -70190,6 +72119,14 @@ ${fnData.code}
                 try { return JSON.stringify(await this._codePatch(a)); } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); }
             },
             { type: 'object', properties: { source: { type: 'string', description: '使用者目前的程式碼（整份）' }, diff: { type: 'string', description: '要合併的 unified diff' }, language: { type: 'string', enum: ['python', 'nodejs', 'c', 'cpp', 'java', 'ruby', 'perl', 'bash', 'csharp'], description: '（選填）不給就從程式碼判斷' }, file_name: { type: 'string', description: '（選填）diff 含多個檔案時指定合併哪一個' }, tests: { type: 'array', description: '[{in,out}]：可見測資；有給就在合併後跑判題，沒過回滾', items: { type: 'object', properties: { in: { type: 'string' }, out: { type: 'string' } } } }, hidden: { type: 'array', description: '[{in,out}]：隱藏測資（選填）', items: { type: 'object', properties: { in: { type: 'string' }, out: { type: 'string' } } } }, require_verify: { type: 'boolean', description: '（選填）true＝沒有檢查器可用就不合併' } }, required: ['source', 'diff'] }
+        );
+        registerOptional('convert_code',
+            '把一份 Python 程式或「區塊」（受控自然語言）轉成 nodejs／java／c（或回 python）：Python → 中間語言 → 目標語言，註解保留、標準函式庫操作對照轉換；也能 action:"to_blocks" 把 Python 拆成區塊（受控自然語言）。這是「轉換」工具，不是寫程式的入口（要寫新程式用 write_code）。不支援的寫法（例如 c 的字典）會如實拒絕並列在 diags，不亂翻。給 tests（stdin→stdout）會在本機實際編譯執行轉出的程式並對輸出；沒給就標示未驗證。參數：{"source":"Python 程式碼"|"blocks":[{"name","params","cnl"}],"target":"nodejs|java|c|python","action":"convert|to_blocks","tests":[{"in","out"}]}',
+            async function (rawArgs) {
+                let a = {}; try { a = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                try { return JSON.stringify(await this._codeConvert(a)); } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); }
+            },
+            { type: 'object', properties: { source: { type: 'string', description: '要轉換的 Python 程式碼（整份）' }, blocks: { type: 'array', items: { type: 'object', properties: { name: { type: 'string' }, params: { type: 'array', items: { type: 'string' } }, cnl: { type: 'string', description: '受控自然語言的區塊文字' } }, required: ['name', 'cnl'] }, description: '（與 source 二選一）區塊函式清單' }, target: { type: 'string', enum: ['nodejs', 'java', 'c', 'python'], description: '目標語言' }, action: { type: 'string', enum: ['convert', 'to_blocks'], description: '預設 convert；to_blocks 把 Python 拆成區塊' }, name: { type: 'string', description: '（選填）java 的類別名等' }, keep_blocks: { type: 'boolean', description: '（選填）先經過區塊再轉，驗證區塊往返' }, tests: { type: 'array', items: { type: 'object', properties: { in: { type: 'string' }, out: { type: 'string' } }, required: ['in', 'out'] }, description: '（選填）有給就實際編譯執行轉出的程式驗證輸出' } }, additionalProperties: false }
         );
         registerOptional('optimize_code',
             '把一份「已經能跑、答案正確」的 Python 程式換成「功能一樣但更有效率」的寫法：先從程式看出慢的寫法（list 當集合用、list.pop(0) 當佇列、重複計算的遞迴、迴圈裡反覆 list.count／in／sum 切片、迴圈裡 lst = lst + [x]、sorted 只為了取極值、字串 += 一直接），再依優化對照表換成 set／deque／lru_cache／Counter／前綴和／max／min／append／join；**每一條都要在 tests（含隱藏測試）上輸出與原程式相同才收，有給 perf（一組大輸入與它的正確輸出）還會量時間，變慢就退回**。回傳 applied（換了什麼、複雜度前後、記憶體、實測毫秒）、skipped（認得但沒換的原因）、source（優化後的程式）。「輸出一致」只在給的測資上驗證，不是等價證明；沒給 tests 就不會改。',
@@ -110178,6 +112115,45 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
     }
     // a: { task（需求文字）, language, tests:[{in,out}], uml（DSL 文字）, use_last_design, source（任意現有程式碼）, goal, driver, model, _gen（CoLU 計畫裡直接給模型） }
     // merge diff patcher：把 unified diff 合併進使用者目前的程式；合併後過語法檢查（bridge.check）與判題（bridge.judge），不過就回滾（結果的 source 仍是原程式）
+    // ===== 區塊／程式 ↔ 中間語言 ↔ nodejs／java／c（DESIGN.core-ir.md、ir_blocks_core.js）：轉換工具，不是第二個寫程式入口（寫程式仍只有 write_code）=====
+    async _irBridge() {
+        if (this._irBridgeObj) return this._irBridgeObj;
+        if (typeof FaIrBundle === 'undefined' || !FaIrBundle.FaIrBlocks) throw new Error('這個版本沒有中間語言模組（FaIrBundle）');
+        const P = await this._pyParserSync(); const parseTree = (x) => P.parse(x); const H = FaIrBundle;
+        const B = FaPyBlocks.makeBlocks({ parseTree, C2U: FaPyCode2Uml });
+        this._irBridgeObj = H.FaIrBlocks.make({ parseTree, C2U: FaPyCode2Uml, B, IN: H.FaIrInPython, PREP: H.FaIrPrep, OUT: { nodejs: H.FaIrOutJs, java: H.FaIrOutJava, c: H.FaIrOutC, python: H.FaIrOutPython }, BD: H.FaIrBehavior, DES: H.FaIrDesign, IR: H.FaIr });
+        return this._irBridgeObj;
+    }
+    // a: { action:'convert'|'to_blocks'|'check', source（Python）| blocks:[{name, params, cnl}], target:'nodejs'|'java'|'c'|'python', name, tests:[{in,out}] }
+    async _codeConvert(a) {
+        a = a || {}; const action = a.action || 'convert'; const br = await this._irBridge();
+        const hasSrc = typeof a.source === 'string' && a.source.trim(), hasBlocks = Array.isArray(a.blocks) && a.blocks.length;
+        if (!hasSrc && !hasBlocks) return { ok: false, error: '缺少 source（Python 程式碼）或 blocks（[{name, params, cnl}]）' };
+        if (action === 'to_blocks') {
+            if (!hasSrc) return { ok: false, error: 'to_blocks 需要 source（Python 程式碼）' };
+            const r = br.fromPython(a.source); return { ok: true, funcs: r.funcs.map((f) => ({ name: f.name, params: f.params, cnl: f.cnl, stats: f.stats })), coverage: r.coverage, comments: r.comments.length, note: '區塊以受控自然語言表示；通用的「程式」區塊代表這一行沒有對應的範本（stats.generic）' };
+        }
+        const target = a.target || a.language; if (!['nodejs', 'java', 'c', 'python'].includes(target)) return { ok: false, error: '不支援的目標語言：' + target + '（支援 nodejs、java、c、python；其他語言只有目錄樣板、沒有輸出器）' };
+        let python = a.source, funcs, comments;
+        if (hasBlocks) {
+            const p = br.program(a.blocks.map((f) => ({ name: f.name, params: f.params || [], cnl: f.cnl, blocks: f.blocks }))); if (!p.ok) return { ok: false, error: '區塊解析失敗', errors: p.errors.slice(0, 5) };
+            python = p.python; comments = p.comments;
+        } else if (action === 'convert' && a.keep_blocks) { // 先經過區塊再轉（驗證區塊往返不丟資訊；註解會掛回）
+            const f = br.fromPython(a.source); const p = br.program(f.funcs.map((x) => ({ name: x.name, params: x.params, cnl: x.cnl })), { ctx: f.ctx }); if (!p.ok) return { ok: false, error: '區塊往返失敗', errors: p.errors.slice(0, 5) };
+            python = p.python; comments = p.comments;
+        }
+        const em = br.emit(python, target, a.name);
+        const out = { ok: !!em.ok, target, code: em.code, python: hasBlocks || a.keep_blocks ? python : undefined, diags: (em.diags || []).slice(0, 20), comments: comments ? { placed: comments.placed, unplaced: comments.unplaced, orphans: (comments.orphans || []).length } : undefined };
+        if (!em.ok) { out.error = '這份程式有中間語言／' + target + ' 輸出器不支援的寫法（見 diags）；沒有硬翻'; return out; }
+        const tests = [].concat(a.tests || []).filter((t) => t && typeof t.in === 'string' && typeof t.out === 'string').slice(0, 12);
+        if (tests.length) {
+            const bridge = this._codeJudgeBridge();
+            if (!bridge.judge) out.verified = null, out.verifyNote = '沒有本機判題器（網頁版）：轉出的程式沒有驗證';
+            else { const j = await bridge.judge({ lang: target, source: em.code, problem: { id: 'convert', tests, checker: a.checker || 'tokens', timeoutMs: 30000 } }); out.verdict = j.verdict; out.verified = j.verdict === 'AC'; if (j.verdict !== 'AC') out.verifyNote = '轉出的程式沒有通過測資：' + String(j.detail || j.verdict).slice(0, 200); }
+        } else out.verified = null, out.verifyNote = '沒有給 tests，轉出的程式沒有實際執行驗證';
+        out.report = '轉成 ' + target + '：' + (out.verified === true ? '已實際執行，輸出與測資一致' : out.verified === false ? '⚠️ 轉出的程式沒過測資（' + (out.verdict || '') + '）' : '⚠️ 沒有實際執行驗證') + (out.diags.length ? '；診斷 ' + out.diags.length + ' 則' : '');
+        return out;
+    }
     // 語法樹剖析器（目前內建只有 Python 文法）：載入失敗就回 undefined，merge diff patcher 退回詞法切分
     async _codePatchParser() { try { return await this._pyParserSync(); } catch (_) { return undefined; } }
     async _codePatch(a) {
