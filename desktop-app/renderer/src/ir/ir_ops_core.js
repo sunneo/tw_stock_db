@@ -195,7 +195,33 @@
         }
     };
     // 輔助函式的相依（先貼被依賴的）
-    const HDEPS = { c: { fa_new: ['fa_list'], fa_push: ['fa_list'], fa_pop: ['fa_list'], fa_filled: ['fa_new', 'fa_push'], fa_list_copy: ['fa_new', 'fa_push'], fa_list_sum: ['fa_list'], fa_list_min: ['fa_list'], fa_list_max: ['fa_list'], fa_list_contains: ['fa_list'], fa_list_reverse: ['fa_list'], fa_sorted: ['fa_list_copy'], fa_sort: ['fa_list'], fa_joinNums: ['fa_list'], fa_splitInts: ['fa_new', 'fa_push'] }, java: { fa_splitInts: ['fa_splitWs'] }, nodejs: { fa_splitInts: ['fa_parseInt'] } };
+    // ---------- C++／C#／Ruby／Perl 的補丁（2026-11-08）：目錄裡原本是 null 的格子與輔助函式。輸出器實跑過的才算數（ir_out_more.test.js） ----------
+    const patchCell = (id, lang, tpl, h) => { const o = OPS[id]; if (!o) return; o.cells[lang] = tpl; if (h) o.h[lang] = h; };
+    patchCell('str.split_ints', 'cpp', 'fa_splitInts($0)', ['fa_splitInts']); patchCell('str.split_ws', 'cpp', 'fa_splitWs($0)', ['fa_splitWs']); patchCell('str.strip', 'cpp', 'fa_strip($0)', ['fa_strip']); patchCell('str.upper', 'cpp', 'fa_upper($0)', ['fa_upper']);
+    patchCell('dict.get_default', 'cpp', 'fa_dgetd($0, $1, $2)', ['fa_dgetd']); patchCell('dict.sorted_keys', 'cpp', 'fa_sortedKeys($0)', ['fa_sortedKeys']); patchCell('str.join_num', 'cpp', 'fa_joinNums($0, $1)', ['fa_joinNums']);
+    patchCell('fmt.fixed', 'cpp', 'fa_fixed($0, $1)', ['fa_fixed']); patchCell('list.pop', 'cpp', 'fa_pop($0)', ['fa_pop']);
+    HELPERS.cpp = {
+        fa_readLine: 'static std::string fa_readLine() { std::string l; if (!std::getline(std::cin, l)) return ""; if (!l.empty() && l.back() == \'\\r\') l.pop_back(); return l; }',
+        fa_floordiv: 'static long long fa_floordiv(long long a, long long b) { if (b == 0) throw std::runtime_error("division by zero"); long long q = a / b; if ((a % b != 0) && ((a < 0) != (b < 0))) q--; return q; }',
+        fa_mod: 'static long long fa_mod(long long a, long long b) { if (b == 0) throw std::runtime_error("modulo by zero"); long long r = a % b; if (r != 0 && ((r < 0) != (b < 0))) r += b; return r; }',
+        fa_splitWs: 'static std::vector<std::string> fa_splitWs(const std::string &s) { std::vector<std::string> r; std::istringstream is(s); std::string t; while (is >> t) r.push_back(t); return r; }',
+        fa_splitInts: 'static std::vector<long long> fa_splitInts(const std::string &s) { std::vector<long long> r; for (const std::string &t : fa_splitWs(s)) r.push_back(std::stoll(t)); return r; }',
+        fa_strip: 'static std::string fa_strip(const std::string &s) { size_t a = 0, b = s.size(); while (a < b && isspace((unsigned char)s[a])) a++; while (b > a && isspace((unsigned char)s[b - 1])) b--; return s.substr(a, b - a); }',
+        fa_upper: 'static std::string fa_upper(std::string s) { for (char &c : s) c = (char)toupper((unsigned char)c); return s; }',
+        fa_dgetd: 'template <class M, class K, class V> static V fa_dgetd(const M &m, const K &k, V d) { auto it = m.find(k); return it == m.end() ? d : it->second; }',
+        fa_sortedKeys: 'template <class M> static std::vector<typename M::key_type> fa_sortedKeys(const M &m) { std::vector<typename M::key_type> r; for (const auto &kv : m) r.push_back(kv.first); std::sort(r.begin(), r.end()); return r; }',
+        fa_joinNums: 'static std::string fa_joinNums(const std::string &sep, const std::vector<long long> &a) { std::string r; for (size_t i = 0; i < a.size(); i++) { if (i) r += sep; r += std::to_string(a[i]); } return r; }',
+        fa_fixed: 'static std::string fa_fixed(double x, long long d) { char buf[512]; snprintf(buf, sizeof buf, "%.*f", (int)d, x); return std::string(buf); }',
+        fa_pop: 'template <class T> static T fa_pop(std::vector<T> &a) { if (a.empty()) throw std::runtime_error("pop from empty list"); T v = a.back(); a.pop_back(); return v; }'
+    };
+    HELPERS.cs = {
+        fa_floordiv: 'static long fa_floordiv(long a, long b) { if (b == 0) throw new DivideByZeroException(); long q = a / b; if ((a % b != 0) && ((a < 0) != (b < 0))) q--; return q; }',
+        fa_mod: 'static long fa_mod(long a, long b) { if (b == 0) throw new DivideByZeroException(); long r = a % b; if (r != 0 && ((r < 0) != (b < 0))) r += b; return r; }'
+    };
+    patchCell('list.get', 'cs', '$0[(int)($1)]'); patchCell('list.set', 'cs', '$0[(int)($1)] = $2');
+    patchCell('str.split_ws', 'cs', '$0.Split((char[])null, StringSplitOptions.RemoveEmptyEntries).ToList()');
+    HELPERS.pl = {}; HELPERS.rb = {};
+    const HDEPS = { c: { fa_new: ['fa_list'], fa_push: ['fa_list'], fa_pop: ['fa_list'], fa_filled: ['fa_new', 'fa_push'], fa_list_copy: ['fa_new', 'fa_push'], fa_list_sum: ['fa_list'], fa_list_min: ['fa_list'], fa_list_max: ['fa_list'], fa_list_contains: ['fa_list'], fa_list_reverse: ['fa_list'], fa_sorted: ['fa_list_copy'], fa_sort: ['fa_list'], fa_joinNums: ['fa_list'], fa_splitInts: ['fa_new', 'fa_push'] }, java: { fa_splitInts: ['fa_splitWs'] }, nodejs: { fa_splitInts: ['fa_parseInt'] }, cpp: { fa_splitInts: ['fa_splitWs'] } };
 
     // ---------- 查表 ----------
     const has = (id) => !!OPS[id];
