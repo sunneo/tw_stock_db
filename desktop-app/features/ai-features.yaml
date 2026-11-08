@@ -92,15 +92,8 @@ categories:
 
   - id: knowledge
     name: 知識與自製函式
-    summary: 知識圖譜（RAG）、AI 自製函式、儲存常用腳本
+    summary: AI 自製函式、儲存常用腳本
     features:
-      - id: rag
-        name: 知識圖譜（RAG）
-        summary: 把筆記或大文件存成知識節點，之後用自然語言查詢；大文件會自動分段。
-        how: { domain: [rag_lookup, rag_management], tools: [rag_store_graph_node, rag_query_graph, rag_chunk_document, rag_delete] }
-        platforms: [web, desktop]
-        samples: ["把這份文件存進知識庫", "知識庫裡有沒有關於 KD 黃金交叉的筆記？"]
-        updated: 2026-09-26
       - id: ai-functions
         name: AI 自製函式
         summary: 讓助理把常用流程存成可重複呼叫的函式，之後直接叫用。

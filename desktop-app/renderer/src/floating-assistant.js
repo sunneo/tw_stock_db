@@ -1409,7 +1409,7 @@ const AI_REASONING_DEADEND_PROMPT = '[系統提示] 你剛才那一輪只完成�
 // 通用的_runSubAgentTask那樣預設能看到全部工具），理由見計畫文件：
 // domain專屬工具的使用guidance是跟該domain專屬system prompt綁在一起設計
 // 的，開放任意組合等於要求每個工具都要能配合任何system prompt，複雜度
-// 不成比例。目前只有rag_lookup是真正啟用的驗證用domain，其餘（
+// 不成比例。其餘（
 // file_analysis/drawing/scene_3d/interactive_component）留給後續階段
 // 各自加入工具子集時才把enabled改成true——未啟用的domain呼叫時直接回報
 // 「尚未實作」，不是crash。
@@ -1492,12 +1492,6 @@ const SUBAGENT_DOMAIN_REGISTRY = {
         label: 'MCP 伺服器（使用者安裝的外部工具包：查詢、呼叫、安裝、管理）',
         toolNames: ['mcp_servers', 'mcp_tools', 'mcp_call', 'mcp_resources', 'mcp_install', 'mcp_manage'],
         systemPrompt: '你是專門使用 MCP（Model Context Protocol）伺服器的子任務助理。使用者在設定裡安裝了一些 MCP 伺服器，每個伺服器提供一組工具。你的流程固定是：(1) 用 mcp_servers 看有哪些伺服器、狀態如何；(2) 用 mcp_tools 查那個伺服器有哪些工具（要看完整輸入格式就帶 tool 參數），絕對不要猜工具名稱或參數；(3) 用 mcp_call 呼叫，arguments 照輸入格式填；(4) 把結果用精簡的文字回報。規則：工具回報 ok:false 或 is_error:true 就是失敗，把原因如實講出來，不要假裝成功，也不要拿別的工具硬湊；伺服器連不上時用 mcp_manage 的 logs 看原因再回報；使用者要安裝 MCP 就用 mcp_install（附件的 file_id 或貼上的 JSON／網址），它會自己請使用者確認，使用者拒絕就停下來，不要換個方式再裝；不要自己叫使用者去終端機執行指令，除非 mcp_install 明講需要。回覆用使用者的語言，只講跟任務有關的結果。'
-    },
-    rag_lookup: {
-        enabled: true,
-        label: 'RAG知識圖譜查詢',
-        toolNames: ['rag_query_graph'],
-        systemPrompt: '你是一個專門查詢RAG知識圖譜的子任務助理。使用者會給你一個查詢需求，你只能使用rag_query_graph工具查詢知識圖譜，查到結果後直接用一段精簡的文字總結回答，不要輸出多餘的寒暄或重複問題本身。如果查無相關記錄，直接明講查無資料，不要編造答案。',
     },
     file_analysis: {
         enabled: true,
@@ -1638,12 +1632,10 @@ const SUBAGENT_DOMAIN_REGISTRY = {
         systemPrompt: '你是一個專門設計2D向量圖形動畫的子任務助理，用render_2d_animation渲染純宣告式YAML描述的2D動畫給使用者看（絕對不能輸出真正會執行的JavaScript程式碼，動畫格式是固定字彙的宣告式YAML，用Canvas2D畫圓/矩形/多邊形/折線/文字/圖片，不是3D）。修改既有動畫前先呼叫get_2d_animation_yaml取得目前真正的內容，不要憑記憶重新編寫。渲染完成後只需要一兩句話簡短說明，不用重複整份YAML內容。',
     },
     // tw_stock_db客製: 2026-09-06使用者要求domain階層式工具註冊——這兩個domain
-    // 補上_registerBuiltinAiTools()裡原本沒有domain覆蓋的工具（AI自製函式4個、
-    // RAG的寫入/維護3個），讓builtinToolExposure:'domains'模式下不會有工具變成
-    // 孤兒（註冊了卻既不在根層級、也不在任何domain的toolNames裡）。刻意跟既有
-    // 唯讀的rag_lookup分開、不擴大它的toolNames——rag_lookup的名稱語意就是「只
-    // 查詢」，混進寫入能力會讓既有明確指定domain:'rag_lookup'的呼叫端system
-    // prompt跟實際能力對不上。
+    // 補上_registerBuiltinAiTools()裡原本沒有domain覆蓋的工具（AI自製函式4個），
+    // 讓builtinToolExposure:'domains'模式下不會有工具變成孤兒。
+    // 2026-11-08：原本的rag_lookup／rag_management兩個RAG領域已移除（RAG不再給AI用，只供離線訓練器與語言探索存檔）；
+    // rag_*工具本身與ragSystem儲存層仍保留，只是沒有任何領域入口。
     ai_functions: {
         enabled: true,
         label: 'AI自製函式管理',
@@ -1671,12 +1663,6 @@ const SUBAGENT_DOMAIN_REGISTRY = {
             return '使用者目前已經建立以下自製函式（用call_ai_function({"name":"...","args":{...}})呼叫）——只要任務主題符合其中任何一個，都應該優先委派這個領域直接呼叫它，不用自己重新實作同樣的邏輯：\n'
                 + names.map(n => `  - ${n}: ${fns[n].description || '(沒有描述)'}`).join('\n');
         },
-    },
-    rag_management: {
-        enabled: true,
-        label: 'RAG知識庫維護（新增節點/大文件分段/刪除）',
-        toolNames: ['rag_store_graph_node', 'rag_chunk_document', 'rag_delete', 'list_uploaded_files'],
-        systemPrompt: '你是一個專門維護RAG知識圖譜的子任務助理，負責新增節點(rag_store_graph_node)、把大文件切成語意分段後個別存入(rag_chunk_document)、刪除節點(rag_delete)。rag_chunk_document不論文件多長都能完整處理（內部自動分段，不會截斷丟棄），文件已經在persistentStorage時（使用者上傳的檔案、或AI用fetch_web_page/summarize_large_text看過的file_id）直接傳file_id即可，不確定file_id時可以先用list_uploaded_files查。純查詢需求請改用rag_lookup領域，不要在這裡處理查詢。完成後用一兩句話簡短說明做了什麼，不用重複整段內容。',
     },
     // tw_stock_db客製: 2026-09-09使用者要求新增的網路搜尋子agent——查詢
     // Wikipedia/StackOverflow/GitHub/一般網頁(google)/SourceForge/CodeProject/
@@ -2818,7 +2804,7 @@ SUBAGENT_DOMAIN_REGISTRY.lang_explorer = {
     enabled: true,
     label: '不認識的程式語言／框架探索（上網查資料→入門摘要→詢問使用者要成為新領域或記到RAG）',
     category: 'programming',
-    toolNames: ['language_explore', 'programming_knowledge', 'browser_search', 'fetch_web_page', 'article_outline', 'article_section', 'rag_query_graph'],
+    toolNames: ['language_explore', 'programming_knowledge', 'browser_search', 'fetch_web_page', 'article_outline', 'article_section'],
     systemPrompt: _faBuildLangExplorerPrompt(),
 };
 SUBAGENT_DOMAIN_REGISTRY.wiki_writer = {
@@ -18169,7 +18155,7 @@ const holder = {};
     // ---------- 三方合併（diff3），行為對照 git merge-file ----------
     // base/ours/theirs：行陣列。style：'merge'（預設，含 git 的 zealous 精修＋相鄰衝突合併）或 'diff3'（含 base 區段，不精修）。key：比對用的鍵（預設原樣）。
     function merge3(base, ours, theirs, o) {
-        o = o || {}; const style = o.style || 'merge'; const key = o.key || ((x) => x);
+        o = o || {}; const style = o.style || 'merge'; const key = o.key || ((x) => x); const touch = o.touch !== false;
         const bk = base.map(key), ok = ours.map(key), tk = theirs.map(key);
         const oc = changesOf(diffMatches(bk, ok), base.length, ours.length), tc = changesOf(diffMatches(bk, tk), base.length, theirs.length);
         const items = []; // {k:'same'|'resolved', lines} | {k:'conf', base, ours, theirs}
@@ -18179,10 +18165,12 @@ const holder = {};
         while (oi < oc.length || ti < tc.length) {
             const first = (ti >= tc.length || (oi < oc.length && oc[oi].a0 <= tc[ti].a0)) ? oc[oi] : tc[ti];
             const lo = first.a0; let hi = first.a1; const O = [], T = [];
+            // 相連（touch，預設，同 git）：相鄰的改動算重疊。touch:false（4.2 縮小衝突用）：只有真的重疊，或同一點的兩個插入，才算重疊
+            const ov = (x) => x.a0 < hi || (touch ? x.a0 === hi : (lo === hi && x.a0 === hi && x.a1 === x.a0));
             for (let moved = true; moved;) {
                 moved = false;
-                while (oi < oc.length && oc[oi].a0 <= hi) { O.push(oc[oi]); hi = Math.max(hi, oc[oi].a1); oi++; moved = true; }
-                while (ti < tc.length && tc[ti].a0 <= hi) { T.push(tc[ti]); hi = Math.max(hi, tc[ti].a1); ti++; moved = true; }
+                while (oi < oc.length && ov(oc[oi])) { O.push(oc[oi]); hi = Math.max(hi, oc[oi].a1); oi++; moved = true; }
+                while (ti < tc.length && ov(tc[ti])) { T.push(tc[ti]); hi = Math.max(hi, tc[ti].a1); ti++; moved = true; }
             }
             if (lo > bp) items.push({ k: 'same', lines: base.slice(bp, lo) });
             const bseg = base.slice(lo, hi); const ot = O.length ? text('o', ours, lo, hi, O) : bseg, tt = T.length ? text('t', theirs, lo, hi, T) : bseg;
@@ -18223,8 +18211,11 @@ const holder = {};
             list = mergedList;
         }
         const lines = []; const conflicts = []; const L = o.labels || { ours: 'ours', base: 'base', theirs: 'theirs' };
+        let ci = 0;
         for (const it of list) {
             if (it.k === 'conf') {
+                const rs = typeof o.resolve === 'function' ? o.resolve({ base: it.base, ours: it.ours, theirs: it.theirs }, ci) : null; ci++; // 4.2：由呼叫端決定這個衝突怎麼解（回 null＝留標記）
+                if (rs) { for (const x of rs) lines.push(x); continue; }
                 conflicts.push({ at: lines.length, base: it.base, ours: it.ours, theirs: it.theirs });
                 lines.push('<<<<<<< ' + L.ours); for (const x of it.ours) lines.push(x);
                 if (style === 'diff3') { lines.push('||||||| ' + L.base); for (const x of it.base) lines.push(x); }
@@ -18299,7 +18290,7 @@ const holder = {};
     // ---------- 單一 hunk 的定位策略 ----------
     const sameExact = (a, b) => strip(a) === b;
     function matchAt(old, cur, p, cmp) { if (p < 0 || p + old.length > cur.length) return false; for (let k = 0; k < old.length; k++) if (!cmp(cur[p + k], old[k])) return false; return true; }
-    function findAll(old, cur, from, cmp) { const r = []; if (!old.length) return r; for (let p = Math.max(0, from); p + old.length <= cur.length; p++) if (matchAt(old, cur, p, cmp)) r.push(p); return r; }
+    function findAll(old, cur, from, cmp, st) { const r = []; if (!old.length) return r; for (let p = Math.max(0, from); p + old.length <= cur.length; p++) if (matchAt(old, cur, p, cmp) && !(st && st.useBlocked && !st.free(p, old.length))) r.push(p); return r; }
     function relIndentOk(old, cur, p) { // python：相對縮排必須一致（整段位移可以，結構不同不行）
         let b0 = null, c0 = null;
         for (let k = 0; k < old.length; k++) { if (!/\S/.test(old[k])) continue; const a = indentOf(old[k]).length, c = indentOf(cur[p + k]).length; if (b0 === null) { b0 = a; c0 = c; } else if (a - b0 !== c - c0) return false; }
@@ -18328,7 +18319,7 @@ const holder = {};
         // ① 精確
         const exact = (a, b) => sameExact(a, b);
         if (old.length && !allBlank) {
-            const ps1 = findAll(old, cur, st.from, exact); const c1 = choose(ps1, 'exact');
+            const ps1 = findAll(old, cur, st.from, exact, st); const c1 = choose(ps1, 'exact');
             if (c1 && c1.pos != null) return mkOk(c1.pos, c1.pos === baseExp ? 'applied' : 'relocated', h.ops);
             if (c1 && c1.ambiguous) return { kind: 'ambiguous', cands: c1.ambiguous, total: c1.total, stage: 'exact', ops: h.ops };
         } else if (!old.length) { // 純新增、沒有脈絡：只能用行號
@@ -18337,14 +18328,14 @@ const holder = {};
         // ③ 忽略空白
         const wsCmp = (a, b) => norm(a) === norm(b);
         if (old.length && !allBlank) {
-            let ps3 = findAll(old, cur, st.from, wsCmp); if (prof.indentSensitive) ps3 = ps3.filter((p) => relIndentOk(old, cur, p));
+            let ps3 = findAll(old, cur, st.from, wsCmp, st); if (prof.indentSensitive) ps3 = ps3.filter((p) => relIndentOk(old, cur, p));
             const c3 = choose(ps3, 'ws'); if (c3 && c3.pos != null) return mkOk(c3.pos, 'fuzzy', h.ops, 0); if (c3 && c3.ambiguous) return { kind: 'ambiguous', cands: c3.ambiguous, total: c3.total, stage: 'ws', ops: h.ops, loose: true };
         }
         // 已經套用過？（新側精確出現、舊側找不到）
         for (let fz = 0; fz <= 2; fz++) { // 使用者改過脈絡時，去掉兩端 1～2 行脈絡再比（要求剩下的裡面有新增的行，否則不算證據）
             const ops = h.ops.filter((x) => x.t !== '-'); let a0 = 0, a1 = ops.length; for (let k = 0; k < fz && a0 < a1 && ops[a0].t === ' '; k++) a0++; for (let k = 0; k < fz && a1 > a0 && ops[a1 - 1].t === ' '; k++) a1--;
             const seg = ops.slice(a0, a1); if (!seg.some((x) => x.t === '+' && /\S/.test(x.s))) continue; const sl = seg.map((x) => x.s); if (sl.filter((s) => /\S/.test(s)).length < 2) continue; // 只有一行證據太薄（可能剛好別處有同樣的行）
-            const ps = findAll(sl, cur, st.from, wsCmp); const okp = prof.indentSensitive ? ps.filter((p) => relIndentOk(sl, cur, p)) : ps;
+            const ps = findAll(sl, cur, st.from, wsCmp, st); const okp = prof.indentSensitive ? ps.filter((p) => relIndentOk(sl, cur, p)) : ps;
             if (okp.length === 1 || (okp.length > 1 && exp != null && okp.includes(exp + a0))) return { kind: 'already', pos: okp.length === 1 ? okp[0] : exp + a0, len: sl.length };
         }
         // ④ 去掉兩端 1～2 行脈絡（使用者改過脈絡）
@@ -18354,7 +18345,7 @@ const holder = {};
             for (let k = 0; k < fz && ops.length && ops[ops.length - 1].t === ' '; k++) { ops.pop(); tail++; }
             if (!lead && !tail) break; const o2 = ops.filter((x) => x.t !== '+').map((x) => x.s); if (!o2.some((s) => /\S/.test(s))) continue;
             const hasCtx = ops.some((x) => x.t === ' '); const hasRem = ops.some((x) => x.t === '-'); if (!hasCtx && !hasRem) continue;
-            let ps = findAll(o2, cur, st.from, wsCmp); if (prof.indentSensitive) ps = ps.filter((p) => relIndentOk(o2, cur, p));
+            let ps = findAll(o2, cur, st.from, wsCmp, st); if (prof.indentSensitive) ps = ps.filter((p) => relIndentOk(o2, cur, p));
             const adj = (pp) => pp - lead; const e2 = baseExp == null ? null : baseExp + lead + st.carry;
             const pick = ps.length === 1 ? { pos: ps[0] } : (e2 != null && ps.includes(e2) ? { pos: e2 } : (ps.length ? { ambiguous: ps.slice(0, LIMITS.maxCands + 2), total: ps.length } : null));
             if (pick && pick.pos != null) { const r = mkOk(pick.pos, 'fuzzy', ops, fz); r.fuzzNote = '去掉 ' + lead + '+' + tail + ' 行脈絡'; return r; }
@@ -65802,12 +65793,10 @@ class FloatingAssistant {
             currentTopic: "無（新對話開始）",
         };
         
-        this.baseSystemPrompt = `你是一個具備「自適應依賴圖譜 RAG (Graph RAG)」與「程序記憶」能力的萬能進化助理。
+        this.baseSystemPrompt = `你是一個萬能進化助理，會依需求選用工具、使用「程序記憶」把做對的流程記下來。
 當你與使用者互動時，請遵循以下機制：
-1. 【記憶圖譜檢索】：
-   對話前系統會自動搜尋「最相關的知識節點」並遞迴拉取其依賴的前置節點（Prerequisites）與確認條件。請多利用這些已被喚醒的上下文回答，不要跳過前置步驟。
-2. 【長文章組織切塊】：
-   遇到超大文章、書籍或長程式碼時，你可以調用 \`rag_chunk_document\` 工具在背景進行語意切分，建立 dependencies 以免 context 混亂。`;
+1. 【工具優先】：能用工具查證或執行的事，就用工具，不要憑印象回答；工具回傳的限制與缺口要照實轉達。
+2. 【長文章組織】：遇到超大文章、書籍或長程式碼時，用文章大綱與分段讀取工具（article_outline、article_section）一段一段處理，不要一次塞進對話。`;
 
         // tw_stock_db客製: 2026-09-17使用者要求——桌面版執行時要在system
         // prompt明確提醒模型「這是可以真的存取本機檔案的桌面程式」，不要
@@ -68556,7 +68545,7 @@ ${fnData.code}
             },
             { type: 'object', properties: {
                 task: { type: 'string', description: '要委派給子agent的任務描述' },
-                domain: { type: 'string', description: '（選填）明確知道的領域代號，例如rag_lookup；不確定就留空讓系統自動判斷' },
+                domain: { type: 'string', description: '（選填）明確知道的領域代號，例如file_analysis；不確定就留空讓系統自動判斷' },
             }, required: ['task'], additionalProperties: false }
         );
 
@@ -75208,7 +75197,7 @@ ${fnData.code}
                     try { await this.ragSystem.add(`[lang:${key}] ${language}｜${c.title}\n${c.text}`, { id: `lang_${key}_${c.id}`, dependencies: c.id === 'overview' ? [] : [`lang_${key}_overview`], preConditions: [], source: 'language_explore', tags: `lang:${key} language_primer` }); n++; } catch (_) {}
                 }
                 rec.status = 'saved_to_rag'; await this._langSave(rec);
-                return { ok: true, saved: 'rag', nodes: n, note: `已把「${language}」的入門摘要拆成${n}個節點記進RAG知識庫（標籤 lang:${key}）。之後用 rag_query_graph({"query":"${language} 語法"}) 或 programming_knowledge({"action":"lookup","domain":"${key}","query":"…"}) 查。` };
+                return { ok: true, saved: 'rag', nodes: n, note: `已把「${language}」的入門摘要拆成${n}個節點記進RAG知識庫（標籤 lang:${key}）。之後用 programming_knowledge({"action":"lookup","domain":"${key}","query":"…"}) 查。` };
             }
             rec.status = 'declined'; await this._langSave(rec);
             return { ok: true, saved: false, note: '使用者選擇不保存。這次對話裡可以直接用剛整理的摘要，但不會留下來。' };
@@ -117138,7 +117127,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                                         <input type="checkbox" id="ai-rag-enabled-chk" style="cursor:pointer;">
                                         <label for="ai-rag-enabled-chk" class="ai-advanced-label" style="margin:0; cursor:pointer;">啟用 RAG（只當離線訓練器的養分）</label>
                                     </div>
-                                    <p class="ai-advanced-hint">2026-10-15 起，RAG 不再插進 AI 的思考（不會每一輪自動「喚醒」記憶，也沒有 rag_lookup 領域可以讓 AI 查），避免舊的、不相關的內容誤導 AI。這裡的知識只當「離線訓練器」的養分：離線模式（沒有 AI 時）回答、挑做法時會把 RAG 當作參考資料。勾選＝讓離線訓練器可以用這份知識；不勾＝不用。</p>
+                                    <p class="ai-advanced-hint">2026-10-15 起，RAG 不再插進 AI 的思考（不會每一輪自動「喚醒」記憶，AI 也沒有任何領域或工具入口可以查它），避免舊的、不相關的內容誤導 AI。這裡的知識只當「離線訓練器」的養分：離線模式（沒有 AI 時）回答、挑做法時會把 RAG 當作參考資料。勾選＝讓離線訓練器可以用這份知識；不勾＝不用。</p>
                                     <p class="ai-advanced-hint">語意檢索預設用內建的TF-IDF近似算法（免費、免設定，純字面詞頻比對）。如果在「LLM Model 管理」分頁把某一筆model標記成🧬 Embedding，這裡的檢索會改成優先呼叫那個模型的/embeddings端點取得真正的語意向量，理解同義詞/相近語意的能力會好上不少；沒標記、或呼叫當下失敗，會自動退回TF-IDF，不影響RAG照常運作。</p>
                                 </div>
                                 <div class="ai-advanced-stack">

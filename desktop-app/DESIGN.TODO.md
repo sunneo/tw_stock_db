@@ -34,7 +34,7 @@
 - 這台機器：C 編譯器沒設系統標頭路徑（C 實跑測試失敗，是環境問題）；awk 求和、`list-as-set` 偶爾因機器慢超時；編譯環境自動尋找已擱置。
 
 ### 介面
-- Graph RAG：標題列徽章已移除；系統提示與兩個 RAG 子任務領域的移除交給 code-slash（排在思考堆疊接線之後）。
+- Graph RAG：**已全部移除（2026-11-08）**——標題列徽章、基本系統提示的說法、`rag_lookup`／`rag_management` 兩個子任務領域、功能清冊的 `rag` 功能、語言探索領域的 `rag_query_graph`。**刻意保留**：四個 `rag_*` 工具的註冊（沒有任何領域入口，AI 看不到）、`ragSystem` 儲存層（離線訓練器查詢、語言探索「記到知識庫」仍用）。「啟用 RAG」設定項與說明文字保留（只當訓練器養分）。測試 `renderer/src/catalog/rag_removed.test.js`、實機評估 `scripts/eval/rag-removed.eval.js`。待改善：舊使用者已保存的 `ragEnabled` 設定名稱仍叫 RAG，不改名以免相容問題。
 
 
 ## 現況總覽（2026-11-06 快照，先看這張）

@@ -85,6 +85,7 @@ const suites = [
     ['行為描述（第一層）：行為分析器＋tree-sitter 抽 python／nodejs 的函式行為描述，與中間語言轉出的描述比對；操作目錄反向索引；只靠行為描述產生的骨架可編譯；需 tree-sitter 快取', 'renderer/src/ir/ir_behavior.test.js'],
     ['離線思考堆疊（缺口 C 層框／E 成品檢查／I 路由量測骨架；純程式，用假模型驗骨架）', 'renderer/src/recipe/offline_stack.test.js'],
     ['區塊 ↔ 中間語言 ↔ 目標語言：樣本 → 區塊 → 受控自然語言 → Python → 中間語言 → nodejs／java／c，實跑輸出與原 Python 一致；函式行為卡可從區塊抽出；需 tree-sitter 快取', 'renderer/src/ir/ir_blocks.test.js'],
+    ['AI 面向的 Graph RAG 已移除（領域清單、提示詞、功能清冊）；底層 rag 工具與訓練器／語言探索用的儲存層仍在', 'renderer/src/catalog/rag_removed.test.js'],
     ['/code 指令路由（寫／修／優化／合併／設計／解釋由程式判斷、欄位只從文字抽不編造、缺什麼說什麼；所有工具都註冊在程式設計領域；離線訓練器 code_write 規則）', 'renderer/src/recipe/code_slash.test.js'],
     ['程式優化對照表（13 條慢寫法→優化寫法（含 two-sum 計數題型），含記憶體實測；輸出一致、實測不變慢、不安全不動、沒測資不改）', 'renderer/src/recipe/code_optimize.test.js'],
     ['型別接線矩陣與路徑搜尋（回傳型別推論、具體程度、布林矩陣連乘、前 K 條接線與得分、萬用結構強制轉型）', 'renderer/src/catalog/matrix_core.test.js'],
