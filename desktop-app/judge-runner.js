@@ -44,7 +44,7 @@ function exec(cmd, args, o) {
         const cap = o.maxOutput || 1 << 20;
         const fin = (r) => { if (done) return; done = true; clearTimeout(timer); resolve(Object.assign({ stdout: out, stderr: err, timedOut, over, ms: Date.now() - t0 }, r)); };
         const killAll = () => { try { process.kill(-child.pid, 'SIGKILL'); } catch (e) { try { child.kill('SIGKILL'); } catch (e2) { /* 已結束 */ } } };
-        try { child = spawn(cmd, args, { cwd: o.cwd, detached: true, stdio: ['pipe', 'pipe', 'pipe'], env: { PATH: process.env.PATH, HOME: o.cwd || os.tmpdir(), LANG: 'C', LC_ALL: 'C' } }); } catch (e) { return resolve({ code: -1, signal: null, stdout: '', stderr: String(e.message || e), spawnError: true, ms: 0 }); }
+        try { child = spawn(cmd, args, { cwd: o.cwd, detached: true, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'], env: { PATH: process.env.PATH, HOME: o.cwd || os.tmpdir(), LANG: 'C', LC_ALL: 'C' } }); } catch (e) { return resolve({ code: -1, signal: null, stdout: '', stderr: String(e.message || e), spawnError: true, ms: 0 }); }
         const timer = setTimeout(() => { timedOut = true; killAll(); }, o.timeoutMs || 5000);
         child.stdout.on('data', (b) => { if (out.length < cap) out += b.toString('utf8'); else if (!over) { over = true; killAll(); } });
         child.stderr.on('data', (b) => { if (err.length < 65536) err += b.toString('utf8'); });
