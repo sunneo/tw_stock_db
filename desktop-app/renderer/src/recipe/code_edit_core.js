@@ -96,9 +96,9 @@
     class Budget extends Error { }
     async function editCode(a) {
         const lang = a.lang; const o = Object.assign({ maxRethink: 3, maxCalls: 20, unitMaxLines: 80 }, a.opts || {}); const Stack = a.stackMod || DefaultStack; const orig = String(a.source == null ? '' : a.source);
-        const calls = { ask: 0, write: 0, judge: 0, check: 0 }, trace = [], gaps = [], edits = []; let cur = orig, sum = null, rethinks = 0;
+        const calls = { ask: 0, write: 0, judge: 0, check: 0 }, trace = [], gaps = [], edits = []; let cur = orig, sum = null, rethinks = 0, patchInfo = null;
         const note = (e) => { trace.push(e); if (typeof a.onEvent === 'function') { try { a.onEvent(e); } catch (_) { /* 進度回報壞了不影響流程 */ } } };
-        const out = (extra) => { const ok = !!(sum && (sum.verdict === 'AC' || sum.verdict === 'CHECKED')); return Object.assign({ ok, verified: !!(sum && sum.verdict === 'AC'), verdict: sum ? sum.verdict : 'NONE', source: cur, diff: Fix.unifiedDiff(orig, cur, 'code'), edits, units: splitUnits(lang, cur).map((u) => ({ name: u.name, startLine: u.startLine, endLine: u.endLine })), rethinks, calls, gaps, trace }, extra || {}); };
+        const out = (extra) => { const ok = !!(sum && (sum.verdict === 'AC' || sum.verdict === 'CHECKED')); return Object.assign({ ok, verified: !!(sum && sum.verdict === 'AC'), verdict: sum ? sum.verdict : 'NONE', source: cur, diff: Fix.unifiedDiff(orig, cur, 'code'), edits, units: splitUnits(lang, cur).map((u) => ({ name: u.name, startLine: u.startLine, endLine: u.endLine })), rethinks, calls, gaps, trace, patch: patchInfo || undefined }, extra || {}); };
         if (!Fix.FAMILY[lang]) return out({ ok: false, reason: 'unsupported_lang', gaps: ['不支援的語言：' + lang + '（支援：' + Object.keys(Fix.FAMILY).join('、') + '）'] });
         if (typeof a.check !== 'function' && typeof a.judge !== 'function') return out({ ok: false, reason: 'no_checker', gaps: ['沒有檢查器也沒有判題器，無法驗證任何東西'] });
         const spend = (k) => { if (calls.ask + calls.write >= o.maxCalls) throw new Budget('呼叫次數用完（' + o.maxCalls + '）'); calls[k]++; };
@@ -119,6 +119,7 @@
         };
         try {
             if (stack) Stack.push(stack, { path: 'edit', question: '修好這份 ' + lang + ' 程式（語法→行為）', note: '從現有程式碼接續' });
+            if (a.patch) await patchCandidate();
             let r = await fixSyntax('開頭'); let guard = 0;
             // 語法仍然壞、而且有 write：讓模型重寫出錯所在的單元（帶編譯訊息）
             while (r.verdict === 'CE' && a.write && guard++ < 2) {
@@ -147,6 +148,22 @@
             if (stack) Stack.pop(stack, { ok: true, summary: sum.verdict });
             return out();
         } catch (e) { if (e instanceof Budget) { gaps.push(e.message); return out({ ok: false, reason: 'budget' }); } throw e; }
+
+        // 修補（unified diff）也是一種候選編輯：交給 merge diff patcher 合併進「目前」的程式，合併後一定過語法檢查與判題；沒過就回滾，改走原本的流程。
+        // 成功時 edits 用和語法修正、單元重寫相同的格式（by／startLine／endLine／desc／removed），diff 欄位共用。
+        async function patchCandidate() {
+            const Pm = (typeof FaCodePatch !== 'undefined' && FaCodePatch) || (typeof globalThis !== 'undefined' && globalThis.FaCodePatch) || (typeof require === 'function' ? (function () { try { return require('./code_patch_core.js'); } catch (_) { return null; } })() : null);
+            if (!Pm) { gaps.push('修補：這個環境沒有 merge diff patcher，略過'); return; }
+            const r = await Pm.applyPatch({ source: cur, diff: a.patch, lang, fileName: a.patchFile, parser: a.parser, ask: ask || undefined,
+                check: async (x) => { const s2 = await check({ lang, source: x }); return { ok: s2.verdict !== 'CE', verdict: s2.verdict, detail: s2.detail, compileLog: s2.compileLog }; },
+                judge: hasTests ? async (x) => { calls.judge++; return a.judge({ lang, source: x, problem: a.problem }); } : undefined, opts: Object.assign({}, o.patchOpts) });
+            const report = Pm.report(r); patchInfo = { ok: !!r.ok, status: r.status, rolledBack: !!r.rolledBack, reason: r.reason, report, hunks: (r.hunks || []).map((h) => ({ index: h.index, status: h.status, line: h.line, offset: h.offset })), verified: r.verified };
+            if (!r.ok) { gaps.push('修補沒有合併（' + r.status + '）：' + clip(r.reason, 160)); note({ t: 'patch', ok: false, status: r.status }); return; }
+            if (r.noop) { gaps.push('修補早就套用過，沒有需要改的'); note({ t: 'patch', ok: true, noop: true }); return; }
+            const pd = Pm.parseDiff(a.patch); const file = pd.ok && (pd.files.find((f) => a.patchFile && (f.newName === a.patchFile || f.oldName === a.patchFile)) || pd.files[0]);
+            for (const h of r.hunks) { const src = file && file.hunks[h.index - 1]; const oldT = src ? src.ops.filter((x) => x.t === '-').map((x) => x.s).join('\n') : ''; const newN = src ? src.ops.filter((x) => x.t !== '-').length : 1; edits.push({ by: 'patch', startLine: h.line || 0, endLine: (h.line || 0) + Math.max(0, newN - 1), desc: '修補第 ' + h.index + ' 段（' + h.status + (h.offset ? '，位移 ' + h.offset : '') + '）', removed: clip(oldT, 200) }); }
+            cur = r.source; note({ t: 'patch', ok: true, hunks: r.hunks.length });
+        }
 
         async function rewriteUnit(u, feedback, isSemantic) {
             if (!a.write) return false; spend('write');
