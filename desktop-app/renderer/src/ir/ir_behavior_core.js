@@ -49,6 +49,25 @@
             }
             named(n).forEach(walk);
         };
+        // 靜態語言：java／c／c++／c#（型別在簽名上，直接收）
+        const walkS = (n) => {
+            let hit = false;
+            if (lang === 'java' && n.type === 'method_declaration') {
+                const ps = n.childForFieldName('parameters'); out[txt(n.childForFieldName('name'))] = { params: named(ps).filter((p) => /formal_parameter|spread_parameter/.test(p.type)).map((p) => ({ name: txt(p.childForFieldName('name')), type: txt(p.childForFieldName('type')) })), ret: txt(n.childForFieldName('type')), doc: '' }; hit = true;
+            }
+            if ((lang === 'c' || lang === 'cpp') && n.type === 'function_definition') {
+                let d = n.childForFieldName('declarator'); while (d && d.type !== 'function_declarator' && d.childForFieldName('declarator')) d = d.childForFieldName('declarator');
+                if (d && d.type === 'function_declarator') {
+                    const nm = d.childForFieldName('declarator'); const ps = d.childForFieldName('parameters');
+                    out[txt(nm).split('::').pop()] = { params: named(ps).filter((p) => p.type === 'parameter_declaration').map((p) => { const dd = p.childForFieldName('declarator'); let nn = dd; while (nn && nn.childForFieldName && nn.childForFieldName('declarator')) nn = nn.childForFieldName('declarator'); const ptr = dd ? (txt(dd).match(/^[*&]+/) || [''])[0] : ''; return { name: nn ? txt(nn).replace(/^[*&\s]+|\[.*$/g, '') : '', type: txt(p.childForFieldName('type')) + ptr }; }), ret: txt(n.childForFieldName('type')), doc: '' }; hit = true;
+                }
+            }
+            if (lang === 'csharp' && n.type === 'method_declaration') {
+                const ps = n.childForFieldName('parameters'); out[txt(n.childForFieldName('name'))] = { params: named(ps).filter((p) => p.type === 'parameter').map((p) => ({ name: txt(p.childForFieldName('name')), type: txt(p.childForFieldName('type')) })), ret: txt(n.childForFieldName('type') || n.childForFieldName('returns')), doc: '' }; hit = true;
+            }
+            named(n).forEach(walkS); return hit;
+        };
+        if (lang === 'java' || lang === 'c' || lang === 'cpp' || lang === 'csharp') { walkS(rootNode); return out; }
         walk(rootNode); return out;
     }
 
@@ -95,5 +114,19 @@
             return '    /**\n' + doc.map((l) => '     * ' + l.replace(/\*\//g, '* /').replace(/[^\x20-\x7e]/g, (c) => '\\u' + ('0000' + c.charCodeAt(0).toString(16)).slice(-4))).join('\n') + '\n     */\n    static ' + ty(bd.ret === 'None' ? 'void' : bd.ret).replace('Object', 'void') + ' ' + bd.name + '(' + (bd.params || []).map((p) => ty(p.type) + ' ' + p.name).join(', ') + ') {\n        throw new RuntimeException("待實作：' + bd.name + '");\n    }\n'; }
         return null;
     }
-    return { VERSION, index, recognize, sigsFromTree, describe, fromIr, agree, skeleton };
+    // 行為卡：一個函式一張，給人看（只讀，不產生程式碼）
+    function card(bd) {
+        const sig = bd.name + '(' + (bd.params ? bd.params.map((p) => p.name + (p.type ? ': ' + p.type : '')).join(', ') : '…') + ')' + (bd.ret ? ' → ' + bd.ret : '');
+        const L = ['### ' + sig, ''];
+        if (bd.doc) L.push(bd.doc, '');
+        L.push('- 位置：' + (bd.pos ? '第 ' + bd.pos[0] + '–' + bd.pos[1] + ' 行' : '未知') + '；來源層級 ' + bd.level + (bd.level === 1 ? '（行為分析器）' : '（完整中間語言）'));
+        L.push('- 控制流：' + bd.control.loops + ' 個迴圈、' + bd.control.branches + ' 個分支、複雜度 ' + bd.control.complexity);
+        L.push('- 呼叫：' + (bd.calls.length ? bd.calls.join('、') : '沒有呼叫本檔其他函式'));
+        L.push('- 標準操作：' + (bd.std.length ? bd.std.map((s) => s.op + (s.ambiguous ? '（候選）' : '')).join('、') : '無'));
+        if (bd.lib && bd.lib.length) L.push('- 未認得的呼叫：' + bd.lib.join('、'));
+        L.push('- 副作用：' + (bd.effects.length ? bd.effects.join('、') : bd.pure === 'unknown' ? '看不出（有未認得的呼叫）' : '無（純函式）'));
+        if (bd.behaviors && bd.behaviors.length) L.push('- 行為分類：' + bd.behaviors.join('、'));
+        return L.join('\n');
+    }
+    return { VERSION, index, recognize, sigsFromTree, describe, fromIr, agree, skeleton, card };
 });

@@ -63,5 +63,20 @@ const DIR = process.env.FA_TS_DIR || [path.join(os.tmpdir(), 'fa-ts-cache'), pat
             const c = cp.spawnSync('javac', ['-encoding', 'UTF-8', '-d', d, path.join(d, 'Main.java')], { encoding: 'utf8' }); assert.strictEqual(c.status, 0, c.stderr + jv);
         } finally { try { fs.rmSync(d, { recursive: true, force: true }); } catch (e) { /* 忽略 */ } }
     });
+    // 階段 A：任意檔案的行為卡。java／c++／c#／lua 用專案自帶的行為分析器樣本；沒有本機文法的語言略過
+    const SAMP = path.join(root, 'renderer', 'src', 'behavior', 'tests', 'samples');
+    for (const [lang, wasm, file] of [['java', 'java', 'sample.java'], ['cpp', 'cpp', 'sample.cpp'], ['csharp', 'c_sharp', 'sample.cs']]) {
+        await t('行為卡 ' + lang + '：簽名（參數名稱與型別）、呼叫、控制流抽得出且卡片可讀', async () => {
+            if (!fs.existsSync(path.join(DIR, 'tree-sitter-' + wasm + '.wasm'))) { notes.push('行為卡 ' + lang + ' 略過：沒有本機文法'); return; }
+            const L = await Parser.Language.load(path.join(DIR, 'tree-sitter-' + wasm + '.wasm')); const p = new Parser(); p.setLanguage(L); const src = fs.readFileSync(path.join(SAMP, file), 'utf8');
+            const sigs = BD.sigsFromTree(lang, p.parse(src).rootNode, src); const r = await eng.explain(file, src, { notes: {} });
+            const fns = r.functions.filter((f) => !/^<anon/.test(f.name)); const names = fns.map((f) => f.name);
+            const cards = fns.map((f) => BD.card(BD.describe(lang, f, sigs[f.name], names)));
+            const withSig = fns.filter((f) => sigs[f.name] && sigs[f.name].params && sigs[f.name].ret != null).length;
+            assert.ok(fns.length >= 2 && withSig >= Math.ceil(fns.length * 0.6), lang + ' 函式 ' + fns.length + '、有簽名 ' + withSig + '：' + JSON.stringify(Object.keys(sigs)));
+            assert.ok(cards.every((c) => /^### /.test(c) && /副作用/.test(c) && /控制流/.test(c)));
+            notes.push('行為卡 ' + lang + '：' + fns.length + ' 個函式，' + withSig + ' 個抽到完整簽名；範例：' + cards[0].split('\n')[0]);
+        });
+    }
     console.log(notes.join('\n')); console.log(pass + ' passed, ' + fail + ' failed'); process.exit(fail ? 1 : 0);
 })().catch((e) => { console.error(e); process.exit(2); });
