@@ -1,6 +1,6 @@
 // node scripts/music-tests/midi_route.test.js -- 「寫貝多芬風格的 MIDI」這類說法要穩定進 midi_compose(任務提示規則與離線規則都讀原始碼裡的正規表示式來測)
 const fs = require('fs'), path = require('path');
-const s = fs.readFileSync(path.join(__dirname, '../../renderer/src/floating-assistant.js'), 'utf8');
+const s = fs.readFileSync(path.join(__dirname, '../../renderer/src/floating-assistant.js'), 'utf8').replace(/\r\n/g, '\n'); // Windows 工作樹是 CRLF，統一成 LF 再定位
 let ok = 0; const bad = [];
 function check(name, cond, extra) { if (cond) ok++; else bad.push(name + (extra !== undefined ? ' ' + JSON.stringify(extra).slice(0, 200) : '')); }
 const i = s.indexOf("id: 'midi_compose',\n    re: "); check('task hint for midi_compose exists', i > 0);
