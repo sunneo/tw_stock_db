@@ -23,7 +23,7 @@
 
 ### 矩陣與 Blockly（`DESIGN.matrix-fallback.md`、`HANDOFF.blockly-teach.md`）
 - 矩陣轉 Blockly 已接進產品（2026-11-08，`matrix_blocks` 工具＋`write_code` 結果帶區塊，真 Electron 驗證過遞推與 DFA）；**待改善**：離線組合只有「讀取器讀不出、或範式沒解出」才走矩陣層，所以多數題目看不到區塊；圖／格子／組合層的真 Electron 沒逐一跑；沒有區塊畫面（只回受控自然語言與分段）。
-- 狀態機 UML 圖種、虛擬機轉結構化自然語言的反編譯、反編譯後狀態命名。
+- 狀態機圖種、VM 轉結構化反編譯、狀態命名已做純模組（2026-11-08，`DESIGN.matrix-fallback.md` §11.7）；**待改善**：狀態機圖種沒收編進 `uml_core` 也沒畫面；VM 區塊沒接 `write_code`；名稱是規則推的角色；BFS 交錯迴圈只能寫成狀態分派。
 - Blockly 教學下週待辦：多矩陣輸入形狀（銀行家演算法、分頁位址轉換）、Linux 語意模擬缺口、holdout 未解題（只量測不可教）。
 
 ### 剖析器與環境

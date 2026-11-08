@@ -517,7 +517,6 @@ FA_TS_DIR=/tmp/fa-ts-cache node scripts/run-core-tests.js
 ### 14.8 待改善（第 14 節）
 
 - 中文 CNL 是我另外寫的範本，**沒有接到現有 `py_blocks` 的受控自然語言**（程式⇄區塊⇄CNL 那套）；「矩陣⇄CNL」只是設計方向，沒驗證能接。
-- 沒有 VM→Python 的反編譯；VM 的 CNL 是逐指令的，沒有把迴圈、分支還原成結構化的描述。
-- 命名由人手動給，編譯器不會自動產生有意義的狀態名；學出來的稠密 WFA 沒有「換基底成標準形」的程式。
+- （2026-11-08 已做，見 `DESIGN.matrix-fallback.md` §11.7）VM→結構化中文／Python 反編譯與預設名稱改寫、DFA 狀態命名規則（`matrix_structure_core.js`、`matrix_statemachine_core.js`）。**仍待改善**：名稱是規則推的角色不是語意；BFS 這種交錯迴圈只能寫成狀態分派；學出來的稠密 WFA 沒有「換基底成標準形」的程式。
 - 可讀性只用「行數／字元數」量，沒有做人的閱讀實驗。
 - 門檻（約 10 狀態、30 非零元素）是判斷，不是實驗結論。

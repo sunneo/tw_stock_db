@@ -13852,6 +13852,7 @@ const holder = {};
  *   M.decompile(res) → dec | {ok:false, reason}
  *       dec = { ok, kind, form, ops:[{name, params, blocks}], main:'main', segments:[{role, title, blocks}] }
  *       segments 是 main 區塊序列的分段（concat 起來 ＝ main 的區塊）；role：read／table／start／scan／graph／compute／vector／filter／reduce／print…
+ *   M.decompileVm(prog) → dec（kind:'vm'；需要 env.ST＝matrix_structure_core；dec.readable＝false 表示有還原不了的跳轉、用狀態分派寫）
  *   M.compile(dec) → Python 原始碼（區塊 → 敘述 IR → Python；其他 def 也一起）
  *   M.cnl(dec) → 每段一個標題＋受控自然語言（給使用者看／貼回）
  *   M.readForm(dec) → 從區塊讀回形態（dfa／recurrence／compose），讀不回來回 null＝離開矩陣模式
@@ -13910,6 +13911,12 @@ const holder = {};
             const raw = ops.reduce((n, o) => n + B.stats(o.blocks).generic, 0), all = ops.reduce((n, o) => n + B.stats(o.blocks).blocks, 0);
             return { ok: true, kind, form: clone(form), model, ops, segments, stats: { blocks: all, generic: raw } };
         }
+        // 第 4 級以上（虛擬機程式）：先還原成 while／if 結構的 Python（matrix_structure_core），再走同一條拆段路；沒有注入結構模組時回 ok:false
+        function decompileVm(prog) {
+            const ST = env.ST; if (!ST) return { ok: false, reason: '沒有注入 matrix_structure_core' };
+            const py = ST.vmToPython(prog); if (!py.ok) return { ok: false, reason: py.reason };
+            const dec = decompile({ ok: true, source: py.source, matrixForm: { kind: 'vm' } }); if (dec.ok) { dec.readable = py.readable; dec.source = py.source; } return dec;
+        }
         const flat = (dec) => [].concat(...dec.segments.map((s) => s.blocks));
         function syncMain(dec) { const m = dec.ops.find((o) => o.name === 'main'); m.blocks = flat(dec); return dec; }
         function compile(dec) {
@@ -13961,7 +13968,7 @@ const holder = {};
             return d;
         }
         function baseOf(dec) { const b = flat(dec).find((x) => isAssignTo(x, 'BASE')); return b ? B.exprText(b.slots.e) : '0'; }
-        return { decompile, compile, cnl, readForm, setForm, setCompose, flat };
+        return { decompile, decompileVm, compile, cnl, readForm, setForm, setCompose, flat };
     }
     return { makeMatrixBlocks };
 });

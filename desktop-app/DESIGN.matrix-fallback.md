@@ -247,8 +247,25 @@ fallback: { stage: 'reader'|'recipe'|'lesson'|'paradigm'|'matrix'|'online'|'colu
 
 ### 11.6 順序與限制
 - （2026-11-08 使用者指示「矩陣到blockly先做」，已依 §11.5c 實作純模組；原本「排在矩陣層有進步之後」的限制取消。）
-- 沒有 VM→結構化 CNL 的反編譯（§14.8），L4 以上的 `blocks` 暫時給不出來。
-- 區塊 IR 與 UML 的 mapping 只有表格，沒有實驗；風險在「狀態機 UML」是否能被現有 UML 模型（`uml_core`）表達，需要先讀 `uml_core` 的圖種類。【待查】
+- （2026-11-08 已做，見 §11.7）VM→結構化中文與 Python、L4 以上的 `blocks`、狀態機圖種。
+- 區塊 IR 與 UML 的 mapping：已讀 `uml_core`，結論在 §11.7（現有模型表達不了狀態機，改做獨立圖種）。
+
+### 11.7 狀態機圖種與 VM 反編譯（2026-11-08，純模組＋測試）
+
+**`uml_core` 能不能表達狀態機？不能（我讀過程式驗證）。** 它的模型只有 `classes`（屬性、操作、列舉值）、`relations`（繼承、實作、組合、聚合、關聯，帶標籤與多重性）、`usecases`（步驟序列）。拿「列舉＋帶標籤的關聯」硬湊，邊畫得出來，但**起點、接受集、轉移字母、決定性與完整性檢查都沒有地方放**，往返（圖→轉移矩陣→圖）會丟資訊。所以做成獨立圖種，沿用 `uml_core` 的做法（一行一件事的文字 DSL、程式產生 Mermaid／PlantUML、解析後逐項驗證）：
+
+- `renderer/src/algo/matrix_statemachine_core.js`：`dfaToMachine`／`machineToDfa`（檢查起點恰一個、決定性、完整性；缺邊可用 `complete` 補「失敗」狀態）、`toDsl`／`parseDsl`、`toMermaid`（`stateDiagram-v2`，起點 `[*] -->`、接受 `--> [*]`）、`toPlantUml`、`matricesToMachine`／`machineToMatrices`（走 `matricesToDfa`、`dfaMatrices`）。
+- **狀態命名**：`stateNames(d)` 由最短到達字串給名字：「起點」、「讀過 10」、所有出邊回自己的叫「成功」或「失敗」。這是規則，不是理解語意；計數取餘這類機器會得到「讀過 1」「讀過 11」這種名字，比 `s0` 好讀但不是「餘 2」。
+- 往返測試：DFA→DSL→DFA 相同、轉移矩陣→狀態機→轉移矩陣相同、30 個隨機 DFA 往返後接受判斷一致、非決定性與缺邊被擋下。
+
+**VM→結構化**（`matrix_structure_core.js`）：
+- `structurize`：把標籤＋跳轉還原成 `while`／`if`／`else`／`break`／`continue`；迴圈第一條是條件離開就變成 `while 條件`；目標後面是幾行加 halt 的就地展開。**還原不了的**（例如佇列 BFS：外層迴圈的回頭跳轉是條件跳轉、與內層迴圈交錯）留下 `goto` 並標 `hasGoto`。13 個編譯器產物裡 12 個完全結構化，只有 BFS 要走狀態分派。
+- `vmToStructuredCnl`：有縮排的受控自然語言（「當 … 時重複」「如果 … 否則」），每條指令附一句說明。
+- `vmToPython`：純量暫存器用 Python 整數、矩陣用 list；半環（計數含取模、布林、最短路、取大）寫成頂層小函式；能結構化就寫 `while`／`if`，不能就寫「狀態分派」（每個基本區塊一個 `if state == ...`，標籤＝狀態名；一樣正確、比較難讀，回傳的 `readable:false`）。
+- `renderer/src/algo/matrix_blocks_core.js` 新增 `decompileVm(prog)`（需注入 `ST`）：VM→Python→同一條拆段路，回 `kind:'vm'` 的 dec，`compile`／`cnl` 照用。
+- **驗證（我跑的）**：13 個編譯器產物（費氏、DFA 計數、圖計數／最短路、括號、gcd、二分、迴文、BFS、單熱記憶、雙調排序、並查集、指標跳躍）的 Python 版與 VM 在各 40 筆隨機輸入上輸出完全一致（真 python）；其中 6 個再經區塊→編回 Python，各 25 筆輸入一致，一般積木 0 個。
+- **名稱與註解**：`renameVM` 只改「看起來是預設名」的暫存器與標籤（`s0`、`L1`、`t2`…）：讀入的叫 `number_in`、計數加一的叫 `counter`、halt 的叫 `answer`；迴圈起點叫 `loop`、出口叫 `after_loop`、其餘 `branch`／`finish`；改名後 VM 執行結果不變（測試）。編譯器本來取好的名字（`loop`、`end`、`cnt`）不動。
+- **沒做／待改善**：名稱是規則推的角色，不懂語意（`number_in_2` 不會變成 `b`）；狀態分派形式可讀性差，沒有把 BFS 這種交錯迴圈改寫成巢狀迴圈；VM 區塊還沒接 `write_code` 或 `matrix_blocks` 工具（只有純模組，矩陣層本來就只在 L1～L3 出 `matrixForm`，L4 以上走範本庫，沒有 VM 程式可反編譯）；狀態機圖種沒有接進 `uml_core` 的 `parse`／`toMermaid`，也沒有畫面；可讀性仍沒做人的閱讀實驗。
 
 ### 9.4 加上 L0 公式枚舉（模式 B，第二版）：21/60
 
