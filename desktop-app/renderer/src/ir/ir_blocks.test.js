@@ -71,6 +71,15 @@ const run = (exe, args, input, timeout) => { const r = cp.spawnSync(exe, args, {
         const bad = bridge.styleCheck(['def get_total(a):', '    sum_all = 0', '    for itemValue in a:', '        sum_all += itemValue', '    return sum_all', '', 'def printResult(x):', '    print(x)', ''].join(String.fromCharCode(10)));
         assert.strictEqual(bad.ok, false); assert.ok(bad.variables.mixed.indexOf('itemValue') >= 0, JSON.stringify(bad)); assert.deepStrictEqual(bad.functions.mixed.length, 1);
     });
+    await t('行內註解經區塊往返不丟：區塊產生的 Python 轉中間語言後，註解數與原程式相同，且沒有掛不回的', () => {
+        let total = 0;
+        for (const s of SAMPLES) {
+            const r = through(s); assert.strictEqual(r.p.comments.unplaced, 0, s.id + ' 有註解掛不回 ' + JSON.stringify(r.p.comments));
+            const a = IR.comments(bridge.toIr(s.py, s.id).ir).length, b = IR.comments(bridge.toIr(r.p.python, s.id).ir).length; assert.strictEqual(b, a, s.id + ' 註解數 原 ' + a + ' 區塊後 ' + b); total += r.p.comments.placed;
+        }
+        assert.ok(total >= 5, '至少要有幾個註解被測到：' + total); notes.push('區塊往返保留註解 ' + total + ' 個（含獨立註解與行尾註解）');
+        const em = bridge.emit(through(SAMPLES[0]).p.python, 'nodejs', 'c'); assert.ok(/walk the list/.test(em.code) && /accumulator/.test(em.code), em.code);
+    });
     await t('壞的受控自然語言：不丟例外，回報解析錯誤', () => {
         const p = bridge.program([{ name: 'main', params: [], cnl: '這不是任何已知的區塊 @@@' }]); assert.strictEqual(p.ok, false);
         const e = bridge.blocksToTarget([{ name: 'main', params: [], cnl: '這不是任何已知的區塊 @@@' }], 'nodejs'); assert.strictEqual(e.ok, false); assert.ok(e.diags.length);

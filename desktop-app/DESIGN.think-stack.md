@@ -92,10 +92,10 @@
 |---|---|---|---|
 | A | 離線失敗時 `rounds` 被丟掉 | **已補（97231841）** | `_codeOffline` 失敗與成功都帶回 `rounds`；`runCode` 外層把「配方✘→課✘→範式✘(試 N 個)→矩陣✘」摘進 `gaps`（後面的路線會整個換掉 gaps，所以在最外層補回）；`code_agent_core.test.js` 有測試 |
 | B | 成功時也帶回 rounds | **已補（97231841）** | `offline.rounds` |
-| C | 離線沒有思考堆疊框（`buildFromUML` 每層 push／失敗 pop） | **未做（大）** | 離線全是純程式層、沒有模型呼叫，框的價值只在診斷；要先設計「層」對應哪種框（recipe／lesson／paradigm／matrix／blocks）與結果寫回格式。進 renderer：否 |
+| C | 離線沒有思考堆疊框（`buildFromUML` 每層 push／失敗 pop） | **純模組已補（2026-11-08）**：`renderer/src/recipe/offline_stack_core.js` 的 `fromRounds`——根框架「離線寫程式」＋每層（配方／課／範式／矩陣／區塊迴圈）一個子框架，成功 done、失敗 failed 並把「沒解出來＋原因」記成根框架的已定決定；`stuckAt` 回答卡在哪一層；`modelHeader` 給轉模型路線用；可 JSONL 往返。測試 `offline_stack.test.js` | **待改善**：尚未接進 `_codeOffline`／`runCode`（要管理者接線；現在仍是 `roundsNote` 單行字串）；`Stack.decide` 的框化版本等接線；層內（例如範式試了哪 12 個）沒有子框架 |
 | D | 離線失敗轉模型路線時，已試過的層沒交給模型 | **已補（2026-11-08）**：`runCode` 把離線各層摘要附在給模型的敘述尾端（「離線的程式組合已經試過但沒成功——…請用不同的做法」），只動敘述、不動測資與判題；`code_agent_core.test.js` 有測試。`Stack.decide` 的框化版本仍等 C | 做 C 時再改成框 |
-| E | 離線沒有 stackChecks | **未做（中）** | 只對 `writeBlocks` 外層加一次 `selfValidate`，預設跟隨 `stack_checks`；先看 C |
+| E | 離線沒有 stackChecks | **純模組已補（2026-11-08）**：`selfCheck`——程式檢查（注入的純函式，例如 `styleCheck`、語法檢查）永遠跑；問模型的自問（`selfValidate`）只在 `enabled` 且有 `ask` 時跑，預設關（維持「額外檢查預設關」的結論），問不出來不阻擋。測試同上 | **待改善**：尚未接線；自問是否值得預設開沒有實測（離線路徑成品已經過沙盒判題，自問的增益預期小，這是推測）；進階程式檢查（語法、常見錯誤）只有注入點，沒有內建項目 |
 | F | 兄弟一致性只在基準腳本 | **部分補（2026-11-08）**：純程式的 `styleCheck(python)`（`renderer/src/ir/ir_blocks_core.js`，測試 `ir_blocks.test.js`）檢查函式名／變數名主流命名風格占比並指出混用的名稱 | **待改善**：尚未接進離線路徑（`_codeOffline` 沒呼叫它，要管理者接線）；不是語法樹比對；離線模型固定單類別，跨類別一致性未設計 |
 | G | CoLU 規劃路由未接到寫程式流程 | **不建議接** | `FaRoute` 是「找不到工具」的路線，離線組合不是它的場景；只在 gap 說明。若要接，先釐清需求 |
 | H | `DESIGN.colu.md` 沒有堆疊／一致性／規劃路由的定義 | **已補（本批）** | 在該檔加交叉引用，註明離線尚未接線 |
-| I | `chooseTool` 路由堆疊、CoLU 計畫階段實測 | **未做（中）** | `scripts/eval/stack_consistency.js` 加離線變體 |
+| I | `chooseTool` 路由堆疊、CoLU 計畫階段實測 | **量測骨架已補（2026-11-08）**：`measureRoute`＋`scripts/eval/stack_route.js --url <模型服務>`（同一批 10 題×重複、無堆疊 vs 有堆疊的正確率與呼叫數）；骨架用確定性假模型驗過會跑、堆疊版提示確實帶標頭 | **待改善／需真模型**：**還沒有任何真模型數字**（本輪沒有跑模型服務），所以不能宣稱路由堆疊有沒有效；CoLU 計畫階段的量測尚無骨架；題目是自己出的小題組，量測時要注意天花板效應 |

@@ -29,6 +29,32 @@
             const pr = B.parseCNL(f.cnl || ''); return { ok: pr.ok, blocks: pr.blocks, errors: pr.errors || [] };
         };
         // 區塊 → Python（所有函式；有名為 main 的函式就在最後呼叫它）
+        // 行內註解（trivia）旁路：區塊樹沒有註解節點，所以從原始碼收集註解，記下「掛在哪一行程式上」（行尾註解＝同一行；獨立註解＝下一行程式），
+        // 區塊產生 Python 後再依程式行的內容（去空白、引號統一）掛回。掛不回的如實計入 unplaced，附在檔尾，不丟棄。
+        const NL = String.fromCharCode(10);
+        const normLine = (t) => String(t).trim().split(" ").join("").split("(").join("").split(")").join("").split(String.fromCharCode(34)).join(String.fromCharCode(39));
+        function collectComments(src, rootNode) {
+            const lines = String(src).split(NL), raw = [];
+            (function walk(n) { if (n.type === "comment") { raw.push({ row: n.startPosition.row, col: n.startPosition.column, text: n.text }); return; } for (let i = 0; i < n.childCount; i++) walk(n.child(i)); })(rootNode);
+            return raw.map((c) => {
+                const code = (lines[c.row] || "").slice(0, c.col), trail = code.trim().length > 0; let anchor = trail ? code : "";
+                if (!trail) { for (let r = c.row + 1; r < lines.length; r++) { const t = lines[r].trim(); if (t && t[0] !== "#") { anchor = lines[r]; break; } } }
+                return { text: c.text, trail, anchor: normLine(anchor) };
+            });
+        }
+        function attachComments(python, comments) {
+            const lines = String(python).split(NL), used = {}, before = {}, tail = []; let placed = 0;
+            (comments || []).forEach((c) => {
+                let idx = -1; if (c.anchor) for (let i = 0; i < lines.length; i++) { if (!used[(c.trail ? "t" : "o") + i] && normLine(lines[i]) === c.anchor) { idx = i; break; } }
+                if (idx < 0) { tail.push(c.text); return; }
+                used[(c.trail ? "t" : "o") + idx] = 1; placed++;
+                if (c.trail) lines[idx] = lines[idx] + "  " + c.text; else (before[idx] = before[idx] || []).push(c.text);
+            });
+            const out = []; lines.forEach((l, i) => { if (before[i]) { const ind = l.slice(0, l.length - l.trimStart().length); before[i].forEach((t) => out.push(ind + t)); } out.push(l); });
+            tail.forEach((t) => out.push(t));
+            return { python: out.join(NL), placed, unplaced: tail.length };
+        }
+
         function program(funcs, opts) {
             const ctx = opts && opts.ctx; const errors = [], bodies = {};
             for (const f of funcs) { const r = blocksOf(f); if (!r.ok) { errors.push({ func: f.name, errors: r.errors }); continue; } bodies[f.name] = { body: B.toIR(r.blocks), params: f.params }; }
@@ -37,8 +63,9 @@
             const m = ctx ? JSON.parse(JSON.stringify(ctx)) : { name: 'M', actors: [], relations: [], usecases: [], prelude: [], order: [], classes: [{ name: 'M', kind: 'class', attrs: [], values: [], ops: [] }] };
             const seen = {}; m.classes.forEach((c) => c.ops.forEach((op) => { if (bodies[op.name]) { op.body = bodies[op.name].body; seen[op.name] = 1; } }));
             let added = 0; Object.keys(bodies).forEach((n) => { if (!seen[n]) { m.classes[0].ops.push(mkOp(n, bodies[n].params, bodies[n].body)); added++; } });
-            let python = C2U.toPython(m); if (!ctx && bodies.main) python += '\nmain()\n';
-            return { ok: true, errors: [], python };
+            let python = C2U.toPython(m); let commentStats = { placed: 0, unplaced: 0 };
+            const trivia = (opts && opts.comments) || (ctx && ctx.trivia); if (trivia && trivia.length) { const a = attachComments(python, trivia); python = a.python; commentStats = { placed: a.placed, unplaced: a.unplaced }; } if (!ctx && bodies.main) python += '\nmain()\n';
+            return { ok: true, errors: [], python, comments: commentStats };
         }
         function fromPython(src) {
             const tree = parseTree(src); const u = C2U.fromTree(tree.rootNode, { source: src });
@@ -46,7 +73,8 @@
             u.model.classes.forEach((c) => c.ops.forEach((op) => {
                 const blocks = B.fromIR(op.body); funcs.push({ name: op.name, params: op.params.map((p) => p.name), sig: { params: op.params, ret: op.ret }, blocks, cnl: B.toCNL(blocks), stats: B.stats(blocks) });
             }));
-            return { funcs, coverage: u.coverage, ctx: u.model };
+            const comments = collectComments(src, tree.rootNode); u.model.trivia = comments;
+            return { funcs, coverage: u.coverage, ctx: u.model, comments };
         }
         function toIr(python, name) {
             const tree = parseTree(python); const r = IN.fromTree(tree.rootNode, { source: python, name: name || 'blocks' });
@@ -84,7 +112,7 @@
             const share = (names) => { const st = names.map(styleOf).filter(Boolean); if (st.length < 2) return { score: 1, dominant: st[0] || null, mixed: [] }; const cnt = {}; st.forEach((x) => { cnt[x] = (cnt[x] || 0) + 1; }); const dom = Object.keys(cnt).sort((a, b) => cnt[b] - cnt[a])[0]; return { score: cnt[dom] / st.length, dominant: dom, mixed: names.filter((n) => { const k = styleOf(n); return k && k !== dom; }) }; };
             const f = share(fn), v = share(vars.filter((x, i, a) => a.indexOf(x) === i)); return { functions: f, variables: v, score: Math.min(f.score, v.score), ok: f.score === 1 && v.score === 1 };
         }
-        return { styleCheck, program, fromPython, toIr, emit, blocksToTarget, cards, cardText };
+        return { collectComments, attachComments, styleCheck, program, fromPython, toIr, emit, blocksToTarget, cards, cardText };
     }
     return { make };
 });
