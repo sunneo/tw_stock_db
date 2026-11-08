@@ -122,7 +122,21 @@
 | `git apply --3way`（實驗） | base blob 在物件庫時可三方合併 | 需要 repo 索引裡有 base；結果留衝突標記、工作區進入 `UU` 狀態 |
 | `git merge-file --diff3`（實驗） | 純三方合併（不需 repo），改動互不重疊時**完全正確**（實測：ours 在別處插函式＋theirs 改一行 → 乾淨合併） | **真衝突時衝突區塊太寬**：實測 ours 改 `mul` 的那一行、旁邊另外新增了一個 `sub` 函式，標記把無關的 `sub` 整個吞進 `<<<<<<<` 區塊；沒有語法單元的概念 |
 
-**設計（未做）**
+**實作狀態（2026-11-08，已實作並測試；第 1～4 點與第 5 點的「合併後驗證」做了，「接進 `editCode`」未做）**
+
+檔案：`renderer/src/recipe/code_patch_core.js`（`FaCodePatch`，純函式 UMD）、測試 `renderer/src/recipe/code_patch.test.js`（64 項，已登記到 `scripts/run-core-tests.js`）、產品入口 `merge_patch` 工具＋`_codePatch`（`floating-assistant.js`）、真 Electron 評估 `scripts/eval/code_patch.eval.js`（用 `node scripts/eval/code_patch.run.js` 啟動）。
+
+- **解析**：`parseDiff` 容忍 CRLF、標頭行數寫錯（用實際內容重算並警告）、沒有檔頭、`@@` 沒數字、程式碼圍欄、`\ No newline at end of file`；二進位（NUL、`GIT binary patch`）與超大（>2 MB、>6 萬行）直接拒絕。
+- **策略鏈**（每個 hunk 的結果不靜默：`applied｜relocated｜fuzzy｜unit｜merged｜already｜conflict｜ambiguous｜failed`，附行號與位移）：原位置精確 → 全檔唯一精確（行號位移，位移會帶給下一個 hunk）→ 忽略空白（python 另要求相對縮排一致，整段縮排位移時新增的行會跟著對齊）→ 已套用過偵測（連使用者改過脈絡也認得）→ 去掉兩端 1～2 行脈絡 → 函式邊界（`splitUnits` 找到函式，函式內用「只出現一次的行」當錨點）＋三方合併（base＝hunk 舊側、theirs＝新側、ours＝目前那一區，保留使用者的修改）→ 衝突。重複片段有歧義時**不猜**：有檢查器／判題器就逐一候選驗證，恰好一個通過才採用，否則拒絕並列出位置。
+- **三方合併**：純 JS 的 diff3（Myers 最長共同子序列＋git 的「相鄰衝突合併」「兩側再精修」規則）。對照 `git merge-file`（本機 git 2.29）：手選 14 組逐字一致；固定種子隨機 400 組（基底每行不同）×（預設樣式、`--diff3` 樣式）＝800 組**全部逐字一致**；基底大量重複行時（Myers 有多個等價解）400 組只有 379 組衝突與否一致、356 組逐字一致，git 判乾淨的 248 組中 233 組一致——**重複行很多時和 git 會分歧**，所以產品路徑只用在「錨點唯一」的區域，且合併結果一律再過語法＋判題。
+- **驗證與回滾**：合併後先 `check`（語法），有 tests 再 `judge`（沙盒），任何一步不過、或有 hunk 衝突／找不到／有歧義，整份不動（`rolledBack:true`，`source` 仍是原程式），`reason` 寫原因。全部或全不；多檔 `applyPatchFiles` 任一檔失敗整批回滾。沒有檢查器就誠實標 `verified:false`（`requireVerify` 可改成拒絕）。
+- **每個語言各自一份**：`PROFILES`（python、nodejs、c、cpp、java、csharp、ruby、perl、bash）各有「縮排是否有意義」「函式標頭怎麼認」。函式邊界沿用 `code_edit_core.splitUnits`（各語言各自的切分）。
+
+**實測**：node 單元測試 64 項（真 python 當語法檢查與判題；C 用 gcc；git 對照見上）。**真 Electron**（獨立 `--user-data-dir`、換埠 17987、`FA_DISABLE_MAIN_OVERLAY=1`，載入的是工作目錄的 `renderer/floating-assistant.js`，語言用 nodejs，因為這台 Windows 的判題器找不到 python3）：使用者編輯過的程式（上面加註解與函式、脈絡行加註解）＋修補 → `fuzzy@11+7` 合併、語法通過、判題 AC、使用者修改全保留；語法壞的修補回滾（語法檢查沒過，附錯誤行）；答案錯的修補回滾（WA，附「合併前是 AC」）；與使用者同一行都改 → conflict 回滾；已套用的修補再套 → `already_applied` 且沒動；`merge_patch` 工具入口 `merged`。
+
+**限制／待改善**：函式邊界用詞法切分，沒用 tree-sitter 語法樹；hunk 必須由上而下依序；衝突只回報（附雙方版本）不自動解（那是 4.2：縮小衝突、候選＋驗證）；「接進 `editCode`」（patch 當候選編輯）沒做；判題器不是安全沙盒；python 這台機器上的真 Electron 判題跑不了（找不到 python3），python 只有 node 測試覆蓋；hunk 順序顛倒的 diff 會失敗；一致性只在給的測資上驗證。
+
+**原設計（保留供對照）**
 
 1. 解析 unified diff → hunks（舊側、新側、context）。
 2. 套用策略鏈，每個 hunk 獨立、結果**不靜默**（`applied｜relocated｜fuzzy｜merged｜conflict`，附位置與理由）：

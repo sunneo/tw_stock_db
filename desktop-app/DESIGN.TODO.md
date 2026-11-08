@@ -31,7 +31,8 @@
 | `browser_get_page_text` 長頁面章節索引 | **已核對（2026-11-06）**：用真 Chrome 156 跑擴充功能的 `pageTextExtractor`，抓到真 bug（擴充功能回 `total_length`，程式只認 `total_chars`，長頁面永遠不分層），已修並用真輸出做回放測試 | 擴充功能連線層端對端沒跑過；擴充功能不回 `title`／`url` | `DESIGN.jsonl-paging.md` 第十節 |
 | JSONL 分頁的舊待改善 | **已做（2026-11-06）**：`_page`＋`offset`（`knowledge_ask`、`repo_map` 清單、`repo_ask search`）、頁數預估（`pages_left`＋帳本提醒放得下幾頁）、4096 小窗口改 token 預算（中文不再低估 3 倍）、超大檔批次視窗；真 Electron 評估通過 | `repo_read_doc`／`repo_sql` 的 `_page`；沒用真 4096 小模型跑完整問答 | `DESIGN.jsonl-paging.md` 第十節 |
 | `docs/HANDOFF.md` | 另一條線盤點：開頭停在 v299、待辦過期、後面補了很多段，不適合當起點頁 | 整理成一頁起點（版本、現況、下一步），歷史段落往後放 | `docs/HANDOFF.md` |
-| 其他（merge diff patcher、函式內部再切步驟、套件／類別層接 `design_core`、以樹為基礎的修復、其他語言） | 未做 | 見各文件「還沒做」 | `DESIGN.code-repair.md`、`DESIGN.fn-template.md`、`DESIGN.ast-nodes.md` |
+| merge diff patcher（unified diff → 合併進使用者目前的程式，`code_patch_core.js`、工具 `merge_patch`） | **提交、等發布才進 renderer**：node 測試 64 項；diff3 對照 git merge-file（無重複行隨機 800 組逐字一致；大量重複行 400 組只 356 組一致，已寫明）；真 Electron（nodejs）使用者編輯過＋修補→合併驗證 AC、語法壞／答案錯／衝突回滾、重複套用 no-op；python 的真 Electron 判題這台跑不了 | 衝突自動解（4.2）、接進 editCode、改用 tree-sitter 語法樹定位 | `DESIGN.code-repair.md` 4.1 |
+| 其他（函式內部再切步驟、套件／類別層接 `design_core`、以樹為基礎的修復、其他語言） | 未做 | 見各文件「還沒做」 | `DESIGN.code-repair.md`、`DESIGN.fn-template.md`、`DESIGN.ast-nodes.md` |
 
 ## 目錄
 

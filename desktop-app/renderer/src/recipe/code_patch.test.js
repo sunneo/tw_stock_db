@@ -50,6 +50,7 @@ const J = mkJudge(tests);
     const run = (source, diff, extra) => P.applyPatch(Object.assign({ source, diff: diff || patch, lang: 'python', check, judge: J }, extra));
     {
         const r = await run(SRC); ok(r.ok && r.source === fixed && r.hunks[0].status === 'applied' && r.verified.syntax === true && r.verified.tests === 'AC', '原位置精確：' + P.report(r));
+        const edited = r.source.replace('def main():', 'def main():  # 入口'); const again2 = await run(edited); ok(again2.ok && again2.noop && again2.source === edited, '已套用過、且使用者改過脈絡：仍認得是 no-op：' + P.report(again2));
         const again = await run(r.source); ok(again.ok && again.noop && again.status === 'already_applied' && again.source === r.source, '重複套用是 no-op');
     }
     { // 行號位移：使用者在上面加了 6 行
