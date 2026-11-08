@@ -103,5 +103,5 @@
         const r0 = mk(all[0]); r0.ambiguous = all.length > 1 && all[1].score === all[0].score; r0.alternatives = all.slice(1, 30).map((h) => Object.assign(mk(h), { ambiguous: true })); return r0;
     }
     function install(M, G) { if (!M || !M.register || !G) return false; GM = G; M.register('compose-graph', synthGraphCompose, { order: 37, level: 'L3', note: '圖：向量積木 × 過濾 × 歸約積木' }); M.register('compose-grid', synthGridCompose, { order: 38, level: 'L4', note: '格子：向量積木 × 過濾 × 歸約積木' }); return true; }
-    return { install, synthGraphCompose, synthGridCompose, GV, RD };
+    return { install, synthGraphCompose, synthGridCompose, GV, RD, FLT };
 });
