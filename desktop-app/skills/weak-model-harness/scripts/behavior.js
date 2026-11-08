@@ -4,6 +4,7 @@
 'use strict';
 const fs = require('fs'); const path = require('path'); const os = require('os'); const https = require('https');
 const tryReq = (p) => { try { return require(p); } catch (_) { return null; } };
+const TA = tryReq('../../../renderer/src/behavior/ts_assets_core.js');   // 文法來源表（在倉庫裡才有；單獨打包的技能沒有就只走 jsdelivr）
 const B = tryReq('./vendor/behavior_engine.js');
 if (!B) throw new Error('找不到 vendor/behavior_engine.js，先執行 node scripts/pack.js');
 const cacheDir = () => process.env.FA_TS_DIR || path.join(os.tmpdir(), 'fa-ts-cache');
@@ -24,7 +25,14 @@ const host = {
         const js = await cached('tree-sitter.js', TSV + 'tree-sitter.js'); const wasm = await cached('tree-sitter.wasm', TSV + 'tree-sitter.wasm');
         const Parser = require(js); await Parser.init({ locateFile: () => wasm }); return Parser;
     },
+    // 取得順序：本機快取 → 專案內建（renderer/vendor/tree-sitter，只有 Python）→ 釘住 commit 的分支（核對位元組數與 MD5）→ jsdelivr。FaTsAssets 找不到（單獨打包的技能）就維持只走 jsdelivr
     async loadLanguageWasm(name) {
+        if (TA && TA.has(name)) {
+            const f = path.join(cacheDir(), 'tree-sitter-' + name + '@' + TA.COMMIT.slice(0, 8) + '.wasm');
+            try { if (fs.existsSync(f)) { const b = fs.readFileSync(f); if (TA.verify(name, b).ok) return new Uint8Array(b); } } catch (_) { /* 快取壞了就重取 */ }
+            if (TA.sources(name)[0].kind === 'bundled') { try { const vb = fs.readFileSync(path.join(__dirname, '..', '..', '..', 'renderer', 'vendor', 'tree-sitter', TA.sources(name)[0].file)); if (TA.verify(name, vb).ok) return new Uint8Array(vb); } catch (_) { /* 沒有內建就往下 */ } }
+            try { const b = await get(TA.RAW + TA.file(name)); if (TA.verify(name, b).ok) { fs.mkdirSync(cacheDir(), { recursive: true }); fs.writeFileSync(f, b); return new Uint8Array(b); } } catch (_) { /* 分支不通或核對不過 → 退到 jsdelivr，不存壞檔 */ }
+        }
         const base = WV_OVERRIDE[name] || WV;
         return new Uint8Array(fs.readFileSync(await cached('tree-sitter-' + name + (WV_OVERRIDE[name] ? '-v06' : '') + '.wasm', base + 'tree-sitter-' + name + '.wasm')));
     }

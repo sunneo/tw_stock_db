@@ -87,6 +87,7 @@ const suites = [
     ['區塊 ↔ 中間語言 ↔ 目標語言：樣本 → 區塊 → 受控自然語言 → Python → 中間語言 → nodejs／java／c，實跑輸出與原 Python 一致；函式行為卡可從區塊抽出；需 tree-sitter 快取', 'renderer/src/ir/ir_blocks.test.js'],
     ['中間語言橋接進產品（FaIrBundle 嵌入與來源逐字一致、嵌入版橋產生 nodejs 並實跑一致、convert_code 註冊在 coding 領域）', 'renderer/src/ir/ir_wire.test.js'],
     ['矩陣轉區塊接進產品（嵌入版 FaMatrixBlocks 與來源一致、管線帶出 matrixForm、嵌入版 DFA 拆區塊並改接受集、matrix_blocks 工具註冊在 coding 領域；需 tree-sitter 與 python）', 'renderer/src/algo/matrix_wire.test.js'],
+    ['tree-sitter 文法取得順序與核對（快取→內建 Python→釘住 commit 的分支並核對位元組數與 MD5→jsdelivr；純函式不連網）', 'renderer/src/behavior/ts_assets.test.js'],
     ['AI 面向的 Graph RAG 已移除（領域清單、提示詞、功能清冊）；底層 rag 工具與訓練器／語言探索用的儲存層仍在', 'renderer/src/catalog/rag_removed.test.js'],
     ['/code 指令路由（寫／修／優化／合併／設計／解釋由程式判斷、欄位只從文字抽不編造、缺什麼說什麼；所有工具都註冊在程式設計領域；離線訓練器 code_write 規則）', 'renderer/src/recipe/code_slash.test.js'],
     ['程式優化對照表（13 條慢寫法→優化寫法（含 two-sum 計數題型），含記憶體實測；輸出一致、實測不變慢、不安全不動、沒測資不改）', 'renderer/src/recipe/code_optimize.test.js'],

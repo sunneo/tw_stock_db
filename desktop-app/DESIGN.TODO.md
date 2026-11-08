@@ -9,7 +9,7 @@
 ### 程式 diff／patch／merge（`DESIGN.code-repair.md` 4.1／4.2，負責：diff-patcher 工作階段）
 - 衝突階梯（4.2）已做縮小衝突、詞元合併、同處插入兩種順序；**沒做**：同一處兩邊都改（刻意不自動取一邊）、重複行很多時的候選品質沒量過。
 - `editCode` 已吃 `patch` 參數，並已接進產品（`_codeAgent` 新增 `patch` 參數、`merge_patch` 與 `_codeAgent` 都傳 Python 剖析器；真 Electron 驗證過，2026-11-08，見 `DESIGN.code-repair.md` 4.2 末）。
-- 語法樹只有 Python：docstring 防護、巢狀／同名函式只在有 `parser` 時生效（沒有時會改到 docstring 裡的範例，測試有列）。其他語言文法本機沒有，下載需使用者同意（檔名、來源、大小待回報）；C++ 模板邊界只有詞法切分，未逐一驗證。
+- 語法樹的修補防護（docstring、巢狀／同名函式）只有 Python 實作；其他語言的文法已有下載來源（見「剖析器與環境」），但 `treeUnits`／`treeStrings` 還沒做各語言版本；C++ 模板邊界只有詞法切分，未逐一驗證。
 - 離線小模型實際走 `merge_patch` 的成效沒量過（目前只有假模型）。
 
 ### 思考堆疊與離線寫程式（`DESIGN.think-stack.md`）
@@ -27,7 +27,7 @@
 - Blockly 教學下週待辦：多矩陣輸入形狀（銀行家演算法、分頁位址轉換）、Linux 語意模擬缺口、holdout 未解題（只量測不可教）。
 
 ### 剖析器與環境
-- 內建剖析器只有 Python 文法（`renderer/vendor/tree-sitter/`）；其他語言要使用者同意後下載。
+- 剖析器資源來源已解決（2026-11-08）：內建 Python，其他 9 種語言從釘住 commit 的分支 `assets-tree-sitter` 延遲下載並核對（`DESIGN.ast-nodes.md` 第九節）。**待改善**：還沒在真 Electron 實際下載一次、跑過其他語言的行為卡或語法樹；各語言的 `parser` 單元切分（merge patch 的語法樹）仍只有 Python 實作。
 - 這台機器：C 編譯器沒設系統標頭路徑（C 實跑測試失敗，是環境問題）；awk 求和、`list-as-set` 偶爾因機器慢超時；編譯環境自動尋找已擱置。
 
 ### 介面

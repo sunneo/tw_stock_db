@@ -130,3 +130,10 @@ qwen3-0.6b q8、CPU、**不開思考**（write_code 領域整個關思考）：
 - **老師迴圈接線（`/teacher-loop`）**：`_otTeacherTryOffline(text, s, item)` 對 Python 判題項目先走離線組合；老師教完、離線自己重做通過驗證後，`_pyLearnLesson` 用 `deriveLesson` 把解答抽成課——**只靠這一堂課自己重做、過判題器才收**（否則不收），存 localStorage（`fa_py_runtime_lessons`，跟內建分開），`_pyLessonsExport()` 匯出 JSON 供轉成內建。`deriveLesson` 可記 `paradigm`＋`slots`。真 Electron 驗證：`scripts/eval/teach-lesson.eval.js`。
 - **骨架的限制**：骨架本文走「程式區塊：」→ `parseCNL`，**巢狀 `def` 會被丟掉**（`stmtsOfSource` 只取敘述），所以骨架要寫成不含 `def`（遞迴改堆疊／由下而上，矩陣用四個變數）；也避免 `a = b = 0` 連續賦值。
 - **還沒做**：沒有範式的算法（骨架是人寫的，新算法仍要請老師或模型）、非 Python 語言；內建課遇到 n 很大的題（如費氏取餘）會先試課而逾時才退到範式。
+
+## 九、tree-sitter 資源的來源（2026-11-08 已決定）
+
+- 內建：web-tree-sitter 0.20.8 與 **Python 文法**（`renderer/vendor/tree-sitter/`）。
+- 其他語言（javascript、java、c、cpp、c_sharp、ruby、bash、rust、go）**延遲下載**：取得順序＝本機快取 → 專案內建 → 釘住 commit 的分支 `assets-tree-sitter`（`raw.githubusercontent.com/sunneo/tw_stock_db/<完整 commit>/grammars/…`，下載後核對位元組數與 MD5，核對不過就丟掉、不存壞檔）→ 最後才是原本的 jsdelivr。ruby 用 tree-sitter-wasms 0.1.6 版（新版在 0.20.8 上會當掉）。快取鍵含 commit 前八碼，換 commit 才會重抓。
+- 程式：`renderer/src/behavior/ts_assets_core.js`（純函式 `FaTsAssets`：`sources`／`cacheKey`／`verify`／`md5`，核對表與分支 README 一致），嵌入 `floating-assistant.js`；載入器 `_behAsset`／`_behTsHost` 與 `skills/weak-model-harness/scripts/behavior.js` 都用它。測試 `ts_assets.test.js`（不連網）。
+- 沒驗證：沒有實際從分支下載（本輪不下載；網址與檢查碼是管理者抽查過的）；分支的檔案若日後換 commit，要同步改 `COMMIT` 與核對表。
