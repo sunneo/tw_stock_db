@@ -15,6 +15,8 @@ const suites = [
     ['文件合併核心（種類判斷、文字解碼、docx／xlsx 簡化轉換、排版）', 'renderer/src/docmerge/docmerge_core.test.js'],
     ['依任務文字補專用工具（圖片轉PDF、合併文件成PDF）', 'scripts/task-tool-hints.test.js'],
     ['工具預算：短說明、精簡參數、階段切割、檢索', 'renderer/src/tools/tool_budget_core.test.js'],
+    ['本機代理：上游回應標頭很肥（40KB）不能變成 502；連不上仍回 502＋x-fa-error', 'scripts/local-proxy-bigheader.test.js'],
+    ['YouTube 下載網路層（502 暫時性判斷、重試退避、具體失敗訊息、同意頁／機器人頁／不完整網頁診斷、yt-dlp 錯誤分類）', 'renderer/src/media/yt_net_core.test.js'],
     ['Agent Model Configure：階段圖、特性估計、自動決定、內建預設、開關不動設定、重置、解析與備援順序、AI 回覆檢查', 'renderer/src/tools/agent_model_core.test.js'],
     ['專案索引的定義抽取（C# 方法／屬性／namespace、Kotlin object、Java）', 'scripts/repo-extract.test.js'],
     ['離線圖像轉文字（模型登記、裝置、快取用量）', 'renderer/src/vlm/vlm_core.test.js'],

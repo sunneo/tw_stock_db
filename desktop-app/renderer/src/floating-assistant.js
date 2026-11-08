@@ -54152,6 +54152,98 @@ const holder = {};
 return holder.FaIntentGate;
 })();
 /* OTGATE-END */
+/* YTNET-BEGIN */
+const FaYtNet = (function () {
+const holder = {};
+(function (module, self) {
+/* YouTube 下載的網路層判斷核心（UMD，純函式，不碰網路／DOM）。
+ * 2026-11-08 使用者回報：「PO Token產生失敗：抓YouTube首頁失敗：HTTP 502」→ yt-dlp「The page needs to be reloaded」。
+ * 實證（本機代理 local-proxy.js 對同一支影片＋另外三支各連打三次，全部 200、頁面完整、含 ytInitialData）：
+ *   代理本身與頁面內容沒問題；502 是代理在「連不上上游」時自己回的（帶 x-fa-error: connect，本文是 Node 的真正錯誤），
+ *   屬於暫時性網路失敗。原本的程式只印「HTTP 502」，把真正原因（本文）丟掉，而且一次失敗就放棄。
+ * 這裡集中三件事，讓橋接、PO Token、yt-dlp 解析三處共用同一套規則（測試也只測這一份）：
+ *   - isTransientHttp   ：哪些回應算暫時性（代理自己回的 502／504、閘道類 502／503／504、429）
+ *   - backoffMs         ：全新重試的退避時間
+ *   - describeFailure   ：把「狀態碼、x-fa-error、本文錯誤、耗時、第幾次」整理成具體訊息（不只給籠統警告）
+ *   - diagnoseHtml      ：抓到的網頁是真頁面、同意頁、機器人檢查頁、還是不完整
+ *   - classifyYtDlpError：yt-dlp 的錯誤字串屬於哪一類，可不可以全新重來；不可重來的給誠實說明 */
+(function (root, factory) {
+    if (typeof module === 'object' && module.exports) module.exports = factory();
+    else root.FaYtNet = factory();
+})(typeof self !== 'undefined' ? self : this, function () {
+    'use strict';
+
+    const MAX_ATTEMPTS = 3;
+    const BACKOFF = [600, 1800, 4000];
+
+    function backoffMs(attempt) { return BACKOFF[Math.min(Math.max(0, attempt | 0), BACKOFF.length - 1)]; }
+
+    // status：HTTP 狀態碼；xFaError：本機代理的 x-fa-error 標頭（connect／timeout／tls），沒有就空字串
+    function isTransientHttp(status, xFaError) {
+        const s = Number(status) || 0;
+        if (xFaError === 'tls') return false; // 憑證問題重試也一樣
+        if (xFaError === 'connect' || xFaError === 'timeout') return true;
+        return s === 502 || s === 503 || s === 504 || s === 429;
+    }
+
+    // 代理回的錯誤本文是 {"error":"..."}；其他情況回前 120 字
+    function proxyErrorText(bodyText) {
+        const t = String(bodyText || '').trim();
+        if (!t) return '';
+        try { const j = JSON.parse(t); if (j && j.error) return String(j.error).slice(0, 200); } catch (_) { /* 不是 JSON */ }
+        return t.replace(/\s+/g, ' ').slice(0, 120);
+    }
+
+    // { step, status, xFaError, bodyText, elapsedMs, attempt, attempts } → 具體訊息
+    function describeFailure(o) {
+        o = o || {};
+        const parts = [];
+        parts.push(`${o.step || '請求'}失敗：HTTP ${o.status != null ? o.status : '?'}`);
+        if (o.xFaError) parts.push(`本機代理判定：${{ connect: '連不上YouTube（連線錯誤）', timeout: '逾時', tls: '憑證／加密連線錯誤' }[o.xFaError] || o.xFaError}`);
+        const pe = proxyErrorText(o.bodyText);
+        if (pe) parts.push(`原因：${pe}`);
+        if (o.elapsedMs != null) parts.push(`耗時${(o.elapsedMs / 1000).toFixed(1)}秒`);
+        if (o.attempts) parts.push(`已試${o.attempt || o.attempts}/${o.attempts}次`);
+        return parts.join('；');
+    }
+
+    // 抓到的網頁內容是什麼：ok／consent／bot／incomplete／empty
+    function diagnoseHtml(html) {
+        const h = String(html || '');
+        if (!h.trim()) return { kind: 'empty', detail: '回應是空的' };
+        const hasData = /ytInitialData\s*=|ytInitialPlayerResponse\s*=/.test(h);
+        if (/consent\.youtube\.com|<form[^>]+action="https:\/\/consent\./i.test(h) && !hasData) return { kind: 'consent', detail: '拿到的是同意頁（cookie 同意），不是影片頁' };
+        if (/unusual traffic|\/sorry\/|g-recaptcha|Sign in to confirm you.{0,3}re not a bot/i.test(h) && !hasData) return { kind: 'bot', detail: '拿到的是機器人檢查頁' };
+        if (!hasData) return { kind: 'incomplete', detail: `網頁內容不完整（${h.length}字元，找不到 ytInitialData）` };
+        if (!/<\/html>\s*$/i.test(h)) return { kind: 'incomplete', detail: `網頁結尾被截斷（${h.length}字元）` };
+        return { kind: 'ok', detail: '' };
+    }
+
+    // yt-dlp 錯誤字串 → { kind, retryable, hint }
+    function classifyYtDlpError(err) {
+        const e = String(err || '');
+        if (/Sign in to confirm|not a bot|confirm you.{0,3}re not a robot/i.test(e)) {
+            return { kind: 'bot', retryable: false, hint: 'YouTube 要求登入或機器人驗證。這是 YouTube 對這類請求的限制，本程式不會繞過驗證；替代方案：改用「瀏覽器控制」讓真人的瀏覽器下載，或自行提供 cookie 檔。' };
+        }
+        if (/Video unavailable|This video is (private|not available)|has been removed|copyright|terminated/i.test(e)) {
+            return { kind: 'unavailable', retryable: false, hint: '影片本身不可用（私人、已移除或地區限制），重試不會改變。' };
+        }
+        if (/LOGIN_REQUIRED|Sign in to/i.test(e)) {
+            return { kind: 'login', retryable: false, hint: 'YouTube 要求登入才能播放，沒有可合法取得的替代做法。' };
+        }
+        if (/page needs to be reloaded|Incomplete data received|unable to extract|HTTP Error 5\d\d|Unable to download|timed out|Connection (reset|aborted|refused)|連線失敗|HTTP 50[234]/i.test(e)) {
+            return { kind: 'transient', retryable: true, hint: '' };
+        }
+        return { kind: 'other', retryable: false, hint: '' };
+    }
+
+    return { MAX_ATTEMPTS, backoffMs, isTransientHttp, proxyErrorText, describeFailure, diagnoseHtml, classifyYtDlpError };
+});
+
+}).call(null, undefined, holder);
+return holder.FaYtNet;
+})();
+/* YTNET-END */
 /* UMLVIEW-BEGIN */
 const FA_UMLVIEW_HTML = "<!doctype html>\n<html lang=\"zh-Hant\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n<title>設計檢視器</title>\n<style>\n:root{--bg:#fff;--fg:#1f2328;--mut:#656d76;--bd:#d0d7de;--ac:#0969da;--sf:#f6f8fa;--hl:#fff8c5;--ok:#1a7f37;--er:#cf222e;--ai:#8250df;--box:#fff;--boxh:#ddf4ff}\n@media (prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;--mut:#8b949e;--bd:#30363d;--ac:#58a6ff;--sf:#161b22;--hl:#3b2e00;--ok:#3fb950;--er:#f85149;--ai:#d2a8ff;--box:#161b22;--boxh:#0c2d6b}}\n*{box-sizing:border-box}html,body{height:100%}body{margin:0;background:var(--bg);color:var(--fg);font:13.5px/1.5 -apple-system,\"Segoe UI\",\"Noto Sans TC\",sans-serif;display:flex;flex-direction:column}\nheader{display:flex;align-items:center;gap:8px;padding:6px 12px;border-bottom:1px solid var(--bd);background:var(--sf);flex-wrap:wrap}\nheader b{font-size:14px}.badge{padding:0 8px;border-radius:10px;border:1px solid var(--bd);font-size:12px;color:var(--mut)}.sp{flex:1}\nbutton{font:inherit;padding:3px 10px;border:1px solid var(--bd);background:var(--bg);color:var(--fg);border-radius:6px;cursor:pointer}button:hover{border-color:var(--ac)}button.ai{border-color:var(--ai);color:var(--ai)}\n#app{flex:1;display:flex;min-height:0}\n#nav{width:250px;border-right:1px solid var(--bd);display:flex;flex-direction:column;background:var(--sf);min-height:0}\n#q{margin:6px;padding:5px 8px;border:1px solid var(--bd);border-radius:6px;background:var(--bg);color:var(--fg)}\n#tree{flex:1;overflow:auto;padding:0 4px 10px}\n.tn{display:block;padding:2px 6px;border-radius:5px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.tn:hover{background:var(--bd)}.tn.on{background:var(--ac);color:#fff}.tn .k{opacity:.6;font-size:11px;margin-right:4px}\n#mid{flex:1;display:flex;flex-direction:column;min-width:0}\n#crumb{padding:5px 12px;border-bottom:1px solid var(--bd);font-size:12.5px;color:var(--mut);display:flex;gap:4px;flex-wrap:wrap}#crumb a{color:var(--ac);cursor:pointer}\n#diag{flex:1.2;min-height:160px;overflow:hidden;position:relative;border-bottom:1px solid var(--bd);background:var(--bg)}#diag svg{width:100%;height:100%;cursor:grab}\n#tabs{display:flex;gap:4px;padding:5px 10px;border-bottom:1px solid var(--bd);background:var(--sf)}#tabs button.on{border-color:var(--ac);color:var(--ac);font-weight:600}\n#info{flex:1;overflow:auto;padding:10px 14px;min-height:100px}\n#src{width:44%;min-width:300px;border-left:1px solid var(--bd);display:flex;flex-direction:column;min-height:0}\n#srchead{padding:5px 8px;border-bottom:1px solid var(--bd);background:var(--sf);display:flex;gap:6px;align-items:center;flex-wrap:wrap}\n#flist{padding:4px 8px;border-bottom:1px solid var(--bd);max-height:130px;overflow:auto;font-size:12.5px}#flist a{display:block;color:var(--ac);cursor:pointer;word-break:break-all}#flist .r{color:var(--mut);margin-right:6px}\n#code{flex:1;overflow:auto;font:12px/1.5 ui-monospace,Consolas,monospace;padding:4px 0}\n.ln{display:flex}.ln i{flex:none;width:44px;text-align:right;padding-right:8px;color:var(--mut);user-select:none;font-style:normal}.ln span{white-space:pre;flex:1;padding-right:12px}.ln.h{background:var(--hl)}.ln.s{cursor:pointer;border-left:3px solid var(--ac)}.ln.s:hover{background:var(--boxh)}\nh3{font-size:14px;margin:10px 0 4px}.mut{color:var(--mut)}pre.t{white-space:pre-wrap;margin:0;font:inherit}\n.dec{border:1px solid var(--bd);border-radius:6px;padding:4px 8px;margin:4px 0}.who{font-size:11px;padding:0 6px;border-radius:8px;border:1px solid var(--bd);margin-right:6px}.who.model{color:var(--ai);border-color:var(--ai)}.who.program{color:var(--ok);border-color:var(--ok)}\n.act{display:inline-block;margin:3px 6px 3px 0}\n#modal{position:fixed;inset:0;background:rgba(0,0,0,.45);display:none;align-items:center;justify-content:center}#modal div{background:var(--bg);border:1px solid var(--bd);border-radius:8px;padding:14px;width:min(560px,92vw)}#modal textarea{width:100%;height:150px;background:var(--sf);color:var(--fg);border:1px solid var(--bd);border-radius:6px;padding:6px;font:12px ui-monospace,Consolas,monospace}\nsvg text{font:12px -apple-system,\"Segoe UI\",\"Noto Sans TC\",sans-serif;fill:var(--fg)}svg .box{fill:var(--box);stroke:var(--fg);stroke-width:1}svg .foc .box{fill:var(--boxh);stroke:var(--ac);stroke-width:2}svg .cls{cursor:pointer}svg .cls:hover .box{stroke:var(--ac)}svg .ed{stroke:var(--fg);fill:none;stroke-width:1.2}svg .dash{stroke-dasharray:5 4}svg .mut{fill:var(--mut)}svg .hlop{fill:var(--hl)}\n</style></head><body>\n<header><b id=\"title\"></b><span class=\"badge\" id=\"b-lang\"></span><span class=\"badge\" id=\"b-arch\"></span><span class=\"badge\" id=\"b-glue\"></span><span class=\"sp\"></span><button id=\"b-dsl\" title=\"複製 UML 文字（可以貼給任何 AI）\">複製 UML</button><button id=\"b-zip\" title=\"下載目前的專案 zip（在 App 裡開啟時可用）\">下載專案</button><button id=\"b-fit\">適合視窗</button></header>\n<div id=\"app\"><div id=\"nav\"><input id=\"q\" placeholder=\"搜尋類別、使用案例、檔案…\"><div id=\"tree\"></div></div>\n<div id=\"mid\"><div id=\"crumb\"></div><div id=\"diag\"></div><div id=\"tabs\"><button data-t=\"design\" class=\"on\">設計</button><button data-t=\"ref\">參考</button><button data-t=\"act\">動作</button></div><div id=\"info\"></div></div>\n<div id=\"src\"><div id=\"srchead\"><b id=\"fname\">原始碼</b><span class=\"mut\" id=\"fmeta\"></span></div><div id=\"flist\"></div><div id=\"code\"></div></div></div>\n<div id=\"modal\"><div><b id=\"mt\"></b><p class=\"mut\" id=\"mp\"></p><textarea id=\"mta\" readonly></textarea><p><button id=\"mcopy\">複製</button> <button id=\"mclose\">關閉</button></p></div></div>\n<script>\nlet B = __BUNDLE__;\nconst $ = (s) => document.querySelector(s); const esc = (s) => String(s == null ? '' : s).replace(/[&<>\"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;' }[c]));\nconst LV = { system: '◆', package: '▣', class: 'C', usecase: '◯', op: 'ƒ' };\nlet cur = 'system', tab = 'design', curFile = null, curLines = null, vb = null;\nconst N = () => B.nodes;\nconst ACTIONS = {\n  'rework-region': { label: '重新設計這一區', help: '只重做這個節點的設計（程式找出問題，模型一次只回答一個封閉的小問題），其他地方不動。' },\n  'add-members': { label: '補充屬性與操作', help: '針對這個類別再補幾個屬性與操作（封閉的小問題，型別必須是基本型別或已知類別）。' },\n  'rework-system': { label: '重新檢查整個設計', help: '由上而下檢查整個系統的問題（孤兒類別、空類別、呼叫順序…），只重做有問題的區域。' },\n  'add-usecase': { label: '新增使用案例', help: '用一句話描述新的使用案例，程式依詞彙表與動作表展開呼叫順序。' },\n  'show-code': { label: '看對應的程式碼', help: '' },\n};\nfunction crumbOf(id) { const out = []; let n = N()[id]; while (n) { out.unshift(n); n = n.parent ? N()[n.parent] : null; } return out; }\nfunction renderTree(filter) {\n  const f = (filter || '').toLowerCase(); const out = [];\n  const walk = (id, depth) => { const n = N()[id]; if (!n) return; const hit = !f || (n.title + ' ' + id).toLowerCase().includes(f) || (n.reference.files || []).some((x) => x.path.toLowerCase().includes(f)); const kids = n.children.map((c) => walk(c, depth + 1)).join(''); if (!hit && !kids) return ''; return '<a class=\"tn' + (id === cur ? ' on' : '') + '\" data-id=\"' + esc(id) + '\" style=\"padding-left:' + (6 + depth * 14) + 'px\"><span class=\"k\">' + (LV[n.level] || '') + '</span>' + esc(n.title) + '</a>' + kids; };\n  $('#tree').innerHTML = walk(B.root, 0);\n}\n// ---------- 圖 ----------\nconst BW = 150, LH = 16, HH = 26;\nfunction boxOf(c) { const lines = c.kind === 'enum' ? (c.values || []).map((v) => v) : c.attrs.map((a) => (a.visibility || '+') + a.name + ':' + tstr(a.type)).concat(['—']).concat(c.ops.map((o) => (o.visibility || '+') + o.name + '(' + o.params.map((p) => p.name).join(',') + '):' + tstr(o.returns))); const attrs = c.kind === 'enum' ? c.values : c.attrs; const ops = c.kind === 'enum' ? [] : c.ops; const w = Math.max(BW, 7.2 * Math.max(c.name.length + 4, ...lines.map((l) => l.length)) + 16); const h = HH + (c.kind === 'class' ? 0 : 14) + Math.max(1, attrs.length) * LH + 6 + (ops.length ? ops.length * LH + 6 : 0); return { w, h, attrs, ops }; }\nfunction tstr(t) { return !t ? 'any' : (t.args && t.args.length ? t.base + '<' + t.args.map(tstr).join(',') + '>' : t.base); }\nfunction layout(classes, rels) {\n  const names = classes.map((c) => c.name); const rank = {}; names.forEach((n) => { rank[n] = 0; });\n  const edges = rels.filter((r) => names.includes(r.from) && names.includes(r.to)).map((r) => (r.kind === 'inherit' || r.kind === 'implement' ? [r.to, r.from] : [r.from, r.to]));\n  for (let it = 0; it < names.length + 2; it++) for (const [a, b] of edges) if (rank[b] <= rank[a] && rank[a] + 1 < names.length) rank[b] = rank[a] + 1;\n  const rows = {}; names.forEach((n) => { (rows[rank[n]] = rows[rank[n]] || []).push(n); });\n  const pos = {}; let y = 20; const maxW = 760;\n  Object.keys(rows).map(Number).sort((a, b) => a - b).forEach((r) => { let list = rows[r]; if (r > 0) list = list.slice().sort((a, b) => { const bc = (n) => { const ns = edges.filter((e) => e[1] === n).map((e) => pos[e[0]] && pos[e[0]].x).filter((v) => v != null); return ns.length ? ns.reduce((s, v) => s + v, 0) / ns.length : 0; }; return bc(a) - bc(b); });\n    let x = 20, rowH = 0, cy = y; for (const n of list) { const c = classes.find((k) => k.name === n); const bx = boxOf(c); if (x + bx.w > maxW && x > 20) { x = 20; cy += rowH + 40; rowH = 0; } pos[n] = { x, y: cy, w: bx.w, h: bx.h, b: bx }; x += bx.w + 36; rowH = Math.max(rowH, bx.h); } y = cy + rowH + 50; });\n  return { pos, edges };\n}\nconst DEFS = '<defs><marker id=\"tri\" markerWidth=\"12\" markerHeight=\"12\" refX=\"11\" refY=\"6\" orient=\"auto\"><path d=\"M1 1 L11 6 L1 11 Z\" fill=\"var(--bg)\" stroke=\"var(--fg)\"/></marker><marker id=\"dia\" markerWidth=\"14\" markerHeight=\"12\" refX=\"1\" refY=\"6\" orient=\"auto-start-reverse\"><path d=\"M1 6 L7 1 L13 6 L7 11 Z\" fill=\"var(--fg)\" stroke=\"var(--fg)\"/></marker><marker id=\"dio\" markerWidth=\"14\" markerHeight=\"12\" refX=\"1\" refY=\"6\" orient=\"auto-start-reverse\"><path d=\"M1 6 L7 1 L13 6 L7 11 Z\" fill=\"var(--bg)\" stroke=\"var(--fg)\"/></marker><marker id=\"arr\" markerWidth=\"10\" markerHeight=\"10\" refX=\"9\" refY=\"5\" orient=\"auto\"><path d=\"M1 1 L9 5 L1 9\" fill=\"none\" stroke=\"var(--fg)\"/></marker></defs>';\nfunction edgePt(p, q) { const cx = p.x + p.w / 2, cy = p.y + p.h / 2, dx = q.x + q.w / 2 - cx, dy = q.y + q.h / 2 - cy; const s = Math.min(Math.abs(dx) > 0 ? (p.w / 2) / Math.abs(dx) : 1e9, Math.abs(dy) > 0 ? (p.h / 2) / Math.abs(dy) : 1e9); return [cx + dx * s, cy + dy * s]; }\nfunction classSvg(names, focus, opNode) {\n  const cls = names.map((n) => B.model.classes.find((c) => c.name === n)).filter(Boolean); const L = layout(cls, B.model.relations); let g = '', ed = '';\n  for (const r of B.model.relations) { const p = L.pos[r.from], q = L.pos[r.to]; if (!p || !q) continue; const a = edgePt(p, q), b2 = edgePt(q, p); const mk = r.kind === 'inherit' || r.kind === 'implement' ? ' marker-end=\"url(#tri)\"' : (r.kind === 'compose' ? ' marker-start=\"url(#dia)\"' : (r.kind === 'aggregate' ? ' marker-start=\"url(#dio)\"' : ' marker-end=\"url(#arr)\"')); const dash = r.kind === 'implement' || r.kind === 'depend' ? ' dash' : ''; ed += '<line class=\"ed' + dash + '\" x1=\"' + a[0] + '\" y1=\"' + a[1] + '\" x2=\"' + b2[0] + '\" y2=\"' + b2[1] + '\"' + mk + '/>' + (r.label || r.mult ? '<text class=\"mut\" x=\"' + (a[0] + b2[0]) / 2 + '\" y=\"' + ((a[1] + b2[1]) / 2 - 4) + '\" text-anchor=\"middle\">' + esc([r.label, r.mult].filter(Boolean).join(' ')) + '</text>' : ''); }\n  for (const c of cls) { const p = L.pos[c.name], bx = p.b; let y = p.y + 18; g += '<g class=\"cls' + (c.name === focus ? ' foc' : '') + '\" data-id=\"class:' + esc(c.name) + '\"><rect class=\"box\" x=\"' + p.x + '\" y=\"' + p.y + '\" width=\"' + p.w + '\" height=\"' + p.h + '\" rx=\"3\"/>' + (c.kind !== 'class' ? '<text class=\"mut\" x=\"' + (p.x + p.w / 2) + '\" y=\"' + (p.y + 13) + '\" text-anchor=\"middle\">«' + esc(c.kind) + '»</text>' : '') + '<text x=\"' + (p.x + p.w / 2) + '\" y=\"' + (p.y + (c.kind !== 'class' ? 27 : 17)) + '\" text-anchor=\"middle\" font-weight=\"700\">' + esc(c.name) + '</text>'; y = p.y + HH + (c.kind !== 'class' ? 14 : 0) - 2; g += '<line x1=\"' + p.x + '\" y1=\"' + (y - 11) + '\" x2=\"' + (p.x + p.w) + '\" y2=\"' + (y - 11) + '\" stroke=\"var(--fg)\"/>';\n    if (c.kind === 'enum') (c.values || []).forEach((v) => { g += '<text x=\"' + (p.x + 8) + '\" y=\"' + y + '\">' + esc(v) + '</text>'; y += LH; }); else { c.attrs.forEach((a) => { g += '<text x=\"' + (p.x + 8) + '\" y=\"' + y + '\">' + esc((a.visibility || '+') + a.name + ': ' + tstr(a.type)) + '</text>'; y += LH; }); if (!c.attrs.length) y += LH; if (c.ops.length) { g += '<line x1=\"' + p.x + '\" y1=\"' + (y - 11) + '\" x2=\"' + (p.x + p.w) + '\" y2=\"' + (y - 11) + '\" stroke=\"var(--fg)\"/>'; c.ops.forEach((o) => { const hot = opNode && opNode === o.name; if (hot) g += '<rect class=\"hlop\" x=\"' + (p.x + 2) + '\" y=\"' + (y - 12) + '\" width=\"' + (p.w - 4) + '\" height=\"' + LH + '\"/>'; g += '<text x=\"' + (p.x + 8) + '\" y=\"' + y + '\" data-op=\"' + esc(c.name + '.' + o.name) + '\">' + esc((o.visibility || '+') + o.name + '(' + o.params.map((q) => q.name + ': ' + tstr(q.type)).join(', ') + '): ' + tstr(o.returns)) + '</text>'; y += LH; }); } }\n    g += '</g>'; }\n  const W = Math.max(...Object.values(L.pos).map((p) => p.x + p.w), 200) + 30, H = Math.max(...Object.values(L.pos).map((p) => p.y + p.h), 100) + 30; return { svg: ed + g, w: W, h: H };\n}\nfunction seqSvg(uc) {\n  const parts = [uc.actor].concat(uc.steps.map((s) => s.to)).filter((x, i, a) => a.indexOf(x) === i); const gap = 150; let g = ''; const X = {}; parts.forEach((p, i) => { X[p] = 70 + i * gap; });\n  const H = 80 + uc.steps.length * 40 + 30;\n  parts.forEach((p) => { const isA = B.model.actors.includes(p); g += '<g class=\"cls\" data-id=\"' + (isA ? '' : 'class:' + esc(p)) + '\"><rect class=\"box\" x=\"' + (X[p] - 52) + '\" y=\"10\" width=\"104\" height=\"26\" rx=\"3\"/><text x=\"' + X[p] + '\" y=\"28\" text-anchor=\"middle\" font-weight=\"700\">' + (isA ? '👤 ' : '') + esc(p) + '</text></g><line class=\"ed dash\" x1=\"' + X[p] + '\" y1=\"36\" x2=\"' + X[p] + '\" y2=\"' + (H - 10) + '\"/>'; });\n  uc.steps.forEach((s, i) => { const y = 66 + i * 40; const a = X[s.from], b = X[s.to]; const self = a === b; g += self ? '<path class=\"ed\" d=\"M' + a + ' ' + (y - 8) + ' h30 v16 h-30\" marker-end=\"url(#arr)\"/><text x=\"' + (a + 36) + '\" y=\"' + (y + 3) + '\" data-op=\"' + esc(s.to + '.' + s.msg) + '\" class=\"cls\">' + (i + 1) + '. ' + esc(s.msg) + '()</text>' : '<line class=\"ed\" x1=\"' + a + '\" y1=\"' + y + '\" x2=\"' + b + '\" y2=\"' + y + '\" marker-end=\"url(#arr)\"/><text class=\"cls\" data-op=\"' + esc(s.to + '.' + s.msg) + '\" x=\"' + (a + b) / 2 + '\" y=\"' + (y - 5) + '\" text-anchor=\"middle\">' + (i + 1) + '. ' + esc(s.msg) + '(' + esc((s.args || []).join(', ')) + ')</text>'; });\n  return { svg: g, w: 70 + parts.length * gap, h: H };\n}\nfunction overviewSvg() {\n  const ucs = B.model.usecases; const actors = B.model.actors.length ? B.model.actors : Array.from(new Set(ucs.map((u) => u.actor))); let g = ''; const ay = {}; actors.forEach((a, i) => { ay[a] = 50 + i * 90; g += '<circle cx=\"50\" cy=\"' + (ay[a] - 14) + '\" r=\"9\" fill=\"none\" stroke=\"var(--fg)\"/><line class=\"ed\" x1=\"50\" y1=\"' + (ay[a] - 5) + '\" x2=\"50\" y2=\"' + (ay[a] + 18) + '\"/><line class=\"ed\" x1=\"34\" y1=\"' + (ay[a] + 4) + '\" x2=\"66\" y2=\"' + (ay[a] + 4) + '\"/><text x=\"50\" y=\"' + (ay[a] + 38) + '\" text-anchor=\"middle\">' + esc(a) + '</text>'; });\n  ucs.forEach((u, i) => { const x = 250 + (i % 3) * 200, y = 40 + Math.floor(i / 3) * 70; if (ay[u.actor] != null) g += '<line class=\"ed\" x1=\"66\" y1=\"' + (ay[u.actor] + 4) + '\" x2=\"' + (x - 70) + '\" y2=\"' + y + '\"/>'; g += '<g class=\"cls\" data-id=\"usecase:' + esc(u.name) + '\"><ellipse class=\"box\" cx=\"' + x + '\" cy=\"' + y + '\" rx=\"72\" ry=\"24\"/><text x=\"' + x + '\" y=\"' + (y + 4) + '\" text-anchor=\"middle\">' + esc(u.name) + '</text></g>'; });\n  const rows = Math.max(Math.ceil(ucs.length / 3) * 70, actors.length * 90) + 30; const cs = classSvg(B.model.classes.map((c) => c.name), null); return { svg: g + '<g transform=\"translate(0,' + rows + ')\">' + cs.svg + '</g>', w: Math.max(700, cs.w), h: rows + cs.h };\n}\nfunction drawDiagram(n) {\n  const d = n.diagram; let r; if (d.kind === 'overview') r = overviewSvg(); else if (d.kind === 'sequence') r = seqSvg(B.model.usecases.find((u) => u.name === d.usecase)); else r = classSvg(d.classes, d.focus, d.kind === 'ops' ? d.focus : null);\n  vb = { x: 0, y: 0, w: r.w, h: r.h, fw: r.w, fh: r.h }; $('#diag').innerHTML = '<svg id=\"sv\" viewBox=\"0 0 ' + r.w + ' ' + r.h + '\" preserveAspectRatio=\"xMidYMin meet\">' + DEFS + r.svg + '</svg>'; bindSvg();\n}\nfunction bindSvg() {\n  const sv = $('#sv'); if (!sv) return; sv.addEventListener('click', (e) => { const el = e.target.closest('[data-op],[data-id]'); if (!el) return; const op = e.target.closest('[data-op]'); if (op && op.dataset.op) { const id = 'op:' + op.dataset.op; if (N()[id]) return go(id); } const c = e.target.closest('[data-id]'); if (c && c.dataset.id && N()[c.dataset.id]) go(c.dataset.id); });\n  sv.addEventListener('wheel', (e) => { e.preventDefault(); const k = e.deltaY > 0 ? 1.12 : 0.89; vb.w *= k; vb.h *= k; setVb(); }, { passive: false });\n  let drag = null; sv.addEventListener('mousedown', (e) => { drag = { x: e.clientX, y: e.clientY, vx: vb.x, vy: vb.y }; sv.style.cursor = 'grabbing'; }); window.addEventListener('mouseup', () => { drag = null; if (sv) sv.style.cursor = 'grab'; }); window.addEventListener('mousemove', (e) => { if (!drag) return; const r = sv.getBoundingClientRect(); vb.x = drag.vx - (e.clientX - drag.x) * (vb.w / r.width); vb.y = drag.vy - (e.clientY - drag.y) * (vb.h / r.height); setVb(); });\n}\nfunction setVb() { const sv = $('#sv'); if (sv) sv.setAttribute('viewBox', vb.x + ' ' + vb.y + ' ' + vb.w + ' ' + vb.h); }\n// ---------- 資訊 ----------\nfunction renderInfo() {\n  const n = N()[cur]; let h = '';\n  if (tab === 'design') { h += '<h3>設計</h3><pre class=\"t\">' + esc(n.design.summary) + '</pre>'; if (n.design.decisions.length) { h += '<h3>設計決策</h3>'; for (const d of n.design.decisions) h += '<div class=\"dec\"><span class=\"who ' + esc(d.who) + '\">' + esc(d.who) + '</span><b>' + esc(d.what) + '</b><div class=\"mut\">' + esc(d.why || '') + '</div></div>'; } if (n.level === 'system' && B.scenario) h += '<h3>原始情境</h3><pre class=\"t mut\">' + esc(B.scenario) + '</pre>'; }\n  else if (tab === 'ref') { h += '<h3>對應的程式碼</h3>' + (n.reference.files.length ? n.reference.files.map((f) => '<div><a href=\"#\" data-file=\"' + esc(f.path) + '\" data-line=\"' + f.line + '\">' + esc(f.roleLabel) + '</a> <span class=\"mut\">' + esc(f.path) + ':' + f.line + (f.symbol ? ' · ' + esc(f.symbol) : '') + '</span></div>').join('') : '<div class=\"mut\">（沒有直接對應的檔案）</div>'); if (n.reference.libs.length) h += '<h3>用到的 library</h3>' + n.reference.libs.map((l) => '<div><b>' + esc(l.name) + '</b> <span class=\"mut\">' + esc(l.concern) + '</span> ' + (l.doc ? '<a href=\"' + esc(l.doc) + '\" target=\"_blank\" rel=\"noopener\">文件</a>' : '') + '</div>').join(''); if (n.level === 'system' && B.glue.length) h += '<h3>膠水</h3>' + B.glue.map((g) => '<div>' + esc(g.id) + ' <span class=\"mut\">' + esc(g.label || '') + (g.verified && Object.keys(g.verified).length ? '　驗證過：' + esc(Object.entries(g.verified).map(([k, v]) => k + ' ' + v).join('、')) : '　未驗證') + '</span></div>').join(''); if (n.reference.related.length) h += '<h3>相關節點</h3>' + n.reference.related.filter((x) => N()[x]).map((x) => '<a class=\"act\" href=\"#\" data-go=\"' + esc(x) + '\">' + esc(N()[x].title) + '</a>').join(''); }\n  else { h += '<h3>動作（切細、重新設計這一區）</h3><div class=\"mut\">每個動作都是封閉的小操作：程式找出問題、模型（或離線訓練器）一次只回答一個小問題、結果會被驗證。可以由任何強弱的 AI 或你自己逐步進行。</div>'; for (const a of n.actions) { const A = ACTIONS[a]; if (!A) continue; h += '<div><button class=\"act ai\" data-act=\"' + esc(a) + '\">' + esc(A.label) + '</button> <span class=\"mut\">' + esc(A.help) + '</span></div>'; } h += '<div class=\"mut\" id=\"actmsg\" style=\"margin-top:8px\"></div>'; }\n  $('#info').innerHTML = h;\n}\n// ---------- 原始碼 ----------\nfunction fileOf(p) { return B.files.find((f) => f.path === p); }\nfunction showFile(path, line, nodeId) {\n  const f = fileOf(path); if (!f) return; curFile = path; $('#fname').textContent = path; const syms = B.symbols.filter((s) => s.file === path); const hl = new Set(); const nid = nodeId || cur; syms.filter((s) => s.node === nid).forEach((s) => hl.add(s.line)); const bySym = {}; syms.forEach((s) => { (bySym[s.line] = bySym[s.line] || []).push(s); });\n  $('#fmeta').textContent = syms.length ? '標記的行可以點，跳到對應的 UML 節點' : '';\n  const lines = f.content.split('\\n'); $('#code').innerHTML = lines.map((l, i) => { const k = i + 1; const sy = bySym[k]; return '<div class=\"ln' + (hl.has(k) ? ' h' : '') + (sy ? ' s' : '') + '\" data-l=\"' + k + '\"' + (sy ? ' data-node=\"' + esc(sy[0].node) + '\" title=\"' + esc(sy.map((x) => x.node).join('、')) + '\"' : '') + '><i>' + k + '</i><span>' + esc(l) + '</span></div>'; }).join('');\n  if (line) { const el = $('#code').querySelector('[data-l=\"' + line + '\"]'); if (el) el.scrollIntoView({ block: 'center' }); }\n}\nfunction renderFiles() { const n = N()[cur]; const fl = n.reference.files; $('#flist').innerHTML = (fl.length ? fl.map((f) => '<a data-file=\"' + esc(f.path) + '\" data-line=\"' + f.line + '\"><span class=\"r\">' + esc(f.roleLabel) + '</span>' + esc(f.path) + ':' + f.line + '</a>').join('') : '<span class=\"mut\">這個節點沒有直接對應的檔案</span>') + '<details><summary class=\"mut\">全部檔案（' + B.files.length + '）</summary>' + B.files.map((f) => '<a data-file=\"' + esc(f.path) + '\">' + esc(f.path) + '</a>').join('') + '</details>'; if (fl.length) showFile(fl[0].path, fl[0].line); else if (curFile) showFile(curFile); }\nfunction go(id) { if (!N()[id]) return; cur = id; const n = N()[id]; $('#crumb').innerHTML = crumbOf(id).map((x, i, a) => (i < a.length - 1 ? '<a data-go=\"' + esc(x.id) + '\">' + esc(x.title) + '</a> ›' : '<b>' + esc(x.title) + '</b>')).join(' '); renderTree($('#q').value); drawDiagram(n); renderInfo(); renderFiles(); }\n// ---------- 動作：嵌在 App 裡由 App 執行；單獨開啟時給一段可以貼給 AI 的指令 ----------\nlet hostWait = null;\nfunction doAction(a) {\n  const n = N()[cur]; const msg = { __fa_uml: 1, type: 'action', node: cur, action: a, level: n.level };\n  if (a === 'show-code') { tab = 'ref'; document.querySelectorAll('#tabs button').forEach((b) => b.classList.toggle('on', b.dataset.t === 'ref')); renderInfo(); return; }\n  let extra = ''; if (a === 'add-usecase') { extra = prompt('用一句話描述新的使用案例（例如：顧客可以取消訂單）'); if (!extra) return; msg.args = { text: extra }; }\n  const out = $('#actmsg'); const embedded = window.parent && window.parent !== window; const instr = '請對這份 UML 設計的節點「' + n.id + '」執行動作「' + ACTIONS[a].label + '」。' + (extra ? '內容：' + extra + '。' : '') + '做法：用 design_choices／uml_to_code 工具的 UML 文字格式，只修改這一區（' + n.id + '）與受它影響的關係與呼叫順序，其他保持不變；改完重新呼叫 uml_to_code。目前的 UML：\\n\\n' + B.dsl;\n  if (embedded) { if (out) out.textContent = '已送給 App 處理…'; window.parent.postMessage(msg, '*'); clearTimeout(hostWait); hostWait = setTimeout(() => { if (out) out.textContent = ''; showModal(ACTIONS[a].label, 'App 沒有回應（可能是單獨開啟）。把下面這段貼給 AI（任何強弱的 AI 或離線訓練器都可以）：', instr); }, 4000); } else showModal(ACTIONS[a].label, '單獨開啟的檢視器不能自己執行這個動作。把下面這段貼給 AI（任何強弱的 AI 或離線訓練器都可以）：', instr);\n}\nfunction showModal(t, p, text) { $('#mt').textContent = t; $('#mp').textContent = p; $('#mta').value = text; $('#modal').style.display = 'flex'; }\nwindow.addEventListener('message', (e) => { const d = e.data; if (!d || d.__fa_uml_r !== 1) return; clearTimeout(hostWait); if (d.type === 'bundle' && d.bundle) { const keep = cur; B = d.bundle; init(N()[keep] ? keep : B.root); const out = $('#actmsg'); if (out && d.note) out.textContent = d.note; } else if (d.type === 'note') { const out = $('#actmsg'); if (out) out.textContent = d.note || ''; } });\ndocument.addEventListener('click', (e) => { const t = e.target; const a = t.closest('[data-go]'); if (a) { e.preventDefault(); return go(a.dataset.go); } const f = t.closest('[data-file]'); if (f) { e.preventDefault(); return showFile(f.dataset.file, f.dataset.line ? Number(f.dataset.line) : null); } const tn = t.closest('.tn'); if (tn) return go(tn.dataset.id); const ln = t.closest('.ln.s'); if (ln) return go(ln.dataset.node); const tb = t.closest('#tabs button'); if (tb) { tab = tb.dataset.t; document.querySelectorAll('#tabs button').forEach((b) => b.classList.toggle('on', b === tb)); return renderInfo(); } const ab = t.closest('[data-act]'); if (ab) return doAction(ab.dataset.act); });\n$('#q').addEventListener('input', () => renderTree($('#q').value)); $('#mclose').onclick = () => { $('#modal').style.display = 'none'; }; $('#mcopy').onclick = () => { $('#mta').select(); try { document.execCommand('copy'); } catch (_) {} };\n$('#b-dsl').onclick = () => showModal('UML 文字', '一行一件事的 UML；任何 AI 都能讀、能改，改完用 uml_to_code 重新產生。', B.dsl); $('#b-zip').onclick = () => { if (window.parent && window.parent !== window) window.parent.postMessage({ __fa_uml: 1, type: 'action', node: cur, action: 'download-zip', level: 'system' }, '*'); else showModal('下載專案', '這個檢視器已經在專案 zip 裡了（viewer.html），不需要再下載。', 'zip 裡的 viewer.html 就是這個頁面；用瀏覽器直接打開即可。'); };\n$('#b-fit').onclick = () => { if (vb) { vb.x = 0; vb.y = 0; vb.w = vb.fw; vb.h = vb.fh; setVb(); } };\nfunction init(start) { document.title = B.title + '　設計檢視器'; $('#title').textContent = B.title; $('#b-lang').textContent = B.language; $('#b-arch').textContent = B.design.architecture ? B.design.architecture.label : ''; $('#b-glue').textContent = '膠水 ' + B.glue.length; go(start || B.root); }\ninit(B.root);\n</script></body></html>\n";
 /* UMLVIEW-END */
@@ -98228,6 +98320,44 @@ ${sourceTool.handlerScript}
     // （已經支援真正的ArrayBuffer二進位回應+自訂header+timeout，且自動
     // 經過_viaAssetProxy的CORS繞過——跟終端機curl/wget用的是同一套機制，
     // 不是重新發明一個網路層）。
+    // 2026-11-08：YouTube請求的重試包裝。實證：本機代理對YouTube首頁／watch頁連打都是200且內容完整；
+    // 使用者看到的502是代理「連不上上游」時自己回的（x-fa-error: connect，本文是Node的真正錯誤），屬暫時性。
+    // 規則在FaYtNet（有單元測試）：暫時性才重試，最多MAX_ATTEMPTS次、退避遞增；用完仍失敗就回傳最後一次的回應（有的話）
+    // 與具體說明（狀態碼、代理判定、真正原因、耗時、第幾次）。
+    _ytNetTraceAdd(line) {
+        const a = this._ytNetTraceArr || (this._ytNetTraceArr = []);
+        a.push(line); if (a.length > 40) a.shift();
+    }
+    async _ytFetchRetry(method, url, opts, step) {
+        const N = FaYtNet;
+        let last = null;
+        let host = url; try { const u = new URL(url); host = u.hostname + u.pathname.slice(0, 40); } catch (_) { /* 保持原樣 */ }
+        for (let a = 1; a <= N.MAX_ATTEMPTS; a++) {
+            const t0 = Date.now();
+            try {
+                const { resp } = await this._terminalHttpFetch(method, url, opts);
+                let xerr = '';
+                try { xerr = (resp.headers && typeof resp.headers.get === 'function' ? resp.headers.get('x-fa-error') : '') || ''; } catch (_) { /* 沒有標頭 */ }
+                const ms = Date.now() - t0;
+                if (resp.ok || !N.isTransientHttp(resp.status, xerr)) {
+                    if (a > 1 || !resp.ok) this._ytNetTraceAdd(`${step} ${host} → HTTP ${resp.status}（第${a}次，${(ms / 1000).toFixed(1)}秒）`);
+                    return { resp, attempts: a };
+                }
+                let bodyText = '';
+                try { bodyText = await (typeof resp.clone === 'function' ? resp.clone() : resp).text(); } catch (_) { /* 讀不到本文 */ }
+                last = { resp, status: resp.status, xFaError: xerr, bodyText, elapsedMs: ms };
+            } catch (err) {
+                last = { resp: null, status: 0, xFaError: '', bodyText: String(err && err.message || err), elapsedMs: Date.now() - t0 };
+            }
+            const f = N.describeFailure({ step, status: last.status, xFaError: last.xFaError, bodyText: last.bodyText, elapsedMs: last.elapsedMs, attempt: a, attempts: N.MAX_ATTEMPTS });
+            this._ytNetTraceAdd(`${host}：${f}`);
+            console.warn('[youtube net]', f);
+            if (a < N.MAX_ATTEMPTS) await new Promise((r) => setTimeout(r, N.backoffMs(a - 1)));
+        }
+        last.failure = N.describeFailure({ step, status: last.status, xFaError: last.xFaError, bodyText: last.bodyText, elapsedMs: last.elapsedMs, attempt: N.MAX_ATTEMPTS, attempts: N.MAX_ATTEMPTS });
+        return last;
+    }
+
     _ytDlpHttpBridge() {
         if (this._ytDlpHttpBridgeObj) return this._ytDlpHttpBridgeObj;
         this._ytDlpHttpBridgeObj = {
@@ -98244,11 +98374,14 @@ ${sourceTool.handlerScript}
                     if (typeof body.destroy === 'function') body.destroy();
                     body = converted;
                 }
-                const { resp } = await this._terminalHttpFetch(method, url, {
+                // 2026-11-08：暫時性失敗（代理回的502／504、連線錯誤）自動全新重試，並把每次結果記進_ytNetTrace供錯誤訊息引用
+                const got = await this._ytFetchRetry(method, url, {
                     headers,
                     body: body && body.length ? body : undefined,
                     timeoutMs: 60000,
-                });
+                }, 'yt-dlp請求');
+                if (!got.resp) throw new Error(got.failure);
+                const resp = got.resp;
                 const buf = new Uint8Array(await resp.arrayBuffer());
                 const respHeaders = {};
                 resp.headers.forEach((v, k) => { respHeaders[k] = v; });
@@ -98634,12 +98767,14 @@ _fa_os.path.join(_fa_os.path.dirname(_fa_vendor_mod.__file__), 'yt.solver.core.j
         const { BotGuardClient, WebPoMinter, utils } = await this._ensureBgUtilsLoaded();
         const REQUEST_KEY = 'O43z0dpjhgX20SCx4KAo';
 
-        const { resp: homeResp } = await this._terminalHttpFetch('GET', 'https://www.youtube.com', {
+        const home = await this._ytFetchRetry('GET', 'https://www.youtube.com', {
             headers: { accept: '*/*', 'accept-language': 'en-US,en;q=0.7' },
             timeoutMs: 20000,
-        });
-        if (!homeResp.ok) throw new Error(`抓YouTube首頁失敗：HTTP ${homeResp.status}`);
-        const homeHtml = await homeResp.text();
+        }, '抓YouTube首頁');
+        if (!home.resp || !home.resp.ok) throw new Error(home.failure || FaYtNet.describeFailure({ step: '抓YouTube首頁', status: home.resp && home.resp.status }));
+        const homeHtml = await home.resp.text();
+        const homeDiag = FaYtNet.diagnoseHtml(homeHtml);
+        if (homeDiag.kind !== 'ok') this._ytNetTraceAdd(`YouTube首頁內容：${homeDiag.detail}`);
 
         let challenge = null;
         const ytcfgMatch = homeHtml.match(/ytcfg\.set\(({.+?})\);/s);
@@ -98720,6 +98855,7 @@ _fa_os.path.join(_fa_os.path.dirname(_fa_vendor_mod.__file__), 'yt.solver.core.j
         const rep = typeof report === 'function' ? report : () => {};
         await rep(0.01, '載入yt-dlp執行環境中（第一次使用需要下載Python環境與套件，可能要1～2分鐘，之後會快很多）…', true);
         const instance = await this._ensureYtDlpLoaded();
+        this._ytNetTraceArr = [];
         let poToken = null;
         let poTokenError = null;
         await rep(0.08, '產生PO Token中…（頁面可能會短暫沒有反應）', true);
@@ -98792,13 +98928,34 @@ _result
 `;
         let infoJson;
         await rep(0.15, 'yt-dlp解析影片資訊中（會向YouTube請求網頁與player資料並解密簽章，過程中頁面可能會短暫沒有反應）…', true);
-        try {
-            infoJson = await instance.runPythonAsync(script);
-        } catch (err) {
-            throw new Error(`yt-dlp解析影片資訊失敗：${String(err.message || err)}`);
+        // 2026-11-08：暫時性失敗（The page needs to be reloaded／Incomplete data／HTTP 5xx／逾時）自動全新重來（每次都是新的YoutubeDL），
+        // 最多FaYtNet.MAX_ATTEMPTS次、退避遞增；機器人驗證／登入／影片不可用不重試，直接給誠實說明。
+        let info = null;
+        const attemptNotes = [];
+        const parseT0 = Date.now();
+        for (let attempt = 1; attempt <= FaYtNet.MAX_ATTEMPTS; attempt++) {
+            try {
+                infoJson = await instance.runPythonAsync(script);
+            } catch (err) {
+                throw new Error(`yt-dlp解析影片資訊失敗：${String(err.message || err)}`);
+            }
+            info = JSON.parse(infoJson);
+            if (info.ok) break;
+            const cls = FaYtNet.classifyYtDlpError(info.error);
+            attemptNotes.push(`第${attempt}次：${String(info.error || '').replace(/\s+/g, ' ').slice(0, 160)}（${cls.kind}）`);
+            this._ytNetTraceAdd(`yt-dlp解析 第${attempt}/${FaYtNet.MAX_ATTEMPTS}次失敗：${cls.kind}`);
+            if (!cls.retryable || attempt >= FaYtNet.MAX_ATTEMPTS || info.only_storyboards) {
+                info.errorKind = cls.kind; info.errorHint = cls.hint;
+                break;
+            }
+            await rep(0.15, `YouTube暫時回應不完整，自動重試中（第${attempt + 1}/${FaYtNet.MAX_ATTEMPTS}次）…`, true);
+            await new Promise((r) => setTimeout(r, FaYtNet.backoffMs(attempt - 1)));
         }
-        const info = JSON.parse(infoJson);
         if (!info.ok) {
+            info.error = String(info.error || '')
+                + (info.errorHint ? `\n${info.errorHint}` : '')
+                + `\n[診斷] 共試${attemptNotes.length}次，耗時${((Date.now() - parseT0) / 1000).toFixed(1)}秒：${attemptNotes.join('；')}`
+                + (this._ytNetTraceArr && this._ytNetTraceArr.length ? `\n[網路紀錄] ${this._ytNetTraceArr.slice(-6).join('；')}` : '');
             const poTokenNote = poToken
                 ? '（已嘗試產生PO Token，但Google目前只給這個app一個信任度較低的「降級版」token（websafeFallbackToken），不是完整信任的integrityToken，所以還是拿不到真實格式——已排除是瀏覽器環境被偵測為自動化的問題（用真實登入的Chrome測過結果一樣），根因還在查，屬於持續在打的BotGuard逆向工程游擊戰，不是設定錯誤）'
                 : `（PO Token產生失敗：${poTokenError || '未知原因'}）`;

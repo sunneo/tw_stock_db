@@ -213,6 +213,10 @@ function handleProxyRequest(req, res, targetUrlRaw, overrideHeaders) {
         method,
         headers,
         rejectUnauthorized: !faInsecure,
+        // 2026-11-08 實證（真 Electron 抓 www.youtube.com 首頁）：「502，x-fa-error: connect，Parse Error: Header overflow」。
+        // YouTube 回應標頭很肥（Content-Security-Policy-Report-Only、connection-allowlist-report-only 等合計約 12～13KB），
+        // 緊貼 Node 預設上限 16KB；cookie／實驗參數多一點就超過，上游明明回 200 卻被當成連線錯誤。放寬到 256KB。
+        maxHeaderSize: 262144,
       },
       (upstreamRes) => {
         const status = upstreamRes.statusCode || 502;
