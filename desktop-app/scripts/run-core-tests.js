@@ -240,6 +240,7 @@ const suites = [
     ['音樂：Basic Pitch 視窗與音符解碼（真模型輸出固定資料）', 'scripts/music-tests/basic_pitch.test.js'],
     ['音樂：樂器分類（封閉候選清單、GM 對應）', 'scripts/music-tests/instrument_classify.test.js'],
     ['merge diff patcher（unified diff 解析、策略鏈、函式邊界三方合併、合併後語法＋判題驗證與回滾；diff3 對照 git merge-file；需 python／git，沒有就略過該部分）', 'renderer/src/recipe/code_patch.test.js'],
+    ['merge diff patcher 第二批（4.2 衝突階梯、亂序片段、語法樹函式單元與 docstring 防護、patch 接進 editCode；需 python，語法樹部分需 renderer/vendor/tree-sitter）', 'renderer/src/recipe/code_patch_repair.test.js'],
     ['音樂：模型分片下載（續傳、核對、重試）', 'scripts/music-tests/audio_models.test.js'],
 ];
 let failed = 0, failedNew = 0;

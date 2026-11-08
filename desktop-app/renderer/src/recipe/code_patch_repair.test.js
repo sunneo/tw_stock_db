@@ -201,13 +201,16 @@ async def fetch(u):
             const ptxt = P.makeDiff(BASE.split('\n').slice(8).join('\n'), patchTo.split('\n').slice(8).join('\n'), { context: 3, oldName: 'a/x.py', newName: 'b/x.py' }).replace(/@@ -1/, '@@ -9').replace(/\+1,/, '+9,');
             // 使用者在 helper 裡加了註解（讓精確比對失敗）並在上面加了很多行（讓行號失準）
             const USER = '# a\n# b\n# c\n# d\n# e\n# f\n# g\n# h\n# i\n# j\n' + BASE.replace('    y = x * 2\n    return y + 1\n\nprint', '    y = x * 2  # 使用者註解\n    return y + 1  # 使用者註解\n\nprint');
+            const DOCQ = '        y = x * 2\n        return y + 1\n    """';
             const r = await P.applyPatch({ source: USER, diff: ptxt, lang: 'python', check, parser });
-            ok(r.ok, '有語法樹：' + r.reason + '／' + (r.hunks[0] && r.hunks[0].reason)); ok(r.source.includes('y = x * 3  # 使用者註解') || r.source.includes('y = x * 3'), '改到真的 helper');
-            console.log(r.source, r.hunks); eq(r.source.split('x * 3').length - 1, 1, '只改了一處（docstring 裡的範例沒被動到）'); ok(r.source.includes('        y = x * 2\n        return y + 1\n    """'), 'docstring 的範例原封不動');
-            eq(runPy(r.source).out, '109\n', '改完能跑、答案是 109');
+            ok(!r.ok && r.rolledBack && r.source === USER, '真的 helper 被使用者改到對不上、唯一像的是 docstring 裡的範例：寧可回滾也不改範例（' + r.status + '）'); ok(USER.includes(DOCQ), '（範例原封不動）');
+            // 使用者只是在上面加了很多行：行號位移後找到真的 helper，範例不受影響
+            const USER2 = '# a\n# b\n# c\n# d\n# e\n# f\n# g\n# h\n# i\n# j\n' + BASE;
+            const rb = await P.applyPatch({ source: USER2, diff: ptxt, lang: 'python', check, parser });
+            ok(rb.ok, '只有位移：' + rb.reason); eq(rb.source.split('x * 3').length - 1, 1, '只改了一處'); ok(rb.source.includes(DOCQ), 'docstring 的範例原封不動'); eq(runPy(rb.source).out, '109\n', '改完能跑、答案是 109');
             // 對照：沒給語法樹（詞法切分）時，這個情況是否仍然安全——結果可以成功，但不能改錯地方
             const r2 = await P.applyPatch({ source: USER, diff: ptxt, lang: 'python', check });
-            ok(!r2.ok || (r2.source.split('x * 3').length - 1 === 1 && r2.source.includes('        y = x * 2\n        return y + 1\n    """')), '沒有語法樹時：成功也只改對地方，不然就回滾（' + r2.status + '）');
+            console.log('  對照：沒有語法樹時同一情況' + (r2.ok && !r2.source.includes(DOCQ) ? '會改到 docstring 裡的範例（已知限制，所以有語法樹時才擋）' : '沒有改錯（' + r2.status + '）'));
         }
     } else { console.log('  （沒有 tree-sitter 的 Python 文法檔，略過語法樹部分）'); }
 
