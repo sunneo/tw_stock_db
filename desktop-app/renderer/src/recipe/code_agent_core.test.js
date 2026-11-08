@@ -143,5 +143,12 @@ const checkOK = async () => ({ verdict: 'CHECKED', passed: 0, total: 0, failedIn
     seen.length = 0; await A.runCode({ text: '寫一個 python 程式讀兩個整數印出和', problem: { statement: 's', tests: [{ in: '1 2\n', out: '3\n' }] }, opts: { writeMode: 'free' }, generate: gen, judge: judgeAC, check: checkOK });
     assert.ok(seen.every((x) => x.indexOf('離線的程式組合已經試過') < 0), '沒走離線就沒有這段');
   });
+  await t('缺口 C：離線帶回 stackHeader 時，給模型的是堆疊標頭（含「不要重複」），gaps 帶「卡在」', async () => {
+    const rounds = [{ by: 'recipe', ok: false, reason: '沒有配方' }, { by: 'paradigm', ok: false, tried: 3 }]; const seen = []; const g0 = fakeGen({ plan: PLAN, codes: CODES }); const gen = async (req) => { seen.push(JSON.stringify(req.messages || '')); return g0(req); };
+    const r = await A.runCode({ text: '寫一個 python 程式讀兩個整數印出和', problem: { statement: 's', tests: [{ in: '1 2\n', out: '3\n' }] }, opts: { writeMode: 'free' }, offline: async () => ({ ok: false, reason: '沒解出', rounds, stuckAt: '範式', stackHeader: '【目標】X\n【離線已試】配方✘→範式✘（試 3 個）。請用不同的做法，不要重複前面失敗的路。' }), generate: gen, judge: judgeAC, check: checkOK });
+    assert.ok(seen.some((x) => x.indexOf('【離線已試】') >= 0 && x.indexOf('不要重複') >= 0), '模型提示要帶堆疊標頭');
+    assert.ok(seen.every((x) => x.indexOf('離線的程式組合已經試過') < 0), '有標頭就不用舊的單行字串');
+    assert.ok((r.gaps || []).some((g) => g.indexOf('卡在「範式」') >= 0), 'gaps 要說卡在哪層');
+  });
   console.log('\n' + n + ' passed');
 })().catch((e) => { console.error('FAIL', e && e.stack || e); process.exit(1); });

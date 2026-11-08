@@ -102,7 +102,7 @@
 
     // 離線沒解出來的各層結果要留到最終結果的 gaps（後面的路線會整個換掉 gaps，所以在最外層補回去）
     async function runCode(a) {
-        const kept = []; const a2 = a && typeof a.offline === 'function' ? Object.assign({}, a, { offline: async (x) => { const o = await a.offline(x); if (o && !o.ok) kept.push('離線組合沒解出來（' + clip(o.reason || '不明', 100) + '）' + (roundsNote(o.rounds) ? '；各層：' + clip(roundsNote(o.rounds), 200) : '')); return o; } }) : a;
+        const kept = []; const a2 = a && typeof a.offline === 'function' ? Object.assign({}, a, { offline: async (x) => { const o = await a.offline(x); if (o && !o.ok) kept.push('離線組合沒解出來（' + clip(o.reason || '不明', 100) + '）' + (roundsNote(o.rounds) ? '；各層：' + clip(roundsNote(o.rounds), 200) : '') + (o.stuckAt ? '；卡在「' + o.stuckAt + '」' : '')); return o; } }) : a;
         const r = await runCode0(a2); if (r && kept.length) r.gaps = kept.concat((r.gaps || []).filter((g) => kept.indexOf(g) < 0 && !/^離線組合沒解出來/.test(g))); return r;
     }
     async function runCode0(a) {
@@ -116,11 +116,11 @@
             return Object.assign(e, { mode: 'edit', lang });
         }
         // 離線組合（Python）：uml_design → 配方／課／範式骨架 → 區塊迴圈 → 沙盒，由宿主注入 offline({text, lang, problem}) → {ok, source, verdict, ...}；要有測試與判題器才試，通過就不用模型，沒過就往下走模型路線
-        const offlineGaps = [];
+        const offlineGaps = []; let offlineHeader = ''; // 缺口 C：離線思考堆疊的標頭（FaOfflineStack.modelHeader），有的話取代 roundsNote 單行字串交給模型
         if (typeof a.offline === 'function' && !a.model && lang === 'python' && a.problem && a.problem.tests && a.problem.tests.length && a.judge) {
             let o = null; try { o = await a.offline({ text: a.text, lang, problem: a.problem, backend }); } catch (e) { offlineGaps.push('離線組合出錯：' + clip((e && e.message) || e, 100)); }
             if (o && o.ok && o.source && (o.verdict === 'AC')) { if (typeof a.onEvent === 'function') { try { a.onEvent({ t: 'offline', by: o.by, paradigm: o.paradigm, tried: o.tried }); } catch (_) { /* 進度回報壞了不影響流程 */ } } return Object.assign(base, { ok: true, verified: o.verified !== false, verdict: 'AC', mode: 'offline', source: o.source, offline: { rounds: Array.isArray(o.rounds) ? o.rounds : null, by: o.by, paradigm: o.paradigm || null, slots: o.slots || null, lesson: o.lesson || null, recipe: o.recipe || null, matrix: o.matrix || null, onlyExamples: !!o.onlyExamples, tried: o.tried || 0, usedModel: !!o.usedModel }, calls: Object.assign({}, base.calls, { judge: o.tried || 1 }) }); }
-            if (o && !o.ok) offlineGaps.push('離線組合沒解出來（' + clip(o.reason || '不明', 100) + '）' + (roundsNote(o.rounds) ? '；各層：' + clip(roundsNote(o.rounds), 200) : '') + '，改用模型');
+            if (o && !o.ok) { offlineGaps.push('離線組合沒解出來（' + clip(o.reason || '不明', 100) + '）' + (roundsNote(o.rounds) ? '；各層：' + clip(roundsNote(o.rounds), 200) : '') + (o.stuckAt ? '；卡在「' + o.stuckAt + '」' : '') + '，改用模型'); if (o.stackHeader) offlineHeader = String(o.stackHeader); }
         }
         base.gaps = base.gaps.concat(offlineGaps);
         if (!backend) return Object.assign(base, { mode: a.model ? 'project' : 'problem', verdict: 'NONE', reason: 'no_model', gaps: ['沒有可用的模型（generate 或 backend）'] });
@@ -155,7 +155,7 @@
         const problem = a.problem && a.problem.statement ? a.problem : { id: 'user-task', title: clip(a.text, 40), statement: String(a.text || '') };
         // 缺口 D：離線各層已試過什麼，交給模型當「已試」前置，避免它重走同一條路（只加在給模型的敘述，不動測資與判題）
         const triedNote = offlineGaps.filter((g) => /^離線組合沒解出來/.test(g)).map((g) => g.replace(/，改用模型$/, '')).join('；');
-        const problemForModel = triedNote ? Object.assign({}, problem, { statement: String(problem.statement || '') + '\n\n（補充：離線的程式組合已經試過但沒成功——' + triedNote + '。請用不同的做法。）' }) : problem;
+        const problemForModel = triedNote ? Object.assign({}, problem, { statement: String(problem.statement || '') + '\n\n' + (offlineHeader ? offlineHeader + '\n（原因：' + triedNote.replace(/；各層：[^；]*/g, '') + '）' : '（補充：離線的程式組合已經試過但沒成功——' + triedNote + '。請用不同的做法。）') }) : problem;
         const hasTests = !!(problem.tests && problem.tests.length);
         const verify = hasTests && a.judge ? ({ lang: l, source }) => a.judge({ lang: l, source, problem }) : (a.check ? ({ lang: l, source }) => a.check({ lang: l, source }) : null);
         if (!verify) return Object.assign(base, { mode: 'problem', verdict: 'NONE', reason: 'no_checker', gaps: ['沒有檢查器（check）也沒有判題器（judge），無法驗證任何東西'] });

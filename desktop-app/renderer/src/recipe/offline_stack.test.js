@@ -43,5 +43,6 @@ const ROUNDS = [{ by: 'recipe', ok: false, reason: '沒有配方' }, { by: 'less
         const s3 = await O.wireOffline({ goal: 'g', result: { ok: true, source: 'x', rounds: [] }, styleFn: () => { throw new Error('壞'); } }); assert.strictEqual(s3.check.ok, false, '檢查器自己壞了記成問題但不丟例外');
         const n = await O.wireOffline(null); assert.strictEqual(n.stack.length >= 1, true);
     });
+    await t('整體成功時 stuckAt 為 null（即使有層記 ✘，實機遇過矩陣層成功但 rounds 只有 matrix✘）', async () => { const w = await O.wireOffline({ goal: 'g', result: { ok: true, source: 'x', rounds: [{ by: 'matrix', ok: false }] } }); assert.strictEqual(w.stuckAt, null); });
     console.log(pass + ' passed, ' + fail + ' failed'); process.exit(fail ? 1 : 0);
 })();

@@ -10,7 +10,7 @@
  *   measureRoute(o)                  I：選工具路由的堆疊效果量測骨架：同一批題目、同一個 generate，比較無堆疊／有堆疊的正確率與呼叫數
  */
 (function (root, factory) {
-    if (typeof module === 'object' && module.exports) module.exports = factory(require('./think_stack.js'), require('./recipe_core.js')); else root.FaOfflineStack = factory(root.FaThinkStack, root.FaRecipe);
+    if (typeof module === 'object' && module.exports) module.exports = factory(require('./think_stack.js'), require('./recipe_core.js')); else root.FaOfflineStack = factory(typeof FaThinkStack !== 'undefined' ? FaThinkStack : root.FaThinkStack, typeof FaRecipe !== 'undefined' ? FaRecipe : root.FaRecipe); // 嵌入進 floating-assistant.js 時 root 是空物件，依賴取同檔的全域常數
 })(typeof self !== 'undefined' ? self : this, function (T, R) {
     const NAME = { recipe: '配方', lesson: '課', paradigm: '範式', matrix: '矩陣', blocks: '區塊迴圈' };
     const QUESTION = { recipe: '食譜有現成做法嗎？', lesson: '教過的課能解這題嗎？', paradigm: '範式骨架＋槽位窮舉能解這題嗎？', matrix: '矩陣層能解這題嗎？', blocks: '區塊迴圈能解這題嗎？' };
@@ -70,7 +70,7 @@
     async function wireOffline(o) {
         o = o || {}; const res = o.result || {}; const out = { stack: null, stuckAt: null, header: '', check: null, note: '' };
         try {
-            const st = fromRounds(o.goal || '離線寫程式', res.rounds); out.stuckAt = stuckAt(st); out.header = res.ok ? '' : modelHeader(st);
+            const st = fromRounds(o.goal || '離線寫程式', res.rounds); out.stuckAt = res.ok ? null : stuckAt(st); /* 整體成功就沒有「卡住」，即使前面某層（例如矩陣層的探路）記了 ✘ */ out.header = res.ok ? '' : modelHeader(st);
             if (res.ok && typeof res.source === 'string') {
                 const progChecks = (o.progChecks || []).slice(); if (typeof o.styleFn === 'function') progChecks.push(styleProgCheck(o.styleFn));
                 out.check = await selfCheck(st, { result: res.source, progChecks, enabled: !!o.enabled, ask: o.ask, question: o.question });
