@@ -228,6 +228,7 @@ const suites = [
     ['音樂：音訊轉 MIDI 流程（分段、可插拔分軌器與轉譜器、續跑、中斷、誠實報告）', 'scripts/music-tests/audio_pipeline.test.js'],
     ['音樂：Basic Pitch 視窗與音符解碼（真模型輸出固定資料）', 'scripts/music-tests/basic_pitch.test.js'],
     ['音樂：樂器分類（封閉候選清單、GM 對應）', 'scripts/music-tests/instrument_classify.test.js'],
+    ['merge diff patcher（unified diff 解析、策略鏈、函式邊界三方合併、合併後語法＋判題驗證與回滾；diff3 對照 git merge-file；需 python／git，沒有就略過該部分）', 'renderer/src/recipe/code_patch.test.js'],
     ['音樂：模型分片下載（續傳、核對、重試）', 'scripts/music-tests/audio_models.test.js'],
 ];
 let failed = 0, failedNew = 0;

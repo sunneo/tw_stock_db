@@ -206,6 +206,13 @@ function embedUml() {
     }
 }
 embedUml();
+(function embedCodePatch() { // merge diff patcher（獨立一段，不和 embedUml 的長清單混在一起）
+    const core = fs.readFileSync(path.join(root, 'renderer/src/recipe/code_patch_core.js'), 'utf8').replace(/\r\n/g, '\n');
+    const a = src.indexOf('/* CODEPATCH-BEGIN */'), b = src.indexOf('/* CODEPATCH-END */');
+    if (a < 0 || b < 0) { console.log('略過 FaCodePatch：floating-assistant.js 還沒有 CODEPATCH 標記'); return; }
+    src = src.slice(0, a) + '/* CODEPATCH-BEGIN */\nconst FaCodePatch = (function () {\nconst holder = {};\n(function (module, self) {\n' + core + '\n}).call(null, undefined, holder);\nreturn holder.FaCodePatch;\n})();\n' + src.slice(b);
+    console.log('已更新 FaCodePatch（' + core.length + ' 字元）');
+})();
 embed('renderer/src/uml/uml-viewer.template.html', 'UMLVIEW-BEGIN', 'UMLVIEW-END', 'FA_UMLVIEW_HTML');
 function embedCard() {
     const core = fs.readFileSync(path.join(root, 'renderer/src/card/card_core.js'), 'utf8').replace(/\r\n/g, '\n');
