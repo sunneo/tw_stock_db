@@ -1,12 +1,12 @@
 {
   "schema": 1,
   "baseVersion": "1.1.0",
-  "generatedAt": "2026-11-08T13:41:26.067Z",
+  "generatedAt": "2026-11-08T15:06:34.519Z",
   "files": {
     "renderer/index.html": "039acc67493d2d42bae493dc9822621a",
     "renderer/bootstrap.js": "a9953cd7275f9fe213f27d062f660e1a",
-    "renderer/floating-assistant.js": "a291c50e81ebac28ebadaff29d489dff",
-    "renderer/floating-assistant.min.js": "a291c50e81ebac28ebadaff29d489dff",
+    "renderer/floating-assistant.js": "b9f1e07cc4b9c85328e1e5e58b34d035",
+    "renderer/floating-assistant.min.js": "b9f1e07cc4b9c85328e1e5e58b34d035",
     "renderer/vendor/midigenai/LICENSE": "99eb9c75e3dddbe23104e4cb8e5d8168",
     "renderer/vendor/midigenai/attributes.mjs": "1596c456f30ac128b844544d0ddcc47e",
     "renderer/vendor/midigenai/generator.mjs": "09f3c65bda0308b5f4998301edda2c8c",
@@ -64,8 +64,8 @@
   "sizes": {
     "renderer/index.html": 5741,
     "renderer/bootstrap.js": 202259,
-    "renderer/floating-assistant.js": 11393306,
-    "renderer/floating-assistant.min.js": 11393306,
+    "renderer/floating-assistant.js": 11442298,
+    "renderer/floating-assistant.min.js": 11442298,
     "renderer/vendor/midigenai/LICENSE": 1070,
     "renderer/vendor/midigenai/attributes.mjs": 9065,
     "renderer/vendor/midigenai/generator.mjs": 11160,

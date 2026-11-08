@@ -239,8 +239,8 @@
    "names": [
     "FaMatrixBlocks"
    ],
-   "size": 8733,
-   "md5": "83b7c3cac4e435437515a5c65fa9fdcc"
+   "size": 9016,
+   "md5": "d293cc140d3f0edc60c9452db6ba90ec"
   },
   "matrixcompose": {
    "file": "chunks/matrixcompose.js",
@@ -447,8 +447,8 @@
    "names": [
     "FaDomainLinuxsem"
    ],
-   "size": 7337,
-   "md5": "dcc10803fd9a3ea961fa1c7d169f2f98"
+   "size": 10576,
+   "md5": "86428f1b16ba432063594e7a8a11e08f"
   },
   "domainlf": {
    "file": "chunks/domainlf.js",
@@ -487,8 +487,8 @@
    "names": [
     "FaCodeSlash"
    ],
-   "size": 7348,
-   "md5": "1377a3cb0c7224d238ce6e11f10b7293"
+   "size": 7688,
+   "md5": "b502cbb32f1e9bc424afea3be25ceb8e"
   },
   "offlinestack": {
    "file": "chunks/offlinestack.js",
@@ -519,8 +519,8 @@
    "names": [
     "FaIrBundle"
    ],
-   "size": 126903,
-   "md5": "1db4ff7231862c05f7a86e590863297a"
+   "size": 170179,
+   "md5": "1800012499df162a0fae166701ffd2f8"
   },
   "view": {
    "file": "chunks/view.js",
@@ -1524,7 +1524,7 @@
   }
  },
  "core": {
-  "size": 5650419,
-  "md5": "801fd2aabf1ba5d6eef6f06e231efdf9"
+  "size": 5652223,
+  "md5": "a7b7b1d3aadd13df5dfa416a38d19314"
  }
 }
