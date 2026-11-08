@@ -9,7 +9,7 @@
 
 | 項目 | 狀態 | 下一步 | 在哪 |
 |---|---|---|---|
-| 寫程式：`uml_design` 讀算法題、內建的課、區塊庫、範式骨架庫 | **已核對**：不給課、只用範式骨架＋槽位窮舉＋沙盒，種子 17/17、沒見過的改寫 16/16（選項反序也 16/16）；`write_code` 已接離線組合（無模型也能做 Python 算法題）；真 Electron 逐題結果見 `STATUS.md` | 範式 23 個（缺回溯、圖最短路、線段樹等）；其他語言；老師迴圈對寫程式只在「離線自己重做通過」時抽課 | 原檔：block-writer、`DESIGN.ast-nodes.md` 第七節 7.3 |
+| 寫程式：`uml_design` 讀算法題、內建的課、區塊庫、範式骨架庫 | **已核對**：不給課、只用範式骨架＋槽位窮舉＋沙盒，種子 17/17、沒見過的改寫 16/16（選項反序也 16/16）；`write_code` 已接離線組合（無模型也能做 Python 算法題）；真 Electron 逐題結果見 `STATUS.md`；**函式內部再切成步驟（2026-11-08）**：`step_split_core.js` 單元測試 14 項過，接在範式骨架／矩陣層之後，2 層、3 層題從需求到判題通過、與只切一層對照（數字見 `DESIGN.fn-template.md` 第 125 行與 STATUS） | 範式 23 個（缺回溯、圖最短路、線段樹等）；其他語言；老師迴圈對寫程式只在「離線自己重做通過」時抽課 | 原檔：block-writer、`DESIGN.ast-nodes.md` 第七節 7.3 |
 | `/teacher-loop`（＝`/offline-trainer-by-ai`）的客觀驗證 | **已核對**：驗證、老師教完離線重做、回歸、回滾，真 Electron 端到端（假模型）通過 | 寫程式的離線組合接進來，才能對真任務跑 | `DESIGN.offline-trainer.md` 5.1、`scripts/e2e/teacher_loop.e2e.mjs` |
 | 「萬物皆矩陣相乘」評估（矩陣＋狀態機、LALR 狀態矩陣、未知題 body→矩陣） | **評估完成＋已驗證**：DFA／min-plus／布林圖／線性遞推（BM）／CYK 布林矩陣／LALR 表矩陣＋有界堆疊／Hankel 學習，49 項測試含隨機對照與反例；種子 20 題 A3／B5／C12（A、B 各有部分只是推測）；追加：多個小矩陣＋狀態機、ReLU vs CoLU、矩陣 VM（19 種封閉指令、JSONL、8 個編譯對照；種子 20 題中矩陣指令是主角 6 題） | 是否把 state-machine／semiring-closure／linear-recurrence 範式接進範式骨架庫，由使用者決定（未動產品） | `DESIGN.matrix-algorithms.md`、`renderer/src/algo/` |
 | **進 renderer 的對照（2026-11-07，一眼看哪些真的在使用者端）** | 規則：每份設計文件在這張表都要有一列，寫「進 renderer？」與「下一步」；沒進 renderer 的不算完成 | — | 下面幾列 |

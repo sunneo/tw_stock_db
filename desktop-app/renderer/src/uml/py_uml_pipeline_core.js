@@ -8,7 +8,7 @@
  *               區塊迴圈（庫存＋範本，模型只在合法選單裡微選擇；參數就是庫存的起點）
  *   ④ 沙盒驗證：判題器跑範例，沒過把判決回饋給區塊迴圈重寫
  *
- *   buildFromUML({statement, uml:{hints, model}, B, R, C2U, FaPyBody, Choose, pick?, judge?, rounds?, Lessons?, lessons?, Paradigms?, paradigmLimit?, paradigmRank?, Matrix?, examples?, matrixBudget?}) → {ok, source, model, cnl, usedModel, recipe, paradigm, slots, tried, rounds, steps, forced, matrix?}
+ *   buildFromUML({statement, uml:{hints, model}, B, R, C2U, FaPyBody, Choose, pick?, judge?, rounds?, Lessons?, lessons?, Paradigms?, paradigmLimit?, paradigmRank?, Matrix?, examples?, matrixBudget?, Steps?, stepJudge?, ctxTokens?}) → {ok, source, model, cnl, usedModel, recipe, paradigm, slots, tried, rounds, steps, forced, matrix?}
  * judge(source) → Promise<{verdict, detail}>；pick 只有走模型路徑才會用到。 */
 (function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaPyUmlPipeline = factory(); })(typeof self !== 'undefined' ? self : this, function () {
     'use strict';
@@ -51,7 +51,16 @@
             if (!m.ok) return { failed: true, reason: m.reason, steps: m.steps }; if (m.verdict !== 'AC' && m.verdict !== 'UNCHECKED') return { failed: true, reason: '矩陣層候選沒通過沙盒：' + m.verdict, steps: m.steps };
             return Object.assign({}, prev || {}, { ok: true, source: m.source, model: null, usedModel: false, verdict: m.verdict, cnl: { solve: m.desc }, matrix: { kind: m.kind, level: m.level, size: m.size, tried: m.tried, ambiguous: m.ambiguous, verified: m.verified, desc: m.desc, steps: m.steps, suggest: m.suggest || null, editable: !!m.editable } });
         };
-        if (!intent) { const mx = await tryMatrix(); if (mx && mx.ok) return Object.assign({ rounds: [{ by: 'matrix', kind: mx.matrix.kind, verdict: mx.verdict }], steps: 0, forced: 0 }, mx); return { ok: false, reason: '這份 UML 不是算法題讀取器讀出來的（沒有意圖）' + (mx && mx.reason ? '；矩陣層：' + mx.reason : '') }; }
+        // ---- 函式內部再切成步驟（Steps：轉換鏈 → 歸約，對半遞迴切；步驟級驗證、組裝後整體判題；失敗回報 fallback，不說成通過）----
+        const trySteps = async (prev) => {
+            if (!o.Steps || !o.examples || !o.examples.length || !o.judge) return null;
+            const sr = await o.Steps.solve({ statement: o.statement, examples: o.examples, judge: o.judge, stepJudge: o.stepJudge, ctxTokens: o.ctxTokens, pick: o.stepPick, maxDepth: o.stepMaxDepth });
+            const rd = { by: 'steps', ok: sr.ok, level: sr.level, tried: sr.tried, reason: sr.reason, perLevel: sr.perLevel };
+            if (prev && prev.rounds) prev.rounds.push(rd);
+            if (!sr.ok) { if (prev && sr.fallback) prev.stepFallback = { level: sr.fallback.level, verdict: sr.fallback.verdict, chain: sr.fallback.chain, reducer: sr.fallback.reducer }; return { ok: false, reason: sr.reason, stepFallback: sr.fallback ? { level: sr.fallback.level, verdict: sr.fallback.verdict } : null }; }
+            return Object.assign({}, prev || {}, { ok: true, source: sr.source, model: null, usedModel: false, verdict: sr.verdict, cnl: Object.assign((prev && prev.cnl) || {}, { solve: '步驟：' + sr.chain.concat([sr.reducer]).join(' → ') }), stepPlan: { level: sr.level, depth: sr.depth, tree: sr.tree, chain: sr.chain, reducer: sr.reducer, tried: sr.tried, perLevel: sr.perLevel, redone: sr.redone, stepChecked: sr.stepChecked } });
+        };
+        if (!intent) { const mx = await tryMatrix(); if (mx && mx.ok) return Object.assign({ rounds: [{ by: 'matrix', kind: mx.matrix.kind, verdict: mx.verdict }], steps: 0, forced: 0 }, mx); { const sx0 = { rounds: [], steps: 0, forced: 0, cnl: {} }; const sx = await trySteps(sx0); if (sx && sx.ok) return sx; } return { ok: false, reason: '這份 UML 不是算法題讀取器讀出來的（沒有意圖）' + (mx && mx.reason ? '；矩陣層：' + mx.reason : '') }; }
         const umlOps = o.uml.model.classes.flatMap((c) => c.ops.map((x) => ({ name: snake(x.name), params: x.params.map((p) => p.name) })));
         const names = umlOps.map((x) => x.name); for (const need of ['read_input', 'solve', 'main']) if (!names.includes(need)) return { ok: false, reason: 'UML 沒有操作 ' + need };
         const parse = (cnl) => { const pr = B.parseCNL(cnl); if (!pr.ok) throw new Error('區塊解析失敗：' + JSON.stringify(pr.errors.slice(0, 2)) + '\n' + cnl); return B.toIR(pr.blocks); };
@@ -90,6 +99,7 @@
         }
         // ---- 矩陣層（範式骨架之後、區塊迴圈之前）----
         { const mx = await tryMatrix(res); res.rounds.push({ by: 'matrix', ok: !!(mx && mx.ok), reason: mx && mx.reason }); if (mx && mx.ok) return mx; if (mx && mx.reason) res.matrixReason = mx.reason; }
+        { const sx = await trySteps(res); if (sx && sx.ok) return sx; }
         // ---- 區塊迴圈（模型微選擇）----
         if (!o.pick) return Object.assign(res, { ok: false, reason: rec ? '配方沒通過沙盒驗證，而且沒有提供模型' : '程式讀不出這題的解法（沒有配方），需要模型' });
         res.usedModel = true; const paramTypes = {}; for (const v of intent.vars) paramTypes[v.name] = v.type === 'list' ? 'list' : v.type;

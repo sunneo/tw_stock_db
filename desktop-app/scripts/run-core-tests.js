@@ -76,6 +76,8 @@ const suites = [
     ['矩陣層後備（只靠敘述＋2 筆範例合成：L1 線性遞推枚舉＋矩陣冪、L2 自動機家族；形狀不支援／不是線性遞推要明確失敗；範例不足回報 ambiguous）', 'renderer/src/algo/matrix_synth.test.js'],
     ['矩陣層 graph／grid 模組（邊表／格子形狀＋L3 半環與走訪範本；heldout2 ≥20/22、heldout3 ≥21/21 回歸，heldout4 ≥14/19、heldout5（L0）verified ≥4/12、heldout6（組合）12 成功 verified ≥9，範本庫沒有的題型要誠實失敗）', 'renderer/src/algo/matrix_graph.test.js'],
     ['矩陣 → code edit（合成程式整理成可編輯版：形態往返、改係數／轉移表行為跟著變、走 Python→UML 路徑 raw=0、改壞時降級；需 tree-sitter 快取）', 'renderer/src/algo/matrix_edit.test.js'],
+    ['矩陣 → Blockly 區塊（合成結果拆成有名字的區塊段落：DFA／遞推／圖／格子／方陣／組合層；區塊編回 Python 與原程式在題庫測資＋隨機輸入上輸出一致；改槽位與換組合積木後輸出照新形態；需 tree-sitter 快取與 python3）', 'renderer/src/algo/matrix_blocks.test.js'],
+    ['函式內部再切成步驟（轉換鏈→歸約、對半遞迴切 1～4 層；切割規則與門檻按 contextWindowTokens 縮放、步驟簽名接線、步驟級驗證只換壞的那一步、組裝後整體判題、失敗回退 fallback、字母選擇題退路；1/2/3 層三題對照只切一層；需 python3）', 'renderer/src/uml/step_split.test.js'],
     ['程式優化對照表（13 條慢寫法→優化寫法（含 two-sum 計數題型），含記憶體實測；輸出一致、實測不變慢、不安全不動、沒測資不改）', 'renderer/src/recipe/code_optimize.test.js'],
     ['型別接線矩陣與路徑搜尋（回傳型別推論、具體程度、布林矩陣連乘、前 K 條接線與得分、萬用結構強制轉型）', 'renderer/src/catalog/matrix_core.test.js'],
     ['單元目錄：Python 原型抽取（註解 → 型別、原型 → 單元、真實跑抽取腳本）', 'renderer/src/catalog/extract_py.test.js'],

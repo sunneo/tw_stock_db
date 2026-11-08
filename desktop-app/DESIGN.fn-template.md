@@ -122,7 +122,7 @@
 | 迴圈 `renderer/src/recipe/code_loop_core.js`（切割→由葉往上逐函式寫→組裝→判題→選擇題挑函式重寫）＋假模型 `code_loop_fake.js` | 已做。9 種語言可切函式（python、nodejs、c、c++、java、ruby、perl、bash、c#）；組語不切、整檔一個節點 |
 | 測試 | `code_loop_core.test.js` 15 項（假判題器，流程控制）、`code-loop.test.js` 14 項（真判題器：20 題回放參考解全 AC、9 種語言兩函式組裝、寫錯→重寫、作弊→hidden 抓到、C 編譯錯→重寫） |
 | 思考堆疊 | 已接：每個階段一個框架（`program`／`split`／`fn:名`／`rethink#n`），標頭帶目標、路徑、已定的函式簽名；`opts.stackChecks:true` 才用 `planChecks`／`selfValidate`／`reviewReturn`（預設關，離線小模型呼叫貴） |
-| 遞迴深度 | **目前只切一層**（程式→函式）。函式內部再切成步驟、類別／套件層，還沒接 `design_core` |
+| 遞迴深度 | 模型路徑的 `code_loop_core` 仍只切一層（程式→函式，標 `complex` 的可再切）。**離線路徑的函式內部再切成步驟（2026-11-08）**：`renderer/src/uml/step_split_core.js`（`FaStepSplit`，測試 `step_split.test.js` 14 項，已登記）：函式 solve ＝ 轉換鏈→歸約，轉換湊不出就對半切成子步驟，第 1～4 層分別容許 ≤1／2／3～4／5～8 個積木；每層只收新增長度，淺層解開就不往下；每個積木有簽名、內建小判題＋範例流過的中間值，逐步丟沙盒，壞了只換那一步的候選；組裝後整體判題，沒過就回報 fallback（最淺的範例過關者）、不說成通過；門檻（深度上限 2／3／4、嘗試上限、選項數、規格長度）全部由 `contextWindowTokens` 按比例算（`budgetFor`）；弱模型每步只回字母選擇題，答不出就用關鍵字排序。接在 `py_uml_pipeline_core` 範式骨架／矩陣層之後、區塊迴圈之前（`Steps` 選項；產品 `_codeOffline` 已傳入）。**真 Electron（獨立資料夾、換埠 17962、不問模型）**：1 層題 1.2 秒；2 層題 2.1 秒、3 層題 2.7 秒，皆 `by:steps` 驗證通過；同題只切一層（`_stepMaxDepth=1`）離線組合湊不出，掉到 `mode:problem` 的後備路徑，分別花 56.8 秒、77.6 秒（該路徑為何仍標 verified、做了什麼，我沒有查）。三題為單一一次量測。**限制**：積木庫只有整數清單的 14 個轉換＋9 個歸約，不是任意函式；步驟級驗證沒有「中間值的標準答案」，靠積木自測＋型別接線＋範例端到端；類別／套件層仍沒接 `design_core` |
 | thinking 模式 | 只在重寫那一輪開（`meta.thinking`）；由注入的 `write` 決定怎麼用 |
 | 專案模式 `renderer/src/recipe/code_project_core.js` | 已做：UML 模型 → 專案→套件→類別 逐類別寫 → 合成一個檔案 → 編譯檢查（有 driver＋測試才跑出行為）；python、nodejs、java、csharp、cpp、ruby、perl，真的編譯器驗證過 |
 | 巢狀切割 | 已做：函式標 `complex` 可再切（最多 `maxDepth` 層，名稱衝突／切不開就維持單一函式並記 gap）；仍沒接 `design_core` 的套件／類別層（專案模式用的是 UML 模型本身的類別） |
