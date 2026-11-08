@@ -7,11 +7,9 @@
 > 已完成的不在這裡。「待改善」＝做了但沒達標；需要真人驗證的另列，不算待辦。
 
 ### 程式 diff／patch／merge（`DESIGN.code-repair.md` 4.1／4.2，負責：diff-patcher 工作階段）
-- 衝突處理階梯（4.2）：現在衝突只回報雙方版本，要縮小衝突、產生候選再用真檢查器／判題驗證。
-- 接進 `editCode`：修補當成一種候選編輯，與語法修正、單元重寫共用格式。
-- 函式邊界改用語法樹（內建剖析器只有 Python 文法，其他語言文法要使用者同意下載）；C++ 模板、Python 巢狀函式等邊界情況要補測試。
-- 修補片段不必由上而下依序。
-- 同步產品內嵌的 `FaCodePatch`（缺「已套用偵測」補強）：跑 `node scripts/embed-code-ui.js`。
+- 衝突階梯（4.2）已做縮小衝突、詞元合併、同處插入兩種順序；**沒做**：同一處兩邊都改（刻意不自動取一邊）、重複行很多時的候選品質沒量過。
+- `editCode` 已吃 `patch` 參數（`code_edit_core.js`）；**還沒接**：`code_agent_core.runCode0` 與 `floating-assistant.js` 沒把使用者的修補傳進去，桌面版也沒載入語法樹 `parser` 給 `merge_patch`（`_codePatch` 沒傳 `parser`）。
+- 語法樹只有 Python：docstring 防護、巢狀／同名函式只在有 `parser` 時生效（沒有時會改到 docstring 裡的範例，測試有列）。其他語言文法本機沒有，下載需使用者同意（檔名、來源、大小待回報）；C++ 模板邊界只有詞法切分，未逐一驗證。
 - 離線小模型實際走 `merge_patch` 的成效沒量過（目前只有假模型）。
 
 ### 思考堆疊與離線寫程式（`DESIGN.think-stack.md`）

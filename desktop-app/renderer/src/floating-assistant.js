@@ -18307,7 +18307,8 @@ const holder = {};
     // ---------- 單一 hunk 的定位策略 ----------
     const sameExact = (a, b) => strip(a) === b;
     function matchAt(old, cur, p, cmp) { if (p < 0 || p + old.length > cur.length) return false; for (let k = 0; k < old.length; k++) if (!cmp(cur[p + k], old[k])) return false; return true; }
-    function findAll(old, cur, from, cmp, st) { const r = []; if (!old.length) return r; for (let p = Math.max(0, from); p + old.length <= cur.length; p++) if (matchAt(old, cur, p, cmp) && !(st && st.useBlocked && !st.free(p, old.length))) r.push(p); return r; }
+    // mode：1＝弱證據，不收落在多行字串（docstring）內部的位置；2＝不受「已套用區域」限制
+    function findAll(old, cur, from, cmp, st, mode) { mode = mode || 0; const r = []; if (!old.length) return r; for (let p = Math.max(0, from); p + old.length <= cur.length; p++) if (matchAt(old, cur, p, cmp) && !(st && ((st.useBlocked && !(mode & 2) && !st.free(p, old.length)) || ((mode & 1) && st.inStr && st.inStr(p, old.length))))) r.push(p); return r; }
     function relIndentOk(old, cur, p) { // python：相對縮排必須一致（整段位移可以，結構不同不行）
         let b0 = null, c0 = null;
         for (let k = 0; k < old.length; k++) { if (!/\S/.test(old[k])) continue; const a = indentOf(old[k]).length, c = indentOf(cur[p + k]).length; if (b0 === null) { b0 = a; c0 = c; } else if (a - b0 !== c - c0) return false; }
@@ -18345,14 +18346,14 @@ const holder = {};
         // ③ 忽略空白
         const wsCmp = (a, b) => norm(a) === norm(b);
         if (old.length && !allBlank) {
-            let ps3 = findAll(old, cur, st.from, wsCmp, st); if (prof.indentSensitive) ps3 = ps3.filter((p) => relIndentOk(old, cur, p));
+            let ps3 = findAll(old, cur, st.from, wsCmp, st, 1); if (prof.indentSensitive) ps3 = ps3.filter((p) => relIndentOk(old, cur, p));
             const c3 = choose(ps3, 'ws'); if (c3 && c3.pos != null) return mkOk(c3.pos, 'fuzzy', h.ops, 0); if (c3 && c3.ambiguous) return { kind: 'ambiguous', cands: c3.ambiguous, total: c3.total, stage: 'ws', ops: h.ops, loose: true };
         }
         // 已經套用過？（新側精確出現、舊側找不到）
         for (let fz = 0; fz <= 2; fz++) { // 使用者改過脈絡時，去掉兩端 1～2 行脈絡再比（要求剩下的裡面有新增的行，否則不算證據）
             const ops = h.ops.filter((x) => x.t !== '-'); let a0 = 0, a1 = ops.length; for (let k = 0; k < fz && a0 < a1 && ops[a0].t === ' '; k++) a0++; for (let k = 0; k < fz && a1 > a0 && ops[a1 - 1].t === ' '; k++) a1--;
             const seg = ops.slice(a0, a1); if (!seg.some((x) => x.t === '+' && /\S/.test(x.s))) continue; const sl = seg.map((x) => x.s); if (sl.filter((s) => /\S/.test(s)).length < 2) continue; // 只有一行證據太薄（可能剛好別處有同樣的行）
-            const ps = findAll(sl, cur, st.from, wsCmp); const okp = prof.indentSensitive ? ps.filter((p) => relIndentOk(sl, cur, p)) : ps;
+            const ps = findAll(sl, cur, st.from, wsCmp, st, 3); const okp = prof.indentSensitive ? ps.filter((p) => relIndentOk(sl, cur, p)) : ps;
             if (okp.length === 1 || (okp.length > 1 && exp != null && okp.includes(exp + a0))) return { kind: 'already', pos: okp.length === 1 ? okp[0] : exp + a0, len: sl.length };
         }
         // ④ 去掉兩端 1～2 行脈絡（使用者改過脈絡）
@@ -18362,7 +18363,7 @@ const holder = {};
             for (let k = 0; k < fz && ops.length && ops[ops.length - 1].t === ' '; k++) { ops.pop(); tail++; }
             if (!lead && !tail) break; const o2 = ops.filter((x) => x.t !== '+').map((x) => x.s); if (!o2.some((s) => /\S/.test(s))) continue;
             const hasCtx = ops.some((x) => x.t === ' '); const hasRem = ops.some((x) => x.t === '-'); if (!hasCtx && !hasRem) continue;
-            let ps = findAll(o2, cur, st.from, wsCmp, st); if (prof.indentSensitive) ps = ps.filter((p) => relIndentOk(o2, cur, p));
+            let ps = findAll(o2, cur, st.from, wsCmp, st, 1); if (prof.indentSensitive) ps = ps.filter((p) => relIndentOk(o2, cur, p));
             const adj = (pp) => pp - lead; const e2 = baseExp == null ? null : baseExp + lead + st.carry;
             const pick = ps.length === 1 ? { pos: ps[0] } : (e2 != null && ps.includes(e2) ? { pos: e2 } : (ps.length ? { ambiguous: ps.slice(0, LIMITS.maxCands + 2), total: ps.length } : null));
             if (pick && pick.pos != null) { const r = mkOk(pick.pos, 'fuzzy', ops, fz); r.fuzzNote = '去掉 ' + lead + '+' + tail + ' 行脈絡'; return r; }
@@ -18404,6 +18405,7 @@ const holder = {};
             const lo = Math.max(w[0], c0 - b0), hi = Math.min(w[1], c1 + (base.length - 1 - b1) + 1);
             if (hi - lo > base.length * 3 + 12) return null; // 錨點散太開，不是同一段
             if (st.useBlocked && !st.free(lo, hi - lo)) return null; // 亂序模式：不能蓋到已經套用的區域
+            if (st.inStr && st.inStr(lo, hi - lo)) return null; // 落在多行字串（docstring）裡的範例碼不是要改的地方
             return { kind: 'merge', lo, hi, how, unitName: unit ? unit.name : null, unitQual: unit ? unit.qual : null, anchors: anc.length, meaningful, base, nw, ref: [base[b0], cur[c0]] };
         };
         if (unitCands.length) {
@@ -18451,6 +18453,18 @@ const holder = {};
         return out;
     }
 
+    // 語法樹裡的多行字串（docstring、三引號字串）：[起始列, 結束列]（0 起算）。弱證據的比對（忽略空白、去掉脈絡）不收落在字串裡的位置：
+    // 字串裡的範例程式碼長得跟真的一樣，改它是改錯地方。有語法錯誤時樹不可靠，回傳空。
+    function treeStrings(parser, src) {
+        const tree = parser.parse(String(src)); const out = [];
+        try {
+            const he = tree.rootNode.hasError; if (typeof he === 'function' ? he.call(tree.rootNode) : he) return out;
+            const walk = (node) => { for (let i = 0; i < node.childCount; i++) { const c = node.child(i); if (c.type === 'string') { if (c.endPosition.row > c.startPosition.row) out.push([c.startPosition.row, c.endPosition.row]); } else walk(c); } };
+            walk(tree.rootNode);
+        } finally { if (tree && typeof tree.delete === 'function') tree.delete(); }
+        return out;
+    }
+
     // ---------- 4.2 衝突處理階梯 ----------
     // 由便宜到貴，每個候選之後都要過真的檢查器／判題器（applyPatch 負責驗證），不過就丟掉；解不開就留標準衝突標記，不假裝解決。
     //   ① 縮小衝突（行層級，相鄰但不重疊的改動分開合併）  ② 詞元層級合併（同一行裡兩邊改不同的詞）
@@ -18487,12 +18501,13 @@ const holder = {};
         const starts = file.hunks.map((x) => x.oldStart).filter((x) => x != null); const monotone = starts.every((x, i) => i === 0 || x >= starts[i - 1]);
         const st = { cur, from: 0, delta: 0, carry: 0, crlf, lang, useBlocked: !monotone, blocked: [], applied: [] };
         st.free = (p, len) => !st.blocked.some((b) => p < b[1] && b[0] < p + Math.max(1, len));
-        const unitsFn = o && o.unitsFn; const resolveOn = !!(o && o.resolve); const CH = choices || {}; const CONF = CH.conf || {};
+        const unitsFn = o && o.unitsFn; const stringsFn = o && o.stringsFn; const resolveOn = !!(o && o.resolve); const CH = choices || {}; const CONF = CH.conf || {};
         const results = []; let ambiguous = null;
         const anchored = (x) => x.ops.some((p) => p.t !== '+' && /\S/.test(p.s)); const order = file.hunks.map((_, i) => i); if (!monotone) order.sort((x, y) => (anchored(file.hunks[y]) ? 1 : 0) - (anchored(file.hunks[x]) ? 1 : 0) || x - y); // 沒有脈絡的純插入最後處理：先靠有脈絡的 hunk 校準使用者造成的位移
         for (const hi of order) {
             const h = file.hunks[hi]; const res = { index: hi + 1, header: h.oldStart == null ? '@@' : '@@ -' + h.oldStart + ' @@', status: 'failed' };
             if (!monotone && h.oldStart != null) { let d = 0, bs = -1, c = 0; for (const ap of st.applied) if (ap.s < h.oldStart) { d += ap.d; if (ap.s > bs) { bs = ap.s; c = ap.carry; } } st.delta = d; st.carry = c; }
+            if (stringsFn) { let rg = []; try { rg = stringsFn(cur.map(strip).join('\n')) || []; } catch (_) { rg = []; } st.inStr = rg.length ? (p, len) => rg.some((g) => p + len - 1 > g[0] && p <= g[1]) : null; } // 多行字串的內部行（第一行是開頭，不算）
             const stv = st.useBlocked ? Object.assign({}, st, { from: 0 }) : st; // 亂序：不用「從上一個之後」的限制
             let plan = planHunk(h, stv, prof, { lang });
             if (plan.kind === 'region') plan = planRegion(h, plan, stv, prof, { lang, unitsFn });
@@ -18569,6 +18584,7 @@ const holder = {};
         };
         const canVerify = !!(a.check || a.judge);
         o.resolve = o.resolve !== false && canVerify; o.canJudge = !!a.judge; // 4.2 衝突階梯要有裁判才開
+        if (a.parser && lang === 'python' && o.stringsFn === undefined) o.stringsFn = (src) => treeStrings(a.parser, src);
         if (a.parser && lang === 'python' && o.unitsFn === undefined) o.unitsFn = (src) => { const u = treeUnits(a.parser, src); return u.hasError && Edit && Edit.splitUnits ? Edit.splitUnits(lang, src) : u; }; // 有語法錯誤時語法樹不可靠，改用詞法切分 // 有語法樹就用語法樹找函式邊界
         const attempts = [];
         const passes = []; let lastFail = null; let lastRun = null;
@@ -18639,7 +18655,7 @@ const holder = {};
         return L.join('\n');
     }
 
-    return { PROFILES, LIMITS, treeUnits, conflictCandidates, parseDiff, applyPatch, applyPatchFiles, merge3, makeDiff, diffMatches, report, norm };
+    return { PROFILES, LIMITS, treeUnits, treeStrings, conflictCandidates, parseDiff, applyPatch, applyPatchFiles, merge3, makeDiff, diffMatches, report, norm };
 });
 
 }).call(null, undefined, holder);
