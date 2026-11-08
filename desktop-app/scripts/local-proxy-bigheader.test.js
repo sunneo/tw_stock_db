@@ -19,6 +19,6 @@ const t = (n, ok, x) => { if (ok) pass++; else { fail++; console.log('✗', n, x
   t('一般回應不受影響', b.s === 200 && b.b === 'small', b);
   const c = await get('/proxy/http://127.0.0.1:1/x');
   t('連不上上游仍回 502＋x-fa-error: connect（才有東西可重試）', c.s === 502 && c.x === 'connect', c);
-  console.log(`local-proxy-bigheader: ${pass}/${pass + fail} 通過`);
+  console.log(`local-proxy-bigheader: ${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 })();

@@ -65,5 +65,5 @@ t('502,502,200 → 第 3 次成功', (() => { const r = run([{ status: 502, x: '
 t('一直 502 → 試滿 3 次後放棄', (() => { const r = run([{ status: 502, x: 'connect' }]); return !r.ok && r.used === 3 && /已試3\/3次/.test(r.msg); })());
 t('403 → 不重試只試 1 次', (() => { const r = run([{ status: 403, x: '' }]); return !r.ok && r.used === 1; })());
 
-console.log(`yt_net_core: ${pass}/${pass + fail} 通過`);
+console.log(`yt_net_core: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
