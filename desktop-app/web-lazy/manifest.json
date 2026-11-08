@@ -234,6 +234,14 @@
    "size": 4684,
    "md5": "f3e67ecec0841acb75f077353e412b5c"
   },
+  "matrixblocks": {
+   "file": "chunks/matrixblocks.js",
+   "names": [
+    "FaMatrixBlocks"
+   ],
+   "size": 8733,
+   "md5": "83b7c3cac4e435437515a5c65fa9fdcc"
+  },
   "matrixcompose": {
    "file": "chunks/matrixcompose.js",
    "names": [
@@ -455,16 +463,16 @@
    "names": [
     "FaPyUmlPipeline"
    ],
-   "size": 9087,
-   "md5": "1902777f1be0e04315391c784522f5ce"
+   "size": 9117,
+   "md5": "fdcbd0cc6e68427f0c76cbe4dea2d73b"
   },
   "codeagent": {
    "file": "chunks/codeagent.js",
    "names": [
     "FaCodeAgent"
    ],
-   "size": 15593,
-   "md5": "2a5c3f8708137ca134e8783380ee9b7d"
+   "size": 15645,
+   "md5": "68711385cefbca1d82ca5816cb95a69a"
   },
   "codeopt": {
    "file": "chunks/codeopt.js",
@@ -479,8 +487,8 @@
    "names": [
     "FaCodeSlash"
    ],
-   "size": 5363,
-   "md5": "3233d0f0aaf5158de18a387089712698"
+   "size": 7348,
+   "md5": "1377a3cb0c7224d238ce6e11f10b7293"
   },
   "offlinestack": {
    "file": "chunks/offlinestack.js",
@@ -497,6 +505,22 @@
    ],
    "size": 31421,
    "md5": "7709ad2f7dd2086f96553f618319aacc"
+  },
+  "tsassets": {
+   "file": "chunks/tsassets.js",
+   "names": [
+    "FaTsAssets"
+   ],
+   "size": 2748,
+   "md5": "426571017bd238be700130d7631d45ea"
+  },
+  "ir": {
+   "file": "chunks/ir.js",
+   "names": [
+    "FaIrBundle"
+   ],
+   "size": 126903,
+   "md5": "1db4ff7231862c05f7a86e590863297a"
   },
   "view": {
    "file": "chunks/view.js",
@@ -1500,7 +1524,7 @@
   }
  },
  "core": {
-  "size": 5635221,
-  "md5": "0095637740d8df787293372addc5c699"
+  "size": 5650419,
+  "md5": "801fd2aabf1ba5d6eef6f06e231efdf9"
  }
 }
