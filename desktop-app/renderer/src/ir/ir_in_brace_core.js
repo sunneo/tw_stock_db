@@ -12,9 +12,10 @@
     const PH = /^__a(\d)$/;
     // ---------- 樣式 ----------
     function unwrap(n) { while (n && (n.type === 'parenthesized_expression' || n.type === 'condition')) { const k = n.namedChildren.filter((c) => !/comment/.test(c.type)); if (k.length !== 1) break; n = k[0]; } return n; }
-    function wrapTpl(lang, tpl) { return lang === 'java' ? 'class X { void f() { Object o = ' + tpl + '; } }' : '(' + tpl + ');'; }
+    function wrapTpl(lang, tpl) { if (lang === 'c') return 'int __f(void) { long long __o = ' + tpl + '; }'; return lang === 'java' ? 'class X { void f() { Object o = ' + tpl + '; } }' : '(' + tpl + ');'; }
     function patRoot(lang, root) {
         if (root.hasError()) return null;
+        if (lang === 'c') { const find = (n) => { if (n.type === 'init_declarator') return n.childForFieldName('value'); for (const c of n.namedChildren) { const r = find(c); if (r) return r; } return null; }; return find(root); }
         if (lang === 'java') { const find = (n) => { if (n.type === 'variable_declarator') return n.childForFieldName('value'); for (const c of n.namedChildren) { const r = find(c); if (r) return r; } return null; }; return find(root); }
         const st = root.namedChildren[0]; return st && st.type === 'expression_statement' ? st.namedChildren[0] : null;
     }
@@ -56,11 +57,15 @@
         if (inner != null) { const a = split(inner).map(tyJava); if (n === 'List' || n === 'ArrayList' || n === 'LinkedList') return IR.list(a[0]); if (n === 'Map' || n === 'HashMap' || n === 'LinkedHashMap' || n === 'TreeMap') return IR.dict(a[0], a[1]); if (n === 'Set' || n === 'HashSet' || n === 'TreeSet') return IR.set(a[0]); }
         return T.unknown;
     }
+    function tyC(s) {
+        s = String(s || '').replace(/\b(const|static|signed|unsigned)\b/g, '').replace(/\s+/g, ''); if (/^(longlong|long|int|short|size_t)$/.test(s)) return T.int; if (s === 'double' || s === 'float') return T.float; if (/^char\*$/.test(s)) return T.str; if (s === 'void') return T.void; if (s === 'IL') return IR.list(T.int);
+        return T.unknown;
+    }
     function unescape(s) { return s.replace(/\\(?:u([0-9a-fA-F]{4})|(.))/g, (m, u, c) => (u ? String.fromCharCode(parseInt(u, 16)) : ({ n: '\n', t: '\t', r: '\r', 0: '\0', '\\': '\\', "'": "'", '"': '"', b: '\b', f: '\f', v: '\v' }[c] != null ? { n: '\n', t: '\t', r: '\r', 0: '\0', '\\': '\\', "'": "'", '"': '"', b: '\b', f: '\f', v: '\v' }[c] : c))); }
 
     function fromTree(rootNode, opts) {
-        opts = opts || {}; const lang = opts.lang === 'java' ? 'java' : 'nodejs'; const src = String(opts.source || ''); const patterns = opts.patterns || [];
-        const cov = { stmts: 0, natives: 0, comments: 0, comments_kept: 0 }; const diags = []; const JAVA = lang === 'java';
+        opts = opts || {}; const lang = opts.lang === 'java' ? 'java' : opts.lang === 'c' ? 'c' : 'nodejs'; const src = String(opts.source || ''); const patterns = opts.patterns || [];
+        const cov = { stmts: 0, natives: 0, comments: 0, comments_kept: 0 }; const diags = []; const JAVA = lang === 'java'; const CL = lang === 'c';
         const txt = (n) => (n.text != null ? n.text : src.slice(n.startIndex, n.endIndex));
         const f = (n, name) => n.childForFieldName(name);
         const isCmt = (c) => c.type === 'comment' || c.type === 'line_comment' || c.type === 'block_comment';
@@ -68,7 +73,7 @@
         const pos = (n) => [n.startPosition.row + 1, n.startPosition.column, n.endPosition.row + 1, n.endPosition.column];
         const at = (o, n) => { o.pos = pos(n); return o; };
         const diag = (m, n) => diags.push({ level: 'warn', msg: m, pos: n ? pos(n) : undefined });
-        const nativeE = (n, why) => { cov.natives++; diag('運算式收成原生區塊：' + (why || n.type), n); return at({ k: 'native', lang: JAVA ? 'java' : 'nodejs', src: txt(n), why: why || n.type }, n); };
+        const nativeE = (n, why) => { cov.natives++; diag('運算式收成原生區塊：' + (why || n.type), n); return at({ k: 'native', lang: JAVA ? 'java' : CL ? 'c' : 'nodejs', src: txt(n), why: why || n.type }, n); };
         const nativeS = (n, why) => { cov.natives++; diag('敘述收成原生區塊：' + (why || n.type), n); return at({ k: 'native', lang: JAVA ? 'java' : 'nodejs', src: txt(n), why: why || n.type }, n); };
         const L = (t, v) => ({ k: 'lit', t, v });
         const isHelperName = (s) => /^(fa_|__fa|__br)/.test(s);
@@ -81,13 +86,13 @@
                 return at({ k: 'call', op, args: cargs }, n); } }
             return null;
         }
-        const PATTERN_TYPES = new Set(['call_expression', 'member_expression', 'new_expression', 'binary_expression', 'ternary_expression', 'method_invocation', 'object_creation_expression', 'cast_expression', 'field_access', 'unary_expression', 'array_creation_expression']);
+        const PATTERN_TYPES = new Set(['field_expression', 'conditional_expression', 'call_expression', 'member_expression', 'new_expression', 'binary_expression', 'ternary_expression', 'method_invocation', 'object_creation_expression', 'cast_expression', 'field_access', 'unary_expression', 'array_creation_expression']);
         function ex(n) {
             if (!n) return null; n = unwrap(n);
-            if (PATTERN_TYPES.has(n.type) && patterns.length) { const r = tryOps(n); if (r) return r; }
+            if ((PATTERN_TYPES.has(n.type) || (CL && n.type === 'subscript_expression')) && patterns.length) { const r = tryOps(n); if (r) return r; }
             switch (n.type) {
                 case 'identifier': return at({ k: 'name', v: txt(n) }, n);
-                case 'number': case 'decimal_integer_literal': case 'hex_integer_literal': case 'decimal_floating_point_literal': { const t = txt(n).replace(/_/g, '').replace(/[lL]$/, ''); return at(L(/[.eE]/.test(t) && !/^0x/i.test(t) ? 'float' : 'int', t), n); }
+                case 'number_literal': case 'number': case 'decimal_integer_literal': case 'hex_integer_literal': case 'decimal_floating_point_literal': { const t = txt(n).replace(/_/g, '').replace(/[lL]$/, ''); return at(L(/[.eE]/.test(t) && !/^0x/i.test(t) ? 'float' : 'int', t), n); }
                 case 'true': return at(L('bool', 'true'), n); case 'false': return at(L('bool', 'false'), n); case 'null': case 'null_literal': return at(L('none', 'None'), n);
                 case 'string': case 'string_literal': { const t = txt(n); return at(L('str', unescape(t.slice(1, -1))), n); }
                 case 'binary_expression': {
@@ -98,14 +103,14 @@
                     return at({ k: 'bin', op, l: ex(l), r: ex(r) }, n);
                 }
                 case 'unary_expression': { const op = txt(f(n, 'operator')); const a = f(n, 'argument') || f(n, 'operand'); if (op === '!') return at({ k: 'not', e: ex(a) }, n); if (['-', '+', '~'].indexOf(op) >= 0) return at({ k: 'un', op, e: ex(a) }, n); return nativeE(n); }
-                case 'ternary_expression': return at({ k: 'cond', a: ex(f(n, 'condition')), c: ex(f(n, 'consequence')), b: ex(f(n, 'alternative')) }, n);
-                case 'subscript_expression': return at({ k: 'index', o: ex(f(n, 'object')), i: ex(f(n, 'index')) }, n);
+                case 'ternary_expression': case 'conditional_expression': return at({ k: 'cond', a: ex(f(n, 'condition')), c: ex(f(n, 'consequence')), b: ex(f(n, 'alternative')) }, n);
+                case 'subscript_expression': return at({ k: 'index', o: ex(f(n, 'object') || f(n, 'argument')), i: ex(f(n, 'index')) }, n);
                 case 'array_access': return at({ k: 'index', o: ex(f(n, 'array')), i: ex(f(n, 'index')) }, n);
                 case 'array': return at({ k: 'list', items: named(n).map(ex) }, n);
                 case 'cast_expression': return ex(f(n, 'value'));
                 case 'call_expression': {
                     const fn = f(n, 'function'); const a = f(n, 'arguments'); const args = a ? named(a) : [];
-                    if (fn.type === 'identifier') return at({ k: 'call', fn: txt(fn), args: args.map(ex) }, n);
+                    if (fn.type === 'identifier') return at({ k: 'call', fn: CL && txt(fn) === 'u_main' ? 'main' : txt(fn), args: args.map(ex) }, n);
                     return nativeE(n, '呼叫的目標不在標準操作目錄');
                 }
                 case 'method_invocation': {
@@ -122,7 +127,8 @@
         // ---- 敘述 ----
         const commentText = (c) => { let t = txt(c); if (t.startsWith('//')) return t.replace(/^\/\/\s?/, ''); t = t.replace(/^\/\*+\s?/, '').replace(/\s?\*+\/$/, ''); return t.split('\n').map((l) => l.replace(/^\s*\*\s?/, '')).join('\n').trim(); };
         const isDoc = (c) => c.type !== 'line_comment' && /^\/\*\*/.test(txt(c));
-        function targetOf(x) { return ex(x); }
+        // 賦值目標：C 的 a.d[i] 會被樣式認成 list.get 呼叫，這裡還原成索引節點
+        function targetOf(x) { const e = ex(x); return e.k === 'call' && (e.op === 'list.get' || e.op === 'dict.get') && e.args.length === 2 ? { k: 'index', o: e.args[0], i: e.args[1], pos: e.pos } : e; }
         function stmt(n) {
             cov.stmts++;
             switch (n.type) {
@@ -130,11 +136,11 @@
                     const x = unwrap(named(n)[0]); if (!x) return [];
                     if (x.type === 'assignment_expression') {
                         const left = f(x, 'left'), right = f(x, 'right'), op = txt(f(x, 'operator') || { text: '=' });
-                        if (op !== '=') { const b = op.replace(/=$/, ''); if (IR.BINOPS.indexOf(b) < 0) return [nativeS(n, '複合賦值 ' + op)]; return [at({ k: 'aug', to: ex(left), op: b, val: ex(right) }, n)]; }
+                        if (op !== '=') { const b = op.replace(/=$/, ''); if (IR.BINOPS.indexOf(b) < 0) return [nativeS(n, '複合賦值 ' + op)]; return [at({ k: 'aug', to: targetOf(left), op: b, val: ex(right) }, n)]; }
                         if (left.type !== 'identifier' && left.type !== 'subscript_expression' && left.type !== 'array_access') return [nativeS(n, '賦值目標 ' + left.type)];
-                        return [at({ k: 'assign', to: ex(left), val: ex(right) }, n)];
+                        return [at({ k: 'assign', to: targetOf(left), val: ex(right) }, n)];
                     }
-                    if (x.type === 'augmented_assignment_expression') { const op = txt(f(x, 'operator')).replace(/=$/, ''); if (IR.BINOPS.indexOf(op) < 0) return [nativeS(n, '複合賦值 ' + op)]; return [at({ k: 'aug', to: ex(f(x, 'left')), op, val: ex(f(x, 'right')) }, n)]; }
+                    if (x.type === 'augmented_assignment_expression') { const op = txt(f(x, 'operator')).replace(/=$/, ''); if (IR.BINOPS.indexOf(op) < 0) return [nativeS(n, '複合賦值 ' + op)]; return [at({ k: 'aug', to: targetOf(f(x, 'left')), op, val: ex(f(x, 'right')) }, n)]; }
                     if (x.type === 'update_expression') { const a = f(x, 'argument') || named(x)[0]; const op = txt(x).indexOf('++') >= 0 ? '+' : '-'; return [at({ k: 'aug', to: ex(a), op, val: L('int', '1') }, n)]; }
                     if (JAVA && x.type === 'method_invocation' && f(x, 'object') && txt(f(x, 'name')) === 'set') { const a = named(f(x, 'arguments')); if (a.length === 2) { const i = unwrap(a[0]); const idx = i.type === 'cast_expression' ? f(i, 'value') : i; return [at({ k: 'assign', to: { k: 'index', o: ex(f(x, 'object')), i: ex(idx) }, val: ex(a[1]) }, n)]; } }
                     const e = ex(x); if (e.k === 'native') return [nativeS(n)]; return [at({ k: 'expr', e }, n)];
@@ -144,6 +150,16 @@
                     for (const d of ds) { const nm = f(d, 'name'), v = f(d, 'value'); if (nm.type !== 'identifier') return [nativeS(n, '解構宣告')]; if (!v) out.push(at({ k: 'declare', name: txt(nm), ty: T.unknown }, n)); else out.push(at({ k: 'assign', to: ex(nm), val: ex(v) }, n)); }
                     return out;
                 }
+                case 'declaration': {
+                    const ty = tyC(txt(f(n, 'type')) + (/\*/.test(txt(n).split('=')[0]) ? '*' : '')); const out = [];
+                    for (const d of named(n).filter((c) => c.type === 'init_declarator' || c.type === 'identifier' || c.type === 'pointer_declarator')) {
+                        let nm = d, v = null; if (d.type === 'init_declarator') { nm = f(d, 'declarator'); v = f(d, 'value'); } while (nm && nm.type === 'pointer_declarator') nm = f(nm, 'declarator'); if (!nm || nm.type !== 'identifier') return [nativeS(n, '宣告的形式')];
+                        if (!v) out.push(at({ k: 'declare', name: txt(nm), ty }, n)); else { const o = at({ k: 'assign', to: ex(nm), val: ex(v) }, n); if (ty.t !== 'unknown') o.ty = ty; out.push(o); }
+                    }
+                    return out;
+                }
+                case 'function_definition': return [func(n)];
+                case 'compound_statement': return block(n, undefined);
                 case 'local_variable_declaration': {
                     const ty = tyJava(txt(f(n, 'type'))); const ds = named(n).filter((c) => c.type === 'variable_declarator'); const out = [];
                     for (const d of ds) { const nm = f(d, 'name'), v = f(d, 'value'); if (!v) out.push(at({ k: 'declare', name: txt(nm), ty }, n)); else { const o = at({ k: 'assign', to: ex(nm), val: ex(v) }, n); if (ty.t !== 'unknown') o.ty = ty; out.push(o); } }
@@ -170,9 +186,14 @@
         function forS(n) {
             const init = f(n, 'initializer') || f(n, 'init'), cond = f(n, 'condition'), upd = f(n, 'increment') || f(n, 'update'), body = f(n, 'body');
             const fall = (why) => [nativeS(n, why)];
+            if (CL) { // C 輸出器把 foreach 降成索引迴圈：for (long long __iN = 0; __iN < X.n; __iN++) { T v = X.d[__iN]; … } → 還原成 foreach
+                const m = /^for\s*\(\s*long long (__i\d+) = 0;\s*\1 < (\w+)\.n;/.exec(txt(n));
+                if (m) { const bd = blk(body, n); const first = bd[0]; if (first && first.k === 'assign' && first.val && first.val.k === 'call' && first.val.op === 'list.get' && first.val.args[1] && first.val.args[1].v === m[1]) { bd.shift(); const o = at({ k: 'foreach', var: first.to.v, iter: { k: 'name', v: m[2] }, body: bd }, n); return [attach(o, n, bd)]; } }
+            }
             if (!init || !cond || !upd) return fall('for 標頭不是標準形');
             let v, from; const i0 = init.type === 'expression_statement' ? named(init)[0] : init;
-            if (i0.type === 'lexical_declaration' || i0.type === 'local_variable_declaration' || i0.type === 'variable_declaration') { const d = named(i0).filter((c) => c.type === 'variable_declarator'); if (d.length !== 1 || !f(d[0], 'value')) return fall('for 初始化'); v = txt(f(d[0], 'name')); from = ex(f(d[0], 'value')); }
+            if (i0.type === 'declaration') { const d = named(i0).filter((c) => c.type === 'init_declarator'); if (d.length !== 1) return fall('for 初始化'); v = txt(f(d[0], 'declarator')); from = ex(f(d[0], 'value')); }
+            else if (i0.type === 'lexical_declaration' || i0.type === 'local_variable_declaration' || i0.type === 'variable_declaration') { const d = named(i0).filter((c) => c.type === 'variable_declarator'); if (d.length !== 1 || !f(d[0], 'value')) return fall('for 初始化'); v = txt(f(d[0], 'name')); from = ex(f(d[0], 'value')); }
             else if (i0.type === 'assignment_expression' && f(i0, 'left').type === 'identifier') { v = txt(f(i0, 'left')); from = ex(f(i0, 'right')); } else return fall('for 初始化');
             const c0 = unwrap(cond.type === 'expression_statement' ? named(cond)[0] : cond); if (c0.type !== 'binary_expression' || txt(f(c0, 'left')) !== v) return fall('for 條件'); const cop = txt(f(c0, 'operator')); if (cop !== '<' && cop !== '>') return fall('for 條件運算子 ' + cop);
             const to = ex(f(c0, 'right')); let step = null; const u0 = unwrap(upd);
@@ -211,9 +232,15 @@
             if (pending.length) pending.forEach((p) => { out.push({ k: 'comment', s: p.t }); cov.comments_kept++; });
             return out;
         }
-        const blk = (bn, parent) => (bn && (bn.type === 'statement_block' || bn.type === 'block') ? block(bn, parent.startPosition.row) : bn ? (() => { const ss = stmt(bn); return ss; })() : []);
+        const blk = (bn, parent) => (bn && (bn.type === 'statement_block' || bn.type === 'block' || bn.type === 'compound_statement') ? block(bn, parent.startPosition.row) : bn ? (() => { const ss = stmt(bn); return ss; })() : []);
         function attach(o, n, arr) { const h = (arr && arr.hdr) || []; if (h.length) { o.c = o.c || {}; o.c.a = h.join(' '); } return o; }
         function skipTop(c) { // 輸出器加的前置輔助
+            if (CL) {
+                if (c.type === 'preproc_include' || c.type === 'preproc_def' || c.type === 'type_definition') return true;
+                if (c.type === 'declaration' && named(c).some((k) => k.type === 'function_declarator' || (k.type === 'pointer_declarator' && /\(/.test(txt(k))))) return true;
+                if (c.type === 'declaration') { const d = named(c).filter((k) => k.type === 'init_declarator')[0]; let nm = d && f(d, 'declarator'); while (nm && nm.type === 'pointer_declarator') nm = f(nm, 'declarator'); if (nm && isHelperName(txt(nm))) return true; }
+                if (c.type === 'function_definition') { const fi = cFuncInfo(c); if (fi && (isHelperName(fi.name) || fi.name === 'main')) return true; }
+            }
             if (c.type === 'import_declaration' || c.type === 'package_declaration') return true;
             if (c.type === 'expression_statement') { const x = named(c)[0]; if (x && x.type === 'string' && /use strict/.test(txt(x))) return true; }
             if (c.type === 'lexical_declaration' || c.type === 'variable_declaration') { const d = named(c).filter((k) => k.type === 'variable_declarator')[0]; if (d && isHelperName(txt(f(d, 'name')))) return true; }
@@ -221,14 +248,25 @@
             if (c.type === 'function_declaration' || c.type === 'method_declaration') { const nm = txt(f(c, 'name')); if (isHelperName(nm)) return true; if (JAVA && nm === 'main') { const ps = f(c, 'parameters'); if (ps && named(ps).length) return true; } }
             return false;
         }
+        function cFuncInfo(n) {
+            let d = f(n, 'declarator'); while (d && d.type === 'pointer_declarator') d = f(d, 'declarator'); if (!d || d.type !== 'function_declarator') return null;
+            const nm = f(d, 'declarator'); return { name: txt(nm), params: f(d, 'parameters'), decl: d };
+        }
+        function funcC(n) {
+            const fi = cFuncInfo(n); if (!fi) return nativeS(n, '函式宣告的形式');
+            const params = named(fi.params).filter((p) => p.type === 'parameter_declaration').map((p) => { let dd = f(p, 'declarator'); const star = dd && dd.type === 'pointer_declarator'; while (dd && dd.type === 'pointer_declarator') dd = f(dd, 'declarator'); if (!dd) return null; return { name: txt(dd), ty: tyC(txt(f(p, 'type')) + (star ? '*' : '')) }; }).filter(Boolean);
+            const star = f(n, 'declarator').type === 'pointer_declarator'; const o = at({ k: 'func', name: fi.name === 'u_main' ? 'main' : fi.name, params, ret: tyC(txt(f(n, 'type')) + (star ? '*' : '')), body: [] }, n);
+            o.body = block(f(n, 'body'), n.startPosition.row); attach(o, n, o.body); return o;
+        }
         function func(n) {
+            if (CL) return funcC(n);
             const name = txt(f(n, 'name')), ps = f(n, 'parameters'), body = f(n, 'body');
             const params = ps ? named(ps).map((p) => { if (p.type === 'identifier') return { name: txt(p) }; if (p.type === 'formal_parameter') return { name: txt(f(p, 'name')), ty: tyJava(txt(f(p, 'type'))) }; diag('不支援的參數形式 ' + p.type, p); return { name: txt(p) }; }) : [];
             const o = at({ k: 'func', name, params, body: [] }, n); if (JAVA) { const rt = f(n, 'type'); if (rt) o.ret = tyJava(txt(rt)); }
             o.body = block(body, n.startPosition.row); attach(o, n, o.body); return o;
         }
         // ---- 模組層 ----
-        const ir = IR.mod({ src: { lang: JAVA ? 'java' : 'nodejs', file: opts.file }, name: opts.name || 'Module' });
+        const ir = IR.mod({ src: { lang: JAVA ? 'java' : CL ? 'c' : 'nodejs', file: opts.file }, name: opts.name || 'Module' });
         let topNode = rootNode; let mainCall = false;
         if (JAVA) { const cls = rootNode.namedChildren.find((c) => c.type === 'class_declaration'); if (cls) topNode = f(cls, 'body'); }
         const top = block(topNode, undefined); const body = [];

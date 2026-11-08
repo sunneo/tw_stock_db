@@ -3,7 +3,7 @@
 // 同時量：原生區塊（沒認得的）個數、註解數是否相等。需要 tree-sitter 的 javascript／java 文法（沒有就略過並說明）和 python。
 const assert = require('assert'), fs = require('fs'), path = require('path'), os = require('os'), cp = require('child_process');
 const IR = require('./ir_core.js'), PREP = require('./ir_prep_core.js'), INPY = require('./ir_in_python_core.js'), INB = require('./ir_in_brace_core.js'), SAMPLES = require('./ir_samples.js');
-const OUT = { nodejs: require('./ir_out_js_core.js'), java: require('./ir_out_java_core.js'), python: require('./ir_out_python_core.js') };
+const OUT = { nodejs: require('./ir_out_js_core.js'), java: require('./ir_out_java_core.js'), c: require('./ir_out_c_core.js'), python: require('./ir_out_python_core.js') };
 const DIR = process.env.FA_TS_DIR || [path.join(os.homedir(), '.cache', 'fa-ts'), path.join(os.tmpdir(), 'fa-ts-cache'), '/tmp/fa-ts-cache'].find((d) => fs.existsSync(path.join(d, 'tree-sitter-python.wasm')));
 let PY = null; for (const c of ['python', 'python3']) { const r = cp.spawnSync(c, ['-I', '-c', 'print(1)'], { encoding: 'utf8' }); if (r.status === 0 && r.stdout.trim() === '1') { PY = c; break; } }
 let pass = 0, fail = 0; const notes = [];
@@ -13,11 +13,11 @@ const runPy = (code, input) => { fs.writeFileSync(path.join(tmp, 'p.py'), code);
 (async () => {
     if (!DIR || !PY) { console.log('略過：找不到 tree-sitter 快取或 python\n0 passed, 0 failed'); return; }
     const Parser = require(path.join(DIR, 'tree-sitter.js')); await Parser.init({ locateFile: () => path.join(DIR, 'tree-sitter.wasm') });
-    const parsers = {}; const want = { python: 'tree-sitter-python.wasm', nodejs: 'tree-sitter-javascript.wasm', java: 'tree-sitter-java.wasm' };
+    const parsers = {}; const want = { python: 'tree-sitter-python.wasm', nodejs: 'tree-sitter-javascript.wasm', java: 'tree-sitter-java.wasm', c: 'tree-sitter-c.wasm' };
     for (const [l, w] of Object.entries(want)) { if (!fs.existsSync(path.join(DIR, w))) { notes.push('略過 ' + l + '：沒有 ' + w); continue; } const P = new Parser(); P.setLanguage(await Parser.Language.load(path.join(DIR, w))); parsers[l] = P; }
     if (!parsers.python) { console.log('略過：沒有 python 文法\n0 passed, 0 failed'); return; }
     const results = {};
-    for (const lang of ['nodejs', 'java']) {
+    for (const lang of ['nodejs', 'java', 'c']) {
         if (!parsers[lang]) continue; const P = parsers[lang]; const patterns = INB.buildPatterns(lang, (s) => P.parse(s).rootNode);
         t(lang + '：樣式表有內容（目錄樣板可解析成語法樹）', () => { assert.ok(patterns.length > 50, '樣式數 ' + patterns.length); notes.push(lang + ' 樣式 ' + patterns.length + ' 個'); });
         let okN = 0, totN = 0, nat = 0, cmS = 0, cmK = 0;
