@@ -192,6 +192,13 @@
 - 缺的語言／工具走既有的 UNAVAILABLE 路線：誠實說這台機器沒有，不假裝。
 - 測試：同一個目標在不同語言得到不同的計畫（例如「修好這份程式」在 C 的計畫含 valgrind 步驟、在 Python 沒有）；沒有適用項時退回通用集合。
 
+### 4.2 接進產品（2026-11-08）
+
+- `merge_patch` 工具（`_codePatch`）在 Python 時載入內建語法樹剖析器（`_codePatchParser`，沿用離線寫程式的 Python 剖析器）傳給 `applyPatch`；載入失敗就退回詞法切分。
+- `write_code`／`fix_code` 的入口（`_codeAgent`）新增 `patch` 參數（相容 `diff`）：有 `source` 時把 `patch`、`patchFile`、剖析器一起傳給 `runCode` → `editCode`（`code_agent_core.runCode0` 已轉傳）。
+- 真 Electron 驗證（`scripts/eval/code_patch_parser.eval.js`，用 `node scripts/eval/real_electron.run.js code_patch_parser` 跑）：docstring 裡有一模一樣範例碼、使用者改過真正函式時寧可回滾，範例不動；只有行號位移時只改一處且測資 AC；對照沒有剖析器時會改到 docstring；`merge_patch` 工具入口與 `_codeAgent` 帶 patch 都成功。
+- 限制不變：語法樹只有 Python；其他語言文法需下載，待使用者同意。
+
 ### 4.5 建議的實作順序
 
 1. merge diff patcher（4.1）：最小可行＝unified diff 解析＋策略鏈 ①②③＋`git merge-file` 對照測試的 diff3。

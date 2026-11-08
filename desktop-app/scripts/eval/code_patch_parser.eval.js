@@ -1,0 +1,22 @@
+// merge_patch／write_code(editCode) 在產品裡用到語法樹（真 Electron）。用法：node scripts/eval/real_electron.run.js code_patch_parser
+const fa = window.fa; const R = {}; const ok = (k, v) => { R[k] = v; };
+const api = window.desktopAPI; const execApi = api.exec || api.execApi || null; if (execApi && execApi.setSettings) await execApi.setSettings({ execEnabled: true, execConfirmRequired: false });
+ok('scripts', [].slice.call(document.scripts).map((s) => s.src).filter((s) => /floating-assistant/.test(s)));
+ok('python_available', await api.judge.available('python'));
+const BASE = 'def doc():\n    """範例：\n    def helper(x):\n        y = x * 2\n        return y + 1\n    """\n    return 0\n\ndef helper(x):\n    y = x * 2\n    return y + 1\n\nprint(helper(3))\n';
+const patchTo = BASE.replace('    return y + 1\n\nprint', '    return y + 100\n\nprint').replace('    y = x * 2\n    return y + 100', '    y = x * 3\n    return y + 100');
+const ptxt = FaCodePatch.makeDiff(BASE.split('\n').slice(8).join('\n'), patchTo.split('\n').slice(8).join('\n'), { context: 3, oldName: 'a/x.py', newName: 'b/x.py' }).replace(/@@ -1/, '@@ -9').replace(/\+1,/, '+9,');
+const USER = '# a\n# b\n# c\n# d\n# e\n# f\n# g\n# h\n# i\n# j\n' + BASE.replace('    y = x * 2\n    return y + 1\n\nprint', '    y = x * 2  # 使用者註解\n    return y + 1  # 使用者註解\n\nprint');
+const USER2 = '# a\n# b\n# c\n# d\n# e\n# f\n# g\n# h\n# i\n# j\n' + BASE;
+const DOCQ = '        y = x * 2\n        return y + 1\n    """';
+const parser = await fa._codePatchParser(); ok('parser_loaded', !!parser);
+const tests = [{ in: '', out: '109\n' }];
+const r1 = await fa._codePatch({ source: USER, diff: ptxt, language: 'python' });
+ok('tool_user_edited_docstring', { ok: r1.ok, status: r1.status, rolledBack: !!r1.rolledBack, unchanged: r1.source === USER, docUntouched: r1.source.includes(DOCQ) });
+const r2 = await fa._codePatch({ source: USER2, diff: ptxt, language: 'python', tests });
+ok('tool_shifted_only', { ok: r2.ok, status: r2.status, verified: r2.verified, docUntouched: r2.source.includes(DOCQ), changedOnce: r2.source.split('x * 3').length - 1 });
+const r3 = await FaCodePatch.applyPatch({ source: USER, diff: ptxt, lang: 'python' });
+ok('contrast_no_parser', { ok: r3.ok, status: r3.status, docTouched: r3.ok && !r3.source.includes(DOCQ) });
+const tool = JSON.parse(await fa.tools.merge_patch.callback.call(fa, JSON.stringify({ source: USER2, diff: ptxt, language: 'python', tests }))); ok('tool_entry', { ok: tool.ok, status: tool.status, verified: tool.verified });
+const ag = await fa._codeAgent({ source: USER2, patch: ptxt, language: 'python', tests, goal: '套用修補' }); ok('code_agent_patch', { ok: ag.ok, verified: ag.verified, mode: ag.mode, hasPatchEdit: (ag.edits || []).some((e) => e.by === 'patch'), docUntouched: (ag.source || '').includes(DOCQ), gaps: ag.gaps });
+return R;

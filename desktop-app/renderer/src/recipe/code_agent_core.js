@@ -112,7 +112,7 @@
         const hasTestsFor = (p) => !!(p && p.tests && p.tests.length && a.judge);
         const makeRepair = (problem) => (a.check && Fix ? ({ lang: l, source, ask, semantic, wrap }) => Fix.repairSyntax({ lang: l, source, ask, semantic, wrap, check: a.check, verify: hasTestsFor(problem) ? async ({ source: sx }) => (await a.judge({ lang: l, source: sx, problem })).verdict === 'AC' : null }) : null);
         if (a.source != null) { // 從任意拿到的程式碼接續：先修語法、再（有測試時）修行為；模型只在要重寫函式時才用
-            const problem = a.problem || null; const e = await Ed.editCode({ source: String(a.source), lang, goal: a.text, problem, check: a.check, judge: a.judge, ask: backend && backend.ask, write: backend && backend.write, repair: makeRepair(problem) || undefined, stackMod, opts, onEvent: a.onEvent });
+            const problem = a.problem || null; const e = await Ed.editCode({ source: String(a.source), lang, goal: a.text, problem, check: a.check, judge: a.judge, ask: backend && backend.ask, write: backend && backend.write, repair: makeRepair(problem) || undefined, stackMod, opts, onEvent: a.onEvent, patch: a.patch, patchFile: a.patchFile, parser: a.parser });
             return Object.assign(e, { mode: 'edit', lang });
         }
         // 離線組合（Python）：uml_design → 配方／課／範式骨架 → 區塊迴圈 → 沙盒，由宿主注入 offline({text, lang, problem}) → {ok, source, verdict, ...}；要有測試與判題器才試，通過就不用模型，沒過就往下走模型路線

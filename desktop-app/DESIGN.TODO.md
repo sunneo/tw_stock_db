@@ -8,7 +8,7 @@
 
 ### 程式 diff／patch／merge（`DESIGN.code-repair.md` 4.1／4.2，負責：diff-patcher 工作階段）
 - 衝突階梯（4.2）已做縮小衝突、詞元合併、同處插入兩種順序；**沒做**：同一處兩邊都改（刻意不自動取一邊）、重複行很多時的候選品質沒量過。
-- `editCode` 已吃 `patch` 參數（`code_edit_core.js`）；**還沒接**：`code_agent_core.runCode0` 與 `floating-assistant.js` 沒把使用者的修補傳進去，桌面版也沒載入語法樹 `parser` 給 `merge_patch`（`_codePatch` 沒傳 `parser`）。
+- `editCode` 已吃 `patch` 參數，並已接進產品（`_codeAgent` 新增 `patch` 參數、`merge_patch` 與 `_codeAgent` 都傳 Python 剖析器；真 Electron 驗證過，2026-11-08，見 `DESIGN.code-repair.md` 4.2 末）。
 - 語法樹只有 Python：docstring 防護、巢狀／同名函式只在有 `parser` 時生效（沒有時會改到 docstring 裡的範例，測試有列）。其他語言文法本機沒有，下載需使用者同意（檔名、來源、大小待回報）；C++ 模板邊界只有詞法切分，未逐一驗證。
 - 離線小模型實際走 `merge_patch` 的成效沒量過（目前只有假模型）。
 
