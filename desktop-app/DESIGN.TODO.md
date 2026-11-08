@@ -22,7 +22,7 @@
 - 註解保存：行被改寫／搬動／刪除的規則已做（`a53b519b`），其餘節點類型的註解錨定待驗證。
 
 ### 矩陣與 Blockly（`DESIGN.matrix-fallback.md`、`HANDOFF.blockly-teach.md`）
-- 矩陣轉 Blockly（`matrix_blocks_core.js`）沒接進產品、沒真 Electron 驗證。
+- 矩陣轉 Blockly 已接進產品（2026-11-08，`matrix_blocks` 工具＋`write_code` 結果帶區塊，真 Electron 驗證過遞推與 DFA）；**待改善**：離線組合只有「讀取器讀不出、或範式沒解出」才走矩陣層，所以多數題目看不到區塊；圖／格子／組合層的真 Electron 沒逐一跑；沒有區塊畫面（只回受控自然語言與分段）。
 - 狀態機 UML 圖種、虛擬機轉結構化自然語言的反編譯、反編譯後狀態命名。
 - Blockly 教學下週待辦：多矩陣輸入形狀（銀行家演算法、分頁位址轉換）、Linux 語意模擬缺口、holdout 未解題（只量測不可教）。
 
@@ -54,7 +54,7 @@
 | 矩陣層後備 `matrix_synth_core`（敘述＋範例合成） | **程式在倉庫、測試過，但 renderer 沒接**：`FaMatrixSynth` 不在 `floating-assistant.js`，`buildFromUML` 的 `o.Matrix` 沒人傳，使用者端沒有作用；stevenyc 那邊正在接宿主（未提交） | 接宿主（embed 清單、`_codeOffline` 傳 `Matrix`、`write_code` 標示層級與 `verified:false`）、真 Electron、發布；之後邊表輸入形狀＋L3 半環範本（預期多解 8～10 題） | `DESIGN.matrix-fallback.md`、`HANDOFF.matrix-fallback.md` |
 | 矩陣層的實際價值 | **已量（保留題庫 48 題，沒教過）**：Blockly 17、加矩陣層 21，只多解 4 題；60 題基準已被教過，只能當回歸 | 看接線後與補形狀／範本後的增益 | `DESIGN.matrix-fallback.md` §9 |
 | 各領域矩陣化可行性與缺口（資料結構、作業系統、Linux、演算法） | **只是評估＋4 個實測，沒進 renderer**：純計算部分表達得出來；缺 Mealy 轉換器、GF(2)、位元級 IO、關聯記憶體／指標堆、輸入形狀前端、由規格合成 | 交給 stevenyc 那邊的矩陣 session | `DESIGN.matrix-fallback.md` §12 |
-| 矩陣 → UML／Blockly（支援 code edit） | **Blockly 部分：純模組做完＋測試（2026-11-08）**：`renderer/src/algo/matrix_blocks_core.js`（`decompile`／`compile`／`cnl`／`readForm`／`setForm`／`setCompose`），題庫 74 題中合成成功 71，區塊編回 Python 後測資輸出 71/71 與原程式一致（與題庫預期輸出也 71/71 相同），通用「程式」區塊只佔 0.7%（10/1348）；DFA／遞推（含取模）／圖／格子／方陣／組合層都有分段，DFA 轉移表與接受集、遞推係數與初值與取模、組合層三段積木可在區塊上改且輸出照新形態；**還沒接進 `floating-assistant.js`（別的 session 正在改該檔）、沒有真 Electron 驗證**；UML 圖種（狀態機圖）未做、VM／ReLU 沒有 | 接線（embed 清單＋MATRIXBLOCKS 標記＋code edit 入口顯示分段）與真 Electron 打通一題；狀態機 UML 圖種 | `DESIGN.matrix-fallback.md` §11.5c |
+| 矩陣 → UML／Blockly（支援 code edit） | **Blockly 部分：純模組做完＋測試（2026-11-08）**：`renderer/src/algo/matrix_blocks_core.js`（`decompile`／`compile`／`cnl`／`readForm`／`setForm`／`setCompose`），題庫 74 題中合成成功 71，區塊編回 Python 後測資輸出 71/71 與原程式一致（與題庫預期輸出也 71/71 相同），通用「程式」區塊只佔 0.7%（10/1348）；DFA／遞推（含取模）／圖／格子／方陣／組合層都有分段，DFA 轉移表與接受集、遞推係數與初值與取模、組合層三段積木可在區塊上改且輸出照新形態；**已接進產品並在真 Electron 驗證（遞推、DFA；2026-11-08，`matrix_blocks` 工具＋write_code 結果帶區塊）**；UML 圖種（狀態機圖）未做、VM／ReLU 沒有 | 狀態機 UML 圖種；圖／格子／組合層的真 Electron | `DESIGN.matrix-fallback.md` §11.5c |
 | 備援第三層（上網找答案、湊 CoLU、待補教學佇列） | **只有介面設計（§10），沒實作**；`catalog_discover` 探索端已實作 | 介面實作；網頁搜尋需開子 agent，SourceForge／CodeProject 常 403 | `DESIGN.matrix-fallback.md` §10、`DESIGN.unit-catalog.md` |
 | 交接文件索引（**別的 session 要接手，先讀這列**） | **協調／發布**：`HANDOFF.coordinator.md`（發布流程、驗證清單、使用者原話、陷阱）；**Blockly 教學**：`HANDOFF.blockly-teach.md`＋`DESIGN.blockly-curriculum.md`（可跨帳號冷啟動）；**矩陣**：`HANDOFF.matrix-fallback.md`（寫給 stevenyc.huang 的 session）；舊的 `HANDOFF.blockly-teach.md`（Blockly 教學）、`HANDOFF.matrix-fallback.md`（矩陣，已寫成給 stevenyc 冷啟動）、`HANDOFF.matrix-algorithms.md`／`HANDOFF.block-writer.md`（已完成，僅供查）、`HANDOFF.edit-remote.md`（別條線） | — | 各檔 |
 | 發布 | **已核對**：patch v313（桌面版）；網頁版沒同步（這台機器找不到 `videos-嗨投資`）；發布前要確認 renderer／scripts／web-lazy 工作樹乾淨（`publish.sh` 會 `git add -A`） | 要同步網頁版請給 repo 路徑 | `DESIGN.release.md` |

@@ -228,7 +228,7 @@ fallback: { stage: 'reader'|'recipe'|'lesson'|'paradigm'|'matrix'|'online'|'colu
 ### 11.5b 實作狀態（2026-11-08，v331）
 **更正：反編譯是為了 code edit，不是評估用**（舊檔頭「評估用，不進產品」的註解是錯的）。`matrix_edit_core.js` 已接進產品：`synth()` 的結果會經 `setEditor` 整理成可編輯版（DFA 轉移表一列一個狀態並註明「讀過什麼之後」、遞推式寫成註解且矩陣乘法移到最上層 `mat_mul`、其他範本的巢狀 def 搬到最上層），交 judge 重驗（含隱藏測資）過了才替換，沒過保留原樣；結果帶 `editable`、`originalSource`、`matrixForm`。`extractForm`／`applyForm` 讀回與直接修改形態（改係數、轉移表、接受集 → 行為跟著變，不用重新合成）；形態讀不回來＝降級成一般 Python 區塊。經既有 Python→UML 路徑 raw 語句為 0，往返穩定且輸出相同（`matrix_edit.test.js`）。未做：狀態機 UML 圖種（`uml_core` 是否能表達待查）、VM／ReLU 的 blocks 直接產生（路 B）、graph／grid 範本的形態編輯。
 
-### 11.5c 矩陣 → Blockly 區塊（2026-11-08，純模組＋測試；未接線）
+### 11.5c 矩陣 → Blockly 區塊（2026-11-08，純模組＋測試；已接線見 11.5d）
 使用者原話：「矩陣到blockly先做」。檔案：`renderer/src/algo/matrix_blocks_core.js`、`matrix_blocks.test.js`（已登記 `run-core-tests.js`；需 tree-sitter 快取與 python3）。
 - **做法（路 B 的務實版）**：不另造區塊。合成結果的程式 → 現有 `py_blocks_core` 的範本比對（`fromIR`）→ 再依**矩陣形態**分段並命名（區塊本身仍是現有範本，編回 Python 走既有 `toIR`／`toPython`）。分段表：DFA＝讀入／轉移表／起點／掃描／輸出；遞推＝讀入／係數初值取模／輸出；圖＝讀入／建圖／圖演算法／輸出；格子與方陣＝讀入／計算／輸出；組合層＝讀入與前置／向量積木／過濾／歸約積木／輸出（依合成時留下的註解切開）。註解不進區塊，所以段落標題放在 `segments[].title`。
 - **在區塊上改**：`setForm`（DFA 的轉移表、起點、接受集；遞推的係數、初值、取模）只改槽位內容；`setCompose`（換向量／過濾／歸約積木，輸出型態要相同、圖與格子的向量積木不能互換，否則回 `ok:false` 並說明原因）；`readForm` 讀不回形態＝離開矩陣模式，降級成一般區塊。
@@ -236,6 +236,14 @@ fallback: { stage: 'reader'|'recipe'|'lesson'|'paradigm'|'matrix'|'online'|'colu
 - **一個踩過的坑**：`toPython` 依 `model.order` 輸出函式，clone 過的 model 若只換 `classes[0].ops` 的本體，改動會被靜默忽略（改接受集後輸出不變才發現，最早一版的「往返一致」是空轉的）；`compile` 現在兩邊都換，且測試要求「改了槽位輸出必須不同」。
 - **做不到／沒做**：(1) 沒接進 `floating-assistant.js`（寫入時該檔有別的 session 未提交的修改），沒有真 Electron 驗證；(2) 狀態機 UML 圖種沒做（`uml_core` 是否能表達仍待查）；(3) VM／ReLU 樹沒有區塊來源（沒有 VM→結構化的反編譯）；(4) 遞推的矩陣冪輔助函式（`mat_mul` 等）只是一般區塊，沒有 `mat_pow` 範本；(5) 圖與格子範本（走訪、半環）只分段，沒有「可換演算法」的槽位；(6) 組合層換向量積木若需要字元參數（`row-cnt`／`col-cnt`）要呼叫端給 `ch`。
 - 本機另有既存問題（與本案無關，換回 HEAD 版組合層也一樣）：`matrix_graph.test.js` 的 heldout4 這台機器上是 14/19，低於下限 15。
+
+### 11.5d 接進產品（2026-11-08）
+
+- **嵌入**：`embed-code-ui.js` 加 `FaMatrixBlocks`（`MATRIXBLOCKS` 標記）；`py_uml_pipeline_core` 的 `matrix` 結果多帶 `matrixForm`（本來合成時就有，只是沒傳出來）。
+- **write_code**：`_codeOffline` 在結果由矩陣層解出時呼叫 `_matrixBlocksFromResult`，把程式拆成區塊（分段、形態、受控自然語言），放進 `offline.matrix.blocks` 並記住最近一次結果。
+- **新工具 `matrix_blocks`**（coding 領域）：`show` 看分段與區塊文字；`edit` 改 DFA 的轉移表／起點／接受集、遞推的係數／初值／取模，或組合層換 vector／filter／reducer，編回 Python；改了定義答案本來就變，所以不拿舊測資比，給 `expected`（新定義的期望輸出）才實跑驗證。預設用最近一次矩陣結果，也可給 `source`＋`kind`。看與改既有結果的工具，不是第二個寫程式入口。
+- **真 Electron 驗證**（`scripts/eval/matrix_blocks.eval.js`）：遞推題由矩陣層解出，結果帶區塊（分段 read／params／print），`show` 讀回係數 [1,1]、初值 [1,0]，`edit` 改初值為 [2,1] 後形態讀回；DFA 以 `source`＋`kind` 進入，分段 read／table／start／scan／print，改接受集後用 `expected` 實跑驗證；缺 patch、非矩陣程式如實報錯。核心測試 `matrix_wire.test.js`（嵌入版與來源一致、嵌入版 DFA 改接受集輸出照新定義）。
+- **沒做／待改善**：離線組合只有讀取器讀不出或範式沒解出才走矩陣層，所以多數題目不會出現區塊；沒有圖形化區塊畫面（只回受控自然語言）；圖／格子／組合層沒在真 Electron 逐一跑（核心測試涵蓋純模組）；`write_code` 的矩陣結果在沒有隱藏測資時 `verified:false`（只對範例）是既有設計。
 
 ### 11.6 順序與限制
 - （2026-11-08 使用者指示「矩陣到blockly先做」，已依 §11.5c 實作純模組；原本「排在矩陣層有進步之後」的限制取消。）

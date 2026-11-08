@@ -1549,7 +1549,7 @@ const SUBAGENT_DOMAIN_REGISTRY = {
     coding: {
         enabled: true,
         label: '程式設計（評估／需求分析／設計計畫／git patch實作／語法檢查／測試／發佈，可中斷恢復）',
-        toolNames: ['uml_to_code', 'design_choices', 'uml_design', 'uml_guide', 'uml_edit', 'write_code', 'fix_code', 'optimize_code', 'merge_patch', 'convert_code', 'intent_parse', 'uml_to_wasm', 'plan_route', 'ask_user_card', 'log_learn', 'log_ask', 'mix_understand', 'mix_highlight', 'glue_list', 'glue_define', 'glue_report', 'list_file_access_points', 'fap_list_files', 'fap_find_file', 'repo_map', 'repo_ask', 'repo_sql', 'repo_read_doc', 'repo_wiki', 'explain_code', 'behavior_define', 'coding_workspace', 'coding_read_file', 'apply_git_patch', 'git_inspect', 'git_commit', 'git_push', 'coding_task_state', 'coding_run_check', 'coding_run_tests', 'terminal_create', 'terminal_list', 'terminal_run', 'terminal_get_text', 'terminal_cp_to', 'terminal_cp_from', 'browser_search', 'fetch_web_page', 'article_outline', 'article_section'],
+        toolNames: ['uml_to_code', 'design_choices', 'uml_design', 'uml_guide', 'uml_edit', 'write_code', 'fix_code', 'optimize_code', 'merge_patch', 'convert_code', 'matrix_blocks', 'intent_parse', 'uml_to_wasm', 'plan_route', 'ask_user_card', 'log_learn', 'log_ask', 'mix_understand', 'mix_highlight', 'glue_list', 'glue_define', 'glue_report', 'list_file_access_points', 'fap_list_files', 'fap_find_file', 'repo_map', 'repo_ask', 'repo_sql', 'repo_read_doc', 'repo_wiki', 'explain_code', 'behavior_define', 'coding_workspace', 'coding_read_file', 'apply_git_patch', 'git_inspect', 'git_commit', 'git_push', 'coding_task_state', 'coding_run_check', 'coding_run_tests', 'terminal_create', 'terminal_list', 'terminal_run', 'terminal_get_text', 'terminal_cp_to', 'terminal_cp_from', 'browser_search', 'fetch_web_page', 'article_outline', 'article_section'],
         systemPrompt: _faBuildCodingSystemPrompt({ kind: 'web' }),
     },
     // tw_stock_db客製: 2026-09-20使用者要求——skills domain：建立Claude格式的skill（SKILL.md＋scripts/references）。
@@ -13842,6 +13842,134 @@ const holder = {};
 return holder.FaMatrixEdit;
 })();
 /* MATRIXEDIT-END */
+/* MATRIXBLOCKS-BEGIN */
+const FaMatrixBlocks = (function () {
+const holder = {};
+(function (module, self) {
+/* 矩陣 → Blockly 區塊（DESIGN.matrix-fallback.md §11.2～11.4，路 B）：把矩陣層合成出的程式，依「矩陣形態」拆成有名字的段落，每段是現有範本庫（py_blocks_core）的區塊，
+ * 使用者可以在區塊上改（轉移表、接受集、係數、初值、取模；組合層可換向量／過濾／歸約積木），再編回 Python、交判題器重驗。純函式 UMD，Python 專屬。
+ *   makeMatrixBlocks({B, C2U, parseTree, CP}) → M       B＝py_blocks_core.makeBlocks(...) 的結果；CP＝matrix_compose_core（組合層換積木才需要）
+ *   M.decompile(res) → dec | {ok:false, reason}
+ *       dec = { ok, kind, form, ops:[{name, params, blocks}], main:'main', segments:[{role, title, blocks}] }
+ *       segments 是 main 區塊序列的分段（concat 起來 ＝ main 的區塊）；role：read／table／start／scan／graph／compute／vector／filter／reduce／print…
+ *   M.compile(dec) → Python 原始碼（區塊 → 敘述 IR → Python；其他 def 也一起）
+ *   M.cnl(dec) → 每段一個標題＋受控自然語言（給使用者看／貼回）
+ *   M.readForm(dec) → 從區塊讀回形態（dfa／recurrence／compose），讀不回來回 null＝離開矩陣模式
+ *   M.setForm(dec, patch) → 新的 dec：只改槽位內容（dfa：delta／start／accept；recurrence：coef／init／mod），其餘區塊原樣
+ *   M.setCompose(dec, {vector, filter, reducer}) → 新的 dec：換掉向量／過濾／歸約三段（輸出型態要一樣；不同型態回 {ok:false}）
+ * 往返要求（測試條件）：矩陣合成 → 區塊 → Python 與原程式在隨機輸入上輸出一致；改槽位後輸出照新形態的定義變。 */
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaMatrixBlocks = factory(); })(typeof self !== 'undefined' ? self : this, function () {
+    'use strict';
+    const clone = (x) => JSON.parse(JSON.stringify(x));
+    function makeMatrixBlocks(env) {
+        const { B, C2U, parseTree } = env; const CP = env.CP || null;
+        const modelOf = (src) => { const tree = parseTree(src); if (!tree || tree.rootNode.hasError()) return null; return C2U.fromTree(tree.rootNode, { source: src }).model; };
+        const stmtsOf = (src) => B.stmtsOfSource(src);
+        const line1 = (b) => B.toCNL([b]).split('\n')[0];
+        const pyOf = (b) => { try { return C2U.toPython({ name: 'M', classes: [], relations: [], prelude: B.toIR([b]), order: [] }); } catch (e) { return ''; } };
+        const isAssignTo = (b, name) => b && b.slots && b.slots.x && b.slots.x.n === 'name' && b.slots.x.v === name;
+        const isPrint = (b) => b && (/^print_/.test(b.t) || (b.t === 'stmt' && /^print\(/.test(pyOf(b).trim())));
+        const isRead = (b) => b && (/^read_/.test(b.t) || (b.t === 'stmt' && /input\(\)/.test(pyOf(b))) || (b.t === 'assign' && /input\(\)/.test(pyOf(b))) || (b.t === 'to_int' && /input\(\)|h\[/.test(pyOf(b))) || (b.t === 'stmt' && /^\w+ = int\(h\[\d+\]\)/.test(pyOf(b).trim())));
+        const findIdx = (bl, f, from) => { for (let i = from || 0; i < bl.length; i++) if (f(bl[i], i)) return i; return -1; };
+
+        // ---- 段落 ----
+        const seg = (role, title, blocks) => ({ role, title, blocks });
+        function splitComments(src) { // 組合層：依「# 向量／過濾／歸約」註解把 main 的本體拆成文字段
+            const L = String(src).replace(/\n+$/, '').split('\n'); if (!/^def main\(\):/.test(L[0])) return null; const marks = []; L.forEach((l, i) => { const m = /^ {4}# (向量|過濾|歸約)/.exec(l); if (m) marks.push([i, m[1]]); }); if (marks.length !== 3) return null;
+            const chunk = (a, b) => L.slice(a, b).map((l) => l.replace(/^ {4}/, '')).filter((l) => !/^\s*#/.test(l)).join('\n') + '\n';
+            const printAt = L.findIndex((l, i) => i > marks[2][0] && /^ {4}print\(/.test(l)); if (printAt < 0) return null;
+            const redStmtEnd = printAt; return { pre: chunk(1, marks[0][0]), vector: chunk(marks[0][0] + 1, marks[1][0]), filter: chunk(marks[1][0] + 1, marks[2][0]), reduce: chunk(marks[2][0] + 1, redStmtEnd), out: chunk(printAt, L.length) };
+        }
+        function composeSegments(src) {
+            const s = splitComments(src); if (!s) return null; const out = []; const names = [['pre', 'read', '讀入與前置（讀入輸入、建圖或格子）'], ['vector', 'vector', '向量積木（把輸入變成每個節點／每列一個數）'], ['filter', 'filter', '過濾（全部／只看 ≥ 0／只看 > 0）'], ['reduce', 'reduce', '歸約積木（向量 → 答案）'], ['out', 'print', '輸出']];
+            for (const [k, role, title] of names) { const st = s[k].trim() ? stmtsOf(s[k]) : []; if (!st) return null; out.push(seg(role, title, B.fromIR(st))); } return out;
+        }
+        function landmarkSegments(kind, bl) {
+            const segs = []; let i = 0; const take = (role, title, n) => { if (n > 0) { segs.push(seg(role, title, bl.slice(i, i + n))); i += n; } };
+            let nRead = 0; while (nRead < bl.length && isRead(bl[nRead])) nRead++;
+            let nOut = 0; while (nOut < bl.length - nRead && isPrint(bl[bl.length - 1 - nOut])) nOut++;
+            if (kind === 'dfa') {
+                const ti = findIdx(bl, (b) => isAssignTo(b, 'T')); const qi = findIdx(bl, (b) => isAssignTo(b, 'q')); const fi = findIdx(bl, (b) => b.t === 'for_each', Math.max(ti, qi));
+                if (ti < 0 || qi < 0 || fi < 0) return null; take('read', '讀入輸入', ti); take('table', '轉移表 T[狀態][字元]＝下一個狀態', qi - ti); take('start', '起點狀態', fi - qi); take('scan', '掃描輸入：逐字轉移', bl.length - nOut - fi); take('print', '輸出（q 在接受集裡的判斷）', nOut); return segs;
+            }
+            if (kind === 'recurrence') {
+                const ci = findIdx(bl, (b) => isAssignTo(b, 'coef')); const ii = findIdx(bl, (b) => isAssignTo(b, 'init')); if (ci < 0 || ii < 0) return null; const first = Math.min(ci, ii);
+                take('read', '讀入輸入', first); take('params', '係數、初值、取模', bl.length - nOut - first); take('print', '輸出', nOut); return segs;
+            }
+            if (kind === 'graph') { const ai = findIdx(bl, (b) => isAssignTo(b, 'adj')); if (ai >= 0 && ai >= nRead) { const fi = findIdx(bl, (b) => b.t === 'for_each' && /\bE\b/.test(pyOf(b).split('\n')[0]), ai); if (fi >= 0) { take('read', '讀入輸入', ai); take('graph', '建圖（鄰接表）', fi + 1 - ai); take('compute', '圖演算法（走訪／半環）', bl.length - nOut - fi - 1); take('print', '輸出', nOut); return segs; } } }
+            take('read', '讀入輸入', nRead); take('compute', '計算', bl.length - nRead - nOut); take('print', '輸出', nOut); return segs;
+        }
+
+        // ---- 分解 ----
+        function decompile(res) {
+            if (!res || !res.ok || !res.source) return { ok: false, reason: '沒有合成結果' };
+            const form = res.matrixForm || {}; const kind = form.kind || 'other'; const model = modelOf(res.source); if (!model || !model.classes.length) return { ok: false, reason: '程式解析失敗' };
+            const ops = model.classes[0].ops.map((o) => ({ name: o.name, params: o.params, blocks: B.fromIR(o.body) })); const mi = ops.findIndex((o) => o.name === 'main'); if (mi < 0) return { ok: false, reason: '沒有 main' };
+            let segments = null; if (kind === 'compose') { segments = composeSegments(res.source); if (segments) ops[mi].blocks = [].concat(...segments.map((s) => s.blocks)); } if (!segments) segments = landmarkSegments(kind, ops[mi].blocks);
+            if (!segments) segments = [seg('compute', '整段程式（形態無法再細分）', ops[mi].blocks)];
+            const raw = ops.reduce((n, o) => n + B.stats(o.blocks).generic, 0), all = ops.reduce((n, o) => n + B.stats(o.blocks).blocks, 0);
+            return { ok: true, kind, form: clone(form), model, ops, segments, stats: { blocks: all, generic: raw } };
+        }
+        const flat = (dec) => [].concat(...dec.segments.map((s) => s.blocks));
+        function syncMain(dec) { const m = dec.ops.find((o) => o.name === 'main'); m.blocks = flat(dec); return dec; }
+        function compile(dec) {
+            syncMain(dec); const m = clone(dec.model); const bodies = {}; for (const d of dec.ops) bodies[d.name] = B.toIR(d.blocks);
+            // toPython 依 model.order 輸出（order 裡的函式物件 clone 後是另一份），所以 ops 與 order 兩邊都要換本體
+            for (const o of m.classes[0].ops) if (bodies[o.name]) o.body = bodies[o.name]; for (const it of m.order || []) if (it.t === 'f' && bodies[it.o.name]) it.o.body = bodies[it.o.name];
+            return C2U.toPython(m);
+        }
+        function cnl(dec) { const out = []; for (const o of dec.ops) { if (o.name !== 'main') { out.push('【函式 ' + o.name + '】'); out.push(B.toCNL(o.blocks)); } } for (const s of dec.segments) { out.push('【' + s.title + '】'); out.push(B.toCNL(s.blocks)); } return out.filter((l) => l !== '').join('\n'); }
+
+        // ---- 形態讀寫（在區塊的槽位上）----
+        const pyLit = (txt) => { try { return JSON.parse(String(txt).replace(/'/g, '"').replace(/\bTrue\b/g, 'true').replace(/\bFalse\b/g, 'false').replace(/\bNone\b/g, 'null')); } catch (e) { return undefined; } };
+        const slotLit = (b) => (b ? pyLit(B.exprText(b.slots.e)) : undefined);
+        const walkBlocks = (bl, f) => { for (const b of bl) { f(b); if (b.t === 'if') { b.branches.forEach((x) => walkBlocks(x.body, f)); if (b.els) walkBlocks(b.els, f); } else if (b.bodies) Object.values(b.bodies).forEach((x) => walkBlocks(x, f)); } };
+        function acceptBlock(dec) { let hit = null; walkBlocks(flat(dec), (b) => { if (hit) return; for (const k of Object.keys(b.slots || {})) { if (b.slots[k] && typeof b.slots[k] === 'object' && /\bq in \[[\d, ]*\]/.test(B.exprText(b.slots[k]))) { hit = { b, k }; return; } } }); return hit; }
+        function readForm(dec) {
+            const bl = flat(dec); const get = (n) => bl.find((b) => isAssignTo(b, n));
+            if (dec.kind === 'dfa') { const T = slotLit(get('T')), q = slotLit(get('q')); if (!Array.isArray(T) || typeof q !== 'number' || !T.every((r) => r && typeof r === 'object')) return null; const o = { kind: 'dfa', start: q, delta: T }; const a = acceptBlock(dec); if (a) o.accept = pyLit(/\bq in (\[[\d, ]*\])/.exec(B.exprText(a.b.slots[a.k]))[1]); return o; }
+            if (dec.kind === 'recurrence') { const c = slotLit(get('coef')), i = slotLit(get('init')); if (!Array.isArray(c) || !Array.isArray(i)) return null; const m = get('M'); const mv = m ? slotLit(m) : null; return { kind: 'recurrence', coef: c, init: i, offset: dec.form.offset || 0, mod: typeof mv === 'number' ? mv : null }; }
+            if (dec.kind === 'compose') return clone(dec.form); return null;
+        }
+        const setSlot = (b, text) => { const e = B.exprOf(text); if (!e) throw new Error('槽位不是合法運算式：' + text); b.slots.e = e; };
+        const dumpDelta = (d) => '[' + d.map((r) => '{' + Object.keys(r).map((c) => JSON.stringify(c) + ': ' + r[c]).join(', ') + '}').join(', ') + ']';
+        function setForm(dec, patch) {
+            const d = { ok: true, kind: dec.kind, form: clone(dec.form), model: dec.model, ops: clone(dec.ops), segments: clone(dec.segments), stats: dec.stats }; const bl = flat(d); const get = (n) => bl.find((b) => isAssignTo(b, n));
+            try {
+                if (d.kind === 'dfa') {
+                    if (patch.delta) { const b = get('T'); if (!b) return { ok: false, reason: '找不到轉移表區塊' }; setSlot(b, dumpDelta(patch.delta)); }
+                    if (patch.start != null) { const b = get('q'); if (!b) return { ok: false, reason: '找不到起點區塊' }; setSlot(b, String(patch.start)); }
+                    if (patch.accept) { const a = acceptBlock(d); if (!a) return { ok: false, reason: '找不到接受集的判斷' }; a.b.slots[a.k] = B.exprOf(B.exprText(a.b.slots[a.k]).replace(/\bq in \[[\d, ]*\]/, 'q in ' + JSON.stringify(patch.accept))); }
+                } else if (d.kind === 'recurrence') {
+                    if (patch.coef) { const b = get('coef'); if (!b) return { ok: false, reason: '找不到係數區塊' }; setSlot(b, JSON.stringify(patch.coef)); const dd = get('d'); if (dd) setSlot(dd, String(patch.coef.length)); }
+                    if (patch.init) { const b = get('init'); if (!b) return { ok: false, reason: '找不到初值區塊' }; setSlot(b, JSON.stringify(patch.init)); }
+                    if (patch.mod !== undefined) { const b = get('M'); if (!b) return { ok: false, reason: '找不到取模區塊' }; setSlot(b, patch.mod == null ? 'None' : String(patch.mod)); }
+                } else return { ok: false, reason: '這種形態沒有可直接改的槽位：' + d.kind };
+            } catch (e) { return { ok: false, reason: String(e.message || e) }; }
+            const f = readForm(d); if (!f) return { ok: false, reason: '改完讀不回形態（離開矩陣模式，請當一般區塊編輯）' }; d.form = Object.assign(d.form, f); return d;
+        }
+        // 組合層：換掉三段積木
+        function setCompose(dec, sel) {
+            if (dec.kind !== 'compose' || !CP) return { ok: false, reason: '不是組合層結果' };
+            const V = CP.GV.find((x) => x.id === (sel.vector || dec.form.vector)), R = CP.RD.find((x) => x.id === (sel.reducer || dec.form.reducer)), fid = sel.filter || dec.form.filter; const F = CP.FLT.find((x) => x[0] === fid);
+            if (!V || !R || !F) return { ok: false, reason: '沒有這個積木' }; const cur = CP.RD.find((x) => x.id === dec.form.reducer); if (cur && cur.out !== R.out) return { ok: false, reason: '輸出型態不同（' + cur.out + ' → ' + R.out + '），要連輸出段一起改，請改用一般區塊編輯' };
+            if ((V.uses === 'graph') !== (CP.GV.find((x) => x.id === dec.form.vector).uses === 'graph')) return { ok: false, reason: '圖與格子的向量積木不能互換' };
+            const d = { ok: true, kind: 'compose', form: Object.assign(clone(dec.form), { vector: V.id, filter: fid, reducer: R.id }), model: dec.model, ops: clone(dec.ops), segments: clone(dec.segments), stats: dec.stats };
+            const ch = dec.segments.find((s) => s.role === 'vector'); let vpy = typeof V.py === 'function' ? V.py(sel.ch || 'x') : V.py; if (typeof V.py === 'function' && !sel.ch) return { ok: false, reason: '這個向量積木需要指定字元（ch）' };
+            const part = (role, lines) => { const s = d.segments.find((x) => x.role === role); const st = stmtsOf(lines.join('\n') + '\n'); if (!st) throw new Error('積木程式解析失敗'); s.blocks = B.fromIR(st); };
+            try { part('vector', vpy); part('filter', [F[2], 'idx = [i for i, x in enumerate(vec) if ' + (fid === 'all' ? 'True' : fid === 'ge0' ? 'x >= 0' : 'x > 0') + ']', 'BASE = ' + (dec.form.base == null ? String(baseOf(dec)) : dec.form.base)]); part('reduce', [R.py]); } catch (e) { return { ok: false, reason: String(e.message || e) }; }
+            return d;
+        }
+        function baseOf(dec) { const b = flat(dec).find((x) => isAssignTo(x, 'BASE')); return b ? B.exprText(b.slots.e) : '0'; }
+        return { decompile, compile, cnl, readForm, setForm, setCompose, flat };
+    }
+    return { makeMatrixBlocks };
+});
+
+}).call(null, undefined, holder);
+return holder.FaMatrixBlocks;
+})();
+/* MATRIXBLOCKS-END */
 /* MATRIXCOMPOSE-BEGIN */
 const FaMatrixCompose = (function () {
 const holder = {};
@@ -17514,7 +17642,7 @@ const holder = {};
         const tryMatrix = async (prev) => {
             if (!o.Matrix || !o.examples || !o.examples.length) return null; const m = await o.Matrix.synth({ statement: o.statement, examples: o.examples, judge: o.judge, budget: o.matrixBudget });
             if (!m.ok) return { failed: true, reason: m.reason, steps: m.steps }; if (m.verdict !== 'AC' && m.verdict !== 'UNCHECKED') return { failed: true, reason: '矩陣層候選沒通過沙盒：' + m.verdict, steps: m.steps };
-            return Object.assign({}, prev || {}, { ok: true, source: m.source, model: null, usedModel: false, verdict: m.verdict, cnl: { solve: m.desc }, matrix: { kind: m.kind, level: m.level, size: m.size, tried: m.tried, ambiguous: m.ambiguous, verified: m.verified, desc: m.desc, steps: m.steps, suggest: m.suggest || null, editable: !!m.editable } });
+            return Object.assign({}, prev || {}, { ok: true, source: m.source, model: null, usedModel: false, verdict: m.verdict, cnl: { solve: m.desc }, matrix: { kind: m.kind, level: m.level, size: m.size, tried: m.tried, ambiguous: m.ambiguous, verified: m.verified, desc: m.desc, steps: m.steps, suggest: m.suggest || null, editable: !!m.editable, matrixForm: m.matrixForm || null } });
         };
         // ---- 函式內部再切成步驟（Steps：轉換鏈 → 歸約，對半遞迴切；步驟級驗證、組裝後整體判題；失敗回報 fallback，不說成通過）----
         const trySteps = async (prev) => {
@@ -72128,6 +72256,14 @@ ${fnData.code}
             },
             { type: 'object', properties: { source: { type: 'string', description: '要轉換的 Python 程式碼（整份）' }, blocks: { type: 'array', items: { type: 'object', properties: { name: { type: 'string' }, params: { type: 'array', items: { type: 'string' } }, cnl: { type: 'string', description: '受控自然語言的區塊文字' } }, required: ['name', 'cnl'] }, description: '（與 source 二選一）區塊函式清單' }, target: { type: 'string', enum: ['nodejs', 'java', 'c', 'python'], description: '目標語言' }, action: { type: 'string', enum: ['convert', 'to_blocks'], description: '預設 convert；to_blocks 把 Python 拆成區塊' }, name: { type: 'string', description: '（選填）java 的類別名等' }, keep_blocks: { type: 'boolean', description: '（選填）先經過區塊再轉，驗證區塊往返' }, tests: { type: 'array', items: { type: 'object', properties: { in: { type: 'string' }, out: { type: 'string' } }, required: ['in', 'out'] }, description: '（選填）有給就實際編譯執行轉出的程式驗證輸出' } }, additionalProperties: false }
         );
+        registerOptional('matrix_blocks',
+            '把矩陣層合成出的程式顯示成「有名字的區塊段落」（DFA：讀入／轉移表／起點／掃描／輸出；遞推：係數初值取模；圖、格子、組合層也有分段），並可在區塊的槽位上直接改：action:"show" 看目前的區塊（受控自然語言）與形態；action:"edit" 改 DFA 的轉移表 delta／起點 start／接受集 accept，或遞推的係數 coef／初值 init／取模 mod，或組合層換 vector／filter／reducer 積木，編回 Python（改完輸出照新定義變；給 expected 才會實跑驗證）。預設用 write_code 最近一次由矩陣層解出的結果；也可自己給 source＋kind。這是看與改既有結果的工具，不是寫程式的入口（寫新程式用 write_code）。參數：{"action":"show|edit","source":"（選填）Python","kind":"dfa|recurrence|compose|graph|grid","patch":{"delta":[{"0":1,"1":0}],"accept":[1]},"expected":[{"in","out"}]}',
+            async function (rawArgs) {
+                let a = {}; try { a = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                try { return JSON.stringify(await this._matrixBlocksTool(a)); } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); }
+            },
+            { type: 'object', properties: { action: { type: 'string', enum: ['show', 'edit'], description: '預設 show' }, source: { type: 'string', description: '（選填）要看／改的 Python 程式；不給就用最近一次矩陣層結果' }, kind: { type: 'string', description: '（給 source 時）形態：dfa／recurrence／compose／graph／grid' }, patch: { type: 'object', description: 'edit：dfa 用 delta（每個狀態一個 {字元: 下一狀態}）、start、accept（接受狀態陣列）；recurrence 用 coef、init、mod' }, compose: { type: 'object', description: 'edit（組合層）：{vector, filter, reducer, ch}' }, expected: { type: 'array', items: { type: 'object', properties: { in: { type: 'string' }, out: { type: 'string' } }, required: ['in', 'out'] }, description: '（選填）改完後新定義的期望輸出，有給才實跑驗證' } }, additionalProperties: false }
+        );
         registerOptional('optimize_code',
             '把一份「已經能跑、答案正確」的 Python 程式換成「功能一樣但更有效率」的寫法：先從程式看出慢的寫法（list 當集合用、list.pop(0) 當佇列、重複計算的遞迴、迴圈裡反覆 list.count／in／sum 切片、迴圈裡 lst = lst + [x]、sorted 只為了取極值、字串 += 一直接），再依優化對照表換成 set／deque／lru_cache／Counter／前綴和／max／min／append／join；**每一條都要在 tests（含隱藏測試）上輸出與原程式相同才收，有給 perf（一組大輸入與它的正確輸出）還會量時間，變慢就退回**。回傳 applied（換了什麼、複雜度前後、記憶體、實測毫秒）、skipped（認得但沒換的原因）、source（優化後的程式）。「輸出一致」只在給的測資上驗證，不是等價證明；沒給 tests 就不會改。',
             async function (rawArgs) {
@@ -112110,8 +112246,8 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         const sw = await this._offlineStackWire(o.text, r); // 思考堆疊缺口 C、E：層框、卡在哪、給模型的標頭（失敗）／成品檢查（成功）
         if (!r.ok) return { ok: false, reason: r.reason, tried: r.tried, rounds: r.rounds, stack: sw.stack, stuckAt: sw.stuckAt, stackHeader: sw.header, stackNote: sw.note };
         // 誠實標示：矩陣層是「用範例合成」的，只對著範例驗證時 AC 不是獨立驗證（範例是學的資料）；有獨立的隱藏測資並通過、且沒有多個候選，才算 verified
-        const mx = r.matrix || null; const independent = !!(o.problem && Array.isArray(o.problem.hidden) && o.problem.hidden.length); const mxVerified = !!(mx && mx.verified && !mx.ambiguous && independent);
-        return { ok: true, rounds: r.rounds, stack: sw.stack, stuckAt: sw.stuckAt, stackNote: sw.note, source: r.source + '\nmain()\n', verdict: r.verdict, by: mx ? 'matrix' : r.stepPlan ? 'steps' : r.recipe ? 'recipe' : r.lesson ? 'lesson' : r.paradigm ? 'paradigm' : 'blocks', stepPlan: r.stepPlan, recipe: r.recipe, lesson: r.lesson, paradigm: r.paradigm, slots: r.slots, tried: r.tried, usedModel: r.usedModel, matrix: mx ? { level: mx.level, kind: mx.kind, desc: mx.desc, verified: mxVerified, ambiguous: !!mx.ambiguous, suggest: mx.suggest || null, editable: !!mx.editable } : undefined, verified: mx ? mxVerified : true, onlyExamples: mx ? !mxVerified : false };
+        const mx = r.matrix || null; const mxBlocks = mx ? await this._matrixBlocksFromResult(r.source, mx, exs) : null; const independent = !!(o.problem && Array.isArray(o.problem.hidden) && o.problem.hidden.length); const mxVerified = !!(mx && mx.verified && !mx.ambiguous && independent);
+        return { ok: true, rounds: r.rounds, stack: sw.stack, stuckAt: sw.stuckAt, stackNote: sw.note, source: r.source + '\nmain()\n', verdict: r.verdict, by: mx ? 'matrix' : r.stepPlan ? 'steps' : r.recipe ? 'recipe' : r.lesson ? 'lesson' : r.paradigm ? 'paradigm' : 'blocks', stepPlan: r.stepPlan, recipe: r.recipe, lesson: r.lesson, paradigm: r.paradigm, slots: r.slots, tried: r.tried, usedModel: r.usedModel, matrix: mx ? { level: mx.level, kind: mx.kind, desc: mx.desc, verified: mxVerified, ambiguous: !!mx.ambiguous, suggest: mx.suggest || null, editable: !!mx.editable, blocks: mxBlocks && mxBlocks.ok ? { kind: mxBlocks.kind, form: mxBlocks.form, segments: mxBlocks.segments, stats: mxBlocks.stats, cnl: mxBlocks.cnl, note: '用 matrix_blocks 工具可在區塊上改轉移表／係數再重驗' } : (mxBlocks ? { unavailable: mxBlocks.reason } : undefined) } : undefined, verified: mx ? mxVerified : true, onlyExamples: mx ? !mxVerified : false };
     }
     // a: { task（需求文字）, language, tests:[{in,out}], uml（DSL 文字）, use_last_design, source（任意現有程式碼）, goal, driver, model, _gen（CoLU 計畫裡直接給模型） }
     // merge diff patcher：把 unified diff 合併進使用者目前的程式；合併後過語法檢查（bridge.check）與判題（bridge.judge），不過就回滾（結果的 source 仍是原程式）
@@ -112152,6 +112288,43 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             else { const j = await bridge.judge({ lang: target, source: em.code, problem: { id: 'convert', tests, checker: a.checker || 'tokens', timeoutMs: 30000 } }); out.verdict = j.verdict; out.verified = j.verdict === 'AC'; if (j.verdict !== 'AC') out.verifyNote = '轉出的程式沒有通過測資：' + String(j.detail || j.verdict).slice(0, 200); }
         } else out.verified = null, out.verifyNote = '沒有給 tests，轉出的程式沒有實際執行驗證';
         out.report = '轉成 ' + target + '：' + (out.verified === true ? '已實際執行，輸出與測資一致' : out.verified === false ? '⚠️ 轉出的程式沒過測資（' + (out.verdict || '') + '）' : '⚠️ 沒有實際執行驗證') + (out.diags.length ? '；診斷 ' + out.diags.length + ' 則' : '');
+        return out;
+    }
+    // ===== 矩陣 → 區塊（DESIGN.matrix-fallback.md §11.5c、matrix_blocks_core.js）：矩陣層合成的結果依形態分段成區塊，可在區塊的槽位上改轉移表／接受集／係數／初值／取模，編回 Python 重驗 =====
+    async _matrixBlocksMod() {
+        if (this._matrixBlocksObj) return this._matrixBlocksObj;
+        if (typeof FaMatrixBlocks === 'undefined' || !FaMatrixBlocks) throw new Error('這個版本沒有矩陣轉區塊模組（FaMatrixBlocks）');
+        const P = await this._pyParserSync(); const parseTree = (x) => P.parse(x); const B = FaPyBlocks.makeBlocks({ parseTree, C2U: FaPyCode2Uml });
+        this._matrixBlocksObj = FaMatrixBlocks.makeMatrixBlocks({ B, C2U: FaPyCode2Uml, parseTree, CP: typeof FaMatrixCompose !== 'undefined' ? FaMatrixCompose : null });
+        return this._matrixBlocksObj;
+    }
+    _matrixDecSummary(M, dec) { return { kind: dec.kind, form: M.readForm(dec) || dec.form, segments: dec.segments.map((s) => ({ role: s.role, title: s.title, blocks: s.blocks.length })), stats: dec.stats, cnl: M.cnl(dec) }; }
+    // 離線組合由矩陣層解出時：把結果拆成區塊，記起來給 matrix_blocks 工具接著改（不丟例外）
+    async _matrixBlocksFromResult(source, mx, tests) {
+        try {
+            const M = await this._matrixBlocksMod(); const dec = M.decompile({ ok: true, source, matrixForm: mx.matrixForm || { kind: mx.kind } }); if (!dec.ok) return { ok: false, reason: dec.reason };
+            this._matrixLast = { source, kind: dec.kind, dec, tests: (tests || []).slice(0, 12), at: Date.now() };
+            return Object.assign({ ok: true }, this._matrixDecSummary(M, dec));
+        } catch (e) { return { ok: false, reason: String((e && e.message) || e) }; }
+    }
+    // a: { action:'show'|'edit', source?, kind?（沒有最近一次矩陣結果時要給形態：dfa／recurrence／compose／graph／grid…）, patch?:{delta,start,accept | coef,init,mod}, compose?:{vector,filter,reducer,ch}, tests? }
+    async _matrixBlocksTool(a) {
+        a = a || {}; const M = await this._matrixBlocksMod(); const action = a.action || 'show'; const last = this._matrixLast || null;
+        let dec, tests = Array.isArray(a.tests) && a.tests.length ? a.tests : (last && last.tests) || [];
+        if (typeof a.source === 'string' && a.source.trim() && !(last && last.source === a.source && (!a.kind || a.kind === last.kind))) {
+            const d = M.decompile({ ok: true, source: a.source, matrixForm: { kind: a.kind || 'other' } }); if (!d.ok) return { ok: false, error: d.reason }; dec = d;
+        } else if (last) dec = last.dec; else return { ok: false, error: '沒有最近一次矩陣層的結果；請給 source（Python 程式）與 kind（dfa／recurrence／compose／graph／grid…），或先用 write_code 寫一題由矩陣層解出的題目' };
+        if (action === 'show') return Object.assign({ ok: true, python: M.compile(dec) }, this._matrixDecSummary(M, dec));
+        if (action !== 'edit') return { ok: false, error: '不認得的 action：' + action + '（show 或 edit）' };
+        let nd;
+        if (a.patch && typeof a.patch === 'object') nd = M.setForm(dec, a.patch); else if (a.compose && typeof a.compose === 'object') nd = M.setCompose(dec, a.compose); else return { ok: false, error: 'edit 需要 patch（dfa：delta／start／accept；recurrence：coef／init／mod）或 compose（vector／filter／reducer）' };
+        if (!nd || !nd.ok) return { ok: false, error: (nd && nd.reason) || '改不了', note: '改不回矩陣形態時，請把它當一般區塊編輯（to_blocks）' };
+        const python = M.compile(nd); const out = Object.assign({ ok: true, python, changed: python !== M.compile(dec) }, this._matrixDecSummary(M, nd));
+        const bridge = this._codeJudgeBridge(); const tt = tests.filter((t) => t && typeof t.in === 'string' && typeof t.out === 'string');
+        if (a.expected && Array.isArray(a.expected)) { // 改完的新形態對應的新期望輸出（使用者改了定義，舊測資的答案會變）
+            const ex = a.expected.filter((t) => t && typeof t.in === 'string' && typeof t.out === 'string'); if (ex.length && bridge.judge) { const j = await bridge.judge({ lang: 'python', source: python + '\nmain()\n', problem: { id: 'matrix-edit', tests: ex, checker: 'tokens', timeoutMs: 20000 } }); out.verdict = j.verdict; out.verified = j.verdict === 'AC'; }
+        } else out.verified = null, out.verifyNote = '改了定義，答案本來就會變，所以不拿舊測資比；給 expected（新的 [{in,out}]）才會實跑驗證' + (tt.length ? '' : '');
+        this._matrixLast = { source: python, kind: nd.kind, dec: nd, tests, at: Date.now() };
         return out;
     }
     // 語法樹剖析器（目前內建只有 Python 文法）：載入失敗就回 undefined，merge diff patcher 退回詞法切分

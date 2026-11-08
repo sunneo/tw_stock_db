@@ -49,7 +49,7 @@
         const tryMatrix = async (prev) => {
             if (!o.Matrix || !o.examples || !o.examples.length) return null; const m = await o.Matrix.synth({ statement: o.statement, examples: o.examples, judge: o.judge, budget: o.matrixBudget });
             if (!m.ok) return { failed: true, reason: m.reason, steps: m.steps }; if (m.verdict !== 'AC' && m.verdict !== 'UNCHECKED') return { failed: true, reason: '矩陣層候選沒通過沙盒：' + m.verdict, steps: m.steps };
-            return Object.assign({}, prev || {}, { ok: true, source: m.source, model: null, usedModel: false, verdict: m.verdict, cnl: { solve: m.desc }, matrix: { kind: m.kind, level: m.level, size: m.size, tried: m.tried, ambiguous: m.ambiguous, verified: m.verified, desc: m.desc, steps: m.steps, suggest: m.suggest || null, editable: !!m.editable } });
+            return Object.assign({}, prev || {}, { ok: true, source: m.source, model: null, usedModel: false, verdict: m.verdict, cnl: { solve: m.desc }, matrix: { kind: m.kind, level: m.level, size: m.size, tried: m.tried, ambiguous: m.ambiguous, verified: m.verified, desc: m.desc, steps: m.steps, suggest: m.suggest || null, editable: !!m.editable, matrixForm: m.matrixForm || null } });
         };
         // ---- 函式內部再切成步驟（Steps：轉換鏈 → 歸約，對半遞迴切；步驟級驗證、組裝後整體判題；失敗回報 fallback，不說成通過）----
         const trySteps = async (prev) => {
