@@ -104,9 +104,9 @@
 
 我讀程式與文件盤點的（不是重跑全部評測）：
 - **多矩陣輸入形狀**：`os.banker`、`os.page-translate` 已由另一個工作階段完成（2026-11-07），讀取器放寬也已進。
-- **真 Linux 語意模擬**：`domain_linuxsem_core.js` 已有 fd 表（open／dup／dup2／close）、管線緩衝、信號遮罩、TCP 狀態機（train 11/11、新 holdout 4/4）。**待改善**：socket 全套、行程樹 fork／wait／exec、信號處理常式巢狀。
+- **真 Linux 語意模擬**：`domain_linuxsem_core.js` 已有 fd 表（open／dup／dup2／close）、管線緩衝、信號遮罩、TCP 狀態機，**2026-11-08 補行程樹（fork／exit／wait、殭屍、過繼給 init、init 是否立刻回收、wait 挑最小或最早 exit）與 socket 監聽佇列（backlog、conn／accept、丟棄、backlog+1）**；`domain_linuxsem.test.js` train 17/17（選項反序也 17/17）、holdout 6/6、整個測試檔 34 項過。**誠實註記**：新增兩個範式的 holdout 敘述是我寫完骨架後才寫的另一種措辭，不是冷啟動出題，所以 holdout 對這兩個範式只能說「換措辭仍解得出」，不能當泛化證據。同時加了兩個全域有風險的偵測詞（`殭屍`、`backlog`、`fork … wait`），已跑 `linux_paradigms`（125 項）、`domain_os`、`domain_sync`、`domain_dsp` 都過。**仍待改善**：socket 全套（bind／connect／半關閉）、`exec` 與環境變數（判題器能力，見下表）、信號處理常式巢狀。
 - **思考堆疊**：F 部分補（見 `DESIGN.think-stack.md`）；C（離線每層框）、E（離線自檢）、I（路由堆疊實測，需模型）仍未做，C 與 E 要先設計層與框的對應，不是小改。
-- **holdout 未解題**：只量測，本輪未讀 holdout 敘述、未教；Linux 的 xz-header、bmp-write8 屬規格太具體，歸在下面「超出」。
+- **holdout 未解題（2026-11-08 量測，沒讀敘述、沒教）**：`holdout_blockly.jsonl` 28/31（未解 h-roman-rev、h-vowel-count、h-seq-given-hold，與之前相同）；`bench_linux_all.jsonl` 59/64（未解 lx-exec-env、lx-tar-blocks、lx-canonical-huffman、lx-xz-header、lx-bmp-write8；原本的 cat-two 已由 v322 的兩段輸入解掉）。用 `bench_coverage.js --json` 只看解出與否，輸出裡的判決種類是「程式讀不出這題的解法」，沒有預期輸出。這些仍是待改善，沒有為它們寫規則。
 - **區塊 ↔ 中間語言 ↔ 目標語言 ↔ 函式行為卡**：已接成同一條線，見 `DESIGN.core-ir.md` §8。
 
 ### 「超出 Blockly」清單（更新）

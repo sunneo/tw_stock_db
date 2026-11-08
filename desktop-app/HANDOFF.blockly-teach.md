@@ -39,6 +39,13 @@
 - 接續點（依序，Linux 格式型家族 linuxfmt（樣板展開／區塊對齊／範式前綴碼）v329；Linux 語意模擬 linuxsem（fd 表／管線／信號遮罩／TCP）v324；檔案系統 fs（FAT／inode）已於 v323 做第一批；進階圖 graph2 已於 v321 做完第一批：MST／SCC／Bellman-Ford／樹直徑／LCA／二分圖／最大流；讀取器通用放寬：區段數量可寫 n-1、「每行 a b 描述…」）：(1) ✔已做（stevenyc.huang 的 session，2026-11-07）：`os.banker`、`os.page-translate`＋讀取器通用放寬（連接詞「接下來／最後／緊接著／隨後」、名稱可用「、」分隔、「第一行有三個整數」、第一行整數不被讀成字串）。原說明：銀行家演算法／分頁位址轉換＝多矩陣輸入：「第一行 n m，接著 n 行…，再接著 n 行…」目前讀成兩個 raw lines 但丟掉第一行整數；修法是 `algo_intent_core.js` 的 `readToolInput` 覆蓋處（搜尋 `const keep =`）把保留條件放寬到 `ti.every(x => x.k==='lines'||x.k==='rest')`，再寫 banker 骨架（是否安全／安全序列）。(2) diff／join 兩段輸入。(3) 檔案系統（inode／FAT）、進階圖樹（MST／SCC／Bellman-Ford／LCA）、真 Linux 語意模擬（fd 表、dup2、pipe、信號遮罩、socket 狀態機）。(4) 思考堆疊 D／F／H（C、E 先設計）。(5) Linux holdout 6 題與各包 holdout 未解題（只補通用能力）。
 - 額度：2026-11-07 06:08 使用者指示不要用到隔週額度；07:00 重置後由使用者決定何時續做。
 
+## 3c. 最新進度（2026-11-08，管理者第二批；比 §3b 新）
+
+- 多矩陣輸入形狀（銀行家、分頁位址轉換）§3b 已做，本批只核對存在（`domain_os_core.js` 的 `os.banker`、`os.page-translate`，`domain_os.test.js` 66 項過）。
+- Linux 語意模擬補了行程樹（`lx.proctree`）與 socket 監聽佇列（`lx.listen`），數字與誠實註記在 `DESIGN.blockly-curriculum.md`。
+- holdout 量測：`holdout_blockly` 28/31、`bench_linux_all` 59/64，只量不教。
+- 新增領域包／範式的做法不變（§3a）；本批新增範式的坑：`limit` 要 ≥ 槽位組合總數（`lx.listen` 2×3=6，一度設 5 導致解不出）；偵測詞放進 `algos` 要 `pri:true`；第一行 `cap q` 的名稱最好沿用已有範式的寫法（`backlog q` 讀不出）；生成輸入要讓輸出非空（行程樹的殭屍輸出一開始全是空行，參考解被判「產生不出測資」）。
+
 ## 4. 環境與流程（任何帳號都能照做）
 
 - **依賴**：Node 20、Python 3、`xvfb-run`（真 Electron 測試）、tree-sitter 快取目錄。`export FA_TS_DIR=/tmp/fa-ts-cache`（需含 `tree-sitter.js`、`tree-sitter.wasm`、`tree-sitter-python.wasm`；沒有就從 `~/.cache/fa-ts` 或專案說明取得；測試找不到會印「略過」）。

@@ -17,14 +17,14 @@
 - 缺口 I 只有量測骨架，沒有真模型數字。
 
 ### 多語言中間語言與函式行為（`DESIGN.core-ir.md`）
-- c++、c#、ruby、perl 輸出器與樣板只有目錄，沒實跑；java／c 的「進」（抽回設計）、nodejs 反向沒做。
+- c++、c#、ruby、perl 輸出器與樣板只有目錄，沒實跑；nodejs 與 java 的「進」已做並實跑驗證（2026-11-08，`DESIGN.core-ir.md` §11，`ir_in_brace_core.js`）；**c 的「進」沒做**：文法快取沒有 `tree-sitter-c.wasm`（只有 cpp），需要管理者放檔；「進」還沒接進產品（`convert_code` 只吃 Python 來源）。
 - 行為卡已接成唯讀工具 `behavior_card`（2026-11-08，`DESIGN.core-ir.md` §10）；**待改善**：nodejs／java／c 的第一層沒在真 Electron 跑（要連網下載文法）；UML 抽回還沒做成工具；沒有卡片畫面。
 - 註解保存：行被改寫／搬動／刪除的規則已做（`a53b519b`），其餘節點類型的註解錨定待驗證。
 
 ### 矩陣與 Blockly（`DESIGN.matrix-fallback.md`、`HANDOFF.blockly-teach.md`）
 - 矩陣轉 Blockly 已接進產品（2026-11-08，`matrix_blocks` 工具＋`write_code` 結果帶區塊，真 Electron 驗證過遞推與 DFA）；**待改善**：離線組合只有「讀取器讀不出、或範式沒解出」才走矩陣層，所以多數題目看不到區塊；圖／格子／組合層的真 Electron 沒逐一跑；沒有區塊畫面（只回受控自然語言與分段）。
 - 狀態機圖種、VM 轉結構化反編譯、狀態命名已做純模組（2026-11-08，`DESIGN.matrix-fallback.md` §11.7）；**待改善**：狀態機圖種沒收編進 `uml_core` 也沒畫面；VM 區塊沒接 `write_code`；名稱是規則推的角色；BFS 交錯迴圈只能寫成狀態分派。
-- Blockly 教學下週待辦：多矩陣輸入形狀（銀行家演算法、分頁位址轉換）、Linux 語意模擬缺口、holdout 未解題（只量測不可教）。
+- Blockly 教學（2026-11-08 第二批）：多矩陣輸入已做（核對過）；Linux 語意模擬補了行程樹與監聽佇列（`DESIGN.blockly-curriculum.md`）；holdout 只量測（28/31、59/64）。**待改善**：socket 全套、exec／環境變數（判題器能力）、信號處理常式巢狀；思考堆疊 C／E／I；holdout 未解題（不可教）。
 
 ### 剖析器與環境
 - 剖析器資源來源已解決（2026-11-08）：內建 Python，其他 9 種語言從釘住 commit 的分支 `assets-tree-sitter` 延遲下載並核對（`DESIGN.ast-nodes.md` 第九節）。**待改善**：還沒在真 Electron 實際下載一次、跑過其他語言的行為卡或語法樹；各語言的 `parser` 單元切分（merge patch 的語法樹）仍只有 Python 實作。
