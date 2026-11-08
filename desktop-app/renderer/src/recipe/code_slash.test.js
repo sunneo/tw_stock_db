@@ -37,8 +37,11 @@ t('轉換：子指令或「貼程式＋轉成 X」→ convert_code，目標語�
     const r = S.classify('轉成 nodejs\n' + F + 'python\nprint(1)\n' + F); assert.strictEqual(r.tool, 'convert_code'); assert.strictEqual(r.ok, true); assert.strictEqual(r.args.target, 'nodejs'); assert.strictEqual(r.args.source, 'print(1)');
     const r2 = S.classify(F + 'python\nx = 1\n' + F + '\n請轉成 Java'); assert.strictEqual(r2.tool, 'convert_code'); assert.strictEqual(r2.args.target, 'java'); assert(/轉成別的語言/.test(r2.why));
     assert.strictEqual(S.classify('轉成 C\n' + F + 'python\nx = 1\n' + F).args.target, 'c');
-    const r3 = S.classify('轉成 c++\n' + F + 'python\nx = 1\n' + F); assert.strictEqual(r3.ok, false); assert(r3.missing.some((m) => /c\+\+/.test(m) && /沒有輸出器/.test(m)));
-    const r4 = S.classify('轉成 java\n' + F + 'js\nlet x = 1;\n' + F); assert.strictEqual(r4.ok, false); assert(r4.missing.some((m) => /只支援 Python/.test(m)));
+    const r3 = S.classify('轉成 c++\n' + F + 'python\nx = 1\n' + F); assert.strictEqual(r3.ok, true); assert.strictEqual(r3.args.target, 'cpp');
+    assert.strictEqual(S.classify('轉成 ruby\n' + F + 'python\nx = 1\n' + F).args.target, 'ruby'); assert.strictEqual(S.classify('轉成 c#\n' + F + 'python\nx = 1\n' + F).args.target, 'csharp'); assert.strictEqual(S.classify('轉成 perl\n' + F + 'python\nx = 1\n' + F).args.target, 'perl');
+    const r3b = S.classify('轉成 rust\n' + F + 'python\nx = 1\n' + F); assert.strictEqual(r3b.ok, false); assert(r3b.missing.some((m) => /目標語言/.test(m)), '沒有輸出器的語言（rust）缺什麼說什麼');
+    const r4 = S.classify('轉成 java\n' + F + 'js\nlet x = 1;\n' + F); assert.strictEqual(r4.ok, true); assert.strictEqual(r4.args.from, 'nodejs'); assert.strictEqual(r4.args.target, 'java');
+    const r4b = S.classify('轉成 java\n' + F + 'rb\nx = 1\n' + F); assert.strictEqual(r4b.ok, false); assert(r4b.missing.some((m) => /來源目前支援/.test(m)), 'ruby 來源還沒有「進」');
     const r5 = S.classify('轉成 nodejs\n' + F + 'python\nprint(input())\n' + F + '\n' + F + 'in\nhi\n' + F + '\n' + F + 'out\nhi\n' + F); assert.deepStrictEqual(r5.args.tests, [{ in: 'hi\n', out: 'hi\n' }]);
     assert.strictEqual(S.classify('寫一個 c 語言的函式，輸入整數印出總和').tool, 'write_code'); });
 t('行為卡：子指令「行為卡／抽回設計」或貼程式說「抽回設計／呼叫關係」→ behavior_card（唯讀）；「解釋」仍走 explain_code', () => {

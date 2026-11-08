@@ -209,8 +209,17 @@
         IR.funcs(ir).forEach(fn); return ir;
     }
 
+    // 參數型別沒標註時，由呼叫端引數的型別推（JavaScript／Ruby 這類沒有型別標註的來源要轉成靜態語言時需要）；只補 unknown 的參數，多處呼叫型別不同就取合流，最多跑三輪
+    function inferParams(ir) {
+        const fns = {}; IR.funcs(ir).forEach((f) => { fns[f.name] = f; }); let changed = false;
+        IR.eachExpr(ir.body, (e) => {
+            if (e.k !== 'call' || !e.fn || !fns[e.fn]) return; const f = fns[e.fn];
+            (e.args || []).forEach((a, i) => { const p = f.params[i]; if (!p || !a.ty || a.ty.t === 'unknown') return; if (!p.ty || p.ty.t === 'unknown') { p.ty = a.ty; changed = true; } });
+        });
+        return changed;
+    }
     function prepare(ir0, opts) {
-        const diags = []; let ir = IR.clone(ir0); infer(ir); ir = lower(ir, diags); infer(ir); scope(ir); return { ir, diags };
+        const diags = []; let ir = IR.clone(ir0); infer(ir); for (let i = 0; i < 3 && inferParams(ir); i++) infer(ir); ir = lower(ir, diags); infer(ir); scope(ir); return { ir, diags };
     }
     return { infer, lower, scope, prepare };
 });

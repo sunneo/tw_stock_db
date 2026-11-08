@@ -7,7 +7,7 @@
 1. **兩條路都要，順序是「行為描述先、完整節點樹後」，而且共用同一份標準操作目錄。** 行為描述（每個函式一份語言中立的摘要）現有零件就能產生，涵蓋語言最多、風險最低，足以支撐「抽回設計→分析→改設計」；但它**不含函式本體，無法精準重現行為**。要「精準轉成目標語言」，一定要有完整節點樹（中間語言）。行為描述是中間語言的上層摘要，不是替代品。
 2. **標準函式庫轉接層不要另造，也不能直接拿單元目錄當它。** 單元目錄（`catalog/`）是「每個執行環境各自的呼叫原型」，沒有「跨語言同一個語意」這個概念。做法：新增一層「語意操作」（本次做的 72 個），單元目錄當它下面的「各語言呼叫原型」資料來源（第 3.4 節）。
 3. **【實測】最小驗證全過**：Python → 中間語言 → nodejs／java／c，10 個樣本函式組在 nodejs 10/10、java 10/10、c 8/8（字典與字串串列正確拒絕，不亂翻）實際編譯執行，輸出與 Python 逐行一致；Python → 中間語言 → Python 往返一致；註解、docstring、位置全數保留。實測抓到 4 個**真的會出錯的語意陷阱**（第 5 節），都在目錄裡處理了，並用「天真翻譯」對照組證明樣本測得到差異。
-4. **沒做到的（誠實）**：c++、c#、ruby、perl 只有目錄樣板（靜態一致性測過，**沒有輸出器、沒有實跑**）；ruby 這台沒裝；c# 有 dotnet 8 SDK 但判題器要 mono，沒試；perl 在專案裡沒有 tree-sitter 文法（第 1 節），「進」做不了。（2026-11-08 更新）nodejs 與 java 的「進」已做（第 11 節）；c 的「進」缺文法檔沒做。
+4. **沒做到的（誠實）**：c++、c#、ruby、perl 只有目錄樣板（靜態一致性測過，**沒有輸出器、沒有實跑**）；ruby 這台沒裝；c# 有 dotnet 8 SDK 但判題器要 mono，沒試；perl 在專案裡沒有 tree-sitter 文法（第 1 節），「進」做不了。（2026-11-08 更新）nodejs、java、c 的「進」已做（第 11、13 節）；c++、c#、perl、ruby 輸出器已用真工具實跑（ruby 這台沒環境，第 12 節）；「進」已接進產品（第 13 節）。
 
 ## 1. 現況盤點【讀程式】
 
@@ -247,7 +247,35 @@ c++／c#／ruby／perl 的輸出器與樣板實跑；java／c 的「進」；浮
 - **歧義**：JavaScript／Java 的 `join` 不分字串串列與整數串列，樣板一樣；「進」時除非引數明顯是 split 的結果，一律選 `str.join_num`（在 Python 裡 `map(str, …)` 對字串也無害，是安全的一邊）。`==` 對字串在 Java 是 `.equals`，已還原成 `cmp ==`。
 - **驗證（我跑的）**：10 個樣本中 nodejs 有 10 個、java 有 10 個，走「Python → IR → 該語言原始碼 → 再進 IR → 輸出 Python → 真 python 實跑」，輸出與原 Python 逐字一致（每樣本 3～5 組輸入）；原生區塊 0 個；註解數 7／7 保留；IR 通過驗證器。另有手寫 JavaScript／Java 各一段：前置／行尾註解、Javadoc、型別、`try` 收成原生區塊。
 - **沒做／待改善**：
-  - **C 的「進」沒做**：這台的文法快取只有 python、javascript、java、cpp、c_sharp、rust，**沒有 c**（`tree-sitter-c.wasm`）。可以拿 cpp 文法硬剖，但宣告式（`long long x`、`char *`、指標、陣列）和我們輸出的 C 輔助函式要另寫一套轉接，未驗證，所以不做；要做請管理者把 `tree-sitter-c.wasm` 放進快取（我沒有下載）。
+  - （已補）C 的「進」見第 13 節。
   - 只認得「我們輸出的」與目錄裡有樣板的寫法；手寫的慣用法（`arr.push(x)`、`Math.floor`、`map.set`）要看目錄有沒有該操作，沒有就是 native。JavaScript 的 `/` 不分整數除法與浮點除法，一律當 `bin /`。
-  - c++、c#、ruby、perl 的**輸出器**仍沒有實跑樣板（沒時間做、沒驗證），維持待改善；perl 沒有文法，「進」做不了。
-  - 沒有接進產品（`convert_code` 目前只吃 Python 來源），也沒嵌入 `floating-assistant.js`。
+  - （已補）輸出器實跑見第 12 節，接進產品見第 13 節。
+
+## 12. C++／C#／Perl／Ruby 輸出器與實跑（2026-11-08）
+
+**共用引擎**：`ir_out_typed_core.js`（C++、C#，仿 Java 輸出器）與 `ir_out_dyn_core.js`（Perl、Ruby）；`ir_out_{cpp,cs,perl,ruby}_core.js` 各只有一行包裝。標準操作的樣板與輔助函式來自 `ir_ops_core.js`，目錄裡原本是 `null` 的格子與缺的輔助函式用檔尾的補丁補上（C++ 的 split／strip／upper／dict 取預設／排序鍵／join／固定小數／pop、C# 的 `list.get`／`list.set` 要轉 `int` 索引與 `split_ws` 要 `ToList`、Perl 的 print／讀行／split／排序鍵／floordiv／conv.bool、Ruby 的 conv.bool）。
+- **靜態語言的型別**：C++ 用 `long long`／`double`／`bool`／`std::string`／`std::vector`／`std::map`／`std::set`，C# 用 `long`／`double`／`bool`／`string`／`List`／`Dictionary`／`HashSet`；型別推不出來（`unknown`）就回報 error 要求標註，不亂猜。使用者函式名 `main` 一律改叫 `main_`（C++ 不能呼叫 `main`）。C++ 容器參數沒被修改就用 `const &`，被修改就用 `&`。
+- **本機工具鏈（我查過）**：C 與 C++ 要用 `J:\msys64\mingw64\bin\gcc.exe`／`g++.exe`，**執行時 PATH 要把 mingw64 放最前面**（`where gcc` 先找到的 `J:\msys64\usr\bin\gcc` 沒有標頭，編譯失敗；PATH 沒調時 C++ 執行檔會 segfault）。C# 用 dotnet SDK 8.0.302，離線 `dotnet build` 可用（整個專案編一次、每個樣本一個類別、用參數選樣本）。Perl 用 `J:\msys64\usr\bin\perl.exe`。**Ruby 這台沒有**（`Get-Command ruby` 找不到、`J:\msys64` 裡也沒有）。
+- **實跑結果（`ir_out_more.test.js`，Python 樣本 → IR → 該語言 → 真的編譯／執行，輸出與原 Python 逐字一致）**：
+
+| 語言 | 結果 |
+|---|---|
+| C++（g++ 14.2.0） | 實跑通過 10/10 |
+| C#（dotnet 8.0.302） | 實跑通過 10/10 |
+| Perl（msys perl） | 實跑通過 10/10 |
+| Ruby | **這台沒有環境，未實跑**；只驗證產生 10/10 個樣本、無 error 診斷，並用 `tree-sitter-ruby` 做語法檢查 10/10 通過（不是語意驗證） |
+
+- **沒做／待改善**：C++ 還有 19／72 個標準操作沒有樣板（`io.read_all`、`rand.randint`、`time.now_seconds`、`list.index_of`、`list.slice`、`str.split_sep`、`str.lower`、`str.join`、`str.replace`、`str.endswith`、`str.repeat`、`str.is_digit`、`str.char_code`、`str.from_code`、`dict.keys`、`file.*`、`json.*`），用到時如實報 error；Perl 缺 `list.index_of`、`str.endswith`；C++ 的 `std::map` 依鍵排序走訪、Perl 的雜湊沒有固定順序，與 Python 的插入順序不同，輸出器會發警告；沒做天真對照組（`ir.test.js` 的 nodejs／java／c 對照組沒擴到這四個語言）；樣本只有 10 個，覆蓋的操作約 20 個，不代表整個目錄都驗證過。
+
+## 13. C 的「進」與接進產品（2026-11-08）
+
+- **C 的「進」**：`ir_in_brace_core.js` 加 `c`（文法 `tree-sitter-c`，管理者已把使用者同意下載的 10 種文法放進 `C:\Users\sunneo\.cache\fa-ts`）。處理 `function_definition`／`declaration`／`for`／指標與 `IL` 串列型別、略過 `#include`、`typedef`、`fa_*` 輔助與 `main` 包裝，`u_main` 還原成 `main`；C 輸出器把 foreach 降成索引迴圈，「進」時認出 `for (long long __iN = 0; __iN < X.n; …) { T v = X.d[__iN]; … }` 還原成 foreach；`a.d[i] = v` 還原成索引賦值。**Python→IR→C→IR→Python 實跑 8/8 與原輸出一致，原生區塊 0 個**（`ir_in_brace.test.js` 現在 33 項：nodejs 10、java 10、c 8）。
+- **參數型別推論**：`ir_prep_core.js` 加 `inferParams`——參數沒標註時，從呼叫端引數型別補（最多三輪），沒有呼叫端的參數仍是 unknown。這讓 JavaScript 來源轉 Perl 時 `a.length` 能選對 `scalar(@{…})`。JavaScript 來源轉**靜態語言**（cpp、csharp、java、c）時，推不出型別的函式仍會被如實拒絕（10 個樣本中 2 個），請在來源加型別。
+- **接進產品**（`floating-assistant.js` 宿主＋`embed-code-ui.js` 清單，`FaIrBundle` 現在 18 個模組）：
+  - `ir_blocks_core.js` 的橋新增 `toIrFrom`／`emitFrom`／`cardsFrom`（來源語言＋該語言的 tree-sitter 剖析器）。
+  - 宿主 `_irLangParser(lang)` 沿用行為卡的文法載入器（`_behTsHost`／`_behAsset`：本機快取 → 釘住 commit 的分支 → jsdelivr，沒下載過會用既有機制下載一次）。
+  - `convert_code`：來源可以是 python／nodejs／java／c（`from` 參數，沒給就從程式碼判斷），目標可以是 nodejs／java／c／cpp／csharp／perl／ruby／python；`action:"to_blocks"` 對非 Python 來源先轉成 Python 再拆區塊；有 `tests` 就在本機實際編譯執行驗證（走判題器）。
+  - `behavior_card`：nodejs／java／c 現在走完整中間語言（第二層，含呼叫圖與設計摘要），cpp 仍是行為分析器（第一層）。
+  - `/code` 路由（`code_slash_core.js`）：「轉成 C++／C#／Ruby／Perl」都有目標（優先抓「轉成」後面的語言，所以「把 Java 轉成 Ruby」目標是 ruby）；貼 nodejs／java／c 程式不再被拒；ruby、perl、cpp、csharp 當**來源**仍會缺什麼說什麼。AI 與 `/code` 呼叫同一個工具。
+- **驗證**：`ir_wire2.test.js`（11 項）驗證嵌入版橋：nodejs／java／c 來源 → python（實跑一致）／perl（實跑一致）／cpp／csharp／ruby（產生無 error，nodejs 來源轉靜態語言缺型別者如實拒絕）；行為卡第二層；路由。**沒在真 Electron 驗證**宿主方法（`_irLangParser` 載入文法、`_codeConvert` 的 `from` 路徑）：核心測試只驗嵌入的模組與宿主程式碼的字串結構，宿主 async 流程沒實跑。
+- **沒做**：c++、c#、ruby、perl 當**來源**的「進」（c++／c# 有文法但沒寫轉接；ruby 有文法也沒寫轉接；perl 專案內沒有文法）。

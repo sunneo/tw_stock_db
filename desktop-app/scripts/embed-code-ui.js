@@ -207,7 +207,7 @@ function embedUml() {
 }
 embedUml();
 (function embedIr() { // 跨語言中間語言＋區塊橋＋行為卡：十一個模組共用同一個 holder（彼此用 root.FaIr… 互相找），整包放進 FaIrBundle
-    const files = ['ir_core', 'ir_ops_core', 'ir_prep_core', 'ir_in_python_core', 'ir_out_js_core', 'ir_out_java_core', 'ir_out_c_core', 'ir_out_python_core', 'ir_design_core', 'ir_behavior_core', 'ir_blocks_core'];
+    const files = ['ir_core', 'ir_ops_core', 'ir_prep_core', 'ir_in_python_core', 'ir_in_brace_core', 'ir_out_js_core', 'ir_out_java_core', 'ir_out_c_core', 'ir_out_python_core', 'ir_out_typed_core', 'ir_out_cpp_core', 'ir_out_cs_core', 'ir_out_dyn_core', 'ir_out_perl_core', 'ir_out_ruby_core', 'ir_design_core', 'ir_behavior_core', 'ir_blocks_core'];
     const a = src.indexOf('/* IR-BEGIN */'), b = src.indexOf('/* IR-END */');
     if (a < 0 || b < 0) { console.log('略過 FaIrBundle：floating-assistant.js 還沒有 IR 標記'); return; }
     let body = ''; let total = 0;

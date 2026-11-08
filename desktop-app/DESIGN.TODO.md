@@ -17,7 +17,7 @@
 - 缺口 I 只有量測骨架，沒有真模型數字。
 
 ### 多語言中間語言與函式行為（`DESIGN.core-ir.md`）
-- c++、c#、ruby、perl 輸出器與樣板只有目錄，沒實跑；nodejs 與 java 的「進」已做並實跑驗證（2026-11-08，`DESIGN.core-ir.md` §11，`ir_in_brace_core.js`）；**c 的「進」沒做**：文法快取沒有 `tree-sitter-c.wasm`（只有 cpp），需要管理者放檔；「進」還沒接進產品（`convert_code` 只吃 Python 來源）。
+- 中間語言各語言（2026-11-08 完成，`DESIGN.core-ir.md` §11～13）：nodejs／java／c 的「進」實跑一致（10／10／8）；c++／c#／perl 輸出器實跑 10/10，ruby 這台沒環境只做語法檢查；「進」與新輸出器已接進 `convert_code`、`behavior_card`、`/code`。**待改善**：c++／c#／ruby／perl 當來源的「進」；cpp 有 19／72 個標準操作沒樣板；ruby 沒實跑；宿主 async 路徑沒在真 Electron 驗證；JavaScript 來源轉靜態語言缺型別會拒絕。
 - 行為卡已接成唯讀工具 `behavior_card`（2026-11-08，`DESIGN.core-ir.md` §10）；**待改善**：nodejs／java／c 的第一層沒在真 Electron 跑（要連網下載文法）；UML 抽回還沒做成工具；沒有卡片畫面。
 - 註解保存：行被改寫／搬動／刪除的規則已做（`a53b519b`），其餘節點類型的註解錨定待驗證。
 

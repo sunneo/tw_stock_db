@@ -231,6 +231,7 @@
         fa_floordiv: 'sub fa_floordiv { my ($a, $b) = @_; die("division by zero") if $b == 0; my $r = $a % $b; return ($a - $r) / $b; }',
         fa_sortedKeys: 'sub fa_sortedKeys { my ($d) = @_; my @k = keys %{$d}; my $num = !grep { $_ !~ /^-?\\d+(?:\\.\\d+)?$/ } @k; return [$num ? sort { $a <=> $b } @k : sort @k]; }'
     };
+    patchCell('conv.bool', 'rb', { int: '(@0 != 0)', str: '(!@0.empty?)', list: '(!@0.empty?)', '*': '(!!@0)' }); patchCell('conv.bool', 'pl', '(($0) ? 1 : 0)');
     HELPERS.rb = {};
     const HDEPS = { c: { fa_new: ['fa_list'], fa_push: ['fa_list'], fa_pop: ['fa_list'], fa_filled: ['fa_new', 'fa_push'], fa_list_copy: ['fa_new', 'fa_push'], fa_list_sum: ['fa_list'], fa_list_min: ['fa_list'], fa_list_max: ['fa_list'], fa_list_contains: ['fa_list'], fa_list_reverse: ['fa_list'], fa_sorted: ['fa_list_copy'], fa_sort: ['fa_list'], fa_joinNums: ['fa_list'], fa_splitInts: ['fa_new', 'fa_push'] }, java: { fa_splitInts: ['fa_splitWs'] }, nodejs: { fa_splitInts: ['fa_parseInt'] }, cpp: { fa_splitInts: ['fa_splitWs'] } };
 

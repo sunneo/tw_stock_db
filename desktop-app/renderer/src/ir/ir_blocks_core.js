@@ -12,6 +12,9 @@
  *   bridge.fromPython(src)           → { funcs:[{name, params, blocks, cnl, stats}], coverage }
  *   bridge.toIr(python, name)        → { ir, diags, coverage }
  *   bridge.emit(python, lang)        → { ok, code, diags }   （lang：nodejs／java／c／python）
+ *   bridge.toIrFrom(src, lang, name, parser)    非 Python 來源（nodejs／java／c）→ 中間語言；parser＝該語言的 tree-sitter Parser（呼叫端載入文法）
+ *   bridge.emitFrom(src, lang, target, name, parser) → { ok, code, diags }   來源語言 → 中間語言 → 目標語言
+ *   bridge.cardsFrom(src, lang, name, parser) → 行為卡（第二層）
  *   bridge.blocksToTarget(funcs, lang)
  *   bridge.cards(python)             → 函式行為卡陣列（level 2，含每個函式用到的區塊範本）
  *   bridge.cardText(card)            → 白話卡片
@@ -21,7 +24,7 @@
     if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaIrBlocks = factory();
 })(typeof self !== 'undefined' ? self : this, function () {
     function make(env) {
-        const { parseTree, C2U, B, IN, PREP, OUT, BD, DES } = env;
+        const { parseTree, C2U, B, IN, PREP, OUT, BD, DES, INB } = env;
         const anyT = { base: 'any', args: [] };
         const mkOp = (name, params, body) => ({ name, params: (params || []).map((x) => ({ name: x, type: anyT })), returns: anyT, visibility: '+', static: true, body });
         const blocksOf = (f) => {
@@ -137,6 +140,24 @@
             const p = program(funcs); if (!p.ok) return { ok: false, code: '', diags: p.errors.map((e) => ({ level: 'error', msg: '區塊解析失敗：' + e.func + ' ' + JSON.stringify(e.errors.slice(0, 2)) })), python: '' };
             const e = emit(p.python, lang, name); e.python = p.python; return e;
         }
+        // ---- 非 Python 來源（DESIGN.core-ir.md 第 11、13 節）----
+        const FROM = { nodejs: 1, java: 1, c: 1 }, patCache = {};
+        const fromLangs = () => (INB ? Object.keys(FROM) : []);
+        function toIrFrom(src, lang, name, parser) {
+            if (lang === 'python') return toIr(src, name);
+            if (!INB || !FROM[lang]) throw new Error('還沒有 ' + lang + ' 的「進」（目前支援 python、' + fromLangs().join('、') + '）');
+            if (!parser) throw new Error('缺少 ' + lang + ' 的語法樹剖析器');
+            const patterns = patCache[lang] || (patCache[lang] = INB.buildPatterns(lang, (s) => parser.parse(s).rootNode));
+            const r = INB.fromTree(parser.parse(src).rootNode, { lang, source: src, patterns, name: name || 'input' });
+            const prep = PREP.prepare(r.ir); return { ir: prep.ir, diags: (r.diags || []).concat(prep.diags || []), coverage: r.coverage };
+        }
+        function emitFrom(src, lang, target, name, parser) {
+            if (lang === 'python') return emit(src, target, name);
+            if (!OUT[target]) return { ok: false, code: '', diags: [{ level: 'error', msg: '不支援的目標語言：' + target }] };
+            const r = toIrFrom(src, lang, name, parser); const em = OUT[target].emit(r.ir); const diags = r.diags.concat(em.diags || []);
+            return { ok: !diags.some((d) => d.level === 'error'), code: em.code, diags, coverage: r.coverage };
+        }
+        function cardsFrom(src, lang, name, parser) { if (lang === 'python') return cards(src, name); return BD.fromIr(toIrFrom(src, lang, name, parser).ir); }
         // 行為卡：中間語言（第二層）＋ 該函式的區塊範本使用統計
         function cards(python, name) {
             const ir = toIr(python, name).ir; const cs = BD.fromIr(ir); let fp = null;
@@ -159,7 +180,7 @@
             const share = (names) => { const st = names.map(styleOf).filter(Boolean); if (st.length < 2) return { score: 1, dominant: st[0] || null, mixed: [] }; const cnt = {}; st.forEach((x) => { cnt[x] = (cnt[x] || 0) + 1; }); const dom = Object.keys(cnt).sort((a, b) => cnt[b] - cnt[a])[0]; return { score: cnt[dom] / st.length, dominant: dom, mixed: names.filter((n) => { const k = styleOf(n); return k && k !== dom; }) }; };
             const f = share(fn), v = share(vars.filter((x, i, a) => a.indexOf(x) === i)); return { functions: f, variables: v, score: Math.min(f.score, v.score), ok: f.score === 1 && v.score === 1 };
         }
-        return { collectComments, attachComments, styleCheck, program, fromPython, toIr, emit, blocksToTarget, cards, cardText };
+        return { collectComments, attachComments, styleCheck, program, fromPython, toIr, emit, toIrFrom, emitFrom, cardsFrom, fromLangs, blocksToTarget, cards, cardText };
     }
     return { make };
 });

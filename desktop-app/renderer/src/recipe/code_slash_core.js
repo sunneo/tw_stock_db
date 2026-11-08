@@ -26,7 +26,7 @@
         '・修：/code 修 ＋ 貼一段 ``` 程式 ```（有測資會連行為一起修）\n' +
         '・優化：/code 優化 ＋ ``` 程式 ``` ＋ ``` 測資 ```（只換輸出一致的寫法）\n' +
         '・合併修補：/code 合併 ＋ ``` 目前的程式 ``` ＋ ```diff 修補 ```（合併後驗證，失敗整份回滾）\n' +
-        '・轉換語言：/code 轉成 nodejs ＋ ``` Python 程式 ```（可轉 nodejs／java／c／python；附 ```in／```out 測資會實際執行驗證；不是寫程式，寫仍用上面「寫」）\n' +
+        '・轉換語言：/code 轉成 nodejs ＋ ``` 程式 ```（來源可以是 Python／nodejs／java／c，可轉 nodejs／java／c／cpp／csharp／perl／ruby／python；附 ```in／```out 測資會實際執行驗證；不是寫程式，寫仍用上面「寫」）\n' +
         '・行為卡（唯讀，抽回設計看每個函式做什麼、改了會影響誰）：/code 行為卡 ＋ ``` 程式 ```\n' +
         '・設計：/code 設計 顧客可以加入購物車並結帳（先出 UML 設計）\n' +
         '・解釋／從程式看回設計：/code 解釋 ＋ ``` 程式 ```\n' +
@@ -45,7 +45,10 @@
     // 轉換的目標語言：只認有輸出器的（nodejs／java／c／python）；提到其他語言時回 { unsupported }
     function targetOf(prose) {
         const t = String(prose || '');
-        if (/c\+\+|cpp|c#|csharp|ruby|perl/i.test(t)) return { unsupported: (/c\+\+|cpp/i.exec(t) || /c#|csharp/i.exec(t) || /ruby/i.exec(t) || /perl/i.exec(t))[0] };
+        const word = (w) => (/^(?:c\+\+|cpp)$/i.test(w) ? 'cpp' : /^(?:c#|csharp)$/i.test(w) ? 'csharp' : /^ruby$/i.test(w) ? 'ruby' : /^perl$/i.test(w) ? 'perl' : null);
+        const tm = /(?:轉成|轉換成|轉為|翻成|改寫成|移植到|convert (?:it )?to|translate (?:it )?to|port (?:it )?to)\s*([A-Za-z+#]+)/i.exec(t);
+        if (tm && word(tm[1])) return { target: word(tm[1]) };
+        if (/c\+\+|cpp/i.test(t)) return { target: 'cpp' }; if (/c#|csharp/i.test(t)) return { target: 'csharp' }; if (/ruby/i.test(t)) return { target: 'ruby' }; if (/perl/i.test(t)) return { target: 'perl' };
         if (/node(?:js)?|javascript|\bjs\b/i.test(t)) return { target: 'nodejs' };
         if (/java(?!script)/i.test(t)) return { target: 'java' };
         if (/(?:^|[^a-z+#])c(?:\s*語言|\s*language|(?![a-z+#0-9]))/i.test(t)) return { target: 'c' };
@@ -75,8 +78,8 @@
         else if (tool === 'optimize_code') { if (code[0]) args.source = code[0].body; else missing.push('要優化的 Python 程式（用 ``` 包起來）'); if (tests.length) args.tests = tests; else missing.push('測資（```in 輸入``` 緊接 ```out 輸出```，優化要靠它確認輸出一致）'); }
         else if (tool === 'merge_patch') { if (code[0]) args.source = code[0].body; else missing.push('目前的程式（用 ``` 包起來）'); if (diff) args.diff = diff.body; else missing.push('要合併的 diff（```diff 區塊）'); if (lang) args.language = lang; if (tests.length) args.tests = tests; }
         else if (tool === 'convert_code') {
-            if (code[0]) { args.source = code[0].body; const fl = langOf(rest, bs); if (fl && fl !== 'python') missing.push('來源目前只支援 Python（你貼的是 ' + fl + '）'); } else missing.push('要轉換的 Python 程式（用 ``` 包起來）');
-            const tg = targetOf(prose); if (tg.target) args.target = tg.target; else missing.push(tg.unsupported ? '目標語言（支援 nodejs、java、c、python；' + tg.unsupported + ' 目前沒有輸出器）' : '目標語言（nodejs、java、c 或 python）');
+            if (code[0]) { args.source = code[0].body; const fl = langOf(rest, bs); if (fl && fl !== 'python') { if (['nodejs', 'java', 'c'].includes(fl)) args.from = fl; else missing.push('來源目前支援 Python、nodejs、java、c（你貼的是 ' + fl + '）'); } } else missing.push('要轉換的程式（用 ``` 包起來）');
+            const tg = targetOf(prose); if (tg.target) args.target = tg.target; else missing.push('目標語言（nodejs、java、c、cpp、csharp、perl、ruby 或 python）');
             if (tests.length) args.tests = tests;
         }
         else if (tool === 'behavior_card') { if (code[0]) { args.source = code[0].body; if (lang) args.language = lang; } else missing.push('要看行為的程式（用 ``` 包起來）'); }
