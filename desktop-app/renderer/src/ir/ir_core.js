@@ -13,7 +13,7 @@
 (function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaIr = factory(); })(typeof self !== 'undefined' ? self : this, function () {
     'use strict';
     const VERSION = 1;
-    const STMT = ['func', 'assign', 'aug', 'if', 'while', 'forrange', 'foreach', 'ret', 'brk', 'cont', 'pass', 'expr', 'raise', 'comment', 'native', 'declare'];
+    const STMT = ['func', 'assign', 'aug', 'if', 'while', 'forrange', 'foreach', 'ret', 'brk', 'cont', 'pass', 'expr', 'raise', 'comment', 'native', 'declare', 'import'];
     const EXPR = ['lit', 'name', 'bin', 'un', 'cmp', 'logic', 'not', 'index', 'call', 'list', 'dict', 'cond', 'native'];
     const PRIM = ['int', 'float', 'str', 'bool', 'void', 'any', 'unknown'], GEN = ['list', 'dict', 'set', 'tuple'];
     const BINOPS = ['+', '-', '*', '/', '//', '%', '**', '&', '|', '^', '<<', '>>'], CMPOPS = ['==', '!=', '<', '<=', '>', '>=', 'in', 'not in', 'is', 'is not'];
@@ -103,6 +103,7 @@
                     case 'comment': if (typeof s.s !== 'string') err('comment 缺 s', s); break;
                     case 'native': if (!s.lang || typeof s.src !== 'string') err('native 要有 lang 與 src', s); break;
                     case 'declare': if (!s.name) err('declare 缺 name', s); chkTy(s.ty, where); break;
+                    case 'import': if (typeof s.src !== 'string') err('import 缺 src（原文）', s); break;
                 }
             });
         };

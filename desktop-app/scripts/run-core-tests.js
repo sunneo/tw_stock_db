@@ -80,6 +80,8 @@ const suites = [
     ['矩陣 → code edit（合成程式整理成可編輯版：形態往返、改係數／轉移表行為跟著變、走 Python→UML 路徑 raw=0、改壞時降級；需 tree-sitter 快取）', 'renderer/src/algo/matrix_edit.test.js'],
     ['矩陣 → Blockly 區塊（合成結果拆成有名字的區塊段落：DFA／遞推／圖／格子／方陣／組合層；區塊編回 Python 與原程式在題庫測資＋隨機輸入上輸出一致；改槽位與換組合積木後輸出照新形態；需 tree-sitter 快取與 python3）', 'renderer/src/algo/matrix_blocks.test.js'],
     ['函式內部再切成步驟（轉換鏈→歸約、對半遞迴切 1～4 層；切割規則與門檻按 contextWindowTokens 縮放、步驟簽名接線、步驟級驗證只換壞的那一步、組裝後整體判題、失敗回退 fallback、字母選擇題退路；1/2/3 層三題對照只切一層；需 python3）', 'renderer/src/uml/step_split.test.js'],
+    ['核心 IR（跨語言中間語言）：資料結構／驗證器／序列化、標準操作目錄（72 個操作 x 8 個語言的靜態一致性）、型別推斷與降低、Python → IR（註解／位置保留）→ Python 往返、→ nodejs／java／c 實際編譯執行並與 Python 輸出一致；需 tree-sitter 快取與 javac／gcc', 'renderer/src/ir/ir.test.js'],
+    ['核心 IR 抽回設計：簽名／呼叫關係／標準操作用量／副作用／摘要 → UML 模型（過 uml_core 驗證）→ 改設計（改名、加參數、uml_edit 差異）→ 重新產生程式碼；需 tree-sitter 快取', 'renderer/src/ir/ir_design.test.js'],
     ['程式優化對照表（13 條慢寫法→優化寫法（含 two-sum 計數題型），含記憶體實測；輸出一致、實測不變慢、不安全不動、沒測資不改）', 'renderer/src/recipe/code_optimize.test.js'],
     ['型別接線矩陣與路徑搜尋（回傳型別推論、具體程度、布林矩陣連乘、前 K 條接線與得分、萬用結構強制轉型）', 'renderer/src/catalog/matrix_core.test.js'],
     ['單元目錄：Python 原型抽取（註解 → 型別、原型 → 單元、真實跑抽取腳本）', 'renderer/src/catalog/extract_py.test.js'],

@@ -157,9 +157,7 @@ if __name__ == "__main__":
     S.push({
         id: 'floor-div-mod', langs: ['nodejs', 'java', 'c'], inputs: ['-7 2\n', '7 -2\n', '-7 -2\n', '7 2\n', '0 5\n', '-1 3\n'],
         py: `def main():
-    t = input().split()
-    a = int(t[0])
-    b = int(t[1])
+    a, b = map(int, input().split())
     print(a // b)
     print(a % b)
 
@@ -177,9 +175,7 @@ if __name__ == "__main__":
 
 
 def main():
-    t = input().split()
-    a = int(t[0])
-    b = int(t[1])
+    a, b = map(int, input().split())
     g = gcd_(a, b)
     print(g)
     if g == 0:

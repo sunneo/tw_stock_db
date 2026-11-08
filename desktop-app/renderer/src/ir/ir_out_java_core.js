@@ -92,7 +92,7 @@
             pre(s, d); const I = ind(d);
             switch (s.k) {
                 case 'comment': out.push(I + '// ' + cm(s.s)); return;
-                case 'pass': if (s.c && s.c.a) out.push(I + '// ' + cm(s.c.a)); return;
+                case 'pass': case 'import': if (s.c && s.c.a) out.push(I + '// ' + cm(s.c.a)); return;
                 case 'declare': out.push(I + ty(s.ty, false, s) + ' ' + safe(s.name) + ' = ' + defaultOf(s.ty) + ';'); return;
                 case 'assign': {
                     let line;
@@ -138,7 +138,7 @@
         let first = true;
         ir.body.forEach((s) => {
             if (s.k === 'func') { if (!first && !(s.c && s.c.sp)) out.push(''); first = false; stmt(s, 1); return; }
-            if (s.k === 'comment' || s.k === 'pass') { stmt(s, 1); return; }
+            if (s.k === 'comment' || s.k === 'pass' || s.k === 'import') { stmt(s, 1); return; }
             if (s.k === 'assign' && s.to.k === 'name') { pre(s, 1); out.push('    static ' + ty(s.ty || s.val.ty, false, s) + ' ' + safe(s.to.v) + ' = ' + ex(s.val).s + ';' + post(s)); return; }
             diag('error', '模組層的 ' + s.k + ' 敘述尚未支援', s);
         });

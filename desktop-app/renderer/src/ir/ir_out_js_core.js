@@ -83,6 +83,7 @@
             switch (s.k) {
                 case 'comment': out.push(I + cmt(s.s)); return;
                 case 'pass': if (s.c && s.c.a) out.push(I + cmt(s.c.a)); return;
+                case 'import': if (s.c && s.c.a) out.push(I + cmt(s.c.a)); return;
                 case 'declare': out.push(I + 'let ' + safe(s.name) + ' = ' + defaultOf(s.ty) + ';'); return;
                 case 'assign': {
                     let line;

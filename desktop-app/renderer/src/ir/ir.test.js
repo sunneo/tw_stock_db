@@ -145,15 +145,35 @@ const OPSET = { has: OPS.has };
         for (const s of SAMPLES) {
             const r = conv(s); const gen = OUT.python.emit(PREP.prepare(r.ir).ir); assert.deepStrictEqual(gen.diags, [], s.id);
             for (const e of expected[s.id]) { const g = runPy(gen.code, e.in); assert.ok(g.ok, s.id + ' 產生的 Python 執行失敗：' + g.err.slice(0, 200) + '\n' + gen.code); assert.strictEqual(g.out, e.out, s.id + ' 輸入 ' + JSON.stringify(e.in)); }
-            const r2 = IN.fromTree(P.parse(gen.code).rootNode, { source: gen.code, name: s.id }); const norm = (ir) => JSON.stringify(IR.strip(PREP.prepare(ir).ir, true));
+            const r2 = IN.fromTree(P.parse(gen.code).rootNode, { source: gen.code, name: s.id }); const norm = (ir) => IR.stringify(IR.strip(PREP.prepare(ir).ir, true));
             assert.strictEqual(norm(r2.ir), norm(r.ir), s.id + ' 第二次轉出的 IR 不同');
         }
     });
 
-    // 端到端：nodejs／java／c 編譯（或載入）並實際執行，與 Python 輸出逐行比對
-    const tally = {}; const unavailable = {};
+    // ---- 實際編譯執行 ----
+    // nodejs 走專案判題器（judge-runner）；java 與 c 直接呼叫工具鏈：本機（Windows）的判題器對 java 會逾時（detached＋殼層 java.exe 殺不掉孫行程，實測一次 TLE 要等 45 秒才回），
+    // 且 PATH 上排最前面的 msys 版 gcc 找不到標準標頭，所以這裡自己找「真的能編譯含 stdio.h 的程式」的 gcc，只用於本測試行程，不改使用者環境。
+    const sh = (exe, args, o) => cp.spawnSync(exe, args, Object.assign({ encoding: 'utf8', timeout: 60000 }, o || {}));
+    const findGcc = () => {
+        const exts = process.platform === 'win32' ? ['.exe', ''] : [''], dirs = String(process.env.PATH || '').split(path.delimiter).filter(Boolean); const seen = new Set();
+        for (const d of dirs) for (const e of exts) {
+            const p = path.join(d, 'gcc' + e); if (seen.has(p) || !fs.existsSync(p)) continue; seen.add(p);
+            const w = fs.mkdtempSync(path.join(os.tmpdir(), 'ir-gcc-')); try { fs.writeFileSync(path.join(w, 'h.c'), '#include <stdio.h>\n#include <math.h>\nint main(void){puts("ok");return 0;}\n'); const r = sh(p, ['-o', path.join(w, 'h'), path.join(w, 'h.c'), '-lm']); if (r.status === 0) { const x = sh(path.join(w, 'h'), []); if (String(x.stdout).trim() === 'ok') return p; } } finally { try { fs.rmSync(w, { recursive: true, force: true }); } catch (e) { /* 忽略 */ } }
+        }
+        return null;
+    };
+    const GCC = findGcc(); const JAVAC = (() => { const r = sh('javac', ['-version']); return r.error ? null : 'javac'; })();
+    const build = (target, code) => {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ir-b-'));
+        if (target === 'java') { fs.writeFileSync(path.join(dir, 'Main.java'), code); const r = sh('javac', ['-encoding', 'UTF-8', '-d', dir, path.join(dir, 'Main.java')]); if (r.status !== 0) return { err: 'CE ' + r.stderr.slice(0, 1500) }; return { run: (inp) => sh('java', ['-Xss64m', '-cp', dir, 'Main'], { input: inp, timeout: 20000 }), dir }; }
+        if (target === 'c') { fs.writeFileSync(path.join(dir, 'main.c'), code); const r = sh(GCC, ['-O2', '-Wall', '-o', path.join(dir, 'a'), path.join(dir, 'main.c'), '-lm']); if (r.status !== 0) return { err: 'CE ' + r.stderr.slice(0, 1500) }; return { run: (inp) => sh(path.join(dir, 'a'), [], { input: inp, timeout: 20000 }), dir, warn: r.stderr }; }
+        fs.writeFileSync(path.join(dir, 'main.js'), code); return { run: (inp) => sh(process.execPath, [path.join(dir, 'main.js')], { input: inp, timeout: 20000 }), dir };
+    };
+    const norm = (s) => String(s).split('\r\n').join('\n');
+    const tally = {}; const unavailable = {}; const compileWarn = [];
     for (const target of ['nodejs', 'java', 'c']) {
-        const av = await R.available(target); tally[target] = { ok: 0, total: 0, skipped: [] };
+        const av = target === 'nodejs' ? { ok: true } : target === 'java' ? { ok: !!JAVAC, reason: '找不到 javac' } : { ok: !!GCC, reason: '找不到能編譯 stdio.h 的 gcc' };
+        tally[target] = { ok: 0, total: 0, skipped: [] };
         for (const s of SAMPLES) {
             const wanted = s.langs.indexOf(target) >= 0;
             await t('端到端 ' + s.id + ' → ' + target + (av.ok ? '' : '（未實跑：' + av.reason + '）'), async () => {
@@ -162,15 +182,35 @@ const OPSET = { has: OPS.has };
                 assert.strictEqual(errs.length, 0, '診斷：' + JSON.stringify(errs));
                 if (!av.ok) { unavailable[target] = av.reason; return; }
                 tally[target].total++;
-                const j = await R.judge({ lang: target, source: em.code, problem: { id: s.id, tests: expected[s.id], hidden: [], checker: 'lines' }, timeoutMs: 8000 });
-                assert.strictEqual(j.verdict, 'AC', j.verdict + ' ' + j.detail + '\n' + em.code.slice(0, 3000)); tally[target].ok++;
+                if (target === 'nodejs') {   // 專案判題器
+                    const j = await R.judge({ lang: 'nodejs', source: em.code, problem: { id: s.id, tests: expected[s.id], hidden: [], checker: 'lines' }, timeoutMs: 8000 });
+                    assert.strictEqual(j.verdict, 'AC', j.verdict + ' ' + j.detail + '\n' + em.code.slice(0, 3000)); tally[target].ok++; return;
+                }
+                const b = build(target, em.code); try {
+                    assert.ok(!b.err, b.err + '\n' + em.code.slice(0, 3000)); if (b.warn) compileWarn.push(s.id + ': ' + b.warn.slice(0, 200));
+                    expected[s.id].forEach((e) => { const r = b.run(e.in); assert.strictEqual(r.status, 0, s.id + ' 執行失敗 ' + String(r.stderr).slice(0, 300) + ' 輸入 ' + JSON.stringify(e.in)); assert.strictEqual(norm(r.stdout), e.out, s.id + ' 輸入 ' + JSON.stringify(e.in) + ' 輸出不同\n' + em.code.slice(0, 2500)); });
+                    tally[target].ok++;
+                } finally { try { fs.rmSync(b.dir, { recursive: true, force: true }); } catch (e) { /* 忽略 */ } }
             });
         }
     }
-    notes.push('端到端通過：' + Object.keys(tally).map((k) => k + ' ' + tally[k].ok + '/' + tally[k].total + (tally[k].skipped.length ? '（正確拒絕 ' + tally[k].skipped.join('、') + '）' : '')).join('；') + (Object.keys(unavailable).length ? '；未實跑 ' + JSON.stringify(unavailable) : ''));
-    await t('語意陷阱有真的被處理：負數的 // 與 %、gcd、五成雙格式化（0.125→0.12）在三個目標語言都與 Python 一致', async () => {
-        for (const id of ['floor-div-mod', 'gcd-lcm', 'average-fixed']) { assert.ok(SAMPLES.find((x) => x.id === id).langs.length === 3); }
-        const e = expected['average-fixed'].find((x) => x.in.indexOf('0 0 0 0 0 0 0 1') >= 0); assert.strictEqual(e.out.trim(), '0.12', 'Python 本身應為 0.12');
+    notes.push('端到端通過：' + Object.keys(tally).map((k) => k + ' ' + tally[k].ok + '/' + tally[k].total + (tally[k].skipped.length ? '（正確拒絕 ' + tally[k].skipped.join('、') + '）' : '')).join('；') + (Object.keys(unavailable).length ? '；未實跑 ' + JSON.stringify(unavailable) : '') + (compileWarn.length ? '；編譯警告 ' + compileWarn.length + ' 則' : ''));
+    await t('對照組：「看起來對」的天真翻譯會真的出錯（證明樣本測得到差異，目錄的處理不是多此一舉）', async () => {
+        const check = (id, lang, mutate, label) => {
+            const s = SAMPLES.find((x) => x.id === id); const em = OUT[lang].emit(PREP.prepare(conv(s).ir).ir); const naive = mutate(em.code); assert.notStrictEqual(naive, em.code, label + '：改寫沒有生效');
+            const b = build(lang, naive); assert.ok(!b.err, label + ' 天真版要能編譯：' + b.err); let wrong = 0, right = 0;
+            try { expected[s.id].forEach((e) => { const r = b.run(e.in); if (r.status !== 0 || norm(r.stdout) !== e.out) wrong++; else right++; }); } finally { try { fs.rmSync(b.dir, { recursive: true, force: true }); } catch (e) { /* 忽略 */ } }
+            assert.ok(wrong >= 1 && right >= 1, label + '：天真版應該「有的對有的錯」（錯 ' + wrong + '、對 ' + right + '）'); return wrong;
+        };
+        if (JAVAC) {
+            const w1 = check('floor-div-mod', 'java', (c) => c.replace(/Math\.floorDiv\((\w+), (\w+)\)/g, '($1 / $2)').replace(/Math\.floorMod\((\w+), (\w+)\)/g, '($1 % $2)'), 'Java 用 / 與 % 當 // 與 %');
+            const w2 = check('average-fixed', 'java', (c) => c.replace(/new java\.math\.BigDecimal\((.+?)\)\.setScale\(\(int\)\((\d+)L\), java\.math\.RoundingMode\.HALF_EVEN\)\.toPlainString\(\)/, 'String.format("%.$2f", $1)'), 'Java 用 String.format 當格式化');
+            notes.push('對照組（天真翻譯）：Java 的 / 與 % 在 ' + w1 + ' 筆輸入上錯；Java 的 String.format 在 ' + w2 + ' 筆輸入上錯（0.125→0.13）');
+        }
+        const w3 = check('average-fixed', 'nodejs', (c) => c.replace(/fa_fixed\((.+?), (\d)\)(?=\);)/, '$1.toFixed($2)'), 'JavaScript 用 toFixed');
+        const w4 = check('floor-div-mod', 'nodejs', (c) => c.replace(/Math\.floor\((\w+) \/ (\w+)\)/g, '(($1 / $2) | 0)').replace(/\(\((\w+) % (\w+)\) \+ \w+\) % \w+/g, '$1 % $2'), 'JavaScript 用截斷除法與 %');
+        notes.push('對照組（天真翻譯）：JavaScript toFixed 在 ' + w3 + ' 筆輸入上錯；JavaScript 截斷除法在 ' + w4 + ' 筆輸入上錯');
+        if (GCC) { const w5 = check('floor-div-mod', 'c', (c) => c.replace(/fa_floordiv\((\w+), (\w+)\)/g, '($1 / $2)').replace(/fa_mod\((\w+), (\w+)\)/g, '($1 % $2)'), 'C 用 / 與 %'); notes.push('對照組（天真翻譯）：C 的 / 與 % 在 ' + w5 + ' 筆輸入上錯'); }
     });
     console.log(notes.join('\n')); console.log(pass + ' passed, ' + fail + ' failed'); process.exit(fail ? 1 : 0);
 })().catch((e) => { console.error(e); process.exit(2); });

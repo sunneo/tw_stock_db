@@ -40,6 +40,7 @@
                 case 'index': return { s: atom(ex(e.o).s) + '[' + ex(e.i).s + ']', p: PREC.atom };
                 case 'call': {
                     const args = (e.args || []).map(ex); if (e.fn) return { s: e.fn + '(' + args.map((a) => a.s).join(', ') + ')', p: PREC.atom };
+                    if (e.op === 'fmt.fixed' && e.args[1].k === 'lit') return { s: '"{:.' + e.args[1].v + 'f}".format(' + args[0].s + ')', p: PREC.atom };   // 位數是常數時用 str.format，與常見寫法（及 Python 進模組的辨識）一致
                     return opCall(e.op, args, (e.args || []).map((a) => a.ty), e);
                 }
                 case 'native': if (e.lang === 'python') return { s: e.src, p: 0 }; diag('error', '原生區塊（' + e.lang + '）不是 Python', e); return { s: 'None', p: PREC.atom };
@@ -55,6 +56,7 @@
             switch (s.k) {
                 case 'comment': out.push(I + '# ' + s.s); return;
                 case 'pass': if (s.c && s.c.a) out.push(I + '# ' + s.c.a); return;
+                case 'import': out.push(I + s.src + post(s)); return;
                 case 'declare': return;
                 case 'assign': {
                     let line;
@@ -94,7 +96,7 @@
             stmt(s, 0); prevFunc = s.k === 'func';
         });
         if (ir.entry) { out.push(''); out.push(''); out.push('if __name__ == "__main__":'); out.push('    ' + ir.entry + '()'); }
-        const head = []; needMods.forEach((m) => head.push('import ' + m)); const tn = Object.keys(typing).sort(); if (tn.length) head.push('from typing import ' + tn.join(', '));
+        const have = ir.body.filter((s) => s.k === 'import').map((s) => s.src).join('\n'); const head = []; needMods.forEach((m) => { if (!new RegExp('\\bimport\\s+' + m + '\\b').test(have)) head.push('import ' + m); }); const tn = Object.keys(typing).sort(); if (tn.length && !/from\s+typing\s+import/.test(have)) head.push('from typing import ' + tn.join(', '));
         return { code: (head.length ? head.join('\n') + '\n\n\n' : '') + out.join('\n') + '\n', diags };
     }
     return { emit };

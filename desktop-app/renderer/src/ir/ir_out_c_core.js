@@ -90,7 +90,7 @@
             pre(s, d); const I = ind(d);
             switch (s.k) {
                 case 'comment': out.push(I + '/* ' + s.s.replace(/\*\//g, '* /') + ' */'); return;
-                case 'pass': if (s.c && s.c.a) out.push(I + '/* ' + s.c.a + ' */'); return;
+                case 'pass': case 'import': if (s.c && s.c.a) out.push(I + '/* ' + s.c.a + ' */'); return;
                 case 'declare': out.push(I + ty(s.ty, s) + ' ' + safe(s.name) + ' = ' + defaultOf(s.ty) + ';'); if (s.ty.t === 'list') useH(['fa_new']); return;
                 case 'assign': {
                     let line;
@@ -141,7 +141,7 @@
         IR.funcs(ir).forEach((f) => { const save = diags.length; protos.push('static ' + ty(f.ret || IR.T.void, f) + ' ' + safe(f.name) + '(' + (f.params.length ? f.params.map((p) => ty(p.ty, f) + ' ' + safe(p.name)).join(', ') : 'void') + ');'); diags.length = save; });
         ir.body.forEach((s) => {
             if (s.k === 'func') { if (!first && !(s.c && s.c.sp)) out.push(''); first = false; stmt(s, 0); return; }
-            if (s.k === 'comment' || s.k === 'pass') { stmt(s, 0); return; }
+            if (s.k === 'comment' || s.k === 'pass' || s.k === 'import') { stmt(s, 0); return; }
             if (s.k === 'assign' && s.to.k === 'name') { pre(s, 0); out.push('static ' + ty(s.ty || s.val.ty, s) + ' ' + safe(s.to.v) + ' = ' + ex(s.val).s + ';' + post(s)); return; }
             diag('error', '模組層的 ' + s.k + ' 敘述尚未支援', s);
         });

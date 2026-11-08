@@ -182,7 +182,7 @@
                 case 'break_statement': return [at({ k: 'brk' }, n)]; case 'continue_statement': return [at({ k: 'cont' }, n)]; case 'pass_statement': return [at({ k: 'pass' }, n)];
                 case 'raise_statement': { const e = named(n).filter((c) => c.type !== 'comment')[0]; let msg; if (e && e.type === 'call') { const a = argsOf(e); if (a[0]) msg = ex(a[0]); } return [at({ k: 'raise', val: msg }, n)]; }
                 case 'function_definition': return [func(n)];
-                case 'import_statement': case 'import_from_statement': return [at({ k: 'pass', imp: txt(n) }, n)];
+                case 'import_statement': case 'import_from_statement': return [at({ k: 'import', src: txt(n) }, n)];
                 default: return [nativeS(n)];
             }
         }
@@ -194,6 +194,14 @@
                 const inner = assign(right, stmtNode); const last = right.childForFieldName('left'); if (left.type === 'identifier' && last && last.type === 'identifier') return inner.concat([at({ k: 'assign', to: ex(left), val: ex(last) }, stmtNode)]); return [nativeS(stmtNode, '連鎖賦值')];
             }
             if (left.type === 'pattern_list' || left.type === 'tuple_pattern') {
+                // 慣用語：a, b = map(int, input().split()) → 一個整數串列暫存＋逐一取值（所有目標語言都表達得了，不需要「字串串列」型別）
+                if (right.type === 'call' && txt(f(right, 'function')) === 'map') {
+                    const ma = argsOf(right);
+                    if (ma.length === 2 && txt(ma[0]) === 'int' && ma[1].type === 'call' && f(ma[1], 'function').type === 'attribute' && txt(f(f(ma[1], 'function'), 'attribute')) === 'split' && !argsOf(ma[1]).length) {
+                        const tmp = '__t' + (tmpN++); const lsx = named(left); const outx = [at({ k: 'assign', to: { k: 'name', v: tmp }, val: call('str.split_ints', [ex(f(f(ma[1], 'function'), 'object'))], right) }, stmtNode)];
+                        lsx.forEach((l, i) => outx.push(at({ k: 'assign', to: ex(l), val: { k: 'index', o: { k: 'name', v: tmp }, i: L('int', String(i)) } }, stmtNode))); return outx;
+                    }
+                }
                 const ls = named(left), rs = right.type === 'expression_list' || right.type === 'tuple' ? named(right) : null;
                 if (rs && rs.length === ls.length) {   // 同時賦值：先全部算進暫存，再逐一寫回（交換 a[i], a[j] = a[j], a[i]）
                     const out = []; const tmps = rs.map((r) => { const t = '__t' + (tmpN++); out.push(at({ k: 'assign', to: { k: 'name', v: t }, val: ex(r) }, stmtNode)); return t; });
@@ -286,11 +294,11 @@
         const top = block(rootNode, undefined); const body = [];
         for (const s of top) {
             if (s.k === 'if' && s.cond.k === 'cmp' && s.cond.l.k === 'name' && s.cond.l.v === '__name__' && s.then.length === 1 && s.then[0].k === 'expr' && s.then[0].e.k === 'call' && s.then[0].e.fn) { ir.entry = s.then[0].e.fn; if (s.c) body.push({ k: 'pass', c: s.c }); continue; }
-            if (s.k === 'pass' && s.imp) { ir.imports.push(s.imp); if (s.c && (s.c.b || s.c.a)) body.push({ k: 'comment', s: (s.c.b || []).concat(s.c.a ? [s.c.a] : []).join(' ') }); continue; }
+            if (s.k === 'import') ir.imports.push(s.src);
             body.push(s);
         }
         // 移除只為了保留註解而留下的空 pass
-        ir.body = body.filter((s) => !(s.k === 'pass' && !s.imp && !s.c)); if (!ir.entry && IR.funcs(ir).some((x) => x.name === 'main')) ir.entry = 'main';
+        ir.body = body.filter((s) => !(s.k === 'pass' && !s.c)); if (!ir.entry && IR.funcs(ir).some((x) => x.name === 'main')) ir.entry = 'main';
         return { ir, coverage: cov, diags };
     }
     return { fromTree, tyOfText };
