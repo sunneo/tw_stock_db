@@ -99,3 +99,21 @@
 - 共用測試 harness：`domain_harness.js`（種子 `{id, want, st, rw, ref, gen, split}`，`split:'holdout'` 只量測；`DBG=1`／`ONLY=id,...` 環境變數除錯）。新包只要寫骨架檔＋種子檔。
 - 讀取器配套小修：字串輸入可帶名稱（「輸入一個字串 s」）、同名重複清單改名（a、b…）、「查詢字串」不再當整數、`rle-pair` 對解碼題否決、領域條目可標 `pri:true` 比內建工具詞彙（lines-map）優先。
 - 台面上還沒做（linuxfmt 已做：樣板變數展開、區塊對齊計數、範式前綴碼三個參數化家族，train 6/6、新 holdout 3/4（${名稱:-預設} 誠實未解）；舊 Linux holdout 的 exec-env／tar-blocks／canonical-huffman 敘述已被當 train 教過，不再算 holdout；仍未解：xz-header、bmp-write8（規格太具體，只能靠第三層介面）。linuxsem 已做：fd 表／管線／信號遮罩／TCP 狀態機，train 11/11、新 holdout 4/4；未做：socket 全套、行程樹 fork／wait／exec、信號處理常式巢狀）：程序／fd／管線／信號／socket 的語意模擬、進階圖與樹（MST、SCC、Bellman-Ford、LCA…）、資料結構的 AVL／跳躍表／稀疏表。見 `DESIGN.TODO.md`。
+
+## 4. 收尾盤點（2026-11-08，使用者：「blockly-teach 先完工」）
+
+我讀程式與文件盤點的（不是重跑全部評測）：
+- **多矩陣輸入形狀**：`os.banker`、`os.page-translate` 已由另一個工作階段完成（2026-11-07），讀取器放寬也已進。
+- **真 Linux 語意模擬**：`domain_linuxsem_core.js` 已有 fd 表（open／dup／dup2／close）、管線緩衝、信號遮罩、TCP 狀態機（train 11/11、新 holdout 4/4）。**待改善**：socket 全套、行程樹 fork／wait／exec、信號處理常式巢狀。
+- **思考堆疊**：F 部分補（見 `DESIGN.think-stack.md`）；C（離線每層框）、E（離線自檢）、I（路由堆疊實測，需模型）仍未做，C 與 E 要先設計層與框的對應，不是小改。
+- **holdout 未解題**：只量測，本輪未讀 holdout 敘述、未教；Linux 的 xz-header、bmp-write8 屬規格太具體，歸在下面「超出」。
+- **區塊 ↔ 中間語言 ↔ 目標語言 ↔ 函式行為卡**：已接成同一條線，見 `DESIGN.core-ir.md` §8。
+
+### 「超出 Blockly」清單（更新）
+| 項目 | 原因 | 去處 |
+|---|---|---|
+| LZMA match／LZMA2／BCJ、動態霍夫曼 inflate、BMP RLE／遮罩、tar PAX | 規格冗長、狀態多，範式槽位窮舉不經濟 | 待補教學（老師教→`deriveLesson`）或題目自帶規格 |
+| 真 fork／exec／socket／檔案 IO、二進位 IO、argv、結束碼、環境變數 | 判題器能力（G15、G16） | 判題器維護者 |
+| xz-header、bmp-write8（Linux holdout 未解） | 規格太具體 | 第三層介面／模型 |
+| 模型／老師部分（G18） | 非範式 | 模型路線 |
+| 區塊層保留行內註解 | 區塊樹沒有註解節點 | 見 `DESIGN.core-ir.md` §8 待改善 1（可做，屬區塊層而非超出） |

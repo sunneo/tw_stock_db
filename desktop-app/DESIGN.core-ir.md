@@ -185,3 +185,31 @@ c++／c#／ruby／perl 的輸出器與樣板實跑；java／c 的「進」；浮
 
 ## 7. 檔案
 `ir_core.js`（資料結構、驗證、序列化）、`ir_ops_core.js`（72 個操作＋輔助函式）、`ir_prep_core.js`（推斷、降低、宣告）、`ir_in_python_core.js`（Python 進）、`ir_out_{js,java,c,python}_core.js`（各語言出）、`ir_design_core.js`（抽回設計與編修）、`ir_behavior_core.js`（行為描述）、`ir_samples.js`（樣本）。每個語言的「進」「出」各自獨立，只有 `ir_core`、`ir_ops`、`ir_prep` 共用。
+
+## 8. 與 Blockly 教學線接成同一條（2026-11-08，`ir_blocks_core.js`＋`ir_blocks.test.js`）
+
+使用者原話（2026-11-08）：「blockly-teach 先完工  我們的多語言的中間語言跟function behavior 也是這個議題」。
+
+**做法**：區塊的範本庫（`py_blocks_core`）是 Python 專屬，所以橋走 Python：區塊（或受控自然語言）→ 區塊的程式碼產生 → Python → 中間語言 → nodejs／java／c／python；反方向 Python 程式 → 區塊（反推）。函式行為卡直接用 `ir_behavior.fromIr`，再附上該函式的區塊統計。純模組，依賴注入，不碰 `floating-assistant.js`（由管理者接線）。
+
+| 介面 | 作用 |
+|---|---|
+| `fromPython(src)` | 程式 → 每個函式的區塊與受控自然語言；回傳 `ctx`（原模型，保留 import、型別標註、模組層敘述） |
+| `program(funcs, {ctx})` | 區塊／受控自然語言 → Python；帶 `ctx` 時只換函式本體 |
+| `emit(python, lang)`／`blocksToTarget(funcs, lang)` | → 目標語言，診斷如實帶回（輸出器拒絕的樣本照樣被拒） |
+| `cards(python)`／`cardText(card)` | 函式行為卡（第二層）＋區塊統計，供 code edit 把程式抽回設計 |
+| `styleCheck(python)` | 函式名／變數名命名風格一致性（思考堆疊缺口 F 的離線版） |
+
+**我驗證的**（`ir_blocks.test.js` 8 項全過，本機有 python／javac）：
+- 10 個樣本 → 區塊 → 受控自然語言 → 區塊 → Python：全部可解析；實跑輸出與原樣本一致（每個測資）。
+- 區塊 → 中間語言 → nodejs 實跑 10/10 與 Python 輸出一致；→ java 產生 10、編譯並實跑 10；→ c 產生 8，另 2 個如預期被如實拒絕。
+- 行為卡從區塊產生的程式抽出，函式名／標準操作／副作用與直接從原程式抽的一致。
+- 壞的受控自然語言不丟例外，回報解析錯誤。
+
+**待改善（誠實清單；沒達標不叫沒做）**
+1. 區塊層**不保存行內註解**（`py_blocks_core` 沒有註解節點；docstring 變成通用「程式」區塊所以保留）。區塊→目標語言的結果因此比「原 Python 直接 → 中間語言」少註解。修法：區塊樹加 `trivia`，或以位置把註解掛回。
+2. 只做 Python 區塊；其他語言的程式要先「進」中間語言才有區塊（目前進只有 python，`DESIGN.core-ir.md` 6.1 階段 C）。
+3. c 的實跑沒驗（這台 C 編譯器沒設系統標頭路徑，屬環境問題）；java／c 只涵蓋樣本用到的 26% 標準操作。
+4. 區塊內容超出樣本範圍（類別、例外、生成式）時，通用「程式」區塊會帶原生語法，輸出器照舊拒絕並說明——沒有驗證過更大的區塊程式集。
+5. `styleCheck` 用文字樣式比對，不是語法樹；只看函式名與簡單賦值／for 變數。
+6. 還沒接進 code edit 畫面與 `floating-assistant.js`（管理者統一接線）。

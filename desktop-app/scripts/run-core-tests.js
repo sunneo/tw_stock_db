@@ -83,6 +83,7 @@ const suites = [
     ['核心 IR（跨語言中間語言）：資料結構／驗證器／序列化、標準操作目錄（72 個操作 x 8 個語言的靜態一致性）、型別推斷與降低、Python → IR（註解／位置保留）→ Python 往返、→ nodejs／java／c 實際編譯執行並與 Python 輸出一致；需 tree-sitter 快取與 javac／gcc', 'renderer/src/ir/ir.test.js'],
     ['核心 IR 抽回設計：簽名／呼叫關係／標準操作用量／副作用／摘要 → UML 模型（過 uml_core 驗證）→ 改設計（改名、加參數、uml_edit 差異）→ 重新產生程式碼；需 tree-sitter 快取', 'renderer/src/ir/ir_design.test.js'],
     ['行為描述（第一層）：行為分析器＋tree-sitter 抽 python／nodejs 的函式行為描述，與中間語言轉出的描述比對；操作目錄反向索引；只靠行為描述產生的骨架可編譯；需 tree-sitter 快取', 'renderer/src/ir/ir_behavior.test.js'],
+    ['區塊 ↔ 中間語言 ↔ 目標語言：樣本 → 區塊 → 受控自然語言 → Python → 中間語言 → nodejs／java／c，實跑輸出與原 Python 一致；函式行為卡可從區塊抽出；需 tree-sitter 快取', 'renderer/src/ir/ir_blocks.test.js'],
     ['程式優化對照表（13 條慢寫法→優化寫法（含 two-sum 計數題型），含記憶體實測；輸出一致、實測不變慢、不安全不動、沒測資不改）', 'renderer/src/recipe/code_optimize.test.js'],
     ['型別接線矩陣與路徑搜尋（回傳型別推論、具體程度、布林矩陣連乘、前 K 條接線與得分、萬用結構強制轉型）', 'renderer/src/catalog/matrix_core.test.js'],
     ['單元目錄：Python 原型抽取（註解 → 型別、原型 → 單元、真實跑抽取腳本）', 'renderer/src/catalog/extract_py.test.js'],

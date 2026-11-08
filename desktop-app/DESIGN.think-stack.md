@@ -95,7 +95,7 @@
 | C | 離線沒有思考堆疊框（`buildFromUML` 每層 push／失敗 pop） | **未做（大）** | 離線全是純程式層、沒有模型呼叫，框的價值只在診斷；要先設計「層」對應哪種框（recipe／lesson／paradigm／matrix／blocks）與結果寫回格式。進 renderer：否 |
 | D | 離線失敗轉模型路線時，已試過的層沒交給模型 | **已補（2026-11-08）**：`runCode` 把離線各層摘要附在給模型的敘述尾端（「離線的程式組合已經試過但沒成功——…請用不同的做法」），只動敘述、不動測資與判題；`code_agent_core.test.js` 有測試。`Stack.decide` 的框化版本仍等 C | 做 C 時再改成框 |
 | E | 離線沒有 stackChecks | **未做（中）** | 只對 `writeBlocks` 外層加一次 `selfValidate`，預設跟隨 `stack_checks`；先看 C |
-| F | 兄弟一致性只在基準腳本 | **未做（小）** | 對離線輸出補「函式名／變數命名風格」純程式檢查；離線模型固定單類別，跨類別需設計 |
+| F | 兄弟一致性只在基準腳本 | **部分補（2026-11-08）**：純程式的 `styleCheck(python)`（`renderer/src/ir/ir_blocks_core.js`，測試 `ir_blocks.test.js`）檢查函式名／變數名主流命名風格占比並指出混用的名稱 | **待改善**：尚未接進離線路徑（`_codeOffline` 沒呼叫它，要管理者接線）；不是語法樹比對；離線模型固定單類別，跨類別一致性未設計 |
 | G | CoLU 規劃路由未接到寫程式流程 | **不建議接** | `FaRoute` 是「找不到工具」的路線，離線組合不是它的場景；只在 gap 說明。若要接，先釐清需求 |
 | H | `DESIGN.colu.md` 沒有堆疊／一致性／規劃路由的定義 | **已補（本批）** | 在該檔加交叉引用，註明離線尚未接線 |
 | I | `chooseTool` 路由堆疊、CoLU 計畫階段實測 | **未做（中）** | `scripts/eval/stack_consistency.js` 加離線變體 |
