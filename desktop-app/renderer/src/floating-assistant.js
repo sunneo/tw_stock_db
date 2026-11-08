@@ -14755,9 +14755,9 @@ const holder = {};
     class Budget extends Error { }
     async function editCode(a) {
         const lang = a.lang; const o = Object.assign({ maxRethink: 3, maxCalls: 20, unitMaxLines: 80 }, a.opts || {}); const Stack = a.stackMod || DefaultStack; const orig = String(a.source == null ? '' : a.source);
-        const calls = { ask: 0, write: 0, judge: 0, check: 0 }, trace = [], gaps = [], edits = []; let cur = orig, sum = null, rethinks = 0;
+        const calls = { ask: 0, write: 0, judge: 0, check: 0 }, trace = [], gaps = [], edits = []; let cur = orig, sum = null, rethinks = 0, patchInfo = null;
         const note = (e) => { trace.push(e); if (typeof a.onEvent === 'function') { try { a.onEvent(e); } catch (_) { /* 進度回報壞了不影響流程 */ } } };
-        const out = (extra) => { const ok = !!(sum && (sum.verdict === 'AC' || sum.verdict === 'CHECKED')); return Object.assign({ ok, verified: !!(sum && sum.verdict === 'AC'), verdict: sum ? sum.verdict : 'NONE', source: cur, diff: Fix.unifiedDiff(orig, cur, 'code'), edits, units: splitUnits(lang, cur).map((u) => ({ name: u.name, startLine: u.startLine, endLine: u.endLine })), rethinks, calls, gaps, trace }, extra || {}); };
+        const out = (extra) => { const ok = !!(sum && (sum.verdict === 'AC' || sum.verdict === 'CHECKED')); return Object.assign({ ok, verified: !!(sum && sum.verdict === 'AC'), verdict: sum ? sum.verdict : 'NONE', source: cur, diff: Fix.unifiedDiff(orig, cur, 'code'), edits, units: splitUnits(lang, cur).map((u) => ({ name: u.name, startLine: u.startLine, endLine: u.endLine })), rethinks, calls, gaps, trace, patch: patchInfo || undefined }, extra || {}); };
         if (!Fix.FAMILY[lang]) return out({ ok: false, reason: 'unsupported_lang', gaps: ['不支援的語言：' + lang + '（支援：' + Object.keys(Fix.FAMILY).join('、') + '）'] });
         if (typeof a.check !== 'function' && typeof a.judge !== 'function') return out({ ok: false, reason: 'no_checker', gaps: ['沒有檢查器也沒有判題器，無法驗證任何東西'] });
         const spend = (k) => { if (calls.ask + calls.write >= o.maxCalls) throw new Budget('呼叫次數用完（' + o.maxCalls + '）'); calls[k]++; };
@@ -14778,6 +14778,7 @@ const holder = {};
         };
         try {
             if (stack) Stack.push(stack, { path: 'edit', question: '修好這份 ' + lang + ' 程式（語法→行為）', note: '從現有程式碼接續' });
+            if (a.patch) await patchCandidate();
             let r = await fixSyntax('開頭'); let guard = 0;
             // 語法仍然壞、而且有 write：讓模型重寫出錯所在的單元（帶編譯訊息）
             while (r.verdict === 'CE' && a.write && guard++ < 2) {
@@ -14806,6 +14807,22 @@ const holder = {};
             if (stack) Stack.pop(stack, { ok: true, summary: sum.verdict });
             return out();
         } catch (e) { if (e instanceof Budget) { gaps.push(e.message); return out({ ok: false, reason: 'budget' }); } throw e; }
+
+        // 修補（unified diff）也是一種候選編輯：交給 merge diff patcher 合併進「目前」的程式，合併後一定過語法檢查與判題；沒過就回滾，改走原本的流程。
+        // 成功時 edits 用和語法修正、單元重寫相同的格式（by／startLine／endLine／desc／removed），diff 欄位共用。
+        async function patchCandidate() {
+            const Pm = (typeof FaCodePatch !== 'undefined' && FaCodePatch) || (typeof globalThis !== 'undefined' && globalThis.FaCodePatch) || (typeof require === 'function' ? (function () { try { return require('./code_patch_core.js'); } catch (_) { return null; } })() : null);
+            if (!Pm) { gaps.push('修補：這個環境沒有 merge diff patcher，略過'); return; }
+            const r = await Pm.applyPatch({ source: cur, diff: a.patch, lang, fileName: a.patchFile, parser: a.parser, ask: ask || undefined,
+                check: async (x) => { const s2 = await check({ lang, source: x }); return { ok: s2.verdict !== 'CE', verdict: s2.verdict, detail: s2.detail, compileLog: s2.compileLog }; },
+                judge: hasTests ? async (x) => { calls.judge++; return a.judge({ lang, source: x, problem: a.problem }); } : undefined, opts: Object.assign({}, o.patchOpts) });
+            const report = Pm.report(r); patchInfo = { ok: !!r.ok, status: r.status, rolledBack: !!r.rolledBack, reason: r.reason, report, hunks: (r.hunks || []).map((h) => ({ index: h.index, status: h.status, line: h.line, offset: h.offset })), verified: r.verified };
+            if (!r.ok) { gaps.push('修補沒有合併（' + r.status + '）：' + clip(r.reason, 160)); note({ t: 'patch', ok: false, status: r.status }); return; }
+            if (r.noop) { gaps.push('修補早就套用過，沒有需要改的'); note({ t: 'patch', ok: true, noop: true }); return; }
+            const pd = Pm.parseDiff(a.patch); const file = pd.ok && (pd.files.find((f) => a.patchFile && (f.newName === a.patchFile || f.oldName === a.patchFile)) || pd.files[0]);
+            for (const h of r.hunks) { const src = file && file.hunks[h.index - 1]; const oldT = src ? src.ops.filter((x) => x.t === '-').map((x) => x.s).join('\n') : ''; const newN = src ? src.ops.filter((x) => x.t !== '-').length : 1; edits.push({ by: 'patch', startLine: h.line || 0, endLine: (h.line || 0) + Math.max(0, newN - 1), desc: '修補第 ' + h.index + ' 段（' + h.status + (h.offset ? '，位移 ' + h.offset : '') + '）', removed: clip(oldT, 200) }); }
+            cur = r.source; note({ t: 'patch', ok: true, hunks: r.hunks.length });
+        }
 
         async function rewriteUnit(u, feedback, isSemantic) {
             if (!a.write) return false; spend('write');
@@ -18199,7 +18216,7 @@ const holder = {};
             const mergedList = [];
             for (let i = 0; i < list.length; i++) {
                 const it = list[i];
-                if (it.k === 'conf' && mergedList.length >= 2) {
+                if (it.k === 'conf' && mergedList.length >= 2 && o.joinNear !== false) {
                     const gap = mergedList[mergedList.length - 1], prev = mergedList[mergedList.length - 2];
                     if ((gap.k === 'same' || gap.k === 'cm') && prev.k === 'conf' && (gap.lines.length <= 3 || !gap.lines.some(hasAlnum))) {
                         mergedList.pop(); mergedList.pop();
@@ -18335,7 +18352,7 @@ const holder = {};
         for (let fz = 0; fz <= 2; fz++) { // 使用者改過脈絡時，去掉兩端 1～2 行脈絡再比（要求剩下的裡面有新增的行，否則不算證據）
             const ops = h.ops.filter((x) => x.t !== '-'); let a0 = 0, a1 = ops.length; for (let k = 0; k < fz && a0 < a1 && ops[a0].t === ' '; k++) a0++; for (let k = 0; k < fz && a1 > a0 && ops[a1 - 1].t === ' '; k++) a1--;
             const seg = ops.slice(a0, a1); if (!seg.some((x) => x.t === '+' && /\S/.test(x.s))) continue; const sl = seg.map((x) => x.s); if (sl.filter((s) => /\S/.test(s)).length < 2) continue; // 只有一行證據太薄（可能剛好別處有同樣的行）
-            const ps = findAll(sl, cur, st.from, wsCmp, st); const okp = prof.indentSensitive ? ps.filter((p) => relIndentOk(sl, cur, p)) : ps;
+            const ps = findAll(sl, cur, st.from, wsCmp); const okp = prof.indentSensitive ? ps.filter((p) => relIndentOk(sl, cur, p)) : ps;
             if (okp.length === 1 || (okp.length > 1 && exp != null && okp.includes(exp + a0))) return { kind: 'already', pos: okp.length === 1 ? okp[0] : exp + a0, len: sl.length };
         }
         // ④ 去掉兩端 1～2 行脈絡（使用者改過脈絡）
@@ -18367,24 +18384,37 @@ const holder = {};
     }
     function planRegion(h, plan, st, prof, o) {
         const cur = st.cur; const base = plan.old, nw = plan.nw;
-        // 找函式單元
+        // 找函式單元（有語法樹就用語法樹；沒有就用詞法切分）
         let name = prof.def(h.heading || '') || null; if (!name) for (const s of base) { name = prof.def(s); if (name) break; }
-        let window = null, unit = null;
         const baseExp = h.oldStart == null ? null : h.oldStart - 1 + st.delta + st.carry;
-        if (Edit && Edit.splitUnits && !prof.generic) {
-            let units = []; try { units = Edit.splitUnits(o.lang, cur.map(strip).join('\n')); } catch (_) { units = []; }
+        let units = []; const src = cur.map(strip).join('\n');
+        try { units = o.unitsFn ? o.unitsFn(src) : ((Edit && Edit.splitUnits && !prof.generic) ? Edit.splitUnits(o.lang, src) : []); } catch (_) { units = []; }
+        const contains = (u) => baseExp != null && u.startLine - 1 <= baseExp && baseExp <= u.endLine; const sizeOf = (u) => u.endLine - u.startLine;
+        let unitCands = [];
+        if (units.length) {
             if (!name && baseExp != null) { for (let k = Math.min(cur.length - 1, baseExp); k >= 0 && k > baseExp - 400; k--) { const d = prof.def(cur[k]); if (d) { name = d; break; } } }
-            if (name) { const c = units.filter((u) => u.name === name); const pick = c.length === 1 ? c[0] : (c.length > 1 && baseExp != null ? c.find((u) => u.startLine - 1 <= baseExp && baseExp <= u.endLine) : null); if (pick) { unit = pick; window = [Math.max(st.from, pick.startLine - 1), pick.endLine]; } }
+            if (name) unitCands = units.filter((u) => u.name === name);
+            else if (o.unitsFn && baseExp != null) { const c = units.filter(contains).sort((a, b) => sizeOf(a) - sizeOf(b)); if (c.length) unitCands = [c[0]]; }
         }
-        const tries = []; if (window) tries.push({ w: window, how: 'unit' }); tries.push({ w: [st.from, cur.length], how: 'file' });
+        const from0 = st.from;
         const meaningful = base.filter((s) => hasAlnum(s) && norm(s).length >= 3).length; if (!meaningful) return { kind: 'fail', reason: '舊側全是空白或符號，沒有可用的錨點行' };
-        for (const t of tries) {
-            const anc = leadAnchors(base, cur, t.w[0], t.w[1]); if (!anc.length || anc.length < Math.max(1, Math.ceil(meaningful * 0.5))) continue;
+        const attempt = (w, how, unit) => {
+            const anc = leadAnchors(base, cur, w[0], w[1]); if (!anc.length || anc.length < Math.max(1, Math.ceil(meaningful * 0.5))) return null;
             const [b0, c0] = anc[0], [b1, c1] = anc[anc.length - 1];
-            const lo = Math.max(t.w[0], c0 - b0), hi = Math.min(t.w[1], c1 + (base.length - 1 - b1) + 1);
-            if (hi - lo > base.length * 3 + 12) continue; // 錨點散太開，不是同一段
-            return { kind: 'merge', lo, hi, how: t.how, unitName: unit ? unit.name : null, anchors: anc.length, meaningful, base, nw, ref: [base[b0], cur[c0]] };
+            const lo = Math.max(w[0], c0 - b0), hi = Math.min(w[1], c1 + (base.length - 1 - b1) + 1);
+            if (hi - lo > base.length * 3 + 12) return null; // 錨點散太開，不是同一段
+            if (st.useBlocked && !st.free(lo, hi - lo)) return null; // 亂序模式：不能蓋到已經套用的區域
+            return { kind: 'merge', lo, hi, how, unitName: unit ? unit.name : null, unitQual: unit ? unit.qual : null, anchors: anc.length, meaningful, base, nw, ref: [base[b0], cur[c0]] };
+        };
+        if (unitCands.length) {
+            const ok = []; for (const u of unitCands) { const r = attempt([Math.max(from0, u.startLine - 1), u.endLine], 'unit', u); if (r) ok.push(r); }
+            if (ok.length === 1) return ok[0];
+            if (ok.length > 1) { // 同名函式不只一個（巢狀函式、不同類別的同名方法）：用位置挑最近的；位置分不出來就不猜
+                const near = baseExp == null ? [] : ok.filter((r) => r.lo <= baseExp && baseExp <= r.hi + 1); if (near.length === 1) return near[0];
+                return { kind: 'fail', reason: '有 ' + ok.length + ' 個同名的函式 ' + name + ' 都符合（' + ok.map((r) => '第 ' + (r.lo + 1) + ' 行').join('、') + '），無法確定該改哪一個' };
+            }
         }
+        const fr = attempt([from0, cur.length], 'file', null); if (fr) return fr;
         return { kind: 'fail', reason: '找不到可靠的位置（舊側 ' + base.length + ' 行，唯一錨點不足' + (name ? '；函式 ' + name : '') + '）' };
     }
 
@@ -18399,16 +18429,73 @@ const holder = {};
         return { lo: plan.pos, hi: k, lines: out };
     }
 
-    function runHunks(file, source, lang, choices, o) {
+    // ---------- 語法樹的函式單元（web-tree-sitter；目前只有 Python 文法在本機）----------
+    // parser：已 setLanguage 的 web-tree-sitter Parser。回傳 [{name, qual, kind, startLine, endLine, depth}]（行號 1 起算、含裝飾器），巢狀函式、類別方法都有，qual 是 外層.內層 的完整路徑。
+    // 字串或註解裡長得像 def 的文字不會被當成函式（詞法切分會）。
+    function treeUnits(parser, src) {
+        const tree = parser.parse(String(src)); const out = [];
+        try {
+            const walk = (node, path) => {
+                for (let i = 0; i < node.namedChildCount; i++) {
+                    const c = node.namedChild(i); let def = c;
+                    if (c.type === 'decorated_definition') def = c.childForFieldName('definition') || c.namedChild(c.namedChildCount - 1);
+                    if (def && (def.type === 'function_definition' || def.type === 'class_definition')) {
+                        const nm = def.childForFieldName('name'); const name = nm ? nm.text : '?';
+                        if (def.type === 'function_definition') out.push({ name, qual: path.concat(name).join('.'), kind: 'function', startLine: c.startPosition.row + 1, endLine: c.endPosition.column === 0 ? c.endPosition.row : c.endPosition.row + 1, depth: path.length });
+                        walk(def.childForFieldName('body') || def, path.concat(name));
+                    } else walk(c, path);
+                }
+            };
+            walk(tree.rootNode, []); const he = tree.rootNode.hasError; out.hasError = typeof he === 'function' ? !!he.call(tree.rootNode) : !!he; // 有語法錯誤時樹不可靠（沒收的括號會吞掉後面的函式）
+        } finally { if (tree && typeof tree.delete === 'function') tree.delete(); }
+        return out;
+    }
+
+    // ---------- 4.2 衝突處理階梯 ----------
+    // 由便宜到貴，每個候選之後都要過真的檢查器／判題器（applyPatch 負責驗證），不過就丟掉；解不開就留標準衝突標記，不假裝解決。
+    //   ① 縮小衝突（行層級，相鄰但不重疊的改動分開合併）  ② 詞元層級合併（同一行裡兩邊改不同的詞）
+    //   ③ 兩邊都插入同一個位置：兩種順序都當候選（要有判題器才收）
+    // 刻意不做的：「兩邊改同一行同一處」不會自動取一邊（那會悄悄丟掉使用者的改動或修補的內容），也不把兩個版本都留下（會留下死碼卻騙過測試）。
+    function tokenMerge(c, cr) {
+        const tk = (ls) => ls.map(strip).join('\n').match(/\w+|[ \t]+|\n|[^\w\s]/g) || [];
+        const b = tk(c.base), o = tk(c.ours), t = tk(c.theirs); if (b.length + o.length + t.length > 1500 || !b.length) return null;
+        const m = merge3(b, o, t, { style: 'diff3' }); if (!m.clean) return null;
+        return m.lines.join('').split('\n').map((l) => l + cr);
+    }
+    function conflictCandidates(baseL, ours, theirs, o) {
+        const cr = o.cr || ''; const cands = []; const seen = new Set(); const sig = (ls) => ls.join('\n');
+        const push = (id, label, cost, lines, needsTests) => { const s = sig(lines); if (seen.has(s)) return; seen.add(s); cands.push({ id, label, cost, lines, needsTests }); };
+        const run = (resolve) => merge3(baseL, ours, theirs, { key: norm, style: 'merge', touch: false, joinNear: false, resolve });
+        const sh = run(null); if (sh.clean) push('shrink', '縮小衝突：兩邊改的地方其實不重疊，分別合併', 1, sh.lines, false);
+        const tok = run((c) => tokenMerge(c, cr)); if (tok.clean) push('token', '詞元層級合併：同一行裡兩邊改的是不同的詞', 2, tok.lines, false);
+        if (o.canJudge) {
+            const cat = (first) => (c) => { if (c.base.length === 0 && c.ours.length && c.theirs.length) { const a = first === 'ours' ? c.ours : c.theirs, b = first === 'ours' ? c.theirs : c.ours; return a.concat(b.filter((l) => !a.some((x) => norm(x) === norm(l)))); } return tokenMerge(c, cr); };
+            const c1 = run(cat('ours')); if (c1.clean) push('ours+theirs', '兩邊都插在同一處：先你的、再修補的', 3, c1.lines, true);
+            const c2 = run(cat('theirs')); if (c2.clean) push('theirs+ours', '兩邊都插在同一處：先修補的、再你的', 3, c2.lines, true);
+        }
+        return cands.sort((x, y) => x.cost - y.cost);
+    }
+
+    function runHunks(file, source, lang, choices, o) { // 亂序時是「有脈絡的先、純插入的後」處理，這裡把結果依 hunk 順序排好
+        const r = runHunks0(file, source, lang, choices, o); r.results.sort((x, y) => x.index - y.index); if (r.failedAt != null) r.failedRes = r.results.find((x) => x.index === r.failedAt + 1) || r.results[r.results.length - 1]; return r;
+    }
+    function runHunks0(file, source, lang, choices, o) {
         const prof = profileOf(lang);
         let text = source; const crlfCount = (text.match(/\r\n/g) || []).length, lfCount = (text.match(/\n/g) || []).length - crlfCount; const crlf = crlfCount > lfCount;
         let cur = text.split('\n'); let finalNl = false; if (cur.length && cur[cur.length - 1] === '') { cur.pop(); finalNl = true; }
-        const st = { cur, from: 0, delta: 0, carry: 0, crlf, lang };
+        // 片段順序：由上而下（行號不遞減）走原本的「接著上一個往後找」；亂序時改成「全檔找、不能蓋到已套用的區域」，位移依原始行號位置累計（不依處理順序）
+        const starts = file.hunks.map((x) => x.oldStart).filter((x) => x != null); const monotone = starts.every((x, i) => i === 0 || x >= starts[i - 1]);
+        const st = { cur, from: 0, delta: 0, carry: 0, crlf, lang, useBlocked: !monotone, blocked: [], applied: [] };
+        st.free = (p, len) => !st.blocked.some((b) => p < b[1] && b[0] < p + Math.max(1, len));
+        const unitsFn = o && o.unitsFn; const resolveOn = !!(o && o.resolve); const CH = choices || {}; const CONF = CH.conf || {};
         const results = []; let ambiguous = null;
-        for (let hi = 0; hi < file.hunks.length; hi++) {
+        const anchored = (x) => x.ops.some((p) => p.t !== '+' && /\S/.test(p.s)); const order = file.hunks.map((_, i) => i); if (!monotone) order.sort((x, y) => (anchored(file.hunks[y]) ? 1 : 0) - (anchored(file.hunks[x]) ? 1 : 0) || x - y); // 沒有脈絡的純插入最後處理：先靠有脈絡的 hunk 校準使用者造成的位移
+        for (const hi of order) {
             const h = file.hunks[hi]; const res = { index: hi + 1, header: h.oldStart == null ? '@@' : '@@ -' + h.oldStart + ' @@', status: 'failed' };
-            let plan = planHunk(h, st, prof, { lang });
-            if (plan.kind === 'region') plan = planRegion(h, plan, st, prof, { lang });
+            if (!monotone && h.oldStart != null) { let d = 0, bs = -1, c = 0; for (const ap of st.applied) if (ap.s < h.oldStart) { d += ap.d; if (ap.s > bs) { bs = ap.s; c = ap.carry; } } st.delta = d; st.carry = c; }
+            const stv = st.useBlocked ? Object.assign({}, st, { from: 0 }) : st; // 亂序：不用「從上一個之後」的限制
+            let plan = planHunk(h, stv, prof, { lang });
+            if (plan.kind === 'region') plan = planRegion(h, plan, stv, prof, { lang, unitsFn });
             if (plan.kind === 'noop') { res.status = 'already'; res.reason = plan.reason; results.push(res); continue; }
             if (plan.kind === 'already') { res.status = 'already'; res.line = plan.pos + 1; res.reason = '新內容已經在那裡（修補先前已套用）'; results.push(res); st.from = plan.pos + plan.len; continue; }
             if (plan.kind === 'fail') { res.reason = plan.reason; results.push(res); return { ok: false, results, failedAt: hi }; }
@@ -18424,8 +18511,18 @@ const holder = {};
                 const refO = indentOf(plan.ref[0]), refC = indentOf(plan.ref[1]); const cr = crlf ? '\r' : '';
                 const theirs = plan.nw.map((s) => reindentLine(s, refO, refC) + cr); const ours = cur.slice(plan.lo, plan.hi); const baseL = plan.base.map((s) => s + cr);
                 const m = merge3(baseL, ours, theirs, { key: norm, labels: { ours: '目前的程式', base: '修補的舊側', theirs: '修補的新側' }, style: 'diff3' });
-                if (!m.clean) { res.status = 'conflict'; res.line = plan.lo + 1; res.reason = '你的程式與修補在同一處都改了（' + m.conflicts.length + ' 處衝突）'; res.conflictText = m.lines.map(strip).join('\n'); res.conflicts = m.conflicts.map((c) => ({ ours: c.ours.map(strip), base: c.base.map(strip), theirs: c.theirs.map(strip) })); results.push(res); return { ok: false, results, failedAt: hi }; }
-                lo = plan.lo; hiIdx = plan.hi; lines = m.lines; status = plan.how === 'unit' ? 'unit' : 'merged'; extra.note = '保留你的修改並合入修補（' + (plan.unitName ? '函式 ' + plan.unitName + ' 內，' : '') + '錨點 ' + plan.anchors + '/' + plan.meaningful + ' 行）';
+                let picked = null;
+                if (!m.clean) { // 4.2 衝突階梯：縮小衝突 → 候選解法（兩邊都保留）；每個候選都要過檢查器／判題器才算數
+                    const cands = resolveOn ? conflictCandidates(baseL, ours, theirs, { cr, canJudge: !!(o && o.canJudge) }) : [];
+                    if (cands.length) {
+                        const pick = CONF[hi];
+                        if (pick == null) { res.status = 'conflict'; res.line = plan.lo + 1; res.reason = '你的程式與修補在同一處都改了（' + m.conflicts.length + ' 處衝突）；有 ' + cands.length + ' 個候選解法待驗證'; results.push(res); return { ok: false, results, failedAt: hi, conflict: { hunk: hi, cands: cands.map((c) => ({ id: c.id, label: c.label, cost: c.cost })), all: cands } }; }
+                        picked = cands.find((c) => c.id === pick) || null;
+                    }
+                    if (!picked) { res.status = 'conflict'; res.line = plan.lo + 1; res.reason = '你的程式與修補在同一處都改了（' + m.conflicts.length + ' 處衝突）' + (resolveOn ? '；縮小衝突與候選解法都不適用' : ''); res.conflictText = m.lines.map(strip).join('\n'); res.conflicts = m.conflicts.map((c) => ({ ours: c.ours.map(strip), base: c.base.map(strip), theirs: c.theirs.map(strip) })); results.push(res); return { ok: false, results, failedAt: hi }; }
+                }
+                lo = plan.lo; hiIdx = plan.hi; lines = picked ? picked.lines : m.lines; status = plan.how === 'unit' ? 'unit' : 'merged'; extra.note = '保留你的修改並合入修補（' + (plan.unitName ? '函式 ' + (plan.unitQual || plan.unitName) + ' 內，' : '') + '錨點 ' + plan.anchors + '/' + plan.meaningful + ' 行）';
+                if (picked) { status = 'resolved'; extra.resolvedBy = picked.id; extra.note = '衝突已解決：' + picked.label + '（候選驗證通過）；' + extra.note; }
                 if (lines.length === hiIdx - lo && lines.every((x, i) => cur[lo + i] === x)) { status = 'already'; extra.note = '合併後與目前相同（修補的內容你已經改好了）'; }
             }
             const before = cur.slice(lo, hiIdx); const sameAsBefore = lines.length === before.length && lines.every((x, i) => x === before[i]);
@@ -18433,6 +18530,7 @@ const holder = {};
             const oldLen = h.ops.filter((x) => x.t !== '+').length, newLen = h.ops.filter((x) => x.t !== '-').length;
             const baseExp = h.oldStart == null ? null : (oldLen ? h.oldStart - 1 : h.oldStart) + st.delta;
             if (baseExp != null && status !== 'already') st.carry = lo - baseExp; // 使用者改動造成的位移，帶給下一個 hunk
+            { const dl = lines.length - (hiIdx - lo); if (st.useBlocked) { for (const b of st.blocked) if (b[0] >= hiIdx) { b[0] += dl; b[1] += dl; } if (!sameAsBefore) st.blocked.push([lo, lo + lines.length]); if (h.oldStart != null) st.applied.push({ s: h.oldStart, d: newLen - oldLen, carry: st.carry }); } } // 亂序模式：記下已套用的區域
             st.delta += newLen - oldLen; st.from = lo + lines.length;
             if (hiIdx >= cur.length - (lines.length - (hiIdx - lo)) && (h.newNoNl || h.oldNoNl)) { if (h.newNoNl) finalNl = false; else if (h.oldNoNl) finalNl = true; }
             Object.assign(res, { status, line: lo + 1, offset: baseExp == null ? null : lo - baseExp }, extra); results.push(res);
@@ -18441,7 +18539,7 @@ const holder = {};
     }
 
     // ---------- 主流程 ----------
-    const LABEL = { applied: '原位置', relocated: '行號位移後找到', fuzzy: '忽略空白／脈絡差異', unit: '函式內錨點＋三方合併', merged: '三方合併', already: '已套用', conflict: '衝突', ambiguous: '位置有歧義', failed: '失敗' };
+    const LABEL = { applied: '原位置', relocated: '行號位移後找到', fuzzy: '忽略空白／脈絡差異', unit: '函式內錨點＋三方合併', merged: '三方合併', already: '已套用', conflict: '衝突', resolved: '衝突已解決（候選驗證通過）', ambiguous: '位置有歧義', failed: '失敗' };
     async function applyPatch(a) {
         a = a || {}; const o = Object.assign({ requireVerify: false, judgeMode: 'ac' }, a.opts || {});
         const lang = a.lang || a.language || null; const out = (r) => Object.assign({ ok: false, source: a.source, changed: false, hunks: [], verified: { syntax: null, tests: null }, gaps: [] }, r);
@@ -18457,7 +18555,7 @@ const holder = {};
         // 基準：合併前的檢查結果
         let baseSyntax = null; if (a.check) { try { const r = await a.check(a.source); baseSyntax = r && r.ok !== false && r.verdict !== 'CE'; } catch (e) { baseSyntax = null; gaps.push('檢查器出錯：' + clip(e && e.message, 80)); } }
         let baseJudge = null; if (a.judge) { try { baseJudge = await a.judge(a.source); } catch (e) { gaps.push('判題器出錯：' + clip(e && e.message, 80)); } }
-        let verifies = 0; const attempts = [];
+        let verifies = 0;
         const verify = async (src) => {
             verifies++; const v = { syntax: null, tests: null };
             if (a.check) { let r; try { r = await a.check(src); } catch (e) { return { pass: false, v, why: '檢查器出錯：' + clip(e && e.message, 80) }; } const ok = r && r.ok !== false && r.verdict !== 'CE'; v.syntax = !!ok; if (!ok) return { pass: false, v, why: '合併後語法檢查沒過：' + clip((r && (r.detail || r.compileLog || r.message)) || 'CE', 200) }; }
@@ -18470,23 +18568,42 @@ const holder = {};
             return { pass: true, v };
         };
         const canVerify = !!(a.check || a.judge);
+        o.resolve = o.resolve !== false && canVerify; o.canJudge = !!a.judge; // 4.2 衝突階梯要有裁判才開
+        if (a.parser && lang === 'python' && o.unitsFn === undefined) o.unitsFn = (src) => { const u = treeUnits(a.parser, src); return u.hasError && Edit && Edit.splitUnits ? Edit.splitUnits(lang, src) : u; }; // 有語法錯誤時語法樹不可靠，改用詞法切分 // 有語法樹就用語法樹找函式邊界
+        const attempts = [];
         const passes = []; let lastFail = null; let lastRun = null;
         const search = async (choices) => {
             const r = runHunks(file, a.source, lang, choices, o); lastRun = r;
             if (!r.ok) {
                 if (r.ambiguous && canVerify) { for (const c of r.ambiguous.cands) { if (verifies >= LIMITS.maxVerify) { gaps.push('驗證次數用完（' + LIMITS.maxVerify + '），不再試其他候選位置'); break; } await search(Object.assign({}, choices, { [r.ambiguous.hunk]: c })); } return; }
-                lastFail = { why: '第 ' + (r.failedAt + 1) + ' 個 hunk：' + (r.results[r.failedAt].reason || ''), run: r }; return;
+                if (r.conflict) { // 4.2：逐一驗證候選解法，由便宜到貴
+                    for (const c of r.conflict.all) {
+                        if (verifies >= LIMITS.maxVerify) { gaps.push('驗證次數用完（' + LIMITS.maxVerify + '），不再試其他衝突解法'); break; }
+                        const next = Object.assign({}, choices, { conf: Object.assign({}, choices.conf || {}, { [r.conflict.hunk]: c.id }) });
+                        const before = passes.length; await search(next);
+                        const passed = passes.length > before; attempts.push({ hunk: r.conflict.hunk + 1, id: c.id, label: c.label, passed, why: passed ? null : (lastFail && lastFail.why) || null });
+                    }
+                    return;
+                }
+                lastFail = { why: '第 ' + (r.failedAt + 1) + ' 個 hunk：' + ((r.failedRes && r.failedRes.reason) || ''), run: r }; return;
             }
-            if (r.source === a.source) { passes.push({ r, noop: true }); return; }
+            if (r.source === a.source) { passes.push({ r, noop: true, choices }); return; }
             const ver = await verify(r.source);
-            if (ver.pass) passes.push({ r, v: ver.v }); else lastFail = { why: ver.why, run: r, unavailable: ver.unavailable };
+            if (ver.pass) passes.push({ r, v: ver.v, choices }); else lastFail = { why: ver.why, run: r, unavailable: ver.unavailable };
         };
         await search({});
+        if (passes.length > 1 && !passes.some((p) => Object.keys(p.choices).some((k) => k !== 'conf'))) { // 只有「衝突解法」不同的多個通過者：選成本最低的（沒辦法分高下時問模型一次，沒有模型就用程式預設並標明）
+            const RANK = { shrink: 1, token: 2, 'ours+theirs': 3, 'theirs+ours': 3 }; const costOf = (p) => p.r.results.reduce((n, x) => n + (x.resolvedBy ? RANK[x.resolvedBy] || 9 : 0), 0);
+            passes.sort((x, y) => costOf(x) - costOf(y)); const tied = passes.filter((p) => costOf(p) === costOf(passes[0])); let best = passes[0]; let by = 'program';
+            if (tied.length > 1 && typeof a.ask === 'function') { try { const letters = tied.map((_, i) => String.fromCharCode(65 + i)); const msgs = [{ role: 'system', content: '有多個衝突解法都通過驗證。只輸出 JSON：{"pick":"字母"}，選最能保留雙方意圖的一個。' }, { role: 'user', content: tied.map((p, i) => letters[i] + '. ' + p.r.results.filter((x) => x.resolvedBy).map((x) => x.note).join('；')).join('\n') }]; const v = await a.ask(msgs, (x) => (x && letters.indexOf(String(x.pick || '').toUpperCase()) >= 0 ? [] : ['「pick」必須是 ' + letters.join('、') + ' 其中一個'])); if (v) { best = tied[letters.indexOf(String(v.pick).toUpperCase())]; by = 'model'; } } catch (e) { gaps.push('選擇題出錯：' + clip(e && e.message, 80)); } }
+            gaps.push('衝突有 ' + passes.length + ' 種解法都通過驗證，由' + (by === 'model' ? '模型' : '程式（成本最低）') + '選定；其餘：' + passes.filter((p) => p !== best).map((p) => p.r.results.filter((x) => x.resolvedBy).map((x) => x.resolvedBy).join('+')).join('、'));
+            best.chosenBy = by; passes.splice(0, passes.length, best);
+        }
         if (passes.length === 1) {
             const p = passes[0]; const r = p.r; const noop = r.results.every((x) => x.status === 'already') || r.source === a.source;
             const verified = { syntax: p.v ? p.v.syntax : baseSyntax, tests: p.v ? p.v.tests : (baseJudge && baseJudge.verdict) || null };
             if (!canVerify) gaps.push('沒有檢查器也沒有判題器：只是文字層面合併，沒有驗證（verified:false）'); else if (!a.judge) gaps.push('沒有判題器：只確認語法，沒有驗證行為');
-            return out({ ok: true, status: noop ? 'already_applied' : 'merged', source: r.source, changed: r.source !== a.source, noop, hunks: r.results, verified, verifiedAny: canVerify, gaps, diff: r.source !== a.source ? makeDiff(a.source.replace(/\r\n/g, '\n'), r.source.replace(/\r\n/g, '\n'), { oldName: 'a/' + (file.oldName || 'source'), newName: 'b/' + (file.newName || 'source') }) : '', baseHash: hash(a.source), baseSyntax, warnings: pd.warnings });
+            return out({ ok: true, status: noop ? 'already_applied' : 'merged', source: r.source, changed: r.source !== a.source, noop, hunks: r.results, verified, verifiedAny: canVerify, gaps, diff: r.source !== a.source ? makeDiff(a.source.replace(/\r\n/g, '\n'), r.source.replace(/\r\n/g, '\n'), { oldName: 'a/' + (file.oldName || 'source'), newName: 'b/' + (file.newName || 'source') }) : '', baseHash: hash(a.source), baseSyntax, warnings: pd.warnings, attempts, chosenBy: p.chosenBy || null, resolved: r.results.some((x) => x.status === 'resolved') });
         }
         if (passes.length > 1) {
             const ls = passes.map((p) => p.r.results.filter((x) => x.candidates || x.note).map((x) => x.line)).flat();
@@ -18497,7 +18614,7 @@ const holder = {};
         const run = lastFail && lastFail.run ? lastFail.run : lastRun; const hunks = run ? run.results : [];
         const bad = hunks.find((x) => x.status === 'conflict' || x.status === 'ambiguous' || x.status === 'failed');
         const status = lastFail && lastFail.unavailable ? 'verify_unavailable' : bad ? (bad.status === 'failed' ? 'locate_failed' : bad.status) : 'verify_failed';
-        return out({ status, reason: why + '。已回滾，你的程式沒有被改動。', hunks, gaps, rolledBack: true });
+        return out({ status, reason: why + '。已回滾，你的程式沒有被改動。', hunks, gaps, rolledBack: true, attempts, conflictText: (bad && bad.conflictText) || undefined });
     }
 
     // 多檔：全部或全不（每個檔各自驗證，任一失敗整批回滾）
@@ -18522,7 +18639,7 @@ const holder = {};
         return L.join('\n');
     }
 
-    return { PROFILES, LIMITS, parseDiff, applyPatch, applyPatchFiles, merge3, makeDiff, diffMatches, report, norm };
+    return { PROFILES, LIMITS, treeUnits, conflictCandidates, parseDiff, applyPatch, applyPatchFiles, merge3, makeDiff, diffMatches, report, norm };
 });
 
 }).call(null, undefined, holder);

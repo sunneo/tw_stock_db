@@ -279,8 +279,8 @@
    "names": [
     "FaCodeEdit"
    ],
-   "size": 10244,
-   "md5": "5e598b40501a65b41f230e3188699041"
+   "size": 11923,
+   "md5": "6a1b403a6783b7602e05bdab21576a5e"
   },
   "pycode2uml": {
    "file": "chunks/pycode2uml.js",
@@ -463,8 +463,8 @@
    "names": [
     "FaCodeAgent"
    ],
-   "size": 15380,
-   "md5": "b7efc507ab16b644b7eef4ad768c494d"
+   "size": 15593,
+   "md5": "2a5c3f8708137ca134e8783380ee9b7d"
   },
   "codeopt": {
    "file": "chunks/codeopt.js",
@@ -474,13 +474,29 @@
    "size": 12548,
    "md5": "131917cb728e9bb8518802f369370827"
   },
+  "codeslash": {
+   "file": "chunks/codeslash.js",
+   "names": [
+    "FaCodeSlash"
+   ],
+   "size": 5363,
+   "md5": "3233d0f0aaf5158de18a387089712698"
+  },
+  "offlinestack": {
+   "file": "chunks/offlinestack.js",
+   "names": [
+    "FaOfflineStack"
+   ],
+   "size": 4135,
+   "md5": "539d0307c52c0e073e82a0202870f9eb"
+  },
   "codepatch": {
    "file": "chunks/codepatch.js",
    "names": [
     "FaCodePatch"
    ],
-   "size": 24406,
-   "md5": "b88bb4cfe5ee135b105ea4fe50442ec8"
+   "size": 30721,
+   "md5": "01df7208b3aa660640816dc54cd190f9"
   },
   "view": {
    "file": "chunks/view.js",
@@ -1484,7 +1500,7 @@
   }
  },
  "core": {
-  "size": 5634813,
-  "md5": "0db10c915ae11c0e20b1d4379d84cc45"
+  "size": 5635221,
+  "md5": "0095637740d8df787293372addc5c699"
  }
 }
