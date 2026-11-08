@@ -220,7 +220,18 @@
     };
     patchCell('list.get', 'cs', '$0[(int)($1)]'); patchCell('list.set', 'cs', '$0[(int)($1)] = $2');
     patchCell('str.split_ws', 'cs', '$0.Split((char[])null, StringSplitOptions.RemoveEmptyEntries).ToList()');
-    HELPERS.pl = {}; HELPERS.rb = {};
+    // Perl：串列／字典是參考；字串內插不能放任意運算式，所以 print 與 conv.str 改用括號運算式
+    patchCell('io.print_line', 'pl', { bool: 'print((@0 ? "True" : "False"), "\\n")', '*': 'print(($0), "\\n")' });
+    patchCell('io.read_line', 'pl', 'fa_readLine()', ['fa_readLine']);
+    patchCell('str.split_ints', 'pl', "[map { int($_) } split(' ', $0)]"); patchCell('str.split_ws', 'pl', "[split(' ', $0)]");
+    patchCell('dict.sorted_keys', 'pl', 'fa_sortedKeys($0)', ['fa_sortedKeys']); patchCell('conv.str', 'pl', '("" . ($0))');
+    patchCell('int.floordiv', 'pl', 'fa_floordiv($0, $1)', ['fa_floordiv']); patchCell('fmt.fixed', 'pl', 'sprintf("%." . ($1) . "f", $0)');
+    HELPERS.pl = {
+        fa_readLine: 'sub fa_readLine { my $l = <STDIN>; return "" unless defined $l; $l =~ s/\\r?\\n$//; return $l; }',
+        fa_floordiv: 'sub fa_floordiv { my ($a, $b) = @_; die("division by zero") if $b == 0; my $r = $a % $b; return ($a - $r) / $b; }',
+        fa_sortedKeys: 'sub fa_sortedKeys { my ($d) = @_; my @k = keys %{$d}; my $num = !grep { $_ !~ /^-?\\d+(?:\\.\\d+)?$/ } @k; return [$num ? sort { $a <=> $b } @k : sort @k]; }'
+    };
+    HELPERS.rb = {};
     const HDEPS = { c: { fa_new: ['fa_list'], fa_push: ['fa_list'], fa_pop: ['fa_list'], fa_filled: ['fa_new', 'fa_push'], fa_list_copy: ['fa_new', 'fa_push'], fa_list_sum: ['fa_list'], fa_list_min: ['fa_list'], fa_list_max: ['fa_list'], fa_list_contains: ['fa_list'], fa_list_reverse: ['fa_list'], fa_sorted: ['fa_list_copy'], fa_sort: ['fa_list'], fa_joinNums: ['fa_list'], fa_splitInts: ['fa_new', 'fa_push'] }, java: { fa_splitInts: ['fa_splitWs'] }, nodejs: { fa_splitInts: ['fa_parseInt'] }, cpp: { fa_splitInts: ['fa_splitWs'] } };
 
     // ---------- 查表 ----------

@@ -60,8 +60,8 @@ const norm = (s) => s.replace(/\r\n/g, '\n');
     // ---- Ruby ----
     if (OUT.ruby) {
         const RV = which('ruby', ['-e', 'print "ok"']);
-        let gen = 0; for (const s of SAMPLES) t('Ruby／' + s.id + '（產生）', () => { const em = OUT.ruby.emit(irOf(s)); noErr('ruby', s, em); assert.ok(/def /.test(em.code) && /\bend\b/.test(em.code)); gen++; if (RV) { const f = path.join(tmp, 'r_' + sid(s) + '.rb'); fs.writeFileSync(f, em.code); sameAll('ruby', s, (inp) => runIn('ruby', [f], inp)); } });
-        table.ruby = RV ? '實跑通過' : '這台沒有環境，未實跑（Get-Command ruby：找不到；只驗證能產生 ' + gen + '/' + SAMPLES.length + ' 個樣本的原始碼、無 error 診斷）';
+        let gen = 0, syn = 0; let rubyP = null; if (fs.existsSync(path.join(DIR, 'tree-sitter-ruby.wasm'))) { rubyP = new Parser(); rubyP.setLanguage(await Parser.Language.load(path.join(DIR, 'tree-sitter-ruby.wasm'))); } for (const s of SAMPLES) t('Ruby／' + s.id + '（產生）', () => { const em = OUT.ruby.emit(irOf(s)); noErr('ruby', s, em); assert.ok(/def /.test(em.code) && /\bend\b/.test(em.code)); gen++; if (rubyP) { const tr = rubyP.parse(em.code); assert.ok(!tr.rootNode.hasError(), 'Ruby 語法檢查（tree-sitter-ruby）有錯：\n' + em.code); syn++; } if (RV) { const f = path.join(tmp, 'r_' + sid(s) + '.rb'); fs.writeFileSync(f, em.code); sameAll('ruby', s, (inp) => runIn('ruby', [f], inp)); } });
+        table.ruby = RV ? '實跑通過' : '這台沒有環境，未實跑（Get-Command ruby：找不到；只驗證能產生 ' + gen + '/' + SAMPLES.length + ' 個樣本的原始碼、無 error 診斷；tree-sitter-ruby 語法檢查通過 ' + syn + '/' + SAMPLES.length + '）';
     } else table.ruby = '輸出器尚未提供';
     notes.push(JSON.stringify(table)); notes.forEach((x) => console.log('  · ' + x));
     console.log(pass + ' passed, ' + fail + ' failed'); process.exit(fail ? 1 : 0);
