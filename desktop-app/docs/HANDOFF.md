@@ -1,6 +1,6 @@
 # 交接起點頁（FloatingAssistant 桌面版）
 
-> **一頁看完**。更新：2026-11-06。「已核對」＝我實際跑過（測試、真 Electron、遠端 manifest）；「另一條線」＝別的工作階段的報告，沒有逐項核對。
+> **一頁看完**。更新：2026-11-08（管理者）。這台是 Windows 機器 `D:Downloadsideos-嗨投資-desktop-appdesktop-app`，下面第 1 節的 Linux／hungfu.lee 說明來自另一台機器。「已核對」＝我實際跑過（測試、真 Electron、遠端 manifest）；「另一條線」＝別的工作階段的報告，沒有逐項核對。
 > 舊的交接（v299 時期、進度補記一到六、使用者原話）**逐字**在 [`HANDOFF.history.md`](HANDOFF.history.md)，可能過期；待辦的完整表在 [`../DESIGN.TODO.md`](../DESIGN.TODO.md) 最前面的「現況總覽」。
 
 ## 1. 現況
@@ -10,6 +10,14 @@
 - 核心測試 **198/198**（已核對：`node scripts/run-core-tests.js`）。
 - 近幾版（以 commit 訊息與遠端 manifest 為準）：v307 思考堆疊接進 `uml_core` 流程／`designProject` 外層／CoLU 計畫階段；v308 判題器（IPC 在 `main-ext.js`，可熱更新）、遞迴寫程式迴圈、語法修復、編輯、程式碼轉 UML；v309 `uml_design` 讀算法題、程式讀情境配方、區塊庫與庫存規則；v310 `/teacher-loop`（`/offline-trainer-by-ai` 的別名）加客觀驗證／離線重做／回歸／回滾、內建的課（離線不問模型 3/20→20/20）、範式與矩陣積木。更早的離線原生模型（v291～v299）與 JSONL 分頁器、檢視器、多層 JSONL（v304 前後）見舊交接與各設計文件。
 - 工作樹裡有**別的工作階段未提交的修改**：`DESIGN.jsonl-paging.md`、`features/FEATURES.md`、`skills/*`、`DESIGN.TODO.md` 舊章節的一行；`test-reports/*` 是跑測試產生的。**不要 `git add -A`**。
+
+## 1b. 2026-11-08 最新（先看這裡，比第 1、2 節新）
+
+- 已發布 **v337**（遠端 manifest.v2）。待發布 v338：內建剖析器（`renderer/vendor/tree-sitter/`，Python 文法）、判題器 Windows 不彈視窗＋用 `python`、`/code` 指令、區塊↔中間語言橋與行內註解保存、思考堆疊接線（進行中）。
+- 發布：從 `desktop-app` 目錄 `PUBLISH_TRAILER="Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>" sh scripts/publish.sh -m "說明"`；`publish.sh` 會 `git add -A renderer scripts web-lazy`，發布前一定先看 `git status`，並確認沒有子工作階段做到一半。
+- 測試環境（Windows）：`PATH` 要含 `D:Downloadsa-ts-cachein`（真的 python）；語法解析器在 `C:Userssunneo.cachea-ts`；整套核心測試約 6～20 分鐘，放背景跑。
+- **未完成清單的唯一入口：`DESIGN.TODO.md` 最前面的「2026-11-08 未完成清單」**（diff／patch／merge 4.2、editCode 整合、語法樹邊界、中間語言各語言、行為卡接線、矩陣轉 Blockly 接線、Blockly 教學待辦等）。
+- 使用者規則補充：找檔案只在專案內，**絕不 `find /`**（電腦會卡死）；編譯環境自動尋找已擱置；Windows 的 Python 叫 `python`；下載先列檔名、來源、大小等同意；管理者工作階段不用交接。
 
 ## 2. 下一步（依序，來源見 `DESIGN.TODO.md` 現況總覽）
 

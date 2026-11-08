@@ -2,6 +2,41 @@
 
 這份合併了原本分散的 32 份 `DESIGN.TODO.<名稱>.md`，內容逐字保留，各節標題為「原檔：名稱」。`DESIGN.TODO.native-runner.md` 仍單獨存在（`native-all-models` 已完成，改名為 `DESIGN.native-all-models.md`）。完成的項目請改成 `DESIGN.<名稱>.md`；需要真人驗證的另列，不算待辦。
 
+## 2026-11-08 未完成清單（管理者彙整，以此為準；細節在各設計文件）
+
+> 已完成的不在這裡。「待改善」＝做了但沒達標；需要真人驗證的另列，不算待辦。
+
+### 程式 diff／patch／merge（`DESIGN.code-repair.md` 4.1／4.2，負責：diff-patcher 工作階段）
+- 衝突處理階梯（4.2）：現在衝突只回報雙方版本，要縮小衝突、產生候選再用真檢查器／判題驗證。
+- 接進 `editCode`：修補當成一種候選編輯，與語法修正、單元重寫共用格式。
+- 函式邊界改用語法樹（內建剖析器只有 Python 文法，其他語言文法要使用者同意下載）；C++ 模板、Python 巢狀函式等邊界情況要補測試。
+- 修補片段不必由上而下依序。
+- 同步產品內嵌的 `FaCodePatch`（缺「已套用偵測」補強）：跑 `node scripts/embed-code-ui.js`。
+- 離線小模型實際走 `merge_patch` 的成效沒量過（目前只有假模型）。
+
+### 思考堆疊與離線寫程式（`DESIGN.think-stack.md`）
+- 缺口 C、E 接進 `_codeOffline`（`wireOffline`，負責：code-slash 工作階段，進行中）。
+- 缺口 I 只有量測骨架，沒有真模型數字。
+
+### 多語言中間語言與函式行為（`DESIGN.core-ir.md`）
+- c++、c#、ruby、perl 輸出器與樣板只有目錄，沒實跑；java／c 的「進」（抽回設計）、nodejs 反向沒做。
+- 行為描述與行為卡還沒接進程式碼編輯介面（要做成 AI 可呼叫的唯讀工具）。
+- 區塊轉中間語言的橋（`ir_blocks_core.js`）還沒接進 `floating-assistant.js`。
+- 註解保存：行被改寫／搬動／刪除的規則已做（`a53b519b`），其餘節點類型的註解錨定待驗證。
+
+### 矩陣與 Blockly（`DESIGN.matrix-fallback.md`、`HANDOFF.blockly-teach.md`）
+- 矩陣轉 Blockly（`matrix_blocks_core.js`）沒接進產品、沒真 Electron 驗證。
+- 狀態機 UML 圖種、虛擬機轉結構化自然語言的反編譯、反編譯後狀態命名。
+- Blockly 教學下週待辦：多矩陣輸入形狀（銀行家演算法、分頁位址轉換）、Linux 語意模擬缺口、holdout 未解題（只量測不可教）。
+
+### 剖析器與環境
+- 內建剖析器只有 Python 文法（`renderer/vendor/tree-sitter/`）；其他語言要使用者同意後下載。
+- 這台機器：C 編譯器沒設系統標頭路徑（C 實跑測試失敗，是環境問題）；awk 求和、`list-as-set` 偶爾因機器慢超時；編譯環境自動尋找已擱置。
+
+### 介面
+- Graph RAG：標題列徽章已移除；系統提示與兩個 RAG 子任務領域的移除交給 code-slash（排在思考堆疊接線之後）。
+
+
 ## 現況總覽（2026-11-06 快照，先看這張）
 
 > 這份合併檔很長（32 份原檔），目錄只有標題、沒有狀態。這張表給「現在做到哪、下一步是什麼、細節在哪一節」。
