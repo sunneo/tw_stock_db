@@ -176,5 +176,5 @@ const J = mkJudge(tests);
         console.log('  手選 ' + cases.length * 2 + ' 組中逐字一致 ' + strict);
         fs.rmSync(dir, { recursive: true, force: true });
     } else { console.log('  （沒有 git，略過對照）'); }
-    console.log('code_patch.test.js 通過（' + n + ' 項；python ' + (hasPy ? '有' : '沒有') + '、git ' + (hasGit ? '有' : '沒有') + '）');
+    console.log('code_patch.test.js（python ' + (hasPy ? '有' : '沒有') + '、git ' + (hasGit ? '有' : '沒有') + '）：' + n + ' passed, 0 failed');
 })().catch((e) => { console.error(e); process.exit(1); });

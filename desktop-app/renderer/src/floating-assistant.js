@@ -77825,6 +77825,9 @@ ${fnData.code}
     async _behAsset(name, url, binary) {
         const key = 'asset:' + name;
         try { const rec = await this.repoWikiCache.get(key); if (rec) return binary ? new Uint8Array(await rec.blob.arrayBuffer()) : await rec.blob.text(); } catch (_) {}
+        // 內建優先：./vendor/tree-sitter/ 底下有的（web-tree-sitter 與 Python 文法）直接用，不必上網
+        const bundled = { 'ts-0.20.8.js': 'tree-sitter.js', 'ts-0.20.8.wasm': 'tree-sitter.wasm', 'ts-lang-python.wasm': 'tree-sitter-python.wasm' }[name];
+        if (bundled) { try { const br = await fetch('./vendor/tree-sitter/' + bundled); if (br.ok) return binary ? new Uint8Array(await br.arrayBuffer()) : await br.text(); } catch (_) {} }
         const r = await fetch(url); if (!r.ok) throw new Error('下載 ' + name + ' 失敗（HTTP ' + r.status + '）。需要網路一次，之後會存起來離線可用。');
         const data = binary ? new Uint8Array(await r.arrayBuffer()) : await r.text();
         try { await this.repoWikiCache.put(name, binary ? 'application/wasm' : 'application/javascript', new Blob([data]), 'repo_wiki', key); } catch (_) {}
