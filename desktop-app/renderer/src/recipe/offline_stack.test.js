@@ -35,5 +35,13 @@ const ROUNDS = [{ by: 'recipe', ok: false, reason: '沒有配方' }, { by: 'less
         assert.strictEqual(r.off.n, 4); assert.strictEqual(r.stack.n, 4); assert.ok(r.off.calls >= 4 && r.stack.calls >= 4); assert.ok(typeof r.off.accuracy === 'number');
         assert.ok(seen.some((s) => /【目標】/.test(s)), '堆疊版提示應帶焦點標頭');
     });
+    await t('接線入口 wireOffline：失敗只做 C（標頭、卡在哪）；成功做 E（風格提醒）；出錯不丟例外', async () => {
+        const f = await O.wireOffline({ goal: 'g', result: { ok: false, rounds: ROUNDS } }); assert.strictEqual(f.stuckAt, '矩陣'); assert.ok(/不要重複/.test(f.header)); assert.strictEqual(f.check, null); assert.ok(Array.isArray(f.stack) && f.stack.length >= 5);
+        const styleFn = () => ({ ok: false, functions: { mixed: ['getX'] }, variables: { mixed: [] } });
+        const s = await O.wireOffline({ goal: 'g', result: { ok: true, source: 'def getX(): pass', rounds: [{ by: 'paradigm', ok: true, tried: 2 }] }, styleFn }); assert.strictEqual(s.header, ''); assert.strictEqual(s.stuckAt, null); assert.strictEqual(s.check.ok, false); assert.ok(/命名風格混用：getX/.test(s.note));
+        const s2 = await O.wireOffline({ goal: 'g', result: { ok: true, source: 'x', rounds: [] }, styleFn: () => ({ ok: true }) }); assert.strictEqual(s2.check.ok, true); assert.strictEqual(s2.note, '');
+        const s3 = await O.wireOffline({ goal: 'g', result: { ok: true, source: 'x', rounds: [] }, styleFn: () => { throw new Error('壞'); } }); assert.strictEqual(s3.check.ok, false, '檢查器自己壞了記成問題但不丟例外');
+        const n = await O.wireOffline(null); assert.strictEqual(n.stack.length >= 1, true);
+    });
     console.log(pass + ' passed, ' + fail + ' failed'); process.exit(fail ? 1 : 0);
 })();

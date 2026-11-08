@@ -63,5 +63,22 @@
         }
         return out;
     }
-    return { fromRounds, stuckAt, modelHeader, selfCheck, measureRoute, NAME };
+    // E 的內建程式檢查：命名風格（styleCheck 由 ir_blocks_core 的橋提供，注入進來）。只是提醒，不擋——風格混用不代表答錯，成品已過沙盒判題
+    function styleProgCheck(styleFn) { return { name: '命名風格', run: (src) => { const r = styleFn(String(src)); const mixed = [].concat((r.functions && r.functions.mixed) || [], (r.variables && r.variables.mixed) || []); return { ok: r.ok !== false, msg: '命名風格混用：' + mixed.slice(0, 4).join('、') }; } }; }
+    // 接線用的一個入口（給 _codeOffline）：offline 結果 → C 的層框＋卡在哪＋給模型的標頭＋E 的成品檢查。
+    // 失敗（沒有 source）時只做 C；成功時再做 E。所有輸出都是純資料（stack 是 JSONL 行），不丟例外。
+    async function wireOffline(o) {
+        o = o || {}; const res = o.result || {}; const out = { stack: null, stuckAt: null, header: '', check: null, note: '' };
+        try {
+            const st = fromRounds(o.goal || '離線寫程式', res.rounds); out.stuckAt = stuckAt(st); out.header = res.ok ? '' : modelHeader(st);
+            if (res.ok && typeof res.source === 'string') {
+                const progChecks = (o.progChecks || []).slice(); if (typeof o.styleFn === 'function') progChecks.push(styleProgCheck(o.styleFn));
+                out.check = await selfCheck(st, { result: res.source, progChecks, enabled: !!o.enabled, ask: o.ask, question: o.question });
+                if (!out.check.ok) out.note = '成品檢查提醒：' + out.check.problems.map((p) => p.check + '（' + p.msg + '）').join('；');
+            }
+            out.stack = T.toJsonl(st);
+        } catch (e) { out.note = '思考堆疊出錯（不影響結果）：' + String((e && e.message) || e); }
+        return out;
+    }
+    return { fromRounds, stuckAt, modelHeader, selfCheck, measureRoute, styleProgCheck, wireOffline, NAME };
 });
