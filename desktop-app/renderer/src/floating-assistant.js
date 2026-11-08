@@ -82250,11 +82250,14 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
             return uploaded[0] || null;
         }
         // 先當file_id直接查
+        // 2026-11-08：AI 產生／下載的影音檔（例如 YouTube 下載後的卡片）kind 是 'generated'，
+        // 使用者明確給了 id 或檔名時也要認得，才能接著抽音軌、轉逐字稿；其他種類的產生檔仍照 kindFilter 擋掉
+        const okKind = (r) => !kindFilter || r.kind === kindFilter || (preferAv && r.kind === 'generated' && ['video', 'audio'].includes(_faClassifyMediaFile(r.filename)));
         const byId = await this.fileCache.get(q).catch(() => null);
-        if (byId && (!kindFilter || byId.kind === kindFilter)) return byId;
+        if (byId && okKind(byId)) return byId;
         // 再當檔名比對
         const all = await this.fileCache.getAll();
-        const pool = all.filter(r => !kindFilter || r.kind === kindFilter).sort((a, b) => b.createdAt - a.createdAt);
+        const pool = all.filter(okKind).sort((a, b) => b.createdAt - a.createdAt);
         const exact = pool.find(r => r.filename === q);
         if (exact) return exact;
         const lc = q.toLowerCase();
@@ -109399,7 +109402,25 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
     // ===== 對話裡的專屬視窗（HTML 檢視器、AIDoc 檢視器、sqlitebrowser…）=====
     // 共同做法：視窗是對話裡的一則訊息（```fa-widget {kind,id,…}```，重新整理後從訊息重建、停在對話內），預設立刻彈出成視窗（FaWin：拖曳、八個邊角改大小、最大化、收回對話裡）。
     // 建構器 _wgBuild<Kind>(ref) → { node, api }，node 已經加好視窗外殼；關掉之後原位留一張小卡片可以重新開啟。
-    _wgBuilders() { return { htmlview: (r) => this._wgBuildHtmlView(r), aidocview: (r) => this._wgBuildAidoc(r), sqlitebrowser: (r) => this._wgBuildSqlite(r) }; }
+    // 2026-11-08：影音檢視視窗（YouTube 下載後的卡片「🪟 視窗」）：播放器放進可拖曳、改大小、最大化、收回對話的視窗
+    async _wgBuildMediaView(ref) {
+        const rec = await this.fileCache.get(ref.fid); if (!rec || !rec.blob) throw new Error('這個檔案已經不在快取裡了（可能被自動清除）');
+        const title = String(ref.title || rec.filename || '影音');
+        const isAudio = _faClassifyMediaFile(rec.filename) === 'audio';
+        const blob = rec.mimeType && rec.blob.type !== rec.mimeType ? new Blob([rec.blob], { type: rec.mimeType }) : rec.blob;
+        const card = document.createElement('div'); card.className = 'fwd';
+        const bar = document.createElement('div'); bar.className = 'fwd-bar'; const t = document.createElement('span'); t.className = 't'; t.textContent = (isAudio ? '🔊 ' : '🎬 ') + title; bar.appendChild(t);
+        const bX = document.createElement('button'); bX.type = 'button'; bX.textContent = '✕'; bX.title = '關閉這個視窗'; bar.appendChild(bX); card.appendChild(bar);
+        const body = document.createElement('div'); body.style.cssText = 'flex:1;min-height:0;overflow:auto;padding:6px;display:flex;flex-direction:column;justify-content:center'; card.appendChild(body);
+        const slot = document.createElement('div'); body.appendChild(slot);
+        this._mountMediaPlayer(slot, blob, isAudio ? 'audio' : 'video');
+        const v = slot.querySelector('video'); if (v) v.style.cssText += ';max-width:none;max-height:none;width:100%;height:auto';
+        const win = FaWin.decorate(card, { id: 'mediaview', title: (isAudio ? '🔊 ' : '🎬 ') + title, bar, minW: 320, minH: 220 });
+        const api = { ok: true, node: card, close: () => { try { const m = slot.querySelector('video,audio'); if (m) m.pause(); } catch (_) { /* */ } try { win.destroy(); } catch (_) { /* */ } card.remove(); } };
+        bX.onclick = () => { api.close(); this._wgClosed(ref.id, ref); };
+        return { node: card, api };
+    }
+    _wgBuilders() { return { mediaview: (r) => this._wgBuildMediaView(r), htmlview: (r) => this._wgBuildHtmlView(r), aidocview: (r) => this._wgBuildAidoc(r), sqlitebrowser: (r) => this._wgBuildSqlite(r) }; }
     async _wgOpen(kind, ref, o) {
         o = o || {}; this._wgLive = this._wgLive || new Map();
         const id = String(ref.id || (kind + '_' + Date.now().toString(36))); ref = Object.assign({}, ref, { kind, id });
@@ -118463,6 +118484,14 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                     if (mediaSlot) {
                         if (isAudio) this._mountAudioPlayer(mediaSlot, blobWithType);
                         else if (isVideo) this._mountVideoPlayer(mediaSlot, blobWithType);
+                        // 2026-11-08：影音卡片的後續動作——視窗化（可最大化）、抽 mp3、轉逐字稿、開影片編輯器；都直接帶這張卡片的檔案 id
+                        const acts = document.createElement('div'); acts.style.cssText = 'margin-top:8px;display:flex;flex-wrap:wrap;gap:6px';
+                        const addAct = (label, tip, fn) => { const b = document.createElement('button'); b.type = 'button'; b.textContent = label; b.title = tip; b.style.cssText = 'display:inline-flex;align-items:center;gap:4px;padding:6px 12px;background:transparent;color:inherit;border:1px solid rgba(128,128,128,0.5);border-radius:6px;font-size:13px;cursor:pointer;'; b.addEventListener('click', async () => { try { await fn(); } catch (err) { this._log('⚠️ ' + label + '失敗：' + String((err && err.message) || err)); } }); acts.appendChild(b); };
+                        addAct('🪟 視窗', '彈出成可拖曳、改大小、最大化的視窗', () => this._wgOpen('mediaview', { id: 'media_' + id, title: record.filename || filename, fid: id }));
+                        addAct('🔊 抽取 mp3', '把這個檔案的聲音抽出來存成 mp3（預設格式，可在設定改 wav）', () => this._handleMediaExtractAudioCommand(id));
+                        addAct('🎙 轉逐字稿', '用瀏覽器端 Whisper 轉成逐字稿（預設中文）', () => this._handleMediaTranscribeCommand(id));
+                        if (isVideo) addAct('🎬 影片編輯器', '在影片逐字稿編輯器開啟這支影片', async () => { const fid = await this._videoResolveSource(id); const res = await this._videoOpen({ fileId: fid || id }); if (res && res.ok === false) this._pushAssistantMessage('⚠️ ' + (res.error || '影片編輯器開不起來'), null); try { this._persistChatHistory(); this._renderMessageHistory(); } catch (_) { /* */ } });
+                        mediaSlot.after(acts);
                     }
                     // tw_stock_db客製: 2026-09-22使用者要求——「image fap」類的
                     // 下載卡片（例如產出/修改過的圖片附件）也要顯示縮圖、點一下
