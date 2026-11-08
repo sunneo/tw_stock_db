@@ -29,30 +29,73 @@
             const pr = B.parseCNL(f.cnl || ''); return { ok: pr.ok, blocks: pr.blocks, errors: pr.errors || [] };
         };
         // 區塊 → Python（所有函式；有名為 main 的函式就在最後呼叫它）
-        // 行內註解（trivia）旁路：區塊樹沒有註解節點，所以從原始碼收集註解，記下「掛在哪一行程式上」（行尾註解＝同一行；獨立註解＝下一行程式），
-        // 區塊產生 Python 後再依程式行的內容（去空白、引號統一）掛回。掛不回的如實計入 unplaced，附在檔尾，不丟棄。
-        const NL = String.fromCharCode(10);
+        // 行內註解（trivia）旁路：區塊樹沒有註解節點，所以從原始碼收集註解，記下它掛的「那一行程式」（行尾註解＝同一行；獨立註解＝下一行程式），
+        // 區塊產生 Python 後再掛回。掛回的規則（依序，前一關掛上就不再往下；每個目標行同一種註解只能被掛一次）：
+        //   ① 同一函式內，去空白／括號／引號統一後完全相同的行（搬動、重排、沒改的行都在這關；同樣的行依出現順序一一對應）
+        //   ② 同一函式內，字詞重疊率（Jaccard）≥ 0.5 的最像的行（改寫過的行；同分取離原位置最近的）
+        //   ③ 函式內程式行數沒變時，原位置的那一行（整行被改得面目全非但位置沒動）
+        //   ④ 都對不上＝那行被刪了：獨立註解保留，掛到原位置（超出就最後一行）之前，因為它多半在說明一整段；
+        //      行尾註解只描述那一行，所以不留在程式裡，計入 orphans（可用 keepOrphans 改成當獨立註解留在函式尾）
+        //   函式本身被刪／改名時，在整份程式的所有行裡找（①②），仍對不上就同 ④（找不到位置的獨立註解附在檔尾）
+        const NL = String.fromCharCode(10), SPC = String.fromCharCode(32), TAB = String.fromCharCode(9);
         const normLine = (t) => String(t).trim().split(" ").join("").split("(").join("").split(")").join("").split(String.fromCharCode(34)).join(String.fromCharCode(39));
+        const isBlank = (l) => !String(l).trim();
+        const isCommentLine = (l) => String(l).trim().charAt(0) === "#";
+        const indentOf = (l) => l.length - l.trimStart().length;
+        // 把程式行分成函式範圍：[{name, start, end(含)}]；模組層（縮排 0 的非 def 行）name 為空字串
+        function funcRanges(lines) {
+            const out = []; let cur = null;
+            lines.forEach((l, i) => {
+                if (isBlank(l)) return; const top = l.charAt(0) !== SPC && l.charAt(0) !== TAB;
+                const m = top && /^(?:async +)?def +([A-Za-z_][A-Za-z0-9_]*)/.exec(l);
+                if (m) { cur = { name: m[1], start: i, end: i }; out.push(cur); return; }
+                if (top && !isCommentLine(l)) { cur = { name: "", start: i, end: i }; out.push(cur); return; }
+                if (cur) cur.end = i;
+            });
+            return out;
+        }
+        const codeLinesIn = (lines, r) => { const a = []; for (let i = r.start; i <= r.end; i++) if (!isBlank(lines[i]) && !isCommentLine(lines[i])) a.push(i); return a; };
+        const toks = (t) => { const s = {}; (String(t).match(/[A-Za-z_][A-Za-z0-9_]*|[0-9]+|[^ A-Za-z0-9_]/g) || []).forEach((x) => { s[x] = 1; }); return s; };
+        const jaccard = (a, b) => { const A = toks(a), B2 = toks(b); let i = 0, u = 0; Object.keys(A).forEach((k) => { if (B2[k]) i++; }); u = Object.keys(A).length + Object.keys(B2).length - i; return u ? i / u : 0; };
         function collectComments(src, rootNode) {
-            const lines = String(src).split(NL), raw = [];
+            const lines = String(src).split(NL), raw = [], ranges = funcRanges(lines);
             (function walk(n) { if (n.type === "comment") { raw.push({ row: n.startPosition.row, col: n.startPosition.column, text: n.text }); return; } for (let i = 0; i < n.childCount; i++) walk(n.child(i)); })(rootNode);
             return raw.map((c) => {
-                const code = (lines[c.row] || "").slice(0, c.col), trail = code.trim().length > 0; let anchor = trail ? code : "";
-                if (!trail) { for (let r = c.row + 1; r < lines.length; r++) { const t = lines[r].trim(); if (t && t[0] !== "#") { anchor = lines[r]; break; } } }
-                return { text: c.text, trail, anchor: normLine(anchor) };
+                const code = (lines[c.row] || "").slice(0, c.col), trail = code.trim().length > 0; let arow = trail ? c.row : -1;
+                if (!trail) { for (let r = c.row + 1; r < lines.length; r++) { const t = lines[r].trim(); if (t && t[0] !== "#") { arow = r; break; } } }
+                const anchorRaw = arow >= 0 ? (trail ? code : lines[arow]).trim() : ""; const rg = ranges.find((r) => arow >= r.start && arow <= r.end) || null;
+                const cl = rg ? codeLinesIn(lines, rg) : [];
+                return { text: c.text, trail, anchor: normLine(anchorRaw), anchorRaw, fn: rg ? rg.name : null, ord: rg ? cl.indexOf(arow) : -1, fnLines: cl.length };
             });
         }
-        function attachComments(python, comments) {
-            const lines = String(python).split(NL), used = {}, before = {}, tail = []; let placed = 0;
-            (comments || []).forEach((c) => {
-                let idx = -1; if (c.anchor) for (let i = 0; i < lines.length; i++) { if (!used[(c.trail ? "t" : "o") + i] && normLine(lines[i]) === c.anchor) { idx = i; break; } }
-                if (idx < 0) { tail.push(c.text); return; }
-                used[(c.trail ? "t" : "o") + idx] = 1; placed++;
-                if (c.trail) lines[idx] = lines[idx] + "  " + c.text; else (before[idx] = before[idx] || []).push(c.text);
+        function attachComments(python, comments, opts) {
+            opts = opts || {}; const lines = String(python).split(NL), ranges = funcRanges(lines), used = {}, placeAt = new Array((comments || []).length), how = new Array((comments || []).length);
+            const rangeOf = (c) => ranges.filter((r) => r.name === c.fn);
+            const candidates = (c, wide) => { const rs = wide ? [{ start: 0, end: lines.length - 1 }] : rangeOf(c); const a = []; rs.forEach((r) => { for (let i = r.start; i <= r.end; i++) if (!isBlank(lines[i]) && !isCommentLine(lines[i])) a.push(i); }); return a; };
+            const key = (c, i) => (c.trail ? "t" : "o") + i;
+            // ① 完全相同（先在同函式，再全檔）
+            (comments || []).forEach((c, ci) => { if (!c.anchor) return; for (const wide of [false, true]) { const hit = candidates(c, wide).find((i) => !used[key(c, i)] && normLine(lines[i]) === c.anchor); if (hit != null) { used[key(c, hit)] = 1; placeAt[ci] = hit; how[ci] = "exact"; return; } } });
+            // ② 最像的（改寫過）
+            (comments || []).forEach((c, ci) => { if (placeAt[ci] != null || !c.anchorRaw) return; for (const wide of [false, true]) {
+                let best = -1, bs = 0; const cl = candidates(c, wide); cl.forEach((i, k) => { if (used[key(c, i)]) return; const s = jaccard(c.anchorRaw, lines[i]) - Math.abs(k - c.ord) * 1e-4; if (jaccard(c.anchorRaw, lines[i]) >= 0.5 && s > bs) { bs = s; best = i; } });
+                if (best >= 0) { used[key(c, best)] = 1; placeAt[ci] = best; how[ci] = "similar"; return; } } });
+            // ③ 行數沒變：原位置
+            (comments || []).forEach((c, ci) => { if (placeAt[ci] != null || c.ord < 0) return; const cl = candidates(c, false); if (cl.length === c.fnLines && cl[c.ord] != null && !used[key(c, cl[c.ord])]) { used[key(c, cl[c.ord])] = 1; placeAt[ci] = cl[c.ord]; how[ci] = "position"; } });
+            // ④ 被刪
+            const orphans = [], tail = [], before = {}, fnTail = {}; let placed = 0;
+            (comments || []).forEach((c, ci) => {
+                if (placeAt[ci] != null) { const i = placeAt[ci]; placed++; if (c.trail) lines[i] = lines[i] + "  " + c.text; else (before[i] = before[i] || []).push(c.text); return; }
+                if (c.trail) { if (opts.keepOrphans) { const r = rangeOf(c)[0]; if (r) { (fnTail[r.end] = fnTail[r.end] || []).push(c.text); placed++; return; } tail.push(c.text); return; } orphans.push({ text: c.text, fn: c.fn, was: c.anchorRaw }); return; }
+                const cl = candidates(c, false); if (cl.length && c.ord >= 0) { const i = cl[Math.min(c.ord, cl.length - 1)]; (before[i] = before[i] || []).push(c.text); placed++; how[ci] = "clamped"; return; }
+                tail.push(c.text);
             });
-            const out = []; lines.forEach((l, i) => { if (before[i]) { const ind = l.slice(0, l.length - l.trimStart().length); before[i].forEach((t) => out.push(ind + t)); } out.push(l); });
+            const out = []; lines.forEach((l, i) => {
+                if (before[i]) { const ind = l.slice(0, indentOf(l)); before[i].forEach((t) => out.push(ind + t)); } out.push(l);
+                if (fnTail[i]) { const ind = SPC.repeat(4); fnTail[i].forEach((t) => out.push(ind + t)); }
+            });
             tail.forEach((t) => out.push(t));
-            return { python: out.join(NL), placed, unplaced: tail.length };
+            const cnt = (k) => how.filter((x) => x === k).length;
+            return { python: out.join(NL), placed, unplaced: tail.length, orphans, by: { exact: cnt("exact"), similar: cnt("similar"), position: cnt("position"), clamped: cnt("clamped") } };
         }
 
         function program(funcs, opts) {
@@ -60,11 +103,15 @@
             for (const f of funcs) { const r = blocksOf(f); if (!r.ok) { errors.push({ func: f.name, errors: r.errors }); continue; } bodies[f.name] = { body: B.toIR(r.blocks), params: f.params }; }
             if (errors.length) return { ok: false, errors, python: '' };
             // 有原模型（fromPython 的 ctx）就沿用它的 import、型別標註、模組層敘述；只換函式本體。沒有就從頭組一個最小模型
-            const m = ctx ? JSON.parse(JSON.stringify(ctx)) : { name: 'M', actors: [], relations: [], usecases: [], prelude: [], order: [], classes: [{ name: 'M', kind: 'class', attrs: [], values: [], ops: [] }] };
-            const seen = {}; m.classes.forEach((c) => c.ops.forEach((op) => { if (bodies[op.name]) { op.body = bodies[op.name].body; seen[op.name] = 1; } }));
-            let added = 0; Object.keys(bodies).forEach((n) => { if (!seen[n]) { m.classes[0].ops.push(mkOp(n, bodies[n].params, bodies[n].body)); added++; } });
-            let python = C2U.toPython(m); let commentStats = { placed: 0, unplaced: 0 };
-            const trivia = (opts && opts.comments) || (ctx && ctx.trivia); if (trivia && trivia.length) { const a = attachComments(python, trivia); python = a.python; commentStats = { placed: a.placed, unplaced: a.unplaced }; } if (!ctx && bodies.main) python += '\nmain()\n';
+            // 注意：不能複製 ctx——model.order 裡的項目指向同一批 op 物件，複製（JSON）會讓 order 帶著舊本體，換掉的函式本體就不會輸出。
+            // 所以直接換 op.body，產生完再還原。
+            const m = ctx || { name: 'M', actors: [], relations: [], usecases: [], prelude: [], order: [], classes: [{ name: 'M', kind: 'class', attrs: [], values: [], ops: [] }] };
+            const saved = [], seen = {}, extra = [];
+            m.classes.forEach((c) => c.ops.forEach((op) => { if (bodies[op.name]) { saved.push([op, op.body]); op.body = bodies[op.name].body; seen[op.name] = 1; } }));
+            Object.keys(bodies).forEach((n) => { if (!seen[n]) { const op = mkOp(n, bodies[n].params, bodies[n].body); m.classes[0].ops.push(op); extra.push(op); if (m.order && m.order.length) m.order.push({ t: 'f', o: op }); } });
+            let python; try { python = C2U.toPython(m); } finally { saved.forEach((x) => { x[0].body = x[1]; }); extra.forEach((op) => { const i = m.classes[0].ops.indexOf(op); if (i >= 0) m.classes[0].ops.splice(i, 1); if (m.order) { const j = m.order.findIndex((it) => it.o === op); if (j >= 0) m.order.splice(j, 1); } }); }
+            let commentStats = { placed: 0, unplaced: 0 };
+            const trivia = (opts && opts.comments) || (ctx && ctx.trivia); if (trivia && trivia.length) { const a = attachComments(python, trivia, opts); python = a.python; commentStats = { placed: a.placed, unplaced: a.unplaced, orphans: a.orphans, by: a.by }; } if (!ctx && bodies.main) python += '\nmain()\n';
             return { ok: true, errors: [], python, comments: commentStats };
         }
         function fromPython(src) {

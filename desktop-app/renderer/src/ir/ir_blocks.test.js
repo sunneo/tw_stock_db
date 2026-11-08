@@ -90,6 +90,48 @@ const run = (exe, args, input, timeout) => { const r = cp.spawnSync(exe, args, {
         }
         notes.push('註解在 nodejs／java／c 輸出共比對 ' + n + ' 筆全部找到');
     });
+    // ---- 區塊被改過之後，註解的去留規則（見 DESIGN.core-ir.md §8「註解掛回規則」）
+    const NLC = String.fromCharCode(10);
+    const SRC_E = ['def f(a):', '    x = 1  # one', '    # two-comment', '    y = 2', '    return x + y', ''].join(NLC);
+    const editRun = (src, edit, opts) => {
+        const a = bridge.fromPython(src); const funcs = a.funcs.map((f) => ({ name: f.name, params: f.params, cnl: edit(f.cnl) }));
+        const p = bridge.program(funcs, Object.assign({ ctx: a.ctx }, opts || {})); assert.ok(p.ok, JSON.stringify(p.errors)); return p;
+    };
+    const lineOf = (py, needle) => py.split(NLC).find((l) => l.indexOf(needle) >= 0) || '';
+    await t('註解：沒改時一一掛回（基準）', () => {
+        const p = editRun(SRC_E, (c) => c); assert.ok(/x = 1 {2}# one/.test(p.python), p.python); assert.ok(/ {4}# two-comment/.test(p.python)); assert.strictEqual(p.comments.orphans.length, 0); assert.strictEqual(p.comments.by.exact, 2);
+    });
+    await t('註解：改寫一行後仍跟著該行（行尾與獨立註解都算），並標記為「相似」關', () => {
+        const p = editRun(SRC_E, (c) => c.replace('令 x 等於 1', '令 x 等於 1 + 0').replace('令 y 等於 2', '令 y 等於 2 * 1'));
+        assert.ok(/x = 1 \+ 0 {2}# one/.test(lineOf(p.python, 'x = ')), p.python); const lines = p.python.split(NLC); const i = lines.findIndex((l) => /# two-comment/.test(l));
+        assert.ok(i >= 0 && /y = 2 \* 1/.test(lines[i + 1]), p.python); assert.strictEqual(p.comments.orphans.length, 0); assert.ok(p.comments.by.similar >= 2, JSON.stringify(p.comments.by));
+    });
+    await t('註解：整行被改得面目全非但位置沒動 → 用位置掛回', () => {
+        const p = editRun(SRC_E, (c) => c.replace('令 x 等於 1', '令 total_count 等於 len(a)'));
+        assert.ok(/total_count = len\(a\) {2}# one/.test(p.python), p.python); assert.strictEqual(p.comments.by.position, 1);
+    });
+    await t('註解：搬動（兩行對調）→ 註解跟著那一行走', () => {
+        const p = editRun(SRC_E, (c) => { const L = c.split(NLC); const ix = L.findIndex((l) => /令 x 等於 1/.test(l)), iy = L.findIndex((l) => /令 y 等於 2/.test(l)); const tmp = L[ix]; L[ix] = L[iy]; L[iy] = tmp; return L.join(NLC); });
+        const lines = p.python.split(NLC); const ix = lines.findIndex((l) => /x = 1/.test(l)), iy = lines.findIndex((l) => /y = 2/.test(l)); assert.ok(iy < ix, p.python);
+        assert.ok(/# one/.test(lines[ix]), p.python); assert.ok(/# two-comment/.test(lines[iy - 1]), '獨立註解跟著 y 這一行：' + p.python);
+    });
+    await t('註解：刪行 → 行尾註解不留在程式裡但列入 orphans（可選擇保留）；獨立註解保留在原位置附近', () => {
+        const delLine = (re) => (c) => c.split(NLC).filter((l) => !re.test(l)).join(NLC);
+        const p = editRun(SRC_E, delLine(/令 x 等於 1/)); assert.ok(p.python.indexOf('# one') < 0, p.python); assert.strictEqual(p.comments.orphans.length, 1); assert.strictEqual(p.comments.orphans[0].text, '# one'); assert.ok(/was/.test(Object.keys(p.comments.orphans[0]).join()) && /x = 1/.test(p.comments.orphans[0].was));
+        assert.ok(p.python.indexOf('# two-comment') >= 0, '獨立註解仍在');
+        const k = editRun(SRC_E, delLine(/令 x 等於 1/), { keepOrphans: true }); assert.ok(k.python.indexOf('# one') >= 0 && k.comments.orphans.length === 0, k.python);
+        const q = editRun(SRC_E, delLine(/令 y 等於 2/)); const lines = q.python.split(NLC); const i = lines.findIndex((l) => /# two-comment/.test(l)); assert.ok(i >= 0, '獨立註解沒了：' + q.python); assert.ok(i + 1 < lines.length && lines[i + 1].trim().length, q.python);
+    });
+    await t('註解：函式被刪／改名 → 在全檔找同樣的行，找不到就依規則處理，不丟例外', () => {
+        const SRC2 = ['def g(a):', '    s = sum(a)  # total', '    return s', '', 'def h(a):', '    return len(a)', ''].join(NLC);
+        const a = bridge.fromPython(SRC2); const funcs = a.funcs.filter((f) => f.name === 'h').map((f) => ({ name: f.name, params: f.params, cnl: f.cnl }));
+        const ren = bridge.program(a.funcs.map((f) => ({ name: f.name === 'g' ? 'g2' : f.name, params: f.params, cnl: f.cnl })), { ctx: a.ctx }); assert.ok(ren.ok);
+        assert.ok(/# total/.test(ren.python) || ren.comments.orphans.length === 1, '改名後註解要嘛跟著、要嘛列入 orphans：' + ren.python);
+    });
+    await t('註解：改過行再往返兩次，註解數不增不減', () => {
+        const p1 = editRun(SRC_E, (c) => c.replace('令 x 等於 1', '令 x 等於 1 + 0')); const p2 = editRun(p1.python, (c) => c);
+        const n = (py) => py.split('#').length - 1; assert.strictEqual(n(p2.python), n(SRC_E)); assert.strictEqual(p2.comments.orphans.length, 0);
+    });
     await t('壞的受控自然語言：不丟例外，回報解析錯誤', () => {
         const p = bridge.program([{ name: 'main', params: [], cnl: '這不是任何已知的區塊 @@@' }]); assert.strictEqual(p.ok, false);
         const e = bridge.blocksToTarget([{ name: 'main', params: [], cnl: '這不是任何已知的區塊 @@@' }], 'nodejs'); assert.strictEqual(e.ok, false); assert.ok(e.diags.length);
