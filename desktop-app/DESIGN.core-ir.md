@@ -216,7 +216,7 @@ c++／c#／ruby／perl 的輸出器與樣板實跑；java／c 的「進」；浮
 3. c 的實跑沒驗（這台 C 編譯器沒設系統標頭路徑，屬環境問題）；java／c 只涵蓋樣本用到的 26% 標準操作。
 4. 區塊內容超出樣本範圍（類別、例外、生成式）時，通用「程式」區塊會帶原生語法，輸出器照舊拒絕並說明——沒有驗證過更大的區塊程式集。
 5. `styleCheck` 用文字樣式比對，不是語法樹；只看函式名與簡單賦值／for 變數。
-6. ~~還沒接進 `floating-assistant.js`~~ → 已接（見 §9）；行為卡接進 code edit 見 §10（若尚未寫出表示還沒做完）。
+6. ~~還沒接進 `floating-assistant.js`~~ → 已接（見 §9）；行為卡接進 code edit 見 §10。
 
 ## 9. 接進產品：`convert_code` 工具（2026-11-08）
 
@@ -228,3 +228,12 @@ c++／c#／ruby／perl 的輸出器與樣板實跑；java／c 的「進」；浮
 
 **我驗證的**：`ir_wire.test.js`（嵌入版與來源一致、嵌入版橋 10 個樣本 nodejs 實跑與 Python 一致、不支援的如實拒絕）；`code_slash.test.js`（轉換路由）；真 Electron：`scripts/eval/code_convert.eval.js`（`node scripts/eval/real_electron.run.js code_convert`），結果見下方提交說明與 `STATUS.md`。
 **沒驗證 / 待改善**：java／c 轉出的程式只有帶 `tests` 才會實跑，這台 C 編譯器標頭路徑問題使 c 實跑失敗屬環境；沒有型別標註的 Python 轉 java／c 會被拒（輸出器要明確型別）；來源只收 Python；`convert_code` 沒接進離線訓練器的規則（AI 或 `/code` 才呼叫）。
+
+## 10. 行為卡接進產品：`behavior_card` 工具（2026-11-08）
+
+- **工具** `behavior_card`（`coding` 領域，**唯讀**：不產生、不修改程式碼）：`source`、選填 `language`／`function`／`level`。python 預設走完整中間語言（第二層）：每個函式一張卡（簽名、說明、控制流、呼叫了本檔哪些函式、標準操作、副作用、是否純函式），另帶區塊統計與模組層設計摘要（`design`：進入點、呼叫圖、標準操作用量、副作用）；中間語言讀不了、或給 `level:1`，以及 nodejs／java／c／cpp，走行為分析器（第一層，`FaBeh2`＋簽名抽取）。回傳 `markdown`（所有卡片）與結構化 `cards`。
+- **用途（code edit 前先看）**：知道改哪個函式會影響誰（`calls`）、動到哪些標準操作、有沒有副作用，再決定怎麼 `fix_code`／`merge_patch`／`convert_code`；等於把程式「抽回設計」的第一步，但只讀。
+- **`/code`**：新子指令 `行為卡／抽回設計／看行為`（貼程式說「抽回設計／呼叫關係」也會路由到這裡）→ `behavior_card`；`解釋` 仍走 `explain_code`（白話說明）。
+- **實作**：宿主 `_behCards(a)`；沿用 `_irBridge()`（§9）的 `cards`／`cardText`、`FaIrDesign.extract`，其他語言沿用 `_behExplainV2`＋`_behTsHost`。
+- **我驗證的**：`ir_wire.test.js`（嵌入版橋對 10 個樣本都抽得出卡、文字卡含控制流與標準操作、設計摘要有呼叫圖）；`code_slash.test.js`（路由）；真 Electron `scripts/eval/behavior_card.eval.js`（`node scripts/eval/real_electron.run.js behavior_card`）：python 第二層與第一層、函式過濾、找不到函式／空來源／不支援語言如實回錯、來源字串不變。
+- **沒驗證 / 待改善**：nodejs／java／c／cpp 的第一層在真 Electron 沒跑（要載入對應文法，沒快取時會連網下載，本輪不下載；`ir_behavior.test.js` 在核心測試用本機快取驗過 python／nodejs 的行為描述）；「進」（抽回設計）只有 python，java／c 的進、nodejs 反向仍沒做；`behavior_card` 沒接進離線訓練器規則（AI 或 `/code` 才呼叫）；卡片沒有畫面，只回 Markdown。

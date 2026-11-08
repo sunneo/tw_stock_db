@@ -18,7 +18,7 @@
 
 ### 多語言中間語言與函式行為（`DESIGN.core-ir.md`）
 - c++、c#、ruby、perl 輸出器與樣板只有目錄，沒實跑；java／c 的「進」（抽回設計）、nodejs 反向沒做。
-- 行為描述與行為卡還沒接進程式碼編輯介面（要做成 AI 可呼叫的唯讀工具）。
+- 行為卡已接成唯讀工具 `behavior_card`（2026-11-08，`DESIGN.core-ir.md` §10）；**待改善**：nodejs／java／c 的第一層沒在真 Electron 跑（要連網下載文法）；UML 抽回還沒做成工具；沒有卡片畫面。
 - 註解保存：行被改寫／搬動／刪除的規則已做（`a53b519b`），其餘節點類型的註解錨定待驗證。
 
 ### 矩陣與 Blockly（`DESIGN.matrix-fallback.md`、`HANDOFF.blockly-teach.md`）

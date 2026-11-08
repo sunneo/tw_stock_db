@@ -38,6 +38,18 @@ const TSDIR = path.join(__dirname, '..', '..', 'vendor', 'tree-sitter');
         const bad = SAMPLES.find((s) => s.langs.indexOf('c') < 0); if (bad) { const e = bridge.emit(bad.py, 'c', bad.id); assert.strictEqual(e.ok, false); assert.ok(e.diags.length); }
         assert.strictEqual(bridge.program([{ name: 'main', params: [], cnl: '這不是任何已知的區塊 @@@' }]).ok, false);
     });
+    await t('行為卡（唯讀）：嵌入版橋對每個樣本抽出卡片（函式名、標準操作、文字卡）；設計摘要有呼叫圖；不改來源', () => {
+        let n = 0;
+        for (const s of SAMPLES) {
+            const cs = bridge.cards(s.py, s.id); assert.ok(cs.length >= 1, s.id); for (const c of cs) { const txt = bridge.cardText(c); assert.ok(txt.indexOf('### ' + c.name) === 0 && /控制流/.test(txt) && /標準操作/.test(txt), s.id + '.' + c.name); n++; }
+            const d = H.FaIrDesign.extract(bridge.toIr(s.py, s.id).ir); assert.ok(d.callGraph && Array.isArray(d.effects), s.id);
+        }
+        assert.ok(n >= 10, '卡片數 ' + n);
+    });
+    await t('宿主程式碼：_behCards 與 behavior_card 工具存在並列在 coding 領域；工具描述講明唯讀', () => {
+        assert.ok(/async _behCards\(a\)/.test(fa) && /registerOptional\('behavior_card'/.test(fa)); const dom = /coding: \{\s*enabled: true,[\s\S]*?toolNames: \[([^\]]*)\]/.exec(fa)[1]; assert.ok(dom.includes("'behavior_card'"));
+        const i = fa.indexOf("registerOptional('behavior_card',"); assert.ok(/唯讀/.test(fa.slice(i, i + 400)));
+    });
     try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_) { /* */ }
     console.log('ir_wire.test.js（python ' + (hasPy ? '有' : '沒有') + '）：嵌入版 nodejs 實跑 ' + nOk + ' 個樣本'); console.log(pass + ' passed, ' + fail + ' failed'); process.exit(fail ? 1 : 0);
 })().catch((e) => { console.error(e); process.exit(2); });

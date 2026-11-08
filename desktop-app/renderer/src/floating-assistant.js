@@ -1549,7 +1549,7 @@ const SUBAGENT_DOMAIN_REGISTRY = {
     coding: {
         enabled: true,
         label: '程式設計（評估／需求分析／設計計畫／git patch實作／語法檢查／測試／發佈，可中斷恢復）',
-        toolNames: ['uml_to_code', 'design_choices', 'uml_design', 'uml_guide', 'uml_edit', 'write_code', 'fix_code', 'optimize_code', 'merge_patch', 'convert_code', 'matrix_blocks', 'intent_parse', 'uml_to_wasm', 'plan_route', 'ask_user_card', 'log_learn', 'log_ask', 'mix_understand', 'mix_highlight', 'glue_list', 'glue_define', 'glue_report', 'list_file_access_points', 'fap_list_files', 'fap_find_file', 'repo_map', 'repo_ask', 'repo_sql', 'repo_read_doc', 'repo_wiki', 'explain_code', 'behavior_define', 'coding_workspace', 'coding_read_file', 'apply_git_patch', 'git_inspect', 'git_commit', 'git_push', 'coding_task_state', 'coding_run_check', 'coding_run_tests', 'terminal_create', 'terminal_list', 'terminal_run', 'terminal_get_text', 'terminal_cp_to', 'terminal_cp_from', 'browser_search', 'fetch_web_page', 'article_outline', 'article_section'],
+        toolNames: ['uml_to_code', 'design_choices', 'uml_design', 'uml_guide', 'uml_edit', 'write_code', 'fix_code', 'optimize_code', 'merge_patch', 'convert_code', 'matrix_blocks', 'behavior_card', 'intent_parse', 'uml_to_wasm', 'plan_route', 'ask_user_card', 'log_learn', 'log_ask', 'mix_understand', 'mix_highlight', 'glue_list', 'glue_define', 'glue_report', 'list_file_access_points', 'fap_list_files', 'fap_find_file', 'repo_map', 'repo_ask', 'repo_sql', 'repo_read_doc', 'repo_wiki', 'explain_code', 'behavior_define', 'coding_workspace', 'coding_read_file', 'apply_git_patch', 'git_inspect', 'git_commit', 'git_push', 'coding_task_state', 'coding_run_check', 'coding_run_tests', 'terminal_create', 'terminal_list', 'terminal_run', 'terminal_get_text', 'terminal_cp_to', 'terminal_cp_from', 'browser_search', 'fetch_web_page', 'article_outline', 'article_section'],
         systemPrompt: _faBuildCodingSystemPrompt({ kind: 'web' }),
     },
     // tw_stock_db客製: 2026-09-20使用者要求——skills domain：建立Claude格式的skill（SKILL.md＋scripts/references）。
@@ -18046,7 +18046,7 @@ const holder = {};
 (function (module, self) {
 /* /code 指令的路由（純函式 UMD，不問模型）：把「寫程式」類的一句話，由程式決定該呼叫哪一個程式設計工具、欄位怎麼填。
  *   classify(text) → { ok, sub, tool, args, why, missing:[…], usage? }
- *     sub：write／fix／optimize／merge／convert／design／explain／help
+ *     sub：write／fix／optimize／merge／convert／card／design／explain／help
  *     先看開頭子指令（寫、修、優化、合併、設計、解釋、help），沒有就看整段文字的證據：
  *       有 diff 區塊（```diff 或含 @@）＋另一個程式區塊 → merge_patch；有程式區塊＋「優化／加速／變慢」→ optimize_code；
  *       有程式區塊＋「錯／修／不能跑／bug」或沒說要做什麼 → fix_code；沒有程式區塊 → write_code（預設）。
@@ -18055,7 +18055,7 @@ const holder = {};
  *   TOOLS：這個指令會用到的工具名單（測試用來核對工具真的存在、描述裡有講到何時用）。 */
 (function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaCodeSlash = factory(); })(typeof self !== 'undefined' ? self : this, function () {
     'use strict';
-    const TOOLS = ['write_code', 'fix_code', 'optimize_code', 'merge_patch', 'convert_code', 'uml_design', 'explain_code'];
+    const TOOLS = ['write_code', 'fix_code', 'optimize_code', 'merge_patch', 'convert_code', 'behavior_card', 'uml_design', 'explain_code'];
     const SUBS = [
         ['write', /^(?:write|寫|寫一個|做|產生|生成|新寫|幫我寫)(?=\s|$|[，,：:])/i, 'write_code'],
         ['fix', /^(?:fix|debug|修|修復|修正|除錯|修理)(?=\s|$|[，,：:])/i, 'fix_code'],
@@ -18063,7 +18063,8 @@ const holder = {};
         ['merge', /^(?:merge|patch|合併|套用修補|合併修補|套用)(?=\s|$|[，,：:])/i, 'merge_patch'],
         ['convert', /^(?:convert|translate|port|轉換|轉成|轉為|翻成|移植)(?=\s|$|[，,：:])/i, 'convert_code'],
         ['design', /^(?:design|uml|設計|畫設計)(?=\s|$|[，,：:])/i, 'uml_design'],
-        ['explain', /^(?:explain|extract|解釋|說明|抽回設計|抽設計|讀懂)(?=\s|$|[，,：:])/i, 'explain_code']
+        ['card', /^(?:card|behavior|行為卡|抽回設計|抽設計|看行為)(?=\s|$|[，,：:])/i, 'behavior_card'],
+        ['explain', /^(?:explain|extract|解釋|說明|讀懂)(?=\s|$|[，,：:])/i, 'explain_code']
     ];
     const LANG_FENCE = { py: 'python', python: 'python', js: 'nodejs', javascript: 'nodejs', node: 'nodejs', nodejs: 'nodejs', c: 'c', cpp: 'cpp', 'c++': 'cpp', java: 'java', rb: 'ruby', ruby: 'ruby', pl: 'perl', perl: 'perl', sh: 'bash', bash: 'bash', cs: 'csharp', csharp: 'csharp' };
     const USAGE = '用法：/code <一句話>。程式自己判斷做哪一種：\n' +
@@ -18072,6 +18073,7 @@ const holder = {};
         '・優化：/code 優化 ＋ ``` 程式 ``` ＋ ``` 測資 ```（只換輸出一致的寫法）\n' +
         '・合併修補：/code 合併 ＋ ``` 目前的程式 ``` ＋ ```diff 修補 ```（合併後驗證，失敗整份回滾）\n' +
         '・轉換語言：/code 轉成 nodejs ＋ ``` Python 程式 ```（可轉 nodejs／java／c／python；附 ```in／```out 測資會實際執行驗證；不是寫程式，寫仍用上面「寫」）\n' +
+        '・行為卡（唯讀，抽回設計看每個函式做什麼、改了會影響誰）：/code 行為卡 ＋ ``` 程式 ```\n' +
         '・設計：/code 設計 顧客可以加入購物車並結帳（先出 UML 設計）\n' +
         '・解釋／從程式看回設計：/code 解釋 ＋ ``` 程式 ```\n' +
         '也可以直接打需求，不加動詞：沒貼程式就當作「寫」，貼了程式就看你有沒有說優化或修。';
@@ -18107,6 +18109,7 @@ const holder = {};
             if (diff && code.length) { sub = 'merge'; tool = 'merge_patch'; why = '有 diff 區塊和一份程式'; }
             else if (code.length && /優化|加速|變快|太慢|效能|optimi[sz]e|faster|slow/i.test(prose)) { sub = 'optimize'; tool = 'optimize_code'; why = '貼了程式並提到優化／太慢'; }
             else if (code.length && /轉成|轉換成|轉為|翻成|改寫成|移植到|convert (?:it )?to|translate (?:it )?to|port (?:it )?to/i.test(prose) && (targetOf(prose).target || targetOf(prose).unsupported)) { sub = 'convert'; tool = 'convert_code'; why = '貼了程式並要轉成別的語言'; }
+            else if (code.length && /行為卡|抽回設計|函式.{0,4}(?:行為|關係)|呼叫關係|behavior card/i.test(prose) && !/修|錯|bug|fix/i.test(prose)) { sub = 'card'; tool = 'behavior_card'; why = '貼了程式並要行為卡／抽回設計'; }
             else if (code.length && /解釋|說明|在做什麼|看懂|explain|what does/i.test(prose) && !/修|錯|bug|fix/i.test(prose)) { sub = 'explain'; tool = 'explain_code'; why = '貼了程式並要解釋'; }
             else if (code.length) { sub = 'fix'; tool = 'fix_code'; why = '貼了程式（沒說要優化或解釋，當作要修）'; }
             else if (/^(?:設計|畫).{0,6}(?:uml|系統)/i.test(prose) || /(?:uml|類別圖|系統設計)/i.test(prose) && !/寫一個|函式|演算法/.test(prose)) { sub = 'design'; tool = 'uml_design'; why = '提到 UML／系統設計'; }
@@ -18122,6 +18125,7 @@ const holder = {};
             const tg = targetOf(prose); if (tg.target) args.target = tg.target; else missing.push(tg.unsupported ? '目標語言（支援 nodejs、java、c、python；' + tg.unsupported + ' 目前沒有輸出器）' : '目標語言（nodejs、java、c 或 python）');
             if (tests.length) args.tests = tests;
         }
+        else if (tool === 'behavior_card') { if (code[0]) { args.source = code[0].body; if (lang) args.language = lang; } else missing.push('要看行為的程式（用 ``` 包起來）'); }
         else if (tool === 'uml_design') { args.scenario = prose; if (!prose) missing.push('情境（例如「顧客可以加入購物車並結帳」）'); }
         else if (tool === 'explain_code') { if (code[0]) { args.text = code[0].body; if (lang) args.lang = lang; } else missing.push('要解釋的程式（用 ``` 包起來）'); }
         return { ok: !missing.length, sub, tool, args, why, missing, usage: missing.length ? USAGE : undefined };
@@ -72264,6 +72268,14 @@ ${fnData.code}
             },
             { type: 'object', properties: { action: { type: 'string', enum: ['show', 'edit'], description: '預設 show' }, source: { type: 'string', description: '（選填）要看／改的 Python 程式；不給就用最近一次矩陣層結果' }, kind: { type: 'string', description: '（給 source 時）形態：dfa／recurrence／compose／graph／grid' }, patch: { type: 'object', description: 'edit：dfa 用 delta（每個狀態一個 {字元: 下一狀態}）、start、accept（接受狀態陣列）；recurrence 用 coef、init、mod' }, compose: { type: 'object', description: 'edit（組合層）：{vector, filter, reducer, ch}' }, expected: { type: 'array', items: { type: 'object', properties: { in: { type: 'string' }, out: { type: 'string' } }, required: ['in', 'out'] }, description: '（選填）改完後新定義的期望輸出，有給才實跑驗證' } }, additionalProperties: false }
         );
+        registerOptional('behavior_card',
+            '函式行為卡（唯讀，不產生也不修改程式碼）：把一份程式「抽回設計」來分析——每個函式一張卡：簽名、說明與註解、控制流（迴圈／分支／複雜度）、呼叫了本檔哪些函式、用到哪些跨語言標準操作、副作用與是否純函式；python 另帶模組層設計摘要（呼叫圖、標準操作用量、副作用）與區塊統計。code edit 前先看這個，就知道改哪個函式會影響誰。python 走完整中間語言（第二層），nodejs／java／c／cpp 走行為分析器（第一層，沒下載過文法時會用既有機制下載）。參數：{"source":"程式碼","language":"（選填）","function":"（選填）只看這個函式"}',
+            async function (rawArgs) {
+                let a = {}; try { a = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                try { return JSON.stringify(await this._behCards(a)); } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); }
+            },
+            { type: 'object', properties: { source: { type: 'string', description: '要分析的程式碼（整份）' }, language: { type: 'string', enum: ['python', 'nodejs', 'java', 'c', 'cpp'], description: '（選填）不給就從程式碼判斷' }, function: { type: 'string', description: '（選填）只看這個函式' }, level: { type: 'integer', enum: [1, 2], description: '（選填）python 預設用完整中間語言（2）；給 1 強制用行為分析器' } }, required: ['source'], additionalProperties: false }
+        );
         registerOptional('optimize_code',
             '把一份「已經能跑、答案正確」的 Python 程式換成「功能一樣但更有效率」的寫法：先從程式看出慢的寫法（list 當集合用、list.pop(0) 當佇列、重複計算的遞迴、迴圈裡反覆 list.count／in／sum 切片、迴圈裡 lst = lst + [x]、sorted 只為了取極值、字串 += 一直接），再依優化對照表換成 set／deque／lru_cache／Counter／前綴和／max／min／append／join；**每一條都要在 tests（含隱藏測試）上輸出與原程式相同才收，有給 perf（一組大輸入與它的正確輸出）還會量時間，變慢就退回**。回傳 applied（換了什麼、複雜度前後、記憶體、實測毫秒）、skipped（認得但沒換的原因）、source（優化後的程式）。「輸出一致」只在給的測資上驗證，不是等價證明；沒給 tests 就不會改。',
             async function (rawArgs) {
@@ -112326,6 +112338,32 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         } else out.verified = null, out.verifyNote = '改了定義，答案本來就會變，所以不拿舊測資比；給 expected（新的 [{in,out}]）才會實跑驗證' + (tt.length ? '' : '');
         this._matrixLast = { source: python, kind: nd.kind, dec: nd, tests, at: Date.now() };
         return out;
+    }
+    // ===== 函式行為卡（DESIGN.core-ir.md、ir_behavior_core.js）：唯讀，不產生程式碼。python 走完整中間語言（第二層，含區塊統計與模組層設計摘要），其他語言走行為分析器（第一層）=====
+    // a: { source, language?, function? } → { ok, lang, level, cards:[{name, card（Markdown）, params, ret, calls, std, effects, pure, control, blocks?}], markdown, design? }
+    async _behCards(a) {
+        a = a || {}; const src = String(a.source == null ? '' : a.source); if (!src.trim()) return { ok: false, error: '缺少 source（要看行為的程式碼）' };
+        if (typeof FaIrBundle === 'undefined' || !FaIrBundle.FaIrBehavior) return { ok: false, error: '這個版本沒有行為卡模組（FaIrBundle）' };
+        const raw = a.language || (typeof FaCodeAgent !== 'undefined' && FaCodeAgent.detectLangFromCode ? FaCodeAgent.detectLangFromCode(src) : null) || 'python';
+        const lang = raw === 'javascript' ? 'nodejs' : raw; const EXT = { python: 'py', nodejs: 'js', java: 'java', c: 'c', cpp: 'cpp' }, GR = { python: 'python', nodejs: 'javascript', java: 'java', c: 'c', cpp: 'cpp' };
+        if (!EXT[lang]) return { ok: false, error: '行為卡目前支援 python、nodejs、java、c、cpp（' + raw + ' 還沒有簽名抽取）' };
+        const BD = FaIrBundle.FaIrBehavior; let level = null, cards = null, design = null, note = '';
+        const keep = (n) => !a.function || n === a.function;
+        if (lang === 'python' && a.level !== 1) {
+            try {
+                const br = await this._irBridge(); const cs = br.cards(src, 'input'); level = 2;
+                cards = cs.filter((c) => keep(c.name)).map((c) => ({ name: c.name, card: br.cardText(c), params: c.params, ret: c.ret, calls: c.calls, std: c.std.map((s) => s.op), effects: c.effects, pure: c.pure, control: c.control, blocks: c.blocks || undefined }));
+                const ir = br.toIr(src, 'input').ir; const d = FaIrBundle.FaIrDesign.extract(ir); design = { entry: d.entry, callGraph: d.callGraph, stdUsage: d.stdUsage, effects: d.effects };
+            } catch (e) { level = null; cards = null; note = '完整中間語言讀不了這份程式（' + String((e && e.message) || e).slice(0, 80) + '），改用行為分析器（第一層）'; }
+        }
+        if (!cards) {
+            const g = GR[lang]; const host = this._behTsHost(); const PC = await host.loadTreeSitter(); const L = await PC.Language.load(await host.loadLanguageWasm(g)); const P = new PC(); P.setLanguage(L);
+            const sigs = BD.sigsFromTree(g, P.parse(src).rootNode, src); const r = await this._behExplainV2(src, 'input.' + EXT[lang], { lang: g }, null, null);
+            const fns = (r.functions || []).filter((f) => !/^<anonymous/.test(f.name) && !/^fa_|^__/.test(f.name)); const names = fns.map((f) => f.name);
+            level = 1; cards = fns.map((f) => BD.describe(g, f, sigs[f.name], names)).filter((d) => keep(d.name)).map((d) => ({ name: d.name, card: BD.card(d), params: d.params, ret: d.ret, calls: d.calls, std: d.std.map((s) => s.op), effects: d.effects, pure: d.pure, control: d.control }));
+        }
+        if (!cards.length) return { ok: false, error: a.function ? '找不到函式 ' + a.function : '沒有找到任何函式', lang, level };
+        return { ok: true, lang, level, cards, markdown: cards.map((c) => c.card).join('\n\n'), design: design || undefined, note: note || undefined, readOnly: true };
     }
     // 語法樹剖析器（目前內建只有 Python 文法）：載入失敗就回 undefined，merge diff patcher 退回詞法切分
     async _codePatchParser() { try { return await this._pyParserSync(); } catch (_) { return undefined; } }

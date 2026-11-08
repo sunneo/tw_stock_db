@@ -19,6 +19,6 @@
 
 ## 待改善（沒達標，誠實列出）
 1. 離線訓練器對「這段程式有 bug 幫我修」「幫我優化這段程式」仍選 `explain_code`。原因：`_otPlan` 一進來就把換行壓成空白，貼上的程式縮排會毀掉，所以我**沒有**為修／優化加規則；目前這兩種請走 `/code 修`、`/code 優化`（或線上模型自己呼叫工具）。要補得先讓訓練器入口保留原文（程式區塊）。
-2. 「從程式抽回設計」：核心 IR 的抽回設計（`ir_design_core.js`）還不是註冊的工具，`/code 解釋` 目前走 `explain_code`（行為說明），不是 UML 抽回。接成工具後 `explain` 子指令要改路由。
+2. 「從程式抽回設計」：已有唯讀的 `behavior_card` 工具（行為卡＋模組設計摘要，`DESIGN.core-ir.md` §10），`/code 行為卡`（或 `抽回設計`）路由到它；`/code 解釋` 仍走 `explain_code`（白話說明）。UML 抽回（`ir_design_core.toUmlModel`）還沒做成工具。
 3. 沒有真的用離線小模型跑 `/code 寫…` 的完整端到端（需要下載模型；這次沒下載）。`write_code` 本身的端到端由 `code_agent_core.test.js`／`code_loop_core.test.js` 以假模型涵蓋。
 4. 「CoLU 計畫階段（`chooseTool`）」：沒有改。`DESIGN.think-stack.md` 缺口 G 已決定「不建議把規劃路由接到寫程式」；`/code` 與訓練器規則是程式直接選工具，等於 CoLU 的「程式決定路由」那一層，沒有新增模型決策點。

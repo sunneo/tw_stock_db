@@ -31,7 +31,7 @@ t('所有會用到的工具，真的註冊在 floating-assistant.js，而且都�
     for (const tn of S.TOOLS) { assert(new RegExp("registerOptional\\('" + tn + "'").test(src), tn + ' 沒註冊'); assert(dom.indexOf("'" + tn + "'") >= 0, tn + ' 不在 coding 領域'); } });
 t('每個工具描述都講得出何時用（description 長度與關鍵詞），AI 才選得到', () => {
     const src = fs.readFileSync(path.join(__dirname, '..', 'floating-assistant.js'), 'utf8');
-    const key = { write_code: /寫出程式/, fix_code: /修一份/, optimize_code: /更有效率/, merge_patch: /合併進使用者/, convert_code: /轉成 nodejs／java／c/, uml_design: /設計成 UML/, explain_code: /解釋原始碼/ };
+    const key = { write_code: /寫出程式/, fix_code: /修一份/, optimize_code: /更有效率/, merge_patch: /合併進使用者/, convert_code: /轉成 nodejs／java／c/, behavior_card: /行為卡/, uml_design: /設計成 UML/, explain_code: /解釋原始碼/ };
     for (const tn of S.TOOLS) { const i = src.indexOf("registerOptional('" + tn + "',"); assert(i > 0); assert(key[tn].test(src.slice(i, i + 600)), tn + ' 描述缺關鍵詞'); } });
 t('轉換：子指令或「貼程式＋轉成 X」→ convert_code，目標語言只認有輸出器的；其他語言缺什麼說什麼，不亂猜', () => {
     const r = S.classify('轉成 nodejs\n' + F + 'python\nprint(1)\n' + F); assert.strictEqual(r.tool, 'convert_code'); assert.strictEqual(r.ok, true); assert.strictEqual(r.args.target, 'nodejs'); assert.strictEqual(r.args.source, 'print(1)');
@@ -41,6 +41,12 @@ t('轉換：子指令或「貼程式＋轉成 X」→ convert_code，目標語�
     const r4 = S.classify('轉成 java\n' + F + 'js\nlet x = 1;\n' + F); assert.strictEqual(r4.ok, false); assert(r4.missing.some((m) => /只支援 Python/.test(m)));
     const r5 = S.classify('轉成 nodejs\n' + F + 'python\nprint(input())\n' + F + '\n' + F + 'in\nhi\n' + F + '\n' + F + 'out\nhi\n' + F); assert.deepStrictEqual(r5.args.tests, [{ in: 'hi\n', out: 'hi\n' }]);
     assert.strictEqual(S.classify('寫一個 c 語言的函式，輸入整數印出總和').tool, 'write_code'); });
+t('行為卡：子指令「行為卡／抽回設計」或貼程式說「抽回設計／呼叫關係」→ behavior_card（唯讀）；「解釋」仍走 explain_code', () => {
+    const r = S.classify('行為卡\n' + F + 'python\ndef f(x):\n    return x\n' + F); assert.strictEqual(r.tool, 'behavior_card'); assert.strictEqual(r.ok, true); assert.strictEqual(r.args.language, 'python'); assert(/def f/.test(r.args.source));
+    assert.strictEqual(S.classify('抽回設計\n' + F + 'js\nfunction f(){}\n' + F).args.language, 'nodejs');
+    assert.strictEqual(S.classify('看一下函式之間的呼叫關係\n' + F + 'python\nx = 1\n' + F).tool, 'behavior_card');
+    assert.strictEqual(S.classify('解釋\n' + F + 'python\nx = 1\n' + F).tool, 'explain_code');
+    assert.strictEqual(S.classify('行為卡').ok, false); });
 t('離線訓練器規則 code_write：該中的中、不該中的不中（音樂、教學、網頁、已貼程式）', () => {
     const p = S.trainerPatterns()[0]; assert.strictEqual(p.tool, 'write_code'); const re = new RegExp(p.expr, 'i');
     for (const y of ['寫一個函式，輸入兩個整數印出總和', '幫我用python寫程式計算費氏數列', '請產生一個排序演算法', '幫我做一個計算質數的程式', 'write a function that sorts numbers，寫個函式']) assert(re.test(y), '應該中：' + y);
