@@ -7,7 +7,7 @@
 1. **兩條路都要，順序是「行為描述先、完整節點樹後」，而且共用同一份標準操作目錄。** 行為描述（每個函式一份語言中立的摘要）現有零件就能產生，涵蓋語言最多、風險最低，足以支撐「抽回設計→分析→改設計」；但它**不含函式本體，無法精準重現行為**。要「精準轉成目標語言」，一定要有完整節點樹（中間語言）。行為描述是中間語言的上層摘要，不是替代品。
 2. **標準函式庫轉接層不要另造，也不能直接拿單元目錄當它。** 單元目錄（`catalog/`）是「每個執行環境各自的呼叫原型」，沒有「跨語言同一個語意」這個概念。做法：新增一層「語意操作」（本次做的 72 個），單元目錄當它下面的「各語言呼叫原型」資料來源（第 3.4 節）。
 3. **【實測】最小驗證全過**：Python → 中間語言 → nodejs／java／c，10 個樣本函式組在 nodejs 10/10、java 10/10、c 8/8（字典與字串串列正確拒絕，不亂翻）實際編譯執行，輸出與 Python 逐行一致；Python → 中間語言 → Python 往返一致；註解、docstring、位置全數保留。實測抓到 4 個**真的會出錯的語意陷阱**（第 5 節），都在目錄裡處理了，並用「天真翻譯」對照組證明樣本測得到差異。
-4. **沒做到的（誠實）**：c++、c#、ruby、perl 只有目錄樣板（靜態一致性測過，**沒有輸出器、沒有實跑**）；ruby 這台沒裝；c# 有 dotnet 8 SDK 但判題器要 mono，沒試；perl 在專案裡沒有 tree-sitter 文法（第 1 節），「進」做不了。node 之外的語言「進」（從 java／c 原始碼進中間語言）都還沒做。
+4. **沒做到的（誠實）**：c++、c#、ruby、perl 只有目錄樣板（靜態一致性測過，**沒有輸出器、沒有實跑**）；ruby 這台沒裝；c# 有 dotnet 8 SDK 但判題器要 mono，沒試；perl 在專案裡沒有 tree-sitter 文法（第 1 節），「進」做不了。（2026-11-08 更新）nodejs 與 java 的「進」已做（第 11 節）；c 的「進」缺文法檔沒做。
 
 ## 1. 現況盤點【讀程式】
 
@@ -237,3 +237,17 @@ c++／c#／ruby／perl 的輸出器與樣板實跑；java／c 的「進」；浮
 - **實作**：宿主 `_behCards(a)`；沿用 `_irBridge()`（§9）的 `cards`／`cardText`、`FaIrDesign.extract`，其他語言沿用 `_behExplainV2`＋`_behTsHost`。
 - **我驗證的**：`ir_wire.test.js`（嵌入版橋對 10 個樣本都抽得出卡、文字卡含控制流與標準操作、設計摘要有呼叫圖）；`code_slash.test.js`（路由）；真 Electron `scripts/eval/behavior_card.eval.js`（`node scripts/eval/real_electron.run.js behavior_card`）：python 第二層與第一層、函式過濾、找不到函式／空來源／不支援語言如實回錯、來源字串不變。
 - **沒驗證 / 待改善**：nodejs／java／c／cpp 的第一層在真 Electron 沒跑（要載入對應文法，沒快取時會連網下載，本輪不下載；`ir_behavior.test.js` 在核心測試用本機快取驗過 python／nodejs 的行為描述）；「進」（抽回設計）只有 python，java／c 的進、nodejs 反向仍沒做；`behavior_card` 沒接進離線訓練器規則（AI 或 `/code` 才呼叫）；卡片沒有畫面，只回 Markdown。
+
+## 11. 其他語言的「進」：nodejs 與 java（2026-11-08，`ir_in_brace_core.js`＋`ir_in_brace.test.js`）
+
+**做法**：不另寫第二份對照表。輸出器用目錄（`ir_ops_core.js`）的樣板產生程式，「進」就把同一批樣板拿去剖成語法樹（`$N`／`@N` 換成佔位識別字），再用結構比對去認程式裡的運算式——括號不算、佔位符可綁任何運算式、同一個佔位符出現兩次要文字相同（例如 `((@0 % @1) + $1) % @1`）。比對成功就是那個標準操作；比不到的呼叫，若是普通名稱呼叫就是使用者函式，其餘收成 `native`（原文＋語言，不丟）。nodejs 82 個樣式、java 81 個樣式（有 `null` 或帶 `$*` 的樣板略過）。
+- **敘述**：函式、`let`／`const`／Java 區域變數（含型別）、賦值（含 `a[i] = v`、Java 的 `list.set(i, v)`）、複合賦值、`i++`、`if`／`else if`／`else`、`while`、典型 `for (init; k < to; k++／k += 常數／k--)` 變 `forrange`、`for…of`／Java 增強 for 變 `foreach`、`return`／`break`／`continue`／`throw`。try、類別、解構、生成式等整段收成 native。
+- **略過輸出器自己加的前置**：`"use strict"`、`__fa_lines`、`fa_*` 輔助函式、Java 的 import、`__br`、`main(String[] args)` 包裝；模組層的 `main()` 呼叫變成 `entry`。
+- **行內註解保存**：沿用 Python 進／`ir_blocks_core.js` 的掛回規則——前置、行尾、獨立成行、函式標頭行尾、空行；JSDoc／Javadoc 變 `func.doc`。
+- **歧義**：JavaScript／Java 的 `join` 不分字串串列與整數串列，樣板一樣；「進」時除非引數明顯是 split 的結果，一律選 `str.join_num`（在 Python 裡 `map(str, …)` 對字串也無害，是安全的一邊）。`==` 對字串在 Java 是 `.equals`，已還原成 `cmp ==`。
+- **驗證（我跑的）**：10 個樣本中 nodejs 有 10 個、java 有 10 個，走「Python → IR → 該語言原始碼 → 再進 IR → 輸出 Python → 真 python 實跑」，輸出與原 Python 逐字一致（每樣本 3～5 組輸入）；原生區塊 0 個；註解數 7／7 保留；IR 通過驗證器。另有手寫 JavaScript／Java 各一段：前置／行尾註解、Javadoc、型別、`try` 收成原生區塊。
+- **沒做／待改善**：
+  - **C 的「進」沒做**：這台的文法快取只有 python、javascript、java、cpp、c_sharp、rust，**沒有 c**（`tree-sitter-c.wasm`）。可以拿 cpp 文法硬剖，但宣告式（`long long x`、`char *`、指標、陣列）和我們輸出的 C 輔助函式要另寫一套轉接，未驗證，所以不做；要做請管理者把 `tree-sitter-c.wasm` 放進快取（我沒有下載）。
+  - 只認得「我們輸出的」與目錄裡有樣板的寫法；手寫的慣用法（`arr.push(x)`、`Math.floor`、`map.set`）要看目錄有沒有該操作，沒有就是 native。JavaScript 的 `/` 不分整數除法與浮點除法，一律當 `bin /`。
+  - c++、c#、ruby、perl 的**輸出器**仍沒有實跑樣板（沒時間做、沒驗證），維持待改善；perl 沒有文法，「進」做不了。
+  - 沒有接進產品（`convert_code` 目前只吃 Python 來源），也沒嵌入 `floating-assistant.js`。

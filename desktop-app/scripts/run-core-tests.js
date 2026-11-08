@@ -86,6 +86,7 @@ const suites = [
     ['離線思考堆疊（缺口 C 層框／E 成品檢查／I 路由量測骨架；純程式，用假模型驗骨架）', 'renderer/src/recipe/offline_stack.test.js'],
     ['區塊 ↔ 中間語言 ↔ 目標語言：樣本 → 區塊 → 受控自然語言 → Python → 中間語言 → nodejs／java／c，實跑輸出與原 Python 一致；函式行為卡可從區塊抽出；需 tree-sitter 快取', 'renderer/src/ir/ir_blocks.test.js'],
     ['中間語言橋接進產品（FaIrBundle 嵌入與來源逐字一致、嵌入版橋產生 nodejs 並實跑一致、convert_code 註冊在 coding 領域）', 'renderer/src/ir/ir_wire.test.js'],
+    ['nodejs／java 的「進」（目錄樣板當樣式做結構比對；Python→IR→nodejs／java→IR→Python 實跑與原輸出一致、註解保存；需 tree-sitter javascript／java 文法與 python，沒有就略過）', 'renderer/src/ir/ir_in_brace.test.js'],
     ['矩陣 VM 反編譯與狀態機圖種（VM→while／if 結構化中文與 Python，13 個編譯器產物與 VM 在隨機輸入上一致；預設名稱改寫；DFA⇄狀態機 DSL／Mermaid／PlantUML⇄轉移矩陣；需 python）', 'renderer/src/algo/matrix_structure.test.js'],
     ['VM 程式給出區塊（VM→Python→區塊→編回 Python 與 VM 一致；需 tree-sitter 與 python，沒有就略過）', 'renderer/src/algo/matrix_vm_blocks.test.js'],
     ['矩陣轉區塊接進產品（嵌入版 FaMatrixBlocks 與來源一致、管線帶出 matrixForm、嵌入版 DFA 拆區塊並改接受集、matrix_blocks 工具註冊在 coding 領域；需 tree-sitter 與 python）', 'renderer/src/algo/matrix_wire.test.js'],
