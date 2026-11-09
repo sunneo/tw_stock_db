@@ -30643,7 +30643,15 @@ const holder = {};
     return { ok: true, found: true, hits: hits.map(function (h) { return { label: h.label, source: h.source, line_start: h.line_start, line_end: h.line_end, section: h.section, loc: h.loc, quote: h.quote, score: h.score, found_by: h.found_by || '關鍵字' }; }) };
   }
 
-  return { denseKeep: denseKeep, pinpoint: pinpoint, tokenize: tokenize, queryTokens: queryTokens, LINK_LABELS: LINK_LABELS, foldLow: foldLow, fold: fold, isHowTo: isHowTo, cmdLine: cmdLine, normalize: normalize, ingest: ingest, cite: cite, buildIndex: buildIndex, search: search, searchHybrid: searchHybrid, summarize: summarize, verifyQuote: verifyQuote, verifyAll: verifyAll, detail: detail, links: links, answer: answer, locLabel: locLabel };
+  // 搬家／傳輸進度的數字：位元組 → MB（「12.3 / 80.0 MB」），分段 → 「3 / 9 段」；總數不知道（邊傳邊壓縮的串流）就只顯示已傳多少，不會出現 8 位數的位元組或「n/0」
+  function syncCount(p) {
+    p = p || {}; var mb = function (n) { return (Number(n || 0) / 1048576).toFixed(1); };
+    if (p.unit === 'bytes') return p.total ? mb(p.done) + ' / ' + mb(p.total) + ' MB' : mb(p.done) + ' MB';
+    var sofar = p.raw ? '（' + mb(p.raw) + ' MB）' : '';
+    return p.total ? p.done + ' / ' + p.total + ' 段' + sofar : '已傳 ' + p.done + ' 段' + sofar;
+  }
+
+  return { syncCount: syncCount, denseKeep: denseKeep, pinpoint: pinpoint, tokenize: tokenize, queryTokens: queryTokens, LINK_LABELS: LINK_LABELS, foldLow: foldLow, fold: fold, isHowTo: isHowTo, cmdLine: cmdLine, normalize: normalize, ingest: ingest, cite: cite, buildIndex: buildIndex, search: search, searchHybrid: searchHybrid, summarize: summarize, verifyQuote: verifyQuote, verifyAll: verifyAll, detail: detail, links: links, answer: answer, locLabel: locLabel };
 });
 
 }).call(null, undefined, holder);
@@ -30967,6 +30975,8 @@ const holder = {};
         embActive = !ev.end; embText = ev.text || '';
         if (ev.end) { setOpl(''); refreshStatus(); return; }
         setOpl('🧠 ' + embText); var now = Date.now(); if (now - refreshT > 1200) { refreshT = now; refreshSourcesOnly(); }
+      } else if (ev.op === 'transfer') {
+        setOpl(ev.end ? '' : '📦 ' + (ev.text || '搬家中…'));
       } else if (ev.op === 'images') {
         setOpl(ev.end ? '' : ev.text || '🖼 讀圖片中…');
       } else if (ev.op === 'organize') {
@@ -31127,12 +31137,35 @@ const holder = {};
       var src = h('details', 'dim'); src.appendChild(h('summary', null, '參考的素材（' + (cr.sources || []).length + ' 段' + (cr.queries && cr.queries.length ? '；查詢：' + cr.queries.join('、') : '') + '）')); (cr.sources || []).forEach(function (sr) { var b = h('button', 'cite', '[' + sr.n + '] ' + sr.label); b.style.display = 'block'; b.onclick = function () { openSource(sr); }; src.appendChild(b); }); c.appendChild(src); scroll();
     }
     // 把一則對話紀錄畫成卡片內容（即時回答與重新整理後恢復都用這個）
+    // 回答被模型的輸出上限截斷（自動加倍重試後還是不夠）：警告目前上限，問要不要加大再問、加多少（1.5x／2x／4x／自己填）。按下去：這次被截斷的回答離開對話歷史，用精確的 N 重問（不再自動加倍）
+    function truncCard(c, rec) {
+      var used = rec.pr.maxTokens || 3500, sel = h('select'), custom = h('input'), go = h('button', null, '加大再問一次'), no = h('button', null, '不用了'), row = h('div', 'row');
+      [Math.round(used * 1.5), used * 2, used * 4].forEach(function (n) { var o = h('option', null, n + ' tokens'); o.value = String(n); sel.appendChild(o); });
+      var oc = h('option', null, '自己填…'); oc.value = 'custom'; sel.appendChild(oc);
+      custom.type = 'number'; custom.min = String(used + 1); custom.step = '500'; custom.style.width = '7em'; custom.style.display = 'none'; custom.value = String(used * 2);
+      sel.onchange = function () { custom.style.display = sel.value === 'custom' ? '' : 'none'; };
+      [sel, custom, go, no].forEach(function (x) { row.appendChild(x); });
+      var cd = h('div', 'st bad'); cd.appendChild(h('div', null, '⚠️ 這段回答被模型的長度上限（' + used + ' tokens）截斷了。要加大上限再問一次嗎？加多少？')); cd.appendChild(row);
+      no.onclick = function () { cd.remove(); };
+      go.onclick = function () {
+        var n = Math.round(Number(sel.value === 'custom' ? custom.value : sel.value)); if (!(n > used)) { custom.style.display = ''; custom.focus(); return; }
+        if (run) { stat.textContent = '還在處理上一個問題…'; return; }
+        askAgain(rec, c, n);
+      };
+      return cd;
+    }
+    function askAgain(oldRec, oldCard, n) {
+      conv = conv.filter(function (r) { return r !== oldRec; }); try { oldCard.remove(); } catch (e) { /* */ }
+      var me = { aborted: false, ctl: {}, ctl2: {}, done: null }; run = me; syncBtn();
+      function fin() { if (run === me) run = null; syncBtn(); }
+      me.done = askCore(oldRec.q, me, { query: oldRec.query, answerMaxTokens: n }).then(fin, fin); return me.done;
+    }
     function fillRec(c, rec) {
       var q = rec.q;
       if (rec.k === 'chat') { var tx = h('div'); tx.style.whiteSpace = 'pre-wrap'; tx.textContent = rec.reply; c.appendChild(tx); return; }
       if (rec.err && rec.err !== '已停止') note(c, '⚠️ ' + rec.err, 'st bad');
       if (rec.k === 'create') { if (rec.cr) renderCreate(c, rec.cr); return; }
-      if (rec.pr) { renderCreate(c, rec.pr); return; }
+      if (rec.pr) { renderCreate(c, rec.pr); if (rec.pr.truncated) c.appendChild(truncCard(c, rec)); return; }
       var res = rec.res; if (!res) return;
       if (!res.found) { var nf0 = h('details', 'dim'); nf0.appendChild(h('summary', null, '沒有找到相關內容')); nf0.appendChild(h('div', null, (res.message || '在目前勾選的來源裡找不到相關內容。') + (res.semantic === false ? '（' + (res.semantic_note || '只用關鍵字檢索') + '）' : ''))); c.appendChild(nf0); return; }
       var ai = rec.ai; if (!ai) { showHits(c, res, q); return; }
@@ -31147,8 +31180,8 @@ const holder = {};
       conv.forEach(function (rec) { userMsg(rec.q); var c = card(cardTitle(rec)); if (rec.steps && rec.steps.length) { var tr0 = transcript(c, '🧾 過程'); rec.steps.forEach(function (st) { tr0.step(st[0], st[1]); }); tr0.end(rec.took || '🧾 過程'); } fillRec(c, rec); });
       scroll();
     }
-    function askCore(q, me) {
-      var kindMode = mode.value; lastQuery = q; userMsg(q);
+    function askCore(q, me, again) {
+      var kindMode = again ? 'ai' : mode.value; lastQuery = q; if (!again) userMsg(q);
       var hist0 = histForRoute(), rec = { k: 'a', q: q, mode: kindMode, steps: [], ts: Date.now() }; conv.push(rec);
       var c = card('🔎 查詢'), tr0 = transcript(c, '🧾 過程（進行中…）'), t0 = Date.now(), ctl = me.ctl;
       var tr = { step: function (t, cls) { rec.steps.push([t, cls || '']); return tr0.step(t, cls); }, wait: tr0.wait, end: function (t) { rec.took = t; tr0.end(t); } };
@@ -31158,13 +31191,13 @@ const holder = {};
       function aborted() { if (me.aborted) { stopWait(); tr.step('⏹ 已停止', 'bad'); tr.end('🧾 過程（已停止）'); rec.err = '已停止'; saveConv(); return true; } return false; }
       function finish(label) { stopWait(); tr.end('🧾 過程（' + ((Date.now() - t0) / 1000).toFixed(1) + ' 秒' + (label ? '，' + label : '') + '）'); saveConv(); scroll(); }
       function onErr(e) { stopWait(); if (me.aborted) { aborted(); return; } rec.err = String((e && e.message) || e).slice(0, 200); tr.step('⚠️ ' + rec.err, 'bad'); tr.end('🧾 過程（出錯）'); saveConv(); }
-      var routeP = (kindMode === 'ai' && host.route) ? host.route(q, hist0, onStep, ctl) : Promise.resolve({ route: 'search', query: q });
+      var routeP = again ? Promise.resolve({ route: 'search', query: again.query || q }) : (kindMode === 'ai' && host.route) ? host.route(q, hist0, onStep, ctl) : Promise.resolve({ route: 'search', query: q });
       return routeP.then(function (rt) {
         if (aborted()) return;
         if (rt.route === 'chat') { rec.k = 'chat'; rec.reply = rt.reply; setTitle('💬 對話'); stopWait(); fillRec(c, rec); finish(); return; }
         var qq = rt.query || q; rec.query = qq;
         if (kindMode === 'ai' && host.respond) {
-          return host.respond(qq, hist0, onStep, ctl).then(function (pr) { stopWait(); if (aborted()) return; if (!pr.ok) { rec.err = pr.error; rec.pr = null; fillRec(c, rec); finish('沒完成'); return; } rec.pr = pr; fillRec(c, rec); finish(); });
+          return host.respond(qq, hist0, onStep, ctl, again ? { answerMaxTokens: again.answerMaxTokens } : undefined).then(function (pr) { stopWait(); if (aborted()) return; if (!pr.ok) { rec.err = pr.error; rec.pr = null; fillRec(c, rec); finish('沒完成'); return; } rec.pr = pr; fillRec(c, rec); finish(); });
         }
         return host.ask({ question: qq, limit: 6, ctl: ctl, onStep: onStep }).then(function (res) {
           stopWait(); if (aborted()) return; rec.res = res;
@@ -67151,6 +67184,8 @@ const FaKnowledgeHost = (function () {
         async _kiEmbedPipe(onProgress) { const p = await this._unitCatalogEmbedder(onProgress); return p || null; },
         // 進度事件：{ op: 'embed'|'organize', done, total, text, source_id?, end? }——面板訂閱後畫進度條
         _kiOn(fn) { (this._kiLs = this._kiLs || new Set()).add(fn); return () => this._kiLs.delete(fn); },
+        // 搬家的傳輸進度：unit 'bytes'（位元組，畫面顯示 MB）；total 不知道就只顯示已傳多少。end 在搬家收尾時送
+        _kiTransfer(phase, done, total) { this._kiEmit({ op: 'transfer', unit: 'bytes', phase, done, total, text: (phase === 'read' ? '讀取知識庫檔案：' : '寫入新位置：') + FaKnowledge.syncCount({ unit: 'bytes', done, total }) }); },
         _kiEmit(ev) { for (const fn of Array.from(this._kiLs || [])) { try { fn(ev); } catch (_) { /* */ } } },
         async _kiEmbedPending(onProgress) {
             const st = this._kiSettings(); if (!st.embedConsent) return { skipped: true, note: '語意索引還沒啟用（/knowledge embed）' };
@@ -67340,7 +67375,7 @@ const FaKnowledgeHost = (function () {
             for (const q of queries) { const r = await this._kiAsk({ question: q, limit: 3, no_expand: true, sources }).catch(() => null); let n = 0; for (const h of ((r && r.hits) || [])) if (mats.length < 14 && addHit(h)) n++; if (n) step('　「' + q.slice(0, 30) + '」→ 新增 ' + n + ' 段'); }
             try { const srcList = (await this._kiRun((store) => store.listSources())).filter((x) => x.enabled).slice(0, 8); for (const sc of srcList) { if (mats.some((h) => h.source_id === sc.id) || mats.length >= 14) continue; const r = await this._kiAsk({ question: queries.join(' ') + ' ' + String(request).slice(0, 60), limit: 2, no_expand: true, sources: [sc.id] }).catch(() => null); let n = 0; for (const h of ((r && r.hits) || [])) if (mats.length < 14 && addHit(h)) n++; if (n) step('　再從《' + sc.name + '》補 ' + n + ' 段'); } } catch (_) { /* */ }
         },
-        async _kiRespond(question, history, onStep, ctl, sources) {
+        async _kiRespond(question, history, onStep, ctl, sources, ropts) {
             const step = (t) => { try { if (onStep) onStep(t); } catch (_) { /* */ } }, t0 = Date.now(), q = String(question || '').trim(); if (!q) return { ok: false, error: '請說要問什麼' };
             const creative = /設計|寫(一個|個|出)?(程式|程序|腳本|code)|實作|實現|幫我(寫|做|設計|規劃)|規劃|產生|生成|範例|\b(design|implement|write|create|build|generate)\b/i.test(q);
             const ids = sources ? await this._kiResolveIds(sources) : null; const mats = [], seen = new Set();
@@ -67348,7 +67383,7 @@ const FaKnowledgeHost = (function () {
             step('🔎 從知識庫找相關資料…'); const r0 = await this._kiAsk({ question: q, limit: 8, sources, onStep: step, ctl }).catch(() => ({ found: false, hits: [] })); (r0.hits || []).forEach(addHit);
             if (creative) await this._kiGatherPlanned(q, step, ctl, sources, addHit, mats);
             const hist = (Array.isArray(history) ? history : []).slice(-4).map((h) => '使用者：' + String(h.q).slice(0, 100) + '\n你：' + String(h.a || '').slice(0, 220)).join('\n');
-            let attempts = 0, needed = [], used = null, reply = '';
+            let attempts = 0, needed = [], used = null, reply = '', trunc = { truncated: false, maxTokens: 0 }; const want = ropts && Number(ropts.answerMaxTokens) > 0 ? Math.round(Number(ropts.answerMaxTokens)) : 0; // want：使用者在「被截斷」卡片上選的上限，精確使用
             for (;;) {
                 attempts++; await this._kiWidenHits(mats); const digs = await this._kiPickDigests(q, ids, mats, Math.floor(this._kiBudgetChars(false) * 0.28));
                 // 組提示詞（同步版）：先概覽、再摘要、其餘給原文片段
@@ -67367,7 +67402,8 @@ const FaKnowledgeHost = (function () {
                 step('📚 交給模型：概覽 ' + (await getMap(false)).split('\n').length + ' 份文件、章節摘要 ' + digs.length + ' 則、原文片段 ' + online.items.filter((x) => !x.digest).length + ' 段，提示詞共約 ' + online.prompt.length + ' 字' + (attempts > 1 ? '（補查之後第 ' + attempts + ' 次）' : '') + '…');
                 const offMap = await getMap(true); let off = null;
                 try {
-                    reply = await this._kiLlm(online.prompt, { systemPrompt: '你是使用者的藏書閣：他放進來的文件就是你的記憶。依資料理解後用自己的話回答，有依據的標編號，資料沒有的標 [外]。', maxTokens: 3500, temperature: 0.3 }, { label: '回答', timeoutMs: 240000, onStep: step, ctl, onAttempt: (kind) => { if (kind === 'offline') { off = off || composeFor(true, offMap); cur = off; } else cur = online; }, offlinePrompt: () => (off = off || composeFor(true, offMap)).prompt });
+                    const gr = await this._kiLlmGrow(online.prompt, { systemPrompt: '你是使用者的藏書閣：他放進來的文件就是你的記憶。依資料理解後用自己的話回答，有依據的標編號，資料沒有的標 [外]。', maxTokens: 3500, temperature: 0.3 }, { label: '回答', timeoutMs: 240000, onStep: step, ctl, onAttempt: (kind) => { if (kind === 'offline') { off = off || composeFor(true, offMap); cur = off; } else cur = online; }, offlinePrompt: () => (off = off || composeFor(true, offMap)).prompt }, { exact: want });
+                    reply = gr.text; trunc = { truncated: gr.truncated, maxTokens: gr.maxTokens };
                 } catch (e) { return { ok: false, error: '模型沒有回應：' + String((e && e.message) || e).slice(0, 160), sources: online.items }; }
                 used = cur;
                 const nm = String(reply).match(/(?:^|\n)\s*NEED\s*[:：]\s*(.+)\s*$/i);
@@ -67431,7 +67467,7 @@ const FaKnowledgeHost = (function () {
                 report = { inKb, notInKb }; step('🔍 依據檢查：程式碼用到 ' + names.length + ' 個名稱，資料裡找得到 ' + inKb.length + ' 個，沒提到 ' + notInKb.length + ' 個');
             }
             step('✅ 核對完成：' + (dropped.length ? '丟掉 ' + dropped.length + ' 句對不上資料的' : '沒有句子被丟掉') + (invalid ? '，' + invalid + ' 個編號不存在' : ''));
-            return { ok: true, text: fixed, sources: items, dropped, report, cited: Array.from(cited), needed, creative, invalid_refs: invalid, ms: Date.now() - t0 };
+            return { ok: true, text: fixed, sources: items, dropped, report, cited: Array.from(cited), needed, creative, invalid_refs: invalid, truncated: trunc.truncated, maxTokens: trunc.maxTokens, ms: Date.now() - t0 };
         },
         // ───── 摘要：逐層壓縮（像「分析大檔案」的 map-reduce），資訊不砍，只一層一層變精簡 ─────
         // 整份文件依序切成小段（每段約 2400 字，不切斷行、盡量在章節邊界換段）→ 每段摘一次（第 1 層）→ 每 6 個相鄰的摘要再摘一次（第 2 層）→ … → 最後一層只剩一個，就是整份文件的概覽（doc）。
@@ -67518,6 +67554,7 @@ const FaKnowledgeHost = (function () {
                 } catch (e) {
                     clearTimeout(timer); lastErr = e; const msg = String((e && e.message) || e);
                     if (/已略過/.test(msg)) throw e;
+                    if (/finish_reason=length/i.test(msg)) throw e; // 回答被輸出上限截斷：換模型沒有用，由 _kiLlmGrow 加大上限同一個模型再問
                     if (kind === 'offline' && /還沒下載|沒有已下載|NOT_SUPPORTED|關掉|使用者取消/.test(msg)) offlineGone = true;
                     // 判斷「線上不行」要有憑據：逾時、5xx、429、網路錯誤才值得多試一次線上（節點可能只是忙或剛重連）；金鑰錯誤、404 這類試幾次都一樣，直接換離線
                     const transient = /逾時|沒有回應|timeout|network|Failed to fetch|網路|空白|HTTP 5\d\d|API錯誤\(5\d\d\)|API錯誤\(429\)|API錯誤\(408\)|429/i.test(msg); if (kind === 'online' && i === 0 && !transient) skipRetry = true;
@@ -67527,6 +67564,19 @@ const FaKnowledgeHost = (function () {
                 }
             }
             throw lastErr;
+        },
+        // 回答被輸出上限截斷（finish_reason=length 且有寫出部分文字）不能當完整答案：_kiLlm 丟出帶 partial 的錯誤，這裡把輸出上限加倍重問（最多 2 次，上限 12000；g.ceiling 可指定自己的上限）。
+        // 還是被截斷就回傳已寫的部分並標 truncated、maxTokens，讓呼叫端顯示警告與「加大再問」。g.exact（使用者在卡片上選的數字）＝精確用這個數字，不再自動加倍。
+        async _kiLlmGrow(prompt, opts, o, g) {
+            g = g || {}; const ceiling = g.exact > 0 ? g.exact : (g.ceiling || 12000), step = (o && o.onStep) || (() => {}); let budget = g.exact > 0 ? g.exact : (opts.maxTokens || 2500), n = 0;
+            for (;;) {
+                try { const text = await this._kiLlm(prompt, Object.assign({}, opts, { maxTokens: budget, strictLength: true }), o); return { text, truncated: false, maxTokens: budget }; }
+                catch (e) {
+                    if (!/finish_reason=length/i.test(String((e && e.message) || e))) throw e;
+                    if (n >= 2 || budget >= ceiling) { if (e.partial) return { text: e.partial, truncated: true, maxTokens: budget }; throw e; }
+                    n++; const next = Math.min(budget * 2, ceiling); step('　⚠️ 回答被輸出上限（' + budget + ' tokens）截斷了，加大到 ' + next + ' 再問一次…'); budget = next;
+                }
+            }
         },
         // 離線文字模型（Configure 裡選好、已下載的）：只拿「文字生成」，不經過離線訓練器與工具
         // 線上：先試第一組，這個節點本身有問題（5xx、連線被重置、逾時、404、金鑰被拒）就換下一個線上模型，最多 4 個，才輪到離線。
@@ -67642,7 +67692,7 @@ const FaKnowledgeHost = (function () {
             return {
                 palette: () => ({ dark: !self._isLightTheme() }),
                 status: () => self._kiStatus(), sources: () => self._kiSources(),
-                ask: (a) => self._kiAsk(a), respond: (q, h, onStep, ctl) => self._kiRespond(q, h, onStep, ctl), chatLoad: () => self._kiChatLoad(), chatSave: (l) => self._kiChatSave(l), chatClear: () => self._kiChatClear(), route: (q, h, onStep, ctl) => self._kiRoute(q, h, onStep, ctl), answerAI: (q, hits, onStep, ctl) => self._kiAnswerAI(q, hits, onStep, ctl), onProgress: (fn) => self._kiOn(fn),
+                ask: (a) => self._kiAsk(a), respond: (q, h, onStep, ctl, ropts) => self._kiRespond(q, h, onStep, ctl, undefined, ropts), chatLoad: () => self._kiChatLoad(), chatSave: (l) => self._kiChatSave(l), chatClear: () => self._kiChatClear(), route: (q, h, onStep, ctl) => self._kiRoute(q, h, onStep, ctl), answerAI: (q, hits, onStep, ctl) => self._kiAnswerAI(q, hits, onStep, ctl), onProgress: (fn) => self._kiOn(fn),
                 outline: (ref) => self._kiWithSource(ref, (store, s) => store.outline(s.id)),
                 detail: (ref, which, o) => self._kiWithSource(ref, (store, s) => store.detail(s.id, which, o)),
                 summary: (ref) => self._kiWithSource(ref, (store, s) => store.summary(s.id)),
@@ -67690,7 +67740,7 @@ const FaKnowledgeHost = (function () {
             const ref = loc.kind === 'file' ? 'file:' + loc.ref : 'fap:' + String(loc.ref).replace(/^fap:/i, '');
             if (loc.kind === 'file' && this._kiNativeApi()) { // 分段讀（每段 8 MB），不產生整檔的 base64 字串
                 const st = await this._kiNativeCall('stat', { path: loc.ref }); if (!st.exists) return null; const out = new Uint8Array(st.size); let off = 0;
-                while (off < st.size) { const r = await this._kiNativeCall('readChunk', { path: loc.ref, offset: off, length: 8388608 }); const u = this._sqlB64ToBytes(r.base64 || ''); if (!u.length) break; out.set(u, off); off += u.length; }
+                while (off < st.size) { this._kiTransfer('read', off, st.size); const r = await this._kiNativeCall('readChunk', { path: loc.ref, offset: off, length: 8388608 }); const u = this._sqlB64ToBytes(r.base64 || ''); if (!u.length) break; out.set(u, off); off += u.length; } this._kiTransfer('read', st.size, st.size);
                 return out;
             }
             if (loc.kind === 'file') { const raw = window.desktopAPI && window.desktopAPI.rawfs; if (!raw) throw new Error('網頁版讀不到磁碟路徑'); const r = await raw.readFile(loc.ref, 'base64'); return this._sqlB64ToBytes(r.base64 || ''); }
@@ -67700,7 +67750,7 @@ const FaKnowledgeHost = (function () {
             if (loc.kind === 'idb') return this._kiIdbPut(loc.ref || 'default', bytes);
             if (loc.kind === 'file' && this._kiNativeApi()) { // 分段寫到 .part，最後 fsync＋改名；回傳的 sha256 要和記憶體裡的位元組一致
                 const CH = 8388608; let off = 0, last = null;
-                do { const end = Math.min(bytes.length, off + CH), done = end >= bytes.length; last = await this._kiNativeCall('writeChunk', { path: loc.ref, offset: off, base64: this._sqlBytesToB64(bytes.subarray(off, end)), done }); off = end; } while (off < bytes.length);
+                do { const end = Math.min(bytes.length, off + CH), done = end >= bytes.length; this._kiTransfer('write', off, bytes.length); last = await this._kiNativeCall('writeChunk', { path: loc.ref, offset: off, base64: this._sqlBytesToB64(bytes.subarray(off, end)), done }); off = end; } while (off < bytes.length); this._kiTransfer('write', bytes.length, bytes.length);
                 const dig = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))).map((b) => b.toString(16).padStart(2, '0')).join('');
                 if (!last || last.sha256 !== dig || last.size !== bytes.length) { try { await this._kiNativeCall('remove', { path: loc.ref }); } catch (_) { /* */ } throw new Error('寫入後 sha256 核對不一致'); }
                 return true;
@@ -67709,7 +67759,8 @@ const FaKnowledgeHost = (function () {
             const ref = 'fap:' + String(loc.ref).replace(/^fap:/i, ''); return this._writeTerminalCopyDestination(ref, bytes, ref.split('/').pop() || 'knowledge.keeplookup', 'application/vnd.sqlite3');
         },
         // 搬到新位置：先把目前的內容存回、複製過去、用新位置開起來核對（來源數、片段數、向量數都要一樣）、確認沒問題才切換設定。舊的預設保留（keepOld=false 才刪）。
-        async _kiMigrate(to, o) {
+        async _kiMigrate(to, o) { try { return await this._kiMigrate0(to, o); } finally { this._kiEmit({ op: 'transfer', end: true }); } },
+        async _kiMigrate0(to, o) {
             o = o || {}; const from = this._kiSettings().location; let dest = { kind: to.kind, ref: String(to.ref || (to.kind === 'idb' ? 'default' : '')) };
             if (!['idb', 'file', 'fap', 'native'].includes(dest.kind)) return { ok: false, error: '位置要是 idb、file、fap 或 native' };
             if (dest.kind === 'native') { // 原生磁碟檔：放在 app 資料夾的 knowledge/，檔名取自 ref（沒給就 main）；不覆蓋既有檔案
@@ -118450,7 +118501,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
     // 內部那次路由呼叫是同一種「單次分類/摘要用途、不需要完整agentic loop」
     // 的呼叫模式，抽出來避免重複程式碼。失敗時丟出例外，呼叫端自行決定要
     // 整段失敗還是（像summarize_large_text那樣）用佔位文字讓其他區塊繼續。
-    async _callSimpleCompletion(userPrompt, { systemPrompt = '', maxTokens = 800, temperature = 0.2, cfg = null, noBudgetRetry = false } = {}) {
+    async _callSimpleCompletion(userPrompt, { systemPrompt = '', maxTokens = 800, temperature = 0.2, cfg = null, noBudgetRetry = false, strictLength = false } = {}) {
         const { apiKey, apiUrl, apiModel } = cfg || this._getApiConfig();
         const messages = [];
         if (systemPrompt) messages.push({ role: 'system', content: systemPrompt });
@@ -118478,6 +118529,8 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             const data = await response.json();
             const ch = data && data.choices && data.choices[0], text = String((ch && ch.message && ch.message.content) || '').trim();
             lastFinish = String((ch && ch.finish_reason) || '');
+            // strictLength：回的字是被輸出上限截斷的（finish_reason=length，停在句子中間），不能當完整答案——丟出錯誤並帶著已寫的部分（e.partial），由呼叫端決定加大再問或標「被截斷」（藏書閣的回答用）
+            if (text && strictLength && lastFinish === 'length') { const te = new Error('finish_reason=length（回答被輸出上限截斷了）'); te.partial = text; te.maxTokens = budget; throw te; }
             if (text) return text;
             const usedUp = lastFinish === 'length' || (data && data.usage && Number(data.usage.completion_tokens) >= budget);
             if (!usedUp || noBudgetRetry || budget >= 32768 || attempt >= 3) {

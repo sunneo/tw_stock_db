@@ -56,6 +56,8 @@
         embActive = !ev.end; embText = ev.text || '';
         if (ev.end) { setOpl(''); refreshStatus(); return; }
         setOpl('🧠 ' + embText); var now = Date.now(); if (now - refreshT > 1200) { refreshT = now; refreshSourcesOnly(); }
+      } else if (ev.op === 'transfer') {
+        setOpl(ev.end ? '' : '📦 ' + (ev.text || '搬家中…'));
       } else if (ev.op === 'images') {
         setOpl(ev.end ? '' : ev.text || '🖼 讀圖片中…');
       } else if (ev.op === 'organize') {
@@ -216,12 +218,35 @@
       var src = h('details', 'dim'); src.appendChild(h('summary', null, '參考的素材（' + (cr.sources || []).length + ' 段' + (cr.queries && cr.queries.length ? '；查詢：' + cr.queries.join('、') : '') + '）')); (cr.sources || []).forEach(function (sr) { var b = h('button', 'cite', '[' + sr.n + '] ' + sr.label); b.style.display = 'block'; b.onclick = function () { openSource(sr); }; src.appendChild(b); }); c.appendChild(src); scroll();
     }
     // 把一則對話紀錄畫成卡片內容（即時回答與重新整理後恢復都用這個）
+    // 回答被模型的輸出上限截斷（自動加倍重試後還是不夠）：警告目前上限，問要不要加大再問、加多少（1.5x／2x／4x／自己填）。按下去：這次被截斷的回答離開對話歷史，用精確的 N 重問（不再自動加倍）
+    function truncCard(c, rec) {
+      var used = rec.pr.maxTokens || 3500, sel = h('select'), custom = h('input'), go = h('button', null, '加大再問一次'), no = h('button', null, '不用了'), row = h('div', 'row');
+      [Math.round(used * 1.5), used * 2, used * 4].forEach(function (n) { var o = h('option', null, n + ' tokens'); o.value = String(n); sel.appendChild(o); });
+      var oc = h('option', null, '自己填…'); oc.value = 'custom'; sel.appendChild(oc);
+      custom.type = 'number'; custom.min = String(used + 1); custom.step = '500'; custom.style.width = '7em'; custom.style.display = 'none'; custom.value = String(used * 2);
+      sel.onchange = function () { custom.style.display = sel.value === 'custom' ? '' : 'none'; };
+      [sel, custom, go, no].forEach(function (x) { row.appendChild(x); });
+      var cd = h('div', 'st bad'); cd.appendChild(h('div', null, '⚠️ 這段回答被模型的長度上限（' + used + ' tokens）截斷了。要加大上限再問一次嗎？加多少？')); cd.appendChild(row);
+      no.onclick = function () { cd.remove(); };
+      go.onclick = function () {
+        var n = Math.round(Number(sel.value === 'custom' ? custom.value : sel.value)); if (!(n > used)) { custom.style.display = ''; custom.focus(); return; }
+        if (run) { stat.textContent = '還在處理上一個問題…'; return; }
+        askAgain(rec, c, n);
+      };
+      return cd;
+    }
+    function askAgain(oldRec, oldCard, n) {
+      conv = conv.filter(function (r) { return r !== oldRec; }); try { oldCard.remove(); } catch (e) { /* */ }
+      var me = { aborted: false, ctl: {}, ctl2: {}, done: null }; run = me; syncBtn();
+      function fin() { if (run === me) run = null; syncBtn(); }
+      me.done = askCore(oldRec.q, me, { query: oldRec.query, answerMaxTokens: n }).then(fin, fin); return me.done;
+    }
     function fillRec(c, rec) {
       var q = rec.q;
       if (rec.k === 'chat') { var tx = h('div'); tx.style.whiteSpace = 'pre-wrap'; tx.textContent = rec.reply; c.appendChild(tx); return; }
       if (rec.err && rec.err !== '已停止') note(c, '⚠️ ' + rec.err, 'st bad');
       if (rec.k === 'create') { if (rec.cr) renderCreate(c, rec.cr); return; }
-      if (rec.pr) { renderCreate(c, rec.pr); return; }
+      if (rec.pr) { renderCreate(c, rec.pr); if (rec.pr.truncated) c.appendChild(truncCard(c, rec)); return; }
       var res = rec.res; if (!res) return;
       if (!res.found) { var nf0 = h('details', 'dim'); nf0.appendChild(h('summary', null, '沒有找到相關內容')); nf0.appendChild(h('div', null, (res.message || '在目前勾選的來源裡找不到相關內容。') + (res.semantic === false ? '（' + (res.semantic_note || '只用關鍵字檢索') + '）' : ''))); c.appendChild(nf0); return; }
       var ai = rec.ai; if (!ai) { showHits(c, res, q); return; }
@@ -236,8 +261,8 @@
       conv.forEach(function (rec) { userMsg(rec.q); var c = card(cardTitle(rec)); if (rec.steps && rec.steps.length) { var tr0 = transcript(c, '🧾 過程'); rec.steps.forEach(function (st) { tr0.step(st[0], st[1]); }); tr0.end(rec.took || '🧾 過程'); } fillRec(c, rec); });
       scroll();
     }
-    function askCore(q, me) {
-      var kindMode = mode.value; lastQuery = q; userMsg(q);
+    function askCore(q, me, again) {
+      var kindMode = again ? 'ai' : mode.value; lastQuery = q; if (!again) userMsg(q);
       var hist0 = histForRoute(), rec = { k: 'a', q: q, mode: kindMode, steps: [], ts: Date.now() }; conv.push(rec);
       var c = card('🔎 查詢'), tr0 = transcript(c, '🧾 過程（進行中…）'), t0 = Date.now(), ctl = me.ctl;
       var tr = { step: function (t, cls) { rec.steps.push([t, cls || '']); return tr0.step(t, cls); }, wait: tr0.wait, end: function (t) { rec.took = t; tr0.end(t); } };
@@ -247,13 +272,13 @@
       function aborted() { if (me.aborted) { stopWait(); tr.step('⏹ 已停止', 'bad'); tr.end('🧾 過程（已停止）'); rec.err = '已停止'; saveConv(); return true; } return false; }
       function finish(label) { stopWait(); tr.end('🧾 過程（' + ((Date.now() - t0) / 1000).toFixed(1) + ' 秒' + (label ? '，' + label : '') + '）'); saveConv(); scroll(); }
       function onErr(e) { stopWait(); if (me.aborted) { aborted(); return; } rec.err = String((e && e.message) || e).slice(0, 200); tr.step('⚠️ ' + rec.err, 'bad'); tr.end('🧾 過程（出錯）'); saveConv(); }
-      var routeP = (kindMode === 'ai' && host.route) ? host.route(q, hist0, onStep, ctl) : Promise.resolve({ route: 'search', query: q });
+      var routeP = again ? Promise.resolve({ route: 'search', query: again.query || q }) : (kindMode === 'ai' && host.route) ? host.route(q, hist0, onStep, ctl) : Promise.resolve({ route: 'search', query: q });
       return routeP.then(function (rt) {
         if (aborted()) return;
         if (rt.route === 'chat') { rec.k = 'chat'; rec.reply = rt.reply; setTitle('💬 對話'); stopWait(); fillRec(c, rec); finish(); return; }
         var qq = rt.query || q; rec.query = qq;
         if (kindMode === 'ai' && host.respond) {
-          return host.respond(qq, hist0, onStep, ctl).then(function (pr) { stopWait(); if (aborted()) return; if (!pr.ok) { rec.err = pr.error; rec.pr = null; fillRec(c, rec); finish('沒完成'); return; } rec.pr = pr; fillRec(c, rec); finish(); });
+          return host.respond(qq, hist0, onStep, ctl, again ? { answerMaxTokens: again.answerMaxTokens } : undefined).then(function (pr) { stopWait(); if (aborted()) return; if (!pr.ok) { rec.err = pr.error; rec.pr = null; fillRec(c, rec); finish('沒完成'); return; } rec.pr = pr; fillRec(c, rec); finish(); });
         }
         return host.ask({ question: qq, limit: 6, ctl: ctl, onStep: onStep }).then(function (res) {
           stopWait(); if (aborted()) return; rec.res = res;

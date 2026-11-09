@@ -290,5 +290,13 @@
     return { ok: true, found: true, hits: hits.map(function (h) { return { label: h.label, source: h.source, line_start: h.line_start, line_end: h.line_end, section: h.section, loc: h.loc, quote: h.quote, score: h.score, found_by: h.found_by || '關鍵字' }; }) };
   }
 
-  return { denseKeep: denseKeep, pinpoint: pinpoint, tokenize: tokenize, queryTokens: queryTokens, LINK_LABELS: LINK_LABELS, foldLow: foldLow, fold: fold, isHowTo: isHowTo, cmdLine: cmdLine, normalize: normalize, ingest: ingest, cite: cite, buildIndex: buildIndex, search: search, searchHybrid: searchHybrid, summarize: summarize, verifyQuote: verifyQuote, verifyAll: verifyAll, detail: detail, links: links, answer: answer, locLabel: locLabel };
+  // 搬家／傳輸進度的數字：位元組 → MB（「12.3 / 80.0 MB」），分段 → 「3 / 9 段」；總數不知道（邊傳邊壓縮的串流）就只顯示已傳多少，不會出現 8 位數的位元組或「n/0」
+  function syncCount(p) {
+    p = p || {}; var mb = function (n) { return (Number(n || 0) / 1048576).toFixed(1); };
+    if (p.unit === 'bytes') return p.total ? mb(p.done) + ' / ' + mb(p.total) + ' MB' : mb(p.done) + ' MB';
+    var sofar = p.raw ? '（' + mb(p.raw) + ' MB）' : '';
+    return p.total ? p.done + ' / ' + p.total + ' 段' + sofar : '已傳 ' + p.done + ' 段' + sofar;
+  }
+
+  return { syncCount: syncCount, denseKeep: denseKeep, pinpoint: pinpoint, tokenize: tokenize, queryTokens: queryTokens, LINK_LABELS: LINK_LABELS, foldLow: foldLow, fold: fold, isHowTo: isHowTo, cmdLine: cmdLine, normalize: normalize, ingest: ingest, cite: cite, buildIndex: buildIndex, search: search, searchHybrid: searchHybrid, summarize: summarize, verifyQuote: verifyQuote, verifyAll: verifyAll, detail: detail, links: links, answer: answer, locLabel: locLabel };
 });
