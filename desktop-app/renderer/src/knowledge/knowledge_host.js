@@ -267,7 +267,7 @@ const FaKnowledgeHost = (function () {
             try { for (;;) {
                 const batch = await this._kiRun((store) => store.pendingVectors(model, 32)); if (!batch.length) break;
                 const vecs = await this._unitCatalogEmbedTexts(pipe, batch.map((b) => (b.section ? b.section + '\n' : '') + String(b.text).slice(0, 1500)), M.passagePrefix);
-                await this._kiRun((store) => store.putVectors(model, batch.map((b, i) => ({ id: b.id, vec: vecs[i] }))), true);
+                await this._kiRun((store) => store.putVectors(model, batch.map((b, i) => ({ id: b.id, vec: vecs[i], h: b.h }))), true);
                 done += batch.length; if (onProgress) onProgress('語意索引 ' + done); this._kiEmit({ op: 'embed', done, total, text: '語意向量 ' + done + '/' + total });
             } } finally { this._kiEmit({ op: 'embed', done, total, end: true }); }
             return { embedded: done, ms: Date.now() - t0, model };
@@ -281,8 +281,11 @@ const FaKnowledgeHost = (function () {
 
         // ───── 問答：回傳原文與出處，不生成 ─────
         async _kiAsk(a) {
-            const q = String((a && (a.question || a.query)) || '').trim(); if (!q) return { ok: false, error: '缺少問題（question）' };
+            const q0 = String((a && (a.question || a.query)) || '').trim(); if (!q0) return { ok: false, error: '缺少問題（question）' };
             const step = (t) => { try { if (a && typeof a.onStep === 'function') a.onStep(t); } catch (_) { /* */ } };
+            // 使用者說「主題不是／沒有 X」：X 不拿去搜尋（會搜出講 X 的文件），講 X 又沒提到主題的片段也不算證據（下面 filterEvidence）
+            const neg = FaKnowledge.negation(q0), avoid = (Array.isArray(a.avoid) ? a.avoid : []).concat(neg.negated).filter((x, i, arr) => arr.indexOf(x) === i);
+            let q = neg.negated.length ? neg.positive : q0; if (avoid.length) q = FaKnowledge.dropWords(q, avoid);
             const ids = a.sources ? await this._kiResolveIds(a.sources) : null;
             step('🔎 檢索：關鍵字（BM25）' + (this._kiSettings().embedConsent ? '＋語意向量' : '（語意索引沒開）') + (ids ? '，限定 ' + ids.length + ' 個來源' : ''));
             const qv = await this._kiQueryVec(q).catch(() => ({ vec: null, why: '語意檢索出錯' }));
@@ -307,15 +310,22 @@ const FaKnowledgeHost = (function () {
                 }
             }
             // 分頁資訊（_page，格式同 JSONL 分頁器的 meta）：知識問答是排名搜尋，翻頁是選擇性的，所以 blocking:false——讀取帳本不會因此逼模型翻完
+            let offTopic = 0;
+            if (avoid.length && res.found && (res.hits || []).length) {
+                const anchors = FaKnowledge.identOf(q).filter((x, i, arr) => avoid.indexOf(x) === -1 && arr.indexOf(x) === i);
+                const f = FaKnowledge.filterEvidence(res.hits.map((h, i) => ({ text: h.quote, source_title: h.source, source_id: h.source_id, _i: i })), anchors, avoid, null);
+                if (f.dropped) { offTopic = f.dropped; res.hits = f.passages.map((p) => res.hits[p._i]); step('　' + f.dropped + ' 段原文不是在講你問的對象（提到 ' + avoid.join('、') + ' 卻沒提到主題），不當作依據'); }
+            }
             const fetched = (res.hits || []).length; const pageHits = (res.hits || []).slice(off, off + lim); const hasMore = fetched >= want && want < 60;
             if (res.hits) res.hits = pageHits; if (off && !pageHits.length) res.found = false;
             const pageMeta = { source: 'ki_ask:' + FaKnowledge.fold(q).slice(0, 40) + (ids ? ':' + ids.join(',') : ''), page: Math.floor(off / lim) + 1, from: off, to: off + pageHits.length, returned: pageHits.length, total: off + pageHits.length, total_exact: false, has_more: hasMore, blocking: false, next_offset: hasMore ? off + lim : null, hint: hasMore ? '可能還有更後面的相符片段：要看就帶 offset=' + (off + lim) + '（同樣的 question），不需要的話不用翻。' : '已經是最後面的相符片段。' };
             if (res.found) for (const h of res.hits) { try { const rel = await this._kiRun((store) => store.relatedOf(h.source_id, h.line_start, h.line_end)); if (rel.length) h.related = rel; } catch (_) { /* */ } }
-            return Object.assign(res, { _page: pageMeta, expanded_terms: expanded || undefined, semantic: !!qv.vec, semantic_note: qv.vec ? undefined : qv.why + '（只用關鍵字檢索）', how_to_answer: res.found ? '只能根據 hits 裡的 quote 回答，每個說法後面標出處（label：來源、第幾行）；quote 沒講到的就說沒有，不要補充或推測。' : '沒有找到，就照實說在知識庫裡找不到，不要用自己的知識代替。' });
+            return Object.assign(res, { _page: pageMeta, avoid: avoid.length ? avoid : undefined, dropped_off_topic: offTopic || undefined, expanded_terms: expanded || undefined, semantic: !!qv.vec, semantic_note: qv.vec ? undefined : qv.why + '（只用關鍵字檢索）', how_to_answer: res.found ? '只能根據 hits 裡的 quote 回答，每個說法後面標出處（label：來源、第幾行）；quote 沒講到的就說沒有，不要補充或推測。' : '沒有找到，就照實說在知識庫裡找不到，不要用自己的知識代替。' });
         },
         // AI 整理：把找到的原文片段編號交給模型，請它只用這些回答、每句結尾標 [編號]。
         // 程式逐句核對：沒標編號、編號不存在、句子裡的指令／數字／英文識別字在被引用的原文裡找不到的句子，一律丟掉（並告訴使用者丟了幾句）。
-        async _kiAnswerAI(question, hits, onStep, ctl) {
+        async _kiAnswerAI(question, hits, onStep, ctl, opts0) {
+            const avoidRule = (o) => (o && o.avoid && o.avoid.length ? '\n6) 使用者說主題 NOT use/have：' + o.avoid.join('、') + '。絕不可寫主題有用到它們，也不可把講 ' + o.avoid.join('／') + ' 的片段當成主題的依據；片段沒講主題用什麼，就只說片段實際講的。' : '');
             const step = (t) => { try { if (onStep) onStep(t); } catch (_) { /* */ } };
             const use = (hits || []).slice(0, 6); if (!use.length) return { ok: false, error: '沒有可以整理的原文' };
             if (typeof this._callSimpleCompletion !== 'function') return { ok: false, error: '這個環境沒有可用的模型' };
@@ -327,7 +337,7 @@ const FaKnowledgeHost = (function () {
             const mkCtx = (per, n) => use.slice(0, n).map((h, i) => '[' + (i + 1) + '] 《' + h.source + '》' + h.ctx.slice(0, per)).join('\n\n'), ctx = mkCtx(900, 6);
             step('🤖 交給模型整理（只准用 ' + use.length + ' 段原文，每句要標編號）…'); const t0 = Date.now();
             let reply = ''; try {
-                const prompt1 = ('問題：' + question + '\n\n下面是從知識庫找到的原文片段（有編號）：\n\n' + ctx + '\n\n請只根據這些片段回答問題。規則：1) 每一句結尾都要標它所根據的片段編號，例如「按下 Save 鈕 [2]」；2) 指令放在 `反引號` 裡，並且逐字照抄原文；數字、名稱原樣照抄，不要改寫；3) 片段沒有講到的就不要說，不要補充或推測；4) 標題或章節名稱跟問題對得上也算有找到（例如「在《某某》找到標題『Plugin Installation』 [2]」），把它後面接著的內容也一併說出來；5) 完全找不到答案就只輸出「找不到」。'); reply = await this._kiLlm(prompt1, { systemPrompt: '你只能用給你的片段回答，每句都要標編號。', maxTokens: 1500, temperature: 0 }, { label: '整理回答', timeoutMs: 120000, onStep: step, ctl, offlinePrompt: () => prompt1.replace(ctx, () => mkCtx(350, 4)) });
+                const prompt1 = ('問題：' + question + '\n\n下面是從知識庫找到的原文片段（有編號）：\n\n' + ctx + '\n\n請只根據這些片段回答問題。規則：1) 每一句結尾都要標它所根據的片段編號，例如「按下 Save 鈕 [2]」；2) 指令放在 `反引號` 裡，並且逐字照抄原文；數字、名稱原樣照抄，不要改寫；3) 片段沒有講到的就不要說，不要補充或推測；4) 標題或章節名稱跟問題對得上也算有找到（例如「在《某某》找到標題『Plugin Installation』 [2]」），把它後面接著的內容也一併說出來；5) 完全找不到答案就只輸出「找不到」。' + avoidRule(opts0)); reply = await this._kiLlm(prompt1, { systemPrompt: '你只能用給你的片段回答，每句都要標編號。', maxTokens: 1500, temperature: 0 }, { label: '整理回答', timeoutMs: 120000, onStep: step, ctl, offlinePrompt: () => prompt1.replace(ctx, () => mkCtx(350, 4)) });
             } catch (e) { return { ok: false, error: '模型沒有回應：' + String((e && e.message) || e).slice(0, 160), ms: Date.now() - t0 }; }
             step('　模型回應了（' + ((Date.now() - t0) / 1000).toFixed(1) + ' 秒），逐句核對編號與原文…');
             const norm = (x) => String(x || '').toLowerCase().replace(/\s+/g, ''); const sentences = [], dropped = [];
@@ -446,17 +456,38 @@ const FaKnowledgeHost = (function () {
             for (const q of queries) { const r = await this._kiAsk({ question: q, limit: 3, no_expand: true, sources }).catch(() => null); let n = 0; for (const h of ((r && r.hits) || [])) if (mats.length < 14 && addHit(h)) n++; if (n) step('　「' + q.slice(0, 30) + '」→ 新增 ' + n + ' 段'); }
             try { const srcList = (await this._kiRun((store) => store.listSources())).filter((x) => x.enabled).slice(0, 8); for (const sc of srcList) { if (mats.some((h) => h.source_id === sc.id) || mats.length >= 14) continue; const r = await this._kiAsk({ question: queries.join(' ') + ' ' + String(request).slice(0, 60), limit: 2, no_expand: true, sources: [sc.id] }).catch(() => null); let n = 0; for (const h of ((r && r.hits) || [])) if (mats.length < 14 && addHit(h)) n++; if (n) step('　再從《' + sc.name + '》補 ' + n + ' 段'); } } catch (_) { /* */ }
         },
+        // 這個庫上一次回答是根據哪些片段：使用者反駁（「GB300 用的不是 AST2700」）時回頭檢查它
+        _kiLastTurn: null,
+        _kiCanCorrect(message) { const l = this._kiLastTurn; return !!(l && l.ref === this._kiRef() && l.question && FaKnowledge.isCorrection(String(message || ''))); },
+        async _kiCorrectLast(message, history, step, ctl, sources, ropts) {
+            const last = this._kiLastTurn, avoid = FaKnowledge.negation(message).negated, anchors = FaKnowledge.identOf(last.question).filter((x) => avoid.indexOf(x) === -1);
+            const au = FaKnowledge.auditPassages(last.passages || [], anchors, avoid, null), titles = au.wrong.map((p) => p.source_title).filter((x, i, arr) => x && arr.indexOf(x) === i);
+            step('🔙 回頭檢查上一個答案：它引用了 ' + (last.passages || []).length + ' 段原文，其中 ' + au.wrong.length + ' 段不是在講' + (anchors.length ? '「' + anchors.join('、') + '」' : '你問的對象') + '，而是 ' + avoid.join('、') + ' 的資料' + (titles.length ? '：' + titles.slice(0, 4).join('、') : ''));
+            const res = await this._kiRespond(last.question, history, step, ctl, sources, Object.assign({}, ropts, { message: last.question, avoid, noCorrect: true }));
+            res.corrected = { avoid, base: last.question, checked: (last.passages || []).length, wrong: au.wrong.slice(0, 8).map((p) => ({ title: p.source_title, text: String(p.text || '').replace(/\s+/g, ' ').slice(0, 120) })) };
+            return res;
+        },
         async _kiRespond(question, history, onStep, ctl, sources, ropts) {
-            const step = (t) => { try { if (onStep) onStep(t); } catch (_) { /* */ } }, t0 = Date.now(), q = String(question || '').trim(); if (!q) return { ok: false, error: '請說要問什麼' };
+            const step = (t) => { try { if (onStep) onStep(t); } catch (_) { /* */ } }, t0 = Date.now(), q00 = String(question || '').trim(); if (!q00) return { ok: false, error: '請說要問什麼' };
+            const said = String((ropts && ropts.message) || q00); // 使用者原話：路由重述過的問句可能把「不是」丟掉，只留名字
+            if (!(ropts && ropts.noCorrect) && this._kiCanCorrect(said)) return this._kiCorrectLast(said, history, step, ctl, sources, ropts);
+            const neg0 = FaKnowledge.negation(q00), avoid = (ropts && Array.isArray(ropts.avoid) ? ropts.avoid : []).concat(neg0.negated, FaKnowledge.negation(said).negated).filter((x, i, arr) => arr.indexOf(x) === i);
+            let q = neg0.negated.length ? neg0.positive : q00; if (avoid.length) q = FaKnowledge.dropWords(q, avoid);
+            const anchors = FaKnowledge.identOf(q).filter((x, i, arr) => avoid.indexOf(x) === -1 && arr.indexOf(x) === i);
             const creative = /設計|寫(一個|個|出)?(程式|程序|腳本|code)|實作|實現|幫我(寫|做|設計|規劃)|規劃|產生|生成|範例|\b(design|implement|write|create|build|generate)\b/i.test(q);
             const ids = sources ? await this._kiResolveIds(sources) : null; const mats = [], seen = new Set();
             const addHit = (h) => { const k = h.source_id + ':' + h.line_start; if (seen.has(k)) return false; seen.add(k); mats.push(h); return true; };
-            step('🔎 從知識庫找相關資料…'); const r0 = await this._kiAsk({ question: q, limit: 8, sources, onStep: step, ctl }).catch(() => ({ found: false, hits: [] })); (r0.hits || []).forEach(addHit);
+            step('🔎 從知識庫找相關資料…'); const r0 = await this._kiAsk({ question: q, limit: 8, sources, onStep: step, ctl, avoid }).catch(() => ({ found: false, hits: [] })); (r0.hits || []).forEach(addHit);
             if (creative) await this._kiGatherPlanned(q, step, ctl, sources, addHit, mats);
+            if (avoid.length && mats.length) { // 補查／規劃蒐集來的片段也要核對：不是在講主題的不當依據（留下太少就不套用）
+                const f = FaKnowledge.filterEvidence(mats.map((h, i) => ({ text: h.quote, source_title: h.source, source_id: h.source_id, _i: i })), anchors, avoid, null, 1);
+                if (f.dropped) { const keep = f.passages.map((p) => mats[p._i]); mats.length = 0; keep.forEach((h) => mats.push(h)); step('　' + f.dropped + ' 段原文不是在講你問的對象（提到 ' + avoid.join('、') + ' 卻沒提到主題），不當作依據'); }
+            }
             const hist = (Array.isArray(history) ? history : []).slice(-4).map((h) => '使用者：' + String(h.q).slice(0, 100) + '\n你：' + String(h.a || '').slice(0, 220)).join('\n');
             let attempts = 0, needed = [], used = null, reply = '', trunc = { truncated: false, maxTokens: 0 }; const want = ropts && Number(ropts.answerMaxTokens) > 0 ? Math.round(Number(ropts.answerMaxTokens)) : 0; // want：使用者在「被截斷」卡片上選的上限，精確使用
             for (;;) {
-                attempts++; await this._kiWidenHits(mats); const digs = await this._kiPickDigests(q, ids, mats, Math.floor(this._kiBudgetChars(false) * 0.28));
+                attempts++; await this._kiWidenHits(mats); let digs = await this._kiPickDigests(q, ids, mats, Math.floor(this._kiBudgetChars(false) * 0.28));
+                if (avoid.length && digs.length) { const fd = FaKnowledge.filterEvidence(digs.map((d, i) => ({ text: d.text, source_title: d.name, source_id: d.source_id, _i: i })), anchors, avoid, null, 1); if (!fd.weak && fd.dropped) digs = fd.passages.map((p) => digs[p._i]); }
                 // 組提示詞（同步版）：先概覽、再摘要、其餘給原文片段
                 const mapCache = {}; const getMap = async (offline) => { const k = offline ? 'o' : 'n'; if (!mapCache[k]) mapCache[k] = await this._kiMapText(ids, Math.floor(this._kiBudgetChars(offline) * 0.18)); return mapCache[k]; };
                 const composeFor = (offline, mapText) => {
@@ -466,7 +497,8 @@ const FaKnowledgeHost = (function () {
                     let du = 0; digs.slice().sort((x, y) => y.sc - x.sc).forEach((d) => { if (du + d.text.length > digMax) return; du += d.text.length; items.push({ n: 0, digest: true, label: '《' + d.name + '》第 ' + d.line_start + '–' + d.line_end + ' 行的摘要（模型整理，不是原文）', source: d.name, source_id: d.source_id, line_start: d.line_start || 1, line_end: d.line_end || 1, quote: d.text, ctx: d.text }); });
                     items.sort((x, y) => (x.digest ? 1 : 0) - (y.digest ? 1 : 0)); items.forEach((x, k) => { x.n = k + 1; });
                     const refs = items.map((x) => '[' + x.n + '] ' + (x.digest ? '（摘要）' : '《' + x.source + '》') + x.ctx).join('\n\n');
-                    const prompt = '【知識庫概覽】（使用者放進來的所有文件，一份一兩句）\n' + mapText + '\n\n' + (hist ? '【對話前文】\n' + hist + '\n\n' : '') + '【參考資料】（有編號；標「摘要」的是事先讀過整理的大意，其餘是原文片段）\n' + (refs || '（這次沒有檢索到相關片段，只有上面的概覽）') + '\n\n【使用者說】\n' + q + '\n\n請像一個讀懂了這些文件的人那樣回答：\n1) 用自己的話理解、整合之後，以自然流暢的段落說明（需要時可以用少量條列），不要把原文一條一條照抄列出來；\n2) 有具體依據的地方，在句末標資料編號 [n]（整段的結尾標也可以）；指令、數字、名稱照資料原樣寫；\n3) 使用者要你設計、寫程式或創作時，直接創作：用到資料裡的語法、API、規則要照資料寫並標編號；資料沒講、憑你自己的知識補的，在那一句（程式碼是那一行的註解）標 [外]；結構與構想是你的，不用標；程式碼放在 ``` 圍起來的區塊裡；\n4) 資料不足以回答時，明講「知識庫裡沒有足夠的資料」，說明有什麼、缺什麼，再視情況用一般知識補充並標 [外]；\n5) 如果還需要看更多細節才答得好，答案寫完後最後一行輸出 NEED: 查詢1; 查詢2（只在真的需要時，每個查詢 1 到 3 個詞）。\n6) 需要比較或整理資料時可以用 Markdown 表格；需要圖示（流程圖、架構圖、示意圖）時可以直接輸出 ```svg 區塊（完整的 <svg>…</svg>，只用基本圖形與文字，不要 script）；要放圖片用 Markdown 圖片語法（只用資料裡出現過的圖片網址，不要編網址）。\n回答使用者用的語言。';
+                    const avoidLine = avoid.length ? '\n\n【限制】使用者說主題 NOT use/have：' + avoid.join('、') + '。絕不可寫主題有用到它們，也不可把講 ' + avoid.join('／') + ' 的資料當成主題的依據；資料沒講主題用什麼，就只說資料實際講的。' : '';
+                    const prompt = '【知識庫概覽】（使用者放進來的所有文件，一份一兩句）\n' + mapText + '\n\n' + (hist ? '【對話前文】\n' + hist + '\n\n' : '') + '【參考資料】（有編號；標「摘要」的是事先讀過整理的大意，其餘是原文片段）\n' + (refs || '（這次沒有檢索到相關片段，只有上面的概覽）') + avoidLine + '\n\n【使用者說】\n' + q + '\n\n請像一個讀懂了這些文件的人那樣回答：\n1) 用自己的話理解、整合之後，以自然流暢的段落說明（需要時可以用少量條列），不要把原文一條一條照抄列出來；\n2) 有具體依據的地方，在句末標資料編號 [n]（整段的結尾標也可以）；指令、數字、名稱照資料原樣寫；\n3) 使用者要你設計、寫程式或創作時，直接創作：用到資料裡的語法、API、規則要照資料寫並標編號；資料沒講、憑你自己的知識補的，在那一句（程式碼是那一行的註解）標 [外]；結構與構想是你的，不用標；程式碼放在 ``` 圍起來的區塊裡；\n4) 資料不足以回答時，明講「知識庫裡沒有足夠的資料」，說明有什麼、缺什麼，再視情況用一般知識補充並標 [外]；\n5) 如果還需要看更多細節才答得好，答案寫完後最後一行輸出 NEED: 查詢1; 查詢2（只在真的需要時，每個查詢 1 到 3 個詞）。\n6) 需要比較或整理資料時可以用 Markdown 表格；需要圖示（流程圖、架構圖、示意圖）時可以直接輸出 ```svg 區塊（完整的 <svg>…</svg>，只用基本圖形與文字，不要 script）；要放圖片用 Markdown 圖片語法（只用資料裡出現過的圖片網址，不要編網址）。\n回答使用者用的語言。';
                     return { prompt, items };
                 };
                 const online = composeFor(false, await getMap(false)); let cur = online;
@@ -478,7 +510,7 @@ const FaKnowledgeHost = (function () {
                 } catch (e) { return { ok: false, error: '模型沒有回應：' + String((e && e.message) || e).slice(0, 160), sources: online.items }; }
                 used = cur;
                 const nm = String(reply).match(/(?:^|\n)\s*NEED\s*[:：]\s*(.+)\s*$/i);
-                if (nm && attempts < 2) { needed = nm[1].split(/[;；]/).map((x) => x.trim()).filter(Boolean).slice(0, 4); step('🔁 模型想看更多：' + needed.join('；') + '，再查一輪…'); let n = 0; for (const nq of needed) { const rr = await this._kiAsk({ question: nq, limit: 3, no_expand: true, sources }).catch(() => null); for (const h of ((rr && rr.hits) || [])) if (mats.length < 16 && addHit(h)) n++; } step('　補了 ' + n + ' 段'); if (n) continue; }
+                if (nm && attempts < 2) { needed = nm[1].split(/[;；]/).map((x) => x.trim()).filter(Boolean).slice(0, 4); step('🔁 模型想看更多：' + needed.join('；') + '，再查一輪…'); let n = 0; for (const nq of needed) { const rr = await this._kiAsk({ question: nq, limit: 3, no_expand: true, sources, avoid }).catch(() => null); for (const h of ((rr && rr.hits) || [])) if (mats.length < 16 && addHit(h)) n++; } step('　補了 ' + n + ' 段'); if (n) continue; }
                 break;
             }
             // 核對
@@ -538,7 +570,8 @@ const FaKnowledgeHost = (function () {
                 report = { inKb, notInKb }; step('🔍 依據檢查：程式碼用到 ' + names.length + ' 個名稱，資料裡找得到 ' + inKb.length + ' 個，沒提到 ' + notInKb.length + ' 個');
             }
             step('✅ 核對完成：' + (dropped.length ? '丟掉 ' + dropped.length + ' 句對不上資料的' : '沒有句子被丟掉') + (invalid ? '，' + invalid + ' 個編號不存在' : ''));
-            return { ok: true, text: fixed, sources: items, dropped, report, cited: Array.from(cited), needed, creative, invalid_refs: invalid, truncated: trunc.truncated, maxTokens: trunc.maxTokens, ms: Date.now() - t0 };
+            this._kiLastTurn = { ref: this._kiRef(), question: q, passages: items.filter((x) => !x.digest).map((x) => ({ source_id: x.source_id, source_title: x.source, text: x.ctx, no: x.n })) };
+            return { ok: true, avoid: avoid.length ? avoid : undefined, text: fixed, sources: items, dropped, report, cited: Array.from(cited), needed, creative, invalid_refs: invalid, truncated: trunc.truncated, maxTokens: trunc.maxTokens, ms: Date.now() - t0 };
         },
         // ───── 摘要：逐層壓縮（像「分析大檔案」的 map-reduce），資訊不砍，只一層一層變精簡 ─────
         // 整份文件依序切成小段（每段約 2400 字，不切斷行、盡量在章節邊界換段）→ 每段摘一次（第 1 層）→ 每 6 個相鄰的摘要再摘一次（第 2 層）→ … → 最後一層只剩一個，就是整份文件的概覽（doc）。
@@ -763,7 +796,7 @@ const FaKnowledgeHost = (function () {
             return {
                 palette: () => ({ dark: !self._isLightTheme() }),
                 status: () => self._kiStatus(), sources: () => self._kiSources(),
-                ask: (a) => self._kiAsk(a), respond: (q, h, onStep, ctl, ropts) => self._kiRespond(q, h, onStep, ctl, undefined, ropts), chatLoad: () => self._kiChatLoad(), chatSave: (l) => self._kiChatSave(l), chatClear: () => self._kiChatClear(), route: (q, h, onStep, ctl) => self._kiRoute(q, h, onStep, ctl), answerAI: (q, hits, onStep, ctl) => self._kiAnswerAI(q, hits, onStep, ctl), onProgress: (fn) => self._kiOn(fn),
+                ask: (a) => self._kiAsk(a), respond: (q, h, onStep, ctl, ropts) => self._kiRespond(q, h, onStep, ctl, undefined, ropts), canCorrect: (m) => self._kiCanCorrect(m), chatLoad: () => self._kiChatLoad(), chatSave: (l) => self._kiChatSave(l), chatClear: () => self._kiChatClear(), route: (q, h, onStep, ctl) => self._kiRoute(q, h, onStep, ctl), answerAI: (q, hits, onStep, ctl, o) => self._kiAnswerAI(q, hits, onStep, ctl, o), onProgress: (fn) => self._kiOn(fn),
                 outline: (ref) => self._kiWithSource(ref, (store, s) => store.outline(s.id)),
                 detail: (ref, which, o) => self._kiWithSource(ref, (store, s) => store.detail(s.id, which, o)),
                 summary: (ref) => self._kiWithSource(ref, (store, s) => store.summary(s.id)),

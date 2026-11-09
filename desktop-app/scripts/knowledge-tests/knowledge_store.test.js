@@ -52,6 +52,15 @@ function makeExec(db) {
   check('pendingVectors lists every chunk without a vector', pend.length === (await store.stats()).chunks, pend.length);
   await store.putVectors(model, pend.map((p) => ({ id: p.id, vec: /結網/.test(p.text) ? vec([1, 0.1, 0]) : vec([0, 1, 0.2]) })));
   check('after embedding nothing is pending', (await store.pendingVectors(model, 100)).length === 0 && (await store.stats()).vectors === pend.length);
+  // 向量只存給「算它的那段文字」：算的期間文字換了（或片段已不在）就丟掉，不存給別的文字
+  { await store.addSource({ name: 'tmp-h', kind: 'text', url: 'x://h', text: 'alpha beta', sections: [], chunks: [{ n: 1, line_start: 1, line_end: 1, text: 'alpha beta', section: '', section_n: 0, loc: '' }], locators: [], notes: [] });
+    const pp = (await store.pendingVectors(model, 100)); check('pendingVectors carries the text hash h', pp.length === 1 && /^[0-9a-f]{8}:\d+$/.test(pp[0].h), pp[0]);
+    let r = await store.putVectors(model, [{ id: pp[0].id, vec: vec([1, 0, 0]), h: 'deadbeef:1' }]); check('putVectors rejects a vector whose text hash does not match', r.rejected === 1 && r.stored === 0 && (await store.pendingVectors(model, 100)).length === 1, r);
+    r = await store.putVectors(model, [{ id: 999999, vec: vec([1, 0, 0]), h: pp[0].h }]); check('putVectors rejects a vector for a chunk that is gone', r.rejected === 1, r);
+    r = await store.putVectors(model, [{ id: pp[0].id, vec: vec([1, 0, 0]), h: pp[0].h }]); check('putVectors stores a vector whose hash matches', r.stored === 1 && (await store.pendingVectors(model, 100)).length === 0, r);
+    await store.exec('INSERT INTO vectors(chunk_id, model, dim, vec) VALUES(424242, ?, 3, ?)', [model, S.vecToBlob(vec([1, 0, 0]))]);
+    const st2 = new S.Store(store.exec); const ini = await st2.init(); check('init removes vectors of chunks that no longer exist (automatic check on open)', ini.orphanVectors === 1, ini);
+    await store.removeSource((await store.findSource('tmp-h')).id); }
   const hv = await store.search('蜘蛛織網的方式', { queryVec: vec([1, 0.05, 0]), model, limit: 3 });
   check('hybrid: semantic-only hit found and marked', hv.length >= 1 && /結網/.test(hv[0].quote) && /語意/.test(hv[0].found_by), hv);
   const hv2 = await store.search('蜘蛛結網', { queryVec: vec([1, 0.05, 0]), model });

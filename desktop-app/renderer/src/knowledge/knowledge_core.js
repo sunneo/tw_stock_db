@@ -298,5 +298,61 @@
     return p.total ? p.done + ' / ' + p.total + ' 段' + sofar : '已傳 ' + p.done + ' 段' + sofar;
   }
 
-  return { syncCount: syncCount, denseKeep: denseKeep, pinpoint: pinpoint, tokenize: tokenize, queryTokens: queryTokens, LINK_LABELS: LINK_LABELS, foldLow: foldLow, fold: fold, isHowTo: isHowTo, cmdLine: cmdLine, normalize: normalize, ingest: ingest, cite: cite, buildIndex: buildIndex, search: search, searchHybrid: searchHybrid, summarize: summarize, verifyQuote: verifyQuote, verifyAll: verifyAll, detail: detail, links: links, answer: answer, locLabel: locLabel };
+  // ───── 使用者說「主題不是／沒有 X」：X 不拿去搜尋、講 X 的原文不算主題的證據（從使用者原話抽，不靠模型） ─────
+  //   negation(text) -> { positive: 去掉否定子句的問句（剩不到 2 字就維持原句）, negated: [小寫識別字], phrases: [被剪掉的原文] }
+  var NEG_ZH = /(?:[,，]\s*)?(?:並?說明|並?指出|並?強調|但|而且)?\s*(?:它|他|其|這個|該)?(?:並)?(?:不使用|不採用|不是用|不是|不用|沒有使用|並未使用|沒有用|沒用|沒有|不含|不具備|並非|不支援|未使用)\s*([^\s,，。;；、)）?？]{1,40})/g;
+  var NEG_EN = /\b(?:and\s+)?(?:(?:it\s+)?(?:does\s*n[o']t|doesn't|do\s+not|isn't|is\s+not|not|without|no)\s+(?:use\s+|using\s+|have\s+|support\s+)?)([A-Za-z0-9_.\-]+)/gi;
+  var IDENT_RE = '[A-Za-z][A-Za-z0-9_.\\-]*[0-9][A-Za-z0-9_.\\-]*|[A-Z]{2,}[A-Za-z0-9_.\\-]*';
+  function identOf(chunk) { // 像名字的字：中間有數字（AST2700、GB300、v1.9）或連續兩個以上大寫；一般單字不算名字
+    var out = [], re = new RegExp(IDENT_RE, 'g'), m; chunk = String(chunk == null ? '' : chunk);
+    while ((m = re.exec(chunk))) out.push(m[0].toLowerCase().replace(/[.\-_]+$/, ''));
+    return out;
+  }
+  function negation(text) {
+    text = String(text == null ? '' : text); var negated = [], phrases = [], pos = text;
+    [NEG_ZH, NEG_EN].forEach(function (re) {
+      re.lastIndex = 0; var m;
+      while ((m = re.exec(text))) { var ids = identOf(m[1]); if (ids.length) { ids.forEach(function (x) { if (negated.indexOf(x) === -1) negated.push(x); }); phrases.push(m[0]); } }
+    });
+    phrases.forEach(function (p) { pos = pos.split(p).join(' '); });
+    pos = pos.replace(/\s+/g, ' ').replace(/^[\s,，;；、]+|[\s,，;；、]+$/g, '');
+    if (!negated.length || pos.length < 2) return { positive: text, negated: negated, phrases: phrases };
+    return { positive: pos, negated: negated, phrases: phrases };
+  }
+  // 整句只是在更正上一個答案（「GB300 用的不是 AST2700」）：否定子句之外只剩幾個字。還有自己內容的新問題不算更正
+  function isCorrection(text) {
+    var n = negation(text); if (!n.negated.length) return false;
+    var rest = n.positive === text ? '' : n.positive.replace(new RegExp(IDENT_RE, 'g'), '').replace(/[\s,，。.?？!！:：;；、()（）\-]+/g, ''); return rest.length <= 4;
+  }
+  // 片段是證據，只有當它在講主題（問句的識別字出現在它的文字、來源名稱或資料夾）。只提到要避開的名字、沒提到主題的片段丟掉；
+  // 問句沒有主題識別字時，提到要避開的名字的片段丟掉。留下的不到 keepMin 段就不套用（weak = true），不會把答案清空。
+  function filterEvidence(passages, anchors, avoid, folderOf, keepMin) {
+    avoid = avoid || []; anchors = (anchors || []).filter(function (t) { return avoid.indexOf(t) === -1; });
+    if (!anchors.length && !avoid.length) return { passages: passages, dropped: 0, weak: false };
+    var kept = passages.filter(function (p) {
+      var hay = (String(p.text || '') + ' ' + String(p.source_title || '') + ' ' + String((folderOf && folderOf[p.source_id]) || '')).toLowerCase();
+      var hasAvoid = avoid.some(function (t) { return hay.indexOf(t) !== -1; }), hasAnchor = anchors.some(function (t) { return hay.indexOf(t) !== -1; });
+      return anchors.length ? hasAnchor : !hasAvoid;
+    });
+    if (kept.length < (keepMin == null ? 3 : keepMin)) return { passages: passages, dropped: 0, weak: true };
+    return { passages: kept, dropped: passages.length - kept.length, weak: false };
+  }
+  // 回頭檢查已經給過的答案：它引用的片段哪些不是在講主題 -> { wrong, right }
+  function auditPassages(passages, anchors, avoid, folderOf) {
+    avoid = avoid || []; anchors = (anchors || []).filter(function (t) { return avoid.indexOf(t) === -1; });
+    var wrong = [], right = [];
+    (passages || []).forEach(function (p) {
+      var hay = (String(p.text || '') + ' ' + String(p.source_title || '') + ' ' + String((folderOf && folderOf[p.source_id]) || '')).toLowerCase();
+      var hasAvoid = avoid.some(function (t) { return hay.indexOf(t) !== -1; }), hasAnchor = anchors.some(function (t) { return hay.indexOf(t) !== -1; });
+      ((anchors.length ? !hasAnchor : hasAvoid) ? wrong : right).push(p);
+    });
+    return { wrong: wrong, right: right };
+  }
+  // 把要避開的名字從問句拿掉（整個名字才算，拿掉後不到 2 字就維持原句）
+  function dropWords(text, words) {
+    var out = String(text == null ? '' : text); (words || []).forEach(function (w) { out = out.replace(new RegExp('(^|[^A-Za-z0-9])' + String(w).replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?![A-Za-z0-9])', 'ig'), '$1'); });
+    out = out.replace(/\s+/g, ' ').trim(); return out.length >= 2 ? out : String(text);
+  }
+
+  return { syncCount: syncCount, denseKeep: denseKeep, pinpoint: pinpoint, tokenize: tokenize, queryTokens: queryTokens, LINK_LABELS: LINK_LABELS, foldLow: foldLow, fold: fold, isHowTo: isHowTo, cmdLine: cmdLine, normalize: normalize, ingest: ingest, cite: cite, buildIndex: buildIndex, search: search, searchHybrid: searchHybrid, summarize: summarize, verifyQuote: verifyQuote, verifyAll: verifyAll, detail: detail, links: links, answer: answer, locLabel: locLabel, identOf: identOf, negation: negation, isCorrection: isCorrection, filterEvidence: filterEvidence, auditPassages: auditPassages, dropWords: dropWords };
 });

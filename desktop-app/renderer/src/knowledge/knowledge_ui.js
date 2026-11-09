@@ -113,7 +113,7 @@
         cb.type = 'checkbox'; cb.checked = !!s.enabled; cb.title = s.enabled ? '勾選中：這個來源會用來回答（取消勾選＝不用，資料還在）' : '沒勾選：不會用來回答'; nm.title = s.name + '\n' + (s.kind || '') + '・' + (s.sections || 0) + ' 節・' + (s.chunks || 0) + ' 片段・向量 ' + (s.vectors || 0) + (s.tags && s.tags.length ? '\n關鍵詞：' + s.tags.join('、') : '') + '\n（點一下看目錄）'; del.title = '刪除這個來源';
         cb.onchange = guard(function () { return host.enable(s.id, cb.checked).then(refreshStatus); });
         nm.onclick = guard(function () { return showOutline(s); });
-        del.onclick = guard(function () { if (!window.confirm('把「' + s.name + '」從知識庫刪除？（片段、向量、關聯都會一起刪）')) return; return host.remove(s.id).then(function () { var c = card('🗑 已刪除'); note(c, s.name); return refreshStatus(); }); });
+        del.onclick = guard(function () { if (!window.confirm('把「' + s.name + '」從知識庫刪除？（片段、向量、關聯都會一起刪）')) return; return host.remove(s.id).then(function (r) { if (r && r.ok === false) { var ce = card('⚠️ 刪除失敗'); note(ce, s.name + '：' + (r.error || '原因不明')); return refreshStatus(); } var c = card('🗑 已刪除'); note(c, s.name); return refreshStatus(); }, function (e) { var cf = card('⚠️ 刪除失敗'); note(cf, s.name + '：' + String((e && e.message) || e)); return refreshStatus(); }); });
         [cb, nm, meta, del].forEach(function (x) { r.appendChild(x); });
         // 進度條：模型整理中的來源、語意向量還沒補滿的來源
         var vtotal = s.chunks || 0, vdone = s.vectors || 0, pend = !!statusInfo.semantic && vtotal > 0 && vdone < vtotal;
@@ -199,6 +199,8 @@
     }
     // 創作的成品：說明文字＋程式碼區塊（可複製）、依據檢查、參考的素材
     function renderCreate(c, cr) {
+      if (cr.corrected) { var cd = h('details', 'dim'); cd.open = true; cd.appendChild(h('summary', null, '🔙 回頭檢查上一個答案：引用了 ' + cr.corrected.checked + ' 段原文，其中 ' + cr.corrected.wrong.length + ' 段是 ' + cr.corrected.avoid.join('、') + ' 的資料，已排除，用同一個問題重答（' + cr.corrected.base + '）')); cr.corrected.wrong.forEach(function (x) { cd.appendChild(h('div', 'trl', x.title + '：' + x.text)); }); c.appendChild(cd); }
+      else if (cr.avoid && cr.avoid.length) c.appendChild(h('div', 'st', '🚫 依你說的，主題沒有用到 ' + cr.avoid.join('、') + '：這些名字沒拿去搜尋，只講它們的原文不當依據。'));
       if (cr.creative) c.appendChild(h('div', 'st', '✨ 這是 AI 依知識庫資料創作的內容——設計與寫法是 AI 自己的，不是知識庫原文。用到知識庫的語法／API 標 [編號]（點開看原始資料）；標 [外] 的是知識庫沒有、AI 憑自己的知識補的，請自己確認。'));
       var box = h('div', 'ans'); c.appendChild(box);
       var fallback = function () { String(cr.text).split(/(```[^\n]*\n[\s\S]*?```)/g).forEach(function (pt) {
@@ -272,13 +274,13 @@
       function aborted() { if (me.aborted) { stopWait(); tr.step('⏹ 已停止', 'bad'); tr.end('🧾 過程（已停止）'); rec.err = '已停止'; saveConv(); return true; } return false; }
       function finish(label) { stopWait(); tr.end('🧾 過程（' + ((Date.now() - t0) / 1000).toFixed(1) + ' 秒' + (label ? '，' + label : '') + '）'); saveConv(); scroll(); }
       function onErr(e) { stopWait(); if (me.aborted) { aborted(); return; } rec.err = String((e && e.message) || e).slice(0, 200); tr.step('⚠️ ' + rec.err, 'bad'); tr.end('🧾 過程（出錯）'); saveConv(); }
-      var routeP = again ? Promise.resolve({ route: 'search', query: again.query || q }) : (kindMode === 'ai' && host.route) ? host.route(q, hist0, onStep, ctl) : Promise.resolve({ route: 'search', query: q });
+      var routeP = again ? Promise.resolve({ route: 'search', query: again.query || q }) : (kindMode === 'ai' && host.route && !(host.canCorrect && host.canCorrect(q))) ? host.route(q, hist0, onStep, ctl) : Promise.resolve({ route: 'search', query: q });
       return routeP.then(function (rt) {
         if (aborted()) return;
         if (rt.route === 'chat') { rec.k = 'chat'; rec.reply = rt.reply; setTitle('💬 對話'); stopWait(); fillRec(c, rec); finish(); return; }
         var qq = rt.query || q; rec.query = qq;
         if (kindMode === 'ai' && host.respond) {
-          return host.respond(qq, hist0, onStep, ctl, again ? { answerMaxTokens: again.answerMaxTokens } : undefined).then(function (pr) { stopWait(); if (aborted()) return; if (!pr.ok) { rec.err = pr.error; rec.pr = null; fillRec(c, rec); finish('沒完成'); return; } rec.pr = pr; fillRec(c, rec); finish(); });
+          return host.respond(qq, hist0, onStep, ctl, Object.assign({ message: q }, again ? { answerMaxTokens: again.answerMaxTokens } : {})).then(function (pr) { stopWait(); if (aborted()) return; if (!pr.ok) { rec.err = pr.error; rec.pr = null; fillRec(c, rec); finish('沒完成'); return; } rec.pr = pr; fillRec(c, rec); finish(); });
         }
         return host.ask({ question: qq, limit: 6, ctl: ctl, onStep: onStep }).then(function (res) {
           stopWait(); if (aborted()) return; rec.res = res;
@@ -286,7 +288,7 @@
           tr.step('找到 ' + res.hits.length + ' 筆　' + (res.semantic ? '關鍵字＋語意' : (res.semantic_note || '只用關鍵字')), 'ok');
           if (kindMode !== 'ai' || !host.answerAI) { fillRec(c, rec); finish(); return; }
           var ctl2 = me.ctl2, stop2 = tr.wait('等待模型回應', ctl2);
-          return host.answerAI(qq, res.hits, function (t) { stop2(); tr.step(t); stop2 = tr.wait('等待模型回應', ctl2); }, ctl2).then(function (ai) { stop2(); if (aborted()) return; rec.ai = ai; fillRec(c, rec); finish(); });
+          return host.answerAI(qq, res.hits, function (t) { stop2(); tr.step(t); stop2 = tr.wait('等待模型回應', ctl2); }, ctl2, { avoid: res.avoid }).then(function (ai) { stop2(); if (aborted()) return; rec.ai = ai; fillRec(c, rec); finish(); });
         });
       }).catch(onErr);
     }

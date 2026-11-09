@@ -45,7 +45,10 @@
     var v = rowsOf(await this.exec("SELECT value FROM meta WHERE key='version'"));
     if (!v.length) await this.exec("INSERT INTO meta(key,value) VALUES('version', ?)", [String(VERSION)]);
     else if (Number(v[0].value) > VERSION) throw new Error('這個知識庫檔案是比較新的版本（' + v[0].value + '），這個 app 只認得到版本 ' + VERSION);
-    return { version: VERSION };
+    // 開啟時自動檢驗：指向已不存在的片段的向量（來源換了內容、片段重切之後才算完的）刪掉，之後會照現在的文字重算
+    var gone = Number((rowsOf(await this.exec('SELECT COUNT(*) AS n FROM vectors WHERE chunk_id NOT IN (SELECT id FROM chunks)'))[0] || {}).n || 0);
+    if (gone) { await this.exec('DELETE FROM vectors WHERE chunk_id NOT IN (SELECT id FROM chunks)'); this.denseCache = null; }
+    return { version: VERSION, orphanVectors: gone };
   };
   Store.prototype.getMeta = async function (k) { var r = rowsOf(await this.exec('SELECT value FROM meta WHERE key=?', [k])); return r.length ? r[0].value : null; };
   Store.prototype.setMeta = async function (k, v) { await this.exec('INSERT INTO meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', [k, String(v)]); };
@@ -102,11 +105,18 @@
 
   // ───── 向量 ─────
   Store.prototype.pendingVectors = async function (model, limit) {
-    return rowsOf(await this.exec('SELECT c.id, c.text, c.section FROM chunks c JOIN sources s ON s.id=c.source_id LEFT JOIN vectors v ON v.chunk_id=c.id AND v.model=? WHERE v.chunk_id IS NULL ORDER BY c.id LIMIT ?', [model, limit || 64]));
+    // h = 這段文字的雜湊：算好向量交回來時用它核對「向量是不是這段文字的」
+    return rowsOf(await this.exec('SELECT c.id, c.text, c.section FROM chunks c JOIN sources s ON s.id=c.source_id LEFT JOIN vectors v ON v.chunk_id=c.id AND v.model=? WHERE v.chunk_id IS NULL ORDER BY c.id LIMIT ?', [model, limit || 64])).map(function (r) { r.h = hashText(r.text); return r; });
   };
+  // items: [{ id, vec, h? }]。有帶 h 的只存「文字（雜湊）還對得上」的向量：算的期間來源換了內容、片段被重切，向量就不屬於現在的文字，丟掉（之後重算）。
+  // 回傳 { stored, rejected }
   Store.prototype.putVectors = async function (model, items) {
-    for (var i = 0; i < items.length; i++) await this.exec('INSERT INTO vectors(chunk_id, model, dim, vec) VALUES(?,?,?,?) ON CONFLICT(chunk_id) DO UPDATE SET model=excluded.model, dim=excluded.dim, vec=excluded.vec', [items[i].id, model, items[i].vec.length, vecToBlob(items[i].vec)]);
-    this.denseCache = null;
+    var stored = 0, rejected = 0;
+    for (var i = 0; i < items.length; i++) {
+      if (items[i].h != null) { var cur = rowsOf(await this.exec('SELECT text FROM chunks WHERE id=?', [items[i].id]))[0]; if (!cur || hashText(cur.text) !== items[i].h) { rejected++; continue; } }
+      stored++; await this.exec('INSERT INTO vectors(chunk_id, model, dim, vec) VALUES(?,?,?,?) ON CONFLICT(chunk_id) DO UPDATE SET model=excluded.model, dim=excluded.dim, vec=excluded.vec', [items[i].id, model, items[i].vec.length, vecToBlob(items[i].vec)]);
+    }
+    this.denseCache = null; return { stored: stored, rejected: rejected };
   };
   Store.prototype._dense = async function (model) {
     if (this.denseCache && this.denseCache.model === model) return this.denseCache.rows;
