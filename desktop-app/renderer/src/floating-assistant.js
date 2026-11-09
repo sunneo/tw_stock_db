@@ -30918,7 +30918,7 @@ const holder = {};
  * 只依賴 host（由 app 提供）：
  *   status() sources() ask({question,sources,limit}) outline(ref) detail(ref, which, opts) summary(ref)
  *   links() setLinkStatus(id, status) rebuildLinks() addUrl(url) addText(name, text, kind) addFile(File) remove(ref) enable(ref, on)
- *   refresh() organize(ref) embedStatus() embedRun() migrate(kind, path, keepOld) setCapacity(mb) palette()? */
+ *   refresh() organize(ref) embedStatus() embedRun() migrate(kind, path, keepOld) setStorage({mode,thresholdMB,cacheMB}) setCapacity(mb) palette()? */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) module.exports = factory(require('../ui/win_shell.js')); else root.FaKnowledgeUI = factory(root.FaWin || (typeof FaWin !== 'undefined' ? FaWin : undefined));
 })(typeof self !== 'undefined' ? self : this, function (WIN) {
@@ -31263,10 +31263,16 @@ const holder = {};
     }
     bGraph.onclick = showGraph;
     bSet.onclick = function () {
-      var c = card('⚙ 設定'), locSt = note(c, '載入中…'); var kind = h('select'); [['idb', '瀏覽器 IndexedDB'], ['file', '磁碟檔案（桌面版）'], ['fap', 'FAP 資料夾']].forEach(function (k) { var o = h('option', null, k[1]); o.value = k[0]; kind.appendChild(o); });
+      var c = card('⚙ 設定'), locSt = note(c, '載入中…'); var kind = h('select'); [['idb', '瀏覽器 IndexedDB'], ['native', '原生磁碟檔（桌面版，大庫用）'], ['file', '磁碟檔案（指定路徑，桌面版）'], ['fap', 'FAP 資料夾']].forEach(function (k) { var o = h('option', null, k[1]); o.value = k[0]; kind.appendChild(o); });
       var path = h('input'); path.type = 'text'; path.style.flex = '1 1 220px'; path.placeholder = '磁碟：完整路徑；FAP：<名稱>/<路徑>'; var keep = h('input'); keep.type = 'checkbox'; keep.checked = true; var kl = h('label', null, '保留舊檔'), mv = h('button', null, '搬過去'), r5 = h('div', 'row'); [h('label', null, '.keeplookup 放在'), kind, path, keep, kl, mv].forEach(function (x) { r5.appendChild(x); }); c.appendChild(r5);
       var out = note(c, '');
       mv.onclick = guard(function () { out.textContent = '搬家中（會先核對數量一致才切換）…'; return host.migrate(kind.value, path.value.trim(), keep.checked).then(function (r) { out.textContent = r.ok ? '✅ 已搬到 ' + r.to + '，數量核對一致（來源 ' + r.verified.sources + '、片段 ' + r.verified.chunks + '、向量 ' + r.verified.vectors + '）' + (r.note ? '\n' + r.note : '') : '⚠️ ' + r.error; return refreshStatus(); }); });
+      // 知識庫儲存：模式（自動／一律記憶體／一律磁碟）、自動轉磁碟的門檻、原生引擎的頁面快取；直接說這個環境能不能用原生磁碟檔
+      var stMode = h('select'); [['auto', '自動（超過門檻就搬到原生磁碟檔）'], ['memory', '一律記憶體（小庫位置，不自動搬）'], ['disk', '一律原生磁碟檔']].forEach(function (k) { var o = h('option', null, k[1]); o.value = k[0]; stMode.appendChild(o); });
+      var stTh = h('input'), stCache = h('input'), stSave = h('button', null, '套用儲存設定'), r10 = h('div', 'row'), r11 = h('div', 'row'), stAvail = note(c, ''); stTh.type = 'number'; stTh.min = '16'; stTh.style.width = '90px'; stCache.type = 'number'; stCache.min = '8'; stCache.style.width = '90px';
+      [h('label', null, '💾 知識庫儲存'), stMode].forEach(function (x) { r10.appendChild(x); }); [h('label', null, '自動轉磁碟的門檻（MB）'), stTh, h('label', null, '頁面快取（MB）'), stCache, stSave].forEach(function (x) { r11.appendChild(x); }); c.appendChild(r10); c.appendChild(r11);
+      stSave.onclick = guard(function () { return host.setStorage({ mode: stMode.value, thresholdMB: Number(stTh.value) || 256, cacheMB: Number(stCache.value) || 96 }).then(function (r) { out.textContent = '✅ 儲存設定：' + r.storage.mode + '，門檻 ' + r.storage.thresholdMB + ' MB，快取 ' + r.storage.cacheMB + ' MB（快取下次開庫生效）'; return refreshStatus(); }); });
+      host.status().then(function (s) { var g = s.storage || {}; stMode.value = g.mode || 'auto'; stTh.value = g.thresholdMB || 256; stCache.value = g.cacheMB || 96; stAvail.textContent = s.native_available ? '這個環境可以用原生磁碟檔（SQLite 直接開檔，庫多大都不吃頁面記憶體）。' : '這個環境沒有原生磁碟檔（網頁版）：庫放在記憶體裡，上限約 1 GB；FAP／IndexedDB 位置都是小庫用的。' + (s.tier_note ? '\n' + s.tier_note : ''); if (s.tier_note && s.native_available) stAvail.textContent += '\n' + s.tier_note; }).catch(function () { /* */ });
       var cap = h('input'); cap.type = 'number'; cap.min = '1'; cap.step = '10'; cap.style.width = '110px'; var unl = h('input'); unl.type = 'checkbox'; var cs = h('button', null, '套用容量'), r6 = h('div', 'row'); [h('label', null, '容量上限（MB）'), cap, unl, h('label', null, '無限'), cs].forEach(function (x) { r6.appendChild(x); }); c.appendChild(r6);
       unl.onchange = function () { cap.disabled = unl.checked; };
       cs.onclick = guard(function () { var mb = unl.checked ? 0 : Number(cap.value); if (!unl.checked && !(mb > 0)) { out.textContent = '⚠️ 容量要是大於 0 的數字，或勾「無限」'; return; } return host.setCapacity(mb).then(function () { out.textContent = '✅ 容量上限：' + (mb ? mb + ' MB' : '無限'); return refreshStatus(); }); });
@@ -66907,11 +66913,13 @@ const FaKnowledgeHost = (function () {
         _kiSettings() {
             const k = (this.advancedSettings && this.advancedSettings.knowledge) || {};
             const L = k.location && ['idb', 'file', 'fap'].includes(k.location.kind) ? k.location : { kind: 'idb', ref: 'default' };
-            return { location: { kind: L.kind, ref: String(L.ref || (L.kind === 'idb' ? 'default' : '')) }, maxMB: Number(k.maxMB) > 0 ? Number(k.maxMB) : 0, embedConsent: k.embedConsent !== false, autoEmbed: k.autoEmbed !== false, pipeline: k.pipeline !== false, images: { enabled: !!(k.images && k.images.enabled), maxPerSource: Math.max(1, Math.min(60, Number(k.images && k.images.maxPerSource) || 12)), minKB: Math.max(1, Math.min(500, Number(k.images && k.images.minKB) || 15)) } };
+            return { location: { kind: L.kind, ref: String(L.ref || (L.kind === 'idb' ? 'default' : '')) }, maxMB: Number(k.maxMB) > 0 ? Number(k.maxMB) : 0, embedConsent: k.embedConsent !== false, autoEmbed: k.autoEmbed !== false, pipeline: k.pipeline !== false, storage: { mode: ['auto', 'memory', 'disk'].includes(k.storage && k.storage.mode) ? k.storage.mode : 'auto', thresholdMB: Math.max(16, Math.min(8192, Number(k.storage && k.storage.thresholdMB) || 256)), cacheMB: Math.max(8, Math.min(4096, Number(k.storage && k.storage.cacheMB) || 96)) }, images: { enabled: !!(k.images && k.images.enabled), maxPerSource: Math.max(1, Math.min(60, Number(k.images && k.images.maxPerSource) || 12)), minKB: Math.max(1, Math.min(500, Number(k.images && k.images.minKB) || 15)) } };
         },
         _kiSaveSettings(patch) { this.advancedSettings.knowledge = Object.assign({}, this._kiSettings(), patch); this._saveAdvancedSettings(); },
         _kiRef() { const L = this._kiSettings().location; if (L.kind === 'idb') return 'idb:' + (L.ref || 'default'); if (L.kind === 'file') return 'file:' + L.ref; return 'fap:' + String(L.ref).replace(/^fap:/i, ''); },
-        _kiLocationLabel() { const L = this._kiSettings().location; return L.kind === 'idb' ? '瀏覽器的 IndexedDB（只在這個瀏覽器／這台 app 裡）' : L.kind === 'file' ? '磁碟檔案：' + L.ref : 'FAP 資料夾：' + L.ref; },
+        _kiNativeApi() { return this._sqlDesktop() && window.desktopAPI && window.desktopAPI.knowledge && typeof window.desktopAPI.knowledge.call === 'function' ? window.desktopAPI.knowledge : null; },
+        async _kiNativeCall(op, args) { const api = this._kiNativeApi(); if (!api) throw new Error('這個環境沒有原生磁碟檔（需要桌面版）'); const r = await api.call(op, args || {}); if (!r || r.ok === false) throw new Error((r && r.error) || '原生輔助沒有回應'); return r; },
+        _kiLocationLabel() { const L = this._kiSettings().location; return L.kind === 'idb' ? '瀏覽器的 IndexedDB（只在這個瀏覽器／這台 app 裡）' : L.kind === 'file' ? (this._kiNativeApi() ? '原生磁碟檔（SQLite 直接開檔，大庫不吃記憶體）：' : '磁碟檔案：') + L.ref : 'FAP 資料夾：' + L.ref; },
 
         // ───── IndexedDB 放法（.keeplookup 的位元組整個存成一筆；不受檔案快取的容量淘汰影響）─────
         _kiIdb() {
@@ -66930,20 +66938,30 @@ const FaKnowledgeHost = (function () {
             const p = (async () => {
                 await this._kiClose();
                 if (!this._sqlAvailable()) throw new Error('這個環境沒有 SQLite 引擎（需要桌面版，或支援 Web Worker 的瀏覽器）');
-                const h = await this._sqlOpen(ref, { create: true });
+                const stg = this._kiSettings().storage; const h = await this._sqlOpen(ref, { create: true, cacheMB: stg.cacheMB, durable: true });
                 const exec = async (sql, bind) => (await this._sqlCall('exec', { db: h.db, sql, bind, limit: 1000000, timeoutMs: 600000 })).results;
                 const store = new FaKnowledgeStore.Store(exec); await store.init(); await h.commit();
-                this._kiS = { ref, h, store, chain: Promise.resolve() };
+                this._kiS = { ref, h, store, chain: Promise.resolve(), tierChecked: false };
                 return this._kiS;
             })();
             this._kiSP = { ref, p};
             try { return await p; } finally { if (this._kiSP && this._kiSP.p === p) this._kiSP = null; }
         },
+        // 要不要改用原生磁碟檔：桌面版、目前不是磁碟檔，而且（設定一律磁碟，或自動且庫超過門檻）。回傳搬家目的地或 null
+        async _kiTierWant(s) {
+            const k = this._kiSettings(); if (!this._kiNativeApi() || k.location.kind === 'file' || k.storage.mode === 'memory') return null;
+            let size = Number(s.h.size) || 0; try { size = Math.max(size, Number((await this._sqlCall('status', { db: s.h.db })).bytes) || 0); } catch (_) { /* */ }
+            if (k.storage.mode === 'auto' && size <= k.storage.thresholdMB * 1048576) return null;
+            return { kind: 'native', ref: '', why: k.storage.mode === 'disk' ? '設定為一律用磁碟' : '庫 ' + Math.round(size / 1048576) + ' MB，超過門檻 ' + k.storage.thresholdMB + ' MB' };
+        },
+        async _kiNativePath(name) { const info = await this._kiNativeCall('info'); const base = String(name || 'main').replace(/\.keeplookup$/i, '').replace(/[^\w.\-\u4e00-\u9fff]/g, '_') || 'main'; const sep = /\\/.test(info.dir) && !/\//.test(info.dir) ? '\\' : '/'; return info.dir.replace(/[\\/]+$/, '') + sep + base + '.keeplookup'; },
+        async _kiSessionIfOpen() { return this._kiS || null; },
         async _kiClose() { const s = this._kiS; this._kiS = null; if (s) { try { await s.chain; } catch (_) { /* */ } try { await s.h.close(); } catch (_) { /* 已關或沒開 */ } } },
         // 依序執行（同一時間只有一個動作碰資料庫）；write=true 的動作做完把變更存回去
         async _kiRun(fn, write) {
             const s = await this._kiSession();
-            const run = s.chain.then(async () => { const r = await fn(s.store, s); if (write) await s.h.commit(); return r; });
+            if (!s.tierChecked && !this._kiMigrating) { s.tierChecked = true; const t = await this._kiTierWant(s); if (t) { this._kiMigrating = true; try { const m = await this._kiMigrate(t, { keepOld: true, auto: true }); if (m.ok) { this._kiTierNote = '資料庫已自動搬到原生磁碟檔：' + m.to + '（' + t.why + '）。舊位置的副本還留著，確認沒問題後可以刪。'; return this._kiRun(fn, write); } this._kiTierNote = '想自動搬到原生磁碟檔但失敗，維持原位置：' + m.error; } finally { this._kiMigrating = false; } } }
+            const run = s.chain.then(async () => { const r = await fn(s.store, s); if (write) { await s.h.commit(); if (s.h.kind !== 'file' && s.h.kind !== 'fap-file' && this._kiNativeApi()) { try { const bytes = (await this._sqlCall('status', { db: s.h.db })).bytes; if (bytes > this._kiSettings().storage.thresholdMB * 1048576) s.tierChecked = false; } catch (_) { /* 狀態讀不到就不判斷 */ } } } return r; });
             s.chain = run.catch(() => {}); return run;
         },
         async _kiNoteFlag() { try { const st = await this._kiRun((store) => store.stats()); localStorage.setItem('fa.ki.has', st && st.enabled > 0 ? '1' : '0'); this._kiHas = !!(st && st.enabled > 0); } catch (_) { /* */ } },
@@ -67616,7 +67634,7 @@ const FaKnowledgeHost = (function () {
         },
         async _kiStatus() {
             const st = await this._kiRun((store) => store.stats()); const k = this._kiSettings(); const dc = await this._kiRun((store) => store.digestCounts()).catch(() => null);
-            return { ok: true, pending: { vectors: k.embedConsent ? Math.max(0, (st.chunks || 0) - (st.vectors || 0)) : 0, digests: Math.max(0, (st.enabled || 0) - ((dc && dc.docs) || 0)) }, location: k.location, location_label: this._kiLocationLabel(), ref: this._kiRef(), capacity_mb: k.maxMB || 0, images: k.images, digests: dc, pipeline_on: k.pipeline, pipeline: { running: !!this._kiPipeRun, stage: this._kiPipeStage || '' }, stats: st, semantic: !!(k.embedConsent && st.vectors > 0) };
+            return { ok: true, pending: { vectors: k.embedConsent ? Math.max(0, (st.chunks || 0) - (st.vectors || 0)) : 0, digests: Math.max(0, (st.enabled || 0) - ((dc && dc.docs) || 0)) }, location: k.location, location_label: this._kiLocationLabel(), ref: this._kiRef(), capacity_mb: k.maxMB || 0, storage: k.storage, native_available: !!this._kiNativeApi(), tier_note: this._kiTierNote || undefined, images: k.images, digests: dc, pipeline_on: k.pipeline, pipeline: { running: !!this._kiPipeRun, stage: this._kiPipeStage || '' }, stats: st, semantic: !!(k.embedConsent && st.vectors > 0) };
         },
         // ───── 面板（對話裡的小工具：查詢／管理／關聯）─────
         _kiPanelHost() {
@@ -67639,6 +67657,7 @@ const FaKnowledgeHost = (function () {
                 embedStatus: () => self._kiEmbedCommand('status'), embedRun: () => self._kiEmbedCommand('run'),
                 migrate: (kind, path, keepOld) => self._kiMigrate({ kind, ref: path }, { keepOld }),
                 setImages: async (o) => { const cur = self._kiSettings().images; self._kiSaveSettings({ images: Object.assign({}, cur, o || {}) }); return { ok: true, images: self._kiSettings().images }; },
+                setStorage: async (o) => { o = o || {}; self._kiSaveSettings({ storage: Object.assign({}, self._kiSettings().storage, o) }); const s = await self._kiSessionIfOpen(); if (s) s.tierChecked = false; return { ok: true, storage: self._kiSettings().storage, native_available: !!self._kiNativeApi() }; },
                 setCapacity: async (mb) => { self._kiSaveSettings({ maxMB: Number(mb) > 0 ? Number(mb) : 0 }); return { ok: true }; },
             };
         },
@@ -67669,26 +67688,47 @@ const FaKnowledgeHost = (function () {
         async _kiReadBytes(loc) {
             if (loc.kind === 'idb') return this._kiIdbGet(loc.ref || 'default');
             const ref = loc.kind === 'file' ? 'file:' + loc.ref : 'fap:' + String(loc.ref).replace(/^fap:/i, '');
+            if (loc.kind === 'file' && this._kiNativeApi()) { // 分段讀（每段 8 MB），不產生整檔的 base64 字串
+                const st = await this._kiNativeCall('stat', { path: loc.ref }); if (!st.exists) return null; const out = new Uint8Array(st.size); let off = 0;
+                while (off < st.size) { const r = await this._kiNativeCall('readChunk', { path: loc.ref, offset: off, length: 8388608 }); const u = this._sqlB64ToBytes(r.base64 || ''); if (!u.length) break; out.set(u, off); off += u.length; }
+                return out;
+            }
             if (loc.kind === 'file') { const raw = window.desktopAPI && window.desktopAPI.rawfs; if (!raw) throw new Error('網頁版讀不到磁碟路徑'); const r = await raw.readFile(loc.ref, 'base64'); return this._sqlB64ToBytes(r.base64 || ''); }
             return (await this._resolveTerminalCopySource(ref)).bytes;
         },
         async _kiWriteBytes(loc, bytes) {
             if (loc.kind === 'idb') return this._kiIdbPut(loc.ref || 'default', bytes);
+            if (loc.kind === 'file' && this._kiNativeApi()) { // 分段寫到 .part，最後 fsync＋改名；回傳的 sha256 要和記憶體裡的位元組一致
+                const CH = 8388608; let off = 0, last = null;
+                do { const end = Math.min(bytes.length, off + CH), done = end >= bytes.length; last = await this._kiNativeCall('writeChunk', { path: loc.ref, offset: off, base64: this._sqlBytesToB64(bytes.subarray(off, end)), done }); off = end; } while (off < bytes.length);
+                const dig = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))).map((b) => b.toString(16).padStart(2, '0')).join('');
+                if (!last || last.sha256 !== dig || last.size !== bytes.length) { try { await this._kiNativeCall('remove', { path: loc.ref }); } catch (_) { /* */ } throw new Error('寫入後 sha256 核對不一致'); }
+                return true;
+            }
             if (loc.kind === 'file') { const raw = window.desktopAPI && window.desktopAPI.rawfs; if (!raw) throw new Error('網頁版不能寫磁碟路徑，請選 IndexedDB 或 FAP'); await raw.writeFile(loc.ref, { base64: this._sqlBytesToB64(bytes) }); return true; }
             const ref = 'fap:' + String(loc.ref).replace(/^fap:/i, ''); return this._writeTerminalCopyDestination(ref, bytes, ref.split('/').pop() || 'knowledge.keeplookup', 'application/vnd.sqlite3');
         },
         // 搬到新位置：先把目前的內容存回、複製過去、用新位置開起來核對（來源數、片段數、向量數都要一樣）、確認沒問題才切換設定。舊的預設保留（keepOld=false 才刪）。
         async _kiMigrate(to, o) {
-            o = o || {}; const from = this._kiSettings().location; const dest = { kind: to.kind, ref: String(to.ref || (to.kind === 'idb' ? 'default' : '')) };
-            if (!['idb', 'file', 'fap'].includes(dest.kind)) return { ok: false, error: '位置要是 idb、file 或 fap' };
+            o = o || {}; const from = this._kiSettings().location; let dest = { kind: to.kind, ref: String(to.ref || (to.kind === 'idb' ? 'default' : '')) };
+            if (!['idb', 'file', 'fap', 'native'].includes(dest.kind)) return { ok: false, error: '位置要是 idb、file、fap 或 native' };
+            if (dest.kind === 'native') { // 原生磁碟檔：放在 app 資料夾的 knowledge/，檔名取自 ref（沒給就 main）；不覆蓋既有檔案
+                if (!this._kiNativeApi()) return { ok: false, error: '原生磁碟檔只有桌面版才有；網頁版請用 IndexedDB 或 FAP 資料夾' };
+                try { dest = { kind: 'file', ref: await this._kiNativePath(dest.ref) }; const ex = await this._kiNativeCall('stat', { path: dest.ref }); if (ex.exists && dest.ref !== from.ref) return { ok: false, error: '原生磁碟檔位置已經有一個檔案：' + dest.ref + '（要用它就 migrate file 指到這個路徑；要覆蓋請先刪掉）' }; } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+            }
             if (dest.kind !== 'idb' && !dest.ref) return { ok: false, error: dest.kind === 'file' ? '磁碟檔案要給完整路徑，例如 D:\\knowledge\\main.keeplookup' : 'FAP 要給 <名稱>/<路徑>，例如 myfolder/knowledge/main.keeplookup' };
             if (dest.kind === 'file' && !/\.keeplookup$/i.test(dest.ref)) dest.ref += '.keeplookup'; if (dest.kind === 'fap' && !/\.keeplookup$/i.test(dest.ref)) dest.ref += '.keeplookup';
             if (dest.kind === from.kind && dest.ref === from.ref) return { ok: false, error: '已經在這個位置了' };
             if (dest.kind === 'file' && !(window.desktopAPI && window.desktopAPI.rawfs)) return { ok: false, error: '網頁版沒有磁碟路徑可以用；請選 IndexedDB 或 FAP 資料夾' };
             const before = await this._kiRun((store) => store.stats()); await this._kiRun(() => 0, true); await this._kiClose();
-            let bytes; try { bytes = await this._kiReadBytes(from); } catch (e) { return { ok: false, error: '讀不到目前的知識庫檔案：' + String((e && e.message) || e) }; }
-            if (!bytes || !bytes.length) return { ok: false, error: '目前的知識庫是空的（還沒有存過），不用搬；直接換位置即可。' };
-            try { await this._kiWriteBytes(dest, bytes); } catch (e) { return { ok: false, error: '寫不進新位置：' + String((e && e.message) || e) + '（目前的位置沒有動）' }; }
+            let bytes = null;
+            if (from.kind === 'file' && dest.kind === 'file' && this._kiNativeApi()) { // 磁碟檔 → 磁碟檔：主行程串流複製＋sha256 核對，整檔不進記憶體
+                try { const st = await this._kiNativeCall('stat', { path: from.ref }); if (!st.exists || !st.size) return { ok: false, error: '目前的知識庫是空的（還沒有存過），不用搬；直接換位置即可。' }; await this._kiNativeCall('copy', { from: from.ref, to: dest.ref, overwrite: false }); } catch (e) { return { ok: false, error: '複製失敗：' + String((e && e.message) || e) + '（目前的位置沒有動）' }; }
+            } else {
+                try { bytes = await this._kiReadBytes(from); } catch (e) { return { ok: false, error: '讀不到目前的知識庫檔案：' + String((e && e.message) || e) }; }
+                if (!bytes || !bytes.length) return { ok: false, error: '目前的知識庫是空的（還沒有存過），不用搬；直接換位置即可。' };
+            }
+            if (bytes) try { await this._kiWriteBytes(dest, bytes); } catch (e) { return { ok: false, error: '寫不進新位置：' + String((e && e.message) || e) + '（目前的位置沒有動）' }; }
             const prev = this.advancedSettings.knowledge; this._kiSaveSettings({ location: dest });
             let after; try { after = await this._kiRun((store) => store.stats()); } catch (e) { this.advancedSettings.knowledge = prev; this._saveAdvancedSettings(); await this._kiClose(); return { ok: false, error: '新位置打不開，已退回原本的位置：' + String((e && e.message) || e) }; }
             const same = after.sources === before.sources && after.chunks === before.chunks && after.vectors === before.vectors;
@@ -67715,7 +67755,7 @@ const FaKnowledgeHost = (function () {
             tool('knowledge_embed', '建立語意索引（小型向量模型把每個片段轉成向量）。第一次要下載約 118 MB 的模型（先從專案的 vendor-models 分支，沒有再 HuggingFace）；action:"enable" 同意並開始，"status" 看進度。', { action: { type: 'string', enum: ['status', 'enable', 'run'] } }, [], function (a) { return this._kiEmbedCommand(a.action || 'status'); });
             tool('knowledge_refresh', '更新知識庫：網址來源重新抓一次（內容有變才更新）、補算還沒有向量的片段、重算關聯。（檔案來源要更新請用 knowledge_add 重新加入，內容有變才會更新。）', {}, [], function () { return this._kiRefresh(); });
             tool('knowledge_organize', '處理流程：語意向量、逐層摘要、關聯。放進來的來源會自動處理，這個工具是叫它現在補齊並等到做完（線上模型用不了會自動改用離線模型）。', { source: SRC }, [], function () { return this._kiPipeline(); });
-            tool('knowledge_location', '看或搬 Knowledge Inventory（.keeplookup，SQLite3 檔）放的位置：action:"status"；action:"migrate" 搬到 to＝idb（瀏覽器 IndexedDB）、file（磁碟，path 給完整路徑，桌面版）、fap（path 給 <FAP 名稱>/<路徑>）。搬完會核對數量，不一致就退回。', { action: { type: 'string', enum: ['status', 'migrate'] }, to: { type: 'string', enum: ['idb', 'file', 'fap'] }, path: { type: 'string' }, keep_old: { type: 'boolean' } }, [], async function (a) { if (a.action === 'migrate') return this._kiMigrate({ kind: a.to, ref: a.path }, { keepOld: a.keep_old !== false }); const st = await this._kiRun((store) => store.stats()); return { ok: true, location: this._kiLocationLabel(), ref: this._kiRef(), capacity_mb: this._kiSettings().maxMB || '無限', stats: st }; });
+            tool('knowledge_location', '看或搬 Knowledge Inventory（.keeplookup，SQLite3 檔）放的位置：action:"status"；action:"migrate" 搬到 to＝idb（瀏覽器 IndexedDB）、file（磁碟，path 給完整路徑，桌面版）、fap（path 給 <FAP 名稱>/<路徑>）、native（桌面版：app 資料夾裡的原生磁碟檔，SQLite 直接開檔，大庫不吃記憶體；path 可省略或給檔名）。庫超過門檻會自動搬到 native（設定可改）。搬完會核對數量，不一致就退回。', { action: { type: 'string', enum: ['status', 'migrate'] }, to: { type: 'string', enum: ['idb', 'file', 'fap', 'native'] }, path: { type: 'string' }, keep_old: { type: 'boolean' } }, [], async function (a) { if (a.action === 'migrate') return this._kiMigrate({ kind: a.to, ref: a.path }, { keepOld: a.keep_old !== false }); const st = await this._kiRun((store) => store.stats()); return { ok: true, location: this._kiLocationLabel(), ref: this._kiRef(), capacity_mb: this._kiSettings().maxMB || '無限', stats: st }; });
         },
         async _kiEmbedCommand(action) {
             const st = this._kiSettings(); const stats = await this._kiRun((store) => store.stats());
@@ -67752,7 +67792,7 @@ const FaKnowledgeHost = (function () {
                         } else if (sub === 'refresh') { say(r, '🔄 更新中…'); const o = await r._kiRefresh(); const e = o.embedding || {}; say(r, '🔄 更新完成：' + (o.refreshed.length ? '網址來源 ' + o.refreshed.map((x) => x.source + '（' + (x.error ? '⚠️ ' + x.error : x.status) + '）').join('、') + '；' : '') + (e.embedded != null ? '新增 ' + e.embedded + ' 個向量；' : e.note ? e.note + '；' : e.error ? '語意索引 ⚠️ ' + e.error + '；' : '') + '關聯 ' + o.links + ' 筆');
                         } else if (sub === 'ui' || sub === 'panel' || sub === 'manage' || sub === '管理') { r._kiOpenPanel(null, /inline|對話/.test(rest));
                         } else if (sub === 'where' || sub === 'location') { const st = await r._kiRun((store) => store.stats()); say(r, '📍 ' + r._kiLocationLabel() + '\n（SQLite3 檔，副檔名 .keeplookup；ref：' + r._kiRef() + '）\n來源 ' + st.sources + '、片段 ' + st.chunks + '、向量 ' + st.vectors);
-                        } else if (sub === 'migrate') { const mm = /^(idb|file|fap)\s*([\s\S]*)$/i.exec(rest); if (!mm) say(r, '用法：/knowledge migrate idb｜file <完整路徑>｜fap <FAP名稱/路徑>'); else { say(r, '📦 搬家中…'); const o = await r._kiMigrate({ kind: mm[1].toLowerCase(), ref: mm[2].trim() }, { keepOld: true }); say(r, o.ok ? '✅ 已搬到 ' + o.to + '，數量核對一致（來源 ' + o.verified.sources + '、片段 ' + o.verified.chunks + '、向量 ' + o.verified.vectors + '）。' + (o.note ? '\n' + o.note : '') : '⚠️ ' + o.error); }
+                        } else if (sub === 'migrate') { const mm = /^(idb|file|fap|native)\s*([\s\S]*)$/i.exec(rest); if (!mm) say(r, '用法：/knowledge migrate idb｜file <完整路徑>｜fap <FAP名稱/路徑>｜native [檔名]'); else { say(r, '📦 搬家中…'); const o = await r._kiMigrate({ kind: mm[1].toLowerCase(), ref: mm[2].trim() }, { keepOld: true }); say(r, o.ok ? '✅ 已搬到 ' + o.to + '，數量核對一致（來源 ' + o.verified.sources + '、片段 ' + o.verified.chunks + '、向量 ' + o.verified.vectors + '）。' + (o.note ? '\n' + o.note : '') : '⚠️ ' + o.error); }
                         } else if (sub === 'capacity') { const v = /^(無限|不限|unlimited|0)$/i.test(rest) ? 0 : Number(rest); if (!Number.isFinite(v) || v < 0) say(r, '用法：/knowledge capacity <MB 數字｜無限>'); else { r._kiSaveSettings({ maxMB: v }); say(r, '✅ 容量上限：' + (v ? v + ' MB' : '無限')); } }
                         else {
                             const res = await r._kiAsk({ question: raw }); say(r, '🔎 **' + raw + '**\n\n' + r._kiFormatHits(res) + (res.found && !res.semantic ? '\n\n（' + res.semantic_note + '）' : ''));
@@ -70837,7 +70877,7 @@ class FloatingAssistant {
             roundExtend: { mode: raw.roundExtend && raw.roundExtend.mode === 'auto' ? 'auto' : 'ask', cap: Math.max(10, Math.min(200, Math.round(Number(raw.roundExtend && raw.roundExtend.cap)) || 60)) },
             browserSearchEnabled: raw.browserSearchEnabled !== false,
             browserControlEnabled: raw.browserControlEnabled === true,
-            knowledge: (() => { const k = raw.knowledge || {}, L = k.location || {}; const kind = ['idb', 'file', 'fap'].includes(L.kind) ? L.kind : 'idb'; return { location: { kind, ref: String(L.ref || (kind === 'idb' ? 'default' : '')).slice(0, 500) }, maxMB: Number(k.maxMB) > 0 ? Math.round(Number(k.maxMB) * 1000000) / 1000000 : 0, embedConsent: k.embedConsent === true, autoEmbed: k.autoEmbed !== false }; })(),
+            knowledge: (() => { const k = raw.knowledge || {}, L = k.location || {}; const kind = ['idb', 'file', 'fap'].includes(L.kind) ? L.kind : 'idb'; return { location: { kind, ref: String(L.ref || (kind === 'idb' ? 'default' : '')).slice(0, 500) }, maxMB: Number(k.maxMB) > 0 ? Math.round(Number(k.maxMB) * 1000000) / 1000000 : 0, embedConsent: k.embedConsent === true, autoEmbed: k.autoEmbed !== false, storage: (k.storage && typeof k.storage === 'object') ? { mode: ['auto', 'memory', 'disk'].includes(k.storage.mode) ? k.storage.mode : 'auto', thresholdMB: Math.max(16, Math.min(8192, Number(k.storage.thresholdMB) || 256)), cacheMB: Math.max(8, Math.min(4096, Number(k.storage.cacheMB) || 96)) } : undefined }; })(),
             bcCapture: (() => { const c = raw.bcCapture || {}; const f = (v, d, lo, hi) => { const n = Math.floor(Number(v)); return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : d; }; return { maxFileMB: f(c.maxFileMB, 200, 1, 2000), maxTotalMB: f(c.maxTotalMB, 400, 1, 4000), keepMinutes: f(c.keepMinutes, 20, 1, 240) }; })(),
             browserSearchProxyUrl: String(raw.browserSearchProxyUrl || '').trim(),
             // tw_stock_db客製: 2026-09-17——見_createDefaultAdvancedSettings()
@@ -99747,7 +99787,7 @@ ${sourceTool.handlerScript}
         const realM = /^(?:file|host):(.+)$/i.exec(ref) || ((/^[A-Za-z]:[\\/]/.test(ref) || /^\\\\/.test(ref)) ? [null, ref] : null);
         if (realM && !this._sqlDesktop()) throw new Error('網頁版沒有真實磁碟路徑可以開；用 fap:<名稱>/<路徑>（授權的資料夾）或終端機沙盒內的檔案');
         if (realM) {
-            const p = realM[1]; const r = await this._sqlCall('open', { path: p, readonly: !!o.readonly, mode: o.create && !o.readonly ? 'new' : undefined });
+            const p = realM[1]; const r = await this._sqlCall('open', { path: p, readonly: !!o.readonly, mode: o.create && !o.readonly ? 'new' : undefined, cacheMB: o.cacheMB, durable: !!o.durable });
             return { db: r.db, kind: 'file', label: r.path, readonly: !!o.readonly, size: r.size, commit: async () => { try { await this._sqlCall('checkpoint', { db: r.db }); } catch (_) { /* 唯讀或非 WAL */ } }, close: () => this._sqlCall('close', { db: r.db }) };
         }
         if (/^fap:/i.test(ref) && this._sqlDesktop() && window.desktopAPI.roots && typeof window.desktopAPI.roots.list === 'function') {

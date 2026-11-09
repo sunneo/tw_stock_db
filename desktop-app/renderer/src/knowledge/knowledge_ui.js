@@ -7,7 +7,7 @@
  * 只依賴 host（由 app 提供）：
  *   status() sources() ask({question,sources,limit}) outline(ref) detail(ref, which, opts) summary(ref)
  *   links() setLinkStatus(id, status) rebuildLinks() addUrl(url) addText(name, text, kind) addFile(File) remove(ref) enable(ref, on)
- *   refresh() organize(ref) embedStatus() embedRun() migrate(kind, path, keepOld) setCapacity(mb) palette()? */
+ *   refresh() organize(ref) embedStatus() embedRun() migrate(kind, path, keepOld) setStorage({mode,thresholdMB,cacheMB}) setCapacity(mb) palette()? */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) module.exports = factory(require('../ui/win_shell.js')); else root.FaKnowledgeUI = factory(root.FaWin || (typeof FaWin !== 'undefined' ? FaWin : undefined));
 })(typeof self !== 'undefined' ? self : this, function (WIN) {
@@ -352,10 +352,16 @@
     }
     bGraph.onclick = showGraph;
     bSet.onclick = function () {
-      var c = card('⚙ 設定'), locSt = note(c, '載入中…'); var kind = h('select'); [['idb', '瀏覽器 IndexedDB'], ['file', '磁碟檔案（桌面版）'], ['fap', 'FAP 資料夾']].forEach(function (k) { var o = h('option', null, k[1]); o.value = k[0]; kind.appendChild(o); });
+      var c = card('⚙ 設定'), locSt = note(c, '載入中…'); var kind = h('select'); [['idb', '瀏覽器 IndexedDB'], ['native', '原生磁碟檔（桌面版，大庫用）'], ['file', '磁碟檔案（指定路徑，桌面版）'], ['fap', 'FAP 資料夾']].forEach(function (k) { var o = h('option', null, k[1]); o.value = k[0]; kind.appendChild(o); });
       var path = h('input'); path.type = 'text'; path.style.flex = '1 1 220px'; path.placeholder = '磁碟：完整路徑；FAP：<名稱>/<路徑>'; var keep = h('input'); keep.type = 'checkbox'; keep.checked = true; var kl = h('label', null, '保留舊檔'), mv = h('button', null, '搬過去'), r5 = h('div', 'row'); [h('label', null, '.keeplookup 放在'), kind, path, keep, kl, mv].forEach(function (x) { r5.appendChild(x); }); c.appendChild(r5);
       var out = note(c, '');
       mv.onclick = guard(function () { out.textContent = '搬家中（會先核對數量一致才切換）…'; return host.migrate(kind.value, path.value.trim(), keep.checked).then(function (r) { out.textContent = r.ok ? '✅ 已搬到 ' + r.to + '，數量核對一致（來源 ' + r.verified.sources + '、片段 ' + r.verified.chunks + '、向量 ' + r.verified.vectors + '）' + (r.note ? '\n' + r.note : '') : '⚠️ ' + r.error; return refreshStatus(); }); });
+      // 知識庫儲存：模式（自動／一律記憶體／一律磁碟）、自動轉磁碟的門檻、原生引擎的頁面快取；直接說這個環境能不能用原生磁碟檔
+      var stMode = h('select'); [['auto', '自動（超過門檻就搬到原生磁碟檔）'], ['memory', '一律記憶體（小庫位置，不自動搬）'], ['disk', '一律原生磁碟檔']].forEach(function (k) { var o = h('option', null, k[1]); o.value = k[0]; stMode.appendChild(o); });
+      var stTh = h('input'), stCache = h('input'), stSave = h('button', null, '套用儲存設定'), r10 = h('div', 'row'), r11 = h('div', 'row'), stAvail = note(c, ''); stTh.type = 'number'; stTh.min = '16'; stTh.style.width = '90px'; stCache.type = 'number'; stCache.min = '8'; stCache.style.width = '90px';
+      [h('label', null, '💾 知識庫儲存'), stMode].forEach(function (x) { r10.appendChild(x); }); [h('label', null, '自動轉磁碟的門檻（MB）'), stTh, h('label', null, '頁面快取（MB）'), stCache, stSave].forEach(function (x) { r11.appendChild(x); }); c.appendChild(r10); c.appendChild(r11);
+      stSave.onclick = guard(function () { return host.setStorage({ mode: stMode.value, thresholdMB: Number(stTh.value) || 256, cacheMB: Number(stCache.value) || 96 }).then(function (r) { out.textContent = '✅ 儲存設定：' + r.storage.mode + '，門檻 ' + r.storage.thresholdMB + ' MB，快取 ' + r.storage.cacheMB + ' MB（快取下次開庫生效）'; return refreshStatus(); }); });
+      host.status().then(function (s) { var g = s.storage || {}; stMode.value = g.mode || 'auto'; stTh.value = g.thresholdMB || 256; stCache.value = g.cacheMB || 96; stAvail.textContent = s.native_available ? '這個環境可以用原生磁碟檔（SQLite 直接開檔，庫多大都不吃頁面記憶體）。' : '這個環境沒有原生磁碟檔（網頁版）：庫放在記憶體裡，上限約 1 GB；FAP／IndexedDB 位置都是小庫用的。' + (s.tier_note ? '\n' + s.tier_note : ''); if (s.tier_note && s.native_available) stAvail.textContent += '\n' + s.tier_note; }).catch(function () { /* */ });
       var cap = h('input'); cap.type = 'number'; cap.min = '1'; cap.step = '10'; cap.style.width = '110px'; var unl = h('input'); unl.type = 'checkbox'; var cs = h('button', null, '套用容量'), r6 = h('div', 'row'); [h('label', null, '容量上限（MB）'), cap, unl, h('label', null, '無限'), cs].forEach(function (x) { r6.appendChild(x); }); c.appendChild(r6);
       unl.onchange = function () { cap.disabled = unl.checked; };
       cs.onclick = guard(function () { var mb = unl.checked ? 0 : Number(cap.value); if (!unl.checked && !(mb > 0)) { out.textContent = '⚠️ 容量要是大於 0 的數字，或勾「無限」'; return; } return host.setCapacity(mb).then(function () { out.textContent = '✅ 容量上限：' + (mb ? mb + ' MB' : '無限'); return refreshStatus(); }); });

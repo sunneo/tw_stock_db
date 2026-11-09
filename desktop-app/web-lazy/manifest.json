@@ -887,8 +887,8 @@
    "names": [
     "FaKnowledgeUI"
    ],
-   "size": 47581,
-   "md5": "3ea8bc33753dbc3fb0082a514c4bed17"
+   "size": 49197,
+   "md5": "1d53528f1da4b4b618c81983815a8227"
   },
   "web": {
    "file": "chunks/web.js",
@@ -1524,7 +1524,7 @@
   }
  },
  "core": {
-  "size": 5652603,
-  "md5": "114a33d6700e41c833ff88f336b9763f"
+  "size": 5657618,
+  "md5": "9ec4b774eb00a167e37591a64e30b6a5"
  }
 }

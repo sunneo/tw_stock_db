@@ -61,7 +61,7 @@ function workerMain() {
     return { columns: [], rows: [], changes: Number(info.changes), last_id: enc(info.lastInsertRowid), ms: Date.now() - t0 };
   }
   const ops = {
-    open({ path: p, readonly, create, memory }) {
+    open({ path: p, readonly, create, memory, cacheMB, durable }) {
       if (db) { try { db.close(); } catch (_) { /* 已關 */ } db = null; }
       if (memory) { db = new DatabaseSync(":memory:"); meta = { path: ":memory:", readonly: false }; }
       else {
@@ -69,7 +69,7 @@ function workerMain() {
         db = new DatabaseSync(p, { readOnly: !!readonly, open: true }); meta = { path: p, readonly: !!readonly };
       }
       db.exec("PRAGMA foreign_keys=ON;"); // temp_store 用預設（檔案）：大庫建索引的排序會溢到暫存檔，不吃記憶體 if (!readonly) { try { db.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;"); } catch (_) { /* 唯讀媒體 */ } }
-      db.exec("PRAGMA cache_size=-65536;"); if (readonly) db.exec("PRAGMA query_only=ON;");
+      db.exec("PRAGMA cache_size=-" + Math.round(Math.max(8, Math.min(4096, Number(cacheMB) || 64)) * 1024) + ";"); if (durable && !readonly) { try { db.exec("PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL;"); } catch (_) { /* 唯讀媒體 */ } } if (readonly) db.exec("PRAGMA query_only=ON;");
       const size = meta.path !== ":memory:" ? fs.statSync(p).size : 0; const ver = db.prepare("select sqlite_version() v").get().v;
       return { size, version: ver, path: meta.path, readonly: meta.readonly };
     },
@@ -172,7 +172,7 @@ class SqliteEngine {
   }
   async _ensureOpen(c) {
     if (c.worker && !c.needsReopen) return;
-    c.needsReopen = false; await this._send(c, "open", { path: c.path, readonly: c.readonly, create: false, memory: c.memory });
+    c.needsReopen = false; await this._send(c, "open", { path: c.path, readonly: c.readonly, create: false, memory: c.memory, cacheMB: c.cacheMB, durable: c.durable });
   }
   async call(op, args, owner) {
     args = args || {};
@@ -182,9 +182,9 @@ class SqliteEngine {
         if (!memory) { const exists = fs.existsSync(p); if (!exists && args.mode !== "new" && !args.create) throw new Error("找不到資料庫檔案：" + p); if (!exists) fs.mkdirSync(path.dirname(p), { recursive: true }); }
         // 同一個檔案已經開著：寫入者只能有一個
         if (!memory && !args.readonly) for (const [id, c] of this.conns) if (c.path === p && !c.readonly) throw new Error("這個檔案已經被另一個連線以可寫方式開著（" + id + "）；先關閉它，或改用唯讀開啟");
-        const db = "db" + (++this.seq); const c = { id: db, owner: owner || null, path: p, readonly: !!args.readonly, memory, worker: null, pending: new Map(), rid: 0, needsReopen: false };
+        const db = "db" + (++this.seq); const c = { id: db, owner: owner || null, path: p, readonly: !!args.readonly, memory, worker: null, pending: new Map(), rid: 0, needsReopen: false, cacheMB: args.cacheMB, durable: !!args.durable };
         this.conns.set(db, c);
-        try { const r = await this._send(c, "open", { path: p, readonly: !!args.readonly, create: args.mode === "new" || !!args.create, memory }); return Object.assign({ db }, r); }
+        try { const r = await this._send(c, "open", { path: p, readonly: !!args.readonly, create: args.mode === "new" || !!args.create, memory, cacheMB: args.cacheMB, durable: !!args.durable }); return Object.assign({ db }, r); }
         catch (e) { this.conns.delete(db); if (c.worker) { try { c.worker.terminate(); } catch (_) { /* */ } } throw e; }
       }
       case "close": { const c = this._conn(args.db); try { if (c.worker && !c.needsReopen) await this._send(c, "close", {}, 20000); } finally { this.conns.delete(args.db); if (c.worker) { try { c.worker.terminate(); } catch (_) { /* */ } c.worker = null; } } return { ok: true }; }

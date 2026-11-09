@@ -142,3 +142,5 @@
 ## 12. 離線視覺模型（2026-10-06）
 
 離線圖像轉文字、離線模型管理、抽象 vision API 與工具設計的移植指南：`DESIGN.offline-vision-portability.md`（分五層，只有 host 的執行時、模型管理 UI、工具重寫；純邏輯 `vlm_core.js` 與 Worker 原樣使用）。
+
+Knowledge Inventory 的大庫（磁碟 swap）：桌面版用原生 SQLite 直接開磁碟 `.keeplookup`、自動切換與串流搬家，見 [DESIGN.knowledge-swap.md](DESIGN.knowledge-swap.md)（網頁版 OPFS 部分尚未做）。

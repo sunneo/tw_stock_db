@@ -94,6 +94,10 @@ contextBridge.exposeInMainWorld("desktopAPI", {
   sql: {
     call: (op, args) => ipcRenderer.invoke("fa:sql:call", { op, args }),
   },
+  // Knowledge Inventory 的原生磁碟檔輔助（knowledge-native.js，fa:knowledge:call）：串流搬家與 sha256 核對。
+  knowledge: {
+    call: (op, args) => ipcRenderer.invoke("fa:knowledge:call", { op, args }),
+  },
   // 終端機 /mnt/<label> 的同步檔案後端（main.js 的 fa:fsx:sync，fsx-sync.js）：shell 的檔案系統是同步的，所以用 sendSync
   fsx: {
     call: (req) => ipcRenderer.sendSync("fa:fsx:sync", req),

@@ -1,12 +1,12 @@
 {
   "schema": 1,
   "baseVersion": "1.1.0",
-  "generatedAt": "2026-11-08T16:58:27.097Z",
+  "generatedAt": "2026-11-09T15:47:24.115Z",
   "files": {
     "renderer/index.html": "039acc67493d2d42bae493dc9822621a",
     "renderer/bootstrap.js": "a9953cd7275f9fe213f27d062f660e1a",
-    "renderer/floating-assistant.js": "b412ffed6ced2a8965a5f13f069a5135",
-    "renderer/floating-assistant.min.js": "b412ffed6ced2a8965a5f13f069a5135",
+    "renderer/floating-assistant.js": "9b0b5c815d39a003e88bc156383dc510",
+    "renderer/floating-assistant.min.js": "9b0b5c815d39a003e88bc156383dc510",
     "renderer/vendor/midigenai/LICENSE": "99eb9c75e3dddbe23104e4cb8e5d8168",
     "renderer/vendor/midigenai/attributes.mjs": "1596c456f30ac128b844544d0ddcc47e",
     "renderer/vendor/midigenai/generator.mjs": "09f3c65bda0308b5f4998301edda2c8c",
@@ -54,18 +54,19 @@
     "fsx-sync.js": "f14777175ba4a3b4d3197c00befc7e82",
     "judge-core.js": "94f3bdfd43f2da943628bdec06427029",
     "judge-runner.js": "9b54044eb183ff7f647fd6e0256e6cf7",
+    "knowledge-native.js": "a62f7e9808bedd0dae1aa195af493e20",
     "local-proxy.js": "158f13c8135c1dc736efe6d8aebb5b05",
-    "main-ext.js": "e202664dff677e5c5a32f0dbb9b747c6",
+    "main-ext.js": "9ca4cc6a9f7fd502561df52044d80900",
     "rfb-client.js": "1ad7d8a545166f0e965d3f5008b94ccb",
     "rfb-codec.js": "08f2ada7bc710642e7d29fbff63ee4f1",
-    "sqlite-engine.js": "ff9d39366459c465271e617b00abb76e",
-    "preload.js": "652cf48492c9044c6e48ba162ba1f151"
+    "sqlite-engine.js": "11018c00a80b760bb3fccdf978adfc16",
+    "preload.js": "5879a874882c22deefa5b986a7a103d0"
   },
   "sizes": {
     "renderer/index.html": 5741,
     "renderer/bootstrap.js": 202259,
-    "renderer/floating-assistant.js": 11442678,
-    "renderer/floating-assistant.min.js": 11442678,
+    "renderer/floating-assistant.js": 11449309,
+    "renderer/floating-assistant.min.js": 11449309,
     "renderer/vendor/midigenai/LICENSE": 1070,
     "renderer/vendor/midigenai/attributes.mjs": 9065,
     "renderer/vendor/midigenai/generator.mjs": 11160,
@@ -113,11 +114,12 @@
     "fsx-sync.js": 5425,
     "judge-core.js": 5947,
     "judge-runner.js": 16010,
+    "knowledge-native.js": 5291,
     "local-proxy.js": 27272,
-    "main-ext.js": 126860,
+    "main-ext.js": 127194,
     "rfb-client.js": 27415,
     "rfb-codec.js": 14601,
-    "sqlite-engine.js": 22797,
-    "preload.js": 15542
+    "sqlite-engine.js": 23159,
+    "preload.js": 15771
   }
 }

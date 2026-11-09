@@ -249,6 +249,9 @@ ipcMain.handle("fa:judge:run", async (_evt, { lang, source, problem, timeoutMs }
     return [{ path: "/", label: "/" }];
   });
 
+  // ---------- Knowledge Inventory 原生磁碟檔輔助（knowledge-native.js；見 DESIGN.knowledge-swap.md）----------
+  try { if (ctx.userDataDir) require("./knowledge-native.js").register(ipcMain, { userDataDir: ctx.userDataDir }); }
+  catch (e) { console.warn("[main-ext] knowledge-native 載入失敗：", e && e.message); }
   // ---------- coding_edit／coding_patch_tool（coding-tools.js）與 CI/CD 連線的 HTTP（ci-fetch.js）----------
   // 2026-10-14：模組本身也在 live-update 白名單；註冊放在這裡，之後改 IPC 名稱或參數只要發 patch。
   // main.js 的 ctx 可能比這份 main-ext.js 舊（只有 fs、path）：缺少確認閘或對話框時，會執行任意程式／寫入外部服務的 IPC 一律拒絕，不會在沒有確認的情況下放行。
