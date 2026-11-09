@@ -871,8 +871,8 @@
    "names": [
     "FaKnowledge"
    ],
-   "size": 15990,
-   "md5": "3baba7f46e1cf3c5e2e324ee80a083b6"
+   "size": 16274,
+   "md5": "583bf4206cb5f6b563b10514fa2b31e1"
   },
   "kstore": {
    "file": "chunks/kstore.js",
@@ -887,8 +887,8 @@
    "names": [
     "FaKnowledgeUI"
    ],
-   "size": 49197,
-   "md5": "1d53528f1da4b4b618c81983815a8227"
+   "size": 50659,
+   "md5": "5dfd2e456cca4e68c63c3dfdca334860"
   },
   "web": {
    "file": "chunks/web.js",
@@ -1524,7 +1524,7 @@
   }
  },
  "core": {
-  "size": 5657618,
-  "md5": "9ec4b774eb00a167e37591a64e30b6a5"
+  "size": 5659083,
+  "md5": "db2126aecb0341eb42cd80f13ac8d62d"
  }
 }
