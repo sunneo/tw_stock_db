@@ -116,6 +116,29 @@ main()
 
 main()
 ` },
+    { id: 'json-loads', ops: ['json.loads', 'json.dumps', 'conv.str'], inputs: ['{"name":"A","items":[{"id":1,"v":1.0},{"id":2,"v":1e-05}],"big":123456789012345678901234567890,"ok":true,"none":null,"s":"\\u00e9\\n\\"q\\""}\n', '{"name":"B","items":[{"id":5}],"big":1,"ok":false,"none":null,"s":""}\n', '[1,2,3]\n'], py: `import json
+
+
+def main():
+    text: str = input()
+    data = json.loads(text)
+    print(json.dumps(data))
+    if text.startswith("["):
+        print(len(data))
+        print(int(data[0]) + int(data[2]))
+        return
+    print(len(data["items"]))
+    print(data["name"])
+    print(int(data["items"][0]["id"]) + 1)
+    for it in data["items"]:
+        print(it["id"])
+    print(str(data["big"]))
+    print(str(data["ok"]))
+    print(json.dumps(data["items"]))
+
+
+main()
+` },
     { id: 'json-dumps', ops: ['json.dumps'], inputs: ['\n'], py: `import json
 from typing import List, Dict
 
@@ -141,7 +164,7 @@ main()
     if (!fs.existsSync(GPP)) { console.log('略過：找不到 g++（' + GPP + '）\n0 passed, 0 failed'); return; }
     const Parser = require(path.join(DIR, 'tree-sitter.js')); await Parser.init({ locateFile: () => path.join(DIR, 'tree-sitter.wasm') }); const P = new Parser(); P.setLanguage(await Parser.Language.load(path.join(DIR, 'tree-sitter-python.wasm')));
     const cov = OPS.ids().filter((id) => { const c = OPS.get(id).cells.cpp; return c != null && !(typeof c === 'object' && Object.keys(c).every((k) => c[k] == null)); }).length;
-    t('覆蓋：C++ 有樣板的操作數至少 71／' + OPS.ids().length + '（只剩 json.loads）', () => { const miss = OPS.ids().filter((id) => OPS.get(id).cells.cpp == null); assert.deepStrictEqual(miss, ['json.loads'], '缺：' + miss.join(',') + '（共 ' + cov + '）'); });
+    t('覆蓋：C++ 72／72 個標準操作都有樣板（json.loads 用通用 JSON 值 JV）', () => { const miss = OPS.ids().filter((id) => OPS.get(id).cells.cpp == null); assert.deepStrictEqual(miss, [], '缺：' + miss.join(',') + '（共 ' + cov + '）'); });
     for (const c of CASES) {
         t('C++／' + c.id, () => {
             const ir = PREP.prepare(INPY.fromTree(P.parse(c.py).rootNode, { source: c.py }).ir).ir; const found = new Set(); IR.walkStmts(ir.body, (s) => { for (const f of ['to', 'val', 'e', 'cond']) if (s[f]) IR.walkExpr(s[f], (x) => { if (x.k === 'call' && x.op) found.add(x.op); }); });
@@ -162,6 +185,7 @@ main()
         const cc = cp.spawnSync(GPP, ['-std=c++17', '-O0', '-o', exe, f], { encoding: 'utf8', env: ENVM, timeout: 90000 }); assert.strictEqual(cc.status, 0, '天真版編譯失敗：' + String(cc.stderr).slice(0, 600));
         return { want: run(PY, ['-I', '-X', 'utf8', path.join(dir, 'o.py')], input), got: run(exe, [], input, ENVM) };
     };
+    t('對照組：json 輸出浮點用 std::to_string 的天真版會答錯（1.0 變 1.000000、1e-05 變 0.000010）', () => { const r = naive('json-loads', 'out += fa_jv_float(v.d);', 'out += std::to_string(v.d);', '{"name":"A","items":[{"id":1,"v":1.0},{"id":2,"v":1e-05}],"big":1,"ok":true,"none":null,"s":"x"}\n'); assert.notStrictEqual(r.got, r.want); });
     t('對照組：replace 不處理空字串的天真版會答錯', () => { const r = naive('replace-repeat-digit', 'if (a.empty()) { for (char c : s) { r += b; r += c; } r += b; return r; }', 'if (a.empty()) return s;', 'a-b-c\n'); assert.notStrictEqual(r.got, r.want); });
     t('對照組：切片不夾邊界的天真版（直接用迭代器位移）對越界輸入出錯或答錯', () => { const r = naive('index-slice-keys', 'if (i < 0) i = std::max(0LL, i + n); if (j < 0) j = std::max(0LL, j + n); i = std::min(i, n); j = std::min(j, n); return i >= j ? std::vector<T>() : std::vector<T>(a.begin() + i, a.begin() + j);', 'return std::vector<T>(a.begin() + i, a.begin() + j);', '5\n3 9 2 7 1\n'); assert.notStrictEqual(r.got, r.want); });
     console.log(pass + ' passed, ' + fail + ' failed'); process.exit(fail ? 1 : 0);

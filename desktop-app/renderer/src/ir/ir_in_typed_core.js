@@ -223,6 +223,8 @@
         function skipTop(c) { // 輸出器加的前置輔助
             if (c.type === 'preproc_include' || c.type === 'using_directive' || c.type === 'using_declaration' || c.type === 'template_declaration' || c.type === 'namespace_definition') return true;
             if (!CS && c.type === 'function_definition') { const fi = cppFuncInfo(c); if (fi && (isHelperName(fi.name) || fi.name === 'main')) return true; }
+            if (!CS && (c.type === 'struct_specifier' || c.type === 'class_specifier') && f(c, 'name') && /^(JV|JvParser|BigInt|Num)$/.test(txt(f(c, 'name')))) return true; // 輸出器附的 JSON 執行期
+            if (!CS && c.type === 'function_definition') { const fi = cppFuncInfo(c); if (fi && fi.name === 'operator<<') return true; }
             if (!CS && c.type === 'declaration') { const ds = declarators(c); if (ds && ds.some((d) => isHelperName(d.name))) return true; }
             if (CS && c.type === 'method_declaration') { const nm = txt(f(c, 'name')); if (isHelperName(nm)) return true; if (nm === (opts.entryName || 'Main') || nm === 'Main' || nm === 'Run') { const b = f(c, 'body'); if (b && named(b).length <= 1 && !named(b).some((x) => isCmt(x))) return true; } }
             return false;

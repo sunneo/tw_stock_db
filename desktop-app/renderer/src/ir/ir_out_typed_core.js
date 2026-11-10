@@ -24,6 +24,7 @@
                 switch (t.t) {
                     case 'int': return CPP ? 'long long' : 'long'; case 'float': return 'double'; case 'bool': return 'bool'; case 'str': return CPP ? 'std::string' : 'string'; case 'void': return 'void';
                     case 'list': return (CPP ? 'std::vector<' : 'List<') + ty(t.a[0], n) + '>'; case 'dict': return (CPP ? 'std::map<' : 'Dictionary<') + ty(t.a[0], n) + ', ' + ty(t.a[1], n) + '>'; case 'set': return (CPP ? 'std::set<' : 'HashSet<') + ty(t.a[0], n) + '>';
+                    case 'any': if (CPP) return 'JV'; diag('error', 'C# 沒有對應 any 的型別（任意型別）——請在來源標註', n); return 'auto'; // C++：json.loads 的結果用通用 JSON 值 JV
                     default: diag('error', (CPP ? 'C++' : 'C#') + ' 需要明確型別，但這裡是 ' + IR.tyStr(t) + '（動態語言沒標註又推不出）——請在來源加型別標註', n); return 'auto';
                 }
             }
@@ -31,18 +32,18 @@
             function opCall(op, args, tys, n) {
                 const r = OPS.render(op, lang, args.map((a) => ({ raw: a.s, atom: a.p >= PREC.atom ? a.s : atom(a.s) })), tys);
                 if (r.code == null) { diag('error', r.missing, n); return { s: '/* 無法翻譯 ' + op + ' */ 0', p: PREC.atom }; }
-                useH(r.helpers); return { s: r.code, p: OPS.atomic(r.code) ? PREC.atom : PREC.cond };
+                useH(r.helpers); if (CPP && op === 'conv.str' && tys && tys[0] && tys[0].t === 'any') useH(['fa_jv']); return { s: r.code, p: OPS.atomic(r.code) ? PREC.atom : PREC.cond };
             }
             function ex(e) {
                 switch (e.k) {
                     case 'lit': if (e.t === 'int') return { s: e.v + (CPP ? 'LL' : 'L'), p: PREC.atom }; if (e.t === 'float') return { s: e.v, p: PREC.atom }; if (e.t === 'str') return { s: CPP ? 'std::string(' + strLit(e.v) + ')' : strLit(e.v), p: PREC.atom }; if (e.t === 'bool') return { s: e.v, p: PREC.atom }; return { s: CPP ? 'nullptr' : 'null', p: PREC.atom };
                     case 'name': return { s: safe(e.v), p: PREC.atom };
-                    case 'bin': { const p = e.op === '<<' || e.op === '>>' ? PREC.shift : PREC[e.op]; const l = ex(e.l), r = ex(e.r); return { s: wrap(l, p) + ' ' + e.op + ' ' + wrap(r, p + 1), p }; }
+                    case 'bin': { if (CPP && ((e.l.ty && e.l.ty.t === 'any') || (e.r.ty && e.r.ty.t === 'any'))) diag('error', 'C++ 的通用 JSON 值（JV）不能直接運算，請先用 int()／float()／str() 取出具體型別', e); const p = e.op === '<<' || e.op === '>>' ? PREC.shift : PREC[e.op]; const l = ex(e.l), r = ex(e.r); return { s: wrap(l, p) + ' ' + e.op + ' ' + wrap(r, p + 1), p }; }
                     case 'un': { const x = ex(e.e); return { s: e.op + wrap(x, PREC.un), p: PREC.un }; }
                     case 'not': { const x = ex(e.e); return { s: '!' + wrap(x, PREC.un), p: PREC.un }; }
                     case 'logic': { const p = e.op === 'and' ? PREC.and : PREC.or; const l = ex(e.l), r = ex(e.r); return { s: wrap(l, p) + (e.op === 'and' ? ' && ' : ' || ') + wrap(r, p + 1), p }; }
                     case 'cmp': {
-                        const l = ex(e.l), r = ex(e.r); const lt = e.l.ty && e.l.ty.t;
+                        const l = ex(e.l), r = ex(e.r); const lt = e.l.ty && e.l.ty.t; if (CPP && !(e.r.k === 'lit' && e.r.t === 'none') && ((e.l.ty && e.l.ty.t === 'any') || (e.r.ty && e.r.ty.t === 'any'))) diag('error', 'C++ 的通用 JSON 值（JV）不能直接比較，請先用 int()／float()／str() 取出具體型別', e);
                         if (e.op === 'is' || e.op === 'is not' || (e.r.k === 'lit' && e.r.t === 'none')) return { s: wrap(l, PREC.eq + 1) + (e.op === '!=' || e.op === 'is not' ? ' != ' : ' == ') + (CPP ? 'nullptr' : 'null'), p: PREC.eq };
                         if (!CPP && ['<', '<=', '>', '>='].indexOf(e.op) >= 0 && lt === 'str') return { s: 'string.CompareOrdinal(' + l.s + ', ' + r.s + ') ' + e.op + ' 0', p: PREC.rel };
                         const p = e.op === '==' || e.op === '!=' ? PREC.eq : PREC.rel; return { s: wrap(l, p) + ' ' + e.op + ' ' + wrap(r, p + 1), p };

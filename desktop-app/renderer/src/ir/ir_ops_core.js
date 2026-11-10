@@ -6,7 +6,7 @@
  *       物件 {int:…,str:…,'*':…}＝依第 0 個引數的型別分派（list／dict／set／str／int／float／bool）；null＝這個語言沒有精準對應（見 cells 的註解與 degrade）。
  * 型別字串：'int'、'list<$e0>'（$e0＝第 0 個引數的元素型別）、'$k0'／'$v0'（字典的鍵／值型別）、'$0'（第 0 個引數的型別）、'$j'（所有引數型別合流）。
  * 每個操作列出語意差異與陷阱 pit，供轉換時提醒、及「無法精準對應」時降級（degrade）。 */
-(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(typeof require === 'function' ? require('./ir_core.js') : root.FaIr); else root.FaIrOps = factory(root.FaIr); })(typeof self !== 'undefined' ? self : this, function (IR) {
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(typeof require === 'function' ? require('./ir_core.js') : root.FaIr, typeof require === 'function' ? require('./json_struct_core.js') : root.FaJsonStruct); else root.FaIrOps = factory(root.FaIr, root.FaJsonStruct); })(typeof self !== 'undefined' ? self : this, function (IR, JSS) {
     'use strict';
     const LANGS = ['py', 'nodejs', 'java', 'c', 'cpp', 'cs', 'rb', 'pl'];
     const LANG_OF = { python: 'py', nodejs: 'nodejs', javascript: 'nodejs', java: 'java', c: 'c', cpp: 'cpp', csharp: 'cs', ruby: 'rb', perl: 'pl' };
@@ -218,7 +218,8 @@
     [['io.read_all', 'fa_readAll()', 'fa_readAll'], ['rand.randint', 'fa_randint($0, $1)', 'fa_randint'], ['time.now_seconds', 'fa_now()', 'fa_now'], ['list.index_of', 'fa_indexOf($0, $1)', 'fa_indexOf'], ['list.slice', 'fa_lslice($0, $1, $2)', 'fa_lslice'],
         ['str.split_sep', 'fa_split($0, $1)', 'fa_split'], ['str.lower', 'fa_lower($0)', 'fa_lower'], ['str.join', 'fa_join($0, $1)', 'fa_join'], ['str.replace', 'fa_replace($0, $1, $2)', 'fa_replace'], ['str.endswith', 'fa_endswith($0, $1)', 'fa_endswith'],
         ['str.repeat', 'fa_repeat($0, $1)', 'fa_repeat'], ['str.is_digit', 'fa_isdigit($0)', 'fa_isdigit'], ['str.char_code', 'fa_ord($0)', 'fa_ord'], ['str.from_code', 'fa_chr($0)', 'fa_chr'], ['dict.keys', 'fa_keys($0)', 'fa_keys'],
-        ['file.read_all', 'fa_readFile($0)', 'fa_readFile'], ['file.write_all', 'fa_writeFile($0, $1)', 'fa_writeFile'], ['json.dumps', 'fa_json($0)', 'fa_json']].forEach((x) => patchCell(x[0], 'cpp', x[1], [x[2]]));
+        ['file.read_all', 'fa_readFile($0)', 'fa_readFile'], ['file.write_all', 'fa_writeFile($0, $1)', 'fa_writeFile'], ['json.dumps', 'fa_json($0)', 'fa_json'], ['json.loads', 'fa_jparse($0)', 'fa_jv']].forEach((x) => patchCell(x[0], 'cpp', x[1], [x[2]]));
+    patchCell('conv.str', 'cpp', { any: 'fa_jv_str($0)', int: 'std::to_string($0)', '*': 'std::to_string($0)' }, []); // any 才需要 fa_jv：由 C++ 輸出器在引數型別是 any 時加上
     Object.assign(HELPERS.cpp, {
         fa_readAll: 'static std::string fa_readAll() { return std::string((std::istreambuf_iterator<char>(std::cin)), std::istreambuf_iterator<char>()); }',
         fa_randint: 'static long long fa_randint(long long a, long long b) { static std::mt19937_64 g(std::random_device{}()); if (b < a) throw std::runtime_error("empty range for randint()"); return std::uniform_int_distribution<long long>(a, b)(g); }',
@@ -237,12 +238,12 @@
         fa_keys: 'template <class M> static std::vector<typename M::key_type> fa_keys(const M &m) { std::vector<typename M::key_type> r; for (const auto &kv : m) r.push_back(kv.first); return r; }',
         fa_readFile: 'static std::string fa_readFile(const std::string &p) { std::ifstream f(p, std::ios::binary); if (!f) throw std::runtime_error("cannot open file"); return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>()); }',
         fa_writeFile: 'static void fa_writeFile(const std::string &p, const std::string &s) { std::ofstream f(p, std::ios::binary); if (!f) throw std::runtime_error("cannot open file"); f << s; }',
-        fa_json: 'static std::string fa_jstr(const std::string &s) { std::string r = "\\""; for (unsigned char c : s) { if (c == \'"\') r += "\\\\\\""; else if (c == \'\\\\\') r += "\\\\\\\\"; else if (c == \'\\n\') r += "\\\\n"; else if (c == \'\\r\') r += "\\\\r"; else if (c == \'\\t\') r += "\\\\t"; else if (c < 0x20) { char b[8]; snprintf(b, sizeof b, "\\\\u%04x", c); r += b; } else r += (char)c; } return r + "\\""; }\n' +
-            'static std::string fa_json(long long v) { return std::to_string(v); }\nstatic std::string fa_json(int v) { return std::to_string(v); }\nstatic std::string fa_json(bool v) { return v ? "true" : "false"; }\nstatic std::string fa_json(const std::string &v) { return fa_jstr(v); }\nstatic std::string fa_json(const char *v) { return fa_jstr(v); }\n' +
-            'static std::string fa_json(double v) { char b[40]; for (int p = 1; p <= 17; p++) { snprintf(b, sizeof b, "%.*g", p, v); if (strtod(b, NULL) == v) break; } std::string r = b; if (r.find_first_of(".en") == std::string::npos) r += ".0"; return r; }\n' +
+        // JSON：json.loads 回傳通用值 JV（C++ 沒有「任意型別」，用 JV 這個帶標籤的值）；json.dumps 吃基本型別、vector、鍵為字串的 map、JV。執行期（剖析器、輸出器）與 json_struct_core.js 產生 struct 用的是同一份
+        fa_jv: JSS.CPP_JSON_RUNTIME + '\nstatic std::string fa_jv_str(const JV &v) { switch (v.t) { case JV::STR: case JV::BIGINT: return v.s; case JV::INT: return std::to_string(v.i); case JV::FLOAT: return fa_jv_float(v.d); case JV::BOOL: return v.b ? "True" : "False"; case JV::NUL: return "None"; default: return fa_jdump(v); } }',
+        fa_json: 'static std::string fa_json(const JV &v) { return fa_jdump(v); }\nstatic std::string fa_json(long long v) { return std::to_string(v); }\nstatic std::string fa_json(int v) { return std::to_string(v); }\nstatic std::string fa_json(bool v) { return v ? "true" : "false"; }\nstatic std::string fa_json(const std::string &v) { return fa_jv_quote(v); }\nstatic std::string fa_json(const char *v) { return fa_jv_quote(v); }\nstatic std::string fa_json(double v) { return fa_jv_float(v); }\n' +
             'template <class T> static std::string fa_json(const std::vector<T> &a);\ntemplate <class V> static std::string fa_json(const std::map<std::string, V> &m);\n' +
             'template <class T> static std::string fa_json(const std::vector<T> &a) { std::string r = "["; for (size_t i = 0; i < a.size(); i++) { if (i) r += ", "; r += fa_json(a[i]); } return r + "]"; }\n' +
-            'template <class V> static std::string fa_json(const std::map<std::string, V> &m) { std::string r = "{"; bool f = true; for (const auto &kv : m) { if (!f) r += ", "; f = false; r += fa_jstr(kv.first) + ": " + fa_json(kv.second); } return r + "}"; }'
+            'template <class V> static std::string fa_json(const std::map<std::string, V> &m) { std::string r = "{"; bool f = true; for (const auto &kv : m) { if (!f) r += ", "; f = false; r += fa_jv_quote(kv.first) + ": " + fa_json(kv.second); } return r + "}"; }'
     });
     HELPERS.cs = {
         fa_floordiv: 'static long fa_floordiv(long a, long b) { if (b == 0) throw new DivideByZeroException(); long q = a / b; if ((a % b != 0) && ((a < 0) != (b < 0))) q--; return q; }',
@@ -263,7 +264,7 @@
     };
     patchCell('conv.bool', 'rb', { int: '(@0 != 0)', str: '(!@0.empty?)', list: '(!@0.empty?)', '*': '(!!@0)' }); patchCell('conv.bool', 'pl', '(($0) ? 1 : 0)');
     HELPERS.rb = {};
-    const HDEPS = { c: { fa_new: ['fa_list'], fa_push: ['fa_list'], fa_pop: ['fa_list'], fa_filled: ['fa_new', 'fa_push'], fa_list_copy: ['fa_new', 'fa_push'], fa_list_sum: ['fa_list'], fa_list_min: ['fa_list'], fa_list_max: ['fa_list'], fa_list_contains: ['fa_list'], fa_list_reverse: ['fa_list'], fa_sorted: ['fa_list_copy'], fa_sort: ['fa_list'], fa_joinNums: ['fa_list'], fa_splitInts: ['fa_new', 'fa_push'] }, java: { fa_splitInts: ['fa_splitWs'] }, nodejs: { fa_splitInts: ['fa_parseInt'] }, cpp: { fa_splitInts: ['fa_splitWs'] } };
+    const HDEPS = { c: { fa_new: ['fa_list'], fa_push: ['fa_list'], fa_pop: ['fa_list'], fa_filled: ['fa_new', 'fa_push'], fa_list_copy: ['fa_new', 'fa_push'], fa_list_sum: ['fa_list'], fa_list_min: ['fa_list'], fa_list_max: ['fa_list'], fa_list_contains: ['fa_list'], fa_list_reverse: ['fa_list'], fa_sorted: ['fa_list_copy'], fa_sort: ['fa_list'], fa_joinNums: ['fa_list'], fa_splitInts: ['fa_new', 'fa_push'] }, java: { fa_splitInts: ['fa_splitWs'] }, nodejs: { fa_splitInts: ['fa_parseInt'] }, cpp: { fa_splitInts: ['fa_splitWs'], fa_json: ['fa_jv'] } };
 
     // ---------- 查表 ----------
     const has = (id) => !!OPS[id];

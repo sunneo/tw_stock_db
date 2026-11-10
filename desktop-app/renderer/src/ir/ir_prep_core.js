@@ -31,7 +31,7 @@
                 case 'not': ex(e.e, env, fx); ty = T.bool; break;
                 case 'cmp': ex(e.l, env, fx); ex(e.r, env, fx); ty = T.bool; break;
                 case 'logic': { const a = ex(e.l, env, fx), b = ex(e.r, env, fx); ty = a.t === 'bool' && b.t === 'bool' ? T.bool : IR.tyJoin(a, b); break; }
-                case 'index': { const o = ex(e.o, env, fx); ex(e.i, env, fx); ty = o.t === 'list' ? o.a[0] : o.t === 'str' ? T.str : o.t === 'dict' ? o.a[1] : T.unknown; break; }
+                case 'index': { const o = ex(e.o, env, fx); ex(e.i, env, fx); ty = o.t === 'list' ? o.a[0] : o.t === 'str' ? T.str : o.t === 'dict' ? o.a[1] : o.t === 'any' ? T.any : T.unknown; break; }
                 case 'list': { let el = T.unknown; (e.items || []).forEach((x, i) => { const t = ex(x, env, fx); el = i === 0 ? t : IR.tyJoin(el, t); }); ty = IR.list(el); break; }
                 case 'dict': { let kt = T.unknown, vt = T.unknown; (e.items || []).forEach((p, i) => { const a = ex(p[0], env, fx), b = ex(p[1], env, fx); kt = i === 0 ? a : IR.tyJoin(kt, a); vt = i === 0 ? b : IR.tyJoin(vt, b); }); ty = IR.dict(kt, vt); break; }
                 case 'cond': ex(e.c, env, fx); ty = IR.tyJoin(ex(e.a, env, fx), ex(e.b, env, fx)); break;
@@ -65,7 +65,7 @@
                     case 'if': ex(s.cond, env, fx); block(s.then, env, fx); block(s.else, env, fx); break;
                     case 'while': ex(s.cond, env, fx); block(s.body, env, fx); break;
                     case 'forrange': ex(s.from, env, fx); ex(s.to, env, fx); if (s.step) ex(s.step, env, fx); env[s.var] = T.int; block(s.body, env, fx); break;
-                    case 'foreach': { const it = ex(s.iter, env, fx); env[s.var] = it.t === 'list' ? it.a[0] : it.t === 'str' ? T.str : it.t === 'dict' ? it.a[0] : T.unknown; block(s.body, env, fx); break; }
+                    case 'foreach': { const it = ex(s.iter, env, fx); env[s.var] = it.t === 'list' ? it.a[0] : it.t === 'str' ? T.str : it.t === 'dict' ? it.a[0] : it.t === 'any' ? T.any : T.unknown; block(s.body, env, fx); break; }
                     case 'ret': { const t = s.val ? ex(s.val, env, fx) : T.void; fx.rets.push(t); break; }
                     case 'expr': ex(s.e, env, fx); break;
                     case 'raise': if (s.val) ex(s.val, env, fx); break;
