@@ -19253,6 +19253,36 @@ const holder = {};
         fa_fixed: 'static std::string fa_fixed(double x, long long d) { char buf[512]; snprintf(buf, sizeof buf, "%.*f", (int)d, x); return std::string(buf); }',
         fa_pop: 'template <class T> static T fa_pop(std::vector<T> &a) { if (a.empty()) throw std::runtime_error("pop from empty list"); T v = a.back(); a.pop_back(); return v; }'
     };
+    // C++ 第二批補丁（2026-11-10）：原本沒樣板的 19 個操作補上 18 個（json.loads 的回傳是「任意型別」，C++ 沒有對應型別，維持不支援）。實跑見 ir_cpp_ops.test.js
+    [['io.read_all', 'fa_readAll()', 'fa_readAll'], ['rand.randint', 'fa_randint($0, $1)', 'fa_randint'], ['time.now_seconds', 'fa_now()', 'fa_now'], ['list.index_of', 'fa_indexOf($0, $1)', 'fa_indexOf'], ['list.slice', 'fa_lslice($0, $1, $2)', 'fa_lslice'],
+        ['str.split_sep', 'fa_split($0, $1)', 'fa_split'], ['str.lower', 'fa_lower($0)', 'fa_lower'], ['str.join', 'fa_join($0, $1)', 'fa_join'], ['str.replace', 'fa_replace($0, $1, $2)', 'fa_replace'], ['str.endswith', 'fa_endswith($0, $1)', 'fa_endswith'],
+        ['str.repeat', 'fa_repeat($0, $1)', 'fa_repeat'], ['str.is_digit', 'fa_isdigit($0)', 'fa_isdigit'], ['str.char_code', 'fa_ord($0)', 'fa_ord'], ['str.from_code', 'fa_chr($0)', 'fa_chr'], ['dict.keys', 'fa_keys($0)', 'fa_keys'],
+        ['file.read_all', 'fa_readFile($0)', 'fa_readFile'], ['file.write_all', 'fa_writeFile($0, $1)', 'fa_writeFile'], ['json.dumps', 'fa_json($0)', 'fa_json']].forEach((x) => patchCell(x[0], 'cpp', x[1], [x[2]]));
+    Object.assign(HELPERS.cpp, {
+        fa_readAll: 'static std::string fa_readAll() { return std::string((std::istreambuf_iterator<char>(std::cin)), std::istreambuf_iterator<char>()); }',
+        fa_randint: 'static long long fa_randint(long long a, long long b) { static std::mt19937_64 g(std::random_device{}()); if (b < a) throw std::runtime_error("empty range for randint()"); return std::uniform_int_distribution<long long>(a, b)(g); }',
+        fa_now: 'static double fa_now() { return std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count(); }',
+        fa_indexOf: 'template <class T> static long long fa_indexOf(const std::vector<T> &a, const T &x) { for (size_t i = 0; i < a.size(); i++) if (a[i] == x) return (long long)i; throw std::runtime_error("value is not in list"); }',
+        fa_lslice: 'template <class T> static std::vector<T> fa_lslice(const std::vector<T> &a, long long i, long long j) { long long n = (long long)a.size(); if (i < 0) i = std::max(0LL, i + n); if (j < 0) j = std::max(0LL, j + n); i = std::min(i, n); j = std::min(j, n); return i >= j ? std::vector<T>() : std::vector<T>(a.begin() + i, a.begin() + j); }',
+        fa_split: 'static std::vector<std::string> fa_split(const std::string &s, const std::string &sep) { if (sep.empty()) throw std::runtime_error("empty separator"); std::vector<std::string> r; size_t p = 0, q; while ((q = s.find(sep, p)) != std::string::npos) { r.push_back(s.substr(p, q - p)); p = q + sep.size(); } r.push_back(s.substr(p)); return r; }',
+        fa_lower: 'static std::string fa_lower(std::string s) { for (char &c : s) c = (char)tolower((unsigned char)c); return s; }',
+        fa_join: 'static std::string fa_join(const std::string &sep, const std::vector<std::string> &a) { std::string r; for (size_t i = 0; i < a.size(); i++) { if (i) r += sep; r += a[i]; } return r; }',
+        fa_replace: 'static std::string fa_replace(const std::string &s, const std::string &a, const std::string &b) { std::string r; if (a.empty()) { for (char c : s) { r += b; r += c; } r += b; return r; } size_t p = 0, q; while ((q = s.find(a, p)) != std::string::npos) { r.append(s, p, q - p); r += b; p = q + a.size(); } r.append(s, p, std::string::npos); return r; }',
+        fa_endswith: 'static bool fa_endswith(const std::string &s, const std::string &t) { return s.size() >= t.size() && s.compare(s.size() - t.size(), t.size(), t) == 0; }',
+        fa_repeat: 'static std::string fa_repeat(const std::string &s, long long n) { std::string r; for (long long i = 0; i < n; i++) r += s; return r; }',
+        fa_isdigit: 'static bool fa_isdigit(const std::string &s) { if (s.empty()) return false; for (char c : s) if (c < \'0\' || c > \'9\') return false; return true; }',
+        fa_ord: 'static long long fa_ord(const std::string &s) { if (s.empty()) throw std::runtime_error("ord() expected a character"); unsigned char c = (unsigned char)s[0]; int n = c < 0x80 ? 0 : c < 0xE0 ? 1 : c < 0xF0 ? 2 : 3; long long v = n == 0 ? c : (c & (0x3F >> n)); for (int i = 1; i <= n && i < (int)s.size(); i++) v = (v << 6) | ((unsigned char)s[i] & 0x3F); return v; }',
+        fa_chr: 'static std::string fa_chr(long long v) { std::string r; if (v < 0x80) r += (char)v; else if (v < 0x800) { r += (char)(0xC0 | (v >> 6)); r += (char)(0x80 | (v & 0x3F)); } else if (v < 0x10000) { r += (char)(0xE0 | (v >> 12)); r += (char)(0x80 | ((v >> 6) & 0x3F)); r += (char)(0x80 | (v & 0x3F)); } else { r += (char)(0xF0 | (v >> 18)); r += (char)(0x80 | ((v >> 12) & 0x3F)); r += (char)(0x80 | ((v >> 6) & 0x3F)); r += (char)(0x80 | (v & 0x3F)); } return r; }',
+        fa_keys: 'template <class M> static std::vector<typename M::key_type> fa_keys(const M &m) { std::vector<typename M::key_type> r; for (const auto &kv : m) r.push_back(kv.first); return r; }',
+        fa_readFile: 'static std::string fa_readFile(const std::string &p) { std::ifstream f(p, std::ios::binary); if (!f) throw std::runtime_error("cannot open file"); return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>()); }',
+        fa_writeFile: 'static void fa_writeFile(const std::string &p, const std::string &s) { std::ofstream f(p, std::ios::binary); if (!f) throw std::runtime_error("cannot open file"); f << s; }',
+        fa_json: 'static std::string fa_jstr(const std::string &s) { std::string r = "\\""; for (unsigned char c : s) { if (c == \'"\') r += "\\\\\\""; else if (c == \'\\\\\') r += "\\\\\\\\"; else if (c == \'\\n\') r += "\\\\n"; else if (c == \'\\r\') r += "\\\\r"; else if (c == \'\\t\') r += "\\\\t"; else if (c < 0x20) { char b[8]; snprintf(b, sizeof b, "\\\\u%04x", c); r += b; } else r += (char)c; } return r + "\\""; }\n' +
+            'static std::string fa_json(long long v) { return std::to_string(v); }\nstatic std::string fa_json(int v) { return std::to_string(v); }\nstatic std::string fa_json(bool v) { return v ? "true" : "false"; }\nstatic std::string fa_json(const std::string &v) { return fa_jstr(v); }\nstatic std::string fa_json(const char *v) { return fa_jstr(v); }\n' +
+            'static std::string fa_json(double v) { char b[40]; for (int p = 1; p <= 17; p++) { snprintf(b, sizeof b, "%.*g", p, v); if (strtod(b, NULL) == v) break; } std::string r = b; if (r.find_first_of(".en") == std::string::npos) r += ".0"; return r; }\n' +
+            'template <class T> static std::string fa_json(const std::vector<T> &a);\ntemplate <class V> static std::string fa_json(const std::map<std::string, V> &m);\n' +
+            'template <class T> static std::string fa_json(const std::vector<T> &a) { std::string r = "["; for (size_t i = 0; i < a.size(); i++) { if (i) r += ", "; r += fa_json(a[i]); } return r + "]"; }\n' +
+            'template <class V> static std::string fa_json(const std::map<std::string, V> &m) { std::string r = "{"; bool f = true; for (const auto &kv : m) { if (!f) r += ", "; f = false; r += fa_jstr(kv.first) + ": " + fa_json(kv.second); } return r + "}"; }'
+    });
     HELPERS.cs = {
         fa_floordiv: 'static long fa_floordiv(long a, long b) { if (b == 0) throw new DivideByZeroException(); long q = a / b; if ((a % b != 0) && ((a < 0) != (b < 0))) q--; return q; }',
         fa_mod: 'static long fa_mod(long a, long b) { if (b == 0) throw new DivideByZeroException(); long r = a % b; if (r != 0 && ((r < 0) != (b < 0))) r += b; return r; }'
@@ -19653,6 +19683,10 @@ const holder = {};
                 const obj = f(fn, 'object'), attr = txt(f(fn, 'attribute')), dotted = txt(fn);
                 if (OPS.PY.module[dotted]) { const id = OPS.PY.module[dotted]; return call(id, pa.map(ex), n); }
                 if (obj.type === 'string' && attr === 'format') { const t = str(obj); const m = t.k === 'lit' && /^\{:\.(\d+)f\}$/.exec(t.v); if (m && pa.length === 1) return call('fmt.fixed', [ex(pa[0]), L('int', m[1])], n); return nativeE(n, 'str.format 非 {:.Nf} 形式'); }
+                if (obj.type === 'call' && txt(f(obj, 'function')) === 'open' && ((attr === 'read' && !pa.length) || (attr === 'write' && pa.length === 1))) { // open(p[, 'r'|'w'[, encoding=…]]).read() / .write(s) → file.read_all / file.write_all
+                    const oa = argsOf(obj).filter((x) => x.type !== 'keyword_argument'); const mode = oa[1] ? str(oa[1]) : null; const m = mode ? (mode.k === 'lit' ? mode.v : '?') : 'r';
+                    if (oa.length >= 1 && oa.length <= 2 && ((attr === 'read' && m === 'r') || (attr === 'write' && m === 'w'))) return call(attr === 'read' ? 'file.read_all' : 'file.write_all', [ex(oa[0])].concat(attr === 'write' ? [ex(pa[0])] : []), n);
+                }
                 const r = ex(obj);
                 if (attr === 'split') return pa.length === 0 ? call('str.split_ws', [r], n) : pa.length === 1 ? call('str.split_sep', [r, ex(pa[0])], n) : nativeE(n, 'split 引數');
                 if (attr === 'join' && pa.length === 1) { const a0 = pa[0]; if (a0.type === 'call' && txt(f(a0, 'function')) === 'map' && argsOf(a0).length === 2 && txt(argsOf(a0)[0]) === 'str') return call('str.join_num', [r, ex(argsOf(a0)[1])], n); return call('str.join', [r, ex(a0)], n); }
@@ -20854,7 +20888,7 @@ const holder = {};
             });
             const hs = OPS.helperSource(lang, used); const lines = [];
             if (CPP) {
-                lines.push('#include <iostream>', '#include <string>', '#include <vector>', '#include <map>', '#include <set>', '#include <algorithm>', '#include <numeric>', '#include <cmath>', '#include <cstdlib>', '#include <cstdio>', '#include <cctype>', '#include <sstream>', '#include <stdexcept>', '');
+                lines.push('#include <iostream>', '#include <string>', '#include <vector>', '#include <map>', '#include <set>', '#include <algorithm>', '#include <numeric>', '#include <cmath>', '#include <cstdlib>', '#include <cstdio>', '#include <cctype>', '#include <sstream>', '#include <stdexcept>', '#include <iterator>', '#include <random>', '#include <chrono>', '#include <fstream>', '');
                 hs.forEach((h) => lines.push(h)); if (hs.length) lines.push(''); out.forEach((l) => lines.push(l));
                 if (ir.entry) { lines.push(''); lines.push('int main() {'); lines.push('    std::ios::sync_with_stdio(false);'); lines.push('    ' + safe(ir.entry) + '();'); lines.push('    return 0;'); lines.push('}'); }
             } else {

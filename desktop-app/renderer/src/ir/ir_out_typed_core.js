@@ -129,7 +129,7 @@
             });
             const hs = OPS.helperSource(lang, used); const lines = [];
             if (CPP) {
-                lines.push('#include <iostream>', '#include <string>', '#include <vector>', '#include <map>', '#include <set>', '#include <algorithm>', '#include <numeric>', '#include <cmath>', '#include <cstdlib>', '#include <cstdio>', '#include <cctype>', '#include <sstream>', '#include <stdexcept>', '');
+                lines.push('#include <iostream>', '#include <string>', '#include <vector>', '#include <map>', '#include <set>', '#include <algorithm>', '#include <numeric>', '#include <cmath>', '#include <cstdlib>', '#include <cstdio>', '#include <cctype>', '#include <sstream>', '#include <stdexcept>', '#include <iterator>', '#include <random>', '#include <chrono>', '#include <fstream>', '');
                 hs.forEach((h) => lines.push(h)); if (hs.length) lines.push(''); out.forEach((l) => lines.push(l));
                 if (ir.entry) { lines.push(''); lines.push('int main() {'); lines.push('    std::ios::sync_with_stdio(false);'); lines.push('    ' + safe(ir.entry) + '();'); lines.push('    return 0;'); lines.push('}'); }
             } else {

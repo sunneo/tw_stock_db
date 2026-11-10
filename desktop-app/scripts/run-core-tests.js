@@ -87,6 +87,7 @@ const suites = [
     ['區塊 ↔ 中間語言 ↔ 目標語言：樣本 → 區塊 → 受控自然語言 → Python → 中間語言 → nodejs／java／c，實跑輸出與原 Python 一致；函式行為卡可從區塊抽出；需 tree-sitter 快取', 'renderer/src/ir/ir_blocks.test.js'],
     ['中間語言橋接進產品（FaIrBundle 嵌入與來源逐字一致、嵌入版橋產生 nodejs 並實跑一致、convert_code 註冊在 coding 領域）', 'renderer/src/ir/ir_wire.test.js'],
     ['「進」與新輸出器接進產品（嵌入版橋：nodejs／java／c 來源→python／perl 實跑一致、→cpp／csharp／ruby 產生、行為卡第二層、/code 路由；需 tree-sitter 文法與 python／perl，沒有就略過）', 'renderer/src/ir/ir_wire2.test.js'],
+    ['C++ 補齊的 18 個標準操作（Python→IR→C++→真 g++ 與 Python 逐字一致，含天真對照組；沒有 g++ 就略過）', 'renderer/src/ir/ir_cpp_ops.test.js'],
     ['C++／C#／Perl／Ruby 輸出器實跑（g++ mingw64、dotnet、perl 編譯執行與 Python 逐字一致；ruby 沒環境只做語法檢查；找不到工具就略過該語言）', 'renderer/src/ir/ir_out_more.test.js'],
     ['nodejs／java 的「進」（目錄樣板當樣式做結構比對；Python→IR→nodejs／java→IR→Python 實跑與原輸出一致、註解保存；需 tree-sitter javascript／java 文法與 python，沒有就略過）', 'renderer/src/ir/ir_in_brace.test.js'],
     ['矩陣 VM 反編譯與狀態機圖種（VM→while／if 結構化中文與 Python，13 個編譯器產物與 VM 在隨機輸入上一致；預設名稱改寫；DFA⇄狀態機 DSL／Mermaid／PlantUML⇄轉移矩陣；需 python）', 'renderer/src/algo/matrix_structure.test.js'],

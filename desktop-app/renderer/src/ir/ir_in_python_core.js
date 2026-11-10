@@ -83,6 +83,10 @@
                 const obj = f(fn, 'object'), attr = txt(f(fn, 'attribute')), dotted = txt(fn);
                 if (OPS.PY.module[dotted]) { const id = OPS.PY.module[dotted]; return call(id, pa.map(ex), n); }
                 if (obj.type === 'string' && attr === 'format') { const t = str(obj); const m = t.k === 'lit' && /^\{:\.(\d+)f\}$/.exec(t.v); if (m && pa.length === 1) return call('fmt.fixed', [ex(pa[0]), L('int', m[1])], n); return nativeE(n, 'str.format 非 {:.Nf} 形式'); }
+                if (obj.type === 'call' && txt(f(obj, 'function')) === 'open' && ((attr === 'read' && !pa.length) || (attr === 'write' && pa.length === 1))) { // open(p[, 'r'|'w'[, encoding=…]]).read() / .write(s) → file.read_all / file.write_all
+                    const oa = argsOf(obj).filter((x) => x.type !== 'keyword_argument'); const mode = oa[1] ? str(oa[1]) : null; const m = mode ? (mode.k === 'lit' ? mode.v : '?') : 'r';
+                    if (oa.length >= 1 && oa.length <= 2 && ((attr === 'read' && m === 'r') || (attr === 'write' && m === 'w'))) return call(attr === 'read' ? 'file.read_all' : 'file.write_all', [ex(oa[0])].concat(attr === 'write' ? [ex(pa[0])] : []), n);
+                }
                 const r = ex(obj);
                 if (attr === 'split') return pa.length === 0 ? call('str.split_ws', [r], n) : pa.length === 1 ? call('str.split_sep', [r, ex(pa[0])], n) : nativeE(n, 'split 引數');
                 if (attr === 'join' && pa.length === 1) { const a0 = pa[0]; if (a0.type === 'call' && txt(f(a0, 'function')) === 'map' && argsOf(a0).length === 2 && txt(argsOf(a0)[0]) === 'str') return call('str.join_num', [r, ex(argsOf(a0)[1])], n); return call('str.join', [r, ex(a0)], n); }
