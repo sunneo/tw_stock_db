@@ -19,6 +19,14 @@ const core = (() => { try { return require('./judge-core.js'); } catch (e) { ret
 
 const sh = (cmd, args) => ({ cmd, args });
 const PY = process.platform === 'win32' ? 'python' : 'python3';
+// Windows 的 bash：PATH 上的 bash 可能是 System32 的 WSL 啟動器（會把 Windows 路徑當 Linux 路徑而失敗），優先找 Git／msys 的 bash.exe（真 fork 用 msys 執行環境）
+const fwd = (x) => String(x).split(String.fromCharCode(92)).join('/'); // msys 的 bash 會把反斜線路徑當跳脫字元吃掉
+const BASH = (() => {
+    if (process.platform !== 'win32') return 'bash';
+    try { const r = require('child_process').spawnSync('where', ['bash'], { encoding: 'utf8', windowsHide: true, timeout: 5000 }); const c = String(r.stdout || '').split(/\r?\n/).map((x) => x.trim()).filter((x) => x && !/[\\/](?:system32|windowsapps)[\\/]/i.test(x)); if (c.length) return c[0]; } catch (e) { /* 找不到就用預設 */ }
+    for (const d of [process.env.FA_BASH, 'J:\\msys64\\usr\\bin\\bash.exe', 'C:\\msys64\\usr\\bin\\bash.exe', 'C:\\Program Files\\Git\\bin\\bash.exe']) if (d && fs.existsSync(d)) return d;
+    return 'bash';
+})();
 // 每種語言：file（原始檔名）、compile(dir)→null 或 {cmd,args}、run(dir)→{cmd,args}、detect（版本探測）、probe（可選，真的跑一個空程式，證明這台機器跑得起來）
 const LANGS = {
     // Windows 的 python3 只是 Microsoft Store 的空殼，真的直譯器叫 python；其他平台叫 python3
@@ -30,7 +38,7 @@ const LANGS = {
     java: { file: 'Main.java', detect: ['javac', ['-version']], compile: (d) => sh('javac', ['-d', d, path.join(d, 'Main.java')]), run: (d) => sh('java', ['-Xss64m', '-cp', d, 'Main']) },
     ruby: { file: 'main.rb', detect: ['ruby', ['--version']], check: (d) => sh('ruby', ['-c', path.join(d, 'main.rb')]), run: (d) => sh('ruby', [path.join(d, 'main.rb')]) },
     perl: { file: 'main.pl', detect: ['perl', ['-e', 'print "$]"']], check: (d) => sh('perl', ['-c', path.join(d, 'main.pl')]), run: (d) => sh('perl', [path.join(d, 'main.pl')]) },
-    bash: { file: 'main.sh', detect: ['bash', ['--version']], check: (d) => sh('bash', ['-n', path.join(d, 'main.sh')]), run: (d) => sh('bash', [path.join(d, 'main.sh')]) },
+    bash: { file: 'main.sh', detect: [BASH, ['--version']], check: (d) => sh(BASH, ['-n', fwd(path.join(d, 'main.sh'))]), run: (d) => sh(BASH, [fwd(path.join(d, 'main.sh'))]) },
     // 組語：GNU as（要寫 .intel_syntax noprefix，進入點 _start，直接用系統呼叫、不連 libc）。x64：syscall；x86：int 0x80（需要核心支援 32 位元執行檔，所以有 probe）
     'asm-x64': { file: 'main.s', detect: ['as', ['--version']], needs: ['ld'], check: (d) => sh('as', ['--64', '-o', path.join(d, 'm.o'), path.join(d, 'main.s')]), compile: (d) => ({ chain: [sh('as', ['--64', '-o', path.join(d, 'm.o'), path.join(d, 'main.s')]), sh('ld', ['-o', path.join(d, 'a.out'), path.join(d, 'm.o')])] }), run: (d) => sh(path.join(d, 'a.out'), []), probe: '.intel_syntax noprefix\n.globl _start\n.text\n_start:\n  mov eax, 60\n  xor edi, edi\n  syscall\n' },
     'asm-x86': { file: 'main.s', detect: ['as', ['--version']], needs: ['ld'], check: (d) => sh('as', ['--32', '-o', path.join(d, 'm.o'), path.join(d, 'main.s')]), compile: (d) => ({ chain: [sh('as', ['--32', '-o', path.join(d, 'm.o'), path.join(d, 'main.s')]), sh('ld', ['-m', 'elf_i386', '-o', path.join(d, 'a.out'), path.join(d, 'm.o')])] }), run: (d) => sh(path.join(d, 'a.out'), []), probe: '.intel_syntax noprefix\n.globl _start\n.text\n_start:\n  mov eax, 1\n  xor ebx, ebx\n  int 0x80\n' },
@@ -50,6 +58,16 @@ function killTree(child) {
     if (!child || !child.pid) return;
     if (process.platform === 'win32') { try { require('child_process').spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore', timeout: 5000 }); } catch (e) { /* 已結束 */ } try { child.kill('SIGKILL'); } catch (e) { /* 已結束 */ } return; }
     try { process.kill(-child.pid, 'SIGKILL'); } catch (e) { try { child.kill('SIGKILL'); } catch (e2) { /* 已結束 */ } }
+}
+// Windows 上跑 python 時：Node 的 windowsHide 讓父行程沒有可見的主控台，Windows Terminal 是預設終端機時，python 再開的子行程（subprocess、os.system、os.popen、os.spawn*）會被配一個新的黑視窗彈出來搶走焦點。
+// 解法：在沙盒暫存目錄放 sitecustomize.py（PYTHONPATH 指向它；判題器跑 python 沒有加 -I，所以會被載入），把這些 API 預設改成 CREATE_NO_WINDOW＋SW_HIDE。nodejs 則用 scripts/hide-child-windows.js（NODE_OPTIONS）。
+// 已知沒處理：C／C++／其他語言自己呼叫 system()／CreateProcess（編出來的程式不吃這些設定）；bash（msys）的子行程。
+const SITECUSTOMIZE = "import sys\nif sys.platform == \"win32\":\n    import subprocess as _sp, os as _os\n    _orig_init = _sp.Popen.__init__\n    def _fa_init(self, *a, **k):\n        k[\"creationflags\"] = k.get(\"creationflags\", 0) | 0x08000000\n        si = k.get(\"startupinfo\")\n        if si is None:\n            si = _sp.STARTUPINFO()\n        si.dwFlags |= 1\n        si.wShowWindow = 0\n        k[\"startupinfo\"] = si\n        if len(a) < 4 and k.get(\"stdin\") is None:\n            k[\"stdin\"] = 0\n        if len(a) < 5 and k.get(\"stdout\") is None:\n            k[\"stdout\"] = 1\n        if len(a) < 6 and k.get(\"stderr\") is None:\n            k[\"stderr\"] = 2\n        _orig_init(self, *a, **k)\n    _sp.Popen.__init__ = _fa_init\n    def _fa_system(cmd):\n        return _sp.call(cmd, shell=True)\n    _os.system = _fa_system\n    def _fa_spawn(mode, path, args, env, search):\n        pr = _sp.Popen([path] + list(args[1:]), env=env)\n        if mode == 0:\n            return pr.wait()\n        return pr.pid\n    for _n, _env, _srch in ((\"spawnv\", False, False), (\"spawnve\", True, False), (\"spawnvp\", False, True), (\"spawnvpe\", True, True)):\n        def _mkv(env=_env, srch=_srch):\n            def _f(mode, path, args, *rest):\n                return _fa_spawn(mode, path, args, rest[0] if env else None, srch)\n            return _f\n        setattr(_os, _n, _mkv())\n    for _n, _env, _srch in ((\"spawnl\", False, False), (\"spawnle\", True, False), (\"spawnlp\", False, True), (\"spawnlpe\", True, True)):\n        def _mkl(env=_env, srch=_srch):\n            def _f(mode, path, *args):\n                if env:\n                    return _fa_spawn(mode, path, args[:-1], args[-1], srch)\n                return _fa_spawn(mode, path, args, None, srch)\n            return _f\n        setattr(_os, _n, _mkl())\n";
+function hideEnv(lang, dir) {
+    if (process.platform !== 'win32') return {};
+    if (lang === 'python') { const sd = path.join(dir, '_fa_site'); try { fs.mkdirSync(sd, { recursive: true }); fs.writeFileSync(path.join(sd, 'sitecustomize.py'), SITECUSTOMIZE); } catch (e) { return {}; } return { PYTHONPATH: sd }; }
+    if (lang === 'nodejs') { const h = path.join(__dirname, 'scripts', 'hide-child-windows.js'); if (fs.existsSync(h)) return { NODE_OPTIONS: '--require ' + h }; }
+    return {};
 }
 // 子行程的環境變數：精簡集合＋（Windows 需要的系統變數，沒有 SystemRoot 的話 winsock 起不來，python／C 的 socket 都會失敗）＋題目指定的 env
 function baseEnv(o) {
@@ -274,7 +292,7 @@ async function judge(opts) {
             let bad = '';
             for (const name of Object.keys(t.files || {})) { if (!safeRel(name)) { bad = '檔名不合法：' + name; break; } const fp = path.join(td, name); fs.mkdirSync(path.dirname(fp), { recursive: true }); fs.writeFileSync(fp, asBuf(t.files[name])); }
             if (bad) { results.push({ hidden, verdict: 'RE', detail: bad, ms: 0, mode: pm.mode }); continue; }
-            const env = {}; for (const k of Object.keys(t.env || {})) env[k] = subst(t.env[k], port); if (port != null) env.JUDGE_PORT = String(port);
+            const env = Object.assign({}, pm.mode === 'wsl' ? {} : hideEnv(lang, p.dir)); for (const k of Object.keys(t.env || {})) env[k] = subst(t.env[k], port); if (port != null) env.JUDGE_PORT = String(port);
             const args = (t.args || []).map((a) => subst(a, port));
             const inBuf = t.inHex != null ? Buffer.from(String(t.inHex).replace(/\s+/g, ''), 'hex') : null;
             let r;
@@ -308,4 +326,4 @@ async function judge(opts) {
     return Object.assign(core.summarize(results), { lang, modes: [...modes], results: results.map((x) => ({ verdict: x.verdict, mode: x.mode, ms: x.ms })) });
 }
 
-module.exports = { LANGS, ORDER, available, judge, check, exec, killTree, startupSyntaxError, capabilities, freePort, sweepOrphans, wslPath };
+module.exports = { SITECUSTOMIZE, hideEnv, LANGS, ORDER, available, judge, check, exec, killTree, startupSyntaxError, capabilities, freePort, sweepOrphans, wslPath };

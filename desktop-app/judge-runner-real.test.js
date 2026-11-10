@@ -129,6 +129,24 @@ const P = (tests, extra) => Object.assign({ id: 'real', checker: 'tokens', tests
         const k = caps.fork === 'wsl' ? await J.exec('wsl', ['-d', caps.wsl.distro, '--', 'sh', '-c', 'ps -eo args | grep "time.sleep(77)" | grep -v grep | wc -l'], { timeoutMs: 30000 }) : await J.exec('sh', ['-c', 'ps -eo args | grep "time.sleep(77)" | grep -v grep | wc -l'], { timeoutMs: 10000 });
         assert.strictEqual(k.stdout.trim(), '0', '殘留子行程');
     });
+    // Windows：python 開的子行程不能有可見的主控台視窗（Windows Terminal 為預設終端機時，沒有父主控台的子行程會彈出黑視窗搶走焦點）。
+    // 做法見 judge-runner.js 的 SITECUSTOMIZE；這裡用子行程自己回報 GetConsoleWindow／IsWindowVisible 來證明
+    if (process.platform === 'win32') await t('Windows：sandbox 的 python 以 subprocess／os.system／os.popen／os.spawnv 開的子行程都沒有可見的主控台視窗', async () => {
+        const L = (a) => a.join(String.fromCharCode(10));
+        const src = L(['import os, subprocess, sys',
+            'open("c.py", "w").write("import ctypes\\nh = ctypes.windll.kernel32.GetConsoleWindow()\\nprint(\\"vis\\", int(bool(h and ctypes.windll.user32.IsWindowVisible(h))))\\n")',
+            'print("patched", subprocess.Popen.__init__.__name__)',
+            'print(subprocess.run([sys.executable, "c.py"], capture_output=True, text=True).stdout.strip())',
+            'os.system(sys.executable + " c.py")',
+            'print(os.popen(sys.executable + " c.py").read().strip())',
+            'os.spawnv(os.P_WAIT, sys.executable, [sys.executable, "c.py"])', '']);
+        const want = ['patched _fa_init', 'vis 0', 'vis 0', 'vis 0', 'vis 0'].join(String.fromCharCode(10));
+        const r = await J.judge({ lang: 'python', source: src, problem: P([{ in: '', out: want }], { checker: 'unordered-lines' }), timeoutMs: 40000 });
+        assert.strictEqual(r.verdict, 'AC', r.verdict + ' ' + r.detail);
+    });
+    if (process.platform === 'win32') await t('Windows：nodejs 沙盒掛上 hide-child-windows（NODE_OPTIONS）', async () => {
+        const env = J.hideEnv('nodejs', require('os').tmpdir()); assert.ok(/hide-child-windows.js/.test(env.NODE_OPTIONS || ''), JSON.stringify(env));
+    });
     await t('不用 fork 的測試在 Windows 仍是 native（不會為了 argv／結束碼去啟動 WSL）', async () => {
         const r = await J.judge({ lang: 'python', source: 'import sys\nprint(len(sys.argv))\n', problem: P([{ in: '', out: '2', args: ['x'] }]) });
         assert.deepStrictEqual(r.modes, ['native']);
