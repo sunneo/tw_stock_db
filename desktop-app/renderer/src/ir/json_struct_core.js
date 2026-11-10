@@ -147,7 +147,8 @@ struct JvParser {
         p++; std::string out;
         for (;;) {
             if (p >= s.size()) fail("unterminated string"); unsigned char c = (unsigned char)s[p++];
-            if (c == '"') break; if (c < 0x20) fail("control character in string");
+            if (c == '"') break;
+        if (c < 0x20) fail("control character in string");
             if (c != '\\') { out += (char)c; continue; }
             if (p >= s.size()) fail("bad escape"); char e = s[p++];
             switch (e) { case '"': out += '"'; break; case '\\': out += '\\'; break; case '/': out += '/'; break; case 'b': out += '\b'; break; case 'f': out += '\f'; break; case 'n': out += '\n'; break; case 'r': out += '\r'; break; case 't': out += '\t'; break;
@@ -255,5 +256,176 @@ static JV jv_put(const BigInt &v) { return JV::bigint(v.digits); }`, '');
         if (opts.main) L.push('', 'int main() { std::string t((std::istreambuf_iterator<char>(std::cin)), std::istreambuf_iterator<char>()); try { ' + rootTy + ' v = ' + rn + '_load(t); std::cout << ' + rn + '_save(v) << "\\n"; } catch (const std::exception &e) { std::cout << "ERROR" << "\\n"; return 1; } return 0; }');
         return { ok: true, code: L.join('\n') + '\n', marshal: true, notes: ['bigint 欄位用 BigInt 包裝（十進位字串，輸出時還原成數字）', '可省略且可空的欄位用 optional<optional<T>>：外層表示有沒有這個鍵，內層表示值是不是 null，所以「缺少」與 null 分得開', '欄位順序依結構宣告，不依輸入的鍵順序'] };
     }
-    return { VERSION, inferSchema, parseTypeDesc, saveSchema, loadSchema, schemaToIrType, parseJsonKeepBig, collectStructs, genCpp, CPP_JSON_RUNTIME, CPP_INCLUDES, ident, pascal, q };
+
+    // ---------- C 的 JSON 執行期：通用值 JV*、剖析器、輸出器（C 字串不能含 NUL，所以 JSON 的 \u0000 會被拒絕）----------
+    const C_JSON_RUNTIME = String.raw`#pragma GCC diagnostic ignored "-Wunused-function"
+typedef struct JV JV;
+enum { JT_NUL, JT_BOOL, JT_INT, JT_BIG, JT_FLOAT, JT_STR, JT_ARR, JT_OBJ };
+struct JV { int t; long long i; double d; char *s; JV **v; char **k; size_t n, cap; };
+typedef char *BigStr;
+typedef struct { int is_int; long long i; double d; } Num;
+static char fa_err[256];
+static int fa_fail(const char *m) { snprintf(fa_err, sizeof fa_err, "%s", m); return 1; }
+static const char *fa_json_error(void) { return fa_err; }
+static JV *jv_new(int t) { JV *x = (JV *)calloc(1, sizeof(JV)); x->t = t; return x; }
+static char *jv_strndup(const char *s, size_t n) { char *r = (char *)malloc(n + 1); memcpy(r, s, n); r[n] = 0; return r; }
+static char *jv_strdup(const char *s) { return jv_strndup(s, strlen(s)); }
+static void jv_free(JV *x) { size_t k; if (!x) return; if (x->t == JT_STR || x->t == JT_BIG) free(x->s); if (x->t == JT_ARR || x->t == JT_OBJ) { for (k = 0; k < x->n; k++) { jv_free(x->v[k]); if (x->t == JT_OBJ) free(x->k[k]); } free(x->v); free(x->k); } free(x); }
+static void jv_push(JV *a, JV *e, const char *key) { if (a->n == a->cap) { a->cap = a->cap ? a->cap * 2 : 4; a->v = (JV **)realloc(a->v, a->cap * sizeof(JV *)); if (a->t == JT_OBJ) a->k = (char **)realloc(a->k, a->cap * sizeof(char *)); } a->v[a->n] = e; if (a->t == JT_OBJ) a->k[a->n] = jv_strdup(key); a->n++; }
+static void jv_set(JV *o, const char *key, JV *e) { size_t k; for (k = 0; k < o->n; k++) if (strcmp(o->k[k], key) == 0) { jv_free(o->v[k]); o->v[k] = e; return; } jv_push(o, e, key); }
+static const JV *jv_get_key(const JV *o, const char *key) { size_t k; for (k = 0; k < o->n; k++) if (strcmp(o->k[k], key) == 0) return o->v[k]; return NULL; }
+static JV *jv_copy(const JV *x) { JV *r = jv_new(x->t); size_t k; r->i = x->i; r->d = x->d; if (x->s) r->s = jv_strdup(x->s); for (k = 0; k < x->n; k++) jv_push(r, jv_copy(x->v[k]), x->t == JT_OBJ ? x->k[k] : NULL); return r; }
+typedef struct { char *p; size_t n, cap; } SB;
+static void sb_add(SB *b, const char *s, size_t n) { if (b->n + n + 1 > b->cap) { b->cap = (b->n + n + 1) * 2; b->p = (char *)realloc(b->p, b->cap); } memcpy(b->p + b->n, s, n); b->n += n; b->p[b->n] = 0; }
+static void sb_str(SB *b, const char *s) { sb_add(b, s, strlen(s)); }
+static void sb_utf8(SB *b, unsigned cp) { char t[4]; if (cp < 0x80) { t[0] = (char)cp; sb_add(b, t, 1); } else if (cp < 0x800) { t[0] = (char)(0xC0 | (cp >> 6)); t[1] = (char)(0x80 | (cp & 0x3F)); sb_add(b, t, 2); } else if (cp < 0x10000) { t[0] = (char)(0xE0 | (cp >> 12)); t[1] = (char)(0x80 | ((cp >> 6) & 0x3F)); t[2] = (char)(0x80 | (cp & 0x3F)); sb_add(b, t, 3); } else { t[0] = (char)(0xF0 | (cp >> 18)); t[1] = (char)(0x80 | ((cp >> 12) & 0x3F)); t[2] = (char)(0x80 | ((cp >> 6) & 0x3F)); t[3] = (char)(0x80 | (cp & 0x3F)); sb_add(b, t, 4); } }
+typedef struct { const char *s; size_t p, n; } JP;
+static void jp_ws(JP *q) { while (q->p < q->n && (q->s[q->p] == ' ' || q->s[q->p] == '\t' || q->s[q->p] == '\n' || q->s[q->p] == '\r')) q->p++; }
+static int jp_hex4(JP *q, unsigned *out) { unsigned v = 0; int k; if (q->p + 4 > q->n) return 1; for (k = 0; k < 4; k++) { char c = q->s[q->p++]; v <<= 4; if (c >= '0' && c <= '9') v |= (unsigned)(c - '0'); else if (c >= 'a' && c <= 'f') v |= (unsigned)(c - 'a' + 10); else if (c >= 'A' && c <= 'F') v |= (unsigned)(c - 'A' + 10); else return 1; } *out = v; return 0; }
+static char *jp_str(JP *q) {
+    SB b = {0, 0, 0}; q->p++; sb_add(&b, "", 0);
+    for (;;) {
+        unsigned char c; if (q->p >= q->n) { fa_fail("unterminated string"); free(b.p); return NULL; } c = (unsigned char)q->s[q->p++];
+        if (c == '"') break;
+        if (c < 0x20) { fa_fail("control character in string"); free(b.p); return NULL; }
+        if (c != '\\') { sb_add(&b, (const char *)&c, 1); continue; }
+        if (q->p >= q->n) { fa_fail("bad escape"); free(b.p); return NULL; } c = (unsigned char)q->s[q->p++];
+        switch (c) { case '"': sb_str(&b, "\""); break; case '\\': sb_str(&b, "\\"); break; case '/': sb_str(&b, "/"); break; case 'b': sb_str(&b, "\b"); break; case 'f': sb_str(&b, "\f"); break; case 'n': sb_str(&b, "\n"); break; case 'r': sb_str(&b, "\r"); break; case 't': sb_str(&b, "\t"); break;
+            case 'u': { unsigned cp; if (jp_hex4(q, &cp)) { fa_fail("bad \\u escape"); free(b.p); return NULL; }
+                if (cp >= 0xD800 && cp < 0xDC00 && q->p + 1 < q->n && q->s[q->p] == '\\' && q->s[q->p + 1] == 'u') { size_t save = q->p; unsigned lo; q->p += 2; if (!jp_hex4(q, &lo) && lo >= 0xDC00 && lo < 0xE000) cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00); else q->p = save; }
+                if (cp == 0) { fa_fail("NUL character in string is not supported in C"); free(b.p); return NULL; } sb_utf8(&b, cp); break; }
+            default: fa_fail("bad escape"); free(b.p); return NULL; }
+    }
+    return b.p;
+}
+static JV *jp_value(JP *q, int depth) {
+    char c; jp_ws(q); if (depth > 512) { fa_fail("too deep"); return NULL; } if (q->p >= q->n) { fa_fail("unexpected end"); return NULL; } c = q->s[q->p];
+    if (c == '{') { JV *r = jv_new(JT_OBJ); q->p++; jp_ws(q); if (q->p < q->n && q->s[q->p] == '}') { q->p++; return r; }
+        for (;;) { char *k; JV *v; jp_ws(q); if (q->p >= q->n || q->s[q->p] != '"') { fa_fail("expected string key"); jv_free(r); return NULL; } k = jp_str(q); if (!k) { jv_free(r); return NULL; } jp_ws(q);
+            if (q->p >= q->n || q->s[q->p] != ':') { fa_fail("expected :"); free(k); jv_free(r); return NULL; } q->p++; v = jp_value(q, depth + 1); if (!v) { free(k); jv_free(r); return NULL; } jv_set(r, k, v); free(k); jp_ws(q);
+            if (q->p < q->n && q->s[q->p] == ',') { q->p++; continue; } if (q->p < q->n && q->s[q->p] == '}') { q->p++; break; } fa_fail("expected , or }"); jv_free(r); return NULL; }
+        return r; }
+    if (c == '[') { JV *r = jv_new(JT_ARR); q->p++; jp_ws(q); if (q->p < q->n && q->s[q->p] == ']') { q->p++; return r; }
+        for (;;) { JV *v = jp_value(q, depth + 1); if (!v) { jv_free(r); return NULL; } jv_push(r, v, NULL); jp_ws(q); if (q->p < q->n && q->s[q->p] == ',') { q->p++; continue; } if (q->p < q->n && q->s[q->p] == ']') { q->p++; break; } fa_fail("expected , or ]"); jv_free(r); return NULL; }
+        return r; }
+    if (c == '"') { JV *r = jv_new(JT_STR); r->s = jp_str(q); if (!r->s) { free(r); return NULL; } return r; }
+    if (q->n - q->p >= 4 && strncmp(q->s + q->p, "true", 4) == 0) { JV *r = jv_new(JT_BOOL); r->i = 1; q->p += 4; return r; }
+    if (q->n - q->p >= 5 && strncmp(q->s + q->p, "false", 5) == 0) { JV *r = jv_new(JT_BOOL); q->p += 5; return r; }
+    if (q->n - q->p >= 4 && strncmp(q->s + q->p, "null", 4) == 0) { q->p += 4; return jv_new(JT_NUL); }
+    { size_t st = q->p; int fl = 0, neg = 0; char *txt; size_t len; JV *r;
+      if (q->s[q->p] == '-') { neg = 1; q->p++; } if (q->p >= q->n || !isdigit((unsigned char)q->s[q->p])) { fa_fail("bad value"); return NULL; }
+      if (q->s[q->p] == '0') q->p++; else while (q->p < q->n && isdigit((unsigned char)q->s[q->p])) q->p++;
+      if (q->p < q->n && q->s[q->p] == '.') { fl = 1; q->p++; if (q->p >= q->n || !isdigit((unsigned char)q->s[q->p])) { fa_fail("bad number"); return NULL; } while (q->p < q->n && isdigit((unsigned char)q->s[q->p])) q->p++; }
+      if (q->p < q->n && (q->s[q->p] == 'e' || q->s[q->p] == 'E')) { fl = 1; q->p++; if (q->p < q->n && (q->s[q->p] == '+' || q->s[q->p] == '-')) q->p++; if (q->p >= q->n || !isdigit((unsigned char)q->s[q->p])) { fa_fail("bad number"); return NULL; } while (q->p < q->n && isdigit((unsigned char)q->s[q->p])) q->p++; }
+      len = q->p - st; txt = jv_strndup(q->s + st, len);
+      if (fl) { r = jv_new(JT_FLOAT); r->d = strtod(txt, NULL); free(txt); return r; }
+      { const char *dg = neg ? txt + 1 : txt; const char *lim = neg ? "9223372036854775808" : "9223372036854775807"; size_t dl = strlen(dg), ll = strlen(lim);
+        if (dl < ll || (dl == ll && strcmp(dg, lim) <= 0)) { r = jv_new(JT_INT); r->i = (neg && strcmp(dg, lim) == 0) ? (-9223372036854775807LL - 1) : strtoll(txt, NULL, 10); free(txt); return r; }
+        r = jv_new(JT_BIG); r->s = txt; return r; } }
+}
+static JV *fa_jparse(const char *text) { JP q; JV *v; q.s = text; q.p = 0; q.n = strlen(text); v = jp_value(&q, 0); if (!v) return NULL; jp_ws(&q); if (q.p != q.n) { fa_fail("extra data"); jv_free(v); return NULL; } return v; }
+static void sb_quote(SB *b, const char *s) {
+    const unsigned char *u = (const unsigned char *)s; sb_str(b, "\"");
+    while (*u) { unsigned char c = *u; char t[16];
+        if (c == '"') { sb_str(b, "\\\""); u++; } else if (c == '\\') { sb_str(b, "\\\\"); u++; } else if (c == '\n') { sb_str(b, "\\n"); u++; } else if (c == '\r') { sb_str(b, "\\r"); u++; } else if (c == '\t') { sb_str(b, "\\t"); u++; } else if (c == '\b') { sb_str(b, "\\b"); u++; } else if (c == '\f') { sb_str(b, "\\f"); u++; }
+        else if (c < 0x20) { snprintf(t, sizeof t, "\\u%04x", c); sb_str(b, t); u++; } else if (c < 0x80) { sb_add(b, (const char *)&c, 1); u++; }
+        else { int n = c >= 0xF0 ? 3 : c >= 0xE0 ? 2 : 1, k; unsigned cp = c & (0x3Fu >> n); for (k = 1; k <= n && u[k]; k++) cp = (cp << 6) | (u[k] & 0x3Fu); u += n + 1;
+            if (cp >= 0x10000) { cp -= 0x10000; snprintf(t, sizeof t, "\\u%04x\\u%04x", 0xD800 + (cp >> 10), 0xDC00 + (cp & 0x3FF)); } else snprintf(t, sizeof t, "\\u%04x", cp); sb_str(b, t); } }
+    sb_str(b, "\"");
+}
+static void sb_float(SB *b, double x) {
+    char buf[64], eb[16]; int p, nd, ex, dp, i, j; char digs[40]; const char *m; int neg;
+    if (x != x) { sb_str(b, "NaN"); return; } if (x > 1.7976931348623157e308) { sb_str(b, "Infinity"); return; } if (x < -1.7976931348623157e308) { sb_str(b, "-Infinity"); return; }
+    for (p = 1; p <= 17; p++) { snprintf(buf, sizeof buf, "%.*e", p - 1, x); if (strtod(buf, NULL) == x) break; }
+    m = buf; neg = *m == '-';
+    if (neg) m++;
+    j = 0; for (i = 0; m[i] && m[i] != 'e'; i++) if (m[i] != '.') digs[j++] = m[i]; digs[j] = 0; ex = atoi(m + i + 1); nd = j; while (nd > 1 && digs[nd - 1] == '0') digs[--nd] = 0;
+    if (neg) sb_str(b, "-");
+    if (ex >= -4 && ex < 16) { dp = ex + 1;
+        if (dp <= 0) { sb_str(b, "0."); for (i = 0; i < -dp; i++) sb_str(b, "0"); sb_str(b, digs); }
+        else if (dp >= nd) { sb_str(b, digs); for (i = 0; i < dp - nd; i++) sb_str(b, "0"); sb_str(b, ".0"); }
+        else { sb_add(b, digs, (size_t)dp); sb_str(b, "."); sb_str(b, digs + dp); } }
+    else { sb_add(b, digs, 1); if (nd > 1) { sb_str(b, "."); sb_str(b, digs + 1); } snprintf(eb, sizeof eb, "e%c%02d", ex < 0 ? '-' : '+', ex < 0 ? -ex : ex); sb_str(b, eb); }
+}
+static void sb_jv(SB *b, const JV *v) {
+    char t[32]; size_t k;
+    switch (v->t) { case JT_NUL: sb_str(b, "null"); break; case JT_BOOL: sb_str(b, v->i ? "true" : "false"); break; case JT_INT: snprintf(t, sizeof t, "%lld", v->i); sb_str(b, t); break; case JT_BIG: sb_str(b, v->s); break;
+        case JT_FLOAT: sb_float(b, v->d); break; case JT_STR: sb_quote(b, v->s); break;
+        case JT_ARR: sb_str(b, "["); for (k = 0; k < v->n; k++) { if (k) sb_str(b, ", "); sb_jv(b, v->v[k]); } sb_str(b, "]"); break;
+        case JT_OBJ: sb_str(b, "{"); for (k = 0; k < v->n; k++) { if (k) sb_str(b, ", "); sb_quote(b, v->k[k]); sb_str(b, ": "); sb_jv(b, v->v[k]); } sb_str(b, "}"); break; }
+}
+static char *fa_jdump(const JV *v) { SB b = {0, 0, 0}; sb_add(&b, "", 0); sb_jv(&b, v); return b.p; }
+static int get_ll(const JV *j, long long *v) { if (j->t != JT_INT) return fa_fail("expected integer"); *v = j->i; return 0; }
+static JV *put_ll(const long long *v) { JV *x = jv_new(JT_INT); x->i = *v; return x; }
+static void free_ll(long long *v) { (void)v; }
+static int get_dbl(const JV *j, double *v) { if (j->t == JT_FLOAT) *v = j->d; else if (j->t == JT_INT) *v = (double)j->i; else if (j->t == JT_BIG) *v = strtod(j->s, NULL); else return fa_fail("expected number"); return 0; }
+static JV *put_dbl(const double *v) { JV *x = jv_new(JT_FLOAT); x->d = *v; return x; }
+static void free_dbl(double *v) { (void)v; }
+static int get_bool(const JV *j, int *v) { if (j->t != JT_BOOL) return fa_fail("expected boolean"); *v = (int)j->i; return 0; }
+static JV *put_bool(const int *v) { JV *x = jv_new(JT_BOOL); x->i = *v; return x; }
+static void free_bool(int *v) { (void)v; }
+static int get_str(const JV *j, char **v) { if (j->t != JT_STR) return fa_fail("expected string"); *v = jv_strdup(j->s); return 0; }
+static JV *put_str(char *const *v) { JV *x = jv_new(JT_STR); x->s = jv_strdup(*v ? *v : ""); return x; }
+static void free_str(char **v) { free(*v); *v = NULL; }
+static int get_big(const JV *j, BigStr *v) { if (j->t == JT_BIG) *v = jv_strdup(j->s); else if (j->t == JT_INT) { char t[32]; snprintf(t, sizeof t, "%lld", j->i); *v = jv_strdup(t); } else return fa_fail("expected integer"); return 0; }
+static JV *put_big(const BigStr *v) { JV *x = jv_new(JT_BIG); x->s = jv_strdup(*v ? *v : "0"); return x; }
+static void free_big(BigStr *v) { free(*v); *v = NULL; }
+static int get_num(const JV *j, Num *v) { if (j->t == JT_INT) { v->is_int = 1; v->i = j->i; } else if (j->t == JT_FLOAT) { v->is_int = 0; v->d = j->d; } else return fa_fail("expected number"); return 0; }
+static JV *put_num(const Num *v) { JV *x; if (v->is_int) { x = jv_new(JT_INT); x->i = v->i; } else { x = jv_new(JT_FLOAT); x->d = v->d; } return x; }
+static void free_num(Num *v) { (void)v; }
+static int get_jv(const JV *j, JV **v) { *v = jv_copy(j); return 0; }
+static JV *put_jv(JV *const *v) { return *v ? jv_copy(*v) : jv_new(JT_NUL); }
+static void free_jv(JV **v) { jv_free(*v); *v = NULL; }`;
+    const C_INCLUDES = ['<stdio.h>', '<stdlib.h>', '<string.h>', '<ctype.h>', '<math.h>'];
+
+    // ---------- C 型別宣告＋對應函式 ----------
+    function genC(schema, opts) {
+        opts = opts || {}; const structs = collectStructs(schema); const rn = ident(schema.name || 'Root', CPP_KW);
+        const code = []; const seen = {};
+        const prim = { int: ['long long', 'll'], float: ['double', 'dbl'], bool: ['int', 'bool'], str: ['char *', 'str'], bigint: ['BigStr', 'big'], number: ['Num', 'num'], any: ['JV *', 'jv'] };
+        const wrap = (kind, inner) => { // kind: 'Arr' | 'Map' | 'Opt'；inner：{ct, m}
+            const nm = kind + '_' + inner.m; if (!seen[nm]) { seen[nm] = true;
+                if (kind === 'Arr') code.push('typedef struct { ' + inner.ct + ' *d; size_t n; } ' + nm + ';',
+                    'static int get_' + nm + '(const JV *j, ' + nm + ' *v) { size_t i; if (j->t != JT_ARR) return fa_fail("expected array"); v->n = 0; v->d = (' + inner.ct + ' *)calloc(j->n ? j->n : 1, sizeof(' + inner.ct + ')); for (i = 0; i < j->n; i++) { if (get_' + inner.m + '(j->v[i], &v->d[i])) return 1; v->n = i + 1; } return 0; }',
+                    'static JV *put_' + nm + '(const ' + nm + ' *v) { size_t i; JV *r = jv_new(JT_ARR); for (i = 0; i < v->n; i++) jv_push(r, put_' + inner.m + '(&v->d[i]), NULL); return r; }',
+                    'static void free_' + nm + '(' + nm + ' *v) { size_t i; for (i = 0; i < v->n; i++) free_' + inner.m + '(&v->d[i]); free(v->d); v->d = NULL; v->n = 0; }');
+                else if (kind === 'Map') code.push('typedef struct { char **k; ' + inner.ct + ' *d; size_t n; } ' + nm + ';',
+                    'static int get_' + nm + '(const JV *j, ' + nm + ' *v) { size_t i; if (j->t != JT_OBJ) return fa_fail("expected object"); v->n = 0; v->k = (char **)calloc(j->n ? j->n : 1, sizeof(char *)); v->d = (' + inner.ct + ' *)calloc(j->n ? j->n : 1, sizeof(' + inner.ct + ')); for (i = 0; i < j->n; i++) { v->k[i] = jv_strdup(j->k[i]); if (get_' + inner.m + '(j->v[i], &v->d[i])) { v->n = i + 1; return 1; } v->n = i + 1; } return 0; }',
+                    'static JV *put_' + nm + '(const ' + nm + ' *v) { size_t i; JV *r = jv_new(JT_OBJ); for (i = 0; i < v->n; i++) jv_set(r, v->k[i], put_' + inner.m + '(&v->d[i])); return r; }',
+                    'static void free_' + nm + '(' + nm + ' *v) { size_t i; for (i = 0; i < v->n; i++) { free(v->k[i]); free_' + inner.m + '(&v->d[i]); } free(v->k); free(v->d); v->k = NULL; v->d = NULL; v->n = 0; }');
+                else code.push('typedef struct { int has; ' + inner.ct + ' v; } ' + nm + ';',
+                    'static int get_' + nm + '(const JV *j, ' + nm + ' *v) { if (j->t == JT_NUL) { v->has = 0; return 0; } v->has = 1; return get_' + inner.m + '(j, &v->v); }',
+                    'static JV *put_' + nm + '(const ' + nm + ' *v) { return v->has ? put_' + inner.m + '(&v->v) : jv_new(JT_NUL); }',
+                    'static void free_' + nm + '(' + nm + ' *v) { if (v->has) free_' + inner.m + '(&v->v); v->has = 0; }'); }
+            return { ct: nm, m: nm }; };
+        const nn = (t) => Object.assign({}, t, { nullable: false });
+        let info;
+        const elem = (t) => (t.nullable ? wrap('Opt', info(nn(t))) : info(t));   // 陣列／字典的元素：可空就包 Opt
+        info = (t) => { if (prim[t.k]) return { ct: prim[t.k][0], m: prim[t.k][1] }; if (t.k === 'array') return wrap('Arr', elem(t.of)); if (t.k === 'map') return wrap('Map', elem(t.of)); if (t.k === 'object') return { ct: t.sname, m: t.sname }; return { ct: 'JV *', m: 'jv' }; };
+        structs.forEach((s) => {
+            const fl = s.fields.map((f) => { f.cid = ident(f.name, CPP_KW); const base = info(nn(f.ty)); let ty, mode;
+                if (f.ty.k === 'any') { ty = base; mode = 'plain'; } else if (f.opt && f.ty.nullable) { ty = wrap('Opt', wrap('Opt', base)); mode = 'optnull'; } else if (f.opt) { ty = wrap('Opt', base); mode = 'opt'; } else if (f.ty.nullable) { ty = wrap('Opt', base); mode = 'null'; } else { ty = base; mode = 'plain'; }
+                return { f, ty, base, mode }; });
+            const seenId = new Set(); fl.forEach((x) => { while (seenId.has(x.f.cid)) x.f.cid += '_'; seenId.add(x.f.cid); });
+            code.push('typedef struct {' + fl.map((x) => ' ' + x.ty.ct + ' ' + x.f.cid + ';').join('') + (fl.length ? '' : ' int _empty;') + ' } ' + s.sname + ';');
+            const g = ['static int get_' + s.sname + '(const JV *j, ' + s.sname + ' *v) {', '    const JV *e = NULL; (void)e; memset(v, 0, sizeof *v); if (j->t != JT_OBJ) return fa_fail("expected object");'];
+            const pu = ['static JV *put_' + s.sname + '(const ' + s.sname + ' *v) {', '    JV *r = jv_new(JT_OBJ);'], fr = ['static void free_' + s.sname + '(' + s.sname + ' *v) {'];
+            fl.forEach((x) => { const k = q(x.f.name), id = 'v->' + x.f.cid; const tm = x.ty.m;
+                if (x.mode === 'opt' || x.mode === 'optnull') { const innerM = x.mode === 'opt' ? x.base.m : tm.replace(/^Opt_/, ''); g.push('    e = jv_get_key(j, ' + k + '); if (e) { ' + id + '.has = 1; if (get_' + innerM + '(e, &' + id + '.v)) return 1; }'); pu.push('    if (' + id + '.has) jv_set(r, ' + k + ', put_' + innerM + '(&' + id + '.v));'); fr.push('    free_' + tm + '(&' + id + ');'); }
+                else { g.push('    e = jv_get_key(j, ' + k + '); if (!e) return fa_fail("missing key: ' + x.f.name.replace(/["\\]/g, '') + '"); if (get_' + tm + '(e, &' + id + ')) return 1;'); pu.push('    jv_set(r, ' + k + ', put_' + tm + '(&' + id + '));'); fr.push('    free_' + tm + '(&' + id + ');'); } });
+            g.push('    return 0;', '}'); pu.push('    return r;', '}'); fr.push('}'); code.push(...g, ...pu, ...fr);
+        });
+        const root = info(nn(schema.type)); if (schema.type.k !== 'object') code.push('typedef ' + root.ct + ' ' + rn + ';');
+        const RT = schema.type.k === 'object' ? schema.type.sname : rn; const rm = root.m;
+        code.push('// ---- 對外介面：load（字串／檔案）傳回 0 成功（錯誤訊息用 fa_json_error()）、save 傳回 malloc 的字串（用完 free）、free 釋放結構內的記憶體 ----',
+            'static int ' + rn + '_load(const char *text, ' + RT + ' *out) { JV *j = fa_jparse(text); int bad; if (!j) return 1; memset(out, 0, sizeof *out); bad = get_' + rm + '(j, out); jv_free(j); return bad; }',
+            'static int ' + rn + '_load_file(const char *path, ' + RT + ' *out) { FILE *f = fopen(path, "rb"); char *buf; long n; int bad; if (!f) return fa_fail("cannot open file"); fseek(f, 0, SEEK_END); n = ftell(f); fseek(f, 0, SEEK_SET); buf = (char *)malloc((size_t)n + 1); n = (long)fread(buf, 1, (size_t)n, f); buf[n] = 0; fclose(f); bad = ' + rn + '_load(buf, out); free(buf); return bad; }',
+            'static char *' + rn + '_save(const ' + RT + ' *v) { JV *j = put_' + rm + '(v); char *s = fa_jdump(j); jv_free(j); return s; }',
+            'static int ' + rn + '_save_file(const char *path, const ' + RT + ' *v) { char *s = ' + rn + '_save(v); FILE *f = fopen(path, "wb"); if (!f) { free(s); return fa_fail("cannot open file"); } fputs(s, f); fclose(f); free(s); return 0; }',
+            'static void ' + rn + '_free(' + RT + ' *v) { free_' + rm + '(v); }');
+        if (opts.main) code.push('', 'int main(void) { size_t cap = 4096, n = 0; char *buf = (char *)malloc(cap); int ch; ' + RT + ' v; char *out; while ((ch = getchar()) != EOF) { if (n + 2 > cap) { cap *= 2; buf = (char *)realloc(buf, cap); } buf[n++] = (char)ch; } buf[n] = 0; if (' + rn + '_load(buf, &v)) { puts("ERROR"); return 1; } out = ' + rn + '_save(&v); puts(out); free(out); ' + rn + '_free(&v); free(buf); return 0; }');
+        return { ok: true, code: C_INCLUDES.map((h) => '#include ' + h).join('\n') + '\n\n// ---- 由 FaJsonStruct 產生：JSON ↔ C 結構（自帶剖析器與輸出器）----\n' + C_JSON_RUNTIME + '\n\n' + code.join('\n') + '\n', marshal: true, notes: ['字串是 malloc 的 char *（JSON 的 \\u0000 會被拒絕：C 字串不能含 NUL）', 'bigint 欄位是十進位字串 BigStr', '陣列 {d, n}、字典 {k, d, n}、可省略／可空 {has, v}；用完呼叫 ' + rn + '_free'] };
+    }
+
+    return { VERSION, inferSchema, parseTypeDesc, saveSchema, loadSchema, schemaToIrType, parseJsonKeepBig, collectStructs, genCpp, genC, CPP_JSON_RUNTIME, C_JSON_RUNTIME, CPP_INCLUDES, ident, pascal, q };
 });
