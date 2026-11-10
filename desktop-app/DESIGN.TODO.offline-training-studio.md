@@ -314,3 +314,10 @@ Backend {
 - **近似去重的規模**：8 桶線性比對，超過約十萬塊時需改成排序合併（目前未實測大語料）。
 - **個資偵測只做樣式比對**（email、台灣電話、身分證、常見金鑰格式），人名、地址抓不到；使用者資料進線上老師前仍須 §6 的送出前確認。
 - **書本的著作權**無法由程式判定，只能依使用者聲明；不提供「從網路抓書」的功能。
+
+## 14. 整合進主程式（已實作，2026-11-11）
+- 架構：瀏覽器端核心（資產／.fatrain／儲存層／trainer 轉接／版面／LoRA 登錄／資料匯入／清洗／假伺服器路由）嵌成 `FaStudio`（`scripts/embed-code-ui.js` 的 `embedStudio`，標記 STUDIO／STUDIOVIEW）；Node 端（後端登錄、基準、檢查點、cpu-py、`studio_host.js`、`lora-train/train_lora.py`）內嵌成 `FA_STUDIO_HOST_FILES`，執行時寫到 `<userData>/studio-host/`，由 `main-ext.js` 的原生信箱 `studio_*` 操作載入，不改 preload／main.js、不需重裝。
+- 入口：`/offline-training-studio`、設定頁 → AI → 離線訓練工作室。八個分頁：資產清單、LoRA 登錄、資料匯入、資料集、評量、訓練、老師、紀錄；版面規則見 §4，核心 `studio_layout_core.js`。
+- LoRA 登錄：由 kind=lora 且含 `weights/*.bin|.safetensors` 的資產建立登錄項；相容性、評量判定、按需選用、手動載入（讀回權重＋核對雜湊）已可用。**未完成（具體阻礙）**：載入後要交給推論，需 `nr-host.js`／`nr-child.js` 轉傳 `lora` 欄位，這兩個檔屬於 md5 釘住、由 GitHub 分支下載的執行包，要先更新執行包；畫面與 API 都明說「尚未套用」。網頁版 transformers.js 的 externalData 接點也未接。
+- 資料匯入：wiki／開源／書本／aiDoc → 清洗 → 語料塊＋請求單＋規則樣本，可逐塊拒絕、存成 kind=lora 的資料資產（`data/corpus.jsonl`、`requests.jsonl`、`train.jsonl`）；老師領取／驗證／回交接口 `/api/teacher/claim｜submit｜release` 已可用，**老師迴圈本身（呼叫線上 AI）仍是 §10 步驟 7 未做**。
+- 驗證：`scripts/eval/studio.eval.js`（真 Electron，38 項；cpu-py 真訓練因本機缺 torch 未能跑）。
