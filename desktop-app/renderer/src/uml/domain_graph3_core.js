@@ -1,0 +1,75 @@
+/* 領域包：進階圖第二批（純函式，Python 專屬）。格式見 domain_registry_core.js。
+ * 範式：Floyd 全點對最短路（查詢距離、距離總和、直徑、可達對數、整張矩陣）、二分圖最大匹配（匹配數、是否完美、左邊未配對數、最大獨立集）、
+ *       指派問題（匈牙利演算法：最小或最大總成本）、最短路變體（路徑還原、最短路條數、第 k 短、限制邊數）。
+ * 差異點（有向／無向、節點編號從 0 或 1、不可達怎麼印、字典序平手、第 k 短算不算重複走訪）是槽位，由沙盒窮舉；
+ * 標籤只在敘述裡有唯一的全大寫輸出詞時才用，抽不到就拒絕渲染。骨架不含 def。train／holdout 見 domain_graph3.test.js。 */
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaDomainGraph3 = factory(); })(typeof self !== 'undefined' ? self : this, function () {
+    'use strict';
+    function make(PAR) {
+        const { S, code } = PAR.dsl;
+        const D = (id, algo, paradigm, label, slots, py, extra) => Object.assign({ id, algo, paradigm, label, slots, py }, extra || {});
+        const q = (x) => JSON.stringify(x);
+        const need = (v, what) => { if (v === undefined || v === null || v === '') throw new Error('抽不到' + what); return v; };
+        const capsLabel = (I) => { const caps = [...new Set([...String(I.statement).matchAll(/(?:輸出|印出)\s*([A-Z][A-Z_]{2,})/g)].map((x) => x[1]))]; return caps.length === 1 ? caps[0] : null; };
+        const ynOf = (I) => { if (I.facts && I.facts.yn) return I.facts.yn; const m = /輸出\s*([^\s，,。；]+?)\s*[，,]\s*(?:否則|不然|其餘)\s*(?:輸出|印)?\s*([^\s，,。；]+)/.exec(String(I.statement)); if (m) return [m[1], m[2]]; const m2 = /輸出\s*([A-Z][A-Z_]{1,})[^輸]{0,16}輸出\s*([A-Z][A-Z_]{1,})/.exec(String(I.statement)); return m2 ? [m2[1], m2[2]] : ['YES', 'NO']; };
+        const BASE = S('base', '節點編號從幾開始', [['1', '1'], ['0', '0']]);
+        const DIR = S('dir', '邊的方向', [['directed', 'directed'], ['undirected', 'undirected']]);
+        const UN = S('un', '不可達時印', [['-1', '-1'], ['INF', 'INF']]);
+        const unv = (c) => (c.un === 'INF' ? '"INF"' : '-1');
+        const adjL = (n, rows, c, weighted) => ['adj = [[] for _ in range(' + n + ' + 1)]', 'for e in ' + rows + ':', '    adj[e[0]].append((e[1], ' + (weighted ? 'e[2]' : '1') + '))'].concat(c.dir === 'undirected' ? ['    adj[e[1]].append((e[0], ' + (weighted ? 'e[2]' : '1') + '))'] : []);
+        const skeletons = [
+            D('graph3.floyd', 'floyd', 'shortest-path', 'Floyd 全點對最短路：三重迴圈用中間點 k 鬆弛 d[i][j]；輸出指定兩點的距離（不可達印 -1 或 INF）、所有點對距離總和、最大的有限距離（直徑）、可達的點對數，或整張距離矩陣',
+                [BASE, DIR, UN, S('out', '輸出', [['query', 'query'], ['sum', 'sum'], ['sumu', 'sumu'], ['diam', 'diam'], ['reach', 'reach'], ['matrix', 'matrix']])],
+                (c, N) => { const n = need(N.sc[0], '節點數 n'), rows = need(N.ls[0], '邊表'); const Q = c.out === 'query' ? need(N.ls[1], '查詢表') : null;
+                    const L = ['INF = 10 ** 18', 'd = [[INF] * (' + n + ' + 1) for _ in range(' + n + ' + 1)]', 'for i in range(' + n + ' + 1):', '    d[i][i] = 0', 'for e in ' + rows + ':', '    d[e[0]][e[1]] = min(d[e[0]][e[1]], e[2])'].concat(c.dir === 'undirected' ? ['    d[e[1]][e[0]] = min(d[e[1]][e[0]], e[2])'] : [], ['for k in range(' + n + ' + 1):', '    for i in range(' + n + ' + 1):', '        for j in range(' + n + ' + 1):', '            if d[i][k] + d[k][j] < d[i][j]:', '                d[i][j] = d[i][k] + d[k][j]']);
+                    const R = 'range(' + c.base + ', ' + c.base + ' + ' + n + ')';
+                    if (c.out === 'query') return code(L.concat(['for e in ' + Q + ':', '    print(' + unv(c) + ' if d[e[0]][e[1]] >= INF else d[e[0]][e[1]])']));
+                    if (c.out === 'sum') return code(L.concat(['tot = 0', 'for i in ' + R + ':', '    for j in ' + R + ':', '        if i != j and d[i][j] < INF:', '            tot += d[i][j]', 'print(tot)']));
+                    if (c.out === 'sumu') return code(L.concat(['tot = 0', 'for i in ' + R + ':', '    for j in ' + R + ':', '        if i < j and d[i][j] < INF:', '            tot += d[i][j]', 'print(tot)']));
+                    if (c.out === 'diam') return code(L.concat(['best = 0', 'for i in ' + R + ':', '    for j in ' + R + ':', '        if d[i][j] < INF:', '            best = max(best, d[i][j])', 'print(best)']));
+                    if (c.out === 'reach') return code(L.concat(['cnt = 0', 'for i in ' + R + ':', '    for j in ' + R + ':', '        if i != j and d[i][j] < INF:', '            cnt += 1', 'print(cnt)']));
+                    return code(L.concat(['for i in ' + R + ':', '    print(*[(' + unv(c) + ' if d[i][j] >= INF else d[i][j]) for j in ' + R + '])'])); }, { limit: 48 }),
+            D('graph3.matching', 'bip-matching', 'matching', '二分圖最大匹配（BFS 找增廣路，不用遞迴）：左邊每個點輪流找一條交替路，找到未配對的右點就沿路翻轉；輸出最大匹配數、是否能讓左邊全部配上（完美）、左邊沒配到的點數，或最大獨立集大小（左右點數和減匹配數）',
+                [S('out', '輸出', [['size', 'size'], ['perfect', 'perfect'], ['free', 'free'], ['indep', 'indep']])],
+                (c, N, I) => { const n = need(N.sc[0], '左邊點數 n'), m = need(N.sc[1], '右邊點數 m'), rows = need(N.ls[0], '邊表'); const yn = ynOf(I);
+                    const L = ['adj = {}', 'for e in ' + rows + ':', '    adj.setdefault(e[0], []).append(e[1])', 'ml = {}', 'mr = {}', 'for u in adj:', '    prev = {}', '    qu = [u]', '    found = None', '    for x in qu:', '        for y in adj[x]:', '            if y in prev:', '                continue', '            prev[y] = x', '            if y not in mr:', '                found = y', '                break', '            if mr[y] in adj:', '                qu.append(mr[y])', '        if found is not None:', '            break', '    if found is not None:', '        y = found', '        while True:', '            x = prev[y]', '            old = ml.get(x)', '            ml[x] = y', '            mr[y] = x', '            if old is None:', '                break', '            y = old', 'size = len(ml)'];
+                    const o = { size: 'print(size)', perfect: 'print(' + q(yn[0]) + ' if size == ' + n + ' else ' + q(yn[1]) + ')', free: 'print(' + n + ' - size)', indep: 'print(' + n + ' + ' + m + ' - size)' }[c.out]; return code(L.concat([o])); }, { limit: 4 }),
+            D('graph3.assignment', 'assignment', 'matching', '指派問題（匈牙利演算法，位勢＋增廣）：n×n 成本矩陣，每個人恰配一件工作；輸出最小總成本，或最大總收益（把矩陣取負後求最小）',
+                [S('out', '輸出', [['min', 'min'], ['max', 'max']])],
+                (c, N) => { const n = need(N.sc[0], '人數 n'), M = need(N.L[0], '成本矩陣'); const sg = c.out === 'max' ? '-' : '';
+                    return code(['a = [[0] * (' + n + ' + 1)]', 'for s in ' + M + ':', '    a.append([0] + [' + sg + 'int(t) for t in s.split()])', 'INF = 10 ** 18', 'u = [0] * (' + n + ' + 1)', 'v = [0] * (' + n + ' + 1)', 'p = [0] * (' + n + ' + 1)', 'way = [0] * (' + n + ' + 1)', 'for i in range(1, ' + n + ' + 1):', '    p[0] = i', '    j0 = 0', '    minv = [INF] * (' + n + ' + 1)', '    used = [False] * (' + n + ' + 1)', '    while True:', '        used[j0] = True', '        i0 = p[j0]', '        delta = INF', '        j1 = 0', '        for j in range(1, ' + n + ' + 1):', '            if not used[j]:', '                cur = a[i0][j] - u[i0] - v[j]', '                if cur < minv[j]:', '                    minv[j] = cur', '                    way[j] = j0', '                if minv[j] < delta:', '                    delta = minv[j]', '                    j1 = j', '        for j in range(' + n + ' + 1):', '            if used[j]:', '                u[p[j]] += delta', '                v[j] -= delta', '            else:', '                minv[j] -= delta', '        j0 = j1', '        if p[j0] == 0:', '            break', '    while True:', '        j1 = way[j0]', '        p[j0] = p[j1]', '        j0 = j1', '        if j0 == 0:', '            break', 'tot = 0', 'for j in range(1, ' + n + ' + 1):', '    tot += a[p[j]][j]', 'print(' + (c.out === 'max' ? '-tot' : 'tot') + ')']); }, { limit: 2 }),
+            D('graph3.sp-path', 'sp-path', 'shortest-path', '最短路徑還原：先從終點在反向圖上做 Dijkstra 得到每點到終點的距離，再從起點每步挑「走這條邊後仍在最短路上」的最小編號鄰居；輸出路徑上的節點序列，或最短路中最少的邊數；不可達印 -1 或標籤',
+                [DIR, S('out', '輸出', [['path', 'path'], ['hops', 'hops']]), S('un', '不可達時印', [['-1', '-1'], ['label', 'label']])],
+                (c, N, I) => { const n = need(N.sc[0], '節點數 n'), rows = need(N.ls[0], '邊表'), s = need(N.sc[2], '起點 s'), t = need(N.sc[3], '終點 t'); const lab = capsLabel(I); if (c.un === 'label' && !lab) throw new Error('抽不到不可達的標籤'); const bad = c.un === 'label' ? q(lab) : '-1';
+                    const radj = ['adj = [[] for _ in range(' + n + ' + 1)]', 'radj = [[] for _ in range(' + n + ' + 1)]', 'for e in ' + rows + ':', '    adj[e[0]].append((e[1], e[2]))', '    radj[e[1]].append((e[0], e[2]))'].concat(c.dir === 'undirected' ? ['    adj[e[1]].append((e[0], e[2]))', '    radj[e[0]].append((e[1], e[2]))'] : []);
+                    if (c.out === 'hops') return code(['import heapq'].concat(radj, ['INF = 10 ** 18', 'best = [(INF, INF)] * (' + n + ' + 1)', 'best[' + s + '] = (0, 0)', 'h = [(0, 0, ' + s + ')]', 'while h:', '    d, k, x = heapq.heappop(h)', '    if (d, k) > best[x]:', '        continue', '    for y, w in adj[x]:', '        if (d + w, k + 1) < best[y]:', '            best[y] = (d + w, k + 1)', '            heapq.heappush(h, (d + w, k + 1, y))', 'print(' + bad + ' if best[' + t + '][0] >= INF else best[' + t + '][1])']));
+                    return code(['import heapq'].concat(radj, ['INF = 10 ** 18', 'dist = [INF] * (' + n + ' + 1)', 'dist[' + t + '] = 0', 'h = [(0, ' + t + ')]', 'while h:', '    d, x = heapq.heappop(h)', '    if d > dist[x]:', '        continue', '    for y, w in radj[x]:', '        if d + w < dist[y]:', '            dist[y] = d + w', '            heapq.heappush(h, (d + w, y))', 'if dist[' + s + '] >= INF:', '    print(' + bad + ')', 'else:', '    cur = ' + s, '    path = [cur]', '    while cur != ' + t + ':', '        nxt = min(y for y, w in adj[cur] if w + dist[y] == dist[cur])', '        path.append(nxt)', '        cur = nxt', '    print(*path)'])); }, { limit: 8 }),
+            D('graph3.sp-count', 'sp-count', 'shortest-path', '最短路條數：Dijkstra 同時記每點的最短路條數，鬆弛到更短就重設、剛好相等就累加；輸出條數、或最短路是否唯一；不可達輸出 0 或 -1',
+                [DIR, S('out', '輸出', [['count', 'count'], ['unique', 'unique']]), S('un', '不可達時印', [['0', '0'], ['-1', '-1']])],
+                (c, N, I) => { const n = need(N.sc[0], '節點數 n'), rows = need(N.ls[0], '邊表'), s = need(N.sc[2], '起點 s'), t = need(N.sc[3], '終點 t'); const yn = ynOf(I);
+                    const o = c.out === 'count' ? 'print(cnt[' + t + '])' : 'print(' + q(yn[0]) + ' if cnt[' + t + '] == 1 else ' + q(yn[1]) + ')';
+                    return code(['import heapq'].concat(adjL(n, rows, c, true), ['INF = 10 ** 18', 'dist = [INF] * (' + n + ' + 1)', 'cnt = [0] * (' + n + ' + 1)', 'dist[' + s + '] = 0', 'cnt[' + s + '] = 1', 'h = [(0, ' + s + ')]', 'while h:', '    d, x = heapq.heappop(h)', '    if d > dist[x]:', '        continue', '    for y, w in adj[x]:', '        if d + w < dist[y]:', '            dist[y] = d + w', '            cnt[y] = cnt[x]', '            heapq.heappush(h, (d + w, y))', '        elif d + w == dist[y]:', '            cnt[y] += cnt[x]', 'if dist[' + t + '] >= INF:', '    print(' + (c.out === 'unique' ? q(yn[1]) : c.un) + ')', 'else:', '    ' + o])); }, { limit: 8 }),
+            D('graph3.sp-kth', 'sp-kth', 'shortest-path', '第 k 短路：可以重複走訪時用優先佇列，每個點第 k 次被取出才算；點不重複（簡單路徑）時用堆疊枚舉所有簡單路徑再排序取第 k 個；不存在第 k 條印 -1 或 INF',
+                [DIR, S('mode', '路徑可否重複走訪', [['walk', 'walk'], ['simple', 'simple']]), UN],
+                (c, N) => { const n = need(N.sc[0], '節點數 n'), rows = need(N.ls[0], '邊表'), s = need(N.sc[2], '起點 s'), t = need(N.sc[3], '終點 t'), k = need(N.sc[4], 'k');
+                    if (c.mode === 'walk') return code(['import heapq'].concat(adjL(n, rows, c, true), ['seen = [0] * (' + n + ' + 1)', 'res = ' + unv(c), 'h = [(0, ' + s + ')]', 'while h:', '    d, x = heapq.heappop(h)', '    seen[x] += 1', '    if x == ' + t + ' and seen[x] == ' + k + ':', '        res = d', '        break', '    if seen[x] > ' + k + ':', '        continue', '    for y, w in adj[x]:', '        heapq.heappush(h, (d + w, y))', 'print(res)']));
+                    return code(adjL(n, rows, c, true).concat(['lens = []', 'st = [(' + s + ', 0, [' + s + '])]', 'while st:', '    x, d, path = st.pop()', '    if x == ' + t + ':', '        lens.append(d)', '        continue', '    for y, w in adj[x]:', '        if y not in path:', '            st.append((y, d + w, path + [y]))', 'lens.sort()', 'print(lens[' + k + ' - 1] if len(lens) >= ' + k + ' else ' + unv(c) + ')'])); }, { limit: 8 }),
+            D('graph3.sp-limit', 'sp-limit', 'shortest-path', '限制邊數的最短路：Bellman-Ford 只鬆弛 k 輪（每輪用上一輪的距離，所以最多走 k 條邊）；或恰好走 k 條邊；不可達印 -1 或 INF',
+                [DIR, S('mode', '邊數限制', [['atmost', 'atmost'], ['exact', 'exact']]), UN],
+                (c, N) => { const n = need(N.sc[0], '節點數 n'), rows = need(N.ls[0], '邊表'), s = need(N.sc[2], '起點 s'), t = need(N.sc[3], '終點 t'), k = need(N.sc[4], 'k');
+                    return code(['INF = 10 ** 18', 'cur = [INF] * (' + n + ' + 1)', 'cur[' + s + '] = 0', 'for _ in range(' + k + '):', '    nxt = list(cur)' .replace('list(cur)', c.mode === 'atmost' ? 'list(cur)' : '[INF] * (' + n + ' + 1)'), '    for e in ' + rows + ':', '        if cur[e[0]] < INF and cur[e[0]] + e[2] < nxt[e[1]]:', '            nxt[e[1]] = cur[e[0]] + e[2]'].concat(c.dir === 'undirected' ? ['        if cur[e[1]] < INF and cur[e[1]] + e[2] < nxt[e[0]]:', '            nxt[e[0]] = cur[e[1]] + e[2]'] : [], ['    cur = nxt', 'print(' + unv(c) + ' if cur[' + t + '] >= INF else cur[' + t + '])'])); }, { limit: 8 }),
+        ];
+        const algos = [
+            ['sp-kth', /第\s*[kK]\s*(?:短|小|佳)(?:的)?(?:路徑|路線|路)?|[kK]\s*[-\s]*th\s*shortest|第\s*[kK]\s*條最短|次短(?:路|路徑|路線)|第二短/i],
+            ['sp-limit', /(?:至多|最多|不超過|不多於|恰好|剛好|正好|剛剛好)\s*(?:使用|走|用)?\s*[kK]\s*(?:條邊|步|個邊|段)|[kK]\s*(?:步|條邊)\s*(?:內|以內|之內)|(?:邊數|步數)\s*(?:限制|上限|不超過|至多)|限制.{0,10}(?:邊數|步數)/i],
+            ['sp-count', /最短(?:路|路徑|路線)(?:的)?(?:條數|數量|個數|總數|數目)|(?:有)?(?:幾|多少)(?:條|種)(?:不同的)?(?:最短(?:路|路徑|路線)|走法)|最短(?:路|路徑|路線)(?:有|共有)(?:幾|多少)|最短(?:路|路徑|路線)(?:是否)?唯一|最短(?:路|路徑|路線)只有一條|只有一條最短/i],
+            ['sp-path', /(?:印出|輸出|還原|列出|求出)(?:出)?\s*(?:一條)?(?:字典序最小的)?\s*(?:最短)?(?:路徑|路線)(?:本身|上(?:所有|的)?(?:節點|點))?|(?:路徑|路線)還原|最短(?:路徑|路線)(?:本身|上的(?:節點|點))|沿途(?:經過)?的(?:節點|點)|經過的(?:節點|點)(?:序列|編號)|(?:最短路|最短路徑|最短路線)(?:最少|至少)(?:要)?(?:經過|走)(?:幾|多少)條邊|(?:權重|長度)總和最小.{0,24}(?:最少|至少).{0,8}(?:幾|多少)條邊/i],
+            ['floyd', /Floyd|弗洛伊德|全點對|所有點對|每一對(?:點|節點)|任意兩(?:個)?(?:點|節點)(?:之間)?(?:的)?最短|all[\s-]*pairs/i],
+            ['assignment', /Hungarian|匈牙利|指派問題|指派(?:的)?(?:總)?(?:成本|費用|花費)|assignment\s*problem|最小(?:總)?(?:成本|花費)完美匹配|每(?:位|個)(?:工人|人|員工)(?:剛好|恰好|只)(?:做|負責|被指派)(?:一|1)/i],
+            ['bip-matching', /二分圖.{0,12}(?:匹配|配對)|(?:最大|最多)(?:匹配|配對)|Hopcroft|Kuhn|maximum\s*(?:bipartite\s*)?matching|增廣路.{0,12}(?:匹配|配對)|(?:匹配|配對).{0,12}增廣路|左邊(?:的|每個|每一個)?(?:點|節點).{0,12}(?:配到|配上|配對).{0,12}右邊/i],
+        ].map(([key, re]) => ({ key, re, pri: true }));
+        const paradigms = {}; for (const sk of skeletons) paradigms[sk.algo] = [sk.paradigm];
+        return { id: 'graph3', label: '進階圖第二批（Floyd、二分圖匹配、指派問題、最短路變體：路徑還原／條數／第 k 短／限制邊數）', requires: [], judge: { checker: 'tokens' }, algos, paradigms, skeletons };
+    }
+    return { make };
+});
