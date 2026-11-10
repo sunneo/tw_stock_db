@@ -24,7 +24,7 @@
     if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaIrBlocks = factory();
 })(typeof self !== 'undefined' ? self : this, function () {
     function make(env) {
-        const { parseTree, C2U, B, IN, PREP, OUT, BD, DES, INB, INT, INR, INP } = env;
+        const { parseTree, C2U, B, IN, PREP, OUT, BD, DES, INB, INT, INR, INP, UML } = env;
         const anyT = { base: 'any', args: [] };
         const mkOp = (name, params, body) => ({ name, params: (params || []).map((x) => ({ name: x, type: anyT })), returns: anyT, visibility: '+', static: true, body });
         const blocksOf = (f) => {
@@ -169,6 +169,17 @@
             if (!out.ok && diags.some((d) => d.level === 'error' && /型別|標註/.test(d.msg))) { out.needTypes = PREP.missingTypes(r.ir); if (r.typeApply) out.typeApply = r.typeApply; }
             return out;
         }
+        // 從程式抽回 UML 設計（任何有「進」的來源語言）：程式 → 中間語言 → 設計（簽名／呼叫關係／標準操作／副作用）→ UML 模型（uml_core 形狀）＋ DSL／Mermaid／PlantUML。
+        // 只讀、不產生程式；UML 模型的類別是「模組」，每個函式是一個靜態操作，使用案例是入口函式的呼叫順序。UML 為 env.UML（uml_core），沒有就只回模型。
+        function umlFrom(src, lang, name, parser, opts) {
+            const r = lang === 'python' ? toIr(src, name) : toIrFrom(src, lang, name, parser); const design = DES.extract(r.ir); const model = DES.toUmlModel(design, { moduleName: (opts && opts.moduleName) || name || 'Module' }, r.ir);
+            const out = { ok: true, lang, design: { module: design.module, entry: design.entry, callGraph: design.callGraph, stdUsage: design.stdUsage, effects: design.effects, functions: design.functions.map((f) => ({ name: f.name, params: f.params, returns: f.returns, summary: f.summary, calls: f.calls, pure: f.pure })) }, model, diags: r.diags || [], natives: r.coverage ? r.coverage.natives : undefined };
+            if (UML) {
+                out.errors = UML.validateModel(model); out.dsl = UML.toDsl(model); out.mermaid = { class: UML.toMermaidClass(model) }; if (model.usecases[0] && model.usecases[0].steps.length) out.mermaid.sequence = UML.toMermaidSequence(model, model.usecases[0]); out.plantuml = UML.toPlantUml(model);
+                if (out.errors.length) out.ok = false;
+            }
+            return out;
+        }
         function cardsFrom(src, lang, name, parser) { if (lang === 'python') return cards(src, name); return BD.fromIr(toIrFrom(src, lang, name, parser).ir); }
         // 行為卡：中間語言（第二層）＋ 該函式的區塊範本使用統計
         function cards(python, name) {
@@ -192,7 +203,7 @@
             const share = (names) => { const st = names.map(styleOf).filter(Boolean); if (st.length < 2) return { score: 1, dominant: st[0] || null, mixed: [] }; const cnt = {}; st.forEach((x) => { cnt[x] = (cnt[x] || 0) + 1; }); const dom = Object.keys(cnt).sort((a, b) => cnt[b] - cnt[a])[0]; return { score: cnt[dom] / st.length, dominant: dom, mixed: names.filter((n) => { const k = styleOf(n); return k && k !== dom; }) }; };
             const f = share(fn), v = share(vars.filter((x, i, a) => a.indexOf(x) === i)); return { functions: f, variables: v, score: Math.min(f.score, v.score), ok: f.score === 1 && v.score === 1 };
         }
-        return { collectComments, attachComments, styleCheck, program, fromPython, toIr, emit, toIrFrom, emitFrom, cardsFrom, fromLangs, blocksToTarget, cards, cardText };
+        return { collectComments, attachComments, styleCheck, program, fromPython, toIr, emit, toIrFrom, emitFrom, cardsFrom, umlFrom, fromLangs, blocksToTarget, cards, cardText };
     }
     return { make };
 });

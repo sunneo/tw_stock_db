@@ -21980,7 +21980,9 @@ const holder = {};
             return { name: f.name, params: f.params.map((p, i) => ({ name: p.name, type: umlType(src && src.params[i] && src.params[i].ty) })), returns: umlType(src && src.ret), visibility: '+', static: true, steps: [f.summary], doc: f.doc || f.summary };
         });
         const steps = []; if (design.entry) { const e = design.functions.find((f) => f.name === design.entry); if (e) e.calls.forEach((c) => steps.push({ from: 'User', to: cls, msg: c, args: [], returns: '' })); }
-        return { name: cls, actors: ['User'], classes: [{ name: cls, kind: 'class', attrs: [], ops, values: [] }], relations: [], usecases: [{ name: design.entry || 'main', actor: 'User', steps }] };
+        // 入口沒有呼叫本檔的其他函式：使用案例就是「使用者呼叫入口」這一步（DSL 要求使用案例至少一步）；沒有入口就不放使用案例，不憑空編
+        if (!steps.length && design.entry) steps.push({ from: 'User', to: cls, msg: design.entry, args: [], returns: '' });
+        return { name: cls, actors: ['User'], classes: [{ name: cls, kind: 'class', attrs: [], ops, values: [] }], relations: [], usecases: steps.length ? [{ name: design.entry || 'main', actor: 'User', steps }] : [] };
     }
 
     // ---- 編修設計 → 回寫 IR ----
@@ -22196,7 +22198,7 @@ const holder = {};
     if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaIrBlocks = factory();
 })(typeof self !== 'undefined' ? self : this, function () {
     function make(env) {
-        const { parseTree, C2U, B, IN, PREP, OUT, BD, DES, INB, INT, INR, INP } = env;
+        const { parseTree, C2U, B, IN, PREP, OUT, BD, DES, INB, INT, INR, INP, UML } = env;
         const anyT = { base: 'any', args: [] };
         const mkOp = (name, params, body) => ({ name, params: (params || []).map((x) => ({ name: x, type: anyT })), returns: anyT, visibility: '+', static: true, body });
         const blocksOf = (f) => {
@@ -22341,6 +22343,17 @@ const holder = {};
             if (!out.ok && diags.some((d) => d.level === 'error' && /型別|標註/.test(d.msg))) { out.needTypes = PREP.missingTypes(r.ir); if (r.typeApply) out.typeApply = r.typeApply; }
             return out;
         }
+        // 從程式抽回 UML 設計（任何有「進」的來源語言）：程式 → 中間語言 → 設計（簽名／呼叫關係／標準操作／副作用）→ UML 模型（uml_core 形狀）＋ DSL／Mermaid／PlantUML。
+        // 只讀、不產生程式；UML 模型的類別是「模組」，每個函式是一個靜態操作，使用案例是入口函式的呼叫順序。UML 為 env.UML（uml_core），沒有就只回模型。
+        function umlFrom(src, lang, name, parser, opts) {
+            const r = lang === 'python' ? toIr(src, name) : toIrFrom(src, lang, name, parser); const design = DES.extract(r.ir); const model = DES.toUmlModel(design, { moduleName: (opts && opts.moduleName) || name || 'Module' }, r.ir);
+            const out = { ok: true, lang, design: { module: design.module, entry: design.entry, callGraph: design.callGraph, stdUsage: design.stdUsage, effects: design.effects, functions: design.functions.map((f) => ({ name: f.name, params: f.params, returns: f.returns, summary: f.summary, calls: f.calls, pure: f.pure })) }, model, diags: r.diags || [], natives: r.coverage ? r.coverage.natives : undefined };
+            if (UML) {
+                out.errors = UML.validateModel(model); out.dsl = UML.toDsl(model); out.mermaid = { class: UML.toMermaidClass(model) }; if (model.usecases[0] && model.usecases[0].steps.length) out.mermaid.sequence = UML.toMermaidSequence(model, model.usecases[0]); out.plantuml = UML.toPlantUml(model);
+                if (out.errors.length) out.ok = false;
+            }
+            return out;
+        }
         function cardsFrom(src, lang, name, parser) { if (lang === 'python') return cards(src, name); return BD.fromIr(toIrFrom(src, lang, name, parser).ir); }
         // 行為卡：中間語言（第二層）＋ 該函式的區塊範本使用統計
         function cards(python, name) {
@@ -22364,7 +22377,7 @@ const holder = {};
             const share = (names) => { const st = names.map(styleOf).filter(Boolean); if (st.length < 2) return { score: 1, dominant: st[0] || null, mixed: [] }; const cnt = {}; st.forEach((x) => { cnt[x] = (cnt[x] || 0) + 1; }); const dom = Object.keys(cnt).sort((a, b) => cnt[b] - cnt[a])[0]; return { score: cnt[dom] / st.length, dominant: dom, mixed: names.filter((n) => { const k = styleOf(n); return k && k !== dom; }) }; };
             const f = share(fn), v = share(vars.filter((x, i, a) => a.indexOf(x) === i)); return { functions: f, variables: v, score: Math.min(f.score, v.score), ok: f.score === 1 && v.score === 1 };
         }
-        return { collectComments, attachComments, styleCheck, program, fromPython, toIr, emit, toIrFrom, emitFrom, cardsFrom, fromLangs, blocksToTarget, cards, cardText };
+        return { collectComments, attachComments, styleCheck, program, fromPython, toIr, emit, toIrFrom, emitFrom, cardsFrom, umlFrom, fromLangs, blocksToTarget, cards, cardText };
     }
     return { make };
 });
@@ -74095,12 +74108,12 @@ ${fnData.code}
             { type: 'object', properties: { source: { type: 'string', description: '使用者目前的程式碼（整份）' }, diff: { type: 'string', description: '要合併的 unified diff' }, language: { type: 'string', enum: ['python', 'nodejs', 'c', 'cpp', 'java', 'ruby', 'perl', 'bash', 'csharp'], description: '（選填）不給就從程式碼判斷' }, file_name: { type: 'string', description: '（選填）diff 含多個檔案時指定合併哪一個' }, tests: { type: 'array', description: '[{in,out}]：可見測資；有給就在合併後跑判題，沒過回滾', items: { type: 'object', properties: { in: { type: 'string' }, out: { type: 'string' } } } }, hidden: { type: 'array', description: '[{in,out}]：隱藏測資（選填）', items: { type: 'object', properties: { in: { type: 'string' }, out: { type: 'string' } } } }, require_verify: { type: 'boolean', description: '（選填）true＝沒有檢查器可用就不合併' } }, required: ['source', 'diff'] }
         );
         registerOptional('convert_code',
-            '把一份 Python／nodejs／java／c 程式（或「區塊」受控自然語言）轉成 nodejs／java／c／cpp／csharp／perl／ruby／python：來源 → 中間語言 → 目標語言，註解保留、標準函式庫操作對照轉換（來源語言自動判斷，也可用 from 指定；Ruby 輸出器這台沒有直譯器驗證過，只做語法檢查）；也能 action:"to_blocks" 把 Python 拆成區塊（受控自然語言）。這是「轉換」工具，不是寫程式的入口（要寫新程式用 write_code）。不支援的寫法（例如 c 的字典）會如實拒絕並列在 diags，不亂翻。給 tests（stdin→stdout）會在本機實際編譯執行轉出的程式並對輸出；沒給就標示未驗證。參數：{"source":"程式碼"|"blocks":[{"name","params","cnl"}],"from":"（選填）python|nodejs|java|c","target":"nodejs|java|c|cpp|csharp|perl|ruby|python","action":"convert|to_blocks","tests":[{"in","out"}]}',
+            '把一份 Python／nodejs／java／c／cpp／csharp／ruby／perl 程式（或「區塊」受控自然語言）轉成 nodejs／java／c／cpp／csharp／perl／ruby／python：來源 → 中間語言 → 目標語言，註解保留、標準函式庫操作對照轉換（來源語言自動判斷，也可用 from 指定）；也能 action:"to_blocks" 把 Python 拆成區塊（受控自然語言）；action:"to_uml" 從程式抽回 UML 設計（只讀：函式簽名、呼叫關係、標準操作、副作用 → 類別圖／序列圖的 DSL、Mermaid、PlantUML，不產生程式）。轉成靜態語言（java／c／cpp／csharp）時來源沒標型別又推不出來，結果會有 needTypes（要補哪些），用 types 補完再呼叫一次，不會亂猜。這是「轉換」工具，不是寫程式的入口（要寫新程式用 write_code）。不支援的寫法（例如 c 的字典）會如實拒絕並列在 diags，不亂翻。給 tests（stdin→stdout）會在本機實際編譯執行轉出的程式並對輸出；沒給就標示未驗證。參數：{"source":"程式碼"|"blocks":[{"name","params","cnl"}],"from":"（選填）python|nodejs|java|c|cpp|csharp|ruby|perl","target":"nodejs|java|c|cpp|csharp|perl|ruby|python（to_uml 不需要）","action":"convert|to_blocks|to_uml","types":{"函式.參數":"list<int>"},"tests":[{"in","out"}]}',
             async function (rawArgs) {
                 let a = {}; try { a = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 try { return JSON.stringify(await this._codeConvert(a)); } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); }
             },
-            { type: 'object', properties: { source: { type: 'string', description: '要轉換的程式碼（整份；python、nodejs、java、c）' }, types: { type: 'object', description: '轉成靜態語言（java／c／cpp／csharp）時，來源沒標型別又推不出來的地方由你補：{"函式.參數":"list<int>", "函式.return":"int", "函式.區域變數":"str"}；型別寫法 int float str bool list<T> dict<K,V> set<T>。第一次轉不成時結果的 needTypes 會列出要補哪些。' }, from: { type: 'string', enum: ['python', 'nodejs', 'java', 'c', 'cpp', 'csharp', 'ruby', 'perl'], description: '（選填）來源語言；不給就從程式碼判斷' }, blocks: { type: 'array', items: { type: 'object', properties: { name: { type: 'string' }, params: { type: 'array', items: { type: 'string' } }, cnl: { type: 'string', description: '受控自然語言的區塊文字' } }, required: ['name', 'cnl'] }, description: '（與 source 二選一）區塊函式清單' }, target: { type: 'string', enum: ['nodejs', 'java', 'c', 'cpp', 'csharp', 'perl', 'ruby', 'python'], description: '目標語言' }, action: { type: 'string', enum: ['convert', 'to_blocks'], description: '預設 convert；to_blocks 把 Python 拆成區塊' }, name: { type: 'string', description: '（選填）java 的類別名等' }, keep_blocks: { type: 'boolean', description: '（選填）先經過區塊再轉，驗證區塊往返' }, tests: { type: 'array', items: { type: 'object', properties: { in: { type: 'string' }, out: { type: 'string' } }, required: ['in', 'out'] }, description: '（選填）有給就實際編譯執行轉出的程式驗證輸出' } }, additionalProperties: false }
+            { type: 'object', properties: { source: { type: 'string', description: '要轉換的程式碼（整份；python、nodejs、java、c）' }, types: { type: 'object', description: '轉成靜態語言（java／c／cpp／csharp）時，來源沒標型別又推不出來的地方由你補：{"函式.參數":"list<int>", "函式.return":"int", "函式.區域變數":"str"}；型別寫法 int float str bool list<T> dict<K,V> set<T>。第一次轉不成時結果的 needTypes 會列出要補哪些。' }, from: { type: 'string', enum: ['python', 'nodejs', 'java', 'c', 'cpp', 'csharp', 'ruby', 'perl'], description: '（選填）來源語言；不給就從程式碼判斷' }, blocks: { type: 'array', items: { type: 'object', properties: { name: { type: 'string' }, params: { type: 'array', items: { type: 'string' } }, cnl: { type: 'string', description: '受控自然語言的區塊文字' } }, required: ['name', 'cnl'] }, description: '（與 source 二選一）區塊函式清單' }, target: { type: 'string', enum: ['nodejs', 'java', 'c', 'cpp', 'csharp', 'perl', 'ruby', 'python'], description: '目標語言' }, action: { type: 'string', enum: ['convert', 'to_blocks', 'to_uml'], description: '預設 convert；to_blocks 把 Python 拆成區塊' }, name: { type: 'string', description: '（選填）java 的類別名等' }, keep_blocks: { type: 'boolean', description: '（選填）先經過區塊再轉，驗證區塊往返' }, tests: { type: 'array', items: { type: 'object', properties: { in: { type: 'string' }, out: { type: 'string' } }, required: ['in', 'out'] }, description: '（選填）有給就實際編譯執行轉出的程式驗證輸出' } }, additionalProperties: false }
         );
         registerOptional('matrix_blocks',
             '把矩陣層合成出的程式顯示成「有名字的區塊段落」（DFA：讀入／轉移表／起點／掃描／輸出；遞推：係數初值取模；圖、格子、組合層也有分段），並可在區塊的槽位上直接改：action:"show" 看目前的區塊（受控自然語言）與形態；action:"edit" 改 DFA 的轉移表 delta／起點 start／接受集 accept，或遞推的係數 coef／初值 init／取模 mod，或組合層換 vector／filter／reducer 積木，編回 Python（改完輸出照新定義變；給 expected 才會實跑驗證）。預設用 write_code 最近一次由矩陣層解出的結果；也可自己給 source＋kind。這是看與改既有結果的工具，不是寫程式的入口（寫新程式用 write_code）。參數：{"action":"show|edit","source":"（選填）Python","kind":"dfa|recurrence|compose|graph|grid","patch":{"delta":[{"0":1,"1":0}],"accept":[1]},"expected":[{"in","out"}]}',
@@ -114131,7 +114144,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         if (typeof FaIrBundle === 'undefined' || !FaIrBundle.FaIrBlocks) throw new Error('這個版本沒有中間語言模組（FaIrBundle）');
         const P = await this._pyParserSync(); const parseTree = (x) => P.parse(x); const H = FaIrBundle;
         const B = FaPyBlocks.makeBlocks({ parseTree, C2U: FaPyCode2Uml });
-        this._irBridgeObj = H.FaIrBlocks.make({ parseTree, C2U: FaPyCode2Uml, B, IN: H.FaIrInPython, PREP: H.FaIrPrep, OUT: { nodejs: H.FaIrOutJs, java: H.FaIrOutJava, c: H.FaIrOutC, cpp: H.FaIrOutCpp, csharp: H.FaIrOutCs, perl: H.FaIrOutPerl, ruby: H.FaIrOutRuby, python: H.FaIrOutPython }, INB: H.FaIrInBrace, INT: H.FaIrInTyped, INR: H.FaIrInRuby, INP: H.FaIrInPerl, BD: H.FaIrBehavior, DES: H.FaIrDesign, IR: H.FaIr });
+        this._irBridgeObj = H.FaIrBlocks.make({ parseTree, C2U: FaPyCode2Uml, B, IN: H.FaIrInPython, PREP: H.FaIrPrep, OUT: { nodejs: H.FaIrOutJs, java: H.FaIrOutJava, c: H.FaIrOutC, cpp: H.FaIrOutCpp, csharp: H.FaIrOutCs, perl: H.FaIrOutPerl, ruby: H.FaIrOutRuby, python: H.FaIrOutPython }, INB: H.FaIrInBrace, INT: H.FaIrInTyped, INR: H.FaIrInRuby, INP: H.FaIrInPerl, UML: FaUml, BD: H.FaIrBehavior, DES: H.FaIrDesign, IR: H.FaIr });
         return this._irBridgeObj;
     }
     // 來源語言的語法樹剖析器（nodejs／java／c 的「進」用；文法沿用行為卡的載入器，沒下載過會用既有機制下載一次）
@@ -114154,6 +114167,11 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         if (from !== 'python' && action === 'to_blocks' && fromParser) { const p0 = br.emitFrom(a.source, from, 'python', a.name, fromParser); if (!p0.ok) return { ok: false, error: from + ' 來源轉不成 Python（見 diags），沒有硬拆區塊', diags: (p0.diags || []).slice(0, 20) }; a = Object.assign({}, a, { source: p0.code }); }
         const hasSrc = typeof a.source === 'string' && a.source.trim(), hasBlocks = Array.isArray(a.blocks) && a.blocks.length;
         if (!hasSrc && !hasBlocks) return { ok: false, error: '缺少 source（Python 程式碼）或 blocks（[{name, params, cnl}]）' };
+        if (action === 'to_uml') { // 從程式抽回 UML 設計（只讀）：任何有「進」的來源語言 → 中間語言 → 設計 → UML 模型＋DSL／Mermaid／PlantUML
+            if (!hasSrc) return { ok: false, error: 'to_uml 需要 source（要抽回設計的程式碼）' };
+            try { const u = br.umlFrom(a.source, from, a.name, fromParser, { moduleName: a.name }); return { ok: !!u.ok, from, action: 'to_uml', uml: u.dsl, model: u.model, mermaid: u.mermaid, plantuml: u.plantuml, design: u.design, errors: u.errors && u.errors.length ? u.errors.slice(0, 10) : undefined, diags: (u.diags || []).slice(0, 20), natives: u.natives, note: '這是從程式讀出的設計（函式簽名、呼叫關係、標準操作、副作用），不是原作者的類別設計；程式沒有的資訊（類別、資料欄位）不會憑空補。' + (u.natives ? '有 ' + u.natives + ' 處讀不懂的寫法（原生區塊），設計裡不含它們的語意。' : '') }; }
+            catch (e) { return { ok: false, error: '讀不了這份 ' + from + ' 程式：' + String((e && e.message) || e).slice(0, 200) }; }
+        }
         if (action === 'to_blocks') {
             if (!hasSrc) return { ok: false, error: 'to_blocks 需要 source（Python 程式碼）' };
             const r = br.fromPython(a.source); return { ok: true, funcs: r.funcs.map((f) => ({ name: f.name, params: f.params, cnl: f.cnl, stats: f.stats })), coverage: r.coverage, comments: r.comments.length, note: '區塊以受控自然語言表示；通用的「程式」區塊代表這一行沒有對應的範本（stats.generic）' };

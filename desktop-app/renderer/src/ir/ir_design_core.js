@@ -60,7 +60,9 @@
             return { name: f.name, params: f.params.map((p, i) => ({ name: p.name, type: umlType(src && src.params[i] && src.params[i].ty) })), returns: umlType(src && src.ret), visibility: '+', static: true, steps: [f.summary], doc: f.doc || f.summary };
         });
         const steps = []; if (design.entry) { const e = design.functions.find((f) => f.name === design.entry); if (e) e.calls.forEach((c) => steps.push({ from: 'User', to: cls, msg: c, args: [], returns: '' })); }
-        return { name: cls, actors: ['User'], classes: [{ name: cls, kind: 'class', attrs: [], ops, values: [] }], relations: [], usecases: [{ name: design.entry || 'main', actor: 'User', steps }] };
+        // 入口沒有呼叫本檔的其他函式：使用案例就是「使用者呼叫入口」這一步（DSL 要求使用案例至少一步）；沒有入口就不放使用案例，不憑空編
+        if (!steps.length && design.entry) steps.push({ from: 'User', to: cls, msg: design.entry, args: [], returns: '' });
+        return { name: cls, actors: ['User'], classes: [{ name: cls, kind: 'class', attrs: [], ops, values: [] }], relations: [], usecases: steps.length ? [{ name: design.entry || 'main', actor: 'User', steps }] : [] };
     }
 
     // ---- 編修設計 → 回寫 IR ----
