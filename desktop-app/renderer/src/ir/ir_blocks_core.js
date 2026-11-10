@@ -126,15 +126,17 @@
             const comments = collectComments(src, tree.rootNode); u.model.trivia = comments;
             return { funcs, coverage: u.coverage, ctx: u.model, comments };
         }
-        function toIr(python, name) {
-            const tree = parseTree(python); const r = IN.fromTree(tree.rootNode, { source: python, name: name || 'blocks' });
-            const prep = PREP.prepare(r.ir); return { ir: prep.ir, diags: (r.diags || []).concat(prep.diags || []), coverage: r.coverage };
+        function toIr(python, name, types) {
+            const tree = parseTree(python); const r = IN.fromTree(tree.rootNode, { source: python, name: name || 'blocks'});
+            return finishFrom(r, types);
         }
-        function emit(python, lang, name) {
+        function emit(python, lang, name, types) {
             if (!OUT[lang]) return { ok: false, code: '', diags: [{ level: 'error', msg: '不支援的目標語言：' + lang }] };
-            const r = toIr(python, name); const em = OUT[lang].emit(r.ir);
+            const r = toIr(python, name, types); const em = OUT[lang].emit(r.ir);
             const diags = r.diags.concat(em.diags || []);
-            return { ok: !diags.some((d) => d.level === 'error'), code: em.code, diags };
+            const out = { ok: !diags.some((d) => d.level === 'error'), code: em.code, diags };
+            if (!out.ok && diags.some((d) => d.level === 'error' && /型別|標註/.test(d.msg))) { out.needTypes = PREP.missingTypes(r.ir); if (r.typeApply) out.typeApply = r.typeApply; }
+            return out;
         }
         function blocksToTarget(funcs, lang, name) {
             const p = program(funcs); if (!p.ok) return { ok: false, code: '', diags: p.errors.map((e) => ({ level: 'error', msg: '區塊解析失敗：' + e.func + ' ' + JSON.stringify(e.errors.slice(0, 2)) })), python: '' };
@@ -143,21 +145,29 @@
         // ---- 非 Python 來源（DESIGN.core-ir.md 第 11、13 節）----
         const FROM = { nodejs: 1, java: 1, c: 1, cpp: 1, csharp: 1, ruby: 1, perl: 1 }, patCache = {}; // cpp、csharp 走 INT（ir_in_typed_core.js，內部語言鍵 cpp／cs）
         const fromLangs = () => (INB ? Object.keys(FROM).filter((l) => (INT || (l !== 'cpp' && l !== 'csharp')) && (INR || l !== 'ruby') && (INP || l !== 'perl')) : []);
-        function toIrFrom(src, lang, name, parser) {
+        function toIrFrom(src, lang, name, parser, types) {
             if (lang === 'python') return toIr(src, name);
             if (!INB || !FROM[lang] || ((lang === 'cpp' || lang === 'csharp') && !INT) || (lang === 'ruby' && !INR) || (lang === 'perl' && !INP)) throw new Error('還沒有 ' + lang + ' 的「進」（目前支援 python、' + fromLangs().join('、') + '）');
             if (!parser && lang !== 'perl') throw new Error('缺少 ' + lang + ' 的語法樹剖析器'); // perl 的剖析器是自己寫的，不需要文法
-            if (lang === 'perl') { const r = INP.fromSource(src, { patterns: patCache.perl || (patCache.perl = INP.buildPatterns()), name: name || 'input' }); const prep = PREP.prepare(r.ir); return { ir: prep.ir, diags: (r.diags || []).concat(prep.diags || []), coverage: r.coverage }; }
+            if (lang === 'perl') { const r = INP.fromSource(src, { patterns: patCache.perl || (patCache.perl = INP.buildPatterns()), name: name || 'input' }); return finishFrom(r, types); }
             const typed = lang === 'cpp' || lang === 'csharp', rb = lang === 'ruby', M = rb ? INR : typed ? INT : INB, L2 = lang === 'csharp' ? 'cs' : lang;
             const patterns = patCache[lang] || (patCache[lang] = rb ? M.buildPatterns((s) => parser.parse(s).rootNode) : M.buildPatterns(L2, (s) => parser.parse(s).rootNode));
             const r = M.fromTree(parser.parse(src).rootNode, { lang: L2, source: src, patterns, name: name || 'input' });
-            const prep = PREP.prepare(r.ir); return { ir: prep.ir, diags: (r.diags || []).concat(prep.diags || []), coverage: r.coverage };
+            return finishFrom(r, types);
         }
-        function emitFrom(src, lang, target, name, parser) {
+        // 套用使用者補的型別（applyTypes）→ 整理（推論＋由用法推）→ 診斷；applyTypes 的結果放在 typeApply
+        function finishFrom(r, types) {
+            const ap = types && Object.keys(types).length ? PREP.applyTypes(r.ir, types) : null; const prep = PREP.prepare(r.ir);
+            return { ir: prep.ir, diags: (r.diags || []).concat(prep.diags || []).concat(ap ? ap.bad.map((b) => ({ level: 'error', msg: '補的型別沒套上：' + b.key + '（' + b.why + '）' })) : []), coverage: r.coverage, typeApply: ap };
+        }
+        function emitFrom(src, lang, target, name, parser, types) {
             if (lang === 'python') return emit(src, target, name);
             if (!OUT[target]) return { ok: false, code: '', diags: [{ level: 'error', msg: '不支援的目標語言：' + target }] };
-            const r = toIrFrom(src, lang, name, parser); const em = OUT[target].emit(r.ir); const diags = r.diags.concat(em.diags || []);
-            return { ok: !diags.some((d) => d.level === 'error'), code: em.code, diags, coverage: r.coverage };
+            const r = toIrFrom(src, lang, name, parser, types); const em = OUT[target].emit(r.ir); const diags = r.diags.concat(em.diags || []);
+            const out = { ok: !diags.some((d) => d.level === 'error'), code: em.code, diags, coverage: r.coverage };
+            // 靜態語言目標缺型別：列出還推不出型別的地方，請呼叫者（AI 或使用者）用 types 補；補的型別只能是參數、回傳值或區域變數
+            if (!out.ok && diags.some((d) => d.level === 'error' && /型別|標註/.test(d.msg))) { out.needTypes = PREP.missingTypes(r.ir); if (r.typeApply) out.typeApply = r.typeApply; }
+            return out;
         }
         function cardsFrom(src, lang, name, parser) { if (lang === 'python') return cards(src, name); return BD.fromIr(toIrFrom(src, lang, name, parser).ir); }
         // 行為卡：中間語言（第二層）＋ 該函式的區塊範本使用統計

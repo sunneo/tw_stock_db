@@ -19389,9 +19389,10 @@ const holder = {};
     'use strict';
     const T = IR.T;
 
+    const retInferred = new WeakSet(); // 回傳型別是推出來的函式（不是來源標註的）：參數型別補上後要重算；不寫進 IR，免得影響 IR 相等比較
     function infer(ir) {
         const funcs = {}; IR.funcs(ir).forEach((f) => { funcs[f.name] = f; });
-        const ret = (f) => (f.ret && f.ret.t !== 'unknown' ? f.ret : (f._ret || T.unknown));
+        const ret = (f) => (f.ret && f.ret.t !== 'unknown' && !retInferred.has(f) ? f.ret : (f._ret || T.unknown)); // retInf＝回傳型別是推出來的（不是來源標註的）：參數型別補上後要重算
         function ex(e, env, fx) {
             if (!e) return T.unknown; let ty = T.unknown;
             switch (e.k) {
@@ -19456,12 +19457,12 @@ const holder = {};
             IR.funcs(ir).forEach((f) => {
                 const env = {}; (f.params || []).forEach((p) => { env[p.name] = p.ty || T.unknown; }); const fx = { rets: [] };
                 block(f.body, env, fx); f.locals = env;
-                if (!f.ret || f.ret.t === 'unknown') { f._ret = fx.rets.length ? fx.rets.reduce((a, b) => IR.tyJoin(a, b)) : T.void; }
+                if (!f.ret || f.ret.t === 'unknown' || retInferred.has(f)) { f._ret = fx.rets.length ? fx.rets.reduce((a, b) => IR.tyJoin(a, b)) : T.void; }
             });
         }
         // 模組層敘述（非函式）
         const menv = {}; const fx0 = { rets: [] }; block(ir.body.filter((s) => s.k !== 'func'), menv, fx0); ir.locals = menv;
-        IR.funcs(ir).forEach((f) => { if ((!f.ret || f.ret.t === 'unknown') && f._ret) { f.ret = f._ret; } delete f._ret; });
+        IR.funcs(ir).forEach((f) => { if ((!f.ret || f.ret.t === 'unknown' || retInferred.has(f)) && f._ret) { f.ret = f._ret; retInferred.add(f); } delete f._ret; });
         return ir;
     }
 
@@ -19599,10 +19600,66 @@ const holder = {};
         });
         return changed;
     }
-    function prepare(ir0, opts) {
-        const diags = []; let ir = IR.clone(ir0); infer(ir); for (let i = 0; i < 3 && inferParams(ir); i++) infer(ir); ir = lower(ir, diags); infer(ir); scope(ir); return { ir, diags };
+    // 由「用法」推還沒有型別的參數（呼叫端沒給型別時的第二道）：只認一定成立的用法——
+    //   整數運算（int.floordiv／int.mod／int.pow／math.gcd 的運算元、forrange 的起訖與步長、索引的下標）→ int；字串操作（str.* 的接收者、coll.len 之外）→ str；list.* 的接收者 → list<unknown>（元素型別仍要使用者補）。
+    // 推出來的用診斷記下（warn），使用者可以覆蓋（applyTypes）。回傳新增的診斷。
+    function inferUsage(ir) {
+        const diags = []; let changed = false;
+        const setP = (f, name, ty, why) => { const p = (f.params || []).find((x) => x.name === name); if (!p || (p.ty && p.ty.t !== 'unknown')) return; p.ty = ty; changed = true; diags.push({ level: 'warn', msg: '參數 ' + f.name + '.' + name + ' 沒有型別，由用法推為 ' + IR.tyStr(ty) + '（' + why + '，請確認）', pos: f.pos }); };
+        IR.funcs(ir).forEach((f) => {
+            const nm = (e) => (e && e.k === 'name' ? e.v : null);
+            const visit = (e) => IR.walkExpr(e, (x) => {
+                if (x.k === 'call' && x.op) {
+                    if (/^(int\.(floordiv|mod|pow)|math\.gcd)$/.test(x.op)) (x.args || []).forEach((a) => { if (nm(a)) setP(f, nm(a), T.int, x.op + ' 的運算元'); });
+                    else if (/^str\./.test(x.op) && x.args && x.args[0] && nm(x.args[0]) && !/^str\.(from_code)$/.test(x.op)) setP(f, nm(x.args[0]), T.str, x.op + ' 的接收者');
+                    else if (/^list\./.test(x.op) && x.args && x.args[0] && nm(x.args[0])) setP(f, nm(x.args[0]), IR.list(T.unknown), x.op + ' 的接收者');
+                    if (x.op === 'list.get' && x.args[1] && nm(x.args[1])) setP(f, nm(x.args[1]), T.int, '串列下標');
+                }
+                if (x.k === 'index' && nm(x.i)) setP(f, nm(x.i), T.int, '索引下標');
+            });
+            IR.walkStmts(f.body, (s) => {
+                if (s.k === 'forrange') [s.from, s.to, s.step].forEach((e) => { if (e && nm(e)) setP(f, nm(e), T.int, 'for 的範圍'); });
+                ['to', 'val', 'e', 'cond', 'iter', 'from'].forEach((k) => { if (s[k]) visit(s[k]); });
+                if (s.k === 'foreach' && s.iter && nm(s.iter)) setP(f, nm(s.iter), IR.list(T.unknown), 'foreach 的走訪對象');
+            });
+        });
+        return { changed, diags };
     }
-    return { infer, lower, scope, prepare };
+    const hasUnknown = (t) => !t || t.t === 'unknown' || (t.a || []).some(hasUnknown);
+    // 仍然推不出型別的地方，列給使用者補：參數、回傳值、區域變數。key 的格式 "函式.名稱"（回傳值用 "函式.return"）。
+    function missingTypes(ir) {
+        const out = [];
+        IR.funcs(ir).forEach((f) => {
+            (f.params || []).forEach((p) => { if (hasUnknown(p.ty)) out.push({ key: f.name + '.' + p.name, kind: 'param', func: f.name, name: p.name, now: IR.tyStr(p.ty || T.unknown), line: f.pos && f.pos[0] }); });
+            if (f.ret && f.ret.t !== 'void' && hasUnknown(f.ret)) out.push({ key: f.name + '.return', kind: 'return', func: f.name, name: 'return', now: IR.tyStr(f.ret), line: f.pos && f.pos[0] });
+            Object.keys(f.locals || {}).forEach((v) => { if (!(f.params || []).some((p) => p.name === v) && hasUnknown(f.locals[v])) out.push({ key: f.name + '.' + v, kind: 'local', func: f.name, name: v, now: IR.tyStr(f.locals[v]), line: f.pos && f.pos[0] }); });
+        });
+        return out;
+    }
+    // 套用使用者補的型別：types＝{ "函式.參數": "list<int>", "函式.return": "int", "函式.區域變數": "str" }（型別字串用 IR.tyParse 的寫法：int float str bool list<T> dict<K,V> set<T>）。
+    // 區域變數的型別寫在它第一次賦值的敘述上（assign.ty）。回傳 { applied:[key], bad:[{key, why}] }。必須在 prepare 之前套用。
+    function applyTypes(ir, types) {
+        const applied = [], bad = []; const fns = {}; IR.funcs(ir).forEach((f) => { fns[f.name] = f; });
+        Object.keys(types || {}).forEach((key) => {
+            const i = key.lastIndexOf('.'); const fname = i > 0 ? key.slice(0, i) : null, nm = i > 0 ? key.slice(i + 1) : key; let ty;
+            try { ty = IR.tyParse(String(types[key])); } catch (e) { ty = T.unknown; } if (!ty || (ty.t === 'unknown' && !/^unknown$/.test(String(types[key]).trim()))) { bad.push({ key, why: '型別寫法看不懂：' + types[key] + '（可用 int float str bool list<T> dict<K,V> set<T>）' }); return; }
+            const fs = fname ? [fns[fname]].filter(Boolean) : IR.funcs(ir); if (!fs.length) { bad.push({ key, why: '找不到函式 ' + fname }); return; }
+            let ok = false;
+            fs.forEach((f) => {
+                if (nm === 'return') { f.ret = ty; ok = true; return; }
+                const p = (f.params || []).find((x) => x.name === nm); if (p) { p.ty = ty; ok = true; return; }
+                IR.walkStmts(f.body, (s) => { if (!ok && s.k === 'assign' && s.to.k === 'name' && s.to.v === nm) { s.ty = ty; ok = true; } });
+            });
+            if (ok) applied.push(key); else bad.push({ key, why: '找不到參數或變數 ' + key });
+        });
+        return { applied, bad };
+    }
+    function prepare(ir0, opts) {
+        const diags = []; let ir = IR.clone(ir0); infer(ir); for (let i = 0; i < 3 && inferParams(ir); i++) infer(ir);
+        for (let i = 0; i < 3; i++) { const u = inferUsage(ir); if (!u.changed) break; u.diags.forEach((d) => diags.push(d)); infer(ir); for (let j = 0; j < 3 && inferParams(ir); j++) infer(ir); }
+        ir = lower(ir, diags); infer(ir); scope(ir); return { ir, diags };
+    }
+    return { infer, lower, scope, prepare, inferUsage, missingTypes, applyTypes, hasUnknown };
 });
 
 }).call(null, undefined, holder);
@@ -22241,15 +22298,17 @@ const holder = {};
             const comments = collectComments(src, tree.rootNode); u.model.trivia = comments;
             return { funcs, coverage: u.coverage, ctx: u.model, comments };
         }
-        function toIr(python, name) {
-            const tree = parseTree(python); const r = IN.fromTree(tree.rootNode, { source: python, name: name || 'blocks' });
-            const prep = PREP.prepare(r.ir); return { ir: prep.ir, diags: (r.diags || []).concat(prep.diags || []), coverage: r.coverage };
+        function toIr(python, name, types) {
+            const tree = parseTree(python); const r = IN.fromTree(tree.rootNode, { source: python, name: name || 'blocks'});
+            return finishFrom(r, types);
         }
-        function emit(python, lang, name) {
+        function emit(python, lang, name, types) {
             if (!OUT[lang]) return { ok: false, code: '', diags: [{ level: 'error', msg: '不支援的目標語言：' + lang }] };
-            const r = toIr(python, name); const em = OUT[lang].emit(r.ir);
+            const r = toIr(python, name, types); const em = OUT[lang].emit(r.ir);
             const diags = r.diags.concat(em.diags || []);
-            return { ok: !diags.some((d) => d.level === 'error'), code: em.code, diags };
+            const out = { ok: !diags.some((d) => d.level === 'error'), code: em.code, diags };
+            if (!out.ok && diags.some((d) => d.level === 'error' && /型別|標註/.test(d.msg))) { out.needTypes = PREP.missingTypes(r.ir); if (r.typeApply) out.typeApply = r.typeApply; }
+            return out;
         }
         function blocksToTarget(funcs, lang, name) {
             const p = program(funcs); if (!p.ok) return { ok: false, code: '', diags: p.errors.map((e) => ({ level: 'error', msg: '區塊解析失敗：' + e.func + ' ' + JSON.stringify(e.errors.slice(0, 2)) })), python: '' };
@@ -22258,21 +22317,29 @@ const holder = {};
         // ---- 非 Python 來源（DESIGN.core-ir.md 第 11、13 節）----
         const FROM = { nodejs: 1, java: 1, c: 1, cpp: 1, csharp: 1, ruby: 1, perl: 1 }, patCache = {}; // cpp、csharp 走 INT（ir_in_typed_core.js，內部語言鍵 cpp／cs）
         const fromLangs = () => (INB ? Object.keys(FROM).filter((l) => (INT || (l !== 'cpp' && l !== 'csharp')) && (INR || l !== 'ruby') && (INP || l !== 'perl')) : []);
-        function toIrFrom(src, lang, name, parser) {
+        function toIrFrom(src, lang, name, parser, types) {
             if (lang === 'python') return toIr(src, name);
             if (!INB || !FROM[lang] || ((lang === 'cpp' || lang === 'csharp') && !INT) || (lang === 'ruby' && !INR) || (lang === 'perl' && !INP)) throw new Error('還沒有 ' + lang + ' 的「進」（目前支援 python、' + fromLangs().join('、') + '）');
             if (!parser && lang !== 'perl') throw new Error('缺少 ' + lang + ' 的語法樹剖析器'); // perl 的剖析器是自己寫的，不需要文法
-            if (lang === 'perl') { const r = INP.fromSource(src, { patterns: patCache.perl || (patCache.perl = INP.buildPatterns()), name: name || 'input' }); const prep = PREP.prepare(r.ir); return { ir: prep.ir, diags: (r.diags || []).concat(prep.diags || []), coverage: r.coverage }; }
+            if (lang === 'perl') { const r = INP.fromSource(src, { patterns: patCache.perl || (patCache.perl = INP.buildPatterns()), name: name || 'input' }); return finishFrom(r, types); }
             const typed = lang === 'cpp' || lang === 'csharp', rb = lang === 'ruby', M = rb ? INR : typed ? INT : INB, L2 = lang === 'csharp' ? 'cs' : lang;
             const patterns = patCache[lang] || (patCache[lang] = rb ? M.buildPatterns((s) => parser.parse(s).rootNode) : M.buildPatterns(L2, (s) => parser.parse(s).rootNode));
             const r = M.fromTree(parser.parse(src).rootNode, { lang: L2, source: src, patterns, name: name || 'input' });
-            const prep = PREP.prepare(r.ir); return { ir: prep.ir, diags: (r.diags || []).concat(prep.diags || []), coverage: r.coverage };
+            return finishFrom(r, types);
         }
-        function emitFrom(src, lang, target, name, parser) {
+        // 套用使用者補的型別（applyTypes）→ 整理（推論＋由用法推）→ 診斷；applyTypes 的結果放在 typeApply
+        function finishFrom(r, types) {
+            const ap = types && Object.keys(types).length ? PREP.applyTypes(r.ir, types) : null; const prep = PREP.prepare(r.ir);
+            return { ir: prep.ir, diags: (r.diags || []).concat(prep.diags || []).concat(ap ? ap.bad.map((b) => ({ level: 'error', msg: '補的型別沒套上：' + b.key + '（' + b.why + '）' })) : []), coverage: r.coverage, typeApply: ap };
+        }
+        function emitFrom(src, lang, target, name, parser, types) {
             if (lang === 'python') return emit(src, target, name);
             if (!OUT[target]) return { ok: false, code: '', diags: [{ level: 'error', msg: '不支援的目標語言：' + target }] };
-            const r = toIrFrom(src, lang, name, parser); const em = OUT[target].emit(r.ir); const diags = r.diags.concat(em.diags || []);
-            return { ok: !diags.some((d) => d.level === 'error'), code: em.code, diags, coverage: r.coverage };
+            const r = toIrFrom(src, lang, name, parser, types); const em = OUT[target].emit(r.ir); const diags = r.diags.concat(em.diags || []);
+            const out = { ok: !diags.some((d) => d.level === 'error'), code: em.code, diags, coverage: r.coverage };
+            // 靜態語言目標缺型別：列出還推不出型別的地方，請呼叫者（AI 或使用者）用 types 補；補的型別只能是參數、回傳值或區域變數
+            if (!out.ok && diags.some((d) => d.level === 'error' && /型別|標註/.test(d.msg))) { out.needTypes = PREP.missingTypes(r.ir); if (r.typeApply) out.typeApply = r.typeApply; }
+            return out;
         }
         function cardsFrom(src, lang, name, parser) { if (lang === 'python') return cards(src, name); return BD.fromIr(toIrFrom(src, lang, name, parser).ir); }
         // 行為卡：中間語言（第二層）＋ 該函式的區塊範本使用統計
@@ -74033,7 +74100,7 @@ ${fnData.code}
                 let a = {}; try { a = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 try { return JSON.stringify(await this._codeConvert(a)); } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); }
             },
-            { type: 'object', properties: { source: { type: 'string', description: '要轉換的程式碼（整份；python、nodejs、java、c）' }, from: { type: 'string', enum: ['python', 'nodejs', 'java', 'c', 'cpp', 'csharp', 'ruby', 'perl'], description: '（選填）來源語言；不給就從程式碼判斷' }, blocks: { type: 'array', items: { type: 'object', properties: { name: { type: 'string' }, params: { type: 'array', items: { type: 'string' } }, cnl: { type: 'string', description: '受控自然語言的區塊文字' } }, required: ['name', 'cnl'] }, description: '（與 source 二選一）區塊函式清單' }, target: { type: 'string', enum: ['nodejs', 'java', 'c', 'cpp', 'csharp', 'perl', 'ruby', 'python'], description: '目標語言' }, action: { type: 'string', enum: ['convert', 'to_blocks'], description: '預設 convert；to_blocks 把 Python 拆成區塊' }, name: { type: 'string', description: '（選填）java 的類別名等' }, keep_blocks: { type: 'boolean', description: '（選填）先經過區塊再轉，驗證區塊往返' }, tests: { type: 'array', items: { type: 'object', properties: { in: { type: 'string' }, out: { type: 'string' } }, required: ['in', 'out'] }, description: '（選填）有給就實際編譯執行轉出的程式驗證輸出' } }, additionalProperties: false }
+            { type: 'object', properties: { source: { type: 'string', description: '要轉換的程式碼（整份；python、nodejs、java、c）' }, types: { type: 'object', description: '轉成靜態語言（java／c／cpp／csharp）時，來源沒標型別又推不出來的地方由你補：{"函式.參數":"list<int>", "函式.return":"int", "函式.區域變數":"str"}；型別寫法 int float str bool list<T> dict<K,V> set<T>。第一次轉不成時結果的 needTypes 會列出要補哪些。' }, from: { type: 'string', enum: ['python', 'nodejs', 'java', 'c', 'cpp', 'csharp', 'ruby', 'perl'], description: '（選填）來源語言；不給就從程式碼判斷' }, blocks: { type: 'array', items: { type: 'object', properties: { name: { type: 'string' }, params: { type: 'array', items: { type: 'string' } }, cnl: { type: 'string', description: '受控自然語言的區塊文字' } }, required: ['name', 'cnl'] }, description: '（與 source 二選一）區塊函式清單' }, target: { type: 'string', enum: ['nodejs', 'java', 'c', 'cpp', 'csharp', 'perl', 'ruby', 'python'], description: '目標語言' }, action: { type: 'string', enum: ['convert', 'to_blocks'], description: '預設 convert；to_blocks 把 Python 拆成區塊' }, name: { type: 'string', description: '（選填）java 的類別名等' }, keep_blocks: { type: 'boolean', description: '（選填）先經過區塊再轉，驗證區塊往返' }, tests: { type: 'array', items: { type: 'object', properties: { in: { type: 'string' }, out: { type: 'string' } }, required: ['in', 'out'] }, description: '（選填）有給就實際編譯執行轉出的程式驗證輸出' } }, additionalProperties: false }
         );
         registerOptional('matrix_blocks',
             '把矩陣層合成出的程式顯示成「有名字的區塊段落」（DFA：讀入／轉移表／起點／掃描／輸出；遞推：係數初值取模；圖、格子、組合層也有分段），並可在區塊的槽位上直接改：action:"show" 看目前的區塊（受控自然語言）與形態；action:"edit" 改 DFA 的轉移表 delta／起點 start／接受集 accept，或遞推的係數 coef／初值 init／取模 mod，或組合層換 vector／filter／reducer 積木，編回 Python（改完輸出照新定義變；給 expected 才會實跑驗證）。預設用 write_code 最近一次由矩陣層解出的結果；也可自己給 source＋kind。這是看與改既有結果的工具，不是寫程式的入口（寫新程式用 write_code）。參數：{"action":"show|edit","source":"（選填）Python","kind":"dfa|recurrence|compose|graph|grid","patch":{"delta":[{"0":1,"1":0}],"accept":[1]},"expected":[{"in","out"}]}',
@@ -114100,9 +114167,14 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             const f = br.fromPython(a.source); const p = br.program(f.funcs.map((x) => ({ name: x.name, params: x.params, cnl: x.cnl })), { ctx: f.ctx }); if (!p.ok) return { ok: false, error: '區塊往返失敗', errors: p.errors.slice(0, 5) };
             python = p.python; comments = p.comments;
         }
-        const em = from !== 'python' && fromParser && !hasBlocks ? br.emitFrom(a.source, from, target, a.name, fromParser) : br.emit(python, target, a.name);
+        const em = from !== 'python' && fromParser && !hasBlocks ? br.emitFrom(a.source, from, target, a.name, fromParser, a.types) : br.emit(python, target, a.name, hasBlocks || a.keep_blocks ? undefined : a.types);
         const out = { ok: !!em.ok, from, target, code: em.code, python: hasBlocks || a.keep_blocks ? python : undefined, diags: (em.diags || []).slice(0, 20), comments: comments ? { placed: comments.placed, unplaced: comments.unplaced, orphans: (comments.orphans || []).length } : undefined };
-        if (!em.ok) { out.error = '這份程式有中間語言／' + target + ' 輸出器不支援的寫法（見 diags）；沒有硬翻'; return out; }
+        if (em.typeApply) out.typeApply = em.typeApply;
+        if (!em.ok) {
+            out.error = '這份程式有中間語言／' + target + ' 輸出器不支援的寫法（見 diags）；沒有硬翻';
+            if (em.needTypes && em.needTypes.length) { out.needTypes = em.needTypes.slice(0, 30); out.error = '轉成 ' + target + ' 需要明確型別，但來源沒標、也推不出：' + em.needTypes.slice(0, 8).map((x) => x.key + '（現在 ' + x.now + '）').join('、') + '。請補型別後再呼叫一次（types 參數，例如 {"sum.a":"list<int>"}），或在來源加標註；沒有硬猜'; }
+            return out;
+        }
         const tests = [].concat(a.tests || []).filter((t) => t && typeof t.in === 'string' && typeof t.out === 'string').slice(0, 12);
         if (tests.length) {
             const bridge = this._codeJudgeBridge();

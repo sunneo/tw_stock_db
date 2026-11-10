@@ -8,9 +8,10 @@
     'use strict';
     const T = IR.T;
 
+    const retInferred = new WeakSet(); // 回傳型別是推出來的函式（不是來源標註的）：參數型別補上後要重算；不寫進 IR，免得影響 IR 相等比較
     function infer(ir) {
         const funcs = {}; IR.funcs(ir).forEach((f) => { funcs[f.name] = f; });
-        const ret = (f) => (f.ret && f.ret.t !== 'unknown' ? f.ret : (f._ret || T.unknown));
+        const ret = (f) => (f.ret && f.ret.t !== 'unknown' && !retInferred.has(f) ? f.ret : (f._ret || T.unknown)); // retInf＝回傳型別是推出來的（不是來源標註的）：參數型別補上後要重算
         function ex(e, env, fx) {
             if (!e) return T.unknown; let ty = T.unknown;
             switch (e.k) {
@@ -75,12 +76,12 @@
             IR.funcs(ir).forEach((f) => {
                 const env = {}; (f.params || []).forEach((p) => { env[p.name] = p.ty || T.unknown; }); const fx = { rets: [] };
                 block(f.body, env, fx); f.locals = env;
-                if (!f.ret || f.ret.t === 'unknown') { f._ret = fx.rets.length ? fx.rets.reduce((a, b) => IR.tyJoin(a, b)) : T.void; }
+                if (!f.ret || f.ret.t === 'unknown' || retInferred.has(f)) { f._ret = fx.rets.length ? fx.rets.reduce((a, b) => IR.tyJoin(a, b)) : T.void; }
             });
         }
         // 模組層敘述（非函式）
         const menv = {}; const fx0 = { rets: [] }; block(ir.body.filter((s) => s.k !== 'func'), menv, fx0); ir.locals = menv;
-        IR.funcs(ir).forEach((f) => { if ((!f.ret || f.ret.t === 'unknown') && f._ret) { f.ret = f._ret; } delete f._ret; });
+        IR.funcs(ir).forEach((f) => { if ((!f.ret || f.ret.t === 'unknown' || retInferred.has(f)) && f._ret) { f.ret = f._ret; retInferred.add(f); } delete f._ret; });
         return ir;
     }
 
@@ -218,8 +219,64 @@
         });
         return changed;
     }
-    function prepare(ir0, opts) {
-        const diags = []; let ir = IR.clone(ir0); infer(ir); for (let i = 0; i < 3 && inferParams(ir); i++) infer(ir); ir = lower(ir, diags); infer(ir); scope(ir); return { ir, diags };
+    // 由「用法」推還沒有型別的參數（呼叫端沒給型別時的第二道）：只認一定成立的用法——
+    //   整數運算（int.floordiv／int.mod／int.pow／math.gcd 的運算元、forrange 的起訖與步長、索引的下標）→ int；字串操作（str.* 的接收者、coll.len 之外）→ str；list.* 的接收者 → list<unknown>（元素型別仍要使用者補）。
+    // 推出來的用診斷記下（warn），使用者可以覆蓋（applyTypes）。回傳新增的診斷。
+    function inferUsage(ir) {
+        const diags = []; let changed = false;
+        const setP = (f, name, ty, why) => { const p = (f.params || []).find((x) => x.name === name); if (!p || (p.ty && p.ty.t !== 'unknown')) return; p.ty = ty; changed = true; diags.push({ level: 'warn', msg: '參數 ' + f.name + '.' + name + ' 沒有型別，由用法推為 ' + IR.tyStr(ty) + '（' + why + '，請確認）', pos: f.pos }); };
+        IR.funcs(ir).forEach((f) => {
+            const nm = (e) => (e && e.k === 'name' ? e.v : null);
+            const visit = (e) => IR.walkExpr(e, (x) => {
+                if (x.k === 'call' && x.op) {
+                    if (/^(int\.(floordiv|mod|pow)|math\.gcd)$/.test(x.op)) (x.args || []).forEach((a) => { if (nm(a)) setP(f, nm(a), T.int, x.op + ' 的運算元'); });
+                    else if (/^str\./.test(x.op) && x.args && x.args[0] && nm(x.args[0]) && !/^str\.(from_code)$/.test(x.op)) setP(f, nm(x.args[0]), T.str, x.op + ' 的接收者');
+                    else if (/^list\./.test(x.op) && x.args && x.args[0] && nm(x.args[0])) setP(f, nm(x.args[0]), IR.list(T.unknown), x.op + ' 的接收者');
+                    if (x.op === 'list.get' && x.args[1] && nm(x.args[1])) setP(f, nm(x.args[1]), T.int, '串列下標');
+                }
+                if (x.k === 'index' && nm(x.i)) setP(f, nm(x.i), T.int, '索引下標');
+            });
+            IR.walkStmts(f.body, (s) => {
+                if (s.k === 'forrange') [s.from, s.to, s.step].forEach((e) => { if (e && nm(e)) setP(f, nm(e), T.int, 'for 的範圍'); });
+                ['to', 'val', 'e', 'cond', 'iter', 'from'].forEach((k) => { if (s[k]) visit(s[k]); });
+                if (s.k === 'foreach' && s.iter && nm(s.iter)) setP(f, nm(s.iter), IR.list(T.unknown), 'foreach 的走訪對象');
+            });
+        });
+        return { changed, diags };
     }
-    return { infer, lower, scope, prepare };
+    const hasUnknown = (t) => !t || t.t === 'unknown' || (t.a || []).some(hasUnknown);
+    // 仍然推不出型別的地方，列給使用者補：參數、回傳值、區域變數。key 的格式 "函式.名稱"（回傳值用 "函式.return"）。
+    function missingTypes(ir) {
+        const out = [];
+        IR.funcs(ir).forEach((f) => {
+            (f.params || []).forEach((p) => { if (hasUnknown(p.ty)) out.push({ key: f.name + '.' + p.name, kind: 'param', func: f.name, name: p.name, now: IR.tyStr(p.ty || T.unknown), line: f.pos && f.pos[0] }); });
+            if (f.ret && f.ret.t !== 'void' && hasUnknown(f.ret)) out.push({ key: f.name + '.return', kind: 'return', func: f.name, name: 'return', now: IR.tyStr(f.ret), line: f.pos && f.pos[0] });
+            Object.keys(f.locals || {}).forEach((v) => { if (!(f.params || []).some((p) => p.name === v) && hasUnknown(f.locals[v])) out.push({ key: f.name + '.' + v, kind: 'local', func: f.name, name: v, now: IR.tyStr(f.locals[v]), line: f.pos && f.pos[0] }); });
+        });
+        return out;
+    }
+    // 套用使用者補的型別：types＝{ "函式.參數": "list<int>", "函式.return": "int", "函式.區域變數": "str" }（型別字串用 IR.tyParse 的寫法：int float str bool list<T> dict<K,V> set<T>）。
+    // 區域變數的型別寫在它第一次賦值的敘述上（assign.ty）。回傳 { applied:[key], bad:[{key, why}] }。必須在 prepare 之前套用。
+    function applyTypes(ir, types) {
+        const applied = [], bad = []; const fns = {}; IR.funcs(ir).forEach((f) => { fns[f.name] = f; });
+        Object.keys(types || {}).forEach((key) => {
+            const i = key.lastIndexOf('.'); const fname = i > 0 ? key.slice(0, i) : null, nm = i > 0 ? key.slice(i + 1) : key; let ty;
+            try { ty = IR.tyParse(String(types[key])); } catch (e) { ty = T.unknown; } if (!ty || (ty.t === 'unknown' && !/^unknown$/.test(String(types[key]).trim()))) { bad.push({ key, why: '型別寫法看不懂：' + types[key] + '（可用 int float str bool list<T> dict<K,V> set<T>）' }); return; }
+            const fs = fname ? [fns[fname]].filter(Boolean) : IR.funcs(ir); if (!fs.length) { bad.push({ key, why: '找不到函式 ' + fname }); return; }
+            let ok = false;
+            fs.forEach((f) => {
+                if (nm === 'return') { f.ret = ty; ok = true; return; }
+                const p = (f.params || []).find((x) => x.name === nm); if (p) { p.ty = ty; ok = true; return; }
+                IR.walkStmts(f.body, (s) => { if (!ok && s.k === 'assign' && s.to.k === 'name' && s.to.v === nm) { s.ty = ty; ok = true; } });
+            });
+            if (ok) applied.push(key); else bad.push({ key, why: '找不到參數或變數 ' + key });
+        });
+        return { applied, bad };
+    }
+    function prepare(ir0, opts) {
+        const diags = []; let ir = IR.clone(ir0); infer(ir); for (let i = 0; i < 3 && inferParams(ir); i++) infer(ir);
+        for (let i = 0; i < 3; i++) { const u = inferUsage(ir); if (!u.changed) break; u.diags.forEach((d) => diags.push(d)); infer(ir); for (let j = 0; j < 3 && inferParams(ir); j++) infer(ir); }
+        ir = lower(ir, diags); infer(ir); scope(ir); return { ir, diags };
+    }
+    return { infer, lower, scope, prepare, inferUsage, missingTypes, applyTypes, hasUnknown };
 });

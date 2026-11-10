@@ -93,6 +93,7 @@ const suites = [
     ['C++／C# 的「進」（Python→IR→C++／C#→IR→Python 實跑與原輸出一致、註解保存；需 tree-sitter cpp／c_sharp 文法與 python，沒有就略過）', 'renderer/src/ir/ir_in_typed.test.js'],
     ['Ruby 的「進」（Python→IR→Ruby→IR→Python 實跑與原輸出一致、註解保存；需 tree-sitter ruby 文法與 python，沒有就略過）', 'renderer/src/ir/ir_in_ruby.test.js'],
     ['Perl 的「進」（自己寫的剖析器、不需文法；Python→IR→Perl→IR→Python 實跑與原輸出一致、註解保存、手寫 Perl 的 local／修飾語句收成原生區塊）', 'renderer/src/ir/ir_in_perl.test.js'],
+    ['沒標型別的來源轉靜態語言（呼叫端推、用法推、needTypes 列出要補的、types 補完再轉、補完的 C++ 真 g++ 與 node 一致）', 'renderer/src/ir/ir_types.test.js'],
     ['矩陣 VM 反編譯與狀態機圖種（VM→while／if 結構化中文與 Python，13 個編譯器產物與 VM 在隨機輸入上一致；預設名稱改寫；DFA⇄狀態機 DSL／Mermaid／PlantUML⇄轉移矩陣；需 python）', 'renderer/src/algo/matrix_structure.test.js'],
     ['VM 程式給出區塊（VM→Python→區塊→編回 Python 與 VM 一致；需 tree-sitter 與 python，沒有就略過）', 'renderer/src/algo/matrix_vm_blocks.test.js'],
     ['矩陣轉區塊接進產品（嵌入版 FaMatrixBlocks 與來源一致、管線帶出 matrixForm、嵌入版 DFA 拆區塊並改接受集、matrix_blocks 工具註冊在 coding 領域；需 tree-sitter 與 python）', 'renderer/src/algo/matrix_wire.test.js'],
