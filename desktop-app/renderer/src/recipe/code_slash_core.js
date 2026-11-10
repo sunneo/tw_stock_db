@@ -26,7 +26,7 @@
         '・修：/code 修 ＋ 貼一段 ``` 程式 ```（有測資會連行為一起修）\n' +
         '・優化：/code 優化 ＋ ``` 程式 ``` ＋ ``` 測資 ```（只換輸出一致的寫法）\n' +
         '・合併修補：/code 合併 ＋ ``` 目前的程式 ``` ＋ ```diff 修補 ```（合併後驗證，失敗整份回滾）\n' +
-        '・轉換語言：/code 轉成 nodejs ＋ ``` 程式 ```（來源可以是 Python／nodejs／java／c／cpp／csharp，可轉 nodejs／java／c／cpp／csharp／perl／ruby／python；附 ```in／```out 測資會實際執行驗證；不是寫程式，寫仍用上面「寫」）\n' +
+        '・轉換語言：/code 轉成 nodejs ＋ ``` 程式 ```（來源可以是 Python／nodejs／java／c／cpp／csharp／ruby，可轉 nodejs／java／c／cpp／csharp／perl／ruby／python；附 ```in／```out 測資會實際執行驗證；不是寫程式，寫仍用上面「寫」）\n' +
         '・行為卡（唯讀，抽回設計看每個函式做什麼、改了會影響誰）：/code 行為卡 ＋ ``` 程式 ```\n' +
         '・設計：/code 設計 顧客可以加入購物車並結帳（先出 UML 設計）\n' +
         '・解釋／從程式看回設計：/code 解釋 ＋ ``` 程式 ```\n' +
@@ -78,7 +78,7 @@
         else if (tool === 'optimize_code') { if (code[0]) args.source = code[0].body; else missing.push('要優化的 Python 程式（用 ``` 包起來）'); if (tests.length) args.tests = tests; else missing.push('測資（```in 輸入``` 緊接 ```out 輸出```，優化要靠它確認輸出一致）'); }
         else if (tool === 'merge_patch') { if (code[0]) args.source = code[0].body; else missing.push('目前的程式（用 ``` 包起來）'); if (diff) args.diff = diff.body; else missing.push('要合併的 diff（```diff 區塊）'); if (lang) args.language = lang; if (tests.length) args.tests = tests; }
         else if (tool === 'convert_code') {
-            if (code[0]) { args.source = code[0].body; const fl = langOf(rest, bs); if (fl && fl !== 'python') { if (['nodejs', 'java', 'c', 'cpp', 'csharp'].includes(fl)) args.from = fl; else missing.push('來源目前支援 Python、nodejs、java、c、cpp、csharp（你貼的是 ' + fl + '）'); } } else missing.push('要轉換的程式（用 ``` 包起來）');
+            if (code[0]) { args.source = code[0].body; const fl = langOf(rest, bs); if (fl && fl !== 'python') { if (['nodejs', 'java', 'c', 'cpp', 'csharp', 'ruby'].includes(fl)) args.from = fl; else missing.push('來源目前支援 Python、nodejs、java、c、cpp、csharp、ruby（你貼的是 ' + fl + '）'); } } else missing.push('要轉換的程式（用 ``` 包起來）');
             const tg = targetOf(prose); if (tg.target) args.target = tg.target; else missing.push('目標語言（nodejs、java、c、cpp、csharp、perl、ruby 或 python）');
             if (tests.length) args.tests = tests;
         }
