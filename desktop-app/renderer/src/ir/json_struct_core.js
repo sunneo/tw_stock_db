@@ -5,7 +5,7 @@
  *   parseTypeDesc(desc[, {name}])    → 結構描述。desc 是 JSON（物件或字串）：值寫型別名 "int|float|bigint|str|bool|any"，後面加 ? 表示可空，陣列寫 [型別]，
  *                                      鍵後面加 ? 表示可省略，{"*": 型別} 表示鍵不固定的字典（鍵為字串）
  *   saveSchema(schema) / loadSchema(textOrObject)   結構描述 ↔ 文字（fa-struct v1，穩定、可存檔、可在 Python／nodejs 間傳遞）
- *   generate(schema, lang, opts)     → { ok, code, marshal, notes }。lang：cpp c python nodejs java csharp；marshal 表示產生的程式含 load／save
+ *   generate(schema, lang, opts)     → { ok, code, marshal, notes }。lang：cpp c python nodejs java csharp；marshal 表示產生的程式含 load／save（java、csharp 只有型別宣告）
  *   CPP_JSON_RUNTIME                 C++ 的通用 JSON 值（JV）＋剖析器＋輸出器（與 Python json.dumps 預設格式一致）；標準操作 json.loads／json.dumps 的 C++ 實作也用它
  *   schemaToIrType(schema)           → 中間語言的型別（IR.tyParse 的字串，struct 以 dict<str,any> 表示）
  * 數字：整數放得進 64 位元就是 int，放不進的是 bigint（以十進位字串保留，輸出原樣，不失精度）；有小數點或指數的是 float。 */
@@ -37,6 +37,7 @@
     const isNum = (v) => v && typeof v === 'object' && Object.prototype.hasOwnProperty.call(v, BIGK);
     function inferOne(v) {
         if (v === null) return { k: 'null' };
+        if (typeof v === 'number') return Number.isInteger(v) ? (Number.isSafeInteger(v) ? P('int') : P('bigint')) : P('float');
         if (typeof v === 'boolean') return P('bool'); if (typeof v === 'string') return P('str');
         if (isNum(v)) return v[BIGK] ? P('bigint') : v.f ? P('float') : P('int');
         if (Array.isArray(v)) { let el = null; v.forEach((x) => { const t = inferOne(x); el = el ? merge(el, t) : t; }); return { k: 'array', of: el || { k: 'any', empty: true } }; }
@@ -427,5 +428,92 @@ static void free_jv(JV **v) { jv_free(*v); *v = NULL; }`;
         return { ok: true, code: C_INCLUDES.map((h) => '#include ' + h).join('\n') + '\n\n// ---- 由 FaJsonStruct 產生：JSON ↔ C 結構（自帶剖析器與輸出器）----\n' + C_JSON_RUNTIME + '\n\n' + code.join('\n') + '\n', marshal: true, notes: ['字串是 malloc 的 char *（JSON 的 \\u0000 會被拒絕：C 字串不能含 NUL）', 'bigint 欄位是十進位字串 BigStr', '陣列 {d, n}、字典 {k, d, n}、可省略／可空 {has, v}；用完呼叫 ' + rn + '_free'] };
     }
 
-    return { VERSION, inferSchema, parseTypeDesc, saveSchema, loadSchema, schemaToIrType, parseJsonKeepBig, collectStructs, genCpp, genC, CPP_JSON_RUNTIME, C_JSON_RUNTIME, CPP_INCLUDES, ident, pascal, q };
+
+    // ---------- Python：dataclass＋from_dict／to_dict＋ loads／load／dumps／save ----------
+    function genPython(schema, opts) {
+        opts = opts || {}; const structs = collectStructs(schema); const nn = (t) => Object.assign({}, t, { nullable: false });
+        let uid = 0;
+        const from = (t, e) => { let r; const inner = nn(t);
+            if (t.nullable) return '(None if ' + e + ' is None else ' + from(inner, e) + ')';
+            switch (t.k) {
+                case 'array': { const v = '_x' + (++uid); r = '[' + from(t.of, v) + ' for ' + v + ' in ' + e + ']'; break; }
+                case 'map': { const v = '_v' + (++uid); r = '{_k: ' + from(t.of, v) + ' for _k, ' + v + ' in ' + e + '.items()}'; break; }
+                case 'object': r = t.sname + '.from_dict(' + e + ')'; break;
+                default: r = e;
+            }
+            return r; };
+        const to = (t, e) => { if (t.nullable) return '(None if ' + e + ' is None else ' + to(nn(t), e) + ')';
+            switch (t.k) {
+                case 'array': { const v = '_x' + (++uid); return '[' + to(t.of, v) + ' for ' + v + ' in ' + e + ']'; }
+                case 'map': { const v = '_v' + (++uid); return '{_k: ' + to(t.of, v) + ' for _k, ' + v + ' in ' + e + '.items()}'; }
+                case 'object': return e + '.to_dict()';
+                default: return e;
+            } };
+        const pyTy = (t) => { let r; switch (t.k) { case 'int': case 'bigint': r = 'int'; break; case 'float': r = 'float'; break; case 'number': r = 'float'; break; case 'str': r = 'str'; break; case 'bool': r = 'bool'; break; case 'array': r = 'List[' + pyTy(t.of) + ']'; break; case 'map': r = 'Dict[str, ' + pyTy(t.of) + ']'; break; case 'object': r = "'" + t.sname + "'"; break; default: r = 'Any'; } return t.nullable && r !== 'Any' ? 'Optional[' + r + ']' : r; };
+        const L = ['# 由 FaJsonStruct 產生：JSON ↔ Python 資料類別（dataclass）。loads／load 讀入（字串／檔案），dumps／save 輸出（字串／檔案）。', 'from __future__ import annotations', 'import json', 'from dataclasses import dataclass', 'from typing import Any, Dict, List, Optional', '', '_MISSING = object()  # 可省略的欄位沒有出現時的值（不輸出）', ''];
+        structs.forEach((s) => {
+            const seen = new Set(); s.fields.forEach((f) => { let id = ident(f.name, PY_KW); while (seen.has(id)) id += '_'; seen.add(id); f.pid = id; });
+            L.push('@dataclass', 'class ' + s.sname + ':');
+            const req = s.fields.filter((f) => !f.opt), opt = s.fields.filter((f) => f.opt);
+            if (!s.fields.length) L.push('    pass');
+            req.forEach((f) => L.push('    ' + f.pid + ': ' + pyTy(f.ty))); opt.forEach((f) => L.push('    ' + f.pid + ': ' + pyTy(f.ty) + ' = _MISSING'));
+            L.push('', '    @staticmethod', '    def from_dict(d):', '        if not isinstance(d, dict):', '            raise ValueError("expected object for ' + s.sname + '")');
+            L.push('        return ' + s.sname + '(' + s.fields.map((f) => f.pid + '=' + (f.opt ? '(' + from(f.ty, 'd[' + q(f.name) + ']') + ' if ' + q(f.name) + ' in d else _MISSING)' : from(f.ty, 'd[' + q(f.name) + ']'))).join(', ') + ')');
+            L.push('', '    def to_dict(self):', '        r = {}');
+            s.fields.forEach((f) => { L.push(f.opt ? '        if self.' + f.pid + ' is not _MISSING:' : '        if True:', '            r[' + q(f.name) + '] = ' + to(f.ty, 'self.' + f.pid)); });
+            L.push('        return r', '', '');
+        });
+        L.push('def loads(text):', '    """從 JSON 字串讀入，回傳根型別的物件。"""', '    return ' + from(schema.type, 'json.loads(text)'), '', '',
+            'def load(path):', '    """從檔案讀入（UTF-8）。"""', '    with open(path, encoding="utf-8") as f:', '        return loads(f.read())', '', '',
+            'def dumps(obj, **kw):', '    """輸出成 JSON 字串（參數同 json.dumps）。"""', '    return json.dumps(' + to(schema.type, 'obj') + ', **kw)', '', '',
+            'def save(obj, path=None, **kw):', '    """輸出成 JSON；給 path 就寫檔（UTF-8）並回傳 None，沒給就回傳字串。"""', '    s = dumps(obj, **kw)', '    if path is None:', '        return s', '    with open(path, "w", encoding="utf-8") as f:', '        f.write(s)', '    return None');
+        if (opts.main) L.push('', '', 'if __name__ == "__main__":', '    import sys', '    print(save(load(sys.argv[1])) if len(sys.argv) > 1 else save(loads(sys.stdin.read())))');
+        return { ok: true, code: L.join('\n') + '\n', marshal: true, notes: ['bigint 是 Python int（不失精度）', 'number 欄位保留輸入的整數或浮點'] };
+    }
+
+    // ---------- nodejs：class＋fromJSON／toJSON＋ loads／load／dumps／save ----------
+    function genNodejs(schema, opts) {
+        opts = opts || {}; const structs = collectStructs(schema); const nn = (t) => Object.assign({}, t, { nullable: false }); let uid = 0;
+        const from = (t, e) => { if (t.nullable) return '(' + e + ' == null ? null : ' + from(nn(t), e) + ')';
+            switch (t.k) { case 'array': { const v = 'x' + (++uid); return e + '.map((' + v + ') => ' + from(t.of, v) + ')'; } case 'map': { const v = 'v' + (++uid); return 'Object.fromEntries(Object.entries(' + e + ').map(([k, ' + v + ']) => [k, ' + from(t.of, v) + ']))'; } case 'object': return t.sname + '.fromJSON(' + e + ')'; default: return e; } };
+        const to = (t, e) => { if (t.nullable) return '(' + e + ' == null ? null : ' + to(nn(t), e) + ')';
+            switch (t.k) { case 'array': { const v = 'x' + (++uid); return e + '.map((' + v + ') => ' + to(t.of, v) + ')'; } case 'map': { const v = 'v' + (++uid); return 'Object.fromEntries(Object.entries(' + e + ').map(([k, ' + v + ']) => [k, ' + to(t.of, v) + ']))'; } case 'object': return e + '.toJSON()'; default: return e; } };
+        const jsTy = (t) => { let r; switch (t.k) { case 'int': case 'float': case 'number': r = 'number'; break; case 'bigint': r = 'number'; break; case 'str': r = 'string'; break; case 'bool': r = 'boolean'; break; case 'array': r = 'Array<' + jsTy(t.of) + '>'; break; case 'map': r = 'Object<string, ' + jsTy(t.of) + '>'; break; case 'object': r = t.sname; break; default: r = '*'; } return t.nullable && r !== '*' ? '?' + r : r; };
+        const L = ['// 由 FaJsonStruct 產生：JSON ↔ JavaScript 類別。loads／load 讀入（字串／檔案），dumps／save 輸出（字串／檔案）。', "'use strict';", "const fs = require('fs');", ''];
+        structs.forEach((s) => {
+            s.fields.forEach((f) => { f.pid = ident(f.name, null); });
+            L.push('class ' + s.sname + ' {', '    /** @param {{' + s.fields.map((f) => f.pid + (f.opt ? '?' : '') + ': ' + jsTy(f.ty)).join(', ') + '}} o */', '    constructor(o) { Object.assign(this, o); }',
+                '    static fromJSON(o) {', '        if (o === null || typeof o !== "object" || Array.isArray(o)) throw new Error("expected object for ' + s.sname + '");');
+            s.fields.forEach((f) => { const k = q(f.name); if (!f.opt) L.push('        if (!(' + k + ' in o)) throw new Error("missing key: ' + f.name.replace(/["\\]/g, '') + '");'); });
+            L.push('        return new ' + s.sname + '({ ' + s.fields.map((f) => q(f.pid) + ': ' + (f.opt ? '(' + q(f.name) + ' in o ? ' + from(f.ty, 'o[' + q(f.name) + ']') + ' : undefined)' : from(f.ty, 'o[' + q(f.name) + ']'))).join(', ') + ' });', '    }',
+                '    toJSON() {', '        const r = {};');
+            s.fields.forEach((f) => { L.push(f.opt ? '        if (this[' + q(f.pid) + '] !== undefined) r[' + q(f.name) + '] = ' + to(f.ty, 'this[' + q(f.pid) + ']') + ';' : '        r[' + q(f.name) + '] = ' + to(f.ty, 'this[' + q(f.pid) + ']') + ';'); });
+            L.push('        return r;', '    }', '}', '');
+        });
+        L.push('function loads(text) { return ' + from(schema.type, 'JSON.parse(text)') + '; }', 'function load(path) { return loads(fs.readFileSync(path, "utf8")); }', 'function dumps(obj, space) { return JSON.stringify(' + to(schema.type, 'obj') + ', null, space); }',
+            'function save(obj, path, space) { const s = dumps(obj, space); if (path == null) return s; fs.writeFileSync(path, s, "utf8"); return null; }', '', 'module.exports = { ' + structs.map((s) => s.sname).join(', ') + (structs.length ? ', ' : '') + 'loads, load, dumps, save };');
+        if (opts.main) L.push('', 'if (require.main === module) { const t = process.argv[2] ? fs.readFileSync(process.argv[2], "utf8") : fs.readFileSync(0, "utf8"); console.log(dumps(loads(t))); }');
+        return { ok: true, code: L.join('\n') + '\n', marshal: true, notes: ['用 JSON.parse：超過 2^53 的整數會失去精度（bigint 欄位在這裡不是 BigInt），需要精準請用 Python／C／C++ 版', '輸出沒有空白（JSON.stringify 預設），與 Python json.dumps 的格式不同但內容相同'] };
+    }
+
+    // ---------- Java／C#：只有型別宣告（沒有 load／save；Java 標準函式庫沒有 JSON，C# 的 System.Text.Json 可直接用這些類別）----------
+    function genJava(schema) {
+        const structs = collectStructs(schema); const box = (s) => ({ long: 'Long', double: 'Double', boolean: 'Boolean' }[s] || s);
+        const jt = (t, boxed) => { let r; switch (t.k) { case 'int': r = 'long'; break; case 'float': r = 'double'; break; case 'number': r = 'Number'; break; case 'bigint': r = 'java.math.BigInteger'; break; case 'str': r = 'String'; break; case 'bool': r = 'boolean'; break; case 'array': r = 'List<' + jt(t.of, true) + '>'; break; case 'map': r = 'Map<String, ' + jt(t.of, true) + '>'; break; case 'object': r = t.sname; break; default: r = 'Object'; } return boxed || t.nullable || t.__opt ? box(r) : r; };
+        const L = ['// 由 FaJsonStruct 產生：JSON 結構的 Java 型別宣告（只有欄位；Java 標準函式庫沒有 JSON，讀寫請用 Jackson／Gson，欄位名就是 JSON 的鍵；鍵不是合法識別字時加底線）。', 'import java.util.*;', '', 'public class ' + ident(schema.name || 'Root') + 'Types {'];
+        structs.forEach((s) => { const seen = new Set(); L.push('    public static class ' + s.sname + ' {'); s.fields.forEach((f) => { let id = ident(f.name, new Set(['abstract', 'boolean', 'class', 'default', 'double', 'enum', 'final', 'int', 'long', 'new', 'package', 'private', 'public', 'static', 'this', 'void', 'goto', 'const', 'char', 'byte', 'short', 'float', 'return', 'null', 'true', 'false', 'if', 'else', 'for', 'while', 'do', 'switch', 'case', 'break', 'continue', 'try', 'catch', 'finally', 'throw', 'throws', 'import', 'interface', 'extends', 'implements', 'instanceof', 'super', 'synchronized', 'transient', 'volatile', 'native', 'strictfp', 'assert', 'protected'])); while (seen.has(id)) id += '_'; seen.add(id); const fty = jt(Object.assign({}, f.ty, { __opt: f.opt })); L.push('        public ' + fty + ' ' + id + ';' + (id !== f.name ? ' // JSON 鍵：' + f.name.replace(/[\r\n]/g, ' ') : '')); }); L.push('    }'); });
+        L.push('}'); return { ok: true, code: L.join('\n') + '\n', marshal: false, notes: ['只有型別宣告，沒有 load／save'] };
+    }
+    function genCsharp(schema) {
+        const structs = collectStructs(schema);
+        const ct = (t, opt) => { let r; switch (t.k) { case 'int': r = 'long'; break; case 'float': case 'number': r = 'double'; break; case 'bigint': r = 'System.Numerics.BigInteger'; break; case 'str': r = 'string'; break; case 'bool': r = 'bool'; break; case 'array': r = 'List<' + ct(t.of) + '>'; break; case 'map': r = 'Dictionary<string, ' + ct(t.of) + '>'; break; case 'object': r = t.sname; break; default: r = 'object'; } return (t.nullable || opt) && ['long', 'double', 'bool', 'System.Numerics.BigInteger'].indexOf(r) >= 0 ? r + '?' : r; };
+        const KW = new Set('abstract as base bool break byte case catch char checked class const continue decimal default delegate do double else enum event explicit extern false finally fixed float for foreach goto if implicit in int interface internal is lock long namespace new null object operator out override params private protected public readonly ref return sbyte sealed short sizeof stackalloc static string struct switch this throw true try typeof uint ulong unchecked unsafe ushort using virtual void volatile while'.split(' '));
+        const L = ['// 由 FaJsonStruct 產生：JSON 結構的 C# 型別宣告（只有屬性；用 System.Text.Json.JsonSerializer.Deserialize<根型別>(text) 與 Serialize 讀寫，[JsonPropertyName] 對應 JSON 的鍵）。', 'using System.Collections.Generic;', 'using System.Text.Json.Serialization;', ''];
+        structs.forEach((s) => { const seen = new Set(); L.push('public class ' + s.sname, '{'); s.fields.forEach((f) => { let id = ident(f.name, KW); while (seen.has(id)) id += '_'; seen.add(id); L.push('    [JsonPropertyName(' + q(f.name) + ')]' + (f.opt ? ' [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]' : ''), '    public ' + ct(f.ty, f.opt) + ' ' + id + ' { get; set; }'); }); L.push('}', ''); });
+        return { ok: true, code: L.join('\n'), marshal: false, notes: ['只有型別宣告；可省略的欄位為 null 時不輸出（與 null 不分）'] };
+    }
+    const LANG_GEN = { cpp: genCpp, c: genC, python: genPython, nodejs: genNodejs, java: genJava, csharp: genCsharp };
+    function generate(schema, lang, opts) { const g = LANG_GEN[lang === 'javascript' ? 'nodejs' : lang === 'c++' ? 'cpp' : lang === 'c#' ? 'csharp' : lang]; if (!g) return { ok: false, error: '不支援的語言：' + lang + '（支援 ' + Object.keys(LANG_GEN).join('、') + '）' }; const s = loadSchema(schema); try { return g(s, opts); } catch (e) { return { ok: false, error: String((e && e.message) || e) }; } }
+
+    return { VERSION, inferSchema, parseTypeDesc, saveSchema, loadSchema, schemaToIrType, parseJsonKeepBig, collectStructs, genCpp, genC, genPython, genNodejs, genJava, genCsharp, generate, LANG_GEN, CPP_JSON_RUNTIME, C_JSON_RUNTIME, CPP_INCLUDES, ident, pascal, q };
 });

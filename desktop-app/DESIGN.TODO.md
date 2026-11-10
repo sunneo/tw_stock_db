@@ -17,7 +17,7 @@
 - 缺口 I 只有量測骨架，沒有真模型數字。
 
 ### 多語言中間語言與函式行為（`DESIGN.core-ir.md`）
-- 中間語言各語言（`DESIGN.core-ir.md` §11～14）：七種來源（nodejs／java／c／cpp／csharp／ruby／perl）的「進」都做了，Python→IR→該語言→IR→Python 實跑一致（10／10／8／10／10／10／10）；cpp 標準操作補到 71／72（只剩 `json.loads`）；Ruby 這台有 ruby 4.0.9 已實跑 10/10；沒標型別轉靜態語言改成推型別＋`needTypes`／`types` 補完；已接進 `convert_code`、`behavior_card`、`/code`。**待改善**：Perl 的「進」只剖我們輸出的子集（手寫 Perl 的修飾語句、local、字串插值收成原生區塊），手寫程式的覆蓋率沒量；C++／C# 的「進」同樣只認目錄樣板；Perl 沒有布林型別，往返後布林變整數；`types` 補型別沒有互動詢問畫面。
+- 中間語言各語言（`DESIGN.core-ir.md` §11～14）：七種來源（nodejs／java／c／cpp／csharp／ruby／perl）的「進」都做了，Python→IR→該語言→IR→Python 實跑一致（10／10／8／10／10／10／10）；cpp 標準操作補到 72／72（`json.loads` 用通用 JSON 值 `JV`，§15.3）；Ruby 這台有 ruby 4.0.9 已實跑 10/10；沒標型別轉靜態語言改成推型別＋`needTypes`／`types` 補完；已接進 `convert_code`、`behavior_card`、`/code`。**待改善**：Perl 的「進」只剖我們輸出的子集（手寫 Perl 的修飾語句、local、字串插值收成原生區塊），手寫程式的覆蓋率沒量；C++／C# 的「進」同樣只認目錄樣板；Perl 沒有布林型別，往返後布林變整數；`types` 補型別沒有互動詢問畫面。；JSON 型別→C／C++ struct 與 load／save、Python／nodejs 結構轉換 runtime tool 與 `convert_code` 的 `struct` 動作已做（§15）。**§15 待改善**：Java／C# 只有型別宣告沒有 load／save；宿主 `struct` 動作沒在真 Electron 跑；IR 沒有 class／struct 宣告節點（任意類別轉 struct 沒做）；C 版沒查記憶體洩漏；`JV` 不能直接算術、nodejs 版大整數失精度、C 版字串不能含 NUL
 - 行為卡已接成唯讀工具 `behavior_card`（`DESIGN.core-ir.md` §10）；各語言第二層與 `convert_code` 的 `to_uml`（從程式抽回 UML 設計，只讀）已在真 Electron 驗證（`scripts/eval/ir_langs.eval.js`，文法用本機已存檔預先放進快取、攔下網路）。**待改善**：還沒在真 Electron 實際從網路下載過其他語言的文法（下載前要先問使用者）；沒有卡片或 UML 畫面（只回 Markdown、DSL、Mermaid、PlantUML）。
 - 註解保存：行被改寫／搬動／刪除的規則已做（`a53b519b`），其餘節點類型的註解錨定待驗證。
 

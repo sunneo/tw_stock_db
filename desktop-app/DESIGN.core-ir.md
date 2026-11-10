@@ -299,3 +299,47 @@ c++／c#／ruby／perl 的輸出器與樣板實跑；java／c 的「進」；浮
 - `ir.test.js` 的 `average-fixed → c` 仍失敗（既有：找 gcc 找到 `J:\msys64\usr\bin\gcc`，沒有標頭；未改）。
 - `types` 補型別只接參數、回傳值與有賦值的區域變數；沒做互動式詢問畫面（只回 `needTypes` 讓 AI／使用者再呼叫）。
 - 整套核心測試沒跑（規則：一天一次由管理者跑）；我只跑了動到的測試檔加 `node --check`。
+
+## 15. JSON 型別 ↔ C／C++ struct、C++ 的 json.loads／dumps、結構轉換 runtime tool（2026-11-10 第三輪）
+
+**需求（使用者原話經管理者轉述）**：「做個 python/nodejs runtime tool 用來轉不同程式語言的結構，與 load, save api」、「能做一個 json type to c/c++ struct 與物件 mapping 的 parser 來讓（C++ 的 json.loads）這件事情接起來？」
+
+### 15.1 結構描述（fa-struct v1）與 `json_struct_core.js`
+- **結構描述**：`{fa_struct:1, name, type}`，`type` 是節點：`int`／`float`／`number`（整數與浮點混用，輸出時保留原本是整數還是浮點）／`bigint`（超過 64 位元的整數，以十進位字串保留、輸出原樣，不失精度）／`str`／`bool`／`any`（任意值）／`array{of}`／`map{of}`（鍵不固定、鍵為字串的字典）／`object{fields:[{name, ty, opt}]}`；任一節點可帶 `nullable`（可空），欄位可帶 `opt`（可省略）。可存檔（`saveSchema`／`loadSchema`），版本比程式新或內容壞掉會拒絕。
+- **由範例推**（`inferSchema`）：自己掃一遍數字（JavaScript 的 `JSON.parse` 會讓大整數失精度，所以不直接用）；多個範例合併——欄位有的沒的→可省略、出現 `null`→可空、整數＋浮點→`number`、對不起來→`any`、空陣列的元素型別等看到非空的再定。**由型別描述建**（`parseTypeDesc`）：`{"id":"int","nick?":"str","tags":["str"],"meta":{"*":"float"},"maybe":"int?"}`（`?` 結尾的型別＝可空，鍵尾的 `?`＝可省略，`[T]`＝陣列，`{"*":T}`＝字典）。
+- **可省略與可空分得開**：欄位既可省略又可空時，C++ 用 `optional<optional<T>>`（外層＝有沒有這個鍵，內層＝是不是 null），C 用 `{has, v}` 的兩層，所以「缺少」與 `null` 往返後不會互相變。欄位順序依結構宣告，不依輸入的鍵順序。
+
+### 15.2 C++ 與 C 的產生器（自帶 JSON 剖析器與輸出器，不用外部函式庫）
+- **產生的程式**：結構（巢狀物件各一個 struct，命名「父名_欄位名」）＋ `jv_get`／`jv_put` 對應函式＋對外介面 `Root_load(字串)`、`Root_load_file(路徑)`、`Root_save(物件)→字串`、`Root_save_file(路徑, 物件)`；C 版是 `Root_load(text, &out)`（傳回 0 成功，錯誤訊息 `fa_json_error()`）、`Root_save(&v)`（malloc 的字串）、`Root_free(&v)`。型別對照：`long long`／`double`／`std::string`／`bool`／`std::vector`／`optional`（C：`long long`／`double`／`char *`／`int`／`{d,n}` 陣列／`{k,d,n}` 字典／`{has,v}`）；`bigint` 用 `BigInt{digits}`（C：`BigStr`）；`number` 用 `Num{is_int,i,d}`；`any` 用 `JV`（C：`JV *`）。
+- **剖析器／輸出器的行為與 Python `json` 對齊**：嚴格語法（前導 0、尾逗號、`+1`、字串內未跳脫的換行、後面多餘的內容都拒絕）、`\uXXXX` 與代理對、重複的鍵後者蓋前者但位置不變、輸出的分隔符是 `", "`／`": "`、`ensure_ascii`（非 ASCII 逸出成 `\uXXXX`，4 位元組字元輸出代理對）、浮點用最短可還原表示並照 Python 的格式（`1e-05`、`1e+16`、`1.0`、`-0.0`、`5e-324`）、大整數原樣。**限制**：C 的字串不能含 NUL，JSON 的 `\u0000` 會被拒絕（C++ 照常接受）；巢狀超過 512 層拒絕。
+- **驗證**（`json_struct.test.js` 19 項）：13 組範例（巢狀、空陣列與空物件、null、跳脫與非 ASCII、大整數與 64 位元邊界、浮點格式、根是陣列／空陣列／null、欄位缺少與 null 合併、整數浮點混用、重複的鍵、型別混雜、空白）由範例推結構→真 g++（mingw64 14.2.0）與 gcc 編譯（C 用 `-Wall -Wextra` 零警告）→執行，輸出與 Python 的 `json.dumps(json.loads(s))` 逐字一致；格式錯誤 9 種兩邊都失敗；型別描述（含缺必要欄位、必要欄位是 null 報錯、可省略欄位缺少時不輸出）；結構描述存檔往返；天真對照組（JavaScript 的 `JSON.parse` 大整數失精度、不逸出非 ASCII）證明樣本測得到差異。**沒做**：C 版的記憶體沒用 valgrind／sanitizer 查過洩漏（解析失敗時最多洩漏一個半成品元素）。
+
+### 15.3 C++ 的 `json.loads`／`json.dumps` 標準操作（72/72）
+- C++ 沒有「任意型別」，所以 `json.loads` 的回傳型別 `any` 在 C++ 輸出器對應到 `JV`——帶標籤的通用 JSON 值（NUL／BOOL／INT／BIGINT／FLOAT／STR／ARR／OBJ），和 15.2 的產生器共用**同一份**剖析器與輸出器（`json_struct_core.js` 的 `CPP_JSON_RUNTIME`，`ir_ops_core.js` 的輔助函式 `fa_jv` 引用它）。`json.dumps` 吃基本型別、`vector`、鍵為字串的 `map` 與 `JV`。
+- `JV` 的使用：`data["items"]`、`data[0]`（負索引同 Python）、`len(data)`、`for it in data["items"]`、`print(data["name"])`、`int(x)`／`float(x)`／`str(x)`（`explicit` 轉型，`conv.str` 對 any 用 `fa_jv_str`）。**限制（如實報錯，不悄悄編不過）**：`JV` 不能直接做算術或比較（輸出器報 error「請先用 int()／float()／str() 取出具體型別」）；`d.get(k, default)` 對 `JV` 不支援；`print` 一個陣列／物件印的是 JSON，不是 Python 的 repr。
+- Python 的「進」多認得 `open(p).read()`／`open(p, "w").write(s)`（上一輪）。型別推論：`any` 的索引與走訪結果仍是 `any`。C++ 的「進」略過輸出器附的 JSON 執行期（`JV`、`JvParser`、`operator<<`）。
+- **驗證**：`ir_cpp_ops.test.js`（13 項）新增 `json-loads` 案例（Python 的 `json.loads`／`dumps`／索引／`len`／`int()`／`str()`／走訪，3 組輸入含大整數、浮點、跳脫、null、根為陣列）→IR→C++→真 g++ 與 Python 逐字一致，並確認標準操作覆蓋 72/72；天真對照組（浮點改用 `std::to_string`）真的答錯。
+
+### 15.4 結構轉換 runtime tool：`fa_struct.js`（nodejs）與 `fa_struct.py`（Python）
+兩端介面一樣，Python 端是薄包裝，用 `subprocess` 呼叫同目錄的 `fa_struct.js --rpc`（需要 node 在 PATH，或設環境變數 `FA_NODE`）。所有「來源」參數可以是 JSON 字串、**檔案路徑**或已解開的物件。
+
+| 介面 | nodejs（`require('./fa_struct.js')`） | Python（`import fa_struct`） |
+|---|---|---|
+| 由範例推結構 | `infer(sample, {name})` | `infer(sample, name="Root")` |
+| 由型別描述建 | `fromDesc(desc, {name})` | `from_desc(desc, name="Root")` |
+| **load**（讀結構描述，檔案或字串） | `loadSchema(src)` | `load_schema(src)` |
+| **save**（存結構描述，檔案或字串） | `saveSchema(schema, path?)` | `save_schema(schema, path=None)` |
+| 產生目標語言 | `generate(schema, lang, {main, out})` | `generate(schema, lang, main=False, out=None)` |
+| 範例或結構描述→程式碼 | `convert(src, lang, {name, out})` | `convert(src, lang, name="Root", out=None)` |
+
+- `lang`：`cpp`、`c`（struct＋`load`／`save` 函式，見 15.2）、`python`（`@dataclass`＋`from_dict`／`to_dict`＋模組函式 `loads`／`load`／`dumps`／`save`；缺必要鍵丟 `KeyError`，可省略欄位用 `_MISSING` 不輸出）、`nodejs`（class＋`fromJSON`／`toJSON`＋`loads`／`load`／`dumps`／`save`；**用 `JSON.parse`，超過 2^53 的整數失精度**）、`java`、`csharp`（**只有型別宣告**，沒有 load／save：Java 標準函式庫沒有 JSON，請用 Jackson／Gson；C# 帶 `[JsonPropertyName]`，可直接用 `System.Text.Json`；Java 欄位名在鍵不合法時加底線並註明 JSON 鍵）。每個結果有 `marshal`（含不含 load／save）與 `notes`。
+- CLI：`node fa_struct.js infer <範例檔|-> [--name N] [--out schema.json]`、`node fa_struct.js generate <schema.json|範例檔|-> --lang cpp [--main] [--out 檔]`。
+- **接進 `convert_code`**：`action:"struct"`，參數 `sample`（範例 JSON）｜`desc`（型別描述）｜`schema`（結構描述文字，即上次回傳的 `schema`）擇一，`target`（`cpp`／`c`／`python`／`nodejs`／`java`／`csharp`／`schema`，預設 `schema`＝只回結構描述），`name`，`main`。回傳 `schema`（可存檔）、`code`、`marshal`、`notes`。AI 與 `/code` 走同一個工具；**檔案讀寫在宿主不做**（要讀寫檔請用 `fa_struct.js`／`fa_struct.py`），宿主只吃字串。
+- **驗證**（`fa_struct.test.js` 9 項）：存檔／讀回／字串兩種往返一致、壞檔拒絕；六種語言都產生且 `marshal` 旗標正確；產生的 **Python 類別真跑**（`loads`→`dumps` 與 `json.dumps(json.loads(s))` 逐字一致、檔案 `load`／`save`、缺鍵報錯、可省略與可空）；產生的 **nodejs 類別真跑**（內容一致）；Java／C# 宣告用 tree-sitter 檢查零語法錯誤；**Python 端 `fa_struct.py` 真的透過 node 後端呼叫**，結構描述與 nodejs 端推的一致；CLI 兩個指令與 `--rpc`；宿主 `struct` 動作與嵌入包（`FaIrBundle.FaJsonStruct`）一致。
+
+### 15.5 沒做／沒驗證
+- Java、C# 沒有 load／save（見上）；Perl、Ruby 沒有產生器。
+- 宿主 `convert_code` 的 `struct` 動作只驗了嵌入包與宿主程式碼的結構（和之前的宿主動作一樣核心測試不跑 async 流程），**沒在真 Electron 跑**（這輪規定不開有視窗的 Electron）。
+- 「中間層的資料結構」目前指 JSON 形狀的資料（物件／陣列／基本型別）；IR 內部的 `class`／`struct` 宣告節點還沒有（IR 的型別只有 `list`／`dict`／`set`／`tuple` 與基本型別）。要把任意 Python／Java 類別轉成 struct 沒做。
+- `nodejs` 版的大整數失精度（`JSON.parse` 的限制）；C 版 NUL 字元限制；`JV` 不能直接算術（見 15.3）。
+- 整套核心測試沒跑；只用 `scripts/qrun.js` 一次一個跑了動到的測試檔。
