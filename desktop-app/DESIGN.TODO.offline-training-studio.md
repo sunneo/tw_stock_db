@@ -167,6 +167,8 @@ Backend {
 | 4 | `webgpu` 研究（§5.6 a→b→c） | (a) 單層梯度與 CPU 最大相對誤差 ≤ 1e-3（fp32）；(b) 區塊梯度 ≤ 5e-3；(c) 全模型 20 步 loss 曲線與 `cpu-py` 同種子對拍，每步 loss 差 ≤ 2%，並記錄 token/秒與峰值記憶體。**任一步沒過就停在該步並回報阻礙，不往下硬做** |
 | 5 | `vulkan`／`directml` 可行性（隔離資料夾、使用者同意後才下載任何東西） | 各自：能否跑通一個小 LoRA 優化步並與 `cpu-py` 對拍（同 §5.8 門檻）；不通過就在 §5.2 更新阻礙與解除條件，後端保持灰掉 |
 
+**已實作（2026-11-11，階段 1–2 的核心邏輯；GUI 下拉與 Configure 視窗、`.fatrain` 往返屬其他階段）**：`renderer/src/studio/` 的 `backend_core.js`（介面、登錄表、kind 宣告）、`backend_cpu_js.js`（含迷你訓練器）、`backend_cpu_py.js`（子行程、暫停續訓、進度解析、safetensors 轉規範化檢查點）、`backend_planned.js`（webgpu／directml／vulkan 的具體阻礙）、`checkpoint_core.js`（§3.1）、`bench_core.js`（§5.8、快取、自動選擇、降級）、`studio_config_core.js`（Configure：訓練核心數，自動＝N−1）。測試 5 組已登錄 `scripts/run-core-tests.js`，皆為 `N passed, 0 failed`；暫停續訓 ≤1e-5 是**迷你訓練器模擬**，真實 `train_lora.py` 的續訓精度與整合測試因本機 Python 3.10.4 缺 torch／transformers／peft（且不下載）**尚未實測**；`cpu-py` 的規範化檢查點拿不到優化器動量（torch 專有 optimizer.pt），跨後端進 `cpu-py` 續訓需 `train_lora.py` 加 `--init_adapter`，尚未做。
+
 ### 5.8 基準測試與一致性測試設計
 
 - **基準測試**（每個後端同一套，固定種子、固定 16 筆樣本、序列長度 256、批次 1、30 個優化步，先跑 3 步暖機不計）：輸出 token/秒（中位數）、步時間 p50／p95、峰值記憶體（子行程取工作集峰值；WebGPU 取已配置緩衝區總和）。整體上限 60 秒，超時即中止並標「太慢」。

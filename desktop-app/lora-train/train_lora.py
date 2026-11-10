@@ -33,10 +33,25 @@ from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
     Trainer,
+    TrainerCallback,
     TrainingArguments,
 )
 from peft import LoraConfig, get_peft_model, TaskType
 from lora_common import normalize, encode
+
+
+class StopFileCallback(TrainerCallback):
+    """Pause support: after any optimizer step, if stop_file exists, force a checkpoint save and end training."""
+
+    def __init__(self, path):
+        self.path = path
+
+    def on_step_end(self, args, state, control, **kwargs):
+        if self.path and os.path.exists(self.path):
+            control.should_save = True
+            control.should_training_stop = True
+            print(f"[paused] step={state.global_step}", flush=True)
+        return control
 
 
 def read_jsonl(path):
@@ -131,6 +146,9 @@ def main():
     ap.add_argument("--max_steps", type=int, default=-1, help="set >0 for a quick smoke test")
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--domains", default="", help="comma list to filter training to specific domains; empty = all")
+    # Studio（renderer/src/studio/backend_cpu_py.js）用：暫停＝建立 stop_file，存檢查點後停；續訓＝從 checkpoint-N 繼續
+    ap.add_argument("--resume_from_checkpoint", default="", help="path of an HF Trainer checkpoint-N dir to resume from (optimizer, scheduler, rng restored)")
+    ap.add_argument("--stop_file", default="", help="when this file exists after a step: save a checkpoint and stop (pause)")
     args = ap.parse_args()
 
     torch.manual_seed(args.seed)
@@ -214,8 +232,9 @@ def main():
         train_dataset=train_ds,
         eval_dataset=val_ds,
         data_collator=collator,
+        callbacks=[StopFileCallback(args.stop_file)] if args.stop_file else None,
     )
-    trainer.train()
+    trainer.train(resume_from_checkpoint=args.resume_from_checkpoint or None)
 
     os.makedirs(args.output_dir, exist_ok=True)
     model.save_pretrained(args.output_dir)
