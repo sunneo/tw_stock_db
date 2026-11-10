@@ -301,7 +301,7 @@
     async function chooseTool(opts) {
         // 思考堆疊：選工具是路由的一層；框架記下「選了哪個」，之後補欄位、計畫階段的標頭就看得到（先前的選擇不會被忘記）
         const T = opts.stack && opts.stackMod; if (T) T.push(opts.stack, { path: opts.label || '選工具', question: '從選單挑一個合適的（或 0＝都不合適）' });
-        const n = opts.cands.length; const r = await jsonStep({ stack: opts.stack, stackMod: opts.stackMod, generate: opts.generate, messages: menuMessages(opts.question, opts.cands), maxTokens: 40, maxTries: opts.maxTries || 2, prefill: '{"choice":', validate: (o) => { const c = o.choice; if (!Number.isInteger(c)) return ['「choice」必須是整數']; if (c < 0 || c > n) return ['「choice」必須是 0～' + n + ' 之間的整數']; return []; } });
+        const n = opts.cands.length; const r = await jsonStep({ stack: opts.stack, stackMod: opts.stackMod, generate: opts.generate, messages: menuMessages(opts.question, opts.cands), maxTokens: 40, maxTries: opts.maxTries || 2, prefill: '{"choice":', validate: (o) => { if (typeof o.choice === 'string' && /^\s*\d{1,2}\s*$/.test(o.choice)) o.choice = Number(o.choice); /* 0.6B 常把整數寫成 "5"：寬鬆接受（實測無堆疊 19/50 題只因此失敗） */ const c = o.choice; if (!Number.isInteger(c)) return ['「choice」必須是整數']; if (c < 0 || c > n) return ['「choice」必須是 0～' + n + ' 之間的整數']; return []; } });
         if (!r.ok) { if (T) T.pop(opts.stack, { ok: false, summary: '' }); return { ok: false, rejected: r.rejected, tries: r.tries, error: r.error }; }
         if (T) { const c = opts.cands[r.value.choice - 1]; T.pop(opts.stack, { summary: r.value.choice === 0 ? '都不合適，當一般問答' : '選了 ' + (c ? c.tool : r.value.choice) }); }
         return { ok: true, index: r.value.choice - 1, none: r.value.choice === 0, by: 'model', tries: r.tries, rejected: r.rejected };

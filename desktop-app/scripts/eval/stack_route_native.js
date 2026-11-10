@@ -40,9 +40,12 @@ if (fake) {
         return curPrefill + r.text;
     };
 }
+// 去位置偏誤的便宜辦法（O.makeRouteColu 的設定），變體名稱＝鍵
+const NN = 6, ID = [0, 1, 2, 3, 4, 5], REV = [5, 4, 3, 2, 1, 0], ROT = [2, 3, 4, 0, 1, 5];
+const routers = { vote: O.makeRouteColu({ orders: [ID, REV, ROT] }), votedef: O.makeRouteColu({ orders: [ID, REV, ROT], defs: true }), shufdef: O.makeRouteColu({ orders: [[3, 1, 4, 0, 2, 5]], defs: true }), nonefirst: O.makeRouteColu({ noneFirst: true }), restate: O.makeRouteColu({ restate: true }) };
 (async () => {
     let cases = buildCases(reps); const t0 = Date.now(); if (sliceArg) { const [x, y] = sliceArg.split(':').map(Number); cases = cases.slice(x, y); } // --slice a:b＝只跑第 a 到 b 題（分批；配 stack_route_merge.js 合併）
-    const r = await O.measureRoute({ cases, generate, variants, goal: '替使用者的話挑工具' });
+    const r = await O.measureRoute({ cases, generate, variants, routers, goal: '替使用者的話挑工具' });
     for (const v of Object.keys(r)) console.log(v + '：正確 ' + r[v].correct + '/' + r[v].n + '（' + (100 * r[v].accuracy).toFixed(1) + '%）；失敗（無有效回答）' + r[v].failed + '；呼叫 ' + r[v].calls);
     // 成對比較（同一題同一次重複，兩邊都有結果）與逐題表
     const A = variants[0], B = variants[1] || variants[0]; const a = r[A].rows, b = r[B].rows; let better = 0, worse = 0, same = 0;

@@ -65,6 +65,20 @@ const ROUNDS = [{ by: 'recipe', ok: false, reason: '沒有配方' }, { by: 'less
         const zero = await O.routeColuYN({ cands, question: 'q', generate: mk([]) }); assert.strictEqual(zero.none, true);
         const many = await O.routeColuYN({ cands, question: 'q', generate: mk(['算數', '寫程式']) }); assert.strictEqual(many.index, 2, '反過來排後第一項是「寫程式」');
     });
+    await t('去位置偏誤：多排列投票／亂序附定義／都不是放最前／複述工具名，字母都正確對回原選項（假模型看選單文字作答）', async () => {
+        const cands = [{ tool: 'calc', intent: '算數', def: '做計算' }, { tool: 'search', intent: '搜尋', def: '上網查' }, { tool: 'code', intent: '寫程式', def: '寫碼' }];
+        const KEY = { 算: '算數', 查: '搜尋', 程: '寫程式' };
+        const generate = async (req) => { const user = req.messages[req.messages.length - 1].content; const q = user.split('使用者的話：\n').pop(); const k = Object.keys(KEY).find((x) => q.indexOf(x) >= 0); const want = k ? KEY[k] : '都不是';
+            const line = user.split('\n').find((l) => /^[A-J]\. /.test(l) && l.indexOf(want) >= 0); const L = line ? line[0] : 'A'; if (req.prefill === '工具：') { const tool = want === '算數' ? 'calc' : want === '搜尋' ? 'search' : want === '寫程式' ? 'code' : '都不是'; return '工具：' + tool + '，答案：' + L; } return '答案：' + L; };
+        const mk = () => O.fromRounds('g', []);
+        const R6 = { vote: O.makeRouteColu({ orders: [[0, 1, 2, 3], [3, 2, 1, 0], [2, 3, 0, 1]] }), def: O.makeRouteColu({ orders: [[2, 0, 3, 1]], defs: true }), nf: O.makeRouteColu({ noneFirst: true }), re: O.makeRouteColu({ restate: true }) };
+        for (const k of Object.keys(R6)) for (const [q, w] of [['幫我算', 0], ['查一下', 1], ['寫程式', 2], ['你好', -1]]) { const r = await R6[k]({ cands, question: q, generate, stack: mk(), stackMod: T, mkStack: mk }); assert.strictEqual(r.index, w, k + ' ' + q); assert.strictEqual(r.none, w === -1); }
+        // 投票：三票裡兩票同意就贏；三票都不同→預設都不是
+        let c = 0; const votes = ['A', 'A', 'B']; const g2 = async () => '答案：' + votes[c++ % 3];
+        const r2 = await O.makeRouteColu({ orders: [[0, 1, 2, 3], [0, 1, 2, 3], [0, 1, 2, 3]] })({ cands, question: 'x', generate: g2 }); assert.strictEqual(r2.index, 0);
+        let d = 0; const g3 = async () => '答案：' + 'ABC'[d++ % 3]; const r3 = await O.makeRouteColu({ orders: [[0, 1, 2, 3], [0, 1, 2, 3], [0, 1, 2, 3]] })({ cands, question: 'x', generate: g3 }); assert.strictEqual(r3.none, true, '平手→都不是');
+        const bad = await O.makeRouteColu({ restate: true })({ cands, question: 'x', generate: async () => '工具：calc，答案：B' }); assert.strictEqual(bad.fallback, true, '名稱與字母不一致 → 格式錯誤 → 預設'); assert.ok(/不一致/.test(bad.badReplies[0]));
+    });
     await t('接線入口 wireOffline：失敗只做 C（標頭、卡在哪）；成功做 E（風格提醒）；出錯不丟例外', async () => {
         const f = await O.wireOffline({ goal: 'g', result: { ok: false, rounds: ROUNDS } }); assert.strictEqual(f.stuckAt, '矩陣'); assert.ok(/不要重複/.test(f.header)); assert.strictEqual(f.check, null); assert.ok(Array.isArray(f.stack) && f.stack.length >= 5);
         const styleFn = () => ({ ok: false, functions: { mixed: ['getX'] }, variables: { mixed: [] } });
