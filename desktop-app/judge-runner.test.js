@@ -64,6 +64,12 @@ const t = async (name, fn) => { await fn(); n++; console.log('ok - ' + name); };
       assert.strictEqual((await R.check({ lang: 'cobol', source: '' })).verdict, 'UNAVAILABLE');
     });
   }
+  if ((!only.length || only.includes('cpp')) && (await R.available('cpp')).ok) {
+    await t('C++：用 iostream 讀寫的程式在判題器裡能執行（Windows 上 PATH 的 Strawberry g++ 編出的程式會以 0xC0000005 崩潰，判題器改用 mingw64）', async () => {
+      const src = '#include <iostream>\n#include <string>\n#include <vector>\nint main() { long long a, b; std::cin >> a >> b; std::vector<long long> v{a, b}; std::cout << v[0] + v[1] << std::endl; return 0; }\n';
+      const r = await R.judge({ lang: 'cpp', source: src, problem: { id: 'cpp-iostream', tests: [{ in: '2 3\n', out: '5\n' }], checker: 'tokens', timeoutMs: 20000 } }); assert.strictEqual(r.verdict, 'AC', r.verdict + ' ' + r.detail);
+    });
+  }
   console.log('\n' + n + ' passed');
   console.log('驗證過的語言：' + (verified.join(', ') || '（無）'));
   if (skipped.length) console.log('沒驗證（工具鏈不在或跑不起來）：' + skipped.join('；'));

@@ -153,9 +153,12 @@ const OPSET = { has: OPS.has };
     // ---- 實際編譯執行 ----
     // nodejs 走專案判題器（judge-runner）；java 與 c 直接呼叫工具鏈：本機（Windows）的判題器對 java 會逾時（detached＋殼層 java.exe 殺不掉孫行程，實測一次 TLE 要等 45 秒才回），
     // 且 PATH 上排最前面的 msys 版 gcc 找不到標準標頭，所以這裡自己找「真的能編譯含 stdio.h 的程式」的 gcc，只用於本測試行程，不改使用者環境。
-    const sh = (exe, args, o) => cp.spawnSync(exe, args, Object.assign({ encoding: 'utf8', timeout: 60000 }, o || {}));
+    // Windows：優先用 mingw64 的 gcc（FA_MINGW_BIN 或 J:/msys64/mingw64/bin），編譯與執行都把它的 bin 放在 PATH 最前面；PATH 上的其他 gcc（Strawberry、msys usr/bin）會崩潰或找不到標頭
+    const MING = [process.env.FA_MINGW_BIN, 'J:/msys64/mingw64/bin', 'C:/msys64/mingw64/bin'].find((d) => d && fs.existsSync(path.join(d, 'gcc.exe'))) || null;
+    const ENVM = MING ? Object.assign({}, process.env, { PATH: MING + path.delimiter + (process.env.PATH || '') }) : process.env;
+    const sh = (exe, args, o) => cp.spawnSync(exe, args, Object.assign({ encoding: 'utf8', timeout: 60000, env: ENVM }, o || {}));
     const findGcc = () => {
-        const exts = process.platform === 'win32' ? ['.exe', ''] : [''], dirs = String(process.env.PATH || '').split(path.delimiter).filter(Boolean); const seen = new Set();
+        const exts = process.platform === 'win32' ? ['.exe', ''] : [''], dirs = (MING ? [MING] : []).concat(String(process.env.PATH || '').split(path.delimiter).filter(Boolean)); const seen = new Set();
         for (const d of dirs) for (const e of exts) {
             const p = path.join(d, 'gcc' + e); if (seen.has(p) || !fs.existsSync(p)) continue; seen.add(p);
             const w = fs.mkdtempSync(path.join(os.tmpdir(), 'ir-gcc-')); try { fs.writeFileSync(path.join(w, 'h.c'), '#include <stdio.h>\n#include <math.h>\nint main(void){puts("ok");return 0;}\n'); const r = sh(p, ['-o', path.join(w, 'h'), path.join(w, 'h.c'), '-lm']); if (r.status === 0) { const x = sh(path.join(w, 'h'), []); if (String(x.stdout).trim() === 'ok') return p; } } finally { try { fs.rmSync(w, { recursive: true, force: true }); } catch (e) { /* 忽略 */ } }
