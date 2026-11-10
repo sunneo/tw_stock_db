@@ -35,6 +35,36 @@ const ROUNDS = [{ by: 'recipe', ok: false, reason: '沒有配方' }, { by: 'less
         assert.strictEqual(r.off.n, 4); assert.strictEqual(r.stack.n, 4); assert.ok(r.off.calls >= 4 && r.stack.calls >= 4); assert.ok(typeof r.off.accuracy === 'number');
         assert.ok(seen.some((s) => /【目標】/.test(s)), '堆疊版提示應帶焦點標頭');
     });
+    await t('CoLU 式推取：寬鬆解析（字母／數字／引號／答案：B／前後有字）、解析不出來才算格式錯誤', () => {
+        const p = (s) => O.parseLetter(s, 6, '答案：');
+        assert.strictEqual(p('答案：B'), 1); assert.strictEqual(p('答案：c.'), 2); assert.strictEqual(p('答案： "3"'), 2); assert.strictEqual(p('<think>\n\n</think>\nF'), 5);
+        assert.strictEqual(p('答案：「A」我覺得'), 0); assert.strictEqual(p('答案：Z'), -1); assert.strictEqual(p('答案：G'), -1, '超出選項數'); assert.strictEqual(p('答案：我不知道'), -1); assert.strictEqual(p(''), -1);
+    });
+    await t('CoLU 式推取：推入框架、標頭送進提示、取出摘要成上層已定；壞回答→全新重試（不把壞回答餵回去）→預設退路，不丟例外', async () => {
+        const opts = [{ text: '算數' }, { text: '搜尋' }, { text: '都不是', isDefault: true }]; const seen = [];
+        const st = O.fromRounds('目標X', [{ by: 'recipe', ok: false, reason: '沒有' }]);
+        let n = 0; const gen = async (req) => { seen.push(req); n++; return n === 1 ? '我覺得是搜尋吧' : '答案：B'; };
+        const r = await O.coluChoose({ stack: st, stackMod: T, generate: gen, options: opts, text: '查天氣' });
+        assert.strictEqual(r.index, 1); assert.strictEqual(r.ok, true); assert.strictEqual(r.tries, 2); assert.strictEqual(r.badReplies.length, 1);
+        assert.ok(/【目標】/.test(seen[0].messages[1].content)); assert.ok(!/我覺得是搜尋吧/.test(JSON.stringify(seen[1].messages)), '重試是全新一次，不餵壞回答');
+        assert.strictEqual(seen[0].prefill, '答案：'); assert.ok(/選了 搜尋/.test(JSON.stringify(T.toJsonl(st))), '取出：摘要進堆疊');
+        const bad = await O.coluChoose({ generate: async () => '???', options: opts, text: 'x' }); assert.strictEqual(bad.fallback, true); assert.strictEqual(bad.index, 2); assert.strictEqual(bad.ok, false);
+        const thr = await O.coluChoose({ generate: async () => { throw new Error('壞了'); }, options: opts, text: 'x' }); assert.strictEqual(thr.fallback, true);
+    });
+    await t('CoLU 式推取：routeColu 與 measureRoute 的 colu 變體（假模型，只驗骨架）', async () => {
+        const cands = [{ tool: 'calc', intent: '算數' }, { tool: 'search', intent: '搜尋' }];
+        const generate = async (req) => { const q = req.messages[1].content.split('使用者的話：\n').pop(); return '答案：' + (/算/.test(q) ? 'A' : /查/.test(q) ? 'B' : 'C'); };
+        const r = await O.routeColu({ cands, question: '幫我算', generate }); assert.strictEqual(r.index, 0); assert.strictEqual((await O.routeColu({ cands, question: '你好', generate })).none, true);
+        const m = await O.measureRoute({ cases: [{ question: '算 1+1', cands, want: 'calc' }, { question: '查雨', cands, want: 'search' }, { question: '你好', cands, want: null }], generate, variants: ['colu'] });
+        assert.strictEqual(m.colu.correct, 3); assert.strictEqual(m.colu.fmtErrReplies, 0); assert.strictEqual(m.colu.avgCalls, 1);
+    });
+    await t('CoLU 式逐項是非 routeColuYN：一個是→選它；零個是→都不是；多個是→再挑一次（順序反過來）', async () => {
+        const cands = [{ tool: 'calc', intent: '算數' }, { tool: 'search', intent: '搜尋' }, { tool: 'code', intent: '寫程式' }];
+        const mk = (yesFor) => async (req) => { const sys = req.messages[0].content; const m = /工具「(.+?)」/.exec(sys); if (m) return '答案：' + (yesFor.includes(m[1]) ? 'A' : 'B'); return '答案：A'; };
+        const one = await O.routeColuYN({ cands, question: 'q', generate: mk(['搜尋']) }); assert.strictEqual(one.index, 1);
+        const zero = await O.routeColuYN({ cands, question: 'q', generate: mk([]) }); assert.strictEqual(zero.none, true);
+        const many = await O.routeColuYN({ cands, question: 'q', generate: mk(['算數', '寫程式']) }); assert.strictEqual(many.index, 2, '反過來排後第一項是「寫程式」');
+    });
     await t('接線入口 wireOffline：失敗只做 C（標頭、卡在哪）；成功做 E（風格提醒）；出錯不丟例外', async () => {
         const f = await O.wireOffline({ goal: 'g', result: { ok: false, rounds: ROUNDS } }); assert.strictEqual(f.stuckAt, '矩陣'); assert.ok(/不要重複/.test(f.header)); assert.strictEqual(f.check, null); assert.ok(Array.isArray(f.stack) && f.stack.length >= 5);
         const styleFn = () => ({ ok: false, functions: { mixed: ['getX'] }, variables: { mixed: [] } });

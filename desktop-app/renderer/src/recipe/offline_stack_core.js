@@ -7,6 +7,7 @@
  *   stuckAt(stack)                   卡在哪一層（第一個 failed 之後沒有 done 的最後一層；全部成功則 null）
  *   selfCheck(stack, o)              E：離線成品離開前的檢查。程式檢查（style／syntax 由呼叫端注入，純函式）永遠跑；
  *                                    問模型的自問（selfValidate）只在 o.enabled 且有 o.ask 時才跑（預設跟隨 stack_checks 設定，預設關）
+ *   coluChoose／routeColu／parseLetter  CoLU 式推入取出：模型只答一個字母，格式／核對／重試／預設退路由程式處理
  *   measureRoute(o)                  I：選工具路由的堆疊效果量測骨架：同一批題目、同一個 generate，比較無堆疊／有堆疊的正確率與呼叫數
  */
 (function (root, factory) {
@@ -48,18 +49,77 @@
         }
         return res;
     }
+    // ---- CoLU 式推入／取出（2026-11-10）：模型不輸出任何格式，只答一個字母；格式、核對、重試、預設退路都是程式的事 ----
+    // 推入＝程式把「這一題」寫成堆疊框架（問題＋選項）；模型只看到標頭＋選單；取出＝程式讀回答、核對、把結果摘要 pop 成上層已定。
+    // 回答解析很寬鬆（字母、數字、引號、「答案：B」、前後有字都行），解析不出來才算格式錯誤；重試是全新一次嘗試（不把壞回答餵回去），
+    // 全部失敗就用程式預設（options 裡 isDefault 的那個，通常是「都不是」），並標 fallback:true，不丟例外。
+    const LETTERS = 'ABCDEFGHIJ';
+    function parseLetter(text, n, prefill) {
+        let s = String(text == null ? '' : text); if (prefill && s.indexOf(prefill) === 0) s = s.slice(prefill.length);
+        s = s.replace(/<think>[\s\S]*?<\/think>/g, '').replace(/^[\s"'`「『（(\[{:：]*(答案|答|選擇|選|choice|answer)?[\s"'`：:是為=]*/i, '');
+        const m = s.match(/^[\s"'`「『（(\[]*([A-Ja-j]|\d{1,2})(?![A-Za-z])/); if (!m) return -1;
+        const t = m[1]; const i = /\d/.test(t) ? (+t - 1) : LETTERS.indexOf(t.toUpperCase()); return i >= 0 && i < n ? i : -1;
+    }
+    // options: [{text, isDefault?}]（至少一個 isDefault；最後一項通常是「都不是」）。回傳 { ok, index, fallback, tries, badReplies:[...], calls }
+    async function coluChoose(o) {
+        const opts = o.options || [], n = opts.length, prefill = o.prefill || '答案：', maxTries = o.maxTries || 2;
+        const Tm = o.stack && o.stackMod; if (Tm) Tm.push(o.stack, { path: o.label || '選一個', question: o.question || '從選單挑一個字母' });
+        const menu = opts.map((x, i) => LETTERS[i] + '. ' + String(x.text).replace(/\s+/g, ' ').slice(0, 60)).join('\n');
+        const base = [{ role: 'system', content: (o.system || '你負責替使用者的話挑一個合適的選項。') + '只回答一個大寫字母（' + LETTERS[0] + '～' + LETTERS[n - 1] + '），不要寫別的。' },
+            { role: 'user', content: '選單：\n' + menu + '\n\n使用者的話：\n' + String(o.text || '').slice(0, 800) }];
+        let idx = -1, tries = 0; const bad = [];
+        for (let t = 1; t <= maxTries && idx < 0; t++) {
+            tries = t; const msgs = Tm ? Tm.wrap(base, o.stack, {}) : base; let raw;
+            try { raw = await o.generate({ messages: msgs, maxTokens: o.maxTokens || 6, prefill }); } catch (e) { bad.push('例外：' + String((e && e.message) || e).slice(0, 80)); continue; }
+            idx = parseLetter(raw, n, prefill); if (idx < 0) bad.push(String(raw).slice(0, 40));
+        }
+        let fallback = false; if (idx < 0) { idx = Math.max(0, opts.findIndex((x) => x.isDefault)); fallback = true; }
+        if (Tm) Tm.pop(o.stack, { ok: !fallback, summary: fallback ? '沒問出來，用預設：' + opts[idx].text : '選了 ' + opts[idx].text });
+        return { ok: !fallback, index: idx, fallback, tries, badReplies: bad };
+    }
+    // 選工具（CoLU 式）：cands 同 chooseTool；回傳 { ok, index, none, tries, ... }，index 對應 cands，none＝都不合適
+    async function routeColu(o) {
+        const options = o.cands.map((c) => ({ text: String(c.intent || c.tool) + '（工具 ' + c.tool + '）' })).concat([{ text: '都不是（一般聊天或問答）', isDefault: true }]);
+        const r = await coluChoose({ stack: o.stack, stackMod: o.stackMod, generate: o.generate, options, text: o.question, label: o.label || '選工具', question: '從選單挑一個合適的（或「都不是」）', system: '你負責替使用者的話挑一個合適的工具。' });
+        const none = r.index === o.cands.length; return { ok: !r.fallback, fallback: r.fallback, index: none ? -1 : r.index, none, tries: r.tries, badReplies: r.badReplies };
+    }
+    // 選工具（CoLU 式·逐項是非）：不讓模型在多個選項裡挑（0.6B 幾乎都選第一個＝位置偏誤），改成每個候選一個框架、一題「是／否」；
+    // 剛好一個「是」就選它；零個「是」＝都不是；多個「是」再從這幾個裡用字母題挑一次（順序反過來排，抵消位置偏誤）。
+    async function routeColuYN(o) {
+        const Tm = o.stack && o.stackMod; const yes = []; let tries = 0; const badReplies = []; let fb = false;
+        for (let i = 0; i < o.cands.length; i++) {
+            const c = o.cands[i];
+            const r = await coluChoose({ stack: o.stack, stackMod: o.stackMod, generate: o.generate, options: [{ text: '是，需要這個工具' }, { text: '否，不需要', isDefault: true }], text: o.question, label: (o.label || '選工具') + ' > ' + c.tool,
+                question: '這句話需要「' + (c.intent || c.tool) + '」嗎？', system: '判斷使用者的話是否需要工具「' + (c.intent || c.tool) + '」。' });
+            tries += r.tries; (r.badReplies || []).forEach((b) => badReplies.push(b)); if (r.fallback) fb = true; if (!r.fallback && r.index === 0) yes.push(i);
+        }
+        if (yes.length === 1) return { ok: true, index: yes[0], none: false, tries, badReplies, fallback: false };
+        if (yes.length === 0) return { ok: true, index: -1, none: true, tries, badReplies, fallback: false };
+        const rev = yes.slice().reverse(); const pick = await coluChoose({ stack: o.stack, stackMod: o.stackMod, generate: o.generate, options: rev.map((i) => ({ text: String(o.cands[i].intent || o.cands[i].tool) })).concat([{ text: '都不是', isDefault: true }]), text: o.question, label: (o.label || '選工具') + ' > 複選', question: '幾個都說需要，挑最合適的一個' });
+        (pick.badReplies || []).forEach((b) => badReplies.push(b)); const none = pick.index === rev.length;
+        return { ok: !pick.fallback, fallback: pick.fallback, index: none ? -1 : rev[pick.index], none, tries: tries + pick.tries, badReplies };
+    }
     // I：選工具路由。cases: [{question, cands:[{tool,intent}], want: tool 或 null(都不合適)}]；generate: 模型呼叫（messages→字串）
+    // variants：'off'（無堆疊）、'stack'（舊：標頭＋JSON 封閉題）、'colu'（標頭＋字母題，格式全由程式處理）
     async function measureRoute(o) {
         const out = {};
         for (const variant of o.variants || ['off', 'stack']) {
-            let ok = 0, calls = 0, failed = 0, rows = [];
+            let ok = 0, calls = 0, failed = 0, fmtErr = 0, ms = 0, rows = [];
             for (const c of o.cases) {
-                const stack = variant === 'stack' ? fromRounds(o.goal || '路由', o.rounds || [{ by: 'recipe', ok: false, reason: '沒有現成做法' }]) : null;
-                const gen = async (req) => { calls++; return o.generate(req); };
-                let r; try { r = await R.chooseTool({ cands: c.cands, question: c.question, generate: gen, stack, stackMod: stack ? T : null, label: '選工具' }); } catch (e) { r = { ok: false, error: String(e && e.message) }; }
-                const got = r.ok ? (r.none ? null : c.cands[r.index] && c.cands[r.index].tool) : undefined; const hit = r.ok && got === c.want; if (hit) ok++; if (!r.ok) failed++; rows.push({ q: clip(c.question, 30), want: c.want, got, hit, tries: r.tries, rejected: r.rejected, error: r.error });
+                const stack = variant !== 'off' ? fromRounds(o.goal || '路由', o.rounds || [{ by: 'recipe', ok: false, reason: '沒有現成做法' }]) : null;
+                let callsHere = 0; const gen = async (req) => { calls++; callsHere++; return o.generate(req); };
+                const t0 = Date.now(); let r;
+                try {
+                    r = variant === 'colu2' ? await routeColuYN({ cands: c.cands, question: c.question, generate: gen, stack, stackMod: stack ? T : null, label: '選工具' }) : variant === 'colu' ? await routeColu({ cands: c.cands, question: c.question, generate: gen, stack, stackMod: stack ? T : null, label: '選工具' })
+                        : await R.chooseTool({ cands: c.cands, question: c.question, generate: gen, stack, stackMod: stack ? T : null, label: '選工具' });
+                } catch (e) { r = { ok: false, error: String(e && e.message) }; }
+                ms += Date.now() - t0;
+                const bad = variant === 'colu' || variant === 'colu2' ? (r.badReplies || []).length : (r.rejected || []).length + (r.error && !(r.rejected || []).length ? 1 : 0); fmtErr += bad;
+                const got = r.ok ? (r.none ? null : c.cands[r.index] && c.cands[r.index].tool) : ((variant === 'colu' || variant === 'colu2') && r.fallback ? '(預設)' : undefined);
+                const hit = (r.ok && got === c.want); if (hit) ok++; if (!r.ok && variant !== 'colu' && variant !== 'colu2') failed++; if ((variant === 'colu' || variant === 'colu2') && r.fallback) failed++;
+                rows.push({ q: clip(c.question, 30), want: c.want, got, hit, tries: r.tries, calls: callsHere, bad, rejected: r.rejected, badReplies: r.badReplies, error: r.error });
             }
-            out[variant] = { n: o.cases.length, correct: ok, failed, calls, accuracy: o.cases.length ? Math.round(1000 * ok / o.cases.length) / 1000 : null, rows };
+            out[variant] = { n: o.cases.length, correct: ok, failed, calls, fmtErrReplies: fmtErr, avgCalls: o.cases.length ? Math.round(100 * calls / o.cases.length) / 100 : null, avgSec: o.cases.length ? Math.round(10 * ms / 1000 / o.cases.length) / 10 : null, accuracy: o.cases.length ? Math.round(1000 * ok / o.cases.length) / 1000 : null, rows };
         }
         return out;
     }
@@ -80,5 +140,5 @@
         } catch (e) { out.note = '思考堆疊出錯（不影響結果）：' + String((e && e.message) || e); }
         return out;
     }
-    return { fromRounds, stuckAt, modelHeader, selfCheck, measureRoute, styleProgCheck, wireOffline, NAME };
+    return { fromRounds, stuckAt, modelHeader, selfCheck, measureRoute, coluChoose, routeColu, routeColuYN, parseLetter, styleProgCheck, wireOffline, NAME };
 });

@@ -1,0 +1,241 @@
+{
+ "params": {
+  "reps": 5,
+  "temp": 0.7,
+  "seed": 100,
+  "fake": false
+ },
+ "paired": {
+  "better": 0,
+  "worse": 0,
+  "same": 10
+ },
+ "byQ": {
+  "幫我算 123 乘 45": {
+   "want": "calc",
+   "off": 1,
+   "stack": 1,
+   "n": 1,
+   "offGot": [],
+   "stackGot": []
+  },
+  "5 英里是幾公里": {
+   "want": "calc",
+   "off": 0,
+   "stack": 0,
+   "n": 1,
+   "offGot": [
+    null
+   ],
+   "stackGot": [
+    null
+   ]
+  },
+  "今天台積電股價多少": {
+   "want": "search",
+   "off": 0,
+   "stack": 0,
+   "n": 1,
+   "offGot": [
+    "timer"
+   ],
+   "stackGot": [
+    "timer"
+   ]
+  },
+  "最近有什麼新的顯示卡": {
+   "want": "search",
+   "off": 0,
+   "stack": 0,
+   "n": 1,
+   "offGot": [
+    null
+   ],
+   "stackGot": [
+    null
+   ]
+  },
+  "寫一個把清單排序的函式": {
+   "want": "code",
+   "off": 0,
+   "stack": 0,
+   "n": 1,
+   "offGot": [
+    "timer"
+   ],
+   "stackGot": [
+    "timer"
+   ]
+  },
+  "這段程式跑出 IndexError 幫我修": {
+   "want": "code",
+   "off": 0,
+   "stack": 0,
+   "n": 1,
+   "offGot": [
+    null
+   ],
+   "stackGot": [
+    null
+   ]
+  },
+  "把下載資料夾的圖片依日期分類": {
+   "want": "file",
+   "off": 0,
+   "stack": 0,
+   "n": 1,
+   "offGot": [
+    null
+   ],
+   "stackGot": [
+    null
+   ]
+  },
+  "讀一下 notes.txt 的內容": {
+   "want": "file",
+   "off": 0,
+   "stack": 0,
+   "n": 1,
+   "offGot": [
+    null
+   ],
+   "stackGot": [
+    null
+   ]
+  },
+  "十分鐘後提醒我關火": {
+   "want": "timer",
+   "off": 1,
+   "stack": 1,
+   "n": 1,
+   "offGot": [],
+   "stackGot": []
+  },
+  "你覺得人生的意義是什麼": {
+   "want": null,
+   "off": 0,
+   "stack": 0,
+   "n": 1,
+   "offGot": [
+    "calc"
+   ],
+   "stackGot": [
+    "calc"
+   ]
+  }
+ },
+ "result": {
+  "colu2": {
+   "n": 10,
+   "correct": 2,
+   "failed": 0,
+   "calls": 60,
+   "fmtErrReplies": 0,
+   "avgCalls": 6,
+   "avgSec": 40.3,
+   "accuracy": 0.2,
+   "rows": [
+    {
+     "q": "幫我算 123 乘 45",
+     "want": "calc",
+     "got": "calc",
+     "hit": true,
+     "tries": 6,
+     "calls": 6,
+     "bad": 0,
+     "badReplies": []
+    },
+    {
+     "q": "5 英里是幾公里",
+     "want": "calc",
+     "got": null,
+     "hit": false,
+     "tries": 6,
+     "calls": 6,
+     "bad": 0,
+     "badReplies": []
+    },
+    {
+     "q": "今天台積電股價多少",
+     "want": "search",
+     "got": "timer",
+     "hit": false,
+     "tries": 6,
+     "calls": 6,
+     "bad": 0,
+     "badReplies": []
+    },
+    {
+     "q": "最近有什麼新的顯示卡",
+     "want": "search",
+     "got": null,
+     "hit": false,
+     "tries": 6,
+     "calls": 6,
+     "bad": 0,
+     "badReplies": []
+    },
+    {
+     "q": "寫一個把清單排序的函式",
+     "want": "code",
+     "got": "timer",
+     "hit": false,
+     "tries": 6,
+     "calls": 6,
+     "bad": 0,
+     "badReplies": []
+    },
+    {
+     "q": "這段程式跑出 IndexError 幫我修",
+     "want": "code",
+     "got": null,
+     "hit": false,
+     "tries": 6,
+     "calls": 6,
+     "bad": 0,
+     "badReplies": []
+    },
+    {
+     "q": "把下載資料夾的圖片依日期分類",
+     "want": "file",
+     "got": null,
+     "hit": false,
+     "tries": 6,
+     "calls": 6,
+     "bad": 0,
+     "badReplies": []
+    },
+    {
+     "q": "讀一下 notes.txt 的內容",
+     "want": "file",
+     "got": null,
+     "hit": false,
+     "tries": 6,
+     "calls": 6,
+     "bad": 0,
+     "badReplies": []
+    },
+    {
+     "q": "十分鐘後提醒我關火",
+     "want": "timer",
+     "got": "timer",
+     "hit": true,
+     "tries": 6,
+     "calls": 6,
+     "bad": 0,
+     "badReplies": []
+    },
+    {
+     "q": "你覺得人生的意義是什麼",
+     "want": null,
+     "got": "calc",
+     "hit": false,
+     "tries": 6,
+     "calls": 6,
+     "bad": 0,
+     "badReplies": []
+    }
+   ]
+  }
+ }
+}
