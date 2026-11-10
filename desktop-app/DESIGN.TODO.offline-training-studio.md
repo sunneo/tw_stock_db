@@ -220,6 +220,7 @@ Backend {
 ## 10. 分階段實作建議（每步可獨立上線、可回退）
 
 1. **資產格式＋匯出入＋儲存層**（記憶體／fap）；先接 `trainer` 現有 bundle，確認 `.fatrain` 可往返。
+   - 已實作（2026-11-11）：`renderer/src/studio/` 的 `asset_core.js`、`fatrain_core.js`、`storage_core.js`、`trainer_adapter.js` 與各自的 `*.test.js`（共 142 項：53＋40＋30＋19，全過；已登錄 `scripts/run-core-tests.js`）。尚未接進 floating-assistant.js（把 fap／FileCache 外的專屬 IndexedDB store 與 `_writeFapFileBytes`／`rawfs` 注入 `createStorage`，屬步驟 2 之後）。
 2. **Studio 視窗**（clone aiDoc 檢視器）＋資產清單與資料集瀏覽，先唯讀。
 3. **符號式五類訓練的包裝**（只宣告 `cpu-js` 後端）：可暫停、進度、評量。
 4. **後端介面＋`cpu-py` 後端＋規範化檢查點＋暫停續訓**（§5.7 階段 1），子行程呼叫 `lora-train/train.py`；`.fatrain` 與 `lora-train` 打包格式對齊。
