@@ -33,6 +33,24 @@
    "size": 52024,
    "md5": "b4c4c659ecb8e9fc0cd8c8ec469fcf68"
   },
+  "studio": {
+   "file": "chunks/studio.js",
+   "names": [
+    "FaStudio",
+    "FA_STUDIO_LAYOUT_SRC",
+    "FA_STUDIO_HOST_FILES"
+   ],
+   "size": 180871,
+   "md5": "dd85157fa446df90429adbf0e79e092c"
+  },
+  "studioview": {
+   "file": "chunks/studioview.js",
+   "names": [
+    "FA_STUDIO_VIEWER_HTML"
+   ],
+   "size": 34030,
+   "md5": "d526a23ae1490525122789f8f97c03ea"
+  },
   "behavior": {
    "file": "chunks/behavior.js",
    "names": [
@@ -1564,7 +1582,7 @@
   }
  },
  "core": {
-  "size": 5667547,
-  "md5": "70da8464ae22270e93282604bd3c8f21"
+  "size": 5679377,
+  "md5": "f7d1124c4a88ce0c0a44fd9720893325"
  }
 }
