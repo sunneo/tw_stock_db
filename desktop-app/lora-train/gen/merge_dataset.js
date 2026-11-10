@@ -13,7 +13,14 @@ const DATA_DIR = path.join(__dirname, '..', 'data');
 
 const GENERATORS = [
   'gen_tool_routing.js',
+  'gen_tool_routing_full.js',
   'gen_colu.js',
+  'gen_colu_full.js',
+  'gen_when2call.js',
+  'gen_natural.js',
+  'gen_agent.js',
+  'gen_wiring.js',
+  'gen_uml_edit.js',
   'gen_uml_design.js',
   'gen_think_stack.js',
   'gen_blockly_matrix.js',

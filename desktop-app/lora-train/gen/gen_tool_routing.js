@@ -28,7 +28,8 @@ async function generate() {
         const wantIndex = want == null ? -1 : cands.findIndex((c) => c.tool === want);
         if (want != null && wantIndex < 0) { skipped++; console.error('[gen_tool_routing] 跳過：想要的工具 "' + want + '" 不在候選裡：' + question); continue; }
         const choice = want == null ? 0 : wantIndex + 1;
-        const expectedCompletion = '{"choice": ' + choice + '}';
+        const expectedCompletion = '{"choice": ' + choice + '}'; // 完整字串（chooseTool 驗證用）
+        const contCompletion = ' ' + choice + '}'; // prefill '{"choice":' 之後的續寫（訓練用）
 
         // 真正的 production 訊息組字函式（不要自己拼字串）
         const messages = R.menuMessages(question, cands);
@@ -47,7 +48,8 @@ async function generate() {
             domain: 'tool_routing',
             stage: 'choose_tool',
             messages,
-            completion: expectedCompletion,
+            prefill: '{"choice":',
+            completion: contCompletion,
             verified_by: 'program_ground_truth',
             split: 'train',
             source_file: SOURCE_FILE,

@@ -5,3 +5,9 @@ out/
 *.safetensors
 *.gguf
 *.onnx
+out_train_*.log
+ref/
+portable/*.tar.gz
+work/
+portable/lora-bundle.tar.gz*
+ref/

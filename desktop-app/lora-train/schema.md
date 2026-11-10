@@ -69,3 +69,11 @@ if (require.main === module) {
 - `require()` 核心模組時，確認是 plain Node（不是 Electron）也能載入——這些模組已確認是不碰 DOM 的純函式 UMD，直接 `require('<path>/xxx_core.js')` 即可拿到匯出的物件。
 - 每個產生器自己要在 stderr 印一行統計（這個領域實際產生了幾筆、來源筆數、跳過了幾筆及原因），寫完就老實印，不要為了湊數字而虛構資料——資料不夠就是不夠，在 stderr 說清楚即可，`merge_dataset.js` 與之後的 DESIGN 文件會如實記錄每個 domain 目前的筆數。
 - 完成後，自己用 `node gen/gen_xxx.js | node -e "let n=0;require('readline').createInterface({input:process.stdin}).on('line',l=>{JSON.parse(l);n++}).on('close',()=>console.log('lines:',n))"` 這類方式跑一次，確認每一行都是合法 JSON、欄位齊全（`messages`、`completion`、`split` 不可缺），再回報。
+
+## 補充欄位（2026-11-11，對齊對照設計 DESIGN.edit-lora 的列格式）
+
+除上面的欄位外，列可以帶：`tools`（Qwen3 chat template 的 `tools=`，Hermes `<tool_call>`）、`prefill`（接在生成提示後、不算 loss 的前綴，例如 `{"choice":`）、
+`rejected`（錯誤行為範本，供 DPO）、`task`／`kind`／`group`／`tool`／`seen`（`seen`＝`unseen` 表示該列目標是 md5('rt:'+name)%5==0 的留出工具）。
+`completion` 一律是 **prefill 之後的續寫**（例如 prefill `{"choice":`、completion ` 3}`）。`lora_common.normalize` 負責對應到訓練。
+**留出工具規則**：heldout=true 的工具絕不出現在 split:"train" 列的 `tools`／選單裡（merge 後已檢查：0 列洩漏）。
+新增產生器：`gen_tool_routing_full`、`gen_colu_full`、`gen_when2call`、`gen_natural`、`gen_agent`（含 writer）、`gen_wiring`、`gen_uml_edit`；共用 `w2c_common.js`；工具清單來自 `extract_tools.js`。

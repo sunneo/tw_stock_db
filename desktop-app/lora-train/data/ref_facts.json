@@ -1,0 +1,342 @@
+{
+"errno": [
+[
+"errno 1",
+"errno 1 = EPERM: Operation not permitted."
+],
+[
+"errno 2",
+"errno 2 = ENOENT: No such file or directory."
+],
+[
+"errno 3",
+"errno 3 = ESRCH: No such process."
+],
+[
+"errno 4",
+"errno 4 = EINTR: Interrupted system call."
+],
+[
+"errno 5",
+"errno 5 = EIO: Input/output error."
+],
+[
+"errno 9",
+"errno 9 = EBADF: Bad file descriptor."
+],
+[
+"errno 11",
+"errno 11 = EAGAIN: Resource temporarily unavailable, try again."
+],
+[
+"errno 12",
+"errno 12 = ENOMEM: Cannot allocate memory."
+],
+[
+"errno 13",
+"errno 13 = EACCES: Permission denied (open/exec without the needed permission)."
+],
+[
+"errno 17",
+"errno 17 = EEXIST: File exists."
+],
+[
+"errno 20",
+"errno 20 = ENOTDIR: Not a directory."
+],
+[
+"errno 21",
+"errno 21 = EISDIR: Is a directory."
+],
+[
+"errno 22",
+"errno 22 = EINVAL: Invalid argument."
+],
+[
+"errno 24",
+"errno 24 = EMFILE: Too many open files."
+],
+[
+"errno 28",
+"errno 28 = ENOSPC: No space left on device."
+],
+[
+"errno 32",
+"errno 32 = EPIPE: Broken pipe."
+],
+[
+"errno 98",
+"errno 98 = EADDRINUSE: Address already in use."
+],
+[
+"errno 110",
+"errno 110 = ETIMEDOUT: Connection timed out."
+],
+[
+"errno 111",
+"errno 111 = ECONNREFUSED: Connection refused."
+],
+[
+"errno 104",
+"errno 104 = ECONNRESET: Connection reset by peer."
+],
+[
+"errno 30",
+"errno 30 = EROFS: Read-only file system."
+],
+[
+"errno 36",
+"errno 36 = ENAMETOOLONG: File name too long."
+],
+[
+"errno 39",
+"errno 39 = ENOTEMPTY: Directory not empty."
+],
+[
+"errno 16",
+"errno 16 = EBUSY: Device or resource busy."
+]
+],
+"hres": [
+[
+"0x80070005",
+"0x80070005 = E_ACCESSDENIED: Access is denied."
+],
+[
+"0x80070002",
+"0x80070002 = ERROR_FILE_NOT_FOUND: The system cannot find the file specified."
+],
+[
+"0x8007000e",
+"0x8007000E = E_OUTOFMEMORY: Ran out of memory."
+],
+[
+"0x80004005",
+"0x80004005 = E_FAIL: Unspecified error."
+],
+[
+"0x80070057",
+"0x80070057 = E_INVALIDARG: One or more arguments are not valid."
+],
+[
+"0x80004002",
+"0x80004002 = E_NOINTERFACE: No such interface supported."
+],
+[
+"0x800700b7",
+"0x800700B7 = ERROR_ALREADY_EXISTS: Cannot create a file when that file already exists."
+],
+[
+"0x80070020",
+"0x80070020 = ERROR_SHARING_VIOLATION: The process cannot access the file because it is being used by another process."
+]
+],
+"cmds": [
+[
+"chmod +x file",
+"`chmod +x file` = make the file executable for its owner, group and others."
+],
+[
+"tar -xzf a.tgz",
+"`tar -xzf a.tgz` = extract (x) a gzip-compressed (z) archive from file (f) a.tgz."
+],
+[
+"git stash pop",
+"`git stash pop` = re-apply the most recent stash and remove it from the stash list."
+],
+[
+"df -h",
+"`df -h` = show free disk space per file system in human-readable units."
+],
+[
+"du -sh *",
+"`du -sh *` = show the total size (s) of each item in the current directory in human-readable form (h)."
+],
+[
+"ps aux",
+"`ps aux` = list all running processes with their owner, CPU and memory use."
+],
+[
+"grep -rn foo .",
+"`grep -rn foo .` = search recursively (r) for foo and print line numbers (n), starting in the current directory."
+],
+[
+"ln -s a b",
+"`ln -s a b` = create a symbolic link named b that points to a."
+],
+[
+"journalctl -u nginx",
+"`journalctl -u nginx` = show the systemd journal entries of the nginx unit."
+],
+[
+"git rebase -i HEAD~3",
+"`git rebase -i HEAD~3` = interactively edit, reorder or squash the last three commits."
+],
+[
+"rsync -av src/ dst/",
+"`rsync -av src/ dst/` = copy src/ into dst/ in archive mode (a) and verbosely (v), only transferring differences."
+],
+[
+"ss -ltnp",
+"`ss -ltnp` = list listening (l) TCP (t) sockets with numeric ports (n) and the owning process (p)."
+]
+],
+"zh_err": {
+"errno 1": "操作不被允許",
+"errno 2": "沒有這個檔案或目錄",
+"errno 3": "沒有這個行程",
+"errno 4": "系統呼叫被中斷",
+"errno 5": "輸入／輸出錯誤",
+"errno 9": "檔案描述子無效",
+"errno 11": "資源暫時無法使用，請重試",
+"errno 12": "無法配置記憶體",
+"errno 13": "權限不足（Permission denied）",
+"errno 17": "檔案已存在",
+"errno 20": "不是目錄",
+"errno 21": "這是目錄",
+"errno 22": "參數無效",
+"errno 24": "開啟的檔案太多",
+"errno 28": "裝置沒有剩餘空間",
+"errno 32": "管道已斷開",
+"errno 98": "位址已被使用",
+"errno 110": "連線逾時",
+"errno 111": "連線被拒絕",
+"errno 104": "連線被對方重設",
+"errno 30": "唯讀檔案系統",
+"errno 36": "檔名太長",
+"errno 39": "目錄不是空的",
+"errno 16": "裝置或資源忙碌中"
+},
+"errcode": {
+"errno 1": "EPERM",
+"errno 2": "ENOENT",
+"errno 3": "ESRCH",
+"errno 4": "EINTR",
+"errno 5": "EIO",
+"errno 9": "EBADF",
+"errno 11": "EAGAIN",
+"errno 12": "ENOMEM",
+"errno 13": "EACCES",
+"errno 17": "EEXIST",
+"errno 20": "ENOTDIR",
+"errno 21": "EISDIR",
+"errno 22": "EINVAL",
+"errno 24": "EMFILE",
+"errno 28": "ENOSPC",
+"errno 32": "EPIPE",
+"errno 98": "EADDRINUSE",
+"errno 110": "ETIMEDOUT",
+"errno 111": "ECONNREFUSED",
+"errno 104": "ECONNRESET",
+"errno 30": "EROFS",
+"errno 36": "ENAMETOOLONG",
+"errno 39": "ENOTEMPTY",
+"errno 16": "EBUSY"
+},
+"q_err_en": [
+"What does {q} mean on Linux?",
+"what is {q}",
+"I got {q}, what does it mean?",
+"Explain {q} please.",
+"My build failed with {q}. What is that?",
+"Can you tell me what {q} means?",
+"meaning of {q}?"
+],
+"q_err_zh": [
+"{q} 是什麼意思？",
+"編譯出現 {q}，這代表什麼？",
+"請問 {q} 要怎麼看？",
+"看到 {q}，幫我查一下是什麼錯誤",
+"{q} 代表什麼？"
+],
+"q_cmd_en": [
+"What does `{q}` do?",
+"explain the command {q}",
+"what does {q} do exactly?",
+"Can you explain {q}?"
+],
+"q_cmd_zh": [
+"{q} 這個指令是做什麼的？",
+"請解釋指令 {q}",
+"`{q}` 是什麼意思？"
+],
+"small_en": [
+"Say hello in one short sentence.",
+"hi",
+"Hello there!",
+"thanks!",
+"Thank you so much",
+"good morning",
+"Who are you?",
+"What can you do?",
+"ok",
+"bye",
+"Tell me a joke about bugs.",
+"how are you?",
+"Can you help me?",
+"What is 2+2?",
+"Say thanks in one short sentence."
+],
+"small_zh": [
+"你好",
+"哈囉",
+"謝謝",
+"謝謝你的幫忙",
+"早安",
+"你是誰？",
+"你可以做什麼？",
+"再見",
+"你好嗎？",
+"好的",
+"晚安",
+"可以幫我一個忙嗎？"
+],
+"small_ans": {
+"hi": "Hello! How can I help you?",
+"Hello there!": "Hello! How can I help?",
+"thanks!": "You're welcome!",
+"Thank you so much": "You're welcome! Ask me anything else.",
+"good morning": "Good morning! How can I help?",
+"ok": "OK.",
+"bye": "Goodbye!",
+"Say hello in one short sentence.": "Hello, nice to meet you!",
+"Who are you?": "I am the offline assistant of floating-assistant, a small model running locally in your browser.",
+"What can you do?": "I can look up error codes, commands and team notes, and answer from what I find.",
+"Tell me a joke about bugs.": "Why do programmers prefer dark mode? Because light attracts bugs.",
+"how are you?": "I'm doing well, thanks! How can I help?",
+"Can you help me?": "Of course. What do you need?",
+"What is 2+2?": "2 + 2 = 4.",
+"Say thanks in one short sentence.": "Thank you very much!",
+"你好": "你好！有什麼我可以幫忙的嗎？",
+"哈囉": "哈囉！需要什麼協助嗎？",
+"謝謝": "不客氣！有需要再問我。",
+"謝謝你的幫忙": "不客氣！有需要再問我。",
+"早安": "早安！有什麼我可以幫忙的嗎？",
+"你是誰？": "我是 floating-assistant 的離線助理，是一個在你瀏覽器裡執行的小型模型。",
+"你可以做什麼？": "我可以查錯誤碼、指令和團隊筆記，並根據查到的資料回答。",
+"再見": "再見！",
+"你好嗎？": "我很好，謝謝！需要什麼協助嗎？",
+"好的": "好的。",
+"晚安": "晚安！",
+"可以幫我一個忙嗎？": "當然可以，請告訴我需要什麼。"
+},
+"nofit_en": [
+"What's the weather in Taipei tomorrow?",
+"Book me a flight to Tokyo.",
+"Send an email to my manager.",
+"Play some music.",
+"What is the stock price of Intel?",
+"Order a pizza for the team.",
+"Translate this paragraph into French.",
+"Turn off the lights in the lab."
+],
+"nofit_zh": [
+"明天台北天氣如何？",
+"幫我訂一張去東京的機票",
+"幫我寄信給主管",
+"播放一些音樂",
+"英特爾現在的股價是多少？",
+"幫團隊訂披薩",
+"關掉實驗室的燈"
+]
+}

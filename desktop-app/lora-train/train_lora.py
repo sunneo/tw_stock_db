@@ -36,6 +36,7 @@ from transformers import (
     TrainingArguments,
 )
 from peft import LoraConfig, get_peft_model, TaskType
+from lora_common import normalize, encode
 
 
 def read_jsonl(path):
@@ -61,48 +62,14 @@ class ChatSFTDataset(Dataset):
         self.tokenizer = tokenizer
         self.max_seq_len = max_seq_len
         self.examples = []
-        skipped_too_long = 0
         for row in rows:
-            messages = row.get("messages")
-            completion = row.get("completion")
-            if not messages or completion is None:
+            x = normalize(row)
+            if not x.get("messages") or x["chosen"] is None:
                 continue
-            thinking = bool((row.get("meta") or {}).get("thinking", False))
-
-            # transformers' apply_chat_template(tokenize=True) returns a BatchEncoding
-            # (dict-like: input_ids/attention_mask), not a bare list -- pull the ids out
-            # explicitly rather than relying on duck-typing (verified against the
-            # transformers version pinned in requirements.txt; re-check if it's upgraded).
-            prompt_ids = tokenizer.apply_chat_template(
-                messages,
-                tokenize=True,
-                add_generation_prompt=True,
-                enable_thinking=thinking,
-            )["input_ids"]
-            # Completion is tokenized on its own (no special prompt tokens), then we
-            # append eos so the model learns to stop.
-            completion_ids = tokenizer(
-                completion, add_special_tokens=False
-            )["input_ids"]
-            eos_id = tokenizer.eos_token_id
-            full_ids = prompt_ids + completion_ids + [eos_id]
-            if len(full_ids) > max_seq_len:
-                skipped_too_long += 1
-                continue
-            labels = [-100] * len(prompt_ids) + completion_ids + [eos_id]
-            self.examples.append(
-                {
-                    "input_ids": full_ids,
-                    "labels": labels,
-                    "attention_mask": [1] * len(full_ids),
-                }
-            )
-        if skipped_too_long:
-            print(
-                f"[data] skipped {skipped_too_long} example(s) longer than "
-                f"max_seq_len={max_seq_len}",
-                file=sys.stderr,
-            )
+            # same encode as eval and DPO (lora_common.encode): chat template (+tools) + prefill,
+            # loss only on chosen + <|im_end|>, left-truncated to max_seq_len
+            ids, labels = encode(tokenizer, x, seq=max_seq_len)
+            self.examples.append({"input_ids": ids, "labels": labels, "attention_mask": [1] * len(ids)})
 
     def __len__(self):
         return len(self.examples)
@@ -147,9 +114,9 @@ def main():
     ap.add_argument("--train_file", required=True, help="unified JSONL, split=train only")
     ap.add_argument("--output_dir", default="lora-train/out/adapter")
     ap.add_argument("--val_fraction", type=float, default=0.1)
-    ap.add_argument("--max_seq_len", type=int, default=1024)
+    ap.add_argument("--max_seq_len", type=int, default=int(os.environ.get("LORA_SEQ", 1024)))
     ap.add_argument("--num_train_epochs", type=float, default=3.0)
-    ap.add_argument("--per_device_train_batch_size", type=int, default=2)
+    ap.add_argument("--per_device_train_batch_size", type=int, default=int(os.environ.get("LORA_BATCH", 2)))
     ap.add_argument("--gradient_accumulation_steps", type=int, default=8)
     ap.add_argument("--learning_rate", type=float, default=1e-4)
     ap.add_argument("--lora_r", type=int, default=16)
@@ -167,6 +134,7 @@ def main():
     args = ap.parse_args()
 
     torch.manual_seed(args.seed)
+    torch.set_num_threads(int(os.environ.get("LORA_THREADS", torch.get_num_threads())))
 
     rows = read_jsonl(args.train_file)
     bad_split = [r for r in rows if r.get("split") != "train"]
@@ -226,6 +194,8 @@ def main():
         logging_steps=args.logging_steps,
         save_steps=args.save_steps,
         save_total_limit=2,
+        warmup_steps=10,
+        lr_scheduler_type="linear",
         eval_strategy="steps" if val_ds else "no",
         eval_steps=args.save_steps if val_ds else None,
         max_steps=args.max_steps,

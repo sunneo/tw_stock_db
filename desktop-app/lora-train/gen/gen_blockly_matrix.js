@@ -51,11 +51,20 @@ const SEED_DIR = path.join(__dirname, '..', '..', 'renderer', 'src', 'recipe', '
 const SEED_REL = 'renderer/src/recipe/seed/';
 
 // problems.jsonl 是 gen_fn_template.js 的資料來源（schema.md 的產生器清單表），這裡不重複讀取。
-const SEED_FILES = [
+// 註（2026-11-10）：heldout/holdout 檔案每題在「沒有一個組合 AC」時會試滿 MAX_CANDIDATES_PER_PROBLEM
+// 個組合才放棄（這些題目的用意本來就是「現有範式+矩陣層解不出來」），實測 heldout2_graph.jsonl
+// 22 題跑出 0 筆、耗時遠超過 5 個 train 檔案的總和——這是誠實的結果（這些題本來就該解不出來），
+// 不是 bug，但代表「production 這一步全部窮舉」在這些檔案上注定是最慢的路徑。環境變數
+// BLOCKLY_MATRIX_SEED_FILES（逗號分隔）可以覆蓋要跑哪些檔案，供「先用 train 檔案跑出可訓練資料、
+// heldout 檔案另外排程」這種分階段執行使用；不設就是全部 12 個檔案都跑（預設行為不變）。
+const DEFAULT_SEED_FILES = [
     'bench_L0_L5_L6.jsonl', 'bench_L1_L2.jsonl', 'bench_L3_L4.jsonl', 'bench_extra.jsonl', 'bench_linux_all.jsonl',
     'heldout2_graph.jsonl', 'heldout3_graph.jsonl', 'heldout4_graph.jsonl', 'heldout5_l0.jsonl', 'heldout6_compose.jsonl',
     'heldout_all.jsonl', 'holdout_blockly.jsonl',
 ];
+const SEED_FILES = process.env.BLOCKLY_MATRIX_SEED_FILES
+    ? process.env.BLOCKLY_MATRIX_SEED_FILES.split(',').map((s) => s.trim()).filter(Boolean)
+    : DEFAULT_SEED_FILES;
 const splitOf = (file) => (/holdout|heldout/i.test(file) ? 'heldout' : 'train');
 
 // 每題最多試幾個「骨架 x 槽位組合」才放棄（production 自己也有 paradigmLimit 這種搜尋上限的概念；

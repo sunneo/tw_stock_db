@@ -62,11 +62,11 @@ async function generate() {
         const text = '查天氣'; const want = '搜尋'; const wantIdx = 1;
         const stack = O.fromRounds('目標X', [{ by: 'recipe', ok: false, reason: '沒有' }]);
         const captured = {};
-        const oracle = async (req) => { const raw = await makeOracle(textMatcher(want), null)(req); captured.messages = req.messages; captured.raw = raw; return raw; };
+        const oracle = async (req) => { const raw = await makeOracle(textMatcher(want), null)(req); captured.messages = req.messages; captured.prefill = req.prefill || ''; captured.raw = raw; return raw; };
         const r = await O.coluChoose({ stack, stackMod: T, generate: oracle, options, text });
         if (!r.ok || r.index !== wantIdx) { fail('coluChoose 基本情境驗證不過（查天氣）：' + JSON.stringify(r)); }
         else {
-            push({ domain: 'colu', stage: 'colu_letter_choice', messages: captured.messages, completion: captured.raw, verified_by: 'program_ground_truth', split: 'train', source_file: SOURCE_FILE, meta: { mechanism: 'coluChoose', text, want, options: options.map((o) => o.text), tries: r.tries } });
+            push({ domain: 'colu', stage: 'colu_letter_choice', messages: captured.messages, prefill: captured.prefill, completion: captured.raw.slice(captured.prefill.length), verified_by: 'program_ground_truth', split: 'train', source_file: SOURCE_FILE, meta: { mechanism: 'coluChoose', text, want, options: options.map((o) => o.text), tries: r.tries } });
         }
     }
 
@@ -82,11 +82,11 @@ async function generate() {
         for (const c of cases) {
             const stack = O.fromRounds('路由', [{ by: 'recipe', ok: false, reason: '沒有現成做法' }]);
             const captured = {};
-            const oracle = async (req) => { const raw = await makeOracle(toolMatcher(c.want), c.want)(req); captured.messages = req.messages; captured.raw = raw; return raw; };
+            const oracle = async (req) => { const raw = await makeOracle(toolMatcher(c.want), c.want)(req); captured.messages = req.messages; captured.prefill = req.prefill || ''; captured.raw = raw; return raw; };
             const r = await O.routeColu({ cands, question: c.question, generate: oracle, stack, stackMod: T, label: '選工具' });
             const got = r.ok ? (r.none ? null : cands[r.index] && cands[r.index].tool) : undefined;
             if (!r.ok || got !== c.want) { fail('routeColu（2 候選）驗證不過：' + c.question + '（want=' + c.want + '，got=' + got + '）'); continue; }
-            push({ domain: 'colu', stage: 'colu_letter_choice', messages: captured.messages, completion: captured.raw, verified_by: 'program_ground_truth', split: 'train', source_file: SOURCE_FILE, meta: { mechanism: 'routeColu', cands: cands.map((x) => x.tool), question: c.question, want: c.want, tries: r.tries } });
+            push({ domain: 'colu', stage: 'colu_letter_choice', messages: captured.messages, prefill: captured.prefill, completion: captured.raw.slice(captured.prefill.length), verified_by: 'program_ground_truth', split: 'train', source_file: SOURCE_FILE, meta: { mechanism: 'routeColu', cands: cands.map((x) => x.tool), question: c.question, want: c.want, tries: r.tries } });
         }
     }
 
@@ -112,11 +112,11 @@ async function generate() {
             for (const c of cases) {
                 const stack = O.fromRounds('g', []);
                 const captured = {};
-                const oracle = async (req) => { const raw = await makeOracle(toolMatcher(c.want), c.want)(req); captured.messages = req.messages; captured.raw = raw; return raw; };
+                const oracle = async (req) => { const raw = await makeOracle(toolMatcher(c.want), c.want)(req); captured.messages = req.messages; captured.prefill = req.prefill || ''; captured.raw = raw; return raw; };
                 const r = await router({ cands, question: c.question, generate: oracle, stack, stackMod: T, label: '選工具' });
                 const got = r.ok ? (r.none ? null : cands[r.index] && cands[r.index].tool) : undefined;
                 if (!r.ok || got !== c.want) { fail('makeRouteColu(' + v.key + ')（3 候選＋def）驗證不過：' + c.question + '（want=' + c.want + '，got=' + got + '）'); continue; }
-                push({ domain: 'colu', stage: v.stage, messages: captured.messages, completion: captured.raw, verified_by: 'program_ground_truth', split: 'train', source_file: SOURCE_FILE, meta: { mechanism: 'makeRouteColu(' + v.key + ')', cands: cands.map((x) => x.tool), question: c.question, want: c.want, tries: r.tries } });
+                push({ domain: 'colu', stage: v.stage, messages: captured.messages, prefill: captured.prefill, completion: captured.raw.slice(captured.prefill.length), verified_by: 'program_ground_truth', split: 'train', source_file: SOURCE_FILE, meta: { mechanism: 'makeRouteColu(' + v.key + ')', cands: cands.map((x) => x.tool), question: c.question, want: c.want, tries: r.tries } });
             }
         }
     }

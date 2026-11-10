@@ -10,22 +10,27 @@ const { createTokenizer } = require('./nr-tokenizer.js');
 const { validateGen, pickToken, makeRng } = require('./nr-gen-params.js');
 
 const LAYERS = 28, KV = 8, HD = 128, EOS = [151645, 151643];
-const cache = { ort: null, sessPath: '', sess: null, tokPath: '', tok: null };
+const cache = { ort: null, sessPath: '', sessKey: '', sess: null, tokPath: '', tok: null };
 
 function ortModule() {
     if (!cache.ort) cache.ort = require(path.join(__dirname, 'node_modules', 'onnxruntime-node'));
     return cache.ort;
 }
 
-function loadModel(modelPath, tokenizerPath, threads) {
+// lora（選填，預設不用）：{ id, bytes }。模型要是 lora-train/make_lora_onnx.py build 出來的「LoRA 槽版」；bytes 是 lora.bin（Uint8Array／Buffer），
+// 以 onnxruntime 的 externalData 交給 session（1.22.0 實測支援，不需把檔案放在模型旁邊）。換 adapter＝傳不同的 id/bytes，session 會重建；沒給＝行為與以前完全一樣。
+function loadModel(modelPath, tokenizerPath, threads, lora) {
     if (!cache.tok || cache.tokPath !== tokenizerPath) {
         cache.tok = createTokenizer(JSON.parse(fs.readFileSync(tokenizerPath, 'utf8')));
         cache.tokPath = tokenizerPath;
     }
-    if (!cache.sess || cache.sessPath !== modelPath) {
+    const sessKey = lora && lora.bytes ? String(lora.id || 'lora') : '';
+    if (!cache.sess || cache.sessPath !== modelPath || cache.sessKey !== sessKey) {
         cache.sess = null;
-        return ortModule().InferenceSession.create(modelPath, { executionProviders: ['cpu'], intraOpNumThreads: threads || 4 }).then((s) => {
-            cache.sess = s; cache.sessPath = modelPath; return s;
+        const so = { executionProviders: ['cpu'], intraOpNumThreads: threads || 4 };
+        if (sessKey) so.externalData = [{ path: 'lora.bin', data: lora.bytes }];
+        return ortModule().InferenceSession.create(modelPath, so).then((s) => {
+            cache.sess = s; cache.sessPath = modelPath; cache.sessKey = sessKey; return s;
         });
     }
     return Promise.resolve(cache.sess);
@@ -45,7 +50,7 @@ function cleanText(tok, ids) {
 // 生成。回傳 { text, ids, finish_reason }。onToken(增量文字)、isCancelled()、onProgress(已生成數) 由呼叫端提供。
 async function generate(opts) {
     const gen = validateGen(opts.gen);
-    const sess = await loadModel(opts.modelPath, opts.tokenizerPath, opts.threads);
+    const sess = await loadModel(opts.modelPath, opts.tokenizerPath, opts.threads, opts.lora);
     const ort = ortModule(), tok = cache.tok;
     const promptIds = tok.encode(applyTemplate(opts.template || 'qwen3-chatml', opts.messages || [], { enable_thinking: false }));
     const rng = gen.do_sample ? makeRng(opts.seed != null ? opts.seed : 1) : null;
