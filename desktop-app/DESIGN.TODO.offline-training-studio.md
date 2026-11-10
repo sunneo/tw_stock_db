@@ -46,6 +46,29 @@ asset/
 - **匯出／匯入**：單一檔 `.fatrain`（zip 容器，內容即 §2 的資產；LoRA 權重已分片所以也可直接當資料夾）。匯入時檢查 `format`／`version`／sha256／相容性，顯示摘要請使用者確認後才合併（沿用 bundle 匯入的確認慣例）。
 - **暫停與搬移**：任何時候可「暫停」→ 寫出 `state/`（步數、optimizer、資料游標、隨機種子、目前資料雜湊）；「匯出訓練包」帶走；到別台（含桌面版 `lora-train/train.sh`）匯入後從 `state/` 續訓。**續訓只在 `base`／rank／`prompt_format_version`／資料雜湊相容時允許**，否則要求以新資產 fork（`parent` 欄位記來源）。
 
+### 3.1 跨後端可攜的檢查點格式（暫停→傳到另一台續訓）
+
+檢查點放在 `state/`，**與後端無關**：
+
+```
+state/
+  ckpt.json     {format:'fa-ckpt', version:1, step, epoch, dtype:'float32',
+                 cursor:{shard, offset, order_seed, consumed_tokens}, rng:{seed, algo:'pcg32', state},
+                 optimizer:{kind:'adamw', lr, betas, eps, wd, step_count, schedule:{type, warmup, total}},
+                 data_sha256, compat:{base, base_sha256, rank, alpha, target_modules[], prompt_format_version, tool_catalog_sha256},
+                 produced_by:{backend, device_fingerprint, engine_version, precision}, loss_tail:[最近N步loss], sha256:{檔→雜湊}}
+  lora_A.f32    規範化 float32（依層名排序，檔頭有 shape 表）
+  lora_B.f32
+  opt_m.f32     優化器一階動量（同順序）
+  opt_v.f32     優化器二階動量
+```
+
+- **一律以 float32 規範化存放**；fp16 後端在 `saveCheckpoint` 時由後端持有的 fp32 主權重輸出（後端若只有 fp16 權重，就要在 `produced_by.precision` 標明並接受精度損失，續訓比對門檻改用較寬的一檔）。
+- **資料游標與亂數種子**：資料順序由 `order_seed` 決定的洗牌＋`cursor` 重現，亂數用與後端無關的 PCG32（不用各後端自己的亂數，否則續訓後的 dropout／洗牌不同）。
+- **相容性檢查欄位**（不符一律拒絕續訓，提示以新資產 fork，`parent` 記來源）：`base_sha256`、`rank`、`alpha`、`target_modules`、`prompt_format_version`、`tool_catalog_sha256`、`data_sha256`、`format`／`version`（舊版先遷移）、優化器種類。**不看**後端與裝置：這兩者允許不同，只記錄。
+- **跨後端續訓的數值差異**：不同後端的浮點加總順序、融合算子、fp16／fp32 不同，所以**不保證逐位元相同**。處理方式：(1) 續訓開始時先對檢查點存的 `eval_batch`（固定 4 筆）在新後端 `evalLoss`，與 `ckpt.json` 記下的 loss 比對，相對差 ≤ 2%（fp16 後端 ≤ 5%）才繼續，否則停下並提示「此後端與原後端數值差異過大」；(2) 續訓後前 N=20 步的 loss 與 `ckpt.json` 的 `loss_tail` 趨勢比對（只作警示，不作拒絕條件，因為資料批次不同）；若原後端仍可用，另用同批資料在兩個後端各跑 N 步互相對照（相對差在上述門檻內）；(3) 紀錄寫明「由 A 後端暫停、B 後端續訓」與比對結果；(4) 同後端續訓的門檻較嚴（§5.7 階段 1：≤ 1e-5）。
+- **傳輸**：檢查點與資產用 `.fatrain`（zip）；大張量分片（沿用 20MB 分片與 sha256）。傳遞方式：(a) 匯出 `.fatrain` 檔，自行搬移；(b) 存到 fap 資料夾（網路磁碟或雲端同步資料夾）後在另一台打開同一資料夾；(c) 區網／遠端傳輸（桌面版暫時開啟的點對點傳送，需配對碼，**只在使用者按下「傳送」後啟動**；階段 3 後的後續項目，第一版只做 (a)(b)）。網頁版與桌面版互相匯入：格式相同，網頁版匯入後只能續訓它有可用後端的部分（目前無，故只能存放與轉交給桌面版）。
+
 ## 4. GUI：`/offline-training-studio`
 
 做法：**複製 aiDoc 檢視器的架構**（浮動視窗＋沙盒 iframe＋`mock.local` 假伺服器＋`postMessage`／WebSocket 推播，`DESIGN.project-index.md` §8），不另起一套。斜線指令註冊、自動完成、設定頁入口比照 `/aidoc`（待核對註冊表位置）。
@@ -58,25 +81,98 @@ asset/
 - **最大化（max）**：每個分頁區標題列有「最大化／還原」按鈕（雙擊分頁列空白處同效）：把該區撐滿整個視窗、另一區暫時收起（不關閉、狀態保留），再按還原；整個視窗另有自己的最大化／還原（沿用 aiDoc 的雙擊標題列行為，最大化時不記住全螢幕尺寸）。可再提供「隱藏另一區」切換，與最大化的差別是保留分頁列。
 - 長時間訓練時視窗可關閉：桌面版訓練在背景子行程，重新開啟 Studio 會接回進度（網頁版訓練限於符號式五類，關閉分頁即暫停並寫出 `state/`）。
 
+### 4.1 訓練分頁的「運算後端」
+
+- **下拉選單**（只對 `lora` 啟用）：`自動（建議）｜純處理器｜WebGPU｜DirectML｜Vulkan`。各項由 `Backend.probe()` 決定可用性；**不可用的灰掉，旁邊顯示具體原因**（例如「找不到 Python」「此瀏覽器沒有 WebGPU」「DirectML 在 qwen3-0.6b 已知失敗」「Vulkan 後端尚未實作」）。網頁版預設只有「WebGPU（研究中）」與「匯出訓練包」可見。其他五種 kind 顯示「只需處理器」。
+- **「跑基準測試」按鈕**：對所有可用後端依序跑 §5.8 的基準測試（一次一個）。表格逐列顯示：後端、實測 token/秒、峰值記憶體、步時間 p50／p95、數值一致性（通過／失敗項目）、測試時間、硬體指紋。可中斷（按鈕變「停止」，3 秒內停）。
+- **基準測試守則（遵守「電腦要保持可用」）**：小（30 步、16 筆）；桌面版在背景子行程執行、視窗隱藏、命令走排隊、最多用 N−1 核（至少留 1 核）；不下載任何檔案、不掃整台機器；WebGPU 測試放 Worker、單次計算分段讓出事件迴圈；測試中偵測到使用者操作變卡頓（事件迴圈延遲超過門檻）自動降低強度或暫停。
+- **「自動」的選擇規則**：
+  1. 候選＝`probe` 可用且基準測試「數值一致性通過」的後端；
+  2. 從候選中選實測 token/秒最高者；同速（差 <10%）偏好較成熟的（`cpu-py` > `vulkan` > `directml` > `webgpu`）；
+  3. 基準測試結果**快取**（含硬體指紋：CPU 型號／核數、顯示卡名稱與驅動版本、WebGPU 的 adapter info、後端引擎版本、模型 sha256），**指紋任一項改變即失效並提示重測**；沒有快取時，第一次按「開始訓練」前先自動跑一次小型基準測試（可略過，略過則用 `cpu-py`）；
+  4. **失敗自動降級**：訓練中後端失敗（裝置遺失、記憶體不足、NaN）→ 存檢查點 → 依序降到下一個候選 → 續訓，並在 `log.jsonl` 與 UI 寫明「由 X 後端失敗降級到 Y，原因：…，降級時 step=…」；降級續訓走 §3.1 的跨後端比對；
+  5. **使用者可釘選**後端：釘選後不自動換，失敗時停下並詢問而不是悄悄降級。
+
 路由（假伺服器，示意）：`GET /api/assets｜/asset｜/dataset｜/runs`、`POST /api/train {kind,name,opts}`、`POST /api/pause｜resume｜stop`、`POST /api/export｜import`、`POST /api/teach {goal,kind}`、`WS /ws`（`run_progress`、`teach_progress`、`asset_changed`）。
 
-## 5. 訓練後端（分層，誠實）
+## 5. 運算後端與訓練核心（2026-11-11 重寫：後端可選、可自動配對、可跨後端續訓）
 
-| kind | 計算性質 | 後端 | 備註 |
-|---|---|---|---|
-| `trainer`／`colu`／`uml`／`blockly`／`matrix` | 符號式或小型統計（邏輯回歸、規則升格、窮舉＋沙盒驗證） | **純 JS，主執行緒或 Worker，CPU** | 現有程式本來就在跑；Studio 只是包成可暫停（以資料游標＋已完成項目為檢查點）的工作。沙盒驗證要走判題器（桌面版 `judge-runner.js`；網頁版需確認可用的沙盒——**網頁版是否能跑 python／gcc 判題待核對**，不能的話 blockly／matrix 的「驗證訓練」在網頁版降級為只做資料集管理與匯出，訓練交給桌面版） |
-| `lora` | 梯度訓練，0.6B | 見下表 | 唯一需要 GPU 級運算的 |
+### 5.1 原則
 
-**LoRA 訓練後端（由可靠到不確定）**：
+- **訓練核心與運算後端分離**：訓練核心（資料游標、損失、優化器排程、檢查點、評量）只跟「後端介面」（§5.3）講話，不知道底下是處理器還是顯示卡。
+- **誠實**：每個後端都標「現在做得到什麼、做不到什麼、阻礙是什麼、解除阻礙的條件」。做不到就寫做不到，**不寫成「刻意不做」**。
+- 符號式五類（`trainer`／`colu`／`uml`／`blockly`／`matrix`）本來就是純 JS 的處理器計算，**只宣告 `cpu-js` 一個後端**；沙盒驗證要走判題器（桌面版 `judge-runner.js`；網頁版是否有可用沙盒待核對，不能的話網頁版這幾類只做資料集管理與匯出、訓練交給桌面版）。後端選單只對 `lora` 有意義，其他 kind 在 UI 顯示「只需處理器」並灰掉選單。
 
-1. **桌面版＋Python 子行程（CPU）**：呼叫 `lora-train/train.py`（已完成、已實測：此機器 CPU 約 60 token/s）。需要使用者機器有 Python；沒有就提示安裝或改用匯出訓練包到別台。Studio 負責資料集、參數、啟動、讀進度、收產物（`pack_adapter.js` 的格式）。**這是第一階段要做的**。
-2. **匯出訓練包到別台**：`lora-train/portable/` 打包（資料＋腳本），別台跑完把 `.fatrain` 匯回。零新技術風險，網頁版也能用（網頁版只當資料集與老師工具）。
-3. **瀏覽器內 WebGPU／CPU（WASM）訓練——目前沒有現成可用方案，列為研究項**：
-   - `onnxruntime-web` 的訓練支援與我們用的推論套件不同、需要離線產生訓練圖（ORT training artifacts），且 WebGPU 後端的訓練算子覆蓋不足；**這個 repo 目前沒有任何訓練圖或 training build（待核對確認）**。
-   - 較可行的路線：**只訓練 LoRA 的 A／B（約 10M 參數），基底凍結量化**。前向沿用我們已驗證的「基底 q8＋LoRA 分支」ONNX（`make_lora_onnx.py`，A/B 為外部資料）；反向需要自己實作：對 196 個目標線性層，已知 `y = y_base + (x·A)·B`，梯度 `dB = (xA)ᵀ·dy`、`dA = xᵀ·(dy·Bᵀ)`，需要各層的輸入 `x` 與輸出梯度 `dy`——`dy` 要穿過整個 transformer 反向傳播（attention、RMSNorm、MLP、量化矩陣乘的 straight-through），即**等於要寫一個 0.6B 的 WebGPU 反向傳播引擎**。工作量大、數值風險高，**不建議列入第一階段**。
-   - 折衷：先做小規模 **WebGPU 微調 head／偏置式 adapter（只訓練最後幾層或 logit 偏置）** 的可行性實驗，量測 token/s 與記憶體後再決定；網頁版 16GB 以下機器上 0.6B fp16 全模型已佔 1.2GB，加上激活與 optimizer 要實測。
-   - 結論寫進 UI：網頁版 LoRA 顯示「目前請用桌面版訓練或匯入別台訓練好的 adapter」，不假裝能訓練。
-4. **速度現實（已實測，CPU）**：約 60 token/s；4141 筆資料約 200 萬 token，一個 epoch 約 9–10 小時。因此 Studio 必須有：時間估計、暫停／續訓、子集試跑（先 1000 筆驗證）、不需要常開視窗（桌面版用背景子行程）。
+### 5.2 後端清單與誠實狀態
+
+「現況」欄只寫已查證的；未查證的標「未查證」，查證方法見 §11。
+
+| 後端代號 | 推論 | 訓練（LoRA 反向傳播） | 依賴與體積 | 跨平台 | 風險 | 第一版 |
+|---|---|---|---|---|---|---|
+| `cpu-py`：桌面版 Python 子行程（`lora-train/train.py`，PyTorch CPU） | 可 | **已可**：本機實測約 60 token/s（Core Ultra 7 155U，見 `DESIGN.lora-training.md` §1） | 使用者機器要有 Python＋`lora-train/requirements.txt`（torch 約數百 MB～GB 級，未逐項量測）；桌面版**沒有內建 Python**（`main-ext.js:361` 只探測） | Windows／Linux／macOS 皆可（只實測 Windows） | 無 Python 的使用者要安裝或改匯出訓練包 | **做**（階段 1） |
+| `cpu-js`：純 JS／WASM（Worker） | 可（onnxruntime-web WASM） | **做不到（目前）**：repo 沒有任何 ORT 訓練圖或 `TrainingSession`，LoRA 反向要自己寫 0.6B 的反向傳播；符號式五類是例外（本來就是它） | 無額外依賴 | 全平台 | 速度遠低於 `cpu-py`（沒有最佳化的矩陣核心） | LoRA：**不做**；阻礙＝沒有反向引擎；解除條件＝§5.6 的 WebGPU 反向引擎做出來後，同一套算子可降級成 WASM 版；符號式：**做** |
+| `webgpu`：瀏覽器 WebGPU，自寫 WGSL 計算著色器（網頁版與桌面版 Electron 渲染行程都能用） | 可（已用 onnxruntime-web WebGPU，`vlm_core` 有降級，`shader-f16` 檢查） | **尚無現成方案**：onnxruntime-web 推論套件不含訓練；ORT 的 on-device training 是否有 WebGPU 後端未查證（官方文件的搜尋結果未提及）。自寫路線＝只訓練 LoRA 的 A／B（約 10M 參數），基底凍結；需要自己寫各層前向與反向（RMSNorm、attention、MLP、q8 反量化矩陣乘、RoPE、softmax／交叉熵）。**可行性＝理論上可行，工程量大、數值風險高，沒有實測數字** | 零安裝，但每台顯示卡的 WGSL 行為、緩衝區上限（`maxStorageBufferBindingSize` 預設 128MB，0.6B 權重要分塊）、記憶體上限都要實測；瀏覽器分頁會被回收 | 瀏覽器（Chrome／Edge 預設有；Firefox／Safari 版本不一，未查證）；Electron 繼承 Chromium | 高：數值與反向的正確性（要與 `cpu-py` 對拍）、裝置遺失（device lost）要能從檢查點續跑 | **第一版不做完整 LoRA**；階段 4 只做可行性實驗（單層 LoRA 梯度對拍，再擴展），有數字才升格 |
+| `directml`：桌面版 Windows DirectML | 可，但 **qwen3-0.6b 已知失敗**：`DESIGN.TODO.native-runner.md:321,416`——onnxruntime-node 1.22.0 與 1.31.1 都在 `SkipSimplifiedLayerNormalization` 節點 E_INVALIDARG | **做不到（目前）**：onnxruntime 的 DirectML 執行提供者是推論用（官方文件：accelerates inference；開發轉維護模式，新功能移往 WinML——搜尋摘要，2026-11-11，見 §11 來源）；PyTorch 路線的 `torch-directml` 最新輪子約 2024-06（0.2.2.dev240614）、釘在 PyTorch 2.2、專案維護模式，**未驗證能否跑 LoRA 反向與 Qwen3 的全部算子**；`nr-engine.js` 的 onnxruntime-node 是 1.22.0，Windows 套件內含 `DirectML.dll`（`DESIGN.TODO.native-runner.md:120` 為 1.31.1 的觀察；1.22.0 是否含未逐檔核對）。**本 repo 沒有 `onnxruntime-node` 安裝**（`package.json` 無此依賴、`node_modules` 無此資料夾；它在使用者機器的執行包 `userData/native-runtime/` 內，按需下載） | `torch-directml` 約數百 MB（未量測）＋Python；DirectML.dll 為 ORT 套件內建 | 僅 Windows 10/11；任何 DX12 顯示卡（含 Intel 內顯） | 高：算子覆蓋、與 CPU 數值差、官方走向 WinML | **第一版不做**；阻礙＝沒有已驗證能跑 LoRA 反向的路徑；解除條件＝在隔離資料夾實測 `torch-directml` 能跑通 `train_lora.py` 前向／反向且與 CPU 數值對得上（見 §5.7 階段 5） |
+| `vulkan`：桌面版 Vulkan | 可（llama.cpp 的 Vulkan 後端為成熟的推論後端；ncnn 的 Vulkan 為推論用，**ncnn 有無訓練未查證**） | **有一個可能路線但未驗證**：Tether QVAC 研究頁（2026-11-11 查）稱在 llama.cpp 加入含 Vulkan 後端的 LoRA 微調流程（初始化、訓練、檢查點、續訓、儲存、合併，凍結基底、只更新 LoRA 張量、輸出 GGUF adapter）；**未確認是否已進 llama.cpp 主線、是否支援 Qwen3、是否涵蓋所需算子（如 `OUT_PROD`、`OPT_STEP_ADAMW` 在 Vulkan 的實作）**。此外它的輸出是 GGUF adapter，要轉成我們的 safetensors／ONNX LoRA 槽格式（`make_lora_onnx.py`）才能互通，轉換未做 | 需預編譯的 llama.cpp 二進位（含 Vulkan）＋GGUF 基底（0.6B 約 0.4–0.7GB，視量化）；Vulkan 驅動由顯示卡廠商提供 | Windows／Linux（macOS 走 MoltenVK，未查證） | 高：上游功能成熟度、格式轉換、與 PyTorch 路徑的數值差 | **第一版不做**；阻礙＝上游訓練支援與 Qwen3 相容性未驗證、格式轉換未寫；解除條件＝讀上游原始碼與 PR 確認算子、在隔離資料夾跑通一次小訓練並與 `cpu-py` 對拍 |
+
+補充：本機（Core Ultra 7 155U）**沒有 NVIDIA 顯示卡**；Intel 內顯與 NPU 都沒有已驗證的訓練路徑（`DESIGN.lora-training.md` §1）。因此「在本機上驗證 GPU 後端」只能用 Intel 內顯＋DirectML／Vulkan／WebGPU，結果不代表其他顯示卡。
+
+### 5.3 後端抽象層（統一介面）
+
+訓練核心依賴下列介面，後端各自實作；**每個後端都要通過同一套一致性測試（§5.8）才能在選單上點亮**：
+
+```
+Backend {
+  id            // 'cpu-js' | 'cpu-py' | 'webgpu' | 'directml' | 'vulkan'
+  probe()       -> {available, reason?, device:{name,vendor,memBytes?,fp16?,limits?}, fingerprint}
+                // 不丟例外；reason 是給使用者看的具體原因（例如「沒有 python」「WebGPU 無 shader-f16」「DirectML 在此模型已知失敗」）
+  benchmark(cfg,{signal}) -> {tokPerSec, peakMemBytes, stepMsP50, stepMsP95, numericCheck:{pass, maxRelErr, lossDelta}, samples}
+                // 小、可中斷（signal.aborted 立刻停）；結果寫進快取（§4.1）
+  init(assetState|null, cfg) -> handle     // 載入基底、建 LoRA A/B（或從檢查點載入）
+  step(handle, batch) -> {loss, gradNorm}  // 一個優化步；內部可累積梯度
+  evalLoss(handle, batch) -> {loss}        // 不更新，用於續訓比對
+  saveCheckpoint(handle) -> CheckpointF32  // 一律交出規範化 float32（§3.1），不洩漏後端專有張量格式
+  loadCheckpoint(handle, CheckpointF32)
+  dispose(handle)
+}
+```
+
+- **每個 kind 宣告支援後端**（寫在 manifest 與 Studio 的 kind 註冊表）：`trainer／colu／uml／blockly／matrix: ['cpu-js']`；`lora: ['cpu-py','webgpu','directml','vulkan']`（依各後端實際點亮狀態動態可用；`cpu-js` 對 `lora` 不宣告，原因見 §5.2）。
+- 訓練核心是一個**狀態機**（待機→執行→暫停→完成／失敗），以「步」為單位在可中斷點寫檢查點；後端失敗（裝置遺失、記憶體不足、數值發散）時由核心處理降級（§4.1）。
+- 不同後端間的差異只允許出現在 `step` 內部；資料游標、亂數種子、學習率排程、分組評量都在核心，與後端無關。
+
+### 5.4 LoRA 訓練後端的現實排序（取代舊版四點）
+
+1. **`cpu-py`**（桌面版＋Python 子行程）：唯一已實測的訓練路徑，**階段 1 就做**。Studio 負責資料集、參數、啟動、讀進度、收產物（`pack_adapter.js` 格式）。沒有 Python 的使用者：提示安裝，或走第 2 點。
+2. **匯出訓練包到別台**：`lora-train/portable/`（資料＋腳本）；別台跑完把 `.fatrain` 匯回；網頁版當資料集與老師工具。與 §3.1 的「暫停後傳遞」是同一件事。
+3. **`webgpu` 研究項**（§5.6），沒有實測數字前不承諾。
+4. **`vulkan`／`directml`**：只在 §5.7 階段 5 做可行性驗證，阻礙與解除條件見 §5.2。
+5. **速度現實（CPU 已實測）**：約 60 token/s；4141 筆資料約 200 萬 token，一個 epoch 約 9–10 小時。Studio 必須有時間估計、暫停／續訓、子集試跑（先 1000 筆）、不需常開視窗（桌面版背景子行程，且遵守「電腦要保持可用」：預設留一個核心、隱藏視窗、命令排隊）。
+
+### 5.5 網頁版 LoRA 現況（維持誠實）
+
+網頁版 LoRA 訓練目前**沒有可用後端**（`webgpu` 未實測、`cpu-js` 無反向引擎）。UI 顯示：「目前請用桌面版訓練，或匯入別台訓練好的 adapter／續訓包」，不假裝能訓練。`webgpu` 研究成功並通過 §5.8 後才解鎖。
+
+### 5.6 WebGPU 反向引擎研究（階段 4 內容）
+
+前向沿用已驗證的「基底 q8＋LoRA 分支」ONNX（`make_lora_onnx.py`，A／B 為外部資料）；反向要自己實作：對 196 個目標線性層，`y = y_base + (x·A)·B`，`dB = (xA)ᵀ·dy`、`dA = xᵀ·(dy·Bᵀ)`，而 `dy` 需穿過整個 transformer 反向（attention、RMSNorm、MLP、q8 straight-through）。研究分三步，每步都要有可量測的完成條件（§5.7）：(a) 單一線性層＋LoRA 的 WGSL 前向／反向與 CPU 浮點對拍；(b) 單一 transformer 區塊；(c) 全模型小批次一個優化步，量 token/秒與峰值記憶體。折衷備案：只訓練最後幾層或 logit 偏置式 adapter。網頁版 16GB 以下機器上 0.6B fp16 全模型已佔 1.2GB，加激活與優化器狀態必須實測。
+
+### 5.7 分階段順序與完成條件
+
+| 階段 | 內容 | 可驗證的完成條件 |
+|---|---|---|
+| 1 | 後端介面＋`cpu-py` 後端＋可暫停續訓＋規範化檢查點（同一後端） | 介面型別測試過；`cpu-py` 的 `probe` 在有／無 Python 兩種環境都回正確 `reason`；暫停→重開→續訓：續訓前 20 步 loss 與未暫停對照最大相對差 ≤ 1e-5（同後端同種子）；`.fatrain` 往返 sha256 一致 |
+| 2 | 基準測試＋自動選擇＋GUI 下拉（§4.1） | 基準測試在 60 秒內可中斷完成，中斷後 3 秒內停止；不彈視窗、同時只用 N−1 核（以行程清單與視窗清單驗證）；自動選擇規則的單元測試（快取命中／指紋失效／降級／釘選）通過 |
+| 3 | 跨機續訓（桌面版⇄桌面版、桌面版⇄網頁版匯入匯出） | 兩台（或兩個隔離環境）互傳 `.fatrain` 後相容性檢查欄位全過；續訓前 N=20 步 loss 與原機對照在 §3.1 容許誤差內；欄位不符時**拒絕並提示 fork**（有負向測試） |
+| 4 | `webgpu` 研究（§5.6 a→b→c） | (a) 單層梯度與 CPU 最大相對誤差 ≤ 1e-3（fp32）；(b) 區塊梯度 ≤ 5e-3；(c) 全模型 20 步 loss 曲線與 `cpu-py` 同種子對拍，每步 loss 差 ≤ 2%，並記錄 token/秒與峰值記憶體。**任一步沒過就停在該步並回報阻礙，不往下硬做** |
+| 5 | `vulkan`／`directml` 可行性（隔離資料夾、使用者同意後才下載任何東西） | 各自：能否跑通一個小 LoRA 優化步並與 `cpu-py` 對拍（同 §5.8 門檻）；不通過就在 §5.2 更新阻礙與解除條件，後端保持灰掉 |
+
+### 5.8 基準測試與一致性測試設計
+
+- **基準測試**（每個後端同一套，固定種子、固定 16 筆樣本、序列長度 256、批次 1、30 個優化步，先跑 3 步暖機不計）：輸出 token/秒（中位數）、步時間 p50／p95、峰值記憶體（子行程取工作集峰值；WebGPU 取已配置緩衝區總和）。整體上限 60 秒，超時即中止並標「太慢」。
+- **數值一致性檢查**（以 `cpu-py` 為參考）：同一份初始 LoRA（A 以固定種子、B 為零）與同一批資料，比較 (1) 第 1 步的 loss（相對差 ≤ 1e-3）、(2) 第 1 步後 LoRA 梯度範數（相對差 ≤ 1e-2）、(3) 30 步後 loss 與參考相差 ≤ 3%、(4) 全程無 NaN／Inf。fp16 後端（`webgpu`、`directml`、`vulkan` 的 fp16 模式）門檻可放寬到 (3) ≤ 5%，但必須在結果裡標明用了 fp16。
+- **通過門檻**：四項全過才標「通過」，後端才可被「自動」選用；未通過的後端仍可手動選，但 UI 顯示紅色警告與具體失敗項目。
+- 門檻數值是**設計初值**，階段 2 以真實測量校準後再固定（不先假設）。
 
 ## 6. 老師介面（線上 AI 擴充訓練集）——仿 aiDoc
 
@@ -125,19 +221,39 @@ asset/
 
 1. **資產格式＋匯出入＋儲存層**（記憶體／fap）；先接 `trainer` 現有 bundle，確認 `.fatrain` 可往返。
 2. **Studio 視窗**（clone aiDoc 檢視器）＋資產清單與資料集瀏覽，先唯讀。
-3. **符號式五類訓練的包裝**（trainer／colu／uml／blockly／matrix）：可暫停、進度、評量。
-4. **LoRA 桌面版後端**（子行程呼叫 `lora-train/train.py`）＋暫停／匯出／續訓；`.fatrain` 與 `lora-train` 打包格式對齊。
-5. **老師面板**（白名單工具、驗證鐵則、缺口驅動）。
-6. **repo 內建化腳本**（`scripts/training-studio.js`、`builtin-training/`、embed、`lora-adapters` 抓取與設定開關）。
-7. **研究項**：瀏覽器 WebGPU LoRA 訓練可行性實驗（§5.3），**沒有實測數字前不承諾**。
+3. **符號式五類訓練的包裝**（只宣告 `cpu-js` 後端）：可暫停、進度、評量。
+4. **後端介面＋`cpu-py` 後端＋規範化檢查點＋暫停續訓**（§5.7 階段 1），子行程呼叫 `lora-train/train.py`；`.fatrain` 與 `lora-train` 打包格式對齊。
+5. **基準測試＋自動選擇＋GUI「運算後端」下拉**（§5.7 階段 2、§4.1）。
+6. **跨機續訓**（§5.7 階段 3、§3.1）：桌面版⇄桌面版、桌面版⇄網頁版匯入匯出。
+7. **老師面板**（白名單工具、驗證鐵則、缺口驅動）。
+8. **repo 內建化腳本**（`scripts/training-studio.js`、`builtin-training/`、embed、`lora-adapters` 抓取與設定開關）。
+9. **研究項**：`webgpu` 反向引擎（§5.6，§5.7 階段 4）、`vulkan`／`directml` 可行性（階段 5）。**沒有實測數字前不承諾**，沒過就保持灰掉並在 §5.2 更新阻礙。
 
 ## 11. 待核對／未驗證
 
-- 斜線指令註冊表、aiDoc 檢視器可複用的函式名、fap 讀寫函式、embed 腳本清單與標記規則——**都要在動工前對原始碼逐一確認**。
-- 網頁版是否有可用的程式沙盒（blockly／matrix 的驗證依賴 python／gcc 判題器）。
-- onnxruntime-web 訓練能力、WebGPU 反向傳播可行性、網頁版記憶體上限——全部未量測。
-- 桌面版沒有 Python 的使用者怎麼辦（內建便攜 Python？下載？只匯出訓練包？）——產品決策。
-- 老師送資料給線上 AI 的隱私與費用提示。
+**已核對（來源）**
+- repo 無 `onnxruntime-node` 依賴與安裝：`package.json` 無、`node_modules` 無（2026-11-11 `ls`／`grep` 唯讀核對）；它是按需下載到 `userData/native-runtime/`，版本 1.22.0（`main-ext.js:746-799`、`nr-engine.js:1,16`）。
+- DirectML 在 qwen3-0.6b 失敗：`DESIGN.TODO.native-runner.md:273,321,416`（1.22.0 與 1.31.1 皆在 `SkipSimplifiedLayerNormalization` E_INVALIDARG）。1.31.1 的 Windows 套件含 `DirectML.dll`（`DESIGN.TODO.native-runner.md:120`）。
+- 本機無 NVIDIA；Intel 內顯／NPU 無訓練路徑：`DESIGN.lora-training.md` §1。
+- CPU 約 60 token/s：`DESIGN.lora-training.md`、本文 §5.4。
+- 搜尋所得（2026-11-11，WebSearch 摘要，**僅摘要未讀原文**）：DirectML 執行提供者為推論、進入維護模式，新功能移往 WinML（<https://onnxruntime.ai/docs/execution-providers/DirectML-ExecutionProvider>）；`torch-directml` 最新輪子約 2024-06、PyTorch 2.2、維護模式（<https://pypi.org/project/torch-directml>、<https://blogs.windows.com/windowsdeveloper/2024/05/24/build-the-next-wave-of-ai-on-windows-with-directml-support-for-pytorch-2-2/>）；ORT 1.17 發佈說明有「瀏覽器端 on-device training」與 WebGPU 執行提供者（<https://onnxruntime.ai/blogs/ort-1-17-release>）；Tether QVAC 稱 llama.cpp 加入含 Vulkan 的 LoRA 微調（<https://qvac.tether.io/?p=175>）。
+
+**待核對（各附核對方法）**
+1. 1.22.0 的 Windows 套件是否含 `DirectML.dll`：在隔離資料夾用 `npm pack` 取 tarball 清單（需使用者同意下載，或讀使用者機器上已存在的 `userData/native-runtime/`）。
+2. ORT on-device training 在 web 上實際用哪個後端、是否支援 WebGPU：讀 <https://onnxruntime.ai/docs/tutorials/on-device-training/> 與 `onnxruntime-web` 原始碼的 training 目錄。
+3. llama.cpp 的 LoRA 訓練是否已併入主線、Vulkan 後端是否有 `OUT_PROD`／`OPT_STEP_ADAMW` 實作、是否支援 Qwen3：讀 `ggml/src/ggml-vulkan/` 與訓練範例原始碼（唯讀 `gh api`／瀏覽），再在隔離資料夾跑一次小訓練。
+4. ncnn 是否有訓練支援：讀其 GitHub 文件（目前**未查證**，預設視為只有推論）。
+5. `torch-directml` 能否跑通 `train_lora.py`（Qwen3 全部算子、反向）：隔離資料夾實測，需使用者同意下載。
+6. WebGPU：`maxStorageBufferBindingSize`、`shader-f16`、裝置遺失行為在使用者顯示卡上的實值：階段 4 用 `adapter.limits` 實測；Firefox／Safari 的 WebGPU 支援版本未查證。
+7. 本文 §5.8 的所有門檻數值是設計初值，階段 2 校準。
+8. 跨後端續訓的容許誤差（2%／5%）同為初值，階段 3 以真實兩後端對拍校準。
+9. 斜線指令註冊表、aiDoc 檢視器可複用的函式名、fap 讀寫函式、embed 腳本清單與標記規則——動工前對原始碼逐一確認。
+10. 網頁版是否有可用的程式沙盒（blockly／matrix 驗證依賴 python／gcc 判題器）。
+11. 網頁版記憶體上限、`onnxruntime-web` 訓練能力——未量測。
+12. 桌面版沒有 Python 的使用者怎麼辦（內建便攜 Python？下載？只匯出訓練包？）——產品決策。
+13. 老師送資料給線上 AI 的隱私與費用提示。
+14. 區網／遠端傳輸（§3.1 (c)）的安全設計（配對碼、加密）尚未設計。
+
 
 ## 12. 已核對的接口位置（`renderer/src/floating-assistant.js`，行號僅供定位）
 
