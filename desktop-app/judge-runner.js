@@ -38,6 +38,12 @@ const LANGS = {
     csharp: { file: 'main.cs', detect: ['mono', ['--version']], needsAny: ['mcs', 'csc'], check: (d, tools) => sh(tools.csharp, ['-target:library', '-out:' + path.join(d, 'main.dll'), path.join(d, 'main.cs')]), compile: (d, tools) => sh(tools.csharp, ['-out:' + path.join(d, 'main.exe'), path.join(d, 'main.cs')]), run: (d) => sh('mono', [path.join(d, 'main.exe')]) }
 };
 const ORDER = ['python', 'nodejs', 'c', 'cpp', 'java', 'ruby', 'perl', 'bash', 'asm-x64', 'asm-x86', 'csharp'];
+// Windows 的 C／C++：PATH 上排前面的 gcc 可能是 Strawberry Perl 或 msys usrin 那支（前者編出來的程式連 hello world 都以 0xC0000005 崩潰，後者找不到標準標頭）。
+// 有 mingw64 就明確用它的 gcc／g++，並讓編譯與執行都把它的 bin 放在 PATH 最前面（DLL 才會載對）。位置：環境變數 FA_MINGW_BIN，或 J:\msys64\mingw64in、C:\msys64\mingw64in；都沒有就維持原行為。
+const mingwBin = (() => { if (process.platform !== 'win32') return null; for (const d of [process.env.FA_MINGW_BIN, 'J:\\msys64\\mingw64\\bin', 'C:\\msys64\\mingw64\\bin']) { if (d && fs.existsSync(path.join(d, 'gcc.exe')) && fs.existsSync(path.join(d, 'g++.exe'))) return d; } return null; })();
+const CC_LANGS = new Set(['c', 'cpp']);
+const ccCmd = (lang, cmd) => (mingwBin && CC_LANGS.has(lang) && (cmd === 'gcc' || cmd === 'g++') ? path.join(mingwBin, cmd + '.exe') : cmd);
+const ccPath = (lang) => (mingwBin && CC_LANGS.has(lang) ? mingwBin : null);
 
 // 殺掉子行程「連同子孫」：Windows 用 taskkill /T /F（process.kill(-pid) 在 Windows 無效，java／測試的孫行程會變孤兒跑很久）；其他平台殺整個行程群組（spawn 已 detached）
 function killTree(child) {
@@ -52,7 +58,7 @@ function exec(cmd, args, o) {
         const cap = o.maxOutput || 1 << 20;
         const fin = (r) => { if (done) return; done = true; clearTimeout(timer); resolve(Object.assign({ stdout: out, stderr: err, timedOut, over, ms: Date.now() - t0 }, r)); };
         const killAll = () => { killTree(child); };
-        try { child = spawn(cmd, args, { cwd: o.cwd, detached: true, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'], env: { PATH: process.env.PATH, HOME: o.cwd || os.tmpdir(), LANG: 'C', LC_ALL: 'C' } }); } catch (e) { return resolve({ code: -1, signal: null, stdout: '', stderr: String(e.message || e), spawnError: true, ms: 0 }); }
+        try { child = spawn(cmd, args, { cwd: o.cwd, detached: true, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'], env: { PATH: o.pathPrefix ? o.pathPrefix + path.delimiter + process.env.PATH : process.env.PATH, HOME: o.cwd || os.tmpdir(), LANG: 'C', LC_ALL: 'C' } }); } catch (e) { return resolve({ code: -1, signal: null, stdout: '', stderr: String(e.message || e), spawnError: true, ms: 0 }); }
         // 逾時：連子孫一起殺。保險起見 2 秒後若 close 還沒來（有孫行程抓著管線不放）就直接收尾，不能讓呼叫端無限等待
         const timer = setTimeout(() => { timedOut = true; killAll(); setTimeout(() => fin({ code: null, signal: 'SIGKILL' }), 2000).unref(); }, o.timeoutMs || 5000);
         child.stdout.on('data', (b) => { if (out.length < cap) out += b.toString('utf8'); else if (!over) { over = true; killAll(); } });
@@ -72,7 +78,7 @@ function available(lang) {
     const p = (async () => {
         const L = LANGS[lang]; if (!L) return { ok: false, reason: '不認得的語言：' + lang };
         const tools = {};
-        const v = await exec(L.detect[0], L.detect[1], { timeoutMs: 8000 });
+        const v = await exec(ccCmd(lang, L.detect[0]), L.detect[1], { timeoutMs: 8000, pathPrefix: ccPath(lang) });
         if (v.spawnError || v.code !== 0) return { ok: false, reason: '找不到 ' + L.detect[0] };
         for (const n of L.needs || []) if (!(await which(n))) return { ok: false, reason: '找不到 ' + n };
         if (L.needsAny) { for (const n of L.needsAny) if (await which(n)) { tools.csharp = n; break; } if (!tools.csharp) return { ok: false, reason: '找不到 ' + L.needsAny.join(' 或 ') }; }
@@ -97,7 +103,7 @@ async function prepare(lang, source, o) {
     if (plan) {
         const c = plan; const chain = c.chain || [c];
         for (const step of chain) {
-            const r = await exec(step.cmd, step.args, { cwd: dir, timeoutMs: o.compileTimeoutMs || 30000, maxOutput: 1 << 16 });
+            const r = await exec(ccCmd(lang, step.cmd), step.args, { cwd: dir, timeoutMs: o.compileTimeoutMs || 30000, maxOutput: 1 << 16, pathPrefix: ccPath(lang) });
             log += (r.stdout || '') + (r.stderr || '');
             if (r.timedOut || r.spawnError || r.code !== 0) { cleanup(dir); return { stage: 'compile', stderr: (r.timedOut ? '編譯逾時\n' : '') + log }; }
         }
@@ -106,7 +112,7 @@ async function prepare(lang, source, o) {
 }
 async function runOnce(lang, source, input, o) {
     const p = await prepare(lang, source, o); if (p.stage !== 'ok') return p;
-    try { const r = await exec(LANGS[lang].run(p.dir).cmd, LANGS[lang].run(p.dir).args, { cwd: p.dir, input, timeoutMs: o.timeoutMs, maxOutput: o.maxOutput }); return Object.assign({ stage: r.spawnError ? 'spawn' : 'ok' }, r); } finally { cleanup(p.dir); }
+    try { const r = await exec(LANGS[lang].run(p.dir).cmd, LANGS[lang].run(p.dir).args, { cwd: p.dir, input, timeoutMs: o.timeoutMs, maxOutput: o.maxOutput, pathPrefix: ccPath(lang) }); return Object.assign({ stage: r.spawnError ? 'spawn' : 'ok' }, r); } finally { cleanup(p.dir); }
 }
 function cleanup(dir) { try { fs.rmSync(dir, { recursive: true, force: true }); } catch (e) { /* 殘留的暫存目錄不影響結果 */ } }
 
@@ -146,7 +152,7 @@ async function judge(opts) {
     try {
         const run = LANGS[lang].run(p.dir);
         for (const { t, hidden } of tests) {
-            const r = await exec(run.cmd, run.args, { cwd: p.dir, input: t.in, timeoutMs, maxOutput: opts.maxOutput });
+            const r = await exec(run.cmd, run.args, { cwd: p.dir, input: t.in, timeoutMs, maxOutput: opts.maxOutput, pathPrefix: ccPath(lang) });
             let verdict, detail = '';
             if (r.timedOut) { verdict = 'TLE'; detail = '超過 ' + timeoutMs + 'ms'; }
             else if (r.over) { verdict = 'OLE'; detail = '輸出超過上限'; }
