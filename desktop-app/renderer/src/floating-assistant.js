@@ -17543,10 +17543,19 @@ const holder = {};
             D('lx.listen', 'listen-backlog', 'socket 監聽佇列：listen 佇列容量 backlog；conn 代表一個客戶端連線抵達（編號從 1 依抵達順序遞增，不管最後有沒有進佇列），佇列沒滿就排進去、滿了就丟棄（有些系統實際容量是 backlog+1）；accept 取出最早排入的連線並回傳其編號，佇列空回傳 -1；輸出每次 accept 的回傳值、被丟棄的連線個數或最後佇列裡剩幾個',
                 [S('lim', '佇列容量', [['exact', 'exact'], ['plus1', 'plus1']]), S('out', '輸出', [['accepts', 'accepts'], ['dropped', 'dropped'], ['left', 'left']])],
                 (c, N) => code(['cap = ' + N.sc[0] + (c.lim === 'plus1' ? ' + 1' : ''), 'q = []', 'cid = 0', 'drop = 0', 'acc = []', 'for line in ' + lines(N) + ':', '    op = line.strip().lower()', '    if op == "conn":', '        cid += 1', '        if len(q) < cap:', '            q.append(cid)', '        else:', '            drop += 1', '    elif op == "accept":', '        acc.append(q.pop(0) if q else -1)', c.out === 'accepts' ? 'print(*acc)' : c.out === 'dropped' ? 'print(drop)' : 'print(len(q))']), { limit: 6 }),
+            D('lx.socket', 'socket-sim', 'socket 生命週期事件模擬：socket 建立 socket 並回傳最小的空閒 fd；bind fd port 綁定埠（fd 必須是剛建立還沒綁的、同一個埠不能被另一個已綁定或監聽中的 socket 佔用，成功 0 失敗 -1）；listen fd n 讓已綁定的 socket 開始監聽、佇列容量 n；connect fd port 讓新建立的客戶端 socket 連到正在監聽該埠的伺服器，佇列沒滿就排進去（成功 0，滿了或沒人監聽 -1）；accept fd 取出佇列最早的客戶端、建立已連線 socket 並回傳新 fd（最小的空閒 fd），客戶端也變成已連線，佇列空或 fd 不是監聽 socket 回傳 -1；send fd n 把 n 位元組送給對端（回傳 n）、recv fd n 讀出自己緩衝裡最多 n 位元組（回傳實際讀到的）；close fd 關閉並解除對端；任何無效操作回傳 -1；輸出每個事件的回傳值、失敗（-1）的個數或 recv 讀到的總位元組數',
+                [S('st', '最小 fd 從', [['0', '0'], ['3', '3']]), S('lim', '監聽佇列容量', [['exact', 'exact'], ['plus1', 'plus1']]), S('out', '輸出', [['returns', 'returns'], ['errors', 'errors'], ['recvd', 'recvd']])],
+                (c, N) => code(['socks = {}', 'rets = []', 'errs = 0', 'got = 0', 'for line in ' + lines(N) + ':', '    p = line.split()', '    if not p:', '        continue', '    op = p[0].lower()', '    r = -1', '    s = socks.get(int(p[1])) if len(p) > 1 else None', '    if op == "socket":', '        k = ' + c.st, '        while k in socks:', '            k += 1', '        socks[k] = ["new", 0, [], -1, 0, 0]', '        r = k', '    elif op == "bind" and s is not None and s[0] == "new":', '        used = False', '        for o in socks.values():', '            if o is not s and o[0] in ("bound", "listen") and o[1] == int(p[2]):', '                used = True', '        if not used:', '            s[0] = "bound"', '            s[1] = int(p[2])', '            r = 0', '    elif op == "listen" and s is not None and s[0] == "bound":', '        s[0] = "listen"', '        s[5] = int(p[2])' + (c.lim === 'plus1' ? ' + 1' : ''), '        r = 0', '    elif op == "connect" and s is not None and s[0] == "new":', '        for o in socks.values():', '            if r < 0 and o[0] == "listen" and o[1] == int(p[2]) and len(o[2]) < o[5]:', '                o[2].append(int(p[1]))', '                s[0] = "wait"', '                r = 0', '    elif op == "accept" and s is not None and s[0] == "listen" and s[2]:', '        cl = s[2].pop(0)', '        k = ' + c.st, '        while k in socks:', '            k += 1', '        socks[k] = ["conn", 0, [], cl, 0, 0]', '        socks[cl][0] = "conn"', '        socks[cl][3] = k', '        r = k', '    elif op == "send" and s is not None and s[0] == "conn" and s[3] in socks:', '        socks[s[3]][4] += int(p[2])', '        r = int(p[2])', '    elif op == "recv" and s is not None and s[0] == "conn":', '        r = min(int(p[2]), s[4])', '        s[4] -= r', '        got += r', '    elif op == "close" and s is not None:', '        del socks[int(p[1])]', '        for o in socks.values():', '            if o[3] == int(p[1]):', '                o[3] = -1', '            if int(p[1]) in o[2]:', '                o[2].remove(int(p[1]))', '        for cl in s[2]:', '            if cl in socks:', '                socks[cl][0] = "new"', '        r = 0', '    rets.append(r)', '    if r < 0:', '        errs += 1', c.out === 'returns' ? 'print(*rets)' : c.out === 'errors' ? 'print(errs)' : 'print(got)']), { limit: 12 }),
+            D('lx.signest', 'signal-nest', '信號處理常式巢狀：on s t... 設定信號 s 的處理常式（執行時依序引發信號 t...，沒有 t 就什麼都不做；重設會覆蓋）；kill s 從主程式引發信號 s；block s... 與 unblock s... 改主程式的遮罩；引發的信號若被遮罩就變 pending（同一信號合併成一個或每次都算一次），沒有處理常式的信號直接忽略；有處理常式就進入它：執行期間 s 自己被加進遮罩（不會遞迴進自己），處理常式引發的信號當場處理（可以巢狀多層），結束時遮罩還原，然後依序遞送不再被遮罩的 pending（編號最小的先、或最早排的先）；unblock 之後也一樣遞送 pending；輸出進入處理常式的順序（可含離開）、最後還有幾個 pending 或最深的巢狀層數',
+                [S('co', 'pending', [['merge', 'merge'], ['count', 'count']]), S('ord', '遞送順序', [['asc', 'asc'], ['fifo', 'fifo']]), S('fmt', '追蹤格式', [['enter', 'enter'], ['both', 'both']]), S('out', '輸出', [['trace', 'trace'], ['pending', 'pending'], ['depth', 'depth']])],
+                (c, N) => code(['hd = {}', 'mask = set()', 'pend = []', 'trace = []', 'depth = 0', 'maxd = 0', 'for line in ' + lines(N) + ':', '    p = line.split()', '    if not p:', '        continue', '    op = p[0].lower()', '    ag = []', '    if op == "on":', '        hd[int(p[1])] = [int(x) for x in p[2:]]', '    elif op == "kill":', '        ag = [("r", int(p[1]), None)]', '    elif op == "block":', '        for x in p[1:]:', '            mask.add(int(x))', '    elif op == "unblock":', '        for x in p[1:]:', '            mask.discard(int(x))', '        ag = [("d", 0, None)]', '    while ag:', '        k, x, sv = ag.pop()', '        if k == "r":', '            if x in mask:', c.co === 'merge' ? '                if x not in pend:\n                    pend.append(x)' : '                pend.append(x)', '            elif x in hd:', '                sv = set(mask)', '                mask.add(x)', '                trace.append(str(x))', '                depth += 1', '                maxd = max(maxd, depth)', '                ag.append(("l", x, sv))', '                for t in reversed(hd[x]):', '                    ag.append(("r", t, None))', '        elif k == "l":', '            mask = sv', '            depth -= 1', c.fmt === 'both' ? '            trace.append("-" + str(x))' : '            pass', '            ag.append(("d", 0, None))', '        else:', '            ready = [y for y in pend if y not in mask]', '            if ready:', '                y = ' + (c.ord === 'asc' ? 'min(ready)' : 'ready[0]'), '                pend.remove(y)', '                ag.append(("d", 0, None))', '                ag.append(("r", y, None))', c.out === 'trace' ? 'print(*trace)' : c.out === 'pending' ? 'print(len(pend))' : 'print(maxd)']), { limit: 24 }),
+            D('lx.envexec', 'env-exec', '環境變數與 exec 事件模擬：set K V 設定殼層變數（沒有 export 的變數子行程看不到）；export K 把變數標成匯出、export K V 設值並匯出；unset K 刪除變數；echo K 印出殼層裡 K 的值（沒設過印空白或破折號）；run 啟動一個子行程，子行程只繼承已匯出且有值的變數，輸出它看到的變數個數；exec 把殼層整個換成新程式（同樣只帶已匯出的變數），之後的事件都不會執行（或視為普通 run）；輸出每次 run／exec 看到的個數、每次 echo 的值，或最後已匯出變數的 K=V 清單（依名稱排序）',
+                [S('xs', 'exec 之後', [['stop', 'stop'], ['goon', 'goon']]), S('un', 'echo 沒設過', [['blank', 'blank'], ['dash', 'dash']]), S('out', '輸出', [['count', 'count'], ['echo', 'echo'], ['list', 'list']])],
+                (c, N) => code(['sh = {}', 'ex = set()', 'cnts = []', 'outs = []', 'dead = False', 'for line in ' + lines(N) + ':', '    if dead:', '        break', '    p = line.split()', '    if not p:', '        continue', '    op = p[0].lower()', '    if op == "set":', '        sh[p[1]] = p[2] if len(p) > 2 else ""', '    elif op == "export":', '        if len(p) > 2:', '            sh[p[1]] = p[2]', '        ex.add(p[1])', '    elif op == "unset":', '        sh.pop(p[1], None)', '        ex.discard(p[1])', '    elif op == "echo":', '        outs.append(sh[p[1]] if p[1] in sh else ' + (c.un === 'dash' ? '"-"' : '""') + ')', '    elif op == "run" or op == "exec":', '        cnts.append(len([k for k in ex if k in sh]))', '        if op == "exec"' + (c.xs === 'stop' ? '' : ' and False') + ':', '            dead = True', c.out === 'count' ? 'print(*cnts)' : c.out === 'echo' ? 'print("\\n".join(outs))' : 'for k in sorted(ex):\n    if k in sh:\n        print(k + "=" + sh[k])']), { limit: 12 }),
         ];
         const algos = [
-            ['fd-table', /檔案描述[符子]|file\s*descriptor|\bdup2?\b|最小的空閒\s*fd|空閒的?\s*fd/i], ['pipe-buf', /管線.{0,24}(?:容量|緩衝)|管線.{0,24}(?:最多|暫存)|\bpipe\b.{0,24}(?:capacity|容量|緩衝|寫滿)|緩衝區.{0,8}容量.{0,16}(?:read|write)/i],
-            ['sig-mask', /信號遮罩|訊號遮罩|signal\s*mask|sigprocmask|被(?:遮罩|阻塞)的(?:信號|訊號)|pending\s*(?:signal|信號|訊號)/i], ['proc-tree', /(?:行程樹|process\s*tree)|fork[^。]{0,80}wait|殭屍|zombie/i], ['listen-backlog', /backlog|監聽佇列|listen\s*佇列|accept\s*佇列|等待連線佇列/i],
+            ['env-exec', /環境變數|\benviron\b|\bexport\b[^。]{0,60}\bunset\b/i], ['signal-nest', /信號處理常式|訊號處理常式|signal\s*handler|\bon\s+s\b[^。]{0,60}\bkill\b/i], ['socket-sim', /\bbind\b[^。]{0,80}\blisten\b|\bsend\b[^。]{0,60}\brecv\b|\bconnect\b[^。]{0,60}\baccept\b|套接字/i], ['fd-table', /檔案描述[符子]|file\s*descriptor|\bdup2?\b|最小的空閒\s*fd|空閒的?\s*fd/i], ['pipe-buf', /管線.{0,24}(?:容量|緩衝)|管線.{0,24}(?:最多|暫存)|\bpipe\b.{0,24}(?:capacity|容量|緩衝|寫滿)|緩衝區.{0,8}容量.{0,16}(?:read|write)/i],
+            ['sig-mask', /信號遮罩|訊號遮罩|signal\s*mask|sigprocmask|被(?:遮罩|阻塞)的(?:信號|訊號)|pending\s*(?:signal|信號|訊號)/i], ['proc-tree', /(?:行程樹|process\s*tree)|bforkb[^。]{0,80}bwaitb|殭屍|zombie/i], ['listen-backlog', /backlog|監聽佇列|listen\s*佇列|accept\s*佇列|等待連線佇列/i],
             ['tcp-fsm', /TCP.{0,24}(?:狀態機|狀態)|三向交握|三次握手|四次揮手|TIME_WAIT|ESTABLISHED/i],
         ].map(([key, re]) => ({ key, re, pri: true }));
         const paradigms = {}; for (const sk of skeletons) paradigms[sk.algo] = ['simulation'];
@@ -18086,7 +18095,7 @@ const holder = {};
         '・修：/code 修 ＋ 貼一段 ``` 程式 ```（有測資會連行為一起修）\n' +
         '・優化：/code 優化 ＋ ``` 程式 ``` ＋ ``` 測資 ```（只換輸出一致的寫法）\n' +
         '・合併修補：/code 合併 ＋ ``` 目前的程式 ``` ＋ ```diff 修補 ```（合併後驗證，失敗整份回滾）\n' +
-        '・轉換語言：/code 轉成 nodejs ＋ ``` 程式 ```（來源可以是 Python／nodejs／java／c，可轉 nodejs／java／c／cpp／csharp／perl／ruby／python；附 ```in／```out 測資會實際執行驗證；不是寫程式，寫仍用上面「寫」）\n' +
+        '・轉換語言：/code 轉成 nodejs ＋ ``` 程式 ```（來源可以是 Python／nodejs／java／c／cpp／csharp，可轉 nodejs／java／c／cpp／csharp／perl／ruby／python；附 ```in／```out 測資會實際執行驗證；不是寫程式，寫仍用上面「寫」）\n' +
         '・行為卡（唯讀，抽回設計看每個函式做什麼、改了會影響誰）：/code 行為卡 ＋ ``` 程式 ```\n' +
         '・設計：/code 設計 顧客可以加入購物車並結帳（先出 UML 設計）\n' +
         '・解釋／從程式看回設計：/code 解釋 ＋ ``` 程式 ```\n' +
@@ -18138,7 +18147,7 @@ const holder = {};
         else if (tool === 'optimize_code') { if (code[0]) args.source = code[0].body; else missing.push('要優化的 Python 程式（用 ``` 包起來）'); if (tests.length) args.tests = tests; else missing.push('測資（```in 輸入``` 緊接 ```out 輸出```，優化要靠它確認輸出一致）'); }
         else if (tool === 'merge_patch') { if (code[0]) args.source = code[0].body; else missing.push('目前的程式（用 ``` 包起來）'); if (diff) args.diff = diff.body; else missing.push('要合併的 diff（```diff 區塊）'); if (lang) args.language = lang; if (tests.length) args.tests = tests; }
         else if (tool === 'convert_code') {
-            if (code[0]) { args.source = code[0].body; const fl = langOf(rest, bs); if (fl && fl !== 'python') { if (['nodejs', 'java', 'c'].includes(fl)) args.from = fl; else missing.push('來源目前支援 Python、nodejs、java、c（你貼的是 ' + fl + '）'); } } else missing.push('要轉換的程式（用 ``` 包起來）');
+            if (code[0]) { args.source = code[0].body; const fl = langOf(rest, bs); if (fl && fl !== 'python') { if (['nodejs', 'java', 'c', 'cpp', 'csharp'].includes(fl)) args.from = fl; else missing.push('來源目前支援 Python、nodejs、java、c、cpp、csharp（你貼的是 ' + fl + '）'); } } else missing.push('要轉換的程式（用 ``` 包起來）');
             const tg = targetOf(prose); if (tg.target) args.target = tg.target; else missing.push('目標語言（nodejs、java、c、cpp、csharp、perl、ruby 或 python）');
             if (tests.length) args.tests = tests;
         }
@@ -20200,6 +20209,256 @@ const holder = {};
 
 }).call(null, undefined, holder);
 (function (module, self) {
+/* 靜態型別大括號語言「進」：C++ 與 C# 的 tree-sitter 語法樹 → 核心 IR。純函式 UMD。設計見 DESIGN.core-ir.md 第 14 節。
+ * 做法同 ir_in_brace_core.js（nodejs／java／c）：目錄（ir_ops_core.js）裡該語言的每個輸出樣板剖成樣式，`$N`／`@N` 換成佔位識別字，
+ * 「進」時用結構比對認出標準操作（所以進與出共用同一份目錄）。敘述層為 C++（function_definition／declaration／for_range_loop）與
+ * C#（method_declaration／local_declaration_statement／for_each_statement）各一套轉接。
+ *   buildPatterns(lang, parse) → 樣式表；fromTree(root, {lang:'cpp'|'cs', source, patterns}) → { ir, coverage, diags }
+ * 不認得的敘述／運算式收成 native（原文＋語言），不丟；輸出器自己加的前置（#include、fa_* 輔助函式、template 輔助、main 包裝）略過。 */
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(require('./ir_core.js'), require('./ir_ops_core.js'), require('./ir_in_brace_core.js')); else root.FaIrInTyped = factory(root.FaIr, root.FaIrOps, root.FaIrInBrace); })(typeof self !== 'undefined' ? self : this, function (IR, OPS, BRACE) {
+    'use strict';
+    const T = IR.T; const PH = /^__a(\d)$/;
+    function unwrap(n) { while (n && (n.type === 'parenthesized_expression' || n.type === 'condition' || n.type === 'condition_clause')) { const k = n.namedChildren.filter((c) => !/comment/.test(c.type)); if (k.length !== 1) break; n = k[0]; } return n; }
+    const kids = (n) => n.children.filter((c) => !/comment/.test(c.type));
+    const size = (n) => 1 + kids(n).reduce((s, c) => s + size(c), 0);
+    const isPurePlaceholderBin = (p) => { const x = unwrap(p); return x && x.type === 'binary_expression' && x.namedChildren.every((c) => PH.test(unwrap(c).text)); };
+    function wrapTpl(lang, tpl) { return lang === 'cpp' ? 'void __f() { auto __o = ' + tpl + '; }' : 'class X { void f() { var o = ' + tpl + '; } }'; }
+    function patRoot(lang, root) {
+        if (root.hasError()) return null;
+        const find = (n) => { if (lang === 'cpp' && n.type === 'init_declarator') return n.childForFieldName('value'); if (lang === 'cs' && n.type === 'variable_declarator') { const e = n.namedChildren.find((c) => c.type === 'equals_value_clause'); return e ? e.namedChildren[0] : null; } for (const c of n.namedChildren) { const r = find(c); if (r) return r; } return null; };
+        return find(root);
+    }
+    function buildPatterns(lang, parse) {
+        const key = OPS.LANG_OF[lang] || lang; const out = [];
+        for (const id of OPS.ids()) {
+            const o = OPS.get(id); const cell = o.cells[key]; if (cell == null) continue;
+            const tpls = typeof cell === 'string' ? [cell] : Object.values(cell).filter((x) => x != null);
+            for (const t of tpls) {
+                if (/\$\*/.test(t)) continue; const text = t.replace(/[$@](\d)/g, '__a$1');
+                let root; try { root = parse(wrapTpl(lang, text)); } catch (e) { continue; } const pr = patRoot(lang, root); if (!pr) continue;
+                if (PH.test(unwrap(pr).text)) continue; if (isPurePlaceholderBin(pr)) continue;
+                const nargs = Math.max(0, ...[...text.matchAll(/__a(\d)/g)].map((m) => +m[1] + 1)); out.push({ op: id, pat: pr, size: size(pr), nargs, stmt: !!o.stmt });
+            }
+        }
+        out.sort((a, b) => b.size - a.size); return out;
+    }
+    const match = BRACE.match;
+    // ---------- 型別 ----------
+    function splitTop(t) { const r = []; let d = 0, cur = ''; for (const ch of t) { if (ch === '<') d++; if (ch === '>') d--; if (ch === ',' && d === 0) { r.push(cur); cur = ''; } else cur += ch; } r.push(cur); return r; }
+    function tyOf(lang, s) {
+        s = String(s || '').replace(/\b(const|static|signed|unsigned|struct)\b/g, '').replace(/[&*]/g, '').replace(/\s+/g, ''); if (!s) return T.unknown;
+        const m = /^([A-Za-z_][A-Za-z_0-9:.]*)(?:<(.*)>)?$/.exec(s); if (!m) return T.unknown; const n = m[1].replace(/^std::/, ''), inner = m[2];
+        if (/^(longlong|long|int|short|size_t|Int64|Int32)$/.test(n)) return T.int; if (n === 'double' || n === 'float') return T.float; if (n === 'string' || n === 'String') return T.str; if (n === 'bool') return T.bool; if (n === 'void') return T.void;
+        if (inner != null) { const a = splitTop(inner).map((x) => tyOf(lang, x)); if (n === 'vector' || n === 'List') return IR.list(a[0]); if (n === 'map' || n === 'Dictionary') return IR.dict(a[0], a[1]); if (n === 'set' || n === 'HashSet') return IR.set(a[0]); }
+        return T.unknown;
+    }
+    function unescape(s) { const M = { n: '\n', t: '\t', r: '\r', 0: '\0', '\\': '\\', "'": "'", '"': '"', b: '\b', f: '\f', v: '\v' }; return s.replace(/\\(?:u([0-9a-fA-F]{4})|x([0-9a-fA-F]{2})|(.))/g, (m, u, x, c) => (u ? String.fromCharCode(parseInt(u, 16)) : x ? String.fromCharCode(parseInt(x, 16)) : M[c] != null ? M[c] : c)); }
+
+    function fromTree(rootNode, opts) {
+        opts = opts || {}; const lang = opts.lang === 'cs' ? 'cs' : 'cpp'; const CS = lang === 'cs'; const src = String(opts.source || ''); const patterns = opts.patterns || [];
+        const cov = { stmts: 0, natives: 0, comments: 0, comments_kept: 0 }; const diags = [];
+        const txt = (n) => (n.text != null ? n.text : src.slice(n.startIndex, n.endIndex));
+        const f = (n, name) => n.childForFieldName(name);
+        const isCmt = (c) => c.type === 'comment';
+        const named = (n) => n.namedChildren.filter((c) => !isCmt(c));
+        const pos = (n) => [n.startPosition.row + 1, n.startPosition.column, n.endPosition.row + 1, n.endPosition.column];
+        const at = (o, n) => { o.pos = pos(n); return o; };
+        const diag = (m, n) => diags.push({ level: 'warn', msg: m, pos: n ? pos(n) : undefined });
+        const nativeE = (n, why) => { cov.natives++; diag('運算式收成原生區塊：' + (why || n.type), n); return at({ k: 'native', lang, src: txt(n), why: why || n.type }, n); };
+        const nativeS = (n, why) => { cov.natives++; diag('敘述收成原生區塊：' + (why || n.type), n); return at({ k: 'native', lang, src: txt(n), why: why || n.type }, n); };
+        const L = (t, v) => ({ k: 'lit', t, v });
+        const isHelperName = (s) => /^(fa_|__fa|__br|__kv|__to)/.test(s);
+        const fixName = (s) => (s === 'main_' ? 'main' : s.replace(/_$/, (m) => m)); // C++／C# 輸出器把使用者的 main 改叫 main_；其餘被關鍵字撞名的名稱也加 _，這裡只還原 main
+        const CMP = { '==': '==', '!=': '!=', '<': '<', '>': '>', '<=': '<=', '>=': '>=' };
+        const lastTy = (n) => { const tn = f(n, 'type'); return tn ? tyOf(lang, txt(tn)) : T.unknown; };
+
+        function tryOps(n) {
+            for (const p of patterns) { const b = []; if (match(p.pat, n, b)) { let ok = true; const args = []; for (let i = 0; i < p.nargs; i++) { if (!b[i]) { ok = false; break; } args.push(b[i]); } if (!ok) continue; const cargs = args.map(ex); let op = p.op;
+                if (op === 'str.join' && CS && !(cargs[1] && cargs[1].k === 'call' && /^str\.split/.test(cargs[1].op || ''))) op = 'str.join_num';
+                return at({ k: 'call', op, args: cargs }, n); } }
+            return null;
+        }
+        const LEAF = new Set(['identifier', 'number_literal', 'integer_literal', 'real_literal', 'string_literal', 'boolean_literal', 'true', 'false', 'null_literal', 'nullptr', 'character_literal', 'raw_string_literal']);
+        const strVal = (n) => { const t = txt(n); return unescape(t.replace(/^[uUL]?R?"/, '').replace(/"$/, '')); };
+        function initItems(n) { return named(n).filter((c) => c.type !== 'initializer_list' || true); }
+        function ex(n) {
+            if (!n) return null; n = unwrap(n);
+            if (!LEAF.has(n.type) && patterns.length) { const r = tryOps(n); if (r) return r; }
+            switch (n.type) {
+                case 'identifier': return at({ k: 'name', v: fixName(txt(n)) }, n);
+                case 'number_literal': case 'integer_literal': case 'real_literal': { const t = txt(n).replace(/_/g, '').replace(/(ll|LL|[lLuUfFdDmM])+$/, ''); return at(L(/[.eE]/.test(t) && !/^0x/i.test(t) ? 'float' : 'int', t), n); }
+                case 'true': return at(L('bool', 'true'), n); case 'false': return at(L('bool', 'false'), n);
+                case 'boolean_literal': return at(L('bool', txt(n)), n);
+                case 'null': case 'null_literal': case 'nullptr': return at(L('none', 'None'), n);
+                case 'string_literal': return at(L('str', strVal(n)), n);
+                case 'binary_expression': {
+                    const op = txt(f(n, 'operator')); const l = f(n, 'left'), r = f(n, 'right');
+                    if (CS && CMP[op] && l.type === 'invocation_expression' && /^string\.CompareOrdinal\(/.test(txt(l)) && txt(r) === '0') { const a = named(f(l, 'arguments')).map((x) => x.namedChildren[0]); if (a.length === 2) return at({ k: 'cmp', op, l: ex(a[0]), r: ex(a[1]) }, n); }
+                    if (CMP[op]) return at({ k: 'cmp', op: CMP[op], l: ex(l), r: ex(r) }, n);
+                    if (op === '&&' || op === '||') return at({ k: 'logic', op: op === '&&' ? 'and' : 'or', l: ex(l), r: ex(r) }, n);
+                    if (IR.BINOPS.indexOf(op) < 0) return nativeE(n, '運算子 ' + op);
+                    return at({ k: 'bin', op, l: ex(l), r: ex(r) }, n);
+                }
+                case 'unary_expression': case 'prefix_unary_expression': { const op = txt(n.children[0]); const a = f(n, 'argument') || f(n, 'operand') || named(n)[0]; if (op === '!') return at({ k: 'not', e: ex(a) }, n); if (['-', '+', '~'].indexOf(op) >= 0) return at({ k: 'un', op, e: ex(a) }, n); return nativeE(n); }
+                case 'conditional_expression': return at({ k: 'cond', a: ex(f(n, 'condition')), c: ex(f(n, 'consequence')), b: ex(f(n, 'alternative')) }, n);
+                case 'subscript_expression': { const idx = named(n).find((c) => c.type === 'subscript_argument_list'); return at({ k: 'index', o: ex(f(n, 'argument')), i: ex(idx ? named(idx)[0] : null) }, n); }
+                case 'element_access_expression': { const sub = f(n, 'subscript'); const a = sub ? named(sub)[0] : null; return at({ k: 'index', o: ex(f(n, 'expression')), i: ex(a && a.type === 'argument' ? a.namedChildren[0] : a) }, n); }
+                case 'cast_expression': return ex(f(n, 'value'));
+                case 'call_expression': case 'invocation_expression': {
+                    const fn = f(n, 'function'); const a = f(n, 'arguments'); const args = a ? named(a).map((x) => (x.type === 'argument' ? x.namedChildren[0] : x)) : [];
+                    if (fn.type === 'identifier') return at({ k: 'call', fn: fixName(txt(fn)), args: args.map(ex) }, n);
+                    const ft = txt(fn).replace(/\s+/g, '');
+                    if (!CS) {
+                        if (ft === 'std::string' && args.length <= 1) return args.length ? ex(args[0]) : at(L('str', ''), n);
+                        const m = /^std::(vector|map|set)</.exec(ft); if (m && !args.length) return at(m[1] === 'vector' ? { k: 'list', items: [], ty: tyOf(lang, ft) } : m[1] === 'map' ? { k: 'dict', items: [], ty: tyOf(lang, ft) } : { k: 'native', lang, src: txt(n), why: 'set 字面值' }, n);
+                    }
+                    return nativeE(n, '呼叫的目標不在標準操作目錄');
+                }
+                case 'compound_literal_expression': { // C++：std::vector<long long>{1LL, 2LL}／std::map<K, V>{{k, v}}
+                    const ty = tyOf(lang, txt(f(n, 'type'))); const body = f(n, 'value'); const items = body ? named(body) : [];
+                    if (ty.t === 'list') return at({ k: 'list', items: items.map(ex), ty }, n);
+                    if (ty.t === 'dict') return at({ k: 'dict', items: items.map((p) => named(p).map(ex)), ty }, n);
+                    return nativeE(n, '初始化列表型別'); }
+                case 'object_creation_expression': { // C#：new List<long>() ／ new List<long> { 1L, 2L } ／ new Dictionary<K,V> { {k, v} }
+                    const ty = tyOf(lang, txt(f(n, 'type'))); const ini = named(n).find((c) => c.type === 'initializer_expression'); const items = ini ? named(ini) : [];
+                    if (ty.t === 'list') return at({ k: 'list', items: items.map(ex), ty }, n);
+                    if (ty.t === 'dict') return at({ k: 'dict', items: items.map((p) => named(p).map(ex)), ty }, n);
+                    return nativeE(n, 'new ' + txt(f(n, 'type'))); }
+                default: return nativeE(n);
+            }
+        }
+
+        // ---- 敘述 ----
+        const commentText = (c) => { let t = txt(c); if (t.startsWith('//')) return t.replace(/^\/\/\s?/, ''); t = t.replace(/^\/\*+\s?/, '').replace(/\s?\*+\/$/, ''); return t.split('\n').map((l) => l.replace(/^\s*\*\s?/, '')).join('\n').trim(); };
+        const isDoc = (c) => /^\/\*\*/.test(txt(c));
+        function targetOf(x) { const e = ex(x); return e.k === 'call' && (e.op === 'list.get' || e.op === 'dict.get') && e.args.length === 2 ? { k: 'index', o: e.args[0], i: e.args[1], pos: e.pos } : e; }
+        // 宣告：回傳 [{name, ty, value}]；C++ 的 declaration、C# 的 variable_declaration
+        function declarators(dn) {
+            if (CS) { const ty = tyOf(lang, txt(f(dn, 'type'))); return named(dn).filter((c) => c.type === 'variable_declarator').map((d) => { const eq = d.namedChildren.find((c) => c.type === 'equals_value_clause'); return { name: txt(d.namedChildren[0]), ty, value: eq ? eq.namedChildren[0] : null, node: d }; }); }
+            const ty = tyOf(lang, txt(f(dn, 'type'))); const out = [];
+            for (const d of named(dn).filter((c) => c.type === 'init_declarator' || c.type === 'identifier' || c.type === 'reference_declarator')) { let nm = d, v = null; if (d.type === 'init_declarator') { nm = f(d, 'declarator'); v = f(d, 'value'); } if (!nm || nm.type !== 'identifier') return null; out.push({ name: txt(nm), ty, value: v, node: d }); }
+            return out;
+        }
+        function declStmts(n, dn) {
+            const ds = declarators(dn); if (!ds) return [nativeS(n, '宣告的形式')]; const out = [];
+            for (const d of ds) { if (!d.value) out.push(at({ k: 'declare', name: d.name, ty: d.ty }, n)); else { const o = at({ k: 'assign', to: { k: 'name', v: fixName(d.name) }, val: ex(d.value) }, n); if (d.ty.t !== 'unknown') o.ty = d.ty; out.push(o); } }
+            return out;
+        }
+        function assignOf(x, n) {
+            const left = f(x, 'left'), right = f(x, 'right'); const opn = x.children.find((c) => !c.isNamed() || c.type === 'assignment_operator'); const op = txt(CS ? x.namedChildren.find((c) => c.type === 'assignment_operator') : f(x, 'operator'));
+            void opn; if (op !== '=') { const b = op.replace(/=$/, ''); if (IR.BINOPS.indexOf(b) < 0) return [nativeS(n, '複合賦值 ' + op)]; return [at({ k: 'aug', to: targetOf(left), op: b, val: ex(right) }, n)]; }
+            if (left.type !== 'identifier' && left.type !== 'subscript_expression' && left.type !== 'element_access_expression') return [nativeS(n, '賦值目標 ' + left.type)];
+            return [at({ k: 'assign', to: targetOf(left), val: ex(right) }, n)];
+        }
+        function stmt(n) {
+            cov.stmts++;
+            switch (n.type) {
+                case 'expression_statement': {
+                    const x = unwrap(named(n)[0]); if (!x) return [];
+                    if (x.type === 'assignment_expression') return assignOf(x, n);
+                    if (x.type === 'update_expression' || x.type === 'postfix_unary_expression' || x.type === 'prefix_unary_expression') { const a = f(x, 'argument') || named(x)[0]; const up = txt(x).indexOf('++') >= 0; if (!up && txt(x).indexOf('--') < 0) return [nativeS(n)]; return [at({ k: 'aug', to: ex(a), op: up ? '+' : '-', val: L('int', '1') }, n)]; }
+                    const e = ex(x); if (e.k === 'native') return [nativeS(n)]; return [at({ k: 'expr', e }, n)];
+                }
+                case 'declaration': return declStmts(n, n);
+                case 'local_declaration_statement': { const vd = named(n).find((c) => c.type === 'variable_declaration'); return vd ? declStmts(n, vd) : [nativeS(n)]; }
+                case 'field_declaration': { const vd = named(n).find((c) => c.type === 'variable_declaration'); return vd ? declStmts(n, vd) : [nativeS(n)]; }
+                case 'function_definition': case 'method_declaration': return [func(n)];
+                case 'compound_statement': case 'block': return block(n, undefined);
+                case 'if_statement': return [ifS(n)];
+                case 'while_statement': { const nn = named(n); const w = at({ k: 'while', cond: ex(f(n, 'condition') || nn[0]), body: blk(f(n, 'body') || nn[nn.length - 1], n) }, n); return [attach(w, n, w.body)]; }
+                case 'for_statement': return forS(n);
+                case 'for_range_loop': case 'for_each_statement': {
+                    const v = CS ? f(n, 'left') : f(n, 'declarator'), it = f(n, 'right'); if (!v || v.type !== 'identifier') return [nativeS(n, '迴圈變數')];
+                    const body = f(n, 'body'); const vn = txt(v);
+                    if (!CS && /^__kv_/.test(vn)) { // 字典走訪：for (const auto &__kv_k : d) { const K k = __kv_k.first; … }
+                        const bd = blk(body, n); const first = bd[0]; const m = /^__kv_(\w+)$/.exec(vn); if (first && first.k === 'assign' && first.to && first.to.v === m[1]) bd.shift(); const o = at({ k: 'foreach', var: m[1], iter: ex(it), body: bd }, n); return [attach(o, n, bd)];
+                    }
+                    const itx = ex(it); if (itx.k === 'native') return [nativeS(n, '走訪的對象')];
+                    // C# 走訪字典：foreach (K k in d.Keys.ToList()) → 走訪字典
+                    let iter = itx; const tt = txt(it).replace(/\s+/g, ''); if (CS) { const m = /^(.*)\.Keys\.ToList\(\)$/.exec(tt); if (m) iter = { k: 'name', v: m[1] }; }
+                    const o = at({ k: 'foreach', var: vn, iter, body: blk(body, n) }, n); return [attach(o, n, o.body)];
+                }
+                case 'return_statement': { const e = named(n)[0]; return [at({ k: 'ret', val: e ? ex(e) : undefined }, n)]; }
+                case 'break_statement': return [at({ k: 'brk' }, n)]; case 'continue_statement': return [at({ k: 'cont' }, n)];
+                case 'throw_statement': { const e = named(n)[0]; let msg; if (e) { const a = f(e, 'arguments'); const as = a ? named(a).map((x) => (x.type === 'argument' ? x.namedChildren[0] : x)) : []; if (as[0]) msg = ex(as[0]); } return [at({ k: 'raise', val: msg }, n)]; }
+                case 'empty_statement': return [];
+                default: return [nativeS(n)];
+            }
+        }
+        function forS(n) {
+            const init = f(n, 'initializer'), cond = f(n, 'condition'), upd = f(n, 'update') || f(n, 'increment'), body = f(n, 'body');
+            const fall = (why) => [nativeS(n, why)];
+            if (!init || !cond || !upd) return fall('for 標頭不是標準形');
+            let v, from; const i0 = init;
+            if (i0.type === 'declaration' || i0.type === 'variable_declaration') { const ds = declarators(i0); if (!ds || ds.length !== 1 || !ds[0].value) return fall('for 初始化'); v = ds[0].name; from = ex(ds[0].value); }
+            else return fall('for 初始化');
+            const c0 = unwrap(cond); if (c0.type !== 'binary_expression' || txt(f(c0, 'left')) !== v) return fall('for 條件'); const cop = txt(f(c0, 'operator')); if (cop !== '<' && cop !== '>') return fall('for 條件運算子 ' + cop);
+            const to = ex(f(c0, 'right')); let step = null; const u0 = unwrap(upd);
+            if (u0.type === 'update_expression' || u0.type === 'postfix_unary_expression') { const up = txt(u0).indexOf('++') >= 0; if (txt(f(u0, 'argument') || named(u0)[0]) !== v) return fall('for 增量'); if ((cop === '<') !== up) return fall('for 方向'); if (!up) step = { k: 'un', op: '-', e: L('int', '1') }; }
+            else if (u0.type === 'assignment_expression' && txt(f(u0, 'left')) === v) { const op = txt(CS ? u0.namedChildren.find((c) => c.type === 'assignment_operator') : f(u0, 'operator')); const r = ex(f(u0, 'right')); const sg = op === '+=' ? 1 : op === '-=' ? -1 : 0; if (!sg || r.k !== 'lit' || r.t !== 'int') return fall('for 增量'); if ((cop === '<') !== (sg > 0)) return fall('for 方向'); step = sg > 0 ? (r.v === '1' ? null : r) : { k: 'un', op: '-', e: r }; }
+            else return fall('for 增量');
+            const o = at({ k: 'forrange', var: v, from, to, step, body: blk(body, n) }, n); if (!step) delete o.step; return [attach(o, n, o.body)];
+        }
+        function ifS(n) {
+            const o = at({ k: 'if', cond: ex(f(n, 'condition')), then: blk(f(n, 'consequence'), n) }, n); attach(o, n, o.then);
+            let alt = f(n, 'alternative'); if (alt && alt.type === 'else_clause') alt = named(alt)[0];
+            if (alt) { if (alt.type === 'if_statement') o.else = [ifS(alt)]; else o.else = blk(alt, alt); }
+            return o;
+        }
+        function block(bn, headerRow) {
+            if (!bn) return []; const out = []; let pending = []; let prev = null, prevEnd = -1; const hdr = []; out.hdr = hdr; let docPending = null;
+            for (const c of bn.children) {
+                if (!c.isNamed()) continue;
+                if (isCmt(c)) {
+                    cov.comments++; const row = c.startPosition.row, t = commentText(c);
+                    if (headerRow != null && row === headerRow && !prev) { hdr.push(t); cov.comments_kept++; continue; }
+                    if (prev && row === prevEnd) { prev.c = prev.c || {}; prev.c.a = prev.c.a ? prev.c.a + ' ' + t : t; cov.comments_kept++; continue; }
+                    if (isDoc(c)) { docPending = { t, row }; continue; }
+                    pending.push({ t, row }); continue;
+                }
+                if (skipTop(c)) { docPending = null; continue; }
+                const ss = stmt(c); if (!ss.length) { continue; }
+                if (docPending && ss[0].k === 'func' && c.startPosition.row - docPending.row <= (docPending.t.split('\n').length + 1)) { ss[0].doc = docPending.t; cov.comments_kept++; } else if (docPending) { pending.push(docPending); }
+                docPending = null;
+                const lastRowBefore = pending.length ? pending[pending.length - 1].row : prevEnd; const gap = prevEnd >= 0 || pending.length ? c.startPosition.row - lastRowBefore - 1 : 0; const first = ss[0];
+                if (pending.length) { first.c = first.c || {}; first.c.b = pending.map((p) => p.t).concat(first.c.b || []); cov.comments_kept += pending.length; const g0 = pending[0].row - (prevEnd >= 0 ? prevEnd : pending[0].row) - 1; if (g0 > 0 && prevEnd >= 0) first.c.sp = 1; pending = []; }
+                else if (gap > 0 && prevEnd >= 0) { first.c = first.c || {}; first.c.sp = 1; }
+                ss.forEach((s) => out.push(s)); prev = ss[ss.length - 1]; prevEnd = c.endPosition.row;
+            }
+            if (pending.length) pending.forEach((p) => { out.push({ k: 'comment', s: p.t }); cov.comments_kept++; });
+            return out;
+        }
+        const blk = (bn, parent) => (bn && (bn.type === 'compound_statement' || bn.type === 'block') ? block(bn, parent.startPosition.row) : bn ? stmt(bn) : []);
+        function attach(o, n, arr) { const h = (arr && arr.hdr) || []; if (h.length) { o.c = o.c || {}; o.c.a = h.join(' '); } return o; }
+        function cppFuncInfo(n) { let d = f(n, 'declarator'); while (d && (d.type === 'pointer_declarator' || d.type === 'reference_declarator')) d = d.namedChildren[0]; if (!d || d.type !== 'function_declarator') return null; return { name: txt(f(d, 'declarator')), params: f(d, 'parameters') }; }
+        function skipTop(c) { // 輸出器加的前置輔助
+            if (c.type === 'preproc_include' || c.type === 'using_directive' || c.type === 'using_declaration' || c.type === 'template_declaration' || c.type === 'namespace_definition') return true;
+            if (!CS && c.type === 'function_definition') { const fi = cppFuncInfo(c); if (fi && (isHelperName(fi.name) || fi.name === 'main')) return true; }
+            if (!CS && c.type === 'declaration') { const ds = declarators(c); if (ds && ds.some((d) => isHelperName(d.name))) return true; }
+            if (CS && c.type === 'method_declaration') { const nm = txt(f(c, 'name')); if (isHelperName(nm)) return true; if (nm === (opts.entryName || 'Main') || nm === 'Main' || nm === 'Run') { const b = f(c, 'body'); if (b && named(b).length <= 1 && !named(b).some((x) => isCmt(x))) return true; } }
+            return false;
+        }
+        function func(n) {
+            let name, ps, params, ret;
+            if (CS) { name = txt(f(n, 'name')); ps = f(n, 'parameters'); params = ps ? named(ps).filter((p) => p.type === 'parameter').map((p) => ({ name: txt(f(p, 'name')), ty: tyOf(lang, txt(f(p, 'type'))) })) : []; ret = tyOf(lang, txt(f(n, 'type'))); }
+            else { const fi = cppFuncInfo(n); if (!fi) return nativeS(n, '函式宣告的形式'); name = fi.name; params = named(fi.params).filter((p) => p.type === 'parameter_declaration').map((p) => { let dd = f(p, 'declarator'); while (dd && dd.type !== 'identifier' && dd.namedChildren.length) dd = dd.namedChildren[0]; return dd ? { name: txt(dd), ty: tyOf(lang, txt(f(p, 'type'))) } : null; }).filter(Boolean); ret = tyOf(lang, txt(f(n, 'type'))); }
+            const o = at({ k: 'func', name: fixName(name), params: params.map((p) => ({ name: fixName(p.name), ty: p.ty })), ret, body: [] }, n);
+            o.body = block(f(n, 'body'), n.startPosition.row); attach(o, n, o.body); return o;
+        }
+        // ---- 模組層 ----
+        const ir = IR.mod({ src: { lang, file: opts.file }, name: opts.name || 'Module' });
+        let topNode = rootNode;
+        if (CS) { const cls = rootNode.namedChildren.find((c) => c.type === 'class_declaration'); if (cls) topNode = f(cls, 'body'); }
+        const top = block(topNode, undefined);
+        ir.body = top.filter((s) => !(s.k === 'pass' && !s.c));
+        if (IR.funcs(ir).some((x) => x.name === 'main')) ir.entry = 'main'; void initItems;
+        return { ir, coverage: cov, diags };
+    }
+    return { buildPatterns, fromTree, tyOf };
+});
+
+}).call(null, undefined, holder);
+(function (module, self) {
 /* JavaScript（Node.js）「出」：核心 IR（已過 FaIrPrep.prepare）→ 原始碼。純函式 UMD，JavaScript 專屬。
  *   emit(ir, {}) → { code, diags, helpers }   diags 的 level：error＝這段沒辦法精準翻譯（程式不可信）、warn＝已翻但有語意差異要提醒
  * 註解：前置註解、行尾註解、獨立註解、docstring（轉成 JSDoc）、空行都保留。 */
@@ -21321,7 +21580,7 @@ const holder = {};
  *   bridge.fromPython(src)           → { funcs:[{name, params, blocks, cnl, stats}], coverage }
  *   bridge.toIr(python, name)        → { ir, diags, coverage }
  *   bridge.emit(python, lang)        → { ok, code, diags }   （lang：nodejs／java／c／python）
- *   bridge.toIrFrom(src, lang, name, parser)    非 Python 來源（nodejs／java／c）→ 中間語言；parser＝該語言的 tree-sitter Parser（呼叫端載入文法）
+ *   bridge.toIrFrom(src, lang, name, parser)    非 Python 來源（nodejs／java／c／cpp／csharp）→ 中間語言；parser＝該語言的 tree-sitter Parser（呼叫端載入文法）
  *   bridge.emitFrom(src, lang, target, name, parser) → { ok, code, diags }   來源語言 → 中間語言 → 目標語言
  *   bridge.cardsFrom(src, lang, name, parser) → 行為卡（第二層）
  *   bridge.blocksToTarget(funcs, lang)
@@ -21333,7 +21592,7 @@ const holder = {};
     if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaIrBlocks = factory();
 })(typeof self !== 'undefined' ? self : this, function () {
     function make(env) {
-        const { parseTree, C2U, B, IN, PREP, OUT, BD, DES, INB } = env;
+        const { parseTree, C2U, B, IN, PREP, OUT, BD, DES, INB, INT } = env;
         const anyT = { base: 'any', args: [] };
         const mkOp = (name, params, body) => ({ name, params: (params || []).map((x) => ({ name: x, type: anyT })), returns: anyT, visibility: '+', static: true, body });
         const blocksOf = (f) => {
@@ -21450,14 +21709,15 @@ const holder = {};
             const e = emit(p.python, lang, name); e.python = p.python; return e;
         }
         // ---- 非 Python 來源（DESIGN.core-ir.md 第 11、13 節）----
-        const FROM = { nodejs: 1, java: 1, c: 1 }, patCache = {};
-        const fromLangs = () => (INB ? Object.keys(FROM) : []);
+        const FROM = { nodejs: 1, java: 1, c: 1, cpp: 1, csharp: 1 }, patCache = {}; // cpp、csharp 走 INT（ir_in_typed_core.js，內部語言鍵 cpp／cs）
+        const fromLangs = () => (INB ? Object.keys(FROM).filter((l) => INT || (l !== 'cpp' && l !== 'csharp')) : []);
         function toIrFrom(src, lang, name, parser) {
             if (lang === 'python') return toIr(src, name);
-            if (!INB || !FROM[lang]) throw new Error('還沒有 ' + lang + ' 的「進」（目前支援 python、' + fromLangs().join('、') + '）');
+            if (!INB || !FROM[lang] || ((lang === 'cpp' || lang === 'csharp') && !INT)) throw new Error('還沒有 ' + lang + ' 的「進」（目前支援 python、' + fromLangs().join('、') + '）');
             if (!parser) throw new Error('缺少 ' + lang + ' 的語法樹剖析器');
-            const patterns = patCache[lang] || (patCache[lang] = INB.buildPatterns(lang, (s) => parser.parse(s).rootNode));
-            const r = INB.fromTree(parser.parse(src).rootNode, { lang, source: src, patterns, name: name || 'input' });
+            const typed = lang === 'cpp' || lang === 'csharp', M = typed ? INT : INB, L2 = lang === 'csharp' ? 'cs' : lang;
+            const patterns = patCache[lang] || (patCache[lang] = M.buildPatterns(L2, (s) => parser.parse(s).rootNode));
+            const r = M.fromTree(parser.parse(src).rootNode, { lang: L2, source: src, patterns, name: name || 'input' });
             const prep = PREP.prepare(r.ir); return { ir: prep.ir, diags: (r.diags || []).concat(prep.diags || []), coverage: r.coverage };
         }
         function emitFrom(src, lang, target, name, parser) {
@@ -73225,7 +73485,7 @@ ${fnData.code}
                 let a = {}; try { a = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
                 try { return JSON.stringify(await this._codeConvert(a)); } catch (err) { return JSON.stringify({ ok: false, error: String((err && err.message) || err) }); }
             },
-            { type: 'object', properties: { source: { type: 'string', description: '要轉換的程式碼（整份；python、nodejs、java、c）' }, from: { type: 'string', enum: ['python', 'nodejs', 'java', 'c'], description: '（選填）來源語言；不給就從程式碼判斷' }, blocks: { type: 'array', items: { type: 'object', properties: { name: { type: 'string' }, params: { type: 'array', items: { type: 'string' } }, cnl: { type: 'string', description: '受控自然語言的區塊文字' } }, required: ['name', 'cnl'] }, description: '（與 source 二選一）區塊函式清單' }, target: { type: 'string', enum: ['nodejs', 'java', 'c', 'cpp', 'csharp', 'perl', 'ruby', 'python'], description: '目標語言' }, action: { type: 'string', enum: ['convert', 'to_blocks'], description: '預設 convert；to_blocks 把 Python 拆成區塊' }, name: { type: 'string', description: '（選填）java 的類別名等' }, keep_blocks: { type: 'boolean', description: '（選填）先經過區塊再轉，驗證區塊往返' }, tests: { type: 'array', items: { type: 'object', properties: { in: { type: 'string' }, out: { type: 'string' } }, required: ['in', 'out'] }, description: '（選填）有給就實際編譯執行轉出的程式驗證輸出' } }, additionalProperties: false }
+            { type: 'object', properties: { source: { type: 'string', description: '要轉換的程式碼（整份；python、nodejs、java、c）' }, from: { type: 'string', enum: ['python', 'nodejs', 'java', 'c', 'cpp', 'csharp'], description: '（選填）來源語言；不給就從程式碼判斷' }, blocks: { type: 'array', items: { type: 'object', properties: { name: { type: 'string' }, params: { type: 'array', items: { type: 'string' } }, cnl: { type: 'string', description: '受控自然語言的區塊文字' } }, required: ['name', 'cnl'] }, description: '（與 source 二選一）區塊函式清單' }, target: { type: 'string', enum: ['nodejs', 'java', 'c', 'cpp', 'csharp', 'perl', 'ruby', 'python'], description: '目標語言' }, action: { type: 'string', enum: ['convert', 'to_blocks'], description: '預設 convert；to_blocks 把 Python 拆成區塊' }, name: { type: 'string', description: '（選填）java 的類別名等' }, keep_blocks: { type: 'boolean', description: '（選填）先經過區塊再轉，驗證區塊往返' }, tests: { type: 'array', items: { type: 'object', properties: { in: { type: 'string' }, out: { type: 'string' } }, required: ['in', 'out'] }, description: '（選填）有給就實際編譯執行轉出的程式驗證輸出' } }, additionalProperties: false }
         );
         registerOptional('matrix_blocks',
             '把矩陣層合成出的程式顯示成「有名字的區塊段落」（DFA：讀入／轉移表／起點／掃描／輸出；遞推：係數初值取模；圖、格子、組合層也有分段），並可在區塊的槽位上直接改：action:"show" 看目前的區塊（受控自然語言）與形態；action:"edit" 改 DFA 的轉移表 delta／起點 start／接受集 accept，或遞推的係數 coef／初值 init／取模 mod，或組合層換 vector／filter／reducer 積木，編回 Python（改完輸出照新定義變；給 expected 才會實跑驗證）。預設用 write_code 最近一次由矩陣層解出的結果；也可自己給 source＋kind。這是看與改既有結果的工具，不是寫程式的入口（寫新程式用 write_code）。參數：{"action":"show|edit","source":"（選填）Python","kind":"dfa|recurrence|compose|graph|grid","patch":{"delta":[{"0":1,"1":0}],"accept":[1]},"expected":[{"in","out"}]}',
@@ -113256,12 +113516,12 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         if (typeof FaIrBundle === 'undefined' || !FaIrBundle.FaIrBlocks) throw new Error('這個版本沒有中間語言模組（FaIrBundle）');
         const P = await this._pyParserSync(); const parseTree = (x) => P.parse(x); const H = FaIrBundle;
         const B = FaPyBlocks.makeBlocks({ parseTree, C2U: FaPyCode2Uml });
-        this._irBridgeObj = H.FaIrBlocks.make({ parseTree, C2U: FaPyCode2Uml, B, IN: H.FaIrInPython, PREP: H.FaIrPrep, OUT: { nodejs: H.FaIrOutJs, java: H.FaIrOutJava, c: H.FaIrOutC, cpp: H.FaIrOutCpp, csharp: H.FaIrOutCs, perl: H.FaIrOutPerl, ruby: H.FaIrOutRuby, python: H.FaIrOutPython }, INB: H.FaIrInBrace, BD: H.FaIrBehavior, DES: H.FaIrDesign, IR: H.FaIr });
+        this._irBridgeObj = H.FaIrBlocks.make({ parseTree, C2U: FaPyCode2Uml, B, IN: H.FaIrInPython, PREP: H.FaIrPrep, OUT: { nodejs: H.FaIrOutJs, java: H.FaIrOutJava, c: H.FaIrOutC, cpp: H.FaIrOutCpp, csharp: H.FaIrOutCs, perl: H.FaIrOutPerl, ruby: H.FaIrOutRuby, python: H.FaIrOutPython }, INB: H.FaIrInBrace, INT: H.FaIrInTyped, BD: H.FaIrBehavior, DES: H.FaIrDesign, IR: H.FaIr });
         return this._irBridgeObj;
     }
     // 來源語言的語法樹剖析器（nodejs／java／c 的「進」用；文法沿用行為卡的載入器，沒下載過會用既有機制下載一次）
     async _irLangParser(lang) {
-        const G = { nodejs: 'javascript', java: 'java', c: 'c', python: 'python' }[lang]; if (!G) throw new Error('還沒有 ' + lang + ' 的「進」（支援 python、nodejs、java、c）');
+        const G = { nodejs: 'javascript', java: 'java', c: 'c', cpp: 'cpp', csharp: 'c_sharp', python: 'python' }[lang]; if (!G) throw new Error('還沒有 ' + lang + ' 的「進」（支援 python、nodejs、java、c、cpp、csharp）');
         this._irParsers = this._irParsers || {}; if (this._irParsers[lang]) return this._irParsers[lang];
         const host = this._behTsHost(); const PC = await host.loadTreeSitter(); const L = await PC.Language.load(await host.loadLanguageWasm(G)); const P = new PC(); P.setLanguage(L);
         return (this._irParsers[lang] = P);
@@ -113272,7 +113532,8 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         // 來源語言：給 from 就用；沒給就從程式碼判斷（只有 python／nodejs／java／c 有「進」）
         let from = a.from || a.source_language; if (from === 'javascript') from = 'nodejs';
         if (!from && typeof a.source === 'string' && a.source.trim() && typeof FaCodeAgent !== 'undefined' && FaCodeAgent.detectLangFromCode) { const d = FaCodeAgent.detectLangFromCode(a.source); from = d === 'javascript' ? 'nodejs' : d; }
-        if (!['nodejs', 'java', 'c'].includes(from)) from = 'python';
+        if (from === 'c++') from = 'cpp'; if (from === 'c#' || from === 'cs') from = 'csharp';
+        if (!['nodejs', 'java', 'c', 'cpp', 'csharp'].includes(from)) from = 'python';
         const fromParser = from !== 'python' && typeof a.source === 'string' && a.source.trim() ? await this._irLangParser(from) : null;
         if (from !== 'python' && action === 'to_blocks' && fromParser) { const p0 = br.emitFrom(a.source, from, 'python', a.name, fromParser); if (!p0.ok) return { ok: false, error: from + ' 來源轉不成 Python（見 diags），沒有硬拆區塊', diags: (p0.diags || []).slice(0, 20) }; a = Object.assign({}, a, { source: p0.code }); }
         const hasSrc = typeof a.source === 'string' && a.source.trim(), hasBlocks = Array.isArray(a.blocks) && a.blocks.length;
@@ -113349,7 +113610,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         if (!EXT[lang]) return { ok: false, error: '行為卡目前支援 python、nodejs、java、c、cpp（' + raw + ' 還沒有簽名抽取）' };
         const BD = FaIrBundle.FaIrBehavior; let level = null, cards = null, design = null, note = '';
         const keep = (n) => !a.function || n === a.function;
-        if ((lang === 'python' || ['nodejs', 'java', 'c'].includes(lang)) && a.level !== 1) {
+        if ((lang === 'python' || ['nodejs', 'java', 'c', 'cpp'].includes(lang)) && a.level !== 1) {
             try {
                 const br = await this._irBridge(); const lp = lang === 'python' ? null : await this._irLangParser(lang); const cs = lang === 'python' ? br.cards(src, 'input') : br.cardsFrom(src, lang, 'input', lp); level = 2;
                 cards = cs.filter((c) => keep(c.name)).map((c) => ({ name: c.name, card: br.cardText(c), params: c.params, ret: c.ret, calls: c.calls, std: c.std.map((s) => s.op), effects: c.effects, pure: c.pure, control: c.control, blocks: c.blocks || undefined }));
