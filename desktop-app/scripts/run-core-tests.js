@@ -101,6 +101,7 @@ const suites = [
     ['矩陣轉區塊接進產品（嵌入版 FaMatrixBlocks 與來源一致、管線帶出 matrixForm、嵌入版 DFA 拆區塊並改接受集、matrix_blocks 工具註冊在 coding 領域；需 tree-sitter 與 python）', 'renderer/src/algo/matrix_wire.test.js'],
     ['tree-sitter 文法取得順序與核對（快取→內建 Python→釘住 commit 的分支並核對位元組數與 MD5→jsdelivr；純函式不連網）', 'renderer/src/behavior/ts_assets.test.js'],
     ['判題器 exec 逾時連子孫一起清掉（孫行程脫離管線也不能變孤兒；exec 不能無限等待）', 'judge-runner-kill.test.js'],
+    ['判題器真行程能力：argv／環境變數／結束碼／檔案夾具與輸出檔／二進位 IO／管線／fork（Windows 走 WSL 或 msys，標明 mode）／socket／孤兒清理', 'judge-runner-real.test.js'],
     ['AI 面向的 Graph RAG 已移除（領域清單、提示詞、功能清冊）；底層 rag 工具與訓練器／語言探索用的儲存層仍在', 'renderer/src/catalog/rag_removed.test.js'],
     ['/code 指令路由（寫／修／優化／合併／設計／解釋由程式判斷、欄位只從文字抽不編造、缺什麼說什麼；所有工具都註冊在程式設計領域；離線訓練器 code_write 規則）', 'renderer/src/recipe/code_slash.test.js'],
     ['程式優化對照表（13 條慢寫法→優化寫法（含 two-sum 計數題型），含記憶體實測；輸出一致、實測不變慢、不安全不動、沒測資不改）', 'renderer/src/recipe/code_optimize.test.js'],

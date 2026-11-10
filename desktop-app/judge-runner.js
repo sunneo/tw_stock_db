@@ -51,22 +51,29 @@ function killTree(child) {
     if (process.platform === 'win32') { try { require('child_process').spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore', timeout: 5000 }); } catch (e) { /* 已結束 */ } try { child.kill('SIGKILL'); } catch (e) { /* 已結束 */ } return; }
     try { process.kill(-child.pid, 'SIGKILL'); } catch (e) { try { child.kill('SIGKILL'); } catch (e2) { /* 已結束 */ } }
 }
+// 子行程的環境變數：精簡集合＋（Windows 需要的系統變數，沒有 SystemRoot 的話 winsock 起不來，python／C 的 socket 都會失敗）＋題目指定的 env
+function baseEnv(o) {
+    const e = { PATH: o.pathPrefix ? o.pathPrefix + path.delimiter + process.env.PATH : process.env.PATH, HOME: o.cwd || os.tmpdir(), LANG: 'C', LC_ALL: 'C' };
+    if (process.platform === 'win32') for (const k of ['SystemRoot', 'SYSTEMDRIVE', 'windir', 'TEMP', 'TMP', 'COMSPEC', 'PATHEXT', 'NUMBER_OF_PROCESSORS', 'PROCESSOR_ARCHITECTURE']) { if (process.env[k]) e[k] = process.env[k]; }
+    return Object.assign(e, o.env || {});
+}
+// o：cwd、input（字串）、inputBuf（Buffer，優先）、timeoutMs、maxOutput、pathPrefix、env（額外環境變數）。結果多帶 stdoutBuf（原始位元組）
 function exec(cmd, args, o) {
     o = o || {};
     return new Promise((resolve) => {
-        const t0 = Date.now(); let out = '', err = '', over = false, timedOut = false, done = false, child;
+        const t0 = Date.now(); let outBufs = [], outLen = 0, err = '', over = false, timedOut = false, done = false, child;
         const cap = o.maxOutput || 1 << 20;
-        const fin = (r) => { if (done) return; done = true; clearTimeout(timer); resolve(Object.assign({ stdout: out, stderr: err, timedOut, over, ms: Date.now() - t0 }, r)); };
+        const fin = (r) => { if (done) return; done = true; clearTimeout(timer); const buf = Buffer.concat(outBufs); resolve(Object.assign({ pid: child && child.pid, stdout: buf.toString('utf8'), stdoutBuf: buf, stderr: err, timedOut, over, ms: Date.now() - t0 }, r)); };
         const killAll = () => { killTree(child); };
-        try { child = spawn(cmd, args, { cwd: o.cwd, detached: true, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'], env: { PATH: o.pathPrefix ? o.pathPrefix + path.delimiter + process.env.PATH : process.env.PATH, HOME: o.cwd || os.tmpdir(), LANG: 'C', LC_ALL: 'C' } }); } catch (e) { return resolve({ code: -1, signal: null, stdout: '', stderr: String(e.message || e), spawnError: true, ms: 0 }); }
+        try { child = spawn(cmd, args, { cwd: o.cwd, detached: true, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'], env: baseEnv(o) }); } catch (e) { return resolve({ code: -1, signal: null, stdout: '', stdoutBuf: Buffer.alloc(0), stderr: String(e.message || e), spawnError: true, ms: 0 }); }
         // 逾時：連子孫一起殺。保險起見 2 秒後若 close 還沒來（有孫行程抓著管線不放）就直接收尾，不能讓呼叫端無限等待
         const timer = setTimeout(() => { timedOut = true; killAll(); setTimeout(() => fin({ code: null, signal: 'SIGKILL' }), 2000).unref(); }, o.timeoutMs || 5000);
-        child.stdout.on('data', (b) => { if (out.length < cap) out += b.toString('utf8'); else if (!over) { over = true; killAll(); } });
+        child.stdout.on('data', (b) => { if (outLen < cap) { outBufs.push(b); outLen += b.length; } else if (!over) { over = true; killAll(); } });
         child.stderr.on('data', (b) => { if (err.length < 65536) err += b.toString('utf8'); });
         child.stdin.on('error', () => { /* 程式沒讀完 stdin 就結束：EPIPE，不算錯 */ });
         child.on('error', (e) => fin({ code: -1, signal: null, stderr: String(e.message || e), spawnError: true }));
         child.on('close', (code, signal) => fin({ code, signal }));
-        try { child.stdin.end(o.input == null ? '' : String(o.input)); } catch (e) { /* 同上 */ }
+        try { child.stdin.end(o.inputBuf ? o.inputBuf : (o.input == null ? '' : String(o.input))); } catch (e) { /* 同上 */ }
     });
 }
 
@@ -139,31 +146,166 @@ function startupSyntaxError(lang, stderr) {
     return false;
 }
 
+// ───────── 真行程／fork／socket／檔案夾具（G15、G16）─────────
+// 題目的每筆測試除了 {in, out}，還可以帶：
+//   args:[…]            程式的命令列引數（接在執行命令後面）
+//   env:{K:V}           額外的環境變數
+//   files:{名稱: 內容}   執行前在這筆測試專屬的工作目錄預置檔案；內容是字串，或 {hex:'…'} 二進位
+//   expectFiles:{名稱: 內容}  執行後比對這些檔案（字串用 tokens 比對，{hex} 位元組完全相等）；檔案不存在算 WA
+//   expectExit:數字|'any'  結束碼比對（沒寫＝只接受 0，其餘算 RE）；結束碼不符算 WA
+//   inHex／outHex       stdin 與 stdout 用二進位（十六進位字串）；有 outHex 時不看 out
+//   needs:['fork','socket']  這筆測試需要的行程能力：fork＝程式自己會 fork／waitpid；socket＝用 127.0.0.1 迴圈網路
+//   env 與 args 裡的 {{PORT}} 會換成判題器替這筆測試挑好的空閒埠（needs 含 socket 才有；也會設環境變數 JUDGE_PORT）
+// 結果多帶 modes：每筆測試實際跑的模式。
+//   native＝這個平台本身就能跑（exec／管線／環境／結束碼／socket 一律是真的行程）；
+//   msys＝Windows 上的 bash 走 msys／Cygwin 執行環境，fork 是它做出來的真 fork（不是事件模擬）；
+//   wsl＝Windows 沒有 fork，改把程式交給 WSL 發行版跑（真 Linux fork），第一次啟動要等十幾秒；
+//   none＝這台 Windows 既沒有 WSL 又不是 bash：該筆測試判 UNAVAILABLE（明確說明，不假裝通過）。
+const wslCache = {};
+const wslPath = (p) => { const m = /^([A-Za-z]):[\\/](.*)$/.exec(p); return m ? '/mnt/' + m[1].toLowerCase() + '/' + m[2].replace(/\\/g, '/') : String(p).replace(/\\/g, '/'); };
+function wslInfo() {
+    if (wslCache.p) return wslCache.p;
+    wslCache.p = (async () => {
+        if (process.platform !== 'win32') return { ok: false, reason: '不是 Windows' };
+        if (process.env.FA_NO_WSL) return { ok: false, reason: '環境變數 FA_NO_WSL 關閉了 WSL' };
+        let name = process.env.FA_WSL_DISTRO;
+        if (!name) {
+            const raw = await new Promise((res) => require('child_process').execFile('wsl', ['-l', '-q'], { encoding: 'buffer', timeout: 15000, windowsHide: true }, (e, so) => res(e ? null : so)));
+            if (!raw) return { ok: false, reason: '執行 wsl -l 失敗（沒裝 WSL）' };
+            name = raw.toString('utf16le').replace(/\0/g, '').split(/\r?\n/).map((x) => x.trim()).filter(Boolean)[0];
+            if (!name) return { ok: false, reason: 'WSL 沒有任何發行版' };
+        }
+        const pr = await exec('wsl', ['-d', name, '--', 'sh', '-c', 'echo wsl-ok'], { timeoutMs: 90000 });
+        if (!/wsl-ok/.test(pr.stdout)) return { ok: false, reason: 'WSL 發行版 ' + name + ' 啟動失敗' };
+        return { ok: true, distro: name };
+    })();
+    return wslCache.p;
+}
+// WSL 裡能跑的語言（發行版要自己有工具；沒有就那筆測試的 stderr 會寫出來）
+const WSL_LANGS = {
+    python: { file: 'main.py', run: (d) => ['python3', d + '/main.py'] },
+    c: { file: 'main.c', compile: (d) => ['gcc', '-O2', '-o', d + '/a.out', d + '/main.c', '-lm'], run: (d) => [d + '/a.out'] },
+    cpp: { file: 'main.cpp', compile: (d) => ['g++', '-O2', '-std=c++17', '-o', d + '/a.out', d + '/main.cpp'], run: (d) => [d + '/a.out'] },
+    bash: { file: 'main.sh', run: (d) => ['bash', d + '/main.sh'] },
+    perl: { file: 'main.pl', run: (d) => ['perl', d + '/main.pl'] },
+    ruby: { file: 'main.rb', run: (d) => ['ruby', d + '/main.rb'] },
+    nodejs: { file: 'main.js', run: (d) => ['node', d + '/main.js'] }
+};
+async function prepareWsl(lang, source, o, distro) {
+    const L = WSL_LANGS[lang]; const dir = fs.mkdtempSync(path.join(o.workDir || os.tmpdir(), 'judge-wsl-' + lang + '-'));
+    fs.writeFileSync(path.join(dir, L.file), source);
+    if (L.compile) {
+        const c = L.compile(wslPath(dir));
+        const r = await exec('wsl', ['-d', distro, '--', ...c], { timeoutMs: o.compileTimeoutMs || 60000, maxOutput: 1 << 16 });
+        if (r.timedOut || r.spawnError || r.code !== 0) { cleanup(dir); return { stage: 'compile', stderr: (r.timedOut ? '編譯逾時\n' : '') + (r.stdout || '') + (r.stderr || '') }; }
+    }
+    return { stage: 'ok', dir, distro, lang };
+}
+function loopbackOk() {
+    return new Promise((res) => { const s = require('net').createServer(); s.on('error', () => res(false)); s.listen(0, '127.0.0.1', () => s.close(() => res(true))); });
+}
+function freePort() {
+    return new Promise((res, rej) => { const s = require('net').createServer(); s.on('error', rej); s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => res(p)); }); });
+}
+// 這台機器的行程能力：{platform, fork:'native'|'msys'|'wsl'|'none', wsl, socket}
+async function capabilities(opts) {
+    const caps = { platform: process.platform, fork: process.platform === 'win32' ? 'none' : 'native', wsl: null, socket: await loopbackOk() };
+    if (process.platform === 'win32') {
+        if ((await available('bash')).ok) caps.bashFork = 'msys';
+        if (!(opts && opts.skipWsl)) { caps.wsl = await wslInfo(); if (caps.wsl.ok) caps.fork = 'wsl'; }
+        if (caps.fork === 'none' && caps.bashFork) caps.fork = 'msys';
+    }
+    return caps;
+}
+async function pickMode(lang, need) {
+    if (!need.has('fork') || process.platform !== 'win32') return { mode: 'native' };
+    if (lang === 'bash') return { mode: 'msys' };
+    const w = await wslInfo();
+    if (w.ok && WSL_LANGS[lang]) return { mode: 'wsl', distro: w.distro };
+    return { mode: 'none', reason: 'Windows 沒有 fork；' + (w.ok ? 'WSL 跑不了語言 ' + lang : 'WSL 不可用（' + w.reason + '）') + '。這筆測試不判通過也不判失敗' };
+}
+// Windows 上孫行程若在父行程結束後才變孤兒，taskkill /T 追不到（命令列也不含暫存目錄）：
+// 孤兒的 ParentProcessId 仍是已死的父行程編號，所以從那個編號往下找「建立時間不早於這筆測試開始」的後代全部殺掉
+function sweepOrphans(rootPid, sinceMs) {
+    if (process.platform !== 'win32' || !rootPid) return;
+    const ps = "$since=" + Math.floor(sinceMs) + ";$all=Get-CimInstance Win32_Process;$q=New-Object System.Collections.Queue;$q.Enqueue([int]" + Number(rootPid) + ");$seen=@{};" +
+        "while($q.Count){$x=$q.Dequeue();foreach($p in $all){if($p.ParentProcessId -eq $x -and $p.ProcessId -ne $PID -and -not $seen[$p.ProcessId] -and ([DateTimeOffset]$p.CreationDate).ToUnixTimeMilliseconds() -ge $since){$seen[$p.ProcessId]=1;$q.Enqueue([int]$p.ProcessId);Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue}}}";
+    try { require('child_process').spawnSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', ps], { windowsHide: true, stdio: 'ignore', timeout: 20000 }); } catch (e) { /* 掃不到就算了 */ }
+}
+const safeRel = (n) => typeof n === 'string' && n.length && !path.isAbsolute(n) && !/(^|[\\/])\.\.([\\/]|$)/.test(n) && !/^[A-Za-z]:/.test(n);
+const asBuf = (c) => (c && typeof c === 'object' && typeof c.hex === 'string') ? Buffer.from(c.hex.replace(/\s+/g, ''), 'hex') : Buffer.from(String(c == null ? '' : c), 'utf8');
+const subst = (s, port) => (port == null ? s : String(s).replace(/\{\{PORT\}\}/g, String(port)));
+// 分析 stdout 之後再比對輸出檔
+function checkFiles(td, expect, checker, eps) {
+    for (const name of Object.keys(expect || {})) {
+        if (!safeRel(name)) return '檔名不合法：' + name;
+        const fp = path.join(td, name); let got; try { got = fs.readFileSync(fp); } catch (e) { return '沒有產生檔案 ' + name; }
+        const want = expect[name];
+        if (want && typeof want === 'object' && typeof want.hex === 'string') { const w = Buffer.from(want.hex.replace(/\s+/g, ''), 'hex'); if (!got.equals(w)) return '檔案 ' + name + ' 位元組不同（長度 ' + got.length + ' vs 期望 ' + w.length + '）'; }
+        else { const c = core.compare(got.toString('utf8'), String(want), checker, { eps }); if (!c.ok) return '檔案 ' + name + '：' + c.reason; }
+    }
+    return '';
+}
+
 async function judge(opts) {
     const lang = opts.lang, problem = opts.problem, source = String(opts.source == null ? '' : opts.source);
     if (!LANGS[lang]) return Object.assign(core.summarize([]), { lang, detail: '不認得的語言：' + lang });
     const v = core.validateProblem(problem); if (!v.ok) throw new Error('題目格式不對：' + v.errors.join('；'));
     const tests = problem.tests.map((t) => ({ t, hidden: false })).concat((problem.hidden || []).map((t) => ({ t, hidden: true })));
     const timeoutMs = opts.timeoutMs || problem.timeoutMs || 3000;
-    const p = await prepare(lang, source, { compileTimeoutMs: opts.compileTimeoutMs, workDir: opts.workDir });
+    // 全部測試都得交給 WSL 跑（Windows 的 python／C 要 fork）時，不在本機先編譯：POSIX 專屬的原始碼在本機工具鏈會誤判成 CE
+    const plan = []; for (const x of tests) plan.push(await pickMode(lang, new Set(x.t.needs || [])));
+    const allWsl = plan.length > 0 && plan.every((m) => m.mode === 'wsl');
+    const p = allWsl ? { stage: 'ok', dir: fs.mkdtempSync(path.join(opts.workDir || os.tmpdir(), 'judge-' + lang + '-')) } : await prepare(lang, source, { compileTimeoutMs: opts.compileTimeoutMs, workDir: opts.workDir });
     if (p.stage === 'unavailable') return Object.assign(core.summarize([]), { lang, verdict: 'UNAVAILABLE', detail: p.stderr });
     if (p.stage === 'compile') return Object.assign(core.summarize(tests.map((x) => ({ hidden: x.hidden, verdict: 'CE', detail: p.stderr.slice(0, 400) }))), { lang, compileLog: p.stderr });
-    const results = [];
+    const results = [], modes = new Set(); let wslPrep = null;
     try {
-        const run = LANGS[lang].run(p.dir);
-        for (const { t, hidden } of tests) {
-            const r = await exec(run.cmd, run.args, { cwd: p.dir, input: t.in, timeoutMs, maxOutput: opts.maxOutput, pathPrefix: ccPath(lang) });
+        const run = allWsl ? null : LANGS[lang].run(p.dir);
+        for (let i = 0; i < tests.length; i++) {
+            const { t, hidden } = tests[i];
+            const need = new Set(t.needs || []);
+            const pm = plan[i];
+            modes.add(pm.mode);
+            if (pm.mode === 'none') { results.push({ hidden, verdict: 'UNAVAILABLE', detail: pm.reason, ms: 0, mode: 'none' }); if (opts.stopAtFirstFail) break; continue; }
+            if (need.has('socket') && !(await loopbackOk())) { results.push({ hidden, verdict: 'UNAVAILABLE', detail: '這台機器開不了 127.0.0.1 的 socket', ms: 0, mode: pm.mode }); continue; }
+            const port = need.has('socket') ? await freePort() : null;
+            const td = path.join(p.dir, 'w' + i); fs.mkdirSync(td, { recursive: true });
+            let bad = '';
+            for (const name of Object.keys(t.files || {})) { if (!safeRel(name)) { bad = '檔名不合法：' + name; break; } const fp = path.join(td, name); fs.mkdirSync(path.dirname(fp), { recursive: true }); fs.writeFileSync(fp, asBuf(t.files[name])); }
+            if (bad) { results.push({ hidden, verdict: 'RE', detail: bad, ms: 0, mode: pm.mode }); continue; }
+            const env = {}; for (const k of Object.keys(t.env || {})) env[k] = subst(t.env[k], port); if (port != null) env.JUDGE_PORT = String(port);
+            const args = (t.args || []).map((a) => subst(a, port));
+            const inBuf = t.inHex != null ? Buffer.from(String(t.inHex).replace(/\s+/g, ''), 'hex') : null;
+            let r;
+            if (pm.mode === 'wsl') {
+                if (!wslPrep) wslPrep = await prepareWsl(lang, source, { compileTimeoutMs: opts.compileTimeoutMs, workDir: opts.workDir }, pm.distro);
+                if (wslPrep.stage !== 'ok') { results.push({ hidden, verdict: 'CE', detail: String(wslPrep.stderr).slice(0, 400), ms: 0, mode: 'wsl' }); continue; }
+                const cmd = WSL_LANGS[lang].run(wslPath(wslPrep.dir)).concat(args);
+                const envArgs = Object.keys(env).map((k) => k + '=' + env[k]);
+                const secs = Math.max(1, Math.ceil(timeoutMs / 1000));
+                r = await exec('wsl', ['-d', pm.distro, '--cd', wslPath(td), '--', 'env'].concat(envArgs, ['timeout', '-k', '1', '-s', 'KILL', String(secs)], cmd), { cwd: td, input: t.in, inputBuf: inBuf, timeoutMs: timeoutMs + 3000, maxOutput: opts.maxOutput });
+                if ((r.code === 137 || r.code === 9 || r.signal === 'SIGKILL') && r.ms >= secs * 1000 - 300) { r.timedOut = true; r.ms = Math.min(r.ms, timeoutMs + 1); } // timeout -s KILL 被 wsl.exe 回報成 137 或 9；用耗時區分「自己被訊號殺掉」
+            } else {
+                const tStart = Date.now();
+                r = await exec(run.cmd, run.args.concat(args), { cwd: td, input: t.in, inputBuf: inBuf, env, timeoutMs, maxOutput: opts.maxOutput, pathPrefix: ccPath(lang) });
+                if (need.has('fork') || need.has('socket') || t.sweep) sweepOrphans(r.pid, tStart - 500);
+            }
             let verdict, detail = '';
-            if (r.timedOut) { verdict = 'TLE'; detail = '超過 ' + timeoutMs + 'ms'; }
+            if (r.timedOut) { verdict = 'TLE'; detail = '超過 ' + timeoutMs + 'ms' + (pm.mode === 'wsl' ? '（WSL 以整秒計：' + Math.ceil(timeoutMs / 1000) + ' 秒）' : ''); }
             else if (r.over) { verdict = 'OLE'; detail = '輸出超過上限'; }
-            else if (!r.spawnError && r.code !== 0 && startupSyntaxError(lang, r.stderr)) return Object.assign(core.summarize(tests.map((x) => ({ hidden: x.hidden, verdict: 'CE', detail: String(r.stderr).slice(0, 400) }))), { lang, compileLog: String(r.stderr) });
-            else if (r.spawnError || r.code !== 0) { verdict = 'RE'; detail = (r.signal ? '訊號 ' + r.signal : '結束碼 ' + r.code) + '；' + String(r.stderr || '').slice(0, 160).trim(); }
+            else if (pm.mode !== 'wsl' && !r.spawnError && r.code !== 0 && t.expectExit === undefined && startupSyntaxError(lang, r.stderr)) return Object.assign(core.summarize(tests.map((x) => ({ hidden: x.hidden, verdict: 'CE', detail: String(r.stderr).slice(0, 400) }))), { lang, compileLog: String(r.stderr) });
+            else if (r.spawnError) { verdict = 'RE'; detail = String(r.stderr || '').slice(0, 160).trim(); }
+            else if (t.expectExit === undefined && r.code !== 0) { verdict = 'RE'; detail = (r.signal ? '訊號 ' + r.signal : '結束碼 ' + r.code) + '；' + String(r.stderr || '').slice(0, 160).trim(); }
+            else if (t.expectExit !== undefined && t.expectExit !== 'any' && r.code !== t.expectExit) { verdict = 'WA'; detail = '結束碼 ' + (r.signal ? '訊號 ' + r.signal : r.code) + ' vs 期望 ' + t.expectExit; }
+            else if (t.outHex != null) { const want = String(t.outHex).replace(/\s+/g, '').toLowerCase(), got = r.stdoutBuf.toString('hex'); if (got === want) verdict = 'AC'; else { verdict = 'WA'; detail = 'stdout 位元組不同（長度 ' + r.stdoutBuf.length + ' vs 期望 ' + want.length / 2 + '）'; } }
             else { const c = core.compare(r.stdout, t.out, problem.checker, { eps: problem.eps }); verdict = c.ok ? 'AC' : 'WA'; detail = c.ok ? '' : c.reason; }
-            results.push({ hidden, verdict, detail, ms: r.ms });
+            if (verdict === 'AC' && t.expectFiles) { const msg = checkFiles(td, t.expectFiles, problem.checker, problem.eps); if (msg) { verdict = 'WA'; detail = msg; } }
+            results.push({ hidden, verdict, detail, ms: r.ms, mode: pm.mode });
             if (opts.stopAtFirstFail && verdict !== 'AC') break;
         }
-    } finally { cleanup(p.dir); }
-    return Object.assign(core.summarize(results), { lang });
+    } finally { cleanup(p.dir); if (wslPrep && wslPrep.dir) cleanup(wslPrep.dir); }
+    return Object.assign(core.summarize(results), { lang, modes: [...modes], results: results.map((x) => ({ verdict: x.verdict, mode: x.mode, ms: x.ms })) });
 }
 
-module.exports = { LANGS, ORDER, available, judge, check, exec, killTree, startupSyntaxError };
+module.exports = { LANGS, ORDER, available, judge, check, exec, killTree, startupSyntaxError, capabilities, freePort, sweepOrphans, wslPath };
