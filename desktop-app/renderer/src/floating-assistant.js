@@ -17682,6 +17682,79 @@ return holder.FaDomainLinuxfmt;
 const FaDomainLinuxreal = (function () {
 const holder = {};
 (function (module, self) {
+/* 領域包：真實 Linux 程式設計範式（環境變數、命令列引數、結束碼、子行程、管線、fork、檔案輸入輸出、本機 socket）。格式見 domain_registry_core.js。
+ * 和 domain_linuxsem_core.js（純函式的事件模擬）不同：這裡產生的程式「真的」呼叫作業系統（os.environ、sys.argv、sys.exit、subprocess、os.fork、open、socket），
+ * 要靠判題器（judge-runner.js）的 argv／env／files／expectFiles／expectExit／needs 才能驗證——測試除了 {in, out} 還帶那些欄位（見判題器開頭註解）。
+ * 骨架不含 def（沒有執行緒回呼），所以 socket 用單執行緒：先 listen、客戶端 connect（連線排進 backlog）、送出，再 accept。
+ * 需要 fork 的範式在 Windows 由判題器交給 WSL（mode wsl），沒有 WSL 就回 UNAVAILABLE，不是失敗。
+ * 差異點（輸出格式、結束碼規則、轉換方式）是槽位，由沙盒窮舉；檔名／標記／埠一律從敘述抽，抽不到就拒絕渲染。train／holdout 見 domain_linuxreal.test.js。 */
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaDomainLinuxreal = factory(); })(typeof self !== 'undefined' ? self : this, function () {
+    'use strict';
+    function make(PAR) {
+        const { S, code } = PAR.dsl;
+        const D = (id, algo, label, slots, py, extra) => Object.assign({ id, algo, paradigm: 'simulation', label, slots, py }, extra || {});
+        const lines = (N) => N.g || N.L[0];
+        // 從敘述抽「沒設定時印的標記」：「…沒有／沒設定／未設定…印「X」」或 <X>
+        const mark = (I) => { const m = /(?:沒有|沒設定|未設定|不存在|找不到)[^「。]{0,24}[「『"]([^」』"]*)[」』"]/.exec(String(I.statement)); if (!m) throw new Error('抽不到沒設定時的標記'); return m[1]; };
+        const fname = (I, re, what) => { const m = re.exec(String(I.statement)); if (!m) throw new Error('抽不到' + what); return m[1]; };
+        const skeletons = [
+            D('lr.env-report', 'real-env-report', '環境變數查詢：標準輸入每行一個名稱，程式讀行程的環境變數，輸出值（可含「名稱=值」格式），環境裡沒有的輸出敘述指定的標記；結束碼是沒設定的個數、或有任何沒設定就 1、或固定 0',
+                [S('fmt', '輸出格式', [['value', 'value'], ['pair', 'pair']]), S('ex', '結束碼', [['count', 'count'], ['flag', 'flag'], ['zero', 'zero']])],
+                (c, N, I) => { const mk = mark(I);
+                    return code(['import os', 'import sys', 'miss = 0', 'for line in ' + lines(N) + ':', '    name = line.strip()', '    if not name:', '        continue', '    v = os.environ.get(name)', '    if v is None:', '        miss += 1', '        print(' + JSON.stringify(mk) + ')', '    else:', '        print(' + (c.fmt === 'pair' ? 'name + "=" + v' : 'v') + ')', 'sys.exit(' + (c.ex === 'count' ? 'miss' : c.ex === 'flag' ? '1 if miss else 0' : '0') + ')']); }, { limit: 6 }),
+            D('lr.argv-report', 'real-argv-report', '命令列引數：輸出引數個數（不含程式名），接著把引數排序後（升冪、降冪或原順序）每個一行；結束碼是最長引數的長度（上限 255）、引數個數、或固定 0',
+                [S('ord', '排序', [['asc', 'asc'], ['desc', 'desc'], ['given', 'given']]), S('ex', '結束碼', [['maxlen', 'maxlen'], ['count', 'count'], ['zero', 'zero']])],
+                (c) => code(['import sys', 'args = sys.argv[1:]', 'print(len(args))', 'for a in ' + (c.ord === 'asc' ? 'sorted(args)' : c.ord === 'desc' ? 'sorted(args, reverse=True)' : 'args') + ':', '    print(a)', 'sys.exit(' + (c.ex === 'maxlen' ? 'min(255, max([len(a) for a in args] + [0]))' : c.ex === 'count' ? 'len(args)' : '0') + ')']), { limit: 9 }),
+            D('lr.spawn-env', 'real-spawn-env', '子行程與環境變數：標準輸入第一行 n 與子行程結束碼 k，接著 n 行「名稱=值」，最後一行一個名稱 q；父行程啟動子行程（同一個 Python 直譯器），子行程印出環境變數 q 的值（沒有印 none）並以 k 結束；環境只放這 n 個變數（不繼承）或繼承父行程再加上這 n 個；父行程轉印子行程的輸出，結束碼照子行程或固定 0',
+                [S('inh', '子行程環境', [['clean', 'clean'], ['inherit', 'inherit']]), S('ex', '父行程結束碼', [['child', 'child'], ['zero', 'zero']])],
+                (c, N) => { const L = lines(N);
+                    return code(['import os', 'import subprocess', 'import sys', 'rows = list(' + L + ')', 'n, k = [int(x) for x in rows[0].split()]', 'env = dict(os.environ) if "' + c.inh + '" == "inherit" else {}', 'for r in rows[1:1 + n]:', '    key, val = r.split("=", 1)', '    env[key] = val', 'q = rows[1 + n].strip()', 'p = subprocess.run([sys.executable, "-c", "import os, sys; print(os.environ.get(sys.argv[1], \\"none\\")); sys.exit(int(sys.argv[2]))", q, str(k)], env=env, capture_output=True, text=True)', 'print(p.stdout.strip())', 'sys.exit(' + (c.ex === 'child' ? 'p.returncode' : '0') + ')']); }, { limit: 4 }),
+            D('lr.file-transform', 'real-file-transform', '文字檔轉換：讀目前目錄的輸入檔，逐行處理後寫進輸出檔（每行反轉字元、整檔行序反轉、去除重複行保留第一次、依長度穩定排序、加行號「n: 」），標準輸出印寫入的行數或位元組數',
+                [S('op', '處理', [['rc', 'rc'], ['rl', 'rl'], ['uq', 'uq'], ['sl', 'sl'], ['nm', 'nm']]), S('cnt', '標準輸出', [['lines', 'lines'], ['bytes', 'bytes']])],
+                (c, N, I) => { const fi = fname(I, /(?:讀|輸入檔)[^。，]{0,10}?([\w.-]+\.\w+)/, '輸入檔名'), fo = fname(I, /(?:寫|輸出檔)[^。，]{0,10}?([\w.-]+\.\w+)/, '輸出檔名');
+                    const body = { rc: ['res = [x[::-1] for x in rows]'], rl: ['res = rows[::-1]'], uq: ['res = []', 'for x in rows:', '    if x not in res:', '        res.append(x)'], sl: ['res = sorted(rows, key=len)'], nm: ['res = [str(i + 1) + ": " + x for i, x in enumerate(rows)]'] }[c.op];
+                    return code(['rows = open(' + JSON.stringify(fi) + ').read().split("\\n")', 'if rows and rows[-1] == "":', '    rows.pop()'].concat(body, ['text = "".join(x + "\\n" for x in res)', 'open(' + JSON.stringify(fo) + ', "w").write(text)', c.cnt === 'lines' ? 'print(len(res))' : 'print(len(text.encode()))'])); }, { limit: 10 }),
+            D('lr.file-merge', 'real-file-merge', '多檔案合併：命令列引數是若干個檔名，每個檔案每行一個整數；程式依序讀入全部，合併後（升冪、降冪或依讀入順序）寫進輸出檔每行一個，標準輸出印整數總和或個數',
+                [S('ord', '輸出檔順序', [['asc', 'asc'], ['desc', 'desc'], ['given', 'given']]), S('st', '標準輸出', [['sum', 'sum'], ['count', 'count']])],
+                (c, N, I) => { const fo = fname(I, /(?:寫進|寫到|輸出檔)[^。，]{0,8}?([\w.-]+\.\w+)/, '輸出檔名');
+                    return code(['import sys', 'nums = []', 'for fn in sys.argv[1:]:', '    for ln in open(fn).read().split():', '        nums.append(int(ln))', 'res = ' + (c.ord === 'asc' ? 'sorted(nums)' : c.ord === 'desc' ? 'sorted(nums, reverse=True)' : 'nums'), 'open(' + JSON.stringify(fo) + ', "w").write("".join(str(x) + "\\n" for x in res))', c.st === 'sum' ? 'print(sum(nums))' : 'print(len(nums))']); }, { limit: 6 }),
+            D('lr.file-binary', 'real-file-binary', '二進位檔轉換：讀目前目錄的二進位輸入檔，每個位元組轉換（與 0xFF 互斥或、加 1 取模 256、高低半位元組對調）或整檔位元組反轉後寫進輸出檔，標準輸出印位元組數',
+                [S('op', '轉換', [['xor', 'xor'], ['add', 'add'], ['swap', 'swap'], ['rev', 'rev']])],
+                (c, N, I) => { const fi = fname(I, /(?:讀|輸入檔)[^。，]{0,10}?([\w.-]+\.bin)/, '輸入檔名'), fo = fname(I, /(?:寫|輸出檔)[^。，]{0,10}?([\w.-]+\.bin)/, '輸出檔名');
+                    const e = { xor: 'bytes(b ^ 255 for b in data)', add: 'bytes((b + 1) % 256 for b in data)', swap: 'bytes(((b & 15) << 4) | (b >> 4) for b in data)', rev: 'data[::-1]' }[c.op];
+                    return code(['data = open(' + JSON.stringify(fi) + ', "rb").read()', 'res = ' + e, 'open(' + JSON.stringify(fo) + ', "wb").write(res)', 'print(len(res))']); }, { limit: 4 }),
+            D('lr.sock-echo', 'real-sock-echo', '本機 socket 回應伺服器：命令列第一個引數是埠；程式在 127.0.0.1 開 TCP 伺服器並 listen；標準輸入每行一則訊息：另開客戶端 socket 連線並送出（送完關閉寫入端），伺服器 accept 後收完整則訊息、回覆轉換結果（轉大寫、字元反轉、長度、大小寫對調），客戶端印出收到的回覆',
+                [S('tf', '轉換', [['up', 'up'], ['rev', 'rev'], ['len', 'len'], ['sw', 'sw']])],
+                (c, N) => { const e = { up: 'data.upper()', rev: 'data[::-1]', len: 'str(len(data))', sw: 'data.swapcase()' }[c.tf];
+                    return code(['import socket', 'import sys', 'port = int(sys.argv[1])', 'srv = socket.socket()', 'srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)', 'srv.bind(("127.0.0.1", port))', 'srv.listen(5)', 'for line in ' + lines(N) + ':', '    msg = line.rstrip("\\n")', '    cl = socket.create_connection(("127.0.0.1", port))', '    cl.sendall(msg.encode())', '    cl.shutdown(socket.SHUT_WR)', '    conn, addr = srv.accept()', '    buf = b""', '    while True:', '        part = conn.recv(4096)', '        if not part:', '            break', '        buf += part', '    data = buf.decode()', '    conn.sendall((' + e + ').encode())', '    conn.close()', '    out = b""', '    while True:', '        part = cl.recv(4096)', '        if not part:', '            break', '        out += part', '    print(out.decode())', '    cl.close()', 'srv.close()']); }, { limit: 4 }),
+            D('lr.fork-pipe', 'real-fork-pipe', 'fork 與管線：標準輸入第一行 n，之後 n 個整數；對每個整數 fork 一個子行程計算（平方、階乘取模 1000003、二進位 1 的個數、十進位位數和），子行程把結果寫進管線後以某個值當結束碼離開（x 除以 10 的餘數，或結果除以 7 的餘數）；父行程依序讀管線、waitpid 取結束碼，每個整數輸出一行「結果 結束碼」',
+                [S('f', '計算', [['sq', 'sq'], ['fac', 'fac'], ['pop', 'pop'], ['ds', 'ds']]), S('ex', '子行程結束碼', [['mod10', 'mod10'], ['mod7', 'mod7']])],
+                (c, N) => { const f = { sq: ['    y = x * x'], fac: ['    y = 1', '    for i in range(2, x + 1):', '        y = y * i % 1000003'], pop: ['    y = bin(x).count("1")'], ds: ['    y = sum(int(ch) for ch in str(x))'] }[c.f];
+                    return code(['import os', 'xs = [int(v) for v in ' + lines(N) + '[1:]]', 'for x in xs:'].concat(f, ['    r, w = os.pipe()', '    pid = os.fork()', '    if pid == 0:', '        os.close(r)', '        os.write(w, str(y).encode())', '        os._exit(' + (c.ex === 'mod10' ? 'x % 10' : 'y % 7') + ')', '    os.close(w)', '    res = os.read(r, 100).decode()', '    os.close(r)', '    _, st = os.waitpid(pid, 0)', '    print(res, os.WEXITSTATUS(st))'])); }, { limit: 8 }),
+            D('lr.pipe-chain', 'real-pipe-chain', '子行程管線：標準輸入的整段文字餵給由兩個子行程接起來的管線（各是一個 Python 直譯器的小過濾器）：第一段（排序行、轉大寫、行序反轉），第二段（相鄰去重、計行數、加行號）；父行程輸出管線最後的輸出',
+                [S('a', '第一段', [['sort', 'sort'], ['up', 'up'], ['rev', 'rev']]), S('b', '第二段', [['uniq', 'uniq'], ['wc', 'wc'], ['nl', 'nl']])],
+                (c, N) => { const A = { sort: 'import sys; sys.stdout.write("".join(sorted(sys.stdin.readlines())))', up: 'import sys; sys.stdout.write(sys.stdin.read().upper())', rev: 'import sys; sys.stdout.write("".join(sys.stdin.readlines()[::-1]))' }[c.a];
+                    const Bc = { uniq: 'import sys\\nprev = None\\nfor l in sys.stdin:\\n    if l != prev:\\n        sys.stdout.write(l)\\n    prev = l', wc: 'import sys; print(len(sys.stdin.readlines()))', nl: 'import sys\\nfor i, l in enumerate(sys.stdin):\\n    sys.stdout.write(str(i + 1) + chr(32) + l)' }[c.b];
+                    return code(['import subprocess', 'import sys', 'text = "".join(x + "\\n" for x in ' + lines(N) + ')', 'p1 = subprocess.Popen([sys.executable, "-c", ' + JSON.stringify(A) + '], stdin=subprocess.PIPE, stdout=subprocess.PIPE)', 'p2 = subprocess.Popen([sys.executable, "-c", "' + Bc + '"], stdin=p1.stdout, stdout=subprocess.PIPE)', 'p1.stdout.close()', 'p1.stdin.write(text.encode())', 'p1.stdin.close()', 'out = p2.communicate()[0]', 'p1.wait()', 'sys.stdout.write(out.decode().replace("\\r\\n", "\\n"))']); }, { limit: 9 })
+        ];
+        // 偵測詞用「全部都出現」的先行斷言（敘述的子句順序和距離不定）；順序＝優先序
+        const ALL = (...parts) => new RegExp('^' + parts.map((x) => '(?=[\\s\\S]*' + x + ')').join(''), 'i');
+        const algos = [
+            { key: 'real-sock-echo', re: ALL('(?:127\\.0\\.0\\.1|socket|TCP)') },
+            { key: 'real-fork-pipe', re: ALL('fork', '(?:管線|waitpid)') },
+            { key: 'real-spawn-env', re: ALL('子行程', '環境變數'), veto: /fork/i },
+            { key: 'real-pipe-chain', re: ALL('(?:兩個子行程|子行程[^。]{0,30}管線)'), veto: /fork/i },
+            { key: 'real-file-merge', re: ALL('命令列引數', '檔名') },
+            { key: 'real-argv-report', re: ALL('命令列引數', '(?:個數|排序)'), veto: /檔名/ },
+            { key: 'real-env-report', re: ALL('環境變數', '(?:沒設定|未設定|不存在|找不到|沒有設|查詢|讀取|查)') },
+            { key: 'real-file-binary', re: ALL('二進位', '檔', '位元組') },
+            { key: 'real-file-transform', re: ALL('讀', '寫', '\\.txt'), veto: /命令列引數/ }
+        ].map((x) => Object.assign(x, { pri: true, raw: true, rawAll: true, veto: new RegExp((x.veto ? x.veto.source + '|' : '') + '事件|set K V|export K|bind fd') })); // 「事件」＝linuxsem 的純函式事件模擬題，不是真實 IO
+        const paradigms = {}; for (const sk of skeletons) paradigms[sk.algo] = ['simulation'];
+        return { id: 'linuxreal', label: '真實 Linux 程式設計（環境變數、命令列引數、結束碼、子行程、管線、fork、檔案輸入輸出、本機 socket）', requires: [], judge: { checker: 'tokens', timeoutMs: 30000 }, algos, paradigms, skeletons };
+    }
+    return { make };
+});
 
 }).call(null, undefined, holder);
 return holder.FaDomainLinuxreal;
@@ -17691,6 +17764,306 @@ return holder.FaDomainLinuxreal;
 const FaDomainLzma = (function () {
 const holder = {};
 (function (module, self) {
+/* 領域包：LZMA 完整流程（LZMA alone 的 match／rep／距離槽解碼、LZMA2 分塊、x86 BCJ 過濾、delta 過濾、xz 容器）。格式見 domain_registry_core.js。
+ * 解碼器寫成「輔助操作」（helpers，G2 切割）：範圍解碼器的單一位元 rc_bit、位元樹、長度解碼、LZMA 區塊迴圈 lzma_chunk、LZMA2 分塊 lzma2、BCJ、xz 區塊標頭，
+ * 各骨架依需要組合（alone 只要前者；lzma2-bcj 加 BCJ；xz-decode 全部）。全部用 Python 標準庫 lzma 當獨立參考解對照驗證（見 domain_lzma.test.js），
+ * 且在撰寫時另外用隨機資料對 lzma.compress 的 FORMAT_ALONE／FORMAT_RAW(LZMA2)／FORMAT_XZ（含 BCJ、delta 濾鏡與四種檢查類型）逐筆比對過。
+ * 誠實限制：只做解碼，不做壓縮；xz 容器只處理單一串流單一區塊（不驗證檢查值、不解析索引與頁尾）；LZMA2 的壓縮區塊假設屬性有效（不檢查壞資料）。 */
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaDomainLzma = factory(); })(typeof self !== 'undefined' ? self : this, function () {
+    'use strict';
+    // 輔助操作本體（Python）；常數已展開成數字（機率陣列版面：isMatch 0、isRep 192、isRepG0 204、G1 216、G2 228、isRep0Long 240、posSlot 432、specPos 688、align 803、長度 819、rep 長度 1333、literal 1847）
+    const HELP = {
+        rc_bit: { params: ["rc", "probs", "i"], py: [
+            "if rc[0] < 16777216:",
+            "    rc[0] = (rc[0] << 8) & 0xFFFFFFFF",
+            "    rc[1] = ((rc[1] << 8) | rc[3][rc[2]]) & 0xFFFFFFFF",
+            "    rc[2] += 1",
+            "p = probs[i]",
+            "bound = (rc[0] >> 11) * p",
+            "if rc[1] < bound:",
+            "    rc[0] = bound",
+            "    probs[i] = p + ((2048 - p) >> 5)",
+            "    return 0",
+            "rc[1] -= bound",
+            "rc[0] -= bound",
+            "probs[i] = p - (p >> 5)",
+            "return 1"
+        ] },
+        rc_tree: { params: ["rc", "probs", "base", "nbits"], py: [
+            "m = 1",
+            "for _ in range(nbits):",
+            "    m = (m << 1) | rc_bit(rc, probs, base + m)",
+            "return m - (1 << nbits)"
+        ] },
+        rc_rtree: { params: ["rc", "probs", "base", "nbits"], py: [
+            "m = 1",
+            "r = 0",
+            "for i in range(nbits):",
+            "    b = rc_bit(rc, probs, base + m)",
+            "    m = (m << 1) | b",
+            "    r |= b << i",
+            "return r"
+        ] },
+        rc_len: { params: ["rc", "probs", "base", "pos_state"], py: [
+            "if rc_bit(rc, probs, base) == 0:",
+            "    return rc_tree(rc, probs, base + 2 + (pos_state << 3), 3)",
+            "if rc_bit(rc, probs, base + 1) == 0:",
+            "    return 8 + rc_tree(rc, probs, base + 2 + 128 + (pos_state << 3), 3)",
+            "return 16 + rc_tree(rc, probs, base + 2 + 256, 8)"
+        ] },
+        lzma_new_probs: { params: ["lc", "lp"], py: [
+            "return [1024] * (1847 + (0x300 << (lc + lp)))"
+        ] },
+        lzma_chunk: { params: ["rc", "st", "out", "limit"], py: [
+            "state, rep0, rep1, rep2, rep3, lc, lp, pb, probs = st",
+            "while len(out) < limit:",
+            "    pos_state = len(out) & ((1 << pb) - 1)",
+            "    if rc_bit(rc, probs, 0 + (state << 4) + pos_state) == 0:",
+            "        prev = out[-1] if out else 0",
+            "        base = 1847 + 0x300 * (((len(out) & ((1 << lp) - 1)) << lc) + (prev >> (8 - lc)))",
+            "        sym = 1",
+            "        if state >= 7:",
+            "            mb = out[-rep0 - 1]",
+            "            while sym < 0x100:",
+            "                mbit = (mb >> 7) & 1",
+            "                mb = (mb << 1) & 0xFF",
+            "                b = rc_bit(rc, probs, base + ((1 + mbit) << 8) + sym)",
+            "                sym = (sym << 1) | b",
+            "                if mbit != b:",
+            "                    break",
+            "        while sym < 0x100:",
+            "            sym = (sym << 1) | rc_bit(rc, probs, base + sym)",
+            "        out.append(sym & 0xFF)",
+            "        state = 0 if state < 4 else (state - 3 if state < 10 else state - 6)",
+            "        continue",
+            "    if rc_bit(rc, probs, 192 + state) == 0:",
+            "        rep3, rep2, rep1 = rep2, rep1, rep0",
+            "        ln = rc_len(rc, probs, 819, pos_state)",
+            "        state = 7 if state < 7 else 10",
+            "        ls = ln if ln < 4 else 3",
+            "        slot = rc_tree(rc, probs, 432 + (ls << 6), 6)",
+            "        if slot < 4:",
+            "            rep0 = slot",
+            "        else:",
+            "            nd = (slot >> 1) - 1",
+            "            rep0 = (2 | (slot & 1)) << nd",
+            "            if slot < 14:",
+            "                rep0 += rc_rtree(rc, probs, 688 + rep0 - slot - 1, nd)",
+            "            else:",
+            "                x = 0",
+            "                for _ in range(nd - 4):",
+            "                    if rc[0] < 16777216:",
+            "                        rc[0] = (rc[0] << 8) & 0xFFFFFFFF",
+            "                        rc[1] = ((rc[1] << 8) | rc[3][rc[2]]) & 0xFFFFFFFF",
+            "                        rc[2] += 1",
+            "                    rc[0] >>= 1",
+            "                    t = 1 if rc[1] >= rc[0] else 0",
+            "                    if t:",
+            "                        rc[1] -= rc[0]",
+            "                    x = (x << 1) | t",
+            "                rep0 += (x << 4) + rc_rtree(rc, probs, 803, 4)",
+            "            if rep0 == 0xFFFFFFFF:",
+            "                st[0], st[1], st[2], st[3], st[4] = state, rep0, rep1, rep2, rep3",
+            "                return 1",
+            "        ln += 2",
+            "    else:",
+            "        if rc_bit(rc, probs, 204 + state) == 0:",
+            "            if rc_bit(rc, probs, 240 + (state << 4) + pos_state) == 0:",
+            "                state = 9 if state < 7 else 11",
+            "                out.append(out[-rep0 - 1])",
+            "                continue",
+            "        else:",
+            "            if rc_bit(rc, probs, 216 + state) == 0:",
+            "                d = rep1",
+            "            else:",
+            "                if rc_bit(rc, probs, 228 + state) == 0:",
+            "                    d = rep2",
+            "                else:",
+            "                    d = rep3",
+            "                    rep3 = rep2",
+            "                rep2 = rep1",
+            "            rep1 = rep0",
+            "            rep0 = d",
+            "        ln = rc_len(rc, probs, 1333, pos_state) + 2",
+            "        state = 8 if state < 7 else 11",
+            "    for _ in range(ln):",
+            "        out.append(out[-rep0 - 1])",
+            "    if len(out) > limit:",
+            "        del out[limit:]",
+            "st[0], st[1], st[2], st[3], st[4] = state, rep0, rep1, rep2, rep3",
+            "return 0"
+        ] },
+        lzma_alone: { params: ["data"], py: [
+            "d = data[0]",
+            "pb = d // 45",
+            "d %= 45",
+            "lp = d // 9",
+            "lc = d % 9",
+            "size = int.from_bytes(data[5:13], \"little\")",
+            "rc = [0xFFFFFFFF, int.from_bytes(data[14:18], \"big\"), 18, data]",
+            "out = bytearray()",
+            "st = [0, 0, 0, 0, 0, lc, lp, pb, lzma_new_probs(lc, lp)]",
+            "lzma_chunk(rc, st, out, size if size != 0xFFFFFFFFFFFFFFFF else 1 << 62)",
+            "return bytes(out)"
+        ] },
+        lzma2: { params: ["data"], py: [
+            "out = bytearray()",
+            "st = None",
+            "pos = 0",
+            "while True:",
+            "    c = data[pos]",
+            "    pos += 1",
+            "    if c == 0:",
+            "        break",
+            "    if c < 0x80:",
+            "        n = ((data[pos] << 8) | data[pos + 1]) + 1",
+            "        pos += 2",
+            "        out += data[pos:pos + n]",
+            "        pos += n",
+            "        continue",
+            "    usize = (((c & 0x1F) << 16) | (data[pos] << 8) | data[pos + 1]) + 1",
+            "    csize = ((data[pos + 2] << 8) | data[pos + 3]) + 1",
+            "    pos += 4",
+            "    mode = (c >> 5) & 3",
+            "    if mode >= 2:",
+            "        d = data[pos]",
+            "        pos += 1",
+            "        pb = d // 45",
+            "        d %= 45",
+            "        lp = d // 9",
+            "        lc = d % 9",
+            "        st = [0, 0, 0, 0, 0, lc, lp, pb, lzma_new_probs(lc, lp)]",
+            "    elif mode == 1:",
+            "        st[0], st[1], st[2], st[3], st[4] = 0, 0, 0, 0, 0",
+            "        st[8] = lzma_new_probs(st[5], st[6])",
+            "    rc = [0xFFFFFFFF, int.from_bytes(data[pos + 1:pos + 5], \"big\"), pos + 5, data]",
+            "    lzma_chunk(rc, st, out, len(out) + usize)",
+            "    pos += csize",
+            "return bytes(out)"
+        ] },
+        bcj_x86: { params: ["data", "decode"], py: [
+            "buf = bytearray(data)",
+            "allowed = [True, True, True, False, True, False, False, False]",
+            "bitnum = [0, 1, 2, 2, 3, 3, 3, 3]",
+            "prev_mask = 0",
+            "prev_pos = 0xFFFFFFFB",
+            "pos = 0",
+            "limit = len(buf) - 5",
+            "while pos <= limit:",
+            "    b = buf[pos]",
+            "    if b != 0xE8 and b != 0xE9:",
+            "        pos += 1",
+            "        continue",
+            "    offset = (pos - prev_pos) & 0xFFFFFFFF",
+            "    prev_pos = pos",
+            "    if offset > 5:",
+            "        prev_mask = 0",
+            "    else:",
+            "        for _ in range(offset):",
+            "            prev_mask &= 0x77",
+            "            prev_mask <<= 1",
+            "    b = buf[pos + 4]",
+            "    if (b == 0 or b == 0xFF) and allowed[(prev_mask >> 1) & 7] and (prev_mask >> 1) < 16:",
+            "        src = (b << 24) | (buf[pos + 3] << 16) | (buf[pos + 2] << 8) | buf[pos + 1]",
+            "        while True:",
+            "            if decode:",
+            "                dest = (src - (pos + 5)) & 0xFFFFFFFF",
+            "            else:",
+            "                dest = (src + (pos + 5)) & 0xFFFFFFFF",
+            "            if prev_mask == 0:",
+            "                break",
+            "            i = bitnum[prev_mask >> 1]",
+            "            b = (dest >> (24 - i * 8)) & 0xFF",
+            "            if not (b == 0 or b == 0xFF):",
+            "                break",
+            "            src = dest ^ ((1 << (32 - i * 8)) - 1)",
+            "        buf[pos + 4] = 0xFF if (dest >> 24) & 1 else 0",
+            "        buf[pos + 3] = (dest >> 16) & 0xFF",
+            "        buf[pos + 2] = (dest >> 8) & 0xFF",
+            "        buf[pos + 1] = dest & 0xFF",
+            "        pos += 5",
+            "        prev_mask = 0",
+            "    else:",
+            "        pos += 1",
+            "        prev_mask |= 1",
+            "        if b == 0 or b == 0xFF:",
+            "            prev_mask |= 0x10",
+            "return bytes(buf)"
+        ] },
+        varint: { params: ["data", "pos"], py: [
+            "v = 0",
+            "sh = 0",
+            "while True:",
+            "    b = data[pos]",
+            "    pos += 1",
+            "    v |= (b & 0x7F) << sh",
+            "    sh += 7",
+            "    if b < 0x80:",
+            "        return v, pos"
+        ] },
+        xz_decode: { params: ["data"], py: [
+            "chk = data[7] & 15",
+            "pos = 12",
+            "hs = (data[pos] + 1) * 4",
+            "hdr = data[pos:pos + hs]",
+            "nf = (hdr[1] & 3) + 1",
+            "p = 2",
+            "if hdr[1] & 0x40:",
+            "    _, p = varint(hdr, p)",
+            "if hdr[1] & 0x80:",
+            "    _, p = varint(hdr, p)",
+            "filters = []",
+            "for _ in range(nf):",
+            "    fid, p = varint(hdr, p)",
+            "    ps, p = varint(hdr, p)",
+            "    filters.append((fid, bytes(hdr[p:p + ps])))",
+            "    p += ps",
+            "pos += hs",
+            "last = filters[-1]",
+            "body = data[pos:]",
+            "out = lzma2(body)",
+            "for fid, props in reversed(filters[:-1]):",
+            "    if fid == 4:",
+            "        out = bcj_x86(out, True)",
+            "    elif fid == 3:",
+            "        dist = props[0] + 1",
+            "        o = bytearray(out)",
+            "        for i in range(dist, len(o)):",
+            "            o[i] = (o[i] + o[i - dist]) & 0xFF",
+            "        out = bytes(o)",
+            "return out"
+        ] }
+    };
+    const pick = (names) => names.map((n) => ({ name: n, params: HELP[n].params, py: HELP[n].py }));
+    const CORE = ['rc_bit', 'rc_tree', 'rc_rtree', 'rc_len', 'lzma_new_probs', 'lzma_chunk'];
+    function make(PAR) {
+        const { S, code } = PAR.dsl;
+        const D = (id, algo, label, slots, py, extra) => Object.assign({ id, algo, paradigm: 'binary-format', label, slots, py }, extra || {});
+        const hexIn = (I) => I.inputs.length === 1 && I.inputs[0].k === 'hex';
+        const hx = (N) => N.s[0];
+        const outSlot = S('out', '輸出', [['hex', 'hex'], ['text', 'text']]);
+        const emit = (c) => (c.out === 'hex' ? 'print(res.hex())' : 'print(res.decode("utf-8"))');
+        const skeletons = [
+            D('lz.alone', 'lzma-alone', 'LZMA alone（.lzma）解碼：13 位元組檔頭（屬性 lc／lp／pb、字典大小、未壓縮大小）＋範圍解碼串流；literal、match、rep0～3、短 rep、距離槽、對齊位元全套', [outSlot],
+                (c, N) => code(['data = bytes.fromhex(' + hx(N) + '.strip())', 'res = lzma_alone(data)', emit(c)]), { shape: hexIn, limit: 2, helpers: () => pick(CORE.concat(['lzma_alone'])) }),
+            D('lz.lzma2', 'lzma2-raw', 'LZMA2 原始串流解碼：控制位元組（0 結束、1／2 未壓縮區塊、0x80 以上的 LZMA 區塊與重置等級）、未壓縮／壓縮大小、屬性位元組；字典跨區塊保留', [outSlot],
+                (c, N) => code(['data = bytes.fromhex(' + hx(N) + '.strip())', 'res = lzma2(data)', emit(c)]), { shape: hexIn, limit: 2, helpers: () => pick(CORE.concat(['lzma2'])) }),
+            D('lz.lzma2-bcj', 'lzma2-bcj', 'x86 BCJ＋LZMA2 原始串流解碼：先 LZMA2 解出，再做 x86 BCJ 解碼（把 E8／E9 後的絕對位址轉回相對位址，prev_mask 狀態機）', [outSlot],
+                (c, N) => code(['data = bytes.fromhex(' + hx(N) + '.strip())', 'res = bcj_x86(lzma2(data), True)', emit(c)]), { shape: hexIn, limit: 2, helpers: () => pick(CORE.concat(['lzma2', 'bcj_x86'])) }),
+            D('lz.xz-decode', 'xz-decode', 'xz 檔解碼：串流標頭、區塊標頭（濾鏡鏈：BCJ x86／delta／LZMA2）、LZMA2 區塊資料，依濾鏡鏈反向還原', [outSlot],
+                (c, N) => code(['data = bytes.fromhex(' + hx(N) + '.strip())', 'res = xz_decode(data)', emit(c)]), { shape: hexIn, limit: 2, helpers: () => pick(CORE.concat(['lzma2', 'bcj_x86', 'varint', 'xz_decode'])) })
+        ];
+        const ALL = (...parts) => new RegExp('^' + parts.map((x) => String.raw`(?=[\s\S]*` + x + ')').join(''), 'i');
+        const DEC = '(?:解壓|解碼|還原)';
+        const algos = [
+            { key: 'xz-decode', re: ALL(DEC, String.raw`(?:\.xz|\bxz\s*(?:檔|壓縮檔|容器))`), veto: /沒有[^。]{0,8}容器|不含[^。]{0,8}容器|原始串流/ }, { key: 'lzma2-bcj', re: ALL(DEC, 'BCJ', 'LZMA2') },
+            { key: 'lzma2-raw', re: ALL(DEC, 'LZMA2'), veto: /BCJ/i }, { key: 'lzma-alone', re: ALL(DEC, String.raw`(?:\.lzma|LZMA\s*alone)`) }
+        ].map((x) => Object.assign(x, { pri: true }));
+        const paradigms = {}; for (const sk of skeletons) paradigms[sk.algo] = ['binary-format'];
+        return { id: 'lzma', label: 'LZMA 完整流程（match 解碼、LZMA2、BCJ、xz 容器）', requires: [], judge: { checker: 'tokens', timeoutMs: 30000 }, algos, paradigms, skeletons };
+    }
+    return { make, HELP };
+});
 
 }).call(null, undefined, holder);
 return holder.FaDomainLzma;
@@ -17700,6 +18073,69 @@ return holder.FaDomainLzma;
 const FaDomainBinfmt = (function () {
 const holder = {};
 (function (module, self) {
+/* 領域包：二進位格式家族的補洞（xz 串流標頭的檢查類型名稱、8 位元調色盤 BMP 寫出）。格式見 domain_registry_core.js。
+ * 這兩個家族原本在 Linux 題庫的 holdout 裡解不出來（核心範式 xz.stream-header 只輸出三種判決字樣；bmp.write24 只有 24 位元、沒有調色盤）。
+ * xz.header-parse：檢查類型的名稱表、各種判決字樣、不在表中的格式，一律從敘述抽（括號例句「OK CRC32」教出前綴；n=名稱 教出表；BAD／FAIL 字樣教出判決），抽不到就拒絕渲染；
+ *   差異點（判決字樣的對應、先檢查魔術還是 CRC、CRC 範圍、檢查類型取低 4 位元還是整個位元組）是槽位，由沙盒窮舉。
+ * bmp.write8：第一行「寬 高 k」、第二行 k 個 RRGGBB、之後逐列索引；上下翻轉、調色盤位元組順序、biClrUsed／biClrImportant 的值是槽位。解析度從敘述抽（抽不到用 2835）。 */
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaDomainBinfmt = factory(); })(typeof self !== 'undefined' ? self : this, function () {
+    'use strict';
+    function make(PAR) {
+        const { S, code } = PAR.dsl;
+        const D = (id, algo, label, slots, py, extra) => Object.assign({ id, algo, paradigm: 'binary-format', label, slots, py }, extra || {});
+        const crcHelper = { name: 'crc32', params: ['data'], py: ['crc = 0xFFFFFFFF', 'for b_ in data:', '    crc ^= b_', '    for _ in range(8):', '        if crc & 1:', '            crc = (crc >> 1) ^ 0xEDB88320', '        else:', '            crc >>= 1', 'return crc ^ 0xFFFFFFFF'] };
+        const quoted = (st) => [...String(st).matchAll(/[「『"]([^」』"]+)[」』"]/g)].map((m) => m[1].trim());
+        // 從敘述抽 xz 標頭的輸出約定
+        const xzSpec = (I) => {
+            const st = String(I.statement);
+            const names = []; for (const m of st.matchAll(/(\d+)\s*[=＝]\s*([A-Za-z][\w-]*)/g)) names.push([+m[1], m[2]]);
+            if (names.length < 2) throw new Error('抽不到檢查類型的名稱表');
+            const ex = quoted(st); const okEx = ex.find((e) => names.some((n) => e.endsWith(n[1])));
+            if (!okEx) throw new Error('抽不到成功例句');
+            const first = names.find((n) => okEx.endsWith(n[1])); const prefix = okEx.slice(0, okEx.length - first[1].length);
+            const PH = new RegExp(String.raw`^(.*?[^A-Za-z])(?:數字|值|編號|號碼|N|X|n|x)(\)?)$`);
+            const unk = ex.find((e) => e !== okEx && !names.some((n) => e.endsWith(n[1])) && PH.test(e));
+            if (!unk) throw new Error('抽不到不在表中的類型格式');
+            const um = PH.exec(unk);
+            const okw = prefix.trim() ? prefix.trim().split(/\s+/)[0] : null; const bad = []; for (const m of st.matchAll(/輸出\s*[「『"]?([A-Za-z][\w-]*(?: [A-Za-z_]+)?)[」』"]?/g)) { const w = m[1].trim(); if ((!okw || w.indexOf(okw) !== 0) && unk.indexOf(w) !== 0 && !bad.includes(w)) bad.push(w); }
+            if (bad.length !== 2) throw new Error('抽不到兩種失敗字樣');
+            return { names, prefix, upre: um[1], usuf: um[2], bad };
+        };
+        const skeletons = [
+            D('xz.header-parse', 'xz-header2', 'xz 串流標頭（12 位元組）：魔術數字、串流旗標（檢查類型取第二個位元組的低 4 位元）、旗標的 CRC-32；成功時輸出「前綴＋檢查類型名稱」（表、前綴、不在表中的格式從敘述抽），失敗輸出敘述裡的兩種字樣',
+                [S('perm', '失敗字樣對應（魔術不符、CRC 不符）', [['01', '0, 1'], ['10', '1, 0']]), S('first', '先檢查', [['magic', 'magic'], ['crc', 'crc']]), S('crcof', 'CRC 範圍', [['flags', 'raw_[6:8]'], ['hdr', 'raw_[0:8]']]), S('tbits', '檢查類型', [['low', 'raw_[7] & 15'], ['full', 'raw_[7]']])],
+                (c, N, I) => { const sp = xzSpec(I); const p = c.perm.split(', ').map(Number); const tbl = '{' + sp.names.map((n) => n[0] + ': ' + JSON.stringify(n[1])).join(', ') + '}';
+                    const magicBad = 'print(' + JSON.stringify(sp.bad[p[0]]) + ')', crcBad = 'print(' + JSON.stringify(sp.bad[p[1]]) + ')';
+                    const body = c.first === 'magic' ? ['if not mg_:', '    ' + magicBad, 'elif ck_ != st_:', '    ' + crcBad, 'else:', '    OKP'] : ['if ck_ != st_:', '    ' + crcBad, 'elif not mg_:', '    ' + magicBad, 'else:', '    OKP'];
+                    const okp = 'tb_ = ' + c.tbits + '\n    nm_ = ' + tbl + '.get(tb_)\n    if nm_ is None:\n        print(' + JSON.stringify(sp.upre) + ' + str(tb_) + ' + JSON.stringify(sp.usuf) + ')\n    else:\n        print(' + JSON.stringify(sp.prefix) + ' + nm_)';
+                    return code(['raw_ = bytes.fromhex(' + N.s[0] + '.strip())', 'mg_ = raw_[0:6] == bytes([0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00])', 'ck_ = crc32(' + c.crcof + ')', 'st_ = int.from_bytes(raw_[8:12], "little")'].concat(body.map((l) => l.replace('OKP', okp)))); },
+                { shape: (I) => I.inputs.length === 1 && I.inputs[0].k === 'hex', limit: 16, helpers: () => [crcHelper] }),
+            D('xz.footer-parse', 'xz-footer', 'xz 串流頁尾（12 位元組）：4 位元組小端 CRC-32（算 backward size 與旗標共 6 位元組）、4 位元組 backward size、2 位元組串流旗標、結尾 YZ；成功時輸出「前綴＋檢查類型名稱」（表、前綴、不在表中的格式與兩種失敗字樣從敘述抽）',
+                [S('perm', '失敗字樣對應（結尾不符、CRC 不符）', [['01', '0, 1'], ['10', '1, 0']]), S('first', '先檢查', [['magic', 'magic'], ['crc', 'crc']]), S('crcof', 'CRC 範圍', [['six', 'raw_[4:10]'], ['bs', 'raw_[4:8]']]), S('tbits', '檢查類型', [['low', 'raw_[9] & 15'], ['full', 'raw_[9]']])],
+                (c, N, I) => { const sp = xzSpec(I); const p = c.perm.split(', ').map(Number); const tbl = '{' + sp.names.map((n) => n[0] + ': ' + JSON.stringify(n[1])).join(', ') + '}';
+                    const magicBad = 'print(' + JSON.stringify(sp.bad[p[0]]) + ')', crcBad = 'print(' + JSON.stringify(sp.bad[p[1]]) + ')';
+                    const body = c.first === 'magic' ? ['if not mg_:', '    ' + magicBad, 'elif ck_ != st_:', '    ' + crcBad, 'else:', '    OKP'] : ['if ck_ != st_:', '    ' + crcBad, 'elif not mg_:', '    ' + magicBad, 'else:', '    OKP'];
+                    const okp = 'tb_ = ' + c.tbits + '\n    nm_ = ' + tbl + '.get(tb_)\n    if nm_ is None:\n        print(' + JSON.stringify(sp.upre) + ' + str(tb_) + ' + JSON.stringify(sp.usuf) + ')\n    else:\n        print(' + JSON.stringify(sp.prefix) + ' + nm_)';
+                    return code(['raw_ = bytes.fromhex(' + N.s[0] + '.strip())', 'mg_ = raw_[10:12] == b"YZ"', 'ck_ = crc32(' + c.crcof + ')', 'st_ = int.from_bytes(raw_[0:4], "little")'].concat(body.map((l) => l.replace('OKP', okp)))); },
+                { shape: (I) => I.inputs.length === 1 && I.inputs[0].k === 'hex', limit: 16, helpers: () => [crcHelper] }),
+            D('bmp.write8', 'bmp-write8', '8 位元調色盤 BMP 寫出：第一行「寬 高 k」、第二行 k 個 RRGGBB、之後逐列調色盤索引；檔頭 14＋資訊標頭 40＋調色盤 4k（B G R 0 或 R G B 0）＋像素（由下而上或由上而下，每列補 0 到 4 的倍數）；使用色彩數與重要色彩數的值由窮舉挑',
+                [S('flip', '列序', [['bu', 'range(ht_ - 1, -1, -1)'], ['td', 'range(ht_)']]), S('po', '調色盤位元組順序', [['bgr', '[b_, g_, r_, 0]'], ['rgb', '[r_, g_, b_, 0]']]), S('ci', '使用色彩數／重要色彩數', [['k0', 'k_, 0'], ['00', '0, 0']]), S('pf', '調色盤寫法', [['hex', 'hex'], ['dec', 'dec']])],
+                (c, N, I) => { const dpi = (/解析度皆\s*(\d+)/.exec(String(I.statement)) || [])[1] || 2835; const L = N.L[0];
+                    return code(['w_, ht_, k_ = [int(t) for t in ' + L + '[0].split()]', c.pf === 'hex' ? 'pal_ = [[int(t[0:2], 16), int(t[2:4], 16), int(t[4:6], 16)] for t in ' + L + '[1].split()]' : 'pal_ = [[int(t) for t in ' + L + '[1 + i].split()] for i in range(k_)]', 'rows_ = [t.split() for t in ' + L + '[' + (c.pf === 'hex' ? '2' : '1 + k_') + ':' + (c.pf === 'hex' ? '2' : '1 + k_') + ' + ht_]]', 'pad_ = (4 - w_ % 4) % 4', 'data_ = bytearray()', 'for y in ' + c.flip + ':', '    data_ += bytes([int(t) for t in rows_[y]])', '    data_ += bytes(pad_)', 'pb_ = bytearray()', 'for c_ in pal_:', '    r_ = c_[0]', '    g_ = c_[1]', '    b_ = c_[2]', '    pb_ += bytes(' + c.po + ')',
+                        'off_ = 54 + 4 * k_', 'fs_ = off_ + len(data_)', 'hdr_ = b"BM" + fs_.to_bytes(4, "little") + bytes(4) + off_.to_bytes(4, "little")', 'dib_ = (40).to_bytes(4, "little") + w_.to_bytes(4, "little") + ht_.to_bytes(4, "little") + (1).to_bytes(2, "little") + (8).to_bytes(2, "little") + bytes(4) + len(data_).to_bytes(4, "little") + (' + dpi + ').to_bytes(4, "little") + (' + dpi + ').to_bytes(4, "little") + (' + c.ci.split(', ')[0] + ').to_bytes(4, "little") + (' + c.ci.split(', ')[1] + ').to_bytes(4, "little")', 'print((hdr_ + dib_ + bytes(pb_) + bytes(data_)).hex())']); },
+                { shape: (I) => I.inputs.some((x) => x.k === 'rest'), limit: 16 })
+        ];
+        const ALL = (...parts) => new RegExp('^' + parts.map((x) => String.raw`(?=[\s\S]*` + x + ')').join(''), 'i');
+        const algos = [
+            { key: 'xz-footer', re: /xz[\s\S]*(?:頁尾|footer)[\s\S]*\d+\s*[=＝]\s*[A-Za-z]/i, veto: /解壓|解碼資料|還原/ },
+            { key: 'xz-header2', re: /xz[\s\S]*(?:標頭|header)[\s\S]*\d+\s*[=＝]\s*[A-Za-z]/i, veto: /解壓|解碼資料|還原|頁尾|footer/i },
+            { key: 'bmp-write8', re: ALL('(?:寫出|寫成|組出|產生|輸出整個|輸出[^。，；]{0,12}BMP)', '調色盤', String.raw`(?:8\s*位元|八位元|256\s*色)`, 'BMP'), rawAll: true }
+        ].map((x) => Object.assign(x, { pri: true }));
+        const paradigms = {}; for (const sk of skeletons) paradigms[sk.algo] = ['binary-format'];
+        return { id: 'binfmt', label: '二進位格式補洞（xz 標頭檢查類型、8 位元調色盤 BMP 寫出）', requires: [], judge: { checker: 'tokens' }, algos, paradigms, skeletons };
+    }
+    return { make };
+});
 
 }).call(null, undefined, holder);
 return holder.FaDomainBinfmt;
