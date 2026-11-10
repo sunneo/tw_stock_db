@@ -16236,7 +16236,7 @@ const holder = {};
     const parseBig = (t) => { const x = String(t).replace(/\s/g, ''); if (/^10\^9\+7$|^1e9\+7$|^1000000007$/i.test(x)) return 1000000007; if (/^998244353$/.test(x)) return 998244353; if (/^10\^9\+9$/.test(x)) return 1000000009; const p = /^10\^(\d+)$/.exec(x); if (p) return Math.pow(10, +p[1]); return /^\d+$/.test(x) ? +x : 0; };
     function extractFacts(text) {
         const f = {}; const t = String(text);
-        const yn2 = /(?:印|輸出)\s*([A-Za-z]+)\s*[，,]\s*(?:否則|不然|其餘)\s*(?:印|輸出)?\s*([A-Za-z]+)/.exec(t); const y = /\b(yes|YES|Yes)\b/.exec(t), n = /\b(no|NO|No)\b/.exec(t); if (yn2) f.yn = [yn2[1], yn2[2]]; else if (y && n) f.yn = [y[1], n[1]];
+        const yn2 = /(?:印|輸出)\s*([A-Za-z]+)\s*[，,]\s*(?:否則|不然|其餘|沒有|不是|不存在|不能|無)\s*(?:印|輸出)?\s*([A-Za-z]+)/.exec(t); const y = /\b(yes|YES|Yes)\b/.exec(t), n = /\b(no|NO|No)\b/.exec(t); if (yn2) f.yn = [yn2[1], yn2[2]]; else if (y && n) f.yn = [y[1], n[1]];
         const nn = /沒有則輸出\s*(-?\d+|[A-Za-z]+)/.exec(t); if (nn) f.none = nn[1]; const ur = /(?:到不了|不可達|無法到達|走不到|不存在)[^，。]*輸出\s*(-?\d+|[A-Za-z]+)/.exec(t); if (ur) f.unreach = ur[1];
         const h8 = t.match(/0x[0-9A-Fa-f]{8}/g); if (h8) f.hex8 = h8; const hx = '(0x[0-9A-Fa-f]{8})'; const pm = new RegExp('多項式\\s*' + hx).exec(t), im = new RegExp('初值\\s*' + hx).exec(t), fm = new RegExp('(?:與|和)\\s*' + hx + '\\s*(?:互斥或|XOR)|互斥或\\s*' + hx, 'i').exec(t); if (pm || im || fm) f.crc = { poly: pm && pm[1], init: im && im[1], fin: fm && (fm[1] || fm[2]) }; // 敘述裡的 8 位十六進位常數（CRC 的多項式、初值、結尾互斥或…依出現順序）
         const em = /(?:空時|為空時)輸出\s*([A-Za-z]+)/.exec(t); if (em) f.empty = em[1];
@@ -16261,7 +16261,7 @@ const holder = {};
     // ---- 工具型題目（cat／grep／xxd／tar／gzip／xz／bmp…）的輸入形狀：文字行串流、十六進位位元組、旗標行、多段 ----
     // 只看「輸入區」（開頭連續以 輸入／第N行／接著／再 起頭的句子），逐子句分類成：hex（單行十六進位）、str（一行原樣文字，含樣式 pat／旗標 flags）、
     // scalars（一行整數）、list（一行 k 個整數／一串整數）、lines（n 行原樣文字，行內容不丟）、rest（其餘所有行，行數由第一行決定）。
-    const ZONE_START = /^(?:輸入|第[一二三四五六七八九\d]+(?:行|份|段|個)|接下來|接著|緊接著|隨後|最後(?=\s*(?:[一二兩\d]+|[a-z][a-z0-9]{0,4})\s*行)|再接著|再來|再|然後|之後)/;
+    const ZONE_START = /^(?:輸入|給(?=\s*[一二兩]行)|第[一二三四五六七八九\d]+(?:行|份|段|個)|接下來|接著|緊接著|隨後|最後(?=\s*(?:[一二兩\d]+|[a-z][a-z0-9]{0,4})\s*行)|再接著|再接|再來|再|然後|之後)/;
     function readToolInput(text) {
         const sents = stripNote(String(text)).split(/。/).map((x) => x.trim()).filter(Boolean); const zone = [];
         for (const s of sents) { if (ZONE_START.test(s)) zone.push(s); else break; }
@@ -16270,10 +16270,10 @@ const holder = {};
         const clauses = zone.join('，').split(/[，,；;：:]+/).map((c) => c.trim()).filter(Boolean); const out = []; const used = { s: 0, h: 0, lines: 0 };
         const nm = (k) => { const i = used[k]++; return k === 'lines' ? (i ? 'lines' + (i + 1) : 'lines') : k === 'h' ? (i ? 'h' + (i + 1) : 'h') : (i ? 't' : 's'); };
         let m;
-        const A_RE = new RegExp('(?:接下來|接著|緊接著|隨後|再給|再來|然後|之後|最後|再)\\s*(' + CNT + ')\\s*行');
+        const A_RE = new RegExp('(?:接下來|接著|緊接著|隨後|再給|再接|再來|然後|之後|最後|再)\\s*(' + CNT + ')\\s*行');
         const one = (c) => { // 一個子句（已拿掉「輸入」）→ 0～1 個輸入描述
-            const head = /^(?:再來|再給|再|然後|接下來|接著|緊接著|隨後|之後|最後)?\s*(?:[^，，]{0,6}?第[一二三四五六七八九\d]+行|[一二兩]行)\s*(?:是|為)?\s*(.*)$/.exec(c); if (!head) return null; const d = head[1].trim(); let m;
-            if (/十六進位/.test(d)) return { k: 'hex', name: nm('h') };
+            const head = /^(?:再來|再給|再|然後|接下來|接著|緊接著|隨後|之後|最後|給)?\s*(?:[^，，]{0,6}?第[一二三四五六七八九\d]+行|[一二兩]行)\s*(?:是|為)?\s*(.*)$/.exec(c); if (!head) return null; const d = head[1].trim(); let m;
+            if (/十六進位|以空白隔開的位元組/.test(d)) return { k: 'hex', name: nm('h') };
             if (/^base64|^[Bb]ase\s*64/.test(d)) return { k: 'str', name: nm('s'), raw: true };
             if (/^pat$/.test(d)) return { k: 'str', name: 'pat', raw: true, role: 'pat' };
             if (/^一串/.test(d) && !new RegExp('^一串[^a-zA-Z]*' + NAME).test(d)) return { k: 'list', name: 'a', size: null, elem: 'int' };
@@ -16284,6 +16284,7 @@ const holder = {};
             if ((m = new RegExp('^[^a-zA-Z0-9]{0,8}?\\s*(' + NAME + ')$').exec(d)) && !/字串|文字/.test(d)) return { k: 'scalars', names: [m[1]], type: 'int', line: true };
             if ((m = new RegExp('^[^a-zA-Z0-9]{0,8}?\\s*(' + NAME + ')\\s*\\(?[^a-zA-Z]*$').exec(d)) && /^[a-z]/.test(m[1]) && !/字串|文字|算式|命令列|後序/.test(d)) return { k: 'scalars', names: [m[1]], type: 'int', line: true };
             if ((m = new RegExp('^(' + NAME + ')\\s*(?:是|為|代表|表示)[^a-zA-Z]*$').exec(d)) && /^[a-z]/.test(m[1]) && !/字串|文字|算式|命令列|後序|個(?:整數|數|字元|小數|正整數|查詢|字)|種/.test(d)) return { k: 'scalars', names: [m[1]], type: 'int', line: true }; // 第三行 s 是起始簇
+            if (/(?:各|每(?:種|類|個)|所有|全部)/.test(d) && /(?:數量|個數|數目|數值|數字|整數|剩餘量|資源量)$/.test(d) && !/字串|文字|行$/.test(d)) return { k: 'list', name: 'a', size: null, elem: 'int', infer: true }; // 「第二行是…各類資源數量」：沒寫幾個，長度由第一行沒被別處當行數用的那個整數推（唯一時才推）
             if (/以空白分隔|若干|多個|一串/.test(d) && /整數|數字|數值/.test(d)) return { k: 'list', name: 'a', size: null, elem: 'int' };
             if (/字串|文字|算式|命令列|後序|記號|式$|行$/.test(d) || /^只含|^由/.test(d)) return { k: 'str', name: nm('s'), raw: true };
             if (d && !/^[a-z0-9\s]+$/i.test(d)) return { k: 'str', name: nm('s'), raw: true }; // 其餘「第N行是某某」：整行原樣（由範式自己解讀）
@@ -16291,7 +16292,7 @@ const holder = {};
         };
         for (let c of clauses) {
             c = c.replace(/^輸入(?=第|一行|(?:一|兩|二)行)/, '').replace(/^輸入\s*/, ''); if (!c) continue; let m;
-            if (!/^(?:再來|再給|再|然後|接下來|接著|緊接著|隨後|之後|最後)?\s*[一二兩]行/.test(c) && (m = new RegExp('^(?:接下來|接著|緊接著|隨後|然後|之後|最後|再接著|再來|再)\\s*(' + NAME + '|[一-龥]{1,2})\\s*行').exec(c))) { out.push({ k: /^[a-zA-Z]/.test(m[1]) ? 'lines' : 'rest', count: /^[a-zA-Z]/.test(m[1]) ? m[1] : null, name: nm('lines'), raw: true }); continue; }
+            if (!/^(?:再來|再給|再|然後|接下來|接著|緊接著|隨後|之後|最後)?\s*[一二兩]行/.test(c) && (m = new RegExp('^(?:接下來|接著|緊接著|隨後|然後|之後|最後|再接著|再接|再來|再)\\s*(' + NAME + '|[一-龥]{1,2})\\s*行').exec(c))) { out.push({ k: /^[a-zA-Z]/.test(m[1]) ? 'lines' : 'rest', count: /^[a-zA-Z]/.test(m[1]) ? m[1] : null, name: nm('lines'), raw: true }); continue; }
             const mA = A_RE.exec(c); const pre = mA ? c.slice(0, mA.index) : c; const r = pre.trim() ? one(pre.trim()) : null; if (r) out.push(r);
             if (mA) out.push({ k: 'lines', count: mA[1], name: nm('lines'), raw: true });
         }
@@ -16311,11 +16312,11 @@ const holder = {};
             const c = clauses[i]; if (/^(輸出|求|找出|判斷|把|只看|對每個|每個|若|保證|有多組)/.test(c)) { seenOutput = true; }
             if (seenOutput) continue;
             if ((m = /^輸入(?:一行)?(兩|三|四|五)個(?:正)?整數$/.exec(c))) { const ns = 'abcde'.slice(0, { 兩: 2, 三: 3, 四: 4, 五: 5 }[m[1]]).split(''); inputs.push({ k: 'scalars', names: ns, type: 'int', line: true }); addNames(ns); continue; } // 輸入三個整數（沒有名字：a b c）
-            if ((m = new RegExp('^(?:接下來|接著|緊接著|隨後|然後|之後|最後|再接著|再來|再)\\s*(' + CNT + ')\\s*行字元').exec(c))) { inputs.push({ k: 'grid', count: m[1], width: null, name: 'g' }); addNames(['g']); continue; } // 接著 n 行字元 "." 或 "#"
-            if ((m = new RegExp('^(?:接下來|接著|緊接著|隨後|然後|之後|最後|再接著|再來|再)\\s*(' + CNT + ')\\s*行(?:指令|操作|事件|動作)$').exec(c))) { inputs.push({ k: 'grid', count: m[1], width: null, name: 'g' }); addNames(['g']); continue; } // 之後 q 行指令（每行一個字串，由程式自己拆）
-            if ((m = new RegExp('^(?:接下來|接著|緊接著|隨後|然後|之後|最後|再接著|再來|再)\\s*(' + CNT + ')\\s*行\\s*(' + NAMES + ')(?:\\s*(?:表示|代表|描述|說明|給出|代表著).*)?$').exec(c))) { const ns = m[2].split(/[\s、]+/); const rn_ = rowName(); inputs.push({ k: 'rows', count: m[1], names: ns, name: rn_ }); addNames([rn_]); continue; } // 接著 m 行 a b／再 q 行 x y
+            if ((m = new RegExp('^(?:接下來|接著|緊接著|隨後|然後|之後|最後|再接著|再接|再來|再)\\s*(' + CNT + ')\\s*行字元').exec(c))) { inputs.push({ k: 'grid', count: m[1], width: null, name: 'g' }); addNames(['g']); continue; } // 接著 n 行字元 "." 或 "#"
+            if ((m = new RegExp('^(?:接下來|接著|緊接著|隨後|然後|之後|最後|再接著|再接|再來|再)\\s*(' + CNT + ')\\s*行(?:指令|操作|事件|動作)$').exec(c))) { inputs.push({ k: 'grid', count: m[1], width: null, name: 'g' }); addNames(['g']); continue; } // 之後 q 行指令（每行一個字串，由程式自己拆）
+            if ((m = new RegExp('^(?:接下來|接著|緊接著|隨後|然後|之後|最後|再接著|再接|再來|再)\\s*(' + CNT + ')\\s*行\\s*(' + NAMES + ')(?:\\s*(?:表示|代表|描述|說明|給出|代表著).*)?$').exec(c))) { const ns = m[2].split(/[\s、]+/); const rn_ = rowName(); inputs.push({ k: 'rows', count: m[1], names: ns, name: rn_ }); addNames([rn_]); continue; } // 接著 m 行 a b／再 q 行 x y
             if ((m = new RegExp('^輸入(?:一行)?(?:(?:兩|三|四|五)個)?(?:正)?(整數|小數)\\s*(' + NAMES + ')$').exec(c))) { const ns = m[2].split(/[\s、]+/); inputs.push({ k: 'scalars', names: ns, type: m[1] === '小數' ? 'float' : 'int', line: true }); addNames(ns); continue; }
-            if ((m = new RegExp('^(?:接下來|接著|緊接著|隨後|然後|之後|最後|再接著|再來|再)\\s*(' + CNT + ')\\s*行(?:每行|各)\\s*(.+)$').exec(c))) {
+            if ((m = new RegExp('^(?:接下來|接著|緊接著|隨後|然後|之後|最後|再接著|再接|再來|再)\\s*(' + CNT + ')\\s*行(?:每行|各)\\s*(.+)$').exec(c))) {
                 const cnt = m[1]; const rest = m[2].trim(); let g;
                 if ((g = new RegExp('^(' + NAME + ')\\s*個字元').exec(rest))) { inputs.push({ k: 'grid', count: cnt, width: g[1], name: 'g' }); addNames(['g']); continue; }
                 const rn = new RegExp('^(' + NAMES + ')(?:\\s*(?:表示|代表|描述|說明|給出|代表著).*)?$').exec(rest); if (rn) { const ns = rn[1].split(/[\s、]+/); const rn_ = rowName(); inputs.push({ k: 'rows', count: cnt, names: ns, name: rn_ }); addNames([rn_]); continue; }
@@ -16340,8 +16341,9 @@ const holder = {};
             if (/^輸入(?:一行)?以空格分隔的/.test(c)) { inputs.push({ k: 'words', name: 'w' }); addNames(['w']); continue; } // 輸入以空格分隔的後序運算式
             if ((m = new RegExp('^輸入[^a-zA-Z0-9]{0,14}?\\s*(' + NAMES + ')$').exec(c)) && !/小數|字串|文字/.test(c)) { const ns = m[1].split(/[\s、]+/); inputs.push({ k: 'scalars', names: ns, type: 'int', line: true }); addNames(ns); continue; } // 輸入 a e m／輸入三個點的整數座標 x1 y1 x2 y2 x3 y3
         }
-        { const ti = readToolInput(text); if (ti && !inputs.some((x) => x.k === 'grid' || x.k === 'rows') && (!inputs.length || ti.some((x) => (x.k === 'list' && x.size === null) || x.k === 'hex' || x.k === 'lines' || x.k === 'rest' || (x.k === 'str' && x.role)))) { const lead = ti.length >= 2 && ti[0].k === 'str' && !ti[0].role && inputs.length >= 1 && inputs[0].k === 'scalars' && inputs[0].line && ti.slice(1).every((x) => x.k === 'lines' || x.k === 'rest' || (x.k === 'list' && x.size)) ? inputs[0] : null; const keep = lead || ti.length >= 1 && ti.every((x) => x.k === 'lines' || x.k === 'rest' || (x.k === 'list' && x.size)) && ti.some((x) => x.k === 'lines' || x.k === 'rest') && inputs.length >= 1 && inputs[0].k === 'scalars' && inputs[0].line ? inputs[0] : null; inputs.length = 0; names.clear(); if (keep) { inputs.push(keep); keep.names.forEach((n) => names.add(n)); } (lead ? ti.slice(1) : ti).forEach((x) => inputs.push(x)); } } // 工具型題目的輸入形狀（文字行串流、十六進位、旗標行、多段）
+        { const ti = readToolInput(text); if (ti && inputs.length && inputs[0].k === 'scalars') { const usedCnt = new Set(ti.filter((y) => y.k === 'lines' || y.k === 'rows').map((y) => y.count)); const free = inputs[0].names.filter((n2) => !usedCnt.has(n2)); for (const x of ti) if (x.k === 'list' && x.infer && x.size === null && free.length === 1) x.size = free[0]; } if (ti && !inputs.some((x) => x.k === 'grid' || x.k === 'rows') && (!inputs.length || ti.some((x) => (x.k === 'list' && x.size === null) || x.k === 'hex' || x.k === 'lines' || x.k === 'rest' || (x.k === 'str' && x.role)))) { const lead = ti.length >= 2 && ti[0].k === 'str' && !ti[0].role && inputs.length >= 1 && inputs[0].k === 'scalars' && inputs[0].line && ti.slice(1).every((x) => x.k === 'lines' || x.k === 'rest' || (x.k === 'list' && x.size)) ? inputs[0] : null; const keep = lead || ti.length >= 1 && ti.every((x) => x.k === 'lines' || x.k === 'rest' || (x.k === 'list' && x.size)) && ti.some((x) => x.k === 'lines' || x.k === 'rest') && inputs.length >= 1 && inputs[0].k === 'scalars' && inputs[0].line ? inputs[0] : null; inputs.length = 0; names.clear(); if (keep) { inputs.push(keep); keep.names.forEach((n) => names.add(n)); } (lead ? ti.slice(1) : ti).forEach((x) => inputs.push(x)); } } // 工具型題目的輸入形狀（文字行串流、十六進位、旗標行、多段）
         if (!inputs.length && /檔案/.test(text) && /行/.test(text) && /連接|串接|接在|依序|行號/.test(text)) { inputs.push({ k: 'rest', count: null, name: 'lines', raw: true, fallback: true }); } // 多段檔案的輸入措辭讀不出來：整份輸入當成行串流，由範式依「行數＋內容」逐段解析
+        if (!inputs.length) { const ra = ALGOS.find((a) => a.pri && a.raw && a.re.test(text)); if (ra) inputs.push({ k: 'rest', count: null, name: 'lines', raw: true }); } // 領域條目標 raw:true（真實 IO 題：輸入在命令列引數／檔案／環境變數，標準輸入可有可無）：給一個原樣的標準輸入行清單，讓後面的流程有輸入可接
         if (!inputs.length) { const im = /(?:≤|<=)\s*([a-z][a-z0-9]{0,3})\s*(?:≤|<=)/.exec(text); if (im) { inputs.push({ k: 'scalars', names: [im[1]], type: 'int', line: true }); addNames([im[1]]); } } // 沒寫「輸入」只在範圍裡出現變數（爬到第 n 階（1≤n≤80））：一個整數
         // ---- 輸出 ----
         const goal = { verbs: [], yesno: /YES\s*(?:或|或者)\s*NO|YES，否則|輸出\s*YES/.test(text) };
@@ -16357,7 +16359,10 @@ const holder = {};
         const toolAlgos = TOOLS.filter((a) => a.re.test(text) && a.sh(inputs)).map((a) => a.key).filter((k, i, arr) => arr.indexOf(k) === i); for (const fam of TOOL_FAMILIES) if (toolAlgos.some((k) => fam.includes(k))) for (const k of fam) if (!toolAlgos.includes(k)) toolAlgos.push(k); // 同家族的算法種類互為候選（敘述措辭抓不到時，由沙盒判決擇一）
         if (ALGOS.some((a) => a.pri && a.re.test(text) && !(a.veto && a.veto.test(text)))) toolAlgos.length = 0; // 領域包的條目標 pri:true＝比內建工具詞彙更具體（例如 sort／uniq／sed 的行為題），命中時不讓 lines-map 等通用工具詞彙搶走
         const toolAlgo = toolAlgos[0]; const algo = toolAlgo || (ALGOS.find((a) => a.re.test(text) && !(a.veto && a.veto.test(text))) || {}).key || null; const paradigms = (algo && PARADIGMS[algo]) || (toolAlgo ? ['text-lines'] : []);
+        { const ra = ALGOS.find((a) => a.pri && a.rawAll && a.re.test(text) && !(a.veto && a.veto.test(text))); if (ra) { inputs.length = 0; inputs.push({ k: 'rest', count: null, name: 'lines', raw: true }); } } // 領域條目標 rawAll:true＝輸入形狀太特別（行裡混十六進位顏色、索引…），整份原樣讀成行清單，由骨架自己拆
         const pend = inputs.findIndex((x) => x.k === 'pending'); if (pend >= 0) inputs.splice(pend, 1);
+        // 行數寫成沒定義過的名稱（例如 rows 的 count 是 q），而敘述裡確實有「一行 q」這種單獨一行：補上那一行整數輸入（通用規則，名稱不限）
+        for (let i = 0; i < inputs.length; i++) { const x = inputs[i]; const cnt = (x.k === 'rows' || x.k === 'lines' || x.k === 'grid') ? x.count : null; if (cnt && /^[A-Za-z][A-Za-z0-9]*$/.test(cnt) && !names.has(cnt) && !inputs.some((y) => y.k === 'scalars' && y.names.includes(cnt)) && new RegExp('(?:^|[，,；;。])\\s*(?:接著|接下來|之後|再|然後|最後|緊接著)?\\s*(?:輸入)?\\s*(?:一行|第[一二三四五六七八九\\d]+行)\\s*(?:是|為)?\\s*(?:一個)?(?:正)?(?:整數)?\\s*' + cnt + '\\s*(?:[，,；;。]|$)').test(text)) { inputs.splice(i, 0, { k: 'scalars', names: [cnt], type: 'int', line: true }); names.add(cnt); i++; } }
         const vars = []; for (const inp of inputs) { if (inp.k === 'scalars') inp.names.forEach((n) => vars.push({ name: n, type: inp.type })); else if (inp.k === 'list') { if (inp.size && !vars.some((v) => v.name === inp.size)) vars.push({ name: inp.size, type: 'int' }); vars.push({ name: inp.name, type: 'list' }); } else if (inp.k === 'rows') vars.push({ name: inp.name, type: 'list' }); else if (inp.k === 'grid') vars.push({ name: inp.name, type: 'list' }); else if (inp.k === 'str' || inp.k === 'hex') vars.push({ name: inp.name, type: 'str' }); else if (inp.k === 'lines' || inp.k === 'rest') vars.push({ name: inp.name, type: 'list' }); else if (inp.k === 'words') vars.push({ name: inp.name, type: 'list' }); }
         // 同一個名稱在不同行出現（第一行 n，第二行 n 個…）只留一個
         const seen = new Set(); const uvars = vars.filter((v) => (seen.has(v.name) ? false : seen.add(v.name)));
@@ -17188,6 +17193,7 @@ const holder = {};
         const emptyOf = (I) => (I.facts && I.facts.empty) || 'empty';
         const ynOf = (I) => { if (I.facts && I.facts.yn) return I.facts.yn; const m = /輸出\s*([^\s，,。；]+?)\s*[，,]\s*(?:否則|不然|其餘)\s*(?:輸出|印)?\s*([^\s，,。；]+)/.exec(String(I.statement)); return m ? [m[1], m[2]] : ['YES', 'NO']; };
         const q = (s) => JSON.stringify(s);
+        const need = (v, what) => { if (v === undefined || v === null || v === '') throw new Error('抽不到' + what); return v; };
         const lines = (N) => N.g || N.L[0];
         const skeletons = [
             D('ds.hash-open', 'hash-table', 'data-structure-mapping', '雜湊表（開放定址，大小 m）：insert／find／delete；探測（線性／二次）、刪除（墓碑／直接清空）、find 輸出（位置／探測次數）由窮舉決定',
@@ -17211,13 +17217,40 @@ const holder = {};
             D('ds.linked-list', 'linked-list-ops', 'data-structure-mapping', '鏈結串列操作：addfirst／addlast／remove（第一個或全部相等的）／reverse／print；空串列的 print 輸出字樣取自敘述',
                 [S('rm', 'remove 刪幾個', [['first', 'first'], ['all', 'all']]), S('sep', 'print 分隔', [['sp', '" "'], ['arrow', '" -> "']])],
                 (c, N, I) => code(['L = []', 'for line in ' + lines(N) + ':', '    p = line.split()', '    if len(p) == 0:', '        continue', '    op = p[0].lower()', '    if op == "addfirst":', '        L.insert(0, int(p[1]))', '    elif op == "addlast":', '        L.append(int(p[1]))', '    elif op == "remove":', '        v = int(p[1])', '        if v in L:', '            if ' + q(c.rm) + ' == "first":', '                L.remove(v)', '            else:', '                L = [x for x in L if x != v]', '    elif op == "reverse":', '        L.reverse()', '    else:', '        if L:', '            print(' + c.sep + '.join(str(x) for x in L))', '        else:', '            print(' + q(emptyOf(I)) + ')']), { limit: 4 }),
+            D('ds.avl', 'avl', 'tree-traversal', 'AVL 樹（自平衡二元搜尋樹）：依序插入 n 個整數（重複的略過），插入後沿父節點往上更新高度，遇到左右高度差超過 1 的節點就旋轉（LL 右旋、RR 左旋、LR 與 RL 雙旋）；輸出中序／前序走訪、樹高（節點數或邊數）、根的鍵值或旋轉總次數（雙旋算一次或兩次由窮舉決定）；陣列加父指標模擬，不用遞迴',
+                [S('out', '輸出', [['in', 'in'], ['pre', 'pre'], ['h-nodes', 'h-nodes'], ['h-edges', 'h-edges'], ['root', 'root'], ['rot', 'rot'], ['leaves', 'leaves']]), S('dbl', '雙旋算幾次旋轉', [['two', '2'], ['one', '1']])],
+                (c, N) => { const a = need(N.ls[0], '插入序列'); const H = (x) => '(ht[' + x + '] if ' + x + ' >= 0 else 0)';
+                    const upd = (x) => ['    ' + 'ht[' + x + '] = 1 + max(' + H('lt[' + x + ']') + ', ' + H('rt[' + x + ']') + ')'];
+                    const L = ['key = []', 'lt = []', 'rt = []', 'ht = []', 'par = []', 'root = -1', 'rot = 0', 'for v in ' + a + ':', '    u = root', '    dup = False', '    while u >= 0:', '        if v == key[u]:', '            dup = True', '            break', '        nxt = lt[u] if v < key[u] else rt[u]', '        if nxt < 0:', '            break', '        u = nxt', '    if dup:', '        continue', '    w = len(key)', '    key.append(v)', '    lt.append(-1)', '    rt.append(-1)', '    ht.append(1)', '    par.append(u)', '    if u < 0:', '        root = w', '    elif v < key[u]:', '        lt[u] = w', '    else:', '        rt[u] = w', '    x = u', '    while x >= 0:', '        hl = ' + H('lt[x]'), '        hr = ' + H('rt[x]'), '        ht[x] = 1 + max(hl, hr)', '        if hl - hr > 1 or hr - hl > 1:',
+                        '            if hl > hr:', '                y = lt[x]', '                if ' + H('lt[y]') + ' < ' + H('rt[y]') + ':', '                    z = rt[y]', '                    rt[y] = lt[z]', '                    if lt[z] >= 0:', '                        par[lt[z]] = y', '                    lt[z] = y', '                    par[y] = z', '                    lt[x] = z', '                    par[z] = x', '                    ht[y] = 1 + max(' + H('lt[y]') + ', ' + H('rt[y]') + ')', '                    ht[z] = 1 + max(' + H('lt[z]') + ', ' + H('rt[z]') + ')', '                    rot += ' + (c.dbl === '2' ? '1' : '0'), '                    y = z', '                p = par[x]', '                lt[x] = rt[y]', '                if rt[y] >= 0:', '                    par[rt[y]] = x', '                rt[y] = x', '                par[x] = y', '                par[y] = p', '                if p < 0:', '                    root = y', '                elif lt[p] == x:', '                    lt[p] = y', '                else:', '                    rt[p] = y', '                ht[x] = 1 + max(' + H('lt[x]') + ', ' + H('rt[x]') + ')', '                ht[y] = 1 + max(' + H('lt[y]') + ', ' + H('rt[y]') + ')', '                rot += 1', '            else:', '                y = rt[x]', '                if ' + H('rt[y]') + ' < ' + H('lt[y]') + ':', '                    z = lt[y]', '                    lt[y] = rt[z]', '                    if rt[z] >= 0:', '                        par[rt[z]] = y', '                    rt[z] = y', '                    par[y] = z', '                    rt[x] = z', '                    par[z] = x', '                    ht[y] = 1 + max(' + H('lt[y]') + ', ' + H('rt[y]') + ')', '                    ht[z] = 1 + max(' + H('lt[z]') + ', ' + H('rt[z]') + ')', '                    rot += ' + (c.dbl === '2' ? '1' : '0'), '                    y = z', '                p = par[x]', '                rt[x] = lt[y]', '                if lt[y] >= 0:', '                    par[lt[y]] = x', '                lt[y] = x', '                par[x] = y', '                par[y] = p', '                if p < 0:', '                    root = y', '                elif lt[p] == x:', '                    lt[p] = y', '                else:', '                    rt[p] = y', '                ht[x] = 1 + max(' + H('lt[x]') + ', ' + H('rt[x]') + ')', '                ht[y] = 1 + max(' + H('lt[y]') + ', ' + H('rt[y]') + ')', '                rot += 1', '            x = par[y]', '            continue', '        x = par[x]'];
+                    void upd;
+                    const walk = { pre: ['out = []', 'st = [root]', 'while st:', '    u = st.pop()', '    if u < 0:', '        continue', '    out.append(key[u])', '    st.append(rt[u])', '    st.append(lt[u])'], in: ['out = []', 'st = []', 'u = root', 'while st or u >= 0:', '    while u >= 0:', '        st.append(u)', '        u = lt[u]', '    u = st.pop()', '    out.append(key[u])', '    u = rt[u]'] };
+                    const res = { in: 'print(" ".join(str(v) for v in out))', pre: 'print(" ".join(str(v) for v in out))', 'h-nodes': 'print(ht[root])', 'h-edges': 'print(ht[root] - 1)', root: 'print(key[root])', rot: 'print(rot)', leaves: 'print(sum(1 for i in range(len(key)) if lt[i] < 0 and rt[i] < 0))' }[c.out];
+                    return code(L.concat(walk[c.out] || [], [res])); }, { limit: 14 }),
+            D('ds.skiplist', 'skiplist', 'data-structure-mapping', '跳躍表（層數固定，每個鍵的層數由指令給定）：insert k h 把 k 放進第 0 到 h-1 層；delete k 從所有層拿掉；search k 從最高層的表頭開始，每層往右走到下一個鍵不再小於 k 為止再往下；輸出是否找到、往右走了幾步、比較了幾次（每次檢查「下一個鍵 < k」算一次，沒有下一個鍵不算）、右走加下降的總步數，或最後每一層的鍵',
+                [S('out', '輸出', [['found', 'found'], ['rights', 'rights'], ['comps', 'comps'], ['steps', 'steps'], ['levels', 'levels']])],
+                (c, N, I) => { const Lv = need(N.sc[0], '層數'), cmds = need(N.g || (N.L && N.L[0]), '指令行'); const yn = ynOf(I);
+                    const body = ['import bisect', 'lev = [[] for _ in range(' + Lv + ')]', 'for line in ' + cmds + ':', '    p = line.split()', '    if len(p) < 2:', '        continue', '    op = p[0].lower()', '    k = int(p[1])', '    if op == "insert":', '        h = min(int(p[2]), ' + Lv + ')', '        for l in range(h):', '            if k not in lev[l]:', '                bisect.insort(lev[l], k)', '    elif op == "delete":', '        for l in range(' + Lv + '):', '            if k in lev[l]:', '                lev[l].remove(k)', '    else:', '        cur = None', '        rights = 0', '        comps = 0', '        for l in range(' + Lv + ' - 1, -1, -1):', '            while True:', '                i = 0 if cur is None else bisect.bisect_right(lev[l], cur)', '                if i >= len(lev[l]):', '                    break', '                comps += 1', '                if lev[l][i] < k:', '                    cur = lev[l][i]', '                    rights += 1', '                else:', '                    break', '        ok = k in lev[0]'];
+                    const o = { found: '        print(' + q(yn[0]) + ' if ok else ' + q(yn[1]) + ')', rights: '        print(rights)', comps: '        print(comps)', steps: '        print(rights + ' + Lv + ' - 1)' }[c.out];
+                    if (c.out === 'levels') return code(body.concat(['for l in range(' + Lv + ' - 1, -1, -1):', '    print(*lev[l])'])); return code(body.concat([o])); }, { limit: 5 }),
+            D('ds.sparse-table', 'sparse-table', 'data-structure-mapping', '稀疏表（Sparse Table）：t[j][i] 是從 i 開始長度 2^j 的區間答案，由 t[j-1] 兩段合併；查詢 [l, r] 取 j = floor(log2(長度))，用 t[j][l] 與 t[j][r-2^j+1] 合併（最小、最大或 gcd 這類可重疊的運算）；輸出每個查詢的答案、表有幾層或表的總格數',
+                [S('op', '運算', [['min', 'min'], ['max', 'max'], ['gcd', 'gcd']]), S('base', '位置從幾開始', [['1', '1'], ['0', '0']]), S('end', '右端點', [['incl', 'incl'], ['excl', 'excl']]), S('out', '輸出', [['ans', 'ans'], ['levels', 'levels'], ['cells', 'cells']])],
+                (c, N) => { const n = need(N.sc[0], '陣列長度 n'), a = need(N.ls[0], '陣列'); const Q = c.out === 'ans' ? need(N.ls[1], '查詢') : null; const f = (x, y) => (c.op === 'gcd' ? 'math.gcd(' + x + ', ' + y + ')' : c.op + '(' + x + ', ' + y + ')');
+                    const L = ['import math', 't = [list(' + a + ')]', 'k = 1', 'while (1 << k) <= ' + n + ':', '    pv = t[-1]', '    t.append([' + f('pv[i]', 'pv[i + (1 << (k - 1))]') + ' for i in range(' + n + ' - (1 << k) + 1)])', '    k += 1'];
+                    if (c.out === 'levels') return code(L.concat(['print(len(t))'])); if (c.out === 'cells') return code(L.concat(['print(sum(len(r) for r in t))']));
+                    return code(L.concat(['for e in ' + Q + ':', '    l = e[0] - ' + c.base, '    r = e[1] - ' + c.base + (c.end === 'excl' ? ' - 1' : ''), '    j = (r - l + 1).bit_length() - 1', '    print(' + f('t[j][l]', 't[j][r - (1 << j) + 1]') + ')'])); }, { limit: 36 }),
         ];
         const algos = [
-            ['hash-table', /雜湊表|散列表|hash\s*table|開放定址|線性探測/i], ['lru-cache', /LRU|最近最少使用|最久沒(?:有)?(?:被)?(?:使用|存取|用到)/i], ['heap-ops', /(?:最小|最大)堆積|堆積.{0,20}(?:push|pop|top|插入|取出)|優先佇列|priority\s*queue|min-?heap|max-?heap/i], ['bst', /二元搜尋樹|二叉搜索樹|二叉搜尋樹|\bBST\b/i],
+            ['hash-table', /雜湊表|散列表|hash\s*table|開放定址|線性探測/i], ['lru-cache', /LRU|最近最少使用|最久沒(?:有)?(?:被)?(?:使用|存取|用到)/i, /缺頁|分頁|頁框|頁面置換|page\s*(?:fault|replace)|置換演算法/i], ['heap-ops', /(?:最小|最大)堆積|堆積.{0,20}(?:push|pop|top|插入|取出)|優先佇列|priority\s*queue|min-?heap|max-?heap/i], ['bst', /二元搜尋樹|二叉搜索樹|二叉搜尋樹|\bBST\b/i],
             ['trie', /前綴樹|字典樹|\bTrie\b/i], ['dsu-ops', /並查集|union.?find|(?:union|合併)\s*a\s*b.*(?:same|同(?:一)?(?:組|集合))/i], ['linked-list-ops', /鏈結串列|連結串列|鏈表|linked\s*list|addfirst/i],
-        ].map(([key, re]) => ({ key, re }));
+        ].map(([key, re, veto]) => (veto ? { key, re, veto } : { key, re }));
+        const algosNew = [
+            ['avl', /AVL|平衡二元搜尋樹|平衡二叉(?:搜尋|搜索)樹|自平衡|平衡因子|balance\s*factor/i],
+            ['skiplist', /跳躍表|跳表|跳躍串列|skip\s*list/i],
+            ['sparse-table', /稀疏表|sparse\s*table|\bST\s*表/i],
+        ].map(([key, re]) => ({ key, re, pri: true }));
         const paradigms = {}; for (const sk of skeletons) paradigms[sk.algo] = [sk.paradigm];
-        return { id: 'ds', label: '資料結構（操作序列）', requires: [], judge: { checker: 'tokens' }, algos, paradigms, skeletons };
+        return { id: 'ds', label: '資料結構（操作序列、AVL、跳躍表、稀疏表）', requires: [], judge: { checker: 'tokens' }, algos: algosNew.concat(algos), paradigms, skeletons };
     }
     return { make };
 });
@@ -17465,6 +17498,8 @@ const holder = {};
         const { S, code } = PAR.dsl;
         const D = (id, algo, label, slots, py, extra) => Object.assign({ id, algo, paradigm: 'fs', label, slots, py }, extra || {});
         const need = (v, what) => { if (v === undefined || v === null || v === '') throw new Error('抽不到' + what); return v; };
+        const q = (x) => JSON.stringify(x);
+        const capsLabel = (I) => { const caps = [...new Set([...String(I.statement).matchAll(/(?:輸出|印出)\s*([A-Z][A-Z_]{2,})/g)].map((x) => x[1]))]; return caps.length === 1 ? caps[0] : null; };
         const capsWords = (I) => { const out = []; for (const m of String(I.statement).matchAll(/\b([A-Z][A-Z_]{2,})\b/g)) if (!out.includes(m[1])) out.push(m[1]); return out; };
         const END = { m1: 'cur != -1', z: 'cur != 0', neg: 'cur >= 0' };
         const BASE = S('base', '簇編號從幾開始', [['0', '0'], ['1', '1']]);
@@ -17490,13 +17525,46 @@ const holder = {};
                 [S('out', '輸出', [['data', 'data'], ['total', 'total']])],
                 (c, N) => { const [b, d, p] = [need(N.sc[0], '區塊大小 b'), need(N.sc[1], '直接指標數 d'), need(N.sc[2], '每個指標區塊的指標數 p')]; const Q = need((N.L && N.L[0]) || N.ls[0], '查詢檔案大小');
                     return code(['for t in ' + Q + ':', '    n = (int(t) + ' + b + ' - 1) // ' + b, '    tot = n', '    rest = n - ' + d, '    if rest > 0:', '        tot += 1', '        rest -= ' + p, '    if rest > 0:', '        tot += 1 + (min(rest, ' + p + ' * ' + p + ') + ' + p + ' - 1) // ' + p, '        rest -= ' + p + ' * ' + p, '    if rest > 0:', '        tot += 1 + (rest + ' + p + ' * ' + p + ' - 1) // (' + p + ' * ' + p + ') + (rest + ' + p + ' - 1) // ' + p, '    print(' + (c.out === 'data' ? 'n' : 'tot') + ')']); }, { limit: 4 }),
+            D('fs.path-normalize', 'path-normalize', 'path 正規化：把路徑照 / 切開，空字串與 . 略過，.. 退回上一層（絕對路徑的根目錄再往上還是根；相對路徑開頭的 .. 要保留）；輸出正規化路徑、層數、最後一層名稱或上一層目錄；相對路徑可先接在目前工作目錄後面',
+                [S('kind', '路徑種類', [['abs', 'abs'], ['rel', 'rel'], ['cwd', 'cwd']]), S('out', '輸出', [['norm', 'norm'], ['depth', 'depth'], ['last', 'last'], ['parent', 'parent']])],
+                (c, N) => { const items = N.L && N.L[0] ? N.L[0] : (N.s && N.s[0] ? '[' + N.s[0] + ']' : null); need(items, '路徑'); if (c.kind === 'cwd' && !(N.s && N.s[0] && N.L && N.L[0])) throw new Error('抽不到工作目錄');
+                    const rel = c.kind === 'rel'; const j = rel ? "'/'.join(parts)" : "'/' + '/'.join(parts)", e = rel ? "'.'" : "'/'"; const fall = (x) => (rel ? "(" + x + " or '.')" : x);
+                    const walk = (src, dst, keep) => ['for t in ' + src + '.split("/"):', '    if t == "" or t == ".":', '        continue', '    if t == "..":', '        if ' + dst + ' and ' + dst + '[-1] != "..":', '            ' + dst + '.pop()', '        elif ' + keep + ':', '            ' + dst + '.append("..")', '    else:', '        ' + dst + '.append(t)'];
+                    const L = []; if (c.kind === 'cwd') { L.push('cw = []'); walk(N.s[0], 'cw', 'False').forEach((x) => L.push(x)); }
+                    L.push('for raw_p in ' + items + ':', '    p = str(raw_p).strip()', '    parts = ' + (c.kind === 'cwd' ? '[] if p.startswith("/") else list(cw)' : '[]'));
+                    walk('p', 'parts', rel ? 'True' : 'False').forEach((x) => L.push('    ' + x));
+                    const o = { norm: 'print(' + fall(j) + ')', depth: 'print(len(parts))', last: 'print(parts[-1] if parts else ' + e + ')', parent: 'print(' + (rel ? "'/'.join(parts[:-1]) or '.'" : "'/' + '/'.join(parts[:-1])") + ')' }[c.out];
+                    L.push('    ' + o); void e; return code(L); }, { limit: 12 }),
+            D('fs.dir-resolve', 'dir-resolve', '目錄解析：維護目錄集合與目前工作目錄；mkdir 建立目錄（連同缺少的上層，或上層必須已存在）、cd 切換（路徑可相對或絕對，含 . 與 ..；目標不存在就留在原處或印標籤）、pwd 印目前目錄；輸出所有 pwd、每次 cd 之後的目錄或最後的目錄',
+                [S('mk', 'mkdir 的上層', [['parents', 'parents'], ['strict', 'strict']]), S('fail', 'cd 到不存在的目錄', [['ignore', 'ignore'], ['label', 'label']]), S('emit', '輸出', [['pwd', 'pwd'], ['cd', 'cd'], ['final', 'final']])],
+                (c, N, I) => { const cmds = need(N.g || (N.L && N.L[0]), '指令行'); const lab = capsLabel(I); if (c.fail === 'label' && !lab) throw new Error('抽不到 cd 失敗的標籤');
+                    const L = ['dirs = {"/"}', 'cwd = []', 'for line in ' + cmds + ':', '    p = line.split()', '    if len(p) < 1:', '        continue', '    if len(p) > 1:', '        tgt = p[1]', '    else:', '        tgt = "/"', '    parts = [] if tgt.startswith("/") else list(cwd)', '    for t in tgt.split("/"):', '        if t == "" or t == ".":', '            continue', '        if t == "..":', '            if parts:', '                parts.pop()', '        else:', '            parts.append(t)', '    key = "/" + "/".join(parts)', '    if p[0] == "mkdir":'];
+                    if (c.mk === 'parents') L.push('        for k in range(len(parts) + 1):', '            dirs.add("/" + "/".join(parts[:k]))'); else L.push('        if "/" + "/".join(parts[:-1]) in dirs:', '            dirs.add(key)');
+                    L.push('    elif p[0] == "cd":', '        if key in dirs:', '            cwd = parts'); if (c.emit === 'cd') L.push('            print("/" + "/".join(cwd))');
+                    L.push('        else:'); L.push(c.fail === 'label' && c.emit !== 'final' ? '            print(' + q(lab) + ')' : c.emit === 'cd' ? '            print("/" + "/".join(cwd))' : '            pass');
+                    L.push('    elif p[0] == "pwd":'); L.push(c.emit === 'pwd' ? '        print("/" + "/".join(cwd))' : '        pass'); if (c.emit === 'final') L.push('print("/" + "/".join(cwd))'); return code(L); }, { limit: 12 }),
+            D('fs.alloc-strategy', 'alloc-strategy', '連續配置策略：磁碟有 N 個區塊（0 空閒、1 已用）；每個檔案要連續 k 個空閒區塊，在所有夠長的空閒區段中依 first-fit（最前面）、best-fit（最短）或 worst-fit（最長）挑一段，同樣長取起點最小的；輸出每個檔案的起始區塊（失敗 -1）、失敗檔數、剩下幾段空閒、最長空閒段或外部碎片（空閒總數減最長一段）',
+                [S('strat', '策略', [['first', 'first'], ['best', 'best'], ['worst', 'worst']]), S('base', '區塊編號從幾開始', [['0', '0'], ['1', '1']]), S('out', '輸出', [['starts', 'starts'], ['fails', 'fails'], ['runs', 'runs'], ['largest', 'largest'], ['frag', 'frag']])],
+                (c, N) => { const bm = N.ls && N.ls[0] ? 'list(' + N.ls[0] + ')' : N.s && N.s[0] ? '[int(ch) for ch in ' + N.s[0] + ' if ch in "01"]' : null; need(bm, '區塊位元圖'); const ks = need(N.L && N.L[0], '檔案大小行'); const pick = { first: 'cand[0]', best: 'min(cand, key=lambda r: (r[1], r[0]))', worst: 'min(cand, key=lambda r: (-r[1], r[0]))' }[c.strat];
+                    const runs = ['    runs = []', '    i = 0', '    while i < len(used):', '        if used[i] == 0:', '            j = i', '            while j < len(used) and used[j] == 0:', '                j += 1', '            runs.append((i, j - i))', '            i = j', '        else:', '            i += 1'];
+                    const o = { starts: 'print(*res)', fails: 'print(res.count(-1))', runs: 'print(len(runs))', largest: 'print(max([r[1] for r in runs] or [0]))', frag: 'print(used.count(0) - max([r[1] for r in runs] or [0]))' }[c.out];
+                    return code(['used = ' + bm, 'res = []', 'for raw_k in ' + ks + ':', '    k = int(raw_k)'].concat(runs, ['    cand = [r for r in runs if r[1] >= k]', '    if not cand:', '        res.append(-1)', '    else:', '        r = ' + pick, '        for x in range(r[0], r[0] + k):', '            used[x] = 1', '        res.append(r[0] + ' + c.base + ')'], ['runs = []', 'i = 0', 'while i < len(used):', '    if used[i] == 0:', '        j = i', '        while j < len(used) and used[j] == 0:', '            j += 1', '        runs.append((i, j - i))', '        i = j', '    else:', '        i += 1', o])); }, { limit: 30 }),
+            D('fs.internal-frag', 'internal-frag', '內部碎片：檔案佔用的空間以區塊（叢集）為單位，大小 s 的檔案用掉 ceil(s / b) 個區塊，浪費 ceil(s / b) * b - s；輸出每個檔案浪費、全部浪費總和、浪費最多的檔案浪費量，或有浪費的檔案數',
+                [S('out', '輸出', [['per', 'per'], ['sum', 'sum'], ['max', 'max'], ['cnt', 'cnt']])],
+                (c, N) => { const b = need(N.sc[0], '區塊大小 b'); const Q = need((N.L && N.L[0]) || N.ls[0], '檔案大小');
+                    const o = { per: 'print(w)', sum: 'tot += w', max: 'tot = max(tot, w)', cnt: 'tot += 1 if w > 0 else 0' }[c.out];
+                    return code(['tot = 0', 'for raw_s in ' + Q + ':', '    s = int(raw_s)', '    nb = (s + ' + b + ' - 1) // ' + b, '    w = nb * ' + b + ' - s', '    ' + o].concat(c.out === 'per' ? [] : ['print(tot)'])); }, { limit: 4 }),
         ];
         const algos = [
+            ['alloc-strategy', /(?=[\s\S]*(?:檔案|磁碟|硬碟|disk|file))(?=[\s\S]*(?:(?:first|best|worst)[\s-]*fit|首次適合|最佳適合|最差適合|最先適合|最適合))/i, /記憶體|分區|partition|行程|程序/i],
+            ['internal-frag', /內部碎片|internal\s*fragmentation|叢集.{0,12}浪費|(?:簇|區塊).{0,8}(?:浪費|用不滿)|檔案.{0,16}(?:浪費|多佔)(?:的)?(?:空間|位元組)/i],
+            ['dir-resolve', /(?:mkdir|cd)\s*[\S]*[\s\S]*pwd|pwd[\s\S]*(?:mkdir|cd)\s|目錄解析|工作目錄.{0,20}(?:切換|cd)/i],
+            ['path-normalize', /正規化|規範化|化簡|簡化.{0,6}路徑|canonical|normaliz|realpath|路徑.{0,24}(?:\.\.|上一層|上層)|(?:\.\.|上一層|上層).{0,24}路徑/i],
             ['fat-free', /空閒簇|自由簇|空閒的簇|沒用到的簇|未使用的簇|沒(?:有)?被使用的簇|沒有使用的簇|閒置的簇/], ['fat-chain', /簇鏈|FAT\s*(?:表|鏈)|下一個簇|起始簇|file\s*allocation\s*table|接哪個簇|之後接.{0,6}簇|(?:占|佔)(?:用)?幾個簇|檔案第一個簇/i],
-            ['inode-blocks', /(?:佔用|占用|需要|用掉)(?:的)?(?:磁碟)?區塊(?:總)?(?:數|個數)|區塊總數|資料區塊(?:加上|再加).{0,8}指標區塊|(?:佔用|占用|需要|用掉)(?:幾個|多少)(?:磁碟)?區塊/i], ['inode-level', /inode|直接區塊|間接區塊|直接指標|間接指標|邏輯區塊階層/i],
-        ].map(([key, re]) => ({ key, re, pri: true }));
+            ['inode-blocks', /(?:佔用|占用|需要|用掉)(?:的)?(?:磁碟)?區塊(?:總)?(?:數|個數)|區塊總數|資料區塊(?:加上|再加).{0,8}指標區塊|(?:佔用|占用|需要|用掉)(?:幾個|多少)(?:磁碟)?區塊/i, /tar\b|補\s*0|補零|對齊|512\s*(?:位元組|bytes?)/i], ['inode-level', /inode|直接區塊|間接區塊|直接指標|間接指標|邏輯區塊階層/i],
+        ].map(([key, re, veto]) => (veto ? { key, re, pri: true, veto } : { key, re, pri: true }));
         const paradigms = {}; for (const sk of skeletons) paradigms[sk.algo] = ['fs'];
-        return { id: 'fs', label: '檔案系統（FAT 簇鏈／空閒簇、inode 區塊階層與佔用）', requires: [], judge: { checker: 'tokens' }, algos, paradigms, skeletons };
+        return { id: 'fs', label: '檔案系統（FAT 簇鏈／空閒簇、inode 區塊階層與佔用、路徑正規化、目錄解析、連續配置策略、內部碎片）', requires: [], judge: { checker: 'tokens' }, algos, paradigms, skeletons };
     }
     return { make };
 });
@@ -17610,6 +17678,152 @@ const holder = {};
 return holder.FaDomainLinuxfmt;
 })();
 /* DOMAINLF-END */
+/* DOMAING3-BEGIN */
+const FaDomainGraph3 = (function () {
+const holder = {};
+(function (module, self) {
+/* 領域包：進階圖第二批（純函式，Python 專屬）。格式見 domain_registry_core.js。
+ * 範式：Floyd 全點對最短路（查詢距離、距離總和、直徑、可達對數、整張矩陣）、二分圖最大匹配（匹配數、是否完美、左邊未配對數、最大獨立集）、
+ *       指派問題（匈牙利演算法：最小或最大總成本）、最短路變體（路徑還原、最短路條數、第 k 短、限制邊數）。
+ * 差異點（有向／無向、節點編號從 0 或 1、不可達怎麼印、字典序平手、第 k 短算不算重複走訪）是槽位，由沙盒窮舉；
+ * 標籤只在敘述裡有唯一的全大寫輸出詞時才用，抽不到就拒絕渲染。骨架不含 def。train／holdout 見 domain_graph3.test.js。 */
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaDomainGraph3 = factory(); })(typeof self !== 'undefined' ? self : this, function () {
+    'use strict';
+    function make(PAR) {
+        const { S, code } = PAR.dsl;
+        const D = (id, algo, paradigm, label, slots, py, extra) => Object.assign({ id, algo, paradigm, label, slots, py }, extra || {});
+        const q = (x) => JSON.stringify(x);
+        const need = (v, what) => { if (v === undefined || v === null || v === '') throw new Error('抽不到' + what); return v; };
+        const capsLabel = (I) => { const caps = [...new Set([...String(I.statement).matchAll(/(?:輸出|印出)\s*([A-Z][A-Z_]{2,})/g)].map((x) => x[1]))]; return caps.length === 1 ? caps[0] : null; };
+        const ynOf = (I) => { if (I.facts && I.facts.yn) return I.facts.yn; const m = /輸出\s*([^\s，,。；]+?)\s*[，,]\s*(?:否則|不然|其餘)\s*(?:輸出|印)?\s*([^\s，,。；]+)/.exec(String(I.statement)); if (m) return [m[1], m[2]]; const m2 = /輸出\s*([A-Z][A-Z_]{1,})[^輸]{0,16}輸出\s*([A-Z][A-Z_]{1,})/.exec(String(I.statement)); return m2 ? [m2[1], m2[2]] : ['YES', 'NO']; };
+        const BASE = S('base', '節點編號從幾開始', [['1', '1'], ['0', '0']]);
+        const DIR = S('dir', '邊的方向', [['directed', 'directed'], ['undirected', 'undirected']]);
+        const UN = S('un', '不可達時印', [['-1', '-1'], ['INF', 'INF']]);
+        const unv = (c) => (c.un === 'INF' ? '"INF"' : '-1');
+        const adjL = (n, rows, c, weighted) => ['adj = [[] for _ in range(' + n + ' + 1)]', 'for e in ' + rows + ':', '    adj[e[0]].append((e[1], ' + (weighted ? 'e[2]' : '1') + '))'].concat(c.dir === 'undirected' ? ['    adj[e[1]].append((e[0], ' + (weighted ? 'e[2]' : '1') + '))'] : []);
+        const skeletons = [
+            D('graph3.floyd', 'floyd', 'shortest-path', 'Floyd 全點對最短路：三重迴圈用中間點 k 鬆弛 d[i][j]；輸出指定兩點的距離（不可達印 -1 或 INF）、所有點對距離總和、最大的有限距離（直徑）、可達的點對數，或整張距離矩陣',
+                [BASE, DIR, UN, S('out', '輸出', [['query', 'query'], ['sum', 'sum'], ['sumu', 'sumu'], ['diam', 'diam'], ['reach', 'reach'], ['matrix', 'matrix']])],
+                (c, N) => { const n = need(N.sc[0], '節點數 n'), rows = need(N.ls[0], '邊表'); const Q = c.out === 'query' ? need(N.ls[1], '查詢表') : null;
+                    const L = ['INF = 10 ** 18', 'd = [[INF] * (' + n + ' + 1) for _ in range(' + n + ' + 1)]', 'for i in range(' + n + ' + 1):', '    d[i][i] = 0', 'for e in ' + rows + ':', '    d[e[0]][e[1]] = min(d[e[0]][e[1]], e[2])'].concat(c.dir === 'undirected' ? ['    d[e[1]][e[0]] = min(d[e[1]][e[0]], e[2])'] : [], ['for k in range(' + n + ' + 1):', '    for i in range(' + n + ' + 1):', '        for j in range(' + n + ' + 1):', '            if d[i][k] + d[k][j] < d[i][j]:', '                d[i][j] = d[i][k] + d[k][j]']);
+                    const R = 'range(' + c.base + ', ' + c.base + ' + ' + n + ')';
+                    if (c.out === 'query') return code(L.concat(['for e in ' + Q + ':', '    print(' + unv(c) + ' if d[e[0]][e[1]] >= INF else d[e[0]][e[1]])']));
+                    if (c.out === 'sum') return code(L.concat(['tot = 0', 'for i in ' + R + ':', '    for j in ' + R + ':', '        if i != j and d[i][j] < INF:', '            tot += d[i][j]', 'print(tot)']));
+                    if (c.out === 'sumu') return code(L.concat(['tot = 0', 'for i in ' + R + ':', '    for j in ' + R + ':', '        if i < j and d[i][j] < INF:', '            tot += d[i][j]', 'print(tot)']));
+                    if (c.out === 'diam') return code(L.concat(['best = 0', 'for i in ' + R + ':', '    for j in ' + R + ':', '        if d[i][j] < INF:', '            best = max(best, d[i][j])', 'print(best)']));
+                    if (c.out === 'reach') return code(L.concat(['cnt = 0', 'for i in ' + R + ':', '    for j in ' + R + ':', '        if i != j and d[i][j] < INF:', '            cnt += 1', 'print(cnt)']));
+                    return code(L.concat(['for i in ' + R + ':', '    print(*[(' + unv(c) + ' if d[i][j] >= INF else d[i][j]) for j in ' + R + '])'])); }, { limit: 48 }),
+            D('graph3.matching', 'bip-matching', 'matching', '二分圖最大匹配（BFS 找增廣路，不用遞迴）：左邊每個點輪流找一條交替路，找到未配對的右點就沿路翻轉；輸出最大匹配數、是否能讓左邊全部配上（完美）、左邊沒配到的點數，或最大獨立集大小（左右點數和減匹配數）',
+                [S('out', '輸出', [['size', 'size'], ['perfect', 'perfect'], ['free', 'free'], ['indep', 'indep']])],
+                (c, N, I) => { const n = need(N.sc[0], '左邊點數 n'), m = need(N.sc[1], '右邊點數 m'), rows = need(N.ls[0], '邊表'); const yn = ynOf(I);
+                    const L = ['adj = {}', 'for e in ' + rows + ':', '    adj.setdefault(e[0], []).append(e[1])', 'ml = {}', 'mr = {}', 'for u in adj:', '    prev = {}', '    qu = [u]', '    found = None', '    for x in qu:', '        for y in adj[x]:', '            if y in prev:', '                continue', '            prev[y] = x', '            if y not in mr:', '                found = y', '                break', '            if mr[y] in adj:', '                qu.append(mr[y])', '        if found is not None:', '            break', '    if found is not None:', '        y = found', '        while True:', '            x = prev[y]', '            old = ml.get(x)', '            ml[x] = y', '            mr[y] = x', '            if old is None:', '                break', '            y = old', 'size = len(ml)'];
+                    const o = { size: 'print(size)', perfect: 'print(' + q(yn[0]) + ' if size == ' + n + ' else ' + q(yn[1]) + ')', free: 'print(' + n + ' - size)', indep: 'print(' + n + ' + ' + m + ' - size)' }[c.out]; return code(L.concat([o])); }, { limit: 4 }),
+            D('graph3.assignment', 'assignment', 'matching', '指派問題（匈牙利演算法，位勢＋增廣）：n×n 成本矩陣，每個人恰配一件工作；輸出最小總成本，或最大總收益（把矩陣取負後求最小）',
+                [S('out', '輸出', [['min', 'min'], ['max', 'max']])],
+                (c, N) => { const n = need(N.sc[0], '人數 n'), M = need(N.L[0], '成本矩陣'); const sg = c.out === 'max' ? '-' : '';
+                    return code(['a = [[0] * (' + n + ' + 1)]', 'for s in ' + M + ':', '    a.append([0] + [' + sg + 'int(t) for t in s.split()])', 'INF = 10 ** 18', 'u = [0] * (' + n + ' + 1)', 'v = [0] * (' + n + ' + 1)', 'p = [0] * (' + n + ' + 1)', 'way = [0] * (' + n + ' + 1)', 'for i in range(1, ' + n + ' + 1):', '    p[0] = i', '    j0 = 0', '    minv = [INF] * (' + n + ' + 1)', '    used = [False] * (' + n + ' + 1)', '    while True:', '        used[j0] = True', '        i0 = p[j0]', '        delta = INF', '        j1 = 0', '        for j in range(1, ' + n + ' + 1):', '            if not used[j]:', '                cur = a[i0][j] - u[i0] - v[j]', '                if cur < minv[j]:', '                    minv[j] = cur', '                    way[j] = j0', '                if minv[j] < delta:', '                    delta = minv[j]', '                    j1 = j', '        for j in range(' + n + ' + 1):', '            if used[j]:', '                u[p[j]] += delta', '                v[j] -= delta', '            else:', '                minv[j] -= delta', '        j0 = j1', '        if p[j0] == 0:', '            break', '    while True:', '        j1 = way[j0]', '        p[j0] = p[j1]', '        j0 = j1', '        if j0 == 0:', '            break', 'tot = 0', 'for j in range(1, ' + n + ' + 1):', '    tot += a[p[j]][j]', 'print(' + (c.out === 'max' ? '-tot' : 'tot') + ')']); }, { limit: 2 }),
+            D('graph3.sp-path', 'sp-path', 'shortest-path', '最短路徑還原：先從終點在反向圖上做 Dijkstra 得到每點到終點的距離，再從起點每步挑「走這條邊後仍在最短路上」的最小編號鄰居；輸出路徑上的節點序列，或最短路中最少的邊數；不可達印 -1 或標籤',
+                [DIR, S('out', '輸出', [['path', 'path'], ['hops', 'hops']]), S('un', '不可達時印', [['-1', '-1'], ['label', 'label']])],
+                (c, N, I) => { const n = need(N.sc[0], '節點數 n'), rows = need(N.ls[0], '邊表'), s = need(N.sc[2], '起點 s'), t = need(N.sc[3], '終點 t'); const lab = capsLabel(I); if (c.un === 'label' && !lab) throw new Error('抽不到不可達的標籤'); const bad = c.un === 'label' ? q(lab) : '-1';
+                    const radj = ['adj = [[] for _ in range(' + n + ' + 1)]', 'radj = [[] for _ in range(' + n + ' + 1)]', 'for e in ' + rows + ':', '    adj[e[0]].append((e[1], e[2]))', '    radj[e[1]].append((e[0], e[2]))'].concat(c.dir === 'undirected' ? ['    adj[e[1]].append((e[0], e[2]))', '    radj[e[0]].append((e[1], e[2]))'] : []);
+                    if (c.out === 'hops') return code(['import heapq'].concat(radj, ['INF = 10 ** 18', 'best = [(INF, INF)] * (' + n + ' + 1)', 'best[' + s + '] = (0, 0)', 'h = [(0, 0, ' + s + ')]', 'while h:', '    d, k, x = heapq.heappop(h)', '    if (d, k) > best[x]:', '        continue', '    for y, w in adj[x]:', '        if (d + w, k + 1) < best[y]:', '            best[y] = (d + w, k + 1)', '            heapq.heappush(h, (d + w, k + 1, y))', 'print(' + bad + ' if best[' + t + '][0] >= INF else best[' + t + '][1])']));
+                    return code(['import heapq'].concat(radj, ['INF = 10 ** 18', 'dist = [INF] * (' + n + ' + 1)', 'dist[' + t + '] = 0', 'h = [(0, ' + t + ')]', 'while h:', '    d, x = heapq.heappop(h)', '    if d > dist[x]:', '        continue', '    for y, w in radj[x]:', '        if d + w < dist[y]:', '            dist[y] = d + w', '            heapq.heappush(h, (d + w, y))', 'if dist[' + s + '] >= INF:', '    print(' + bad + ')', 'else:', '    cur = ' + s, '    path = [cur]', '    while cur != ' + t + ':', '        nxt = min(y for y, w in adj[cur] if w + dist[y] == dist[cur])', '        path.append(nxt)', '        cur = nxt', '    print(*path)'])); }, { limit: 8 }),
+            D('graph3.sp-count', 'sp-count', 'shortest-path', '最短路條數：Dijkstra 同時記每點的最短路條數，鬆弛到更短就重設、剛好相等就累加；輸出條數、或最短路是否唯一；不可達輸出 0 或 -1',
+                [DIR, S('out', '輸出', [['count', 'count'], ['unique', 'unique']]), S('un', '不可達時印', [['0', '0'], ['-1', '-1']])],
+                (c, N, I) => { const n = need(N.sc[0], '節點數 n'), rows = need(N.ls[0], '邊表'), s = need(N.sc[2], '起點 s'), t = need(N.sc[3], '終點 t'); const yn = ynOf(I);
+                    const o = c.out === 'count' ? 'print(cnt[' + t + '])' : 'print(' + q(yn[0]) + ' if cnt[' + t + '] == 1 else ' + q(yn[1]) + ')';
+                    return code(['import heapq'].concat(adjL(n, rows, c, true), ['INF = 10 ** 18', 'dist = [INF] * (' + n + ' + 1)', 'cnt = [0] * (' + n + ' + 1)', 'dist[' + s + '] = 0', 'cnt[' + s + '] = 1', 'h = [(0, ' + s + ')]', 'while h:', '    d, x = heapq.heappop(h)', '    if d > dist[x]:', '        continue', '    for y, w in adj[x]:', '        if d + w < dist[y]:', '            dist[y] = d + w', '            cnt[y] = cnt[x]', '            heapq.heappush(h, (d + w, y))', '        elif d + w == dist[y]:', '            cnt[y] += cnt[x]', 'if dist[' + t + '] >= INF:', '    print(' + (c.out === 'unique' ? q(yn[1]) : c.un) + ')', 'else:', '    ' + o])); }, { limit: 8 }),
+            D('graph3.sp-kth', 'sp-kth', 'shortest-path', '第 k 短路：可以重複走訪時用優先佇列，每個點第 k 次被取出才算；點不重複（簡單路徑）時用堆疊枚舉所有簡單路徑再排序取第 k 個；不存在第 k 條印 -1 或 INF',
+                [DIR, S('mode', '路徑可否重複走訪', [['walk', 'walk'], ['simple', 'simple']]), UN],
+                (c, N) => { const n = need(N.sc[0], '節點數 n'), rows = need(N.ls[0], '邊表'), s = need(N.sc[2], '起點 s'), t = need(N.sc[3], '終點 t'), k = need(N.sc[4], 'k');
+                    if (c.mode === 'walk') return code(['import heapq'].concat(adjL(n, rows, c, true), ['seen = [0] * (' + n + ' + 1)', 'res = ' + unv(c), 'h = [(0, ' + s + ')]', 'while h:', '    d, x = heapq.heappop(h)', '    seen[x] += 1', '    if x == ' + t + ' and seen[x] == ' + k + ':', '        res = d', '        break', '    if seen[x] > ' + k + ':', '        continue', '    for y, w in adj[x]:', '        heapq.heappush(h, (d + w, y))', 'print(res)']));
+                    return code(adjL(n, rows, c, true).concat(['lens = []', 'st = [(' + s + ', 0, [' + s + '])]', 'while st:', '    x, d, path = st.pop()', '    if x == ' + t + ':', '        lens.append(d)', '        continue', '    for y, w in adj[x]:', '        if y not in path:', '            st.append((y, d + w, path + [y]))', 'lens.sort()', 'print(lens[' + k + ' - 1] if len(lens) >= ' + k + ' else ' + unv(c) + ')'])); }, { limit: 8 }),
+            D('graph3.sp-limit', 'sp-limit', 'shortest-path', '限制邊數的最短路：Bellman-Ford 只鬆弛 k 輪（每輪用上一輪的距離，所以最多走 k 條邊）；或恰好走 k 條邊；不可達印 -1 或 INF',
+                [DIR, S('mode', '邊數限制', [['atmost', 'atmost'], ['exact', 'exact']]), UN],
+                (c, N) => { const n = need(N.sc[0], '節點數 n'), rows = need(N.ls[0], '邊表'), s = need(N.sc[2], '起點 s'), t = need(N.sc[3], '終點 t'), k = need(N.sc[4], 'k');
+                    return code(['INF = 10 ** 18', 'cur = [INF] * (' + n + ' + 1)', 'cur[' + s + '] = 0', 'for _ in range(' + k + '):', '    nxt = list(cur)' .replace('list(cur)', c.mode === 'atmost' ? 'list(cur)' : '[INF] * (' + n + ' + 1)'), '    for e in ' + rows + ':', '        if cur[e[0]] < INF and cur[e[0]] + e[2] < nxt[e[1]]:', '            nxt[e[1]] = cur[e[0]] + e[2]'].concat(c.dir === 'undirected' ? ['        if cur[e[1]] < INF and cur[e[1]] + e[2] < nxt[e[0]]:', '            nxt[e[0]] = cur[e[1]] + e[2]'] : [], ['    cur = nxt', 'print(' + unv(c) + ' if cur[' + t + '] >= INF else cur[' + t + '])'])); }, { limit: 8 }),
+        ];
+        const algos = [
+            ['sp-kth', /第\s*[kK]\s*(?:短|小|佳)(?:的)?(?:路徑|路線|路)?|[kK]\s*[-\s]*th\s*shortest|第\s*[kK]\s*條最短|次短(?:路|路徑|路線)|第二短/i],
+            ['sp-limit', /(?:至多|最多|不超過|不多於|恰好|剛好|正好|剛剛好)\s*(?:使用|走|用)?\s*[kK]\s*(?:條邊|步|個邊|段)|[kK]\s*(?:步|條邊)\s*(?:內|以內|之內)|(?:邊數|步數)\s*(?:限制|上限|不超過|至多)|限制.{0,10}(?:邊數|步數)/i],
+            ['sp-count', /最短(?:路|路徑|路線)(?:的)?(?:條數|數量|個數|總數|數目)|(?:有)?(?:幾|多少)(?:條|種)(?:不同的)?(?:最短(?:路|路徑|路線)|走法)|最短(?:路|路徑|路線)(?:有|共有)(?:幾|多少)|最短(?:路|路徑|路線)(?:是否)?唯一|最短(?:路|路徑|路線)只有一條|只有一條最短/i],
+            ['sp-path', /(?:印出|輸出|還原|列出|求出)(?:出)?\s*(?:一條)?(?:字典序最小的)?\s*(?:最短)?(?:路徑|路線)(?:本身|上(?:所有|的)?(?:節點|點))?|(?:路徑|路線)還原|最短(?:路徑|路線)(?:本身|上的(?:節點|點))|沿途(?:經過)?的(?:節點|點)|經過的(?:節點|點)(?:序列|編號)|(?:最短路|最短路徑|最短路線)(?:最少|至少)(?:要)?(?:經過|走)(?:幾|多少)條邊|(?:權重|長度)總和最小.{0,24}(?:最少|至少).{0,8}(?:幾|多少)條邊/i],
+            ['floyd', /Floyd|弗洛伊德|全點對|所有點對|每一對(?:點|節點)|任意兩(?:個)?(?:點|節點)(?:之間)?(?:的)?最短|all[\s-]*pairs/i],
+            ['assignment', /Hungarian|匈牙利|指派問題|指派(?:的)?(?:總)?(?:成本|費用|花費)|assignment\s*problem|最小(?:總)?(?:成本|花費)完美匹配|每(?:位|個)(?:工人|人|員工)(?:剛好|恰好|只)(?:做|負責|被指派)(?:一|1)/i],
+            ['bip-matching', /二分圖.{0,12}(?:匹配|配對)|(?:最大|最多)(?:匹配|配對)|Hopcroft|Kuhn|maximum\s*(?:bipartite\s*)?matching|增廣路.{0,12}(?:匹配|配對)|(?:匹配|配對).{0,12}增廣路|左邊(?:的|每個|每一個)?(?:點|節點).{0,12}(?:配到|配上|配對).{0,12}右邊/i],
+        ].map(([key, re]) => ({ key, re, pri: true }));
+        const paradigms = {}; for (const sk of skeletons) paradigms[sk.algo] = [sk.paradigm];
+        return { id: 'graph3', label: '進階圖第二批（Floyd、二分圖匹配、指派問題、最短路變體：路徑還原／條數／第 k 短／限制邊數）', requires: [], judge: { checker: 'tokens' }, algos, paradigms, skeletons };
+    }
+    return { make };
+});
+
+}).call(null, undefined, holder);
+return holder.FaDomainGraph3;
+})();
+/* DOMAING3-END */
+/* DOMAINSY2-BEGIN */
+const FaDomainSync2 = (function () {
+const holder = {};
+(function (module, self) {
+/* 領域包：作業系統／同步原語第二批（純函式，Python 專屬）。格式見 domain_registry_core.js。
+ * 範式：哲學家用餐（事件模擬：每個事件讓某位哲學家往前一步；以及「同時最多幾位能吃」）、死結偵測（等待圖／資源配置圖找環；多個實例的 Allocation／Request 矩陣偵測）。
+ * 輸入形狀：事件序列＝「之後 q 行事件」（N.g）或 q 行文字；邊表＝rows（整數）或 lines（P1 R1 這種有名字的節點）；
+ *           Available 那一行沒寫幾個整數時，長度由讀取器從第一行沒被當行數用的那個整數推（algo_intent_core.js 的通用規則，唯一時才推）。
+ * 差異點（先拿左或右筷子、奇偶不同、編號從幾開始、只算行程節點、沒有死結時印什麼、零配置的行程算不算已完成）是槽位，由沙盒窮舉；骨架不含 def。
+ * train／holdout 見 domain_sync2.test.js。 */
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaDomainSync2 = factory(); })(typeof self !== 'undefined' ? self : this, function () {
+    'use strict';
+    function make(PAR) {
+        const { S, code } = PAR.dsl;
+        const D = (id, algo, paradigm, label, slots, py, extra) => Object.assign({ id, algo, paradigm, label, slots, py }, extra || {});
+        const q = (s) => JSON.stringify(s);
+        const need = (v, what) => { if (v === undefined || v === null || v === '') throw new Error('抽不到' + what); return v; };
+        const ynOf = (I) => { if (I.facts && I.facts.yn) return I.facts.yn; const m = /輸出\s*([^\s，,。；]+?)\s*[，,]\s*(?:否則|不然|其餘)\s*(?:輸出|印)?\s*([^\s，,。；]+)/.exec(String(I.statement)); if (m) return [m[1], m[2]]; const m2 = /輸出\s*([A-Z][A-Z_]{1,})[^輸]{0,16}輸出\s*([A-Z][A-Z_]{1,})/.exec(String(I.statement)); return m2 ? [m2[1], m2[2]] : ['YES', 'NO']; };
+        const BASE = S('base', '編號從幾開始', [['0', '0'], ['1', '1']]);
+        const EMPTY = S('empty', '沒有時印', [['blank', 'blank'], ['none', 'none'], ['-1', '-1']]);
+        const emp = (c) => (c.empty === 'none' ? '"none"' : c.empty === 'blank' ? '""' : '-1');
+        const skeletons = [
+            D('sync2.philosophers', 'philo-sim', 'simulation', '哲學家用餐事件模擬：n 位哲學家圍桌，筷子 i 在哲學家 i 與 i+1（環狀）之間；每位的流程是拿第一支筷子、拿第二支筷子、吃完放下兩支（一餐）；每個事件讓指定的哲學家往前一步，需要的筷子被別人拿著就卡住（事件白費）；輸出總餐數、每人餐數、是否死結（每人都握著第一支筷子）或完成餐點的順序',
+                [BASE, S('first', '先拿哪支', [['left', 'left'], ['right', 'right'], ['alt', 'alt']]), S('out', '輸出', [['meals', 'meals'], ['per', 'per'], ['dead', 'dead'], ['order', 'order']])],
+                (c, N, I) => { const n = need(N.sc[0], '哲學家人數 n'), ev = need(N.g || N.L[0], '事件行'); const yn = ynOf(I);
+                    const fst = c.first === 'left' ? 'i' : c.first === 'right' ? '(i + 1) % ' + n : 'i if i % 2 == 0 else (i + 1) % ' + n, snd = c.first === 'left' ? '(i + 1) % ' + n : c.first === 'right' ? 'i' : '(i + 1) % ' + n + ' if i % 2 == 0 else i';
+                    const o = { meals: 'print(sum(meals))', per: 'print(*meals)', dead: 'print(' + q(yn[0]) + ' if all(st[i] == 1 for i in range(' + n + ')) else ' + q(yn[1]) + ')', order: 'print(*order)' }[c.out];
+                    return code(['hold = [-1] * ' + n, 'st = [0] * ' + n, 'meals = [0] * ' + n, 'order = []', 'for line in ' + ev + ':', '    p = line.split()', '    if len(p) < 1:', '        continue', '    i = int(p[0]) - ' + c.base, '    a = ' + fst, '    b = ' + snd, '    if st[i] == 0:', '        if hold[a] == -1:', '            hold[a] = i', '            st[i] = 1', '    elif st[i] == 1:', '        if hold[b] == -1:', '            hold[b] = i', '            st[i] = 2', '    else:', '        hold[a] = -1', '        hold[b] = -1', '        st[i] = 0', '        meals[i] += 1', '        order.append(i + ' + c.base + ')', o]); }, { limit: 24 }),
+            D('sync2.philo-max', 'philo-max', 'search', '哲學家同時最多幾位能吃：相鄰的哲學家共用一支筷子，不能同時吃；只有想吃的人才可能吃；枚舉所有子集，取沒有兩位相鄰者的最大子集大小（環狀）；想吃的人用 0/1 旗標或編號列表給',
+                [BASE, S('form', '想吃的人怎麼給', [['flags', 'flags'], ['ids', 'ids']])],
+                (c, N) => { const n = need(N.sc[0], '哲學家人數 n'), a = need(N.ls[0], '想吃的人'); const hungry = c.form === 'flags' ? '[i for i in range(' + n + ') if ' + a + '[i] == 1]' : '[x - ' + c.base + ' for x in ' + a + ']';
+                    return code(['hungry = ' + hungry, 'best = 0', 'for mask in range(1 << len(hungry)):', '    pick = [hungry[j] for j in range(len(hungry)) if (mask >> j) & 1]', '    ok = True', '    for x in pick:', '        if (x + 1) % ' + n + ' in pick and (x + 1) % ' + n + ' != x:', '            ok = False', '    if ok:', '        best = max(best, len(pick))', 'print(best)']); }, { limit: 4 }),
+            D('sync2.deadlock-graph', 'deadlock-graph', 'graph-traversal', '死結偵測（等待圖／資源配置圖找環）：有向邊 u→v（行程等行程，或行程要資源、資源給行程）；有環就有死結；能走回自己的節點就在環上；輸出有沒有死結、環上節點數（可只算行程）或環上節點列表',
+                [S('out', '輸出', [['yn', 'yn'], ['count', 'count'], ['list', 'list']]), S('only', '計算的節點', [['all', 'all'], ['proc', 'proc']]), EMPTY],
+                (c, N, I) => { const raw = N.L[0] && !N.ls[0]; const E = need(raw ? N.L[0] : N.ls[0], '邊表'); const yn = ynOf(I);
+                    const rd = raw ? ['    p = e.split()'] : ['    p = [str(t) for t in e]'];
+                    const flt = c.only === 'proc' ? ['cyc = [x for x in cyc if x[0] in "Pp"]'] : [];
+                    const o = c.out === 'yn' ? 'print(' + q(yn[0]) + ' if cyc else ' + q(yn[1]) + ')' : c.out === 'count' ? 'print(len(cyc))' : 'print(" ".join(cyc) if cyc else ' + emp(c) + ')';
+                    return code(['adj = {}', 'for e in ' + E + ':'].concat(rd, ['    adj.setdefault(p[0], []).append(p[1])', '    adj.setdefault(p[1], [])', 'cyc = []', 'for x in sorted(adj, key=lambda z: (len(z), z)):', '    seen = set()', '    st = list(adj[x])', '    while st:', '        y = st.pop()', '        if y not in seen:', '            seen.add(y)', '            st.extend(adj[y])', '    if x in seen:', '        cyc.append(x)'], flt, [o])); }, { limit: 18 }),
+            D('sync2.deadlock-detect', 'deadlock-detect', 'simulation', '死結偵測（多個實例，Available／Allocation／Request 矩陣）：反覆找一個目前請求能被可用資源滿足的行程，讓它跑完並歸還它配置的資源；最後還沒完成的行程就是死結的行程；輸出死結行程列表、個數或有沒有死結',
+                [S('ord', '兩個矩陣的順序', [['alloc-req', 'alloc-req'], ['req-alloc', 'req-alloc']]), S('zero', '沒配置任何資源的行程', [['done', 'done'], ['normal', 'normal']]), S('out', '輸出', [['list', 'list'], ['count', 'count'], ['yn', 'yn']]), BASE, EMPTY],
+                (c, N, I) => { const n = N.sc[0], m = N.sc[1], av = N.ls[0], A = N.L[0], B = N.L[1]; if (!n || !m || !av || !A || !B) throw new Error('死結偵測要有 n m、可用向量、兩個矩陣'); const yn = ynOf(I);
+                    const L = ['al = [list(map(int, s.split())) for s in ' + A + ']', 'rq = [list(map(int, s.split())) for s in ' + B + ']']; if (c.ord === 'req-alloc') L.push('al, rq = rq, al');
+                    L.push('work = list(' + av + ')', 'fin = [' + (c.zero === 'done' ? 'sum(al[i]) == 0' : 'False') + ' for i in range(' + n + ')]', 'prog = True', 'while prog:', '    prog = False', '    for i in range(' + n + '):', '        if not fin[i] and all(rq[i][j] <= work[j] for j in range(' + m + ')):', '            for j in range(' + m + '):', '                work[j] = work[j] + al[i][j]', '            fin[i] = True', '            prog = True', 'dead = [i + ' + c.base + ' for i in range(' + n + ') if not fin[i]]');
+                    L.push(c.out === 'list' ? 'print(*dead if dead else [' + emp(c) + '])' : c.out === 'count' ? 'print(len(dead))' : 'print(' + q(yn[0]) + ' if dead else ' + q(yn[1]) + ')'); return code(L); }, { limit: 72 }),
+        ];
+        const algos = [
+            ['philo-max', /哲學家[\s\S]{0,60}(?:同時|最多)[\s\S]{0,20}(?:幾|多少)(?:位|個|人)|(?:同時|最多)[\s\S]{0,12}(?:幾|多少)(?:位|個|人)[\s\S]{0,12}(?:吃|用餐)/i],
+            ['philo-sim', /哲學家|dining\s*philosophers?|筷子/i],
+            ['deadlock-detect', /(?:死結|死鎖|deadlock)[\s\S]*(?:Allocation|Request|已配置|請求矩陣)|(?:Allocation|Request|已配置|請求矩陣)[\s\S]*(?:死結|死鎖|deadlock)/i, /Max\b|最大需求|銀行家|安全序列|安全狀態/i],
+            ['deadlock-graph', /死結|死鎖|deadlock|資源配置圖|等待圖|wait[\s-]*for\s*graph/i, /Max\b|最大需求|銀行家|安全序列|安全狀態/i],
+        ].map(([key, re, veto]) => (veto ? { key, re, pri: true, veto } : { key, re, pri: true }));
+        const paradigms = {}; for (const sk of skeletons) paradigms[sk.algo] = [sk.paradigm];
+        return { id: 'sync2', label: '作業系統：哲學家用餐、死結偵測', requires: [], judge: { checker: 'tokens' }, algos, paradigms, skeletons };
+    }
+    return { make };
+});
+
+}).call(null, undefined, holder);
+return holder.FaDomainSync2;
+})();
+/* DOMAINSY2-END */
 /* PYUMLPIPELINE-BEGIN */
 const FaPyUmlPipeline = (function () {
 const holder = {};
@@ -114105,7 +114319,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         const host = this._behTsHost(); const PC = await host.loadTreeSitter(); const lang = await PC.Language.load(await host.loadLanguageWasm('python')); const P = new PC(); P.setLanguage(lang); this._pyParser = P; return P;
     }
     // 領域包（DSP…）：第一次用到時註冊進算法詞彙與範式骨架表；判題用領域的容差設定（DSP＝float）
-    _pyDomainsInit() { if (this._pyDomainsDone) return; this._pyDomainsDone = true; for (const pk of [FaDomainDsp, FaDomainAlgo2, FaDomainOs, FaDomainDs, FaDomainLinuxText, FaDomainSync, FaDomainGraph2, FaDomainTwofile, FaDomainFs, FaDomainLinuxsem, FaDomainLinuxfmt]) { try { FaDomains.register(pk.make(FaPyParadigms), { AI: FaAlgoIntent, PAR: FaPyParadigms }); } catch (_) { /* 領域包註冊失敗不影響通用範式 */ } } }
+    _pyDomainsInit() { if (this._pyDomainsDone) return; this._pyDomainsDone = true; for (const pk of [FaDomainDsp, FaDomainAlgo2, FaDomainOs, FaDomainDs, FaDomainLinuxText, FaDomainSync, FaDomainGraph2, FaDomainTwofile, FaDomainLinuxsem, FaDomainLinuxfmt, FaDomainFs, FaDomainSync2, FaDomainGraph3]) { try { FaDomains.register(pk.make(FaPyParadigms), { AI: FaAlgoIntent, PAR: FaPyParadigms }); } catch (_) { /* 領域包註冊失敗不影響通用範式 */ } } }
     async _offlineStackWire(text, r) { // 不丟例外；缺模組（舊版嵌入）就回空
         const empty = { stack: null, stuckAt: null, header: '', note: '' };
         try { if (typeof FaOfflineStack === 'undefined') return empty; return await FaOfflineStack.wireOffline({ goal: String(text || '').replace(/\s+/g, ' ').slice(0, 60), result: { ok: !!r.ok, rounds: r.rounds, source: r.ok ? r.source : undefined }, enabled: false }); } catch (_) { return empty; }

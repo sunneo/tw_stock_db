@@ -25,6 +25,7 @@
 - 矩陣轉 Blockly 已接進產品（2026-11-08，`matrix_blocks` 工具＋`write_code` 結果帶區塊，真 Electron 驗證過遞推與 DFA）；**待改善**：離線組合只有「讀取器讀不出、或範式沒解出」才走矩陣層，所以多數題目看不到區塊；圖／格子／組合層的真 Electron 已逐題跑過（2026-11-10，74 題：組合 12/12、圖類含格子 62/62 解出且帶區塊，結果見 `DESIGN.matrix-fallback.md` §11.8；`verified` 欄多為 false＝歧義未排除，不等於錯）；沒有區塊畫面（只回受控自然語言與分段）。
 - 狀態機圖種、VM 轉結構化反編譯、狀態命名已做純模組（2026-11-08，`DESIGN.matrix-fallback.md` §11.7）；**待改善**：狀態機圖種沒收編進 `uml_core` 也沒畫面；VM 區塊沒接 `write_code`；名稱是規則推的角色；BFS 交錯迴圈只能寫成狀態分派。
 - Blockly 教學（2026-11-08 第二批）：多矩陣輸入已做（核對過）；Linux 語意模擬補了行程樹與監聽佇列（`DESIGN.blockly-curriculum.md`）；holdout 只量測（28/31、59/64）。（2026-11-10 補：socket 全套 `lx.socket`、信號處理常式巢狀 `lx.signest`、環境變數與 exec 事件模擬 `lx.envexec` 已做，整份 linuxsem train 27/27、holdout 10/10）。**待改善**：真 exec／argv／環境／結束碼需要判題器真的啟動行程，判題器沒有這項能力，目前只有事件模擬；思考堆疊 C／E／I；holdout 未解題（不可教）。
+- Blockly 教學剩餘缺口（2026-11-10）：已補進階圖 graph3（Floyd、二分圖匹配、指派問題、最短路徑還原／條數／第 k 短／限制邊數）、同步 sync2（哲學家、死結偵測）並修好銀行家 holdout 的輸入措辭缺口（通用讀取規則）、檔案系統（路徑正規化、目錄解析、連續配置策略、內部碎片）、資料結構（AVL、跳躍表、稀疏表），細節與數字在 `DESIGN.blockly-curriculum.md`。**仍待改善**：Hopcroft-Karp（現用 BFS 增廣）、單調佇列、夥伴系統、日誌檔案系統；各包 holdout 都是寫完骨架後所出，不算冷啟動，graph3 的 `ho2` 有 1 題（車站／軌道措辭的路徑還原）、sync2 舊 holdout 有 1 題（只寫「永遠卡住」）、ds 有 1 題（查詢欄位叫 x y 的稀疏表）未解。
 
 ### 剖析器與環境
 - 剖析器資源來源已解決（2026-11-08）：內建 Python，其他 9 種語言從釘住 commit 的分支 `assets-tree-sitter` 延遲下載並核對（`DESIGN.ast-nodes.md` 第九節）。**待改善**：還沒在真 Electron 實際下載一次、跑過其他語言的行為卡或語法樹；各語言的 `parser` 單元切分（merge patch 的語法樹）仍只有 Python 實作。
