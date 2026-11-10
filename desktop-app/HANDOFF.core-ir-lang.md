@@ -1,5 +1,7 @@
 # HANDOFF：中間語言各語言的「進／出」收尾（項目 7 擴充）
 
+> **2026-11-10 更新（先看這段）**：下面第 3 節的待辦都已完成並提交；現況與驗證結果在 `DESIGN.core-ir.md` 第 11～14 節，剩餘待改善在 `DESIGN.TODO.md`「多語言中間語言與函式行為」。第二輪（2026-11-10）提交：C++ 補 18 個標準操作樣板（`e52d81c93`）、C++／C# 的「進」（`2fc5e32ab`）＋接進產品（`930f338ce`）、Ruby 的「進」（`addf063a0`）、Perl 的「進」自己寫的剖析器（`4696f8dc1`）、沒標型別處理 `needTypes`／`types`（`86b0f5c08`）、`to_uml`（`2804f57ac`）、真 Electron 驗證 `ir_langs.eval.js`（`2a3131c24`）。**都還沒發布**（管理者發布）。接手前的環境更正：這台現在有 Ruby（`J:\Ruby40-x64\bin\ruby.exe`），下面「Ruby 沒環境」的說法已過時；判題器的 C++ 在這台會崩潰（見 DESIGN §14）。改 `floating-assistant.js` 嵌入的模組後要 `node scripts/embed-code-ui.js`；真 Electron 驗證要先 `node build-assistant.js`，驗完還原受追蹤的建置產物（`git checkout -- renderer/floating-assistant.js renderer/floating-assistant.min.js renderer/update-manifest.json web-lazy`，不要提交）。
+
 ## 1. 開場提示（接手者收到的原文）
 
 請從這份文件接手（`D:\Downloads\videos-嗨投資-desktop-app\desktop-app\HANDOFF.core-ir-lang.md`）。完整讀完，包括「使用者原話」與「工作方式」，照做。執行 low-context-long-run 技能：做下一個待辦，context 到 30% 就寫下一份交接並啟動自己的接手者。第一則訊息用一行確認你讀了文件、正要開始哪個待辦。

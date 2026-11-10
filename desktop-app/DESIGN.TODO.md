@@ -17,8 +17,8 @@
 - 缺口 I 只有量測骨架，沒有真模型數字。
 
 ### 多語言中間語言與函式行為（`DESIGN.core-ir.md`）
-- 中間語言各語言（2026-11-08 完成，`DESIGN.core-ir.md` §11～13）：nodejs／java／c 的「進」實跑一致（10／10／8）；c++／c#／perl 輸出器實跑 10/10，ruby 這台沒環境只做語法檢查；「進」與新輸出器已接進 `convert_code`、`behavior_card`、`/code`。**待改善**：c++／c#／ruby／perl 當來源的「進」；cpp 有 19／72 個標準操作沒樣板；ruby 沒實跑；宿主 async 路徑沒在真 Electron 驗證；JavaScript 來源轉靜態語言缺型別會拒絕。
-- 行為卡已接成唯讀工具 `behavior_card`（2026-11-08，`DESIGN.core-ir.md` §10）；**待改善**：nodejs／java／c 的第一層沒在真 Electron 跑（要連網下載文法）；UML 抽回還沒做成工具；沒有卡片畫面。
+- 中間語言各語言（`DESIGN.core-ir.md` §11～14）：七種來源（nodejs／java／c／cpp／csharp／ruby／perl）的「進」都做了，Python→IR→該語言→IR→Python 實跑一致（10／10／8／10／10／10／10）；cpp 標準操作補到 71／72（只剩 `json.loads`）；Ruby 這台有 ruby 4.0.9 已實跑 10/10；沒標型別轉靜態語言改成推型別＋`needTypes`／`types` 補完；已接進 `convert_code`、`behavior_card`、`/code`。**待改善**：判題器的 C++ 在這台連 hello world 都以 0xC0000005 崩潰（`judge-runner.js` 用 Strawberry g++，疑似精簡環境變數造成 DLL 載入錯誤；帶 tests 轉 cpp 會得到假的 WA）；Perl 的「進」只剖我們輸出的子集（手寫 Perl 的修飾語句、local、字串插值收成原生區塊），手寫程式的覆蓋率沒量；C++／C# 的「進」同樣只認目錄樣板；`ir.test.js` 的 `average-fixed → c` 因找到沒標頭的 gcc 而失敗；Perl 沒有布林型別，往返後布林變整數；`types` 補型別沒有互動詢問畫面。
+- 行為卡已接成唯讀工具 `behavior_card`（`DESIGN.core-ir.md` §10）；各語言第二層與 `convert_code` 的 `to_uml`（從程式抽回 UML 設計，只讀）已在真 Electron 驗證（`scripts/eval/ir_langs.eval.js`，文法用本機已存檔預先放進快取、攔下網路）。**待改善**：還沒在真 Electron 實際從網路下載過其他語言的文法（下載前要先問使用者）；沒有卡片或 UML 畫面（只回 Markdown、DSL、Mermaid、PlantUML）。
 - 註解保存：行被改寫／搬動／刪除的規則已做（`a53b519b`），其餘節點類型的註解錨定待驗證。
 
 ### 矩陣與 Blockly（`DESIGN.matrix-fallback.md`、`HANDOFF.blockly-teach.md`）
