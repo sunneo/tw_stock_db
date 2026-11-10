@@ -343,8 +343,8 @@
    "names": [
     "FaAlgoIntent"
    ],
-   "size": 26823,
-   "md5": "f391ebce14891fb2346a409761212e5d"
+   "size": 28160,
+   "md5": "0bd4fd6bde99a74a251dfefa41d18d9c"
   },
   "pylessons": {
    "file": "chunks/pylessons.js",
@@ -399,8 +399,8 @@
    "names": [
     "FaDomainDs"
    ],
-   "size": 9467,
-   "md5": "6c50cd01e98859959f908004358f758d"
+   "size": 17753,
+   "md5": "6dc51daae0e96a240208fef334cf2606"
   },
   "domainlt": {
    "file": "chunks/domainlt.js",
@@ -439,8 +439,8 @@
    "names": [
     "FaDomainFs"
    ],
-   "size": 5130,
-   "md5": "01ea540e22d67dd6c319f0fd792352af"
+   "size": 12415,
+   "md5": "a0c49e1e8623a85a036680de0d43a332"
   },
   "domainls": {
    "file": "chunks/domainls.js",
@@ -457,6 +457,46 @@
    ],
    "size": 5086,
    "md5": "ae82b2989952577b4afd4fe808dd6020"
+  },
+  "domainlr": {
+   "file": "chunks/domainlr.js",
+   "names": [
+    "FaDomainLinuxreal"
+   ],
+   "size": 11499,
+   "md5": "fe2e85372e24770230b52d4215cdc448"
+  },
+  "domainlz": {
+   "file": "chunks/domainlz.js",
+   "names": [
+    "FaDomainLzma"
+   ],
+   "size": 10975,
+   "md5": "f272aa7fa44d4f230166ee4cae869e88"
+  },
+  "domainbf": {
+   "file": "chunks/domainbf.js",
+   "names": [
+    "FaDomainBinfmt"
+   ],
+   "size": 7303,
+   "md5": "e495a2bf36b3b25ae9b557f5f2f0921f"
+  },
+  "domaing3": {
+   "file": "chunks/domaing3.js",
+   "names": [
+    "FaDomainGraph3"
+   ],
+   "size": 14020,
+   "md5": "0cbc87616d6c5469c929509d691550c8"
+  },
+  "domainsy2": {
+   "file": "chunks/domainsy2.js",
+   "names": [
+    "FaDomainSync2"
+   ],
+   "size": 7154,
+   "md5": "466c5df2b732d1950d484202c4fcd221"
   },
   "pyumlpipeline": {
    "file": "chunks/pyumlpipeline.js",
@@ -495,8 +535,8 @@
    "names": [
     "FaOfflineStack"
    ],
-   "size": 4135,
-   "md5": "539d0307c52c0e073e82a0202870f9eb"
+   "size": 10556,
+   "md5": "2433d9738f52008204d1d386b863699c"
   },
   "codepatch": {
    "file": "chunks/codepatch.js",
@@ -519,8 +559,8 @@
    "names": [
     "FaIrBundle"
    ],
-   "size": 226661,
-   "md5": "7c8f910c6898bf075ae36c3a75084097"
+   "size": 282423,
+   "md5": "d0abfe8ae0f5bcbd120d9ac53bd760b6"
   },
   "view": {
    "file": "chunks/view.js",
@@ -1524,7 +1564,7 @@
   }
  },
  "core": {
-  "size": 5665080,
-  "md5": "e46fe08f2f7daafb659a0763557e5ef0"
+  "size": 5667547,
+  "md5": "70da8464ae22270e93282604bd3c8f21"
  }
 }
