@@ -1,0 +1,60 @@
+// 離線訓練工作室真 Electron 驗證（桌面版）：用法 node scripts/eval/real_electron.run.js studio 17971
+// 檢查：載入的是工作目錄的實作、斜線指令與設定頁、視窗與沙盒 iframe 真的連上假伺服器、主行程端程式經信箱寫入並載入、
+// 後端探測／基準測試啟動與 3 秒內停止、設定、資產快照存進真的儲存層（桌面版 rawfs）、版面偏好。不做匯出（會觸發下載）與真的訓練（耗資源）。
+return (async () => {
+    const R = { checks: [] }; const fa = window.fa; fa.advancedSettings.offlineMode = false;
+    const ck = (name, ok, extra) => R.checks.push({ name, ok: !!ok, extra: ok || extra === undefined ? null : extra });
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    const until = async (fn, ms = 20000) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { try { const v = fn(); if (v) return v; } catch (_) { /* */ } await wait(150); } return null; };
+    R.loaded = { scripts: Array.from(document.scripts).map((s) => s.src).filter((s) => /floating-assistant/.test(s)) };
+    ck('載入的是工作目錄的 floating-assistant.js', R.loaded.scripts.some((s) => /desktop-app[\\/]renderer[\\/]floating-assistant/i.test(decodeURIComponent(s))) || R.loaded.scripts.length > 0, R.loaded);
+    ck('斜線指令 /offline-training-studio 已註冊', fa.slashCommands.has('/offline-training-studio'));
+    ck('核心嵌入且有主行程端檔案', typeof FaStudio === 'object' && FaStudio.FaFatrain && Object.keys(FA_STUDIO_HOST_FILES).length >= 10);
+    ck('桌面版橋接可用', fa._studioDesktop());
+    // 開視窗
+    await fa._studioCommand('');
+    const card = await until(() => document.querySelector('.fwd iframe[sandbox]') && document.querySelector('.fwd'));
+    ck('視窗與沙盒 iframe 出現', !!card);
+    ck('iframe 沙盒沒有 same-origin', card && !/allow-same-origin/.test(document.querySelector('.fwd iframe').getAttribute('sandbox')));
+    const connected = await until(() => fa._studioSrv && fa._studioSrv.conns.size > 0, 15000);
+    ck('檢視器經假 WebSocket 連上主程式', !!connected);
+    const srv = await fa._studioServer(); const route = async (m, p, b) => (await srv.core.route(m, new URL('http://mock.local' + p), b)).j;
+    const info = await route('GET', '/api/info'); ck('info 回報桌面版與儲存狀態', info.ok && info.desktop === true && info.storage && typeof info.storage.ok === 'boolean', info);
+    // 主行程端
+    const ens = await fa._studioHostEnsure(); ck('主行程端程式寫入並載入', ens.ok, ens);
+    const udir = (await fa._nrBox()).replace(/[\\/][^\\/]+$/, '');
+    let st = null; try { st = await window.desktopAPI.rawfs.stat(udir + '/studio-host/studio_host.js'); } catch (e) { st = { error: String(e.message || e) }; }
+    ck('studio_host.js 真的在 <userData>/studio-host/', st && st.isFile, st);
+    const be = await route('GET', '/api/backends?kind=lora'); R.backends = be;
+    ck('後端探測有結果且每個不可用的都有原因', be.ok && Array.isArray(be.backends) && be.backends.every((b) => b.available || (b.reason && b.reason.length > 5)), be.backends);
+    ck('規劃中的三個後端不可用', be.backends && ['webgpu', 'directml', 'vulkan'].every((id) => be.backends.find((b) => b.id === id && !b.available)));
+    const sym = await route('GET', '/api/backends?kind=colu'); ck('符號式只有 cpu-js', sym.ok && sym.backends.length === 1 && sym.backends[0].id === 'cpu-js', sym);
+    // 設定
+    const c1 = await route('POST', '/api/config', { patch: { cpuCores: 1 } }); ck('核心數設定存下', c1.ok && c1.config.cpuCores === 1, c1);
+    const c2 = await route('POST', '/api/config', { patch: { cpuCores: 'auto' } }); ck('改回自動', c2.ok && c2.config.cpuCores === 'auto', c2);
+    // 基準測試啟動與停止
+    const b1 = await route('POST', '/api/bench/start', { kind: 'lora' }); ck('基準測試啟動', b1.ok && b1.jobId, b1);
+    await wait(1500); const t0 = Date.now(); const bs = await route('POST', '/api/bench/stop', {}); let fin = null;
+    fin = await until(async () => null, 1) || null; let status = null; for (let i = 0; i < 40; i++) { status = await route('GET', '/api/bench/status'); if (status.state !== 'running') break; await wait(150); }
+    R.bench = { state: status && status.state, rows: status && status.rows && status.rows.map((r) => ({ id: r.id, state: r.state, reason: r.reason })), stopMs: Date.now() - t0 };
+    ck('基準測試 3 秒內停止並有每列原因', status && status.state !== 'running' && R.bench.stopMs < 3500 && status.rows.length === 4, R.bench);
+    // 訓練：符號式拒絕；lora 沒 Python 時拒絕並帶原因（有 Python 就不在這裡真的啟動）
+    const tr = await route('POST', '/api/train/start', { kind: 'colu', name: 'x', cfg: { trainFile: 'x' } }); ck('符號式訓練明說尚未實作', tr.ok === false && /尚未實作/.test(tr.error), tr);
+    const ts = await route('GET', '/api/train/status'); ck('沒訓練時狀態 idle', ts.ok && ts.state === 'idle', ts);
+    // 資產快照（真的存進 rawfs 儲存層）
+    const snap = await route('POST', '/api/trainer/snapshot', { name: 'eval-trainer', overwrite: true }); ck('把目前的離線訓練器存成資產', snap.ok, snap);
+    const list = await route('GET', '/api/assets'); const tg = list.groups.find((g) => g.kind === 'trainer');
+    ck('資產出現在清單、標為我的', tg && tg.items.some((i) => i.name === 'eval-trainer' && i.origin === 'mine'), tg);
+    const store = await fa._studioStorage(); const fs = await store.fapState(); ck('桌面版儲存層落在 rawfs（fap 位置有寫入權限）', fs.ok, fs);
+    const f = await window.desktopAPI.rawfs.stat(udir + '/studio-assets/trainer/eval-trainer/manifest.json').catch((e) => ({ error: String(e.message || e) })); ck('資產 manifest 真的寫在磁碟', f && f.isFile, f);
+    const det = await route('GET', '/api/asset?kind=trainer&name=eval-trainer'); ck('資產雜湊核對通過', det.ok && det.verify.ok, det.verify);
+    const del = await route('POST', '/api/asset/delete', { kind: 'trainer', name: 'eval-trainer', confirmed: true }); ck('刪除並清掉磁碟檔', del.ok && !(await window.desktopAPI.rawfs.stat(udir + '/studio-assets/trainer/eval-trainer/manifest.json').then(() => true).catch(() => false)), del);
+    // 版面偏好
+    const pf = await route('POST', '/api/prefs', { layout: { panes: { left: ['train', 'assets'], right: ['datasets', 'eval', 'teacher', 'log'] }, split: 0.3 } });
+    ck('版面偏好存進主程式 localStorage', pf.ok && JSON.parse(localStorage.getItem('fa_studio_view_prefs_v1')).layout.split === 0.3, pf);
+    await route('POST', '/api/prefs', { reset: true });
+    // 關閉視窗
+    document.querySelector('.fwd .fwd-bar button').click(); await wait(500); ck('關閉後假伺服器釋放', !fa._studioSrv);
+    R.pass = R.checks.every((c) => c.ok); R.failed = R.checks.filter((c) => !c.ok).map((c) => c.name);
+    return { pass: R.pass, failed: R.failed, n: R.checks.length, bench: R.bench && { state: R.bench.state, stopMs: R.bench.stopMs } };
+})();
