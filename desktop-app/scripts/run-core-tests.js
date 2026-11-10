@@ -132,6 +132,8 @@ const suites = [
     ['訓練工作室 .fatrain 容器（zip 讀寫、分片、inspect、確認後匯入、合併／fork／取代、分卷）', 'renderer/src/studio/fatrain_core.test.js'],
     ['訓練工作室儲存層（記憶體／分塊／Node fs、fap 同步與資料可能遺失旗標）', 'renderer/src/studio/storage_core.test.js'],
     ['訓練工作室離線訓練器 bundle ⇄ 資產往返（sha256 一致）', 'renderer/src/studio/trainer_adapter.test.js'],
+    ['訓練工作室 LoRA 登錄與按需載入（相容性、領域路由、衝突、預算與 LRU 卸載、停用）', 'renderer/src/studio/lora_registry.test.js'],
+    ['訓練工作室資料匯入與清洗（wiki／開源／書本／aiDoc 轉接、切塊、去個資、去重、授權、請求單、規則樣本、schema 檢查；用真實 wiki 與 aiDoc 輸出）', 'renderer/src/studio/ingest.test.js'],
     ['壓縮檔（檔頭辨識 zip／jar／7z／rar／tar／gzip／bzip2／xz／iso、bzip2 解碼、tar 的 pax／GNU 長檔名、內容判斷、jar 摘要）', 'renderer/src/archive/archive_core.test.js'],
     ['中英互譯的核心（方向判斷、切句、檢查譯文：語言／網址／重複／數字、提示詞、術語、自然語言命令不誤判）', 'renderer/src/tools/translate_core.test.js'],
     ['語音合成的意圖辨識（用英文語音說…、把「…」念出來、tts: …；提問與別的「念／讀」不誤判）', 'renderer/src/tools/tts_intent.test.js'],

@@ -77,3 +77,7 @@ if (require.main === module) {
 `completion` 一律是 **prefill 之後的續寫**（例如 prefill `{"choice":`、completion ` 3}`）。`lora_common.normalize` 負責對應到訓練。
 **留出工具規則**：heldout=true 的工具絕不出現在 split:"train" 列的 `tools`／選單裡（merge 後已檢查：0 列洩漏）。
 新增產生器：`gen_tool_routing_full`、`gen_colu_full`、`gen_when2call`、`gen_natural`、`gen_agent`（含 writer）、`gen_wiring`、`gen_uml_edit`；共用 `w2c_common.js`；工具清單來自 `extract_tools.js`。
+
+## 補充：`doc_knowledge` 領域（2026-11-11，資料匯入與清洗管線）
+`renderer/src/studio/clean_core.js` 的 `ruleSamples`（`meta.author:'rule'`，純規則擷取）與老師生成並通過 `verifyTeacherSample` 的樣本使用 `domain:"doc_knowledge"`，`stage` 為 `rule_heading_summary`／`rule_code_comment`／老師自訂。
+`meta` 必帶：`chunk_id`（對應語料塊）、`source`、`source_type`（wiki／open_source／book／aidoc）、`license`、`builtin_allowed`、`retrieved_at`。**授權 unknown／copyleft／使用者提供者 `builtin_allowed:false`，只能進使用者資產，不得內建化。**

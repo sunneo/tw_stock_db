@@ -271,3 +271,46 @@ Backend {
 - **未找到**（實作時要自己確認或新增）：CoLU 回饋紀錄的執行期儲存位置、matrix 層的使用者資料位置、knowledge-types pack 的執行期位置與格式。
 - **運算**：onnxruntime-web 1.22.0（:8989）；`vlm/vlm_core.js` 有 WebGPU→WASM 降級與 `shader-f16` 檢查（:80–85）；transformers.js 走 CDN；原生是 `nr-engine.js`＋onnxruntime-node（CPU，子行程 `nr-child.js`／`nr-host.js`）。**整個 repo 沒有任何 ORT 訓練圖或 `TrainingSession`**（`lora-train/ref` 之外）。桌面版 `main-ext.js:361` 會探測 node／npm／npx／python，Python 橋接（`FA_PYBRIDGE_FILES`）跑技能腳本，**沒有內建 Python 執行環境**。
 - **發佈**：改 `floating-assistant.js`／`bootstrap.js`／`index.html` 只能經 `scripts/publish.sh`（建置、commit、組 `desktop-app-patch` 分支、核對 checksum；`PATCH_VERSION` 單調遞增；不手組 patch；凍結的 `live-patch-compat` 不動；大檔分片）。
+
+
+## 13. LoRA 按需載入與資料匯入清洗（已實作，2026-11-11）
+
+使用者需求：「訓練出來的LoRA要有辦法給主程式按需求載入，例如我也想要將來可以有資料匯入跟清洗器，將資料從wiki或open source或書本內容, aiDoc來變成LoRA」。三個純核心（UMD、依賴注入、Node 與瀏覽器都能載入），都在 `renderer/src/studio/`；測試登錄在 `scripts/run-core-tests.js`。
+
+### 13.1 檔案
+| 檔案 | 內容 |
+|---|---|
+| `lora_registry_core.js` | LoRA 登錄表、相容性檢查、依需求選用（路由）、預算與 LRU 卸載、載入器介面、`entryFromManifest`（由 `pack_adapter.js` 的 manifest 轉登錄項）、`nrEngineLoader`（把 nr-engine 接點包成載入器，載入前核對 sha256） |
+| `ingest_core.js` | 四種來源轉接器 `fromWiki`／`fromOpenSource`／`fromBook`／`fromAiDoc`，與分派 `ingest(source, input, opts)`；輸出統一「文件」`{text, code?, heading, meta}` |
+| `clean_core.js` | 清洗管線 `cleanDocs`、切塊、去個資與密鑰、品質過濾、去重、授權政策、老師請求單 `buildSampleRequests`、老師樣本驗證 `verifyTeacherSample`、純規則樣本 `ruleSamples`、schema 檢查 `validateRow(s)` |
+| `lora_registry.test.js`、`ingest.test.js` | 43＋77 項斷言 |
+
+### 13.2 按需載入（lora_registry_core.js）
+- 登錄項欄位：`id, name, source('builtin'|'user'|'imported'), base, base_sha256?, rank, alpha?, prompt_format_version, tool_catalog_sha256?, domains[], triggers[], conflicts_with[], priority, location, size, sha256, enabled, eval, added`。
+- `checkCompat(entry, env)`：base、基底雜湊、rank 不在槽（`env.rank_slots`）、提示格式版本不符 → `reject` 並回 `{field, expected, actual, message}`；`tool_catalog_sha256` 不符或缺 → `warn`（對應 DESIGN.lora-training §10）。
+- `select({domain, domains, text, ids})` → `{plan, skipped:[{id, reason}]}`：停用／不相容／無評量資料／有組別輸給基底者不自動選用（手動 `ids` 可繞過「無評量」與「輸基底」，**不能**繞過不相容）；同領域只留一個，排序＝來源（使用者 > 匯入 > 內建，沿用 §7）→ `priority` → 評量 → 較新；`conflicts_with` 排除排序在後者；通用（`domains` 空）只在沒有專屬者時補上；`text` 以 `triggers`（字串或正規表示式）比對使用者指令；取前 `maxActive` 個。
+- `ensure(plan)`／`request(req)`：預算（`budgetBytes`，預設 256 MiB）不夠就依 LRU 卸載不在本次計畫內者；單靠計畫就超預算則丟排序最後者並寫原因；載入失敗回具體原因、不留駐留。`setEnabled(id,false)` 會同時卸載。`snapshot()`／`restore()` 供存進 Studio 儲存層。
+- **載入器介面**：`{load(entry) → handle, unload(entry, handle)}`。**現有主程式接點**：`nr-engine.js` 的 `loadModel(modelPath, tokenizerPath, threads, lora)`（約第 22 行；`lora = {id, bytes}`，bytes＝`lora.bin`，以 onnxruntime 的 `externalData` 交給 session；換 adapter＝傳不同 id／bytes，session 重建）；`nr-engine.js` 呼叫處 `opts.lora`（約第 53 行）。`nrEngineLoader({readBytes, sha256Hex})` 回傳的 handle 正好是這個 `{id, bytes}`。
+- **尚未完成與具體阻礙**：
+  1. **同時套多個 adapter 做不到**：`nr-engine.js` 一個 session 只吃一個 `lora.bin`（模型是 `make_lora_onnx.py build` 的單一 LoRA 槽版），所以 `maxActive` 預設 1；要多個同時作用，需新增「多槽版」ONNX 或在載入前把多個 adapter 的 A／B 依 rank 槽合併（兩者都要改 `make_lora_onnx.py`，本階段未做）。
+  2. 網頁版（transformers.js 的 `session_options.externalData`）接點在 `floating-assistant.js`／`vlm_core.js`，使用者規則禁止本階段改 `floating-assistant.js`，所以尚未接線；登錄表本身網頁版也能載入。
+  3. 登錄表持久化（存進 fap／KVStore）與設定頁 UI 沒做，只提供 `snapshot()`／`restore()`；GitHub `lora-adapters` branch 的下載與分片重組沿用 §10 設計，未做。
+  4. 領域標籤來源：manifest 目前沒有 `domains` 與 `prompt_format_version` 欄位（`pack_adapter.js` 沒寫），`entryFromManifest` 需呼叫端補；`pack_adapter.js` 要補寫這兩欄才能全自動。
+
+### 13.3 資料匯入與清洗
+流程：來源 → `ingest`（文件）→ `cleanDocs`（語料塊 `kind:'corpus_chunk'`）→ 兩條出口：
+1. `buildSampleRequests`：**樣本生成請求單**（`kind:'sample_request'`，`status:'pending'`，記錄任務〔qa／summary／instruction／code_explain〕、輸入語料塊、輸出格式與 `verify` 驗證條件；`author:'teacher'`）。語料塊**不是**訓練資料；請求單交給老師（§6）生成後，用 `verifyTeacherSample` 驗證（schema、答案詞彙至少一半出現在語料塊、無個資、`split:'train'`、不得引用 heldout 塊）才收。heldout 塊不產生請求單。
+2. `ruleSamples`：不用 AI 的純規則樣本，標 `meta.author:'rule'`、`verified_by:'program_ground_truth'`（答案逐字擷取自語料塊）：標題→摘要（`rule_heading_summary`）、程式碼前導註解→說明（`rule_code_comment`）。品質低於老師生成，只作補充。
+- 來源轉接器：wiki（`.md`／`.html`／`.txt`，依標題切段，程式碼區塊內的 `#` 不算標題；HTML 去 script／style／nav、保留標題與 pre）、open source（偵測 LICENSE／COPYING，SPDX 與特徵句，最近上層優先，找不到＝`unknown`；跳過 lock、minified、二進位、過大檔）、書本（只收使用者提供文字，`user_supplied:true`，`\f` 分頁記頁碼，沒有分頁符不編造頁碼，授權預設 `unknown`）、aiDoc（核對過 `_repoIndexSnapshot` 與 `index.sqlite3` 實際結構，支援 `fa-project-notes`、`{meta,notes,map}`〔`/aidoc save`〕、`fa-project-index-bundle`、wiki `index.json`、SQLite 匯出的列陣列；AI 寫的說明記 `note_by`，自動產生的草稿頁跳過）。
+- 清洗：正規化（BOM、CRLF、零寬字元、全形空白）、切塊大小＝`contextWindowTokens` 的比例（目標 1/8、上限 1/4、重疊目標的 1/8、下限目標的 1/10，未給視窗用 4096；**無寫死的 token 常數**）、個資與密鑰樣式（email、電話、身分證字號、私鑰、sk-/ghp_/AKIA/Bearer/JWT/`api_key=`；預設改成佔位字並在 `meta.redactions` 記數，`dropOnSecret:true` 則整塊丟棄）、品質（過短、亂碼、文字比例、重複行比例）、去重（精確雜湊＋近似 simhash，8 段×8 位分桶、海明距離 ≤6，≥100 字元才比近似）。
+- 授權與來源：每塊 `meta` 記 `source, source_type, license, license_policy{builtin_allowed, kind, note}, url, path, title, heading, page, retrieved_at, redactions, user_supplied`。**只有寬鬆授權（MIT、Apache-2.0、BSD、ISC、CC0、CC-BY-4.0…）`builtin_allowed:true`；copyleft、`user-provided`、`unknown` 一律 `false`，只能留在使用者資產**（內建化 §7 的 `import-asset` 應拒收這類來源，該檢查尚未接上）。
+- heldout：路徑含 `holdout`／`heldout` 或 `meta.heldout:true` 的來源標 `split:'heldout'`；去重時 heldout 先入、train 的近似重複被丟（原因 `leaks_heldout`），請求單與規則樣本都不使用 heldout；`validateRows` 另查 train 列有沒有引用 heldout 語料塊。預設 `split:'train'`。
+- schema 檢查：`lora-train/gen/merge_dataset.js` 的 `validateRow` 沒有匯出且載入即執行 `main`，無法重用，`clean_core.validateRow` 照同一組必要欄位與 `split` 規則另寫（另加 messages 角色、`verified_by`、`domain` 清單檢查）。新增領域 `doc_knowledge`（已寫進 `lora-train/schema.md` 補充段）；`merge_dataset.js`、`train_lora.py` 尚未認識這個領域（沒有對應的 `gen_*.js`，要把規則樣本／老師樣本併入訓練集需新增產生器或匯入步驟）。
+- 實測輸入（`ingest.test.js` 印出）：repo 的 `wiki/`（29 文件→29 塊）、`DESIGN.lora-training.md`＋`DESIGN.project-index.md`（55→56 塊，2 塊過短被拒）、`asset_core.js`＋`storage_core.js`＋`lora-train/README.md`、aiDoc 的 `renderer/src/logmine/.floating-assistant/index/index.sqlite3`（用 python `sqlite3` 唯讀 immutable 轉列陣列，135 文件→121 塊，11 近似重複、3 過短被拒）；規則樣本全數通過 schema 檢查。
+
+### 13.4 未完成（具體阻礙）
+- **老師真的生成樣本**：需要線上 AI 與 §6 的老師迴圈（`_runSubAgentTask`＋`studio_*` 工具白名單），都在 `floating-assistant.js`，本階段不得修改；請求單與驗證函式已備好。
+- **GUI**（匯入來源挑選、清洗預覽、逐塊拒絕）：屬 §4 的 Studio 視窗，未做。
+- **近似去重的規模**：8 桶線性比對，超過約十萬塊時需改成排序合併（目前未實測大語料）。
+- **個資偵測只做樣式比對**（email、台灣電話、身分證、常見金鑰格式），人名、地址抓不到；使用者資料進線上老師前仍須 §6 的送出前確認。
+- **書本的著作權**無法由程式判定，只能依使用者聲明；不提供「從網路抓書」的功能。
