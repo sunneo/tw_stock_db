@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "baseVersion": "1.1.0",
-  "generatedAt": "2026-11-10T09:21:50.167Z",
+  "generatedAt": "2026-11-10T09:25:45.550Z",
   "files": {
     "renderer/index.html": "039acc67493d2d42bae493dc9822621a",
     "renderer/bootstrap.js": "a9953cd7275f9fe213f27d062f660e1a",
@@ -53,7 +53,7 @@
     "edge-tts.js": "135b186b61de5963ae2d3852fb70de5b",
     "fsx-sync.js": "f14777175ba4a3b4d3197c00befc7e82",
     "judge-core.js": "94f3bdfd43f2da943628bdec06427029",
-    "judge-runner.js": "9b54044eb183ff7f647fd6e0256e6cf7",
+    "judge-runner.js": "e8b931772094ca0f08a3e5b22d9eec2e",
     "knowledge-native.js": "a62f7e9808bedd0dae1aa195af493e20",
     "local-proxy.js": "158f13c8135c1dc736efe6d8aebb5b05",
     "main-ext.js": "9ca4cc6a9f7fd502561df52044d80900",
@@ -113,7 +113,7 @@
     "edge-tts.js": 7363,
     "fsx-sync.js": 5425,
     "judge-core.js": 5947,
-    "judge-runner.js": 16010,
+    "judge-runner.js": 17211,
     "knowledge-native.js": 5291,
     "local-proxy.js": 27272,
     "main-ext.js": 127194,
