@@ -49,11 +49,19 @@
 ## 3d. 最新進度（2026-11-10，blockly 續做）
 
 - Linux 語意模擬（`domain_linuxsem_core.js`）新增三個範式，各有 train／holdout 分開的種子，整份測試 train 27/27、holdout 10/10：`lx.socket`（socket／bind／listen／connect／accept／send／recv／close 全套事件）、`lx.signest`（信號處理常式巢狀：處理常式引發信號、自身遮罩、pending 遞送；骨架不能用 def，所以用顯式堆疊）、`lx.envexec`（環境變數匯出／繼承與 exec 事件模擬）。提交：`5b8eed9c9`、`e231198a3`、`9f4431b90`。
-- **判題器仍缺**：真的 exec／argv／環境變數／結束碼（`bench_linux_all` 的 holdout `exec-env` 仍是這類）需要判題器啟動真行程；現在只有事件模擬，沒有這項能力。
+- **判題器能力（2026-11-10 已補，見 §3e）**：argv、環境變數、結束碼、多檔案夾具與輸出檔、二進位 stdin／stdout、真子行程／管線、fork（Windows 走 WSL 或 msys 並標明 mode）、本機 socket 都已做進 `judge-runner.js`。（原 `exec-env` holdout 其實是樣板變數展開，早已由 linuxfmt 解掉。）
 - 這台 Windows 機器跑領域包測試要設 `FA_TS_DIR=~/.cache/fa-ts` 與 `FA_PYTHON=python`（`python3` 是商店空殼；`domain_harness.js` 已支援 `FA_PYTHON`）。腳本改檔別用 shell 內嵌（反斜線會被吃成退格字元），用 Write 寫成檔再跑。
 - 偵測詞排在 `algos` 最前面才不會被 `lx.fdtable`（「最小的空閒 fd」）搶走；新範式的偵測詞要避開別的範式的關鍵字。
 - 嵌入：這批沒跑 `embed-code-ui.js`（`floating-assistant.js` 另有他人未提交改動），發布時要嵌入。
 - 真 Electron 矩陣層逐題結果見 `DESIGN.matrix-fallback.md` §11.8。
+
+## 3e. 最新進度（2026-11-10，判題器真行程＋LZMA 完整流程＋xz／bmp 留存題）
+
+- **判題器**（`judge-runner.js`，測試 `judge-runner-real.test.js` 14 項、原 `judge-runner.test.js` 25 項、`judge-runner-kill.test.js` 5 項）：測試除 `{in, out}` 還可帶 `args／env／files／expectFiles／expectExit／inHex／outHex／needs`（欄位說明在檔案開頭註解）。`needs:['fork']` 時：非 Windows 直接真 fork（mode native）；Windows 的 bash 走 msys 的真 fork（mode msys）；Windows 的 python／C／C++ 交給 WSL 發行版（mode wsl，第一次啟動約 20 秒）；都沒有就該筆回 UNAVAILABLE（mode none，不假裝通過）。`needs:['socket']` 會替測試挑 127.0.0.1 的空閒埠，換掉 args／env 裡的 `{{PORT}}` 並設環境變數 JUDGE_PORT。逾時殺整棵行程樹；Windows 另掃「父行程已結束才變孤兒」的後代。
+- **不彈視窗（使用者抱怨過搶走焦點）**：Windows 沙盒的 python 掛 `sitecustomize.py`（PYTHONPATH 指向沙盒暫存目錄），把 subprocess／os.system／os.popen／os.spawn* 改成 CREATE_NO_WINDOW＋SW_HIDE 並補標準代碼；nodejs 掛 `scripts/hide-child-windows.js`。測試用子行程自己回報 GetConsoleWindow 為 0 來證明。**已知沒處理**：C／C++ 程式自己呼叫 system()／CreateProcess、bash（msys）的子行程；WSL 內的行程（wsl.exe 本身是 windowsHide 啟動）。
+- **領域包**：`domain_linuxreal_core.js`（環境變數查詢、argv、子行程環境、文字檔轉換、多檔案合併、二進位檔轉換、本機 socket 回應、fork＋管線、子行程管線）、`domain_lzma_core.js`（LZMA alone／LZMA2／LZMA2＋BCJ／xz 容器解碼，解碼器是 helpers，對 Python 標準庫 lzma 逐筆比對）、`domain_binfmt_core.js`（xz 標頭檢查類型名稱、xz 頁尾、8 位元調色盤 BMP 寫出）。數字見 `DESIGN.blockly-curriculum.md` §3。
+- 讀取器通用小修：領域條目可標 `raw:true`（輸入不在標準輸入時給一個原樣行清單）、`rawAll:true`（整份輸入原樣讀成行清單）；「給一行…」視同「輸入一行…」；「以空白隔開的位元組」也是 hex 輸入。
+- 測試跑法：這台機器 4 核心，所有 node 測試一律 `node scripts/qrun.js --timeout 秒數 -- <命令>`（排隊、低優先權、不彈視窗），一次只跑一個。
 
 ## 4. 環境與流程（任何帳號都能照做）
 

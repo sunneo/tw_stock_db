@@ -17678,6 +17678,33 @@ const holder = {};
 return holder.FaDomainLinuxfmt;
 })();
 /* DOMAINLF-END */
+/* DOMAINLR-BEGIN */
+const FaDomainLinuxreal = (function () {
+const holder = {};
+(function (module, self) {
+
+}).call(null, undefined, holder);
+return holder.FaDomainLinuxreal;
+})();
+/* DOMAINLR-END */
+/* DOMAINLZ-BEGIN */
+const FaDomainLzma = (function () {
+const holder = {};
+(function (module, self) {
+
+}).call(null, undefined, holder);
+return holder.FaDomainLzma;
+})();
+/* DOMAINLZ-END */
+/* DOMAINBF-BEGIN */
+const FaDomainBinfmt = (function () {
+const holder = {};
+(function (module, self) {
+
+}).call(null, undefined, holder);
+return holder.FaDomainBinfmt;
+})();
+/* DOMAINBF-END */
 /* DOMAING3-BEGIN */
 const FaDomainGraph3 = (function () {
 const holder = {};
@@ -114319,7 +114346,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         const host = this._behTsHost(); const PC = await host.loadTreeSitter(); const lang = await PC.Language.load(await host.loadLanguageWasm('python')); const P = new PC(); P.setLanguage(lang); this._pyParser = P; return P;
     }
     // 領域包（DSP…）：第一次用到時註冊進算法詞彙與範式骨架表；判題用領域的容差設定（DSP＝float）
-    _pyDomainsInit() { if (this._pyDomainsDone) return; this._pyDomainsDone = true; for (const pk of [FaDomainDsp, FaDomainAlgo2, FaDomainOs, FaDomainDs, FaDomainLinuxText, FaDomainSync, FaDomainGraph2, FaDomainTwofile, FaDomainLinuxsem, FaDomainLinuxfmt, FaDomainFs, FaDomainSync2, FaDomainGraph3]) { try { FaDomains.register(pk.make(FaPyParadigms), { AI: FaAlgoIntent, PAR: FaPyParadigms }); } catch (_) { /* 領域包註冊失敗不影響通用範式 */ } } }
+    _pyDomainsInit() { if (this._pyDomainsDone) return; this._pyDomainsDone = true; for (const pk of [FaDomainDsp, FaDomainAlgo2, FaDomainOs, FaDomainDs, FaDomainLinuxText, FaDomainSync, FaDomainGraph2, FaDomainTwofile, FaDomainLinuxsem, FaDomainLinuxfmt, FaDomainLinuxreal, FaDomainLzma, FaDomainBinfmt, FaDomainFs, FaDomainSync2, FaDomainGraph3]) { try { FaDomains.register(pk.make(FaPyParadigms), { AI: FaAlgoIntent, PAR: FaPyParadigms }); } catch (_) { /* 領域包註冊失敗不影響通用範式 */ } } }
     async _offlineStackWire(text, r) { // 不丟例外；缺模組（舊版嵌入）就回空
         const empty = { stack: null, stuckAt: null, header: '', note: '' };
         try { if (typeof FaOfflineStack === 'undefined') return empty; return await FaOfflineStack.wireOffline({ goal: String(text || '').replace(/\s+/g, ' ').slice(0, 60), result: { ok: !!r.ok, rounds: r.rounds, source: r.ok ? r.source : undefined }, enabled: false }); } catch (_) { return empty; }

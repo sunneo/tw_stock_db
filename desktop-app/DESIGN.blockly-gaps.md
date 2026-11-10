@@ -236,9 +236,9 @@ LZMA 的 match／rep0–3／距離槽／狀態轉移機、LZMA2 區塊分塊、B
 | G11 | **已補** | 73deb981 |
 | G12 | **已補** | 73deb981（`interp.stack-vm`、`interp.assign-env`、`interp.pipeline`、`str.env-expand`） |
 | G13 | **已補** | 73deb981（LZ77 編解碼、霍夫曼合併、範式霍夫曼、DP 比對、Delta、RLE） |
-| G14 | 超出 Blockly | LZMA match／rep／距離槽狀態機、LZMA2、BCJ：待補教學／上網 |
-| G15 | 超出 Blockly | 判題器二進位 IO、檔案、argv、結束碼、環境變數：判題器維護者 |
-| G16 | 超出 Blockly | 真行程：待補教學 |
+| G14 | ✔ 已補（2026-11-10） | `domain_lzma_core.js`：LZMA match／rep／距離槽、LZMA2、BCJ、xz 容器（helpers 做法） |
+| G15 | ✔ 已補（2026-11-10） | `judge-runner.js`：inHex／outHex、files／expectFiles、args、env、expectExit |
+| G16 | ✔ 已補（2026-11-10） | 判題器 needs fork／socket（Windows fork 走 WSL 或 msys，標明 mode）；範式 `domain_linuxreal_core.js` |
 | G17 | **已補** | dfed1565、73deb981 |
 | G18 | **已補（讀取器偵測）** | 本批：`intent.specLike`（長敘述／多張表／多條公式）；模型／老師部分超出 Blockly |
 

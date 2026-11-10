@@ -25,7 +25,21 @@ async function run({ name, packs, seeds, minSkeletons, judge: jd, trainOnly }) {
         const r = await PL.buildFromUML({ statement: st, uml: { hints: uml.hints, model: uml.model }, B, R, C2U, FaPyBody: PB, Choose: CH, judge, Paradigms: PAR, paradigmRank: rank });
         if (!r.ok) { if (process.env.DBG) console.log('DBG', e.id, JSON.stringify(r).slice(0, 1500)); return { err: r.reason }; } const j = await J.judge({ lang: 'python', source: r.source + '\nmain()\n', problem }); return { r, v: j.verdict, detail: j.detail };
     };
-    const mk = (e, b) => { for (let t = 0; t < 20; t++) { const input = e.gen(b, { rnd, pick }); const r0 = cp.spawnSync(process.env.FA_PYTHON || 'python3', ['-I', '-c', e.ref], { input, encoding: 'utf8', timeout: 20000 }); if (r0.status === 0 && r0.stdout.trim()) return { in: input, out: r0.stdout }; } return null; };
+    // 真實 IO 種子（e.real）：gen 回傳 {in, args?, env?, files?, needs?, outFiles?}；參考解在暫存目錄裡真的執行（argv＝args、環境變數＝env、檔案預置），
+    // 以它的 stdout／結束碼／outFiles 當期望（結束碼非 0 時測試帶 expectExit）。args 裡的 {{PORT}} 換成隨機埠。e.binFiles＝輸出檔用位元組比對。
+    const mkReal = (e, b) => { for (let t = 0; t < 20; t++) {
+        const g = e.gen(b, { rnd, pick }); const port = 20000 + rnd(0, 30000); const sub = (x) => String(x).replace(/\{\{PORT\}\}/g, port);
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'real-ref-')); try {
+            for (const k of Object.keys(g.files || {})) { fs.mkdirSync(path.dirname(path.join(dir, k)), { recursive: true }); fs.writeFileSync(path.join(dir, k), g.files[k] && g.files[k].hex ? Buffer.from(g.files[k].hex, 'hex') : g.files[k]); }
+            const env = Object.assign({}, process.env, g.env || {}, { JUDGE_PORT: String(port) });
+            const r0 = cp.spawnSync(process.env.FA_PYTHON || 'python3', ['-I', '-c', e.ref].concat((g.args || []).map(sub)), { cwd: dir, input: g.in || '', env, encoding: 'utf8', timeout: 60000 });
+            if (r0.status === null || r0.error) continue;
+            const test = { in: g.in || '', out: r0.stdout }; if (g.args) test.args = g.args; if (g.env) test.env = g.env; if (g.files) test.files = g.files; if (g.needs) test.needs = g.needs; if (r0.status !== 0) test.expectExit = r0.status;
+            if (g.outFiles) { test.expectFiles = {}; for (const k of g.outFiles) { try { const bf = fs.readFileSync(path.join(dir, k)); test.expectFiles[k] = e.binFiles ? { hex: bf.toString('hex') } : bf.toString('utf8'); } catch (_) { test.expectFiles = null; break; } } if (!test.expectFiles) continue; }
+            if (!test.out.trim() && !test.expectFiles && test.expectExit === undefined) continue;
+            return test;
+        } finally { try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_) { /* */ } } } return null; };
+    const mk = (e, b) => { if (e.real) return mkReal(e, b); for (let t = 0; t < 20; t++) { const input = e.gen(b, { rnd, pick }); const r0 = cp.spawnSync(process.env.FA_PYTHON || 'python3', ['-I', '-c', e.ref], { input, encoding: 'utf8', timeout: 20000 }); if (r0.status === 0 && r0.stdout.trim()) return { in: input, out: r0.stdout }; } return null; };
     const bad = [], rows = []; let ok = 0, revOk = 0, n = 0, hoOk = 0, hoN = 0; const hoFail = [];
     for (const e of seeds) {
         if (process.env.ONLY && !process.env.ONLY.split(',').includes(e.id)) continue; const holdout = e.split === 'holdout'; if (holdout && trainOnly) continue;

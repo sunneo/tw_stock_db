@@ -59,8 +59,9 @@
 | sed／awk／cut／sort／uniq／wc／tr／head／tail／diff／join 行為 | ◐ | `domain_linuxtext_core.js`：除 diff／join 外✔；兩段輸入工具另在 `domain_twofile_core.js`：cat -n 兩檔、comm／diff（只在 A／B／共同、去重、排序、個數）、join（inner／left）、paste、cmp；train 10/10、新 holdout 4/4。注意：`bench_coverage.js` 不載入領域包（只量核心範式），所以 bench_linux_all 58→59 來自讀取器的「兩個檔案各是一行 k 加 k 行」改寫（通用），不是 twofile 骨架；lx-cat-two 的敘述另被當 train（cat-cont）教進 twofile 測試，領域包層面不算泛化，泛化看新 holdout ho-cat（換措辭）。領域包的數字以各自 test.js 為準，宿主是否接上以 `scripts/e2e/matrix_graph.e2e.mjs` 為準 | ✔ |
 | 文字剖析：CSV／JSON 子集／INI／log 解析、printf 格式化、strftime | ✗ | | P1 |
 | 檔案 IO／行程／管線／信號／socket 的**語意模擬**（open flags、fd 表、dup2 重導向、pipe 緩衝、信號遮罩、socket 狀態機） | ✗ | 輸入「系統呼叫序列」，輸出狀態／輸出（純函式，不真呼叫） | P1 |
-| 動態霍夫曼 inflate、LZMA match 解碼、LZMA2、BCJ、BMP RLE／32 位元遮罩、tar PAX | ✗ | 超出多半（DESIGN.blockly-gaps.md G14） | P3 |
-| 真 fork／exec／socket／檔案 IO（判題器需二進位 IO／argv／環境／結束碼，G15、G16） | ✗ | **超出 Blockly**：交判題器維護者 | — |
+| LZMA match 解碼、LZMA2、BCJ、xz 容器 | ✔ | `domain_lzma_core.js`（解碼器是 helpers，對 Python 標準庫 lzma 逐筆比對；只解碼、xz 單串流單區塊、不驗證檢查值） | 本批 |
+| 動態霍夫曼 inflate、BMP RLE／32 位元遮罩、tar PAX | ✗ | 未做（無具體卡點，是排序問題；BMP RLE 與動態霍夫曼可照 lzma 的 helpers 做法補） | P3 |
+| 真 fork／exec／socket／檔案 IO（判題器需二進位 IO／argv／環境／結束碼，G15、G16） | ✔ | 判題器已補（`judge-runner.js`：argv／env／files／expectFiles／expectExit／inHex／outHex／needs fork／socket；Windows fork 走 WSL 或 msys 並標明 mode）；範式在 `domain_linuxreal_core.js`（環境變數查詢、argv、子行程環境、文字檔轉換、多檔案合併、二進位檔轉換、本機 socket、fork＋管線、子行程管線） | 本批 |
 
 ## 2. Linux 缺口 G1–G18 狀態（對照 DESIGN.blockly-gaps.md §4）
 
@@ -79,9 +80,9 @@
 | G11 算式求值 | ✔ 已補 | 73deb981 |
 | G12 直譯器 | ✔ 已補 | 73deb981 |
 | G13 壓縮演算法 | ✔ 已補 | 73deb981 |
-| G14 LZMA 完整流程 | 超出 Blockly（待補教學／上網） | — |
-| G15 判題器二進位 IO 等 | 超出（判題器維護者） | — |
-| G16 真行程 | 超出（待補教學） | — |
+| G14 LZMA 完整流程 | ✔ 已補（`domain_lzma_core.js`：alone／LZMA2／BCJ／xz 容器解碼） | 本批 |
+| G15 判題器二進位 IO 等 | ✔ 已補（`judge-runner.js`，`judge-runner-real.test.js`） | 本批 |
+| G16 真行程 | ✔ 判題器可驗證真 fork／exec／管線／socket；Blockly 範式 `lr.fork-pipe`、`lr.pipe-chain`、`lr.sock-echo`、`lr.spawn-env` | 本批 |
 | G17 讀取器假陽性 | ✔ 已補 | dfed1565、73deb981 |
 | G18 規格即題目 | ✔ 偵測 `intent.specLike` 已補；模型／老師部分超出 | 見 DESIGN.blockly-gaps.md §7 |
 
@@ -100,6 +101,12 @@
 | `domain_fs_core.js`（擴充） | 路徑正規化、目錄解析、連續配置策略（first／best／worst-fit）、內部碎片 | 33/33（含原有 10 題） | 7/7＋`ho2` 2/2 | 本批 |
 | `domain_ds_core.js`（擴充） | AVL、跳躍表、稀疏表 | 新增題全過（完整檔最後一次含舊題的跑法有 AVL 旋轉次數的 bug，修後只跑了相關子集 6/6） | 5/6（未解：把查詢欄位叫 x y 的稀疏表題） | 本批 |
 
+| `domain_linuxreal_core.js` | 真實 Linux 程式設計：環境變數查詢、argv、子行程環境、文字檔轉換、多檔案合併、二進位檔轉換、本機 socket 回應、fork＋管線、子行程管線（測試帶 args／env／files／needs，由判題器真的執行；fork 在 Windows 走 WSL） | 19/19（選項反序 19/19） | 第一次量測 4/5（未解 ho-env：偵測詞沒有「找不到／查」）；補通用詞彙後 5/5，**這一題不再獨立** | 本批 |
+| `domain_lzma_core.js` | LZMA alone／LZMA2／LZMA2＋BCJ／xz 容器解碼（range coder、literal、match、rep0～3、距離槽、對齊位元、LZMA2 分塊、x86 BCJ、delta 濾鏡） | 7/7（反序 7/7） | 第一次量測 2/3（未解：敘述以「給一行十六進位」開頭，讀取器只認「輸入…」）；讀取器加「給一行」後 3/3，**這一題不再獨立** | 本批 |
+| `domain_binfmt_core.js` | xz 標頭（檢查類型名稱／判決字樣／表外格式從敘述抽）、xz 頁尾、8 位元調色盤 BMP 寫出（十六進位或十進位調色盤、列序、解析度） | 3/3（反序 3/3） | 見下方註記 | 本批 |
+
+- binfmt 的 holdout 誠實紀錄：寫完 `xz.header-parse`／`bmp.write8` 後另寫的第一批 holdout（ho-xz-valid、ho-bmp8）第一次 1/2（ho-xz-valid 因「輸出 UNKNOWN(n)」被當成第三種失敗字樣而失敗，補通用規則）；第二批 6 題第一次 3/6（未解：以空白隔開的位元組輸入、xz 頁尾、十進位調色盤），補通用能力（讀取器認「以空白隔開的位元組」、新增 `xz.footer-parse`、調色盤寫法槽位）後 6/6；第三批（補完後才寫、措辭與格式都不同：成功時只輸出種類名稱、輸入列已是由下往上）第一次 **0/2**（偵測詞沒有「輸出…BMP」、成功例句沒有前綴時抽不到），補通用規則後 8/8。**只有最後一批的第一次量測 0/2 是乾淨的泛化數字；之後的 8/8 都是補過規則的結果，不代表泛化。**
+
 - 共用測試 harness：`domain_harness.js`（種子 `{id, want, st, rw, ref, gen, split}`，`split:'holdout'` 只量測；`DBG=1`／`ONLY=id,...` 環境變數除錯）。新包只要寫骨架檔＋種子檔。
 - 讀取器配套小修：字串輸入可帶名稱（「輸入一個字串 s」）、同名重複清單改名（a、b…）、「查詢字串」不再當整數、`rle-pair` 對解碼題否決、領域條目可標 `pri:true` 比內建工具詞彙（lines-map）優先。
 - 台面上還沒做（linuxfmt 已做：樣板變數展開、區塊對齊計數、範式前綴碼三個參數化家族，train 6/6、新 holdout 3/4（${名稱:-預設} 誠實未解）；舊 Linux holdout 的 exec-env／tar-blocks／canonical-huffman 敘述已被當 train 教過，不再算 holdout；仍未解：xz-header、bmp-write8（規格太具體，只能靠第三層介面）。linuxsem 已做：fd 表／管線／信號遮罩／TCP 狀態機，train 11/11、新 holdout 4/4；未做：socket 全套、行程樹 fork／wait／exec、信號處理常式巢狀）：程序／fd／管線／信號／socket 的語意模擬、進階圖與樹（MST、SCC、Bellman-Ford、LCA…）、資料結構的 AVL／跳躍表／稀疏表。見 `DESIGN.TODO.md`。
@@ -116,8 +123,8 @@
 ### 「超出 Blockly」清單（更新）
 | 項目 | 原因 | 去處 |
 |---|---|---|
-| LZMA match／LZMA2／BCJ、動態霍夫曼 inflate、BMP RLE／遮罩、tar PAX | 規格冗長、狀態多，範式槽位窮舉不經濟 | 待補教學（老師教→`deriveLesson`）或題目自帶規格 |
-| 真 fork／exec／socket／檔案 IO、二進位 IO、argv、結束碼、環境變數 | 判題器能力（G15、G16） | 判題器維護者 |
-| xz-header、bmp-write8（Linux holdout 未解） | 規格太具體 | 第三層介面／模型 |
+| 動態霍夫曼 inflate、BMP RLE／遮罩、tar PAX | 尚未做（不是超出，是排序；LZMA match／LZMA2／BCJ 已於 2026-11-10 做完） | 可照 `domain_lzma_core.js` 的 helpers 做法補 |
+| 真 fork／exec／socket／檔案 IO、二進位 IO、argv、結束碼、環境變數 | 已做（2026-11-10）：判題器能力與範式 `domain_linuxreal_core.js` | 見 HANDOFF.blockly-teach.md §3e |
+| xz-header、bmp-write8（Linux holdout 未解） | 已做（2026-11-10）：`domain_binfmt_core.js`；原題庫的兩題敘述現在算被教過，新 holdout 見上方 binfmt 紀錄 | — |
 | 模型／老師部分（G18） | 非範式 | 模型路線 |
 | 區塊層保留行內註解 | 區塊樹沒有註解節點 | 見 `DESIGN.core-ir.md` §8 待改善 1（可做，屬區塊層而非超出） |
