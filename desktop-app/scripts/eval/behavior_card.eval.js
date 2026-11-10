@@ -11,6 +11,6 @@ const l1 = await call({ source: PY, level: 1 }); ok('python_level1', { ok: l1.ok
 const one = await call({ source: PY, function: 'total' }); ok('function_filter', { ok: one.ok, names: (one.cards || []).map((c) => c.name) });
 const missing = await call({ source: PY, function: 'nope' }); ok('missing_function', { ok: missing.ok, error: missing.error });
 const empty = await call({ source: '' }); ok('empty_source', { ok: empty.ok, error: empty.error });
-const lang = await call({ source: 'x = 1', language: 'ruby' }); ok('unsupported_lang', { ok: lang.ok, error: lang.error });
+const lang = await call({ source: 'x = 1', language: 'rust' }); ok('unsupported_lang', { ok: lang.ok, error: lang.error });
 ok('source_unchanged', before === PY);
 return R;

@@ -253,7 +253,8 @@
             if (f.ret && f.ret.t !== 'void' && hasUnknown(f.ret)) out.push({ key: f.name + '.return', kind: 'return', func: f.name, name: 'return', now: IR.tyStr(f.ret), line: f.pos && f.pos[0] });
             Object.keys(f.locals || {}).forEach((v) => { if (!(f.params || []).some((p) => p.name === v) && hasUnknown(f.locals[v])) out.push({ key: f.name + '.' + v, kind: 'local', func: f.name, name: v, now: IR.tyStr(f.locals[v]), line: f.pos && f.pos[0] }); });
         });
-        return out;
+        // 參數或回傳值還缺時，區域變數多半是它們的連帶結果（補了參數就會推出來），先不列，免得一次問太多
+        return out.some((x) => x.kind !== 'local') ? out.filter((x) => x.kind !== 'local') : out;
     }
     // 套用使用者補的型別：types＝{ "函式.參數": "list<int>", "函式.return": "int", "函式.區域變數": "str" }（型別字串用 IR.tyParse 的寫法：int float str bool list<T> dict<K,V> set<T>）。
     // 區域變數的型別寫在它第一次賦值的敘述上（assign.ty）。回傳 { applied:[key], bad:[{key, why}] }。必須在 prepare 之前套用。

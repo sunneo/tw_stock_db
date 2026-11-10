@@ -11,6 +11,7 @@ const GPP = path.join(MING, 'g++.exe');
 let pass = 0, fail = 0;
 const t = (name, fn) => { try { fn(); pass++; return true; } catch (e) { fail++; console.error('FAIL ' + name + '\n   ' + String(e.message).split('\n').slice(0, 30).join('\n   ')); return false; } };
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'irc-'));
+process.chdir(tmp); // 檔案操作的樣本會在目前目錄寫暫存檔，放在暫存資料夾裡
 const run = (cmd, args, input, env) => { const r = cp.spawnSync(cmd, args, { input, encoding: 'utf8', timeout: 30000, env: env || process.env }); return r.status === 0 ? r.stdout.replace(/\r\n/g, '\n') : 'ERR(' + r.status + '):' + String(r.stderr).slice(-300); };
 let PY = null; for (const c of ['python', 'python3']) { const r = cp.spawnSync(c, ['-I', '-c', 'print(1)'], { encoding: 'utf8' }); if (r.status === 0 && r.stdout.trim() === '1') { PY = c; break; } }
 

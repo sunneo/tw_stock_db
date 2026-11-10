@@ -17,7 +17,7 @@ const runCmd = (exe, args, input) => { const r = cp.spawnSync(exe, args, { input
     await t('宿主程式碼：convert_code 有 from 參數與新目標、_irLangParser、行為卡 nodejs／java／c 走第二層、橋注入 INB', () => {
         assert.ok(/async _irLangParser\(lang\)/.test(fa)); assert.ok(/INB: H\.FaIrInBrace/.test(fa)); assert.ok(/cpp: H\.FaIrOutCpp, csharp: H\.FaIrOutCs, perl: H\.FaIrOutPerl, ruby: H\.FaIrOutRuby/.test(fa));
         const i = fa.indexOf("registerOptional('convert_code',"); const seg = fa.slice(i, i + 4000); assert.ok(/from: \{ type: 'string', enum: \['python', 'nodejs', 'java', 'c', 'cpp', 'csharp', 'ruby', 'perl'\]/.test(seg)); assert.ok(/'cpp', 'csharp', 'perl', 'ruby', 'python'\]/.test(seg));
-        assert.ok(/\['nodejs', 'java', 'c', 'cpp', 'ruby', 'perl'\]\.includes\(lang\)\) && a\.level !== 1/.test(fa), '行為卡第二層');
+        assert.ok(/\['nodejs', 'java', 'c', 'cpp', 'csharp', 'ruby', 'perl'\]\.includes\(lang\)\) && a\.level !== 1/.test(fa), '行為卡第二層');
     });
     await t('/code 路由：轉成 C++／C#／Ruby／Perl 都有目標；來源貼 java 程式不再被拒', () => {
         const m = /function targetOf\(prose\) \{[\s\S]*?\n    \}\n/.exec(fa); assert.ok(m); const targetOf = new Function(m[0] + '\nreturn targetOf;')();

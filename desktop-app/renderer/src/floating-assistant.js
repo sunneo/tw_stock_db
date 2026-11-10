@@ -19634,7 +19634,8 @@ const holder = {};
             if (f.ret && f.ret.t !== 'void' && hasUnknown(f.ret)) out.push({ key: f.name + '.return', kind: 'return', func: f.name, name: 'return', now: IR.tyStr(f.ret), line: f.pos && f.pos[0] });
             Object.keys(f.locals || {}).forEach((v) => { if (!(f.params || []).some((p) => p.name === v) && hasUnknown(f.locals[v])) out.push({ key: f.name + '.' + v, kind: 'local', func: f.name, name: v, now: IR.tyStr(f.locals[v]), line: f.pos && f.pos[0] }); });
         });
-        return out;
+        // 參數或回傳值還缺時，區域變數多半是它們的連帶結果（補了參數就會推出來），先不列，免得一次問太多
+        return out.some((x) => x.kind !== 'local') ? out.filter((x) => x.kind !== 'local') : out;
     }
     // 套用使用者補的型別：types＝{ "函式.參數": "list<int>", "函式.return": "int", "函式.區域變數": "str" }（型別字串用 IR.tyParse 的寫法：int float str bool list<T> dict<K,V> set<T>）。
     // 區域變數的型別寫在它第一次賦值的敘述上（assign.ty）。回傳 { applied:[key], bad:[{key, why}] }。必須在 prepare 之前套用。
@@ -114245,11 +114246,11 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         a = a || {}; const src = String(a.source == null ? '' : a.source); if (!src.trim()) return { ok: false, error: '缺少 source（要看行為的程式碼）' };
         if (typeof FaIrBundle === 'undefined' || !FaIrBundle.FaIrBehavior) return { ok: false, error: '這個版本沒有行為卡模組（FaIrBundle）' };
         const raw = a.language || (typeof FaCodeAgent !== 'undefined' && FaCodeAgent.detectLangFromCode ? FaCodeAgent.detectLangFromCode(src) : null) || 'python';
-        const lang = raw === 'javascript' ? 'nodejs' : raw; const EXT = { python: 'py', nodejs: 'js', java: 'java', c: 'c', cpp: 'cpp', ruby: 'rb', perl: 'pl' }, GR = { python: 'python', nodejs: 'javascript', java: 'java', c: 'c', cpp: 'cpp', ruby: 'ruby' };
-        if (!EXT[lang]) return { ok: false, error: '行為卡目前支援 python、nodejs、java、c、cpp、ruby、perl（' + raw + ' 還沒有簽名抽取）' };
+        const lang = raw === 'javascript' ? 'nodejs' : raw; const EXT = { python: 'py', nodejs: 'js', java: 'java', c: 'c', cpp: 'cpp', csharp: 'cs', ruby: 'rb', perl: 'pl' }, GR = { python: 'python', nodejs: 'javascript', java: 'java', c: 'c', cpp: 'cpp', csharp: 'c_sharp', ruby: 'ruby' };
+        if (!EXT[lang]) return { ok: false, error: '行為卡目前支援 python、nodejs、java、c、cpp、csharp、ruby、perl（' + raw + ' 還沒有簽名抽取）' };
         const BD = FaIrBundle.FaIrBehavior; let level = null, cards = null, design = null, note = '';
         const keep = (n) => !a.function || n === a.function;
-        if ((lang === 'python' || ['nodejs', 'java', 'c', 'cpp', 'ruby', 'perl'].includes(lang)) && a.level !== 1) {
+        if ((lang === 'python' || ['nodejs', 'java', 'c', 'cpp', 'csharp', 'ruby', 'perl'].includes(lang)) && a.level !== 1) {
             try {
                 const br = await this._irBridge(); const lp = lang === 'python' ? null : await this._irLangParser(lang); const cs = lang === 'python' ? br.cards(src, 'input') : br.cardsFrom(src, lang, 'input', lp); level = 2;
                 cards = cs.filter((c) => keep(c.name)).map((c) => ({ name: c.name, card: br.cardText(c), params: c.params, ret: c.ret, calls: c.calls, std: c.std.map((s) => s.op), effects: c.effects, pure: c.pure, control: c.control, blocks: c.blocks || undefined }));

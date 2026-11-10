@@ -16,10 +16,10 @@ const fromBlocks = await call({ blocks: tb.funcs.map((f) => ({ name: f.name, par
 // java／c 只產生不實跑：這台機器 javac 很慢（單次超過 100 秒）、C 編譯器缺系統標頭；實跑由 ir_blocks.test.js 驗 java
 const jv = await call({ source: PYT, target: 'java' }); ok('python_to_java', { ok: jv.ok, verified: jv.verified, verdict: jv.verdict, note: jv.verifyNote, diag: (jv.diags || []).slice(0, 2) });
 const c = await call({ source: PYT, target: 'c' }); ok('python_to_c', { ok: c.ok, verified: c.verified, verdict: c.verdict, note: c.verifyNote, diag: (c.diags || []).slice(0, 2) });
-const untyped = await call({ source: PY, target: 'java' }); ok('java_untyped_rejected', { ok: untyped.ok, why: (untyped.diags || []).map((d) => d.msg).slice(0, 2) });
+const untyped = await call({ source: PY, target: 'java' }); ok('java_untyped_inferred_from_callsite', { ok: untyped.ok, why: (untyped.diags || []).map((d) => d.msg).slice(0, 2) });
 const rej = await call({ source: 'def f(d):\n    return {k: v for k, v in d.items()}\n\nprint(f({1: 2}))\n', target: 'c' }); ok('c_rejects_dict', { ok: rej.ok, error: rej.error, diags: (rej.diags || []).length });
 const bad = await call({ target: 'nodejs' }); ok('missing_args', bad.ok === false);
-const unsupported = await call({ source: PY, target: 'cpp' }); ok('unsupported_target', { ok: unsupported.ok, error: unsupported.error });
+const unsupported = await call({ source: PY, target: 'rust' }); ok('unsupported_target', { ok: unsupported.ok, error: unsupported.error });
 // /code 路由
 const slash = fa.slashCommands.get('/code'); ok('slash_registered', !!slash);
 return R;
