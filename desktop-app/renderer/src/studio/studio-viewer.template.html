@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>離線訓練工作室</title>
+<style>
+:root{--bg:#fff;--fg:#1f2328;--mut:#656d76;--bd:#d0d7de;--ac:#0969da;--sf:#f6f8fa;--ok:#1a7f37;--er:#cf222e;--wn:#9a6700;--hl:#ddf4ff}
+@media (prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;--mut:#8b949e;--bd:#30363d;--ac:#58a6ff;--sf:#161b22;--ok:#3fb950;--er:#f85149;--wn:#d29922;--hl:#0c2d4a}}
+*{box-sizing:border-box}html,body{height:100%}body{margin:0;background:var(--bg);color:var(--fg);font:13px/1.5 -apple-system,"Segoe UI","Noto Sans TC",sans-serif;display:flex;flex-direction:column}
+header{display:flex;align-items:center;gap:8px;padding:5px 10px;border-bottom:1px solid var(--bd);background:var(--sf);flex-wrap:wrap}
+header b{font-size:14px}.sp{flex:1}
+button,select,input{font:inherit;color:inherit;background:var(--bg);border:1px solid var(--bd);border-radius:5px;padding:2px 8px}
+button{cursor:pointer}button:hover:not(:disabled){border-color:var(--ac)}button:disabled{opacity:.5;cursor:not-allowed}
+button.pri{background:var(--ac);border-color:var(--ac);color:#fff}button.dng{color:var(--er)}
+#main{flex:1;display:flex;min-height:0}#main.stack{flex-direction:column}
+.pane{display:flex;flex-direction:column;min-width:0;min-height:0;overflow:hidden}
+.pane.hid{display:none}
+.bar{display:flex;align-items:stretch;border-bottom:1px solid var(--bd);background:var(--sf);flex:none;user-select:none}
+.tabs{display:flex;flex:1;overflow-x:auto;min-width:0}
+.tab{padding:5px 10px;cursor:pointer;border-right:1px solid var(--bd);white-space:nowrap;color:var(--mut)}
+.tab.act{background:var(--bg);color:var(--fg);box-shadow:inset 0 -2px 0 var(--ac)}.tab.over{background:var(--hl)}
+.bar button{border:none;border-radius:0;background:none;padding:0 8px}
+.body{flex:1;overflow:auto;padding:10px;min-height:0}
+#split{flex:none;width:6px;background:var(--bd);cursor:col-resize}#main.stack #split{width:auto;height:6px;cursor:row-resize}#split:hover{background:var(--ac)}
+.badge{display:inline-block;padding:0 7px;border-radius:9px;border:1px solid var(--bd);font-size:11px;color:var(--mut);margin-left:4px}
+.badge.ok{color:var(--ok);border-color:var(--ok)}.badge.er{color:var(--er);border-color:var(--er)}.badge.wn{color:var(--wn);border-color:var(--wn)}
+.warn{border:1px solid var(--wn);color:var(--wn);padding:6px 10px;border-radius:6px;margin-bottom:8px}
+.todo{border:1px dashed var(--bd);padding:10px;border-radius:6px;color:var(--mut)}
+.grp{margin:10px 0 4px;font-weight:600}.row{display:flex;align-items:center;gap:6px;padding:4px 0;border-bottom:1px solid var(--bd);flex-wrap:wrap}.row .n{flex:1;min-width:120px;word-break:break-all}
+.card{border:1px solid var(--bd);border-radius:6px;padding:8px;margin:8px 0;background:var(--sf)}
+table{border-collapse:collapse;width:100%;font-size:12px}td,th{border:1px solid var(--bd);padding:3px 6px;text-align:left}th{background:var(--sf)}
+pre{background:var(--sf);border:1px solid var(--bd);border-radius:5px;padding:6px;overflow:auto;max-height:200px;margin:4px 0;font-size:12px}
+label{display:block;margin:4px 0 0;color:var(--mut);font-size:12px}input[type=text],select{width:100%}
+#menu{position:fixed;z-index:9;background:var(--bg);border:1px solid var(--bd);border-radius:6px;box-shadow:0 4px 14px #0004;display:none;min-width:130px}
+#menu div{padding:5px 12px;cursor:pointer}#menu div:hover{background:var(--hl)}
+canvas{width:100%;height:60px;border:1px solid var(--bd);border-radius:4px;background:var(--sf)}
+</style></head><body>
+__SHIM__
+<header><b>🏭 離線訓練工作室</b><span class="badge" id="mode">載入中…</span><span class="sp"></span>
+<button id="bReset" title="把分頁位置、分隔線、最大化都還原成預設">還原版面</button></header>
+<div id="main"><div class="pane" id="pL"></div><div id="split" title="拖曳調整寬度；雙擊還原"></div><div class="pane" id="pR"></div></div>
+<div id="menu"></div>
+<script>__LAYOUT__</script>
+<script>
+(function(){
+var CFG=__CFG__;var BASE='http://mock.local',Lay=FaStudioLayout,$=function(s){return document.querySelector(s)};
+var L=Lay.defaults(),INFO={},TITLE={};Lay.TABS.forEach(function(t){TITLE[t.id]=t.icon+' '+t.title});
+function h(tag,a,kids){var e=document.createElement(tag);if(a)for(var k in a){if(k==='text')e.textContent=a[k];else if(k.slice(0,2)==='on')e.addEventListener(k.slice(2),a[k]);else if(a[k]!==false&&a[k]!=null)e.setAttribute(k,a[k]===true?'':a[k])}
+ (kids||[]).forEach(function(c){if(c!=null)e.appendChild(typeof c==='string'?document.createTextNode(c):c)});return e}
+async function api(m,p,b){var r=await fetch(BASE+p,{method:m,headers:{'content-type':'application/json'},body:b?JSON.stringify(b):undefined});var j=await r.json();if(!r.ok&&j&&j.ok===undefined)j.ok=false;return j}
+function fmtB(n){return n>1048576?(n/1048576).toFixed(1)+' MB':n>1024?(n/1024).toFixed(1)+' KB':n+' B'}
+function reason(t){return h('div',{'class':'todo',text:t})}
+// ===== 版面 =====
+var saveT;function save(){clearTimeout(saveT);saveT=setTimeout(function(){api('POST','/api/prefs',{layout:L}).catch(function(){})},250)}
+function setL(n){L=Lay.normalize(n);save();render()}
+function applySize(){var main=$('#main'),stack=Lay.orientation(main.clientWidth)==='stack';main.classList.toggle('stack',stack);var a=$('#pL'),b=$('#pR'),sp=$('#split');
+ var maxed=L.max;a.classList.toggle('hid',maxed==='right');b.classList.toggle('hid',maxed==='left');sp.style.display=maxed?'none':'';
+ var p=(L.split*100)+'%';if(maxed){a.style.flex=b.style.flex='1 1 0'}else{a.style.flex='0 0 calc('+p+' - 3px)';b.style.flex='1 1 0'}}
+function menu(x,y,items){var m=$('#menu');m.textContent='';items.forEach(function(it){m.appendChild(h('div',{text:it[0],onclick:function(){m.style.display='none';it[1]()}}))});m.style.left=Math.min(x,innerWidth-150)+'px';m.style.top=Math.min(y,innerHeight-30*items.length-8)+'px';m.style.display='block'}
+document.addEventListener('click',function(){$('#menu').style.display='none'});
+var dragId=null;
+function paneEl(side){
+ var el=side==='left'?$('#pL'):$('#pR'),tabs=h('div',{'class':'tabs'});
+ L.panes[side].forEach(function(id){var t=h('div',{'class':'tab'+(L.active[side]===id?' act':''),draggable:'true',text:TITLE[id],title:'拖到另一側的分頁列可搬移；右鍵有更多選項'});
+  t.addEventListener('click',function(){setL(Lay.activate(L,id))});
+  t.addEventListener('dragstart',function(e){dragId=id;try{e.dataTransfer.setData('text/plain',id)}catch(_){}});
+  t.addEventListener('contextmenu',function(e){e.preventDefault();var o=side==='left'?'right':'left';menu(e.clientX,e.clientY,[['移到'+(o==='left'?'左':'右')+'區',function(){mv(id,o)}],['關閉',function(){var r=Lay.closeTab(L,id);if(r.ok)setL(r.layout);else alert(r.error)}]])});
+  tabs.appendChild(t)});
+ var plus=h('button',{text:'＋',title:'開啟已關閉的分頁',onclick:function(e){e.stopPropagation();var cl=L.closed;var r=e.currentTarget.getBoundingClientRect();menu(r.left,r.bottom,cl.length?cl.map(function(id){return[TITLE[id],function(){var r2=Lay.openTab(L,id,side);if(r2.ok)setL(r2.layout)}]}):[['（沒有已關閉的分頁）',function(){}]])}});
+ var mx=h('button',{text:L.max===side?'🗗':'🗖',title:L.max===side?'還原':'最大化這一區（雙擊分頁列空白處同效）',onclick:function(){setL(Lay.toggleMax(L,side))}});
+ var bar=h('div',{'class':'bar'},[tabs,plus,mx]);
+ bar.addEventListener('dblclick',function(e){if(e.target===bar||e.target===tabs)setL(Lay.toggleMax(L,side))});
+ bar.addEventListener('dragover',function(e){if(dragId){e.preventDefault();bar.classList.add('over')}});bar.addEventListener('dragleave',function(){bar.classList.remove('over')});
+ bar.addEventListener('drop',function(e){e.preventDefault();bar.classList.remove('over');if(dragId){mv(dragId,side);dragId=null}});
+ var body=h('div',{'class':'body'});el.textContent='';el.appendChild(bar);el.appendChild(body);return body}
+function mv(id,side){var r=Lay.moveTab(L,id,side);if(r.ok)setL(r.layout);else alert(r.error)}
+var cur={left:null,right:null};
+function render(){applySize();['left','right'].forEach(function(s){var body=paneEl(s),id=L.active[s];cur[s]=id;if(id)show(id,body)})}
+$('#bReset').onclick=async function(){var r=await api('POST','/api/prefs',{reset:true});L=Lay.normalize(r.layout);render()};
+(function(){var sp=$('#split'),down=false;sp.addEventListener('pointerdown',function(e){down=true;sp.setPointerCapture(e.pointerId)});
+ sp.addEventListener('pointermove',function(e){if(!down)return;var m=$('#main').getBoundingClientRect(),stack=$('#main').classList.contains('stack');L=Lay.setSplit(L,stack?Lay.ratioFromPointer(e.clientY,m.top,m.height):Lay.ratioFromPointer(e.clientX,m.left,m.width));applySize()});
+ sp.addEventListener('pointerup',function(){if(down){down=false;save()}});sp.addEventListener('dblclick',function(){L=Lay.resetSplit(L);save();applySize()});
+ window.addEventListener('resize',applySize)})();
+// ===== 分頁內容 =====
+var T={};
+function show(id,body){body.textContent='';(T[id]||function(b){b.appendChild(reason('尚未實作'))})(body)}
+function refresh(id){['left','right'].forEach(function(s){if(cur[s]===id){var b=(s==='left'?$('#pL'):$('#pR')).querySelector('.body');if(b)show(id,b)}})}
+T.assets=async function(body){
+ var r=await api('GET','/api/assets');if(r.ok===false){body.appendChild(reason('讀取資產失敗：'+r.error));return}
+ if(r.storage&&!r.storage.ok)body.appendChild(h('div',{'class':'warn',text:'⚠️ '+r.storage.message}));
+ var tb=h('div',{'class':'row'},[h('button',{'class':'pri',text:'匯入 .fatrain…',onclick:doImport}),h('button',{text:'把目前的離線訓練器存成資產',onclick:async function(){var n=prompt('資產名稱','trainer-'+new Date().toISOString().slice(0,10));if(!n)return;var x=await api('POST','/api/trainer/snapshot',{name:n});if(x.ok===false)alert(x.error);refresh('assets')}}),h('button',{text:'重新整理',onclick:function(){refresh('assets')}})]);body.appendChild(tb);
+ var imp=h('div',{id:'impBox'});body.appendChild(imp);
+ var ORG={builtin:'內建',mine:'我的',imported:'匯入'};
+ r.groups.forEach(function(g){body.appendChild(h('div',{'class':'grp',text:g.label+'（'+g.kind+'）　'+g.items.length+' 個'}));
+  if(!g.items.length)body.appendChild(h('div',{'class':'row',style:'color:var(--mut)',text:g.kind==='lora'?'還沒有 LoRA 資產（訓練完成後會在這裡；LoRA 登錄與按需載入在第二輪接上）':(g.kind==='trainer'?'還沒有。按上面「把目前的離線訓練器存成資產」':'還沒有。這個種類的資產由 '+g.label+' 的訓練包裝產生（尚未實作，見設計文件 §10 步驟 3）')}));
+  g.items.forEach(function(it){var c=it.counts?Object.keys(it.counts).map(function(k){return k+' '+it.counts[k]}).join('、'):'';
+   body.appendChild(h('div',{'class':'row'},[h('span',{'class':'n',text:it.name}),h('span',{'class':'badge '+(it.origin==='builtin'?'ok':''),text:ORG[it.origin]}),h('span',{'class':'badge',text:c||'—'}),
+    h('button',{text:'詳情',onclick:function(){detail(it.kind,it.name,body)}}),h('button',{text:'匯出',onclick:async function(){var x=await api('POST','/api/export',{kind:it.kind,name:it.name});if(x.ok===false)alert(x.error)}}),
+    it.kind==='trainer'?h('button',{text:'套用到離線訓練器',onclick:function(){applyTrainer(it.name)}}):null,
+    h('button',{'class':'dng',text:'刪除',onclick:async function(){if(!confirm('刪除 '+it.kind+'/'+it.name+'？這會刪掉記憶體與資料夾裡的檔案，無法復原。'))return;var x=await api('POST','/api/asset/delete',{kind:it.kind,name:it.name,confirmed:true});if(x.ok===false)alert(x.error);refresh('assets')}})]))})})};
+async function detail(kind,name,body){var r=await api('GET','/api/asset?kind='+encodeURIComponent(kind)+'&name='+encodeURIComponent(name));var box=h('div',{'class':'card'});
+ if(r.ok===false){box.appendChild(reason(r.error))}else{box.appendChild(h('div',{},[h('b',{text:kind+'/'+name}),h('span',{'class':'badge '+(r.verify.ok?'ok':'er'),text:r.verify.ok?'雜湊核對通過':'雜湊核對失敗：'+r.verify.message})]));
+  box.appendChild(h('pre',{text:JSON.stringify(Object.assign({},r.manifest,{sha256:undefined}),null,1)}));box.appendChild(h('div',{text:'檔案：'+r.files.map(function(f){return f.path+'（'+fmtB(f.bytes)+'）'}).join('、')}))}
+ box.appendChild(h('button',{text:'關閉',onclick:function(){box.remove()}}));body.insertBefore(box,body.children[2]||null)}
+async function applyTrainer(name){var d=await api('POST','/api/trainer/apply',{name:name});if(d.ok===false){alert(d.error);return}
+ if(!confirm('把 trainer/'+name+' 合併進目前的離線訓練器？\n預覽結果：'+JSON.stringify(d.result).slice(0,300)))return;var x=await api('POST','/api/trainer/apply',{name:name,confirmed:true});alert(x.ok===false?x.error:'已套用：'+JSON.stringify(x.result).slice(0,300))}
+async function doImport(){var r=await api('POST','/api/import/pick');var box=$('#impBox');if(!box)return;box.textContent='';if(r.cancelled)return;
+ if(r.ok===false){box.appendChild(h('div',{'class':'warn',text:'匯入被拒：'+r.error+(r.suggest==='fork'?'（可改用「另存新名稱」）':'')}));return}
+ var s=r.summary,mode=h('select',{},[h('option',{value:'auto',text:r.plan.action==='merge'?'合併進現有資產':'新增'}),h('option',{value:'replace',text:'整個取代現有'}),h('option',{value:'fork',text:'另存新名稱（fork）'})]),fn=h('input',{type:'text',placeholder:'fork 名稱',value:s.name+'-fork'});
+ box.appendChild(h('div',{'class':'card'},[h('div',{},[h('b',{text:'先看內容再確認：'+r.file})]),h('div',{text:s.kind+'/'+s.name+'　'+s.files+' 個檔案　'+fmtB(s.bytes)+'　基底：'+(s.base||'—')+'　建立：'+(s.created||'—')}),
+  r.existing?h('div',{'class':'warn',text:'已有同名資產（'+JSON.stringify(r.existing.counts||{})+'），預設會合併'}):h('div',{text:'沒有同名資產，會新增。'}),
+  (r.warnings||[]).length?h('div',{'class':'warn',text:r.warnings.join('；')}):null,h('label',{text:'處理方式'}),mode,fn,
+  h('div',{'class':'row'},[h('button',{'class':'pri',text:'確認匯入',onclick:async function(){var x=await api('POST','/api/import/confirm',{pendingId:r.pendingId,mode:mode.value,forkName:fn.value});if(x.ok===false){alert(x.error+(x.suggest==='fork'?'\n請改選「另存新名稱」':''));return}if(x.dataMayBeLost)alert('注意：資料目前只存在記憶體（沒有授權資料夾），瀏覽器資料被清掉會遺失。請另外匯出備份。');refresh('assets')}}),h('button',{text:'取消',onclick:function(){api('POST','/api/import/cancel');box.textContent=''}})])]))}
+T.datasets=async function(body){var r=await api('GET','/api/datasets');body.appendChild(h('div',{'class':'todo',text:'先唯讀：瀏覽資產裡 data/ 的檔案。編輯與第二輪的「資料匯入」（wiki／開源／書本／aiDoc → 清洗）還沒做。'}));
+ if(r.note)body.appendChild(h('div',{'class':'row',text:r.note}));var pv=h('pre',{style:'display:none'});
+ (r.files||[]).forEach(function(f){body.appendChild(h('div',{'class':'row'},[h('span',{'class':'n',text:f.kind+'/'+f.name+' › '+f.path}),h('span',{'class':'badge',text:fmtB(f.bytes)}),h('button',{text:'預覽',onclick:async function(){var x=await api('GET','/api/asset-file?kind='+f.kind+'&name='+encodeURIComponent(f.name)+'&path='+encodeURIComponent(f.path));pv.style.display='';pv.textContent=x.ok===false?x.error:x.text+(x.truncated?'\n…（只顯示前 6000 位元組）':'')}})]))});body.appendChild(pv)};
+T.eval=async function(body){var r=await api('GET','/api/eval');body.appendChild(reason('尚未實作：'+(r.reason||'')));(r.items||[]).forEach(function(i){body.appendChild(h('div',{'class':'card'},[h('b',{text:i.kind+'/'+i.name}),h('pre',{text:JSON.stringify(i.eval,null,1)})]))})};
+T.teacher=async function(body){var r=await api('GET','/api/teacher');body.appendChild(reason('尚未實作：'+r.reason))};
+T.log=async function(body){var r=await api('GET','/api/log');if(!r.log.length)body.appendChild(h('div',{'class':'row',text:'本次開啟後還沒有紀錄。（紀錄只保留在這個視窗開啟期間；寫成 log.jsonl 屬後續步驟）'}));
+ r.log.slice().reverse().forEach(function(x){body.appendChild(h('div',{'class':'row'},[h('span',{'class':'badge',text:new Date(x.at).toLocaleTimeString()}),h('span',{'class':'n',style:x.level==='error'?'color:var(--er)':'',text:x.text})]))})};
+// ----- 訓練 -----
+var polling=null,lossHist=[];
+T.train=async function(body){
+ var kinds=[['lora','LoRA（語言模型）'],['trainer','離線訓練器'],['colu','CoLU'],['uml','UML 設計'],['blockly','積木課程'],['matrix','矩陣層']];
+ var ksel=h('select',{},kinds.map(function(k){return h('option',{value:k[0],text:k[1]})}));var out=h('div');body.appendChild(h('label',{text:'訓練種類'}));body.appendChild(ksel);body.appendChild(out);
+ async function build(){out.textContent='';var kind=ksel.value,r=await api('GET','/api/backends?kind='+kind);if(r.ok===false){out.appendChild(h('div',{'class':'warn',text:'讀取運算後端失敗：'+r.error}));return}
+  if(r.note)out.appendChild(h('div',{'class':'warn',text:r.note}));
+  if(kind!=='lora'){out.appendChild(h('div',{'class':'todo',text:'只需處理器（cpu-js）。這個種類的訓練包裝尚未實作（設計文件 §10 步驟 3）：目前可以在「資產清單」匯出入／備份它的資產，但不能從這裡開始訓練。'}));return}
+  var bs=h('select',{});bs.appendChild(h('option',{value:'auto',text:'自動（建議）'+(r.selection&&r.selection.chosen?' → '+r.selection.chosen:(r.selection&&r.selection.reason?'：'+r.selection.reason.slice(0,60):''))}));
+  var names={'cpu-py':'純處理器（Python）','webgpu':'WebGPU','directml':'DirectML','vulkan':'Vulkan'};
+  r.backends.forEach(function(b){bs.appendChild(h('option',{value:b.id,disabled:!b.available,text:(names[b.id]||b.id)+(b.available?'':'（不可用）')}))});
+  out.appendChild(h('label',{text:'運算後端'}));out.appendChild(bs);
+  var why=r.backends.filter(function(b){return !b.available});if(why.length){var ul=h('div',{style:'color:var(--mut);font-size:12px'});why.forEach(function(b){ul.appendChild(h('div',{text:'• '+(names[b.id]||b.id)+'：'+b.reason}))});out.appendChild(ul)}
+  if(r.hw)out.appendChild(h('div',{style:'color:var(--mut);font-size:12px;margin-top:4px',text:'電腦：'+r.hw.cpuModel+'，'+r.hw.cores+' 個核心；訓練會用 '+r.threads+' 個（Configure：'+(r.config.cpuCores==='auto'?'自動＝全部減 1':r.config.cpuCores)+'）'}));
+  // 設定
+  if(r.config){var cc=h('input',{type:'text',value:String(r.config.cpuCores),style:'width:80px'});out.appendChild(h('div',{'class':'row'},[h('span',{text:'核心數（auto 或整數）'}),cc,h('button',{text:'套用',onclick:async function(){var v=/^\d+$/.test(cc.value)?parseInt(cc.value,10):cc.value;var x=await api('POST','/api/config',{patch:{cpuCores:v}});alert(x.ok===false?x.error:(x.errors.concat(x.warnings).join('\n')||'已更新'));build()}})]))}
+  // 基準
+  out.appendChild(h('div',{'class':'grp',text:'基準測試'}));var bb=h('div',{'class':'row'}),bt=h('div');
+  var bStart=h('button',{text:'跑基準測試',disabled:!r.desktop,onclick:async function(){var x=await api('POST','/api/bench/start',{kind:'lora'});if(x.ok===false){alert(x.error);return}pollBench(bt,bStart,bStop)}}),bStop=h('button',{text:'停止',disabled:true,onclick:function(){api('POST','/api/bench/stop',{})}});
+  bb.appendChild(bStart);bb.appendChild(bStop);bb.appendChild(h('span',{style:'color:var(--mut);font-size:12px',text:'小（30 步、16 筆）、背景執行、至少留 1 個核心、不下載任何檔案'}));out.appendChild(bb);out.appendChild(bt);
+  // 訓練表單
+  out.appendChild(h('div',{'class':'grp',text:'訓練'}));
+  var nm=h('input',{type:'text',placeholder:'資產名稱（輸出資料夾用）'}),base=h('input',{type:'text',value:'Qwen/Qwen3-0.6B'}),tf=h('input',{type:'text',placeholder:'訓練資料檔 .jsonl 的絕對路徑'}),od=h('input',{type:'text',placeholder:'（留空＝自動放在使用者資料夾 studio/runs/名稱）'});
+  [['名稱',nm],['基底模型（本機已有；離線不下載）',base],['訓練資料檔',tf],['輸出資料夾',od]].forEach(function(p){out.appendChild(h('label',{text:p[0]}));out.appendChild(p[1])});
+  var prog=h('div',{'class':'card'}),cv=h('canvas',{width:600,height:60});
+  function body2(resume){return{kind:'lora',name:nm.value.trim(),backend:bs.value,resume:resume,cfg:{base:base.value.trim(),trainFile:tf.value.trim(),outputDir:od.value.trim()||undefined}}}
+  var bGo=h('button',{'class':'pri',text:'開始訓練',disabled:!r.desktop,onclick:async function(){var x=await api('POST','/api/train/start',body2(false));if(x.ok===false){alert(x.error);return}lossHist=[];pollTrain(prog,cv)}});
+  var bPa=h('button',{text:'暫停（存檢查點）',disabled:!r.desktop,onclick:async function(){var x=await api('POST','/api/train/pause',{});if(x.ok===false)alert(x.error||x.reason)}});
+  var bRe=h('button',{text:'續訓',disabled:!r.desktop,onclick:async function(){var x=await api('POST','/api/train/start',body2(true));if(x.ok===false){alert(x.error);return}pollTrain(prog,cv)}});
+  var bSt=h('button',{'class':'dng',text:'停止',disabled:!r.desktop,onclick:function(){if(confirm('停止訓練？（不存檢查點；要保留進度請用「暫停」）'))api('POST','/api/train/stop',{})}});
+  out.appendChild(h('div',{'class':'row'},[bGo,bPa,bRe,bSt]));
+  if(!r.desktop)out.appendChild(h('div',{'class':'todo',text:'網頁版不能啟動訓練（沒有子行程）。到「資產清單」匯出 .fatrain，拿到桌面版訓練。'}));
+  out.appendChild(prog);prog.appendChild(h('div',{text:'還沒有訓練。'}));prog.appendChild(cv);pollTrain(prog,cv,true)}
+ ksel.onchange=build;build()};
+async function pollBench(tb,bStart,bStop){bStart.disabled=true;bStop.disabled=false;clearTimeout(pollBench.t);
+ var r=await api('GET','/api/bench/status');tb.textContent='';if(r.ok===false){tb.appendChild(reason(r.error));bStart.disabled=false;bStop.disabled=true;return}
+ var t=h('table',{},[h('tr',{},['後端','狀態','token/秒','步時間 p50／p95','峰值記憶體','數值一致性','說明'].map(function(x){return h('th',{text:x})}))]);
+ r.rows.forEach(function(w){var x=w.result||{},nc=x.numericCheck;t.appendChild(h('tr',{},[h('td',{text:w.id}),h('td',{text:{pending:'等待',running:'執行中…',skipped:'略過',passed:'通過',failed:'未通過',aborted:'已中斷'}[w.state]||w.state}),h('td',{text:x.tokPerSec?x.tokPerSec.toFixed(1):'—'}),h('td',{text:x.stepMsP50?Math.round(x.stepMsP50)+'／'+Math.round(x.stepMsP95)+' ms':'—'}),h('td',{text:x.peakMemBytes?fmtB(x.peakMemBytes):'—'}),h('td',{text:nc?(nc.pass?'通過':'失敗：'+(nc.failed||[]).join('、')):'—'}),h('td',{text:w.reason||x.reason||''})]))});
+ tb.appendChild(t);tb.appendChild(h('div',{style:'color:var(--mut);font-size:12px',text:'狀態：'+r.state+'　用時 '+Math.round(r.elapsedMs/1000)+' 秒'}));
+ if(r.state==='running')pollBench.t=setTimeout(function(){pollBench(tb,bStart,bStop)},1500);else{bStart.disabled=false;bStop.disabled=true}}
+async function pollTrain(prog,cv,once){clearTimeout(pollTrain.t);var r=await api('GET','/api/train/status');if(r.ok===false)return;
+ if(r.state==='idle'){return}
+ (r.events||[]).forEach(function(e){if(e.type==='log'&&isFinite(e.loss)){if(!lossHist.length||lossHist[lossHist.length-1].s!==e.step)lossHist.push({s:r.step,l:e.loss})}});
+ prog.firstChild.textContent='狀態：'+r.state+'　step '+r.step+'　loss '+(r.loss==null?'—':Number(r.loss).toFixed(4))+'　用時 '+Math.round(r.elapsedMs/1000)+' 秒'+(r.errors&&r.errors.length?'　錯誤：'+r.errors.join(' | '):'');
+ var c=cv.getContext('2d');c.clearRect(0,0,cv.width,cv.height);var hs=lossHist.slice(-200);if(hs.length>1){var mx=Math.max.apply(null,hs.map(function(p){return p.l})),mn=Math.min.apply(null,hs.map(function(p){return p.l}));c.strokeStyle='#58a6ff';c.beginPath();hs.forEach(function(p,i){var x=i/(hs.length-1)*cv.width,y=cv.height-4-(mx===mn?.5:(p.l-mn)/(mx-mn))*(cv.height-8);i?c.lineTo(x,y):c.moveTo(x,y)});c.stroke()}
+ if(r.running)pollTrain.t=setTimeout(function(){pollTrain(prog,cv)},2000)}
+// ===== 啟動 =====
+try{var ws=new WebSocket('ws://mock.local/ws');ws.onmessage=function(ev){try{var m=JSON.parse(ev.data);if(m.type==='asset_changed')refresh('assets');if(m.type==='log')refresh('log')}catch(_){}}}catch(e){}
+(async function(){try{INFO=await api('GET','/api/info');$('#mode').textContent=INFO.desktop?'桌面版':'網頁版（不能訓練，可匯出入）';$('#mode').className='badge '+(INFO.desktop?'ok':'wn')}catch(e){$('#mode').textContent='無法連線'}
+ try{var p=await api('GET','/api/prefs');if(p&&p.layout)L=Lay.normalize(p.layout)}catch(e){}render()})();
+})();
+</script></body></html>

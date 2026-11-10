@@ -1784,8 +1784,29 @@ function startNativeMailbox(ctx) {
       return { ok: false, code: "bad_op", message: "未知的操作：" + op };
     } catch (e) { return { ok: false, code: (e && e.code) || "internal", message: String((e && e.message) || e), backend: "native" }; }
   }
+  // 離線訓練工作室的主行程端（studio_* 操作）：程式由渲染程序寫到 <userData>/studio-host/（內嵌在 floating-assistant.js，隨熱更新送達，不需重裝），這裡載入並分派
+  let studioHost = null, studioQuitHooked = false;
+  function loadStudioHost(force) {
+    const dir = pathM.join(userData, "studio-host"), entry = pathM.join(dir, "studio_host.js");
+    if (!fsSync.existsSync(entry)) return { ok: false, code: "no_host", message: "Studio 主行程端程式還沒寫入（" + entry + "）" };
+    if (studioHost && !force) return { ok: true };
+    if (studioHost) { try { studioHost.handle("studio_dispose", {}); } catch (_) { /* */ } studioHost = null; }
+    try {
+      for (const k of Object.keys(require.cache)) { if (k.indexOf(dir) === 0) delete require.cache[k]; }
+      const mod = require(entry);
+      studioHost = mod.createStudioHost({ fs: fsSync, path: pathM, os: require("os"), cp: require("child_process"), hostDir: dir, loraDir: pathM.join(dir, "lora-train"), env: {} });
+      if (app && !studioQuitHooked) { studioQuitHooked = true; app.on("before-quit", () => { try { if (studioHost) studioHost.handle("studio_dispose", {}); } catch (_) { /* */ } }); }
+      return { ok: true };
+    } catch (e) { studioHost = null; return { ok: false, code: "host_load_failed", message: "Studio 主行程端載入失敗：" + String((e && e.message) || e) }; }
+  }
+  async function handleStudio(op, p) {
+    if (op === "studio_reload") { const r = loadStudioHost(true); return r.ok ? { ok: true, reloaded: true } : r; }
+    const r = loadStudioHost(false); if (!r.ok) return r;
+    return studioHost.handle(op, p);
+  }
   async function handle(op, payload, id) {
     const p = payload || {};
+    if (op.indexOf("studio_") === 0) return handleStudio(op, p);
     if (op === "status") return { ok: true, status: host ? host.status() : idleStatus, engine: runtime.ok && modelPath ? "native" : "none", box, runtime: { ok: runtime.ok, version: runtime.version || null, reason: runtime.ok ? "" : runtime.reason, protocolOk, modelReady: !!(runtime.ok && modelPath && tokenizerPath) } };
     if (op === "reenable") { if (host) host.reenable(); return { ok: true, status: host ? host.status() : idleStatus }; }
     if (op === "dispose") { if (host) host.dispose("介面要求"); return { ok: true, status: host ? host.status() : idleStatus }; }

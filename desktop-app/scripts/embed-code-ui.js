@@ -522,5 +522,28 @@ embedLiveModule('FBANK', 'FaFbank', 'renderer/src/voice/fbank.js');
 embedLiveModule('ECAPA', 'FaEcapaEmbed', 'renderer/src/voice/ecapa_embed.js');
 embedLiveModule('VPSTORE', 'FaVoiceprintStore', 'renderer/src/voice/voiceprint_store.js');
 
+// 離線訓練工作室（DESIGN.TODO.offline-training-studio.md）：
+//  STUDIO 區塊＝瀏覽器端的純函式核心（資產／.fatrain／儲存層／trainer 轉接／版面／假伺服器路由），共用一個 holder，結果是常數 FaStudio（FaStudio.FaFatrain …）；
+//        另有 FA_STUDIO_LAYOUT_SRC（版面核心原始碼字串，檢視器 iframe 內聯用）與 FA_STUDIO_HOST_FILES（主行程端的 CommonJS 檔案，執行時寫到 <userData>/studio-host/ 由 main-ext.js 載入）。
+//  STUDIOVIEW 區塊＝檢視器 HTML 範本（FA_STUDIO_VIEWER_HTML）。
+function embedStudio() {
+    const dir = path.join(root, 'renderer/src/studio'); if (!fs.existsSync(path.join(dir, 'studio_server_core.js'))) return;
+    const rd = (p) => fs.readFileSync(path.join(root, p), 'utf8').replace(/\r\n/g, '\n');
+    const UMD = ['asset_core', 'fatrain_core', 'storage_core', 'trainer_adapter', 'studio_layout_core', 'studio_server_core']; // 順序＝相依順序
+    let code = 'const FaStudio = (function () {\nconst holder = {};\n';
+    for (const n of UMD) code += '(function (module, self) {\n' + rd('renderer/src/studio/' + n + '.js') + '\n}).call(null, undefined, holder);\n';
+    code += 'return holder;\n})();\nconst FA_STUDIO_LAYOUT_SRC = ' + lit(rd('renderer/src/studio/studio_layout_core.js')) + ';\n';
+    const HOST = ['backend_core', 'bench_core', 'backend_cpu_js', 'backend_cpu_py', 'backend_planned', 'checkpoint_core', 'studio_config_core', 'studio_host'];
+    const files = {}; for (const n of HOST) files[n + '.js'] = rd('renderer/src/studio/' + n + '.js');
+    for (const n of ['train_lora.py', 'lora_common.py']) files['lora-train/' + n] = rd('lora-train/' + n);
+    code += 'const FA_STUDIO_HOST_FILES = ' + lit(files) + ';';
+    let a = src.indexOf('/* STUDIO-BEGIN */'), b = src.indexOf('/* STUDIO-END */');
+    if (a < 0 || b < 0) { const at = src.indexOf('/* AIDOCVIEW-END */'); if (at < 0) throw new Error('找不到 AIDOCVIEW-END 標記'); const cut = at + '/* AIDOCVIEW-END */'.length; src = src.slice(0, cut) + '\n/* STUDIO-BEGIN */\n/* STUDIO-END */\n/* STUDIOVIEW-BEGIN */\n/* STUDIOVIEW-END */' + src.slice(cut); a = src.indexOf('/* STUDIO-BEGIN */'); b = src.indexOf('/* STUDIO-END */'); }
+    src = src.slice(0, a) + '/* STUDIO-BEGIN */\n' + code + '\n' + src.slice(b);
+    console.log('已更新 FaStudio（' + UMD.length + ' 個核心）與主行程端檔案（' + Object.keys(files).length + ' 個）');
+    embed('renderer/src/studio/studio-viewer.template.html', 'STUDIOVIEW-BEGIN', 'STUDIOVIEW-END', 'FA_STUDIO_VIEWER_HTML');
+}
+embedStudio();
+
 if (crlf) src = src.replace(/\n/g, '\r\n');
 fs.writeFileSync(file, src);
