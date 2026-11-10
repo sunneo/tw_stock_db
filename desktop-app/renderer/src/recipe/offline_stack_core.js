@@ -57,7 +57,7 @@
                 const stack = variant === 'stack' ? fromRounds(o.goal || '路由', o.rounds || [{ by: 'recipe', ok: false, reason: '沒有現成做法' }]) : null;
                 const gen = async (req) => { calls++; return o.generate(req); };
                 let r; try { r = await R.chooseTool({ cands: c.cands, question: c.question, generate: gen, stack, stackMod: stack ? T : null, label: '選工具' }); } catch (e) { r = { ok: false, error: String(e && e.message) }; }
-                const got = r.ok ? (r.none ? null : c.cands[r.index] && c.cands[r.index].tool) : undefined; const hit = r.ok && got === c.want; if (hit) ok++; if (!r.ok) failed++; rows.push({ q: clip(c.question, 30), want: c.want, got, hit });
+                const got = r.ok ? (r.none ? null : c.cands[r.index] && c.cands[r.index].tool) : undefined; const hit = r.ok && got === c.want; if (hit) ok++; if (!r.ok) failed++; rows.push({ q: clip(c.question, 30), want: c.want, got, hit, tries: r.tries, rejected: r.rejected, error: r.error });
             }
             out[variant] = { n: o.cases.length, correct: ok, failed, calls, accuracy: o.cases.length ? Math.round(1000 * ok / o.cases.length) / 1000 : null, rows };
         }
