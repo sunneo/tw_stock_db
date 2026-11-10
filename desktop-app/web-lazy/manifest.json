@@ -447,8 +447,8 @@
    "names": [
     "FaDomainLinuxsem"
    ],
-   "size": 10576,
-   "md5": "86428f1b16ba432063594e7a8a11e08f"
+   "size": 18799,
+   "md5": "abd477bc56568aabb8cf5d6f8fcace9d"
   },
   "domainlf": {
    "file": "chunks/domainlf.js",
@@ -487,8 +487,8 @@
    "names": [
     "FaCodeSlash"
    ],
-   "size": 7688,
-   "md5": "b502cbb32f1e9bc424afea3be25ceb8e"
+   "size": 7775,
+   "md5": "6ef402c41706d3cbbc2747a9c03255d8"
   },
   "offlinestack": {
    "file": "chunks/offlinestack.js",
@@ -519,8 +519,8 @@
    "names": [
     "FaIrBundle"
    ],
-   "size": 170179,
-   "md5": "1800012499df162a0fae166701ffd2f8"
+   "size": 226661,
+   "md5": "7c8f910c6898bf075ae36c3a75084097"
   },
   "view": {
    "file": "chunks/view.js",
@@ -1524,7 +1524,7 @@
   }
  },
  "core": {
-  "size": 5662554,
-  "md5": "f9f5e6bbfc50e57cb388273ea8a54d05"
+  "size": 5665080,
+  "md5": "e46fe08f2f7daafb659a0763557e5ef0"
  }
 }
