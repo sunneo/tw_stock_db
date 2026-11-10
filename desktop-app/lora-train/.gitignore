@@ -1,0 +1,7 @@
+.venv/
+data/*.jsonl
+data/*.log
+out/
+*.safetensors
+*.gguf
+*.onnx

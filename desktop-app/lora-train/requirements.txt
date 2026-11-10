@@ -1,0 +1,19 @@
+# CPU-only LoRA fine-tuning stack for Qwen3-0.6B.
+#
+# IMPORTANT: install this into its own virtualenv (lora-train/.venv), never into the
+# shared/global Python environment. This repo's global env has `docling` pinned to
+# transformers<5.0.0,huggingface_hub<1 for other skills (pdf/docx processing) -- a
+# plain `pip install datasets` there drags transformers to the 5.x line and breaks it.
+#
+#   python -m venv lora-train/.venv
+#   lora-train/.venv/Scripts/pip install torch --index-url https://download.pytorch.org/whl/cpu
+#   lora-train/.venv/Scripts/pip install -r lora-train/requirements.txt
+#
+# This machine has no CUDA GPU; the Intel AI Boost NPU here is inference-only
+# (no backprop/training support), so the torch wheel above is explicitly the CPU build.
+transformers>=5.22.0
+peft>=0.21.0
+accelerate>=1.15.0
+datasets>=5.2.0
+safetensors>=0.4.3
+sentencepiece>=0.2.0
