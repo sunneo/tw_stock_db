@@ -25,7 +25,7 @@ async function run({ name, packs, seeds, minSkeletons, judge: jd, trainOnly }) {
         const r = await PL.buildFromUML({ statement: st, uml: { hints: uml.hints, model: uml.model }, B, R, C2U, FaPyBody: PB, Choose: CH, judge, Paradigms: PAR, paradigmRank: rank });
         if (!r.ok) { if (process.env.DBG) console.log('DBG', e.id, JSON.stringify(r).slice(0, 1500)); return { err: r.reason }; } const j = await J.judge({ lang: 'python', source: r.source + '\nmain()\n', problem }); return { r, v: j.verdict, detail: j.detail };
     };
-    const mk = (e, b) => { for (let t = 0; t < 20; t++) { const input = e.gen(b, { rnd, pick }); const r0 = cp.spawnSync('python3', ['-I', '-c', e.ref], { input, encoding: 'utf8', timeout: 20000 }); if (r0.status === 0 && r0.stdout.trim()) return { in: input, out: r0.stdout }; } return null; };
+    const mk = (e, b) => { for (let t = 0; t < 20; t++) { const input = e.gen(b, { rnd, pick }); const r0 = cp.spawnSync(process.env.FA_PYTHON || 'python3', ['-I', '-c', e.ref], { input, encoding: 'utf8', timeout: 20000 }); if (r0.status === 0 && r0.stdout.trim()) return { in: input, out: r0.stdout }; } return null; };
     const bad = [], rows = []; let ok = 0, revOk = 0, n = 0, hoOk = 0, hoN = 0; const hoFail = [];
     for (const e of seeds) {
         if (process.env.ONLY && !process.env.ONLY.split(',').includes(e.id)) continue; const holdout = e.split === 'holdout'; if (holdout && trainOnly) continue;
