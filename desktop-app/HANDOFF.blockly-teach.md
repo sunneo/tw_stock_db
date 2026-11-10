@@ -46,6 +46,15 @@
 - holdout 量測：`holdout_blockly` 28/31、`bench_linux_all` 59/64，只量不教。
 - 新增領域包／範式的做法不變（§3a）；本批新增範式的坑：`limit` 要 ≥ 槽位組合總數（`lx.listen` 2×3=6，一度設 5 導致解不出）；偵測詞放進 `algos` 要 `pri:true`；第一行 `cap q` 的名稱最好沿用已有範式的寫法（`backlog q` 讀不出）；生成輸入要讓輸出非空（行程樹的殭屍輸出一開始全是空行，參考解被判「產生不出測資」）。
 
+## 3d. 最新進度（2026-11-10，blockly 續做）
+
+- Linux 語意模擬（`domain_linuxsem_core.js`）新增三個範式，各有 train／holdout 分開的種子，整份測試 train 27/27、holdout 10/10：`lx.socket`（socket／bind／listen／connect／accept／send／recv／close 全套事件）、`lx.signest`（信號處理常式巢狀：處理常式引發信號、自身遮罩、pending 遞送；骨架不能用 def，所以用顯式堆疊）、`lx.envexec`（環境變數匯出／繼承與 exec 事件模擬）。提交：`5b8eed9c9`、`e231198a3`、`9f4431b90`。
+- **判題器仍缺**：真的 exec／argv／環境變數／結束碼（`bench_linux_all` 的 holdout `exec-env` 仍是這類）需要判題器啟動真行程；現在只有事件模擬，沒有這項能力。
+- 這台 Windows 機器跑領域包測試要設 `FA_TS_DIR=~/.cache/fa-ts` 與 `FA_PYTHON=python`（`python3` 是商店空殼；`domain_harness.js` 已支援 `FA_PYTHON`）。腳本改檔別用 shell 內嵌（反斜線會被吃成退格字元），用 Write 寫成檔再跑。
+- 偵測詞排在 `algos` 最前面才不會被 `lx.fdtable`（「最小的空閒 fd」）搶走；新範式的偵測詞要避開別的範式的關鍵字。
+- 嵌入：這批沒跑 `embed-code-ui.js`（`floating-assistant.js` 另有他人未提交改動），發布時要嵌入。
+- 真 Electron 矩陣層逐題結果見 `DESIGN.matrix-fallback.md` §11.8。
+
 ## 4. 環境與流程（任何帳號都能照做）
 
 - **依賴**：Node 20、Python 3、`xvfb-run`（真 Electron 測試）、tree-sitter 快取目錄。`export FA_TS_DIR=/tmp/fa-ts-cache`（需含 `tree-sitter.js`、`tree-sitter.wasm`、`tree-sitter-python.wasm`；沒有就從 `~/.cache/fa-ts` 或專案說明取得；測試找不到會印「略過」）。

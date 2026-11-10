@@ -443,3 +443,19 @@ fallback: { stage: 'reader'|'recipe'|'lesson'|'paradigm'|'matrix'|'online'|'colu
 **推翻／修正協調者的猜測**：①「缺 GF(2) 半環」——**推翻**，`SR.count(2)` 就是；②「雜湊表／樹／指標需要新的關聯記憶體／指標堆元件」——**部分推翻**，one-hot 查詢是線性的（LRU 實測）、陣列堆已夠，缺的是整數運算元（G3）與配置慣例／可讀性（G10）；③「死結偵測是布林閉包」——**成立，但現成 `transitiveClosure` 直接用會錯**（G8）；④「exec／系統呼叫在矩陣之外」——**成立**；⑤「CRC32 是 GF(2) 真矩陣」——**成立**（實測），但變長要 Mealy／逐位元組結構，且需要規格（G6）；⑥「DEFLATE 要位元讀取器＋霍夫曼查表」——**成立**，霍夫曼解碼是位元 DFA（實測），LZ77 往回複製需要視窗陣列；⑦「輸入形狀前端」「由規格合成」——**成立且是最大的兩項**：現有矩陣層對 held-out／Linux 題的失敗大多是這兩個，不是矩陣表達力不夠。
 
 **可行性結論（誠實）**：表達力上，資料結構／OS／演算法／Linux 的純計算部分都能矩陣化（有 3 個實測加既有原型支持）；不可行的是副作用（exec／系統呼叫／I/O）。**真正的瓶頸不是矩陣，而是「從敘述與少量範例推出該用哪個矩陣」**（G5、G6）與可讀性（G10、反編譯）。矩陣層補齊的順序建議：G5 → G8＋L3 半環範本 → G3 → G1 → G4 → G6。這些都沒實作，增益是預估。
+
+
+### 11.8 圖／格子／組合層的真 Electron 逐題驗證（2026-11-10）
+
+做法：`fa._codeAgent({language:'python', task:題目敘述, tests:前 2 筆, hidden:其餘})`，全新 `--user-data-dir`、換埠 17941、`FA_DISABLE_MAIN_OVERLAY=1`（`scripts/eval/run_eval.js`）；回傳確認載入的是工作目錄的 `renderer/floating-assistant.js`，且 `FaMatrixSynth`、`FaMatrixGraph`、`FaMatrixBlocks` 皆為物件。題庫：`heldout2_graph`（22）、`heldout3_graph`（21）、`heldout4_graph`（19）、`heldout6_compose`（12）。
+
+| 題庫 | 題數 | 解出 | 層別（由矩陣層解出） | 帶區塊 |
+|---|---|---|---|---|
+| heldout6_compose | 12 | 12 | 組合 9、圖 3 | 12 |
+| heldout2_graph | 22 | 22 | 圖 14、格子 6、方陣 2 | 22 |
+| heldout3_graph | 21 | 21 | 圖 10、格子 8、方陣 2；另 1 題走範式骨架 | 21 |
+| heldout4_graph | 19 | 19 | 圖 9、格子 4、方陣 2、組合 2；另 2 題沒有矩陣資訊（不是矩陣層解的） | 17 |
+
+- 誠實註記：`ok` 是 `_codeAgent` 判定通過（含隱藏測資）；回傳的 `verified` 只有 3 題為 true，其餘為 false，我沒有逐題查它的確切含意（推測是合成有歧義、未排除其他解），所以不能把 74 題都說成「已驗證無歧義」。
+- 沒有失敗題，所以沒有失敗原因可寫；heldout4 有 2 題不是由矩陣層解出（`by` 空），沒有區塊，未追查來源。
+- 這批題庫早已被矩陣層量過（純 Node），這裡只是確認真 Electron 的渲染頁行為一致。
