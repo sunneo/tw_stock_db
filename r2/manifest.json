@@ -1,0 +1,38 @@
+{
+  "name": "r2",
+  "base": "Qwen/Qwen3-0.6B",
+  "format": "peft-lora",
+  "rank": 16,
+  "alpha": 32,
+  "target_modules": "q,k,v,o,gate,up,down",
+  "trained_on": {
+    "rows": 378,
+    "epochs": 2,
+    "file_sha256": "1fa60e49da4d65fac4c9d8bed55b23ea3271da54a5bff6094a958a277564363d",
+    "tool_catalog_sha256": "c2281ce0eb49c583619b41a38de82917cc31d600e46b36d11447923a48c30513"
+  },
+  "file": "adapter_model.safetensors",
+  "total_size": 40422168,
+  "sha256": "7bf9af13876ce40a17d517d147ef6d645410fde09cb39754167f2162e271f0b1",
+  "parts": [
+    {
+      "file": "adapter_model.safetensors.part00",
+      "size": 20971520,
+      "sha256": "e07836926e6df0edf5536b99a419e35ace8c3f8edb03c134cc12fbc7652aa25a"
+    },
+    {
+      "file": "adapter_model.safetensors.part01",
+      "size": 19450648,
+      "sha256": "54f0dc183f479bba39f2d35688b55562e72a5098f49de596c2bf83ffc495ba24"
+    }
+  ],
+  "eval": {
+    "heldout_tool_routing": {
+      "n": 61,
+      "base": 6,
+      "tuned": 53,
+      "note": "synthetic questions; only this group measured"
+    }
+  },
+  "date": "2026-11-11"
+}
