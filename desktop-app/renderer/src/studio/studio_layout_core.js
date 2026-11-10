@@ -9,6 +9,8 @@
     'use strict';
     const TABS = [
         { id: 'assets', title: '資產清單', icon: '📦' },
+        { id: 'lora', title: 'LoRA 登錄', icon: '🧩' },
+        { id: 'ingest', title: '資料匯入', icon: '📥' },
         { id: 'datasets', title: '資料集', icon: '🗂️' },
         { id: 'eval', title: '評量', icon: '📊' },
         { id: 'train', title: '訓練', icon: '🏋️' },
@@ -16,7 +18,7 @@
         { id: 'log', title: '紀錄', icon: '📜' },
     ];
     const IDS = TABS.map((t) => t.id);
-    const DEFAULT = { panes: { left: ['assets', 'datasets', 'eval'], right: ['train', 'teacher', 'log'] }, active: { left: 'assets', right: 'train' }, closed: [], split: 0.45, max: null };
+    const DEFAULT = { panes: { left: ['assets', 'lora', 'ingest', 'datasets', 'eval'], right: ['train', 'teacher', 'log'] }, active: { left: 'assets', right: 'train' }, closed: [], split: 0.45, max: null };
     const SPLIT_MIN = 0.2, SPLIT_MAX = 0.8, STACK_BELOW = 640;
     const clone = (o) => JSON.parse(JSON.stringify(o));
     const clamp = (v, a, b) => Math.min(b, Math.max(a, v));

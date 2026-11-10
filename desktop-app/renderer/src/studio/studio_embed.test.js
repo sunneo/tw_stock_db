@@ -13,7 +13,7 @@ const rd = (p) => fs.readFileSync(path.join(root, p), 'utf8').replace(/\r\n/g, '
 // 載入嵌入的核心（取得 FaStudio、FA_STUDIO_HOST_FILES、FA_STUDIO_LAYOUT_SRC）
 const sandbox = { TextEncoder, TextDecoder }; vm.createContext(sandbox);
 vm.runInContext(studio.replace(/^\/\* STUDIO-BEGIN \*\/\n/, '').replace(/const (FaStudio|FA_STUDIO_LAYOUT_SRC|FA_STUDIO_HOST_FILES) =/g, 'var $1 ='), sandbox);
-check('FaStudio 帶齊六個核心', ['FaStudioAsset', 'FaFatrain', 'FaStudioStorage', 'FaStudioTrainerAdapter', 'FaStudioLayout', 'FaStudioServer'].every((k) => sandbox.FaStudio[k]), Object.keys(sandbox.FaStudio));
+check('FaStudio 帶齊九個核心', ['FaStudioAsset', 'FaFatrain', 'FaStudioStorage', 'FaStudioTrainerAdapter', 'FaStudioLayout', 'FaLoraRegistry', 'FaStudioIngest', 'FaStudioClean', 'FaStudioServer'].every((k) => sandbox.FaStudio[k]), Object.keys(sandbox.FaStudio));
 check('版面核心原始碼一致', sandbox.FA_STUDIO_LAYOUT_SRC === rd('renderer/src/studio/studio_layout_core.js'));
 const files = sandbox.FA_STUDIO_HOST_FILES;
 Object.keys(files).forEach((n) => { const src = n.indexOf('lora-train/') === 0 ? 'lora-train/' + n.slice(11) : 'renderer/src/studio/' + n; check('嵌入與來源一致：' + n, files[n] === rd(src)); });
