@@ -511,3 +511,47 @@ model card 欄位以 `description`（一句話，來自描述檔，§13.2）與 
 - `decompose`、`plan` 的呼叫點未找到（15.3 步驟 E）。
 - 真實聊天中的切換延遲與回基底的體感，未量測。
 - embed 後的 UMD 載入順序（步驟 A）未在打包產物中驗證。
+
+### 15.6 合併狀態與順序（2026-11-12）
+
+本分支 `claude/lora-slot-equiv`（`e9cc0b4b`）相對 `desktop-app`（`4c5b5e15`）領先 19 個提交、落後 0 個。**尚未合併任何分支，也沒有 push。**
+
+#### 15.6.1 與其他分支的關係
+
+| 對象 | 共同基底 | 雙方都改的檔案 | 結果 |
+|---|---|---|---|
+| `desktop-app` | `4c5b5e15` | 無 | fast-forward，無衝突 |
+| `claude/studio-domain-author-dcb72c`（`55bba55b`，領先 21 個提交） | `4c5b5e15` | `studio_server_core.js`、`studio_server_core.test.js`、`scripts/embed-code-ui.js` 第 532 行 | 見下 |
+| `lora-train-eval`（`0d638c0e`，領先 7 個提交） | `4c5b5e15` | `DESIGN.lora-training.md`（只有這個檔） | 程式無衝突；文件要手動合併 |
+
+與 studio 分支的衝突點：
+
+- `studio_server_core.js`：雙方都改，但自動合併成功。
+- `studio_server_core.test.js`：一個衝突區塊，在 `/api/info` 的分頁數。對方為 10 個分頁（新增「流程」分頁），我方為 9 個。**取對方**，並保留對方的 `/api/pipeline`、`/api/advice` 檢查；我方的 `/api/lora/replace`、`status.replacing` 檢查位於別的區塊，會自動保留。
+- `scripts/embed-code-ui.js` 第 532 行（`const UMD = [...]`）：對方改了同一行。步驟 A 要在 `'lora_registry_core'` 後面插入 `'lora_route_core'`，整合時要連同對方的新增項一起保留，不是取其中一邊。
+
+驗證（暫存 worktree，已刪除，未 commit）：以 `git merge -X theirs claude/studio-domain-author-dcb72c` 合併後，`studio_server_core.test.js` 109 項、`lora_registry.test.js` 80 項、`lora_route.test.js` 18 項全部通過。`-X theirs` 只影響衝突區塊；不加這個參數時，衝突只有上面那一個區塊。
+
+#### 15.6.2 `DESIGN.lora-training.md` 的合併規則
+
+- 雙方都新增了 §13 起的段落，編號衝突：我方 §13（多顆 LoRA 註冊與按需載入）、§14（槽位管理）、§15（本節）；對方 `lora-train-eval` 也用 §13、§14、§15（其中 §15 是「訓練要點調整」）。
+- 規則：**我方保留 §13–§15**，因為程式註解已引用這些編號（`lora_registry_core.js` 的 §13／§14、`floating-assistant.js` 的 §15）。對方的段落改為 §16 起，並更新它段落內的交叉引用。
+- 合併後檢查：`grep -n "^## 1[3-9]" DESIGN.lora-training.md` 每個編號只能出現一次。
+- 這一條需要 `lora-train-eval` 那邊的作者同意改編號；我沒有改對方的文字。
+
+#### 15.6.3 建議合併順序
+
+1. `desktop-app` ← 本分支（fast-forward）。
+2. `claude/studio-domain-author-dcb72c`：衝突點見 15.6.1，兩處已驗證。
+3. `lora-train-eval`：依 15.6.2 手動處理 DESIGN 文件。
+4. 最後才做 15.3 的步驟 A、B（embed UMD 與核心測試清單）；embed 與 build 由整合者執行，不在本分支做。
+
+### 15.7 接手節（給下一位接手的人）
+
+- **已提交**：`97ee7942`（§15 整合清單）、`e9cc0b4b`（替換端點 `outId`／`inId` 與 `status().replacing`）；之前的路由與登錄表提交見 15.1。
+- **既有失敗已修**：native_lora 2 項（`ffc28738`，refreeze `nr-engine.js` 的內嵌清單）、studio_server_core 2 項（`7bc932da`，版面期望值）。目前 native_lora 65 項、native_lora_merge 20 項、studio_server_core 106 項全部通過。
+- **未完成**：
+  - `decompose`、`plan` 的生成呼叫點尚未找到（15.3 步驟 E）。
+  - 步驟 A、B 與 embed／build（整合者做）。
+  - 15.6.3 的合併順序（需要使用者或指揮決定執行）。
+  - 網頁版路由的瀏覽器實測（§14.7）。
