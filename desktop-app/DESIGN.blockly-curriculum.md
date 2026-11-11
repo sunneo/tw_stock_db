@@ -128,3 +128,39 @@
 | xz-header、bmp-write8（Linux holdout 未解） | 已做（2026-11-10）：`domain_binfmt_core.js`；原題庫的兩題敘述現在算被教過，新 holdout 見上方 binfmt 紀錄 | — |
 | 模型／老師部分（G18） | 非範式 | 模型路線 |
 | 區塊層保留行內註解 | 區塊樹沒有註解節點 | 見 `DESIGN.core-ir.md` §8 待改善 1（可做，屬區塊層而非超出） |
+
+## 5. 影音壓縮領域（2026-11-11 立項，使用者原話：「如果要讓離線 AI 寫 H.264 呢」「撰寫破壞（有損）的聲音跟影像壓縮演算法」，回覆「列為新領域」）
+
+目標：離線小模型（或完全無模型的領域包）能依題目敘述寫出位元級的影音編解碼程式。做法同 §3：領域包（`domain_av*_core.js`，經 `FaDomains.register`）＋ train／holdout 分離的種子題＋判題器對照；骨架的輔助操作（helpers）用 Python 寫成可被判題器直接執行的函式。
+
+### 5.1 本機參考實作盤點（2026-11-11 實測）
+| 工具 | 有無 | 用途 | 限制 |
+|---|---|---|---|
+| Python 3.10 標準庫（zlib、struct、math、wave） | 有 | 位元流題的獨立參考解（類別式位元讀取，與骨架的寫法不同） | — |
+| numpy 2.2.6、scipy 1.15.3、Pillow 12.0 | 有 | 離散餘弦／小波／PSNR 的獨立參考；`scipy.fft.dct` 對照 DCT-II；Pillow 讀寫 JPEG／PNG 當真實檔 | 沒有 scikit-image、OpenCV：SSIM 自寫參考（Wang 2004 高斯窗版，與公式逐項對照） |
+| ffmpeg／ffprobe（`J:\Downloads\softwares\ffmpeg-x86\bin`，含 libx264、內建 h264 解碼、aac、libmp3lame、libshine） | 有 | H.264：用 libx264 產生真實位元流（基線、`-bf 0`、CAVLC、單 slice）當解碼器的輸入，ffmpeg 解出的 yuv 當逐像素真值；我們的編碼器產出餵 ffmpeg 解碼驗證；聲音：libmp3lame／aac 當「簡化 MP3／AAC 風格」比較對象 | 命令列、不能當函式庫；判題器內不一定有 ffmpeg，所以種子題的**期望輸出在出題時預先由 ffmpeg 算好**，判題時只比對文字 |
+| x264 單機、openh264 | 無 | — | libx264 已在 ffmpeg 內，不需另外下載 |
+| JM 參考軟體 | 無（不下載） | — | 以 ffmpeg 內建 h264 解碼器當解碼真值（它是業界通用實作） |
+
+### 5.2 階段、範圍與判題對照
+判題原則：解碼類題＝輸入是位元流（十六進位），期望輸出是欄位或像素（文字），由 ffmpeg／自寫獨立參考算出；編碼類題＝**往返**（我們編 → 獨立解碼器解 → 比較），因為編碼器輸出不唯一，不能逐位元對固定答案。有損類題＝判 PSNR／SNR 下限與位元數上限，而不是逐值相等。
+
+| 階段 | 範圍 | 判題對照 | 可驗證完成條件 |
+|---|---|---|---|
+| 1 位元級基礎 `domain_avbits` | 位元讀寫器（MSB 先）、Exp-Golomb ue／se／te、NAL 單元（起始碼 3／4 位元組、nal_unit_type／ref_idc）、防競爭位元組（00 00 03）插入與移除、RBSP 尾位元、SPS／PPS／slice header 欄位解析與寫出 | 參考＝自寫位元讀取類別；SPS／PPS／slice header 另對 ffmpeg `-bsf trace_headers`／`ffprobe` 的寬高、profile、level、QP 交叉驗證 | train 全過、holdout 另寫措辭只量測；真 libx264 位元流的 SPS 欄位與 ffprobe 一致 |
+| 2 H.264 基線 I 幀解碼 `domain_h264dec` | 4×4 整數逆變換、QP 量化表（LevelScale／反量化）、畫面內預測 Intra4x4（9 模式）與 Intra16x16（4 模式）、色度 Intra 預測與 DC 變換、CAVLC 殘差（coeff_token 表、trailing ones、level 前綴後綴、total_zeros、run_before）、去區塊濾波器（bS＝3／4） | 位元流由 libx264（`-profile:v baseline -bf 0 -g 1 -x264-params cabac=0`）產生；真值＝ffmpeg 解出的 yuv420p（需關閉去區塊時用 `-x264-params no-deblock=1` 先對齊再對去區塊版） | 逐像素比對 0 差異；每個子元件（逆變換、預測、CAVLC、去區塊）各有獨立單元題 |
+| 3 H.264 基線編碼 `domain_h264enc` | 整數正變換、量化、CAVLC 編碼、畫面內模式決策（SAD／SATD）、I 幀輸出；P 幀：全搜尋與鑽石搜尋、半像素（6 階濾波）與四分之一像素內插、運動補償、運動向量預測（中位數）與 mvd 編碼、skip 巨集區塊、率失真簡化（λ·R＋D）、碼率控制（QP 調整）；最後 CABAC（算術編碼引擎、上下文初始化與模型、二值化）與 B 幀 | 往返：我們編碼 → ffmpeg 解碼 → PSNR 與「與我們自己的解碼器重建逐像素一致」；碼率控制＝總位元數落在目標 ±X% | 每步往返 PSNR 下限（I 幀 QP28 ≥ 35 dB 之類，量測後寫入）；與 ffmpeg 解碼逐像素一致（驗證位元流合法） |
+| 4 有損聲音 `domain_avaudio` | MDCT／IMDCT（視窗：正弦／KBD、50% 重疊相加、TDAC）、簡化心理聲學遮蔽（Bark 頻帶、擴散函數、靜音門檻）、位元配置（依遮蔽比）、量化（冪律量化）、霍夫曼熵編碼、簡單位元流 | MDCT：對照 numpy 以定義式直接算；完美重建（無量化）誤差 < 1e-9；有損：SNR 與位元率，並與 ffmpeg libmp3lame／aac 在相近位元率的 SNR 比較（只比數字，不宣稱等同） | MDCT 往返誤差、位元流往返逐位元相等、SNR 曲線（位元率 vs SNR）寫入文件 |
+| 5 有損影像 `domain_avimage` | JPEG 風格：8×8 DCT（重用 matrix-finish 的 DCT／YCbCr／量化／Z 字形，沒有就自寫並標註之後可替換）、量化表依品質縮放、Z 字形、DC 差分、RLE＋霍夫曼；小波：Haar 與 5/3 整數提升（可逆）；PSNR、SSIM、位元率-失真曲線 | DCT 對照 `scipy.fft.dct`；JPEG 往返以 Pillow 解碼我們的檔（合法性）；PSNR／SSIM 自寫參考對照公式 | 位元流可被 Pillow 開啟；5/3 小波無損往返逐值相等；R-D 表寫入文件 |
+
+### 5.3 誠實限制（立項時）
+- 領域包是「骨架＋輔助操作」：整個 H.264 解碼器不會靠一句話的骨架產生，而是拆成上表各子元件（每個是可獨立判題的題），完整解碼器由這些元件在 CoLU／UML design 拆解下組合；組合後的整體端對端驗證放在階段 2、3 的整合測試（不是領域包種子題）。
+- 位元流題的大小受判題器逾時限制（沿用 `domain_inflate` 的字串位元流寫法只適合小資料），整幀測試用小畫面（16×16～64×64）。
+- CABAC、B 幀、多參考幀、加權預測、多 slice、FMO 屬「最後做，但不略過」：排在階段 3 末，若時間不夠會在文件列為具體未完成項與解除條件，不會寫成「不做」。
+- 沒有 JM、x264 單機、openh264；真值一律是 ffmpeg 內建 h264 解碼器與 libx264 編碼器。
+
+### 5.4 進度（隨每階段 commit 更新）
+| 階段 | 狀態 | 提交 | 量測 |
+|---|---|---|---|
+| 0 設計 | ✔ 本節 | — | — |
+| 1–5 | 進行中 | — | — |
