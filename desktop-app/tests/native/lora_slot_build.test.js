@@ -1,7 +1,7 @@
 // 標準版 q8 ONNX → LoRA 槽版的 JavaScript 轉換器（lora-slot-build.js）與槽版管理（native-slot-model.js）。
 // 用小型假 ONNX（1 層 × 7 個目標，與 quantize_dynamic 圖同一套命名）驗證：節點／初始值數量、輸出改名與 Add 接回、排布規則（與 make_lora_onnx.py 相同）、
 // 其餘位元組原封不動、位元組輸入與檔案輸入結果相同、各種錯誤明確失敗、管理模組（沒有標準版的說明、未同意不下載、背景轉換與快取）。
-// 沒測到的（需要真模型 617 MB 與 onnxruntime-node）：數值等價——見 scripts/eval/lora_slot_equiv.js 與 DESIGN.lora-training.md。
+// 沒測到的（需要真模型 617 MB 與 onnxruntime-node）：數值等價尚未通過，見 DESIGN.lora-training.md §11。
 'use strict';
 const fs = require('fs'), os = require('os'), path = require('path'), crypto = require('crypto');
 const root = path.join(__dirname, '..', '..');

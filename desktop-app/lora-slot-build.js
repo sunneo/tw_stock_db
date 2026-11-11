@@ -160,7 +160,7 @@ function makeLayout(targets, rank, align) {
 
 function buildSlotModel(opts) {
     const t0 = Date.now();
-    const rank = opts.rank || 16, align = opts.align || 64;
+    const rank = opts.rank === undefined ? 16 : opts.rank, align = opts.align || 64;
     if (!(rank >= 1 && rank <= 256)) throw new Error('rank 必須在 1–256');
     if (!opts.srcBytes && !opts.srcPath) throw new Error('需要 srcPath 或 srcBytes');
     const src = openSource(opts);
