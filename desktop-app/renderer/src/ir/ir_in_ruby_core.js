@@ -27,7 +27,9 @@
         for (const id of OPS.ids()) {
             const o = OPS.get(id); const cell = o.cells.rb; if (cell == null) continue;
             const tpls = typeof cell === 'string' ? [cell] : Object.values(cell).filter((x) => x != null);
-            for (const t of tpls) {
+            // 變體：Ruby 的命令呼叫可以不加括號（puts x）；樣板寫成 puts($0) 時多收 puts $0 的形式（參數只有一個時）
+            const variants = (t) => { const v = [t]; const m = /^([a-z_]\w*)\(([$@]\d)\)$/.exec(t); if (m) v.push(m[1] + ' ' + m[2]); return v; };
+            for (const t0 of tpls) for (const t of variants(t0)) {
                 if (/\$\*/.test(t)) continue; const text = t.replace(/[$@](\d)/g, '__a$1');
                 let root; try { root = parse('__x = ' + text + '\n'); } catch (e) { continue; } if (root.hasError()) continue;
                 const as = root.namedChildren[0]; const pr = as && as.type === 'assignment' ? as.childForFieldName('right') : null; if (!pr) continue;
@@ -71,11 +73,25 @@
             if (!n) return null; n = unwrap(n);
             if (!LEAF.has(n.type) && patterns.length) { const r = tryOps(n); if (r) return r; }
             switch (n.type) {
-                case 'identifier': return defined.has(txt(n)) ? at({ k: 'call', fn: fixName(txt(n)), args: [] }, n) : at({ k: 'name', v: txt(n) }, n);
+                // 不帶括號的 gets 是讀一行標準輸入（與 gets.chomp 同義），不是變數
+                case 'identifier': if (!defined.has(txt(n)) && txt(n) === 'gets') return at({ k: 'call', op: 'io.read_line', args: [] }, n); return defined.has(txt(n)) ? at({ k: 'call', fn: fixName(txt(n)), args: [] }, n) : at({ k: 'name', v: txt(n) }, n);
                 case 'integer': return at(L('int', txt(n).replace(/_/g, '')), n);
                 case 'float': return at(L('float', txt(n).replace(/_/g, '')), n);
                 case 'true': return at(L('bool', 'true'), n); case 'false': return at(L('bool', 'false'), n); case 'nil': return at(L('none', 'None'), n);
-                case 'string': { if (n.namedChildren.some((c) => c.type === 'interpolation')) return nativeE(n, '字串插值'); const t = txt(n); return at(L('str', t[0] === "'" ? t.slice(1, -1).replace(/\\(['\\])/g, '$1') : unescape(t.slice(1, -1))), n); }
+                case 'string': {
+                    // 字串插值 "n=#{n}" → "n=" + conv.str(n)；插值裡不是單一運算式（例如 #{a; b}）仍是原生區塊
+                    if (n.namedChildren.some((c) => c.type === 'interpolation')) {
+                        const parts = [];
+                        for (const c of n.namedChildren) {
+                            if (c.type === 'string_content') { const sv = unescape(txt(c)); if (sv) parts.push(L('str', sv)); continue; }
+                            if (c.type === 'interpolation') { const kids = c.namedChildren; if (kids.length !== 1) return nativeE(n, '字串插值'); parts.push(at({ k: 'call', op: 'conv.str', args: [ex(kids[0])] }, c)); continue; }
+                            return nativeE(n, '字串插值的部分 ' + c.type);
+                        }
+                        if (!parts.length) return at(L('str', ''), n);
+                        let e = parts[0]; for (let i = 1; i < parts.length; i++) e = { k: 'bin', op: '+', l: e, r: parts[i] };
+                        return at(e, n);
+                    }
+                    const t = txt(n); return at(L('str', t[0] === "'" ? t.slice(1, -1).replace(/\\(['\\])/g, '$1') : unescape(t.slice(1, -1))), n); }
                 case 'binary': {
                     const op = txt(f(n, 'operator')); const l = f(n, 'left'), r = f(n, 'right');
                     if (CMP[op]) return at({ k: 'cmp', op: CMP[op], l: ex(l), r: ex(r) }, n);
@@ -118,6 +134,15 @@
                 case 'return': { const a = n.namedChildren.find((c) => c.type === 'argument_list'); const e = a ? named(a)[0] : null; return [at({ k: 'ret', val: e ? ex(e) : undefined }, n)]; }
                 case 'break': return [at({ k: 'brk' }, n)]; case 'next': return [at({ k: 'cont' }, n)];
                 case 'call': {
+                    // 區塊迭代 a.each { |x| … }（或 do…end）→ 走訪迴圈，與 for x in a 相同；區塊參數只有一個、接收者存在才轉
+                    const blk = f(n, 'block');
+                    if (blk && f(n, 'receiver') && txt(f(n, 'method')) === 'each' && !argsOf(n).length) {
+                        const ps = f(blk, 'parameters'), pl = ps ? named(ps) : [];
+                        if (pl.length !== 1 || pl[0].type !== 'identifier') return [nativeS(n, '區塊參數')];
+                        const o = at({ k: 'foreach', var: txt(pl[0]), iter: ex(f(n, 'receiver')), body: [] }, n);
+                        o.body = block(blk.namedChildren.filter((c) => c.type !== 'block_parameters'), n.startPosition.row);
+                        return [attach(o, n)];
+                    }
                     if (!f(n, 'receiver') && txt(f(n, 'method')) === 'raise') { const a = argsOf(n); return [at({ k: 'raise', val: a[0] ? ex(a[0]) : undefined }, n)]; }
                     const e = ex(n); if (e.k === 'native') return [nativeS(n)]; return [at({ k: 'expr', e }, n)];
                 }
@@ -149,8 +174,8 @@
         // 把一個容器節點（then／do／else／method）的子節點轉成敘述，註解依位置掛成 前置／行尾／獨立／標頭行尾（同 ir_in_brace_core.js 的規則）
         function blockOf(bn, parent) { if (!bn) return []; const arr = block(bn.children.filter((c) => c.isNamed()), parent ? parent.startPosition.row : undefined); return arr; }
         function block(list, headerRow) {
-            // 新版文法把 def／do／if 的本體包在 body_statement 裡（舊版直接是子節點）；攤平，否則整段會變成一個原生區塊
-            list = list.reduce((acc, c) => (c.type === 'body_statement' ? acc.concat(c.namedChildren) : acc.concat([c])), []);
+            // 新版文法把 def／do／if 的本體包在 body_statement（do…end）或 block_body（{ }）裡（舊版直接是子節點）；攤平，否則整段會變成一個原生區塊
+            list = list.reduce((acc, c) => (c.type === 'body_statement' || c.type === 'block_body' ? acc.concat(c.namedChildren) : acc.concat([c])), []);
             const out = []; let pending = []; let prev = null, prevEnd = -1; const hdr = []; out.hdr = hdr;
             for (const c of list) {
                 if (isCmtT(c)) {
@@ -178,7 +203,10 @@
             const name = txt(f(n, 'name')), ps = f(n, 'parameters'); const params = ps ? named(ps).map((p) => { if (p.type === 'identifier') return { name: txt(p) }; diag('不支援的參數形式 ' + p.type, p); return { name: txt(p) }; }) : [];
             const o = at({ k: 'func', name: fixName(name), params, body: [] }, n);
             const skip = new Set([f(n, 'name').startIndex, ps ? ps.startIndex : -1]); const list = n.children.filter((c) => c.isNamed() && !skip.has(c.startIndex));
-            o.body = block(list, n.startPosition.row); const h = o.body.hdr || []; if (h.length) { o.c = o.c || {}; o.c.a = h.join(' '); } return o;
+            o.body = block(list, n.startPosition.row);
+            // Ruby 的方法沒有 return 時，回傳最後一個運算式的值（隱含 return）；把結尾的運算式敘述改成 ret，與 Python 的語意一致
+            const last = o.body[o.body.length - 1]; if (last && last.k === 'expr' && last.e && last.e.k !== 'native') { const rv = Object.assign({}, last, { k: 'ret', val: last.e }); delete rv.e; o.body[o.body.length - 1] = rv; }
+            const h = o.body.hdr || []; if (h.length) { o.c = o.c || {}; o.c.a = h.join(' '); } return o;
         }
         // ---- 模組層 ----
         const ir = IR.mod({ src: { lang: 'ruby', file: opts.file }, name: opts.name || 'Module' });
