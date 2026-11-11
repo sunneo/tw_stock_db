@@ -30,6 +30,7 @@
         const errors = [];
         if (!e || typeof e !== 'object') return ['登錄項必須是物件'];
         if (!e.id || typeof e.id !== 'string') errors.push('缺 id');
+        if (e.version !== undefined && (typeof e.version !== 'string' || !e.version)) errors.push('version 必須是非空字串');
         if (SOURCES.indexOf(e.source) < 0) errors.push('source 必須是 ' + SOURCES.join('／') + '，收到 ' + JSON.stringify(e.source));
         if (!e.base || typeof e.base !== 'string') errors.push('缺 base（基底模型 id）');
         if (!(Number.isInteger(e.rank) && e.rank > 0)) errors.push('rank 必須是正整數');
@@ -53,6 +54,49 @@
         if (env.tool_catalog_sha256 && entry.tool_catalog_sha256 && entry.tool_catalog_sha256 !== env.tool_catalog_sha256) warnings.push({ field: 'tool_catalog_sha256', message: '工具清單已變動，建議重訓或更新 adapter（仍可載入）' });
         if (env.tool_catalog_sha256 && !entry.tool_catalog_sha256) warnings.push({ field: 'tool_catalog_sha256', message: 'adapter 沒記錄工具清單雜湊，無法判斷是否過期' });
         return { ok: reasons.length === 0, level: reasons.length ? 'reject' : (warnings.length ? 'warn' : 'ok'), reasons, warnings };
+    }
+
+    // 描述檔 fa-lora-descriptor v1（DESIGN.lora-training.md §13.2）：每顆 adapter 資料夾內的 lora.descriptor.json
+    const DESCRIPTOR_FORMAT = 'fa-lora-descriptor';
+    const DESCRIPTOR_FORMAT_VERSION = 1;
+    const ID_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+    function descriptorErrors(d) {
+        const errs = [];
+        if (!d || typeof d !== 'object' || Array.isArray(d)) return ['描述檔必須是物件'];
+        if (d.format !== DESCRIPTOR_FORMAT) errs.push('format 必須是 ' + DESCRIPTOR_FORMAT);
+        if (d.format_version !== DESCRIPTOR_FORMAT_VERSION) errs.push('format_version 必須是 ' + DESCRIPTOR_FORMAT_VERSION + '，收到 ' + JSON.stringify(d.format_version));
+        if (typeof d.id !== 'string' || !ID_RE.test(d.id)) errs.push('id 格式不對（小寫英數與 -._，最長 64）');
+        if (!d.version || typeof d.version !== 'string') errs.push('缺 version');
+        if (!d.base || typeof d.base !== 'string') errs.push('缺 base（基底模型 id）');
+        if (!(Number.isInteger(d.rank) && d.rank > 0)) errs.push('rank 必須是正整數');
+        if (d.prompt_format_version === undefined || d.prompt_format_version === null || d.prompt_format_version === '') errs.push('缺 prompt_format_version');
+        if (!d.applies || typeof d.applies !== 'object' || Array.isArray(d.applies)) errs.push('缺 applies（物件）');
+        else {
+            if (d.applies.domains !== undefined && !Array.isArray(d.applies.domains)) errs.push('applies.domains 必須是陣列');
+            if (d.applies.triggers !== undefined) {
+                if (!Array.isArray(d.applies.triggers)) errs.push('applies.triggers 必須是陣列');
+                else d.applies.triggers.forEach((t, i) => { try { new RegExp(String(t), 'i'); } catch (_) { errs.push('applies.triggers 第 ' + i + ' 項不是合法正規表示式'); } });
+            }
+        }
+        if (!(Number.isInteger(d.size) && d.size >= 0)) errs.push('size 必須是非負整數');
+        if (!(typeof d.sha256 === 'string' && HEX64.test(d.sha256))) errs.push('sha256 必須是 64 位十六進位小寫');
+        if (!d.location || typeof d.location !== 'string') errs.push('缺 location');
+        if (d.base_sha256 != null && !HEX64.test(String(d.base_sha256))) errs.push('base_sha256 格式不對');
+        if (d.tool_catalog_sha256 != null && !HEX64.test(String(d.tool_catalog_sha256))) errs.push('tool_catalog_sha256 格式不對');
+        return errs;
+    }
+    // 描述檔 → 登錄項（不讀權重）；不合法就丟出列出所有原因的錯誤
+    function descriptorFromJson(d, extra) {
+        const errs = descriptorErrors(d);
+        if (errs.length) throw new Error('描述檔不合法：' + errs.join('；'));
+        const a = d.applies || {};
+        return Object.assign({
+            id: d.id, name: d.name || d.id, version: d.version, source: 'imported',
+            base: d.base, base_sha256: d.base_sha256 || undefined, rank: d.rank, alpha: d.alpha,
+            prompt_format_version: d.prompt_format_version, tool_catalog_sha256: d.tool_catalog_sha256 || undefined,
+            domains: (a.domains || []).slice(), triggers: (a.triggers || []).slice(),
+            location: d.location, size: d.size, sha256: d.sha256, eval: d.eval || null, enabled: true,
+        }, extra || {});
     }
 
     // 評量分數：manifest.eval.groups 每組 {adapter, base}；任何一組輸給基底→ lose；沒資料→ null（不自動選用，可手動）
@@ -197,7 +241,14 @@
             for (const e of snap.entries || []) { try { register(e); } catch (err) { bad.push({ id: e && e.id, error: err.message }); } }
             return { bad };
         }
-        return { env, budget, maxActive, register, unregister, get, list, setEnabled, checkCompat: compat, select, ensure, request, unload, unloadAll, loaded: loadedList, snapshot, restore };
+        // 呼叫端用的出口：永不丟例外。沒有 adapter 可用（沒選到、全部載入失敗、沒有載入器）→ fallback:'base'，原因寫在 skipped
+        async function resolve(req) {
+            let r;
+            try { r = await request(req); }
+            catch (err) { return { active: [], handles: [], loaded: [], unloaded: [], skipped: [{ id: '*', reason: '登錄表錯誤，退回基底：' + String((err && err.message) || err) }], fallback: 'base' }; }
+            return Object.assign(r, { fallback: r.active.length ? 'lora' : 'base' });
+        }
+        return { env, budget, maxActive, register, unregister, get, list, setEnabled, checkCompat: compat, select, ensure, request, resolve, unload, unloadAll, loaded: loadedList, snapshot, restore };
     }
 
     // 由 pack_adapter.js 的 manifest.json（或 fa-training-asset kind:'lora' 的 manifest）轉成登錄項
@@ -232,5 +283,5 @@
         };
     }
 
-    return { SOURCES, DEFAULT_BUDGET, validateEntry, checkCompat, evalVerdict, createRegistry, entryFromManifest, nrEngineLoader };
+    return { SOURCES, DEFAULT_BUDGET, DESCRIPTOR_FORMAT, DESCRIPTOR_FORMAT_VERSION, validateEntry, descriptorErrors, descriptorFromJson, checkCompat, evalVerdict, createRegistry, entryFromManifest, nrEngineLoader };
 });

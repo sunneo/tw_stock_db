@@ -118,5 +118,60 @@ let t = 1000; const now = () => ++t;
         const L2 = R.nrEngineLoader({ readBytes: async () => new Uint8Array([9, 9, 9, 9]), sha256Hex: A.sha256Hex });
         let rej = false; try { await L2.load(e); } catch (err) { rej = /sha256 不符/.test(err.message); } check('雜湊不符拒載', rej);
     }
-    console.log(ok + ' passed, ' + bad + ' failed'); process.exit(bad ? 1 : 0);
+    // 描述檔 fa-lora-descriptor v1（DESIGN §13.2）
+    {
+        const good = () => ({ format: 'fa-lora-descriptor', format_version: 1, id: 'decompose-r16', version: '1.0.0', base: 'Qwen/Qwen3-0.6B', rank: 16, prompt_format_version: 3,
+            applies: { domains: ['decompose'], triggers: ['拆題|拆解'] }, size: 4, sha256: A.sha256Hex(new Uint8Array([1, 2, 3, 4])), location: 'asset:lora/decompose-r16', eval: null });
+        const e = R.descriptorFromJson(good());
+        check('描述檔合法 → 登錄項（版本、適用條件、位置都帶過去）', R.validateEntry(e).length === 0 && e.version === '1.0.0' && e.domains[0] === 'decompose' && e.triggers.length === 1 && e.location === 'asset:lora/decompose-r16' && e.size === 4, e);
+        check('描述檔 id 與 source 預設（imported，可由 extra 覆蓋）', e.source === 'imported' && R.descriptorFromJson(good(), { source: 'user' }).source === 'user');
+        const bad = (mut) => { const d = good(); mut(d); return R.descriptorErrors(d); };
+        check('缺 version 拒絕', bad((d) => { delete d.version; }).some((x) => /缺 version/.test(x)));
+        check('format_version 不是 1 拒絕', bad((d) => { d.format_version = 2; }).some((x) => /format_version/.test(x)));
+        check('format 不對拒絕', bad((d) => { d.format = 'x'; }).some((x) => /format 必須/.test(x)));
+        check('triggers 非法正規表示式拒絕', bad((d) => { d.applies.triggers = ['(']; }).some((x) => /正規表示式/.test(x)));
+        check('sha256 格式錯拒絕', bad((d) => { d.sha256 = 'abc'; }).some((x) => /sha256/.test(x)));
+        check('id 含大寫或空白拒絕', bad((d) => { d.id = 'Bad Id'; }).some((x) => /id 格式/.test(x)));
+        check('多項錯誤全部列出', bad((d) => { delete d.version; d.rank = 0; d.size = -1; }).length >= 3);
+        let thr = false; try { R.descriptorFromJson({ id: 'x' }); } catch (err) { thr = /描述檔不合法/.test(err.message); } check('descriptorFromJson 不合法就丟出原因', thr);
+    }
+
+    // 懶載入：註冊不載入；只載入被選到的
+    {
+        const L = mkLoader(); const r = R.createRegistry({ env: ENV, loader: L, budgetBytes: 500 * MB, maxActive: 3, now });
+        r.register(mk('lz1', { domains: ['decompose'] })); r.register(mk('lz2', { domains: ['toolcall'] })); r.register(mk('lz3', { domains: ['plan'] }));
+        check('註冊不呼叫載入器（懶載入）', L.log.length === 0 && r.loaded().length === 0, L.log);
+        const q = await r.request({ domains: ['toolcall'] });
+        check('請求只載入被選到的那一顆', JSON.stringify(q.active) === JSON.stringify(['lz2']) && L.log.join(',') === 'load lz2', L.log);
+    }
+
+    // resolve：永不丟例外，沒有可用 adapter 就退回基底
+    {
+        const noLoader = R.createRegistry({ env: ENV, now }); noLoader.register(mk('nl1', { domains: ['decompose'] }));
+        const r1 = await noLoader.resolve({ domains: ['decompose'] });
+        check('沒有載入器：resolve 不丟例外，退回基底', r1.fallback === 'base' && r1.active.length === 0 && /登錄表錯誤/.test(r1.skipped[0].reason), r1);
+        const L = mkLoader(); L.load = async (e) => { if (e.id === 'bad1') throw new Error('讀不到權重檔'); L.log.push('load ' + e.id); return { id: e.id }; };
+        const r2 = R.createRegistry({ env: ENV, loader: L, budgetBytes: 500 * MB, maxActive: 1, now });
+        r2.register(mk('bad1', { domains: ['decompose'] }));
+        const r2r = await r2.resolve({ domains: ['decompose'] });
+        check('載入失敗：退回基底並附具體原因', r2r.fallback === 'base' && r2r.active.length === 0 && r2r.skipped.some((x) => /讀不到權重檔/.test(x.reason)) && r2r.handles.length === 0, r2r);
+        r2.register(mk('good1', { domains: ['plan'] }));
+        const r2b = await r2.resolve({ domains: ['plan'] });
+        check('其他 adapter 不受失敗影響（照常載入）', r2b.fallback === 'lora' && r2b.active[0] === 'good1', r2b);
+        const r3 = await r2.resolve({ domains: ['nothing_here'] });
+        check('沒有符合的 adapter：fallback 為 base', r3.fallback === 'base' && r3.active.length === 0, r3);
+    }
+
+    // LRU：超過上限時先卸最久沒用的；計畫內的不卸
+    {
+        let t = 5000; const tnow = () => ++t; const L = mkLoader();
+        const r = R.createRegistry({ env: ENV, loader: L, budgetBytes: 500 * MB, maxActive: 2, now: tnow });
+        ['a1', 'a2', 'a3'].forEach((id) => r.register(mk(id, { domains: [id] })));
+        await r.request({ domains: ['a1'] }); await r.request({ domains: ['a2'] });
+        await r.request({ domains: ['a1'] });            // a1 最近用過，a2 最久沒用
+        const q = await r.request({ domains: ['a3'] });   // maxActive=2 → 應卸 a2
+        check('超過 maxActive：卸最久沒用的 a2，保留 a1 與 a3', L.log.indexOf('unload a2') >= 0 && r.loaded().map((x) => x.id).sort().join(',') === 'a1,a3' && q.active[0] === 'a3', { log: L.log, loaded: r.loaded() });
+    }
+
+        console.log(ok + ' passed, ' + bad + ' failed'); process.exit(bad ? 1 : 0);
 })();
