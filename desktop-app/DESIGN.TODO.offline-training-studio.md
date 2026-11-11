@@ -885,3 +885,36 @@ Backend {
 ### 20.4 接手
 - 分支 `claude/studio-domain-author-dcb72c`。本輪提交見 `git log`（檢視器建議切換、LLM 匯出純函式、Windows 記憶體取樣、§20）。沒有推送，沒有嵌入。
 - 下一步順序：(1) lora-manager-2 把 optimum 與 llama.cpp 準備好後，寫 ONNX 與 GGUF 的 runner（先用假工具測流程，再用真工具）；(2) 主行程注入 `probeExportTools`，接到 `exportCaps`；(3) 總指揮重產嵌入；(4) 資料集逐筆編輯；(5) Electron 視窗驗證。
+
+## 21. LoRA 管理介面、model card 欄位與接手（2026-11-12）
+
+使用者需求（原話）：「在離線模型或工作室的configure界面要有LoRA的管理界面，例如註冊後有沒有LoRA的介紹/model card，會附帶什麼能力」。
+
+### 21.1 model card 欄位（`model_card.json`，放在 `lora/<名稱>/`；由 lora-manager-2 產生）
+- 必填：`format` 固定 `"fa-lora-card"`；`version` 固定 `1`；`id`（`lora/<名稱>`）；`name`；`base.name`；`created`（ISO 日期）；`capabilities`（陣列，每項 `{id, label, desc?}`）；`known_limits`（字串陣列，沒有限制也給 `[]`）。
+- 選填建議：`intro`（介紹）、`version_tag`（版本）、`applicable {rank, domains}`、`training {rows, domains:[{domain, rows}], sources}`、`eval {split_legal_rate {base, tuned, n}, fc_format_rate {base, tuned, n}}`（0 到 1 的數字，`n` 為整數題數）。
+- 檢查與摘要：`lora_manage_core.validateModelCard`、`summarizeCard`。缺的評量指標寫「無資料」，樣本少於 30 題警告「只供參考」。
+
+### 21.2 註冊表欄位（描述檔，由 lora-slot-js 提供，草案已送出待對齊）
+- entry：`{id, name, base, rank, size（位元組）, version, path, created?, domains?, lastUsed?（毫秒，卸載後保留）, hasCard}`。
+- 槽位：`[{index, loadedId|null, lastUsed|null}]`。
+- 草案已用 SendMessage 送給 lora-slot-js（對方當時在另一個回合，訊息排隊中，尚未確認讀取）與 lora-manager-2（已送達）。對方回覆的欄位名稱若不同，以對方為準，改 `lora_manage_core.js` 即可。
+
+### 21.3 這一輪做了什麼（提交見 git log）
+- `renderer/src/studio/lora_manage_core.js` ＋ 測試 33／0：card 檢查、評量摘要（差距、判定、樣本少警告、缺資料無資料）、註冊表列（是否載入、槽位、最後使用時間、每個動作能不能做與原因）、規則（註冊、移除、載入、卸載、替換；不改輸入）、HTML（所有外部字串跳脫）。
+- `pipeline_routes_core.js`：新增 `GET /api/lora/card?id=lora/<名稱>`，讀資產的 `model_card.json`，回摘要；沒有檔案照實說；壞掉的 JSON 回 400。測試 31／0（新增 5 項）。
+- `studio_server_core.js`：接上上面的路由（dispatch 與工廠參數）。測試 94／0。
+
+### 21.4 還沒做（誠實寫出）
+- **介面沒接進檢視器**：`lora_manage_core` 的 HTML 還沒放進檢視器的 LoRA 分頁，「介紹」按鈕與載入、卸載、替換的呼叫沒寫。現有的 `/api/lora/load`、`/api/lora/unload`、`/api/lora/select` 可以直接用。
+- **真的註冊表**：目前列表資料來源是假資料（測試裡的 fixtures）。要等 lora-slot-js 的註冊表與槽位狀態（host op）到位。
+- **註冊、移除的伺服器端寫入**：`planAction` 只做規則與下一個狀態，沒有寫入檔案或登錄。
+- **model_card.md**：只定了 JSON，沒有 Markdown 版本。
+- 嵌入：`lora_manage_core.js` 尚未加入 `scripts/embed-code-ui.js` 的清單（沒有執行嵌入，留給總指揮）。
+
+### 21.5 §20.3 的未完成項（本輪沒有處理）
+本輪把時間放在 LoRA 管理介面與欄位對齊。§20.3 的項目（ONNX／GGUF 轉換執行器、伺服器接上工具偵測、資料集逐筆編輯、blockly 種子題重跑、wiki 實測、Electron 驗證）仍然未做，原因與解除條件見 §20.3。
+
+### 21.6 接手
+- 分支 `claude/studio-domain-author-dcb72c`。新檔：`lora_manage_core.js`、`lora_manage_core.test.js`；修改：`pipeline_routes_core.js`（與測試）、`studio_server_core.js`。
+- 順序：(1) 等 lora-slot-js 與 lora-manager-2 回覆欄位，對齊後改 `validateModelCard`、`registryRows`；(2) 把 `renderLoraManageHTML` 接進檢視器 LoRA 分頁，「介紹」按鈕呼叫 `/api/lora/card`；(3) 註冊表與槽位的 host op 到位後，註冊、移除、載入、卸載、替換寫入伺服器；(4) 總指揮重產嵌入（含 `lora_manage_core.js`）。
