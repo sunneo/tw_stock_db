@@ -533,3 +533,34 @@ heldout9（`heldout9_list.jsonl`，16 題）：**ok 15/16，verified 14**（測�
 4. **核心測試登記**：已加入 `scripts/run-core-tests.js`（0fb08cfc）。整套 run-core-tests 這次未跑。
 
 **分支與身分**：`git -c user.name=hungfu.lee -c user.email=hungfu.lee@insyde.com`（沒有改全域設定）。trailer 依系統提醒寫 Haiku 5.5，指揮訊息要求的 Sonnet 5.5 與系統提醒衝突，我依系統提醒。備份 ref：`backup/matrix-b15c2f2f`（指向上一輪的 b15c2f2f，可刪）。
+
+### 13.3 第二輪續作（2026-11-12，指揮指示：G7 動態霍夫曼與算術編碼、合成器範本、teach_queue 產品呼叫與介面、JPEG 熵編碼；context 到 30% 交接）
+
+本輪提交（分支 `claude/matrix-finish-28f1b5`，在 `origin/desktop-app` 之上，未推送、未嵌入）：
+
+| 提交 | 內容 | 驗證（我在這台跑過） |
+|---|---|---|
+| 27714b8a | JPEG 熵編碼（演算法層）：DC 差分＋類別碼、AC 游程、ZRL／EOB、1 補數、0xFF 填充、解碼；標準 DC／AC 亮度表（從 libjpeg 的 DHT 讀出） | `matrix_jpeg_entropy.test.js` 5 項：500 組往返；標準表與 libjpeg DHT 逐一相同；**我們寫的 64×64 檔案經 libjpeg（PIL 9.0.1）解碼，與我們的重建最大差 1**；libjpeg 寫的掃描經我們解碼，與 PIL 像素最大差 1 |
+| 42f3ccbc | G7 動態霍夫曼：每符號後由計數重建最佳碼長、碼字用 `matrix_dyn_core` 的 canonical 規則、計數超過 512 減半 | `matrix_adaptive_huffman.test.js` 3 項：120 組往返（最長 2000，觸發減半）；2203 個採樣狀態的 Kraft 和＝1、加權成本與獨立 Python heapq 最佳成本逐一相同；偏態 3000 符號 6788 位元（定長 12000） |
+| 9f1bbdcf | G7 算術編碼：LZMA 式範圍編碼器（cache／carry 照 LZMA SDK）、位元樹、直接位元；LZMA1 字面量子集 | `matrix_range.test.js` 117 項：100 組隨機操作往返；**15 個 .lzma 檔交給真的 liblzma（Python lzma FORMAT_ALONE）解，逐位元組一致**（含 0xFF 進位）；自解往返一致 |
+| （本提交） | `run-core-tests.js` 登記上面三條，共 15 條；本節 | 三條逐一 node 執行 rc=0 |
+
+**本輪的數字**：jpeg_entropy 5、adaptive_huffman 3、range 117，加上 13.2 的 12 條（5586 項）。整套 `run-core-tests.js` 這一輪沒有跑（需要 tree-sitter 快取，這台沒有）。
+
+**誠實的未做與阻礙（接手者必讀）**
+
+1. **G7 動態霍夫曼是「每符號後重建」**，不是 FGK／Vitter 增量樹。效能每符號 O(n² )（n 是字母表大小，目前 ≤32 測試）。解除條件：寫 FGK 的兄弟性質維護與節點交換，並用同一批序列對照「碼長 Kraft＝1、成本不差於重建版太多」。
+2. **算術編碼只到字面量子集**：沒有比對（重複距離）與完整 LZMA 解碼器。解除條件：實作 LZMA 的 isMatch／isRep／長度與距離樹，用 liblzma 解我們壓的任意資料（已有的 liblzma 外部驗證管線可直接沿用）。
+3. **合成器範本未做**（G7 動態霍夫曼／MTF、Petri、圖片壓縮、JPEG 熵編碼都沒有接進 `FaMatrixSynth`）。阻礙：沒有新 held-out 題，題目的敘述與範例對應要先寫題庫（例如「給一段權杖流程問會不會死結」「給 8×8 係數問 DC 差分」）。解除條件：寫 10 題以上新 held-out（不能回頭用已凍結的題庫），量了再調範本。
+4. **teach_queue 產品呼叫與介面未做**：寫檔層（`matrix_teach_queue_core.js`）完成，但 `floating-assistant.js` 的 `_codeOffline` 失敗路徑沒有呼叫 `add`，也沒有摘要的視窗。阻礙：這台的 node_modules 沒有 Electron 二進位（postinstall 需要下載，規則不允許），也沒有 xvfb，驗不了視窗。解除條件：Electron 二進位由使用者同意下載（列出檔名與大小），或改由有視窗的機器跑 e2e。
+5. **JPEG 熵編碼只有灰階基線**：彩色 4:2:0、漸進式、optimize、JFIF／JPEG 檔案讀寫的領域包都不在這裡。若 blockly-finish-2 已在做 JPEG 讀寫領域包，以它為準；本模組只提供熵編碼的演算法層。
+
+**要嵌入／登錄的檔案（管理者統一做，我沒有跑 embed、build、publish）**
+
+- 重新嵌入：`renderer/src/algo/matrix_sketch_core.js`（13.2 已列）。
+- 新增嵌入清單：`matrix_dyn_core.js`（FaMatrixDyn）、`matrix_petri_core.js`（FaMatrixPetri）、`matrix_image_core.js`（FaMatrixImage）、`matrix_teach_queue_core.js`（FaMatrixTeachQueue，要在 FaMatrixSpec 之後）、`matrix_jpeg_entropy_core.js`（FaMatrixJpegEntropy）、`matrix_adaptive_huffman_core.js`（FaMatrixAdaptiveHuffman，依賴 FaMatrixDyn）、`matrix_range_core.js`（FaMatrixRange）。
+- 核心測試登記：已加入 `scripts/run-core-tests.js`（本提交）。
+
+**接手者的下一步（依順序）**：(a) 寫 10 題以上 held-out（dyn、petri、jpeg、range 各類），量 synth 的 ok／verified 數；(b) 在 `FaMatrixSynth` 註冊範本，只有量到有效才算；(c) 寫 `_codeOffline` 的失敗路徑 `add`（宿主 io 用 `localStorage` 或 host 檔案，兩者都要 try/catch）；(d) 依阻礙 4 的解除條件處理視窗驗證；(e) FGK（阻礙 1）與完整 LZMA（阻礙 2）。
+
+**身分與分支**：`git -c user.name=hungfu.lee -c user.email=hungfu.lee@insyde.com`（沒有改全域設定）。trailer 依系統提醒寫 Haiku 5.5；指揮要求的 Sonnet 5.5 與系統提醒衝突，我依系統提醒。
