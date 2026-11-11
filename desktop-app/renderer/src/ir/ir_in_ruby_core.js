@@ -149,6 +149,8 @@
         // 把一個容器節點（then／do／else／method）的子節點轉成敘述，註解依位置掛成 前置／行尾／獨立／標頭行尾（同 ir_in_brace_core.js 的規則）
         function blockOf(bn, parent) { if (!bn) return []; const arr = block(bn.children.filter((c) => c.isNamed()), parent ? parent.startPosition.row : undefined); return arr; }
         function block(list, headerRow) {
+            // 新版文法把 def／do／if 的本體包在 body_statement 裡（舊版直接是子節點）；攤平，否則整段會變成一個原生區塊
+            list = list.reduce((acc, c) => (c.type === 'body_statement' ? acc.concat(c.namedChildren) : acc.concat([c])), []);
             const out = []; let pending = []; let prev = null, prevEnd = -1; const hdr = []; out.hdr = hdr;
             for (const c of list) {
                 if (isCmtT(c)) {
