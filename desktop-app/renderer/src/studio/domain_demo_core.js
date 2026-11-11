@@ -37,9 +37,9 @@
         ],
         tasks: [
             { id: 'lin-3-2-11', op: 'lin-mod', split: 'train', statement: '輸入整數 n，輸出 (3n+2) 除以 11 的餘數（同餘計算）。',
-                examples: [{ in: '1\n', out: '5\n' }, { in: '4\n', out: '3\n' }, { in: '7\n', out: '1\n' }], hidden: [{ in: '10\n', out: '10\n' }, { in: '20\n', out: '7\n' }, { in: '0\n', out: '2\n' }, { in: '13\n', out: '9\n' }] },
+                examples: [{ in: '1\n', out: '5\n' }, { in: '4\n', out: '3\n' }, { in: '7\n', out: '1\n' }], hidden: [{ in: '10\n', out: '10\n' }, { in: '20\n', out: '7\n' }, { in: '0\n', out: '2\n' }, { in: '13\n', out: '8\n' }] },
             { id: 'lin-5-1-9', op: 'lin-mod', split: 'holdout', statement: '輸入整數 n，輸出 (5n+1) 除以 9 的餘數（同餘計算）。',
-                examples: [{ in: '2\n', out: '2\n' }, { in: '3\n', out: '7\n' }, { in: '5\n', out: '8\n' }], hidden: [{ in: '9\n', out: '1\n' }, { in: '11\n', out: '2\n' }, { in: '0\n', out: '1\n' }, { in: '14\n', out: '8\n' }] },
+                examples: [{ in: '2\n', out: '2\n' }, { in: '3\n', out: '7\n' }, { in: '5\n', out: '8\n' }], hidden: [{ in: '9\n', out: '1\n' }, { in: '11\n', out: '2\n' }, { in: '6\n', out: '4\n' }, { in: '14\n', out: '8\n' }] },
             { id: 'pal-yes-no', op: 'is-pal', split: 'train', statement: '輸入一個字串，若它是回文印 yes，否則印 no。',
                 examples: [{ in: 'abba\n', out: 'yes\n' }, { in: 'abca\n', out: 'no\n' }, { in: 'x\n', out: 'yes\n' }], hidden: [{ in: 'level\n', out: 'yes\n' }, { in: 'ab\n', out: 'no\n' }, { in: 'noon\n', out: 'yes\n' }] },
             { id: 'pal-holdout', op: 'is-pal', split: 'holdout', statement: '輸入一個小寫字串，判斷它是不是回文，是就印 yes，不是就印 no。',
