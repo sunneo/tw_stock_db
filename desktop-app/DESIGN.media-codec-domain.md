@@ -224,3 +224,50 @@ FA_TS_DIR=<含 tree-sitter.js、tree-sitter.wasm、tree-sitter-python.wasm 的�
 - 同一段 holdout 措辭改過一次，就不再是乾淨 holdout（要另寫新措辭）。
 - 工作樹曾被誤 `git reset --hard`，之後用 `git rebase` 衝突停在半途；用 `git rebase --abort` 復原，再用 cherry-pick 重做。
 - 分支名 `desktop-app` 同時是倉庫子目錄名，寫 git 參數時用 `refs/heads/desktop-app`。
+
+## 接手（第三棒，2026-11-12，Haiku 5.5；分支 `claude/media-codec-3-dc5e60`，起點 `0ef1d663`）
+
+### 本棒完成（每項 train、反序、holdout 皆實跑，數字為實測）
+| 項目 | 提交 | train | 反序 | holdout | 備註 |
+|---|---|---|---|---|---|
+| CAVLC coeff_token（表 9-5） | `c3422487` | 5/5 | 5/5 | 1/1 | 表來源 libavc `ih264_cavlc_tables.c` 逐字；TotalCoeff 0 特例；nC≥8 固定 6 位元；色度直流 nC＝−1；**未涵蓋 nC＝−2（4:2:2）** |
+| CAVLC level（前綴後綴、suffixLength） | `66025285` | 3/3 | 3/3 | 1/1 | 規格公式兩份獨立寫法互相對照 |
+| 去區塊亮度邊界（bS 1 至 4） | `e7b209bf` | 2/2 | 2/2 | 1/1 | α、β、tC0 來自 libavc `ih264_deblk_tables.c`；**色度濾波、整幀順序未做** |
+| 端對端重疊相加（TDAC） | `381a5561` | 1/1 | 1/1 | 1/1 | 保留小數後取整；多段串接的整段誤差未做 |
+| 簡化心理聲學遮蔽（教學定義，非 ISO 模型） | `953a3b89` | 1/1 | 1/1 | 1/1 | 定義寫在題目裡；不代表任何標準 |
+| 霍夫曼 canonical 解碼（4 符號） | `817cf80c` | 1/1 | 1/1 | 1/1 | 只輸出第一個符號；無整串熵編碼 |
+| 4×4 整數正變換＋量化（intra） | `4b71e0ec` | 1/1 | 1/1 | **0/1** | 根因：holdout 措辭寫「正向整數轉換」，讀取器只認「正變換／前向／forward」，配對不到；依規則不改這題原措辭，留作紀錄 |
+| 亮度半像素 6 抽頭內插 | `1970f675` | 1/1 | 1/1 | 1/1 | 運動補償基礎；四分之一像素、色度內插未做 |
+
+回歸（每次提交前後都跑）：`domain_h264coefftoken` 10/0、`domain_h264level` 6/0、`domain_h264cavlc` 4/0、`domain_h264totalzeros` 4/0、`domain_h264dec` 6/0、`domain_h264intra` 20/0、`domain_h264dequant` 6/0、`domain_h264deblock` 4/0、`domain_h264hpel` 2/0、`domain_h264fwd` 2/0；`domain_avbits` 32/0、`domain_avaudio` 4/0、`domain_avimage` 10/0、`domain_avolap` 2/0、`domain_avpsycho` 2/0、`domain_avhuff` 2/0。全部 0 失敗。
+
+### 外部對照（誠實限制）
+- 可用工具：`/usr/bin/ffmpeg`、`ffprobe`（有 libx264、aac、libmp3lame）、`python3.13`（無 numpy、Pillow、scipy 可用；`python3` 有 numpy 版本警告）、`libjpeg.so.8`（可用，但它的整數 DCT 與本棒的浮點參考式不同，沒有直接對照路徑）。
+- 本棒新題**沒有任何一題做到 ffmpeg 逐係數對照**：coeff_token 與 MF 表是從 libavc 與記憶取得；level、去區塊、TDAC、霍夫曼、正變換都是公式的兩份獨立寫法互相對照。要做外部對照，需要能單獨指定一個係數或一個樣本的路徑（例如用 libx264 的 `--no-deblock`、`-x264-params` 控制單一幀的模式），本棒未做。
+
+### 未完成（照順序；未做的寫明阻礙）
+1. **階段 3 其餘**：整數 1/4 像素與色度內插、運動搜尋（全搜尋 SAD，需先定平手規則）、CABAC（上下文表很大，需要 libavc 或 ffmpeg 的表來源，尚未取）、B 幀（雙向預測）、整幀編碼端到端。阻礙：CABAC 表尚未取得；B 幀依賴運動搜尋。
+2. **階段 5 算術編碼**：未做。霍夫曼整串解碼也只做到第一個符號，整串版本待做。
+3. **階段 4**：心理聲學只有教學定義；ISO 模型未做（阻礙：需要規格的遮蔽門檻表，尚未取得）。
+4. **六題未解 holdout（本棒未動，只整理根因）**：
+   - `intra4-dc-ho`、`intra4-h-ho`：敘述沒寫「4×4」，讀取器的幀內預測配對不到（已由 `intra4-dc-ho2`、`intra4-h-tr2` 另寫）。
+   - `intra4-ddl-ho`：句型「輸入 13 個…」不是讀取器認得的「輸入一行 N 個整數」（已由 `intra4-ddl-ho2` 另寫）。
+   - `legall-ho`：敘述自相矛盾（「平均」與「除以 4」），屬我方敘述錯。
+   - `legall-ho2`：輸出句「第一行印 s」被讀成輸入（讀取器只認「輸出」字樣）；可用新 id 另寫「輸出」措辭量測。
+   - `idct4-ho2`：敘述沒有點名「逆變換」，讀取器配對不到。
+   - 新增的 `fq-ho`（正變換量化）：措辭缺「正變換」字樣，同第 4 點的措辭缺口。
+   - 以上「補敘述」的修法都需要另寫新 id（改過一次就不是乾淨 holdout），本棒沒有做，留給下一棒判斷。
+
+### 第三棒的新坑
+- 讀取器配對靠字樣：正變換題要有「正變換」或「前向」；半像素題要有「半像素」與「內插」；去區塊題要有「去區塊」與「bS」。新題的敘述要避開他題的否決詞（例如 level 題不能有 coeff_token 或 TotalCoeff）。
+- 規則：`tree-sitter` 快取要用 `FA_TS_DIR=/home/hungfu.lee/.cache/fa-ts-h264`，每次要看到「train N/M」那一行，否則會假通過。
+- libavc 表的欄位約定：coeff_token 的 `[TrailingOnes][TotalCoeff−1]`，TotalCoeff 0 不在表內（特例）。
+
+### 尚缺清單（不要自己做）
+- 所有新子元件都還沒登記進 `scripts/embed-code-ui.js`、`floating-assistant.js`、`scripts/run-core-tests.js`，由總指揮統一處理。
+- 不推送、不發布、不跑 embed／build。
+
+### 接續點（給下一棒）
+1. 先跑 `domain_h264*.test.js` 與 `domain_av*.test.js` 回歸，確認數字與上表相同。
+2. 從「未完成」第 1 點開始：色度與 1/4 像素內插，然後運動搜尋的平手規則（先寫在敘述裡）。
+3. 取 CABAC 表來源（libavc 或 ffmpeg 原始碼，需 web-fetch 子代理）後再做 CABAC。
