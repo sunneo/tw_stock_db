@@ -172,3 +172,24 @@ lora-train/.venv/Scripts/pip install -r lora-train/requirements.txt
 - 實測：轉換 4.2 秒、峰值 RSS 約 37.6 MB（617 MB 輸入，串流）。
 - **尚未通過等價驗證**：全零 adapter 位元相同；非零 adapter 的槽版與網頁版併權重結果不一致（首步 logits cos 約 0.968）。查出原因前，不得宣稱「與 make_lora_onnx.py 等價」或「網頁版與原生版一致」。
 - 已知阻礙：studio-viewer 的既有語法錯誤（符號式擬合區段）使 LoRA 卡片無法在畫面驗證。
+
+## 12. 資料擴充：函式層切割與思考堆疊（2026-11-12，Linux 機器）
+
+**起因**：§7 第 3、5 點與實跑 `merge_dataset.js` 的結果——UML 切割、思考堆疊、計畫樣板資料各只有 1～20 列，留出集也沒有這幾塊，訓練了也量不出是否變準。
+
+**發現**：種子題庫 377 題的參考解全部只有一個 `main()`，只有 14 題另有函式；所以「由參考解反推切割」沒有現成素材，必須自己重構（見下）。
+
+**新增**
+- `lora-train/gen/refactor_split.py`：用 `ast` 把單一 `main()` 機械式重構成 `read_input()`／`solve(...)`／`main()`（前段讀入、後段 print 留在 main、其餘是運算；import 提到最上面）。已有多函式的 14 題沿用原本的函式與呼叫關係。377 題中 190 題可重構、137 題沒有「中段運算」（讀入後直接 print 運算式）、28 題 main 裡有 return／global、8 題開頭沒讀輸入。
+- `lora-train/gen/gen_code_split.js`（已登記在 `merge_dataset.js`）：用**真正的** `CodeLoop.solve()`，`ask` 回呼攔截並回答切割題、`write` 回呼攔截並回答逐函式寫作題，組好的整份程式交 `judge-runner.js` 跑 tests＋hidden，沒 AC 的整題丟掉（2 題 RE 被丟）。產出 `fn_template/code_split` 與 `fn_template/code_write_fn`，messages 帶真正的思考堆疊標頭。
+- 同一支另跑 `stackChecks:true` 三種版本（clean／第一次寫壞／一直寫壞），收集堆疊自己的三種封閉題 `think_stack/plan_check`、`self_validate`、`review_return`。**答案由程式用結構檢查算出**（函式有沒有定義、參數個數與簽名是否一致、內容是不是只有 `pass`），負例是故意改函式名／拿掉一個參數／換成 `pass`。刻意**不**做「模型讀程式碼判斷對錯」的標籤——0.6B 不能執行程式，那只會學到瞎猜。
+- `lora-train/eval_gen.py`＋`score_gen.js`：批次產生輸出（每個 stage 各自的長度上限）、用判題器評分。切割題看 valid（JSON 合法、有 main、calls 都指到清單內）／names／calls；逐函式寫作看「放進標準答案的其他函式後判題器是否 AC」；自問與核對看 ok 欄位。
+
+**資料量（`merge_dataset.js`，2026-11-12）**：總 6294 列、訓練 4170、留出 2124。新增 `code_split` 202（訓練 67）、`code_write_fn` 596（194）、`plan_check` 203（68）、`self_validate` 836（277）、`review_return` 219（76）。
+
+**誠實限制**
+- **可用的訓練題只有 67 題**：種子題庫大多放在凍結的 heldout／holdout 檔（135 題），依紀律不進訓練集。要更多訓練題，需要用 `gen_bench_*.py` 的產生器生新題，不是放寬留出。
+- 切法是機械式「讀入／運算／輸出」，purpose 是固定句型，不是人類設計師各式各樣的切法；可能讓模型學成固定三段式。要看它在沒見過的題目上有沒有幫助，不能只看 loss。
+- `review_return` 的負例只有 13 筆，`self_validate` 的負例 248 對正例 584，比例偏正。
+- `uml_design` 的 actors／classes／relations 仍只有 1～4 列（只有單一固定情境），這一輪**沒有**補。
+- 基底在這批題上的起點（`eval_gen.py` 抽 8 題煙霧）：切割題 valid 0/8（基底輸出 JSON 陣列而不是要求的物件）、自問 ok 3/8。完整基準與微調結果見下一節（有跑才寫）。
