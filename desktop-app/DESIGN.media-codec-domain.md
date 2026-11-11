@@ -108,7 +108,10 @@ FA_TS_DIR=<含 tree-sitter.js、tree-sitter.wasm、tree-sitter-python.wasm 的�
 - 骨架 `aud.mdct8q`：窗長 16、係數 8，正弦窗 w[n]＝sin(π(n＋1/2)/16)，核 cos(π/8 (n＋1/2＋4)(k＋1/2))，量化 floor(X/Q＋0.5)；輸入一行 17 個整數（Q 後接 16 個取樣）。
 - 自檢：兩種寫法的核（骨架式與 π(2n＋1＋N)(2k＋1)/(4N) 式）逐項相等（最大誤差 0）。
 - 數字：train `mdct-tr` AC，反序 1/1（0 次模型）；holdout `mdct-ho`（新措辭）AC。
-- **未做與限制**：IMDCT（反變換）與 TDAC 重疊相加還原尚未做；心理聲學模型（遮蔽門檻）未做；熵編碼未做；**沒有外部工具（ffmpeg 的 aac、Python 的 scipy）逐係數對照**，正確性以公式與參考解一致為準。下一步：加 IMDCT 並用兩個相鄰區塊的重疊相加驗證還原（TDAC 性質，可自檢）。
+- IMDCT（`aud.imdct8`，輸入一行 8 個係數，輸出 16 個四捨五入後的取樣，縮放 2/N＝0.25）：train `imdct-tr` AC，反序 2/2（含 mdct-tr）；holdout `imdct-ho`（新措辭）AC。
+- TDAC 自檢（`domain_avaudio.test.js` 內，JS）：相鄰兩區塊（位移 8）以正弦窗做 MDCT 再 IMDCT、重疊相加，中段誤差 2.4e-13，確認縮放 2/N 與窗的組合可還原。這是**數學自洽檢查，不是外部工具對照**。
+- **未做與限制**：心理聲學模型（遮蔽門檻）未做；熵編碼未做；整段訊號的端對端還原（多區塊、四捨五入後的誤差）未做；**沒有外部工具（ffmpeg 的 aac、Python 的 scipy）逐係數對照**。
+- 階段 4 holdout 合計 2/2（`mdct-ho`、`imdct-ho`）。
 
 ## 3. 環境與坑（重要，接手前先看）
 

@@ -44,7 +44,41 @@ const HO = 'MDCT 量化（音訊壓縮的變換步驟）：輸入一行 17 個�
 
 const gen = (b, { rnd: rr }) => [rr(4, 64)].concat(Array.from({ length: 16 }, () => rr(-100, 100))).join(' ');
 
+// IMDCT（窗長 16、係數 8、縮放 2/N）：TDAC 自檢——相鄰兩區塊（位移 8）的重疊相加在中段必須還原原訊號。
+{
+    const N = 8, W = 16;
+    const w = (n) => Math.sin(Math.PI * (n + 0.5) / W);
+    const fwd = (x, off) => Array.from({ length: N }, (_, k) => { let s = 0; for (let n = 0; n < W; n++) s += w(n) * x[off + n] * Math.cos(Math.PI / N * (n + 0.5 + N / 2) * (k + 0.5)); return s; });
+    const inv = (X) => Array.from({ length: W }, (_, n) => { let s = 0; for (let k = 0; k < N; k++) s += X[k] * Math.cos(Math.PI / N * (n + 0.5 + N / 2) * (k + 0.5)); return w(n) * s * (2 / N); });
+    const x = Array.from({ length: 24 }, (_, i) => Math.sin(i * 0.7) * 100 + (i % 5));
+    const y0 = inv(fwd(x, 0)), y1 = inv(fwd(x, 8));
+    let maxErr = 0;
+    for (let n = 0; n < 8; n++) maxErr = Math.max(maxErr, Math.abs((y0[8 + n] + y1[n]) - x[8 + n]));
+    if (maxErr > 1e-9) throw new Error('TDAC 還原失敗，最大誤差 ' + maxErr);
+    console.log(`TDAC 自檢通過（中段最大誤差 ${maxErr.toExponential(2)}）`);
+}
+
+// IMDCT：參考解獨立寫成 Python（核用 (2n＋1＋N)(2k＋1)/(4N) 式，與骨架寫法不同）
+const REF_IMDCT = `import sys, math
+X = [int(t) for t in sys.stdin.read().split()]
+N = 8
+out = []
+for n in range(2 * N):
+    s = 0.0
+    for k in range(N):
+        s += X[k] * math.cos(math.pi * (2 * n + 1 + N) * (2 * k + 1) / (4 * N))
+    w = math.sin(math.pi * (2 * n + 1) / (4 * N))
+    out.append(math.floor(w * (2.0 / N) * s + 0.5))
+print(*out)
+`;
+const ST_IMDCT = 'IMDCT（窗長 16、係數 8）：輸入一行 8 個整數（MDCT 係數 X[0] 至 X[7]）。先算 Y[n]＝Σ X[k]cos(π/8 (n＋1/2＋4)(k＋1/2))，n 為 0 至 15、k 為 0 至 7；再乘上正弦窗 w[n]＝sin(π(n＋1/2)/16) 與係數 2/8，取 y＝w[n]·Y[n]/4，每個 y 加 0.5 後向下取整，輸出一行 16 個整數。';
+// holdout：另寫措辭（只量測）
+const HO_IMDCT = '反修正離散餘弦（窗長 16、8 個係數）：輸入一行 8 個整數 X[0] 至 X[7]。對 n＝0 至 15 算 Σ X[k]cos(π(2n＋1＋8)(2k＋1)/32)，乘上窗 sin(π(2n＋1)/32) 與 2/8，四捨五入（加 0.5 後取整數部分），輸出一行 16 個整數。';
+const genIM = (b, { rnd: rr }) => Array.from({ length: 8 }, () => rr(-50, 50)).join(' ');
+
 const SEEDS = [
+    { id: 'imdct-tr', want: 'aud.imdct8', st: ST_IMDCT, ref: REF_IMDCT, gen: genIM },
+    { id: 'imdct-ho', split: 'holdout', st: HO_IMDCT, ref: REF_IMDCT, gen: genIM },
     { id: 'mdct-tr', want: 'aud.mdct8q', st: ST, ref: REF, gen },
     { id: 'mdct-ho', split: 'holdout', st: HO, ref: REF, gen },
 ];
