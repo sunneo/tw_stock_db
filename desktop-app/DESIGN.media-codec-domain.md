@@ -328,3 +328,12 @@ FA_TS_DIR=<含 tree-sitter.js、tree-sitter.wasm、tree-sitter-python.wasm 的�
 - 外部工具：本機有 `/usr/bin/ffmpeg`（含 libx264），**沒有 x264 命令列工具**（`command -v x264` 無結果）。ffmpeg 只能端到端解碼，沒有單係數或單區塊的輸出路徑，所以逐係數對照仍未做。
 - 六題 holdout：舊 id 依舊未解（保留為根因紀錄），新 id 已通過（見上表與 `031f457f`）。
 - 仍未做：CABAC 語法 ctxIdx 的 m、n 表（x264 的 `common/tables.c` 有 `x264_cabac_context_init` 類的表，需確認檔名與格式後逐項核對）；1/4 像素的 f、i、j、k、n、q 等位置（j 需先算 6 抽頭的中間值）；運動向量預測與子像素搜尋。
+
+### 第四棒續（二）：1/4 像素其餘位置、CABAC 初始化表子集、EG0
+- 1/4 像素（`domain_h264motion_core.js`）：新增 `h264.qpel.edge`（c、d、n）、`h264.qpel.tap6`（六分接頭半像素 b）、`h264.qpel.j`（中心 j，由六個未截斷中間值經 +512 右移 10 位）、`h264.qpel.fikq`（f、i、k、q）。實跑：motion 測試 16 passed、0 failed；新增四組皆 train 1/1、反序 1/1、holdout 1/1。
+- CABAC 初始化（`domain_h264cabac_core.js`）：新增 `h264.cabac.ctxinit`，只含 I 條帶的 ctxIdx 0 至 10 與 60 至 69（共 21 組 m、n）。**不是完整表**（完整表有 1024 個 ctxIdx、四種 cabac_init_idc，尚未做）。
+  - 來源誠實說明：本機沒有 H.264 標準正文，這 21 組 m、n 是依記憶寫入，**不是逐格從標準抄出**。核對方式：與 x264 `common/tables.c` 的 `x264_cabac_context_init_I` 逐格比對，21/21 相同。標準本文仍需由總指揮或人工核對。
+  - 實跑：cabac 測試 14 passed、0 failed（新增 `cab-ci-tr/ho` 通過）。
+- EG0（`h264.cabac.ueg0`）：指數哥倫布 k=0 後綴的旁路位元。兩種寫法（迴圈與位元長度）互相核對，隨機 0 至 300 的值相同。實跑：`cab-ug-tr/ho` 皆 1/1，反序 1/1。
+- 外部對照：ffmpeg 與 x264 仍只能端到端；EG0 與 1/4 像素的係數未做外部逐項對照（同上阻礙）。
+- 仍未做：完整 CABAC 初始化表；語法元素（mb_type、cbp、殘差 coded_block_flag 等）與符號位元的上下文；運動向量預測與子像素搜尋；色度內插；逐位元外部對照。

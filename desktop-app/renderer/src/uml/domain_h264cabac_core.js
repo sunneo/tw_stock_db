@@ -68,12 +68,23 @@
                 [], (c, N, I) => code(['v = ' + nums(N, I)].concat(['bins = []', 'for x in v:', '    for i in range(min(x, 6)):', '        bins.append((i, 1))', '    if x < 6:', '        bins.append((x, 0))'], tabs, ['ps = [0] * 6', 'mps = [0] * 6', 'low = 0', 'rng = 510', 'out = []', 'first = True', 'outst = 0',
                     'for c, bn in bins:', '    q = (rng >> 6) & 3', '    lps = tab[ps[c]][q]', '    rng = rng - lps', '    if bn != mps[c]:', '        low = low + rng', '        rng = lps', '        if ps[c] == 0:', '            mps[c] = 1 - mps[c]', '        ps[c] = tl[ps[c]]', '    else:', '        ps[c] = ps[c] + 1 if ps[c] < 62 else ps[c]'], RN.map((l) => '    ' + l), ['rng = 2'], RN, ['pb = (low >> 9) & 1', 'if first:', '    first = False', 'else:', '    out.append(pb)', 'while outst > 0:', '    out.append(1 - pb)', '    outst = outst - 1', 'w = ((low >> 7) & 3) | 1', 'out.append((w >> 1) & 1)', 'out.append(w & 1)', 'print("".join(str(x) for x in out))'])),
                 { shape: numIn, limit: 1, helpers: () => [] }),
+            D('h264.cabac.ctxinit', 'h264-cabac-ctxinit', 'CABAC 上下文初始化（I 條帶查表）：輸入一行 2 個整數，依序為 ctxIdx 與 SliceQPY。ctxIdx 只會是 0 至 10 或 60 至 69；由 I 條帶的 m、n 表（標準表 9-12 與表 9-18）查得該 ctxIdx 的 m 與 n。令 qp 為 SliceQPY 夾在 0 至 51 之間的值，preCtxState 為 ((m 乘 qp) 右移 4 位加 n) 夾在 1 至 126 之間的值。若 preCtxState 不大於 63，則 pStateIdx 為 63 減 preCtxState、valMPS 為 0；否則 pStateIdx 為 preCtxState 減 64、valMPS 為 1。輸出兩個整數：pStateIdx、valMPS。',
+                [], (c, N, I) => code(['v = ' + nums(N, I), 'T = {0: (20, -15), 1: (2, 54), 2: (3, 74), 3: (20, -15), 4: (2, 54), 5: (3, 74), 6: (-28, 127), 7: (-23, 104), 8: (-6, 53), 9: (-1, 54), 10: (7, 51), 60: (0, 41), 61: (0, 63), 62: (0, 63), 63: (0, 63), 64: (-9, 83), 65: (4, 86), 66: (0, 97), 67: (-7, 72), 68: (13, 41), 69: (3, 62)}',
+                    'm = T[v[0]][0]', 'n = T[v[0]][1]', 'qp = min(max(v[1], 0), 51)', 'pre = min(max(((m * qp) >> 4) + n, 1), 126)',
+                    'if pre <= 63:', '    ps = 63 - pre', '    mps = 0', 'else:', '    ps = pre - 64', '    mps = 1',
+                    'print(ps, mps)']),
+                { shape: numIn, limit: 1, helpers: () => [] }),
+            D('h264.cabac.ueg0', 'h264-cabac-ueg0', 'CABAC 旁路的指數哥倫布 k=0 後綴二值化（EG0，H.264 9.3.2.3）：輸入一行 1 個整數 v（0 以上）。令 k 為 0，依下列規則產生位元：當 v 不小於 2 的 k 次方時，送出 1、v 減去 2 的 k 次方、k 加 1；否則送出 0，再以 k 個位元由高位到低位送出 v。全部位元都以旁路方式送出，不使用上下文。輸出由 0 與 1 組成的位元字串。',
+                [], (c, N, I) => code(['v = ' + nums(N, I), 'x = v[0]', 'k = 0', 'out = []', 'while x >= (1 << k):', '    out.append(1)', '    x = x - (1 << k)', '    k = k + 1', 'out.append(0)', 'for i in range(k - 1, -1, -1):', '    out.append((x >> i) & 1)', 'print("".join(str(b) for b in out))']),
+                { shape: numIn, limit: 1, helpers: () => [] }),
         ];
-        const ALL = (...parts) => new RegExp('^' + parts.map((x) => String.raw`(?=[\s\S]*` + x + ')').join(''), 'i');
+        const ALL =(...parts) => new RegExp('^' + parts.map((x) => String.raw`(?=[\s\S]*` + x + ')').join(''), 'i');
         const algos = [
             { key: 'h264-cabac-decision', re: ALL('(?:CABAC|上下文)', '(?:DecodeDecision|rangeTabLPS|codIRange)', '(?:解碼|決策)'), veto: /編碼|EncodeDecision|旁路|bypass|初始化|preCtxState|CAVLC|coeff_token/i },
-            { key: 'h264-cabac-bypass', re: ALL('CABAC', '(?:旁路|bypass)'), veto: /編碼|初始化|rangeTabLPS|DecodeDecision/i },
-            { key: 'h264-cabac-init', re: ALL('CABAC', '(?:初始化|preCtxState|上下文初始)'), veto: /編碼|旁路|bypass|rangeTabLPS|解碼一個/i },
+            { key: 'h264-cabac-bypass', re: ALL('CABAC', '(?:旁路|bypass)'), veto: /編碼|初始化|rangeTabLPS|DecodeDecision|指數哥倫布|EG0/i },
+            { key: 'h264-cabac-init', re: ALL('CABAC', '(?:初始化|preCtxState|上下文初始)'), veto: /編碼|旁路|bypass|rangeTabLPS|解碼一個|ctxIdx/i },
+            { key: 'h264-cabac-ctxinit', re: ALL('CABAC', 'ctxIdx', 'I 條帶'), veto: /編碼|旁路|bypass|rangeTabLPS|DecodeDecision|解碼一個/i },
+            { key: 'h264-cabac-ueg0', re: ALL('CABAC', '(?:指數哥倫布|EG0)', '(?:旁路|k\\s*=\\s*0)'), veto: /解碼|DecodeDecision|rangeTabLPS|初始化|ctxIdx/i },
             { key: 'h264-cabac-levels', re: ALL('(?:影像|係數)', '上下文', '(?:熵編碼|算術編碼)'), veto: /DecodeDecision|旁路|初始化|bypass|解碼|CABAC/i },
             { key: 'h264-cabac-encode', re: ALL('CABAC', '(?:編碼|EncodeDecision|算術編碼)'), veto: /解碼|DecodeDecision|旁路|初始化|bypass/i },
         ].map((x) => Object.assign(x, { pri: true }));

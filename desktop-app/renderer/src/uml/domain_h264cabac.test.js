@@ -199,6 +199,33 @@ const ST_LEV = '有損影像係數的多上下文熵編碼：輸入一行 12 個
 const HO_LEV = '影像係數的二值化與算術編碼：一行 12 個整數，各為 0 到 6 的係數絕對值。截斷一元碼：v 個 1 後接一個 0（v 等於 6 時不接 0）。第 i 位二值使用第 i 個上下文，六個上下文各自從狀態 0、最可能值 0 開始，依 rangeTabLPS 更新。以同一個算術編碼器依序編碼，最後收尾。輸出 0 與 1 組成的位元字串。';
 const genLev = (b, { rnd }) => { const xs = []; for (let i = 0; i < 12; i++) xs.push(rnd(0, 6)); return xs.join(' '); };
 
+const REF_CI = `import sys
+v = [int(t) for t in sys.stdin.read().split()]
+ctx, qp = v
+table = {0: (20, -15), 1: (2, 54), 2: (3, 74), 3: (20, -15), 4: (2, 54), 5: (3, 74), 6: (-28, 127), 7: (-23, 104), 8: (-6, 53), 9: (-1, 54), 10: (7, 51), 60: (0, 41), 61: (0, 63), 62: (0, 63), 63: (0, 63), 64: (-9, 83), 65: (4, 86), 66: (0, 97), 67: (-7, 72), 68: (13, 41), 69: (3, 62)}
+m, n = table[ctx]
+qp = min(max(qp, 0), 51)
+pre = min(max(((m * qp) >> 4) + n, 1), 126)
+if pre <= 63:
+    print(63 - pre, 0)
+else:
+    print(pre - 64, 1)
+`;
+const ST_CI = 'CABAC 上下文初始化（I 條帶查表）：輸入一行 2 個整數，依序為 ctxIdx 與 SliceQPY。ctxIdx 只會是 0 至 10 或 60 至 69；由 I 條帶的 m、n 表（標準表 9-12 與表 9-18）查得該 ctxIdx 的 m 與 n。令 qp 為 SliceQPY 夾在 0 至 51 之間的值，preCtxState 為 ((m 乘 qp) 右移 4 位加 n) 夾在 1 至 126 之間的值。若 preCtxState 不大於 63，則 pStateIdx 為 63 減 preCtxState、valMPS 為 0；否則 pStateIdx 為 preCtxState 減 64、valMPS 為 1。輸出兩個整數：pStateIdx、valMPS。';
+const HO_CI = 'CABAC 的 I 條帶上下文查表初始化：一行兩個整數，第一個是 ctxIdx（只會是 0 至 10 或 60 至 69），第二個是 SliceQPY。依 I 條帶的 m、n 表（表 9-12、表 9-18）取得該 ctxIdx 的 m 與 n，把 SliceQPY 夾在 0 到 51 之間後，計算 preCtxState 為 (m 乘 qp 右移 4 位) 加 n，夾在 1 到 126。preCtxState 不大於 63 時輸出 63 減它與 0；否則輸出它減 64 與 1。';
+const genCi = (b, { rnd }) => { const k = rnd(0, 20); const c = k <= 10 ? k : k + 49; return c + ' ' + rnd(0, 51); };
+
+const REF_UG = `import sys
+v = int(sys.stdin.read().split()[0])
+k = (v + 1).bit_length() - 1
+rest = v + 1 - (1 << k)
+suffix = bin(rest)[2:].zfill(k) if k > 0 else ''
+print('1' * k + '0' + suffix)
+`;
+const ST_UG = 'CABAC 旁路的指數哥倫布 k=0 後綴二值化（EG0，H.264 9.3.2.3）：輸入一行 1 個整數 v（0 以上）。令 k 為 0，依下列規則產生位元：當 v 不小於 2 的 k 次方時，送出 1、v 減去 2 的 k 次方、k 加 1；否則送出 0，再以 k 個位元由高位到低位送出 v。全部位元都以旁路方式送出，不使用上下文。輸出由 0 與 1 組成的位元字串。';
+const HO_UG = 'CABAC 的 EG0 旁路碼：一行 1 個整數 v（不小於 0）。把 v 轉成指數哥倫布碼：先從 k 等於 0 開始，只要 v 不小於 2 的 k 次方，就寫 1、把 v 減去 2 的 k 次方、k 加 1；v 不再符合時寫 0，最後把剩下的 v 用 k 個位元由高位寫到低位。輸出位元字串。';
+const genUg = (b, { rnd }) => String(rnd(0, 300));
+
 const SEEDS = [
     { id: 'cab-dec-tr', want: 'h264.cabac.decision', st: ST_DEC, ref: REF_DEC, gen: genDec },
     { id: 'cab-dec-ho', split: 'holdout', st: HO_DEC, ref: REF_DEC, gen: genDec },
@@ -206,6 +233,10 @@ const SEEDS = [
     { id: 'cab-byp-ho', split: 'holdout', st: HO_BYP, ref: REF_BYP, gen: genByp },
     { id: 'cab-init-tr', want: 'h264.cabac.init', st: ST_INIT, ref: REF_INIT, gen: genInit },
     { id: 'cab-init-ho', split: 'holdout', st: HO_INIT, ref: REF_INIT, gen: genInit },
+    { id: 'cab-ci-tr', want: 'h264.cabac.ctxinit', st: ST_CI, ref: REF_CI, gen: genCi },
+    { id: 'cab-ci-ho', split: 'holdout', st: HO_CI, ref: REF_CI, gen: genCi },
+    { id: 'cab-ug-tr', want: 'h264.cabac.ueg0', st: ST_UG, ref: REF_UG, gen: genUg },
+    { id: 'cab-ug-ho', split: 'holdout', st: HO_UG, ref: REF_UG, gen: genUg },
     { id: 'cab-enc-tr', want: 'h264.cabac.encode', st: ST_ENC, ref: REF_ENC, gen: genEnc },
     { id: 'cab-enc-ho', split: 'holdout', st: HO_ENC, ref: REF_ENC, gen: genEnc },
     { id: 'cab-lev-tr', want: 'h264.cabac.levels', st: ST_LEV, ref: REF_LEV, gen: genLev },

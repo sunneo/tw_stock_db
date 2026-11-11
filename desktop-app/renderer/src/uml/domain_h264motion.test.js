@@ -57,6 +57,44 @@ const ST_QD = '四分之一像素的對角位置：輸入一行 4 個整數，�
 const HO_QD = '1/4 像素位置 e、g、p、r 的值：一行 4 個整數，依序是 b、h、m、s 四個半像素樣本。取 b 與 h 的平均（加 1 後右移 1 位）得 e；b 與 m 得 g；h 與 s 得 p；m 與 s 得 r。依序輸出 e、g、p、r 四個整數。';
 const genQd = (b, { rnd }) => [rnd(0, 255), rnd(0, 255), rnd(0, 255), rnd(0, 255)].join(' ');
 
+const REF_ED = `import sys
+v = [int(t) for t in sys.stdin.read().split()]
+G, H, M, b, h = v
+print((H + b + 1) // 2, (G + h + 1) // 2, (M + h + 1) // 2)
+`;
+const ST_ED = '1/4 像素的邊緣位置 c、d、n：輸入一行 5 個整數，依序為整數位置的樣本 G、H、M（都是 0 至 255）與半像素樣本 b、h。c 為 (H 加 b 加 1) 右移 1 位；d 為 (G 加 h 加 1) 右移 1 位；n 為 (M 加 h 加 1) 右移 1 位。輸出三個整數，依序為 c、d、n。';
+const HO_ED = '1/4 像素的 c、d、n 位置：一行 5 個整數，依序為整數樣本 G、H、M，再為半像素樣本 b、h。c 取 H 與 b 的平均（加 1 後右移 1 位）；d 取 G 與 h 的平均；n 取 M 與 h 的平均。依序輸出 c、d、n。';
+const genEd = (b, { rnd }) => [rnd(0, 255), rnd(0, 255), rnd(0, 255), rnd(0, 255), rnd(0, 255)].join(' ');
+
+const REF_TP = `import sys
+v = [int(t) for t in sys.stdin.read().split()]
+taps = [1, -5, 20, 20, -5, 1]
+b1 = sum(t * x for t, x in zip(taps, v))
+print(min(255, max(0, (b1 + 16) // 32)))
+`;
+const ST_TP = '六分接頭半像素樣本 b：輸入一行 6 個整數，依序為同一列的整數位置樣本 E、F、G、H、I、J（都是 0 至 255）。先算 b1 等於 E 減 5F 加 20G 加 20H 減 5I 加 J，再算 b 等於 (b1 加 16) 右移 5 位，並限制在 0 至 255。輸出一個整數 b。';
+const HO_TP = '六分接頭的半像素值 b：一行 6 個整數 E、F、G、H、I、J（0 至 255）。先算 E 減 5 乘 F 加 20 乘 G 加 20 乘 H 減 5 乘 I 加 J，記為 b1；再算 (b1 加 16) 除以 32 取整數部分，並限制在 0 至 255。輸出 b。';
+const genTp = (b, { rnd }) => [0, 1, 2, 3, 4, 5].map(() => rnd(0, 255)).join(' ');
+
+const REF_JC = `import sys
+v = [int(t) for t in sys.stdin.read().split()]
+taps = [1, -5, 20, 20, -5, 1]
+j1 = sum(t * x for t, x in zip(taps, v))
+print(min(255, max(0, (j1 + 512) // 1024)))
+`;
+const ST_JC = '六分接頭中心位置 j：輸入一行 6 個整數，依序為未截斷的中間值 cc、dd、h1、m1、ee、ff（可為負數）。j1 等於 cc 減 5dd 加 20h1 加 20m1 減 5ee 加 ff。j 等於 (j1 加 512) 右移 10 位，並限制在 0 至 255。輸出一個整數 j。';
+const HO_JC = '六分接頭中心位置 j：一行 6 個整數，依序為中間值 cc、dd、h1、m1、ee、ff（未截斷，可為負數）。j1 等於 cc 減 5 乘 dd 加 20 乘 h1 加 20 乘 m1 減 5 乘 ee 加 ff。j 等於 (j1 加 512) 除以 1024 取整數部分，限制在 0 至 255。輸出 j。';
+const genJc = (b, { rnd }) => [0, 1, 2, 3, 4, 5].map(() => rnd(-2550, 10710)).join(' ');
+
+const REF_FK = `import sys
+v = [int(t) for t in sys.stdin.read().split()]
+b, h, j, m, s = v
+print((b + j + 1) // 2, (h + j + 1) // 2, (j + m + 1) // 2, (j + s + 1) // 2)
+`;
+const ST_FK = '1/4 像素的 f、i、k、q 位置：輸入一行 5 個整數，依序為半像素樣本 b、h、j、m、s（都是 0 至 255）。f 為 (b 加 j 加 1) 右移 1 位；i 為 (h 加 j 加 1) 右移 1 位；k 為 (j 加 m 加 1) 右移 1 位；q 為 (j 加 s 加 1) 右移 1 位。輸出四個整數，依序為 f、i、k、q。';
+const HO_FK = '1/4 像素的 f、i、k、q 位置：一行 5 個整數，依序為 b、h、j、m、s（0 至 255）。f 取 b 與 j 的平均（加 1 後右移 1 位）；i 取 h 與 j；k 取 j 與 m；q 取 j 與 s。依序輸出 f、i、k、q。';
+const genFk = (b, { rnd }) => [0, 1, 2, 3, 4].map(() => rnd(0, 255)).join(' ');
+
 const SEEDS = [
     { id: 'mo-sad-tr', want: 'h264.motion.sad', st: ST_SAD, ref: REF_SAD, gen: genSad },
     { id: 'mo-sad-ho', split: 'holdout', st: HO_SAD, ref: REF_SAD, gen: genSad },
@@ -66,6 +104,14 @@ const SEEDS = [
     { id: 'mo-qp-ho', split: 'holdout', st: HO_QP, ref: REF_QP, gen: genQp },
     { id: 'mo-qd-tr', want: 'h264.qpel.diag', st: ST_QD, ref: REF_QD, gen: genQd },
     { id: 'mo-qd-ho', split: 'holdout', st: HO_QD, ref: REF_QD, gen: genQd },
+    { id: 'mo-ed-tr', want: 'h264.qpel.edge', st: ST_ED, ref: REF_ED, gen: genEd },
+    { id: 'mo-ed-ho', split: 'holdout', st: HO_ED, ref: REF_ED, gen: genEd },
+    { id: 'mo-tp-tr', want: 'h264.qpel.tap6', st: ST_TP, ref: REF_TP, gen: genTp },
+    { id: 'mo-tp-ho', split: 'holdout', st: HO_TP, ref: REF_TP, gen: genTp },
+    { id: 'mo-jc-tr', want: 'h264.qpel.j', st: ST_JC, ref: REF_JC, gen: genJc },
+    { id: 'mo-jc-ho', split: 'holdout', st: HO_JC, ref: REF_JC, gen: genJc },
+    { id: 'mo-fk-tr', want: 'h264.qpel.fikq', st: ST_FK, ref: REF_FK, gen: genFk },
+    { id: 'mo-fk-ho', split: 'holdout', st: HO_FK, ref: REF_FK, gen: genFk },
 ];
 
 H.main({ name: '領域包 h264motion', packs: [MO], seeds: SEEDS, minSkeletons: 3, judge: { checker: 'tokens', timeoutMs: 60000 } });

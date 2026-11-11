@@ -28,13 +28,29 @@
             D('h264.qpel.diag', 'h264-qpel-diag', '四分之一像素的對角位置：輸入一行 4 個整數，依序為半像素樣本 b、h、m、s（都是 0 至 255）。e 為 (b 加 h 加 1) 右移 1 位；g 為 (b 加 m 加 1) 右移 1 位；p 為 (h 加 s 加 1) 右移 1 位；r 為 (m 加 s 加 1) 右移 1 位。輸出四個整數，依序為 e、g、p、r。',
                 [], (c, N, I) => code(['v = ' + nums(N, I), 'b = v[0]', 'h = v[1]', 'm = v[2]', 's = v[3]', 'print((b + h + 1) >> 1, (b + m + 1) >> 1, (h + s + 1) >> 1, (m + s + 1) >> 1)']),
                 { shape: numIn, limit: 1, helpers: () => [] }),
+            D('h264.qpel.edge', 'h264-qpel-edge', '1/4 像素的邊緣位置 c、d、n：輸入一行 5 個整數，依序為整數位置的樣本 G、H、M（都是 0 至 255）與半像素樣本 b、h。c 為 (H 加 b 加 1) 右移 1 位；d 為 (G 加 h 加 1) 右移 1 位；n 為 (M 加 h 加 1) 右移 1 位。輸出三個整數，依序為 c、d、n。',
+                [], (c, N, I) => code(['v = ' + nums(N, I), 'G = v[0]', 'H = v[1]', 'M = v[2]', 'b = v[3]', 'h = v[4]', 'print((H + b + 1) >> 1, (G + h + 1) >> 1, (M + h + 1) >> 1)']),
+                { shape: numIn, limit: 1, helpers: () => [] }),
+            D('h264.qpel.tap6', 'h264-qpel-tap6', '六分接頭半像素樣本 b：輸入一行 6 個整數，依序為同一列的整數位置樣本 E、F、G、H、I、J（都是 0 至 255）。先算 b1 等於 E 減 5F 加 20G 加 20H 減 5I 加 J，再算 b 等於 (b1 加 16) 右移 5 位，並限制在 0 至 255。輸出一個整數 b。',
+                [], (c, N, I) => code(['v = ' + nums(N, I), 'b1 = v[0] - 5 * v[1] + 20 * v[2] + 20 * v[3] - 5 * v[4] + v[5]', 'b = min(max((b1 + 16) >> 5, 0), 255)', 'print(b)']),
+                { shape: numIn, limit: 1, helpers: () => [] }),
+            D('h264.qpel.j', 'h264-qpel-j', '六分接頭中心位置 j：輸入一行 6 個整數，依序為未截斷的中間值 cc、dd、h1、m1、ee、ff（可為負數）。j1 等於 cc 減 5dd 加 20h1 加 20m1 減 5ee 加 ff。j 等於 (j1 加 512) 右移 10 位，並限制在 0 至 255。輸出一個整數 j。',
+                [], (c, N, I) => code(['v = ' + nums(N, I), 'j1 = v[0] - 5 * v[1] + 20 * v[2] + 20 * v[3] - 5 * v[4] + v[5]', 'j = min(max((j1 + 512) >> 10, 0), 255)', 'print(j)']),
+                { shape: numIn, limit: 1, helpers: () => [] }),
+            D('h264.qpel.fikq', 'h264-qpel-fikq', '1/4 像素的 f、i、k、q 位置：輸入一行 5 個整數，依序為半像素樣本 b、h、j、m、s（都是 0 至 255）。f 為 (b 加 j 加 1) 右移 1 位；i 為 (h 加 j 加 1) 右移 1 位；k 為 (j 加 m 加 1) 右移 1 位；q 為 (j 加 s 加 1) 右移 1 位。輸出四個整數，依序為 f、i、k、q。',
+                [], (c, N, I) => code(['v = ' + nums(N, I), 'b = v[0]', 'h = v[1]', 'j = v[2]', 'm = v[3]', 's = v[4]', 'print((b + j + 1) >> 1, (h + j + 1) >> 1, (j + m + 1) >> 1, (j + s + 1) >> 1)']),
+                { shape: numIn, limit: 1, helpers: () => [] }),
         ];
-        const ALL = (...parts) => new RegExp('^' + parts.map((x) => String.raw`(?=[\s\S]*` + x + ')').join(''), 'i');
+        const ALL =(...parts) => new RegExp('^' + parts.map((x) => String.raw`(?=[\s\S]*` + x + ')').join(''), 'i');
         const algos = [
             { key: 'h264-motion-sad', re: ALL('(?:運動|motion)', '(?:全搜尋|SAD|絕對差)'), veto: /CAVLC|CABAC|量化|去區塊|幀內|逆變換|正變換/ },
             { key: 'h264-bipred', re: ALL('(?:雙向|B\\s*幀|bi.?pred)', '(?:預設平均|平均|預測樣本)'), veto: /CABAC|CAVLC|量化|去區塊|幀內|全搜尋|SAD/ },
             { key: 'h264-qpel-diag', re: ALL('(?:1\\s*/\\s*4|四分之一)', 'e、g、p、r'), veto: /CABAC|CAVLC|量化|去區塊|幀內|全搜尋|SAD|色度|雙向/ },
-            { key: 'h264-qpel', re: ALL('(?:1\\s*/\\s*4|四分之一|quarter)', '(?:像素|sample|內插)'), veto: /CABAC|CAVLC|量化|去區塊|幀內|全搜尋|SAD|色度|雙向|e、g、p、r/ },
+            { key: 'h264-qpel', re: ALL('(?:1\\s*/\\s*4|四分之一|quarter)', '(?:像素|sample|內插)'), veto: /CABAC|CAVLC|量化|去區塊|幀內|全搜尋|SAD|色度|雙向|e、g、p、r|c、d、n|f、i、k、q|六分接頭/ },
+            { key: 'h264-qpel-edge', re: ALL('c、d、n'), veto: /e、g、p、r|f、i、k、q|六分接頭/ },
+            { key: 'h264-qpel-tap6', re: ALL('六分接頭', 'b1'), veto: /中心位置|f、i、k、q|c、d、n|1\s*\/\s*4|四分之一/ },
+            { key: 'h264-qpel-j', re: ALL('中心位置', 'cc'), veto: /f、i、k、q|c、d、n|e、g、p、r/ },
+            { key: 'h264-qpel-fikq', re: ALL('f、i、k、q'), veto: /c、d、n|e、g、p、r|六分接頭|中心位置/ },
         ].map((x) => Object.assign(x, { pri: true }));
         const paradigms = {}; for (const sk of skeletons) paradigms[sk.algo] = ['codec-motion'];
         return { id: 'h264motion', label: '影音壓縮 3：運動搜尋、B 幀雙向平均、1/4 像素', requires: [], judge: { checker: 'tokens', timeoutMs: 30000 }, algos, paradigms, skeletons };
