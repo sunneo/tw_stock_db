@@ -19,11 +19,18 @@
                 [],
                 (c, N, I) => code(['import math', 'X = ' + (I.inputs[0].k === 'list' ? N.ls[0] : '[int(t) for t in ' + N.s[0] + '.split()]'), 'out = []', 'for n in range(16):', '    s = 0.0', '    for k in range(8):', '        s = s + X[k] * math.cos(math.pi / 8 * (n + 0.5 + 4) * (k + 0.5))', '    w = math.sin(math.pi * (n + 0.5) / 16)', '    out.append(math.floor(w * s * 0.25 + 0.5))', 'print(*out)']),
                 { shape: numIn, limit: 1, helpers: () => [] }),
+            // 端對端重疊相加（TDAC）：輸入一行 16 個整數，前 8 個是前一段的係數、後 8 個是這一段的係數。兩段各自做 IMDCT 並保留小數（窗與縮放 2/N＝0.25），
+            // 前段的後半（第 8 至 15 格）與這段的前半（第 0 至 7 格）相加，最後每格加 0.5 向下取整，輸出 8 個整數。
+            D('aud.olap8', 'aud-olap8', '重疊相加（TDAC）：輸入一行 16 個整數，前 8 個是前一段的 MDCT 係數，後 8 個是這一段的 MDCT 係數。兩段各自做 IMDCT（窗長 16、正弦窗、縮放 2/8，先不取整），前段輸出的後半 8 格與這段輸出的前半 8 格逐格相加，每格加 0.5 後向下取整，輸出 8 個整數',
+                [],
+                (c, N, I) => code(['import math', 'X = ' + (I.inputs[0].k === 'list' ? N.ls[0] : '[int(t) for t in ' + N.s[0] + '.split()]'), 'yA = []', 'yB = []', 'for n in range(16):', '    sa = 0.0', '    sb = 0.0', '    for k in range(8):', '        sa = sa + X[k] * math.cos(math.pi / 8 * (n + 0.5 + 4) * (k + 0.5))', '        sb = sb + X[8 + k] * math.cos(math.pi / 8 * (n + 0.5 + 4) * (k + 0.5))', '    w = math.sin(math.pi * (n + 0.5) / 16)', '    yA.append(w * sa * 0.25)', '    yB.append(w * sb * 0.25)', 'out = []', 'for n in range(8):', '    out.append(math.floor(yA[8 + n] + yB[n] + 0.5))', 'print(*out)']),
+                { shape: numIn, limit: 1, helpers: () => [] }),
         ];
         const ALL = (...parts) => new RegExp('^' + parts.map((x) => String.raw`(?=[\s\S]*` + x + ')').join(''), 'i');
         const algos = [
             { key: 'aud-mdct8q', re: ALL('MDCT|修正離散餘弦', '(?:窗|window|聲音|音訊|取樣)', '(?:量化|取樣)'), veto: /小波|Haar|哈爾|8\s*[x×*乘]\s*8|IMDCT|反變換/i },
-            { key: 'aud-imdct8', re: ALL('IMDCT|反修正離散餘弦|反 ?MDCT', '(?:窗|window|係數|重疊)'), veto: /小波|Haar|哈爾|量化/i },
+            { key: 'aud-imdct8', re: ALL('IMDCT|反修正離散餘弦|反 ?MDCT', '(?:窗|window|係數|重疊)'), veto: /小波|Haar|哈爾|量化|重疊相加|端對端|TDAC/i },
+            { key: 'aud-olap8', re: ALL('IMDCT|反修正離散餘弦|反 ?MDCT', '(?:重疊相加|TDAC|端對端)'), veto: /小波|Haar|哈爾|量化/i },
         ].map((x) => Object.assign(x, { pri: true }));
         const paradigms = {}; for (const sk of skeletons) paradigms[sk.algo] = ['codec-transform'];
         return { id: 'avaudio', label: '影音壓縮 4：有損聲音（MDCT 與量化）', requires: [], judge: { checker: 'tokens', timeoutMs: 30000 }, algos, paradigms, skeletons };
