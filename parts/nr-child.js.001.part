@@ -28,6 +28,12 @@ async function runFake(msg) {
     const f = msg.fake || {};
     const t0 = Date.now();
     if (f.crash) process.exit(7);
+    // 假引擎也走同一條 lora 驗證（讀檔、sha256），讓轉傳鏈能在沒有模型的環境測試；真的 onnxruntime 套用要有模型才能驗
+    let lora = null;
+    if (msg.lora) {
+        try { lora = require('./nr-engine.js').resolveLora(msg.lora, null); }
+        catch (e) { send({ type: 'error', id: msg.id, code: 'load_failed', message: 'LoRA：' + String((e && e.message) || e) }); return; }
+    }
     const reply = String(f.reply != null ? f.reply : 'OK');
     const chars = Array.from(reply);
     const limit = Math.min(chars.length, msg.max_tokens || chars.length);
@@ -57,7 +63,9 @@ async function runFake(msg) {
     }
     const ms = Date.now() - t0;
     if (cancelled.has(msg.id) && !f.ignore_cancel) { send({ type: 'cancelled', id: msg.id }); return; }
-    send({ type: 'done', id: msg.id, ok: true, text, ms, finish_reason: limit < chars.length ? 'length' : 'stop' });
+    const done = { type: 'done', id: msg.id, ok: true, text, ms, finish_reason: limit < chars.length ? 'length' : 'stop' };
+    if (lora) { done.lora_applied = lora.id; done.lora_sha256 = lora.sha256; }
+    send(done);
 }
 
 // 真推論：逐 token 串流（stream 為真時）、每 8 個 token 回報進度、取消後回 cancelled。錯誤碼：載入失敗 load_failed，其餘 internal。
@@ -66,18 +74,26 @@ async function runReal(msg) {
     const engine = require('./nr-engine.js');
     journal({ type: 'progress', id: msg.id, stage: 'start', tokens: 0 });
     const tokenizerPath = msg.tokenizer_path || '';
-    try { await engine.loadModel(msg.model_path, tokenizerPath, 4); }
+    // adapter：有 lora 欄位才讀檔、核對 sha256 與槽版；任何一步失敗都回 load_failed（具體原因），不退回無 adapter 默默生成
+    let lora = null;
+    if (msg.lora) {
+        try { lora = engine.resolveLora(msg.lora, msg.model_path); }
+        catch (e) { send({ type: 'error', id: msg.id, code: 'load_failed', message: 'LoRA：' + String((e && e.message) || e) }); return; }
+    }
+    try { await engine.loadModel(msg.model_path, tokenizerPath, 4, lora); }
     catch (e) { send({ type: 'error', id: msg.id, code: 'load_failed', message: String((e && e.message) || e) }); return; }
     try {
         const r = await engine.generate({
-            modelPath: msg.model_path, tokenizerPath, messages: msg.messages || [], template: msg.template || 'qwen3-chatml',
+            modelPath: msg.model_path, tokenizerPath, messages: msg.messages || [], template: msg.template || 'qwen3-chatml', lora,
             gen: msg.gen, maxTokens: msg.max_tokens, seed: msg.seed, threads: 4,
             isCancelled: () => cancelled.has(msg.id),
             onToken: (t) => { if (msg.stream) send({ type: 'token', id: msg.id, text: t }); },
             onProgress: (n) => { journal({ type: 'progress', id: msg.id, stage: 'generate', tokens: n }); send({ type: 'progress', id: msg.id, stage: 'generate', tokens: n }); },
         });
         if (r.cancelled) { send({ type: 'cancelled', id: msg.id }); return; }
-        send({ type: 'done', id: msg.id, ok: true, text: r.text, ms: Date.now() - t0, finish_reason: r.finish_reason });
+        const done = { type: 'done', id: msg.id, ok: true, text: r.text, ms: Date.now() - t0, finish_reason: r.finish_reason };
+        if (lora) { done.lora_applied = lora.id; done.lora_sha256 = lora.sha256; } // 回報「真的套用了哪個」，主程序據此核對（不信任自己送出的請求）
+        send(done);
     } catch (e) {
         send({ type: 'error', id: msg.id, code: 'internal', message: String((e && e.message) || e) });
     }
@@ -91,7 +107,7 @@ function handle(msg) {
     }
     if (msg.type === 'hello') {
         if (msg.v !== proto.PROTOCOL_VERSION) { send({ type: 'error', id: msg.id, code: 'version_mismatch', message: '主程序協定版本 ' + msg.v + '，子程序 ' + proto.PROTOCOL_VERSION }); return; }
-        send({ type: 'hello_ack', id: msg.id, v: versionOverride != null ? versionOverride : proto.PROTOCOL_VERSION, pid: process.pid });
+        send({ type: 'hello_ack', id: msg.id, v: versionOverride != null ? versionOverride : proto.PROTOCOL_VERSION, pid: process.pid, features: proto.FEATURES });
         return;
     }
     if (msg.type === 'load') {

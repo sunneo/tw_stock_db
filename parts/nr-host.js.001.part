@@ -66,7 +66,7 @@ function createNativeRunnerHost(opts) {
         if (!job) return;
         clearTimeout(job.timeoutTimer); clearTimeout(job.graceTimer);
         pending.delete(m.id);
-        if (m.type === 'done') { consecutiveCrashes = 0; job.resolve({ ok: m.ok, text: m.text, ms: m.ms, finish_reason: m.finish_reason }); touch(); return; }
+        if (m.type === 'done') { consecutiveCrashes = 0; const res = { ok: m.ok, text: m.text, ms: m.ms, finish_reason: m.finish_reason }; if (m.lora_applied) { res.lora_applied = m.lora_applied; res.lora_sha256 = m.lora_sha256 || null; } job.resolve(res); touch(); return; }
         if (m.type === 'cancelled') { job.reject(makeError('cancelled', '已取消')); touch(); return; }
         if (m.type === 'error') {
             if (m.code === 'version_mismatch') { disabledReason = '協定版本不符：' + (m.message || ''); }
@@ -170,6 +170,7 @@ function createNativeRunnerHost(opts) {
                 if (req.seed !== undefined) msg.seed = req.seed; // 取樣用的亂數種子（可重現）
                 if (req.modelPath) msg.model_path = req.modelPath; // 真引擎：模型檔路徑（沒有就用假引擎）
                 if (req.tokenizerPath) msg.tokenizer_path = req.tokenizerPath;
+                if (req.lora) msg.lora = { id: req.lora.id, path: req.lora.path, sha256: req.lora.sha256, size: req.lora.size }; // adapter：只傳路徑與雜湊，子程序自己讀檔核對
                 writeMsg(msg);
             } catch (e) { pending.delete(id); clearTimeout(job.timeoutTimer); reject(e); }
         }));
