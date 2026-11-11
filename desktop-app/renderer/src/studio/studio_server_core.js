@@ -329,7 +329,36 @@
                     log('LoRA 按需載入：' + (r.active.join('、') || '（沒有符合的）') + (applied ? '，已套用' : '，尚未套用到推論'));
                     return ok({ active: r.active, fallback: r.fallback, loaded: r.loaded, unloaded: r.unloaded, skipped: r.skipped, handles: r.handles.map((x) => ({ id: x.id, bytes: x.handle && x.handle.bytes ? x.handle.bytes.length : 0 })), applied, applyNote, applyItems });
                 }
-                if (method === 'POST' && P === '/api/lora/unload') { const reg = await syncRegistry(); const ids = body.id ? [body.id] : await reg.reg.unloadAll(); if (body.id) await reg.reg.unload(body.id); if (h.loraClear) { try { await h.loraClear(); } catch (_) { /* 主程序沒回應不影響卸載 */ } } return ok({ unloaded: ids }); }
+                if (method === 'POST' && P === '/api/lora/unload') {
+                    // 卸載：指定 id 走 manualUnload（釘選與推論中拒絕，回 409）；不指定 id ＝卸載全部，但跳過釘選與推論中的
+                    const reg = await syncRegistry(); const R2 = reg.reg;
+                    if (body.id) {
+                        if (!R2.get(String(body.id))) return bad(404, '沒有這個 adapter');
+                        const u = await R2.manualUnload(String(body.id)); if (!u.ok) return bad(409, u.error, { active: R2.loaded().map((x) => x.id) });
+                    } else {
+                        for (const x of R2.loaded()) { const st = R2.status().slots.find((y) => y.id === x.id); if (st && (st.pinned || st.inUse)) continue; await R2.unload(x.id); }
+                    }
+                    if (h.loraClear) { try { await h.loraClear(); } catch (_) { /* 主程序沒回應不影響卸載 */ } }
+                    return ok({ unloaded: body.id ? [String(body.id)] : [], active: R2.loaded().map((x) => x.id), status: R2.status() });
+                }
+                // 槽位與模型卡狀態（管理畫面）
+                if (method === 'GET' && P === '/api/lora/status') { const reg = await syncRegistry(); return ok(reg.reg.status()); }
+                // 釘選／解除釘選：釘選的 adapter 不被自動淘汰，也不能被手動卸載或替換（除非 force）
+                if (method === 'POST' && (P === '/api/lora/pin' || P === '/api/lora/unpin')) {
+                    const reg = await syncRegistry(); const id = String(body.id || '');
+                    if (!reg.reg.get(id)) return bad(404, '沒有這個 adapter');
+                    const r = reg.reg.pin(id, P === '/api/lora/pin' ? body.on !== false : false);
+                    log((r.pinned ? '釘選' : '解除釘選') + ' LoRA ' + id); return ok(r);
+                }
+                // 替換：換出 out、換入 in（原子，失敗或套用失敗都還原，見 DESIGN.lora-training.md §14.4）
+                if (method === 'POST' && P === '/api/lora/replace') {
+                    const reg = await syncRegistry(); const outId = String(body.out || ''), inId = String(body.in || '');
+                    if (!reg.reg.get(outId) || !reg.reg.get(inId)) return bad(404, '沒有這個 adapter（out 或 in）');
+                    const applyFn = h.loraApply ? async (hs) => { const a = await h.loraApply(hs.map((x) => ({ id: x.id, bytes: x.handle && x.handle.bytes }))); return { ok: !!(a && a.ok), error: a && (a.error || a.note) }; } : null;
+                    const r = await reg.reg.replace(outId, inId, { applyFn, force: body.force === true });
+                    if (!r.ok) return bad(409, r.error, { rolledBack: !!r.rolledBack, state: r.state || null, active: r.active });
+                    log('LoRA 替換：' + outId + ' → ' + inId); return ok({ out: outId, in: inId, active: r.active });
+                }
                 // ---- 資料匯入與清洗（第二輪，接 ingest_core／clean_core）----
                 if (method === 'POST' && P === '/api/ingest/pick') {
                     const src = String(body.source || ''); if (SOURCES.indexOf(src) < 0) return bad(400, '來源必須是 ' + SOURCES.join('／'));
