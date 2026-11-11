@@ -47,6 +47,12 @@ v350 工作室與資產／後端／基準測試／LoRA 登錄／資料匯入；v
 - 「我們的matrix_algorithm, blockly-teach那段還沒全部做完」「中間語言層的部分」「如果要讓offline ai寫code來製作jpeg,pcx,png,gif writer / reader」（→「加進去」）「如果要讓offline ai寫h.264呢, 或用一個題目是利用平行運算能力，找到程式裡面適合平行的演算法，用類似openmp的block schedule跟cyclic schedule來加速影像壓縮、檔案壓縮、撰寫破壞的聲音跟影像壓縮演算法」（→「列為新領域」）「我希望我們增加新領域、加入新的blockly-teach, matrix-algorithm的操作，在離線訓練工作室也要可以達到」
 - 「先幫我把目前現況能commit的commit上去，然後讓我可以交接，我要讓其他session接手」（本次）
 
+### 0.8 接手前先看這裡：主文件與打包
+- **主文件就是這一頁（`desktop-app/docs/HANDOFF.md` 第 0 節）**；其餘 DESIGN 文件是各線的細節，要看時從第 0.3 節表格進去。
+- 另一台不會有本機檔案。打包腳本：`node scripts/handoff-pack.js --out <資料夾>`（建議 `node scripts/qrun.js --timeout 900 -- node <絕對路徑>\scripts\handoff-pack.js --out <資料夾>`）。產生單一 `.tar`：所有分支（含沒推送的提交）的 `repo.bundle`、倉庫外未追蹤的 `wiki/` 與 `.weak-harness/`、`progress.jsonl`、`test-reports/`、`RESTORE.md`（還原步驟、Python 環境重建指令、模型下載來源與大小）、`MANIFEST.json`（sha256，`--verify <解開資料夾>` 核對）。不含金鑰（`builtin-secrets*.json`）、`node_modules`、`dist`、`lora-train/.venv`。模型要帶就加 `--with-models <資料夾>`（Qwen3 約 1.4 GB 與 590 MB，不帶也行，RESTORE.md 有來源）。
+- 沒有「訓練到一半」的東西需要續訓：目前只有煙霧與基準測試，沒有留下檢查點，對方要訓練就從頭開始。所有程式已推到遠端 `desktop-app` 分支，對方也可以直接 `git clone` 該分支（不需要 bundle），bundle 是離線備份。
+- 打包前先確認 `git status` 沒有已追蹤的未提交修改（腳本會警告）。
+
 ### 0.7 踩過的坑
 - 用 `git hash-object -w` 推 GitHub 分支檔案時，CRLF 換行轉換會讓檔案檢查碼不符（nr-engine 分段檔就中過），要加 `--no-filters` 並逐檔核對 md5。
 - qrun 殼層不認正斜線相對路徑，用絕對路徑；`sh scripts/publish.sh` 不能包 qrun。

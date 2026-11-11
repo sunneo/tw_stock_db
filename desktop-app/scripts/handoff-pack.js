@@ -117,9 +117,10 @@ desktop-app/lora-train/.venv/Scripts/python.exe -m pip install torch -r desktop-
   // 6. 打成一個檔
   const tarPath = path.join(outDir, 'fa-handoff-' + stamp + '.tar');
   say('打包成 ' + tarPath + ' …');
-  run('tar', ['-cf', tarPath, '-C', stage, '.']);
+  let fl = []; try { if (/GNU/.test(run('tar', ['--version']))) fl = ['--force-local']; } catch (_) { /* 沒有 tar --version 的版本當成 bsdtar */ }
+  run('tar', fl.concat(['-cf', tarPath, '-C', stage, '.']));
   fs.rmSync(stage, { recursive: true, force: true });
   const sz = fs.statSync(tarPath).size;
   say('完成：' + tarPath + '（' + human(sz) + '，內含 ' + Object.keys(files).length + ' 個檔案）');
-  say('在對方機器：解開（tar -xf）後讀 RESTORE.md。主文件：desktop-app/docs/HANDOFF.md 第 0 節。');
+  say('在對方機器：解開（tar -xf 檔名；GNU tar 路徑含磁碟代號時加 --force-local）後讀 RESTORE.md。主文件：desktop-app/docs/HANDOFF.md 第 0 節。');
 })().catch((e) => { console.error('[handoff] 失敗：' + (e && e.message || e)); process.exit(1); });
