@@ -352,7 +352,7 @@
                 }
                 // 替換：換出 out、換入 in（原子，失敗或套用失敗都還原，見 DESIGN.lora-training.md §14.4）
                 if (method === 'POST' && P === '/api/lora/replace') {
-                    const reg = await syncRegistry(); const outId = String(body.out || ''), inId = String(body.in || '');
+                    const reg = await syncRegistry(); const outId = String(body.outId || body.out || ''), inId = String(body.inId || body.in || '');
                     if (!reg.reg.get(outId) || !reg.reg.get(inId)) return bad(404, '沒有這個 adapter（out 或 in）');
                     const applyFn = h.loraApply ? async (hs) => { const a = await h.loraApply(hs.map((x) => ({ id: x.id, bytes: x.handle && x.handle.bytes }))); return { ok: !!(a && a.ok), error: a && (a.error || a.note) }; } : null;
                     const r = await reg.reg.replace(outId, inId, { applyFn, force: body.force === true });

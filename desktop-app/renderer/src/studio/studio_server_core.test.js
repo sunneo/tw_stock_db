@@ -131,13 +131,14 @@ function mk(desktop, hostOps) {
     check('status：registered 含 model card（版本、描述、相容、釘選）', r.j.registered.some((c) => c.id === 'pa' && c.compat === 'ok' && c.pinned === false && 'version' in c && 'description' in c), r.j.registered[0]);
     r = await t.req('POST', '/api/lora/pin', { id: 'pa' }); check('釘選 pa', r.s === 200 && r.j.pinned === true, r.j);
     r = await t.req('POST', '/api/lora/unload', { id: 'pa' }); check('釘選的手動卸載 409 並說明', r.s === 409 && /釘選/.test(r.j.error), r.j);
-    r = await t.req('POST', '/api/lora/replace', { out: 'pa', in: 'pb' }); check('釘選的替換 409（不強制）', r.s === 409 && /釘選/.test(r.j.error), r.j);
+    r = await t.req('POST', '/api/lora/replace', { outId: 'pa', inId: 'pb' }); check('釘選的替換 409（不強制）', r.s === 409 && /釘選/.test(r.j.error), r.j);
     r = await t.req('POST', '/api/lora/unpin', { id: 'pa' }); check('解除釘選', r.s === 200 && r.j.pinned === false, r.j);
     t.h.loraApply = async () => ({ ok: false, error: '主程序拒絕' });
-    r = await t.req('POST', '/api/lora/replace', { out: 'pa', in: 'pb' }); check('套用失敗：409、rolledBack、舊的（pa）還在', r.s === 409 && r.j.rolledBack === true && r.j.active.join() === 'pa' && /主程序拒絕/.test(r.j.error), r.j);
+    r = await t.req('POST', '/api/lora/replace', { outId: 'pa', inId: 'pb' }); check('套用失敗：409、rolledBack、舊的（pa）還在', r.s === 409 && r.j.rolledBack === true && r.j.active.join() === 'pa' && /主程序拒絕/.test(r.j.error), r.j);
     delete t.h.loraApply;
-    r = await t.req('POST', '/api/lora/replace', { out: 'pa', in: 'pb' }); check('替換成功：pb 上線、pa 下線', r.s === 200 && r.j.active.join() === 'pb', r.j);
-    r = await t.req('POST', '/api/lora/replace', { out: 'nope', in: 'pb' }); check('替換：不存在的 out 回 404', r.s === 404, r.j);
+    r = await t.req('POST', '/api/lora/replace', { outId: 'pa', inId: 'pb' }); check('替換成功：pb 上線、pa 下線', r.s === 200 && r.j.active.join() === 'pb', r.j);
+    r = await t.req('GET', '/api/lora/status'); check('替換結束後 status.replacing 為 null', r.j.replacing === null, r.j.replacing);
+    r = await t.req('POST', '/api/lora/replace', { outId: 'nope', inId: 'pb' }); check('替換：不存在的 outId 回 404', r.s === 404, r.j);
     r = await t.req('POST', '/api/lora/pin', { id: 'nope' }); check('釘選：不存在的 id 回 404', r.s === 404, r.j);
     r = await t.req('POST', '/api/lora/unload', { id: 'pb' }); check('手動卸載：未釘選可卸', r.s === 200 && r.j.status.usedRank === 0, r.j);
     r = await t.req('POST', '/api/lora/unload', { id: 'nope' }); check('手動卸載：不存在的 id 回 404', r.s === 404);

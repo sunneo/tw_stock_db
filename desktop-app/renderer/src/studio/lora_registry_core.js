@@ -262,7 +262,14 @@
          * 原子性（DESIGN §14.4）：①先載入新的，失敗原狀不動；②扣掉舊的後容量不夠，還原舊的、卸新的；
          * ③applyFn（通知推論端套用新組合）失敗：卸新、重新載入舊、再套一次舊組合，回報 rolledBack；④都成功才釋放舊的。
          * 舊的釘選或推論中一律拒絕（force 只能繞過釘選，推論中永遠不行）。 */
+        // 替換進行中的記錄（給畫面：status().replacing；完成或失敗都會清掉）
+        let replacing = null;
         async function replace(outId, inId, o) {
+            replacing = { out: outId, in: inId };
+            try { return await replaceInner(outId, inId, o); }
+            finally { replacing = null; }
+        }
+        async function replaceInner(outId, inId, o) {
             o = o || {};
             const out = entries.get(outId), inn = entries.get(inId);
             if (!out || !inn) return { ok: false, error: '沒有這個 adapter', active: currentHandles().map((x) => x.id) };
@@ -304,7 +311,7 @@
         // 狀態（給 LoRA 管理畫面）：槽位、已載入、最後使用時間、釘選、推論中
         function status() {
             const slots = Array.from(live.keys()).map((id) => { const l = live.get(id), e = entries.get(id) || {}; return { id, name: e.name || id, version: e.version || null, rank: e.rank, size: l.size, loaded: true, pinned: pins.has(id), inUse: inUse.get(id) || 0, lastUsed: l.lastUsed }; }).sort((a, b) => b.lastUsed - a.lastUsed);
-            return { slotCapacity: slotCapacity || null, usedRank: usedRank(), freeRank: slotCapacity ? slotCapacity - usedRank() : null, maxActive, budget, usedBytes: residentSize(), slots, registered: list().map(card) };
+            return { replacing: replacing ? Object.assign({}, replacing) : null, slotCapacity: slotCapacity || null, usedRank: usedRank(),freeRank: slotCapacity ? slotCapacity - usedRank() : null, maxActive, budget, usedBytes: residentSize(), slots, registered: list().map(card) };
         }
 
         // 依需求載入：select ＋ ensure；handles 給呼叫端交給推論（nr-engine 的 opts.lora）

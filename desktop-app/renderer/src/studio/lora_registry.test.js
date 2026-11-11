@@ -216,8 +216,10 @@ let t = 1000; const now = () => ++t;
         { const L = mkL(); const r = R.createRegistry({ env: ENV_SLOT, loader: L, budgetBytes: 500 * MB, maxActive: 2, slotCapacity: 16, now: tn });
           r.register(mk('ra', { rank: 8, domains: ['a'] })); r.register(mk('rb', { rank: 8, domains: ['b'] }));
           await r.request({ domains: ['a'] });
-          const x = await r.replace('ra', 'rb', { applyFn: async (hs) => ({ ok: true, n: hs.length }) });
-          check('替換成功：新的上線、舊的卸掉', x.ok && x.active.join() === 'rb' && L.log.indexOf('unload ra') > L.log.indexOf('load rb'), { x, log: L.log }); }
+          let during = null;
+          const x = await r.replace('ra', 'rb', { applyFn: async (hs) => { during = r.status().replacing; return { ok: true, n: hs.length }; } });
+          check('替換成功：新的上線、舊的卸掉', x.ok && x.active.join() === 'rb' && L.log.indexOf('unload ra') > L.log.indexOf('load rb'), { x, log: L.log });
+          check('替換進行中 status.replacing 為 {out, in}；結束後為 null', !!during && during.out === 'ra' && during.in === 'rb' && r.status().replacing === null, { during, after: r.status().replacing }); }
         // 新的載入失敗：原狀不動
         { const L = mkL('rc'); const r = R.createRegistry({ env: ENV_SLOT, loader: L, budgetBytes: 500 * MB, maxActive: 2, slotCapacity: 16, now: tn });
           r.register(mk('ra2', { rank: 8, domains: ['a'] })); r.register(mk('rc', { rank: 8, domains: ['c'] }));
