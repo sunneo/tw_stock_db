@@ -701,3 +701,41 @@ Backend {
 - 分支 `claude/studio-domain-author-dcb72c`，本次提交：DSL 與示範修正、版面測試更新（見 `git log`）。沒有推送，沒有 publish，沒有動 `lora-train/`。
 - 接續順序：(1) 決定 16.3-1 與 16.3-2；(2) 離線訓練器 GUI 缺口重新盤點並補齊；(3) 在有顯示的環境下做 Electron 視窗驗證（16.2）；(4) 把 `training-studio.js` 預設 Python 改為可設定（16.3-3）。
 - 注意：未追蹤的 `lora-train/` 修改沒有做，管理者的 `~/fa/desktop-app/lora-train/` 不要碰。
+
+## 17. 流程總覽（pipeline view）設計與進度（2026-11-11）
+
+使用者原話：「訓練工作室除了現有的view, 對於訓練各種(colu, matrix, blockly, LoRA, LLM Model) 想要有一個pipeline view」；另：「不只用來產生LoRA，也能基於基礎的那包qwen，經過資料輸入訓練，產生更強的model，可以選gguf, onnx，預設以當下環境(網頁/desktop-app native) 優先」。
+
+### 17.1 階段圖（左到右）
+| 訓練 | 階段 |
+|---|---|
+| colu／matrix／blockly（符號式） | 資料來源／匯入清洗 → 資料產生（驗證）→ 切分訓練與留出 → 訓練（後端固定 cpu-js）→ 評量（基底 vs 微調，退步列出）→ 打包／匯出 → 按需載入（略過：符號式由程式直接使用） |
+| LoRA | 同上，訓練後端 cpu-py／wasm-web（webgpu、directml、vulkan 仍是研究項，不列入）；打包為 lora.bin／fatrain；按需載入＝登錄與套用 |
+| LLM 模型（完整模型） | 同上，訓練（目前只有 LoRA 路線）→ 評量 → 合併（LoRA 併入基底）→ 匯出（ONNX q8 或 GGUF）→ 按需載入（ONNX 執行包） |
+
+### 17.2 狀態推導（只看真實產物與標記，不自己宣稱完成）
+- 每階段的事實由呼叫端從資產庫與磁碟讀出：`products`（有產物才算）、`done`（有 done 標記）、`running`、`failed`（原因）、`skipped`（原因）、`elapsedMs`。
+- 規則（`pipeline_core.stageState`）：failed 優先 → running → skipped → 前一個必要階段未完成則待做 → 有產物且 done → 完成 → 有產物但無 done → **失敗**（產物不完整）→ 其他待做。
+- 按需載入為非必要階段；未實作階段（`implemented:false`）固定為待做並帶阻礙原因，畫面標「尚未實作」。
+- 產物摘要（`summarizeProduct`）：筆數（train＋holdout）、檔案數、manifest 雜湊前 16 碼；沿用 `asset_core` 的 `manifestHash`，不另起狀態儲存。
+
+### 17.3 匯出格式預設（`pickExportFormat(env, caps)`）
+- 網頁與桌面本機都**優先 ONNX q8**；GGUF（q8_0）只在有 llama.cpp 後端（`caps.ggufExport`）時提供，不會在有 ONNX 時改預設。
+- 只有 GGUF 可用時預設改為 GGUF；兩者都沒有時預設為空，並寫出「尚未實作」原因。
+- 格式由 `caps` 注入，不寫死；env 不合法回錯誤。
+
+### 17.4 已實作與驗證（2026-11-11）
+- `renderer/src/studio/pipeline_core.js`（UMD，純函式）與 `pipeline_core.test.js`：31／0。涵蓋五種階段表、狀態推導（完成、失敗、待做、進行中、略過、前一階段未完成、耗時與產物帶出）、LLM 匯出與載入標示未實作、格式預設（網頁與桌面、有無 llama.cpp、只有 GGUF、無工具）。
+- 測試期間修掉的設計缺陷：第一版「完成」判斷先於「前一階段未完成」，後面階段有殘留產物時會被誤判為完成；已改為先判斷前置階段。
+
+### 17.5 未做（缺口與解除條件）
+1. **GUI 沒接上**：`studio-viewer.template.html` 還沒有流程總覽頁，也沒有 `/api/pipeline` 路由。解除：在 `studio_server_core.js` 加路由，從資產庫與磁碟組出 `facts`，再交給 `deriveStageStates`；畫面每節點顯示狀態、產物、耗時，可點進細節與重跑該階段。
+2. **「重跑該階段」**沒有接任何執行器：符號式的 `sym_train_core` 與 LoRA 的訓練入口已存在，但還沒有依階段 id 分派的介面。
+3. **LLM 完整微調**沒有實作；目前 llm 的訓練階段只有 LoRA 路線。
+4. **ONNX／GGUF 匯出工具**這台都沒有（optimum、llama.cpp）。任何下載都要先回報並由使用者同意。在那之前匯出與載入階段維持「尚未實作」。
+5. **asset kind 沒有 llm**：`asset_core.KINDS` 只有 colu、blockly、matrix、uml、trainer、lora。完整模型的產物目前無法用現有資產 kind 表示。解除條件：先決定 llm 產物是 kind 新增，還是沿用 lora＋export 子產物；需要 schema 版本升級，這次沒有改。
+6. **Electron 視窗與 GUI** 這次沒驗（同 §16.2）。
+
+### 17.6 接手
+- 檔案：`renderer/src/studio/pipeline_core.js`、`pipeline_core.test.js`（新增，未與其他檔案混在一起）。
+- 接續順序：(1) 決定 17.5-5 的 llm 產物表示；(2) 在 `studio_server_core.js` 加 `/api/pipeline`；(3) 在檢視器加流程總覽頁；(4) 把 `facts` 與既有資產的 done 標記對上（先確認各訓練寫不寫 done 標記）。
