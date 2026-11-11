@@ -115,7 +115,24 @@ const ST_ZZ = '8×8 Z 字形掃描：輸入一行 64 個整數，依列優先排
 const HO_ZZ = 'JPEG 式之字形掃描：輸入一行 64 個整數（8×8 矩陣依列排列）。從左上角開始，先向右走一格，再斜向左下走完該斜線，接著向下走一格再斜向右上，如此交錯，輸出掃描後的 64 個數（一行，以空格分隔）。';
 const genZZ = (b, { rnd: rr }) => Array.from({ length: 64 }, () => rr(-128, 127)).join(' ');
 
+// 零游程編碼：參考解用「非零位置差」寫（與骨架的逐一計數寫法不同）
+const REF_RLE = `import sys
+v = [int(t) for t in sys.stdin.read().split()]
+nz = [i for i, x in enumerate(v) if x != 0]
+prev = -1
+for i in nz:
+    print(i - prev - 1, v[i])
+    prev = i
+print("EOB")
+`;
+const ST_RLE = '零游程編碼：輸入一行 64 個整數（已依 Z 字形排好的量化係數）。從前往後逐一查看，每遇到一個非零值，輸出一行兩個整數：它前面連續的零的個數，以及該非零值本身；全部看完後輸出一行 EOB。';
+// holdout：另寫措辭（只量測）
+const HO_RLE = 'run-length 編碼（量化後的 64 個係數，已排成一行）：每個非零係數輸出一行「與前一個非零係數之間的零個數、係數值」，最後一行印 EOB。第一個非零係數前的零也要計入。';
+const genRLE = (b, { rnd: rr }) => Array.from({ length: 64 }, () => (rr(0, 9) < 2 ? rr(-9, 9) : 0)).join(' ');
+
 const SEEDS = [
+    { id: 'rle-tr', want: 'img.rle64', st: ST_RLE, ref: REF_RLE, gen: genRLE },
+    { id: 'rle-ho', split: 'holdout', st: HO_RLE, ref: REF_RLE, gen: genRLE },
     { id: 'zz-tr', want: 'img.zigzag8', st: ST_ZZ, ref: REF_ZZ, gen: genZZ },
     { id: 'zz-ho', split: 'holdout', st: HO_ZZ, ref: REF_ZZ, gen: genZZ },
     { id: 'dct-tr', want: 'img.dct8q', st: ST_DCT, ref: REF_DCT, gen: genDCT },

@@ -30,12 +30,18 @@
                 [],
                 (c, N, I) => code(['v = ' + nums(N, I), 'out = []', 'for s in range(15):', '    cells = []', '    for i in range(8):', '        j = s - i', '        if j >= 0 and j < 8:', '            cells.append((i, j))', '    if s % 2 == 0:', '        cells.reverse()', '    for i, j in cells:', '        out.append(v[8 * i + j])', 'print(*out)']),
                 { shape: numIn, limit: 1, helpers: () => [] }),
+            // 零游程編碼（已依 Z 字形排成一行 64 個係數）：每個非零值輸出一行「前面連續零的個數 值」，最後輸出一行 EOB。
+            D('img.rle64', 'img-rle64', '零游程編碼：輸入一行 64 個整數（已依 Z 字形排好的量化係數）。從前往後逐一查看，每遇到一個非零值，輸出一行兩個整數：它前面連續的零的個數，以及該非零值本身；全部掃完後輸出一行 EOB。',
+                [],
+                (c, N, I) => code(['v = ' + nums(N, I), 'run = 0', 'for x in v:', '    if x == 0:', '        run = run + 1', '    else:', '        print(run, x)', '        run = 0', 'print("EOB")']),
+                { shape: numIn, limit: 1, helpers: () => [] }),
         ];
         const ALL = (...parts) => new RegExp('^' + parts.map((x) => String.raw`(?=[\s\S]*` + x + ')').join(''), 'i');
         const algos = [
             { key: 'img-haar1d', re: ALL('(?:Haar|哈爾)', '(?:小波|wavelet)'), veto: /5\s*\/\s*3|LeGall|提升/i },
             { key: 'img-legall53', re: ALL('(?:5\\s*/\\s*3|LeGall|萊加爾)', '(?:小波|提升|lifting|wavelet)'), veto: /Haar|哈爾/i },
             { key: 'img-dct8q', re: ALL('8\\s*[x×*乘]\\s*8', '(?:DCT|離散餘弦)'), veto: /小波|Haar|哈爾|5\s*\/\s*3|掃描/i },
+            { key: 'img-rle64', re: ALL('(?:游程|run-?length|RLE)', '(?:零|zero|係數)'), veto: /小波|Haar|哈爾|DCT|MDCT|CAVLC/i },
             { key: 'img-zigzag8', re: ALL('(?:Z\\s*字形|之字形|zig-?zag)', '(?:8\\s*[x×*乘]\\s*8|掃描|走訪)'), veto: /DCT|小波|Haar|哈爾/i },
         ].map((x) => Object.assign(x, { pri: true }));
         const paradigms = {}; for (const sk of skeletons) paradigms[sk.algo] = ['codec-transform'];
