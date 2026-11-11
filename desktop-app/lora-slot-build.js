@@ -232,8 +232,12 @@ function buildSlotModel(opts) {
             newInits.push(externalTensor(A.name, A.dims, A.offset, A.length), externalTensor(B.name, B.dims, B.offset, B.length));
             if (renamed.has(t.prod)) throw new Error('同一個節點產生兩個目標輸出：' + t.y);
             renamed.set(t.prod, [t.y, t.y + '_base']);
+            // 診斷用（預設關閉，正式轉換不用）：旁支吃「DynamicQuantizeLinear 之後再反量化」的啟動值，模擬網頁版併權重時看到的量化輸入
+            const lin = opts.dqLoraInput ? t.x + '.dqlora.' + tag : t.x;
+            const dqNodes = opts.dqLoraInput ? [makeNode([t.x + '_quantized', t.x + '_scale', t.x + '_zero_point'], [lin], tag + '.dq', 'DequantizeLinear')] : [];
             afterNode.set(t.prod, [
-                makeNode([t.x, A.name], [tag + '.h'], tag + '.mmA', 'MatMul'),
+                ...dqNodes,
+                makeNode([lin, A.name], [tag + '.h'], tag + '.mmA', 'MatMul'),
                 makeNode([tag + '.h', B.name], [tag + '.d'], tag + '.mmB', 'MatMul'),
                 makeNode([t.y + '_base', tag + '.d'], [t.y], tag + '.add', 'Add'),
             ]);
