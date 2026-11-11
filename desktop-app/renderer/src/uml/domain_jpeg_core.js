@@ -272,7 +272,7 @@
         const ALL = (...parts) => new RegExp('^' + parts.map((x) => String.raw`(?=[\s\S]*` + x + ')').join(''), 'i');
         const algos = [
             { key: 'jpeg-decode', re: ALL('JPEG', '(?:解碼|解壓|還原|讀取|解析|讀|解開)'), veto: /寫出|編碼|組出|產生|寫成|壓縮成/ },
-            { key: 'jpeg-encode', re: ALL('JPEG', '(?:編碼|編成|寫出|組出|寫成|壓縮成|產生)'), veto: /解碼|解壓|還原|讀取|解析|解開/ }
+            { key: 'jpeg-encode', re: ALL('JPEG', '(?:編碼|編成|做成|製成|製作|寫出|組出|寫成|壓縮成|產生)'), veto: /解碼|解壓|還原|讀取|解析|解開/ }
         ].map((x) => Object.assign(x, { pri: true }));
         const paradigms = {}; for (const sk of skeletons) paradigms[sk.algo] = ['binary-format'];
         return { id: 'jpeg', label: 'JPEG 讀寫（灰階基線，標準霍夫曼與量化表，整數 DCT）', requires: [], judge: { checker: 'tokens', timeoutMs: 60000 }, algos, paradigms, skeletons };

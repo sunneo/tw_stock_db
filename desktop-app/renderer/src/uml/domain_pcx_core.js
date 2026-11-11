@@ -87,7 +87,7 @@
         const ALL = (...parts) => new RegExp('^' + parts.map((x) => String.raw`(?=[\s\S]*` + x + ')').join(''), 'i');
         const algos = [
             { key: 'pcx-decode', re: ALL('PCX', '(?:解碼|解壓|還原|讀取|解析|讀|解開)'), veto: /寫出|編碼|組出|產生|寫成|壓縮成/ },
-            { key: 'pcx-encode', re: ALL('PCX', '(?:編碼|寫出|組出|寫成|壓縮成|產生)'), veto: /解碼|解壓|還原|讀取|解析|解開/ }
+            { key: 'pcx-encode', re: ALL('PCX', '(?:編碼|編成|做成|製成|製作|寫出|組出|寫成|壓縮成|產生)'), veto: /解碼|解壓|還原|讀取|解析|解開/ }
         ].map((x) => Object.assign(x, { pri: true }));
         const paradigms = {}; for (const sk of skeletons) paradigms[sk.algo] = ['binary-format'];
         return { id: 'pcx', label: 'PCX 讀寫（ZSoft 版本 5，RLE，8 位元調色盤或三平面 RGB）', requires: [], judge: { checker: 'tokens', timeoutMs: 30000 }, algos, paradigms, skeletons };

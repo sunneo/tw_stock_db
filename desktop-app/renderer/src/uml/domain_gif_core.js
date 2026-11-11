@@ -148,8 +148,8 @@
         ];
         const ALL = (...parts) => new RegExp('^' + parts.map((x) => String.raw`(?=[\s\S]*` + x + ')').join(''), 'i');
         const algos = [
-            { key: 'gif-decode', re: ALL('GIF', '(?:解碼|解壓|還原|讀取|解析|讀)'), veto: /寫出|編碼|組出|產生|寫成|壓縮成/ },
-            { key: 'gif-encode', re: ALL('GIF', '(?:編碼|寫出|組出|寫成|壓縮成|產生)'), veto: /解碼|解壓|還原|讀取|解析/ }
+            { key: 'gif-decode', re: ALL('GIF', '(?:解碼|解壓|還原|讀取|解析|讀|解開)'), veto: /寫出|編碼|組出|產生|寫成|壓縮成/ },
+            { key: 'gif-encode', re: ALL('GIF', '(?:編碼|編成|做成|製成|製作|寫出|組出|寫成|壓縮成|產生)'), veto: /解碼|解壓|還原|讀取|解析|解開/ }
         ].map((x) => Object.assign(x, { pri: true }));
         const paradigms = {}; for (const sk of skeletons) paradigms[sk.algo] = ['binary-format'];
         return { id: 'gif', label: 'GIF 讀寫（單張影格，LZW 變長碼，全域／局部調色盤）', requires: [], judge: { checker: 'tokens', timeoutMs: 30000 }, algos, paradigms, skeletons };

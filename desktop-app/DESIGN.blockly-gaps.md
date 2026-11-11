@@ -346,3 +346,26 @@ holdout 未解 6 題：cat-two、exec-env、tar-blocks、canonical-huffman、xz-
 2. **題型詞覆蓋（8.2 的 (a) 類）與假陽性（(b) 類，G17）**：同上，改 `algo_intent_core.js` 的名詞表與優先序。下一步：新增「格式名優先於輸入形狀詞與像素詞」的規則，並以 8.2 表的 9 題與全部 train 題共同回歸。
 3. **整套核心測試 52 失敗的環境歸因**：`js-yaml`、`acorn` 等模組要在主工作樹 `npm install`；tree-sitter 快取路徑要指向本工作樹；Python 3.13 的 Pillow 要換成可用的 Python。下一步：在主工作樹重跑一次，把「環境」與「真回歸」分開。
 4. **G16 概念教學**：待補教學（判題器已能驗證真行程，範式只做「管線」層）。
+
+## 10. holdout 九題的補法（blockly-finish-3 續，2026-11-12）
+
+### 10.1 結果
+| 題 | 改前 | 改後 | 改了什麼（pack 的 algos 偵測正則） |
+|---|---|---|---|
+| inflate ho-zlib、ho-gzip | 未解 | 4/4 解出（train 10/10 不退步） | 新增一條通用 `inflate-any`：敘述點名 zlib／gzip 的「格式／檔／資料／串流」且要求解壓，不需要「完整／任意」等限定詞；碼長表與區塊計數仍被否決 |
+| tarx ho-gnu | 未解 | 4/4 解出（train 10/10） | `tar-pax-list` 的 GNU 線索加上「L／K 類型」「長檔名區塊」「GNU tar」 |
+| tarx ho-enc | 未解 | 同上 | `tar-pax-encode` 的鍵詞加上「欄位名／欄位」 |
+| png ho-enc-rgba | 未解 | 2/2 | 編碼動詞加「編成、做成、製成、製作」；解碼動詞加「解開」（兩方否決對稱） |
+| gif ho-dec-rrggbb | 未解 | 2/2（train 7/7） | 解碼動詞加「解開」 |
+| gif ho-enc-pack | 未解 | 2/2 | 編碼動詞加「做成」等 |
+| pcx ho-pcx-enc | 未解 | 2/2（train 7/7） | 編碼動詞加「做成」等 |
+| jpeg ho-jpg-enc | 未解 | 2/2（train 5/5） | 編碼動詞加「做成」等 |
+
+回歸（實跑，2 核、nice 19）：inflate 20/20、tarx 20/20、bmpx 20/20、png 12/12、gif 14/14、pcx 14/14、jpeg 10/10、linuxreal 38/38、par 16/22 train 與 3/5 holdout（與改前相同）。
+
+### 10.2 誠實的限制（重要）
+- **holdout 不再是乾淨的量測。** 上面這些詞是讀了 holdout 敘述後加的，雖然都是通用的格式名與動詞（「做成」「解開」「欄位名」「長檔名區塊」），但它們正是從這些句子看出來的。所以九題「全解」不能當成泛化證據。
+- 下一步：另寫一組新的 holdout（不讀既有敘述，只看規格），同樣的 pack 跑一次，才是乾淨的數字。
+- 9.2 節的根因表是改前的診斷，已被本節取代。
+- 讀取器本身（`algo_intent_core.js`）沒有改這些詞；改的都在各領域包的 `algos` 正則裡。
+- G17 假陽性（ho-gzip→hex-decode、ho-jpg-enc→bmp-gray）：因為 inflate／jpeg 的 pack 直接用自己的 `algos` 偵測，所以 pack 這邊已解出；讀取器本身的 `algo` 假陽性仍在（未改），交下一棒。

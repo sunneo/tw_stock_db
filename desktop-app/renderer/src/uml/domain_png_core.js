@@ -93,8 +93,8 @@
         ];
         const ALL = (...parts) => new RegExp('^' + parts.map((x) => String.raw`(?=[\s\S]*` + x + ')').join(''), 'i');
         const algos = [
-            { key: 'png-decode', re: ALL('PNG', '(?:解碼|解壓|還原|讀取|解析|讀)'), veto: /寫出|編碼|組出|產生|寫成|壓縮成/ },
-            { key: 'png-encode', re: ALL('PNG', '(?:編碼|寫出|組出|寫成|壓縮成|產生)'), veto: /解碼|解壓|還原|讀取|解析/ }
+            { key: 'png-decode', re: ALL('PNG', '(?:解碼|解壓|還原|讀取|解析|讀|解開)'), veto: /寫出|編碼|組出|產生|寫成|壓縮成/ },
+            { key: 'png-encode', re: ALL('PNG', '(?:編碼|編成|做成|製成|製作|寫出|組出|寫成|壓縮成|產生)'), veto: /解碼|解壓|還原|讀取|解析|解開/ }
         ].map((x) => Object.assign(x, { pri: true }));
         const paradigms = {}; for (const sk of skeletons) paradigms[sk.algo] = ['binary-format'];
         return { id: 'png', label: 'PNG 讀寫（8 位元灰階／RGB／RGBA，過濾 0～4，zlib）', requires: [], judge: { checker: 'tokens', timeoutMs: 30000 }, algos, paradigms, skeletons };
