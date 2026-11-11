@@ -25,12 +25,18 @@
                 [],
                 (c, N, I) => code(['import math', 'v = ' + nums(N, I), 'Q = v[0]', 'out = []', 'for u in range(8):', '    row = []', '    for w in range(8):', '        s = 0.0', '        for x in range(8):', '            for y in range(8):', '                s = s + v[1 + 8 * x + y] * math.cos((2 * x + 1) * u * math.pi / 16) * math.cos((2 * y + 1) * w * math.pi / 16)', '        au = 0.5', '        if u == 0:', '            au = math.sqrt(0.125)', '        aw = 0.5', '        if w == 0:', '            aw = math.sqrt(0.125)', '        row.append(math.floor(au * aw * s / Q + 0.5))', '    print(*row)']),
                 { shape: numIn, limit: 1, helpers: () => [] }),
+            // 8×8 Z 字形掃描（JPEG 之字形）：依反對角線 s＝i＋j 由 0 到 14；s 為偶數時 i 由大到小（左下往右上），奇數時 i 由小到大（右上往左下）。
+            D('img.zigzag8', 'img-zigzag8', '8×8 Z 字形掃描：輸入一行 64 個整數，依列優先排列（第 i 列第 j 行的位置為 8i＋j）。依反對角線 s＝i＋j 由 0 到 14 走訪：s 為偶數時 i 由大到小（左下往右上），s 為奇數時 i 由小到大（右上往左下）。輸出一行 64 個整數（依掃描順序）',
+                [],
+                (c, N, I) => code(['v = ' + nums(N, I), 'out = []', 'for s in range(15):', '    cells = []', '    for i in range(8):', '        j = s - i', '        if j >= 0 and j < 8:', '            cells.append((i, j))', '    if s % 2 == 0:', '        cells.reverse()', '    for i, j in cells:', '        out.append(v[8 * i + j])', 'print(*out)']),
+                { shape: numIn, limit: 1, helpers: () => [] }),
         ];
         const ALL = (...parts) => new RegExp('^' + parts.map((x) => String.raw`(?=[\s\S]*` + x + ')').join(''), 'i');
         const algos = [
             { key: 'img-haar1d', re: ALL('(?:Haar|哈爾)', '(?:小波|wavelet)'), veto: /5\s*\/\s*3|LeGall|提升/i },
             { key: 'img-legall53', re: ALL('(?:5\\s*/\\s*3|LeGall|萊加爾)', '(?:小波|提升|lifting|wavelet)'), veto: /Haar|哈爾/i },
-            { key: 'img-dct8q', re: ALL('8\\s*[x×*乘]\\s*8', '(?:DCT|離散餘弦)'), veto: /小波|Haar|哈爾|5\s*\/\s*3/i },
+            { key: 'img-dct8q', re: ALL('8\\s*[x×*乘]\\s*8', '(?:DCT|離散餘弦)'), veto: /小波|Haar|哈爾|5\s*\/\s*3|掃描/i },
+            { key: 'img-zigzag8', re: ALL('(?:Z\\s*字形|之字形|zig-?zag)', '(?:8\\s*[x×*乘]\\s*8|掃描|走訪)'), veto: /DCT|小波|Haar|哈爾/i },
         ].map((x) => Object.assign(x, { pri: true }));
         const paradigms = {}; for (const sk of skeletons) paradigms[sk.algo] = ['codec-transform'];
         return { id: 'avimage', label: '影音壓縮 5：有損影像（小波）', requires: [], judge: { checker: 'tokens', timeoutMs: 30000 }, algos, paradigms, skeletons };

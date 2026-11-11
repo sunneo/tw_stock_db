@@ -104,7 +104,20 @@ const ST_DCT = '8×8 二維 DCT 與量化：輸入一行 65 個整數，第一�
 const HO_DCT = '以 8×8 離散餘弦變換（DCT-II）加量化：輸入一行 65 個 -128 到 127 的整數，第一個為步長 Q，其後 64 個為區塊像素（列優先）。做正交 DCT-II（常數項用 √(1/8)，其餘係數用 1/2 的縮放），每個係數除以 Q 再加 0.5 取整數部分，輸出 8 行、每行 8 個整數。';
 const genDCT = (b, { rnd: rr }) => [rr(4, 32)].concat(Array.from({ length: 64 }, () => rr(-128, 127))).join(' ');
 
+// 8×8 Z 字形掃描：參考解用排序鍵寫（與骨架的逐斜線 cells 寫法不同）
+const REF_ZZ = `import sys
+v = [int(t) for t in sys.stdin.read().split()]
+cells = sorted([(i, j) for i in range(8) for j in range(8)], key=lambda p: (p[0] + p[1], p[0] if (p[0] + p[1]) % 2 == 1 else -p[0]))
+print(*[v[8 * i + j] for (i, j) in cells])
+`;
+const ST_ZZ = '8×8 Z 字形掃描：輸入一行 64 個整數，依列優先排列（第 i 列第 j 行的位置為 8i＋j）。依反對角線 s＝i＋j 由 0 到 14 走訪：s 為偶數時 i 由大到小（左下往右上），s 為奇數時 i 由小到大（右上往左下）。輸出一行 64 個整數（依掃描順序）。';
+// holdout：另寫措辭，先右再左下的走法寫明（只量測）
+const HO_ZZ = 'JPEG 式之字形掃描：輸入一行 64 個整數（8×8 矩陣依列排列）。從左上角開始，先向右走一格，再斜向左下走完該斜線，接著向下走一格再斜向右上，如此交錯，輸出掃描後的 64 個數（一行，以空格分隔）。';
+const genZZ = (b, { rnd: rr }) => Array.from({ length: 64 }, () => rr(-128, 127)).join(' ');
+
 const SEEDS = [
+    { id: 'zz-tr', want: 'img.zigzag8', st: ST_ZZ, ref: REF_ZZ, gen: genZZ },
+    { id: 'zz-ho', split: 'holdout', st: HO_ZZ, ref: REF_ZZ, gen: genZZ },
     { id: 'dct-tr', want: 'img.dct8q', st: ST_DCT, ref: REF_DCT, gen: genDCT },
     { id: 'dct-ho', split: 'holdout', st: HO_DCT, ref: REF_DCT, gen: genDCT },
     { id: 'haar-tr', want: 'img.haar1d', st: ST_HAAR, ref: REF_HAAR, gen: gen8 },
