@@ -129,6 +129,7 @@ const suites = [
     ['排名模型訓練（邏輯迴歸、類別不平衡、留一組交叉驗證、特徵、模型排名）', 'renderer/src/catalog/rank_train.test.js'],
     ['MCP（設定檔各家寫法、bundle manifest、專案偵測、JSON-RPC 用戶端、stdio／Streamable HTTP／SSE 傳輸、結果格式）', 'renderer/src/mcp/mcp_core.test.js'],
     ['訓練工作室 GUI 補齊：分組評量（退步標紅／門檻／留出）、五種符號式訓練（暫停／繼續／停止）、老師迴圈（程式驗證、留出不可見、上限、試算回滾、確認後才送）', 'renderer/src/studio/sym_studio.test.js'],
+    ['訓練工作室資料匯入輸入欄位（本機路徑、多資料夾、fap 參照、GitHub wiki／raw 網址先確認再連網、釘選；網頁版寫具體原因）', 'renderer/src/studio/source_input.test.js'],
     ['訓練工作室內建資產（唯讀提供者：真實領域包／內建課／矩陣層／UML 表，數字動態取得；清單、詳情、匯出、拒刪）', 'renderer/src/studio/builtin_assets_core.test.js'],
     ['訓練工作室資產（sha256、manifest 建立／驗證／舊版遷移、相容性檢查與 fork、竄改拒絕）', 'renderer/src/studio/asset_core.test.js'],
     ['訓練工作室 .fatrain 容器（zip 讀寫、分片、inspect、確認後匯入、合併／fork／取代、分卷）', 'renderer/src/studio/fatrain_core.test.js'],

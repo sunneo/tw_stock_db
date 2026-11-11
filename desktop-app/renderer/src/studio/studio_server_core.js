@@ -10,6 +10,7 @@
  *   h.workDir()      → 桌面版訓練輸出根目錄（絕對路徑）或 null
  *   h.builtin        FaStudioBuiltin.createProvider(...) 的實例（唯讀內建資產；選填，沒有就只列儲存層）
  *   h.sym            符號式評量與訓練需要的模組與接口（見 sym_suites_core.js 檔頭；選填，沒給就在畫面寫「這個環境沒有接上」）
+ *   h.localReadDir／localStat／localReadFile  桌面版以路徑讀本機（rawfs）；fapList／fapRead  檔案存取資料夾參照；fetchUrl  使用者確認後才連網取文字（皆選填，缺了該類輸入回具體原因）
  *   h.teacherAI      async ({system, prompt, tools, maxRounds}) → {text, calls}  線上 AI 子任務（只有白名單工具）；沒給＝老師迴圈寫明沒有線上 AI
  *   h.now()
  * 回傳 { route(method, url(URL物件), body) → {s, j}, push(obj)（由呼叫端接上）, log[] } */
@@ -24,10 +25,11 @@
     const Ev = (typeof module === 'object' && module.exports) ? require('./eval_core.js') : root.FaStudioEval;
     const Sy = (typeof module === 'object' && module.exports) ? require('./sym_suites_core.js') : root.FaStudioSym;
     const ST = (typeof module === 'object' && module.exports) ? require('./sym_train_core.js') : root.FaStudioSymTrain;
+    const Si = (typeof module === 'object' && module.exports) ? require('./source_input_core.js') : root.FaStudioSourceInput;
     const Te = (typeof module === 'object' && module.exports) ? require('./teacher_core.js') : root.FaStudioTeacher;
-    if (typeof module === 'object' && module.exports) module.exports = factory(A, F, T, Lay, Ing, Cln, Reg, Ev, Sy, ST, Te);
-    else root.FaStudioServer = factory(A, F, T, Lay, Ing, Cln, Reg, Ev, Sy, ST, Te);
-})(typeof self !== 'undefined' ? self : this, function (Asset, Fatrain, Trainer, Layout, Ingest, Clean, LoraReg, EvalCore, Sym, SymTrain, Teacher) {
+    if (typeof module === 'object' && module.exports) module.exports = factory(A, F, T, Lay, Ing, Cln, Reg, Ev, Sy, ST, Te, Si);
+    else root.FaStudioServer = factory(A, F, T, Lay, Ing, Cln, Reg, Ev, Sy, ST, Te, Si);
+})(typeof self !== 'undefined' ? self : this, function (Asset, Fatrain, Trainer, Layout, Ingest, Clean, LoraReg, EvalCore, Sym, SymTrain, Teacher, SourceInput) {
     'use strict';
     const KIND_LABEL = { colu: 'CoLU', blockly: '積木課程', matrix: '矩陣層', uml: 'UML 設計', trainer: '離線訓練器', lora: 'LoRA' };
     const dec = (u) => new TextDecoder('utf-8').decode(u);
@@ -51,7 +53,7 @@
             const I = S.ingest; if (!I) return { has: false };
             const lic = {}; I.chunks.forEach((c) => { lic[c.meta.license] = (lic[c.meta.license] || 0) + 1; });
             const q = { pending: 0, claimed: 0, done: 0 }; I.requests.forEach((r) => { q[r.status] = (q[r.status] || 0) + 1; });
-            return { has: true, source: I.source, stats: I.stats, sizing: I.sizing, licenses: lic, skipped: (I.skipped || []).slice(0, 30), skippedTotal: (I.skipped || []).length, rejectedTotal: I.rejected.length, rejected: I.rejected.slice(0, 30), preview: I.chunks.slice(0, 8).map(chunkBrief), requests: q, samples: I.samples.length, savedAs: I.savedAs || null };
+            return { has: true, inputs: I.inputs || null, source: I.source, stats: I.stats, sizing: I.sizing, licenses: lic, skipped: (I.skipped || []).slice(0, 30), skippedTotal: (I.skipped || []).length, rejectedTotal: I.rejected.length, rejected: I.rejected.slice(0, 30), preview: I.chunks.slice(0, 8).map(chunkBrief), requests: q, samples: I.samples.length, savedAs: I.savedAs || null };
         };
         // 由 kind:'lora' 且帶權重的資產建立登錄項；只含資料的資產（資料匯入的結果）不是 adapter
         async function syncRegistry() {
@@ -299,6 +301,32 @@
                     const rq = Clean.buildSampleRequests(cl.chunks, { now: new Date(now()).toISOString() });
                     S.ingest = { source: src, chunks: cl.chunks, rejected: cl.rejected, stats: cl.stats, skipped, info, requests: rq.requests, samples: [], sizing: cl.sizing, savedAs: null };
                     log('資料匯入 ' + src + '：' + files.length + ' 個檔案 → ' + cl.chunks.length + ' 個語料塊、' + rq.requests.length + ' 張請求單（拒絕 ' + cl.rejected.length + '、略過 ' + skipped.length + '）');
+                    return ok(ingestView());
+                }
+                // ---- 資料匯入的輸入欄位：本機路徑／fap 參照／網址／多個資料夾／釘選（設計 §15.4）----
+                if (method === 'GET' && P === '/api/ingest/pins') return ok({ pins: prefsObj().ingestPins || [], can: { path: !!h.localReadDir, fap: !!h.fapList, url: !!h.fetchUrl } });
+                if (method === 'POST' && P === '/api/ingest/pin') { const r = SourceInput.addPin(prefsObj().ingestPins, body); if (!r.ok) return bad(409, r.error); const np = Object.assign({}, prefsObj()); np.ingestPins = r.pins; h.prefsSet(np); return ok({ pins: r.pins, pin: r.pin }); }
+                if (method === 'POST' && P === '/api/ingest/unpin') { const r = SourceInput.removePin(prefsObj().ingestPins, String(body.id || '')); if (!r.ok) return bad(404, '沒有這個釘選'); const np = Object.assign({}, prefsObj()); np.ingestPins = r.pins; h.prefsSet(np); return ok({ pins: r.pins }); }
+                if (method === 'POST' && P === '/api/ingest/plan') { const inputs = (Array.isArray(body.inputs) ? body.inputs : String(body.lines || '').split(/\r?\n/).map(SourceInput.parseLine)).filter(Boolean); return ok({ inputs, urls: SourceInput.planUrls(inputs) }); }
+                if (method === 'POST' && P === '/api/ingest/from') {
+                    const src = String(body.source || ''); if (SOURCES.indexOf(src) < 0) return bad(400, '來源必須是 ' + SOURCES.join('／'));
+                    const inputs = (Array.isArray(body.inputs) ? body.inputs : String(body.lines || '').split(/\r?\n/).map(SourceInput.parseLine)).filter((x) => x && x.value); if (!inputs.length) return bad(400, '請至少填一個輸入（本機路徑、fap:資料夾、或網址；一行一個）');
+                    const urls = SourceInput.planUrls(inputs);
+                    if (urls.length && !body.confirmedUrls) return bad(400, '要連網取得網址內容，請先確認（使用者主動操作）：' + urls.map((u) => u.url + (u.ok ? ' → ' + u.willFetch.join('、') : '（' + u.error + '）')).join('；'), { needsConfirm: true, urls });
+                    const ex = await SourceInput.expandInputs(inputs, h, body.limits);
+                    const files = ex.files.filter((f) => f.content != null);
+                    if (!files.length) return bad(409, '沒有取得任何可用的文字檔：' + ex.sources.map((s) => s.type + ' ' + s.value + '：' + (s.error || '無檔案')).join('；'), { sources: ex.sources });
+                    let docs = [], skipped = ex.files.filter((f) => f.content == null).map((f) => ({ path: f.path, reason: '二進位／過大／在略過目錄（' + f.size + ' 位元組）' })), info = {};
+                    try {
+                        if (src === 'aidoc') { for (const f of files) { let o; try { o = JSON.parse(f.content); } catch (_) { skipped.push({ path: f.path, reason: '不是 JSON' }); continue; } const r = Ingest.ingest('aidoc', o, {}); docs = docs.concat(r.docs); skipped = skipped.concat(r.skipped || []); info = r.info || info; } }
+                        else if (src === 'book') { const f = files[0]; const r = Ingest.ingest('book', { title: String(body.title || f.path.replace(/\.[^.]+$/, '')), author: body.author || undefined, text: files.map((x) => x.content).join('\n\n') }, {}); docs = r.docs; skipped = skipped.concat(r.skipped || []); info = r.info || {}; }
+                        else { const r = Ingest.ingest(src, files.map((f) => ({ path: f.path, content: f.content })), {}); docs = r.docs; skipped = skipped.concat(r.skipped || []); info = r.info || {}; }
+                    } catch (e) { return bad(409, '匯入來源解析失敗：' + String((e && e.message) || e)); }
+                    const cw = Number(body.contextWindowTokens) > 0 ? Number(body.contextWindowTokens) : 4096;
+                    const cl = Clean.cleanDocs(docs, { contextWindowTokens: cw, now: new Date(now()).toISOString() });
+                    const rq = Clean.buildSampleRequests(cl.chunks, { now: new Date(now()).toISOString() });
+                    S.ingest = { source: src, chunks: cl.chunks, rejected: cl.rejected, stats: cl.stats, skipped, info, requests: rq.requests, samples: [], sizing: cl.sizing, savedAs: null, inputs: ex.sources };
+                    log('資料匯入（輸入欄位）' + src + '：' + inputs.length + ' 個輸入、' + files.length + ' 個檔案、' + ex.totalBytes + ' 位元組 → ' + cl.chunks.length + ' 個語料塊');
                     return ok(ingestView());
                 }
                 if (method === 'GET' && P === '/api/ingest') return ok(ingestView());
