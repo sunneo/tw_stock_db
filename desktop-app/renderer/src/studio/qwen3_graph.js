@@ -30,6 +30,8 @@ function ropeTables(M, T, hd) {
     return { C, S, R };
 }
 
+// 反量化寫成 Cast＋Sub＋Mul：WebGPU 後端的 DequantizeLinear 對 uint8／int8 會算錯（逐算子實測，相對誤差 1e7 倍），而 Cast／Sub／Mul 與 uint8 的 Gather 都正確
+const dq = (g, x, s, z) => g.mul(g.sub(g.cast(x, 'f32'), z), s);
 const D = 1024, H = 16, KV = 8, HD = 128, FF = 3072;
 // 共用常數（rope 表、遮罩、純量）
 function sharedConsts(g, M, T, rank, alpha) {
@@ -43,22 +45,23 @@ function addLayer(g, M, c, layer, x, T, rank, params) {
     const pre = 'model.layers.' + layer + '.', ln = 'l' + layer + '.';
     const lin = (key, fname, din, dout, h) => {
         const ql = qLinear(M, pre + fname + '.MatMul'); if (ql.dims[0] !== din || ql.dims[1] !== dout) throw new Error(fname + ' 形狀不符 ' + ql.dims);
-        const q = g.const(ln + key + '.q', [din, dout], ql.q, 'u8'), sc = g.const(ln + key + '.s', [], Float64Array.of(ql.scale)), zp = g.const(ln + key + '.z', [], Float64Array.of(ql.zp), 'u8');
-        const W = g.dequant(q, sc, zp);
+        const q = g.const(ln + key + '.q', [din, dout], ql.q, 'u8'), sc = g.const(ln + key + '.s', [], Float64Array.of(ql.scale)), zp = g.const(ln + key + '.z', [], Float64Array.of(ql.zp));
+        const W = dq(g, q, sc, zp);
         const A = g.input(ln + key + '.A', [din, rank], 'f32', true), B = g.input(ln + key + '.B', [rank, dout], 'f32', true); params.push(A, B);
         return g.add(g.matmul(h, W), g.mul(c.sS, g.matmul(g.matmul(h, A), B)));
     };
+    const DB = (t) => { if (c.dbgList && layer === 0) c.dbgList.push(g.output(t)); return t; };
     const rope = (h) => g.add(g.mul(h, c.Ct), g.mul(g.matmul(h, c.Rt), c.St));
     const n1 = rmsOf(g, M, c, x, pre + 'input_layernorm.weight', D);
     const q0 = lin('q', 'attn.q_proj', D, H * HD, n1), k0 = lin('k', 'attn.k_proj', D, KV * HD, n1), v0 = lin('v', 'attn.v_proj', D, KV * HD, n1);
     const q = rope(rmsOf(g, M, c, g.reshape(q0, [T, H, HD]), pre + 'attn.q_norm.layernorm.weight', HD)), k = rope(rmsOf(g, M, c, g.reshape(k0, [T, KV, HD]), pre + 'attn.k_norm.layernorm.weight', HD));
-    const v = g.reshape(v0, [T, KV, HD]);
+    const v = g.reshape(v0, [T, KV, HD]); DB(q); DB(v);
     const rep = (t) => g.reshape(g.expand(g.reshape(g.transpose(t, [1, 0, 2]), [KV, 1, T, HD]), [KV, H / KV, T, HD]), [H, T, HD]);
     const sc = g.add(g.mul(g.matmul(g.transpose(q, [1, 0, 2]), g.transpose(rep(k), [0, 2, 1])), c.scale), c.maskT);
-    const ctx = g.reshape(g.transpose(g.matmul(g.softmax(sc, -1), rep(v)), [1, 0, 2]), [T, H * HD]);
-    const h1 = g.add(x, lin('o', 'attn.o_proj', H * HD, D, ctx));
+    const P = DB(g.softmax(DB(sc), -1)); const ctx = DB(g.reshape(g.transpose(g.matmul(P, DB(rep(v))), [1, 0, 2]), [T, H * HD]));
+    const h1 = DB(g.add(x, DB(lin('o', 'attn.o_proj', H * HD, D, ctx))));
     const n2 = rmsOf(g, M, c, h1, pre + 'post_attention_layernorm.weight', D);
-    const gg = lin('gate', 'mlp.gate_proj', D, FF, n2), uu = lin('up', 'mlp.up_proj', D, FF, n2);
+    DB(n2); const gg = DB(lin('gate', 'mlp.gate_proj', D, FF, n2)), uu = DB(lin('up', 'mlp.up_proj', D, FF, n2));
     const out = g.add(h1, lin('down', 'mlp.down_proj', FF, D, g.mul(g.mul(gg, g.sigmoid(gg)), uu)));
     return { out, k, v };
 }
@@ -71,17 +74,27 @@ function buildBlock(M, layer, T, rank, probe, opts) {
 }
 // 全模型：token id → 28 層 → 最終 RMSNorm → 綁定嵌入的輸出頭 → 交叉熵（onehot 的整列為 0 代表該位置不計損失）
 function buildFull(M, T, rank, opts) {
-    opts = opts || {}; const nl = opts.layers || 28; const g = new Gm.G(); const c = sharedConsts(g, M, T, rank, opts.alpha); const params = [];
+    opts = opts || {}; const nl = opts.layers === undefined ? 28 : opts.layers; const g = new Gm.G(); const c = sharedConsts(g, M, T, rank, opts.alpha); const params = [];
+    c.dbgList = opts.debug ? [] : null;
     const et = initOf(M, 'model.embed_tokens.weight_quantized'); const V = et.dims[0];
-    const embQ = g.const('emb.q', [V, D], M.bytes.subarray(et.rawStart, et.rawEnd), 'u8'), embS = g.scalar(scalarOf(M, 'model.embed_tokens.weight_scale')), embZ = g.const('emb.z', [], Float64Array.of(scalarOf(M, 'model.embed_tokens.weight_zero_point')), 'u8');
-    const ids = g.input('ids', [T], 'i64'), onehot = g.input('onehot', [T, V]);
-    let h = g.dequant(g.gather(embQ, ids), embS, embZ); const ks = [];
-    for (let l = 0; l < nl; l++) { const L = addLayer(g, M, c, l, h, T, rank, params); h = L.out; ks.push(L.k, L.v); }
+    const embQ = g.const('emb.q', [V, D], M.bytes.subarray(et.rawStart, et.rawEnd), 'u8'), embS = g.scalar(scalarOf(M, 'model.embed_tokens.weight_scale')), embZ = g.const('emb.z', [], Float64Array.of(scalarOf(M, 'model.embed_tokens.weight_zero_point')));
+    const ids = g.input('ids', [T], 'i64'); const rowmask = g.input('rowmask', [T]);   // rowmask[t] = 該位置權重（1/有效位置數；0＝不計損失）
+    let h = opts.hostEmbed ? g.input('x', [T, D]) : dq(g, g.gather(embQ, ids), embS, embZ);   // hostEmbed：嵌入查表在圖外做（WebGPU 後端的 uint8 Gather 實測會輸出全 0）
+    const dbg = c.dbgList || []; if (opts.debug) dbg.push(g.output(h));
+    for (let l = 0; l < nl; l++) { const L = addLayer(g, M, c, l, h, T, rank, params); h = L.out; if (opts.debug) { dbg.push(g.output(L.k)); dbg.push(g.output(L.out)); } }
     const nf = rmsOf(g, M, c, h, 'model.layers.28.final_norm_layernorm.weight', D);
-    const logits = g.matmul(nf, g.dequant(g.transpose(embQ, [1, 0]), embS, embZ));
-    const sel = g.reduceSum(g.mul(g.softmax(logits, -1), onehot), [1], false);
-    const loss = g.neg(g.reduceMean(g.log(sel), [0], false)); g.output(loss);
-    return { g, loss, params, logits, V };
+    // 輸出頭分塊：詞表切成 C 塊（列連續，零拷貝切片），任何時刻只展開 1/C 的 fp32 權重；
+    // loss_t = log Σ_c Σ_j exp(logit) − logit[target]（不減最大值：綁定嵌入的 logit 實測在數十以內，f32 的 exp 上限約 88；超過會變 inf，由呼叫端的 loss 檢查攔下）
+    const C = opts.headChunks || 8; if (V % C) throw new Error('詞表大小不能被分塊數整除'); const Vc = V / C; let Z = null, TL = null;
+    for (let k = 0; k < C; k++) {
+        const cq = g.const('head.q' + k, [Vc, D], M.bytes.subarray(et.rawStart + k * Vc * D, et.rawStart + (k + 1) * Vc * D), 'u8'); const oh = g.input('onehot' + k, [T, Vc]);
+        const lg = g.matmul(nf, dq(g, g.transpose(cq, [1, 0]), embS, embZ));
+        if (opts.debug && k === 0) { dbg.push(g.output(nf)); dbg.push(g.output(lg)); }
+        const z = g.reduceSum(g.exp(lg), [1], false), tl = g.reduceSum(g.mul(lg, oh), [1], false);
+        Z = Z ? g.add(Z, z) : z; TL = TL ? g.add(TL, tl) : tl;
+    }
+    const loss = g.reduceSum(g.mul(g.sub(g.log(Z), TL), rowmask), [0], false); g.output(loss);
+    return { g, loss, params, V, C, Vc, dbg: dbg.map((t) => t.name) };
 }
 
 // 把 token id 經量化嵌入表取成 float 隱藏狀態 [T,d]

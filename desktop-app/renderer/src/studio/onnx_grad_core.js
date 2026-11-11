@@ -34,7 +34,7 @@
         bin(op, a, b) { return this.node(op, [a, b], bshape(a.shape, b.shape), null, a.dtype); }
         add(a, b) { return this.bin('Add', a, b); } sub(a, b) { return this.bin('Sub', a, b); } mul(a, b) { return this.bin('Mul', a, b); } div(a, b) { return this.bin('Div', a, b); }
         un(op, a) { return this.node(op, [a], a.shape, null, a.dtype); }
-        neg(a) { return this.un('Neg', a); } sqrt(a) { return this.un('Sqrt', a); } recip(a) { return this.un('Reciprocal', a); } log(a) { return this.un('Log', a); } sigmoid(a) { return this.un('Sigmoid', a); }
+        neg(a) { return this.un('Neg', a); } sqrt(a) { return this.un('Sqrt', a); } recip(a) { return this.un('Reciprocal', a); } log(a) { return this.un('Log', a); } exp(a) { return this.un('Exp', a); } sigmoid(a) { return this.un('Sigmoid', a); }
         softmax(a, axis) { return this.node('Softmax', [a], a.shape, { axis: normAxis(axis === undefined ? -1 : axis, a.shape.length) }); }
         matmul(a, b) {
             if (a.shape.length < 2 || b.shape.length < 2) throw new Error('MatMul 只支援 2 維以上');
@@ -51,6 +51,7 @@
             return this.node(op, [a], os, { axes, keepdims: keep ? 1 : 0 });
         }
         reduceSum(a, axes, keep) { return this.reduce('ReduceSum', a, axes, keep); } reduceMean(a, axes, keep) { return this.reduce('ReduceMean', a, axes, keep); }
+        cast(a, dtype) { return this.node('Cast', [a], a.shape, { to: DT[dtype] }, dtype); }
         expand(a, shape) { const s = this.const(this._name('shp'), [shape.length], Float64Array.from(shape), 'i64'); return this.node('Expand', [a, s], bshape(a.shape, shape)); }
         gather(d, idx) { return this.node('Gather', [d, idx], idx.shape.concat(d.shape.slice(1)), { axis: 0 }, d.dtype); }
         dequant(q, scale, zp, axis) { return this.node('DequantizeLinear', zp ? [q, scale, zp] : [q, scale], q.shape, axis === undefined ? {} : { axis }); }
@@ -66,12 +67,12 @@
         return g.reshape(r, shape);
     }
     // 反向要再用到凍結權重的反量化／轉置結果時，重新產生一份（不沿用前向那份），讓前向的大張量能在用完後釋放（28 層的 fp32 權重不必同時存在）
+    const FROZEN_OPS = new Set(['DequantizeLinear', 'Transpose', 'Cast', 'Sub', 'Mul']);
+    function frozen(g, t) { if (t.isConst) return true; const p = g.nodes.find((n) => n.outputs[0] === t.name); return !!p && FROZEN_OPS.has(p.op) && p.inputs.every((x) => frozen(g, g.tensors.get(x))); }
     function fresh(g, t) {
+        if (t.isConst || !frozen(g, t)) return t;
         const p = g.nodes.find((n) => n.outputs[0] === t.name);
-        if (!p || (p.op !== 'DequantizeLinear' && p.op !== 'Transpose')) return t;
-        const ins = p.inputs.map((x) => g.tensors.get(x)); if (!ins.every((x) => x.isConst || g.nodes.some((n) => n.outputs[0] === x.name && (n.op === 'Transpose' || n.op === 'DequantizeLinear')))) return t;
-        const ni = ins.map((x) => (x.isConst ? x : fresh(g, x)));
-        return g.node(p.op, ni, t.shape, Object.assign({}, p.attrs), t.dtype);
+        return g.node(p.op, p.inputs.map((x) => fresh(g, g.tensors.get(x))), t.shape, Object.assign({}, p.attrs), t.dtype);
     }
     const lastTwoPerm = (r) => { const p = [...Array(r).keys()]; p[r - 1] = r - 2; p[r - 2] = r - 1; return p; };
     const RULES = {
@@ -83,6 +84,8 @@
         Sqrt: (g, dy, n, I, O) => [g.div(dy, g.mul(O[0], g.scalar(2)))],
         Reciprocal: (g, dy, n, I, O) => [g.neg(g.mul(dy, g.mul(O[0], O[0])))],
         Log: (g, dy, n, I) => [g.div(dy, I[0])],
+        Exp: (g, dy, n, I, O) => [g.mul(dy, O[0])],
+        Cast: (g, dy, n, I, O) => { if (I[0].dtype !== 'f32') throw new Error('Cast 的輸入不是浮點，不能求梯度（凍結常數不需要）'); return [dy]; },
         Sigmoid: (g, dy, n, I, O) => [g.mul(dy, g.mul(O[0], g.sub(g.scalar(1), O[0])))],
         Softmax: (g, dy, n, I, O) => { const ax = n.attrs.axis; const s = g.reduceSum(g.mul(dy, O[0]), [ax], true); return [g.mul(O[0], g.sub(dy, s))]; },
         MatMul: (g, dy, n, I, O, need) => {
@@ -142,7 +145,7 @@
             for (let d = r - 1; d >= 0; d--) { if (++idx[d] < outShape[d]) break; idx[d] = 0; }
         }
     }
-    const UN = { Neg: (x) => -x, Sqrt: Math.sqrt, Reciprocal: (x) => 1 / x, Log: Math.log, Sigmoid: (x) => 1 / (1 + Math.exp(-x)) };
+    const UN = { Neg: (x) => -x, Sqrt: Math.sqrt, Reciprocal: (x) => 1 / x, Log: Math.log, Exp: Math.exp, Sigmoid: (x) => 1 / (1 + Math.exp(-x)) };
     const BIN = { Add: (a, b) => a + b, Sub: (a, b) => a - b, Mul: (a, b) => a * b, Div: (a, b) => a / b };
     const sc0 = (t) => t.shape.length === 0;
     function execNode(n, vals, g) {
@@ -157,7 +160,7 @@
             const bsz = m * nn; for (let q = 0; q < Math.max(nb, 1); q++) { const ao = (nb ? ia[q] : 0) * m * k, bo = (nb ? ib[q] : 0) * k * nn, co = q * bsz; for (let i = 0; i < m; i++) for (let p = 0; p < k; p++) { const av = a.data[ao + i * k + p]; if (av === 0) continue; for (let j = 0; j < nn; j++) out[co + i * nn + j] += av * b.data[bo + p * nn + j]; } }
         }
         else if (op === 'Transpose') { const p = n.attrs.perm, ish = I[0].shape, ist = strides(ish); const idx = new Array(os.length).fill(0); for (let o = 0; o < out.length; o++) { let off = 0; for (let d = 0; d < os.length; d++) off += idx[d] * ist[p[d]]; out[o] = I[0].data[off]; for (let d = os.length - 1; d >= 0; d--) { if (++idx[d] < os[d]) break; idx[d] = 0; } } }
-        else if (op === 'Reshape') out.set(I[0].data);
+        else if (op === 'Reshape' || op === 'Cast') out.set(I[0].data);
         else if (op === 'Expand') { bIter(I[0].shape, os, (o, off) => { out[o] = I[0].data[off]; }); }
         else if (op === 'Softmax') { const ax = n.attrs.axis, sh = I[0].shape, st = strides(sh), len = sh[ax], tot = out.length; const done = new Uint8Array(tot); for (let s = 0; s < tot; s++) { if (done[s]) continue; const base = s - (Math.floor(s / st[ax]) % len) * st[ax]; let mx = -Infinity; for (let j = 0; j < len; j++) mx = Math.max(mx, I[0].data[base + j * st[ax]]); let sum = 0; for (let j = 0; j < len; j++) { const e = Math.exp(I[0].data[base + j * st[ax]] - mx); out[base + j * st[ax]] = e; sum += e; done[base + j * st[ax]] = 1; } for (let j = 0; j < len; j++) out[base + j * st[ax]] /= sum; } }
         else if (op === 'ReduceSum' || op === 'ReduceMean') {

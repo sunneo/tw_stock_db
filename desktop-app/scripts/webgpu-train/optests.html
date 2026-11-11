@@ -1,0 +1,21 @@
+<!doctype html><meta charset="utf-8"><title>op tests</title>
+<script type="module">
+// 逐算子對照：同一組輸入，WASM（CPU）與 WebGPU 各跑一次，列出最大相對誤差；NaN／無窮／全 0 也會標出。
+const log = (o) => console.log('RESULT ' + JSON.stringify(o));
+try {
+    const ort = await import('/ort/ort.webgpu.min.mjs'); ort.env.wasm.wasmPaths = '/ort/'; ort.env.wasm.numThreads = 1;
+    const tests = await (await fetch('/data/optests.json')).json();
+    let seed = 12345; const rnd = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; }; const randn = () => Math.sqrt(-2 * Math.log(rnd() + 1e-12)) * Math.cos(2 * Math.PI * rnd());
+    for (const t of tests) {
+        try {
+            const bytes = new Uint8Array(await (await fetch('/data/' + t.name + '.onnx')).arrayBuffer());
+            const feeds = {}; for (const inp of t.inputs) { const n = inp.shape.reduce((a, b) => a * b, 1); const a = new Float32Array(n); for (let i = 0; i < n; i++) a[i] = randn() * inp.scale; feeds[inp.name] = new ort.Tensor('float32', a, inp.shape); }
+            const run = async (ep) => { const s = await ort.InferenceSession.create(bytes, { executionProviders: [ep], graphOptimizationLevel: 'disabled' }); const t0 = performance.now(); const o = await s.run(feeds); const ms = performance.now() - t0; return { d: o[t.output].data, ms }; };
+            const w = await run('wasm'), g = await run('webgpu');
+            let maxAbs = 0, maxRef = 0, bad = 0, zeros = 0; for (let i = 0; i < w.d.length; i++) { const a = w.d[i], b = g.d[i]; if (!isFinite(b) && isFinite(a)) { bad++; continue; } maxAbs = Math.max(maxAbs, Math.abs(a - b)); maxRef = Math.max(maxRef, Math.abs(a)); if (b === 0 && a !== 0) zeros++; }
+            const rel = maxAbs / (maxRef || 1); log({ test: t.name, ops: t.nodes, n: w.d.length, rel: +rel.toExponential(2), nonfinite: bad, zerosWhereNot: zeros, ok: rel < 1e-3 && bad === 0, wasmMs: Math.round(w.ms), gpuMs: Math.round(g.ms) });
+        } catch (e) { log({ test: t.name, ops: t.nodes, error: String(e && e.message || e).slice(0, 300) }); }
+    }
+} catch (e) { log({ error: String(e && e.stack || e) }); }
+console.log('PAGE_FINISHED');
+</script>

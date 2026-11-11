@@ -1,0 +1,30 @@
+<!doctype html><meta charset="utf-8"><title>qwen3 train</title>
+<script type="module">
+// 頁面端：用 ORT-web 載入 train.onnx，跑 WebGPU 或 WASM 訓練步；結果以 console.log('RESULT ' + JSON) 輸出（主程序轉到標準輸出）。
+const q = new URLSearchParams(location.search); const ep = q.get('ep') || 'webgpu', steps = +(q.get('steps') || 3), lr = +(q.get('lr') || 0.001), opt = q.get('opt') || 'disabled', trace = q.get('trace') === '1';
+const log = (o) => console.log('RESULT ' + JSON.stringify(o));
+const placements = [];
+if (trace) for (const k of ['log', 'info', 'warn', 'error']) { const f = console[k].bind(console); console[k] = (...a) => { const s = a.join(' '); if (/placement|placed|not supported|fallback|CPUExecutionProvider|assigned|Memcpy/i.test(s)) placements.push(s.slice(0, 300)); f(...a); }; }
+try {
+    const ort = await import('/ort/' + (ep === 'webgpu' ? 'ort.webgpu.min.mjs' : 'ort.min.mjs'));
+    ort.env.wasm.wasmPaths = '/ort/'; ort.env.wasm.numThreads = 1; if (trace) { ort.env.logLevel = 'verbose'; }
+    const meta = await (await fetch('/data/meta.json')).json(); const init = new Float32Array(await (await fetch('/data/init.bin')).arrayBuffer());
+    let t0 = performance.now(); const model = new Uint8Array(await (await fetch('/data/train.onnx')).arrayBuffer()); const tFetch = performance.now() - t0;
+    t0 = performance.now(); const sess = await ort.InferenceSession.create(model, { executionProviders: [ep], graphOptimizationLevel: opt, logSeverityLevel: trace ? 0 : 3 }); const tCreate = performance.now() - t0;
+    const T = meta.T, Vc = meta.Vc; const feeds = { ids: new ort.Tensor('int64', BigInt64Array.from(meta.ids.map(BigInt)), [T]), rowmask: new ort.Tensor('float32', new Float32Array(T).fill(1 / T), [T]) };
+    for (let k = 0; k < meta.chunks; k++) { const oh = new Float32Array(T * Vc); meta.tgt.forEach((id, t) => { if (id >= k * Vc && id < (k + 1) * Vc) oh[t * Vc + id - k * Vc] = 1; }); feeds['onehot' + k] = new ort.Tensor('float32', oh, [T, Vc]); }
+    if (meta.hostEmbed) feeds.x = new ort.Tensor('float32', new Float32Array(await (await fetch('/data/x.bin')).arrayBuffer()), [T, 1024]);
+    let off = 0; for (const p of meta.params) { const n = p.shape.reduce((a, b) => a * b, 1); feeds[p.name] = new ort.Tensor('float32', init.slice(off, off + n), p.shape); feeds[p.name + '.m'] = new ort.Tensor('float32', new Float32Array(n), p.shape); feeds[p.name + '.v'] = new ort.Tensor('float32', new Float32Array(n), p.shape); off += n; }
+    const losses = [], times = [], grads = {};
+    for (let i = 1; i <= steps; i++) {
+        feeds.adam_alpha = new ort.Tensor('float32', Float32Array.of(lr / (1 - Math.pow(0.9, i))), []); feeds.adam_c2 = new ort.Tensor('float32', Float32Array.of(1 / (1 - Math.pow(0.999, i))), []);
+        const t = performance.now(); const out = await sess.run(feeds); const dt = performance.now() - t; times.push(dt); losses.push(out[meta.loss].data[0]);
+        if (i === 1 && meta.dbg) log({ dbg: meta.dbg.map((n) => { const d = out[n].data; let s = 0, nan = 0, mx = 0; for (let j = 0; j < d.length; j++) { if (!isFinite(d[j])) nan++; else { s += d[j] * d[j]; mx = Math.max(mx, Math.abs(d[j])); } } return { n, dims: out[n].dims, norm: +Math.sqrt(s).toFixed(4), nan, max: +mx.toFixed(3), head: Array.from(d.slice(0, 4)).map((v) => +v.toFixed(4)) }; }) });
+        if (i === 1) for (const pg of meta.probeGrads) { const d = out[pg.out].data; let s = 0; for (let j = 0; j < d.length; j++) s += d[j] * d[j]; grads[pg.param] = { norm: Math.sqrt(s), head: Array.from(d.slice(0, 16)) }; }
+        for (const s of meta.state) { feeds[s.param] = out[s.p]; feeds[s.m] = out[s.m2]; feeds[s.v] = out[s.v2]; }
+        log({ step: i, loss: losses[i - 1], ms: Math.round(dt) });
+    }
+    log({ done: true, ep, opt, T, steps, tFetch: Math.round(tFetch), tCreate: Math.round(tCreate), losses, times: times.map(Math.round), grads, placements: placements.slice(0, 60) });
+} catch (e) { log({ error: String(e && e.stack || e), placements: placements.slice(0, 60) }); }
+console.log('PAGE_FINISHED');
+</script>
