@@ -58,6 +58,7 @@ const suites = [
     ['領域包 tarx（tar 進階：PAX 擴充標頭、GNU 長檔名、ustar prefix、PAX 記錄編碼；train 全過、holdout 只量測；需 tree-sitter 快取）', 'renderer/src/uml/domain_tarx.test.js'],
     ['領域包 bmpx（BMP 進階讀取：RLE8／RLE4、16／32 位元色彩遮罩；train 全過、holdout 只量測；需 tree-sitter 快取）', 'renderer/src/uml/domain_bmpx.test.js'],
     ['領域包 png（PNG 讀寫：8 位元灰階／RGB／RGBA，過濾 0～4，zlib；train 全過、holdout 只量測；需 tree-sitter 快取）', 'renderer/src/uml/domain_png.test.js'],
+    ['領域包 gif（GIF 讀寫：單張影格、LZW 變長碼、全域／局部調色盤；Pillow 外部雙向驗證；train 全過、holdout 只量測；需 tree-sitter 快取）', 'renderer/src/uml/domain_gif.test.js'],
     ['區塊的庫存與範本規則（三區、型別、終止條件、模組需求；需 tree-sitter 快取）', 'renderer/src/uml/py_blocks_rules.test.js'],
     ['UML 遞迴切割寫 body（假模型：補全式逐行、縮排結構、退回重寫、區塊版；需 tree-sitter 快取）', 'renderer/src/uml/py_body.test.js'],
     ['AST 建樹：隨機建樹與真 tree-sitter 一致、種子程式重放（需 tree-sitter 快取）', 'renderer/src/ast/ast_replay.test.js'],
