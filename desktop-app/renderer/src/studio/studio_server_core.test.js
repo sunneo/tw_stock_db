@@ -19,12 +19,12 @@ function mk(desktop, hostOps) {
 }
 (async () => {
   const t = mk(true, { studio_probe: () => ({ ok: true, backends: [{ id: 'cpu-py', available: false, reason: '找不到 Python' }] }), studio_select: () => ({ ok: false, chosen: null, reason: '沒有可用的後端' }), studio_train_start: (p) => (p.cfg.trainFile === 'bad' ? { ok: false, error: 'cpu-py 不可用：x' } : { ok: true, jobId: 'train1' }) });
-  let r = await t.req('GET', '/api/info'); check('info', r.j.ok && r.j.desktop && r.j.tabs.length === 8 && r.j.workDir === '/ud/studio', r.j);
+  let r = await t.req('GET', '/api/info'); check('info', r.j.ok && r.j.desktop && r.j.tabs.length === 9 && r.j.workDir === '/ud/studio', r.j);
   check('info 回報 fap 沒授權（資料只在記憶體）', r.j.storage.ok === false && /記憶體/.test(r.j.storage.message), r.j.storage);
   // 版面偏好
   r = await t.req('GET', '/api/prefs'); check('預設版面', r.j.layout.panes.left[0] === 'assets');
   r = await t.req('POST', '/api/prefs', { layout: { panes: { left: ['train'], right: ['assets'] }, split: 0.9 } }); check('偏好存起來並正規化', r.j.layout.split === 0.8 && r.j.layout.panes.left[0] === 'train' && t.prefs().layout.split === 0.8, r.j);
-  r = await t.req('POST', '/api/prefs', { reset: true }); check('還原版面', r.j.layout.split === 0.45 && r.j.layout.panes.left.length === 5);
+  r = await t.req('POST', '/api/prefs', { reset: true }); check('還原版面', r.j.layout.split === 0.45 && r.j.layout.panes.left.length === 6);
   // trainer 往返
   r = await t.req('POST', '/api/trainer/snapshot', { name: 'my-trainer' }); check('快照存成資產', r.j.ok && r.j.name === 'my-trainer', r.j);
   r = await t.req('POST', '/api/trainer/snapshot', { name: 'my-trainer' }); check('同名不覆蓋', r.s === 409);
