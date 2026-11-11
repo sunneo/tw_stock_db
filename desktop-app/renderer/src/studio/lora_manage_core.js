@@ -108,6 +108,12 @@
         });
     }
 
+    // 替換進行中（status.replacing = {out, in}，完成或失敗後為 null）→ 畫面的替換中文字；沒有就回空字串
+    function busyText(status) {
+        const r = status && status.replacing;
+        return r && r.out && r.in ? '替換中：' + r.out + ' → ' + r.in + '（完成前，列表的載入狀態可能暫時不準）' : '';
+    }
+
     // 登錄表的 model card（卡片用）：能力標籤、觸發字、相容性與原因、評量的贏與輸清單
     function cardFromRegistered(r) {
         const row = rowsFromStatus({ registered: [r] })[0];
@@ -158,5 +164,5 @@
         return '<div class="lora-manage"><div class="ttl">LoRA 管理</div>' + bud + busy + table + regCard + card + '</div>';
     }
 
-    return { CARD_FORMAT, CARD_VERSION, METRIC_KEYS, validateModelCard, summarizeCard, budgetOf, rowsFromStatus, cardFromRegistered, renderLoraManageHTML, sizeText, timeText };
+    return { CARD_FORMAT, CARD_VERSION, METRIC_KEYS, validateModelCard, summarizeCard, budgetOf, busyText, rowsFromStatus, cardFromRegistered, renderLoraManageHTML, sizeText, timeText };
 }));

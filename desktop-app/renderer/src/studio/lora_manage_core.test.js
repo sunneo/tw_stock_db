@@ -68,6 +68,7 @@ check('model_card.json 的卡片仍照常顯示（名稱、限制、評量差距
 check('缺資料寫無資料', /無資料（還沒有註冊的 LoRA）/.test(M.renderLoraManageHTML({ rows: [] })));
 check('外部字串跳脫', (() => { const h = M.renderLoraManageHTML({ rows: M.rowsFromStatus({ registered: [reg({ name: '<img src=x>' })] }) }); return h.indexOf('<img') < 0 && h.indexOf('&lt;img') >= 0; })());
 check('註冊時間：登錄表的 added（毫秒）轉成日期；沒有就寫從未使用', M.rowsFromStatus({ registered: [reg({ id: 'lora/t', added: Date.UTC(2026, 10, 10, 8, 5) })] })[0].created === '2026-11-10 08:05' && M.rowsFromStatus({ registered: [reg({ id: 'lora/u' })] })[0].created === '從未使用');
+check('替換中：由登錄表的 replacing {out,in} 產生文字；沒有替換就是空字串', M.busyText({ replacing: { out: 'lora/a', in: 'lora/b' } }).indexOf('替換中：lora/a → lora/b') === 0 && M.busyText({ replacing: null }) === '' && M.busyText({}) === '');
 check('格式函式', M.sizeText(undefined) === '未知' && M.timeText(NaN) === '從未使用');
 
 console.log(ok + ' passed, ' + bad + ' failed');
