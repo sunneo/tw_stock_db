@@ -537,6 +537,13 @@ function embedStudio() {
     let wsrc = 'const holder = {};\n'; for (const n of ['onnx_patch_core', 'lora_merge_core', 'lora_web_core']) wsrc += '(function (module, self) {\n' + rd('renderer/src/studio/' + n + '.js') + '\n}).call(null, undefined, holder);\n';
     wsrc += 'return holder.FaLoraWeb;';
     code += 'const FA_WEBLORA_WORKER_SRC = ' + lit(wsrc) + ';\n';
+    // 網頁版頁內訓練 Worker：逐層引擎＋服務＋檢查點＋交換空間，CommonJS 模組用最小 require 墊片串成一段可在 Worker（Blob）內執行的原始碼（見 webtrain_worker_core.js）
+    const WT_MODS = ['asset_core', 'fatrain_core', 'onnx_patch_core', 'onnx_grad_core', 'qwen3_graph', 'qwen3_layered_engine', 'swap_store', 'checkpoint_core', 'backend_core', 'bench_core', 'backend_wasm_web', 'web_train_core', 'webtrain_worker_core'];
+    let tsrc = 'const MODS = {};\n'; for (const n of WT_MODS) tsrc += 'MODS[' + JSON.stringify(n) + '] = function (module, exports, require) {\n' + rd('renderer/src/studio/' + n + '.js') + '\n};\n';
+    tsrc += "const CACHE = {}; function req(p) { const n = String(p).replace(/^\\.\\//, '').replace(/\\.js$/, ''); if (CACHE[n]) return CACHE[n].exports; if (!MODS[n]) throw new Error('Worker 內沒有模組 ' + p); const m = { exports: {} }; CACHE[n] = m; MODS[n].call(m.exports, m, m.exports, req); return m.exports; }\n";
+    tsrc += "const WH = req('webtrain_worker_core').createWorkerHost({ importModule: (u) => import(u), caches: self.caches, indexedDB: self.indexedDB, fetch: self.fetch.bind(self) });\n";
+    tsrc += "self.onmessage = async (ev) => { const d = ev.data || {}; try { const r = await WH.handle(d.op, d.p); const tr = []; if (r && r.bytes && r.bytes.buffer) tr.push(r.bytes.buffer); self.postMessage({ id: d.id, r }, tr); } catch (e) { self.postMessage({ id: d.id, err: String((e && e.message) || e) }); } };\n";
+    code += 'const FA_WEBTRAIN_WORKER_SRC = ' + lit(tsrc) + ';\n';
     const HOST = ['backend_core', 'bench_core', 'backend_cpu_js', 'backend_cpu_py', 'backend_planned', 'checkpoint_core', 'studio_config_core', 'studio_host'];
     const files = {}; for (const n of HOST) files[n + '.js'] = rd('renderer/src/studio/' + n + '.js');
     for (const n of ['train_lora.py', 'lora_common.py']) files['lora-train/' + n] = rd('lora-train/' + n);

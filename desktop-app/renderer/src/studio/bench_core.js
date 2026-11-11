@@ -1,6 +1,6 @@
 'use strict';
 // 基準測試、一致性檢查、結果快取與自動選擇（DESIGN.TODO.offline-training-studio.md §4.1、§5.8）。純核心、依賴注入（時鐘、儲存、記錄都由呼叫端給）。
-const crypto = require('crypto');
+let crypto = null; try { crypto = require('crypto'); } catch (e) { crypto = null; }   // Worker／瀏覽器沒有 Node crypto 時用純 JS 的 FNV 雜湊（只拿來比對指紋是否改變）
 const B = require('./backend_core.js');
 
 // §5.8 設計初值（階段 2 以真實測量校準後才固定）
@@ -77,7 +77,8 @@ const benchPassed = (r) => !!(r && r.ok && !r.tooSlow && r.numericCheck && r.num
 
 // ---- 快取：以硬體指紋為鍵 ----
 function stableStringify(o) { if (o === null || typeof o !== 'object') return JSON.stringify(o); if (Array.isArray(o)) return '[' + o.map(stableStringify).join(',') + ']'; return '{' + Object.keys(o).sort().map((k) => JSON.stringify(k) + ':' + stableStringify(o[k])).join(',') + '}'; }
-const hashFingerprint = (fp) => crypto.createHash('sha256').update(stableStringify(fp || {})).digest('hex').slice(0, 16);
+const fnvHex = (s) => { let h1 = 0x811c9dc5, h2 = 0x1000193; for (let i = 0; i < s.length; i++) { h1 = Math.imul(h1 ^ s.charCodeAt(i), 0x01000193) >>> 0; h2 = Math.imul(h2 + s.charCodeAt(i), 0x85ebca6b) >>> 0; } return (h1.toString(16).padStart(8, '0') + h2.toString(16).padStart(8, '0')); };
+const hashFingerprint = (fp) => (crypto ? crypto.createHash('sha256').update(stableStringify(fp || {})).digest('hex').slice(0, 16) : fnvHex(stableStringify(fp || {})));
 function diffFingerprint(a, b) { const keys = new Set(Object.keys(a || {}).concat(Object.keys(b || {}))), out = []; keys.forEach((k) => { if (stableStringify((a || {})[k]) !== stableStringify((b || {})[k])) out.push(k); }); return out; }
 // store: { load() -> obj|null, save(obj) }（可非同步）；沒給就用記憶體
 function createBenchCache(store, now) {

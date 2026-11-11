@@ -37,10 +37,10 @@ function createWasmWebBackend(o) {
     },
     async step(h, batch) {
       if (h.disposed) throw new Error('handle 已釋放');
-      const r = await h.eng.step(batch.ids, batch.tgt, batch.lr); h.step++; h.cursor.consumed_tokens += batch.ids.length; h.lossTail.push(r.loss); if (h.lossTail.length > 50) h.lossTail.shift();
+      const r = await h.eng.step(batch.ids, batch.tgt, batch.lr, batch.mask); h.step++; h.cursor.consumed_tokens += batch.ids.length; h.lossTail.push(r.loss); if (h.lossTail.length > 50) h.lossTail.shift();
       return { loss: r.loss, gradNorm: r.gradNorm };
     },
-    async evalLoss(h, batch) { return h.eng.evalLoss(batch.ids, batch.tgt); },
+    async evalLoss(h, batch) { return h.eng.evalLoss(batch.ids, batch.tgt, batch.mask); },
     async saveCheckpoint(h) {
       const st = h.eng.exportState(), sh = h.eng.shapes, cfg = h.cfg;
       const A = eachNamed(st.params, '.A'), Bn = eachNamed(st.params, '.B'), all = A.concat(Bn);

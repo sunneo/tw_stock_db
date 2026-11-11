@@ -239,6 +239,8 @@
                     const kind = Q('kind') || 'lora';
                     if (!h.desktop) { const bl = kind === 'lora' ? await webBackendList(h) : null; const wt = !!(bl && bl.some((b) => b.id === 'wasm-web' && b.available)); return ok({ desktop: false, kind, symbolic: kind !== 'lora', webTrain: wt, backends: kind === 'lora' ? bl : [{ id: 'cpu-js', available: true, reason: '', note: '只需處理器' }], note: kind === 'lora' && wt ? '' : NOT_DESKTOP }); }
                     const r = await callHost('studio_probe', { kind }, 30000); if (r.ok === false) return bad(502, r.error);
+                    // 桌面版也能用頁內 wasm-web：主行程的清單把它列為「由渲染行程執行」的不可用項，這裡用頁內宿主的探測結果取代
+                    if (kind === 'lora' && h.webTrain && Array.isArray(r.backends)) { let p; try { p = await h.webTrain.probe(); } catch (e) { p = { available: false, reason: '探測失敗：' + String((e && e.message) || e) }; } const e = Object.assign({ id: 'wasm-web' }, p); const i = r.backends.findIndex((b) => b.id === 'wasm-web'); if (i >= 0) r.backends[i] = e; else r.backends.push(e); r.webTrain = !!p.available; }
                     const sel = kind === 'lora' ? await callHost('studio_select', { kind }, 30000) : null;
                     return ok(Object.assign({ desktop: true, selection: sel && { chosen: sel.chosen, order: sel.order, needsRebench: sel.needsRebench, reason: sel.reason, source: sel.source } }, r));
                 }
@@ -265,7 +267,7 @@
                     S.lastTrain = r.jobId; S.webJob = r.jobId; S.webName = name; log((body.resume ? '網頁版續訓 ' : '網頁版開始訓練 ') + name + '（' + r.jobId + '，頁內處理器）'); return ok(Object.assign({ web: true }, r));
                 }
                 const isWebJob = (id) => !!h.webTrain && !!(S.webJob) && (!id || id === S.webJob || String(id).indexOf('web') === 0);
-                if (method === 'GET' && P === '/api/train/status' && isWebJob(Q('jobId') || S.lastTrain)) { const r = h.webTrain.status(Q('jobId') || S.webJob); return r.ok === false ? bad(502, r.error) : ok(r); }
+                if (method === 'GET' && P === '/api/train/status' && isWebJob(Q('jobId') || S.lastTrain)) { const r = await h.webTrain.status(Q('jobId') || S.webJob); return r.ok === false ? bad(502, r.error) : ok(r); }
                 if (method === 'POST' && P === '/api/train/pause' && isWebJob(body.jobId || S.lastTrain)) { const r = await h.webTrain.pause(body.jobId || S.webJob); log('網頁版暫停訓練：' + (r.ok ? '已存檢查點 step=' + r.step : r.error)); return r.ok === false ? bad(409, r.error || '暫停失敗', r) : ok(r); }
                 if (method === 'POST' && P === '/api/train/stop' && isWebJob(body.jobId || S.lastTrain)) { const r = await h.webTrain.stop(body.jobId || S.webJob); log('網頁版停止訓練'); return ok(r); }
                 if (method === 'POST' && P === '/api/train/checkpoint/export') {

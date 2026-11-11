@@ -17,7 +17,7 @@ class LayeredEngine {
         this.graphOpt = o.graphOpt || (this.ep === 'webgpu' ? 'basic' : 'disabled');   // WebGPU 後端在最佳化全關時會算錯（逐算子實測），WASM 要關掉常數折疊以免 fp32 權重複本
         this.lr = o.lr === undefined ? 0.001 : o.lr; this.b1 = 0.9; this.b2 = 0.999; this.eps = 1e-8;
         this.keep = o.keepSessions !== false; this.sess = new Map(); this.layerSource = o.layerSource || null; this.stats = { created: 0, runMs: 0, createMs: 0 };
-        this.V = this.M.ix.inits.get('model.embed_tokens.weight_quantized').dims[0]; this.Vc = this.V / this.chunks; this.params = new Map(); this.m = new Map(); this.v = new Map(); this.t = 0; this.shapes = new Map();
+        this.V = this.M.ix.inits.get('model.embed_tokens.weight_quantized').dims[0]; this.Vc = this.V / this.chunks; this.phase = ''; this.params = new Map(); this.m = new Map(); this.v = new Map(); this.t = 0; this.shapes = new Map();
         for (let l = 0; l < this.layers; l++) for (const k of Object.keys(DIMS)) { const [din, dout] = DIMS[k]; this.shapes.set('l' + l + '.' + k + '.A', [din, this.rank]); this.shapes.set('l' + l + '.' + k + '.B', [this.rank, dout]); }
     }
     // 初始化：A 為 N(0,1/din)，B 為 0；也可傳入 Map<name, Float32Array>（續訓／與別的實作對拍）
@@ -46,26 +46,27 @@ class LayeredEngine {
     async _forward(ids) {
         const T = this.T, d = 1024; const x0 = Float32Array.from(Q.embed(this.M, ids)); const acts = [x0];
         for (let l = 0; l < this.layers; l++) {
-            const s = await this._session('F', l); const t0 = Date.now();
+            this.phase = '前向 ' + (l + 1) + '/' + this.layers; const s = await this._session('F', l); const t0 = Date.now();
             const out = await s.run(this._layerFeeds(l, { x: new this.ort.Tensor('float32', acts[l], [T, d]) })); this.stats.runMs += Date.now() - t0;
             acts.push(Float32Array.from(out[s.outputNames[0]].data)); await this._release(s);
         }
         return acts;
     }
-    async _head(h, tgt, withGrad) {
+    async _head(h, tgt, withGrad, mask) {
         const T = this.T; const s = await this._session('H', 0); const loss = s.outputNames[0], dh = s.outputNames[1], chunks = this.chunks, Vc = this.Vc;   // 輸出順序固定：loss、dh
-        const feeds = { h: new this.ort.Tensor('float32', h, [T, 1024]), rowmask: new this.ort.Tensor('float32', new Float32Array(T).fill(1 / T), [T]) };
+        const feeds = { h: new this.ort.Tensor('float32', h, [T, 1024]), rowmask: new this.ort.Tensor('float32', LayeredEngine.rowMask(mask, T), [T]) };
         for (let k = 0; k < chunks; k++) { const oh = new Float32Array(T * Vc); tgt.forEach((id, t) => { if (id >= k * Vc && id < (k + 1) * Vc) oh[t * Vc + id - k * Vc] = 1; }); feeds['onehot' + k] = new this.ort.Tensor('float32', oh, [T, Vc]); }
         const t0 = Date.now(); const out = await s.run(feeds); this.stats.runMs += Date.now() - t0; await this._release(s);
         return { loss: out[loss].data[0], dh: withGrad ? Float32Array.from(out[dh].data) : null };
     }
-    async evalLoss(ids, tgt) { const acts = await this._forward(ids); const r = await this._head(acts[this.layers], tgt, false); return { loss: r.loss }; }
+    static rowMask(mask, T) { const r = new Float32Array(T); if (!mask) return r.fill(1 / T); let n = 0; for (let i = 0; i < T; i++) if (mask[i]) n++; if (!n) throw new Error('這一筆沒有任何要算損失的位置（答案 token 為 0）'); for (let i = 0; i < T; i++) r[i] = mask[i] ? 1 / n : 0; return r; }
+    async evalLoss(ids, tgt, mask) { const acts = await this._forward(ids); const r = await this._head(acts[this.layers], tgt, false, mask); return { loss: r.loss }; }
     // 一個訓練步；回傳 {loss, gradNorm, ms}
-    async step(ids, tgt, lr) {
-        const t0 = Date.now(); const T = this.T, d = 1024; const acts = await this._forward(ids); const hd = await this._head(acts[this.layers], tgt, true);
+    async step(ids, tgt, lr, mask) {
+        const t0 = Date.now(); const T = this.T, d = 1024; const acts = await this._forward(ids); const hd = await this._head(acts[this.layers], tgt, true, mask);
         let dh = hd.dh; this.t++; const lr_ = lr === undefined ? this.lr : lr; const c1 = 1 - Math.pow(this.b1, this.t), c2 = 1 - Math.pow(this.b2, this.t); let gn = 0;
         for (let l = this.layers - 1; l >= 0; l--) {
-            const s = await this._session('B', l); const t1 = Date.now();
+            this.phase = '反向 ' + (this.layers - l) + '/' + this.layers; const s = await this._session('B', l); const t1 = Date.now();
             const out = await s.run(this._layerFeeds(l, { x: new this.ort.Tensor('float32', acts[l], [T, d]), dy: new this.ort.Tensor('float32', dh, [T, d]) })); this.stats.runMs += Date.now() - t1;
             const names = Q.layerParamNames(l), dx = s.outputNames[0];   // 輸出順序固定：dx，然後本層 14 個梯度（q,k,v,o,gate,up,down 各 A、B）
             names.forEach((name, i) => {

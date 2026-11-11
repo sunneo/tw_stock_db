@@ -22,13 +22,13 @@ const rss = () => mb(process.memoryUsage().rss);
         for (let t = 0; t < T; t++) { let mx = -Infinity; for (let j = 0; j < V; j++) mx = Math.max(mx, lg[t * V + j]); let s = 0; for (let j = 0; j < V; j++) s += Math.exp(lg[t * V + j] - mx); ce += -(lg[t * V + tgt[t]] - mx - Math.log(s)); }
         console.log('真模型（原始 q8 圖）同序列交叉熵 = ' + (ce / T).toFixed(5) + '（T=' + T + '）'); process.exit(0);
     }
-    let t0 = Date.now(); const blk = Q.buildFull(M, T, rank, { layers: nl }); const { g } = blk;
+    let t0 = Date.now(); const blk = Q.buildFull(M, T, rank, { layers: nl, headChunks: +(process.env.FA_HEAD_CHUNKS || 8) }); const { g } = blk;
     const gr = Gm.grad(g, blk.loss, blk.params.map((p) => p.name)); const st = Gm.adam(g, blk.params, gr, {});
     const tBuild = Date.now() - t0; t0 = Date.now(); const bytes = Gm.toOnnx(g, { name: 'qwen3_full' }); const tSer = Date.now() - t0;
     console.log('層數 ' + nl + '、T=' + T + '、rank=' + rank + '：節點 ' + g.nodes.length + '、可訓練張量 ' + blk.params.length + '（' + blk.params.reduce((a, p) => a + Gm.prod(p.shape), 0) + ' 個參數）；建圖 ' + tBuild + ' ms、序列化 ' + mb(bytes.length) + '（' + tSer + ' ms）；RSS ' + rss());
     t0 = Date.now(); const sess = await ort.InferenceSession.create(bytes, { executionProviders: ['wasm'], graphOptimizationLevel: process.env.FA_ORT_OPT || 'disabled' }); console.log('ORT-web 建立工作階段 ' + ((Date.now() - t0) / 1000).toFixed(1) + ' 秒；RSS ' + rss());
-    const V = blk.V; const oh = new Float32Array(T * V); tgt.forEach((id, t) => { oh[t * V + id] = 1; });
-    const feeds = { ids: new ort.Tensor('int64', BigInt64Array.from(ids.map(BigInt)), [T]), onehot: new ort.Tensor('float32', oh, [T, V]) };
+    const V = blk.V, Vc = blk.Vc; const feeds = { ids: new ort.Tensor('int64', BigInt64Array.from(ids.map(BigInt)), [T]), rowmask: new ort.Tensor('float32', new Float32Array(T).fill(1 / T), [T]) };
+    for (let k = 0; k < blk.C; k++) { const oh = new Float32Array(T * Vc); tgt.forEach((id, t) => { if (id >= k * Vc && id < (k + 1) * Vc) oh[t * Vc + id - k * Vc] = 1; }); feeds['onehot' + k] = new ort.Tensor('float32', oh, [T, Vc]); }
     for (const p of blk.params) { const n = Gm.prod(p.shape), a = new Float32Array(n); if (/\.A$/.test(p.name)) { for (let i = 0; i < n; i++) a[i] = Math.sqrt(-2 * Math.log(rng() + 1e-12)) * Math.cos(2 * Math.PI * rng()) / Math.sqrt(p.shape[0]); } feeds[p.name] = new ort.Tensor('float32', a, p.shape); feeds[p.name + '.m'] = new ort.Tensor('float32', new Float32Array(n), p.shape); feeds[p.name + '.v'] = new ort.Tensor('float32', new Float32Array(n), p.shape); }
     const lr = +(process.env.FA_LR || 0.005); const losses = [], times = [];
     for (let i = 1; i <= steps; i++) {

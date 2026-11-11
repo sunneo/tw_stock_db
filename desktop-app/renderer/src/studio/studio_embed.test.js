@@ -27,7 +27,7 @@ const cp = { spawnSync: () => ({ error: new Error('ENOENT') }), spawn: () => { t
 const h = mod.createStudioHost({ fs, path, os, cp, hostDir: dir, loraDir: path.join(dir, 'lora-train'), env: {} });
 (async () => {
   const r = await h.handle('studio_probe', { kind: 'lora' });
-  check('嵌入版主行程端可載入並探測', r.ok && r.backends.length === 4, r);
+  check('嵌入版主行程端可載入並探測', r.ok && r.backends.length === 5, r);
   check('lora-train 資料夾以嵌入的訓練腳本為準', r.loraDir === path.join(dir, 'lora-train'), r.loraDir);
   fs.rmSync(dir, { recursive: true, force: true });
   console.log(ok + ' passed, ' + bad.length + ' failed', bad); process.exit(bad.length ? 1 : 0);

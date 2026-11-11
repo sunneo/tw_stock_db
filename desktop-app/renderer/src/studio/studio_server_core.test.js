@@ -160,6 +160,8 @@ function mk(desktop, hostOps) {
   // 桌面版：選 wasm-web 且有宿主時也走頁內；不選則仍走原本的子行程
   const dw = mk(true, { studio_train_start: () => ({ ok: true, jobId: 'job_desktop' }) }); dw.h.webTrain = WT;
   r = await dw.req('POST', '/api/train/start', { name: 'd1', backend: 'wasm-web', cfg: { steps: 5 } }); check('桌面版選 wasm-web 走頁內宿主', r.j.web === true && r.j.jobId === 'web1_x', r.j);
+  const dw3 = mk(true, { studio_probe: () => ({ ok: true, kind: 'lora', backends: [{ id: 'cpu-py', available: true, reason: '' }, { id: 'wasm-web', available: false, reason: '由渲染行程執行' }] }), studio_select: () => ({ ok: true, chosen: 'cpu-py', order: ['cpu-py'] }) }); dw3.h.webTrain = WT;
+  r = await dw3.req('GET', '/api/backends?kind=lora'); check('桌面版清單：wasm-web 用頁內宿主的探測取代，並帶 webTrain 旗標', r.j.desktop === true && r.j.webTrain === true && r.j.backends.find((b) => b.id === 'wasm-web').available === true && r.j.backends.find((b) => b.id === 'cpu-py').available, r.j.backends);
   const dw2 = mk(true, { studio_train_start: () => ({ ok: true, jobId: 'job_desktop' }) }); dw2.h.webTrain = WT;
   r = await dw2.req('POST', '/api/train/start', { name: 'd2', backend: 'cpu-py', cfg: { trainFile: 'x.jsonl', outputDir: '/o' } }); check('桌面版選 cpu-py 仍走子行程', r.j.jobId === 'job_desktop' && !r.j.web, r.j);
   console.log(ok + ' passed, ' + bad.length + ' failed', bad); process.exit(bad.length ? 1 : 0);

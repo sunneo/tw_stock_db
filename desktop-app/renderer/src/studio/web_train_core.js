@@ -68,7 +68,7 @@ function createWebTrainService(o) {
     },
     status(id) {
       const j = jobs.get(id || activeId); if (!j) return { ok: false, error: '沒有這個訓練工作' };
-      return { ok: true, jobId: j.id, name: j.name, state: j.state, step: j.h.step, total: j.total, loss: j.loss, gradNorm: j.gradNorm, lossTail: j.losses.slice(-50), tokPerSec: j.ms > 0 ? j.tokens / (j.ms / 1000) : null, error: j.error || null, errorName: j.errorName || null, lastCkptStep: j.lastCkptStep === undefined ? null : j.lastCkptStep, backend: 'wasm-web' };
+      return { ok: true, jobId: j.id, name: j.name, state: j.state, step: j.h.step, total: j.total, loss: j.loss, gradNorm: j.gradNorm, lossTail: j.losses.slice(-50), tokPerSec: j.ms > 0 ? j.tokens / (j.ms / 1000) : null, error: j.error || null, errorName: j.errorName || null, lastCkptStep: j.lastCkptStep === undefined ? null : j.lastCkptStep, backend: 'wasm-web', engPhase: (j.h.eng && j.h.eng.phase) || '' };
     },
     async _settle(j) { if (!j.idle) await new Promise((r) => { (j.waiters = j.waiters || []).push(r); }); },
     async pause(id) {

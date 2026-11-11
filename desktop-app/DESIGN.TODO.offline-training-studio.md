@@ -336,6 +336,33 @@ Backend {
 
 **仍未做**：(1) 宿主接線（見上，`h.webTrain` 的真實作與嵌入）；(2) 資料管線（分詞器＋提示格式→`{ids,tgt}`、只對答案 token 算損失的遮罩）——參考對拍用的是隨機 token 序列，**沒有用真實訓練資料驗證收斂**；(3) 較新顯示卡（有 `shader-f16`）、T≥256 的速度與記憶體；(4) 瀏覽器內 `.fackpt` 往返實測；(5) 層圖跨工作階段重用（版本鍵）。
 
+**階段 8（2026-11-11）：頁內宿主 `h.webTrain` 接上，真 Electron 從工作室畫面端到端驗證**
+
+**實作**
+- `webtrain_worker_core.js`（Worker 端）：取得基底模型 → 載入 onnxruntime-web 1.22.0（CDN，與 AI 助理同一個）→ 逐層引擎訓練；訓練資料用 transformers.js 3.7.5 的分詞器＋`apply_chat_template(enable_thinking:false)`（與 `lora-train/lora_common.py` 同樣的格式：提示用聊天模板加 prefill，損失只算 `答案＋<|im_end|>`），每筆固定長度 T（預設 64；太長保留尾端、不足補齊且補齊位置不算損失）；檢查點存專屬 IndexedDB（`fa-train-ckpt`，配額 2GB）、層圖交換用 `fa-train-swap`（配額 3GB，預設開啟）；進度（「前向 n/28」「反向 n/28」「下載模型…」）經狀態回報。
+- **基底模型來源（不新增託管）**：瀏覽器快取 `transformers-cache` 裡 AI 助理載入 Qwen3-0.6B 時存的 `https://huggingface.co/onnx-community/Qwen3-0.6B-ONNX/resolve/main/onnx/model_quantized.onnx`；沒有才由使用者的瀏覽器向同一網址下載（約 617MB，並寫回同一個快取）；失敗時畫面寫「找不到可用的 Qwen3-0.6B q8 模型：…請先到 AI 助理載入 Qwen3 0.6B 一次，或檢查網路」。
+- `floating-assistant.js`：`_studioHostApi().webTrain`（getter）＋`_studioWebTrain()`：Blob Worker（`FA_WEBTRAIN_WORKER_SRC`，由 `scripts/embed-code-ui.js` 把 13 個 CommonJS 模組串成最小 require 墊片）、RPC、從資產 `lora/<名稱>` 的 `data/train.jsonl` 取訓練列（預設最多 200 列）、檔案挑選接受 `.fackpt`。
+- 桌面版 `/api/backends`：把主行程列為「由渲染行程執行」的 `wasm-web` 換成頁內宿主的探測結果並帶 `webTrain` 旗標（路由測試 91 項通過）。`bench_core.js`／`checkpoint_core.js` 的 Node `crypto` 改為選用；`LayeredEngine`／`wasm-web` 後端支援「每位置損失遮罩」。
+
+**真 Electron 端到端（`scripts/eval/studio_webtrain.run.js`＋`.eval.js`；獨立 `--user-data-dir`、換埠 18990／18991、停用 live-patch 覆蓋；載入的是工作目錄的 `renderer/floating-assistant.js`；模型與分詞器由 127.0.0.1 本機伺服器餵入，沒有任何下載；ORT 與 transformers.js 兩個函式庫仍從 CDN 載入，那是 App 既有的執行期依賴）**：資產 `lora/e2e-tiny`（6 筆中文問答）；**在工作室「訓練」分頁的真畫面（同源探測框）** 選「網頁處理器（頁內 WebAssembly，慢但正確、可暫停匯出）」，填名稱 `e2e-a`、資料 `lora/e2e-tiny`、步數 4，按「開始訓練」：
+
+| 時間 | 畫面／狀態 | loss |
+|---|---|---|
+| +17 秒 | 執行中，進度「前向 6/28」（模型載入、分詞、層圖建立已完成） | — |
+| +64 秒 | 第 1 步完成 | 11.0317 |
+| +94 秒 | 第 2 步完成 | 2.1506 |
+| 按「暫停（存檔點）」→ +128 秒 | 狀態 `paused`、step=3（暫停時把進行中的第 3 步跑完才存） | 4.7862 |
+| 按「匯出續訓檢查點 .fackpt」 | 觸發下載 `e2e-a.fackpt`，**60,636,714 位元組**，PK 開頭的有效 zip | — |
+| 名稱改 `e2e-b`，按「匯入續訓檢查點…」（模擬另一台機器，經檔案位元組） | 畫面提示「**已匯入：3 步（產生者 wasm-web）。按「續訓」從這裡接著訓練。**」 | — |
+| 按「續訓」（步數 5） | 從 step=3 接續，+185 秒 step=4 | 9.0214 |
+| 停止 | step=5 | 6.8116 |
+
+全程 14 項檢查全過（含「選到網頁處理器後『開始訓練』可按、畫面不再出現『網頁版不能啟動訓練』」）。步間 loss 不同是因為 6 筆資料各步輪流（不同序列），不代表收斂；**這個驗證證明的是流程接通與檢查點往返，不是訓練品質**。第 1 步含層圖與工作階段建立，之後約 15–30 秒／步（T=64、WASM 單執行緒、交換模式）。畫面文字全文（含後端下拉選項、三個灰掉的後端的原因）保存在驗證輸出，下拉選項：「自動（建議） → cpu-py／純處理器（Python，桌面版）／網頁處理器（頁內 WebAssembly，慢但正確、可暫停匯出）／WebGPU（不可用）／DirectML（不可用）／Vulkan（不可用）」。
+
+**發現的既有問題（不在我的檔案範圍，已回報）**：桌面版 `/api/backends` 在這台機器要 **44～53 秒**（主行程探測 Python 套件：`cpu-py` 現在會檢查 torch／transformers／peft，頁內宿主的 `probe` 只要 1 毫秒），超過檢視器網路層的 **20 秒**逾時，畫面會顯示「Failed to fetch（mock伺服器 20 秒沒有回應）」而**整個後端區塊空白**。驗證腳本因此讓畫面第二次起拿到第一次的結果（快取）才能繼續；產品上需要讓主行程探測更快（快取偵測結果、或平行／延後）或放寬該逾時。
+
+**仍未做／限制**：(1) 網頁版（瀏覽器，非 Electron）的實機驗證：頁內宿主與 Worker 在 Electron 渲染行程驗證，純瀏覽器還沒跑（`file://` 頁面的 `caches` 在 Electron 可用，網頁版 https 頁面理論上也可用，未驗證）；(2) 訓練資料目前只讀 `lora/<名稱>/data/train.jsonl` 的 `messages＋completion`（或 `chosen`／`answer`，或已分詞的 `ids／tgt`），資料集的其他來源與 `tools` 欄位的實測沒做；(3) 模型來自瀏覽器快取的情形（AI 助理先載入過）沒有實測，驗證用的是測試掛鉤（`window.__FA_WEBTRAIN_TEST` 指向本機伺服器）；(4) `webgpu` 後端仍灰（頁內宿主只接了 `wasm-web`）；(5) 分詞器的 chat template 與 Python 版逐 token 一致性沒有逐筆比對。
+
 **退路（正式需求）：網頁版小型編譯器，用 WebGPU／WASM 自己做訓練與產圖**
 
 使用者最差狀況的要求：若「反向圖＋一般 onnxruntime-web」卡在算子或效能，就在網頁版自己做編譯器。**現在就把主攻路線做成它的前半段**，避免做兩次：
