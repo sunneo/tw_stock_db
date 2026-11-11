@@ -164,3 +164,14 @@
 |---|---|---|---|
 | 0 設計 | ✔ 本節 | — | — |
 | 1–5 | 進行中 | — | — |
+
+## 6. 平行運算與排程領域（2026-11-11 立項）
+
+使用者原話：「找到程式裡面適合平行的演算法，用類似 openmp 的 block schedule 跟 cyclic schedule 來加速影像壓縮、檔案壓縮、撰寫破壞的聲音跟影像壓縮演算法」，回覆「列為新領域」。詳細數字與缺口見 `DESIGN.parallel-domain.md`。
+
+| 子領域 | 狀態 | 範式／內容 | 提交 |
+|---|---|---|---|
+| 排程原語（static 區塊、cyclic、chunked、dynamic、guided）、負載與 span、推薦排程 | ◐ | `domain_par_core.js`（4 個骨架）、`par_sched_core.js`；程式產生器與 JS 參考逐行相同 646／646；單元測試 4212 項 | 本批 |
+| 真的平行執行：OpenMP 區塊 DCT＋量化（有損影像）、多行程分塊 zlib（無損檔案） | ◐ | `tests/parallel/`；各排程與循序版逐位元相同（8 組） | 本批 |
+| 相依分析（迴圈攜帶相依、歸約、前綴和）、有損聲音的平行、熵編碼兩趟寫法 | ✗ | 見 `DESIGN.parallel-domain.md` §2 | — |
+| 種子題 train／holdout | ✗ | 這台機器沒有 tree-sitter 文法（不准下載），harness 會略過假通過；需在有文法的機器跑 | — |
