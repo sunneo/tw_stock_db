@@ -8,6 +8,7 @@
  *   h.otExport()／h.otImport(bundle, opts)   離線訓練器 bundle（_otBundleExport／_otBundleImport）
  *   h.prefsGet()／h.prefsSet(o)  版面等偏好（主程式 localStorage）
  *   h.workDir()      → 桌面版訓練輸出根目錄（絕對路徑）或 null
+ *   h.builtin        FaStudioBuiltin.createProvider(...) 的實例（唯讀內建資產；選填，沒有就只列儲存層）
  *   h.now()
  * 回傳 { route(method, url(URL物件), body) → {s, j}, push(obj)（由呼叫端接上）, log[] } */
 (function (root, factory) {
@@ -73,13 +74,16 @@
         const markImported = (kind, name) => { const p = Object.assign({}, h.prefsGet ? h.prefsGet() : {}); const a = imported().filter((x) => x !== kind + '/' + name); a.push(kind + '/' + name); p.imported = a.slice(-500); h.prefsSet(p); };
         const fapNote = async () => { const st = await h.storage.fapState(); return st.ok ? { ok: true } : { ok: false, message: st.message, reason: st.reason }; };
         const callHost = async (op, payload, t) => { if (!h.desktop || !h.call) return { ok: false, error: NOT_DESKTOP, notDesktop: true }; const r = await h.call(op, payload || {}, t || 20000); if (r && r.ok === false && !r.error) r.error = r.message || r.code || '主行程沒有回應'; return r; };
-        const readAsset = async (kind, name) => { const r = await h.storage.loadAsset(kind, name); return r; };
+        // 儲存層優先；沒有同名的才看唯讀內建資產（h.builtin，見 builtin_assets_core.js）
+        const readAsset = async (kind, name) => { const r = await h.storage.loadAsset(kind, name); if (r) return r; return h.builtin ? h.builtin.read(kind, name) : null; };
+        const builtinItems = async (stored) => { if (!h.builtin) return []; const have = new Set(stored.map((x) => x.kind + '/' + x.name)); return (await h.builtin.list()).filter((x) => !have.has(x.kind + '/' + x.name)); };
 
         async function listAssets() {
             const items = await h.storage.listAssets(), imp = new Set(imported()), groups = {};
             Asset.KINDS.forEach((k) => { groups[k] = { kind: k, label: KIND_LABEL[k] || k, items: [] }; });
             for (const it of items) { if (!groups[it.kind]) continue; const origin = it.owner === 'builtin' ? 'builtin' : (imp.has(it.kind + '/' + it.name) ? 'imported' : 'mine'); groups[it.kind].items.push(Object.assign({}, it, { origin })); }
-            return Asset.KINDS.map((k) => groups[k]);
+            for (const it of await builtinItems(items)) if (groups[it.kind]) groups[it.kind].items.unshift(it);
+            return Asset.KINDS.map((k) => { const g = groups[k]; g.counts = { builtin: 0, mine: 0, imported: 0 }; g.items.forEach((x) => { g.counts[x.origin] = (g.counts[x.origin] || 0) + 1; }); return g; });
         }
 
         async function route(method, u, body) {
@@ -100,7 +104,7 @@
                 if (method === 'GET' && P === '/api/assets') return ok({ groups: await listAssets(), storage: await fapNote() });
                 if (method === 'GET' && P === '/api/asset') {
                     const r = await readAsset(Q('kind'), Q('name')); if (!r) return bad(404, '沒有這個資產');
-                    return ok({ manifest: r.asset.manifest, verify: { ok: r.verify.ok, message: r.verify.message || '' }, files: Object.keys(r.asset.files).map((p) => ({ path: p, bytes: r.asset.files[p].length })) });
+                    return ok({ readonly: !!r.builtin, manifest: r.asset.manifest, verify: { ok: r.verify.ok, message: r.verify.message || '' }, files: Object.keys(r.asset.files).map((p) => ({ path: p, bytes: r.asset.files[p].length })) });
                 }
                 if (method === 'GET' && P === '/api/asset-file') {
                     const r = await readAsset(Q('kind'), Q('name')); if (!r) return bad(404, '沒有這個資產'); const f = r.asset.files[Q('path')]; if (!f) return bad(404, '資產裡沒有這個檔案');
@@ -109,6 +113,7 @@
                 }
                 if (method === 'POST' && P === '/api/asset/delete') {
                     if (!body.confirmed) return bad(400, '刪除資產要先確認（confirmed:true）', { needsConfirm: true });
+                    if (h.builtin && !(await h.storage.loadManifest(String(body.kind || ''), String(body.name || ''))) && await h.builtin.has(String(body.kind || ''), String(body.name || ''))) return bad(409, '這是內建資產（唯讀，內容來自程式本身），不能刪除');
                     const r = await h.storage.deleteAsset(String(body.kind || ''), String(body.name || '')); log('刪除資產 ' + body.kind + '/' + body.name + '（' + r.removed + ' 個檔案）'); return ok(r);
                 }
                 if (method === 'POST' && P === '/api/export') {
@@ -153,11 +158,11 @@
                 }
                 // ---- 資料集（先唯讀）／評量 ----
                 if (method === 'GET' && P === '/api/datasets') {
-                    const out = []; for (const it of await h.storage.listAssets()) { const r = await readAsset(it.kind, it.name); if (!r) continue; Object.keys(r.asset.files).filter((p) => /^data\//.test(p)).forEach((p) => out.push({ kind: it.kind, name: it.name, path: p, bytes: r.asset.files[p].length })); }
+                    const out = []; const st0 = await h.storage.listAssets(); for (const it of st0.concat(await builtinItems(st0))) { const r = await readAsset(it.kind, it.name); if (!r) continue; Object.keys(r.asset.files).filter((p) => /^data\//.test(p)).forEach((p) => out.push({ kind: it.kind, name: it.name, path: p, bytes: r.asset.files[p].length, readonly: !!r.builtin })); }
                     return ok({ files: out, note: out.length ? '' : '還沒有任何資產帶資料檔（data/）。把離線訓練器存成資產後這裡會出現 solutions／synonyms 等資料。' });
                 }
                 if (method === 'GET' && P === '/api/eval') {
-                    const out = []; for (const it of await h.storage.listAssets()) { const m = await h.storage.loadManifest(it.kind, it.name); if (m && m.eval) out.push({ kind: it.kind, name: it.name, eval: m.eval }); }
+                    const out = []; const st1 = await h.storage.listAssets(); for (const it of st1) { const m = await h.storage.loadManifest(it.kind, it.name); if (m && m.eval) out.push({ kind: it.kind, name: it.name, eval: m.eval }); } for (const it of await builtinItems(st1)) if (it.eval) out.push({ kind: it.kind, name: it.name, eval: it.eval, builtin: true });
                     return ok({ items: out, implemented: false, reason: out.length ? '' : '評量集與分組評量的執行（每組都列、退步標紅、上線門檻）屬設計文件 §10 步驟 3／§8，目前資產的 manifest 還沒有任何評量結果；等符號式包裝與 LoRA 評量集（資料匯入）完成後才會有資料' });
                 }
                 if (method === 'GET' && P === '/api/teacher') { const v = ingestView(); return ok({ implemented: false, reason: '老師迴圈本身（呼叫線上 AI、白名單工具、缺口驅動，§6）屬設計文件 §10 步驟 7，尚未實作；請求單的領取、驗證與回交接口（/api/teacher/claim｜submit｜release）已可用。' + (v.has ? '' : '目前還沒有匯入資料，沒有請求單。'), queue: v.has ? v.requests : null, samples: v.has ? v.samples : 0 }); }
