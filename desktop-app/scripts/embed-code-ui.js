@@ -529,7 +529,7 @@ embedLiveModule('VPSTORE', 'FaVoiceprintStore', 'renderer/src/voice/voiceprint_s
 function embedStudio() {
     const dir = path.join(root, 'renderer/src/studio'); if (!fs.existsSync(path.join(dir, 'studio_server_core.js'))) return;
     const rd = (p) => fs.readFileSync(path.join(root, p), 'utf8').replace(/\r\n/g, '\n');
-    const UMD = ['asset_core', 'fatrain_core', 'storage_core', 'trainer_adapter', 'studio_layout_core', 'lora_registry_core', 'ingest_core', 'clean_core', 'studio_server_core']; // 順序＝相依順序
+    const UMD = ['asset_core', 'fatrain_core', 'storage_core', 'trainer_adapter', 'studio_layout_core', 'lora_registry_core', 'lora_apply_core', 'ingest_core', 'clean_core', 'studio_server_core']; // 順序＝相依順序
     let code = 'const FaStudio = (function () {\nconst holder = {};\n';
     for (const n of UMD) code += '(function (module, self) {\n' + rd('renderer/src/studio/' + n + '.js') + '\n}).call(null, undefined, holder);\n';
     code += 'return holder;\n})();\nconst FA_STUDIO_LAYOUT_SRC = ' + lit(rd('renderer/src/studio/studio_layout_core.js')) + ';\n';

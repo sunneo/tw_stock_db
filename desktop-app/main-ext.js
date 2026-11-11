@@ -745,15 +745,21 @@ function installTray(ctx, ipcMain) {
 
 // 執行包（見 DESIGN.TODO.native-runner.md 交接第 (2) 節）：子程序程式（nr-*.js）與 onnxruntime-node 1.22.0 原生檔放在
 // userData/native-runtime/<版本>/，manifest.json 記錄每個檔案的大小與 md5。載入前全部核對；任何一個對不上就當作沒有執行包（不用半個）。
-const NATIVE_RUNTIME_VERSION = "1.22.0-1";
+// 版本沿革：1.22.0-1＝第一版（沒有 lora 欄位轉傳）；1.22.0-2＝nr-protocol／nr-child／nr-host／nr-engine 轉傳並套用 lora（FEATURES 含 'lora'）。
+// 安裝與移除的目標永遠是最新版；舊版資料夾若還在且核對通過，仍可使用（不含 lora，畫面會明說需更新執行包），不強迫使用者重新下載才能用原生推論。
+const NATIVE_RUNTIME_VERSION = "1.22.0-2";
+const NATIVE_RUNTIME_LEGACY_VERSIONS = ["1.22.0-1"];
 // 執行包來源（見 main-ext.js 的 NRI）：來源 1 是 npm 官方庫的 tgz；來源 2 是 GitHub 分支 native-runtime-1.22.0，釘住 commit SHA 的 raw 網址。
 const NATIVE_NPM_TARBALL = "https://registry.npmjs.org/onnxruntime-node/-/onnxruntime-node-1.22.0.tgz";
-const NATIVE_GITHUB_BASE = "https://raw.githubusercontent.com/sunneo/tw_stock_db/9702b97723a24f61792d0814832a885e3aa756db";
-function checkNativeRuntimeDir(dir) {
+// 1.22.0-2 的來源 2：分支 native-runtime-1.22.0 上「含新版 nr-*.js 分割段」的 commit。尚未推送，所以先留空：留空時安裝會在下載前明確失敗（不是靜默用舊版）。
+// 推送後把這裡換成 https://raw.githubusercontent.com/sunneo/tw_stock_db/<新 commit SHA>（見 DESIGN.TODO.native-runner.md「1.22.0-2」一節）。
+const NATIVE_GITHUB_BASE = "";
+function checkNativeRuntimeDir(dir, version) {
+  version = version || NATIVE_RUNTIME_VERSION;
   const fsSync = require("fs"), pathM = require("path"), crypto = require("crypto");
   let manifest = null;
   try { manifest = JSON.parse(fsSync.readFileSync(pathM.join(dir, "manifest.json"), "utf8")); } catch (_) { return { ok: false, dir, reason: "沒有執行包" }; }
-  if (!manifest || manifest.runtimeVersion !== NATIVE_RUNTIME_VERSION || !manifest.files) return { ok: false, dir, reason: "執行包清單版本不符" };
+  if (!manifest || manifest.runtimeVersion !== version || !manifest.files) return { ok: false, dir, reason: "執行包清單版本不符" };
   if (manifest.platform !== process.platform || manifest.arch !== process.arch) return { ok: false, dir, reason: "執行包是 " + manifest.platform + "-" + manifest.arch + "，這台電腦是 " + process.platform + "-" + process.arch };
   for (const rel of Object.keys(manifest.files)) {
     const exp = manifest.files[rel];
@@ -761,9 +767,26 @@ function checkNativeRuntimeDir(dir) {
     try { buf = fsSync.readFileSync(pathM.join(dir, ...rel.split("/"))); } catch (_) { return { ok: false, dir, reason: "缺少檔案：" + rel }; }
     if (buf.length !== exp.size || crypto.createHash("md5").update(buf).digest("hex") !== exp.md5) return { ok: false, dir, reason: "檔案核對失敗：" + rel };
   }
-  return { ok: true, dir, version: NATIVE_RUNTIME_VERSION, ortVersion: manifest.ortVersion };
+  return { ok: true, dir, version, ortVersion: manifest.ortVersion };
 }
-function nativeRuntimeDir(userData) { return require("path").join(userData, "native-runtime", NATIVE_RUNTIME_VERSION); }
+function nativeRuntimeDir(userData, version) { return require("path").join(userData, "native-runtime", version || NATIVE_RUNTIME_VERSION); }
+// 找可用的執行包：先最新版，再依序找舊版（核對通過才算）。回傳 runtime 物件加上：features（該包的 nr-protocol.js 匯出的 FEATURES；舊包沒有＝空陣列）、
+// legacy（true＝不是最新版）。找不到任何可用版本時回最新版的失敗原因（讓畫面顯示要安裝的是哪一版）。
+function findNativeRuntime(userData) {
+  const pathM = require("path");
+  let first = null;
+  for (const v of [NATIVE_RUNTIME_VERSION].concat(NATIVE_RUNTIME_LEGACY_VERSIONS)) {
+    const r = checkNativeRuntimeDir(nativeRuntimeDir(userData, v), v);
+    if (!first) first = r;
+    if (!r.ok) continue;
+    let features = [];
+    try { const pr = require(pathM.join(r.dir, "nr-protocol.js")); features = Array.isArray(pr.FEATURES) ? pr.FEATURES.slice() : []; r.protocolLoaded = true; }
+    catch (e) { return { ok: false, dir: r.dir, reason: "載入子程序協定失敗：" + String((e && e.message) || e) }; }
+    r.features = features; r.legacy = v !== NATIVE_RUNTIME_VERSION; r.latestVersion = NATIVE_RUNTIME_VERSION;
+    return r;
+  }
+  return first;
+}
 // 從本機資料夾安裝執行包（先複製到 .partial、核對通過才改名）。目前只給測試用（環境變數 FA_NATIVE_RUNTIME_LOCAL_SRC）；真正的下載見第 4 項。
 function installNativeRuntimeFromLocal(userData, srcDir) {
   const fsSync = require("fs"), dst = nativeRuntimeDir(userData), tmp = dst + ".partial";
@@ -777,6 +800,75 @@ function installNativeRuntimeFromLocal(userData, srcDir) {
   return checkNativeRuntimeDir(dst);
 }
 
+// ===== LoRA adapter 管理（NRL；見 DESIGN.lora-training.md §7／§10、DESIGN.TODO.offline-training-studio.md §13）=====
+// 渲染程序（Studio 的 LoRA 登錄載入器）把 adapter 位元組寫到 <信箱>/lora-in/<id>/lora.bin，再送 lora_apply；這裡核對大小與 SHA-256、核對模型是 LoRA 槽版、
+// 搬到 <userData>/native-lora/<id>/lora.bin，之後每次 run 都帶 lora:{id,path,sha256,size} 給子程序（子程序自己讀檔再核對一次）。
+// 執行包太舊（nr-protocol.js 沒有 FEATURES 含 'lora'）時明確拒絕並回 runtime_outdated——不送出會被舊子程序默默忽略的欄位。
+// 寫在本檔而不是 nr-*.js：本檔隨熱更新送達，舊安裝也收得到。可注入依賴，所以不需 Electron 就能測。
+const NRL = (function () {
+  const SAFE = /^[A-Za-z0-9._-]{1,120}$/;
+  const err = (code, message) => ({ ok: false, code, message });
+  function create(d) {
+    const fs = d.fs, path = d.path, crypto = d.crypto;
+    let active = null; // { id, path, sha256, size }
+    const rtInfo = () => { const rt = d.getRuntime() || {}; return { ok: !!rt.ok, version: rt.version || null, latest: rt.latestVersion || null, supported: !!(rt.ok && (rt.features || []).indexOf("lora") >= 0) }; };
+    function gate() {
+      const r = rtInfo();
+      if (!r.ok) return err("no_engine", "原生引擎沒有可用的執行包，無法套用 LoRA（要先安裝執行包）");
+      if (!r.supported) return err("runtime_outdated", "已安裝的原生執行包（" + r.version + "）不支援 LoRA，需要更新執行包" + (r.latest ? "到 " + r.latest : "") + "（設定頁 → 原生執行器 → 安裝／更新）；更新前 adapter 不會套用到推論");
+      return null;
+    }
+    // 模型若有 layout.json（LoRA 槽版）就核對大小；沒有 layout.json 的模型不是槽版，adapter 套不上去，直接說
+    function checkSlot(size) {
+      const mp = d.getModelPath && d.getModelPath();
+      if (!mp) return err("no_model", "沒有設定原生模型檔路徑，無法確認 adapter 能否套用");
+      let layout = null;
+      try { layout = JSON.parse(fs.readFileSync(path.join(path.dirname(mp), "layout.json"), "utf8")); } catch (_) { layout = null; }
+      if (!layout || !(layout.total_bytes > 0)) return err("not_slot_model", "目前的原生模型不是 LoRA 槽版（模型資料夾沒有 layout.json；要用 lora-train/make_lora_onnx.py build 產生），adapter 套不上去");
+      if (layout.total_bytes !== size) return err("slot_mismatch", "adapter 大小 " + size + " 與模型的 LoRA 槽（" + layout.total_bytes + "，rank " + layout.rank + "）不符");
+      return null;
+    }
+    function apply(p) {
+      p = p || {};
+      const g = gate(); if (g) return g;
+      if (!SAFE.test(String(p.id || "")) || p.id === "." || p.id === "..") return err("bad_request", "adapter id 不合法");
+      if (!/^[0-9a-f]{64}$/.test(String(p.sha256 || ""))) return err("bad_request", "缺少 sha256（64 位十六進位小寫）");
+      const src = path.join(d.box, "lora-in", p.id, "lora.bin");
+      let buf; try { buf = fs.readFileSync(src); } catch (e) { return err("no_file", "信箱裡沒有 adapter 檔案：" + src); }
+      const sha = crypto.createHash("sha256").update(buf).digest("hex");
+      if (sha !== p.sha256) { try { fs.rmSync(path.dirname(src), { recursive: true, force: true }); } catch (_) { /* */ } return err("verify_failed", "adapter 的 SHA-256 不符（預期 " + p.sha256.slice(0, 12) + "…，實際 " + sha.slice(0, 12) + "…），沒有套用"); }
+      if (p.size != null && Number(p.size) !== buf.length) return err("verify_failed", "adapter 大小不符（預期 " + p.size + "，實際 " + buf.length + "）");
+      const sl = checkSlot(buf.length); if (sl) return sl;
+      const dir = path.join(d.userData, "native-lora", p.id), dst = path.join(dir, "lora.bin"), tmp = dst + ".partial";
+      try {
+        fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(tmp, buf); fs.rmSync(dst, { force: true }); fs.renameSync(tmp, dst);
+        fs.rmSync(path.dirname(src), { recursive: true, force: true });
+      } catch (e) { return err("write_failed", "寫入 adapter 失敗：" + String((e && e.message) || e)); }
+      const prev = active && active.id !== p.id ? active.id : null;
+      active = { id: p.id, path: dst, sha256: sha, size: buf.length };
+      if (prev) { try { fs.rmSync(path.join(d.userData, "native-lora", prev), { recursive: true, force: true }); } catch (_) { /* 舊 adapter 刪不掉不影響套用 */ } }
+      return { ok: true, applied: true, id: p.id, size: buf.length, note: "已套用到原生推論：之後的原生生成都會帶這個 adapter（第一次生成會重建 session）" };
+    }
+    function clear() { const was = active; active = null; if (was) { try { fs.rmSync(path.join(d.userData, "native-lora", was.id), { recursive: true, force: true }); } catch (_) { /* */ } } return { ok: true, cleared: was ? was.id : null }; }
+    // run 的前置：有套用中的 adapter 時回 {lora}；此時執行包若被換成舊版（不支援），拒絕而不是默默不用
+    function forRun() {
+      if (!active) return { ok: true, lora: null };
+      const g = gate(); if (g) return g;
+      return { ok: true, lora: { id: active.id, path: active.path, sha256: active.sha256, size: active.size } };
+    }
+    // run 之後：子程序必須回報套用了同一個 adapter（id 與 sha256 都對），否則視為失敗
+    function verifyDone(r) {
+      if (!active) return null;
+      if (!r || r.lora_applied !== active.id || (r.lora_sha256 && r.lora_sha256 !== active.sha256)) return err("lora_not_applied", "子程序沒有回報套用 LoRA「" + active.id + "」（回報：" + ((r && r.lora_applied) || "無") + "）；這次輸出不是 adapter 的結果，已視為失敗");
+      return null;
+    }
+    function status() { const r = rtInfo(); return { active: active ? { id: active.id, size: active.size, sha256: active.sha256 } : null, supported: r.supported, runtimeVersion: r.version, latestRuntimeVersion: r.latest, needsRuntimeUpdate: r.ok && !r.supported }; }
+    return { apply, clear, forRun, verifyDone, status, _active: () => active };
+  }
+  return { create, SAFE };
+})();
+
 // 原生執行器的主程序信箱（見 DESIGN.TODO.native-runner.md 第 8-C 節）。
 // 渲染程序把請求寫成 <userData>/native-runner-box/req-<id>.json（用既有的 desktopAPI.rawfs），這裡每 200 毫秒輪詢，
 // 寫回 resp-<id>.json（先寫 .tmp 再改名）。真引擎尚未接上：status 回報沒有子程序，run 回傳 no_engine（不假裝成功）。
@@ -784,7 +876,7 @@ function installNativeRuntimeFromLocal(userData, srcDir) {
 // 執行包按需安裝（併入本檔，因為 main-ext.js 不能 require 不在熱更新清單內的檔案；見 DESIGN.TODO.native-runner.md 第 4 項與「安裝路徑」教訓）。
 // 執行包的分割清單（與 GitHub 分支 native-runtime-1.22.0 的 manifest.json 逐位元組相同；內嵌在本檔，因為外部資料檔熱更新送不到舊安裝）。
 const NATIVE_RUNTIME_MANIFEST = {
-  "runtimeVersion": "1.22.0-1",
+  "runtimeVersion": "1.22.0-2",
   "ortVersion": "1.22.0",
   "license": "MIT",
   "partMaxBytes": 5242880,
@@ -804,8 +896,8 @@ const NATIVE_RUNTIME_MANIFEST = {
     }
   },
   "platforms": {
-    "win32-x64": 21707587,
-    "linux-x64": 31433755
+    "win32-x64": 21714049,
+    "linux-x64": 31440217
   },
   "files": [
     {
@@ -1272,52 +1364,52 @@ const NATIVE_RUNTIME_MANIFEST = {
     {
       "path": "nr-child.js",
       "platform": "all",
-      "size": 7629,
-      "sha256": "437cb6df334906bdf4633d4ae6ccd25d78383d61aade27e028bec406c39f787e",
+      "size": 8820,
+      "sha256": "aceb9942a11b5a4a0019b9522962d44bb2a950d0db879cddc1084ea66f70e0f6",
       "parts": [
         {
           "name": "nr-child.js.001.part",
-          "size": 7629,
-          "md5": "db7e4f5b7b1e10987ff1828db7c97445"
+          "size": 8820,
+          "md5": "6178c509cd10e08e1608c6f12796f854"
         }
       ]
     },
     {
       "path": "nr-engine.js",
       "platform": "all",
-      "size": 4514,
-      "sha256": "3a6f8943a383b840f2c5c9e54ba60ec60a62e34c6dda5bc28bd88adb84340a79",
+      "size": 7973,
+      "sha256": "e6500cea13d1e4b68567726a920a6d4076a9a8c3db5d4f64543edeeb76981bed",
       "parts": [
         {
           "name": "nr-engine.js.001.part",
-          "size": 4514,
-          "md5": "663d698c89f5ecde20de5e0d82d28015"
+          "size": 7973,
+          "md5": "4a3723c6c21fa270c5b63df21afcb28b"
         }
       ]
     },
     {
       "path": "nr-host.js",
       "platform": "all",
-      "size": 11212,
-      "sha256": "576357f00e29c9fd4189b85ba0e3ddee23b91d68f23141700848c4d53ed7b34d",
+      "size": 11523,
+      "sha256": "475910b0119da40a9629fd66181722d01d947896615479ce4e3b63212bd1ef1b",
       "parts": [
         {
           "name": "nr-host.js.001.part",
-          "size": 11212,
-          "md5": "24e6748c3dde747b2c62f79d795d511a"
+          "size": 11523,
+          "md5": "4ab2df1e1105d57c796bbe6eaeb478a7"
         }
       ]
     },
     {
       "path": "nr-protocol.js",
       "platform": "all",
-      "size": 4424,
-      "sha256": "7ffeb1793ee4446893fbb9ce223ed48a6f255c39d3834e011cba26a34097f0e4",
+      "size": 5925,
+      "sha256": "33b5ffef00f72df8aebeb52e84a1b73a0fa8ae6c7e05d159187bf73b2199f095",
       "parts": [
         {
           "name": "nr-protocol.js.001.part",
-          "size": 4424,
-          "md5": "e7ecfc335b67492fa5fb79dc98400180"
+          "size": 5925,
+          "md5": "d04c81af2a86709497e8cca28bf4ac61"
         }
       ]
     },
@@ -1360,6 +1452,9 @@ const NATIVE_RUNTIME_MANIFEST = {
         }
       ]
     }
+  ],
+  "features": [
+    "lora"
   ]
 };
 
@@ -1447,7 +1542,20 @@ async function installRuntime(opts) {
     const stage = opts.runtimeDir + '.partial';
     fs.rmSync(stage, { recursive: true, force: true });
     let npm = { ok: false, why: '沒有嘗試' };
-    if (!opts.forceGithub) {
+    // 舊版執行包（seedDirs）裡內容完全相同（sha256 一致）的檔案直接沿用，不重新下載：升級版本只需要抓有變動的檔案（通常只有 nr-*.js，幾十 KB）
+    const seeded = new Map();
+    for (const f of files) {
+        if (/^nr-.*\.js$/.test(f.path)) continue;
+        for (const sd of (opts.seedDirs || [])) {
+            try { const b = fs.readFileSync(path.join(sd, ...f.path.split('/'))); if (b.length === f.size && sha256(b) === f.sha256) { seeded.set(f.path, b); break; } } catch (_) { /* 這個舊版沒有這個檔案 */ }
+        }
+    }
+    const needNpm = files.some((f) => !/^nr-.*\.js$/.test(f.path) && !seeded.has(f.path));
+    if (!needNpm) {
+        npm = { ok: false, why: '全部 onnxruntime 檔案都能沿用舊版執行包（sha256 一致），不需下載 npm' };
+        log('[native-runtime] ' + npm.why);
+        prog({ stage: 'seed', source: 'local', detail: '沿用舊版執行包的 ' + seeded.size + ' 個檔案（sha256 一致），只下載有變動的程式檔' });
+    } else if (!opts.forceGithub) {
         log('[native-runtime] 來源 1：npm 官方庫（' + m.sources.npm.package + '）');
         prog({ stage: 'npm', source: 'npm', detail: '正在下載 npm 官方庫的 tgz（約 89 MB）' });
         npm = await trySourceNpm(m, opts);
@@ -1461,8 +1569,10 @@ async function installRuntime(opts) {
     const installed = {};
     try {
         for (const f of files) {
-            let buf = npm.ok && npm.bufs.get(f.path) ? npm.bufs.get(f.path) : null;
-            let from = 'npm';
+            if (/^nr-.*\.js$/.test(f.path)) continue; // 子程序程式在下面另外處理
+            let buf = seeded.get(f.path) || null;
+            let from = buf ? 'local' : 'npm';
+            if (!buf && npm.ok && npm.bufs.get(f.path)) buf = npm.bufs.get(f.path);
             if (buf && sha256(buf) !== f.sha256) { buf = null; log('[native-runtime] npm 的 ' + f.path + ' sha256 不符，改用來源 2'); }
             if (!buf) { buf = await readFromGithub(m, f, opts); from = 'github'; }
             if (sha256(buf) !== f.sha256) throw new Error('最終檔案 ' + f.path + ' 的 sha256 不符');
@@ -1478,7 +1588,8 @@ async function installRuntime(opts) {
             // 只有安裝目錄真的有這個檔案才用本機的（舊安裝沒有）；沒有就走來源 2
             for (const f of m.files.filter((x) => /^nr-.*\.js$/.test(x.path) && fs.existsSync(path.join(opts.nrSourceDir, x.path)))) {
                 const buf = fs.readFileSync(path.join(opts.nrSourceDir, f.path));
-                if (sha256(buf) !== f.sha256) throw new Error('本機 ' + f.path + ' 與分割包不一致');
+                // 安裝目錄的 nr-*.js 是安裝包附的舊版；執行包升級後內容不同，這時不能用也不算錯——改走來源 2（GitHub 分支）取得釘住的新版
+                if (sha256(buf) !== f.sha256) { log('[native-runtime] 安裝目錄的 ' + f.path + ' 與分割包不同（舊安裝包附的版本），改用來源 2'); continue; }
                 fs.writeFileSync(path.join(stage, f.path), buf);
                 sourcesUsed[f.path] = 'local';
                 installed[f.path] = { size: buf.length, md5: md5(buf), sha256: sha256(buf) };
@@ -1490,7 +1601,7 @@ async function installRuntime(opts) {
         const [plat, arch] = opts.platformKey.split('-');
         const runtimeFiles = {};
         for (const k of Object.keys(installed)) runtimeFiles[k] = { size: installed[k].size, md5: installed[k].md5 };
-        fs.writeFileSync(path.join(stage, 'manifest.json'), JSON.stringify({ runtimeVersion: m.runtimeVersion, ortVersion: m.ortVersion, platform: plat, arch, license: m.license, files: runtimeFiles }, null, 2) + '\n');
+        fs.writeFileSync(path.join(stage, 'manifest.json'), JSON.stringify({ runtimeVersion: m.runtimeVersion, ortVersion: m.ortVersion, platform: plat, arch, license: m.license, features: m.features || [], files: runtimeFiles }, null, 2) + '\n');
         fs.rmSync(opts.runtimeDir, { recursive: true, force: true });
         fs.mkdirSync(path.dirname(opts.runtimeDir), { recursive: true });
         fs.renameSync(stage, opts.runtimeDir);
@@ -1683,14 +1794,13 @@ function startNativeMailbox(ctx) {
   if (!userData) return { ok: false, reason: "沒有 userData 路徑" };
   const box = pathM.join(userData, "native-runner-box");
   try { fsSync.mkdirSync(box, { recursive: true }); } catch (_) { /* 之後每輪再試 */ }
-  let runtime = checkNativeRuntimeDir(nativeRuntimeDir(userData));
+  let runtime = findNativeRuntime(userData);
   const localSrc = process.env.FA_NATIVE_RUNTIME_LOCAL_SRC;
-  if (!runtime.ok && localSrc) {
-    try { runtime = installNativeRuntimeFromLocal(userData, localSrc); } catch (e) { runtime = { ok: false, reason: "本機來源安裝失敗：" + String((e && e.message) || e) }; }
+  if ((!runtime.ok || runtime.legacy) && localSrc) {
+    try { const li = installNativeRuntimeFromLocal(userData, localSrc); if (li.ok) runtime = findNativeRuntime(userData); else if (!runtime.ok) runtime = li; } catch (e) { if (!runtime.ok) runtime = { ok: false, reason: "本機來源安裝失敗：" + String((e && e.message) || e) }; }
   }
-  let protocolOk = false;
-  if (runtime.ok) { try { require(require("path").join(runtime.dir, "nr-protocol.js")); protocolOk = true; } catch (e) { runtime = { ok: false, reason: "載入子程序協定失敗：" + String((e && e.message) || e) }; } }
-  console.log("[main-ext] 執行包：" + (runtime.ok ? "就緒 " + runtime.version + "（onnxruntime-node " + runtime.ortVersion + "）" : "沒有可用（" + runtime.reason + "）"));
+  const protocolOk = !!(runtime.ok && runtime.protocolLoaded);
+  console.log("[main-ext] 執行包：" + (runtime.ok ? "就緒 " + runtime.version + "（onnxruntime-node " + runtime.ortVersion + "）" + (runtime.legacy ? "，舊版（最新為 " + NATIVE_RUNTIME_VERSION + "，不支援 LoRA）" : "") : "沒有可用（" + runtime.reason + "）"));
   // 真引擎：子程序由 nr-host.js 管理（懶啟動、握手、逾時、崩潰重啟）。模型檔與分詞器路徑由環境變數給（產品端的下載位置見第 4 項）。
   const modelPath = process.env.FA_NATIVE_MODEL_PATH || "", tokenizerPath = process.env.FA_NATIVE_TOKENIZER_PATH || "";
   let host = null;
@@ -1707,18 +1817,27 @@ function startNativeMailbox(ctx) {
     });
     return host;
   }
+  const lora = NRL.create({ fs: fsSync, path: pathM, crypto: require("crypto"), userData, box, getRuntime: () => runtime, getModelPath: () => modelPath });
   const idleStatus = { alive: false, pid: null, pending: 0, consecutiveCrashes: 0, disabled: false, disabledReason: "" };
   let runQueue = Promise.resolve(); // 生成一次只跑一個（子程序一次只處理一個生成）
   async function doRun(id, p) {
     const tokFile = pathM.join(box, "tok-" + id + ".jsonl");
     try { fsSync.unlinkSync(tokFile); } catch (_) { /* 還沒有 */ }
     try {
-      const r = await getHost().run({
+      const lr = lora.forRun(); // 有套用中的 adapter 才帶；沒有時 lora 為 null，請求內容與沒有此功能時完全相同
+      if (!lr.ok) return { ok: false, code: lr.code, message: lr.message, backend: "native" };
+      const req = {
         messages: p.messages || [], template: p.template, gen: p.gen, maxTokens: p.maxTokens, stream: !!p.stream, timeoutMs: p.timeoutMs || 0, seed: p.seed,
         modelPath, tokenizerPath,
         onToken: (t) => { try { fsSync.appendFileSync(tokFile, JSON.stringify({ text: t }) + "\n"); } catch (_) { /* 寫不了就只靠最後結果 */ } },
-      });
-      return { ok: true, text: r.text, ms: r.ms, finish_reason: r.finish_reason, backend: "native" };
+      };
+      if (lr.lora) req.lora = lr.lora;
+      const r = await getHost().run(req);
+      const vd = lora.verifyDone(r);
+      if (vd) return { ok: false, code: vd.code, message: vd.message, backend: "native" };
+      const out = { ok: true, text: r.text, ms: r.ms, finish_reason: r.finish_reason, backend: "native" };
+      if (lr.lora) out.lora = lr.lora.id;
+      return out;
     } catch (e) {
       return { ok: false, code: (e && e.code) || "internal", message: String((e && e.message) || e), backend: "native" };
     }
@@ -1807,7 +1926,10 @@ function startNativeMailbox(ctx) {
   async function handle(op, payload, id) {
     const p = payload || {};
     if (op.indexOf("studio_") === 0) return handleStudio(op, p);
-    if (op === "status") return { ok: true, status: host ? host.status() : idleStatus, engine: runtime.ok && modelPath ? "native" : "none", box, runtime: { ok: runtime.ok, version: runtime.version || null, reason: runtime.ok ? "" : runtime.reason, protocolOk, modelReady: !!(runtime.ok && modelPath && tokenizerPath) } };
+    if (op === "status") return { ok: true, status: host ? host.status() : idleStatus, engine: runtime.ok && modelPath ? "native" : "none", box, runtime: { ok: runtime.ok, version: runtime.version || null, reason: runtime.ok ? "" : runtime.reason, protocolOk, modelReady: !!(runtime.ok && modelPath && tokenizerPath), features: runtime.features || [], legacy: !!runtime.legacy, latestVersion: NATIVE_RUNTIME_VERSION }, lora: lora.status() };
+    if (op === "lora_apply") return lora.apply(p);
+    if (op === "lora_clear") return lora.clear();
+    if (op === "lora_status") return Object.assign({ ok: true }, lora.status());
     if (op === "reenable") { if (host) host.reenable(); return { ok: true, status: host ? host.status() : idleStatus }; }
     if (op === "dispose") { if (host) host.dispose("介面要求"); return { ok: true, status: host ? host.status() : idleStatus }; }
     if (op === "install") {
@@ -1820,6 +1942,11 @@ function startNativeMailbox(ctx) {
         const manifest = NATIVE_RUNTIME_MANIFEST; // 清單直接放在本檔（舊安裝沒有外部資料檔，熱更新也送不到）
         const testNpm = process.env.FA_NATIVE_INSTALL_NPM_FILE || "", testGh = process.env.FA_NATIVE_INSTALL_GH_DIR || "";
         const testing = !!(testNpm || testGh);
+        if (!testing && !process.env.FA_NATIVE_INSTALL_GH_BASE && !NATIVE_GITHUB_BASE) {
+          const why = "新版執行包（" + NATIVE_RUNTIME_VERSION + "）的 GitHub 來源還沒有釘住 commit（尚未發佈），無法安裝；目前仍可使用舊版執行包（不含 LoRA）。";
+          writeProg({ state: "failed", stage: "failed", source: "", detail: why });
+          return { ok: false, code: "runtime_not_published", message: why };
+        }
         const r = await inst.installRuntime({
           manifest, platformKey: process.platform + "-" + process.arch,
           runtimeDir: nativeRuntimeDir(userData),
@@ -1830,6 +1957,7 @@ function startNativeMailbox(ctx) {
           forceGithub: !!(payload && payload.forceGithub),
           stats: {},
           nrSourceDir: __dirname,
+          seedDirs: NATIVE_RUNTIME_LEGACY_VERSIONS.map((v) => nativeRuntimeDir(userData, v)),
           timeoutMs: 120000,
           log: (s) => console.log("[main-ext] " + s),
           progress: (o) => writeProg(Object.assign({ state: "running" }, o)),
@@ -1838,7 +1966,9 @@ function startNativeMailbox(ctx) {
           writeProg({ state: "failed", stage: "failed", source: "", detail: r.why });
           return { ok: false, code: "install_failed", message: r.why, sourcesUsed: r.sourcesUsed || {} };
         }
-        runtime = checkNativeRuntimeDir(nativeRuntimeDir(userData));
+        runtime = findNativeRuntime(userData);
+        // 新版就緒後舊版資料夾不再需要（已把可沿用的檔案複製進新版），刪除以省空間；新版沒就緒時保留舊版當退路
+        if (runtime.ok && !runtime.legacy) { for (const v of NATIVE_RUNTIME_LEGACY_VERSIONS) { try { fsSync.rmSync(nativeRuntimeDir(userData, v), { recursive: true, force: true }); } catch (_) { /* 刪不掉不影響使用 */ } } }
         if (host) { try { host.dispose("安裝完成，重新載入"); } catch (_) { /* */ } host = null; }
         const counts = {}; for (const k of Object.keys(r.sourcesUsed)) counts[r.sourcesUsed[k]] = (counts[r.sourcesUsed[k]] || 0) + 1;
         writeProg({ state: "done", stage: "done", source: r.npmUsed ? "npm" : "github", detail: "安裝完成" });
@@ -1852,8 +1982,9 @@ function startNativeMailbox(ctx) {
       // 移除執行包：先關掉子程序，再刪除 userData/native-runtime/<版本>/。不會動安裝目錄。
       if (installing) return { ok: false, code: "busy", message: "安裝中，不能移除" };
       if (host) { try { host.dispose("移除執行包"); } catch (_) { /* */ } host = null; } for (const h of nrtHosts.values()) { try { h.dispose(); } catch (_) { /* */ } } nrtHosts.clear();
-      try { fsSync.rmSync(nativeRuntimeDir(userData), { recursive: true, force: true }); } catch (e) { return { ok: false, code: "remove_failed", message: String((e && e.message) || e) }; }
-      runtime = checkNativeRuntimeDir(nativeRuntimeDir(userData));
+      lora.clear();
+      try { for (const v of [NATIVE_RUNTIME_VERSION].concat(NATIVE_RUNTIME_LEGACY_VERSIONS)) fsSync.rmSync(nativeRuntimeDir(userData, v), { recursive: true, force: true }); } catch (e) { return { ok: false, code: "remove_failed", message: String((e && e.message) || e) }; }
+      runtime = findNativeRuntime(userData);
       return { ok: true, runtime: { ok: runtime.ok, version: null, reason: runtime.reason || "" } };
     }
     if (op.indexOf("onnx_") === 0) return handleOnnx(op, p);
@@ -1895,4 +2026,4 @@ function startNativeMailbox(ctx) {
   return { ok: true, box };
 }
 
-module.exports = { register, _NRI: NRI, _NRT: NRT };
+module.exports = { register, _NRI: NRI, _NRT: NRT, _NRL: NRL, _findNativeRuntime: findNativeRuntime, _checkNativeRuntimeDir: checkNativeRuntimeDir, _NATIVE_RUNTIME_VERSION: NATIVE_RUNTIME_VERSION, _NATIVE_RUNTIME_MANIFEST: NATIVE_RUNTIME_MANIFEST };

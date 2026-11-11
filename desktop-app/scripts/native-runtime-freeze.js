@@ -8,7 +8,8 @@ const crypto = require('crypto');
 
 const PART_MAX = 5 * 1024 * 1024; // 每段上限 5 MB
 const ORT_VERSION = '1.22.0';
-const RUNTIME_VERSION = '1.22.0-1';
+const RUNTIME_VERSION = '1.22.0-2'; // 1.22.0-2：nr-*.js 轉傳並套用 lora（FEATURES 含 'lora'）；1.22.0-1 是第一版
+const FEATURES = ['lora'];
 const PLATFORMS = [['win32', 'x64'], ['linux', 'x64']];
 const NR_FILES = ['nr-child.js', 'nr-engine.js', 'nr-host.js', 'nr-protocol.js', 'nr-gen-params.js', 'nr-template.js', 'nr-tokenizer.js'];
 
@@ -70,7 +71,7 @@ function freeze(opts) {
         platformSizes[key] = files.filter((f) => f.platform === key || f.platform === 'all').reduce((s, f) => s + f.size, 0);
     }
     const manifest = {
-        runtimeVersion: RUNTIME_VERSION, ortVersion: ORT_VERSION, license: 'MIT', partMaxBytes: PART_MAX,
+        runtimeVersion: RUNTIME_VERSION, features: FEATURES, ortVersion: ORT_VERSION, license: 'MIT', partMaxBytes: PART_MAX,
         sources: {
             npm: { package: 'onnxruntime-node@' + ORT_VERSION, tarball: 'https://registry.npmjs.org/onnxruntime-node/-/onnxruntime-node-' + ORT_VERSION + '.tgz', integrity: opts.integrity || '', tgzBytes: opts.tgzBytes || null, note: 'npm 官方庫（來源 1）只提供 onnxruntime 相關檔（不含 nr-*.js）' },
             commonPackage: 'onnxruntime-common@' + ORT_VERSION + '（來源：本機既有安裝，見 DESIGN.TODO.native-runner.md 第 4 項）',

@@ -32,7 +32,7 @@
     ];
     // 主程式目前的基底模型與 LoRA 槽版 ONNX 的條件（make_lora_onnx.py build 的單槽 rank 16；提示格式版本 1）；工具目錄雜湊目前主程式沒有對應來源，所以不比對（adapter 缺記錄會出警告）
     const LORA_ENV = { base: 'Qwen/Qwen3-0.6B', rank_slots: [16], prompt_format_version: 1 };
-    const LORA_APPLY_BLOCKER = '載入器已把 adapter 讀成 {id, bytes}（nr-engine.js 的 lora 接點格式），但原生執行器的子行程（nr-host.js／nr-child.js）沒有轉傳 lora 欄位，這兩個檔屬於 md5 釘住、從 GitHub 分支下載的執行包，要先更新執行包才能真的套用到推論；所以這裡只做到「選用與載入到記憶體」，不假裝已套用';
+    const LORA_APPLY_BLOCKER = '目前環境沒有原生推論套用器：桌面版需要原生執行包 1.22.0-2 以上（nr-host／nr-child 轉傳 lora，見設計文件 §14）；網頁版的 transformers.js 接點尚未接（阻礙見 §14）。所以這裡只做到「選用與載入到記憶體」，不假裝已套用';
     const SOURCES = ['wiki', 'open_source', 'book', 'aidoc'];
     const NOT_DESKTOP = '這個功能要在桌面版執行（需要主行程子行程）；網頁版請用「匯出訓練包」到桌面版訓練';
 
@@ -201,11 +201,12 @@
                 if (method === 'POST' && P === '/api/lora/load') {
                     const reg = await syncRegistry(); const r = await reg.reg.request({ text: body.text, domains: body.domains, ids: body.ids, manual: !!(body.ids && body.ids.length) });
                     let applied = false, applyNote = LORA_APPLY_BLOCKER;
-                    if (h.loraApply && r.handles.length) { try { const a = await h.loraApply(r.handles); applied = !!(a && a.ok); applyNote = (a && (a.error || a.note)) || ''; } catch (e) { applyNote = String((e && e.message) || e); } }
+                    if (h.loraClear && !r.handles.length) { try { await h.loraClear(); applyNote = '沒有選到 adapter，原生推論已回到基底模型'; } catch (e) { applyNote = String((e && e.message) || e); } }
+                    if (h.loraApply && r.handles.length) { try { const a = await h.loraApply(r.handles.map((x) => ({ id: x.id, bytes: x.handle && x.handle.bytes }))); applied = !!(a && a.ok); applyNote = (a && (a.error || a.note)) || ''; } catch (e) { applyNote = String((e && e.message) || e); } }
                     log('LoRA 按需載入：' + (r.active.join('、') || '（沒有符合的）') + (applied ? '，已套用' : '，尚未套用到推論'));
                     return ok({ active: r.active, loaded: r.loaded, unloaded: r.unloaded, skipped: r.skipped, handles: r.handles.map((x) => ({ id: x.id, bytes: x.handle && x.handle.bytes ? x.handle.bytes.length : 0 })), applied, applyNote });
                 }
-                if (method === 'POST' && P === '/api/lora/unload') { const reg = await syncRegistry(); const ids = body.id ? [body.id] : await reg.reg.unloadAll(); if (body.id) await reg.reg.unload(body.id); return ok({ unloaded: ids }); }
+                if (method === 'POST' && P === '/api/lora/unload') { const reg = await syncRegistry(); const ids = body.id ? [body.id] : await reg.reg.unloadAll(); if (body.id) await reg.reg.unload(body.id); if (h.loraClear) { try { await h.loraClear(); } catch (_) { /* 主程序沒回應不影響卸載 */ } } return ok({ unloaded: ids }); }
                 // ---- 資料匯入與清洗（第二輪，接 ingest_core／clean_core）----
                 if (method === 'POST' && P === '/api/ingest/pick') {
                     const src = String(body.source || ''); if (SOURCES.indexOf(src) < 0) return bad(400, '來源必須是 ' + SOURCES.join('／'));

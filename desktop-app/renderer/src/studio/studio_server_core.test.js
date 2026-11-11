@@ -15,7 +15,7 @@ function mk(desktop, hostOps) {
     call: async (op, p) => { calls.push([op, p]); return hostOps && hostOps[op] ? hostOps[op](p) : { ok: true }; }, workDir: async () => '/ud/studio', otExport: async () => bundle, otImport: async (b, o) => { otImported = { b, o }; return { ok: true, dry: o.dry_run }; } };
   const srv = createServer(h); const pushes = []; srv.setPush((o) => pushes.push(o));
   const req = async (m, path, body) => { const r = await srv.route(m, new URL('http://mock.local' + path), body); return { s: r.s || 200, j: r.j }; };
-  return { srv, req, storage, downloads, setPicked: (f) => { picked = f; }, setPickFiles: (f) => { pickedFiles = f; }, calls, pushes, prefs: () => prefs, otImported: () => otImported };
+  return { h, srv, req, storage, downloads, setPicked: (f) => { picked = f; }, setPickFiles: (f) => { pickedFiles = f; }, calls, pushes, prefs: () => prefs, otImported: () => otImported };
 }
 (async () => {
   const t = mk(true, { studio_probe: () => ({ ok: true, backends: [{ id: 'cpu-py', available: false, reason: '找不到 Python' }] }), studio_select: () => ({ ok: false, chosen: null, reason: '沒有可用的後端' }), studio_train_start: (p) => (p.cfg.trainFile === 'bad' ? { ok: false, error: 'cpu-py 不可用：x' } : { ok: true, jobId: 'train1' }) });
@@ -106,11 +106,21 @@ function mk(desktop, hostOps) {
   check('登錄表列出四個 adapter（資料資產不算）', r.j.entries.length === 4 && !E['corpus-wiki'], r.j.entries.map((e) => e.id));
   check('基底不同的標 reject 並說具體原因', E.wrongbase.compat.level === 'reject' && /基底模型不同/.test(E.wrongbase.compat.reasons[0].message), E.wrongbase.compat);
   check('評量判定：贏、輸、未知', E.good.verdict.known && E.good.verdict.lose.length === 0 && E.lose.verdict.lose.length === 1 && !E.noeval.verdict.known, E);
-  check('明說套用到推論的阻礙', /nr-host\.js/.test(r.j.applyBlocker), r.j.applyBlocker);
+  check('明說套用到推論的阻礙', /1\.22\.0-2/.test(r.j.applyBlocker), r.j.applyBlocker);
   r = await t.req('POST', '/api/lora/select', { domains: ['doc_knowledge'] }); check('按需選用只選相容且評量贏的', r.j.plan.length === 1 && r.j.plan[0].id === 'good' && r.j.skipped.some((x) => x.id === 'wrongbase'), r.j);
   r = await t.req('POST', '/api/lora/select', { ids: ['wrongbase'] }); check('手動也不能繞過不相容', r.j.plan.length === 0, r.j);
   r = await t.req('POST', '/api/lora/select', { ids: ['noeval'] }); check('手動可選沒評量的', r.j.plan.length === 1 && r.j.plan[0].id === 'noeval', r.j);
-  r = await t.req('POST', '/api/lora/load', { domains: ['doc_knowledge'] }); check('載入到記憶體並誠實說尚未套用', r.j.active.join() === 'good' && r.j.handles[0].bytes === 1000 && r.j.applied === false && /nr-host/.test(r.j.applyNote), r.j);
+  r = await t.req('POST', '/api/lora/load', { domains: ['doc_knowledge'] }); check('載入到記憶體並誠實說尚未套用', r.j.active.join() === 'good' && r.j.handles[0].bytes === 1000 && r.j.applied === false && /1.22.0-2/.test(r.j.applyNote), r.j);
+  { // 套用器接點：桌面版 h.loraApply／h.loraClear（主程式接到原生推論的 lora_apply）；回 ok:false 時要如實顯示原因，不報已套用
+    const seen = []; t.h.loraApply = async (hs) => { seen.push(hs.map((x) => ({ id: x.id, n: x.bytes && x.bytes.length }))); return { ok: false, error: '需要更新執行包到 1.22.0-2' }; }; t.h.loraClear = async () => { seen.push('clear'); return { ok: true }; };
+    r = await t.req('POST', '/api/lora/load', { domains: ['doc_knowledge'] }); check('套用器回失敗：applied=false 且原因原樣顯示', r.j.applied === false && /更新執行包/.test(r.j.applyNote) && seen[0][0].id === 'good' && seen[0][0].n === 1000, { j: r.j, seen });
+    t.h.loraApply = async () => ({ ok: true, note: '已套用到原生推論' });
+    r = await t.req('POST', '/api/lora/load', { domains: ['doc_knowledge'] }); check('套用器回成功：applied=true', r.j.applied === true && /已套用/.test(r.j.applyNote), r.j);
+    r = await t.req('POST', '/api/lora/load', { domains: ['no_such_domain'] }); check('沒有選到 adapter：通知原生端回到基底', r.j.active.length === 0 && seen.includes('clear') && /基底/.test(r.j.applyNote), { j: r.j, seen });
+    seen.length = 0; r = await t.req('POST', '/api/lora/unload', {}); check('卸載時一併清掉原生端的 adapter', seen.includes('clear'), seen);
+    delete t.h.loraApply; delete t.h.loraClear;
+    r = await t.req('POST', '/api/lora/load', { domains: ['doc_knowledge'] });
+  }
   r = await t.req('GET', '/api/lora'); check('登錄表顯示已載入', r.j.entries.find((e) => e.id === 'good').loaded === true && r.j.loaded.length === 1);
   r = await t.req('POST', '/api/lora/enable', { id: 'good', on: false }); r = await t.req('GET', '/api/lora'); check('停用會卸載並記住', !r.j.entries.find((e) => e.id === 'good').enabled && r.j.loaded.length === 0 && t.prefs().loraEnabled.good === false);
   r = await t.req('POST', '/api/lora/load', { domains: ['doc_knowledge'] }); check('停用的不會被載入', r.j.active.length === 0);

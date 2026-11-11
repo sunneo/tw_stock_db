@@ -7,7 +7,8 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
-const RUNTIME_VERSION = '1.22.0-1';
+const RUNTIME_VERSION = '1.22.0-2'; // 1.22.0-2：nr-*.js 轉傳並套用 lora（FEATURES 含 'lora'）；1.22.0-1 是第一版
+const FEATURES = ['lora'];
 const ORT_VERSION = '1.22.0';
 const NR_FILES = ['nr-child.js', 'nr-engine.js', 'nr-host.js', 'nr-protocol.js', 'nr-gen-params.js', 'nr-template.js', 'nr-tokenizer.js'];
 
@@ -58,7 +59,7 @@ function pack(opts) {
   copyTree(path.join(ortNode, 'dist'), path.join(out, 'node_modules', 'onnxruntime-node', 'dist'), 'node_modules/onnxruntime-node/dist', files);
   copyTree(binDir, path.join(out, 'node_modules', 'onnxruntime-node', 'bin', 'napi-v6', opts.platform, opts.arch), 'node_modules/onnxruntime-node/bin/napi-v6/' + opts.platform + '/' + opts.arch, files);
   copyTree(ortCommon, path.join(out, 'node_modules', 'onnxruntime-common'), 'node_modules/onnxruntime-common', files);
-  const manifest = { runtimeVersion: RUNTIME_VERSION, ortVersion: ORT_VERSION, platform: opts.platform, arch: opts.arch, files: {}, totalBytes: 0 };
+  const manifest = { runtimeVersion: RUNTIME_VERSION, features: FEATURES, ortVersion: ORT_VERSION, platform: opts.platform, arch: opts.arch, files: {}, totalBytes: 0 };
   for (const rel of files.sort()) {
     const buf = fs.readFileSync(path.join(out, ...rel.split('/')));
     manifest.files[rel] = { size: buf.length, md5: crypto.createHash('md5').update(buf).digest('hex') };

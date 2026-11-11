@@ -5,6 +5,11 @@
 
 const PROTOCOL_VERSION = 1;
 
+// 這份執行包的子程序／主程序程式支援的選配功能。主程序（main-ext.js）載入前讀它：舊執行包的 nr-protocol.js 沒有這個匯出（＝空），
+// 所以「需要 lora 的操作」會被明確拒絕（畫面顯示需更新執行包），而不是送出一個會被舊子程序默默忽略的 lora 欄位。
+// 新增功能時只加進這裡；協定版本號 PROTOCOL_VERSION 只在不相容改動時才升。
+const FEATURES = ['lora'];
+
 // 訊息種類表：方向、必填欄位。驗證函式以此為準。
 const MESSAGES = {
     hello: { dir: 'host->child', required: ['v', 'id'] },
@@ -45,6 +50,15 @@ function validate(msg) {
     if (msg.type === 'run' && msg.model_path !== undefined && (typeof msg.model_path !== 'string' || !msg.model_path)) return { ok: false, error: 'run.model_path 必須是非空字串' };
     if (msg.type === 'run' && msg.tokenizer_path !== undefined && typeof msg.tokenizer_path !== 'string') return { ok: false, error: 'run.tokenizer_path 必須是字串' };
     if (msg.type === 'run' && msg.seed !== undefined && typeof msg.seed !== 'number') return { ok: false, error: 'run.seed 必須是數字' };
+    // run 的 lora 欄位（可選）：{ id, path, sha256, size? }。子程序自己讀檔並核對 sha256（檔案不經標準輸入傳輸，避免一行幾十 MB）。沒有這個欄位＝不用 adapter，行為與沒有此功能時完全一致。
+    if (msg.type === 'run' && msg.lora !== undefined && msg.lora !== null) {
+        const l = msg.lora;
+        if (typeof l !== 'object' || Array.isArray(l)) return { ok: false, error: 'run.lora 必須是物件' };
+        if (typeof l.id !== 'string' || !l.id) return { ok: false, error: 'run.lora.id 必須是非空字串' };
+        if (typeof l.path !== 'string' || !l.path) return { ok: false, error: 'run.lora.path 必須是非空字串' };
+        if (typeof l.sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(l.sha256)) return { ok: false, error: 'run.lora.sha256 必須是 64 位十六進位小寫' };
+        if (l.size !== undefined && !(Number.isInteger(l.size) && l.size >= 0)) return { ok: false, error: 'run.lora.size 必須是非負整數' };
+    }
     return { ok: true, error: '' };
 }
 
@@ -70,4 +84,4 @@ function parseLine(line) {
     return v.ok ? { ok: true, msg, error: '' } : { ok: false, msg, error: v.error };
 }
 
-module.exports = { PROTOCOL_VERSION, MESSAGES, ERROR_CODES, encodeLine, validate, createLineDecoder, parseLine };
+module.exports = { PROTOCOL_VERSION, FEATURES, MESSAGES, ERROR_CODES, encodeLine, validate, createLineDecoder, parseLine };
