@@ -6,6 +6,23 @@
 (function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaDomainH264dec = factory(); })(typeof self !== 'undefined' ? self : this, function () {
     'use strict';
     const L = (src) => src.replace(/^\n/, '').replace(/\n\s*$/, '').split('\n');
+    // CAVLC coeff_token（H.264 表 9-5）。來源：libavc common/ih264_cavlc_tables.c（Apache 2.0，web-fetch 取得後逐字抄入）。
+    // 索引：[nC 範圍][TrailingOnes][TotalCoeff−1]；TotalCoeff 0 由程式另列特例；色度直流（nC＝−1）另用 4×4 表。
+    const CT_CODE = [[[5, 7, 7, 7, 7, 15, 11, 8, 15, 11, 15, 11, 15, 11, 7, 4], [1, 4, 6, 6, 6, 6, 14, 10, 14, 10, 14, 10, 1, 14, 10, 6], [0, 1, 5, 5, 5, 5, 5, 13, 9, 13, 9, 13, 9, 13, 9, 5], [0, 0, 3, 3, 4, 4, 4, 4, 4, 12, 12, 8, 12, 8, 12, 8]], [[11, 7, 7, 7, 4, 7, 15, 11, 15, 11, 8, 15, 11, 7, 9, 7], [2, 7, 10, 6, 6, 6, 6, 14, 10, 14, 10, 14, 10, 11, 8, 6], [0, 3, 9, 5, 5, 5, 5, 13, 9, 13, 9, 13, 9, 6, 10, 5], [0, 0, 5, 4, 6, 8, 4, 4, 4, 12, 8, 12, 12, 8, 1, 4]], [[15, 11, 8, 15, 11, 9, 8, 15, 11, 15, 11, 8, 13, 9, 5, 1], [14, 15, 12, 10, 8, 14, 10, 14, 14, 10, 14, 10, 7, 12, 8, 4], [0, 13, 14, 11, 9, 13, 9, 13, 10, 13, 9, 13, 9, 11, 7, 3], [0, 0, 12, 11, 10, 9, 8, 13, 12, 12, 12, 8, 12, 10, 6, 2]]];
+    const CT_SIZE = [[[6, 8, 9, 10, 11, 13, 13, 13, 14, 14, 15, 15, 16, 16, 16, 16], [2, 6, 8, 9, 10, 11, 13, 13, 14, 14, 15, 15, 15, 16, 16, 16], [0, 3, 7, 8, 9, 10, 11, 13, 13, 14, 14, 15, 15, 16, 16, 16], [0, 0, 5, 6, 7, 8, 9, 10, 11, 13, 14, 14, 15, 15, 16, 16]], [[6, 6, 7, 8, 8, 9, 11, 11, 12, 12, 12, 13, 13, 13, 14, 14], [2, 5, 6, 6, 7, 8, 9, 11, 11, 12, 12, 13, 13, 14, 14, 14], [0, 3, 6, 6, 7, 8, 9, 11, 11, 12, 12, 13, 13, 13, 14, 14], [0, 0, 4, 4, 5, 6, 6, 7, 9, 11, 11, 12, 13, 13, 13, 14]], [[6, 6, 6, 7, 7, 7, 7, 8, 8, 9, 9, 9, 10, 10, 10, 10], [4, 5, 5, 5, 5, 6, 6, 7, 8, 8, 9, 9, 9, 10, 10, 10], [0, 4, 5, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 10], [0, 0, 4, 4, 4, 4, 4, 5, 6, 7, 8, 8, 9, 10, 10, 10]]];
+    const CT_CODE_CH = [[7, 4, 3, 2], [1, 6, 3, 3], [0, 1, 2, 2], [0, 0, 5, 0]];
+    const CT_SIZE_CH = [[6, 6, 6, 6], [1, 6, 7, 8], [0, 3, 7, 8], [0, 0, 6, 7]];
+    // 把一張表轉成 [TotalCoeff, TrailingOnes, 碼字字串] 清單（欄 c 對應 TotalCoeff＝c＋1；長度 0 的格子不是有效碼字）
+    const ctRows = (code, size) => { const out = []; for (let t1 = 0; t1 < size.length; t1++) for (let c = 0; c < size[t1].length; c++) { const n = size[t1][c]; if (n > 0) out.push([c + 1, t1, code[t1][c].toString(2).padStart(n, '0')]); } return out; };
+    const ctFlc = [[0, 0, '000011']];
+    for (let tc = 1; tc <= 16; tc++) for (let t1 = 0; t1 <= Math.min(3, tc); t1++) ctFlc.push([tc, t1, (((tc - 1) << 2) | t1).toString(2).padStart(6, '0')]);
+    const ctTables = {
+        n0: [[0, 0, '1']].concat(ctRows(CT_CODE[0], CT_SIZE[0])),
+        n2: [[0, 0, '11']].concat(ctRows(CT_CODE[1], CT_SIZE[1])),
+        n4: [[0, 0, '1111']].concat(ctRows(CT_CODE[2], CT_SIZE[2])),
+        flc: ctFlc,
+        chroma: [[0, 0, '01']].concat(ctRows(CT_CODE_CH, CT_SIZE_CH)),
+    };
     function make(PAR) {
         const { S, code } = PAR.dsl;
         const D = (id, algo, label, slots, py, extra) => Object.assign({ id, algo, paradigm: 'codec-transform', label, slots, py }, extra || {});
@@ -49,6 +66,11 @@
                 [],
                 (c, N, I) => code(['v = ' + nums(N, I), 'zl = v[0]', 'bits = ""', 'for x in v[1:13]:', '    bits = bits + str(x)', 'key = 7', 'if zl < 7:', '    key = zl', 'tab = {1: [(0, "1"), (1, "0")], 2: [(0, "1"), (1, "01"), (2, "00")], 3: [(0, "11"), (1, "10"), (2, "01"), (3, "00")], 4: [(0, "11"), (1, "10"), (2, "01"), (3, "001"), (4, "000")], 5: [(0, "11"), (1, "10"), (2, "011"), (3, "010"), (4, "001"), (5, "000")], 6: [(0, "11"), (1, "000"), (2, "001"), (3, "011"), (4, "010"), (5, "101"), (6, "100")], 7: [(0, "111"), (1, "110"), (2, "101"), (3, "100"), (4, "011"), (5, "010"), (6, "001"), (7, "0001"), (8, "00001"), (9, "000001"), (10, "0000001"), (11, "00000001"), (12, "000000001"), (13, "0000000001"), (14, "00000000001")]}', 'ans = -1', 'for run, cw in tab[key]:', '    if ans < 0 and bits.startswith(cw):', '        ans = run', 'print(ans)']),
                 { shape: numIn, limit: 1, helpers: () => [] }),
+            // CAVLC coeff_token（表 9-5）：輸入一行 17 個整數（nC，後接 16 個位元）；依 nC 選表，位元開頭符合的碼字即輸出 TotalCoeff 與 TrailingOnes。
+            D('h264.coefftoken', 'h264-coefftoken', 'CAVLC 的 coeff_token 解碼：輸入一行 17 個整數，第一個是 nC（色度直流為 -1，亮度為 0 以上），其後 16 個是位元（每個為 0 或 1）。依 H.264 表 9-5 的 nC 那一欄從位元開頭比對碼字，輸出兩個整數：TotalCoeff 與 TrailingOnes',
+                [],
+                (c, N, I) => code(['v = ' + nums(N, I), 'nc = v[0]', 'bits = ""', 'for x in v[1:17]:', '    bits = bits + str(x)', 'key = "n0"', 'if nc >= 2:', '    key = "n2"', 'if nc >= 4:', '    key = "n4"', 'if nc >= 8:', '    key = "flc"', 'if nc == -1:', '    key = "chroma"', 'tab = ' + JSON.stringify(ctTables), 'tc = -1', 't1 = -1', 'for e in tab[key]:', '    if tc < 0 and bits.startswith(e[2]):', '        tc = e[0]', '        t1 = e[1]', 'print(tc, t1)']),
+                { shape: numIn, limit: 1, helpers: () => [] }),
             // CAVLC total_zeros（4×4 區塊）：輸入一行 11 個整數，第一個是 tzVlcIndex（1 到 15，即 TotalCoeff），其後 10 個是位元；查 tzVlcIndex 的那一列，位元開頭符合的碼字對應的 total_zeros 即為輸出。
             D('h264.totalzeros', 'h264-totalzeros', 'CAVLC 的 total_zeros 解碼（4×4 區塊）：輸入一行 11 個整數，第一個是 tzVlcIndex（1 到 15），其後 10 個是位元（每個為 0 或 1）。依 H.264 表 9-7、9-8 查 tzVlcIndex 那一列，從位元開頭比對碼字，找到的 total_zeros 即為輸出（一個整數）',
                 [],
@@ -61,10 +83,11 @@
             { key: 'h264-dequant4', re: ALL('反量化', '4\\s*[x×*乘]\\s*4'), veto: /正量化|編碼/ },
             { key: 'h264-intra4', re: ALL('(?:幀內|畫面內|intra)', '4\\s*[x×*乘]\\s*4', '預測'), veto: /逆變換|反變換|反量化|正變換/i },
             { key: 'h264-runbefore', re: ALL('(?:CAVLC|run_before|run before)', '(?:游程|zerosLeft|剩餘零)'), veto: /反量化|逆變換|幀內/ },
+            { key: 'h264-coefftoken', re: ALL('(?:CAVLC|coeff_token|coeff token)', '(?:TotalCoeff|TrailingOnes)'), veto: /run_before|total_zeros|游程|zerosLeft|tzVlcIndex|反量化|逆變換|幀內/i },
             { key: 'h264-totalzeros', re: ALL('(?:CAVLC|total_zeros|total zeros)', '(?:tzVlcIndex|total_zeros|總零)'), veto: /反量化|逆變換|幀內|run_before/ },
         ].map((x) => Object.assign(x, { pri: true }));
         const paradigms = {}; for (const sk of skeletons) paradigms[sk.algo] = ['codec-transform'];
         return { id: 'h264dec', label: '影音壓縮 2：H.264 解碼算術（4×4 整數逆變換）', requires: [], judge: { checker: 'tokens', timeoutMs: 30000 }, algos, paradigms, skeletons };
     }
-    return { make };
+    return { make, ctTables };
 });
