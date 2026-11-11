@@ -8,10 +8,12 @@
 |---|---|---|
 | 0 設計 | `DESIGN.blockly-curriculum.md` §5（提交 `33e4c0f5b`） | 完成 |
 | 1 位元級基礎 `domain_avbits` | Exp-Golomb、NAL 切分、防競爭位元組、RBSP 尾位元、SPS／PPS／slice header | **train 16/16、選項反序 16/16、holdout 6/7（未解 1 題，只量測）**；尚未登記進 embed 清單與 run-core-tests |
-| 2 H.264 I 幀解碼 `domain_h264dec` | 逆變換、反量化、Intra 預測、CAVLC、去區塊 | 4×4 整數逆變換（train 3/3、holdout 1/2）與 4×4 反量化（train 3/3、holdout 1/1）；Intra、CAVLC、去區塊未開始 |
+| 2 H.264 I 幀解碼 `domain_h264dec` | 逆變換、反量化、Intra 預測、CAVLC、去區塊 | 逆變換（train 3/3、holdout 1/2）、反量化（train 3/3、holdout 1/1）、幀內預測 0 至 8 全部模式（train 10/10、holdout 7/10）、CAVLC run_before（2/2、1/1）與 total_zeros（2/2、1/1）已做；**coeff_token、level、去區塊未做**（見下方「接手（第二棒）」的接續點） |
 | 3 H.264 編碼與 P／B／CABAC | 整數正變換、量化、運動搜尋與補償、CABAC、B 幀 | 未開始 |
-| 4 有損聲音 `domain_avaudio` | MDCT、量化、簡化心理聲學 | 未開始 |
-| 5 有損影像 `domain_avimage` | 8×8 DCT、量化、Z 字形、熵編碼、Haar／5/3 小波 | 未開始 |
+| 4 有損聲音 `domain_avaudio` | MDCT、量化、IMDCT、簡化心理聲學 | MDCT 與量化（train 1/1、holdout 1/1）、IMDCT（train 1/1、holdout 1/1）、TDAC 自檢已做；**心理聲學未做** |
+| 5 有損影像 `domain_avimage` | 8×8 DCT、量化、Z 字形、熵編碼、Haar／5/3 小波 | Haar、5/3 提升、8×8 DCT＋量化、Z 字形、零游程編碼已做（holdout 5/7）；**Huffman／算術編碼未做** |
+
+階段 3（H.264 編碼、P／B／CABAC）：未開始。
 
 ## 2. 實測數字（階段 1，`domain_avbits.test.js`）
 
@@ -144,7 +146,43 @@ FA_TS_DIR=<含 tree-sitter.js、tree-sitter.wasm、tree-sitter-python.wasm 的�
 - 提交訊息需結尾 `Co-Authored-By: Claude Haiku 5.5 <noreply@anthropic.com>`（依最新指示）。
 - 未推送、未發布、未執行 `embed-code-ui.js`／`build-assistant.js`。`domain_avbits` 尚未登記進 `scripts/embed-code-ui.js`、`floating-assistant.js` 標記與 `scripts/run-core-tests.js`，需要管理者統一嵌入時一併登記。
 
-## 接手（2026-11-12，交給下一位 session）
+## 接手（第二棒，2026-11-12，由 Haiku 5.5 續做；取代下方第一棒節）
+
+### 本棒完成（分支 `claude/media-codec-2-625f4c`，起點 `399e769a`）
+- 提交：`73b323d8`（幀內預測 3 至 8）、`005c7b4d`（CAVLC run_before 與 total_zeros）、`c656b868`（5/3 與 Haar）、`6422c838`（8×8 DCT）、`559c1291`（Z 字形）、`e726d862`（MDCT）、`bac68db1`（IMDCT、TDAC）、`5d6cb619`（零游程）。
+- 數字與根因逐項見 DESIGN §2C 至 §2F 與本節下方「數字」。
+- 分支說明：指示寫的 `claude/media-codec-domain-bdfe56` 當時指向 `63ee38e6`，不是 `399e769a`；本棒把 `claude/media-codec-2-625f4c` 重設到 `399e769a`（`63ee38e6` 是其祖先，沒有遺失提交）。
+
+### 接續點（照順序做，每項 train、反序、holdout 實跑，寫出端對照寫明）
+1. **CAVLC coeff_token**（表 9-5，四個 nC 區段）：表來源可用 libavc `ih264_cavlc_tables.c` 的 coeff_token 陣列（web-fetch 子代理可取，回報後用 node 還原並自檢：每列互不為前綴、Kraft ≤ 1）。骨架：輸入 (nC, 位元) → 輸出 TotalCoeff 與 TrailingOnes。
+2. **level 前綴後綴**（level_prefix、level_suffix、suffixLength 規則）：規格細節多，先寫 train 再補 holdout。
+3. **去區塊 bS 3／4**：需要 α、β、tC0 表（libavc 的 deblk 表可取）；做不完就寫具體阻礙。
+4. **階段 3**：整數正變換、量化、運動搜尋與補償、CABAC、B 幀。做不完的子項寫阻礙。
+5. **階段 4**：心理聲學簡化模型（遮蔽門檻）、端對端 IMDCT（多區塊、四捨五入後誤差）。
+6. **階段 5**：Huffman 或算術編碼（後段熵編碼）。
+7. 未解 holdout 紀錄（不改教法，留作根因）：`intra4-dc-ho`、`intra4-h-ho`、`intra4-ddl-ho`、`legall-ho`、`legall-ho2`、`idct4-ho2`。
+
+### 數字（本棒）
+- 幀內預測：train 10/10、反序 10/10；holdout 7/10。
+- run_before：train 2/2、反序 2/2；holdout 1/1。total_zeros：train 2/2、反序 2/2；holdout 1/1。
+- Haar 與 5/3：train haar-tr、legall-tr 各 1，AC；holdout 2/4（haar-ho、legall-ho3 AC）。8×8 DCT：train 3/3；holdout dct-ho AC。Z 字形：train 4/4；holdout zz-ho AC。零游程：train 5/5；holdout rle-ho AC（階段 5 holdout 合計 5/7）。
+- MDCT：train 1/1；holdout mdct-ho AC；IMDCT：train 1/1；holdout imdct-ho AC；TDAC 中段誤差 2.4e-13（自檢，非外部對照）。
+
+### 尚缺清單（不要自己做）
+- 所有子元件都還沒登記進 `scripts/embed-code-ui.js`、`floating-assistant.js` 標記、`scripts/run-core-tests.js`，由管理者統一處理。不推送、不發布、不跑 embed／build。
+- 外部工具對照：沒有任何一項有外部工具（ffmpeg、Pillow、scipy）逐係數對照；正確性以公式與參考解一致、自檢（可逆性、TDAC、表的 Kraft）為準，已在各節寫明。
+
+### 第二棒的新坑（接手前看）
+- 搜尋上限：骨架的 `limit` 必須 ≥ 選項組合數。幀內預測由 4 改 9 才能找到模式 3 至 8（首次量測時 5 題失敗，根因是上限，不是公式）。
+- 算 algo 的正規式會同時命中多個題型（例如「掃描」同時命中 Z 字形與零游程）；新題的敘述要避開他題的關鍵字，並用 node 直接測正規式。
+- 讀取器只認「輸出」字樣，寫「第一行印 s」會被讀成輸入（`legall-ho2`）。
+- 讀取器只認「輸入一行 N 個整數」句型；「輸入 13 個…」讀不出（`ddl-ho`）。
+- 敘述寫「平均」卻給「除以 4」是敘述錯（`legall-ho`）。
+- holdout 改過一次就不乾淨：要另寫新 id，舊的留作紀錄（`legall` 已改兩次）。
+- 測試 `DBG=1` 時 debug 檔寫到 `CLAUDE_JOB_DIR/tmp/`，要先建立該目錄（本棒用 scratchpad）。
+- 外部 tree-sitter 快取：`FA_TS_DIR=/home/hungfu.lee/.cache/fa-ts-h264`（由 `renderer/vendor/tree-sitter/` 三檔複製）。
+
+### 接手（第一棒，已取代；保留原文）
 
 ### 接續點（照順序做）
 1. **幀內預測模式 3 至 8**：在 `renderer/src/uml/domain_h264dec_core.js` 的 `h264.intra4` 加上對角模式（3 DDL、4 DDR、5 VR、6 HD、7 VL、8 HU）的 slot 選項，參考解寫在 `domain_h264intra.test.js`（各模式獨立 Python 參考解）。每個模式至少一題 train、一題 holdout（holdout 措辭要寫出「4×4」，否則讀不出）。先修 `intra4-dc-ho` 的沙盒失敗根因（只查，不為 holdout 改教法）。
