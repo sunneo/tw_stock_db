@@ -232,3 +232,18 @@ Pillow 外部驗證：寫出端 20/20、解碼生成器 30/30（python3 的 Pill
 - Python 測試用 `FA_PYTHON=python3`（Pillow 9.0.1）；python3.13 的 Pillow 壞掉。
 - 判題器 DBG 會寫到 `CLAUDE_JOB_DIR/tmp/`，要先建目錄，否則變成 JUDGE_ERROR（已遇到）。
 - 指揮的 `kh` 修改在 `algo_intent_core.js` 的 `readToolInput` 最後一段（搜尋 `const kh`）。
+
+### 交接狀態（2026-11-12，context 39%，指揮要求）
+- **核心測試（一次，已結束）**：`scripts/run-core-tests.js` 完整跑完，日誌 `$HOME/.cache/blockly-run/core-full.log`（EXIT=1）。摘要：通過 247／299 組，失敗 52 組（新增 51、既有 1）。失敗群組清單：`grep -E '^FAIL' core-full.log`。日誌裡的 PASS／FAIL 行數（248／67）含明細行，以摘要行為準。
+- **沒有我的背景程序在跑**。pid 1021400 是 `matrix-finish-4-48e1e0` 工作階段的程序（cwd 不在本 worktree），不是本批的，本交接不處理也不殺。
+- 舊的 `core-after.log`（被中斷）與 `core-after-killed-partial.log` 只是過程紀錄，以 `core-full.log` 為準。
+- **par 失敗已對照**：`領域包 par`（63a0236c 既有半成品）用原始 `algo_intent_core.js` 也是 0/1 失敗，與讀取器修改無關。
+
+### 未完成與精確接續點（給 blockly-finish-3）
+1. **51 組新增失敗的基準對照（未做）**：多數為環境缺件（js-yaml、tree-sitter wasm、python 參數、g++／dotnet、wiki 目錄、LoRA manifest 雜湊）。接續：逐組暫換 `algo_intent_core.js` 為 `$HOME/.cache/algo_intent_core.orig.js`（或改用 `git show 4c5b5e15:…`）跑該群組，確認只有環境原因；**跑完務必還原**（`algo_intent_core.new.js` 是修改版）。注意：`$HOME/.cache` 內的暫存檔可能已不在，以 `git show 1698816c^:renderer/src/uml/algo_intent_core.js` 取得原版。
+2. **holdout 未解題與未過題根因（未做）**：ho-zlib、ho-gzip、ho-gnu、ho-enc、ho-enc-rgba；GIF ho-dec-rrggbb、ho-enc-pack；PCX ho-pcx-enc；JPEG ho-jpg-enc。指揮已授權查根因、可補敘述或教法；補過的題之後只當「補過後」數字。
+3. **讀取器兩段輸入的消費端（未做）**：讀取器已能產生 `[scalars, hex]`（`AI.reader("輸入三個整數 w h c，第二行一個十六進位字串 px。…")`），尚無骨架接受此形狀。接續：寫一個 `hexIn`＋整數行的骨架（如 PNG／GIF 寫出的「w h c＋像素」），再量測 train／holdout。
+4. **G1–G18 重跑（未做）**：目前只是存在性核對（`DESIGN.blockly-gaps.md` §8），沒有逐項重跑。
+
+### 本批提交（本交接節所在的提交）
+34ddf6d6（GIF）、fcd48a46（PCX）、832b49df（JPEG）、1698816c（讀取器＋G 核對＋接手節）。
