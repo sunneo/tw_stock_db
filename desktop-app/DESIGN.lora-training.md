@@ -328,3 +328,32 @@ lora-train/.venv/Scripts/pip install -r lora-train/requirements.txt
 3. **退步判定要有樣本數**：n < 20 的組只報告，不作退步判定；可以用來提出疑問，但不能拿來 pack 或否決。
 4. **範圍內與範圍外分欄**：報告退步表要分「適用範圍內」與「範圍外」兩欄，範圍外沒評的要寫「未量」。
 5. **已存輸出可以重新評分**（`regrade_*.py`），但重評要註明用的是哪一版判準。
+
+## 19. 第三、第四顆 adapter：`plan`、`colu`（2026-11-12 實跑，已打包 v1）
+
+**共同注意**：判準沿用既有的 `score_gen.js`／`eval_run.py`，沒有在看輸出前新登記（這不符合 §18.2 第 1 條的理想流程，已在卡片的已知限制註明）。範圍外沒有量。留出與訓練無題目或 id 重疊（已核對）。
+
+**plan**（rank 4，855 列，think_stack 的 plan_check、review_return、self_validate；留出 60 列 × 3 組，每組抽樣）
+
+| 組別 | 基底 | 微調 | 判定 |
+|---|---|---|---|
+| plan_check valid | 52/60 | 60/60 | 進步 |
+| review_return items | 0/60 | 50/60 | 進步 |
+| self_validate ok | 25/60 | 47/60 | 進步 |
+| self_validate 正例 | 23/43 | 32/43 | 進步 |
+| self_validate 負例 | 2/17 | 15/17 | 進步 |
+
+範圍內沒有退步。與 decompose 不同，plan 在 self_validate 正例上是進步（decompose 是退步 23→16）。
+
+**colu**（rank 4，657 列，colu 541 ＋ blockly_matrix 116；留出 114 列）
+
+| 組別 | 基底 | 微調 | 判定 |
+|---|---|---|---|
+| colu_letter_choice | 11/57 | 30/57 | 進步 |
+| colu_letter_choice_nonefirst | 0/57 | 25/57 | 進步 |
+
+範圍內沒有退步。blockly_matrix 沒有評量。
+
+**打包**：`out/release/plan-r4/`、`out/release/colu-r4/`，各 1 個分片、10,143,496 位元組。卡片的 eval 欄位沒有放（欄位只定義拆題與 function call 格式），數字記在這裡。
+
+**下一步**：`decompose_v2`（1,133 列，約 141 步）正在訓練；v2 的評量依 `EVAL_CRITERIA_v2.md` 的判準（全量 528 列、group/git ≥ 20）。
