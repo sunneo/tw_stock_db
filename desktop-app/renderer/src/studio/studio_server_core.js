@@ -321,12 +321,12 @@
                 }
                 if (method === 'POST' && P === '/api/lora/select') { const reg = await syncRegistry(); return ok(reg.reg.select({ text: body.text, domains: body.domains, ids: body.ids, manual: !!(body.ids && body.ids.length) })); }
                 if (method === 'POST' && P === '/api/lora/load') {
-                    const reg = await syncRegistry(); const r = await reg.reg.request({ text: body.text, domains: body.domains, ids: body.ids, manual: !!(body.ids && body.ids.length) });
+                    const reg = await syncRegistry(); const r = await reg.reg.resolve({ text: body.text, domains: body.domains, ids: body.ids, manual: !!(body.ids && body.ids.length) }); // resolve：不丟例外，沒有可用 adapter 回 fallback:'base'
                     let applied = false, applyNote = LORA_APPLY_BLOCKER, applyItems = null;
                     if (h.loraClear && !r.handles.length) { try { await h.loraClear(); applyNote = '沒有選到 adapter，原生推論已回到基底模型'; } catch (e) { applyNote = String((e && e.message) || e); } }
                     if (h.loraApply && r.handles.length) { try { const a = await h.loraApply(r.handles.map((x) => ({ id: x.id, bytes: x.handle && x.handle.bytes }))); applied = !!(a && a.ok); applyNote = (a && (a.error || a.note)) || ''; applyItems = (a && a.items) || null; } catch (e) { applyNote = String((e && e.message) || e); } }
                     log('LoRA 按需載入：' + (r.active.join('、') || '（沒有符合的）') + (applied ? '，已套用' : '，尚未套用到推論'));
-                    return ok({ active: r.active, loaded: r.loaded, unloaded: r.unloaded, skipped: r.skipped, handles: r.handles.map((x) => ({ id: x.id, bytes: x.handle && x.handle.bytes ? x.handle.bytes.length : 0 })), applied, applyNote, applyItems });
+                    return ok({ active: r.active, fallback: r.fallback, loaded: r.loaded, unloaded: r.unloaded, skipped: r.skipped, handles: r.handles.map((x) => ({ id: x.id, bytes: x.handle && x.handle.bytes ? x.handle.bytes.length : 0 })), applied, applyNote, applyItems });
                 }
                 if (method === 'POST' && P === '/api/lora/unload') { const reg = await syncRegistry(); const ids = body.id ? [body.id] : await reg.reg.unloadAll(); if (body.id) await reg.reg.unload(body.id); if (h.loraClear) { try { await h.loraClear(); } catch (_) { /* 主程序沒回應不影響卸載 */ } } return ok({ unloaded: ids }); }
                 // ---- 資料匯入與清洗（第二輪，接 ingest_core／clean_core）----
