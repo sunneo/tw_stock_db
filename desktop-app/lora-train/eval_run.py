@@ -77,7 +77,7 @@ def grade(x, o):
         if k == "ask":
             return ("?" in t or "？" in t or re.search(r"which|what|please|請問|請", t, re.I)) is not None and not re.search(r"not available|沒有", t), t[:60]
         if k == "missing":
-            return bool(re.search(r"not available|isn.t available|does not exist|doesn.t exist|not in the list|不存在|沒有這個", t, re.I)), t[:80]
+            return bool(re.search(r"not available|isn.t available|does not exist|doesn.t exist|not in the list|不存在|沒有這個|工具清單裡沒有|清單裡沒有|沒有「[^」]+」這個工具", t, re.I)), t[:80]
         return True, ""
     if task == "uml":
         if k.startswith("ask"):
