@@ -8,7 +8,7 @@
 |---|---|---|
 | 0 設計 | `DESIGN.blockly-curriculum.md` §5（提交 `33e4c0f5b`） | 完成 |
 | 1 位元級基礎 `domain_avbits` | Exp-Golomb、NAL 切分、防競爭位元組、RBSP 尾位元、SPS／PPS／slice header | **train 16/16、選項反序 16/16、holdout 6/7（未解 1 題，只量測）**；尚未登記進 embed 清單與 run-core-tests |
-| 2 H.264 I 幀解碼 `domain_h264dec` | 逆變換、反量化、Intra 預測、CAVLC、去區塊 | 第一個子元件 4×4 整數逆變換：train 3/3（反序 3/3）、holdout 1/2；其餘子元件未開始 |
+| 2 H.264 I 幀解碼 `domain_h264dec` | 逆變換、反量化、Intra 預測、CAVLC、去區塊 | 4×4 整數逆變換（train 3/3、holdout 1/2）與 4×4 反量化（train 3/3、holdout 1/1）；Intra、CAVLC、去區塊未開始 |
 | 3 H.264 編碼與 P／B／CABAC | 整數正變換、量化、運動搜尋與補償、CABAC、B 幀 | 未開始 |
 | 4 有損聲音 `domain_avaudio` | MDCT、量化、簡化心理聲學 | 未開始 |
 | 5 有損影像 `domain_avimage` | 8×8 DCT、量化、Z 字形、熵編碼、Haar／5/3 小波 | 未開始 |
@@ -49,7 +49,11 @@ FA_TS_DIR=<含 tree-sitter.js、tree-sitter.wasm、tree-sitter-python.wasm 的�
   - `idct4-ho2`：另寫的新措辭，第一次量測即失敗（沒有配方）。原因：敘述沒有點名「逆變換」，讀取器靠這幾個字配對，這是真實缺口，未為它改讀取器。
   - 乾淨的 holdout 結果：0/1（ho2）。
 - 測試：`6 passed, 0 failed`。執行方式同 §2。
-- 尚未做：反量化（LevelScale）、Intra 預測、CAVLC、去區塊；未登記進 embed 清單與 run-core-tests。
+- 第二個子元件 4×4 反量化（平坦縮放，權重 16；骨架 `h264.dequant4`，測試檔 `domain_h264dequant.test.js`）：輸入一行 17 個整數（qP＋16 個係數）。
+  - train：`dequant4`、`dequant4-rw`、`dequant4-rw′` 共 3 題，3/3，反序 3/3；qP 0..51、係數 ±20。
+  - holdout：`dequant4-ho` 1 題，措辭第一次量測即通過、未修改，1/1；係數 ±200。
+  - 測試 `6 passed, 0 failed`。回歸：`domain_h264dec.test.js` 仍 6 passed，holdout `idct4-ho2` 仍未解（1/2）。
+- 尚未做：Intra 預測、CAVLC、去區塊；未登記進 embed 清單與 run-core-tests。
 
 ## 3. 環境與坑（重要，接手前先看）
 

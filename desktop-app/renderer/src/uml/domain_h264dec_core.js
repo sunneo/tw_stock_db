@@ -24,10 +24,15 @@
                     return code(['v = ' + nums(N, I), 'm = [v[4 * i:4 * i + 4] for i in range(4)]'].concat(stages[0], stages[1], c.out === 'lines' ? ['for i in range(4):', '    print(*m[i])'] : ['print(*[x for row in m for x in row])']));
                 },
                 { shape: numIn, limit: 4, helpers: () => [] }),
+            D('h264.dequant4', 'h264-dequant4', '4×4 反量化（平坦縮放，權重 16）：輸入一行 17 個整數，第一個是量化參數 qP，後面 16 個是係數（依列排列）；每個位置的 normAdjust 值由 (列,行) 的奇偶性決定（兩者皆偶用第 0 欄、兩者皆奇用第 1 欄、其餘用第 2 欄），LevelScale＝16×normAdjust；qP 大於等於 24 時 d＝(c×LevelScale)左移(qP//6-4)位，否則 d＝(c×LevelScale＋2 的 (3-qP//6) 次方)右移(4-qP//6)位；輸出 4 行，每行 4 個整數',
+                [S('out', '輸出格式', [['lines', 'lines'], ['flat', 'flat']])],
+                (c, N, I) => code(['v = ' + nums(N, I), 'qp = v[0]', 'co = v[1:17]', 'vt = [[10, 16, 13], [11, 18, 14], [13, 20, 16], [14, 23, 18], [16, 25, 20], [18, 29, 23]]', 'out = []', 'for k in range(16):', '    i = k // 4', '    j = k % 4', '    if i % 2 == 0 and j % 2 == 0:', '        t = vt[qp % 6][0]', '    elif i % 2 == 1 and j % 2 == 1:', '        t = vt[qp % 6][1]', '    else:', '        t = vt[qp % 6][2]', '    ls = 16 * t', '    if qp >= 24:', '        out.append((co[k] * ls) << (qp // 6 - 4))', '    else:', '        out.append((co[k] * ls + (1 << (3 - qp // 6))) >> (4 - qp // 6))'].concat(c.out === 'lines' ? ['for i in range(4):', '    print(*out[4 * i:4 * i + 4])'] : ['print(*out)'])),
+                { shape: numIn, limit: 4, helpers: () => [] }),
         ];
         const ALL = (...parts) => new RegExp('^' + parts.map((x) => String.raw`(?=[\s\S]*` + x + ')').join(''), 'i');
         const algos = [
             { key: 'h264-idct4', re: ALL('4\\s*[x×*乘]\\s*4', '(?:逆變換|反變換|逆轉換|反轉換|整數變換)'), veto: /正變換|前向/ },
+            { key: 'h264-dequant4', re: ALL('反量化', '4\\s*[x×*乘]\\s*4'), veto: /正量化|編碼/ },
         ].map((x) => Object.assign(x, { pri: true }));
         const paradigms = {}; for (const sk of skeletons) paradigms[sk.algo] = ['codec-transform'];
         return { id: 'h264dec', label: '影音壓縮 2：H.264 解碼算術（4×4 整數逆變換）', requires: [], judge: { checker: 'tokens', timeoutMs: 30000 }, algos, paradigms, skeletons };
