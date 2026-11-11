@@ -524,3 +524,17 @@ Backend {
 
 **無法分辨的部分（誠實寫出）**：對隨機 adapter、隨機詞元序列，併入後整體輸出與原模型的差距（KL）：變化量 1e-9 → 0.075；1e-4 → 0.24；1e-3 → 0.26；0.5% → 0.27；2% → 0.30；兩種抖動種子互比 0.27。也就是**只要基底不是位元相同，這個 q8 模型的輸出就會被推到 KL 0.25 左右的雜訊底線，與變化量大小幾乎無關**，所以這組實驗**無法證明或否定「併入結果接近真正的 LoRA 分支」**：沒有分支版本可比（槽版需要 Python 的 onnx 套件，本機沒有），而且分支版本相對於原模型同樣會落在這個底線上。同樣的敏感度意味著桌面版（原生分支）與網頁版（併入）、甚至不同 CPU 指令集之間，輸出都可能不位元相同。需要用**真的訓練出的 adapter**、**自然語句**、**任務層級的指標**（例如該 adapter 的評量集分數，或在固定提示下輸出是否符合訓練目標）來比較「原模型／桌面分支／網頁併入」三者，這一步還沒做，是 §14.1 路線 c 目前最大的未驗證項。
 **其他未驗證**：瀏覽器 WASM 的 ORT 與 transformers.js 的 fetch 攔截、WebGPU 都沒測；網頁版記憶體峰值。
+
+## 15. GUI「尚未實作」盤點與補齊進度（2026-11-11）
+
+盤點方式：grep `尚未實作／implemented:false／尚未接` 於 `studio_server_core.js`、`studio_host.js`、`studio-viewer.template.html`、`backend_*.js`。結果與處理：
+
+| # | 位置 | 現象 | 處理 |
+|---|---|---|---|
+| 1 | `studio_server_core.js` `/api/teacher` ＋ 檢視器 `T.teacher` | 「老師迴圈尚未實作」 | 做：`teacher_core.js`（見 §15.2） |
+| 2 | `/api/eval` ＋ `T.eval` | `implemented:false`、「尚未實作」 | 做：`eval_core.js`（§15.1） |
+| 3 | `studio_host.js` `studio_train_start`、`T.train` | 五種符號式「訓練包裝尚未實作」 | 做：`sym_train_core.js`（§15.3） |
+| 4 | `T.ingest` | 只有「挑檔案／資料夾」，沒有路徑／資料夾參照／網址／多資料夾／釘選輸入 | 做：§15.4 |
+| 5 | `backend_planned.js` 的 webgpu／directml／vulkan | 研究項，已有具體阻礙與解除條件（§5.2） | 不在 GUI 補齊範圍；維持灰掉並顯示阻礙 |
+| 6 | `LORA_APPLY_BLOCKER`（`studio_server_core.js:36`） | LoRA 套用到推論未接 | 其他工作階段處理（§14），不在此 |
+| 7 | 資產清單空狀態文字「由 … 的訓練包裝產生（尚未實作…）」 | 文案過時 | 隨 #3 改文案 |
