@@ -782,3 +782,64 @@ Backend {
 ### 18.5 接手
 - 檔案：`pipeline_live_core.js`、`pipeline_live_core.test.js`、`train_advice_core.js`、`train_advice_core.test.js`，以及 `pipeline_core.js`（新增 logDone 與 progress 的傳遞）。
 - 接續順序：(1) 管理者在 `eval_run.py` 補 gold／pred；(2) 用真的評量輸出跑 `adviceFromEval` 看結果；(3) 在 `studio_server_core.js` 加 `/api/pipeline` 與 `/api/advice`，組 facts 與 `trainRows`；(4) 畫面：流程總覽顯示即時狀態與建議清單，建議的按鈕連到補資料、調比重、換超參數。
+
+## 19. 流程總覽接上：路由、真實紀錄、畫面與離線訓練器 GUI 盤點（2026-11-12）
+
+管理者指示：先 rebase 到最新 desktop-app（已完成，基底 `4c5b5e15`）；把流程總覽接上（路由、畫面、真實紀錄、記憶體取樣）；LLM 階段圖與格式選擇；離線訓練器 GUI 盤點後逐項做。
+
+### 19.1 真實紀錄（資料從哪裡來）
+- **訓練日誌**：`backend_cpu_py` 把子行程輸出的每一行逐行寫進 `<outputDir>/train.log`（追加；寫不了不影響訓練）。
+- **子行程 pid**：啟動時寫進 `<outputDir>/run.pid`。
+- **完成標記**：資產（manifest.json＋sha256）寫入即為完成；日誌的 `[done]` 只代表日誌寫了，不算完成（§18.1）。
+- **記憶體**：主行程的 `studio_host.studio_run_info` 讀 `run.pid` 對應的 `/proc/<pid>/status` VmRSS（只有 Linux）；主行程 RSS（`process.memoryUsage().rss`）另附。Windows 沒有 /proc，回「尚未實作」並寫明。
+- **事件解析**：在主行程用 `backend_cpu_py.parseProgressLine` 解析成事件，回給伺服器（伺服器與畫面不再解析日誌）。
+
+### 19.2 路由與畫面
+- `renderer/src/studio/pipeline_routes_core.js`（依賴注入，純核心）：`GET /api/pipeline?kind=&name=&run=&env=`、`GET /api/advice?kind=&name=`（讀資產的 `eval.json`，從資料檔數 `trainRows`，holdout 不計）、`POST /api/advice/from-json`（貼上的評量 JSON）。
+- `studio_server_core.js` 接上（依賴以工廠參數注入，和其他模組同一個寫法）。
+- `renderer/src/studio/pipeline_view_core.js`：HTML 產生器（所有外部字串先跳脫）。資料沒有寫「無資料（原因）」；功能沒做寫「尚未實作（阻礙）」。
+- 檢視器：新增「流程」分頁（版面 TABS 加在「訓練」之後），執行中每 2 秒重讀。建議的按鈕目前只顯示「請到『X』分頁操作」（沒有自動切換分頁，這點未做，見 19.5）。
+- 嵌入清單（`scripts/embed-code-ui.js`）已加入新模組（只改清單，**沒有執行嵌入**）。
+
+### 19.3 LLM 模型階段圖與格式選擇
+- 階段：資料→產生→切分→訓練（LoRA 或完整微調；目前只有 LoRA）→評量→合併→匯出（ONNX q8 或 GGUF）→按需載入。
+- 格式預設：網頁與桌面本機都優先 ONNX q8；GGUF 只在有 llama.cpp 後端時提供（`pipeline_core.pickExportFormat`，§17.3）。
+- 目前 `exportCaps` 固定 `{onnxExport:false, ggufExport:false}`：沒有轉換工具，所以預設為空，畫面寫「尚未實作（原因）」。接上工具時只要改這個注入值。
+
+### 19.4 測試（本次數字）
+| 測試 | 結果 | 說明 |
+|---|---|---|
+| `pipeline_core.test.js` | 31／0 | 階段表、狀態推導、格式預設 |
+| `pipeline_live_core.test.js` | 20／0 | 即時狀態、與 facts 串接 |
+| `train_advice_core.test.js` | 23／0 | 建議規則、門檻、證據不足 |
+| `pipeline_routes_core.test.js` | 26／0 | 路由形狀、真實紀錄（假儲存層）、建議讀 eval.json |
+| `pipeline_view_core.test.js` | 18／0 | HTML 跳脫、無資料、尚未實作、建議按鈕 |
+| `studio_layout_core.test.js` | 27／0 | 新增「流程」分頁 |
+| `studio_server_core.test.js` | 94／0 | 含三項新路由檢查（路由接上、未知種類 400、建議證據不足） |
+| `studio_host.test.js` | 20／0 | |
+| `backend_cpu_py.test.js` | 60／0 | 新增 train.log 逐行寫入、run.pid 寫入檢查 |
+| `dsl_expr_core` / `domain_spec_core` / `domain_e2e` / `sym_studio` | 77／0、85／0、17／0、71／0 | 先前的回歸 |
+| `studio_embed.test.js` | **12 過、4 敗（預期）** | 敗的 4 項是「嵌入與來源一致」：來源已改、嵌入尚未重產（見 19.5） |
+
+### 19.5 離線訓練器 GUI 盤點（逐項）
+| # | 項目 | 現況 | 這次處理 |
+|---|---|---|---|
+| 1 | 流程總覽分頁（五種訓練階段圖、即時、建議） | 無 | **做**：核心、路由、畫面、測試（19.2、19.4） |
+| 2 | 訓練紀錄與記憶體取樣 | 無 | **做**：train.log、run.pid、主行程讀取（19.1）；Windows 子行程記憶體未做 |
+| 3 | 建議按鈕自動切換到對應分頁 | 只顯示提示 | **未做**：需要檢視器的分頁切換函式，尚未確認其介面 |
+| 4 | 資料集分頁逐筆編輯 | 只讀（畫面寫明「逐筆編輯還沒做」） | **未做** |
+| 5 | LoRA 套用到推論 | 阻礙：桌面需原生執行包 1.22.0-2 以上；網頁的 transformers.js 接點未接（`LORA_APPLY_BLOCKER`） | **未做**（阻礙寫明，等執行包） |
+| 6 | webgpu／directml／vulkan 後端 | 研究項，`backend_planned.js` 寫明阻礙 | **未做**（§5.2） |
+| 7 | LLM 完整微調 | 只有 LoRA 路線 | **未做** |
+| 8 | ONNX／GGUF 匯出與載入 | 沒有轉換工具（optimum、llama.cpp） | **未做**：任何下載都要先回報並由使用者同意 |
+| 9 | 老師迴圈對 colu／trainer 代做 | 設計上不可（使用者決定） | 不做（by design） |
+| 10 | GitHub wiki 連網抓取實測 | 未測（§15.5） | **未做** |
+| 11 | blockly 種子題在 App 內重跑 | 題目在測試檔，打包不含（§15.1） | **未做** |
+| 12 | Electron 視窗驗證（整個工作室與流程分頁） | 這次未驗（沒有開視窗） | **未做** |
+| 13 | 嵌入重產 | 來源已改，嵌入未重產（studio_embed 4 項預期失敗） | **未做**：需要有權限的人執行 `embed-code-ui.js` |
+| 14 | 評量的位置偏誤 | `eval_run.py` 缺 gold／pred | **未做**：管理者在 `lora-train/` 補；這裡以「無資料」顯示 |
+
+### 19.6 接手
+- 分支 `claude/studio-domain-author-dcb72c`（已 rebase 到 `4c5b5e15`，原分支留在 `backup/studio-pre-rebase-e9da5891`）。
+- 新檔：`pipeline_routes_core.js`、`pipeline_view_core.js` 與各自測試。修改：`backend_cpu_py.js`、`studio_host.js`、`studio_server_core.js`、`studio_layout_core.js`、`studio-viewer.template.html`、`scripts/embed-code-ui.js`，以及對應測試。
+- 下一步順序：(1) 有權限者重產嵌入（studio_embed 會轉綠）；(2) 14 的 gold／pred 由管理者補；(3) 19.5 的 3、4 項；(4) Electron 視窗驗證。
