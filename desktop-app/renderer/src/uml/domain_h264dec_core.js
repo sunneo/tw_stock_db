@@ -90,6 +90,11 @@
                 [],
                 (c, N, I) => code(['v = ' + nums(N, I), 'qp = v[0]', 'X = [v[1:5], v[5:9], v[9:13], v[13:17]]', 'CF = [[1, 1, 1, 1], [2, 1, -1, -2], [1, -1, -1, 1], [1, -2, 2, -1]]', 'MF = [[13107, 5243, 8066], [11916, 4660, 7490], [10082, 4194, 6554], [9362, 3647, 5825], [8192, 3355, 5243], [7282, 2893, 4559]]', 'T = [[0] * 4 for i in range(4)]', 'for i in range(4):', '    for j in range(4):', '        for k in range(4):', '            T[i][j] = T[i][j] + CF[i][k] * X[k][j]', 'W = [[0] * 4 for i in range(4)]', 'for i in range(4):', '    for j in range(4):', '        for k in range(4):', '            W[i][j] = W[i][j] + T[i][k] * CF[j][k]', 'qbits = 15 + qp // 6', 'f = (1 << qbits) // 3', 'out = []', 'for i in range(4):', '    for j in range(4):', '        m = MF[qp % 6][2]', '        if i % 2 == 0 and j % 2 == 0:', '            m = MF[qp % 6][0]', '        if i % 2 == 1 and j % 2 == 1:', '            m = MF[qp % 6][1]', '        a = W[i][j]', '        if a < 0:', '            a = -a', '        z = (a * m + f) >> qbits', '        if W[i][j] < 0:', '            z = -z', '        out.append(z)', 'print(*out)']),
                 { shape: numIn, limit: 1, helpers: () => [] }),
+            // 運動補償：亮度半像素內插（6 抽頭，H.264 8.4.2.2.1）：輸入一行 6 個整數 E、F、G、H、I、J（0 至 255）；b1＝E−5F＋20G＋20H−5I＋J，b＝clip((b1＋16)>>5)，輸出 b。
+            D('h264.hpel', 'h264-hpel', '亮度半像素內插（6 抽頭）：輸入一行 6 個整數 E、F、G、H、I、J（0 至 255）。先算 b1＝E 減 5 倍 F 加 20 倍 G 加 20 倍 H 減 5 倍 I 加 J；再算 b＝(b1 加 16) 右移 5 位，並限制在 0 至 255；輸出一個整數 b',
+                [],
+                (c, N, I) => code(['v = ' + (I.inputs[0].k === 'list' ? N.ls[0] : '[int(t) for t in ' + N.s[0] + '.split()]'), 'b1 = v[0] - 5 * v[1] + 20 * v[2] + 20 * v[3] - 5 * v[4] + v[5]', 'b = (b1 + 16) >> 5', 'if b < 0:', '    b = 0', 'if b > 255:', '    b = 255', 'print(b)']),
+                { shape: numIn, limit: 1, helpers: () => [] }),
             // CAVLC total_zeros（4×4 區塊）：輸入一行 11 個整數，第一個是 tzVlcIndex（1 到 15，即 TotalCoeff），其後 10 個是位元；查 tzVlcIndex 的那一列，位元開頭符合的碼字對應的 total_zeros 即為輸出。
             D('h264.totalzeros', 'h264-totalzeros', 'CAVLC 的 total_zeros 解碼（4×4 區塊）：輸入一行 11 個整數，第一個是 tzVlcIndex（1 到 15），其後 10 個是位元（每個為 0 或 1）。依 H.264 表 9-7、9-8 查 tzVlcIndex 那一列，從位元開頭比對碼字，找到的 total_zeros 即為輸出（一個整數）',
                 [],
@@ -104,6 +109,7 @@
             { key: 'h264-runbefore', re: ALL('(?:CAVLC|run_before|run before)', '(?:游程|zerosLeft|剩餘零)'), veto: /反量化|逆變換|幀內/ },
             { key: 'h264-coefftoken', re: ALL('(?:CAVLC|coeff_token|coeff token)', '(?:TotalCoeff|TrailingOnes)'), veto: /run_before|total_zeros|游程|zerosLeft|tzVlcIndex|level_prefix|suffixLength|反量化|逆變換|幀內/i },
             { key: 'h264-level', re: ALL('(?:CAVLC|level_prefix)', '(?:suffixLength|level_suffix)'), veto: /coeff_token|TotalCoeff|run_before|total_zeros|游程|反量化|逆變換|幀內/i },
+            { key: 'h264-hpel', re: ALL('(?:半像素|half.?pel)', '(?:內插|插值|interpolat|6\\s*抽頭)'), veto: /CAVLC|量化|去區塊|正變換|逆變換/i },
             { key: 'h264-fwdquant4', re: ALL('(?:正變換|前向|forward)', '(?:4\\s*[x×*乘]\\s*4|整數正變換)', '(?:量化|MF|qP)'), veto: /逆變換|反變換|反量化|幀內|CAVLC|去區塊/i },
             { key: 'h264-deblock', re: ALL('(?:去區塊|deblock)', '(?:bS|邊界強度)'), veto: /coeff_token|level|CAVLC|run_before|total_zeros|游程|反量化|逆變換|幀內/i },
             { key: 'h264-totalzeros', re: ALL('(?:CAVLC|total_zeros|total zeros)', '(?:tzVlcIndex|total_zeros|總零)'), veto: /反量化|逆變換|幀內|run_before/ },
