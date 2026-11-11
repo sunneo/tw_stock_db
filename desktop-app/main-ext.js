@@ -1907,7 +1907,12 @@ function startNativeMailbox(ctx) {
     });
     return host;
   }
-  const lora = NRL.create({ fs: fsSync, path: pathM, crypto: require("crypto"), userData, box, getRuntime: () => runtime, getModelPath: () => modelPath });
+  // 標準版 q8 → LoRA 槽版（自動轉換並快取，見 native-slot-model.js／lora-slot-build.js）。環境變數指定的模型優先；沒指定時自動找本程式下載位置的標準版。
+  const slot = require("./native-slot-model.js").create({ fs: fsSync, path: pathM, crypto: require("crypto"), cp: require("child_process"), https: require("https"), userData, env: process.env, execPath: process.execPath, buildScript: pathM.join(__dirname, "lora-slot-build.js"), baseModelPath: modelPath, log: (s) => console.log("[main-ext] " + s) });
+  const baseModel = () => modelPath || ((slot.findStandard() || {}).model || "");
+  const baseTokenizer = () => tokenizerPath || ((slot.findStandard() || {}).tokenizer || "");
+  const slotModel = () => { const c = slot.currentSlot(); return c ? c.model : ""; };
+  const lora = NRL.create({ fs: fsSync, path: pathM, crypto: require("crypto"), userData, box, getRuntime: () => runtime, getModelPath: () => slotModel() || baseModel() });
   const idleStatus = { alive: false, pid: null, pending: 0, consecutiveCrashes: 0, disabled: false, disabledReason: "" };
   let runQueue = Promise.resolve(); // 生成一次只跑一個（子程序一次只處理一個生成）
   async function doRun(id, p) {
@@ -1918,7 +1923,7 @@ function startNativeMailbox(ctx) {
       if (!lr.ok) return { ok: false, code: lr.code, message: lr.message, backend: "native" };
       const req = {
         messages: p.messages || [], template: p.template, gen: p.gen, maxTokens: p.maxTokens, stream: !!p.stream, timeoutMs: p.timeoutMs || 0, seed: p.seed,
-        modelPath, tokenizerPath,
+        modelPath: lr.lora ? (slotModel() || baseModel()) : baseModel(), tokenizerPath: baseTokenizer(),
         onToken: (t) => { try { fsSync.appendFileSync(tokFile, JSON.stringify({ text: t }) + "\n"); } catch (_) { /* 寫不了就只靠最後結果 */ } },
       };
       if (lr.lora) req.lora = lr.lora;
@@ -2016,9 +2021,16 @@ function startNativeMailbox(ctx) {
   async function handle(op, payload, id) {
     const p = payload || {};
     if (op.indexOf("studio_") === 0) return handleStudio(op, p);
-    if (op === "status") return { ok: true, status: host ? host.status() : idleStatus, engine: runtime.ok && modelPath ? "native" : "none", box, runtime: { ok: runtime.ok, version: runtime.version || null, reason: runtime.ok ? "" : runtime.reason, protocolOk, modelReady: !!(runtime.ok && modelPath && tokenizerPath), features: runtime.features || [], legacy: !!runtime.legacy, latestVersion: NATIVE_RUNTIME_VERSION }, lora: lora.status() };
-    if (op === "lora_apply") return lora.apply(p);
-    if (op === "lora_apply_set") return lora.applySet(p);
+    if (op === "status") return { ok: true, status: host ? host.status() : idleStatus, engine: runtime.ok && baseModel() ? "native" : "none", box, runtime: { ok: runtime.ok, version: runtime.version || null, reason: runtime.ok ? "" : runtime.reason, protocolOk, modelReady: !!(runtime.ok && baseModel() && baseTokenizer()), features: runtime.features || [], legacy: !!runtime.legacy, latestVersion: NATIVE_RUNTIME_VERSION }, lora: lora.status() };
+    if (op === "lora_apply" || op === "lora_apply_set") {
+      // 模型不是槽版時先自動轉換（有標準版）或回具體說明（沒有標準版：要下載的檔名／來源／大小）
+      const bm = baseModel();
+      if (!(bm && fsSync.existsSync(pathM.join(pathM.dirname(bm), "layout.json")))) { const er = await slot.ensure(); if (!er.ok) return er; }
+      return op === "lora_apply" ? lora.apply(p) : lora.applySet(p);
+    }
+    if (op === "slot_status") return slot.status();
+    if (op === "slot_prepare") { slot.ensure(); return { ok: true, started: true }; }
+    if (op === "slot_download") return slot.download(p);
     if (op === "lora_clear") return lora.clear();
     if (op === "lora_status") return Object.assign({ ok: true }, lora.status());
     if (op === "reenable") { if (host) host.reenable(); return { ok: true, status: host ? host.status() : idleStatus }; }
@@ -2081,7 +2093,7 @@ function startNativeMailbox(ctx) {
     if (op.indexOf("onnx_") === 0) return handleOnnx(op, p);
     if (op === "run") {
       if (!runtime.ok) return { ok: false, code: "no_engine", message: "原生引擎沒有可用的執行包（" + runtime.reason + "）" };
-      if (!modelPath || !tokenizerPath) return { ok: false, code: "no_model", message: "原生引擎沒有模型檔路徑（環境變數 FA_NATIVE_MODEL_PATH／FA_NATIVE_TOKENIZER_PATH 未設定）" };
+      if (!baseModel() || !baseTokenizer()) return { ok: false, code: "no_model", message: "原生引擎沒有模型檔路徑（環境變數 FA_NATIVE_MODEL_PATH／FA_NATIVE_TOKENIZER_PATH 未設定）" };
       const job = runQueue.then(() => doRun(id, p));
       runQueue = job.catch(() => {});
       return job;
