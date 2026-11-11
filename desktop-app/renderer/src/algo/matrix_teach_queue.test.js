@@ -40,5 +40,19 @@ ok(sm.total === 2 && sm.needExamples === 1, '摘要：2 題，1 題沒有範例�
 ok(sm.lines[0].includes('2 題') && sm.lines[0].includes('1 題還沒有範例'), '摘要首行：' + sm.lines[0]);
 ok(sm.top[0].count === 2 && sm.top[0].statement.startsWith('輸入 n'), '最常出現的題排第一、次數 2');
 console.log('⑥ 摘要：' + sm.lines.join(' ｜ '));
+// ⑦ 純函式 mergeText（產品端 _teachQueueRecord 用它）：與直接 mergeQueue＋queueText 逐字相同；同一題再加只計次數；壞文字不丟其他行
+{
+    const base = S.queueText(S.mergeQueue([], e1));
+    const direct = S.queueText(S.mergeQueue(S.parseQueue(base), e2));
+    const viaMT = Q.mergeText(base, e2);
+    ok(viaMT.text === direct && viaMT.count === 2, 'mergeText 與直接合併逐字相同（2 筆）');
+    const again = Q.mergeText(viaMT.text, e3);
+    ok(again.count === 2 && again.entries.find((x) => x.statement === e1.statement).count === 2, 'mergeText 同題第二次加入只計次數（count=2、仍 2 筆）');
+    const bad = Q.mergeText('這不是 JSON\n' + base + '{"缺statement":1}\n', e2);
+    ok(bad.count === 2 && bad.summary.total === 2, 'mergeText 略過壞行，其他行保留');
+    const empty = Q.mergeText('', e1); ok(empty.count === 1 && empty.summary.lines[0].includes('1 題'), 'mergeText 空字串＝空佇列，加入 1 筆');
+    ok(Q.mergeText(null, e1).count === 1, 'mergeText 接受 null（rawfs 沒讀到時）');
+    console.log('⑦ mergeText：逐字相同、同題計次、壞行略過、空／null 輸入');
+}
 fs.rmSync(dir, { recursive: true, force: true });
 console.log(passed + ' passed, 0 failed');

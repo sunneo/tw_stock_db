@@ -48,5 +48,12 @@
         };
     }
 
-    return { create, summarize, nodeFsIO, STAGE_LABEL };
+    // 純函式版（給宿主的同步或非同步 io 用）：整份 JSONL 文字＋一筆新紀錄 → 合併後的文字、筆數與摘要。
+    // 產品端 floating-assistant 的 _teachQueueRecord 用這個：讀與寫都由宿主負責（rawfs 是非同步的），這裡只做合併規則。
+    function mergeText(text, entry) {
+        const merged = S.mergeQueue(S.parseQueue(text || ''), entry);
+        return { text: S.queueText(merged), entries: merged, count: merged.length, summary: summarize(merged) };
+    }
+
+    return { create, summarize, mergeText, nodeFsIO, STAGE_LABEL };
 });

@@ -120042,11 +120042,13 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
     }
     async _teachQueueRecord(entry) {
         const Sp = FaMatrixSpec; let text = '', where = 'memory';
+        // 合併與摘要走 FaMatrixTeachQueue.mergeText（matrix_teach_queue_core，同一套 mergeQueue 規則）；模組沒嵌入時退回直接合併
+        const teachMerge = (t, e) => { if (typeof FaMatrixTeachQueue !== 'undefined' && FaMatrixTeachQueue && FaMatrixTeachQueue.mergeText) return FaMatrixTeachQueue.mergeText(t, e); const m = Sp.mergeQueue(Sp.parseQueue(t), e); return { text: Sp.queueText(m), count: m.length, summary: null }; };
         try {
             const box = typeof window !== 'undefined' && window.desktopAPI && window.desktopAPI.rawfs ? await this._nrBox() : null;
-            if (box) { const sep = box.indexOf(String.fromCharCode(92)) >= 0 ? String.fromCharCode(92) : '/'; const ud = box.split(sep).slice(0, -1).join('/'); const p = ud + '/teach_queue.jsonl'; try { const r = await window.desktopAPI.rawfs.readFile(p, 'utf8'); text = (r && r.text) || ''; } catch (_) { text = ''; } const merged = Sp.mergeQueue(Sp.parseQueue(text), entry); await window.desktopAPI.rawfs.writeFile(p, { text: Sp.queueText(merged) }); return { where: 'file', path: p, count: merged.length }; }
+            if (box) { const sep = box.indexOf(String.fromCharCode(92)) >= 0 ? String.fromCharCode(92) : '/'; const ud = box.split(sep).slice(0, -1).join('/'); const p = ud + '/teach_queue.jsonl'; try { const r = await window.desktopAPI.rawfs.readFile(p, 'utf8'); text = (r && r.text) || ''; } catch (_) { text = ''; } const mg = teachMerge(text, entry); await window.desktopAPI.rawfs.writeFile(p, { text: mg.text }); return { where: 'file', path: p, count: mg.count, lines: mg.summary ? mg.summary.lines : null }; }
         } catch (_) { /* 檔案寫不了就退到 localStorage */ }
-        try { text = localStorage.getItem('fa_teach_queue') || ''; const merged = Sp.mergeQueue(Sp.parseQueue(text), entry); localStorage.setItem('fa_teach_queue', Sp.queueText(merged)); return { where: 'localStorage', count: merged.length }; } catch (_) { return { where, count: 0 }; }
+        try { text = localStorage.getItem('fa_teach_queue') || ''; const mg = teachMerge(text, entry); localStorage.setItem('fa_teach_queue', mg.text); return { where: 'localStorage', count: mg.count, lines: mg.summary ? mg.summary.lines : null }; } catch (_) { return { where, count: 0 }; }
     }
     async _codeOffline(o, bridge) {
         this._pyDomainsInit();
