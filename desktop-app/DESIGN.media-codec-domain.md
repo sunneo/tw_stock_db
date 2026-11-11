@@ -271,3 +271,7 @@ FA_TS_DIR=<含 tree-sitter.js、tree-sitter.wasm、tree-sitter-python.wasm 的�
 1. 先跑 `domain_h264*.test.js` 與 `domain_av*.test.js` 回歸，確認數字與上表相同。
 2. 從「未完成」第 1 點開始：色度與 1/4 像素內插，然後運動搜尋的平手規則（先寫在敘述裡）。
 3. 取 CABAC 表來源（libavc 或 ffmpeg 原始碼，需 web-fetch 子代理）後再做 CABAC。
+
+### 第三棒補記（色度與 CABAC 阻礙）
+- 色度 1/8 像素雙線性內插（`h264.chroma8`，提交 `5beaca84`）：train 1/1、反序 1/1、holdout 1/1；回歸 `domain_h264hpel` 2/0、`domain_h264fwd` 2/0、`domain_h264dec` 6/0、`domain_h264intra` 20/0、`domain_h264deblock` 4/0 全部通過。
+- **CABAC 被阻礙（未做）**：web-fetch 讀 FFmpeg `libavcodec/h264_cabac.c` 與 `cabac_functions.h`，兩檔都只用到合併表 `ff_h264_cabac_tables` 與 `H264_*_OFFSET` 巨集，表本身不在這兩檔；`h264tab.h` 回 404。下一步：找定義 `ff_h264_cabac_tables` 的檔案（FFmpeg 樹內的 `libavcodec/` 下的 CABAC 表源檔，需先確認檔名），或改取 JM 參考解碼器的 `rangeTabLPS`／`transIdxLPS`（規格表 9-44、9-45）。在拿到表之前，CABAC 題不寫。
