@@ -103,7 +103,7 @@
                 source: r.source || '未標註', enabled: r.enabled !== false, compat: r.compat || 'ok', compatReasons: Array.isArray(r.compatReasons) ? r.compatReasons : [],
                 domains: Array.isArray(r.domains) ? r.domains : [], triggers: Array.isArray(r.triggers) ? r.triggers : [], description: r.description || '',
                 evalWin: r.eval && Array.isArray(r.eval.win) ? r.eval.win : null, evalLose: r.eval && Array.isArray(r.eval.lose) ? r.eval.lose : null,
-                location: r.location || '', actions
+                location: r.location || '', created: timeText(Number(r.added)), actions
             };
         });
     }

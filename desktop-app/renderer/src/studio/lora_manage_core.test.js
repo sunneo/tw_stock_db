@@ -67,6 +67,7 @@ check('登錄表卡片：相容性不通過的原因要顯示', /相容性不通
 check('model_card.json 的卡片仍照常顯示（名稱、限制、評量差距）', /示範：function call 格式/.test(html) && /只支援兩個工具/.test(html) && /\+36 點/.test(html));
 check('缺資料寫無資料', /無資料（還沒有註冊的 LoRA）/.test(M.renderLoraManageHTML({ rows: [] })));
 check('外部字串跳脫', (() => { const h = M.renderLoraManageHTML({ rows: M.rowsFromStatus({ registered: [reg({ name: '<img src=x>' })] }) }); return h.indexOf('<img') < 0 && h.indexOf('&lt;img') >= 0; })());
+check('註冊時間：登錄表的 added（毫秒）轉成日期；沒有就寫從未使用', M.rowsFromStatus({ registered: [reg({ id: 'lora/t', added: Date.UTC(2026, 10, 10, 8, 5) })] })[0].created === '2026-11-10 08:05' && M.rowsFromStatus({ registered: [reg({ id: 'lora/u' })] })[0].created === '從未使用');
 check('格式函式', M.sizeText(undefined) === '未知' && M.timeText(NaN) === '從未使用');
 
 console.log(ok + ' passed, ' + bad + ' failed');
