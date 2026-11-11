@@ -34,7 +34,7 @@ const check = (n, c, x) => { if (c) ok++; else { bad.push(n); console.log('FAIL'
   check('符號式自動選擇 cpu-js', selS.ok && selS.chosen === 'cpu-js');
   // 訓練拒絕
   const t1 = await h.handle('studio_train_start', { kind: 'colu', cfg: {} });
-  check('符號式訓練明說尚未實作', !t1.ok && /尚未實作/.test(t1.error), t1);
+  check('符號式訓練不走主行程，明說由 sym_train_core 執行', !t1.ok && /sym_train_core/.test(t1.error), t1);
   const t2 = await h.handle('studio_train_start', { kind: 'lora', cfg: { trainFile: 'a', outputDir: 'b' } });
   check('cpu-py 不可用時拒絕並帶原因', !t2.ok && /cpu-py 不可用/.test(t2.error), t2);
   const t3 = await h.handle('studio_train_start', { kind: 'lora', backend: 'webgpu', cfg: {} });

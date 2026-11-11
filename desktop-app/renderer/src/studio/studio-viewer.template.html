@@ -120,7 +120,18 @@ async function doImport(){var r=await api('POST','/api/import/pick');var box=$('
 T.datasets=async function(body){var r=await api('GET','/api/datasets');body.appendChild(h('div',{'class':'todo',text:'先唯讀：瀏覽資產裡 data/ 的檔案（包含「資料匯入」存下來的 corpus／requests／train.jsonl）。逐筆編輯還沒做。'}));
  if(r.note)body.appendChild(h('div',{'class':'row',text:r.note}));var pv=h('pre',{style:'display:none'});
  (r.files||[]).forEach(function(f){body.appendChild(h('div',{'class':'row'},[h('span',{'class':'n',text:f.kind+'/'+f.name+' › '+f.path}),h('span',{'class':'badge',text:fmtB(f.bytes)}),h('button',{text:'預覽',onclick:async function(){var x=await api('GET','/api/asset-file?kind='+f.kind+'&name='+encodeURIComponent(f.name)+'&path='+encodeURIComponent(f.path));pv.style.display='';pv.textContent=x.ok===false?x.error:x.text+(x.truncated?'\n…（只顯示前 6000 位元組）':'')}})]))});body.appendChild(pv)};
-T.eval=async function(body){var r=await api('GET','/api/eval');body.appendChild(reason('尚未實作：'+(r.reason||'')));(r.items||[]).forEach(function(i){body.appendChild(h('div',{'class':'card'},[h('b',{text:i.kind+'/'+i.name}),h('pre',{text:JSON.stringify(i.eval,null,1)})]))})};
+T.eval=async function(body){var r=await api('GET','/api/eval');if(r.ok===false){body.appendChild(reason('讀取評量失敗：'+r.error));return}
+ var ksel=h('select',{},r.kinds.map(function(k){return h('option',{value:k.kind,text:k.label+'（'+k.kind+'）'})})),fa=h('input',{type:'text',placeholder:'題目資產（選填，例 matrix/mytasks；讀它的 data/tasks.jsonl）',style:'width:260px'}),sb=h('input',{type:'checkbox'}),out=h('div');
+ var gd=h('input',{type:'number',min:'0',max:'1',step:'0.05',value:String(r.gate.default),style:'width:70px'});
+ body.appendChild(h('div',{'class':'card'},[h('b',{text:'分組評量'}),h('div',{style:'color:var(--mut);font-size:12px',text:'每一組都列；退步（比基準低超過 0.02）標紅；低於上線門檻標橘。留出（heldout）組只給通過率。沒跑成的組寫具體原因與解除條件，不算通過也不算退步。'}),
+  h('div',{'class':'row'},[ksel,fa,h('label',{},[sb,h('span',{text:' 存成新基準'})]),h('button',{'class':'pri',text:'跑評量',onclick:run})]),
+  h('div',{'class':'row'},[h('span',{text:'上線門檻（預設）'}),gd,h('button',{text:'儲存門檻',onclick:async function(){var x=await api('POST','/api/eval/gate',{default:Number(gd.value),groups:r.gate.groups||{}});if(x.ok===false)alert(x.error);else refresh('eval')}})])]));body.appendChild(out);
+ function draw(res){out.textContent='';var sm=res.summary;out.appendChild(h('div',{'class':'card'},[h('b',{text:res.kind+'：'+sm.ran+'／'+sm.groups+' 組有跑　退步 '+sm.regressed+'　未過門檻 '+sm.belowGate+'　'+(sm.releaseOk?'✅ 可上線':'⛔ 不可上線')+(res.baselineSaved?'　（已存成新基準）':'')})]));
+  res.groups.forEach(function(g){var col=!g.ran?'var(--mut)':(g.regressed?'var(--er)':(g.passedGate?'var(--ok)':'#d97706'));
+   var t=g.ran?(g.pass+'／'+g.n+' = '+(g.rate*100).toFixed(1)+'%　門檻 '+(g.gate*100).toFixed(0)+'%'+(g.prev!=null?'　上次 '+(g.prev*100).toFixed(1)+'%（'+(g.delta>=0?'+':'')+(g.delta*100).toFixed(1)+'）':'　（沒有基準）')):('沒跑：'+g.unavailable);
+   out.appendChild(h('div',{'class':'row',style:'border-left:4px solid '+col+';padding-left:6px'},[h('span',{'class':'n',text:g.group}),g.heldout?h('span',{'class':'badge',text:'留出'}):null,g.recorded?h('span',{'class':'badge',text:'已記錄'}):null,h('span',{style:'color:'+col,text:t}),g.note?h('div',{style:'color:var(--mut);font-size:12px;width:100%',text:g.note}):null,(g.detail&&!g.heldout)?h('details',{},[h('summary',{text:'細節'}),h('pre',{text:JSON.stringify(g.detail,null,1)})]):null]))})}
+ async function run(){out.textContent='評量中…';var x=await api('POST','/api/eval/run',{kind:ksel.value,fromAsset:fa.value||undefined,saveBaseline:sb.checked});if(x.ok===false){out.textContent='';out.appendChild(reason(x.error));return}draw(x)}
+ if(r.items.length){body.appendChild(h('div',{'class':'grp',text:'資產 manifest 裡已有的評量記錄'}));r.items.forEach(function(i){body.appendChild(h('div',{'class':'card'},[h('b',{text:i.kind+'/'+i.name+(i.builtin?'（內建）':'')}),h('pre',{text:JSON.stringify(i.eval,null,1)})]))})}};
 T.log=async function(body){var r=await api('GET','/api/log');if(!r.log.length)body.appendChild(h('div',{'class':'row',text:'本次開啟後還沒有紀錄。（紀錄只保留在這個視窗開啟期間；寫成 log.jsonl 屬後續步驟）'}));
  r.log.slice().reverse().forEach(function(x){body.appendChild(h('div',{'class':'row'},[h('span',{'class':'badge',text:new Date(x.at).toLocaleTimeString()}),h('span',{'class':'n',style:x.level==='error'?'color:var(--er)':'',text:x.text})]))})};
 // ----- LoRA 登錄 -----
@@ -168,7 +179,18 @@ T.ingest=async function(body){
  r.preview.forEach(function(c){body.appendChild(h('div',{'class':'card'},[h('div',{'class':'row'},[h('span',{'class':'n',text:(c.heading||c.path||c.id)}),h('span',{'class':'badge '+(c.builtin_allowed?'ok':'wn'),text:c.license+(c.user_supplied?'（你提供）':'')}),h('span',{'class':'badge',text:c.tokens+' tokens｜'+c.split}),h('button',{'class':'dng',text:'拒絕這塊',onclick:async function(){await api('POST','/api/ingest/drop',{chunkId:c.id});refresh('ingest')}})]),h('div',{style:'font-size:12px;color:var(--mut)',text:c.head})]))});
  if(st.chunks>r.preview.length)body.appendChild(h('div',{style:'color:var(--mut)',text:'…還有 '+(st.chunks-r.preview.length)+' 塊（存成資產後可在「資料集」分頁預覽 data/corpus.jsonl）'}))};
 // ----- 資料匯入：載入已存的資料資產 -----
-T.teacher=async function(body){var r=await api('GET','/api/teacher');body.appendChild(reason('老師迴圈尚未實作：'+r.reason));
+T.teacher=async function(body){var r=await api('GET','/api/teacher');if(r.ok===false){body.appendChild(reason(r.error));return}
+ body.appendChild(h('div',{'class':'card'},[h('b',{text:'老師迴圈'}),h('div',{style:'color:var(--mut);font-size:12px',text:'缺口驅動：先看評量弱項 → 線上 AI 只能用白名單工具（'+r.tools.join('、')+'）補訓練資料 → 每筆都經程式驗證才收（留出題不可見、不可教）→ 重評量，沒改善就回滾並停止。不會自動訓練；送出前會先顯示要送什麼。單次上限：'+r.limits.maxRows+' 筆、'+r.limits.maxRounds+' 輪。'}),r.canRun?null:h('div',{'class':'warn',text:'目前不能執行老師：'+r.whyNot})]));
+ var ks=h('select',{},r.kinds.map(function(k){return h('option',{value:k,text:k})})),goal=h('input',{type:'text',placeholder:'目標（例：強化 L2 自動機）',style:'width:260px'}),fa=h('input',{type:'text',placeholder:'既有資料資產（選填，kind/name）'}),tg=h('input',{type:'text',placeholder:'寫入哪個資產（名稱）'}),box=h('div');
+ body.appendChild(h('div',{'class':'row'},[ks,goal,fa,tg,h('button',{'class':'pri',text:'建立並算缺口',onclick:async function(){var x=await api('POST','/api/teacher/plan',{kind:ks.value,goal:goal.value,fromAsset:fa.value||undefined,target:tg.value||undefined});if(x.ok===false){box.textContent='';box.appendChild(reason(x.error));return}showS(x.session)}})]));body.appendChild(box);
+ function showS(s){box.textContent='';box.appendChild(h('div',{'class':'card'},[h('b',{text:'工作階段 '+s.id+'（'+s.kind+'）狀態：'+s.state}),
+   s.preview&&s.state==='planned'?h('div',{},[h('div',{'class':'warn',text:'即將送給線上 AI 的內容（'+s.preview.bytes+' 字元；只含資料集摘要與評量缺口，不含使用者檔案、不含留出題）：'}),h('pre',{text:s.preview.prompt}),
+     h('button',{'class':'pri',text:'確認送出並執行',onclick:async function(){box.insertBefore(h('div',{text:'老師執行中…（會花一些時間）'}),box.firstChild);var x=await api('POST','/api/teacher/run',{id:s.id,confirmed:true,previewHash:s.preview.hash});if(x.ok===false){alert(x.error);return}showS(x.session)}})]):null,
+   s.report?h('div',{},[h('div',{text:'結果：'+s.report.state+'；新增 '+s.report.added+'、回滾 '+s.report.rolledBack+'、被拒 '+s.report.refused+'；剩餘弱項 '+s.report.gapLeft}),h('div',{style:'color:var(--mut);font-size:12px',text:s.report.note}),h('pre',{text:JSON.stringify(s.report.rounds,null,1)})]):null]));
+  s.items.forEach(function(it){box.appendChild(h('div',{'class':'row'},[h('span',{'class':'badge '+(it.status==='accepted'?'ok':''),text:it.status}),h('span',{'class':'n',text:it.brief}),h('span',{style:'color:var(--mut);font-size:12px',text:'驗證：'+it.verified_by}),it.status==='accepted'?h('button',{'class':'dng',text:'拒絕這筆',onclick:async function(){var x=await api('POST','/api/teacher/reject',{id:s.id,itemId:it.id});if(x.ok===false)alert(x.error);else{var y=await api('GET','/api/teacher/session?id='+s.id);showS(y.session)}}}):null]))});
+  if(s.counts.accepted){box.appendChild(h('button',{'class':'pri',text:'寫入資產（不會開始訓練）',onclick:async function(){var x=await api('POST','/api/teacher/commit',{id:s.id,name:tg.value||s.target||undefined});alert(x.ok===false?x.error:x.note+'（'+x.asset+'，共 '+x.total+' 筆）')}}))}
+  if(s.log.length)box.appendChild(h('details',{},[h('summary',{text:'紀錄'}),h('pre',{text:s.log.map(function(l){return l.text}).join('\n')})]))}
+ if(r.sessions.length)showS(r.sessions[r.sessions.length-1]);
  if(r.queue){body.appendChild(h('div',{'class':'card'},[h('b',{text:'樣本請求單佇列'}),h('div',{text:'待領 '+(r.queue.pending||0)+'、已領 '+(r.queue.claimed||0)+'、完成 '+(r.queue.done||0)+'；已收樣本 '+r.samples+' 列'}),h('div',{style:'color:var(--mut);font-size:12px',text:'老師領取（/api/teacher/claim）、回交（/api/teacher/submit）會先通過程式驗證：schema、答案要有語料塊依據、不得含個資、不得引用 heldout。'})]))}};
 // ----- 訓練 -----
 var polling=null,lossHist=[];
@@ -177,7 +199,7 @@ T.train=async function(body){
  var ksel=h('select',{},kinds.map(function(k){return h('option',{value:k[0],text:k[1]})}));var out=h('div');body.appendChild(h('label',{text:'訓練種類'}));body.appendChild(ksel);body.appendChild(out);
  async function build(){out.textContent='';var kind=ksel.value,r=await api('GET','/api/backends?kind='+kind);if(r.ok===false){out.appendChild(h('div',{'class':'warn',text:'讀取運算後端失敗：'+r.error}));return}
   if(r.note)out.appendChild(h('div',{'class':'warn',text:r.note}));
-  if(kind!=='lora'){out.appendChild(h('div',{'class':'todo',text:'只需處理器（cpu-js）。這個種類的訓練包裝尚未實作（設計文件 §10 步驟 3）：目前可以在「資產清單」匯出入／備份它的資產，但不能從這裡開始訓練。'}));return}
+  if(kind!=='lora'){symTrain(out,kind);return}
   var bs=h('select',{});bs.appendChild(h('option',{value:'auto',text:'自動（建議）'+(r.selection&&r.selection.chosen?' → '+r.selection.chosen:(r.selection&&r.selection.reason?'：'+r.selection.reason.slice(0,60):''))}));
   var names={'cpu-py':'純處理器（Python）','webgpu':'WebGPU','directml':'DirectML','vulkan':'Vulkan'};
   r.backends.forEach(function(b){bs.appendChild(h('option',{value:b.id,disabled:!b.available,text:(names[b.id]||b.id)+(b.available?'':'（不可用）')}))});
@@ -210,6 +232,23 @@ async function pollBench(tb,bStart,bStop){bStart.disabled=true;bStop.disabled=fa
  r.rows.forEach(function(w){var x=w.result||{},nc=x.numericCheck;t.appendChild(h('tr',{},[h('td',{text:w.id}),h('td',{text:{pending:'等待',running:'執行中…',skipped:'略過',passed:'通過',failed:'未通過',aborted:'已中斷'}[w.state]||w.state}),h('td',{text:x.tokPerSec?x.tokPerSec.toFixed(1):'—'}),h('td',{text:x.stepMsP50?Math.round(x.stepMsP50)+'／'+Math.round(x.stepMsP95)+' ms':'—'}),h('td',{text:x.peakMemBytes?fmtB(x.peakMemBytes):'—'}),h('td',{text:nc?(nc.pass?'通過':'失敗：'+(nc.failed||[]).join('、')):'—'}),h('td',{text:w.reason||x.reason||''})]))});
  tb.appendChild(t);tb.appendChild(h('div',{style:'color:var(--mut);font-size:12px',text:'狀態：'+r.state+'　用時 '+Math.round(r.elapsedMs/1000)+' 秒'}));
  if(r.state==='running')pollBench.t=setTimeout(function(){pollBench(tb,bStart,bStop)},1500);else{bStart.disabled=false;bStop.disabled=true}}
+function symTrain(out,kind){
+ var NEEDS={blockly:'題目資產（data/tasks.jsonl：{id,statement,solution,tests}）',matrix:'題目資產（data/tasks.jsonl：{id,statement,examples:[{in,out}]}）',uml:'情境與設計對資產（data/pairs.jsonl：{scenario,model}）',colu:'不需要（用目前的採用／退回回饋）',trainer:'不需要（整理目前的成功案例）'};
+ var WHAT={blockly:'窮舉＋判題收成課（需要判題器：桌面版並允許執行程式）',matrix:'範式擬合（L0–L3 真演算法；L4–L6 只有窮舉、不保證）',uml:'決策表／詞彙補強（結構驗證；執行期套用見說明）',colu:'重訓排名模型（留一組交叉驗證）',trainer:'蒸餾（重複 ≥3 次的成功做法升格成技能；開始前自動快照）'};
+ out.appendChild(h('div',{'class':'card'},[h('b',{text:WHAT[kind]}),h('div',{style:'color:var(--mut);font-size:12px',text:'只需處理器（cpu-js）。可暫停／繼續（同一次開啟內）；完成後寫成資產並跑評量。需要的輸入：'+NEEDS[kind]})]));
+ var nm=h('input',{type:'text',placeholder:'輸出資產名稱',value:kind+'-'+new Date().toISOString().slice(0,10)}),fa=h('input',{type:'text',placeholder:'輸入資產（kind/name）',style:'width:240px',disabled:kind==='colu'||kind==='trainer'}),fo=h('input',{type:'checkbox'});
+ var pg=h('progress',{max:'100',value:'0',style:'width:100%'}),st=h('div',{style:'font-size:12px;color:var(--mut)'}),lg=h('pre',{style:'max-height:160px;overflow:auto'});
+ var bS=h('button',{'class':'pri',text:'開始'}),bP=h('button',{text:'暫停',disabled:true}),bR=h('button',{text:'繼續',disabled:true}),bX=h('button',{text:'停止',disabled:true});
+ out.appendChild(h('div',{'class':'row'},[nm,fa,kind==='colu'?h('label',{},[fo,h('span',{text:' 資料不足也訓練'})]):null]));out.appendChild(h('div',{'class':'row'},[bS,bP,bR,bX]));out.appendChild(pg);out.appendChild(st);out.appendChild(lg);
+ function setB(state){bS.disabled=(state==='running'||state==='paused'||state==='finishing');bP.disabled=state!=='running';bR.disabled=state!=='paused';bX.disabled=!(state==='running'||state==='paused')}
+ async function poll(){clearTimeout(poll.t);var r=await api('GET','/api/train/sym-status');if(r.ok===false)return;pg.value=r.pct;st.textContent=r.state+'　'+r.done+'／'+r.total+(r.current?'　'+r.current:'')+(r.error?'　錯誤：'+r.error:'');lg.textContent=r.log.map(function(l){return l.text}).join('\n');setB(r.state);
+  if(r.state==='finished'){st.textContent+='　→ 已存成資產 '+((r.result&&r.result.saved)||[]).join('、')+'　'+JSON.stringify(r.result&&r.result.counts||{});refresh('assets')}
+  if(r.state==='running'||r.state==='finishing')poll.t=setTimeout(poll,500)}
+ bS.onclick=async function(){var x=await api('POST','/api/train/start',{kind:kind,name:nm.value,fromAsset:fa.value||undefined,cfg:{force:fo.checked}});if(x.ok===false){st.textContent='';alert(x.error);return}poll()};
+ bP.onclick=async function(){var x=await api('POST','/api/train/sym-pause',{});if(x.ok===false)alert(x.error);poll()};
+ bR.onclick=async function(){var x=await api('POST','/api/train/sym-resume',{});if(x.ok===false)alert(x.error);poll()};
+ bX.onclick=async function(){await api('POST','/api/train/sym-stop',{});poll()};
+ poll()}
 async function pollTrain(prog,cv,once){clearTimeout(pollTrain.t);var r=await api('GET','/api/train/status');if(r.ok===false)return;
  if(r.state==='idle'){return}
  (r.events||[]).forEach(function(e){if(e.type==='log'&&isFinite(e.loss)){if(!lossHist.length||lossHist[lossHist.length-1].s!==e.step)lossHist.push({s:r.step,l:e.loss})}});

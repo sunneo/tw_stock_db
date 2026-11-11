@@ -9,6 +9,8 @@
  *   h.prefsGet()／h.prefsSet(o)  版面等偏好（主程式 localStorage）
  *   h.workDir()      → 桌面版訓練輸出根目錄（絕對路徑）或 null
  *   h.builtin        FaStudioBuiltin.createProvider(...) 的實例（唯讀內建資產；選填，沒有就只列儲存層）
+ *   h.sym            符號式評量與訓練需要的模組與接口（見 sym_suites_core.js 檔頭；選填，沒給就在畫面寫「這個環境沒有接上」）
+ *   h.teacherAI      async ({system, prompt, tools, maxRounds}) → {text, calls}  線上 AI 子任務（只有白名單工具）；沒給＝老師迴圈寫明沒有線上 AI
  *   h.now()
  * 回傳 { route(method, url(URL物件), body) → {s, j}, push(obj)（由呼叫端接上）, log[] } */
 (function (root, factory) {
@@ -19,9 +21,13 @@
     const Ing = (typeof module === 'object' && module.exports) ? require('./ingest_core.js') : root.FaStudioIngest;
     const Cln = (typeof module === 'object' && module.exports) ? require('./clean_core.js') : root.FaStudioClean;
     const Reg = (typeof module === 'object' && module.exports) ? require('./lora_registry_core.js') : root.FaLoraRegistry;
-    if (typeof module === 'object' && module.exports) module.exports = factory(A, F, T, Lay, Ing, Cln, Reg);
-    else root.FaStudioServer = factory(A, F, T, Lay, Ing, Cln, Reg);
-})(typeof self !== 'undefined' ? self : this, function (Asset, Fatrain, Trainer, Layout, Ingest, Clean, LoraReg) {
+    const Ev = (typeof module === 'object' && module.exports) ? require('./eval_core.js') : root.FaStudioEval;
+    const Sy = (typeof module === 'object' && module.exports) ? require('./sym_suites_core.js') : root.FaStudioSym;
+    const ST = (typeof module === 'object' && module.exports) ? require('./sym_train_core.js') : root.FaStudioSymTrain;
+    const Te = (typeof module === 'object' && module.exports) ? require('./teacher_core.js') : root.FaStudioTeacher;
+    if (typeof module === 'object' && module.exports) module.exports = factory(A, F, T, Lay, Ing, Cln, Reg, Ev, Sy, ST, Te);
+    else root.FaStudioServer = factory(A, F, T, Lay, Ing, Cln, Reg, Ev, Sy, ST, Te);
+})(typeof self !== 'undefined' ? self : this, function (Asset, Fatrain, Trainer, Layout, Ingest, Clean, LoraReg, EvalCore, Sym, SymTrain, Teacher) {
     'use strict';
     const KIND_LABEL = { colu: 'CoLU', blockly: '積木課程', matrix: '矩陣層', uml: 'UML 設計', trainer: '離線訓練器', lora: 'LoRA' };
     const dec = (u) => new TextDecoder('utf-8').decode(u);
@@ -38,7 +44,8 @@
     const NOT_DESKTOP = '這個功能要在桌面版執行（需要主行程子行程）；網頁版請用「匯出訓練包」到桌面版訓練';
 
     function createServer(h) {
-        const S = { log: [], pending: null, seq: 0, lastTrain: null, lastBench: null, ingest: null, registry: null, regSha: {} };
+        const SYMBOLIC = ['trainer', 'colu', 'uml', 'blockly', 'matrix'];
+        const S = { evals: {}, teachers: new Map(), log: [], pending: null, seq: 0, lastTrain: null, lastBench: null, ingest: null, registry: null, regSha: {} };
         const chunkBrief = (c) => ({ id: c.id, tokens: c.tokens_est, split: c.split, code: !!c.code, heading: c.meta.heading || c.meta.title || '', path: c.meta.path || '', license: c.meta.license, builtin_allowed: !!(c.meta.license_policy && c.meta.license_policy.builtin_allowed), user_supplied: !!c.meta.user_supplied, redactions: c.meta.redactions, head: c.text.slice(0, 200) });
         const ingestView = () => {
             const I = S.ingest; if (!I) return { has: false };
@@ -67,6 +74,34 @@
             return { reg, entries, invalid };
         }
         const now = () => (h.now ? h.now() : Date.now());
+        const prefsObj = () => (h.prefsGet && h.prefsGet()) || {};
+        const jsonl = (u8) => dec(u8).split('\n').map((l) => l.trim()).filter(Boolean).map((l) => { try { return JSON.parse(l); } catch (_) { return null; } }).filter(Boolean);
+        // 從資產取題目／情境對（data/tasks.jsonl、data/pairs.jsonl）；沒有就回 null 與原因
+        async function tasksFrom(ref, file) {
+            const m = /^([a-z]+)\/(.+)$/.exec(String(ref || '')); if (!m) return { tasks: null, why: '資產參照格式是 kind/name' };
+            const r = await readAsset(m[1], m[2]); if (!r) return { tasks: null, why: '找不到資產 ' + ref }; const f = r.asset.files[file]; if (!f) return { tasks: null, why: ref + ' 沒有 ' + file };
+            return { tasks: jsonl(f) };
+        }
+        async function evalKind(kind, fromAsset) {
+            const p = prefsObj(); let suites = Sym.evalSuites(kind, h.sym);
+            if (fromAsset) { const t = await tasksFrom(fromAsset, 'data/tasks.jsonl'); if (!t.tasks) throw new Error('無法取題目：' + t.why); suites = suites.concat(Sym.taskSuites(kind, t.tasks, h.sym)); }
+            return EvalCore.runEval(kind, suites, { baseline: (p.evalBaseline || {})[kind] || {}, gate: p.evalGate, now });
+        }
+        let teacherObj = null;
+        const getTeacher = () => teacherObj || (teacherObj = Teacher.createTeacher({
+            now, Eval: EvalCore, hash: Clean.hash64,
+            kinds: Sym.teacherKinds(Object.assign({}, h.sym || {}, { cleanValidateRow: Clean.validateRow, verifyTeacherSample: Clean.verifyTeacherSample, ingestChunk: (id) => (S.ingest ? S.ingest.chunks.find((c) => c.id === id) : null) })),
+            evaluate: (kind) => evalKind(kind), trial: h.sym && h.sym.trial ? h.sym.trial : null, ai: h.teacherAI || null,
+            whyNot: (k) => (k === 'colu' ? 'colu 的資料是使用者「採用／退回」推薦的標註，那是使用者的決定，老師不能代做；解除條件：使用者自己累積，或匯入別人的回饋資產' : (k === 'trainer' ? 'trainer 的資料是離線訓練器實際成功的案例，只能由實際執行產生；要讓 AI 教它請用 /offline-trainer-by-ai（有自己的老師迴圈與回滾）' : '')),
+            loadExisting: async (kind, ref) => {
+                const train = [], heldout = []; const push = (r) => { const sp = r && r.split; (sp === 'heldout' || sp === 'holdout' ? heldout : train).push(r); };
+                if (ref) { const m = /^([a-z]+)\/(.+)$/.exec(ref); const a = m && await readAsset(m[1], m[2]); if (a) Object.keys(a.asset.files).filter((p) => /^data\/.*\.jsonl$/.test(p)).forEach((p) => jsonl(a.asset.files[p]).forEach(push)); }
+                if (kind === 'lora' && S.ingest) S.ingest.samples.forEach(push);
+                return { train, heldout };
+            }
+        }));
+        let runner = null;
+        const getRunner = () => runner || (runner = SymTrain.createRunner({ storage: h.storage, Asset, Trainer, now, onChange: () => { if (S.push) { try { S.push({ type: 'sym_progress' }); } catch (_) { /* */ } } } }));
         const log = (text, extra) => { const r = Object.assign({ at: now(), text }, extra || {}); S.log.push(r); if (S.log.length > 500) S.log.shift(); if (S.push) { try { S.push({ type: 'log', rec: r }); } catch (_) { /* */ } } return r; };
         const ok = (j) => ({ j: Object.assign({ ok: true }, j) });
         const bad = (s, error, extra) => ({ s, j: Object.assign({ ok: false, error }, extra || {}) });
@@ -163,9 +198,31 @@
                 }
                 if (method === 'GET' && P === '/api/eval') {
                     const out = []; const st1 = await h.storage.listAssets(); for (const it of st1) { const m = await h.storage.loadManifest(it.kind, it.name); if (m && m.eval) out.push({ kind: it.kind, name: it.name, eval: m.eval }); } for (const it of await builtinItems(st1)) if (it.eval) out.push({ kind: it.kind, name: it.name, eval: it.eval, builtin: true });
-                    return ok({ items: out, implemented: false, reason: out.length ? '' : '評量集與分組評量的執行（每組都列、退步標紅、上線門檻）屬設計文件 §10 步驟 3／§8，目前資產的 manifest 還沒有任何評量結果；等符號式包裝與 LoRA 評量集（資料匯入）完成後才會有資料' });
+                    const p = prefsObj(); return ok({ implemented: true, kinds: Asset.KINDS.map((k) => ({ kind: k, label: KIND_LABEL[k], available: SYMBOLIC.indexOf(k) >= 0 ? !!h.sym : k === 'lora' })), items: out, last: S.evals, gate: Object.assign({}, EvalCore.DEFAULT_GATE, p.evalGate || {}), baseline: p.evalBaseline || {} });
                 }
-                if (method === 'GET' && P === '/api/teacher') { const v = ingestView(); return ok({ implemented: false, reason: '老師迴圈本身（呼叫線上 AI、白名單工具、缺口驅動，§6）屬設計文件 §10 步驟 7，尚未實作；請求單的領取、驗證與回交接口（/api/teacher/claim｜submit｜release）已可用。' + (v.has ? '' : '目前還沒有匯入資料，沒有請求單。'), queue: v.has ? v.requests : null, samples: v.has ? v.samples : 0 }); }
+                if (method === 'POST' && P === '/api/eval/run') {
+                    const kind = String(body.kind || ''); if (Asset.KINDS.indexOf(kind) < 0) return bad(400, '不認得的種類：' + kind);
+                    if (!h.sym) return bad(501, '這個環境沒有接上評量需要的模組（h.sym）；更新到含 sym 接口的版本');
+                    let res; try { res = await evalKind(kind, body.fromAsset); } catch (e) { return bad(409, String((e && e.message) || e)); }
+                    S.evals[kind] = res; log('評量 ' + kind + '：' + res.summary.ran + '/' + res.summary.groups + ' 組有跑，退步 ' + res.summary.regressed + '、未過門檻 ' + res.summary.belowGate);
+                    if (body.saveBaseline && res.summary.ran) { const np = Object.assign({}, prefsObj()); np.evalBaseline = Object.assign({}, np.evalBaseline); np.evalBaseline[kind] = EvalCore.saveBaseline(res, np.evalBaseline[kind]); h.prefsSet(np); res.baselineSaved = true; }
+                    return ok(res);
+                }
+                if (method === 'POST' && P === '/api/eval/gate') { const np = Object.assign({}, prefsObj()); const d = Number(body.default); np.evalGate = { default: d >= 0 && d <= 1 ? d : EvalCore.DEFAULT_GATE.default, groups: Object.assign({}, body.groups || {}) }; h.prefsSet(np); return ok({ gate: np.evalGate }); }
+                if (method === 'GET' && P === '/api/teacher') { const v = ingestView(); return ok({ implemented: true, canRun: !!h.teacherAI, whyNot: h.teacherAI ? '' : '這個環境沒有接上線上 AI 子任務（h.teacherAI）；桌面版與網頁版都在設定→AI 有線上模型時才能跑老師', tools: Teacher.TOOLS, limits: Teacher.LIMITS, kinds: ['blockly', 'matrix', 'uml', 'lora'], sessions: getTeacher().list(), queue: v.has ? v.requests : null, samples: v.has ? v.samples : 0 }); }
+                if (method === 'POST' && P === '/api/teacher/plan') { if (!h.sym) return bad(501, '這個環境沒有接上評量模組（h.sym），無法算缺口'); const r = await getTeacher().plan({ kind: body.kind, goal: body.goal, fromAsset: body.fromAsset, target: body.target, limits: body.limits }); if (!r.ok) return bad(409, r.error); log('老師工作階段 ' + r.session.id + '（' + r.session.kind + '）建立；弱項 ' + (getTeacher().sessions.get(r.session.id).gap.weak.length)); return ok(r); }
+                if (method === 'POST' && P === '/api/teacher/run') { const r = await getTeacher().run(String(body.id || ''), { confirmed: !!body.confirmed, previewHash: body.previewHash, model: body.model }); if (r.needsConfirm) return bad(400, r.error, r); if (!r.ok) return bad(409, r.error); log('老師執行完成：' + r.session.state + '，新增 ' + r.session.counts.accepted + ' 筆（尚未寫入資產）'); return ok(r); }
+                if (method === 'GET' && P === '/api/teacher/session') { const v = getTeacher().view(Q('id')); return v ? ok({ session: v }) : bad(404, '沒有這個老師工作階段'); }
+                if (method === 'POST' && P === '/api/teacher/reject') { const r = getTeacher().reject(String(body.id || ''), String(body.itemId || ''), body.reason); return r.ok ? ok(r) : bad(409, r.error); }
+                if (method === 'POST' && P === '/api/teacher/stop') { const r = getTeacher().stop(String(body.id || '')); return r.ok ? ok(r) : bad(404, r.error); }
+                if (method === 'POST' && P === '/api/teacher/commit') {
+                    const T = getTeacher(); const v = T.view(String(body.id || '')); if (!v) return bad(404, '沒有這個老師工作階段'); const rows = T.rowsToCommit(v.id); if (!rows.length) return bad(409, '沒有可寫入的資料（全部被拒絕、回滾或根本沒新增）');
+                    const name = String(body.name || v.target || ''); if (!name || !Asset.safeName(name)) return bad(400, '請填合法的資產名稱（寫入 ' + v.kind + '/名稱 的 data/teacher.jsonl；不會開始訓練）');
+                    const ex = await h.storage.loadAsset(v.kind, name); const files = ex ? Object.assign({}, ex.asset.files) : {}; const old = files['data/teacher.jsonl'] ? jsonl(files['data/teacher.jsonl']) : [];
+                    const all = old.concat(rows); files['data/teacher.jsonl'] = new TextEncoder().encode(all.map((x) => JSON.stringify(x)).join('\n'));
+                    const m = Asset.createManifest({ kind: v.kind, name, files, counts: Object.assign({}, ex ? ex.asset.manifest.counts : {}, { teacher_rows: all.length }), owner: 'user', created: ex ? ex.asset.manifest.created : new Date(now()).toISOString(), parent: ex ? ex.asset.manifest.parent : null, base: ex ? ex.asset.manifest.base : null, compat: ex ? ex.asset.manifest.compat : undefined, eval: ex ? ex.asset.manifest.eval : null, extra: ex ? ex.asset.manifest.extra : undefined });
+                    const w = await h.storage.saveAsset({ manifest: m, files }, { replace: true }); if (!w.ok) return bad(500, w.error); log('老師資料寫入 ' + v.kind + '/' + name + '（' + rows.length + ' 筆；沒有開始訓練）'); if (S.push) S.push({ type: 'asset_changed' }); return ok({ written: rows.length, total: all.length, asset: v.kind + '/' + name, note: '已寫入資料集；訓練是另一個動作，請到「訓練」分頁開始。' });
+                }
                 if (method === 'GET' && P === '/api/log') return ok({ log: S.log.slice(-300) });
                 // ---- 運算後端／基準／訓練 ----
                 if (method === 'GET' && P === '/api/backends') {
@@ -180,6 +237,15 @@
                 if (method === 'POST' && P === '/api/bench/start') { const r = await callHost('studio_bench_start', { kind: body.kind || 'lora', base: body.base }); if (r.ok === false) return bad(r.notDesktop ? 400 : 409, r.error); S.lastBench = r.jobId; log('開始基準測試（' + r.jobId + '）'); return ok(r); }
                 if (method === 'POST' && P === '/api/bench/stop') { const r = await callHost('studio_bench_stop', { jobId: body.jobId || S.lastBench }); log('要求停止基準測試'); return ok(r); }
                 if (method === 'GET' && P === '/api/bench/status') { const r = await callHost('studio_bench_status', { jobId: Q('jobId') || S.lastBench }); return r.ok === false ? bad(404, r.error) : ok(r); }
+                if (method === 'POST' && P === '/api/train/start' && SYMBOLIC.indexOf(String(body.kind || '')) >= 0) {
+                    const kind = String(body.kind); const name = String(body.name || ''); if (!name || !Asset.safeName(name)) return bad(400, '請先填一個合法的名稱（不可含斜線或 ..）');
+                    if (!h.sym) return bad(501, '這個環境沒有接上符號式訓練需要的模組（h.sym）');
+                    const opts = Object.assign({}, body.cfg || {});
+                    if (body.fromAsset) { const file = kind === 'uml' ? 'data/pairs.jsonl' : 'data/tasks.jsonl'; const t = await tasksFrom(body.fromAsset, file); if (!t.tasks) return bad(409, '無法取題目：' + t.why); if (kind === 'uml') opts.pairs = t.tasks; else opts.tasks = t.tasks; }
+                    const prep = await Sym.prepareTrain(kind, h.sym, opts); if (!prep.ok) { log('符號式訓練沒有啟動（' + kind + '）：' + prep.error, { level: 'error' }); return bad(409, prep.error); }
+                    const r = getRunner().start(kind, name, prep, opts); if (!r.ok) return bad(409, r.error);
+                    S.lastSym = r.jobId; log('開始 ' + kind + ' 訓練 → ' + kind + '/' + name + '（' + r.total + ' 段）'); return ok(Object.assign({ sym: true }, r));
+                }
                 if (method === 'POST' && P === '/api/train/start') {
                     if (!h.desktop) return bad(400, NOT_DESKTOP);
                     const kind = String(body.kind || 'lora');
@@ -192,6 +258,10 @@
                     if (r.ok === false) { log('訓練沒有啟動：' + r.error, { level: 'error' }); return bad(409, r.error); }
                     S.lastTrain = r.jobId; log((body.resume ? '續訓 ' : '開始訓練 ') + kind + '/' + name + '（' + r.jobId + '）→ ' + cfg.outputDir); return ok(Object.assign({ outputDir: cfg.outputDir }, r));
                 }
+                if (method === 'GET' && P === '/api/train/sym-status') return ok(getRunner().status(Q('jobId') || S.lastSym));
+                if (method === 'POST' && P === '/api/train/sym-pause') { const r = await getRunner().pause(body.jobId || S.lastSym); log('暫停符號式訓練'); return r.ok === false ? bad(409, r.error) : ok(r); }
+                if (method === 'POST' && P === '/api/train/sym-resume') { const r = getRunner().resume(body.jobId || S.lastSym); return r.ok === false ? bad(409, r.error) : ok(r); }
+                if (method === 'POST' && P === '/api/train/sym-stop') { const r = getRunner().stop(body.jobId || S.lastSym); log('停止符號式訓練'); return ok(r); }
                 if (method === 'GET' && P === '/api/train/status') { const r = await callHost('studio_train_status', { jobId: Q('jobId') || S.lastTrain, tail: 30 }); return r.ok === false ? bad(502, r.error) : ok(r); }
                 if (method === 'POST' && P === '/api/train/pause') { const r = await callHost('studio_train_pause', { jobId: body.jobId || S.lastTrain }, 180000); log('暫停訓練：' + (r.ok ? '已存檢查點 step=' + r.step : r.error || r.reason)); return r.ok === false && !r.checkpoint ? bad(409, r.error || r.reason || '暫停失敗', r) : ok(r); }
                 if (method === 'POST' && P === '/api/train/stop') { const r = await callHost('studio_train_stop', { jobId: body.jobId || S.lastTrain }, 30000); log('停止訓練'); return r.ok === false ? bad(409, r.error) : ok(r); }

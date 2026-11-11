@@ -104,10 +104,10 @@ function createStudioHost(d) {
       const r = await BC.autoSelect({ kind: (p && p.kind) || 'lora', registry, cache: benchCache, ctx: ctxOf(p), pin: p && p.pin, skipBench: true });
       return Object.assign({ ok: !!r.chosen }, r);
     },
-    // 訓練：目前只有 lora（cpu-py）有真的子行程訓練；符號式五類的包裝尚未接（步驟 3）
+    // 訓練：目前只有 lora（cpu-py）有真的子行程訓練；符號式五類由主程式端的 sym_train_core 執行（設計 §15.3）
     async studio_train_start(p) {
       p = p || {}; const kind = p.kind || 'lora';
-      if (kind !== 'lora') return { ok: false, error: kind + ' 的訓練包裝尚未實作（設計文件 §10 步驟 3）；目前只有 lora 能在這裡啟動訓練' };
+      if (kind !== 'lora') return { ok: false, error: kind + ' 是符號式訓練，由主程式的 studio_server（sym_train_core）執行，不經主行程子行程；這裡只處理 lora' };
       if (p.backend && p.backend !== 'cpu-py') return { ok: false, error: '後端 ' + p.backend + ' 目前只有 cpu-py 能實際訓練' };
       if (activeTrain && (activeTrain.state === 'running' || activeTrain.state === 'pausing')) return { ok: false, error: '已有訓練在執行（' + activeTrain.id + '）' };
       if (activeBench && activeBench.state === 'running') return { ok: false, error: '基準測試進行中，請先等它結束或按停止' };

@@ -63,8 +63,8 @@ function mk(desktop, hostOps) {
   r = await t.req('POST', '/api/train/pause', {}); check('暫停', r.s === 200);
   r = await t.req('GET', '/api/log'); check('紀錄有項目', r.j.log.length >= 5 && r.j.log.some((x) => /開始訓練/.test(x.text)));
   // 尚未實作的分頁要說原因
-  r = await t.req('GET', '/api/teacher'); check('老師明說尚未實作且有原因', r.j.implemented === false && /§10 步驟 7/.test(r.j.reason));
-  r = await t.req('GET', '/api/eval'); check('評量明說尚未實作且有原因', r.j.implemented === false && r.j.reason.length > 20);
+  r = await t.req('GET', '/api/teacher'); check('老師已實作；沒有線上 AI 時明說不能跑與原因', r.j.implemented === true && r.j.canRun === false && /線上 AI/.test(r.j.whyNot) && r.j.tools.length === 7, r.j);
+  r = await t.req('GET', '/api/eval'); check('評量已實作；沒接模組時各種類標不可用', r.j.implemented === true && r.j.kinds.length === 6 && r.j.kinds.every((k) => k.available === (k.kind === 'lora' ? true : false)), r.j.kinds);
   r = await t.req('GET', '/api/nope'); check('未知路由 404', r.s === 404);
   // ===== 第二輪：資料匯入與清洗、老師領取、LoRA 登錄 =====
   const md = (n) => '# 離線訓練工作室說明 ' + n + '\n\n這份文件說明如何安裝並啟動離線訓練工作室，需要先準備好基底模型與訓練資料，然後依步驟執行，最後匯出訓練包到另一台電腦繼續訓練。\n\n## 匯出\n\n匯出時會把資產切成二十 MB 的分片，並且記錄每個檔案的雜湊，匯入時先檢查摘要再確認，避免覆蓋掉使用者原本的資料。聯絡信箱 someone@example.com 不該留下。\n';
@@ -91,7 +91,7 @@ function mk(desktop, hostOps) {
   const chunk2 = srvChunk(t, rq2.chunk_id);
   r = await t.req('POST', '/api/teacher/submit', { id: rq2.id, row: { stage: 'qa', messages: [{ role: 'user', content: '這份文件說明什麼？' }], completion: chunk2.text.replace(/\s+/g, ' ').slice(0, 120) } }); check('有根據的答案通過驗證收進樣本', r.j.accepted === true && r.j.samples >= 1, r.j);
   r = await t.req('POST', '/api/teacher/submit', { id: rq2.id, row: {} }); check('已完成的請求單不能再交', r.s === 409);
-  r = await t.req('GET', '/api/teacher'); check('老師分頁仍誠實說迴圈未實作、但顯示佇列', r.j.implemented === false && r.j.queue && r.j.queue.done === 1, r.j);
+  r = await t.req('GET', '/api/teacher'); check('老師分頁顯示請求單佇列', r.j.implemented === true && r.j.queue && r.j.queue.done === 1, r.j);
   r = await t.req('POST', '/api/ingest/save', { name: 'corpus-wiki' }); check('存成資料資產', r.j.ok, r.j);
   r = await t.req('POST', '/api/ingest/save', { name: 'corpus-wiki' }); check('同名不覆蓋', r.s === 409);
   r = await t.req('POST', '/api/ingest/load', { name: 'corpus-wiki' }); check('重新載入資料資產', r.j.has && r.j.stats.chunks >= 1 && r.j.samples >= 1, r.j);

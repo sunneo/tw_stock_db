@@ -529,7 +529,7 @@ embedLiveModule('VPSTORE', 'FaVoiceprintStore', 'renderer/src/voice/voiceprint_s
 function embedStudio() {
     const dir = path.join(root, 'renderer/src/studio'); if (!fs.existsSync(path.join(dir, 'studio_server_core.js'))) return;
     const rd = (p) => fs.readFileSync(path.join(root, p), 'utf8').replace(/\r\n/g, '\n');
-    const UMD = ['asset_core', 'fatrain_core', 'storage_core', 'trainer_adapter', 'studio_layout_core', 'lora_registry_core', 'lora_apply_core', 'onnx_patch_core', 'lora_merge_core', 'lora_web_core', 'ingest_core', 'clean_core', 'builtin_assets_core', 'studio_server_core']; // 順序＝相依順序
+    const UMD = ['asset_core', 'fatrain_core', 'storage_core', 'trainer_adapter', 'studio_layout_core', 'lora_registry_core', 'lora_apply_core', 'onnx_patch_core', 'lora_merge_core', 'lora_web_core', 'ingest_core', 'clean_core', 'builtin_assets_core', 'eval_core', 'sym_suites_core', 'sym_train_core', 'teacher_core', 'studio_server_core']; // 順序＝相依順序
     let code = 'const FaStudio = (function () {\nconst holder = {};\n';
     for (const n of UMD) code += '(function (module, self) {\n' + rd('renderer/src/studio/' + n + '.js') + '\n}).call(null, undefined, holder);\n';
     code += 'return holder;\n})();\nconst FA_STUDIO_SEED_COUNTS = ' + JSON.stringify(require('./domain-seed-counts.js').seedCounts(root)) + ';\nconst FA_STUDIO_LORA_DATA = ' + JSON.stringify(require('./domain-seed-counts.js').loraDatasets(root)) + '; // 領域包種子題數（建置時由 scripts/domain-seed-counts.js 從 domain_*.test.js 算出；打包後沒有測試檔）\nconst FA_STUDIO_LAYOUT_SRC = ' + lit(rd('renderer/src/studio/studio_layout_core.js')) + ';\n';
