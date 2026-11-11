@@ -102,6 +102,8 @@ const suites = [
     ['JPEG 熵編碼（DC／AC 霍夫曼、ZRL／EOB、填充；標準表與 libjpeg DHT 相同；與 PIL 解碼互通）', 'renderer/src/algo/matrix_jpeg_entropy.test.js'],
     ['G7 動態霍夫曼（每符號後重建、碼長 Kraft 與最佳成本對獨立 Python 一致、往返）', 'renderer/src/algo/matrix_adaptive_huffman.test.js'],
     ['G7 範圍編碼（LZMA 式位元樹、直接位元、字面量串流經 liblzma 解碼一致）', 'renderer/src/algo/matrix_range.test.js'],
+    ['G7 完整 LZMA（比對、重複距離、shortrep、長度與距離樹；與 liblzma 雙向逐位元組一致）', 'renderer/src/algo/matrix_lzma.test.js'],
+    ['G7 增量動態霍夫曼 FGK（每步不變量、與獨立 Python 參照逐位元相同、成本對重建版）', 'renderer/src/algo/matrix_fgk.test.js'],
     ['矩陣層 graph／grid 模組（邊表／格子形狀＋L3 半環與走訪範本；heldout2 ≥20/22、heldout3 ≥21/21 回歸，heldout4 ≥14/19、heldout5（L0）verified ≥4/12、heldout6（組合）12 成功 verified ≥9，範本庫沒有的題型要誠實失敗）', 'renderer/src/algo/matrix_graph.test.js'],
     ['矩陣 → code edit（合成程式整理成可編輯版：形態往返、改係數／轉移表行為跟著變、走 Python→UML 路徑 raw=0、改壞時降級；需 tree-sitter 快取）', 'renderer/src/algo/matrix_edit.test.js'],
     ['矩陣 → Blockly 區塊（合成結果拆成有名字的區塊段落：DFA／遞推／圖／格子／方陣／組合層；區塊編回 Python 與原程式在題庫測資＋隨機輸入上輸出一致；改槽位與換組合積木後輸出照新形態；需 tree-sitter 快取與 python3）', 'renderer/src/algo/matrix_blocks.test.js'],
