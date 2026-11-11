@@ -275,3 +275,49 @@ FA_TS_DIR=<含 tree-sitter.js、tree-sitter.wasm、tree-sitter-python.wasm 的�
 ### 第三棒補記（色度與 CABAC 阻礙）
 - 色度 1/8 像素雙線性內插（`h264.chroma8`，提交 `5beaca84`）：train 1/1、反序 1/1、holdout 1/1；回歸 `domain_h264hpel` 2/0、`domain_h264fwd` 2/0、`domain_h264dec` 6/0、`domain_h264intra` 20/0、`domain_h264deblock` 4/0 全部通過。
 - **CABAC 被阻礙（未做）**：web-fetch 讀 FFmpeg `libavcodec/h264_cabac.c` 與 `cabac_functions.h`，兩檔都只用到合併表 `ff_h264_cabac_tables` 與 `H264_*_OFFSET` 巨集，表本身不在這兩檔；`h264tab.h` 回 404。下一步：找定義 `ff_h264_cabac_tables` 的檔案（FFmpeg 樹內的 `libavcodec/` 下的 CABAC 表源檔，需先確認檔名），或改取 JM 參考解碼器的 `rangeTabLPS`／`transIdxLPS`（規格表 9-44、9-45）。在拿到表之前，CABAC 題不寫。
+
+## 接手（第四棒，2026-11-12，Haiku 5.5；分支 `claude/media-codec-4-271bae`，起點 `135a66d6`）
+
+### 本棒完成（每項 train、反序、holdout 皆實跑，數字為實測）
+| 項目 | 提交 | train | 反序 | holdout | 備註 |
+|---|---|---|---|---|---|
+| CABAC 決策解碼、旁路、上下文初始化、算術編碼（單一上下文） | `114f04ce` | 4/4 | 4/4 | 4/4 | 表依 H.264 表 9-44、9-45 自寫；`domain_h264cabac_core.js` |
+| 運動全搜尋 SAD（4×4、位移 −1 至 1，平手取先出現者）、B 幀預設雙向平均、1/4 像素 a 位置 | `a3dda2b6` | 3/3 | 3/3 | 3/3 | 平手規則是本題自訂；`domain_h264motion_core.js` |
+| 未解 holdout 以新 id 另寫敘述 | `031f457f` | — | — | 新 id 皆通過 | 見下表 |
+
+### 未解 holdout 的處理（舊 id 保留為根因紀錄，不改舊措辭）
+- `intra4-h-ho2`（新，通過）：舊 `intra4-h-ho` 讀不出（句型「12 個像素值一行」）。
+- `fq-ho2`（新，通過）：補「正變換」字樣；舊 `fq-ho` 缺字樣。
+- `idct4-ho3`（新，通過）：補「4 乘 4 整數逆變換」與「輸入一行」句首；舊 `idct4-ho2` 缺字樣。（不在總指揮清單內，一併處理。）
+- `intra4-dc-ho`、`intra4-ddl-ho`、`legall-ho`、`legall-ho2`：早已有通過的新 id（`intra4-dc-ho2`、`intra4-ddl-ho2`、`legall-ho3`），舊 id 仍未解、保留。
+- 以上都是「敘述改寫後首次量測」，不計入教法，屬讀取器可讀性修補。
+
+### 外部核對（已驗證，誠實界線）
+- 工具：`/usr/bin/ffmpeg`（含 libx264）、`ffprobe`。本機 `libavcodec.so.58` 的 CABAC 表符號被剝除，無法直接讀出。
+- 改用 x264 原始碼的 `common/tables.c`（`x264_cabac_range_lps[64][4]`、`x264_cabac_transition[128][2]`），下載到 scratchpad 的新目錄核對，**不進專案樹、不提交**。來源：`https://raw.githubusercontent.com/mirror/x264/master/common/tables.c`，大小 115507 位元組。
+- 結果：rangeTabLPS 256/256 相同（x264 是 pStateIdx 倒序：x264 第 k 列＝標準 63−k）；狀態轉移 256/256 相同（記號對應：mps 與 bin 皆取一致的翻轉，兩種等價寫法都對）。
+- 自檢：編碼後以標準解碼流程還原，2000 組隨機二元串 2000/2000 相同。
+- FFmpeg：`libavcodec/cabac.c` 的 `ff_h264_cabac_tables` 是合併編排格式，逐格對照未完成（只確認了表的存在與位置）。
+- **未做**：CABAC 位元流與 ffmpeg 逐位元對照；運動、B 幀、變換的逐係數外部對照（阻礙：ffmpeg／x264 命令列沒有單一係數或單一區塊的輸出路徑；要做需寫 libavcodec 呼叫程式，待改善）。
+
+### 尚未做（照順序；阻礙寫明）
+1. **階段 5 有損影像的算術編碼**（熵編碼）：本棒只做了 H.264 的 CABAC 單一上下文編碼器。影像量化係數的完整二值化與多上下文尚未做（阻礙：需要 ctxIdx 表與語法元素，未取）。
+2. **運動**：整數全搜尋已做；1/4 像素的其他位置（b、c、d、e、f、g、h、i、j、k、n、p、q、r）與色度一般化未做；運動向量預測、子像素搜尋未做。
+3. **B 幀**：只做預設雙向平均；加權預測、時間直接模式未做。
+4. **CABAC 完整語法**：ctxIdx 的 m、n 表、二值化、殘差語法元素未做（阻礙：m、n 表是大量數字，需逐項核對，尚未取得）。
+
+### 新的坑（接手前看）
+- 讀取器對「輸入一行 N 個整數，依序為…」的句型很敏感：CABAC 編碼題的首版（「起始 pStateIdx、起始 valMPS，其後…」）讀不出；改成與通過題相同的句型後可讀。
+- 骨架程式不要用 `def`／`global`：編碼骨架首版用函式，骨架能跑（Python 直接執行正確），但在 harness 內配方失敗；改成迴圈內聯後通過。
+- 同一骨架內的重複區塊用 JS 陣列產生（`RN`），縮排要整段縮進迴圈本體，否則輸出錯誤（已修）。
+- 外部 tree-sitter 快取：`FA_TS_DIR=/home/hungfu.lee/.cache/fa-ts-h264`；每次要看到「train N/M」那行。
+
+### 尚缺清單（不要自己做）
+- 新檔 `domain_h264cabac_core.js`、`domain_h264cabac.test.js`、`domain_h264motion_core.js`、`domain_h264motion.test.js` 都還沒登記進 `scripts/embed-code-ui.js`、`floating-assistant.js`、`scripts/run-core-tests.js`，由總指揮統一處理。
+- 不推送、不發布、不跑 embed／build。
+
+### 接續點（給下一棒）
+1. 先跑 `domain_h264*.test.js` 與 `domain_av*.test.js` 回歸，確認數字與上表相同。
+2. 階段 5 影像的熵編碼：用已做的 CABAC 編碼器為基礎，設計多上下文的量化係數二值化（需要語法元素表，先寫清楚來源）。
+3. CABAC 語法 ctxIdx 的 m、n 表：來源需逐項核對（x264 `common/cabac.c` 的 `x264_cabac_context_init` 可能可用，先確認檔案位置）。
+4. 1/4 像素其餘位置（表 8-12 的 f、q、j 等）。
