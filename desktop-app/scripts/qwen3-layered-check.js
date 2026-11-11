@@ -12,10 +12,15 @@ const mb = (x) => (x / 1048576).toFixed(0) + 'MB';
     const meta = JSON.parse(fs.readFileSync(path.join(dataDir, 'meta.json'), 'utf8')); const ib = fs.readFileSync(path.join(dataDir, 'init.bin')); const init = new Float32Array(ib.buffer.slice(ib.byteOffset, ib.byteOffset + ib.length));
     const map = new Map(); let off = 0; for (const p of meta.params) { const n = p.shape.reduce((a, b) => a * b, 1); map.set(p.name, init.slice(off, off + n)); off += n; }
     // 全圖版 meta 的參數名稱順序為 q,k,v,o,gate,up,down 各 A,B（與引擎相同）
-    const eng = new E.LayeredEngine({ ort, ep: process.env.FA_EP || 'wasm', M, T: meta.T, rank: meta.rank, layers: nl, headChunks: meta.chunks, lr });
+    const swapMode = process.env.FA_SWAP === '1'; let layerSource = null, store = null;
+    if (swapMode) { const SW = require('../renderer/src/studio/swap_store.js'); const Gm = require('../renderer/src/studio/onnx_grad_core.js'); store = SW.createMemorySwap({ quotaBytes: 4 * 1073741824 });
+        layerSource = SW.createSwapLayerSource(store, async (kind, l) => { const b = kind === 'F' ? Q.buildLayerF(M, l, meta.T, meta.rank) : kind === 'B' ? Q.buildLayerB(M, l, meta.T, meta.rank) : Q.buildHead(M, meta.T, { headChunks: meta.chunks }); return Gm.toOnnx(b.g, { name: kind + l }); }, 'k:'); }
+    const eng = new E.LayeredEngine({ ort, ep: process.env.FA_EP || 'wasm', M, T: meta.T, rank: meta.rank, layers: nl, headChunks: meta.chunks, lr, keepSessions: !swapMode, layerSource });
     eng.initParams(map);
     console.log('逐層引擎：層數 ' + nl + '、T=' + meta.T + '、rank=' + meta.rank + '、ep=' + eng.ep + '、RSS ' + mb(process.memoryUsage().rss));
-    const losses = []; for (let i = 1; i <= steps; i++) { const r = await eng.step(meta.ids, meta.tgt); losses.push(r.loss); console.log('步 ' + i + '：loss ' + r.loss.toFixed(5) + '，梯度範數 ' + r.gradNorm.toFixed(4) + '，' + r.ms + ' ms，RSS ' + mb(process.memoryUsage().rss) + '，工作階段建立 ' + eng.stats.created + ' 個（' + eng.stats.createMs + ' ms）'); }
+    const seqsF = path.join(dataDir, 'seqs.json'); const seqs = fs.existsSync(seqsF) ? JSON.parse(fs.readFileSync(seqsF, 'utf8')) : [{ ids: meta.ids, tgt: meta.tgt }]; const rec = [];
+    const losses = []; for (let i = 1; i <= steps; i++) { const sq = seqs[(i - 1) % seqs.length]; const r = await eng.step(sq.ids, sq.tgt); rec.push({ step: i, loss: r.loss, gradNorm: r.gradNorm, sec: +(r.ms / 1000).toFixed(2) }); if (process.env.FA_OUT) fs.writeFileSync(process.env.FA_OUT, JSON.stringify({ ep: eng.ep, steps: rec })); losses.push(r.loss); console.log('步 ' + i + '：loss ' + r.loss.toFixed(5) + '，梯度範數 ' + r.gradNorm.toFixed(4) + '，' + r.ms + ' ms，RSS ' + mb(process.memoryUsage().rss) + '，工作階段建立 ' + eng.stats.created + ' 個（' + eng.stats.createMs + ' ms）'); }
+    if (store) console.log('交換空間：' + JSON.stringify(await store.usage()) + '、put ' + store.stats.puts + ' 次/' + store.stats.putMs + ' ms、get ' + store.stats.gets + ' 次/' + store.stats.getMs + ' ms');
     console.log('LOSSES ' + JSON.stringify(losses) + ' 峰值 RSS ' + mb(process.resourceUsage().maxRSS * 1024));
     process.exit(0);
 })().catch((e) => { console.error('FAIL ' + (e.stack || e.message)); process.exit(1); });

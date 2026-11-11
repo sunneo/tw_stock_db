@@ -17,7 +17,8 @@ try {
     let layerSource = null, store = null; if (swap) { store = SW.createIdbSwap({ quotaBytes: 3 * 1073741824, dbName: 'fa-train-swap-layered' }); await store.clear(); layerSource = SW.createSwapLayerSource(store, async (kind, l) => { const b = kind === 'F' ? Q.buildLayerF(M, l, meta.T, meta.rank) : kind === 'B' ? Q.buildLayerB(M, l, meta.T, meta.rank) : Q.buildHead(M, meta.T, { headChunks: meta.chunks }); return Gm.toOnnx(b.g, { name: kind + l }); }, 'k:'); }
     const eng = new E.LayeredEngine({ ort, ep, M, T: meta.T, rank: meta.rank, layers: nl, headChunks: meta.chunks, lr, keepSessions: !swap, layerSource }); eng.initParams(map);
     const losses = [], times = [];
-    for (let i = 1; i <= steps; i++) { const r = await eng.step(meta.ids, meta.tgt); losses.push(r.loss); times.push(r.ms); log({ step: i, loss: r.loss, gradNorm: r.gradNorm, ms: r.ms, created: eng.stats.created }); }
+    let seqs = [{ ids: meta.ids, tgt: meta.tgt }]; try { const rs = await fetch('/data/seqs.json'); if (rs.ok) seqs = await rs.json(); } catch (e) {}
+    for (let i = 1; i <= steps; i++) { const sq = seqs[(i - 1) % seqs.length]; const r = await eng.step(sq.ids, sq.tgt); losses.push(r.loss); times.push(r.ms); log({ step: i, loss: r.loss, gradNorm: r.gradNorm, ms: r.ms, created: eng.stats.created }); }
     const mem = performance.memory ? { usedJSHeapMB: Math.round(performance.memory.usedJSHeapSize / 1048576) } : null;
     log({ done: true, ep, swap, layers: nl, T: meta.T, threads, tModelFetch: Math.round(tModel), losses, times, stats: eng.stats, mem, swapUsage: store ? await store.usage() : null, swapStats: store ? store.stats : null });
 } catch (e) { log({ error: String(e && e.stack || e) }); }
