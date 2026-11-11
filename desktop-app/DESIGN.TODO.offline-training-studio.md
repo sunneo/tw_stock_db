@@ -977,3 +977,51 @@ Backend {
 - 不要推送、不要嵌入、不要跑 `scripts/publish.sh`、`embed-code-ui.js`、`build-assistant.js`。
 - 測試用 `nice -n 10 taskset -c 10-11`，一次跑一個。
 - 主行程目錄 `/home/hungfu.lee/Downloads/SRC/tw_stock_db` 是管理者的工作區，不在那裡提交。
+
+## 23. 第二位接手（studio-domain-author-2，分支 `claude/studio-domain-author-2-ec7d26`，2026-11-12）
+
+基底：`5e5b45e9`（§22 接手節）。**沒有推送、沒有嵌入、沒有跑 `embed-code-ui.js`／`build-assistant.js`。**
+
+### 23.1 提交（`git log --oneline 5e5b45e9..HEAD`）
+- `23a3c8a9` 匯出工具偵測接上伺服器（§20.3 第 2 項）：主行程 `studio_export_tools` 在 PATH 找 `optimum-cli`、`llama-quantize`（只看存在，不執行）；`onnxruntime` 還沒偵測，誠實寫「尚未實作」；伺服器 `exportCaps` 由 `llm_export_core.exportCapsFrom` 推出，節流 30 秒。執行器沒寫，工具找到也不宣稱可用。
+- `c1324129` 資料集逐筆編輯（§20.3 第 3 項）：`dataset_edit_core.js`（jsonl／json；壞一行整份不給編並寫行號；修改、刪除、新增、分頁）；伺服器 `GET /api/dataset/rows`、`POST /api/dataset/edit`（刪除要 `confirmed`；內建資產唯讀；寫回重算 manifest，雜湊核對仍通過；評量結果標示「可能過期」）；檢視器資料集分頁可逐筆改、刪、新增。**另修既有語法錯誤**：模板矩陣擬合按鈕的括號（`]),fitTa]),out]))` → `]),fitTa,out]))`），HEAD 已有，導致整個檢視器無法執行。
+- `f8c0e494` LoRA 介紹（§21／§22.2）：LoRA 登錄每列加「介紹」，讀 `/api/lora/card`，顯示名稱、版本、基底、rank、介紹、能力、限制、評量（沒有的寫無資料）。HTML 由 `lora_manage_core.cardIntroHTML` 產生（跳脫、可測）。
+- `9667cd6b` LoRA 移除：沿用既有 `/api/asset/delete`（先確認）。註冊沿用資產清單的匯入。
+- 嵌入清單（`scripts/embed-code-ui.js`，只改清單）加入：`llm_export_core`、`dataset_edit_core`、`lora_manage_core`（**`lora_manage_core` 必須在 `pipeline_routes_core` 之前**：頁內伺服器在載入時就要它，否則介紹會失效）。
+
+### 23.2 測試（本輪最後一次跑）
+| 測試 | 結果 |
+|---|---|
+| `llm_export_core.test.js` | 23／0（新增 3 項 exportCapsFrom） |
+| `studio_host.test.js` | 28／0（新增 5 項匯出工具偵測；PATH 用暫存目錄，跑完還原） |
+| `studio_server_core.test.js` | 111／0（新增工具偵測節流 3 項、逐筆編輯 11 項） |
+| `dataset_edit_core.test.js` | 34／0（新增） |
+| `lora_manage_core.test.js` | 41／0（新增 cardIntroHTML 7 項） |
+| `pipeline_routes_core` 31、`pipeline_view_core` 18、`pipeline_core` 31、`studio_layout_core` 27 | 全過（沒有變動） |
+| `studio_embed.test.js` | 12 過、4 敗（預期：嵌入未重產，總指揮處理） |
+
+### 23.3 GUI 實跑（已驗證的範圍，誠實標註）
+- 方法：scratchpad 的暫時 harness（不進專案）：node 伺服器用 `createServer` 處理 API，頁面由 `studio-viewer.template.html` 組出，腳本以 `<script>` 逐檔載入，瀏覽器窗格操作。**這不是嵌入後的正式頁面**：正式版的伺服器跑在頁內，嵌入清單是否完整只能在重產嵌入後驗證。
+- 已實跑：資料集逐筆「改」「刪」（先確認）「新增在尾端」、壞檔顯示第幾行、寫回後資產雜湊核對通過；LoRA 登錄的「介紹」（能力、限制、評量、無資料）、「移除」（列表回空狀態）。
+- 未實跑：驗證不通過的資產、內建資產唯讀的畫面、`hasCard:false` 的說明（只有單元測試覆蓋的邏輯）。
+
+### 23.4 還沒做（逐項，原因與解除條件）
+1. **LoRA 管理的 pin／replace／load／unload 與「替換中」**：端點在 `claude/lora-slot-equiv`（`e9cc0b4b` 依賴 `6a9d4b94` 等 lora-slot 線上的前置提交，本分支沒有登錄表本身）。試過 cherry-pick `e9cc0b4b`，衝突，已中止，**沒有留下變更**。依規則，合併別的 session 分支要使用者同意。解除：使用者決定合併 `claude/lora-slot-equiv` 或由 lora-slot-js 整理成可合併的分支；之後在 `T.lora` 接 `POST /api/lora/pin|unpin|replace|load|unload`、`GET /api/lora/status`，`busy` 用 `busyText`。現在 `T.lora` 仍用既有的 `/api/lora`（舊的列表），**不是** `lora_manage_core.renderLoraManageHTML`。
+2. **ONNX／GGUF 轉換執行器**：等 lora-manager-2 把 optimum、llama.cpp 準備好；之後把 `EXPORT_PLANS` 的 `runner` 改 true。
+3. **blockly 種子題在 App 內重跑**：題目在 `renderer/src/uml/domain_*.test.js`（約 30 萬字元，15 個以上檔案），題目由產生器函式即時生成，判題需要 tree-sitter 與 Python。解除方向：寫一個建置腳本把種子（train／holdout 的實例與答案）匯出成資料檔，隨程式載入；判題仍需要桌面版的 Python。這是獨立的一輪工作，建議另開 session。
+4. **GitHub wiki 連網實測**：需要連網，規則要使用者同意（要連哪些網址、何時）。
+5. **Electron 視窗驗證**：需要 matrix-finish-4 下載的 Electron 路徑（已問總指揮，尚未回覆）。
+6. **嵌入重產**：總指揮處理（studio_embed 的 4 項）。
+7. 其餘同 §22.2：LLM 完整微調、LoRA 套用到推論（`LORA_APPLY_BLOCKER`）、位置偏誤的 gold／pred（管理者）。
+
+### 23.5 接續點（依序）
+1. 等使用者決定 `claude/lora-slot-equiv` 合併與否；同意後合併（或 cherry-pick 整串），跑 `studio_server_core.test.js`，再接 §23.4 第 1 項。
+2. 拿到 Electron 路徑後做視窗驗證（工作室、流程、資料集、LoRA 介紹與移除）。
+3. wiki 實測：先問使用者同意。
+4. blockly 種子：另開 session 做成資料檔。
+5. 嵌入由總指揮重產（清單已含 `llm_export_core`、`dataset_edit_core`、`lora_manage_core`）。
+
+### 23.6 注意
+- 提交逐檔加入，沒有用 `git add -A`；新檔要明確 `git add`（`git diff --stat` 看不到未追蹤的新檔）。
+- 換行：`embed-code-ui.js` 是 CRLF 的部分檔案，用 Python 文字模式讀寫會把整檔換成 LF（本輪踩到，已還原）。改這類檔請用 binary 讀寫。
+- 測試用 `nice -n 10 taskset -c 10-11`，一次跑一個。
