@@ -84,6 +84,13 @@ git checkout ${branch}
 (bundle 內有所有分支。若遠端 \`origin\` 在對方機器也能連，\`git remote set-url origin <網址>\` 後 \`git fetch\` 即可補新的。)
 接手第一件事：讀 \`desktop-app/docs/HANDOFF.md\` 的第 0 節（**這是主文件**）。
 
+## 1b. Linux：一鍵準備環境（沒有 Node.js 也可以）
+還原倉庫後，在倉庫裡執行（不用 sudo；缺系統套件時只會列出安裝指令）：
+\`\`\`
+bash desktop-app/scripts/setup-linux.sh --handoff <解開後的交接資料夾> [--with-python] [--with-electron]
+\`\`\`
+它會檢查工具、下載並核對官方 Node 22（約 25–30 MB，來源 nodejs.org，sha256 核對）、跑 npm ci、放回下面第 2 節的額外檔案、（--with-python）建訓練用 Python 環境，最後自我檢查。每次下載前都會先問你。
+
 ## 2. 放回倉庫外的檔案
 把 \`extras/\` 裡的內容複製回新倉庫的相同相對位置（\`wiki/\`、\`desktop-app/.weak-harness/\`、\`desktop-app/progress.jsonl\`、\`desktop-app/test-reports/\`）。\`_outside/\` 下是你用 --extra 指定的倉庫外路徑，自行放置。
 

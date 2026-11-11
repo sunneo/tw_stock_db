@@ -51,6 +51,7 @@ v350 工作室與資產／後端／基準測試／LoRA 登錄／資料匯入；v
 - **主文件就是這一頁（`desktop-app/docs/HANDOFF.md` 第 0 節）**；其餘 DESIGN 文件是各線的細節，要看時從第 0.3 節表格進去。
 - 另一台不會有本機檔案。打包腳本：`node scripts/handoff-pack.js --out <資料夾>`（建議 `node scripts/qrun.js --timeout 900 -- node <絕對路徑>\scripts\handoff-pack.js --out <資料夾>`）。產生單一 `.tar`：所有分支（含沒推送的提交）的 `repo.bundle`、倉庫外未追蹤的 `wiki/` 與 `.weak-harness/`、`progress.jsonl`、`test-reports/`、`RESTORE.md`（還原步驟、Python 環境重建指令、模型下載來源與大小）、`MANIFEST.json`（sha256，`--verify <解開資料夾>` 核對）。不含金鑰（`builtin-secrets*.json`）、`node_modules`、`dist`、`lora-train/.venv`。模型要帶就加 `--with-models <資料夾>`（Qwen3 約 1.4 GB 與 590 MB，不帶也行，RESTORE.md 有來源）。
 - 沒有「訓練到一半」的東西需要續訓：目前只有煙霧與基準測試，沒有留下檢查點，對方要訓練就從頭開始。所有程式已推到遠端 `desktop-app` 分支，對方也可以直接 `git clone` 該分支（不需要 bundle），bundle 是離線備份。
+- **Linux 新機器一鍵準備環境**：還原倉庫後 `bash desktop-app/scripts/setup-linux.sh --handoff <解開資料夾> [--with-python] [--with-electron]`（沒有 Node.js 也行：會下載並核對官方 Node 22、跑 npm ci、放回額外檔案、選用建訓練用 Python 環境、自我檢查；不用 sudo，缺系統套件時列出安裝指令）。
 - 打包前先確認 `git status` 沒有已追蹤的未提交修改（腳本會警告）。
 
 ### 0.7 踩過的坑
