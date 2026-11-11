@@ -138,7 +138,8 @@
         const hx = (N) => N.s[0];
         const wrap = S('wrap', '外殼', [['raw', 'data'], ['zlib', 'data[2:]'], ['gzip', 'data[gz_skip(data):]']]);
         const outSlot = S('out', '輸出', [['hex', 'hex'], ['text', 'text']]);
-        const need = (c) => NEED.concat(c.wrap === 'gzip' ? ['gz_skip'] : []);
+        // 外殼槽位的值是運算式字串（如 'data[gz_skip(data):]'），要看值是否呼叫 gz_skip，不能比對槽位名稱
+        const need = (c) => NEED.concat(/gz_skip\(/.test(c.wrap) ? ['gz_skip'] : []);
         const skeletons = [
             D('df.inflate', 'inflate-any', 'DEFLATE 完整解壓：區塊迴圈（BFINAL／BTYPE：00 未壓縮、01 固定、10 動態），動態區塊先讀 HLIT／HDIST／HCLEN 與長度碼的碼長、展開 16／17／18 的重複，再以範式碼解字面／長度與距離，LZ77 複製；外殼 raw／zlib（2 位元組標頭）／gzip（10 位元組標頭加選用欄位）',
                 [wrap, outSlot],
