@@ -117,4 +117,4 @@ console.log('④ 偏態 3000 符號（字母表 16，定長 12000 位元）FGK �
 assert.throws(() => F.decode(4, [], 1), /提早結束/); passed++;
 console.log('⑤ 串流提早結束會報錯');
 
-console.log('FGK 測試通過 ' + passed + ' 項');
+console.log(passed + ' passed, 0 failed');

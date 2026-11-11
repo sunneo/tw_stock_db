@@ -88,4 +88,4 @@ const trunc = ours[6].enc.subarray(0, 20); let threw = false; try { L.lzmaDecode
 console.log('⑥ 錯誤的 props、截斷的檔案都會報錯');
 
 fs.rmSync(tmp, { recursive: true, force: true });
-console.log('LZMA 測試通過 ' + passed + ' 項');
+console.log(passed + ' passed, 0 failed');
