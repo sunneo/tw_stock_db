@@ -23,6 +23,10 @@
         flc: ctFlc,
         chroma: [[0, 0, '01']].concat(ctRows(CT_CODE_CH, CT_SIZE_CH)),
     };
+    // 去區塊（8.7.2）表：來源 libavc common/ih264_deblk_tables.c（Apache 2.0，web-fetch 逐字取得）。α、β 各 52 格；tC0 表 [indexA][bS]，欄 1 至 3 為 bS 1 至 3（欄 0 為 0，未用）。
+    const DB_ALPHA = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 4, 5, 6, 7, 8, 9, 10, 12, 13, 15, 17, 20, 22, 25, 28, 32, 36, 40, 45, 50, 56, 63, 71, 80, 90, 101, 113, 127, 144, 162, 182, 203, 226, 255, 255];
+    const DB_BETA = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13, 14, 14, 15, 15, 16, 16, 17, 17, 18, 18];
+    const DB_TC = [[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 1], [0, 0, 0, 1], [0, 0, 0, 1], [0, 0, 0, 1], [0, 0, 1, 1], [0, 0, 1, 1], [0, 1, 1, 1], [0, 1, 1, 1], [0, 1, 1, 1], [0, 1, 1, 1], [0, 1, 1, 2], [0, 1, 1, 2], [0, 1, 1, 2], [0, 1, 1, 2], [0, 1, 2, 3], [0, 1, 2, 3], [0, 2, 2, 3], [0, 2, 2, 4], [0, 2, 3, 4], [0, 2, 3, 4], [0, 3, 3, 5], [0, 3, 4, 6], [0, 3, 4, 6], [0, 4, 5, 7], [0, 4, 5, 8], [0, 4, 6, 9], [0, 5, 7, 10], [0, 6, 8, 11], [0, 6, 8, 13], [0, 7, 10, 14], [0, 8, 11, 16], [0, 9, 12, 18], [0, 10, 13, 20], [0, 11, 15, 23], [0, 13, 17, 25]];
     function make(PAR) {
         const { S, code } = PAR.dsl;
         const D = (id, algo, label, slots, py, extra) => Object.assign({ id, algo, paradigm: 'codec-transform', label, slots, py }, extra || {});
@@ -76,6 +80,11 @@
                 [],
                 (c, N, I) => code(['v = ' + nums(N, I), 'sl = v[0]', 'lp = v[1]', 'ls = v[2]', 'fl = v[3]', 'lc = (min(15, lp) << sl) + ls', 'if lp >= 15 and sl == 0:', '    lc = lc + 15', 'if lp >= 16:', '    lc = lc + (1 << (lp - 3)) - 4096', 'if fl == 1:', '    lc = lc + 2', 'if lc % 2 == 0:', '    lv = (lc + 2) >> 1', 'else:', '    lv = (-lc - 1) >> 1', 'if sl == 0:', '    sl = 1', 'av = lv', 'if av < 0:', '    av = -av', 'if av > (3 << (sl - 1)) and sl < 6:', '    sl = sl + 1', 'print(lv, sl)']),
                 { shape: numIn, limit: 1, helpers: () => [] }),
+            // 去區塊亮度邊界濾波（8.7.2.3 至 8.7.2.4，8 位元）：輸入一行 11 個整數：indexA、indexB、bS、p3、p2、p1、p0、q0、q1、q2、q3；輸出 6 個整數：p2、p1、p0、q0、q1、q2 的濾波後值。
+            D('h264.deblock', 'h264-deblock', '去區塊濾波（亮度邊界）：輸入一行 11 個整數，依序是 indexA、indexB、邊界強度 bS（0 至 4）、p3、p2、p1、p0、q0、q1、q2、q3。若 bS 為 0 或不符合 α、β 條件則不改；bS 小於 4 時用 tC0 表計算 tC，只改 p0、q0，以及符合條件的 p1、q1；bS 為 4 時用強濾波改 p 側與 q 側最多三格。依序輸出 6 個整數：p2、p1、p0、q0、q1、q2 的濾波後值',
+                [],
+                (c, N, I) => code(['v = ' + nums(N, I), 'ia = v[0]', 'ib = v[1]', 'bs = v[2]', 'p3 = v[3]', 'p2 = v[4]', 'p1 = v[5]', 'p0 = v[6]', 'q0 = v[7]', 'q1 = v[8]', 'q2 = v[9]', 'q3 = v[10]', 'AL = ' + JSON.stringify(DB_ALPHA), 'BE = ' + JSON.stringify(DB_BETA), 'TC = ' + JSON.stringify(DB_TC), 'al = AL[ia]', 'be = BE[ib]', 'P2 = p2', 'P1 = p1', 'P0 = p0', 'Q0 = q0', 'Q1 = q1', 'Q2 = q2', 'if bs > 0 and abs(p0 - q0) < al and abs(p1 - p0) < be and abs(q1 - q0) < be:', '    ap = abs(p2 - p0)', '    aq = abs(q2 - q0)', '    if bs < 4:', '        t0 = TC[ia][bs]', '        tc = t0 + (1 if ap < be else 0) + (1 if aq < be else 0)', '        d = (((q0 - p0) << 2) + (p1 - q1) + 4) >> 3', '        d = max(-tc, min(tc, d))', '        P0 = max(0, min(255, p0 + d))', '        Q0 = max(0, min(255, q0 - d))', '        if ap < be:', '            dp = max(-t0, min(t0, (p2 + ((p0 + q0 + 1) >> 1) - (p1 << 1)) >> 1))', '            P1 = p1 + dp', '        if aq < be:', '            dq = max(-t0, min(t0, (q2 + ((p0 + q0 + 1) >> 1) - (q1 << 1)) >> 1))', '            Q1 = q1 + dq', '    else:', '        small = abs(p0 - q0) < ((al >> 2) + 2)', '        if ap < be and small:', '            P0 = (p2 + 2 * p1 + 2 * p0 + 2 * q0 + q1 + 4) >> 3', '            P1 = (p2 + p1 + p0 + q0 + 2) >> 2', '            P2 = (2 * p3 + 3 * p2 + p1 + p0 + q0 + 4) >> 3', '        else:', '            P0 = (2 * p1 + p0 + q1 + 2) >> 2', '        if aq < be and small:', '            Q0 = (p1 + 2 * p0 + 2 * q0 + 2 * q1 + q2 + 4) >> 3', '            Q1 = (p0 + q0 + q1 + q2 + 2) >> 2', '            Q2 = (2 * q3 + 3 * q2 + q1 + q0 + p0 + 4) >> 3', '        else:', '            Q0 = (2 * q1 + q0 + p1 + 2) >> 2', 'print(P2, P1, P0, Q0, Q1, Q2)']),
+                { shape: numIn, limit: 1, helpers: () => [] }),
             // CAVLC total_zeros（4×4 區塊）：輸入一行 11 個整數，第一個是 tzVlcIndex（1 到 15，即 TotalCoeff），其後 10 個是位元；查 tzVlcIndex 的那一列，位元開頭符合的碼字對應的 total_zeros 即為輸出。
             D('h264.totalzeros', 'h264-totalzeros', 'CAVLC 的 total_zeros 解碼（4×4 區塊）：輸入一行 11 個整數，第一個是 tzVlcIndex（1 到 15），其後 10 個是位元（每個為 0 或 1）。依 H.264 表 9-7、9-8 查 tzVlcIndex 那一列，從位元開頭比對碼字，找到的 total_zeros 即為輸出（一個整數）',
                 [],
@@ -90,6 +99,7 @@
             { key: 'h264-runbefore', re: ALL('(?:CAVLC|run_before|run before)', '(?:游程|zerosLeft|剩餘零)'), veto: /反量化|逆變換|幀內/ },
             { key: 'h264-coefftoken', re: ALL('(?:CAVLC|coeff_token|coeff token)', '(?:TotalCoeff|TrailingOnes)'), veto: /run_before|total_zeros|游程|zerosLeft|tzVlcIndex|level_prefix|suffixLength|反量化|逆變換|幀內/i },
             { key: 'h264-level', re: ALL('(?:CAVLC|level_prefix)', '(?:suffixLength|level_suffix)'), veto: /coeff_token|TotalCoeff|run_before|total_zeros|游程|反量化|逆變換|幀內/i },
+            { key: 'h264-deblock', re: ALL('(?:去區塊|deblock)', '(?:bS|邊界強度)'), veto: /coeff_token|level|CAVLC|run_before|total_zeros|游程|反量化|逆變換|幀內/i },
             { key: 'h264-totalzeros', re: ALL('(?:CAVLC|total_zeros|total zeros)', '(?:tzVlcIndex|total_zeros|總零)'), veto: /反量化|逆變換|幀內|run_before/ },
         ].map((x) => Object.assign(x, { pri: true }));
         const paradigms = {}; for (const sk of skeletons) paradigms[sk.algo] = ['codec-transform'];
