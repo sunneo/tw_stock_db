@@ -63,7 +63,21 @@ FA_TS_DIR=<含 tree-sitter.js、tree-sitter.wasm、tree-sitter-python.wasm 的�
   - `intra4-dc-ho`：0/2 的一題，原因「配方沒通過沙盒驗證」。尚未查根因（候選可能是 DC 的題目描述或 0 至 255 的像素範圍）。
   - `intra4-h-ho`：0/2 的一題，原因「uml_design 讀不出」：敘述沒有寫出區塊大小 4×4，讀取器無法配對。這是措辭缺口，未改讀取器。
 - 測試 `6 passed, 0 failed`（holdout 不計入失敗）。
-- 尚未做：模式 3 至 8（對角、垂直右、水平下、垂直左、水平上）；Intra16x16 與色度預測。
+- 尚未做：Intra16x16 與色度預測。
+
+## 2C. 幀內預測模式 3 至 8（2026-11-12，同一骨架 `h264.intra4`，共 9 個模式選項）
+
+- 輸入：模式 0 至 2 仍為 12 個整數；模式 3 至 8 為 13 個整數（上方 8 含右上 4 格、左方 4、左上角 1）。骨架內以邊界陣列 E＝[L3,L2,L1,L0,C,T0..T7] 實作，p(x,-1)＝E[5+x]、p(-1,y)＝E[3-y]、p(-1,-1)＝E[4]。
+- 參考解 `domain_h264intra.test.js` 的 `REF_DDL`…`REF_HU`：獨立寫成 Python，用 p(x,y) 函式照規格邊界寫（與骨架寫法不同）。另以一次性腳本（隨機 300 組）比對骨架公式與參考解：6 個模式各 0 不符。這是「兩份自寫公式互相對照」，不是外部工具驗證（見限制）。
+- 數字（2026-11-12）：
+  - train：`intra4-ddl`、`intra4-ddr`、`intra4-vr`、`intra4-hd`、`intra4-vl`、`intra4-hu` 各 1 題，共 6 題，全部 AC；此外 `intra4-h-tr2`（補寫 4×4 的水平模式教學題）AC。合計 train 10/10，選項反序 10/10（0 次模型）。
+  - 首次量測時 6 題只有 DDL 被搜到，原因是骨架 `limit: 4`（最多試 4 組）不足以涵蓋 9 個選項；改為 `limit: 9` 後全部通過。這是搜尋上限的錯，不是公式錯。
+  - holdout（只量測）：7/10 解出。
+    - 解出：`intra4-ddl-ho2`（新措辭）、`intra4-ddr-ho`、`intra4-vr-ho`、`intra4-hd-ho`、`intra4-vl-ho`、`intra4-hu-ho`、`intra4-dc-ho2`（新措辭）。
+    - 未解、保留為根因紀錄：`intra4-dc-ho`（根因：敘述沒有「4×4」，`幀內|畫面內|intra`＋`4×4`＋`預測`的 algo 規則不命中，退回「單一清單的總和」配方，42 種範式全失敗；以 `DBG=1` 與 node 正規式檢查確認）；`intra4-h-ho`（根因同上，敘述沒寫 4×4，讀不出；已另寫 `intra4-h-tr2` 補寫敘述並教，該題 AC）；`intra4-ddl-ho`（敘述「輸入 13 個…」不是讀取器認得的「輸入一行 13 個…」句型，uml_design 讀不出；以新措辭 `intra4-ddl-ho2` 量測，AC）。
+- 根因修正（DC holdout）：不在教法上補 4×4 字樣（不改 holdout 原措辭），而是另寫 `intra4-dc-ho2`（寫出 4×4）量測；原 `intra4-dc-ho` 留作紀錄。
+- 限制（誠實）：外部工具（ffmpeg／libx264）無法強制單一幀內模式，無法用真實解碼輸出交叉比對；模式 3 至 8 的正確性目前只靠兩份獨立撰寫的公式互相一致，以及規格邊界的手寫檢查。若要外部驗證，需要一個能輸出單一 4×4 幀內模式位元流並解碼的工具路徑（待辦）。
+- 回歸：`domain_h264intra.test.js` 20 passed, 0 failed；`domain_h264dequant.test.js` 6 passed；`domain_h264dec.test.js` 6 passed（holdout `idct4-ho2` 仍未解，既有）。
 
 ## 3. 環境與坑（重要，接手前先看）
 

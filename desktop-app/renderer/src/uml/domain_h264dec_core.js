@@ -16,6 +16,16 @@
         const rowRnd = ['for i in range(4):', '    a = m[i][0]', '    b = m[i][1]', '    c = m[i][2]', '    d = m[i][3]', '    e = a + c', '    f = a - c', '    g = (b >> 1) - d', '    h = b + (d >> 1)', '    r = [e + h, f + g, f - g, e - h]', '    m[i] = [(r[k] + 32) >> 6 for k in range(4)]'];
         const colRaw = ['for j in range(4):', '    a = m[0][j]', '    b = m[1][j]', '    c = m[2][j]', '    d = m[3][j]', '    e = a + c', '    f = a - c', '    g = (b >> 1) - d', '    h = b + (d >> 1)', '    r = [e + h, f + g, f - g, e - h]', '    for i in range(4):', '        m[i][j] = r[i]'];
         const colRnd = ['for j in range(4):', '    a = m[0][j]', '    b = m[1][j]', '    c = m[2][j]', '    d = m[3][j]', '    e = a + c', '    f = a - c', '    g = (b >> 1) - d', '    h = b + (d >> 1)', '    r = [e + h, f + g, f - g, e - h]', '    for i in range(4):', '        m[i][j] = (r[i] + 32) >> 6'];
+        // 幀內預測模式 3 至 8：E 為邊界陣列 [L3,L2,L1,L0,C,T0..T7]（13 格）。p(x,-1)＝E[5+x]、p(-1,y)＝E[3-y]、p(-1,-1)＝E[4]。
+        const blk = (body) => ['for y in range(4):', '    row = []', '    for x in range(4):'].concat(body.map((l) => '        ' + l), ['        row.append(val)', '    print(*row)']);
+        const I8 = {
+            ddl: blk(['if x == 3 and y == 3:', '    val = (E[11] + 3 * E[12] + 2) >> 2', 'else:', '    val = (E[5 + x + y] + 2 * E[6 + x + y] + E[7 + x + y] + 2) >> 2']),
+            ddr: blk(['if x > y:', '    val = (E[3 + x - y] + 2 * E[4 + x - y] + E[5 + x - y] + 2) >> 2', 'elif x < y:', '    val = (E[5 + x - y] + 2 * E[4 + x - y] + E[3 + x - y] + 2) >> 2', 'else:', '    val = (E[5] + 2 * E[4] + E[3] + 2) >> 2']),
+            vr: blk(['z = 2 * x - y', 'k = x - (y >> 1)', 'if z >= 0 and z % 2 == 0:', '    val = (E[4 + k] + E[5 + k] + 1) >> 1', 'elif z >= 0:', '    val = (E[3 + k] + 2 * E[4 + k] + E[5 + k] + 2) >> 2', 'elif z == -1:', '    val = (E[3] + 2 * E[4] + E[5] + 2) >> 2', 'else:', '    val = (E[4 - y] + 2 * E[5 - y] + E[6 - y] + 2) >> 2']),
+            hd: blk(['z = 2 * y - x', 'k = y - (x >> 1)', 'if z >= 0 and z % 2 == 0:', '    val = (E[4 - k] + E[3 - k] + 1) >> 1', 'elif z >= 0:', '    val = (E[5 - k] + 2 * E[4 - k] + E[3 - k] + 2) >> 2', 'elif z == -1:', '    val = (E[3] + 2 * E[4] + E[5] + 2) >> 2', 'else:', '    val = (E[4 + x] + 2 * E[3 + x] + E[2 + x] + 2) >> 2']),
+            vl: blk(['k = x + (y >> 1)', 'if y % 2 == 0:', '    val = (E[5 + k] + E[6 + k] + 1) >> 1', 'else:', '    val = (E[5 + k] + 2 * E[6 + k] + E[7 + k] + 2) >> 2']),
+            hu: blk(['z = x + 2 * y', 'k = y + (x >> 1)', 'if z < 5 and z % 2 == 0:', '    val = (E[3 - k] + E[2 - k] + 1) >> 1', 'elif z < 5:', '    val = (E[3 - k] + 2 * E[2 - k] + E[1 - k] + 2) >> 2', 'elif z == 5:', '    val = (E[1] + 3 * E[0] + 2) >> 2', 'else:', '    val = E[0]']),
+        };
         const skeletons = [
             D('h264.idct4', 'h264-idct4', '4×4 整數逆變換：輸入一行 16 個有號整數（係數矩陣依列排列），依 H.264 的一維蝶形（a、b、c、d 為輸入四個值：e=a+c、f=a-c、g=(b>>1)-d、h=b+(d>>1)，輸出 e+h、f+g、f-g、e-h）做兩個方向的變換；每個值最後加 32 再右移 6 位；輸出 4 行，每行 4 個整數（殘差）。先列後行或先行後列由窮舉挑',
                 [S('ord', '先做方向', [['row', 'row'], ['col', 'col']]), S('out', '輸出格式', [['lines', 'lines'], ['flat', 'flat']])],
@@ -28,10 +38,10 @@
                 [S('out', '輸出格式', [['lines', 'lines'], ['flat', 'flat']])],
                 (c, N, I) => code(['v = ' + nums(N, I), 'qp = v[0]', 'co = v[1:17]', 'vt = [[10, 16, 13], [11, 18, 14], [13, 20, 16], [14, 23, 18], [16, 25, 20], [18, 29, 23]]', 'out = []', 'for k in range(16):', '    i = k // 4', '    j = k % 4', '    if i % 2 == 0 and j % 2 == 0:', '        t = vt[qp % 6][0]', '    elif i % 2 == 1 and j % 2 == 1:', '        t = vt[qp % 6][1]', '    else:', '        t = vt[qp % 6][2]', '    ls = 16 * t', '    if qp >= 24:', '        out.append((co[k] * ls) << (qp // 6 - 4))', '    else:', '        out.append((co[k] * ls + (1 << (3 - qp // 6))) >> (4 - qp // 6))'].concat(c.out === 'lines' ? ['for i in range(4):', '    print(*out[4 * i:4 * i + 4])'] : ['print(*out)'])),
                 { shape: numIn, limit: 4, helpers: () => [] }),
-            D('h264.intra4', 'h264-intra4', '4×4 幀內預測（本批只做 0 垂直、1 水平、2 DC 三模式）：輸入一行 12 個整數，前 8 個是上方參考像素（只用前 4 個），後 4 個是左方參考像素；依所選模式輸出 4 行，每行 4 個整數（預測區塊）。垂直：每一欄等於上方對應像素；水平：每一列等於左方對應像素；DC：上方 4 個與左方 4 個的總和加 4 再右移 3 位，全部填入',
-                [S('mode', '預測模式', [['v', 'v'], ['h', 'h'], ['dc', 'dc']])],
-                (c, N, I) => code(['v = ' + nums(N, I), 'top = v[0:4]', 'left = v[8:12]', 'dc = (sum(top) + sum(left) + 4) >> 3', c.mode === 'v' ? 'rows = [top[:] for y in range(4)]' : c.mode === 'h' ? 'rows = [[left[y]] * 4 for y in range(4)]' : 'rows = [[dc] * 4 for y in range(4)]', 'for y in range(4):', '    print(*rows[y])']),
-                { shape: numIn, limit: 4, helpers: () => [] }),
+            D('h264.intra4', 'h264-intra4', '4×4 幀內預測：模式 0 垂直、1 水平、2 DC 輸入一行 12 個整數（前 8 個為上方參考，只用前 4 個；後 4 個為左方參考）；模式 3 至 8（對角向左下、對角向右下、垂直偏右、水平偏下、垂直偏左、水平偏上）輸入一行 13 個整數（前 8 個為上方參考含右上 4 格；接著 4 個為左方參考；最後 1 個為左上角）。依所選模式輸出 4 行，每行 4 個整數（預測區塊）',
+                [S('mode', '預測模式', [['v', 'v'], ['h', 'h'], ['dc', 'dc'], ['ddl', 'ddl'], ['ddr', 'ddr'], ['vr', 'vr'], ['hd', 'hd'], ['vl', 'vl'], ['hu', 'hu']])],
+                (c, N, I) => (c.mode === 'v' || c.mode === 'h' || c.mode === 'dc') ? code(['v = ' + nums(N, I), 'top = v[0:4]', 'left = v[8:12]', 'dc = (sum(top) + sum(left) + 4) >> 3', c.mode === 'v' ? 'rows = [top[:] for y in range(4)]' : c.mode === 'h' ? 'rows = [[left[y]] * 4 for y in range(4)]' : 'rows = [[dc] * 4 for y in range(4)]', 'for y in range(4):', '    print(*rows[y])']) : code(['v = ' + nums(N, I), 'E = [v[11], v[10], v[9], v[8], v[12], v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7]]'].concat(I8[c.mode])),
+                { shape: numIn, limit: 9, helpers: () => [] }),
         ];
         const ALL = (...parts) => new RegExp('^' + parts.map((x) => String.raw`(?=[\s\S]*` + x + ')').join(''), 'i');
         const algos = [
