@@ -8,7 +8,7 @@
 |---|---|---|
 | 0 設計 | `DESIGN.blockly-curriculum.md` §5（提交 `33e4c0f5b`） | 完成 |
 | 1 位元級基礎 `domain_avbits` | Exp-Golomb、NAL 切分、防競爭位元組、RBSP 尾位元、SPS／PPS／slice header | **train 16/16、選項反序 16/16、holdout 6/7（未解 1 題，只量測）**；尚未登記進 embed 清單與 run-core-tests |
-| 2 H.264 I 幀解碼 `domain_h264dec` | 逆變換、反量化、Intra 預測、CAVLC、去區塊 | 未開始 |
+| 2 H.264 I 幀解碼 `domain_h264dec` | 逆變換、反量化、Intra 預測、CAVLC、去區塊 | 第一個子元件 4×4 整數逆變換：train 3/3（反序 3/3）、holdout 1/2；其餘子元件未開始 |
 | 3 H.264 編碼與 P／B／CABAC | 整數正變換、量化、運動搜尋與補償、CABAC、B 幀 | 未開始 |
 | 4 有損聲音 `domain_avaudio` | MDCT、量化、簡化心理聲學 | 未開始 |
 | 5 有損影像 `domain_avimage` | 8×8 DCT、量化、Z 字形、熵編碼、Haar／5/3 小波 | 未開始 |
@@ -38,6 +38,18 @@ FA_TS_DIR=<含 tree-sitter.js、tree-sitter.wasm、tree-sitter-python.wasm 的�
 ### 2.2 holdout 未解題
 
 - `ho-pps`：PPS 解析的一題，讀取器回報沒有配方。只量測，不為它改教法（依規則：holdout 不拿來教）。下一步可以查它的 algo 配對是否被 `av-pps-parse` 的 regex 漏掉。
+
+## 2A. 階段 2 第一個子元件：4×4 整數逆變換（`domain_h264dec`，2026-11-12）
+
+- 骨架 `h264.idct4`：輸入一行 16 個有號整數（4×4 依列），兩方向一維蝶形（先列後行或先行後列由窮舉挑），每個值加 32 右移 6 位，輸出 4 行。
+- 參考解獨立寫成 Python（列變換不捨入、行變換後捨入），與骨架寫法不同。
+- train：`idct4` 原敘述、`idct4-rw`（換變數名）、`idct4-rw′`（改寫），各 1 題；3/3，反序 3/3。數值範圍 ±40。
+- holdout：兩題，數值範圍 ±3000。
+  - `idct4-ho`：**誠實註記**：這題的措辭在第一次量測時失敗兩次（讀成 a、b、c、d 純量；以及「量化」被否決詞擋掉），我修過兩次措辭後才通過。所以它**不是乾淨的 holdout**，只算「修過措辭後能通過」。
+  - `idct4-ho2`：另寫的新措辭，第一次量測即失敗（沒有配方）。原因：敘述沒有點名「逆變換」，讀取器靠這幾個字配對，這是真實缺口，未為它改讀取器。
+  - 乾淨的 holdout 結果：0/1（ho2）。
+- 測試：`6 passed, 0 failed`。執行方式同 §2。
+- 尚未做：反量化（LevelScale）、Intra 預測、CAVLC、去區塊；未登記進 embed 清單與 run-core-tests。
 
 ## 3. 環境與坑（重要，接手前先看）
 
