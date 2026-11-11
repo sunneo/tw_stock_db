@@ -100,4 +100,35 @@ function buildFull(M, T, rank, opts) {
 // 把 token id 經量化嵌入表取成 float 隱藏狀態 [T,d]
 function embed(M, ids) { const t = initOf(M, 'model.embed_tokens.weight_quantized'); if (t.dataType !== 2 || t.rawStart < 0) throw new Error('嵌入表不是 raw uint8'); const sc = scalarOf(M, 'model.embed_tokens.weight_scale'), zp = scalarOf(M, 'model.embed_tokens.weight_zero_point'); const d = t.dims[1]; const o = new Float64Array(ids.length * d); ids.forEach((id, i) => { for (let j = 0; j < d; j++) o[i * d + j] = (M.bytes[t.rawStart + id * d + j] - zp) * sc; }); return o; }
 
-module.exports = { openModel, buildBlock, buildFull, embed, f32Of, scalarOf, ropeTables };
+// ───────── 逐層圖（網頁版逐層訓練用）─────────
+// 前向圖 F：x、本層 LoRA 參數 → y；
+// 反向圖 B：x、dy、本層 LoRA 參數 → y（前向重算，等於 activation checkpointing）、dx、本層 14 個梯度；
+// 頭部圖：h → loss、dh。每張圖只含一層的權重（約 15MB），所以任何時刻 WASM 記憶體都遠低於 4GB。
+function layerParamNames(layer) { const o = []; for (const k of ['q', 'k', 'v', 'o', 'gate', 'up', 'down']) { o.push('l' + layer + '.' + k + '.A', 'l' + layer + '.' + k + '.B'); } return o; }
+function buildLayerF(M, layer, T, rank, opts) {
+    opts = opts || {}; const g = new Gm.G(); const x = g.input('x', [T, D]); const c = sharedConsts(g, M, T, rank, opts.alpha); const params = [];
+    const L = addLayer(g, M, c, layer, x, T, rank, params); g.output(L.out); return { g, params, out: L.out };
+}
+function buildLayerB(M, layer, T, rank, opts) {
+    opts = opts || {}; const g = new Gm.G(); const x = g.input('x', [T, D]); const dy = g.input('dy', [T, D]); const c = sharedConsts(g, M, T, rank, opts.alpha); const params = [];
+    const L = addLayer(g, M, c, layer, x, T, rank, params);
+    const gr = Gm.grad(g, L.out, ['x'].concat(params.map((p) => p.name)), dy);
+    g.output(gr.get('x')); const names = params.map((p) => { g.output(gr.get(p.name)); return p.name; });
+    return { g, params, dx: gr.get('x'), gradNames: names, gradOuts: params.map((p) => gr.get(p.name).name) };
+}
+function buildHead(M, T, opts) {
+    opts = opts || {}; const g = new Gm.G(); const h = g.input('h', [T, D]); const c = sharedConsts(g, M, T, 1, opts.alpha); const chunks = opts.headChunks || 8;
+    const et = initOf(M, 'model.embed_tokens.weight_quantized'); const V = et.dims[0], Vc = V / chunks; if (V % chunks) throw new Error('詞表大小不能被分塊數整除');
+    const embS = g.scalar(scalarOf(M, 'model.embed_tokens.weight_scale')), embZ = g.const('emb.z', [], Float64Array.of(scalarOf(M, 'model.embed_tokens.weight_zero_point')));
+    const rowmask = g.input('rowmask', [T]); const nf = rmsOf(g, M, c, h, 'model.layers.28.final_norm_layernorm.weight', D); let Z = null, TL = null;
+    for (let k = 0; k < chunks; k++) {
+        const cq = g.const('head.q' + k, [Vc, D], M.bytes.subarray(et.rawStart + k * Vc * D, et.rawStart + (k + 1) * Vc * D), 'u8'); const oh = g.input('onehot' + k, [T, Vc]);
+        const lg = g.matmul(nf, dq(g, g.transpose(cq, [1, 0]), embS, embZ)); const z = g.reduceSum(g.exp(lg), [1], false), tl = g.reduceSum(g.mul(lg, oh), [1], false);
+        Z = Z ? g.add(Z, z) : z; TL = TL ? g.add(TL, tl) : tl;
+    }
+    const loss = g.reduceSum(g.mul(g.sub(g.log(Z), TL), rowmask), [0], false);
+    const gr = Gm.grad(g, loss, ['h']); g.output(loss); g.output(gr.get('h'));
+    return { g, loss, dh: gr.get('h'), V, Vc, chunks };
+}
+
+module.exports = { layerParamNames, buildLayerF, buildLayerB, buildHead, openModel, buildBlock, buildFull, embed, f32Of, scalarOf, ropeTables };

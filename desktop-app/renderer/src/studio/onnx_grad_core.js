@@ -103,11 +103,12 @@
     function keepShape(shape, axes) { return shape.map((d, i) => (axes.includes(i) ? 1 : d)); }
 
     // 反向：回傳 Map<paramName, gradTensor>
-    function grad(g, loss, wrtNames) {
+    // seed：外部給的上游梯度張量（形狀同 loss）；沒給時 loss 必須是純量，以 1 起算。wrtNames 可包含非參數的輸入（例如層輸入 x，用來取得 dx）
+    function grad(g, loss, wrtNames, seed) {
         const need = new Set(wrtNames);                       // 需要梯度的張量（沿前向傳播）
         const fwd = g.nodes.slice();
         for (const n of fwd) if (n.inputs.some((x) => need.has(x))) for (const o of n.outputs) need.add(o);
-        const grads = new Map(); grads.set(loss.name, g.scalar(1));
+        const grads = new Map(); grads.set(loss.name, seed || g.scalar(1));
         const add = (name, t) => { if (grads.has(name)) grads.set(name, g.add(grads.get(name), t)); else grads.set(name, t); };
         for (let i = fwd.length - 1; i >= 0; i--) {
             const n = fwd[i]; const dy = grads.get(n.outputs[0]); if (!dy || !n.outputs.some((o) => need.has(o))) continue;
