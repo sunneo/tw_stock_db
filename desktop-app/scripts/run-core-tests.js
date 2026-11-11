@@ -60,6 +60,7 @@ const suites = [
     ['領域包 png（PNG 讀寫：8 位元灰階／RGB／RGBA，過濾 0～4，zlib；train 全過、holdout 只量測；需 tree-sitter 快取）', 'renderer/src/uml/domain_png.test.js'],
     ['領域包 gif（GIF 讀寫：單張影格、LZW 變長碼、全域／局部調色盤；Pillow 外部雙向驗證；train 全過、holdout 只量測；需 tree-sitter 快取）', 'renderer/src/uml/domain_gif.test.js'],
     ['領域包 pcx（PCX 讀寫：ZSoft 版本 5，RLE 逐掃描線，8 位元調色盤或三平面 RGB；Pillow 外部雙向驗證；train 全過、holdout 只量測；需 tree-sitter 快取）', 'renderer/src/uml/domain_pcx.test.js'],
+    ['領域包 jpeg（JPEG 灰階基線讀寫：標準霍夫曼與量化表，整數 DCT；Pillow 外部雙向驗證 ±2；train 全過、holdout 只量測；需 tree-sitter 快取）', 'renderer/src/uml/domain_jpeg.test.js'],
     ['區塊的庫存與範本規則（三區、型別、終止條件、模組需求；需 tree-sitter 快取）', 'renderer/src/uml/py_blocks_rules.test.js'],
     ['UML 遞迴切割寫 body（假模型：補全式逐行、縮排結構、退回重寫、區塊版；需 tree-sitter 快取）', 'renderer/src/uml/py_body.test.js'],
     ['AST 建樹：隨機建樹與真 tree-sitter 一致、種子程式重放（需 tree-sitter 快取）', 'renderer/src/ast/ast_replay.test.js'],
