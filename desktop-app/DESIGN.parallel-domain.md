@@ -71,3 +71,43 @@
 - 沒有推送、沒有跑 publish、沒有跑 embed／build 腳本、沒有改共用檔。
 - 測試一次跑一個，用 `nice -n 10 taskset -c 6-7` 開頭。
 - 沒有下載任何東西（沒有執行 `npm ci`；文法來自 git 追蹤的 vendor 目錄）。
+
+## 7. 接手（2026-11-12，context 約 30%）
+
+### 7.1 已提交
+- `d72ffe6f` avbits 修正：train 12/16 → 16/16（反序 16/16），holdout 4/7 → 6/7。根因四項（觸發詞反斜線被吃掉、寫出 SPS／PPS 的巢狀 def、se 的 k 差一、slice 觸發詞）。
+- 較早的提交：`0e8a8cb0`（par3）、`1bafd123`（par2）、`06f94928`（harness 找不到文法即失敗）、`67e039b1`（race 真執行與設計文件）。
+
+### 7.2 未提交、已寫但未全部驗證（接手者先跑測試再提交）
+1. `renderer/src/uml/algo_intent_core.js`：`FLOAT_WORDS` 移除「取樣值」。已驗證：par2 holdout 2/3 → 3/3、train 12/12；DSP 36/36。回歸：29 個套件中 `avbits`、`inflate`、`tarx` 失敗，`avbits` 與 `inflate` 在原讀取器下也失敗，`tarx` 在原讀取器下也失敗（train 9/10、`list-prefix` 讀不出配方）。這三個失敗與本改動無關，但要修。
+2. `domain_par_core.js`（觸發詞：`dynamic 排程`、`領取…塊`、`耗時`、`總耗時`）、`domain_par.test.js`（新 train 題 load-busy、dyn-chunks）：**尚未跑**。
+3. `domain_par3_core.js`（觸發詞「寫成…位元」「位元…接」「位元位移」；新骨架 `par.hist`，私有直方圖後歸約；algo 名 par-hist）、`domain_par3.test.js`（新 train 題 pack-concat、hist-counts、hist-maxbin；新 holdout ho-hist）：**尚未跑**。
+4. `tests/parallel/false_sharing_omp.c`：偽共享量測（packed／padded）：**尚未編譯、尚未執行**。
+5. 污染說明：新的 train 題（load-busy、dyn-chunks、pack-concat）教的是 ho-load-block、ho-dyn-chunks、ho-pack-bits 的同一概念。這三題之後的 holdout 數字不再是獨立量測，報告時必須標示。
+
+### 7.3 §4 待改善的狀態
+| # | 項目 | 狀態 |
+|---|---|---|
+| 1 | 「取樣值」被當成小數 | 已修（7.2-1），待提交 |
+| 2 | holdout 讀不出配方 | 觸發詞與 train 題已補（7.2-2、3），待跑；holdout 已受污染 |
+| 3 | 相依分析：從迴圈程式碼讀存取模式 | **未開始**。下一步：在讀取器加陣列存取抽取（`a[i]`、`a[i-d]` 的索引線性式），輸出距離向量給 `par.wave` |
+| 4 | 有損影像 2 維區塊進判題器 | **未開始**。原因：題目形狀是一維；2 維要矩陣輸入形狀，且 DCT 要先定整數化規則。下一步：改用整數 Walsh-Hadamard（可精確）做 8×8 骨架 |
+| 5 | MDCT | **未開始**。下一步：定點數參考，每框獨立，再做 train／holdout |
+| 6 | 霍夫曼頻率統計（直方圖後歸約） | 骨架 `par.hist` 已寫（7.2-3），**待跑**；表格建構保持循序 |
+| 7 | OpenMP 其餘語法（barrier、private、false sharing） | false sharing C 已寫（7.2-4），**待跑**；其餘未做 |
+| 8 | Python 多行程在更大輸入的加速 | **未量測**。下一步：256 MiB 以上、taskset 2 核，一次一個 |
+| 9 | 鎖與臨界區在判題器是模擬 | 設計取捨，不改；真的鎖在 `race_omp.c` 實測 |
+| 10 | 登錄嵌入清單 | **不做**（依指示由管理者統一處理，見 §5） |
+
+### 7.4 現有失敗與待查
+- `domain_avbits` holdout 未解 `ho-pps`：PPS 寫出的 holdout 措辭讀不出配方（待查觸發詞，注意污染規則）。
+- `domain_inflate`：train 或 holdout 失敗，根因未查（在原讀取器下也失敗）。
+- `domain_tarx`：`list-prefix` 讀不出配方（train）；holdout `ho-gnu`、`ho-enc` 讀不出配方。
+
+### 7.5 環境與注意事項
+- 工作樹的 `desktop-app/node_modules` 是指向主倉庫的符號連結（未追蹤，`.gitignore` 的 `node_modules/` 不吃符號連結）。**提交時只 `git add` 明確的檔案，不要 `git add -A`。**
+- 預設 `python` 是 Python 2.7.18，測試要用 `FA_PYTHON=python3.13`。
+- 文法目錄：`FA_TS_DIR=<worktree>/desktop-app/renderer/vendor/tree-sitter`。
+- 機器負載高（約 30）：一次只跑一個測試，用 `nice -n 10 taskset -c 6-7`。
+- `renderer/src/uml_orig/` 是本次臨時複製用的目錄，已刪除；不要提交。
+- 日誌與除錯檔放在 scratchpad（`/tmp/claude-1003/...`），不進倉庫。
