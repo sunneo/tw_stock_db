@@ -33,7 +33,7 @@
     const RED = {
         sum: { js: (v) => v.reduce((a, b) => a + b, 0), py: (e) => 'sum(' + e + ')' }, count: { js: (v) => v.length, py: (e) => 'len(' + e + ')' },
         max: { js: (v) => (v.length ? Math.max(...v) : 0), py: (e) => 'max(' + e + ', default=0)' }, min: { js: (v) => (v.length ? Math.min(...v) : 0), py: (e) => 'min(' + e + ', default=0)' },
-        prod: { js: (v) => v.reduce((a, b) => a * b, 1), py: (e) => 'prod(' + e + ')' },
+        prod: { js: (v) => (v.length && typeof v[0] === 'bigint' ? v.reduce((a, b) => a * BigInt(b), 1n) : v.reduce((a, b) => a * b, 1)), py: (e) => 'prod(' + e + ')' },
     };
     const POSTS = { id: { js: (r) => r, py: (r) => r, label: false }, eqn: { js: (r, n) => r === n, py: (r) => r + ' == n', label: true }, gtn: { js: (r, n) => r > n, py: (r) => r + ' > n', label: true }, ltn: { js: (r, n) => r < n, py: (r) => r + ' < n', label: true }, eq2: { js: (r) => r === 2, py: (r) => r + ' == 2', label: true }, eq1: { js: (r) => r === 1, py: (r) => r + ' == 1', label: true }, even: { js: (r) => r % 2 === 0, py: (r) => r + ' % 2 == 0', label: true }, odd: { js: (r) => r % 2 === 1, py: (r) => r + ' % 2 == 1', label: true } };
     const HELP = {
