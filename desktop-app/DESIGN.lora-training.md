@@ -360,3 +360,76 @@ lora-train/.venv/Scripts/pip install -r lora-train/requirements.txt
 
 - 真實 adapter 的按需載入延遲（本機沒有真 adapter；載入器是注入的假載入器測試）。
 - 聊天呼叫點（13.5）與網頁版的瀏覽器執行。
+
+## 14. 槽位管理：滿了怎麼替換（2026-11-12，實測＋設計）
+
+需求（指揮轉達的使用者問題）：「如果載入的槽用完，有辦法按需要 replace LoRA 嗎」。
+
+### 14.1 槽數是匯出時固定的（已確認）
+
+- 槽版 ONNX 的 LoRA 形狀寫在圖裡：每個目標的 A 是 `[din, R]`、B 是 `[R, dout]`，R 是 `buildSlotModel` 的 `rank`（現在 16）。`layout.json` 的版面也由 R 決定。改 R＝重新轉換（真模型約 4 秒、輸出 617 MB），不是執行期可調。
+- 「槽」在程式裡有兩層意思：(a) 總容量 R（rank 總和上限，多顆依 rank 串接，見 DESIGN.TODO.native-runner.md §9.2）；(b) 同時啟用數 `maxActive`（登錄表的上限）。本節的「槽滿」指 (a)，`maxActive` 另外限制。
+- 因此每顆 adapter 占用 `rank` 個槽列；R=16 時，rank 8 兩顆就滿。
+
+### 14.2 替換一個槽：要重建工作階段（實測）
+
+真模型（標準版轉成的槽版，rank 16，`scratch` 實測，2 顆 CPU 核心，每項一次）：
+
+| 量測 | 毫秒 |
+|---|---|
+| 建立基底 session（對照） | 3,898 |
+| 基底一次 22 token 前向 | 546 |
+| 建立槽版 session（含 lora.bin 外部資料） | 2,157 |
+| 槽版一次 22 token 前向 | 533 |
+| 換成另一顆 lora.bin 後重建 session | 1,897 |
+| 重建後的一次 22 token 前向 | 548 |
+
+**熱換不可行（實測）**：在同一個 session 還活著時，把 `lora.bin` 原地覆寫成另一顆，再跑一次前向，輸出與覆寫前逐值相同（最大差 0）；重建 session 後的輸出則與覆寫前不同（最大差 5.49）。結論：ORT 在建立 session 時把外部資料讀進來，之後檔案改了也不影響既有 session。**替換＝釋放舊 session＋重建**，成本約 2 秒（再加上前向）。
+
+- 推測（未測）：主行程經信箱傳送 40 MB 的 lora.bin（base64）本身也要時間，這段**未量測**，實際替換延遲會更長。
+- 推測（未測、需要改圖）：若把 A、B 改成圖的輸入（每次前向餵入），就能不重建 session 直接換，代價是每次前向都要傳 40 MB 或做成常駐張量；這需要改 `lora-slot-build.js` 並重新驗證，本次不做。
+
+### 14.3 淘汰策略（預設）
+
+- 候選＝已載入、**沒釘選**、**沒在推論中**、**不在本次計畫內**的 adapter。
+- 依最久未用（LRU，`lastUsed`）卸載，直到新的 adapter 放得下（rank 總和 ≤ R、同時數 ≤ maxActive、位元組 ≤ budgetBytes）。
+- 卸不掉（候選都釘選或推論中）：新的那顆寫出原因（「槽已滿，且沒有可卸載的」），不硬塞、不影響已載入的。
+- 計畫內的 adapter 一定不被淘汰；計畫本身超過槽容量時，排序最後的那顆被丟棄並寫原因。
+
+### 14.4 替換與回滾（原子性）
+
+`replace(outId, inId, {applyFn})` 的步驟：
+
+1. **先載入新的**。失敗：原狀不動，回報「載入 … 失敗，原狀保留」。
+2. **扣掉舊的後看容量**。放不下：卸掉新的、把舊的放回去，回報 `rolledBack`。
+3. **通知推論端**（`applyFn(新的組合)`，桌面版是 `lora_apply_set`）。失敗：卸掉新的、重新載入舊的、再套一次舊組合，回報 `rolledBack` 與原因。舊的若無法還原，回報 `state: 'degraded'`，由呼叫端退回基底。
+4. **都成功**：釋放舊的，回報 `ok` 與新的 `active` 組合。
+
+限制：舊的釘選或推論中一律拒絕（釘選可用 `force` 繞過，推論中不行）。替換期間新舊 adapter 的位元組會同時駐留一小段時間（記憶體峰值多一顆），這是為了失敗時能還原。
+
+### 14.5 手動替換與卸載
+
+- 手動替換＝`replace`（指定換出與換入）。
+- 手動卸載＝`manualUnload`：釘選與推論中都拒絕，與自動淘汰同一套保護。
+- 釘選＝`pin(id, on)`，只在記憶體（重啟後要重新釘選；持久化待決定）。
+- 推論中＝`acquire(id)`／`release(id)`，推論開始與結束時由呼叫端成對呼叫。
+
+### 14.6 給 LoRA 管理畫面的介面（與 studio-domain-author 對齊）
+
+登錄表（`lora_registry_core.js`）提供：
+
+- `status()` → `{slotCapacity, usedRank, freeRank, maxActive, budget, usedBytes, slots:[…], registered:[model card…]}`。
+  - `slots[]`：`{id, name, version, rank, size, loaded:true, pinned, inUse, lastUsed}`，依最後使用時間新到舊排序。
+  - `registered[]`：每顆 adapter 的 model card（見下）。
+- `card(entry)` → model card：`{id, name, version, description, base, rank, size, domains, triggers, prompt_format_version, source, enabled, location, eval:{lose, win}|null, compat:'ok'|'warn'|'reject', compatReasons, pinned}`。
+- 操作：`pin(id, on)`、`manualUnload(id)`、`replace(outId, inId, {applyFn, force})`、`request({domains|text|ids})`（載入）、`register`／`unregister`（註冊移除）、`setEnabled`。
+- 每一個操作都回傳 `ok`、`error`（具體原因）與 `active`（目前組合），畫面不需要自己猜狀態。
+
+model card 欄位以 `description`（一句話，來自描述檔，§13.2）與 `version` 為新增；畫面的標題用 `name`，副標題用 `description`，能力標籤用 `domains`，觸發字用 `triggers`。
+
+### 14.7 限制與未驗證
+
+- **網頁版**：`maxActive=1`，換 adapter＝重新併權重（617 MB，數秒到數十秒，未在瀏覽器實測）。網頁版沒有槽，只有「換一顆」。
+- **替換延遲的主行程部分未量測**（信箱寫入 40 MB、base64 解碼、主行程的 `lora_apply_set`）。
+- 「改圖讓 A、B 成為輸入、可熱換」是推測，未實作、未測。
+- 所有實測在 2 顆 CPU 核心（`taskset -c 12-13`）、隨機 adapter 上完成；真實 adapter 的權重值不影響載入時間，但實際機器的核心數會改變數字。
