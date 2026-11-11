@@ -554,3 +554,20 @@ Backend {
 | 5 | `backend_planned.js` 的 webgpu／directml／vulkan | 研究項，已有具體阻礙與解除條件（§5.2） | 不在 GUI 補齊範圍；維持灰掉並顯示阻礙 |
 | 6 | `LORA_APPLY_BLOCKER`（`studio_server_core.js:36`） | LoRA 套用到推論未接 | 其他工作階段處理（§14），不在此 |
 | 7 | 資產清單空狀態文字「由 … 的訓練包裝產生（尚未實作…）」 | 文案過時 | 隨 #3 改文案 |
+
+### 15.1 評量分頁（已實作，2026-11-11）
+`eval_core.js`（分組評量、基準、退步、上線門檻、留出組只給通過率、改善比較）＋ `sym_suites_core.js` 的各 kind 評量組；路由 `/api/eval`、`/api/eval/run`、`/api/eval/gate`。基準與門檻存在 Studio 偏好（`evalBaseline`／`evalGate`）。實際評量組：uml（5 小題＋3 組合題 × actors／classes／usecases／sequences，程式先讀情境不問模型）、trainer（內建規則自檢：正規式可編譯、工具存在、信心值合法）、colu（留一組交叉驗證 F1，資料不足時寫缺什麼；內建模型體檢為「已記錄」）、blockly（內建課「已記錄」；種子題需 tree-sitter＋判題器，題目只在測試檔，寫明解除條件）、matrix（6 題獨立手寫參考解，2 筆擬合、20 筆隱藏驗證，需判題器）、lora（讀資產 manifest.eval，由 `lora-train/eval_run.py` 產生）。**限制**：blockly 領域包種子題尚不能在 App 內重跑（阻礙：題目寫在 `uml/domain_*.test.js`、打包不含；解除條件：把種子題抽成資料檔隨程式載入）。
+
+### 15.2 老師迴圈（已實作）
+`teacher_core.js`：缺口驅動、七個白名單工具（`studio_dataset_list／read／add／remove／verify／eval`、`studio_gap_report`）、鐵則由程式強制（驗證才收且記 `verified_by`、只收 `split:'train'`、與留出題內容相同者拒收、留出題不可見、`author:'teacher'`＋來源＋時間＋證據、使用者逐筆拒絕、單次上限 30 筆／60000 字元／3 輪、不自動訓練、送出前顯示內容與 hash 並要 `confirmed`）。路由 `/api/teacher/plan|run|session|reject|stop|commit`。主程式端 `_studioTeacherAI`：執行時才把白名單工具註冊進 `this.tools`，經 `_runSubAgentTask({allowedToolNames})` 呼叫線上 AI，結束即移除。驗證器：uml（`validateModel`）、blockly（判題器 AC）、matrix（矩陣層自己重做＋隱藏測資）、lora（語料塊依據＋schema）；colu／trainer 不給老師代做（原因寫在畫面）。**限制**：沒有「試算」接口的 kind 加資料不訓練，分數不會變，改善以「每筆都通過程式驗證（含離線自己重做）」為準並在報告明說；有 `trial` 接口時才做到「沒改善就回滾」（單元測試用假接口驗證了回滾邏輯，App 內尚未接任何 kind 的 trial）。
+
+### 15.3 符號式訓練包裝（已實作）
+`sym_train_core.js`（執行器：分段、可暫停／繼續／停止、進度、完成寫資產、同時只一個）＋ `sym_suites_core.prepareTrain`：colu（留一組交叉驗證挑 l2、全資料訓練，產物為資產，不自動換掉使用中的模型）、trainer（先拍前後兩份快照再蒸餾）、uml（情境與設計對經 `validateModel` 收錄，產出詞彙補強資產；**阻礙**：uml_core 的詞彙／模板是常數表，執行期無擴充接口；解除條件：在 uml_core 加 `extend()`，或把資產匯出由開發者合併）、blockly（題目＋解答經 `_pyLearnLesson` 收成課，需 tree-sitter 與判題器）、matrix（範式擬合，有判題器就用隱藏測資驗證；L4–L6 不保證）。暫停只在同一次開啟內有效（單元是記憶體閉包，尚未序列化成檢查點）。網頁版：evaluation／colu／uml／trainer 可用；blockly／matrix 因沒有 Python 判題器，畫面寫具體原因。
+
+### 15.4 資料匯入輸入欄位（已實作）
+`source_input_core.js`：本機路徑（桌面版 rawfs）、多行＝多個資料夾、`fap:` 參照、GitHub wiki／raw／blob 網址（只抓文字、2MB 上限、wiki 最多 40 頁、先列出要連線的網址請使用者確認、顯示每次連線的狀態與大小、不下載壓縮檔或二進位）、常用來源釘選（最多 30，存偏好）。網頁版不能用路徑讀本機檔（瀏覽器沙盒），畫面寫明並指向挑選器與 `fap:`。
+
+### 15.5 其他缺口（盤點後留下的）
+- 沒有真的連網抓 GitHub wiki 的 Electron 驗證（規則：不連網路；單元測試用假抓取驗證了網址轉換、頁面探索與確認流程）。
+- blockly 訓練、matrix 訓練的 Electron 端到端沒跑（matrix **評量**在真 Electron 以真 Python 判題器 6/6 通過）。
+- 老師迴圈沒有以真線上 AI 跑過（沒有可用模型；Electron 驗證用 `_runSubAgentTask` 替身確認白名單註冊、驗證、移除與 commit）。

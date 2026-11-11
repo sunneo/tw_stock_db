@@ -205,7 +205,7 @@ var polling=null,lossHist=[];
 T.train=async function(body){
  var kinds=[['lora','LoRA（語言模型）'],['trainer','離線訓練器'],['colu','CoLU'],['uml','UML 設計'],['blockly','積木課程'],['matrix','矩陣層']];
  var ksel=h('select',{},kinds.map(function(k){return h('option',{value:k[0],text:k[1]})}));var out=h('div');body.appendChild(h('label',{text:'訓練種類'}));body.appendChild(ksel);body.appendChild(out);
- async function build(){out.textContent='';var kind=ksel.value,r=await api('GET','/api/backends?kind='+kind);if(r.ok===false){out.appendChild(h('div',{'class':'warn',text:'讀取運算後端失敗：'+r.error}));return}
+ var buildTok=0;async function build(){var my=++buildTok;out.textContent='';var kind=ksel.value,r=await api('GET','/api/backends?kind='+kind);if(my!==buildTok)return;if(r.ok===false){out.appendChild(h('div',{'class':'warn',text:'讀取運算後端失敗：'+r.error}));return}
   if(r.note)out.appendChild(h('div',{'class':'warn',text:r.note}));
   if(kind!=='lora'){symTrain(out,kind);return}
   var bs=h('select',{});bs.appendChild(h('option',{value:'auto',text:'自動（建議）'+(r.selection&&r.selection.chosen?' → '+r.selection.chosen:(r.selection&&r.selection.reason?'：'+r.selection.reason.slice(0,60):''))}));
@@ -249,7 +249,7 @@ function symTrain(out,kind){
  var bS=h('button',{'class':'pri',text:'開始'}),bP=h('button',{text:'暫停',disabled:true}),bR=h('button',{text:'繼續',disabled:true}),bX=h('button',{text:'停止',disabled:true});
  out.appendChild(h('div',{'class':'row'},[nm,fa,kind==='colu'?h('label',{},[fo,h('span',{text:' 資料不足也訓練'})]):null]));out.appendChild(h('div',{'class':'row'},[bS,bP,bR,bX]));out.appendChild(pg);out.appendChild(st);out.appendChild(lg);
  function setB(state){bS.disabled=(state==='running'||state==='paused'||state==='finishing');bP.disabled=state!=='running';bR.disabled=state!=='paused';bX.disabled=!(state==='running'||state==='paused')}
- async function poll(){clearTimeout(poll.t);var r=await api('GET','/api/train/sym-status');if(r.ok===false)return;pg.value=r.pct;st.textContent=r.state+'　'+r.done+'／'+r.total+(r.current?'　'+r.current:'')+(r.error?'　錯誤：'+r.error:'');lg.textContent=r.log.map(function(l){return l.text}).join('\n');setB(r.state);
+ async function poll(){clearTimeout(poll.t);var r=await api('GET','/api/train/sym-status');if(r.ok===false)return;if(r.kind&&r.kind!==kind){pg.value=0;lg.textContent='';if(r.state==='running'||r.state==='paused'||r.state==='finishing'){st.textContent='另一個符號式訓練進行中（'+r.kind+'/'+r.name+'，'+r.state+'）；同一時間只能跑一個';setB('running');bP.disabled=true;bX.disabled=true;poll.t=setTimeout(poll,1000)}else{st.textContent='';setB('idle')}return}pg.value=r.pct;st.textContent=r.state+'　'+r.done+'／'+r.total+(r.current?'　'+r.current:'')+(r.error?'　錯誤：'+r.error:'');lg.textContent=r.log.map(function(l){return l.text}).join('\n');setB(r.state);
   if(r.state==='finished'){st.textContent+='　→ 已存成資產 '+((r.result&&r.result.saved)||[]).join('、')+'　'+JSON.stringify(r.result&&r.result.counts||{});refresh('assets')}
   if(r.state==='running'||r.state==='finishing')poll.t=setTimeout(poll,500)}
  bS.onclick=async function(){var x=await api('POST','/api/train/start',{kind:kind,name:nm.value,fromAsset:fa.value||undefined,cfg:{force:fo.checked}});if(x.ok===false){st.textContent='';alert(x.error);return}poll()};
