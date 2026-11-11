@@ -334,3 +334,14 @@ inflate 20/20、tarx 20/20、bmpx 20/20、png 12/12、gif 14/14、pcx 14/14、jp
 ### 注意
 - 測試執行會改動 `test-reports/`、`__pycache__`、`parts_builtin.json`，提交前要還原；未追蹤的 wasm、`node_modules` 符號連結不要加入。
 - 背景 `&` 執行的測試會在第一個測項後就結束（已遇到兩次），長的測試改用前景＋`timeout` 跑。
+
+## 接手（blockly-finish-3，續三，2026-11-12）
+
+- **乾淨 holdout 已量一次**：27 題（inflate 3、tar 3、BMP 3、PNG 3、GIF 3、PCX 3、JPEG 3、gzip 3、zlib 3），**0／27 解出**。凍結聲明與根因見 `DESIGN.blockly-gaps.md` §12。測試檔 `renderer/src/uml/domain_fresh_holdout.test.js`。
+- 根因：這批是「讀欄位／數一數」的題型，現有 7 個領域包都是「解碼成完整內容／編碼成完整檔」的骨架，讀取器對 26 題 `algo=null`，tar 3 題有 tar-parse 但沒有對應骨架。
+- **這批 holdout 之後不再碰**（不為它調教法）。之後的教法只能用新的 train 題。
+- 下一步（新 train 題，措辭與這批不同）：
+  1. 補「欄位查詢（位移＋寬度＋端序）」範式，起點是 `domain_binfmt_core.js`（已有欄位表概念，讀取器沒把「欄位、位移、小端」對到它）。
+  2. 補「計數」範式（標記出現次數、成員數）。
+  3. 完成後另寫一組新 holdout，同樣凍結後只量一次。
+- 注意：舊的 holdout 已不乾淨（見 §10.2）；乾淨的數字只看 §12。
