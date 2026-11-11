@@ -34,9 +34,10 @@
     const PRt = (typeof module === 'object' && module.exports) ? require('./pipeline_routes_core.js') : root.FaStudioPipelineRoutes;
     const PLm = (typeof module === 'object' && module.exports) ? require('./lora_manage_core.js') : root.FaStudioLoraManage;
     const LXp = (typeof module === 'object' && module.exports) ? require('./llm_export_core.js') : root.FaStudioLlmExport;
-    if (typeof module === 'object' && module.exports) module.exports = factory(A, F, T, Lay, Ing, Cln, Reg, Ev, Sy, ST, Te, Si, PPl, PLv, PAd, PRt, PLm, LXp);
-    else root.FaStudioServer = factory(A, F, T, Lay, Ing, Cln, Reg, Ev, Sy, ST, Te, Si, PPl, PLv, PAd, PRt, PLm, LXp);
-})(typeof self !== 'undefined' ? self : this, function (Asset, Fatrain, Trainer, Layout, Ingest, Clean, LoraReg, EvalCore, Sym, SymTrain, Teacher, SourceInput, PipeLib, PipeLive, PipeAdvice, PipeRoutes, PipeManage, LlmExp) {
+    const DEd = (typeof module === 'object' && module.exports) ? require('./dataset_edit_core.js') : root.FaStudioDatasetEdit;
+    if (typeof module === 'object' && module.exports) module.exports = factory(A, F, T, Lay, Ing, Cln, Reg, Ev, Sy, ST, Te, Si, PPl, PLv, PAd, PRt, PLm, LXp, DEd);
+    else root.FaStudioServer = factory(A, F, T, Lay, Ing, Cln, Reg, Ev, Sy, ST, Te, Si, PPl, PLv, PAd, PRt, PLm, LXp, DEd);
+})(typeof self !== 'undefined' ? self : this, function (Asset, Fatrain, Trainer, Layout, Ingest, Clean, LoraReg, EvalCore, Sym, SymTrain, Teacher, SourceInput, PipeLib, PipeLive, PipeAdvice, PipeRoutes, PipeManage, LlmExp, DatasetEdit) {
     'use strict';
     const KIND_LABEL = { colu: 'CoLU', blockly: '積木課程', matrix: '矩陣層', uml: 'UML 設計', trainer: '離線訓練器', lora: 'LoRA' };
     const dec = (u) => new TextDecoder('utf-8').decode(u);
@@ -229,6 +230,37 @@
                 if (method === 'GET' && P === '/api/datasets') {
                     const out = []; const st0 = await h.storage.listAssets(); for (const it of st0.concat(await builtinItems(st0))) { const r = await readAsset(it.kind, it.name); if (!r) continue; Object.keys(r.asset.files).filter((p) => /^data\//.test(p)).forEach((p) => out.push({ kind: it.kind, name: it.name, path: p, bytes: r.asset.files[p].length, readonly: !!r.builtin })); }
                     return ok({ files: out, note: out.length ? '' : '還沒有任何資產帶資料檔（data/）。把離線訓練器存成資產後這裡會出現 solutions／synonyms 等資料。' });
+                }
+                // 逐筆編輯（dataset_edit_core.js，DESIGN §22.2 第 3 項）：只能改 data/ 底下 .jsonl／.json；內建資產唯讀；寫回時重算 manifest
+                if (method === 'GET' && P === '/api/dataset/rows') {
+                    const kind = Q('kind'), name = Q('name'), path = Q('path');
+                    if (!DatasetEdit) return bad(501, '這個環境沒有接上逐筆編輯模組');
+                    if (!/^data\//.test(path)) return bad(400, '只能看 data/ 底下的檔案');
+                    const r = await readAsset(kind, name); if (!r) return bad(404, '沒有這個資產');
+                    const f = r.asset.files[path]; if (!f) return bad(404, '資產裡沒有這個檔案');
+                    const parsed = DatasetEdit.parseRows(path, dec(f));
+                    if (!parsed.ok) return ok({ editable: false, reason: parsed.error, path, bytes: f.length });
+                    const pg = DatasetEdit.pageRows(parsed.rows, Q('offset'), Q('limit'));
+                    return ok(Object.assign({ editable: !r.builtin && !!r.verify.ok, reason: r.builtin ? '內建資產是唯讀的（內容來自程式本身）；要改請另存成自己的資產' : (r.verify.ok ? '' : '資產的雜湊核對不過，先不編輯：' + (r.verify.message || '')), path, format: parsed.format, bytes: f.length, evalStale: !!r.asset.manifest.eval }, pg));
+                }
+                if (method === 'POST' && P === '/api/dataset/edit') {
+                    const kind = String(body.kind || ''), name = String(body.name || ''), path = String(body.path || ''), op = String(body.op || '');
+                    if (!DatasetEdit) return bad(501, '這個環境沒有接上逐筆編輯模組');
+                    if (!/^data\//.test(path)) return bad(400, '只能編輯 data/ 底下的檔案');
+                    if (op === 'delete' && !body.confirmed) return bad(400, '刪除一筆要先確認（confirmed:true）', { needsConfirm: true });
+                    const r = await readAsset(kind, name); if (!r) return bad(404, '沒有這個資產');
+                    if (r.builtin) return bad(409, '這是內建資產（唯讀），不能編輯；請另存成自己的資產後再編輯');
+                    if (!r.verify.ok) return bad(409, '資產的雜湊核對不過，先不編輯：' + (r.verify.message || ''));
+                    const f = r.asset.files[path]; if (!f) return bad(404, '資產裡沒有這個檔案');
+                    const parsed = DatasetEdit.parseRows(path, dec(f)); if (!parsed.ok) return bad(409, parsed.error);
+                    const res = DatasetEdit.applyEdit(parsed.rows, { op, index: body.index, row: body.row }); if (!res.ok) return bad(400, res.error);
+                    const files = Object.assign({}, r.asset.files); files[path] = new TextEncoder().encode(DatasetEdit.serializeRows(parsed.format, res.rows));
+                    const mf = r.asset.manifest;
+                    const m = Asset.createManifest({ kind, name, files, counts: Object.assign({}, mf.counts), owner: mf.owner, created: mf.created, parent: mf.parent, base: mf.base, compat: mf.compat, eval: mf.eval, extra: mf.extra });
+                    const w = await h.storage.saveAsset({ manifest: m, files }, { replace: true }); if (!w.ok) return bad(500, w.error);
+                    log('逐筆編輯 ' + kind + '/' + name + ' › ' + path + '：' + op + '（現在 ' + res.rows.length + ' 筆）');
+                    if (S.push) S.push({ type: 'asset_changed' });
+                    return ok({ total: res.rows.length, op, evalStale: !!mf.eval });
                 }
                 if (method === 'GET' && P === '/api/eval') {
                     const out = []; const st1 = await h.storage.listAssets(); for (const it of st1) { const m = await h.storage.loadManifest(it.kind, it.name); if (m && m.eval) out.push({ kind: it.kind, name: it.name, eval: m.eval }); } for (const it of await builtinItems(st1)) if (it.eval) out.push({ kind: it.kind, name: it.name, eval: it.eval, builtin: true });
