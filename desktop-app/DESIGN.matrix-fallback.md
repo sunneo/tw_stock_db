@@ -590,3 +590,66 @@ heldout9（`heldout9_list.jsonl`，16 題）：**ok 15/16，verified 14**（測�
 4. 「待改善」清單（本棒誠實寫下）：FGK 的均勻分布成本 +13%；LZMA 目前只有貪婪比對（沒有最優解析），壓縮率低於 liblzma 預設；整套 `run-core-tests.js` 沒有跑。
 
 **身分與分支**：`git -c user.name="Claude" -c user.email="noreply@anthropic.com"`（依任務指示，沒有改全域設定）；trailer 寫 Haiku 5.5（依系統提醒）。沒有推送、沒有發布、沒有跑 `scripts/embed-code-ui.js`、`build-assistant.js`、沒有用 `git add -A`。
+
+### 13.5 第四棒（2026-11-12，分支 `claude/matrix-finish-4-48e1e0`，起點 `ea5e6f68`）
+
+**提交（未推送、未嵌入、未跑 embed／build、未用 `git add -A`）**
+
+| 提交 | 內容 |
+|---|---|
+| 9ac73f62 | 第二批 held-out 12 題先凍結（`matrix_synth_holdout2.test.js`），才寫任何新範本 |
+| 69d84200 | 合成器範本 +11（相鄰差、首項保留差分、游程段數、最長連續 0、眾數次數、過半多數、絕對值位元數）；第二批與第三批的回歸地板 |
+| 588af9b8 | 第三批 held-out 12 題凍結（`matrix_synth_holdout3.test.js`），換說法與參數，只量一次 |
+| 3d3febbc | teach_queue：`_teachQueueRecord` 改走 `FaMatrixTeachQueue.mergeText`；新增 6 項測試 |
+| af8f8973 | LZMA、FGK 測試結尾行改成執行器認得的格式（內容不變） |
+| b449b3d4 | `matrix_range_core.js` 檔頭「完整 LZMA 未做」改掉（已在 §13.4 完成） |
+
+**合成器（量測，不是獨立檢查的部分要標清楚）**
+
+- 第二批（範本寫在看過它的題型之後，數字偏樂觀）：範本寫之前 **3/12**（兩個對照加一題 DFA），寫之後 **10/12** 合成，隱藏測資 AC 10。未過：`h-mtf`（MTF 是有狀態的清單變換，沒有範本）、`h-tokens`（兩個整數同一行的組合計數，沒有這種輸入形狀）。
+- 第三批（凍結後只量一次，換說法換參數，**這是比較誠實的數字**）：**8/12** 合成，隱藏測資 AC 8。未過：`g-longest-one`（範本寫死「0」，換成「1」就不中：待改善，改成參數化要用新的 held-out 量）、`g-squares`（沒有範本）、`g-balls-boxes`（同第二批 `h-tokens` 的形狀問題）、`g-mtf-alpha`（MTF 有狀態）。
+- 第三批已經用掉。之後再改範本，要換新的一批（第四批）才算數；對第三批再調，就會變成調參。
+- 尚未量：範本的關鍵字分數（`kw`）是看第二批敘述寫的，沒有關鍵字時的召回沒量（待改善）。
+- 既有 `matrix_synth.test.js` 17 項仍全綠；`matrix_synth_holdout2.test.js` 地板 10、`holdout3` 地板 8。
+
+**teach_queue（修正舊的敘述）**
+
+- 13.3 寫「`_codeOffline` 失敗路徑沒有呼叫 add」已過時：失敗路徑經 `_matrixSpecNeed` → `_teachQueueRecord` 寫檔（`floating-assistant.js` 約 120059、120065 行）。
+- 真正的缺口是：`_teachQueueRecord` 自己做合併，沒有用 `FaMatrixTeachQueue`，所以摘要與合併規則有兩份。已改成 `FaMatrixTeachQueue.mergeText`（純函式），沒嵌入時退回直接合併。測試 `matrix_teach_queue.test.js` 17 項全綠（新增第 ⑦ 組 6 項）。
+- `renderer/floating-assistant.js`（建置產物）仍是舊的，這次沒有重嵌入（總指揮統一做）。
+- **Electron 實跑（12/12）**：`~/fa-electron/harness/`（在專案外，不提交）載入真實的 `_teachQueueRecord` 原始碼（用方法起頭搜尋，不用寫死的行號），檔案 API 用真的檔案系統，驗證：新增、同題計次、可重讀、無暫存檔殘留、摘要、localStorage 退路、沒有 `FaMatrixTeachQueue` 時的退路。截圖 `~/fa-electron/run-data/teach_queue_window.png`。
+- **沒有驗到的**：產品的摘要視窗（`floating-assistant.js` 目前沒有摘要 UI，只回傳 `lines`）；完整的產品應用程式（需要嵌入與建置，不在本棒範圍）；因此總指揮要求的隔離環境變數（`FA_DISABLE_MAIN_OVERLAY`、`FA_UPDATE_BASE`、獨立 `--user-data-dir`）沒有用上，因為沒有啟動產品。
+
+**Electron 44.4.0（使用者同意的下載，範圍只限此項）**
+
+- 來源：GitHub 官方發行 `electron/electron` v44.4.0，`electron-v44.4.0-linux-x64.zip`，**122,922,610 位元組（117 MiB，約 123 MB）**，在估計的 100～150 MB 之內（是核對後的實際值）。
+- 校驗：與同一發行的 `SHASUMS256.txt` 比對，sha256 `db661711…c499d` 相符。
+- 位置：`~/fa-electron/`（zip 與 `SHASUMS256.txt`；解壓到 `~/fa-electron/dist/`）。解壓後補回可執行權限（僅限 `electron`、`chrome_crashpad_handler`、`chrome-sandbox`）。`dist/electron --version` 得 `v44.4.0`。
+- 沒有安裝系統套件、沒有改系統設定、沒有放進專案樹。
+- 沙箱：這台 `chrome-sandbox` 沒有 root 擁有的 setuid，只能 `--no-sandbox` 跑驗證（驗證環境的限制，不是產品設定）。
+- DISPLAY `:2.0` 可用（`xdpyinfo` 確認），用的是共用桌面；沒有另開虛擬顯示。
+
+**整套 `run-core-tests` 在這台能不能跑（修正 13.3 與 13.4 的說法）**
+
+- 能跑，會完整跑完 309 組（8 核、nice 10，約 10 分鐘，機器負載高時更久）。
+- 「缺 tree-sitter 快取」的說法**不對**：測試預設讀 `~/.cache/fa-ts`，那個目錄不存在，所以測試印「略過」。文法其實在 git 追蹤的 `renderer/vendor/tree-sitter/`，而且 `~/.cache/fa-ts-h264/` 裡三個檔的 md5 和它完全相同。Blockly 的接手者跑得動，是因為它設了 `FA_TS_DIR=~/.cache/fa-ts-h264`。
+- 我第一次跑時錯誤地設 `FA_TS_DIR` 指到 repo 的 `renderer/vendor/tree-sitter`，結果有些測試會把缺的文法下載進 repo（7 個 `.wasm`，未追蹤）。已刪除，之後改用 `~/.cache/fa-ts-h264`。
+- 另外要有 `python` 指令（這台只有 `python3`）：在工作目錄外的 scratchpad 放一個 `python -> /usr/bin/python3` 的符號連結，只在那次執行時加入 PATH。
+- 工作樹沒有 `node_modules`，缺 `js-yaml`、`acorn` 等。以符號連結指向主倉庫的 `desktop-app/node_modules`（執行後要移除，它不在 `.gitignore`，見下）。
+- 執行器會覆寫 `test-reports/core-tests-latest.*` 與 `renderer/src/catalog/__pycache__/*.pyc`；這兩類都不提交，已還原。
+
+**結果（乾淨環境：`FA_TS_DIR=~/.cache/fa-ts-h264`、`FA_PYTHON=python3`、python shim、node_modules 連結）**
+
+- **285／309 組通過，24 組失敗，全部是「新增」，沒有既有失敗。**
+- 其中 **11 組是格式誤判**：測試本身全部通過（文字寫「全部通過」「0 失敗」「通過 N 項」），但結尾行不符執行器要求的 `N passed` 或 `0 failed`。包括：sym_studio（71）、source_input（33）、lora_web（54）、native_lora_merge（22）、網頁版訓練 LoRA 研究／ONNX 圖／wasm-web 後端、訓練服務、頁內 Worker、交換空間、find_installed_runtime（8）。這些應該改結尾行（和 13.4 的 LZMA 同類問題），本棒沒有逐一改，是待改善。
+- **13 組真失敗或未分類（沒有修，各自有 owner）**：
+  - `par`（平行運算）：`load-span` 的 holdout 報「程式讀不出，需要模型」；
+  - 行為描述第一層：`ENOENT`（缺檔）；
+  - C++／C#／Perl／Ruby 輸出器實跑：10 項失敗；
+  - 從程式抽回 UML（`convert_code` to_uml）與結構轉換（struct）：宿主 enum 缺 `to_uml`／struct 動作；
+  - 判題器 exec 逾時：孫行程變孤兒；
+  - 程式優化對照表：prefix-sum 實測加速 1.5 倍，門檻 3（在高負載下量，可能是環境）；
+  - 訓練工作室整合（視窗版面、假伺服器路由）：版面與 info 數值不符；
+  - 原生推論套用 LoRA：嵌入清單的 sha256 與目前 `nr-*.js` 不同步（需要重跑 refreeze，屬於嵌入流程）；
+  - 內建資產（LoRA 現況）；資料匯入與清洗：`ENOENT: scandir`；harness skill 可攜：1 項。
+- 本棒新增的矩陣測試全部在 run-core-tests 裡通過（`matrix_lzma`、`matrix_fgk` 修完結尾行後為 31 與 6，`matrix_teach_queue` 17，`matrix_synth*`）。
