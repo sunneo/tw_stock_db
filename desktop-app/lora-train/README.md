@@ -17,9 +17,21 @@
 
 CPU 訓練很慢（約 1–5 小時，視資料量），所以請嚴格看上表，不要每次小改都重訓。
 
+## 手動建立訓練環境（工作室的 cpu-py 後端也用這個）
+
+訓練工作室會依序找：`lora-train/.venv`（開發目錄與使用者資料夾）→ PATH 上的 python／python3／py → `py -0p` 列出的各版本，只接受 3.11 以上。建議固定用 `lora-train/.venv`：
+
+```bash
+py -3.13 -m venv lora-train/.venv
+lora-train/.venv/Scripts/python.exe -m pip install torch --extra-index-url https://download.pytorch.org/whl/cpu
+lora-train/.venv/Scripts/python.exe -m pip install -r lora-train/requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu
+```
+
+基底模型 Qwen/Qwen3-0.6B 第一次訓練會從 Hugging Face 下載（約 1.2 GB）。
+
 ## 一鍵訓練（從頭到尾，可中斷續跑）
 
-需要：Python 3.11+、Node.js。第一次執行會自動建立隔離的 `.venv`（CPU 版 torch），**不會動全域 Python**。
+需要：**Python 3.11 以上**（transformers 5.x 的要求；3.10 以下會裝不起來或顯示缺套件）、Node.js。第一次執行會自動建立隔離的 `.venv`（CPU 版 torch），**不會動全域 Python**。
 
 ```bash
 ./train.sh --name r3          # Linux / macOS / Git-Bash

@@ -2003,7 +2003,7 @@ function startNativeMailbox(ctx) {
     try {
       for (const k of Object.keys(require.cache)) { if (k.indexOf(dir) === 0) delete require.cache[k]; }
       const mod = require(entry);
-      studioHost = mod.createStudioHost({ fs: fsSync, path: pathM, os: require("os"), cp: require("child_process"), hostDir: dir, loraDir: pathM.join(dir, "lora-train"), env: {} });
+      studioHost = mod.createStudioHost({ fs: fsSync, path: pathM, os: require("os"), cp: require("child_process"), hostDir: dir, loraDir: pathM.join(dir, "lora-train"), loraDirs: [pathM.join(__dirname, "lora-train"), pathM.join(process.resourcesPath || "", "lora-train")], env: Object.assign({}, process.env) });
       if (app && !studioQuitHooked) { studioQuitHooked = true; app.on("before-quit", () => { try { if (studioHost) studioHost.handle("studio_dispose", {}); } catch (_) { /* */ } }); }
       return { ok: true };
     } catch (e) { studioHost = null; return { ok: false, code: "host_load_failed", message: "Studio 主行程端載入失敗：" + String((e && e.message) || e) }; }

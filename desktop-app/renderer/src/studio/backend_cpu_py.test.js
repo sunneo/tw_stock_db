@@ -47,7 +47,7 @@ const mkBackend = (o) => { const fs = memfs(); fs.writeFileSync('/lora/train_lor
   check('無 Python：不可用且 reason 明說找不到 Python 與出路', !noPy.available && /找不到 Python/.test(noPy.reason) && /匯出訓練包/.test(noPy.reason), noPy);
   check('probe 結果型別合法', B.validateProbeResult(noPy).length === 0);
   const noPkg = await mkP(async () => ({ found: true, version: '3.10.4', packages: { torch: null, transformers: '4', peft: null } })).probe();
-  check('有 Python 缺套件：列出缺的套件', !noPkg.available && /torch、peft/.test(noPkg.reason) && /3\.10\.4/.test(noPkg.reason) && !/transformers/.test(noPkg.reason.split('缺少套件：')[1]), noPkg);
+  check('有 Python 缺套件：列出缺的套件', !noPkg.available && /torch、peft/.test(noPkg.reason) && /3\.10\.4/.test(noPkg.reason) && !/transformers/.test(noPkg.reason.split('缺少套件：')[1].split('。')[0]), noPkg);
   const noScript = await mkP(async () => ({ found: true, version: '3.10.4', packages: { torch: '2', transformers: '4', peft: '1' } }), memfs()).probe();
   check('缺訓練腳本：回具體路徑', !noScript.available && /train_lora\.py/.test(noScript.reason), noScript);
   const good = await mkP(async () => ({ found: true, version: '3.10.4', packages: { torch: '2.3', transformers: '4', peft: '1' } })).probe();
@@ -59,6 +59,26 @@ const mkBackend = (o) => { const fs = memfs(); fs.writeFileSync('/lora/train_lor
   const dr = det();
   check('預設偵測：python 找不到就試 python3，且 windowsHide', dr.found && dr.path === 'python3' && dr.version === '3.11.0' && det.calls.every((c) => c.opts.windowsHide === true), { dr, calls: det.calls });
   check('介面型別', B.validateBackend(mkBackend().b).length === 0);
+
+  // ---- Python 探測順序（全用注入的假 spawnSync／假 fs，不動真環境）----
+  {
+    const full = { torch: '2.15', transformers: '5.22', peft: '0.21' };
+    const mkSpawn = (table) => { const calls = []; const f = (cmd, args) => { calls.push(cmd); if (cmd === 'py' && args[0] === '-0p') return table['py -0p'] ? { status: 0, stdout: table['py -0p'] } : { error: new Error('ENOENT'), status: null }; const t = table[cmd]; return t ? { status: 0, stdout: JSON.stringify({ version: t.v, packages: t.p }) + '\n' } : { error: new Error('ENOENT'), status: null }; }; f.calls = calls; return f; };
+    const BS = String.fromCharCode(92), WP = (s) => s.split('/').join(BS), VENV = WP('D:/x/lora-train/.venv/Scripts/python.exe'), fsHas = { existsSync: (f) => f === VENV };
+    const winPath = require('path').win32;
+    const sp1 = mkSpawn({ [VENV]: { v: '3.13.1', p: full }, python: { v: '3.10.4', p: { torch: null, transformers: null, peft: null } } });
+    const r1 = P.defaultDetect(sp1, { fs: fsHas, path: winPath, platform: 'win32', venvDirs: [WP('D:/x/lora-train')] })();
+    check('探測：優先用 lora-train/.venv，找到就不再往後試', r1.found && r1.path === VENV && r1.version === '3.13.1' && sp1.calls.indexOf('python') < 0, r1);
+    const PY313 = WP('C:/Python313/python.exe'), sp2 = mkSpawn({ python: { v: '3.10.4', p: full }, 'py -0p': ' -V:3.13 *        ' + PY313 + String.fromCharCode(10) + ' -V:3.10          ' + WP('C:/Python310/python.exe') + String.fromCharCode(10), [PY313]: { v: '3.13.0', p: { torch: null, transformers: null, peft: null } } });
+    const r2 = P.defaultDetect(sp2, { fs: { existsSync: () => false }, path: winPath, platform: 'win32', venvDirs: [WP('D:/x/lora-train')] })();
+    check('探測：PATH 上 3.10 不採用，改選 py 啟動器列出的 3.13（缺套件由 probe 說明）', r2.found && r2.path === PY313 && r2.version === '3.13.0', r2);
+    const sp3 = mkSpawn({ python: { v: '3.10.4', p: full } });
+    const r3 = P.defaultDetect(sp3, { fs: { existsSync: () => false }, path: winPath, platform: 'win32', venvDirs: [] })();
+    check('探測：只有 3.10 → found:false 並記下太舊的版本', !r3.found && r3.tooOld === '3.10.4', r3);
+    const pr3 = await P.createCpuPyBackend({ detect: async () => r3, spawn: () => {}, fs: memfs(), path: posix, loraDir: '/lora', hw: { cores: 4 } }).probe();
+    check('太舊：reason 寫明需要 3.11 以上與三個套件、建議 .venv，並附安裝指令與 --extra-index-url', !pr3.available && /3\.10\.4/.test(pr3.reason) && /需要 Python 3\.11 以上與 torch／transformers／peft，建議在 lora-train\/\.venv 安裝/.test(pr3.reason) && /py -3\.13 -m venv/.test(pr3.reason) && /--extra-index-url https:\/\/download\.pytorch\.org\/whl\/cpu/.test(pr3.reason), pr3);
+    check('pyOk 邊界', P.pyOk('3.11.0') && P.pyOk('3.13.1') && !P.pyOk('3.10.9') && !P.pyOk('2.7.18') && P.pyOk('4.0.0') && !P.pyOk(null));
+  }
 
   // ---- 進度行解析 ----
   const pl = P.parseProgressLine;

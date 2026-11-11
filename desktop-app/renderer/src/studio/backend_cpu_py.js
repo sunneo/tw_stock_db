@@ -26,12 +26,12 @@ function defaultDetect(spawnSync, opts) {
     ['python', 'python3', 'py'].forEach((c) => cands.push(c));
     try {   // py 啟動器列出的各版本（py -0p 每行最後一欄是路徑）
       const l = spawnSync('py', ['-0p'], { encoding: 'utf8', windowsHide: true, timeout: 10000 });
-      if (l && !l.error && l.status === 0) String(l.stdout).split(/\r?\n/).forEach((ln) => { const m = /(?:^|\s)([A-Za-z]:\.*python[0-9.]*\.exe)\s*$/i.exec(ln.trim()); if (m && cands.indexOf(m[1]) < 0) cands.push(m[1]); });
+      if (l && !l.error && l.status === 0) String(l.stdout).split(/\r?\n/).forEach((ln) => { const m = /(?:^|\s)([A-Za-z]:[\\/].*python[0-9.]*\.exe)\s*$/i.exec(ln.trim()); if (m && cands.indexOf(m[1]) < 0) cands.push(m[1]); });
     } catch (e) {}
     const tried = [], good = []; let tooOld = null;
     for (const cmd of cands) {
       try {
-        const r = spawnSync(cmd, ['-I', '-c', code], { encoding: 'utf8', windowsHide: true, timeout: 20000 });
+        const r = spawnSync(cmd, ['-I', '-c', code], { encoding: 'utf8', windowsHide: true, timeout: opts.timeoutMs || 120000 });
         if (r && !r.error && r.status === 0) {
           const j = JSON.parse(String(r.stdout).trim().split('\n').pop()); tried.push({ path: cmd, version: j.version });
           if (!pyOk(j.version)) { tooOld = tooOld || j.version; continue; }
@@ -108,7 +108,7 @@ function createCpuPyBackend(o) {
       const dev = { name: hw.cpuModel || 'CPU', vendor: 'cpu', fp16: false };
       if (!d || !d.found) return B.probeResult(false, (d && d.tooOld ? '找到的 Python 版本太舊（' + d.tooOld + '）。' : '找不到 Python。') + installHint(o.loraDir) + '；或改匯出訓練包到別台訓練', dev, fp);
       const missing = ['torch', 'transformers', 'peft'].filter((k) => !(d.packages && d.packages[k]));
-      if (missing.length) return B.probeResult(false, '已找到 Python ' + d.version + '（' + d.path + '），但缺少套件：' + missing.join('、') + '。' + installHint(o.loraDir), dev, fp);
+      if (missing.length) return B.probeResult(false, '已找到 Python ' + d.version + (d.path ? '（' + d.path + '）' : '') + '，但缺少套件：' + missing.join('、') + '。' + installHint(o.loraDir), dev, fp);
       if (!o.fs.existsSync(script())) return B.probeResult(false, '找不到訓練腳本 ' + script(), dev, fp);
       return B.probeResult(true, '', dev, fp);
     },

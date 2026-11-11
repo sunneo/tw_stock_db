@@ -22,7 +22,8 @@ function createStudioHost(d) {
   const loadConfig = () => SC.normalize(readJson(jf('studio-config.json'), {}), hw.cores);
   let config = loadConfig().config;
   // ---- 後端登錄 ----
-  const loraDirOf = () => { const a = P.join(hostDir, 'lora-train'); if (fs.existsSync(P.join(a, 'train_lora.py'))) return a; return d.loraDir || a; };
+  // 訓練腳本所在：使用者資料夾 → 注入的 loraDir → 開發目錄／安裝目錄（loraDirs，由主行程給）；都沒有就回第一個（probe 會說找不到）
+  const loraDirOf = () => { const a = P.join(hostDir, 'lora-train'), cands = [a, d.loraDir].concat(d.loraDirs || []).filter(Boolean); for (const c of cands) { if (fs.existsSync(P.join(c, 'train_lora.py'))) return c; } return d.loraDir || a; };
   const killTree = d.killTree || ((ch) => { try { if (process.platform === 'win32' && ch.pid) cp.spawn('taskkill', ['/PID', String(ch.pid), '/T', '/F'], { windowsHide: true }); else ch.kill('SIGTERM'); } catch (e) {} });
   const spawnLow = (c, a, o) => {
     const ch = cp.spawn(c, a, Object.assign({}, o, { windowsHide: true }));
@@ -31,7 +32,7 @@ function createStudioHost(d) {
     return ch;
   };
   const registry = new BackendCore.BackendRegistry();
-  const cpuPy = CpuPy.createCpuPyBackend({ detect: CpuPy.defaultDetect(cp.spawnSync, { fs, path: P, venvDirs: () => [loraDirOf(), P.join(hostDir, 'lora-train'), d.loraDir] }), spawn: spawnLow, killTree, fs, path: P, get loraDir() { return loraDirOf(); }, hw, get config() { return config; }, env: d.env || {} });
+  const cpuPy = CpuPy.createCpuPyBackend({ detect: CpuPy.defaultDetect(cp.spawnSync, { fs, path: P, venvDirs: () => [loraDirOf(), P.join(hostDir, 'lora-train'), d.loraDir].concat(d.loraDirs || []) }), spawn: spawnLow, killTree, fs, path: P, get loraDir() { return loraDirOf(); }, hw, get config() { return config; }, env: d.env || {} });
   registry.register(CpuJs.createCpuJsBackend({ engineVersion: 'tiny-1' }));
   registry.register(cpuPy);
   ['wasm-web', 'webgpu', 'directml', 'vulkan'].forEach((id) => registry.register(Planned.createPlannedBackend(id, {})));
