@@ -259,6 +259,56 @@ Backend {
 
 階段 3 **未涵蓋**：(1) 梯度本身在全模型上沒有直接對有限差分（單區塊已對，4.6e-7；全模型的前向與端到端下降已驗證，但沒有逐參數檢查）；(2) T 只試 16／32；T=256 以上的激活記憶體沒量（估算見上表，可用逐層檢查點）；(3) 與 `train_lora.py` 的 loss 曲線對拍（缺 torch 與完整權重下載同意）；(4) 多筆資料的批次／泛化訓練（目前只有單序列過擬合）；(5) 把 A／B 檢查點轉成 `.fatrain`／adapter 格式（`lora_web` 已有載入端）。
 
+**階段 4–6 狀態（2026-11-11）：WebGPU 實測、32 位元上限與出路、逐層引擎、wasm-web 後端、交換空間**
+
+**本機環境事實（實測，`scripts/webgpu-probe-main.js`：真 Electron、隱藏視窗、隔離資料夾）**
+
+| 項目 | 結果 |
+|---|---|
+| Electron／Chromium | Electron 44.4.0／Chromium 152.0.7977.78 |
+| WebGPU | **可用**。`navigator.gpu` 只在安全來源出現（`data:` 網址沒有；改用 `file:` 或 `http://127.0.0.1` 才有）。adapter 回報 vendor `nvidia`、architecture `kepler`（舊世代；與「本機沒有 NVIDIA」的舊記載不符，以此次實測為準，這台機器的處理器探測是 Core i5-2320、4 核）。功能含 `subgroups`、`timestamp-query`，**沒有 `shader-f16`**；`maxBufferSize` 與 `maxStorageBufferBindingSize` 約 2GB |
+| Memory64 | `new WebAssembly.Memory({index:'i64'})` 成功：**這個 Chromium 支援 64 位元 WebAssembly 記憶體**（但 onnxruntime-web 的二進位不是 wasm64 建置，見下） |
+| 跨來源隔離／多執行緒 | 頁面加 COOP: same-origin／COEP: require-corp 標頭後 `crossOriginIsolated=true`、`SharedArrayBuffer` 可用；無標頭（file: 頁）則不可用 |
+
+**WebGPU 逐算子比對（`scripts/webgpu-train/export-optests.js`＋`optests.html`：同輸入、WASM 與 WebGPU 各跑，形狀仿 Qwen3）**
+
+- 通過（相對誤差 ≤ 3e-6）：Add／Sub／Mul（含廣播與純量）、Div、Neg、Sqrt、Reciprocal、Log、Exp、Sigmoid、Softmax（含因果遮罩 −1e9）、MatMul（2 維、批次、2 維右運算元廣播、LoRA 兩段）、Transpose（102、021）、Reshape、ReduceMean、ReduceSum（軸／全部）、Expand、Cast（uint8／int8→float）、**uint8 的 Gather（接 Cast＋Sub＋Mul）**、RMSNorm 組合、RoPE 組合、SiLU 乘。
+- **錯誤（WebGPU 後端的 bug，不是我們的圖）**：`DequantizeLinear` 對 uint8／int8（整張量縮放，有或無零點）輸出錯誤值（相對誤差 1e7 倍，部分為 0）。**對策已實作**：訓練圖改寫成 `Cast→Sub(零點)→Mul(縮放)`（`qwen3_graph.js` 的 `dq`），實測與 WASM 一致；`fresh()` 反向重生成規則也同步涵蓋。
+- **ORT 圖最佳化等級在 WebGPU 的行為**：`graphOptimizationLevel: 'disabled'` 時 WebGPU 在第 0 層前饋就算錯（層輸出範數 363 vs 51.6），`basic` 與 `all` 時第 0 層每個中間值都與 WASM 一致（最終 logits 範數 3139.8876 vs 3139.8878）。**WebGPU 必須用 `basic`**；WASM 則必須 `disabled`（否則常數折疊把 uint8 權重展開成 fp32，28 層撐爆 4GB）。引擎已依 ep 自動選。
+- 單一個 28 層大圖在 WebGPU＋`basic` 會在建立工作階段時以 wasm 錯誤碼 1533628344 中止（常數折疊在 wasm 堆積區展開 fp32 權重），所以 WebGPU 也要走逐層圖。
+
+**「32 位元 WASM」是什麼、出路是什麼**：電腦和作業系統是 64 位元沒錯，但 WebAssembly 目前通用規格的線性記憶體位址只有 32 位元，單一模組最多 4GiB（`onnxruntime_webassembly.cmake` 設 `MAXIMUM_MEMORY=4294967296`），與機器實際記憶體無關。Memory64 已標準化（phase 5）：Chrome 133、Firefox 134 預設開（`WebAssembly/website` 的 features.json，查閱日不明），Safari 僅 Technical Preview 旗標；本機 Chromium 152 實測支援。**但 onnxruntime-web 沒有 wasm64 二進位**（`cmake/onnxruntime_webassembly.cmake` 與 `build.py` 看不到 memory64／wasm64 旗標；1.23–1.27、1.29.x 的發行說明沒能讀到，結論僅限已讀部分）。阻礙＝要用 Memory64 必須自己用 Emscripten 重編整個 onnxruntime（工程與維護成本高，且 Safari 不支援）；解除條件＝上游發行 wasm64 建置。**因此本專案的出路不是等 wasm64，而是不需要大位址空間：逐層執行（任何時刻只有一層在算）＋交換空間。**
+
+**峰值記憶體分解（T=32、rank 8；RSS 為 Electron 內建 node 實測，標「估」者是依資料大小推算）**
+
+| 模式 | 峰值 RSS | 說明 |
+|---|---|---|
+| 28 層單一大圖、輸出頭整塊（階段 3） | 3.85GB | 已貼近 4GB；ORT 最佳化開啟則直接中止 |
+| 同上、輸出頭分塊（8 塊，需 Exp 規則） | 3.60GB（穩態約 2.6GB） | 峰值出現在序列化／建立工作階段那一刻 |
+| **逐層、全部工作階段常駐** | **2.51GB** | 57 個小圖（28 前向＋28 反向＋頭部），損失與大圖版逐步相同 |
+| 逐層、交換模式（工作階段用完釋放，層圖放記憶體版交換空間） | 2.64GB | 這個記憶體版交換空間本身佔 1.04GB（JS 堆）；換成 IndexedDB 後這 1GB 離開程序 |
+| 逐層＋真 IndexedDB 交換（瀏覽器頁面，WASM） | JS 堆 717MB（`usedJSHeapSize`）；層圖 1.04GB 在 IndexedDB | WASM 堆本身無法從頁面直接量，RSS 在頁面模式沒量 |
+
+分解（估）：原始模型檔 617MB（建圖與嵌入查表用）＋序列化訓練圖 570–718MB（建立工作階段後可釋放）＋ ORT 解析複本（約等於圖大小）＋常數折疊展開（uint8→fp32，4 倍；28 層約 1.8GB＋輸出頭 0.6GB，**這是最大的單項，必須避開**）＋激活（T=32 約百 MB 內）＋梯度與 Adam 狀態（5.05M 參數×3×4B≈61MB）。目標「低於 3GB 且有餘裕」：逐層常駐 2.51GB 已達成；交換模式在 IndexedDB 下預期更低但**頁面 RSS 沒量，不宣稱數字**。
+
+**逐層引擎（`qwen3_layered_engine.js`）**：每步＝嵌入（圖外）→ 28 次前向圖 → 頭部圖（loss、dh）→ 28 次反向圖（前向在圖內重算＝activation checkpointing，輸出 dx 與本層 14 個梯度）→ 圖外 Adam。
+
+| 驗證 | 結果 |
+|---|---|
+| 逐層 WASM（Electron node）vs 全圖版，28 層，同初始值／資料 | 前 3 步 loss 13.18862／10.74745／8.11364，與全圖版 13.18862／10.74745／8.11365 相同（到第 5 位） |
+| **WebGPU（瀏覽器頁面，28 層）vs WASM** | loss 13.188620／10.747438／8.113509 vs 13.188616／10.747451／8.113641，最大相對差 **1.6e-5**；第 1 步梯度範數 16.79986 vs 16.79969（1e-5）。前 8 步 loss：13.19→10.75→8.11→5.11→1.55→0.225→0.302→0.020 |
+| WebGPU 速度（Kepler 舊顯示卡、T=32） | 第 1 步 59 秒（建立 57 個工作階段＋著色器編譯）；暖機後 **約 10–12 秒／步（≈3 token/s）**，與 WASM 單執行緒（逐層常駐 16.5 秒／步、全圖 12 秒／步）同級。這張卡沒有 `shader-f16`，且每層一次往返，沒有調校；**不能據此推論新顯示卡的速度** |
+| 逐層 WASM＋真 IndexedDB 交換（瀏覽器頁面） | 前 3 步 loss 與常駐版**位元相同**；約 26 秒／步（比常駐慢約 9 秒：每步讀 57 個層圖共 4.7 秒＋重建工作階段）；交換空間 1.04GB／57 筆 |
+| 多執行緒 WASM（`numThreads=4`，跨來源隔離頁面）單一矩陣乘 | 1 執行緒 12.4ms vs 4 執行緒 18.9ms：**這台 4 核機器上沒有加速（反而慢）**；Electron node 內全圖 20.7 vs 11.9 秒／步同結論。能開（要 COOP／COEP 標頭），預設維持 1；使用者其他較強的處理器上可能不同，未測 |
+
+**交換空間（`swap_store.js`）**：專屬 IndexedDB 庫 `fa-train-swap`（不和 aiDoc 的 FileCache／KVStore 共用）；**不做 LRU 淘汰**（悄悄淘汰會讓訓練下一步失敗或用錯權重）；明確配額，超過丟 `SwapFullError`（含已用／要存／配額，訓練停止、舊資料保留）；讀回做長度＋校驗，不符丟 `SwapCorruptError`。真 IndexedDB 實測（`swaptest.html`）：57 筆×18MB 寫入 3.4 秒、讀回 4.9 秒、0 筆損壞；配額 1100MB 時再寫 200MB 被明確拒絕且舊資料完好；瀏覽器儲存估計配額 245GB。重用的是 aiDoc 的「分塊＋配額」精神，沒有重用 LRU。
+
+**wasm-web 後端（`backend_wasm_web.js`，已登錄 `backend_core.js`）**：id `wasm-web`，lora 後端清單第二順位（`cpu-py`、`wasm-web`、`webgpu`、`directml`、`vulkan`），成熟度排在 `cpu-py` 之後；實作全部後端介面（probe／benchmark／init／step／evalLoss／saveCheckpoint／loadCheckpoint／dispose），檢查點是規範化 float32（`lora_A/B.f32`、`opt_m/v.f32`）。測試（假引擎）：介面合規、probe、暫停→匯出→續訓 3+3 步與連續 6 步參數／動量**位元相同**、改動一個位元組拒絕續訓、rank 不符拒絕續訓；既有 `backend_core`／`studio_host` 測試更新為五個 lora 後端。桌面版主程序（`studio_host`）把 `wasm-web` 登錄為「由渲染行程執行」的規劃項，不在主程序載入 onnxruntime-web。
+
+**§5.8 門檻對照**：第 1 步 loss 相對差 ≤1e-3：WebGPU vs WASM 3.6e-7、逐層 vs 全圖 0、對真模型交叉熵 8.8e-4（階段 3，差異來自真模型激活量化）；梯度範數 ≤1e-2：1.0e-5；30 步後 loss ≤5%：**只跑到 8 步，未達 30 步，未驗證**。
+
+**仍未做／阻礙**（誠實清單）：(1) Studio 訓練分頁的後端下拉：本次沒有改 `floating-assistant.js`（嵌入區塊與雙份 UI 規則需另行處理，且網頁版目前沒有 `studio_host` 對應的頁內宿主），所以網頁版畫面仍可能顯示「請用桌面版」；(2) `checkpoint_core.js` 用 Node 的 `crypto` 與 `Buffer`，瀏覽器端要補 sha256（同步）與 Buffer 墊片，**未在瀏覽器驗證**；(3) 資料管線：後端 `step` 吃 `{ids, tgt}` 的 token 序列，把訓練資料（對話格式、遮罩只算答案 token）轉成這個形狀的工作在 Studio 核心，未接；(4) 與 `train_lora.py` 的同資料 loss 曲線對拍（缺 torch 與完整權重）；(5) 30 步以上的 WebGPU／WASM loss 曲線一致性；(6) 較新顯示卡（有 `shader-f16`）的速度；(7) 序列長度只試 T=32；T=256 以上的激活與時間未量；(8) 層圖第一次建立要約 57 秒（WASM 常駐）到 59 秒（WebGPU）暖機，產品需顯示進度並可把建好的層圖留在 IndexedDB 供下次直接使用（`createSwapLayerSource` 已支援，跨工作階段重用的版本號鍵未做）。
+
 **退路（正式需求）：網頁版小型編譯器，用 WebGPU／WASM 自己做訓練與產圖**
 
 使用者最差狀況的要求：若「反向圖＋一般 onnxruntime-web」卡在算子或效能，就在網頁版自己做編譯器。**現在就把主攻路線做成它的前半段**，避免做兩次：

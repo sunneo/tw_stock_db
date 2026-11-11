@@ -7,7 +7,7 @@ const data = arg('data'), ortDir = arg('ort'), ep = arg('ep', 'webgpu'), steps =
 const types = { '.html': 'text/html', '.mjs': 'text/javascript', '.js': 'text/javascript', '.wasm': 'application/wasm', '.json': 'application/json', '.onnx': 'application/octet-stream', '.bin': 'application/octet-stream' };
 const server = http.createServer((req, res) => {
     const u = decodeURIComponent(req.url.split('?')[0]); let f = null;
-    if (u === '/' + pageName) f = path.join(__dirname, pageName); else if (u.startsWith('/ort/')) f = path.join(ortDir, path.basename(u)); else if (u.startsWith('/src/')) f = path.join(__dirname, '..', '..', 'renderer', 'src', 'studio', path.basename(u)); else if (u.startsWith('/data/')) f = path.join(data, path.basename(u));
+    if (u === '/' + pageName) f = path.join(__dirname, pageName); else if (u.startsWith('/ort/')) f = path.join(ortDir, path.basename(u)); else if (u.startsWith('/src/')) f = path.join(__dirname, '..', '..', 'renderer', 'src', 'studio', path.basename(u)); else if (u === '/model.onnx') f = arg('model'); else if (u.startsWith('/data/')) f = path.join(data, path.basename(u));
     if (!f || !fs.existsSync(f)) { res.writeHead(404); return res.end(); }
     res.writeHead(200, { 'Content-Type': types[path.extname(f)] || 'application/octet-stream', 'Content-Length': fs.statSync(f).size, 'Cross-Origin-Opener-Policy': 'same-origin', 'Cross-Origin-Embedder-Policy': 'require-corp', 'Cross-Origin-Resource-Policy': 'same-origin' });
     fs.createReadStream(f).pipe(res);

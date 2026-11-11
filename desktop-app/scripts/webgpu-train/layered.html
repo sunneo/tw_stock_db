@@ -1,0 +1,25 @@
+<!doctype html><meta charset="utf-8"><title>layered</title>
+<script type="module">
+// 在「瀏覽器頁面」裡跑逐層引擎（產品的網頁版形狀）：模型位元組以 fetch 取得、引擎與圖產生器是同一份 CommonJS 原始碼（用最小 require 墊片載入）。
+// 參數：ep=wasm|webgpu、steps、lr、layers、threads。結果以 RESULT 行輸出。
+const sp = new URLSearchParams(location.search); const q = { get: (k) => { const a = sp.getAll(k); return a.length ? a[a.length - 1] : null; } };   // 同名參數取最後一個（--extra 可覆蓋主程序預設）
+    const ep = q.get('ep') || 'wasm', steps = +(q.get('steps') || 3), lr = +(q.get('lr') || 0.001), nl = +(q.get('layers') || 28), threads = +(q.get('threads') || 1), swap = q.get('swap') === '1';
+const log = (o) => console.log('RESULT ' + JSON.stringify(o));
+try {
+    const cache = {}; const names = ['onnx_grad_core', 'onnx_patch_core', 'qwen3_graph', 'qwen3_layered_engine', 'swap_store'];
+    const srcs = {}; for (const n of names) srcs[n] = await (await fetch('/src/' + n + '.js')).text();
+    const req = (p) => { const n = p.replace(/^\.\//, '').replace(/\.js$/, ''); if (cache[n]) return cache[n].exports; if (!srcs[n]) throw new Error('墊片找不到模組 ' + p); const m = { exports: {} }; cache[n] = m; new Function('module', 'exports', 'require', srcs[n])(m, m.exports, req); return m.exports; };
+    const Q = req('./qwen3_graph.js'), E = req('./qwen3_layered_engine.js'), SW = req('./swap_store.js'), Gm = req('./onnx_grad_core.js');
+    const ort = await import('/ort/' + (ep === 'webgpu' ? 'ort.webgpu.min.mjs' : 'ort.min.mjs')); ort.env.wasm.wasmPaths = '/ort/'; ort.env.wasm.numThreads = threads;
+    const meta = await (await fetch('/data/meta.json')).json(); const init = new Float32Array(await (await fetch('/data/init.bin')).arrayBuffer());
+    let t0 = performance.now(); const bytes = new Uint8Array(await (await fetch('/model.onnx')).arrayBuffer()); const tModel = performance.now() - t0; const M = Q.openModel(bytes);
+    const map = new Map(); let off = 0; for (const p of meta.params) { const n = p.shape.reduce((a, b) => a * b, 1); map.set(p.name, init.slice(off, off + n)); off += n; }
+    let layerSource = null, store = null; if (swap) { store = SW.createIdbSwap({ quotaBytes: 3 * 1073741824, dbName: 'fa-train-swap-layered' }); await store.clear(); layerSource = SW.createSwapLayerSource(store, async (kind, l) => { const b = kind === 'F' ? Q.buildLayerF(M, l, meta.T, meta.rank) : kind === 'B' ? Q.buildLayerB(M, l, meta.T, meta.rank) : Q.buildHead(M, meta.T, { headChunks: meta.chunks }); return Gm.toOnnx(b.g, { name: kind + l }); }, 'k:'); }
+    const eng = new E.LayeredEngine({ ort, ep, M, T: meta.T, rank: meta.rank, layers: nl, headChunks: meta.chunks, lr, keepSessions: !swap, layerSource }); eng.initParams(map);
+    const losses = [], times = [];
+    for (let i = 1; i <= steps; i++) { const r = await eng.step(meta.ids, meta.tgt); losses.push(r.loss); times.push(r.ms); log({ step: i, loss: r.loss, gradNorm: r.gradNorm, ms: r.ms, created: eng.stats.created }); }
+    const mem = performance.memory ? { usedJSHeapMB: Math.round(performance.memory.usedJSHeapSize / 1048576) } : null;
+    log({ done: true, ep, swap, layers: nl, T: meta.T, threads, tModelFetch: Math.round(tModel), losses, times, stats: eng.stats, mem, swapUsage: store ? await store.usage() : null, swapStats: store ? store.stats : null });
+} catch (e) { log({ error: String(e && e.stack || e) }); }
+console.log('PAGE_FINISHED');
+</script>
