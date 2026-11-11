@@ -38,10 +38,11 @@
    "names": [
     "FaStudio",
     "FA_STUDIO_LAYOUT_SRC",
+    "FA_WEBLORA_WORKER_SRC",
     "FA_STUDIO_HOST_FILES"
    ],
-   "size": 182891,
-   "md5": "f5e2bce1cefb1341d8792ee4361f4609"
+   "size": 232224,
+   "md5": "e20976d87d987500e25c9b6b6c1b5f04"
   },
   "studioview": {
    "file": "chunks/studioview.js",
@@ -1582,7 +1583,7 @@
   }
  },
  "core": {
-  "size": 5680032,
-  "md5": "5cbd583cc6fd3aad8d412e0911dd471a"
+  "size": 5682600,
+  "md5": "4bc4106774c38af3d38bd448f679e30c"
  }
 }
