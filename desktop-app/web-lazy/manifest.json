@@ -40,8 +40,8 @@
     "FA_STUDIO_LAYOUT_SRC",
     "FA_STUDIO_HOST_FILES"
    ],
-   "size": 180871,
-   "md5": "dd85157fa446df90429adbf0e79e092c"
+   "size": 182891,
+   "md5": "f5e2bce1cefb1341d8792ee4361f4609"
   },
   "studioview": {
    "file": "chunks/studioview.js",
@@ -1582,7 +1582,7 @@
   }
  },
  "core": {
-  "size": 5679377,
-  "md5": "f7d1124c4a88ce0c0a44fd9720893325"
+  "size": 5680032,
+  "md5": "5cbd583cc6fd3aad8d412e0911dd471a"
  }
 }

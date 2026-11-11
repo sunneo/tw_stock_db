@@ -3,7 +3,7 @@
 // 做什麼：以 main-ext.js 內嵌的現行清單為底，重新計算 nr-*.js 各檔的大小／sha256／分割段 md5，
 // 版本號改成 --version，加上 features，更新各平台大小；輸出到 <輸出資料夾>：
 //   manifest.json（新版完整清單，與要推到 GitHub 分支的檔案逐位元組相同）、parts/<只有有變動的 nr-*.js 的分割段>、PUSH-LIST.txt（要推的檔案清單與 md5）。
-// 加 --write-main-ext 會把新清單寫回 main-ext.js 內嵌的 NATIVE_RUNTIME_MANIFEST（與分支的 manifest.json 逐位元組相同的約定）。
+// 加 --all 會輸出全部 nr-*.js 的分割段（預設只輸出與目前內嵌清單不同的）。加 --write-main-ext 會把新清單寫回 main-ext.js 內嵌的 NATIVE_RUNTIME_MANIFEST（與分支的 manifest.json 逐位元組相同的約定）。
 // 用法：node scripts/native-runtime-refreeze-nr.js <輸出資料夾> --version 1.22.0-2 --features lora [--write-main-ext]
 'use strict';
 const fs = require('fs');
@@ -32,7 +32,7 @@ function refreeze(opts) {
         const buf = fs.readFileSync(path.join(root, f.path));
         if (buf.length > PART_MAX) throw new Error(f.path + ' 超過單段上限，需要多段（此工具只處理單段）');
         const sha = sha256(buf);
-        if (sha === f.sha256) continue; // 沒變動
+        if (sha === f.sha256 && !opts.all) continue; // 沒變動（--all：清單已是新版時仍輸出全部 nr 檔的分割段，內容相同的檔推上去也無害）
         f.size = buf.length; f.sha256 = sha;
         f.parts = [{ name: safeName(f.path) + '.001.part', size: buf.length, md5: md5(buf) }];
         changed.push({ file: f, buf });
@@ -58,14 +58,15 @@ function refreeze(opts) {
 }
 
 if (require.main === module) {
-    const argv = process.argv.slice(2), o = { out: null, version: null, features: [], writeMainExt: false };
+    const argv = process.argv.slice(2), o = { out: null, version: null, features: [], writeMainExt: false, all: false };
     for (let i = 0; i < argv.length; i++) {
         if (argv[i] === '--version') o.version = argv[++i];
         else if (argv[i] === '--features') o.features = String(argv[++i]).split(',').filter(Boolean);
         else if (argv[i] === '--write-main-ext') o.writeMainExt = true;
+        else if (argv[i] === '--all') o.all = true;
         else if (!o.out) o.out = argv[i];
     }
-    if (!o.out || !o.version) { console.error('用法：node scripts/native-runtime-refreeze-nr.js <輸出資料夾> --version 1.22.0-2 --features lora [--write-main-ext]'); process.exit(2); }
+    if (!o.out || !o.version) { console.error('用法：node scripts/native-runtime-refreeze-nr.js <輸出資料夾> --version 1.22.0-2 --features lora [--write-main-ext] [--all]'); process.exit(2); }
     console.log(refreeze(o).lines.join('\n'));
 }
 

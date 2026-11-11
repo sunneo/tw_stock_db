@@ -509,3 +509,45 @@
 - DirectML 不提供（同一模型在 SkipSimplifiedLayerNormalization 失敗）。
 - 「全語音Live」設定區塊目前停用、標示開發中（它與原生無關，同批發布前由管理層確認）。
 - 實際下載的分割包：GitHub 備援路徑對單一平台約 21.7 MB（win32-x64）或 31.4 MB（linux-x64），整個分支含兩個平台共 53.0 MB；管理層先前說的 50.6 MB 是另一個計算方式。
+
+
+## 9. 執行包 1.22.0-2：LoRA 轉傳與套用（2026-11-11）
+
+目標：訓練工作室選用的 LoRA 真的套用到桌面版原生推論（`DESIGN.lora-training.md` §7 第 4 點做法 A、§10 的「載入」）。上一版的阻礙是子行程 `nr-host.js`／`nr-child.js` 沒有轉傳 `lora` 欄位，而這兩個檔屬於 md5 釘住、從 GitHub 分支下載的執行包。
+
+### 9.1 資料流（每一步誰負責、改了哪個檔）
+| 步驟 | 檔案 | 做什麼 |
+|---|---|---|
+| 1 | `renderer/src/studio/studio_server_core.js` | 按需載入後把 `{id, bytes}` 交給 `h.loraApply`；沒選到 adapter 或卸載時呼叫 `h.loraClear`。回 `ok:false` 時原因原樣顯示，`applied` 為假，不假裝成功 |
+| 2 | `renderer/src/studio/lora_apply_core.js`（新，嵌入 FaStudio）＋ `floating-assistant.js` 的 `_studioHostApi` | 算 sha256、把位元組寫到 `<信箱>/lora-in/<安全id>/lora.bin`、呼叫主程序 `lora_apply`。安全 id＝名稱消毒＋雜湊前 8 碼 |
+| 3 | `main-ext.js` 的 `NRL`（新，隨熱更新送達） | 核對大小與 sha256、核對模型是 LoRA 槽版（模型資料夾的 `layout.json` 的 `total_bytes` 必須等於 adapter 大小）、搬到 `<userData>/native-lora/<id>/lora.bin`；之後每次 `run` 都帶 `lora:{id,path,sha256,size}`；生成後核對子程序回報的 `lora_applied`＋`lora_sha256`，不符就當失敗（`lora_not_applied`） |
+| 4 | `nr-host.js`（執行包） | `run` 請求的 `lora` 欄位原樣放進協定訊息；完成訊息的 `lora_applied`／`lora_sha256` 原樣回給呼叫端（沒有 lora 時結果物件不多任何欄位） |
+| 5 | `nr-protocol.js`（執行包） | `run.lora` 欄位驗證（id、path、64 位小寫十六進位 sha256、size）；匯出 `FEATURES = ['lora']`；完成訊息帶 `lora_applied` |
+| 6 | `nr-child.js`（執行包） | 收到 `lora`：呼叫 `engine.resolveLora`（子程序自己讀檔，不經標準輸入，避免一行幾十 MB），失敗回 `load_failed` 並說明原因；成功傳給 `engine.loadModel(..., lora)`；完成訊息回報 `lora_applied`。假引擎也走同一條驗證，所以沒有模型也能測轉傳鏈 |
+| 7 | `nr-engine.js`（執行包） | `resolveLora`：讀檔、大小、sha256（缺 sha256 拒絕）、`layout.json` 槽版核對（模型不是槽版就明確失敗——因為 onnxruntime 對沒被引用的外部資料會靜默忽略，看起來成功其實沒套用）；`loadModel` 以 `externalData: [{path:'lora.bin', data}]` 交給 session，session 鍵含 id＋sha256（換 adapter 或同 id 換內容就重建；不給 lora 就重建成沒有 externalData 的 session＝卸載） |
+
+沒有 lora 時：請求內容、session 選項、結果物件都與 1.22.0-1 完全一致（`tests/native/native_lora.test.js` 逐項檢查；既有 `native_runner.test.js` 19 項、`tensor_host.test.js` 20 項仍全過）。
+
+### 9.2 同時只能套一個
+模型是 `make_lora_onnx.py build` 的單一 LoRA 槽版（一個 `lora.bin`），所以一次一個 adapter；`lora_registry` 的 `maxActive` 預設就是 1。渲染端套用器遇到多個 handle 只套第一個並在畫面明說其餘未套用。要同時套多個需要「多槽版」ONNX 或載入前把多個 adapter 依 rank 槽合併（兩者都要改 `make_lora_onnx.py`，未做）。
+
+### 9.3 執行包發佈與升級（機制說明＋這次做法）
+- **機制**：執行包不隨安裝包升級；主程序（`main-ext.js`，隨熱更新送達）內嵌一份分割清單 `NATIVE_RUNTIME_MANIFEST`（每檔大小、sha256、分割段 md5），使用者在設定頁按「安裝」才下載：來源 1＝npm 官方庫的 onnxruntime-node tgz（integrity 驗證），來源 2＝GitHub 分支 `native-runtime-1.22.0` 的釘住 commit SHA 的 raw 網址（`NATIVE_GITHUB_BASE`，分割段逐段 md5＋整檔 sha256）。`nr-*.js` 只有來源 2 有，或安裝目錄剛好有同樣內容的檔案。安裝到 `<userData>/native-runtime/<版本>/`，載入前 `checkNativeRuntimeDir` 全檔核對 md5。
+- **為什麼需要新版本**：`nr-*.js` 內容變了，md5 釘住的舊執行包不可能「就地」變成新的，所以版本從 `1.22.0-1` 升到 `1.22.0-2`（新資料夾）。
+- **使用者要重新下載嗎**：要按一次「安裝」，但**不重下載 onnxruntime**：安裝時以舊版資料夾當種子（`seedDirs`），sha256 一致的檔案直接沿用，只從來源 2 取變動的 `nr-*.js`（約 40 KB），也不連 npm。
+- **舊執行包相容與降級**：`findNativeRuntime` 先找新版、再找舊版；舊版核對通過仍可用（原生推論照常、功能不減），只是 `FEATURES` 沒有 `lora`：`lora_apply` 回 `runtime_outdated`，畫面顯示「已安裝的原生執行包（1.22.0-1）不支援 LoRA，需要更新執行包到 1.22.0-2」，`applied` 為假；`NRL.forRun` 另外保證「已套用後執行包被換回舊版」時 run 會被拒絕而不是默默不用；子程序沒回報套用也視為失敗。新版安裝成功後才刪舊版（新版沒就緒時保留舊版當退路）。
+- **新版尚未發佈時**：`NATIVE_GITHUB_BASE` 目前留空；按安裝會在下載前以 `runtime_not_published` 明確失敗並說明（不是靜默），舊版照常可用。
+- **安裝目錄的舊 `nr-*.js`**：原先 `installRuntime` 在「本機 nr 檔與清單 sha256 不同」時直接丟錯；新版改為略過並改用來源 2（舊安裝包附的版本本來就會不同）。
+- 其他程式碼仍寫死 `1.22.0-1` 的只有真機評估腳本（`scripts/eval/native_real_install_eval.js`、`stack_route_native.js` 的說明）；它們讀的是實際安裝資料夾，升級後要改路徑。
+
+### 9.4 要推到 GitHub 的檔案（等管理者決定；本工作階段沒有推送）
+目標：倉庫 `sunneo/tw_stock_db` 的分支 `native-runtime-1.22.0`。檔案已產生在共用筆記資料夾 `native-runtime-1.22.0-2-push/`（`node scripts/native-runtime-refreeze-nr.js <輸出資料夾> --version 1.22.0-2 --features lora --all` 可重現）：
+- `manifest.json`（18884 位元組，md5 `0f0752463232c87fb3143022ed82d826`；與 `main-ext.js` 內嵌的 `NATIVE_RUNTIME_MANIFEST` 內容相同，測試逐項比對）
+- `parts/nr-child.js.001.part`（md5 `6178c509cd10e08e1608c6f12796f854`）、`parts/nr-engine.js.001.part`（`4a3723c6c21fa270c5b63df21afcb28b`）、`parts/nr-host.js.001.part`（`4ab2df1e1105d57c796bbe6eaeb478a7`）、`parts/nr-protocol.js.001.part`（`d04c81af2a86709497e8cca28bf4ac61`）——這四個內容相對 1.22.0-1 有變動
+- `parts/nr-gen-params.js.001.part`、`nr-template.js.001.part`、`nr-tokenizer.js.001.part` 內容沒變（推不推都可以，內容相同）
+推上去之後：取得新 commit SHA，把 `main-ext.js` 的 `NATIVE_GITHUB_BASE` 設成 `https://raw.githubusercontent.com/sunneo/tw_stock_db/<新 SHA>`，再依熱更新流程發佈 `main-ext.js`＋`floating-assistant.js`。注意：改了任何 `nr-*.js` 都要重跑上面的工具加 `--write-main-ext`（`native_lora.test.js` 會在清單與檔案不一致時失敗）。
+
+### 9.5 驗證狀態（誠實）
+- 有測（`tests/native/native_lora.test.js`，65 項）：協定驗證、`resolveLora` 各種失敗、用假的 onnxruntime 驗證 `externalData` 傳遞與 session 重建規則、host→真 `nr-child.js`（假引擎）轉傳與失敗原因、`NRL` 全部分支、執行包版本選擇與 md5 竄改退回舊版、升級沿用舊檔不連網、清單重算與嵌入一致、渲染端套用器。
+- **沒測到**：真的用 LoRA 槽版 ONNX 在 onnxruntime-node 1.22.0 跑出「與基底不同的輸出」——本機沒有槽版模型（要 `make_lora_onnx.py build`，需要 Python、torch、onnx 與 Qwen3-0.6B 的 onnx 基底，都不在本機）；`lora-train/lora_ort_test.js` 先前已實測 `externalData` 選項在 1.22.0 可用，但不是經過這條鏈。**沒測到**：真 Electron 下的信箱往返（`lora_apply`）與 UI。這兩項要有槽版模型後用 `scripts/eval/studio.eval.js` 加一項。
+- 實際使用還需要模型位置：原生模型路徑目前仍由環境變數指定，且必須是槽版模型；非槽版會回 `not_slot_model`。
