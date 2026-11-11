@@ -2,7 +2,8 @@
  *   ① 範圍編碼器／解碼器（照 LZMA SDK 的 RangeEnc_ShiftLow 與 cache／carry 規則）；
  *   ② 位元樹（bit tree）：m 位元符號用 2^m 個機率，逐位元沿樹走；
  *   ③ LZMA1 串流（.lzma，FORMAT_ALONE）的「只有字面量」子集：每個位元組＝isMatch 位元 0＋8 位元字面量（lc=3、lp=0、pb=2）。
- *      用真的 liblzma（Python lzma 模組）解我們寫的檔，就是外部驗證；完整 LZMA（比對、重複距離）未做。
+ *      用真的 liblzma（Python lzma 模組）解我們寫的檔，就是外部驗證。
+ *      完整 LZMA（比對、重複距離、shortrep）已在 matrix_lzma_core.js（FaMatrixLzma，依賴本檔），見 DESIGN §13.4。
  * 純函式（UMD）。 */
 (function (root, factory) {
     if (typeof module === 'object' && module.exports) module.exports = factory();
