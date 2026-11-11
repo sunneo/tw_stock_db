@@ -107,8 +107,24 @@ if [ "$WITH_PY" = 1 ]; then
   echo "使用 $($py --version)。將下載 torch 處理器版約 121 MB 與其他套件（合計約 220 MB，來源 pypi.org、download.pytorch.org）。"
   ask "繼續安裝？" || { warn "略過 Python 環境。"; WITH_PY=0; }
   if [ "$WITH_PY" = 1 ]; then
-    "$py" -m venv "$DESK/lora-train/.venv"
-    "$DESK/lora-train/.venv/bin/python" -m pip install --upgrade pip
+    V="$DESK/lora-train/.venv"
+    rm -rf "$V"   # 上次失敗留下的半成品環境
+    if ! "$py" -m venv "$V" 2>/tmp/fa-venv.err; then
+      rm -rf "$V"
+      pyver="$("$py" -c 'import sys;print("%d.%d"%sys.version_info[:2])')"
+      warn "建立虛擬環境失敗（常見原因：系統 Python 沒附 ensurepip）：$(tail -1 /tmp/fa-venv.err)"
+      echo "  方案 A（建議，要 root）：sudo apt-get install -y python${pyver}-venv   （Fedora：sudo dnf install python3-pip；Arch 已內建）"
+      echo "  方案 B（不用 root）：先建沒有 pip 的環境，再從 bootstrap.pypa.io 下載 get-pip.py（約 2.5 MB）安裝 pip。"
+      if ask "改用方案 B 嗎（會下載 https://bootstrap.pypa.io/get-pip.py）？"; then
+        "$py" -m venv --without-pip "$V" || { rm -rf "$V"; warn "連 --without-pip 都失敗，請先照方案 A 安裝後重跑。"; exit 1; }
+        curl -fsSL https://bootstrap.pypa.io/get-pip.py -o /tmp/fa-get-pip.py
+        "$V/bin/python" /tmp/fa-get-pip.py
+        rm -f /tmp/fa-get-pip.py
+      else
+        warn "已略過 Python 環境。裝好 python${pyver}-venv 後請用 --with-python 重跑。"; exit 1
+      fi
+    fi
+    "$V/bin/python" -m pip install --upgrade pip
     "$DESK/lora-train/.venv/bin/python" -m pip install torch -r "$DESK/lora-train/requirements.txt" --extra-index-url https://download.pytorch.org/whl/cpu
     "$DESK/lora-train/.venv/bin/python" -c 'import torch,transformers,peft;print("torch",torch.__version__,"transformers",transformers.__version__,"peft",peft.__version__)'
   fi
