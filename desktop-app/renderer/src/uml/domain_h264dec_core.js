@@ -28,11 +28,16 @@
                 [S('out', '輸出格式', [['lines', 'lines'], ['flat', 'flat']])],
                 (c, N, I) => code(['v = ' + nums(N, I), 'qp = v[0]', 'co = v[1:17]', 'vt = [[10, 16, 13], [11, 18, 14], [13, 20, 16], [14, 23, 18], [16, 25, 20], [18, 29, 23]]', 'out = []', 'for k in range(16):', '    i = k // 4', '    j = k % 4', '    if i % 2 == 0 and j % 2 == 0:', '        t = vt[qp % 6][0]', '    elif i % 2 == 1 and j % 2 == 1:', '        t = vt[qp % 6][1]', '    else:', '        t = vt[qp % 6][2]', '    ls = 16 * t', '    if qp >= 24:', '        out.append((co[k] * ls) << (qp // 6 - 4))', '    else:', '        out.append((co[k] * ls + (1 << (3 - qp // 6))) >> (4 - qp // 6))'].concat(c.out === 'lines' ? ['for i in range(4):', '    print(*out[4 * i:4 * i + 4])'] : ['print(*out)'])),
                 { shape: numIn, limit: 4, helpers: () => [] }),
+            D('h264.intra4', 'h264-intra4', '4×4 幀內預測（本批只做 0 垂直、1 水平、2 DC 三模式）：輸入一行 12 個整數，前 8 個是上方參考像素（只用前 4 個），後 4 個是左方參考像素；依所選模式輸出 4 行，每行 4 個整數（預測區塊）。垂直：每一欄等於上方對應像素；水平：每一列等於左方對應像素；DC：上方 4 個與左方 4 個的總和加 4 再右移 3 位，全部填入',
+                [S('mode', '預測模式', [['v', 'v'], ['h', 'h'], ['dc', 'dc']])],
+                (c, N, I) => code(['v = ' + nums(N, I), 'top = v[0:4]', 'left = v[8:12]', 'dc = (sum(top) + sum(left) + 4) >> 3', c.mode === 'v' ? 'rows = [top[:] for y in range(4)]' : c.mode === 'h' ? 'rows = [[left[y]] * 4 for y in range(4)]' : 'rows = [[dc] * 4 for y in range(4)]', 'for y in range(4):', '    print(*rows[y])']),
+                { shape: numIn, limit: 4, helpers: () => [] }),
         ];
         const ALL = (...parts) => new RegExp('^' + parts.map((x) => String.raw`(?=[\s\S]*` + x + ')').join(''), 'i');
         const algos = [
             { key: 'h264-idct4', re: ALL('4\\s*[x×*乘]\\s*4', '(?:逆變換|反變換|逆轉換|反轉換|整數變換)'), veto: /正變換|前向/ },
             { key: 'h264-dequant4', re: ALL('反量化', '4\\s*[x×*乘]\\s*4'), veto: /正量化|編碼/ },
+            { key: 'h264-intra4', re: ALL('(?:幀內|畫面內|intra)', '4\\s*[x×*乘]\\s*4', '預測'), veto: /逆變換|反變換|反量化|正變換/i },
         ].map((x) => Object.assign(x, { pri: true }));
         const paradigms = {}; for (const sk of skeletons) paradigms[sk.algo] = ['codec-transform'];
         return { id: 'h264dec', label: '影音壓縮 2：H.264 解碼算術（4×4 整數逆變換）', requires: [], judge: { checker: 'tokens', timeoutMs: 30000 }, algos, paradigms, skeletons };

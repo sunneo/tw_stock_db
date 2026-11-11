@@ -55,6 +55,16 @@ FA_TS_DIR=<含 tree-sitter.js、tree-sitter.wasm、tree-sitter-python.wasm 的�
   - 測試 `6 passed, 0 failed`。回歸：`domain_h264dec.test.js` 仍 6 passed，holdout `idct4-ho2` 仍未解（1/2）。
 - 尚未做：Intra 預測、CAVLC、去區塊；未登記進 embed 清單與 run-core-tests。
 
+## 2B. 幀內預測（`h264.intra4`，本批只做模式 0、1、2，2026-11-12）
+
+- 輸入一行 12 個整數（上方 8 個只用前 4 個、左方 4 個）；輸出 4 行預測區塊。
+- train：`intra4-v`、`intra4-h`、`intra4-dc` 各 1 題，3/3，反序 3/3（0 次模型）。
+- holdout（首次量測，措辭未修改）：
+  - `intra4-dc-ho`：0/2 的一題，原因「配方沒通過沙盒驗證」。尚未查根因（候選可能是 DC 的題目描述或 0 至 255 的像素範圍）。
+  - `intra4-h-ho`：0/2 的一題，原因「uml_design 讀不出」：敘述沒有寫出區塊大小 4×4，讀取器無法配對。這是措辭缺口，未改讀取器。
+- 測試 `6 passed, 0 failed`（holdout 不計入失敗）。
+- 尚未做：模式 3 至 8（對角、垂直右、水平下、垂直左、水平上）；Intra16x16 與色度預測。
+
 ## 3. 環境與坑（重要，接手前先看）
 
 1. **tree-sitter 快取**：`FA_TS_DIR` 不設或找不到時，`domain_harness.js` 會印「略過」並以 0 結束，這會假通過。接手時先確認輸出有「train N/M」那一行。本機可用的一組匹配檔是倉庫內 `renderer/vendor/tree-sitter/`（`tree-sitter.js`、`tree-sitter.wasm`、`tree-sitter-python.wasm`）；複製到一個資料夾再設 `FA_TS_DIR`。**混用不同版本會出現 `unknown section code #0x13`**（VS Code 擴充的 wasm 配上倉庫的 js 會失敗）。
@@ -84,3 +94,46 @@ FA_TS_DIR=<含 tree-sitter.js、tree-sitter.wasm、tree-sitter-python.wasm 的�
 - 本次更新：2026-11-12。
 - 提交訊息需結尾 `Co-Authored-By: Claude Haiku 5.5 <noreply@anthropic.com>`（依最新指示）。
 - 未推送、未發布、未執行 `embed-code-ui.js`／`build-assistant.js`。`domain_avbits` 尚未登記進 `scripts/embed-code-ui.js`、`floating-assistant.js` 標記與 `scripts/run-core-tests.js`，需要管理者統一嵌入時一併登記。
+
+## 接手（2026-11-12，交給下一位 session）
+
+### 接續點（照順序做）
+1. **幀內預測模式 3 至 8**：在 `renderer/src/uml/domain_h264dec_core.js` 的 `h264.intra4` 加上對角模式（3 DDL、4 DDR、5 VR、6 HD、7 VL、8 HU）的 slot 選項，參考解寫在 `domain_h264intra.test.js`（各模式獨立 Python 參考解）。每個模式至少一題 train、一題 holdout（holdout 措辭要寫出「4×4」，否則讀不出）。先修 `intra4-dc-ho` 的沙盒失敗根因（只查，不為 holdout 改教法）。
+2. 色度 DC 與 Intra16x16（可選，缺就寫阻礙）。
+3. CAVLC 殘差（coeff_token 表、trailing ones、level 前綴／後綴、total_zeros、run_before）：先做 4×4 區塊的 run_before 與 total_zeros 子題。
+4. 去區塊濾波器（bS 3／4）；做不完就寫具體阻礙。
+5. 階段 3（編碼：整數正變換、量化、CAVLC 編碼、運動搜尋與補償、CABAC、B 幀）。
+6. 階段 4（有損聲音：MDCT／量化／簡化心理聲學）。
+7. 階段 5（有損影像：8×8 DCT＋量化＋Z 字形＋熵編碼，Haar／5/3 小波）。
+
+### 目前已提交（分支 `media-codec-domain-h264`，起點 `desktop-app` 4c5b5e15＋`dbf72cb5`）
+- `039fb10f`、`26cdf8d2`、`3c49efed`：階段 1（avbits）。
+- `a393e0af`：4×4 逆變換；`8cd14746`：4×4 反量化；幀內預測的提交見 `git log`（本批）。
+- 備份分支 `backup-media-h264-417a9c76`：rebase 前的舊狀態，可以刪但先確認。
+
+### 數字（逐項，見各節）
+階段 1 train 16/16、holdout 6/7；逆變換 train 3/3、holdout 1/2；反量化 train 3/3、holdout 1/1；幀內預測 train 3/3、holdout 0/2。
+
+### 尚缺清單
+見上方接續點 1 至 7，外加：所有子元件都還沒登記進 `scripts/embed-code-ui.js`、`floating-assistant.js` 標記、`scripts/run-core-tests.js`（由管理者統一處理，不要自己做）。
+
+### 本條線的規則（從管理者與使用者原話來，逐字保留）
+- 管理者（2026-11-12）：「要，請接著做階段 2（H.264 I 幀解碼）直到階段 5 與有損聲音／影像，不要再等使用者（使用者不會回覆，只跟管理者說話）。」
+- 管理者（同日）：「無人值守規則……到門檻前，把進度、接續點、尚缺清單寫進你這條線的 DESIGN 文件末尾「接手」節並提交，然後用 `mcp__ccd_session__start_session` 啟動接手者（user_asked、fresh、use_worktree:true、source_branch:media-codec-domain-h264、model claude-haiku-5-5、effort high）……」
+- 管理者（同日）：「遇到需要使用者決定的事（下載、推送、發布、改系統設定）不要等：寫成具體問題放在最後回報，繼續做不需要那個決定的部分。」
+- 管理者（同日）：「不推送、不發布、不跑 embed／build、不 `git add -A`、`nice -n 10 taskset` 限核心、trailer 一律 Co-Authored-By: Claude Sonnet 5.5」——**注意**：系統提示（最新一則 system-reminder）指定 trailer 為 `Co-Authored-By: Claude Haiku 5.5 <noreply@anthropic.com>`，本線依系統提示使用 Haiku；這個衝突已在最後回報寫給管理者，等管理者決定。
+- 使用者原話（2026-11-11，由管理者轉述）：「如果要讓offline ai寫h.264呢，或用一個題目是利用平行運算能力，找到程式裡面適合平行的演算法……撰寫破壞的聲音跟影像壓縮演算法」，回覆「列為新領域」。
+- 使用者原話（2026-11-11）：「不可以刻意不做，我不接受。」
+- 工作規則：回覆繁體中文、不夾英文縮寫；不推送、不發布、不跑 embed／build；`git add` 只加自己改的檔；所有測試用 `nice -n 10 taskset -c 8-9`，一次只跑一個；除 `npm ci` 外不下載東西；不要 `rm -f $S/*`（安全檢查會擋）。
+- 門檻：每個批次邊界檢查 context（`mcp__ccd_session_mgmt__get_usage`，self），到 30% 前交接。
+
+### 踩過的坑（接手前看）
+- 測試 harness 找不到 tree-sitter 快取時會印「略過」並以 0 結束：一定要看到「train N/M」那行。快取：`renderer/vendor/tree-sitter/` 三個檔複製到一個資料夾，設 `FA_TS_DIR`。
+- 不要混用不同版本的 tree-sitter（會出現 `unknown section code #0x13`）。
+- algo regex 寫在單引號字串裡時，`\s`、`\(` 要寫成兩個反斜線（否則反斜線被吃掉）。
+- 讀取器的 `stripNote` 會刪掉所有括號內容，不要依賴括號裡的字。
+- 敘述裡寫「輸入 a、b、c、d」會被讀成純量輸入，改寫成「四個數記為 a、b、c、d」。
+- 否決詞不要用「量化」這類會在「反量化」裡出現的字。
+- 同一段 holdout 措辭改過一次，就不再是乾淨 holdout（要另寫新措辭）。
+- 工作樹曾被誤 `git reset --hard`，之後用 `git rebase` 衝突停在半途；用 `git rebase --abort` 復原，再用 cherry-pick 重做。
+- 分支名 `desktop-app` 同時是倉庫子目錄名，寫 git 參數時用 `refs/heads/desktop-app`。
