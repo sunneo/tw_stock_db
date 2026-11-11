@@ -63,8 +63,10 @@ function createStudioHost(d) {
     const rows = []; for (let i = 0; i < BC.BENCH.samples; i++) rows.push(JSON.stringify({ id: 'b' + i, split: 'train', domain: 'bench', messages: [{ role: 'user', content: '基準測試問題 ' + i }], completion: '基準測試回答 ' + i, meta: {} }));
     fs.mkdirSync(P.dirname(f), { recursive: true }); fs.writeFileSync(f, rows.join('\n') + '\n'); return f;
   }
+  // 基準測試時間上限：預設 60 秒是給 GPU／頁內後端的；cpu-py 是整段 Python 訓練，慢的處理器（如這台 4 核 i5-2320，每步十幾秒）要 33 步，放寬到 20 分鐘（仍可隨時按停止，3 秒內結束）
+  const BENCH_DEADLINE_CPU_PY = 20 * 60 * 1000, benchDeadline = (id) => id === 'cpu-py' ? BENCH_DEADLINE_CPU_PY : undefined;
   const benchCfg = (id, p) => id === 'cpu-py'
-    ? { base: (p && p.base) || 'Qwen/Qwen3-0.6B', trainFile: benchDataFile(), outputDir: P.join(hostDir, 'bench-out'), threads: SC.resolveThreads(config, hw.cores, 'benchmark') }
+    ? { base: (p && p.base) || 'Qwen/Qwen3-0.6B', trainFile: benchDataFile(), accum: 1, outputDir: P.join(hostDir, 'bench-out'), threads: SC.resolveThreads(config, hw.cores, 'benchmark') }
     : { threads: SC.resolveThreads(config, hw.cores, 'benchmark') };
 
   const ops = {
@@ -98,7 +100,7 @@ function createStudioHost(d) {
             job.rows.push(row);
             if (!pr.available) { row.state = 'skipped'; continue; }
             row.state = 'running';
-            let r; try { r = await b.benchmark(benchCfg(id, p), { signal: job.signal, deadlineMs: p && p.deadlineMs }); } catch (e) { r = { ok: false, error: String(e && e.message || e), reason: String(e && e.message || e) }; }
+            let r; try { r = await b.benchmark(benchCfg(id, p), { signal: job.signal, deadlineMs: (p && p.deadlineMs) || benchDeadline(id) }); } catch (e) { r = { ok: false, error: String(e && e.message || e), reason: String(e && e.message || e) }; }
             if (r && r.aborted) { row.state = 'aborted'; row.reason = '使用者中斷'; break; }
             row.result = { ok: !!r.ok, tokPerSec: r.tokPerSec, peakMemBytes: r.peakMemBytes, stepMsP50: r.stepMsP50, stepMsP95: r.stepMsP95, numericCheck: r.numericCheck, reason: r.reason, elapsedMs: r.elapsedMs };
             row.passed = BC.benchPassed(r); row.state = row.passed ? 'passed' : 'failed'; row.at = now();
