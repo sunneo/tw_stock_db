@@ -111,6 +111,7 @@ const suites = [
     ['VM 程式給出區塊（VM→Python→區塊→編回 Python 與 VM 一致；需 tree-sitter 與 python，沒有就略過）', 'renderer/src/algo/matrix_vm_blocks.test.js'],
     ['矩陣轉區塊接進產品（嵌入版 FaMatrixBlocks 與來源一致、管線帶出 matrixForm、嵌入版 DFA 拆區塊並改接受集、matrix_blocks 工具註冊在 coding 領域；需 tree-sitter 與 python）', 'renderer/src/algo/matrix_wire.test.js'],
     ['tree-sitter 文法取得順序與核對（快取→內建 Python→釘住 commit 的分支並核對位元組數與 MD5→jsdelivr；純函式不連網）', 'renderer/src/behavior/ts_assets.test.js'],
+    ['矩陣層作業系統模組（LRU 置換矩陣／FIFO 環形移位矩陣對清單版各 300 個隨機；Petri 網 M←M+C·f；快取／排程／Petri 範本經 judge）', 'renderer/src/algo/matrix_os.test.js'],
     ['判題器 exec 逾時連子孫一起清掉（孫行程脫離管線也不能變孤兒；exec 不能無限等待）', 'judge-runner-kill.test.js'],
     ['判題器真行程能力：argv／環境變數／結束碼／檔案夾具與輸出檔／二進位 IO／管線／fork（Windows 走 WSL 或 msys，標明 mode）／socket／孤兒清理', 'judge-runner-real.test.js'],
     ['AI 面向的 Graph RAG 已移除（領域清單、提示詞、功能清冊）；底層 rag 工具與訓練器／語言探索用的儲存層仍在', 'renderer/src/catalog/rag_removed.test.js'],
