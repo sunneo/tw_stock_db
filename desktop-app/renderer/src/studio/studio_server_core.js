@@ -450,7 +450,7 @@
                 return bad(404, '沒有這個路由：' + method + ' ' + P);
             } catch (e) { return bad(500, String((e && e.message) || e)); }
         }
-        return { route, S, log, push: null, setPush(f) { S.push = f; } };
+        return { route, S, log, push: null, setPush(f) { S.push = f; }, registry: async () => (await syncRegistry()).reg }; // registry：聊天每輪路由取得登錄表（不需要 HTTP 監聽）
     }
     return { createServer, WEB_BACKENDS, KIND_LABEL, NOT_DESKTOP };
 });

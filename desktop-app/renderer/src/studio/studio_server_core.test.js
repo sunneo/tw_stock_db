@@ -182,5 +182,7 @@ function mk(desktop, hostOps) {
   r = await dw3.req('GET', '/api/backends?kind=lora'); check('桌面版清單：wasm-web 用頁內宿主的探測取代，並帶 webTrain 旗標', r.j.desktop === true && r.j.webTrain === true && r.j.backends.find((b) => b.id === 'wasm-web').available === true && r.j.backends.find((b) => b.id === 'cpu-py').available, r.j.backends);
   const dw2 = mk(true, { studio_train_start: () => ({ ok: true, jobId: 'job_desktop' }) }); dw2.h.webTrain = WT;
   r = await dw2.req('POST', '/api/train/start', { name: 'd2', backend: 'cpu-py', cfg: { trainFile: 'x.jsonl', outputDir: '/o' } }); check('桌面版選 cpu-py 仍走子行程', r.j.jobId === 'job_desktop' && !r.j.web, r.j);
-  console.log(ok + ' passed, ' + bad.length + ' failed', bad); process.exit(bad.length ? 1 : 0);
+  // 聊天每輪路由用的登錄表存取器（不需要 HTTP 監聽）
+{ const C2 = require('./studio_server_core.js').createServer({}); check('createServer 回傳 registry()（聊天路由取得登錄表）', typeof C2.registry === 'function' && typeof C2.route === 'function'); }
+console.log(ok + ' passed, ' + bad.length + ' failed', bad); process.exit(bad.length ? 1 : 0);
 })();
