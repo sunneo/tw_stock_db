@@ -95,6 +95,11 @@
                 [],
                 (c, N, I) => code(['v = ' + (I.inputs[0].k === 'list' ? N.ls[0] : '[int(t) for t in ' + N.s[0] + '.split()]'), 'b1 = v[0] - 5 * v[1] + 20 * v[2] + 20 * v[3] - 5 * v[4] + v[5]', 'b = (b1 + 16) >> 5', 'if b < 0:', '    b = 0', 'if b > 255:', '    b = 255', 'print(b)']),
                 { shape: numIn, limit: 1, helpers: () => [] }),
+            // 運動補償：色度 1/8 像素雙線性內插（H.264 8.4.2.2.2）：輸入一行 6 個整數 xF、yF（0 至 7）、A、B、C、D（0 至 255，左上、右上、左下、右下）；pred＝((8−xF)(8−yF)A＋xF(8−yF)B＋(8−xF)yF C＋xF yF D＋32)右移 6 位，輸出 pred。
+            D('h264.chroma8', 'h264-chroma8', '色度 1/8 像素雙線性內插：輸入一行 6 個整數 xF、yF（0 至 7）、A、B、C、D（0 至 255，依序為左上、右上、左下、右下樣本）。算 pred＝((8 減 xF)乘(8 減 yF)乘 A 加 xF 乘(8 減 yF)乘 B 加 (8 減 xF)乘 yF 乘 C 加 xF 乘 yF 乘 D 加 32)右移 6 位；輸出一個整數 pred',
+                [],
+                (c, N, I) => code(['v = ' + (I.inputs[0].k === 'list' ? N.ls[0] : '[int(t) for t in ' + N.s[0] + '.split()]'), 'xf = v[0]', 'yf = v[1]', 'A = v[2]', 'B = v[3]', 'C = v[4]', 'D = v[5]', 'pred = ((8 - xf) * (8 - yf) * A + xf * (8 - yf) * B + (8 - xf) * yf * C + xf * yf * D + 32) >> 6', 'print(pred)']),
+                { shape: numIn, limit: 1, helpers: () => [] }),
             // CAVLC total_zeros（4×4 區塊）：輸入一行 11 個整數，第一個是 tzVlcIndex（1 到 15，即 TotalCoeff），其後 10 個是位元；查 tzVlcIndex 的那一列，位元開頭符合的碼字對應的 total_zeros 即為輸出。
             D('h264.totalzeros', 'h264-totalzeros', 'CAVLC 的 total_zeros 解碼（4×4 區塊）：輸入一行 11 個整數，第一個是 tzVlcIndex（1 到 15），其後 10 個是位元（每個為 0 或 1）。依 H.264 表 9-7、9-8 查 tzVlcIndex 那一列，從位元開頭比對碼字，找到的 total_zeros 即為輸出（一個整數）',
                 [],
@@ -109,6 +114,7 @@
             { key: 'h264-runbefore', re: ALL('(?:CAVLC|run_before|run before)', '(?:游程|zerosLeft|剩餘零)'), veto: /反量化|逆變換|幀內/ },
             { key: 'h264-coefftoken', re: ALL('(?:CAVLC|coeff_token|coeff token)', '(?:TotalCoeff|TrailingOnes)'), veto: /run_before|total_zeros|游程|zerosLeft|tzVlcIndex|level_prefix|suffixLength|反量化|逆變換|幀內/i },
             { key: 'h264-level', re: ALL('(?:CAVLC|level_prefix)', '(?:suffixLength|level_suffix)'), veto: /coeff_token|TotalCoeff|run_before|total_zeros|游程|反量化|逆變換|幀內/i },
+            { key: 'h264-chroma8', re: ALL('(?:色度|chroma)', '(?:1\\s*/\\s*8|八分之一|雙線性|bilinear)'), veto: /CAVLC|量化|去區塊|正變換|逆變換|半像素/i },
             { key: 'h264-hpel', re: ALL('(?:半像素|half.?pel)', '(?:內插|插值|interpolat|6\\s*抽頭)'), veto: /CAVLC|量化|去區塊|正變換|逆變換/i },
             { key: 'h264-fwdquant4', re: ALL('(?:正變換|前向|forward)', '(?:4\\s*[x×*乘]\\s*4|整數正變換)', '(?:量化|MF|qP)'), veto: /逆變換|反變換|反量化|幀內|CAVLC|去區塊/i },
             { key: 'h264-deblock', re: ALL('(?:去區塊|deblock)', '(?:bS|邊界強度)'), veto: /coeff_token|level|CAVLC|run_before|total_zeros|游程|反量化|逆變換|幀內/i },
