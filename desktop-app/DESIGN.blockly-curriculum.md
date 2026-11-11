@@ -173,5 +173,5 @@
 |---|---|---|---|
 | 排程原語（static 區塊、cyclic、chunked、dynamic、guided）、負載與 span、推薦排程 | ◐ | `domain_par_core.js`（4 個骨架）、`par_sched_core.js`；程式產生器與 JS 參考逐行相同 646／646；單元測試 4212 項 | 本批 |
 | 真的平行執行：OpenMP 區塊 DCT＋量化（有損影像）、多行程分塊 zlib（無損檔案） | ◐ | `tests/parallel/`；各排程與循序版逐位元相同（8 組） | 本批 |
-| 相依分析（迴圈攜帶相依、歸約、前綴和）、有損聲音的平行、熵編碼兩趟寫法 | ✗ | 見 `DESIGN.parallel-domain.md` §2 | — |
-| 種子題 train／holdout | ✗ | 這台機器沒有 tree-sitter 文法（不准下載），harness 會略過假通過；需在有文法的機器跑 | — |
+| 相依分析（攜帶相依的距離型波前）、兩趟前綴和／位元位移、框式量化（block／cyclic／dynamic） | ◐ | `domain_par2_core.js`：train 12/12、holdout 2/3；歸約、迴圈讀取、MDCT、位元打包未做 | 本批 |
+| 排程原語種子題（train／holdout） | ◐ | `domain_par_core.js`：train 22/22、holdout 3/5；文法用 git 追蹤的 renderer/vendor/tree-sitter | 本批 |
