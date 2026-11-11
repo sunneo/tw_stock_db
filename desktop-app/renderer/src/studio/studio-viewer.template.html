@@ -209,7 +209,7 @@ T.train=async function(body){
   if(r.note)out.appendChild(h('div',{'class':'warn',text:r.note}));
   if(kind!=='lora'){symTrain(out,kind);return}
   var bs=h('select',{});bs.appendChild(h('option',{value:'auto',text:'自動（建議）'+(r.selection&&r.selection.chosen?' → '+r.selection.chosen:(r.selection&&r.selection.reason?'：'+r.selection.reason.slice(0,60):''))}));
-  var names={'cpu-py':'純處理器（Python）','webgpu':'WebGPU','directml':'DirectML','vulkan':'Vulkan'};
+  var names={'cpu-py':'純處理器（Python，桌面版）','wasm-web':'網頁處理器（頁內 WebAssembly，慢但正確、可暫停匯出）','webgpu':'WebGPU','directml':'DirectML','vulkan':'Vulkan'};
   r.backends.forEach(function(b){bs.appendChild(h('option',{value:b.id,disabled:!b.available,text:(names[b.id]||b.id)+(b.available?'':'（不可用）')}))});
   out.appendChild(h('label',{text:'運算後端'}));out.appendChild(bs);
   var why=r.backends.filter(function(b){return !b.available});if(why.length){var ul=h('div',{style:'color:var(--mut);font-size:12px'});why.forEach(function(b){ul.appendChild(h('div',{text:'• '+(names[b.id]||b.id)+'：'+b.reason}))});out.appendChild(ul)}
@@ -222,16 +222,21 @@ T.train=async function(body){
   bb.appendChild(bStart);bb.appendChild(bStop);bb.appendChild(h('span',{style:'color:var(--mut);font-size:12px',text:'小（30 步、16 筆）、背景執行、至少留 1 個核心、不下載任何檔案'}));out.appendChild(bb);out.appendChild(bt);
   // 訓練表單
   out.appendChild(h('div',{'class':'grp',text:'訓練'}));
-  var nm=h('input',{type:'text',placeholder:'資產名稱（輸出資料夾用）'}),base=h('input',{type:'text',value:'Qwen/Qwen3-0.6B'}),tf=h('input',{type:'text',placeholder:'訓練資料檔 .jsonl 的絕對路徑'}),od=h('input',{type:'text',placeholder:'（留空＝自動放在使用者資料夾 studio/runs/名稱）'});
-  [['名稱',nm],['基底模型（本機已有；離線不下載）',base],['訓練資料檔',tf],['輸出資料夾',od]].forEach(function(p){out.appendChild(h('label',{text:p[0]}));out.appendChild(p[1])});
+  var stp=h('input',{type:'text',value:'100'}),lrI=h('input',{type:'text',value:'0.001'}),nm=h('input',{type:'text',placeholder:'資產名稱（輸出資料夾用）'}),base=h('input',{type:'text',value:'Qwen/Qwen3-0.6B'}),tf=h('input',{type:'text',placeholder:'訓練資料檔 .jsonl 的絕對路徑'}),od=h('input',{type:'text',placeholder:'（留空＝自動放在使用者資料夾 studio/runs/名稱）'});
+  [['名稱',nm],['基底模型（本機已有；離線不下載）',base],['訓練資料（桌面版：.jsonl 絕對路徑；網頁處理器：資產 lora/名稱）',tf],['輸出資料夾（桌面版）',od],['步數（網頁處理器）',stp],['學習率（網頁處理器）',lrI]].forEach(function(p){out.appendChild(h('label',{text:p[0]}));out.appendChild(p[1])});
+  function canRun(){return !!r.desktop||(!!r.webTrain&&bs.value==='wasm-web')}
   var prog=h('div',{'class':'card'}),cv=h('canvas',{width:600,height:60});
-  function body2(resume){return{kind:'lora',name:nm.value.trim(),backend:bs.value,resume:resume,cfg:{base:base.value.trim(),trainFile:tf.value.trim(),outputDir:od.value.trim()||undefined}}}
-  var bGo=h('button',{'class':'pri',text:'開始訓練',disabled:!r.desktop,onclick:async function(){var x=await api('POST','/api/train/start',body2(false));if(x.ok===false){alert(x.error);return}lossHist=[];pollTrain(prog,cv)}});
-  var bPa=h('button',{text:'暫停（存檢查點）',disabled:!r.desktop,onclick:async function(){var x=await api('POST','/api/train/pause',{});if(x.ok===false)alert(x.error||x.reason)}});
-  var bRe=h('button',{text:'續訓',disabled:!r.desktop,onclick:async function(){var x=await api('POST','/api/train/start',body2(true));if(x.ok===false){alert(x.error);return}pollTrain(prog,cv)}});
-  var bSt=h('button',{'class':'dng',text:'停止',disabled:!r.desktop,onclick:function(){if(confirm('停止訓練？（不存檢查點；要保留進度請用「暫停」）'))api('POST','/api/train/stop',{})}});
-  out.appendChild(h('div',{'class':'row'},[bGo,bPa,bRe,bSt]));
-  if(!r.desktop)out.appendChild(h('div',{'class':'todo',text:'網頁版不能啟動訓練（沒有子行程）。到「資產清單」匯出 .fatrain，拿到桌面版訓練。'}));
+  function body2(resume){return{kind:'lora',name:nm.value.trim(),backend:bs.value,resume:resume,cfg:{base:base.value.trim(),trainFile:tf.value.trim(),outputDir:od.value.trim()||undefined,fromAsset:tf.value.trim(),steps:parseInt(stp.value,10)||100,lr:parseFloat(lrI.value)||0.001}}}
+  var bGo=h('button',{'class':'pri',text:'開始訓練',disabled:!canRun(),onclick:async function(){var x=await api('POST','/api/train/start',body2(false));if(x.ok===false){alert(x.error);return}lossHist=[];pollTrain(prog,cv)}});
+  var bPa=h('button',{text:'暫停（存檢查點）',disabled:!canRun(),onclick:async function(){var x=await api('POST','/api/train/pause',{});if(x.ok===false)alert(x.error||x.reason)}});
+  var bRe=h('button',{text:'續訓',disabled:!canRun(),onclick:async function(){var x=await api('POST','/api/train/start',body2(true));if(x.ok===false){alert(x.error);return}pollTrain(prog,cv)}});
+  var bSt=h('button',{'class':'dng',text:'停止',disabled:!canRun(),onclick:function(){if(confirm('停止訓練？（不存檢查點；要保留進度請用「暫停」）'))api('POST','/api/train/stop',{})}});
+  var bEx=h('button',{text:'匯出續訓檢查點 .fackpt',disabled:!r.webTrain,onclick:async function(){var x=await api('POST','/api/train/checkpoint/export',{name:nm.value.trim()});if(x.ok===false)alert(x.error)}});
+  var bIm=h('button',{text:'匯入續訓檢查點…',disabled:!r.webTrain,onclick:async function(){var x=await api('POST','/api/train/checkpoint/import',{name:nm.value.trim()||undefined});if(x.ok===false){alert(x.error);return}if(x.cancelled)return;alert('已匯入：'+x.step+' 步（產生者 '+((x.produced_by&&x.produced_by.backend)||'?')+'）。按「續訓」從這裡接著訓練。')}});
+  function refresh(){var on=canRun();[bGo,bPa,bRe,bSt].forEach(function(b){b.disabled=!on})}bs.onchange=refresh;refresh();
+  out.appendChild(h('div',{'class':'row'},[bGo,bPa,bRe,bSt]));out.appendChild(h('div',{'class':'row'},[bEx,bIm]));
+  if(!r.desktop&&!r.webTrain)out.appendChild(h('div',{'class':'todo',text:'這個環境沒有可用的訓練後端（沒有子行程，頁內處理器訓練也沒接上）。到「資產清單」匯出 .fatrain，拿到桌面版訓練。'}));
+  if(!r.desktop&&r.webTrain)out.appendChild(h('div',{'class':'todo',text:'網頁版用頁內處理器訓練：慢但正確；可隨時「暫停」，再「匯出續訓檢查點」帶到另一台（桌面版或另一個網頁）接著訓練。'}));
   out.appendChild(prog);prog.appendChild(h('div',{text:'還沒有訓練。'}));prog.appendChild(cv);pollTrain(prog,cv,true)}
  ksel.onchange=build;build()};
 async function pollBench(tb,bStart,bStop){bStart.disabled=true;bStop.disabled=false;clearTimeout(pollBench.t);
@@ -265,7 +270,7 @@ async function pollTrain(prog,cv,once){clearTimeout(pollTrain.t);var r=await api
  if(r.running)pollTrain.t=setTimeout(function(){pollTrain(prog,cv)},2000)}
 // ===== 啟動 =====
 try{var ws=new WebSocket('ws://mock.local/ws');ws.onmessage=function(ev){try{var m=JSON.parse(ev.data);if(m.type==='asset_changed')refresh('assets');if(m.type==='log')refresh('log')}catch(_){}}}catch(e){}
-(async function(){try{INFO=await api('GET','/api/info');$('#mode').textContent=INFO.desktop?'桌面版':'網頁版（不能訓練，可匯出入）';$('#mode').className='badge '+(INFO.desktop?'ok':'wn')}catch(e){$('#mode').textContent='無法連線'}
+(async function(){try{INFO=await api('GET','/api/info');$('#mode').textContent=INFO.desktop?'桌面版':(INFO.webTrain?'網頁版（頁內處理器訓練，較慢；可匯出入）':'網頁版（不能訓練，可匯出入）');$('#mode').className='badge '+(INFO.desktop?'ok':'wn')}catch(e){$('#mode').textContent='無法連線'}
  try{var p=await api('GET','/api/prefs');if(p&&p.layout)L=Lay.normalize(p.layout)}catch(e){}render()})();
 })();
 </script></body></html>

@@ -35,7 +35,8 @@
     const dec = (u) => new TextDecoder('utf-8').decode(u);
     const WEB_BACKENDS = [
         { id: 'cpu-py', available: false, reason: '網頁版沒有 Python 子行程；請「匯出訓練包」（.fatrain）後到桌面版訓練' },
-        { id: 'webgpu', available: false, reason: 'WebGPU 的 LoRA 反向傳播引擎尚未實作（研究中：onnxruntime-web 只有推論，需自寫 WGSL 前向／反向，單層梯度對拍通過前不點亮）', planned: true },
+        { id: 'webgpu', available: false, reason: 'WebGPU 尚未點亮：反向圖產生器與逐層引擎已在本機 WebGPU 跑通 28 層並與處理器版一致（舊顯示卡約 3 token/s），但還沒做頁內宿主接線與 30 步以上對拍；目前請用「網頁處理器」', planned: true },
+        { id: 'wasm-web', available: false, reason: '頁內訓練宿主（h.webTrain）還沒接上這個環境', planned: true },
         { id: 'directml', available: false, reason: 'DirectML 只在桌面版原生路徑有意義，且尚未實作', planned: true },
         { id: 'vulkan', available: false, reason: 'Vulkan 後端尚未實作', planned: true },
     ];
@@ -43,6 +44,13 @@
     const LORA_ENV = { base: 'Qwen/Qwen3-0.6B', rank_slots: [16], prompt_format_version: 1 };
     const LORA_APPLY_BLOCKER = '目前環境沒有原生推論套用器：桌面版需要原生執行包 1.22.0-2 以上（nr-host／nr-child 轉傳 lora，見設計文件 §14）；網頁版的 transformers.js 接點尚未接（阻礙見 §14）。所以這裡只做到「選用與載入到記憶體」，不假裝已套用';
     const SOURCES = ['wiki', 'open_source', 'book', 'aidoc'];
+    // 網頁版（沒有子行程）：wasm-web 由頁內宿主 h.webTrain 提供；沒接上就誠實寫原因
+    async function webBackendList(h) {
+        const base = WEB_BACKENDS.map((b) => Object.assign({}, b)); const i = base.findIndex((b) => b.id === 'wasm-web');
+        if (h.webTrain && h.webTrain.probe) { try { const p = await h.webTrain.probe(); base[i] = Object.assign({ id: 'wasm-web' }, p); } catch (e) { base[i] = { id: 'wasm-web', available: false, reason: '探測失敗：' + String((e && e.message) || e) }; } }
+        // 順序：可用的排前面（wasm-web 在網頁版是主要後端）
+        base.sort((a, b) => (b.available ? 1 : 0) - (a.available ? 1 : 0)); return base;
+    }
     const NOT_DESKTOP = '這個功能要在桌面版執行（需要主行程子行程）；網頁版請用「匯出訓練包」到桌面版訓練';
 
     function createServer(h) {
@@ -129,7 +137,7 @@
             try {
                 if (method === 'GET' && P === '/api/info') {
                     const fs = await fapNote();
-                    return ok({ desktop: !!h.desktop, storage: fs, kinds: Asset.KINDS.map((k) => ({ kind: k, label: KIND_LABEL[k] })), tabs: Layout.TABS, workDir: h.workDir ? await h.workDir() : null, webgpu: !!(h.webgpu && h.webgpu()) });
+                    return ok({ desktop: !!h.desktop, webTrain: !!h.webTrain, storage: fs, kinds: Asset.KINDS.map((k) => ({ kind: k, label: KIND_LABEL[k] })), tabs: Layout.TABS, workDir: h.workDir ? await h.workDir() : null, webgpu: !!(h.webgpu && h.webgpu()) });
                 }
                 if (method === 'GET' && P === '/api/prefs') return ok({ layout: Layout.normalize(((h.prefsGet && h.prefsGet()) || {}).layout) });
                 if (method === 'POST' && P === '/api/prefs') {
@@ -229,7 +237,7 @@
                 // ---- 運算後端／基準／訓練 ----
                 if (method === 'GET' && P === '/api/backends') {
                     const kind = Q('kind') || 'lora';
-                    if (!h.desktop) return ok({ desktop: false, kind, symbolic: kind !== 'lora', backends: kind === 'lora' ? WEB_BACKENDS : [{ id: 'cpu-js', available: true, reason: '', note: '只需處理器' }], note: NOT_DESKTOP });
+                    if (!h.desktop) { const bl = kind === 'lora' ? await webBackendList(h) : null; const wt = !!(bl && bl.some((b) => b.id === 'wasm-web' && b.available)); return ok({ desktop: false, kind, symbolic: kind !== 'lora', webTrain: wt, backends: kind === 'lora' ? bl : [{ id: 'cpu-js', available: true, reason: '', note: '只需處理器' }], note: kind === 'lora' && wt ? '' : NOT_DESKTOP }); }
                     const r = await callHost('studio_probe', { kind }, 30000); if (r.ok === false) return bad(502, r.error);
                     const sel = kind === 'lora' ? await callHost('studio_select', { kind }, 30000) : null;
                     return ok(Object.assign({ desktop: true, selection: sel && { chosen: sel.chosen, order: sel.order, needsRebench: sel.needsRebench, reason: sel.reason, source: sel.source } }, r));
@@ -247,6 +255,27 @@
                     const prep = await Sym.prepareTrain(kind, h.sym, opts); if (!prep.ok) { log('符號式訓練沒有啟動（' + kind + '）：' + prep.error, { level: 'error' }); return bad(409, prep.error); }
                     const r = getRunner().start(kind, name, prep, opts); if (!r.ok) return bad(409, r.error);
                     S.lastSym = r.jobId; log('開始 ' + kind + ' 訓練 → ' + kind + '/' + name + '（' + r.total + ' 段）'); return ok(Object.assign({ sym: true }, r));
+                }
+                // ---- 網頁版頁內訓練（wasm-web）：沒有子行程，由 h.webTrain 在頁面裡跑 ----
+                const wantWeb = (b) => !!h.webTrain && (String((b && b.backend) || '') === 'wasm-web' || !h.desktop);
+                if (method === 'POST' && P === '/api/train/start' && wantWeb(body)) {
+                    const name = String(body.name || ''); if (!name || !Asset.safeName(name)) return bad(400, '請先填一個合法的名稱（不可含斜線或 ..）');
+                    const cfg = Object.assign({}, body.cfg || {}); const r = await h.webTrain.start({ name, cfg, resume: !!body.resume, fromAsset: body.fromAsset || cfg.fromAsset });
+                    if (!r || r.ok === false) { log('網頁版訓練沒有啟動：' + (r && r.error), { level: 'error' }); return bad(409, (r && r.error) || '啟動失敗'); }
+                    S.lastTrain = r.jobId; S.webJob = r.jobId; S.webName = name; log((body.resume ? '網頁版續訓 ' : '網頁版開始訓練 ') + name + '（' + r.jobId + '，頁內處理器）'); return ok(Object.assign({ web: true }, r));
+                }
+                const isWebJob = (id) => !!h.webTrain && !!(S.webJob) && (!id || id === S.webJob || String(id).indexOf('web') === 0);
+                if (method === 'GET' && P === '/api/train/status' && isWebJob(Q('jobId') || S.lastTrain)) { const r = h.webTrain.status(Q('jobId') || S.webJob); return r.ok === false ? bad(502, r.error) : ok(r); }
+                if (method === 'POST' && P === '/api/train/pause' && isWebJob(body.jobId || S.lastTrain)) { const r = await h.webTrain.pause(body.jobId || S.webJob); log('網頁版暫停訓練：' + (r.ok ? '已存檢查點 step=' + r.step : r.error)); return r.ok === false ? bad(409, r.error || '暫停失敗', r) : ok(r); }
+                if (method === 'POST' && P === '/api/train/stop' && isWebJob(body.jobId || S.lastTrain)) { const r = await h.webTrain.stop(body.jobId || S.webJob); log('網頁版停止訓練'); return ok(r); }
+                if (method === 'POST' && P === '/api/train/checkpoint/export') {
+                    if (!h.webTrain) return bad(400, '這個環境沒有頁內訓練宿主'); const name = String(body.name || S.webName || ''); if (!name) return bad(400, '請填名稱');
+                    const r = await h.webTrain.exportCheckpoint(name); if (!r.ok) return bad(404, r.error); if (!h.download) return bad(501, '這個環境沒有存檔接口'); h.download(r.name, r.bytes, 'application/octet-stream'); log('匯出續訓檢查點 ' + r.name + '（' + r.bytes.length + ' 位元組）'); return ok({ name: r.name, size: r.bytes.length });
+                }
+                if (method === 'POST' && P === '/api/train/checkpoint/import') {
+                    if (!h.webTrain) return bad(400, '這個環境沒有頁內訓練宿主'); if (!h.pickFile) return bad(501, '這個環境沒有檔案挑選器');
+                    const f = await h.pickFile(); if (!f) return ok({ cancelled: true }); const nm = String(body.name || String(f.name || '').replace(/\.fackpt$/i, '') || S.webName || 'imported');
+                    const r = await h.webTrain.importCheckpoint(f.bytes, nm); if (!r.ok) return bad(409, r.error); S.webName = nm; log('匯入續訓檢查點 → ' + nm + '（step=' + r.step + '）'); return ok(r);
                 }
                 if (method === 'POST' && P === '/api/train/start') {
                     if (!h.desktop) return bad(400, NOT_DESKTOP);

@@ -131,5 +131,36 @@ function mk(desktop, hostOps) {
   r = await w.req('GET', '/api/backends?kind=lora'); check('網頁版後端全灰並說原因', r.j.desktop === false && r.j.backends.every((b) => !b.available && b.reason.length > 10), r.j);
   r = await w.req('POST', '/api/train/start', { name: 'a', cfg: { trainFile: 'x' } }); check('網頁版不能訓練並指向匯出訓練包', r.s === 400 && /匯出訓練包/.test(r.j.error), r.j);
   r = await w.req('POST', '/api/bench/start', {}); check('網頁版不能跑基準', r.s === 400 && /桌面版/.test(r.j.error));
+  // 網頁版頁內訓練（h.webTrain）：沒接上時誠實說明；接上後 wasm-web 可用、可開始／狀態／暫停／匯出／匯入
+  r = await w.req('GET', '/api/backends?kind=lora'); check('網頁版沒接頁內宿主時 wasm-web 列出並說原因', r.j.webTrain === false && r.j.backends.find((b) => b.id === 'wasm-web' && !b.available && /h\.webTrain/.test(b.reason)), r.j.backends);
+  const wlog = []; let wpicked = null; const WT = {
+    probe: async () => ({ available: true, reason: '', device: { name: 'WebAssembly 處理器' }, fingerprint: { backend: 'wasm-web' } }),
+    start: async (p) => { wlog.push(['start', p]); return p.cfg.fail ? { ok: false, error: '沒有可用資料' } : { ok: true, jobId: 'web1_x' }; },
+    status: (id) => ({ ok: true, jobId: id, state: 'running', step: 3, total: 10, loss: 1.5 }),
+    pause: async (id) => { wlog.push(['pause', id]); return { ok: true, step: 3, checkpoint: true }; },
+    stop: async (id) => { wlog.push(['stop', id]); return { ok: true }; },
+    exportCheckpoint: async (name) => (name === 'ck' ? { ok: true, name: 'ck.fackpt', bytes: new Uint8Array([1, 2, 3]) } : { ok: false, error: '沒有檢查點' }),
+    importCheckpoint: async (bytes, name) => ({ ok: true, name, step: 7, produced_by: { backend: 'cpu-py' } }),
+  };
+  const w2 = mk(false); w2.h.webTrain = WT; w2.h.pickFile = async () => wpicked;
+  r = await w2.req('GET', '/api/info'); check('info 帶 webTrain 旗標', r.j.webTrain === true && r.j.desktop === false, r.j.webTrain);
+  r = await w2.req('GET', '/api/backends?kind=lora'); check('網頁版接上宿主：wasm-web 可用且排最前、webTrain 旗標', r.j.webTrain === true && r.j.backends[0].id === 'wasm-web' && r.j.backends[0].available && r.j.note === '', r.j.backends.map((b) => b.id + b.available));
+  r = await w2.req('POST', '/api/train/start', { name: 'ck', backend: 'wasm-web', cfg: { steps: 10, fromAsset: 'lora/a' } }); check('網頁版開始訓練走 h.webTrain', r.j.ok && r.j.web && r.j.jobId === 'web1_x' && wlog[0][1].cfg.steps === 10, r.j);
+  r = await w2.req('POST', '/api/train/start', { name: 'bad name/..', backend: 'wasm-web' }); check('名稱不合法被擋', r.s === 400);
+  r = await w2.req('POST', '/api/train/start', { name: 'f', backend: 'wasm-web', cfg: { fail: 1 } }); check('宿主回失敗時 409 並帶原因', r.s === 409 && /沒有可用資料/.test(r.j.error), r.j);
+  r = await w2.req('POST', '/api/train/start', { name: 'ck', backend: 'wasm-web', cfg: { steps: 10 } });
+  r = await w2.req('GET', '/api/train/status'); check('狀態走 h.webTrain', r.j.state === 'running' && r.j.step === 3, r.j);
+  r = await w2.req('POST', '/api/train/pause', {}); check('暫停走 h.webTrain 並回步數', r.j.ok && r.j.step === 3 && wlog.some((x) => x[0] === 'pause'), r.j);
+  r = await w2.req('POST', '/api/train/checkpoint/export', { name: 'ck' }); check('匯出檢查點交給 download', r.j.ok && r.j.name === 'ck.fackpt' && w2.downloads.length === 1 && w2.downloads[0].n === 'ck.fackpt', r.j);
+  r = await w2.req('POST', '/api/train/checkpoint/export', { name: 'none' }); check('沒有檢查點時 404', r.s === 404);
+  wpicked = { name: 'from-desktop.fackpt', bytes: new Uint8Array([9]) }; r = await w2.req('POST', '/api/train/checkpoint/import', {}); check('匯入檢查點（檔名當預設名稱）', r.j.ok && r.j.name === 'from-desktop' && r.j.step === 7, r.j);
+  wpicked = null; r = await w2.req('POST', '/api/train/checkpoint/import', {}); check('取消挑選不報錯', r.j.cancelled === true);
+  r = await w2.req('POST', '/api/train/stop', {}); check('停止走 h.webTrain', r.j.ok && wlog.some((x) => x[0] === 'stop'));
+  r = await w2.req('POST', '/api/bench/start', {}); check('網頁版仍不能跑桌面基準', r.s === 400);
+  // 桌面版：選 wasm-web 且有宿主時也走頁內；不選則仍走原本的子行程
+  const dw = mk(true, { studio_train_start: () => ({ ok: true, jobId: 'job_desktop' }) }); dw.h.webTrain = WT;
+  r = await dw.req('POST', '/api/train/start', { name: 'd1', backend: 'wasm-web', cfg: { steps: 5 } }); check('桌面版選 wasm-web 走頁內宿主', r.j.web === true && r.j.jobId === 'web1_x', r.j);
+  const dw2 = mk(true, { studio_train_start: () => ({ ok: true, jobId: 'job_desktop' }) }); dw2.h.webTrain = WT;
+  r = await dw2.req('POST', '/api/train/start', { name: 'd2', backend: 'cpu-py', cfg: { trainFile: 'x.jsonl', outputDir: '/o' } }); check('桌面版選 cpu-py 仍走子行程', r.j.jobId === 'job_desktop' && !r.j.web, r.j);
   console.log(ok + ' passed, ' + bad.length + ' failed', bad); process.exit(bad.length ? 1 : 0);
 })();
