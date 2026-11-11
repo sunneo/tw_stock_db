@@ -343,3 +343,53 @@ c++／c#／ruby／perl 的輸出器與樣板實跑；java／c 的「進」；浮
 - 「中間層的資料結構」目前指 JSON 形狀的資料（物件／陣列／基本型別）；IR 內部的 `class`／`struct` 宣告節點還沒有（IR 的型別只有 `list`／`dict`／`set`／`tuple` 與基本型別）。要把任意 Python／Java 類別轉成 struct 沒做。
 - `nodejs` 版的大整數失精度（`JSON.parse` 的限制）；C 版 NUL 字元限制；`JV` 不能直接算術（見 15.3）。
 - 整套核心測試沒跑；只用 `scripts/qrun.js` 一次一個跑了動到的測試檔。
+
+## 16. 缺口清單與接手（2026-11-12，Linux 接手）
+
+本節是 Linux 接手的紀錄。數字標明來源：**【本機實測】**＝這台 Linux 上實際跑出來的；**【交接數字】**＝Windows 交接時的紀錄；**【推測】**＝沒有逐一驗證。
+
+### 16.1 本次已補（每項有提交與測試）
+
+| 提交 | 內容 | 驗證（本機實測） |
+|---|---|---|
+| `91483df7` | Python 探測改先試 python3（這台的 `python` 是 2.7，`input()` 語意不同，參考輸出會是空的）；ir_wire／ir_wire2 的 Python 呼叫改用探到的解譯器；ir_out_more／ir_cpp_ops／json_struct 的 C++ 找不到 mingw64 時改用 PATH 上的 g++（原本全部略過） | ir_wire 7/7；ir_out_more 30/30（g++ 11.4 實跑 C++ 10/10）；ir_cpp_ops 13/13；json_struct 19/19；ir_overflow 7/7；ir_design_edit 6/6；ir 48/48 |
+| `0fe216af` | Perl 布林轉字串：`conv.str` 的 Perl 格子改成依型別，布林印 True／False（原本 `"" . (!!1)` 印出 `1` 與空字串） | 新增 ir_perl_bool.test.js 2/2（已登記在 scripts/run-core-tests.js）；修正前同一程式 Perl 印 `1 `，Python 印 `True False` |
+| `00607086` | 「進」跟上新版文法：Ruby 的 def／迴圈本體包在 body_statement 裡，整段變成一個原生區塊（block() 攤平）；C# 的回傳型別欄位改名 returns、foreach_statement 節點名、賦值運算子改讀匿名 token、變數初始值不再包 equals_value_clause（csInit） | ir_in_ruby 12/12（修正前 1/12，原生區塊 19 個）；ir_in_typed 24/24（修正前崩潰；C# 原生區塊 27 → 0，9 個樣本全部 Python→IR→C#→IR→Python 實跑一致） |
+| `4b0e20c2` | 樣式表的變體：java 的 `a.size()`（目錄樣板是 `(long)a.size()`，手寫沒有轉型）、cpp 的 `max_element`（目錄樣板是 `std::max_element`，手寫常在 `using namespace std` 之後）；ir_handwritten 加回歸斷言 | ir_handwritten 8/8；ir_in_brace 33/33；ir_in_typed 24/24；ir 48/48 |
+| `467e99ab` | ir_types 的 g++ 實跑在 Linux 上也會跑（原本整段略過） | ir_types 7/7（真 g++ 編譯執行，與 node 跑原 JavaScript 一致） |
+
+另外本機實測通過（沒有改程式）：ir_in_perl 13/13、ir_design 7/7、ir_blocks 17/17、ir_behavior 7/7、ir_wire 7/7。
+
+### 16.2 原生區塊佔比（ir_handwritten：每個語言一份「人會這樣寫」的程式，11 個左右敘述）
+
+| 語言 | 交接數字（Windows） | 本機實測（Linux，修正後） | 狀態與原因 |
+|---|---|---|---|
+| c | 0% | 0% | **不是缺口**：0% 的意思是每個敘述都認得 |
+| java | 9% | **0%** | 已補（`4b0e20c2`）：`a.size()` 樣式變體 |
+| cpp | 14% | **0%** | 已補（`4b0e20c2`）：`max_element` 樣式變體 |
+| nodejs | —（未列） | 18% | **尚缺，未查**：不在本次範圍，原因未追 |
+| csharp | 31% | 31% | **尚缺**：`a.Max()`（目錄只有 `Enumerable.Max($0)`）；`int.Parse(Console.ReadLine())`（讀入與轉整數的組合沒有樣板）；LINQ 的 `Select(long.Parse)`；`$"n={n}"` 內插字串 |
+| ruby | 27% | 27% | **尚缺**：`a.each { \|x\| ... }` 區塊迭代（目錄樣板是 for 迴圈）；`"n=#{n}"` 內插字串 |
+| perl | 57% | 57% | **尚缺**：Perl 是自寫的子集剖析器；`foreach my $x (@$a)` 多句本體、語句修飾 `... if ...`、`chomp $n`、`print "n=$n\n"` 內插 |
+
+### 16.3 尚缺與未驗證（具體原因）
+
+1. **嵌入版還是舊碼（需要管理者）**：`renderer/floating-assistant.js` 內嵌的 FaIrBundle 是舊的。本次改了 `ir_in_brace_core.js`、`ir_in_typed_core.js`、`ir_in_ruby_core.js`、`ir_ops_core.js`，必須由管理者執行 `node scripts/embed-code-ui.js`（與 `build-assistant.js`）才會一致。在那之前：ir_wire2 有 4 項失敗（1 項是嵌入一致性；另 3 項是嵌入版的 csharp 與 ruby 橋案例，推測是舊碼的節點形狀問題，已確認嵌入版沒有 C# 的 `returns` 修正）。
+2. **宿主建置產物過舊（既有，與本次修改無關）**：`renderer/floating-assistant.js` 沒有 `renderer/src/floating-assistant.js` 裡的 `struct` 動作與 `to_uml` 動作。因此 fa_struct 的 ⑤ 項與 ir_uml_extract 的「宿主」項失敗（fa_struct 8/9、ir_uml_extract 6/9；後者的 csharp 與 ruby 項另外因為第 1 點）。修法同第 1 點：由管理者建置。
+3. **舊版文法未重驗**：本機只有版本 15 的文法（見 16.4）。Ruby 與 C# 的修正都寫成「新舊兩種形狀都認」（例如 `returns || type`、`csInit` 兩種都處理、Ruby 的攤平在舊文法沒有 body_statement 時是空操作），但**沒有在版本 13–14 的文法上實跑**。Windows 上要重跑 ir_in_ruby、ir_in_typed、ir_in_brace。
+4. **Windows 基準未重跑**：這台是 Linux；16.2 的 Windows 數字是交接紀錄，不是本次重跑。
+5. **16.2 的尚缺項**：csharp、ruby、perl 的慣用法，以及 nodejs 18%，都是下一步要補的（每項要有測試）。c 不在缺口內。
+6. **核心測試整套沒跑**（規則：一天一次由管理者跑）。本次只跑了動到的檔與相依的檔。
+
+### 16.4 測試環境（接手者必讀）
+
+- 這台 Linux 沒有 tree-sitter 文法快取（`~/.cache/fa-ts`、`/tmp/fa-ts-cache` 都不存在；不下載）。`renderer/vendor/tree-sitter/` 只有 Python 文法與版本 13–14 的執行期。
+- 本次做法：把 VS Code 安裝目錄內建的文法（`/usr/share/code/resources/app/node_modules/@github/copilot/tree-sitter-*.wasm`，版本 15）與執行期（`@vscode/tree-sitter-wasm/wasm/`）**複製**到 scratchpad 的 `fa-ts/` 目錄（不在 repo、不是下載），再用一個本機 shim 把 VS Code 執行期包成測試要的介面（`Parser.init`、`Parser.Language.load`，並把 `isNamed`／`hasError` 等 getter 包成方法）。shim 不在 repo 裡。
+- 執行方式：`FA_TS_DIR=<那個目錄> FA_PERL=/usr/bin/perl nice -n 10 taskset -c 4-5 node <測試檔>`，一次一個。
+- 若換機器，這個做法要重做；建議管理者在 Windows 上用原來的快取重跑 16.1 的全部測試，並比對本節數字。
+
+### 16.5 接手者第一步
+
+1. 管理者：嵌入（`scripts/embed-code-ui.js`、`build-assistant.js`）；提交範圍見 16.3 第 1 點。
+2. 在 Windows 上（有快取）重跑：ir、ir_overflow、ir_wire、ir_wire2、ir_in_brace、ir_in_typed、ir_in_ruby、ir_in_perl、ir_handwritten、ir_perl_bool，與 16.2 的數字比對。
+3. 依 16.2 補 csharp、ruby、perl、nodejs 的慣用法（每項一個提交、每項要有測試、補完後回寫本節）。
