@@ -35,6 +35,11 @@
                 [],
                 (c, N, I) => code(['v = ' + nums(N, I), 'run = 0', 'for x in v:', '    if x == 0:', '        run = run + 1', '    else:', '        print(run, x)', '        run = 0', 'print("EOB")']),
                 { shape: numIn, limit: 1, helpers: () => [] }),
+            // 霍夫曼解碼（canonical 規則）：輸入一行 16 個整數：前 4 個是符號 0 至 3 的碼長，其後 12 個是位元。依碼長由小到大、同長依符號由小到大指派碼字（碼由 0 開始遞增，碼長增加時左移），輸出位元開頭符合的第一個符號。
+            D('img.huff4', 'img-huff4', '霍夫曼解碼（canonical 規則）：輸入一行 16 個整數，前 4 個是符號 0 至 3 的碼長（1 至 3），其後 12 個是位元（0 或 1）。依碼長由小到大、同長依符號由小到大指派碼字（碼由 0 開始逐一遞增，碼長增加時左移），從位元開頭比對，輸出第一個解出的符號',
+                [],
+                (c, N, I) => code(['v = ' + (I.inputs[0].k === 'list' ? N.ls[0] : '[int(t) for t in ' + N.s[0] + '.split()]'), 'L = v[0:4]', 'bits = ""', 'for x in v[4:16]:', '    bits = bits + str(x)', 'order = []', 'for l in range(1, 4):', '    for s in range(4):', '        if L[s] == l:', '            order.append(s)', 'cw = {}', 'code = 0', 'prevlen = L[order[0]]', 'for s in order:', '    code = code << (L[s] - prevlen)', '    cw[s] = format(code, "0%db" % L[s])', '    code = code + 1', '    prevlen = L[s]', 'ans = -1', 'for s in order:', '    if ans < 0 and bits.startswith(cw[s]):', '        ans = s', 'print(ans)']),
+                { shape: numIn, limit: 1, helpers: () => [] }),
         ];
         const ALL = (...parts) => new RegExp('^' + parts.map((x) => String.raw`(?=[\s\S]*` + x + ')').join(''), 'i');
         const algos = [
@@ -43,6 +48,7 @@
             { key: 'img-dct8q', re: ALL('8\\s*[x×*乘]\\s*8', '(?:DCT|離散餘弦)'), veto: /小波|Haar|哈爾|5\s*\/\s*3|掃描/i },
             { key: 'img-rle64', re: ALL('(?:游程|run-?length|RLE)', '(?:零|zero|係數)'), veto: /小波|Haar|哈爾|DCT|MDCT|CAVLC/i },
             { key: 'img-zigzag8', re: ALL('(?:Z\\s*字形|之字形|zig-?zag)', '(?:8\\s*[x×*乘]\\s*8|掃描|走訪)'), veto: /DCT|小波|Haar|哈爾/i },
+            { key: 'img-huff4', re: ALL('(?:霍夫曼|Huffman)', '(?:碼長|碼字|canonical)'), veto: /算術|小波|Haar|哈爾|游程|零/i },
         ].map((x) => Object.assign(x, { pri: true }));
         const paradigms = {}; for (const sk of skeletons) paradigms[sk.algo] = ['codec-transform'];
         return { id: 'avimage', label: '影音壓縮 5：有損影像（小波）', requires: [], judge: { checker: 'tokens', timeoutMs: 30000 }, algos, paradigms, skeletons };
