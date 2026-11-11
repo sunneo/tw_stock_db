@@ -1,7 +1,7 @@
 'use strict';
 // studio_host 測試：用假子行程（沒有 Python），驗證 probe／設定／基準測試／自動選擇／訓練拒絕的誠實回報。
 const fs = require('fs'), os = require('os'), path = require('path');
-const { createStudioHost } = require('./studio_host.js');
+const { createStudioHost, parseTasklistMemory } = require('./studio_host.js');
 let ok = 0; const bad = [];
 const check = (n, c, x) => { if (c) ok++; else { bad.push(n); console.log('FAIL', n, x === undefined ? '' : JSON.stringify(x).slice(0, 400)); } };
 (async () => {
@@ -52,5 +52,9 @@ const check = (n, c, x) => { if (c) ok++; else { bad.push(n); console.log('FAIL'
   let s2; for (let i = 0; i < 200; i++) { s2 = await h.handle('studio_bench_status', { jobId: sb.jobId }); if (s2.state !== 'running') break; await new Promise((r) => setTimeout(r, 50)); }
   check('cpu-js 基準通過（參考引擎）', s2.rows[0] && s2.rows[0].state === 'passed' && s2.rows[0].result.tokPerSec > 0, s2.rows);
   fs.rmSync(dir, { recursive: true, force: true });
+  // Windows 子行程記憶體：tasklist 的 CSV 欄位（千分位、K）→ 位元組；查不到回 null
+  check('tasklist：解析千分位的 K 為位元組', parseTasklistMemory('"python.exe","1234","Console","1","1,234,567 K"\r\n') === 1234567 * 1024, parseTasklistMemory('"python.exe","1234","Console","1","1,234,567 K"'));
+  check('tasklist：查不到（INFO 訊息）回 null', parseTasklistMemory('INFO: No tasks are running which match the specified criteria.') === null);
+  check('tasklist：空輸出回 null', parseTasklistMemory('') === null);
   console.log(ok + ' passed, ' + bad.length + ' failed', bad); process.exit(bad.length ? 1 : 0);
 })();

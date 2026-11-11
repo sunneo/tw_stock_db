@@ -145,6 +145,10 @@ function createStudioHost(d) {
       let pid = null; try { pid = parseInt(fs.readFileSync(P.join(dir, 'run.pid'), 'utf8'), 10) || null; } catch (e) { pid = null; }
       let rssBytes = null, rssReason = '';
       if (!pid) rssReason = '沒有 run.pid（子行程 pid 未記錄）';
+      else if (process.platform === 'win32') {
+        try { const r = cp.spawnSync('tasklist', ['/FI', 'PID eq ' + pid, '/FO', 'CSV', '/NH'], { encoding: 'utf8', windowsHide: true, timeout: 5000 }); const bytes = parseTasklistMemory(r.stdout || ''); if (bytes !== null) rssBytes = bytes; else rssReason = 'tasklist 查不到子行程 ' + pid + '（可能已結束）'; }
+        catch (e) { rssReason = 'tasklist 執行失敗：' + String((e && e.message) || e); }
+      }
       else if (process.platform !== 'linux') rssReason = '這個系統（' + process.platform + '）還沒有子行程記憶體取樣（尚未實作）';
       else { try { const st = fs.readFileSync('/proc/' + pid + '/status', 'utf8'); const m = /VmRSS:\s+(\d+)\s+kB/.exec(st); if (m) rssBytes = +m[1] * 1024; else rssReason = '/proc 沒有 VmRSS 欄位'; } catch (e) { rssReason = '子行程已結束，或讀不到 /proc/' + pid + '/status'; } }
       let hostRssBytes = null; try { hostRssBytes = process.memoryUsage().rss; } catch (e) { hostRssBytes = null; }
@@ -163,4 +167,9 @@ function createStudioHost(d) {
   return { ops, registry, handle: async (op, payload) => { const f = ops[op]; if (!f) return { ok: false, code: 'bad_op', message: '未知的 Studio 操作：' + op }; try { return await f(payload || {}); } catch (e) { return { ok: false, code: 'internal', message: String((e && e.message) || e) }; } } };
 }
 
-module.exports = { createStudioHost };
+// tasklist /FO CSV 的記憶體欄（例如 "1,234,567 K"）→ 位元組；查不到回 null。純函式，測試用
+function parseTasklistMemory(text) {
+  const m = /"([\d,]+)\s*K"\s*$/m.exec(String(text || '')); if (!m) return null;
+  const kb = Number(m[1].replace(/,/g, '')); return Number.isFinite(kb) ? kb * 1024 : null;
+}
+module.exports = { createStudioHost, parseTasklistMemory };
