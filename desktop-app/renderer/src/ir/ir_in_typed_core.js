@@ -20,7 +20,15 @@
         return find(root);
     }
     // 樣板的變體（只為了讓手寫程式比得上）：C++ 的目錄樣板寫 std::max_element，手寫常見 using namespace std 之後的 max_element，多收一個去掉 std:: 的版本
-    function variantsOf(lang, t) { const v = [t]; if (lang === 'cpp' && /\bstd::/.test(t)) v.push(t.replace(/\bstd::/g, '')); return v; }
+    function variantsOf(lang, t) {
+        const v = [t];
+        if (lang === 'cpp' && /\bstd::/.test(t)) v.push(t.replace(/\bstd::/g, ''));
+        // C#：目錄樣板 Enumerable.Max($0) 是 LINQ 靜態呼叫；手寫多半用擴充方法 a.Max()
+        if (lang === 'cs') { const m = /^Enumerable\.(\w+)\(\$0\)$/.exec(t); if (m) v.push('$0.' + m[1] + '()'); }
+        // C#：int.Parse 是 32 位元；IR 的整數是 64 位元（與 long.Parse 同一個 conv.int 樣板）。範圍內結果相同，超出 32 位元時手寫程式會丟例外而 IR 不會——記在 DESIGN.core-ir.md §16.2
+        if (lang === 'cs') { const m = /^long\.Parse\(\$0\)$/.exec(t); if (m) v.push('int.Parse($0)'); }
+        return v;
+    }
     function buildPatterns(lang, parse) {
         const key = OPS.LANG_OF[lang] || lang; const out = [];
         for (const id of OPS.ids()) {
@@ -84,6 +92,20 @@
                 case 'boolean_literal': return at(L('bool', txt(n)), n);
                 case 'null': case 'null_literal': case 'nullptr': return at(L('none', 'None'), n);
                 case 'string_literal': return at(L('str', strVal(n)), n);
+                // C# 內插字串 $"n={n}" → "n=" + conv.str(n)；格式子句（:F2）與對齊子句沒有對應的標準操作，仍是原生區塊
+                case 'interpolated_string_expression': {
+                    if (!CS) return nativeE(n, '內插字串');
+                    const parts = [];
+                    for (const c of n.namedChildren) {
+                        if (c.type === 'interpolation_start') continue;
+                        if (c.type === 'string_content') { const sv = txt(c).replace(/\{\{/g, '{').replace(/\}\}/g, '}'); if (sv) parts.push(L('str', sv)); continue; }
+                        if (c.type === 'interpolation') { const kids = c.namedChildren.filter((x) => x.type !== 'interpolation_brace'); if (kids.length !== 1) return nativeE(n, '內插字串的格式或對齊子句'); parts.push(at({ k: 'call', op: 'conv.str', args: [ex(kids[0])] }, c)); continue; }
+                        return nativeE(n, '內插字串的部分 ' + c.type);
+                    }
+                    if (!parts.length) return at(L('str', ''), n);
+                    let e = parts[0]; for (let i = 1; i < parts.length; i++) e = { k: 'bin', op: '+', l: e, r: parts[i] };
+                    return at(e, n);
+                }
                 case 'binary_expression': {
                     const op = txt(f(n, 'operator')); const l = f(n, 'left'), r = f(n, 'right');
                     if (CS && CMP[op] && l.type === 'invocation_expression' && /^string\.CompareOrdinal\(/.test(txt(l)) && txt(r) === '0') { const a = named(f(l, 'arguments')).map((x) => x.namedChildren[0]); if (a.length === 2) return at({ k: 'cmp', op, l: ex(a[0]), r: ex(a[1]) }, n); }

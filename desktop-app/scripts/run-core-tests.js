@@ -105,6 +105,7 @@ const suites = [
     ['Ruby 的「進」（Python→IR→Ruby→IR→Python 實跑與原輸出一致、註解保存；需 tree-sitter ruby 文法與 python，沒有就略過）', 'renderer/src/ir/ir_in_ruby.test.js'],
     ['Perl 的「進」（自己寫的剖析器、不需文法；Python→IR→Perl→IR→Python 實跑與原輸出一致、註解保存、手寫 Perl 的 local／修飾語句收成原生區塊）', 'renderer/src/ir/ir_in_perl.test.js'],
     ['Perl 布林輸出（Python 布林程式 → IR → Perl 實跑，True／False 與 Python 逐字一致；需 perl 與 python3，沒有就略過）', 'renderer/src/ir/ir_perl_bool.test.js'],
+    ['C# 慣用法的「進」（手寫 a.Max()、int.Parse(Console.ReadLine())、$"n={n}" 內插字串 → IR → Python 實跑一致；格式子句仍是原生區塊；需 tree-sitter 的 c_sharp 文法與 python3，沒有就略過）', 'renderer/src/ir/ir_in_csharp_idioms.test.js'],
     ['沒標型別的來源轉靜態語言（呼叫端推、用法推、needTypes 列出要補的、types 補完再轉、補完的 C++ 真 g++ 與 node 一致）', 'renderer/src/ir/ir_types.test.js'],
     ['整數溢位檢查模式（prepare overflow:check：+ - * ** 換成檢查溢位的標準操作；nodejs／java／c／c++／c#／perl／ruby／python 實跑，範圍內與 Python 一致、超出範圍明確失敗且不印錯的數；不開檢查時 java 悄悄環繞的對照組）', 'renderer/src/ir/ir_overflow.test.js'],
     ['從程式抽回 UML 設計（convert_code 的 to_uml：八種來源語言抽回的函式與呼叫關係與 Python 一致、過 uml_core 驗證、DSL 可再解析、含 Mermaid／PlantUML）', 'renderer/src/ir/ir_uml_extract.test.js'],
