@@ -53,7 +53,7 @@
         reduceSum(a, axes, keep) { return this.reduce('ReduceSum', a, axes, keep); } reduceMean(a, axes, keep) { return this.reduce('ReduceMean', a, axes, keep); }
         expand(a, shape) { const s = this.const(this._name('shp'), [shape.length], Float64Array.from(shape), 'i64'); return this.node('Expand', [a, s], bshape(a.shape, shape)); }
         gather(d, idx) { return this.node('Gather', [d, idx], idx.shape.concat(d.shape.slice(1)), { axis: 0 }); }
-        dequant(q, scale, zp, axis) { return this.node('DequantizeLinear', zp ? [q, scale, zp] : [q, scale], q.shape, { axis }); }
+        dequant(q, scale, zp, axis) { return this.node('DequantizeLinear', zp ? [q, scale, zp] : [q, scale], q.shape, axis === undefined ? {} : { axis }); }
     }
 
     // ───────── 反向規則表 ─────────
@@ -136,6 +136,7 @@
     }
     const UN = { Neg: (x) => -x, Sqrt: Math.sqrt, Reciprocal: (x) => 1 / x, Log: Math.log, Sigmoid: (x) => 1 / (1 + Math.exp(-x)) };
     const BIN = { Add: (a, b) => a + b, Sub: (a, b) => a - b, Mul: (a, b) => a * b, Div: (a, b) => a / b };
+    const sc0 = (t) => t.shape.length === 0;
     function execNode(n, vals, g) {
         const I = n.inputs.map((x) => vals.get(x)); const outT = g.tensors.get(n.outputs[0]); const os = outT.shape; const out = new Float64Array(prod(os));
         const op = n.op;
@@ -156,12 +157,13 @@
             const oidx = new Int32Array(I[0].data.length); bIter(keepS, sh, (o, off) => { oidx[o] = off; }); for (let i = 0; i < oidx.length; i++) out[oidx[i]] += I[0].data[i]; if (op === 'ReduceMean') for (let i = 0; i < out.length; i++) out[i] /= cnt;
         }
         else if (op === 'Gather') { const d = I[0], ix = I[1], row = d.data.length / d.shape[0]; for (let i = 0; i < ix.data.length; i++) { const r = ix.data[i]; for (let j = 0; j < row; j++) out[i * row + j] = d.data[r * row + j]; } }
+        else if (op === 'DequantizeLinear' && sc0(I[1])) { const q = I[0], s0 = I[1].data[0], z0 = I[2] ? I[2].data[0] : 0; for (let i = 0; i < out.length; i++) out[i] = (q.data[i] - z0) * s0; }
         else if (op === 'DequantizeLinear') { const q = I[0], sc = I[1], zp = I[2]; const ax = n.attrs.axis, st = strides(q.shape); for (let i = 0; i < out.length; i++) { const c = Math.floor(i / st[ax]) % q.shape[ax]; out[i] = (q.data[i] - (zp ? zp.data[c] : 0)) * sc.data[c]; } }
         else throw new Error('直譯器沒有實作：' + op);
         vals.set(n.outputs[0], { shape: os, data: out });
     }
     function run(g, feeds) {
-        const vals = new Map(); for (const [k, t] of g.tensors) if (t.isConst) vals.set(k, { shape: t.shape, data: Float64Array.from(t.data) });
+        const vals = new Map(); for (const [k, t] of g.tensors) if (t.isConst) vals.set(k, { shape: t.shape, data: t.data instanceof Float64Array ? t.data : Float64Array.from(t.data) });
         for (const t of g.inputs) { const f = feeds[t.name]; if (!f) throw new Error('缺少輸入：' + t.name); vals.set(t.name, { shape: t.shape, data: Float64Array.from(f) }); }
         for (const n of g.nodes) execNode(n, vals, g);
         return vals;
@@ -190,7 +192,7 @@
     function valueInfo(t) { const dims = cat(t.shape.map((d) => fLen(1, fVar(1, d)))); const tt = cat([fVar(1, DT[t.dtype]), fLen(2, dims)]); return cat([fStr(1, t.name), fLen(2, fLen(1, tt))]); }
     function toOnnx(g, opts) {
         opts = opts || {}; const parts = [];
-        for (const n of g.nodes) parts.push(fLen(1, cat([...n.inputs.map((x) => fStr(1, x)), ...n.outputs.map((x) => fStr(2, x)), fStr(3, n.outputs[0] + '_n'), fStr(4, n.op), ...Object.keys(n.attrs).map((k) => fLen(5, attrProto(k, n.attrs[k])))])));
+        for (const n of g.nodes) parts.push(fLen(1, cat([...n.inputs.map((x) => fStr(1, x)), ...n.outputs.map((x) => fStr(2, x)), fStr(3, n.outputs[0] + '_n'), fStr(4, n.op), ...Object.keys(n.attrs).filter((k) => n.attrs[k] !== undefined).map((k) => fLen(5, attrProto(k, n.attrs[k])))])));
         parts.push(fStr(2, opts.name || 'train_graph'));
         for (const [, t] of g.tensors) if (t.isConst) parts.push(fLen(5, tensorProto(t.name, t.shape, t.dtype, t.data)));
         for (const t of g.inputs) parts.push(fLen(11, valueInfo(t)));
