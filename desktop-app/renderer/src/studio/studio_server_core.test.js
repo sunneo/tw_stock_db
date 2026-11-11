@@ -19,7 +19,11 @@ function mk(desktop, hostOps) {
 }
 (async () => {
   const t = mk(true, { studio_probe: () => ({ ok: true, backends: [{ id: 'cpu-py', available: false, reason: '找不到 Python' }] }), studio_select: () => ({ ok: false, chosen: null, reason: '沒有可用的後端' }), studio_train_start: (p) => (p.cfg.trainFile === 'bad' ? { ok: false, error: 'cpu-py 不可用：x' } : { ok: true, jobId: 'train1' }) });
-  let r = await t.req('GET', '/api/info'); check('info', r.j.ok && r.j.desktop && r.j.tabs.length === 9 && r.j.workDir === '/ud/studio', r.j);
+  let r = await t.req('GET', '/api/info'); check('info', r.j.ok && r.j.desktop && r.j.tabs.length === 10 && r.j.workDir === '/ud/studio', r.j);
+  // 流程總覽與建議（DESIGN §19）：路由接上；讀不到的資料照實說
+  let q = await t.req('GET', '/api/pipeline?kind=lora&run=/ud/studio/none'); check('pipeline 路由接上：lora 七個階段，沒有產物時第一段待做', q.j.ok === true && q.j.stages.length === 7 && q.j.stages[0].state === '待做' && q.j.live === null, q.j);
+  q = await t.req('GET', '/api/pipeline?kind=bad'); check('pipeline 未知種類回 400', q.s === 400 && q.j.ok === false, q.j);
+  q = await t.req('GET', '/api/advice?kind=lora&name=none'); check('advice 沒有資產：證據不足，不猜', q.j.ok === true && q.j.suggestions.length === 0 && q.j.insufficient[0].rule === 'eval', q.j);
   check('info 回報 fap 沒授權（資料只在記憶體）', r.j.storage.ok === false && /記憶體/.test(r.j.storage.message), r.j.storage);
   // 版面偏好
   r = await t.req('GET', '/api/prefs'); check('預設版面', r.j.layout.panes.left[0] === 'assets');

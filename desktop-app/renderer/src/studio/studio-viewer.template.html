@@ -270,6 +270,27 @@ T.teacher=async function(body){var r=await api('GET','/api/teacher');if(r.ok===f
  if(r.queue){body.appendChild(h('div',{'class':'card'},[h('b',{text:'樣本請求單佇列'}),h('div',{text:'待領 '+(r.queue.pending||0)+'、已領 '+(r.queue.claimed||0)+'、完成 '+(r.queue.done||0)+'；已收樣本 '+r.samples+' 列'}),h('div',{style:'color:var(--mut);font-size:12px',text:'老師領取（/api/teacher/claim）、回交（/api/teacher/submit）會先通過程式驗證：schema、答案要有語料塊依據、不得含個資、不得引用 heldout。'})]))}};
 // ----- 訓練 -----
 var polling=null,lossHist=[];
+// 流程總覽（DESIGN §19）：五種訓練的階段圖、即時狀態（train.log）、匯出格式、下一次該加強什麼（eval.json）；執行中每 2 秒重讀
+T.pipeline=async function(body){
+  var kinds=['lora','llm','colu','matrix','blockly'],st=T._pipe||(T._pipe={kind:'lora',name:'',run:'',env:'desktop',timer:null}),out=h('div',{});
+  var sel=h('select',{onchange:function(){st.kind=this.value;draw()}});kinds.forEach(function(k){var o=h('option',{value:k,text:k});if(k===st.kind)o.selected=true;sel.appendChild(o)});
+  var nm=h('input',{value:st.name,placeholder:'資產名稱（可省）',oninput:function(){st.name=this.value}});
+  var rn=h('input',{value:st.run,placeholder:'訓練資料夾（可省；留空用最近一次訓練）',size:44,oninput:function(){st.run=this.value}});
+  var ev=h('select',{onchange:function(){st.env=this.value;draw()}});[['desktop','桌面本機'],['web','網頁']].forEach(function(p){var o=h('option',{value:p[0],text:p[1]});if(p[0]===st.env)o.selected=true;ev.appendChild(o)});
+  body.appendChild(h('div',{'class':'row'},[sel,nm,rn,ev,h('button',{text:'重新整理',onclick:function(){draw()}})]));body.appendChild(out);
+  var WHERE={add_data:'資料匯入',reweight:'訓練',hparam:'訓練'};
+  async function draw(){
+    if(st.timer){clearTimeout(st.timer);st.timer=null}
+    var q='/api/pipeline?kind='+encodeURIComponent(st.kind)+'&name='+encodeURIComponent(st.name)+'&run='+encodeURIComponent(st.run)+'&env='+encodeURIComponent(st.env);
+    var r=await api('GET',q);var adv=st.name?await api('GET','/api/advice?kind='+encodeURIComponent(st.kind)+'&name='+encodeURIComponent(st.name)):null;
+    out.textContent='';
+    if(!window.FaStudioPipelineView){out.appendChild(reason('流程總覽模組沒有載入（需要重新嵌入 pipeline_view_core.js）'));return}
+    var box=h('div',{});box.innerHTML=FaStudioPipelineView.renderPipelineHTML(r,adv);out.appendChild(box);
+    box.querySelectorAll('.act').forEach(function(b){b.addEventListener('click',function(){var w=WHERE[b.getAttribute('data-action')]||'資料匯入';alert('請到「'+w+'」分頁操作（'+b.getAttribute('title')+'）')})});
+    if(r&&r.live&&r.live.logState==='進行中')st.timer=setTimeout(draw,2000);
+  }
+  draw();
+};
 T.train=async function(body){
  var kinds=[['lora','LoRA（語言模型）'],['trainer','離線訓練器'],['colu','CoLU'],['uml','UML 設計'],['blockly','積木課程'],['matrix','矩陣層']];
  var ksel=h('select',{},kinds.map(function(k){return h('option',{value:k[0],text:k[1]})}));var out=h('div');body.appendChild(h('label',{text:'訓練種類'}));body.appendChild(ksel);body.appendChild(out);

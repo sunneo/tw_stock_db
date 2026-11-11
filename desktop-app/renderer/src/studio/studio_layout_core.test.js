@@ -3,7 +3,7 @@ const L = require('./studio_layout_core.js');
 let ok = 0; const bad = [];
 const check = (n, c, x) => { if (c) ok++; else { bad.push(n); console.log('FAIL', n, x === undefined ? '' : JSON.stringify(x).slice(0, 300)); } };
 const d = L.defaults(); const N = L.IDS.length;
-check('預設左 資產／LoRA／匯入／資料集／評量，右 訓練／老師／紀錄', d.panes.left.join() === 'assets,lora,ingest,datasets,domains,eval' && d.panes.right.join() === 'train,teacher,log');
+check('預設左 資產／LoRA／匯入／資料集／評量，右 訓練／老師／紀錄', d.panes.left.join() === 'assets,lora,ingest,datasets,domains,eval' && d.panes.right.join() === 'train,pipeline,teacher,log');
 // normalize 對壞輸入
 check('null 輸入回預設', JSON.stringify(L.normalize(null)) === JSON.stringify(d));
 const n1 = L.normalize({ panes: { left: ['train', 'train', 'zzz'], right: [] }, closed: ['log', 'assets'], split: 5, max: 'right' });
