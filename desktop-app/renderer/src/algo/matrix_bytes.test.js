@@ -4,7 +4,7 @@
 //  ③ 題庫：bench_linux_all train 的 xz-varint-dec、bit-reader、lz77-decode、huffman-cost、xxd-reverse、deflate-stored（前 2 筆當範例）；④ 誠實失敗。
 const assert = require('assert'), fs = require('fs'), path = require('path'), cp = require('child_process'), zlib = require('zlib');
 const S = require('./matrix_synth_core.js'); const K = require('./matrix_bytes_core.js'); const J = require(path.join(__dirname, '..', '..', '..', 'judge-runner.js'));
-assert.strictEqual(K.install(S), true); const PY = process.env.PYTHON || 'python'; let passed = 0; const ok = (c, m) => { assert.ok(c, m); passed++; };
+assert.strictEqual(K.install(S), true); const PY = process.env.PYTHON || (process.platform === 'win32' ? 'python' : 'python3'); let passed = 0; const ok = (c, m) => { assert.ok(c, m); passed++; };
 let seed = 31337; const rnd = (n) => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return Math.floor(seed / 65536) % n; };
 const hx = (b) => b.map((x) => (x < 16 ? '0' : '') + x.toString(16)).join('');
 // 每台機器的輸入產生器

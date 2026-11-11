@@ -7,7 +7,7 @@
 const assert = require('assert'), fs = require('fs'), path = require('path'), cp = require('child_process');
 const S = require('./matrix_synth_core.js'); const T = require('./matrix_text_core.js'); const J = require(path.join(__dirname, '..', '..', '..', 'judge-runner.js'));
 assert.strictEqual(T.install(S), true); const names = S.list().map((x) => x.name); assert.ok(names.includes('text-string') && names.includes('text-lines'));
-const PY = process.env.PYTHON || 'python';
+const PY = process.env.PYTHON || (process.platform === 'win32' ? 'python' : 'python3');
 let passed = 0; const ok = (c, m) => { assert.ok(c, m); passed++; };
 // ① JS 版與 Python 版
 {

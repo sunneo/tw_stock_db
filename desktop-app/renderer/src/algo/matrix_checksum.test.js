@@ -6,7 +6,7 @@
 const assert = require('assert'), fs = require('fs'), path = require('path'), cp = require('child_process');
 const S = require('./matrix_synth_core.js'); const K = require('./matrix_checksum_core.js'); const J = require(path.join(__dirname, '..', '..', '..', 'judge-runner.js'));
 assert.strictEqual(K.install(S), true);
-const PY = process.env.PYTHON || 'python'; let passed = 0; const ok = (c, m) => { assert.ok(c, m); passed++; };
+const PY = process.env.PYTHON || (process.platform === 'win32' ? 'python' : 'python3'); let passed = 0; const ok = (c, m) => { assert.ok(c, m); passed++; };
 let seed = 12345; const rnd = (n) => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return Math.floor(seed / 65536) % n; };
 const chk = K.enc('123456789');
 for (const [name, sp] of Object.entries(K.SPECS)) { ok(K.crcBitwise(sp, chk) === sp.check, name + ' 位元逐步版檢查值 0x' + sp.check.toString(16) + ' 得 0x' + K.crcBitwise(sp, chk).toString(16)); }

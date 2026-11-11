@@ -5,7 +5,7 @@
 //  ③ 誠實失敗：形狀不對、輸出不是兩種標籤、沒有範例。
 const assert = require('assert'), fs = require('fs'), path = require('path'), cp = require('child_process');
 const S = require('./matrix_synth_core.js'); const R = require('./matrix_regex_core.js'); const J = require(path.join(__dirname, '..', '..', '..', 'judge-runner.js'));
-assert.strictEqual(R.install(S), true); const PY = process.env.PYTHON || 'python'; let passed = 0; const ok = (c, m) => { assert.ok(c, m); passed++; };
+assert.strictEqual(R.install(S), true); const PY = process.env.PYTHON || (process.platform === 'win32' ? 'python' : 'python3'); let passed = 0; const ok = (c, m) => { assert.ok(c, m); passed++; };
 let seed = 99; const rnd = (n) => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed % n; };
 const ATOMS = ['a', 'b', 'c', '.', '[ab]', '[^a]', '[a-c]', '(a|b)', '(ab)', '(a|bc)', 'a|b'];
 const genRe = () => { let s = ''; const n = 1 + rnd(4); for (let i = 0; i < n; i++) { let a = ATOMS[rnd(ATOMS.length - 1)]; s += a + ['', '', '?', '+', '*'][rnd(5)]; } return rnd(5) === 0 ? s + '|' + ATOMS[rnd(5)] + 'b' : s; };
