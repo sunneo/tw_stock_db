@@ -85315,7 +85315,7 @@ ${fnData.code}
         const root = document.createElement('div'); root.style.cssText = 'font-size:13px; line-height:1.5;';
         const p = document.createElement('p'); p.textContent = '離線訓練工作室：管理訓練資產（匯出／匯入 .fatrain、離線訓練器快照）、挑運算後端、跑基準測試、訓練 LoRA（桌面版需要 Python＋torch＋transformers＋peft）。也可以在對話框輸入 /offline-training-studio 開啟。';
         const b = document.createElement('button'); b.type = 'button'; b.textContent = '開啟離線訓練工作室'; b.style.cssText = 'padding:4px 12px; border-radius:6px; border:1px solid #475569; background:#1e293b; color:#e2e8f0; cursor:pointer;';
-        b.onclick = () => { this._studioCommand('').catch((e) => console.warn('開啟訓練工作室失敗', e)); };
+        b.onclick = () => { try { this._closeAdvancedModal(); } catch (_) { /* 設定面板蓋在視窗上面，先關掉才看得到 */ } this._studioCommand('').catch((e) => console.warn('開啟訓練工作室失敗', e)); };
         root.appendChild(p); root.appendChild(b);
         this.registerAdvancedSettingsTab('ai', 'offline-training-studio', '離線訓練工作室', root);
     }
