@@ -1,0 +1,26 @@
+/* 領域包：影音壓縮階段 4「有損聲音」的變換部分（見 DESIGN.blockly-curriculum.md §5、DESIGN.media-codec-domain.md §2F）。
+ * 本檔目前只有一個子元件：MDCT（窗長 2N＝16、係數 N＝8）加均勻量化。格式同 domain_avimage_core.js。
+ * 輸入：一行 17 個整數，第一個是量化步長 Q，其後 16 個是取樣值；輸出：一行 8 個整數（量化後的 X[k]）。
+ * 誠實限制：只涵蓋變換與量化；反變換（IMDCT）、心理聲學模型、熵編碼尚未做。 */
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaDomainAvaudio = factory(); })(typeof self !== 'undefined' ? self : this, function () {
+    'use strict';
+    function make(PAR) {
+        const { S, code } = PAR.dsl;
+        const D = (id, algo, label, slots, py, extra) => Object.assign({ id, algo, paradigm: 'codec-transform', label, slots, py }, extra || {});
+        const numIn = (I) => I.inputs.length === 1 && (I.inputs[0].k === 'list' || (I.inputs[0].k === 'str' && I.inputs[0].raw));
+        const nums = (N, I) => (I.inputs[0].k === 'list' ? N.ls[0] : '[int(t) for t in ' + N.s[0] + '.split()]');
+        const skeletons = [
+            D('aud.mdct8q', 'aud-mdct8q', 'MDCT 與量化（窗長 16、輸出 8 個係數）：輸入一行 17 個整數，第一個是量化步長 Q，其後 16 個是取樣值。以正弦窗 w[n]＝sin(π(n＋1/2)/16) 乘上取樣，做 MDCT：X[k]＝Σ w[n]x[n]cos(π/8 (n＋1/2＋4)(k＋1/2))，n 為 0 至 15、k 為 0 至 7；每個 X[k] 除以 Q 加 0.5 後向下取整，輸出一行 8 個整數',
+                [],
+                (c, N, I) => code(['import math', 'v = ' + nums(N, I), 'Q = v[0]', 'x = v[1:17]', 'out = []', 'for k in range(8):', '    s = 0.0', '    for n in range(16):', '        w = math.sin(math.pi * (n + 0.5) / 16)', '        s = s + w * x[n] * math.cos(math.pi / 8 * (n + 0.5 + 4) * (k + 0.5))', '    out.append(math.floor(s / Q + 0.5))', 'print(*out)']),
+                { shape: numIn, limit: 1, helpers: () => [] }),
+        ];
+        const ALL = (...parts) => new RegExp('^' + parts.map((x) => String.raw`(?=[\s\S]*` + x + ')').join(''), 'i');
+        const algos = [
+            { key: 'aud-mdct8q', re: ALL('MDCT|修正離散餘弦', '(?:窗|window|聲音|音訊|取樣)'), veto: /小波|Haar|哈爾|8\s*[x×*乘]\s*8/i },
+        ].map((x) => Object.assign(x, { pri: true }));
+        const paradigms = {}; for (const sk of skeletons) paradigms[sk.algo] = ['codec-transform'];
+        return { id: 'avaudio', label: '影音壓縮 4：有損聲音（MDCT 與量化）', requires: [], judge: { checker: 'tokens', timeoutMs: 30000 }, algos, paradigms, skeletons };
+    }
+    return { make };
+});

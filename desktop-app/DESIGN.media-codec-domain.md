@@ -103,6 +103,13 @@ FA_TS_DIR=<含 tree-sitter.js、tree-sitter.wasm、tree-sitter-python.wasm 的�
 - 階段 5 holdout 總計 4/6（`dct-ho`、`haar-ho`、`legall-ho3`、`zz-ho` AC；`legall-ho`、`legall-ho2` 為紀錄）。
 - 尚未做：熵編碼（階段 5 其餘部分，例如 run-length 或 Huffman）；階段 4 有損聲音（MDCT）尚未開始。
 
+## 2F. 階段 4 有損聲音：MDCT 與量化（`domain_avaudio_core.js`、`domain_avaudio.test.js`，2026-11-12）
+
+- 骨架 `aud.mdct8q`：窗長 16、係數 8，正弦窗 w[n]＝sin(π(n＋1/2)/16)，核 cos(π/8 (n＋1/2＋4)(k＋1/2))，量化 floor(X/Q＋0.5)；輸入一行 17 個整數（Q 後接 16 個取樣）。
+- 自檢：兩種寫法的核（骨架式與 π(2n＋1＋N)(2k＋1)/(4N) 式）逐項相等（最大誤差 0）。
+- 數字：train `mdct-tr` AC，反序 1/1（0 次模型）；holdout `mdct-ho`（新措辭）AC。
+- **未做與限制**：IMDCT（反變換）與 TDAC 重疊相加還原尚未做；心理聲學模型（遮蔽門檻）未做；熵編碼未做；**沒有外部工具（ffmpeg 的 aac、Python 的 scipy）逐係數對照**，正確性以公式與參考解一致為準。下一步：加 IMDCT 並用兩個相鄰區塊的重疊相加驗證還原（TDAC 性質，可自檢）。
+
 ## 3. 環境與坑（重要，接手前先看）
 
 1. **tree-sitter 快取**：`FA_TS_DIR` 不設或找不到時，`domain_harness.js` 會印「略過」並以 0 結束，這會假通過。接手時先確認輸出有「train N/M」那一行。本機可用的一組匹配檔是倉庫內 `renderer/vendor/tree-sitter/`（`tree-sitter.js`、`tree-sitter.wasm`、`tree-sitter-python.wasm`）；複製到一個資料夾再設 `FA_TS_DIR`。**混用不同版本會出現 `unknown section code #0x13`**（VS Code 擴充的 wasm 配上倉庫的 js 會失敗）。
