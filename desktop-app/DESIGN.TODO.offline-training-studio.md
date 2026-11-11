@@ -675,3 +675,29 @@ Backend {
 - 沒有真的連網抓 GitHub wiki 的 Electron 驗證（規則：不連網路；單元測試用假抓取驗證了網址轉換、頁面探索與確認流程）。
 - blockly 訓練、matrix 訓練的 Electron 端到端沒跑（matrix **評量**在真 Electron 以真 Python 判題器 6/6 通過）。
 - 老師迴圈沒有以真線上 AI 跑過（沒有可用模型；Electron 驗證用 `_runSubAgentTask` 替身確認白名單註冊、驗證、移除與 commit）。
+
+## 16. 工作室新增領域收尾（2026-11-11，Linux 工作階段，分支 claude/studio-domain-author-dcb72c）
+
+### 16.1 這次實際驗證的
+- 單元測試（都在 `renderer/src/studio/`，逐一執行）：`dsl_expr_core.test.js` 77／0；`domain_spec_core.test.js` 85／0；`domain_e2e.test.js` 17／0（matrix 部分全過，blockly 部分因沒有 tree-sitter 快取而略過，見 16.3）；`studio_layout_core.test.js` 27／0；`studio_server_core.test.js` 91／0；`studio_host.test.js` 20／0；`studio_embed.test.js` 16／0；`sym_studio.test.js` 71／0（matrix 真跑 Python 判題）。
+- 修掉的真問題：(a) `dsl_expr_core.js` 推導式 `[x for x in b]` 裡的 `x` 被算成自由變數（元素先解析、綁定後才知道），現在於 for 綁定後移除；(b) 示範 matrix 的輸入 `0` 同時出現在 train 與 holdout（改成 6，留出題混進訓練的檢查正確擋下）；(c) 示範 matrix 一筆期望值算錯（(3·13+2) mod 11 = 8，不是 9）；(d) 版面測試沒跟上「領域」分頁（左欄 6 個）。
+- 其餘測試紅燈多是測試本身過時或期望錯，逐項依真實行為修正並寫在提交訊息，沒有為了綠而改掉規格。
+- 純邏輯端到端：`scripts/training-studio.js pack` → 自我核對 → `verify all --deep`，matrix 示範（train 2／2、holdout 2／2）與 blockly 示範（train 2／2、holdout 2／2）都通過（輸出放在工作階段暫存目錄，未寫進倉庫）。
+
+### 16.2 沒有驗證的
+- **真 Electron 視窗**：這次沒開。`DISPLAY=:2.0` 存在，但只跑了純邏輯測試；工作室畫面、新增領域的按鈕流程、老師迴圈的真畫面都沒看過。
+- **blockly 訓練包裝的 Electron 端到端**：未做（同上，且缺 tree-sitter 快取）。
+- **「新增領域→產生資料→評量」在 App 內的完整點擊流程**：只有純函式與 `training-studio.js` 驗證。
+
+### 16.3 缺口（寫明原因與解除條件）
+1. **`builtin-training/` 目錄不存在**：HANDOFF 0.3 寫「builtin-training/ 已寫並存檔提交」，但 `git log --all -- '*builtin-training*'` 沒有任何提交。`training-studio.js pack` 目前會產生該目錄（預設位置），還沒有提交內容。解除：決定是否要把示範資產 pack 進倉庫（會變成內建資產，需先確認授權與來源欄位）。
+2. **blockly 端到端缺 tree-sitter 快取**：`domain_e2e.test.js` 與 blockly 判題需要 `~/.cache/fa-ts/tree-sitter-python.wasm`（或 `FA_TS_DIR`）。這台找不到專案自己的副本（只有 VS Code 內建的 Copilot 套件裡有一份，來源與版本未核對，沒有拿來用）。解除：由管理者提供專案的 tree-sitter 資產（HANDOFF 的 `assets-tree-sitter` 分支）或同意我下載並核對檔名與大小。
+3. **測試用 `python`**：這台的 `python` 不支援 `-I`，測試與 `training-studio.js` 改用 `FA_PYTHON=python3`（測試檔中 `dsl_expr_core.test.js` 已改為 `python3`；`training-studio.js` 的預設仍是 `python`，尚未改）。
+4. **離線訓練器 GUI（使用者要求優先）**：本次沒有做。本次聚焦在工作室新增領域的正確性。下一步是補齊離線訓練器 GUI 的未實作項目（§15 盤點之外的新缺口需重新盤點）。
+5. **blockly／矩陣訓練包裝的 GUI 端到端**：`lora-train/gen/` 的產生器這次只做了 `training-studio.js` 的純邏輯路徑，沒有在 App 內跑一次。
+6. **老師迴圈**：仍只用替身驗證，沒有真線上 AI（同 §15.5）。
+
+### 16.4 接手（給下一個工作階段）
+- 分支 `claude/studio-domain-author-dcb72c`，本次提交：DSL 與示範修正、版面測試更新（見 `git log`）。沒有推送，沒有 publish，沒有動 `lora-train/`。
+- 接續順序：(1) 決定 16.3-1 與 16.3-2；(2) 離線訓練器 GUI 缺口重新盤點並補齊；(3) 在有顯示的環境下做 Electron 視窗驗證（16.2）；(4) 把 `training-studio.js` 預設 Python 改為可設定（16.3-3）。
+- 注意：未追蹤的 `lora-train/` 修改沒有做，管理者的 `~/fa/desktop-app/lora-train/` 不要碰。
