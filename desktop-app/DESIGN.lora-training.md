@@ -280,3 +280,83 @@ lora-train/.venv/Scripts/pip install -r lora-train/requirements.txt
 - `review_return` 的負例只有 13 筆，`self_validate` 的負例 248 對正例 584，比例偏正。
 - `uml_design` 的 actors／classes／relations 仍只有 1～4 列（只有單一固定情境），這一輪**沒有**補。
 - 基底在這批題上的起點（`eval_gen.py` 抽 8 題煙霧）：切割題 valid 0/8（基底輸出 JSON 陣列而不是要求的物件）、自問 ok 3/8。完整基準與微調結果見下一節（有跑才寫）。
+
+## 13. 多顆 LoRA 註冊與按需載入（2026-11-12，設計）
+
+需求（使用者原話，2026-11-12）：「floating assistant 要可以註冊多個 LoRA，這些 LoRA 要 on demand loading / lazy loading」。
+
+### 13.1 現況（已存在，本節不重做）
+
+- `renderer/src/studio/lora_registry_core.js`：登錄表（`register`、`select`、`ensure`、`request`）、LRU 卸載、記憶體預算（`budgetBytes`，預設 256 MiB）、同時啟用上限（`maxActive`：桌面版 4、網頁版 1）、相容性檢查（基底、rank 槽、提示格式版本、工具清單）、評量門檻（任一組輸給基底就不自動選用）。`lora_registry.test.js` 43 項通過。
+- 桌面版載入路徑：`studio_server_core.js` 的 `/api/lora/load` → `registry.request` → `lora_apply_core.js`（寫信箱 → 主程序 `lora_apply`／`lora_apply_set`）。
+- 缺口（本節補的）：
+  1. 沒有統一的「描述檔」格式。現有只有 `pack_adapter.js` 產生的 `manifest.json`，而且沒有 `version` 欄位。
+  2. `request` 在沒有載入器時會丟例外，呼叫端沒有統一的「退回基底模型」出口。
+  3. 每一輪聊天依任務類型路由的呼叫點還沒接（見 13.5）。
+
+### 13.2 描述檔格式：`fa-lora-descriptor` v1（與 lora-manager-2 的約定）
+
+每顆 adapter 的資料夾內放一份 `lora.descriptor.json`，欄位如下：
+
+| 欄位 | 型別 | 必要 | 說明 |
+|---|---|---|---|
+| `format` | 字串 | 是 | 固定為 `fa-lora-descriptor` |
+| `format_version` | 整數 | 是 | 目前為 `1`；未知版本一律拒絕 |
+| `id` | 字串 | 是 | 全域唯一，小寫英數與 `-._`，例如 `decompose-r16` |
+| `version` | 字串 | 是 | adapter 版本，例如 `1.0.0`（同一 id 換權重就要加版本） |
+| `name` | 字串 | 否 | 顯示名稱 |
+| `base` | 字串 | 是 | 基底模型 id，例如 `Qwen/Qwen3-0.6B` |
+| `base_sha256` | 64 位十六進位 或 null | 否 | 基底模型檔案雜湊（同名不同檔時拒絕） |
+| `rank` | 正整數 | 是 | LoRA 秩；必須落在模型的 rank 槽內 |
+| `alpha` | 數字 | 否 | 與 PEFT 的 `lora_alpha` 相同 |
+| `prompt_format_version` | 整數或字串 | 是 | 提示格式版本；格式改變就要換版 |
+| `tool_catalog_sha256` | 64 位十六進位 或 null | 否 | 訓練時的工具清單雜湊；不符只警告 |
+| `applies` | 物件 | 是 | 適用條件：`domains`（任務類型陣列）與 `triggers`（正規表示式字串陣列，使用者指令命中就視為想用） |
+| `size` | 非負整數 | 是 | 權重總位元組數（分片加總） |
+| `sha256` | 64 位十六進位 | 是 | 權重整檔的雜湊；載入前核對 |
+| `location` | 字串 | 是 | 檔案位置：`asset:lora/<id>`（工作室資產庫）、`fap:…`（執行包內）或絕對路徑；由載入器解讀 |
+| `eval` | 物件 或 null | 否 | 評量結果（`groups` 每組 `{adapter, base}`）；沒有就不自動選用 |
+
+規則：
+
+- 描述檔只描述，不含權重；權重檔以 `size` 與 `sha256` 核對。
+- `applies.domains` 的標籤由 lora-manager-2 定義：`decompose`（拆題）、`toolcall`（工具呼叫格式）、`colu`（選單）、`plan`（規劃）。空陣列表示通用，只在沒有領域專屬者時才補上。
+- 同一資料夾也可以有 `manifest.json`（`pack_adapter.js` 產生）。有描述檔時，`id`、`version`、`applies`、`location` 以描述檔為準。
+
+### 13.3 註冊、按需載入與快取
+
+- **註冊不載入**：註冊只讀描述檔（與可選的 manifest），不讀權重，不呼叫載入器。
+- **選用（路由）**：依 `applies.domains`（任務類型）與 `applies.triggers`（指令比對）選出候選；停用、不相容、沒有評量資料（手動指定除外）、評量輸給基底的不選；同領域只留排序最前者；`conflicts_with` 衝突者跳過。
+- **按需載入**：只有被選到的才呼叫載入器；載入成功後進入快取。沒被用到的 adapter 不占記憶體。
+- **快取上限**：同時駐留的位元組總和不超過 `budgetBytes`；同時啟用不超過 `maxActive`。超過時卸載 `lastUsed` 最小者（LRU），但不卸載本次計畫內的 adapter。
+- **失敗退回基底**：單顆載入失敗（檔案讀不到、雜湊不符、主程序拒絕）只讓該顆進 `skipped`，寫出具體原因，其餘照常。計畫內全部失敗，`active` 為空，呼叫端走基底模型（`fallback: 'base'`）。新增的 `resolve()` 保證不丟例外：沒有載入器或任何未預期錯誤都回基底並附原因。
+- **相容性不符**：`reject`，不載入，寫出原因（例如基底不同、rank 不在槽內）。
+
+### 13.4 兩個平台
+
+- **桌面版（nr-engine 原生推論）**：多顆依 rank 串接成一個槽檔，由主程序 `lora_apply_set` 套用，容量不足的逐項拒絕（不截斷）。換組合＝重建推論 session（數秒）。
+- **網頁版（transformers.js＋併權重）**：**限制**：`maxActive=1`。併權重必須從原始 q8 位元組重新併入，所以換 adapter 等於重新 patch 整個模型（617 MB，數秒到數十秒），不支援同時多顆。併權重的數值限制（啟動值量化、飽和）見 §11.3–11.4，網頁版的結果**不與桌面版槽版等價**。網頁版若沒有可用的 q8 模型，registry 回基底。
+
+### 13.5 尚未接的部分（阻礙）
+
+- **每一輪聊天依任務類型路由**的呼叫點在 `renderer/src/floating-assistant.js`。該檔內嵌 studio 核心（`scripts/embed-code-ui.js` 的 UMD 清單），改動需要重跑 embed 與 live-update 發佈流程。依指示本次不跑 embed、不發佈，所以這一步尚未接。
+- 目前「按需載入」只在工作室的 `/api/lora/load` 生效（使用者在工作室觸發）。
+- 接上時的做法：聊天送出前呼叫 `registry.resolve({text, domains})`，回傳的 `handles` 交給 `lora_apply`；`active` 與上一輪相同就不重建 session。
+
+### 13.6 給 lora-manager-2 的產出要求
+
+- 每顆 adapter 一個資料夾，內含 `adapter_model.safetensors`（或 `.partNN` 分片）、`adapter_config.json`、`manifest.json`（`pack_adapter.js`）、`lora.descriptor.json`（本節格式）。
+- 描述檔的 `size`、`sha256` 與 manifest 一致；`version` 只在權重改變時增加。
+- 四顆：`decompose`、`toolcall`、`colu`、`plan`，各自的 `applies.domains` 與 `applies.triggers` 由 lora-manager-2 填。
+
+### 13.7 測試（`lora_registry.test.js`）
+
+- 描述檔解析：合法、缺 `version`、`format_version` 不是 1、`triggers` 不是合法正規表示式、`size` 或 `sha256` 格式錯誤。
+- 註冊不呼叫載入器（懶載入）。
+- `resolve()`：沒有載入器時回基底且不丟例外；載入失敗時回基底並附原因。
+- LRU：超過 `maxActive` 時卸載最久沒用者；計畫內的不卸。
+
+### 13.8 未驗證
+
+- 真實 adapter 的按需載入延遲（本機沒有真 adapter；載入器是注入的假載入器測試）。
+- 聊天呼叫點（13.5）與網頁版的瀏覽器執行。
