@@ -279,3 +279,11 @@ lora-train/.venv/Scripts/pip install -r lora-train/requirements.txt
 **沒做**：uml 的 actors／classes／members／relations／sequence 留出題（留出檔裡只有 edit 題），所以 uml 結構階段沒有量到。
 
 **接下來（待決定）**：(a) 在 `decompose` 的訓練集裡加入 self_validate 的正例（與 plan 分工，或讓 self_validate 只歸 plan 那顆）；(b) 接受「self_validate 只在 plan 顆處理」，把 decompose 的適用條件（`applies`）限制成拆題提示，然後重新評量。兩者都要用同一批留出題重評。
+
+### 17.1 decompose v1 打包（限縮範圍後，2026-11-12）
+- **適用範圍（內）**：code_split、code_write_fn、uml 逐層切割與編輯（`applies.domains=["decompose"]`，`triggers` 為拆題相關的關鍵字）。**範圍外（明確排除）**：think_stack 的 self_validate、review_return、plan_check。排除是設定的意圖；路由是否真的排除，要等 lora-slot-js 的任務路由實作後才算驗證。
+- **範圍內退步**：無（code_split valid 0→60/60、names 0→55/60、calls 0→55/60、judge 8→20/60；uml edit 18→30、16→30；def 持平）。
+- **範圍外退步**：self_validate 正例 23/43→16/43；負例 2/17→9/17；整體 ok 25/60 持平；review_return 0/60 持平（未訓練）。
+- **打包**：`out/release/decompose-r4/`（`pack_adapter.js`，id `decompose-r4`、版本 `1.0.0`、rank 4、20 MB 分片 1 個，大小 10,143,496 位元組）。model_card 的評量數字由 `make_metrics.py` 從 `score_gen.js` 實跑輸出解析（不手寫），只放拆題合法率；function call 格式合法率沒有放（不在本顆範圍）。
+- **descriptor 沒有 eval 欄位**：打包時沒有傳評量 JSON，所以描述檔的 `eval` 是 null，lora-slot-js 的「只自動採用有評量者」規則不會自動選它，只能手動選。
+- **v2 準備中**：`data/multi/decompose_v2.jsonl` = v1 677 列 ＋ self_validate 正例 191 ＋ review_return 265（正負都收）＝ 1,133 列；排在 toolcall／plan／colu 之後自動開跑（`out/multi/run_v2.log`）。v2 只加正例，負例仍欠缺，評量時會看 neg 是否再退步。
