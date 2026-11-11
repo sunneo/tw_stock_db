@@ -243,3 +243,38 @@ LZMA 的 match／rep0–3／距離槽／狀態轉移機、LZMA2 區塊分塊、B
 | G18 | **已補（讀取器偵測）** | 本批：`intent.specLike`（長敘述／多張表／多條公式）；模型／老師部分超出 Blockly |
 
 holdout 未解 6 題：cat-two、exec-env、tar-blocks、canonical-huffman、xz-header、bmp-write8（輸入措辭或輸出格式猜不到，沒有讀 holdout 敘述；需老師教）。holdout 對「家族」不乾淨（缺口表已點名單元），21/27 代表「缺口表家族＋沒看過的措辭／格式」的泛化。
+
+## 8. G1–G18 逐項核對（2026-11-12，blockly-finish-2 接手）
+
+核對方式：每一項以程式碼中的識別字搜尋確認存在（`grep -rl`，排除測試檔），並對照 `DESIGN.blockly-curriculum.md` §2 宣稱的提交。這裡是「存在性核對」，不是逐項重跑各家族；家族的通過數以各領域包測試檔與核心測試為準（見 §8.2）。表中的「實際名稱」是程式碼中的識別字，可能與 §4 建議的名稱不同。
+
+| # | 判定 | 實際名稱／證據（程式碼存在） | 提交 | 尚缺 |
+|---|---|---|---|---|
+| G1 讀取器形狀 | ✔ 已補；本批再補一項 | `readToolInput`（`algo_intent_core.js`）；本批新增「整數行＋十六進位行」兩段輸入的保留條件（見 §8.1） | dfed1565、73deb981、本批 | 兩段輸入還沒有骨架消費（PNG／GIF 寫出仍用單一封包），見 §8.1 |
+| G2 切割模板（輔助操作） | ✔ 已補 | `HELP` 輔助操作＋`helpers` 機制（各領域包）；`crc32` 單元 | 73deb981 | — |
+| G3 積木 | ✔ 已補（部分） | `try_ignore`（單本體 try）；位元與格式化運算由骨架字串完成 | 73deb981 | 雙本體 try/except 仍走通用程式區塊 |
+| G4 欄位表範式 | ✔ 已補 | `ftTable`（`py_paradigms_core.js`，BMP／tar 欄位位移抽取） | 73deb981 | 未以 `binfmt.field-table` 命名，功能等價 |
+| G5 行過濾器 | ✔ 已補 | `lines.map`、`lines.filter` 於多個 `domain_linux*` 與核心範式 | dfed1565 | — |
+| G6 無 `def` 改寫 | ✔ 實質完成 | regex 狀態集、調度場、inflate、VM 都不含 `def`；保留 `def` 的 (a) 未做 | 73deb981 | (a) 保留巢狀 `def`：不做，已改由 helpers 承接 |
+| G7 校驗碼 | ✔ 已補 | `checksum.crc32`（核心範式）、CRC-32 單元 | 73deb981 | — |
+| G8 位元流 | ✔ 已補 | 範式 `bitstream`（`bmp.read1` 等）；位元讀取由 `domain_inflate_core.js` 的 `huff_sym`／`inflate_raw` 完成 | 73deb981、fbed8762 | 位元重組（base64 之類）只在部分家族 |
+| G9 對齊與列序 | ✔ 已補 | `align.up`、`bmp.stride-pad`、`bmp.gray-rows` | 73deb981 | — |
+| G10 詞法與狀態機 | ✔ 已補 | `lexer.scan`（核心範式） | 73deb981 | 狀態集合由敘述抽取的通用版未做 |
+| G11 運算式求值 | ✔ 已補 | `rpn` 與 `shunting` 相關範式（`stack.*` 名稱不同） | 73deb981 | 遞迴下降見 G6 |
+| G12 直譯器與指令分派 | ✔ 已補 | `vm-exec`、`interp.pipeline`；`dispatch` 出現在 27 個檔案 | 73deb981 | 指令集由敘述抽取的通用版未做 |
+| G13 壓縮演算法 | ✔ 已補 | `lz77.greedy`、`heap.huffman-merge`；inflate 三種區塊（`domain_inflate_core.js`） | 73deb981、fbed8762 | 動態霍夫曼的 holdout 未解（ho-zlib、ho-gzip） |
+| G14 LZMA 完整流程 | ✔ 已補（解碼） | `domain_lzma_core.js`（alone、LZMA2、BCJ、xz 容器解碼） | 本批（2026-11-10） | 只解碼、不驗證檢查值；不做編碼 |
+| G15 判題器二進位 IO 等 | ✔ 已補 | `judge-runner.js`（argv、env、files、expectFiles、expectExit、inHex、outHex）；`judge-runner-real.test.js` | 本批（2026-11-10） | Windows 的 fork 走 WSL 或 msys，標明 mode |
+| G16 真行程 | ✔ 已補（判題可驗證） | `lr.fork-pipe`、`lr.pipe-chain`、`lr.sock-echo`、`lr.spawn-env`（`domain_linuxreal_core.js`） | 本批（2026-11-10） | 信號與重導向的完整語意未做 |
+| G17 讀取器假陽性 | ✔ 已補 | `specLike`、否決條件；`readToolInput` 的 `pri`、`veto` 規則 | dfed1565、73deb981 | — |
+| G18 規格即題目 | ✔ 讀取器偵測已補 | `intent.specLike`（偵測）；模型／老師的翻譯部分超出 Blockly | 73deb981 | 模型路線（非範式） |
+
+### 8.1 本批（接手）的讀取器修改與未完成的消費端
+- 修改：`readToolInput` 最後的輸入組合，原本遇到「整數行（`scalars`）＋十六進位行」時只留下十六進位行（整數行被 `inputs.length = 0` 丟掉）。現在當整數行後面只有一個十六進位行時，兩者都保留，形狀為 `[scalars, hex]`。
+- 向下相容：修改只放寬一個狹窄條件（`ti.length === 1 && ti[0].k === 'hex'` 且前一個是 `scalars` 行）；其他形狀沒有動。
+- 探測（`AI.reader`）：「輸入三個整數 w h c，第二行一個十六進位字串 px」→ `[scalars w h c, hex h]`（修改前為 `[hex h]`）。「第一行有三個整數…第二行是一串十六進位位元組」仍為 `[str s, hex h]`，未改善（它是另一條規則，待改善）。
+- 尚未做：消費端。PNG／GIF／PCX／JPEG 的寫出骨架目前都要求「單一十六進位封包」（`hexIn`），所以新形狀不會被它們採用；要真的用上，需要一個接受 `[scalars, hex]` 形狀的骨架，並重新量測。這是下一步。
+- 回歸：修改後跑一次完整核心測試（見 §8.2）。
+
+### 8.2 本批的測試數字（無模型、0 次模型呼叫）
+見 `DESIGN.blockly-curriculum.md` 的接手節（本批提交與數字）。完整核心測試的結果以該節的記錄為準。

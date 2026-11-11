@@ -104,6 +104,9 @@
 | `domain_linuxreal_core.js` | 真實 Linux 程式設計：環境變數查詢、argv、子行程環境、文字檔轉換、多檔案合併、二進位檔轉換、本機 socket 回應、fork＋管線、子行程管線（測試帶 args／env／files／needs，由判題器真的執行；fork 在 Windows 走 WSL） | 19/19（選項反序 19/19） | 第一次量測 4/5（未解 ho-env：偵測詞沒有「找不到／查」）；補通用詞彙後 5/5，**這一題不再獨立** | 本批 |
 | `domain_lzma_core.js` | LZMA alone／LZMA2／LZMA2＋BCJ／xz 容器解碼（range coder、literal、match、rep0～3、距離槽、對齊位元、LZMA2 分塊、x86 BCJ、delta 濾鏡） | 7/7（反序 7/7） | 第一次量測 2/3（未解：敘述以「給一行十六進位」開頭，讀取器只認「輸入…」）；讀取器加「給一行」後 3/3，**這一題不再獨立** | 本批 |
 | `domain_binfmt_core.js` | xz 標頭（檢查類型名稱／判決字樣／表外格式從敘述抽）、xz 頁尾、8 位元調色盤 BMP 寫出（十六進位或十進位調色盤、列序、解析度） | 3/3（反序 3/3） | 見下方註記 | 本批 |
+| `domain_gif_core.js`（2026-11-12 接手） | GIF 單張影格讀寫：跳過擴充、全域／局部調色盤、LZW 變長碼（解碼）；確定性貪婪 LZW 與子區塊（寫出） | 7/7（選項反序 7/7） | 0/2（ho-dec-rrggbb、ho-enc-pack 未解，未拿來教）；Pillow 外部雙向 16/16、16/16 | 34ddf6d6 |
+| `domain_pcx_core.js`（2026-11-12 接手） | PCX 版本 5 讀寫：128 位元組表頭、RLE 逐掃描線、單平面調色盤或三平面 RGB | 7/7（選項反序 7/7） | 1/2（ho-pcx-enc 未解）；Pillow 外部雙向 12/12、12/12 | fcd48a46 |
+| `domain_jpeg_core.js`（2026-11-12 接手） | JPEG 灰階基線讀寫：DQT／DHT 解析、霍夫曼 DC／AC、整數 IDCT／FDCT；寫出用 Pillow 抽出的標準表 | 5/5（選項反序 5/5） | 1/2（ho-jpg-enc 未解）；Pillow 外部雙向最大差 1（10/10、8/8） | 832b49df |
 
 - binfmt 的 holdout 誠實紀錄：寫完 `xz.header-parse`／`bmp.write8` 後另寫的第一批 holdout（ho-xz-valid、ho-bmp8）第一次 1/2（ho-xz-valid 因「輸出 UNKNOWN(n)」被當成第三種失敗字樣而失敗，補通用規則）；第二批 6 題第一次 3/6（未解：以空白隔開的位元組輸入、xz 頁尾、十進位調色盤），補通用能力（讀取器認「以空白隔開的位元組」、新增 `xz.footer-parse`、調色盤寫法槽位）後 6/6；第三批（補完後才寫、措辭與格式都不同：成功時只輸出種類名稱、輸入列已是由下往上）第一次 **0/2**（偵測詞沒有「輸出…BMP」、成功例句沒有前綴時抽不到），補通用規則後 8/8。**只有最後一批的第一次量測 0/2 是乾淨的泛化數字；之後的 8/8 都是補過規則的結果，不代表泛化。**
 
@@ -201,3 +204,31 @@ Pillow 外部驗證：寫出端 20/20、解碼生成器 30/30（python3 的 Pill
 - 變基後實跑（無模型）：inflate train 10/10、holdout 2/4；tarx train 10/10、holdout 2/4；bmpx train 10/10、holdout 4/4；png train 6/6、holdout 1/2。各檔 `20 passed` 或 `12 passed`、`0 failed`。
 - 同伴提出的「以 start_session 啟動接手者」未執行：該 initiation 需要使用者本人在本對話的指示，同伴訊息不能代替。接續由使用者本人決定。
 - 尚缺（與前節相同）：GIF、PCX、JPEG 讀寫；holdout 未解題（ho-zlib、ho-gzip、ho-gnu、ho-enc、ho-enc-rgba）；G1–G18 逐項核對；整套核心測試。
+
+## 接手（2026-11-12，blockly-finish-2，指揮接續）
+
+### 本批已提交
+| 項目 | 提交 | 實跑（無模型） |
+|---|---|---|
+| GIF 讀寫 domain_gif | 34ddf6d6 | train 7/7、反序 7/7、holdout 0/2；Pillow 寫出 16/16、解碼 16/16 |
+| PCX 讀寫 domain_pcx | fcd48a46 | train 7/7、反序 7/7、holdout 1/2（ho-pcx-enc）；Pillow 12/12、12/12 |
+| JPEG 灰階基線 domain_jpeg | 832b49df | train 5/5、反序 5/5、holdout 1/2（ho-jpg-enc）；Pillow 10/10、8/8（最大差 1） |
+| G1–G18 核對 | 本次提交 | 見 DESIGN.blockly-gaps.md §8（存在性核對，不是逐項重跑） |
+| 讀取器「整數行＋十六進位行」 | 本次提交 | 探測 `[scalars, hex]` 成立；尚無消費端骨架 |
+
+### 完整核心測試（一次）
+`run-core-tests.js` 完整跑完：通過 247／299 組，失敗 52 組（新增 51、既有 1）。多數是本機缺件而非邏輯錯誤：`js-yaml`、tree-sitter 的 c_sharp／cpp／java／javascript wasm、`python -c` 參數、g++／dotnet、ENOENT（wiki 目錄）、LoRA 的 manifest 雜湊等。
+- `領域包 par`（63a0236c 的既有半成品）：用原始讀取器也是 0/1 失敗，與本次修改無關。
+- 未能證明的部分：51 個「新增」失敗沒有做基準（原始讀取器）全量對照，只對 par 做了對照。下一步：用 `git stash`-free 方式（暫換檔案）對失敗的群組逐一基準比對，確認只有環境原因。
+- 測試執行會改寫 `test-reports/` 與 `__pycache__`，這些不提交。
+
+### 未完成（接續點）
+1. **holdout 未解題**（ho-zlib、ho-gzip、ho-gnu、ho-enc、ho-enc-rgba；GIF ho-dec-rrggbb、ho-enc-pack；PCX ho-pcx-enc；JPEG ho-jpg-enc）：指揮已授權查根因、可補敘述或教法。注意：補過的題之後只能當「補過後」數字，不能當泛化證據。
+2. **讀取器兩段輸入的消費端**：寫一個接受 `[scalars, hex]` 的骨架（如 PNG／GIF 寫出的「w h c」＋十六進位像素），再量測。
+3. **環境缺件**：安裝或記錄 js-yaml、wasm 等後重跑對應群組，確認沒有與本批有關的失敗。
+
+### 其他要注意的事
+- 本機沒有 git 身分：提交用 `git -c user.name=hungfu.lee -c user.email=hungfu.lee@insyde.com commit`，不改全域。
+- Python 測試用 `FA_PYTHON=python3`（Pillow 9.0.1）；python3.13 的 Pillow 壞掉。
+- 判題器 DBG 會寫到 `CLAUDE_JOB_DIR/tmp/`，要先建目錄，否則變成 JUDGE_ERROR（已遇到）。
+- 指揮的 `kh` 修改在 `algo_intent_core.js` 的 `readToolInput` 最後一段（搜尋 `const kh`）。
