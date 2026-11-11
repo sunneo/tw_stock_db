@@ -224,6 +224,11 @@ async function slotCard(body){
  async function poll(){var x=await api('GET','/api/lora/slot');if(!card.isConnected)return;draw(x);clearTimeout(timer);if(x.phase==='hash'||x.phase==='build'||x.phase==='download')timer=setTimeout(poll,1000)}
  draw(s);if(s.phase==='hash'||s.phase==='build'||s.phase==='download')timer=setTimeout(poll,1000);
 }
+// LoRA 介紹／model card（DESIGN §21）：讀 /api/lora/card，顯示介紹、會附帶的能力、已知限制與評量（缺的寫無資料）
+async function loraIntro(e,box){box.textContent='';var x=await api('GET','/api/lora/card?id='+encodeURIComponent('lora/'+e.id));
+ if(x.ok===false){box.appendChild(reason('讀取介紹失敗：'+x.error));return}
+ if(!x.hasCard){box.appendChild(reason('這個 LoRA 沒有 model_card.json，沒有介紹與能力說明。'));return}
+ box.innerHTML=FaStudioLoraManage.cardIntroHTML(x.card)}
 T.lora=async function(body){
  var r=await api('GET','/api/lora');if(r.ok===false){body.appendChild(reason('讀取 LoRA 登錄失敗：'+r.error));return}
  body.appendChild(h('div',{style:'color:var(--mut);font-size:12px',text:'主程式環境：基底 '+r.env.base+'，rank 槽 '+r.env.rank_slots.join('／')+'，提示格式版本 '+r.env.prompt_format_version+'；記憶體預算 '+fmtB(r.budget)+'，同時啟用 '+r.maxActive+' 個'}));
@@ -231,7 +236,7 @@ T.lora=async function(body){
  await slotCard(body);
  body.appendChild(h('div',{'class':'row'},[h('button',{text:'重新整理',onclick:function(){refresh('lora')}}),h('button',{text:'全部卸載',onclick:async function(){await api('POST','/api/lora/unload',{});refresh('lora')}})]));
  if(!r.entries.length)body.appendChild(h('div',{'class':'todo',text:'還沒有 LoRA adapter。訓練完成的 LoRA 會以 kind=lora 的資產（含 weights/lora.bin）出現在這裡；也可以到「資產清單」匯入別台訓練好的 .fatrain。'}));
- r.entries.forEach(function(e){var c=e.compat,v=e.verdict;
+ r.entries.forEach(function(e){var c=e.compat,v=e.verdict,ib=h('div',{});
   var cb=h('span',{'class':'badge '+(c.level==='reject'?'er':(c.level==='warn'?'wn':'ok')),text:c.level==='reject'?'不相容':(c.level==='warn'?'有警告':'相容')});
   var vb=h('span',{'class':'badge '+(!v.known?'wn':(v.lose&&v.lose.length?'er':'ok')),text:!v.known?'沒有評量':(v.lose&&v.lose.length?'輸給基底：'+v.lose.join('、'):'評量通過')});
   body.appendChild(h('div',{'class':'card'},[h('div',{'class':'row'},[h('b',{'class':'n',text:e.name}),cb,vb,h('span',{'class':'badge',text:e.loaded?'已載入記憶體':'未載入'}),h('span',{'class':'badge',text:e.source+'｜rank '+e.rank+'｜'+fmtB(e.size)})]),
@@ -240,7 +245,7 @@ T.lora=async function(body){
    c.warnings.length?h('div',{style:'color:var(--wn);font-size:12px',text:c.warnings.map(function(x){return x.message}).join('；')}):null,
    h('div',{'class':'row'},[h('label',{style:'margin:0'},[h('input',{type:'checkbox',checked:e.enabled?true:false,onchange:async function(ev){await api('POST','/api/lora/enable',{id:e.id,on:ev.target.checked});refresh('lora')}}),' 啟用']),
     h('button',{text:'手動載入',disabled:c.level==='reject',title:c.level==='reject'?'不相容的 adapter 不能載入':'',onclick:async function(){var x=await api('POST','/api/lora/load',{ids:[e.id]});if(x.ok===false)alert(x.error);else alert((x.active.length?'已載入到記憶體：'+x.active.join('、'):'沒有載入：'+x.skipped.map(function(s){return s.id+'：'+s.reason}).join('；'))+'\n'+(x.applied?'已套用到推論':'尚未套用到推論：'+x.applyNote));refresh('lora')}}),
-    h('button',{text:'卸載',disabled:!e.loaded,onclick:async function(){await api('POST','/api/lora/unload',{id:e.id});refresh('lora')}})])]))});
+    h('button',{text:'卸載',disabled:!e.loaded,onclick:async function(){await api('POST','/api/lora/unload',{id:e.id});refresh('lora')}}),h('button',{text:'介紹',onclick:function(){loraIntro(e,ib)}})]),ib]))});
  (r.invalid||[]).forEach(function(x){body.appendChild(h('div',{'class':'warn',text:'登錄項不合法：'+x.id+'：'+x.error}))});
  var q=h('input',{type:'text',placeholder:'輸入一句使用者指令，看按需選用會挑哪個 adapter（不會載入）'}),out=h('pre',{style:'display:none'});
  body.appendChild(h('div',{'class':'grp',text:'按需選用試算'}));body.appendChild(q);

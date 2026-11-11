@@ -71,5 +71,18 @@ check('註冊時間：登錄表的 added（毫秒）轉成日期；沒有就寫�
 check('替換中：由登錄表的 replacing {out,in} 產生文字；沒有替換就是空字串', M.busyText({ replacing: { out: 'lora/a', in: 'lora/b' } }).indexOf('替換中：lora/a → lora/b') === 0 && M.busyText({ replacing: null }) === '' && M.busyText({}) === '');
 check('格式函式', M.sizeText(undefined) === '未知' && M.timeText(NaN) === '從未使用');
 
+// cardIntroHTML（DESIGN §22.2）：介紹頁的 HTML；外部字串跳脫，沒有的評量寫無資料，樣本少寫警告
+{
+  const card = M.summarizeCard({ format: 'fa-lora-card', version: 1, id: 'lora/x', name: 'x<script>', intro: '介紹 & "引號"', version_tag: 'v1', base: { name: 'Qwen' }, created: '2026-11-12', applicable: { rank: 16 }, capabilities: [{ id: 'json', label: '輸出 JSON', desc: '合法' }, 'plain 能力'], known_limits: ['只在示範題上測過'], eval: { split_legal_rate: { base: 0.5, tuned: 0.75, n: 12 } } });
+  const html = M.cardIntroHTML(card);
+  check('介紹：名稱與介紹都跳脫（沒有原始 <script>）', html.indexOf('<script>') < 0 && html.indexOf('x&lt;script&gt;') >= 0 && html.indexOf('介紹 &amp; &quot;引號&quot;') >= 0, html.slice(0, 200));
+  check('介紹：列出能力（物件與字串兩種形式）與限制', html.indexOf('輸出 JSON：合法') >= 0 && html.indexOf('plain 能力') >= 0 && html.indexOf('只在示範題上測過') >= 0);
+  check('介紹：有評量的指標寫數字與差距，樣本 12 題寫偏少警告', html.indexOf('拆題合法率：50% → 75%') >= 0 && html.indexOf('偏少') >= 0, html.slice(html.indexOf('評量')));
+  check('介紹：沒有的評量（function call）寫無資料', html.indexOf('function call') >= 0 && html.indexOf('無資料') >= 0);
+  check('介紹：rank 與版本顯示', html.indexOf('rank 16') >= 0 && html.indexOf('版本 v1') >= 0);
+  const none = M.cardIntroHTML(M.summarizeCard({ format: 'fa-lora-card', version: 1, id: 'lora/y', name: 'y', base: { name: 'Q' }, created: '2026-11-12', capabilities: [], known_limits: [] }));
+  check('介紹：沒有能力與限制時說明沒有，不編造', none.indexOf('沒有') >= 0 && none.indexOf('能力') >= 0);
+  check('介紹：沒有卡片資料時回說明', M.cardIntroHTML(null).indexOf('沒有介紹資料') >= 0);
+}
 console.log(ok + ' passed, ' + bad + ' failed');
 process.exit(bad ? 1 : 0);

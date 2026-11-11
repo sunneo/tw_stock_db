@@ -164,5 +164,22 @@
         return '<div class="lora-manage"><div class="ttl">LoRA 管理</div>' + bud + busy + table + regCard + card + '</div>';
     }
 
-    return { CARD_FORMAT, CARD_VERSION, METRIC_KEYS, validateModelCard, summarizeCard, budgetOf, busyText, rowsFromStatus, cardFromRegistered, renderLoraManageHTML, sizeText, timeText };
+    // LoRA 介紹（model card，§21）：summarizeCard 的結果 → HTML（所有外部字串跳脫；沒有的評量寫「無資料」）
+    function cardIntroHTML(c) {
+        if (!c) return '<div class="todo">沒有介紹資料</div>';
+        const list = (xs, f) => (xs && xs.length ? '<ul>' + xs.map((x) => '<li>' + esc(f(x)) + '</li>').join('') + '</ul>' : '<div class="todo">沒有</div>');
+        const head = esc(c.name || '') + '　版本 ' + esc(c.version || '未標註') + '　基底 ' + esc(c.base || '未標註') + (c.rank !== null && c.rank !== undefined ? '　rank ' + esc(c.rank) : '');
+        const errs = c.errors && c.errors.length ? '<div class="warn">model_card 有問題：' + esc(c.errors.join('；')) + '</div>' : '';
+        const metrics = (c.metrics || []).map((m) => (m.available
+            ? m.label + '：' + m.base + '% → ' + m.tuned + '%（' + m.verdict + '，' + m.deltaPts + ' 個百分點，' + m.n + ' 題）' + (m.warn ? '　⚠ ' + m.warn : '')
+            : m.label + '：無資料（' + m.reason + '）'));
+        return '<div class="card"><b>' + head + '</b>'
+            + (c.intro ? '<div>' + esc(c.intro) + '</div>' : '') + errs
+            + '<div class="grp">會附帶的能力</div>' + list(c.capabilities, (k) => (typeof k === 'string' ? k : (k.label || k.id || '') + (k.desc ? '：' + k.desc : '')))
+            + '<div class="grp">已知限制</div>' + list(c.limits, (t) => String(t))
+            + '<div class="grp">評量（基底 → 微調；沒有的寫無資料）</div>' + list(metrics, (x) => x)
+            + '</div>';
+    }
+
+    return { CARD_FORMAT, CARD_VERSION, METRIC_KEYS, validateModelCard, summarizeCard, budgetOf, busyText, rowsFromStatus, cardFromRegistered, renderLoraManageHTML, cardIntroHTML, sizeText, timeText };
 }));
