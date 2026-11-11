@@ -564,3 +564,29 @@ heldout9（`heldout9_list.jsonl`，16 題）：**ok 15/16，verified 14**（測�
 **接手者的下一步（依順序）**：(a) 寫 10 題以上 held-out（dyn、petri、jpeg、range 各類），量 synth 的 ok／verified 數；(b) 在 `FaMatrixSynth` 註冊範本，只有量到有效才算；(c) 寫 `_codeOffline` 的失敗路徑 `add`（宿主 io 用 `localStorage` 或 host 檔案，兩者都要 try/catch）；(d) 依阻礙 4 的解除條件處理視窗驗證；(e) FGK（阻礙 1）與完整 LZMA（阻礙 2）。
 
 **身分與分支**：`git -c user.name=hungfu.lee -c user.email=hungfu.lee@insyde.com`（沒有改全域設定）。trailer 依系統提醒寫 Haiku 5.5；指揮要求的 Sonnet 5.5 與系統提醒衝突，我依系統提醒。
+
+### 13.4 第三棒接手（2026-11-12，分支 `claude/matrix-finish-3-a3bdb3`，起點 `7cd90ff9`；context 近 30% 交接）
+
+本棒提交：`d0ca84e4`（未推送、未嵌入、未跑 embed／build）。
+
+| 項目 | 狀態 | 證據（我在這台跑過） |
+|---|---|---|
+| **完整 LZMA**（阻礙 2 已解除） | **已做** `matrix_lzma_core.js`（FaMatrixLzma，依賴 FaMatrixRange） | `matrix_lzma.test.js` 31 項：我們的編碼器輸出 **17/17** 經真的 liblzma 解碼逐位元組一致；liblzma 壓縮（preset 0/6/9，未知大小＋結束標記）**51/51** 經我們的解碼器一致；符號種類全部出現（lit 17020、match 1521、rep0 148、rep1 126、rep2 41、rep3 28、shortrep 110）。修過一個 bug：shortrep 多編了一次 isMatch 位元（已修，見測試）。 |
+| **FGK 增量動態霍夫曼**（阻礙 1 已解除） | **已做** `matrix_fgk_core.js`（FaMatrixFgk） | `matrix_fgk.test.js` 6 項：每一步檢查不變量（權重沿位置序不遞減、父＝子和、位置序）、往返一致；**120/120** 組與獨立 Python 參照（物件樹實作同一演算法）逐位元相同。成本：偏態 **1.031×** 重建版、均勻隨機 **1.132×**（均勻分布上增量樹較差，是實測，不是 bug）。 |
+| 核心測試登記 | 已加入 `scripts/run-core-tests.js` 兩條 | 上列 matrix 測試全部逐條 rc=0（共 28 條檔案；整套 runner 這台仍跑不了，需要 tree-sitter 快取） |
+| **合成器範本**（FaMatrixSynth） | **未做** | 阻礙不變：沒有新 held-out 題。解除條件：寫 ≥10 題新 held-out（**不能用已凍結的題**），涵蓋 dyn（動態霍夫曼／MTF）、petri（權杖死結、可達數）、jpeg（DC 差分、AC 游程）、range（LZMA 字面量／比對），量了才註冊；註冊要用 `FaMatrixSynth.register(name, fn, {order, level, note})`（見 `matrix_synth_core.js:239`），現有範例見 `matrix_text_core.js:196` 的 `install`。 |
+| **teach_queue 產品呼叫** | **未做**（寫檔層已完成：`matrix_teach_queue_core.js`） | 現況：`floating-assistant.js` 的 `_codeOffline` 失敗路徑（約 120035～120039 行）已經呼叫 `FaMatrixSpec.teachEntry` 與 `this._teachQueueRecord(entry)`，**但 `_teachQueueRecord`（約 120043 行）是否已用 `FaMatrixTeachQueue` 寫檔，本棒沒有讀完整、沒有驗證**。解除條件：先讀 `_teachQueueRecord` 與 `FaMatrixTeachQueue` 的介面（`add`、`summary`），確認寫檔路徑已接上；視窗（摘要 UI）需要 Electron，這台沒有 Electron 二進位，驗不了；要使用者同意下載（列出檔名與大小）或改由有視窗的機器跑。 |
+| **JPEG 讀寫領域包** | 不在本棒（blockly-finish-2 負責） | — |
+
+**要嵌入／登錄的檔案（管理者統一做）**：
+- 新增：`matrix_lzma_core.js`（FaMatrixLzma，**要放在 FaMatrixRange 之後**）、`matrix_fgk_core.js`（FaMatrixFgk）。
+- 之前 §13.3 列的 7 個清單照舊（dyn、petri、image、teach_queue、jpeg_entropy、adaptive_huffman、range），另加 `matrix_sketch_core.js` 重新嵌入。
+- 注意 `matrix_range_core.js` 的檔頭註解仍寫「完整 LZMA 未做」，那句已過時，下一棒改掉即可（本棒未動）。
+
+**下一棒的接續點（依順序）**：
+1. 讀 `_teachQueueRecord`（floating-assistant.js 約 120043 行）與 `matrix_teach_queue_core.js` 的介面，確認寫檔是否已接；未接就接上，`add` 只在失敗路徑呼叫，io 用 try/catch 包住。
+2. 寫 ≥10 題新 held-out（dyn、petri、jpeg、range 各類），在不看範本的情況下先量 synth 的 ok／verified；量到有效才註冊範本（`register`），沒有效就寫成「待改善」並附數字。
+3. 視窗驗證：依 §13.3 阻礙 4 的解除條件處理（不自行下載 Electron）。
+4. 「待改善」清單（本棒誠實寫下）：FGK 的均勻分布成本 +13%；LZMA 目前只有貪婪比對（沒有最優解析），壓縮率低於 liblzma 預設；整套 `run-core-tests.js` 沒有跑。
+
+**身分與分支**：`git -c user.name="Claude" -c user.email="noreply@anthropic.com"`（依任務指示，沒有改全域設定）；trailer 寫 Haiku 5.5（依系統提醒）。沒有推送、沒有發布、沒有跑 `scripts/embed-code-ui.js`、`build-assistant.js`、沒有用 `git add -A`。
