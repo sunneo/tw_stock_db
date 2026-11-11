@@ -1046,3 +1046,9 @@ Backend {
 ### 24.4 還沒做（同 §23.4，去掉已完成的）
 - blockly 種子題（另開 session）、wiki 實測（需使用者同意連網）、轉換執行器（等 lora-manager-2）、Electron 驗證（見 24.3）、嵌入重產（總指揮）。
 - LoRA 管理的 `model_card.md`、註冊入口（沿用資產清單匯入）維持原狀。
+
+### 24.5 驗證用重產嵌入與 Electron（指揮許可，之後已還原）
+- 在本工作樹執行 `node scripts/embed-code-ui.js && node build-assistant.js`（`nice -n 10 taskset -c 0,1`），產生檔只用於驗證，驗完已 `git checkout --` 還原，並刪除新產生的 `web-lazy/chunks/matrix*.js`（8 個）；**沒有提交任何產生檔**。
+- `studio_embed.test.js` 由 12 過、4 敗轉為 **17 過、0 敗**（4 項「嵌入與來源一致」通過）。`studio_server_core` 126／0、`lora_manage_core` 41／0。
+- Electron（`/home/hungfu.lee/fa-electron/dist/electron`，暫存 user-data-dir，DISPLAY :2.0）：應用程式啟動；「立即更新」對話框未按（未點更新）。視窗驗證沒有完成：:2.0 是共用桌面，我的視窗被其他程序的視窗蓋住，要拉到前面會干擾別人的視窗，因此沒有做工作室與流程分頁的視窗操作。已結束自己的程序。
+- 解除條件：在獨立的顯示環境（或使用者同意的情況下）跑 Electron，或用 `FA_UPDATE_BASE`、`FA_DISABLE_MAIN_OVERLAY=1`（見 main-ext.js 第 493 行與 renderer 的覆蓋層說明）避開更新與覆蓋層後再驗。
