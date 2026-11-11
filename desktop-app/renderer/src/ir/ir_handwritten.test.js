@@ -192,5 +192,10 @@ print "n=$n\\n";
             table[lang] = { 函式: funcs.join('、'), 敘述: stmts, 原生: nat, 原生佔比: stmts ? Math.round((100 * nat) / stmts) + '%' : '?', 例: natives.slice(0, 4).map((n) => String(n.src).split('\n')[0].slice(0, 40)) };
         });
     }
+    // 回歸（2026-11-11）：java 的 a.size()（目錄樣板是 (long)a.size()，手寫沒有轉型）與 cpp 的 *max_element(…)（手寫用 using namespace std，沒有 std::）原本是原生區塊；樣式變體補上後應為 0
+    t('回歸：java 的 a.size() 與 cpp 的 max_element 不再是原生區塊', () => {
+        if (table.java) assert.strictEqual(table.java.原生, 0, 'java 原生區塊 ' + table.java.原生 + '：' + JSON.stringify(table.java.例));
+        if (table.cpp) assert.strictEqual(table.cpp.原生, 0, 'cpp 原生區塊 ' + table.cpp.原生 + '：' + JSON.stringify(table.cpp.例));
+    });
     console.log(JSON.stringify(table, null, 1)); console.log(pass + ' passed, ' + fail + ' failed'); process.exit(fail ? 1 : 0);
 })().catch((e) => { console.error(e.stack); process.exit(1); });

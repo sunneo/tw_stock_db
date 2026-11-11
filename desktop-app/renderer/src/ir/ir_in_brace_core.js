@@ -22,12 +22,14 @@
     const kids = (n) => n.children.filter((c) => !/comment/.test(c.type));
     function size(n) { return 1 + kids(n).reduce((s, c) => s + size(c), 0); }
     const isPurePlaceholderBin = (p) => { const x = unwrap(p); return x && (x.type === 'binary_expression') && x.namedChildren.every((c) => PH.test(unwrap(c).text)); };
+    // 樣板的變體（只為了讓手寫程式比得上）：java 的 (long) 轉型是我們輸出器加的，手寫的 a.size() 沒有，所以多收一個去掉轉型的版本
+    function variantsOf(lang, t) { const v = [t]; if (lang === 'java' && /^\((long long|long)\)/.test(t)) v.push(t.replace(/^\((long long|long)\)/, '')); return v; }
     function buildPatterns(lang, parse) {
         const key = OPS.LANG_OF[lang] || lang; const out = [];
         for (const id of OPS.ids()) {
             const o = OPS.get(id); const cell = o.cells[key]; if (cell == null) continue;
             const tpls = typeof cell === 'string' ? [cell] : Object.values(cell).filter((x) => x != null);
-            for (const t of tpls) {
+            for (const t0 of tpls) for (const t of variantsOf(lang, t0)) {
                 if (/\$\*/.test(t)) continue; const text = t.replace(/[$@](\d)/g, '__a$1');
                 let root; try { root = parse(wrapTpl(lang, text)); } catch (e) { continue; } const pr = patRoot(lang, root); if (!pr) continue;
                 if (PH.test(unwrap(pr).text)) continue; if (isPurePlaceholderBin(pr)) continue;
