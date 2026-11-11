@@ -15,6 +15,15 @@ try {
         const want = run('seq');
         assert.match(want, /hash [0-9a-f]{16}\nnonzero \d+\nsse \d+ psnr [\d.]+/);
         for (const m of ['static', 'cyclic', 'chunk4', 'dynamic4', 'guided']) { assert.strictEqual(run(m), want, 'C 排程 ' + m + ' 與循序不同'); n++; }
+        // 競爭條件與同步：atomic／critical／lock／reduction 必須精確等於 T；unsync 沒有同步，只回報遺失的次數（結果不固定，不斷言）
+        const raceBin = path.join(TMP, 'race_omp');
+        const rb = cp.spawnSync('gcc', ['-O2', '-fopenmp', path.join(DIR, 'race_omp.c'), '-o', raceBin], { encoding: 'utf8' });
+        assert.strictEqual(rb.status, 0, rb.stderr);
+        const T = 2000000;
+        for (const m of ['atomic', 'critical', 'lock', 'reduction']) { const got = cp.spawnSync(raceBin, [m, String(T), '2'], { encoding: 'utf8' }).stdout.trim(); assert.strictEqual(got, String(T), 'C 同步 ' + m + ' 不精確：' + got); n++; }
+        const lost = cp.spawnSync(raceBin, ['unsync', String(T), '2'], { encoding: 'utf8' }).stdout.trim();
+        assert.ok(Number(lost) <= T, 'unsync 超過 T');
+        console.log('unsync（無同步）最後計數＝' + lost + '，應有 ' + T + '（遺失 ' + (T - Number(lost)) + '）');
     } else skipped.push('gcc -fopenmp（找不到）');
     if (has(PY, ['--version'])) {
         const sha = (mode) => cp.spawnSync(PY, ['-I', path.join(DIR, 'chunk_zlib_mp.py'), mode, '2', '2', '64'], { encoding: 'utf8' }).stdout.split('\n');
@@ -24,4 +33,4 @@ try {
     } else skipped.push(PY + '（找不到）');
 } finally { fs.rmSync(TMP, { recursive: true, force: true }); }
 if (skipped.length) console.log('略過：' + skipped.join('、'));
-console.log(n + ' 組排程與循序逐位元相同（真執行）'); console.log(n + ' passed, 0 failed');
+console.log(n + ' 組（排程、同步）與循序或理論值相同（真執行）'); console.log(n + ' passed, 0 failed');
