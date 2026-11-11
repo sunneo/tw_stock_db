@@ -502,3 +502,34 @@ heldout9（`heldout9_list.jsonl`，16 題）：**ok 15/16，verified 14**（測�
 - **分支注意**：這次我在 worktree 分支 `claude/matrix-finish-28f1b5` 上做了一次未先檢查的 `git reset --hard desktop-app`（該分支原本指向 `f8089636`，不在 desktop-app 的祖先鏈上）。`f8089636` 仍在物件庫中，被 `main` 與 `claude/media-codec-domain-bdfe56` 包含，沒有遺失。若要還原：`git branch -f claude/matrix-finish-28f1b5 f8089636`（會丟掉本分支的提交，先確認）。目前分支是 `desktop-app` 的最新提交加上上表 5 個提交（rebase 後 HEAD `d754af21`）。
 - **git 身分**：這台機器沒有設定 `user.name`／`user.email`。我每次用 `git -c user.name=hungfu.lee -c user.email=hungfu.lee@insyde.com commit`，沒有改全域設定。
 - **沒有推送、沒有發布、沒有跑 `publish.sh`、`embed-code-ui.js`、`build-assistant.js`。**
+
+### 13.2 續作（2026-11-12，指揮 session 指示：G7、G9、第 3 項、teach_queue 都要做，做不到寫阻礙）
+
+分支：`claude/matrix-finish-28f1b5`，已 rebase 到 `origin/desktop-app` 之上，再接本機 `desktop-app` 的三個提交（`8c96ee8f`、`c106fc9f`、`4c5b5e15` → 新 hash `3f82aaf0`、`03987174`、`0271ec71`）。沒有推送、沒有發布、沒有跑 embed／build。
+
+| 提交 | 內容 | 驗證（我在這台跑過） |
+|---|---|---|
+| 5ffd9c94 | **G7** `matrix_dyn_core.js`：canonical Huffman（RFC 1951 §3.2.2）、位元流解碼、MTF 動態表 | `matrix_dyn.test.js` 404 項：RFC 範例碼字逐一相同；300 組隨機碼長表與獨立 Python 參照一致；位元流往返 200 組；MTF 與 Python 300 組一致、往返 200 組；過度碼長與提早結束都報錯 |
+| 2d5cd5ba | **G9** `matrix_petri_core.js`：關聯矩陣 C=post−pre、發火、狀態方程 M0+C·x、可達集 BFS | `matrix_petri.test.js` 205 項：150 個隨機網中 **65 個未截斷者**與獨立 Python BFS 的可達數、死結數、最大權杖一致（85 個因權杖無界被截斷，未比對）；狀態方程 200 段與實際標記一致；互斥鎖不變量、互搶鎖死結、生產者－消費者（容量 2，可達 3）符合預期 |
+| 8816ed52 | **第 3 項** `matrix_image_core.js`：DCT-II 基矩陣、YCbCr（JFIF）、Annex K 量化表＋IJG 品質、Z 字形、PNG 濾波器 Sub／Up 的模 256 矩陣形式 | `matrix_image.test.js` 15 項：DCT 與 Python 雙重求和最大差 1.1e-13；往返 2.8e-13；YCbCr 與 Python 一致；Z 字形 64 項與 Python 一致、前 16 項與 JPEG 標準相同；PNG 濾波器 200 筆與 Python 一致；端到端像素誤差在理論上界內（品質 100 最大 0.93、品質 90 最大 13.8、品質 50 最大 60.6） |
+| 54cb9d00 | **teach_queue 寫檔與摘要** `matrix_teach_queue_core.js`（建在 matrix_spec_core 之上） | `matrix_teach_queue.test.js` 12 項（真暫存檔）：新增、同題計次、壞行略過、原子寫無殘留、刪除、清空、摘要 |
+| 0fb08cfc | 核心測試登記 12 條（含先前半成品未登記的 8 條） | 12 條逐一 node 執行 rc=0 |
+
+**本輪重跑的數字（最終）**：bytes 523、checksum 3137、list 7、regex 5、sketch 6、spec 25、text 7、vm_ops 1241、dyn 404、petri 205、image 15、teach_queue 12，共 **5586 項，0 失敗**。
+
+**誠實的未做與阻礙**
+
+- **G7 未完**：FGK／Vitter 動態霍夫曼（每次編碼後重建樹）未做。阻礙：要寫樹重建與參照（zlib 不提供動態霍夫曼的逐步狀態，只能自寫參照）。解除條件：寫出可與獨立參照比對的樹重建。LZMA 機率表的算術編碼未做：要寫範圍編碼器與 LZMA 參照，工作量獨立成一條線。
+- **G7、G9、image 都未接進合成器（synth）**：沒有範本、沒有題庫、沒有 `FaMatrixSynth.register`。阻礙：題目敘述與範例的對應（哪一題該用 Petri、哪一題該用 DCT）需要題庫；目前沒有 held-out 題。解除條件：寫一批新的 held-out 題（例如「互斥鎖是否死結」「給一段 8×8 像素求 DCT 係數」）再量。
+- **第 3 項未完**：霍夫曼熵編碼（JPEG 的 DC／AC 編碼表）、4:2:0 子取樣、JFIF／PNG 檔案讀寫都未做。Average 與 Paeth 明說不矩陣化（含整數除法與比較）。
+- **teach_queue 介面與產品呼叫未做**：寫檔層完成，但 `_codeOffline` 失敗時呼叫 `add`、顯示摘要的視窗都沒有做，這台沒有 Electron 視窗，驗不了。解除條件：宿主（floating-assistant.js）提供 io、在失敗路徑呼叫 `add`，並以真 Electron 驗證。
+- **G1、G5、G6、G10 仍是「部分」**（同 §13 上方表格），本輪沒有再動。
+
+**要嵌入／登錄的檔案（管理者統一做，我沒有跑 embed、build、publish）**
+
+1. **重新嵌入**：`renderer/src/algo/matrix_sketch_core.js`（976fbb17 改了 prod 的 BigInt 行；內嵌的 floating-assistant.js 仍是舊版）。
+2. **新增嵌入清單**（目前不在 `scripts/embed-code-ui.js` 內，要加入內嵌區塊並給全域名稱）：`matrix_dyn_core.js`（FaMatrixDyn）、`matrix_petri_core.js`（FaMatrixPetri）、`matrix_image_core.js`（FaMatrixImage）、`matrix_teach_queue_core.js`（FaMatrixTeachQueue，依賴 FaMatrixSpec，要在 FaMatrixSpec 之後）。
+3. **不需要嵌入**：`matrix_structure_core.js`（不在內嵌清單，正規式修正只影響 Node 測試）。`matrix_list`、`matrix_spec`、`matrix_vm_ops`、`matrix_bytes`、`matrix_checksum`、`matrix_regex`、`matrix_text` 的改動只在測試檔。
+4. **核心測試登記**：已加入 `scripts/run-core-tests.js`（0fb08cfc）。整套 run-core-tests 這次未跑。
+
+**分支與身分**：`git -c user.name=hungfu.lee -c user.email=hungfu.lee@insyde.com`（沒有改全域設定）。trailer 依系統提醒寫 Haiku 5.5，指揮訊息要求的 Sonnet 5.5 與系統提醒衝突，我依系統提醒。備份 ref：`backup/matrix-b15c2f2f`（指向上一輪的 b15c2f2f，可刪）。
