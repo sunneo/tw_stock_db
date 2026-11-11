@@ -115,6 +115,8 @@ const ST_H2 = '輸入一行 12 個整數：前 8 個是上方參考像素（只�
 const ST_HO_DC = '一行有 12 個像素值（0 到 255）：先 8 個是區塊上方的參考列（取前 4 個就夠），後 4 個是左邊的參考行。畫面內預測選 DC：把上方四個與左方四個的和加 4、除以 8（向下取整），然後四行、每行四格都填這個值，印出來。';
 const ST_HO_H = '12 個像素值一行，前 4 個（忽略其後 4 個上方候選）是上方，後 4 個是左方參考。幀內預測採水平模式：第 y 列全部填成左方第 y 個參考值，印出 4 行。';
 // holdout：新措辭（寫出 4×4，首次量測）
+// holdout 新措辭（寫出 4×4、輸入句型同通過的題，首次量測）：對應 intra4-h-ho 的根因
+const ST_HO2_H = '以 4×4 幀內預測的水平模式產生預測區塊：輸入一行 12 個 0 到 255 的整數，前 8 格為上方（只看前 4 格）、後 4 格為左方。第 y 列整列填入左方第 y 格的值。印出 4 行，每行 4 個整數。';
 const ST_HO2_DC = '以 4×4 幀內預測的 DC 模式產生預測區塊：輸入一行 12 個 0 到 255 的整數，前 8 格為上方（只看前 4 格）、後 4 格為左方。把上方 4 格與左方 4 格的和加 4、再右移 3 位，填滿整個區塊。印出 4 行，每行 4 個整數。';
 
 // 模式 3 至 8：train（教過的措辭，寫出 4×4）與 holdout（另寫措辭）
@@ -143,6 +145,7 @@ const SEEDS = [
     { id: 'intra4-h-tr2', want: 'h264.intra4', st: ST_H2, ref: REF_H, gen: genPix },
     { id: 'intra4-dc-ho', split: 'holdout', st: ST_HO_DC, ref: REF_DC, gen: genPix },
     { id: 'intra4-h-ho', split: 'holdout', st: ST_HO_H, ref: REF_H, gen: genPix },
+    { id: 'intra4-h-ho2', split: 'holdout', st: ST_HO2_H, ref: REF_H, gen: genPix },
     { id: 'intra4-dc-ho2', split: 'holdout', st: ST_HO2_DC, ref: REF_DC, gen: genPix },
     { id: 'intra4-ddl', want: 'h264.intra4', st: ST_DDL, ref: REF_DDL, gen: genPix13 },
     { id: 'intra4-ddr', want: 'h264.intra4', st: ST_DDR, ref: REF_DDR, gen: genPix13 },

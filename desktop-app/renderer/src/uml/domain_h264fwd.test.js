@@ -44,11 +44,14 @@ const genFQ = (b, { rnd }) => {
 
 const ST = '4×4 整數正變換與量化（intra）：輸入一行 17 個整數，第一個是 qP，其後 16 個是殘差（依列）。先做 W＝Cf·X·Cfᵀ，Cf 為 [[1,1,1,1],[2,1,-1,-2],[1,-1,-1,1],[1,-2,2,-1]]；再依位置類別取 MF：兩個偶數位置用第 0 欄、兩個奇數位置用第 1 欄、其餘用第 2 欄，MF 表依 qP 除以 6 的餘數取列；量化 Z＝符號(W)·((|W|·MF＋f)>>qbits)，qbits＝15＋qP 除以 6 取整，f＝2 的 qbits 次方除以 3 取整。輸出 16 個整數（依列）。';
 // holdout：另寫措辭（只量測，不教）
+// holdout 新措辭：補上「正變換」字樣（讀取器配對靠字樣）；舊 HO 保留為根因紀錄。
+const HO2 = '4×4 整數正變換加量化（intra）：輸入一行 17 個整數，第一個為 qP，後 16 個為殘差（依列）。依 H.264 規則求正變換 W＝Cf·X·Cfᵀ，再以 MF 與 qbits＝15＋qP 除以 6、f＝2 的 qbits 次方除以 3 量化，印出 16 個整數。';
 const HO = '正向整數轉換加量化（4×4，intra）：輸入一行 17 個整數，第一個為 qP，後 16 個為殘差（依列）。依 H.264 規則求 W＝Cf·X·Cfᵀ，再以 MF 與 qbits＝15＋qP 除以 6、f＝2 的 qbits 次方除以 3 量化，印出 16 個整數。';
 
 const SEEDS = [
     { id: 'fq-tr', want: 'h264.fwdquant4', st: ST, ref: REF, gen: genFQ },
     { id: 'fq-ho', split: 'holdout', st: HO, ref: REF, gen: genFQ },
+    { id: 'fq-ho2', split: 'holdout', st: HO2, ref: REF, gen: genFQ },
 ];
 
 H.main({ name: '領域包 h264fwd', packs: [DH], seeds: SEEDS, minSkeletons: 1, judge: { checker: 'tokens', timeoutMs: 60000 } });

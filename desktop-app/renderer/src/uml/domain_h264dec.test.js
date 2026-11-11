@@ -29,11 +29,14 @@ const ST_HO = '給一行 16 個有號整數，是 4 乘 4 的反量化後係數�
 const genRange = (R) => (b, { rnd: rr }) => Array.from({ length: 16 }, () => rr(-R, R)).join(' ');
 
 const ST_HO2 = '一行 16 個有號整數，代表 4 乘 4 的矩陣，逐列放置。對每一列 p、q、r、s（由左到右）做一次一維運算：先算 p＋r 與 p－r，再算 (q 右移 1 位)－s 與 q＋(s 右移 1 位)，設為 g 與 h；把 p＋r＋h、p－r＋g、p－r－g、p＋r－h 排成新的一列。全部列做完後，對每一行再做同樣的運算，最後每個數加 32、右移 6 位，以四行輸出，每行四個整數、以空格分隔。';
+// holdout 新措辭：補上「逆變換」字樣與「輸入一行」句首（讀取器配對靠字樣）；舊 ST_HO2 保留為根因紀錄。
+const ST_HO3 = '4 乘 4 整數逆變換（反變換）。輸入' + ST_HO2;
 const SEEDS = [
     { id: 'idct4', want: 'h264.idct4', st: ST_TRAIN, ref: REF, gen: genRange(40) },
     { id: 'idct4-rw', want: 'h264.idct4', st: ST_TRAIN, rw: (s) => s.replace('係數矩陣 d', '係數矩陣 Q'), ref: REF, gen: genRange(40) },
     { id: 'idct4-ho', split: 'holdout', st: ST_HO, ref: REF, gen: genRange(3000) },
     { id: 'idct4-ho2', split: 'holdout', st: ST_HO2, ref: REF, gen: genRange(3000) },
+    { id: 'idct4-ho3', split: 'holdout', st: ST_HO3, ref: REF, gen: genRange(3000) },
 ];
 
 H.main({ name: '領域包 h264dec', packs: [DH], seeds: SEEDS, minSkeletons: 1, judge: { checker: 'tokens', timeoutMs: 60000 } });
