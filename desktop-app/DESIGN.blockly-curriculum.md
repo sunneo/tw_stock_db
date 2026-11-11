@@ -257,3 +257,42 @@ Pillow 外部驗證：寫出端 20/20、解碼生成器 30/30（python3 的 Pill
   1. 讀取器改動（共用 `algo_intent_core.js`）：(a) 格式名優先於輸入形狀詞與像素詞（修 G17 假陽性 ho-gzip、ho-jpg-enc）；(b) 補 zlib、GNU tar、GIF／PCX／JPEG／PNG 寫出端的通用題型詞；(c) 兩段輸入（整數行＋十六進位行）。每一步都要跑全部領域包 train＋選項反序，不得退步，並跑 `bench_coverage`。
   2. 在主工作樹重跑整套核心測試，把環境失敗與真回歸分開。
   3. G16 概念教學待補。
+
+## 接手（blockly-finish-3 續，2026-11-12，無模型）
+
+環境：工作樹 `desktop-app/node_modules` 為符號連結（未追蹤，不提交）；測試用 `PATH` 前置一個把 `python` 指向 `python3` 的暫時 shim（只在測試行程的環境裡，不改系統）；`FA_TS_DIR=renderer/vendor/tree-sitter`、`FA_PYTHON=python3`；限 2 核、nice。
+
+### 1. inflate、tarx 的「原版讀取器下失敗」：重現不了
+- 現行分支（含 1698816c）：inflate train 10/10、holdout 2/4；tarx train 10/10、holdout 2/4；皆 `20 passed, 0 failed`。
+- 暫換成 832b49df 的舊讀取器跑：結果相同（`20 passed, 0 failed`）。測完已還原，`git diff` 確認無改動。
+- 判定：**回報但重現不了**。與平行運算那邊的回報不同，可能是當時工作樹缺 node_modules 或舊檔。不改程式。
+
+### 2. 整套核心測試（前一位與本批）
+- 本批實跑：`core-run2.log`，**272／299 通過，27 失敗**（新增計數 27、既有 0）。
+- 分類（依日誌字串，未逐項重跑）：
+
+| 失敗項 | 領域 | 判定 |
+|---|---|---|
+| 領域包 par（train 16/22） | 平行運算 | 真失敗，**與讀取器無關**（舊讀取器同結果）；交平行運算接手者 |
+| 領域包 linuxreal（sock-len） | blockly（Linux 真實） | **單獨重跑 38 passed、0 failed，未重現**；核心測試時的失敗可能與負載或埠有關，待主工作樹再跑 |
+| 行為描述（第一層）、ENOENT（tree-sitter 快取路徑） | 行為分析 | 非 blockly；路徑指向他人工作樹，屬環境 |
+| C++／C#／Perl／Ruby 輸出器實跑、convert_code 的 to_uml／struct | 程式轉換 | 非 blockly；本批未查 |
+| 矩陣 VM 反編譯 ×2（Invalid regular expression） | 矩陣 | 非 blockly；正規表示式語法錯誤，是該領域 bug |
+| 判題器 exec 逾時孫行程、程式優化對照表（keys-in 量時間） | 判題器／優化 | 非 blockly |
+| 訓練工作室（GUI、資料匯入、內建資產、版面、假伺服器）、網頁版 LoRA、原生推論、harness | 訓練工作室／LoRA | 非 blockly；含嵌入清單 sha256 不一致（需 refreeze 指令） |
+
+**與讀取器修改有關的失敗：沒有發現**（領域包中只有 par 失敗，且與讀取器無關）。非 blockly 的 26 項本批未修，原因是跨多個領域，超出 blockly 範圍，逐項交各領域。
+
+### 3. holdout 未過題與 G1–G18
+- 未改動（本批時間與 context 不足）。根因與補法見 `DESIGN.blockly-gaps.md` §9.2，仍有效。
+- G1–G18：仍是存在性核對（§9.3），未逐項重跑。
+
+### 4. 接續點
+1. 讀取器通用題型詞與假陽性（ho-gzip→hex-decode、ho-jpg-enc→bmp-gray）：每改一步都跑七個領域包（train＋選項反序）並跑 `bench_coverage`。
+2. holdout 未解 9 題：依 §9.2 的補法做，不照句型加詞。
+3. linuxreal 在主工作樹重跑一次確認 sock-len。
+4. 非 blockly 的 26 項交各領域。
+
+### 5. 注意
+- 測試執行會改動已追蹤的 `test-reports/`、`__pycache__/stub_to_types.cpython-310.pyc`、`skills/image-decompose-redraw/data/parts_builtin.json`；且產生未追蹤的 `renderer/vendor/tree-sitter/*.wasm`。提交前要 `git checkout --` 還原前三者，未追蹤的不要加入。
+- 背景腳本 `par_old.sh` 已結束；工作樹 `algo_intent_core.js` 與 HEAD 一致。
