@@ -369,3 +369,34 @@ holdout 未解 6 題：cat-two、exec-env、tar-blocks、canonical-huffman、xz-
 - 9.2 節的根因表是改前的診斷，已被本節取代。
 - 讀取器本身（`algo_intent_core.js`）沒有改這些詞；改的都在各領域包的 `algos` 正則裡。
 - G17 假陽性（ho-gzip→hex-decode、ho-jpg-enc→bmp-gray）：因為 inflate／jpeg 的 pack 直接用自己的 `algos` 偵測，所以 pack 這邊已解出；讀取器本身的 `algo` 假陽性仍在（未改），交下一棒。
+
+## 11. G1–G18 收尾（blockly-finish-3 續，2026-11-12）
+
+本節是「實跑印證」，不是逐項重做每個積木。標記：**實跑**＝本批跑了對應領域包（含 train＋選項反序＋holdout）；**回報**＝沿用先前提交的記載，本批未重跑。
+
+| 編號 | 狀態 | 依據 |
+|---|---|---|
+| G1 讀取器形狀 | 已補；本批再補一條 | **實跑**：新增具名整數行規則（8e0c3e19），「第一行三個整數 w h c＋一行十六進位」讀成 `scalars`＋`hex`，之前丟掉整數行；全部領域包回歸不退步。題型詞的假陽性（G17）另計 |
+| G2 切割（輔助操作） | 已補 | **實跑**：inflate、tarx 的骨架用共用 crc32 輔助（20/20） |
+| G3 位元／格式積木 | 已補 | **回報**（73deb981）；bmpx、png 實跑間接印證 |
+| G4 欄位表範式 | 已補 | **實跑**：binfmt holdout 8/8、train 3/3 |
+| G5 行過濾器 | 已補 | **實跑**：linuxtext train 28/28、holdout 4/5（56 passed） |
+| G6 無 def 改寫 | 實質完成 | **回報**（73deb981） |
+| G7 校驗碼 | 已補 | **實跑**：inflate gzip 外殼（20/20）；crc32 單元 |
+| G8 位元流 | 已補 | **實跑**：inflate、png、jpeg（LSB 位元讀取、霍夫曼） |
+| G9 對齊／列序 | 已補 | **實跑**：bmpx 20/20（stride、底到頂列序） |
+| G10 詞法／狀態機 | 已補 | **回報**（73deb981）；py_paradigms 89/89 間接 |
+| G11 算式求值 | 已補 | **回報**；py_paradigms 間接 |
+| G12 直譯器 | 已補 | **回報**；linux_paradigms 125/125 間接 |
+| G13 壓縮演算法 | 已補 | **實跑**：inflate（動態霍夫曼、區塊統計、碼長表）20/20；LZ77 單元回報 |
+| G14 LZMA 完整流程 | 已補 | **實跑**：lzma train 7/7、holdout 3/3（14 passed） |
+| G15 判題器二進位 IO | 已補 | **實跑**：linuxreal 38/38（檔案、argv、env、結束碼） |
+| G16 真行程 | 已補（判題器） | **實跑**：linuxreal 38/38（fork、socket、管線）；**待改善**：概念教學未補 |
+| G17 讀取器假陽性 | **未全補** | 讀取器層面的假陽性（ho-gzip→hex-decode、ho-jpg-enc→bmp-gray）仍在，本批只在各領域包的正則補了格式名，讀取器本身未改。下一棒 |
+| G18 規格即題目 | 偵測已補；模型部分超出 | **回報**（73deb981，`intent.specLike`）；本批未重跑 |
+
+### 11.1 待改善（寫明原因與下一步）
+1. **G17 讀取器假陽性**：`algo_intent_core.js` 的 TOOLS 表是「先命中的先算」，格式名沒有優先於輸入形狀詞與像素詞。下一步：加一條「格式名（gzip／JPEG 等）優先」的排序規則，改完跑全部領域包與 py_uml_pipeline。
+2. **G16 概念教學**：未補。原因：需要寫教學敘述，不屬於本批的程式範圍。
+3. **G18 重跑**：沒有重跑 specLike 的題。下一步：挑幾題長敘述實跑。
+4. **新 holdout**：見 §10.2。
