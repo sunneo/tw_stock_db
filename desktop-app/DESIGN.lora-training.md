@@ -433,3 +433,81 @@ model card 欄位以 `description`（一句話，來自描述檔，§13.2）與 
 - **替換延遲的主行程部分未量測**（信箱寫入 40 MB、base64 解碼、主行程的 `lora_apply_set`）。
 - 「改圖讓 A、B 成為輸入、可熱換」是推測，未實作、未測。
 - 所有實測在 2 顆 CPU 核心（`taskset -c 12-13`）、隨機 adapter 上完成；真實 adapter 的權重值不影響載入時間，但實際機器的核心數會改變數字。
+
+## 15. 聊天每輪 LoRA 路由：源碼與整合步驟清單（2026-11-12，源碼已提交，未 embed）
+
+本節是給整合者（指揮）照做的清單。**本 session 沒有跑 embed，也沒有 build**；下列位置都以本分支目前的源碼為準，行號會因後續修改而變，動手前先用關鍵字確認。
+
+### 15.1 已完成的源碼
+
+| 提交 | 檔案 | 內容 | 測試 |
+|---|---|---|---|
+| `658843da` | `renderer/src/studio/lora_route_core.js` | 純函式：任務類型→領域（`decompose`、`toolcall`、`colu`、`plan`），`taskDomain`、`decideTurn`、`routeTurn` | `lora_route.test.js` 18 項通過 |
+| `f15febb6` | `renderer/src/studio/studio_server_core.js` | `createServer` 回傳 `registry()`（不需要 HTTP 監聽） | `studio_server_core.test.js` 105 項通過 |
+| `9084c355` | `renderer/src/floating-assistant.js` | 路由掛鉤：`_loraCore`、`_loraRouteTurn`、`_loraSwitch`、`_llmGenerate`（包裝）、`_llmGenerateInner`（原函式改名，本體未動），三個呼叫點標上 `task` | `node --check` 通過；尚未在瀏覽器實測 |
+
+`routeTurn(registry, task, { prevActive })` 回傳 `{ task, domain, action, active, handles, skipped, fallback, reason }`，`action` 為 `keep`、`switch` 或 `clear`。
+
+### 15.2 每輪行為（以程式為準）
+
+1. **沒有 `task`**（`_loraRouteTurn` 回傳 `null`）：不決定、不切換，維持目前載入的 LoRA。
+2. **有 `task`，但沒有對應領域**：回基底（`fallback: 'base'`），不載入任何 LoRA；若目前有載入的，動作為 `clear`，否則 `keep`。
+3. **有 `task` 且有對應領域**：向登錄表要該領域的 LoRA（`resolve`）；組合與目前相同就 `keep`，不同就 `switch`（先 clear 再 apply 新組合）。
+4. **套用失敗**：清空、回基底，`applied: false`，`applyError` 記原因，`fallback: 'base'`。
+5. **推論期間**：生成前對 `active` 逐顆 `acquire`，生成結束（含例外）`release`，推論中不會被淘汰。
+6. **路由本身出錯**：`_llmGenerate` 的 `catch` 改為基底，不中斷生成。
+
+### 15.3 整合步驟清單（依序做）
+
+**步驟 A：`scripts/embed-code-ui.js`，第 532 行（`const UMD = [...]`）**
+- 在 `'lora_registry_core'` 與 `'lora_apply_core'` 之間插入 `'lora_route_core'`，成為 `'lora_registry_core', 'lora_route_core', 'lora_apply_core'`。
+- 理由：`FaLoraRoute` 是全域物件（`lora_route_core.js` 的 UMD 匯出 `root.FaLoraRoute`），`floating-assistant.js` 執行時會讀它；它本身不依賴其他模組。
+- 確認 `'studio_server_core'` 仍在同一陣列（已確認，第 532 行含此名）；`_loraCore` 依賴 `FaStudio.FaStudioServer.createServer`。
+
+**步驟 B：`scripts/run-core-tests.js`，第 146 行之後**
+- 新增一列（與第 146 行同格式）：
+  `['訓練工作室 LoRA 每輪路由（任務→領域、保留／切換／回基底、無領域不載入）', 'renderer/src/studio/lora_route.test.js'],`
+- 第 143 行的 `studio_server_core.test.js` 項目已涵蓋 `createServer` 的 `registry()` 與各端點，不需要另加。
+
+**步驟 C：`renderer/src/floating-assistant.js`（源碼已在位，不需再改；整合者只需確認下列標記存在）**
+
+| 位置（本分支目前行號） | 標記 | 作用 |
+|---|---|---|
+| 約 87358 | `// ===== LoRA 每輪路由（DESIGN.lora-training.md §15）` | 區段註解，之後的四個方法都屬於這段 |
+| 約 87360 | `_loraCore()` | 懶建立 `createServer(this._studioHostApi())`，只取登錄表 |
+| 約 87362 | `_loraRouteTurn(task)` | 決定本輪路由 |
+| 約 87375 | `_loraSwitch(route)` | 依路由 clear／apply，失敗回基底 |
+| 約 87384 | `_llmGenerate(model, a, cb)` | 包裝：路由 → 切換 → acquire → `_llmGenerateInner` → release |
+| 約 120607 | `_llmGenerateInner(model, a, cb)` | 原本的 `_llmGenerate` 本體，**不要刪、不要改名回去** |
+
+**步驟 D：`task` 標記的呼叫點（已標）**
+
+| 行號 | 呼叫 | 標記 |
+|---|---|---|
+| 約 117569 | 選單（`SEL.selectionMessages`） | `task: 'colu'` |
+| 約 117574 | 工具參數（`SEL.argsMessages`） | `task: 'toolcall'` |
+| 約 120746 | 工具階段（`FaVlm.TOOL_STAGE_SYSTEM`） | `task: 'toolcall'` |
+
+**步驟 E：`decompose` 與 `plan` 的呼叫點（未標，未完成）**
+- 搜尋結果：`floating-assistant.js` 內沒有以 `task: 'decompose'` 或 `task: 'plan'` 呼叫 `_llmGenerate` 的地方。
+- 同名的 `decompose`／`plan` 都不是 LLM 呼叫：`FaHarness.decompose`（約 59158，離線規則）、`TP.expand`（約 61833，離線模板）、`planBatch`（約 32722，瀏覽器代理）。
+- 因此目前這兩類任務在聊天中**沒有**切到對應 LoRA；依 15.2 第 1 點，它們會沿用目前載入的 LoRA（若有）。
+- 待辦：找出「拆解」與「規劃」真正送進模型的生成呼叫，補上 `task: 'decompose'`／`task: 'plan'`。找到之前，這兩類不要宣稱已接好。
+
+### 15.4 核心測試清單（整合後應全部通過）
+
+| 檔案 | 項數 | 來源 |
+|---|---|---|
+| `renderer/src/studio/lora_route.test.js` | 18 | 步驟 B 新增 |
+| `renderer/src/studio/lora_registry.test.js` | 79 | 既有（`run-core-tests.js` 第 146 行） |
+| `renderer/src/studio/studio_server_core.test.js` | 105 | 既有（第 143 行） |
+| `tests/native/lora_slot_equiv.test.js` | 8 | 原生（槽版等價） |
+| `tests/native/lora_slot_build.test.js` | 38 | 原生（槽版轉換） |
+| native_lora | 65 | 原生 manifest 已 refreeze（`ffc28738`） |
+
+### 15.5 未驗證（整合後要補的）
+
+- 瀏覽器中的網頁版路由未實測；網頁版 `maxActive=1`，切換時要重新併權重（見 §14.7）。
+- `decompose`、`plan` 的呼叫點未找到（15.3 步驟 E）。
+- 真實聊天中的切換延遲與回基底的體感，未量測。
+- embed 後的 UMD 載入順序（步驟 A）未在打包產物中驗證。
