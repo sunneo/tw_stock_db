@@ -163,5 +163,5 @@
 | 階段 | 狀態 | 提交 | 量測 |
 |---|---|---|---|
 | 0 設計 | ✔ 本節 | — | — |
-| 1 位元級基礎 | 進行中：測試可跑，train 12/16、holdout 4/7，未通過（見 `DESIGN.media-codec-domain.md`） | — | train 12/16、holdout 4/7 |
+| 1 位元級基礎 | train 16/16 通過（選項反序 16/16）；holdout 1 題未解、只量測（見 `DESIGN.media-codec-domain.md`） | 見 git log（階段 1 修正提交） | train 16/16、反序 16/16、holdout 6/7 |
 | 2–5 | 未開始 | — | — |
