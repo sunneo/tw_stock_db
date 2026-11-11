@@ -47,9 +47,9 @@ sub sum { # 標頭註解
 }
 `;
         const r = INB.fromSource(code, { patterns: INB.buildPatterns() });
-        t('手寫 Perl：前置註解、標頭行尾註解、行尾註解，local 與修飾語句收成原生區塊', () => {
+        t('手寫 Perl：前置註解、標頭行尾註解、行尾註解，local 收成原生區塊，if 修飾語句讀成 if（2026-11-12 起認得 EXPR if COND）', () => {
             const fn = r.ir.body[0]; assert.strictEqual(fn.k, 'func'); assert.deepStrictEqual(fn.c && fn.c.b, ['計算總和']); assert.strictEqual(fn.c && fn.c.a, '標頭註解'); assert.strictEqual(fn.params.length, 1); assert.strictEqual(fn.body[0].c && fn.body[0].c.a, '累加'); assert.strictEqual(fn.body[1].k, 'foreach');
-            assert.strictEqual(fn.body.filter((x) => x.k === 'native').length, 2, JSON.stringify(fn.body.map((x) => x.k))); assert.strictEqual(r.coverage.natives, 2);
+            assert.strictEqual(fn.body.filter((x) => x.k === 'native').length, 1, JSON.stringify(fn.body.map((x) => x.k))); assert.strictEqual(r.coverage.natives, 1); assert.ok(fn.body.some((x) => x.k === 'if'), '修飾語句應讀成 if');
         });
     }
     // 布林往返：Perl 沒有布林型別，輸出器把 True／False 寫成 !!1／!!0，「進」認得它還原成布林字面值（以前變成整數 1／0）

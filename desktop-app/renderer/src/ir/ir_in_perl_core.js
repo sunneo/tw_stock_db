@@ -35,6 +35,7 @@
                 const s = i; const m = /^[@%][A-Za-z_][A-Za-z_0-9]*(?:::[A-Za-z_][A-Za-z_0-9]*)*/.exec(src.slice(i));
                 if (m) { i += m[0].length; push('var', m[0], s, i, { sig: c, name: m[0].slice(1) }); continue; }
                 if (src[i + 1] === '{') { i += 2; push('op', c + '{', s, i); continue; }
+                if (c === '@' && src[i + 1] === '$') { const mv = /^\$[A-Za-z_]\w*/.exec(src.slice(i + 1)); if (mv) { push('op', '@{', s, i + 1); const vs = i + 1; i += 1 + mv[0].length; push('var', mv[0], vs, i, { sig: '$', name: mv[0].slice(1) }); push('op', '}', i, i); continue; } }
                 if (c === '@' && src[i + 1] === '_') { i += 2; push('var', '@_', s, i, { sig: '@', name: '_' }); continue; }
             }
             if (/[A-Za-z_]/.test(c)) {
@@ -156,7 +157,12 @@
                 if (w === 'last' || w === 'next') { next(); if (isId('if') || isId('unless')) fail('修飾語句'); if (isOp(';')) next(); return N(w, '', [], t, t); }
             }
             const e = parseExpr(1);
-            if (peek() && peek().t === 'ident' && /^(if|unless|while|until|for|foreach)$/.test(peek().v)) fail('修飾語句');
+            if (peek() && peek().t === 'ident' && peek().v === 'if') { // 修飾語句 EXPR if COND; → if COND { EXPR }
+                const mt = next(); const c = parseExpr(1); if (isOp(';')) next(); else if (!isOp('}') && peek()) fail('敘述沒有以 ; 結束');
+                const inner = N('expr', '', [e], t, e); const th = N('block', '', [inner], t, e); th.hdrRow = t.row;
+                return done(N('if', '', [c, th], mt, th));
+            }
+            if (peek() && peek().t === 'ident' && /^(unless|while|until|for|foreach)$/.test(peek().v)) fail('修飾語句');
             if (isOp(';')) next(); else if (!isOp('}') && peek()) fail('敘述沒有以 ; 結束');
             return done(N('expr', '', [e], t, e));
         }
@@ -212,6 +218,20 @@
             return null;
         }
         const LEAF = new Set(['num', 'str', 'var']);
+        // 雙引號字串的插值 "n=$n\n" → "n=" + conv.str($n)；只認簡單純量 $name；@陣列、$x[…]、$x->…、${…} 仍是原生區塊（保留原文）
+        function interpOf(n, pos) {
+            const raw = n.v; const toks = raw.match(/\\[\s\S]|\$[A-Za-z_]\w*|[^\\$@]+|[\s\S]/g) || []; const parts = [];
+            for (let i = 0; i < toks.length; i++) {
+                const tk = toks[i];
+                if (tk[0] === '\\') { parts.push({ k: 'lit', t: 'str', v: unq(tk), pos }); continue; }
+                if (tk[0] === '$' && tk.length > 1) { const nx = toks[i + 1] || ''; if (/^(\[|\{|->)/.test(nx)) return native(n, '字串插值的索引或解參考'); parts.push({ k: 'call', op: 'conv.str', args: [{ k: 'name', v: varName(tk), pos }], pos }); continue; }
+                if (tk === '@' || tk === '$') return native(n, '字串插值的陣列或符號');
+                parts.push({ k: 'lit', t: 'str', v: unq(tk), pos });
+            }
+            if (!parts.length) return { k: 'lit', t: 'str', v: '', pos };
+            let e = parts[0]; for (let i = 1; i < parts.length; i++) e = { k: 'bin', op: '+', l: e, r: parts[i], pos };
+            return e;
+        }
         function ex(n) {
             if (!n) return null; n = unwrap(n);
             if (!LEAF.has(n.y) && patterns.length) { const r = tryOps(n); if (r) return r; }
@@ -219,14 +239,16 @@
             switch (n.y) {
                 case 'num': return { k: 'lit', t: /[.eE]/.test(n.v) && !/^0x/i.test(n.v) ? 'float' : 'int', v: n.v, pos };
                 case 'str': return { k: 'lit', t: 'str', v: unq(n.v), pos };
-                case 'var': if (n.v[0] !== '$') return native(n, '非純量變數 ' + n.v); return { k: 'name', v: varName(n.v), pos };
+                case 'interp': return interpOf(n, pos);
+                case 'var': if (n.v[0] === '@' && n.v !== '@_') return { k: 'name', v: varName('$' + n.v.slice(1)), pos }; if (n.v[0] !== '$') return native(n, '非純量變數 ' + n.v); return { k: 'name', v: varName(n.v), pos };
+                case 'list': if (n.k.length >= 2) return { k: 'list', items: n.k.map(ex), pos }; return native(n, 'list');
                 case 'deref': if (n.v === '$') return native(n, '純量解參考'); return ex(n.k[0]);
                 case 'idx': return { k: 'index', o: ex(n.k[0]), i: ex(n.k[1]), pos };
                 case 'hkey': return { k: 'index', o: ex(n.k[0]), i: ex(n.k[1]), pos };
                 case 'anonarr': return { k: 'list', items: n.k.map(ex), pos };
                 case 'anonhash': { const it = []; for (let i = 0; i + 1 < n.k.length; i += 2) it.push([ex(n.k[i]), ex(n.k[i + 1])]); return { k: 'dict', items: it, pos }; }
                 case 'cond': return { k: 'cond', a: ex(n.k[0]), c: ex(n.k[1]), b: ex(n.k[2]), pos };
-                case 'un': { if (n.v === '!') { const x = unwrap(n.k[0]); if (x.y === 'un' && x.v === '!') { const y = unwrap(x.k[0]); if (y.y === 'num' && (y.v === '1' || y.v === '0')) return { k: 'lit', t: 'bool', v: y.v === '1' ? 'true' : 'false', pos }; } if (x.y === 'call' && x.v === 'defined' && x.k.length === 1) return { k: 'cmp', op: '==', l: ex(x.k[0]), r: L('none', 'None'), pos }; return { k: 'not', e: ex(n.k[0]), pos }; } if (n.v === '-' || n.v === '+') return { k: 'un', op: n.v, e: ex(n.k[0]), pos }; return native(n, '一元運算子 ' + n.v); }
+                case 'un': { if (n.v === '\\' && unwrap(n.k[0]).y === 'var' && unwrap(n.k[0]).v[0] === '@') { const av = unwrap(n.k[0]); return { k: 'name', v: varName('$' + av.v.slice(1)), pos }; } if (n.v === '!') { const x = unwrap(n.k[0]); if (x.y === 'un' && x.v === '!') { const y = unwrap(x.k[0]); if (y.y === 'num' && (y.v === '1' || y.v === '0')) return { k: 'lit', t: 'bool', v: y.v === '1' ? 'true' : 'false', pos }; } if (x.y === 'call' && x.v === 'defined' && x.k.length === 1) return { k: 'cmp', op: '==', l: ex(x.k[0]), r: L('none', 'None'), pos }; return { k: 'not', e: ex(n.k[0]), pos }; } if (n.v === '-' || n.v === '+') return { k: 'un', op: n.v, e: ex(n.k[0]), pos }; return native(n, '一元運算子 ' + n.v); }
                 case 'bin': {
                     const op = n.v; if (CMPW[op]) return { k: 'cmp', op: CMPW[op], l: ex(n.k[0]), r: ex(n.k[1]), pos };
                     if (op === '&&' || op === 'and') return { k: 'logic', op: 'and', l: ex(n.k[0]), r: ex(n.k[1]), pos }; if (op === '||' || op === 'or') return { k: 'logic', op: 'or', l: ex(n.k[0]), r: ex(n.k[1]), pos };
@@ -235,6 +257,9 @@
                     return native(n, '運算子 ' + op);
                 }
                 case 'call': {
+                    // print X, "\n" 與 print "…\n"（字串結尾是換行）＝ 印一行，對應標準操作 io.print_line；其他 print 形式仍是原生區塊
+                    if (n.v === 'print' && n.k.length === 2 && unwrap(n.k[1]).y === 'str' && unwrap(n.k[1]).v === '\\n') return { k: 'call', op: 'io.print_line', args: [ex(n.k[0])], pos };
+                    if (n.v === 'print' && n.k.length === 1) { const x = unwrap(n.k[0]); if ((x.y === 'str' || x.y === 'interp') && /(^|[^\\])(\\\\)*\\n$/.test(x.v)) return { k: 'call', op: 'io.print_line', args: [ex(Object.assign({}, x, { v: x.v.slice(0, -2) }))], pos }; }
                     if (n.v === 'defined' && n.k.length === 1) return { k: 'cmp', op: '!=', l: ex(n.k[0]), r: L('none', 'None'), pos };
                     if (n.v === 'undef' && !n.k.length) return L('none', 'None');
                     if (defined.has(n.v) && n.v.indexOf('fa_') !== 0) return { k: 'call', fn: fixName(n.v), args: n.k.map(ex), pos };
