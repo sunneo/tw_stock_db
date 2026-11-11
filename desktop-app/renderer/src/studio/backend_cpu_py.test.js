@@ -56,7 +56,7 @@ const mkBackend = (o) => { const fs = memfs(); fs.writeFileSync('/lora/train_lor
   check('偵測函式丟例外：不可用並說找不到 Python', !thrown.available && /找不到 Python/.test(thrown.reason), thrown);
   // 預設偵測（用假 spawnSync，不碰真的行程）
   const det = P.defaultDetect((cmd, args, opts) => { det.calls.push({ cmd, opts }); return cmd === 'python3' ? { status: 0, stdout: JSON.stringify({ version: '3.11.0', packages: { torch: '2', transformers: '4', peft: '1' } }) + '\n' } : { error: new Error('ENOENT'), status: null }; }); det.calls = [];
-  const dr = det();
+  const dr = await det();
   check('預設偵測：python 找不到就試 python3，且 windowsHide', dr.found && dr.path === 'python3' && dr.version === '3.11.0' && det.calls.every((c) => c.opts.windowsHide === true), { dr, calls: det.calls });
   check('介面型別', B.validateBackend(mkBackend().b).length === 0);
 
@@ -67,13 +67,13 @@ const mkBackend = (o) => { const fs = memfs(); fs.writeFileSync('/lora/train_lor
     const BS = String.fromCharCode(92), WP = (s) => s.split('/').join(BS), VENV = WP('D:/x/lora-train/.venv/Scripts/python.exe'), fsHas = { existsSync: (f) => f === VENV };
     const winPath = require('path').win32;
     const sp1 = mkSpawn({ [VENV]: { v: '3.13.1', p: full }, python: { v: '3.10.4', p: { torch: null, transformers: null, peft: null } } });
-    const r1 = P.defaultDetect(sp1, { fs: fsHas, path: winPath, platform: 'win32', venvDirs: [WP('D:/x/lora-train')] })();
+    const r1 = await P.defaultDetect(sp1, { fs: fsHas, path: winPath, platform: 'win32', venvDirs: [WP('D:/x/lora-train')] })();
     check('探測：優先用 lora-train/.venv，找到就不再往後試', r1.found && r1.path === VENV && r1.version === '3.13.1' && sp1.calls.indexOf('python') < 0, r1);
     const PY313 = WP('C:/Python313/python.exe'), sp2 = mkSpawn({ python: { v: '3.10.4', p: full }, 'py -0p': ' -V:3.13 *        ' + PY313 + String.fromCharCode(10) + ' -V:3.10          ' + WP('C:/Python310/python.exe') + String.fromCharCode(10), [PY313]: { v: '3.13.0', p: { torch: null, transformers: null, peft: null } } });
-    const r2 = P.defaultDetect(sp2, { fs: { existsSync: () => false }, path: winPath, platform: 'win32', venvDirs: [WP('D:/x/lora-train')] })();
+    const r2 = await P.defaultDetect(sp2, { fs: { existsSync: () => false }, path: winPath, platform: 'win32', venvDirs: [WP('D:/x/lora-train')] })();
     check('探測：PATH 上 3.10 不採用，改選 py 啟動器列出的 3.13（缺套件由 probe 說明）', r2.found && r2.path === PY313 && r2.version === '3.13.0', r2);
     const sp3 = mkSpawn({ python: { v: '3.10.4', p: full } });
-    const r3 = P.defaultDetect(sp3, { fs: { existsSync: () => false }, path: winPath, platform: 'win32', venvDirs: [] })();
+    const r3 = await P.defaultDetect(sp3, { fs: { existsSync: () => false }, path: winPath, platform: 'win32', venvDirs: [] })();
     check('探測：只有 3.10 → found:false 並記下太舊的版本', !r3.found && r3.tooOld === '3.10.4', r3);
     const pr3 = await P.createCpuPyBackend({ detect: async () => r3, spawn: () => {}, fs: memfs(), path: posix, loraDir: '/lora', hw: { cores: 4 } }).probe();
     check('太舊：reason 寫明需要 3.11 以上與三個套件、建議 .venv，並附安裝指令與 --extra-index-url', !pr3.available && /3\.10\.4/.test(pr3.reason) && /需要 Python 3\.11 以上與 torch／transformers／peft，建議在 lora-train\/\.venv 安裝/.test(pr3.reason) && /py -3\.13 -m venv/.test(pr3.reason) && /--extra-index-url https:\/\/download\.pytorch\.org\/whl\/cpu/.test(pr3.reason), pr3);
@@ -92,16 +92,16 @@ const mkBackend = (o) => { const fs = memfs(); fs.writeFileSync('/lora/train_lor
     const sp = (cmd, args, o) => { if (cmd === 'py' && args[0] === '-0p') return { error: new Error('ENOENT'), status: null }; spawns++; codeSeen = args[2] || ''; o.__t = o.timeout; return { status: 0, stdout: JSON.stringify({ version: '3.13.1', packages: full }) + String.fromCharCode(10) }; };
     const store = {}, cache = { get: (k) => store[k] || null, set: (k, v) => { store[k] = v; } };
     const mk = () => P.defaultDetect(sp, { fs: fsX, path: wp, platform: 'win32', venvDirs: [WP('D:/x/lora-train')], cache });
-    const r1 = mk()();
+    const r1 = await mk()();
     check('探測程式碼用 importlib.metadata、不 import torch', /importlib/.test(codeSeen) && /metadata/.test(codeSeen) && !/__import__/.test(codeSeen) && !/import torch/.test(codeSeen), codeSeen);
     check('第一次真的啟動子行程，結果寫入快取', r1.found && spawns === 1 && Object.keys(store).length === 1, { spawns, store });
-    const r2 = mk()();
+    const r2 = await mk()();
     check('第二次直接用快取、不啟動子行程', r2.found && spawns === 1 && r2.tried[0].cached === true, { spawns, r2 });
     fsX.statSync = () => ({ mtimeMs: 6 });   // 裝了套件 → 修改時間變 → 快取失效
-    mk()(); check('site-packages 修改時間變了：快取失效重探', spawns === 2, spawns);
+    await mk()(); check('site-packages 修改時間變了：快取失效重探', spawns === 2, spawns);
     // 逾時：記下具體原因，probe 的 reason 帶出
     const spT = (cmd, args) => (cmd === 'py' && args[0] === '-0p') ? { error: new Error('ENOENT'), status: null } : { error: Object.assign(new Error('spawnSync python ETIMEDOUT'), { code: 'ETIMEDOUT' }), status: null };
-    const dt = P.defaultDetect(spT, { fs: { existsSync: () => false }, path: wp, platform: 'win32', venvDirs: [], timeoutMs: 8000 })();
+    const dt = await P.defaultDetect(spT, { fs: { existsSync: () => false }, path: wp, platform: 'win32', venvDirs: [], timeoutMs: 8000 })();
     check('逾時：找不到，tried 記逾時秒數', !dt.found && dt.tried.length > 0 && dt.tried.every((x) => /逾時（8 秒/.test(x.error)), dt);
     const prT = await P.createCpuPyBackend({ detect: async () => dt, spawn: () => {}, fs: memfs(), path: posix, loraDir: '/lora', hw: { cores: 4 } }).probe();
     check('逾時：probe 的 reason 寫出哪些項目逾時', !prT.available && /探測失敗項目：.*逾時/.test(prT.reason), prT);

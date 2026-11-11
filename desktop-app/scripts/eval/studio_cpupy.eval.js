@@ -25,5 +25,5 @@ return (async () => {
     R.bench = { state: status && status.state, row, ms: Date.now() - t0 };
     ck('基準測試結束且 cpu-py 那列有結果（數字，或失敗＋具體原因）', row && row.result && (row.result.tokPerSec > 0 || (row.result.reason && row.result.reason.length > 5)), row);
     R.failed = R.checks.filter((c) => !c.ok).length; R.pass = R.failed === 0;
-    return { pass: R.pass, failed: R.failed, n: R.checks.length, bench: R.bench, checks: R.checks.filter((c) => !c.ok) };
+    return { pass: R.pass, failed: R.failed, n: R.checks.length, backendsFirstMs: R.backendsFirstMs, firstCpuPy: R.firstCpuPy && { available: R.firstCpuPy.available, probing: R.firstCpuPy.probing, reason: R.firstCpuPy.reason }, probeDoneMs: R.probeDoneMs, bench: R.bench, checks: R.checks.filter((c) => !c.ok) };
 })();

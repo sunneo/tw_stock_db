@@ -8,7 +8,7 @@ let ok = 0; const bad = [];
 const check = (n, c, x) => { if (c) ok++; else { bad.push(n); console.log('FAIL', n, x === undefined ? '' : JSON.stringify(x).slice(0, 400)); } };
 (async () => {
   const hw = { cpuModel: os.cpus()[0].model, cores: os.cpus().length };
-  const b = P.createCpuPyBackend({ detect: P.defaultDetect(cp.spawnSync, { fs, path, venvDirs: [loraDir] }), spawn: (c, a, o) => cp.spawn(c, a, o), killTree: (ch) => { try { cp.spawnSync('taskkill', ['/PID', String(ch.pid), '/T', '/F'], { windowsHide: true }); } catch (e) {} }, fs, path, loraDir, hw, env: { HF_HUB_OFFLINE: '1', TRANSFORMERS_OFFLINE: '1' } });
+  const b = P.createCpuPyBackend({ detect: P.defaultDetect((c, a, o) => cp.spawnSync(c, a, o), { fs, path, venvDirs: [loraDir] }), spawn: (c, a, o) => cp.spawn(c, a, o), killTree: (ch) => { try { cp.spawnSync('taskkill', ['/PID', String(ch.pid), '/T', '/F'], { windowsHide: true }); } catch (e) {} }, fs, path, loraDir, hw, env: { HF_HUB_OFFLINE: '1', TRANSFORMERS_OFFLINE: '1' } });
   const pr = await b.probe();
   console.log('probe：' + (pr.available ? '可用' : '不可用：' + pr.reason));
   const hub = path.join(process.env.HF_HOME || path.join(os.homedir(), '.cache', 'huggingface'), 'hub', 'models--Qwen--Qwen3-0.6B');

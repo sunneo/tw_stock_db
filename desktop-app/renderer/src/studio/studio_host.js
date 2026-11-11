@@ -32,9 +32,13 @@ function createStudioHost(d) {
     return ch;
   };
   const registry = new BackendCore.BackendRegistry();
+  // 探測用的非同步執行器（execFile）：探測期間主行程的事件迴圈不被擋住（用 spawnSync 會讓整個主行程卡住數秒）
+  const runAsync = (cmd, args, o) => new Promise((res) => {
+    try { cp.execFile(cmd, args, { encoding: 'utf8', windowsHide: true, timeout: o && o.timeout }, (err, stdout) => { if (!err) return res({ status: 0, stdout: String(stdout) }); const e = err.killed ? Object.assign(new Error('ETIMEDOUT'), { code: 'ETIMEDOUT' }) : err; res({ error: e, status: null, stdout: String(stdout || '') }); }); } catch (e) { res({ error: e, status: null }); }
+  });
   // Python 探測結果快取（存使用者資料夾；鍵含 python 路徑與修改時間，裝／卸套件後自動失效）
   const detectCache = { get(k) { const m = readJson(jf('cpu-py-detect-cache.json'), {}); return m[k] || null; }, set(k, v) { const m = readJson(jf('cpu-py-detect-cache.json'), {}); m[k] = v; writeJson(jf('cpu-py-detect-cache.json'), m); } };
-  const cpuPy = CpuPy.createCpuPyBackend({ detect: CpuPy.defaultDetect(cp.spawnSync, { fs, path: P, cache: detectCache, venvDirs: () => [loraDirOf(), P.join(hostDir, 'lora-train'), d.loraDir].concat(d.loraDirs || []) }), spawn: spawnLow, killTree, fs, path: P, get loraDir() { return loraDirOf(); }, hw, get config() { return config; }, env: d.env || {} });
+  const cpuPy = CpuPy.createCpuPyBackend({ detect: CpuPy.defaultDetect(runAsync, { fs, path: P, cache: detectCache, venvDirs: () => [loraDirOf(), P.join(hostDir, 'lora-train'), d.loraDir].concat(d.loraDirs || []) }), spawn: spawnLow, killTree, fs, path: P, get loraDir() { return loraDirOf(); }, hw, get config() { return config; }, env: d.env || {} });
   registry.register(CpuJs.createCpuJsBackend({ engineVersion: 'tiny-1' }));
   const rawProbe = cpuPy.probe.bind(cpuPy), PROBE_TTL = 60000, probeSt = { val: null, at: 0, running: null };
   const refreshProbe = () => probeSt.running || (probeSt.running = (async () => { try { probeSt.val = await rawProbe(); probeSt.at = now(); } finally { probeSt.running = null; } })());

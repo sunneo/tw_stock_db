@@ -20,14 +20,15 @@ function venvPythons(dirs, P, plat) {
 function defaultDetect(spawnSync, opts) {
   opts = opts || {}; const P = opts.path || require('path'), plat = opts.platform || process.platform;
   const exists = (f) => { try { return (opts.fs || require('fs')).existsSync(f); } catch (e) { return false; } };
-  return function detect() {
+  // spawnSync 可以是同步函式（測試用的假的）或回 Promise 的非同步執行器（主行程用：不阻塞主行程的事件迴圈）
+  return async function detect() {
     // 用 importlib.metadata 讀套件版本，不 import torch（光 import torch 在這台就要十幾秒）
     const code = "import sys,json\nfrom importlib import metadata as md\nr={'version':sys.version.split()[0],'packages':{}}\nfor m in ('torch','transformers','peft'):\n    try:\n        r['packages'][m]=md.version(m)\n    except Exception:\n        r['packages'][m]=None\nprint(json.dumps(r))";
     const cands = venvPythons(typeof opts.venvDirs === 'function' ? opts.venvDirs() : opts.venvDirs, P, plat).filter(exists);
     ['python', 'python3', 'py'].forEach((c) => cands.push(c));
     const tmo = opts.timeoutMs || 8000;   // 單項探測逾時
     try {   // py 啟動器列出的各版本（py -0p 每行最後一欄是路徑）
-      const l = spawnSync('py', ['-0p'], { encoding: 'utf8', windowsHide: true, timeout: 5000 });
+      const l = await spawnSync('py', ['-0p'], { encoding: 'utf8', windowsHide: true, timeout: 5000 });
       if (l && !l.error && l.status === 0) String(l.stdout).split(/\r?\n/).forEach((ln) => { const m = /(?:^|\s)([A-Za-z]:[\\/].*python[0-9.]*\.exe)\s*$/i.exec(ln.trim()); if (m && cands.indexOf(m[1]) < 0) cands.push(m[1]); });
     } catch (e) {}
     // 結果快取：鍵＝python 絕對路徑＋執行檔與 site-packages 的修改時間（裝／卸套件會變）；只對絕對路徑的候選用
@@ -38,7 +39,7 @@ function defaultDetect(spawnSync, opts) {
       try {
         const key = opts.cache ? keyOf(cmd) : null; let j = key ? opts.cache.get(key) : null; const fromCache = !!j;
         if (!j) {
-          const r = spawnSync(cmd, ['-I', '-c', code], { encoding: 'utf8', windowsHide: true, timeout: tmo });
+          const r = await spawnSync(cmd, ['-I', '-c', code], { encoding: 'utf8', windowsHide: true, timeout: tmo });
           if (!r || r.error || r.status !== 0) { const why = r && r.error && /ETIMEDOUT/.test(String(r.error.code || r.error.message)) ? '逾時（' + Math.round(tmo / 1000) + ' 秒內沒回應）' : (r && r.error ? String(r.error.code || r.error.message) : '結束碼 ' + (r && r.status)); tried.push({ path: cmd, error: why }); continue; }
           j = JSON.parse(String(r.stdout).trim().split('\n').pop()); if (key) opts.cache.set(key, j);
         }
