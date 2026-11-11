@@ -138,6 +138,20 @@ function createStudioHost(d) {
       job.run.done.then((r) => { job.state = (job.run && job.run.state) || 'finished'; job.result = r && { state: r.state }; job.endedAt = now(); });
       return { ok: true, jobId: job.id };
     },
+    // 流程總覽讀真實紀錄（DESIGN §19）：<runDir>/train.log 尾端 2MB；run.pid 對應的子行程 VmRSS（Linux 才有 /proc；其他系統說明未取樣）；主行程 RSS 另附
+    async studio_run_info(p) {
+      const dir = String((p && p.runDir) || ''); if (!dir) return { ok: false, error: '缺 runDir' };
+      let log = null; try { const t = fs.readFileSync(P.join(dir, 'train.log'), 'utf8'); log = t.length > 2000000 ? t.slice(t.length - 2000000) : t; } catch (e) { log = null; }
+      let pid = null; try { pid = parseInt(fs.readFileSync(P.join(dir, 'run.pid'), 'utf8'), 10) || null; } catch (e) { pid = null; }
+      let rssBytes = null, rssReason = '';
+      if (!pid) rssReason = '沒有 run.pid（子行程 pid 未記錄）';
+      else if (process.platform !== 'linux') rssReason = '這個系統（' + process.platform + '）還沒有子行程記憶體取樣（尚未實作）';
+      else { try { const st = fs.readFileSync('/proc/' + pid + '/status', 'utf8'); const m = /VmRSS:\s+(\d+)\s+kB/.exec(st); if (m) rssBytes = +m[1] * 1024; else rssReason = '/proc 沒有 VmRSS 欄位'; } catch (e) { rssReason = '子行程已結束，或讀不到 /proc/' + pid + '/status'; } }
+      let hostRssBytes = null; try { hostRssBytes = process.memoryUsage().rss; } catch (e) { hostRssBytes = null; }
+      const events = log ? log.split(/\r?\n/).map((l) => CpuPy.parseProgressLine(l)).filter(Boolean).slice(-5000) : [];
+      return { ok: true, runDir: dir, log, events, pid, rssBytes, rssReason: rssBytes === null ? rssReason : '', hostRssBytes };
+    },
+    async studio_run_current() { const j = activeTrain || Array.from(jobs.values()).pop(); return { ok: true, runDir: j && j.cfg && j.cfg.outputDir ? j.cfg.outputDir : null }; },
     async studio_train_status(p) {
       const j = jobs.get(p && p.jobId) || activeTrain; if (!j || j.kind === undefined || !j.run) return { ok: true, running: false, state: 'idle' };
       const r = j.run; return { ok: true, jobId: j.id, running: r.state === 'running' || r.state === 'pausing', state: r.state, step: r.lastStep, loss: r.lastLoss, errors: r.errors.slice(-5), events: j.events.slice(-(Number(p && p.tail) || 50)), exitCode: r.exitCode, elapsedMs: (j.endedAt || now()) - j.startedAt };

@@ -13,7 +13,7 @@ function memfs() {
   return { files, dirs,
     existsSync: (p) => { p = norm(p); return files.has(p) || dirs.has(p) || [...files.keys(), ...dirs].some((k) => k.startsWith(p + '/')); },
     readdirSync: (d) => { d = norm(d).replace(/\/$/, ''); const out = new Set(); [...files.keys(), ...dirs].forEach((k) => { if (k.startsWith(d + '/')) out.add(k.slice(d.length + 1).split('/')[0]); }); return [...out]; },
-    writeFileSync: (p, c) => { files.set(norm(p), c); }, readFileSync: (p) => { if (!files.has(norm(p))) throw new Error('ENOENT ' + p); return files.get(norm(p)); },
+    writeFileSync: (p, c) => { files.set(norm(p), c); }, appendFileSync: (p, c) => { p = norm(p); files.set(p, (files.get(p) || '') + c); }, readFileSync: (p) => { if (!files.has(norm(p))) throw new Error('ENOENT ' + p); return files.get(norm(p)); },
     unlinkSync: (p) => { files.delete(norm(p)); }, mkdirSync: (p) => { dirs.add(norm(p)); } };
 }
 const posix = require('path').posix;
@@ -131,6 +131,9 @@ const mkBackend = (o) => { const fs = memfs(); fs.writeFileSync('/lora/train_lor
   check('子行程以 windowsHide:true 啟動且不接 stdin', spawn.calls[0].opts.windowsHide === true && spawn.calls[0].opts.stdio[0] === 'ignore', spawn.calls[0].opts);
   check('子行程環境含核心數', spawn.calls[0].opts.env.LORA_THREADS === '11');
   check('跑完：finished、收到 12 個 log 與 done', res.state === 'finished' && ev.filter((e) => e.type === 'log').length === 12 && ev.some((e) => e.type === 'done'), res);
+  // 真實紀錄：日誌逐行寫進 <outputDir>/train.log，子行程 pid 寫進 run.pid（流程總覽讀這兩個檔）
+  const trainLog = fs.files.get('/o/train.log') || ''; check('train.log 逐行寫入（至少 12 行，含 loss）', trainLog.split('\n').filter(Boolean).length >= 12 && /loss/.test(trainLog), trainLog.slice(0, 200));
+  check('run.pid 寫進輸出資料夾', fs.files.has('/o/run.pid'), [...fs.files.keys()]);
   check('記錄最後 loss', Math.abs(run.lastLoss - 3 / 12) < 1e-3);
 
   // ---- 暫停→續訓 ----
