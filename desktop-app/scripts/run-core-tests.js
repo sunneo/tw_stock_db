@@ -105,6 +105,7 @@ const suites = [
     ['Ruby 的「進」（Python→IR→Ruby→IR→Python 實跑與原輸出一致、註解保存；需 tree-sitter ruby 文法與 python，沒有就略過）', 'renderer/src/ir/ir_in_ruby.test.js'],
     ['Perl 的「進」（自己寫的剖析器、不需文法；Python→IR→Perl→IR→Python 實跑與原輸出一致、註解保存、手寫 Perl 的 local／修飾語句收成原生區塊）', 'renderer/src/ir/ir_in_perl.test.js'],
     ['Perl 布林輸出（Python 布林程式 → IR → Perl 實跑，True／False 與 Python 逐字一致；需 perl 與 python3，沒有就略過）', 'renderer/src/ir/ir_perl_bool.test.js'],
+    ['nodejs 慣用法的「進」（模板字串 `n=${n}` 轉拼接、單引號的 require(\'fs\').readFileSync(0, \'utf8\') 對應目錄樣板；手寫 JavaScript → IR → Python 實跑一致；標籤模板仍是原生區塊；需 tree-sitter 的 javascript 文法與 python3，沒有就略過）', 'renderer/src/ir/ir_in_brace_idioms.test.js'],
     ['C# 慣用法的「進」（手寫 a.Max()、int.Parse(Console.ReadLine())、$"n={n}" 內插字串 → IR → Python 實跑一致；格式子句仍是原生區塊；需 tree-sitter 的 c_sharp 文法與 python3，沒有就略過）', 'renderer/src/ir/ir_in_csharp_idioms.test.js'],
     ['Ruby 慣用法的「進」（a.each { |x| … } 區塊迭代、"n=#{n}" 字串插值、不加括號的 puts x、不帶括號的 gets、隱含 return → IR → Python 實跑一致；多參數區塊仍是原生區塊；需 tree-sitter 的 ruby 文法與 python3，沒有就略過）', 'renderer/src/ir/ir_in_ruby_idioms.test.js'],
     ['Perl 慣用法的「進」（@$a 的 foreach、EXPR if COND 修飾、"…$n\n" 插值、print X, "\n"、\\@a 參考、(1, 2, 3) 清單 → IR → Python 實跑一致；unless 與 <STDIN> 仍是原生區塊；自寫剖析器，不需文法，需要 python3）', 'renderer/src/ir/ir_in_perl_idioms.test.js'],
