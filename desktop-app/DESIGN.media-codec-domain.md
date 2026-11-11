@@ -89,6 +89,16 @@ FA_TS_DIR=<含 tree-sitter.js、tree-sitter.wasm、tree-sitter-python.wasm 的�
 - 測試檔：`domain_h264cavlc.test.js`（4 passed, 0 failed）、`domain_h264totalzeros.test.js`（4 passed, 0 failed）。回歸：`domain_h264intra.test.js` 20 passed、`domain_h264dequant.test.js` 6 passed、`domain_h264dec.test.js` 6 passed。
 - 尚未做：coeff_token（表 9-5，表很大，來源同 libavc 的 coeff_token 表，待做）、level 前綴後綴、CAVLC 整區塊串接、去區塊濾波器。
 
+## 2E. 階段 5 有損影像的一層整數小波（`domain_avimage_core.js`、`domain_avimage.test.js`，2026-11-12）
+
+- 骨架 `img.haar1d`（整數 Haar：低頻 (a+b)>>1、高頻 a−b）與 `img.legall53`（LeGall 5/3 整數提升，JPEG 2000 可逆版；邊界：右鄰超出時用 x[2i]，左端 d[-1] 取 d[0]）。輸入一行 8 個整數，輸出兩行（低頻、高頻）。
+- **自檢**：JS 的正向與反向提升互逆（隨機 300 組，反提升還原原值）。這是可逆性檢查，確認公式與邊界定義自洽，**不是外部工具對照**：Pillow、ffmpeg 等的小波實作邊界與捨入規則可能不同，本機沒有可直接對照的 5/3 輸出。
+- 數字：train `haar-tr`、`legall-tr` 各 1，AC，反序 2/2（0 次模型）。holdout 2/4：`haar-ho` AC、`legall-ho3` AC；未解兩題保留為紀錄：
+  - `legall-ho`：敘述錯誤（「相鄰高頻的平均（…加 2 後除以 4）」把平均與除以 4 寫成矛盾），屬我方敘述錯。
+  - `legall-ho2`：根因是輸出句「第一行印 s，第二行印 d」被讀成輸入（讀取器只認「輸出」字樣）。
+  - `legall-ho3`（改寫輸出句後的措辭）AC。注意：`legall` 的 holdout 已改過兩次（ho→ho2→ho3），不再是乾淨 holdout，`legall-ho3` 只能當措辭探索紀錄。
+- 尚未做：8×8 DCT 與量化、Z 字形、熵編碼（階段 5 其餘部分）。
+
 ## 3. 環境與坑（重要，接手前先看）
 
 1. **tree-sitter 快取**：`FA_TS_DIR` 不設或找不到時，`domain_harness.js` 會印「略過」並以 0 結束，這會假通過。接手時先確認輸出有「train N/M」那一行。本機可用的一組匹配檔是倉庫內 `renderer/vendor/tree-sitter/`（`tree-sitter.js`、`tree-sitter.wasm`、`tree-sitter-python.wasm`）；複製到一個資料夾再設 `FA_TS_DIR`。**混用不同版本會出現 `unknown section code #0x13`**（VS Code 擴充的 wasm 配上倉庫的 js 會失敗）。
