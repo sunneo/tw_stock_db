@@ -927,3 +927,53 @@ Backend {
 - pin、replace 的 HTTP 端點還沒有：lora-slot-js 會在 `studio_server_core` 加（同一個 commit 系列）。在那之前，列表上的「釘選」「替換」只會顯示提示、點了會被停用。
 - 替換的時間：桌面約 2 秒（重建推論 session），網頁版 maxActive=1，數秒到數十秒，畫面要顯示「替換中」（`busy` 參數）。
 - 測試：`lora_manage_core.test.js` 32／0（假的 status 形狀）。
+
+## 22. 接手節（給 studio-domain-author-2，2026-11-12）
+
+分支 `claude/studio-domain-author-dcb76c` 的工作樹在 `/home/hungfu.lee/Downloads/SRC/tw_stock_db/.claude/worktrees/studio-domain-author-dcb72c`（分支名以 `git branch --show-current` 為準）。已 rebase 到 `4c5b5e15`。**沒有推送、沒有嵌入**。`studio_embed.test.js` 的 4 項「嵌入與來源一致」預期失敗，由總指揮整合時重產嵌入處理，不在這條線處理。
+
+### 22.1 已完成（提交都在分支上，`git log --oneline 4c5b5e15..HEAD` 可看）
+- 工作室新增領域（DSL、規格、評量、示範）、版面測試：見 §16。
+- 流程總覽（五種訓練階段圖、即時狀態 train.log、建議 eval.json、匯出格式與 LLM 訓練模式）：見 §17、§18、§19。
+  - 路由：`/api/pipeline`、`/api/advice`、`/api/advice/from-json`、`/api/lora/card`（`pipeline_routes_core.js`）。
+  - 畫面：`pipeline_view_core.js`，檢視器「流程」分頁；建議按鈕切換分頁（§20.1）。
+  - 真實紀錄：cpu-py 寫 `train.log`、`run.pid`；主行程 `studio_run_info`（Linux 讀 /proc，Windows 用 tasklist）。
+- LLM 匯出純函式（`llm_export_core.js`）：五步步驟表、可用性與原因、工具偵測（注入式）、訓練模式（LoRA 實作、完整微調寫明阻礙）：見 §20.1。
+- LoRA 管理核心（`lora_manage_core.js`）：model_card.json 檢查與摘要、登錄表 status() 的列與按鈕提示、登錄表卡片、replacing 文字：見 §21。
+- 測試數字（分支上最後一次跑）：pipeline_core 31、pipeline_live 20、train_advice 23、pipeline_routes 31、pipeline_view 18、studio_layout 27、studio_server 94、studio_host 23、backend_cpu_py 60、llm_export 20、lora_manage 34、dsl 77、domain_spec 85、domain_e2e 17、sym_studio 71；studio_embed 12 過、4 敗（預期）。
+
+### 22.2 未完成（逐項，原因與解除條件）
+**§20.3（上一輪留下的，全部未做）**
+1. ONNX／GGUF 轉換執行器（合併→轉換→量化→核對→寫入資產）。工具（optimum、llama.cpp）由 lora-manager-2 下載，尚未到位。解除：工具到位後寫 runner，並把 `llm_export_core.EXPORT_PLANS` 各步的 `runner` 改為 true，同時把 `pipeline_core` 的 export 階段 implemented 改為 true。
+2. 伺服器接上工具偵測：主行程注入 `probeExportTools`，結果送進 `studio_server_core` 的 `exportCaps`（目前寫死全部 false）。
+3. 資料集分頁逐筆編輯（目前只讀）。
+4. blockly 種子題在 App 內重跑（題目在測試檔，打包不含；解除：抽成資料檔隨程式載入）。
+5. GitHub wiki 連網實測（規則：不連網路，需使用者同意）。
+6. Electron 視窗驗證（整個工作室與流程分頁，這台沒有開視窗）。
+7. LLM 完整微調（`trainModePlan('full')` 寫明阻礙：記憶體與時間未評估，訓練程式未寫）。
+8. LoRA 套用到推論（`LORA_APPLY_BLOCKER`；需要原生執行包 1.22.0-2 以上，網頁版 transformers.js 接點未接）。
+9. 位置偏誤的 gold、pred：`lora-train/eval_run.py` 的 `--json_out` 要補欄位，管理者負責。lora-manager-2 已在 `lora-train-eval` 分支處理 pack_adapter，eval 欄位仍需確認。
+
+**LoRA 管理畫面還缺什麼（對照 §21）**
+- 還沒接進檢視器：`renderLoraManageHTML` 沒有放進 LoRA 分頁（`T.lora`），「介紹」按鈕、載入、卸載、釘選、替換、移除的呼叫都沒寫。
+- 替換與釘選的端點在 lora-slot-js 的分支 `claude/lora-slot-equiv`（commit `e9cc0b4b`），**不在這條分支上**。接手者要先合併那條分支（或 cherry-pick 那個提交）才能呼叫。端點：`POST /api/lora/pin {id, on}`、`POST /api/lora/unpin {id}`、`POST /api/lora/replace {outId, inId, force?}`、`POST /api/lora/load`、`POST /api/lora/unload {id?}`、`GET /api/lora/status`（含 `replacing`）。
+- 「替換中」用 `busyText(status)` 產生；畫面要把它傳給 `renderLoraManageHTML({busy})`。
+- 註冊與移除的語意：註冊是資產匯入（沒有獨立 register 端點）；移除是刪除資產（既有的 `/api/asset/delete`）。畫面要沿用這兩個流程，不要自己發明 register API。
+- `hasCard` 不在登錄表欄位裡：由資產清單判斷有沒有 `model_card.json`。
+- `lora_manage_core.js` 尚未加進 `scripts/embed-code-ui.js` 的 UMD 清單（總指揮重產嵌入時一起加；`pipeline_*` 與 `train_advice_core` 已加）。
+- model_card.md：只定了 JSON，沒有 Markdown 版本。
+- 卡片路由 `/api/lora/card?id=lora/<名稱>`（已在 `pipeline_routes_core.js`）用資產 id；登錄表的 id 不帶前綴，畫面層要自己加。
+- `llm_export_core.js` 尚未接進伺服器、也不在嵌入清單裡（等 runner 與偵測一起接）。
+
+### 22.3 精確接續點（依序）
+1. 合併或 cherry-pick `claude/lora-slot-equiv` 的 `e9cc0b4b`（只需要端點與 replacing 欄位），跑 `studio_server_core.test.js` 確認沒有衝突。
+2. 在檢視器的 `T.lora`（`studio-viewer.template.html`，約 `T.lora=async function`）呼叫 `FaStudioLoraManage.renderLoraManageHTML`：資料來自 `GET /api/lora/status` 經 `rowsFromStatus`，容量用 `budgetOf`，忙碌用 `busyText`；按鈕事件分派到 `POST /api/lora/load|unload|pin|replace`；「介紹」呼叫 `/api/lora/card?id=lora/<id>`。
+3. 把 `lora_manage_core.js` 加進 `scripts/embed-code-ui.js` 的 UMD 清單（放在 `pipeline_view_core` 之後、`studio_server_core` 之前），不要執行嵌入。
+4. 工作室要有註冊（資產匯入）與移除（刪資產）的入口，沿用既有 `/api/import/*` 與 `/api/asset/delete`。
+5. §22.2 的 §20.3 項目依上面 1 到 9 的順序處理；1 與 2 需要 lora-manager-2 的工具。
+
+### 22.4 注意事項
+- 不要 `git add -A`；提交只加自己改的檔。
+- 不要推送、不要嵌入、不要跑 `scripts/publish.sh`、`embed-code-ui.js`、`build-assistant.js`。
+- 測試用 `nice -n 10 taskset -c 10-11`，一次跑一個。
+- 主行程目錄 `/home/hungfu.lee/Downloads/SRC/tw_stock_db` 是管理者的工作區，不在那裡提交。
