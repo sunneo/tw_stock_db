@@ -39,6 +39,6 @@ const T = [
     }
     console.log('held-out3 ' + T.length + ' 題：合成 ' + ok + '，隱藏測資 AC ' + ac);
     module.exports = { rows, T: T.length, ok, ac };
-    assert.ok(T.length >= 10, '至少 10 題');
+    assert.ok(ok >= 8, '第三批合成數回退（量測值 8）：' + ok);
     process.exit(0);
 })().catch((e) => { console.error('FAIL', e && e.stack || e); process.exit(1); });
