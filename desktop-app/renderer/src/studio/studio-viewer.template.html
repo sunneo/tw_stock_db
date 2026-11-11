@@ -278,7 +278,7 @@ T.pipeline=async function(body){
   var rn=h('input',{value:st.run,placeholder:'訓練資料夾（可省；留空用最近一次訓練）',size:44,oninput:function(){st.run=this.value}});
   var ev=h('select',{onchange:function(){st.env=this.value;draw()}});[['desktop','桌面本機'],['web','網頁']].forEach(function(p){var o=h('option',{value:p[0],text:p[1]});if(p[0]===st.env)o.selected=true;ev.appendChild(o)});
   body.appendChild(h('div',{'class':'row'},[sel,nm,rn,ev,h('button',{text:'重新整理',onclick:function(){draw()}})]));body.appendChild(out);
-  var WHERE={add_data:'資料匯入',reweight:'訓練',hparam:'訓練'};
+  var WHERE={add_data:'ingest',reweight:'train',hparam:'train'};
   async function draw(){
     if(st.timer){clearTimeout(st.timer);st.timer=null}
     var q='/api/pipeline?kind='+encodeURIComponent(st.kind)+'&name='+encodeURIComponent(st.name)+'&run='+encodeURIComponent(st.run)+'&env='+encodeURIComponent(st.env);
@@ -286,7 +286,7 @@ T.pipeline=async function(body){
     out.textContent='';
     if(!window.FaStudioPipelineView){out.appendChild(reason('流程總覽模組沒有載入（需要重新嵌入 pipeline_view_core.js）'));return}
     var box=h('div',{});box.innerHTML=FaStudioPipelineView.renderPipelineHTML(r,adv);out.appendChild(box);
-    box.querySelectorAll('.act').forEach(function(b){b.addEventListener('click',function(){var w=WHERE[b.getAttribute('data-action')]||'資料匯入';alert('請到「'+w+'」分頁操作（'+b.getAttribute('title')+'）')})});
+    box.querySelectorAll('.act').forEach(function(b){b.addEventListener('click',function(){var id=WHERE[b.getAttribute('data-action')]||'ingest';setL(Lay.activate(L,id))})});
     if(r&&r.live&&r.live.logState==='進行中')st.timer=setTimeout(draw,2000);
   }
   draw();
