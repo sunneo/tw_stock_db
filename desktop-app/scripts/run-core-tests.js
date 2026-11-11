@@ -140,6 +140,7 @@ const suites = [
     ['訓練工作室 LoRA 登錄與按需載入（相容性、領域路由、衝突、預算與 LRU 卸載、停用）', 'renderer/src/studio/lora_registry.test.js'],
     ['原生推論套用 LoRA（協定欄位、引擎雜湊／槽版核對與 session 重建、host→子程序轉傳、主程序 adapter 管理與舊執行包拒絕、執行包版本選擇與升級沿用舊檔、清單重算與嵌入一致、渲染端套用器）', 'tests/native/native_lora.test.js'],
     ['多個 LoRA adapter 同時套用（rank 串接合併的數值等價 1e-5、容量不足拒絕不截斷、與 Python 孿生逐位元組相同、主程序 applySet 逐項回報與換組清理）', 'tests/native/native_lora_merge.test.js'],
+    ['網頁版訓練 LoRA 研究：純 JS 參考實作（手寫反向對有限差分、fp32 捨入誤差、B=0 性質、30 步訓練、0.6B 算術估算）', 'renderer/src/studio/lora_ref_train.test.js'],
     ['評估腳本找最新已安裝原生執行包（與主程式同規則；不寫死版本資料夾）', 'tests/native/find_installed_runtime.test.js'],
     ['訓練工作室資料匯入與清洗（wiki／開源／書本／aiDoc 轉接、切塊、去個資、去重、授權、請求單、規則樣本、schema 檢查；用真實 wiki 與 aiDoc 輸出）', 'renderer/src/studio/ingest.test.js'],
     ['壓縮檔（檔頭辨識 zip／jar／7z／rar／tar／gzip／bzip2／xz／iso、bzip2 解碼、tar 的 pax／GNU 長檔名、內容判斷、jar 摘要）', 'renderer/src/archive/archive_core.test.js'],

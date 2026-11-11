@@ -111,7 +111,7 @@ state/
 |---|---|---|---|---|---|---|
 | `cpu-py`：桌面版 Python 子行程（`lora-train/train.py`，PyTorch CPU） | 可 | **已可**：本機實測約 60 token/s（Core Ultra 7 155U，見 `DESIGN.lora-training.md` §1） | 使用者機器要有 Python＋`lora-train/requirements.txt`（torch 約數百 MB～GB 級，未逐項量測）；桌面版**沒有內建 Python**（`main-ext.js:361` 只探測） | Windows／Linux／macOS 皆可（只實測 Windows） | 無 Python 的使用者要安裝或改匯出訓練包 | **做**（階段 1） |
 | `cpu-js`：純 JS／WASM（Worker） | 可（onnxruntime-web WASM） | **做不到（目前）**：repo 沒有任何 ORT 訓練圖或 `TrainingSession`，LoRA 反向要自己寫 0.6B 的反向傳播；符號式五類是例外（本來就是它） | 無額外依賴 | 全平台 | 速度遠低於 `cpu-py`（沒有最佳化的矩陣核心） | LoRA：**不做**；阻礙＝沒有反向引擎；解除條件＝§5.6 的 WebGPU 反向引擎做出來後，同一套算子可降級成 WASM 版；符號式：**做** |
-| `webgpu`：瀏覽器 WebGPU，自寫 WGSL 計算著色器（網頁版與桌面版 Electron 渲染行程都能用） | 可（已用 onnxruntime-web WebGPU，`vlm_core` 有降級，`shader-f16` 檢查） | **尚無現成方案**：onnxruntime-web 推論套件不含訓練；ORT 的 on-device training 是否有 WebGPU 後端未查證（官方文件的搜尋結果未提及）。自寫路線＝只訓練 LoRA 的 A／B（約 10M 參數），基底凍結；需要自己寫各層前向與反向（RMSNorm、attention、MLP、q8 反量化矩陣乘、RoPE、softmax／交叉熵）。**可行性＝理論上可行，工程量大、數值風險高，沒有實測數字** | 零安裝，但每台顯示卡的 WGSL 行為、緩衝區上限（`maxStorageBufferBindingSize` 預設 128MB，0.6B 權重要分塊）、記憶體上限都要實測；瀏覽器分頁會被回收 | 瀏覽器（Chrome／Edge 預設有；Firefox／Safari 版本不一，未查證）；Electron 繼承 Chromium | 高：數值與反向的正確性（要與 `cpu-py` 對拍）、裝置遺失（device lost）要能從檢查點續跑 | **第一版不做完整 LoRA**；階段 4 只做可行性實驗（單層 LoRA 梯度對拍，再擴展），有數字才升格 |
+| `webgpu`：瀏覽器 WebGPU，自寫 WGSL 計算著色器（網頁版與桌面版 Electron 渲染行程都能用） | 可（已用 onnxruntime-web WebGPU，`vlm_core` 有降級，`shader-f16` 檢查） | **無「現成可直接用」的方案**（2026-11-11 查證，詳見 §5.6）：ORT 網頁訓練只有 WASM 的 CPU 後端且官方訓練套件已棄用；rullama 有瀏覽器 LoRA 但只支援 Gemma 4；tensorgrad 只有 f32 無 LoRA。自寫路線＝只訓練 LoRA 的 A／B（約 10M 參數），基底凍結；需要自己寫各層前向與反向（RMSNorm、attention、MLP、q8 反量化矩陣乘、RoPE、softmax／交叉熵）。**可行性＝理論上可行，工程量大、數值風險高，沒有實測數字** | 零安裝，但每台顯示卡的 WGSL 行為、緩衝區上限（`maxStorageBufferBindingSize` 預設 128MB，0.6B 權重要分塊）、記憶體上限都要實測；瀏覽器分頁會被回收 | 瀏覽器（Chrome／Edge 預設有；Firefox／Safari 版本不一，未查證）；Electron 繼承 Chromium | 高：數值與反向的正確性（要與 `cpu-py` 對拍）、裝置遺失（device lost）要能從檢查點續跑 | **第一版不做完整 LoRA**；階段 4 只做可行性實驗（單層 LoRA 梯度對拍，再擴展），有數字才升格 |
 | `directml`：桌面版 Windows DirectML | 可，但 **qwen3-0.6b 已知失敗**：`DESIGN.TODO.native-runner.md:321,416`——onnxruntime-node 1.22.0 與 1.31.1 都在 `SkipSimplifiedLayerNormalization` 節點 E_INVALIDARG | **做不到（目前）**：onnxruntime 的 DirectML 執行提供者是推論用（官方文件：accelerates inference；開發轉維護模式，新功能移往 WinML——搜尋摘要，2026-11-11，見 §11 來源）；PyTorch 路線的 `torch-directml` 最新輪子約 2024-06（0.2.2.dev240614）、釘在 PyTorch 2.2、專案維護模式，**未驗證能否跑 LoRA 反向與 Qwen3 的全部算子**；`nr-engine.js` 的 onnxruntime-node 是 1.22.0，Windows 套件內含 `DirectML.dll`（`DESIGN.TODO.native-runner.md:120` 為 1.31.1 的觀察；1.22.0 是否含未逐檔核對）。**本 repo 沒有 `onnxruntime-node` 安裝**（`package.json` 無此依賴、`node_modules` 無此資料夾；它在使用者機器的執行包 `userData/native-runtime/` 內，按需下載） | `torch-directml` 約數百 MB（未量測）＋Python；DirectML.dll 為 ORT 套件內建 | 僅 Windows 10/11；任何 DX12 顯示卡（含 Intel 內顯） | 高：算子覆蓋、與 CPU 數值差、官方走向 WinML | **第一版不做**；阻礙＝沒有已驗證能跑 LoRA 反向的路徑；解除條件＝在隔離資料夾實測 `torch-directml` 能跑通 `train_lora.py` 前向／反向且與 CPU 數值對得上（見 §5.7 階段 5） |
 | `vulkan`：桌面版 Vulkan | 可（llama.cpp 的 Vulkan 後端為成熟的推論後端；ncnn 的 Vulkan 為推論用，**ncnn 有無訓練未查證**） | **有一個可能路線但未驗證**：Tether QVAC 研究頁（2026-11-11 查）稱在 llama.cpp 加入含 Vulkan 後端的 LoRA 微調流程（初始化、訓練、檢查點、續訓、儲存、合併，凍結基底、只更新 LoRA 張量、輸出 GGUF adapter）；**未確認是否已進 llama.cpp 主線、是否支援 Qwen3、是否涵蓋所需算子（如 `OUT_PROD`、`OPT_STEP_ADAMW` 在 Vulkan 的實作）**。此外它的輸出是 GGUF adapter，要轉成我們的 safetensors／ONNX LoRA 槽格式（`make_lora_onnx.py`）才能互通，轉換未做 | 需預編譯的 llama.cpp 二進位（含 Vulkan）＋GGUF 基底（0.6B 約 0.4–0.7GB，視量化）；Vulkan 驅動由顯示卡廠商提供 | Windows／Linux（macOS 走 MoltenVK，未查證） | 高：上游功能成熟度、格式轉換、與 PyTorch 路徑的數值差 | **第一版不做**；阻礙＝上游訓練支援與 Qwen3 相容性未驗證、格式轉換未寫；解除條件＝讀上游原始碼與 PR 確認算子、在隔離資料夾跑通一次小訓練並與 `cpu-py` 對拍 |
 
@@ -151,11 +151,60 @@ Backend {
 
 ### 5.5 網頁版 LoRA 現況（維持誠實）
 
-網頁版 LoRA 訓練目前**沒有可用後端**（`webgpu` 未實測、`cpu-js` 無反向引擎）。UI 顯示：「目前請用桌面版訓練，或匯入別台訓練好的 adapter／續訓包」，不假裝能訓練。`webgpu` 研究成功並通過 §5.8 後才解鎖。
+網頁版 LoRA 訓練目前**沒有可用後端**（`webgpu` 未實測；`cpu-js` 的純 JS 反向已有參考實作與梯度驗證，但速度不足以訓練 0.6B，見 §5.6）。UI 顯示：「目前請用桌面版訓練，或匯入別台訓練好的 adapter／續訓包」，不假裝能訓練。`webgpu` 研究成功並通過 §5.8 後才解鎖。
 
-### 5.6 WebGPU 反向引擎研究（階段 4 內容）
+### 5.6 網頁版瀏覽器內訓練 LoRA：路線查證與實測（2026-11-11 重寫，更正先前「沒有現成方案」的說法）
 
-前向沿用已驗證的「基底 q8＋LoRA 分支」ONNX（`make_lora_onnx.py`，A／B 為外部資料）；反向要自己實作：對 196 個目標線性層，`y = y_base + (x·A)·B`，`dB = (xA)ᵀ·dy`、`dA = xᵀ·(dy·Bᵀ)`，而 `dy` 需穿過整個 transformer 反向（attention、RMSNorm、MLP、q8 straight-through）。研究分三步，每步都要有可量測的完成條件（§5.7）：(a) 單一線性層＋LoRA 的 WGSL 前向／反向與 CPU 浮點對拍；(b) 單一 transformer 區塊；(c) 全模型小批次一個優化步，量 token/秒與峰值記憶體。折衷備案：只訓練最後幾層或 logit 偏置式 adapter。網頁版 16GB 以下機器上 0.6B fp16 全模型已佔 1.2GB，加激活與優化器狀態必須實測。
+**更正**：先前寫的「尚無現成方案、要自寫 WebGPU 反向引擎」不準確。查證後**有現成的路線，但沒有一條同時滿足「Qwen3-0.6B、瀏覽器、可用速度」**。下表逐條列出，來源皆為 2026-11-11 查閱；標「未驗證」的沒有親自跑過。
+
+| 路線 | 能否在瀏覽器訓練 | LoRA 反向 | 對 0.6B 的記憶體／速度 | 依賴與體積 | 風險 | 工作量 |
+|---|---|---|---|---|---|---|
+| (a) onnxruntime-web 訓練版（`onnxruntime-web/training`） | **可，但只有 CPU（WebAssembly）**：2024-02 官方部落格寫「ORT Web 訓練只支援 CPU，由 WebAssembly 實現」。訓練圖要離線產生（Python `generate_artifacts` → 訓練圖、優化器圖、評量圖、檢查點四個檔） | 理論上可（可指定凍結參數、只訓練 LoRA 參數），**但 Qwen3 全部算子是否都有梯度定義未驗證**；我們的前向圖含 q8 量化算子，訓練圖要用 fp32 的 PyTorch 匯出版本重做 | WASM 為 32 位元，單一分頁可定址約 4GB；0.6B fp32 權重 2.4GB 加激活與優化器已近上限（**阻礙**）；速度只會比現有 `cpu-py`（約 60 token/s）慢 | repo 已用 onnxruntime-web 1.22.0（CDN 載入）；**訓練版 wasm 另載，體積未量測** | **官方狀態不明**：ORT 1.20.0 發行說明稱「所有 ONNX Runtime Training 套件已棄用」（PyPI／NuGet／Maven 等，最後版本 1.19.2；列表未明確包含 npm 的 web 訓練）。`generate_artifacts` 若只存在於已棄用的 Python 訓練套件，就要用 1.19.x 時代工具鏈 | 中偏大，且被棄用風險高；**不建議當主路線** |
+| (b) TensorFlow.js | 可（WebGPU／WASM 後端、自動微分），但官方文件與範例都是小模型與遷移學習（只換最後一層）；**查無** Qwen3 載入、transformer LoRA 範例 | 自動微分可求梯度，LoRA 要自己寫層；不支援 q8 量化矩陣乘 | 沒有 0.6B 實例；f32 權重 2.4GB、WebGPU 單緩衝區上限要分塊（未驗證） | repo 沒用 | 專案重心在推論；Qwen3 的 RoPE、GQA、RMSNorm 都要自己組 | 大，**不建議** |
+| (c-1) Burn（Rust 編成 WebAssembly＋WebGPU） | README：自動微分是疊在後端上的裝飾器，WGPU 後端可編成 WebAssembly 在瀏覽器跑；**瀏覽器範例是推論（手寫數字辨識），未見文件記載瀏覽器內訓練大模型**（未驗證） | 框架有自動微分，LoRA 與 Qwen3 要自己寫 | 無 0.6B 數據 | 需 Rust 工具鏈與編譯產出（repo 沒有） | 版本變動快、docs.rs 0.22.0 建置失敗 | 大 |
+| (c-2) **rullama**（Rust，wgpu；`rullama-finetune`，Apache-2.0 或 MIT 雙授權） | **可：README 明說瀏覽器（wasm＋WebGPU）內 LoRA 微調**；反向算子有 Q4_K／Q6_K 矩陣乘、RMSNorm、RoPE、GeGLU、注意力 dQ／dKV、交叉熵、Adam；梯度累積、梯度檢查點、混合精度、輸出 safetensors | **有**（q/k/v/o＋前饋） | README 只給推論速度（iPhone 16e 約 4.65 token/s、舊 AMD 顯示卡約 1 token/s，「naive kernels」），**沒有訓練 token/s 與記憶體數字**；訓練驗證只有「200 步過擬合單一樣本，loss 17.7→0」 | 需 Rust 1.91 以上＋wasm-pack 自行編譯，無 npm 套件；wasm 體積未知 | **只支援 Gemma 4**（README 寫明 llama／mistral／qwen／phi 不支援）；4 顆星、無下游使用者、0.x；GitHub 說明與 docs.rs 的套件名有出入 | 把 Qwen3 結構（GQA、q/k norm、SwiGLU）加進去：大。**當參考實作與算子清單很有價值，直接採用不可行** |
+| (d-1) tensorgrad（npm，MIT，v0.5.2，只有 WebGPU） | 可：TypeScript 反向自動微分，Adam／AdamW，Worker 內訓練；文件有多頭注意力、`softmaxCausal`、`rope`、`RMSNorm`、嵌入 | **未內建 LoRA**（推論：凍結權重當輸入、A／B 當參數可手組，**未驗證**）；**只支援 f32 權重**、靜態形狀，無量化 | 0.6B f32 權重 2.4GB 要整塊放進顯示記憶體，超過多數瀏覽器單緩衝區與記憶體上限；**阻礙**：無量化、無分塊載入說明 | 零依賴，體積未知 | 新（約一個月前發版）、單人維護 | 中：小模型可試；0.6B 需先解權重分塊與 f16 |
+| (d-2) Tapasya（示範頁，進化策略 EGGROLL 加 rank-8 LoRA，SmolLM-135M） | 可，**不用反向傳播**，只做前向（WebGPU；CPU 約慢 10 倍） | 不需要反向 | 135M 模型 2000 步約 8 分鐘（頁面自述，無 token/s）；下載約 540MB | 授權頁面未載（未取得） | 進化策略的樣本效率遠低於梯度法；**在我們的選擇題任務是否收斂沒有證據** | 中；列為低門檻備案，不是主線 |
+| (d-3) WebLLM／transformers.js／tinygrad WebGPU | 都只做推論（tinygrad 有 GPT-2 124M 編成 WGSL 的推論範例）；**查無瀏覽器訓練** | 無 | — | — | — | 不適用 |
+| 純 JS 自寫（本研究的參考實作） | 可，**已實作並驗證正確性**（見下） | 已完成 q/k/v/o LoRA 的手寫反向 | 純 JS 速度不足以訓練 0.6B | 零依賴 | 速度 | 見下方階段 |
+
+#### 實測（本機，沒有 GPU、沒有 torch）
+
+- 檔案：`renderer/src/studio/lora_ref_train.js`（前向＋手寫反向＋Adam）、`lora_ref_train.test.js`（已登錄 `scripts/run-core-tests.js`）。假模型：2 層、隱藏維度 64、4 個注意力頭、前饋 128、詞表 32、RMSNorm、因果注意力含 RoPE、SiLU 閘控前饋、綁定詞嵌入；LoRA 加在 q／k／v／o，rank 8。
+- **梯度正確性**：手寫反向對 fp64 有限差分（中央差分，eps=1e-5），抽樣 96 個參數（2 層 × q／k／v／o × A／B），**最大相對誤差 3.9e-6**；`B=0` 時 A 的梯度精確為 0。
+- **fp32 影響**：每個算子輸出做 `Math.fround` 模擬 fp32 捨入，整體梯度相對 L2 誤差 **2.7e-7**。這只含逐算子捨入，**不含 GPU 平行累加順序的差異**，所以是下限不是上限；§5.7 階段 4 的門檻（單層 1e-3、區塊 5e-3）有餘裕。
+- **訓練行為**：固定一條 16 token 序列，30 步 Adam（學習率 0.02）loss 4.07 → 0.02（過擬合，只證明端到端反向可用）。純 JS 單執行緒 fp64 每步約 16 ms（T=16、約 2 萬 LoRA 參數）。
+- **不是對 PyTorch 的對拍**：本機沒有 torch（匯入失敗），所以參考是「有限差分」而非 PyTorch；有限差分對反向公式是獨立的嚴格檢驗，但**與 `train_lora.py` 的 loss 對拍仍未做**，需要安裝 torch 與 Qwen3 權重（見回報的下載清單）。
+- **WebGPU 本身沒有在這台機器驗證**：缺 (1) 有 WebGPU 的瀏覽器環境（Electron 渲染行程可以，但需開視窗或無頭 GPU 設定，依「不彈視窗」規則沒有跑）；(2) WGSL 著色器尚未寫。因此**沒有任何 WebGPU 訓練速度數字**，下列 0.6B 數字全是算術估算。
+
+#### Qwen3-0.6B 全尺寸估算（算術，非實測；T=512、rank 16）
+
+| 項目 | 數字 | 依據 |
+|---|---|---|
+| 基底參數 | 596M（本體 441M＋詞嵌入 155M） | 28 層、d=1024、前饋 3072、16 頭、8 個 KV 頭、頭維 128、詞表 151936（`estimate06B`） |
+| LoRA 參數（q/k/v/o，rank 16） | 4.6M（rank 32 約 9.2M） | 同上；原先「約 10M」大約對應 rank 32 |
+| 每 token 訓練計算量 | 2.38 GFLOP（逐層重算約 3.58 GFLOP） | 前向 2×參數，反向只算對輸入的梯度（基底凍結，不算權重梯度），LoRA 梯度可忽略 |
+| 與已測 CPU 對照 | 60 token/s ≈ 0.14 TFLOPS 有效 | 2.38G × 60 |
+| 權重記憶體 | f16 1137MB；q8 568MB | 596M × 2 或 × 1 |
+| 激活 | 不做檢查點 1400MB；逐層檢查點 106MB | `estimate06B` 粗估；logits（f32）297MB，需分塊算損失 |
+| 優化器狀態 | 約 55MB | LoRA 參數 × 4B × 3（參數、m、v） |
+| 合計（q8 權重＋檢查點） | 約 1.0GB 顯示記憶體 | 單一緩衝區上限預設 128MB，權重須分塊綁定（`maxStorageBufferBindingSize`，可請求更高，要實測） |
+
+速度（**推測，無實測**）：若內顯可持續 0.3–0.6 TFLOPS，約 **100–250 token/s**（比 CPU 快 2–4 倍）；若矩陣乘寫得保守只達 0.1 TFLOPS，則與 CPU 相當。要有實測才能承諾。記憶體上看是**可行**的（約 1GB），阻礙在算子正確性與調校，而不是容量。
+
+#### 結論與建議
+
+1. **最短可用路線＝沿用 `cpu-py`（桌面版）做 LoRA 訓練；網頁版維持不能訓練**，直到下面的 WebGPU 路線做出實測數字。理由改成具體阻礙：沒有一條現成方案同時支援 Qwen3＋瀏覽器＋q8＋可用速度（rullama 只支援 Gemma 4；ORT 網頁訓練只有 WASM 且官方訓練套件已棄用；tensorgrad 只有 f32 無 LoRA；Burn／TensorFlow.js 沒有 Qwen3 實例）。
+2. **網頁版最有希望的路線＝WebGPU 反向引擎，範圍比先前想的小，且已有正確性基準**：`lora_ref_train.js` 是可對拍的規格，rullama 的算子清單（矩陣乘反向、RMSNorm、RoPE、注意力 dQ／dKV、交叉熵、Adam）是現成參考；tensorgrad 可用來快速驗證「小模型 LoRA 在 WebGPU 跑得通」，免去先寫全部著色器。
+3. **分階段與工作量（單人估，含對拍與除錯）**：
+   - **A（約 2–3 天）**：用 tensorgrad 或手寫 WGSL，把假模型搬上 WebGPU，與參考實作比對損失與梯度（目標 1e-4 相對誤差），量每步時間。**缺：有 WebGPU 的瀏覽器環境；若用 tensorgrad 還缺該套件下載。**
+   - **B（約 1 週）**：f16／q8 權重分塊綁定、GQA、q／k norm、RoPE 與 Qwen3 的形狀；用真實 0.6B 一層對拍 `train_lora.py` 同層梯度（目標 §5.7 的 1e-3）。**缺：torch 與 Qwen3 權重。**
+   - **C（約 1–2 週）**：全模型一步、逐層檢查點、分塊損失、裝置遺失續跑；量 token/s 與峰值記憶體，才決定要不要點亮 `webgpu` 後端。
+   - **備案**：Tapasya 式進化策略（只要前向，可用已驗證的推論路徑）；但樣本效率與收斂沒有證據，只在 A–C 失敗時評估。
+4. **下一步**：先做 A；取得 WebGPU 環境與使用者同意下載後再進 B。任一階段沒過就停下回報阻礙，不往下硬做（維持 §5.7）。
+5. **待查證**：(i) `onnxruntime-web` npm 上是否仍有 `training` 子模組與其 wasm 體積（只需查 npm 中繼資料，不需下載套件）；(ii) rullama 的 `rullama-lora` 與 `rullama-finetune` 哪個是現行套件；(iii) 表中標「未驗證」者。
+
+來源（2026-11-11 查閱）：ORT 瀏覽器訓練部落格 <https://opensource.microsoft.com/blog/2024/02/06/on-device-training-training-a-model-in-browser>；官方文件 <https://onnxruntime.ai/docs/get-started/training-on-device.html>、<https://onnxruntime.ai/docs/tutorials/on-device-training/>；ORT 1.20.0 發行說明（棄用訓練套件）<https://newreleases.io/project/npm/onnxruntime-web/release/1.20.0>；Burn <https://docs.rs/crate/burn/latest/source/src/lib.rs>；rullama <https://github.com/Brainwires/rullama>、<https://docs.rs/crate/rullama/0.5.0>；tensorgrad <https://www.pkgstats.com/pkg:tensorgrad>；Tapasya <https://naklitechie.github.io/Tapasya/>；tinygrad WebGPU 推論範例 <https://huggingface.co/jik-wtf/tinygpt-webgpu>；TensorFlow.js WebGPU 後端 <https://www.npmjs.com/package/@tensorflow/tfjs-backend-webgpu>。
 
 ### 5.7 分階段順序與完成條件
 
