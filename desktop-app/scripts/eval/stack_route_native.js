@@ -1,7 +1,7 @@
 'use strict';
 // 缺口 I（真模型版）：用桌面版原生執行器的引擎（onnxruntime-node，CPU）直接跑 Qwen3-0.6B，不開網路服務、不下載。
 //   node scripts/eval/stack_route_native.js --runtime <原生執行包資料夾> --model <model_quantized.onnx> --tok <tokenizer.json> [--reps 3] [--temp 0.7] [--seed 1] [--variants off,stack,colu] [--slice a:b] [--threads 2] [--baseline 先前結果.json] [--out f.json] [--fake]
-// --runtime 例：%APPDATA%\floating-assistant-desktop\native-runtime\1.22.0-1（只讀它的程式與 onnxruntime-node，不寫入）
+// --runtime 例：%APPDATA%\floating-assistant-desktop\native-runtime\<版本>（只讀它的程式與 onnxruntime-node，不寫入）；省略時自動找最新已安裝版本（同 find_installed_runtime.js）
 // --fake：不載入模型，用確定性假模型驗證腳本本身（含 prefill、堆疊標頭有沒有送進提示）。
 // 做法：題目與評分跟 stack_route.js 共用（scripts/eval/stack_route_cases.js），只是 generate 換成原生引擎；
 //   chooseTool 走 jsonStep 的封閉題做法（prefill {"choice":、最多重試 2 次），所以模型每次只答一題。
@@ -13,7 +13,7 @@ const fake = args.includes('--fake');
 const reps = +opt('reps', 3), temp = +opt('temp', 0.7), seed0 = +opt('seed', 1), outFile = opt('out');
 const variants = (opt('variants', 'off,stack')).split(','), baselineFile = opt('baseline');
 const sliceArg = opt('slice'), threads = +opt('threads', 2);
-const runtime = opt('runtime'), modelPath = opt('model'), tokPath = opt('tok');
+const runtime = opt('runtime') || (args.includes('--fake') ? undefined : (() => { try { return require('./find_installed_runtime.js').requireInstalledRuntimeDir(); } catch (_) { return undefined; } })()), modelPath = opt('model'), tokPath = opt('tok');
 if (!fake && !(runtime && modelPath && tokPath)) { console.log('用法：node scripts/eval/stack_route_native.js --runtime <原生執行包資料夾> --model <onnx> --tok <tokenizer.json> [--reps 3] [--temp 0.7] [--seed 1] [--out f.json]\n或加 --fake 只驗證腳本'); process.exit(0); }
 
 let generate;

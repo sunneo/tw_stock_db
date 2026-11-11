@@ -10,7 +10,7 @@
  *                  現有主程式接點：nr-engine.js 的 loadModel(modelPath, tokenizerPath, threads, lora)，lora＝{id, bytes}（bytes＝lora.bin），
  *                  換 adapter＝傳不同 id/bytes，session 會重建。nrEngineLoader() 就是把這個接點包成載入器。
  *    opts.budgetBytes  同時駐留記憶體的 adapter 大小總和上限（預設 256 MiB；0 或未給＝用預設）
- *    opts.maxActive    同時啟用幾個 adapter（預設 1：nr-engine 目前一個 session 只吃一個 lora.bin；見 §13 的阻礙說明）
+ *    opts.maxActive    同時啟用幾個 adapter（預設 1；桌面版原生套用器存在時由 studio_server_core 放寬到 4：多個 adapter 在主程序依 rank 串接成一個槽檔，容量不夠的逐項被拒；見 DESIGN.TODO.native-runner.md §9.2）
  *    opts.now          時間函式（測試用）
  *  登錄項 entry：{id, name, source:'builtin'|'user'|'imported', base, base_sha256?, rank, alpha?, prompt_format_version, tool_catalog_sha256?,
  *                domains:[…], triggers?:[字串或正規表示式原始碼]（使用者指令出現就視為想用）, conflicts_with?:[id], priority?（數字，大者優先）,

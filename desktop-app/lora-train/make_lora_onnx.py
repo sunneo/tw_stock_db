@@ -12,11 +12,17 @@ The surgery must happen AFTER quantization, otherwise A/B would be quantized.
           -> out_dir/model_quantized.onnx (+ layout.json, lora.bin all zeros)
   pack:   python make_lora_onnx.py pack <peft_adapter_dir> <layout.json> <lora.bin>
           -> rewrites lora.bin from a PEFT adapter (rank <= slot; alpha/r folded into B; unused rank rows zero)
+  packmulti: python make_lora_onnx.py packmulti <layout.json> <lora.bin> <peft_adapter_dir[:weight]>...
+          -> several adapters active at once: stacked along the rank axis into ONE lora.bin (sum of ranks must fit the slot;
+             build the model with --rank >= the sum, e.g. 32). weight scales that adapter's B. Over-capacity adapters are rejected, never truncated.
+  merge:  python make_lora_onnx.py merge <layout.json> <out lora.bin> <lora.bin[:weight]>...   (same, from already packed slot files)
 """
 import json, os, sys
 import numpy as np
 import onnx
 from onnx import TensorProto, helper
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import lora_slots
 
 PROJ = [("attn", "self_attn", "q_proj"), ("attn", "self_attn", "k_proj"), ("attn", "self_attn", "v_proj"),
         ("attn", "self_attn", "o_proj"), ("mlp", "mlp", "gate_proj"), ("mlp", "mlp", "up_proj"), ("mlp", "mlp", "down_proj")]
@@ -87,9 +93,8 @@ def build(src, out_dir, rank):
     print(f"targets={hits} lora.bin={off} bytes -> {out_dir}")
 
 
-def pack(adapter_dir, layout_path, out_path):
+def pack_bytes(adapter_dir, lay):
     from safetensors.numpy import load_file
-    lay = json.load(open(layout_path))
     cfg = json.load(open(os.path.join(adapter_dir, "adapter_config.json")))
     r, scale = cfg["r"], cfg["lora_alpha"] / cfg["r"]
     if r > lay["rank"]:
@@ -106,14 +111,55 @@ def pack(adapter_dir, layout_path, out_path):
         else:
             arr[:r, :] = m.T * scale
         buf[t["offset"]: t["offset"] + t["length"]] = arr.tobytes()
+    return bytes(buf), r, scale
+
+
+def pack(adapter_dir, layout_path, out_path):
+    lay = json.load(open(layout_path))
+    buf, r, scale = pack_bytes(adapter_dir, lay)
     open(out_path, "wb").write(buf)
     print(f"packed {out_path} {len(buf)} bytes (rank {r}, scale {scale})")
 
 
+def split_weight(s):
+    tail = s.rsplit(":", 1)[1] if ":" in s else ""
+    return (s.rsplit(":", 1)[0], float(tail)) if tail.replace(".", "", 1).isdigit() else (s, 1.0)
+
+
+def finish_merge(lay, items, out_path):
+    r = lora_slots.merge_slots(lay, items)
+    open(out_path, "wb").write(r["buf"])
+    print(json.dumps({"items": r["items"], "rank_used": r["rank_used"], "rank_slot": r["rank_slot"]}, ensure_ascii=False))
+    if not any(i["applied"] for i in r["items"]):
+        sys.exit(2)
+
+
+def packmulti(layout_path, out_path, specs):
+    lay = json.load(open(layout_path))
+    items = []
+    for sp in specs:
+        d, w = split_weight(sp)
+        items.append({"id": d, "buf": pack_bytes(d, lay)[0], "weight": w})
+    finish_merge(lay, items, out_path)
+
+
+def merge(layout_path, out_path, specs):
+    lay = json.load(open(layout_path))
+    items = []
+    for sp in specs:
+        pth, w = split_weight(sp)
+        items.append({"id": pth, "buf": open(pth, "rb").read(), "weight": w})
+    finish_merge(lay, items, out_path)
+
+
 if __name__ == "__main__":
-    if len(sys.argv) < 2 or sys.argv[1] not in ("build", "pack"):
+    if len(sys.argv) < 2 or sys.argv[1] not in ("build", "pack", "packmulti", "merge"):
         sys.exit(__doc__)
     if sys.argv[1] == "build":
         build(sys.argv[2], sys.argv[3], int(arg("--rank", 16)))
+    elif sys.argv[1] == "packmulti":
+        packmulti(sys.argv[2], sys.argv[3], sys.argv[4:])
+    elif sys.argv[1] == "merge":
+        merge(sys.argv[2], sys.argv[3], sys.argv[4:])
     else:
         pack(sys.argv[2], sys.argv[3], sys.argv[4])

@@ -58,7 +58,7 @@ async function scenario(name, extraEnv) {
         res.install = { ok: resp.ok, npmUsed: resp.npmUsed, npmBytes: resp.npmBytes, githubBytes: resp.githubBytes, sourceCounts: resp.sourceCounts, message: resp.message || null, elapsedMs: Date.now() - tInst };
         logLine('[' + name + '] 安裝回應：' + JSON.stringify(res.install));
         if (!resp.ok) throw new Error('安裝失敗：' + (resp.message || resp.code));
-        const runtimeDir = path.join(ud, 'native-runtime', '1.22.0-1');
+        const runtimeDir = require('./find_installed_runtime.js').requireInstalledRuntimeDir(ud); // 最新已安裝版本（與主程式同一規則），不寫死版本資料夾
         const inst = JSON.parse(fs.readFileSync(path.join(runtimeDir, 'manifest.json'), 'utf8'));
         const files = {};
         for (const rel of Object.keys(inst.files)) {

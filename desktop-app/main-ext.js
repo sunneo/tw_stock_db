@@ -807,10 +807,12 @@ function installNativeRuntimeFromLocal(userData, srcDir) {
 // 寫在本檔而不是 nr-*.js：本檔隨熱更新送達，舊安裝也收得到。可注入依賴，所以不需 Electron 就能測。
 const NRL = (function () {
   const SAFE = /^[A-Za-z0-9._-]{1,120}$/;
+  const MAX_SET = 16;
   const err = (code, message) => ({ ok: false, code, message });
   function create(d) {
     const fs = d.fs, path = d.path, crypto = d.crypto;
-    let active = null; // { id, path, sha256, size }
+    let active = null; // 實際送子程序的檔：{ id, path, sha256, size }（多個 adapter 時是合併後的檔）
+    let set = []; // 目前套用中的各 adapter：[{ id, rank, weight }]
     const rtInfo = () => { const rt = d.getRuntime() || {}; return { ok: !!rt.ok, version: rt.version || null, latest: rt.latestVersion || null, supported: !!(rt.ok && (rt.features || []).indexOf("lora") >= 0) }; };
     function gate() {
       const r = rtInfo();
@@ -828,29 +830,80 @@ const NRL = (function () {
       if (layout.total_bytes !== size) return err("slot_mismatch", "adapter 大小 " + size + " 與模型的 LoRA 槽（" + layout.total_bytes + "，rank " + layout.rank + "）不符");
       return null;
     }
-    function apply(p) {
+    function readLayout() {
+      const mp = d.getModelPath && d.getModelPath();
+      if (!mp) return null;
+      try { const l = JSON.parse(fs.readFileSync(path.join(path.dirname(mp), "layout.json"), "utf8")); return l && l.total_bytes > 0 && Array.isArray(l.tensors) ? l : null; } catch (_) { return null; }
+    }
+    const nlDir = () => path.join(d.userData, "native-lora");
+    const rm = (p) => { try { fs.rmSync(p, { recursive: true, force: true }); } catch (_) { /* 刪不掉不影響套用 */ } };
+    // 一次套用「一組」adapter（取代目前整組）：每個 {id, sha256, size, weight?}，順序＝優先序（rank 容量不夠時後面的被拒）。
+    // 做法：全部在 rank 軸上串接成一個與槽同版面的 lora.bin（A 串欄、B 串列並乘 weight，數學上等於各 adapter 相加；見 mergeSlots），子程序與執行包完全不用改。
+    // 回 { ok, applied, id（實際送子程序的 id）, items:[{id, applied, rank?, offset?, weight?, code?, message?}], rankUsed, rankSlot }；一個都沒套上時 ok:false 並保持原狀態。
+    function applySet(p) {
       p = p || {};
       const g = gate(); if (g) return g;
-      if (!SAFE.test(String(p.id || "")) || p.id === "." || p.id === "..") return err("bad_request", "adapter id 不合法");
-      if (!/^[0-9a-f]{64}$/.test(String(p.sha256 || ""))) return err("bad_request", "缺少 sha256（64 位十六進位小寫）");
-      const src = path.join(d.box, "lora-in", p.id, "lora.bin");
-      let buf; try { buf = fs.readFileSync(src); } catch (e) { return err("no_file", "信箱裡沒有 adapter 檔案：" + src); }
-      const sha = crypto.createHash("sha256").update(buf).digest("hex");
-      if (sha !== p.sha256) { try { fs.rmSync(path.dirname(src), { recursive: true, force: true }); } catch (_) { /* */ } return err("verify_failed", "adapter 的 SHA-256 不符（預期 " + p.sha256.slice(0, 12) + "…，實際 " + sha.slice(0, 12) + "…），沒有套用"); }
-      if (p.size != null && Number(p.size) !== buf.length) return err("verify_failed", "adapter 大小不符（預期 " + p.size + "，實際 " + buf.length + "）");
-      const sl = checkSlot(buf.length); if (sl) return sl;
-      const dir = path.join(d.userData, "native-lora", p.id), dst = path.join(dir, "lora.bin"), tmp = dst + ".partial";
-      try {
-        fs.mkdirSync(dir, { recursive: true });
-        fs.writeFileSync(tmp, buf); fs.rmSync(dst, { force: true }); fs.renameSync(tmp, dst);
-        fs.rmSync(path.dirname(src), { recursive: true, force: true });
-      } catch (e) { return err("write_failed", "寫入 adapter 失敗：" + String((e && e.message) || e)); }
-      const prev = active && active.id !== p.id ? active.id : null;
-      active = { id: p.id, path: dst, sha256: sha, size: buf.length };
-      if (prev) { try { fs.rmSync(path.join(d.userData, "native-lora", prev), { recursive: true, force: true }); } catch (_) { /* 舊 adapter 刪不掉不影響套用 */ } }
-      return { ok: true, applied: true, id: p.id, size: buf.length, note: "已套用到原生推論：之後的原生生成都會帶這個 adapter（第一次生成會重建 session）" };
+      const list = Array.isArray(p.items) ? p.items : [];
+      if (!list.length) return err("bad_request", "沒有要套用的 adapter（items 是空的）");
+      if (list.length > MAX_SET) return err("bad_request", "一次最多 " + MAX_SET + " 個 adapter");
+      const res = [], staged = [], seen = new Set(), boxDirs = [];
+      const fail = (it, code, message) => res.push({ id: String((it && it.id) || ""), applied: false, code, message });
+      for (const it of list) {
+        const id = it && it.id;
+        if (!SAFE.test(String(id || "")) || id === "." || id === "..") { fail(it, "bad_request", "adapter id 不合法"); continue; }
+        if (seen.has(id)) { fail(it, "duplicate_id", "同一批裡 id 重複：" + id); continue; }
+        seen.add(id);
+        if (!/^[0-9a-f]{64}$/.test(String(it.sha256 || ""))) { fail(it, "bad_request", "缺少 sha256（64 位十六進位小寫）"); continue; }
+        const w = it.weight == null ? 1 : Number(it.weight);
+        if (!(isFinite(w) && w > 0 && w <= 8)) { fail(it, "bad_weight", "weight " + it.weight + " 不合法（要是 0 到 8 之間的正數）"); continue; }
+        const src = path.join(d.box, "lora-in", id, "lora.bin");
+        boxDirs.push(path.dirname(src));
+        let buf; try { buf = fs.readFileSync(src); } catch (e) { fail(it, "no_file", "信箱裡沒有 adapter 檔案：" + src); continue; }
+        const sha = crypto.createHash("sha256").update(buf).digest("hex");
+        if (sha !== it.sha256) { rm(path.dirname(src)); fail(it, "verify_failed", "adapter 的 SHA-256 不符（預期 " + it.sha256.slice(0, 12) + "…，實際 " + sha.slice(0, 12) + "…），沒有套用"); continue; }
+        if (it.size != null && Number(it.size) !== buf.length) { fail(it, "verify_failed", "adapter 大小不符（預期 " + it.size + "，實際 " + buf.length + "）"); continue; }
+        const sl = checkSlot(buf.length); if (sl) { fail(it, sl.code, sl.message); continue; }
+        staged.push({ id, buf, sha, weight: w });
+      }
+      const finish = (r) => { if (r.ok) for (const b of boxDirs) rm(b); return r; }; // 失敗時信箱檔留著（原因排除後可重送）；成功才清
+      const firstFail = () => { const f = res.find((x) => !x.applied) || {}; return { ok: false, code: f.code || "bad_request", message: f.message || "沒有可套用的 adapter", items: res }; };
+      if (!staged.length) return finish(firstFail());
+      const layout = readLayout();
+      let eff, rankUsed = null; const rankSlot = layout ? layout.rank : null;
+      let passthrough = staged.length === 1 && staged[0].weight === 1;
+      if (!passthrough) {
+        const mr = mergeSlots(layout, staged.map((s) => ({ id: s.id, buf: s.buf, weight: s.weight })));
+        for (const m of mr.items) { res.push(Object.assign({}, m, { message: m.applied ? "已併入（rank " + m.offset + "–" + (m.offset + m.rank - 1) + "，權重 " + m.weight + "）" : m.message })); }
+        if (!mr.items.some((m) => m.applied)) return finish(firstFail());
+        rankUsed = mr.rankUsed;
+        const okOnes = mr.items.filter((m) => m.applied);
+        if (okOnes.length === 1 && okOnes[0].weight === 1) { passthrough = true; const only = staged.find((x) => x.id === okOnes[0].id); staged.length = 0; staged.push(only); }
+        else {
+          const msha = crypto.createHash("sha256").update(mr.buf).digest("hex"), mid = "merged-" + msha.slice(0, 12);
+          const dir = path.join(nlDir(), "_merged"), dst = path.join(dir, "lora.bin"), tmp = dst + ".partial";
+          try { fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(tmp, mr.buf); fs.rmSync(dst, { force: true }); fs.renameSync(tmp, dst); }
+          catch (e) { return finish({ ok: false, code: "write_failed", message: "寫入合併後的 adapter 失敗：" + String((e && e.message) || e), items: res }); }
+          eff = { id: mid, path: dst, sha256: msha, size: mr.buf.length };
+          set = okOnes.map((m) => ({ id: m.id, rank: m.rank, weight: m.weight }));
+        }
+      }
+      if (passthrough) {
+        const s = staged[0], dir = path.join(nlDir(), s.id), dst = path.join(dir, "lora.bin"), tmp = dst + ".partial";
+        try { fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(tmp, s.buf); fs.rmSync(dst, { force: true }); fs.renameSync(tmp, dst); }
+        catch (e) { return finish({ ok: false, code: "write_failed", message: "寫入 adapter 失敗：" + String((e && e.message) || e), items: res }); }
+        if (!res.some((x) => x.id === s.id && x.applied)) res.push({ id: s.id, applied: true, weight: 1, message: "已套用" });
+        eff = { id: s.id, path: dst, sha256: s.sha, size: s.buf.length };
+        set = [{ id: s.id, rank: null, weight: 1 }];
+      }
+      // 舊的整組換掉：清掉不再使用的檔案
+      const keep = new Set([passthrough ? eff.id : "_merged"]);
+      try { for (const n of fs.readdirSync(nlDir())) if (!keep.has(n)) rm(path.join(nlDir(), n)); } catch (_) { /* */ }
+      active = eff;
+      const n = res.filter((x) => x.applied).length;
+      return finish({ ok: true, applied: true, id: eff.id, size: eff.size, items: res, rankUsed, rankSlot, note: "已套用到原生推論：" + n + " 個 adapter" + (n > 1 ? "（rank 串接成一個，共用 " + rankUsed + "／" + rankSlot + "）" : "") + (res.length > n ? "；" + (res.length - n) + " 個沒套上，原因見逐項回報" : "") + "；之後的原生生成都會帶它（第一次生成會重建 session）" });
     }
-    function clear() { const was = active; active = null; if (was) { try { fs.rmSync(path.join(d.userData, "native-lora", was.id), { recursive: true, force: true }); } catch (_) { /* */ } } return { ok: true, cleared: was ? was.id : null }; }
+    function apply(p) { return applySet({ items: [p || {}] }); }
+    function clear() { const was = active; const ids = set.map((x) => x.id); active = null; set = []; try { for (const n of fs.readdirSync(nlDir())) rm(path.join(nlDir(), n)); } catch (_) { /* */ } return { ok: true, cleared: was ? was.id : null, ids }; }
     // run 的前置：有套用中的 adapter 時回 {lora}；此時執行包若被換成舊版（不支援），拒絕而不是默默不用
     function forRun() {
       if (!active) return { ok: true, lora: null };
@@ -863,10 +916,47 @@ const NRL = (function () {
       if (!r || r.lora_applied !== active.id || (r.lora_sha256 && r.lora_sha256 !== active.sha256)) return err("lora_not_applied", "子程序沒有回報套用 LoRA「" + active.id + "」（回報：" + ((r && r.lora_applied) || "無") + "）；這次輸出不是 adapter 的結果，已視為失敗");
       return null;
     }
-    function status() { const r = rtInfo(); return { active: active ? { id: active.id, size: active.size, sha256: active.sha256 } : null, supported: r.supported, runtimeVersion: r.version, latestRuntimeVersion: r.latest, needsRuntimeUpdate: r.ok && !r.supported }; }
-    return { apply, clear, forRun, verifyDone, status, _active: () => active };
+    function status() { const r = rtInfo(); return { active: active ? { id: active.id, size: active.size, sha256: active.sha256 } : null, adapters: set.slice(), supported: r.supported, runtimeVersion: r.version, latestRuntimeVersion: r.latest, needsRuntimeUpdate: r.ok && !r.supported }; }
+    return { apply, applySet, clear, forRun, verifyDone, status, _active: () => active };
   }
-  return { create, SAFE };
+  // ---- rank 串接合併（lora-train/lora_slots.py 的 JS 孿生；測試比對兩邊輸出逐位元組相同）----
+  // 一個 adapter 貢獻 dW = A·B（A [in,r]、B [r,out]）。A 串欄、B 串列（並乘 weight）→ A·B = Σ w_k·A_k·B_k。
+  const f32of = (buf) => { const ab = new ArrayBuffer(buf.length); new Uint8Array(ab).set(buf); return new Float32Array(ab); };
+  const abOf = (t) => t.name.slice(t.name.lastIndexOf(".") + 1);
+  // 有效 rank：A 有非零的最大欄索引、B 有非零的最大列索引，取大者 +1
+  function effectiveRank(buf, layout) {
+    const f = f32of(buf); let r = 0;
+    for (const t of layout.tensors) {
+      const base = t.offset / 4, d0 = t.dims[0], d1 = t.dims[1], isA = abOf(t) === "A";
+      if (isA) { for (let i = 0; i < d0; i++) for (let j = d1 - 1; j >= r; j--) if (f[base + i * d1 + j] !== 0) { r = j + 1; break; } }
+      else { for (let i = d0 - 1; i >= r; i--) { let nz = false; for (let j = 0; j < d1; j++) if (f[base + i * d1 + j] !== 0) { nz = true; break; } if (nz) { r = i + 1; break; } } }
+    }
+    return r;
+  }
+  function mergeSlots(layout, items) {
+    const R = layout.rank, total = layout.total_bytes, res = [], placed = []; let used = 0;
+    for (const it of items) {
+      const w = it.weight == null ? 1 : Number(it.weight);
+      if (it.buf.length !== total) { res.push({ id: it.id, applied: false, code: "slot_mismatch", message: "大小 " + it.buf.length + " 與槽 " + total + " 不符" }); continue; }
+      if (!(isFinite(w) && w > 0 && w <= 8)) { res.push({ id: it.id, applied: false, code: "bad_weight", message: "weight " + it.weight + " 不合法（要是 0 到 8 之間的正數）" }); continue; }
+      const r = effectiveRank(it.buf, layout);
+      if (r === 0) { res.push({ id: it.id, applied: false, code: "empty_adapter", message: "adapter 全是零（等於基底），沒有東西可併" }); continue; }
+      if (used + r > R) { res.push({ id: it.id, applied: false, code: "rank_capacity", message: "rank 容量不足：槽 " + R + "、已用 " + used + "、這個 adapter 需要 " + r + "；已拒絕（不會截斷）。要同時套更多請用 make_lora_onnx.py build --rank 加大槽（rank 總和）" }); continue; }
+      placed.push({ f: f32of(it.buf), w: Math.fround(w), r, off: used });
+      res.push({ id: it.id, applied: true, rank: r, offset: used, weight: w });
+      used += r;
+    }
+    const out = new Float32Array(total / 4);
+    for (const t of layout.tensors) {
+      const base = t.offset / 4, d0 = t.dims[0], d1 = t.dims[1], isA = abOf(t) === "A";
+      for (const p of placed) {
+        if (isA) { for (let i = 0; i < d0; i++) for (let j = 0; j < p.r; j++) out[base + i * d1 + p.off + j] = p.f[base + i * d1 + j]; }
+        else { for (let i = 0; i < p.r; i++) for (let j = 0; j < d1; j++) out[base + (p.off + i) * d1 + j] = p.f[base + i * d1 + j] * p.w; }
+      }
+    }
+    return { buf: Buffer.from(out.buffer), items: res, rankUsed: used, rankSlot: R };
+  }
+  return { create, SAFE, mergeSlots, effectiveRank, MAX_SET };
 })();
 
 // 原生執行器的主程序信箱（見 DESIGN.TODO.native-runner.md 第 8-C 節）。
@@ -1928,6 +2018,7 @@ function startNativeMailbox(ctx) {
     if (op.indexOf("studio_") === 0) return handleStudio(op, p);
     if (op === "status") return { ok: true, status: host ? host.status() : idleStatus, engine: runtime.ok && modelPath ? "native" : "none", box, runtime: { ok: runtime.ok, version: runtime.version || null, reason: runtime.ok ? "" : runtime.reason, protocolOk, modelReady: !!(runtime.ok && modelPath && tokenizerPath), features: runtime.features || [], legacy: !!runtime.legacy, latestVersion: NATIVE_RUNTIME_VERSION }, lora: lora.status() };
     if (op === "lora_apply") return lora.apply(p);
+    if (op === "lora_apply_set") return lora.applySet(p);
     if (op === "lora_clear") return lora.clear();
     if (op === "lora_status") return Object.assign({ ok: true }, lora.status());
     if (op === "reenable") { if (host) host.reenable(); return { ok: true, status: host ? host.status() : idleStatus }; }

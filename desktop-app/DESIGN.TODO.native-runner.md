@@ -528,8 +528,26 @@
 
 沒有 lora 時：請求內容、session 選項、結果物件都與 1.22.0-1 完全一致（`tests/native/native_lora.test.js` 逐項檢查；既有 `native_runner.test.js` 19 項、`tensor_host.test.js` 20 項仍全過）。
 
-### 9.2 同時只能套一個
-模型是 `make_lora_onnx.py build` 的單一 LoRA 槽版（一個 `lora.bin`），所以一次一個 adapter；`lora_registry` 的 `maxActive` 預設就是 1。渲染端套用器遇到多個 handle 只套第一個並在畫面明說其餘未套用。要同時套多個需要「多槽版」ONNX 或載入前把多個 adapter 依 rank 槽合併（兩者都要改 `make_lora_onnx.py`，未做）。
+### 9.2 同時套多個 adapter（2026-11-11 決定並實作：做法 (a)，載入前依 rank 槽串接合併）
+**兩種做法比較**
+| | (a) 載入前把多個 adapter 依 rank 槽合併 | (b) 多槽版 ONNX |
+|---|---|---|
+| 要改圖嗎 | 不用。槽版圖本來就是 `y = y_base + (x·A)·B`，A [in,R]、B [R,out] | 要。每個目標多 N 組 A/B 與 N 個 MatMul／Add，圖變大、載入變慢，每個槽各一個 `lora.bin` 外部資料 |
+| 要改執行包嗎 | 不用（子程序仍只收一個 `lora.bin`）→ **不需要新執行包版本，沒有東西要推 GitHub** | 要：`resolveLora`／`externalData` 要吃多個檔、協定 `lora` 要變陣列 → 1.22.0-3 |
+| 權重（scale） | B 的列乘 weight，自然支援 | 需要額外輸入或預乘 |
+| 限制 | 各 adapter 的 rank 總和 ≤ 槽的 rank | 槽數固定，每槽 rank 固定，閒置槽仍花計算 |
+決定 (a)。數學：一個 adapter 貢獻 ΔW = A·B；把各 adapter 的 A 串欄、B 串列（並乘 weight）得 A·B = Σ w_k·A_k·B_k，與「各自套用再相加」相等（不是依序套用，沒有順序效應）。
+
+**實作位置**
+- `main-ext.js` 的 `NRL`（隨熱更新送達，舊安裝也收得到）：`mergeSlots`（合併）、`effectiveRank`（用「A 的非零最大欄、B 的非零最大列」偵測 adapter 的有效 rank，不需要旁路資料）、`applySet`（新操作 `lora_apply_set`：一次送一組 `{id, sha256, size, weight?}`，**取代整組**；舊操作 `lora_apply` 等於只有一個的一組，行為不變）。合併結果寫到 `native-lora/_merged/lora.bin`，送子程序的 `lora.id` 是 `merged-<sha256 前 12 碼>`，`verifyDone` 照樣核對子程序回報的 id＋sha256；只有一個且權重 1 時不合併，直接用原檔與原 id（與舊版完全一致）。
+- `lora-train/lora_slots.py`（只需 numpy，是上面 JS 的孿生）、`make_lora_onnx.py` 新增 `packmulti <layout.json> <out lora.bin> <adapter_dir[:weight]>...`（直接從多個 PEFT adapter 打包）與 `merge <layout.json> <out> <lora.bin[:weight]>...`（從已打包的槽檔合併）。
+- `lora_apply_core.js`：`apply(handles)` 多個 handle 時送 `lora_apply_set`，回 `{ok, id, applied:[...], items:[{id, applied, rank?, code?, message?}], note}`；一個都沒套上才 `ok:false`。`studio_server_core.js`：桌面版有套用器時登錄表 `maxActive` 放寬到 4（`h.loraMaxActive` 可調；沒有套用器仍是 1），`/api/lora/load` 回應多了 `applyItems`。
+- 衝突規則：同一批 id 重複 → 第二個 `duplicate_id` 被拒；領域衝突與「同領域只留一個」仍由登錄表決定；`weight` 要在 (0, 8]；全零 adapter 在合併時 `empty_adapter` 被拒；一批最多 16 個（`MAX_SET`）。
+
+**rank 容量不足時的行為**：依傳入順序（優先序）逐個放進槽，放不下的那個 **整個被拒絕**（`rank_capacity`，訊息寫明「槽 R、已用 U、這個需要 N」與解法），**不會截斷 rank、也不會靜默丟掉**；其餘照常套用，逐項 `applied` 回報，畫面 `note` 列出未套用者與原因。一個都放不下則 `ok:false` 並保持原狀態。解除條件：用 `make_lora_onnx.py build --rank <rank 總和>`（例如 32）重建槽版模型——現有的 rank 16 槽版最多放 rank 16 的總和。
+
+**驗證**：`tests/native/native_lora_merge.test.js`（22 項）——小型假模型（6 個目標、不同 in/out、槽 rank 16、64 位元組對齊位移）三個 adapter（rank 4/6/5、權重 1/0.5/2）合併後輸出與各自相加比較，最大絕對誤差 4.4e-16（門檻 1e-5）；Python 孿生與 JS 輸出逐位元組相同；容量不足、全零、權重不合法、大小不符、重複 id、換組清理、執行包太舊、全失敗不改狀態。
+**沒實測**：(1) `make_lora_onnx.py` 的 `packmulti`（需要 safetensors＋真 PEFT adapter；本機沒有 onnx 套件，該檔只做了語法編譯，合併核心 `lora_slots.py` 有實跑）；(2) 真槽版 ONNX 在 onnxruntime-node 跑出多個 adapter 疊加的輸出（本機沒有槽版模型，阻礙同 §9.5；解除條件：有 Python＋torch＋onnx＋Qwen3-0.6B onnx 基底，`build --rank 32`）；(3) 真 Electron 下 `lora_apply_set` 的信箱往返與畫面逐項回報。
 
 ### 9.3 執行包發佈與升級（機制說明＋這次做法）
 - **機制**：執行包不隨安裝包升級；主程序（`main-ext.js`，隨熱更新送達）內嵌一份分割清單 `NATIVE_RUNTIME_MANIFEST`（每檔大小、sha256、分割段 md5），使用者在設定頁按「安裝」才下載：來源 1＝npm 官方庫的 onnxruntime-node tgz（integrity 驗證），來源 2＝GitHub 分支 `native-runtime-1.22.0` 的釘住 commit SHA 的 raw 網址（`NATIVE_GITHUB_BASE`，分割段逐段 md5＋整檔 sha256）。`nr-*.js` 只有來源 2 有，或安裝目錄剛好有同樣內容的檔案。安裝到 `<userData>/native-runtime/<版本>/`，載入前 `checkNativeRuntimeDir` 全檔核對 md5。
@@ -538,7 +556,7 @@
 - **舊執行包相容與降級**：`findNativeRuntime` 先找新版、再找舊版；舊版核對通過仍可用（原生推論照常、功能不減），只是 `FEATURES` 沒有 `lora`：`lora_apply` 回 `runtime_outdated`，畫面顯示「已安裝的原生執行包（1.22.0-1）不支援 LoRA，需要更新執行包到 1.22.0-2」，`applied` 為假；`NRL.forRun` 另外保證「已套用後執行包被換回舊版」時 run 會被拒絕而不是默默不用；子程序沒回報套用也視為失敗。新版安裝成功後才刪舊版（新版沒就緒時保留舊版當退路）。
 - **新版尚未發佈時**：`NATIVE_GITHUB_BASE` 目前留空；按安裝會在下載前以 `runtime_not_published` 明確失敗並說明（不是靜默），舊版照常可用。
 - **安裝目錄的舊 `nr-*.js`**：原先 `installRuntime` 在「本機 nr 檔與清單 sha256 不同」時直接丟錯；新版改為略過並改用來源 2（舊安裝包附的版本本來就會不同）。
-- 其他程式碼仍寫死 `1.22.0-1` 的只有真機評估腳本（`scripts/eval/native_real_install_eval.js`、`stack_route_native.js` 的說明）；它們讀的是實際安裝資料夾，升級後要改路徑。
+- 真機評估腳本不再寫死版本資料夾：`scripts/eval/find_installed_runtime.js` 用主程式同一個 `findNativeRuntime`（新版優先、舊版退路、md5 核對）找最新已安裝版本；`native_real_install_eval.js`、`stack_route_native.js`（省略 `--runtime`）、`native_audio_e2e.js`（RUNTIME 填 `auto`）、`native_sdxs/run_pair.sh` 都用它；`tests/native/find_installed_runtime.test.js` 守住。注意：它與主程式一樣會核對平台／架構，32 位元的 node 會找不到 win32-x64 的執行包，要用 64 位元 node 或 Electron 跑。
 
 ### 9.4 要推到 GitHub 的檔案（等管理者決定；本工作階段沒有推送）
 目標：倉庫 `sunneo/tw_stock_db` 的分支 `native-runtime-1.22.0`。檔案已產生在共用筆記資料夾 `native-runtime-1.22.0-2-push/`（`node scripts/native-runtime-refreeze-nr.js <輸出資料夾> --version 1.22.0-2 --features lora --all` 可重現）：

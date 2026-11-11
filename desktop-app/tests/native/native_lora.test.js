@@ -212,7 +212,7 @@ async function settle(p) { try { return { ok: true, v: await p }; } catch (e) { 
     let r = await ap2.apply([{ id: 'My Adapter/1', bytes: new Uint8Array(loraBytes) }]);
     check('套用器：寫信箱檔、呼叫 lora_apply、id 轉成安全字元並帶雜湊前綴', r.ok && written[0].p.startsWith('/ud/box/lora-in/My_Adapter_1-') && written[0].len === 64 && calls[0].op === 'lora_apply' && calls[0].p.sha256 === sha(loraBytes) && Apply.safeId('My Adapter/1', sha(loraBytes)) === calls[0].p.id, { r, calls, written });
     r = await ap2.apply([{ id: 'a', bytes: new Uint8Array(loraBytes) }, { id: 'b', bytes: new Uint8Array(loraBytes) }]);
-    check('套用器：多個 adapter 只套第一個並明說其餘未套用', r.ok && /未套用：b/.test(r.note), r);
+    check('套用器：多個 adapter 走 lora_apply_set，各帶 id／sha256／size／weight，結果逐項回報（舊版是只套第一個）', r.ok && calls[calls.length - 1].op === 'lora_apply_set' && calls[calls.length - 1].p.items.length === 2 && calls[calls.length - 1].p.items.every((x) => x.weight === 1 && x.size === 64) && r.items.length === 2, r);
     ap2 = mkApplier(() => ({ ok: false, code: 'runtime_outdated', message: '需要更新執行包' }));
     r = await ap2.apply([{ id: 'a', bytes: new Uint8Array(loraBytes) }]);
     check('套用器：執行包太舊回 ok:false 與 needsRuntimeUpdate，不假裝成功', r.ok === false && r.needsRuntimeUpdate === true && /更新執行包/.test(r.error), r);

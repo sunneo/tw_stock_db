@@ -1,8 +1,9 @@
 // 啟動隔離的真 Electron，跑 native_audio_e2e.eval.js（獨立 --user-data-dir、換埠，絕不用 17923；執行包從本機已安裝的複製，不下載）。
-// 用法：node native_audio_e2e.js <工作資料夾> <模型資料夾> <electron.exe> <desktop-app 資料夾> <原生執行包資料夾（native-runtime/1.22.0-1）> <模型 id,逗號分隔>
+// 用法：node native_audio_e2e.js <工作資料夾> <模型資料夾> <electron.exe> <desktop-app 資料夾> <原生執行包資料夾，或 auto＝最新已安裝版本> <模型 id,逗號分隔>
 // 結果寫在 <工作資料夾>/e2e-result.json。
 const fs = require('fs'), path = require('path'), cp = require('child_process');
-const [, , WORK, MODELS, ELECTRON, APP, RUNTIME, IDS = 'basic-pitch,yamnet'] = process.argv;
+const [, , WORK, MODELS, ELECTRON, APP, RUNTIME_ARG, IDS = 'basic-pitch,yamnet'] = process.argv;
+const RUNTIME = RUNTIME_ARG === 'auto' ? (() => { try { return require('./find_installed_runtime.js').requireInstalledRuntimeDir(); } catch (e) { console.error(e.message); process.exit(2); } })() : RUNTIME_ARG;
 if (!RUNTIME) { console.error('用法見檔頭'); process.exit(2); }
 const fwd = (p) => p.replace(/\\/g, '/');
 const OUT = fwd(path.join(WORK, 'e2e-result.json'));
