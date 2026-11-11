@@ -79,6 +79,16 @@ FA_TS_DIR=<含 tree-sitter.js、tree-sitter.wasm、tree-sitter-python.wasm 的�
 - 限制（誠實）：外部工具（ffmpeg／libx264）無法強制單一幀內模式，無法用真實解碼輸出交叉比對；模式 3 至 8 的正確性目前只靠兩份獨立撰寫的公式互相一致，以及規格邊界的手寫檢查。若要外部驗證，需要一個能輸出單一 4×4 幀內模式位元流並解碼的工具路徑（待辦）。
 - 回歸：`domain_h264intra.test.js` 20 passed, 0 failed；`domain_h264dequant.test.js` 6 passed；`domain_h264dec.test.js` 6 passed（holdout `idct4-ho2` 仍未解，既有）。
 
+## 2D. CAVLC 子題：run_before 與 total_zeros（2026-11-12）
+
+- 骨架 `h264.runbefore`（表 9-10）與 `h264.totalzeros`（表 9-7、9-8，tzVlcIndex 1 至 15）：輸入一行整數（zerosLeft 或 tzVlcIndex，後接 12 或 10 個 0／1 位元），骨架內含查表資料，候選程式做「位元開頭比對碼字」。
+- **誠實註記**：查表資料由骨架提供（同 dequant 的 normAdjust 表），學到的是比對流程，不是表本身；表的正確性以下列方式確認：
+  - `run_before`：表依規格逐列抄寫；自檢碼字互不為前綴、Kraft 和（zerosLeft 1 至 6 與大於 6 各列）通過，7 至 14 那列 Kraft 0.9995（未用碼字 00000000000）。**未對照規格原文，也沒有外部來源可交叉比對。**
+  - `total_zeros`：表來源是 libavc 的 `ih264_cavlc_tables.c`（Apache 2.0）的 `gu1_size_zero_table`／`gu1_code_zero_table`，由 web-fetch 子代理讀取，本機以 `tz_check.js` 還原（自檢：每列互不為前綴、Kraft 和 1；tzVlcIndex 1 為 0.998，未用碼字 000000000）；與記憶中的 tzVlcIndex 1 一致。**仍未對照規格原文，屬外部源碼對照，不是規格對照。**
+- 數字：`run_before` train 2/2、反序 2/2、holdout 1/1（`rb-ho`，新措辭）；`total_zeros` train 2/2、反序 2/2、holdout 1/1（`tz-ho`，新措辭）。
+- 測試檔：`domain_h264cavlc.test.js`（4 passed, 0 failed）、`domain_h264totalzeros.test.js`（4 passed, 0 failed）。回歸：`domain_h264intra.test.js` 20 passed、`domain_h264dequant.test.js` 6 passed、`domain_h264dec.test.js` 6 passed。
+- 尚未做：coeff_token（表 9-5，表很大，來源同 libavc 的 coeff_token 表，待做）、level 前綴後綴、CAVLC 整區塊串接、去區塊濾波器。
+
 ## 3. 環境與坑（重要，接手前先看）
 
 1. **tree-sitter 快取**：`FA_TS_DIR` 不設或找不到時，`domain_harness.js` 會印「略過」並以 0 結束，這會假通過。接手時先確認輸出有「train N/M」那一行。本機可用的一組匹配檔是倉庫內 `renderer/vendor/tree-sitter/`（`tree-sitter.js`、`tree-sitter.wasm`、`tree-sitter-python.wasm`）；複製到一個資料夾再設 `FA_TS_DIR`。**混用不同版本會出現 `unknown section code #0x13`**（VS Code 擴充的 wasm 配上倉庫的 js 會失敗）。
