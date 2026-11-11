@@ -466,11 +466,11 @@ fallback: { stage: 'reader'|'recipe'|'lesson'|'paradigm'|'matrix'|'online'|'colu
 
 | 提交 | 內容 | 我驗證的 |
 |---|---|---|
-| 411e8ded | matrix_structure_core：`/^(+\|-)$/` 語法錯誤（整個模組載入失敗）改為 `/^[+-]$/` | structure 56、decompile 15、machine 28、synth 17、graph 7、os 1104、edit 7、memory 11、wire 3 全過 |
-| 4ff22284 | matrix_sketch_core：階乘乘積 Number 丟精度，改 BigInt 相乘；測試 harness 解除 Python 整數字串上限 | sketch 6 項過（修前 JS／Python 不一致 9/2583） |
-| fb7d3ae1 | matrix_vm_ops 測試：VM→Python 來源已含 `main()`，harness 重複呼叫（測試錯） | vm_ops 1241 項過 |
-| c84645ae | bytes／checksum／regex／text 測試改 `python3` | bytes 523、checksum 3137、regex 5、text 7 過 |
-| c9c96e24 | list 測試：單一範例斷言改為「不標 verified 且附 suggest」（模組 ambiguous 依分數差距判定，verified:false 已符合交接規則）；spec 測試：鑑別輸入組只有 1 筆，原期望 2 筆是測試寫錯 | list 7、spec 25 過 |
+| 4d26d615 | matrix_structure_core：`/^(+\|-)$/` 語法錯誤（整個模組載入失敗）改為 `/^[+-]$/` | structure 56、decompile 15、machine 28、synth 17、graph 7、os 1104、edit 7、memory 11、wire 3 全過 |
+| 976fbb17 | matrix_sketch_core：階乘乘積 Number 丟精度，改 BigInt 相乘；測試 harness 解除 Python 整數字串上限 | sketch 6 項過（修前 JS／Python 不一致 9/2583） |
+| 06d89f68 | matrix_vm_ops 測試：VM→Python 來源已含 `main()`，harness 重複呼叫（測試錯） | vm_ops 1241 項過 |
+| 2cc7b256 | bytes／checksum／regex／text 測試改 `python3` | bytes 523、checksum 3137、regex 5、text 7 過 |
+| d754af21 | list 測試：單一範例斷言改為「不標 verified 且附 suggest」（模組 ambiguous 依分數差距判定，verified:false 已符合交接規則）；spec 測試：鑑別輸入組只有 1 筆，原期望 2 筆是測試寫錯 | list 7、spec 25 過 |
 
 heldout9（`heldout9_list.jsonl`，16 題）：**ok 15/16，verified 14**（測試內門檻 ≥12）。heldout7 清單／括號 4/5。這兩批是同一批作者寫、且在模組寫完後才量的，不是獨立泛化數字。
 
@@ -497,7 +497,7 @@ heldout9（`heldout9_list.jsonl`，16 題）：**ok 15/16，verified 14**（測�
 
 ### 13.1 接手（給下一個 session）
 
-- **要嵌入的來源檔**（管理者統一做，我沒有跑 embed）：`renderer/src/algo/matrix_sketch_core.js`（提交 4ff22284 改了 prod 的 BigInt 行；目前內嵌的 `floating-assistant.js` 仍是舊版）。`matrix_structure_core.js` 不在內嵌清單內，不用嵌入，但它的正規式修正會影響 Node 測試。`matrix_list`、`matrix_spec` 只改了測試，不用嵌入。嵌入指令：`node scripts/embed-code-ui.js && node build-assistant.js`（由管理者執行）。
+- **要嵌入的來源檔**（管理者統一做，我沒有跑 embed）：`renderer/src/algo/matrix_sketch_core.js`（提交 976fbb17 改了 prod 的 BigInt 行；目前內嵌的 `floating-assistant.js` 仍是舊版）。`matrix_structure_core.js` 不在內嵌清單內，不用嵌入，但它的正規式修正會影響 Node 測試。`matrix_list`、`matrix_spec` 只改了測試，不用嵌入。嵌入指令：`node scripts/embed-code-ui.js && node build-assistant.js`（由管理者執行）。
 - **未做的順序建議**：G7（動態霍夫曼建表範本）→ G9（Petri）→ 第 3 項（DCT／量化等，依使用者說的「寫給圖片壓縮用」）；G5、G1、G6 的「部分」補成統一介面。
 - **分支注意**：這次我在 worktree 分支 `claude/matrix-finish-28f1b5` 上做了一次未先檢查的 `git reset --hard desktop-app`（該分支原本指向 `f8089636`，不在 desktop-app 的祖先鏈上）。`f8089636` 仍在物件庫中，被 `main` 與 `claude/media-codec-domain-bdfe56` 包含，沒有遺失。若要還原：`git branch -f claude/matrix-finish-28f1b5 f8089636`（會丟掉本分支的提交，先確認）。目前分支是 `desktop-app` 的最新提交加上上表 5 個提交（rebase 後 HEAD `d754af21`）。
 - **git 身分**：這台機器沒有設定 `user.name`／`user.email`。我每次用 `git -c user.name=hungfu.lee -c user.email=hungfu.lee@insyde.com commit`，沒有改全域設定。
