@@ -303,3 +303,34 @@ Pillow 外部驗證：寫出端 20/20、解碼生成器 30/30（python3 的 Pill
 - 向下相容：只新增一條 `return` 規則，原本能讀的句型（「第一行 n」「整數 n 行」等）走到它之前不變；只有「整數／小數＋具名」的 `one()` 子句才會命中。
 - 回歸（實跑，2 核、nice 19）：domain_inflate 20/20、tarx 20/20、bmpx 20/20、png 12/12、gif 14/14、pcx 14/14、jpeg 10/10、linuxreal 38/38、dsp 72/72、py_paradigms 89/89、py_lessons 17/17、linux_paradigms 125/125、py_uml_pipeline 7/7；par 16/22 train、3/5 holdout（與改前相同）。holdout 數字與改前相同。
 - 已知風險：同名欄位（整數行 `h` 與十六進位 `h`）會撞名，這是探針用的名字；真實題目應取不同名字。
+
+## 接手（blockly-finish-3，續二，2026-11-12 收尾）
+
+### 本批提交（依時間）
+| 提交 | 內容 |
+|---|---|
+| 8867fdab | 接手文件（§9 holdout 根因、G1–G18 核對）重新套在 f167c72e 上 |
+| 50d9f720 | 接手節續寫（核心測試分類） |
+| 8e0c3e19 | 讀取器：具名整數行（「第一行三個整數 w h c」）讀成 scalars，修兩段輸入限制 |
+| c62dfd43 | holdout 九題補法（各領域包 algos 正則：zlib／gzip、GNU 長檔名、PAX 欄位名、做成／編成／解開） |
+| 6c0e2492 | G1–G18 收尾（實跑與回報分開標示） |
+| 1b3b2fe6 | 讀取器 G17：點名具體格式時，泛用 hex／bmp 算法不搶先 |
+
+### 結果
+- **holdout 九題全數解出**（inflate 4/4、tarx 4/4、png 2/2、gif 2/2、pcx 2/2、jpeg 2/2）。**但 holdout 已不乾淨**：補的詞是讀了這些句子後加的（見 `DESIGN.blockly-gaps.md` §10.2）。要得到泛化數字，必須另寫新 holdout。
+- **讀取器兩段輸入**：已修（8e0c3e19），具名整數行可以讀。
+- **G17 讀取器假陽性**：已修（1b3b2fe6），ho-gzip 與 ho-jpg-enc 不再被錯認。
+- **G1–G18**：見 `DESIGN.blockly-gaps.md` §11；實跑 G1、G2、G4、G5、G7、G8、G9、G13、G14、G15、G16、G17；G3、G6、G10–G12、G18 為回報。
+- **核心測試 27 失敗中的 blockly 項**：linuxreal（單獨重跑 38/38，未重現）；其餘非 blockly，已在上一節分類。par 失敗與讀取器無關（舊讀取器同結果），屬平行運算領域，未修。
+
+### 回歸（每次改動後實跑，2 核、nice 19）
+inflate 20/20、tarx 20/20、bmpx 20/20、png 12/12、gif 14/14、pcx 14/14、jpeg 10/10、linuxreal 38/38、lzma 14/14、linuxtext 56/56、binfmt 6/6、dsp 72/72、py_paradigms 89/89、py_lessons 17/17、linux_paradigms 125/125、py_uml_pipeline 7/7。par 16/22 train、3/5 holdout（與改前相同，最後一次實跑在讀取器改動前後都是這個數字）。
+
+### 接續點（下一棒）
+1. **寫新的 holdout**（不讀既有 holdout 敘述，只看規格），對 inflate、tarx、png、gif、pcx、jpeg 各 1–2 題，量測泛化。這是目前最重要的缺口。
+2. G16 概念教學、G18 實跑（長敘述題）。
+3. 核心測試 27 項中，非 blockly 的 26 項交各領域；`par` 交平行運算接手者（其觀察已寫在本節前文）。
+
+### 注意
+- 測試執行會改動 `test-reports/`、`__pycache__`、`parts_builtin.json`，提交前要還原；未追蹤的 wasm、`node_modules` 符號連結不要加入。
+- 背景 `&` 執行的測試會在第一個測項後就結束（已遇到兩次），長的測試改用前景＋`timeout` 跑。
