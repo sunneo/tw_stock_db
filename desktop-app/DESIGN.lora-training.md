@@ -171,7 +171,35 @@ lora-train/.venv/Scripts/pip install -r lora-train/requirements.txt
 - 做法與細節見 `DESIGN.TODO.native-runner.md` §9.6；程式：`lora-slot-build.js`、`native-slot-model.js`、`tests/native/lora_slot_build.test.js`。
 - 實測：轉換 4.2 秒、峰值 RSS 約 37.6 MB（617 MB 輸入，串流）。
 - **尚未通過等價驗證**：全零 adapter 位元相同；非零 adapter 的槽版與網頁版併權重結果不一致（首步 logits cos 約 0.968）。查出原因前，不得宣稱「與 make_lora_onnx.py 等價」或「網頁版與原生版一致」。
+  - **2026-11-12 更新**：原因已查明（§11.1）：槽版與 fp32 真值一致，差異來自網頁版併權重的抖動雜訊。真模型上仍未驗證。
 - 已知阻礙：studio-viewer 的既有語法錯誤（符號式擬合區段）使 LoRA 卡片無法在畫面驗證。
+
+### 11.1 查明結果（2026-11-11～11-12，假圖重現；真模型未驗證）
+
+**結論：非零 adapter 的「槽版 vs 網頁版併權重」不一致，不是槽版的錯。** 槽版與 fp32 真值（基底輸出 + x·A·B）逐值一致（相對誤差 0）。網頁版併權重的誤差來自抖動式四捨五入，是零均值的隨機雜訊，屬於 `lora-merge` 核心（`renderer/src/studio/lora_merge_core.js`）的既有設計（`DESIGN.TODO.offline-training-studio.md` §14）。先前把「網頁版併權重」當等價基準是錯的：它本身是近似，不是真值。
+
+實測（假的 q8 圖：1 層 × 7 目標，rank 4，onnxruntime-node 1.22.0；可重現，見 `tests/native/lora_slot_equiv.test.js`）：
+
+| 假設 | 實測 | 判定 |
+|---|---|---|
+| 轉置（A、B 方向） | 非方陣（8×12 等）下，槽版 vs 真值相對誤差 0 | 排除 |
+| rank 槽順序（版面 offset） | 槽版 vs 真值 0；網頁版 vs 槽版 cos 約 0.9999～1。把 q 與 k 的 A 寫錯位置時，測試失敗（突變測試） | 排除 |
+| 縮放取 2 的冪 | 槽版不併權重，與 k 無關；強制 k=1 時網頁版誤差幾乎不變（約 0.9%） | 排除 |
+| 動態量化輸入（網頁版的 LoRA 項吃量化後的 x） | 改用量化後的 x 算真值，網頁版誤差 0.0049 vs 0.0048 | 排除 |
+| 抖動捨入 | 單一種子的 ΔW 對 A·B 相對誤差 0.994（B 很小時）；32 個種子平均後降到 0.179（約 1/√32，零均值）。誤差隨「量化步距 ÷ ΔW」增大（0.26 → 2.6 → 26 時，網頁版對真值相對誤差 0.5% → 0.7%～1%；LoRA 本身的輸出效應只有約 0.04%） | **主因** |
+
+判讀：小 adapter（ΔW 小於一格）時，併入的雜訊比 LoRA 效果本身還大；這正是 `lora_web_core.js` 的 `minCos` 門檻要擋的情況。真模型上 0.968 的首步 logits 餘弦，推測是 196 層的雜訊累積到 logits 的結果，**未在真模型上驗證**。
+
+**修正與測試**
+- 槽版程式（`lora-slot-build.js`、`native-slot-model.js`）不需要改。
+- 等價基準改為 fp32 真值：槽版相對誤差 < 1e-5；網頁版與真值相對誤差 < 3%（實測 0.5%～1.3%）。網頁版與槽版不再要求逐值相近。
+- `tests/native/lora_slot_equiv.test.js`：8 項通過（A 段權重層級，不需要 onnxruntime；B 段需要執行包，沒有就略過並說明）。`tests/native/lora_slot_build.test.js` 仍 36 項通過。
+- 網頁版降雜訊：評估後**不改程式**。確定性捨入會產生偏差（不再是零均值）；多種子平均要併入多次、成本高；而且沒有真模型的量測，無法證明改善。要改，先在真模型上量測再決定。
+
+**尚未驗證（誠實列出）**
+1. 真模型（onnx-community Qwen3-0.6B q8，約 618 MB）上的槽版與網頁版數值，包括 0.968 的來源。驗證腳本 `scripts/eval/lora_slot_web_equiv.js` 已寫好（輸入：標準版 ONNX、lora.bin、prompt ids；輸出：首步 logits 餘弦、首步 top-1、前 N 步貪婪 token 是否一致），**尚未執行**。需要使用者同意下載後才能跑；這台沒有該檔，依規則不下載。
+2. 真模型上的「量化步距 ÷ ΔW」比值，決定網頁版實際雜訊大小。只靠 PyTorch 權重無法精確算出，需要真 q8 檔。
+3. 小型重現的 ΔW 與步距比例是人為設定，不代表真 adapter 的分布。
 
 ## 12. 資料擴充：函式層切割與思考堆疊（2026-11-12，Linux 機器）
 
