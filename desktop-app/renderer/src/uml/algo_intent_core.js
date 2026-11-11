@@ -236,6 +236,8 @@
         }
         for (const g of GOALS) if (g.key.test(text)) goal.verbs.push(g.op);
         const toolAlgos = TOOLS.filter((a) => a.re.test(text) && a.sh(inputs)).map((a) => a.key).filter((k, i, arr) => arr.indexOf(k) === i); for (const fam of TOOL_FAMILIES) if (toolAlgos.some((k) => fam.includes(k))) for (const k of fam) if (!toolAlgos.includes(k)) toolAlgos.push(k); // 同家族的算法種類互為候選（敘述措辭抓不到時，由沙盒判決擇一）
+        // G17：點名了具體檔案格式（gzip／zlib／JPEG／PCX／GIF／PNG／DEFLATE）時，「十六進位、灰階、位元」這類只描述輸入形狀或像素的泛用詞不應搶先（它們只因為輸入是十六進位才命中）；有 BMP／xxd／傾印字樣時不動，避免改壞 BMP 與 xxd 題
+        if (/gzip|zlib|\bJPEG\b|\bPCX\b|\bGIF\b|\bPNG\b|DEFLATE/i.test(text) && !/BMP|xxd|傾印|dump/i.test(text)) { const GENERIC = ['hex-decode', 'hex-encode', 'bits-expand', 'xxd-dump', 'bmp-gray', 'bmp-read8', 'bmp-header', 'bmp-read1', 'bmp-pixel', 'bmp-stride']; for (let i = toolAlgos.length - 1; i >= 0; i--) if (GENERIC.includes(toolAlgos[i])) toolAlgos.splice(i, 1); }
         if (ALGOS.some((a) => a.pri && a.re.test(text) && !(a.veto && a.veto.test(text)))) toolAlgos.length = 0; // 領域包的條目標 pri:true＝比內建工具詞彙更具體（例如 sort／uniq／sed 的行為題），命中時不讓 lines-map 等通用工具詞彙搶走
         const toolAlgo = toolAlgos[0]; const algo = toolAlgo || (ALGOS.find((a) => a.re.test(text) && !(a.veto && a.veto.test(text))) || {}).key || null; const paradigms = (algo && PARADIGMS[algo]) || (toolAlgo ? ['text-lines'] : []);
         { const ra = ALGOS.find((a) => a.pri && a.rawAll && a.re.test(text) && !(a.veto && a.veto.test(text))); if (ra) { inputs.length = 0; inputs.push({ k: 'rest', count: null, name: 'lines', raw: true }); } } // 領域條目標 rawAll:true＝輸入形狀太特別（行裡混十六進位顏色、索引…），整份原樣讀成行清單，由骨架自己拆

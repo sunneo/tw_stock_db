@@ -400,3 +400,9 @@ holdout 未解 6 題：cat-two、exec-env、tar-blocks、canonical-huffman、xz-
 2. **G16 概念教學**：未補。原因：需要寫教學敘述，不屬於本批的程式範圍。
 3. **G18 重跑**：沒有重跑 specLike 的題。下一步：挑幾題長敘述實跑。
 4. **新 holdout**：見 §10.2。
+
+### 11.2 G17 讀取器假陽性（已補，2026-11-12，commit 見下）
+- 改了什麼：`algo_intent_core.js` 的工具偵測後，若敘述點名具體格式（gzip／zlib／JPEG／PCX／GIF／PNG／DEFLATE），且沒有 BMP／xxd／傾印字樣，就移除只描述輸入形狀或像素的泛用算法（hex-decode、hex-encode、bits-expand、xxd-dump、bmp-* 全族）。
+- 為什麼：「給一行十六進位，是 gzip 壓縮檔…還原成原始文字」被讀成 hex-decode；「…灰階像素…做成 JPEG 檔」被讀成 bmp-gray，錯的算法會拉錯骨架。
+- 驗證（實跑）：ho-gzip 的讀取器輸出由 hex-decode 變成 null（不再錯認）；ho-jpg-enc 由 bmp-gray 變成 null。回歸：inflate 20/20、tarx 20/20、bmpx 20/20、png 12/12、gif 14/14、pcx 14/14、jpeg 10/10、linuxreal 38/38、lzma 14/14、linuxtext 56/56、binfmt 6/6、dsp 72/72、py_paradigms 89/89、py_lessons 17/17、linux_paradigms 125/125、py_uml_pipeline 7/7。par 16/22、3/5（與改前相同，未在本次重跑，沿用 §10.1）。
+- 限制：這只是讀取器的 `algo` 欄位；各領域包仍用自己的 `algos` 正則，所以 holdout 的解出數不因此改變。
