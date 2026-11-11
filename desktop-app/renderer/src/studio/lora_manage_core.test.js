@@ -35,47 +35,39 @@ check('缺的評量指標寫無資料，不算差距', M.summarizeCard(cNo).metr
 const cRegress = card(); cRegress.eval.split_legal_rate = { base: 0.8, tuned: 0.7, n: 50 };
 check('微調比基底差：判定退步', M.summarizeCard(cRegress).metrics.find((m) => m.key === 'split_legal_rate').verdict === '退步');
 
-// ---- 註冊表列 ----
-const entries = [
-    { id: 'lora/demo-fc', name: '示範：function call', base: 'Qwen3-0.6B', rank: 16, size: 39 * 1024 * 1024, version: '0.2.0', path: 'lora/demo-fc/lora.bin', lastUsed: Date.UTC(2026, 10, 12, 9, 30), hasCard: true },
-    { id: 'lora/uml', name: '示範：UML', base: 'Qwen3-0.6B', rank: 8, size: 20 * 1024 * 1024, version: '0.1.0', path: 'lora/uml/lora.bin' },
-    { id: 'lora/extra', name: '第三個', base: 'Qwen3-0.6B', rank: 16, size: 10, version: '0.0.1', path: 'x' }
-];
-const slots = [{ index: 0, loadedId: 'lora/demo-fc', lastUsed: Date.UTC(2026, 10, 12, 9, 30) }, { index: 1, loadedId: null, lastUsed: null }];
-const rows = M.registryRows(entries, slots, Date.UTC(2026, 10, 12, 10, 0));
-const r0 = rows.find((r) => r.id === 'lora/demo-fc'), r1 = rows.find((r) => r.id === 'lora/uml');
-check('已載入的列：佔用槽 0、有最後使用時間', r0.loaded === true && r0.slot === 0 && r0.lastUsed === '2026-11-12 09:30', r0);
-check('大小以可讀單位顯示', r0.size === '39.0 MB' && rows.find((r) => r.id === 'lora/extra').size === '10 位元組', rows.map((r) => r.size));
-check('已載入：不能再載入、可卸載、不能移除（說明原因）', r0.actions.load.ok === false && /已經載入/.test(r0.actions.load.reason) && r0.actions.unload.ok && r0.actions.remove.ok === false && /請先卸載/.test(r0.actions.remove.reason));
-check('未載入且有空槽：可載入；沒有最後使用時間寫「從未使用」', r1.actions.load.ok && r1.loaded === false && r1.lastUsed === '從未使用' && r1.actions.unload.ok === false && r1.actions.remove.ok);
-const full = M.registryRows(entries, [{ index: 0, loadedId: 'lora/demo-fc', lastUsed: 1 }, { index: 1, loadedId: 'lora/uml', lastUsed: 2 }], 3);
-check('槽全滿：未載入的 LoRA 不能載入，原因提示用替換', full.find((r) => r.id === 'lora/extra').actions.load.ok === false && /替換/.test(full.find((r) => r.id === 'lora/extra').actions.load.reason));
-check('卸載後仍保留該 LoRA 的最後使用時間（來自註冊表）', (() => { const e2 = entries.map((e) => (e.id === 'lora/uml' ? Object.assign({}, e, { lastUsed: Date.UTC(2026, 10, 11, 8, 0) }) : e)); return M.registryRows(e2, slots, 0).find((r) => r.id === 'lora/uml').lastUsed === '2026-11-11 08:00'; })());
-
-// ---- 規則：註冊、移除、載入、卸載、替換（不改輸入）----
-const base = { entries, slots, now: Date.UTC(2026, 10, 12, 11, 0) };
-const beforeSlots = JSON.stringify(slots);
-const ld = M.planAction('load', Object.assign({}, base, { id: 'lora/uml' }));
-check('載入：放進第一個空槽，帶入現在時間，且不改輸入', ld.ok && ld.slots[1].loadedId === 'lora/uml' && ld.slots[1].lastUsed === base.now && JSON.stringify(slots) === beforeSlots, ld);
-check('載入已載入的：失敗並說明槽位', (() => { const r = M.planAction('load', Object.assign({}, base, { id: 'lora/demo-fc' })); return !r.ok && /槽 0/.test(r.error); })());
-const ul = M.planAction('unload', Object.assign({}, base, { id: 'lora/demo-fc' }));
-check('卸載：清空該槽，不影響別的槽', ul.ok && ul.slots[0].loadedId === null && ul.slots[1].loadedId === null, ul);
-check('卸載沒載入的：失敗', M.planAction('unload', Object.assign({}, base, { id: 'lora/uml' })).ok === false);
-check('移除載入中的：失敗；移除沒載入的：從註冊表拿掉', M.planAction('remove', Object.assign({}, base, { id: 'lora/demo-fc' })).ok === false && (() => { const r = M.planAction('remove', Object.assign({}, base, { id: 'lora/uml' })); return r.ok && r.entries.length === 2 && !r.entries.some((e) => e.id === 'lora/uml'); })());
-check('替換：指定槽 1 放進去（槽 1 原本是空的也可以）', (() => { const r = M.planAction('replace', Object.assign({}, base, { id: 'lora/uml', slotIndex: 1 })); return r.ok && r.slots[1].loadedId === 'lora/uml' && r.replaced === 1; })());
-check('替換：槽不存在、或這個 LoRA 已在別槽，失敗', M.planAction('replace', Object.assign({}, base, { id: 'lora/uml', slotIndex: 9 })).ok === false && M.planAction('replace', Object.assign({}, base, { id: 'lora/demo-fc', slotIndex: 1 })).ok === false);
-const reg = M.planAction('register', { entries, slots, draft: { id: 'lora/new', base: 'Qwen3-0.6B', path: 'lora/new/lora.bin', name: '新的' } });
-check('註冊：加入新 id；重複 id 失敗；缺基底或位置失敗', reg.ok && reg.entries.length === 4 && M.planAction('register', { entries, slots, draft: { id: 'lora/uml', base: 'b', path: 'p' } }).ok === false && M.planAction('register', { entries, slots, draft: { id: 'z', path: 'p' } }).ok === false && M.planAction('register', { entries, slots, draft: { id: 'z', base: 'b' } }).ok === false);
-check('未知動作：失敗', M.planAction('explode', base).ok === false);
+// ---- 登錄表 status() 形狀（lora_registry_core，假資料）----
+const reg = (o) => Object.assign({ id: 'lora/a', name: 'A', version: '0.1', description: '描述 A', base: 'Qwen3-0.6B', rank: 4, size: 39 * 1024 * 1024, domains: ['tool_call'], triggers: ['呼叫'], prompt_format_version: 1, source: 'user', enabled: true, location: 'lora/a/lora.bin', eval: { lose: ['uml'], win: ['tool_call'] }, compat: 'ok', compatReasons: [], pinned: false }, o);
+const status = {
+    slotCapacity: 16, usedRank: 4, freeRank: 12, maxActive: 2, budget: 16, usedBytes: 39 * 1024 * 1024,
+    slots: [{ id: 'lora/a', name: 'A', version: '0.1', rank: 4, size: 39 * 1024 * 1024, loaded: true, pinned: true, inUse: 1, lastUsed: Date.UTC(2026, 10, 12, 9, 30) }],
+    registered: [reg({ pinned: true }), reg({ id: 'lora/b', name: 'B', rank: 4, size: 20 * 1024 * 1024, enabled: false, compat: 'reject', compatReasons: ['基底不符：需要 Qwen3-1.7B'] }), reg({ id: 'lora/c', name: 'C', rank: 4, size: 10, source: 'builtin' })]
+};
+const rows = M.rowsFromStatus(status);
+const ra = rows.find((r) => r.id === 'lora/a'), rb = rows.find((r) => r.id === 'lora/b'), rc = rows.find((r) => r.id === 'lora/c');
+check('容量：rank 用量與剩餘（不是編號槽）', M.budgetOf(status).text === 'rank 4 / 16，剩 12', M.budgetOf(status));
+check('載入中：推論中計數、最後使用時間、不能再載入', ra.loaded && ra.inUse === 1 && ra.lastUsed === '2026-11-12 09:30' && ra.actions.load.ok === false && /已經載入/.test(ra.actions.load.reason));
+check('釘選且推論中：不能卸載，說明原因', ra.actions.unload.ok === false && /釘選/.test(ra.actions.unload.reason));
+check('推論中（沒釘選）：卸載被擋，原因是計數', (() => { const st = JSON.parse(JSON.stringify(status)); st.slots[0].pinned = false; st.slots[0].inUse = 2; st.registered[0].pinned = false; return M.rowsFromStatus(st)[0].actions.unload.ok === false && /計數 2/.test(M.rowsFromStatus(st)[0].actions.unload.reason); })());
+const rd = M.rowsFromStatus({ registered: [reg({ id: 'lora/d', enabled: false })] })[0];
+check('停用的 LoRA（相容）：不能載入，要先啟用；按鈕文字跟著狀態', rd.actions.load.ok === false && /停用/.test(rd.actions.load.reason) && rd.actions.enable.label === '啟用' && rd.enabled === false);
+check('相容性不通過比停用先顯示（原因更具體）', /基底不符/.test(rb.actions.load.reason) && rb.enabled === false);
+check('相容性 reject：載入與替換都被擋，原因就是登錄表給的 compatReasons', rb.actions.load.reason.indexOf('基底不符') >= 0 && rb.actions.replace.ok === false);
+check('未載入、可用：可載入，替換有替換中的說明', rc.actions.load.ok && rc.actions.replace.ok && /重建推論 session/.test(rc.actions.replace.note) && rc.actions.unload.ok === false && rc.actions.pin.label === '釘選');
+check('未載入：不能移除以外都正常；載入中不能移除', rc.actions.remove.ok && ra.actions.remove.ok === false && /請先卸載/.test(ra.actions.remove.reason));
+check('沒有最後使用時間寫「從未使用」，來源與相容性照實', rc.lastUsed === '從未使用' && rc.source === 'builtin' && rc.compat === 'ok');
+check('空登錄表：沒有列，不丟例外', M.rowsFromStatus({}).length === 0 && M.rowsFromStatus(null).length === 0);
+const card2 = M.cardFromRegistered(reg({ id: 'lora/x' }));
+check('登錄表卡片：能力標籤、觸發字、評量贏與輸清單', card2.domains[0] === 'tool_call' && card2.triggers[0] === '呼叫' && card2.evalWin[0] === 'tool_call' && card2.evalLose[0] === 'uml', card2);
 
 // ---- 畫面 ----
-const html = M.renderLoraManageHTML({ rows, card: M.summarizeCard(card()) });
-check('列表有操作按鈕，不能用的按鈕標 disabled 並有原因', /data-lora-action="load" data-id="lora\/demo-fc" disabled/.test(html) && /data-lora-action="unload" data-id="lora\/demo-fc"[^>]*>卸載/.test(html), html.slice(0, 500));
-check('model card：名稱、介紹、能力、限制、評量差距都有', /示範：function call 格式/.test(html) && /工具呼叫/.test(html) && /只支援兩個工具/.test(html) && /\+36 點/.test(html) && /樣本數 12 題偏少/.test(html));
-check('缺的資料寫無資料', M.renderLoraManageHTML({ rows: [], card: M.summarizeCard(Object.assign(card(), { capabilities: [], known_limits: [] })) }).indexOf('無資料') >= 0 && /無資料（還沒有註冊的 LoRA）/.test(M.renderLoraManageHTML({ rows: [] })));
-check('外部字串跳脫（名稱含 HTML 不會變成標籤）', (() => { const h = M.renderLoraManageHTML({ rows: [Object.assign({}, rows[0], { name: '<img src=x>' })] }); return h.indexOf('<img') < 0 && h.indexOf('&lt;img') >= 0; })());
-check('card 有錯誤時標示需要修正', /需要修正/.test(M.renderLoraManageHTML({ rows: [], card: M.summarizeCard({ format: 'x' }) })));
-check('大小與時間格式函式', M.sizeText(undefined) === '未知' && M.timeText(NaN) === '從未使用');
+const html = M.renderLoraManageHTML({ rows, budget: M.budgetOf(status), registryCard: M.cardFromRegistered(reg({ compat: 'reject', compatReasons: ['基底不符'] })), card: M.summarizeCard(card()) });
+check('列表有按鈕，不能用的標 disabled 並帶原因', /data-lora-action="load" data-id="lora\/b" disabled/.test(html) && /data-lora-action="pin" data-id="lora\/c"/.test(html), html.slice(0, 400));
+check('容量與替換中提示', /rank 4 \/ 16，剩 12/.test(M.renderLoraManageHTML({ rows: [], budget: M.budgetOf(status), busy: '替換 lora/a → lora/c' })) && /替換中：替換 lora\/a/.test(M.renderLoraManageHTML({ rows: [], busy: '替換 lora/a → lora/c' })));
+check('登錄表卡片：相容性不通過的原因要顯示', /相容性不通過：基底不符/.test(html));
+check('model_card.json 的卡片仍照常顯示（名稱、限制、評量差距）', /示範：function call 格式/.test(html) && /只支援兩個工具/.test(html) && /\+36 點/.test(html));
+check('缺資料寫無資料', /無資料（還沒有註冊的 LoRA）/.test(M.renderLoraManageHTML({ rows: [] })));
+check('外部字串跳脫', (() => { const h = M.renderLoraManageHTML({ rows: M.rowsFromStatus({ registered: [reg({ name: '<img src=x>' })] }) }); return h.indexOf('<img') < 0 && h.indexOf('&lt;img') >= 0; })());
+check('格式函式', M.sizeText(undefined) === '未知' && M.timeText(NaN) === '從未使用');
 
 console.log(ok + ' passed, ' + bad + ' failed');
 process.exit(bad ? 1 : 0);

@@ -1,10 +1,11 @@
 'use strict';
-/* LoRA 管理（純函式＋畫面字串，不碰檔案、網路、槽位硬體）。設計見 DESIGN.TODO.offline-training-studio.md §21。
+/* LoRA 管理（純函式＋畫面字串，不碰檔案、網路、登錄表本體）。設計見 DESIGN.TODO.offline-training-studio.md §21。
  *   CARD_FORMAT／validateModelCard(card)     model_card.json 的欄位檢查（格式 fa-lora-card，版本 1）
  *   summarizeCard(card)                       model card → 顯示用摘要（評量：基底、微調、差距、判定；缺資料寫「無資料」）
- *   registryRows(entries, slots, now)         註冊表＋槽位 → 每列：是否已載入、佔用哪個槽、最後使用時間、可做的動作與原因
- *   planAction(action, state)                 註冊、移除、載入、卸載、替換的規則檢查；回傳下一個槽位狀態（不改輸入）
- *   renderLoraManageHTML(model)               列表與 model card 的 HTML（所有外部字串先跳脫）
+ *   budgetOf(status)                          登錄表的容量（rank 用量與剩餘）
+ *   rowsFromStatus(status)                    登錄表 status() → 每列：載入中、推論中計數、釘選、最後使用、按鈕可不可按與原因
+ *   cardFromRegistered(entry)                 登錄表的 model card（能力標籤、觸發字、相容性、評量贏與輸清單）
+ *   renderLoraManageHTML(model)               列表、登錄表卡片與 model_card.json 卡片的 HTML（所有外部字串先跳脫）
  * 欄位與責任分工見 §21.2：描述檔（註冊表）由 lora-slot-js 提供；model_card.json 由 lora-manager-2 產生，放在資產裡。
  */
 (function (root, factory) {
@@ -66,7 +67,9 @@
         };
     }
 
-    // ---- 槽位與註冊表 ----
+    // ---- 登錄表（lora_registry_core 的 status() 形狀，§21.5）----
+    // 真實模型：容量以 rank 計（slotCapacity，已用 usedRank，剩 freeRank），不是編號槽。
+    // 權威規則在登錄表本身（pin、推論中計數、容量、相容性）；這裡只把它的狀態換成畫面列與按鈕提示。
     function sizeText(b) {
         if (!Number.isFinite(b)) return '未知';
         const u = ['位元組', 'KB', 'MB', 'GB']; let x = b, i = 0; while (x >= 1024 && i < u.length - 1) { x /= 1024; i++; }
@@ -74,72 +77,41 @@
     }
     const timeText = (ms) => (Number.isFinite(ms) ? new Date(ms).toISOString().slice(0, 16).replace('T', ' ') : '從未使用');
 
-    function slotOf(slots, id) { const s = (slots || []).find((x) => x.loadedId === id); return s ? s.index : null; }
+    function budgetOf(status) {
+        const s = status || {};
+        return { slotCapacity: s.slotCapacity, usedRank: s.usedRank, freeRank: s.freeRank, maxActive: s.maxActive, usedBytes: s.usedBytes, budget: s.budget, text: 'rank ' + (s.usedRank === undefined ? '?' : s.usedRank) + ' / ' + (s.slotCapacity === undefined ? '?' : s.slotCapacity) + '，剩 ' + (s.freeRank === undefined ? '?' : s.freeRank) };
+    }
 
-    function registryRows(entries, slots, now) {
-        const sl = Array.isArray(slots) ? slots : [];
-        const free = sl.filter((s) => !s.loadedId).length;
-        return (entries || []).map((e) => {
-            const idx = slotOf(sl, e.id), loaded = idx !== null && idx !== undefined;
-            const slot = loaded ? sl.find((s) => s.index === idx) : null;
+    // 每個已註冊的 LoRA 一列：是否載入、推論中計數、釘選、最後使用時間、按鈕能不能按（與原因）
+    function rowsFromStatus(status) {
+        const s = status || {}, slots = Array.isArray(s.slots) ? s.slots : [], reg = Array.isArray(s.registered) ? s.registered : [];
+        const live = new Map(slots.map((x) => [x.id, x]));
+        return reg.map((r) => {
+            const sl = live.get(r.id) || null, loaded = !!sl, pinned = !!r.pinned, inUse = sl && Number.isFinite(sl.inUse) ? sl.inUse : 0;
+            const reject = r.compat === 'reject' ? (Array.isArray(r.compatReasons) && r.compatReasons.length ? r.compatReasons.join('；') : '相容性檢查不通過') : '';
             const actions = {
-                load: loaded ? { ok: false, reason: '已經載入（槽 ' + idx + '）' } : (free > 0 ? { ok: true } : { ok: false, reason: '沒有空槽：請先卸載，或用「替換」指定槽' }),
-                unload: loaded ? { ok: true } : { ok: false, reason: '目前沒有載入' },
+                load: loaded ? { ok: false, reason: '已經載入' } : reject ? { ok: false, reason: reject } : r.enabled === false ? { ok: false, reason: '已停用：請先啟用' } : { ok: true },
+                unload: !loaded ? { ok: false, reason: '目前沒有載入' } : pinned ? { ok: false, reason: '已釘選：先取消釘選才能卸載' } : inUse > 0 ? { ok: false, reason: '推論中（計數 ' + inUse + '）' } : { ok: true },
                 remove: loaded ? { ok: false, reason: '載入中不能移除：請先卸載' } : { ok: true },
-                replace: { ok: sl.length > 0, reason: sl.length ? '' : '沒有槽位' }
+                replace: loaded ? { ok: false, reason: '已經載入' } : reject ? { ok: false, reason: reject } : { ok: true, note: '替換會重建推論 session（桌面約 2 秒；網頁版重新併權重，數秒到數十秒）' },
+                pin: { ok: true, label: pinned ? '取消釘選' : '釘選' },
+                enable: { ok: true, label: r.enabled === false ? '啟用' : '停用' }
             };
             return {
-                id: e.id, name: e.name || e.id, base: e.base || '未標註', rank: e.rank, version: e.version || '未標註', path: e.path || '',
-                size: sizeText(e.size), loaded, slot: loaded ? idx : null, lastUsed: timeText(Number.isFinite(e.lastUsed) ? e.lastUsed : (slot ? slot.lastUsed : NaN)), actions,
-                hasCard: !!e.hasCard, now: Number.isFinite(now) ? now : null
+                id: r.id, name: r.name || r.id, version: r.version || '未標註', base: r.base || '未標註', rank: r.rank, size: sizeText(r.size),
+                sizeBytes: r.size, loaded, pinned, inUse, slot: null, lastUsed: timeText(sl ? sl.lastUsed : NaN),
+                source: r.source || '未標註', enabled: r.enabled !== false, compat: r.compat || 'ok', compatReasons: Array.isArray(r.compatReasons) ? r.compatReasons : [],
+                domains: Array.isArray(r.domains) ? r.domains : [], triggers: Array.isArray(r.triggers) ? r.triggers : [], description: r.description || '',
+                evalWin: r.eval && Array.isArray(r.eval.win) ? r.eval.win : null, evalLose: r.eval && Array.isArray(r.eval.lose) ? r.eval.lose : null,
+                location: r.location || '', actions
             };
         });
     }
 
-    // 規則檢查與下一個槽位狀態（不改輸入）
-    function planAction(action, state) {
-        const st = state || {}, slots = (st.slots || []).map((s) => Object.assign({}, s));
-        const entries = st.entries || [], now = st.now;
-        const ent = entries.find((e) => e.id === st.id);
-        const fail = (error) => ({ ok: false, error, slots: st.slots || [] });
-        const occupiedBy = (id) => slots.find((s) => s.loadedId === id);
-        switch (action) {
-            case 'register': {
-                if (!st.draft || !isStr(st.draft.id)) return fail('缺 id');
-                if (!isStr(st.draft.base)) return fail('缺基底模型（base）');
-                if (!isStr(st.draft.path)) return fail('缺檔案位置（path）');
-                if (entries.some((e) => e.id === st.draft.id)) return fail('已註冊過相同的 id：' + st.draft.id);
-                return { ok: true, slots, entries: entries.concat([Object.assign({}, st.draft)]) };
-            }
-            case 'remove': {
-                if (!ent) return fail('找不到這個 LoRA');
-                if (occupiedBy(ent.id)) return fail('載入中不能移除：請先卸載');
-                return { ok: true, slots, entries: entries.filter((e) => e.id !== ent.id) };
-            }
-            case 'load': {
-                if (!ent) return fail('找不到這個 LoRA');
-                if (occupiedBy(ent.id)) return fail('已經載入（槽 ' + occupiedBy(ent.id).index + '）');
-                const free = slots.find((s) => !s.loadedId);
-                if (!free) return fail('沒有空槽：請先卸載，或用替換');
-                free.loadedId = ent.id; free.lastUsed = now;
-                return { ok: true, slots, entries };
-            }
-            case 'unload': {
-                const s = occupiedBy(st.id);
-                if (!s) return fail('目前沒有載入');
-                s.loadedId = null;
-                return { ok: true, slots, entries };
-            }
-            case 'replace': {
-                if (!ent) return fail('找不到這個 LoRA');
-                const target = slots.find((s) => s.index === st.slotIndex);
-                if (!target) return fail('沒有這個槽：' + st.slotIndex);
-                if (occupiedBy(ent.id)) return fail('已經在槽 ' + occupiedBy(ent.id).index + ' 載入');
-                target.loadedId = ent.id; target.lastUsed = now;
-                return { ok: true, slots, entries, replaced: target.index };
-            }
-            default: return fail('未知的動作：' + action);
-        }
+    // 登錄表的 model card（卡片用）：能力標籤、觸發字、相容性與原因、評量的贏與輸清單
+    function cardFromRegistered(r) {
+        const row = rowsFromStatus({ registered: [r] })[0];
+        return Object.assign({}, row, { hasRegistryCard: true });
     }
 
     // ---- HTML ----
@@ -159,18 +131,32 @@
             '<h5>訓練資料摘要</h5>' + tr + '<h5>已知限制</h5>' + lim + '</div>';
     }
 
-    function renderLoraManageHTML(model) {
-        const m = model || {};
-        const rows = (m.rows || []).map((r) => {
-            const btn = (name, label, a) => '<button class="act" data-lora-action="' + esc(name) + '" data-id="' + esc(r.id) + '"' + (a && a.ok ? '' : ' disabled title="' + esc(a && a.reason) + '"') + '>' + esc(label) + '</button>';
-            return '<tr class="' + (r.loaded ? 'on' : '') + '"><td><b>' + esc(r.name) + '</b><div class="id">' + esc(r.id) + '</div></td><td>' + esc(r.base) + (r.rank !== undefined && r.rank !== null ? '・rank ' + esc(r.rank) : '') + '</td><td>' + esc(r.size) + '</td><td>' + esc(r.version) + '</td>' +
-                '<td>' + (r.loaded ? '槽 ' + esc(r.slot) : '<span class="na">未載入</span>') + '</td><td>' + esc(r.lastUsed) + '</td><td>' +
-                '<button class="act" data-lora-action="card" data-id="' + esc(r.id) + '">介紹</button> ' + btn('load', '載入', r.actions.load) + ' ' + btn('unload', '卸載', r.actions.unload) + ' ' + btn('remove', '移除', r.actions.remove) + ' ' + btn('replace', '替換', r.actions.replace) + '</td></tr>';
-        }).join('');
-        const table = rows ? '<table><tr><th>LoRA</th><th>基底</th><th>大小</th><th>版本</th><th>槽位</th><th>最後使用</th><th>操作</th></tr>' + rows + '</table>' : '<div class="na">無資料（還沒有註冊的 LoRA）</div>';
-        const card = m.card ? cardHTML(m.card) : '';
-        return '<div class="lora-manage"><div class="ttl">LoRA 管理</div>' + table + card + '</div>';
+    function registryCardHTML(r) {
+        const chips = (xs) => (xs && xs.length ? xs.map((x) => '<span class="chip">' + esc(x) + '</span>').join('') : '<span class="na">無資料</span>');
+        const comp = r.compat === 'reject' ? '<div class="err">相容性不通過：' + esc(r.compatReasons.join('；') || '未說明') + '</div>' : r.compat === 'warn' ? '<div class="warn">相容性提醒：' + esc(r.compatReasons.join('；')) + '</div>' : '';
+        const ev = (r.evalWin || r.evalLose) ? '<div>評量：贏 ' + esc((r.evalWin || []).join('、') || '無') + '；輸 ' + esc((r.evalLose || []).join('、') || '無') + '</div>' : '<div class="na">無資料（沒有評量結果）</div>';
+        return '<div class="card"><div class="ttl">' + esc(r.name) + '</div><div class="intro">' + esc(r.description || '無資料（沒有說明）') + '</div>' +
+            '<div class="kv">版本 ' + esc(r.version) + '・基底 ' + esc(r.base) + '・rank ' + esc(r.rank) + '・' + esc(r.size) + '・來源 ' + esc(r.source) + (r.location ? '・位置 ' + esc(r.location) : '') + '</div>' +
+            comp + '<h5>能力（適用領域）</h5><div>' + chips(r.domains) + '</div><h5>觸發字</h5><div>' + chips(r.triggers) + '</div>' + ev + '</div>';
     }
 
-    return { CARD_FORMAT, CARD_VERSION, METRIC_KEYS, validateModelCard, summarizeCard, registryRows, planAction, renderLoraManageHTML, sizeText, timeText };
+    function renderLoraManageHTML(model) {
+        const m = model || {};
+        const bud = m.budget ? '<div class="kv">容量：' + esc(m.budget.text) + (m.budget.maxActive !== undefined ? '・同時載入上限 ' + esc(m.budget.maxActive) : '') + '</div>' : '';
+        const busy = m.busy ? '<div class="warn">替換中：' + esc(m.busy) + '</div>' : '';
+        const btn = (name, label, a, id) => '<button class="act" data-lora-action="' + esc(name) + '" data-id="' + esc(id) + '"' + (a && a.ok ? '' : ' disabled title="' + esc(a && a.reason) + '"') + '>' + esc(label) + '</button>';
+        const rows = (m.rows || []).map((r) => {
+            const state = r.loaded ? '<span class="badge b-done">載入中（推論中 ' + esc(r.inUse) + '）</span>' : '<span class="na">未載入</span>';
+            const flags = (r.pinned ? '<span class="badge">釘選</span> ' : '') + (r.enabled ? '' : '<span class="badge">停用</span> ') + (r.compat !== 'ok' ? '<span class="badge b-fail">相容 ' + esc(r.compat) + '</span>' : '');
+            return '<tr class="' + (r.loaded ? 'on' : '') + '"><td><b>' + esc(r.name) + '</b><div class="id">' + esc(r.id) + '</div>' + flags + '</td><td>' + esc(r.base) + '・rank ' + esc(r.rank) + '</td><td>' + esc(r.size) + '</td><td>' + esc(r.version) + '</td><td>' + state + '</td><td>' + esc(r.lastUsed) + '</td><td>' +
+                '<button class="act" data-lora-action="card" data-id="' + esc(r.id) + '">介紹</button> ' +
+                btn('load', '載入', r.actions.load, r.id) + ' ' + btn('unload', '卸載', r.actions.unload, r.id) + ' ' + btn('pin', r.actions.pin.label, r.actions.pin, r.id) + ' ' + btn('enable', r.actions.enable.label, r.actions.enable, r.id) + ' ' + btn('replace', '替換', r.actions.replace, r.id) + ' ' + btn('remove', '移除', r.actions.remove, r.id) + '</td></tr>';
+        }).join('');
+        const table = rows ? '<table><tr><th>LoRA</th><th>基底</th><th>大小</th><th>版本</th><th>狀態</th><th>最後使用</th><th>操作</th></tr>' + rows + '</table>' : '<div class="na">無資料（還沒有註冊的 LoRA）</div>';
+        const regCard = m.registryCard ? registryCardHTML(m.registryCard) : '';
+        const card = m.card ? cardHTML(m.card) : '';
+        return '<div class="lora-manage"><div class="ttl">LoRA 管理</div>' + bud + busy + table + regCard + card + '</div>';
+    }
+
+    return { CARD_FORMAT, CARD_VERSION, METRIC_KEYS, validateModelCard, summarizeCard, budgetOf, rowsFromStatus, cardFromRegistered, renderLoraManageHTML, sizeText, timeText };
 }));

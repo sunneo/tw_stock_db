@@ -918,3 +918,12 @@ Backend {
 ### 21.6 接手
 - 分支 `claude/studio-domain-author-dcb72c`。新檔：`lora_manage_core.js`、`lora_manage_core.test.js`；修改：`pipeline_routes_core.js`（與測試）、`studio_server_core.js`。
 - 順序：(1) 等 lora-slot-js 與 lora-manager-2 回覆欄位，對齊後改 `validateModelCard`、`registryRows`；(2) 把 `renderLoraManageHTML` 接進檢視器 LoRA 分頁，「介紹」按鈕呼叫 `/api/lora/card`；(3) 註冊表與槽位的 host op 到位後，註冊、移除、載入、卸載、替換寫入伺服器；(4) 總指揮重產嵌入（含 `lora_manage_core.js`）。
+
+### 21.5 改接登錄表的真實模型（2026-11-12，lora-slot-js 的回覆）
+- 登錄表（`lora_registry_core`，commit `6a9d4b94`）的容量以 **rank** 計（`slotCapacity` 16、`usedRank`、`freeRank`），不是編號槽。我之前的槽位模型作廢，`registryRows`、`planAction` 已移除。
+- 列表資料來源改為 `registry.status()`：`rowsFromStatus(status)`、`budgetOf(status)`；卡片用 `cardFromRegistered(entry)`（能力標籤 domains、觸發字 triggers、相容性 compat 與 compatReasons、評量 eval.lose／eval.win）。
+- 按鈕可不可按由登錄表的狀態推出提示（已載入、釘選、推論中計數、停用、相容性不通過）；**權威規則仍在登錄表**，按下後以登錄表回傳的 error 為準。相容性不通過的原因比停用先顯示。
+- 兩種「卡片」要分清楚：登錄表卡片（eval 是贏與輸的 domain 清單）與 `model_card.json`（eval 是比率）。畫面兩個都顯示，不合併。
+- pin、replace 的 HTTP 端點還沒有：lora-slot-js 會在 `studio_server_core` 加（同一個 commit 系列）。在那之前，列表上的「釘選」「替換」只會顯示提示、點了會被停用。
+- 替換的時間：桌面約 2 秒（重建推論 session），網頁版 maxActive=1，數秒到數十秒，畫面要顯示「替換中」（`busy` 參數）。
+- 測試：`lora_manage_core.test.js` 32／0（假的 status 形狀）。
