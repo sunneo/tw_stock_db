@@ -128,6 +128,7 @@ const suites = [
     ['能力卡片（長文切片與地圖縮放、事實抽取、多片段投票融合、各種文件種類）', 'renderer/src/catalog/card_core.test.js'],
     ['排名模型訓練（邏輯迴歸、類別不平衡、留一組交叉驗證、特徵、模型排名）', 'renderer/src/catalog/rank_train.test.js'],
     ['MCP（設定檔各家寫法、bundle manifest、專案偵測、JSON-RPC 用戶端、stdio／Streamable HTTP／SSE 傳輸、結果格式）', 'renderer/src/mcp/mcp_core.test.js'],
+    ['訓練工作室內建資產（唯讀提供者：真實領域包／內建課／矩陣層／UML 表，數字動態取得；清單、詳情、匯出、拒刪）', 'renderer/src/studio/builtin_assets_core.test.js'],
     ['訓練工作室資產（sha256、manifest 建立／驗證／舊版遷移、相容性檢查與 fork、竄改拒絕）', 'renderer/src/studio/asset_core.test.js'],
     ['訓練工作室 .fatrain 容器（zip 讀寫、分片、inspect、確認後匯入、合併／fork／取代、分卷）', 'renderer/src/studio/fatrain_core.test.js'],
     ['訓練工作室儲存層（記憶體／分塊／Node fs、fap 同步與資料可能遺失旗標）', 'renderer/src/studio/storage_core.test.js'],
