@@ -20,16 +20,18 @@ function buildModel(o) {
     o = o || {}; const layers = o.layers || 2, DIN = o.din || 64, DOUT = o.dout || 96, r = rng(7), dtype = o.dtype || 'uint8';
     const nodes = [], inits = [], weights = {}, truth = {};
     for (let L = 0; L < layers; L++) for (const [grp, proj] of [['attn', 'q_proj'], ['attn', 'k_proj'], ['attn', 'v_proj'], ['attn', 'o_proj'], ['mlp', 'gate_proj'], ['mlp', 'up_proj'], ['mlp', 'down_proj']]) {
-        const base = '/model/layers.' + L + '/' + grp + '/' + proj + '/MatMul', x = 'x.' + L + proj;
+        const base = '/model/layers.' + L + '/' + grp + '/' + proj + '/MatMul', x = 'x.' + L + grp, xq = 'x.' + L + grp + '_q', xs = 'x.' + L + grp + '_s', xz = 'x.' + L + grp + '_z'; // 同一組（attn／mlp）共用輸入與輸入縮放，與真模型相同
         const Wf = new Float32Array(DIN * DOUT); for (let i = 0; i < Wf.length; i++) Wf[i] = (r() < 0.0005 ? 15 : 1) * 0.03 * gauss(r);
         let mx = 0, mn = 0; for (const v of Wf) { if (v > mx) mx = v; if (v < mn) mn = v; }
         let sc, zp, q = new Uint8Array(DIN * DOUT);
         if (dtype === 'uint8') { sc = (mx - mn) / 255; zp = Math.round(-mn / sc); for (let i = 0; i < Wf.length; i++) q[i] = Math.max(0, Math.min(255, Math.round(Wf[i] / sc) + zp)); }
         else { sc = Math.max(mx, -mn) / 127; zp = 0; for (let i = 0; i < Wf.length; i++) q[i] = Math.max(-128, Math.min(127, Math.round(Wf[i] / sc))) & 255; }
         const dt = dtype === 'uint8' ? 2 : 3, sf = new Float32Array([sc]);
-        nodes.push(node(base + '_dq', 'DynamicQuantizeLinear', [x], [base + '_xq', base + '_xs', base + '_xz']));
-        nodes.push(node(base + '_quant', 'MatMulInteger', [base + '_xq', base + '_W', base + '_xz', base + '_Wz'], [base + '_int']));
-        nodes.push(node(base + '_sm', 'Mul', [base + '_xs', base + '_Wscale'], [base + '_scales']));
+        if (proj === 'q_proj' || proj === 'gate_proj') nodes.push(node('dq.' + L + grp, 'DynamicQuantizeLinear', [x], [xq, xs, xz]));
+        nodes.push(node(base + '_quant', 'MatMulInteger', [xq, base + '_W', xz, base + '_Wz'], [base + '_int']));
+        nodes.push(node(base + '_cast', 'Cast', [base + '_int'], [base + '_intf']));
+        nodes.push(node(base + '_sm', 'Mul', [xs, base + '_Wscale'], [base + '_scales']));
+        nodes.push(node(base + '_om', 'Mul', [base + '_intf', base + '_scales'], [base + '_out']));
         inits.push(tensor(base + '_W', dt, [DIN, DOUT], Buffer.from(q)));
         inits.push(tensor(base + '_Wz', dt, [], Buffer.from([zp & 255])));
         inits.push(tensor(base + '_Wscale', 1, [], Buffer.from(sf.buffer)));
@@ -65,7 +67,7 @@ const deq = (w, qv, j, sc) => ((w.dtype === 'int8' ? (qv << 24 >> 24) : qv) - w.
 // ---------- 1. protobuf 讀寫 ----------
 {
     const m = buildModel(); const idx = Onnx.indexModel(m.bytes);
-    check('索引：節點數 = 目標×3', idx.nodes.length === 14 * 3, idx.nodes.length);
+    check('索引：節點數 = 目標×3', idx.nodes.length === 14 * 4 + 4, idx.nodes.length);
     check('索引：初始值數 = 目標×3', idx.inits.size === 14 * 3, idx.inits.size);
     const w = idx.inits.get('/model/layers.0/attn/q_proj/MatMul_W');
     check('權重初始值：型別／形狀／長度', w.dataType === 2 && w.dims.join() === '64,96' && w.rawEnd - w.rawStart === 64 * 96, w);
@@ -200,7 +202,7 @@ for (const dtype of ['uint8', 'int8']) {
     check('不相符的網址原樣通過（不動、不經過 transform）', (await other.arrayBuffer()).byteLength === origBytes.length && patchCalls.length === 0 && h.hits === 0);
     const res = await scope.fetch('https://huggingface.co/onnx-community/Qwen3-0.6B-ONNX/resolve/main/onnx/model_quantized.onnx');
     const got = new Uint8Array(await res.arrayBuffer());
-    check('相符網址回傳合併後的模型（長度與原檔不同、可解析）', got.length !== origBytes.length && Onnx.indexModel(got).nodes.length === 42 && h.hits === 1, { got: got.length, orig: origBytes.length });
+    check('相符網址回傳合併後的模型（長度與原檔不同、可解析）', got.length !== origBytes.length && Onnx.indexModel(got).nodes.length === 60 && h.hits === 1, { got: got.length, orig: origBytes.length });
     check('content-length 與實際長度相符', Number(res.headers.get('content-length')) === got.length);
     h.uninstall();
     check('uninstall 還原原本的 fetch', scope.fetch !== undefined && (await (await scope.fetch('https://huggingface.co/x/onnx/model_quantized.onnx')).arrayBuffer()).byteLength === origBytes.length);

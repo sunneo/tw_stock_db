@@ -35,19 +35,27 @@
             let zp = 0;
             if (n.inputs[3]) {
                 const Z = idx.inits.get(n.inputs[3]);
-                if (!Z || Z.rawStart < 0 || Z.rawEnd - Z.rawStart !== 1 || (Z.dims.length && Z.dims.reduce((a, b) => a * b, 1) !== 1)) return { error: '權重零點不是純量（' + where + '），可能是逐通道量化的模型，不支援' };
-                zp = W.dataType === Onnx.DT.INT8 ? (bytes[Z.rawStart] << 24 >> 24) : bytes[Z.rawStart];
+                const zraw = Z && Z.rawStart >= 0 && Z.rawEnd - Z.rawStart === 1 ? bytes[Z.rawStart] : (Z && Z.int32Data && Z.int32Data.length === 1 && Z.rawStart < 0 ? Z.int32Data[0] : null);
+                if (!Z || zraw === null || (Z.dims.length && Z.dims.reduce((a, b) => a * b, 1) !== 1)) return { error: '權重零點不是純量（' + where + '），可能是逐通道量化的模型，不支援' };
+                zp = W.dataType === Onnx.DT.INT8 ? (zraw << 24 >> 24) : zraw;
             }
             const dq = idx.producers.get(n.inputs[0]);
             if (!dq || dq.op !== 'DynamicQuantizeLinear') return { error: '輸入不是 DynamicQuantizeLinear（' + where + '），不是 quantize_dynamic 的圖' };
             const xs = dq.outputs[1];
-            const mul = (idx.consumers.get(xs) || []).find((c) => c.op === 'Mul' && c.inputs.some((i) => i !== xs && idx.inits.has(i)));
-            if (!mul) return { error: '找不到縮放值的 Mul 節點（' + where + '）' };
+            // 沿資料流找這一個目標專屬的縮放 Mul（q／k／v 共用同一個輸入縮放 xs，不能只靠 xs 找）：MatMulInteger → Cast → Mul(轉型結果, 縮放積) ← Mul(xs, 權重縮放)
+            const casts = (idx.consumers.get(n.outputs[0]) || []).filter((c) => c.op === 'Cast');
+            if (casts.length !== 1) return { error: '找不到 MatMulInteger 後的 Cast（' + where + '）' };
+            const mul2 = (idx.consumers.get(casts[0].outputs[0]) || []).filter((c) => c.op === 'Mul');
+            if (mul2.length !== 1) return { error: '找不到套用縮放積的 Mul（' + where + '）' };
+            const prodName = mul2[0].inputs.find((i) => i !== casts[0].outputs[0]);
+            const mul = idx.producers.get(prodName);
+            if (!mul || mul.op !== 'Mul' || !mul.inputs.includes(xs)) return { error: '縮放積不是 Mul(輸入縮放, 權重縮放)（' + where + '）' };
             const scaleName = mul.inputs.find((i) => i !== xs && idx.inits.has(i));
             const S = idx.inits.get(scaleName);
-            if (S.dataType !== Onnx.DT.FLOAT || S.rawStart < 0 || S.rawEnd - S.rawStart !== 4 || S.external) return { error: '縮放值不是 raw_data 的單一 float（' + where + '）' };
+            const sraw = S.dataType === Onnx.DT.FLOAT && !S.external && S.rawStart >= 0 && S.rawEnd - S.rawStart === 4 ? f32(bytes.subarray(S.rawStart, S.rawStart + 4)) : (S.dataType === Onnx.DT.FLOAT && !S.external && S.rawStart < 0 && S.floatData && S.floatData.length === 1 ? S.floatData[0] : null);
+            if (sraw === null) return { error: '縮放值不是單一 float（' + where + '）' };
             if ((idx.consumers.get(scaleName) || []).length !== 1) return { error: '縮放值被多個節點共用（' + where + '），不能改成逐欄向量' };
-            targets.push({ layer: Number(m[1]), proj: m[3], din, dout, dtype: W.dataType === Onnx.DT.INT8 ? 'int8' : 'uint8', zp, scale: f32(bytes.subarray(S.rawStart, S.rawStart + 4)), W, scaleName, nodeName: n.name });
+            targets.push({ layer: Number(m[1]), proj: m[3], din, dout, dtype: W.dataType === Onnx.DT.INT8 ? 'int8' : 'uint8', zp, scale: sraw, W, scaleName, nodeName: n.name });
         }
         return { targets };
     }
@@ -98,7 +106,7 @@
                 if (!S || !W) return { ok: false, error: '核對失敗：找不到 ' + t.scaleName, report };
                 if (W.rawEnd - W.rawStart !== t.din * t.dout) return { ok: false, error: '核對失敗：權重長度改變 ' + t.nodeName, report };
                 const want = replacements.has(t.scaleName) ? String(t.dout) : idx.inits.get(t.scaleName).dims.join();
-                if (S.dims.join() !== want || S.rawEnd - S.rawStart !== (replacements.has(t.scaleName) ? t.dout * 4 : 4)) return { ok: false, error: '核對失敗：縮放值形狀不對 ' + t.scaleName, report };
+                if (S.dims.join() !== want || (replacements.has(t.scaleName) && S.rawEnd - S.rawStart !== t.dout * 4)) return { ok: false, error: '核對失敗：縮放值形狀不對 ' + t.scaleName, report };
             }
             report.verified = true;
         }

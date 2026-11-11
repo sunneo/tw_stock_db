@@ -60,7 +60,7 @@
         return n;
     }
     function parseTensor(b, s, e, tagStart) {
-        const t = { name: '', dataType: 0, dims: [], rawStart: -1, rawEnd: -1, external: false, otherData: false, tagStart, start: s, end: e };
+        const t = { name: '', dataType: 0, dims: [], rawStart: -1, rawEnd: -1, external: false, otherData: false, floatData: null, int32Data: null, tagStart, start: s, end: e };
         eachField(b, s, e, (f) => {
             if (f.num === 1) {
                 if (f.wt === 0) t.dims.push(f.val);
@@ -70,6 +70,10 @@
             else if (f.num === 9 && f.wt === 2) { t.rawStart = f.vs; t.rawEnd = f.ve; }
             else if (f.num === 13) t.external = true;
             else if (f.num === 14 && f.wt === 0 && f.val === 1) t.external = true;
+            else if (f.num === 4 && f.wt === 2 && f.ve - f.vs <= 64) { t.floatData = t.floatData || []; const dv = new DataView(b.buffer, b.byteOffset + f.vs, f.ve - f.vs); for (let o = 0; o + 4 <= f.ve - f.vs; o += 4) t.floatData.push(dv.getFloat32(o, true)); }
+            else if (f.num === 4 && f.wt === 5) { t.floatData = t.floatData || []; t.floatData.push(new DataView(b.buffer, b.byteOffset + f.vs, 4).getFloat32(0, true)); }
+            else if (f.num === 5 && f.wt === 2 && f.ve - f.vs <= 64) { t.int32Data = t.int32Data || []; let p = f.vs; while (p < f.ve) { let v; [v, p] = readVarint(b, p); t.int32Data.push(v); } }
+            else if (f.num === 5 && f.wt === 0) { t.int32Data = t.int32Data || []; t.int32Data.push(f.val); }
             else if ([4, 5, 6, 7, 10, 11].includes(f.num)) t.otherData = true;
         });
         return t;
