@@ -321,3 +321,10 @@ FA_TS_DIR=<含 tree-sitter.js、tree-sitter.wasm、tree-sitter-python.wasm 的�
 2. 階段 5 影像的熵編碼：用已做的 CABAC 編碼器為基礎，設計多上下文的量化係數二值化（需要語法元素表，先寫清楚來源）。
 3. CABAC 語法 ctxIdx 的 m、n 表：來源需逐項核對（x264 `common/cabac.c` 的 `x264_cabac_context_init` 可能可用，先確認檔案位置）。
 4. 1/4 像素其餘位置（表 8-12 的 f、q、j 等）。
+
+### 第四棒續（同一分支，續接於 `e5a3ba3c`）
+- `c4984a63`：`h264.cabac.levels`（有損影像係數的多上下文熵編碼：截斷一元二值化，第 i 位用第 i 個上下文，共用同一算術編碼器）；`h264.qpel.diag`（1/4 像素對角 e、g、p、r）。實跑：levels train 1/1、反序 1/1、holdout 1/1；qpel.diag train 1/1、反序 1/1、holdout 1/1。自檢：1000 組隨機係數串經解碼流程還原 1000/1000。
+- 限制：多上下文只做係數絕對值（0 至 6），無符號、無 EG 後綴、上下文初始狀態固定為 0；未用 ffmpeg 逐位元對照。
+- 外部工具：本機有 `/usr/bin/ffmpeg`（含 libx264），**沒有 x264 命令列工具**（`command -v x264` 無結果）。ffmpeg 只能端到端解碼，沒有單係數或單區塊的輸出路徑，所以逐係數對照仍未做。
+- 六題 holdout：舊 id 依舊未解（保留為根因紀錄），新 id 已通過（見上表與 `031f457f`）。
+- 仍未做：CABAC 語法 ctxIdx 的 m、n 表（x264 的 `common/tables.c` 有 `x264_cabac_context_init` 類的表，需確認檔名與格式後逐項核對）；1/4 像素的 f、i、j、k、n、q 等位置（j 需先算 6 抽頭的中間值）；運動向量預測與子像素搜尋。
