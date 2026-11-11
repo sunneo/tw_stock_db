@@ -459,3 +459,46 @@ fallback: { stage: 'reader'|'recipe'|'lesson'|'paradigm'|'matrix'|'online'|'colu
 - 誠實註記：`ok` 是 `_codeAgent` 判定通過（含隱藏測資）；回傳的 `verified` 只有 3 題為 true，其餘為 false，我沒有逐題查它的確切含意（推測是合成有歧義、未排除其他解），所以不能把 74 題都說成「已驗證無歧義」。
 - 沒有失敗題，所以沒有失敗原因可寫；heldout4 有 2 題不是由矩陣層解出（`by` 空），沒有區塊，未追查來源。
 - 這批題庫早已被矩陣層量過（純 Node），這裡只是確認真 Electron 的渲染頁行為一致。
+
+## 13. 缺口補完狀態（2026-11-11，接手 session 補；只寫已驗證與明確未做的，不寫成「全部完成」）
+
+**本輪做了什麼（提交見下表）**：半成品存檔 `4eb5fb490` 的 bytes／checksum／list／regex／text／spec／sketch／vm_ops 測試全部重跑；沒有任何測試被刪除，修的是測試本身的錯與 Linux 相容性（`python`→`python3`）與一個真實的模組 bug。
+
+| 提交 | 內容 | 我驗證的 |
+|---|---|---|
+| 411e8ded | matrix_structure_core：`/^(+\|-)$/` 語法錯誤（整個模組載入失敗）改為 `/^[+-]$/` | structure 56、decompile 15、machine 28、synth 17、graph 7、os 1104、edit 7、memory 11、wire 3 全過 |
+| 4ff22284 | matrix_sketch_core：階乘乘積 Number 丟精度，改 BigInt 相乘；測試 harness 解除 Python 整數字串上限 | sketch 6 項過（修前 JS／Python 不一致 9/2583） |
+| fb7d3ae1 | matrix_vm_ops 測試：VM→Python 來源已含 `main()`，harness 重複呼叫（測試錯） | vm_ops 1241 項過 |
+| c84645ae | bytes／checksum／regex／text 測試改 `python3` | bytes 523、checksum 3137、regex 5、text 7 過 |
+| c9c96e24 | list 測試：單一範例斷言改為「不標 verified 且附 suggest」（模組 ambiguous 依分數差距判定，verified:false 已符合交接規則）；spec 測試：鑑別輸入組只有 1 筆，原期望 2 筆是測試寫錯 | list 7、spec 25 過 |
+
+heldout9（`heldout9_list.jsonl`，16 題）：**ok 15/16，verified 14**（測試內門檻 ≥12）。heldout7 清單／括號 4/5。這兩批是同一批作者寫、且在模組寫完後才量的，不是獨立泛化數字。
+
+**§12.3 缺口逐項現況（誠實版）**
+
+| # | 缺口 | 現況 | 證據與還缺什麼 |
+|---|---|---|---|
+| G5 | 輸入形狀前端 | **部分** | 邊表／格子在 graph 模組（2026-11-07）；十六進位在 bytes；清單與逐行在 list、text。**還缺**：沒有統一的 `inferShape` 擴充，各模組各自解析，沒有一次量完所有形狀。 |
+| G1 | Mealy 轉換器 | **部分** | text 模組有 `mealy` 家族（凱撒、RLE 解碼等，text 14/14）；霍夫曼成本、varint、CRC 逐位元組各自實作。**還缺**：沒有通用的「DFA＋輸出函數」合成器，也沒有 base64、xxd 管線的 Mealy 範本。 |
+| G3 | VM 整數運算元 | **已做** | `matrix_vm_ops.test.js`：`* // % & \| ^ << >>` 等 10 個算子，400 組（含負數、大位移）對 Python 一致；φ、完全數、k 進位三個 VM 程式與 JS 參考一致、VM→Python 一致。 |
+| G4 | 位元組／位元級 I/O | **已做（範圍內）** | `matrix_bytes`：10 台位元組機器 JS 與 Python 300 次一致；Linux train 位元組類 6/6。 |
+| G6 | 由規格而非範例合成 | **部分／未做** | `matrix_spec` 是「預言機／使用者答案」流程，不是把規格（CRC 多項式、tar 格式）編譯成矩陣。CRC 目前靠 GF(2) 探測＋已知多項式模板（checksum）。**還缺**：規格解析器（格式描述 → 矩陣或 DFA）。 |
+| G2 | GF(2) 半環範本 | **已做** | `matrix_checksum`：矩陣版 CRC32 對 zlib、XMODEM 對 binascii 60 串一致；GF(2) 線性 100/100。 |
+| G7 | 動態表（動態霍夫曼建表、LZMA 機率表） | **未做** | 未寫範本；VM 陣列已夠，缺的是建表的範本與題庫。 |
+| G8 | 閉包修正版 | **已做（2026-11-07）** | 見 §12.3 上方表格。 |
+| G9 | Petri 網 | **未做** | 未開始。 |
+| G10 | 結點配置慣例（堆、樹、雜湊） | **部分** | `matrix_vm_ops`：陣列堆的雜湊集合與二元搜尋樹與 JS 參考、VM→Python 一致。**還缺**：可讀的反編譯回結構體 UML。 |
+
+另有：**teach_queue 接線**：純函式完成（`matrix_spec_core`：`teachEntry`／`queueLine`／`parseQueue`／`mergeQueue`），嵌入在 `floating-assistant.js` 的 FaMatrixSpec 區塊，`_codeOffline` 附近看得到 `specFlow` 呼叫。**寫入待補佇列的檔案路徑與 UI 我沒有驗證**，列為待確認。
+
+**第 3 項（DCT、YCbCr、量化、Z 字形、PNG 濾波器）：未開始**，依交接排在後面。
+
+**沒有做完、也不能說完成的**：G1、G5、G6、G10 的「部分」項；G7、G9；teach_queue 寫檔與 UI；第 3 項全部。
+
+### 13.1 接手（給下一個 session）
+
+- **要嵌入的來源檔**（管理者統一做，我沒有跑 embed）：`renderer/src/algo/matrix_sketch_core.js`（提交 4ff22284 改了 prod 的 BigInt 行；目前內嵌的 `floating-assistant.js` 仍是舊版）。`matrix_structure_core.js` 不在內嵌清單內，不用嵌入，但它的正規式修正會影響 Node 測試。`matrix_list`、`matrix_spec` 只改了測試，不用嵌入。嵌入指令：`node scripts/embed-code-ui.js && node build-assistant.js`（由管理者執行）。
+- **未做的順序建議**：G7（動態霍夫曼建表範本）→ G9（Petri）→ 第 3 項（DCT／量化等，依使用者說的「寫給圖片壓縮用」）；G5、G1、G6 的「部分」補成統一介面。
+- **分支注意**：這次我在 worktree 分支 `claude/matrix-finish-28f1b5` 上做了一次未先檢查的 `git reset --hard desktop-app`（該分支原本指向 `f8089636`，不在 desktop-app 的祖先鏈上）。`f8089636` 仍在物件庫中，被 `main` 與 `claude/media-codec-domain-bdfe56` 包含，沒有遺失。若要還原：`git branch -f claude/matrix-finish-28f1b5 f8089636`（會丟掉本分支的提交，先確認）。目前分支是 `desktop-app` 的最新提交加上上表 5 個提交（rebase 後 HEAD `d754af21`）。
+- **git 身分**：這台機器沒有設定 `user.name`／`user.email`。我每次用 `git -c user.name=hungfu.lee -c user.email=hungfu.lee@insyde.com commit`，沒有改全域設定。
+- **沒有推送、沒有發布、沒有跑 `publish.sh`、`embed-code-ui.js`、`build-assistant.js`。**
