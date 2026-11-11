@@ -843,3 +843,45 @@ Backend {
 - 分支 `claude/studio-domain-author-dcb72c`（已 rebase 到 `4c5b5e15`，原分支留在 `backup/studio-pre-rebase-e9da5891`）。
 - 新檔：`pipeline_routes_core.js`、`pipeline_view_core.js` 與各自測試。修改：`backend_cpu_py.js`、`studio_host.js`、`studio_server_core.js`、`studio_layout_core.js`、`studio-viewer.template.html`、`scripts/embed-code-ui.js`，以及對應測試。
 - 下一步順序：(1) 有權限者重產嵌入（studio_embed 會轉綠）；(2) 14 的 gold／pred 由管理者補；(3) 19.5 的 3、4 項；(4) Electron 視窗驗證。
+
+## 20. 收尾第二輪：建議按鈕切換分頁、LLM 匯出純函式、Windows 記憶體取樣（2026-11-12）
+
+總指揮指示：把 DESIGN 待辦與三個使用者需求的未完成項目補完；匯出用的 llama.cpp 與 optimum 由 lora-manager-2 下載（本工作階段不下載、不執行轉換），本工作階段只做介面與純函式；studio_embed 的 4 項預期失敗由總指揮整合時重產嵌入，不在此處理；逐項提交、不推送、不嵌入。
+
+### 20.1 這一輪做了什麼
+- **建議按鈕切換分頁**（§19.5 第 3 項，已完成）：檢視器的流程分頁，按鈕改成 `setL(Lay.activate(L, id))`，資料匯入（ingest）與訓練（train）兩個分頁。
+- **LLM 匯出純函式**（`renderer/src/studio/llm_export_core.js`，新檔，測試 `llm_export_core.test.js`）：
+  - `EXPORT_PLANS`：ONNX q8 與 GGUF q8_0 各五步（合併、轉換、量化、核對、寫入資產）。每步註明要的工具與阻礙。
+  - `exportPlan(format, toolsState)`：每步標「缺工具」「尚未實作」或「待做」。工具找到但執行器沒寫，仍是「尚未實作」，不宣稱可用。
+  - `exportAvailability(toolsState)`：格式是否可用，以及不可用的具體原因（缺哪個工具，或執行器尚未實作）。
+  - `probeExportTools(detect)`：偵測由呼叫端注入，偵測函式丟例外不影響其他工具。
+  - `trainModePlan(mode)`：LoRA 已實作；完整微調未實作，阻礙寫明（記憶體與時間還沒評估、訓練程式沒寫）。
+- **Windows 子行程記憶體**（§19.5 第 2 項的 Windows 部分）：`studio_host.js` 在 win32 用 `tasklist /FI "PID eq <pid>" /FO CSV /NH` 讀子行程記憶體，`parseTasklistMemory` 解析千分位的 K，查不到回原因。
+- **流程總覽接上匯出的目前狀態**：伺服器的 `exportCaps` 仍是固定的全部不可用（沒有偵測結果注入），所以格式預設仍是空，畫面標示未實作。
+
+### 20.2 測試（本輪）
+| 測試 | 結果 |
+|---|---|
+| `llm_export_core.test.js` | 20／0 |
+| `studio_host.test.js` | 23／0（新增 tasklist 解析 3 項） |
+
+先前的測試數字沒有變動（見 §19.4）；本輪只動了上面兩個檔與檢視器樣板，所以其餘套件不需要重跑。
+
+### 20.3 仍未做（逐項，誠實寫出）
+| 項目 | 狀態 | 原因／解除條件 |
+|---|---|---|
+| ONNX／GGUF 的實際轉換執行器（合併→轉換→量化→核對→寫入資產） | 未做 | 需要 lora-manager-2 下載的 optimum、llama.cpp 到位，才能用真工具測試；本輪只做介面與純函式。解除：工具到位後寫 runner，並把 `runner` 旗標改為 true |
+| `exportCaps` 接上真偵測 | 未做 | 需要主行程把 `probeExportTools` 的偵測結果注入伺服器；偵測函式在主行程寫 |
+| LLM 完整微調（訓練程式） | 未做 | 阻礙寫在 `trainModePlan('full')`：記憶體與時間未評估 |
+| LoRA 套用到推論（LORA_APPLY_BLOCKER） | 未做 | 需要原生執行包 1.22.0-2 以上；網頁版 transformers.js 接點未接 |
+| 資料集分頁逐筆編輯 | 未做 | 工作量大，本輪先不動；目前只讀（畫面寫明） |
+| blockly 種子題在 App 內重跑 | 未做 | 題目寫在測試檔、打包不含；解除：抽成資料檔隨程式載入 |
+| GitHub wiki 連網實測 | 未做 | 規則：不連網路；需要使用者同意 |
+| 位置偏誤的 gold／pred | 未做（管理者） | `eval_run.py` 的 `--json_out` 補欄位，由管理者在 `lora-train/` 處理 |
+| Electron 視窗驗證（整個工作室與流程分頁） | 未做 | 這台沒有開視窗；需要有顯示環境的驗證 |
+| 嵌入重產 | 未做（總指揮） | studio_embed 的 4 項預期失敗，等總指揮整合時重產 |
+| `llm_export_core.js` 尚未接進伺服器與嵌入清單 | 未接 | 等 runner 與偵測一起接，避免接了沒有用的模組 |
+
+### 20.4 接手
+- 分支 `claude/studio-domain-author-dcb72c`。本輪提交見 `git log`（檢視器建議切換、LLM 匯出純函式、Windows 記憶體取樣、§20）。沒有推送，沒有嵌入。
+- 下一步順序：(1) lora-manager-2 把 optimum 與 llama.cpp 準備好後，寫 ONNX 與 GGUF 的 runner（先用假工具測流程，再用真工具）；(2) 主行程注入 `probeExportTools`，接到 `exportCaps`；(3) 總指揮重產嵌入；(4) 資料集逐筆編輯；(5) Electron 視窗驗證。
