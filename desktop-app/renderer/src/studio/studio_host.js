@@ -31,7 +31,7 @@ function createStudioHost(d) {
     return ch;
   };
   const registry = new BackendCore.BackendRegistry();
-  const cpuPy = CpuPy.createCpuPyBackend({ detect: CpuPy.defaultDetect(cp.spawnSync), spawn: spawnLow, killTree, fs, path: P, get loraDir() { return loraDirOf(); }, hw, get config() { return config; }, env: d.env || {} });
+  const cpuPy = CpuPy.createCpuPyBackend({ detect: CpuPy.defaultDetect(cp.spawnSync, { fs, path: P, venvDirs: () => [loraDirOf(), P.join(hostDir, 'lora-train'), d.loraDir] }), spawn: spawnLow, killTree, fs, path: P, get loraDir() { return loraDirOf(); }, hw, get config() { return config; }, env: d.env || {} });
   registry.register(CpuJs.createCpuJsBackend({ engineVersion: 'tiny-1' }));
   registry.register(cpuPy);
   ['wasm-web', 'webgpu', 'directml', 'vulkan'].forEach((id) => registry.register(Planned.createPlannedBackend(id, {})));

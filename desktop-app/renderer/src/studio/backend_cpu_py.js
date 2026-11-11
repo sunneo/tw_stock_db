@@ -7,18 +7,51 @@ const BC = require('./bench_core.js');
 const C = require('./checkpoint_core.js');
 const SC = require('./studio_config_core.js');
 
-// 預設的 Python 探測（桌面版真的用；測試不用）：不丟例外，回 { found, path, version, packages }
-function defaultDetect(spawnSync) {
+// Python 探測順序：① lora-train/.venv（開發目錄與使用者資料夾，opts.venvDirs）② PATH 上的 python／python3／py ③ py 啟動器列出的各版本（py -0p）。
+// 只接受 3.11 以上（transformers 5.x 的要求）；挑第一個套件齊全的，沒有就挑第一個 3.11 以上的（讓 probe 說缺哪些套件）。
+// 回 { found, path, version, packages, tooOld?:版本, tried:[...] }；spawnSync、fs 可注入，測試不碰真的行程。
+const MIN_PY = [3, 11];
+const PY_PKGS = ['torch', 'transformers', 'peft'];
+function pyOk(v) { const m = /^(\d+)\.(\d+)/.exec(String(v || '')); return !!m && (+m[1] > MIN_PY[0] || (+m[1] === MIN_PY[0] && +m[2] >= MIN_PY[1])); }
+function venvPythons(dirs, P, plat) {
+  const out = []; (dirs || []).forEach((d) => { if (!d) return; out.push(plat === 'win32' ? P.join(d, '.venv', 'Scripts', 'python.exe') : P.join(d, '.venv', 'bin', 'python')); });
+  return out.filter((x, i) => out.indexOf(x) === i);
+}
+function defaultDetect(spawnSync, opts) {
+  opts = opts || {}; const P = opts.path || require('path'), plat = opts.platform || process.platform;
+  const exists = (f) => { try { return (opts.fs || require('fs')).existsSync(f); } catch (e) { return false; } };
   return function detect() {
     const code = "import sys,json\nr={'version':sys.version.split()[0],'packages':{}}\nfor m in ('torch','transformers','peft'):\n    try:\n        mod=__import__(m); r['packages'][m]=getattr(mod,'__version__','?')\n    except Exception:\n        r['packages'][m]=None\nprint(json.dumps(r))";
-    for (const cmd of ['python', 'python3', 'py']) {
+    const cands = venvPythons(typeof opts.venvDirs === 'function' ? opts.venvDirs() : opts.venvDirs, P, plat).filter(exists);
+    ['python', 'python3', 'py'].forEach((c) => cands.push(c));
+    try {   // py 啟動器列出的各版本（py -0p 每行最後一欄是路徑）
+      const l = spawnSync('py', ['-0p'], { encoding: 'utf8', windowsHide: true, timeout: 10000 });
+      if (l && !l.error && l.status === 0) String(l.stdout).split(/\r?\n/).forEach((ln) => { const m = /(?:^|\s)([A-Za-z]:\.*python[0-9.]*\.exe)\s*$/i.exec(ln.trim()); if (m && cands.indexOf(m[1]) < 0) cands.push(m[1]); });
+    } catch (e) {}
+    const tried = [], good = []; let tooOld = null;
+    for (const cmd of cands) {
       try {
         const r = spawnSync(cmd, ['-I', '-c', code], { encoding: 'utf8', windowsHide: true, timeout: 20000 });
-        if (r && !r.error && r.status === 0) { const j = JSON.parse(String(r.stdout).trim().split('\n').pop()); return { found: true, path: cmd, version: j.version, packages: j.packages }; }
+        if (r && !r.error && r.status === 0) {
+          const j = JSON.parse(String(r.stdout).trim().split('\n').pop()); tried.push({ path: cmd, version: j.version });
+          if (!pyOk(j.version)) { tooOld = tooOld || j.version; continue; }
+          const res = { found: true, path: cmd, version: j.version, packages: j.packages };
+          if (PY_PKGS.every((k) => j.packages && j.packages[k])) return Object.assign(res, { tried });
+          good.push(res);
+        }
       } catch (e) {}
     }
-    return { found: false };
+    if (good.length) return Object.assign(good[0], { tried });
+    return { found: false, tooOld, tried };
   };
+}
+
+// 沒有可用環境時 probe 的說明與要執行的安裝指令
+function installHint(loraDir) {
+  const d = loraDir || 'lora-train', v = d + '/.venv', py = v + '/Scripts/python.exe';
+  return '需要 Python 3.11 以上與 torch／transformers／peft，建議在 lora-train/.venv 安裝。安裝指令：'
+    + 'py -3.13 -m venv "' + v + '"；"' + py + '" -m pip install torch --extra-index-url https://download.pytorch.org/whl/cpu；'
+    + '"' + py + '" -m pip install -r "' + d + '/requirements.txt" --extra-index-url https://download.pytorch.org/whl/cpu';
 }
 
 // 解析 train_lora.py（HF Trainer）印出的一行：log 字典、評估、tqdm 進度、[done]、[paused]
@@ -73,9 +106,9 @@ function createCpuPyBackend(o) {
       const hw = o.hw || {};
       const fp = { backend: 'cpu-py', cpu: hw.cpuModel || null, cores: hw.cores || null, python_version: d.version || null, torch_version: d.packages && d.packages.torch || null, engine_version: 'train_lora.py' };
       const dev = { name: hw.cpuModel || 'CPU', vendor: 'cpu', fp16: false };
-      if (!d || !d.found) return B.probeResult(false, '找不到 Python（請安裝 Python 3.10 以上並裝 lora-train/requirements.txt，或改匯出訓練包到別台訓練）', dev, fp);
+      if (!d || !d.found) return B.probeResult(false, (d && d.tooOld ? '找到的 Python 版本太舊（' + d.tooOld + '）。' : '找不到 Python。') + installHint(o.loraDir) + '；或改匯出訓練包到別台訓練', dev, fp);
       const missing = ['torch', 'transformers', 'peft'].filter((k) => !(d.packages && d.packages[k]));
-      if (missing.length) return B.probeResult(false, '已找到 Python ' + d.version + '，但缺少套件：' + missing.join('、') + '（見 lora-train/requirements.txt）', dev, fp);
+      if (missing.length) return B.probeResult(false, '已找到 Python ' + d.version + '（' + d.path + '），但缺少套件：' + missing.join('、') + '。' + installHint(o.loraDir), dev, fp);
       if (!o.fs.existsSync(script())) return B.probeResult(false, '找不到訓練腳本 ' + script(), dev, fp);
       return B.probeResult(true, '', dev, fp);
     },
@@ -168,4 +201,4 @@ function createCpuPyBackend(o) {
   return b;
 }
 
-module.exports = { createCpuPyBackend, defaultDetect, parseProgressLine, readSafetensors, loraTensors, NO_STEP };
+module.exports = { createCpuPyBackend, defaultDetect, pyOk, installHint, parseProgressLine, readSafetensors, loraTensors, NO_STEP };

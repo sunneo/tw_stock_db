@@ -17,7 +17,7 @@ class LayeredEngine {
         this.graphOpt = o.graphOpt || (this.ep === 'webgpu' ? 'basic' : 'disabled');   // WebGPU 後端在最佳化全關時會算錯（逐算子實測），WASM 要關掉常數折疊以免 fp32 權重複本
         this.lr = o.lr === undefined ? 0.001 : o.lr; this.b1 = 0.9; this.b2 = 0.999; this.eps = 1e-8;
         this.keep = o.keepSessions !== false; this.sess = new Map(); this.layerSource = o.layerSource || null; this.stats = { created: 0, runMs: 0, createMs: 0 };
-        this.params = new Map(); this.m = new Map(); this.v = new Map(); this.t = 0; this.shapes = new Map();
+        this.V = this.M.ix.inits.get('model.embed_tokens.weight_quantized').dims[0]; this.Vc = this.V / this.chunks; this.params = new Map(); this.m = new Map(); this.v = new Map(); this.t = 0; this.shapes = new Map();
         for (let l = 0; l < this.layers; l++) for (const k of Object.keys(DIMS)) { const [din, dout] = DIMS[k]; this.shapes.set('l' + l + '.' + k + '.A', [din, this.rank]); this.shapes.set('l' + l + '.' + k + '.B', [this.rank, dout]); }
     }
     // 初始化：A 為 N(0,1/din)，B 為 0；也可傳入 Map<name, Float32Array>（續訓／與別的實作對拍）
@@ -35,7 +35,7 @@ class LayeredEngine {
         const key = kind + layer; if (this.sess.has(key)) return this.sess.get(key);
         const t0 = Date.now(); let bytes;
         if (this.layerSource) bytes = await this.layerSource(kind, layer);
-        else { const b = kind === 'F' ? Q.buildLayerF(this.M, layer, this.T, this.rank) : kind === 'B' ? Q.buildLayerB(this.M, layer, this.T, this.rank) : Q.buildHead(this.M, this.T, { headChunks: this.chunks }); bytes = Gm.toOnnx(b.g, { name: key }); if (kind === 'B') this.bMeta = this.bMeta || { gradNames: b.gradNames, gradOuts: b.gradOuts, dx: b.dx.name }; if (kind === 'H') this.hMeta = { loss: b.loss.name, dh: b.dh.name, V: b.V, Vc: b.Vc, chunks: b.chunks }; }
+        else { const b = kind === 'F' ? Q.buildLayerF(this.M, layer, this.T, this.rank) : kind === 'B' ? Q.buildLayerB(this.M, layer, this.T, this.rank) : Q.buildHead(this.M, this.T, { headChunks: this.chunks }); bytes = Gm.toOnnx(b.g, { name: key }); }
         const s = await this.ort.InferenceSession.create(bytes, { executionProviders: [this.ep], graphOptimizationLevel: this.graphOpt, logSeverityLevel: 3 });
         this.stats.created++; this.stats.createMs += Date.now() - t0;
         if (this.keep) this.sess.set(key, s);
@@ -53,7 +53,7 @@ class LayeredEngine {
         return acts;
     }
     async _head(h, tgt, withGrad) {
-        const T = this.T; const s = await this._session('H', 0); const { loss, dh, Vc, chunks } = this.hMeta;
+        const T = this.T; const s = await this._session('H', 0); const loss = s.outputNames[0], dh = s.outputNames[1], chunks = this.chunks, Vc = this.Vc;   // 輸出順序固定：loss、dh
         const feeds = { h: new this.ort.Tensor('float32', h, [T, 1024]), rowmask: new this.ort.Tensor('float32', new Float32Array(T).fill(1 / T), [T]) };
         for (let k = 0; k < chunks; k++) { const oh = new Float32Array(T * Vc); tgt.forEach((id, t) => { if (id >= k * Vc && id < (k + 1) * Vc) oh[t * Vc + id - k * Vc] = 1; }); feeds['onehot' + k] = new this.ort.Tensor('float32', oh, [T, Vc]); }
         const t0 = Date.now(); const out = await s.run(feeds); this.stats.runMs += Date.now() - t0; await this._release(s);
@@ -67,9 +67,9 @@ class LayeredEngine {
         for (let l = this.layers - 1; l >= 0; l--) {
             const s = await this._session('B', l); const t1 = Date.now();
             const out = await s.run(this._layerFeeds(l, { x: new this.ort.Tensor('float32', acts[l], [T, d]), dy: new this.ort.Tensor('float32', dh, [T, d]) })); this.stats.runMs += Date.now() - t1;
-            const { gradNames, gradOuts, dx } = this.bMeta;
-            gradNames.forEach((nm, i) => {   // 名稱是 l0.… 的模板；換成本層名稱
-                const name = nm.replace(/^l\d+\./, 'l' + l + '.'); const g = out[gradOuts[i]].data, p = this.params.get(name), m = this.m.get(name), v = this.v.get(name);
+            const names = Q.layerParamNames(l), dx = s.outputNames[0];   // 輸出順序固定：dx，然後本層 14 個梯度（q,k,v,o,gate,up,down 各 A、B）
+            names.forEach((name, i) => {
+                const g = out[s.outputNames[1 + i]].data, p = this.params.get(name), m = this.m.get(name), v = this.v.get(name);
                 for (let j = 0; j < p.length; j++) { const gj = g[j]; gn += gj * gj; m[j] = this.b1 * m[j] + (1 - this.b1) * gj; v[j] = this.b2 * v[j] + (1 - this.b2) * gj * gj; p[j] -= lr_ * (m[j] / c1) / (Math.sqrt(v[j] / c2) + this.eps); }
             });
             dh = Float32Array.from(out[dx].data); await this._release(s);

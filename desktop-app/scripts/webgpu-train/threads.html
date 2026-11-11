@@ -1,0 +1,14 @@
+<!doctype html><meta charset="utf-8"><title>threads</title>
+<script type="module">
+// 多執行緒 WASM 可行性：頁面是否跨來源隔離（SharedArrayBuffer）、ORT-web numThreads=1 vs 4 對同一個矩陣乘的耗時。
+const log = (o) => console.log('RESULT ' + JSON.stringify(o));
+try {
+    const r = { crossOriginIsolated: self.crossOriginIsolated, sab: typeof SharedArrayBuffer, cores: navigator.hardwareConcurrency };
+    const ort = await import('/ort/ort.min.mjs'); ort.env.wasm.wasmPaths = '/ort/';
+    const bytes = new Uint8Array(await (await fetch('/data/matmul_2d.onnx')).arrayBuffer());
+    const feeds = { a: new ort.Tensor('float32', new Float32Array(32 * 1024).fill(0.01), [32, 1024]), b: new ort.Tensor('float32', new Float32Array(1024 * 2048).fill(0.01), [1024, 2048]) };
+    const n = +(new URLSearchParams(location.search).get('n') || 1); r.n = n; { ort.env.wasm.numThreads = n; const s = await ort.InferenceSession.create(bytes, { executionProviders: ['wasm'], graphOptimizationLevel: 'disabled' }); await s.run(feeds); const t0 = performance.now(); for (let i = 0; i < 20; i++) await s.run(feeds); r['ms_per_run_threads' + n] = +((performance.now() - t0) / 20).toFixed(2); }
+    log(r);
+} catch (e) { log({ error: String(e && e.stack || e) }); }
+console.log('PAGE_FINISHED');
+</script>

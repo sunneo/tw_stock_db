@@ -1,0 +1,17 @@
+<!doctype html><meta charset="utf-8"><title>swap test</title>
+<script type="module">
+// 真 IndexedDB 的交換空間實測：寫入 57 個約 18MB 的層圖大小區塊、讀回校驗、配額滿了要明確丟錯並保留舊資料。
+const log = (o) => console.log('RESULT ' + JSON.stringify(o));
+try {
+    const src = await (await fetch('/src/swap_store.js')).text(); const mod = { exports: {} }; new Function('module', 'exports', src)(mod, mod.exports); const S = mod.exports;
+    const store = S.createIdbSwap({ quotaBytes: 1100 * 1048576, dbName: 'fa-train-swap-test' }); await store.clear();
+    const N = 57, SZ = 18 * 1048576; const mk = (i) => { const u = new Uint8Array(SZ); let s = i + 1; for (let k = 0; k < SZ; k += 4099) { s = (s * 1103515245 + 12345) >>> 0; u[k] = s >>> 24; } u[0] = i; return u; };
+    let t0 = performance.now(); for (let i = 0; i < N; i++) await store.put('L' + i, mk(i)); const putMs = performance.now() - t0;
+    const usage = await store.usage();
+    t0 = performance.now(); let bad = 0; for (let i = 0; i < N; i++) { const b = await store.get('L' + i); if (!b || b[0] !== i || b.length !== SZ) bad++; } const getMs = performance.now() - t0;
+    let err = null; try { await store.put('overflow', new Uint8Array(200 * 1048576)); } catch (e) { err = { name: e.name, msg: e.message }; }
+    const still = await store.get('L0'); const after = await store.usage(); await store.clear(); const cleared = await store.usage();
+    log({ done: true, n: N, blockMB: 18, usage, putMs: Math.round(putMs), getMs: Math.round(getMs), readBad: bad, quotaError: err, oldDataIntact: !!still && still[0] === 0, usageAfterReject: after, usageAfterClear: cleared, storageEstimate: navigator.storage && navigator.storage.estimate ? await navigator.storage.estimate() : null });
+} catch (e) { log({ error: String(e && e.stack || e) }); }
+console.log('PAGE_FINISHED');
+</script>

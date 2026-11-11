@@ -7,7 +7,7 @@ const data = arg('data'), ortDir = arg('ort'), ep = arg('ep', 'webgpu'), steps =
 const types = { '.html': 'text/html', '.mjs': 'text/javascript', '.js': 'text/javascript', '.wasm': 'application/wasm', '.json': 'application/json', '.onnx': 'application/octet-stream', '.bin': 'application/octet-stream' };
 const server = http.createServer((req, res) => {
     const u = decodeURIComponent(req.url.split('?')[0]); let f = null;
-    if (u === '/' + pageName) f = path.join(__dirname, pageName); else if (u.startsWith('/ort/')) f = path.join(ortDir, path.basename(u)); else if (u.startsWith('/data/')) f = path.join(data, path.basename(u));
+    if (u === '/' + pageName) f = path.join(__dirname, pageName); else if (u.startsWith('/ort/')) f = path.join(ortDir, path.basename(u)); else if (u.startsWith('/src/')) f = path.join(__dirname, '..', '..', 'renderer', 'src', 'studio', path.basename(u)); else if (u.startsWith('/data/')) f = path.join(data, path.basename(u));
     if (!f || !fs.existsSync(f)) { res.writeHead(404); return res.end(); }
     res.writeHead(200, { 'Content-Type': types[path.extname(f)] || 'application/octet-stream', 'Content-Length': fs.statSync(f).size, 'Cross-Origin-Opener-Policy': 'same-origin', 'Cross-Origin-Embedder-Policy': 'require-corp', 'Cross-Origin-Resource-Policy': 'same-origin' });
     fs.createReadStream(f).pipe(res);
@@ -17,6 +17,6 @@ app.whenReady().then(() => {
         const win = new BrowserWindow({ show: false, width: 800, height: 600, webPreferences: { sandbox: false, backgroundThrottling: false } });
         win.webContents.on('console-message', (e, level, message) => { const m = typeof level === 'object' ? level.message : message; if (/^RESULT |PAGE_FINISHED/.test(m)) { console.log(m); if (/PAGE_FINISHED/.test(m)) { server.close(); app.quit(); } } });
         win.webContents.on('render-process-gone', (e, d) => { console.log('RESULT ' + JSON.stringify({ error: 'render-process-gone ' + d.reason })); app.quit(); });
-        await win.loadURL('http://127.0.0.1:' + port + '/' + pageName + '?ep=' + ep + '&steps=' + steps + '&lr=' + lr + '&opt=' + opt + '&trace=' + trace);
+        await win.loadURL('http://127.0.0.1:' + port + '/' + pageName + '?ep=' + ep + '&steps=' + steps + '&lr=' + lr + '&opt=' + opt + '&trace=' + trace + (arg('extra') ? '&' + arg('extra') : ''));
     });
 });

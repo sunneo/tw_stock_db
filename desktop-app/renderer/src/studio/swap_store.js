@@ -11,7 +11,7 @@
 
 class SwapFullError extends Error { constructor(used, add, quota) { super('交換空間已滿：已用 ' + mb(used) + '，要再存 ' + mb(add) + '，配額 ' + mb(quota) + '。訓練已停止（不會悄悄淘汰舊資料）；請調大配額或清理交換空間'); this.name = 'SwapFullError'; this.used = used; this.add = add; this.quota = quota; } }
 class SwapCorruptError extends Error { constructor(key) { super('交換空間資料損毀：' + key + '（長度或校驗不符），請清理後重建'); this.name = 'SwapCorruptError'; this.key = key; } }
-const mb = (x) => (x / 1048576).toFixed(0) + 'MB';
+const mb = (x) => (x >= 1048576 ? (x / 1048576).toFixed(0) + 'MB' : (x / 1024).toFixed(0) + 'KB');
 function fnv1a(u8) { let h = 0x811c9dc5; const step = u8.length > 4194304 ? 17 : 1; for (let i = 0; i < u8.length; i += step) { h ^= u8[i]; h = Math.imul(h, 0x01000193) >>> 0; } return (h ^ u8.length) >>> 0; }   // 大檔抽樣校驗（每 17 位元組取 1），小檔全檢；目的是抓截斷與寫壞，不是密碼學
 
 function createMemorySwap(o) {
