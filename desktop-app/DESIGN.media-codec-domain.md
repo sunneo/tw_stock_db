@@ -337,3 +337,31 @@ FA_TS_DIR=<含 tree-sitter.js、tree-sitter.wasm、tree-sitter-python.wasm 的�
 - EG0（`h264.cabac.ueg0`）：指數哥倫布 k=0 後綴的旁路位元。兩種寫法（迴圈與位元長度）互相核對，隨機 0 至 300 的值相同。實跑：`cab-ug-tr/ho` 皆 1/1，反序 1/1。
 - 外部對照：ffmpeg 與 x264 仍只能端到端；EG0 與 1/4 像素的係數未做外部逐項對照（同上阻礙）。
 - 仍未做：完整 CABAC 初始化表；語法元素（mb_type、cbp、殘差 coded_block_flag 等）與符號位元的上下文；運動向量預測與子像素搜尋；色度內插；逐位元外部對照。
+
+### 第四棒續（三）：x264 表的來源、trace_headers 逐欄核對、初始化表批次
+
+**x264 表的來源（如實記錄）**
+- 檔名與位置：`common/tables.c`，放在 scratchpad 的 `ffref/x264_tables.c`（專案外，不進 repo、不提交）。
+- 來源網址：`https://raw.githubusercontent.com/mirror/x264/master/common/tables.c`。
+- 大小 115507 位元組，sha256 `6f22f14992e4a6833518d7d2a56c75e0c9df2f25884ec52755cd25a573c0de3f`。
+- 用途：只做核對。x264 是 GPL，沒有把它的原始碼或整段表複製進 repo；repo 內的表都是我們依標準（記憶）寫的。
+
+**SPS、PPS、slice header 的外部核對（已驗證）**
+- 方法：以 Python 自寫位元流（ue、se、u 三種寫法，含負數 se），寫出 Baseline 以外的 Main SPS（profile 77，因為 CABAC 需要 Main 以上）、PPS（entropy_coding_mode=1、pic_init_qp=−3、chroma_qp_offset=4、deblocking 控制開）、IDR slice header（slice_qp_delta=−2、alpha=2、beta=−1，含 cabac_alignment_one_bit）。產物放在 scratchpad 的 `trace/`，不進 repo。
+- 以 `ffmpeg -f h264 -i mine.264 -c copy -bsf:v trace_headers -f null -` 讀回，逐欄比對：SPS、PPS、slice header 共 39 欄，**39/39 相同**，0 筆不符。
+- 過程中發現的寫出端錯誤（已修，屬於寫出端，不是 ffmpeg 的問題）：(a) 第一版用 Baseline profile 卻設 CABAC，ffmpeg 正確報錯；(b) CABAC 的 slice header 後缺 cabac_alignment_one_bit，ffmpeg 報 `cabac_alignment_one_bit out of range`。
+- 另外用 libx264 編了一段 64×64 的 I 幀（yuv420p，`cabac=1`），`trace_headers` 能正常讀出；這只證明 trace 工具可用，沒有拿它當比對基準。
+- 界線：這驗的是 SPS、PPS、slice header 的寫出與 Exp-Golomb；**CABAC 的 slice data 位元仍未與 ffmpeg 逐位元比對**（trace_headers 不印 slice data 內的 bin）。
+
+**CABAC 初始化表的批次核對**
+- 已收進（與 x264 逐格相同）：ctxIdx 0–10、60–69（I 條帶，21 組，前一棒已做）；**ctxIdx 70–104（I 條帶，35 組，本棒新增，與 x264 35/35 相同）**。新 skeleton `h264.cabac.ctxinit70`，測試 `cab-c2-tr/ho` 1/1、1/1，反序 1/1；cabac 測試 16 passed、0 failed。
+- 仍未收進：ctxIdx 11–59（P、B 條帶與 cabac_init_idc 0 至 2 的表）、105–1023（殘差、運動向量、8×8 變換等）。全部依記憶，未核對者一律標 **unverified**，不收進 repo。
+- 標準正文：本機沒有 H.264 標準正文，所有 m、n 值仍需人工對照標準表 9-12、9-13、9-18 等確認；這點保留在待改善。
+
+**1/4 像素與 EG0 的狀態**：同第四棒續（二）；本棒未再改動。
+
+**接續點（下一棒）**
+1. CABAC 初始化：ctxIdx 11–59 與 P、B 條帶的 cabac_init_idc 表，逐批自寫、與 x264 比對，未通過者標 unverified。
+2. CABAC slice data 的逐位元比對：需要 ffmpeg 內部的 bin 追蹤，目前沒有公開的輸出；先評估是否能用 `-debug` 或自寫解碼器比對。
+3. 運動向量預測（8.4.1）與子像素搜尋：尚未開始。
+4. 色度內插（8.4.2.2.2）：尚未開始。

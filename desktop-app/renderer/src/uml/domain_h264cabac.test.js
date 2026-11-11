@@ -226,6 +226,22 @@ const ST_UG = 'CABAC 旁路的指數哥倫布 k=0 後綴二值化（EG0，H.264 
 const HO_UG = 'CABAC 的 EG0 旁路碼：一行 1 個整數 v（不小於 0）。把 v 轉成指數哥倫布碼：先從 k 等於 0 開始，只要 v 不小於 2 的 k 次方，就寫 1、把 v 減去 2 的 k 次方、k 加 1；v 不再符合時寫 0，最後把剩下的 v 用 k 個位元由高位寫到低位。輸出位元字串。';
 const genUg = (b, { rnd }) => String(rnd(0, 300));
 
+const REF_C2 = `import sys
+v = [int(t) for t in sys.stdin.read().split()]
+ctx, qp = v
+table = {70: (0, 11), 71: (1, 55), 72: (0, 69), 73: (-17, 127), 74: (-13, 102), 75: (0, 82), 76: (-7, 74), 77: (-21, 107), 78: (-27, 127), 79: (-31, 127), 80: (-24, 127), 81: (-18, 95), 82: (-27, 127), 83: (-21, 114), 84: (-30, 127), 85: (-17, 123), 86: (-12, 115), 87: (-16, 122), 88: (-11, 115), 89: (-12, 63), 90: (-2, 68), 91: (-15, 84), 92: (-13, 104), 93: (-3, 70), 94: (-8, 93), 95: (-10, 90), 96: (-30, 127), 97: (-1, 74), 98: (-6, 97), 99: (-7, 91), 100: (-20, 127), 101: (-4, 56), 102: (-5, 82), 103: (-7, 76), 104: (-22, 125)}
+m, n = table[ctx]
+qp = min(max(qp, 0), 51)
+pre = min(max(((m * qp) >> 4) + n, 1), 126)
+if pre <= 63:
+    print(63 - pre, 0)
+else:
+    print(pre - 64, 1)
+`;
+const ST_C2 = 'CABAC 上下文初始化（I 條帶，ctxIdx 70 至 104 的語法元素）：輸入一行 2 個整數，依序為 ctxIdx 與 SliceQPY。ctxIdx 只會是 70 至 104 之間的整數；由 I 條帶的 m、n 表（標準表 9-18）查得該 ctxIdx 的 m 與 n。令 qp 為 SliceQPY 夾在 0 至 51 之間的值，preCtxState 為 ((m 乘 qp) 右移 4 位加 n) 夾在 1 至 126 之間的值。若 preCtxState 不大於 63，則 pStateIdx 為 63 減 preCtxState、valMPS 為 0；否則 pStateIdx 為 preCtxState 減 64、valMPS 為 1。輸出兩個整數：pStateIdx、valMPS。';
+const HO_C2 = 'CABAC 的 I 條帶上下文查表初始化：一行兩個整數，第一個是 ctxIdx（70 至 104 之間），第二個是 SliceQPY。依 I 條帶的 m、n 表（表 9-18）取得該 ctxIdx 的 m 與 n，把 SliceQPY 夾在 0 到 51 之間後，計算 preCtxState 為 (m 乘 qp 右移 4 位) 加 n，夾在 1 到 126。preCtxState 不大於 63 時輸出 63 減它與 0；否則輸出它減 64 與 1。';
+const genC2 = (b, { rnd }) => rnd(70, 104) + ' ' + rnd(0, 51);
+
 const SEEDS = [
     { id: 'cab-dec-tr', want: 'h264.cabac.decision', st: ST_DEC, ref: REF_DEC, gen: genDec },
     { id: 'cab-dec-ho', split: 'holdout', st: HO_DEC, ref: REF_DEC, gen: genDec },
@@ -237,6 +253,8 @@ const SEEDS = [
     { id: 'cab-ci-ho', split: 'holdout', st: HO_CI, ref: REF_CI, gen: genCi },
     { id: 'cab-ug-tr', want: 'h264.cabac.ueg0', st: ST_UG, ref: REF_UG, gen: genUg },
     { id: 'cab-ug-ho', split: 'holdout', st: HO_UG, ref: REF_UG, gen: genUg },
+    { id: 'cab-c2-tr', want: 'h264.cabac.ctxinit70', st: ST_C2, ref: REF_C2, gen: genC2 },
+    { id: 'cab-c2-ho', split: 'holdout', st: HO_C2, ref: REF_C2, gen: genC2 },
     { id: 'cab-enc-tr', want: 'h264.cabac.encode', st: ST_ENC, ref: REF_ENC, gen: genEnc },
     { id: 'cab-enc-ho', split: 'holdout', st: HO_ENC, ref: REF_ENC, gen: genEnc },
     { id: 'cab-lev-tr', want: 'h264.cabac.levels', st: ST_LEV, ref: REF_LEV, gen: genLev },
