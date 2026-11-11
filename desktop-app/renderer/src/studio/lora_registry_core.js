@@ -118,6 +118,7 @@
         const slotCapacity = opts.slotCapacity >= 1 ? opts.slotCapacity : 0;   // 槽的 rank 總容量（0＝不限）；桌面版＝槽版 ONNX 的 rank（匯出時固定）
         const pins = new Set();               // 釘選：自動淘汰不碰（DESIGN §14）
         const inUse = new Map();              // id → 推論中的計數；>0 不可淘汰、不可替換
+        const lastUsedById = new Map();       // id → 最後使用時間（卸載後仍保留，給模型卡）
         const now = opts.now || (() => Date.now());
         const entries = new Map();            // id → entry
         const live = new Map();               // id → {handle, size, lastUsed}（Map 插入順序不代表 LRU，靠 lastUsed）
@@ -137,6 +138,7 @@
         function list(filter) { filter = filter || {}; return Array.from(entries.values()).filter((e) => (!filter.source || e.source === filter.source) && (!filter.domain || e.domains.indexOf(filter.domain) >= 0) && (filter.enabled === undefined || e.enabled === filter.enabled)); }
         async function unload(id) {
             const l = live.get(id); if (!l) return false;
+            lastUsedById.set(id, l.lastUsed);
             live.delete(id);
             if (loader && loader.unload) await loader.unload(entries.get(id), l.handle);
             return true;
@@ -272,7 +274,7 @@
             let h;
             try { h = await loader.load(inn); }
             catch (err) { return { ok: false, error: '載入 ' + inId + ' 失敗，原狀保留：' + errText(err), rolledBack: false, active: currentHandles().map((x) => x.id) }; }
-            const old = live.get(outId); live.delete(outId);
+            const old = live.get(outId); live.delete(outId); lastUsedById.set(outId, old.lastUsed);
             if (!fits(inn)) {
                 const why = noRoomReason(inn); live.set(outId, old); await safeUnload(inn, h);
                 return { ok: false, error: '容量不足，替換不成立，原狀保留（' + why + '）', rolledBack: true, active: currentHandles().map((x) => x.id) };
@@ -294,7 +296,8 @@
         // 模型卡（給 LoRA 管理畫面）：與 DESIGN §14.6 對齊
         function card(e) {
             const ev = evalVerdict(e.eval), c = compat(e);
-            return { id: e.id, name: e.name || e.id, version: e.version || null, description: e.description || '', base: e.base, rank: e.rank, size: e.size,
+            const lu = live.has(e.id) ? live.get(e.id).lastUsed : (lastUsedById.has(e.id) ? lastUsedById.get(e.id) : null);
+            return { id: e.id, name: e.name || e.id, version: e.version || null, description: e.description || '', base: e.base, rank: e.rank, size: e.size, added: e.added || null, lastUsed: lu,
                 domains: e.domains.slice(), triggers: (e.triggers || []).slice(), prompt_format_version: e.prompt_format_version, source: e.source, enabled: !!e.enabled,
                 location: e.location, eval: ev.known ? { lose: ev.lose, win: ev.win } : null, compat: c.level, compatReasons: c.reasons.map((r) => r.message), pinned: pins.has(e.id) };
         }

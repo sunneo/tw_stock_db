@@ -201,6 +201,7 @@ let t = 1000; const now = () => ++t;
         r.pin('s8e', false); r.acquire('s8e');
         check('手動卸載：推論中拒絕', (await r.manualUnload('s8e')).ok === false); r.release('s8e');
         check('手動卸載：正常可卸', (await r.manualUnload('s8e')).ok === true);
+        check('卸載後模型卡仍保留最後使用時間（lastUsed）', r.card(r.get('s8e')).lastUsed !== null && r.card(r.get('s8e')).lastUsed > 0 && r.status().registered.find((c) => c.id === 's8e').lastUsed > 0);
         let pinThrow = false; try { r.pin('nope', true); } catch (_) { pinThrow = true; } check('釘選不存在的 adapter 報錯', pinThrow);
         // 描述檔 description 可選、帶過去
         const d = R.descriptorFromJson({ format: 'fa-lora-descriptor', format_version: 1, id: 'dsc', version: '1', base: 'Qwen/Qwen3-0.6B', rank: 4, prompt_format_version: 3, applies: { domains: ['x'] }, size: 4, sha256: H('e'), location: 'fap:x', description: '拆題用' });
