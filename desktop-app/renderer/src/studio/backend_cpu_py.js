@@ -66,10 +66,12 @@ function installHint(loraDir) {
 
 // 解析 train_lora.py（HF Trainer）印出的一行：log 字典、評估、tqdm 進度、[done]、[paused]
 function parseProgressLine(line) {
-  const s = String(line).trim(); if (!s) return null;
+  let s = String(line).trim(); if (!s) return null;
   let m;
+  // transformers 5.x 的 log 字典常接在進度條文字後面（同一行），數值是帶引號的字串
+  if ((m = /(\{'[A-Za-z_].*\})\s*$/.exec(s))) s = m[1];
   if ((m = s.match(/^\{.*\}$/))) {
-    const o = {}; const re = /'([A-Za-z_]+)':\s*(-?[0-9.]+(?:e[-+]?[0-9]+)?|nan|inf)/gi; let k;
+    const o = {}; const re = /'([A-Za-z_]+)':\s*'?(-?[0-9.]+(?:e[-+]?[0-9]+)?|nan|inf)'?/gi; let k;
     while ((k = re.exec(s))) o[k[1]] = /nan|inf/i.test(k[2]) ? NaN : parseFloat(k[2]);
     if (o.eval_loss !== undefined) return { type: 'eval', evalLoss: o.eval_loss, epoch: o.epoch };
     if (o.loss !== undefined || o.train_loss !== undefined) return { type: 'log', loss: o.loss !== undefined ? o.loss : o.train_loss, gradNorm: o.grad_norm, lr: o.learning_rate, epoch: o.epoch };

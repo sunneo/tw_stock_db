@@ -9,7 +9,12 @@ return (async () => {
     await fa._studioCommand('');
     const srv = await fa._studioServer(); const route = async (m, p, b) => (await srv.core.route(m, new URL('http://mock.local' + p), b)).j;
     const ens = await fa._studioHostEnsure(); ck('主行程端程式寫入並載入', ens.ok, ens);
-    const be = await route('GET', '/api/backends?kind=lora'); R.backends = be.backends;
+    const tb = Date.now(); let be = await route('GET', '/api/backends?kind=lora'); R.backendsFirstMs = Date.now() - tb;
+    ck('第一次 /api/backends 在 3 秒內回（下拉才出得來）', R.backendsFirstMs < 3000, R.backendsFirstMs);
+    R.firstCpuPy = be.backends && be.backends.find((b) => b.id === 'cpu-py');
+    // 背景探測完成前會標「探測中…」；等它變成確定結果（檢視器每 1.5 秒重取）
+    const tp = Date.now(); for (let i = 0; i < 40 && be.backends.some((b) => b.probing); i++) { await wait(500); be = await route('GET', '/api/backends?kind=lora'); } R.probeDoneMs = Date.now() - tp;
+    R.backends = be.backends;
     const cp = be.backends && be.backends.find((b) => b.id === 'cpu-py');
     ck('cpu-py 顯示可用', cp && cp.available, cp);
     R.cpuPy = cp;

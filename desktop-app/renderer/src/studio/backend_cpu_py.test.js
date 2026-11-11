@@ -80,6 +80,10 @@ const mkBackend = (o) => { const fs = memfs(); fs.writeFileSync('/lora/train_lor
     check('pyOk 邊界', P.pyOk('3.11.0') && P.pyOk('3.13.1') && !P.pyOk('3.10.9') && !P.pyOk('2.7.18') && P.pyOk('4.0.0') && !P.pyOk(null));
   }
 
+  // transformers 5.x 實測的 log 行：數值帶引號、且接在進度條後面
+  check('解析帶引號數值的 log（實測格式）', JSON.stringify(P.parseProgressLine("{'loss': '13.93', 'grad_norm': '66.25', 'learning_rate': '0', 'epoch': '0.09091'}")) === JSON.stringify({ type: 'log', loss: 13.93, gradNorm: 66.25, lr: 0, epoch: 0.09091 }));
+  const glued = P.parseProgressLine("100%|##########| 6/6 [01:10<00:00, 11.83s/it]{'loss': '9.515', 'grad_norm': '84.18', 'learning_rate': '5e-05', 'epoch': '0.5455'}");
+  check('解析接在進度條後面的 log', glued && glued.type === 'log' && glued.loss === 9.515 && glued.lr === 5e-05, glued);
   // ---- 探測不 import torch、單項逾時、結果快取 ----
   {
     const full = { torch: '2.15', transformers: '5.22', peft: '0.21' }, BS = String.fromCharCode(92), WP = (x) => x.split('/').join(BS), VENV = WP('D:/x/lora-train/.venv/Scripts/python.exe');
