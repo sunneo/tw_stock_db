@@ -12,6 +12,7 @@
  *   h.sym            符號式評量與訓練需要的模組與接口（見 sym_suites_core.js 檔頭；選填，沒給就在畫面寫「這個環境沒有接上」）
  *   h.localReadDir／localStat／localReadFile  桌面版以路徑讀本機（rawfs）；fapList／fapRead  檔案存取資料夾參照；fetchUrl  使用者確認後才連網取文字（皆選填，缺了該類輸入回具體原因）
  *   h.teacherAI      async ({system, prompt, tools, maxRounds}) → {text, calls}  線上 AI 子任務（只有白名單工具）；沒給＝老師迴圈寫明沒有線上 AI
+ *   h.domain         { runtime, solve, runRef, corpus? } 使用者領域的執行期載入器與評量接口（domain_routes_core.js 檔頭；選填，缺了領域分頁只能編輯，畫面寫具體原因）
  *   h.now()
  * 回傳 { route(method, url(URL物件), body) → {s, j}, push(obj)（由呼叫端接上）, log[] } */
 (function (root, factory) {
@@ -131,10 +132,15 @@
             return Asset.KINDS.map((k) => { const g = groups[k]; g.counts = { builtin: 0, mine: 0, imported: 0 }; g.items.forEach((x) => { g.counts[x.origin] = (g.counts[x.origin] || 0) + 1; }); return g; });
         }
 
+        // 「領域」分頁（blockly／matrix 新增領域與操作，domain_routes_core.js）：不是領域路由就回 null
+        const DomApi = (typeof module === 'object' && module.exports) ? require('./domain_routes_core.js') : self.FaStudioDomainApi;
+        const domainApi = DomApi ? DomApi.createDomainApi({ storage: h.storage, prefsGet: h.prefsGet, prefsSet: h.prefsSet, now: h.now, Asset, Eval: EvalCore, sym: h.sym, domain: h.domain, teacherAI: h.teacherAI, log: (t) => log(t), push: (o) => { if (S.push) S.push(o); } }) : null;
+
         async function route(method, u, body) {
             const P = u.pathname, Q = (k) => u.searchParams.get(k) || '';
             body = body || {};
             try {
+                if (domainApi && /^\/api\/domains?(\/|$)/.test(P)) { const dr = await domainApi.route(method, u, body); if (dr) return dr; }
                 if (method === 'GET' && P === '/api/info') {
                     const fs = await fapNote();
                     return ok({ desktop: !!h.desktop, webTrain: !!h.webTrain, storage: fs, kinds: Asset.KINDS.map((k) => ({ kind: k, label: KIND_LABEL[k] })), tabs: Layout.TABS, workDir: h.workDir ? await h.workDir() : null, webgpu: !!(h.webgpu && h.webgpu()) });
@@ -300,6 +306,14 @@
                 if (method === 'POST' && P === '/api/train/stop') { const r = await callHost('studio_train_stop', { jobId: body.jobId || S.lastTrain }, 30000); log('停止訓練'); return r.ok === false ? bad(409, r.error) : ok(r); }
                 // ---- LoRA 登錄與按需載入（第二輪，接 lora_registry_core）----
                 if (method === 'GET' && P === '/api/lora') { const reg = await syncRegistry(); return ok({ env: LORA_ENV, budget: reg.reg.budget, maxActive: reg.reg.maxActive, entries: reg.entries, invalid: reg.invalid, loaded: reg.reg.loaded(), applyBlocker: h.loraApply ? '' : LORA_APPLY_BLOCKER }); }
+                // 原生模型 LoRA 槽版（標準版 q8 → 槽版，主行程 native-slot-model.js）：狀態／開始轉換／使用者同意後下載
+                if (P === '/api/lora/slot' || P === '/api/lora/slot/prepare' || P === '/api/lora/slot/download') {
+                    if (!h.slotCall) return ok({ ok: false, available: false, error: '只有桌面版的原生推論需要 LoRA 槽版；這個環境沒有接上主行程' });
+                    const op = P === '/api/lora/slot' ? 'slot_status' : (P.endsWith('/prepare') ? 'slot_prepare' : 'slot_download');
+                    if (op !== 'slot_status' && method !== 'POST') return bad(405, '要用 POST');
+                    const r = await h.slotCall(op, op === 'slot_download' ? { confirm: body.confirm === true, files: body.files } : {}, op === 'slot_download' ? 3600000 : 20000);
+                    return ok(r || { ok: false, error: '主行程沒有回應' });
+                }
                 if (method === 'POST' && P === '/api/lora/enable') {
                     const reg = await syncRegistry(); if (!reg.reg.get(String(body.id || ''))) return bad(404, '沒有這個 adapter');
                     await reg.reg.setEnabled(body.id, !!body.on); const p = Object.assign({}, h.prefsGet ? h.prefsGet() : {}); p.loraEnabled = Object.assign({}, p.loraEnabled); p.loraEnabled[body.id] = !!body.on; h.prefsSet(p);
