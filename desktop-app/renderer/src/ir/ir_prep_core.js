@@ -85,7 +85,7 @@
         return ir;
     }
 
-    function lower(ir, diags) {
+    function lower(ir, diags, opts) {
         const d = (m, n) => diags.push({ level: 'warn', msg: m, pos: n && n.pos });
         const callOp = (op, args, node) => { const c = { k: 'call', op, args }; if (node && node.pos) c.pos = node.pos; c.ty = OPS.retType(op, args.map((a) => a.ty || T.unknown)); return c; };
         const mk = (e, ty) => { e.ty = ty; return e; };
@@ -112,7 +112,8 @@
                     if (e.op === '//') { if (a.t === 'int' && b.t === 'int') out = callOp('int.floordiv', [l, r], e); else d('// 只支援整數（運算元型別 ' + IR.tyStr(a) + '、' + IR.tyStr(b) + '）', e); }
                     else if (e.op === '%') { if (a.t === 'int' && b.t === 'int') out = callOp('int.mod', [l, r], e); else d('% 只支援整數', e); }
                     else if (e.op === '/') out = callOp('num.div', [l, r], e);
-                    else if (e.op === '**') { if (a.t === 'int' && b.t === 'int') out = callOp('int.pow', [l, r], e); else d('** 只支援整數', e); }
+                    else if (e.op === '**') { if (a.t === 'int' && b.t === 'int') out = callOp(opts && opts.overflow === 'check' ? 'int.cpow' : 'int.pow', [l, r], e); else d('** 只支援整數', e); }
+                    else if (opts && opts.overflow === 'check' && a.t === 'int' && b.t === 'int' && (e.op === '+' || e.op === '-' || e.op === '*')) { out = callOp(e.op === '+' ? 'int.cadd' : e.op === '-' ? 'int.csub' : 'int.cmul', [l, r], e); out.ty = T.int; }
                     else if (e.op === '+' && a.t === 'str' && b.t === 'str') out = callOp('str.concat', [l, r], e);
                     else if (e.op === '*' && a.t === 'str' && b.t === 'int') out = callOp('str.repeat', [l, r], e);
                     else if (e.op === '*' && a.t === 'list' && l.k === 'list' && l.items.length === 1 && b.t === 'int') out = callOp('list.filled', [l.items[0], r], e);
@@ -229,7 +230,7 @@
             const nm = (e) => (e && e.k === 'name' ? e.v : null);
             const visit = (e) => IR.walkExpr(e, (x) => {
                 if (x.k === 'call' && x.op) {
-                    if (/^(int\.(floordiv|mod|pow)|math\.gcd)$/.test(x.op)) (x.args || []).forEach((a) => { if (nm(a)) setP(f, nm(a), T.int, x.op + ' 的運算元'); });
+                    if (/^(int\.(floordiv|mod|pow|cadd|csub|cmul|cpow)|math\.gcd)$/.test(x.op)) (x.args || []).forEach((a) => { if (nm(a)) setP(f, nm(a), T.int, x.op + ' 的運算元'); });
                     else if (/^str\./.test(x.op) && x.args && x.args[0] && nm(x.args[0]) && !/^str\.(from_code)$/.test(x.op)) setP(f, nm(x.args[0]), T.str, x.op + ' 的接收者');
                     else if (/^list\./.test(x.op) && x.args && x.args[0] && nm(x.args[0])) setP(f, nm(x.args[0]), IR.list(T.unknown), x.op + ' 的接收者');
                     if (x.op === 'list.get' && x.args[1] && nm(x.args[1])) setP(f, nm(x.args[1]), T.int, '串列下標');
@@ -277,7 +278,7 @@
     function prepare(ir0, opts) {
         const diags = []; let ir = IR.clone(ir0); infer(ir); for (let i = 0; i < 3 && inferParams(ir); i++) infer(ir);
         for (let i = 0; i < 3; i++) { const u = inferUsage(ir); if (!u.changed) break; u.diags.forEach((d) => diags.push(d)); infer(ir); for (let j = 0; j < 3 && inferParams(ir); j++) infer(ir); }
-        ir = lower(ir, diags); infer(ir); scope(ir); return { ir, diags };
+        ir = lower(ir, diags, opts); infer(ir); scope(ir); return { ir, diags };
     }
     return { infer, lower, scope, prepare, inferUsage, missingTypes, applyTypes, hasUnknown };
 });

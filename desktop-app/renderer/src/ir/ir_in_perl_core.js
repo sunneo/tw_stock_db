@@ -226,7 +226,7 @@
                 case 'anonarr': return { k: 'list', items: n.k.map(ex), pos };
                 case 'anonhash': { const it = []; for (let i = 0; i + 1 < n.k.length; i += 2) it.push([ex(n.k[i]), ex(n.k[i + 1])]); return { k: 'dict', items: it, pos }; }
                 case 'cond': return { k: 'cond', a: ex(n.k[0]), c: ex(n.k[1]), b: ex(n.k[2]), pos };
-                case 'un': { if (n.v === '!') { const x = unwrap(n.k[0]); if (x.y === 'call' && x.v === 'defined' && x.k.length === 1) return { k: 'cmp', op: '==', l: ex(x.k[0]), r: L('none', 'None'), pos }; return { k: 'not', e: ex(n.k[0]), pos }; } if (n.v === '-' || n.v === '+') return { k: 'un', op: n.v, e: ex(n.k[0]), pos }; return native(n, '一元運算子 ' + n.v); }
+                case 'un': { if (n.v === '!') { const x = unwrap(n.k[0]); if (x.y === 'un' && x.v === '!') { const y = unwrap(x.k[0]); if (y.y === 'num' && (y.v === '1' || y.v === '0')) return { k: 'lit', t: 'bool', v: y.v === '1' ? 'true' : 'false', pos }; } if (x.y === 'call' && x.v === 'defined' && x.k.length === 1) return { k: 'cmp', op: '==', l: ex(x.k[0]), r: L('none', 'None'), pos }; return { k: 'not', e: ex(n.k[0]), pos }; } if (n.v === '-' || n.v === '+') return { k: 'un', op: n.v, e: ex(n.k[0]), pos }; return native(n, '一元運算子 ' + n.v); }
                 case 'bin': {
                     const op = n.v; if (CMPW[op]) return { k: 'cmp', op: CMPW[op], l: ex(n.k[0]), r: ex(n.k[1]), pos };
                     if (op === '&&' || op === 'and') return { k: 'logic', op: 'and', l: ex(n.k[0]), r: ex(n.k[1]), pos }; if (op === '||' || op === 'or') return { k: 'logic', op: 'or', l: ex(n.k[0]), r: ex(n.k[1]), pos };

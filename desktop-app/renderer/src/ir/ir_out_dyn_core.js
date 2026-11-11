@@ -30,7 +30,7 @@
             const isStr = (e) => e.ty && e.ty.t === 'str';
             function ex(e) {
                 switch (e.k) {
-                    case 'lit': if (e.t === 'int' || e.t === 'float') return { s: e.v, p: PREC.atom }; if (e.t === 'str') return { s: dq(e.v, PL), p: PREC.atom }; if (e.t === 'bool') return { s: PL ? (e.v === 'true' ? '1' : '0') : e.v, p: PREC.atom }; return { s: PL ? 'undef' : 'nil', p: PREC.atom };
+                    case 'lit': if (e.t === 'int' || e.t === 'float') return { s: e.v, p: PREC.atom }; if (e.t === 'str') return { s: dq(e.v, PL), p: PREC.atom }; if (e.t === 'bool') return { s: PL ? (e.v === 'true' ? '!!1' : '!!0') : e.v, p: PREC.atom }; return { s: PL ? 'undef' : 'nil', p: PREC.atom };
                     case 'name': return { s: v(e.v), p: PREC.atom };
                     case 'bin': { const p = e.op === '<<' || e.op === '>>' ? PREC.shift : PREC[e.op]; const l = ex(e.l), r = ex(e.r); const op = PL && e.op === '+' && (isStr(e.l) || isStr(e.r)) ? '.' : e.op; return { s: wrap(l, p) + ' ' + op + ' ' + wrap(r, p + 1), p }; }
                     case 'un': { const x = ex(e.e); return { s: e.op + wrap(x, PREC.un), p: PREC.un }; }

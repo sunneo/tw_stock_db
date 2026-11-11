@@ -11,7 +11,7 @@
  *   bridge.program(funcs)            funcs: [{name, params:[名稱], blocks | cnl}] → { python, funcs }
  *   bridge.fromPython(src)           → { funcs:[{name, params, blocks, cnl, stats}], coverage }
  *   bridge.toIr(python, name)        → { ir, diags, coverage }
- *   bridge.emit(python, lang)        → { ok, code, diags }   （lang：nodejs／java／c／python）
+ *   bridge.emit(python, lang, name, types, ovf) → { ok, code, diags }   （lang：nodejs／java／c／python…；ovf 真值＝整數溢位檢查模式：超出目標語言整數範圍就明確失敗）
  *   bridge.toIrFrom(src, lang, name, parser)    非 Python 來源（nodejs／java／c／cpp／csharp）→ 中間語言；parser＝該語言的 tree-sitter Parser（呼叫端載入文法）
  *   bridge.emitFrom(src, lang, target, name, parser) → { ok, code, diags }   來源語言 → 中間語言 → 目標語言
  *   bridge.cardsFrom(src, lang, name, parser) → 行為卡（第二層）
@@ -24,7 +24,7 @@
     if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaIrBlocks = factory();
 })(typeof self !== 'undefined' ? self : this, function () {
     function make(env) {
-        const { parseTree, C2U, B, IN, PREP, OUT, BD, DES, INB, INT, INR, INP, UML } = env;
+        const { parseTree, C2U, B, IN, PREP, OUT, BD, DES, INB, INT, INR, INP, UML, UE } = env;
         const anyT = { base: 'any', args: [] };
         const mkOp = (name, params, body) => ({ name, params: (params || []).map((x) => ({ name: x, type: anyT })), returns: anyT, visibility: '+', static: true, body });
         const blocksOf = (f) => {
@@ -126,13 +126,13 @@
             const comments = collectComments(src, tree.rootNode); u.model.trivia = comments;
             return { funcs, coverage: u.coverage, ctx: u.model, comments };
         }
-        function toIr(python, name, types) {
+        function toIr(python, name, types, ovf) {
             const tree = parseTree(python); const r = IN.fromTree(tree.rootNode, { source: python, name: name || 'blocks'});
-            return finishFrom(r, types);
+            return finishFrom(r, types, ovf);
         }
-        function emit(python, lang, name, types) {
+        function emit(python, lang, name, types, ovf) {
             if (!OUT[lang]) return { ok: false, code: '', diags: [{ level: 'error', msg: '不支援的目標語言：' + lang }] };
-            const r = toIr(python, name, types); const em = OUT[lang].emit(r.ir);
+            const r = toIr(python, name, types, ovf); const em = OUT[lang].emit(r.ir);
             const diags = r.diags.concat(em.diags || []);
             const out = { ok: !diags.some((d) => d.level === 'error'), code: em.code, diags };
             if (!out.ok && diags.some((d) => d.level === 'error' && /型別|標註/.test(d.msg))) { out.needTypes = PREP.missingTypes(r.ir); if (r.typeApply) out.typeApply = r.typeApply; }
@@ -145,25 +145,25 @@
         // ---- 非 Python 來源（DESIGN.core-ir.md 第 11、13 節）----
         const FROM = { nodejs: 1, java: 1, c: 1, cpp: 1, csharp: 1, ruby: 1, perl: 1 }, patCache = {}; // cpp、csharp 走 INT（ir_in_typed_core.js，內部語言鍵 cpp／cs）
         const fromLangs = () => (INB ? Object.keys(FROM).filter((l) => (INT || (l !== 'cpp' && l !== 'csharp')) && (INR || l !== 'ruby') && (INP || l !== 'perl')) : []);
-        function toIrFrom(src, lang, name, parser, types) {
+        function toIrFrom(src, lang, name, parser, types, ovf) {
             if (lang === 'python') return toIr(src, name);
             if (!INB || !FROM[lang] || ((lang === 'cpp' || lang === 'csharp') && !INT) || (lang === 'ruby' && !INR) || (lang === 'perl' && !INP)) throw new Error('還沒有 ' + lang + ' 的「進」（目前支援 python、' + fromLangs().join('、') + '）');
             if (!parser && lang !== 'perl') throw new Error('缺少 ' + lang + ' 的語法樹剖析器'); // perl 的剖析器是自己寫的，不需要文法
-            if (lang === 'perl') { const r = INP.fromSource(src, { patterns: patCache.perl || (patCache.perl = INP.buildPatterns()), name: name || 'input' }); return finishFrom(r, types); }
+            if (lang === 'perl') { const r = INP.fromSource(src, { patterns: patCache.perl || (patCache.perl = INP.buildPatterns()), name: name || 'input' }); return finishFrom(r, types, ovf); }
             const typed = lang === 'cpp' || lang === 'csharp', rb = lang === 'ruby', M = rb ? INR : typed ? INT : INB, L2 = lang === 'csharp' ? 'cs' : lang;
             const patterns = patCache[lang] || (patCache[lang] = rb ? M.buildPatterns((s) => parser.parse(s).rootNode) : M.buildPatterns(L2, (s) => parser.parse(s).rootNode));
             const r = M.fromTree(parser.parse(src).rootNode, { lang: L2, source: src, patterns, name: name || 'input' });
-            return finishFrom(r, types);
+            return finishFrom(r, types, ovf);
         }
         // 套用使用者補的型別（applyTypes）→ 整理（推論＋由用法推）→ 診斷；applyTypes 的結果放在 typeApply
-        function finishFrom(r, types) {
-            const ap = types && Object.keys(types).length ? PREP.applyTypes(r.ir, types) : null; const prep = PREP.prepare(r.ir);
+        function finishFrom(r, types, ovf) {
+            const ap = types && Object.keys(types).length ? PREP.applyTypes(r.ir, types) : null; const prep = PREP.prepare(r.ir, ovf ? { overflow: 'check' } : undefined);
             return { ir: prep.ir, diags: (r.diags || []).concat(prep.diags || []).concat(ap ? ap.bad.map((b) => ({ level: 'error', msg: '補的型別沒套上：' + b.key + '（' + b.why + '）' })) : []), coverage: r.coverage, typeApply: ap };
         }
-        function emitFrom(src, lang, target, name, parser, types) {
-            if (lang === 'python') return emit(src, target, name);
+        function emitFrom(src, lang, target, name, parser, types, ovf) {
+            if (lang === 'python') return emit(src, target, name, types, ovf);
             if (!OUT[target]) return { ok: false, code: '', diags: [{ level: 'error', msg: '不支援的目標語言：' + target }] };
-            const r = toIrFrom(src, lang, name, parser, types); const em = OUT[target].emit(r.ir); const diags = r.diags.concat(em.diags || []);
+            const r = toIrFrom(src, lang, name, parser, types, ovf); const em = OUT[target].emit(r.ir); const diags = r.diags.concat(em.diags || []);
             const out = { ok: !diags.some((d) => d.level === 'error'), code: em.code, diags, coverage: r.coverage };
             // 靜態語言目標缺型別：列出還推不出型別的地方，請呼叫者（AI 或使用者）用 types 補；補的型別只能是參數、回傳值或區域變數
             if (!out.ok && diags.some((d) => d.level === 'error' && /型別|標註/.test(d.msg))) { out.needTypes = PREP.missingTypes(r.ir); if (r.typeApply) out.typeApply = r.typeApply; }
@@ -179,6 +179,23 @@
                 if (out.errors.length) out.ok = false;
             }
             return out;
+        }
+        // 改設計 → 改程式：程式 → 中間語言 → UML 模型（改前）→ 套用 uml_edit 指令（FaUmlEdit.apply）→ 模型差異（applyModelDiff：刪函式、加函式骨架、簽名相同名稱不同＝改名）→ 輸出（預設同來源語言）。
+        // opts：{ name, parser, ops（uml_edit 指令陣列）, target, types, overflow }。回傳 { ok, code, diags, changes, applied, rejected, needImpl（新增、尚待實作內容的函式）, before（改前 DSL） }
+        function designEdit(src, lang, opts) {
+            opts = opts || {}; if (!UE) return { ok: false, error: '缺少 uml_edit 模組（env.UE）' };
+            if (!Array.isArray(opts.ops) || !opts.ops.length) return { ok: false, error: '沒有編修指令（ops 要是 uml_edit 指令陣列）' };
+            const target = opts.target || lang; if (!OUT[target]) return { ok: false, error: '不支援的目標語言：' + target };
+            const r = lang === 'python' ? toIr(src, opts.name, opts.types, opts.overflow) : toIrFrom(src, lang, opts.name, opts.parser, opts.types, opts.overflow);
+            const design = DES.extract(r.ir); const before = DES.toUmlModel(design, { moduleName: opts.name || 'Module' }, r.ir);
+            const ap = UE.apply(JSON.parse(JSON.stringify(before)), opts.ops);
+            if (!ap.applied.length) return { ok: false, error: '沒有任何一條編修指令套用成功', rejected: ap.rejected };
+            const d = DES.applyModelDiff(r.ir, before, ap.model);
+            if (!d.ok) return { ok: false, error: '設計的改動接不回程式：' + d.errors.join('；'), errors: d.errors, applied: ap.applied, rejected: ap.rejected, changes: d.log };
+            const em = OUT[target].emit(d.ir); const diags = (r.diags || []).concat(em.diags || []);
+            const needImpl = []; (d.ir.body || []).forEach((st) => { if (st.k === 'func' && (st.body || []).some((x) => x.k === 'native' && x.lang === 'todo')) needImpl.push(st.name); });
+            const real = diags.filter((x) => x.level === 'error' && !/待實作|原生區塊（todo）/.test(x.msg));
+            return { ok: real.length === 0, from: lang, target, code: em.code, diags, changes: d.log, applied: ap.applied, rejected: ap.rejected, needImpl };
         }
         function cardsFrom(src, lang, name, parser) { if (lang === 'python') return cards(src, name); return BD.fromIr(toIrFrom(src, lang, name, parser).ir); }
         // 行為卡：中間語言（第二層）＋ 該函式的區塊範本使用統計
@@ -203,7 +220,7 @@
             const share = (names) => { const st = names.map(styleOf).filter(Boolean); if (st.length < 2) return { score: 1, dominant: st[0] || null, mixed: [] }; const cnt = {}; st.forEach((x) => { cnt[x] = (cnt[x] || 0) + 1; }); const dom = Object.keys(cnt).sort((a, b) => cnt[b] - cnt[a])[0]; return { score: cnt[dom] / st.length, dominant: dom, mixed: names.filter((n) => { const k = styleOf(n); return k && k !== dom; }) }; };
             const f = share(fn), v = share(vars.filter((x, i, a) => a.indexOf(x) === i)); return { functions: f, variables: v, score: Math.min(f.score, v.score), ok: f.score === 1 && v.score === 1 };
         }
-        return { collectComments, attachComments, styleCheck, program, fromPython, toIr, emit, toIrFrom, emitFrom, cardsFrom, umlFrom, fromLangs, blocksToTarget, cards, cardText };
+        return { collectComments, attachComments, styleCheck, program, fromPython, toIr, emit, toIrFrom, emitFrom, cardsFrom, umlFrom, designEdit, fromLangs, blocksToTarget, cards, cardText };
     }
     return { make };
 });

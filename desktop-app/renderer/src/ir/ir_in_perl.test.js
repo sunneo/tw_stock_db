@@ -52,6 +52,18 @@ sub sum { # 標頭註解
             assert.strictEqual(fn.body.filter((x) => x.k === 'native').length, 2, JSON.stringify(fn.body.map((x) => x.k))); assert.strictEqual(r.coverage.natives, 2);
         });
     }
+    // 布林往返：Perl 沒有布林型別，輸出器把 True／False 寫成 !!1／!!0，「進」認得它還原成布林字面值（以前變成整數 1／0）
+    {
+        const src = 'def flag(n: int) -> bool:\n    if n > 3:\n        return True\n    return False\n\n\ndef main():\n    n: int = int(input())\n    print(flag(n))\n\n\nmain()\n';
+        const em = OUT.perl.emit(PREP.prepare(INPY.fromTree(parsers.python.parse(src).rootNode, { source: src }).ir).ir);
+        t('Perl 布林：輸出 !!1／!!0；進回來是布林字面值；還原的 Python 實跑與原程式一致', () => {
+            assert.ok(/return !!1;/.test(em.code) && /return !!0;/.test(em.code), em.code);
+            const r = INB.fromSource(em.code, { patterns: INB.buildPatterns() }); const text = JSON.stringify(r.ir);
+            assert.ok(/"t":"bool","v":"true"/.test(text) && /"t":"bool","v":"false"/.test(text), '沒有還原成布林字面值');
+            const back = OUT.python.emit(PREP.prepare(r.ir).ir); assert.ok(/return True/.test(back.code) && /return False/.test(back.code), back.code);
+            for (const inp of ['2\n', '9\n']) assert.strictEqual(runPy(back.code, inp), runPy(src, inp));
+        });
+    }
     notes.push(JSON.stringify(results));
     notes.forEach((x) => console.log('  · ' + x));
     console.log(pass + ' passed, ' + fail + ' failed'); process.exit(fail ? 1 : 0);

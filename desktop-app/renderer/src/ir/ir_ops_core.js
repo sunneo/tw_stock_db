@@ -264,6 +264,26 @@
     };
     patchCell('conv.bool', 'rb', { int: '(@0 != 0)', str: '(!@0.empty?)', list: '(!@0.empty?)', '*': '(!!@0)' }); patchCell('conv.bool', 'pl', '(($0) ? 1 : 0)');
     HELPERS.rb = {};
+    // ---------- 溢位檢查模式（prepare 選項 overflow:'check'）：整數 + - * ** 超出目標語言的整數範圍就明確失敗，不悄悄環繞／失精度 ----------
+    // Python／Ruby 本來就是任意長度整數，樣板就是原運算；Perl 預設超過 64 位元會悄悄變浮點，所以也要檢查。
+    const OVF_SEM = '純函式；與 Python 不同處：結果超出目標語言整數範圍時丟錯（overflow），不環繞';
+    const OVF_PIT = ['Python 的 int 沒有上限；Java／C／C++／C# 為 64 位元（無檢查時環繞）、JavaScript 為 2^53 以內精確、Perl 超過 64 位元悄悄變浮點 → 檢查模式改成明確失敗，需要大整數結果的程式請改用支援大整數的語言（Python／Ruby）或另外處理'];
+    [['cadd', '+', 'add', 'addExact'], ['csub', '-', 'sub', 'subtractExact'], ['cmul', '*', 'mul', 'multiplyExact']].forEach((x) => {
+        O('int.' + x[0], ['int', 'int'], 'int', OVF_SEM, ['$0 ' + x[1] + ' $1', 'fa_' + x[0] + '($0, $1)', 'Math.' + x[3] + '($0, $1)', 'fa_' + x[0] + '($0, $1)', 'fa_' + x[0] + '($0, $1)', 'checked($0 ' + x[1] + ' $1)', '$0 ' + x[1] + ' $1', 'fa_' + x[0] + '($0, $1)'],
+            { h: { nodejs: ['fa_' + x[0]], c: ['fa_' + x[0]], cpp: ['fa_' + x[0]], pl: ['fa_' + x[0]] }, pit: OVF_PIT });
+        HELPERS.nodejs['fa_' + x[0]] = 'function fa_' + x[0] + '(a, b) { const r = a ' + x[1] + ' b; if (!Number.isSafeInteger(r)) throw new Error("integer overflow (beyond 2^53)"); return r; }';
+        HELPERS.c['fa_' + x[0]] = 'static long long fa_' + x[0] + '(long long a, long long b) { long long r; if (__builtin_' + x[2] + '_overflow(a, b, &r)) { fprintf(stderr, "integer overflow\\n"); exit(1); } return r; }';
+        HELPERS.cpp['fa_' + x[0]] = 'static long long fa_' + x[0] + '(long long a, long long b) { long long r; if (__builtin_' + x[2] + '_overflow(a, b, &r)) throw std::overflow_error("integer overflow"); return r; }';
+        HELPERS.pl['fa_' + x[0]] = 'sub fa_' + x[0] + ' { my ($a, $b) = @_; my $r = $a ' + x[1] + ' $b; die("integer overflow\\n") if $r != int($r) || abs($r) >= 9.2233720368547758e18; return $r; }';
+    });
+    O('int.cpow', ['int', 'int'], 'int', OVF_SEM + '；負指數 Python 會變浮點', ['$0 ** $1', 'fa_cpow($0, $1)', 'fa_cpow($0, $1)', 'fa_cpow($0, $1)', 'fa_cpow($0, $1)', 'fa_cpow($0, $1)', '$0 ** $1', 'fa_cpow($0, $1)'],
+        { h: { nodejs: ['fa_cpow'], java: ['fa_cpow'], c: ['fa_cpow'], cpp: ['fa_cpow'], cs: ['fa_cpow'], pl: ['fa_cpow'] }, pit: OVF_PIT });
+    HELPERS.nodejs.fa_cpow = 'function fa_cpow(b, e) { let r = 1; for (let i = 0; i < e; i++) { r *= b; if (!Number.isSafeInteger(r)) throw new Error("integer overflow (beyond 2^53)"); } return r; }';
+    HELPERS.java.fa_cpow = 'static long fa_cpow(long b, long e) { long r = 1; for (long i = 0; i < e; i++) r = Math.multiplyExact(r, b); return r; }';
+    HELPERS.c.fa_cpow = 'static long long fa_cpow(long long b, long long e) { long long r = 1; for (long long i = 0; i < e; i++) { if (__builtin_mul_overflow(r, b, &r)) { fprintf(stderr, "integer overflow\\n"); exit(1); } } return r; }';
+    HELPERS.cpp.fa_cpow = 'static long long fa_cpow(long long b, long long e) { long long r = 1; for (long long i = 0; i < e; i++) { if (__builtin_mul_overflow(r, b, &r)) throw std::overflow_error("integer overflow"); } return r; }';
+    HELPERS.cs.fa_cpow = 'static long fa_cpow(long b, long e) { long r = 1; for (long i = 0; i < e; i++) r = checked(r * b); return r; }';
+    HELPERS.pl.fa_cpow = 'sub fa_cpow { my ($b, $e) = @_; my $r = 1; for (my $i = 0; $i < $e; $i++) { $r *= $b; die("integer overflow\\n") if $r != int($r) || abs($r) >= 9.2233720368547758e18; } return $r; }';
     const HDEPS = { c: { fa_new: ['fa_list'], fa_push: ['fa_list'], fa_pop: ['fa_list'], fa_filled: ['fa_new', 'fa_push'], fa_list_copy: ['fa_new', 'fa_push'], fa_list_sum: ['fa_list'], fa_list_min: ['fa_list'], fa_list_max: ['fa_list'], fa_list_contains: ['fa_list'], fa_list_reverse: ['fa_list'], fa_sorted: ['fa_list_copy'], fa_sort: ['fa_list'], fa_joinNums: ['fa_list'], fa_splitInts: ['fa_new', 'fa_push'] }, java: { fa_splitInts: ['fa_splitWs'] }, nodejs: { fa_splitInts: ['fa_parseInt'] }, cpp: { fa_splitInts: ['fa_splitWs'], fa_json: ['fa_jv'] } };
 
     // ---------- 查表 ----------
