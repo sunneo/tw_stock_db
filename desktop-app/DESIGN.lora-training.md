@@ -254,3 +254,28 @@ lora-train/.venv/Scripts/pip install -r lora-train/requirements.txt
 - 第一次實測失敗（`target_modules` 是 set，JSON 寫不出來）已修；第二次因為評估批次混進 trace 與讀錯 loss 檔路徑無效；第三次有效。測試腳本的通過條件改成比對 `C[:6]==A[6:12]`，這個比對是用同一份 trace 檔人工核對的，腳本改完後沒有重跑。
 
 **尚未做**：`train_multi.sh` 的整批續跑（已完成的顆跳過、做到一半的顆從最新 checkpoint 續）；工作室端的「暫停／續訓」接線；toolcall 目前沒有檢查點，無法從中途接續，這一顆要等它跑完。
+
+## 17. 第一顆 adapter：`decompose`（2026-11-12，實跑）
+
+**訓練**：`out/multi/decompose/`，rank 4、alpha 8、7 個投影、學習率 2e-4、一輪、序列 768、batch 1×累積 8（共 84 步，實跑約 9,425 秒，約 2.6 小時；機器負載 20–60）。資料 677 列（`uml_design` 396、`fn_template` 281；`data/multi/decompose.jsonl`）。驗證集 3%（實際有 eval 的那次）。checkpoint 當時每 100 步，沒有中途檢查點。
+**評量資料**：`heldout_v1.jsonl`（與基底基準同一批）。拆題的 135 個留出題與 77 個訓練題**沒有題目重疊**（problem_id 比對，0 重疊）。
+
+| 組別 | 指標 | 基底 | 微調 | 判定 |
+|---|---|---|---|---|
+| fn_template/code_split | valid（JSON、有 main、呼叫指向函式） | 0/60 | 60/60 | 進步 |
+| fn_template/code_split | names（函式名集合相同） | 0/60 | 55/60 | 進步 |
+| fn_template/code_split | calls（呼叫關係相同） | 0/60 | 55/60 | 進步 |
+| fn_template/code_write_fn | def | 60/60 | 60/60 | 持平 |
+| fn_template/code_write_fn | judge（判題器通過） | 8/60 | 20/60 | 進步 |
+| uml_design/uml_edit_real | 選擇 | 18/30 | 30/30 | 進步 |
+| uml_design/uml_edit_shuf | 選擇 | 16/30 | 30/30 | 進步 |
+| think_stack/plan_check | valid | 52/60 | 59/60 | 進步 |
+| think_stack/review_return | items | 0/60 | 0/60 | 持平（未改善） |
+| think_stack/self_validate | ok | 25/60 | 25/60 | 持平 |
+| think_stack/self_validate | neg_ok（負例） | 2/17 | 9/17 | 進步 |
+| think_stack/self_validate | **pos_ok（正例）** | **23/43** | **16/43** | **退步** |
+
+**退步**：`think_stack/self_validate` 的正例 23→16。依規則（沒有退步才 pack），**`decompose` 目前不 pack**。
+**沒做**：uml 的 actors／classes／members／relations／sequence 留出題（留出檔裡只有 edit 題），所以 uml 結構階段沒有量到。
+
+**接下來（待決定）**：(a) 在 `decompose` 的訓練集裡加入 self_validate 的正例（與 plan 分工，或讓 self_validate 只歸 plan 那顆）；(b) 接受「self_validate 只在 plan 顆處理」，把 decompose 的適用條件（`applies`）限制成拆題提示，然後重新評量。兩者都要用同一批留出題重評。
