@@ -753,7 +753,7 @@ const NATIVE_RUNTIME_LEGACY_VERSIONS = ["1.22.0-1"];
 const NATIVE_NPM_TARBALL = "https://registry.npmjs.org/onnxruntime-node/-/onnxruntime-node-1.22.0.tgz";
 // 1.22.0-2 的來源 2：分支 native-runtime-1.22.0 上「含新版 nr-*.js 分割段」的 commit。尚未推送，所以先留空：留空時安裝會在下載前明確失敗（不是靜默用舊版）。
 // 推送後把這裡換成 https://raw.githubusercontent.com/sunneo/tw_stock_db/<新 commit SHA>（見 DESIGN.TODO.native-runner.md「1.22.0-2」一節）。
-const NATIVE_GITHUB_BASE = "";
+const NATIVE_GITHUB_BASE = "https://raw.githubusercontent.com/sunneo/tw_stock_db/eb7fd2a43b3264a330b1c2b3bde58bdffaaaa4b3";
 function checkNativeRuntimeDir(dir, version) {
   version = version || NATIVE_RUNTIME_VERSION;
   const fsSync = require("fs"), pathM = require("path"), crypto = require("crypto");
