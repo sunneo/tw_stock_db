@@ -296,3 +296,10 @@ Pillow 外部驗證：寫出端 20/20、解碼生成器 30/30（python3 的 Pill
 ### 5. 注意
 - 測試執行會改動已追蹤的 `test-reports/`、`__pycache__/stub_to_types.cpython-310.pyc`、`skills/image-decompose-redraw/data/parts_builtin.json`；且產生未追蹤的 `renderer/vendor/tree-sitter/*.wasm`。提交前要 `git checkout --` 還原前三者，未追蹤的不要加入。
 - 背景腳本 `par_old.sh` 已結束；工作樹 `algo_intent_core.js` 與 HEAD 一致。
+
+## 讀取器改動（blockly-finish-3，2026-11-12）
+- 改了什麼：`algo_intent_core.js` 的 `readToolInput` 內的 `one()`，新增一條規則：「第一行三個整數 w h c」這類具名整數行（`[兩三四五\d]個?(正)?(整數|小數) 名字…`）讀成 `scalars` 輸入，不再掉成 `str raw`。
+- 為什麼：舊版對「第一行三個整數 w h c，第二行一個十六進位字串 px」只讀出 `str s`＋`hex h`，整數行丟失（finish-2 記載的兩段輸入限制之一）。
+- 向下相容：只新增一條 `return` 規則，原本能讀的句型（「第一行 n」「整數 n 行」等）走到它之前不變；只有「整數／小數＋具名」的 `one()` 子句才會命中。
+- 回歸（實跑，2 核、nice 19）：domain_inflate 20/20、tarx 20/20、bmpx 20/20、png 12/12、gif 14/14、pcx 14/14、jpeg 10/10、linuxreal 38/38、dsp 72/72、py_paradigms 89/89、py_lessons 17/17、linux_paradigms 125/125、py_uml_pipeline 7/7；par 16/22 train、3/5 holdout（與改前相同）。holdout 數字與改前相同。
+- 已知風險：同名欄位（整數行 `h` 與十六進位 `h`）會撞名，這是探針用的名字；真實題目應取不同名字。

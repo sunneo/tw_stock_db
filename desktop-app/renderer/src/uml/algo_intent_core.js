@@ -152,6 +152,7 @@
         const one = (c) => { // 一個子句（已拿掉「輸入」）→ 0～1 個輸入描述
             const head = /^(?:再來|再給|再|然後|接下來|接著|緊接著|隨後|之後|最後|給)?\s*(?:[^，，]{0,6}?第[一二三四五六七八九\d]+行|[一二兩]行)\s*(?:是|為)?\s*(.*)$/.exec(c); if (!head) return null; const d = head[1].trim(); let m;
             if (/十六進位|以空白隔開的位元組/.test(d)) return { k: 'hex', name: nm('h') };
+            if ((m = new RegExp('^(?:(?:兩|三|四|五|\\d)\\s*)?個?(?:正)?(?:整數|小數)\\s*(' + NAMES + ')$').exec(d))) return { k: 'scalars', names: m[1].split(/[\s、]+/), type: /小數/.test(d) ? 'float' : 'int', line: true }; // 「第一行三個整數 w h c」：具名的整數行（向下相容：只接受「整數／小數」加名字）
             if (/^base64|^[Bb]ase\s*64/.test(d)) return { k: 'str', name: nm('s'), raw: true };
             if (/^pat$/.test(d)) return { k: 'str', name: 'pat', raw: true, role: 'pat' };
             if (/^一串/.test(d) && !new RegExp('^一串[^a-zA-Z]*' + NAME).test(d)) return { k: 'list', name: 'a', size: null, elem: 'int' };
