@@ -8,7 +8,7 @@ const argv = process.argv.slice(2), flags = {}, pos = [];
 for (let i = 0; i < argv.length; i++) { if (argv[i].startsWith('--')) flags[argv[i].slice(2)] = argv[++i]; else pos.push(argv[i]); }
 const [adapterDir, name, evalPath] = pos;
 // 可選旗標（多顆 LoRA 用；描述檔格式見 DESIGN.lora-training.md §13.2 fa-lora-descriptor v1）：
-//   --id <id> --version <字串> --domains a,b --triggers "正規式1,正規式2"（逗號分隔）--pf <prompt_format_version> --card <card_info.json>
+//   --id <id> --version <字串> --domains a,b --triggers "正規式1,正規式2"（逗號分隔）--pf <prompt_format_version> --card <card_info.json> --metrics <metrics.json>
 if (!adapterDir || !name) { console.error('usage: node pack_adapter.js <adapter_dir> <name> [eval_json]'); process.exit(1); }
 const SZ = 20 * 1024 * 1024, here = __dirname;
 const out = p.join(here, 'out', 'release', name); fs.rmSync(out, { recursive: true, force: true }); fs.mkdirSync(out, { recursive: true });
@@ -34,13 +34,16 @@ if (flags.id) {
     applies: { domains: (flags.domains || '').split(',').filter(Boolean), triggers: (flags.triggers || '').split(',').filter(Boolean) },
     size: man.total_size, sha256: man.sha256, location: flags.location || ('asset:lora/' + flags.id), eval: man.eval && man.eval.groups ? { groups: man.eval.groups } : null };
   fs.writeFileSync(p.join(out, 'lora.descriptor.json'), JSON.stringify(desc, null, 2));
-  // model card：數字只從實跑的評量 JSON 取，沒有評量就標明沒有，不手寫
+  // model card：格式 fa-lora-card v1（與工作室 lora_manage_core.js validateModelCard 對齊）。
+  // 評量數字只從 --metrics 檔（由實跑評量算出的 {split_legal_rate:{base,tuned,n}, fc_format_rate:{base,tuned,n}}，小數 0～1）取；沒有就不放 eval 欄位，不手寫。
   const info = flags.card && fs.existsSync(flags.card) ? JSON.parse(fs.readFileSync(flags.card, 'utf8')) : {};
-  const ev = man.eval || null; const reg = ev && ev.regress ? ev.regress : null;
-  const card = { id: flags.id, name: info.name || flags.id, version: desc.version, date: man.date, base: man.base, rank: cfg.r, size: man.total_size,
-    intro: info.intro || '', capabilities: info.capabilities || [], training_data: info.training_data || { note: '未提供', train_file_sha256: man.trained_on.train_file_sha256 },
-    metrics: ev ? { source: 'eval json（實跑）', groups: ev.groups || null } : { note: '沒有評量資料（未實跑，不顯示數字）' },
-    regressions: reg, not_winning: ev && ev.not_winning ? ev.not_winning : null, limitations: info.limitations || [] };
+  const met = flags.metrics && fs.existsSync(flags.metrics) ? JSON.parse(fs.readFileSync(flags.metrics, 'utf8')) : null;
+  const card = { format: 'fa-lora-card', version: 1, id: 'lora/' + flags.id, name: info.name || flags.id, version_tag: desc.version,
+    base: { name: man.base }, created: new Date().toISOString().slice(0, 10), intro: info.intro || '',
+    capabilities: info.capabilities || [], known_limits: info.known_limits || [],
+    applicable: { rank: cfg.r, domains: desc.applies.domains },
+    training: Object.assign({ sources: info.sources || '' }, info.training || {}) };
+  if (met) card.eval = met;
   fs.writeFileSync(p.join(out, 'model_card.json'), JSON.stringify(card, null, 2));
   console.log('descriptor + model_card written for', flags.id);
 }
