@@ -1,5 +1,6 @@
 // node renderer/src/studio/pipeline_routes_core.test.js
 const R = require('./pipeline_routes_core.js'), PL = require('./pipeline_core.js'), LV = require('./pipeline_live_core.js'), AD = require('./train_advice_core.js'), BP = require('./backend_cpu_py.js');
+const LM = require('./lora_manage_core.js');
 let ok = 0, bad = 0; const check = (n, c, x) => { if (c) ok++; else { bad++; console.log('FAIL', n, x === undefined ? '' : JSON.stringify(x).slice(0, 400)); } };
 const enc = (s) => new TextEncoder().encode(s);
 
@@ -10,13 +11,13 @@ const evalJson = { groups: { 'group/blockly-parity': { n: 8, base: 5, tuned: 3 }
 const trainJsonl = ['{"domain":"matrix/lin","split":"train"}', '{"domain":"matrix/lin","split":"train"}', '{"domain":"matrix/lin","split":"holdout"}', '{"domain":"uml/class","split":"train"}'].join('\n');
 const storage = {
     async loadManifest(kind, name) { return kind === 'lora' && name === 'demo' ? manifest : null; },
-    async loadAsset(kind, name) { return kind === 'lora' && name === 'demo' ? { manifest, asset: { files: { 'eval.json': JSON.stringify(evalJson), 'data/train.jsonl': enc(trainJsonl) } } } : null; }
+    async loadAsset(kind, name) { if (kind === 'lora' && name === 'demo-card') return { manifest, asset: { files: { 'model_card.json': JSON.stringify({ format: 'fa-lora-card', version: 1, id: 'lora/demo-card', name: '卡片示範', intro: 'x', base: { name: 'Qwen3-0.6B' }, created: '2026-11-10T00:00:00Z', capabilities: [], known_limits: ['無'], eval: { split_legal_rate: { base: 0.5, tuned: 0.6, n: 40 } } }) } } }; if (kind === 'lora' && name === 'demo-bad') return { manifest, asset: { files: { 'model_card.json': '{not json' } } }; return kind === 'lora' && name === 'demo' ? { manifest, asset: { files: { 'eval.json': JSON.stringify(evalJson), 'data/train.jsonl': enc(trainJsonl) } } } : null; }
 };
 // 真實格式的訓練紀錄（train_lora.py 的輸出行）
 const LOG_RUNNING = [ "{'loss': '2.1034', 'grad_norm': '0.81', 'learning_rate': '0.0002', 'epoch': '0.1'}", '  10/100 [00:08<01:12,  0.80s/it]', "{'loss': '1.5012', 'grad_norm': '0.52', 'learning_rate': '0.0002', 'epoch': '0.5'}", ' 40/100 [00:32<00:48,  0.82s/it]' ].join('\n');
 let logText = LOG_RUNNING, rssBytes = 1000 * 1024 * 1024;
 const readRunLog = async (dir) => (dir === 'RUN_NONE' ? null : { ok: true, log: logText, events: logText.split('\n').map((l) => BP.parseProgressLine(l)).filter(Boolean), rssBytes, rssReason: rssBytes === null ? '子行程已結束' : '', hostRssBytes: 123 });
-const api = R.createPipelineApi({ storage, readRunLog, now: () => 1000, Pipeline: PL, Live: LV, Advice: AD, parseLine: BP.parseProgressLine, exportCaps: () => ({ onnxExport: false, ggufExport: false }) });
+const api = R.createPipelineApi({ storage, readRunLog, now: () => 1000, Pipeline: PL, Live: LV, Advice: AD, LoraManage: LM, parseLine: BP.parseProgressLine, exportCaps: () => ({ onnxExport: false, ggufExport: false }) });
 const U = (p) => new URL('http://x' + p);
 
 (async () => {
@@ -75,6 +76,18 @@ const U = (p) => new URL('http://x' + p);
     check('貼上的 JSON：來源寫進建議', p1.j.ok && p1.j.suggestions.some((s) => s.evidence.source.indexOf('my.json') === 0 && s.rule === 'regression'));
     const p2 = await api.route('POST', U('/api/advice/from-json'), { report: { rows: [] } });
     check('貼上的 JSON 沒有 groups：400', p2.s === 400 && /groups/.test(p2.j.error), p2);
+
+    // ---- LoRA model card 路由（§21）----
+    const c1 = await api.route('GET', U('/api/lora/card?id=lora/demo-card'), {});
+    check('card：有 model_card.json 就回摘要（判定、差距）', c1.j.ok && c1.j.hasCard && c1.j.card.name === '卡片示範' && c1.j.card.metrics[0].deltaPts === 10 && c1.j.card.metrics[0].verdict === '進步', c1.j);
+    const c2 = await api.route('GET', U('/api/lora/card?id=lora/demo'), {});
+    check('card：沒有 model_card.json 照實說', c2.j.ok && c2.j.hasCard === false && /沒有 model_card/.test(c2.j.reason), c2.j);
+    const c3 = await api.route('GET', U('/api/lora/card?id=lora/demo-bad'), {});
+    check('card：壞掉的 JSON 回 400 並說明', c3.s === 400 && /不是合法的 JSON/.test(c3.j.error), c3);
+    const c4 = await api.route('GET', U('/api/lora/card?id=colu/x'), {});
+    check('card：參照格式不是 lora/ 回 400', c4.s === 400);
+    const c5 = await api.route('GET', U('/api/lora/card?id=lora/demo-card'), {});
+    check('card：summarizeCard 與 validateModelCard 接上（缺評量指標寫無資料）', c5.j.card.metrics[1].available === false, c5.j.card.metrics);
 
     // ---- 純函式 ----
     check('trainRowsFrom：只計 train，缺 domain 歸到 ?', (() => { const t = R.trainRowsFrom({ 'data/a.jsonl': enc('{"domain":"x","split":"train"}\n{"split":"train"}\n{"domain":"x","split":"holdout"}\nbroken\n') }); return t.x === 1 && t['?'] === 1; })());

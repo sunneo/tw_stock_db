@@ -32,9 +32,10 @@
     const PLv = (typeof module === 'object' && module.exports) ? require('./pipeline_live_core.js') : root.FaStudioLive;
     const PAd = (typeof module === 'object' && module.exports) ? require('./train_advice_core.js') : root.FaStudioAdvice;
     const PRt = (typeof module === 'object' && module.exports) ? require('./pipeline_routes_core.js') : root.FaStudioPipelineRoutes;
-    if (typeof module === 'object' && module.exports) module.exports = factory(A, F, T, Lay, Ing, Cln, Reg, Ev, Sy, ST, Te, Si, PPl, PLv, PAd, PRt);
-    else root.FaStudioServer = factory(A, F, T, Lay, Ing, Cln, Reg, Ev, Sy, ST, Te, Si, PPl, PLv, PAd, PRt);
-})(typeof self !== 'undefined' ? self : this, function (Asset, Fatrain, Trainer, Layout, Ingest, Clean, LoraReg, EvalCore, Sym, SymTrain, Teacher, SourceInput, PipeLib, PipeLive, PipeAdvice, PipeRoutes) {
+    const PLm = (typeof module === 'object' && module.exports) ? require('./lora_manage_core.js') : root.FaStudioLoraManage;
+    if (typeof module === 'object' && module.exports) module.exports = factory(A, F, T, Lay, Ing, Cln, Reg, Ev, Sy, ST, Te, Si, PPl, PLv, PAd, PRt, PLm);
+    else root.FaStudioServer = factory(A, F, T, Lay, Ing, Cln, Reg, Ev, Sy, ST, Te, Si, PPl, PLv, PAd, PRt, PLm);
+})(typeof self !== 'undefined' ? self : this, function (Asset, Fatrain, Trainer, Layout, Ingest, Clean, LoraReg, EvalCore, Sym, SymTrain, Teacher, SourceInput, PipeLib, PipeLive, PipeAdvice, PipeRoutes, PipeManage) {
     'use strict';
     const KIND_LABEL = { colu: 'CoLU', blockly: '積木課程', matrix: '矩陣層', uml: 'UML 設計', trainer: '離線訓練器', lora: 'LoRA' };
     const dec = (u) => new TextDecoder('utf-8').decode(u);
@@ -141,12 +142,12 @@
         const domainApi = DomApi ? DomApi.createDomainApi({ storage: h.storage, prefsGet: h.prefsGet, prefsSet: h.prefsSet, now: h.now, Asset, Eval: EvalCore, sym: h.sym, domain: h.domain, teacherAI: h.teacherAI, log: (t) => log(t), push: (o) => { if (S.push) S.push(o); } }) : null;
 
         // 流程總覽與建議（pipeline_routes_core.js，DESIGN §19）：讀真實的 train.log／run.pid（經主行程 studio_run_info）與資產的 eval.json
-        const pipeApi = PipeRoutes && PipeLib && PipeLive && PipeAdvice ? PipeRoutes.createPipelineApi({ storage: h.storage, now, readRunLog: async (dir) => { const r = await callHost('studio_run_info', { runDir: dir }); return r && r.ok ? r : null; }, exportCaps: () => ({ onnxExport: false, ggufExport: false }), Pipeline: PipeLib, Live: PipeLive, Advice: PipeAdvice }) : null;
+        const pipeApi = PipeRoutes && PipeLib && PipeLive && PipeAdvice ? PipeRoutes.createPipelineApi({ storage: h.storage, now, readRunLog: async (dir) => { const r = await callHost('studio_run_info', { runDir: dir }); return r && r.ok ? r : null; }, exportCaps: () => ({ onnxExport: false, ggufExport: false }), Pipeline: PipeLib, Live: PipeLive, Advice: PipeAdvice, LoraManage: PipeManage }) : null;
         async function route(method, u, body) {
             const P = u.pathname, Q = (k) => u.searchParams.get(k) || '';
             body = body || {};
             try {
-                if (pipeApi && /^\/api\/(pipeline|advice)/.test(P)) { const pr = await pipeApi.route(method, u, body); if (pr) return pr; }
+                if (pipeApi && /^\/api\/(pipeline|advice|lora\/card)/.test(P)) { const pr = await pipeApi.route(method, u, body); if (pr) return pr; }
                 if (domainApi && /^\/api\/domains?(\/|$)/.test(P)) { const dr = await domainApi.route(method, u, body); if (dr) return dr; }
                 if (method === 'GET' && P === '/api/info') {
                     const fs = await fapNote();

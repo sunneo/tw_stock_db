@@ -105,6 +105,7 @@
                     const v = await adviceFromAsset(Q('kind') || 'lora', Q('name'));
                     return v.ok === false ? { s: 400, j: v } : { j: Object.assign({ ok: true }, v) };
                 }
+                if (method === 'GET' && P === '/api/lora/card') { const v = await loraCard(Q('id')); return v; }
                 if (method === 'POST' && P === '/api/advice/from-json') {
                     const b = body || {}; const rep = b.report;
                     if (!rep || typeof rep !== 'object' || !rep.groups) return { s: 400, j: { ok: false, error: '缺 report（eval_run.py 的 --json_out 內容，需要有 groups）' } };
@@ -114,7 +115,19 @@
             } catch (e) { return { s: 500, j: { ok: false, error: String((e && e.message) || e) } }; }
             return null;
         }
-        return { route, pipelineView, adviceFromAsset };
+        // LoRA model card（lora_manage_core.js，§21）：讀資產的 model_card.json，檢查後回摘要；沒有就說沒有
+        async function loraCard(id) {
+            if (!d.LoraManage) return { s: 500, j: { ok: false, error: 'LoRA 管理核心沒有接上' } };
+            const m = /^lora\/(.+)$/.exec(String(id || ''));
+            if (!m) return { s: 400, j: { ok: false, error: '參照格式是 lora/<名稱>' } };
+            const a = d.storage ? await d.storage.loadAsset('lora', m[1]) : null;
+            const f = a && a.asset && a.asset.files ? a.asset.files['model_card.json'] : null;
+            if (!f) return { j: { ok: true, hasCard: false, card: null, reason: '這個 LoRA 沒有 model_card.json' } };
+            let card; try { card = JSON.parse(typeof f === 'string' ? f : new TextDecoder('utf-8').decode(f)); } catch (e) { return { s: 400, j: { ok: false, error: 'model_card.json 不是合法的 JSON：' + ((e && e.message) || e) } }; }
+            return { j: { ok: true, hasCard: true, card: d.LoraManage.summarizeCard(card), source: 'lora/' + m[1] + '/model_card.json' } };
+        }
+        // 註冊表介面到位前，列表用假資料（讀取 entries 與槽位的真正來源由 lora-slot-js 提供）；這裡只轉傳 card
+        return { route, pipelineView, adviceFromAsset, loraCard };
     }
 
     return { ASSET_KIND, createPipelineApi, factsFromManifest, eventsFromLog, trainRowsFrom };
