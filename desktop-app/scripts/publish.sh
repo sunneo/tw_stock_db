@@ -94,7 +94,13 @@ if [ "$DRY" = 1 ]; then
   echo "[dry-run] git push --force $REMOTE desktop-app-patch:desktop-app-patch"
 else
   git update-ref refs/heads/desktop-app-patch "$COMMIT"
-  git push --force "$REMOTE" desktop-app-patch:desktop-app-patch 2>&1 | grep -v 'warning\|negotiation\|acknowledg' | tail -1 || true
+  # 推送失敗一定要中止（以前接 `| tail -1 || true` 會吞掉失敗，v354 就是這樣印出「完成」但遠端沒更新）
+  PUSH_OUT="$(git push --force "$REMOTE" desktop-app-patch:desktop-app-patch 2>&1)" || { echo "$PUSH_OUT" >&2; echo "推送 desktop-app-patch 失敗，中止" >&2; exit 1; }
+  printf '%s\n' "$PUSH_OUT" | grep -v 'warning\|negotiation\|acknowledg' | tail -1
+  # 以遠端實際的提交核對（不是本機分支）
+  REMOTE_SHA="$(git ls-remote "$REMOTE" refs/heads/desktop-app-patch | cut -c1-40)"
+  [ "$REMOTE_SHA" = "$COMMIT" ] || { echo "遠端 desktop-app-patch（${REMOTE_SHA:-沒有}）不是剛組出的 $COMMIT，中止" >&2; exit 1; }
+  echo "遠端 desktop-app-patch 已是 $COMMIT"
 fi
 
 # ---- 4. 驗證 patch ----
