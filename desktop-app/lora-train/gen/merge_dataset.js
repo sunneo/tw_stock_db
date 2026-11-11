@@ -25,6 +25,7 @@ const GENERATORS = [
   'gen_think_stack.js',
   'gen_blockly_matrix.js',
   'gen_fn_template.js',
+  'gen_code_split.js',
 ];
 
 const REQUIRED_FIELDS = ['id', 'domain', 'stage', 'messages', 'completion', 'verified_by', 'split', 'source_file'];
