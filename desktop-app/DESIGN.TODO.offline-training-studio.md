@@ -192,6 +192,57 @@ Backend {
 
 速度（**推測，無實測**）：若內顯可持續 0.3–0.6 TFLOPS，約 **100–250 token/s**（比 CPU 快 2–4 倍）；若矩陣乘寫得保守只達 0.1 TFLOPS，則與 CPU 相當。要有實測才能承諾。記憶體上看是**可行**的（約 1GB），阻礙在算子正確性與調校，而不是容量。
 
+#### 使用者要求（2026-11-11）：網頁版自己產生訓練圖，使用者端不必有 Python
+
+先前說「訓練圖由開發者離線產生一次、使用者端不需要」是**繞過需求的說法，已作廢**。目標改為：網頁版（瀏覽器內，無 Python）自己從模型產生「前向＋反向＋優化器步」的圖並執行。
+
+**步驟 1：Pyodide 路線的具體阻礙（查證，2026-11-11）**
+
+| 項目 | 結果 | 來源 |
+|---|---|---|
+| Pyodide 內建套件 | 版本 314.0.7 的套件表**沒有** onnx、onnxruntime、onnxruntime-training、torch、tensorflow、jax；有 numpy、protobuf、scipy、safetensors、ml_dtypes | <https://pyodide.org/en/stable/usage/packages-in-pyodide.html> |
+| 自行 micropip 安裝 | 只能裝純 Python 的 wheel；含編譯擴充的套件「需為 Pyodide 交叉編譯」 | <https://pyodide.org/en/stable/usage/faq.html> |
+| `generate_artifacts` 能否在 Pyodide 跑 | **不能**：它呼叫 `build_gradient_graph`，而該函式需要原生的 `onnxruntime.capi._pybind_state`（`GradientGraphBuilder`、`get_optimized_model`，C++ 編譯） | 原始碼 <https://raw.githubusercontent.com/microsoft/onnxruntime/main/orttraining/orttraining/python/training/onnxblock/_training_graph_utils.py> |
+| ORT 的 Pyodide 支援 | 只找到 2022 年已關閉的需求 pyodide/pyodide#3038，沒有後續 | GitHub 議題搜尋 |
+| 能否取代原生 C++ 梯度圖建構 | 阻礙＝沒有 wasm 版 `onnxruntime-training`；解除條件＝自己編譯（emscripten 編整個 ORT 訓練模組，工程與體積都遠大於下一條路線）。**因此不走 Pyodide**，改用步驟 2 的純 JS 產生器（也不需要 Python） | — |
+| 附帶事實 | npm 的 `onnxruntime-web@1.22.0`（實際解包檢查）**沒有訓練版**：`dist` 內 0 個含 train 的檔、`package.json` 無 `./training` 匯出；所以「ORT 網頁訓練版」在本專案使用的版本根本不存在，與官方訓練套件棄用的說法一致 | 本機實測 |
+
+**步驟 2：主攻路線＝ONNX 反向圖產生器（純 JS，階段 1 已完成並實測）**
+
+- 實作：`renderer/src/studio/onnx_grad_core.js`（靜態形狀圖建構器、反向模式自動微分、圖內 Adam、ONNX opset 17 序列化、純 JS 直譯器）；`lora_graph_model.js`（把參考小模型建成圖）；`onnx_grad_core.test.js`（已登錄）；`scripts/ort-grad-check.js`（交給真的 onnxruntime-web 執行對拍）。
+- 輸出是**普通推論圖**（只用 Add／Sub／Mul／Div／Neg／Sqrt／Reciprocal／Log／Sigmoid／Softmax／MatMul／Transpose／Reshape／ReduceSum／ReduceMean／Expand／Gather／DequantizeLinear 這些標準運算子），可交給一般 onnxruntime-web（WASM 或 WebGPU），完全不依賴 ORT 訓練版或 Python。
+- **實測（假模型：2 層、d=64、4 頭、LoRA rank 8 在 q/k/v/o）**：
+  - 圖版本 loss 與純 JS 手寫參考（`lora_ref_train.js`，其反向已對有限差分 3.9e-6）完全一致（Δ=0）；16 個 LoRA 張量梯度對參考相對 L2 誤差 **9.7e-16**（fp64 直譯器）；基底改存 int8＋逐欄縮放的 `DequantizeLinear`（直通估計：權重凍結，梯度只穿過激活）同樣 **9.9e-16**；圖內 Adam 一步對參考 **2.4e-16**。
+  - **真的 onnxruntime-web 1.22.0（WASM，Electron 內建 node 執行；node 16 會閃退，退出碼 3221226505）**執行序列化後的 610 節點訓練圖：17 個輸出（loss 與全部更新後參數）對 fp64 相對 L2 誤差 **3.2e-7**；單步（前向＋反向＋Adam）暖機後約 **5–6 ms**（序列長度 16，WASM 單執行緒），載入 2.5 秒。
+  - 未列反向規則的運算子（測試用 `Erf`）會丟出「沒有反向規則的運算子」，不會產生錯的梯度。
+- **真 Qwen3 的運算子清單與處理（`model_quantized.onnx`，1312 節點；數量為實際統計）**：
+
+| 真模型運算子（數量） | 訓練圖中的處理 | 反向規則狀態 |
+|---|---|---|
+| MatMulInteger（196）＋DynamicQuantizeLinear（112）＋Cast（198）＋縮放用 Mul（448） | 降成 `DequantizeLinear(權重)`＋`MatMul`；**激活不量化＝直通估計**（與部署前向有量化雜訊差，需另量化差距） | MatMul、DequantizeLinear（常數）✔ 階段 1 以 int8 逐欄縮放驗證；真權重是 uint8＋零點，格式待階段 2 核對 |
+| SimplifiedLayerNormalization（57）、SkipSimplifiedLayerNormalization（56） | 拆成 Mul／ReduceMean／Add／Sqrt／Reciprocal／Mul；Skip 版多一個殘差 Add | ✔（階段 1 用同樣基本運算子驗證） |
+| RotaryEmbedding（56，微軟擴充運算子） | `x*cos + (x·R)*sin`，R 為固定 ±1 置換矩陣（Qwen3 是 rotate-half，只需換 R） | ✔（階段 1 驗證相鄰配對版；rotate-half 規則相同、置換矩陣不同，階段 2 驗證） |
+| GroupQueryAttention（28，微軟擴充運算子，含 KV 快取） | 訓練圖用無快取版：Reshape／Transpose／KV 頭重複（Expand＋Reshape）／MatMul／Mul／加因果遮罩／Softmax | ✔ 各基本規則皆有（階段 1 驗證多頭因果注意力；GQA 的 KV 重複反向由 Expand 規則做 ReduceSum，階段 2 驗證） |
+| Sigmoid（28）＋Mul（SiLU） | 原樣 | ✔ |
+| Gather（嵌入，3）、MatMul（輸出頭，1） | 嵌入凍結，不對 Gather 資料求梯度；輸出頭 MatMul | ✔ |
+| Shape／Constant／Unsqueeze／Sub／Concat／ReduceSum／Transpose（共約 15） | 位置、遮罩、KV 快取長度處理；訓練圖固定序列長度，改用常數 | 不需要（不在可訓練路徑上） |
+
+  **誠實的限制**：真模型是 ORT-GenAI 融合圖，不是「通用 ONNX→ONNX 轉換」能直接吃的，必須**先降成基本運算子再微分**（上表第 1–4 列的降級）。降級是 Qwen3 專用的型樣辨識（依運算子與權重命名），不是任意模型通用；換架構要加新型樣。
+- **對真 Qwen3 單一區塊的對拍（階段 2）**：見下方「階段 2 狀態」。
+
+**退路（正式需求）：網頁版小型編譯器，用 WebGPU／WASM 自己做訓練與產圖**
+
+使用者最差狀況的要求：若「反向圖＋一般 onnxruntime-web」卡在算子或效能，就在網頁版自己做編譯器。**現在就把主攻路線做成它的前半段**，避免做兩次：
+
+1. **輸入表示**：就是 `onnx_grad_core.js` 的靜態形狀圖 IR（節點＝運算子名＋輸入輸出張量＋屬性；張量＝名稱＋形狀＋dtype）。ONNX 與自訂來源都先轉成這個 IR；已有 `toOnnx` 可輸出給 ORT，編譯器則從同一份 IR 出發。
+2. **運算子清單**：IR 的 17 個基本運算子（上面列的）；編譯器的第一版只支援這個集合，與主攻路線相同。
+3. **反向規則表**：就是 `RULES`（運算子名＋形狀的純函式，輸出仍是 IR 節點），**編譯器直接重用**，不另寫第二份。
+4. **WGSL 產生**：每個運算子一個著色器模板（元素逐項、廣播、Softmax／歸約、批次 MatMul 用分塊共享記憶體 16×16 或 8×8 tile、DequantizeLinear 融合進 MatMul 的載入段以省掉 f32 權重展開）；相鄰逐元素運算子融合成一個核心。WASM 路徑：同一份 IR 用 SIMD 核心（MatMul、Softmax、歸約），給沒有 WebGPU 的環境。
+5. **記憶體規劃**：IR 是靜態形狀，所以編譯時做活躍區間分析（每個張量第一次寫入到最後一次讀取），用區間著色重用同一塊緩衝區；權重緩衝區分塊（受 `maxStorageBufferBindingSize` 限制）；逐層梯度檢查點在 IR 層做（把前向段標成可重算子圖）。
+6. **排程**：拓撲序即可；單一命令編碼器內分派，每步一次提交；歸約與 MatMul 之間用儲存緩衝區屏障。
+7. **與 ORT 路線共用**：IR、建構器、規則表、降級（融合運算子→基本運算子）、直譯器（正確性規格）、對拍測試全部共用；只有「執行層」不同（ORT 或自家 WGSL／WASM）。因此切換條件明確：**階段 2 若在真區塊上量到 ORT-web 的步時間或記憶體不可接受，才啟動執行層編譯器**，不必重做前面。
+8. **目前阻礙／未驗證**：WGSL 著色器尚未寫；WebGPU 在本機未驗證（缺有 WebGPU 的瀏覽器環境）；效能數字全是估算（見上節）。
+
 #### 結論與建議
 
 1. **最短可用路線＝沿用 `cpu-py`（桌面版）做 LoRA 訓練；網頁版維持不能訓練**，直到下面的 WebGPU 路線做出實測數字。理由改成具體阻礙：沒有一條現成方案同時支援 Qwen3＋瀏覽器＋q8＋可用速度（rullama 只支援 Gemma 4；ORT 網頁訓練只有 WASM 且官方訓練套件已棄用；tensorgrad 只有 f32 無 LoRA；Burn／TensorFlow.js 沒有 Qwen3 實例）。
