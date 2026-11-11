@@ -50,7 +50,7 @@
         const algos = [
             { key: 'tar-pax-encode', re: ALL(PAX, '(?:編碼|編成|組出|產生|輸出[^。]{0,10}記錄|寫出)', '(?:長度|length)', '(?:key|鍵)'), veto: /解析|走訪|列出/, rawAll: true },
             { key: 'tar-pax-records', re: ALL('tar', PAX, '(?:key\\s*=\\s*value|key=value|鍵值|記錄|records?)'), veto: /編碼|組出|寫出|產生|檔名|大小|真正檔案|覆蓋|prefix/ },
-            { key: 'tar-pax-list', re: ALL('tar', '(?:' + PAX + '|prefix\s*欄|GNU[^。]{0,8}(?:長檔名|LongLink|longname)|LongLink|\\./@LongLink|typeflag\\s*[=＝]?\\s*[\'"「]?[LK])', '(?:列出|檔名|名稱|path)'), veto: /編碼|組出|寫出|(?:輸出|列出)\s*key\s*=\s*value|依\s*key|逐條/ }
+            { key: 'tar-pax-list', re: ALL('tar', '(?:' + PAX + '|prefix\\s*欄|GNU[^。]{0,8}(?:長檔名|LongLink|longname)|LongLink|\\./@LongLink|typeflag\\s*[=＝]?\\s*[\'"「]?[LK])', '(?:列出|檔名|名稱|path)'), veto: /編碼|組出|寫出|(?:輸出|列出)\s*key\s*=\s*value|依\s*key|逐條/ }
         ].map((x) => Object.assign(x, { pri: true }));
         const paradigms = {}; for (const sk of skeletons) paradigms[sk.algo] = ['binary-format'];
         return { id: 'tarx', label: 'tar 進階（PAX 擴充標頭、GNU 長檔名、prefix）', requires: [], judge: { checker: 'tokens', timeoutMs: 30000 }, algos, paradigms, skeletons };
