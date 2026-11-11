@@ -1052,3 +1052,31 @@ Backend {
 - `studio_embed.test.js` 由 12 過、4 敗轉為 **17 過、0 敗**（4 項「嵌入與來源一致」通過）。`studio_server_core` 126／0、`lora_manage_core` 41／0。
 - Electron（`/home/hungfu.lee/fa-electron/dist/electron`，暫存 user-data-dir，DISPLAY :2.0）：應用程式啟動；「立即更新」對話框未按（未點更新）。視窗驗證沒有完成：:2.0 是共用桌面，我的視窗被其他程序的視窗蓋住，要拉到前面會干擾別人的視窗，因此沒有做工作室與流程分頁的視窗操作。已結束自己的程序。
 - 解除條件：在獨立的顯示環境（或使用者同意的情況下）跑 Electron，或用 `FA_UPDATE_BASE`、`FA_DISABLE_MAIN_OVERLAY=1`（見 main-ext.js 第 493 行與 renderer 的覆蓋層說明）避開更新與覆蓋層後再驗。
+
+## 25. 接手節（studio-domain-author-2，分支 `claude/studio-domain-author-2-ec7d26`，2026-11-12，context 達門檻）
+
+### 25.1 目前狀態
+- HEAD `f01aa741`；工作樹乾淨（只有我自己的 `desktop-app/node_modules` 符號連結，**不要提交**）。未推送、未嵌入（驗證用重產已還原）。
+- 本輪提交：`23a3c8a9` 工具偵測、`c1324129` 資料集逐筆編輯、`f8c0e494` LoRA 介紹、`9667cd6b` LoRA 移除、`2faed9b2` 合併 lora-slot-equiv、`9708f849` LoRA 管理接登錄表、`c4fc2a33`／`f01aa741` 文件。
+- 合併後測試：studio_server_core 126／0、lora_manage 41／0、lora_registry 80／0、lora_route 18／0、llm_export 23／0、studio_host 28／0、dataset_edit 34／0；驗證用重產後 studio_embed 17／0。
+
+### 25.2 已完成（不需要再做）
+- §20.3 第 2 項（工具偵測）、第 3 項（資料集逐筆編輯）。
+- LoRA 管理：介紹、移除、load、unload、pin、enable、replace（GUI 暫存頁實跑，見 §24.2）。
+- 修矩陣模板既有語法錯誤（見 §23.1）。
+
+### 25.3 未完成（依序，每項的起點與解除條件）
+1. **blockly 種子題在 App 內重跑**（§20.3 第 4 項）。起點：`renderer/src/uml/domain_*.test.js`（15 個以上，約 30 萬字元，題目由產生器即時生成）；`sym_suites_core.js:78` 目前寫「未跑」。判題需要 tree-sitter 與 Python（桌面版才有）。建議**另開 session**：(a) 寫建置腳本，用 `scripts/domain-seed-counts.js` 的「攔截 harness」方式取得每個檔的 `{packs, seeds}`，把 train／holdout 的實例（已產生好的題目文字與答案，不是產生器）寫成 `renderer/src/uml/seeds/*.json`；(b) 讓 `builtin_assets_core` 或 `sym_suites_core` 讀資料檔算題數與分組；(c) 判題仍是桌面版 Python 的功能，網頁版誠實寫「需要桌面版」。
+2. **wiki 實測**（§20.3 第 5 項）。需要連網，**必須先取得使用者同意**（要連哪些網址、何時、流量上限）。目前沒有同意，我沒有連網。要做時請總指揮向使用者確認。
+3. **Electron 視窗驗證**（最後做）。
+   - 環境：`/home/hungfu.lee/fa-electron/dist/electron`，`cd desktop-app`，`FA_DISABLE_MAIN_OVERLAY=1 FA_UPDATE_BASE=http://127.0.0.1:9`，獨立 `--user-data-dir`，埠 17987（指揮規定，不與他人同埠），`--no-sandbox`。驗證前要先重產嵌入（§24.5 的做法，驗完還原）。
+   - 無視窗實測（本輪）：加 `--ozone-platform=headless --remote-debugging-port=9333 --disable-gpu`，DevTools 有起來（`/json/list` 一度無回應），但程序在 renderer 啟動前後結束（第一次出現 zygote fork 失敗；第二次日誌停在 `local-proxy` 之後，未見視窗）。**未解。** 下一步：xvfb 裝好後改用 `xvfb-run -a`（指揮會通知）；或在 headless 下用 `Target.createTarget` 透過 CDP 開頁再截圖。
+   - 嚴禁碰 :2.0 的他人視窗；驗完關自己的程序（用 PID，不用 pattern）。
+4. 嵌入重產：總指揮統一處理（清單已含 `llm_export_core`、`dataset_edit_core`、`lora_manage_core`、`lora_route_core`）。
+5. 轉換執行器（ONNX／GGUF）：等 lora-manager-2 的 optimum、llama.cpp；之後把 `EXPORT_PLANS` 的 `runner` 改 true。
+
+### 25.4 注意
+- 測試一律 `nice -n 19` 並限 2 核（指揮 06:00 前的要求），例如 `nice -n 19 taskset -c 0,1 node <test>`。
+- 提交逐檔加入；嵌入產生檔驗完一定 `git checkout --` 還原，不提交。
+- `embed-code-ui.js` 是 CRLF 的部分檔案，用 binary 讀寫（Python 文字模式會把整檔換成 LF）。
+- 上一輪 `git status` 顯示的 `desktop-app/node_modules` 是符號連結，不加入提交。
