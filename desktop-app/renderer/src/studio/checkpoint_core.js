@@ -3,7 +3,7 @@
 // 純核心、不碰 window／檔案系統：檔案以 { 檔名: Buffer } 表示，由呼叫端決定存到記憶體或資料夾。
 // 瀏覽器可用：不再硬依賴 Node 的 crypto／Buffer（網頁版 wasm-web 後端要在頁面內存取檢查點）。Node 下仍優先用 crypto 與 Buffer，行為不變。
 let crypto = null; try { crypto = require('crypto'); } catch (e) { crypto = null; }
-const Asset = require('./asset_core.js');
+let Asset = null; try { Asset = require('./asset_core.js'); } catch (e) { Asset = null; }   // 只有沒有 Node crypto 時（瀏覽器）才用它的純 JS sha256；主行程嵌入版可以沒有這個檔
 const hasBuf = typeof Buffer !== 'undefined';
 const newBytes = (n) => (hasBuf ? Buffer.alloc(n) : new Uint8Array(n));
 const u8of = (x) => (x instanceof Uint8Array ? x : new Uint8Array(x));
@@ -15,7 +15,7 @@ const TENSOR_FILES = ['lora_A.f32', 'lora_B.f32', 'opt_m.f32', 'opt_v.f32'];
 const COMPAT_FIELDS = ['base', 'base_sha256', 'rank', 'alpha', 'target_modules', 'prompt_format_version', 'tool_catalog_sha256'];
 const TOL = { sameBackend: 1e-5, crossBackend: 0.02, crossBackendFp16: 0.05 };
 
-const sha256 = (buf) => (crypto && crypto.createHash ? crypto.createHash('sha256').update(buf).digest('hex') : Asset.sha256Hex(u8of(buf)));
+const sha256 = (buf) => (crypto && crypto.createHash ? crypto.createHash('sha256').update(buf).digest('hex') : (function () { if (!Asset) throw new Error('沒有可用的 sha256（需要 Node crypto 或 asset_core.js）'); return Asset.sha256Hex(u8of(buf)); })());
 
 // ---- 與後端無關的亂數：PCG32（標準 XSH-RR 輸出，64 位元狀態用 BigInt） ----
 const M64 = (1n << 64n) - 1n, MULT = 6364136223846793005n;
