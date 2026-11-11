@@ -42,7 +42,7 @@
             if (k !== k2) throw new Error('MatMul 內維不合：[' + a.shape + '] x [' + b.shape + ']');
             return this.node('MatMul', [a, b], bshape(a.shape.slice(0, -2), b.shape.slice(0, -2)).concat([m, n]));
         }
-        transpose(a, perm) { return this.node('Transpose', [a], perm.map((p) => a.shape[p]), { perm }); }
+        transpose(a, perm) { return this.node('Transpose', [a], perm.map((p) => a.shape[p]), { perm }, a.dtype); }
         reshape(a, shape) { if (prod(shape) !== prod(a.shape)) throw new Error('Reshape 元素數不合'); const s = this.const(this._name('shp'), [shape.length], Float64Array.from(shape), 'i64'); return this.node('Reshape', [a, s], shape, null, a.dtype); }
         _axes(a, axes) { return axes.map((x) => normAxis(x, a.shape.length)); }
         reduce(op, a, axes, keep) {
@@ -52,7 +52,7 @@
         }
         reduceSum(a, axes, keep) { return this.reduce('ReduceSum', a, axes, keep); } reduceMean(a, axes, keep) { return this.reduce('ReduceMean', a, axes, keep); }
         expand(a, shape) { const s = this.const(this._name('shp'), [shape.length], Float64Array.from(shape), 'i64'); return this.node('Expand', [a, s], bshape(a.shape, shape)); }
-        gather(d, idx) { return this.node('Gather', [d, idx], idx.shape.concat(d.shape.slice(1)), { axis: 0 }); }
+        gather(d, idx) { return this.node('Gather', [d, idx], idx.shape.concat(d.shape.slice(1)), { axis: 0 }, d.dtype); }
         dequant(q, scale, zp, axis) { return this.node('DequantizeLinear', zp ? [q, scale, zp] : [q, scale], q.shape, axis === undefined ? {} : { axis }); }
     }
 
@@ -64,6 +64,14 @@
         for (let i = 0; i < t.shape.length; i++) if (i < lead || (shape[i - lead] === 1 && t.shape[i] !== 1)) axes.push(i);
         let r = t; if (axes.length) r = g.reduceSum(t, axes, true);
         return g.reshape(r, shape);
+    }
+    // 反向要再用到凍結權重的反量化／轉置結果時，重新產生一份（不沿用前向那份），讓前向的大張量能在用完後釋放（28 層的 fp32 權重不必同時存在）
+    function fresh(g, t) {
+        const p = g.nodes.find((n) => n.outputs[0] === t.name);
+        if (!p || (p.op !== 'DequantizeLinear' && p.op !== 'Transpose')) return t;
+        const ins = p.inputs.map((x) => g.tensors.get(x)); if (!ins.every((x) => x.isConst || g.nodes.some((n) => n.outputs[0] === x.name && (n.op === 'Transpose' || n.op === 'DequantizeLinear')))) return t;
+        const ni = ins.map((x) => (x.isConst ? x : fresh(g, x)));
+        return g.node(p.op, ni, t.shape, Object.assign({}, p.attrs), t.dtype);
     }
     const lastTwoPerm = (r) => { const p = [...Array(r).keys()]; p[r - 1] = r - 2; p[r - 2] = r - 1; return p; };
     const RULES = {
@@ -79,7 +87,7 @@
         Softmax: (g, dy, n, I, O) => { const ax = n.attrs.axis; const s = g.reduceSum(g.mul(dy, O[0]), [ax], true); return [g.mul(O[0], g.sub(dy, s))]; },
         MatMul: (g, dy, n, I, O, need) => {
             const a = I[0], b = I[1], ra = a.shape.length, rb = b.shape.length;
-            return [need[0] ? unb(g, g.matmul(dy, g.transpose(b, lastTwoPerm(rb))), a.shape) : null, need[1] ? unb(g, g.matmul(g.transpose(a, lastTwoPerm(ra)), dy), b.shape) : null];
+            return [need[0] ? unb(g, g.matmul(dy, g.transpose(fresh(g, b), lastTwoPerm(rb))), a.shape) : null, need[1] ? unb(g, g.matmul(g.transpose(a, lastTwoPerm(ra)), dy), b.shape) : null];
         },
         Transpose: (g, dy, n) => { const p = n.attrs.perm, inv = new Array(p.length); p.forEach((v, i) => { inv[v] = i; }); return [g.transpose(dy, inv)]; },
         Reshape: (g, dy, n, I) => [g.reshape(dy, I[0].shape), null],
@@ -180,7 +188,7 @@
         if (dt === 'f32') { const a = new Float32Array(data.length); for (let i = 0; i < a.length; i++) a[i] = data[i]; return new Uint8Array(a.buffer); }
         if (dt === 'i64') { const a = new BigInt64Array(data.length); for (let i = 0; i < a.length; i++) a[i] = BigInt(Math.round(data[i])); return new Uint8Array(a.buffer); }
         if (dt === 'i32') { const a = new Int32Array(data.length); for (let i = 0; i < a.length; i++) a[i] = data[i]; return new Uint8Array(a.buffer); }
-        if (dt === 'u8') return Uint8Array.from(data); if (dt === 'i8') return new Uint8Array(Int8Array.from(data).buffer);
+        if (dt === 'u8') return data instanceof Uint8Array ? data : Uint8Array.from(data); if (dt === 'i8') return new Uint8Array(Int8Array.from(data).buffer);
         throw new Error('未知 dtype ' + dt);
     }
     function tensorProto(name, shape, dt, data) { return cat([...shape.map((d) => fVar(1, d)), fVar(2, DT[dt]), fStr(8, name), fLen(9, rawOf(dt, data))]); }
