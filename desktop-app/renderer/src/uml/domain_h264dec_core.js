@@ -71,6 +71,11 @@
                 [],
                 (c, N, I) => code(['v = ' + nums(N, I), 'nc = v[0]', 'bits = ""', 'for x in v[1:17]:', '    bits = bits + str(x)', 'key = "n0"', 'if nc >= 2:', '    key = "n2"', 'if nc >= 4:', '    key = "n4"', 'if nc >= 8:', '    key = "flc"', 'if nc == -1:', '    key = "chroma"', 'tab = ' + JSON.stringify(ctTables), 'tc = -1', 't1 = -1', 'for e in tab[key]:', '    if tc < 0 and bits.startswith(e[2]):', '        tc = e[0]', '        t1 = e[1]', 'print(tc, t1)']),
                 { shape: numIn, limit: 1, helpers: () => [] }),
+            // CAVLC level 解碼（H.264 9.2.2.1）：輸入一行 4 個整數：suffixLength、level_prefix、level_suffix（已讀出的整數值）、加 2 旗標（0 或 1）；輸出 levelVal 與更新後的 suffixLength。
+            D('h264.level', 'h264-level', 'CAVLC 的 level 解碼：輸入一行 4 個整數，依序是 suffixLength、level_prefix、level_suffix（已讀出的整數值）、加 2 旗標（0 或 1）。依 H.264 規則先算 levelCode，再換成 levelVal，並依 suffixLength 規則更新，輸出兩個整數：levelVal 與更新後的 suffixLength',
+                [],
+                (c, N, I) => code(['v = ' + nums(N, I), 'sl = v[0]', 'lp = v[1]', 'ls = v[2]', 'fl = v[3]', 'lc = (min(15, lp) << sl) + ls', 'if lp >= 15 and sl == 0:', '    lc = lc + 15', 'if lp >= 16:', '    lc = lc + (1 << (lp - 3)) - 4096', 'if fl == 1:', '    lc = lc + 2', 'if lc % 2 == 0:', '    lv = (lc + 2) >> 1', 'else:', '    lv = (-lc - 1) >> 1', 'if sl == 0:', '    sl = 1', 'av = lv', 'if av < 0:', '    av = -av', 'if av > (3 << (sl - 1)) and sl < 6:', '    sl = sl + 1', 'print(lv, sl)']),
+                { shape: numIn, limit: 1, helpers: () => [] }),
             // CAVLC total_zeros（4×4 區塊）：輸入一行 11 個整數，第一個是 tzVlcIndex（1 到 15，即 TotalCoeff），其後 10 個是位元；查 tzVlcIndex 的那一列，位元開頭符合的碼字對應的 total_zeros 即為輸出。
             D('h264.totalzeros', 'h264-totalzeros', 'CAVLC 的 total_zeros 解碼（4×4 區塊）：輸入一行 11 個整數，第一個是 tzVlcIndex（1 到 15），其後 10 個是位元（每個為 0 或 1）。依 H.264 表 9-7、9-8 查 tzVlcIndex 那一列，從位元開頭比對碼字，找到的 total_zeros 即為輸出（一個整數）',
                 [],
@@ -83,7 +88,8 @@
             { key: 'h264-dequant4', re: ALL('反量化', '4\\s*[x×*乘]\\s*4'), veto: /正量化|編碼/ },
             { key: 'h264-intra4', re: ALL('(?:幀內|畫面內|intra)', '4\\s*[x×*乘]\\s*4', '預測'), veto: /逆變換|反變換|反量化|正變換/i },
             { key: 'h264-runbefore', re: ALL('(?:CAVLC|run_before|run before)', '(?:游程|zerosLeft|剩餘零)'), veto: /反量化|逆變換|幀內/ },
-            { key: 'h264-coefftoken', re: ALL('(?:CAVLC|coeff_token|coeff token)', '(?:TotalCoeff|TrailingOnes)'), veto: /run_before|total_zeros|游程|zerosLeft|tzVlcIndex|反量化|逆變換|幀內/i },
+            { key: 'h264-coefftoken', re: ALL('(?:CAVLC|coeff_token|coeff token)', '(?:TotalCoeff|TrailingOnes)'), veto: /run_before|total_zeros|游程|zerosLeft|tzVlcIndex|level_prefix|suffixLength|反量化|逆變換|幀內/i },
+            { key: 'h264-level', re: ALL('(?:CAVLC|level_prefix)', '(?:suffixLength|level_suffix)'), veto: /coeff_token|TotalCoeff|run_before|total_zeros|游程|反量化|逆變換|幀內/i },
             { key: 'h264-totalzeros', re: ALL('(?:CAVLC|total_zeros|total zeros)', '(?:tzVlcIndex|total_zeros|總零)'), veto: /反量化|逆變換|幀內|run_before/ },
         ].map((x) => Object.assign(x, { pri: true }));
         const paradigms = {}; for (const sk of skeletons) paradigms[sk.algo] = ['codec-transform'];
