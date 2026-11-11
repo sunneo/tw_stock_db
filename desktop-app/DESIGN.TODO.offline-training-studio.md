@@ -930,7 +930,7 @@ Backend {
 
 ## 22. 接手節（給 studio-domain-author-2，2026-11-12）
 
-分支 `claude/studio-domain-author-dcb76c` 的工作樹在 `/home/hungfu.lee/Downloads/SRC/tw_stock_db/.claude/worktrees/studio-domain-author-dcb72c`（分支名以 `git branch --show-current` 為準）。已 rebase 到 `4c5b5e15`。**沒有推送、沒有嵌入**。`studio_embed.test.js` 的 4 項「嵌入與來源一致」預期失敗，由總指揮整合時重產嵌入處理，不在這條線處理。
+分支 `claude/studio-domain-author-dcb72c` 的工作樹在 `/home/hungfu.lee/Downloads/SRC/tw_stock_db/.claude/worktrees/studio-domain-author-dcb72c`（分支名以 `git branch --show-current` 為準）。已 rebase 到 `4c5b5e15`。**沒有推送、沒有嵌入**。`studio_embed.test.js` 的 4 項「嵌入與來源一致」預期失敗，由總指揮整合時重產嵌入處理，不在這條線處理。
 
 ### 22.1 已完成（提交都在分支上，`git log --oneline 4c5b5e15..HEAD` 可看）
 - 工作室新增領域（DSL、規格、評量、示範）、版面測試：見 §16。
