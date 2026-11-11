@@ -34,6 +34,11 @@ FA_TS_DIR=<含 tree-sitter.js、tree-sitter.wasm、tree-sitter-python.wasm 的�
 
 這些是讀取器（`algo_intent_core.js` 的配方比對）與範式的問題，不是位元運算本身的錯；尚未確認根因，**不能宣稱階段 1 完成**。
 
+根因查證（`DBG=1 ONLY=eg-enc-se,sps-write`，2026-11-11）：
+- `eg-enc-se`：`av-eg-encode` 的 regex 與否決詞對這段敘述實測都通過（`ALL` 兩段皆命中，否決詞不命中），但回報的 rounds 只有 `matrix`、沒有任何範式被嘗試，代表配方在更前面的讀取步驟（CNL 或 algo 挑選）就被丟掉。讀取器的 CNL 只剩 `讀入一行整數成清單 a`，與 `eg-enc-ue` 同樣的輸入形狀，差別在敘述裡的 `se(v)` 與括號後的 `ue(v)`，待查。
+- `sps-write`：讀成 `程式：s = input()`（單行字串），範式嘗試 9 次，但判題器沒有被呼叫（沒有 `DBGJ` 輸出），代表候選程式在進判題前就被剔除；原因待查（推測是輸入形狀與骨架的 `numIn` 判斷不合）。
+- 修法會動到共用的 `algo_intent_core.js`，其他工作階段（blockly、matrix、ir）也依賴它；**本次未改，等管理者決定**（見 §6）。
+
 ## 3. 環境與坑（重要，接手前先看）
 
 1. **tree-sitter 快取**：`FA_TS_DIR` 不設或找不到時，`domain_harness.js` 會印「略過」並以 0 結束，這會假通過。接手時先確認輸出有「train N/M」那一行，不能只看結束碼。本機可用的一組匹配檔是倉庫內 `renderer/vendor/tree-sitter/`（`tree-sitter.js`、`tree-sitter.wasm`、`tree-sitter-python.wasm`）；把三個檔複製到一個資料夾再設 `FA_TS_DIR`。**混用不同版本會出現 `unknown section code #0x13`**（本次踩過：VS Code 擴充的 wasm 配上倉庫的 js 會失敗）。
