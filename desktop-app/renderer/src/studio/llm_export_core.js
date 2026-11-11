@@ -77,6 +77,12 @@
         return state;
     }
 
+    // 給 pipeline_routes_core 的 exportCaps：{onnxExport, ggufExport}（只看格式是否可用；執行器沒寫時一律 false）
+    function exportCapsFrom(toolsState) {
+        const av = exportAvailability(toolsState || {});
+        return { onnxExport: !!av.onnx.available, ggufExport: !!av.gguf.available };
+    }
+
     // 訓練模式：LoRA 已實作（cpu-py／wasm-web 路線）；完整微調尚未實作
     const LLM_TRAIN_MODES = [
         { id: 'lora', label: 'LoRA 微調', implemented: true, note: '沿用 LoRA 訓練（cpu-py；網頁版 wasm-web）' },
@@ -88,5 +94,5 @@
         return { ok: true, mode: m.id, label: m.label, implemented: m.implemented, blocker: m.implemented ? '' : m.blocker };
     }
 
-    return { TOOLS, EXPORT_PLANS, FORMATS, exportPlan, exportAvailability, probeExportTools, LLM_TRAIN_MODES, trainModePlan };
+    return { TOOLS, EXPORT_PLANS, FORMATS, exportPlan, exportAvailability, probeExportTools, exportCapsFrom, LLM_TRAIN_MODES, trainModePlan };
 }));

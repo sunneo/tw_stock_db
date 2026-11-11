@@ -9,6 +9,22 @@ const SC = require('./studio_config_core.js');
 const CpuJs = require('./backend_cpu_js.js');
 const CpuPy = require('./backend_cpu_py.js');
 const Planned = require('./backend_planned.js');
+const LlmExport = require('./llm_export_core.js');
+
+// 在 PATH 上找候選可執行檔（不執行它）。沒有 PATH 或找不到就 found:false 並寫原因。
+const EXPORT_TOOL_BINS = { optimum: ['optimum-cli'], llamaCpp: ['llama-quantize', 'llama-cli'] };
+function detectExportTool(name) {
+    const bins = EXPORT_TOOL_BINS[name];
+    if (!bins) return { found: false, reason: '這版還沒有偵測 ' + name + '（尚未實作）' };
+    const path = require('path'), fs = require('fs');
+    const dirs = String(process.env.PATH || '').split(path.delimiter).filter(Boolean);
+    const exts = process.platform === 'win32' ? ['.exe', '.cmd', ''] : [''];
+    for (const b of bins) for (const dir of dirs) for (const ext of exts) {
+        const f = path.join(dir, b + ext);
+        try { if (fs.statSync(f).isFile()) return { found: true, version: null, path: f }; } catch (e) { /* 不在這裡 */ }
+    }
+    return { found: false, reason: 'PATH 上找不到 ' + bins.join(' 或 ') };
+}
 
 function createStudioHost(d) {
   const fs = d.fs, P = d.path, os = d.os, cp = d.cp;
@@ -154,6 +170,11 @@ function createStudioHost(d) {
       let hostRssBytes = null; try { hostRssBytes = process.memoryUsage().rss; } catch (e) { hostRssBytes = null; }
       const events = log ? log.split(/\r?\n/).map((l) => CpuPy.parseProgressLine(l)).filter(Boolean).slice(-5000) : [];
       return { ok: true, runDir: dir, log, events, pid, rssBytes, rssReason: rssBytes === null ? rssReason : '', hostRssBytes };
+    },
+    // LLM 匯出工具偵測（DESIGN §20.3 第 2 項）：只在 PATH 上找可執行檔；onnxruntime 要查 python 模組，這版還沒做，照實回報
+    async studio_export_tools() {
+        const tools = LlmExport.probeExportTools(detectExportTool);
+        return { ok: true, tools, checkedAt: now() };
     },
     async studio_run_current() { const j = activeTrain || Array.from(jobs.values()).pop(); return { ok: true, runDir: j && j.cfg && j.cfg.outputDir ? j.cfg.outputDir : null }; },
     async studio_train_status(p) {

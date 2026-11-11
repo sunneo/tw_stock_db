@@ -33,9 +33,10 @@
     const PAd = (typeof module === 'object' && module.exports) ? require('./train_advice_core.js') : root.FaStudioAdvice;
     const PRt = (typeof module === 'object' && module.exports) ? require('./pipeline_routes_core.js') : root.FaStudioPipelineRoutes;
     const PLm = (typeof module === 'object' && module.exports) ? require('./lora_manage_core.js') : root.FaStudioLoraManage;
-    if (typeof module === 'object' && module.exports) module.exports = factory(A, F, T, Lay, Ing, Cln, Reg, Ev, Sy, ST, Te, Si, PPl, PLv, PAd, PRt, PLm);
-    else root.FaStudioServer = factory(A, F, T, Lay, Ing, Cln, Reg, Ev, Sy, ST, Te, Si, PPl, PLv, PAd, PRt, PLm);
-})(typeof self !== 'undefined' ? self : this, function (Asset, Fatrain, Trainer, Layout, Ingest, Clean, LoraReg, EvalCore, Sym, SymTrain, Teacher, SourceInput, PipeLib, PipeLive, PipeAdvice, PipeRoutes, PipeManage) {
+    const LXp = (typeof module === 'object' && module.exports) ? require('./llm_export_core.js') : root.FaStudioLlmExport;
+    if (typeof module === 'object' && module.exports) module.exports = factory(A, F, T, Lay, Ing, Cln, Reg, Ev, Sy, ST, Te, Si, PPl, PLv, PAd, PRt, PLm, LXp);
+    else root.FaStudioServer = factory(A, F, T, Lay, Ing, Cln, Reg, Ev, Sy, ST, Te, Si, PPl, PLv, PAd, PRt, PLm, LXp);
+})(typeof self !== 'undefined' ? self : this, function (Asset, Fatrain, Trainer, Layout, Ingest, Clean, LoraReg, EvalCore, Sym, SymTrain, Teacher, SourceInput, PipeLib, PipeLive, PipeAdvice, PipeRoutes, PipeManage, LlmExp) {
     'use strict';
     const KIND_LABEL = { colu: 'CoLU', blockly: '積木課程', matrix: '矩陣層', uml: 'UML 設計', trainer: '離線訓練器', lora: 'LoRA' };
     const dec = (u) => new TextDecoder('utf-8').decode(u);
@@ -142,12 +143,21 @@
         const domainApi = DomApi ? DomApi.createDomainApi({ storage: h.storage, prefsGet: h.prefsGet, prefsSet: h.prefsSet, now: h.now, Asset, Eval: EvalCore, sym: h.sym, domain: h.domain, teacherAI: h.teacherAI, log: (t) => log(t), push: (o) => { if (S.push) S.push(o); } }) : null;
 
         // 流程總覽與建議（pipeline_routes_core.js，DESIGN §19）：讀真實的 train.log／run.pid（經主行程 studio_run_info）與資產的 eval.json
-        const pipeApi = PipeRoutes && PipeLib && PipeLive && PipeAdvice ? PipeRoutes.createPipelineApi({ storage: h.storage, now, readRunLog: async (dir) => { const r = await callHost('studio_run_info', { runDir: dir }); return r && r.ok ? r : null; }, exportCaps: () => ({ onnxExport: false, ggufExport: false }), Pipeline: PipeLib, Live: PipeLive, Advice: PipeAdvice, LoraManage: PipeManage }) : null;
+        // LLM 匯出工具狀態（DESIGN §20.3 第 2 項）：向主行程問（studio_export_tools），節流 30 秒；網頁版問不到就全部視為沒有
+        const exportState = { tools: {}, at: -Infinity };
+        async function refreshExportTools() {
+            if (!LlmExp || now() - exportState.at < 30000) return;
+            exportState.at = now();
+            const r = await callHost('studio_export_tools', {}, 5000);
+            exportState.tools = r && r.ok && r.tools ? r.tools : {};
+        }
+        const exportCaps = () => (LlmExp ? LlmExp.exportCapsFrom(exportState.tools) : { onnxExport: false, ggufExport: false });
+        const pipeApi = PipeRoutes && PipeLib && PipeLive && PipeAdvice ? PipeRoutes.createPipelineApi({ storage: h.storage, now, readRunLog: async (dir) => { const r = await callHost('studio_run_info', { runDir: dir }); return r && r.ok ? r : null; }, exportCaps,Pipeline: PipeLib, Live: PipeLive, Advice: PipeAdvice, LoraManage: PipeManage }) : null;
         async function route(method, u, body) {
             const P = u.pathname, Q = (k) => u.searchParams.get(k) || '';
             body = body || {};
             try {
-                if (pipeApi && /^\/api\/(pipeline|advice|lora\/card)/.test(P)) { const pr = await pipeApi.route(method, u, body); if (pr) return pr; }
+                if (pipeApi && /^\/api\/(pipeline|advice|lora\/card)/.test(P)) { if (P === '/api/pipeline') await refreshExportTools(); const pr = await pipeApi.route(method, u, body); if (pr) return pr; }
                 if (domainApi && /^\/api\/domains?(\/|$)/.test(P)) { const dr = await domainApi.route(method, u, body); if (dr) return dr; }
                 if (method === 'GET' && P === '/api/info') {
                     const fs = await fapNote();

@@ -168,5 +168,11 @@ function mk(desktop, hostOps) {
   r = await dw3.req('GET', '/api/backends?kind=lora'); check('桌面版清單：wasm-web 用頁內宿主的探測取代，並帶 webTrain 旗標', r.j.desktop === true && r.j.webTrain === true && r.j.backends.find((b) => b.id === 'wasm-web').available === true && r.j.backends.find((b) => b.id === 'cpu-py').available, r.j.backends);
   const dw2 = mk(true, { studio_train_start: () => ({ ok: true, jobId: 'job_desktop' }) }); dw2.h.webTrain = WT;
   r = await dw2.req('POST', '/api/train/start', { name: 'd2', backend: 'cpu-py', cfg: { trainFile: 'x.jsonl', outputDir: '/o' } }); check('桌面版選 cpu-py 仍走子行程', r.j.jobId === 'job_desktop' && !r.j.web, r.j);
+  // exportCaps 接上主行程偵測（DESIGN §20.3 第 2 項）：流程 API 讀取前會問一次（節流），工具找到也不宣稱可用（執行器未寫）
+  const dx = mk(true, { studio_export_tools: () => ({ ok: true, tools: { optimum: { found: true }, onnxruntime: { found: true }, llamaCpp: { found: true } } }) });
+  r = await dx.req('GET', '/api/pipeline?kind=lora&name=none'); check('流程 API 會向主行程問匯出工具', dx.calls.some((c) => c[0] === 'studio_export_tools'), dx.calls.map((c) => c[0]));
+  check('工具全找到時匯出仍不可用（回應不含 onnx／gguf 可用旗標）', !JSON.stringify(r.j).includes('"onnxExport":true') && !JSON.stringify(r.j).includes('"ggufExport":true'), r.j);
+  const nCalls = dx.calls.filter((c) => c[0] === 'studio_export_tools').length;
+  await dx.req('GET', '/api/pipeline?kind=lora&name=none'); check('節流：30 秒內不重問', dx.calls.filter((c) => c[0] === 'studio_export_tools').length === nCalls);
   console.log(ok + ' passed, ' + bad.length + ' failed', bad); process.exit(bad.length ? 1 : 0);
 })();

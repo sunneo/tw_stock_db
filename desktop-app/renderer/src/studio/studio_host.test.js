@@ -56,5 +56,20 @@ const check = (n, c, x) => { if (c) ok++; else { bad.push(n); console.log('FAIL'
   check('tasklist：解析千分位的 K 為位元組', parseTasklistMemory('"python.exe","1234","Console","1","1,234,567 K"\r\n') === 1234567 * 1024, parseTasklistMemory('"python.exe","1234","Console","1","1,234,567 K"'));
   check('tasklist：查不到（INFO 訊息）回 null', parseTasklistMemory('INFO: No tasks are running which match the specified criteria.') === null);
   check('tasklist：空輸出回 null', parseTasklistMemory('') === null);
+  // LLM 匯出工具偵測（DESIGN §20.3 第 2 項）：PATH 上找不到就照實回報；找到 optimum-cli 就標 found；onnxruntime 還沒偵測
+  const savedPath = process.env.PATH;
+  try {
+    process.env.PATH = path.join(dir, 'empty-bin');
+    const t0 = await h.handle('studio_export_tools', {});
+    check('匯出工具偵測：回 ok 與三個工具鍵', t0.ok && t0.tools.optimum && t0.tools.onnxruntime && t0.tools.llamaCpp, t0);
+    check('匯出工具偵測：PATH 上沒有 optimum-cli 時 found=false 且寫原因', t0.tools.optimum.found === false && /PATH 上找不到/.test(t0.tools.optimum.reason), t0.tools.optimum);
+    check('匯出工具偵測：onnxruntime 尚未偵測，寫明尚未實作', t0.tools.onnxruntime.found === false && /尚未實作/.test(t0.tools.onnxruntime.reason), t0.tools.onnxruntime);
+    const binDir = path.join(dir, 'bin'); fs.mkdirSync(binDir, { recursive: true });
+    fs.writeFileSync(path.join(binDir, 'optimum-cli'), '#!/bin/sh\n');
+    process.env.PATH = binDir;
+    const t1 = await h.handle('studio_export_tools', {});
+    check('匯出工具偵測：PATH 上有 optimum-cli 就 found=true（只看存在，不執行）', t1.tools.optimum.found === true, t1.tools.optimum);
+    check('匯出工具偵測：沒有的 llama.cpp 仍 found=false', t1.tools.llamaCpp.found === false, t1.tools.llamaCpp);
+  } finally { process.env.PATH = savedPath; }
   console.log(ok + ' passed, ' + bad.length + ' failed', bad); process.exit(bad.length ? 1 : 0);
 })();

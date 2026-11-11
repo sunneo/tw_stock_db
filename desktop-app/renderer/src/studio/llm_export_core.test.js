@@ -41,5 +41,12 @@ const full = E.trainModePlan('full');
 check('完整微調：未實作，寫明阻礙（記憶體與時間未評估）', full.implemented === false && /未評估|沒有寫|沒評估|還沒評估/.test(full.blocker), full);
 check('未知訓練模式回錯誤', E.trainModePlan('dpo').ok === false);
 
+// exportCapsFrom：伺服器 exportCaps 用；執行器沒寫時，即使工具全找到也一律 false
+const capsNone = E.exportCapsFrom({});
+check('exportCapsFrom 沒有工具：兩格式都 false', capsNone.onnxExport === false && capsNone.ggufExport === false, capsNone);
+const capsAll = E.exportCapsFrom({ optimum: { found: true }, onnxruntime: { found: true }, llamaCpp: { found: true } });
+check('exportCapsFrom 工具全找到：仍 false（執行器尚未實作，不宣稱可用）', capsAll.onnxExport === false && capsAll.ggufExport === false, capsAll);
+check('exportCapsFrom 收到 undefined 不丟例外', E.exportCapsFrom(undefined).ggufExport === false);
+
 console.log(ok + ' passed, ' + bad + ' failed');
 process.exit(bad ? 1 : 0);
