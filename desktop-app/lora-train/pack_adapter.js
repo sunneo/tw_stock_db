@@ -4,7 +4,11 @@
  * 輸出：lora-train/out/release/<name>/（可直接放進 lora-adapters branch 的 <name>/ 資料夾）
  */
 const fs = require('fs'), c = require('crypto'), p = require('path');
-const [adapterDir, name, evalPath] = process.argv.slice(2);
+const argv = process.argv.slice(2), flags = {}, pos = [];
+for (let i = 0; i < argv.length; i++) { if (argv[i].startsWith('--')) flags[argv[i].slice(2)] = argv[++i]; else pos.push(argv[i]); }
+const [adapterDir, name, evalPath] = pos;
+// 可選旗標（多顆 LoRA 用；描述檔格式見 DESIGN.lora-training.md §13.2 fa-lora-descriptor v1）：
+//   --id <id> --version <字串> --domains a,b --triggers "正規式1,正規式2"（逗號分隔）--pf <prompt_format_version> --card <card_info.json>
 if (!adapterDir || !name) { console.error('usage: node pack_adapter.js <adapter_dir> <name> [eval_json]'); process.exit(1); }
 const SZ = 20 * 1024 * 1024, here = __dirname;
 const out = p.join(here, 'out', 'release', name); fs.rmSync(out, { recursive: true, force: true }); fs.mkdirSync(out, { recursive: true });
@@ -24,4 +28,20 @@ const h=(b)=>c.createHash('sha256').update(b).digest('hex');
 const all=Buffer.concat(m.parts.map(x=>{const b=fs.readFileSync(p.join(__dirname,x.file));if(b.length!==x.size||h(b)!==x.sha256)throw new Error('bad part '+x.file);return b;}));
 if(h(all)!==m.sha256)throw new Error('bad total sha256');fs.writeFileSync(p.join(__dirname,m.file),all);console.log('OK',m.file,all.length);
 `);
+if (flags.id) {
+  const desc = { format: 'fa-lora-descriptor', format_version: 1, id: flags.id, version: String(flags.version || '1.0.0'), name: flags.name || flags.id, base: man.base, base_sha256: null,
+    rank: cfg.r, alpha: cfg.lora_alpha, prompt_format_version: flags.pf || '1', tool_catalog_sha256: man.trained_on.tool_catalog_sha256,
+    applies: { domains: (flags.domains || '').split(',').filter(Boolean), triggers: (flags.triggers || '').split(',').filter(Boolean) },
+    size: man.total_size, sha256: man.sha256, location: flags.location || ('asset:lora/' + flags.id), eval: man.eval && man.eval.groups ? { groups: man.eval.groups } : null };
+  fs.writeFileSync(p.join(out, 'lora.descriptor.json'), JSON.stringify(desc, null, 2));
+  // model card：數字只從實跑的評量 JSON 取，沒有評量就標明沒有，不手寫
+  const info = flags.card && fs.existsSync(flags.card) ? JSON.parse(fs.readFileSync(flags.card, 'utf8')) : {};
+  const ev = man.eval || null; const reg = ev && ev.regress ? ev.regress : null;
+  const card = { id: flags.id, name: info.name || flags.id, version: desc.version, date: man.date, base: man.base, rank: cfg.r, size: man.total_size,
+    intro: info.intro || '', capabilities: info.capabilities || [], training_data: info.training_data || { note: '未提供', train_file_sha256: man.trained_on.train_file_sha256 },
+    metrics: ev ? { source: 'eval json（實跑）', groups: ev.groups || null } : { note: '沒有評量資料（未實跑，不顯示數字）' },
+    regressions: reg, not_winning: ev && ev.not_winning ? ev.not_winning : null, limitations: info.limitations || [] };
+  fs.writeFileSync(p.join(out, 'model_card.json'), JSON.stringify(card, null, 2));
+  console.log('descriptor + model_card written for', flags.id);
+}
 console.log('packed', parts.length, 'parts ->', out);
