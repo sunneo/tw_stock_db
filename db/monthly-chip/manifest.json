@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-11-11T05:50:23.154065+00:00",
+  "generated_at": "2026-11-11T10:22:39.158996+00:00",
   "months": [
     {
       "label": "2024-07",
@@ -172,8 +172,8 @@
     {
       "label": "2026-11",
       "path": "db/monthly-chip/2026/11.db",
-      "sha256": "18fc640389bcdd048bb37fcda43c9cc75ce2feb028faa0f251bc4855e4bea851",
-      "size_bytes": 5677056
+      "sha256": "841a13a71fd4ffedf56322b3c31303a3601d6499e8b82043f4205e2da0eed5c3",
+      "size_bytes": 5808128
     }
   ],
   "rebuilt_this_run": [
