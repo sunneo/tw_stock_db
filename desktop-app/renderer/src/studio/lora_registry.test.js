@@ -118,5 +118,136 @@ let t = 1000; const now = () => ++t;
         const L2 = R.nrEngineLoader({ readBytes: async () => new Uint8Array([9, 9, 9, 9]), sha256Hex: A.sha256Hex });
         let rej = false; try { await L2.load(e); } catch (err) { rej = /sha256 不符/.test(err.message); } check('雜湊不符拒載', rej);
     }
+    // 描述檔 fa-lora-descriptor v1（DESIGN §13.2）
+    {
+        const good = () => ({ format: 'fa-lora-descriptor', format_version: 1, id: 'decompose-r16', version: '1.0.0', base: 'Qwen/Qwen3-0.6B', rank: 16, prompt_format_version: 3,
+            applies: { domains: ['decompose'], triggers: ['拆題|拆解'] }, size: 4, sha256: A.sha256Hex(new Uint8Array([1, 2, 3, 4])), location: 'asset:lora/decompose-r16', eval: null });
+        const e = R.descriptorFromJson(good());
+        check('描述檔合法 → 登錄項（版本、適用條件、位置都帶過去）', R.validateEntry(e).length === 0 && e.version === '1.0.0' && e.domains[0] === 'decompose' && e.triggers.length === 1 && e.location === 'asset:lora/decompose-r16' && e.size === 4, e);
+        check('描述檔 id 與 source 預設（imported，可由 extra 覆蓋）', e.source === 'imported' && R.descriptorFromJson(good(), { source: 'user' }).source === 'user');
+        const bad = (mut) => { const d = good(); mut(d); return R.descriptorErrors(d); };
+        check('缺 version 拒絕', bad((d) => { delete d.version; }).some((x) => /缺 version/.test(x)));
+        check('format_version 不是 1 拒絕', bad((d) => { d.format_version = 2; }).some((x) => /format_version/.test(x)));
+        check('format 不對拒絕', bad((d) => { d.format = 'x'; }).some((x) => /format 必須/.test(x)));
+        check('triggers 非法正規表示式拒絕', bad((d) => { d.applies.triggers = ['(']; }).some((x) => /正規表示式/.test(x)));
+        check('sha256 格式錯拒絕', bad((d) => { d.sha256 = 'abc'; }).some((x) => /sha256/.test(x)));
+        check('id 含大寫或空白拒絕', bad((d) => { d.id = 'Bad Id'; }).some((x) => /id 格式/.test(x)));
+        check('多項錯誤全部列出', bad((d) => { delete d.version; d.rank = 0; d.size = -1; }).length >= 3);
+        let thr = false; try { R.descriptorFromJson({ id: 'x' }); } catch (err) { thr = /描述檔不合法/.test(err.message); } check('descriptorFromJson 不合法就丟出原因', thr);
+    }
+
+    // 懶載入：註冊不載入；只載入被選到的
+    {
+        const L = mkLoader(); const r = R.createRegistry({ env: ENV, loader: L, budgetBytes: 500 * MB, maxActive: 3, now });
+        r.register(mk('lz1', { domains: ['decompose'] })); r.register(mk('lz2', { domains: ['toolcall'] })); r.register(mk('lz3', { domains: ['plan'] }));
+        check('註冊不呼叫載入器（懶載入）', L.log.length === 0 && r.loaded().length === 0, L.log);
+        const q = await r.request({ domains: ['toolcall'] });
+        check('請求只載入被選到的那一顆', JSON.stringify(q.active) === JSON.stringify(['lz2']) && L.log.join(',') === 'load lz2', L.log);
+    }
+
+    // resolve：永不丟例外，沒有可用 adapter 就退回基底
+    {
+        const noLoader = R.createRegistry({ env: ENV, now }); noLoader.register(mk('nl1', { domains: ['decompose'] }));
+        const r1 = await noLoader.resolve({ domains: ['decompose'] });
+        check('沒有載入器：resolve 不丟例外，退回基底', r1.fallback === 'base' && r1.active.length === 0 && /登錄表錯誤/.test(r1.skipped[0].reason), r1);
+        const L = mkLoader(); L.load = async (e) => { if (e.id === 'bad1') throw new Error('讀不到權重檔'); L.log.push('load ' + e.id); return { id: e.id }; };
+        const r2 = R.createRegistry({ env: ENV, loader: L, budgetBytes: 500 * MB, maxActive: 1, now });
+        r2.register(mk('bad1', { domains: ['decompose'] }));
+        const r2r = await r2.resolve({ domains: ['decompose'] });
+        check('載入失敗：退回基底並附具體原因', r2r.fallback === 'base' && r2r.active.length === 0 && r2r.skipped.some((x) => /讀不到權重檔/.test(x.reason)) && r2r.handles.length === 0, r2r);
+        r2.register(mk('good1', { domains: ['plan'] }));
+        const r2b = await r2.resolve({ domains: ['plan'] });
+        check('其他 adapter 不受失敗影響（照常載入）', r2b.fallback === 'lora' && r2b.active[0] === 'good1', r2b);
+        const r3 = await r2.resolve({ domains: ['nothing_here'] });
+        check('沒有符合的 adapter：fallback 為 base', r3.fallback === 'base' && r3.active.length === 0, r3);
+    }
+
+    // LRU：超過上限時先卸最久沒用的；計畫內的不卸
+    {
+        let t = 5000; const tnow = () => ++t; const L = mkLoader();
+        const r = R.createRegistry({ env: ENV, loader: L, budgetBytes: 500 * MB, maxActive: 2, now: tnow });
+        ['a1', 'a2', 'a3'].forEach((id) => r.register(mk(id, { domains: [id] })));
+        await r.request({ domains: ['a1'] }); await r.request({ domains: ['a2'] });
+        await r.request({ domains: ['a1'] });            // a1 最近用過，a2 最久沒用
+        const q = await r.request({ domains: ['a3'] });   // maxActive=2 → 應卸 a2
+        check('超過 maxActive：卸最久沒用的 a2，保留 a1 與 a3', L.log.indexOf('unload a2') >= 0 && r.loaded().map((x) => x.id).sort().join(',') === 'a1,a3' && q.active[0] === 'a3', { log: L.log, loaded: r.loaded() });
+    }
+
+        const ENV_SLOT = Object.assign({}, ENV, { rank_slots: [4, 8, 16] });   // 槽容量測試用：槽版 rank 16，允許 4／8 的 adapter
+    // 槽容量（rank 總和）、釘選、推論中保護（DESIGN §14）
+    {
+        let t = 9000; const tn = () => ++t; const L = mkLoader();
+        const r = R.createRegistry({ env: ENV_SLOT, loader: L, budgetBytes: 500 * MB, maxActive: 9, slotCapacity: 16, now: tn });
+        r.register(mk('s8a', { rank: 8, domains: ['sa'] })); r.register(mk('s8b', { rank: 8, domains: ['sb'] })); r.register(mk('s4c', { rank: 4, domains: ['sc'] }));
+        await r.request({ domains: ['sa'] }); await r.request({ domains: ['sb'] });   // 槽 8+8=16 滿
+        const q1 = await r.request({ domains: ['sc'] });                                // 需要 4 → 卸最久沒用的 s8a
+        check('槽滿時卸最久沒用者（LRU）騰出 rank', q1.unloaded.join() === 's8a' && q1.active.join() === 's4c' && r.status().usedRank === 12, { q1, st: r.status() });
+        check('status：槽容量、已用、剩餘 rank', r.status().slotCapacity === 16 && r.status().freeRank === 4, r.status());
+        // 釘選：s8b 被釘，下一次只能卸 s4c
+        r.pin('s8b', true);
+        r.register(mk('s8d', { rank: 8, domains: ['sd'] }));
+        const q2 = await r.request({ domains: ['sd'] });
+        check('釘選不被自動淘汰：卸 s4c，保留 s8b', q2.unloaded.join() === 's4c' && r.loaded().map((x) => x.id).sort().join() === 's8b,s8d', { q2, loaded: r.loaded() });
+        // 推論中：s8b 釘選，s8d 推論中 → 新的 rank 8 放不下，寫原因
+        r.pin('s8b', false); r.acquire('s8b'); r.acquire('s8d');
+        r.register(mk('s8e', { rank: 8, domains: ['se'] }));
+        const q3 = await r.request({ domains: ['se'] });
+        check('推論中不可淘汰：放不下就寫原因（不硬塞）', q3.active.length === 0 && q3.skipped.some((x) => x.id === 's8e' && /槽已滿/.test(x.reason)), q3);
+        r.release('s8b'); r.release('s8d');
+        check('推論結束後可以淘汰', (await r.request({ domains: ['se'] })).active.join() === 's8e');
+        // 手動卸載：釘選與推論中都拒絕
+        r.pin('s8e', true);
+        check('手動卸載：釘選拒絕', (await r.manualUnload('s8e')).ok === false);
+        r.pin('s8e', false); r.acquire('s8e');
+        check('手動卸載：推論中拒絕', (await r.manualUnload('s8e')).ok === false); r.release('s8e');
+        check('手動卸載：正常可卸', (await r.manualUnload('s8e')).ok === true);
+        check('卸載後模型卡仍保留最後使用時間（lastUsed）', r.card(r.get('s8e')).lastUsed !== null && r.card(r.get('s8e')).lastUsed > 0 && r.status().registered.find((c) => c.id === 's8e').lastUsed > 0);
+        let pinThrow = false; try { r.pin('nope', true); } catch (_) { pinThrow = true; } check('釘選不存在的 adapter 報錯', pinThrow);
+        // 描述檔 description 可選、帶過去
+        const d = R.descriptorFromJson({ format: 'fa-lora-descriptor', format_version: 1, id: 'dsc', version: '1', base: 'Qwen/Qwen3-0.6B', rank: 4, prompt_format_version: 3, applies: { domains: ['x'] }, size: 4, sha256: H('e'), location: 'fap:x', description: '拆題用' });
+        check('描述檔 description 帶過去', d.description === '拆題用' && R.descriptorErrors(Object.assign({}, { format: 'fa-lora-descriptor', format_version: 1, id: 'dsc', version: '1', base: 'b', rank: 4, prompt_format_version: 3, applies: {}, size: 4, sha256: H('e'), location: 'f', description: 5 })).length === 1);
+    }
+
+    // 替換：成功與各種回滾（DESIGN §14.4）
+    {
+        let t = 12000; const tn = () => ++t;
+        const mkL = (failIn, failApply) => { const log = []; return { log, load: async (e) => { if (e.id === failIn) throw new Error('讀不到權重'); log.push('load ' + e.id); return { id: e.id, tag: e.id }; }, unload: async (e) => { log.push('unload ' + e.id); } }; };
+        // 成功
+        { const L = mkL(); const r = R.createRegistry({ env: ENV_SLOT, loader: L, budgetBytes: 500 * MB, maxActive: 2, slotCapacity: 16, now: tn });
+          r.register(mk('ra', { rank: 8, domains: ['a'] })); r.register(mk('rb', { rank: 8, domains: ['b'] }));
+          await r.request({ domains: ['a'] });
+          let during = null;
+          const x = await r.replace('ra', 'rb', { applyFn: async (hs) => { during = r.status().replacing; return { ok: true, n: hs.length }; } });
+          check('替換成功：新的上線、舊的卸掉', x.ok && x.active.join() === 'rb' && L.log.indexOf('unload ra') > L.log.indexOf('load rb'), { x, log: L.log });
+          check('替換進行中 status.replacing 為 {out, in}；結束後為 null', !!during && during.out === 'ra' && during.in === 'rb' && r.status().replacing === null, { during, after: r.status().replacing }); }
+        // 新的載入失敗：原狀不動
+        { const L = mkL('rc'); const r = R.createRegistry({ env: ENV_SLOT, loader: L, budgetBytes: 500 * MB, maxActive: 2, slotCapacity: 16, now: tn });
+          r.register(mk('ra2', { rank: 8, domains: ['a'] })); r.register(mk('rc', { rank: 8, domains: ['c'] }));
+          await r.request({ domains: ['a'] });
+          const x = await r.replace('ra2', 'rc', {});
+          check('替換：新的載入失敗 → 原狀保留（舊的還在）', !x.ok && x.active.join() === 'ra2' && /原狀保留/.test(x.error), x); }
+        // 容量不夠：還原
+        { const L = mkL(); const r = R.createRegistry({ env: ENV_SLOT, loader: L, budgetBytes: 500 * MB, maxActive: 2, slotCapacity: 16, now: tn });
+          r.register(mk('ra3', { rank: 8, domains: ['a'] })); r.register(mk('rb3', { rank: 16, domains: ['b'] })); r.register(mk('keep3', { rank: 8, domains: ['k'] }));
+          await r.request({ domains: ['a'] }); await r.request({ domains: ['k'] });   // 槽 8+8 滿；換 ra3 成 rb3 後需要 8+16=24 > 16
+          const x = await r.replace('ra3', 'rb3', {});
+          check('替換：扣掉舊的仍放不下 → 還原（舊的還在、新的已卸）', !x.ok && x.rolledBack && x.active.indexOf('ra3') >= 0 && x.active.indexOf('rb3') < 0 && L.log.indexOf('unload rb3') >= 0, { x, log: L.log }); }
+        // 套用失敗：還原舊的並再套一次
+        { const L = mkL(); const r = R.createRegistry({ env: ENV_SLOT, loader: L, budgetBytes: 500 * MB, maxActive: 2, slotCapacity: 16, now: tn });
+          r.register(mk('ra4', { rank: 8, domains: ['a'] })); r.register(mk('rb4', { rank: 8, domains: ['b'] }));
+          await r.request({ domains: ['a'] }); const seen = [];
+          const x = await r.replace('ra4', 'rb4', { applyFn: async (hs) => { seen.push(hs.map((h) => h.id).join('+')); return hs.some((h) => h.id === 'rb4') ? { ok: false, error: '主程序拒絕' } : { ok: true }; } });
+          check('替換：套用失敗 → 回報 rolledBack、舊的還原為 active', !x.ok && x.rolledBack && x.active.join() === 'ra4' && /主程序拒絕/.test(x.error), x);
+          check('替換：套用失敗時先套新組合、再把舊組合還原套一次（applyFn 兩次）', seen.length === 2 && seen[0] === 'rb4' && seen[1] === 'ra4', seen); }
+        // 釘選與推論中：拒絕
+        { const L = mkL(); const r = R.createRegistry({ env: ENV_SLOT, loader: L, budgetBytes: 500 * MB, maxActive: 2, slotCapacity: 16, now: tn });
+          r.register(mk('ra5', { rank: 8, domains: ['a'] })); r.register(mk('rb5', { rank: 8, domains: ['b'] }));
+          await r.request({ domains: ['a'] }); r.pin('ra5', true);
+          const x1 = await r.replace('ra5', 'rb5', {}); check('替換：釘選的舊 adapter 拒絕（先解除）', !x1.ok && /釘選/.test(x1.error));
+          r.pin('ra5', false); r.acquire('ra5');
+          const x2 = await r.replace('ra5', 'rb5', {}); check('替換：推論中的舊 adapter 拒絕', !x2.ok && /推論中/.test(x2.error));
+          r.release('ra5'); const x3 = await r.replace('ra5', 'rb5', {}); check('替換：推論結束後可以替換', x3.ok && x3.active.join() === 'rb5'); } 
+    }
+
     console.log(ok + ' passed, ' + bad + ' failed'); process.exit(bad ? 1 : 0);
 })();

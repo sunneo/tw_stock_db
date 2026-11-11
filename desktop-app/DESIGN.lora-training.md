@@ -171,7 +171,94 @@ lora-train/.venv/Scripts/pip install -r lora-train/requirements.txt
 - 做法與細節見 `DESIGN.TODO.native-runner.md` §9.6；程式：`lora-slot-build.js`、`native-slot-model.js`、`tests/native/lora_slot_build.test.js`。
 - 實測：轉換 4.2 秒、峰值 RSS 約 37.6 MB（617 MB 輸入，串流）。
 - **尚未通過等價驗證**：全零 adapter 位元相同；非零 adapter 的槽版與網頁版併權重結果不一致（首步 logits cos 約 0.968）。查出原因前，不得宣稱「與 make_lora_onnx.py 等價」或「網頁版與原生版一致」。
+  - **2026-11-12 更新**：原因已查明（§11.1）：槽版與 fp32 真值一致，差異來自網頁版併權重的抖動雜訊。真模型上仍未驗證。
 - 已知阻礙：studio-viewer 的既有語法錯誤（符號式擬合區段）使 LoRA 卡片無法在畫面驗證。
+
+### 11.1 查明結果（2026-11-11～11-12，假圖重現；真模型見 §11.2–11.4）
+
+**結論：非零 adapter 的「槽版 vs 網頁版併權重」不一致，不是槽版的錯。** 槽版與 fp32 真值（基底輸出 + x·A·B）逐值一致（相對誤差 0）。網頁版併權重的誤差來自抖動式四捨五入，是零均值的隨機雜訊，屬於 `lora-merge` 核心（`renderer/src/studio/lora_merge_core.js`）的既有設計（`DESIGN.TODO.offline-training-studio.md` §14）。先前把「網頁版併權重」當等價基準是錯的：它本身是近似，不是真值。
+
+實測（假的 q8 圖：1 層 × 7 目標，rank 4，onnxruntime-node 1.22.0；可重現，見 `tests/native/lora_slot_equiv.test.js`）：
+
+| 假設 | 實測 | 判定 |
+|---|---|---|
+| 轉置（A、B 方向） | 非方陣（8×12 等）下，槽版 vs 真值相對誤差 0 | 排除 |
+| rank 槽順序（版面 offset） | 槽版 vs 真值 0；網頁版 vs 槽版 cos 約 0.9999～1。把 q 與 k 的 A 寫錯位置時，測試失敗（突變測試） | 排除 |
+| 縮放取 2 的冪 | 槽版不併權重，與 k 無關；強制 k=1 時網頁版誤差幾乎不變（約 0.9%） | 排除 |
+| 動態量化輸入（網頁版的 LoRA 項吃量化後的 x） | 改用量化後的 x 算真值，網頁版誤差 0.0049 vs 0.0048 | 排除 |
+| 抖動捨入 | 單一種子的 ΔW 對 A·B 相對誤差 0.994（B 很小時）；32 個種子平均後降到 0.179（約 1/√32，零均值）。誤差隨「量化步距 ÷ ΔW」增大（0.26 → 2.6 → 26 時，網頁版對真值相對誤差 0.5% → 0.7%～1%；LoRA 本身的輸出效應只有約 0.04%） | **主因** |
+
+判讀：小 adapter（ΔW 小於一格）時，併入的雜訊比 LoRA 效果本身還大；這正是 `lora_web_core.js` 的 `minCos` 門檻要擋的情況。真模型上 0.968 的首步 logits 餘弦，推測是 196 層的雜訊累積到 logits 的結果，**未在真模型上驗證**。
+
+**修正與測試**
+- 槽版程式（`lora-slot-build.js`、`native-slot-model.js`）不需要改。
+- 等價基準改為 fp32 真值：槽版相對誤差 < 1e-5；網頁版與真值相對誤差 < 3%（實測 0.5%～1.3%）。網頁版與槽版不再要求逐值相近。
+- `tests/native/lora_slot_equiv.test.js`：8 項通過（A 段權重層級，不需要 onnxruntime；B 段需要執行包，沒有就略過並說明）。`tests/native/lora_slot_build.test.js` 仍 36 項通過。
+- 網頁版降雜訊：評估後**不改程式**。確定性捨入會產生偏差（不再是零均值）；多種子平均要併入多次、成本高；而且沒有真模型的量測，無法證明改善。要改，先在真模型上量測再決定。
+
+**尚未驗證（誠實列出）**
+1. ~~真模型上的驗證~~ 已於 2026-11-12 完成，見 §11.2（槽版轉換器）、§11.3（網頁版差異的來源）、§11.4（結論與待改善）。仍未驗證：真實訓練的 adapter（本機沒有，以下全部用隨機 adapter）與瀏覽器內的網頁版執行。
+2. 真模型上的「量化步距 ÷ ΔW」比值，決定網頁版實際雜訊大小。只靠 PyTorch 權重無法精確算出，需要真 q8 檔。
+3. 小型重現的 ΔW 與步距比例是人為設定，不代表真 adapter 的分布。
+
+### 11.2 槽版轉換器：真模型逐目標驗證（2026-11-12，通過）
+
+- 檔案：標準版 q8 ONNX `models/Qwen3-0.6B-ONNX/onnx/model_quantized.onnx`（617,687,575 位元組，唯讀使用，未下載）。
+- 方法（`scripts/eval/lora_slot_branch_check.js`）：在基底與槽版的 graph 尾端加上 y（目標輸出）、y_base（槽版內的原輸出）、x（目標啟動值）為圖輸出，並關閉圖最佳化（否則部分中間名稱會被融合掉、不回傳）。隨機 adapter（rank 16，種子 7，B 幅度 0.02，A 幅度 1）；prompt 為 22 個 token（聊天樣板）。
+- 比較：每個目標的旁支輸出（槽版 y − y_base）對 x·A·B，x 取自**同一次槽版執行**（不能用基底的啟動值：上游層的旁支會改變下游的啟動值，這是先前比對失效的原因），全部用 fp32 計算。
+- 結果：196 個目標，平均相對誤差 **2.23e-7**，最差 **3.56e-7**（`layers.10/attn/o_proj`）。抽樣的 `layers.0/attn/q_proj` 餘弦 1.0000、長度比 1.0000。
+- 結論：槽版轉換器在真模型上的旁支與 fp32 真值一致（在 float32 精度內）；位置、rank 槽順序、轉置都正確。
+- 基底不變：LoRA 全零時，槽版與基底的首步 logits 位元相同，前 4 步貪婪 token 相同（`tests/native/lora_slot_build.test.js` 與本節的全零實測一致）。
+- 範圍：這個判準只涵蓋旁支的數學與接線；其餘網路與基底相同（由全零位元相同保證）。端到端 logits 不能當判準，見 §11.3。
+
+### 11.3 網頁版（併權重）與槽版的差異：來源（真模型診斷，2026-11-12）
+
+- 方法（`scripts/eval/lora_slot_web_equiv.js`）：同一份隨機 adapter（rank 16）、同一個 prompt，比較四條路徑：base（標準版）、slot（槽版，fp32 旁支，正式轉換器）、slotdq（旁支吃「DynamicQuantizeLinear 之後再反量化」的啟動值，builder 選項 `dqLoraInput`，僅供診斷）、web（`patchQwen3Q8` 併權重）。報告首步 logits 餘弦、各方式 LoRA 增量對槽版增量的相對誤差、前 8 步貪婪 token。
+
+| adapter B 幅度 | slot–slotdq 餘弦 | slotdq–web 餘弦 | slot–web 餘弦 | 增量相對誤差：slotdq 對 slot | web 對 slot | web 對 slotdq | web 剪裁元素數 |
+|---|---|---|---|---|---|---|---|
+| 0.02 | — | — | 0.026 | — | — | — | 28,473,118 |
+| 0.002 | 0.8706 | 0.8812 | 0.8614 | 0.565 | 0.746 | 0.648 | 15,058 |
+| 0.0002 | 0.9905 | 0.9896 | 0.9846 | 0.572 | 0.719 | 0.589 | 44 |
+| 0.00002 | 0.9861 | 0.9863 | 0.9778 | 0.860 | 1.135 | 1.189 | 2 |
+| 0（全零） | 1 | 1 | 1 | 0 | 0 | 0 | 0 |
+
+（基底首步 logits 範數 2109；B=0.002 時 base 對 slot 的增量範數 1554，B=0.0002 時 608，B=0.00002 時仍有 426。）
+
+判讀（分三個來源）：
+
+1. **啟動值量化（最大，且不是網頁版獨有問題）**：slot 與 slotdq 的增量差 57%～86%。用真模型量：112 個目標的啟動值（`scripts/eval/lora_activation_probe.js`）最大值對中位數的比 26～75,173（中位數 67），也就是有離群通道；對隨機 LoRA 項，量化造成的相對誤差平均 5.3%、最大 18.2%。併權重的網頁版把 LoRA 乘進 int8 權重，因此 LoRA 項只能吃量化後的啟動值，槽版的 fp32 旁支沒有這一項。
+2. **權重側（抖動捨入＋飽和）**：web 對 slotdq 的增量差 59%～119%。merge 自己用探針估的每目標輸出誤差平均 8.5%（B=0.0002）到 12%（B=0.02）；大 adapter 時飽和（剪裁）很多：B=0.02 有 2,847 萬個元素被剪，而 `minCos` 門檻仍放行（merge 的探針估計 outCosMean 0.9946），也就是**門檻看不到飽和**。
+3. **端到端 logits 會放大小擾動**：B=0.00002 時槽版與基底的增量範數仍有 426，遠大於 adapter 的實際大小。原因是下游的啟動值量化會因為上游的微小改變跳一格（離散跳動）。所以端到端 logits 的餘弦或相對誤差**不能當等價判準**；先前看到的 0.968 就屬於這種情況。
+
+結論：**網頁版併權重不可能與槽版端到端等價**，即使權重側誤差降到零，來源 1（啟動值量化）也還在。這不是實作錯誤，是「把 LoRA 併進 int8 權重」這個做法的限制。
+
+### 11.4 網頁版降雜訊：評估結論、待改善與阻礙（2026-11-12）
+
+**降雜訊：評估後不改 `lora_merge_core.js`。** 理由（由 §11.3 的實測與機制推得）：
+
+1. 確定性四捨五入會把小於一格的變化量整個丟掉（有偏差）。抖動（dither）是保留小變化量的必要做法，不能去掉。
+2. 多種子平均能消除權重側的零均值部分（§11.1 實測：32 個種子平均後誤差降到約 1/√32），但要併入多次、成本高；而啟動值量化的誤差不是零均值隨機雜訊，平均消不掉（§11.3 來源 1）。
+3. 每欄的縮放 k 受 8 位元範圍限制（真模型上 kMean 約 2.5），沒有更細的格子可用。
+4. 不做改動，就沒有可能退步的風險；網頁版現況與 §14 的設計一致。
+
+**待改善（需要決定，本次未做）**
+
+- **飽和要納入門檻**：`minCos` 只看探針估計，看不到剪裁。B=0.02 時 28,473,118 個元素被剪，門檻仍放行（outCosMean 0.9946）。建議：把剪裁比例（`stats.clipped / stats.n`）也納入 `patchQwen3Q8` 的拒絕條件，超過門檻就回報「adapter 太大，網頁版無法可靠套用」。這會讓部分 adapter 從「放行但錯」變成「明確拒絕」，需要決定門檻值（建議先在真 adapter 上量）。
+- **探針估計不可靠**：merge 報告的 outRelErrMean 與端到端不一致（B=0.002 時 0.9%，B=0.0002 時 8.5%，但端到端 B=0.002 的差異反而較大）。報告數字只能當粗略參考，不能當準確度指標。
+
+**真正的解法與阻礙（未實作）**
+
+- 要讓網頁版與槽版等價，LoRA 項必須吃 fp32 啟動值，也就是網頁版改用「LoRA 分支」圖（槽版），而不是併權重。
+- 阻礙一：lora.bin 要交給 transformers.js（ORT-web）。目前 fetch 攔截只能換掉模型位元組；需要確認 ORT-web 是否支援 externalData，且 lora 檔能經由攔截交付。**未確認。** 依指示不採用「嵌入 adapter 進模型」的做法。
+- 阻礙二：網頁版的實際執行只能在瀏覽器內驗證，本機沒有可用的瀏覽器環境來做端到端測試。
+- 阻礙三：這會改變網頁版的產品路徑（§14 的設計是併權重），需要使用者同意。
+
+**尚未驗證（誠實列出）**
+
+1. 真實訓練的 adapter：本機沒有（`lora-train/out` 只有評量與煙霧測試輸出），以上全部是隨機 adapter。隨機 adapter 的 ΔW 幅度可能與真 adapter 不同，數字只用來判斷機制。
+2. 瀏覽器內的網頁版執行（transformers.js + 攔截）。
+3. 真模型上端到端的貪婪輸出品質（不在本次範圍；§11.3 已說明端到端 logits 不能當判準）。
 
 ## 12. 資料擴充：函式層切割與思考堆疊（2026-11-12，Linux 機器）
 
@@ -193,3 +280,278 @@ lora-train/.venv/Scripts/pip install -r lora-train/requirements.txt
 - `review_return` 的負例只有 13 筆，`self_validate` 的負例 248 對正例 584，比例偏正。
 - `uml_design` 的 actors／classes／relations 仍只有 1～4 列（只有單一固定情境），這一輪**沒有**補。
 - 基底在這批題上的起點（`eval_gen.py` 抽 8 題煙霧）：切割題 valid 0/8（基底輸出 JSON 陣列而不是要求的物件）、自問 ok 3/8。完整基準與微調結果見下一節（有跑才寫）。
+
+## 13. 多顆 LoRA 註冊與按需載入（2026-11-12，設計）
+
+需求（使用者原話，2026-11-12）：「floating assistant 要可以註冊多個 LoRA，這些 LoRA 要 on demand loading / lazy loading」。
+
+### 13.1 現況（已存在，本節不重做）
+
+- `renderer/src/studio/lora_registry_core.js`：登錄表（`register`、`select`、`ensure`、`request`）、LRU 卸載、記憶體預算（`budgetBytes`，預設 256 MiB）、同時啟用上限（`maxActive`：桌面版 4、網頁版 1）、相容性檢查（基底、rank 槽、提示格式版本、工具清單）、評量門檻（任一組輸給基底就不自動選用）。`lora_registry.test.js` 原有 43 項，§13 新增後為 60 項。
+- 桌面版載入路徑：`studio_server_core.js` 的 `/api/lora/load` → `registry.request` → `lora_apply_core.js`（寫信箱 → 主程序 `lora_apply`／`lora_apply_set`）。
+- 缺口（本節補的）：
+  1. 沒有統一的「描述檔」格式。現有只有 `pack_adapter.js` 產生的 `manifest.json`，而且沒有 `version` 欄位。
+  2. `request` 在沒有載入器時會丟例外，呼叫端沒有統一的「退回基底模型」出口。
+  3. 每一輪聊天依任務類型路由的呼叫點還沒接（見 13.5）。
+
+### 13.2 描述檔格式：`fa-lora-descriptor` v1（與 lora-manager-2 的約定）
+
+每顆 adapter 的資料夾內放一份 `lora.descriptor.json`，欄位如下：
+
+| 欄位 | 型別 | 必要 | 說明 |
+|---|---|---|---|
+| `format` | 字串 | 是 | 固定為 `fa-lora-descriptor` |
+| `format_version` | 整數 | 是 | 目前為 `1`；未知版本一律拒絕 |
+| `id` | 字串 | 是 | 全域唯一，小寫英數與 `-._`，例如 `decompose-r16` |
+| `version` | 字串 | 是 | adapter 版本，例如 `1.0.0`（同一 id 換權重就要加版本） |
+| `name` | 字串 | 否 | 顯示名稱 |
+| `base` | 字串 | 是 | 基底模型 id，例如 `Qwen/Qwen3-0.6B` |
+| `base_sha256` | 64 位十六進位 或 null | 否 | 基底模型檔案雜湊（同名不同檔時拒絕） |
+| `rank` | 正整數 | 是 | LoRA 秩；必須落在模型的 rank 槽內 |
+| `alpha` | 數字 | 否 | 與 PEFT 的 `lora_alpha` 相同 |
+| `prompt_format_version` | 整數或字串 | 是 | 提示格式版本；格式改變就要換版 |
+| `tool_catalog_sha256` | 64 位十六進位 或 null | 否 | 訓練時的工具清單雜湊；不符只警告 |
+| `applies` | 物件 | 是 | 適用條件：`domains`（任務類型陣列）與 `triggers`（正規表示式字串陣列，使用者指令命中就視為想用） |
+| `size` | 非負整數 | 是 | 權重總位元組數（分片加總） |
+| `sha256` | 64 位十六進位 | 是 | 權重整檔的雜湊；載入前核對 |
+| `location` | 字串 | 是 | 檔案位置：`asset:lora/<id>`（工作室資產庫）、`fap:…`（執行包內）或絕對路徑；由載入器解讀 |
+| `eval` | 物件 或 null | 否 | 評量結果（`groups` 每組 `{adapter, base}`）；沒有就不自動選用 |
+
+規則：
+
+- 描述檔只描述，不含權重；權重檔以 `size` 與 `sha256` 核對。
+- `applies.domains` 的標籤由 lora-manager-2 定義：`decompose`（拆題）、`toolcall`（工具呼叫格式）、`colu`（選單）、`plan`（規劃）。空陣列表示通用，只在沒有領域專屬者時才補上。
+- 同一資料夾也可以有 `manifest.json`（`pack_adapter.js` 產生）。有描述檔時，`id`、`version`、`applies`、`location` 以描述檔為準。
+
+### 13.3 註冊、按需載入與快取
+
+- **註冊不載入**：註冊只讀描述檔（與可選的 manifest），不讀權重，不呼叫載入器。
+- **選用（路由）**：依 `applies.domains`（任務類型）與 `applies.triggers`（指令比對）選出候選；停用、不相容、沒有評量資料（手動指定除外）、評量輸給基底的不選；同領域只留排序最前者；`conflicts_with` 衝突者跳過。
+- **按需載入**：只有被選到的才呼叫載入器；載入成功後進入快取。沒被用到的 adapter 不占記憶體。
+- **快取上限**：同時駐留的位元組總和不超過 `budgetBytes`；同時啟用不超過 `maxActive`。超過時卸載 `lastUsed` 最小者（LRU），但不卸載本次計畫內的 adapter。
+- **失敗退回基底**：單顆載入失敗（檔案讀不到、雜湊不符、主程序拒絕）只讓該顆進 `skipped`，寫出具體原因，其餘照常。計畫內全部失敗，`active` 為空，呼叫端走基底模型（`fallback: 'base'`）。新增的 `resolve()` 保證不丟例外：沒有載入器或任何未預期錯誤都回基底並附原因。
+- **相容性不符**：`reject`，不載入，寫出原因（例如基底不同、rank 不在槽內）。
+
+### 13.4 兩個平台
+
+- **桌面版（nr-engine 原生推論）**：多顆依 rank 串接成一個槽檔，由主程序 `lora_apply_set` 套用，容量不足的逐項拒絕（不截斷）。換組合＝重建推論 session（數秒）。
+- **網頁版（transformers.js＋併權重）**：**限制**：`maxActive=1`。併權重必須從原始 q8 位元組重新併入，所以換 adapter 等於重新 patch 整個模型（617 MB，數秒到數十秒），不支援同時多顆。併權重的數值限制（啟動值量化、飽和）見 §11.3–11.4，網頁版的結果**不與桌面版槽版等價**。網頁版若沒有可用的 q8 模型，registry 回基底。
+
+### 13.5 尚未接的部分（阻礙）
+
+- **每一輪聊天依任務類型路由**的呼叫點在 `renderer/src/floating-assistant.js`。該檔內嵌 studio 核心（`scripts/embed-code-ui.js` 的 UMD 清單），改動需要重跑 embed 與 live-update 發佈流程。依指示本次不跑 embed、不發佈，所以這一步尚未接。
+- 目前「按需載入」只在工作室的 `/api/lora/load` 生效（使用者在工作室觸發）。
+- 接上時的做法：聊天送出前呼叫 `registry.resolve({text, domains})`，回傳的 `handles` 交給 `lora_apply`；`active` 與上一輪相同就不重建 session。
+
+### 13.6 給 lora-manager-2 的產出要求
+
+- 每顆 adapter 一個資料夾，內含 `adapter_model.safetensors`（或 `.partNN` 分片）、`adapter_config.json`、`manifest.json`（`pack_adapter.js`）、`lora.descriptor.json`（本節格式）。
+- 描述檔的 `size`、`sha256` 與 manifest 一致；`version` 只在權重改變時增加。
+- 四顆：`decompose`、`toolcall`、`colu`、`plan`，各自的 `applies.domains` 與 `applies.triggers` 由 lora-manager-2 填。
+
+### 13.7 測試（`lora_registry.test.js`）
+
+- 描述檔解析：合法、缺 `version`、`format_version` 不是 1、`triggers` 不是合法正規表示式、`size` 或 `sha256` 格式錯誤。
+- 註冊不呼叫載入器（懶載入）。
+- `resolve()`：沒有載入器時回基底且不丟例外；載入失敗時回基底並附原因。
+- LRU：超過 `maxActive` 時卸載最久沒用者；計畫內的不卸。
+
+### 13.8 未驗證
+
+- 真實 adapter 的按需載入延遲（本機沒有真 adapter；載入器是注入的假載入器測試）。
+- 聊天呼叫點（13.5）與網頁版的瀏覽器執行。
+
+## 14. 槽位管理：滿了怎麼替換（2026-11-12，實測＋設計）
+
+需求（指揮轉達的使用者問題）：「如果載入的槽用完，有辦法按需要 replace LoRA 嗎」。
+
+### 14.1 槽數是匯出時固定的（已確認）
+
+- 槽版 ONNX 的 LoRA 形狀寫在圖裡：每個目標的 A 是 `[din, R]`、B 是 `[R, dout]`，R 是 `buildSlotModel` 的 `rank`（現在 16）。`layout.json` 的版面也由 R 決定。改 R＝重新轉換（真模型約 4 秒、輸出 617 MB），不是執行期可調。
+- 「槽」在程式裡有兩層意思：(a) 總容量 R（rank 總和上限，多顆依 rank 串接，見 DESIGN.TODO.native-runner.md §9.2）；(b) 同時啟用數 `maxActive`（登錄表的上限）。本節的「槽滿」指 (a)，`maxActive` 另外限制。
+- 因此每顆 adapter 占用 `rank` 個槽列；R=16 時，rank 8 兩顆就滿。
+
+### 14.2 替換一個槽：要重建工作階段（實測）
+
+真模型（標準版轉成的槽版，rank 16，`scratch` 實測，2 顆 CPU 核心，每項一次）：
+
+| 量測 | 毫秒 |
+|---|---|
+| 建立基底 session（對照） | 3,898 |
+| 基底一次 22 token 前向 | 546 |
+| 建立槽版 session（含 lora.bin 外部資料） | 2,157 |
+| 槽版一次 22 token 前向 | 533 |
+| 換成另一顆 lora.bin 後重建 session | 1,897 |
+| 重建後的一次 22 token 前向 | 548 |
+
+**熱換不可行（實測）**：在同一個 session 還活著時，把 `lora.bin` 原地覆寫成另一顆，再跑一次前向，輸出與覆寫前逐值相同（最大差 0）；重建 session 後的輸出則與覆寫前不同（最大差 5.49）。結論：ORT 在建立 session 時把外部資料讀進來，之後檔案改了也不影響既有 session。**替換＝釋放舊 session＋重建**，成本約 2 秒（再加上前向）。
+
+- 推測（未測）：主行程經信箱傳送 40 MB 的 lora.bin（base64）本身也要時間，這段**未量測**，實際替換延遲會更長。
+- 推測（未測、需要改圖）：若把 A、B 改成圖的輸入（每次前向餵入），就能不重建 session 直接換，代價是每次前向都要傳 40 MB 或做成常駐張量；這需要改 `lora-slot-build.js` 並重新驗證，本次不做。
+
+### 14.3 淘汰策略（預設）
+
+- 候選＝已載入、**沒釘選**、**沒在推論中**、**不在本次計畫內**的 adapter。
+- 依最久未用（LRU，`lastUsed`）卸載，直到新的 adapter 放得下（rank 總和 ≤ R、同時數 ≤ maxActive、位元組 ≤ budgetBytes）。
+- 卸不掉（候選都釘選或推論中）：新的那顆寫出原因（「槽已滿，且沒有可卸載的」），不硬塞、不影響已載入的。
+- 計畫內的 adapter 一定不被淘汰；計畫本身超過槽容量時，排序最後的那顆被丟棄並寫原因。
+
+### 14.4 替換與回滾（原子性）
+
+`replace(outId, inId, {applyFn})` 的步驟：
+
+1. **先載入新的**。失敗：原狀不動，回報「載入 … 失敗，原狀保留」。
+2. **扣掉舊的後看容量**。放不下：卸掉新的、把舊的放回去，回報 `rolledBack`。
+3. **通知推論端**（`applyFn(新的組合)`，桌面版是 `lora_apply_set`）。失敗：卸掉新的、重新載入舊的、再套一次舊組合，回報 `rolledBack` 與原因。舊的若無法還原，回報 `state: 'degraded'`，由呼叫端退回基底。
+4. **都成功**：釋放舊的，回報 `ok` 與新的 `active` 組合。
+
+限制：舊的釘選或推論中一律拒絕（釘選可用 `force` 繞過，推論中不行）。替換期間新舊 adapter 的位元組會同時駐留一小段時間（記憶體峰值多一顆），這是為了失敗時能還原。
+
+### 14.5 手動替換與卸載
+
+- 手動替換＝`replace`（指定換出與換入）。
+- 手動卸載＝`manualUnload`：釘選與推論中都拒絕，與自動淘汰同一套保護。
+- 釘選＝`pin(id, on)`，只在記憶體（重啟後要重新釘選；持久化待決定）。
+- 推論中＝`acquire(id)`／`release(id)`，推論開始與結束時由呼叫端成對呼叫。
+
+### 14.6 給 LoRA 管理畫面的介面（與 studio-domain-author 對齊）
+
+登錄表（`lora_registry_core.js`）提供：
+
+- `status()` → `{slotCapacity, usedRank, freeRank, maxActive, budget, usedBytes, slots:[…], registered:[model card…]}`。
+  - `slots[]`：`{id, name, version, rank, size, loaded:true, pinned, inUse, lastUsed}`，依最後使用時間新到舊排序。
+  - `registered[]`：每顆 adapter 的 model card（見下）。
+- `card(entry)` → model card：`{id, name, version, description, base, rank, size, domains, triggers, prompt_format_version, source, enabled, location, eval:{lose, win}|null, compat:'ok'|'warn'|'reject', compatReasons, pinned}`。
+- 操作：`pin(id, on)`、`manualUnload(id)`、`replace(outId, inId, {applyFn, force})`、`request({domains|text|ids})`（載入）、`register`／`unregister`（註冊移除）、`setEnabled`。
+- 每一個操作都回傳 `ok`、`error`（具體原因）與 `active`（目前組合），畫面不需要自己猜狀態。
+
+model card 欄位以 `description`（一句話，來自描述檔，§13.2）與 `version` 為新增；畫面的標題用 `name`，副標題用 `description`，能力標籤用 `domains`，觸發字用 `triggers`。
+
+### 14.7 限制與未驗證
+
+- **網頁版**：`maxActive=1`，換 adapter＝重新併權重（617 MB，數秒到數十秒，未在瀏覽器實測）。網頁版沒有槽，只有「換一顆」。
+- **替換延遲的主行程部分未量測**（信箱寫入 40 MB、base64 解碼、主行程的 `lora_apply_set`）。
+- 「改圖讓 A、B 成為輸入、可熱換」是推測，未實作、未測。
+- 所有實測在 2 顆 CPU 核心（`taskset -c 12-13`）、隨機 adapter 上完成；真實 adapter 的權重值不影響載入時間，但實際機器的核心數會改變數字。
+
+## 15. 聊天每輪 LoRA 路由：源碼與整合步驟清單（2026-11-12，源碼已提交，未 embed）
+
+本節是給整合者（指揮）照做的清單。**本 session 沒有跑 embed，也沒有 build**；下列位置都以本分支目前的源碼為準，行號會因後續修改而變，動手前先用關鍵字確認。
+
+### 15.1 已完成的源碼
+
+| 提交 | 檔案 | 內容 | 測試 |
+|---|---|---|---|
+| `658843da` | `renderer/src/studio/lora_route_core.js` | 純函式：任務類型→領域（`decompose`、`toolcall`、`colu`、`plan`），`taskDomain`、`decideTurn`、`routeTurn` | `lora_route.test.js` 18 項通過 |
+| `f15febb6` | `renderer/src/studio/studio_server_core.js` | `createServer` 回傳 `registry()`（不需要 HTTP 監聽） | `studio_server_core.test.js` 105 項通過 |
+| `9084c355` | `renderer/src/floating-assistant.js` | 路由掛鉤：`_loraCore`、`_loraRouteTurn`、`_loraSwitch`、`_llmGenerate`（包裝）、`_llmGenerateInner`（原函式改名，本體未動），三個呼叫點標上 `task` | `node --check` 通過；尚未在瀏覽器實測 |
+
+`routeTurn(registry, task, { prevActive })` 回傳 `{ task, domain, action, active, handles, skipped, fallback, reason }`，`action` 為 `keep`、`switch` 或 `clear`。
+
+### 15.2 每輪行為（以程式為準）
+
+1. **沒有 `task`**（`_loraRouteTurn` 回傳 `null`）：不決定、不切換，維持目前載入的 LoRA。
+2. **有 `task`，但沒有對應領域**：回基底（`fallback: 'base'`），不載入任何 LoRA；若目前有載入的，動作為 `clear`，否則 `keep`。
+3. **有 `task` 且有對應領域**：向登錄表要該領域的 LoRA（`resolve`）；組合與目前相同就 `keep`，不同就 `switch`（先 clear 再 apply 新組合）。
+4. **套用失敗**：清空、回基底，`applied: false`，`applyError` 記原因，`fallback: 'base'`。
+5. **推論期間**：生成前對 `active` 逐顆 `acquire`，生成結束（含例外）`release`，推論中不會被淘汰。
+6. **路由本身出錯**：`_llmGenerate` 的 `catch` 改為基底，不中斷生成。
+
+### 15.3 整合步驟清單（依序做）
+
+**步驟 A：`scripts/embed-code-ui.js`，第 532 行（`const UMD = [...]`）**
+- 在 `'lora_registry_core'` 與 `'lora_apply_core'` 之間插入 `'lora_route_core'`，成為 `'lora_registry_core', 'lora_route_core', 'lora_apply_core'`。
+- 理由：`FaLoraRoute` 是全域物件（`lora_route_core.js` 的 UMD 匯出 `root.FaLoraRoute`），`floating-assistant.js` 執行時會讀它；它本身不依賴其他模組。
+- 確認 `'studio_server_core'` 仍在同一陣列（已確認，第 532 行含此名）；`_loraCore` 依賴 `FaStudio.FaStudioServer.createServer`。
+
+**步驟 B：`scripts/run-core-tests.js`，第 146 行之後**
+- 新增一列（與第 146 行同格式）：
+  `['訓練工作室 LoRA 每輪路由（任務→領域、保留／切換／回基底、無領域不載入）', 'renderer/src/studio/lora_route.test.js'],`
+- 第 143 行的 `studio_server_core.test.js` 項目已涵蓋 `createServer` 的 `registry()` 與各端點，不需要另加。
+
+**步驟 C：`renderer/src/floating-assistant.js`（源碼已在位，不需再改；整合者只需確認下列標記存在）**
+
+| 位置（本分支目前行號） | 標記 | 作用 |
+|---|---|---|
+| 約 87358 | `// ===== LoRA 每輪路由（DESIGN.lora-training.md §15）` | 區段註解，之後的四個方法都屬於這段 |
+| 約 87360 | `_loraCore()` | 懶建立 `createServer(this._studioHostApi())`，只取登錄表 |
+| 約 87362 | `_loraRouteTurn(task)` | 決定本輪路由 |
+| 約 87375 | `_loraSwitch(route)` | 依路由 clear／apply，失敗回基底 |
+| 約 87384 | `_llmGenerate(model, a, cb)` | 包裝：路由 → 切換 → acquire → `_llmGenerateInner` → release |
+| 約 120607 | `_llmGenerateInner(model, a, cb)` | 原本的 `_llmGenerate` 本體，**不要刪、不要改名回去** |
+
+**步驟 D：`task` 標記的呼叫點（已標）**
+
+| 行號 | 呼叫 | 標記 |
+|---|---|---|
+| 約 117569 | 選單（`SEL.selectionMessages`） | `task: 'colu'` |
+| 約 117574 | 工具參數（`SEL.argsMessages`） | `task: 'toolcall'` |
+| 約 120746 | 工具階段（`FaVlm.TOOL_STAGE_SYSTEM`） | `task: 'toolcall'` |
+
+**步驟 E：`decompose` 與 `plan` 的呼叫點（未標，未完成）**
+- 搜尋結果：`floating-assistant.js` 內沒有以 `task: 'decompose'` 或 `task: 'plan'` 呼叫 `_llmGenerate` 的地方。
+- 同名的 `decompose`／`plan` 都不是 LLM 呼叫：`FaHarness.decompose`（約 59158，離線規則）、`TP.expand`（約 61833，離線模板）、`planBatch`（約 32722，瀏覽器代理）。
+- 因此目前這兩類任務在聊天中**沒有**切到對應 LoRA；依 15.2 第 1 點，它們會沿用目前載入的 LoRA（若有）。
+- 待辦：找出「拆解」與「規劃」真正送進模型的生成呼叫，補上 `task: 'decompose'`／`task: 'plan'`。找到之前，這兩類不要宣稱已接好。
+
+### 15.4 核心測試清單（整合後應全部通過）
+
+| 檔案 | 項數 | 來源 |
+|---|---|---|
+| `renderer/src/studio/lora_route.test.js` | 18 | 步驟 B 新增 |
+| `renderer/src/studio/lora_registry.test.js` | 79 | 既有（`run-core-tests.js` 第 146 行） |
+| `renderer/src/studio/studio_server_core.test.js` | 105 | 既有（第 143 行） |
+| `tests/native/lora_slot_equiv.test.js` | 8 | 原生（槽版等價） |
+| `tests/native/lora_slot_build.test.js` | 38 | 原生（槽版轉換） |
+| native_lora | 65 | 原生 manifest 已 refreeze（`ffc28738`） |
+
+### 15.5 未驗證（整合後要補的）
+
+- 瀏覽器中的網頁版路由未實測；網頁版 `maxActive=1`，切換時要重新併權重（見 §14.7）。
+- `decompose`、`plan` 的呼叫點未找到（15.3 步驟 E）。
+- 真實聊天中的切換延遲與回基底的體感，未量測。
+- embed 後的 UMD 載入順序（步驟 A）未在打包產物中驗證。
+
+### 15.6 合併狀態與順序（2026-11-12）
+
+本分支 `claude/lora-slot-equiv`（`e9cc0b4b`）相對 `desktop-app`（`4c5b5e15`）領先 19 個提交、落後 0 個。**尚未合併任何分支，也沒有 push。**
+
+#### 15.6.1 與其他分支的關係
+
+| 對象 | 共同基底 | 雙方都改的檔案 | 結果 |
+|---|---|---|---|
+| `desktop-app` | `4c5b5e15` | 無 | fast-forward，無衝突 |
+| `claude/studio-domain-author-dcb72c`（`55bba55b`，領先 21 個提交） | `4c5b5e15` | `studio_server_core.js`、`studio_server_core.test.js`、`scripts/embed-code-ui.js` 第 532 行 | 見下 |
+| `lora-train-eval`（`0d638c0e`，領先 7 個提交） | `4c5b5e15` | `DESIGN.lora-training.md`（只有這個檔） | 程式無衝突；文件要手動合併 |
+
+與 studio 分支的衝突點：
+
+- `studio_server_core.js`：雙方都改，但自動合併成功。
+- `studio_server_core.test.js`：一個衝突區塊，在 `/api/info` 的分頁數。對方為 10 個分頁（新增「流程」分頁），我方為 9 個。**取對方**，並保留對方的 `/api/pipeline`、`/api/advice` 檢查；我方的 `/api/lora/replace`、`status.replacing` 檢查位於別的區塊，會自動保留。
+- `scripts/embed-code-ui.js` 第 532 行（`const UMD = [...]`）：對方改了同一行。步驟 A 要在 `'lora_registry_core'` 後面插入 `'lora_route_core'`，整合時要連同對方的新增項一起保留，不是取其中一邊。
+
+驗證（暫存 worktree，已刪除，未 commit）：以 `git merge -X theirs claude/studio-domain-author-dcb72c` 合併後，`studio_server_core.test.js` 109 項、`lora_registry.test.js` 80 項、`lora_route.test.js` 18 項全部通過。`-X theirs` 只影響衝突區塊；不加這個參數時，衝突只有上面那一個區塊。
+
+#### 15.6.2 `DESIGN.lora-training.md` 的合併規則
+
+- 雙方都新增了 §13 起的段落，編號衝突：我方 §13（多顆 LoRA 註冊與按需載入）、§14（槽位管理）、§15（本節）；對方 `lora-train-eval` 也用 §13、§14、§15（其中 §15 是「訓練要點調整」）。
+- 規則：**我方保留 §13–§15**，因為程式註解已引用這些編號（`lora_registry_core.js` 的 §13／§14、`floating-assistant.js` 的 §15）。對方的段落改為 §16 起，並更新它段落內的交叉引用。
+- 合併後檢查：`grep -n "^## 1[3-9]" DESIGN.lora-training.md` 每個編號只能出現一次。
+- 這一條需要 `lora-train-eval` 那邊的作者同意改編號；我沒有改對方的文字。
+
+#### 15.6.3 建議合併順序
+
+1. `desktop-app` ← 本分支（fast-forward）。
+2. `claude/studio-domain-author-dcb72c`：衝突點見 15.6.1，兩處已驗證。
+3. `lora-train-eval`：依 15.6.2 手動處理 DESIGN 文件。
+4. 最後才做 15.3 的步驟 A、B（embed UMD 與核心測試清單）；embed 與 build 由整合者執行，不在本分支做。
+
+### 15.7 接手節（給下一位接手的人）
+
+- **已提交**：`97ee7942`（§15 整合清單）、`e9cc0b4b`（替換端點 `outId`／`inId` 與 `status().replacing`）；之前的路由與登錄表提交見 15.1。
+- **既有失敗已修**：native_lora 2 項（`ffc28738`，refreeze `nr-engine.js` 的內嵌清單）、studio_server_core 2 項（`7bc932da`，版面期望值）。目前 native_lora 65 項、native_lora_merge 20 項、studio_server_core 106 項全部通過。
+- **未完成**：
+  - `decompose`、`plan` 的生成呼叫點尚未找到（15.3 步驟 E）。
+  - 步驟 A、B 與 embed／build（整合者做）。
+  - 15.6.3 的合併順序（需要使用者或指揮決定執行）。
+  - 網頁版路由的瀏覽器實測（§14.7）。

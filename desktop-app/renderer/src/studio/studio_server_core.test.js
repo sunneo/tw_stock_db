@@ -128,6 +128,25 @@ function mk(desktop, hostOps) {
   r = await t.req('GET', '/api/lora'); check('登錄表顯示已載入', r.j.entries.find((e) => e.id === 'good').loaded === true && r.j.loaded.length === 1);
   r = await t.req('POST', '/api/lora/enable', { id: 'good', on: false }); r = await t.req('GET', '/api/lora'); check('停用會卸載並記住', !r.j.entries.find((e) => e.id === 'good').enabled && r.j.loaded.length === 0 && t.prefs().loraEnabled.good === false);
   r = await t.req('POST', '/api/lora/load', { domains: ['doc_knowledge'] }); check('停用的不會被載入', r.j.active.length === 0);
+  { // 槽位管理（DESIGN.lora-training.md §14）：槽容量 16；釘選、手動卸載、替換（成功、套用失敗還原）
+    await mkLora('pa', { domains: ['slotA'], eval: { groups: { g: { adapter: 0.9, base: 0.5 } } } }); await mkLora('pb', { domains: ['slotB'], eval: { groups: { g: { adapter: 0.9, base: 0.5 } } } });
+    r = await t.req('POST', '/api/lora/load', { domains: ['slotA'] }); check('槽位：載入 pa', r.j.active.join() === 'pa', r.j);
+    r = await t.req('GET', '/api/lora/status'); check('status：槽容量 16、已用 16、剩 0、slots 只有 pa', r.j.slotCapacity === 16 && r.j.usedRank === 16 && r.j.freeRank === 0 && r.j.slots.length === 1 && r.j.slots[0].id === 'pa', r.j);
+    check('status：registered 含 model card（版本、描述、相容、釘選）', r.j.registered.some((c) => c.id === 'pa' && c.compat === 'ok' && c.pinned === false && 'version' in c && 'description' in c), r.j.registered[0]);
+    r = await t.req('POST', '/api/lora/pin', { id: 'pa' }); check('釘選 pa', r.s === 200 && r.j.pinned === true, r.j);
+    r = await t.req('POST', '/api/lora/unload', { id: 'pa' }); check('釘選的手動卸載 409 並說明', r.s === 409 && /釘選/.test(r.j.error), r.j);
+    r = await t.req('POST', '/api/lora/replace', { outId: 'pa', inId: 'pb' }); check('釘選的替換 409（不強制）', r.s === 409 && /釘選/.test(r.j.error), r.j);
+    r = await t.req('POST', '/api/lora/unpin', { id: 'pa' }); check('解除釘選', r.s === 200 && r.j.pinned === false, r.j);
+    t.h.loraApply = async () => ({ ok: false, error: '主程序拒絕' });
+    r = await t.req('POST', '/api/lora/replace', { outId: 'pa', inId: 'pb' }); check('套用失敗：409、rolledBack、舊的（pa）還在', r.s === 409 && r.j.rolledBack === true && r.j.active.join() === 'pa' && /主程序拒絕/.test(r.j.error), r.j);
+    delete t.h.loraApply;
+    r = await t.req('POST', '/api/lora/replace', { outId: 'pa', inId: 'pb' }); check('替換成功：pb 上線、pa 下線', r.s === 200 && r.j.active.join() === 'pb', r.j);
+    r = await t.req('GET', '/api/lora/status'); check('替換結束後 status.replacing 為 null', r.j.replacing === null, r.j.replacing);
+    r = await t.req('POST', '/api/lora/replace', { outId: 'nope', inId: 'pb' }); check('替換：不存在的 outId 回 404', r.s === 404, r.j);
+    r = await t.req('POST', '/api/lora/pin', { id: 'nope' }); check('釘選：不存在的 id 回 404', r.s === 404, r.j);
+    r = await t.req('POST', '/api/lora/unload', { id: 'pb' }); check('手動卸載：未釘選可卸', r.s === 200 && r.j.status.usedRank === 0, r.j);
+    r = await t.req('POST', '/api/lora/unload', { id: 'nope' }); check('手動卸載：不存在的 id 回 404', r.s === 404);
+  }
   r = await t.req('POST', '/api/lora/enable', { id: 'zzz', on: true }); check('不存在的 adapter 404', r.s === 404);
   await t.storage.deleteAsset('lora', 'noeval'); r = await t.req('GET', '/api/lora'); check('資產刪除後登錄表同步', !r.j.entries.find((e) => e.id === 'noeval'));
   // 網頁版
@@ -202,5 +221,7 @@ function mk(desktop, hostOps) {
   await de.storage.saveAsset({ manifest: Asset.createManifest({ kind: 'trainer', name: 'ds2', files: dsBad, counts: {}, owner: 'user', created: '2026-11-12T00:00:00.000Z' }), files: dsBad }, { replace: true });
   r = await de.req('GET', '/api/dataset/rows?kind=trainer&name=ds2&path=data%2Fbroken.jsonl'); check('逐筆：壞行的檔案不給編，寫第 2 行', r.j.editable === false && /第 2 行/.test(r.j.reason), r.j);
   r = await de.req('POST', '/api/dataset/edit', { kind: 'trainer', name: 'ds2', path: 'data/broken.jsonl', op: 'add', row: { q: 2 } }); check('逐筆：壞檔的寫入也拒絕（409）', r.s === 409, r.j);
-  console.log(ok + ' passed, ' + bad.length + ' failed', bad); process.exit(bad.length ? 1 : 0);
+    // 聊天每輪路由用的登錄表存取器（不需要 HTTP 監聽）
+{ const C2 = require('./studio_server_core.js').createServer({}); check('createServer 回傳 registry()（聊天路由取得登錄表）', typeof C2.registry === 'function' && typeof C2.route === 'function'); }
+console.log(ok + ' passed, ' + bad.length + ' failed', bad); process.exit(bad.length ? 1 : 0);
 })();
