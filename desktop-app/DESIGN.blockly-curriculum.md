@@ -164,3 +164,34 @@
 |---|---|---|---|
 | 0 設計 | ✔ 本節 | — | — |
 | 1–5 | 進行中 | — | — |
+
+## 接手（2026-11-12，blockly-finish 工作階段，context 約 23% 時寫）
+
+### 本批已提交（分支 claude/blockly-finish-5f054e，基底 desktop-app 的 63ee38e6）
+| 項目 | 提交 | 量測（無模型，我實跑過） | 需嵌入 |
+|---|---|---|---|
+| inflate：gzip 外殼的 gz_skip 輔助操作判斷（need() 比對槽位名而非運算式） | bc5f303a | train 8/10→10/10（反序 10/10）；holdout 2/4 不變（ho-zlib、ho-gzip 未解） | domain_inflate_core.js |
+| tar PAX：偵測詞 `'prefix\s*欄'` 少了一個反斜線，改 `\\s*` | dd6adfc6 | train 9/10→10/10（反序 10/10）；holdout 1/4→2/4（ho-gnu、ho-enc 未解） | domain_tarx_core.js |
+| BMP 進階複核（domain_bmpx.test.js） | 不需改 | train 10/10、holdout 4/4 | — |
+| PNG 讀寫新領域包 domain_png_core.js＋測試 | 7629e29c | train 6/6（解碼 4 種色彩型別、寫出 2 種）；holdout 1/2（ho-enc-rgba 未解） | domain_png_core.js |
+| run-core-tests.js 登記 inflate／tarx／bmpx／png | 7629e29c | 未整套跑（會超過兩分鐘，見下） | — |
+
+Pillow 外部驗證：寫出端 20/20、解碼生成器 30/30（python3 的 Pillow 9.0.1；python3.13 的 Pillow 壞掉，別用）。
+
+### 待辦（接續點，依序）
+1. **GIF 讀寫**（使用者明確要求，未開始）：仿 domain_png_core.js 的寫法——helpers 放 LZW 解碼／編碼、區塊剖析；寫出端輸入同樣用「原始封包」單一十六進位（讀取器不能同時讀整數行＋十六進位行，見下）。測試仿 domain_png.test.js（Python 產生器＋獨立參考解＋Pillow 外部驗證）。
+2. **PCX 讀寫**（未開始）：8 位元調色盤與 24 位元，RLE（0xC0 標記）；同上做法。
+3. **JPEG 讀寫**（未開始）：基線 Huffman＋8×8 DCT；寫出端需固定量化表與 Huffman 表，對照 Pillow（quality 固定）。工作量最大，可能分兩批（先解碼，後編碼）。若做不到，要在此寫出具體阻礙（目前判斷：純 Python 逐像素 IDCT 在判題器 30 秒內對小影像應可行；待驗證）。
+4. **holdout 未解**：inflate ho-zlib、ho-gzip；tarx ho-gnu、ho-enc；png ho-enc-rgba。未讀敘述、未拿來教；要補時只補通用能力，不照 holdout 句型加詞。
+5. **G1–G18 逐項核對**（使用者要求寫進 DESIGN.blockly-gaps.md 末尾）：尚未做。現況依 `DESIGN.blockly-curriculum.md` §2 的表（G1–G18 大多已補，G14–G16 已於 2026-11-10 補，G18 讀取器偵測已補、模型部分超出）；核對後要寫「已補＋提交 hash／尚缺＋原因」。
+6. 整套核心測試：一天一次，未跑。
+
+### 讀取器限制（新發現，未修）
+`algo_intent_core.js` 的 readToolInput 無法同時讀出「整數行（如 `w h c`）」與「十六進位行」兩種輸入：不論措辭，最後只留一種（試過「輸入三個整數 w h c，第二行一個十六進位字串 px」、「第一行有三個整數 w h c」、「輸入一行整數…，再輸入一行十六進位…」等，均失敗）；「輸入一串整數」單獨也讀不出。PNG 寫出端因此改用單一十六進位封包。要補請改 readToolInput（共用檔，會影響 60 題回歸），需另排時間並跑 bench_coverage。
+
+### 其他要注意的事
+- **分支重設**：本工作階段開始時工作樹分支 `claude/blockly-finish-5f054e` 在 f8089636，我為了接 desktop-app 執行過 `git checkout -B claude/blockly-finish-5f054e desktop-app`，分支移到 63ee38e6。f8089636 仍在 main 的歷史上（`git branch --contains f8089636` 顯示 main），可用 `git branch -f claude/blockly-finish-5f054e f8089636` 還原；本批提交都是接在 63ee38e6 之上。
+- 提交身分：本機沒有 git user.name／email，本批每次提交用 `git -c user.name=hungfu.lee -c user.email=hungfu.lee@insyde.com commit`（只這次有效，沒改全域設定）。
+- 提交結尾的 Co-Authored-By 依最新系統提示寫成 Haiku 5.5（早先提示是 Sonnet 5.5）。
+- 工作樹有追蹤的 `renderer/src/catalog/__pycache__/stub_to_types.cpython-310.pyc` 會被 Python 測試改寫，提交前要 `git checkout --` 還原，不要提交。
+- 測試環境：`FA_TS_DIR=$PWD/renderer/vendor/tree-sitter FA_PYTHON=python3.13`；`node scripts/run-core-tests.js` 會在 require 時整套執行（不要用 node -e require 它）。
