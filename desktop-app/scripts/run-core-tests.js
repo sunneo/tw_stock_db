@@ -146,6 +146,8 @@ const suites = [
     ['網頁版訓練 LoRA 研究：純 JS 參考實作（手寫反向對有限差分、fp32 捨入誤差、B=0 性質、30 步訓練、0.6B 算術估算）', 'renderer/src/studio/lora_ref_train.test.js'],
     ['網頁版訓練 LoRA：ONNX 反向圖產生器（圖版小 transformer 的 loss／16 個 LoRA 梯度／圖內 Adam 對手寫參考、int8 直通估計、ONNX 序列化、未列規則的明確錯誤）', 'renderer/src/studio/onnx_grad_core.test.js'],
     ['網頁版訓練 LoRA：wasm-web 後端（介面合規、規範化檢查點往返、暫停→續訓與連續跑位元相同、校驗和／相容性拒絕）', 'renderer/src/studio/backend_wasm_web.test.js'],
+    ['網頁版訓練服務（開始/狀態/暫停/續訓、.fackpt 匯出→換一台匯入→續訓位元相同、壞檔拒絕、配額滿了明確停止、同時一個訓練）與交換空間', 'renderer/src/studio/web_train_core.test.js'],
+    ['訓練交換空間（配額滿了明說並停止、不淘汰、校驗、覆寫算差額、layerSource 只建一次）', 'renderer/src/studio/swap_store.test.js'],
     ['評估腳本找最新已安裝原生執行包（與主程式同規則；不寫死版本資料夾）', 'tests/native/find_installed_runtime.test.js'],
     ['訓練工作室資料匯入與清洗（wiki／開源／書本／aiDoc 轉接、切塊、去個資、去重、授權、請求單、規則樣本、schema 檢查；用真實 wiki 與 aiDoc 輸出）', 'renderer/src/studio/ingest.test.js'],
     ['壓縮檔（檔頭辨識 zip／jar／7z／rar／tar／gzip／bzip2／xz／iso、bzip2 解碼、tar 的 pax／GNU 長檔名、內容判斷、jar 摘要）', 'renderer/src/archive/archive_core.test.js'],

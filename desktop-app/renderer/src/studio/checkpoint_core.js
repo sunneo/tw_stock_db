@@ -1,7 +1,13 @@
 'use strict';
 // 規範化 float32 檢查點（DESIGN.TODO.offline-training-studio.md §3.1）：與後端無關的暫停／續訓格式。
 // 純核心、不碰 window／檔案系統：檔案以 { 檔名: Buffer } 表示，由呼叫端決定存到記憶體或資料夾。
-const crypto = require('crypto');
+// 瀏覽器可用：不再硬依賴 Node 的 crypto／Buffer（網頁版 wasm-web 後端要在頁面內存取檢查點）。Node 下仍優先用 crypto 與 Buffer，行為不變。
+let crypto = null; try { crypto = require('crypto'); } catch (e) { crypto = null; }
+const Asset = require('./asset_core.js');
+const hasBuf = typeof Buffer !== 'undefined';
+const newBytes = (n) => (hasBuf ? Buffer.alloc(n) : new Uint8Array(n));
+const u8of = (x) => (x instanceof Uint8Array ? x : new Uint8Array(x));
+const textBytes = (str) => (hasBuf ? Buffer.from(str, 'utf8') : new TextEncoder().encode(str));
 
 const FORMAT = 'fa-ckpt', VERSION = 1;
 const TENSOR_FILES = ['lora_A.f32', 'lora_B.f32', 'opt_m.f32', 'opt_v.f32'];
@@ -9,7 +15,7 @@ const TENSOR_FILES = ['lora_A.f32', 'lora_B.f32', 'opt_m.f32', 'opt_v.f32'];
 const COMPAT_FIELDS = ['base', 'base_sha256', 'rank', 'alpha', 'target_modules', 'prompt_format_version', 'tool_catalog_sha256'];
 const TOL = { sameBackend: 1e-5, crossBackend: 0.02, crossBackendFp16: 0.05 };
 
-const sha256 = (buf) => crypto.createHash('sha256').update(buf).digest('hex');
+const sha256 = (buf) => (crypto && crypto.createHash ? crypto.createHash('sha256').update(buf).digest('hex') : Asset.sha256Hex(u8of(buf)));
 
 // ---- 與後端無關的亂數：PCG32（標準 XSH-RR 輸出，64 位元狀態用 BigInt） ----
 const M64 = (1n << 64n) - 1n, MULT = 6364136223846793005n;
@@ -53,15 +59,16 @@ function encodeTensors(list) {
   const sorted = list.slice().sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
   let off = 0;
   const meta = sorted.map((t) => { const len = t.data.length, m = { name: t.name, shape: t.shape || [len], offset: off, length: len }; off += len; return m; });
-  const head = Buffer.from(JSON.stringify({ format: 'fa-f32', tensors: meta }), 'utf8');
-  const out = Buffer.alloc(4 + head.length + off * 4); out.writeUInt32LE(head.length, 0); head.copy(out, 4);
-  let p = 4 + head.length; sorted.forEach((t) => { for (let i = 0; i < t.data.length; i++) { out.writeFloatLE(t.data[i], p); p += 4; } });
+  const head = textBytes(JSON.stringify({ format: 'fa-f32', tensors: meta }));
+  const out = newBytes(4 + head.length + off * 4); const dv = new DataView(out.buffer, out.byteOffset, out.byteLength); dv.setUint32(0, head.length, true); out.set(head, 4);
+  let p = 4 + head.length; sorted.forEach((t) => { for (let i = 0; i < t.data.length; i++) { dv.setFloat32(p, t.data[i], true); p += 4; } });
   return out;
 }
 function decodeTensors(buf) {
-  const hl = buf.readUInt32LE(0), head = JSON.parse(buf.subarray(4, 4 + hl).toString('utf8')), base = 4 + hl;
+  const u = u8of(buf), dv = new DataView(u.buffer, u.byteOffset, u.byteLength);
+  const hl = dv.getUint32(0, true), head = JSON.parse(new TextDecoder('utf-8').decode(u.subarray(4, 4 + hl))), base = 4 + hl;
   if (head.format !== 'fa-f32') throw new Error('不是 fa-f32 張量檔');
-  return head.tensors.map((m) => { const d = new Float32Array(m.length); for (let i = 0; i < m.length; i++) d[i] = buf.readFloatLE(base + (m.offset + i) * 4); return { name: m.name, shape: m.shape, data: d }; });
+  return head.tensors.map((m) => { const d = new Float32Array(m.length); for (let i = 0; i < m.length; i++) d[i] = dv.getFloat32(base + (m.offset + i) * 4, true); return { name: m.name, shape: m.shape, data: d }; });
 }
 
 // ---- 組裝／驗證 ----
