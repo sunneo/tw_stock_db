@@ -164,3 +164,11 @@ lora-train/.venv/Scripts/pip install -r lora-train/requirements.txt
 - **載入**：**桌面版已接（2026-11-11）**：adapter 為 `lora.bin`（做法 A：量化後在 196 個目標線性層插入 LoRA 分支、A／B 存成外部資料，`make_lora_onnx.py`），經 `nr-engine.js` 的 `externalData` 交給 onnxruntime-node 1.22.0（已實測選項可用），換 adapter 只重建 session。需要執行包 1.22.0-2（尚未發佈，發佈前舊執行包會明說需要更新），細節見 `DESIGN.TODO.native-runner.md` §9。**網頁版（transformers.js）尚未接**：阻礙與解除條件見 `DESIGN.TODO.offline-training-studio.md` §14。一次只能套一個 adapter（單一 LoRA 槽）。
 - **安全**：只下載本專案 repo 指定 branch 的檔案；只接受 sha256 吻合者；不執行任何下載內容（adapter 是純權重）；使用者可隨時停用。
 - **改到 renderer 檔案時**：`floating-assistant.js`／`bootstrap.js`／`index.html` 的變更需走 live-update patch 發佈流程。
+
+## 11. 標準版 q8 轉成槽版（JavaScript，免 Python）（2026-11-11，進行中）
+
+- 目的：使用者不需要 Python 也能把自己下載的標準版 Qwen3-0.6B q8 ONNX 改成 LoRA 槽版（不託管模型）。
+- 做法與細節見 `DESIGN.TODO.native-runner.md` §9.6；程式：`lora-slot-build.js`、`native-slot-model.js`、`tests/native/lora_slot_build.test.js`。
+- 實測：轉換 4.2 秒、峰值 RSS 約 37.6 MB（617 MB 輸入，串流）。
+- **尚未通過等價驗證**：全零 adapter 位元相同；非零 adapter 的槽版與網頁版併權重結果不一致（首步 logits cos 約 0.968）。查出原因前，不得宣稱「與 make_lora_onnx.py 等價」或「網頁版與原生版一致」。
+- 已知阻礙：studio-viewer 的既有語法錯誤（符號式擬合區段）使 LoRA 卡片無法在畫面驗證。

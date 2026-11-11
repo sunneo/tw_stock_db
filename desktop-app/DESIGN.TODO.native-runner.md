@@ -569,3 +569,16 @@
 - 有測（`tests/native/native_lora.test.js`，65 項）：協定驗證、`resolveLora` 各種失敗、用假的 onnxruntime 驗證 `externalData` 傳遞與 session 重建規則、host→真 `nr-child.js`（假引擎）轉傳與失敗原因、`NRL` 全部分支、執行包版本選擇與 md5 竄改退回舊版、升級沿用舊檔不連網、清單重算與嵌入一致、渲染端套用器。
 - **沒測到**：真的用 LoRA 槽版 ONNX 在 onnxruntime-node 1.22.0 跑出「與基底不同的輸出」——本機沒有槽版模型（要 `make_lora_onnx.py build`，需要 Python、torch、onnx 與 Qwen3-0.6B 的 onnx 基底，都不在本機）；`lora-train/lora_ort_test.js` 先前已實測 `externalData` 選項在 1.22.0 可用，但不是經過這條鏈。**沒測到**：真 Electron 下的信箱往返（`lora_apply`）與 UI。這兩項要有槽版模型後用 `scripts/eval/studio.eval.js` 加一項。
 - 實際使用還需要模型位置：原生模型路徑目前仍由環境變數指定，且必須是槽版模型；非槽版會回 `not_slot_model`。
+
+### 9.6 標準版 q8 → LoRA 槽版（JavaScript 轉換，免 Python）（2026-11-11，進行中，未通過等價驗證）
+
+- 轉換器：`lora-slot-build.js`（make_lora_onnx.py build 的 JavaScript 孿生）。逐段讀寫檔案，不把 617 MB 整個載入記憶體。
+  - 實測（Qwen3-0.6B q8，617,687,575 位元組，rank 16）：找到 196 個目標、輸出 617,790,864 位元組、lora.bin 槽 40,370,176 位元組、392 個張量；轉換耗時 4.2 秒、峰值 RSS 約 37.6 MB。
+- 槽管理：`native-slot-model.js`（找標準版；來源 sha256 快取到 `<userData>/native-lora/slot-model/<sha>/`；背景子行程轉換；下載清單與使用者同意後的分段下載＋sha256 核對）。
+- 主行程：main-ext.js 的 lora_apply／lora_apply_set 在模型不是槽版時自動轉換；沒有標準版時回 need_std_model（檔名、來源、大小），不自動下載。
+- 畫面：studio-viewer 的 LoRA 分頁有「LoRA 槽版模型」卡片（API：/api/lora/slot、/prepare、/download）。**注意：studio-viewer 在 HEAD 就有語法錯誤**（block 1，符號式擬合區段，約第 135 行，另一工作階段的程式），整個檢視器腳本無法執行，卡片無法在畫面驗證。
+- 等價驗證（真模型，onnxruntime-node 1.22.0 經 Electron 當 node，比較 tokens 與首步 logits）：
+  - LoRA 全零：與原模型位元相同（maxAbs 0，tokens 相同）。**通過。**
+  - 非零小 adapter（隨機 A、B，rank 4，全部 196 層；B 幅度 0.02 與 0.003）：槽版 vs 基底 cos 0.978、maxAbs 6.2；槽版 vs 網頁版併權重 cos 0.968、maxAbs 9.2。**未通過**：兩條路徑的最終 logits 差距遠大於預期。原因未定（可能是網頁版 q8 併入的近似，也可能是槽版圖的接線），需要逐層、單目標比對才能下結論。tokens 相同只是八個 token 的弱證據。
+- 單元測試：`tests/native/lora_slot_build.test.js` 36 項通過（假 ONNX：節點與初始值數量、排布與 make_lora_onnx.py 相同、權重位元組不變、檔案與位元組輸入一致、錯誤明確失敗、管理模組的 need_std_model、未同意不下載、快取）。
+- 未做：Python 逐節點比對（lora-train/.venv 沒有 onnx 套件，依規則不自行安裝，需管理者決定）；設定頁的自動找路徑；run-core-tests 登錄的最終確認；發布與推送（管理者做）。
