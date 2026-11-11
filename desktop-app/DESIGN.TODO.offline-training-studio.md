@@ -739,3 +739,46 @@ Backend {
 ### 17.6 接手
 - 檔案：`renderer/src/studio/pipeline_core.js`、`pipeline_core.test.js`（新增，未與其他檔案混在一起）。
 - 接續順序：(1) 決定 17.5-5 的 llm 產物表示；(2) 在 `studio_server_core.js` 加 `/api/pipeline`；(3) 在檢視器加流程總覽頁；(4) 把 `facts` 與既有資產的 done 標記對上（先確認各訓練寫不寫 done 標記）。
+
+## 18. 流程總覽：訓練中即時狀態與「下一次該加強什麼」（2026-11-11）
+
+使用者原話：「pipeline view可以在跑訓練時，看到每個階段的狀況，以及可以知道下一次訓練該加強什麼」。兩件事都是純核心＋單元測試；GUI 與路由還沒接（見 18.4）。
+
+### 18.1 訓練進行中的即時狀態（`renderer/src/studio/pipeline_live_core.js`）
+- **資料來源**：日誌逐行經 `backend_cpu_py.parseProgressLine` 解析（已存在、已匯出）。事件型別：`progress`（tqdm 的步數與 s/it）、`log`（loss 字典）、`eval`、`paused`（`[paused] step=N`）、`done`（`[done] adapter saved to …`）、`error`。
+- `liveProgress(events, opts)` 回傳：日誌狀態（進行中／完成／暫停／失敗／待做）、步數與總步數、百分比、每步秒數（優先用日誌的 s/it，沒有才用起始時間推算，並標明來源）、預估剩餘秒數、經過秒數、loss（最後一次與第一次）、評估 loss、記憶體（最後值、峰值、取樣數，**只用呼叫端的真實取樣**；沒有取樣就寫「沒有記憶體取樣」）。
+- **不宣稱完成**：`progressToFacts` 只把日誌轉成 facts 片段（running、failed、logDone、progress、暫停原因）。階段最後是否完成仍由 `pipeline_core` 依產物與 done 標記判斷。日誌寫了 `[done]` 但沒有產物與 done 標記 → 失敗（不算完成）。
+- `pipeline_core.stageState` 因此多了三個規則：暫停 → 進行中（標明暫停）、`logDone` 但沒有 done 標記 → 失敗、階段結果附上 `progress`。
+
+### 18.2 下一次訓練建議（`renderer/src/studio/train_advice_core.js`）
+- 輸入：`eval_run.py --json_out` 的 `groups`（{組名: {n, base, tuned}}）、`rows`（有 `key`、`tuned_ok`、`note`，可選 `gold`、`pred`）、`trainRows`（{"task/kind": 列數}，由呼叫端從資料檔數出）、`source`（證據來源檔名）、`thresholds`（可覆寫）。
+- **規則寫在資料表 `RULES`**（不寫死在畫面）。每條有 scope（group／domain／global）、條件 `[欄位, 運算子, 值或門檻名]`、動作、嚴重度、文字樣板。目前六條：
+  | 規則 | 範圍 | 條件（預設門檻） | 動作 |
+  |---|---|---|---|
+  | regression | 組 | 微調題數 < 基底題數 | 調比重 |
+  | below-gate | 組 | 題數 ≥ 5 且微調正確率 < 60% | 補資料 |
+  | few-rows | 領域 | 訓練列數 < 200 | 補資料 |
+  | format-errors | 領域 | 失敗 ≥ 3 題且格式錯誤占失敗 ≥ 50% | 補資料（格式範例） |
+  | content-errors | 領域 | 失敗 ≥ 3 題且內容錯誤占失敗 ≥ 50% | 補資料（同題型） |
+  | position-bias | 全體 | 有 gold／pred，題數 ≥ 8，某選項被預測占 ≥ 50% | 調比重 |
+- **動作對應**：補資料（到匯入／產生頁）、調比重、換超參數（只在資料足夠時）、先確認（證據不足）。每條建議附 `actionLabel`、`actionHint`，畫面用來連到對應按鈕。
+- **依據**：每條建議都有 `evidence.source`（來源檔與 JSON 路徑，例如 `groups["group/…"]`）與 `evidence.numbers`（規則實際用到的數字）。
+- **證據不足不猜**：條件缺欄位時不給建議，改列入 `insufficient`，寫明缺哪個欄位。目前 `rows` 沒有 `gold`、`pred`，所以位置偏誤一律列為證據不足。
+- 失敗型態從 `note` 分類：`format…` → 格式，`wrong…` → 內容，其他 → 其他。
+
+### 18.3 測試（已跑）
+- `pipeline_core.test.js` 31／0（含本節新增的暫停、logDone 規則）。
+- `pipeline_live_core.test.js` 20／0：用 `parseProgressLine` 解析真實格式的日誌行；涵蓋進行中、s/it 與推算、預估剩餘、loss、記憶體取樣與缺取樣、`[done]`／`[paused]`／錯誤、無事件、與 facts 的串接（含「日誌完成但沒有產物」不算完成）。
+- `train_advice_core.test.js` 23／0：六條規則的觸發與不觸發、門檻覆寫、失敗型態分類、位置偏誤（有欄位才判、題數不足不判）、組別數字不完整與缺列數的證據不足、空輸入不丟例外、每條建議都有依據。
+
+### 18.4 未做與缺口
+1. **GUI 與路由沒接**：流程總覽畫面、`/api/pipeline`（組 facts：讀日誌檔、done 標記、產物、記憶體取樣）、即時更新的輪詢或推送，都還沒做。
+2. **記憶體取樣**沒有實作：呼叫端要用真實程序的 RSS（桌面版可讀程序資訊），本模組只接收取樣。
+3. **`eval_run.py` 缺 gold／pred**：位置偏誤要 `rows` 每列有 `gold`（標準答案字母）與 `pred`（模型預測字母）。`lora-train/eval_run.py` 的 `det` 目前沒寫這兩欄。這是管理者資料夾的改動（`lora-train/` 在本工作樹只讀），需要由管理者在 `eval_run.py` 補上，再提交。
+4. **`trainRows` 的來源**：呼叫端要從 `lora-train/data/*.jsonl` 數出每個 `task/kind` 的列數，目前沒有這段程式。
+5. **還沒用真的評量輸出跑過**：目前只用手寫的 JSON（形狀與 `eval_run.py --json_out` 相同）測試。真實輸出出來後應該再跑一次，確認組名（含 `seen/`、`heldout/`、`pos/` 前綴）與門檻的結果合理。
+6. **門檻是預設值**，沒有依據統計檢定；`eval_run.py` 也已說明「clearly win」只是經驗規則。
+
+### 18.5 接手
+- 檔案：`pipeline_live_core.js`、`pipeline_live_core.test.js`、`train_advice_core.js`、`train_advice_core.test.js`，以及 `pipeline_core.js`（新增 logDone 與 progress 的傳遞）。
+- 接續順序：(1) 管理者在 `eval_run.py` 補 gold／pred；(2) 用真的評量輸出跑 `adviceFromEval` 看結果；(3) 在 `studio_server_core.js` 加 `/api/pipeline` 與 `/api/advice`，組 facts 與 `trainRows`；(4) 畫面：流程總覽顯示即時狀態與建議清單，建議的按鈕連到補資料、調比重、換超參數。

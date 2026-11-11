@@ -65,12 +65,15 @@
         const elapsed = typeof f.elapsedMs === 'number' && f.elapsedMs >= 0 ? f.elapsedMs : null;
         if (stage.implemented === false) return { state: '待做', reason: stage.blocker || '尚未實作', products, elapsedMs: elapsed, unimplemented: true };
         if (f.failed) return { state: '失敗', reason: String(f.failed), products, elapsedMs: elapsed };
-        if (f.running) return { state: '進行中', reason: '', products, elapsedMs: elapsed };
-        if (f.skipped) return { state: '略過', reason: String(f.skipped), products, elapsedMs: elapsed };
-        if (!prevDone) return { state: '待做', reason: '前一個階段還沒完成', products, elapsedMs: elapsed };
-        if (products.length && f.done) return { state: '完成', reason: '', products, elapsedMs: elapsed };
-        if (products.length && !f.done) return { state: '失敗', reason: '有產物但沒有 done 標記，產物不完整，不算完成', products, elapsedMs: elapsed };
-        return { state: '待做', reason: '', products, elapsedMs: elapsed };
+        const progress = f.progress || null;
+        if (f.running) return { state: '進行中', reason: '', products, elapsedMs: elapsed, progress };
+        if (f.pausedReason) return { state: '進行中', reason: String(f.pausedReason), products, elapsedMs: elapsed, progress };
+        if (f.skipped) return { state: '略過', reason: String(f.skipped), products, elapsedMs: elapsed, progress };
+        if (!prevDone) return { state: '待做', reason: '前一個階段還沒完成', products, elapsedMs: elapsed, progress };
+        if (products.length && f.done) return { state: '完成', reason: '', products, elapsedMs: elapsed, progress };
+        if (f.logDone && !f.done) return { state: '失敗', reason: '日誌寫了 [done]，但沒有 done 標記，不算完成', products, elapsedMs: elapsed, progress };
+        if (products.length && !f.done) return { state: '失敗', reason: '有產物但沒有 done 標記，產物不完整，不算完成', products, elapsedMs: elapsed, progress };
+        return { state: '待做', reason: '', products, elapsedMs: elapsed, progress };
     }
 
     // 推導整條流程。回 { kind, label, stages:[{id,label,state,reason,products,elapsedMs,implemented,backends,note,blocker,lookup}] }
