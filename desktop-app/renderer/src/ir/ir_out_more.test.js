@@ -11,7 +11,7 @@ const DIR = process.env.FA_TS_DIR || [path.join(os.homedir(), '.cache', 'fa-ts')
 const MING = process.env.FA_MINGW_BIN || 'J:\\msys64\\mingw64\\bin'; const PERL = process.env.FA_PERL || 'J:\\msys64\\usr\\bin\\perl.exe';
 const ENVM = Object.assign({}, process.env, { PATH: MING + path.delimiter + (process.env.PATH || '') });
 const which = (cmd, args, env) => { try { const r = cp.spawnSync(cmd, args, { encoding: 'utf8', env: env || process.env, timeout: 20000 }); return r.status === 0 ? String(r.stdout || r.stderr).split('\n')[0].trim() : null; } catch (e) { return null; } };
-let PY = null; for (const c of ['python', 'python3']) { if (which(c, ['-I', '-c', 'print(1)']) === '1') { PY = c; break; } }
+let PY = null; for (const c of ['python3', 'python']) { if (which(c, ['-I', '-c', 'print(1)']) === '1') { PY = c; break; } }
 let pass = 0, fail = 0; const notes = []; const table = {};
 const t = (name, fn) => { try { fn(); pass++; return true; } catch (e) { fail++; console.error('FAIL ' + name + '\n   ' + String(e.message).split('\n').slice(0, 30).join('\n   ')); return false; } };
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'irm-'));
@@ -28,12 +28,13 @@ const norm = (s) => s.replace(/\r\n/g, '\n');
 
     // ---- C++ ----
     const GPP = which(MING + '\\g++.exe', ['--version'], ENVM) || (fs.existsSync(MING) ? null : which('g++', ['--version']));
+    const GXX = fs.existsSync(path.join(MING, 'g++.exe')) ? path.join(MING, 'g++.exe') : 'g++'; // Windows 用 mingw64；Linux 用 PATH 上的 g++
     if (!GPP) { notes.push('C++：找不到 g++（' + MING + '）→ 略過'); table.cpp = '這台沒有環境（g++ 找不到）'; }
     else {
         let ok = 0;
         for (const s of SAMPLES) t('C++／' + s.id, () => {
             const em = OUT.cpp.emit(irOf(s)); noErr('cpp', s, em); const f = path.join(tmp, 'c_' + sid(s) + '.cpp'), exe = path.join(tmp, 'c_' + sid(s) + '.exe'); fs.writeFileSync(f, em.code);
-            const c = cp.spawnSync(path.join(MING, 'g++.exe'), ['-std=c++17', '-O0', '-o', exe, f], { encoding: 'utf8', env: ENVM, timeout: 90000 }); assert.strictEqual(c.status, 0, 'g++ 編譯失敗：\n' + String(c.stderr).slice(0, 1500) + '\n' + em.code);
+            const c = cp.spawnSync(GXX, ['-std=c++17', '-O0', '-o', exe, f], { encoding: 'utf8', env: ENVM, timeout: 90000 }); assert.strictEqual(c.status, 0, 'g++ 編譯失敗：\n' + String(c.stderr).slice(0, 1500) + '\n' + em.code);
             sameAll('cpp', s, (inp) => runIn(exe, [], inp, ENVM)); ok++;
         });
         table.cpp = '實跑通過 ' + ok + '/' + SAMPLES.length + '（' + GPP + '）';

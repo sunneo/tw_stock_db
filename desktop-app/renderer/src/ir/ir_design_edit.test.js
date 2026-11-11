@@ -17,7 +17,7 @@ const run = (exe, args, input) => { const r = cp.spawnSync(exe, args, { input, e
     const PY = await load('tree-sitter-python.wasm'); const JS = fs.existsSync(path.join(DIR, 'tree-sitter-javascript.wasm')) ? await load('tree-sitter-javascript.wasm') : null, JV = fs.existsSync(path.join(DIR, 'tree-sitter-java.wasm')) ? await load('tree-sitter-java.wasm') : null;
     const parseTree = (s) => PY.parse(s); const B = PB.makeBlocks({ parseTree, C2U });
     const bridge = BR.make({ parseTree, C2U, B, IN, PREP, OUT, BD, DES, IR, INB, UML, UE });
-    let PYEXE = null; for (const exe of ['python', 'python3']) { const r = run(exe, ['-c', 'print(1)'], ''); if (r.ok && r.out.trim() === '1') { PYEXE = exe; break; } }
+    let PYEXE = null; for (const exe of ['python3', 'python']) { const r = run(exe, ['-c', 'print(1)'], ''); if (r.ok && r.out.trim() === '1') { PYEXE = exe; break; } }
     if (!PYEXE) { console.log('略過：找不到 python\n0 passed, 0 failed'); return; }
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ir-de-'));
     const runPy = (code, inp) => { const f = path.join(tmp, 'm' + Math.random().toString(36).slice(2) + '.py'); fs.writeFileSync(f, code); return run(PYEXE, [f], inp); };

@@ -10,7 +10,7 @@ const assert = require('assert'), fs = require('fs'), path = require('path'), os
 const FS = require('./fa_struct.js');
 let pass = 0, fail = 0; const t = async (name, fn) => { try { await fn(); pass++; } catch (e) { fail++; console.error('FAIL ' + name + '\n   ' + String(e.message).split('\n').slice(0, 12).join('\n   ')); } };
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'fas-'));
-let PY = null; for (const c of ['python', 'python3']) { const r = cp.spawnSync(c, ['-I', '-c', 'print(1)'], { encoding: 'utf8' }); if (r.status === 0 && r.stdout.trim() === '1') { PY = c; break; } }
+let PY = null; for (const c of ['python3', 'python']) { const r = cp.spawnSync(c, ['-I', '-c', 'print(1)'], { encoding: 'utf8' }); if (r.status === 0 && r.stdout.trim() === '1') { PY = c; break; } }
 const SAMPLE = '{"id":1,"name":"A","score":1.5,"tags":["x","y"],"addr":{"city":"T","zip":null},"items":[{"id":1,"ok":true},{"id":2,"ok":false}],"meta":{}}';
 const DIR = process.env.FA_TS_DIR || [path.join(os.homedir(), '.cache', 'fa-ts'), path.join(os.tmpdir(), 'fa-ts-cache')].find((d) => fs.existsSync(path.join(d, 'tree-sitter-python.wasm')));
 (async () => {
