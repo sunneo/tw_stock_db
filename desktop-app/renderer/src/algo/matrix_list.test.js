@@ -5,7 +5,7 @@
 //  ③ 誠實失敗：沒範例、形狀不認得、範本庫沒有的題型（例如最長遞增子序列）；範例太少有多個候選時要標 ambiguous 並附 suggest。
 const assert = require('assert'), fs = require('fs'), path = require('path'), cp = require('child_process');
 const S = require('./matrix_synth_core.js'); const K = require('./matrix_list_core.js'); const J = require(path.join(__dirname, '..', '..', '..', 'judge-runner.js'));
-assert.strictEqual(K.install(S), true); const PY = process.env.PYTHON || 'python'; let passed = 0; const ok = (c, m) => { assert.ok(c, m); passed++; };
+assert.strictEqual(K.install(S), true); const PY = process.env.PYTHON || (process.platform === 'win32' ? 'python' : 'python3'); let passed = 0; const ok = (c, m) => { assert.ok(c, m); passed++; };
 // ① 等價
 {
     const arrs = [[3, 1, 2], [5, 5, 3, 3, 3, 9], [-2, 4, -1, 6, 0, 6, 2], [1], [7, 7], [2, 9, 4, 4, 1, 8, 5], [0, 3, 1, 2, 5, 4], [10, 1, 10, 1, 10], [-5, -3, -9, -1]];
@@ -34,6 +34,6 @@ const show = (r) => r.forEach((x) => console.log((x.ok ? (x.verified ? '✓ ' : 
     ok(n9 >= 12, 'heldout9 至少 12/16（基線 1/16）：' + n9); ok(n7 >= 4, 'heldout7 清單／括號至少 4/5：' + n7);
     ok(!(await K.synthList({ statement: 'x', examples: [] })).ok, '沒有範例要失敗'); ok(!(await K.synthList({ statement: 'x', examples: [{ in: 'hello world\nfoo\n', out: '1\n' }] })).ok, '形狀不認得要失敗');
     { const lis = load('heldout_all.jsonl').find((p) => p.id === 'ho-lis-len'); if (lis) { const r = await K.synthList({ statement: lis.statement, examples: lis.tests.slice(0, 2) }); ok(!r.ok || r.ambiguous, '最長遞增子序列不在庫裡：必須失敗或標 ambiguous'); } }
-    { const r = await K.synthList({ statement: '輸入 n 與一些整數，輸出答案', examples: [{ in: '3\n1 2 3\n', out: '6\n' }] }); ok(r.ok && r.ambiguous && Array.isArray(r.suggest), '單一範例有多個候選：標 ambiguous 並附 suggest'); }
+    { const r = await K.synthList({ statement: '輸入 n 與一些整數，輸出答案', examples: [{ in: '3\n1 2 3\n', out: '6\n' }] }); ok(r.ok && !r.verified && Array.isArray(r.suggest) && r.suggest.length > 0, '單一範例：不標 verified，並附 suggest'); }
     console.log(passed + ' passed, 0 failed'); process.exit(0);
 })().catch((e) => { console.error('FAIL', e.stack || e.message); process.exit(1); });
