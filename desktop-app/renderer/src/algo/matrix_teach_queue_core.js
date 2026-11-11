@@ -27,17 +27,19 @@
     }
 
     function summarize(entries) {
-        const byStage = {}; let needEx = 0;
+        const byStage = {}; const byRoute = { 'blockly-teach': 0, matrix: 0, lora: 0 }; let needEx = 0;
         for (const e of entries) {
             const k = e.stuckAt || 'unknown'; byStage[k] = (byStage[k] || 0) + 1;
+            const rt = e.route || (e.stuckAt === 'reader' ? ((e.examples || []).length ? 'matrix' : 'lora') : 'blockly-teach'); byRoute[rt] = (byRoute[rt] || 0) + 1;
             if (!(e.examples || []).length) needEx++;
         }
         const top = entries.slice().sort((a, b) => (b.count || 1) - (a.count || 1)).slice(0, 5).map((e) => ({ id: e.id, statement: e.statement, count: e.count || 1 }));
         const lines = [];
         lines.push('待補教學：' + entries.length + ' 題' + (needEx ? '（其中 ' + needEx + ' 題還沒有範例）' : ''));
+        lines.push('建議順序：blockly 教學 ' + byRoute['blockly-teach'] + ' 題（最快）、編成矩陣 ' + byRoute.matrix + ' 題（要額外寫範本）、留給 LoRA ' + byRoute.lora + ' 題（訓練最久）');
         for (const [k, n] of Object.entries(byStage)) lines.push('  ' + (STAGE_LABEL[k] || k) + '：' + n + ' 題');
         for (const t of top) lines.push('  出現 ' + t.count + ' 次：' + t.statement.slice(0, 60));
-        return { total: entries.length, byStage, needExamples: needEx, top, lines };
+        return { total: entries.length, byStage, byRoute, needExamples: needEx, top, lines };
     }
 
     // Node 版 io：暫存檔＋換名（同一目錄 rename 在同一檔案系統上是原子的）

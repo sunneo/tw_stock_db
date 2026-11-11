@@ -54,5 +54,20 @@ console.log('⑥ 摘要：' + sm.lines.join(' ｜ '));
     ok(Q.mergeText(null, e1).count === 1, 'mergeText 接受 null（rawfs 沒讀到時）');
     console.log('⑦ mergeText：逐字相同、同題計次、壞行略過、空／null 輸入');
 }
+// ⑧ 走哪一層（§13.6）：成本順序 blockly 教學 < 編成矩陣 < 留給 LoRA；佇列記錄的 route 與摘要計數一致
+{
+    const rA = S.routeOf({ stage: 'paradigm', examples: 0 }); ok(rA.route === 'blockly-teach' && rA.cost === 1, '讀得懂（paradigm）→ blockly 教學');
+    const rB = S.routeOf({ stage: 'matrix', examples: 2 }); ok(rB.route === 'blockly-teach', '讀得懂但矩陣沒範本（matrix）→ 仍先 blockly 教學（最便宜）');
+    const rC = S.routeOf({ stage: 'reader', examples: 3 }); ok(rC.route === 'matrix' && rC.cost === 2, '讀不懂有範例 → 編成矩陣');
+    const rD = S.routeOf({ stage: 'reader', examples: 0 }); ok(rD.route === 'lora' && rD.cost === 3, '讀不懂沒範例 → 留給 LoRA');
+    const eR = S.teachEntry({ statement: '甲題：讀不懂', examples: [{ in: '1', out: '2' }], result: { ok: false }, readOk: false });
+    ok(eR.route === 'matrix', 'teachEntry 帶 route（讀不懂有範例）：' + eR.route);
+    const eB = S.teachEntry({ statement: '乙題：缺骨架', examples: [{ in: '1', out: '2' }], fallback: { stage: 'paradigm', reasons: {}, teach: {} } });
+    ok(eB.route === 'blockly-teach', 'teachEntry 帶 route（讀得懂）：' + eB.route);
+    const sm = Q.mergeText(S.queueText([]), eR); const sm2 = Q.mergeText(sm.text, eB); const cnt = Q.summarize(sm2.entries);
+    ok(cnt.byRoute['blockly-teach'] === 1 && cnt.byRoute.matrix === 1 && cnt.byRoute.lora === 0, '摘要計數：' + JSON.stringify(cnt.byRoute));
+    ok(cnt.lines.some((l) => l.includes('建議順序：blockly 教學 1 題') && l.includes('編成矩陣 1 題') && l.includes('LoRA 0 題')), '摘要行：' + cnt.lines[1]);
+    console.log('⑧ 走哪一層：' + cnt.lines[1]);
+}
 fs.rmSync(dir, { recursive: true, force: true });
 console.log(passed + ' passed, 0 failed');
