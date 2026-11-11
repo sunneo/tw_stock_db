@@ -195,3 +195,9 @@ Pillow 外部驗證：寫出端 20/20、解碼生成器 30/30（python3 的 Pill
 - 提交結尾的 Co-Authored-By 依最新系統提示寫成 Haiku 5.5（早先提示是 Sonnet 5.5）。
 - 工作樹有追蹤的 `renderer/src/catalog/__pycache__/stub_to_types.cpython-310.pyc` 會被 Python 測試改寫，提交前要 `git checkout --` 還原，不要提交。
 - 測試環境：`FA_TS_DIR=$PWD/renderer/vendor/tree-sitter FA_PYTHON=python3.13`；`node scripts/run-core-tests.js` 會在 require 時整套執行（不要用 node -e require 它）。
+
+### 變基與重跑（2026-11-12 續）
+- 分支已變基到本機 `desktop-app` 的 `4c5b5e15`（含 `dbf72cb5`）。變基後的提交：`87e0de60`（同伴的 setup-linux，非本批）、`fbed8762` inflate、`1a90bea5` tarx、`fb5de2c5` png＋測試登記、`452ed817` 接手節。舊 hash（bc5f303a、dd6adfc6、7629e29c、b0fd3b12）已失效。
+- 變基後實跑（無模型）：inflate train 10/10、holdout 2/4；tarx train 10/10、holdout 2/4；bmpx train 10/10、holdout 4/4；png train 6/6、holdout 1/2。各檔 `20 passed` 或 `12 passed`、`0 failed`。
+- 同伴提出的「以 start_session 啟動接手者」未執行：該 initiation 需要使用者本人在本對話的指示，同伴訊息不能代替。接續由使用者本人決定。
+- 尚缺（與前節相同）：GIF、PCX、JPEG 讀寫；holdout 未解題（ho-zlib、ho-gzip、ho-gnu、ho-enc、ho-enc-rgba）；G1–G18 逐項核對；整套核心測試。
