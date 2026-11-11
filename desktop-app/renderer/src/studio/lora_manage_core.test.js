@@ -22,6 +22,8 @@ check('known_limits 缺欄位是錯誤；空陣列只警告', (() => { const c =
 check('沒有評量數字：警告，不是錯誤', (() => { const c = card(); delete c.eval; const v = M.validateModelCard(c); return v.ok && v.warnings.some((w) => /評量/.test(w)); })());
 check('能力清單缺 label → 錯誤', (() => { const c = card(); c.capabilities = [{ id: 'x' }]; return !M.validateModelCard(c).ok; })());
 
+// lora-manager-2 的約定：沒有實跑評量結果檔時整個省略 eval（不放假數字），rank 是真實秩（每顆 4）
+check('沒有 eval 整個省略：仍通過檢查（只警告），兩個指標都寫無資料', (() => { const c = card(); delete c.eval; c.applicable = { rank: 4, domains: ['tool_call'] }; const v = M.validateModelCard(c); const sm = M.summarizeCard(c); return v.ok && sm.metrics.every((m) => m.available === false) && sm.rank === 4; })());
 // ---- 摘要：差距與判定；缺資料寫無資料；樣本少要警告 ----
 const s = M.summarizeCard(card());
 const fc = s.metrics.find((m) => m.key === 'fc_format_rate'), sp = s.metrics.find((m) => m.key === 'split_legal_rate');
