@@ -532,7 +532,7 @@ function embedStudio() {
     const UMD = ['asset_core', 'fatrain_core', 'storage_core', 'trainer_adapter', 'studio_layout_core', 'lora_registry_core', 'lora_apply_core', 'onnx_patch_core', 'lora_merge_core', 'lora_web_core', 'ingest_core', 'clean_core', 'builtin_assets_core', 'studio_server_core']; // 順序＝相依順序
     let code = 'const FaStudio = (function () {\nconst holder = {};\n';
     for (const n of UMD) code += '(function (module, self) {\n' + rd('renderer/src/studio/' + n + '.js') + '\n}).call(null, undefined, holder);\n';
-    code += 'return holder;\n})();\nconst FA_STUDIO_SEED_COUNTS = ' + JSON.stringify(require('./domain-seed-counts.js').seedCounts(root)) + '; // 領域包種子題數（建置時由 scripts/domain-seed-counts.js 從 domain_*.test.js 算出；打包後沒有測試檔）\nconst FA_STUDIO_LAYOUT_SRC = ' + lit(rd('renderer/src/studio/studio_layout_core.js')) + ';\n';
+    code += 'return holder;\n})();\nconst FA_STUDIO_SEED_COUNTS = ' + JSON.stringify(require('./domain-seed-counts.js').seedCounts(root)) + ';\nconst FA_STUDIO_LORA_DATA = ' + JSON.stringify(require('./domain-seed-counts.js').loraDatasets(root)) + '; // 領域包種子題數（建置時由 scripts/domain-seed-counts.js 從 domain_*.test.js 算出；打包後沒有測試檔）\nconst FA_STUDIO_LAYOUT_SRC = ' + lit(rd('renderer/src/studio/studio_layout_core.js')) + ';\n';
     // 網頁版 LoRA：三個核心串成一段可在 Worker 內 new Function 執行的原始碼（回傳 FaLoraWeb），見 lora_web_core.js
     let wsrc = 'const holder = {};\n'; for (const n of ['onnx_patch_core', 'lora_merge_core', 'lora_web_core']) wsrc += '(function (module, self) {\n' + rd('renderer/src/studio/' + n + '.js') + '\n}).call(null, undefined, holder);\n';
     wsrc += 'return holder.FaLoraWeb;';

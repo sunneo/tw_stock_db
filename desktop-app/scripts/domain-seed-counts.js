@@ -34,3 +34,16 @@ function seedCounts(root) {
 }
 module.exports = { seedCounts };
 if (require.main === module) console.log(JSON.stringify(seedCounts(path.join(__dirname, '..')), null, 1));
+
+// LoRA 訓練資料現況（倉庫的 lora-train/data 與 lora-train/gen；打包後沒有這個目錄，所以建置時算好嵌入）
+function loraDatasets(root) {
+    const d = path.join(root, 'lora-train/data'), g = path.join(root, 'lora-train/gen'); const sz = (v) => (Array.isArray(v) ? v.length : (v && typeof v === 'object' ? Object.keys(v).length : (typeof v === 'number' ? v : 0)));
+    const datasets = []; if (fs.existsSync(d)) for (const f of fs.readdirSync(d).filter((x) => /\.json$/.test(x)).sort()) {
+        const o = JSON.parse(fs.readFileSync(path.join(d, f), 'utf8')); let rows = 0, how = '';
+        if (o && o.rows !== undefined) { rows = sz(o.rows); how = 'rows'; } else if (o && typeof o.total === 'number') { rows = o.total; how = 'total'; } else { rows = Object.keys(o).reduce((n, k) => n + sz(o[k]), 0); how = '各表筆數加總'; }
+        datasets.push({ name: f.replace(/\.json$/, ''), rows, counted_by: how, file: 'lora-train/data/' + f, bytes: fs.statSync(path.join(d, f)).size });
+    }
+    const generators = fs.existsSync(g) ? fs.readdirSync(g).filter((x) => /\.js$/.test(x)).sort() : [];
+    return { datasets, generators: generators.map((x) => 'lora-train/gen/' + x) };
+}
+module.exports.loraDatasets = loraDatasets;

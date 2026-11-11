@@ -54,6 +54,9 @@ const otDomains = [{ name: 'core_rules', description: '通用規則', source: 'b
   const fbA = by('colu', 'colu_feedback'); check('回饋紀錄 0 筆時如實顯示 0 並說明', fbA.counts.records === 0 && /還沒有人|還不夠/.test(fbA.summary), fbA.summary);
   const rk = by('colu', 'colu_rank'); check('排序模型未訓練：說明程式碼已內建但沒有模型檔', /還沒有訓練出的模型檔/.test(rk.summary), rk.summary);
   const lo = by('lora', 'lora'); check('LoRA：寫明 lora-train 資料集不在打包內', /不在打包內/.test(lo.summary) && lo.counts.adapters === 0, lo.summary);
+  const LD = require('../../../scripts/domain-seed-counts.js').loraDatasets(path.join(__dirname, '..', '..', '..'));
+  const lo2 = (await Builtin.createProvider(mkDeps({ loraInfo: async () => ({ adapters: [], datasets: LD.datasets, generators: LD.generators }) })).list()).find((x) => x.kind === 'lora');
+  check('LoRA：資料表數／筆數／產生器數來自 lora-train 實際檔案', LD.datasets.length >= 3 && lo2.counts.datasets === LD.datasets.length && lo2.counts.rows === LD.datasets.reduce((n, d) => n + d.rows, 0) && lo2.counts.generators === LD.generators.length, lo2.counts);
   // 回饋有資料時數字跟著變
   fbStore = FB.append(fbStore, [FB.makeRecord({ url: 'https://x/y', gap_id: 'g1', name: 'x', label: 1, source: 'user_adopt', features: [1, 0] })]);
   const B2 = Builtin.createProvider(mkDeps()); const fb2 = (await B2.list()).find((x) => x.name === Builtin.NAMES.colu_feedback);
