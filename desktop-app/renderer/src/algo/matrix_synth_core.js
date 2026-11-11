@@ -84,7 +84,7 @@
             for (const m of nums.filter((x) => x >= 2 && x <= 12)) { const delta = []; for (let q = 0; q < m; q++) { delta[q] = {}; for (const a of alpha) delta[q][a] = (q * base + Number(a)) % m; } F.push({ name: base + ' 進位值 mod ' + m, n: m, start: 0, delta, accept: (q) => q === 0, value: (q) => q, hint: 2 + (bh ? 1 : 0) + (/整除|餘數/.test(statement) ? 1 : 0) }); } }
         // 子字串：含／不含／開頭／結尾／出現次數；子字串必須在敘述裡出現（引號、或敘述裡的連續字元，例如「兩個 1」→ 11）
         const subs = new Set(); for (let len = 1; len <= 3; len++) { const rec = (cur) => { if (cur.length === len) { subs.add(cur); return; } for (const a of alpha) rec(cur + a); }; rec(''); }
-        const repOf = (s) => { const r = new RegExp('(?:連續)?([兩二三四2-4])個\\s*' + s[0]).exec(statement); return r ? ({ '兩': 2, '二': 2, '2': 2, '三': 3, '3': 3, '四': 4, '4': 4 })[r[1]] : 0; };
+        const repOf = (s) => { const r = new RegExp('(?:連續)?([兩二三四2-4])個\\s*' + String(s[0]).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).exec(statement); return r ? ({ '兩': 2, '二': 2, '2': 2, '三': 3, '3': 3, '四': 4, '4': 4 })[r[1]] : 0; };
         const stmtSubs = [...subs].filter((s) => mentions(s) || (repOf(s) && s === s[0].repeat(repOf(s))));
         for (const s of stmtSubs) { const delta = kmpDFA(s, alpha); const m = s.length; const repN = repOf(s[0]); const base = (statement.indexOf(s) >= 0 ? 1 + s.length : 0) + 1 + (repN && s === s[0].repeat(repN) ? 3 : 0) - (repN && s.length !== repN && s === s[0].repeat(s.length) ? 2 : 0);
             F.push({ name: '含 ' + s, n: m + 1, start: 0, delta: (() => { const d2 = delta.map((r) => Object.assign({}, r)); for (const a of alpha) d2[m][a] = m; return d2; })(), accept: (q) => q === m, hint: base + (/含|包含|連續|出現/.test(statement) ? 1 : 0) });

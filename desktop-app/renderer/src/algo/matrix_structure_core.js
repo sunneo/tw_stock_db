@@ -126,7 +126,7 @@
                 case 'read': return i.eof ? '一個一個讀輸入，讀完就離開' : '讀入下一個數';
                 case 'const': return isNum(i.value) ? '常數' : '常數矩陣 ' + i.value.length + '×' + i.value[0].length;
                 case 'mul': return '矩陣乘法（照程式選的半環）'; case 'pow': return '矩陣快速冪：用 ' + 'log(次方)' + ' 次乘法算出多步的結果';
-                case 'iarith': return i.f === '+' && (i.b === 'one' || i.b === 1) && i.a === i.dst ? '計數加一' : i.f === '>>1' ? '除以二（向下取整）' : '整數加減';
+                case 'iarith': return i.f === '+' && (i.b === 'one' || i.b === 1) && i.a === i.dst ? '計數加一' : i.f === '>>1' ? '除以二（向下取整）' : /^(+|-)$/.test(i.f) ? '整數加減' : '整數運算（' + i.f + '）';
                 case 'push': return '放進堆疊'; case 'pop': return '從堆疊取出（堆疊空了會出錯）'; case 'enq': return '排進佇列'; case 'deq': return '從佇列取出'; case 'jqe': return '佇列空了就離開迴圈';
                 case 'jlt': case 'jeq': return '比較後分支'; case 'get': return '讀出矩陣的一格'; case 'set': return '寫入矩陣的一格'; case 'halt': return '答案'; case 'print': return '輸出'; case 'onehot': return '位址向量（只有第 i 格是 1）';
                 default: return '';
@@ -149,7 +149,7 @@
                 case 'const': return i.dst + ' 設成常數（' + d(i.value) + '）'; case 'mov': return i.dst + ' ← ' + i.src; case 'zeros': return i.dst + ' ← ' + f('r') + '×' + f('c') + ' 的零矩陣'; case 'id': return i.dst + ' ← ' + i.n + ' 階單位矩陣';
                 case 'mul': return i.dst + ' ← ' + i.a + ' × ' + i.b + '（矩陣乘法）'; case 'add': return i.dst + ' ← ' + i.a + ' ⊕ ' + i.b + '（逐格相加／取小）'; case 'pow': return i.dst + ' ← ' + i.a + ' 的 ' + i.e + ' 次方（矩陣快速冪）';
                 case 'get': return i.dst + ' ← ' + i.a + '[' + i.i + '][' + i.j + ']'; case 'set': return i.dst + '[' + i.i + '][' + i.j + '] ← ' + i.src;
-                case 'iarith': return i.dst + ' ← ' + (i.f === '>>1' ? i.a + ' 除以 2（向下取整）' : i.a + ' ' + (i.f === '+' ? '＋' : '－') + ' ' + i.b);
+                case 'iarith': return i.dst + ' ← ' + (i.f === '>>1' ? i.a + ' 除以 2（向下取整）' : i.a + ' ' + ({ '+': '＋', '-': '－', '*': '×', '//': '整除', '%': '除以…取餘數，除數是', '&': '位元且', '|': '位元或', '^': '位元互斥或', '<<': '左移', '>>': '右移' }[i.f] || i.f) + ' ' + i.b);
                 case 'push': return '把 ' + i.src + ' 推進堆疊'; case 'pop': return '從堆疊取出一個放進 ' + i.dst; case 'enq': return '把 ' + i.src + ' 排進佇列'; case 'deq': return '從佇列取出一個放進 ' + i.dst;
                 case 'tr': return i.dst + ' ← ' + i.a + ' 的轉置'; case 'onehot': return i.dst + ' ← 長度 ' + i.n + '、第 ' + i.i + ' 格是 1 的 one-hot 向量'; case 'print': return '輸出 ' + i.src; default: return '（未知指令 ' + i.op + '）';
             }

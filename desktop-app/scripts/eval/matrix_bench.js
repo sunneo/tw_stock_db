@@ -3,6 +3,8 @@
 // 範例＝題目 tests 的前 N 筆（預設 2）；隱藏測資只給 judge 驗證。誠實計數：ok＝合成成功且 judge 通過（含 hidden）；verified＝ok 且不 ambiguous。
 const fs = require('fs'), path = require('path');
 const S = require('../../renderer/src/algo/matrix_synth_core.js'); const G = require('../../renderer/src/algo/matrix_graph_core.js'); G.install(S); require('../../renderer/src/algo/matrix_l0_core.js').install(S); require('../../renderer/src/algo/matrix_compose_core.js').install(S, G);
+// --new：另外安裝 2026-11-11 之後的模組（文字／校驗碼／草圖／作業系統）；不給就是舊基線，數字可重現
+if (process.argv.includes('--new')) for (const m of ['matrix_text_core', 'matrix_checksum_core', 'matrix_sketch_core', 'matrix_os_core']) { try { require('../../renderer/src/algo/' + m + '.js').install(S); } catch (e) { console.log('略過 ' + m + '：' + e.message); } }
 const J = require('../../judge-runner.js');
 const file = process.argv[2]; const nEx = Number((process.argv.indexOf('--ex') > 0 && process.argv[process.argv.indexOf('--ex') + 1]) || 2);
 const jp = process.argv.indexOf('--json') > 0 ? process.argv[process.argv.indexOf('--json') + 1] : null;

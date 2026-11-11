@@ -88,7 +88,7 @@
                 case 'pow': out.push('  ' + i.dst + ' ← ' + i.a + ' 的 ' + i.e + ' 次方（矩陣快速冪）'); break;
                 case 'get': out.push('  ' + i.dst + ' ← ' + i.a + '[' + i.i + '][' + i.j + ']'); break;
                 case 'set': out.push('  ' + i.dst + '[' + i.i + '][' + i.j + '] ← ' + i.src); break;
-                case 'iarith': out.push('  ' + i.dst + ' ← ' + (i.f === '>>1' ? i.a + ' 除以 2（向下取整）' : i.a + ' ' + (i.f === '+' ? '＋' : '－') + ' ' + i.b)); break;
+                case 'iarith': out.push('  ' + i.dst + ' ← ' + (i.f === '>>1' ? i.a + ' 除以 2（向下取整）' : i.a + ' ' + ({ '+': '＋', '-': '－', '*': '×', '//': '整除', '%': '除以…取餘數，除數是', '&': '位元且', '|': '位元或', '^': '位元互斥或', '<<': '左移', '>>': '右移' }[i.f] || i.f) + ' ' + i.b)); break;
                 case 'jlt': out.push('  如果 ' + i.a + ' < ' + i.b + ' 跳到 ' + i.to); break;
                 case 'jeq': out.push('  如果 ' + i.a + ' = ' + i.b + ' 跳到 ' + i.to); break;
                 case 'jmp': out.push('  跳到 ' + i.to); break;

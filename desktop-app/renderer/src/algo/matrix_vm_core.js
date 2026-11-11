@@ -16,13 +16,26 @@
     const INF = Infinity;
     const SRS = { count: (p) => MF.SR.count(p.mod || 0), bool: () => MF.SR.bool, minplus: () => MF.SR.minplus, maxplus: () => ({ name: 'max-plus', zero: -INF, one: 0, add: Math.max, mul: (a, b) => a + b }) };
     // 每個 op 的運算元型別：r＝暫存器名稱（寫入）、v＝暫存器名稱或數字（讀取）、m＝矩陣常數、l＝標籤、f＝算子
+    const IA_OPS = ['+', '-', '>>1', '*', '//', '%', '&', '|', '^', '<<', '>>'];
+    const big = (x) => BigInt(Math.trunc(x));
+    // 整數算子（語意同 Python：// 向下取整、% 取除數的正負號；位元運算用任意精度，不被 32 位元截斷）
+    function iarith(f, a, b) {
+        switch (f) {
+            case '+': return a + b; case '-': return a - b; case '>>1': return Math.floor(a / 2); case '*': return a * b;
+            case '//': if (b === 0) throw new Error('除以零'); return Math.floor(a / b);
+            case '%': if (b === 0) throw new Error('除以零'); return a - b * Math.floor(a / b);
+            case '&': return Number(big(a) & big(b)); case '|': return Number(big(a) | big(b)); case '^': return Number(big(a) ^ big(b));
+            case '<<': if (b < 0) throw new Error('位移為負'); return a * Math.pow(2, b); case '>>': if (b < 0) throw new Error('位移為負'); return Math.floor(a / Math.pow(2, b));
+            default: throw new Error('iarith 算子不認得 ' + f);
+        }
+    }
     const OPS = { const: 'rm', read: 'rl?', mov: 'rv', zeros: 'rvv', id: 'rv', mul: 'rvv', add: 'rvv', pow: 'rvv', get: 'rvvv', set: 'rvvv', iarith: 'rvfv', jlt: 'vvl', jeq: 'vvl', jmp: 'l', label: 'n', push: 'v', pop: 'r', print: 'v', halt: 'v', tr: 'rv', onehot: 'rvv', enq: 'v', deq: 'r', jqe: 'l' };
     const FIELDS = { const: ['dst', 'value'], read: ['dst', 'eof'], mov: ['dst', 'src'], zeros: ['dst', 'r', 'c'], id: ['dst', 'n'], mul: ['dst', 'a', 'b'], add: ['dst', 'a', 'b'], pow: ['dst', 'a', 'e'], get: ['dst', 'a', 'i', 'j'], set: ['dst', 'i', 'j', 'src'], iarith: ['dst', 'a', 'f', 'b'], jlt: ['a', 'b', 'to'], jeq: ['a', 'b', 'to'], jmp: ['to'], label: ['name'], push: ['src'], pop: ['dst'], print: ['src'], halt: ['src'], tr: ['dst', 'a'], onehot: ['dst', 'n', 'i'], enq: ['src'], deq: ['dst'], jqe: ['to'] };
     // 執行前的驗證：op 要認得、欄位要齊、標籤要存在；回傳錯誤清單（空＝合法）
     function validate(prog) {
         const errs = []; if (!SRS[prog.sr && prog.sr.name]) errs.push('半環不認得：' + JSON.stringify(prog.sr));
         const labels = new Set(prog.code.filter((i) => i.op === 'label').map((i) => i.name));
-        prog.code.forEach((ins, k) => { if (!OPS[ins.op]) { errs.push(k + '：op 不認得 ' + ins.op); return; } for (const f of FIELDS[ins.op]) if (ins[f] === undefined && !(ins.op === 'read' && f === 'eof')) errs.push(k + '：' + ins.op + ' 缺 ' + f); if (ins.to !== undefined && !labels.has(ins.to)) errs.push(k + '：標籤不存在 ' + ins.to); if (ins.op === 'iarith' && !['+', '-', '>>1'].includes(ins.f)) errs.push(k + '：iarith 算子不認得 ' + ins.f); });
+        prog.code.forEach((ins, k) => { if (!OPS[ins.op]) { errs.push(k + '：op 不認得 ' + ins.op); return; } for (const f of FIELDS[ins.op]) if (ins[f] === undefined && !(ins.op === 'read' && f === 'eof')) errs.push(k + '：' + ins.op + ' 缺 ' + f); if (ins.to !== undefined && !labels.has(ins.to)) errs.push(k + '：標籤不存在 ' + ins.to); if (ins.op === 'iarith' && !IA_OPS.includes(ins.f)) errs.push(k + '：iarith 算子不認得 ' + ins.f); });
         return errs;
     }
     function run(prog, tokens, opts) {
@@ -46,7 +59,7 @@
                 case 'pow': R[i.dst] = MF.matPow(mat(i.a), sc(i.e), sr); st.pow++; break;
                 case 'get': R[i.dst] = [[mat(i.a)[sc(i.i)][sc(i.j)]]]; break;
                 case 'set': { const M = mat(i.dst); M[sc(i.i)][sc(i.j)] = sc(i.src); break; }
-                case 'iarith': { const a = sc(i.a); R[i.dst] = [[i.f === '+' ? a + sc(i.b) : i.f === '-' ? a - sc(i.b) : a >> 1]]; break; }
+                case 'iarith': { R[i.dst] = [[iarith(i.f, sc(i.a), i.f === '>>1' ? 0 : sc(i.b))]]; break; }
                 case 'jlt': if (sc(i.a) < sc(i.b)) pc = pos.get(i.to); break;
                 case 'jeq': if (sc(i.a) === sc(i.b)) pc = pos.get(i.to); break;
                 case 'jmp': pc = pos.get(i.to); break;
@@ -100,6 +113,39 @@
     // 輾轉相減
     const gcdVM = () => ({ sr: { name: 'count' }, code: [{ op: 'read', dst: 'a' }, { op: 'read', dst: 'b' }, C('zero', 0), L('loop'), J('jeq', 'b', 'zero', 'end'), J('jlt', 'a', 'b', 'swp'), IA('a', 'a', '-', 'b'), JM('loop'),
         L('swp'), { op: 'mov', dst: 't', src: 'a' }, { op: 'mov', dst: 'a', src: 'b' }, { op: 'mov', dst: 'b', src: 't' }, JM('loop'), L('end'), { op: 'halt', src: 'a' }] });
+    // ---- 整數算子（* // % & | ^ << >>）帶來的 L4：歐拉函數、k 進位（用堆疊反轉數字）、完全數 ----
+    const eulerPhiVM = () => ({ sr: { name: 'count' }, code: [{ op: 'read', dst: 'n' }, C('zero', 0), C('one', 1), C('two', 2), { op: 'mov', dst: 'r', src: 'n' }, { op: 'mov', dst: 'm', src: 'n' }, { op: 'mov', dst: 'p', src: 'two' },
+        L('loop'), IA('pp', 'p', '*', 'p'), J('jlt', 'm', 'pp', 'fin'), IA('t', 'm', '%', 'p'), J('jeq', 't', 'zero', 'div'), JM('next'),
+        L('div'), IA('q', 'r', '//', 'p'), IA('r', 'r', '-', 'q'), L('inner'), IA('t', 'm', '%', 'p'), J('jeq', 't', 'zero', 'shrink'), JM('next'), L('shrink'), IA('m', 'm', '//', 'p'), JM('inner'),
+        L('next'), IA('p', 'p', '+', 'one'), JM('loop'), L('fin'), J('jlt', 'one', 'm', 'sub'), JM('end'), L('sub'), IA('q', 'r', '//', 'm'), IA('r', 'r', '-', 'q'), L('end'), { op: 'halt', src: 'r' }] });
+    const toBaseVM = () => ({ sr: { name: 'count' }, code: [{ op: 'read', dst: 'n' }, { op: 'read', dst: 'k' }, C('zero', 0), C('one', 1), C('cnt', 0),
+        L('loop'), IA('d', 'n', '%', 'k'), { op: 'push', src: 'd' }, IA('cnt', 'cnt', '+', 'one'), IA('n', 'n', '//', 'k'), J('jeq', 'n', 'zero', 'out'), JM('loop'),
+        L('out'), J('jeq', 'cnt', 'zero', 'end'), { op: 'pop', dst: 'x' }, { op: 'print', src: 'x' }, IA('cnt', 'cnt', '-', 'one'), JM('out'), L('end'), { op: 'halt', src: 'zero' }] });
+    const perfectVM = () => ({ sr: { name: 'count' }, code: [{ op: 'read', dst: 'n' }, C('zero', 0), C('one', 1), C('s', 0), C('d', 1),
+        L('loop'), J('jeq', 'd', 'n', 'chk'), IA('t', 'n', '%', 'd'), J('jeq', 't', 'zero', 'add'), JM('nxt'), L('add'), IA('s', 's', '+', 'd'), L('nxt'), IA('d', 'd', '+', 'one'), JM('loop'),
+        L('chk'), J('jeq', 's', 'n', 'yes'), { op: 'halt', src: 'zero' }, L('yes'), { op: 'halt', src: 'one' }] });
+    // ---- G10：結點配置慣例（陣列當堆）＋雜湊（需要 %）----
+    // 雜湊集合（開放定址、線性探測）：輸入 n 與 n 個非負整數（n ≤ size），回報相異個數。表 T 放在 1×size 矩陣，空格用 -1
+    const hashSetVM = (size) => ({ sr: { name: 'count' }, code: [{ op: 'read', dst: 'n' }, C('zero', 0), C('one', 1), C('m1', -1), C('size', size), C('d', 0), C('i', 0), C('k', 0), { op: 'zeros', dst: 'T', r: 1, c: 'size' },
+        L('clr'), J('jeq', 'k', 'size', 'go'), { op: 'set', dst: 'T', i: 'zero', j: 'k', src: 'm1' }, IA('k', 'k', '+', 'one'), JM('clr'),
+        L('go'), J('jeq', 'i', 'n', 'end'), { op: 'read', dst: 'x' }, IA('h', 'x', '%', 'size'),
+        L('probe'), { op: 'get', dst: 'v', a: 'T', i: 'zero', j: 'h' }, J('jeq', 'v', 'm1', 'put'), J('jeq', 'v', 'x', 'next'), IA('h', 'h', '+', 'one'), IA('h', 'h', '%', 'size'), JM('probe'),
+        L('put'), { op: 'set', dst: 'T', i: 'zero', j: 'h', src: 'x' }, IA('d', 'd', '+', 'one'), L('next'), IA('i', 'i', '+', 'one'), JM('go'), L('end'), { op: 'halt', src: 'd' }] });
+    // 二元搜尋樹（結點配置慣例：key／left／right 三個 1×n 陣列，結點編號＝插入順序，-1 是空；根是 0）：輸入 n 與 n 個整數，依序插入後印出中序走訪（顯式堆疊）
+    const bstVM = () => ({ sr: { name: 'count' }, code: [{ op: 'read', dst: 'n' }, C('zero', 0), C('one', 1), C('m1', -1), { op: 'zeros', dst: 'key', r: 1, c: 'n' }, { op: 'zeros', dst: 'lf', r: 1, c: 'n' }, { op: 'zeros', dst: 'rt', r: 1, c: 'n' }, C('k', 0),
+        L('clr'), J('jeq', 'k', 'n', 'root'), { op: 'set', dst: 'lf', i: 'zero', j: 'k', src: 'm1' }, { op: 'set', dst: 'rt', i: 'zero', j: 'k', src: 'm1' }, IA('k', 'k', '+', 'one'), JM('clr'),
+        L('root'), { op: 'read', dst: 'x' }, { op: 'set', dst: 'key', i: 'zero', j: 'zero', src: 'x' }, C('i', 1),
+        L('ins'), J('jeq', 'i', 'n', 'walk'), { op: 'read', dst: 'x' }, { op: 'mov', dst: 'cur', src: 'zero' },
+        L('desc'), { op: 'get', dst: 'kv', a: 'key', i: 'zero', j: 'cur' }, J('jlt', 'x', 'kv', 'goL'),
+        { op: 'get', dst: 'c', a: 'rt', i: 'zero', j: 'cur' }, J('jeq', 'c', 'm1', 'attR'), { op: 'mov', dst: 'cur', src: 'c' }, JM('desc'),
+        L('attR'), { op: 'set', dst: 'rt', i: 'zero', j: 'cur', src: 'i' }, JM('fin'),
+        L('goL'), { op: 'get', dst: 'c', a: 'lf', i: 'zero', j: 'cur' }, J('jeq', 'c', 'm1', 'attL'), { op: 'mov', dst: 'cur', src: 'c' }, JM('desc'),
+        L('attL'), { op: 'set', dst: 'lf', i: 'zero', j: 'cur', src: 'i' },
+        L('fin'), { op: 'set', dst: 'key', i: 'zero', j: 'i', src: 'x' }, IA('i', 'i', '+', 'one'), JM('ins'),
+        L('walk'), { op: 'mov', dst: 'cur', src: 'zero' }, C('sp', 0),
+        L('lp'), J('jeq', 'cur', 'm1', 'popph'), { op: 'push', src: 'cur' }, IA('sp', 'sp', '+', 'one'), { op: 'get', dst: 'cur', a: 'lf', i: 'zero', j: 'cur' }, JM('lp'),
+        L('popph'), J('jeq', 'sp', 'zero', 'end'), { op: 'pop', dst: 'cur' }, IA('sp', 'sp', '-', 'one'), { op: 'get', dst: 'kv', a: 'key', i: 'zero', j: 'cur' }, { op: 'print', src: 'kv' }, { op: 'get', dst: 'cur', a: 'rt', i: 'zero', j: 'cur' }, JM('lp'),
+        L('end'), { op: 'halt', src: 'zero' }] });
     // 二分搜尋：輸入 n、n 個遞增的數、x；回傳第一個不小於 x 的位置（陣列放在 1×n 矩陣裡，get 以暫存器當索引）
     const lowerBoundVM = () => ({ sr: { name: 'count' }, code: [{ op: 'read', dst: 'n' }, C('zero', 0), C('one', 1), { op: 'zeros', dst: 'arr', r: 1, c: 'n' }, C('i', 0), L('fill'), J('jeq', 'i', 'n', 'rx'), { op: 'read', dst: 'v' }, { op: 'set', dst: 'arr', i: 'zero', j: 'i', src: 'v' }, IA('i', 'i', '+', 'one'), JM('fill'),
         L('rx'), { op: 'read', dst: 'x' }, { op: 'mov', dst: 'lo', src: 'zero' }, { op: 'mov', dst: 'hi', src: 'n' }, L('loop'), J('jeq', 'lo', 'hi', 'end'), IA('mid', 'lo', '+', 'hi'), IA('mid', 'mid', '>>1', 0), { op: 'get', dst: 'v', a: 'arr', i: 'zero', j: 'mid' },
@@ -158,5 +204,5 @@
         'gcd-lcm': { cls: 'general', direct: '只做 gcd（lcm 要再接乘法迴圈）' }, 'count-primes': { cls: 'general' }, 'grid-bfs': { cls: 'matrix', direct: '同類：min-plus 圖最短路（輸入格式是邊表，不是格子）' }, 'components': { cls: 'matrix', direct: '同類：count 半環路徑計數（輸入格式是邊表）' },
         'merge-intervals': { cls: 'general' }, 'kth-largest': { cls: 'general' }, 'anagram': { cls: 'general' }, 'knapsack': { cls: 'matrix' },
     };
-    return { SEED_MEM, bfsVM, oneHotMemVM, bitonicVM, bitonicSchedule, unionFindVM, pointerJumpVM, SEED_VM, OPS, validate, run, toJsonl, fromJsonl, fibVM, dfaCountVM, graphVM, bracketsVM, gcdVM, lowerBoundVM, palindromeVM };
+    return { SEED_MEM, bfsVM, oneHotMemVM, bitonicVM, bitonicSchedule, unionFindVM, pointerJumpVM, SEED_VM, OPS, validate, run, toJsonl, fromJsonl, fibVM, dfaCountVM, graphVM, bracketsVM, gcdVM, lowerBoundVM, palindromeVM, eulerPhiVM, toBaseVM, perfectVM, hashSetVM, bstVM, iarith, IA_OPS };
 });
