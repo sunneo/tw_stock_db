@@ -278,3 +278,71 @@ holdout 未解 6 題：cat-two、exec-env、tar-blocks、canonical-huffman、xz-
 
 ### 8.2 本批的測試數字（無模型、0 次模型呼叫）
 見 `DESIGN.blockly-curriculum.md` 的接手節（本批提交與數字）。完整核心測試的結果以該節的記錄為準。
+## 9. blockly-finish-3 核對（2026-11-12，無模型）
+
+### 9.1 本批實跑（分支 claude/blockly-finish-3-e91198，HEAD 832b49df）
+
+環境：`FA_TS_DIR=$PWD/renderer/vendor/tree-sitter`；`FA_PYTHON=python3`（Pillow 9.0.1 可用）。`FA_PYTHON=python3.13` 的 Pillow 壞掉，GIF／PCX／JPEG 的 Pillow 外部驗證會失敗，不可用。
+
+| 領域包 | train | 選項反序 | holdout（只量測） | 未解 holdout |
+|---|---|---|---|---|
+| inflate | 10/10 | 10/10 | 2/4 | ho-zlib、ho-gzip |
+| tarx | 10/10 | 10/10 | 2/4 | ho-gnu、ho-enc |
+| png | 6/6 | 6/6 | 1/2 | ho-enc-rgba |
+| gif | 7/7 | 7/7 | 0/2 | ho-dec-rrggbb、ho-enc-pack |
+| pcx | 7/7 | 7/7 | 1/2 | ho-pcx-enc |
+| jpeg | 5/5 | 5/5 | 1/2 | ho-jpg-enc |
+
+六個測試檔都是 `0 failed`（`20 passed`、`20 passed`、`12 passed`、`14 passed`、`14 passed`、`10 passed`）。Pillow 外部驗證：GIF 寫出 16/16、解碼 16/16；PCX 寫出 12/12、解碼 12/12；JPEG Pillow 解碼 10/10（最大差 1）、參考編碼 Pillow 解碼 8/8（最大差 1）。
+
+整套核心測試（前一位在 `blockly-finish-2-b16f79` 工作樹背景跑的 `core-full.log`，已結束）：通過 247／299 組，失敗 52（新增 51、既有 1），`EXIT=1`。**失敗多為環境缺件，不是讀取器修改造成**（本批在讀取器還沒改）：`js-yaml`、`acorn` 模組找不到；tree-sitter 快取路徑指到別的工作樹；Python 3.13 的 Pillow；缺 g++／dotnet／ruby；`fa_sqlite`；判題器 exec 的孫行程測試；prefix-sum 加速 2.5 倍（門檻 3）。blockly 的七個領域包（inflate、tarx、bmpx、png、gif、pcx、jpeg）在該次日誌中沒有 FAIL 行。判定：**已驗證**（七包在本批實跑通過）；**回報**（整套 52 失敗的原因歸類來自日誌字串，未逐一重跑；`js-yaml`／`acorn`／tree-sitter 路徑屬環境，要在主工作樹安裝後才能判斷是否為真回歸）。
+
+### 9.2 holdout 未解題的根因（讀取器診斷，無模型）
+
+診斷方法：對每題 `UC.scenarioToModel(st, {readers:[AI.reader]})` 看 `intent`。未解的 9 題，`intent.ok` 皆為 true、`inputs` 形狀大多對，但**題型（algo）或範式（paradigms）沒對上**，於是 `buildFromUML` 回「程式讀不出這題的解法（沒有配方）」。
+
+| 題 | 讀取器給的 intent | 根因（判定） | 補法（通用，不照句型加詞） |
+|---|---|---|---|
+| ho-zlib | `algo=null`、`paradigms=[]`、輸入 `hex` | 讀取器沒有「zlib 格式（標頭兩位元組＋Adler-32）」的題型詞；`zlib` 只在 inflate 的解碼骨架裡，名詞表沒把「zlib 壓縮資料」對到它 | 名詞表補 zlib／gzip 的同義詞（格式名＋「壓縮資料」），並讓 `zlib` 解碼與 `inflate` 共用題型 |
+| ho-gzip | `algo=hex-decode`（**錯**），`algos` 含 hex-encode、bits-expand、xxd-dump | **讀取器假陽性**（G17 同類）：「gzip 壓縮檔（標頭帶有檔名欄位）」被「十六進位」這個輸入詞拉去 hex 類 | 格式名要比輸入形狀詞優先；輸入形狀（hex）只決定讀法，不決定題型 |
+| ho-gnu | `algo=tar-parse`（方向對，但不是 gnu 長檔名） | 題型是 tar 但子型（GNU `L` 長檔名區塊）沒有對應骨架；名詞表只有 PAX（`x`）那支 | 增加 GNU `L`／`K` 長名區塊的題型詞與骨架；範式可共用 tar 的標頭讀取 |
+| ho-enc | `algo=null`；**輸入正確**（`scalars n` ＋ `lines count=n raw`） | 輸入形狀讀對了，但「PAX 擴充標頭的資料內容：每筆是 總長度 欄位名=欄位值」沒有編碼方向的題型詞（只有解讀方向詞） | 補 tar PAX 的「寫出」方向名詞（產生記錄、總長度含自己位數） |
+| ho-enc-rgba | `algo=null`；輸入正確（hex） | 「原始影像封包：寬、高、每像素位元組數」與「PNG」的編碼方向詞沒對上；PNG 寫出的題型詞只有 RGB／灰階 | 補 PNG 寫出端的 RGBA 與「每像素位元組數」欄位的題型詞 |
+| ho-dec-rrggbb | `algo=null`；輸入 hex | 「GIF 圖片（一個影格）」與「每像素 RRGGBB」的解碼輸出形式沒有題型詞；GIF 解碼骨架本身存在 | 補「GIF 影格解開→像素 RRGGBB 列印」的題型詞（與 `gif.decode` 同題型） |
+| ho-enc-pack | `algo=null`；輸入 hex | 「原始封包：寬、高、顏色數、RGB 調色盤與索引」與 GIF 寫出的題型詞不對 | 補 GIF 寫出端的「顏色數」欄位與調色盤題型詞 |
+| ho-pcx-enc | `algo=null`；輸入 hex | 「PCX 檔」寫出端的「平面數 1、768 位元組調色盤」沒有題型詞 | 補 PCX 寫出端的平面數欄位與調色盤題型詞 |
+| ho-jpg-enc | `algo=bmp-gray`（**錯**），`algos` 含 bmp-header、bmp-read8… | **讀取器假陽性**：「灰階」一詞把題型拉到 BMP 灰階；JPEG 寫出的題型詞不存在 | 同 ho-gzip：格式名（JPEG）優先於「灰階」這類像素詞；補 JPEG 寫出的題型詞 |
+
+**結論（已驗證，依診斷輸出）**：未解的根因有兩類。(a) **讀取器題型詞覆蓋不足**：新格式（GIF、PCX、JPEG、zlib、GNU tar）的「編碼方向」與「子型」沒有題型詞，所以 `algo=null`。(b) **讀取器假陽性**（G17 同類）：格式名不夠強，被輸入形狀詞或像素詞（十六進位、灰階）拉到錯的題型（ho-gzip→hex-decode、ho-jpg-enc→bmp-gray）。這兩類都在共用的 `algo_intent_core.js` 裡，**沒有在本批改**（見 9.4）。
+
+依使用者規則，**不照 holdout 句型加詞**。補法只寫成「格式名＋方向」的通用詞，並以 train 題與選項反序回歸確認。
+
+### 9.3 G1–G18 逐項核對（對照文件記載，部分已由本批實跑印證）
+
+| 編號 | 狀態 | 依據（已驗證／回報） |
+|---|---|---|
+| G1 讀取器形狀 | 已補（部分未全） | 已驗證：七包 train 全過、輸入形狀正確（ho-enc 的 `scalars n`＋`lines` 正確）。未全：兩段輸入（見 9.4）、題型詞覆蓋（見 9.2） |
+| G2 切割（輔助操作） | 已補 | 回報（73deb981 記載）；本批未重驗 |
+| G3 位元／格式積木 | 已補 | 回報（73deb981） |
+| G4 欄位表範式 | 已補 | 回報（73deb981，`ftTable`） |
+| G5 行過濾器 | 已補 | 回報（dfed1565） |
+| G6 無 def 改寫 | 實質完成；(a) 保留 def 不做 | 回報（73deb981） |
+| G7 校驗碼 | 已補 | 回報（73deb981）；inflate 與 gzip 的 crc32 已實跑 |
+| G8 位元流 | 已補 | 回報（73deb981） |
+| G9 對齊／列序 | 已補 | 回報（73deb981，bmpx 實跑 10/10、4/4） |
+| G10 詞法／狀態機 | 已補 | 回報（73deb981） |
+| G11 算式求值 | 已補 | 回報（73deb981） |
+| G12 直譯器 | 已補 | 回報（73deb981） |
+| G13 壓縮演算法 | 已補 | 回報（73deb981）；inflate 實跑 |
+| G14 LZMA 完整流程 | 已補 | 回報（2026-11-10，`domain_lzma_core.js`） |
+| G15 判題器二進位 IO | 已補 | 回報（`judge-runner.js`，`judge-runner-real.test.js`）；本批的 gif／pcx／jpeg 寫出端以 `files`／`expectFiles` 形式實跑 |
+| G16 真行程 | 已補（判題器）；概念教學待補 | 回報（2026-11-10）；`lr.*` 範式未在本批重跑 |
+| G17 讀取器假陽性 | **未全補** | 本批實跑發現 ho-gzip→hex-decode、ho-jpg-enc→bmp-gray 兩個新假陽性；先前記載的兩例（huffman-cost、xz-delta）未重驗。判定：部分補，還有 2 例以上 |
+| G18 規格即題目 | 偵測已補；模型部分超出 | 回報（73deb981，`intent.specLike`） |
+
+### 9.4 待改善（做不到或本批未做，寫明原因與下一步）
+
+1. **讀取器兩段輸入限制（整數行加十六進位行）**：本批**未改** `algo_intent_core.js` 的 `readToolInput`。原因：它是共用核心，改了要跑 `bench_coverage` 與全部領域包回歸，本批時間不夠做完整的回歸。下一步：先在 `domain_*` 測試清單上列出目前每包 train／holdout 的基線（本節 9.1 表），改動後逐包比對，不得退步。
+2. **題型詞覆蓋（8.2 的 (a) 類）與假陽性（(b) 類，G17）**：同上，改 `algo_intent_core.js` 的名詞表與優先序。下一步：新增「格式名優先於輸入形狀詞與像素詞」的規則，並以 8.2 表的 9 題與全部 train 題共同回歸。
+3. **整套核心測試 52 失敗的環境歸因**：`js-yaml`、`acorn` 等模組要在主工作樹 `npm install`；tree-sitter 快取路徑要指向本工作樹；Python 3.13 的 Pillow 要換成可用的 Python。下一步：在主工作樹重跑一次，把「環境」與「真回歸」分開。
+4. **G16 概念教學**：待補教學（判題器已能驗證真行程，範式只做「管線」層）。

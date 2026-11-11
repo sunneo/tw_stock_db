@@ -243,7 +243,17 @@ Pillow 外部驗證：寫出端 20/20、解碼生成器 30/30（python3 的 Pill
 1. **51 組新增失敗的基準對照（未做）**：多數為環境缺件（js-yaml、tree-sitter wasm、python 參數、g++／dotnet、wiki 目錄、LoRA manifest 雜湊）。接續：逐組暫換 `algo_intent_core.js` 為 `$HOME/.cache/algo_intent_core.orig.js`（或改用 `git show 4c5b5e15:…`）跑該群組，確認只有環境原因；**跑完務必還原**（`algo_intent_core.new.js` 是修改版）。注意：`$HOME/.cache` 內的暫存檔可能已不在，以 `git show 1698816c^:renderer/src/uml/algo_intent_core.js` 取得原版。
 2. **holdout 未解題與未過題根因（未做）**：ho-zlib、ho-gzip、ho-gnu、ho-enc、ho-enc-rgba；GIF ho-dec-rrggbb、ho-enc-pack；PCX ho-pcx-enc；JPEG ho-jpg-enc。指揮已授權查根因、可補敘述或教法；補過的題之後只當「補過後」數字。
 3. **讀取器兩段輸入的消費端（未做）**：讀取器已能產生 `[scalars, hex]`（`AI.reader("輸入三個整數 w h c，第二行一個十六進位字串 px。…")`），尚無骨架接受此形狀。接續：寫一個 `hexIn`＋整數行的骨架（如 PNG／GIF 寫出的「w h c＋像素」），再量測 train／holdout。
-4. **G1–G18 重跑（未做）**：目前只是存在性核對（`DESIGN.blockly-gaps.md` §8），沒有逐項重跑。
+4. **G1–G18 重跑（未做）**：目前只是存在性核對（`DESIGN.blockly-gaps.md` §9），沒有逐項重跑。
 
 ### 本批提交（本交接節所在的提交）
 34ddf6d6（GIF）、fcd48a46（PCX）、832b49df（JPEG）、1698816c（讀取器＋G 核對＋接手節）。
+## 接手（blockly-finish-3，2026-11-12，無模型）
+
+- 起點：分支 `claude/blockly-finish-3-e91198` 在 `832b49df`（jpeg）。尚未收到前一位最後接手節的提交編號，本批在 jpeg 之上工作；收到後要 `git reset --hard <該提交>`（本批只新增文件，沒有未提交的程式改動，reset 安全）。
+- 本批新增提交：`DESIGN.blockly-gaps.md` §9（holdout 根因、G1–G18 核對、待改善）與本節。**沒有改任何程式**（讀取器未動）。
+- 實跑：七個領域包（inflate、tarx、bmpx、png、gif、pcx、jpeg）全部 `0 failed`；holdout 未解 9 題的根因見 `DESIGN.blockly-gaps.md` §9.2。
+- 整套核心測試：前一位背景跑的結果 247／299，52 失敗，多為環境缺件（js-yaml、acorn、tree-sitter 路徑、Python 3.13 的 Pillow、缺 g++／dotnet）；詳見 gaps §9.1、§9.4。
+- 接續點（依序）：
+  1. 讀取器改動（共用 `algo_intent_core.js`）：(a) 格式名優先於輸入形狀詞與像素詞（修 G17 假陽性 ho-gzip、ho-jpg-enc）；(b) 補 zlib、GNU tar、GIF／PCX／JPEG／PNG 寫出端的通用題型詞；(c) 兩段輸入（整數行＋十六進位行）。每一步都要跑全部領域包 train＋選項反序，不得退步，並跑 `bench_coverage`。
+  2. 在主工作樹重跑整套核心測試，把環境失敗與真回歸分開。
+  3. G16 概念教學待補。
