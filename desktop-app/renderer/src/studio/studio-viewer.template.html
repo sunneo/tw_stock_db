@@ -206,6 +206,7 @@ T.train=async function(body){
  var kinds=[['lora','LoRA（語言模型）'],['trainer','離線訓練器'],['colu','CoLU'],['uml','UML 設計'],['blockly','積木課程'],['matrix','矩陣層']];
  var ksel=h('select',{},kinds.map(function(k){return h('option',{value:k[0],text:k[1]})}));var out=h('div');body.appendChild(h('label',{text:'訓練種類'}));body.appendChild(ksel);body.appendChild(out);
  var buildTok=0;async function build(){var my=++buildTok;out.textContent='';var kind=ksel.value,r=await api('GET','/api/backends?kind='+kind);if(my!==buildTok)return;if(r.ok===false){out.appendChild(h('div',{'class':'warn',text:'讀取運算後端失敗：'+r.error}));return}
+  if(r.backends&&r.backends.some(function(b){return b.probing}))setTimeout(function(){if(my===buildTok)build()},1500);
   if(r.note)out.appendChild(h('div',{'class':'warn',text:r.note}));
   if(kind!=='lora'){symTrain(out,kind);return}
   var bs=h('select',{});bs.appendChild(h('option',{value:'auto',text:'自動（建議）'+(r.selection&&r.selection.chosen?' → '+r.selection.chosen:(r.selection&&r.selection.reason?'：'+r.selection.reason.slice(0,60):''))}));

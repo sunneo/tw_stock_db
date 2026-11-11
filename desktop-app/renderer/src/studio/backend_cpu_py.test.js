@@ -80,6 +80,28 @@ const mkBackend = (o) => { const fs = memfs(); fs.writeFileSync('/lora/train_lor
     check('pyOk 邊界', P.pyOk('3.11.0') && P.pyOk('3.13.1') && !P.pyOk('3.10.9') && !P.pyOk('2.7.18') && P.pyOk('4.0.0') && !P.pyOk(null));
   }
 
+  // ---- 探測不 import torch、單項逾時、結果快取 ----
+  {
+    const full = { torch: '2.15', transformers: '5.22', peft: '0.21' }, BS = String.fromCharCode(92), WP = (x) => x.split('/').join(BS), VENV = WP('D:/x/lora-train/.venv/Scripts/python.exe');
+    const fsX = { existsSync: (f) => f === VENV, statSync: () => ({ mtimeMs: 5 }) }, wp = require('path').win32;
+    let codeSeen = '', spawns = 0;
+    const sp = (cmd, args, o) => { if (cmd === 'py' && args[0] === '-0p') return { error: new Error('ENOENT'), status: null }; spawns++; codeSeen = args[2] || ''; o.__t = o.timeout; return { status: 0, stdout: JSON.stringify({ version: '3.13.1', packages: full }) + String.fromCharCode(10) }; };
+    const store = {}, cache = { get: (k) => store[k] || null, set: (k, v) => { store[k] = v; } };
+    const mk = () => P.defaultDetect(sp, { fs: fsX, path: wp, platform: 'win32', venvDirs: [WP('D:/x/lora-train')], cache });
+    const r1 = mk()();
+    check('探測程式碼用 importlib.metadata、不 import torch', /importlib/.test(codeSeen) && /metadata/.test(codeSeen) && !/__import__/.test(codeSeen) && !/import torch/.test(codeSeen), codeSeen);
+    check('第一次真的啟動子行程，結果寫入快取', r1.found && spawns === 1 && Object.keys(store).length === 1, { spawns, store });
+    const r2 = mk()();
+    check('第二次直接用快取、不啟動子行程', r2.found && spawns === 1 && r2.tried[0].cached === true, { spawns, r2 });
+    fsX.statSync = () => ({ mtimeMs: 6 });   // 裝了套件 → 修改時間變 → 快取失效
+    mk()(); check('site-packages 修改時間變了：快取失效重探', spawns === 2, spawns);
+    // 逾時：記下具體原因，probe 的 reason 帶出
+    const spT = (cmd, args) => (cmd === 'py' && args[0] === '-0p') ? { error: new Error('ENOENT'), status: null } : { error: Object.assign(new Error('spawnSync python ETIMEDOUT'), { code: 'ETIMEDOUT' }), status: null };
+    const dt = P.defaultDetect(spT, { fs: { existsSync: () => false }, path: wp, platform: 'win32', venvDirs: [], timeoutMs: 8000 })();
+    check('逾時：找不到，tried 記逾時秒數', !dt.found && dt.tried.length > 0 && dt.tried.every((x) => /逾時（8 秒/.test(x.error)), dt);
+    const prT = await P.createCpuPyBackend({ detect: async () => dt, spawn: () => {}, fs: memfs(), path: posix, loraDir: '/lora', hw: { cores: 4 } }).probe();
+    check('逾時：probe 的 reason 寫出哪些項目逾時', !prT.available && /探測失敗項目：.*逾時/.test(prT.reason), prT);
+  }
   // ---- 進度行解析 ----
   const pl = P.parseProgressLine;
   check('解析 log 字典', JSON.stringify(pl("{'loss': 1.2345, 'grad_norm': 0.5, 'learning_rate': 0.0002, 'epoch': 0.03}")) === JSON.stringify({ type: 'log', loss: 1.2345, gradNorm: 0.5, lr: 0.0002, epoch: 0.03 }));

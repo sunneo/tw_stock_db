@@ -8,6 +8,11 @@ const check = (n, c, x) => { if (c) ok++; else { bad.push(n); console.log('FAIL'
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fa-studio-host-'));
   const cp = { spawnSync: () => ({ error: new Error('ENOENT'), status: null }), spawn: () => { throw new Error('不應該啟動子行程'); } };
   const h = createStudioHost({ fs, path, os, cp, hostDir: dir, loraDir: path.join(dir, 'none') });
+  // 畫面用的探測不等慢的探測：第一次先回「探測中…」，等背景探測完成後才有具體結果
+  const pr0 = await h.handle('studio_probe', { kind: 'lora' });
+  const py0 = pr0.backends.find((b) => b.id === 'cpu-py');
+  check('第一次探測：cpu-py 標探測中且立即回', pr0.ok && py0.probing === true && py0.reason === '探測中…' && !py0.available, py0);
+  const w = await h.handle('studio_probe_wait', {}); check('等待背景探測完成', w.ok && w.done, w);
   const pr = await h.handle('studio_probe', { kind: 'lora' });
   check('probe 回六種後端中 lora 的五個', pr.ok && pr.backends.map((b) => b.id).join() === 'cpu-py,wasm-web,webgpu,directml,vulkan', pr.backends);
   const py = pr.backends.find((b) => b.id === 'cpu-py');

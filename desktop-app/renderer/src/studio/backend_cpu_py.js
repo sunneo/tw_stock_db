@@ -21,30 +21,40 @@ function defaultDetect(spawnSync, opts) {
   opts = opts || {}; const P = opts.path || require('path'), plat = opts.platform || process.platform;
   const exists = (f) => { try { return (opts.fs || require('fs')).existsSync(f); } catch (e) { return false; } };
   return function detect() {
-    const code = "import sys,json\nr={'version':sys.version.split()[0],'packages':{}}\nfor m in ('torch','transformers','peft'):\n    try:\n        mod=__import__(m); r['packages'][m]=getattr(mod,'__version__','?')\n    except Exception:\n        r['packages'][m]=None\nprint(json.dumps(r))";
+    // 用 importlib.metadata 讀套件版本，不 import torch（光 import torch 在這台就要十幾秒）
+    const code = "import sys,json\nfrom importlib import metadata as md\nr={'version':sys.version.split()[0],'packages':{}}\nfor m in ('torch','transformers','peft'):\n    try:\n        r['packages'][m]=md.version(m)\n    except Exception:\n        r['packages'][m]=None\nprint(json.dumps(r))";
     const cands = venvPythons(typeof opts.venvDirs === 'function' ? opts.venvDirs() : opts.venvDirs, P, plat).filter(exists);
     ['python', 'python3', 'py'].forEach((c) => cands.push(c));
+    const tmo = opts.timeoutMs || 8000;   // 單項探測逾時
     try {   // py 啟動器列出的各版本（py -0p 每行最後一欄是路徑）
-      const l = spawnSync('py', ['-0p'], { encoding: 'utf8', windowsHide: true, timeout: 10000 });
+      const l = spawnSync('py', ['-0p'], { encoding: 'utf8', windowsHide: true, timeout: 5000 });
       if (l && !l.error && l.status === 0) String(l.stdout).split(/\r?\n/).forEach((ln) => { const m = /(?:^|\s)([A-Za-z]:[\\/].*python[0-9.]*\.exe)\s*$/i.exec(ln.trim()); if (m && cands.indexOf(m[1]) < 0) cands.push(m[1]); });
     } catch (e) {}
+    // 結果快取：鍵＝python 絕對路徑＋執行檔與 site-packages 的修改時間（裝／卸套件會變）；只對絕對路徑的候選用
+    const stat = (f2) => { try { return (opts.fs || require('fs')).statSync(f2).mtimeMs; } catch (e) { return 0; } };
+    const keyOf = (cmd) => (P.isAbsolute && P.isAbsolute(cmd)) ? cmd + '|' + stat(cmd) + '|' + stat(P.join(P.dirname(cmd), '..', 'Lib', 'site-packages')) : null;
     const tried = [], good = []; let tooOld = null;
     for (const cmd of cands) {
       try {
-        const r = spawnSync(cmd, ['-I', '-c', code], { encoding: 'utf8', windowsHide: true, timeout: opts.timeoutMs || 120000 });
-        if (r && !r.error && r.status === 0) {
-          const j = JSON.parse(String(r.stdout).trim().split('\n').pop()); tried.push({ path: cmd, version: j.version });
-          if (!pyOk(j.version)) { tooOld = tooOld || j.version; continue; }
-          const res = { found: true, path: cmd, version: j.version, packages: j.packages };
-          if (PY_PKGS.every((k) => j.packages && j.packages[k])) return Object.assign(res, { tried });
-          good.push(res);
+        const key = opts.cache ? keyOf(cmd) : null; let j = key ? opts.cache.get(key) : null; const fromCache = !!j;
+        if (!j) {
+          const r = spawnSync(cmd, ['-I', '-c', code], { encoding: 'utf8', windowsHide: true, timeout: tmo });
+          if (!r || r.error || r.status !== 0) { const why = r && r.error && /ETIMEDOUT/.test(String(r.error.code || r.error.message)) ? '逾時（' + Math.round(tmo / 1000) + ' 秒內沒回應）' : (r && r.error ? String(r.error.code || r.error.message) : '結束碼 ' + (r && r.status)); tried.push({ path: cmd, error: why }); continue; }
+          j = JSON.parse(String(r.stdout).trim().split('\n').pop()); if (key) opts.cache.set(key, j);
         }
-      } catch (e) {}
+        tried.push({ path: cmd, version: j.version, cached: fromCache });
+        if (!pyOk(j.version)) { tooOld = tooOld || j.version; continue; }
+        const res = { found: true, path: cmd, version: j.version, packages: j.packages };
+        if (PY_PKGS.every((k) => j.packages && j.packages[k])) return Object.assign(res, { tried });
+        good.push(res);
+      } catch (e) { tried.push({ path: cmd, error: String(e && e.message || e) }); }
     }
     if (good.length) return Object.assign(good[0], { tried });
     return { found: false, tooOld, tried };
   };
 }
+
+function triedNote(d) { const e = d && d.tried ? d.tried.filter((x) => x.error) : []; return e.length ? '探測失敗項目：' + e.map((x) => x.path + '（' + x.error + '）').join('、') + '。' : ''; }
 
 // 沒有可用環境時 probe 的說明與要執行的安裝指令
 function installHint(loraDir) {
@@ -106,7 +116,7 @@ function createCpuPyBackend(o) {
       const hw = o.hw || {};
       const fp = { backend: 'cpu-py', cpu: hw.cpuModel || null, cores: hw.cores || null, python_version: d.version || null, torch_version: d.packages && d.packages.torch || null, engine_version: 'train_lora.py' };
       const dev = { name: hw.cpuModel || 'CPU', vendor: 'cpu', fp16: false };
-      if (!d || !d.found) return B.probeResult(false, (d && d.tooOld ? '找到的 Python 版本太舊（' + d.tooOld + '）。' : '找不到 Python。') + installHint(o.loraDir) + '；或改匯出訓練包到別台訓練', dev, fp);
+      if (!d || !d.found) return B.probeResult(false, (d && d.tooOld ? '找到的 Python 版本太舊（' + d.tooOld + '）。' : '找不到 Python。') + triedNote(d) + installHint(o.loraDir) + '；或改匯出訓練包到別台訓練', dev, fp);
       const missing = ['torch', 'transformers', 'peft'].filter((k) => !(d.packages && d.packages[k]));
       if (missing.length) return B.probeResult(false, '已找到 Python ' + d.version + (d.path ? '（' + d.path + '）' : '') + '，但缺少套件：' + missing.join('、') + '。' + installHint(o.loraDir), dev, fp);
       if (!o.fs.existsSync(script())) return B.probeResult(false, '找不到訓練腳本 ' + script(), dev, fp);

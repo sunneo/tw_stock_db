@@ -32,8 +32,18 @@ function createStudioHost(d) {
     return ch;
   };
   const registry = new BackendCore.BackendRegistry();
-  const cpuPy = CpuPy.createCpuPyBackend({ detect: CpuPy.defaultDetect(cp.spawnSync, { fs, path: P, venvDirs: () => [loraDirOf(), P.join(hostDir, 'lora-train'), d.loraDir].concat(d.loraDirs || []) }), spawn: spawnLow, killTree, fs, path: P, get loraDir() { return loraDirOf(); }, hw, get config() { return config; }, env: d.env || {} });
+  // Python 探測結果快取（存使用者資料夾；鍵含 python 路徑與修改時間，裝／卸套件後自動失效）
+  const detectCache = { get(k) { const m = readJson(jf('cpu-py-detect-cache.json'), {}); return m[k] || null; }, set(k, v) { const m = readJson(jf('cpu-py-detect-cache.json'), {}); m[k] = v; writeJson(jf('cpu-py-detect-cache.json'), m); } };
+  const cpuPy = CpuPy.createCpuPyBackend({ detect: CpuPy.defaultDetect(cp.spawnSync, { fs, path: P, cache: detectCache, venvDirs: () => [loraDirOf(), P.join(hostDir, 'lora-train'), d.loraDir].concat(d.loraDirs || []) }), spawn: spawnLow, killTree, fs, path: P, get loraDir() { return loraDirOf(); }, hw, get config() { return config; }, env: d.env || {} });
   registry.register(CpuJs.createCpuJsBackend({ engineVersion: 'tiny-1' }));
+  const rawProbe = cpuPy.probe.bind(cpuPy), PROBE_TTL = 60000, probeSt = { val: null, at: 0, running: null };
+  const refreshProbe = () => probeSt.running || (probeSt.running = (async () => { try { probeSt.val = await rawProbe(); probeSt.at = now(); } finally { probeSt.running = null; } })());
+  cpuPy.probe = async (ctx) => {
+    const fresh = probeSt.val && now() - probeSt.at < PROBE_TTL;
+    if (fresh) return probeSt.val;
+    if (ctx && ctx.fast) { refreshProbe().catch(() => {}); return probeSt.val ? Object.assign({}, probeSt.val, { probing: true }) : BackendCore.probeResult(false, '探測中…', { name: hw.cpuModel || 'CPU', vendor: 'cpu', fp16: false }, { backend: 'cpu-py' }); }
+    await refreshProbe(); return probeSt.val;
+  };
   registry.register(cpuPy);
   ['wasm-web', 'webgpu', 'directml', 'vulkan'].forEach((id) => registry.register(Planned.createPlannedBackend(id, {})));
   const benchCache = BC.createBenchCache({ load: () => readJson(jf('bench-cache.json'), null), save: (o) => writeJson(jf('bench-cache.json'), o) }, now);
@@ -56,10 +66,11 @@ function createStudioHost(d) {
   const ops = {
     // 狀態：硬體、設定、各後端是否可用與原因
     async studio_probe(p) {
-      const kind = (p && p.kind) || 'lora', list = await registry.listFor(kind, ctxOf(p));
+      const kind = (p && p.kind) || 'lora', list = await registry.listFor(kind, Object.assign(ctxOf(p), { fast: true }));   // 畫面用：不等慢的探測
       const sym = BackendCore.isSymbolicKind(kind);
-      return { ok: true, kind, symbolic: sym, hw, config, backends: sym ? [{ id: 'cpu-js', available: true, reason: '', note: '只需處理器' }] : list.map((x) => ({ id: x.id, available: x.available, reason: x.reason, device: x.probe && x.probe.device, planned: !!(registry.get(x.id) || {}).planned })), loraDir: loraDirOf(), threads: SC.resolveThreads(config, hw.cores, 'train') };
+      return { ok: true, kind, symbolic: sym, hw, config, backends: sym ? [{ id: 'cpu-js', available: true, reason: '', note: '只需處理器' }] : list.map((x) => ({ id: x.id, available: x.available, reason: x.reason, probing: x.reason === '探測中…' || !!(x.probe && x.probe.probing), device: x.probe && x.probe.device, planned: !!(registry.get(x.id) || {}).planned })), loraDir: loraDirOf(), threads: SC.resolveThreads(config, hw.cores, 'train') };
     },
+    async studio_probe_wait() { try { await (probeSt.running || Promise.resolve()); } catch (e) {} return { ok: true, done: !probeSt.running }; },
     async studio_config_get() { return { ok: true, config, schema: SC.SCHEMA, hw }; },
     async studio_config_set(p) {
       const r = SC.normalize(Object.assign({}, config, (p && p.patch) || {}), hw.cores);
@@ -102,7 +113,7 @@ function createStudioHost(d) {
     },
     // 自動選擇：只用快取（不跑基準，避免意外吃資源）；沒有快取結果就回 needsRebench
     async studio_select(p) {
-      const r = await BC.autoSelect({ kind: (p && p.kind) || 'lora', registry, cache: benchCache, ctx: ctxOf(p), pin: p && p.pin, skipBench: true });
+      const r = await BC.autoSelect({ kind: (p && p.kind) || 'lora', registry, cache: benchCache, ctx: Object.assign(ctxOf(p), { fast: true }), pin: p && p.pin, skipBench: true });
       return Object.assign({ ok: !!r.chosen }, r);
     },
     // 訓練：目前只有 lora（cpu-py）有真的子行程訓練；符號式五類由主程式端的 sym_train_core 執行（設計 §15.3）
