@@ -34,7 +34,7 @@ function createStudioHost(d) {
   const cpuPy = CpuPy.createCpuPyBackend({ detect: CpuPy.defaultDetect(cp.spawnSync), spawn: spawnLow, killTree, fs, path: P, get loraDir() { return loraDirOf(); }, hw, get config() { return config; }, env: d.env || {} });
   registry.register(CpuJs.createCpuJsBackend({ engineVersion: 'tiny-1' }));
   registry.register(cpuPy);
-  ['webgpu', 'directml', 'vulkan'].forEach((id) => registry.register(Planned.createPlannedBackend(id, {})));
+  ['wasm-web', 'webgpu', 'directml', 'vulkan'].forEach((id) => registry.register(Planned.createPlannedBackend(id, {})));
   const benchCache = BC.createBenchCache({ load: () => readJson(jf('bench-cache.json'), null), save: (o) => writeJson(jf('bench-cache.json'), o) }, now);
   const ctxOf = (p) => ({ hw, modelSha256: (p && p.modelSha256) || null });
 

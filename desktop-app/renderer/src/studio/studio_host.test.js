@@ -9,7 +9,7 @@ const check = (n, c, x) => { if (c) ok++; else { bad.push(n); console.log('FAIL'
   const cp = { spawnSync: () => ({ error: new Error('ENOENT'), status: null }), spawn: () => { throw new Error('不應該啟動子行程'); } };
   const h = createStudioHost({ fs, path, os, cp, hostDir: dir, loraDir: path.join(dir, 'none') });
   const pr = await h.handle('studio_probe', { kind: 'lora' });
-  check('probe 回五種後端中 lora 的四個', pr.ok && pr.backends.map((b) => b.id).join() === 'cpu-py,webgpu,directml,vulkan', pr.backends);
+  check('probe 回六種後端中 lora 的五個', pr.ok && pr.backends.map((b) => b.id).join() === 'cpu-py,wasm-web,webgpu,directml,vulkan', pr.backends);
   const py = pr.backends.find((b) => b.id === 'cpu-py');
   check('沒有 Python：cpu-py 不可用且原因具體', !py.available && /找不到 Python/.test(py.reason), py);
   check('規劃中後端不可用並帶阻礙原因', pr.backends.filter((b) => b.planned).every((b) => !b.available && b.reason.length > 10));
@@ -26,7 +26,7 @@ const check = (n, c, x) => { if (c) ok++; else { bad.push(n); console.log('FAIL'
   check('基準測試啟動', st.ok && st.jobId, st);
   let s; for (let i = 0; i < 100; i++) { s = await h.handle('studio_bench_status', { jobId: st.jobId }); if (s.state !== 'running') break; await new Promise((r) => setTimeout(r, 50)); }
   check('基準測試結束', s.state === 'done', s);
-  check('四列都有且全部略過並附原因', s.rows.length === 4 && s.rows.every((r) => r.state === 'skipped' && r.reason), s.rows.map((r) => r.id + r.state));
+  check('五列都有且全部略過並附原因', s.rows.length === 5 && s.rows.every((r) => r.state === 'skipped' && r.reason), s.rows.map((r) => r.id + r.state));
   // 自動選擇：沒有可用後端 → 具體原因
   const sel = await h.handle('studio_select', { kind: 'lora' });
   check('自動選擇沒有可用後端時回原因', !sel.ok && /沒有可用的後端/.test(sel.reason || ''), sel);

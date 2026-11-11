@@ -16,7 +16,7 @@ const check = (n, c, x) => { if (c) ok++; else { bad.push(n); console.log('FAIL'
   check('cpu-js probe 可用且指紋含核心數', pj.available && pj.fingerprint.cores === 4 && !pj.reason, pj);
   // kind 宣告
   ['trainer', 'colu', 'uml', 'blockly', 'matrix'].forEach((k) => check('符號式 ' + k + ' 只宣告 cpu-js', JSON.stringify(B.KIND_BACKENDS[k]) === '["cpu-js"]' && B.isSymbolicKind(k)));
-  check('lora 宣告四個後端且不含 cpu-js', JSON.stringify(B.KIND_BACKENDS.lora) === '["cpu-py","webgpu","directml","vulkan"]');
+  check('lora 宣告五個後端（含網頁版 wasm-web）且不含 cpu-js', JSON.stringify(B.KIND_BACKENDS.lora) === '["cpu-py","wasm-web","webgpu","directml","vulkan"]');
   // 規劃中後端：probe 回具體阻礙，不假裝可用，其餘方法拒絕
   const reg = new B.BackendRegistry();
   reg.register(js).register(P.createWebgpuBackend()).register(P.createDirectmlBackend()).register(P.createVulkanBackend());
@@ -32,7 +32,7 @@ const check = (n, c, x) => { if (c) ok++; else { bad.push(n); console.log('FAIL'
   // listFor
   const lst = await reg.listFor('lora', {});
   check('lora 清單：cpu-py 沒登錄就灰掉並說明', lst.find((x) => x.id === 'cpu-py').available === false && /沒有登錄/.test(lst.find((x) => x.id === 'cpu-py').reason));
-  check('lora 清單順序固定', lst.map((x) => x.id).join() === 'cpu-py,webgpu,directml,vulkan');
+  check('lora 清單順序固定', lst.map((x) => x.id).join() === 'cpu-py,wasm-web,webgpu,directml,vulkan');
   check('符號式清單只有 cpu-js 且可用', (await reg.listFor('uml', {})).length === 1 && (await reg.listFor('uml', {}))[0].available);
   // safeProbe 不丟例外、格式錯也被攔下
   const boom = Object.assign({}, js, { probe: async () => { throw new Error('爆了'); } });

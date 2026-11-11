@@ -1,11 +1,11 @@
 'use strict';
 // 運算後端統一介面與登錄表（DESIGN.TODO.offline-training-studio.md §5.3）。純核心、依賴注入、不碰 window。
-const BACKEND_IDS = ['cpu-js', 'cpu-py', 'webgpu', 'directml', 'vulkan'];
+const BACKEND_IDS = ['cpu-js', 'cpu-py', 'wasm-web', 'webgpu', 'directml', 'vulkan'];
 const SYMBOLIC_KINDS = ['trainer', 'colu', 'uml', 'blockly', 'matrix'];
 // 每個 kind 宣告支援的後端；lora 的清單是「可能」，實際是否點亮由 probe＋基準測試決定。符號式五類只有 cpu-js。
-const KIND_BACKENDS = { trainer: ['cpu-js'], colu: ['cpu-js'], uml: ['cpu-js'], blockly: ['cpu-js'], matrix: ['cpu-js'], lora: ['cpu-py', 'webgpu', 'directml', 'vulkan'] };
+const KIND_BACKENDS = { trainer: ['cpu-js'], colu: ['cpu-js'], uml: ['cpu-js'], blockly: ['cpu-js'], matrix: ['cpu-js'], lora: ['cpu-py', 'wasm-web', 'webgpu', 'directml', 'vulkan'] };
 // 「自動」同速（差 <10%）時偏好較成熟者：cpu-py > vulkan > directml > webgpu（cpu-js 只服務符號式，排最前）
-const MATURITY = ['cpu-js', 'cpu-py', 'vulkan', 'directml', 'webgpu'];
+const MATURITY = ['cpu-js', 'cpu-py', 'wasm-web', 'vulkan', 'directml', 'webgpu'];   // wasm-web：網頁版處理器訓練，慢但正確、可搬檢查點（§5.6）
 
 const REQUIRED_METHODS = ['probe', 'benchmark', 'init', 'step', 'evalLoss', 'saveCheckpoint', 'loadCheckpoint', 'dispose'];
 
