@@ -1025,3 +1025,24 @@ Backend {
 - 提交逐檔加入，沒有用 `git add -A`；新檔要明確 `git add`（`git diff --stat` 看不到未追蹤的新檔）。
 - 換行：`embed-code-ui.js` 是 CRLF 的部分檔案，用 Python 文字模式讀寫會把整檔換成 LF（本輪踩到，已還原）。改這類檔請用 binary 讀寫。
 - 測試用 `nice -n 10 taskset -c 10-11`，一次跑一個。
+
+## 24. 合併 lora-slot-equiv 與端點實跑（studio-domain-author-2，2026-11-12，指揮同意）
+
+### 24.1 合併
+- `2faed9b2` 合併 `claude/lora-slot-equiv`（`f66993a6`）。衝突只在 `studio_server_core.test.js` 兩處：分頁數取 10（保留「流程」分頁）；兩段新增測試都保留。`floating-assistant.js`、`main-ext.js` 自動合併、無衝突。
+- 嵌入清單加 `lora_route_core`（放在 `lora_registry_core` 之後，依 §15.3 步驟 A；`floating-assistant.js` 用 `FaStudio.FaLoraRoute`）。只改清單，未嵌入。§15.3 步驟 B（核心測試清單）未做。
+- 測試（合併後）：studio_server_core 126／0、llm_export 23／0、studio_host 28／0、lora_manage_core 41／0、lora_registry 80／0、lora_route 18／0、pipeline_routes 31／0、pipeline_view 18／0、studio_layout 27／0、dataset_edit 34／0。
+
+### 24.2 LoRA 管理畫面接上登錄表（`9708f849`）
+- `T.lora` 改用 `/api/lora/status` 經 `rowsFromStatus`、`budgetOf`、`busyText` 餵 `renderLoraManageHTML`。事件委派到既有端點：`load`、`unload`、`pin`（`on`）、`enable`（`on`）、`replace`（`outId`、`inId`；換出者唯一時自動選，多個時問使用者）、`remove`（先確認，`/api/asset/delete`）、`card`（`/api/lora/card`）。保留環境列、槽位卡、按需選用試算。
+- GUI 實跑（暫存 harness，node 伺服器，非嵌入版）：替換 200 並生效（`slots` 換成 demo-lora-2）；釘選寫入登錄；釘選且載入中的列，卸載、替換、移除皆 disabled；移除未載入的 LoRA 生效。
+- 注意：`applied:false` 仍在（原生套用器未接，`LORA_APPLY_BLOCKER`）；畫面只說「載入到記憶體」。
+
+### 24.3 Electron 視窗驗證：未完成
+- 用 `/home/hungfu.lee/fa-electron/dist/electron`（指揮提供，DISPLAY :2.0，暫存 user-data-dir）啟動 desktop-app，程序能起來；日誌顯示應用程式「檢查更新」並要求「立即更新」。我沒有點更新，已結束自己啟動的程序。
+- 沒有完成工作室與流程分頁的視窗驗證，原因：(1) 正式版工作室仍是舊的嵌入版，本分支的新程式要重產嵌入後才會出現在 Electron 裡；(2) :2.0 是共用桌面，上面有別人的終端機與更新對話框，操作前需要使用者確認。
+- 解除條件：總指揮重產嵌入後，用暫存 user-data-dir 再跑一次；對話框只按「取消」，且需使用者同意。
+
+### 24.4 還沒做（同 §23.4，去掉已完成的）
+- blockly 種子題（另開 session）、wiki 實測（需使用者同意連網）、轉換執行器（等 lora-manager-2）、Electron 驗證（見 24.3）、嵌入重產（總指揮）。
+- LoRA 管理的 `model_card.md`、註冊入口（沿用資產清單匯入）維持原狀。
