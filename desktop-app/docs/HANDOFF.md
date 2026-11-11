@@ -2,6 +2,77 @@
 
 > **2026-11-11 管理者交接（先看第 0 節，比下面所有節新）**。這台是 Windows 機器，專案 `D:\Downloadsideos-嗨投資-desktop-app\desktop-app`，分支 `desktop-app`。更舊的現況在下面第 1 節以後與 [`HANDOFF.history.md`](HANDOFF.history.md)，可能過期，先驗證再引用。
 
+## 0-A. 2026-11-11（Linux）管理者交接：LoRA 資料擴充、七個子 session、訓練工作室新需求
+
+> **這一節比下面所有節新，先讀這裡。** 下面的「0. 2026-11-11 交接」是 Windows 機器那一份（仍有效，但路徑與工具要對應到 Linux，見本節「環境」）。
+
+### A1. 開場提示（接手者收到的原文）
+請接續 `desktop-app/docs/HANDOFF.md` 第 0-A 節：完整讀完（含使用者原話與工作方式）並照著做，執行 low-context-long-run 技能（門檻 30%）：做下一個待辦，到門檻就寫下一份交接、啟動接手者。第一則訊息用一行確認你讀過文件、要從哪個待辦開始。
+
+### A2. 概況
+- **機器與倉庫**：Linux 伺服器（24 核、61 GB、無 GPU）。主倉庫 `/home/hungfu.lee/Downloads/SRC/tw_stock_db`，分支 `desktop-app`（Claude Desktop 認得這個資料夾，能建工作樹）。`~/fa` 是從交接 bundle 還原的複本，**Claude Desktop 不認得它，不能在那裡開 session 或工作樹**；LoRA 的 Python 環境與模型在那裡（見「環境」）。node v22 在 `/usr/bin/node`。
+- **我提交的**：`8c96ee8f`（主倉庫 `desktop-app`）：`lora-train/gen/gen_code_split.js`、`gen/refactor_split.py`（已登記在 `gen/merge_dataset.js`）、`eval_gen.py`、`score_gen.js`、`DESIGN.lora-training.md` §12。
+- **LoRA 資料現況**（`merge_dataset.js` 實跑）：6294 列（訓練 4170、留出 2124）。新增 `code_split` 202（訓練 67）、`code_write_fn` 596（194）、`plan_check` 203（68）、`self_validate` 836（277）、`review_return` 219（76）。**訓練題只有 67 題**（種子題庫大多在凍結的留出檔，不能進訓練集）。`uml_design` 的 actors／classes／relations 仍只有 1～4 列。
+- **煙霧訓練（2026-11-11）**：LoRA r16、batch 2×累積 8（每步 16 列）：**每步約 60 秒**（當時機器同時有其他工作），一輪約 235 步≈4 小時，三輪≈12 小時；Trainer 內建的驗證階段（417 列）要約 13 分鐘，記憶體約 19 GB。loss 2.225→2.025（只 2 步，沒有意義）。**尚未做正式訓練、尚未量過微調後的分數。**
+- **基底基準（只抽 8 題煙霧）**：切割題 valid 0/8（基底輸出 JSON 陣列而不是要求的物件）、自問 ok 3/8。完整基準還沒跑。
+- **七個子 session**（都在各自工作樹、各限 2 核心、不推送不發布；已改成 `claude-haiku-5-5`、高思考強度，從它們的下一輪生效）：
+  | 名稱 | session id | 內容 |
+  |---|---|---|
+  | blockly-finish | `local_9b886b69-3a3d-4a54-a93d-465bf4809156` | inflate／tar PAX／圖片格式讀寫／holdout 未解題／G1–G18 |
+  | matrix-finish | `local_6959e132-9c5e-4363-ada9-6f94cf48b9cd` | §12.3 缺口、反編譯、teach_queue、DCT／YCbCr／量化矩陣化 |
+  | ir-finish | `local_cfbf6126-a189-44e7-87d4-84e892805489` | 多語言層（中間語言）缺口 |
+  | parallel-domain | `local_5cd23b85-6989-4b1c-90f3-d9fbe231985a` | OpenMP 風格排程、相依分析、平行範式 |
+  | media-codec-domain | `local_208db49d-7c2b-444c-8ee7-43435e7c8392` | H.264＋有損聲音／影像壓縮 |
+  | studio-domain-author | `local_dc9d8a32-4c2a-4d23-81f2-25a42b25a4cd` | 訓練工作室新增領域／blockly／矩陣包裝 |
+  | lora-slot-js | `local_6bd203d6-3ee2-4cef-8359-1c38a45374e9` | 槽版轉換器非零 adapter 等價（cos 0.968）原因 |
+  - 補充（2026-11-11）：studio-domain-author 已完成一輪：單元測試 8 組全綠（修了推導式變數誤判、示範資料留出題混入訓練、算錯的期望值），4 個提交在分支 `claude/studio-domain-author-dcb72c`（最新 `1827d6c1`，DESIGN.TODO.offline-training-studio.md §16）；**Electron 視窗與 blockly 端到端沒驗、離線訓練器 GUI 沒做**；未推送。
+  它們結束一輪時會有通知；**核對各自工作樹的提交再說完成**；合併到主倉庫要先問使用者；共用檔 `renderer/src/floating-assistant.js` 由管理者統一執行 `scripts/embed-code-ui.js` 嵌入（子 session 被禁止跑）。
+- **v354 沒上線的原因（已查出，未修）**：`scripts/publish.sh` 第 97 行 `git push --force … | grep … | tail -1 || true`，管線結束碼是 `tail` 的、後面又 `|| true`，推送失敗被吞掉；第 4 步驗證檢查的是「本機」`desktop-app-patch` 分支而不是遠端，所以照樣印出「完成」。遠端 `desktop-app-patch` 停在 `1343f908`（v353）。為什麼推送失敗不知道。
+
+### A3. 待辦（依序）
+0. **新需求（使用者 2026-11-11，原話見 A5）：訓練工作室的「流程總覽（pipeline view）」，涵蓋 colu、matrix、blockly、LoRA、LLM 模型五種訓練。** 已用 `SendMessage` 交給 studio-domain-author（`local_dc9d8a32-…`）；你要追它的進度、核對提交，不要自己同時改同樣的檔案。
+1. **新需求（使用者 2026-11-11，原話見 A5）：訓練工作室支援「完整微調 Qwen3-0.6B → 匯出更強的模型（GGUF 或 ONNX）」，預設依執行環境（網頁／桌面版本機）挑格式。** 先寫設計再做，設計寫進 `DESIGN.TODO.offline-training-studio.md` 新節。已查到的事實：
+   - app 的執行格式：桌面版 `nr-engine.js` 是 ONNX 專用（onnxruntime-node）；網頁版是 transformers.js／ort-web 的 ONNX q8（`onnx-community/Qwen3-0.6B-ONNX/onnx/model_quantized.onnx`）。GGUF 目前只用在評量（`scripts/eval/mini_llama_server.py`）與候選的 Vulkan 後端（llama.cpp），app 主路徑沒有吃 GGUF。所以「預設格式」要做成依環境與可用後端挑選的純函式（網頁→ONNX q8、桌面本機→ONNX q8、有 llama.cpp 後端時才提供 GGUF），不要寫死。
+   - 現成：`lora-train/merge_and_export.py`（adapter 合併回基底，輸出 fp32 safetensors）、`lora-train/make_lora_onnx.py`、`lora-slot-build.js`（桌面版把標準 q8 改成槽版）。**沒有**的：fp32→ONNX 匯出（要 `optimum` 或自寫 `torch.onnx.export`，且必須與 app 吃的 q8 圖的輸入輸出格式一致：`input_ids／attention_mask／position_ids／past_key_values.*`）、q8 量化、GGUF 轉換（`llama.cpp` 的 `convert_hf_to_gguf.py`＋`llama-quantize`，這台沒裝）。
+   - 完整微調（全參數）的記憶體粗估：fp32 權重 2.4 GB＋梯度 2.4 GB＋AdamW 狀態 4.8 GB≈10 GB 再加啟動記憶體；這台 CPU 能跑但比 LoRA 更慢；網頁版 WASM 做不到。要誠實寫在設計裡，並提供「LoRA 訓練後合併成完整模型再匯出」這條較實際的路。
+   - 工作室的實作歸 `studio-domain-author` 那條線（它正在改 `scripts/training-studio.js`、工作室資產／評量），先用 `SendMessage` 跟它對齊，不要兩邊同時改同樣的檔案。
+   - 任何下載（llama.cpp、optimum、ONNX 量化檔）都要先列檔名／來源／大小，使用者**直接**同意才做。
+2. **LoRA 訓練**：先決定規模再開跑。建議：(a) 用 `eval_gen.py` 量基底在各 stage 的完整基準（`--per_stage 60`，輸出 `out/eval/base.json`，再 `node score_gen.js`）；(b) 正式訓練前關掉 Trainer 內建驗證或把驗證集縮到 ≤40 列（13 分鐘太浪費）；(c) 兩輪、必要時對 `when2call`／`agent`／`wiring` 這些已足夠的領域降取樣，讓新領域的比重上來；(d) 訓練完用 `eval_run.py`（既有領域）＋`eval_gen.py`/`score_gen.js`（新領域）比基底與微調，**退步的組別要列出來**；(e) 只有各組都不輸基底才進 `pack`。要用 `nice`，且先看子 session 佔用的 CPU。
+3. **補資料**：`uml_design` 的 actors／classes／relations（現在每個 1～4 列，只用一個固定情境）；`review_return` 負例只有 13 筆；訓練題只有 67 題——用 `scripts/eval/gen_bench_*.py` 生新的訓練題（不是放寬留出）。
+4. **v354**：修 `publish.sh`（推送失敗要中止；驗證改用 `git ls-remote origin desktop-app-patch` 比對剛組出的提交）；**重發需要 GitHub 推送權限，這台沒有登入**（`git push` 報 `could not read Username`），必須由使用者提供或在有權限的機器上做；要在 `97ffb93e9` 的乾淨工作樹發布，不要帶半成品。
+5. **收子 session 的成果**：逐一核對、跑測試、列出可合併的提交給使用者；統一嵌入與建置。
+
+### A4. 工作方式（逐字規則）
+- 回覆用繁體中文、不夾英文縮寫、不用簡體字；誠實區分「我驗證過的」「子 session 回報的」「推測」；失敗要附具體事實。
+- 派子 session 時：`claude-haiku-5-5`＋高思考強度（使用者 2026-11-11 指示）；`start_session` 後模型要用 `set_session_model` 改（hook 會改輸入，被要求時用「完全相同的輸入」再呼叫一次）。工作樹要建在**主倉庫**，不是 `~/fa`。
+- commit 結尾 `Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>`；這台沒設 git 身分，用 `git -c user.name="Claude" -c user.email="noreply@anthropic.com" commit`，**不要改全域設定、不要冒用既有作者**；不要 `git add -A`（工作樹裡還有別人未提交的 `progress.jsonl`、`handoff.txt`、`wiki/`、`test-reports/`）。
+- 發布：`PUBLISH_TRAILER=… sh scripts/publish.sh -m "說明"`，直接用 `sh`；**半成品不要帶上線**；沒有推送權限就停下來告訴使用者。
+- 下載一律先列檔名／來源／大小並等使用者直接同意。不改系統設定（IPv6、apt 設定、sudo 都是使用者自己在終端機執行）。
+- 這台是共用伺服器：測試與長命令用 `nice -n 10`，子 session 各被限制 2 核心；不要平行跑多個重測試。
+- 使用者已授權：各線有結果核對後直接 commit、push、publish（先前口頭授權）——但這台沒有推送權限，而且半成品不上線。
+- 額度：做事到 context 30% 就交棒；五小時額度快用完時（約 90%）也交棒。
+
+### A5. 使用者原話（逐字；日期為對話日期）
+- 2026-11-10：「我們這邊也要實現Qwen3-0.6B LoRA訓練，要讓CoLU, UML-design逐層切割,UML-design+CoLU思考堆疊與 所有tool call的recipe都可以獲得強化，並讓plan template規劃能力可以增強。也要讓目前正在實現的blockly-teach+matrix-algorithm 與各種提前教學的題目可以更精準，要讓未知的題目可以做出更好的選擇」
+- 2026-11-11（交接訊息）：「第一件事（HANDOFF 第 0.1 節）：v354 沒有真的上線，遠端更新分支停在 v353。先查原因再重發，不要直接跑發布腳本，因為現在的提交含半成品。」「發布（scripts/publish.sh）需要有 GitHub 推送權限，先確認。」
+- 2026-11-11：「是，照建議做」（UML 切割與計畫樣板資料用程式重構參考解來產生）；「同意下載」（`Qwen/Qwen3-0.6B`，約 1.5 GB，已下載）；對「子 session 用哪個倉庫」選「快轉原倉庫」。
+- 2026-11-11：「可以開好幾的subsession把前面累積handoff的一起執行」「包括matrix algorithm缺口, 多語言層缺口，blockly-teach缺口, 平行運算與排程(OpenMP), H.264有損聲音與影響壓縮...等」「所有的subsession都可以用haiku 5.5, high thinking efford」
+- 2026-11-11：「我希望我們的訓練工作室不只用來產生LoRA，也能基於基礎的那包qwen，經過資料輸入訓練，產生更強的model，可以選gguf, onnx，預設以當下環境(網頁/desktop-app native) 優先」
+- 2026-11-11：「訓練工作室除了現有的view, 對於訓練各種(colu, matrix, blockly, LoRA, LLM Model) 想要有一個pipeline view」
+- 更早仍有效的使用者原話在下面第 0.6 節（「不可以刻意不做，我不接受。」等）。
+
+### A6. 交接程序（自我遞迴）
+執行 low-context-long-run 技能（門檻 30%）：每個批次邊界檢查 context（`mcp__ccd_session_mgmt__get_usage`）；到門檻就把本節更新、提交、用 `mcp__ccd_session__start_session`（`initiation:"user_asked"`、`context:"fresh"`、`use_worktree:false`，主倉庫）啟動接手者，等它確認讀過文件後再 `mark_completed`＋`archive_session`（不要 delete、不要 clear）。待辦清空且驗證完才停。
+
+### A7. 踩過的坑
+- `pkill -f "<模式>"` 會比對到自己的 shell 命令列而把自己殺掉（exit 144）；用程序編號 `kill <pid>`。
+- 系統 `python3.13` 沒有 transformers；LoRA 腳本一律用 `~/fa/desktop-app/lora-train/.venv/bin/python`。PPA（`ppa.launchpadcontent.net`）被網路擋，`python3.13-venv` 裝不了，venv 是用 `python3.13 -m venv --without-pip` 再 `get-pip.py` 建的；IPv6 目前被使用者用 sysctl 關掉（重開機會恢復）。
+- Claude Desktop 不認得 `~/fa`：在那裡 `start_session` 建工作樹會被拒；不要在那裡跑 git。`~/fa/desktop-app/lora-train/` 有未被 git 追蹤的 `.venv/`、`models/Qwen3-0.6B/`、`data/train.jsonl`、`data/heldout.jsonl`、`out/`；主倉庫的工作樹裡沒有這些，子 session 要用絕對路徑唯讀使用。
+- Trainer 預設 batch 2、長度 1024 時記憶體約 19 GB；驗證階段很慢；新增的切割／寫作題 token 數較長（平均 480～570）。
+- `eval_adapter.py` 的 `max_new=24` 與完全比對不適合長輸出題型，新題型用 `eval_gen.py`＋`score_gen.js`。
+- `scripts/qrun.js`、`psmux`、處理器親和性、`py` 啟動器、PowerShell 都是 Windows 專用，Linux 直接跑。
+
+
 ## 0. 2026-11-11 交接
 
 ### 0.1 最優先：v354 沒有真的上線
