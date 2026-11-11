@@ -20,11 +20,17 @@
                 [],
                 (c, N, I) => code(['v = ' + nums(N, I), 'n = len(v)', 'N2 = n // 2', 'd = []', 'for i in range(N2):', '    xr = v[2 * i]', '    if 2 * i + 2 < n:', '        xr = v[2 * i + 2]', '    d.append(v[2 * i + 1] - ((v[2 * i] + xr) >> 1))', 's = []', 'for i in range(N2):', '    dl = d[i]', '    if i > 0:', '        dl = d[i - 1]', '    s.append(v[2 * i] + ((dl + d[i] + 2) >> 2))', 'print(*s)', 'print(*d)']),
                 { shape: numIn, limit: 1, helpers: () => [] }),
+            // 8×8 二維 DCT-II（正交縮放：a(0)＝√(1/8)，其餘 a＝1/2）後以均勻量化步長 Q 量化，捨入為 floor(c/Q＋0.5)。
+            D('img.dct8q', 'img-dct8q', '8×8 二維 DCT 與量化：輸入一行 65 個整數，第一個是量化步長 Q，其後 64 個是 8×8 區塊的像素（依列排列，已減去 128）。以 DCT-II 正交縮放（第 0 個係數的縮放為 √(1/8)，其餘為 1/2），每個係數 c 先除以 Q 再加 0.5 後向下取整，得到量化係數。輸出 8 行，每行 8 個整數（依 u 列、v 行）',
+                [],
+                (c, N, I) => code(['import math', 'v = ' + nums(N, I), 'Q = v[0]', 'out = []', 'for u in range(8):', '    row = []', '    for w in range(8):', '        s = 0.0', '        for x in range(8):', '            for y in range(8):', '                s = s + v[1 + 8 * x + y] * math.cos((2 * x + 1) * u * math.pi / 16) * math.cos((2 * y + 1) * w * math.pi / 16)', '        au = 0.5', '        if u == 0:', '            au = math.sqrt(0.125)', '        aw = 0.5', '        if w == 0:', '            aw = math.sqrt(0.125)', '        row.append(math.floor(au * aw * s / Q + 0.5))', '    print(*row)']),
+                { shape: numIn, limit: 1, helpers: () => [] }),
         ];
         const ALL = (...parts) => new RegExp('^' + parts.map((x) => String.raw`(?=[\s\S]*` + x + ')').join(''), 'i');
         const algos = [
             { key: 'img-haar1d', re: ALL('(?:Haar|哈爾)', '(?:小波|wavelet)'), veto: /5\s*\/\s*3|LeGall|提升/i },
             { key: 'img-legall53', re: ALL('(?:5\\s*/\\s*3|LeGall|萊加爾)', '(?:小波|提升|lifting|wavelet)'), veto: /Haar|哈爾/i },
+            { key: 'img-dct8q', re: ALL('8\\s*[x×*乘]\\s*8', '(?:DCT|離散餘弦)'), veto: /小波|Haar|哈爾|5\s*\/\s*3/i },
         ].map((x) => Object.assign(x, { pri: true }));
         const paradigms = {}; for (const sk of skeletons) paradigms[sk.algo] = ['codec-transform'];
         return { id: 'avimage', label: '影音壓縮 5：有損影像（小波）', requires: [], judge: { checker: 'tokens', timeoutMs: 30000 }, algos, paradigms, skeletons };

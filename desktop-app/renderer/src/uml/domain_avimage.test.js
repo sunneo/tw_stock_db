@@ -82,7 +82,31 @@ const HO2_LEGALL = 'JPEG 2000 可逆 5/3 小波一層（提升法）：輸入一
 const HO3_LEGALL = 'JPEG 2000 可逆 5/3 小波一層（提升法）：輸入一行 8 個整數，記為 x0 至 x7。高頻 d[i] 為奇數位 x[2i+1] 減去 (x[2i] 與右鄰偶數之和) 右移 1 位，右鄰超出右端時用 x[2i]；低頻 s[i] 為偶數位 x[2i] 加上 (兩個相鄰高頻 d[i-1] 與 d[i] 之和加 2) 右移 2 位，左端 d[-1] 用 d[0]。輸出兩行：第一行 s（4 個），第二行 d（4 個）。';
 const gen8 = (b, { rnd: rr }) => Array.from({ length: 8 }, () => rr(-128, 127)).join(' ');
 
+// 8×8 DCT-II 加量化：參考解獨立寫成 Python（直接以 f[x][y] 逐項累加，a(k) 用函式）
+const REF_DCT = `import sys, math
+v = [int(t) for t in sys.stdin.read().split()]
+Q = v[0]
+f = [[v[1 + 8 * x + y] for y in range(8)] for x in range(8)]
+def a(k):
+    return math.sqrt(1 / 8) if k == 0 else 0.5
+for u in range(8):
+    row = []
+    for w in range(8):
+        s = 0.0
+        for x in range(8):
+            for y in range(8):
+                s += f[x][y] * math.cos((2 * x + 1) * u * math.pi / 16) * math.cos((2 * y + 1) * w * math.pi / 16)
+        row.append(math.floor(a(u) * a(w) * s / Q + 0.5))
+    print(*row)
+`;
+const ST_DCT = '8×8 二維 DCT 與量化：輸入一行 65 個整數，第一個是量化步長 Q，其後 64 個是 8×8 區塊的像素（依列排列，已減去 128）。以 DCT-II 正交縮放（第 0 個係數的縮放為 √(1/8)，其餘為 1/2），每個係數 c 先除以 Q 再加 0.5 後向下取整，得到量化係數。輸出 8 行，每行 8 個整數（依 u 列、v 行）。';
+// holdout：另寫措辭（只量測），仍寫出正交縮放的約定，避免縮放約定不明
+const HO_DCT = '以 8×8 離散餘弦變換（DCT-II）加量化：輸入一行 65 個 -128 到 127 的整數，第一個為步長 Q，其後 64 個為區塊像素（列優先）。做正交 DCT-II（常數項用 √(1/8)，其餘係數用 1/2 的縮放），每個係數除以 Q 再加 0.5 取整數部分，輸出 8 行、每行 8 個整數。';
+const genDCT = (b, { rnd: rr }) => [rr(4, 32)].concat(Array.from({ length: 64 }, () => rr(-128, 127))).join(' ');
+
 const SEEDS = [
+    { id: 'dct-tr', want: 'img.dct8q', st: ST_DCT, ref: REF_DCT, gen: genDCT },
+    { id: 'dct-ho', split: 'holdout', st: HO_DCT, ref: REF_DCT, gen: genDCT },
     { id: 'haar-tr', want: 'img.haar1d', st: ST_HAAR, ref: REF_HAAR, gen: gen8 },
     { id: 'legall-tr', want: 'img.legall53', st: ST_LEGALL, ref: REF_LEGALL, gen: gen8 },
     { id: 'haar-ho', split: 'holdout', st: HO_HAAR, ref: REF_HAAR, gen: gen8 },

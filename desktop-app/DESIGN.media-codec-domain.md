@@ -97,7 +97,9 @@ FA_TS_DIR=<含 tree-sitter.js、tree-sitter.wasm、tree-sitter-python.wasm 的�
   - `legall-ho`：敘述錯誤（「相鄰高頻的平均（…加 2 後除以 4）」把平均與除以 4 寫成矛盾），屬我方敘述錯。
   - `legall-ho2`：根因是輸出句「第一行印 s，第二行印 d」被讀成輸入（讀取器只認「輸出」字樣）。
   - `legall-ho3`（改寫輸出句後的措辭）AC。注意：`legall` 的 holdout 已改過兩次（ho→ho2→ho3），不再是乾淨 holdout，`legall-ho3` 只能當措辭探索紀錄。
-- 尚未做：8×8 DCT 與量化、Z 字形、熵編碼（階段 5 其餘部分）。
+- 8×8 DCT 與量化（`img.dct8q`，DCT-II 正交縮放，量化 floor(c/Q＋0.5)，輸入一行 65 個整數）：train `dct-tr` AC，反序 3/3 含前面兩題；holdout `dct-ho`（新措辭）AC。限制：參考解與骨架都用浮點 cos，理論上近似平手處可能與別的實作差 1，本次隨機資料未出現；**沒有外部工具（Pillow、ffmpeg 的 DCT）逐係數對照**，正確性以公式與參考解一致為準。
+- holdout 合計 3/5（`dct-ho`、`haar-ho`、`legall-ho3` AC；`legall-ho`、`legall-ho2` 為紀錄）。
+- 尚未做：Z 字形、熵編碼（階段 5 其餘部分）；階段 4 有損聲音（MDCT）尚未開始。
 
 ## 3. 環境與坑（重要，接手前先看）
 
