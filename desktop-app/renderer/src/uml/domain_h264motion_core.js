@@ -25,12 +25,16 @@
             D('h264.qpel', 'h264-qpel', '1/4 像素內插（a 位置）：輸入一行 2 個整數，依序為整數位置的樣本 G 與半像素樣本 b（都是 0 至 255）。a 的值為 (G 加 b 加 1) 右移 1 位。輸出一個整數 a。',
                 [], (c, N, I) => code(['v = ' + nums(N, I), 'G = v[0]', 'b = v[1]', 'a = (G + b + 1) >> 1', 'print(a)']),
                 { shape: numIn, limit: 1, helpers: () => [] }),
+            D('h264.qpel.diag', 'h264-qpel-diag', '四分之一像素的對角位置：輸入一行 4 個整數，依序為半像素樣本 b、h、m、s（都是 0 至 255）。e 為 (b 加 h 加 1) 右移 1 位；g 為 (b 加 m 加 1) 右移 1 位；p 為 (h 加 s 加 1) 右移 1 位；r 為 (m 加 s 加 1) 右移 1 位。輸出四個整數，依序為 e、g、p、r。',
+                [], (c, N, I) => code(['v = ' + nums(N, I), 'b = v[0]', 'h = v[1]', 'm = v[2]', 's = v[3]', 'print((b + h + 1) >> 1, (b + m + 1) >> 1, (h + s + 1) >> 1, (m + s + 1) >> 1)']),
+                { shape: numIn, limit: 1, helpers: () => [] }),
         ];
         const ALL = (...parts) => new RegExp('^' + parts.map((x) => String.raw`(?=[\s\S]*` + x + ')').join(''), 'i');
         const algos = [
             { key: 'h264-motion-sad', re: ALL('(?:運動|motion)', '(?:全搜尋|SAD|絕對差)'), veto: /CAVLC|CABAC|量化|去區塊|幀內|逆變換|正變換/ },
             { key: 'h264-bipred', re: ALL('(?:雙向|B\\s*幀|bi.?pred)', '(?:預設平均|平均|預測樣本)'), veto: /CABAC|CAVLC|量化|去區塊|幀內|全搜尋|SAD/ },
-            { key: 'h264-qpel', re: ALL('(?:1\\s*/\\s*4|四分之一|quarter)', '(?:像素|sample|內插)'), veto: /CABAC|CAVLC|量化|去區塊|幀內|全搜尋|SAD|色度|雙向/ },
+            { key: 'h264-qpel-diag', re: ALL('(?:1\\s*/\\s*4|四分之一)', 'e、g、p、r'), veto: /CABAC|CAVLC|量化|去區塊|幀內|全搜尋|SAD|色度|雙向/ },
+            { key: 'h264-qpel', re: ALL('(?:1\\s*/\\s*4|四分之一|quarter)', '(?:像素|sample|內插)'), veto: /CABAC|CAVLC|量化|去區塊|幀內|全搜尋|SAD|色度|雙向|e、g、p、r/ },
         ].map((x) => Object.assign(x, { pri: true }));
         const paradigms = {}; for (const sk of skeletons) paradigms[sk.algo] = ['codec-motion'];
         return { id: 'h264motion', label: '影音壓縮 3：運動搜尋、B 幀雙向平均、1/4 像素', requires: [], judge: { checker: 'tokens', timeoutMs: 30000 }, algos, paradigms, skeletons };

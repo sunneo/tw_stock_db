@@ -140,6 +140,65 @@ const genEnc = (b, { rnd }) => {
     return xs.join(' ');
 };
 
+const REF_LEV = `import sys
+${TABS}
+v = [int(t) for t in sys.stdin.read().split()]
+bins = []
+for x in v:
+    for i in range(min(x, 6)):
+        bins.append((i, 1))
+    if x < 6:
+        bins.append((x, 0))
+ctx = {i: [0, 0] for i in range(6)}
+low, rng, first, outst, out = 0, 510, True, 0, []
+def put(b):
+    global first, outst
+    if first:
+        first = False
+    else:
+        out.append(b)
+    while outst > 0:
+        out.append(1 - b)
+        outst -= 1
+def renorm():
+    global low, rng, outst
+    while rng < 256:
+        if low < 256:
+            put(0)
+        elif low >= 512:
+            low -= 512
+            put(1)
+        else:
+            low -= 256
+            outst += 1
+        rng <<= 1
+        low <<= 1
+for c, bn in bins:
+    p, m = ctx[c]
+    lps = RANGE[p][(rng >> 6) & 3]
+    rng -= lps
+    if bn == m:
+        p = min(p + 1, 62) if p < 62 else p
+    else:
+        low += rng
+        rng = lps
+        if p == 0:
+            m = 1 - m
+        p = TL[p]
+    ctx[c] = [p, m]
+    renorm()
+rng = 2
+renorm()
+put((low >> 9) & 1)
+t = ((low >> 7) & 3) | 1
+out += [(t >> 1) & 1, t & 1]
+print(''.join(str(x) for x in out))
+`;
+
+const ST_LEV = '有損影像係數的多上下文熵編碼：輸入一行 12 個整數，每個為 0 至 6 的係數絕對值。截斷一元二值化：值為 v 時送出 v 個 1（至多 6 個），v 小於 6 再送出一個 0。第 i 個二進位值用第 i 個上下文（共 6 個，各自從 pStateIdx 0、valMPS 0 開始），各上下文依 rangeTabLPS 與狀態轉移各自更新。全部用同一個算術編碼器（RenormE、PutBit、位元欠款）編碼，最後收尾。輸出一個由 0 與 1 組成的位元字串。';
+const HO_LEV = '影像係數的二值化與算術編碼：一行 12 個整數，各為 0 到 6 的係數絕對值。截斷一元碼：v 個 1 後接一個 0（v 等於 6 時不接 0）。第 i 位二值使用第 i 個上下文，六個上下文各自從狀態 0、最可能值 0 開始，依 rangeTabLPS 更新。以同一個算術編碼器依序編碼，最後收尾。輸出 0 與 1 組成的位元字串。';
+const genLev = (b, { rnd }) => { const xs = []; for (let i = 0; i < 12; i++) xs.push(rnd(0, 6)); return xs.join(' '); };
+
 const SEEDS = [
     { id: 'cab-dec-tr', want: 'h264.cabac.decision', st: ST_DEC, ref: REF_DEC, gen: genDec },
     { id: 'cab-dec-ho', split: 'holdout', st: HO_DEC, ref: REF_DEC, gen: genDec },
@@ -149,6 +208,8 @@ const SEEDS = [
     { id: 'cab-init-ho', split: 'holdout', st: HO_INIT, ref: REF_INIT, gen: genInit },
     { id: 'cab-enc-tr', want: 'h264.cabac.encode', st: ST_ENC, ref: REF_ENC, gen: genEnc },
     { id: 'cab-enc-ho', split: 'holdout', st: HO_ENC, ref: REF_ENC, gen: genEnc },
+    { id: 'cab-lev-tr', want: 'h264.cabac.levels', st: ST_LEV, ref: REF_LEV, gen: genLev },
+    { id: 'cab-lev-ho', split: 'holdout', st: HO_LEV, ref: REF_LEV, gen: genLev },
 ];
 
 H.main({ name: '領域包 h264cabac', packs: [CB], seeds: SEEDS, minSkeletons: 4, judge: { checker: 'tokens', timeoutMs: 60000 } });

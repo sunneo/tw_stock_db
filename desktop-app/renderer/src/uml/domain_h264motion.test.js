@@ -47,6 +47,16 @@ const genSad = (b, { rnd }) => { const xs = []; for (let i = 0; i < 52; i++) xs.
 const genBi = (b, { rnd }) => { const xs = []; for (let i = 0; i < 8; i++) xs.push(rnd(0, 255)); return xs.join(' '); };
 const genQp = (b, { rnd }) => [rnd(0, 255), rnd(0, 255)].join(' ');
 
+const REF_QD = `import sys
+v = [int(t) for t in sys.stdin.read().split()]
+b, h, m, s = v
+print((b + h + 1) // 2, (b + m + 1) // 2, (h + s + 1) // 2, (m + s + 1) // 2)
+`;
+
+const ST_QD = '四分之一像素的對角位置：輸入一行 4 個整數，依序為半像素樣本 b、h、m、s（都是 0 至 255）。e 為 (b 加 h 加 1) 右移 1 位；g 為 (b 加 m 加 1) 右移 1 位；p 為 (h 加 s 加 1) 右移 1 位；r 為 (m 加 s 加 1) 右移 1 位。輸出四個整數，依序為 e、g、p、r。';
+const HO_QD = '1/4 像素位置 e、g、p、r 的值：一行 4 個整數，依序是 b、h、m、s 四個半像素樣本。取 b 與 h 的平均（加 1 後右移 1 位）得 e；b 與 m 得 g；h 與 s 得 p；m 與 s 得 r。依序輸出 e、g、p、r 四個整數。';
+const genQd = (b, { rnd }) => [rnd(0, 255), rnd(0, 255), rnd(0, 255), rnd(0, 255)].join(' ');
+
 const SEEDS = [
     { id: 'mo-sad-tr', want: 'h264.motion.sad', st: ST_SAD, ref: REF_SAD, gen: genSad },
     { id: 'mo-sad-ho', split: 'holdout', st: HO_SAD, ref: REF_SAD, gen: genSad },
@@ -54,6 +64,8 @@ const SEEDS = [
     { id: 'mo-bi-ho', split: 'holdout', st: HO_BI, ref: REF_BI, gen: genBi },
     { id: 'mo-qp-tr', want: 'h264.qpel', st: ST_QP, ref: REF_QP, gen: genQp },
     { id: 'mo-qp-ho', split: 'holdout', st: HO_QP, ref: REF_QP, gen: genQp },
+    { id: 'mo-qd-tr', want: 'h264.qpel.diag', st: ST_QD, ref: REF_QD, gen: genQd },
+    { id: 'mo-qd-ho', split: 'holdout', st: HO_QD, ref: REF_QD, gen: genQd },
 ];
 
 H.main({ name: '領域包 h264motion', packs: [MO], seeds: SEEDS, minSkeletons: 3, judge: { checker: 'tokens', timeoutMs: 60000 } });

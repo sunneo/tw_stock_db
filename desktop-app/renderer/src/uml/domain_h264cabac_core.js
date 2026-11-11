@@ -63,12 +63,18 @@
                     'rng = 2', ...RN, 'pb = (low >> 9) & 1', 'if first:', '    first = False', 'else:', '    out.append(pb)', 'while outst > 0:', '    out.append(1 - pb)', '    outst = outst - 1', 'w = ((low >> 7) & 3) | 1', 'out.append((w >> 1) & 1)', 'out.append(w & 1)',
                     'print("".join(str(x) for x in out))']),
                 { shape: numIn, limit: 1, helpers: () => [] }),
+            // 多上下文係數熵編碼：輸入一行 12 個整數，每個為 0 至 6 的係數絕對值。截斷一元二值化：值為 v 時送出 v 個 1（至多 6 個），v 小於 6 再送出一個 0。第 i 個二進位值用第 i 個上下文（共 6 個，各自從 pStateIdx 0、valMPS 0 開始），各上下文依 rangeTabLPS 與狀態轉移各自更新。全部用同一個算術編碼器（RenormE、PutBit、位元欠款）編碼，最後收尾。輸出一個由 0 與 1 組成的位元字串。
+            D('h264.cabac.levels', 'h264-cabac-levels', '有損影像係數的多上下文熵編碼：輸入一行 12 個整數，每個為 0 至 6 的係數絕對值。截斷一元二值化：值為 v 時送出 v 個 1（至多 6 個），v 小於 6 再送出一個 0。第 i 個二進位值用第 i 個上下文（共 6 個，各自從 pStateIdx 0、valMPS 0 開始），各上下文依 rangeTabLPS 與狀態轉移各自更新。全部用同一個算術編碼器（RenormE、PutBit、位元欠款）編碼，最後收尾。輸出一個由 0 與 1 組成的位元字串。',
+                [], (c, N, I) => code(['v = ' + nums(N, I)].concat(['bins = []', 'for x in v:', '    for i in range(min(x, 6)):', '        bins.append((i, 1))', '    if x < 6:', '        bins.append((x, 0))'], tabs, ['ps = [0] * 6', 'mps = [0] * 6', 'low = 0', 'rng = 510', 'out = []', 'first = True', 'outst = 0',
+                    'for c, bn in bins:', '    q = (rng >> 6) & 3', '    lps = tab[ps[c]][q]', '    rng = rng - lps', '    if bn != mps[c]:', '        low = low + rng', '        rng = lps', '        if ps[c] == 0:', '            mps[c] = 1 - mps[c]', '        ps[c] = tl[ps[c]]', '    else:', '        ps[c] = ps[c] + 1 if ps[c] < 62 else ps[c]'], RN.map((l) => '    ' + l), ['rng = 2'], RN, ['pb = (low >> 9) & 1', 'if first:', '    first = False', 'else:', '    out.append(pb)', 'while outst > 0:', '    out.append(1 - pb)', '    outst = outst - 1', 'w = ((low >> 7) & 3) | 1', 'out.append((w >> 1) & 1)', 'out.append(w & 1)', 'print("".join(str(x) for x in out))'])),
+                { shape: numIn, limit: 1, helpers: () => [] }),
         ];
         const ALL = (...parts) => new RegExp('^' + parts.map((x) => String.raw`(?=[\s\S]*` + x + ')').join(''), 'i');
         const algos = [
             { key: 'h264-cabac-decision', re: ALL('(?:CABAC|上下文)', '(?:DecodeDecision|rangeTabLPS|codIRange)', '(?:解碼|決策)'), veto: /編碼|EncodeDecision|旁路|bypass|初始化|preCtxState|CAVLC|coeff_token/i },
             { key: 'h264-cabac-bypass', re: ALL('CABAC', '(?:旁路|bypass)'), veto: /編碼|初始化|rangeTabLPS|DecodeDecision/i },
             { key: 'h264-cabac-init', re: ALL('CABAC', '(?:初始化|preCtxState|上下文初始)'), veto: /編碼|旁路|bypass|rangeTabLPS|解碼一個/i },
+            { key: 'h264-cabac-levels', re: ALL('(?:影像|係數)', '上下文', '(?:熵編碼|算術編碼)'), veto: /DecodeDecision|旁路|初始化|bypass|解碼|CABAC/i },
             { key: 'h264-cabac-encode', re: ALL('CABAC', '(?:編碼|EncodeDecision|算術編碼)'), veto: /解碼|DecodeDecision|旁路|初始化|bypass/i },
         ].map((x) => Object.assign(x, { pri: true }));
         const paradigms = {}; for (const sk of skeletons) paradigms[sk.algo] = ['codec-cabac'];
