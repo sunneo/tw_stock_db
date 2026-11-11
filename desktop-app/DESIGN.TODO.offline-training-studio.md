@@ -309,6 +309,33 @@ Backend {
 
 **仍未做／阻礙**（誠實清單）：(1) Studio 訓練分頁的後端下拉：本次沒有改 `floating-assistant.js`（嵌入區塊與雙份 UI 規則需另行處理，且網頁版目前沒有 `studio_host` 對應的頁內宿主），所以網頁版畫面仍可能顯示「請用桌面版」；(2) `checkpoint_core.js` 用 Node 的 `crypto` 與 `Buffer`，瀏覽器端要補 sha256（同步）與 Buffer 墊片，**未在瀏覽器驗證**；(3) 資料管線：後端 `step` 吃 `{ids, tgt}` 的 token 序列，把訓練資料（對話格式、遮罩只算答案 token）轉成這個形狀的工作在 Studio 核心，未接；(4) 與 `train_lora.py` 的同資料 loss 曲線對拍（缺 torch 與完整權重）；(5) 30 步以上的 WebGPU／WASM loss 曲線一致性；(6) 較新顯示卡（有 `shader-f16`）的速度；(7) 序列長度只試 T=32；T=256 以上的激活與時間未量；(8) 層圖第一次建立要約 57 秒（WASM 常駐）到 59 秒（WebGPU）暖機，產品需顯示進度並可把建好的層圖留在 IndexedDB 供下次直接使用（`createSwapLayerSource` 已支援，跨工作階段重用的版本號鍵未做）。
 
+**階段 7（2026-11-11）：Studio 網頁版接線、瀏覽器端檢查點、30 步對拍**
+
+**Studio 網頁版接線（`studio_server_core.js`、`studio-viewer.template.html`、`web_train_core.js`）**
+- 新增頁內宿主介面 `h.webTrain`（`probe／start／status／pause／stop／exportCheckpoint／importCheckpoint`）。接上時：`/api/backends` 在網頁版把 `wasm-web` 列為可用並排最前、回 `webTrain: true`，`/api/info` 帶 `webTrain`，畫面標示「網頁版（頁內處理器訓練，較慢；可匯出入）」，後端下拉出現「網頁處理器」，開始／暫停／續訓／停止按鈕在選到 `wasm-web` 時啟用（桌面版選 `wasm-web` 也走頁內）；沒接上時 `wasm-web` 仍列出並寫原因（「頁內訓練宿主（h.webTrain）還沒接上這個環境」），不假裝可用。
+- 暫停→存檢查點到專屬 store；「匯出續訓檢查點」得 `<名稱>.fackpt`（存放式 zip：`ckpt.json`＋四個規範化張量檔，和 `.fatrain` 同容器技術但內容是續訓狀態）；「匯入續訓檢查點」先驗 zip 的 crc32 與檢查點 sha256 再存；續訓檢查相容欄位（rank、基底雜湊…）不符就拒絕。服務層（`web_train_core.js`）測試：連續 8 步 vs 暫停→續訓位元相同、匯出→**另一個服務實例／另一個 store**匯入→續訓到 12 步、壞檔／非 zip 被拒、沒有檢查點不能續訓、同時只允許一個訓練、**配額滿了訓練進入 error 並說明（`SwapFullError`），不靜默遺失**。路由層測試 90 項通過。
+- **還沒接**（宿主端，需動 `floating-assistant.js` 的嵌入與 `main-ext`，該檔目前有他人未提交的修改，所以我沒碰）：把 `web_train_core`／`backend_wasm_web`／`qwen3_*`／`onnx_grad_core`／`swap_store` 嵌進頁面並提供 `h.webTrain`（需要把這些 CommonJS 檔轉成嵌入用格式、onnxruntime-web 的 wasm 檔與 Worker、模型 617MB 的取得與快取、分詞器與提示格式把訓練資料轉成 `{ids,tgt}`）。**在宿主接上之前，使用者在真正的網頁版畫面看到的仍是「沒有可用的訓練後端」加上匯出 .fatrain 的說明**；`studio_embed.test.js` 在重跑 `node scripts/embed-code-ui.js` 之前會有 4 項失敗（範本、`checkpoint_core.js` 等嵌入內容與來源不一致，屬預期）。
+
+**瀏覽器端檢查點墊片**：`checkpoint_core.js` 不再硬依賴 Node 的 `crypto`／`Buffer`——改用 `DataView`／`Uint8Array`，沒有 `crypto` 時用 `asset_core.js` 的純 JS sha256；Node 下行為不變（既有 35 項測試通過）；主行程嵌入版不需新增檔案（`asset_core` 為選用）。檢查點存放用 `swap_store.js` 的專屬 IndexedDB（`fa-train-swap`／可另設 `fa-train-ckpt`），**滿了丟 `SwapFullError` 並停止，不淘汰**（IndexedDB 版在真 Electron 頁面實測過，見階段 4–6）。**瀏覽器內的 `.fackpt` 往返我只在 Node 測過**（沒有在瀏覽器頁面跑 `web_train_core`）。
+
+**30 步對拍（獨立 PyTorch 參考，`lora-train/webtrain_ref.py`）**：參考實作用同一份量化 ONNX 權重（`export-ref.js` 匯出 uint8 權重、縮放、零點、norm 增益與 RoPE 表）在 PyTorch 2.15.0 裡以標準算子（autograd、`torch.optim.Adam`）重寫 Qwen3 前向，與 JS 端的圖產生器／逐層引擎完全獨立；同一份初始 LoRA、同樣 4 條序列循環、學習率 3e-4、Adam(0.9, 0.999, 1e-8)、rank 8、alpha 16，三方各跑 30 步：
+
+| 步 | PyTorch loss | WASM 逐層 | WebGPU 逐層 | 相對差（WASM／WebGPU） | 梯度範數（PyTorch／WASM／WebGPU） |
+|---|---|---|---|---|---|
+| 1 | 13.18862 | 13.18862 | 13.18862 | 7.2e-8／2.9e-7 | 15.053／15.053／15.053 |
+| 5 | 11.31527 | 11.31527 | 11.31527 | 3.4e-7／2.5e-7 | 7.411／7.411／7.411 |
+| 10 | 10.94733 | 10.94733 | 10.94734 | 7.8e-7／4.4e-7 | 6.081／6.081／6.081 |
+| 15 | 9.26015 | 9.26010 | 9.26015 | 5.0e-6／7.2e-7 | 9.601／9.601／9.601 |
+| 20 | 8.05089 | 8.05062 | 8.05098 | 3.3e-5／1.1e-5 | 15.014／15.015／15.014 |
+| 25 | 1.93897 | 1.93905 | 1.93889 | 3.9e-5／3.9e-5 | 25.573／25.586／25.567 |
+| 30 | 1.16960 | 1.16927 | 1.16974 | 2.8e-4／1.1e-4 | 24.918／24.909／24.914 |
+
+30 步內最大 loss 相對差：**WASM 5.3e-4、WebGPU 2.8e-4**；最大梯度範數相對差：WASM 1.1e-3、WebGPU 4.1e-4。**對照 §5.8 門檻：第 1 步 loss ≤1e-3（實測 ≤3e-7）、梯度範數 ≤1e-2（實測 ≤1.1e-3）、30 步後 loss（fp16 時才放寬到 5%）——fp32 實測 ≤5.3e-4，全部通過**。誤差隨步數增大是訓練動力學對 fp32 捨入的放大（第 1–15 步 ≤5e-6），不是系統性偏差。速度：PyTorch（2 執行緒）13.9 秒／步，WASM 逐層 19.7 秒／步，WebGPU（舊 Kepler 顯示卡）暖機 72 秒後中位 10.0 秒／步（T=32）。
+
+**量化底座與原始 PyTorch 權重的差距（獨立於我們的引擎）**：用管理者下載的 Qwen/Qwen3-0.6B 原始權重（`model.safetensors`，float32 載入）對同一條序列算交叉熵：**13.25796 vs q8 底座 13.18862（相對差 5.2e-3）**；先前真 q8 ONNX 本身是 13.17702。也就是「q8 量化的底座」與「原始權重」之間本來就有約 0.5% 的 loss 差，這是部署用的 q8 底座的性質，不是訓練引擎的誤差；在 q8 底座上訓練的 adapter 套回 q8 推論是自洽的，但**若要拿它套到非量化的底座上，沒有驗證過**。
+
+**仍未做**：(1) 宿主接線（見上，`h.webTrain` 的真實作與嵌入）；(2) 資料管線（分詞器＋提示格式→`{ids,tgt}`、只對答案 token 算損失的遮罩）——參考對拍用的是隨機 token 序列，**沒有用真實訓練資料驗證收斂**；(3) 較新顯示卡（有 `shader-f16`）、T≥256 的速度與記憶體；(4) 瀏覽器內 `.fackpt` 往返實測；(5) 層圖跨工作階段重用（版本鍵）。
+
 **退路（正式需求）：網頁版小型編譯器，用 WebGPU／WASM 自己做訓練與產圖**
 
 使用者最差狀況的要求：若「反向圖＋一般 onnxruntime-web」卡在算子或效能，就在網頁版自己做編譯器。**現在就把主攻路線做成它的前半段**，避免做兩次：
