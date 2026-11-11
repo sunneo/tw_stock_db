@@ -529,10 +529,14 @@ embedLiveModule('VPSTORE', 'FaVoiceprintStore', 'renderer/src/voice/voiceprint_s
 function embedStudio() {
     const dir = path.join(root, 'renderer/src/studio'); if (!fs.existsSync(path.join(dir, 'studio_server_core.js'))) return;
     const rd = (p) => fs.readFileSync(path.join(root, p), 'utf8').replace(/\r\n/g, '\n');
-    const UMD = ['asset_core', 'fatrain_core', 'storage_core', 'trainer_adapter', 'studio_layout_core', 'lora_registry_core', 'lora_apply_core', 'ingest_core', 'clean_core', 'studio_server_core']; // 順序＝相依順序
+    const UMD = ['asset_core', 'fatrain_core', 'storage_core', 'trainer_adapter', 'studio_layout_core', 'lora_registry_core', 'lora_apply_core', 'onnx_patch_core', 'lora_merge_core', 'lora_web_core', 'ingest_core', 'clean_core', 'studio_server_core']; // 順序＝相依順序
     let code = 'const FaStudio = (function () {\nconst holder = {};\n';
     for (const n of UMD) code += '(function (module, self) {\n' + rd('renderer/src/studio/' + n + '.js') + '\n}).call(null, undefined, holder);\n';
     code += 'return holder;\n})();\nconst FA_STUDIO_LAYOUT_SRC = ' + lit(rd('renderer/src/studio/studio_layout_core.js')) + ';\n';
+    // 網頁版 LoRA：三個核心串成一段可在 Worker 內 new Function 執行的原始碼（回傳 FaLoraWeb），見 lora_web_core.js
+    let wsrc = 'const holder = {};\n'; for (const n of ['onnx_patch_core', 'lora_merge_core', 'lora_web_core']) wsrc += '(function (module, self) {\n' + rd('renderer/src/studio/' + n + '.js') + '\n}).call(null, undefined, holder);\n';
+    wsrc += 'return holder.FaLoraWeb;';
+    code += 'const FA_WEBLORA_WORKER_SRC = ' + lit(wsrc) + ';\n';
     const HOST = ['backend_core', 'bench_core', 'backend_cpu_js', 'backend_cpu_py', 'backend_planned', 'checkpoint_core', 'studio_config_core', 'studio_host'];
     const files = {}; for (const n of HOST) files[n + '.js'] = rd('renderer/src/studio/' + n + '.js');
     for (const n of ['train_lora.py', 'lora_common.py']) files['lora-train/' + n] = rd('lora-train/' + n);

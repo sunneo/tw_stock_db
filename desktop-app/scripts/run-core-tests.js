@@ -131,6 +131,7 @@ const suites = [
     ['訓練工作室資產（sha256、manifest 建立／驗證／舊版遷移、相容性檢查與 fork、竄改拒絕）', 'renderer/src/studio/asset_core.test.js'],
     ['訓練工作室 .fatrain 容器（zip 讀寫、分片、inspect、確認後匯入、合併／fork／取代、分卷）', 'renderer/src/studio/fatrain_core.test.js'],
     ['訓練工作室儲存層（記憶體／分塊／Node fs、fap 同步與資料可能遺失旗標）', 'renderer/src/studio/storage_core.test.js'],
+    ['網頁版 LoRA（路線 c）：ONNX 位元組讀寫、q8 細格＋抖動併入（數值品質／不偏／零 adapter）、fetch 攔截、套用器誠實回報', 'renderer/src/studio/lora_web.test.js'],
     ['訓練工作室離線訓練器 bundle ⇄ 資產往返（sha256 一致）', 'renderer/src/studio/trainer_adapter.test.js'],
     ['訓練工作室整合：視窗版面（分頁搬移／關閉／重開、分隔線上下限、最大化、窄視窗堆疊、壞偏好正規化、隨機操作不變量）', 'renderer/src/studio/studio_layout_core.test.js'],
     ['訓練工作室整合：假伺服器路由（資產列表／匯出入先確認、trainer 往返、版面偏好、後端／基準／訓練轉呼叫、網頁版誠實回報）', 'renderer/src/studio/studio_server_core.test.js'],

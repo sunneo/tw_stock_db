@@ -319,10 +319,71 @@ Backend {
 - 架構：瀏覽器端核心（資產／.fatrain／儲存層／trainer 轉接／版面／LoRA 登錄／資料匯入／清洗／假伺服器路由）嵌成 `FaStudio`（`scripts/embed-code-ui.js` 的 `embedStudio`，標記 STUDIO／STUDIOVIEW）；Node 端（後端登錄、基準、檢查點、cpu-py、`studio_host.js`、`lora-train/train_lora.py`）內嵌成 `FA_STUDIO_HOST_FILES`，執行時寫到 `<userData>/studio-host/`，由 `main-ext.js` 的原生信箱 `studio_*` 操作載入，不改 preload／main.js、不需重裝。
 - 入口：`/offline-training-studio`、設定頁 → AI → 離線訓練工作室。八個分頁：資產清單、LoRA 登錄、資料匯入、資料集、評量、訓練、老師、紀錄；版面規則見 §4，核心 `studio_layout_core.js`。
 - LoRA 登錄：由 kind=lora 且含 `weights/*.bin|.safetensors` 的資產建立登錄項；相容性、評量判定、按需選用、手動載入（讀回權重＋核對雜湊）已可用。**桌面版套用已接（2026-11-11 第三輪）**：載入後經 `h.loraApply`（`lora_apply_core.js`）→ 主程序 `lora_apply`（`main-ext.js` 的 NRL）→ `nr-host`／`nr-child`／`nr-engine` 轉傳到 onnxruntime 的 `externalData`；完整資料流、執行包發佈與升級、降級行為見 `DESIGN.TODO.native-runner.md` §9。**執行包 1.22.0-2 尚未發佈**（等管理者推 GitHub 分支並釘住 commit）：在此之前，已安裝 1.22.0-1 的使用者按「手動載入」會看到「需要更新執行包」，`applied` 為假；網頁版與沒有橋接的環境也維持「尚未套用」。未實測的部分見 native-runner §9.5。
-  - **網頁版 transformers.js 的 LoRA 接點：可行性查證結果與具體阻礙（不是刻意不做）**
-    - 查到的事實：我們的 adapter 是 `lora.bin`（`make_lora_onnx.py pack` 寫入、固定佈局、旁有 `layout.json`），要配「槽版」ONNX 使用，載入方式是 ORT 的外部資料選項 `externalData: [{path:'lora.bin', data}]`。onnxruntime-web 的 `InferenceSession.create` 有同名選項，本專案 `renderer/src/tts/moss_worker.js` 已經在網頁版（WASM）用它載入 MOSS TTS 的外部資料，所以「格式能被網頁版 ORT 吃」成立。網頁版 LLM 的載入處是 `floating-assistant.js` 的 `AutoModelForCausalLM.from_pretrained(repo, opts)`（transformers.js 3.7.5 的 WASM、4.2.0 的 WebGPU），`opts.session_options` 會傳到 `InferenceSession.create`。
-    - 阻礙一（主要）：網頁版現在載入的是 onnx-community 的標準 Qwen3-0.6B ONNX，**沒有 LoRA 分支與 `layout.json`**；要套 adapter 必須改載「槽版」（`make_lora_onnx.py build` 的輸出，q8 約 600 MB），而目前沒有任何地方託管這份檔案（HuggingFace 或本專案 GitHub 都沒有）。拿標準 ONNX 配 `externalData` 會被 ORT 靜默忽略，看起來載入成功其實沒套用，所以不能只接線。**解除條件**：使用者同意產生並上傳槽版模型（需要 Python、torch、onnx；上傳前我會列檔名與大小請你決定），或桌面版與網頁版共用同一份槽版（網頁版從 fap 讀）。
-    - 阻礙二：transformers.js 3.7.5 與 4.2.0 如何處理 `session_options.externalData`（是否會被它自己的 `use_external_data_format` 機制覆蓋、WebGPU 路徑是否支援外部資料）我沒有讀原始碼也沒有實測——查證需要下載它們的原始碼（依本次規則下載要先經你同意），實測需要瀏覽器加槽版模型。**解除條件**：取得槽版模型後，在瀏覽器實測兩個版本各一次（對 `lora_ort_test.js` 的同一組提示，比對有／無 adapter 的輸出不同、全零 `lora.bin` 與基底輸出一致）。
-    - 設計好的接點（不寫成未驗證的死碼，所以沒有放進程式）：`vlm_core` 載入文字模型的選項加 `lora:{id, bytes}`，轉成 `opts.session_options.externalData=[{path:'lora.bin', data:bytes}]`，並確認 `use_external_data_format` 不會另外抓 `model.onnx_data`；網頁版在 `studio_server_core` 的 `h.loraApply` 提供相同介面（`lora_apply_core` 的 `apply(handles)`），失敗原因同樣如實回報。
+  - **網頁版 LoRA（2026-11-11 第四輪：已實作路線 c，程式與假模型測試完成，真模型端到端尚未實測）**——詳見下方 §14.1。舊版「阻礙一／二」已被 §14.1 的查證與選擇取代：不再需要槽版模型與託管，也不需要修改 transformers.js 原始碼。
 - 資料匯入：wiki／開源／書本／aiDoc → 清洗 → 語料塊＋請求單＋規則樣本，可逐塊拒絕、存成 kind=lora 的資料資產（`data/corpus.jsonl`、`requests.jsonl`、`train.jsonl`）；老師領取／驗證／回交接口 `/api/teacher/claim｜submit｜release` 已可用，**老師迴圈本身（呼叫線上 AI）仍是 §10 步驟 7 未做**。
 - 驗證：`scripts/eval/studio.eval.js`（真 Electron，38 項；cpu-py 真訓練因本機缺 torch 未能跑）。
+
+
+### 14.1 網頁版 LoRA：查證、三條路比較、選擇與實作（2026-11-11 第四輪）
+
+使用者要求：「網頁版也要可以支援LoRA。沒有託管的話有沒有辦法網頁版做到下載並在網頁上量化，或者只能切片並放入 branch」「如果支援需要修改transformer.js原始碼，請修改」。結論先講：**選路線 c（載入時把 LoRA 併進 q8 權重）已實作**；不需要託管槽版、不需要切片、不需要修改 transformers.js 原始碼。真模型端到端尚未實測（見末段清單，等你決定下載）。
+
+#### 查證（只讀 repo，沒有下載任何東西）
+- **載入處**：`floating-assistant.js` 的 `faVlmWorkerMain`（Worker）→ `load()` 的 `causal-lm` 分支：`AutoModelForCausalLM.from_pretrained(repo, {dtype, device})`；主執行緒由 `_vlmEnsureLoaded` 決定裝置順序並送 `load` 訊息。
+- **transformers.js 與 ORT 的來源**：`FA_ASSET_URLS.transformersJs`＝CDN 的 transformers 3.7.5（WASM／CPU），`transformersJsWebGpu`＝CDN 的 4.2.0（WebGPU）。**repo 沒有內嵌複本，node_modules 也沒有 transformers 或 onnxruntime-web**（桌面版的 ORT 在原生執行包裡），所以原始碼本機讀不到、也不能直接改檔；若真要改只能「補丁覆蓋」。ORT 版本由 transformers 套件內含決定，未讀原始碼，不寫版本號。`moss_worker.js` 以 `externalData` 載入 MOSS 的外部資料，證明網頁版 ORT 的工作階段選項支援它。
+- **模型**：`qwen3-0.6b`，GPU 用 `q4f16`（約 543 MB，四位元分塊量化）、CPU 用 `q8`（約 589 MB，onnx-community 的 `onnx/model_quantized.onnx`，動態量化：權重 8 位元整數、每個張量一個縮放純量、後接 Mul 乘縮放）。`make_lora_onnx.py` 針對的就是這份 q8 圖。
+- **需要讀 npm 原始碼才能確定、因此未確定的事**：transformers.js 是否把 `session_options.externalData` 傳給 ORT（影響路線 a、b），以及它取模型檔是否經過全域 `fetch`（影響路線 c 的攔截）。路線 c 把第二項做成執行時檢查（沒經過就報錯，不假裝成功），所以不必先讀原始碼。若你要我讀，需下載：`@huggingface/transformers@3.7.5` 與 `@4.2.0` 的 npm 套件壓縮檔（各約數 MB 至十餘 MB，實際大小未查），來源 registry.npmjs.org；你同意前我不下載。
+
+#### 三條路比較
+| | (a) 瀏覽器內改圖＋量化 | (b) 槽版切片放 branch | (c) 載入時併入權重（選這條） |
+|---|---|---|---|
+| 做法 | 下載標準 q8，在 JS 內改寫 ONNX：196 個目標各插 3 個節點、改名輸出、加 392 個外部初始值，A／B 以 `externalData` 給 ORT | 本機用 `make_lora_onnx.py build` 產生槽版（約 600 MB），切成 ≤20 MB 分片推到 branch，網頁版下載重組後載入 | 下載標準 q8，攔截 `fetch`，在位元組層級把 B·A 併進權重並把縮放值改成每欄一個，原地換掉再交給 transformers.js |
+| 需要託管 | 否 | **是**（約 600 MB，約 30 片；每次重建槽版歷史再多 600 MB，GitHub 建議倉庫 1 GB 內） | 否 |
+| 需要改 transformers.js | 要確認 `externalData` 會被傳遞（未驗證）；不通就要補丁覆蓋 | 同左 | 否（只攔截 fetch） |
+| 圖改寫 | 要（protobuf 讀寫我已寫好，但節點插入、拓撲順序、輸出改名是新增風險；GPU 的 q4f16 圖是另一種結構要另寫） | 不用（本機用 Python 做） | **不用**，只換 196 個縮放初始值與權重位元組 |
+| 「在頁面上量化」 | 對 q8 基底不需要（已量化）；從 fp 基底做要下載 1.2～2.4 GB 並在 JS 內量化，記憶體與時間更差，沒有理由 | 不適用 | 不適用 |
+| 網頁版額外下載 | 無 | **多一份 600 MB**（與標準版並存，瀏覽器快取共 1.2 GB） | 無 |
+| 推論成本 | 每層多兩個矩陣乘 | 同左 | **無**（併入後與基底同樣大小） |
+| 精度 | 與桌面版相同（A／B 保持 32 位元浮點） | 同左 | 有損，見下表 |
+| 換 adapter | 重建工作階段 | 重建工作階段 | 重新下載（讀快取）＋重新併入，約一分鐘級 |
+| 能同時套多個 adapter | 否（一個槽） | 否 | 可以先把多個 B·A 相加再併（本輪只做一個，未做） |
+
+**選 c 的理由**：(1) 不需託管，沒有 600 MB 下載與倉庫膨脹的問題；(2) 不依賴未驗證的 `externalData` 傳遞，也不改圖，失敗面小；(3) 推論成本與基底相同；(4) 唯一代價是精度有損，而這可以事先用數值實驗量出來並在執行時量測。**什麼情況下改選 a 或 b**：實測發現 c 的精度對你的 adapter 不夠（執行時量到的輸出相似度過低，系統會拒絕套用並說明）時，才需要保留 32 位元 A／B 的路線；那時 b 比 a 穩（圖改寫在本機做）。
+
+#### 路線 c 的精度：數值實驗
+**為什麼不能「反量化→加 BA→用原縮放重新量化」**：q8 每個張量只有一個縮放值，步距約為整張權重範圍的 1/255；LoRA 的變化量每個元素只有步距的 0.3%～3%，四捨五入後整個消失。實驗（合成權重 1024×2048、rank 16，輸入含 A 對齊成分；權重分兩種：t 分佈 df=3、高斯加稀疏離群值）量「併入後輸出的變化 vs 真正 LoRA 分支的變化」的餘弦相似度：
+
+| 方法 | 變化量 1%（對權重範數） | 變化量 3% | 基底輸出多出的雜訊 |
+|---|---|---|---|
+| 直接用舊縮放四捨五入 | 0.000（全部消失） | 0.000 | 0.04～0.24 |
+| 每張量隨機進位 | 0.80 | 0.90 | 0.06～0.12 |
+| 每欄重新量化（新縮放不整除舊格） | 0.83～0.96 | 0.99 | 0.02～0.05 |
+| 每欄細格＋四捨五入 | 0.60～0.86 | 0.97 | 0.04～0.07 |
+| **每欄細格＋抖動（採用）** | **0.967～0.979** | **0.993～0.996** | **0.017～0.028** |
+
+參考：q8 本身相對 32 位元浮點的輸出誤差約 13～30%（合成重尾權重，偏嚴苛），所以多出的 2% 雜訊遠小於基底原有的量化誤差。**限制**：變化量低於約 0.5% 時相似度會明顯下降（單元測試 0.05% 的情形量到 < 0.9）；真實 adapter 的變化量大小未知，且合成權重不等於真的 Qwen3 權重——**這些數字是設計依據，不是真模型的結果**。程式在套用時對每個張量用探針輸入實際量測輸出相似度，平均低於 0.5 就拒絕套用並回報數字。
+
+**採用的做法（細格＋抖動）**：(1) 每個輸出欄各自一個縮放值：新步距＝舊步距／k，k 是整數，取「該欄權重範圍仍塞得進 8 位元」的最大值（上限 64，實驗平均約 11）；因為 k 是整數，舊權重剛好落在新格點上，基底不增加量化誤差。(2) 變化量以新步距為單位，用「抖動式四捨五入」（加固定種子的均勻亂數再取下整）：期望值不偏，即使遠小於一格也不消失。(3) 計算圖裡縮放值只參與 Mul（廣播），把純量改成長度 dout 的向量不用改圖；零點維持純量不動（不用每欄零點，避開 ORT 對逐欄零點的支援差異）。(4) 零 adapter 時併入結果與基底逐值相同（測試涵蓋）。
+
+**成本**：單一張量實測（Node 16、1024×3072、rank 16）約 176 ns／元素，全模型約 4.4 億個權重元素，外推約 77 秒（在 Worker 內，不卡畫面；外推值，真機未量）。記憶體：原檔 589 MB＋併入後的副本（Blob 串接，只多出縮放向量）＋ORT 載入時再複製，峰值約為模型大小的 2～3 倍；機器記憶體不足會在載入時失敗並回報，不會靜默。
+
+#### 實作
+| 檔案 | 內容 |
+|---|---|
+| `renderer/src/studio/onnx_patch_core.js` | 最小 ONNX protobuf 讀寫：索引節點與初始值、編碼新張量、只重寫被換掉的初始值並用零拷貝切片串接；遇到外部資料、非 raw_data、`graph.input` 含該初始值就丟明確錯誤 |
+| `renderer/src/studio/lora_merge_core.js` | 細格＋抖動併入（uint8 與 int8 都支援）、輸出相似度探針、`lora.bin` 版面計算（與 `make_lora_onnx.py` 的 A／B 順序與 64 位元組對齊一致，網頁版不需要 `layout.json`） |
+| `renderer/src/studio/lora_web_core.js` | `patchQwen3Q8`（找 196 個目標、核對大小／結構、併入、品質閘門、可選重新解析核對）、`installFetchPatch`（攔截 fetch，從瀏覽器快取取原檔並不寫回併入結果）、`createWebLoraApplier`（與桌面版同介面 `apply／clear／status`） |
+| `renderer/src/floating-assistant.js` | Worker `load()` 在有 `lora` 時才攔截並併入；`_vlmEnsureLoaded` 有 LoRA 時強制 CPU、已載入判斷納入 LoRA 雜湊；`_studioWebLoraApplier` 接進 Studio 的 `h.loraApply`（網頁版）；`scripts/embed-code-ui.js` 嵌入三個核心與 Worker 用原始碼字串 `FA_WEBLORA_WORKER_SRC` |
+| `renderer/src/studio/lora_web.test.js` | 54 項斷言，已登錄 `scripts/run-core-tests.js` |
+
+- **核對（applied 為真的條件）**：`lora.bin` 大小與由標準圖推得的版面完全相等；196 個目標的結構（節點名、DynamicQuantizeLinear、純量縮放、權重型別）全部符合；品質閘門通過；`fetch` 攔截確實被 transformers.js 用到（`hits ≥ 1`）；Worker 回報合併報告，主執行緒收到才回 `ok:true`。任何一項不成立都回具體原因並把狀態退回前一個 adapter。雜湊：登錄表載入時已核對 `lora.bin` 的 sha256，併入的抖動亂數種子也由該雜湊決定（同一份 adapter 每次併入結果相同）。
+- **沒有 LoRA 時與現在完全一致**：Worker 只在 `m.lora` 存在時執行攔截；主執行緒只在 `this._webLora.lora` 有值時改裝置順序與載入參數（測試涵蓋「不相符網址原樣通過」「沒有 LoRA 不安裝攔截」，載入路徑的其餘程式碼未動；`vlm_core.test.js` 143 項仍全過）。
+- **限制（誠實列出）**：只對 `qwen3-0.6b` 的 CPU（WASM）q8 檔有效；有 LoRA 時即使偏好 GPU 也改用 CPU（q4f16 是四位元分塊量化，併入會被量化吃掉，本輪不支援）；同時只套一個 adapter；rank 槽固定 16（與登錄表的 `rank_slots` 一致）；`lora.bin` 約 39 MB（28 層×7 個目標，A、B 以 32 位元浮點）。
+
+#### 未實測的部分與需要你決定的清單
+單元測試用自己編碼的假 ONNX 與假 fetch，**沒有跑過真的 ORT 與真的 transformers.js**，以下是風險與驗證步驟：
+1. **ORT 能否接受縮放值變成 [dout] 向量**（圖裡 `value_info` 可能仍宣告純量，預期只是警告，但未驗證）；**transformers.js 3.7.5 是否經過全域 fetch**（沒有的話本功能會明確報錯「沒有經過 fetch」而不是靜默失效，此時才需要讀它的原始碼或改用 `env.customCache`）；**瀏覽器快取名稱** 假設為 `transformers-cache`（對不上時會重新下載原檔，不影響正確性）。
+2. 記憶體峰值（約模型的 2～3 倍）在低階機器上是否過不了。
+3. 真實 adapter 的輸出相似度與語意效果（有／無 adapter 的同一提示輸出是否符合訓練目標）。
+
+驗證步驟（需你同意下載）：(1) 瀏覽器載入 `onnx-community/Qwen3-0.6B-ONNX` 的 `onnx/model_quantized.onnx`，約 589 MB，來源 huggingface.co（應用程式自己下載到瀏覽器快取，使用者若已用過離線 Qwen3 CPU 版就已經有）；另有 tokenizer 與設定小檔合計約 3 MB。(2) 一份真的 `lora.bin`（約 39 MB，本機 `lora-train` 流程用 `pack` 產生，不需下載；沒有的話我可以用隨機 adapter 做結構驗證，但看不到語意效果）。(3) 在網頁版訓練工作室載入 LoRA，檢查 `applied` 為真、合併報告（併入層數、輸出相似度、耗時）、同一提示有／無 adapter 的輸出差異、記憶體峰值。**不需要推送任何東西到 GitHub**；`floating-assistant.js` 有改動，發布 live-update 補丁由你決定時機。
