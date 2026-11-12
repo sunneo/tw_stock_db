@@ -10,12 +10,24 @@
         const { S, code } = PAR.dsl;
         const quoted = (st) => [...String(st).matchAll(/[「『"]([^」』"]+)[」』"]/g)].map((m) => m[1].trim());
         const HEXM = /^[0-9a-fA-F]{2}(?: [0-9a-fA-F]{2})*$/;
+        // 欄位讀取：位移（「位移 O」「偏移 O」）＋寬度。寬度的說法有多種（2026-11-12 續五放寬：欄位寬／長（度）為／占佔取讀／位移後的 N 位元組／共 N 位元組）；
+        // 數字可寫阿拉伯數字或一～八的中文。順序即優先序；抽不到就回傳 null（拒絕渲染）。
+        const NUM = '(\\d+|[一二兩三四五六七八])';
+        const cn = { 一: 1, 二: 2, 兩: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8 }; const numOf = (t) => (/^\d+$/.test(t) ? +t : cn[t]);
+        const WIDTH_RES = [
+            /欄位寬\s*(?:為|是)?\s*(\d+|[一二兩三四五六七八])\s*個?位元組/,
+            /(?:長度|長)\s*(?:為|是)?\s*(\d+|[一二兩三四五六七八])\s*個?位元組/,
+            /(?:占|佔|取|讀取|讀出|讀|擷取|共|合計|總共)\s*(?:為|是)?\s*(\d+|[一二兩三四五六七八])\s*個?位元組/,
+            /(?:位移|偏移)\s*(?:是|為)?\s*\d+[^，。；]{0,6}?(\d+|[一二兩三四五六七八])\s*個?位元組/,
+            /(\d+|[一二兩三四五六七八])\s*個?位元組的欄位/
+        ];
+        const FIELD_RE = /(?=[\s\S]*(?:位移|偏移)\s*(?:是|為)?\s*\d+)(?=[\s\S]*(?:\d+|[一二兩三四五六七八])\s*個?位元組)/;
+        const fieldSpec = (st) => { const mo = /(?:位移|偏移)\s*(?:是|為)?\s*(\d+)/.exec(String(st)); if (!mo) return null; for (const re of WIDTH_RES) { const m = re.exec(String(st)); if (m) { const w = numOf(m[1]); if (w) return { o: +mo[1], w }; } } return null; };
         const skeletons = [
             { id: 'bin.field-read', algo: 'field-read', paradigm: 'field-read', limit: 8,
                 label: '固定位移的欄位讀取：從位移 O 取寬 W 個位元組，端序與有無號由窮舉挑；O、W 由敘述抽（「位移 O」「欄位寬 W 個位元組」）',
                 slots: [S('end', '端序', [['le', '"little"', '小端'], ['be', '"big"', '大端']]), S('sg', '有無號', [['u', 'False', '無號'], ['s', 'True', '有號']])],
-                py: (c, N, I) => { const st = String(I.statement); const mo = /位移\s*(?:是|為)?\s*(\d+)/.exec(st); const mw = /欄位寬\s*(?:為|是)?\s*(\d+)\s*(?:個)?位元組/.exec(st); if (!mo || !mw) throw new Error('抽不到位移或欄位寬');
-                    const o = +mo[1], w = +mw[1];
+                py: (c, N, I) => { const sp = fieldSpec(I.statement); if (!sp) throw new Error('抽不到位移或欄位寬'); const o = sp.o, w = sp.w;
                     return code(['raw_ = bytes.fromhex(' + N.s[0] + '.strip())', 'v_ = int.from_bytes(raw_[' + o + ':' + (o + w) + '], ' + c.end + ', signed=' + c.sg + ')', 'print(v_)']); },
                 shape: (I) => I.inputs.length === 1 && I.inputs[0].k === 'hex' },
             { id: 'bin.count-mark', algo: 'count-mark', paradigm: 'counting', limit: 4,
@@ -33,7 +45,7 @@
         ];
         // 領域詞彙（pri:true：壓過內建的通用詞彙；veto 擋掉寫出／解壓類題目）
         const algos = [
-            { key: 'field-read', re: /(?=[\s\S]*位移\s*(?:是|為)?\s*\d+)(?=[\s\S]*欄位寬\s*(?:為|是)?\s*\d+\s*(?:個)?位元組)/, veto: /寫出|寫成|組出|產生|解壓|還原|頁尾|footer|調色盤/ },
+            { key: 'field-read', re: FIELD_RE, veto: /寫出|寫成|組出|產生|解壓|還原|頁尾|footer|調色盤/ },
             { key: 'count-mark', re: /(?=[\s\S]*(?:計算|數出|數一數|統計|數)[\s\S]*(?:出現|次數|幾次|個數))(?=[\s\S]*[「『"]\s*[0-9a-fA-F]{2}(?: [0-9a-fA-F]{2})*\s*[」』"])/, veto: /寫出|寫成|解壓|還原/ },
             { key: 'count-byte', re: /(?=[\s\S]*位元組)(?=[\s\S]*(?:數出|計算|統計|數一數|數)[\s\S]*(?:個數|幾個|次數|出現|幾次))(?=[\s\S]*(?:等於|為)\s*(?:0x[0-9a-fA-F]{1,2}|\d{1,3})(?![\d.]))(?![\s\S]*[「『"]\s*[0-9a-fA-F]{2}\s)/, veto: /寫出|寫成|解壓|還原/ }
         ].map((x) => Object.assign(x, { pri: true }));

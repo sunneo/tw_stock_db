@@ -15,6 +15,15 @@ const SEEDS = [
         ref: 'import sys\nd = bytes.fromhex(sys.stdin.read().strip())\nprint(int.from_bytes(d[5:6], "little", signed=False))', gen: (b, o) => bytesGen(10) },
     { id: 'tf-be-u3', st: '輸入一行十六進位，是一段資料。請讀出位移 1、欄位寬 3 個位元組的欄位，大端，無號，十進位輸出。',
         ref: 'import sys\nd = bytes.fromhex(sys.stdin.read().strip())\nprint(int.from_bytes(d[1:4], "big", signed=False))', gen: (b, o) => bytesGen(9) },
+    // ── 讀欄位（train，2026-11-12 續五：寬度的另一組說法；與 v2、v3 的措辭不同）──
+    { id: 'tf-sensor', st: '輸入一行十六進位，是一個感測器封包。自位移 3 起，長為 2 位元組的欄位，以小端、無號整數解讀，十進位輸出。',
+        ref: 'import sys\nd = bytes.fromhex(sys.stdin.read().strip())\nprint(int.from_bytes(d[3:5], "little", signed=False))', gen: (b, o) => bytesGen(12) },
+    { id: 'tf-rec', st: '輸入一行十六進位，是一筆紀錄。位移 4 處開始的 4 位元組是欄位，大端、有號，十進位輸出。',
+        ref: 'import sys\nd = bytes.fromhex(sys.stdin.read().strip())\nprint(int.from_bytes(d[4:8], "big", signed=True))', gen: (b, o) => bytesGen(12) },
+    { id: 'tf-tail', st: '輸入一行十六進位，是一段資料。讀取位移 7 之後的 1 位元組，無號，十進位輸出。',
+        ref: 'import sys\nd = bytes.fromhex(sys.stdin.read().strip())\nprint(int.from_bytes(d[7:8], "little", signed=False))', gen: (b, o) => bytesGen(10) },
+    { id: 'tf-total', st: '輸入一行十六進位，是一段資料。欄位從位移 1 開始，共三個位元組，大端、無號，十進位輸出。',
+        ref: 'import sys\nd = bytes.fromhex(sys.stdin.read().strip())\nprint(int.from_bytes(d[1:4], "big", signed=False))', gen: (b, o) => bytesGen(9) },
     // ── 計數：位元組標記（train）──
     { id: 'tc-ov', st: '輸入一行十六進位，是一段位元組。請計算標記「ab cd」在其中出現的次數（標記可以重疊），十進位輸出。',
         ref: 'import sys\nd = bytes.fromhex(sys.stdin.read().strip())\nm = bytes.fromhex("abcd")\nprint(sum(1 for i in range(len(d) - len(m) + 1) if d[i:i + len(m)] == m))', gen: (b, o) => bytesGen(30, [0xab, 0xcd, 0x00]) },
