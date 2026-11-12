@@ -1144,3 +1144,9 @@ Backend {
 ### 26.2 更新
 - wiki 實測：已完成（見 §26.5）。
 - 其餘未做項目見 §26.2 的第 2 到 4 項，都仍然未做。
+
+### 26.6 其餘未做項目的最後狀態（2026-11-12，指揮要求一併處理）
+1. **par 的 12 題失敗：已查明原因，未修**（實測）。失敗的是 load-span、load-cyc-loads、pick-span（原敘述、反序、改寫）。訊息分兩種：「程式讀不出這題的解法（沒有配方），需要模型」與「配方沒通過沙盒驗證，而且沒有提供模型」。HEAD 與 Python 3.11（`FA_PYTHON=/usr/bin/python3.11`）都是同樣 12 題失敗，所以跟直譯器版本無關。結論：par 領域包缺這三種題型的配方，是程式內容的缺口，不是資料檔問題。修法要在 par 包補配方，屬於另一個任務。
+2. **blockly 題在 App 內重跑：未做**。原因有三：(a) 判題需要 tree-sitter 快取，這台機器只有 /tmp/fa-ts-cache，App 的 `~/.cache/fa-ts` 不存在；(b) 這台 PATH 上的 python3 是 3.10.12，App 的 cpu-py 探測會判定太舊（/usr/bin/python3.11 存在，但 App 不會自動選它）；(c) 把題目數與資料檔接進 sym_suites 的顯示與按鈕，這一段沒有寫。資料檔的題數已經由 domain-seed-counts 讀取（428／120，與 HEAD 一致）。
+3. **LoRA 多顆註冊與替換的實機操作：未做**。隔離 user-data-dir 沒有 adapter，要實跑需要真的 lora.bin 與 descriptor。之前的 staging 實跑見 §24.2，這次沒有重跑。替換「約 2 秒」仍然沒有實測。
+4. **wiki 實測：已完成**（§26.5）。
