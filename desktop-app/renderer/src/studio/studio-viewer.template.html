@@ -61,10 +61,10 @@ var dragId=null;
 // 詳情／瀏覽資料：開在「資產清單的另一側」的可關閉分頁（不佔資產清單的版面）；暫時的，不存進版面偏好
 var DT=[],dtAct=null;
 function detSide(){return L.panes.left.indexOf('assets')>=0?'right':'left'}
-function openDetail(kind,name){var id=kind+'/'+name;if(!DT.some(function(d){return d.id===id}))DT.push({id:id,kind:kind,name:name,hist:[{t:'asset'}],i:0});dtAct=id;if(L.max&&L.max!==detSide())L=Lay.toggleMax(L,L.max);render()}
+function openDetail(kind,name){var id=kind+'/'+name;if(!DT.some(function(d){return d.id===id}))DT.push({id:id,kind:kind,name:name,hist:[{t:'asset'}],i:0});dtAct=id;if(L.max&&L.max!==detSide())L=Lay.toggleMax(L,L.max);render([detSide()])}
 // 每個詳情分頁有自己的瀏覽歷史（上一頁／下一頁）：資產詳情 → 點檔案 → 檔案內容；上一頁回到詳情
-function pushView(d,v){d.hist=d.hist.slice(0,d.i+1);d.hist.push(v);d.i=d.hist.length-1;render()}
-function navDetail(d,dir){var n=d.i+dir;if(n<0||n>=d.hist.length)return;d.i=n;render()}
+function pushView(d,v){d.hist=d.hist.slice(0,d.i+1);d.hist.push(v);d.i=d.hist.length-1;render([detSide()])}
+function navDetail(d,dir){var n=d.i+dir;if(n<0||n>=d.hist.length)return;d.i=n;render([detSide()])}
 async function renderDetail(d,body){var v=d.hist[d.i]||{t:'asset'};
  var bk=h('button',{text:'◀ 上一頁',title:'上一頁（Alt+←）',disabled:d.i<=0,onclick:function(){navDetail(d,-1)}}),fw=h('button',{text:'下一頁 ▶',title:'下一頁（Alt+→）',disabled:d.i>=d.hist.length-1,onclick:function(){navDetail(d,1)}});
  body.appendChild(h('div',{'class':'row'},[bk,fw,h('span',{style:'color:var(--mut);font-size:12px',text:d.kind+'/'+d.name+(v.t==='file'?' › '+v.path:'')+'（第 '+(d.i+1)+'／'+d.hist.length+' 步）'})]));
@@ -72,7 +72,15 @@ async function renderDetail(d,body){var v=d.hist[d.i]||{t:'asset'};
   body.appendChild(h('pre',{text:x.ok===false?x.error:x.text+(x.truncated?'\n…（只顯示前 6000 字元，共 '+x.bytes+' 位元組）':'')}));return}
  await detail(d.kind,d.name,body,d)}
 document.addEventListener('keydown',function(e){if(!e.altKey||!dtAct)return;var d=DT.filter(function(x){return x.id===dtAct})[0];if(!d)return;if(e.key==='ArrowLeft'){e.preventDefault();navDetail(d,-1)}else if(e.key==='ArrowRight'){e.preventDefault();navDetail(d,1)}});
-function closeDetail(id){DT=DT.filter(function(d){return d.id!==id});if(dtAct===id)dtAct=DT.length?DT[DT.length-1].id:null;render()}
+function dtMenu(x,y,d){var idx=DT.indexOf(d);menu(x,y,[
+ ['關閉 Close',function(){closeDetail(d.id)}],
+ ['關閉全部 Close All',function(){closeDetailMany(function(){return false})}],
+ ['關閉其他 Close Others',function(){closeDetailMany(function(o){return o===d})}],
+ ['關閉左側 Close Left',function(){closeDetailMany(function(o){return DT.indexOf(o)>=idx})}],
+ ['關閉右側 Close Right',function(){closeDetailMany(function(o){return DT.indexOf(o)<=idx})}],
+ ['複製名稱（'+d.kind+'/'+d.name+'）',function(){try{navigator.clipboard.writeText(d.kind+'/'+d.name)}catch(_){}}]])}
+function closeDetail(id){DT=DT.filter(function(d){return d.id!==id});if(dtAct===id)dtAct=DT.length?DT[DT.length-1].id:null;render([detSide()])}
+function closeDetailMany(keep){DT=DT.filter(function(d){return keep(d)});if(!DT.some(function(d){return d.id===dtAct}))dtAct=DT.length?DT[DT.length-1].id:null;render([detSide()])}
 function paneEl(side){
  var el=side==='left'?$('#pL'):$('#pR'),tabs=h('div',{'class':'tabs'});
  L.panes[side].forEach(function(id){var t=h('div',{'class':'tab'+(L.active[side]===id&&!(side===detSide()&&dtAct)?' act':''),draggable:'true',text:TITLE[id],title:'拖到另一側的分頁列可搬移；右鍵有更多選項'});
@@ -80,7 +88,7 @@ function paneEl(side){
   t.addEventListener('dragstart',function(e){dragId=id;try{e.dataTransfer.setData('text/plain',id)}catch(_){}});
   t.addEventListener('contextmenu',function(e){e.preventDefault();var o=side==='left'?'right':'left';menu(e.clientX,e.clientY,[['移到'+(o==='left'?'左':'右')+'區',function(){mv(id,o)}],['關閉',function(){var r=Lay.closeTab(L,id);if(r.ok)setL(r.layout);else alert(r.error)}]])});
   tabs.appendChild(t)});
- if(side===detSide())DT.forEach(function(d){var t=h('div',{'class':'tab'+(dtAct===d.id?' act':''),title:d.kind+'/'+d.name+'（可關閉的詳情分頁）'},[h('span',{text:'📄 '+d.name}),h('span',{'class':'x',text:'✕',title:'關閉這個分頁',onclick:function(e){e.stopPropagation();closeDetail(d.id)}})]);t.addEventListener('click',function(){dtAct=d.id;render()});tabs.appendChild(t)});
+ if(side===detSide())DT.forEach(function(d){var t=h('div',{'class':'tab'+(dtAct===d.id?' act':''),title:d.kind+'/'+d.name+'（可關閉的詳情分頁）'},[h('span',{text:'📄 '+d.name}),h('span',{'class':'x',text:'✕',title:'關閉這個分頁',onclick:function(e){e.stopPropagation();closeDetail(d.id)}})]);t.addEventListener('click',function(){dtAct=d.id;render([detSide()])});t.addEventListener('contextmenu',function(e){e.preventDefault();dtMenu(e.clientX,e.clientY,d)});tabs.appendChild(t)});
  var plus=h('button',{text:'＋',title:'開啟已關閉的分頁',onclick:function(e){e.stopPropagation();var cl=L.closed;var r=e.currentTarget.getBoundingClientRect();menu(r.left,r.bottom,cl.length?cl.map(function(id){return[TITLE[id],function(){var r2=Lay.openTab(L,id,side);if(r2.ok)setL(r2.layout)}]}):[['（沒有已關閉的分頁）',function(){}]])}});
  var mx=h('button',{text:L.max===side?'🗗':'🗖',title:L.max===side?'還原':'最大化這一區（雙擊分頁列空白處同效）',onclick:function(){setL(Lay.toggleMax(L,side))}});
  var bar=h('div',{'class':'bar'},[tabs,plus,mx]);
@@ -90,9 +98,11 @@ function paneEl(side){
  var body=h('div',{'class':'body'});el.textContent='';el.appendChild(bar);el.appendChild(body);return body}
 function mv(id,side){var r=Lay.moveTab(L,id,side);if(r.ok)setL(r.layout);else alert(r.error)}
 var cur={left:null,right:null};
-function render(){applySize();['left','right'].forEach(function(s){var body=paneEl(s),id=L.active[s];
- if(s===detSide()&&dtAct){var d=DT.filter(function(x){return x.id===dtAct})[0];if(d){cur[s]='detail:'+d.id;renderDetail(d,body);return}dtAct=null}
- cur[s]=id;if(id)show(id,body)})}
+// 只重畫需要的那一側，並保留捲動位置：以前每開一個詳情分頁，兩側都重畫，左邊的清單就跳回開頭
+function render(sides){applySize();(sides||['left','right']).forEach(function(s){var el=s==='left'?$('#pL'):$('#pR'),oldB=el.querySelector('.body'),keep=oldB&&oldB.scrollTop||0,wasCur=cur[s];var body=paneEl(s),id=L.active[s],pr=null;
+  if(s===detSide()&&dtAct){var d=DT.filter(function(x){return x.id===dtAct})[0];if(d){cur[s]='detail:'+d.id;pr=renderDetail(d,body)}else dtAct=null}
+  if(!pr){cur[s]=id;if(id)pr=show(id,body)}
+  var back=function(){if(cur[s]===wasCur&&keep)body.scrollTop=keep};back();Promise.resolve(pr).then(back,back);setTimeout(back,150)})}
 $('#bReset').onclick=async function(){var r=await api('POST','/api/prefs',{reset:true});L=Lay.normalize(r.layout);render()};
 (function(){var sp=$('#split'),down=false;sp.addEventListener('pointerdown',function(e){down=true;sp.setPointerCapture(e.pointerId)});
  sp.addEventListener('pointermove',function(e){if(!down)return;var m=$('#main').getBoundingClientRect(),stack=$('#main').classList.contains('stack');L=Lay.setSplit(L,stack?Lay.ratioFromPointer(e.clientY,m.top,m.height):Lay.ratioFromPointer(e.clientX,m.left,m.width));applySize()});
@@ -100,7 +110,7 @@ $('#bReset').onclick=async function(){var r=await api('POST','/api/prefs',{reset
  window.addEventListener('resize',applySize)})();
 // ===== 分頁內容 =====
 var T={};
-function show(id,body){body.textContent='';(T[id]||function(b){b.appendChild(reason('尚未實作'))})(body)}
+function show(id,body){body.textContent='';return (T[id]||function(b){b.appendChild(reason('尚未實作'))})(body)}
 function refresh(id){['left','right'].forEach(function(s){if(cur[s]===id){var b=(s==='left'?$('#pL'):$('#pR')).querySelector('.body');if(b)show(id,b)}})}
 T.assets=async function(body){
  var r=await api('GET','/api/assets');if(r.ok===false){body.appendChild(reason('讀取資產失敗：'+r.error));return}

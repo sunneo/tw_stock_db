@@ -11,4 +11,6 @@ check('每個分頁有歷史堆疊（hist／i）與上一頁下一頁', /hist:\[
 check('點檔案是推一個新的歷史項（可回上一頁）', /pushView\(dt,\{t:'file',path:f\.path\}\)/.test(T));
 check('Alt+左右鍵切換歷史', /e\.altKey/.test(T) && /ArrowLeft/.test(T) && /ArrowRight/.test(T));
 check('詳情分頁不存進版面偏好（暫時的）', !/DT/.test(fs.readFileSync(path.join(__dirname, 'studio_layout_core.js'), 'utf8')));
+check('右鍵選單：關閉／全部／其他／左側／右側', /Close All/.test(T) && /Close Others/.test(T) && /Close Left/.test(T) && /Close Right/.test(T) && /addEventListener\('contextmenu',function\(e\)\{e\.preventDefault\(\);dtMenu/.test(T));
+check('只重畫詳情那一側（左邊清單不跳回開頭）並保留捲動位置', /render\(\[detSide\(\)\]\)/.test(T) && /oldB\.scrollTop/.test(T) && /body\.scrollTop=keep/.test(T));
 console.log(ok + ' passed, ' + bad + ' failed'); process.exit(bad ? 1 : 0);
