@@ -24,7 +24,7 @@ const throws = (f, re) => { try { f(); return false; } catch (e) { return re ? r
     try {
         const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'fatrain-')); const f = path.join(tmp, 't.zip'); fs.writeFileSync(f, z);
         const r = cp.spawnSync('python', ['-c', 'import zipfile,sys;z=zipfile.ZipFile(sys.argv[1]);print(z.testzip(),sorted(z.namelist()))', f], { encoding: 'utf8', windowsHide: true });
-        if (r.status === 0) check('標準 zipfile 能讀我們寫的 zip', /None \['a.txt', 'd\/b.bin'\]/.test(r.stdout), r.stdout); fs.rmSync(tmp, { recursive: true, force: true });
+        if (r.status === 0) check('標準 zipfile 能讀我們寫的 zip', /None,? \[u?'a.txt', u?'d\/b.bin'\]/.test(r.stdout), r.stdout); fs.rmSync(tmp, { recursive: true, force: true });
     } catch (_) { /* 沒有 python 就略過 */ }
 
     // 匯出／inspect／匯入往返
