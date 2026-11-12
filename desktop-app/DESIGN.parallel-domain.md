@@ -111,3 +111,43 @@
 - 機器負載高（約 30）：一次只跑一個測試，用 `nice -n 10 taskset -c 6-7`。
 - `renderer/src/uml_orig/` 是本次臨時複製用的目錄，已刪除；不要提交。
 - 日誌與除錯檔放在 scratchpad（`/tmp/claude-1003/...`），不進倉庫。
+
+## 8. 接續批次（2026-11-12 後半，本工作樹）
+
+### 8.1 找回的未提交工作
+- §7.2 的改動原本不在本工作樹（接手者誤以為在），實際在工作樹 `claude/parallel-domain-e31b41`（未提交，含 `tests/parallel/false_sharing_omp.c`）。本批以該工作樹的 diff 套用到本工作樹（未改動原工作樹）。套用內容與 §7.2 逐項相符。
+- 本批實跑（套用後，2 核 taskset 6-7，nice 10）：domain_par 26/26（含新增 load-busy、dyn-chunks）、domain_par2 12/12、domain_par3 22/22（含新增 hist、pack-concat）、domain_par_codegen 646/646、par-demo 12/12、algo_intent 讀取器相關套件共 20 個（algo2、ds、linuxreal、fs、linuxfmt、linuxsem、graph2、linuxtext、binfmt、graph3、os、sync、lzma、sync2、bmpx、twofile、py_lessons、py_uml_pipeline、py_paradigms、linux_paradigms）全部 0 失敗；dsp 72/72。
+
+### 8.2 par 訓練題 16/22：未能重現
+- 本工作樹 HEAD（79e536e5）與套用改動後，par train 皆全過（HEAD 22/22；改動後 26/26），par2 12/12，par3 HEAD 16/16、改動後 22/22。
+- 「16/22」的來源：`blockly-finish-3-e91198` 的 `DESIGN.blockly-curriculum.md` 記錄「領域包 par（train 16/22）真失敗、與讀取器無關」。該分支不含 par3 提交（0e8a8cb0 之前），是較舊的狀態，當時的失敗未留下逐題日誌。
+- 在目前的程式與預設環境（不設 FA_* 變數，與 `scripts/run-core-tests.js` 相同）下重跑 domain_par、domain_par3，皆全過。結論：目前沒有 train 失敗可修；不改判準。若總指揮的整套測試仍看到 16/22，請提供該次日誌，逐題查。
+
+### 8.3 既有失敗（與本改動無關，已在 HEAD 重現）
+- `domain_inflate`：train 8/10（`gzip-hex`、`lens-both` 原敘述與反序）、holdout 2/4。HEAD 同樣。讀取器讀不出配方，屬 inflate 領域（不在 par 範圍，未修）。
+- `domain_tarx`：train 9/10（`list-prefix`）、holdout 2/4（`ho-gnu`、`ho-enc`）。HEAD 同樣。屬 tarx 領域，未修。
+- `domain_avbits`：train 16/16、holdout 6/7（`ho-pps`）。
+- 以上依指示：要修的是 7.2-1 的回歸判斷。實測：改動後與 HEAD 的失敗集合相同（inflate、tarx），沒有新增失敗。
+
+### 8.4 §4 狀態更新（本批）
+| # | 項目 | 本批結果 |
+|---|---|---|
+| 1 | 「取樣值」當小數 | 完成（已套用）。par2 holdout 3/3。回歸見 8.1 |
+| 2 | holdout 讀不出配方 | 補的觸發詞都由 train 措辭來（load-busy、dyn-chunks、pack-concat、hist）。結果：par holdout 4/5（`ho-load-block` 仍未解；`ho-dyn-chunks` 已解但**受污染**，因為 dyn-chunks 是同一概念的 train 題）；par3 holdout 4/5（`ho-pack-bits` 已解但**受污染**，pack-concat 同概念；`ho-hist` 是本批新加的 holdout，未解）。holdout 數字不可當獨立量測 |
+| 3 | 相依分析：陣列存取抽取 | **未做**。原因：要改通用讀取器（算術索引 `a[i-d]` 的抽取），影響所有領域，本批範圍內不宜動；下一步同 §4-3 |
+| 4 | 有損影像 2 維進判題器 | **未做**。原因：判題器只有一維輸入形狀，2 維要新增矩陣形狀，且 DCT 要先定整數化。下一步：整數 Walsh-Hadamard 8×8（只用加減），先做骨架 |
+| 5 | MDCT | **未做**。下一步同 §4-5（定點數參考，每框獨立） |
+| 6 | 霍夫曼頻率統計 | 直方圖私有副本後歸約（`par.hist`，train 4 題全過）已做。霍夫曼表格建構與碼長未做（保持循序，標明） |
+| 7 | OpenMP 其餘語法 | false sharing 量測已做（見 8.5）。barrier、private／lastprivate、ordered、tasks、nowait 未做 |
+| 8 | Python 多行程更大輸入 | 已量測（見 8.5），結果：加速很小 |
+| 9 | 判題器的鎖是模擬 | 不改（設計取捨） |
+| 10 | 登錄嵌入清單 | 不做（依 §5，由管理者統一處理） |
+
+### 8.5 本批實跑數字（2 核、taskset 6-7、其他工作階段同時在跑，單次量測，只供參考）
+- `false_sharing_omp`（2 執行緒，N＝5×10⁸）：兩次 packed 0.4735、0.2696 秒；padded 0.1005、0.1785 秒；兩版計數都正確（correct）。N＝5×10⁷ 時差距小、不穩定，不作結論。
+- `chunk_zlib_mp.py`（256 MiB、256 KiB 區塊、2 行程，各一次）：seq 1.761 秒；block 1.519；cyclic 1.730；dynamic 1.886。三種排程的 SHA-256 與循序相同，解壓還原皆 roundtrip_ok。最大加速約 1.16 倍，未達穩定結論（需要重複量測與更多核心）。
+
+### 8.6 未完成與原因（本批）
+- §4-3、4、5 未做：見 8.4。原因是各需要新的讀取器能力或判題器形狀，範圍超過本批；已列出下一步。
+- 霍夫曼表格、OpenMP barrier 等語法未做：見 8.4-6、7。
+- 污染：8.4-2 的兩個 holdout 之後不再是獨立量測，報告時必須標示。
