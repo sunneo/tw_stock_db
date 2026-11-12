@@ -1150,3 +1150,46 @@ Backend {
 2. **blockly 題在 App 內重跑：未做**。原因有三：(a) 判題需要 tree-sitter 快取，這台機器只有 /tmp/fa-ts-cache，App 的 `~/.cache/fa-ts` 不存在；(b) 這台 PATH 上的 python3 是 3.10.12，App 的 cpu-py 探測會判定太舊（/usr/bin/python3.11 存在，但 App 不會自動選它）；(c) 把題目數與資料檔接進 sym_suites 的顯示與按鈕，這一段沒有寫。資料檔的題數已經由 domain-seed-counts 讀取（428／120，與 HEAD 一致）。
 3. **LoRA 多顆註冊與替換的實機操作：未做**。隔離 user-data-dir 沒有 adapter，要實跑需要真的 lora.bin 與 descriptor。之前的 staging 實跑見 §24.2，這次沒有重跑。替換「約 2 秒」仍然沒有實測。
 4. **wiki 實測：已完成**（§26.5）。
+
+## 27. 一般使用者第一次使用的實測與修正（studio-ux，2026-11-13，分支 claude/studio-ux）
+
+方法：xvfb 下的真 Electron（不是模擬）。啟動器 `scripts/eval/studio_firstrun.run.js`，探測 `scripts/eval/studio_firstrun.eval.js`：各分頁的畫面文字與按鈕、簡單模式精靈逐步點過（「訓練」→「下一步」→「CoLU 排名」→「下一步」→「開始訓練」）、啟動失敗的畫面。截圖由啟動器用 `import -window root` 截整個螢幕。隔離的 user-data-dir，沒有寫入使用者資料，沒有下載。`FA_TPL=1` 會把工作目錄裡**未嵌入**的 `studio-viewer.template.html` 注入探測框，讓嵌入前的修正也能在真畫面驗證（主畫面 iframe 仍是嵌入版，所以這次的修正要等總指揮重新嵌入才會出現在主畫面）。
+
+截圖（scratchpad，本機路徑，不進 repo）：修正前 `…/scratchpad/shots-before/01-studio-first-open.png`；修正後 `…/scratchpad/shots5/`（`10-tab-*.png`、`20-wizard-confirm.png`、`21-wizard-running.png`）。`10-tab-lora.png` 是空白（探測框還沒上色就截圖，這是截圖時機問題，不是 LoRA 面板的內容），所以 LoRA 面板的證據是文字，不是截圖。
+
+### 27.1 實測到的缺陷（修正前，數字都是畫面文字）
+
+| # | 位置 | 看到的文字（節錄） | 問題 |
+|---|---|---|---|
+| 1 | 資產清單，內建卡片的計數 | `tasks 6、units 203`、`models 3、self 3`、`weights 0、trained 0`、`records 0、rows 0、positives 0…`、`lessons 17、algos 17、verified_tasks 20`、`synthesizers 23…` | 計數鍵是英文程式名，一般使用者看不懂 |
+| 2 | 資產清單，內建卡片的來源行 | `來源：renderer/src/floating-assistant.js（FA_PRESET_MODEL_STATE）；…`、`執行期儲存：fileCache／unit-catalog-feedback.json` | 給開發者看的檔案路徑與環境變數名，直接擺在第一次開啟的畫面上 |
+| 3 | 簡單模式「開始」的進度列 | 狀態顯示 `running`、`finished`、`paused`（英文程式狀態） | 中英夾雜，沒有說明狀態 |
+| 4 | 簡單模式啟動失敗（CoLU，沒有回饋） | 標題仍是「訓練進行中」，下面仍有「暫停／繼續／停止」按鈕；錯誤訊息本身正確（「沒辦法開始：還沒有可以訓練的回饋…解除條件：…」） | 標題與按鈕跟錯誤矛盾，按了暫停會得到沒有意義的結果 |
+| 5 | 資料步驟（沒有資料時）的提示 | `（需要資產裡有 data/tasks.jsonl）` | 把內部檔案路徑當成要求 |
+| 6 | 資產清單，空的 LoRA 種類 | `還沒有 LoRA 資產（訓練完成後會在這裡；LoRA 登錄與按需載入在第二輪接上）` | 「第二輪」是開發進度用語，使用者會以為功能沒做完 |
+| 7 | 資產清單，空的其他種類 | `…由 X 的訓練包裝產生（尚未實作，見設計文件 §10 步驟 3）` | 把設計文件編號給使用者看 |
+| 8 | 領域分頁的卡片摘要 | `train 370／holdout 237` | 英文鍵 |
+| 9 | LoRA 登錄，環境行 | `主程式環境：基底 …，rank 槽 16，提示格式版本 1；記憶體預算 256.0 MB，同時啟用 4 個` | 「rank 槽」「提示格式版本」沒說明，也沒說上限的後果 |
+| 10 | LoRA 登錄，槽版卡片 | `原生推論的 LoRA 槽版模型`、`已就緒：rank 槽 16` | 同上 |
+
+### 27.2 修正（全部在 `renderer/src/studio/studio-viewer.template.html`，未重新嵌入）
+
+- 1：計數鍵加上 `ZHK` 對照表（題目、單元、模型、權重、紀錄、正例、負例、課、演算法、已驗證題、領域包、骨架、種子題、訓練題、留出題、操作、合成器…），沒列出的鍵照原樣顯示。修正後實測：`題目 6、單元 203`、`模型 3、自我檢查 3`、`權重 0、已訓練 0`、`紀錄 0、列 0、正例 0、負例 0、組 0`、`課 17、演算法 17、已驗證題 20`。
+- 2：來源行改成收合的 `<details>`「技術細節（給開發者看的來源檔案）」，預設不展開。修正後畫面每張卡片只剩一行技術細節標題（截圖 `21-wizard-running.png` 左欄）。
+- 3：`STZH` 對照：running→訓練中、paused→已暫停、finishing→收尾中、finished→已完成、error→出錯、stopped→已停止、idle→待命。
+- 4：啟動失敗時，標題改成「沒辦法開始」，進度條、紀錄框、暫停／繼續／停止按鈕整排移除（LoRA 分支同樣處理）。修正後實測（`walk.s4`）：標題「沒辦法開始」，按鈕列表只剩「`沒辦法開始：…`」訊息，沒有暫停與停止。錯誤訊息文字沒改，它本來就寫了發生什麼與怎麼辦。
+- 5：改成「（這種訓練需要題目資料，檔名要是 tasks.jsonl）」與「（這種訓練需要一份 .jsonl 資料集）」。**未實機驗證**：這次的實機流程選到的是 CoLU，不走資料步驟。
+- 6、7：空的 LoRA 種類改成「還沒有 LoRA 資產。訓練完成後會出現在這裡，也可以到「LoRA 登錄」分頁查看與載入。」；其他種類改成「還沒有。到「訓練」分頁選「X」就會產生。」。**未實機驗證**（這次的內建資產都有項目，沒有觸發這兩個空狀態）。
+- 8：領域摘要改成「訓練題 370／留出題 237」。
+- 9、10：環境行改寫為「主程式目前使用的基底模型：Qwen/Qwen3-0.6B。LoRA 槽寬（rank）16、提示格式版本 1；記憶體預算 256.0 MB，最多同時啟用 4 顆（超過時要先卸下一顆）。」；槽版卡片改為「原生推論用的模型（LoRA 槽版）」與「已就緒：LoRA 槽寬 16」。
+
+驗證：`node --check`（把樣板內的所有 `<script>` 抽出來檢查）通過；`renderer/src/studio/studio_viewer_tabs.test.js` 13／0。實機探測（`FA_TPL=1`）確認上面 1、2、4、8、9、10 的文字，見 27.2 各項的實測數字。3（狀態中文）**未實機驗證**：啟動失敗後不會進入輪詢，這次的流程沒有走到進度輪詢；只有語法檢查與程式對照。
+
+### 27.3 沒有處理、留給下一步的
+
+- **需要總指揮重新嵌入**：`renderer/src/floating-assistant.js` 要重新嵌入 `studio-viewer.template.html` 的修正，主畫面才會顯示這些文字。這次沒有跑 embed／build（指揮規定）。
+- 伺服器端的摘要文字還有英文：`3 個內建模型有體檢結果：self 3`、`0 筆回饋…（groups 0/8、positives 0/10、negatives 0/20）`、`版本 packs 34`（`renderer/src/catalog/feedback_core.js`、`colu_bench_core.js` 等）。這些字串在核心層，改它們要跑對應的單元測試，這輪沒有動。
+- 「資料匯入」分頁的 `fap:`、`/aidoc save`、`.fatrain` 是功能名稱，沒有改寫成一般語言，待產品決定。
+- 領域分頁：`載入：這個環境沒有領域載入器（FaStudioDomainRuntime）`（`renderer/src/studio/domain_routes_core.js:45`）還把類別名稱給使用者看，未改。
+- LoRA 登錄的「註冊多顆、延遲載入、槽滿替換」**沒有在這次的實機中操作**：隔離環境沒有 adapter，這與 §26.2 第 3 項的限制相同。`lora_registry.test.js`、`lora_manage_core.test.js` 等單元測試沒有重跑（這輪只改樣板文字）。
+- 「簡單模式」精靈的「目標」「資料」「確認」已在實機看過（截圖 `20-wizard-confirm.png`）；「更新資產」流程沒走，未驗證。
