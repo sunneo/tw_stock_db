@@ -48,12 +48,17 @@
                 (c, N) => { need(N, 3); const n = N.sc[0], p = N.sc[1], k = N.sc[2], x = N.ls[0];
                     const term = c.out === 'sumq' ? 'lo // 4 + hi // 4' : 'abs(lo // 4) + abs(hi // 4)';
                     return code(['nf = ' + n + ' // ' + k].concat(ownFrames(c.kind, n, k, p), ['tot = [0] * ' + p, 'for t in range(' + p + '):', '    for f in own[t]:', '        for j in range(f * ' + k + ', f * ' + k + ' + ' + k + ', 2):', '            lo = (' + x + '[j] + ' + x + '[j + 1]) >> 1', '            hi = ' + x + '[j] - ' + x + '[j + 1]', '            tot[t] += ' + term, 'print(sum(tot))'])); }, { limit: 8 }),
+            D('par.hist', 'par-hist', 'private-reduction', '直方圖的私有副本歸約：迭代以區塊或循環排程分給 p 個執行緒，每個執行緒用私有直方圖統計，最後逐格加總；輸出 8 格的次數或次數最多的格號',
+                [S('kind', '排程', [['block', 'block'], ['cyclic', 'cyclic']]), S('out', '輸出', [['counts', 'counts'], ['maxbin', 'maxbin']])],
+                (c, N) => { need(N, 2); if (N.ls.length < 1) throw new Error('要陣列'); const n = N.sc[0], p = N.sc[1], x = N.ls[0];
+                    return code(ownIdx(c.kind, n, p).concat(['K = 8', 'priv = [[0] * K for _ in range(' + p + ')]', 'for t in range(' + p + '):', '    for i in own[t]:', '        priv[t][' + x + '[i]] += 1', 'cnt = [sum(priv[t][b] for t in range(' + p + ')) for b in range(K)]', c.out === 'counts' ? 'print(" ".join(str(v) for v in cnt))' : 'print(cnt.index(max(cnt)))'])); }, { limit: 4 }),
         ];
         const algos = [
             ['par-haar', /Haar|haar|小波|整數提升|提升.{0,10}(變換|係數)/],
+            ['par-hist', /直方圖|histogram|出現次數/],
             ['par-race', /競爭條件|race|原子|atomic|臨界區|critical|遺失.{0,6}更新|lost\s*update/i],
             ['par-reduce', /歸約|reduction|reduce/i],
-            ['par-pack', /位元(打包|寫入)|熵編碼.{0,20}(平行|位移|寫入|位元)|寫入位元/],
+            ['par-pack', /位元(打包|寫入)|熵編碼.{0,20}(平行|位移|寫入|位元)|寫入位元|寫成.{0,8}位元|位元.{0,8}(接|串)|位元位移/],
         ].map(([key, re]) => ({ key, re, pri: true }));
         const paradigms = {}; for (const sk of skeletons) paradigms[sk.algo] = [sk.paradigm];
         return { id: 'par3', label: '平行運算：歸約、競爭條件、熵編碼打包、Haar 有損框變換', requires: [], judge: { checker: 'tokens' }, algos, paradigms, skeletons };
