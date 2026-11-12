@@ -25,7 +25,11 @@
 | translate | translate_text 成功 | 同上 |
 | worksheet | worksheet_make／topic／open | 同上 |
 | drawing | render_drawing／render_uml_diagram／images_to_pdf | 同上 |
-| image、music、coding、file_analysis、browser_*、research、knowledge、computer_use、git、mcp… | **待改善**：沒有單一產物（分析／查詢／操作混在一起），判準要依任務類型分，下一步依事故逐項加 | 目前只有既有的工具錯誤回饋＋延展回合 |
+| image（畫／生成類任務） | generate_image／render_drawing／render_uml_diagram 成功（軟判準，依任務文字） | 糾正×2 → 回覆後加警告（不判失敗，因為可能判錯） |
+| music（作曲／轉 midi／拆軌） | midi_compose*／audio_to_midi／soundtrack_make／music_topic／midi_to_mp3 成功（軟） | 同上 |
+| coding（寫／修／優化／轉換） | write_code／fix_code／optimize_code／convert_code／merge_patch／uml_to_code／fap 寫檔工具成功（軟） | 同上 |
+| editors（剪／合併／字幕／配音／轉 3D） | video_*／image_to_3d／edit_*_open 成功（軟） | 同上 |
+| file_analysis、browser_*、research、knowledge、computer_use、git、mcp、browser_search… | **查詢／操作類：答案本身就是成果**，沒有單一產物工具；失敗靠既有的工具錯誤回饋＋延展回合＋重複呼叫攔截。若之後有事故（模型只說做完、實際沒做），依事故逐項加判準 | 既有機制 |
 
 ## 測試
 `scripts/self-correct/domain_produces.test.js`（判準、糾正訊息、接線）、`scripts/deck-tests/deck_url_wiring.test.js`、`scripts/deck-tests/deck_topic.test.js`。

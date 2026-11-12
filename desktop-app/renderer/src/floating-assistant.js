@@ -1446,6 +1446,20 @@ const FA_DOMAIN_PRODUCES = {
     worksheet: ['worksheet_make', 'worksheet_topic', 'worksheet_open'],
     drawing: ['render_drawing', 'render_uml_diagram', 'images_to_pdf'],
 };
+// 依任務內容才看得出「要不要產物」的領域（分析／查詢／操作混在一起）：任務文字符合「要做出東西」的說法才設判準；這類判準是「軟」的——糾正重來後仍沒有，
+// 不整個判失敗（可能判錯），只在回覆後面加警告。回 { tools, soft:true } 或 null。
+const FA_TASK_EXPECT = [
+    { domain: 'image', ask: /(畫|繪製|生成|產生|做一張|做個|製作).{0,12}(圖|插畫|海報|圖片|流程圖|示意圖|logo)|generate|draw/i, not: /(解讀|描述|看看|看一下|分析|比較|辨識|讀圖|說明這張)/, tools: ['generate_image', 'render_drawing', 'render_uml_diagram'] },
+    { domain: 'music', ask: /(作曲|編曲|寫.{0,6}(歌|曲|旋律)|做.{0,6}(音樂|配樂|歌)|拆軌|轉.{0,4}midi|compose|soundtrack)/i, not: /(播放|聽聽|只要播)/, tools: ['midi_compose', 'midi_compose_tree', 'midi_song_jsonl', 'audio_to_midi', 'soundtrack_make', 'music_topic', 'midi_to_mp3'] },
+    { domain: 'coding', ask: /(寫|新增|實作|修(正|改|掉)?|優化|轉換|重構).{0,14}(程式|函式|function|bug|code|類別|class|腳本)/i, not: /(解釋|說明|讀懂|分析|review|評論)/i, tools: ['write_code', 'fix_code', 'optimize_code', 'convert_code', 'merge_patch', 'uml_to_code', 'fap_apply_patch', 'fap_write_file', 'attachment_apply_patch'] },
+    { domain: 'editors', ask: /(剪|切|裁|合併|加字幕|燒字幕|配音|轉場|轉成.{0,6}(3d|3D))/, not: /(教我|怎麼|如何|說明)/, tools: ['video_cut_range', 'video_cut_clip', 'video_cut_line', 'video_split', 'video_add_media', 'video_tts_dub', 'video_set_transition', 'video_transcribe', 'video_set_line', 'video_shift_lines', 'image_to_3d', 'edit_svg_open', 'edit_picture_open', 'edit_3d_open', 'edit_video_open'] },
+];
+function faDomainExpect(domainKey, task) {
+    if (FA_DOMAIN_PRODUCES[domainKey]) return { tools: FA_DOMAIN_PRODUCES[domainKey], soft: false };
+    const t = String(task || '').replace(/\[附件：[^\]]*\]/g, ' ');
+    const r = FA_TASK_EXPECT.find((x) => x.domain === domainKey && x.ask.test(t) && !(x.not && x.not.test(t)));
+    return r ? { tools: r.tools, soft: true } : null;
+}
 function faDomainProduced(calls, produces) { return !!(Array.isArray(calls) && Array.isArray(produces) && calls.some((c) => c && c.ok && produces.indexOf(c.name) >= 0)); }
 // 糾正訊息：說清楚缺什麼、該用哪個工具、上一次哪個呼叫錯在哪（錯誤原文），不是只叫它「再試一次」
 function faCorrectionNote(calls, produces, label) {
@@ -76750,7 +76764,7 @@ const FaDeckTools = (function () {
                 catch (e) { errs.push(c.title.slice(0, 30) + '：' + String((e && e.message) || e).slice(0, 80)); }
             }
             if (photos.length) return { ok: true, photos, note: 'use "ref" as the picture src; keep the credit if the user wants sources' };
-            return { error: 'no usable photo for "' + q + '"' + (errs.length ? '（' + errs.slice(0, 3).join('；') + '）' : '（搜尋沒有符合的圖片）') + ' -- try other English keywords once; if still nothing, draw it yourself (cute_picture / svg) and go on with the other slides' };
+            return { error: 'no usable photo for "' + q + '"' + (errs.length ? '（' + errs.slice(0, 3).join('；') + '）' : '（搜尋沒有符合的圖片）') + ' -- try other English keywords once; if still nothing, take a screenshot of the source page instead (browser_create_tab the url, then browser_screenshot: the result gives you an image handle), or draw it yourself (cute_picture / svg), and go on with the other slides' };
         },
         // 匯入搜尋到的一張照片（c＝_deckFindPhoto 的 candidates 其中一個）
         async _deckPhotoImport(c) {
@@ -77081,7 +77095,7 @@ const FaDeckTools = (function () {
                     const u = String(a.url || '').trim(); if (!/^https?:\/\//i.test(u)) return { error: 'only http/https urls are allowed' };
                     if (/placehold|placeholder|dummyimage|fakeimg|lorempixel|picsum\.photos|placekitten|placeimg/i.test(u)) return { error: 'that is a placeholder-picture service (it returns a grey box with the text you gave it), not a real picture. Do not use it: draw the object yourself as a visual kind svg (see the rule on drawing pictures), or use a real picture from a tool / the sources.' };
                     const { resp } = await this._terminalHttpFetch('GET', u, { headers: { Accept: 'image/*' }, timeoutMs: 20000 });
-                    if (!resp.ok) return { error: 'the server answered HTTP ' + resp.status };
+                    if (!resp.ok) return { error: 'the server answered HTTP ' + resp.status + '.'+ ' 下載失敗時不要重複試下載：用 browser_create_tab 開那個頁面，再用 browser_screenshot（可帶 region 只截圖片那一塊）截圖，結果會直接給你圖片代號。' };
                     const blob = await resp.blob(); let type = (resp.headers.get('content-type') || blob.type || '').split(';')[0].trim().toLowerCase();
                     return this._deckImportImageBlob(type && blob.type !== type ? new Blob([blob], { type }) : blob, 'web: ' + u.slice(0, 100), 'import_image_url');
                 });
@@ -129188,14 +129202,16 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             if (askedForMaterial(subResult)) { if (progress) progress.finish('需要素材'); return { ok: true, domain: domainKey, result: String(subResult.text || '') + String.fromCharCode(10, 10) + '（這次的任務沒有附上檔案或網址，所以沒有產生簡報。請附上素材再送一次。）' }; }
             await trySalvageDeck();
             // 通用自我糾正：有「完成判準」的領域（FA_DOMAIN_PRODUCES），模型說完成但沒有任何成功的產物工具呼叫 → 帶具體糾正訊息重來（最多 2 次）；還是沒有就誠實失敗（附上次錯誤），不把空話當結果
-            const produces = !isDeck && !isSkillDomain ? FA_DOMAIN_PRODUCES[domainKey] : null;
+            const expect = !isDeck && !isSkillDomain ? faDomainExpect(domainKey, task0) : null, produces = expect ? expect.tools : null;
             if (produces) {
                 const done = () => faDomainProduced(callLog, produces) || !!(subResult && subResult.visual) || /[?？]\s*$/.test(String((subResult && subResult.text) || '').trim()); // 結尾是問句＝向使用者釐清，不算放棄
                 for (let attempt = 1; attempt <= 2 && !done() && !(extra.shouldStop && extra.shouldStop()); attempt++) {
                     const l = '⚠️ 子agent說做完了，但沒有成功呼叫 ' + produces.join('／') + '——自動糾正重來（第 ' + attempt + ' 次）'; if (progress) progress.log(l); if (extra.onTrace) extra.onTrace(l);
                     subResult = await runOnce(task + String.fromCharCode(10, 10) + faCorrectionNote(callLog, produces, domain.label));
                 }
-                if (!done()) {
+                if (!done() && expect.soft) { // 軟判準（依任務文字判斷的）：不整個判失敗，回覆後面加警告，讓使用者知道沒確認到成果
+                    subResult = Object.assign({}, subResult, { text: String((subResult && subResult.text) || '') + String.fromCharCode(10, 10) + '⚠️ 這次沒有確認到成果（已糾正重來 2 次，仍沒有成功呼叫 ' + produces.slice(0, 4).join('／') + ' 等工具）。如果你要的是產出（圖、曲、程式修改、影片），請補一句具體要求再送一次。' });
+                } else if (!done()) {
                     const lastErr = callLog.filter((x) => !x.ok && produces.indexOf(x.name) >= 0).slice(-1)[0];
                     if (progress) progress.fail('沒有做出成果');
                     return { ok: false, error: '「' + domain.label + '」沒有做出成果：已糾正重來 2 次，仍沒有成功呼叫 ' + produces.join('／') + '。' + (lastErr ? '最後一次失敗：' + lastErr.name + ' → ' + JSON.stringify(lastErr.res || {}).slice(0, 240) + '。' : '') + '請補一句具體要做什麼（或附上素材）再送一次；也可以用 /rounds 調高回合。', model_said: String((subResult && subResult.text) || '').slice(0, 300) };

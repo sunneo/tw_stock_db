@@ -573,7 +573,7 @@ const FaDeckTools = (function () {
                 catch (e) { errs.push(c.title.slice(0, 30) + '：' + String((e && e.message) || e).slice(0, 80)); }
             }
             if (photos.length) return { ok: true, photos, note: 'use "ref" as the picture src; keep the credit if the user wants sources' };
-            return { error: 'no usable photo for "' + q + '"' + (errs.length ? '（' + errs.slice(0, 3).join('；') + '）' : '（搜尋沒有符合的圖片）') + ' -- try other English keywords once; if still nothing, draw it yourself (cute_picture / svg) and go on with the other slides' };
+            return { error: 'no usable photo for "' + q + '"' + (errs.length ? '（' + errs.slice(0, 3).join('；') + '）' : '（搜尋沒有符合的圖片）') + ' -- try other English keywords once; if still nothing, take a screenshot of the source page instead (browser_create_tab the url, then browser_screenshot: the result gives you an image handle), or draw it yourself (cute_picture / svg), and go on with the other slides' };
         },
         // 匯入搜尋到的一張照片（c＝_deckFindPhoto 的 candidates 其中一個）
         async _deckPhotoImport(c) {
@@ -904,7 +904,7 @@ const FaDeckTools = (function () {
                     const u = String(a.url || '').trim(); if (!/^https?:\/\//i.test(u)) return { error: 'only http/https urls are allowed' };
                     if (/placehold|placeholder|dummyimage|fakeimg|lorempixel|picsum\.photos|placekitten|placeimg/i.test(u)) return { error: 'that is a placeholder-picture service (it returns a grey box with the text you gave it), not a real picture. Do not use it: draw the object yourself as a visual kind svg (see the rule on drawing pictures), or use a real picture from a tool / the sources.' };
                     const { resp } = await this._terminalHttpFetch('GET', u, { headers: { Accept: 'image/*' }, timeoutMs: 20000 });
-                    if (!resp.ok) return { error: 'the server answered HTTP ' + resp.status };
+                    if (!resp.ok) return { error: 'the server answered HTTP ' + resp.status + '.'+ ' 下載失敗時不要重複試下載：用 browser_create_tab 開那個頁面，再用 browser_screenshot（可帶 region 只截圖片那一塊）截圖，結果會直接給你圖片代號。' };
                     const blob = await resp.blob(); let type = (resp.headers.get('content-type') || blob.type || '').split(';')[0].trim().toLowerCase();
                     return this._deckImportImageBlob(type && blob.type !== type ? new Blob([blob], { type }) : blob, 'web: ' + u.slice(0, 100), 'import_image_url');
                 });
