@@ -653,3 +653,71 @@ heldout9（`heldout9_list.jsonl`，16 題）：**ok 15/16，verified 14**（測�
   - 原生推論套用 LoRA：嵌入清單的 sha256 與目前 `nr-*.js` 不同步（需要重跑 refreeze，屬於嵌入流程）；
   - 內建資產（LoRA 現況）；資料匯入與清洗：`ENOENT: scandir`；harness skill 可攜：1 項。
 - 本棒新增的矩陣測試全部在 run-core-tests 裡通過（`matrix_lzma`、`matrix_fgk` 修完結尾行後為 31 與 6，`matrix_teach_queue` 17，`matrix_synth*`）。
+
+### 13.6 blockly 與 matrix 混用（2026-11-12，指揮指示；分支 `claude/matrix-finish-4-48e1e0`）
+
+**設計（兩層，成本由低到高）**
+
+1. **整條失敗才交給矩陣**：blockly 的 UML→骨架→區塊管線整條失敗後，`_codeOffline` 的失敗路徑把「可見測資」當範例呼叫 `FaMatrixSynth`。矩陣答案只有「隱藏測資獨立判過（`verdict === 'AC'`）、非多候選（`!ambiguous`）、標記已驗證」才採用（`matrix_hybrid_core.js` 的 `tryMatrix`）；否則回傳原因，照舊回失敗＋教學佇列，交給弱模型或 LoRA。沒有獨立判題器時一律不採用，不能把「只對範例」當驗證。
+2. **殘留部分交給矩陣（部分匹配）**：設計上 blockly 拆出的步驟有殘留、或函式本體對不準時，只把殘留那段交給矩陣對應函式，再用判題器或結構檢查驗證。**尚未實作**，原因：blockly 失敗回傳只有 `stage`、`rounds`、`stuckAt`，沒有「哪一步殘留」的語句級資訊；要做需要 UML 建構器輸出語句級差異，這是下一棒的接續點。
+
+**接點（已提交，未嵌入）**
+
+- `renderer/src/algo/matrix_hybrid_core.js`（`FaMatrixHybrid`，純函式，synth 與 judge 注入）。
+- `renderer/src/floating-assistant.js` 失敗路徑：`typeof FaMatrixHybrid` 檢查，未嵌入時完全不動。`FaMatrixHybrid` 要在 `FaMatrixSynth` 之後嵌入（總指揮統一做）。
+- 測試 `matrix_hybrid.test.js` 7 項：真合成＋真判題採用一項（相鄰差）；判題 WA、沒有範本、沒有判題器、多候選、合成器丟例外、沒有範例，共六項拒絕路徑。全綠。
+
+**量測（實跑）**
+
+- 掃描：`domain_*` 測試共 30 包，holdout 未解共 **20 題**（avbits 3、ds 2、graph3 5、inflate 2、linuxfmt 1、linuxtext 1、os 1、par 2、sync2 1、tarx 2）；binfmt 的 `ho3-xz-bare` 在 3000ms 時限下偶發 TLE，本次 8/8 解出，屬於時限波動。
+- 抓題目物件：攔截判題器呼叫取得敘述、可見測資、隱藏測資。**抓到 13 題**；另 7 題 blockly 從未呼叫判題器（沒有候選），題目物件沒有被記錄，這是量測工具的缺口，未補。
+- `FaMatrixSynth` 對這 13 題：**合成 0 題，隱藏測資通過 0 題**。原因：這些題型（Floyd、匹配、分配、路徑、第 k 短、同步偵測、tar 列表、環境變數預設值、cut 半形）不在矩陣現有範本與家族內（失敗訊息都是「沒有符合所有範例的範本」）。
+- 結論：**整題混用在這批未解題上實測補上 0 題**。接點正確，但目前覆蓋到的未解題為零；要靠殘留部分交給矩陣，或擴充矩陣家族，才會有增益。
+
+**teach_queue「該走哪一層」（成本：blockly 教學最快 < 編成矩陣 < LoRA 最久）**
+
+- `matrix_spec_core.routeOf({stage, examples})`：讀得懂（stage ≠ reader）→ `blockly-teach`（缺骨架或課，補一課最便宜）；讀不懂有可見範例 → `matrix`（能合成但要寫範本）；讀不懂也沒有範例 → `lora`（先請使用者補範例，否則留給 LoRA）。
+- `teachEntry` 寫入 `route`（只存名字）；`matrix_teach_queue_core.summarize` 加 `byRoute` 與「建議順序」行。
+- 測試 `matrix_teach_queue.test.js` ⑧ 組 8 項；`matrix_spec.test.js` 25 項全綠。
+- **判斷依據的限制**：route 只看 stage 與範例數，沒有看題型是否落在矩陣家族內，所以「讀不懂有範例 → matrix」在上面的量測裡其實會落空（0/13）。實際是否編成矩陣，應該在量測矩陣覆蓋率之後再決定；這是待改善。
+
+**核心測試執行器與 11 組格式誤判（修正 13.5）**
+
+- `scripts/run-core-tests.js` 結尾行判定加入中文零失敗寫法：「全部通過」「通過 N 項」「0 失敗」「失敗 0 項」；結束碼仍必須為 0，`FAILED` 仍會失敗。這是讓執行器認得既有寫法，沒有逐檔改測試結尾行。
+- 11 組已逐一用執行器同樣的環境與規則實跑：10 組結束碼 0 且結尾行正確；`native_lora_merge`、`find_installed_runtime` 原本是「通過 N 項」，已由新規則接受（規則以 `node -e` 驗過，兩組實際結束碼 0）。
+
+**整套 run-core-tests（乾淨環境，2 核、nice 19）**
+
+- 結果：**296／309 組通過，13 組失敗，全部是新增、沒有既有失敗**。執行約 40 分鐘（負載高，`domain_os` 那一段長時間被 nice 19 餓住）。
+- 乾淨環境：`FA_TS_DIR=~/.cache/fa-ts-h264`、`FA_PYTHON=python3`、`python` 指向 python3 的 shim（只在執行時加入 PATH）、`node_modules` 以符號連結指向主倉庫（執行後已移除，不在 `.gitignore`，不提交）。執行器會覆寫 `test-reports/` 與兩個生成檔，已還原。
+
+**13 組真失敗與根因（逐項；屬矩陣領域者修，其餘寫根因）**
+
+| # | 套件 | 證據（我實跑或讀 log） | 根因／歸屬 |
+|---|---|---|---|
+| 1 | 領域包 os | `disk-sstf（改寫）` 沒有配方；反序變體 TLE | blockly os 包缺 disk-SSTF 的改寫配方；TLE 與負載有關。**歸 blockly os 包，不屬矩陣** |
+| 2 | 領域包 par | `load-span`（原敘述與反序）沒有配方，需要模型 | blockly par 包缺 load-span 家族的配方。**歸 blockly par 包** |
+| 3 | C++／C#／Perl／Ruby 輸出器 | 10 組 `g++ 編譯失敗：undefined`；本機有 g++ 11.4 | 推測：測試假設 mingw 工具鏈，編譯步驟沒有把錯誤文字帶出來。**未驗證，歸 IR 輸出器** |
+| 4 | 從程式抽回 UML（convert_code to_uml） | 期待 `enum: ['convert','to_blocks','to_uml']`，宿主 enum 沒有 `to_uml` | 宿主 convert_code 的動作清單未加 to_uml。**歸 convert_code 宿主** |
+| 5 | 結構轉換 runtime（struct） | 期待 enum 含 `struct` 與說明文字，宿主沒有 | 宿主 convert_code 的 struct 動作未接進 enum 與說明。**歸 convert_code 宿主（同 #4）** |
+| 6 | 判題器 exec 逾時 | 孫行程逾時後還活著（孤兒） | judge-runner 逾時只殺直接子行程，沒有殺整個行程樹。**真缺陷，歸判題器基礎設施** |
+| 7 | 程式優化對照表 | prefix-sum 實測加速 1.5 倍，門檻 ≥3（前次 2 倍） | 實測計時門檻在高負載下不穩（推測）。**歸程式優化測試，建議改相對量測或在空閒時跑** |
+| 8 | 訓練工作室內建資產 | `lora/內建-LoRA現況 {"adapters":0,"datasets":0}` | 測試期待內建 LoRA 資產存在，此 checkout 沒有。**歸 studio 資產（資料未進 repo）** |
+| 9 | 訓練工作室整合：視窗版面 | 預設左右分組與測試期待不符；分頁關閉後 closed 狀態不符 | 版面預設值與測試不一致，根因未查到。**待查，歸 studio 整合** |
+| 10 | 訓練工作室整合：假伺服器路由 | `info` 顯示 `storage.reason = "no-fap"`，webTrain=false | 測試期待有授權資料夾（fap）；無 fap 時的 info 與期待不符，根因未完全查到。**待查，歸 studio 整合** |
+| 11 | 原生推論套用 LoRA | 嵌入清單 sha256 與 `nr-*.js` 不同步，需重跑 `scripts/native-runtime-refreeze-nr.js --write-main-ext` | 有人改了 nr 檔沒有重算清單。**真漂移，歸原生執行包嵌入流程（不在矩陣）** |
+| 12 | 訓練工作室資料匯入與清洗 | `ENOENT scandir …/wiki`（worktree 沒有 wiki 目錄） | 測試依賴未進 repo 的 wiki 資料。**資料依賴，歸 studio 匯入** |
+| 13 | harness skill 可攜 | `vendor/recipe_core.js 與來源一致` 失敗：只差一行（`jsonStep` 那行） | `58f223f9` 改了 `renderer/src/recipe/recipe_core.js` 沒有重新同步 vendor 副本。**真漂移，歸 weak-model-harness skill** |
+
+- 前次（乾淨環境第一輪）的「行為描述」`ENOENT tree-sitter-javascript.wasm` 這次沒有復現（本次通過）；原因未查。
+- 以上 13 組都不是矩陣領域的失敗，所以本棒**沒有修**，只寫根因。
+
+**身分與分支**：提交身分 `Claude <noreply@anthropic.com>`，trailer 寫 Haiku 5.5。未推送、未發布、未跑 `embed-code-ui.js`、`build-assistant.js`，未用 `git add -A`。
+
+**接手者的接續點（依順序）**
+
+1. 量測工具補缺口：7 題 blockly 從未呼叫判題器，要在 `_codeOffline` 之外（或在 buildFromUML 的呼叫端）取得題目物件，才能量完整的 20 題。
+2. 實作部分匹配（本節設計的第 2 層）：需要 UML 建構器輸出語句級殘留，這是第一個真正的技術缺口。
+3. 矩陣家族擴充要以「新 held-out」量測；第三批 held-out 已用掉，不再對它調參（見 §13.5）。
+4. 13 組真失敗：#4、#5 是宿主 convert_code 的 enum 缺動作，#6 是判題器行程樹清理，#11、#13 是同步漂移，這五項最好由各自 owner 修；#9、#10 的根因還沒查完。
+5. 把 `matrix_hybrid_core.js` 與 `FaMatrixHybrid` 的嵌入順序加進嵌入清單（`FaMatrixSynth` 之後）；嵌入與登記由總指揮統一做。
