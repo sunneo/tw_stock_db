@@ -439,3 +439,45 @@ FA_TS_DIR=<含 tree-sitter.js、tree-sitter.wasm、tree-sitter-python.wasm 的�
 - `renderer/src/uml/domain_h264pb_core.js`、`renderer/src/uml/domain_h264pb.test.js`（14 項，train 7/7、反序 7/7、holdout 7/7）。
 - `scripts/eval/h264-cabac-enc.js`（共用模組，無相依）、`scripts/eval/cabac-pskip-ffmpeg.js`、`scripts/eval/cabac-ipcm-ffmpeg.js`、`scripts/eval/x264-cabac-pb-compare.js`。
 - 嵌入：新核心與測試照前一段的清單登記；`scripts/eval/*` 不需嵌入，手動執行（需要 ffmpeg 含 libx264）。
+
+### 第五棒收尾（停損，2026-11-12）
+
+指揮決定：媒體編解碼設停損，不再擴充新演算法。本節是第五棒的最後狀態。
+
+**已完成並驗證（數字為實測）**
+| 項目 | 驗證方式 | 結果 |
+|---|---|---|
+| CABAC 初始化 P／B，ctxIdx 11 至 59（3 個 idc） | 與 x264 逐格比對（`scripts/eval/x264-cabac-pb-compare.js`） | 147/147 |
+| CABAC 位元比對（P_Skip，ctxIdx 11，3 個 idc × 3 個 QP） | ffmpeg 逐位元解碼比對（`scripts/eval/cabac-pskip-ffmpeg.js`） | 9/9；負向對照 9/9 不同 |
+| CABAC 位元比對（I_PCM，ctxIdx 3、4、5，終止二值，PCM 後重新初始化） | ffmpeg 逐位元比對（`scripts/eval/cabac-ipcm-ffmpeg.js`） | 3/3；負向對照 3/3 不同 |
+| 算術編碼往返（隨機序列，含 LPS 路徑與終止） | 獨立解碼器往返（臨時腳本，未入庫） | 300/300 |
+| 運動向量預測（中位數與單一匹配） | train／反序／holdout（`domain_h264pb.test.js`） | 各 1/1 |
+| 次像素半像素層代價選擇 | 同上 | 各 1/1 |
+| 次像素四分之一層代價選擇 | 同上（pb-qs） | 各 1/1 |
+| mvd、ref_idx 二值化，mb_skip 上下文增量 | 同上 | 各 1/1 |
+| 色度 1/8 內插（既有 `h264.chroma8`） | 回歸 | 2/2 |
+
+**新測試與回歸（本節收尾時實跑）**
+- `domain_h264pb.test.js`：14 passed、0 failed（train 7/7、反序 7/7、holdout 7/7）。
+- `cabac-pskip-ffmpeg.js`、`cabac-ipcm-ffmpeg.js`：通過（需 ffmpeg 含 libx264）。
+- `x264-cabac-pb-compare.js`：147／147，不符 0。
+- 回歸：`domain_h264cabac` 16、`domain_h264motion` 16、`domain_h264chroma` 2、`domain_h264dec` 6、`domain_h264intra` 20、`domain_h264cavlc` 4，全數通過。
+
+**未完成（阻礙寫明；不再擴充）**
+1. **完整初始化表（所有 ctxIdx）**：阻礙：規格正文本機沒有。下載規格 PDF 的嘗試被權限分類器拒絕，已停止，不繞過。唯一外部向量是 x264（GPL），整批抄入需要使用者同意。需要使用者決定：(a) 自行下載規格 PDF 放到專案外路徑，或 (b) 同意以 x264 表生成並寫明授權。目前 repo 中只有 I 條帶 0–10、60–104 與 P/B 11–59。
+2. **次像素四分之一樣本的內插，以 ffmpeg 驗證**：阻礙：要驗證需要非略過的 P 巨集區塊（P_L0_16x16 加 mvd 加 cbp），而 cbp 與 P 條帶的 ctxIdx 70–84 初始化屬於第 1 項的缺口。目前四分之一層只有代價選擇（pb-qs 測試），內插公式只有 `h264.qpel*` 系列的自洽測試，**沒有外部驗證**。
+
+**刻意不再擴充（停損）**
+- 熵編碼之後的全部項目：mb_type 完整二值表（P／I 所有型別）、coded_block_pattern、coded_block_flag、殘差（significant、last、level）、非略過巨集區塊的端到端 ffmpeg 比對。
+- B 幀的直接模式、加權預測、多參考幀、多 slice、去區塊（對 inter 區塊）、FMO。
+- 任何新的編碼演算法或新的 CABAC 語法。
+- 理由：沒有完整初始化表時，這些項目無法做逐位元外部驗證；有表之後再重新排定。
+
+**嵌入時需要的檔名與順序（給總指揮）**
+1. `renderer/src/uml/domain_h264pb_core.js`：新核心，無相依，可放在 `domain_h264cabac_core.js` 之後。
+2. `renderer/src/uml/domain_h264pb.test.js`：新測試，登記到 `scripts/run-core-tests.js`，需要 tree-sitter 快取（`FA_TS_DIR`）；要看到「train 7/7」才算有效。
+3. 登記點：`scripts/embed-code-ui.js`、`floating-assistant.js`（同前幾棒，本棒未登記）。
+4. `scripts/eval/` 下的四支腳本（`h264-cabac-enc.js`、`cabac-pskip-ffmpeg.js`、`cabac-ipcm-ffmpeg.js`、`x264-cabac-pb-compare.js`）不嵌入，手動執行；`cabac-*` 需要 ffmpeg 含 libx264。`h264-cabac-enc.js` 是另兩支的共用模組，必須隨之一起放。
+
+**提交（第五棒，全部在 `claude/dazzling-haslett-912eb2`，未推送）**
+`06012887`、`cc2aa69c`、`cf0e1267`、`69078162`、`13af5758`、`3bbcd9f5`、`a83f25f5`、本節收尾提交（見下）。
