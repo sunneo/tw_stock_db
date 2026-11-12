@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "baseVersion": "1.1.0",
-  "generatedAt": "2026-11-12T11:17:02.469Z",
+  "generatedAt": "2026-11-12T12:43:19.104Z",
   "files": {
     "renderer/index.html": "039acc67493d2d42bae493dc9822621a",
     "renderer/bootstrap.js": "a9953cd7275f9fe213f27d062f660e1a",
@@ -57,7 +57,7 @@
     "knowledge-native.js": "a62f7e9808bedd0dae1aa195af493e20",
     "local-proxy.js": "158f13c8135c1dc736efe6d8aebb5b05",
     "lora-slot-build.js": "0f12371323819fcbc01c6ba5c8f6daa9",
-    "main-ext.js": "30fa4708b104e068acf44f7ab64b0812",
+    "main-ext.js": "b166b438116677ce2d49014be9647a87",
     "native-slot-model.js": "72362f60756a5c7db2a44386e0997f65",
     "rfb-client.js": "1ad7d8a545166f0e965d3f5008b94ccb",
     "rfb-codec.js": "08f2ada7bc710642e7d29fbff63ee4f1",
@@ -119,7 +119,7 @@
     "knowledge-native.js": 5291,
     "local-proxy.js": 27272,
     "lora-slot-build.js": 18366,
-    "main-ext.js": 153347,
+    "main-ext.js": 153646,
     "native-slot-model.js": 15827,
     "rfb-client.js": 27415,
     "rfb-codec.js": 14601,
