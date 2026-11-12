@@ -57,7 +57,20 @@ const ccPath = (lang) => (mingwBin && CC_LANGS.has(lang) ? mingwBin : null);
 function killTree(child) {
     if (!child || !child.pid) return;
     if (process.platform === 'win32') { try { require('child_process').spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore', timeout: 5000 }); } catch (e) { /* 已結束 */ } try { child.kill('SIGKILL'); } catch (e) { /* 已結束 */ } return; }
+    // 孫行程自己 detached（setsid，另一個行程群組）時，殺行程群組追不到：先趁父行程還在，沿 ppid 找出所有子孫，群組殺完再逐一殺
+    const kin = descendantPids(child.pid);
     try { process.kill(-child.pid, 'SIGKILL'); } catch (e) { try { child.kill('SIGKILL'); } catch (e2) { /* 已結束 */ } }
+    for (const pid of kin) { try { process.kill(pid, 'SIGKILL'); } catch (e) { /* 已結束 */ } }
+}
+// 非 Windows：用 ps 列出 pid 的所有子孫（ps 不存在或失敗就回空陣列，退回只殺行程群組）
+function descendantPids(root) {
+    try {
+        const r = require('child_process').spawnSync('ps', ['-A', '-o', 'pid=,ppid='], { encoding: 'utf8', timeout: 3000 });
+        if (r.status !== 0) return [];
+        const kids = new Map(); for (const ln of String(r.stdout || '').split('\n')) { const m = /^\s*(\d+)\s+(\d+)\s*$/.exec(ln); if (m) { const pp = Number(m[2]); if (!kids.has(pp)) kids.set(pp, []); kids.get(pp).push(Number(m[1])); } }
+        const out = [], stack = [root]; while (stack.length) { const x = stack.pop(); for (const k of kids.get(x) || []) { if (k !== process.pid && !out.includes(k)) { out.push(k); stack.push(k); } } }
+        return out;
+    } catch (e) { return []; }
 }
 // Windows 上跑 python 時：Node 的 windowsHide 讓父行程沒有可見的主控台，Windows Terminal 是預設終端機時，python 再開的子行程（subprocess、os.system、os.popen、os.spawn*）會被配一個新的黑視窗彈出來搶走焦點。
 // 解法：在沙盒暫存目錄放 sitecustomize.py（PYTHONPATH 指向它；判題器跑 python 沒有加 -I，所以會被載入），把這些 API 預設改成 CREATE_NO_WINDOW＋SW_HIDE。nodejs 則用 scripts/hide-child-windows.js（NODE_OPTIONS）。
