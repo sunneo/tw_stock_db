@@ -1095,8 +1095,7 @@ Backend {
 - **LoRA 管理（回報，本輪沒有新增程式）**：多顆註冊、按需延遲載入（`request`）、槽滿替換與原子回滾（`replace`，含 applyFn 失敗時還原）、model card 能力介紹（`renderLoraManageHTML` 的「會附帶的能力」）都已在 `lora_registry_core.js`、`lora_manage_core.js` 實作。測試：lora_registry 80／0、lora_manage_core 41／0、lora_route 18／0、lora_web 54／0、lora_ref_train 全部通過。**沒有在本次 Electron 內實際操作多顆 adapter 與替換**（隔離環境沒有 adapter）；「替換約 2 秒」是介面文字，沒有實測。
 
 ### 26.2 未完成（與原因）
-1. **wiki 實測（更正後計畫）**。指揮更正：使用者說的 wiki 是維基百科，不是 GitHub wiki。來源 zh.wikipedia.org（必要時 en.wikipedia.org），官方 API（extracts，純文字），每頁 ≤2 MB、≤40 頁，User-Agent 用通用名稱。下載已由使用者統一同意，但要記錄來源、頁數、實際總大小，資料放專案樹外。
-   - 抓取清單（標題／語言版，先列清單再抓）：見 §26.4。我已經用 SendMessage 把網址交給總指揮確認（見下）。候選網址：`https://github.com/sunneo/tw_stock_db/wiki`（來自 git remote `origin`）。條件：只取文字、每頁 ≤2 MB、≤40 頁，先取頁面清單，再只抓清單內的頁。**同意前不抓。**
+1. **wiki 實測：已完成（實測，見 §26.5）**。來源是維基百科（指揮更正後），不是 GitHub wiki。
 2. **blockly 題在 App 內重跑：未做**。判題需要桌面版 Python（≥3.11）與 tree-sitter 快取（`~/.cache/fa-ts` 這台沒有）；我只在 node 測試驗證。App 內還要把 `sym_suites` 的題數與資料檔接起來，這一步沒有做。
 3. **LoRA 多顆與替換的實機操作**：需要真的 adapter（或在 staging 頁，見 §24.2）。
 4. **par 的 12 題既有失敗**：未查明原因（見 26.1）。
@@ -1125,3 +1124,23 @@ Backend {
 | en | Dijkstra's algorithm |
 | en | Semaphore (programming) |
 | en | Huffman coding |
+
+### 26.5 wiki 實測結果（2026-11-12，實測）
+- 來源與方法：`https://zh.wikipedia.org/w/api.php` 與 `https://en.wikipedia.org/w/api.php`，action=query、prop=extracts、explaintext=1、redirects=1、formatversion=2；純文字，User-Agent `generic-text-fetch/1.0`。
+- 頁數：15 頁（上限 40）。每頁都 ≤2 MB（最大約 33 KB）。
+- 實際大小：純文字 266,483 bytes（約 260 KB）；原始 API 回應 275,393 bytes。兩者都放在專案樹外的 scratchpad（`…/scratchpad/wiki/`）。
+- 與 §26.4 清單的差異（如實記錄）：
+  - 演算法 → 重新導向到「算法」。
+  - 迪傑斯特拉演算法 → 不存在；實際抓的是「迪杰斯特拉算法」（頁面標題為「戴克斯特拉算法」）。
+  - 離散傅立葉變換 → 不存在；實際抓的是「离散傅里叶变换」。
+  - 互斥鎖 → 不存在；實際抓的是「互斥锁」。
+  - 霍夫曼編碼 → 不存在；實際抓的是「霍夫曼编码」。
+  - 動態規劃、紅黑樹、鏈結串列、雜湊表 → 重新導向到简体标题（动态规划、红黑树、链表、哈希表）。
+  - 卷積 → 實際抓的是「卷积」。
+- 限制：zh.wikipedia 的正文是簡體中文，與本專案的繁體規範不同；這份文字沒有轉換。
+- 遇到 HTTP 429 兩次（霍夫曼編碼、卷積、英文頁），等 20 秒後重試成功。
+- 這次只是取得與計量，沒有把內容餵進訓練或評量。
+
+### 26.2 更新
+- wiki 實測：已完成（見 §26.5）。
+- 其餘未做項目見 §26.2 的第 2 到 4 項，都仍然未做。
