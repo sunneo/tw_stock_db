@@ -1,0 +1,148 @@
+'use strict';
+// 領域包「影音壓縮 5」有損影像的一層整數小波：img.haar1d、img.legall53。骨架在 domain_avimage_core.js。
+// 自檢：LeGall 5/3 的正向提升必須可逆（反提升還原原值），否則參考解的邊界定義有誤；Haar 也做還原檢查。
+// 參考解獨立寫成 Python（逐點算，與骨架的 list 寫法不同）。train＝教過的措辭；holdout＝另寫措辭，只量測、不教。
+// 限制：沒有外部工具可交叉比對本定義（Pillow／ffmpeg 的小波實作邊界與捨入規則不同），正確性以可逆性與參考解一致為準。
+const H = require('./domain_harness.js');
+const DA = require('./domain_avimage_core.js');
+
+// JS 自檢：正向與反向提升互逆（隨機 300 組）
+const fwd = (x) => {
+    const n = x.length, N = n / 2, d = [], s = [];
+    for (let i = 0; i < N; i++) {
+        const xr = 2 * i + 2 < n ? x[2 * i + 2] : x[2 * i];
+        d.push(x[2 * i + 1] - ((x[2 * i] + xr) >> 1));
+    }
+    for (let i = 0; i < N; i++) {
+        const dl = i > 0 ? d[i - 1] : d[i];
+        s.push(x[2 * i] + ((dl + d[i] + 2) >> 2));
+    }
+    return { s, d };
+};
+const inv = ({ s, d }) => {
+    const N = s.length, n = 2 * N, x = new Array(n);
+    for (let i = 0; i < N; i++) {
+        const dl = i > 0 ? d[i - 1] : d[i];
+        x[2 * i] = s[i] - ((dl + d[i] + 2) >> 2);
+    }
+    for (let i = 0; i < N; i++) {
+        const xr = 2 * i + 2 < n ? x[2 * i + 2] : x[2 * i];
+        x[2 * i + 1] = d[i] + ((x[2 * i] + xr) >> 1);
+    }
+    return x;
+};
+let seed = 12345;
+const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed; };
+for (let t = 0; t < 300; t++) {
+    const x = Array.from({ length: 8 }, () => (rnd() % 256) - 128);
+    const back = inv(fwd(x));
+    if (back.join(',') !== x.join(',')) throw new Error('5/3 提升不可逆：' + x.join(' '));
+}
+console.log('LeGall 5/3 提升自檢通過（300 組隨機，反提升還原原值）');
+
+const REF_HAAR = `import sys
+v = [int(t) for t in sys.stdin.read().split()]
+lo = []
+hi = []
+for i in range(0, 8, 2):
+    lo.append((v[i] + v[i + 1]) // 2)
+    hi.append(v[i] - v[i + 1])
+print(*lo)
+print(*hi)
+`;
+
+const REF_LEGALL = `import sys
+x = [int(t) for t in sys.stdin.read().split()]
+n = len(x)
+half = n // 2
+def right_of(i):
+    if 2 * i + 2 < n:
+        return x[2 * i + 2]
+    return x[2 * i]
+d = [x[2 * i + 1] - (x[2 * i] + right_of(i)) // 2 for i in range(half)]
+s = []
+for i in range(half):
+    left_d = d[0] if i == 0 else d[i - 1]
+    s.append(x[2 * i] + (left_d + d[i] + 2) // 4)
+print(*s)
+print(*d)
+`;
+
+const ST_HAAR = '一層 Haar 小波（整數版）：輸入一行 8 個整數，兩兩一組 (a,b)；低頻為 (a+b) 右移 1 位（向下取整），高頻為 a 減 b。輸出兩行，第一行為低頻（4 個），第二行為高頻（4 個）。';
+const ST_LEGALL = 'LeGall 5/3 小波的整數提升（一層）：輸入一行 8 個整數，記為 x0 至 x7。先算高頻 d[i]＝x[2i+1] 減去 (x[2i] 加上右鄰 x[2i+2]) 右移 1 位，右鄰超出右端時用 x[2i]；再算低頻 s[i]＝x[2i] 加上 (d[i-1] 加 d[i] 加 2) 右移 2 位，i 為 0 時 d[-1] 取 d[0]。輸出兩行：第一行 s（4 個），第二行 d（4 個）。';
+// holdout：另寫措辭（只量測）
+const HO_HAAR = '以 Haar 小波做一層整數分解：輸入一行 8 個整數，每兩個相鄰數為一對 (a,b)。輸出第一行是 (a+b) 右移 1 位的低頻，第二行是 a 減 b 的高頻，各 4 個。';
+const HO_LEGALL = 'JPEG 2000 可逆的 5/3 小波一層提升：輸入一行 8 個整數。先由奇數位置減去相鄰兩偶數的平均（取整數，向下取整）得高頻，再由偶數位置加上相鄰高頻的平均（取整，向下取整，加 2 後除以 4）得低頻。右端超出時用左側偶數代替，左端第一個低頻的左側高頻用第一個高頻代替。第一行印低頻、第二行印高頻。';
+
+// 原 HO_LEGALL（legall-ho）的錯誤：「加上相鄰高頻的平均（…加 2 後除以 4）」把「平均」與「除以 4」寫成矛盾，讀取器與參考解的公式不一致，屬敘述錯誤；保留為紀錄。
+// HO2_LEGALL：新措辭，把公式寫成「和」而非「平均」（首次量測）。
+const HO2_LEGALL = 'JPEG 2000 可逆 5/3 小波一層（提升法）：輸入一行 8 個整數，記為 x0 至 x7。高頻 d[i] 為奇數位 x[2i+1] 減去 (x[2i] 與右鄰偶數之和) 右移 1 位，右鄰超出右端時用 x[2i]；低頻 s[i] 為偶數位 x[2i] 加上 (兩個相鄰高頻 d[i-1] 與 d[i] 之和加 2) 右移 2 位，左端 d[-1] 用 d[0]。第一行印 s，第二行印 d。';
+// HO3_LEGALL：legall-ho2 未解的根因是輸出句「第一行印 s，第二行印 d」被讀成輸入（讀取器只認「輸出」字樣）；改寫輸出句後的第三次措辭。
+// 注意：legall-ho 的 holdout 已改過兩次（ho→ho2→ho3），不再是乾淨 holdout，結果只能當措辭探索紀錄。
+const HO3_LEGALL = 'JPEG 2000 可逆 5/3 小波一層（提升法）：輸入一行 8 個整數，記為 x0 至 x7。高頻 d[i] 為奇數位 x[2i+1] 減去 (x[2i] 與右鄰偶數之和) 右移 1 位，右鄰超出右端時用 x[2i]；低頻 s[i] 為偶數位 x[2i] 加上 (兩個相鄰高頻 d[i-1] 與 d[i] 之和加 2) 右移 2 位，左端 d[-1] 用 d[0]。輸出兩行：第一行 s（4 個），第二行 d（4 個）。';
+const gen8 = (b, { rnd: rr }) => Array.from({ length: 8 }, () => rr(-128, 127)).join(' ');
+
+// 8×8 DCT-II 加量化：參考解獨立寫成 Python（直接以 f[x][y] 逐項累加，a(k) 用函式）
+const REF_DCT = `import sys, math
+v = [int(t) for t in sys.stdin.read().split()]
+Q = v[0]
+f = [[v[1 + 8 * x + y] for y in range(8)] for x in range(8)]
+def a(k):
+    return math.sqrt(1 / 8) if k == 0 else 0.5
+for u in range(8):
+    row = []
+    for w in range(8):
+        s = 0.0
+        for x in range(8):
+            for y in range(8):
+                s += f[x][y] * math.cos((2 * x + 1) * u * math.pi / 16) * math.cos((2 * y + 1) * w * math.pi / 16)
+        row.append(math.floor(a(u) * a(w) * s / Q + 0.5))
+    print(*row)
+`;
+const ST_DCT = '8×8 二維 DCT 與量化：輸入一行 65 個整數，第一個是量化步長 Q，其後 64 個是 8×8 區塊的像素（依列排列，已減去 128）。以 DCT-II 正交縮放（第 0 個係數的縮放為 √(1/8)，其餘為 1/2），每個係數 c 先除以 Q 再加 0.5 後向下取整，得到量化係數。輸出 8 行，每行 8 個整數（依 u 列、v 行）。';
+// holdout：另寫措辭（只量測），仍寫出正交縮放的約定，避免縮放約定不明
+const HO_DCT = '以 8×8 離散餘弦變換（DCT-II）加量化：輸入一行 65 個 -128 到 127 的整數，第一個為步長 Q，其後 64 個為區塊像素（列優先）。做正交 DCT-II（常數項用 √(1/8)，其餘係數用 1/2 的縮放），每個係數除以 Q 再加 0.5 取整數部分，輸出 8 行、每行 8 個整數。';
+const genDCT = (b, { rnd: rr }) => [rr(4, 32)].concat(Array.from({ length: 64 }, () => rr(-128, 127))).join(' ');
+
+// 8×8 Z 字形掃描：參考解用排序鍵寫（與骨架的逐斜線 cells 寫法不同）
+const REF_ZZ = `import sys
+v = [int(t) for t in sys.stdin.read().split()]
+cells = sorted([(i, j) for i in range(8) for j in range(8)], key=lambda p: (p[0] + p[1], p[0] if (p[0] + p[1]) % 2 == 1 else -p[0]))
+print(*[v[8 * i + j] for (i, j) in cells])
+`;
+const ST_ZZ = '8×8 Z 字形掃描：輸入一行 64 個整數，依列優先排列（第 i 列第 j 行的位置為 8i＋j）。依反對角線 s＝i＋j 由 0 到 14 走訪：s 為偶數時 i 由大到小（左下往右上），s 為奇數時 i 由小到大（右上往左下）。輸出一行 64 個整數（依掃描順序）。';
+// holdout：另寫措辭，先右再左下的走法寫明（只量測）
+const HO_ZZ = 'JPEG 式之字形掃描：輸入一行 64 個整數（8×8 矩陣依列排列）。從左上角開始，先向右走一格，再斜向左下走完該斜線，接著向下走一格再斜向右上，如此交錯，輸出掃描後的 64 個數（一行，以空格分隔）。';
+const genZZ = (b, { rnd: rr }) => Array.from({ length: 64 }, () => rr(-128, 127)).join(' ');
+
+// 零游程編碼：參考解用「非零位置差」寫（與骨架的逐一計數寫法不同）
+const REF_RLE = `import sys
+v = [int(t) for t in sys.stdin.read().split()]
+nz = [i for i, x in enumerate(v) if x != 0]
+prev = -1
+for i in nz:
+    print(i - prev - 1, v[i])
+    prev = i
+print("EOB")
+`;
+const ST_RLE = '零游程編碼：輸入一行 64 個整數（已依 Z 字形排好的量化係數）。從前往後逐一查看，每遇到一個非零值，輸出一行兩個整數：它前面連續的零的個數，以及該非零值本身；全部看完後輸出一行 EOB。';
+// holdout：另寫措辭（只量測）
+const HO_RLE = 'run-length 編碼（量化後的 64 個係數，已排成一行）：每個非零係數輸出一行「與前一個非零係數之間的零個數、係數值」，最後一行印 EOB。第一個非零係數前的零也要計入。';
+const genRLE = (b, { rnd: rr }) => Array.from({ length: 64 }, () => (rr(0, 9) < 2 ? rr(-9, 9) : 0)).join(' ');
+
+const SEEDS = [
+    { id: 'rle-tr', want: 'img.rle64', st: ST_RLE, ref: REF_RLE, gen: genRLE },
+    { id: 'rle-ho', split: 'holdout', st: HO_RLE, ref: REF_RLE, gen: genRLE },
+    { id: 'zz-tr', want: 'img.zigzag8', st: ST_ZZ, ref: REF_ZZ, gen: genZZ },
+    { id: 'zz-ho', split: 'holdout', st: HO_ZZ, ref: REF_ZZ, gen: genZZ },
+    { id: 'dct-tr', want: 'img.dct8q', st: ST_DCT, ref: REF_DCT, gen: genDCT },
+    { id: 'dct-ho', split: 'holdout', st: HO_DCT, ref: REF_DCT, gen: genDCT },
+    { id: 'haar-tr', want: 'img.haar1d', st: ST_HAAR, ref: REF_HAAR, gen: gen8 },
+    { id: 'legall-tr', want: 'img.legall53', st: ST_LEGALL, ref: REF_LEGALL, gen: gen8 },
+    { id: 'haar-ho', split: 'holdout', st: HO_HAAR, ref: REF_HAAR, gen: gen8 },
+    { id: 'legall-ho', split: 'holdout', st: HO_LEGALL, ref: REF_LEGALL, gen: gen8 },
+    { id: 'legall-ho2', split: 'holdout', st: HO2_LEGALL, ref: REF_LEGALL, gen: gen8 },
+    { id: 'legall-ho3', split: 'holdout', st: HO3_LEGALL, ref: REF_LEGALL, gen: gen8 },
+];
+
+H.main({ name: '領域包 avimage', packs: [DA], seeds: SEEDS, minSkeletons: 1, judge: { checker: 'tokens', timeoutMs: 60000 } });

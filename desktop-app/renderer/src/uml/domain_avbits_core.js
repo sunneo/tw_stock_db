@@ -298,12 +298,12 @@ return d`) }
         const algos = [
             { key: 'av-sps-write', re: ALL('SPS', '(?:寫出|組出|產生|編成|產出)', '(?:profile_idc|profile)'), veto: /解析|解出|解讀/ },
             { key: 'av-pps-write', re: ALL('PPS', '(?:寫出|組出|產生|編成|產出)', '(?:pic_init_qp|pic_parameter_set_id)'), veto: /解析|解出|解讀/ },
-            { key: 'av-slice-header', re: ALL('slice.{0,8}(?:header|標頭)', '(?:解析|解出|解讀)'), veto: /寫出|組出/ },
+            { key: 'av-slice-header', re: ALL('slice\\s*(?:的\\s*)?(?:header|標頭)', '(?:解析|解出|解讀)'), veto: /寫出|組出/ },
             { key: 'av-sps-parse', re: ALL('(?:SPS|序列參數集)', '(?:解析|解出|解讀|找)'), veto: /寫出|組出|slice\s*(?:header|標頭)/i },
             { key: 'av-pps-parse', re: ALL('(?:PPS|圖像參數集)', '(?:解析|解出|解讀|找)'), veto: /寫出|組出|slice\s*(?:header|標頭)|SPS|序列參數集/i },
             { key: 'av-esc-insert', re: ALL('防競爭位元組', '(?:插入|加入|補上|加上)'), veto: /移除|去掉|還原/ },
             { key: 'av-esc-remove', re: ALL('防競爭位元組', '(?:移除|去掉|去除|還原|刪除)'), veto: /插入|加入|補上/ },
-            { key: 'av-eg-encode', re: ALL('(?:Exp-Golomb|指數哥倫布|哥倫布|ue\\(v\\)|se\\(v\\))', '(?:編碼|編成|串起來|連接成|印出十六進位|輸出十六進位)'), veto: /解碼|解出|還原|解析/ },
+            { key: 'av-eg-encode', re: ALL('(?:Exp-Golomb|指數哥倫布|哥倫布|ue\\(v\\)|se\\(v\\)|\\bue\\b|\\bse\\b)', '(?:編碼|編成|串起來|連接成|印出十六進位|輸出十六進位)'), veto: /解碼|解出|還原|解析/ },
             { key: 'av-eg-decode', re: ALL('(?:Exp-Golomb|指數哥倫布|哥倫布|ue\\(v\\)|se\\(v\\))', '(?:解碼|解出|還原|解析)'), veto: /編成|串起來|連接成/ },
             { key: 'av-rbsp-trailing', re: ALL('(?:RBSP|rbsp)', '(?:尾位元|停止位元|stop_one_bit|trailing)'), veto: /Exp-Golomb|指數哥倫布|哥倫布|ue\\(v\\)|se\\(v\\)|編成|串起來/i },
             { key: 'av-nal-split', re: ALL('NAL', '(?:Annex\\s*B|起始碼|位元組流|串流)', '(?:切|分隔|拆|列出|統計|幾個|多少|共有|類型)'), veto: /防競爭位元組(?:插入|移除)|去掉防競爭/ }
