@@ -1095,7 +1095,7 @@ Backend {
 - **LoRA 管理（回報，本輪沒有新增程式）**：多顆註冊、按需延遲載入（`request`）、槽滿替換與原子回滾（`replace`，含 applyFn 失敗時還原）、model card 能力介紹（`renderLoraManageHTML` 的「會附帶的能力」）都已在 `lora_registry_core.js`、`lora_manage_core.js` 實作。測試：lora_registry 80／0、lora_manage_core 41／0、lora_route 18／0、lora_web 54／0、lora_ref_train 全部通過。**沒有在本次 Electron 內實際操作多顆 adapter 與替換**（隔離環境沒有 adapter）；「替換約 2 秒」是介面文字，沒有實測。
 
 ### 26.2 未完成（與原因）
-1. **wiki 實測：未連網，等使用者同意**。我已經用 SendMessage 把網址交給總指揮確認（見下）。候選網址：`https://github.com/sunneo/tw_stock_db/wiki`（來自 git remote `origin`）。條件：只取文字、每頁 ≤2 MB、≤40 頁，先取頁面清單，再只抓清單內的頁。**同意前不抓。**
+1. **wiki 實測：未做，原因「等使用者確認網址」**。指揮（2026-11-12）要求在確認前不連網；指揮會轉問使用者，回覆後再通知。我已經用 SendMessage 把網址交給總指揮確認（見下）。候選網址：`https://github.com/sunneo/tw_stock_db/wiki`（來自 git remote `origin`）。條件：只取文字、每頁 ≤2 MB、≤40 頁，先取頁面清單，再只抓清單內的頁。**同意前不抓。**
 2. **blockly 題在 App 內重跑：未做**。判題需要桌面版 Python（≥3.11）與 tree-sitter 快取（`~/.cache/fa-ts` 這台沒有）；我只在 node 測試驗證。App 內還要把 `sym_suites` 的題數與資料檔接起來，這一步沒有做。
 3. **LoRA 多顆與替換的實機操作**：需要真的 adapter（或在 staging 頁，見 §24.2）。
 4. **par 的 12 題既有失敗**：未查明原因（見 26.1）。
