@@ -1454,6 +1454,21 @@ const FA_TASK_EXPECT = [
     { domain: 'coding', ask: /(寫|新增|實作|修(正|改|掉)?|優化|轉換|重構).{0,14}(程式|函式|function|bug|code|類別|class|腳本)/i, not: /(解釋|說明|讀懂|分析|review|評論)/i, tools: ['write_code', 'fix_code', 'optimize_code', 'convert_code', 'merge_patch', 'uml_to_code', 'fap_apply_patch', 'fap_write_file', 'attachment_apply_patch'] },
     { domain: 'editors', ask: /(剪|切|裁|合併|加字幕|燒字幕|配音|轉場|轉成.{0,6}(3d|3D))/, not: /(教我|怎麼|如何|說明)/, tools: ['video_cut_range', 'video_cut_clip', 'video_cut_line', 'video_split', 'video_add_media', 'video_tts_dub', 'video_set_transition', 'video_transcribe', 'video_set_line', 'video_shift_lines', 'image_to_3d', 'edit_svg_open', 'edit_picture_open', 'edit_3d_open', 'edit_video_open'] },
 ];
+// 簡報的輸出狀態機：最終產物＝播放器（有 visual）。目前狀態依這次的呼叫紀錄推斷，下一步寫成「要呼叫哪個工具、帶什麼」
+function faDeckContract() {
+    return {
+        label: '簡報播放器（render_presentation 或 begin_presentation→add_chapters→finish_presentation 成功）', maxNudges: 3,
+        done: (cx) => !!cx.visual || cx.calls.some((c) => c.ok && /^(render_presentation|finish_presentation)$/.test(c.name)),
+        describe: (cx) => {
+            const ok = (n) => cx.calls.some((c) => c.ok && c.name === n), tried = (n) => cx.calls.some((c) => c.name === n);
+            const last = cx.calls.filter((c) => /^(render_presentation|begin_presentation|add_chapters|finish_presentation)$/.test(c.name)).pop();
+            if (ok('begin_presentation') && !ok('finish_presentation')) return '目前狀態：草稿已開始、還沒完成。下一步：用 begin_presentation 回傳的 draft 代號呼叫 add_chapters({draft, yaml}) 加章節，最後 finish_presentation({draft})。';
+            if (last && last.ok === false) return '目前狀態：你送出的簡報被檢查擋下來了。下一步：只修被指出的地方——用結果裡的 yaml_id 重送 {yaml_id, edits:[{find, replace}]}，不要整份重寫。';
+            if (!tried('render_presentation') && !tried('begin_presentation')) return '目前狀態：還沒有送出任何簡報。素材與圖片代號就在任務裡（沒有的話先讀）。下一步：呼叫 render_presentation({name, yaml})，yaml 照計畫範本的最小合法範例（chapters 在最上層、visual 是帶 kind 的物件、narration 是字串）。';
+            return '目前狀態：簡報還沒成功產生。下一步：呼叫 render_presentation 並照回傳的問題修正。';
+        },
+    };
+}
 function faDomainExpect(domainKey, task) {
     if (FA_DOMAIN_PRODUCES[domainKey]) return { tools: FA_DOMAIN_PRODUCES[domainKey], soft: false };
     const t = String(task || '').replace(/\[附件：[^\]]*\]/g, ' ');
@@ -77162,6 +77177,15 @@ const FaDeckTools = (function () {
         '',
         'ICON STYLE ("圖示", "字可以少", "用圖示", "動畫", pictures for small children): EVERY slide is ONE collage (get_presentation_topic("visuals") has the format). The pictures are icons: emoji_picture(emoji) -> "@imgN" (once per distinct icon; reuse the handle). NO bullets and almost no words: a title of at most 6 characters, a short name tag (label) under each icon, and the subtitle. 2-4 icons per slide, each popping in with its own sentence (at: {sentence: N}); 2-3 short narration sentences (<= 20 characters each). Things that travel MOVE: a plane, a car, a walking person, a suitcase on the belt get keys: [{at: {sentence: N}, sec: 3, x, y, rot?}]; add swing / bob for life and sounds: [{sfx: whoosh, sentence: N}] for flying. Keep every item inside the picture area (y + 1.5 * w <= 0.85, so nothing hides behind the subtitle bar). The cover has a big title text (texts, style title) and the last slide is a recap.',
         'DRAWING YOUR OWN PICTURES: for a thing that emoji_picture / cute_picture / find_photo cannot give, draw ONE object as SVG and call svg_picture({svg, name}) -> "@imgN", then use it like any picture (a collage item that pops in and moves). Same size and look for every object of the deck (viewBox 0 0 200 200, transparent background, flat colours with a darker outline, no text). A whole diagram (layers of the sky, a route map) is an svg or shapes visual instead.',
+        'PLAN TEMPLATE (follow it step by step; every step is a REAL tool call, never text that looks like a call, and never a reply that only describes what you would do): ' +
+        'STEP 1 -- read the material: if the system already put the source text / picture handles (@imgN) in your task, use THEM and do not browse again; otherwise read it with the tools. ' +
+        'STEP 2 -- plan on paper in your head: 5-8 slides for 2 minutes (about 130 words of narration per minute), one point per slide, each slide = title + 2-3 short bullets + ONE picture + narration (a plain STRING of 1-3 sentences taken from the source). ' +
+        'STEP 3 -- pictures per slide (priority: the article\'s own @imgN -> generate_image if allowed -> screenshot last). ' +
+        'STEP 4 -- ONE real call: render_presentation({name, yaml}) for a short deck (up to about 8 slides); for a longer one begin_presentation -> add_chapters (use the draft id it returned) -> finish_presentation. ' +
+        'STEP 5 -- if the tool answers with problems, fix ONLY those (send {yaml_id, edits:[{find, replace}]}), do not rewrite the deck; repeat until it is accepted. ' +
+        'STEP 6 -- answer in 1-2 sentences (what the deck covers); never paste the yaml. ' +
+        'A MINIMAL VALID DECK (copy this shape): deck: {title: "標題", lang: zh-TW}  chapters: [{title: "章", slides: [{title: "封面", layout: title, subtitle: "副標", narration: "一到三句旁白。", visual: {kind: image, src: "@img1", fit: cover}}, {title: "重點", bullets: ["短句一", "短句二"], narration: "旁白。", visual: {kind: image, src: "@img2"}}]}]. ' +
+        '(chapters is at the TOP level next to deck; visual is a mapping with kind; narration is a string.)',
         'PICTURE PRIORITY (when a slide needs a picture, in THIS order): (1) a picture that is IN the source text itself (the article\'s own images: browser_get_page_structure "images" -> import_image_url; the user\'s attachments); (2) if the user said pictures may be generated ("可以產生圖片", "生圖", "AI畫"): call generate_image(prompt) for that slide -> its client_file_url is the picture (import it with import_image_url / use it as client-file/<id>); (3) a browser_screenshot of the page is the LAST resort -- it is a whole-page view that does not match one slide\'s point, so use it only when (1) and (2) gave nothing. A stock photo (find_photo) for a NEWS story or a named person is never right: it shows somebody else. For a generated picture about a real news event draw a neutral illustration of the situation (a boardroom, a document, a building, a chart) -- never a likeness of a real person. generate_image returns "ref" (@imgN) directly.',
         'REAL PHOTOS FROM THE INTERNET ("可以上網找照片", "要真實照片"): call find_photo(query: 2-5 ENGLISH keywords of what the picture shows, e.g. "Hokkaido snow field", "airport baggage claim carousel") once per slide that needs one -> "@imgN" (+ credit / licence: put it in the slide notes). NEVER write a picture url yourself. find_photo is the quick first choice (free-licence photos, imported at once); when it finds nothing that fits the slide and the browser is connected (browser_status ok), you MAY use the browser tools yourself (search the web, open the page, then import the picture with import_image_url or take a screenshot) -- better matching photos are worth it. If neither works, try other keywords once, then draw that picture yourself (cute_picture / svg) -- one missing photo never stops the deck. Do not call list_uploaded_files when the task has no "[附件：…]" part: there is no attachment. When the user asks to speak at a speed ("語速1.0") set deck.speed.',
         'ATTACHED FILES ARE THE MATERIAL. When the task text contains "[附件：name（file_id=…）、…]" the user attached those files to THIS request: they are the source, in that order. Do NOT call list_uploaded_files to guess among older uploads, never ask which file, and never make up content when files were attached. Pictures: import_uploaded_image(file_id) for each -> "@imgN", one slide per picture (layout visual, or split with the text beside it) in the attached order. A picture with text on it (English captions, a page of a book, a slide): read it with interpret_image(file_id, "transcribe every word on this picture exactly, keep line breaks") and use THAT text -- never invent what is written. A video (mp4): visual kind video with src "client-file/<file_id>" (see get_presentation_topic("visuals")). A PDF / pptx / document: parse_uploaded_file / pptx_to_deck. Your final answer lists which attached file became which slide and says plainly which could not be used.',
@@ -103230,7 +103254,7 @@ ${sourceTool.handlerScript}
         for (const p of parts) {
             const km = /^\s*([A-Za-z_][\w]*)\s*[:=]\s*([\s\S]*)$/.exec(p);
             if (km && (!order.length || order.includes(km[1]) || /^(deck|yaml|draft|name|topic|names|url|query|prompt)$/.test(km[1]))) out[km[1]] = val(km[2]);
-            else { const key = order.filter((k) => !(k in out))[pos++]; if (!key) return null; out[key] = val(p); }
+            else { const key = order.filter((k) => !(k in out))[0]; if (!key) return null; out[key] = val(p); }
         }
         return out;
     }
@@ -130056,7 +130080,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             if (focus && progress) progress.log('🎯 領域工具太多（' + hintedTools.length + '個）——先只給最相關的 ' + runTools.length + ' 個，其餘需要時再補');
             const callLog = []; // 這個領域這次委派裡所有工具呼叫（名稱、參數、成敗），給「完成判準」與糾正訊息用
             const runOnce = (taskText) => this._runSubAgentTask(taskText, isDeck ? 90 : (isSkillDomain ? SUBAGENT_DELEGATE_MAX_ROUNDS * 2 : SUBAGENT_DELEGATE_MAX_ROUNDS), {
-                allowedToolNames: runTools, collectCalls: callLog,
+                allowedToolNames: runTools, collectCalls: callLog, outputContract: isDeck ? faDeckContract() : undefined,
                 focusReserve: focus ? focus.reserve : null,
                 meta: extra.meta || { domain: (domain && domain.label) || domainKey, source: '本機', kind: 'local' },
                 systemPrompt: (domain.mixer ? this._mixerPreamble(domainKey, domain) + '\n\n' : (extra.phaseNote ? extra.phaseNote + '\n\n' : '')) + this._resolveDomainSystemPrompt(domain) + skillDirNote,
@@ -131521,6 +131545,21 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                     const ch = data.choices && data.choices[0]; const diag = 'finish_reason=' + (ch && ch.finish_reason) + '、content長度=' + String(rawContent).length + '、reasoning長度=' + String(reasoningContent).length + '、tool_calls=' + toolCalls.length + '、useNative=' + useNative + '、模型=' + apiModel;
                     if (onTrace) onTrace('📋 診斷：' + diag);
                     if (reasoningDeadendRetries < SUBAGENT_MAX_REASONING_DEADEND_RETRIES) { reasoningDeadendRetries++; if (onProgress) onProgress('↻ 最終回覆是空的，請AI繼續（第' + reasoningDeadendRetries + '次）…'); messages.push({ role: 'assistant', content: '（這一輪沒有輸出內容）' }); messages.push({ role: 'user', content: AI_REASONING_DEADEND_PROMPT }); round--; continue; }
+                }
+                // 輸出狀態機（2026-11-12 使用者：「他們沒有對於一個請求最終輸出是什麼有正確的狀態機」）：呼叫端宣告「這個請求最後一定要有什麼」（outputContract.done），
+                // 模型想結束但那個產物還沒出現時，不當成答案：告訴它「目前狀態」和「下一步要呼叫哪個工具」，最多 maxNudges 次；用完才交給外層的補救（重跑／程式自己組）。
+                if (options.outputContract && typeof options.outputContract.done === 'function') {
+                    const oc = options.outputContract; let done = true; const cx = { calls: Array.isArray(options.collectCalls) ? options.collectCalls : [], visual: capturedVisual, finalText };
+                    try { done = !!oc.done(cx); } catch (_) { done = true; }
+                    options._contractNudges = options._contractNudges || 0;
+                    if (!done && options._contractNudges < (oc.maxNudges || 3)) {
+                        options._contractNudges++; let st = ''; try { st = String(oc.describe(cx) || ''); } catch (_) { st = ''; }
+                        if (onProgress) onProgress('🧭 還沒做出「' + (oc.label || '最終產物') + '」，退回並告訴它目前狀態與下一步（第' + options._contractNudges + '次）…');
+                        if (onTrace) onTrace('🧭 輸出狀態機：最終產物（' + (oc.label || '') + '）還沒出現，不當成答案。' + st.slice(0, 200));
+                        messages.push({ role: 'assistant', content: finalText || '（空）' });
+                        messages.push({ role: 'user', content: '[系統狀態] 這個請求要的最終產物是「' + (oc.label || '') + '」，目前還沒有做出來，所以你這個回覆不算完成。' + st + ' 請真的呼叫工具（不是把呼叫寫成文字），做出產物後再用一兩句話回報。' });
+                        round--; continue;
+                    }
                 }
                 if (onTrace) onTrace('✅ 最終回覆：' + traceSnip(finalText || '（無回應）', 600));
                 return { text: finalText || '（子任務無回應）', visual: capturedVisual };
