@@ -1105,3 +1105,31 @@ model card 欄位以 `description`（一句話，來自描述檔，§13.2）與 
 - 主程式工具雜湊與訓練端的相等性（需要 Electron 內算出 `toolCatalogSha256()` 再與 `real_tools_all.json` 比對）。
 - 重新打包 toolcall-r4 成 `shape-v1`（它的 adapter 與發布目錄已不在磁碟上）。
 - 發布、推送、熱更新送達：這次只有 commit，沒有發布。
+
+### 25.13 第四輪（指揮接力，2026-11-13）：原生、產品路徑、網頁版實按、adapter 參考
+
+**環境狀況先說明**：本機 `~/fa/` 底下的第三輪產物（`lora-export-work`、`web-ort-test`、`~/fa-electron`）在這一輪開始前已經不存在；只剩 HF 快取的 `Qwen/Qwen3-0.6B`（沒有重新下載）、主 checkout 的 `node_modules/electron`（v44.4.0）、與 `~/.config/floating-assistant-desktop/native-runtime/1.22.0-1`。所以這一輪的 q8 是**重新匯出**的，不是沿用 25.11 的檔。
+
+**下載（已由使用者統一同意）**：
+- Python 套件：`torch 2.14.1+cpu`（download.pytorch.org CPU 索引）、`transformers 4.57.6`、`optimum-onnx 0.1.0`、`onnxruntime 1.23.2`、`peft 0.21.2`、`accelerate`、`sentencepiece`、`safetensors`（PyPI）與依賴。虛擬環境 `~/fa/round3/venv-export` 約 1.2 GB。
+- **偏差**：指定的 `onnxruntime==1.31.1` 在這台的索引上找不到（`pip index versions onnxruntime` 最新只到 1.23.2），改用 1.23.2 做匯出的量化與核對；**執行端仍是桌面的 onnxruntime-node 1.22.0**。
+- 模型：沒有新下載，基底用 HF 快取的 `Qwen/Qwen3-0.6B`（snapshot `c1899de2…`）。adapter 用 `~/.config/floating-assistant-desktop/studio-host/bench-out`（產品自己的 bench 訓練產物，r=16、alpha=32、7 個 target，`base_model_name_or_path: Qwen/Qwen3-0.6B`）。
+
+| # | 要求 | 狀態 | 實測 |
+|---|---|---|---|
+| 1 | Electron 內經主行程 nr 信箱（nr-child／ORT 1.22）載入匯出的 q8 並生成 | **完成** | 真的 Electron（xvfb，`FA_NATIVE_MODEL_PATH` 指向 `~/fa/round3/export-base/q8/model_quantized.onnx`）：`status` → `engine: native, runtime 1.22.0-1`；`run`（chatml，`do_sample:false`，24 token）→ `"The function \`add(a, b)\` is defined as:\n\n\`\`\`python\ndef add(a, b):\n    return a"`，2.7 秒。參考（同一份 chatml 提示，`llm_web_core`＋onnxruntime-node 1.22，圖最佳化 all）**逐字相同**。 |
+| 2 | 「設為離線模型 → 重啟 → 生成」整條走完 | **完成** | 產品路徑（真的 Electron，studio 主機）：`studio_llm_export`（合併 bench-out adapter→匯出五步，`finished`，耗時 1335.7 秒）→ bundle（7 個檔，q8 756,736,956 位元組；fp32 排除）→ `POST /api/llm/export/register` → `e2e-q8`（772,626,575 位元組）→ `POST /api/llm/use` → `choice.modelPath = …/studio-assets/llm/e2e-q8/q8/model_quantized.onnx`。之後**重新啟動**（新行程、不帶 `FA_NATIVE_*` 環境變數）→ `run` 得到 `"def add(a, b):<|im_end|>"`，`finish_reason: stop`，`backend: native`；參考（同模型、chatml，`enable_thinking:false`）token 序列相同。 |
+| 3 | 工作室頁內網頁版模型選單，用瀏覽器實際點一次 | **完成** | 網頁版（`web-lazy/core.js` 原樣，無桌面橋接）在 Claude 瀏覽器窗格中：資產以 `saveAsset` 寫入網頁版儲存層（IndexedDB）→ 開工作室（真的點擊「更多…」與窗格控制）→ 「網頁版模型」下拉選到 `e2e-q8`（onnx q8，736.6 MB）→ 輸入 `def add(a, b):` → 點「生成」。畫面：`return a + b / def subtract(a, b): / return a`，「16 token，max，載入 1676 ms，生成 1329 ms」。頁內 onnxruntime-web **1.22.0**（CDN）；參考（同一份原始提示、`llm_web_core`＋onnxruntime-node 1.22）：`\n    return a + b\n\ndef subtract(a, b):\n    return a`（開頭換行與縮排是畫面不顯示的部分）。 |
+| 4 | adapter 版 slot 的 PEFT 貪婪比對參考 | **完成** | `peft_ref.py`（transformers 4.57.6＋peft 0.21.2，fp32，6 題×16 token，同 check.json 的提示）。`make_lora_onnx.py pack`（bench-out → lora.bin，rank 16，scale 2.0）→ `lora-slot-build.js buildSlotModel`（196 個目標，layout 30,899 位元組）→ ORT 1.22 greedy：**slot+adapter 對 PEFT fp32：43/96（全對 2/6）**；基底 q8 對 fp32 基底：23/96；slot+adapter 對基底 q8：22/96（確認 adapter 確實有作用）。差距來自 q8 量化，與 25.4 相同性質。 |
+
+**這一輪抓到並修掉的產品 bug（實測才會出現）**
+1. **匯出腳本沒有進產品**：`embed-code-ui.js` 的主行程檔清單只有 `train_lora.py`、`lora_common.py`。安裝版跑 `studio_llm_export` 會在 merge 步驟失敗（`can't open file …/studio-host/lora-train/merge_and_export.py`）。修：清單加入 `train_full.py`、`merge_and_export.py`、`export_onnx.py`、`export_gguf.py`。
+2. **登錄 756 MB 的 q8 會超過字串上限**：渲染端的 `rawfs.readFile(p,'base64')` 把整個檔轉成字串，錯誤是 `Cannot create a string longer than 0x1fffffe8 characters`。修：登錄改在**主行程**（`studio_host.js` 的 `studio_llm_register`）直接從磁碟讀，寫到 `<userData>/studio-assets/llm/<名稱>/`（與 rawfs 儲存層同一個版面），每個檔寫完讀回 sha256 核對，`manifest.json` 最後寫。渲染端路由在桌面版改呼叫主行程；網頁版仍走原來的路徑。
+3. **網頁版的 llm 資產 `ready` 判斷錯**：匯出的 bundle 把 `tokenizer.json` 放在根目錄，路由只認 `q8/tokenizer.json`，結果下拉選單裡的資產都是「不可用」。修：根目錄與 `q8/` 兩種位置都接受（`llm_web_route.test.js` 新增舊版路徑的案例）。
+4. `/api/eval` 列出了 llm（不是評量種類）→ 已排除，`/api/eval/run` 對 llm 回 400。
+
+**沒做完、要寫清楚的**
+- 主行程的 sha256 是純 JavaScript 同步計算（`asset_core.sha256Hex`），756 MB 會阻塞主行程；這一輪沒有計時，之後應換成 `crypto` 或串流。
+- 「重新啟動」是用新行程（同一個 userData）模擬，不是點設定頁按鈕；離線模型的設定頁 UI 沒有實按。
+- Electron 內**沒有**載入 LoRA 槽（`lora_apply`）做生成，只跑了基底 q8 與 e2e-q8（合併後的模型）。
+- 網頁版的參考用的是 `llm_web_core` 在 onnxruntime-node 1.22 跑的結果（同一份核心、同一個圖最佳化設定 disabled）；瀏覽器內的 onnxruntime-web 與 node 的數值是否逐位元相同，只比對了文字結果，沒有比 logits。

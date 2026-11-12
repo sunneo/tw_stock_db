@@ -24,7 +24,8 @@ const fakeOrt = {
     const req = async (m, p, body) => { const r = await srv.route(m, new URL('http://mock.local' + p), body); return { s: r.s || 200, j: r.j }; };
     // 一個可用的 onnx 資產、一個 gguf（不可用）、一個缺 tokenizer 的 onnx
     const mk = (name, format, files) => { const m = Asset.createManifest({ kind: 'llm', name, files, owner: 'user', base: 'Qwen3-0.6B', compat: {}, counts: {}, eval: null }); m.llm = { format, quant: format === 'onnx' ? 'q8' : 'q8_0', recipe: 'full', excluded: [] }; return storage.saveAsset({ manifest: m, files }); };
-    await mk('ok-q8', 'onnx', { 'q8/model_quantized.onnx': onnxBytes, 'q8/tokenizer.json': tokBytes });
+    await mk('ok-q8', 'onnx', { 'q8/model_quantized.onnx': onnxBytes, 'tokenizer.json': tokBytes });
+    await mk('ok-q8-legacy', 'onnx', { 'q8/model_quantized.onnx': onnxBytes, 'q8/tokenizer.json': tokBytes });
     await mk('gg', 'gguf', { 'gguf/model-q8_0.gguf': new Uint8Array([1, 2, 3]) });
     await mk('no-tok', 'onnx', { 'q8/model_quantized.onnx': onnxBytes });
 
@@ -34,6 +35,7 @@ const fakeOrt = {
     check('models：GGUF 不可用，原因指向 llama.cpp', byName.gg && byName.gg.ready === false && /llama\.cpp/.test(byName.gg.reason), byName.gg);
     check('models：缺 tokenizer 不可用，說出缺什麼', byName['no-tok'] && byName['no-tok'].ready === false && /tokenizer/.test(byName['no-tok'].reason), byName['no-tok']);
     check('models：回報 ortAvailable', r.j.ortAvailable === true);
+    check('models：舊版路徑 q8/tokenizer.json 也算 ready', byName['ok-q8-legacy'] && byName['ok-q8-legacy'].ready === true, byName['ok-q8-legacy']);
 
     r = await req('POST', '/api/llm/web/generate', { name: 'ok-q8', prompt: 'ab', maxNew: 3 });
     check('generate：回 ok 與 tokens（貪婪：b→c→d 依假模型）', r.j.ok === true && r.j.tokens.join() === [99, 100, 101].join() && r.j.text === 'cde' && r.j.stoppedBy === 'max', r.j);

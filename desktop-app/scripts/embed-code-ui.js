@@ -544,10 +544,10 @@ function embedStudio() {
     tsrc += "const WH = req('webtrain_worker_core').createWorkerHost({ importModule: (u) => import(u), caches: self.caches, indexedDB: self.indexedDB, fetch: self.fetch.bind(self) });\n";
     tsrc += "self.onmessage = async (ev) => { const d = ev.data || {}; try { const r = await WH.handle(d.op, d.p); const tr = []; if (r && r.bytes && r.bytes.buffer) tr.push(r.bytes.buffer); self.postMessage({ id: d.id, r }, tr); } catch (e) { self.postMessage({ id: d.id, err: String((e && e.message) || e) }); } };\n";
     code += 'const FA_WEBTRAIN_WORKER_SRC = ' + lit(tsrc) + ';\n';
-    const HOST = ['backend_core', 'bench_core', 'backend_cpu_js', 'backend_cpu_py', 'backend_planned', 'checkpoint_core', 'studio_config_core', 'llm_export_core', 'studio_host'];
+    const HOST = ['backend_core', 'bench_core', 'backend_cpu_js', 'backend_cpu_py', 'backend_planned', 'checkpoint_core', 'studio_config_core', 'llm_export_core', 'asset_core', 'studio_host'];
     const files = {}; for (const n of HOST) files[n + '.js'] = rd('renderer/src/studio/' + n + '.js');
     // requirements.txt 也要帶：安裝指令（installHint）指向 <studio-host>/lora-train/requirements.txt，沒帶就「File not found」（2026-11-12 使用者實測）
-    for (const n of ['train_lora.py', 'lora_common.py', 'requirements.txt']) files['lora-train/' + n] = rd('lora-train/' + n);
+    for (const n of ['train_lora.py', 'lora_common.py', 'requirements.txt', 'train_full.py', 'merge_and_export.py', 'export_onnx.py', 'export_gguf.py']) files['lora-train/' + n] = rd('lora-train/' + n);
     code += 'const FA_STUDIO_HOST_FILES = ' + lit(files) + ';';
     let a = src.indexOf('/* STUDIO-BEGIN */'), b = src.indexOf('/* STUDIO-END */');
     if (a < 0 || b < 0) { const at = src.indexOf('/* AIDOCVIEW-END */'); if (at < 0) throw new Error('找不到 AIDOCVIEW-END 標記'); const cut = at + '/* AIDOCVIEW-END */'.length; src = src.slice(0, cut) + '\n/* STUDIO-BEGIN */\n/* STUDIO-END */\n/* STUDIOVIEW-BEGIN */\n/* STUDIOVIEW-END */' + src.slice(cut); a = src.indexOf('/* STUDIO-BEGIN */'); b = src.indexOf('/* STUDIO-END */'); }
