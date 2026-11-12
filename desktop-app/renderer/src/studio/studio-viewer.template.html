@@ -381,7 +381,8 @@ T.train=async function(body){
   if(r.backends&&r.backends.some(function(b){return b.probing}))setTimeout(function(){if(my===buildTok)build()},1500);
   if(r.note)out.appendChild(h('div',{'class':'warn',text:r.note}));
   if(kind!=='lora'){symTrain(out,kind);return}
-  var bs=h('select',{});bs.appendChild(h('option',{value:'auto',text:'自動（建議）'+(r.selection&&r.selection.chosen?' → '+r.selection.chosen:(r.selection&&r.selection.reason?'：'+r.selection.reason.slice(0,60):''))}));
+  var bs=h('select',{});var webOk=r.backends.some(function(b){return b.id==='wasm-web'&&b.available}),hostOk=r.backends.some(function(b){return b.id!=='wasm-web'&&b.available});
+  bs.appendChild(h('option',{value:'auto',text:'自動（建議）'+(r.selection&&r.selection.chosen?' → '+r.selection.chosen:(!hostOk&&webOk?' → 網頁處理器（桌面版後端不可用，自動退到頁內 WebAssembly）':(r.selection&&r.selection.reason?'：'+r.selection.reason.slice(0,60):'')))}));
   var names={'cpu-py':'純處理器（Python，桌面版）','wasm-web':'網頁處理器（頁內 WebAssembly，慢但正確、可暫停匯出）','webgpu':'WebGPU','directml':'DirectML','vulkan':'Vulkan'};
   r.backends.forEach(function(b){bs.appendChild(h('option',{value:b.id,disabled:!b.available,text:(names[b.id]||b.id)+(b.available?'':'（不可用）')}))});
   out.appendChild(h('label',{text:'運算後端'}));out.appendChild(bs);
@@ -400,7 +401,7 @@ T.train=async function(body){
   function canRun(){return !!r.desktop||(!!r.webTrain&&bs.value==='wasm-web')}
   var prog=h('div',{'class':'card'}),cv=h('canvas',{width:600,height:60});
   function body2(resume){return{kind:'lora',name:nm.value.trim(),backend:bs.value,resume:resume,cfg:{base:base.value.trim(),trainFile:tf.value.trim(),outputDir:od.value.trim()||undefined,fromAsset:tf.value.trim(),steps:parseInt(stp.value,10)||100,lr:parseFloat(lrI.value)||0.001}}}
-  var bGo=h('button',{'class':'pri',text:'開始訓練',disabled:!canRun(),onclick:async function(){var x=await api('POST','/api/train/start',body2(false));if(x.ok===false){alert(x.error);return}lossHist=[];pollTrain(prog,cv)}});
+  var bGo=h('button',{'class':'pri',text:'開始訓練',disabled:!canRun(),onclick:async function(){var x=await api('POST','/api/train/start',body2(false));if(x.ok===false){alert(x.error);return}if(x.fallback){prog.insertBefore(h('div',{'class':'warn',text:'ℹ️ '+x.fallback.note+'（原因：'+String(x.fallback.reason).slice(0,200)+'）'}),prog.children[1]||null)}lossHist=[];pollTrain(prog,cv)}});
   var bPa=h('button',{text:'暫停（存檢查點）',disabled:!canRun(),onclick:async function(){var x=await api('POST','/api/train/pause',{});if(x.ok===false)alert(x.error||x.reason)}});
   var bRe=h('button',{text:'續訓',disabled:!canRun(),onclick:async function(){var x=await api('POST','/api/train/start',body2(true));if(x.ok===false){alert(x.error);return}pollTrain(prog,cv)}});
   var bSt=h('button',{'class':'dng',text:'停止',disabled:!canRun(),onclick:function(){if(confirm('停止訓練？（不存檢查點；要保留進度請用「暫停」）'))api('POST','/api/train/stop',{})}});

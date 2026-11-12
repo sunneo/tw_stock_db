@@ -44,16 +44,16 @@
     "FA_WEBTRAIN_WORKER_SRC",
     "FA_STUDIO_HOST_FILES"
    ],
-   "size": 579703,
-   "md5": "396c0bb4ce35116b4edb130606b7246e"
+   "size": 587082,
+   "md5": "506bdf571237ac45134fc6e3c3b889db"
   },
   "studioview": {
    "file": "chunks/studioview.js",
    "names": [
     "FA_STUDIO_VIEWER_HTML"
    ],
-   "size": 83503,
-   "md5": "803810222526f8c65685f355e0e81e8e"
+   "size": 86747,
+   "md5": "5a3459bcdeed715b60d75f00b158c4eb"
   },
   "behavior": {
    "file": "chunks/behavior.js",
@@ -1109,8 +1109,8 @@
    "names": [
     "FaDeckTopic"
    ],
-   "size": 11801,
-   "md5": "f58232bd7e3496316200d123fabc575d"
+   "size": 12994,
+   "md5": "fbb7f574c02ad677a0f5d871f73965f8"
   },
   "imgplan": {
    "file": "chunks/imgplan.js",
@@ -1802,7 +1802,7 @@
   }
  },
  "core": {
-  "size": 5711110,
-  "md5": "7722269acb7e5a0886f17a3132dc2ab2"
+  "size": 5714833,
+  "md5": "1588516f005cd1b09cc5e7279c2ea3cc"
  }
 }

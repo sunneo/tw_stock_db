@@ -23,7 +23,7 @@ check('記憶體沒有取樣：寫無資料與原因', /記憶體<\/span><span c
 // 未實作與阻礙
 const llm = PL.deriveStageStates('llm', { stages: {} });
 const lhtml = V.renderPipelineHTML({ ok: true, kind: 'llm', label: 'LLM', stages: llm.stages, live: null, memory: null, memoryReason: '', export: PL.pickExportFormat('desktop', {}), env: 'desktop', source: { manifest: false, log: false } }, null);
-check('LLM 匯出：寫尚未實作與阻礙，不假裝可用', /尚未實作/.test(lhtml) && /optimum/.test(lhtml) && /unimpl/.test(lhtml));
+check('LLM 匯出：已實作，畫面有 ONNX 匯出階段，且該階段不標未實作', /ONNX/.test(lhtml) && !llm.stages.find((s) => s.id === 'export').unimplemented);
 const withOnnx = V.renderPipelineHTML({ ok: true, kind: 'llm', label: 'LLM', stages: llm.stages, live: null, memory: null, memoryReason: '', export: PL.pickExportFormat('web', { onnxExport: true, ggufExport: false }), env: 'web', source: {} }, null);
 check('有 ONNX：寫預設格式與環境', /預設格式：ONNX（q8，網頁）/.test(withOnnx));
 

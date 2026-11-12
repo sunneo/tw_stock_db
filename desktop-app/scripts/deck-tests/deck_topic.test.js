@@ -59,4 +59,9 @@ check('request: 圖文並茂 means photos, 2分鐘 is parsed, 讀給我聽 means
 check('request: 兩分鐘 / 3分鐘 parsed; none = 0', T.minutesOf('兩分鐘') === 2 && T.minutesOf('3分鐘') === 3 && T.minutesOf('沒說') === 0);
 check('request: the minutes set the page count (2 min ≈ 5-6 pages; no minutes keeps 8-12)', T.pageRange(RQ)[0] === 5 && T.pageRange(RQ)[1] === 6 && T.pageRange({ minutes: 0 })[0] === 8);
 check('template: 分鐘／讀給我聽／圖文並茂 never become pages', T.templateOutline(RQ, () => '').every((o) => !/分鐘|讀給我聽|圖文並茂/.test(o.title)));
+const GR = T.parseRequest('圖文並茂的描寫這個爆料新聞，2分鐘\n\n【網頁素材：黃仁勳婚外情】\n輝達董事會今天開會決定去留，副總裁被指有染');
+check('grounding: material is split from the topic and the outline prompt carries it with a no-fabrication rule', GR.body.indexOf('網頁素材') < 0 && GR.material.indexOf('輝達董事會') >= 0 && /不要編造/.test(T.outlinePrompt(GR)) && /輝達董事會/.test(T.outlinePrompt(GR)));
+check('grounding: narration prompt also carries the material', /輝達董事會/.test(T.narrationPrompt({ title: 'x', point: 'y' }, GR)));
+check('grounding: the deck title is the article title, not the word 封面', (() => { const d = T.buildDeck(GR, [{ title: '封面', point: '一則新聞' }, { title: '董事會', point: '開會決定' }], [], []).deck; return d.title === '黃仁勳婚外情'; })());
+check('long material: the narration excerpt is the part most related to the slide, not the head of the article', (() => { const m = '開頭無關。'.repeat(300) + '董事會決議罷免執行長並任命接班人。' + '結尾無關。'.repeat(300); return T.excerptFor(m, { title: '董事會決議', point: '罷免執行長任命接班人' }, 400).indexOf('董事會決議罷免') >= 0; })());
 console.log(bad.length ? 'FAILED:\n  ' + bad.join('\n  ') : 'deck_topic: ' + ok + ' passed'); process.exit(bad.length ? 1 : 0);

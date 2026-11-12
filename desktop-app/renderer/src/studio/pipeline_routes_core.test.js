@@ -57,7 +57,7 @@ const U = (p) => new URL('http://x' + p);
     const sym = await api.route('GET', U('/api/pipeline?kind=colu&name=demo'), {});
     check('符號式：按需載入略過（不需要載入）', sym.j.stages.find((s) => s.id === 'mount').state === '略過');
     const llm = await api.route('GET', U('/api/pipeline?kind=llm&name=demo&env=web'), {});
-    check('LLM：匯出階段標示未實作並寫明阻礙', llm.j.stages.find((s) => s.id === 'export').unimplemented === true && /optimum|llama/.test(llm.j.stages.find((s) => s.id === 'export').reason));
+    check('LLM：匯出階段已實作（不再標未實作），並有說明', !llm.j.stages.find((s) => s.id === 'export').unimplemented && /studio_llm_export|ONNX|GGUF/.test(JSON.stringify(llm.j.stages.find((s) => s.id === 'export'))));
     check('LLM 匯出格式：沒有工具時預設為空，原因寫明', llm.j.export.default === null && /尚未實作/.test(llm.j.export.reason) && llm.j.env === 'web', llm.j.export);
     const apiOnnx = R.createPipelineApi({ storage, readRunLog, now: () => 1, Pipeline: PL, Live: LV, Advice: AD, exportCaps: () => ({ onnxExport: true, ggufExport: false }) });
     const llm2 = await apiOnnx.route('GET', U('/api/pipeline?kind=llm&name=demo&env=desktop'), {});

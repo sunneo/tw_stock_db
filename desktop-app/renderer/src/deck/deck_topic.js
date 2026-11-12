@@ -22,17 +22,20 @@
   // 「2分鐘」「兩分鐘」→ 分鐘數（0＝沒說）；用來決定頁數（旁白約一頁 20～25 秒）
   function minutesOf(b) { var m = /([0-9]+(?:\.[0-9]+)?|[一二兩三四五六七八九十]+)\s*分鐘/.exec(b || ''); if (!m) return 0; var CN = { 一: 1, 二: 2, 兩: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10 }; var n = /^[0-9.]+$/.test(m[1]) ? Number(m[1]) : (CN[m[1]] || 0); return n > 0 && n <= 30 ? n : 0; }
   function pageRange(req) { if (!req.minutes) return [8, 12]; var n = Math.max(5, Math.min(24, Math.round(req.minutes * 60 / 22))); return [Math.max(5, n - 1), n + 1]; }
+  // 程式從網址抓回來的素材放在【網頁素材：標題】之後；要講什麼（topic）和素材分開，素材只拿來當事實依據
+  function splitMaterial(text) { var m = /【網頁素材：([^】]*)】/.exec(text); if (!m) return { topic: text, material: '', matTitle: '' }; return { topic: text.slice(0, m.index).trim(), material: text.slice(m.index + m[0].length).replace(/\s+/g, ' ').trim(), matTitle: m[1] }; }
   function parseRequest(task) {
-    var body = clean(task), sp = Number((/(?:語速|速度|speed)\s*[:：=]?\s*([0-9]*\.?[0-9]+)/i.exec(body) || [])[1]);
+    var sm = splitMaterial(clean(task)), body = sm.topic, sp = Number((/(?:語速|速度|speed)\s*[:：=]?\s*([0-9]*\.?[0-9]+)/i.exec(body) || [])[1]);
     var wantEn = /英文|english/i.test(body) && !/(繁體|簡體|國語|華語)?中文/.test(body.replace(/英文/g, ''));
     var voice = (/\b([ab][fm]_[a-z]+|z[fm]_[a-z]+|zh-[A-Za-z]+-[A-Za-z]+)\b/i.exec(body) || [])[1] || '';
     var tm = /《([^》]{1,24})》/.exec(body), title = tm ? tm[1] : '';
-    return { body: body, lang: wantEn ? 'en' : 'zh-TW', speed: sp >= 0.5 && sp <= 2 ? sp : 0, voice: voice, kids: /幼兒|幼童|小朋友|兒童|繪本|活潑|可愛|寶寶|孩子/.test(body), wantPhotos: /照片|實拍|上網找|圖文並茂|配圖|插圖/.test(body) || /找圖/.test(body), minutes: minutesOf(body), read: /讀給我聽|唸給我聽|念給我聽|朗讀|旁白/.test(body), icons: /圖示|icon|字可以少|少字|字少|不要太多字|貼圖|卡通圖|動畫/i.test(body), title: title };
+    return { body: body, material: sm.material, matTitle: sm.matTitle, lang: wantEn ? 'en' : 'zh-TW', speed: sp >= 0.5 && sp <= 2 ? sp : 0, voice: voice, kids: /幼兒|幼童|小朋友|兒童|繪本|活潑|可愛|寶寶|孩子/.test(body), wantPhotos: /照片|實拍|上網找|圖文並茂|配圖|插圖/.test(body) || /找圖/.test(body), minutes: minutesOf(body), read: /讀給我聽|唸給我聽|念給我聽|朗讀|旁白/.test(body), icons: /圖示|icon|字可以少|少字|字少|不要太多字|貼圖|卡通圖|動畫/i.test(body), title: title };
   }
 
   var ascii = function (s, n) { return String(s == null ? '' : s).replace(/[^A-Za-z0-9 \-']/g, ' ').replace(/\s+/g, ' ').trim().slice(0, n || 40); };
   function outlinePrompt(req) {
-    return '使用者的簡報需求：「' + req.body.slice(0, 700) + '」\n請把它規劃成 ' + pageRange(req)[0] + ' 到 ' + pageRange(req)[1] + ' 頁，每行一頁，格式：\n頁標題｜這一頁要講的重點（一句話）｜找照片用的英文關鍵字（2 到 4 個英文字，不需要照片就寫 none）\n第一頁是封面，最後一頁是總結。需求裡點名的每一件事都要有一頁。只輸出這幾行，不要編號、不要其他說明。';
+    var grounded = req.material ? '\n【網頁素材（標題：' + req.matTitle + '）】\n' + req.material.slice(0, 6000) + '\n規則：每一頁的標題與重點只能取自上面的網頁素材；素材沒寫的人名、數字、事件一律不要寫，不要編造，也不要套用別的新聞。' : '';
+    return '使用者的簡報需求：「' + req.body.slice(0, 700) + '」' + grounded + '\n請把它規劃成 ' + pageRange(req)[0] + ' 到 ' + pageRange(req)[1] + ' 頁，每行一頁，格式：\n頁標題｜這一頁要講的重點（一句話）｜找照片用的英文關鍵字（2 到 4 個英文字，不需要照片就寫 none）\n第一頁是封面，最後一頁是總結。需求裡點名的每一件事都要有一頁。只輸出這幾行，不要編號、不要其他說明。';
   }
   function parseOutline(text) {
     var out = [];
@@ -58,8 +61,16 @@
     return outline.slice(0, 14);
   }
 
+  // 長素材（整篇文章）：旁白只拿和這一頁標題／重點最相關的段落（用字元雙連詞重疊挑），不是前面一小段
+  function excerptFor(material, slide, n) {
+    material = String(material || ''); if (material.length <= n) return material;
+    var q = (String(slide.title || '') + String(slide.point || '')).replace(/\s+/g, ''), grams = {}; for (var i = 0; i + 1 < q.length; i++) grams[q.slice(i, i + 2)] = 1;
+    var best = 0, bestS = -1, step = Math.max(80, Math.floor(n / 4));
+    for (var s0 = 0; s0 < material.length; s0 += step) { var w = material.slice(s0, s0 + n), sc = 0; for (var j = 0; j + 1 < w.length; j++) if (grams[w.slice(j, j + 2)]) sc++; if (sc > bestS) { bestS = sc; best = s0; } }
+    return material.slice(best, best + n);
+  }
   function narrationPrompt(slide, req) {
-    return (req.kids ? '用幼兒聽得懂的繁體中文' : '用清楚簡短的' + (req.lang === 'en' ? 'English' : '繁體中文')) + '，替簡報這一頁寫 2 到 3 句旁白。簡報主題：「' + req.body.slice(0, 120) + '」\n這一頁的標題：' + slide.title + '\n這一頁的重點：' + slide.point + '\n每句不超過 25 個字，' + (req.lang === 'en' ? '' : '不要用英文、') + '不要編號，只輸出旁白。';
+    return (req.kids ? '用幼兒聽得懂的繁體中文' : '用清楚簡短的' + (req.lang === 'en' ? 'English' : '繁體中文')) + '，替簡報這一頁寫 2 到 3 句旁白。簡報主題：「' + req.body.slice(0, 120) + '」' + (req.material ? '\n只能根據這份網頁素材寫，素材沒有的不要寫（下面是和這一頁最相關的段落）：' + excerptFor(req.material, slide, 1500) : '') + '\n這一頁的標題：' + slide.title + '\n這一頁的重點：' + slide.point + '\n每句不超過 25 個字，' + (req.lang === 'en' ? '' : '不要用英文、') + '不要編號，只輸出旁白。';
   }
   function acceptNarration(text, slide, req) {
     var t = String(text == null ? '' : text).replace(/^[「『"\s]+|[」』"\s]+$/g, '').replace(/\n+/g, ' ').trim();
@@ -71,9 +82,9 @@
   function bulletsOf(point) { var b = String(point || '').split(/[，,；;]/).map(function (x) { return x.trim(); }).filter(function (x) { return x.length >= 2; }).slice(0, 3); return b.length ? b.map(function (x) { return x.slice(0, 18); }) : [String(point || '').slice(0, 18)]; }
   // narr：每頁旁白（陣列，缺的用重點）；photos：每頁 { ref, credit, license, source } 或 null
   function buildDeck(req, outline, narr, photos) {
-    var deck = { title: (outline[0] && outline[0].title) || '簡報', lang: req.lang }; if (req.speed) deck.speed = req.speed; if (req.voice) deck.voice = req.voice;
+    var realTitle = req.title || req.matTitle || ''; /* 標題用文章標題，不要是「封面」兩個字 */ var deck = { title: realTitle || (outline[0] && outline[0].title) || '簡報', lang: req.lang }; if (req.speed) deck.speed = req.speed; if (req.voice) deck.voice = req.voice;
     var slides = outline.map(function (o, i) {
-      var s = { title: o.title, bullets: bulletsOf(o.point), narration: (narr && narr[i]) || (o.point + '。') }, ph = photos && photos[i];
+      var s = { title: (i === 0 && realTitle && /^(封面|cover|首頁|標題)$/i.test(o.title)) ? realTitle.slice(0, 24) : o.title, bullets: bulletsOf(o.point), narration: (narr && narr[i]) || (o.point + '。') }, ph = photos && photos[i];
       if (i === 0) { s.layout = 'title'; s.subtitle = o.point.slice(0, 30); delete s.bullets; }
       if (ph && ph.ref) {
         s.visual = req.kids ? { kind: 'collage', items: [{ src: ph.ref, x: 0.1, y: 0.05, w: 0.8, label: o.title.slice(0, 10) }] } : { kind: 'image', src: ph.ref, fit: 'cover', motion: 'kenburns' };
@@ -147,5 +158,5 @@
   }
   function dropAllVisuals(doc) { var n = 0; doc.chapters.forEach(function (c) { c.slides.forEach(function (s) { if (s.visual) { delete s.visual; n++; } if (s.layout === 'split') s.layout = 'content'; }); }); return n; }
 
-  return { minutesOf: minutesOf, pageRange: pageRange, parseRequest: parseRequest, outlinePrompt: outlinePrompt, parseOutline: parseOutline, templateOutline: templateOutline, narrationPrompt: narrationPrompt, acceptNarration: acceptNarration, buildDeck: buildDeck, ICONS: ICONS, iconsFor: iconsFor, buildIconDeck: buildIconDeck, iconList: iconList, repair: repair, dropAllVisuals: dropAllVisuals, TRAVEL: TRAVEL };
+  return { excerptFor: excerptFor, splitMaterial: splitMaterial, minutesOf: minutesOf, pageRange: pageRange, parseRequest: parseRequest, outlinePrompt: outlinePrompt, parseOutline: parseOutline, templateOutline: templateOutline, narrationPrompt: narrationPrompt, acceptNarration: acceptNarration, buildDeck: buildDeck, ICONS: ICONS, iconsFor: iconsFor, buildIconDeck: buildIconDeck, iconList: iconList, repair: repair, dropAllVisuals: dropAllVisuals, TRAVEL: TRAVEL };
 });

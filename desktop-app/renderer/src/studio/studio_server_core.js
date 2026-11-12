@@ -424,12 +424,17 @@
                 }
                 // ---- 網頁版頁內訓練（wasm-web）：沒有子行程，由 h.webTrain 在頁面裡跑 ----
                 const wantWeb = (b) => !!h.webTrain && (String((b && b.backend) || '') === 'wasm-web' || !h.desktop);
-                if (method === 'POST' && P === '/api/train/start' && wantWeb(body)) {
-                    const name = String(body.name || ''); if (!name || !Asset.safeName(name)) return bad(400, '請先填一個合法的名稱（不可含斜線或 ..）');
-                    const cfg = Object.assign({}, body.cfg || {}); const r = await h.webTrain.start({ name, cfg, resume: !!body.resume, fromAsset: body.fromAsset || cfg.fromAsset });
-                    if (!r || r.ok === false) { log('網頁版訓練沒有啟動：' + (r && r.error), { level: 'error' }); return bad(409, (r && r.error) || '啟動失敗'); }
-                    S.lastTrain = r.jobId; S.webJob = r.jobId; S.webName = name; log((body.resume ? '網頁版續訓 ' : '網頁版開始訓練 ') + name + '（' + r.jobId + '，頁內處理器）'); return ok(Object.assign({ web: true }, r));
-                }
+                // 網頁處理器（頁內 WebAssembly）訓練：沒有子行程，由 h.webTrain 在頁面裡跑。桌面版的 Python／GPU 後端不能用時，「自動」會退到這裡（fallback 說明寫進回傳與紀錄）
+                const startWeb = async (b, fb) => {
+                    const name = String(b.name || ''); if (!name || !Asset.safeName(name)) return bad(400, '請先填一個合法的名稱（不可含斜線或 ..）');
+                    const cfg = Object.assign({}, b.cfg || {}); if (fb) { cfg.steps = Number(cfg.steps) > 0 ? cfg.steps : 100; cfg.lr = Number(cfg.lr) > 0 ? cfg.lr : 0.001; }
+                    const r = await h.webTrain.start({ name, cfg, resume: !!b.resume, fromAsset: b.fromAsset || cfg.fromAsset });
+                    if (!r || r.ok === false) { log('網頁版訓練沒有啟動：' + (r && r.error), { level: 'error' }); return bad(409, (fb ? '桌面版的 Python 後端不能用（' + fb.slice(0, 160) + '），已自動改用網頁處理器，但它也沒有啟動：' : '') + ((r && r.error) || '啟動失敗')); }
+                    S.lastTrain = r.jobId; S.webJob = r.jobId; S.webName = name;
+                    log((fb ? '桌面版後端不能用（' + fb.slice(0, 120) + '）→ 自動改用網頁處理器 ' : (b.resume ? '網頁版續訓 ' : '網頁版開始訓練 ')) + name + '（' + r.jobId + '，頁內處理器）');
+                    return ok(Object.assign({ web: true }, fb ? { fallback: { from: 'cpu-py', to: 'wasm-web', reason: fb, note: '桌面版的 Python／GPU 後端不能用，已自動改用網頁處理器（頁內 WebAssembly，慢但正確、可暫停、可匯出檢查點）。想用桌面版後端：安裝缺少的套件（見「運算後端」的原因）。' } } : {}, r));
+                };
+                if (method === 'POST' && P === '/api/train/start' && wantWeb(body)) return startWeb(body, null);
                 const isWebJob = (id) => !!h.webTrain && !!(S.webJob) && (!id || id === S.webJob || String(id).indexOf('web') === 0);
                 if (method === 'GET' && P === '/api/train/status' && isWebJob(Q('jobId') || S.lastTrain)) { const r = await h.webTrain.status(Q('jobId') || S.webJob); return r.ok === false ? bad(502, r.error) : ok(r); }
                 if (method === 'POST' && P === '/api/train/pause' && isWebJob(body.jobId || S.lastTrain)) { const r = await h.webTrain.pause(body.jobId || S.webJob); log('網頁版暫停訓練：' + (r.ok ? '已存檢查點 step=' + r.step : r.error)); return r.ok === false ? bad(409, r.error || '暫停失敗', r) : ok(r); }
@@ -451,7 +456,22 @@
                     const cfg = Object.assign({ base: 'Qwen/Qwen3-0.6B', epochs: 1, batch: 1, accum: 4, seqLen: 256, saveSteps: 50 }, body.cfg || {});
                     if (!cfg.trainFile) return bad(400, '請填訓練資料檔路徑（.jsonl；第二輪的「資料匯入」會自動產生）');
                     if (!cfg.outputDir) { if (!wd) return bad(500, '找不到使用者資料夾，請手動指定輸出資料夾'); cfg.outputDir = wd + '/runs/' + name; }
+                    const autoPick = !body.backend || body.backend === 'auto', canWebFb = autoPick && kind === 'lora' && !!h.webTrain;
+                    // 自動模式：桌面版沒有任何可用的後端（例如 Python 缺 transformers／peft）→ 直接退到網頁處理器，不要叫使用者先去裝套件
+                    if (canWebFb) {
+                        const pr = await callHost('studio_probe', { kind }, 30000).catch(() => null);
+                        const list = pr && Array.isArray(pr.backends) ? pr.backends : null;
+                        if (list && !list.some((x) => x.available)) {
+                            const why = list.map((x) => x.id + '：' + String(x.reason || '').slice(0, 100)).join('；');
+                            const wp = await h.webTrain.probe().catch(() => null);
+                            if (wp && wp.available !== false) return startWeb({ name, cfg: Object.assign({}, cfg, { fromAsset: body.fromAsset || cfg.fromAsset || cfg.trainFile }), resume: !!body.resume, fromAsset: body.fromAsset || cfg.fromAsset || cfg.trainFile }, why);
+                        }
+                    }
                     const r = await callHost('studio_train_start', { kind, backend: body.backend && body.backend !== 'auto' ? body.backend : undefined, cfg, resume: !!body.resume }, 60000);
+                    if (r.ok === false && canWebFb) { // 桌面版啟動失敗（缺套件、找不到模型…）：自動模式再試網頁處理器
+                        const wp = await h.webTrain.probe().catch(() => null);
+                        if (wp && wp.available !== false) return startWeb({ name, cfg: Object.assign({}, cfg, { fromAsset: body.fromAsset || cfg.fromAsset || cfg.trainFile }), resume: !!body.resume, fromAsset: body.fromAsset || cfg.fromAsset || cfg.trainFile }, String(r.error || '啟動失敗'));
+                    }
                     if (r.ok === false) { log('訓練沒有啟動：' + r.error, { level: 'error' }); return bad(409, r.error); }
                     S.lastTrain = r.jobId; log((body.resume ? '續訓 ' : '開始訓練 ') + kind + '/' + name + '（' + r.jobId + '）→ ' + cfg.outputDir); return ok(Object.assign({ outputDir: cfg.outputDir }, r));
                 }

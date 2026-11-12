@@ -4,7 +4,7 @@ const fs = require('fs'), path = require('path');
 const SRC = fs.readFileSync(path.join(__dirname, '..', '..', 'renderer', 'src', 'floating-assistant.js'), 'utf8');
 const DT = fs.readFileSync(path.join(__dirname, '..', '..', 'renderer', 'src', 'deck', 'deck_tools.js'), 'utf8'); // 簡報工具的真正來源（嵌進 floating-assistant.js，改嵌入區塊會被覆寫）
 let ok = 0, bad = 0; const check = (n, c) => { if (c) ok++; else { bad++; console.log('FAIL ' + n); } };
-check('有 _deckUrlBrief（抓網頁文字）', /async _deckUrlBrief\(url\)/.test(SRC) && /this\.tools\.fetch_web_page/.test(SRC));
+check('有 _deckUrlBrief（抓網頁文字）', /async _deckUrlBrief\(url, log\)/.test(SRC) && /fetch_web_page/.test(SRC));
 check('程式組簡報不看有沒有附件／網址（簡報跟附件無關）', /!askedForMaterial\(subResult\) && !\(extra\.shouldStop && extra\.shouldStop\(\)\)\) \{\n\s+const line0/.test(SRC));
 check('只有沒說要講什麼才請使用者補素材', /topicLen < 6 && asksMaterial/.test(SRC));
 check('網址會被抓回並併進食譜任務', /recipeTask/.test(SRC) && /_deckTopicRecipe\(recipeTask/.test(SRC));
@@ -13,4 +13,8 @@ check('下載圖片失敗的錯誤訊息引導改用截圖', /不要重複試下
 check('食譜：找不到照片用瀏覽器截圖補（_deckPageShots）', /async _deckPageShots\(url, n, log\)/.test(SRC) && /opts\.url && photos\.filter\(Boolean\)\.length </.test(SRC));
 check('食譜：使用者給的圖依序插到沒有照片的頁面', /from: 'user_attachment'/.test(SRC));
 check('委派流程把網址與附件圖交給食譜', /\{ url: urlM && urlM\[0\], images: myImages \}/.test(SRC));
+check('網頁讀不到文字：fetch → 瀏覽器讀全文／頁面結構 → 截圖＋看圖模型（VLM）', /路三：讀不到文字也能「看」/.test(SRC) && /interpret: true/.test(SRC) && /browser_get_page_structure/.test(SRC) && /browser_get_page_text/.test(SRC));
+check('抓不到網址內容就不編造，請使用者貼內文', /我不會憑空編寫新聞/.test(SRC) && /if \(urlM && noMaterialErr\)/.test(SRC));
+check('截圖＋看圖：一直看到頁面最底，不限 4 段（只有 300 段安全閥）', /k < 300/.test(SRC) && !/k < 4; k\+\+\) \{\n\s+if \(k > 0\) \{ try \{ await call\('browser_scroll'[^\n]*interpret/.test(SRC) && /到底（捲動位置不再增加）/.test(SRC) && /到底（畫面和上一段一樣）/.test(SRC));
+check('網頁素材最多收 12000 字（不再 1800）', /br\.text\.slice\(0, 12000\)/.test(SRC));
 console.log(ok + ' passed, ' + bad + ' failed'); process.exit(bad ? 1 : 0);
