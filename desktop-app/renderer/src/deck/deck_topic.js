@@ -79,7 +79,9 @@
     var n = (t.match(/[。！？!?]/g) || []).length; if (n > 5) return null; return t;
   }
 
-  function bulletsOf(point) { var b = String(point || '').split(/[，,；;]/).map(function (x) { return x.trim(); }).filter(function (x) { return x.length >= 2; }).slice(0, 3); return b.length ? b.map(function (x) { return x.slice(0, 18); }) : [String(point || '').slice(0, 18)]; }
+  // 條列太長時不在字中間硬切（2026-11-12：「與醫療事業部」「董事」這種斷在半句的條列）：先在標點／空白處斷，斷不了才截斷並加「…」
+  function clipBullet(x, lim) { x = String(x); if (x.length <= lim) return x; var cut = x.slice(0, lim), k = Math.max(cut.lastIndexOf('、'), cut.lastIndexOf('和'), cut.lastIndexOf('與'), cut.lastIndexOf(' ')); if (k >= Math.floor(lim * 0.6)) cut = cut.slice(0, k); return cut.replace(/[，,；;、和與\s]+$/, '') + '…'; }
+  function bulletsOf(point) { var b = String(point || '').split(/[，,；;。]/).map(function (x) { return x.trim(); }).filter(function (x) { return x.length >= 2; }).slice(0, 3); return b.length ? b.map(function (x) { return clipBullet(x, 24); }) : [clipBullet(String(point || ''), 24)]; }
   // narr：每頁旁白（陣列，缺的用重點）；photos：每頁 { ref, credit, license, source } 或 null
   function buildDeck(req, outline, narr, photos) {
     var realTitle = req.title || req.matTitle || ''; /* 標題用文章標題，不要是「封面」兩個字 */ var deck = { title: realTitle || (outline[0] && outline[0].title) || '簡報', lang: req.lang }; if (req.speed) deck.speed = req.speed; if (req.voice) deck.voice = req.voice;
@@ -150,7 +152,7 @@
     lines.forEach(function (ln) {
       var m = /chapters\[(\d+)\]\.slides\[(\d+)\]\.([A-Za-z_.\[\]0-9]+)\s*:\s*(.*)$/.exec(ln); if (!m) return; var s = slideAt(+m[1], +m[2]); if (!s) return; var field = m[3];
       if (/^visual/.test(field)) { if (s.visual) { delete s.visual; if (s.layout === 'split') s.layout = 'content'; changes.push('第 ' + (+m[1] + 1) + ' 章第 ' + (+m[2] + 1) + ' 頁：拿掉有問題的圖（' + m[4].slice(0, 50) + '）'); } }
-      else if (/^bullets/.test(field)) { s.bullets = (s.bullets || []).slice(0, 4).map(function (b) { return String(b).slice(0, 14); }); changes.push('第 ' + (+m[1] + 1) + ' 章第 ' + (+m[2] + 1) + ' 頁：截短條列'); }
+      else if (/^bullets/.test(field)) { s.bullets = (s.bullets || []).slice(0, 4).map(function (b) { return clipBullet(b, 14); }); changes.push('第 ' + (+m[1] + 1) + ' 章第 ' + (+m[2] + 1) + ' 頁：截短條列'); }
       else if (/^title/.test(field)) { s.title = String(s.title || '').slice(0, 14) || '這一頁'; changes.push('截短標題'); }
       else if (/^narration|^caption/.test(field)) { s.narration = String(s.narration || '').slice(0, 120); changes.push('截短旁白'); }
     });

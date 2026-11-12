@@ -189,6 +189,54 @@ const FaDeckTools = (function () {
         if (at >= 0) return { yaml: body.slice(at).trim(), name: '' };
         return null;
     }
+    // ---- 參數消毒（呼叫驗證前先把「明顯是同一個意思、只是寫法不對」的地方整理好；每一處改動都回報，不默默改）----
+    // 2026-11-12 事故：模型把 chapters 寫進 deck 裡面（驗證回「chapters: needs a non-empty list」十幾次都修不好）、visual 寫成 "@img1" 字串、narration 寫成陣列。
+    const IMG_REF = /^(@img\d+|client-file\/[\w.-]+|https?:\/\/\S+)$/;
+    function imageVisual(str) {
+        const refs = String(str).split(/[\s,，、]+/).filter(Boolean);
+        if (!refs.length || !refs.every((x) => IMG_REF.test(x))) return null;
+        if (refs.length === 1) return { kind: 'image', src: refs[0], fit: 'cover' };
+        const n = Math.min(refs.length, 6), cols = n <= 2 ? n : 2, rows = Math.ceil(n / cols), w = 0.46, h = 0.8 / rows;
+        return { kind: 'collage', items: refs.slice(0, n).map((src, i) => ({ src, x: 0.03 + (i % cols) * 0.5, y: 0.1 + Math.floor(i / cols) * (0.8 / rows), w: Math.min(w, h * 1.5) })) };
+    }
+    function deckSanitize(doc) {
+        const fixes = []; if (!doc || typeof doc !== 'object' || Array.isArray(doc)) return { doc, fixes };
+        const d = doc.deck && typeof doc.deck === 'object' ? doc.deck : null;
+        if (!Array.isArray(doc.chapters) || !doc.chapters.length) {
+            if (d && Array.isArray(d.chapters) && d.chapters.length) { doc.chapters = d.chapters; delete d.chapters; fixes.push('chapters 寫在 deck 裡面：已移到最上層（chapters 和 deck 是同一層）'); }
+            else if (Array.isArray(doc.slides) && doc.slides.length) { doc.chapters = [{ title: (d && d.title) || '內容', slides: doc.slides }]; delete doc.slides; fixes.push('slides 直接放在最上層：已包成一個章節'); }
+            else if (d && Array.isArray(d.slides) && d.slides.length) { doc.chapters = [{ title: d.title || '內容', slides: d.slides }]; delete d.slides; fixes.push('slides 寫在 deck 裡面：已包成一個章節放到最上層'); }
+        }
+        (Array.isArray(doc.chapters) ? doc.chapters : []).forEach((ch, ci) => {
+            if (Array.isArray(ch)) { doc.chapters[ci] = ch = { title: '章節 ' + (ci + 1), slides: ch }; fixes.push('chapters[' + ci + '] 是投影片清單：已包成章節'); }
+            if (!ch || typeof ch !== 'object' || !Array.isArray(ch.slides)) return;
+            ch.slides.forEach((sl, si) => {
+                if (!sl || typeof sl !== 'object') return; const at = 'chapters[' + ci + '].slides[' + si + ']';
+                if (Array.isArray(sl.narration)) { sl.narration = sl.narration.map((x) => String(x == null ? '' : x).trim()).filter(Boolean).join(' '); fixes.push(at + '.narration 是陣列：已接成一段文字'); }
+                if (Array.isArray(sl.bullets)) { const b = sl.bullets.map((x) => (typeof x === 'string' ? x : (x && typeof x === 'object' ? String(x.text || x.title || Object.values(x)[0] || '') : String(x == null ? '' : x)))).filter(Boolean); if (b.some((x, i) => x !== sl.bullets[i])) { sl.bullets = b; fixes.push(at + '.bullets 有非文字項目：已轉成文字'); } }
+                for (const k of ['image', 'picture', 'photo', 'img']) if (sl.visual == null && typeof sl[k] === 'string' && IMG_REF.test(sl[k].trim())) { sl.visual = sl[k].trim(); delete sl[k]; fixes.push(at + '.' + k + ' 不是投影片欄位：已當成 visual'); }
+                const v = sl.visual;
+                if (typeof v === 'string') { const iv = imageVisual(v.trim()); if (iv) { sl.visual = iv; fixes.push(at + '.visual 是字串：已改成 {kind: ' + iv.kind + '}'); } }
+                else if (Array.isArray(v) && v.length && v.every((x) => typeof x === 'string')) { const iv = imageVisual(v.join(' ')); if (iv) { sl.visual = iv; fixes.push(at + '.visual 是清單：已改成 {kind: ' + iv.kind + '}'); } }
+                else if (v && typeof v === 'object' && !Array.isArray(v) && !v.kind) {
+                    const ref = [v.src, v.image, v.picture, v.url, v.handle, v.ref].find((x) => typeof x === 'string' && IMG_REF.test(x.trim()));
+                    if (ref) { const keep = Object.assign({}, v); for (const k of ['image', 'picture', 'url', 'handle', 'ref']) delete keep[k]; sl.visual = Object.assign({ kind: 'image', src: ref.trim(), fit: 'cover' }, keep, { src: ref.trim() }); fixes.push(at + '.visual 少了 kind：已補 kind: image'); }
+                }
+            });
+        });
+        return { doc, fixes };
+    }
+    // 存下來的 yaml：每次送進來的文字都先放進這個任務的暫存（y1、y2…），失敗時回 yaml_id；之後只要送 {yaml_id, edits:[{find, replace}]} 就能重驗，不必整份重打（也就不會一再遇到跳脫字元的問題）
+    function applyEdits(text, edits) {
+        const out = { text: String(text || ''), applied: 0, errors: [] };
+        (Array.isArray(edits) ? edits : []).slice(0, 50).forEach((e, i) => {
+            if (!e || typeof e !== 'object' || typeof e.find !== 'string' || !e.find) { out.errors.push('edits[' + i + '] 要有 find（要找的原文）和 replace（換成什麼）'); return; }
+            const rep = e.replace == null ? '' : String(e.replace), at = out.text.indexOf(e.find);
+            if (at < 0) { out.errors.push('edits[' + i + ']：存下來的 yaml 裡找不到 ' + JSON.stringify(e.find.slice(0, 60))); return; }
+            out.text = e.all ? out.text.split(e.find).join(rep) : out.text.slice(0, at) + rep + out.text.slice(at + e.find.length); out.applied++;
+        });
+        return out;
+    }
     function estimateMinutes(doc) {
         if (!doc || !Array.isArray(doc.chapters)) return 0;
         let speed = Number(doc.deck && doc.deck.speed); if (!(speed >= 0.5 && speed <= 2)) speed = 1;
@@ -490,16 +538,37 @@ const FaDeckTools = (function () {
             let r = null; try { r = await this._deckRender(args); } catch (_) { return null; }
             return r && !r.error && r.type === 'deck' && r.url ? r : null;
         },
+        // 取得這次的 yaml 文字：直接給的、或用 yaml_id 取回上次存下的（可再套 edits 小修）；成功取得後存進暫存，回 yaml_id
+        _deckYamlInput(a) {
+            const run = this._deckRun(); run.yamls = run.yamls || {}; run.nYamls = run.nYamls || 0;
+            let text = deckYamlArg(a), id = String(a.yaml_id || '');
+            if (!text.trim() && id) { text = run.yamls[id] || ''; if (!text) return { error: 'unknown yaml_id ' + JSON.stringify(id) + ' -- this id was not stored in this task; send the yaml itself' }; }
+            let note = '';
+            if (Array.isArray(a.edits) && a.edits.length) {
+                if (!text.trim()) return { error: 'edits need a yaml_id (or yaml) to edit' };
+                const r = applyEdits(text, a.edits); if (r.errors.length) return { error: r.errors.join('; ') + ' -- the stored yaml is unchanged; fix the "find" text (copy it exactly) and send the edits again', yaml_id: id || undefined };
+                text = r.text; note = r.applied + ' edit(s) applied to the stored yaml';
+            }
+            if (!text.trim()) return { error: 'yaml is required (or yaml_id of one you already sent)' };
+            if (!id || !run.yamls[id] || run.yamls[id] !== text) { id = (a.yaml_id && note) ? String(a.yaml_id) : 'y' + (++run.nYamls); run.yamls[id] = text; }
+            return { text, id, note };
+        },
+        _deckWithId(res, inp) { // 失敗的結果附上 yaml_id 與「用 edits 修」的說明（成功的結果加上消毒改了什麼）
+            if (!res || typeof res !== 'object') return res;
+            if (res.error) return Object.assign({}, res, { yaml_id: inp.id, fix_hint: 'Your yaml is stored as yaml_id "' + inp.id + '". Do NOT resend the whole document: call again with {yaml_id: "' + inp.id + '", edits: [{find: "<exact text to change>", replace: "<new text>"}]} (each find is copied from the stored yaml; no escaping of the rest needed).' });
+            return Object.assign({}, res, { yaml_id: inp.id });
+        },
         async _deckRender(a) {
-            const yamlText = deckYamlArg(a);
-            if (!yamlText.trim()) return { error: 'yaml is required' };
-            { const yk = FaYamlKind.check(yamlText, 'deck'); if (!yk.ok) return { error: yk.message }; }
+            const inp = this._deckYamlInput(a || {}); if (inp.error) return inp;
+            const yamlText = inp.text;
+            { const yk = FaYamlKind.check(yamlText, 'deck'); if (!yk.ok) return this._deckWithId({ error: yk.message }, inp); }
             await this._ensureJsYamlLoaded();
-            const parsed = this._deckParseYaml(yamlText); if (parsed.error) return { error: parsed.error };
-            const data = parsed.data;
-            const checked = await this._deckCheck(data, 'render_presentation'); if (checked.error) return checked;
+            const parsed = this._deckParseYaml(yamlText); if (parsed.error) return this._deckWithId({ error: parsed.error }, inp);
+            const san = deckSanitize(parsed.data), data = san.doc;
+            const checked = await this._deckCheck(data, 'render_presentation'); if (checked.error) return this._deckWithId(Object.assign({}, checked, san.fixes.length ? { sanitized: san.fixes } : {}), inp);
             this._deckNoteFixes(checked, parsed);
-            return this._deckSaveChecked(data, String(a.name || (data.deck && data.deck.title) || ''), checked);
+            if (san.fixes.length) checked.warnings = (checked.warnings || []).concat('auto-fixed before checking: ' + san.fixes.slice(0, 12).join('; '));
+            return this._deckWithId(await this._deckSaveChecked(data, String(a.name || (data.deck && data.deck.title) || ''), checked), inp);
         },
         async _deckBeginPresentation(a) {
             await this._ensureJsYamlLoaded();
@@ -514,12 +583,15 @@ const FaDeckTools = (function () {
             await this._ensureJsYamlLoaded();
             const run = this._deckRun(); const draft = run.drafts[String(a.draft || '')];
             if (!draft) return { error: 'unknown draft ' + JSON.stringify(a.draft) + ' -- call begin_presentation first' };
-            const p = this._deckParseYaml(a.yaml); if (p.error) return { error: p.error };
-            const chapters = Array.isArray(p.data) ? p.data : (p.data && p.data.chapters);
-            if (!Array.isArray(chapters) || !chapters.length) return { error: 'yaml must be a list of chapters ("- title: ...\\n  slides: [...]") or {chapters: [...]}' };
-            const candidate = { deck: draft.deck, chapters };
-            const checked = await this._deckCheck(candidate, 'add_chapters'); if (checked.error) return checked;
+            const inp = this._deckYamlInput(a); if (inp.error) return inp;
+            const p = this._deckParseYaml(inp.text); if (p.error) return this._deckWithId({ error: p.error }, inp);
+            let chapters = Array.isArray(p.data) ? p.data : (p.data && (p.data.chapters || (p.data.deck && p.data.deck.chapters)));
+            if (!Array.isArray(chapters) && p.data && Array.isArray(p.data.slides)) chapters = [{ title: p.data.title || '內容', slides: p.data.slides }];
+            if (!Array.isArray(chapters) || !chapters.length) return this._deckWithId({ error: 'yaml must be a list of chapters ("- title: ...\\n  slides: [...]") or {chapters: [...]}' }, inp);
+            const candidate = { deck: draft.deck, chapters }; const san = deckSanitize(candidate);
+            const checked = await this._deckCheck(candidate, 'add_chapters'); if (checked.error) return this._deckWithId(Object.assign({}, checked, san.fixes.length ? { sanitized: san.fixes } : {}), inp);
             this._deckNoteFixes(checked, p);
+            if (san.fixes.length) checked.warnings = (checked.warnings || []).concat('auto-fixed before checking: ' + san.fixes.slice(0, 12).join('; '));
             draft.chapters.push(...candidate.chapters);
             const all = { deck: draft.deck, chapters: draft.chapters };
             return { ok: true, chapters_so_far: draft.chapters.length, slides_so_far: draft.chapters.reduce((n, c) => n + c.slides.length, 0), minutes_so_far: Math.round(estimateMinutes(all) * 10) / 10, warnings: checked.warnings };
@@ -565,11 +637,24 @@ const FaDeckTools = (function () {
             }
             // 搜尋結果依「標題裡有幾個關鍵字」排序（相關的先試）；一個關鍵字都對不上的排最後
             const qw = q.toLowerCase().split(' ').filter((w) => w.length > 3), sc = (c) => qw.filter((w) => c.title.toLowerCase().indexOf(w.slice(0, Math.max(4, w.length - 2))) >= 0).length; cands.forEach((c, i) => { c.i = i; }); cands.sort((x, y) => sc(y) - sc(x) || x.i - y.i);
+            if (!/mcdonald|burger ?king|kfc|starbucks|coca.?cola|logo/i.test(q)) for (let i = cands.length - 1; i >= 0; i--) if (/mcdonald|burger ?king|kfc|starbucks|coca.?cola|\blogo\b/i.test(cands[i].title)) cands.splice(i, 1); // 品牌照片（麥當勞等）除非題目本身就要，否則不用
+            // minScore：標題裡至少要對上幾個關鍵字才算相關（新聞／指名人物的簡報不能放「長得像但不相干」的圖庫照片，2026-11-12 黃仁勳新聞配了 TEDx、IAEA 的不相干人物照）
+            if (a && Number(a.minScore) > 0) { const ms = Math.round(Number(a.minScore)); for (let i = cands.length - 1; i >= 0; i--) if (sc(cands[i]) < ms) cands.splice(i, 1); }
             if (a && a.candidates) return { ok: true, candidates: cands.slice(0, Math.max(1, Math.min(12, Number(a.candidates) || 6))) }; // 只搜尋、不匯入（先看過縮圖再挑）
             const photos = [], tried = [];
             for (const c of cands) {
-                if (photos.length >= want || tried.length >= 8) break; if (!c.url || run.photoUrls[c.url]) continue; tried.push(c.title);
-                try { const blob = await getBlob(c.url); const r = await this._deckImportImageBlob(blob, 'photo: ' + c.title + ' (' + c.source + (c.license ? ', ' + c.license : '') + ')', 'find_photo'); if (r && r.ok && r.ref) { run.photoUrls[c.url] = r.ref; photos.push({ ref: r.ref, title: c.title, credit: c.credit, license: c.license, source: c.source, page: c.page }); } else errs.push(c.title.slice(0, 30) + '：' + String((r && r.error) || '').slice(0, 80)); }
+                if (photos.length >= want || tried.length >= 12) break; if (!c.url || run.photoUrls[c.url]) continue; tried.push(c.title);
+                try { const blob = await getBlob(c.url);
+                    // 看圖確認（verify＝這一頁要講什麼）：圖庫的標題常常亂配（要「健康飲食」配到麥當勞、要新聞配到不相干的人），所以每張候選都請看圖模型看過、說對不上就換下一張；看圖模型不能用時退回只靠標題關鍵字（minScore）
+                    if (!(a && a.verify === false) && typeof this._interpretImageWithVisionModel === 'function') { const verifyText = String((a && a.verify) || q);
+                        let verdict = null; try {
+                            const du = await new Promise((res, rej) => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.onerror = () => rej(fr.error); fr.readAsDataURL(blob); });
+                            const rr = await this._interpretImageWithVisionModel(du, 'This picture is being considered as the illustration for a presentation slide about: "' + verifyText.slice(0, 200) + '". Does the picture clearly show that subject? Reply with exactly YES or NO, then a short reason. Reply NO if it shows a different subject, a fast-food / restaurant brand or logo that is not the subject, a recognisable real person who is not named in the subject, or if you are not sure.');
+                            verdict = String((rr && rr.description) || '').trim();
+                        } catch (_) { verdict = null; /* 看圖模型不能用：不擋 */ }
+                        if (verdict && !/^\W*YES/i.test(verdict)) { errs.push(c.title.slice(0, 30) + '：看圖覺得跟「' + verifyText.slice(0, 20) + '」對不上（' + verdict.slice(0, 50) + '）'); continue; }
+                    }
+                    const r = await this._deckImportImageBlob(blob, 'photo: ' + c.title + ' (' + c.source + (c.license ? ', ' + c.license : '') + ')', 'find_photo'); if (r && r.ok && r.ref) { run.photoUrls[c.url] = r.ref; photos.push({ ref: r.ref, title: c.title, credit: c.credit, license: c.license, source: c.source, page: c.page }); } else errs.push(c.title.slice(0, 30) + '：' + String((r && r.error) || '').slice(0, 80)); }
                 catch (e) { errs.push(c.title.slice(0, 30) + '：' + String((e && e.message) || e).slice(0, 80)); }
             }
             if (photos.length) return { ok: true, photos, note: 'use "ref" as the picture src; keep the credit if the user wants sources' };
@@ -582,6 +667,14 @@ const FaDeckTools = (function () {
             return { ref: r.ref, title: c.title, credit: c.credit, license: c.license, source: c.source, page: c.page };
         },
         async _deckImportImageBlob(blob, label, tool, opt) {
+            // 伺服器常回空的或 octet-stream 的 Content-Type：看檔頭位元組認圖（jpg/png/gif/webp/bmp），認得就補上正確 type
+            if (blob && !/^image\//.test(blob.type || '') && (!blob.type || /octet-stream|binary/.test(blob.type)) && blob.size > 12) {
+                try {
+                    const h = new Uint8Array(await blob.slice(0, 12).arrayBuffer()); const asc = (a, b) => String.fromCharCode.apply(null, Array.from(h.slice(a, b)));
+                    const t = (h[0] === 0xFF && h[1] === 0xD8) ? 'image/jpeg' : (h[0] === 0x89 && asc(1, 4) === 'PNG') ? 'image/png' : asc(0, 3) === 'GIF' ? 'image/gif' : (asc(0, 4) === 'RIFF' && asc(8, 12) === 'WEBP') ? 'image/webp' : asc(0, 2) === 'BM' ? 'image/bmp' : '';
+                    if (t) blob = blob.slice(0, blob.size, t);
+                } catch (_) { /* 認不出來就走下面的錯誤 */ }
+            }
             if (!blob || !/^image\//.test(blob.type || '')) return { error: 'that is not a picture (' + ((blob && blob.type) || 'unknown type') + ')' };
             if (blob.size > 8 * 1024 * 1024) return { error: 'the picture is larger than 8 MB' };
             if (blob.size < 1000 && blob.type !== 'image/svg+xml' && !(opt && opt.tiny)) return { error: 'that picture is only ' + blob.size + ' bytes: it is a broken / removed-image placeholder (a site that says the image no longer exists, a 1-pixel image), not a real picture. Do not use it. Use cute_picture for everyday things, or draw the thing yourself as a visual kind svg.' };
@@ -811,7 +904,7 @@ const FaDeckTools = (function () {
             const obj = (props, req) => ({ type: 'object', properties: props, required: req || [], additionalProperties: false });
             tool('render_presentation',
                 'Validate a deck description (YAML, see get_presentation_topic) and save it as the animated presentation, which is then shown to the user as a player. "yaml" is the whole document: {deck: {title, lang}, chapters: [{title, slides: [...]}]}. Pictures must be handles from list_source_images ("@img1") or "client-file/<id>". On success returns {"ok":true,...}. On a validation error it lists every problem with its field path: fix them and call again (you may call it several times).',
-                obj({ name: { type: 'string', description: 'Short human-readable name of the presentation.' }, yaml: { type: 'string', description: 'The deck YAML document.' } }, ['name', 'yaml']),
+                obj({ name: { type: 'string', description: 'Short human-readable name of the presentation.' }, yaml: { type: 'string', description: 'The deck YAML document.' }, yaml_id: { type: 'string', description: 'After a refused call: the yaml_id it returned (your yaml is stored). Send it instead of yaml, with edits.' }, edits: { type: 'array', description: 'Small fixes to the stored yaml: [{find, replace}] (find is copied exactly from the stored text). Use this to fix errors instead of resending the whole document.', items: { type: 'object' } } }, ['name']),
                 function (a) { return this._deckRender(a); });
             tool('define_snippet',
                 'Store a LONG text for the deck and get a short handle for it, so you never have to put it (and escape it) inside the YAML. kind "widget": the full HTML document of an interactive piece / small game (inline css + js, no network; checked at once). kind "code": a long code listing or log. kind "patch": a git patch / unified diff. Returns a handle: "@w1" (widget), "@c1" (code) or "@p1" (patch) -- ONLY handles returned by this tool exist; never invent one. In the deck yaml write html: "@w1" for a widget visual, code: "@c1" for a code visual; the text replaces the handle when the deck is validated and saved. ALWAYS use this for a widget and for any code longer than ~10 lines.',
@@ -832,7 +925,7 @@ const FaDeckTools = (function () {
                 function (a) { return this._deckBeginPresentation(a); });
             tool('add_chapters',
                 'Append a batch of chapters to a draft. "yaml" is a list of chapters ("- title: ...\\n  slides: [...]"; same slide format as render_presentation). The batch is validated at once (field-path errors: fix and call again with the same batch). Keep a batch to about 8-12 minutes of content. Returns how many chapters / slides / minutes the draft has so far.',
-                obj({ draft: { type: 'string' }, yaml: { type: 'string', description: 'A list of chapters in yaml.' } }, ['draft', 'yaml']),
+                obj({ draft: { type: 'string' }, yaml: { type: 'string', description: 'A list of chapters in yaml.' }, yaml_id: { type: 'string', description: 'After a refused call: the yaml_id it returned. Send it instead of yaml, with edits.' }, edits: { type: 'array', description: 'Small fixes to the stored yaml: [{find, replace}].', items: { type: 'object' } } }, ['draft']),
                 function (a) { return this._deckAddChapters(a); });
             tool('finish_presentation',
                 'Assemble every batch of a draft into ONE presentation, validate it as a whole and save it. Returns {"ok":true,...}; the deck is shown to the user as a player.',
@@ -1015,6 +1108,6 @@ const FaDeckTools = (function () {
             return lines.join('\n');
         },
     };
-    return { methods, Snippets, ImageCatalog, deckYamlArg, deckArgsFromText, autoQuoteYaml, deckLeftovers, estimateMinutes, resolveImages, visualNodes, eachSlide, SYSTEM_PROMPT, DOMAIN_TOOLS, STRICT_WARNING, MAX_DECK_MINUTES };
+    return { methods, Snippets, ImageCatalog, deckSanitize, applyEdits, deckYamlArg, deckArgsFromText, autoQuoteYaml, deckLeftovers, estimateMinutes, resolveImages, visualNodes, eachSlide, SYSTEM_PROMPT, DOMAIN_TOOLS, STRICT_WARNING, MAX_DECK_MINUTES };
 })();
 if (typeof module === 'object' && module.exports) module.exports = FaDeckTools;

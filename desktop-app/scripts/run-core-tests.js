@@ -11,6 +11,11 @@
 const { spawnSync } = require('child_process');
 const path = require('path');
 const root = path.join(__dirname, '..');
+// 完整測試只在使用者明說「做一次完整測試」時才跑（2026-11-12）；平常用 node scripts/test-affected.js 只測改到的功能與相依功能。
+if (!process.argv.includes('--full') && !process.env.FA_FULL_TESTS) {
+    console.error('完整核心測試只在使用者要求「做一次完整測試」時才跑。日常請用：node scripts/test-affected.js（只測改動與受影響的相依測試）。確定要跑完整的請加 --full。');
+    process.exit(2);
+}
 const suites = [
     ['知識引擎（類型、驗證、展開、知識包）', 'renderer/src/refs/tests/ref_engine.test.js'],
     ['標註核心（魔術棒、切格、猜字）', 'renderer/src/annotator/annot_core.test.js'],
@@ -21,6 +26,8 @@ const suites = [
     ['文件合併核心（種類判斷、文字解碼、docx／xlsx 簡化轉換、排版）', 'renderer/src/docmerge/docmerge_core.test.js'],
     ['依任務文字補專用工具（圖片轉PDF、合併文件成PDF）', 'scripts/task-tool-hints.test.js'],
     ['工具預算：短說明、精簡參數、階段切割、檢索', 'renderer/src/tools/tool_budget_core.test.js'],
+    ['工具參數消毒（所有工具共用：型別／欄位名／字串化 JSON／args_id＋patch）', 'renderer/src/tools/tool_args_core.test.js'],
+    ['選測工具（依相依只測改動與受影響功能）', 'scripts/test-affected.test.js'],
     ['本機代理：上游回應標頭很肥（40KB）不能變成 502；連不上仍回 502＋x-fa-error', 'scripts/local-proxy-bigheader.test.js'],
     ['YouTube 下載網路層（502 暫時性判斷、重試退避、具體失敗訊息、同意頁／機器人頁／不完整網頁診斷、yt-dlp 錯誤分類）', 'renderer/src/media/yt_net_core.test.js'],
     ['Agent Model Configure：階段圖、特性估計、自動決定、內建預設、開關不動設定、重置、解析與備援順序、AI 回覆檢查', 'renderer/src/tools/agent_model_core.test.js'],

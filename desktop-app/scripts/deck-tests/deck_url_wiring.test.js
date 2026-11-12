@@ -17,4 +17,15 @@ check('網頁讀不到文字：fetch → 瀏覽器讀全文／頁面結構 → �
 check('抓不到網址內容就不編造，請使用者貼內文', /我不會憑空編寫新聞/.test(SRC) && /if \(urlM && noMaterialErr\)/.test(SRC));
 check('截圖＋看圖：一直看到頁面最底，不限 4 段（只有 300 段安全閥）', /k < 300/.test(SRC) && !/k < 4; k\+\+\) \{\n\s+if \(k > 0\) \{ try \{ await call\('browser_scroll'[^\n]*interpret/.test(SRC) && /到底（捲動位置不再增加）/.test(SRC) && /到底（畫面和上一段一樣）/.test(SRC));
 check('網頁素材最多收 12000 字（不再 1800）', /br\.text\.slice\(0, 12000\)/.test(SRC));
+
+// ---- 圖要對題：新聞只用文章自己的圖；圖庫照片要看圖確認、品牌／不相干的不用（2026-11-12 黃仁勳新聞配 TEDx 人物照、健康飲食配麥當勞）----
+{
+    const fa = require('fs').readFileSync(require('path').join(__dirname, '../../renderer/src/floating-assistant.js'), 'utf8');
+    const dt = require('fs').readFileSync(require('path').join(__dirname, '../../renderer/src/deck/deck_tools.js'), 'utf8');
+    check('有網址／素材的簡報不走圖庫（newsy）、改用文章自己的圖', /const newsy = !!opts\.url/.test(fa) && /_deckArticleImages\(opts\.url/.test(fa) && /!newsy\) \{/.test(fa));
+    check('找圖會請看圖模型確認對題（verify）並預設用查詢字', /verifyText/.test(dt) && /Reply NO if it shows a different subject/.test(dt));
+    check('品牌照片（麥當勞等）預設濾掉', /mcdonald/.test(dt));
+    check('配圖頁傳 minScore＋verify', /minScore: 1, verify:/.test(fa));
+}
+
 console.log(ok + ' passed, ' + bad + ' failed'); process.exit(bad ? 1 : 0);

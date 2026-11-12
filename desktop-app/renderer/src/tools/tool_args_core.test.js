@@ -1,0 +1,23 @@
+// 工具參數消毒核心＋接線測試
+const A = require('./tool_args_core.js'); const fs = require('fs'), path = require('path');
+let ok = 0; const bad = []; const check = (n, c, d) => { if (c) ok++; else bad.push(n + (d !== undefined ? ' → ' + JSON.stringify(d) : '')); };
+const sc = { type: 'object', properties: { file_path: { type: 'string' }, count: { type: 'integer' }, deep: { type: 'boolean' }, tags: { type: 'array', items: { type: 'string' } }, opts: { type: 'object', properties: { a: { type: 'number' } } }, mode: { type: 'string', enum: ['fast', 'slow'] }, note: { type: 'string' } }, required: ['file_path'] };
+const r = A.sanitize(sc, JSON.stringify({ arguments: JSON.stringify({ 'File-Path': '/x', count: '3', deep: 'yes', tags: 'a, b', opts: '{"a":"2"}', mode: ' FAST ', extra: null, note: 5 }) }));
+check('外包＋雙重字串化拆掉、欄位名、型別全修', r.args.file_path === '/x' && r.args.count === 3 && r.args.deep === true && r.args.tags.join() === 'a,b' && r.args.opts.a === 2 && r.args.mode === 'fast' && r.args.note === '5' && r.fixes.length >= 7, r);
+check('程式碼圍欄', A.sanitize(sc, '```json\n{"file_path":"a"}\n```').args.file_path === 'a');
+check('壞 JSON 不丟例外、parsed=false', A.sanitize(sc, 'not json').parsed === false);
+check('空字串→{}', JSON.stringify(A.sanitize(sc, '').args) === '{}');
+check('null 且非必填拿掉、必填保留', !('x' in A.sanitize({ type: 'object', properties: { x: { type: 'string' } } }, '{"x":null}').args) && A.sanitize(sc, '{"file_path":null}').args.file_path === null);
+check('字串含控制字元被清', A.sanitize(sc, JSON.stringify({ file_path: 'a\u0001b\nc' })).args.file_path === 'ab\nc');
+check('已正確的不改', A.sanitize(sc, '{"file_path":"a","count":2}').fixes.length === 0);
+check('單一值包成陣列欄位', JSON.stringify(A.sanitize({ type: 'object', properties: { t: { type: 'array', items: { type: 'number' } } } }, '{"t":5}').args.t) === '[5]');
+check('沒有 schema 只做 parse', A.sanitize(null, '{"a":1}').args.a === 1);
+const st = A.createStash(); const id = st.put('t', { file_path: 'a', count: 1 });
+const m = st.resolve('t', { args_id: id, patch: { count: 2 } });
+check('args_id＋patch 合併', m.args.file_path === 'a' && m.args.count === 2 && m.note);
+check('args_id 錯工具／不存在報錯', st.resolve('u', { args_id: id }).error && st.resolve('t', { args_id: 'zz' }).error);
+check('沒有 args_id 原樣', st.resolve('t', { a: 1 }).args.a === 1);
+const fa = fs.readFileSync(path.join(__dirname, '../floating-assistant.js'), 'utf8');
+check('接線：register_openai_tool 內呼叫 FaToolArgs.sanitize、失敗附 args_id', /register_openai_tool\(name[\s\S]{0,400}FaToolArgs[\s\S]{0,2500}args_id/.test(fa) || (fa.indexOf('FaToolArgs.sanitize(parametersSchema') > 0 && fa.indexOf('o.args_id = sanitized.id') > 0));
+check('接線：已嵌入核心', /const FaToolArgs = \(function/.test(fa));
+console.log(bad.length ? 'FAILED:\n  ' + bad.join('\n  ') : 'tool_args: ' + ok + ' passed'); process.exit(bad.length ? 1 : 0);

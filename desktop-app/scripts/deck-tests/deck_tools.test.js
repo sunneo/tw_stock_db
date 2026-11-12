@@ -98,5 +98,25 @@ check('deckArgsFromText：```yaml 區塊', a3 && /^deck:/.test(a3.yaml) && /slid
 check('deckArgsFromText：一般文字回覆不救（回 null）', T.deckArgsFromText('本簡報共6張投影片，使用自製圖示') === null && T.deckArgsFromText('') === null);
 check('deckArgsFromText：JSON 但不是簡報也回 null', T.deckArgsFromText('{"ok":true,"slides":3}') === null);
 
+// ---- 參數消毒（2026-11-12：chapters 寫進 deck、visual 字串、narration 陣列）與 yaml_id/edits ----
+{
+    const doc = { deck: { title: 'T', chapters: [{ title: 'c', slides: [{ title: 'a', visual: '@img1', narration: ['一', '二'] }, { title: 'b', visual: { src: '@img7' } }, { title: 'c', visual: '@img1 @img2 @img3' }, { title: 'd', image: 'client-file/x1' }] }] } };
+    const r = T.deckSanitize(doc); const sl = r.doc.chapters[0].slides;
+    check('deckSanitize：chapters 從 deck 移到最上層', Array.isArray(r.doc.chapters) && !r.doc.deck.chapters);
+    check('deckSanitize：narration 陣列接成字串', sl[0].narration === '一 二');
+    check('deckSanitize：visual 字串→image', sl[0].visual.kind === 'image' && sl[0].visual.src === '@img1');
+    check('deckSanitize：visual 缺 kind 有 src→image', sl[1].visual.kind === 'image' && sl[1].visual.src === '@img7');
+    check('deckSanitize：多個 handle→collage', sl[2].visual.kind === 'collage' && sl[2].visual.items.length === 3);
+    check('deckSanitize：slide.image→visual', sl[3].visual.kind === 'image' && !('image' in sl[3]));
+    check('deckSanitize：每項修正都有回報', r.fixes.length >= 5);
+    const w = T.deckSanitize({ deck: { title: 'x' }, slides: [{ title: 'a' }] });
+    check('deckSanitize：最上層 slides 包成章節', w.doc.chapters && w.doc.chapters[0].slides.length === 1);
+    const ok0 = { deck: { title: 'x' }, chapters: [{ title: 'c', slides: [{ title: 'a', narration: 'n', visual: { kind: 'svg', svg: '<svg/>' } }] }] };
+    check('deckSanitize：已正確的文件不改', T.deckSanitize(JSON.parse(JSON.stringify(ok0))).fixes.length === 0);
+    const e = T.applyEdits('a: 1\nb: 2', [{ find: 'b: 2', replace: 'b: 3' }]);
+    check('applyEdits：套用 find/replace', e.text === 'a: 1\nb: 3' && e.applied === 1 && !e.errors.length);
+    check('applyEdits：找不到的 find 報錯、不動原文', T.applyEdits('a: 1', [{ find: 'zz', replace: 'y' }]).errors.length === 1);
+}
+
 console.log(bad.length ? 'FAILED:\n  ' + bad.join('\n  ') : 'deck_tools: ' + ok + ' passed');
 process.exit(bad.length ? 1 : 0);
