@@ -9,11 +9,11 @@
 | 0 設計 | `DESIGN.blockly-curriculum.md` §5（提交 `33e4c0f5b`） | 完成 |
 | 1 位元級基礎 `domain_avbits` | Exp-Golomb、NAL 切分、防競爭位元組、RBSP 尾位元、SPS／PPS／slice header | **train 16/16、選項反序 16/16、holdout 6/7（未解 1 題，只量測）**；尚未登記進 embed 清單與 run-core-tests |
 | 2 H.264 I 幀解碼 `domain_h264dec` | 逆變換、反量化、Intra 預測、CAVLC、去區塊 | 逆變換（train 3/3、holdout 1/2）、反量化（train 3/3、holdout 1/1）、幀內預測 0 至 8 全部模式（train 10/10、holdout 7/10）、CAVLC run_before（2/2、1/1）與 total_zeros（2/2、1/1）已做；**coeff_token、level、去區塊未做**（見下方「接手（第二棒）」的接續點） |
-| 3 H.264 編碼與 P／B／CABAC | 整數正變換、量化、運動搜尋與補償、CABAC、B 幀 | 未開始 |
+| 3 H.264 編碼與 P／B／CABAC | 整數正變換、量化、運動搜尋與補償、CABAC、B 幀 | 進行中：CABAC 決策／旁路／初始化、EG0、係數多上下文、P／B 初始化 11 至 59（x264 147/147）、運動向量預測、次像素半像素層代價、mvd 與 ref_idx 二值化已做；**CABAC 位元比對、完整初始化表、整幀編碼未做**（見第五棒） |
 | 4 有損聲音 `domain_avaudio` | MDCT、量化、IMDCT、簡化心理聲學 | MDCT 與量化（train 1/1、holdout 1/1）、IMDCT（train 1/1、holdout 1/1）、TDAC 自檢已做；**心理聲學未做** |
 | 5 有損影像 `domain_avimage` | 8×8 DCT、量化、Z 字形、熵編碼、Haar／5/3 小波 | Haar、5/3 提升、8×8 DCT＋量化、Z 字形、零游程編碼已做（holdout 5/7）；**Huffman／算術編碼未做** |
 
-階段 3（H.264 編碼、P／B／CABAC）：未開始。
+階段 3（H.264 編碼、P／B／CABAC）：進行中，詳見第四棒續與第五棒。
 
 ## 2. 實測數字（階段 1，`domain_avbits.test.js`）
 
@@ -365,3 +365,44 @@ FA_TS_DIR=<含 tree-sitter.js、tree-sitter.wasm、tree-sitter-python.wasm 的�
 2. CABAC slice data 的逐位元比對：需要 ffmpeg 內部的 bin 追蹤，目前沒有公開的輸出；先評估是否能用 `-debug` 或自寫解碼器比對。
 3. 運動向量預測（8.4.1）與子像素搜尋：尚未開始。
 4. 色度內插（8.4.2.2.2）：尚未開始。
+
+## 接手（第五棒，2026-11-12，Haiku 5.5；同一分支，續接於 `6fb198e0`）
+
+### 本棒完成（每項 train、反序、holdout 皆實跑，數字為實測）
+| 項目 | 提交 | train | 反序 | holdout | 備註 |
+|---|---|---|---|---|---|
+| P／B 初始化表 ctxIdx 11 至 59、cabac_init_idc 0 至 2（147 組）、`h264.cabac.ctxinitPB` | `06012887` | 1/1 | 1/1 | 1/1 | 表依記憶寫入後，與 x264 `x264_cabac_context_init_PB` 比對 **147/147 相同**（實測，腳本見下） |
+| 運動向量預測（單一參考匹配、B／C 不可用時代入 A、分量中位數）`h264.mvpred.median` | `06012887` | 1/1 | 1/1 | 1/1 | 規則依規格記憶；「不可用」以參考索引 −1 表示 |
+| 次像素代價選擇（半像素層，代價 SAD＋λ 乘距離，平手取先出現者）`h264.subpel.refine` | `06012887` | 1/1 | 1/1 | 1/1 | λ 與平手規則為題目自訂，不是編碼器規則 |
+| mvd 的 UEG3 二值化與上下文增量 `h264.cabac.mvd` | `06012887` | 1/1 | 1/1 | 1/1 | 上下文增量依記憶，未逐項對照標準正文 |
+| 參考索引 ref_idx 的一元二值化與增量 `h264.cabac.refidx` | `cc2aa69c` | 1/1 | 1/1 | 1/1 | 增量：第 0 位 cond、第 1 位 4、其餘 5（依記憶） |
+| 色度內插 1/8 像素 `h264.chroma8` | 第三棒以前（`5beaca84`） | 1/1 | 1/1 | 1/1 | 本棒未改動，只做回歸（2/2 通過） |
+
+測試：`domain_h264pb.test.js` 10 passed、0 failed（train 5/5、反序 5/5、holdout 5/5）。回歸：`domain_h264cabac` 16、`domain_h264motion` 16、`domain_h264chroma` 2、`domain_h264dec` 6、`domain_h264intra` 20、`domain_h264cavlc` 4，全數通過。
+
+### 外部核對（已驗證，誠實界線）
+- 腳本：`desktop-app/scripts/eval/x264-cabac-pb-compare.js`（只讀路徑參數指定的 x264 `common/tables.c`，不含 x264 內容）。執行：`node scripts/eval/x264-cabac-pb-compare.js <tables.c>` → 「比對組數 147，不符 0」，退出碼 0。
+- 來源：`https://raw.githubusercontent.com/mirror/x264/master/common/tables.c`，115507 位元組，sha256 `6f22f14992e4a6833518d7d2a56c75e0c9df2f25884ec52755cd25a573c0de3f`（與第四棒續（三）同一個檔）。檔案放在本棒 scratchpad 的 `ffref/`，不進專案樹。
+- 注意：第一次比對時沒去掉 C 註解，抽到 6243 個數字而全部不符；去掉 `/* */` 與 `//` 後數字為 6144，147/147 相同。這是解析錯誤，不是表的錯。
+- 界線：x264 是「獨立實作的對照」，不是標準正文。標準表 9-13 至 9-16 本機沒有，**未逐格對照標準原文**。
+
+### 未做（照順序；阻礙寫明）
+1. **CABAC 位元比對（slice data 逐位元與 ffmpeg）**：阻礙：ffmpeg 與 x264 沒有公開的 bin 追蹤輸出，`trace_headers` 不印 slice data。要做需寫 libavcodec 呼叫程式（待改善），本棒不做。
+2. **完整 CABAC 初始化表**：目前 I 條帶 0–10、60–69、70–104，P／B 條帶 11–59。仍缺 P／B 的 0–10 與 60–69、ctxIdx 105 至 1023（殘差、運動、8×8 變換等）。阻礙：每格需逐格對照，大量數字；這些未核對者一律視為 unverified，不收進 repo。
+3. **次像素的四分之一層與內插代價**：本棒只做半像素層的代價選擇。阻礙：四分之一層需要先算半像素內插後的 SAD，題目規模較大；未做。
+4. **運動向量預測的 D 代入**：`h264.mvpred.median` 的輸入已是「C 不可用時改用 D」之後的結果；D 的代入未做成題。
+5. **P 條帶語法元素的上下文**：mb_skip_flag、mb_type、coded_block_flag、cbp 的上下文增量未做。阻礙：需要 ctxIdx 0–10 與 60–69 的表，已在第 2 項列為缺口。
+6. **P-skip 與 B 直接模式**：未做。
+
+### 總指揮嵌入需要的檔名與順序（本棒新增）
+- 新核心：`renderer/src/uml/domain_h264pb_core.js`（無相依，順序可在 `domain_h264cabac_core.js` 之後）。
+- 新測試：`renderer/src/uml/domain_h264pb.test.js`，需跑 tree-sitter 快取（`FA_TS_DIR`）；沒有快取時會印「略過」並以 0 結束，所以要確認輸出有「train 5/5」。
+- 登記點：`scripts/embed-code-ui.js`、`floating-assistant.js`、`scripts/run-core-tests.js`（與前幾棒相同，本棒未登記，由總指揮統一處理）。
+- 外部核對腳本 `scripts/eval/x264-cabac-pb-compare.js` 不需嵌入，需要時手動執行。
+
+### 新的坑（接手前看）
+- 表的 JSON 鍵是字串：骨架用 `PB[str(idc)][str(ctx)]`；參考解若用整數鍵會出現「參考解產生不出測資」，這不是骨架錯。
+- 「不可用」與「幀內鄰居」都以參考索引 −1 表示，兩者在 mvpred 中被視為相同；接手若要區分，要改輸入格式。
+- 次像素的平手規則是題目自訂（先出現者），若要與編碼器一致，需另外核對。
+- 工作樹的 `desktop-app/node_modules` 是符號連結（未提交），每次新工作樹都要重建。
+- 本棒沒有嵌入、沒有 build、沒有推送、沒有發布。
