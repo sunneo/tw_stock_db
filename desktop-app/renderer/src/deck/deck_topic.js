@@ -29,7 +29,7 @@
     var wantEn = /英文|english/i.test(body) && !/(繁體|簡體|國語|華語)?中文/.test(body.replace(/英文/g, ''));
     var voice = (/\b([ab][fm]_[a-z]+|z[fm]_[a-z]+|zh-[A-Za-z]+-[A-Za-z]+)\b/i.exec(body) || [])[1] || '';
     var tm = /《([^》]{1,24})》/.exec(body), title = tm ? tm[1] : '';
-    return { body: body, material: sm.material, matTitle: sm.matTitle, lang: wantEn ? 'en' : 'zh-TW', speed: sp >= 0.5 && sp <= 2 ? sp : 0, voice: voice, kids: /幼兒|幼童|小朋友|兒童|繪本|活潑|可愛|寶寶|孩子/.test(body), wantPhotos: /照片|實拍|上網找|圖文並茂|配圖|插圖/.test(body) || /找圖/.test(body), minutes: minutesOf(body), read: /讀給我聽|唸給我聽|念給我聽|朗讀|旁白/.test(body), icons: /圖示|icon|字可以少|少字|字少|不要太多字|貼圖|卡通圖|動畫/i.test(body), title: title };
+    return { body: body, material: sm.material, matTitle: sm.matTitle, lang: wantEn ? 'en' : 'zh-TW', speed: sp >= 0.5 && sp <= 2 ? sp : 0, voice: voice, kids: /幼兒|幼童|小朋友|兒童|繪本|活潑|可愛|寶寶|孩子/.test(body), wantPhotos: /照片|實拍|上網找|圖文並茂|配圖|插圖|生圖|生成圖|產生圖|畫圖/.test(body) || /找圖/.test(body), wantGen: /(?:產生|生成|製作|畫|生)(?:出|一些|幾張)?(?:圖片|圖像|插圖|圖|照片)|AI\s*(?:生|畫|繪)圖|生圖|自己畫|可以(?:畫|生|產生)/.test(body), minutes: minutesOf(body), read: /讀給我聽|唸給我聽|念給我聽|朗讀|旁白/.test(body), icons: /圖示|icon|字可以少|少字|字少|不要太多字|貼圖|卡通圖|動畫/i.test(body), title: title };
   }
 
   var ascii = function (s, n) { return String(s == null ? '' : s).replace(/[^A-Za-z0-9 \-']/g, ' ').replace(/\s+/g, ' ').trim().slice(0, n || 40); };

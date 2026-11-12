@@ -9,7 +9,7 @@ check('程式組簡報不看有沒有附件／網址（簡報跟附件無關）'
 check('只有沒說要講什麼才請使用者補素材', /topicLen < 6 && asksMaterial/.test(SRC));
 check('網址會被抓回並併進食譜任務', /recipeTask/.test(SRC) && /_deckTopicRecipe\(recipeTask/.test(SRC));
 check('截圖在簡報任務裡直接給圖片代號（下載失敗時截圖就拿得到圖）', /meta\.deck_ref = ir\.ref/.test(SRC));
-check('下載圖片失敗的錯誤訊息引導改用截圖', /不要重複試下載：用 browser_create_tab/.test(DT) && /take a screenshot of the source page instead/.test(DT));
+check('下載圖片失敗的錯誤訊息：先文章其他圖、再生圖、最後才截圖', /不要重複試下載：先用文章裡的其他圖/.test(DT) && /generate_image if the user allowed generated pictures, and only then take a screenshot/.test(DT));
 check('食譜：找不到照片用瀏覽器截圖補（_deckPageShots）', /async _deckPageShots\(url, n, log\)/.test(SRC) && /opts\.url && photos\.filter\(Boolean\)\.length </.test(SRC));
 check('食譜：使用者給的圖依序插到沒有照片的頁面', /from: 'user_attachment'/.test(SRC));
 check('委派流程把網址與附件圖交給食譜', /\{ url: urlM && urlM\[0\], images: myImages \}/.test(SRC));
@@ -26,6 +26,18 @@ check('網頁素材最多收 12000 字（不再 1800）', /br\.text\.slice\(0, 1
     check('找圖會請看圖模型確認對題（verify）並預設用查詢字', /verifyText/.test(dt) && /Reply NO if it shows a different subject/.test(dt));
     check('品牌照片（麥當勞等）預設濾掉', /mcdonald/.test(dt));
     check('配圖頁傳 minScore＋verify', /minScore: 1, verify:/.test(fa));
+}
+
+
+// ---- 圖的優先順序：文章內文的圖 → 生圖 → 段落截圖（最後）----
+{
+    const fa = require('fs').readFileSync(require('path').join(__dirname, '../../renderer/src/floating-assistant.js'), 'utf8');
+    const dt = require('fs').readFileSync(require('path').join(__dirname, '../../renderer/src/deck/deck_tools.js'), 'utf8');
+    const T = require('../../renderer/src/deck/deck_topic.js');
+    const iA = fa.indexOf('_deckArticleImages(opts.url'), iG = fa.indexOf('this._imageMake({ prompt: (o.kw'), iS = fa.indexOf('this._deckPageShots(opts.url');
+    check('配方順序：文章原圖 < 生圖 < 截圖', iA > 0 && iG > iA && iS > iG, [iA, iG, iS]);
+    check('提示詞寫了圖片優先順序與 generate_image', /PICTURE PRIORITY/.test(dt) && /generate_image\(prompt\)/.test(dt) && /LAST resort/.test(dt));
+    check('parseRequest：「可以產生圖片」→ wantGen', T.parseRequest('用這個網址做簡報，圖文並茂，可以產生圖片').wantGen === true && T.parseRequest('介紹貓咪').wantGen === false);
 }
 
 console.log(ok + ' passed, ' + bad + ' failed'); process.exit(bad ? 1 : 0);
