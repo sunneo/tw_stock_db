@@ -77,6 +77,18 @@ if mvd != 0:
 print(' '.join(bins))
 `;
 
+const REF_RI = `import sys
+v = [int(t) for t in sys.stdin.read().split()]
+r, cond = v
+bins = []
+for i in range(r):
+    ctx = cond if i == 0 else (4 if i == 1 else 5)
+    bins.append('c%d=1' % ctx)
+ctx = cond if r == 0 else (4 if r == 1 else 5)
+bins.append('c%d=0' % ctx)
+print(' '.join(bins))
+`;
+
 const rndInt = (rnd, lo, hi) => rnd(lo, hi);
 
 const genCI = (b, { rnd }) => [rndInt(rnd, 11, 59), rnd(0, 2), rnd(-5, 60)].join(' ');
@@ -114,7 +126,13 @@ const HO_SUB = '次像素搜尋的代價比較：一行 13 個整數，前三個
 const ST_MVD = 'CABAC 運動向量差（mvd）的二值化（UEG3、uCoff＝9、有號）：輸入一行 2 個整數，依序為 mvd（可為負數）與 s（左邊與上面鄰居的 mvd 絕對值分量之和，非負）。令 absV 為 mvd 的絕對值。前綴為截斷一元碼，上限 9：absV 小於 9 時送出 absV 個 1 再送一個 0，absV 不小於 9 時送出 9 個 1。前綴的第 0 個二值的上下文增量：s 小於 3 為 0，s 在 3 至 32 之間為 1，s 大於 32 為 2；第 1、2、3 個二值的增量分別為 3、4、5；第 4 個及以後的二值增量為 6。absV 不小於 9 時，後綴為指數哥倫布 k＝3 的旁路二值，編碼 absV 減 9。最後若 mvd 不為 0，送一個旁路符號位元：正數為 0、負數為 1。輸出一行，以空白分隔：上下文編碼的二值寫成 c 加增量加等號加位元（例如 c0=1），旁路二值寫成 b=位元。';
 const HO_MVD = 'CABAC 的運動向量差二值化，參數 uCoff 為 9 且為有號：一行 2 個整數，mvd 與 s（A、B 兩鄰居 mvd 絕對值之和）。絕對值小於 9 時，前綴為該數個 1 加一個 0；否則為 9 個 1，後面接 k 為 3 的指數哥倫布旁路碼，編碼絕對值減 9。前綴各位元的上下文增量：第一位依 s 分 0、1、2（s 小於 3、3 到 32、大於 32），第二、三、四位分別為 3、4、5，之後為 6。最後非零時送旁路符號位元，負數為 1。以 c增量=位元 或 b=位元 的形式以空白分隔輸出。';
 
+const genRI = (b, { rnd }) => [rnd(0, 4), rnd(0, 3)].join(' ');
+
+const ST_RI = 'CABAC 參考索引（ref_idx）的二值化（一元碼）：輸入一行 2 個整數，依序為 refIdx（非負整數）與 cond（0 至 3，即 condTermFlagA 加 2 乘 condTermFlagB）。一元碼送出 refIdx 個 1 再送一個 0。第 0 個二值的上下文增量為 cond；第 1 個二值的增量為 4；第 2 個及以後的二值增量為 5。輸出一行，以空白分隔：上下文編碼的二值寫成 c 加增量加等號加位元（例如 c0=1）。';
+const HO_RI = 'CABAC 中參考索引的一元二值化：一行 2 個整數，refIdx 與 cond（0 到 3）。得到 refIdx 個 1 再接一個 0；第一個位元用上下文增量 cond，第二個用 4，其餘用 5。以 c增量=位元 的形式、空白分隔輸出。';
+
 const SEEDS = [
+
     { id: 'pb-ci-tr', want: 'h264.cabac.ctxinitPB', st: ST_CI, ref: REF_CI, gen: genCI },
     { id: 'pb-ci-ho', split: 'holdout', st: HO_CI, ref: REF_CI, gen: genCI },
     { id: 'pb-mv-tr', want: 'h264.mvpred.median', st: ST_MVP, ref: REF_MVP, gen: genMVP },
@@ -123,6 +141,8 @@ const SEEDS = [
     { id: 'pb-sp-ho', split: 'holdout', st: HO_SUB, ref: REF_SUB, gen: genSUB },
     { id: 'pb-md-tr', want: 'h264.cabac.mvd', st: ST_MVD, ref: REF_MVD, gen: genMVD },
     { id: 'pb-md-ho', split: 'holdout', st: HO_MVD, ref: REF_MVD, gen: genMVD },
+    { id: 'pb-ri-tr', want: 'h264.cabac.refidx', st: ST_RI, ref: REF_RI, gen: genRI },
+    { id: 'pb-ri-ho', split: 'holdout', st: HO_RI, ref: REF_RI, gen: genRI },
 ];
 
 H.main({ name: '領域包 h264pb', packs: [PBC], seeds: SEEDS, minSkeletons: 4, judge: { checker: 'tokens', timeoutMs: 60000 } });

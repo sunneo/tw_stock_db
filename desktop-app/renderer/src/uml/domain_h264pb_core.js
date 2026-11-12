@@ -68,6 +68,13 @@
                     'if mvd != 0:', '    out.append("b=%d" % (1 if mvd < 0 else 0))',
                     'print(" ".join(out))']),
                 { shape: numIn, limit: 1, helpers: () => [] }),
+            // 參考索引 ref_idx 的二值化（一元碼，9.3.2.3 的 U）與上下文增量：輸入一行 2 個整數：refIdx（非負）與 cond（0 至 3，即 condTermFlagA 加 2 乘 condTermFlagB）。
+            D('h264.cabac.refidx', 'h264-cabac-refidx', 'CABAC 參考索引（ref_idx）的二值化（一元碼）：輸入一行 2 個整數，依序為 refIdx（非負整數）與 cond（0 至 3，即 condTermFlagA 加 2 乘 condTermFlagB）。一元碼送出 refIdx 個 1 再送一個 0。第 0 個二值的上下文增量為 cond；第 1 個二值的增量為 4；第 2 個及以後的二值增量為 5。輸出一行，以空白分隔：上下文編碼的二值寫成 c 加增量加等號加位元（例如 c0=1）。',
+                [], (c, N, I) => code(['v = ' + nums(N, I), 'r = v[0]', 'cond = v[1]', 'out = []',
+                    'for i in range(r):', '    inc = cond if i == 0 else (4 if i == 1 else 5)', '    out.append("c%d=1" % inc)',
+                    'inc = cond if r == 0 else (4 if r == 1 else 5)', 'out.append("c%d=0" % inc)',
+                    'print(" ".join(out))']),
+                { shape: numIn, limit: 1, helpers: () => [] }),
         ];
         const ALL = (...parts) => new RegExp('^' + parts.map((x) => String.raw`(?=[\s\S]*` + x + ')').join(''), 'i');
         const algos = [
@@ -75,6 +82,7 @@
             { key: 'h264-mvpred-median', re: ALL('(?:運動向量|motion vector|MV)', '(?:預測|predict)', '(?:中位數|median|參考索引)'), veto: /次像素|mvd|二值|SAD|全搜尋|CABAC/i },
             { key: 'h264-subpel-refine', re: ALL('(?:次像素|subpel|sub-pel)', '(?:精修|搜尋|refine|search)', '(?:代價|cost|λ|lam)'), veto: /mvd|二值|預測向量的/i },
             { key: 'h264-cabac-mvd', re: ALL('CABAC', '(?:運動向量差|mvd)', '(?:二值|binar)'), veto: /上下文初始化|rangeTabLPS|DecodeDecision|ctxIdx 11/i },
+            { key: 'h264-cabac-refidx', re: ALL('CABAC', '(?:參考索引|ref_?idx|refIdx)', '(?:二值|binar|一元)'), veto: /mvd|上下文初始化|rangeTabLPS|DecodeDecision|次像素/i },
         ].map((x) => Object.assign(x, { pri: true }));
         const paradigms = {}; for (const sk of skeletons) paradigms[sk.algo] = ['codec-pb'];
         return { id: 'h264pb', label: '影音壓縮 3：P／B 條帶（初始化表 11 至 59、運動向量預測、次像素代價、mvd 二值化）', requires: [], judge: { checker: 'tokens', timeoutMs: 30000 }, algos, paradigms, skeletons };
