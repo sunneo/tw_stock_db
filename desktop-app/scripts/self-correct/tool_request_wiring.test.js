@@ -10,4 +10,17 @@ check('文字寫成的名單外呼叫：先試自動追加', /autoGrantTool\(dc2
 check('名單外的工具描述呼叫不再被當最終答案（會退回並教申請）', /名單外但真的存在的工具/.test(fa) && /它不在你目前的工具名單裡，沒有被執行/.test(fa));
 check('偵測函式不再因名單外就放過', /名單外的工具也要認得/.test(fa));
 check('畫圖結果直接給 ref，不必再匯入', /_deckAnnotateResult\(toolName, result\)/.test(dt) && /result = this\._deckAnnotateResult\(fnName, result\)/.test(fa));
+// 只有參數、沒有工具名的回覆（{ "topic": "format" }）：依參數結構唯一對應到工具才當成呼叫
+{
+    const i = fa.indexOf('    _parseDescribedToolCall(text, availableToolNames) {'); const j = fa.indexOf('\n    }\n', i);
+    const fn = new Function('return function ' + fa.slice(i, j + 6).trim() + '')();
+    const self = { tools: { get_presentation_topic: { parametersSchema: { type: 'object', properties: { topic: { type: 'string' } }, required: ['topic'] } }, find_photo: { parametersSchema: { type: 'object', properties: { query: { type: 'string' }, count: { type: 'number' } }, required: ['query'] } }, other: { parametersSchema: { type: 'object', properties: { topic: { type: 'string' } }, required: ['topic'] } } } };
+    const names = ['get_presentation_topic', 'find_photo'];
+    const r = fn.call(self, '{ "topic": "format" }', names);
+    check('只有參數：唯一對應 → 當成該工具的呼叫', r && r.name === 'get_presentation_topic' && r.args.topic === 'format' && r.inferred, r);
+    check('只有參數：兩個工具都符合 → 不猜', fn.call(self, '{ "topic": "format" }', ['get_presentation_topic', 'other']) === null);
+    check('只有參數：欄位對不上任何工具 → 不猜', fn.call(self, '{ "zzz": 1 }', names) === null);
+    check('有寫工具名的照舊', (fn.call(self, '{"tool":"find_photo","args":{"query":"x"}}', names) || {}).name === 'find_photo');
+}
+check('有網址的簡報：系統先讀網址與文章原圖再交給模型', /先替你讀好網址/.test(fa) && /_deckArticleImages\(um\[0\], 8, lg\)/.test(fa) && /系統已讀好這個網址/.test(fa));
 console.log(bad.length ? 'FAILED:\n  ' + bad.join('\n  ') : 'tool_request_wiring: ' + ok + ' passed'); process.exit(bad.length ? 1 : 0);

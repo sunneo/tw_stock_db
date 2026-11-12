@@ -129995,6 +129995,22 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                 if (again) { task += String.fromCharCode(10, 10) + again; if (progress) progress.log('🔁 ' + why + '——沿用上一次的附件'); }
             }
             if (isDeck) { this._deckBeginRun(task); this._deckInDomainRun = true; }
+            // 預先讀好網址（2026-11-12：使用者清掉對話重來，模型第一輪連資料都沒去取）：有網址的簡報要求，不靠模型自己想到去開瀏覽器——系統先讀全文（三層讀取）、把文章自己的圖匯入，再把素材與圖片代號寫進任務交給模型
+            if (isDeck && !/\[網頁素材：|client-file\//.test(task)) {
+                const um = /https?:\/\/[^\s)）」』]+/i.exec(task0);
+                if (um) {
+                    const lg = (x) => { if (progress) progress.log(x); if (extra.onTrace) extra.onTrace(x); };
+                    try {
+                        const br = await this._deckUrlBrief(um[0], lg);
+                        if (br && br.text) {
+                            lg('🌐 先替你讀好網址（' + String(br.title || '').slice(0, 40) + '，' + br.text.length + ' 字），模型不必再自己開瀏覽器讀');
+                            const imgs = /圖|照片|image|picture/i.test(task0) ? await this._deckArticleImages(um[0], 8, lg).catch(() => []) : [];
+                            task += String.fromCharCode(10, 10) + '【系統已讀好這個網址（內容只能取自下面素材，不要編造；不必再用瀏覽器讀）：' + String(br.title || '') + '】' + String.fromCharCode(10) + br.text.slice(0, 9000)
+                                + (imgs.length ? String.fromCharCode(10, 10) + '【文章自己的圖（已匯入，直接用這些代號當 visual 的 src；圖的優先順序：這些 → generate_image 生圖 → 最後才截圖）】' + String.fromCharCode(10) + imgs.map((x) => x.ref + ' ' + (x.alt || '')).join(String.fromCharCode(10)) : '');
+                        } else lg('✗ 預先讀網址沒讀到內容（' + String((br && br.error) || '').slice(0, 60) + '），交給模型自己處理');
+                    } catch (e) { lg('✗ 預先讀網址失敗（' + String((e && e.message) || e).slice(0, 60) + '），交給模型自己處理'); }
+                }
+            }
             if (isDeck && this._latestDeckUrl && !/client-file\//.test(task)) task += '\n\n【這個對話最近做的簡報是 ' + this._latestDeckUrl + '。如果這次的要求是修改它（改字、換圖、改題目、換配色），先用 get_presentation_yaml 取得它的內容，只改要改的地方再重新產生；如果是要做全新的簡報就不要理它。】';
             // 依任務文字補專用工具（見 FA_TASK_TOOL_HINTS）：根模型挑的領域沒有那個工具時，這次執行也拿得到
             const taskHints = (isDeck || domain.mixer || Array.isArray(extra.restrictTools)) ? [] : _faTaskToolHints(task);
@@ -130792,7 +130808,14 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         if (o && o.function && typeof o.function === 'object') o = o.function;
         if (!o || typeof o !== 'object') return null;
         const raw = o.name || o.tool || o.tool_name || o.function || o.action;
-        if (typeof raw !== 'string' || !raw.trim()) return null;
+        if (typeof raw !== 'string' || !raw.trim()) {
+            // 只有參數、沒有工具名（2026-11-12：模型的最終回覆是 { "topic": "format" }，那是 get_presentation_topic 的參數）：用「所有欄位都在某個工具的參數裡、必填欄位都有」反推——只有唯一符合的工具才當成呼叫，不猜
+            const keys = Object.keys(o); const names = Array.isArray(availableToolNames) ? availableToolNames : [];
+            if (!keys.length || keys.length > 8 || o.type) return null;
+            const hits = names.filter((n) => { const t = this.tools && this.tools[n]; const sc = t && t.parametersSchema; const pr = sc && sc.properties; if (!pr) return false; const req = sc.required || []; return keys.every((k) => k in pr) && req.every((k) => k in o); });
+            if (hits.length !== 1) return null;
+            return { name: hits[0], args: o, inferred: true };
+        }
         let args = o.arguments !== undefined ? o.arguments : (o.args !== undefined ? o.args : (o.parameters !== undefined ? o.parameters : o.input));
         let flat = false;
         if (args === undefined) {
@@ -131386,7 +131409,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                 if (dc) {
                     autoExecDescribed++;
                     toolTasks.push({ fnName: dc.name, fnArgsRaw: JSON.stringify(dc.args), described: true });
-                    if (onTrace) onTrace('🔁 模型把工具呼叫寫成文字JSON，已當成真的呼叫執行：' + dc.name);
+                    if (onTrace) onTrace('🔁 模型把工具呼叫寫成文字JSON，已當成真的呼叫執行：' + dc.name + (dc.inferred ? '（回覆只有參數、沒寫工具名：依參數結構唯一對應到這個工具）' : ''));
                 }
             }
             if (!toolTasks.length) {
