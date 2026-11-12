@@ -5391,6 +5391,24 @@ const holder = {};
     const SOURCE_RANK = { user: 2, imported: 1, builtin: 0 }; // DESIGN §7：使用者啟用的 > 內建
     const DEFAULT_BUDGET = 256 * 1024 * 1024;
     const HEX64 = /^[0-9a-f]{64}$/;
+    // 工具清單雜湊的格式 shape-v1：只取「工具名稱＋參數結構（名稱、型別、必填、enum）」，不取說明文字。
+    // 說明文字在主程式裡會依平台插值（${…}），執行時的文字與離線掃描（real_tools_all.json）不會逐字相同，拿來比對會永遠誤報。
+    // 代價：只改說明、不改參數的變動偵測不到（DESIGN.lora-training.md §26.2）。沒有 tool_catalog_scheme 的舊雜湊是檔案位元組，無法比對。
+    const TOOL_HASH_SCHEME = 'shape-v1';
+    function toolShape(t) {
+        const s = (t && (t.parameters || t.parametersSchema || t.schema)) || {};
+        const props = s.properties && typeof s.properties === 'object' ? s.properties : {};
+        const req = Array.isArray(s.required) ? s.required.map(String) : [];
+        return { name: String(t.name), params: Object.keys(props).sort().map((k) => {
+            const p = props[k] || {};
+            return [k, p.type == null ? null : String(p.type), req.indexOf(k) >= 0 ? 1 : 0, Array.isArray(p.enum) ? p.enum.map(String) : null];
+        }), required: req.slice().sort() };
+    }
+    function toolCatalogShapeText(tools) {
+        const rows = (Array.isArray(tools) ? tools : []).filter((t) => t && t.name).map(toolShape);
+        rows.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+        return JSON.stringify(rows);
+    }
 
     function validateEntry(e) {
         const errors = [];
@@ -5418,8 +5436,12 @@ const holder = {};
         const slotRank = entry.slot_rank != null ? entry.slot_rank : entry.rank;
         if (Array.isArray(env.rank_slots) && env.rank_slots.length && env.rank_slots.indexOf(slotRank) < 0) reasons.push({ field: 'rank', expected: env.rank_slots, actual: slotRank, message: 'LoRA 槽寬（rank 槽 ' + slotRank + '）與模型的槽版 ONNX（' + env.rank_slots.join('、') + '）不符，放不進去' });
         if (env.prompt_format_version !== undefined && String(entry.prompt_format_version) !== String(env.prompt_format_version)) reasons.push({ field: 'prompt_format_version', expected: env.prompt_format_version, actual: entry.prompt_format_version, message: '提示格式版本不同：主程式 ' + env.prompt_format_version + '，adapter ' + entry.prompt_format_version + '（格式一改一定要重訓）' });
-        if (env.tool_catalog_sha256 && entry.tool_catalog_sha256 && entry.tool_catalog_sha256 !== env.tool_catalog_sha256) warnings.push({ field: 'tool_catalog_sha256', message: '工具清單已變動，建議重訓或更新 adapter（仍可載入）' });
-        if (env.tool_catalog_sha256 && !entry.tool_catalog_sha256) warnings.push({ field: 'tool_catalog_sha256', message: 'adapter 沒記錄工具清單雜湊，無法判斷是否過期' });
+        // 工具清單：只有同格式（shape-v1）的雜湊才比得出來；舊格式、主程式算不出、adapter 沒記錄都要說出來，不靜默通過
+        if (entry.tool_catalog_sha256 && env.tool_catalog_sha256) {
+            if (entry.tool_catalog_scheme !== TOOL_HASH_SCHEME) warnings.push({ field: 'tool_catalog_sha256', message: '工具清單雜湊是舊格式，無法與現在的工具清單比對；用新版重新打包後才判斷得出' });
+            else if (entry.tool_catalog_sha256 !== env.tool_catalog_sha256) warnings.push({ field: 'tool_catalog_sha256', message: '工具清單已變動，建議重訓或更新 adapter（仍可載入）' });
+        } else if (entry.tool_catalog_sha256 && !env.tool_catalog_sha256) warnings.push({ field: 'tool_catalog_sha256', message: '主程式算不出工具清單雜湊，無法判斷這顆 adapter 是否過期' });
+        else if (env.tool_catalog_sha256 && !entry.tool_catalog_sha256) warnings.push({ field: 'tool_catalog_sha256', message: 'adapter 沒記錄工具清單雜湊，無法判斷是否過期' });
         return { ok: reasons.length === 0, level: reasons.length ? 'reject' : (warnings.length ? 'warn' : 'ok'), reasons, warnings };
     }
 
@@ -5451,6 +5473,7 @@ const holder = {};
         if (d.base_sha256 != null && !HEX64.test(String(d.base_sha256))) errs.push('base_sha256 格式不對');
         if (d.description !== undefined && typeof d.description !== 'string') errs.push('description 必須是字串');
         if (d.tool_catalog_sha256 != null && !HEX64.test(String(d.tool_catalog_sha256))) errs.push('tool_catalog_sha256 格式不對');
+        if (d.tool_catalog_scheme != null && d.tool_catalog_scheme !== TOOL_HASH_SCHEME) errs.push('tool_catalog_scheme 不認得：' + d.tool_catalog_scheme);
         return errs;
     }
     // 描述檔 → 登錄項（不讀權重）；不合法就丟出列出所有原因的錯誤
@@ -5461,7 +5484,7 @@ const holder = {};
         return Object.assign({
             id: d.id, name: d.name || d.id, version: d.version, description: d.description || '', source: 'imported',
             base: d.base, base_sha256: d.base_sha256 || undefined, rank: d.rank, alpha: d.alpha,
-            prompt_format_version: d.prompt_format_version, tool_catalog_sha256: d.tool_catalog_sha256 || undefined,
+            prompt_format_version: d.prompt_format_version, tool_catalog_sha256: d.tool_catalog_sha256 || undefined, tool_catalog_scheme: d.tool_catalog_scheme || undefined,
             domains: (a.domains || []).slice(), triggers: (a.triggers || []).slice(),
             location: d.location, size: d.size, sha256: d.sha256, eval: d.eval || null, enabled: true,
         }, extra || {});
@@ -5748,6 +5771,7 @@ const holder = {};
             rank: lx.trained_rank !== undefined ? lx.trained_rank : (m.rank !== undefined ? m.rank : c.rank), slot_rank: slotRank, alpha: m.alpha !== undefined ? m.alpha : c.alpha,
             prompt_format_version: m.prompt_format_version !== undefined ? m.prompt_format_version : c.prompt_format_version,
             tool_catalog_sha256: m.tool_catalog_sha256 || c.tool_catalog_sha256 || trained.tool_catalog_sha256,
+            tool_catalog_scheme: m.tool_catalog_scheme || c.tool_catalog_scheme || trained.tool_catalog_scheme || undefined,
             domains: extra.domains || m.domains || [], location: extra.location, size: m.total_size !== undefined ? m.total_size : m.size, sha256: m.sha256,
             eval: m.eval || null, enabled: extra.enabled !== false,
         }, extra);
@@ -5813,7 +5837,7 @@ const holder = {};
         };
     }
 
-    return { SOURCES, DEFAULT_BUDGET, DESCRIPTOR_FORMAT, DESCRIPTOR_FORMAT_VERSION, validateEntry, descriptorErrors, descriptorFromJson, checkCompat, evalVerdict, createRegistry, entryFromManifest, weightFile, summaryOf, diffSummaries, importReport, nrEngineLoader };
+    return { SOURCES, DEFAULT_BUDGET, DESCRIPTOR_FORMAT, DESCRIPTOR_FORMAT_VERSION, TOOL_HASH_SCHEME, toolCatalogShapeText, validateEntry, descriptorErrors, descriptorFromJson, checkCompat, evalVerdict, createRegistry, entryFromManifest, weightFile, summaryOf, diffSummaries, importReport, nrEngineLoader };
 });
 
 }).call(null, undefined, holder);
@@ -9922,8 +9946,6 @@ const holder = {};
         { id: 'directml', available: false, reason: 'DirectML 只在桌面版原生路徑有意義，且尚未實作', planned: true },
         { id: 'vulkan', available: false, reason: 'Vulkan 後端尚未實作', planned: true },
     ];
-    // 主程式目前的基底模型與 LoRA 槽版 ONNX 的條件（make_lora_onnx.py build 的單槽 rank 16；提示格式版本 1）；工具目錄雜湊目前主程式沒有對應來源，所以不比對（adapter 缺記錄會出警告）
-    const LORA_ENV = { base: 'Qwen/Qwen3-0.6B', rank_slots: [16], prompt_format_version: 1 };
     const LORA_SLOT_RANK = 16;   // 槽版 ONNX 的 rank 總容量（匯出時固定，DESIGN.lora-training.md §14.1）
     const LORA_APPLY_BLOCKER = '目前環境沒有原生推論套用器：桌面版需要原生執行包 1.22.0-2 以上（nr-host／nr-child 轉傳 lora，見設計文件 §14）；網頁版的 transformers.js 接點尚未接（阻礙見 §14）。所以這裡只做到「選用與載入到記憶體」，不假裝已套用';
     const SOURCES = ['wiki', 'open_source', 'book', 'aidoc'];
@@ -9946,8 +9968,18 @@ const holder = {};
             const q = { pending: 0, claimed: 0, done: 0 }; I.requests.forEach((r) => { q[r.status] = (q[r.status] || 0) + 1; });
             return { has: true, inputs: I.inputs || null, source: I.source, stats: I.stats, sizing: I.sizing, licenses: lic, skipped: (I.skipped || []).slice(0, 30), skippedTotal: (I.skipped || []).length, rejectedTotal: I.rejected.length, rejected: I.rejected.slice(0, 30), preview: I.chunks.slice(0, 8).map(chunkBrief), requests: q, samples: I.samples.length, savedAs: I.savedAs || null };
         };
+        // 主程式目前的基底模型與 LoRA 槽版 ONNX 的條件（make_lora_onnx.py build 的單槽 rank 16；提示格式版本 1）。
+        // 工具清單雜湊（shape-v1）由主程式的 h.toolCatalogSha256() 給，第一次使用前由 loraEnv() 填入；算不出來就留空，相容性檢查會寫明「算不出」。
+        const LORA_ENV = { base: 'Qwen/Qwen3-0.6B', rank_slots: [16], prompt_format_version: 1 };
+        async function loraEnv() {
+            if (!LORA_ENV.tool_catalog_sha256 && typeof h.toolCatalogSha256 === 'function') {
+                try { const v = await h.toolCatalogSha256(); if (v) LORA_ENV.tool_catalog_sha256 = String(v); } catch (_) { /* 留空＝相容性檢查寫「主程式算不出」 */ }
+            }
+            return LORA_ENV;
+        }
         // 由 kind:'lora' 且帶權重的資產建立登錄項；只含資料的資產（資料匯入的結果）不是 adapter
         async function syncRegistry() {
+            await loraEnv();
             if (!S.registry) S.registry = LoraReg.createRegistry({ env: LORA_ENV, slotCapacity: LORA_SLOT_RANK, maxActive: h.loraApply ? (h.loraMaxActive >= 1 ? h.loraMaxActive : 4) : 1, loader: LoraReg.nrEngineLoader({ readBytes: async (e) => { const r = await h.storage.loadAsset('lora', e.asset_name); if (!r || !r.asset.files[e.weight_file]) throw new Error('讀不到權重檔 ' + e.weight_file); return r.asset.files[e.weight_file]; }, sha256Hex: Asset.sha256Hex }) });
             const reg = S.registry, prefs = (h.prefsGet && h.prefsGet()) || {}, en = prefs.loraEnabled || {}, imp = new Set(Array.isArray(prefs.imported) ? prefs.imported : []);
             const seen = new Set(), invalid = [], dataOnly = [], items = await h.storage.listAssets();
@@ -10178,7 +10210,7 @@ const holder = {};
                     S.pending = { id: 'imp' + (++S.seq), bytes: f.bytes, name: f.name };
                     // LoRA 說明：相容性（會不會被登錄表拒絕）與同名現有資產的版本差異；不是 LoRA 的不給
                     let loraReport = null; const parsed = Fatrain.readAsset(f.bytes, {});
-                    if (parsed.ok && parsed.asset.manifest.kind === 'lora') { const mf = parsed.asset.manifest; const existing = await h.storage.loadManifest('lora', mf.name).catch(() => null); loraReport = LoraReg.importReport(mf, { env: LORA_ENV, existing: existing || null }); }
+                    if (parsed.ok && parsed.asset.manifest.kind === 'lora') { const mf = parsed.asset.manifest; const existing = await h.storage.loadManifest('lora', mf.name).catch(() => null); loraReport = LoraReg.importReport(mf, { env: await loraEnv(), existing: existing || null }); }
                     return ok(Object.assign({ pendingId: S.pending.id, file: f.name, loraReport }, r));
                 }
                 if (method === 'POST' && P === '/api/import/confirm') {
@@ -10361,7 +10393,7 @@ const holder = {};
                 if (method === 'POST' && P === '/api/train/pause') { const r = await callHost('studio_train_pause', { jobId: body.jobId || S.lastTrain }, 180000); log('暫停訓練：' + (r.ok ? '已存檢查點 step=' + r.step : r.error || r.reason)); return r.ok === false && !r.checkpoint ? bad(409, r.error || r.reason || '暫停失敗', r) : ok(r); }
                 if (method === 'POST' && P === '/api/train/stop') { const r = await callHost('studio_train_stop', { jobId: body.jobId || S.lastTrain }, 30000); log('停止訓練'); return r.ok === false ? bad(409, r.error) : ok(r); }
                 // ---- LoRA 登錄與按需載入（第二輪，接 lora_registry_core）----
-                if (method === 'GET' && P === '/api/lora') { const reg = await syncRegistry(); return ok({ env: LORA_ENV, budget: reg.reg.budget, maxActive: reg.reg.maxActive, entries: reg.entries, invalid: reg.invalid, dataOnly: reg.dataOnly, loaded: reg.reg.loaded(), applyBlocker: h.loraApply ? '' : LORA_APPLY_BLOCKER }); }
+                if (method === 'GET' && P === '/api/lora') { const reg = await syncRegistry(); return ok({ env: await loraEnv(), budget: reg.reg.budget, maxActive: reg.reg.maxActive, entries: reg.entries, invalid: reg.invalid, dataOnly: reg.dataOnly, loaded: reg.reg.loaded(), applyBlocker: h.loraApply ? '' : LORA_APPLY_BLOCKER }); }
                 // 原生模型 LoRA 槽版（標準版 q8 → 槽版，主行程 native-slot-model.js）：狀態／開始轉換／使用者同意後下載
                 if (P === '/api/lora/slot' || P === '/api/lora/slot/prepare' || P === '/api/lora/slot/download') {
                     if (!h.slotCall) return ok({ ok: false, available: false, error: '只有桌面版的原生推論需要 LoRA 槽版；這個環境沒有接上主行程' });
@@ -93016,6 +93048,14 @@ ${fnData.code}
     }
     // ===== LoRA 每輪路由（DESIGN.lora-training.md §15）：有 task 的生成才決定保留／切換／回基底；沒有 task 的呼叫不動目前的 LoRA =====
     _loraCore() { if (!this._loraCoreInst) { try { this._loraCoreInst = FaStudio.FaStudioServer.createServer(this._studioHostApi()); } catch (_) { this._loraCoreInst = null; } } return this._loraCoreInst; }
+    // 工具清單雜湊（shape-v1）：主程式內建工具的名稱＋參數結構（不含說明文字），給 LoRA 相容性檢查比對；與 pack_adapter.js 同一套算法
+    async _toolCatalogSha256() {
+        const names = this._builtinToolNameSnapshot; const L = typeof FaStudio !== 'undefined' ? FaStudio.FaLoraRegistry : null;
+        if (!names || !this.tools || !L || !FaStudio.FaStudioAsset) return null;
+        const tools = [...names].filter((n) => this.tools[n]).map((n) => ({ name: n, parameters: this.tools[n].parametersSchema }));
+        if (!tools.length) return null;
+        return FaStudio.FaStudioAsset.sha256Hex(new TextEncoder().encode(L.toolCatalogShapeText(tools)));
+    }
     async _loraRouteTurn(task, text) {
         if (task == null || task === '' || !this._studioDesktop() || typeof FaStudio === 'undefined' || !FaStudio.FaLoraRoute) return null;
         // 沒開過訓練工作室時 _studioStoreSync 還沒設，登錄表讀不到資產、路由整個靜默失效：先把儲存層準備好
@@ -93126,6 +93166,7 @@ ${fnData.code}
             loraClear: me._studioDesktop() ? async () => (await me._studioLoraApplier()).clear() : async () => me._studioWebLoraApplier().clear(),
             // 原生推論實際套用的 LoRA 狀態（主行程 lora_status）：給 LoRA 管理畫面顯示「目前套用到原生推論的是哪些」
             loraStatus: me._studioDesktop() ? async () => (await me._studioLoraApplier()).status() : null,
+            toolCatalogSha256: () => me._toolCatalogSha256(),
             slotCall: me._studioDesktop() ? async (op, payload, t) => me._nrCall(op, payload, t || 20000) : null,
             call: async (op, payload, t) => { const e = await me._studioHostEnsure(); if (!e.ok) return { ok: false, error: e.error }; return me._nrCall(op, payload, t || 20000); },
             workDir: async () => { const box = await me._nrBox().catch(() => null); if (!box) return null; const sep = box.indexOf(String.fromCharCode(92)) >= 0 ? String.fromCharCode(92) : '/'; return box.split(sep).slice(0, -1).join('/') + '/studio'; },
