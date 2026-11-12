@@ -103208,6 +103208,32 @@ ${sourceTool.handlerScript}
     // 甚至又寫了另一個[CALL:...]，都不會被誤吞進這個呼叫的參數裡。掃到
     // 字串結尾都還沒配對成功（模型真的沒把這次呼叫寫完）就回傳掃到底的
     // 內容當最佳猜測，並把endIndex設成text.length。
+    // 函式寫法的呼叫（2026-11-12：模型的最終回覆是 get_presentation_topic(...) begin_presentation(deck: "...") add_chapters(draft, "...") 一串，系統只認 [CALL:]／JSON／標籤／XML，整串被當成答案）：
+    // 認出「允許的工具名稱(參數)」依序執行；參數可寫 key: 值（值是字串、{…}、[…]、數字、true/false）或依 schema 欄位順序的位置參數；解析不了的參數就不呼叫那一個（回傳 null 讓呼叫端走反思）。
+    _parsePseudoCalls(text, allowedNames) {
+        const t = String(text || ''); const names = (allowedNames || []).filter((n) => /^[A-Za-z][\w-]{2,60}$/.test(n)); if (!names.length || t.length > 60000) return null;
+        const re = new RegExp('(?:^|[\\s;,`])(' + names.map((n) => n.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&')).join('|') + ')\\s*\\(', 'g'); const calls = []; let m;
+        while ((m = re.exec(t))) {
+            const open = m.index + m[0].length - 1; const { content, endIndex } = this._extractBalancedCallArgs(t, open); if (endIndex == null || endIndex <= open) continue;
+            const args = this._looseCallArgs(String(content || ''), m[1]); if (args) calls.push({ name: m[1], args }); re.lastIndex = Math.max(re.lastIndex, endIndex);
+        }
+        return calls.length ? calls : null;
+    }
+    _looseCallArgs(content, toolName) {
+        const c = content.trim(); if (!c) return {};
+        if (c[0] === '{') { try { const o = JSON.parse(c); if (o && typeof o === 'object') return o; } catch (_) { /* 往下 */ } }
+        const parts = []; let depth = 0, q = null, cur = '';
+        for (let i = 0; i < c.length; i++) { const ch = c[i]; if (q) { cur += ch; if (ch === '\\') { cur += c[++i] || ''; continue; } if (ch === q) q = null; continue; } if (ch === '"' || ch === "'") { q = ch; cur += ch; continue; } if ('({['.includes(ch)) depth++; if (')}]'.includes(ch)) depth--; if (ch === ',' && depth === 0) { parts.push(cur); cur = ''; continue; } cur += ch; }
+        if (cur.trim()) parts.push(cur);
+        const sc = this.tools && this.tools[toolName] && this.tools[toolName].parametersSchema; const order = sc && sc.properties ? Object.keys(sc.properties) : []; const out = {}; let pos = 0;
+        const val = (v) => { v = v.trim(); if (v[0] === '"' || v[0] === "'") { const qc = v[0]; let body = v.slice(1, v.endsWith(qc) ? -1 : undefined); if (qc === '"') { try { return JSON.parse('"' + body.replace(/(?<!\\)\n/g, '\\n') + '"'); } catch (_) { /* 手動還原 */ } } return body.replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\'/g, "'").replace(/\\\\/g, '\\'); } if (v[0] === '{' || v[0] === '[') { try { return JSON.parse(v); } catch (_) { return v; } } if (/^-?\d+(\.\d+)?$/.test(v)) return Number(v); if (/^(true|false)$/i.test(v)) return /^true$/i.test(v); return v; };
+        for (const p of parts) {
+            const km = /^\s*([A-Za-z_][\w]*)\s*[:=]\s*([\s\S]*)$/.exec(p);
+            if (km && (!order.length || order.includes(km[1]) || /^(deck|yaml|draft|name|topic|names|url|query|prompt)$/.test(km[1]))) out[km[1]] = val(km[2]);
+            else { const key = order.filter((k) => !(k in out))[pos++]; if (!key) return null; out[key] = val(p); }
+        }
+        return out;
+    }
     _extractBalancedCallArgs(text, openParenIndex) {
         let depth = 0, inStr = null;
         let i = openParenIndex;
@@ -120095,8 +120121,16 @@ _result
             tab = await call('browser_create_tab', { url, tab_group: 'AI Controlled' }); if (!tab || tab.ok === false || !tab.tab_id) return out;
             const st = await call('browser_get_page_structure', { tab_id: tab.tab_id }); const imgs = (st && st.images) || [];
             const bad = /報名|廣告|advert|banner|logo|avatar|icon|sprite/i; const seen = new Set();
+            // 只留「文章自己的圖」：側欄「相關文章」的縮圖（網址含 thumbnail）和跟文章標題沒關係的圖（廣告、別篇）不算（2026-11-12：7 張裡只有 1 張是內文圖，其餘是相關文章縮圖＋德州儀器廣告）。第一張（主圖）一定留。
+            const pageTitle = String((st && st.headings && st.headings[0] && st.headings[0].text) || tab.title || '').replace(/[^\u4e00-\u9fffA-Za-z0-9]/g, '');
+            const bg = new Set(); for (let k = 0; k + 1 < pageTitle.length; k++) bg.add(pageTitle.slice(k, k + 2));
+            const relevant = (alt) => { const a = String(alt || '').replace(/[^\u4e00-\u9fffA-Za-z0-9]/g, ''); let c = 0; for (let k = 0; k + 1 < a.length; k++) if (bg.has(a.slice(k, k + 2))) c++; return c >= 3; };
+            let idx = -1;
             for (const im of imgs) {
-                if (out.length >= n) break; const src = String(im.src || ''); if (!/^https?:/.test(src) || seen.has(src) || bad.test(src + ' ' + (im.alt || ''))) continue; seen.add(src);
+                idx++;
+                if (out.length >= n) break; const src = String(im.src || ''); if (!/^https?:/.test(src) || seen.has(src) || bad.test(src + ' ' + (im.alt || ''))) continue;
+                if (idx > 0 && (/thumb|_s\.|small|related/i.test(src) || !relevant(im.alt))) { log('🖼 略過（不是文章內文的圖）：' + String(im.alt || src).slice(0, 36)); continue; }
+                seen.add(src);
                 try { const r = await call('import_image_url', { url: src }); if (r && r.ref) { out.push({ ref: r.ref, alt: String(im.alt || '') }); log('🖼 文章自己的圖：' + String(im.alt || src).slice(0, 40)); } } catch (_) { /* 這張下載不了就跳過 */ }
             }
         } catch (e) { log('🖼 讀不到文章的圖：' + String((e && e.message) || e).slice(0, 80)); }
@@ -131410,6 +131444,14 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                     autoExecDescribed++;
                     toolTasks.push({ fnName: dc.name, fnArgsRaw: JSON.stringify(dc.args), described: true });
                     if (onTrace) onTrace('🔁 模型把工具呼叫寫成文字JSON，已當成真的呼叫執行：' + dc.name + (dc.inferred ? '（回覆只有參數、沒寫工具名：依參數結構唯一對應到這個工具）' : ''));
+                }
+            }
+            if (!toolTasks.length && autoExecDescribed < 80) {
+                const pcs = this._parsePseudoCalls(this._stripInlineBase64(rawContent).trim(), allowedToolNames);
+                if (pcs) {
+                    autoExecDescribed += pcs.length;
+                    for (const pc of pcs.slice(0, 6)) toolTasks.push({ fnName: pc.name, fnArgsRaw: JSON.stringify(pc.args), described: true });
+                    if (onTrace) onTrace('🔁 模型把工具呼叫寫成函式文字（' + pcs.map((x) => x.name).join(' → ') + '），已依序當成真的呼叫執行；結果會回給它，錯了它可以修');
                 }
             }
             if (!toolTasks.length) {

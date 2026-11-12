@@ -23,4 +23,5 @@ check('畫圖結果直接給 ref，不必再匯入', /_deckAnnotateResult\(toolN
     check('有寫工具名的照舊', (fn.call(self, '{"tool":"find_photo","args":{"query":"x"}}', names) || {}).name === 'find_photo');
 }
 check('有網址的簡報：系統先讀網址與文章原圖再交給模型', /先替你讀好網址/.test(fa) && /_deckArticleImages\(um\[0\], 8, lg\)/.test(fa) && /系統已讀好這個網址/.test(fa));
+check('文章原圖只留內文的圖：略過相關文章縮圖與跟標題無關的圖', /略過（不是文章內文的圖）/.test(fa) && /thumb\|_s\\\.\|small\|related/.test(fa) && /const relevant = \(alt\)/.test(fa));
 console.log(bad.length ? 'FAILED:\n  ' + bad.join('\n  ') : 'tool_request_wiring: ' + ok + ' passed'); process.exit(bad.length ? 1 : 0);
