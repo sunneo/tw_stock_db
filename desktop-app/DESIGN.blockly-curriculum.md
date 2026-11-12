@@ -365,3 +365,12 @@ inflate 20/20、tarx 20/20、bmpx 20/20、png 12/12、gif 14/14、pcx 14/14、jp
 ### 目前狀態（已驗證）
 - 乾淨 holdout 第一批：`domain_fresh_holdout.test.js`，0／27，凍結紀錄在 §12。
 - 其餘提交見前文（最新 `e8ac4926` 為續三接手節）。
+
+## 接手（blockly-finish-3，續五，2026-11-12）
+
+- **做了什麼**：新增範式 `renderer/src/uml/domain_fieldcount_core.js`（`bin.field-read` 固定位移欄位讀取；`bin.count-mark` 位元組標記出現次數；`bin.count-byte` 位元組值個數）＋ train 12 題 `domain_fieldcount.test.js`（實測 12/12；選項反序 12/12）；`scripts/run-core-tests.js` 登記一行。
+- **提交**：`17ee6851`（新範式＋train）；`2840bf79`（乾淨 holdout v2 凍結，量測前）；本節與 §13 的記錄由之後的提交加入（見 git log）。
+- **乾淨 holdout v2**（27 題，凍結後只量一次）：**12／27 解出**。讀欄位 0／15（讀取器的觸發詞要求「欄位寬 N 位元組」，v2 用了別的說法，harness 回報「沒有配方」）；計數 12／12（範式名稱未記錄，推測但未驗證）。與 v1 的 0／27 並列見 `DESIGN.blockly-gaps.md` §13。
+- **沒做的**：未嵌入（`embed-code-ui.js` 清單與 `floating-assistant.js` 的 BEGIN／END 標記未加，因不跑 embed，且不改嵌入區塊）；未發布；未跑全套核心測試（本批沒改任何既有共用程式，只新增檔案與一行測試登記，新包只在它自己的測試行程中註冊，不影響其他測試）；未重跑 v1。
+- **接續點**：(1) 擴充讀欄位的觸發詞並用新措辭的 train 題教（不改 v2）；(2) 另寫 holdout v3；(3) 計數的「成員數」型；(4) 嵌入時要一併做：`embed-code-ui.js` 清單、`floating-assistant.js` 的 FIELDCOUNT 標記、`run-core-tests.js`（已登記）。
+- **注意**：工作樹有未追蹤的 `desktop-app/node_modules` 符號連結（指向主工作樹的 node_modules），不要提交；測試用 `FA_TS_DIR=/tmp/fa-ts-cache`。
