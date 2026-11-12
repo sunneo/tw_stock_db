@@ -49,7 +49,7 @@ function createStudioHost(d) {
   const rawProbe = cpuPy.probe.bind(cpuPy), PROBE_TTL = 60000, probeSt = { val: null, at: 0, running: null };
   const refreshProbe = () => probeSt.running || (probeSt.running = (async () => { try { probeSt.val = await rawProbe(); probeSt.at = now(); } finally { probeSt.running = null; } })());
   cpuPy.probe = async (ctx) => {
-    const fresh = probeSt.val && now() - probeSt.at < PROBE_TTL;
+    const fresh = probeSt.val && now() - probeSt.at < (probeSt.val.available ? PROBE_TTL : 5000);   // 不可用的結果只留 5 秒：使用者裝好環境後很快就要看到變化
     if (fresh) return probeSt.val;
     if (ctx && ctx.fast) { refreshProbe().catch(() => {}); return probeSt.val ? Object.assign({}, probeSt.val, { probing: true }) : BackendCore.probeResult(false, '探測中…', { name: hw.cpuModel || 'CPU', vendor: 'cpu', fp16: false }, { backend: 'cpu-py' }); }
     await refreshProbe(); return probeSt.val;

@@ -388,6 +388,8 @@ T.train=async function(body){
  var ksel=h('select',{},kinds.map(function(k){return h('option',{value:k[0],text:k[1]})}));var out=h('div');body.appendChild(h('label',{text:'訓練種類'}));body.appendChild(ksel);body.appendChild(out);
  var buildTok=0;async function build(){var my=++buildTok;out.textContent='';var kind=ksel.value,r=await api('GET','/api/backends?kind='+kind);if(my!==buildTok)return;if(r.ok===false){out.appendChild(h('div',{'class':'warn',text:'讀取運算後端失敗：'+r.error}));return}
   if(r.backends&&r.backends.some(function(b){return b.probing}))setTimeout(function(){if(my===buildTok)build()},1500);
+  /* 2026-11-12：純處理器不可用（缺套件／版本太舊）時，使用者正在照指令安裝——每 8 秒自動重探，裝好就自己變可用，不必切分頁或重啟 */
+  if(kind==='lora'&&r.backends&&r.backends.some(function(b){return b.id==='cpu-py'&&!b.available&&!b.probing}))setTimeout(function(){if(my===buildTok&&out.isConnected)build()},8000);
   if(r.note)out.appendChild(h('div',{'class':'warn',text:r.note}));
   if(kind!=='lora'){symTrain(out,kind);return}
   var bs=h('select',{});var webOk=r.backends.some(function(b){return b.id==='wasm-web'&&b.available}),hostOk=r.backends.some(function(b){return b.id!=='wasm-web'&&b.available});
