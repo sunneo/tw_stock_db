@@ -81737,6 +81737,7 @@ class FloatingAssistant {
             branchAskMode: 'ask', // 計畫分歧時：ask＝問使用者（預設）；recommended＝使用者說過「不要再問」，統一走建議的（/ask-mode 可切換）
             // tw_stock_db客製: 2026-09-26使用者要求——台灣節慶套版（Configure > LLM基礎設定），預設開啟。
             festivalThemeEnabled: true,
+            studioShowHalfFinished: false, // 工作室：顯示半成品與只有設計的模型類型（預設關）
             // tw_stock_db客製: 2026-09-16——bash_execute/python_execute要抓的
             // wasm執行環境（jsDelivr鏡射的npm套件或自家backup分支，見
             // FA_ASSET_URLS.bashWasmJsBase/pyodideJsBase的說明），留空時直接
@@ -83179,6 +83180,7 @@ class FloatingAssistant {
             routeMode: raw.routeMode === 'auto' ? 'auto' : 'manual',
             branchAskMode: raw.branchAskMode === 'recommended' ? 'recommended' : 'ask',
             festivalThemeEnabled: raw.festivalThemeEnabled !== false,
+            studioShowHalfFinished: raw.studioShowHalfFinished === true,
             assetBackupProxyUrl: String(raw.assetBackupProxyUrl || '').trim(),
             whisperWasmThreads: (() => {
                 const n = Number(raw.whisperWasmThreads);
@@ -93081,7 +93083,8 @@ ${fnData.code}
         const srv = await this._studioServer(); const title = '離線訓練工作室';
         const cfg = { hosts: ['mock.local'], prefixes: null, block: true, allow_hosts: [], deny: this._sandboxDenyHosts(), backend: 'iframe' };
         const shim = '<script>(' + __faMockShim.toString() + ')(' + JSON.stringify(cfg).replace(/</g, '\\u003c') + ')</' + 'script>';
-        const doc = FA_STUDIO_VIEWER_HTML.replace('__CFG__', () => JSON.stringify({ title, theme: this._isLightTheme() ? 'light' : 'dark' }).replace(/</g, '\\u003c')).replace('__SHIM__', () => shim).replace('__LAYOUT__', () => FA_STUDIO_LAYOUT_SRC.replace(/<\/script/gi, '<\\/script'));
+        const mtp = this._studioModelTypesPayload();
+        const doc = FA_STUDIO_VIEWER_HTML.replace('__CFG__', () => JSON.stringify({ title, theme: this._isLightTheme() ? 'light' : 'dark', modelTypes: mtp.list, guards: mtp.guards, showHalf: mtp.showHalf, modelTypesMissing: !!mtp.missing }).replace(/</g, '\\u003c')).replace('__SHIM__', () => shim).replace('__LAYOUT__', () => FA_STUDIO_LAYOUT_SRC.replace(/<\/script/gi, '<\\/script'));
         const card = document.createElement('div'); card.className = 'fwd';
         const bar = document.createElement('div'); bar.className = 'fwd-bar'; const t = document.createElement('span'); t.className = 't'; t.textContent = '🏭 ' + title; bar.appendChild(t);
         const bX = document.createElement('button'); bX.type = 'button'; bX.textContent = '✕'; bX.title = '關閉訓練工作室（背景訓練不會停；重新開啟會接回進度）'; bar.appendChild(bX); card.appendChild(bar);
@@ -93091,8 +93094,9 @@ ${fnData.code}
         // app 主題變了就告訴視窗（視窗的背景跟 app 主題走，沒有主題時才跟 OS）
         const themeObs = new MutationObserver(() => { try { if (iframe.contentWindow) iframe.contentWindow.postMessage({ __fa_theme: this._isLightTheme() ? 'light' : 'dark' }, '*'); } catch (_) { /* */ } });
         themeObs.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+        if (!this._studioFrames) this._studioFrames = new Set(); this._studioFrames.add(iframe);
         const win = FaWin.decorate(card, { id: 'studio', title: '🏭 ' + title, bar, minW: 480, minH: 320 });
-        const api = { ok: true, node: card, close: () => { themeObs.disconnect(); window.removeEventListener('message', onMsg); try { srv.close(); } catch (_) { /* */ } try { win.destroy(); } catch (_) { /* */ } card.remove(); } };
+        const api = { ok: true, node: card, close: () => { themeObs.disconnect(); if (this._studioFrames) this._studioFrames.delete(iframe); window.removeEventListener('message', onMsg); try { srv.close(); } catch (_) { /* */ } try { win.destroy(); } catch (_) { /* */ } card.remove(); } };
         bX.onclick = () => { api.close(); this._wgClosed(ref.id, Object.assign({ title }, ref)); };
         iframe.srcdoc = doc;
         return { node: card, api };
@@ -93124,6 +93128,19 @@ ${fnData.code}
         const r = await this._wgOpen('studioview', { id: 'studio', title: '離線訓練工作室' }, { lead: '🏭 離線訓練工作室' });
         if (r && r.ok === false) { this._pushAssistantMessage('⚠️ 開不起訓練工作室：' + (r.error || ''), null); this._persistChatHistory(); this._renderMessageHistory(); }
     }
+    // 模型類型清單＋開始守門（由登錄表 FaStudioModelTypes 算出，JSON 資料）：視窗用它產生畫面，不自己判斷
+    _studioModelTypesPayload() {
+        const showHalf = !!(this.advancedSettings && this.advancedSettings.studioShowHalfFinished === true);
+        const M = (typeof FaStudio !== 'undefined' && FaStudio && FaStudio.FaStudioModelTypes) || null;
+        if (!M) return { showHalf, list: [], guards: {}, missing: true };
+        const guards = {};
+        M.TYPES.forEach((t) => { guards[t.id] = { _default: M.canStart(t.id, (t.outputs[0] || {}).id, showHalf) }; t.outputs.forEach((o) => { guards[t.id][o.id] = M.canStart(t.id, o.id, showHalf); }); });
+        return { showHalf, list: M.listFor(showHalf), guards };
+    }
+    _studioPushModelTypes() {
+        const p = this._studioModelTypesPayload();
+        (this._studioFrames || new Set()).forEach((f) => { try { if (f.contentWindow) f.contentWindow.postMessage({ __fa_modeltypes: p }, '*'); } catch (_) { /* */ } });
+    }
     _studioRegisterPane() {
         if (this._studioPaneRegistered) return; this._studioPaneRegistered = true;
         const root = document.createElement('div'); root.style.cssText = 'font-size:13px; line-height:1.5;';
@@ -93135,6 +93152,12 @@ ${fnData.code}
         row.appendChild(mk('如何使用離線訓練器(簡單模式)', () => this._studioHowto('simple')));
         row.appendChild(mk('如何使用離線訓練器(進階模式)', () => this._studioHowto('adv')));
         root.appendChild(p); root.appendChild(row);
+        // 顯示半成品的功能（預設關）：關著時工作室只列已完成可用的模型類型；開了才列半成品與只有設計的，並標徽章
+        const halfLbl = document.createElement('label'); halfLbl.style.cssText = 'display:flex; gap:6px; align-items:flex-start; margin-top:12px; cursor:pointer;';
+        const halfChk = document.createElement('input'); halfChk.type = 'checkbox'; halfChk.id = 'ai-studio-half-chk'; halfChk.checked = this.advancedSettings.studioShowHalfFinished === true; halfChk.style.marginTop = '3px';
+        const halfTxt = document.createElement('span'); halfTxt.textContent = '顯示半成品的功能（還沒完成的模型類型：只會顯示說明與缺什麼，不會假裝能訓練）';
+        halfChk.addEventListener('change', () => { this.advancedSettings.studioShowHalfFinished = halfChk.checked === true; this._saveAdvancedSettings(); this._studioPushModelTypes(); });
+        halfLbl.appendChild(halfChk); halfLbl.appendChild(halfTxt); root.appendChild(halfLbl);
         this.registerAdvancedSettingsTab('ai', 'offline-training-studio', '離線訓練工作室', root);
     }
 
