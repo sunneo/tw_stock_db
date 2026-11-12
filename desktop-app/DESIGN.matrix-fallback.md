@@ -779,3 +779,24 @@ heldout9（`heldout9_list.jsonl`，16 題）：**ok 15/16，verified 14**（測�
   - M＞0：寫出採用條目，並由 hidden 判題再核一次。
 - 不對第二、第三批 held-out 調參；矩陣範本不改。
 - UML 建構器檔案（`renderer/src/uml/py_uml_pipeline_core.js`）：2026-11-12 檢查所有 worktree，沒有未提交的修改（`git worktree list` 各目錄 `git status` 為乾淨）。改動限於 `buildFromUML` 的失敗回傳與候選記錄，不改成功路徑。
+
+**13.8 結果（2026-11-12，只量一次；原始資料在 side-session-notes/matrix-finish-5/dump2.jsonl，不入庫）**
+
+- 實作（已提交 `c6833f80`）：`renderer/src/uml/py_uml_pipeline_core.js` 的 `buildFromUML`（最小改動）。新增 `keepResid`，在配方、課、範式（`pj`）、區塊迴圈四處記下最後一個被判為非 AC／非 UNCHECKED 的候選；失敗回傳帶 `residual: {source, verdict, detail, by}`，成功路徑不變。`py_uml_pipeline.test.js` 7 項全綠（實測）。
+- 殘留池 P（實測）：母體 21 條未解 holdout（§13.7 同一批 id）中，**13 條有殘留，8 條沒有**。
+  - 有殘留的 13 條：來源都是 `paradigm`，verdict 為 WA 或 RE（例如 ho-floyd「詞數不同：25 vs 期望 3」、ho-sps-write「結束碼 1」）。
+  - 沒有殘留的 8 條：ho-heap-max2（uml_design 讀不出）、ho-match、ho-assign、ho-path、ho-kth、ho-zlib、ho-dyn-chunks、ho-enc。它們沒有任何候選被判過（實測，`rounds` 無判題紀錄）。
+- 混用結果 M：**0/13（由 §13.7 的 0/21 推得，不是新量）**。理由：`tryMatrix` 的輸入是整題敘述與可見測資，殘留（一支整體 WA 的程式）不是矩陣能用的輸入，所以混用呼叫的內容與 §13.7 相同，結果也相同。
+- **語句級殘留：沒有做。** 判題器只回傳整支程式的 verdict 與第一個差異測資，沒有逐語句的判定，所以無法從殘留切出「哪幾句是對的」。這需要中間值的 oracle（每句之後的變數值），目前題目資料只有 I/O。
+- 結論（量到的數字）：殘留混用在這批題的增益是 **0**，原因是 (a) 殘留池只有 13 條，而且都是整體 WA／RE；(b) 矩陣拿不到子問題的範例，所以殘留無法變成矩陣的輸入。
+- 下一步（寫給接手者）：
+  1. 若要真的做語句級殘留，先要有每句的中間值 oracle。候選是：從參考解（只存在於 harness，產品內沒有）取中間值，但這不能用在產品，所以只能用於量測；或者在 UML 建構器上為每個區塊記錄執行軌跡（需要沙盒支援），這是獨立的工作項目。
+  2. 在有 oracle 之前，殘留混用不應該進產品路徑。目前 `_codeOffline` 的混用仍然只用整題（§13.6），沒有改。
+  3. 13.7 的 routeOf 改動（不建議矩陣）與本節一致，不需要因為殘留再改。
+
+**交接（給總指揮與下一棒）**
+
+- 本棒提交：`8ddf69e0`（§13.8 判準）、`c6833f80`（UML 建構器殘留，最小改動）、以及本段結果（最後一個提交）。未推送、未嵌入、未 build。
+- UML 建構器：`renderer/src/uml/py_uml_pipeline_core.js` 的 `buildFromUML` 新增 `residual` 欄位（失敗時）。要嵌入到 `floating-assistant.js` 才會在產品生效；嵌入由總指揮做。`_codeOffline` 目前不讀 `residual`，所以產品行為沒有改。
+- 檢查：2026-11-12 所有 worktree 對該檔的 `git status` 都是乾淨的（實測），本次改動沒有與其他接手者衝突。
+- 量測用的 harness 副本只在 scratch（加了 dump 與 POOL 過濾），沒有入庫。
