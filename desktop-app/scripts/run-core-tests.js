@@ -373,6 +373,7 @@ const suites = [
     ['圖片轉3D核心（封閉殼、平滑殼、背景差分、全景分層、貼材質）', 'scripts/media-tests/image3d_core.test.js'],
     ['圖片轉3D主機端模擬（只要主體：挑主體、貼圖流程、擺到桌子上）', 'scripts/media-tests/image3d_host.test.js'],
     ['圖片轉3D接線（領域工具清單、自然語言觸發提示、detail／max_faces／pose 有傳下去、用法列）', 'scripts/media-tests/image3d_wiring.test.js'],
+    ['簡報委派只有網址時由程式抓網頁組簡報（不放棄）', 'scripts/deck-tests/deck_url_wiring.test.js'],
     ['音樂：MIDI 核心（解析、寫出、往返、量化、移調、合併拆分、速度表）', 'scripts/music-tests/midi_core.test.js'],
     ['音樂：播放排程（事件、頻道配置、前瞻排程、靜音獨奏、跳轉、迴圈）', 'scripts/music-tests/midi_play.test.js'],
     ['音樂：MIDI 編輯器純函式層（封閉動作、中文指令、復原重做）', 'scripts/music-tests/midi_edit.test.js'],

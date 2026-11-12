@@ -57,7 +57,9 @@ const UPDATE_MANIFEST_PATH = path.join(__dirname, "renderer", "update-manifest.j
 })();
 function collectMainModules() {
   const seen = new Set(), queue = ["main.js", "main-ext.js", "preload.js"];
-  const re = /require\(\s*["']\.\/([\w.-]+\.js)["']\s*\)/g;
+  // 除了 require("./x.js")，也認「子行程腳本」寫法 join(__dirname, "x.js")（例：lora-slot-build.js 由 native-slot-model 以子行程啟動，不是 require；
+  // 以前沒掃到，熱更新沒帶它，使用者按「轉成槽版」就 Cannot find module 失敗）
+  const re = /(?:require\(\s*["']\.\/|join\(\s*__dirname\s*,\s*["'])([\w.-]+\.js)["']\s*\)/g;
   while (queue.length) {
     const f = queue.shift(); if (seen.has(f)) continue; seen.add(f);
     let src = ""; try { src = fs.readFileSync(path.join(__dirname, f), "utf8"); } catch (_) { continue; }

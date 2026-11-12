@@ -90976,6 +90976,8 @@ ${fnData.code}
     _loraCore() { if (!this._loraCoreInst) { try { this._loraCoreInst = FaStudio.FaStudioServer.createServer(this._studioHostApi()); } catch (_) { this._loraCoreInst = null; } } return this._loraCoreInst; }
     async _loraRouteTurn(task) {
         if (task == null || task === '' || !this._studioDesktop() || typeof FaStudio === 'undefined' || !FaStudio.FaLoraRoute) return null;
+        // 沒開過訓練工作室時 _studioStoreSync 還沒設，登錄表讀不到資產、路由整個靜默失效：先把儲存層準備好
+        if (!this._studioStoreSync) { try { this._studioStoreSync = await this._studioStorage(); } catch (_) { return null; } }
         const core = this._loraCore(); if (!core) return null;
         const reg = await core.registry().catch(() => null); if (!reg) return null;
         this._loraTurnReg = reg;
@@ -119210,6 +119212,14 @@ _result
     // 子agent（模型）一次寫完整份 yaml 常常失敗（欄位寫錯、不呼叫 render_presentation、找不到照片就放棄）。這裡把整件事拆成封閉的小步驟：
     // 規劃每頁（標題｜重點｜找圖關鍵字）→ 每頁旁白 → 每頁找照片（find_photo）→ 程式寫 yaml → render_presentation 驗證，有問題只修有問題的那一頁。
     // 模型不可用或答不出來，每一步都有程式的退路（樣板、重點當旁白、沒有照片就不放圖），所以一定做得出一份簡報。
+    // 抓網址的文字當簡報素材：用 fetch_web_page（同一個工具，含登入／同意頁判斷），讀 fileCache 取文字；失敗回 {error}
+    async _deckUrlBrief(url) {
+        const tl = this.tools && this.tools.fetch_web_page; if (!tl) return { error: '這個環境沒有 fetch_web_page' };
+        let j; try { j = JSON.parse(await tl.callback.call(this, JSON.stringify({ url }))); } catch (e) { return { error: String((e && e.message) || e) }; }
+        if (!j || j.ok === false || !j.file_id) return { error: String((j && j.error) || '抓取失敗') };
+        const rec = await this.fileCache.get(j.file_id).catch(() => null); if (!rec || !rec.blob) return { error: '抓到了但讀不到內容' };
+        const text = String(await rec.blob.text()).replace(/\s+/g, ' ').trim(); return text.length >= 40 ? { title: String(j.title || url), text } : { error: '網頁內容太少（可能要登入或被擋）' };
+    }
     async _deckTopicRecipe(task, log) {
         log = log || (() => {}); const T = FaDeckTopic, req = T.parseRequest(task); if (req.body.length < 6) return { error: '需求太短，看不出要講什麼' };
         log('📐 程式自己組簡報（模型只回答小問題，yaml 由程式寫並驗證）：' + [req.kids ? '幼兒風' : '', req.wantPhotos ? '要找網路照片' : '', req.lang, req.speed ? '語速 ' + req.speed : ''].filter(Boolean).join('、'));
@@ -129107,10 +129117,14 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             if (askedForMaterial(subResult)) { if (progress) progress.finish('需要素材'); return { ok: true, domain: domainKey, result: String(subResult.text || '') + String.fromCharCode(10, 10) + '（這次的任務沒有附上檔案或網址，所以沒有產生簡報。請附上素材（例如要解讀的圖片）再送一次。）' }; }
             // 沒有檔案或網址、只給主題，而模型沒有真的做出簡報：不再叫同一個模型從頭再寫一次（它會犯一樣的錯），由程式自己組（食譜：主題簡報）——
             // 規劃、旁白、找照片、組 yaml、驗證都是封閉的小步驟，每一步都有退路，所以一定做得出來；過程都寫進記錄
-            if (isDeck && !(subResult && subResult.visual) && !askedForMaterial(subResult) && !hasMaterial(task) && !(extra.shouldStop && extra.shouldStop())) {
+            // 只有網址（沒有附件、檔案）也由程式組：先把網頁抓回來，取標題與開頭當素材（2026-11-12 真實事故：給文章網址要 2 分鐘簡報，模型讀完只用文字說「已完成」，程式又因為「帶網址」而放棄，使用者什麼都沒拿到）
+            const hasFileMaterial = (t) => /\[附件：|client-file\/|fap:/i.test(String(t || '')) || /[A-Za-z]:[\\\/]/.test(String(t || ''));
+            if (isDeck && !(subResult && subResult.visual) && !askedForMaterial(subResult) && !hasFileMaterial(task) && !(extra.shouldStop && extra.shouldStop())) {
                 const line0 = '⚠️ 模型這次沒有真的做出簡報（沒有成功呼叫 render_presentation）——改由程式自己組：規劃每頁 → 旁白 → 找照片 → 寫 yaml → 驗證';
                 if (progress) progress.log(line0); if (extra.onTrace) extra.onTrace(line0);
-                try { const tr = await this._deckTopicRecipe(task0, (x) => { if (progress) progress.log(x); if (extra.onTrace) extra.onTrace(x); }); if (tr && tr.ok) subResult = { text: tr.text, visual: tr.deck }; else { const l = '✗ 程式組簡報沒成功：' + String((tr && tr.error) || '').slice(0, 200); if (progress) progress.log(l); if (extra.onTrace) extra.onTrace(l); this._deckTopicError = (tr && tr.error) || ''; } }
+                let recipeTask = task0; const urlM = /https?:\/\/[^\s)）」』]+/i.exec(String(task0 || ''));
+                if (urlM) { try { const br = await this._deckUrlBrief(urlM[0]); if (br && br.text) { recipeTask = String(task0).replace(/https?:\/\/[^\s)）」』]+/gi, ' ').trim() + String.fromCharCode(10, 10) + '【網頁素材：' + br.title + '】' + String.fromCharCode(10) + br.text.slice(0, 1800); const l1 = '🌐 已抓回網頁（' + br.title.slice(0, 40) + '，' + br.text.length + ' 字），拿它當簡報素材'; if (progress) progress.log(l1); if (extra.onTrace) extra.onTrace(l1); } else { const l1 = '✗ 網頁沒抓到內容：' + String((br && br.error) || '').slice(0, 100) + '——只用你的文字描述來組'; if (progress) progress.log(l1); if (extra.onTrace) extra.onTrace(l1); } } catch (e) { /* 抓不到就只用文字描述 */ } }
+                try { const tr = await this._deckTopicRecipe(recipeTask, (x) => { if (progress) progress.log(x); if (extra.onTrace) extra.onTrace(x); }); if (tr && tr.ok) subResult = { text: tr.text, visual: tr.deck }; else { const l = '✗ 程式組簡報沒成功：' + String((tr && tr.error) || '').slice(0, 200); if (progress) progress.log(l); if (extra.onTrace) extra.onTrace(l); this._deckTopicError = (tr && tr.error) || ''; } }
                 catch (e) { const l = '✗ 程式組簡報出錯：' + String((e && e.message) || e).slice(0, 200); if (progress) progress.log(l); this._deckTopicError = String((e && e.message) || e); }
             }
             // 簡報領域：模型只用文字說「已完成」、實際沒有成功產生簡報（沒有播放器可以顯示）時不能信——自己重來，最多再兩次；

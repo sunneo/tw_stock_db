@@ -11,6 +11,7 @@ check('工具參數呼叫點標 toolcall', /_llmGenerate\(S\.model, \{ task: 'to
 check('工具階段呼叫點標 toolcall', /_llmGenerate\(m, \{ task: 'toolcall'/.test(SRC));
 check('食譜規劃模型預設標 plan（呼叫端沒指定時）', /return this\._llmGenerate\(model, Object\.assign\(\{\}, a, \{ tools: \[\], deterministic: true, task: a\.task \|\| opts\.task \|\| 'plan' \}\), \{\}\);/.test(SRC));
 check('UML design 拆解經 _umlModel 傳 decompose', /const off = await this\._planModel\(\{ task: 'decompose' \}\)/.test(SRC));
+check('路由前先備好儲存層（沒開過工作室也能讀登錄表）', /if \(!this\._studioStoreSync\) \{ try \{ this\._studioStoreSync = await this\._studioStorage\(\);/.test(SRC));
 // 路由核心認得這四種任務
 for (const [t, d] of [['colu', 'colu'], ['toolcall', 'toolcall'], ['plan', 'plan'], ['decompose', 'decompose']]) check('taskDomain ' + t, Rt.taskDomain(t) === d);
 check('未知任務回 null（走基底）', Rt.taskDomain('chitchat') === null);
