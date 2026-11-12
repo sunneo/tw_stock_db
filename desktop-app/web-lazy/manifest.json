@@ -44,16 +44,16 @@
     "FA_WEBTRAIN_WORKER_SRC",
     "FA_STUDIO_HOST_FILES"
    ],
-   "size": 541221,
-   "md5": "ae9978a489151851158f7744912bfbe0"
+   "size": 571838,
+   "md5": "f2fdcc8802d6bbdca35b2bc1bd9f0f5a"
   },
   "studioview": {
    "file": "chunks/studioview.js",
    "names": [
     "FA_STUDIO_VIEWER_HTML"
    ],
-   "size": 72485,
-   "md5": "2f856c4432eb3a48ac45590c364cb293"
+   "size": 77247,
+   "md5": "6740d5797e71bb92d760904f179faf65"
   },
   "behavior": {
    "file": "chunks/behavior.js",

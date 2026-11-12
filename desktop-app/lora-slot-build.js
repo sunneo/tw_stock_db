@@ -206,13 +206,18 @@ function buildSlotModel(opts) {
         const layers = [...layerSet].sort((a, b) => a - b);
         if (!layers.length) throw new Error('來源不是 quantize_dynamic 的 q8 圖（找不到 MatMulInteger 層）');
         const targets = [];
+        // 兩種命名都認：官方 q8（ORT 融合後）是 attn/…/MatMul/output_0；optimum＋quantize_dynamic 匯出的是 self_attn/…/MatMul_output_0
+        const GRP_ALIASES = { attn: ['attn', 'self_attn'], mlp: ['mlp'] };
         for (const L of layers) {
             for (const [grp, proj] of PROJ) {
-                const base = `/model/layers.${L}/${grp}/${proj}/MatMul`;
-                const mi = quant.get(base + '_quant');
-                const y = base + '/output_0';
-                const prod = nodeByOutput.get(y);
-                if (!mi || !prod) throw new Error('找不到目標層（預期 quantize_dynamic 的 q8 圖）：' + base);
+                let hit = null;
+                for (const g of GRP_ALIASES[grp] || [grp]) for (const yName of ['/output_0', '_output_0']) {
+                    const b = `/model/layers.${L}/${g}/${proj}/MatMul`;
+                    const m0 = quant.get(b + '_quant'), p0 = nodeByOutput.get(b + yName);
+                    if (m0 && p0) { hit = { base: b, mi: m0, y: b + yName, prod: p0 }; break; }
+                }
+                if (!hit) throw new Error('找不到目標層（預期 quantize_dynamic 的 q8 圖）：/model/layers.' + L + '/' + grp + '|self_attn/' + proj + '/MatMul');
+                const { base, mi, y, prod } = hit;
                 let x = mi.node.inputs[0];
                 if (!x.endsWith('_quantized')) throw new Error('量化輸入命名不符：' + x);
                 x = x.slice(0, -'_quantized'.length);

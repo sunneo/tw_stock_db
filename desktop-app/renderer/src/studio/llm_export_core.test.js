@@ -69,6 +69,20 @@ const okLine = (step) => JSON.stringify({ step, ok: true, bytes: 1 });
     const events = [];
     await E.runExportSteps({ format: 'onnx', steps: cOnnx.steps.slice(0, 2) }, fakeOk, { onEvent: (e) => events.push(e.type) });
     check('執行器：事件順序 start/end 成對', events.join(',') === 'step-start,step-end,step-start,step-end', events);
+    // 續跑：skip 的步驟不執行；停止要求在步驟之間生效（剩下的標未執行、done 只含已完成）
+    const ran = [];
+    const rSkip = await E.runExportSteps(cOnnx, async (argv, id) => { ran.push(id); return { code: 0, stdout: okLine(id), stderr: '' }; }, { skip: new Set(['merge', 'convert']) });
+    check('續跑：skip 的步驟不執行，標「略過（已完成）」，其餘照跑', ran.join(',') === 'quantize,verify,pack' && rSkip.steps[0].state === '略過（已完成）' && rSkip.ok === true && rSkip.done.join() === 'merge,convert,quantize,verify,pack', rSkip);
+    const ran2 = [];
+    let stopAfter = 1, calls = 0;
+    const rStop = await E.runExportSteps(cOnnx, async (argv, id) => { ran2.push(id); return { code: 0, stdout: okLine(id), stderr: '' }; }, { isStopRequested: () => ran2.length >= stopAfter });
+    check('暫停：要求停止後不再開新步驟，剩下標未執行，stopped=true、ok=false', ran2.join() === 'merge' && rStop.stopped === true && rStop.ok === false && rStop.steps[4].state === '未執行' && rStop.done.join() === 'merge', rStop);
+    void calls;
+    const rInt = await E.runExportSteps(cOnnx, async (argv, id) => (id === 'convert' ? { code: -15, stdout: '', stderr: 'killed' } : { code: 0, stdout: okLine(id), stderr: '' }), { isStopRequested: () => false });
+    check('失敗（非停止）仍是失敗', rInt.failedAt === 'convert' && rInt.stopped === false, rInt);
+    let stopNow = false;
+    const rInt2 = await E.runExportSteps(cOnnx, async (argv, id) => { if (id === 'convert') stopNow = true; return id === 'convert' ? { code: -15, stdout: '', stderr: 'killed' } : { code: 0, stdout: okLine(id), stderr: '' }; }, { isStopRequested: () => stopNow });
+    check('被要求停止時中斷的步驟標「中斷」、不算失敗、後面不開始', rInt2.stopped === true && rInt2.failedAt === null && rInt2.steps[1].state === '中斷' && rInt2.steps[2].state === '未執行' && rInt2.done.join() === 'merge', rInt2);
     check('parseStepResult：取最後一行有效 JSON', E.parseStepResult('{"step":"a","ok":false}\n{"step":"b","ok":true}').step === 'b' && E.parseStepResult('x') === null);
 
     // ---- 訓練模式 ----

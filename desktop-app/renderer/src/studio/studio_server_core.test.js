@@ -34,7 +34,7 @@ function mk(desktop, hostOps) {
   r = await t.req('POST', '/api/trainer/snapshot', { name: 'my-trainer' }); check('同名不覆蓋', r.s === 409);
   r = await t.req('POST', '/api/trainer/snapshot', { name: '../x' }); check('不合法名稱被拒', r.s === 400);
   r = await t.req('GET', '/api/assets'); const tg = r.j.groups.find((g) => g.kind === 'trainer');
-  check('資產清單依 kind 分組，標為「我的」', r.j.groups.length === 6 && tg.items.length === 1 && tg.items[0].origin === 'mine', r.j.groups);
+  check('資產清單依 kind 分組，標為「我的」', r.j.groups.length === 7 && tg.items.length === 1 && tg.items[0].origin === 'mine', r.j.groups);
   r = await t.req('GET', '/api/asset?kind=trainer&name=my-trainer'); check('資產詳情含驗證', r.j.verify.ok && r.j.files.some((f) => f.path === 'weights/domains.json'), r.j);
   r = await t.req('GET', '/api/asset-file?kind=trainer&name=my-trainer&path=data%2Fsolutions.json'); check('檔案預覽', r.j.text === '[{"q":1}]', r.j);
   r = await t.req('GET', '/api/datasets'); check('資料集列出 data/ 檔案', r.j.files.some((f) => f.path === 'data/solutions.json'), r.j);
@@ -68,7 +68,7 @@ function mk(desktop, hostOps) {
   r = await t.req('GET', '/api/log'); check('紀錄有項目', r.j.log.length >= 5 && r.j.log.some((x) => /開始訓練/.test(x.text)));
   // 尚未實作的分頁要說原因
   r = await t.req('GET', '/api/teacher'); check('老師已實作；沒有線上 AI 時明說不能跑與原因', r.j.implemented === true && r.j.canRun === false && /線上 AI/.test(r.j.whyNot) && r.j.tools.length === 7, r.j);
-  r = await t.req('GET', '/api/eval'); check('評量已實作；沒接模組時各種類標不可用', r.j.implemented === true && r.j.kinds.length === 6 && r.j.kinds.every((k) => k.available === (k.kind === 'lora' ? true : false)), r.j.kinds);
+  r = await t.req('GET', '/api/eval'); check('評量已實作；沒接模組時各種類標不可用', r.j.implemented === true && r.j.kinds.length === 7 && r.j.kinds.every((k) => k.available === (k.kind === 'lora' ? true : false)), r.j.kinds);
   r = await t.req('GET', '/api/nope'); check('未知路由 404', r.s === 404);
   // ===== 第二輪：資料匯入與清洗、老師領取、LoRA 登錄 =====
   const md = (n) => '# 離線訓練工作室說明 ' + n + '\n\n這份文件說明如何安裝並啟動離線訓練工作室，需要先準備好基底模型與訓練資料，然後依步驟執行，最後匯出訓練包到另一台電腦繼續訓練。\n\n## 匯出\n\n匯出時會把資產切成二十 MB 的分片，並且記錄每個檔案的雜湊，匯入時先檢查摘要再確認，避免覆蓋掉使用者原本的資料。聯絡信箱 someone@example.com 不該留下。\n';

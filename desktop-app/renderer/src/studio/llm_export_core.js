@@ -142,26 +142,37 @@
     }
 
     /* runExportSteps(cmds, runner, opts)：依序執行；runner(argv, id) → Promise<{code, stdout, stderr}>（可能丟例外）。
-     * 任一步失敗就停止（後面的步驟標「未執行」）。opts.onEvent(e) 每步開始／結束時呼叫。 */
+     * 任一步失敗就停止（後面的步驟標「未執行」）。
+     * opts.onEvent(e)：每步開始／結束時呼叫。
+     * opts.skip：Set（步驟 id），在裡面的步驟不執行，標「略過（已完成）」（續跑用）。
+     * opts.isStopRequested()：每一步開始前檢查；要求停止（暫停或取消）就不再開新步驟，剩下的標「未執行」，回傳 stopped:true。 */
     async function runExportSteps(cmds, runner, opts) {
         const onEvent = (opts && opts.onEvent) || (() => {});
+        const skip = (opts && opts.skip) || new Set();
+        const stopReq = (opts && opts.isStopRequested) || (() => false);
         const steps = [];
-        let failedAt = null;
+        let failedAt = null, stopped = false;
         for (let i = 0; i < cmds.steps.length; i++) {
             const s = cmds.steps[i];
-            if (failedAt !== null) { steps.push({ id: s.id, label: s.label, state: '未執行' }); continue; }
+            if (failedAt !== null || stopped) { steps.push({ id: s.id, label: s.label, state: '未執行' }); continue; }
+            if (skip.has(s.id)) { steps.push({ id: s.id, label: s.label, state: '略過（已完成）' }); onEvent({ type: 'step-skip', id: s.id }); continue; }
+            if (stopReq()) { stopped = true; steps.push({ id: s.id, label: s.label, state: '未執行' }); continue; }
             onEvent({ type: 'step-start', id: s.id, label: s.label });
             let r;
             try { r = await runner(s.argv, s.id); } catch (e) { r = { code: -1, stdout: '', stderr: String((e && e.message) || e) }; }
             const j = parseStepResult(r && r.stdout);
             const ok = !!(r && r.code === 0 && j && j.ok === true);
-            const rec = { id: s.id, label: s.label, state: ok ? '完成' : '失敗', code: r ? r.code : -1, result: j,
+            // 被要求停止時中斷的步驟不是失敗：標「中斷」，之後的步驟不再開始
+            const interrupted = !ok && stopReq();
+            const rec = { id: s.id, label: s.label, state: ok ? '完成' : (interrupted ? '中斷' : '失敗'), code: r ? r.code : -1, result: j,
                 error: ok ? '' : ((j && j.error) || String((r && r.stderr) || '').split(/\r?\n/).filter(Boolean).slice(-3).join(' | ') || '沒有輸出（退出碼 ' + (r ? r.code : '?') + '）') };
             steps.push(rec);
             onEvent({ type: 'step-end', id: s.id, state: rec.state, error: rec.error });
-            if (!ok) failedAt = s.id;
+            if (interrupted) stopped = true;
+            else if (!ok) failedAt = s.id;
         }
-        return { ok: failedAt === null, format: cmds.format, failedAt, steps };
+        const done = steps.filter((x) => x.state === '完成' || x.state === '略過（已完成）').map((x) => x.id);
+        return { ok: failedAt === null && !stopped, stopped, format: cmds.format, failedAt, steps, done };
     }
 
     // 訓練模式：LoRA 已實作（cpu-py／wasm-web）；完整微調有腳本（train_full.py），只跑過 smoke

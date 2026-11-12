@@ -368,18 +368,31 @@ T.train=async function(body){
   out.appendChild(h('label',{text:'基底 HF 資料夾'}));out.appendChild(lbd);
   var lGo=h('button',{'class':'pri',text:'匯出',disabled:!r.desktop,onclick:async function(){var x=await api('POST','/api/llm/export',{format:lfm.value,adapterDir:lad.value.trim(),baseDir:lbd.value.trim()});if(x.ok===false){alert(x.error||'匯出沒有啟動');if(x.tools)ltool.textContent=JSON.stringify(x.tools);return}pollLlmExport(lst)}});
   var lChk=h('button',{text:'檢查工具',disabled:!r.desktop,onclick:async function(){var x=await api('GET','/api/llm/tools');if(x.ok===false){ltool.textContent=x.error||'偵測失敗';return}ltool.textContent=Object.keys(x.availability||{}).map(function(k){var a=x.availability[k];return k.toUpperCase()+'：'+(a.available?'可用':'不可用（'+a.reason+'）')}).join('\n')}});
-  out.appendChild(h('div',{'class':'row'},[lGo,lChk]));out.appendChild(ltool);out.appendChild(lst);
+  out.appendChild(h('div',{'class':'row'},[lGo,lChk]));out.appendChild(ltool);out.appendChild(lst);out.appendChild(h('div',{id:'fa-llm-actions','class':'row'}));
   if(!r.desktop)out.appendChild(h('div',{'class':'todo',text:'網頁版只能匯出設定、實際匯出在桌面版（需要 Python 與 llama.cpp）。'}));
   if(!r.desktop&&!r.webTrain)out.appendChild(h('div',{'class':'todo',text:'這個環境沒有可用的訓練後端（沒有子行程，頁內處理器訓練也沒接上）。到「資產清單」匯出 .fatrain，拿到桌面版訓練。'}));
   if(!r.desktop&&r.webTrain)out.appendChild(h('div',{'class':'todo',text:'網頁版用頁內處理器訓練：慢但正確；可隨時「暫停」，再「匯出續訓檢查點」帶到另一台（桌面版或另一個網頁）接著訓練。'}));
   out.appendChild(prog);prog.appendChild(h('div',{text:'還沒有訓練。'}));prog.appendChild(cv);pollTrain(prog,cv,true)}
  ksel.onchange=build;build()};
+var llmLastJob=null;
 async function pollLlmExport(box){clearTimeout(pollLlmExport.t);var r=await api('GET','/api/llm/export/status');box.textContent='';
+ var act=document.getElementById('fa-llm-actions');if(act)act.textContent='';
  if(r.ok===false){box.textContent=r.error||'讀取失敗';return}
  if(r.state==='idle'){box.textContent='還沒有匯出。';return}
- box.textContent='狀態：'+({running:'執行中…',finished:'完成',failed:'失敗'}[r.state]||r.state)+(r.outDir?'\n輸出資料夾：'+r.outDir:'');
- (r.steps||[]).forEach(function(s){box.textContent+='\n'+s.state+'　'+s.label+(s.error?'　→ '+s.error:'')});
- if(!r.steps){(r.events||[]).forEach(function(e){if(e.type==='step-start')box.textContent+='\n開始：'+e.label})}
+ llmLastJob=r;
+ var stateName={running:'執行中…',finished:'完成',failed:'失敗',paused:'已暫停（已完成的步驟保留，可續跑）',cancelled:'已取消（已完成的步驟保留，可續跑）'}[r.state]||r.state;
+ box.textContent='狀態：'+stateName+(r.outDir?'\n輸出資料夾：'+r.outDir:'');
+ if(r.steps)r.steps.forEach(function(s){box.textContent+='\n'+s.state+'　'+s.label+(s.error?'　→ '+s.error:'')});
+ else (r.events||[]).forEach(function(e){if(e.type==='step-start')box.textContent+='\n開始：'+e.label});
+ if(act){
+  if(r.state==='running'){act.appendChild(h('button',{text:'暫停（保留進度）',onclick:async function(){var x=await api('POST','/api/llm/export/pause',{jobId:r.jobId});if(x.ok===false)alert(x.error)}}));
+   act.appendChild(h('button',{'class':'dng',text:'取消',onclick:async function(){if(confirm('取消匯出？已完成的步驟會保留，可以之後續跑。'))await api('POST','/api/llm/export/cancel',{jobId:r.jobId})}}))}
+  if(r.state==='paused'||r.state==='cancelled'||r.state==='failed'){act.appendChild(h('button',{text:'續跑',onclick:async function(){var x=await api('POST','/api/llm/export/resume',{jobId:r.jobId,workDir:r.workDir});if(x.ok===false){alert(x.error);return}pollLlmExport(box)}}))}
+  if(r.state==='finished'){var nmI=h('input',{type:'text',placeholder:'資產名稱（留空自動取名）'});act.appendChild(nmI);
+   act.appendChild(h('button',{'class':'pri',text:'登錄成 LLM 資產',onclick:async function(){var x=await api('POST','/api/llm/export/register',{jobId:r.jobId,name:nmI.value.trim()||undefined});if(x.ok===false){alert(x.error);return}alert('已登錄為 llm/'+x.name+'（到「資產」分頁查看）'+(x.warning?'\n'+x.warning:''))}}));
+   if(r.format!=='gguf'){act.appendChild(h('button',{text:'設為離線模型（桌面版）',onclick:async function(){var nm2=nmI.value.trim();if(!nm2){alert('先登錄成資產（填名稱）後再設為離線模型');return}var x=await api('POST','/api/llm/use',{name:nm2});if(x.ok===false){alert(x.error);return}alert('離線模型已改為 llm/'+nm2+'。重新啟動離線模型後生效。')}}))}
+  }
+ }
  if(r.state==='running')pollLlmExport.t=setTimeout(function(){pollLlmExport(box)},2000);
 }
 async function pollBench(tb,bStart,bStop){bStart.disabled=true;bStop.disabled=false;clearTimeout(pollBench.t);

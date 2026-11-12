@@ -89,6 +89,7 @@
     function exportAsset(asset, opts) {
         opts = opts || {}; const shardBytes = Math.max(16, opts.shardBytes || SHARD_BYTES);
         const m = asset.manifest, files = asset.files || {};
+        if (Object.keys(m.external || {}).length) return { ok: false, error: '這個 llm 資產的大權重在外部檔（' + Object.keys(m.external).join('、') + '），.fatrain 還不能打包外部檔（需要分片串流，尚未實作）；目前只能在這台機器上使用它' };
         const v = Asset.verifyFiles(m, files); if (!v.ok) return { ok: false, error: '匯出前核對失敗：' + v.message };
         const chk = Asset.validateManifest(m); if (!chk.ok) return { ok: false, error: 'manifest 不合法：' + chk.errors.join('；') };
         const entries = []; const shards = {};

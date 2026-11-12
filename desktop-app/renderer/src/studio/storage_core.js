@@ -113,7 +113,7 @@
             async remove(key) { await memory.delete(key); if ((await fapState()).ok) { try { await fap.delete(key); } catch (_) { /* */ } } },
             async loadManifest(kind, name) { const b = await read(dir(kind, name) + 'manifest.json'); if (!b) return null; try { return JSON.parse(dec(b)); } catch (_) { return null; } },
             async saveAsset(asset, opts) {
-                const m = asset.manifest; const d = dir(m.kind, m.name); const v = Asset.verifyFiles(m, asset.files);
+                const m = asset.manifest; const d = dir(m.kind, m.name); const v = Asset.verifyFiles(m, asset.files, { external: Object.keys(m.external || {}) });
                 if (!v.ok) return { ok: false, error: '拒絕儲存：' + v.message };
                 const res = { ok: true, dataMayBeLost: false, written: 0 };
                 if (opts && opts.replace) { const keep = new Set(Object.keys(asset.files).map((p) => d + p).concat([d + 'manifest.json'])); for (const k of await listKeys(d)) if (!keep.has(k)) await this.remove(k); }
@@ -125,7 +125,7 @@
             async loadAsset(kind, name) {
                 const d = dir(kind, name); const manifest = await this.loadManifest(kind, name); if (!manifest) return null;
                 const files = {}; for (const p of Object.keys(manifest.sha256 || {})) { const b = await read(d + p); if (b) files[p] = b; }
-                const v = Asset.verifyFiles(manifest, files, { allowExtra: true });
+                const v = Asset.verifyFiles(manifest, files, { allowExtra: true, external: Object.keys(manifest.external || {}) });
                 return { asset: { manifest, files }, verify: v };
             },
             async listAssets() {

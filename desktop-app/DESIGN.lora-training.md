@@ -888,3 +888,22 @@ model card 欄位以 `description`（一句話，來自描述檔，§13.2）與 
 3. 桌面版設定頁的模型選單（指向匯出資料夾，`tokenizerPath` 用同一資料夾）；用真的 `nr-engine` 載入一次。
 4. q8 品質：要的話用更大的留出集（KL 或分佈級指標），試 weight-only（需要 `onnx_ir`，要先取得同意）；目前不宣稱達標。
 5. 完整微調的品質訓練：資料、步數、留出評量都還沒做。
+
+### 25.11 指揮追加的七項（2026-11-12，同一分支；誠實版本：哪些做完、哪些沒做完）
+
+| # | 要求 | 狀態 | 實測／原因 |
+|---|---|---|---|
+| 1 | 資產列表 kind:'llm'（KINDS、storage、server 列表／詳情／登錄、分片、sha256、.fatrain 往返） | **部分** | 完成：`KINDS` 加 `llm`；`llm` 資產的 manifest 有 `llm{format,quant,recipe}` 與 `external{路徑:{bytes,location}}`（權重不進記憶體，sha256 表仍包含）；`verifyFiles` 只跳過宣告為 external 的檔；`POST /api/llm/export/register` 把匯出結果登錄成資產（小檔進資產、權重記外部位置）；資產清單的 LLM 群組已加（`asset_core.test.js` 60 項、`storage_core` 30、`studio_server_core` 126、`studio_embed` 17 全過）。**未做**：`.fatrain` 往返（外部權重需要分片串流，現在 `fatrain_core` 會明確拒絕並說明原因）；分片；網頁版實際讀取（外部位置只在這台機器有效）。 |
+| 2 | 模型選單（桌面 nr-engine 載入；網頁 onnxruntime-web；GGUF 列出、匯出、下載） | **部分** | 完成（桌面）：`POST /api/llm/use` 把 ONNX 資產寫成 `<userData>/studio-host/llm-model-choice.json`；`main-ext.js` 的 `baseModel`／`baseTokenizer` 優先讀它（環境變數仍最優先）。**未實跑**（沒有開 Electron）。**未做**：網頁版 onnxruntime-web 載入（需要把 q8 圖與分詞器送到瀏覽器，尚未設計）；GGUF 在網頁版的下載（資產列表會列出，但沒有下載路由）；LoRA 槽與自選模型的互斥（目前 LoRA 仍以標準版為基底，選了 llm 之後兩者可能不一致，這是已知缺口）。 |
+| 3 | 用桌面版的 onnxruntime-node 1.22 驗證匯出的 ONNX | **部分** | 完成（同一個執行包內的套件，以一般 Node 載入，不是在 Electron 裡）：`~/.config/floating-assistant-desktop/native-runtime/1.22.0-1/node_modules/onnxruntime-node`（版本 1.22.0）。fp32 ONNX：貪婪 16 token 對 HF 96/96 逐字一致（6/6 題全對）；q8 full：44/96（2/6 題全對，比 Python ORT 1.31 的 39/96 略好，差異來自 ORT 版本）。**未做**：Electron 內用 `xvfb-run … electron . --no-sandbox` 與 `FA_DEBUG_EVAL_FILE` 實跑（下一步：寫一個 eval 檔，讀取匯出的模型並生成）。 |
+| 4 | lora-slot-build.js 吃 full 產物並跑出 LoRA 槽版 | **完成** | 原本的建置器只認官方 q8 的命名（`attn/…/MatMul/output_0`），對 optimum＋quantize_dynamic 的圖報「找不到目標層」。改成兩種命名都認（`self_attn/…/MatMul_output_0` 也接受）。結果：rank 4，196 個目標層，`lora.bin` 10,092,544 位元組（與 adapter 的 rank 相同）。驗證：(a) 全零 lora.bin 的槽版與 q8 的貪婪 token 完全相同（ORT 1.22）；(b) 把 toolcall-r4 adapter 用 `make_lora_onnx.pack`（alpha/r 摺進 B）打包後，槽版首步 logits 對 PEFT 參考的餘弦平均 0.926（top-1 多數相同）；貪婪 token 10/96（與 q8 本身的量化誤差同一量級，LoRA 分支本身無法單獨判斷好壞）。 |
+| 5 | 匯出可取消、可暫停、可續跑 | **完成（主行程模組的實測）** | 核心：`runExportSteps` 支援 `skip`（續跑）與 `isStopRequested`（停止要求在步驟之間生效；被打斷的步驟標「中斷」、不算失敗）。主行程：`studio_llm_export_pause`、`_cancel`、`_resume`；子行程以 `nice -n 19` 執行（與訓練一致）、用 process group 結束；續跑前清掉未完成步驟的殘留輸出。路由：`POST /api/llm/export/pause|cancel|resume`，UI 有對應按鈕。**實測**（`~/fa/lora-export-work/driver/host_e2e.js`，真的 `studio_host.js` 與真的子行程）：ONNX 匯出在 quantize 中途暫停 → 狀態「paused」、步驟 merge／convert 完成、quantize「中斷」；續跑 → merge、convert 標「略過（已完成）」，quantize、verify、pack 完成（`finished`）。**取消**走同一段程式（只是狀態名不同），沒有另外做 e2e。 |
+| 6 | Python 匯出腳本的測試（迷你 Qwen3 smoke；大資源另標 measureOnly） | **完成（小型）／未做（大型）** | `lora-train/test_export_smoke.py`：用隨機初始化的迷你 Qwen3（2 層、hidden 64）＋ 迷你 LoRA，跑 merge → ONNX（convert／quantize full／verify／pack）→ GGUF（convert／quantize／verify／pack，llama-server）→ `train_full.py`（smoke、stop_file 暫停、checkpoint 續訓）。結果：**18 passed, 0 failed**（需要的 python、tokenizer、llama.cpp 都有時）；缺哪個就略過該段並印出原因。已登記於 `scripts/run-core-tests.js`（匯出環境 python 不在時印「略過」）。**大型（Qwen3-0.6B 全量的 train_full、真實 ONNX 匯出）未登記 measureOnly**：跑法是 `FA_QWEN3_TOKENIZER=<Qwen3-0.6B> lora-train/.venv-export/bin/python lora-train/test_export_smoke.py` 以及 §25.5 的 smoke 指令（沒有寫成自動測試，因為單次需要約 15 GB 記憶體與數分鐘）。 |
+| 7 | 在分支 commit（不 push／publish）；embed-code-ui 與 build-assistant；grep 確認 | **完成** | `node scripts/embed-code-ui.js` 與 `node build-assistant.js`（build 需要 `node_modules`：工作樹建了指向主 checkout 的符號連結，**未提交**）。grep 確認：`renderer/floating-assistant.js` 與 `.min.js` 都含 `studio_llm_export_pause`、`/api/llm/export/register`、`llm-model-choice.json`、`buildStepCommands`、`fa-llm-actions`、`LLM 模型（匯出）`；`web-lazy/chunks/studio.js` 與 `studioview.js` 也含對應字串。`studio_embed.test.js` 17 項全過。 |
+
+**沒做完、要寫清楚的理由與下一步**
+- 網頁版 onnxruntime-web 載入 llm 資產（項目 2）：需要設計瀏覽器端的模型來源（資產是外部檔，網頁版拿不到路徑）；下一步＝決定網頁版要從 studio 伺服器的路由串流 q8 檔，還是只支援 fp32／小模型，然後接 `backend_wasm_web` 的 onnxruntime-web。
+- `.fatrain` 往返與分片（項目 1）：下一步＝外部權重不進 zip，而是 `.fatrain` 內只帶 manifest 與小檔，大權重以 20 MB 分片的獨立檔案匯出，匯入時串流寫回；需要改 `fatrain_core` 的寫入與讀取。
+- Electron 實跑（項目 2、3）：下一步＝寫 `FA_DEBUG_EVAL_FILE` 腳本，在真的桌面版裡呼叫 `studio_llm_use` 後生成一次，並比對貪婪 token。
+- LoRA 槽與自選模型的互斥（項目 2）：下一步＝選 llm 時停用 LoRA 槽，或為選定的 llm 建立它自己的槽版。
+- 登錄路由（`/api/llm/export/register`）目前只有「主行程 bundle＋伺服器端 manifest 組裝」的程式路徑，沒有經過真的 HTTP 測試；`llm_export_core` 與 host 的測試都過。
