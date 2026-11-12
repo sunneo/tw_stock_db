@@ -406,7 +406,8 @@ for (const [name, file] of suites) {
     const t0 = Date.now(), r = spawnSync(process.execPath, [path.join(root, file)], { encoding: 'utf8' });
     const last = String(r.stdout || '').trim().split('\n').pop();
     // 結束碼 0 才算過；結尾行接受三種寫法：英文 N passed／0 failed，或中文「全部通過」「通過 N 項，失敗 0 項」「0 失敗」（有些測試用中文結尾：「全部通過」「通過 N 項」「0 失敗」）
-    const ok = r.status === 0 && /(0 failed|[0-9]+ passed|全部通過|失敗 0 項|0 失敗|通過 [0-9]+ 項)/.test(last) && !/FAILED/.test(last);
+    // 補登的測試各有自己的結尾寫法（「23 tests passed」「ALL 20 PASS」「69 assertions passed」「19 項全過」「38 通過」「24 項通過」）：結束碼 0 且結尾行有通過字樣、沒有失敗字樣就算過
+    const ok = r.status === 0 && /(0 failed|[0-9]+ passed|passed|全部通過|失敗 0 項|0 失敗|通過 [0-9]+ 項|[0-9]+ 項(全過|通過)|[0-9]+ 通過|全過|ALL [0-9]+ PASS)/i.test(last) && !/FAILED|[1-9][0-9]* failed|失敗 [1-9]/i.test(last);
     const reason = ok ? '' : reasonOf(r), isKnown = !ok && Object.prototype.hasOwnProperty.call(known, file);
     if (!ok) { failed++; if (!isKnown) failedNew++; }
     console.log((ok ? 'PASS ' : (isKnown ? 'FAIL(既有) ' : 'FAIL(新增) ')) + name + '：' + (ok ? last : reason || last));
