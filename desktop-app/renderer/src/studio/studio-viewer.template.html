@@ -139,12 +139,26 @@ async function detail(kind,name,body,dt){var r=await api('GET','/api/asset?kind=
  box.appendChild(h('button',{text:'關閉這個分頁',onclick:function(){closeDetail(kind+'/'+name)}}));body.insertBefore(box,dt?null:(body.children[2]||null))}
 async function applyTrainer(name){var d=await api('POST','/api/trainer/apply',{name:name});if(d.ok===false){alert(d.error);return}
  if(!confirm('把 trainer/'+name+' 合併進目前的離線訓練器？\n預覽結果：'+JSON.stringify(d.result).slice(0,300)))return;var x=await api('POST','/api/trainer/apply',{name:name,confirmed:true});alert(x.ok===false?x.error:'已套用：'+JSON.stringify(x.result).slice(0,300))}
+// 匯入 LoRA 的說明：會不會被拒、可載但要注意的事、卡片揭露、與同名現有資產的版本差異（都是伺服器算出來的，這裡只顯示）
+function loraReportEl(x){
+ if(!x)return null;
+ var LM=FaStudioLoraManage,kids=[h('b',{text:'LoRA 相容性說明'})];
+ if(!x.ok)kids.push(h('div',{'class':'err',text:'會被拒絕載入：'+(x.error||x.level)}));
+ else if(x.level==='warn')kids.push(h('div',{'class':'warn',text:'可以載入，但注意：'+((x.compat&&x.compat.warnings)||[]).join('；')}));
+ else kids.push(h('div',{text:'相容：基底、槽寬、提示格式版本都對，可以載入。'}));
+ if(x.ok&&x.compat&&x.compat.warnings&&x.compat.warnings.length&&x.level!=='warn')kids.push(h('div',{'class':'warn',text:x.compat.warnings.join('；')}));
+ var dis=x.summary?LM.disclosuresOf(x.summary.limits):[];
+ if(dis.length)kids.push(h('div',{'class':'warn',text:'卡片揭露（'+dis.length+' 項）：'+dis.join('；')}));
+ if(x.versionDiff){var d=h('div',{});d.innerHTML=LM.renderCompareHTML(x.versionDiff);kids.push(d)}
+ else if(x.summary)kids.push(h('div',{style:'color:var(--mut);font-size:12px',text:'沒有同名的現有 LoRA，沒有版本差異可比。'}));
+ return h('div',{'class':'card'},kids);
+}
 async function doImport(){var r=await api('POST','/api/import/pick');var box=$('#impBox');if(!box)return;box.textContent='';if(r.cancelled)return;
  if(r.ok===false){box.appendChild(h('div',{'class':'warn',text:'匯入被拒：'+r.error+(r.suggest==='fork'?'（可改用「另存新名稱」）':'')}));return}
  var s=r.summary,mode=h('select',{},[h('option',{value:'auto',text:r.plan.action==='merge'?'合併進現有資產':'新增'}),h('option',{value:'replace',text:'整個取代現有'}),h('option',{value:'fork',text:'另存新名稱（fork）'})]),fn=h('input',{type:'text',placeholder:'fork 名稱',value:s.name+'-fork'});
  box.appendChild(h('div',{'class':'card'},[h('div',{},[h('b',{text:'先看內容再確認：'+r.file})]),h('div',{text:s.kind+'/'+s.name+'　'+s.files+' 個檔案　'+fmtB(s.bytes)+'　基底：'+(s.base||'—')+'　建立：'+(s.created||'—')}),
   r.existing?h('div',{'class':'warn',text:'已有同名資產（'+JSON.stringify(r.existing.counts||{})+'），預設會合併'}):h('div',{text:'沒有同名資產，會新增。'}),
-  (r.warnings||[]).length?h('div',{'class':'warn',text:r.warnings.join('；')}):null,h('label',{text:'處理方式'}),mode,fn,
+  (r.warnings||[]).length?h('div',{'class':'warn',text:r.warnings.join('；')}):null,loraReportEl(r.loraReport),h('label',{text:'處理方式'}),mode,fn,
   h('div',{'class':'row'},[h('button',{'class':'pri',text:'確認匯入',onclick:async function(){var x=await api('POST','/api/import/confirm',{pendingId:r.pendingId,mode:mode.value,forkName:fn.value});if(x.ok===false){alert(x.error+(x.suggest==='fork'?'\n請改選「另存新名稱」':''));return}if(x.dataMayBeLost)alert('注意：資料目前只存在記憶體（沒有授權資料夾），瀏覽器資料被清掉會遺失。請另外匯出備份。');refresh('assets')}}),h('button',{text:'取消',onclick:function(){api('POST','/api/import/cancel');box.textContent=''}})])]))}
 T.datasets=async function(body){var r=await api('GET','/api/datasets');body.appendChild(h('div',{'class':'todo',text:'資料集：瀏覽資產裡 data/ 的檔案（包含「資料匯入」存下來的 corpus／requests／train.jsonl）。.jsonl 與 .json 可以逐筆修改、刪除、新增，寫回資產時重算雜湊；內建資產唯讀。'}));
  if(r.note)body.appendChild(h('div',{'class':'row',text:r.note}));var pv=h('pre',{style:'display:none'}),rowsBox=h('div',{});
@@ -263,15 +277,22 @@ T.lora=async function(body){
  var st=await api('GET','/api/lora/status');
  body.appendChild(h('div',{style:'color:var(--mut);font-size:12px',text:'主程式環境：基底 '+r.env.base+'，rank 槽 '+r.env.rank_slots.join('／')+'，提示格式版本 '+r.env.prompt_format_version+'；記憶體預算 '+fmtB(r.budget)+'，同時啟用 '+r.maxActive+' 個'}));
  if(r.applyBlocker)body.appendChild(h('div',{'class':'warn',text:'⚠️ 載入 ≠ 套用：'+r.applyBlocker}));
+ if(st.ok!==false&&st.native){var nat=st.native,last=nat.last;
+  if(nat.available===false||(nat.ok===false&&!last))body.appendChild(h('div',{'class':'todo',text:'原生推論套用狀態：'+(nat.error||nat.reason||'無法取得')}));
+  else body.appendChild(h('div',{'class':last&&last.ok?'todo':'warn',text:last?('原生推論套用狀態：'+(last.ok?'已套用 '+((last.applied||[]).join('、')||'（無）'):'未套用：'+(last.error||'原因不明'))):'原生推論套用狀態：目前沒有套用任何 LoRA（基底）'}));
+ }
+ if(r.dataOnly&&r.dataOnly.length)body.appendChild(h('div',{'class':'todo',text:'資料資產（只含資料，不是 adapter，不進登錄表）：'+r.dataOnly.join('、')}));
  await slotCard(body);
  body.appendChild(h('div',{'class':'row'},[h('button',{text:'重新整理',onclick:function(){refresh('lora')}}),h('button',{text:'全部卸載',onclick:async function(){await api('POST','/api/lora/unload',{});refresh('lora')}})]));
  if(st.ok===false){body.appendChild(reason('讀取登錄狀態失敗：'+st.error))}
  else{
   var LM=FaStudioLoraManage, model={rows:LM.rowsFromStatus(st),budget:LM.budgetOf(st),busy:LM.busyText(st)};
   var box=h('div',{}),cardBox=h('div',{});box.innerHTML=LM.renderLoraManageHTML(model);body.appendChild(box);body.appendChild(cardBox);
+  if(model.rows.length>1){var sa=h('select',{},model.rows.map(function(q){return h('option',{value:q.id,text:q.name+'（'+q.version+'）'})})),sb=h('select',{},model.rows.map(function(q){return h('option',{value:q.id,text:q.name+'（'+q.version+'）'})}));sb.selectedIndex=1;var cmpBox=h('div',{});
+   body.appendChild(h('div',{'class':'grp',text:'版本比較（兩個已登錄的 LoRA）'}));body.appendChild(h('div',{'class':'row'},[sa,sb,h('button',{text:'比較',onclick:async function(){var x=await api('GET','/api/lora/compare?a='+encodeURIComponent(sa.value)+'&b='+encodeURIComponent(sb.value));cmpBox.textContent='';if(x.ok===false){cmpBox.appendChild(reason(x.error));return}cmpBox.innerHTML=LM.renderCompareHTML(x.diff)}})]));body.appendChild(cmpBox)}
   box.addEventListener('click',async function(ev){var b=ev.target.closest&&ev.target.closest('[data-lora-action]');if(!b||b.disabled)return;
    var id=b.getAttribute('data-id'),act=b.getAttribute('data-lora-action'),row=model.rows.filter(function(x){return x.id===id})[0],x=null;
-   if(act==='card'){cardBox.textContent='';var c=await api('GET','/api/lora/card?id='+encodeURIComponent('lora/'+id));if(c.ok===false){cardBox.appendChild(reason('讀取介紹失敗：'+c.error));return}cardBox.innerHTML=c.hasCard?LM.cardIntroHTML(c.card):'';if(!c.hasCard)cardBox.appendChild(reason('這個 LoRA 沒有 model_card.json，沒有介紹與能力說明。'));return}
+   if(act==='card'){cardBox.textContent='';var c=await api('GET','/api/lora/card?id='+encodeURIComponent('lora/'+id));if(c.ok===false){cardBox.appendChild(reason('讀取介紹失敗：'+c.error));return}cardBox.innerHTML=LM.registryCardHTML(row)+(c.hasCard?LM.cardIntroHTML(c.card):'');if(!c.hasCard)cardBox.appendChild(reason('這個 LoRA 沒有 model_card.json，沒有介紹與能力說明。'));return}
    if(act==='load')x=await api('POST','/api/lora/load',{ids:[id]});
    else if(act==='unload')x=await api('POST','/api/lora/unload',{id:id});
    else if(act==='pin')x=await api('POST','/api/lora/pin',{id:id,on:!row.pinned});

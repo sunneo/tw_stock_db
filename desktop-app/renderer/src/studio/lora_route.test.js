@@ -51,5 +51,15 @@ const mkLoader = () => { const log = []; return { log, load: async (e) => { log.
         const h = await Rt.routeTurn({ resolve: async () => { throw new Error('壞掉'); } }, 'plan', {});
         check('登錄表丟例外：回基底並附原因', h.fallback === 'base' && /登錄表錯誤/.test(h.reason), h);
     }
-    console.log(ok + ' passed, ' + bad + ' failed'); process.exit(bad ? 1 : 0);
+    // 觸發字：applies.triggers 在這一輪的話裡出現時，即使任務類型不同也會選用（第三輪，對應 DESIGN §26）
+{
+  const reg = R.createRegistry({ env: ENV, slotCapacity: 16, maxActive: 4, loader: { load: async (x) => ({ id: x.id }), unload: async () => {} } });
+  const good = { score: 1, groups: { g: { adapter: 9, base: 5 } } };
+  reg.register({ id: 'uml-dec', name: 'uml-dec', source: 'imported', base: ENV.base, rank: 4, slot_rank: 16, prompt_format_version: 3, tool_catalog_sha256: H('a'), domains: ['decompose'], triggers: ['UML'], location: 'asset:lora/uml-dec', size: 40 * MB, sha256: H('b'), eval: good, enabled: true });
+  const withText = await Rt.routeTurn(reg, 'toolcall', { prevActive: [], text: '請用 UML 幫我拆' });
+  check('觸發字命中：任務是 toolcall 也會選到 decompose 的 adapter', withText.active.join() === 'uml-dec', withText);
+  const noText = await Rt.routeTurn(reg, 'toolcall', { prevActive: [] });
+  check('沒有文字：不靠觸發字，維持原本行為（沒有符合就用基底）', noText.fallback === 'base' && noText.active.length === 0, noText);
+}
+console.log(ok + ' passed, ' + bad + ' failed'); process.exit(bad ? 1 : 0);
 })();

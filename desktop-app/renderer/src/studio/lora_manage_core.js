@@ -103,7 +103,8 @@
                 source: r.source || '未標註', enabled: r.enabled !== false, compat: r.compat || 'ok', compatReasons: Array.isArray(r.compatReasons) ? r.compatReasons : [],
                 domains: Array.isArray(r.domains) ? r.domains : [], triggers: Array.isArray(r.triggers) ? r.triggers : [], description: r.description || '',
                 evalWin: r.eval && Array.isArray(r.eval.win) ? r.eval.win : null, evalLose: r.eval && Array.isArray(r.eval.lose) ? r.eval.lose : null,
-                location: r.location || '', created: timeText(Number(r.added)), actions
+                location: r.location || '', created: timeText(Number(r.added)), actions,
+                slotRank: r.slotRank != null ? r.slotRank : r.rank, compatWarnings: Array.isArray(r.compatWarnings) ? r.compatWarnings : [], limits: Array.isArray(r.limits) ? r.limits : [], evalMetrics: r.evalMetrics || null
             };
         });
     }
@@ -120,6 +121,27 @@
         return Object.assign({}, row, { hasRegistryCard: true });
     }
 
+    // 卡片揭露：已知限制裡提到退步、未量、沒有量、不可用於的，要在最上面標出來（不能藏在清單底下）
+    const DISCLOSURE_RE = /退步|未量|沒有量|沒有評量|不可用於|不能用於|不可以用於|不可用|不可以/;
+    function disclosuresOf(limits) { return (Array.isArray(limits) ? limits : []).filter((x) => DISCLOSURE_RE.test(String(x))); }
+    const discBanner = (limits) => { const d = disclosuresOf(limits); return d.length ? '<div class="warn"><b>卡片揭露（' + d.length + ' 項）：</b><ul>' + d.map((x) => '<li>' + esc(x) + '</li>').join('') + '</ul></div>' : ''; };
+
+    // 評量數字的一行文字（只用 card 的 split_legal_rate／fc_format_rate；沒有的寫無資料）
+    function evalLinesHTML(ev) {
+        if (!ev) return '<div class="na">無資料（沒有評量數字）</div>';
+        const lines = Object.keys(METRIC_KEYS).map((k) => { const m = ev[k]; return m && isNum01(m.base) && isNum01(m.tuned) ? '<div>' + esc(METRIC_KEYS[k]) + '：' + esc(Math.round(m.base * 1000) / 10) + '% → ' + esc(Math.round(m.tuned * 1000) / 10) + '%（n=' + esc(m.n) + '）</div>' : null; }).filter(Boolean);
+        return lines.length ? lines.join('') : '<div class="na">無資料（沒有評量數字）</div>';
+    }
+
+    // 版本比較的表（diffSummaries 的結果）：有差異的列加粗
+    function renderCompareHTML(diff) {
+        if (!diff) return '<div class="na">無資料（沒有可比較的版本）</div>';
+        const rows = diff.rows.map((r) => '<tr' + (r.changed ? ' class="on"' : '') + '><td>' + esc(r.field) + '</td><td>' + esc(r.a) + '</td><td>' + esc(r.b) + '</td><td>' + (r.changed ? '<b>有差異</b>' : '相同') + '</td></tr>').join('');
+        const lim = (diff.limitsAdded.length || diff.limitsRemoved.length)
+            ? '<div>已知限制：新增 ' + esc(diff.limitsAdded.join('；') || '無') + '；移除 ' + esc(diff.limitsRemoved.join('；') || '無') + '</div>' : '<div>已知限制：相同</div>';
+        return '<div class="card"><b>版本比較' + (diff.same ? '（沒有差異）' : '') + '</b><table><tr><th>項目</th><th>A</th><th>B</th><th>結果</th></tr>' + rows + '</table>' + lim + '</div>';
+    }
+
     // ---- HTML ----
     function cardHTML(s) {
         const v = s.ok ? '' : '<div class="err">model card 有 ' + s.errors.length + ' 處需要修正：' + esc(s.errors.join('；')) + '</div>';
@@ -129,7 +151,7 @@
             : '<tr><td>' + esc(m.label) + '</td><td colspan="4"><span class="na">無資料（' + esc(m.reason) + '）</span></td></tr>').join('');
         const lim = s.limits.length ? '<ul>' + s.limits.map((x) => '<li>' + esc(x) + '</li>').join('') + '</ul>' : '<div class="na">無資料（card 沒有列已知限制）</div>';
         const tr = s.training ? '<div>訓練列數：' + esc(s.training.rows) + '；領域：' + esc(s.training.domains.map((d) => d.domain + ' ' + d.rows).join('、') || '無資料') + '</div><div>來源摘要：' + esc(s.training.sources || '無資料') + '</div>' : '<div class="na">無資料（沒有訓練資料摘要）</div>';
-        return '<div class="card"><div class="ttl">' + esc(s.name) + '</div>' + v +
+        return '<div class="card"><div class="ttl">' + esc(s.name) + '</div>' + v + discBanner(s.limits) +
             '<div class="intro">' + esc(s.intro || '無資料（沒有介紹）') + '</div>' +
             '<div class="kv">版本 ' + esc(s.version) + '・基底 ' + esc(s.base) + (s.rank !== null ? '・rank ' + esc(s.rank) : '') + '・建立 ' + esc(s.created) + '</div>' +
             '<h5>具備的能力</h5>' + caps +
@@ -139,11 +161,14 @@
 
     function registryCardHTML(r) {
         const chips = (xs) => (xs && xs.length ? xs.map((x) => '<span class="chip">' + esc(x) + '</span>').join('') : '<span class="na">無資料</span>');
-        const comp = r.compat === 'reject' ? '<div class="err">相容性不通過：' + esc(r.compatReasons.join('；') || '未說明') + '</div>' : r.compat === 'warn' ? '<div class="warn">相容性提醒：' + esc(r.compatReasons.join('；')) + '</div>' : '';
-        const ev = (r.evalWin || r.evalLose) ? '<div>評量：贏 ' + esc((r.evalWin || []).join('、') || '無') + '；輸 ' + esc((r.evalLose || []).join('、') || '無') + '</div>' : '<div class="na">無資料（沒有評量結果）</div>';
-        return '<div class="card"><div class="ttl">' + esc(r.name) + '</div><div class="intro">' + esc(r.description || '無資料（沒有說明）') + '</div>' +
-            '<div class="kv">版本 ' + esc(r.version) + '・基底 ' + esc(r.base) + '・rank ' + esc(r.rank) + '・' + esc(r.size) + '・來源 ' + esc(r.source) + (r.location ? '・位置 ' + esc(r.location) : '') + '</div>' +
-            comp + '<h5>能力（適用領域）</h5><div>' + chips(r.domains) + '</div><h5>觸發字</h5><div>' + chips(r.triggers) + '</div>' + ev + '</div>';
+        const comp = (r.compat === 'reject' ? '<div class="err">相容性不通過：' + esc(r.compatReasons.join('；') || '未說明') + '</div>' : '')
+            + (r.compatWarnings && r.compatWarnings.length ? '<div class="warn">相容性提醒：' + esc(r.compatWarnings.join('；')) + '</div>' : '')
+            + (r.compat === 'warn' && r.compatReasons.length ? '<div class="warn">相容性提醒：' + esc(r.compatReasons.join('；')) + '</div>' : '');
+        const ev = r.evalMetrics ? evalLinesHTML(r.evalMetrics) : ((r.evalWin || r.evalLose) ? '<div>評量：贏 ' + esc((r.evalWin || []).join('、') || '無') + '；輸 ' + esc((r.evalLose || []).join('、') || '無') + '</div>' : '<div class="na">無資料（沒有評量結果）</div>');
+        const lim = r.limits && r.limits.length ? '<h5>已知限制</h5><ul>' + r.limits.map((x) => '<li>' + esc(x) + '</li>').join('') + '</ul>' : '';
+        return '<div class="card"><div class="ttl">' + esc(r.name) + '</div>' + discBanner(r.limits) + '<div class="intro">' + esc(r.description || '無資料（沒有說明）') + '</div>' +
+            '<div class="kv">版本 ' + esc(r.version) + '・基底 ' + esc(r.base) + '・訓練秩 ' + esc(r.rank) + '・槽寬 ' + esc(r.slotRank) + '・' + esc(r.size) + '・來源 ' + esc(r.source) + (r.location ? '・位置 ' + esc(r.location) : '') + '</div>' +
+            comp + '<h5>能力（適用領域）</h5><div>' + chips(r.domains) + '</div><h5>觸發字</h5><div>' + chips(r.triggers) + '</div><h5>評量</h5>' + ev + lim + '</div>';
     }
 
     function renderLoraManageHTML(model) {
@@ -173,7 +198,7 @@
         const metrics = (c.metrics || []).map((m) => (m.available
             ? m.label + '：' + m.base + '% → ' + m.tuned + '%（' + m.verdict + '，' + m.deltaPts + ' 個百分點，' + m.n + ' 題）' + (m.warn ? '　⚠ ' + m.warn : '')
             : m.label + '：無資料（' + m.reason + '）'));
-        return '<div class="card"><b>' + head + '</b>'
+        return '<div class="card"><b>' + head + '</b>' + discBanner(c.limits)
             + (c.intro ? '<div>' + esc(c.intro) + '</div>' : '') + errs
             + '<div class="grp">會附帶的能力</div>' + list(c.capabilities, (k) => (typeof k === 'string' ? k : (k.label || k.id || '') + (k.desc ? '：' + k.desc : '')))
             + '<div class="grp">已知限制</div>' + list(c.limits, (t) => String(t))
@@ -181,5 +206,5 @@
             + '</div>';
     }
 
-    return { CARD_FORMAT, CARD_VERSION, METRIC_KEYS, validateModelCard, summarizeCard, budgetOf, busyText, rowsFromStatus, cardFromRegistered, renderLoraManageHTML, cardIntroHTML, sizeText, timeText };
+    return { CARD_FORMAT, CARD_VERSION, METRIC_KEYS, validateModelCard, summarizeCard, budgetOf, busyText, rowsFromStatus, cardFromRegistered, renderLoraManageHTML, cardIntroHTML, sizeText, timeText, disclosuresOf, renderCompareHTML, evalLinesHTML, registryCardHTML };
 }));

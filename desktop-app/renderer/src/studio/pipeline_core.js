@@ -43,8 +43,8 @@
                 S('train', '訓練（LoRA 或完整微調）', { backends: ['cpu-py'], implemented: true, note: '目前只有 LoRA 路線；完整微調尚未實作' }),
                 S('eval', '評量（基底 vs 微調，退步列出）'),
                 S('merge', '合併（LoRA 併入基底權重）', { note: '有 lora_merge_core.js；完整模型路線的合併尚未接上' }),
-                S('export', '匯出（ONNX q8 或 GGUF）', { implemented: false, blocker: '這台沒有 ONNX 與 GGUF 轉換工具（optimum／llama.cpp）；任何下載都要先回報並由使用者同意' }),
-                S('mount', '按需載入（ONNX 執行包）', { implemented: false, blocker: '依賴匯出階段；匯出未實作前不能載入' })
+                S('export', '匯出（ONNX q8 或 GGUF）', { implemented: true, note: '桌面版 /api/llm/export 已接（主行程 studio_llm_export）；ONNX 與 GGUF 的 IO 與 fp32 logits 已在這台實測（DESIGN §13.1）；完整的端到端產物未在桌面執行包上驗證' }),
+                S('mount', '按需載入（桌面版原生推論）', { implemented: true, note: '桌面版 /api/llm/use 已接；網頁版的完整模型推論尚未接（見 DESIGN §22）' })
             ]
         }
     };

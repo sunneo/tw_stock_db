@@ -84,5 +84,21 @@ check('格式函式', M.sizeText(undefined) === '未知' && M.timeText(NaN) === 
   check('介紹：沒有能力與限制時說明沒有，不編造', none.indexOf('沒有') >= 0 && none.indexOf('能力') >= 0);
   check('介紹：沒有卡片資料時回說明', M.cardIntroHTML(null).indexOf('沒有介紹資料') >= 0);
 }
+// 第三輪：卡片揭露（退步、未量）要標在最上面；版本比較表；登錄表卡片的評量與相容性提醒
+{
+  const c = card(); c.known_limits = ['範圍內 v1 → v2 退步：judge 20/60 → 16/60', '範圍外未量', '一般限制'];
+  check('揭露：退步與未量的限制會被挑出', M.disclosuresOf(c.known_limits).length === 2 && M.disclosuresOf(['一般限制']).length === 0, M.disclosuresOf(c.known_limits));
+  const html = M.cardIntroHTML(M.summarizeCard(c));
+  check('介紹頁：揭露區塊在最上面', html.indexOf('卡片揭露（2 項）') >= 0 && html.indexOf('卡片揭露') < html.indexOf('會附帶的能力'), html.slice(0, 200));
+  const diff = { same: false, rows: [{ field: '版本', a: '1.0.0', b: '2.0.0', changed: true }, { field: '基底', a: 'x', b: 'x', changed: false }], limitsAdded: ['新'], limitsRemoved: [] };
+  const ch = M.renderCompareHTML(diff);
+  check('版本比較：有差異的列標示', ch.indexOf('有差異') >= 0 && ch.indexOf('相同') >= 0 && ch.indexOf('新') >= 0, ch.slice(0, 200));
+  check('版本比較：沒有可比的版本', M.renderCompareHTML(null).indexOf('沒有可比較的版本') >= 0);
+  const reg = { id: 'dec4', name: 'dec4', version: '2.0.0', base: 'Qwen/Qwen3-0.6B', rank: 4, slotRank: 16, size: '40 MB', source: 'imported', location: 'asset:lora/dec4', domains: ['decompose'], triggers: [], description: '拆題', compat: 'warn', compatReasons: [], compatWarnings: ['工具清單已變動'], limits: ['範圍外退步：x'], evalMetrics: { split_legal_rate: { base: 0, tuned: 1, n: 60 } }, evalWin: null, evalLose: null };
+  const rh = M.registryCardHTML(reg);
+  check('登錄表卡片：評量數字、相容性提醒、揭露都在', rh.indexOf('拆題合法率：0% → 100%（n=60）') >= 0 && rh.indexOf('工具清單已變動') >= 0 && rh.indexOf('卡片揭露（1 項）') >= 0 && rh.indexOf('槽寬 16') >= 0, rh.slice(0, 300));
+  const rowsWith = M.rowsFromStatus({ registered: [Object.assign({}, reg, { enabled: true, pinned: false })], slots: [] })[0];
+  check('列資料帶出槽寬、限制與評量', rowsWith.slotRank === 16 && rowsWith.limits.length === 1 && rowsWith.evalMetrics.split_legal_rate.tuned === 1, rowsWith);
+}
 console.log(ok + ' passed, ' + bad + ' failed');
 process.exit(bad ? 1 : 0);

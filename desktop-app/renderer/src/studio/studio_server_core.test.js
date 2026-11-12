@@ -221,6 +221,30 @@ function mk(desktop, hostOps) {
   await de.storage.saveAsset({ manifest: Asset.createManifest({ kind: 'trainer', name: 'ds2', files: dsBad, counts: {}, owner: 'user', created: '2026-11-12T00:00:00.000Z' }), files: dsBad }, { replace: true });
   r = await de.req('GET', '/api/dataset/rows?kind=trainer&name=ds2&path=data%2Fbroken.jsonl'); check('逐筆：壞行的檔案不給編，寫第 2 行', r.j.editable === false && /第 2 行/.test(r.j.reason), r.j);
   r = await de.req('POST', '/api/dataset/edit', { kind: 'trainer', name: 'ds2', path: 'data/broken.jsonl', op: 'add', row: { q: 2 } }); check('逐筆：壞檔的寫入也拒絕（409）', r.s === 409, r.j);
+    // LoRA（第三輪）：資料資產列在 dataOnly、訓練秩與槽寬分開、版本與限制、評量格式（card）、原生套用狀態、版本比較、匯入說明
+    {
+      const f4 = { 'weights/lora.bin': mkw(1000) };
+      const evalCard = { split_legal_rate: { base: 0, tuned: 1, n: 60 } };
+      const man = (name, base, ver, lim) => Asset.createManifest({ kind: 'lora', name, files: f4, base, compat: { base, rank: 16, alpha: 8, prompt_format_version: 1 }, owner: 'user', eval: evalCard, counts: { weight_bytes: 1000 }, extra: { lora: { domains: ['decompose'], trained_rank: 4, version: ver, description: '拆題', known_limits: lim, size: 1000 } } });
+      await t.storage.saveAsset({ manifest: man('dec4', 'Qwen/Qwen3-0.6B', '1.0.0', ['範圍外退步：self_validate 負例 2→0']), files: f4 }, { replace: true });
+      r = await t.req('GET', '/api/lora'); check('資料資產列在 dataOnly（不靜默消失）', (r.j.dataOnly || []).indexOf('corpus-wiki') >= 0, r.j.dataOnly);
+      r = await t.req('GET', '/api/lora/status'); const reg4 = (r.j.registered || []).find((x) => x.id === 'dec4');
+      check('訓練秩 4、槽寬 16、版本與限制', !!reg4 && reg4.rank === 4 && reg4.slotRank === 16 && reg4.version === '1.0.0' && reg4.limits.length === 1 && reg4.compat === 'ok', reg4);
+      check('model card 的評量格式算出贏', !!reg4 && !!reg4.evalMetrics && reg4.evalMetrics.split_legal_rate.tuned === 1 && reg4.eval && reg4.eval.win.indexOf('split_legal_rate') >= 0, reg4 && reg4.eval);
+      check('沒有原生橋接時狀態誠實標示不可用', !!r.j.native && r.j.native.available === false, r.j.native);
+      t.h.loraStatus = async () => ({ ok: true, last: { ok: true, id: 'dec4', applied: ['dec4'], items: [{ id: 'dec4', applied: true }] } });
+      r = await t.req('GET', '/api/lora/status'); check('原生套用狀態（主行程）回傳到畫面', !!r.j.native && r.j.native.last.applied.join() === 'dec4', r.j.native);
+      delete t.h.loraStatus;
+      r = await t.req('GET', '/api/lora/compare?a=dec4&b=good'); check('版本比較：版本與限制有差異', !!r.j.diff && r.j.diff.same === false && r.j.diff.rows.some((x) => x.field === '版本' && x.changed), r.j);
+      r = await t.req('GET', '/api/lora/compare?a=dec4&b=nope'); check('版本比較：不存在回 404', r.s === 404, r.s);
+      const incoming = man('dec4', 'Qwen/Qwen3-0.6B', '2.0.0', ['範圍外退步：self_validate 負例 2→0', '新增的限制：y']);
+      t.setPicked({ name: 'dec4.fatrain', bytes: Fatrain.exportAsset({ manifest: incoming, files: f4 }, {}).bytes });
+      r = await t.req('POST', '/api/import/pick');
+      check('匯入 LoRA：同名版本差異與新增的限制', !!r.j.loraReport && r.j.loraReport.ok === true && r.j.loraReport.versionDiff && r.j.loraReport.versionDiff.same === false && r.j.loraReport.versionDiff.limitsAdded.join() === '新增的限制：y', r.j.loraReport);
+      t.setPicked({ name: 'badbase.fatrain', bytes: Fatrain.exportAsset({ manifest: man('badbase', 'Other/Model', '1.0.0', []), files: f4 }, {}).bytes });
+      r = await t.req('POST', '/api/import/pick');
+      check('匯入 LoRA：基底不同 → 說明為 reject 並寫原因', !!r.j.loraReport && r.j.loraReport.ok === false && /基底模型不同/.test(r.j.loraReport.error || ''), r.j.loraReport || r.j);
+    }
     // 聊天每輪路由用的登錄表存取器（不需要 HTTP 監聽）
 { const C2 = require('./studio_server_core.js').createServer({}); check('createServer 回傳 registry()（聊天路由取得登錄表）', typeof C2.registry === 'function' && typeof C2.route === 'function'); }
 console.log(ok + ' passed, ' + bad.length + ' failed', bad); process.exit(bad.length ? 1 : 0);

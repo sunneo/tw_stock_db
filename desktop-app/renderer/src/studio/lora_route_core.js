@@ -37,7 +37,8 @@
         if (!domain) return base('任務類型沒有對應的 LoRA（' + String(task) + '），用基底，不載入');
         if (!registry || typeof registry.resolve !== 'function') return base('沒有登錄表，用基底');
         let r;
-        try { r = await registry.resolve({ domains: [domain] }); }
+        // 文字（使用者這一輪的話）一併給登錄表：applies.triggers 的觸發字也會選用（不靠任務類型）
+        try { r = await registry.resolve({ domains: [domain], text: opts.text ? String(opts.text) : undefined }); }
         catch (err) { return base('登錄表錯誤，退回基底：' + String((err && err.message) || err)); }
         if (!r || !r.active || !r.active.length) return base('沒有符合「' + domain + '」的可用 LoRA，用基底', r && r.skipped);
         return { task: String(task), domain, fallback: 'lora', active: r.active, handles: r.handles || [], skipped: r.skipped || [], action: decideTurn(prev, r.active), reason: '「' + domain + '」→ ' + r.active.join('、') };

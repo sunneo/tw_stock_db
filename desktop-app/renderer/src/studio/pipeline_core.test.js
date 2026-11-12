@@ -10,7 +10,7 @@ check('符號式的按需載入是 lookup、非必要', P.PIPELINES.colu.stages.
 check('lora 階段表', ids('lora') === 'ingest,generate,split,train,eval,pack,mount', ids('lora'));
 check('lora 訓練後端只列 cpu-py 與 wasm-web', JSON.stringify(P.PIPELINES.lora.stages.find((s) => s.id === 'train').backends) === '["cpu-py","wasm-web"]');
 check('llm 階段表含合併與匯出', ids('llm') === 'ingest,generate,split,train,eval,merge,export,mount', ids('llm'));
-check('llm 匯出與按需載入標示未實作並寫阻礙', ['export', 'mount'].every((id) => { const s = P.PIPELINES.llm.stages.find((x) => x.id === id); return s.implemented === false && typeof s.blocker === 'string' && s.blocker.length > 0; }));
+check('llm 匯出與按需載入已接上並附說明', ['export', 'mount'].every((id) => { const s = P.PIPELINES.llm.stages.find((x) => x.id === id); return s.implemented === true && typeof s.note === 'string' && s.note.length > 0; }));
 check('未實作以外的階段都標 implemented', P.PIPELINES.lora.stages.every((s) => s.implemented !== false) && P.PIPELINES.colu.stages.every((s) => s.implemented !== false));
 
 // ---- 狀態推導（只看真實產物與標記）----
@@ -30,7 +30,7 @@ check('產物與耗時照原樣帶出', partial.stages[0].products.length === 1 
 const withTime = P.deriveStageStates('colu', { stages: { ingest: { products: [prod], done: true, elapsedMs: 1234 } } });
 check('耗時帶出', withTime.stages[0].elapsedMs === 1234);
 const llmEmpty = P.deriveStageStates('llm', { stages: {} });
-check('llm 匯出：未實作，狀態待做，原因是阻礙', llmEmpty.stages.find((s) => s.id === 'export').state === '待做' && llmEmpty.stages.find((s) => s.id === 'export').unimplemented === true && /optimum/.test(llmEmpty.stages.find((s) => s.id === 'export').reason));
+check('llm 匯出：已接上（桌面版），沒有產物時狀態待做', llmEmpty.stages.find((s) => s.id === 'export').state === '待做' && llmEmpty.stages.find((s) => s.id === 'export').unimplemented !== true && /DESIGN §13\.1/.test(llmEmpty.stages.find((s) => s.id === 'export').note || ''));
 const llmTrained = P.deriveStageStates('llm', { stages: { ingest: { products: [prod], done: true }, generate: { products: [prod], done: true }, split: { products: [prod], done: true }, train: { products: [prod], done: true }, eval: { products: [prod], done: true }, merge: { products: [prod], done: true } } });
 check('llm 合併完成但匯出未實作：匯出仍待做、後面不完成', llmTrained.stages[5].state === '完成' && llmTrained.stages[6].state === '待做' && llmTrained.stages[7].state === '待做');
 check('未知 kind 回錯誤不丟例外', P.deriveStageStates('nope', {}).ok === false);
