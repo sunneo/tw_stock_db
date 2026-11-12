@@ -488,7 +488,9 @@ model card 欄位以 `description`（一句話，來自描述檔，§13.2）與 
 | 約 117574 | 工具參數（`SEL.argsMessages`） | `task: 'toolcall'` |
 | 約 120746 | 工具階段（`FaVlm.TOOL_STAGE_SYSTEM`） | `task: 'toolcall'` |
 
-**步驟 E：`decompose` 與 `plan` 的呼叫點（未標，未完成）**
+**步驟 E：`decompose` 與 `plan` 的呼叫點（2026-11-12 總指揮已接上，見提交 a07d68cd；下面的搜尋結果是接上之前的紀錄）**
+- 實際呼叫點：食譜規劃與 UML design 都經 `_planModel`（`floating-assistant.js`）；它的生成預設標 `task: 'plan'`，`_umlModel`（UML design 拆解、寫函式、自我驗證）呼叫 `_planModel({ task: 'decompose' })`。線上模型路徑不看 `task`，不受影響。
+- 驗證：`lora_route_wiring.test.js` 10 項（原始碼接線）；尚未重新建置、未在產品視窗實測。
 - 搜尋結果：`floating-assistant.js` 內沒有以 `task: 'decompose'` 或 `task: 'plan'` 呼叫 `_llmGenerate` 的地方。
 - 同名的 `decompose`／`plan` 都不是 LLM 呼叫：`FaHarness.decompose`（約 59158，離線規則）、`TP.expand`（約 61833，離線模板）、`planBatch`（約 32722，瀏覽器代理）。
 - 因此目前這兩類任務在聊天中**沒有**切到對應 LoRA；依 15.2 第 1 點，它們會沿用目前載入的 LoRA（若有）。

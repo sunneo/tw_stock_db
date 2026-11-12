@@ -120028,7 +120028,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             gen: async (req) => { if (this.stopRequested) throw new Error('使用者停止'); const call = await this._coluBenchCall(cfg, { messages: req.messages, maxTokens: 4096 }); if (!call.http_ok) throw new Error(call.error || '呼叫失敗'); return call.content; } }; };
         if (p === 'online') return row ? online() : { error: '目前的線上模型做過體檢、結論是連一次一小題的拆解流程都沒跑通，所以不用它拆 UML。請改用 uml_guide（程式讀情境、卡片逐步確認，不需要模型），或 model:"offline"。' };
         if (p === 'auto' && row) return online(); // UML design 是線上模型的補救能力：預設就用目前的線上模型拆（離線模型要下載、在 CPU 上很慢）
-        const off = await this._planModel({}); const err = await off.ensure();
+        const off = await this._planModel({ task: 'decompose' }); const err = await off.ensure();
         if (!err) return Object.assign(off, { label: '離線模型' });
         return { error: '離線文字模型不能用：' + err + '；目前的線上模型做過體檢、也沒跑通一次一小題的拆解流程。請改用 uml_guide（程式讀情境、卡片逐步確認，不需要模型）。' };
     }
@@ -120407,7 +120407,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
     async _planModel(opts) {
         const S = this._omSettings(); const inst = await this._omInstalled(); const route = FaVlm.routeStages({ config: S.roles, bench: S.bench, installed: inst.set, requireInstalled: !!opts.fallback, defaultId: S.textModel, hasTools: false }); const model = route.answer; let err; this._omDeclined = this._omDeclined || new Set();
         const ensure = async () => { if (err !== undefined) return err; const gpu = await this._omGpuInfo(); const dev = FaVlm.resolveDevice(model, this._omDevicePrefOf(model), gpu.available, gpu.f16); if (!dev.order.length) return (err = dev.reason); const need = FaVlm.estimateDownload(model, dev.order[0], (inst.usage.byModel[model.id] || { bytes: 0 }).bytes); if (need > 20 * 1048576) { if (opts.fallback || this._omDeclined.has(model.id)) return (err = '離線文字模型「' + model.label + '」還沒下載'); const ok = await this._omAskDownload('要下載離線文字模型嗎？', '「' + model.label + '」約 ' + FaVlm.fmtBytes(need) + '（計畫需要用它挑目標、填欄位、做摘要）。', '下載並使用'); if (!ok) { this._omDeclined.add(model.id); return (err = '使用者取消了下載'); } } return (err = null); };
-        const gen = async (a) => { const e = await ensure(); if (e) throw new Error(e); return this._llmGenerate(model, Object.assign({}, a, { tools: [], deterministic: true }), {}); };
+        const gen = async (a) => { const e = await ensure(); if (e) throw new Error(e); return this._llmGenerate(model, Object.assign({}, a, { tools: [], deterministic: true, task: a.task || opts.task || 'plan' }), {}); }; // task：呼叫端沒指定時＝食譜規劃（plan）；UML design 拆解由 _umlModel 傳 'decompose'（每輪 LoRA 路由，DESIGN.lora-training.md §15）
         return { model, ensure, gen };
     }
     // 離線摘要（pseudo 工具 local_summarize）：依模型上下文切段（自適應）→ 每段讓模型摘要並檢查（有編造就換程式摘要）→ 合併；沒有模型就全部用程式摘要
