@@ -199,6 +199,7 @@ async function dsOpen(f,box,offset,editIndex){box.textContent='';var x=await api
 function modelEvalPanel(r){
  var box=h('div',{'class':'card'});box.appendChild(h('b',{text:'模型評測：與基底並排比較'}));
  box.appendChild(h('div',{style:'color:var(--mut);font-size:12px',text:'選一顆 LoRA（來自「LoRA 登錄」）或完整模型，跑留出題，與基底並排比較。留出題只給通過率，不顯示題目與答案。'}));
+ var eg=(r&&r.evalGroups)||[];if(eg.length){box.appendChild(h('div',{style:'font-size:12px;margin-top:6px;color:var(--mut)',text:'評測組（留出題，每組 '+eg[0].n+' 題，程式生成）：'}));eg.forEach(function(g){box.appendChild(h('div',{style:'font-size:12px',text:'• '+g.group+'：'+g.source+(g.available?'':'（'+g.unavailable+'）')}))})}
  var sel=h('select',{style:'width:100%'});sel.appendChild(h('option',{value:'',text:'（選一個模型）'}));
  api('GET','/api/lora').then(function(x){if(x.ok===false)return;(x.entries||[]).forEach(function(e){sel.appendChild(h('option',{value:'lora|'+e.id,text:'LoRA：'+(e.name||e.id)+(e.gate&&!e.gate.ok?'（未通過把關）':'')}))})});
  sel.appendChild(h('option',{value:'full|full',text:'完整模型（合併匯出）：待 fp32 轉 ONNX 補上'}));

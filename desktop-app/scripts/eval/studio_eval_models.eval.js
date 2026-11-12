@@ -6,11 +6,14 @@ return (async () => {
     const until = async (fn, ms = 20000) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { try { const v = await fn(); if (v) return v; } catch (_) { /* */ } await wait(150); } return null; };
     for (const m of (globalThis.__FA_INJECT || [])) (0, eval)(m.src);
     const ME = window.FaStudioModelEval;
+    const EG = window.FaStudioEvalGroups;
     const TPL = globalThis.__FA_TPL || FA_STUDIO_VIEWER_HTML;
     const fa = window.fa; fa.advancedSettings.offlineMode = false;
     const srv = await fa._studioServer();
     const route = async (m, p, b) => { const x = await srv.core.route(m, new URL('http://mock.local' + p), b); return Object.assign({ _s: x.s || 200 }, x.j); };
+    const origRoute = srv.core.route;
     const shimRoute = async (m, u, b) => {
+        if (u.pathname === '/api/eval' && EG) { const x = await origRoute(m, u, b); return { s: x.s || 200, j: Object.assign({}, x.j, { evalGroups: EG.describeAll({ judge: !!fa.judgeCode }) }) }; }
         if (u.pathname !== '/api/eval/model') return null;
         const tg = (b && b.target) || {}; const plan = ME.planTarget(tg);
         if (!plan.ok) return { s: 400, j: { ok: false, error: plan.reason } };
@@ -19,7 +22,7 @@ return (async () => {
     let cur = null;
     const onMsg = (ev) => { const m = ev.data; if (!m || m.__fa_mock !== 1 || !cur || ev.source !== cur.contentWindow) return; const src = ev.source; srv.handle(m, (r, tr) => { try { src.postMessage(Object.assign({ __fa_mock_r: 1 }, r), '*', tr || []); } catch (_) { /* */ } }); };
     window.addEventListener('message', onMsg);
-    const origRoute = srv.core.route; srv.core.route = async (m, u, b) => { const sh = await shimRoute(m, u, b); return sh || origRoute(m, u, b); };
+    srv.core.route = async (m, u, b) => { const sh = await shimRoute(m, u, b); return sh || origRoute(m, u, b); };
     const f = document.createElement('iframe'); f.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms allow-modals');
     f.style.cssText = 'position:fixed;left:0;top:0;width:1280px;height:1000px;z-index:99999;background:#fff'; cur = f;
     await route('POST', '/api/prefs', { layout: { panes: { left: ['assets'], right: ['eval'] }, split: 0.5 } });

@@ -36,9 +36,10 @@
     const LXp = (typeof module === 'object' && module.exports) ? require('./llm_export_core.js') : root.FaStudioLlmExport;
     const DEd = (typeof module === 'object' && module.exports) ? require('./dataset_edit_core.js') : root.FaStudioDatasetEdit;
     const MEv = (typeof module === 'object' && module.exports) ? require('./model_eval_core.js') : root.FaStudioModelEval;
-    if (typeof module === 'object' && module.exports) module.exports = factory(A, F, T, Lay, Ing, Cln, Reg, Ev, Sy, ST, Te, Si, PPl, PLv, PAd, PRt, PLm, LXp, DEd, MEv);
-    else root.FaStudioServer = factory(A, F, T, Lay, Ing, Cln, Reg, Ev, Sy, ST, Te, Si, PPl, PLv, PAd, PRt, PLm, LXp, DEd, MEv);
-})(typeof self !== 'undefined' ? self : this, function (Asset, Fatrain, Trainer, Layout, Ingest, Clean, LoraReg, EvalCore, Sym, SymTrain, Teacher, SourceInput, PipeLib, PipeLive, PipeAdvice, PipeRoutes, PipeManage, LlmExp, DatasetEdit, ModelEval) {
+    const EGr = (typeof module === 'object' && module.exports) ? require('./eval_groups_core.js') : root.FaStudioEvalGroups;
+    if (typeof module === 'object' && module.exports) module.exports = factory(A, F, T, Lay, Ing, Cln, Reg, Ev, Sy, ST, Te, Si, PPl, PLv, PAd, PRt, PLm, LXp, DEd, MEv, EGr);
+    else root.FaStudioServer = factory(A, F, T, Lay, Ing, Cln, Reg, Ev, Sy, ST, Te, Si, PPl, PLv, PAd, PRt, PLm, LXp, DEd, MEv, EGr);
+})(typeof self !== 'undefined' ? self : this, function (Asset, Fatrain, Trainer, Layout, Ingest, Clean, LoraReg, EvalCore, Sym, SymTrain, Teacher, SourceInput, PipeLib, PipeLive, PipeAdvice, PipeRoutes, PipeManage, LlmExp, DatasetEdit, ModelEval, EvalGroups) {
     'use strict';
     const KIND_LABEL = { colu: 'CoLU', blockly: '積木課程', matrix: '矩陣層', uml: 'UML 設計', trainer: '離線訓練器', lora: 'LoRA', llm: 'LLM 模型（匯出）' };
     const dec = (u) => new TextDecoder('utf-8').decode(u);
@@ -373,7 +374,7 @@
                 }
                 if (method === 'GET' && P === '/api/eval') {
                     const out = []; const st1 = await h.storage.listAssets(); for (const it of st1) { const m = await h.storage.loadManifest(it.kind, it.name); if (m && m.eval) out.push({ kind: it.kind, name: it.name, eval: m.eval }); } for (const it of await builtinItems(st1)) if (it.eval) out.push({ kind: it.kind, name: it.name, eval: it.eval, builtin: true });
-                    const p = prefsObj(); return ok({ implemented: true, kinds: Asset.KINDS.filter((k) => k !== 'llm').map((k) => ({ kind: k, label: KIND_LABEL[k], available: SYMBOLIC.indexOf(k) >= 0 ? !!h.sym : k === 'lora' })), items: out, last: S.evals, gate: Object.assign({}, EvalCore.DEFAULT_GATE, p.evalGate || {}), baseline: p.evalBaseline || {}, models: S.modelEvals || {} });
+                    const p = prefsObj(); return ok({ implemented: true, kinds: Asset.KINDS.filter((k) => k !== 'llm').map((k) => ({ kind: k, label: KIND_LABEL[k], available: SYMBOLIC.indexOf(k) >= 0 ? !!h.sym : k === 'lora' })), items: out, last: S.evals, gate: Object.assign({}, EvalCore.DEFAULT_GATE, p.evalGate || {}), baseline: p.evalBaseline || {}, models: S.modelEvals || {}, evalGroups: EvalGroups.describeAll({ judge: !!h.judgeCode }) });
                 }
                 if (method === 'POST' && P === '/api/eval/run') {
                     const kind = String(body.kind || ''); if (Asset.KINDS.indexOf(kind) < 0) return bad(400, '不認得的種類：' + kind); if (kind === 'llm') return bad(400, 'LLM 資產不評量（只能匯出、列出、下載）');

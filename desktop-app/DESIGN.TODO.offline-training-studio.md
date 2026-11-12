@@ -1300,3 +1300,13 @@ Backend {
 - 畫面：評量分頁底部「模型評測」區，選 LoRA（來自 LoRA 登錄）或完整模型，按「跑留出題（與基底並排）」。顯示把關結論、格式率、答對率、延遲，每組列出基底→模型、差值、狀態，退步名單。
 - 驗證（真 Electron，DOM）：`scripts/eval/studio_eval_models.eval.js`（`FA_TPL=1 FA_INJECT=model_eval_core`）。結果：完整模型選項存在；按下後顯示「完整模型的載入評測待 fp32 轉 ONNX 補上…」。探測端用同一個純函式補上未嵌入的路由（見腳本註解）。
 - 未驗證：LoRA 路徑（需要宿主執行器 `h.modelEval`；桌面版的原生執行器尚未接上，`scripts/eval/lora_four_adapters.run.js` 是參考實作）。沒有 LoRA 資產的環境看不到 LoRA 選項。
+
+### 30.2 第 2 項：五個評量組（已做）
+
+- `renderer/src/studio/eval_groups_core.js`（純函式）：`toolcall`（工具呼叫格式率與參數正確，缺工具要拒絕）、`plan_check`（規劃 JSON 合法、checks 數量與每筆欄位）、`decompose/split_legal_rate`（函式名稱集合與標準答案完全相同）、`code_write/code_write_fn`（產生的 Python 程式通過單元斷言，需要判題沙盒）、`reading`（依文答題、引用句逐字出現在文中、無答案拒答）。每組 20 題，固定種子，可重現。
+- 題目來源：**程式生成**，不是 lora-train/data 的留出集（`lora-train/data` 只有三個參考 JSON，`heldout_toolcall_v1.jsonl` 等留出檔不在這個倉庫）；閱讀理解的資料生成也還沒有（子 session assets-rebuild 的規劃未到）。每組的 `source` 欄位寫明來源，畫面上顯示。
+- 判準沿用 `lora-train/EVAL_CRITERIA_v2.md` 的口徑（n ≥ 20 才判斷退步，缺工具拒絕句型）。
+- 伺服器：`GET /api/eval` 回傳 `evalGroups`（由定義產生，給畫面列出）。`code_write` 沒有判題沙盒時標「不可用」並寫原因，不算通過。
+- 測試 `eval_groups_core.test.js` 21／0（含：標準答案當生成器時四個判題組全部 20／20；亂答時都不通過；沙盒缺席時 code 組寫原因）。
+- 畫面：模型評測區列出五個評測組、題數、來源與不可用原因。驗證：`studio_eval_models`（`FA_INJECT=model_eval_core,eval_groups_core`）。
+- 未驗證：這些組還沒有接上實際的模型生成（宿主的 `h.modelEval` 未接），所以沒有 LoRA 或基底的真實分數。
