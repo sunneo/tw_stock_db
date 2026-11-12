@@ -91,6 +91,7 @@ const suites = [
     ['node renderer/src/studio/llm_export_core.test.js（補登）', 'renderer/src/studio/llm_export_core.test.js'],
     ['node renderer/src/studio/lora_manage_core.test.js（假資料；註冊表介面到位後改接真資料）（補登）', 'renderer/src/studio/lora_manage_core.test.js'],
     ['node renderer/src/studio/lora_route.test.js（補登）', 'renderer/src/studio/lora_route.test.js'],
+    ['LoRA 每輪路由的呼叫點接線（colu／toolcall／plan／decompose 四類都標任務類型）', 'renderer/src/studio/lora_route_wiring.test.js'],
     ['node renderer/src/studio/pipeline_core.test.js（補登）', 'renderer/src/studio/pipeline_core.test.js'],
     ['node renderer/src/studio/pipeline_live_core.test.js（補登）', 'renderer/src/studio/pipeline_live_core.test.js'],
     ['node renderer/src/studio/pipeline_routes_core.test.js（補登）', 'renderer/src/studio/pipeline_routes_core.test.js'],
