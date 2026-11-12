@@ -922,14 +922,14 @@ const NRL = (function () {
         set = [{ id: s.id, rank: null, weight: 1 }];
       }
       // 舊的整組換掉：清掉不再使用的檔案
-      const keep = new Set([passthrough ? eff.id : "_merged"]);
+      const keep = new Set([passthrough ? eff.id : "_merged", "slot-model"]);   // slot-model＝轉換好的槽版模型快取（同一個資料夾底下），不能當成舊 adapter 清掉：清掉後帶 LoRA 的生成找不到 layout.json、靜默退回 WASM（2026-11-12 四顆 LoRA 產品視窗實測發現）
       try { for (const n of fs.readdirSync(nlDir())) if (!keep.has(n)) rm(path.join(nlDir(), n)); } catch (_) { /* */ }
       active = eff;
       const n = res.filter((x) => x.applied).length;
       return finish({ ok: true, applied: true, id: eff.id, size: eff.size, items: res, rankUsed, rankSlot, note: "已套用到原生推論：" + n + " 個 adapter" + (n > 1 ? "（rank 串接成一個，共用 " + rankUsed + "／" + rankSlot + "）" : "") + (res.length > n ? "；" + (res.length - n) + " 個沒套上，原因見逐項回報" : "") + "；之後的原生生成都會帶它（第一次生成會重建 session）" });
     }
     function apply(p) { return applySet({ items: [p || {}] }); }
-    function clear() { const was = active; const ids = set.map((x) => x.id); active = null; set = []; try { for (const n of fs.readdirSync(nlDir())) rm(path.join(nlDir(), n)); } catch (_) { /* */ } return { ok: true, cleared: was ? was.id : null, ids }; }
+    function clear() { const was = active; const ids = set.map((x) => x.id); active = null; set = []; try { for (const n of fs.readdirSync(nlDir())) if (n !== "slot-model") rm(path.join(nlDir(), n)); } catch (_) { /* 槽版模型快取留著 */ } return { ok: true, cleared: was ? was.id : null, ids }; }
     // run 的前置：有套用中的 adapter 時回 {lora}；此時執行包若被換成舊版（不支援），拒絕而不是默默不用
     function forRun() {
       if (!active) return { ok: true, lora: null };

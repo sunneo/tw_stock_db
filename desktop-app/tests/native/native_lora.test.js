@@ -140,9 +140,12 @@ async function settle(p) { try { return { ok: true, v: await p }; } catch (e) { 
     check('NRL：status 回報套用中與支援狀態', st.active.id === 'ad1' && st.supported && !st.needsRuntimeUpdate, st);
     const bytes2 = crypto.randomBytes(64); put('ad2', bytes2);
     nrl.apply({ id: 'ad2', sha256: sha(bytes2) });
+    // 槽版模型快取（native-lora/slot-model）和 adapter 在同一個資料夾：換 adapter、clear 都不能把它當舊 adapter 清掉（否則帶 LoRA 的生成找不到 layout.json、靜默退回 WASM）
+    const slotMark = path.join(ud, 'native-lora', 'slot-model', 'abc', 'layout.json'); fs.mkdirSync(path.dirname(slotMark), { recursive: true }); fs.writeFileSync(slotMark, '{}');
     check('NRL：換 adapter 會刪掉前一個的檔案', nrl._active().id === 'ad2' && !fs.existsSync(path.join(ud, 'native-lora', 'ad1')));
     const cl = nrl.clear();
     check('NRL：clear 卸載並刪檔，之後 run 前置不帶 lora', cl.ok && cl.cleared === 'ad2' && nrl.forRun().lora === null && !fs.existsSync(path.join(ud, 'native-lora', 'ad2')));
+    check('NRL：換 adapter 與 clear 之後槽版模型快取都還在', fs.existsSync(slotMark));
     check('NRL：沒有 adapter 時 verifyDone 不檢查（沒有 lora 行為不變）', nrl.verifyDone({ text: 'x' }) === null);
 
     // ---------- 6 執行包版本選擇 ----------
