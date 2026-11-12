@@ -957,3 +957,36 @@ model card 欄位以 `description`（一句話，來自描述檔，§13.2）與 
 - 「重新啟動」是用新行程（同一個 userData）模擬，不是點設定頁按鈕；離線模型的設定頁 UI 沒有實按。
 - Electron 內**沒有**載入 LoRA 槽（`lora_apply`）做生成，只跑了基底 q8 與 e2e-q8（合併後的模型）。
 - 網頁版的參考用的是 `llm_web_core` 在 onnxruntime-node 1.22 跑的結果（同一份核心、同一個圖最佳化設定 disabled）；瀏覽器內的 onnxruntime-web 與 node 的數值是否逐位元相同，只比對了文字結果，沒有比 logits。
+
+### 25.14 第五輪（指揮接力 v390，2026-11-13）：網頁版 q8 落差的原因
+
+**問題**：網頁版（與桌面原生）的 q8 貪婪輸出對 HF fp32 只有 23/96 token 一致，怎麼回事。
+
+**結論（有證據）**：落差來自 q8 動態量化本身，不是網頁版路徑或分詞器錯誤。
+
+1. **管線正確**：fp32 ONNX 對 HF（PyTorch）逐字一致，96/96、首步 logits cos 1.0（`export-base/check.json`）。
+2. **網頁版沒有額外誤差**：同一份 `llm_web_core` 在瀏覽器（onnxruntime-web 1.22）、Node（onnxruntime-node 1.22）、Electron 原生（nr-child）三者的 q8 輸出文字相同。
+3. **量化誤差大**：q8（per-channel QUInt8，與官方 q8 同結構）對 fp32 的首步 logits cos 最低 0.816、平均 0.912；官方 q8 本身也只有 0.75–0.93（§25.4）。
+4. **分歧點的 logit 差距小於量化誤差**（`~/fa/round4/margin.py`，在 fp32 的 prefix 上比 fp32 與 q8 的 logits）：
+
+| 提示 | 首次分歧位置 | fp32 top-1 與 top-2 差距（nat） | q8 與 fp32 的 logits 最大絕對差 |
+|---|---|---|---|
+| 台北在哪個國家？ | 0 | 0.075 | 7.23 |
+| Choose the best tool… | 6 | 0.675 | 7.36 |
+| 請把這個任務拆成… | 0 | 0.179 | 3.78 |
+| {"name": "get_weather"…} | 0 | 0.059 | 4.88 |
+| The quick brown fox… | 1 | 0.715 | 13.19 |
+| def add(a, b): | 無分歧（16/16） | — | — |
+
+   四個分歧的提示，fp32 的 top-1 與 top-2 差距只有 0.06–0.7 nat，而 q8 的 logits 誤差是 3.8–13 之多，所以貪婪解碼必然在某一步翻到第二名。這就是「不可解」的證據：在這個量化方式下，argmax 無法保證跟 fp32 一致。
+
+**沒有做的（列為下一步，不是已驗證的修法）**：weight-only 量化（權重 int8、啟動時 activation 保持 fp32）、fp16 圖、或分層保留敏感層（mixed 配方 §25.4 的 cos 較好但貪婪仍差）。這些都會增加體積或失去 LoRA 槽相容性，需要另外評估。
+
+**Why**：指揮要求的「找原因或說明不可解的證據」。
+**How to apply**：評估 q8 品質時用 fp32 的分歧點 margin 判斷，不要再用貪婪 token 一致率當作網頁版或原生的 bug 指標。
+
+**第五輪進度（同日，接續）**：
+- 產品視窗（xvfb Electron＋remote-debugging，只用 Playwright 連到 CDP 按鈕）：從工作室聊天指令 `/offline-training-studio` 開工作室，在「訓練」分頁的 LLM 匯出表單實際按「匯出」；第二次的匯出（`llmexp3`）真的跑完五步（340 秒，`finished`）。
+- 同一個面板的「登錄成 LLM 資產」→ `llm-onnx-2026-11-12T22-30-23-453Z`；「設為離線模型（桌面版）」→ `llm-model-choice.json` 已指向該資產（按鈕讀取的名稱欄位要與登錄名稱一致，否則會擋下）。
+- **未完成**：關掉產品再重開（要換成新的離線模型）與重啟後的生成。這一步在嘗試結束產品行程時被自動權限擋下，沒有繞過。
+- 另外：`fa:rawfs:readFile` 對 756 MB 檔案用文字解碼會丟 `ERR_STRING_TOO_LONG`（main-ext.js 已加 32 MB 門檻，改回 base64；**尚未實測**）。

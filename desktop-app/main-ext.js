@@ -166,7 +166,9 @@ ipcMain.handle("fa:judge:run", async (_evt, { lang, source, problem, timeoutMs }
     const target = path.resolve(rawFsPath(p));
     const buf = await fs.readFile(target);
     if (encoding === "base64") return { path: target, base64: buf.toString("base64"), sizeBytes: buf.length };
-    if (detectLikelyBinary(buf)) {
+    // 大檔（超過 V8 字串上限附近，例如 756 MB 的 q8 模型）不能當文字解碼：沒有 NUL 的二進位也一樣會走到這裡，
+    // 實測會丟 ERR_STRING_TOO_LONG 並讓 IPC 回錯。這裡改回 base64，由呼叫端自己決定怎麼用。
+    if (buf.length > 32 * 1024 * 1024 || detectLikelyBinary(buf)) {
       return { path: target, base64: buf.toString("base64"), sizeBytes: buf.length, likelyBinary: true };
     }
     return { path: target, text: buf.toString("utf8"), sizeBytes: buf.length };
