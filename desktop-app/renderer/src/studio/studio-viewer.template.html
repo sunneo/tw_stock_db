@@ -385,7 +385,14 @@ T.pipeline=async function(body){
 };
 T.train=async function(body){
  var kinds=[['lora','LoRA（語言模型）'],['trainer','離線訓練器'],['colu','CoLU'],['uml','UML 設計'],['blockly','積木課程'],['matrix','矩陣層']];
- var ksel=h('select',{},kinds.map(function(k){return h('option',{value:k[0],text:k[1]})}));var out=h('div');body.appendChild(h('label',{text:'訓練種類'}));body.appendChild(ksel);body.appendChild(out);
+ var ksel=h('select',{},kinds.map(function(k){return h('option',{value:k[0],text:k[1]})}));var out=h('div');
+ /* 簡單模式（精靈，一步一步照著填）／進階模式（原本全部欄位）：選擇記在這個瀏覽器，下次開啟沿用 */
+ var MODE='simple';try{MODE=localStorage.getItem('fa_train_mode')||'simple'}catch(e){}
+ var adv=h('div'),wiz=h('div');adv.appendChild(h('label',{text:'訓練種類'}));adv.appendChild(ksel);adv.appendChild(out);
+ var bSimple=h('button',{text:'🧭 簡單模式（一步一步）'}),bAdv=h('button',{text:'🛠 進階模式（全部設定）'});
+ function setMode(m){MODE=m;try{localStorage.setItem('fa_train_mode',m)}catch(e){}bSimple.className=m==='simple'?'pri':'';bAdv.className=m==='adv'?'pri':'';wiz.style.display=m==='simple'?'':'none';adv.style.display=m==='adv'?'':'none';if(m==='simple')trainWizard(wiz);else if(!setMode.built){setMode.built=true;build()}}
+ bSimple.onclick=function(){setMode('simple')};bAdv.onclick=function(){setMode('adv')};
+ body.appendChild(h('div',{'class':'row'},[bSimple,bAdv]));body.appendChild(wiz);body.appendChild(adv);
  var buildTok=0;async function build(){var my=++buildTok;out.textContent='';var kind=ksel.value,r=await api('GET','/api/backends?kind='+kind);if(my!==buildTok)return;if(r.ok===false){out.appendChild(h('div',{'class':'warn',text:'讀取運算後端失敗：'+r.error}));return}
   if(r.backends&&r.backends.some(function(b){return b.probing}))setTimeout(function(){if(my===buildTok)build()},1500);
   /* 2026-11-12：純處理器不可用（缺套件／版本太舊）時，使用者正在照指令安裝——每 8 秒自動重探，裝好就自己變可用，不必切分頁或重啟 */
@@ -439,7 +446,76 @@ T.train=async function(body){
   if(!r.desktop&&!r.webTrain)out.appendChild(h('div',{'class':'todo',text:'這個環境沒有可用的訓練後端（沒有子行程，頁內處理器訓練也沒接上）。到「資產清單」匯出 .fatrain，拿到桌面版訓練。'}));
   if(!r.desktop&&r.webTrain)out.appendChild(h('div',{'class':'todo',text:'網頁版用頁內處理器訓練：慢但正確；可隨時「暫停」，再「匯出續訓檢查點」帶到另一台（桌面版或另一個網頁）接著訓練。'}));
   out.appendChild(prog);prog.appendChild(h('div',{text:'還沒有訓練。'}));prog.appendChild(cv);pollTrain(prog,cv,true)}
- ksel.onchange=build;build()};
+ ksel.onchange=build;setMode(MODE==='adv'?'adv':'simple')};
+
+// ===== 簡單模式：訓練精靈（選目標 → 選資料 → 確認 → 開始），每一步只問一件事，預設值都填好 =====
+function trainWizard(host){
+ var GOALS=[
+  ['lora','🧠 訓練語言模型（LoRA）','讓內建的小模型學會你的資料。需要一個 .jsonl 資料集。','需要資料集'],
+  ['blockly','🧩 積木課程','用題目資產窮舉＋判題，收成一套課。','需要題目資產'],
+  ['matrix','🔢 矩陣層','用題目資產擬合矩陣運算的範式。','需要題目資產'],
+  ['uml','📐 UML 設計','用「情境→設計」配對補強決策表與詞彙。','需要情境配對資產'],
+  ['colu','🎯 CoLU 排名','用目前的「採用／退回」回饋重訓排名模型。','不用挑資料'],
+  ['trainer','🎓 離線訓練器','把重複成功的做法升格成技能。','不用挑資料']];
+ var W=host._w||(host._w={step:0,intent:'',kind:'lora',data:'',name:'',files:null,src:'asset'});
+ function wantFile(k){return k==='uml'?'data/pairs.jsonl':(k==='lora'?null:'data/tasks.jsonl')}
+ function needsData(k){return k!=='colu'&&k!=='trainer'}
+ function steps(){if(W.intent==='update')return ['想做什麼','挑資產','要做什麼','開始'];return needsData(W.kind)?['想做什麼','目標','資料','確認','開始']:['想做什麼','目標','確認','開始']}
+ function bar(){var st=steps(),cur=W.step;return h('div',{'class':'row',style:'gap:6px'},st.map(function(t,i){return h('span',{'class':'badge'+(i===cur?' ok':''),text:(i+1)+'. '+t})}))}
+ function nav(back,next,nextText){var r=h('div',{'class':'row'},[]);if(back)r.appendChild(h('button',{text:'← 上一步',onclick:back}));if(next)r.appendChild(h('button',{'class':'pri',text:nextText||'下一步 →',onclick:next}));return r}
+ function go(d){W.step=Math.max(0,W.step+d);draw()}
+ function stepName(){return steps()[W.step]}
+ async function draw(){host.textContent='';host.appendChild(bar());var sn=stepName();
+  if(sn==='想做什麼'){host.appendChild(h('b',{text:'你想做什麼？'}));
+   [['train','🏋 訓練','用資料訓練出新的成果（語言模型、積木課、矩陣層、UML、CoLU…）'],['update','🔄 更新資產','已經有一份資產：用新資料再訓練、補資料、或重新評量']].forEach(function(g){var on=W.intent===g[0];host.appendChild(h('div',{'class':'card',style:'cursor:pointer;'+(on?'border:2px solid var(--ok)':''),onclick:function(){W.intent=g[0];W.data='';W.name='';draw()}},[h('b',{text:(on?'✅ ':'')+g[1]}),h('div',{style:'color:var(--mut);font-size:12px',text:g[2]})]))});
+   host.appendChild(nav(null,W.intent?function(){go(1)}:null));if(!W.intent)host.appendChild(h('div',{style:'color:var(--mut);font-size:12px',text:'先點選一個才能下一步。'}));return}
+  if(sn==='挑資產'){host.appendChild(h('b',{text:'要更新哪一份資產？'}));var bx=h('div',{text:'載入中…'});host.appendChild(bx);var ra=await api('GET','/api/assets');bx.textContent='';var any=false;
+   Object.keys((ra&&ra.groups)||{}).forEach(function(k){var g=ra.groups[k];(g.items||[]).filter(function(it){return it.origin!=='builtin'}).forEach(function(it){any=true;var on=W.data===it.kind+'/'+it.name;bx.appendChild(h('div',{'class':'card',style:'cursor:pointer;'+(on?'border:2px solid var(--ok)':''),onclick:function(){W.kind=it.kind;W.data=it.kind+'/'+it.name;W.name=it.name;draw()}},[h('b',{text:(on?'✅ ':'')+it.kind+'/'+it.name}),h('span',{'class':'badge',text:g.label||it.kind})]))})});
+   if(!any)bx.appendChild(h('div',{'class':'warn',text:'你還沒有自己的資產（內建的唯讀，不能更新）。先選「訓練」做出第一份。'}));
+   host.appendChild(nav(function(){go(-1)},W.data?function(){go(1)}:null));return}
+  if(sn==='要做什麼'){host.appendChild(h('b',{text:'對 '+W.data+' 要做什麼？'}));var res=h('div',{style:'font-size:13px;margin-top:8px'});
+   var sym=['blockly','matrix','uml','colu','trainer'].indexOf(W.kind)>=0;
+   host.appendChild(h('div',{'class':'card',style:'cursor:pointer',onclick:function(){setL(Lay.activate(L,'ingest'));res.textContent='已切到左邊的「資料匯入」：把新的檔案／網頁／文字匯入後存回這份資產。做好再回來。'}},[h('b',{text:'➕ 補充資料'}),h('div',{style:'color:var(--mut);font-size:12px',text:'到「資料匯入」加入新資料'})]));
+   if(sym)host.appendChild(h('div',{'class':'card',style:'cursor:pointer',onclick:function(){W.step=steps().indexOf('開始');draw()}},[h('b',{text:'🔁 再訓練一次'}),h('div',{style:'color:var(--mut);font-size:12px',text:'用這份資產現有的資料重新訓練，成果存回同名資產'})]));
+   if(['blockly','matrix','uml','colu'].indexOf(W.kind)>=0)host.appendChild(h('div',{'class':'card',style:'cursor:pointer',onclick:async function(){res.textContent='評量中…';var y=await api('POST','/api/eval/run',{kind:W.kind,fromAsset:(W.kind==='colu')?undefined:W.data});res.textContent=y.ok===false?('評量失敗：'+y.error):('評量：'+y.summary.ran+'／'+y.summary.groups+' 組有跑，退步 '+y.summary.regressed+'，未過門檻 '+y.summary.belowGate+'　'+(y.summary.releaseOk?'✅ 可上線':'⛔ 不可上線')+'（細節在「評量」分頁）')}},[h('b',{text:'📊 重新評量'}),h('div',{style:'color:var(--mut);font-size:12px',text:'跑一次評量，看有沒有退步'})]));
+   host.appendChild(res);host.appendChild(nav(function(){go(-1)},null));return}
+  if(sn==='目標'){host.appendChild(h('b',{text:'你想訓練什麼？'}));GOALS.forEach(function(g){var on=W.kind===g[0];host.appendChild(h('div',{'class':'card',style:'cursor:pointer;'+(on?'border:2px solid var(--ok)':''),onclick:function(){if(W.kind!==g[0]){W.kind=g[0];W.data='';W.name=''}draw()}},[h('b',{text:(on?'✅ ':'')+g[1]}),h('div',{style:'color:var(--mut);font-size:12px',text:g[2]+'（'+g[3]+'）'})]))});host.appendChild(nav(null,function(){go(1)}));return}
+  if(sn==='資料'){host.appendChild(h('b',{text:'訓練的資料從哪裡來？'}));
+   host.appendChild(h('div',{'class':'row'},[h('button',{'class':W.src==='asset'?'pri':'',text:'📦 已匯入／內建的資產',onclick:function(){W.src='asset';draw()}}),h('button',{'class':W.src==='new'?'pri':'',text:'🆕 新的資料（檔案、網頁、文字）',onclick:function(){W.src='new';draw()}})]));
+   if(W.src==='new'){host.appendChild(h('div',{'class':'card'},[h('div',{text:'新資料要先匯入：到「資料匯入」把檔案、網頁或文字放進來，它會整理成可訓練的資料集並存成資產。'}),h('div',{'class':'row'},[h('button',{'class':'pri',text:'前往「資料匯入」',onclick:function(){setL(Lay.activate(L,'ingest'))}}),h('button',{text:'我匯入好了，回來挑',onclick:function(){W.files=null;W.src='asset';draw()}})])]));host.appendChild(nav(function(){go(-1)},null));return}
+   var box=h('div',{text:'載入中…'});host.appendChild(box);
+   var x=W.files||(W.files=await api('GET','/api/datasets'));box.textContent='';var want=wantFile(W.kind);
+   var list=((x&&x.files)||[]).filter(function(f){return want?f.path===want:/\.jsonl$/.test(f.path)});
+   if(!list.length){box.appendChild(h('div',{'class':'warn',text:'目前沒有可用的資料。請先到左邊的「資料匯入」把你的檔案／網頁／文字匯入，或到「資產清單」匯入 .fatrain；做好後按下面「重新整理」。'+(want?'（需要資產裡有 '+want+'）':'（需要資產裡有 .jsonl 資料檔）')}));host.appendChild(h('button',{text:'重新整理',onclick:function(){W.files=null;draw()}}))}
+   else list.forEach(function(f){var v=f.kind+'/'+f.name+(want?'':'::'+f.path),on=W.data===v;box.appendChild(h('div',{'class':'card',style:'cursor:pointer;'+(on?'border:2px solid var(--ok)':''),onclick:function(){W.data=v;if(!W.name)W.name=f.kind+'-'+f.name+'-'+new Date().toISOString().slice(0,10);draw()}},[h('b',{text:(on?'✅ ':'')+f.kind+'/'+f.name+(want?'':' › '+f.path)}),h('span',{'class':'badge',text:fmtB(f.bytes)+(f.readonly?'・內建':'')})]))});
+   host.appendChild(nav(function(){go(-1)},W.data?function(){go(1)}:null));if(!W.data&&list.length)host.appendChild(h('div',{style:'color:var(--mut);font-size:12px',text:'先點選一份資料才能下一步。'}));return}
+  if(sn==='確認'){host.appendChild(h('b',{text:'確認一下，然後開始'}));if(!W.name)W.name=W.kind+'-'+new Date().toISOString().slice(0,10);
+   var nm=h('input',{type:'text',value:W.name,oninput:function(){W.name=nm.value}});
+   var info=h('div',{style:'font-size:13px',text:'訓練：'+(GOALS.filter(function(g){return g[0]===W.kind})[0][1])+(needsData(W.kind)?'　資料：'+W.data:'')});
+   host.appendChild(info);host.appendChild(h('label',{text:'給這次訓練取個名字（成果會用這個名字存）'}));host.appendChild(nm);
+   var env=h('div',{style:'font-size:12px;color:var(--mut)',text:W.kind==='lora'?'檢查運算環境…':'這一種只用處理器，不需要安裝任何東西。'});host.appendChild(env);
+   if(W.kind==='lora'){var r=await api('GET','/api/backends?kind=lora');var ok=r&&r.backends&&r.backends.some(function(b){return b.id==='cpu-py'&&b.available}),web=r&&r.backends&&r.backends.some(function(b){return b.id==='wasm-web'&&b.available});
+    env.textContent=ok?'✅ 會用你電腦上的 Python 訓練（快）。':(web?'ℹ️ 沒有可用的 Python 環境，會自動改用網頁處理器（慢但正確，可暫停匯出）。想要快，請到「進階模式」看安裝指令。':'⚠️ 目前沒有可用的訓練環境。請切到「進階模式」看安裝說明，或到「資產清單」匯出 .fatrain 到別台訓練。')}
+   host.appendChild(h('div',{style:'color:var(--mut);font-size:12px',text:'其他參數（步數、學習率、核心數、輸出資料夾…）都用建議值；要自己調請切到「進階模式」。'}));
+   host.appendChild(nav(function(){go(-1)},function(){if(!W.name.trim()){alert('請取個名字');return}go(1)},'▶ 開始訓練'));return}
+  // 開始
+  host.appendChild(h('b',{text:'訓練進行中'}));var st=h('div',{text:'啟動中…'}),pg=h('progress',{max:'100',value:'0',style:'width:100%'}),lg=h('pre',{style:'max-height:160px;overflow:auto'}),cv=h('canvas',{width:600,height:60}),prog=h('div',{'class':'card'});prog.appendChild(h('div',{text:''}));prog.appendChild(cv);
+  var bP=h('button',{text:'暫停'}),bR=h('button',{text:'繼續',disabled:true}),bX=h('button',{'class':'dng',text:'停止'}),bN=h('button',{text:'再訓練一個',onclick:function(){W.step=0;W.data='';W.name='';draw()}});
+  host.appendChild(st);
+  if(W.kind==='lora'){host.appendChild(prog);host.appendChild(h('div',{'class':'row'},[bP,bX,bN]));
+   var body0={kind:'lora',name:W.name.trim(),backend:'auto',cfg:{datasetRef:W.data||undefined,steps:100,lr:0.001}};var x0=await api('POST','/api/train/start',body0);
+   if(x0.ok===false){st.textContent='';host.insertBefore(h('div',{'class':'warn',text:'沒辦法開始：'+x0.error}),st);return}
+   st.textContent=(x0.fallback?'ℹ️ '+x0.fallback.note:'已開始。')+'　成果會存成名字「'+W.name+'」。';lossHist=[];pollTrain(prog,cv);
+   bP.onclick=async function(){var y=await api('POST','/api/train/pause',{});if(y.ok===false)alert(y.error||y.reason);else st.textContent='已暫停並存檢查點；到「進階模式」按「續訓」可接著練。'};
+   bX.onclick=function(){if(confirm('停止訓練？（不存檢查點；要保留進度請用「暫停」）'))api('POST','/api/train/stop',{})};return}
+  host.appendChild(pg);host.appendChild(lg);host.appendChild(h('div',{'class':'row'},[bP,bR,bX,bN]));
+  var x1=await api('POST','/api/train/start',{kind:W.kind,name:W.name.trim(),fromAsset:needsData(W.kind)?W.data:undefined,cfg:{}});
+  if(x1.ok===false){st.textContent='';host.insertBefore(h('div',{'class':'warn',text:'沒辦法開始：'+x1.error}),st);return}
+  async function poll(){clearTimeout(poll.t);if(!host.isConnected||stepName()!=='開始')return;var r=await api('GET','/api/train/sym-status');if(r.ok===false)return;pg.value=r.pct;st.textContent=r.state+'　'+r.done+'／'+r.total+(r.current?'　'+r.current:'')+(r.error?'　錯誤：'+r.error:'');lg.textContent=(r.log||[]).map(function(l){return l.text}).join('\n');bP.disabled=r.state!=='running';bR.disabled=r.state!=='paused';bX.disabled=!(r.state==='running'||r.state==='paused');
+   if(r.state==='finished'){st.textContent+='　✅ 完成，已存成資產 '+((r.result&&r.result.saved)||[]).join('、');refresh('assets')}
+   if(r.state==='running'||r.state==='finishing'||r.state==='paused')poll.t=setTimeout(poll,600)}
+  bP.onclick=async function(){await api('POST','/api/train/sym-pause',{});poll()};bR.onclick=async function(){await api('POST','/api/train/sym-resume',{});poll()};bX.onclick=async function(){if(confirm('停止？'))await api('POST','/api/train/sym-stop',{});poll()};poll()}
+ draw()}
 function webLlmBox(){
  var box=h('div',{'class':'card'});
  box.appendChild(h('div',{text:'網頁版模型（ONNX q8，頁內 onnxruntime-web 推論；GGUF 不在這裡）'}));

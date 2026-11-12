@@ -13,4 +13,7 @@ check('Alt+左右鍵切換歷史', /e\.altKey/.test(T) && /ArrowLeft/.test(T) &&
 check('詳情分頁不存進版面偏好（暫時的）', !/DT/.test(fs.readFileSync(path.join(__dirname, 'studio_layout_core.js'), 'utf8')));
 check('右鍵選單：關閉／全部／其他／左側／右側', /Close All/.test(T) && /Close Others/.test(T) && /Close Left/.test(T) && /Close Right/.test(T) && /addEventListener\('contextmenu',function\(e\)\{e\.preventDefault\(\);dtMenu/.test(T));
 check('只重畫詳情那一側（左邊清單不跳回開頭）並保留捲動位置', /render\(\[detSide\(\)\]\)/.test(T) && /oldB\.scrollTop/.test(T) && /body\.scrollTop=keep/.test(T));
+check('訓練分頁有簡單／進階模式切換並記住選擇', /function setMode\(m\)/.test(T) && /fa_train_mode/.test(T) && /簡單模式/.test(T) && /進階模式/.test(T));
+check('精靈：先問訓練／更新資產，再問資料來源（已匯入資產或新資料）', /function trainWizard\(host\)/.test(T) && /你想做什麼/.test(T) && /訓練的資料從哪裡來/.test(T) && /更新資產/.test(T) && /要更新哪一份資產/.test(T));
+check('精靈用 datasetRef／fromAsset 開始訓練，不叫使用者輸入路徑', /datasetRef:W\.data\|\|undefined/.test(T) && /fromAsset:needsData\(W\.kind\)\?W\.data/.test(T));
 console.log(ok + ' passed, ' + bad + ' failed'); process.exit(bad ? 1 : 0);
