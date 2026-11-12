@@ -4,12 +4,38 @@
 // 這個檔案用到的東西都從 ctx 傳進來（fs＝fs/promises、path），不依賴 main.js 的其他函式，所以可以單獨被覆蓋。
 "use strict";
 
+// AppImage 重啟（2026-11-12）：Linux 的 AppImage 更新後重啟常出現「Cannot mount AppImage, please check your FUSE setup」而沒有重啟——
+// app.relaunch 在舊行程結束的同一刻就啟動新的 AppImage，舊的掛載點還沒卸乾淨、又繼承了舊行程的 APPIMAGE／APPDIR 等環境變數。
+// 這個修正原本只寫在 main.js（入口，只能重新安裝才會換）。改在 main-ext.js 接手 app.relaunch：main.js 不管是哪個版本、最後都會呼叫 app.relaunch，
+// 所以已安裝的舊 AppImage 只要熱更新到這個檔案、重啟一次後，之後的更新重啟就不會再掛載失敗。
+// 做法：脫離的 shell 先等 2 秒、清掉 AppImage 的環境變數再啟動；幾秒內就失敗（FUSE 掛載不了）就改用 APPIMAGE_EXTRACT_AND_RUN=1（解開到暫存資料夾再跑，不需要 FUSE）重試。
+function installAppImageRelaunch(app, deps) {
+  deps = deps || {};
+  const platform = deps.platform || process.platform, env = deps.env || process.env, argv = deps.argv || process.argv;
+  const spawn = deps.spawn || ((...a) => require("child_process").spawn(...a));
+  if (platform !== "linux" || !env.APPIMAGE || !app || typeof app.relaunch !== "function" || app.__faRelaunchPatched) return false;
+  const orig = app.relaunch.bind(app);
+  app.relaunch = function (opts) {
+    try {
+      const cleanEnv = Object.assign({}, env); for (const k of ["APPIMAGE", "APPDIR", "ARGV0", "OWD", "APPIMAGE_SILENT_INSTALL"]) delete cleanEnv[k];
+      const args = opts && Array.isArray(opts.args) ? opts.args : argv.slice(1);
+      const script = 'A="$1"; shift; sleep 2; s=$(date +%s); "$A" "$@"; rc=$?; e=$(date +%s); if [ "$rc" -ne 0 ] && [ $((e-s)) -lt 8 ]; then APPIMAGE_EXTRACT_AND_RUN=1 "$A" "$@"; fi';
+      const child = spawn("/bin/sh", ["-c", script, "sh", env.APPIMAGE].concat(args), { detached: true, stdio: "ignore", env: cleanEnv });
+      if (child && typeof child.unref === "function") child.unref();
+      return;
+    } catch (e) { console.error("[relaunch] 脫離式重啟失敗，改用原本的 app.relaunch：" + ((e && e.message) || e)); }
+    return orig(opts);
+  };
+  app.__faRelaunchPatched = true; return true;
+}
+
 function register(ipcMain, ctx) {
   // 舊版主程式呼叫 register 時只傳 { fs, path, execConfirmGate, net, dialog, BrowserWindow }：沒有 electron、userDataDir、getMainWindow 等。
   // 後面所有「自己更新自己」的功能（模組覆蓋、更新處理、缺模組自動補回、電腦操作）都靠這些，缺了就補上，不依賴主程式傳進來什麼。
   try {
     ctx = ctx || {};
     if (!ctx.electron) { try { ctx.electron = require("electron"); } catch (_) { /* 不在 Electron 裡（測試）：維持沒有 */ } }
+    try { if (ctx.electron && ctx.electron.app) installAppImageRelaunch(ctx.electron.app); } catch (_) { /* 接手重啟失敗不影響其他功能 */ }
     const E = ctx.electron;
     if (!ctx.BrowserWindow && E) ctx.BrowserWindow = E.BrowserWindow;
     if (!ctx.userDataDir && E && E.app) ctx.userDataDir = () => E.app.getPath("userData");
@@ -2131,4 +2157,4 @@ function startNativeMailbox(ctx) {
   return { ok: true, box };
 }
 
-module.exports = { register, _NRI: NRI, _NRT: NRT, _NRL: NRL, _findNativeRuntime: findNativeRuntime, _checkNativeRuntimeDir: checkNativeRuntimeDir, _NATIVE_RUNTIME_VERSION: NATIVE_RUNTIME_VERSION, _NATIVE_RUNTIME_MANIFEST: NATIVE_RUNTIME_MANIFEST };
+module.exports = { register, _installAppImageRelaunch: installAppImageRelaunch, _NRI: NRI, _NRT: NRT, _NRL: NRL, _findNativeRuntime: findNativeRuntime, _checkNativeRuntimeDir: checkNativeRuntimeDir, _NATIVE_RUNTIME_VERSION: NATIVE_RUNTIME_VERSION, _NATIVE_RUNTIME_MANIFEST: NATIVE_RUNTIME_MANIFEST };
