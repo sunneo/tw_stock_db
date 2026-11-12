@@ -98,7 +98,7 @@ const otDomains = [{ name: 'core_rules', description: '通用規則', source: 'b
   const del2 = await req('POST', '/api/asset/delete', { kind: 'trainer', name: 'my-t', confirmed: true }); check('使用者資產照常可刪', del2.j.ok === true, del2.j);
   const hn = createServer(Object.assign({}, h, { builtin: null })); hn.setPush(() => {});
   const x0 = await hn.route('GET', new URL('http://mock.local/api/assets'), {}); check('沒有提供者時只列儲存層（舊行為）', x0.j.groups.every((q) => q.items.length === 0));
-  console.log('builtin_assets_core 測試：通過 ' + ok + ' 項，失敗 ' + bad.length + ' 項');
   console.log(items.map((x) => x.kind + '/' + x.name + ' ' + JSON.stringify(x.counts)).join('\n'));
+  console.log('builtin_assets_core 測試：通過 ' + ok + ' 項，失敗 ' + bad.length + ' 項');
   if (bad.length) process.exit(1);
 })().catch((e) => { console.log('ERR', e && e.stack || e); process.exit(1); });
