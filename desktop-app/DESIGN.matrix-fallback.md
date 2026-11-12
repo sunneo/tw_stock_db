@@ -763,3 +763,19 @@ heldout9（`heldout9_list.jsonl`，16 題）：**ok 15/16，verified 14**（測�
 3. `node_modules` 符號連結在工作樹（`desktop-app/node_modules` → 主倉庫），未追蹤，**不要提交**；是 `??` 狀態。
 4. 未解題的矩陣覆蓋 0/21，下一步要擴充矩陣家族，或在 blockly 的 UML 建構器上做語句級殘留（第 2 點）。擴充家族要用新的 held-out（第四批以後），不對已用掉的批次調參。
 5. 13.6 表格 #4、#5、#6、#11、#13 各有 owner，還沒修；#9、#10 已修（如上）。訓練 train 條目在本次重跑中的 avbits、inflate、par、tarx 失敗，根因還沒查。
+
+### 13.8 殘留步驟混用（2026-11-12，第六棒；指揮指示：先寫判準、commit、再量一次）
+
+**判準（預先登記）**
+
+- 母體：§13.7 基線的 **21 個未解 holdout 條目**（固定 id 清單，與 13.7 相同；不重抽題）。
+- 殘留（residual）的定義：`buildFromUML` 失敗時，回傳**最後一次被判題器判過、判為非 AC／非 UNCHECKED 的候選程式**（來源：配方、課、範式、區塊迴圈）。`residual = {source, verdict, detail, by}`；沒有任何候選被判過則為 `null`。
+- 量測 P（殘留池大小）：母體中 `residual ≠ null` 的條目數。
+- 量測 M（混用結果）：對 P 中每個條目，把殘留交給 `FaMatrixHybrid.tryMatrix`，採用條件同 §13.6（隱藏測資獨立判過、非多候選、已驗證）。**判準的硬條件：只有 `tryMatrix` 的既有採用條件成立才算解出**，殘留本身不能當答案。
+- 語句級：本棒**不宣稱**有語句級殘留。判題器只回傳整支程式的 verdict 與一個測資的差異，沒有逐語句判定；若要語句級，需要中間值的 oracle，本棒不造。
+- 決定規則：
+  - P＝0：殘留混用沒有輸入，結論寫「0 by construction」，並寫下一步（需要語句級 oracle 或中間值範例）。
+  - P＞0 且 M＝0：寫出 P 中各條目的殘留來源與 verdict，並指出矩陣為什麼拿不到子問題的範例。
+  - M＞0：寫出採用條目，並由 hidden 判題再核一次。
+- 不對第二、第三批 held-out 調參；矩陣範本不改。
+- UML 建構器檔案（`renderer/src/uml/py_uml_pipeline_core.js`）：2026-11-12 檢查所有 worktree，沒有未提交的修改（`git worktree list` 各目錄 `git status` 為乾淨）。改動限於 `buildFromUML` 的失敗回傳與候選記錄，不改成功路徑。
