@@ -17,11 +17,11 @@
             lines: ['cnt_ = 0', 'for v_ in {{N.ls.0}}:', '    if v_ % 2 == {{c.par}}:', '        cnt_ += 1', 'print(cnt_)']
         }],
         families: [
-            { id: 'even-count', algo: 'demo-parity-count', split: 'train', want: 'user-demo-parity',
+            { id: 'even-count', algo: 'demo-parity-count', split: 'train', want: 'demo.parity-count',
                 statements: ['第一行 n，第二行 n 個整數。請輸出這些整數中偶數的個數。', '第一行 n，第二行 n 個整數。統計其中偶數的個數並輸出。'],
                 ref: 'n = int(input())\na = list(map(int, input().split()))\nprint(sum(1 for x in a if x % 2 == 0))',
                 gen: [[{ name: 'n', int: [1, 8], big: [20, 60] }], [{ name: 'a', ints: { len: 'n', range: [-20, 50] } }]] },
-            { id: 'odd-count', algo: 'demo-parity-count', split: 'holdout', want: 'user-demo-parity',
+            { id: 'odd-count', algo: 'demo-parity-count', split: 'holdout', want: 'demo.parity-count',
                 statements: ['第一行 n，第二行 n 個整數。請輸出這些整數中奇數的個數。'],
                 ref: 'n = int(input())\na = list(map(int, input().split()))\nprint(sum(1 for x in a if x % 2 != 0))',
                 gen: [[{ name: 'n', int: [1, 8], big: [20, 60] }], [{ name: 'a', ints: { len: 'n', range: [-20, 50] } }]] }

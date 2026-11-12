@@ -71,15 +71,15 @@ const runtime = RT.createRuntime({ Domains: DR, AI, PAR, Synth: SYN, Spec: S, Ex
     const dB2 = { solve, runRef, runtime, cache: {} };
     const rb = await EV.runDomain(Bs, dB2);
     const bt = rb.groups['domain/demo-parity/train'], bh = rb.groups['domain/demo-parity/holdout'];
-    check('blockly：train 2/2（由領域範式解出）', bt && bt.n === 2 && bt.pass === 2 && bt.detail.every((d) => /user-demo-parity/.test(d.by)), bt);
+    check('blockly：train 2/2（由領域範式解出）', bt && bt.n === 2 && bt.pass === 2 && bt.detail.every((d) => d.by === 'demo.parity-count'), bt);
     check('blockly：離線 AI 解到沒教過的 holdout 題（奇數個數）', bh && bh.n === 1 && bh.pass === 1, bh);
     // 直接看這一題是怎麼解的
     const bt1 = await EV.loadTasks(Bs, dB2); const ho = bt1.tasks.find((t) => t.split === 'holdout'); const sr = await solve(ho);
-    check('blockly：holdout 題是靠領域骨架解出（par=1）', sr.ok && sr.paradigm === 'user-demo-parity', sr);
+    check('blockly：holdout 題是靠領域骨架解出（par=1）', sr.ok && sr.paradigm === 'demo.parity-count', sr);
     // 停用 → 拿掉
     runtime.remove('demo-parity');
     check('blockly：停用後讀題規則與骨架都拿掉', !AI.ALGOS.some((a) => a.key === 'demo-parity-count') && !PAR.byId['demo.parity-count'] && !AI.PARADIGMS['demo-parity-count']);
-    const sr2 = await solve(ho); check('blockly：停用後這題不再由領域範式解', !(sr2.ok && sr2.paradigm === 'user-demo-parity'), sr2);
+    const sr2 = await solve(ho); check('blockly：停用後這題不再由領域範式解', !(sr2.ok && sr2.paradigm === 'demo.parity-count'), sr2);
     // 重新啟用（雜湊不變也要能再註冊：packs 內舊 id 還在，所以用帶雜湊的 id）
     const again = await runtime.ensure(Bs); check('blockly：重新啟用', again.ok && !again.already, again);
     runtime.remove('demo-parity');
