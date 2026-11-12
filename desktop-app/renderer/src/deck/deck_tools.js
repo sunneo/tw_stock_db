@@ -169,6 +169,26 @@ const FaDeckTools = (function () {
     }
 
     // ---------------------------------------------------------------- 估算與文件走訪
+    // 工具參數的 yaml：接受 yaml／deck_yaml 兩個名稱；模型把工具呼叫寫成文字 JSON 時常把換行寫成兩個字元「\n」（整份簡報擠成一行），
+    // 開頭是「deck:」接著跳脫換行、而且沒有真的換行時就還原（只處理這個明確的樣子，單行 flow 寫法裡合法的 \n 不動）
+    function deckYamlArg(a) {
+        a = a || {}; let t = a.yaml; if (!String(t == null ? '' : t).trim()) t = a.deck_yaml != null ? a.deck_yaml : '';
+        t = String(t == null ? '' : t);
+        if (t.indexOf('\n') < 0 && /^\s*deck\s*:\s*(\\r)?\\n/.test(t)) t = t.replace(/\\r\\n|\\n/g, '\n').replace(/\\t/g, '  ').replace(/\\"/g, '"');
+        return t;
+    }
+    // 模型沒有呼叫 render_presentation、只把參數當文字回覆（{"name":…,"yaml":…}、{"arguments":{…}}、或整份 deck yaml／```yaml 區塊）：抽出參數，程式替它呼叫一次
+    function deckArgsFromText(text) {
+        const s = String(text || ''); let o = null; const m = /\{[\s\S]*\}/.exec(s);
+        if (m) { try { o = JSON.parse(m[0]); } catch (_) { o = null; } }
+        if (o && typeof o === 'object') {
+            const src = (o.arguments && typeof o.arguments === 'object') ? o.arguments : o; const y = deckYamlArg(src);
+            if (/^\s*deck\s*:/.test(y)) return { yaml: y, name: String(src.name || o.name || '') };
+        }
+        const f = /```(?:ya?ml)?\s*\n([\s\S]*?)```/.exec(s); const body = f ? f[1] : s; const at = body.search(/^\s*deck\s*:/m);
+        if (at >= 0) return { yaml: body.slice(at).trim(), name: '' };
+        return null;
+    }
     function estimateMinutes(doc) {
         if (!doc || !Array.isArray(doc.chapters)) return 0;
         let speed = Number(doc.deck && doc.deck.speed); if (!(speed >= 0.5 && speed <= 2)) speed = 1;
@@ -465,8 +485,13 @@ const FaDeckTools = (function () {
             this._latestDeckUrl = saved.url;
             return { ok: true, type: 'deck', url: saved.url, file_id: saved.id, name: name || (data.deck && data.deck.title) || saved.name, title: (data.deck && data.deck.title) || '', slides, chapters: data.chapters.length, minutes: Math.round(checked.minutes * 10) / 10, warnings: checked.warnings };
         },
+        async _deckSalvage(text) { // 救回：模型把簡報參數寫成文字回覆而沒有呼叫工具時，程式替它呼叫 render_presentation；成功才回傳工具結果，失敗回 null（呼叫端照原流程處理）
+            const args = deckArgsFromText(text); if (!args) return null;
+            let r = null; try { r = await this._deckRender(args); } catch (_) { return null; }
+            return r && !r.error && r.type === 'deck' && r.url ? r : null;
+        },
         async _deckRender(a) {
-            const yamlText = String(a.yaml || '');
+            const yamlText = deckYamlArg(a);
             if (!yamlText.trim()) return { error: 'yaml is required' };
             { const yk = FaYamlKind.check(yamlText, 'deck'); if (!yk.ok) return { error: yk.message }; }
             await this._ensureJsYamlLoaded();
@@ -990,6 +1015,6 @@ const FaDeckTools = (function () {
             return lines.join('\n');
         },
     };
-    return { methods, Snippets, ImageCatalog, autoQuoteYaml, deckLeftovers, estimateMinutes, resolveImages, visualNodes, eachSlide, SYSTEM_PROMPT, DOMAIN_TOOLS, STRICT_WARNING, MAX_DECK_MINUTES };
+    return { methods, Snippets, ImageCatalog, deckYamlArg, deckArgsFromText, autoQuoteYaml, deckLeftovers, estimateMinutes, resolveImages, visualNodes, eachSlide, SYSTEM_PROMPT, DOMAIN_TOOLS, STRICT_WARNING, MAX_DECK_MINUTES };
 })();
 if (typeof module === 'object' && module.exports) module.exports = FaDeckTools;

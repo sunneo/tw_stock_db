@@ -77,5 +77,26 @@ check('expand: a handle written in src is moved to code', sn2.expand(mv).length 
 const mv2 = { chapters: [{ slides: [{ visual: { kind: 'code', src: '@c9' } }] }] };
 check('expand: an undefined handle in src is still an error', sn2.expand(mv2).length === 1);
 
+// ---- 2026-11-12 真實事故（/media-presentation 圖文並茂的新聞簡報，使用者回報「建簡報卻這樣停下來」）：
+// 模型把工具呼叫寫成文字 JSON，換行變成兩個字元「\n」整份擠成一行（bad indentation 1:27），參數名也寫成 deck_yaml；最後把 {name,yaml} 當文字回覆就結束。
+const yamlReal = 'deck:\n  title: "t"\n  lang: "zh-TW"\n  chapters:\n    - title: "c"\n      slides:\n        - id: s1\n          layout: "title"\n          title: "x"\n          narration: "n"\n';
+const yamlEsc = yamlReal.replace(/\n/g, '\\n');
+check('deckYamlArg：真的換行不動', T.deckYamlArg({ yaml: yamlReal }) === yamlReal);
+check('deckYamlArg：整份擠成一行的「\\n」還原成換行', T.deckYamlArg({ yaml: yamlEsc }) === yamlReal, T.deckYamlArg({ yaml: yamlEsc }).slice(0, 60));
+check('deckYamlArg：參數名 deck_yaml 也接受', T.deckYamlArg({ deck_yaml: yamlReal }) === yamlReal);
+check('deckYamlArg：還原後的引號跳脫也還原', T.deckYamlArg({ yaml: 'deck:\\n  title: \\"黃\\"\\n' }) === 'deck:\n  title: "黃"\n');
+const flow = 'deck: {title: "t", lang: "zh-TW", chapters: [{title: "c", slides: [{id: "s1", layout: "title", title: "x", narration: "a\\nb"}]}]}';
+check('deckYamlArg：單行 flow 寫法裡合法的 \\n 不動', T.deckYamlArg({ yaml: flow }) === flow);
+check('deckYamlArg：不是 deck 開頭的字串不動', T.deckYamlArg({ yaml: 'foo:\\nbar' }) === 'foo:\\nbar');
+check('deckYamlArg：空值回空字串', T.deckYamlArg({}) === '' && T.deckYamlArg(null) === '');
+const a1 = T.deckArgsFromText(JSON.stringify({ name: '黃', yaml: flow }));
+check('deckArgsFromText：{name,yaml} 的文字回覆', a1 && a1.name === '黃' && a1.yaml === flow, a1);
+const a2 = T.deckArgsFromText('好的\n' + JSON.stringify({ name: 'render_presentation', arguments: { deck_yaml: yamlEsc, name: '簡報' } }));
+check('deckArgsFromText：{arguments:{deck_yaml(擠成一行),name}} 也救得回來', a2 && a2.name === '簡報' && a2.yaml === yamlReal, a2);
+const a3 = T.deckArgsFromText('這是簡報：\n```yaml\n' + yamlReal + '```\n完成');
+check('deckArgsFromText：```yaml 區塊', a3 && /^deck:/.test(a3.yaml) && /slides:/.test(a3.yaml), a3);
+check('deckArgsFromText：一般文字回覆不救（回 null）', T.deckArgsFromText('本簡報共6張投影片，使用自製圖示') === null && T.deckArgsFromText('') === null);
+check('deckArgsFromText：JSON 但不是簡報也回 null', T.deckArgsFromText('{"ok":true,"slides":3}') === null);
+
 console.log(bad.length ? 'FAILED:\n  ' + bad.join('\n  ') : 'deck_tools: ' + ok + ' passed');
 process.exit(bad.length ? 1 : 0);

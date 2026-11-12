@@ -76316,6 +76316,26 @@ const FaDeckTools = (function () {
     }
 
     // ---------------------------------------------------------------- 估算與文件走訪
+    // 工具參數的 yaml：接受 yaml／deck_yaml 兩個名稱；模型把工具呼叫寫成文字 JSON 時常把換行寫成兩個字元「\n」（整份簡報擠成一行），
+    // 開頭是「deck:」接著跳脫換行、而且沒有真的換行時就還原（只處理這個明確的樣子，單行 flow 寫法裡合法的 \n 不動）
+    function deckYamlArg(a) {
+        a = a || {}; let t = a.yaml; if (!String(t == null ? '' : t).trim()) t = a.deck_yaml != null ? a.deck_yaml : '';
+        t = String(t == null ? '' : t);
+        if (t.indexOf('\n') < 0 && /^\s*deck\s*:\s*(\\r)?\\n/.test(t)) t = t.replace(/\\r\\n|\\n/g, '\n').replace(/\\t/g, '  ').replace(/\\"/g, '"');
+        return t;
+    }
+    // 模型沒有呼叫 render_presentation、只把參數當文字回覆（{"name":…,"yaml":…}、{"arguments":{…}}、或整份 deck yaml／```yaml 區塊）：抽出參數，程式替它呼叫一次
+    function deckArgsFromText(text) {
+        const s = String(text || ''); let o = null; const m = /\{[\s\S]*\}/.exec(s);
+        if (m) { try { o = JSON.parse(m[0]); } catch (_) { o = null; } }
+        if (o && typeof o === 'object') {
+            const src = (o.arguments && typeof o.arguments === 'object') ? o.arguments : o; const y = deckYamlArg(src);
+            if (/^\s*deck\s*:/.test(y)) return { yaml: y, name: String(src.name || o.name || '') };
+        }
+        const f = /```(?:ya?ml)?\s*\n([\s\S]*?)```/.exec(s); const body = f ? f[1] : s; const at = body.search(/^\s*deck\s*:/m);
+        if (at >= 0) return { yaml: body.slice(at).trim(), name: '' };
+        return null;
+    }
     function estimateMinutes(doc) {
         if (!doc || !Array.isArray(doc.chapters)) return 0;
         let speed = Number(doc.deck && doc.deck.speed); if (!(speed >= 0.5 && speed <= 2)) speed = 1;
@@ -76612,8 +76632,13 @@ const FaDeckTools = (function () {
             this._latestDeckUrl = saved.url;
             return { ok: true, type: 'deck', url: saved.url, file_id: saved.id, name: name || (data.deck && data.deck.title) || saved.name, title: (data.deck && data.deck.title) || '', slides, chapters: data.chapters.length, minutes: Math.round(checked.minutes * 10) / 10, warnings: checked.warnings };
         },
+        async _deckSalvage(text) { // 救回：模型把簡報參數寫成文字回覆而沒有呼叫工具時，程式替它呼叫 render_presentation；成功才回傳工具結果，失敗回 null（呼叫端照原流程處理）
+            const args = deckArgsFromText(text); if (!args) return null;
+            let r = null; try { r = await this._deckRender(args); } catch (_) { return null; }
+            return r && !r.error && r.type === 'deck' && r.url ? r : null;
+        },
         async _deckRender(a) {
-            const yamlText = String(a.yaml || '');
+            const yamlText = deckYamlArg(a);
             if (!yamlText.trim()) return { error: 'yaml is required' };
             { const yk = FaYamlKind.check(yamlText, 'deck'); if (!yk.ok) return { error: yk.message }; }
             await this._ensureJsYamlLoaded();
@@ -77137,7 +77162,7 @@ const FaDeckTools = (function () {
             return lines.join('\n');
         },
     };
-    return { methods, Snippets, ImageCatalog, autoQuoteYaml, deckLeftovers, estimateMinutes, resolveImages, visualNodes, eachSlide, SYSTEM_PROMPT, DOMAIN_TOOLS, STRICT_WARNING, MAX_DECK_MINUTES };
+    return { methods, Snippets, ImageCatalog, deckYamlArg, deckArgsFromText, autoQuoteYaml, deckLeftovers, estimateMinutes, resolveImages, visualNodes, eachSlide, SYSTEM_PROMPT, DOMAIN_TOOLS, STRICT_WARNING, MAX_DECK_MINUTES };
 })();
 if (typeof module === 'object' && module.exports) module.exports = FaDeckTools;
 
@@ -129056,6 +129081,15 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                 delegationExclude: extra.delegationExclude || [],
             });
             let subResult = await runOnce(task);
+            // 救回：模型沒有呼叫 render_presentation，只把簡報參數當文字回覆（{"name":…,"yaml":…}、整份 deck yaml）——2026-11-12 真實事故：寫成文字的工具呼叫換行變成「\n」兩個字元、參數名寫成 deck_yaml，
+            // 兩次都失敗後用文字回覆結束，簡報就沒了。程式替它呼叫一次（還原換行、接受 deck_yaml），成功才算數
+            const trySalvageDeck = async () => {
+                if (!isDeck || (subResult && subResult.visual) || !subResult || !subResult.text || typeof this._deckSalvage !== 'function') return;
+                const sv = await this._deckSalvage(subResult.text); const vis = sv ? this._detectVisualToolPayload(sv) : null; if (!vis) return;
+                const l = '🛟 模型把簡報參數寫成文字回覆而沒有呼叫 render_presentation——程式替它呼叫並成功（' + (sv.slides || '?') + ' 張）'; if (progress) progress.log(l); if (extra.onTrace) extra.onTrace(l);
+                subResult = { text: '已建立簡報「' + String(sv.title || sv.name || '') + '」（' + (sv.slides || '?') + ' 張）', visual: vis };
+            };
+            await trySalvageDeck();
             // 任務完全沒有素材（沒有附件、網址、檔案）而模型說「需要素材」——這是對的答案，直接交給使用者；不要當成失敗再逼它交出一份簡報（逼出來的是編造的示範簡報）
             const hasMaterial = (t) => /\[附件：|client-file\/|https?:\/\/|fap:/i.test(String(t || '')) || /[A-Za-z]:[\\\/]/.test(String(t || ''));
             const asksMaterial = (t) => /(source material|please attach|attach (the )?(file|image|picture)s?|provide (the )?(files?|material|url)|need (the )?(source|material|files?)|請(提供|附上|上傳|附)|需要.{0,12}(素材|附件|檔案|來源)|沒有(收到|看到).{0,8}(附件|檔案|素材))/i.test(String(t || ''));
@@ -129077,6 +129111,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                 subResult = await runOnce(task + '\n\n【上一次嘗試沒有成功產生簡報：你只用文字說明、沒有真的呼叫 render_presentation 並得到成功結果。這次直接寫出完整的簡報 yaml 並呼叫 render_presentation；它回報問題就修正後再呼叫，成功之後才回答。不要再只用文字描述。如果這個任務沒有給你任何素材或主題（沒有附件、網址、檔案，也沒有說要講什麼），不要編造內容、也不要做示範簡報，直接用文字說明需要什麼素材。】');
             }
             if (askedForMaterial(subResult)) { if (progress) progress.finish('需要素材'); return { ok: true, domain: domainKey, result: String(subResult.text || '') + String.fromCharCode(10, 10) + '（這次的任務沒有附上檔案或網址，所以沒有產生簡報。請附上素材再送一次。）' }; }
+            await trySalvageDeck();
             if (isDeck && !(subResult && subResult.visual)) { const mk = /\[附件：[^\]]*\]/.exec(task); this._deckLastFailure = { at: Date.now(), task: task0, marker: mk ? mk[0] : '' }; if (progress) progress.fail('沒有產生簡報'); return { ok: false, error: '沒有做出簡報。模型寫的簡報沒通過檢查或沒有真的呼叫 render_presentation；程式自己組也沒成功（' + (this._deckTopicError || '主題簡報食譜不適用：任務帶有檔案或網址，或需求太短') + '）。過程記錄裡有每一步的結果；補一句具體要講哪幾件事，或附上素材（照片、文件）再送一次。', model_said: String((subResult && subResult.text) || '').slice(0, 600) }; }
             if (isDeck) this._deckLastFailure = null; // 做成了，下一次不是接續
             if (progress) progress.finish('完成');
