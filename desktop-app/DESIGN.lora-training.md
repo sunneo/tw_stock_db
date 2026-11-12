@@ -1027,3 +1027,49 @@ model card 欄位以 `description`（一句話，來自描述檔，§13.2）與 
 - 未驗證：這三項在真實桌面視窗裡的生成效果（只有單元測試與註冊／樣板的字串核對）；工具折進 system 後與 WASM 樣板的逐字等同只對照了官方樣板文字，沒有跑同一題兩邊比輸出。
 
 未列入阻礙但值得記：套用後第一次生成會重建 session，多花約 1.4～3 秒；`lora_apply` 一次約 0.65 秒（寫 40 MB 到信箱），工作室手動載入約 1.6 秒，四顆一起 3.96 秒。
+
+## 27.7 §27.6 三項修正的產品視窗驗證：未完成（2026-11-13，分支 claude/lora-verify）
+
+結論：**沒有在產品視窗實測**。阻礙是資產與執行包，不是程式；本次沒有改任何程式，只補這一節。
+
+### 27.7.1 環境查核（這台，2026-11-13）
+
+- 四顆 `.fatrain`（decompose-r4-v2、toolcall-r4、colu-r4、plan-r4）不在本機：全機 `find` 找不到；`/home/hungfu.lee/fa-adapters-int/` 不存在。唯一找到的 `.fatrain` 是測試用的 `/tmp/fa-build-lora-*/out-good/demo-r4.fatrain`，不是四顆之一，沒有拿來當替代。重新產生需要 `lora-train/` 訓練，不在本次範圍，也沒有下載。
+- 執行包 1.22.0-2 未安裝；本機只有 1.22.0-1（legacy，不支援 LoRA）。可用 `scripts/native-runtime-pack.js` 由既有的 onnxruntime-node 1.22.0 打包，本次未做。
+- Electron 有：主倉庫 `desktop-app/node_modules/electron/dist`。worktree 沒有 `node_modules`。`scripts/eval/lora_four_adapters.run.js` 把 exe 寫死在 `<app>/node_modules/electron`，所以在 worktree 直接跑會失敗。
+- 模型：`~/.config/floating-assistant-desktop/native-models/qwen3-0.6b-q8` 存在；`native-lora/slot-model` 存在（舊的槽版，未重新驗證）。
+
+### 27.7.2 靜態查核（已驗過，只跑相關單檔）
+
+| 檔案 | 結果 |
+|---|---|
+| `renderer/src/vlm/vlm_core.test.js` | 150 通過、0 失敗（含 `effectiveDevicePref`、`wantsNativeBackend`、`nativeToolMessages`） |
+| `renderer/src/studio/lora_route_wiring.test.js` | 13 通過、0 失敗 |
+| `renderer/src/studio/lora_registry.test.js` | 96 通過、0 失敗 |
+| `renderer/src/studio/lora_route.test.js` | 20 通過、0 失敗 |
+
+逐項對照程式碼（只是讀程式，沒有實跑）：
+
+- §27.4 第 1 項（`slot-model` 被刪）：`main-ext.js` 的 `applySet` 保留清單含 `"slot-model"`，`clear()` 也跳過它。修正在程式裡。
+- §27.6 第 2 項（沒有 WebGPU 不走原生）：`FaVlm.effectiveDevicePref`（`vlm_core.js`）把 `gpu` 且沒有 WebGPU 視為 `auto`；`floating-assistant.js` 的 `_llmGenerateInner` 用它判斷原生。
+- §27.6 第 3 項（colu／plan 自動選用）：`KNOWN_EVAL` 只有 `colu-r4`（30:11、25:0）與 `plan-r4`（60:52、50:0、47:25），數字與 §19 相同，只認 id 或名稱完全相同。
+- §27.6 第 4 項（工具與預填）：`nativeToolMessages` 把工具折進 system；歷史有 `tool` 角色或 `tool_calls` 時回 `ok:false`。`nativeWithPrefill` 輸出不以預填開頭時回 `null`，`_nrRunNative` 把它當失敗，呼叫端退回網頁版。這條路沒有看到會靜默輸出錯誤的分支。
+
+### 27.7.3 未驗證（誠實列出）
+
+- (1) 無 WebGPU 時 LoRA 真的走原生：**未在產品視窗實跑**。只有單元測試。
+- (2) colu／plan 被自動路由選到、且不被 `toolcall-r4` 的觸發字搶走：**未實跑**。依賴的四顆 `.fatrain` 不在本機，無法做真實路由。
+- (3) 帶 tools／預填的呼叫，原生輸出與網頁版 WASM 是否一致：**未量**。沒有同一題兩邊的輸出比對。
+- 槽版（`slot-model`）在真實 `lora_apply` 後存活：**未在產品視窗重驗**，只有程式碼與既有測試。
+
+### 27.7.4 要完成這一節，需要做的事（依序）
+
+1. 把四顆 `.fatrain` 放進一個資料夾，用 `--assets=<資料夾>` 傳給啟動器。
+2. 用 `node scripts/native-runtime-pack.js <輸出資料夾> --ort-src <含 node_modules/onnxruntime-node 1.22.0 的資料夾>` 打出 1.22.0-2，再以 `--runtime=` 傳入。
+3. 讓 worktree 能找到 Electron（symlink `node_modules`，或把 `run.js` 的 exe 路徑改成可設定）。
+4. 跑 `xvfb-run -a taskset -c 0-1 nice -n 19 node scripts/eval/lora_four_adapters.run.js --runtime=… --assets=… --restore-slot=0`（`--restore-slot=0` 才是產品原樣）。
+
+### 27.7.5 提交與共用檔
+
+- 本次只改 `desktop-app/DESIGN.lora-training.md`（新增本節）。沒有改程式、沒有改 `renderer/src/floating-assistant.js`，因此**不需要重新嵌入**。
+- 沒有 embed、build、推送或發布。
