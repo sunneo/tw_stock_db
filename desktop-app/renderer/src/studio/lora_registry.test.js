@@ -249,5 +249,30 @@ let t = 1000; const now = () => ++t;
           r.release('ra5'); const x3 = await r.replace('ra5', 'rb5', {}); check('替換：推論結束後可以替換', x3.ok && x3.active.join() === 'rb5'); } 
     }
 
+    // 第三輪：訓練秩與槽寬分開（r4 佔 4 秩、檔案寫進 16 槽）、card 的評量格式、匯入說明、版本差異
+    {
+        const man = { name: 'dec4', base: 'Qwen/Qwen3-0.6B', compat: { base: 'Qwen/Qwen3-0.6B', rank: 16, prompt_format_version: 3 }, sha256: { 'weights/lora.bin': H('c') }, counts: { weight_bytes: 40 * MB },
+            eval: { split_legal_rate: { base: 0, tuned: 1, n: 60 } }, extra: { lora: { trained_rank: 4, domains: ['decompose'], version: '2.0.0', description: '拆題', known_limits: ['範圍外退步：x'] } }, owner: 'user' };
+        const e = R.entryFromManifest(Object.assign({}, man, { sha256: undefined, total_size: undefined }), { id: 'dec4', name: 'dec4', source: 'imported', domains: ['decompose'], location: 'asset:lora/dec4', size: 40 * MB, sha256: H('c') });
+        check('訓練秩 4（佔用的秩），槽寬 16（相容性用）', e.rank === 4 && e.slot_rank === 16 && e.version === '2.0.0' && e.limits.length === 1, e);
+        const cc = R.checkCompat(Object.assign({}, e, { tool_catalog_sha256: undefined }), ENV); check('槽寬 16 的 r4 相容', cc.ok && cc.level !== 'reject', cc);
+        check('槽寬 32 不相容', !R.checkCompat(Object.assign({}, e, { slot_rank: 32 }), ENV).ok);
+        const rr = R.createRegistry({ env: ENV, slotCapacity: 16, maxActive: 8, loader: mkLoader() });
+        for (const id of ['a4', 'b4', 'c4', 'd4']) rr.register(Object.assign({}, e, { id, name: id, sha256: H(id[0]) }));
+        const f4 = await rr.request({ ids: ['a4', 'b4', 'c4', 'd4'], manual: true });
+        check('四顆 r4 能同時放進 16 槽（秩加總 16）', f4.active.length === 4 && rr.loaded().length === 4, f4);
+        const v = R.evalVerdict({ split_legal_rate: { base: 0, tuned: 1, n: 60 }, fc_format_rate: { base: 0.6, tuned: 0.5, n: 20 } });
+        check('card 評量格式：贏與輸都認得', v.known && v.win.join() === 'split_legal_rate' && v.lose.join() === 'fc_format_rate', v);
+        const sA = R.summaryOf(e), sB = R.summaryOf(Object.assign({}, e, { version: '1.0.0', limits: [] }));
+        const dfx = R.diffSummaries(sB, sA);
+        check('版本差異：版本與限制新增', !dfx.same && dfx.rows.some((x) => x.field === '版本' && x.changed) && dfx.limitsAdded.join() === '範圍外退步：x', dfx);
+        check('同樣的摘要沒有差異', R.diffSummaries(sA, sA).same === true);
+        const imp = R.importReport(Object.assign({}, man, { base: 'Other/Model', compat: { base: 'Other/Model', rank: 16, prompt_format_version: 3 } }), { env: ENV });
+        check('匯入說明：基底不同 reject 並寫原因', imp.ok === false && imp.level === 'reject' && /基底模型不同/.test(imp.error), imp);
+        const imp2 = R.importReport(Object.assign({}, man, { sha256: {} }), { env: ENV });
+        check('匯入說明：沒有權重檔 reject', imp2.ok === false && /沒有權重檔/.test(imp2.error), imp2);
+        check('weightFile 找得到 lora.bin', R.weightFile(man) === 'weights/lora.bin' && R.weightFile({ sha256: { 'data/x.jsonl': H('d') } }) === null);
+    }
+
     console.log(ok + ' passed, ' + bad + ' failed'); process.exit(bad ? 1 : 0);
 })();

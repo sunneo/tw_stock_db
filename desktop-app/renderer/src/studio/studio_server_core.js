@@ -76,10 +76,14 @@
         async function syncRegistry() {
             if (!S.registry) S.registry = LoraReg.createRegistry({ env: LORA_ENV, slotCapacity: LORA_SLOT_RANK, maxActive: h.loraApply ? (h.loraMaxActive >= 1 ? h.loraMaxActive : 4) : 1, loader: LoraReg.nrEngineLoader({ readBytes: async (e) => { const r = await h.storage.loadAsset('lora', e.asset_name); if (!r || !r.asset.files[e.weight_file]) throw new Error('讀不到權重檔 ' + e.weight_file); return r.asset.files[e.weight_file]; }, sha256Hex: Asset.sha256Hex }) });
             const reg = S.registry, prefs = (h.prefsGet && h.prefsGet()) || {}, en = prefs.loraEnabled || {}, imp = new Set(Array.isArray(prefs.imported) ? prefs.imported : []);
-            const seen = new Set(), invalid = [], items = await h.storage.listAssets();
+            const seen = new Set(), invalid = [], dataOnly = [], items = await h.storage.listAssets();
             for (const it of items) {
-                if (it.kind !== 'lora') continue; const m = await h.storage.loadManifest('lora', it.name); if (!m) continue;
-                const wf = Object.keys(m.sha256 || {}).find((p) => /^weights\/.*(lora\.bin|\.safetensors|\.bin)$/.test(p)); if (!wf) continue;
+                if (it.kind !== 'lora') continue;
+                const m = await h.storage.loadManifest('lora', it.name);
+                if (!m) { invalid.push({ id: it.name, error: '讀不到 manifest' }); continue; }
+                const wf = LoraReg.weightFile(m);
+                // 只含資料的 lora 資產（資料匯入存下來的 corpus、requests、train.jsonl）不是 adapter：列在 dataOnly，不進登錄表，但也不會靜默消失
+                if (!wf) { dataOnly.push(it.name); continue; }
                 const ex = (m.extra && m.extra.lora) || {}, id = it.name;
                 const e = LoraReg.entryFromManifest(Object.assign({}, m, { sha256: undefined, total_size: undefined, size: undefined }), { id, name: it.name, source: m.owner === 'builtin' ? 'builtin' : (imp.has('lora/' + it.name) ? 'imported' : 'user'), domains: ex.domains || m.domains || [], location: 'asset:lora/' + it.name, size: ex.size || (m.counts && m.counts.weight_bytes) || 0, sha256: m.sha256[wf], enabled: en[id] !== false, asset_name: it.name, weight_file: wf, triggers: ex.triggers, priority: ex.priority });
                 seen.add(id);
@@ -90,7 +94,7 @@
             for (const e of reg.list()) if (!seen.has(e.id)) await reg.unregister(e.id);
             const loaded = new Set(reg.loaded().map((x) => x.id));
             const entries = reg.list().map((e) => ({ id: e.id, name: e.name, source: e.source, base: e.base, rank: e.rank, size: e.size, domains: e.domains, enabled: e.enabled, compat: reg.checkCompat(e), verdict: LoraReg.evalVerdict(e.eval), loaded: loaded.has(e.id), prompt_format_version: e.prompt_format_version }));
-            return { reg, entries, invalid };
+            return { reg, entries, invalid, dataOnly };
         }
         const now = () => (h.now ? h.now() : Date.now());
         const prefsObj = () => (h.prefsGet && h.prefsGet()) || {};
@@ -297,7 +301,11 @@
                     const f = await h.pickFile(); if (!f) return ok({ cancelled: true });
                     const r = await Fatrain.importAsset(f.bytes, { storage: h.storage, confirmed: false });
                     if (!r.ok) { log('匯入被拒：' + (r.error || '') + '（' + f.name + '）'); return bad(409, r.error || '匯入失敗', r); }
-                    S.pending = { id: 'imp' + (++S.seq), bytes: f.bytes, name: f.name }; return ok(Object.assign({ pendingId: S.pending.id, file: f.name }, r));
+                    S.pending = { id: 'imp' + (++S.seq), bytes: f.bytes, name: f.name };
+                    // LoRA 說明：相容性（會不會被登錄表拒絕）與同名現有資產的版本差異；不是 LoRA 的不給
+                    let loraReport = null; const parsed = Fatrain.readAsset(f.bytes, {});
+                    if (parsed.ok && parsed.asset.manifest.kind === 'lora') { const mf = parsed.asset.manifest; const existing = await h.storage.loadManifest('lora', mf.name).catch(() => null); loraReport = LoraReg.importReport(mf, { env: LORA_ENV, existing: existing || null }); }
+                    return ok(Object.assign({ pendingId: S.pending.id, file: f.name, loraReport }, r));
                 }
                 if (method === 'POST' && P === '/api/import/confirm') {
                     const pd = S.pending; if (!pd || pd.id !== body.pendingId) return bad(409, '沒有待確認的匯入（可能已取消，請重新選檔）');
@@ -455,7 +463,7 @@
                 if (method === 'POST' && P === '/api/train/pause') { const r = await callHost('studio_train_pause', { jobId: body.jobId || S.lastTrain }, 180000); log('暫停訓練：' + (r.ok ? '已存檢查點 step=' + r.step : r.error || r.reason)); return r.ok === false && !r.checkpoint ? bad(409, r.error || r.reason || '暫停失敗', r) : ok(r); }
                 if (method === 'POST' && P === '/api/train/stop') { const r = await callHost('studio_train_stop', { jobId: body.jobId || S.lastTrain }, 30000); log('停止訓練'); return r.ok === false ? bad(409, r.error) : ok(r); }
                 // ---- LoRA 登錄與按需載入（第二輪，接 lora_registry_core）----
-                if (method === 'GET' && P === '/api/lora') { const reg = await syncRegistry(); return ok({ env: LORA_ENV, budget: reg.reg.budget, maxActive: reg.reg.maxActive, entries: reg.entries, invalid: reg.invalid, loaded: reg.reg.loaded(), applyBlocker: h.loraApply ? '' : LORA_APPLY_BLOCKER }); }
+                if (method === 'GET' && P === '/api/lora') { const reg = await syncRegistry(); return ok({ env: LORA_ENV, budget: reg.reg.budget, maxActive: reg.reg.maxActive, entries: reg.entries, invalid: reg.invalid, dataOnly: reg.dataOnly, loaded: reg.reg.loaded(), applyBlocker: h.loraApply ? '' : LORA_APPLY_BLOCKER }); }
                 // 原生模型 LoRA 槽版（標準版 q8 → 槽版，主行程 native-slot-model.js）：狀態／開始轉換／使用者同意後下載
                 if (P === '/api/lora/slot' || P === '/api/lora/slot/prepare' || P === '/api/lora/slot/download') {
                     if (!h.slotCall) return ok({ ok: false, available: false, error: '只有桌面版的原生推論需要 LoRA 槽版；這個環境沒有接上主行程' });
@@ -491,7 +499,9 @@
                     return ok({ unloaded: body.id ? [String(body.id)] : [], active: R2.loaded().map((x) => x.id), status: R2.status() });
                 }
                 // 槽位與模型卡狀態（管理畫面）
-                if (method === 'GET' && P === '/api/lora/status') { const reg = await syncRegistry(); return ok(reg.reg.status()); }
+                if (method === 'GET' && P === '/api/lora/status') { const reg = await syncRegistry(); const native = h.loraStatus ? await h.loraStatus().catch((e) => ({ ok: false, error: String((e && e.message) || e) })) : null; return ok(Object.assign({}, reg.reg.status(), { native: native || { ok: false, available: false, error: '這個環境沒有原生推論的套用狀態（不是桌面版）' } })); }
+                // 版本比較：兩個已登錄的 LoRA 的摘要差異（版本、rank、槽寬、基底、領域、評量數字、已知限制）
+                if (method === 'GET' && P === '/api/lora/compare') { const reg = await syncRegistry(); const ea = reg.reg.get(Q('a')), eb = reg.reg.get(Q('b')); if (!ea || !eb) return bad(404, '沒有這個 adapter（a 或 b）'); return ok({ a: LoraReg.summaryOf(ea), b: LoraReg.summaryOf(eb), diff: LoraReg.diffSummaries(LoraReg.summaryOf(ea), LoraReg.summaryOf(eb)) }); }
                 // 釘選／解除釘選：釘選的 adapter 不被自動淘汰，也不能被手動卸載或替換（除非 force）
                 if (method === 'POST' && (P === '/api/lora/pin' || P === '/api/lora/unpin')) {
                     const reg = await syncRegistry(); const id = String(body.id || '');

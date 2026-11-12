@@ -929,3 +929,47 @@ model card 欄位以 `description`（一句話，來自描述檔，§13.2）與 
 - Electron 內的 ORT 1.22 生成與「設為離線模型 → 重啟 → 生成」沒做（見 3a）。
 - adapter 版 slot 的貪婪比對對象應改成 PEFT adapter 的 greedy，目前沒有這份參考。
 - 網頁版 q8 的品質：6 題 16 token 的全對只有 2/6，與 HF 的差距仍在（25.4）。
+
+## 26. LoRA 管理缺口：盤點、補完與實測（2026-11-12，分支 lora-train-eval）
+
+**來源**：唯讀盤點（14 項，commit 20d5c2f5 時的程式），加上本輪自己找到的 UI 缺口。下表每項都標明：已補（有測試）、部分、未補（原因）。
+
+### 26.1 盤點結果（逐項）
+
+| # | 缺口 | 狀態 | 做了什麼／為什麼沒做 |
+|---|---|---|---|
+| 1 | 四顆 r4 只能同時載一顆（登錄表用槽寬 16 當 rank；mergeSlots 其實依有效秩串接） | **已補** | `entryFromManifest`：`rank`＝訓練秩（manifest.extra.lora.trained_rank），`slot_rank`＝槽寬 16（相容性用）。實測：四顆 r4 同時載入，秩加總 16；第五顆被拒並寫原因。 |
+| 2 | 自動選用失效（card 評量格式 `{split_legal_rate:{base,tuned,n}}` 不被 evalVerdict 認得） | **已補** | `evalVerdict` 認得 card 格式（微調 > 基底＝贏，< ＝輸）。實測：decompose／toolcall 的 card 判為贏；plan／colu 沒有評量數字，仍不自動選用（寫明原因）。 |
+| 3 | 描述檔與權重不一致（size／sha256 指 PEFT 檔，實際權重是 lora.bin；base 是本機路徑） | **已補** | `build-lora-asset.js`：描述檔 size／sha256 ＝ 實際 lora.bin，base ＝ `Qwen/Qwen3-0.6B`，本機路徑存 `base_local`。`scripts/build-lora-asset.test.js` 讀回驗證。 |
+| 4 | 版本與說明遺失（版本顯示「未標註」） | **已補** | manifest.extra.lora 帶 version、description、known_limits；登錄表映射。 |
+| 5 | 路由窄（triggers 沒用；網頁版路由被擋） | **部分** | 桌面版：triggers 現在會參與選用（`routeTurn` 傳入這一輪的話；測試：任務是 toolcall 也能靠 UML 觸發字選到 decompose）。網頁版路由仍被 `_studioDesktop()` 擋，需要改網頁路徑（未補）。 |
+| 6 | 網頁版只能套一顆、minCos 0.5 會拒絕小 adapter | **未補** | 需要演算法或槽版網頁路徑（不是 UI 能解的）。 |
+| 7 | §10 的「自動取 GitHub lora-adapters、offlineLora 設定、sha 核對、靜默退回」程式不存在 | **未補** | 需要網路下載的同意流程與設定頁；下載要先經使用者同意。 |
+| 8 | 靜默略過（無權重的 lora 資產直接 continue；build 不驗證） | **已補** | 沒有權重的 lora 資產改列為 `dataOnly`（畫面上看得到，不是 adapter）；讀不到 manifest 進 `invalid`。build 先驗描述檔、model_card、lora.bin 大小；缺任何一項就拒絕產出。 |
+| 9 | 相容性警告丟失（card() 只回 reasons；LORA_ENV 沒有基底雜湊與工具清單雜湊） | **部分** | 警告已保留並顯示（`compatWarnings`）。但 LORA_ENV 仍沒有工具清單雜湊，所以「工具清單是否過期」目前無法判斷，畫面會寫「adapter 沒記錄工具清單雜湊」而不是假裝通過。要補需要 app 端的工具清單雜湊，未做。 |
+| 10 | 評量呈現不全（METRIC_KEYS 只有 2 項；toolcall 卡片是 v1 數字；範圍外未量） | **部分** | toolcall 卡片已更新為 §24 的 v2 數字（1.1.0）。plan／colu 的數字在 DESIGN §19，但 fa-lora-card 的 eval 只定義了兩個指標（split_legal_rate、fc_format_rate），沒有 plan_check／colu 的格式，所以沒有寫進卡片（要改 card schema，未做）。範圍外退步仍未量。 |
+| 11 | 原生套用的正確性未證（槽圖 10/96 等） | **未驗證** | 盤點報告提到的數字我沒有重跑，不在這裡宣稱。真模型的數值比對需要 onnxruntime-node，這台沒有裝，安裝屬於下載，需要使用者同意。 |
+| 12 | 測試缺口（無 build 測試；無真實 manifest→登錄項測試；route wiring 用正則） | **部分** | 補了 build 測試（12 項）、真實 manifest→登錄項與四顆 r4 同槽的測試（registry 測試）。`lora_route_wiring.test.js` 仍用正則比原始碼，未換掉。 |
+| 13 | 文件與程式不符 | **部分** | `pipeline_core.js` 的 llm 匯出／按需載入改為已接上（附說明），測試同步改寫。§10、§13.5、§15.5 的舊敘述本節不改寫原文，以本節為準：§10 的「一次只能套一個」是桌面版舊狀態，現在桌面版可以同時載入多顆（rank 槽）；路由已接（見 floating-assistant.js 的 `_loraRouteTurn`）。 |
+| 14 | 出貨不可重現（manifest 有 data_sha256，build 不產生） | **未補** | 需要把訓練資料的雜湊帶進 build；訓練資料在 runtime 資料夾，尚未設計由誰提供。 |
+
+### 26.2 本輪新增的 UI（都有測試）
+
+- **匯入 .fatrain（LoRA）的相容性說明**：`Reg.importReport`；匯入確認頁顯示會不會被拒、可載但要注意的事、卡片揭露、與同名現有資產的版本差異。測試：`studio_server_core.test.js`（基底不同 → reject 並寫原因；同名版本差異與新增限制）。
+- **版本比較**：`GET /api/lora/compare?a=&b=` 與畫面上的兩個下拉選單；`renderCompareHTML`。測試：`lora_manage_core.test.js`、`studio_server_core.test.js`（不存在回 404）。
+- **評量結果**：登錄表卡片顯示 card 的評量數字（拆題合法率、function call 格式合法率）與相容性提醒。
+- **卡片揭露**：已知限制裡提到「退步」「未量」「沒有量」「不可用於」的，放在卡片最上面（`disclosuresOf`）。decompose-r4-v2 的 self_validate 負例退步與範圍外未量都會這樣顯示。
+- **原生套用狀態**：`/api/lora/status` 多一個 `native` 欄位（主行程的 `lora_status`），畫面顯示「已套用／未套用＋原因」。桌面版接線在 `floating-assistant.js` 的 `loraStatus`。
+- **槽版轉換狀態與失敗原因**：既有的 `slotCard` 已顯示 phase 與 error（`native-slot-model.js` 的 `status()` 會回 error）。這輪只確認沒有改動，未額外補測試。
+
+### 26.3 實測（逐項，這台）
+
+- 單元測試：`lora_registry.test.js` 90 項、`lora_manage_core.test.js` 47 項、`studio_server_core.test.js` 135 項、`lora_route.test.js` 20 項、`pipeline_core.test.js` 31 項、`scripts/build-lora-asset.test.js` 12 項、`studio_embed.test.js` 17 項、`lora_route_wiring.test.js` 11 項，全部通過。
+- 五個 .fatrain（decompose-r4、decompose-r4-v2、toolcall-r4 1.1.0、plan-r4、colu-r4）用新的 build 重新產出；讀回驗證：描述檔 size／sha256 與 lora.bin 相符，base＝`Qwen/Qwen3-0.6B`，訓練秩 4、槽寬 16，相容性 ok。`plan-r4`、`colu-r4` 的卡片沒有評量數字（畫面會寫「無資料」）。
+- 同槽驗證：decompose-r4、decompose-r4-v2、toolcall-r4、colu-r4 同時載入，秩加總 16（容量滿）；plan-r4 被拒並寫「計畫的 rank 總和超過槽容量 16」。
+- 沒有做的實測：真模型（617 MB）上的原生推論比對（§26.1 第 11 項）。
+
+### 26.4 誠實的剩餘項目
+
+第 6、7、9（工具清單雜湊）、10（plan／colu 數字與範圍外量測）、11、14，以及網頁版路由（第 5 項後半）。原因都寫在 26.1 表格中。
+

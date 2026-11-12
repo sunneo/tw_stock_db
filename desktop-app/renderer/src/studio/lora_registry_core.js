@@ -49,7 +49,8 @@
         env = env || {};
         if (env.base && entry.base !== env.base) reasons.push({ field: 'base', expected: env.base, actual: entry.base, message: '基底模型不同：主程式用 ' + env.base + '，adapter 是為 ' + entry.base + ' 訓練的' });
         if (env.base_sha256 && entry.base_sha256 && entry.base_sha256 !== env.base_sha256) reasons.push({ field: 'base_sha256', expected: env.base_sha256, actual: entry.base_sha256, message: '基底模型檔案雜湊不同（同名但檔案不是同一份）' });
-        if (Array.isArray(env.rank_slots) && env.rank_slots.length && env.rank_slots.indexOf(entry.rank) < 0) reasons.push({ field: 'rank', expected: env.rank_slots, actual: entry.rank, message: 'LoRA 秩（rank）' + entry.rank + ' 放不進模型的 rank 槽（槽版 ONNX 只有 ' + env.rank_slots.join('、') + '）' });
+        const slotRank = entry.slot_rank != null ? entry.slot_rank : entry.rank;
+        if (Array.isArray(env.rank_slots) && env.rank_slots.length && env.rank_slots.indexOf(slotRank) < 0) reasons.push({ field: 'rank', expected: env.rank_slots, actual: slotRank, message: 'LoRA 槽寬（rank 槽 ' + slotRank + '）與模型的槽版 ONNX（' + env.rank_slots.join('、') + '）不符，放不進去' });
         if (env.prompt_format_version !== undefined && String(entry.prompt_format_version) !== String(env.prompt_format_version)) reasons.push({ field: 'prompt_format_version', expected: env.prompt_format_version, actual: entry.prompt_format_version, message: '提示格式版本不同：主程式 ' + env.prompt_format_version + '，adapter ' + entry.prompt_format_version + '（格式一改一定要重訓）' });
         if (env.tool_catalog_sha256 && entry.tool_catalog_sha256 && entry.tool_catalog_sha256 !== env.tool_catalog_sha256) warnings.push({ field: 'tool_catalog_sha256', message: '工具清單已變動，建議重訓或更新 adapter（仍可載入）' });
         if (env.tool_catalog_sha256 && !entry.tool_catalog_sha256) warnings.push({ field: 'tool_catalog_sha256', message: 'adapter 沒記錄工具清單雜湊，無法判斷是否過期' });
@@ -101,8 +102,17 @@
     }
 
     // 評量分數：manifest.eval.groups 每組 {adapter, base}；任何一組輸給基底→ lose；沒資料→ null（不自動選用，可手動）
+    // model card 的評量格式（fa-lora-card：split_legal_rate／fc_format_rate 各有 base、tuned、n）：贏＝微調高於基底，輸＝低於基底
+    const CARD_METRIC_KEYS = ['split_legal_rate', 'fc_format_rate'];
+    function metricsVerdict(m) {
+        const win = [], lose = [];
+        for (const k of CARD_METRIC_KEYS) { const x = m[k]; if (!x || typeof x.base !== 'number' || typeof x.tuned !== 'number') continue; if (x.tuned > x.base) win.push(k); else if (x.tuned < x.base) lose.push(k); }
+        return { known: win.length + lose.length > 0, win, lose, score: win.length - lose.length };
+    }
     function evalVerdict(ev) {
         if (!ev || typeof ev !== 'object') return { known: false };
+        if (ev.metrics && typeof ev.metrics === 'object') return metricsVerdict(ev.metrics);
+        if (CARD_METRIC_KEYS.some((k) => k in ev)) return metricsVerdict(ev);
         const g = ev.groups; if (!g || typeof g !== 'object') return { known: typeof ev.score === 'number', score: ev.score, lose: [] };
         const names = Object.keys(g), lose = [], win = [];
         for (const n of names) { const x = g[n]; if (!x || typeof x.adapter !== 'number' || typeof x.base !== 'number') continue; if (x.adapter < x.base) lose.push(n); else if (x.adapter > x.base) win.push(n); }
@@ -306,7 +316,8 @@
             const lu = live.has(e.id) ? live.get(e.id).lastUsed : (lastUsedById.has(e.id) ? lastUsedById.get(e.id) : null);
             return { id: e.id, name: e.name || e.id, version: e.version || null, description: e.description || '', base: e.base, rank: e.rank, size: e.size, added: e.added || null, lastUsed: lu,
                 domains: e.domains.slice(), triggers: (e.triggers || []).slice(), prompt_format_version: e.prompt_format_version, source: e.source, enabled: !!e.enabled,
-                location: e.location, eval: ev.known ? { lose: ev.lose, win: ev.win } : null, compat: c.level, compatReasons: c.reasons.map((r) => r.message), pinned: pins.has(e.id) };
+                location: e.location, eval: ev.known ? { lose: ev.lose, win: ev.win } : null, compat: c.level, compatReasons: c.reasons.map((r) => r.message), compatWarnings: c.warnings.map((w) => w.message), pinned: pins.has(e.id),
+                slotRank: e.slot_rank != null ? e.slot_rank : e.rank, limits: (e.limits || []).slice(), evalMetrics: e.eval && (e.eval.metrics || (CARD_METRIC_KEYS.some((k) => k in e.eval) ? e.eval : null)) || null };
         }
         // 狀態（給 LoRA 管理畫面）：槽位、已載入、最後使用時間、釘選、推論中
         function status() {
@@ -345,17 +356,69 @@
         extra = extra || {};
         const c = (m && m.compat) || {};
         const trained = (m && m.trained_on) || {};
+        const lx = (m && m.extra && m.extra.lora) || {};
+        // rank＝實際佔用的秩（訓練秩，零補齊到槽寬不算）；slot_rank＝檔案寫進的槽寬（相容性檢查用）
+        const slotRank = c.rank !== undefined ? c.rank : m.rank;
         return Object.assign({
             id: extra.id || (m.name || 'lora') + '@' + String(m.sha256 || '').slice(0, 8),
             name: m.name || extra.id,
+            version: lx.version || m.version_tag || undefined,
+            description: lx.description || undefined,
+            limits: Array.isArray(lx.known_limits) ? lx.known_limits.slice() : [],
             source: extra.source || 'imported',
             base: m.base || c.base, base_sha256: m.base_sha256 || c.base_sha256,
-            rank: m.rank !== undefined ? m.rank : c.rank, alpha: m.alpha !== undefined ? m.alpha : c.alpha,
+            rank: lx.trained_rank !== undefined ? lx.trained_rank : (m.rank !== undefined ? m.rank : c.rank), slot_rank: slotRank, alpha: m.alpha !== undefined ? m.alpha : c.alpha,
             prompt_format_version: m.prompt_format_version !== undefined ? m.prompt_format_version : c.prompt_format_version,
             tool_catalog_sha256: m.tool_catalog_sha256 || c.tool_catalog_sha256 || trained.tool_catalog_sha256,
             domains: extra.domains || m.domains || [], location: extra.location, size: m.total_size !== undefined ? m.total_size : m.size, sha256: m.sha256,
             eval: m.eval || null, enabled: extra.enabled !== false,
         }, extra);
+    }
+
+    // 權重檔在資產裡的路徑（weights/lora.bin 或 .safetensors）；找不到就回 null（不可靜默略過，見 studio_server_core.syncRegistry）
+    const WEIGHT_RE = /^weights\/.*(lora\.bin|\.safetensors|\.bin)$/;
+    function weightFile(manifest) { return Object.keys((manifest && manifest.sha256) || {}).find((p) => WEIGHT_RE.test(p)) || null; }
+
+    // 一個 LoRA 資產的摘要（給版本比較與匯入說明用）
+    function summaryOf(e) {
+        const ev = e.eval && (e.eval.metrics || (CARD_METRIC_KEYS.some((k) => k in e.eval) ? e.eval : null));
+        const metrics = {};
+        if (ev) CARD_METRIC_KEYS.forEach((k) => { if (ev[k] && typeof ev[k].tuned === 'number') metrics[k] = { base: ev[k].base, tuned: ev[k].tuned, n: ev[k].n }; });
+        return { id: e.id, name: e.name || e.id, version: e.version || null, rank: e.rank, slotRank: e.slot_rank != null ? e.slot_rank : e.rank, base: e.base || null,
+            domains: (e.domains || []).slice(), metrics: Object.keys(metrics).length ? metrics : null, limits: (e.limits || []).slice() };
+    }
+    // 兩個摘要的差異：版本、rank、槽寬、基底、領域、每項評量的數字、已知限制增減；same＝沒有任何差異
+    function diffSummaries(a, b) {
+        const rows = [];
+        const row = (field, av, bv) => rows.push({ field, a: av == null ? '無資料' : String(av), b: bv == null ? '無資料' : String(bv), changed: String(av == null ? '' : av) !== String(bv == null ? '' : bv) });
+        row('版本', a.version || '未標註', b.version || '未標註');
+        row('訓練秩（rank）', a.rank, b.rank);
+        row('槽寬', a.slotRank, b.slotRank);
+        row('基底', a.base, b.base);
+        row('適用領域', (a.domains || []).join('、') || '通用', (b.domains || []).join('、') || '通用');
+        for (const k of CARD_METRIC_KEYS) {
+            const am = a.metrics && a.metrics[k], bm = b.metrics && b.metrics[k];
+            const f = (m) => (m ? (m.tuned * 100).toFixed(1) + '%（基底 ' + (m.base * 100).toFixed(1) + '%，n=' + m.n + '）' : '無資料');
+            rows.push({ field: '評量 ' + k, a: f(am), b: f(bm), changed: f(am) !== f(bm) });
+        }
+        const la = a.limits || [], lb = b.limits || [];
+        const added = lb.filter((x) => la.indexOf(x) < 0), removed = la.filter((x) => lb.indexOf(x) < 0);
+        return { same: !rows.some((r) => r.changed) && !added.length && !removed.length, rows, limitsAdded: added, limitsRemoved: removed };
+    }
+    // 匯入 .fatrain 的 LoRA 時的說明：相容性（reject＝載入會被拒、warn＝可載但要注意）、與同名現有資產的版本差異
+    function importReport(manifest, opts) {
+        opts = opts || {};
+        const wf = weightFile(manifest);
+        if (!wf) return { ok: false, level: 'reject', error: '沒有權重檔（weights/*.bin 或 .safetensors），不是可載入的 LoRA', compat: null, summary: null, versionDiff: null };
+        const build = (m) => {
+            const lx = (m.extra && m.extra.lora) || {};
+            const m2 = Object.assign({}, m, { sha256: m.sha256[wf], total_size: m.counts && m.counts.weight_bytes });
+            return entryFromManifest(m2, { id: m.name, source: 'imported', location: 'asset:lora/' + m.name, domains: lx.domains || [], enabled: true });
+        };
+        const e = build(manifest), c = checkCompat(e, opts.env || {});
+        const summary = summaryOf(e);
+        const versionDiff = opts.existing ? diffSummaries(summaryOf(build(opts.existing)), summary) : null;
+        return { ok: c.ok, level: c.level, compat: { reasons: c.reasons.map((r) => r.message), warnings: c.warnings.map((w) => w.message) }, summary, versionDiff, error: c.ok ? null : c.reasons.map((r) => r.message).join('；') };
     }
 
     // 載入器：把 nr-engine.js 的 lora 接點（{id, bytes}）包成注入用載入器。readBytes(entry) → Uint8Array（讀分片＋合併由呼叫端做）；
@@ -372,5 +435,5 @@
         };
     }
 
-    return { SOURCES, DEFAULT_BUDGET, DESCRIPTOR_FORMAT, DESCRIPTOR_FORMAT_VERSION, validateEntry, descriptorErrors, descriptorFromJson, checkCompat, evalVerdict, createRegistry, entryFromManifest, nrEngineLoader };
+    return { SOURCES, DEFAULT_BUDGET, DESCRIPTOR_FORMAT, DESCRIPTOR_FORMAT_VERSION, validateEntry, descriptorErrors, descriptorFromJson, checkCompat, evalVerdict, createRegistry, entryFromManifest, weightFile, summaryOf, diffSummaries, importReport, nrEngineLoader };
 });
