@@ -122,7 +122,8 @@
     }
 
     // 卡片揭露：已知限制裡提到退步、未量、沒有量、不可用於的，要在最上面標出來（不能藏在清單底下）
-    const DISCLOSURE_RE = /退步|未量|沒有量|沒有評量|不可用於|不能用於|不可以用於|不可用|不可以/;
+    // 「沒有保證」「偏向」「範圍外」是 decompose-r4-v2 等卡片的實際用語（範圍外沒量、負例偏少可能偏向判 ok），也要標出來
+    const DISCLOSURE_RE = /退步|未量|沒有量|沒有評量|沒有保證|偏向|範圍外|不可用於|不能用於|不可以用於|不可用|不可以/;
     function disclosuresOf(limits) { return (Array.isArray(limits) ? limits : []).filter((x) => DISCLOSURE_RE.test(String(x))); }
     const discBanner = (limits) => { const d = disclosuresOf(limits); return d.length ? '<div class="warn"><b>卡片揭露（' + d.length + ' 項）：</b><ul>' + d.map((x) => '<li>' + esc(x) + '</li>').join('') + '</ul></div>' : ''; };
 

@@ -8,7 +8,8 @@ from safetensors.numpy import load_file
 
 HOME = os.path.expanduser('~')
 LAYOUT = os.path.join(HOME, '.config/floating-assistant-desktop/native-lora/slot-model/ccf8734e59fdf7475b2dc0c117005e267a3a08342c1d951e0a79f0bce57bf62a/layout.json')
-ADAPTER = os.path.join(HOME, '.config/floating-assistant-desktop/studio-host/bench-out')
+ADAPTER = os.environ.get('FA_ADAPTER') or os.path.join(HOME, '.config/floating-assistant-desktop/studio-host/bench-out')
+TAG = os.environ.get('FA_TAG', 'bench')  # lora_<TAG>.bin
 OUTD = os.path.join(HOME, 'fa-work/native_check/bin'); os.makedirs(OUTD, exist_ok=True)
 
 lay = json.load(open(LAYOUT))
@@ -27,6 +28,6 @@ for t in lay['tensors']:
     else:
         arr[:r, :] = m.T * scale
     buf[t['offset']: t['offset'] + t['length']] = arr.tobytes()
-open(os.path.join(OUTD, 'lora_bench.bin'), 'wb').write(bytes(buf))
+open(os.path.join(OUTD, f'lora_{TAG}.bin'), 'wb').write(bytes(buf))
 open(os.path.join(OUTD, 'lora_zero.bin'), 'wb').write(b'\0' * lay['total_bytes'])
 print('rank', r, 'scale', scale, 'tensors', len(lay['tensors']), 'bytes', len(buf))

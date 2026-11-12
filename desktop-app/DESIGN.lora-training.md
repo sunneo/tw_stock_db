@@ -1105,3 +1105,53 @@ model card 欄位以 `description`（一句話，來自描述檔，§13.2）與 
 - 主程式工具雜湊與訓練端的相等性（需要 Electron 內算出 `toolCatalogSha256()` 再與 `real_tools_all.json` 比對）。
 - 重新打包 toolcall-r4 成 `shape-v1`（它的 adapter 與發布目錄已不在磁碟上）。
 - 發布、推送、熱更新送達：這次只有 commit，沒有發布。
+
+## 29. LoRA 缺口第三輪（總指揮接力，2026-11-13，分支 lora-train-eval）
+
+接力範圍：(1) 用原本那顆 adapter 重測原生推論；(2) runtime 與訓練端工具目錄雜湊相等性；(3) 三處閉包呼叫點改行為測試；(4) decompose_v2 評量與管理介面缺口。
+
+| # | 項目 | 狀態 | 結果 |
+|---|---|---|---|
+| 1 | 原生推論（原 adapter） | **部分** | 找到原 adapter：`keen-williamson-f167f3/desktop-app/lora-train/out/multi/toolcall/adapter_model.safetensors`（rank 4、alpha 8、10,143,496 位元組）。**§28 說它已不在磁碟上是錯的**，只有它的 release 目錄不見了。用同一套腳本量測：見 29.1。仍不是 10/96 的重現（原 10/96 的 HF 參考與題組設定已無法確認）。 |
+| 2 | 工具目錄雜湊相等 | **未相等（離線模擬）** | 見 29.2。這是 #9 的實質缺陷，不是量測不到。 |
+| 3 | 三處閉包呼叫點 | **完成** | `lora_route_wiring.test.js` 不再有原始碼標記：`_unitCatalogEvalStep`（colu、toolcall）、`_umlModel`（decompose 經真的 `_planModel`）、`_omToolBench`（toolcall）整個外層方法執行，檢查實際送進 `_llmGenerate` 的任務類型。30 項通過。 |
+| 4 | decompose_v2 評量與管理介面 | **部分** | 見 29.3。 |
+
+### 29.1 原 adapter（toolcall-r4，rank 4）的原生量測
+
+- 腳本：`lora-train/native_check/`（`hf_ref.py`、`pack_bench.py`、`native_run.js` 新增 `FA_ADAPTER`／`FA_TAG` 環境變數，預設行為不變）。`pack_bench.py` 以 layout.json 打包，`scale = alpha/r = 2.0`，392 個張量，lora.bin 40,370,176 位元組。
+- 同一題組（6 題 × 16 token = 96 位置）、onnxruntime-node 1.22.0、q8 基底與槽版圖同前。
+
+| 原生組 | 對 HF fp32＋toolcall adapter | 對 HF fp32 基底 |
+|---|---|---|
+| (a) q8 基底，無 adapter | 16/96 | 26/96 |
+| (b) 槽版圖，全零 lora.bin | 16/96（與 a 逐 token 相同） | 26/96 |
+| (c) 槽版圖，toolcall lora.bin | 22/96 | 14/96 |
+
+- 結果檔：`~/fa-work/native_check/native_results_toolcall.json`（不在版本庫）。
+- 能說的：零 adapter 的槽版圖與 q8 逐 token 相同；toolcall adapter 載入後與 HF＋adapter 的一致數高於與無 adapter 的 q8（22 > 16），但仍遠低於 96。
+- 不能說的：不能說原生與 fp32＋adapter 一致；q8 量化噪聲本身就把一致數拉低；未在 Electron 內跑。
+
+### 29.2 工具目錄雜湊：離線模擬的比對結果（未相等）
+
+`lora-train/tool_catalog_compare.js`：vm 執行 `floating-assistant.js` 的 `_registerBuiltinAiTools` 本體（工具替身 no-op，登記表真的），用 `lora_registry_core.toolCatalogShapeText` 算 shape-v1，與 `real_tools_all.json`（322 列）比。
+
+- app 登記名稱 214、訓練端 322；雜湊不相等。
+- 只在訓練端：114（例如 `computer_*`、`add_chapters`、`begin_presentation`，這些在別的登記路徑或條件式模組中登記）。
+- 只在 app：6（`get_tool_details`、`delegate_to_subagent`、`chat_*`，在建構子其他位置直接登記）。
+- 同名但形狀不同：1（`convert_code`，參數結構不同，待查）。
+- **含意**：#9 目前的實作把兩邊定義成不同的集合（訓練端＝全部靜態盤點；app＝建構子快照的內建名單）。一旦 adapter 寫入的是訓練端雜湊，app 每次都會回報「工具清單已變動」，是誤報。這不是單純的量測沒做，要修的是「雜湊涵蓋哪個集合」的合約。
+- 未解的限制：離線模擬沒有執行整個建構子；它也不含條件式模組。要得到真正的主程式值，需要 Electron 內呼叫 `toolCatalogSha256()`。
+- 待決定：合約採用哪一種（(a) 訓練端改成只算「建構子快照」那批名單，需要重新產出 adapter 的 env 資料；(b) app 改算完整靜態集合；(c) 只比名稱集合、不比形狀）。這會影響所有已打包 adapter 的相容性判定，所以沒有擅自改。
+
+### 29.3 decompose_v2 評量與管理介面
+
+- **評量**：`out/eval/decompose-r4-v2.json` 目前還沒有；另一個 session 的 `eval_run.py`（keen 工作樹，pid 1463607，06:09 起）正在跑 360 列，06:16 為 144/360。這台機器負載約 25，沒有再開第二個。它只量拆題組；範圍外（toolcall、colu、plan）退步仍未量，需要另外排程（每組 110～412 列，CPU 上很花時間）。
+- **管理介面（確認的缺口，已修）**：`lora_manage_core.js` 的 `DISCLOSURE_RE` 認不得 decompose-r4-v2 卡片的兩條實際限制（「範圍外…沒有保證」、「可能偏向判 ok」），所以卡片頂端的「卡片揭露」橫幅不會出現。§26.2 原本寫「decompose-r4-v2 會顯示」是錯的。已把「沒有保證」「偏向」「範圍外」加入，測試 49 項通過（新增兩條 decompose-r4-v2 的實際文字）。
+- **管理介面（待決定）**：登錄表的自動選用依 `split_legal_rate` 判 decompose-r4-v2 為「贏」，但 §17.2 已記錄它的 self_validate 負例全錯、整體偏向判 ok（實質行為偏差，§17.2 的決定是「v2 不取代 v1」，之後 §26 改為打包 v2，兩者不一致）。卡片會揭露，但自動選用不看揭露。要不要讓「有揭露的退步」擋住自動選用，是產品政策，沒有擅自改。
+
+### 29.4 測試與提交
+
+- 通過：`lora_route_wiring.test.js` 30、`lora_manage_core.test.js` 49。
+- 腳本未入測試：`native_check/*`、`tool_catalog_compare.js`（診斷用，手動執行）。
+- 沒有推送、沒有發布、沒有熱更新送達。

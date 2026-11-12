@@ -88,6 +88,10 @@ check('格式函式', M.sizeText(undefined) === '未知' && M.timeText(NaN) === 
 {
   const c = card(); c.known_limits = ['範圍內 v1 → v2 退步：judge 20/60 → 16/60', '範圍外未量', '一般限制'];
   check('揭露：退步與未量的限制會被挑出', M.disclosuresOf(c.known_limits).length === 2 && M.disclosuresOf(['一般限制']).length === 0, M.disclosuresOf(c.known_limits));
+  // decompose-r4-v2 卡片的實際限制文字（cards/decompose-r4-v2.json）：兩條都要被揭露，不能藏在清單底下
+  const d2 = ['只在拆題類任務上量過；範圍外（工具呼叫、CoLU 選單）沒有保證', '訓練資料為 v1 加 self_validate 正例與 review_return，負例偏少，可能偏向判 ok'];
+  check('揭露：decompose-r4-v2 的範圍外沒保證、偏向判 ok 都會標出', M.disclosuresOf(d2).length === 2, M.disclosuresOf(d2));
+  check('揭露：只描述用途、沒有風險的限制不標', M.disclosuresOf(['只在桌面版原生推論的純文字路徑生效']).length === 0);
   const html = M.cardIntroHTML(M.summarizeCard(c));
   check('介紹頁：揭露區塊在最上面', html.indexOf('卡片揭露（2 項）') >= 0 && html.indexOf('卡片揭露') < html.indexOf('會附帶的能力'), html.slice(0, 200));
   const diff = { same: false, rows: [{ field: '版本', a: '1.0.0', b: '2.0.0', changed: true }, { field: '基底', a: 'x', b: 'x', changed: false }], limitsAdded: ['新'], limitsRemoved: [] };

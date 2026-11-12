@@ -9,14 +9,15 @@ from peft import PeftModel
 HOME = os.path.expanduser('~')
 OUT = os.path.join(HOME, 'fa-work/native_check')
 BASE = os.path.join(HOME, 'fa-work/models/Qwen3-0.6B')
-ADAPTER = os.path.join(HOME, '.config/floating-assistant-desktop/studio-host/bench-out')
+ADAPTER = os.environ.get('FA_ADAPTER') or os.path.join(HOME, '.config/floating-assistant-desktop/studio-host/bench-out')  # 可用環境變數指定其他 PEFT 資料夾
 STEPS = 16
 torch.set_num_threads(8)
 
 ids_doc = json.load(open(os.path.join(OUT, 'ids.json')))
 import sys
 BASE_ONLY = '--base-only' in sys.argv  # 不套 adapter：當作 q8 基底的量化對照
-PFX = 'hf_base_' if BASE_ONLY else 'hf_'
+TAG = os.environ.get('FA_TAG', '')  # 不同 adapter 的輸出加標籤，避免覆蓋
+PFX = ('hf_base_' if BASE_ONLY else 'hf_') + (TAG + '_' if TAG and not BASE_ONLY else '')
 model = AutoModelForCausalLM.from_pretrained(BASE, dtype=torch.float32)
 if not BASE_ONLY:
     model = PeftModel.from_pretrained(model, ADAPTER).merge_and_unload()
