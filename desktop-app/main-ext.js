@@ -986,8 +986,8 @@ const NATIVE_RUNTIME_MANIFEST = {
     }
   },
   "platforms": {
-    "win32-x64": 21714049,
-    "linux-x64": 31440217
+    "win32-x64": 21713939,
+    "linux-x64": 31440107
   },
   "files": [
     {
@@ -1467,13 +1467,13 @@ const NATIVE_RUNTIME_MANIFEST = {
     {
       "path": "nr-engine.js",
       "platform": "all",
-      "size": 7973,
-      "sha256": "e6500cea13d1e4b68567726a920a6d4076a9a8c3db5d4f64543edeeb76981bed",
+      "size": 7863,
+      "sha256": "b7c6081ff60df46fd00118dade546cfe4bd6557207ee9136b46ef8fba0df6591",
       "parts": [
         {
           "name": "nr-engine.js.001.part",
-          "size": 7973,
-          "md5": "4a3723c6c21fa270c5b63df21afcb28b"
+          "size": 7863,
+          "md5": "a5fa5416ee7b3f7225452d9f22460957"
         }
       ]
     },

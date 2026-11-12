@@ -1,0 +1,613 @@
+{
+ "format": "fa-domain-seeds",
+ "version": 1,
+ "source": "renderer/src/uml/domain_twofile.test.js",
+ "name": "領域包 twofile",
+ "minSkeletons": 3,
+ "judge": null,
+ "trainOnly": null,
+ "seeds": [
+  {
+   "id": "cat-cont",
+   "st": "輸入兩個「檔案」：每個檔案是一行 k 加上 k 行文字（先第一個、再第二個）。仿 cat -n 檔1 檔2：把兩個檔案依序連接，行號從 1 連續編到最後（不重新開始），格式：行號靠右對齊寬度 6、一個 Tab、文字。",
+   "rw_st": null,
+   "ref": "import sys\nd = sys.stdin.read().split(\"\\n\")\nk = int(d[0])\nA = d[1:1+k]\nm = int(d[1+k])\nB = d[2+k:2+k+m]\nn = 0\nfor part in (A, B):\n    for t in part:\n        n += 1\n        print((\"%6d\" % n) + \"\\t\" + t)\n",
+   "tests": [
+    {
+     "in": "4\nh\ng\ngf\ne\n1\ndd\n",
+     "out": "     1\th\n     2\tg\n     3\tgf\n     4\te\n     5\tdd\n"
+    },
+    {
+     "in": "4\nd\nf\nc\nc\n2\ncb\nff\n",
+     "out": "     1\td\n     2\tf\n     3\tc\n     4\tc\n     5\tcb\n     6\tff\n"
+    },
+    {
+     "in": "2\nff\nb\n1\ne\n",
+     "out": "     1\tff\n     2\tb\n     3\te\n"
+    },
+    {
+     "in": "4\ne\nhc\ncb\nff\n3\nff\nbb\na\n",
+     "out": "     1\te\n     2\thc\n     3\tcb\n     4\tff\n     5\tff\n     6\tbb\n     7\ta\n"
+    },
+    {
+     "in": "1\na\n3\nhc\nc\nc\n",
+     "out": "     1\ta\n     2\thc\n     3\tc\n     4\tc\n"
+    },
+    {
+     "in": "1\nc\n3\nff\nbb\nfa\n",
+     "out": "     1\tc\n     2\tff\n     3\tbb\n     4\tfa\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "13\nah\ndd\nc\na\nd\ng\ng\ng\nbb\nfa\ng\ne\ne\n5\na\na\nah\ng\nbe\n",
+     "out": "     1\tah\n     2\tdd\n     3\tc\n     4\ta\n     5\td\n     6\tg\n     7\tg\n     8\tg\n     9\tbb\n    10\tfa\n    11\tg\n    12\te\n    13\te\n    14\ta\n    15\ta\n    16\tah\n    17\tg\n    18\tbe\n"
+    },
+    {
+     "in": "2\ne\ne\n5\nd\na\nah\nd\nc\n",
+     "out": "     1\te\n     2\te\n     3\td\n     4\ta\n     5\tah\n     6\td\n     7\tc\n"
+    }
+   ],
+   "want": "tf.cat-n"
+  },
+  {
+   "id": "cat-restart",
+   "st": "輸入兩個檔案，每個檔案是一行 k 加上 k 行文字。仿 cat -n 檔1 檔2 但每個檔案的行號都重新從 1 開始：行號靠右對齊寬度 6、一個空白、文字。",
+   "rw_st": null,
+   "ref": "import sys\nd = sys.stdin.read().split(\"\\n\")\nk = int(d[0])\nA = d[1:1+k]\nm = int(d[1+k])\nB = d[2+k:2+k+m]\nn = 0\nfor part in (A, B):\n    n = 0\n    for t in part:\n        n += 1\n        print((\"%6d\" % n) + \" \" + t)\n",
+   "tests": [
+    {
+     "in": "4\nf\na\na\na\n5\ndd\nhh\ng\nec\ncb\n",
+     "out": "     1 f\n     2 a\n     3 a\n     4 a\n     1 dd\n     2 hh\n     3 g\n     4 ec\n     5 cb\n"
+    },
+    {
+     "in": "2\nbb\nf\n5\ne\ne\nhh\nd\nc\n",
+     "out": "     1 bb\n     2 f\n     1 e\n     2 e\n     3 hh\n     4 d\n     5 c\n"
+    },
+    {
+     "in": "4\ng\nbb\nf\ne\n4\ne\ned\nh\ng\n",
+     "out": "     1 g\n     2 bb\n     3 f\n     4 e\n     1 e\n     2 ed\n     3 h\n     4 g\n"
+    },
+    {
+     "in": "4\ng\nbb\nff\ne\n1\nd\n",
+     "out": "     1 g\n     2 bb\n     3 ff\n     4 e\n     1 d\n"
+    },
+    {
+     "in": "3\na\na\na\n3\nah\ng\ng\n",
+     "out": "     1 a\n     2 a\n     3 a\n     1 ah\n     2 g\n     3 g\n"
+    },
+    {
+     "in": "5\ng\ng\nc\nc\nff\n1\na\n",
+     "out": "     1 g\n     2 g\n     3 c\n     4 c\n     5 ff\n     1 a\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "6\ndd\nhc\nc\nc\nff\ne\n7\ncb\nfa\ng\ne\ne\nhh\nd\n",
+     "out": "     1 dd\n     2 hc\n     3 c\n     4 c\n     5 ff\n     6 e\n     1 cb\n     2 fa\n     3 g\n     4 e\n     5 e\n     6 hh\n     7 d\n"
+    },
+    {
+     "in": "8\nah\ndd\nhh\ndd\nhg\ng\ng\ngf\n11\ne\ne\nec\nc\nff\nbb\nff\ne\ned\nhh\ndg\n",
+     "out": "     1 ah\n     2 dd\n     3 hh\n     4 dd\n     5 hg\n     6 g\n     7 g\n     8 gf\n     1 e\n     2 e\n     3 ec\n     4 c\n     5 ff\n     6 bb\n     7 ff\n     8 e\n     9 ed\n    10 hh\n    11 dg\n"
+    }
+   ],
+   "want": "tf.cat-n"
+  },
+  {
+   "id": "set-a",
+   "st": "第一行 n，接著 n 行是檔案 A 的每一行文字；再來一行 m，接著 m 行是檔案 B 的每一行文字。仿 comm -23：輸出只在 A 出現的行（依 A 的順序，重複的只輸出一次）。",
+   "rw_st": null,
+   "ref": "import sys\nd = sys.stdin.read().split(\"\\n\")\nk = int(d[0])\nA = d[1:1+k]\nm = int(d[1+k])\nB = d[2+k:2+k+m]\nsa, sb = set(A), set(B)\nres = [t for t in A if t not in sb]\nres = list(dict.fromkeys(res))\nprint(\"\\n\".join(res))\n",
+   "tests": [
+    {
+     "in": "2\ngd\nbb\n5\nag\ng\ng\ncb\nfa\n",
+     "out": "gd\nbb\n"
+    },
+    {
+     "in": "2\na\ndd\n3\ndd\nc\nca\n",
+     "out": "a\n"
+    },
+    {
+     "in": "4\na\na\nah\ndd\n2\nd\nc\n",
+     "out": "a\nah\ndd\n"
+    },
+    {
+     "in": "2\na\nag\n3\ng\ng\ng\n",
+     "out": "a\nag\n"
+    },
+    {
+     "in": "1\ngf\n2\nff\nbb\n",
+     "out": "gf\n"
+    },
+    {
+     "in": "1\ne\n5\ned\nc\nff\nbb\nf\n",
+     "out": "e\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "8\nhh\ndd\nc\nc\ncb\nff\nbb\na\n6\na\na\na\ndd\nhh\ng\n",
+     "out": "c\ncb\nff\nbb\n"
+    },
+    {
+     "in": "7\nc\nff\nb\na\ndd\nh\ne\n4\nhc\nc\nc\nfc\n",
+     "out": "ff\nb\na\ndd\nh\ne\n"
+    }
+   ],
+   "want": "tf.set"
+  },
+  {
+   "id": "set-b",
+   "st": "第一行 n，接著 n 行是檔案 A 的每一行文字；再來一行 m，接著 m 行是檔案 B 的每一行文字。仿 comm -13：輸出只在 B 出現的行（依 B 的順序，重複的只輸出一次）。",
+   "rw_st": null,
+   "ref": "import sys\nd = sys.stdin.read().split(\"\\n\")\nk = int(d[0])\nA = d[1:1+k]\nm = int(d[1+k])\nB = d[2+k:2+k+m]\nsa, sb = set(A), set(B)\nres = [t for t in B if t not in sa]\nres = list(dict.fromkeys(res))\nprint(\"\\n\".join(res))\n",
+   "tests": [
+    {
+     "in": "3\nch\nff\nb\n2\na\naf\n",
+     "out": "a\naf\n"
+    },
+    {
+     "in": "2\na\ndd\n1\ndg\n",
+     "out": "dg\n"
+    },
+    {
+     "in": "2\nff\nb\n2\na\nah\n",
+     "out": "a\nah\n"
+    },
+    {
+     "in": "5\nd\ng\nbb\nff\nb\n3\na\na\ndd\n",
+     "out": "a\ndd\n"
+    },
+    {
+     "in": "2\nc\nc\n5\nc\ncb\nff\nbb\nf\n",
+     "out": "cb\nff\nbb\nf\n"
+    },
+    {
+     "in": "3\ncb\nf\naf\n3\nhc\nc\nff\n",
+     "out": "hc\nc\nff\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "10\nf\ne\ned\nhh\nd\nc\nc\nff\nbb\nff\n8\na\nah\ndd\nhh\ng\nb\ne\ne\n",
+     "out": "a\nah\ndd\ng\nb\n"
+    },
+    {
+     "in": "13\nh\nbb\nf\nc\ncb\nfa\ng\na\ndd\nh\ngf\nbe\ne\n10\ne\ne\ne\ne\ne\ne\nhc\nc\nff\nbb\n",
+     "out": "hc\nff\n"
+    }
+   ],
+   "want": "tf.set"
+  },
+  {
+   "id": "set-both-count",
+   "st": "第一行 n，接著 n 行是檔案 A 的文字；再來一行 m，接著 m 行是檔案 B 的文字。輸出兩個檔案共同的行有幾種（重複的行只算一次）。",
+   "rw_st": null,
+   "ref": "import sys\nd = sys.stdin.read().split(\"\\n\")\nk = int(d[0])\nA = d[1:1+k]\nm = int(d[1+k])\nB = d[2+k:2+k+m]\nsa, sb = set(A), set(B)\nres = [t for t in A if t in sb]\nres = list(dict.fromkeys(res))\nprint(len(res))\n",
+   "tests": [
+    {
+     "in": "2\na\ne\n5\nhh\nd\ncb\na\nah\n",
+     "out": "1\n"
+    },
+    {
+     "in": "3\nhh\ng\ng\n2\nff\nbb\n",
+     "out": "0\n"
+    },
+    {
+     "in": "2\nb\ng\n4\nhh\ndg\nbb\na\n",
+     "out": "0\n"
+    },
+    {
+     "in": "4\ng\ng\ng\ngf\n2\nfa\na\n",
+     "out": "0\n"
+    },
+    {
+     "in": "1\nah\n3\nh\ng\ng\n",
+     "out": "0\n"
+    },
+    {
+     "in": "4\nbb\nc\nah\ng\n1\ncb\n",
+     "out": "0\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "6\nbb\nff\nbb\ne\ne\ne\n2\nc\nc\n",
+     "out": "0\n"
+    },
+    {
+     "in": "3\nff\nbe\nc\n7\nc\nff\na\na\na\na\na\n",
+     "out": "2\n"
+    }
+   ],
+   "want": "tf.set"
+  },
+  {
+   "id": "join-inner",
+   "st": "第一行 n，接著 n 行是檔案 A 的每一行「鍵 值」；再來一行 m，接著 m 行是檔案 B 的每一行「鍵 值」。仿 join：以第一欄為鍵合併，輸出「鍵 A的值 B的值」（用空白隔開），依 A 的順序；沒有配對的行不輸出。",
+   "rw_st": null,
+   "ref": "import sys\nd = sys.stdin.read().split(\"\\n\")\nk = int(d[0])\nA = d[1:1+k]\nm = int(d[1+k])\nB = d[2+k:2+k+m]\nbm = {}\nfor t in B:\n    f = t.split()\n    bm.setdefault(f[0], []).append(f[1:])\nfor t in A:\n    f = t.split()\n    if f[0] in bm:\n        for r in bm[f[0]]:\n            print(\" \".join(f + r))\n",
+   "tests": [
+    {
+     "in": "2\na 15\na 4\n3\na 51\nh 94\nh 23\n",
+     "out": "a 15 51\na 4 51\n"
+    },
+    {
+     "in": "3\nf 66\na 95\nd 3\n2\na 16\na 81\n",
+     "out": "a 95 16\na 95 81\n"
+    },
+    {
+     "in": "1\na 34\n3\na 35\na 90\nf 47\n",
+     "out": "a 34 35\na 34 90\n"
+    },
+    {
+     "in": "3\na 55\nd 23\nd 12\n5\ng 7\nb 53\nb 83\na 70\na 42\n",
+     "out": "a 55 70\na 55 42\n"
+    },
+    {
+     "in": "1\na 16\n1\na 67\n",
+     "out": "a 16 67\n"
+    },
+    {
+     "in": "1\ne 11\n3\ne 84\ne 77\ne 79\n",
+     "out": "e 11 84\ne 11 77\ne 11 79\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "8\nh 56\nh 34\nh 18\nh 58\na 10\na 33\na 16\nh 23\n11\ng 44\nb 36\nb 90\na 17\na 10\na 17\nd 1\nd 50\nc 98\nc 75\nc 54\n",
+     "out": "a 10 17\na 10 10\na 10 17\na 33 17\na 33 10\na 33 17\na 16 17\na 16 10\na 16 17\n"
+    },
+    {
+     "in": "11\nc 63\nc 3\nc 12\nf 33\nf 82\nf 33\nf 17\na 29\na 59\na 18\na 26\n8\ng 57\ne 66\nd 33\nd 66\nc 57\nf 47\nf 33\nf 49\n",
+     "out": "c 63 57\nc 3 57\nc 12 57\nf 33 47\nf 33 33\nf 33 49\nf 82 47\nf 82 33\nf 82 49\nf 33 47\nf 33 33\nf 33 49\nf 17 47\nf 17 33\nf 17 49\n"
+    }
+   ],
+   "want": "tf.join"
+  },
+  {
+   "id": "join-left",
+   "st": "第一行 n，接著 n 行是檔案 A 的每一行「鍵 值」；再來一行 m，接著 m 行是檔案 B 的每一行「鍵 值」。仿 join -a 1：以第一欄為鍵合併，輸出「鍵 A的值 B的值」（空白隔開），沒有配到的 A 行也原樣輸出。依 A 的順序。",
+   "rw_st": null,
+   "ref": "import sys\nd = sys.stdin.read().split(\"\\n\")\nk = int(d[0])\nA = d[1:1+k]\nm = int(d[1+k])\nB = d[2+k:2+k+m]\nbm = {}\nfor t in B:\n    f = t.split()\n    bm.setdefault(f[0], []).append(f[1:])\nfor t in A:\n    f = t.split()\n    if f[0] in bm:\n        for r in bm[f[0]]:\n            print(\" \".join(f + r))\n    else:\n        print(\" \".join(f))\n",
+   "tests": [
+    {
+     "in": "3\ne 35\na 12\na 9\n3\ng 41\ng 68\ng 47\n",
+     "out": "e 35\na 12\na 9\n"
+    },
+    {
+     "in": "2\nf 97\nf 97\n1\nb 27\n",
+     "out": "f 97\nf 97\n"
+    },
+    {
+     "in": "1\na 98\n3\na 38\nd 3\nd 81\n",
+     "out": "a 98 38\n"
+    },
+    {
+     "in": "3\nh 96\nh 25\nh 41\n1\ne 52\n",
+     "out": "h 96\nh 25\nh 41\n"
+    },
+    {
+     "in": "1\ne 72\n1\ne 35\n",
+     "out": "e 72 35\n"
+    },
+    {
+     "in": "3\ne 56\na 52\nh 59\n5\nc 84\nf 36\nf 23\nf 49\ne 3\n",
+     "out": "e 56 3\na 52\nh 59\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "5\ne 41\nh 43\nc 94\nc 26\nb 45\n1\ne 18\n",
+     "out": "e 41 18\nh 43\nc 94\nc 26\nb 45\n"
+    },
+    {
+     "in": "12\nh 42\nh 30\nc 4\na 68\nh 56\nc 12\nf 51\nb 63\nd 78\nd 20\nd 11\nd 83\n8\nh 37\ng 42\ng 25\nf 71\nf 79\na 7\na 18\na 24\n",
+     "out": "h 42 37\nh 30 37\nc 4\na 68 7\na 68 18\na 68 24\nh 56 37\nc 12\nf 51 71\nf 51 79\nb 63\nd 78\nd 20\nd 11\nd 83\n"
+    }
+   ],
+   "want": "tf.join"
+  },
+  {
+   "id": "paste-tab",
+   "st": "第一行 n，接著 n 行是檔案 A 的每一行文字；再來一行 m，接著 m 行是檔案 B 的每一行文字。仿 paste：把兩個檔案逐行並排，每行是 A 的第 i 行、一個 Tab、B 的第 i 行；較短的檔案用空字串補。",
+   "rw_st": null,
+   "ref": "import sys\nd = sys.stdin.read().split(\"\\n\")\nk = int(d[0])\nA = d[1:1+k]\nm = int(d[1+k])\nB = d[2+k:2+k+m]\nfor i in range(max(len(A), len(B))):\n    print((A[i] if i < len(A) else \"\") + \"\\t\" + (B[i] if i < len(B) else \"\"))\n",
+   "tests": [
+    {
+     "in": "4\ng\ng\ngf\nbe\n5\ne\ne\ne\ned\nce\n",
+     "out": "g\te\ng\te\ngf\te\nbe\ted\n\tce\n"
+    },
+    {
+     "in": "2\ne\ne\n4\ndd\nhh\ng\ned\n",
+     "out": "e\tdd\ne\thh\n\tg\n\ted\n"
+    },
+    {
+     "in": "5\ng\ng\ng\ng\ng\n5\ng\ng\nbb\na\na\n",
+     "out": "g\tg\ng\tg\ng\tbb\ng\ta\ng\ta\n"
+    },
+    {
+     "in": "3\nd\ng\ng\n4\nfc\na\na\na\n",
+     "out": "d\tfc\ng\ta\ng\ta\n\ta\n"
+    },
+    {
+     "in": "2\na\ndd\n3\nd\na\ndd\n",
+     "out": "a\td\ndd\ta\n\tdd\n"
+    },
+    {
+     "in": "3\ndd\nhc\nc\n5\na\ndd\na\na\na\n",
+     "out": "dd\ta\nhc\tdd\nc\ta\n\ta\n\ta\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "1\nhc\n5\na\ndd\nc\nff\ne\n",
+     "out": "hc\ta\n\tdd\n\tc\n\tff\n\te\n"
+    },
+    {
+     "in": "15\na\ndd\nc\na\na\na\na\na\ne\nhc\nc\nff\nb\ng\na\n5\nd\ng\nbf\nd\nah\n",
+     "out": "a\td\ndd\tg\nc\tbf\na\td\na\tah\na\t\na\t\na\t\ne\t\nhc\t\nc\t\nff\t\nb\t\ng\t\na\t\n"
+    }
+   ],
+   "want": "tf.paste"
+  },
+  {
+   "id": "cmp-first",
+   "st": "第一行 n，接著 n 行是檔案 A 的每一行文字；再來一行 m，接著 m 行是檔案 B 的每一行文字。仿 cmp：輸出第一個不同的行號（從 1 開始，一邊先結束也算不同）；完全相同輸出 0。",
+   "rw_st": null,
+   "ref": "import sys\nd = sys.stdin.read().split(\"\\n\")\nk = int(d[0])\nA = d[1:1+k]\nm = int(d[1+k])\nB = d[2+k:2+k+m]\ndif = [i + 1 for i in range(max(len(A), len(B))) if (A[i] if i < len(A) else None) != (B[i] if i < len(B) else None)]\nprint(dif[0] if dif else 0)\n",
+   "tests": [
+    {
+     "in": "5\ng\ng\nbb\nff\ne\n4\ng\ng\nbb\nff\n",
+     "out": "5\n"
+    },
+    {
+     "in": "5\ne\neg\nbb\nf\ne\n4\ne\neg\nbb\nf\n",
+     "out": "5\n"
+    },
+    {
+     "in": "5\nhh\ndg\ne\ne\ned\n5\nhh\ndg\ne\ne\ned\n",
+     "out": "0\n"
+    },
+    {
+     "in": "4\ndd\nhh\nd\nc\n4\ndd\nhh\nd\nc\n",
+     "out": "0\n"
+    },
+    {
+     "in": "3\nc\nca\na\n2\nax\nca\n",
+     "out": "1\n"
+    },
+    {
+     "in": "2\ndd\nhc\n1\ngex\n",
+     "out": "1\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "9\ne\nec\nc\ncb\nff\nbe\ne\ne\nhh\n9\ne\nec\nc\ncb\nff\nbe\ne\ne\nhh\n",
+     "out": "0\n"
+    },
+    {
+     "in": "7\ng\ng\ng\ng\ng\ng\ng\n7\ng\ng\ng\nffx\ng\ng\ng\n",
+     "out": "4\n"
+    }
+   ],
+   "want": "tf.cmp"
+  },
+  {
+   "id": "cmp-count",
+   "st": "第一行 n，接著 n 行是檔案 A 的每一行文字；再來一行 m，接著 m 行是檔案 B 的每一行文字。逐行比較，輸出不同的行數（一邊先結束，多出來的行也算不同）；完全相同輸出 0。",
+   "rw_st": null,
+   "ref": "import sys\nd = sys.stdin.read().split(\"\\n\")\nk = int(d[0])\nA = d[1:1+k]\nm = int(d[1+k])\nB = d[2+k:2+k+m]\ndif = [i + 1 for i in range(max(len(A), len(B))) if (A[i] if i < len(A) else None) != (B[i] if i < len(B) else None)]\nprint(len(dif) if dif else 0)\n",
+   "tests": [
+    {
+     "in": "3\ne\ne\nhh\n3\ne\ne\ncx\n",
+     "out": "1\n"
+    },
+    {
+     "in": "5\nc\nff\ne\nhh\ng\n5\nc\nff\ne\nhh\ng\n",
+     "out": "0\n"
+    },
+    {
+     "in": "2\nb\na\n2\nb\na\n",
+     "out": "0\n"
+    },
+    {
+     "in": "5\nhh\ndd\nhh\ng\ng\n5\nhh\ndd\nhh\ng\ng\n",
+     "out": "0\n"
+    },
+    {
+     "in": "3\nb\na\ndg\n2\nb\na\n",
+     "out": "1\n"
+    },
+    {
+     "in": "4\ne\ne\ne\ned\n4\ne\ne\ngx\ned\n",
+     "out": "1\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "3\ng\ng\nbb\n3\nffx\ng\nbb\n",
+     "out": "1\n"
+    },
+    {
+     "in": "2\nbb\nfa\n2\nbb\nhhx\n",
+     "out": "1\n"
+    }
+   ],
+   "want": "tf.cmp"
+  },
+  {
+   "id": "ho-cat",
+   "st": "輸入兩份清單，每份都是先一行整數 k，再 k 行字串。把兩份接在一起依序編號，編號從 1 連續到底，格式為編號靠右對齊寬度 6、Tab、字串，仿 cat -n 檔1 檔2。",
+   "rw_st": null,
+   "ref": "import sys\nd = sys.stdin.read().split(\"\\n\")\nk = int(d[0])\nA = d[1:1+k]\nm = int(d[1+k])\nB = d[2+k:2+k+m]\nn = 0\nfor part in (A, B):\n    for t in part:\n        n += 1\n        print((\"%6d\" % n) + \"\\t\" + t)\n",
+   "tests": [
+    {
+     "in": "4\ng\nbb\nff\nbb\n1\nbb\n",
+     "out": "     1\tg\n     2\tbb\n     3\tff\n     4\tbb\n     5\tbb\n"
+    },
+    {
+     "in": "1\na\n4\nd\na\na\na\n",
+     "out": "     1\ta\n     2\td\n     3\ta\n     4\ta\n     5\ta\n"
+    },
+    {
+     "in": "5\nhh\ng\ng\ng\ng\n4\ng\ng\ng\ng\n",
+     "out": "     1\thh\n     2\tg\n     3\tg\n     4\tg\n     5\tg\n     6\tg\n     7\tg\n     8\tg\n     9\tg\n"
+    },
+    {
+     "in": "1\ng\n2\nff\nba\n",
+     "out": "     1\tg\n     2\tff\n     3\tba\n"
+    },
+    {
+     "in": "2\ndh\nbd\n5\ng\nbb\nff\nbb\nf\n",
+     "out": "     1\tdh\n     2\tbd\n     3\tg\n     4\tbb\n     5\tff\n     6\tbb\n     7\tf\n"
+    },
+    {
+     "in": "5\nc\nc\nc\nc\ncb\n1\nah\n",
+     "out": "     1\tc\n     2\tc\n     3\tc\n     4\tc\n     5\tcb\n     6\tah\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "11\nc\ng\ngb\ne\ne\ne\ne\nha\na\na\nah\n6\nc\nff\nbe\ned\nhc\na\n",
+     "out": "     1\tc\n     2\tg\n     3\tgb\n     4\te\n     5\te\n     6\te\n     7\te\n     8\tha\n     9\ta\n    10\ta\n    11\tah\n    12\tc\n    13\tff\n    14\tbe\n    15\ted\n    16\thc\n    17\ta\n"
+    },
+    {
+     "in": "10\na\ndg\ne\ne\ned\nh\ng\nbb\nff\nbb\n10\nbb\nff\ne\ng\ng\ng\ngf\nbb\nf\ne\n",
+     "out": "     1\ta\n     2\tdg\n     3\te\n     4\te\n     5\ted\n     6\th\n     7\tg\n     8\tbb\n     9\tff\n    10\tbb\n    11\tbb\n    12\tff\n    13\te\n    14\tg\n    15\tg\n    16\tg\n    17\tgf\n    18\tbb\n    19\tf\n    20\te\n"
+    }
+   ],
+   "split": "holdout"
+  },
+  {
+   "id": "ho-diff",
+   "st": "第一行 n，接下來 n 行是檔案甲；再一行 m，之後 m 行是檔案乙。找出只出現在甲的行（依甲原本的順序，重複只留第一次），每行輸出一個。",
+   "rw_st": null,
+   "ref": "import sys\nd = sys.stdin.read().split(\"\\n\")\nk = int(d[0])\nA = d[1:1+k]\nm = int(d[1+k])\nB = d[2+k:2+k+m]\nsa, sb = set(A), set(B)\nres = [t for t in A if t not in sb]\nres = list(dict.fromkeys(res))\nprint(\"\\n\".join(res))\n",
+   "tests": [
+    {
+     "in": "1\nhh\n4\nh\ngf\nbe\ne\n",
+     "out": "hh\n"
+    },
+    {
+     "in": "4\ndd\nhh\nd\nah\n1\nhc\n",
+     "out": "dd\nhh\nd\nah\n"
+    },
+    {
+     "in": "3\nc\nc\nfa\n5\na\ndd\nhc\nc\ncb\n",
+     "out": "fa\n"
+    },
+    {
+     "in": "3\ne\ned\nc\n1\nc\n",
+     "out": "e\ned\n"
+    },
+    {
+     "in": "2\nc\ncb\n2\na\na\n",
+     "out": "c\ncb\n"
+    },
+    {
+     "in": "1\nh\n3\ng\ng\ngd\n",
+     "out": "h\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "5\na\na\na\nac\nc\n11\nc\nc\nc\nfa\na\ndd\nhh\ndd\nhh\ndd\nhh\n",
+     "out": "ac\n"
+    },
+    {
+     "in": "6\nhc\na\ngf\nbb\na\na\n13\na\na\na\nd\ng\ng\ngf\nb\ndd\nhh\ndd\nhh\ndd\n",
+     "out": "hc\nbb\n"
+    }
+   ],
+   "split": "holdout"
+  },
+  {
+   "id": "ho-join",
+   "st": "第一行 n，接下來 n 行是檔案 A 的記錄「鍵 值」；再一行 m，之後 m 行是檔案 B 的記錄「鍵 值」。把第一欄相同的記錄合併，輸出「鍵 A值 B值」，空白隔開，按 A 的順序，沒配到的不輸出。",
+   "rw_st": null,
+   "ref": "import sys\nd = sys.stdin.read().split(\"\\n\")\nk = int(d[0])\nA = d[1:1+k]\nm = int(d[1+k])\nB = d[2+k:2+k+m]\nbm = {}\nfor t in B:\n    f = t.split()\n    bm.setdefault(f[0], []).append(f[1:])\nfor t in A:\n    f = t.split()\n    if f[0] in bm:\n        for r in bm[f[0]]:\n            print(\" \".join(f + r))\n",
+   "tests": [
+    {
+     "in": "1\na 75\n5\na 52\na 46\na 20\na 46\na 60\n",
+     "out": "a 75 52\na 75 46\na 75 20\na 75 46\na 75 60\n"
+    },
+    {
+     "in": "5\nd 17\na 19\nh 85\nc 34\na 18\n4\na 17\na 82\na 53\na 50\n",
+     "out": "a 19 17\na 19 82\na 19 53\na 19 50\na 18 17\na 18 82\na 18 53\na 18 50\n"
+    },
+    {
+     "in": "4\nd 67\ng 24\ng 11\ng 64\n5\na 44\na 93\ng 32\ng 83\ng 67\n",
+     "out": "g 24 32\ng 24 83\ng 24 67\ng 11 32\ng 11 83\ng 11 67\ng 64 32\ng 64 83\ng 64 67\n"
+    },
+    {
+     "in": "1\ng 63\n4\ng 6\nf 49\na 99\nd 94\n",
+     "out": "g 63 6\n"
+    },
+    {
+     "in": "5\ne 26\ne 81\ne 76\ne 19\nc 8\n4\nc 65\nc 30\nb 89\nb 8\n",
+     "out": "c 8 65\nc 8 30\n"
+    },
+    {
+     "in": "1\ne 70\n4\ne 51\ne 33\ne 19\ne 65\n",
+     "out": "e 70 51\ne 70 33\ne 70 19\ne 70 65\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "11\na 42\ng 81\ng 87\nb 27\nb 92\nb 89\nb 89\nb 6\nb 43\nb 31\ng 49\n7\ng 51\ng 45\ng 55\ng 14\ng 28\nf 2\nc 75\n",
+     "out": "g 81 51\ng 81 45\ng 81 55\ng 81 14\ng 81 28\ng 87 51\ng 87 45\ng 87 55\ng 87 14\ng 87 28\ng 49 51\ng 49 45\ng 49 55\ng 49 14\ng 49 28\n"
+    },
+    {
+     "in": "11\na 31\na 81\na 55\na 71\na 90\na 82\nh 21\nh 92\nh 72\ng 95\ng 66\n11\nb 70\ne 59\ne 83\ne 48\ne 1\ne 35\nh 65\nh 9\nh 96\nc 66\nc 16\n",
+     "out": "h 21 65\nh 21 9\nh 21 96\nh 92 65\nh 92 9\nh 92 96\nh 72 65\nh 72 9\nh 72 96\n"
+    }
+   ],
+   "split": "holdout"
+  },
+  {
+   "id": "ho-cmp",
+   "st": "第一行 n，接著 n 行是文字 A；再來一行 m，接著 m 行是文字 B。逐行對照，輸出第一個不一樣的行是第幾行（從 1 算，長度不同時較短的那邊後面當作缺行）；兩邊完全一樣輸出 0。",
+   "rw_st": null,
+   "ref": "import sys\nd = sys.stdin.read().split(\"\\n\")\nk = int(d[0])\nA = d[1:1+k]\nm = int(d[1+k])\nB = d[2+k:2+k+m]\ndif = [i + 1 for i in range(max(len(A), len(B))) if (A[i] if i < len(A) else None) != (B[i] if i < len(B) else None)]\nprint(dif[0] if dif else 0)\n",
+   "tests": [
+    {
+     "in": "5\nc\ncb\na\nah\ndd\n5\nc\ncb\na\nah\ndd\n",
+     "out": "0\n"
+    },
+    {
+     "in": "3\nd\nc\ncb\n2\nffx\nc\n",
+     "out": "1\n"
+    },
+    {
+     "in": "4\nec\nc\nc\nc\n3\nec\nc\nc\n",
+     "out": "4\n"
+    },
+    {
+     "in": "5\ne\ne\ne\ne\ne\n5\ne\ne\ne\nhx\ne\n",
+     "out": "4\n"
+    },
+    {
+     "in": "4\ng\ngf\nbb\nfc\n4\ng\nhbx\nbb\nfc\n",
+     "out": "2\n"
+    },
+    {
+     "in": "3\ne\ne\nhh\n2\ne\ngfx\n",
+     "out": "2\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "1\ne\n1\nz\n",
+     "out": "1\n"
+    },
+    {
+     "in": "12\ne\neg\ng\ng\ngf\nb\nah\nd\na\nc\nc\nc\n11\ne\neg\ng\ng\ngf\nb\nah\nd\na\nfax\nc\n",
+     "out": "10\n"
+    }
+   ],
+   "split": "holdout"
+  }
+ ]
+}

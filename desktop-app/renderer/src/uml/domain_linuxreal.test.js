@@ -35,31 +35,4 @@ const FKREF = (f, ex) => 'import sys\nxs = [int(t) for t in sys.stdin.read().spl
 const pcGen = (b) => { const n = rnd(2, b ? 10 : 6); const pool = Array.from({ length: 4 }, () => word(rnd(1, 3))); return { in: lines(Array.from({ length: n }, () => pick(pool))) }; };
 const PCREF = (a, bb) => 'import sys\nrows = sys.stdin.read().splitlines()\nif ' + JSON.stringify(a) + ' == "sort":\n    rows.sort()\nelif ' + JSON.stringify(a) + ' == "up":\n    rows = [r.upper() for r in rows]\nelse:\n    rows.reverse()\nif ' + JSON.stringify(bb) + ' == "uniq":\n    o = [r for i, r in enumerate(rows) if i == 0 or rows[i - 1] != r]\n    print("\\n".join(o))\nelif ' + JSON.stringify(bb) + ' == "wc":\n    print(len(rows))\nelse:\n    for i, r in enumerate(rows):\n        print(i + 1, r)\n';
 
-const SEEDS = [
-    { id: 'env-count', real: true, want: 'lr.env-report', st: '標準輸入每行一個環境變數名稱。程式讀取行程的環境變數，每行輸出對應的值；環境裡沒有的名稱輸出「<unset>」。結束碼是沒設定的名稱個數。', ref: ENVREF('<unset>', 'value', 'count'), gen: envGen },
-    { id: 'env-pair-flag', real: true, want: 'lr.env-report', st: '標準輸入每行一個環境變數名稱。程式查詢行程的環境變數，每行輸出「名稱=值」；環境變數沒設定的輸出「-」。只要有任何一個沒設定，結束碼就是 1，否則是 0。', ref: ENVREF('-', 'pair', 'flag'), gen: envGen },
-    { id: 'argv-maxlen', real: true, want: 'lr.argv-report', st: '程式沒有標準輸入，只看命令列引數（不含程式名稱）。先輸出引數個數，接著把引數依字典序由小到大排序後每個一行輸出。結束碼是最長引數的長度（不超過 255）。', ref: ARGREF('asc', 'maxlen'), gen: argGen },
-    { id: 'argv-count', real: true, want: 'lr.argv-report', st: '程式沒有標準輸入，只看命令列引數（不含程式名稱）。先輸出引數個數，接著依原本的順序每個引數一行輸出。結束碼是引數的個數。', ref: ARGREF('given', 'count'), gen: argGen },
-    { id: 'spawn-clean', real: true, want: 'lr.spawn-env', st: '標準輸入第一行是 n 與 k，接著 n 行「名稱=值」，最後一行是一個名稱 q。父行程啟動一個子行程（用同一個 Python 直譯器），子行程的環境變數只有這 n 個（不繼承父行程的），子行程印出環境變數 q 的值（沒有就印 none）並以 k 當結束碼。父行程印出子行程輸出的那一行，並以子行程的結束碼結束。', ref: SPREF('clean', 'child'), gen: spGen },
-    { id: 'spawn-inherit', real: true, want: 'lr.spawn-env', st: '標準輸入第一行是 n 與 k，接著 n 行「名稱=值」，最後一行是名稱 q。父行程啟動子行程（同一個 Python 直譯器），子行程的環境是父行程的環境再加上這 n 個變數，子行程印出環境變數 q 的值（沒有就印 none）並以 k 結束。父行程印出子行程輸出的那一行，自己固定以 0 結束。', ref: SPREF('inherit', 'zero'), gen: spGen },
-    { id: 'file-rev', real: true, want: 'lr.file-transform', st: '目前目錄有文字檔 in.txt。程式讀 in.txt，把每一行的字元順序反轉，寫到 out.txt（每行結尾換行），標準輸出印寫入的行數。', ref: TXTREF('in.txt', 'out.txt', 'rc', 'lines'), gen: txtGen(['in.txt', 'out.txt']) },
-    { id: 'file-uniq-bytes', real: true, want: 'lr.file-transform', st: '目錄裡有文字檔 in.txt。程式讀 in.txt，去掉重複的行（保留第一次出現的順序），寫到 out.txt，標準輸出印寫入的位元組數。', ref: TXTREF('in.txt', 'out.txt', 'uq', 'bytes'), gen: txtGen(['in.txt', 'out.txt']) },
-    { id: 'file-number', real: true, want: 'lr.file-transform', st: '目前目錄有文字檔 in.txt。程式讀 in.txt，每行前面加上行號和冒號與空白（例如「1: abc」，行號從 1 開始），寫到 out.txt，標準輸出印寫入的行數。', ref: TXTREF('in.txt', 'out.txt', 'nm', 'lines'), gen: txtGen(['in.txt', 'out.txt']) },
-    { id: 'merge-asc', real: true, want: 'lr.file-merge', st: '命令列引數是若干個檔名，每個檔案每行一個整數。程式依序讀入全部整數，由小到大排序後寫到 out.txt（每行一個），標準輸出印所有整數的總和。', ref: MGREF('out.txt', 'asc', 'sum'), gen: mgGen('out.txt') },
-    { id: 'merge-given', real: true, want: 'lr.file-merge', st: '命令列引數是若干個檔名，每個檔案每行一個整數。程式依檔名順序讀入全部整數，維持讀入的順序寫到 merged.txt（每行一個），標準輸出印整數的個數。', ref: MGREF('merged.txt', 'given', 'count'), gen: mgGen('merged.txt') },
-    { id: 'bin-xor', real: true, binFiles: true, want: 'lr.file-binary', st: '目前目錄有二進位檔 data.bin。程式讀 data.bin，把每個位元組與 0xFF 做互斥或，寫到 out.bin，標準輸出印位元組數。', ref: BINREF('data.bin', 'out.bin', 'xor'), gen: binGen(['data.bin', 'out.bin']) },
-    { id: 'bin-rev', real: true, binFiles: true, want: 'lr.file-binary', st: '目前目錄有二進位檔 data.bin。程式讀 data.bin 的所有位元組，順序整個反過來寫到 out.bin，標準輸出印位元組數。', ref: BINREF('data.bin', 'out.bin', 'rev'), gen: binGen(['data.bin', 'out.bin']) },
-    { id: 'sock-up', real: true, want: 'lr.sock-echo', st: '命令列第一個引數是埠號。程式在 127.0.0.1 的這個埠開一個 TCP 伺服器並開始 listen。標準輸入每行一則訊息：程式另開一個客戶端 socket 連到伺服器並送出訊息（送完關閉寫入端），伺服器 accept 後收完整則訊息，回覆轉成大寫的內容，客戶端印出收到的回覆。', ref: SKREF('up'), gen: skGen },
-    { id: 'sock-len', real: true, want: 'lr.sock-echo', st: '命令列第一個引數是埠號。程式在 127.0.0.1 的這個埠開 TCP 伺服器並 listen；標準輸入每行一則訊息，程式用客戶端 socket 連線送出（送完關閉寫入端），伺服器 accept 後收完整則訊息，回覆訊息的長度（十進位文字），客戶端印出回覆。', ref: SKREF('len'), gen: skGen },
-    { id: 'fork-sq', real: true, want: 'lr.fork-pipe', st: '標準輸入第一行是 n，之後 n 行各一個整數 x。對每個整數 fork 一個子行程：子行程算 x 的平方寫進管線，然後以 x 除以 10 的餘數當結束碼離開；父行程從管線讀結果、waitpid 取得結束碼，每個整數輸出一行「結果 結束碼」。', ref: FKREF('sq', 'mod10'), gen: fkGen },
-    { id: 'fork-pop', real: true, want: 'lr.fork-pipe', st: '標準輸入第一行是 n，之後 n 行各一個整數 x。每個整數 fork 一個子行程：子行程算 x 的二進位中 1 的個數寫進管線，並以這個結果除以 7 的餘數當結束碼離開；父行程依序從管線讀取、waitpid 取結束碼，每個整數輸出一行「結果 結束碼」。', ref: FKREF('pop', 'mod7'), gen: fkGen },
-    { id: 'pchain-sort-uniq', real: true, want: 'lr.pipe-chain', st: '標準輸入是若干行文字。程式把整段文字餵給由兩個子行程接成的管線（各是一個 Python 直譯器的小過濾器）：第一個子行程把所有行排序，第二個子行程把相鄰重複的行去掉；父行程輸出管線最後的輸出。', ref: PCREF('sort', 'uniq'), gen: pcGen },
-    { id: 'pchain-up-nl', real: true, want: 'lr.pipe-chain', st: '標準輸入是若干行文字。程式把整段文字餵給由兩個子行程串成的管線（各是 Python 直譯器的小過濾器）：第一個子行程把全部轉成大寫，第二個子行程在每行前面加行號（從 1 開始，後面一個空白）；父行程輸出管線最後的輸出。', ref: PCREF('up', 'nl'), gen: pcGen },
-    // holdout：另寫措辭（輸出約定不同、描述順序不同），只量測、不教
-    { id: 'ho-env', split: 'holdout', real: true, st: '標準輸入每行是一個環境變數的名稱。請查這個行程的環境，依序輸出各名稱的值；若環境中找不到該名稱，就改輸出「N/A」。離開時的結束碼要等於找不到的名稱數量。', ref: ENVREF('N/A', 'value', 'count'), gen: envGen },
-    { id: 'ho-argv', split: 'holdout', real: true, st: '不讀標準輸入。程式的命令列引數（程式名稱除外）請這樣處理：第一行印出引數個數，然後把引數由大到小（字典序）排列，每行印一個。結束碼為引數個數。', ref: ARGREF('desc', 'count'), gen: argGen },
-    { id: 'ho-file', split: 'holdout', real: true, st: '工作目錄裡有 in.txt。讀取 in.txt，將所有行的順序顛倒後寫入 out.txt（每行以換行結尾），並在標準輸出印出寫入的位元組數。', ref: TXTREF('in.txt', 'out.txt', 'rl', 'bytes'), gen: txtGen(['in.txt', 'out.txt']) },
-    { id: 'ho-sock', split: 'holdout', real: true, st: '第一個命令列引數是埠。在 127.0.0.1 上以該埠建立 TCP 伺服器並開始 listen。標準輸入的每一行是一則訊息：另外建立客戶端 socket 連上去，送出訊息後關閉寫入方向；伺服器 accept 之後收完訊息，回傳字元順序反轉的字串；客戶端把收到的回覆印出來。', ref: SKREF('rev'), gen: skGen },
-    { id: 'ho-fork', split: 'holdout', real: true, st: '標準輸入第一行 n，接下來 n 行各一個整數 x。對每個 x 用 fork 建立一個子行程，子行程計算 x 的十進位各位數字之和，經管線傳回父行程後以 x 除以 10 的餘數作為結束碼離開；父行程用 waitpid 取得結束碼，每個 x 輸出一行「數字和 結束碼」。', ref: FKREF('ds', 'mod10'), gen: fkGen }
-];
-H.main({ name: '領域包 linuxreal', packs: [LR], seeds: SEEDS, minSkeletons: 8, judge: { checker: 'tokens', timeoutMs: 40000 } });
+H.main({ name: '領域包 linuxreal', packs: [LR], seeds: H.loadSeeds(require('path').join(__dirname, 'seeds', 'domain_linuxreal.json')), minSkeletons: 8, judge: { checker: 'tokens', timeoutMs: 40000 } });

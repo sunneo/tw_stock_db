@@ -1,0 +1,1731 @@
+{
+ "format": "fa-domain-seeds",
+ "version": 1,
+ "source": "renderer/src/uml/domain_fs.test.js",
+ "name": "領域包 fs",
+ "minSkeletons": 8,
+ "judge": null,
+ "trainOnly": null,
+ "seeds": [
+  {
+   "id": "fat-len",
+   "st": "第一行 n，第二行 n 個整數 fat，fat[i] 是簇 i 的下一個簇，-1 表示檔案結束（簇編號從 0 開始）。第三行 s 是檔案的起始簇。輸出檔案的簇鏈長度。",
+   "rw_st": null,
+   "ref": "n = int(input())\nfat = list(map(int, input().split()))\ns = int(input())\nc = [s]\nwhile fat[c[-1]] != -1:\n    c.append(fat[c[-1]])\nprint(len(c))\n",
+   "tests": [
+    {
+     "in": "8\n-1 0 -1 2 3 4 -1 -1\n1\n",
+     "out": "2\n"
+    },
+    {
+     "in": "4\n-1 -1 -1 -1\n0\n",
+     "out": "1\n"
+    },
+    {
+     "in": "10\n9 7 1 -1 3 4 8 -1 0 -1\n5\n",
+     "out": "3\n"
+    },
+    {
+     "in": "5\n-1 2 -1 4 -1\n3\n",
+     "out": "2\n"
+    },
+    {
+     "in": "6\n-1 0 1 -1 -1 -1\n2\n",
+     "out": "3\n"
+    },
+    {
+     "in": "8\n6 -1 1 4 7 2 -1 -1\n5\n",
+     "out": "3\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "15\n-1 -1 10 -1 6 11 9 13 -1 8 14 3 -1 1 -1\n5\n",
+     "out": "3\n"
+    },
+    {
+     "in": "14\n-1 8 -1 12 -1 6 13 -1 9 11 1 2 5 -1\n7\n",
+     "out": "1\n"
+    }
+   ],
+   "want": "fs.fat-chain"
+  },
+  {
+   "id": "fat-chain",
+   "st": "第一行 n，第二行 n 個整數 fat，fat[i] 是簇 i 的下一個簇，-1 表示檔案結束（簇編號從 0 開始）。第三行 s 是檔案的起始簇。輸出檔案依序佔用的所有簇編號，用空白隔開。",
+   "rw_st": null,
+   "ref": "n = int(input())\nfat = list(map(int, input().split()))\ns = int(input())\nc = [s]\nwhile fat[c[-1]] != -1:\n    c.append(fat[c[-1]])\nprint(*c)\n",
+   "tests": [
+    {
+     "in": "10\n1 5 -1 7 -1 2 4 6 -1 8\n3\n",
+     "out": "3 7 6 4\n"
+    },
+    {
+     "in": "5\n4 3 -1 -1 -1\n0\n",
+     "out": "0 4\n"
+    },
+    {
+     "in": "9\n-1 -1 -1 -1 -1 -1 -1 5 7\n8\n",
+     "out": "8 7 5\n"
+    },
+    {
+     "in": "8\n4 5 6 -1 3 -1 -1 1\n0\n",
+     "out": "0 4 3\n"
+    },
+    {
+     "in": "7\n5 -1 3 1 -1 -1 0\n4\n",
+     "out": "4\n"
+    },
+    {
+     "in": "5\n1 -1 -1 4 -1\n3\n",
+     "out": "3 4\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "9\n5 2 -1 4 -1 1 -1 -1 3\n0\n",
+     "out": "0 5 1 2\n"
+    },
+    {
+     "in": "20\n10 6 16 9 19 4 12 -1 -1 2 -1 8 18 1 11 0 7 14 17 -1\n5\n",
+     "out": "5 4 19\n"
+    }
+   ],
+   "want": "fs.fat-chain"
+  },
+  {
+   "id": "fat-last",
+   "st": "第一行 n，第二行 n 個整數 fat，fat[i] 是簇 i 的下一個簇，-1 表示檔案結束（簇編號從 0 開始）。第三行 s 是檔案的起始簇。輸出檔案的最後一個簇編號。",
+   "rw_st": null,
+   "ref": "n = int(input())\nfat = list(map(int, input().split()))\ns = int(input())\nc = [s]\nwhile fat[c[-1]] != -1:\n    c.append(fat[c[-1]])\nprint(c[-1])\n",
+   "tests": [
+    {
+     "in": "7\n-1 -1 6 -1 3 -1 -1\n2\n",
+     "out": "6\n"
+    },
+    {
+     "in": "9\n-1 0 4 -1 6 8 -1 1 3\n2\n",
+     "out": "6\n"
+    },
+    {
+     "in": "7\n-1 3 0 6 2 -1 -1\n4\n",
+     "out": "0\n"
+    },
+    {
+     "in": "6\n-1 2 -1 4 -1 -1\n5\n",
+     "out": "5\n"
+    },
+    {
+     "in": "4\n3 2 -1 -1\n1\n",
+     "out": "2\n"
+    },
+    {
+     "in": "6\n-1 0 -1 1 5 -1\n4\n",
+     "out": "5\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "26\n10 7 22 25 23 15 21 17 18 -1 16 1 6 -1 0 14 13 -1 -1 8 3 -1 11 20 19 -1\n12\n",
+     "out": "21\n"
+    },
+    {
+     "in": "24\n18 -1 19 10 -1 22 9 21 2 -1 4 16 -1 15 0 3 5 20 17 12 1 13 -1 8\n23\n",
+     "out": "12\n"
+    }
+   ],
+   "want": "fs.fat-chain"
+  },
+  {
+   "id": "fat-jumps",
+   "st": "第一行 n，第二行 n 個整數 fat，fat[i] 是簇 i 的下一個簇，-1 表示檔案結束（簇編號從 0 開始）。第三行 s 是檔案的起始簇。輸出檔案不連續的次數：鏈上下一個簇不是目前簇編號加一的次數。",
+   "rw_st": null,
+   "ref": "n = int(input())\nfat = list(map(int, input().split()))\ns = int(input())\nc = [s]\nwhile fat[c[-1]] != -1:\n    c.append(fat[c[-1]])\nprint(sum(1 for i in range(1, len(c)) if c[i] != c[i-1] + 1))\n",
+   "tests": [
+    {
+     "in": "9\n-1 2 3 7 8 -1 -1 -1 5\n4\n",
+     "out": "2\n"
+    },
+    {
+     "in": "5\n-1 -1 -1 4 -1\n3\n",
+     "out": "0\n"
+    },
+    {
+     "in": "6\n-1 0 1 -1 5 3\n2\n",
+     "out": "2\n"
+    },
+    {
+     "in": "6\n-1 -1 1 -1 3 4\n2\n",
+     "out": "1\n"
+    },
+    {
+     "in": "7\n-1 -1 6 0 -1 4 -1\n5\n",
+     "out": "1\n"
+    },
+    {
+     "in": "7\n-1 -1 5 -1 1 -1 0\n2\n",
+     "out": "1\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "29\n14 25 8 16 28 -1 19 12 26 0 18 6 4 21 -1 23 5 -1 2 -1 -1 22 -1 24 9 10 20 1 11\n27\n",
+     "out": "8\n"
+    },
+    {
+     "in": "14\n7 10 -1 8 0 -1 2 1 13 4 5 12 6 11\n9\n",
+     "out": "6\n"
+    }
+   ],
+   "want": "fs.fat-chain"
+  },
+  {
+   "id": "free-count",
+   "st": "第一行 n，第二行 n 個整數表示 FAT 表（簇編號從 1 開始），0 代表空閒簇。輸出空閒簇的個數。",
+   "rw_st": null,
+   "ref": "n = int(input())\nfat = list(map(int, input().split()))\nprint(fat.count(0))\n",
+   "tests": [
+    {
+     "in": "9\n4 0 6 2 2 0 5 9 7\n",
+     "out": "2\n"
+    },
+    {
+     "in": "9\n0 0 8 0 1 8 0 0 3\n",
+     "out": "5\n"
+    },
+    {
+     "in": "6\n6 0 5 0 1 4\n",
+     "out": "2\n"
+    },
+    {
+     "in": "6\n0 4 1 0 6 3\n",
+     "out": "2\n"
+    },
+    {
+     "in": "4\n0 0 0 0\n",
+     "out": "4\n"
+    },
+    {
+     "in": "5\n0 4 2 1 0\n",
+     "out": "2\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "29\n0 0 20 22 2 0 0 17 3 0 0 0 13 21 0 19 4 8 3 4 0 6 28 14 12 28 0 12 0\n",
+     "out": "11\n"
+    },
+    {
+     "in": "17\n15 9 1 3 14 3 0 3 10 0 0 17 0 7 17 0 7\n",
+     "out": "5\n"
+    }
+   ],
+   "want": "fs.fat-free"
+  },
+  {
+   "id": "free-firstk",
+   "st": "第一行 n，第二行 n 個整數表示 FAT 表（簇編號從 1 開始），0 代表空閒簇。第三行 k。輸出編號最小的前 k 個空閒簇，用空白隔開。",
+   "rw_st": null,
+   "ref": "n = int(input())\nfat = list(map(int, input().split()))\nk = int(input())\nprint(*[i + 1 for i in range(n) if fat[i] == 0][:k])\n",
+   "tests": [
+    {
+     "in": "8\n3 2 2 1 0 4 0 5\n1\n",
+     "out": "5\n"
+    },
+    {
+     "in": "9\n0 0 0 4 0 0 5 0 0\n2\n",
+     "out": "1 2\n"
+    },
+    {
+     "in": "7\n0 3 3 0 0 3 0\n1\n",
+     "out": "1\n"
+    },
+    {
+     "in": "7\n0 0 2 0 3 0 1\n3\n",
+     "out": "1 2 4\n"
+    },
+    {
+     "in": "6\n0 2 0 2 6 1\n2\n",
+     "out": "1 3\n"
+    },
+    {
+     "in": "8\n8 8 7 6 0 0 0 7\n1\n",
+     "out": "5\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "16\n4 7 0 10 2 0 0 1 1 1 0 4 11 0 3 3\n3\n",
+     "out": "3 6 7\n"
+    },
+    {
+     "in": "6\n2 6 6 0 0 0\n1\n",
+     "out": "4\n"
+    }
+   ],
+   "want": "fs.fat-free"
+  },
+  {
+   "id": "free-run",
+   "st": "第一行 n，第二行 n 個整數表示 FAT 表，0 代表空閒簇。輸出最長一段連續空閒簇的長度。",
+   "rw_st": null,
+   "ref": "n = int(input())\nfat = list(map(int, input().split()))\nbest = cur = 0\nfor x in fat:\n    cur = cur + 1 if x == 0 else 0\n    best = max(best, cur)\nprint(best)\n",
+   "tests": [
+    {
+     "in": "10\n5 0 10 4 5 5 0 0 0 0\n",
+     "out": "4\n"
+    },
+    {
+     "in": "5\n0 3 0 3 3\n",
+     "out": "1\n"
+    },
+    {
+     "in": "4\n0 3 3 2\n",
+     "out": "1\n"
+    },
+    {
+     "in": "5\n0 1 0 1 3\n",
+     "out": "1\n"
+    },
+    {
+     "in": "9\n0 0 9 1 8 0 4 8 0\n",
+     "out": "2\n"
+    },
+    {
+     "in": "6\n1 0 0 1 0 0\n",
+     "out": "2\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "25\n4 22 20 16 16 3 18 5 0 0 17 3 8 24 0 0 0 18 16 21 13 24 0 20 0\n",
+     "out": "3\n"
+    },
+    {
+     "in": "12\n6 10 6 1 5 9 0 0 12 0 7 0\n",
+     "out": "2\n"
+    }
+   ],
+   "want": "fs.fat-free"
+  },
+  {
+   "id": "inode-lvl",
+   "st": "第一行 b d p q，之後 q 行每行一個整數 x，表示檔案內的位元組偏移。inode 有 d 個直接指標，一個一級間接指標、一個二級間接指標、一個三級間接指標，每個指標區塊可放 p 個指標，區塊大小 b。輸出每個偏移所在邏輯區塊的階層編號：直接為 0、一級間接為 1、二級間接為 2、三級間接為 3。",
+   "rw_st": null,
+   "ref": "b, d, p, q = map(int, input().split())\nfor _ in range(q):\n    x = int(input()) // b\n    if x < d:\n        L = 0\n    elif x < d + p:\n        L = 1\n    elif x - d - p < p * p:\n        L = 2\n    else:\n        L = 3\n    print(L)\n",
+   "tests": [
+    {
+     "in": "4 1 2 5\n55\n36\n52\n15\n44\n",
+     "out": "3\n3\n3\n2\n3\n"
+    },
+    {
+     "in": "8 3 4 5\n437\n664\n45\n658\n404\n",
+     "out": "3\n3\n1\n3\n3\n"
+    },
+    {
+     "in": "4 2 3 2\n64\n137\n",
+     "out": "3\n3\n"
+    },
+    {
+     "in": "16 1 2 6\n139\n130\n82\n102\n130\n90\n",
+     "out": "3\n3\n2\n2\n3\n2\n"
+    },
+    {
+     "in": "4 2 2 5\n58\n6\n30\n5\n33\n",
+     "out": "3\n0\n2\n0\n3\n"
+    },
+    {
+     "in": "16 3 4 4\n273\n803\n573\n1035\n",
+     "out": "2\n3\n3\n3\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "16 1 2 1\n146\n",
+     "out": "3\n"
+    },
+    {
+     "in": "8 4 5 5\n898\n802\n601\n1118\n28\n",
+     "out": "3\n3\n3\n3\n0\n"
+    }
+   ],
+   "want": "fs.inode-level"
+  },
+  {
+   "id": "inode-label",
+   "st": "第一行 b d p q，之後 q 行每行一個整數 x，表示檔案內的位元組偏移。inode 有 d 個直接指標，一個一級間接指標、一個二級間接指標、一個三級間接指標，每個指標區塊可放 p 個指標，區塊大小 b。輸出每個偏移所在邏輯區塊的階層：DIRECT、SINGLE、DOUBLE、TRIPLE。",
+   "rw_st": null,
+   "ref": "b, d, p, q = map(int, input().split())\nfor _ in range(q):\n    x = int(input()) // b\n    if x < d:\n        L = 0\n    elif x < d + p:\n        L = 1\n    elif x - d - p < p * p:\n        L = 2\n    else:\n        L = 3\n    print([\"DIRECT\", \"SINGLE\", \"DOUBLE\", \"TRIPLE\"][L])\n",
+   "tests": [
+    {
+     "in": "16 2 3 2\n570\n344\n",
+     "out": "TRIPLE\nTRIPLE\n"
+    },
+    {
+     "in": "16 4 5 1\n1300\n",
+     "out": "TRIPLE\n"
+    },
+    {
+     "in": "16 3 3 6\n613\n36\n21\n286\n23\n664\n",
+     "out": "TRIPLE\nDIRECT\nDIRECT\nTRIPLE\nDIRECT\nTRIPLE\n"
+    },
+    {
+     "in": "4 2 3 2\n60\n4\n",
+     "out": "TRIPLE\nDIRECT\n"
+    },
+    {
+     "in": "4 1 2 1\n27\n",
+     "out": "DOUBLE\n"
+    },
+    {
+     "in": "16 3 4 5\n480\n4\n1342\n1\n1017\n",
+     "out": "TRIPLE\nDIRECT\nTRIPLE\nDIRECT\nTRIPLE\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "4 1 4 5\n334\n45\n41\n300\n144\n",
+     "out": "TRIPLE\nDOUBLE\nDOUBLE\nTRIPLE\nTRIPLE\n"
+    },
+    {
+     "in": "16 1 2 5\n117\n84\n191\n118\n227\n",
+     "out": "TRIPLE\nDOUBLE\nTRIPLE\nTRIPLE\nTRIPLE\n"
+    }
+   ],
+   "want": "fs.inode-level"
+  },
+  {
+   "id": "inode-total",
+   "st": "第一行 b d p q，之後 q 行每行一個整數 sz，表示檔案大小（位元組）。inode 有 d 個直接指標，一個一級間接指標、一個二級間接指標、一個三級間接指標，每個指標區塊可放 p 個指標，區塊大小 b。輸出檔案佔用的磁碟區塊總數：資料區塊加上用到的指標區塊。",
+   "rw_st": null,
+   "ref": "b, d, p, q = map(int, input().split())\nfor _ in range(q):\n    sz = int(input())\n    n = -(-sz // b)\n    t = n\n    r = n - d\n    if r > 0:\n        t += 1\n        r -= p\n        if r > 0:\n            t += 1 + -(-r // p) if r <= p * p else 1 + p\n            r -= p * p\n            if r > 0:\n                t += 1 + -(-r // (p * p)) + -(-r // p)\n    print(t)\n",
+   "tests": [
+    {
+     "in": "4 1 3 3\n153\n17\n33\n",
+     "out": "57\n8\n13\n"
+    },
+    {
+     "in": "4 1 4 1\n32\n",
+     "out": "11\n"
+    },
+    {
+     "in": "8 2 2 2\n127\n87\n",
+     "out": "27\n19\n"
+    },
+    {
+     "in": "8 2 3 4\n274\n110\n82\n278\n",
+     "out": "51\n19\n15\n51\n"
+    },
+    {
+     "in": "8 2 4 5\n81\n60\n672\n68\n489\n",
+     "out": "15\n11\n111\n12\n82\n"
+    },
+    {
+     "in": "4 1 4 3\n39\n159\n243\n",
+     "out": "14\n54\n81\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "4 2 2 7\n42\n38\n50\n14\n58\n54\n2\n",
+     "out": "19\n17\n23\n5\n26\n24\n1\n"
+    },
+    {
+     "in": "8 2 2 1\n109\n",
+     "out": "24\n"
+    }
+   ],
+   "want": "fs.inode-blocks"
+  },
+  {
+   "id": "ho-fat",
+   "st": "第一行 n，第二行 n 個整數 nxt，nxt[i] 表示簇 i 之後接哪個簇，值為 -1 代表檔案到此結束（簇從 0 開始編號）。第三行 s 是檔案第一個簇。輸出這個檔案共占幾個簇。",
+   "rw_st": null,
+   "ref": "n = int(input())\nfat = list(map(int, input().split()))\ns = int(input())\nc = [s]\nwhile fat[c[-1]] != -1:\n    c.append(fat[c[-1]])\nprint(len(c))\n",
+   "tests": [
+    {
+     "in": "8\n2 -1 7 -1 -1 -1 -1 3\n0\n",
+     "out": "4\n"
+    },
+    {
+     "in": "7\n1 -1 5 6 3 -1 -1\n4\n",
+     "out": "3\n"
+    },
+    {
+     "in": "7\n-1 -1 1 -1 2 3 -1\n5\n",
+     "out": "2\n"
+    },
+    {
+     "in": "4\n-1 -1 -1 0\n1\n",
+     "out": "1\n"
+    },
+    {
+     "in": "5\n-1 -1 -1 -1 -1\n0\n",
+     "out": "1\n"
+    },
+    {
+     "in": "4\n-1 -1 -1 -1\n2\n",
+     "out": "1\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "29\n12 11 21 4 -1 19 16 8 18 27 15 24 13 6 28 17 14 5 22 1 9 -1 0 7 2 20 3 -1 -1\n10\n",
+     "out": "10\n"
+    },
+    {
+     "in": "18\n3 15 6 17 9 7 -1 1 11 13 4 14 -1 -1 -1 10 12 8\n0\n",
+     "out": "6\n"
+    }
+   ],
+   "split": "holdout"
+  },
+  {
+   "id": "ho-free",
+   "st": "第一行 n，第二行 n 個整數是 FAT 表（簇編號從 1 開始），值為 0 的簇沒有被使用。輸出沒被使用的簇共有幾個。",
+   "rw_st": null,
+   "ref": "n = int(input())\nfat = list(map(int, input().split()))\nprint(fat.count(0))\n",
+   "tests": [
+    {
+     "in": "6\n1 5 4 3 0 0\n",
+     "out": "2\n"
+    },
+    {
+     "in": "10\n0 0 7 0 0 1 3 0 8 4\n",
+     "out": "5\n"
+    },
+    {
+     "in": "4\n0 0 2 1\n",
+     "out": "2\n"
+    },
+    {
+     "in": "4\n0 1 0 0\n",
+     "out": "3\n"
+    },
+    {
+     "in": "9\n4 0 9 9 0 4 0 2 6\n",
+     "out": "3\n"
+    },
+    {
+     "in": "6\n3 5 0 0 0 2\n",
+     "out": "3\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "30\n10 0 8 9 27 0 0 23 0 28 24 9 19 2 10 30 22 2 22 17 27 0 26 0 1 17 0 0 7 3\n",
+     "out": "8\n"
+    },
+    {
+     "in": "28\n1 21 0 0 1 9 25 25 21 0 0 0 24 0 0 0 21 12 8 0 7 1 0 0 0 8 4 0\n",
+     "out": "13\n"
+    }
+   ],
+   "split": "holdout"
+  },
+  {
+   "id": "ho-inode",
+   "st": "第一行 b d p q，之後 q 行每行一個整數 x（檔案內位元組偏移）。一個 inode 有 d 個直接指標，另外有一級、二級、三級間接指標各一個，指標區塊每個可容納 p 個指標，區塊大小 b。對每個偏移輸出它的資料區塊要經過幾層間接（直接區塊是 0，一級是 1，二級是 2，三級是 3）。",
+   "rw_st": null,
+   "ref": "b, d, p, q = map(int, input().split())\nfor _ in range(q):\n    x = int(input()) // b\n    if x < d:\n        L = 0\n    elif x < d + p:\n        L = 1\n    elif x - d - p < p * p:\n        L = 2\n    else:\n        L = 3\n    print(L)\n",
+   "tests": [
+    {
+     "in": "4 4 5 4\n327\n215\n170\n245\n",
+     "out": "3\n3\n3\n3\n"
+    },
+    {
+     "in": "16 4 5 5\n194\n747\n2264\n2268\n469\n",
+     "out": "2\n3\n3\n3\n2\n"
+    },
+    {
+     "in": "16 1 2 5\n166\n21\n113\n111\n58\n",
+     "out": "3\n1\n3\n2\n2\n"
+    },
+    {
+     "in": "4 4 2 1\n61\n",
+     "out": "3\n"
+    },
+    {
+     "in": "4 3 4 3\n179\n2\n157\n",
+     "out": "3\n0\n3\n"
+    },
+    {
+     "in": "4 3 4 3\n236\n155\n148\n",
+     "out": "3\n3\n3\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "4 2 3 15\n148\n56\n160\n148\n25\n146\n17\n95\n58\n13\n56\n23\n110\n164\n150\n",
+     "out": "3\n3\n3\n3\n2\n3\n1\n3\n3\n1\n3\n2\n3\n3\n3\n"
+    },
+    {
+     "in": "16 4 4 5\n167\n1316\n658\n1185\n26\n",
+     "out": "2\n3\n3\n3\n0\n"
+    }
+   ],
+   "split": "holdout"
+  },
+  {
+   "id": "pn-abs",
+   "st": "第一行 q，接著 q 行，每行一條 Unix 風格的絕對路徑，可能含有 . 、 .. 和連續多個斜線，也可能以斜線結尾。輸出正規化後的路徑：不含 . 與連續斜線，.. 退回上一層（根目錄的上一層仍是根目錄），結尾不留斜線（根目錄就是 /）。",
+   "rw_st": "第一行 k，接著 k 行，每行一條 Unix 風格的絕對路徑，可能含有 . 、 .. 和連續多個斜線，也可能以斜線結尾。輸出正規化後的路徑：不含 . 與連續斜線，.. 退回上一層（根目錄的上一層仍是根目錄），結尾不留斜線（根目錄就是 /）。",
+   "ref": "import posixpath\nq = int(input())\nfor _ in range(q):\n    p = input().strip()\n    n = \"/\" + posixpath.normpath(p).lstrip(\"/\")\n    print(n)\n",
+   "tests": [
+    {
+     "in": "1\n/.//c/../a\n",
+     "out": "/a\n"
+    },
+    {
+     "in": "4\n/../../b/b/b\n/./a/a/a/x//x\n/d/d/b/../..//../\n/..//../a\n",
+     "out": "/b/b/b\n/a/a/a/x/x\n/\n/a\n"
+    },
+    {
+     "in": "4\n/c/c\n/././..//../../d\n/c\n/./..\n",
+     "out": "/c/c\n/d\n/c\n/\n"
+    },
+    {
+     "in": "1\n/d/d/a/d\n",
+     "out": "/d/d/a/d\n"
+    },
+    {
+     "in": "4\n/c\n/b//d//d/d/d/d\n/..\n/b/b/b//a/a/\n",
+     "out": "/c\n/b/d/d/d/d/d\n/\n/b/b/b/a/a\n"
+    },
+    {
+     "in": "1\n/../../../././/../\n",
+     "out": "/\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "1\n/../../x\n",
+     "out": "/x\n"
+    },
+    {
+     "in": "7\n/../..//../x\n/d/d\n/../x/x//../..\n/../..//..\n/..\n/./a/\n/a//d/..\n",
+     "out": "/x\n/d/d\n/\n/\n/\n/a\n/a\n"
+    }
+   ],
+   "want": "fs.path-normalize"
+  },
+  {
+   "id": "pn-depth",
+   "st": "第一行 q，接著 q 行，每行一條 Unix 風格的絕對路徑，可能含有 . 、 .. 和連續多個斜線，也可能以斜線結尾。輸出正規化後的路徑有幾層（根目錄是 0 層）。",
+   "rw_st": null,
+   "ref": "import posixpath\nq = int(input())\nfor _ in range(q):\n    p = input().strip()\n    n = \"/\" + posixpath.normpath(p).lstrip(\"/\")\n    print(len([x for x in n.split(\"/\") if x]))\n",
+   "tests": [
+    {
+     "in": "5\n/b\n/c//a/\n/a/a/a//x//x\n/a//d/d/d//d\n/c/c/a//d//d/a/\n",
+     "out": "1\n2\n5\n5\n6\n"
+    },
+    {
+     "in": "5\n/a/x/c/a/d\n/c/././c//a//d\n/c/a/\n/a/a//a/a//..\n/c//c\n",
+     "out": "5\n4\n2\n3\n2\n"
+    },
+    {
+     "in": "4\n/b/../a/a\n/../b/.\n/a\n/../..//.././././\n",
+     "out": "2\n1\n1\n0\n"
+    },
+    {
+     "in": "4\n/../\n/../x/b\n/.//../..//d\n/x/x\n",
+     "out": "0\n2\n1\n2\n"
+    },
+    {
+     "in": "1\n/../../d/d/d\n",
+     "out": "3\n"
+    },
+    {
+     "in": "2\n/d/d/c/c\n/c/c/a/\n",
+     "out": "4\n3\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "1\n/a/a//a//x//x\n",
+     "out": "5\n"
+    },
+    {
+     "in": "3\n/..//b//..//../..\n/c/c/b\n/././\n",
+     "out": "0\n3\n0\n"
+    }
+   ],
+   "want": "fs.path-normalize"
+  },
+  {
+   "id": "pn-last",
+   "st": "第一行 q，接著 q 行，每行一條 Unix 風格的絕對路徑，可能含有 . 、 .. 和連續多個斜線，也可能以斜線結尾。輸出正規化後路徑的最後一層名稱；如果正規化後是根目錄，輸出 /。",
+   "rw_st": null,
+   "ref": "import posixpath\nq = int(input())\nfor _ in range(q):\n    p = input().strip()\n    n = \"/\" + posixpath.normpath(p).lstrip(\"/\")\n    print(n.split(\"/\")[-1] or \"/\")\n",
+   "tests": [
+    {
+     "in": "1\n/../\n",
+     "out": "/\n"
+    },
+    {
+     "in": "5\n/x/../../../../..\n/..\n/../.././/.//./\n/../x//x//c//c\n/c//././\n",
+     "out": "/\n/\n/\nc\nc\n"
+    },
+    {
+     "in": "2\n/d/..\n/b\n",
+     "out": "/\nb\n"
+    },
+    {
+     "in": "3\n/a/d/d/d/d\n/x//x//..//..\n/./a//a/x/..//../\n",
+     "out": "d\n/\na\n"
+    },
+    {
+     "in": "3\n/../../x/x/..\n/..//../.././/.\n/b/b/b/b\n",
+     "out": "x\n/\nb\n"
+    },
+    {
+     "in": "1\n/a/x//x\n",
+     "out": "x\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "4\n/..//d/.\n/b/b//b/b/a/a\n/a/a/a//d/d\n/..\n",
+     "out": "d\na\nd\n/\n"
+    },
+    {
+     "in": "3\n/../../..\n/..\n/../../.././/.\n",
+     "out": "/\n/\n/\n"
+    }
+   ],
+   "want": "fs.path-normalize"
+  },
+  {
+   "id": "pn-parent",
+   "st": "第一行 q，接著 q 行，每行一條 Unix 風格的絕對路徑，可能含有 . 、 .. 和連續多個斜線，也可能以斜線結尾。輸出正規化後路徑的上一層目錄（根目錄的上一層仍是 /）。",
+   "rw_st": null,
+   "ref": "import posixpath\nq = int(input())\nfor _ in range(q):\n    p = input().strip()\n    n = \"/\" + posixpath.normpath(p).lstrip(\"/\")\n    print(posixpath.dirname(n) or \"/\")\n",
+   "tests": [
+    {
+     "in": "4\n/a/.//b/d/..\n/././/./././c\n/c/c/c//c//b/\n/d\n",
+     "out": "/a\n/\n/c/c/c/c\n/\n"
+    },
+    {
+     "in": "1\n/a\n",
+     "out": "/\n"
+    },
+    {
+     "in": "4\n/./..//../\n/../\n/x//a/a/\n/a//x//c/./.\n",
+     "out": "/\n/\n/x/a\n/a/x\n"
+    },
+    {
+     "in": "5\n/../d//d\n/a/a/d/..//c/\n/../d/..//../d\n/b/b/b/b/b/b\n/..\n",
+     "out": "/d\n/a/a\n/\n/b/b/b/b/b\n/\n"
+    },
+    {
+     "in": "2\n/../..//b//b//b\n/../..//d\n",
+     "out": "/b/b\n/\n"
+    },
+    {
+     "in": "4\n/../b//b/../\n/x/x/a/a//a/\n/x//x\n/d//d/d//d/\n",
+     "out": "/\n/x/x/a/a\n/x\n/d/d/d\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "1\n/x/x/c//c/c/.\n",
+     "out": "/x/x/c/c\n"
+    },
+    {
+     "in": "1\n/a/d/d//d/c\n",
+     "out": "/a/d/d/d\n"
+    }
+   ],
+   "want": "fs.path-normalize"
+  },
+  {
+   "id": "pn-rel",
+   "st": "第一行 q，接著 q 行，每行一條 Unix 風格的相對路徑（不以斜線開頭），可能含有 . 、 .. 和連續多個斜線，也可能以斜線結尾。輸出正規化後的相對路徑：去掉 . 與連續斜線，能抵消的 .. 要抵消，抵消不掉的開頭 .. 保留；結果是空的就輸出 .",
+   "rw_st": null,
+   "ref": "import posixpath\nq = int(input())\nfor _ in range(q):\n    p = input().strip()\n    print(posixpath.normpath(p))\n",
+   "tests": [
+    {
+     "in": "3\nb//../../d/c//c\nc/c//c//c/c\nc/./a/\n",
+     "out": "../d/c/c\nc/c/c/c/c\nc/a\n"
+    },
+    {
+     "in": "1\na\n",
+     "out": "a\n"
+    },
+    {
+     "in": "1\n../..//..\n",
+     "out": "../../..\n"
+    },
+    {
+     "in": "3\n./a/\na//a/c\nc\n",
+     "out": "a\na/a/c\nc\n"
+    },
+    {
+     "in": "4\nc\n.\na//d/d/d/d\nx//x\n",
+     "out": "c\n.\na/d/d/d/d\nx/x\n"
+    },
+    {
+     "in": "1\nx/x//x/c/\n",
+     "out": "x/x/x/c\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "11\nb\n./a//a/a/\na/a/d/../..\nb\na/x//x/x/x/x\nd/d/a/a/\na/a//x//c//c\na/a/\na//a/a/a/a/\na/\nx//a/d/d/a/a/\n",
+     "out": "b\na/a/a\na\nb\na/x/x/x/x/x\nd/d/a/a\na/a/x/c/c\na/a\na/a/a/a/a\na\nx/a/d/d/a/a\n"
+    },
+    {
+     "in": "1\na/a/a/c/x\n",
+     "out": "a/a/a/c/x\n"
+    }
+   ],
+   "want": "fs.path-normalize"
+  },
+  {
+   "id": "pn-cwd",
+   "st": "第一行是一個字串 cwd，表示目前工作目錄（一條正規化的絕對路徑）；第二行 q，接著 q 行，每行一個路徑，可能是相對路徑（相對於 cwd）或絕對路徑，可含 . 、 .. 和連續斜線。輸出每個路徑解析後的絕對路徑（正規化：不含 . 與連續斜線，根目錄的 .. 仍是根目錄，結尾不留斜線）。",
+   "rw_st": null,
+   "ref": "import posixpath\ncwd = input().strip()\nq = int(input())\nfor _ in range(q):\n    p = input().strip()\n    t = posixpath.normpath(posixpath.join(cwd, p))\n    print(\"/\" + t.lstrip(\"/\"))\n",
+   "tests": [
+    {
+     "in": "/a/b/c\n5\nb/a/a\n..//..//..//..//..\n./a//d/d/c//b\na/..//b//b//b//b\n../../..//..//../\n",
+     "out": "/a/b/c/b/a/a\n/\n/a/b/c/a/d/d/c/b\n/a/b/c/b/b/b/b\n/\n"
+    },
+    {
+     "in": "/\n3\nc/c//b/b/a/\na/a/a/\nd\n",
+     "out": "/c/c/b/b/a\n/a/a/a\n/d\n"
+    },
+    {
+     "in": "/a/b/c\n5\n..//./a/a/a\nd/d\nx//x/x/x/../..\n./../\n..//..//../../..\n",
+     "out": "/a/b/a/a/a\n/a/b/c/d/d\n/a/b/c/x/x\n/a/b\n/\n"
+    },
+    {
+     "in": "/a/b/c\n5\nc//././c//c\nc/a//..//..//b\n./././.\nb/../../..\n../../..\n",
+     "out": "/a/b/c/c/c/c\n/a/b/c/b\n/a/b/c\n/a\n/\n"
+    },
+    {
+     "in": "/home/u\n4\n../a//a/\na/\na/\nx//x/x//..\n",
+     "out": "/home/a/a\n/home/u/a\n/home/u/a\n/home/u/x/x\n"
+    },
+    {
+     "in": "/a/b/c\n5\n../..//../../..//..\nx//x\nc/c/c/c/b/\na\nd/d/d//d\n",
+     "out": "/\n/a/b/c/x/x\n/a/b/c/c/c/c/c/b\n/a/b/c/a\n/a/b/c/d/d/d/d\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "/a/b/c\n11\nb/b//b/../\nx//c//c/c/.\nx/../..//../../../\n../d/../../..\n.//././/c\nx//b//..//../../d\n../b/../\n../..//../\nx/../..\nb//b/a\nd/a/c/c/c/.\n",
+     "out": "/a/b/c/b/b\n/a/b/c/x/c/c/c\n/\n/\n/a/b/c/c\n/a/b/d\n/a/b\n/\n/a/b\n/a/b/c/b/b/a\n/a/b/c/d/a/c/c/c\n"
+    },
+    {
+     "in": "/home/u\n1\n/a/a//a/x//../\n",
+     "out": "/a/a/a\n"
+    }
+   ],
+   "want": "fs.path-normalize"
+  },
+  {
+   "id": "pn-one",
+   "st": "輸入一個字串 p，是一條 Unix 絕對路徑，可能含有 . 、 .. 和連續多個斜線。輸出正規化後的路徑（根目錄的上一層仍是根目錄，結尾不留斜線）。",
+   "rw_st": null,
+   "ref": "import posixpath\np = input().strip()\nprint(\"/\" + posixpath.normpath(p).lstrip(\"/\"))\n",
+   "tests": [
+    {
+     "in": "/..//../d/d/d\n",
+     "out": "/d/d/d\n"
+    },
+    {
+     "in": "/x/x/..//../\n",
+     "out": "/\n"
+    },
+    {
+     "in": "/c//./a\n",
+     "out": "/c/a\n"
+    },
+    {
+     "in": "/d//..//../..\n",
+     "out": "/\n"
+    },
+    {
+     "in": "/..\n",
+     "out": "/\n"
+    },
+    {
+     "in": "/.//../\n",
+     "out": "/\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "/../..//x/x/c\n",
+     "out": "/x/x/c\n"
+    },
+    {
+     "in": "/x//x//..//..\n",
+     "out": "/\n"
+    }
+   ],
+   "want": "fs.path-normalize"
+  },
+  {
+   "id": "dr-pwd",
+   "st": "第一行 q，之後 q 行指令：mkdir 路徑（建立目錄，連同缺少的上層目錄）、cd 路徑、pwd（輸出目前所在目錄）。一開始只有根目錄 /，目前目錄是 /。路徑可以是絕對或相對，可含 . 與 ..（根目錄的 .. 還是根目錄）。cd 到不存在的目錄就留在原處。輸出每個 pwd 的結果。",
+   "rw_st": null,
+   "ref": "import posixpath\nq = int(input())\ndirs = {\"/\"}\ncwd = \"/\"\nfor _ in range(q):\n    p = input().split()\n    if p[0] == \"pwd\":\n        if \"pwd\" == \"pwd\":\n            print(cwd)\n        continue\n    t = \"/\" + posixpath.normpath(posixpath.join(cwd, p[1])).lstrip(\"/\")\n    if p[0] == \"mkdir\":\n        if \"parents\" == \"parents\":\n            x = t\n            while True:\n                dirs.add(x)\n                if x == \"/\":\n                    break\n                x = posixpath.dirname(x) or \"/\"\n        elif (posixpath.dirname(t) or \"/\") in dirs:\n            dirs.add(t)\n    else:\n        if t in dirs:\n            cwd = t\n            if \"pwd\" == \"cd\":\n                print(cwd)\n        elif False and \"pwd\" != \"final\":\n            print(\"ERROR\")\n        elif \"pwd\" == \"cd\":\n            print(cwd)\nif \"pwd\" == \"final\":\n    print(cwd)\n",
+   "tests": [
+    {
+     "in": "11\npwd\nmkdir c\npwd\nmkdir b\npwd\ncd c\nmkdir b/c\ncd .\npwd\ncd b/c\npwd\n",
+     "out": "/\n/\n/\n/c\n/c/b/c\n"
+    },
+    {
+     "in": "7\nmkdir a/b\npwd\nmkdir ..\ncd .\nmkdir ../a\ncd b/c\npwd\n",
+     "out": "/\n/\n"
+    },
+    {
+     "in": "11\nmkdir ..\nmkdir b/c\npwd\ncd .\nmkdir /a/b\nmkdir /a\npwd\ncd a\nmkdir b\ncd /a\npwd\n",
+     "out": "/\n/\n/a\n"
+    },
+    {
+     "in": "5\ncd c\ncd b/c\nmkdir ..\ncd c\npwd\n",
+     "out": "/\n"
+    },
+    {
+     "in": "9\nmkdir c\ncd /a\npwd\nmkdir /a\npwd\nmkdir /\npwd\ncd a\npwd\n",
+     "out": "/\n/\n/\n/a\n"
+    },
+    {
+     "in": "5\nmkdir ../a\nmkdir /\nmkdir c\ncd a\npwd\n",
+     "out": "/a\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "20\nmkdir c\nmkdir .\nmkdir .\ncd b/c\ncd a/b\nmkdir ../a\ncd .\ncd c\npwd\nmkdir a\nmkdir ..\ncd a/b\ncd a/b\npwd\ncd b/c\ncd /a\ncd a/..\nmkdir ../a\ncd a/..\npwd\n",
+     "out": "/c\n/c\n/a\n"
+    },
+    {
+     "in": "12\npwd\ncd ../a\ncd /\ncd b/c\ncd a/..\npwd\ncd /a/b\nmkdir b/c\nmkdir b/c\npwd\ncd .\npwd\n",
+     "out": "/\n/\n/\n/\n"
+    }
+   ],
+   "want": "fs.dir-resolve"
+  },
+  {
+   "id": "dr-cd",
+   "st": "第一行 q，之後 q 行指令：mkdir 路徑（建立目錄，連同缺少的上層目錄）、cd 路徑、pwd（輸出目前所在目錄）。一開始只有根目錄 /，目前目錄是 /。路徑可以是絕對或相對，可含 . 與 ..（根目錄的 .. 還是根目錄）。cd 到不存在的目錄就留在原處。輸出每次 cd 之後的目前目錄（cd 失敗時目前目錄不變，也輸出目前目錄）。",
+   "rw_st": null,
+   "ref": "import posixpath\nq = int(input())\ndirs = {\"/\"}\ncwd = \"/\"\nfor _ in range(q):\n    p = input().split()\n    if p[0] == \"pwd\":\n        if \"cd\" == \"pwd\":\n            print(cwd)\n        continue\n    t = \"/\" + posixpath.normpath(posixpath.join(cwd, p[1])).lstrip(\"/\")\n    if p[0] == \"mkdir\":\n        if \"parents\" == \"parents\":\n            x = t\n            while True:\n                dirs.add(x)\n                if x == \"/\":\n                    break\n                x = posixpath.dirname(x) or \"/\"\n        elif (posixpath.dirname(t) or \"/\") in dirs:\n            dirs.add(t)\n    else:\n        if t in dirs:\n            cwd = t\n            if \"cd\" == \"cd\":\n                print(cwd)\n        elif False and \"cd\" != \"final\":\n            print(\"ERROR\")\n        elif \"cd\" == \"cd\":\n            print(cwd)\nif \"cd\" == \"final\":\n    print(cwd)\n",
+   "tests": [
+    {
+     "in": "7\nmkdir c\nmkdir a\nmkdir /a/b\nmkdir /a/b\nmkdir /a\ncd b/c\npwd\n",
+     "out": "/\n"
+    },
+    {
+     "in": "7\npwd\npwd\ncd /a/b\nmkdir a\npwd\ncd /a\npwd\n",
+     "out": "/\n/a\n"
+    },
+    {
+     "in": "8\ncd ../a\nmkdir a/b\nmkdir ../a\ncd c\ncd a/..\nmkdir b\ncd b\npwd\n",
+     "out": "/\n/\n/\n/b\n"
+    },
+    {
+     "in": "9\ncd ..\ncd a\nmkdir x\nmkdir /\nmkdir b\ncd b\ncd a/b\ncd a/b\npwd\n",
+     "out": "/\n/\n/b\n/b\n/b\n"
+    },
+    {
+     "in": "5\nmkdir .\nmkdir x\nmkdir ../a\ncd b/c\npwd\n",
+     "out": "/\n"
+    },
+    {
+     "in": "5\ncd b\ncd x\nmkdir a\ncd a\npwd\n",
+     "out": "/\n/\n/a\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "16\ncd b/c\nmkdir /a/b\nmkdir a/b\ncd a/b\nmkdir b\npwd\ncd /a\nmkdir /\ncd c\nmkdir /\nmkdir x\npwd\npwd\nmkdir ../a\ncd /a\npwd\n",
+     "out": "/\n/a/b\n/a\n/a\n/a\n"
+    },
+    {
+     "in": "7\npwd\ncd a/..\ncd x\nmkdir /a\nmkdir /\ncd /a/b\npwd\n",
+     "out": "/\n/\n/\n"
+    }
+   ],
+   "want": "fs.dir-resolve"
+  },
+  {
+   "id": "dr-label",
+   "st": "第一行 q，之後 q 行指令：mkdir 路徑（建立目錄，連同缺少的上層目錄）、cd 路徑、pwd（輸出目前所在目錄）。一開始只有根目錄 /，目前目錄是 /。路徑可以是絕對或相對，可含 . 與 ..（根目錄的 .. 還是根目錄）。cd 到不存在的目錄就停在原處。輸出每個 pwd 的結果；cd 到不存在的目錄時改輸出 ERROR。",
+   "rw_st": null,
+   "ref": "import posixpath\nq = int(input())\ndirs = {\"/\"}\ncwd = \"/\"\nfor _ in range(q):\n    p = input().split()\n    if p[0] == \"pwd\":\n        if \"pwd\" == \"pwd\":\n            print(cwd)\n        continue\n    t = \"/\" + posixpath.normpath(posixpath.join(cwd, p[1])).lstrip(\"/\")\n    if p[0] == \"mkdir\":\n        if \"parents\" == \"parents\":\n            x = t\n            while True:\n                dirs.add(x)\n                if x == \"/\":\n                    break\n                x = posixpath.dirname(x) or \"/\"\n        elif (posixpath.dirname(t) or \"/\") in dirs:\n            dirs.add(t)\n    else:\n        if t in dirs:\n            cwd = t\n            if \"pwd\" == \"cd\":\n                print(cwd)\n        elif True and \"pwd\" != \"final\":\n            print(\"ERROR\")\n        elif \"pwd\" == \"cd\":\n            print(cwd)\nif \"pwd\" == \"final\":\n    print(cwd)\n",
+   "tests": [
+    {
+     "in": "7\nmkdir /a/b\nmkdir ..\nmkdir /a/b\ncd a/b\nmkdir a\ncd /a/b\npwd\n",
+     "out": "/a/b\n"
+    },
+    {
+     "in": "5\nmkdir ../a\nmkdir a/b\ncd /a\ncd .\npwd\n",
+     "out": "/a\n"
+    },
+    {
+     "in": "12\ncd .\nmkdir a/b\nmkdir /a\ncd a/b\nmkdir /a\ncd ../a\ncd /a/b\ncd a\nmkdir b\nmkdir /\ncd b/c\npwd\n",
+     "out": "ERROR\nERROR\nERROR\n/a/b\n"
+    },
+    {
+     "in": "9\npwd\nmkdir a\nmkdir /\nmkdir ..\nmkdir x\nmkdir a\npwd\ncd a/..\npwd\n",
+     "out": "/\n/\n/\n"
+    },
+    {
+     "in": "12\nmkdir a\nmkdir a/..\npwd\nmkdir a\nmkdir x\nmkdir ../a\ncd a/b\nmkdir a\npwd\nmkdir b/c\ncd a/..\npwd\n",
+     "out": "/\nERROR\n/\n/\n"
+    },
+    {
+     "in": "5\nmkdir x\ncd c\ncd ../a\ncd ..\npwd\n",
+     "out": "ERROR\nERROR\n/\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "12\ncd a/b\nmkdir /\nmkdir /\nmkdir c\ncd a/b\nmkdir /a\nmkdir /\ncd c\nmkdir /a/b\nmkdir b\ncd a\npwd\n",
+     "out": "ERROR\nERROR\nERROR\n/c\n"
+    },
+    {
+     "in": "12\ncd b\ncd a/b\nmkdir a\ncd a/b\nmkdir /a/b\ncd ../a\npwd\npwd\nmkdir a\nmkdir a\ncd a/b\npwd\n",
+     "out": "ERROR\nERROR\nERROR\n/a\n/a\nERROR\n/a\n"
+    }
+   ],
+   "want": "fs.dir-resolve"
+  },
+  {
+   "id": "dr-strict",
+   "st": "第一行 q，之後 q 行指令：mkdir 路徑（建立目錄；它的上一層必須已經存在，否則不建立）、cd 路徑、pwd（輸出目前所在目錄）。一開始只有根目錄 /，目前目錄是 /。路徑可以是絕對或相對，可含 . 與 ..（根目錄的 .. 還是根目錄）。cd 到不存在的目錄就留在原處。輸出最後所在的目錄。",
+   "rw_st": null,
+   "ref": "import posixpath\nq = int(input())\ndirs = {\"/\"}\ncwd = \"/\"\nfor _ in range(q):\n    p = input().split()\n    if p[0] == \"pwd\":\n        if \"final\" == \"pwd\":\n            print(cwd)\n        continue\n    t = \"/\" + posixpath.normpath(posixpath.join(cwd, p[1])).lstrip(\"/\")\n    if p[0] == \"mkdir\":\n        if \"strict\" == \"parents\":\n            x = t\n            while True:\n                dirs.add(x)\n                if x == \"/\":\n                    break\n                x = posixpath.dirname(x) or \"/\"\n        elif (posixpath.dirname(t) or \"/\") in dirs:\n            dirs.add(t)\n    else:\n        if t in dirs:\n            cwd = t\n            if \"final\" == \"cd\":\n                print(cwd)\n        elif False and \"final\" != \"final\":\n            print(\"ERROR\")\n        elif \"final\" == \"cd\":\n            print(cwd)\nif \"final\" == \"final\":\n    print(cwd)\n",
+   "tests": [
+    {
+     "in": "5\nmkdir b/c\npwd\ncd x\ncd b/c\npwd\n",
+     "out": "/\n"
+    },
+    {
+     "in": "8\ncd a/..\nmkdir a/b\nmkdir c\ncd a/b\npwd\nmkdir x\ncd b/c\npwd\n",
+     "out": "/\n"
+    },
+    {
+     "in": "8\ncd /\ncd a/..\ncd ..\nmkdir /\npwd\ncd b/c\ncd c\npwd\n",
+     "out": "/\n"
+    },
+    {
+     "in": "6\nmkdir b\npwd\nmkdir .\nmkdir a/..\ncd b\npwd\n",
+     "out": "/b\n"
+    },
+    {
+     "in": "11\nmkdir b/c\nmkdir a\nmkdir .\nmkdir ..\nmkdir ../a\nmkdir x\nmkdir b\nmkdir a/b\nmkdir .\ncd a/b\npwd\n",
+     "out": "/a/b\n"
+    },
+    {
+     "in": "7\nmkdir a\nmkdir ..\nmkdir x\nmkdir ../a\nmkdir a/b\ncd /a\npwd\n",
+     "out": "/a\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "11\ncd a/..\ncd a\nmkdir ..\nmkdir b\nmkdir .\npwd\npwd\npwd\ncd c\ncd c\npwd\n",
+     "out": "/\n"
+    },
+    {
+     "in": "8\nmkdir ..\nmkdir a/b\nmkdir ../a\ncd x\ncd a/b\ncd a/..\ncd /a\npwd\n",
+     "out": "/a\n"
+    }
+   ],
+   "want": "fs.dir-resolve"
+  },
+  {
+   "id": "al-first",
+   "st": "第一行 N q，第二行 N 個整數描述磁碟，0 表示該區塊空閒、1 表示已被使用。接著 q 行，每行一個整數 k，表示一個新檔案需要連續 k 個空閒區塊。檔案依序處理，每個檔案採用 first-fit：選編號最前面的、夠長的空閒區段，從選到的空閒區段開頭開始占用（占用後這些區塊就不再空閒）；放不下的檔案不占用任何區塊。輸出每個檔案配置到的起始區塊編號（區塊從 0 開始編號）；配置不到輸出 -1。",
+   "rw_st": "第一行 M q，第二行 M 個整數描述磁碟，0 表示該區塊空閒、1 表示已被使用。接著 q 行，每行一個整數 k，表示一個新檔案需要連續 k 個空閒區塊。檔案依序處理，每個檔案採用 first-fit：選編號最前面的、夠長的空閒區段，從選到的空閒區段開頭開始占用（占用後這些區塊就不再空閒）；放不下的檔案不占用任何區塊。輸出每個檔案配置到的起始區塊編號（區塊從 0 開始編號）；配置不到輸出 -1。",
+   "ref": "import re\nN, q = map(int, input().split())\nbits = list(map(int, input().split()))\nres = []\nfor _ in range(q):\n    k = int(input())\n    runs = [(m.start(), m.end() - m.start()) for m in re.finditer(\"0+\", \"\".join(map(str, bits)))]\n    cand = [r for r in runs if r[1] >= k]\n    if not cand:\n        res.append(-1)\n        continue\n    r = sorted(cand, key=lambda r: (r[0],))[0]\n    for x in range(r[0], r[0] + k):\n        bits[x] = 1\n    res.append(r[0] + 0)\nprint(*res)\n",
+   "tests": [
+    {
+     "in": "10 5\n0 0 0 1 0 0 0 1 0 0\n3\n3\n3\n3\n3\n",
+     "out": "0 4 -1 -1 -1\n"
+    },
+    {
+     "in": "14 3\n0 0 1 0 0 0 1 0 1 1 1 0 0 0\n2\n2\n1\n",
+     "out": "0 3 5\n"
+    },
+    {
+     "in": "9 4\n1 0 1 1 1 0 0 1 0\n2\n1\n1\n4\n",
+     "out": "5 1 8 -1\n"
+    },
+    {
+     "in": "9 3\n0 0 0 0 1 0 0 1 0\n2\n2\n2\n",
+     "out": "0 2 5\n"
+    },
+    {
+     "in": "11 4\n0 0 1 0 0 0 0 1 1 0 1\n3\n3\n2\n2\n",
+     "out": "3 -1 0 -1\n"
+    },
+    {
+     "in": "9 2\n0 0 1 1 1 0 1 1 0\n1\n4\n",
+     "out": "0 -1\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "19 2\n0 0 1 0 0 1 0 1 1 0 1 0 0 1 1 1 0 1 0\n1\n1\n",
+     "out": "0 1\n"
+    },
+    {
+     "in": "8 3\n0 1 1 1 0 0 0 0\n2\n2\n2\n",
+     "out": "4 6 -1\n"
+    }
+   ],
+   "want": "fs.alloc-strategy"
+  },
+  {
+   "id": "al-best",
+   "st": "第一行 N q，第二行 N 個整數描述磁碟，0 表示該區塊空閒、1 表示已被使用。接著 q 行，每行一個整數 k，表示一個新檔案需要連續 k 個空閒區塊。檔案依序處理，每個檔案採用 best-fit：選夠長的空閒區段中最短的，同樣長取起點最小的，從選到的空閒區段開頭開始占用（占用後這些區塊就不再空閒）；放不下的檔案不占用任何區塊。輸出每個檔案配置到的起始區塊編號（區塊從 1 開始編號）；配置不到輸出 -1。",
+   "rw_st": null,
+   "ref": "import re\nN, q = map(int, input().split())\nbits = list(map(int, input().split()))\nres = []\nfor _ in range(q):\n    k = int(input())\n    runs = [(m.start(), m.end() - m.start()) for m in re.finditer(\"0+\", \"\".join(map(str, bits)))]\n    cand = [r for r in runs if r[1] >= k]\n    if not cand:\n        res.append(-1)\n        continue\n    r = sorted(cand, key=lambda r: (r[1], r[0]))[0]\n    for x in range(r[0], r[0] + k):\n        bits[x] = 1\n    res.append(r[0] + 1)\nprint(*res)\n",
+   "tests": [
+    {
+     "in": "10 4\n1 1 0 0 1 0 1 0 1 0\n3\n3\n2\n2\n",
+     "out": "-1 -1 3 -1\n"
+    },
+    {
+     "in": "13 2\n1 1 0 0 1 0 0 0 1 1 0 1 0\n1\n1\n",
+     "out": "11 13\n"
+    },
+    {
+     "in": "18 2\n0 1 1 0 1 1 0 0 1 0 1 0 0 1 0 0 0 0\n1\n1\n",
+     "out": "1 4\n"
+    },
+    {
+     "in": "12 3\n0 0 0 1 0 0 0 0 1 0 1 0\n2\n1\n3\n",
+     "out": "1 3 5\n"
+    },
+    {
+     "in": "16 3\n0 0 1 0 0 0 1 1 1 0 1 1 0 0 1 1\n2\n1\n1\n",
+     "out": "1 10 13\n"
+    },
+    {
+     "in": "16 3\n0 0 1 0 0 0 0 0 0 1 1 0 1 1 0 0\n4\n3\n3\n",
+     "out": "4 -1 -1\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "20 4\n0 0 0 0 0 0 0 0 0 1 1 0 0 0 1 1 0 0 1 1\n3\n3\n2\n2\n",
+     "out": "12 1 17 4\n"
+    },
+    {
+     "in": "14 2\n0 0 0 1 0 1 0 0 0 0 0 1 0 1\n1\n1\n",
+     "out": "5 13\n"
+    }
+   ],
+   "want": "fs.alloc-strategy"
+  },
+  {
+   "id": "al-worst",
+   "st": "第一行 N q，第二行 N 個整數描述磁碟，0 表示該區塊空閒、1 表示已被使用。接著 q 行，每行一個整數 k，表示一個新檔案需要連續 k 個空閒區塊。檔案依序處理，每個檔案採用 worst-fit：選最長的空閒區段，同樣長取起點最小的，從選到的空閒區段開頭開始占用（占用後這些區塊就不再空閒）；放不下的檔案不占用任何區塊。輸出每個檔案配置到的起始區塊編號（區塊從 0 開始編號）；配置不到輸出 -1。",
+   "rw_st": null,
+   "ref": "import re\nN, q = map(int, input().split())\nbits = list(map(int, input().split()))\nres = []\nfor _ in range(q):\n    k = int(input())\n    runs = [(m.start(), m.end() - m.start()) for m in re.finditer(\"0+\", \"\".join(map(str, bits)))]\n    cand = [r for r in runs if r[1] >= k]\n    if not cand:\n        res.append(-1)\n        continue\n    r = sorted(cand, key=lambda r: (-r[1], r[0]))[0]\n    for x in range(r[0], r[0] + k):\n        bits[x] = 1\n    res.append(r[0] + 0)\nprint(*res)\n",
+   "tests": [
+    {
+     "in": "11 3\n0 1 0 0 0 0 0 1 1 1 1\n2\n2\n2\n",
+     "out": "2 4 -1\n"
+    },
+    {
+     "in": "16 4\n1 1 0 0 0 0 0 0 1 1 1 0 1 0 0 1\n3\n3\n3\n3\n",
+     "out": "2 5 -1 -1\n"
+    },
+    {
+     "in": "8 4\n0 0 1 0 1 1 0 0\n1\n3\n3\n3\n",
+     "out": "0 -1 -1 -1\n"
+    },
+    {
+     "in": "11 3\n0 1 0 0 0 0 0 0 1 0 0\n1\n1\n1\n",
+     "out": "2 3 4\n"
+    },
+    {
+     "in": "8 4\n0 0 0 1 1 0 0 1\n3\n3\n2\n2\n",
+     "out": "0 -1 5 -1\n"
+    },
+    {
+     "in": "12 5\n1 0 0 0 0 0 1 0 1 1 0 0\n4\n3\n3\n1\n1\n",
+     "out": "1 -1 -1 10 5\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "30 2\n1 1 1 0 1 1 1 1 0 0 0 1 0 0 1 0 1 0 0 0 1 0 0 1 0 0 1 1 1 0\n1\n4\n",
+     "out": "8 -1\n"
+    },
+    {
+     "in": "23 2\n0 1 0 0 1 0 0 0 0 1 0 1 0 0 1 0 1 0 0 1 0 0 1\n1\n1\n",
+     "out": "5 6\n"
+    }
+   ],
+   "want": "fs.alloc-strategy"
+  },
+  {
+   "id": "al-fails",
+   "st": "第一行 N q，第二行 N 個整數描述磁碟，0 表示該區塊空閒、1 表示已被使用。接著 q 行，每行一個整數 k，表示一個新檔案需要連續 k 個空閒區塊。檔案依序處理，每個檔案採用 best-fit：選夠長的空閒區段中最短的，同樣長取起點最小的，從選到的空閒區段開頭開始占用（占用後這些區塊就不再空閒）；放不下的檔案不占用任何區塊。輸出有幾個檔案配置失敗。",
+   "rw_st": null,
+   "ref": "import re\nN, q = map(int, input().split())\nbits = list(map(int, input().split()))\nres = []\nfor _ in range(q):\n    k = int(input())\n    runs = [(m.start(), m.end() - m.start()) for m in re.finditer(\"0+\", \"\".join(map(str, bits)))]\n    cand = [r for r in runs if r[1] >= k]\n    if not cand:\n        res.append(-1)\n        continue\n    r = sorted(cand, key=lambda r: (r[1], r[0]))[0]\n    for x in range(r[0], r[0] + k):\n        bits[x] = 1\n    res.append(r[0] + 0)\nprint(res.count(-1))\n",
+   "tests": [
+    {
+     "in": "11 4\n1 0 1 0 0 1 0 1 1 1 0\n3\n3\n3\n3\n",
+     "out": "4\n"
+    },
+    {
+     "in": "14 5\n1 0 0 0 0 1 0 0 0 0 1 0 1 0\n4\n3\n3\n3\n2\n",
+     "out": "3\n"
+    },
+    {
+     "in": "12 3\n0 0 1 1 0 0 0 0 0 0 1 0\n1\n1\n4\n",
+     "out": "0\n"
+    },
+    {
+     "in": "15 4\n1 0 0 1 1 0 1 1 1 0 0 0 1 0 0\n3\n3\n3\n2\n",
+     "out": "2\n"
+    },
+    {
+     "in": "12 4\n0 0 0 0 1 0 0 0 1 1 0 0\n3\n2\n2\n2\n",
+     "out": "0\n"
+    },
+    {
+     "in": "10 5\n0 0 1 0 0 1 1 0 1 0\n4\n4\n4\n4\n4\n",
+     "out": "5\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "10 2\n1 0 0 0 0 1 1 1 0 0\n1\n1\n",
+     "out": "0\n"
+    },
+    {
+     "in": "19 2\n0 1 0 1 0 1 0 1 0 1 1 0 0 1 0 1 1 1 1\n3\n3\n",
+     "out": "2\n"
+    }
+   ],
+   "want": "fs.alloc-strategy"
+  },
+  {
+   "id": "al-frag",
+   "st": "第一行 N q，第二行 N 個整數描述磁碟，0 表示該區塊空閒、1 表示已被使用。接著 q 行，每行一個整數 k，表示一個新檔案需要連續 k 個空閒區塊。檔案依序處理，每個檔案採用 first-fit：選編號最前面的、夠長的空閒區段，從選到的空閒區段開頭開始占用（占用後這些區塊就不再空閒）；放不下的檔案不占用任何區塊。全部檔案處理完之後，輸出外部碎片：空閒區塊總數減去最長一段連續空閒區塊的長度。",
+   "rw_st": null,
+   "ref": "import re\nN, q = map(int, input().split())\nbits = list(map(int, input().split()))\nres = []\nfor _ in range(q):\n    k = int(input())\n    runs = [(m.start(), m.end() - m.start()) for m in re.finditer(\"0+\", \"\".join(map(str, bits)))]\n    cand = [r for r in runs if r[1] >= k]\n    if not cand:\n        res.append(-1)\n        continue\n    r = sorted(cand, key=lambda r: (r[0],))[0]\n    for x in range(r[0], r[0] + k):\n        bits[x] = 1\n    res.append(r[0] + 0)\nprint(bits.count(0) - max([m.end() - m.start() for m in re.finditer(\"0+\", \"\".join(map(str, bits)))] or [0]))\n",
+   "tests": [
+    {
+     "in": "12 4\n0 0 1 0 0 1 0 0 0 1 0 0\n3\n3\n3\n3\n",
+     "out": "4\n"
+    },
+    {
+     "in": "12 4\n0 1 0 1 1 1 1 1 0 0 1 0\n3\n3\n3\n3\n",
+     "out": "3\n"
+    },
+    {
+     "in": "9 4\n0 0 0 0 1 1 1 1 0\n3\n3\n3\n3\n",
+     "out": "1\n"
+    },
+    {
+     "in": "9 2\n0 1 0 1 0 0 0 1 0\n1\n4\n",
+     "out": "2\n"
+    },
+    {
+     "in": "15 3\n0 0 0 0 1 1 0 0 0 0 0 0 0 1 0\n2\n2\n1\n",
+     "out": "1\n"
+    },
+    {
+     "in": "18 5\n1 0 0 0 0 1 0 1 1 0 0 0 0 1 1 0 0 1\n4\n4\n4\n4\n3\n",
+     "out": "1\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "10 4\n0 1 1 1 0 0 0 0 0 1\n3\n3\n2\n4\n",
+     "out": "0\n"
+    },
+    {
+     "in": "23 2\n0 0 0 0 0 0 0 0 1 1 0 1 0 0 0 0 0 0 1 0 0 0 1\n3\n1\n",
+     "out": "8\n"
+    }
+   ],
+   "want": "fs.alloc-strategy"
+  },
+  {
+   "id": "al-largest",
+   "st": "第一行 N q，第二行 N 個整數描述磁碟，0 表示該區塊空閒、1 表示已被使用。接著 q 行，每行一個整數 k，表示一個新檔案需要連續 k 個空閒區塊。檔案依序處理，每個檔案採用 worst-fit：選最長的空閒區段，同樣長取起點最小的，從選到的空閒區段開頭開始占用（占用後這些區塊就不再空閒）；放不下的檔案不占用任何區塊。全部檔案處理完之後，輸出最長一段連續空閒區塊的長度。",
+   "rw_st": null,
+   "ref": "import re\nN, q = map(int, input().split())\nbits = list(map(int, input().split()))\nres = []\nfor _ in range(q):\n    k = int(input())\n    runs = [(m.start(), m.end() - m.start()) for m in re.finditer(\"0+\", \"\".join(map(str, bits)))]\n    cand = [r for r in runs if r[1] >= k]\n    if not cand:\n        res.append(-1)\n        continue\n    r = sorted(cand, key=lambda r: (-r[1], r[0]))[0]\n    for x in range(r[0], r[0] + k):\n        bits[x] = 1\n    res.append(r[0] + 0)\nprint(max([m.end() - m.start() for m in re.finditer(\"0+\", \"\".join(map(str, bits)))] or [0]))\n",
+   "tests": [
+    {
+     "in": "16 5\n1 1 0 1 1 0 1 1 1 0 1 1 1 1 0 0\n3\n3\n3\n3\n3\n",
+     "out": "2\n"
+    },
+    {
+     "in": "15 2\n1 0 0 1 1 0 0 0 1 0 0 0 0 1 0\n1\n1\n",
+     "out": "3\n"
+    },
+    {
+     "in": "17 2\n1 0 1 1 1 1 0 1 0 0 0 1 1 0 1 0 0\n3\n3\n",
+     "out": "2\n"
+    },
+    {
+     "in": "13 5\n1 1 1 1 0 1 0 0 1 1 0 0 0\n4\n4\n4\n4\n4\n",
+     "out": "3\n"
+    },
+    {
+     "in": "15 4\n1 1 1 0 1 1 1 0 0 1 0 1 1 0 0\n2\n2\n2\n2\n",
+     "out": "1\n"
+    },
+    {
+     "in": "10 3\n0 1 1 0 0 1 0 0 0 0\n1\n1\n4\n",
+     "out": "2\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "27 2\n1 1 0 0 0 0 0 0 1 0 0 1 1 0 0 1 0 0 0 0 1 1 1 1 1 1 0\n4\n2\n",
+     "out": "2\n"
+    },
+    {
+     "in": "29 2\n0 0 1 1 0 0 0 0 0 1 1 0 0 0 1 0 1 0 1 0 1 0 1 1 1 0 0 1 0\n1\n1\n",
+     "out": "3\n"
+    }
+   ],
+   "want": "fs.alloc-strategy"
+  },
+  {
+   "id": "if-per",
+   "st": "第一行 b q，之後 q 行每行一個整數 s，表示檔案大小（位元組）。檔案系統以大小 b 的區塊（叢集）為配置單位，每個檔案配置的區塊數必須是整數，最後一個區塊通常用不滿，浪費的空間就是內部碎片。輸出每個檔案的內部碎片（浪費的位元組數），一行一個。",
+   "rw_st": null,
+   "ref": "b, q = map(int, input().split())\ntot = 0\nfor _ in range(q):\n    s = int(input())\n    print(-s % b)\n",
+   "tests": [
+    {
+     "in": "4 5\n75\n31\n51\n79\n19\n",
+     "out": "1\n1\n1\n1\n1\n"
+    },
+    {
+     "in": "8 5\n17\n87\n63\n27\n27\n",
+     "out": "7\n1\n1\n5\n5\n"
+    },
+    {
+     "in": "8 3\n15\n18\n38\n",
+     "out": "1\n6\n2\n"
+    },
+    {
+     "in": "4 5\n90\n21\n17\n69\n73\n",
+     "out": "2\n3\n3\n3\n3\n"
+    },
+    {
+     "in": "8 1\n87\n",
+     "out": "1\n"
+    },
+    {
+     "in": "16 3\n27\n63\n47\n",
+     "out": "5\n1\n1\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "16 5\n35\n39\n79\n19\n83\n",
+     "out": "13\n9\n1\n13\n13\n"
+    },
+    {
+     "in": "16 3\n63\n59\n22\n",
+     "out": "1\n5\n10\n"
+    }
+   ],
+   "want": "fs.internal-frag"
+  },
+  {
+   "id": "if-sum",
+   "st": "第一行 b q，之後 q 行每行一個整數 s，表示檔案大小（位元組）。檔案系統以大小 b 的區塊（叢集）為配置單位，每個檔案配置的區塊數必須是整數，最後一個區塊通常用不滿，浪費的空間就是內部碎片。輸出所有檔案內部碎片的總和。",
+   "rw_st": null,
+   "ref": "b, q = map(int, input().split())\ntot = 0\nfor _ in range(q):\n    s = int(input())\n    tot += -s % b\nprint(tot)\n",
+   "tests": [
+    {
+     "in": "4 5\n17\n89\n5\n25\n13\n",
+     "out": "15\n"
+    },
+    {
+     "in": "16 4\n77\n76\n16\n24\n",
+     "out": "15\n"
+    },
+    {
+     "in": "8 3\n19\n55\n3\n",
+     "out": "11\n"
+    },
+    {
+     "in": "16 5\n83\n91\n71\n11\n67\n",
+     "out": "45\n"
+    },
+    {
+     "in": "4 4\n42\n61\n67\n15\n",
+     "out": "7\n"
+    },
+    {
+     "in": "8 5\n78\n42\n90\n66\n70\n",
+     "out": "22\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "8 8\n22\n94\n21\n13\n77\n57\n17\n81\n",
+     "out": "34\n"
+    },
+    {
+     "in": "4 3\n89\n69\n17\n",
+     "out": "9\n"
+    }
+   ],
+   "want": "fs.internal-frag"
+  },
+  {
+   "id": "if-max",
+   "st": "第一行 b q，之後 q 行每行一個整數 s，表示檔案大小（位元組）。檔案系統以大小 b 的區塊（叢集）為配置單位，每個檔案配置的區塊數必須是整數，最後一個區塊通常用不滿，浪費的空間就是內部碎片。輸出浪費最多的那個檔案的內部碎片大小。",
+   "rw_st": null,
+   "ref": "b, q = map(int, input().split())\ntot = 0\nfor _ in range(q):\n    s = int(input())\n    tot = max(tot, -s % b)\nprint(tot)\n",
+   "tests": [
+    {
+     "in": "8 1\n44\n",
+     "out": "4\n"
+    },
+    {
+     "in": "8 3\n84\n59\n75\n",
+     "out": "5\n"
+    },
+    {
+     "in": "8 3\n63\n51\n63\n",
+     "out": "5\n"
+    },
+    {
+     "in": "4 5\n90\n46\n66\n26\n85\n",
+     "out": "3\n"
+    },
+    {
+     "in": "8 2\n100\n87\n",
+     "out": "4\n"
+    },
+    {
+     "in": "8 5\n81\n41\n69\n69\n57\n",
+     "out": "7\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "16 5\n12\n23\n95\n19\n39\n",
+     "out": "13\n"
+    },
+    {
+     "in": "16 3\n13\n81\n84\n",
+     "out": "15\n"
+    }
+   ],
+   "want": "fs.internal-frag"
+  },
+  {
+   "id": "if-cnt",
+   "st": "第一行 b q，之後 q 行每行一個整數 s，表示檔案大小（位元組）。檔案系統以大小 b 的區塊（叢集）為配置單位，每個檔案配置的區塊數必須是整數，最後一個區塊通常用不滿，浪費的空間就是內部碎片。輸出有幾個檔案有內部碎片（大小不是區塊大小的整數倍）。",
+   "rw_st": null,
+   "ref": "b, q = map(int, input().split())\ntot = 0\nfor _ in range(q):\n    s = int(input())\n    tot += 1 if s % b else 0\nprint(tot)\n",
+   "tests": [
+    {
+     "in": "16 2\n23\n51\n",
+     "out": "2\n"
+    },
+    {
+     "in": "16 1\n7\n",
+     "out": "1\n"
+    },
+    {
+     "in": "4 4\n6\n34\n50\n30\n",
+     "out": "4\n"
+    },
+    {
+     "in": "16 2\n62\n42\n",
+     "out": "2\n"
+    },
+    {
+     "in": "8 4\n37\n81\n61\n97\n",
+     "out": "4\n"
+    },
+    {
+     "in": "16 1\n53\n",
+     "out": "1\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "8 3\n13\n24\n80\n",
+     "out": "1\n"
+    },
+    {
+     "in": "8 8\n4\n23\n15\n82\n26\n70\n97\n81\n",
+     "out": "8\n"
+    }
+   ],
+   "want": "fs.internal-frag"
+  },
+  {
+   "id": "ho-pn",
+   "st": "第一行 q，接著 q 行，每行一條以 / 開頭的檔案路徑，裡面可能夾雜 ./、../ 以及重複的斜線。請把每條路徑化簡成最短的等價寫法再輸出（到根目錄為止，不能再往上）。",
+   "rw_st": null,
+   "ref": "import posixpath\nq = int(input())\nfor _ in range(q):\n    p = input().strip()\n    n = \"/\" + posixpath.normpath(p).lstrip(\"/\")\n    print(n)\n",
+   "tests": [
+    {
+     "in": "3\n/a/a//a/a//a/\n/a/x/..\n/../x/c//a/a//a/\n",
+     "out": "/a/a/a/a/a\n/a\n/x/c/a/a/a\n"
+    },
+    {
+     "in": "2\n/x/x//../..\n/../..//./d//a/\n",
+     "out": "/\n/d/a\n"
+    },
+    {
+     "in": "3\n/d/d/c//c/a/\n/x/x\n/d//c//b//b/\n",
+     "out": "/d/d/c/c/a\n/x/x\n/d/c/b/b\n"
+    },
+    {
+     "in": "4\n/d\n/c/.\n/b//b/\n/a/a/a\n",
+     "out": "/d\n/c\n/b/b\n/a/a/a\n"
+    },
+    {
+     "in": "5\n/c//c\n/././a/a/a/a/\n/a\n/b\n/../\n",
+     "out": "/c/c\n/a/a/a/a\n/a\n/b\n/\n"
+    },
+    {
+     "in": "3\n/d/c//c//c/b/../\n/../\n/x\n",
+     "out": "/d/c/c/c\n/\n/x\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "8\n/x/..\n/../..//../d/..\n/../b//b//../../\n/../\n/..//../../../../\n/d//c/.//../\n/..//x/x/../..\n/..//././/./.\n",
+     "out": "/\n/\n/\n/\n/\n/d\n/\n/\n"
+    },
+    {
+     "in": "10\n/./.\n/./x//x//x\n/a/\n/x//x/c/../\n/..\n/x/..\n/b/b/\n/d\n/..//././/./.\n/../../../x//..//..\n",
+     "out": "/\n/x/x/x\n/a\n/x/x\n/\n/\n/b/b\n/d\n/\n/\n"
+    }
+   ],
+   "split": "holdout"
+  },
+  {
+   "id": "ho-dr",
+   "st": "第一行 q，之後 q 行指令：mkdir 路徑 會把整條路徑（包含缺少的上層）建出來，cd 路徑 會進入該目錄（路徑可相對可絕對，可含 . 與 ..），pwd 會印出現在所在的目錄。剛開始只有根目錄 /，人在 /。如果 cd 的目的地不存在，人留在原地。請輸出每一次 pwd 印出的內容。",
+   "rw_st": null,
+   "ref": "import posixpath\nq = int(input())\ndirs = {\"/\"}\ncwd = \"/\"\nfor _ in range(q):\n    p = input().split()\n    if p[0] == \"pwd\":\n        if \"pwd\" == \"pwd\":\n            print(cwd)\n        continue\n    t = \"/\" + posixpath.normpath(posixpath.join(cwd, p[1])).lstrip(\"/\")\n    if p[0] == \"mkdir\":\n        if \"parents\" == \"parents\":\n            x = t\n            while True:\n                dirs.add(x)\n                if x == \"/\":\n                    break\n                x = posixpath.dirname(x) or \"/\"\n        elif (posixpath.dirname(t) or \"/\") in dirs:\n            dirs.add(t)\n    else:\n        if t in dirs:\n            cwd = t\n            if \"pwd\" == \"cd\":\n                print(cwd)\n        elif False and \"pwd\" != \"final\":\n            print(\"ERROR\")\n        elif \"pwd\" == \"cd\":\n            print(cwd)\nif \"pwd\" == \"final\":\n    print(cwd)\n",
+   "tests": [
+    {
+     "in": "11\npwd\ncd b/c\nmkdir a/..\nmkdir b\nmkdir b/c\nmkdir ../a\nmkdir ../a\ncd a\ncd /a/b\ncd /a/b\npwd\n",
+     "out": "/\n/a\n"
+    },
+    {
+     "in": "8\npwd\nmkdir ..\nmkdir a\nmkdir ..\nmkdir .\nmkdir a\ncd a/..\npwd\n",
+     "out": "/\n/\n"
+    },
+    {
+     "in": "5\npwd\nmkdir a\nmkdir ..\ncd ..\npwd\n",
+     "out": "/\n/\n"
+    },
+    {
+     "in": "11\nmkdir .\nmkdir ../a\ncd a\nmkdir .\nmkdir a/b\nmkdir c\nmkdir ..\npwd\nmkdir /a/b\ncd ..\npwd\n",
+     "out": "/a\n/\n"
+    },
+    {
+     "in": "5\nmkdir ../a\npwd\npwd\ncd x\npwd\n",
+     "out": "/\n/\n/\n"
+    },
+    {
+     "in": "8\ncd .\nmkdir a/b\nmkdir x\ncd /\nmkdir ..\ncd a/b\ncd ..\npwd\n",
+     "out": "/a\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "8\ncd a/b\npwd\nmkdir a/..\nmkdir a/..\nmkdir /a/b\ncd c\ncd a/..\npwd\n",
+     "out": "/\n/\n"
+    },
+    {
+     "in": "12\nmkdir a\ncd a/b\nmkdir b\npwd\nmkdir b\npwd\npwd\ncd a\nmkdir /a/b\nmkdir a/b\ncd /\npwd\n",
+     "out": "/\n/\n/\n/\n"
+    }
+   ],
+   "split": "holdout"
+  },
+  {
+   "id": "ho-al",
+   "st": "第一行 N q，第二行 N 個整數描述磁碟，0 代表那個區塊還空著，1 代表已被占用。接著 q 行每行一個整數 k，是一個新檔案需要的連續區塊數。每個檔案採 best-fit 配置：在所有長度不小於 k 的連續空區塊中挑最短的一段（長度一樣挑起點較小的），從該段開頭開始佔用。請依序輸出每個檔案的起點（從 0 算起），放不下輸出 -1。",
+   "rw_st": null,
+   "ref": "import re\nN, q = map(int, input().split())\nbits = list(map(int, input().split()))\nres = []\nfor _ in range(q):\n    k = int(input())\n    runs = [(m.start(), m.end() - m.start()) for m in re.finditer(\"0+\", \"\".join(map(str, bits)))]\n    cand = [r for r in runs if r[1] >= k]\n    if not cand:\n        res.append(-1)\n        continue\n    r = sorted(cand, key=lambda r: (r[1], r[0]))[0]\n    for x in range(r[0], r[0] + k):\n        bits[x] = 1\n    res.append(r[0] + 0)\nprint(*res)\n",
+   "tests": [
+    {
+     "in": "15 2\n0 0 0 0 0 0 1 0 0 0 0 1 1 0 0\n4\n4\n",
+     "out": "7 0\n"
+    },
+    {
+     "in": "8 4\n1 0 0 0 0 0 1 0\n1\n3\n1\n3\n",
+     "out": "7 1 4 -1\n"
+    },
+    {
+     "in": "9 4\n0 0 0 1 1 1 0 0 0\n3\n3\n3\n3\n",
+     "out": "0 6 -1 -1\n"
+    },
+    {
+     "in": "9 3\n0 0 0 0 0 0 1 1 0\n1\n3\n3\n",
+     "out": "8 0 3\n"
+    },
+    {
+     "in": "17 2\n1 0 1 0 1 1 1 0 1 1 0 0 0 1 0 1 0\n1\n1\n",
+     "out": "1 3\n"
+    },
+    {
+     "in": "11 4\n1 1 0 0 1 0 0 1 0 1 0\n2\n2\n2\n2\n",
+     "out": "2 5 -1 -1\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "18 5\n1 0 0 0 0 1 1 1 0 0 0 0 0 0 1 1 0 1\n4\n3\n3\n2\n2\n",
+     "out": "1 8 11 -1 -1\n"
+    },
+    {
+     "in": "8 4\n1 1 0 1 0 1 1 0\n1\n1\n1\n1\n",
+     "out": "2 4 7 -1\n"
+    }
+   ],
+   "split": "holdout"
+  },
+  {
+   "id": "ho-if",
+   "st": "第一行 b q，之後 q 行每行一個整數 s，為檔案長度。檔案系統一律以大小 b 的叢集為配置單位，最後一個叢集通常用不滿。請輸出所有檔案白白浪費的空間總和。",
+   "rw_st": null,
+   "ref": "b, q = map(int, input().split())\ntot = 0\nfor _ in range(q):\n    s = int(input())\n    tot += -s % b\nprint(tot)\n",
+   "tests": [
+    {
+     "in": "16 4\n48\n16\n71\n3\n",
+     "out": "22\n"
+    },
+    {
+     "in": "8 3\n39\n99\n43\n",
+     "out": "11\n"
+    },
+    {
+     "in": "16 2\n27\n87\n",
+     "out": "14\n"
+    },
+    {
+     "in": "4 4\n61\n9\n53\n16\n",
+     "out": "9\n"
+    },
+    {
+     "in": "16 3\n55\n35\n31\n",
+     "out": "23\n"
+    },
+    {
+     "in": "16 4\n6\n42\n34\n82\n",
+     "out": "44\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "8 10\n26\n6\n54\n30\n90\n10\n62\n30\n78\n86\n",
+     "out": "32\n"
+    },
+    {
+     "in": "4 4\n5\n45\n1\n84\n",
+     "out": "9\n"
+    }
+   ],
+   "split": "holdout"
+  },
+  {
+   "id": "ho2-pn",
+   "st": "第一行 q，接著 q 行，每行一條路徑字串，開頭是 /，中間可能出現 .、.. 與連續的 /。請輸出每條路徑經過正規化（canonical form）之後的結果。",
+   "rw_st": null,
+   "ref": "import posixpath\nq = int(input())\nfor _ in range(q):\n    p = input().strip()\n    n = \"/\" + posixpath.normpath(p).lstrip(\"/\")\n    print(n)\n",
+   "tests": [
+    {
+     "in": "3\n/c\n/.//.\n/a/x//x\n",
+     "out": "/c\n/\n/a/x/x\n"
+    },
+    {
+     "in": "4\n/x//../..//d\n/c\n/b//b/../x/d//x\n/./././././../\n",
+     "out": "/d\n/c\n/b/x/d/x\n/\n"
+    },
+    {
+     "in": "1\n/c/a//d/c/c//c\n",
+     "out": "/c/a/d/c/c/c\n"
+    },
+    {
+     "in": "3\n/b//b//b//../\n/../../c\n/c//./.\n",
+     "out": "/b/b\n/c\n/c\n"
+    },
+    {
+     "in": "3\n/a/a/.//a/a/a/\n/d/x//b//a//a/\n/a/a/a//a/a/\n",
+     "out": "/a/a/a/a/a\n/d/x/b/a/a\n/a/a/a/a/a\n"
+    },
+    {
+     "in": "4\n/a//a/a/a/a/\n/a//x/x/x//x\n/.\n/b/a/d/d\n",
+     "out": "/a/a/a/a/a\n/a/x/x/x/x\n/\n/b/a/d/d\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "8\n/c\n/c/x/c//./.\n/..//../\n/../../../\n/x\n/d/..//b/b/..//..\n/../b/b/b/a/\n/x//../.././././\n",
+     "out": "/c\n/c/x/c\n/\n/\n/x\n/\n/b/b/b/a\n/\n"
+    },
+    {
+     "in": "11\n/a/a/d/d/d\n/..//../b\n/.//c\n/../..\n/x/x\n/a/d/d//d//d\n/c/c//c//c\n/.//..\n/c/.//././\n/x\n/c\n",
+     "out": "/a/a/d/d/d\n/b\n/c\n/\n/x/x\n/a/d/d/d/d\n/c/c/c/c\n/\n/c\n/x\n/c\n"
+    }
+   ],
+   "split": "holdout"
+  },
+  {
+   "id": "ho2-al",
+   "st": "第一行 N q，第二行 N 個整數，0 為空閒區塊、1 為已使用區塊。接著 q 行，每行一個整數 k，代表一個檔案需要連續 k 個區塊。依序為每個檔案採用 first-fit（取最前面、足夠長的一段空閒區塊）配置，輸出各檔案的起始區塊編號（從 0 起），配置失敗輸出 -1。",
+   "rw_st": null,
+   "ref": "import re\nN, q = map(int, input().split())\nbits = list(map(int, input().split()))\nres = []\nfor _ in range(q):\n    k = int(input())\n    runs = [(m.start(), m.end() - m.start()) for m in re.finditer(\"0+\", \"\".join(map(str, bits)))]\n    cand = [r for r in runs if r[1] >= k]\n    if not cand:\n        res.append(-1)\n        continue\n    r = sorted(cand, key=lambda r: (r[0],))[0]\n    for x in range(r[0], r[0] + k):\n        bits[x] = 1\n    res.append(r[0] + 0)\nprint(*res)\n",
+   "tests": [
+    {
+     "in": "12 2\n0 0 0 0 1 0 0 1 1 0 0 0\n1\n1\n",
+     "out": "0 1\n"
+    },
+    {
+     "in": "11 2\n0 1 1 0 1 0 0 1 1 0 0\n1\n1\n",
+     "out": "0 3\n"
+    },
+    {
+     "in": "9 2\n0 0 0 0 0 1 0 1 1\n3\n3\n",
+     "out": "0 -1\n"
+    },
+    {
+     "in": "14 4\n1 1 0 0 0 0 0 0 1 0 1 1 0 0\n3\n3\n2\n2\n",
+     "out": "2 5 12 -1\n"
+    },
+    {
+     "in": "18 4\n0 0 1 0 0 0 0 0 1 1 0 1 0 1 1 0 0 1\n3\n3\n2\n1\n",
+     "out": "3 -1 0 6\n"
+    },
+    {
+     "in": "12 5\n0 0 0 0 1 0 1 0 1 0 0 0\n4\n4\n4\n4\n4\n",
+     "out": "0 -1 -1 -1 -1\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "15 2\n1 0 0 0 0 0 0 1 1 1 0 0 1 0 0\n1\n1\n",
+     "out": "1 2\n"
+    },
+    {
+     "in": "20 4\n0 1 0 1 0 1 1 1 0 0 0 1 0 0 1 1 0 1 0 1\n3\n3\n3\n3\n",
+     "out": "8 -1 -1 -1\n"
+    }
+   ],
+   "split": "holdout"
+  }
+ ]
+}

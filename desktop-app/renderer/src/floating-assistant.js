@@ -87355,6 +87355,41 @@ ${fnData.code}
             unloadModel: async () => { me._vlmTerminate('cpu'); } });
         return this._webLoraApplier;
     }
+    // ===== LoRA 每輪路由（DESIGN.lora-training.md §15）：有 task 的生成才決定保留／切換／回基底；沒有 task 的呼叫不動目前的 LoRA =====
+    _loraCore() { if (!this._loraCoreInst) { try { this._loraCoreInst = FaStudio.FaStudioServer.createServer(this._studioHostApi()); } catch (_) { this._loraCoreInst = null; } } return this._loraCoreInst; }
+    async _loraRouteTurn(task) {
+        if (task == null || task === '' || !this._studioDesktop() || typeof FaStudio === 'undefined' || !FaStudio.FaLoraRoute) return null;
+        const core = this._loraCore(); if (!core) return null;
+        const reg = await core.registry().catch(() => null); if (!reg) return null;
+        this._loraTurnReg = reg;
+        const prev = (this._loraTurnState && this._loraTurnState.active) || [];
+        return FaStudio.FaLoraRoute.routeTurn(reg, task, { prevActive: prev });
+    }
+    // 只在組合改變時套用（keep 不動）；套用失敗就回基底並記 log；成功的 adapter 在生成期間 acquire，生成結束 release（推論中不淘汰）
+    async _loraSwitch(route) {
+        if (!route || route.action === 'keep') { if (route) this._loraTurnState = { active: route.active.slice() }; return route; }
+        const applier = await this._studioLoraApplier();
+        if (route.action === 'clear' || !route.handles.length) {
+            const c = await applier.clear().catch((e) => ({ ok: false, error: String((e && e.message) || e) }));
+            this._loraTurnState = { active: [] };
+            return Object.assign(route, { applied: !!c.ok, applyError: c.ok ? null : c.error });
+        }
+        const a = await applier.apply(route.handles.map((x) => ({ id: x.id, bytes: x.handle && x.handle.bytes })));
+        if (a && a.ok) { this._loraTurnState = { active: route.active.slice() }; return Object.assign(route, { applied: true, applyError: null }); }
+        await applier.clear().catch(() => null);
+        this._loraTurnState = { active: [] };
+        return Object.assign(route, { applied: false, applyError: (a && a.error) || '套用失敗', active: [], fallback: 'base' });
+    }
+    // 包住一次生成：路由 → 必要時切換 → 生成（acquire/release 之間推論中不可淘汰）→ 釋放
+    async _llmGenerate(model, a, cb) {
+        let route = null;
+        try { route = await this._loraRouteTurn(a && a.task); if (route) route = await this._loraSwitch(route); }
+        catch (e) { route = { task: String(a && a.task), fallback: 'base', active: [], handles: [], skipped: [], action: 'keep', reason: '路由錯誤，用基底：' + String((e && e.message) || e) }; }
+        const held = route && route.active ? route.active.slice() : [];
+        const reg = this._loraTurnReg; if (reg) held.forEach((id) => reg.acquire(id));
+        try { return await this._llmGenerateInner(model, a, cb); }
+        finally { if (reg) held.forEach((id) => reg.release(id)); }
+    }
     async _studioLoraApplier() {
         if (this._loraApplier) return this._loraApplier;
         const box = await this._nrBox(); if (!box) throw new Error('找不到使用者資料夾（原生信箱）');
@@ -117531,12 +117566,12 @@ ${existingNodeSummaries}
                     const ranked = SEL.retrieve(S.idxInt, t.c.query, 20); const cands = SEL.buildCandidates(S.universe, t.c.truth, ranked, t.k, t.mode, t.seed, S.universe);
                     if (!cands.length) { S.rows.push({ id: t.c.id, kind: t.c.kind === 'neg' ? 'neg' : 'pos', mode: t.mode, k: t.k, cands: [], truth: t.c.truth, choice: 0, ms: 0, no_candidates: true }); }
                     else {
-                        const raw = await this._llmGenerate(S.model, { messages: SEL.selectionMessages(t.c.query, cands, null), deterministic: true, maxTokens: 6 }, {}); const choice = SEL.parseChoice(raw, cands.length); const ms = Date.now() - t0;
+                        const raw = await this._llmGenerate(S.model, { task: 'colu', messages: SEL.selectionMessages(t.c.query, cands, null), deterministic: true, maxTokens: 6 }, {}); const choice = SEL.parseChoice(raw, cands.length); const ms = Date.now() - t0;
                         const row = { id: t.c.id, kind: t.c.kind === 'neg' ? 'neg' : 'pos', mode: t.mode, k: t.k, cands: cands.map((u) => u.id), truth: t.c.truth, choice, ms, raw: String(raw).slice(0, 40) }; S.rows.push(row);
                         const wrong = t.mode !== 'none' && t.c.kind !== 'neg' ? !(choice && t.c.truth.includes(row.cands[choice - 1])) : (choice !== 0); if (wrong && S.failures.length < 80) S.failures.push({ id: t.c.id, query: t.c.query, mode: t.mode, k: t.k, truth: t.c.truth, chose: choice ? row.cands[choice - 1] : (choice === 0 ? '(0 沒有適合的)' : '(解析不了：' + row.raw + ')'), in_list: row.cands.some((c) => t.c.truth.includes(c)) });
                     }
                 } else {
-                    const u = S.byId.get(t.a.unit); const raw = await this._llmGenerate(S.model, { messages: SEL.argsMessages(u, t.a.query), deterministic: true, maxTokens: 120, prefill: '{' }, {}); const got = SEL.parseArgs(raw); const sc = SEL.scoreArgs(t.a.expected, got, u);
+                    const u = S.byId.get(t.a.unit); const raw = await this._llmGenerate(S.model, { task: 'toolcall', messages: SEL.argsMessages(u, t.a.query), deterministic: true, maxTokens: 120, prefill: '{' }, {}); const got = SEL.parseArgs(raw); const sc = SEL.scoreArgs(t.a.expected, got, u);
                     S.argRows.push(Object.assign({ unit: t.a.unit, ms: Date.now() - t0, raw: String(raw).slice(0, 120) }, sc)); if (!sc.exact && S.failures.length < 80) S.failures.push({ id: 'args:' + t.a.unit, query: t.a.query, expected: t.a.expected, got: String(raw).slice(0, 120) });
                 }
             } catch (e) { S.errors++; S.lastError = String((e && e.message) || e); if (S.errors > 5) throw e; }
@@ -120569,7 +120604,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         if (r && r.ok) return { ok: true, text: String(r.text == null ? acc : r.text) };
         return { ok: false, why: '原生失敗（' + ((r && r.code) || '未知') + '）：' + ((r && r.message) || '沒有訊息') };
     }
-    async _llmGenerate(model, a, cb) {
+    async _llmGenerateInner(model, a, cb) {
         cb = cb || {}; const gpu = await this._omGpuInfo();
         // 原生執行器（桌面版，先試）：只支援純文字生成（沒有工具、沒有預填）。失敗或不可用就退回 WebGPU／WASM，並把實際後端與原因寫進 log。
         const NATIVE_MODEL_ID = 'qwen3-0.6b';
@@ -120708,7 +120743,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         try {
             for (let i = 0; i < FaVlm.BENCH_CASES.length; i++) {
                 const c = FaVlm.BENCH_CASES[i]; if (setStatus) setStatus('第 ' + (i + 1) + '／' + FaVlm.BENCH_CASES.length + ' 題…'); prog.log('題目 ' + (i + 1) + '：' + c.user);
-                const raw = await this._llmGenerate(m, { messages: [{ role: 'system', content: FaVlm.TOOL_STAGE_SYSTEM }, { role: 'user', content: c.user }], tools: specs, deterministic: true, maxTokens: 160 }, { update, log: (s) => prog.log(s) });
+                const raw = await this._llmGenerate(m, { task: 'toolcall', messages: [{ role: 'system', content: FaVlm.TOOL_STAGE_SYSTEM }, { role: 'user', content: c.user }], tools: specs, deterministic: true, maxTokens: 160 }, { update, log: (s) => prog.log(s) });
                 const r = FaVlm.scoreToolCase(c, raw); results.push(Object.assign({ id: c.id }, r)); prog.log((r.ok ? '✅ ' : '❌ ') + r.reason + '　輸出：' + String(raw).replace(/\s+/g, ' ').slice(0, 100));
             }
             const sum = FaVlm.summarizeToolBench(results); const rec = Object.assign({}, sum, { at: Date.now(), device: (this._omLastDevice || {})[m.id] === 'webgpu' ? 'gpu' : 'cpu', ms: Date.now() - t0, details: results.map((r) => ({ id: r.id, ok: r.ok, reason: r.reason })) });

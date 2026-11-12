@@ -1,0 +1,656 @@
+{
+ "format": "fa-domain-seeds",
+ "version": 1,
+ "source": "renderer/src/uml/domain_algo2.test.js",
+ "name": "領域包 algo2",
+ "minSkeletons": 15,
+ "judge": null,
+ "trainOnly": null,
+ "seeds": [
+  {
+   "id": "phi",
+   "st": "輸入一個整數 n。輸出歐拉函數 φ(n)，也就是 1 到 n 之中與 n 互質的整數個數。",
+   "rw_st": "輸入一個整數 m。輸出歐拉函數 φ(m)，也就是 1 到 m 之中與 m 互質的整數個數。",
+   "ref": "n = int(input())\nr = n\nm = n\np = 2\nwhile p * p <= m:\n    if m % p == 0:\n        while m % p == 0:\n            m //= p\n        r -= r // p\n    p += 1\nif m > 1:\n    r -= r // m\nprint(r)",
+   "tests": [
+    {
+     "in": "10\n",
+     "out": "4\n"
+    },
+    {
+     "in": "53\n",
+     "out": "52\n"
+    },
+    {
+     "in": "52\n",
+     "out": "24\n"
+    },
+    {
+     "in": "16\n",
+     "out": "8\n"
+    },
+    {
+     "in": "16\n",
+     "out": "8\n"
+    },
+    {
+     "in": "19\n",
+     "out": "18\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "122970\n",
+     "out": "32784\n"
+    },
+    {
+     "in": "439898\n",
+     "out": "205920\n"
+    }
+   ],
+   "want": "nt.phi"
+  },
+  {
+   "id": "perfect",
+   "st": "輸入一個整數 n。如果 n 的所有真因數（不含 n 本身）之和等於 n，輸出 YES，否則輸出 NO。",
+   "rw_st": "輸入一個整數 x。如果 x 的所有真因數（不含 x 本身）之和等於 x，輸出 YES，否則輸出 NO。",
+   "ref": "n = int(input())\nprint(\"YES\" if n > 1 and sum(d for d in range(1, n) if n % d == 0) == n else \"NO\")",
+   "tests": [
+    {
+     "in": "1\n",
+     "out": "NO\n"
+    },
+    {
+     "in": "27\n",
+     "out": "NO\n"
+    },
+    {
+     "in": "2\n",
+     "out": "NO\n"
+    },
+    {
+     "in": "12\n",
+     "out": "NO\n"
+    },
+    {
+     "in": "2\n",
+     "out": "NO\n"
+    },
+    {
+     "in": "12\n",
+     "out": "NO\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "28\n",
+     "out": "YES\n"
+    },
+    {
+     "in": "2\n",
+     "out": "NO\n"
+    }
+   ],
+   "want": "nt.perfect"
+  },
+  {
+   "id": "step-count",
+   "st": "輸入一個整數 n。每一步：若 n 是偶數就除以 2，若是奇數就減 1，直到 n 變成 0 為止。輸出需要幾步。",
+   "rw_st": "輸入一個整數 v。每一步：若 v 是偶數就除以 2，若是奇數就減 1，直到 v 變成 0 為止。輸出需要幾步。",
+   "ref": "n = int(input())\nc = 0\nwhile n > 0:\n    n = n // 2 if n % 2 == 0 else n - 1\n    c += 1\nprint(c)",
+   "tests": [
+    {
+     "in": "96\n",
+     "out": "8\n"
+    },
+    {
+     "in": "67\n",
+     "out": "9\n"
+    },
+    {
+     "in": "281\n",
+     "out": "12\n"
+    },
+    {
+     "in": "173\n",
+     "out": "12\n"
+    },
+    {
+     "in": "12\n",
+     "out": "5\n"
+    },
+    {
+     "in": "36\n",
+     "out": "7\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "2992291\n",
+     "out": "32\n"
+    },
+    {
+     "in": "8055831\n",
+     "out": "36\n"
+    }
+   ],
+   "want": "sim.step-count"
+  },
+  {
+   "id": "base-k",
+   "st": "第一行整數 n，第二行整數 k（2 ≤ k ≤ 16）。輸出 n 的 k 進位表示（以字串輸出，大於 9 的數字用大寫字母 A、B、C…）。",
+   "rw_st": "第一行整數 m，第二行整數 b（2 ≤ b ≤ 16）。輸出 m 的 b 進位表示（以字串輸出，大於 9 的數字用大寫字母 A、B、C…）。",
+   "ref": "n = int(input())\nk = int(input())\nd = \"0123456789ABCDEF\"\ns = \"\"\nif n == 0:\n    s = \"0\"\nwhile n > 0:\n    s = d[n % k] + s\n    n //= k\nprint(s)",
+   "tests": [
+    {
+     "in": "198\n5\n",
+     "out": "1243\n"
+    },
+    {
+     "in": "124\n14\n",
+     "out": "8C\n"
+    },
+    {
+     "in": "103\n4\n",
+     "out": "1213\n"
+    },
+    {
+     "in": "83\n16\n",
+     "out": "53\n"
+    },
+    {
+     "in": "189\n15\n",
+     "out": "C9\n"
+    },
+    {
+     "in": "334\n5\n",
+     "out": "2314\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "8474593\n3\n",
+     "out": "120221112221211\n"
+    },
+    {
+     "in": "430716\n7\n",
+     "out": "3442506\n"
+    }
+   ],
+   "want": "nt.base-convert"
+  },
+  {
+   "id": "histogram",
+   "st": "第一行 n，第二行 n 個非負整數，表示直方圖中每根柱子的高度（寬度都是 1）。輸出直方圖中最大矩形的面積。",
+   "rw_st": "第一行 m，第二行 m 個非負整數，表示直方圖中每根柱子的高度（寬度都是 1）。輸出直方圖中最大矩形的面積。",
+   "ref": "n = int(input())\na = list(map(int, input().split()))\nb = 0\nfor i in range(n):\n    m = a[i]\n    for j in range(i, n):\n        m = min(m, a[j])\n        b = max(b, m * (j - i + 1))\nprint(b)",
+   "tests": [
+    {
+     "in": "5\n0 8 6 4 7\n",
+     "out": "16\n"
+    },
+    {
+     "in": "1\n0\n",
+     "out": "0\n"
+    },
+    {
+     "in": "8\n5 1 8 0 2 0 2 8\n",
+     "out": "8\n"
+    },
+    {
+     "in": "2\n0 8\n",
+     "out": "8\n"
+    },
+    {
+     "in": "3\n0 2 5\n",
+     "out": "5\n"
+    },
+    {
+     "in": "3\n1 1 9\n",
+     "out": "9\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "117\n178 237 4 169 262 115 175 235 65 100 10 80 120 43 10 46 221 270 253 287 271 114 173 221 43 150 208 126 130 188 87 119 79 224 267 187 177 228 207 226 72 109 132 10 216 102 172 43 243 156 298 288 150 101 58 121 286 261 107 48 277 295 183 187 188 244 84 216 7 195 176 186 148 272 285 66 105 299 235 56 40 256 71 261 227 202 83 30 107 292 178 262 171 237 26 242 156 296 135 194 122 231 232 290 160 99 41 61 292 289 128 79 100 135 126 18 241\n",
+     "out": "1296\n"
+    },
+    {
+     "in": "146\n35 253 55 172 253 6 227 242 16 102 220 117 241 234 63 256 41 174 43 25 131 2 93 5 170 196 257 83 157 73 62 4 63 122 12 210 275 225 291 110 259 153 265 79 6 132 235 23 293 287 161 259 213 0 123 31 2 56 291 209 40 216 189 151 264 127 243 25 273 58 178 90 241 28 138 191 124 175 129 168 80 66 257 260 19 61 288 45 106 5 5 10 171 146 262 7 295 244 234 254 131 154 41 106 8 254 71 298 66 78 260 142 170 161 221 299 242 145 150 288 25 72 51 129 214 295 206 52 240 111 159 189 179 214 152 299 284 230 176 129 140 179 248 74 144 152\n",
+     "out": "1677\n"
+    }
+   ],
+   "want": "stack.histogram-max"
+  },
+  {
+   "id": "warmer",
+   "st": "第一行 n，第二行 n 個整數，表示每天的溫度。對每一天輸出要再等幾天才會遇到更高的溫度，以空白分隔；之後都沒有更高的就輸出 0。",
+   "rw_st": "第一行 m，第二行 m 個整數，表示每天的溫度。對每一天輸出要再等幾天才會遇到更高的溫度，以空白分隔；之後都沒有更高的就輸出 0。",
+   "ref": "n = int(input())\na = list(map(int, input().split()))\nr = []\nfor i in range(n):\n    d = 0\n    for j in range(i + 1, n):\n        if a[j] > a[i]:\n            d = j - i\n            break\n    r.append(d)\nprint(*r)",
+   "tests": [
+    {
+     "in": "4\n39 33 33 31\n",
+     "out": "0 0 0 0\n"
+    },
+    {
+     "in": "4\n35 32 38 31\n",
+     "out": "2 1 0 0\n"
+    },
+    {
+     "in": "9\n33 31 31 34 39 34 33 34 31\n",
+     "out": "3 2 1 1 0 0 1 0 0\n"
+    },
+    {
+     "in": "2\n30 39\n",
+     "out": "1 0\n"
+    },
+    {
+     "in": "8\n31 37 38 35 39 30 37 38\n",
+     "out": "1 1 2 1 0 1 1 0\n"
+    },
+    {
+     "in": "8\n35 40 33 30 33 30 39 39\n",
+     "out": "1 0 4 1 2 1 0 0\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "120\n51 80 73 35 35 70 45 93 50 70 56 57 93 77 50 95 91 57 62 90 54 74 55 68 82 52 71 60 42 53 51 37 42 67 93 39 38 96 97 85 40 95 58 37 45 38 63 95 82 55 92 58 33 82 47 77 79 91 74 94 76 51 72 75 87 95 64 70 57 55 86 32 90 79 67 69 52 89 61 47 40 91 33 100 48 82 84 82 30 32 44 62 46 53 58 46 57 71 99 80 63 90 50 43 60 89 96 94 87 77 42 81 71 72 40 77 33 40 55 99\n",
+     "out": "1 6 5 2 1 2 1 8 1 3 1 1 3 2 1 22 18 1 1 15 1 3 1 1 10 1 8 6 1 4 3 1 1 1 3 2 1 1 45 2 1 42 4 1 2 1 1 36 2 1 9 2 1 4 1 1 1 2 1 6 4 1 1 1 1 18 1 3 2 1 2 1 9 4 1 2 1 4 3 2 1 2 1 0 1 1 12 11 1 1 1 6 1 1 3 1 1 1 0 2 1 5 2 1 1 1 13 12 11 2 1 8 1 2 1 4 1 1 1 0\n"
+    },
+    {
+     "in": "83\n50 39 69 53 100 42 38 54 81 73 79 46 55 44 86 43 45 93 53 90 47 32 54 41 80 54 63 93 62 59 66 75 95 72 69 96 85 72 97 81 42 86 48 72 91 62 65 80 98 64 84 37 34 69 98 86 82 69 52 93 45 40 55 97 96 42 84 71 48 41 94 77 88 60 44 69 62 62 77 97 88 73 48\n",
+     "out": "2 1 2 1 0 2 1 1 6 1 4 1 2 1 3 1 1 15 1 8 2 1 2 1 3 1 1 5 2 1 1 1 3 2 1 3 2 1 10 2 1 3 1 1 4 1 1 1 0 1 4 2 1 1 0 4 3 2 1 4 2 1 1 0 15 1 4 3 2 1 9 1 7 2 1 3 2 1 1 0 0 0 0\n"
+    }
+   ],
+   "want": "stack.next-greater-dist"
+  },
+  {
+   "id": "nested",
+   "st": "輸入一個編碼字串 s，規則是 k[內容] 表示內容重複 k 次（k 是正整數，可多位數，可以巢狀）。輸出解碼後的字串。",
+   "rw_st": "輸入一個編碼字串 t，規則是 k[內容] 表示內容重複 k 次（k 是正整數，可多位數，可以巢狀）。輸出解碼後的字串。",
+   "ref": "s = input()\nst = []\ncur = \"\"\nk = 0\nfor ch in s:\n    if ch.isdigit():\n        k = k * 10 + int(ch)\n    elif ch == \"[\":\n        st.append((cur, k))\n        cur = \"\"\n        k = 0\n    elif ch == \"]\":\n        p, kk = st.pop()\n        cur = p + cur * kk\n    else:\n        cur += ch\nprint(cur)",
+   "tests": [
+    {
+     "in": "cccc3[bba]6[zx]\n",
+     "out": "ccccbbabbabbazxzxzxzxzxzx\n"
+    },
+    {
+     "in": "aa2[3[dddd]]2[2[ddd]]2[zx]\n",
+     "out": "aaddddddddddddddddddddddddddddddddddddzxzx\n"
+    },
+    {
+     "in": "bb2[c]4[xy]\n",
+     "out": "bbccxyxyxyxy\n"
+    },
+    {
+     "in": "aaa3[cbbb]6[xx]\n",
+     "out": "aaacbbbcbbbcbbbxxxxxxxxxxxx\n"
+    },
+    {
+     "in": "3[3[3[aa]2[dddddd]bb]aa]\n",
+     "out": "aaaaaaddddddddddddbbaaaaaaddddddddddddbbaaaaaaddddddddddddbbaaaaaaaaddddddddddddbbaaaaaaddddddddddddbbaaaaaaddddddddddddbbaaaaaaaaddddddddddddbbaaaaaaddddddddddddbbaaaaaaddddddddddddbbaa\n"
+    },
+    {
+     "in": "bccc7[zz]\n",
+     "out": "bccczzzzzzzzzzzzzz\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "cb5[xx]\n",
+     "out": "cbxxxxxxxxxx\n"
+    },
+    {
+     "in": "aaaad5[zy]\n",
+     "out": "aaaadzyzyzyzyzy\n"
+    }
+   ],
+   "want": "stack.nested-expand"
+  },
+  {
+   "id": "paren",
+   "st": "輸入一個只含 ( 與 ) 的字串 s。輸出其中最長的合法（括號正確配對）連續子字串的長度。",
+   "rw_st": "輸入一個只含 ( 與 ) 的字串 t。輸出其中最長的合法（括號正確配對）連續子字串的長度。",
+   "ref": "s = input()\nb = 0\nfor i in range(len(s)):\n    d = 0\n    for j in range(i, len(s)):\n        d += 1 if s[j] == \"(\" else -1\n        if d < 0:\n            break\n        if d == 0:\n            b = max(b, j - i + 1)\nprint(b)",
+   "tests": [
+    {
+     "in": ")((((((()(((\n",
+     "out": "2\n"
+    },
+    {
+     "in": "()()(\n",
+     "out": "4\n"
+    },
+    {
+     "in": ")\n",
+     "out": "0\n"
+    },
+    {
+     "in": "(\n",
+     "out": "0\n"
+    },
+    {
+     "in": "(()(\n",
+     "out": "2\n"
+    },
+    {
+     "in": "())\n",
+     "out": "2\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "()())(()((())()((((((((()))))(((())(((()(((((((((())(((())()())(())(()(((((()())(((()()()(()()((()(()(((()(((((\n",
+     "out": "14\n"
+    },
+    {
+     "in": "(()()(()()(())(((((()(((()((()((())((()((((((()(()(()())()(()(())((((((((((())))()((()())((()((((((()(()(\n",
+     "out": "10\n"
+    }
+   ],
+   "want": "stack.longest-valid-paren"
+  },
+  {
+   "id": "josephus",
+   "st": "第一行 n，第二行 k。n 個人編號 1 到 n 圍成一圈，從 1 號開始報數，數到 k 的人出列，下一個人重新從 1 報起。輸出最後留下來的人的編號。",
+   "rw_st": "第一行 m，第二行 q。m 個人編號 1 到 m 圍成一圈，從 1 號開始報數，數到 q 的人出列，下一個人重新從 1 報起。輸出最後留下來的人的編號。",
+   "ref": "n = int(input())\nk = int(input())\np = list(range(1, n + 1))\ni = 0\nwhile len(p) > 1:\n    i = (i + k - 1) % len(p)\n    p.pop(i)\nprint(p[0])",
+   "tests": [
+    {
+     "in": "7\n3\n",
+     "out": "4\n"
+    },
+    {
+     "in": "7\n1\n",
+     "out": "7\n"
+    },
+    {
+     "in": "6\n6\n",
+     "out": "4\n"
+    },
+    {
+     "in": "7\n3\n",
+     "out": "4\n"
+    },
+    {
+     "in": "10\n4\n",
+     "out": "5\n"
+    },
+    {
+     "in": "10\n1\n",
+     "out": "10\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "115\n4\n",
+     "out": "94\n"
+    },
+    {
+     "in": "263\n9\n",
+     "out": "262\n"
+    }
+   ],
+   "want": "sim.josephus"
+  },
+  {
+   "id": "win-sum",
+   "st": "第一行 n k，第二行 n 個整數。對每個長度為 k 的連續視窗取最大值，輸出所有視窗最大值的總和。",
+   "rw_st": "第一行 m w，第二行 m 個整數。對每個長度為 w 的連續視窗取最大值，輸出所有視窗最大值的總和。",
+   "ref": "n, k = map(int, input().split())\na = list(map(int, input().split()))\nprint(sum(max(a[i:i + k]) for i in range(n - k + 1)))",
+   "tests": [
+    {
+     "in": "6 2\n-10 41 2 45 -2 25\n",
+     "out": "197\n"
+    },
+    {
+     "in": "9 1\n-11 9 19 -5 22 -18 6 -3 12\n",
+     "out": "31\n"
+    },
+    {
+     "in": "6 3\n-18 -7 -16 50 39 -6\n",
+     "out": "143\n"
+    },
+    {
+     "in": "5 4\n1 -10 23 34 31\n",
+     "out": "68\n"
+    },
+    {
+     "in": "5 1\n34 41 41 -3 9\n",
+     "out": "122\n"
+    },
+    {
+     "in": "5 1\n19 21 15 13 9\n",
+     "out": "77\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "67 7\n-11 9 -4 -2 44 -15 27 -1 -7 47 -10 42 35 45 8 9 21 -8 -18 25 31 50 1 17 15 -7 25 -1 17 47 29 26 33 4 44 -17 12 -17 46 5 -8 -5 41 6 -10 16 4 5 26 -3 -14 44 -15 21 -17 22 45 44 13 33 -11 2 12 14 -19 36 50\n",
+     "out": "2700\n"
+    },
+    {
+     "in": "82 8\n28 -13 37 -11 -8 48 -10 44 42 18 15 44 37 -20 32 -15 -13 6 40 2 2 32 6 13 4 -16 19 -10 9 38 27 44 6 -14 -9 4 15 0 28 -12 -16 15 3 37 12 -13 -13 7 11 23 -16 42 5 6 19 8 43 26 23 24 46 40 -9 15 12 34 47 34 28 31 45 23 41 -16 -19 23 -20 -4 28 8 40 30\n",
+     "out": "3140\n"
+    }
+   ],
+   "want": "win.agg"
+  },
+  {
+   "id": "interval-union",
+   "st": "第一行 n，接著 n 行 l r（每行是一個區間 [l, r]）。輸出這些區間的聯集所覆蓋的總長度（相接而不重疊的區間算兩段）。",
+   "rw_st": "第一行 m，接著 m 行 l r（每行是一個區間 [l, r]）。輸出這些區間的聯集所覆蓋的總長度（相接而不重疊的區間算兩段）。",
+   "ref": "n = int(input())\niv = sorted(tuple(map(int, input().split())) for _ in range(n))\ntot = 0\ncs, ce = iv[0]\nfor l, r in iv[1:]:\n    if l <= ce:\n        ce = max(ce, r)\n    else:\n        tot += ce - cs\n        cs, ce = l, r\ntot += ce - cs\nprint(tot)",
+   "tests": [
+    {
+     "in": "5\n4 8\n0 4\n18 22\n7 12\n9 10\n",
+     "out": "16\n"
+    },
+    {
+     "in": "6\n19 20\n7 8\n14 15\n1 2\n6 10\n17 19\n",
+     "out": "9\n"
+    },
+    {
+     "in": "3\n4 5\n9 12\n16 19\n",
+     "out": "7\n"
+    },
+    {
+     "in": "3\n0 5\n3 6\n17 23\n",
+     "out": "12\n"
+    },
+    {
+     "in": "4\n14 18\n5 11\n10 14\n15 19\n",
+     "out": "14\n"
+    },
+    {
+     "in": "5\n8 11\n2 3\n6 11\n2 3\n10 14\n",
+     "out": "9\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "50\n316 327\n55 65\n142 159\n242 262\n346 358\n107 115\n384 392\n362 370\n118 130\n39 47\n110 129\n29 48\n38 40\n128 142\n341 347\n347 356\n117 118\n203 216\n186 198\n300 303\n357 363\n362 372\n85 99\n240 258\n94 96\n23 33\n341 347\n270 280\n136 150\n297 311\n317 327\n58 76\n272 274\n384 394\n138 156\n50 56\n152 161\n100 117\n24 28\n244 260\n230 249\n391 402\n172 191\n322 329\n212 230\n144 146\n9 21\n249 264\n179 198\n265 268\n",
+     "out": "314\n"
+    },
+    {
+     "in": "37\n48 67\n54 61\n305 316\n67 78\n339 346\n357 375\n345 363\n252 253\n160 180\n298 307\n31 39\n376 387\n195 206\n88 91\n264 279\n101 103\n199 209\n196 210\n365 382\n123 139\n25 29\n297 300\n274 285\n2 21\n367 373\n171 186\n132 134\n228 246\n148 162\n155 165\n167 180\n83 103\n154 166\n280 284\n63 80\n330 343\n194 210\n",
+     "out": "269\n"
+    }
+   ],
+   "want": "sweep.interval-union"
+  },
+  {
+   "id": "pair-count",
+   "st": "第一行 n t，第二行 n 個整數。輸出有多少對 (i, j)，滿足 i < j 且 a[i] + a[j] = t。",
+   "rw_st": "第一行 m s，第二行 m 個整數。輸出有多少對 (i, j)，滿足 i < j 且 a[i] + a[j] = s。",
+   "ref": "n, t = map(int, input().split())\na = list(map(int, input().split()))\nprint(sum(1 for i in range(n) for j in range(i + 1, n) if a[i] + a[j] == t))",
+   "tests": [
+    {
+     "in": "1 2\n2\n",
+     "out": "0\n"
+    },
+    {
+     "in": "7 10\n4 8 4 9 5 4 6\n",
+     "out": "3\n"
+    },
+    {
+     "in": "4 8\n3 7 3 5\n",
+     "out": "2\n"
+    },
+    {
+     "in": "9 11\n0 6 0 7 3 5 2 0 5\n",
+     "out": "2\n"
+    },
+    {
+     "in": "8 5\n4 7 1 5 0 5 5 2\n",
+     "out": "4\n"
+    },
+    {
+     "in": "2 4\n0 2\n",
+     "out": "0\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "83 6\n1 5 7 5 9 5 2 8 6 0 8 4 2 0 8 8 0 2 7 5 8 6 8 8 2 6 2 4 6 8 8 2 5 1 5 7 3 2 2 4 4 6 8 8 0 2 2 3 9 3 5 3 8 2 5 9 9 7 2 4 4 4 0 9 1 5 6 4 7 7 4 6 0 0 4 8 0 8 2 8 8 4 7\n",
+     "out": "232\n"
+    },
+    {
+     "in": "70 11\n4 8 8 0 5 7 8 4 4 6 8 8 6 9 0 4 8 0 4 6 6 4 6 1 9 6 0 2 4 9 1 3 5 4 4 6 4 4 0 3 3 5 5 8 6 2 2 8 0 8 0 0 4 0 0 8 8 6 5 9 5 3 4 2 4 4 4 1 9 7\n",
+     "out": "150\n"
+    }
+   ],
+   "want": "cnt.pair-sum"
+  },
+  {
+   "id": "rle-dec",
+   "st": "輸入一個行程長度編碼字串 s，格式是「字元＋次數」連續排列（次數可能有多位數）。輸出解碼後的字串。",
+   "rw_st": "輸入一個行程長度編碼字串 t，格式是「字元＋次數」連續排列（次數可能有多位數）。輸出解碼後的字串。",
+   "ref": "s = input()\nr = \"\"\ni = 0\nwhile i < len(s):\n    c = s[i]\n    i += 1\n    k = 0\n    while i < len(s) and s[i].isdigit():\n        k = k * 10 + int(s[i])\n        i += 1\n    r += c * k\nprint(r)",
+   "tests": [
+    {
+     "in": "b1y9\n",
+     "out": "byyyyyyyyy\n"
+    },
+    {
+     "in": "a9y5y5\n",
+     "out": "aaaaaaaaayyyyyyyyyy\n"
+    },
+    {
+     "in": "x7c7c3\n",
+     "out": "xxxxxxxcccccccccc\n"
+    },
+    {
+     "in": "a11y11c5a5\n",
+     "out": "aaaaaaaaaaayyyyyyyyyyycccccaaaaa\n"
+    },
+    {
+     "in": "c8b3c11a2x5\n",
+     "out": "ccccccccbbbcccccccccccaaxxxxx\n"
+    },
+    {
+     "in": "a7\n",
+     "out": "aaaaaaa\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "a25a29y7a19c9x4z24\n",
+     "out": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaayyyyyyyaaaaaaaaaaaaaaaaaaacccccccccxxxxzzzzzzzzzzzzzzzzzzzzzzzz\n"
+    },
+    {
+     "in": "c15y25a7b10b16z24x22\n",
+     "out": "cccccccccccccccyyyyyyyyyyyyyyyyyyyyyyyyyaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbzzzzzzzzzzzzzzzzzzzzzzzzxxxxxxxxxxxxxxxxxxxxxx\n"
+    }
+   ],
+   "want": "str.rle-decode"
+  },
+  {
+   "id": "pal-sub",
+   "st": "輸入一個小寫字串 s。輸出 s 中回文子字串的個數（位置不同就算不同的子字串，單一字元也算）。",
+   "rw_st": "輸入一個小寫字串 t。輸出 t 中回文子字串的個數（位置不同就算不同的子字串，單一字元也算）。",
+   "ref": "s = input()\nc = 0\nfor i in range(len(s)):\n    for j in range(i + 1, len(s) + 1):\n        t = s[i:j]\n        if t == t[::-1]:\n            c += 1\nprint(c)",
+   "tests": [
+    {
+     "in": "bacabbacb\n",
+     "out": "14\n"
+    },
+    {
+     "in": "ccbccbcc\n",
+     "out": "18\n"
+    },
+    {
+     "in": "abc\n",
+     "out": "3\n"
+    },
+    {
+     "in": "bab\n",
+     "out": "4\n"
+    },
+    {
+     "in": "bbbcaca\n",
+     "out": "12\n"
+    },
+    {
+     "in": "bcacaccba\n",
+     "out": "14\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "baabacaabbbcaababaaacaaaccabcccaababcbcacbacabcbcaccbabbbacbc\n",
+     "out": "110\n"
+    },
+    {
+     "in": "bbabbcccbbcbabcaccbccaababbaaabaabaabbabbcbabbbcaaccaacbcabbccccacacc\n",
+     "out": "143\n"
+    }
+   ],
+   "want": "str.palindrome-substrings"
+  },
+  {
+   "id": "pascal",
+   "st": "輸入一個整數 n（從 0 起算）。輸出巴斯卡三角形的第 n 列（第 0 列是 1），數字以空白分隔。",
+   "rw_st": "輸入一個整數 m（從 0 起算）。輸出巴斯卡三角形的第 m 列（第 0 列是 1），數字以空白分隔。",
+   "ref": "n = int(input())\nr = [1]\nfor _ in range(n):\n    r = [1] + [r[i] + r[i + 1] for i in range(len(r) - 1)] + [1]\nprint(*r)",
+   "tests": [
+    {
+     "in": "4\n",
+     "out": "1 4 6 4 1\n"
+    },
+    {
+     "in": "8\n",
+     "out": "1 8 28 56 70 56 28 8 1\n"
+    },
+    {
+     "in": "4\n",
+     "out": "1 4 6 4 1\n"
+    },
+    {
+     "in": "2\n",
+     "out": "1 2 1\n"
+    },
+    {
+     "in": "0\n",
+     "out": "1\n"
+    },
+    {
+     "in": "2\n",
+     "out": "1 2 1\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "27\n",
+     "out": "1 27 351 2925 17550 80730 296010 888030 2220075 4686825 8436285 13037895 17383860 20058300 20058300 17383860 13037895 8436285 4686825 2220075 888030 296010 80730 17550 2925 351 27 1\n"
+    },
+    {
+     "in": "29\n",
+     "out": "1 29 406 3654 23751 118755 475020 1560780 4292145 10015005 20030010 34597290 51895935 67863915 77558760 77558760 67863915 51895935 34597290 20030010 10015005 4292145 1560780 475020 118755 23751 3654 406 29 1\n"
+    }
+   ],
+   "want": "comb.pascal-row"
+  }
+ ]
+}

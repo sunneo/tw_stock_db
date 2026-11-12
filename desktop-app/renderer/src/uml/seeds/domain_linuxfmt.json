@@ -1,0 +1,441 @@
+{
+ "format": "fa-domain-seeds",
+ "version": 1,
+ "source": "renderer/src/uml/domain_linuxfmt.test.js",
+ "name": "領域包 linuxfmt",
+ "minSkeletons": 3,
+ "judge": null,
+ "trainOnly": null,
+ "seeds": [
+  {
+   "id": "env-orig",
+   "st": "第一行 n，接著 n 行「名稱=值」，最後一行是樣板。樣板中的 $名稱 或 ${名稱} 要換成值（名稱由大寫字母組成；$名稱 的名稱取到第一個非大寫字母為止；沒定義的名稱換成空字串）。輸出展開結果。",
+   "rw_st": null,
+   "ref": "import re, sys\nd = sys.stdin.read().split(\"\\n\")\nn = int(d[0])\nenv = dict(x.split(\"=\", 1) for x in d[1:1+n])\nt = d[1+n]\nPAT = r'\\$\\{([A-Za-z]+)\\}|\\$([A-Z]+)'\nprint(re.sub(PAT, lambda m: env.get(m.group(1) or m.group(2), \"\"), t))\n",
+   "tests": [
+    {
+     "in": "1\nGDF=hecg\n$GDF$GDFx\n",
+     "out": "hecghecgx\n"
+    },
+    {
+     "in": "1\nBB=ai\n${BB}yz\n",
+     "out": "aiyz\n"
+    },
+    {
+     "in": "2\nGIG=gdjb\nDH=ddg\n-xz${DD}\n",
+     "out": "-xz\n"
+    },
+    {
+     "in": "1\nCG=gc\nx-$BHExz\n",
+     "out": "x-xz\n"
+    },
+    {
+     "in": "3\nFCCC=bbd\nBF=iee\nGCE=g\nxx.zzy\n",
+     "out": "xx.zzy\n"
+    },
+    {
+     "in": "1\nFB=ggig\n$FB${FB}${FB}\n",
+     "out": "ggigggigggig\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "2\nBJ=jdj\nHD=bcegf\ny$BJ\n",
+     "out": "yjdj\n"
+    },
+    {
+     "in": "4\nBAG=hj\nJFB=bhd\nEC=bd\nICE=ci\nyyy${BAG}-\n",
+     "out": "yyyhj-\n"
+    }
+   ],
+   "want": "lf.env-expand"
+  },
+  {
+   "id": "env-keep",
+   "st": "第一行 n，接著 n 行「名稱=值」，最後一行是樣板。樣板中的 $名稱 或 ${名稱} 要換成對應的值（名稱由大寫字母組成；$名稱 取到第一個非大寫字母為止）；沒有定義的名稱原樣保留不替換。輸出展開結果。",
+   "rw_st": null,
+   "ref": "import re, sys\nd = sys.stdin.read().split(\"\\n\")\nn = int(d[0])\nenv = dict(x.split(\"=\", 1) for x in d[1:1+n])\nt = d[1+n]\nprint(re.sub(r\"\\$\\{([A-Za-z]+)\\}|\\$([A-Z]+)\", lambda m: env.get(m.group(1) or m.group(2), m.group(0)), t))\n",
+   "tests": [
+    {
+     "in": "1\nCG=jfdf\ny$CG\n",
+     "out": "yjfdf\n"
+    },
+    {
+     "in": "1\nCI=i\n.z$CI$CI$CI\n",
+     "out": ".ziii\n"
+    },
+    {
+     "in": "2\nJBC=cc\nGCC=ace\n$GCC.xx$JBC\n",
+     "out": "ace.xxcc\n"
+    },
+    {
+     "in": "2\nHI=jdf\nEF=bdjg\n$HIzyxx\n",
+     "out": "jdfzyxx\n"
+    },
+    {
+     "in": "3\nEIEE=a\nDH=cgie\nGI=jfj\nx-x.${EGDF}-yxz\n",
+     "out": "x-x.${EGDF}-yxz\n"
+    },
+    {
+     "in": "3\nAEGC=jf\nEI=c\nIHJD=bcec\nyz.\n",
+     "out": "yz.\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "1\nEIG=a\n-z$EIG${EIG}\n",
+     "out": "-zaa\n"
+    },
+    {
+     "in": "2\nHG=gi\nAC=hfd\nx$JDD${AC}\n",
+     "out": "x$JDDhfd\n"
+    }
+   ],
+   "want": "lf.env-expand"
+  },
+  {
+   "id": "tar-orig",
+   "st": "輸入一行檔案大小 s（位元組）。tar 以 512 位元組為區塊：一個檔案佔 1 個標頭區塊，加上資料區塊（資料補 0 補到 512 的倍數，s=0 沒有資料區塊）。輸出兩行：第一行是這一個檔案佔用的區塊數，第二行是只含這個檔案的完整封存檔位元組數（再加 2 個全 0 的結尾區塊）。",
+   "rw_st": null,
+   "ref": "s = int(input())\ndata = -(-s // 512)\nblocks = data + 1\nprint(blocks)\nprint((blocks + 2) * 512)\n",
+   "tests": [
+    {
+     "in": "1995\n",
+     "out": "5\n3584\n"
+    },
+    {
+     "in": "2191\n",
+     "out": "6\n4096\n"
+    },
+    {
+     "in": "1261\n",
+     "out": "4\n3072\n"
+    },
+    {
+     "in": "123\n",
+     "out": "2\n2048\n"
+    },
+    {
+     "in": "2578\n",
+     "out": "7\n4608\n"
+    },
+    {
+     "in": "1911\n",
+     "out": "5\n3584\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "421\n",
+     "out": "2\n2048\n"
+    },
+    {
+     "in": "2423\n",
+     "out": "6\n4096\n"
+    }
+   ],
+   "want": "lf.block-count"
+  },
+  {
+   "id": "tar-blocks-only",
+   "st": "輸入一行檔案大小 s（位元組）。tar 以 512 位元組為區塊：一個檔案佔 1 個標頭區塊，加上資料區塊（資料補 0 補到 512 的倍數，s=0 沒有資料區塊）。輸出這個檔案佔用的區塊數。",
+   "rw_st": null,
+   "ref": "s = int(input())\ndata = -(-s // 512)\nblocks = data + 1\nprint(blocks)\n",
+   "tests": [
+    {
+     "in": "1301\n",
+     "out": "4\n"
+    },
+    {
+     "in": "3262\n",
+     "out": "8\n"
+    },
+    {
+     "in": "1852\n",
+     "out": "5\n"
+    },
+    {
+     "in": "4092\n",
+     "out": "9\n"
+    },
+    {
+     "in": "4073\n",
+     "out": "9\n"
+    },
+    {
+     "in": "2212\n",
+     "out": "6\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "4616\n",
+     "out": "11\n"
+    },
+    {
+     "in": "3698\n",
+     "out": "9\n"
+    }
+   ],
+   "want": "lf.block-count"
+  },
+  {
+   "id": "huff-orig",
+   "st": "第一行 k，第二行 k 個碼長 len[0..k-1]（0 表示該符號不使用）。依 RFC 1951 產生範式碼：bl_count[L]＝碼長為 L 的符號數（L≥1）；next_code[1]=0，next_code[L]=(next_code[L-1]+bl_count[L-1])*2；再依符號編號由小到大，碼長非 0 者取 code=next_code[len]++。對每個使用中的符號輸出一行「符號編號 碼（二進位字串，補零到 len 位）」。",
+   "rw_st": null,
+   "ref": "k = int(input())\nL = list(map(int, input().split()))\nfrom collections import Counter\nc = Counter(x for x in L if x)\ncode = 0\nstart = {}\nfor l in range(1, max(L) + 1):\n    code = (code + c.get(l - 1, 0) * (l > 1)) << 1\n    start[l] = code\nused = {}\nfor i, l in enumerate(L):\n    if l:\n        v = start[l] + used.get(l, 0)\n        used[l] = used.get(l, 0) + 1\n        print(str(i) + \" \" + format(v, \"0\" + str(l) + \"b\"))\n",
+   "tests": [
+    {
+     "in": "6\n2 2 0 2 0 2\n",
+     "out": "0 00\n1 01\n3 10\n5 11\n"
+    },
+    {
+     "in": "6\n1 4 4 3 3 3\n",
+     "out": "0 0\n1 1110\n2 1111\n3 100\n4 101\n5 110\n"
+    },
+    {
+     "in": "3\n2 1 2\n",
+     "out": "0 10\n1 0\n2 11\n"
+    },
+    {
+     "in": "6\n3 3 3 3 0 1\n",
+     "out": "0 100\n1 101\n2 110\n3 111\n5 0\n"
+    },
+    {
+     "in": "6\n3 2 3 3 2 3\n",
+     "out": "0 100\n1 00\n2 101\n3 110\n4 01\n5 111\n"
+    },
+    {
+     "in": "9\n3 3 4 2 3 0 4 0 2\n",
+     "out": "0 100\n1 101\n2 1110\n3 00\n4 110\n6 1111\n8 01\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "6\n2 4 2 3 2 4\n",
+     "out": "0 00\n1 1110\n2 01\n3 110\n4 10\n5 1111\n"
+    },
+    {
+     "in": "2\n1 1\n",
+     "out": "0 0\n1 1\n"
+    }
+   ],
+   "want": "lf.canon-huffman"
+  },
+  {
+   "id": "huff-colon",
+   "st": "第一行 k，第二行 k 個碼長（0 表示不使用）。依 DEFLATE 的範式 Huffman 規則（bl_count、next_code）產生每個符號的碼，依符號編號由小到大，每個使用中的符號輸出一行「符號編號:碼」，碼是補零到碼長的二進位字串。",
+   "rw_st": null,
+   "ref": "k = int(input())\nL = list(map(int, input().split()))\nfrom collections import Counter\nc = Counter(x for x in L if x)\ncode = 0\nstart = {}\nfor l in range(1, max(L) + 1):\n    code = (code + c.get(l - 1, 0) * (l > 1)) << 1\n    start[l] = code\nused = {}\nfor i, l in enumerate(L):\n    if l:\n        v = start[l] + used.get(l, 0)\n        used[l] = used.get(l, 0) + 1\n        print(str(i) + \":\" + format(v, \"0\" + str(l) + \"b\"))\n",
+   "tests": [
+    {
+     "in": "3\n2 2 1\n",
+     "out": "0:10\n1:11\n2:0\n"
+    },
+    {
+     "in": "3\n2 1 2\n",
+     "out": "0:10\n1:0\n2:11\n"
+    },
+    {
+     "in": "7\n3 3 2 0 2 0 2\n",
+     "out": "0:110\n1:111\n2:00\n4:01\n6:10\n"
+    },
+    {
+     "in": "4\n3 3 2 1\n",
+     "out": "0:110\n1:111\n2:10\n3:0\n"
+    },
+    {
+     "in": "4\n2 2 2 2\n",
+     "out": "0:00\n1:01\n2:10\n3:11\n"
+    },
+    {
+     "in": "7\n3 3 2 4 2 4 3\n",
+     "out": "0:100\n1:101\n2:00\n3:1110\n4:01\n5:1111\n6:110\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "4\n2 1 0 2\n",
+     "out": "0:10\n1:0\n3:11\n"
+    },
+    {
+     "in": "2\n1 1\n",
+     "out": "0:0\n1:1\n"
+    }
+   ],
+   "want": "lf.canon-huffman"
+  },
+  {
+   "id": "ho-env-word",
+   "st": "第一行 n，接著 n 行「名稱=值」，最後一行是樣板。名稱由英文字母、數字與底線組成。樣板裡的 ${名稱} 與 $名稱 都要換成值，$名稱 的名稱盡量取最長；沒定義的名稱換成空字串。輸出展開後的樣板。",
+   "rw_st": null,
+   "ref": "import re, sys\nd = sys.stdin.read().split(\"\\n\")\nn = int(d[0])\nenv = dict(x.split(\"=\", 1) for x in d[1:1+n])\nt = d[1+n]\nPAT = r'\\$\\{([A-Za-z0-9_]+)\\}|\\$([A-Za-z0-9_]+)'\nprint(re.sub(PAT, lambda m: env.get(m.group(1) or m.group(2), \"\"), t))\n",
+   "tests": [
+    {
+     "in": "1\nheb_6=hf\n${ecag8}x-x\n",
+     "out": "x-x\n"
+    },
+    {
+     "in": "1\nbba2=ec\n-y${bba2}\n",
+     "out": "-yec\n"
+    },
+    {
+     "in": "1\nhgj7=diagc\n${hgj7}$hgj7${hgj7}\n",
+     "out": "diagcdiagcdiagc\n"
+    },
+    {
+     "in": "1\nhe6=eaca\nx${aea2}$he6\n",
+     "out": "xeaca\n"
+    },
+    {
+     "in": "2\n__d1=ffd\ngfaf3=agcg\nxy$gfaf3\n",
+     "out": "xyagcg\n"
+    },
+    {
+     "in": "2\nebh9=ffhb\njc9=gi\nxy\n",
+     "out": "xy\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "3\nj_ce9=f\nedj9=gaj\nga9=cee\n$ga9$jfa9xyy$j_ce9\n",
+     "out": "ceef\n"
+    },
+    {
+     "in": "2\nbg_b2=bciae\ndcdb1=bdf\n${gcf3}-xx--\n",
+     "out": "-xx--\n"
+    }
+   ],
+   "split": "holdout"
+  },
+  {
+   "id": "ho-fs-block",
+   "st": "輸入一行檔案大小 s（位元組）。檔案系統每個區塊 4096 位元組，檔案資料用掉的區塊數是 s 除以 4096 無條件進位（s=0 用 0 個區塊）。輸出兩行：第一行是用掉的區塊數，第二行是最後浪費的位元組數（內部碎片）。",
+   "rw_st": null,
+   "ref": "s = int(input())\ndata = -(-s // 4096)\nblocks = data + 0\nprint(data)\nprint(data * 4096 - s)\n",
+   "tests": [
+    {
+     "in": "21249\n",
+     "out": "6\n3327\n"
+    },
+    {
+     "in": "16394\n",
+     "out": "5\n4086\n"
+    },
+    {
+     "in": "14332\n",
+     "out": "4\n2052\n"
+    },
+    {
+     "in": "16312\n",
+     "out": "4\n72\n"
+    },
+    {
+     "in": "7406\n",
+     "out": "2\n786\n"
+    },
+    {
+     "in": "22928\n",
+     "out": "6\n1648\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "2775\n",
+     "out": "1\n1321\n"
+    },
+    {
+     "in": "13009\n",
+     "out": "4\n3375\n"
+    }
+   ],
+   "split": "holdout"
+  },
+  {
+   "id": "ho-huff-codes",
+   "st": "第一行 k，第二行 k 個碼長，0 代表該符號沒有用到。依 DEFLATE 的範式前綴碼規則（先算每種碼長有幾個符號，再算每個碼長的起始碼）替每個有用到的符號指派碼，依符號編號順序，每行輸出一個碼（補零到碼長的二進位字串）。",
+   "rw_st": null,
+   "ref": "k = int(input())\nL = list(map(int, input().split()))\nfrom collections import Counter\nc = Counter(x for x in L if x)\ncode = 0\nstart = {}\nfor l in range(1, max(L) + 1):\n    code = (code + c.get(l - 1, 0) * (l > 1)) << 1\n    start[l] = code\nused = {}\nfor i, l in enumerate(L):\n    if l:\n        v = start[l] + used.get(l, 0)\n        used[l] = used.get(l, 0) + 1\n        print(format(v, \"0\" + str(l) + \"b\"))\n",
+   "tests": [
+    {
+     "in": "11\n0 2 0 2 0 2 0 4 5 3 5\n",
+     "out": "00\n01\n10\n1110\n11110\n110\n11111\n"
+    },
+    {
+     "in": "4\n0 1 0 1\n",
+     "out": "0\n1\n"
+    },
+    {
+     "in": "4\n3 3 2 1\n",
+     "out": "110\n111\n10\n0\n"
+    },
+    {
+     "in": "12\n2 0 4 4 0 3 0 3 0 2 0 3\n",
+     "out": "00\n1110\n1111\n100\n101\n01\n110\n"
+    },
+    {
+     "in": "7\n0 1 0 2 0 3 3\n",
+     "out": "0\n10\n110\n111\n"
+    },
+    {
+     "in": "3\n1 2 2\n",
+     "out": "0\n10\n11\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "9\n0 2 0 2 0 4 3 2 4\n",
+     "out": "00\n01\n1110\n110\n10\n1111\n"
+    },
+    {
+     "in": "2\n1 1\n",
+     "out": "0\n1\n"
+    }
+   ],
+   "split": "holdout"
+  },
+  {
+   "id": "ho-env-default",
+   "st": "第一行 n，接著 n 行「名稱=值」，最後一行是樣板。樣板裡的 ${名稱:-預設} 表示名稱沒定義或值為空時用「預設」，其他 ${名稱} 與 $名稱 換成值。輸出展開結果。",
+   "rw_st": null,
+   "ref": "import sys\nprint(\"unsupported\")\n",
+   "tests": [
+    {
+     "in": "3\nEAC=gee\nCEG=ddec\nGDF=jgegh\ny$EAC$EAC${BDF}\n",
+     "out": "unsupported\n"
+    },
+    {
+     "in": "1\nAHJ=i\n$AHJ${AHJ}.-z\n",
+     "out": "unsupported\n"
+    },
+    {
+     "in": "2\nBFH=dbbb\nJBE=bbie\n${JBE}${JBE}${JBE}\n",
+     "out": "unsupported\n"
+    },
+    {
+     "in": "1\nCGE=cbcac\n$CGE$CGE${CGE}\n",
+     "out": "unsupported\n"
+    },
+    {
+     "in": "1\nJJH=dbbb\n$IFFy-z\n",
+     "out": "unsupported\n"
+    },
+    {
+     "in": "2\nIGI=acg\nFFG=j\nz$EJH.z\n",
+     "out": "unsupported\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "1\nEGB=g\n${EGB}z$EGB$EGB\n",
+     "out": "unsupported\n"
+    },
+    {
+     "in": "3\nACC=bdci\nCIG=c\nCCB=aa\nxz${CCB}\n",
+     "out": "unsupported\n"
+    }
+   ],
+   "split": "holdout"
+  }
+ ]
+}

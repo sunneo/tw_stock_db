@@ -3,7 +3,7 @@ const L = require('./studio_layout_core.js');
 let ok = 0; const bad = [];
 const check = (n, c, x) => { if (c) ok++; else { bad.push(n); console.log('FAIL', n, x === undefined ? '' : JSON.stringify(x).slice(0, 300)); } };
 const d = L.defaults(); const N = L.IDS.length;
-check('預設左 資產／LoRA／匯入／資料集／評量，右 訓練／老師／紀錄', d.panes.left.join() === 'assets,lora,ingest,datasets,eval' && d.panes.right.join() === 'train,teacher,log');
+check('預設左 資產／LoRA／匯入／資料集／評量，右 訓練／老師／紀錄', d.panes.left.join() === 'assets,lora,ingest,datasets,domains,eval' && d.panes.right.join() === 'train,pipeline,teacher,log');
 // normalize 對壞輸入
 check('null 輸入回預設', JSON.stringify(L.normalize(null)) === JSON.stringify(d));
 const n1 = L.normalize({ panes: { left: ['train', 'train', 'zzz'], right: [] }, closed: ['log', 'assets'], split: 5, max: 'right' });
@@ -14,14 +14,14 @@ check('兩區至少各一個', n1.panes.left.length >= 1 && n1.panes.right.lengt
 check('max 指向空區時清掉', L.normalize({ panes: { left: L.IDS.slice(), right: [] }, max: 'right' }).max !== 'right' || L.normalize({ panes: { left: L.IDS.slice(), right: [] }, max: 'right' }).panes.right.length > 0);
 // 搬移
 let r = L.moveTab(d, 'train', 'left', 0); check('右→左搬到最前', r.ok && r.layout.panes.left[0] === 'train' && r.layout.panes.right.indexOf('train') < 0 && r.layout.active.left === 'train', r);
-check('搬移不改原物件', d.panes.left.length === 5);
+check('搬移不改原物件', d.panes.left.length === 6);
 const one = { panes: { left: ['assets'], right: ['train', 'log'] }, active: { left: 'assets', right: 'train' }, closed: ['datasets', 'eval', 'teacher'], split: 0.45, max: null };
 check('來源只剩一個時拒絕搬走', !L.moveTab(one, 'assets', 'right').ok);
 check('同側重排允許', L.moveTab(one, 'log', 'right', 0).layout.panes.right[0] === 'log');
 check('搬到不存在的側拒絕', !L.moveTab(d, 'train', 'middle').ok);
 check('搬已關閉的分頁拒絕', !L.moveTab(one, 'eval', 'left').ok);
 // 關閉／重開
-r = L.closeTab(d, 'datasets'); check('關閉分頁進 closed', r.ok && r.layout.closed.join() === 'datasets' && r.layout.panes.left.join() === 'assets,lora,ingest,eval', r);
+r = L.closeTab(d, 'datasets'); check('關閉分頁進 closed', r.ok && r.layout.closed.join() === 'datasets' && r.layout.panes.left.join() === 'assets,lora,ingest,domains,eval', r);
 check('關閉最後一個被拒', !L.closeTab(one, 'assets').ok);
 const c2 = L.closeTab(d, 'assets').layout; check('關閉使用中分頁後換成鄰近', c2.active.left === 'lora', c2.active);
 r = L.openTab(c2, 'assets'); check('用「+」重開回原側', r.ok && r.layout.panes.left.indexOf('assets') >= 0 && r.layout.closed.length === 0 && r.layout.active.left === 'assets', r);

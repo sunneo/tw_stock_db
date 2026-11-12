@@ -9,6 +9,22 @@ const SC = require('./studio_config_core.js');
 const CpuJs = require('./backend_cpu_js.js');
 const CpuPy = require('./backend_cpu_py.js');
 const Planned = require('./backend_planned.js');
+const LlmExport = require('./llm_export_core.js');
+
+// 在 PATH 上找候選可執行檔（不執行它）。沒有 PATH 或找不到就 found:false 並寫原因。
+const EXPORT_TOOL_BINS = { optimum: ['optimum-cli'], llamaCpp: ['llama-quantize', 'llama-cli'] };
+function detectExportTool(name) {
+    const bins = EXPORT_TOOL_BINS[name];
+    if (!bins) return { found: false, reason: '這版還沒有偵測 ' + name + '（尚未實作）' };
+    const path = require('path'), fs = require('fs');
+    const dirs = String(process.env.PATH || '').split(path.delimiter).filter(Boolean);
+    const exts = process.platform === 'win32' ? ['.exe', '.cmd', ''] : [''];
+    for (const b of bins) for (const dir of dirs) for (const ext of exts) {
+        const f = path.join(dir, b + ext);
+        try { if (fs.statSync(f).isFile()) return { found: true, version: null, path: f }; } catch (e) { /* 不在這裡 */ }
+    }
+    return { found: false, reason: 'PATH 上找不到 ' + bins.join(' 或 ') };
+}
 
 function createStudioHost(d) {
   const fs = d.fs, P = d.path, os = d.os, cp = d.cp;
@@ -138,6 +154,29 @@ function createStudioHost(d) {
       job.run.done.then((r) => { job.state = (job.run && job.run.state) || 'finished'; job.result = r && { state: r.state }; job.endedAt = now(); });
       return { ok: true, jobId: job.id };
     },
+    // 流程總覽讀真實紀錄（DESIGN §19）：<runDir>/train.log 尾端 2MB；run.pid 對應的子行程 VmRSS（Linux 才有 /proc；其他系統說明未取樣）；主行程 RSS 另附
+    async studio_run_info(p) {
+      const dir = String((p && p.runDir) || ''); if (!dir) return { ok: false, error: '缺 runDir' };
+      let log = null; try { const t = fs.readFileSync(P.join(dir, 'train.log'), 'utf8'); log = t.length > 2000000 ? t.slice(t.length - 2000000) : t; } catch (e) { log = null; }
+      let pid = null; try { pid = parseInt(fs.readFileSync(P.join(dir, 'run.pid'), 'utf8'), 10) || null; } catch (e) { pid = null; }
+      let rssBytes = null, rssReason = '';
+      if (!pid) rssReason = '沒有 run.pid（子行程 pid 未記錄）';
+      else if (process.platform === 'win32') {
+        try { const r = cp.spawnSync('tasklist', ['/FI', 'PID eq ' + pid, '/FO', 'CSV', '/NH'], { encoding: 'utf8', windowsHide: true, timeout: 5000 }); const bytes = parseTasklistMemory(r.stdout || ''); if (bytes !== null) rssBytes = bytes; else rssReason = 'tasklist 查不到子行程 ' + pid + '（可能已結束）'; }
+        catch (e) { rssReason = 'tasklist 執行失敗：' + String((e && e.message) || e); }
+      }
+      else if (process.platform !== 'linux') rssReason = '這個系統（' + process.platform + '）還沒有子行程記憶體取樣（尚未實作）';
+      else { try { const st = fs.readFileSync('/proc/' + pid + '/status', 'utf8'); const m = /VmRSS:\s+(\d+)\s+kB/.exec(st); if (m) rssBytes = +m[1] * 1024; else rssReason = '/proc 沒有 VmRSS 欄位'; } catch (e) { rssReason = '子行程已結束，或讀不到 /proc/' + pid + '/status'; } }
+      let hostRssBytes = null; try { hostRssBytes = process.memoryUsage().rss; } catch (e) { hostRssBytes = null; }
+      const events = log ? log.split(/\r?\n/).map((l) => CpuPy.parseProgressLine(l)).filter(Boolean).slice(-5000) : [];
+      return { ok: true, runDir: dir, log, events, pid, rssBytes, rssReason: rssBytes === null ? rssReason : '', hostRssBytes };
+    },
+    // LLM 匯出工具偵測（DESIGN §20.3 第 2 項）：只在 PATH 上找可執行檔；onnxruntime 要查 python 模組，這版還沒做，照實回報
+    async studio_export_tools() {
+        const tools = LlmExport.probeExportTools(detectExportTool);
+        return { ok: true, tools, checkedAt: now() };
+    },
+    async studio_run_current() { const j = activeTrain || Array.from(jobs.values()).pop(); return { ok: true, runDir: j && j.cfg && j.cfg.outputDir ? j.cfg.outputDir : null }; },
     async studio_train_status(p) {
       const j = jobs.get(p && p.jobId) || activeTrain; if (!j || j.kind === undefined || !j.run) return { ok: true, running: false, state: 'idle' };
       const r = j.run; return { ok: true, jobId: j.id, running: r.state === 'running' || r.state === 'pausing', state: r.state, step: r.lastStep, loss: r.lastLoss, errors: r.errors.slice(-5), events: j.events.slice(-(Number(p && p.tail) || 50)), exitCode: r.exitCode, elapsedMs: (j.endedAt || now()) - j.startedAt };
@@ -149,4 +188,9 @@ function createStudioHost(d) {
   return { ops, registry, handle: async (op, payload) => { const f = ops[op]; if (!f) return { ok: false, code: 'bad_op', message: '未知的 Studio 操作：' + op }; try { return await f(payload || {}); } catch (e) { return { ok: false, code: 'internal', message: String((e && e.message) || e) }; } } };
 }
 
-module.exports = { createStudioHost };
+// tasklist /FO CSV 的記憶體欄（例如 "1,234,567 K"）→ 位元組；查不到回 null。純函式，測試用
+function parseTasklistMemory(text) {
+  const m = /"([\d,]+)\s*K"\s*$/m.exec(String(text || '')); if (!m) return null;
+  const kb = Number(m[1].replace(/,/g, '')); return Number.isFinite(kb) ? kb * 1024 : null;
+}
+module.exports = { createStudioHost, parseTasklistMemory };

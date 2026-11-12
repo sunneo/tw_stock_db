@@ -19,23 +19,4 @@ const BP = 'import sys\nsys.setrecursionlimit(10000)\nd = sys.stdin.read().split
 const fGen = (b) => { const n = rnd(3, b ? 12 : 6); const m = rnd(n, 2 * n); const E = []; for (let i = 0; i < m; i++) { const u = rnd(1, n), v = rnd(1, n); if (u !== v) E.push([u, v, rnd(1, 9)]); } E.push([1, n, rnd(1, 9)]); return n + ' ' + E.length + '\n' + E.map((e) => e.join(' ')).join('\n') + '\n'; };
 const MF = 'import sys\nd = sys.stdin.read().split()\nn, m = int(d[0]), int(d[1])\ncap = {}\nfor i in range(m):\n    a, b, c = int(d[2+3*i]), int(d[3+3*i]), int(d[4+3*i])\n    cap[(a, b)] = cap.get((a, b), 0) + c\ndef dfs(x, seen, f):\n    if x == n:\n        return f\n    seen.add(x)\n    for y in range(1, n+1):\n        c = cap.get((x, y), 0)\n        if y not in seen and c > 0:\n            r = dfs(y, seen, min(f, c))\n            if r:\n                cap[(x, y)] -= r\n                cap[(y, x)] = cap.get((y, x), 0) + r\n                return r\n    return 0\nflow = 0\nwhile True:\n    r = dfs(1, set(), 10**9)\n    if not r:\n        break\n    flow += r\nprint(flow)\n';
 const rw = (s) => s.replace(/\bm\b/g, 'k');
-const SEEDS = [
-    { id: 'mst-total', want: 'graph2.mst', st: '第一行 n m，接著 m 行每行 u v w 表示節點 u 和 v 之間有一條權重 w 的無向邊。求最小生成樹的總權重；如果圖不連通就輸出 -1。', ref: MST('print(tot)'), gen: wGen },
-    { id: 'mst-max', want: 'graph2.mst', st: '第一行 n m，接著 m 行每行 u v w 表示無向加權邊。用 Kruskal 演算法求最小生成樹，輸出樹上最大的那條邊的權重；若無法連通所有點輸出 -1。', ref: MST('print(mx)'), gen: wGen },
-    { id: 'mst-count', want: 'graph2.mst', st: '第一行 n m，接著 m 行每行 u v w 表示無向加權邊。求最小生成樹用掉幾條邊；若圖不連通輸出 -1。', ref: MST('print(cnt - 1)'), gen: wGen },
-    { id: 'scc-count', want: 'graph2.scc', st: '第一行 n m，接著 m 行每行 u v 表示一條從 u 到 v 的有向邊。輸出這張有向圖的強連通分量個數。', ref: SCC('print(len(groups))'), gen: dGen },
-    { id: 'scc-largest', want: 'graph2.scc', st: '第一行 n m，接著 m 行每行 u v 表示一條有向邊 u 到 v。輸出最大的強連通分量包含幾個點。', ref: SCC('print(max(groups))'), gen: dGen },
-    { id: 'scc-one', want: 'graph2.scc', st: '第一行 n m，接著 m 行每行 u v 表示有向邊 u 到 v。判斷整張圖是否強連通，是輸出 YES，否則輸出 NO。', ref: SCC('print("YES" if len(groups) == 1 else "NO")'), gen: dGen },
-    { id: 'bf-dist', want: 'graph2.bellman', st: '第一行 n m，接著 m 行每行 u v w 表示一條從 u 到 v、權重為 w 的有向邊（權重可以是 0 但保證沒有負環）。用 Bellman-Ford 求從節點 1 到節點 n 的最短距離，無法到達輸出 -1。', ref: BF('print(dist.get(n, -1))'), gen: bGen },
-    { id: 'bf-all', want: 'graph2.bellman', st: '第一行 n m，接著 m 行每行 u v w 表示有向邊 u 到 v 權重 w。用 Bellman-Ford 求節點 1 到每個節點的最短距離，輸出 n 個數字用空白分隔，無法到達的輸出 INF。', ref: BF('print(*[dist.get(i, "INF") for i in range(1, n+1)])'), gen: bGen },
-    { id: 'td-len', want: 'graph2.tree-diameter', st: '第一行 n，接著 n-1 行每行 u v 表示樹上的一條邊。輸出樹的直徑（最遠兩點的距離，以邊數計）。', ref: TD, gen: tGen },
-    { id: 'lca-q', want: 'graph2.lca', st: '第一行 n q，接著 n-1 行每行 u v 表示樹上的一條邊（以節點 1 為根），再接著 q 行每行 a b，輸出 a 和 b 的最近共同祖先。', ref: LCA('print(c)'), gen: lGen },
-    { id: 'lca-dist', want: 'graph2.lca', st: '第一行 n q，接著 n-1 行每行 u v 表示樹的一條邊（根是 1），再接著 q 行每行 a b。每個查詢輸出 a 到 b 的樹上距離（邊數）；可以利用最近共同祖先。', ref: LCA('print(pa.index(c) + pb.index(c))'), gen: lGen },
-    { id: 'bip-yn', want: 'graph2.bipartite', st: '第一行 n m，接著 m 行每行 u v 表示一條無向邊。判斷這張圖是不是二分圖，是輸出 YES，否則輸出 NO。', ref: BP, gen: bpGen },
-    { id: 'mf-flow', want: 'graph2.maxflow', st: '第一行 n m，接著 m 行每行 u v c 表示一條從 u 到 v 容量為 c 的有向邊。求從節點 1 到節點 n 的最大流量。', ref: MF, gen: fGen },
-    { id: 'ho-mst-sum', split: 'holdout', st: '第一行 n m，接著 m 行每行 a b c，代表城市 a 與 b 之間可以鋪設成本 c 的道路（雙向）。要讓所有城市互通，最少總成本是多少？若不可能輸出 -1。', ref: MST('print(tot)'), gen: wGen },
-    { id: 'ho-scc-n', split: 'holdout', st: '第一行 n m，接著 m 行每行 x y，表示網頁 x 有連結指向網頁 y。互相可以到達的網頁算同一群，輸出有幾群。', ref: SCC('print(len(groups))'), gen: dGen },
-    { id: 'ho-diam', split: 'holdout', st: '第一行 n，接著 n-1 行每行 a b 描述一棵樹。找出樹上相距最遠的兩個點，輸出它們之間經過的邊數。', ref: TD, gen: tGen },
-    { id: 'ho-lca', split: 'holdout', st: '第一行 n q，接著 n-1 行每行 a b 描述一棵以 1 為根的樹，再來 q 行每行 x y。對每個詢問輸出 x 與 y 共同的最深祖先編號（LCA）。', ref: LCA('print(c)'), gen: lGen },
-];
-H.main({ name: '領域包 graph2', packs: [G2], seeds: SEEDS, minSkeletons: 4 });
+H.main({ name: '領域包 graph2', packs: [G2], seeds: H.loadSeeds(require('path').join(__dirname, 'seeds', 'domain_graph2.json')), minSkeletons: 4 });

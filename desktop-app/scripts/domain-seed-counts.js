@@ -8,7 +8,8 @@ function seedCounts(root) {
     const PAR = require(path.join(dir, 'py_paradigms_core.js'));
     const out = {}; const orig = Module._load;
     let cur = null;
-    const stub = { rnd: (a) => a, pick: (arr) => arr[0], main: (o) => { cur = o; }, run: (o) => { cur = o; } };
+    const REAL = require(path.join(dir, 'domain_harness.js')); // 真的 harness（loadSeeds 只讀 JSON，不跑題）；main 只攔截
+    const stub = Object.assign({}, REAL, { main: (o) => { cur = o; }, run: (o) => { cur = o; } });
     Module._load = function (req, parent, isMain) {
         if (parent && /domain_[^\\/]+\.test\.js$/.test(parent.filename || '') && /domain_harness(\.js)?$/.test(req)) return stub;
         return orig.apply(this, arguments);
@@ -18,6 +19,12 @@ function seedCounts(root) {
             cur = null;
             const p = path.join(dir, f); delete require.cache[p];
             const srcText = fs.readFileSync(p, 'utf8');
+            if (!/domain_harness/.test(srcText) && /seeds', '[^']+\.json'/.test(srcText)) { // 自己跑的測試檔（dsp）：種子在資料檔，直接讀 JSON 數
+                const idm = /require\('\.\/domain_(?!registry)([a-z0-9]+)_core\.js'\)/.exec(srcText); const jf = /seeds', '([^']+\.json)'/.exec(srcText)[1];
+                const sd = JSON.parse(fs.readFileSync(path.join(dir, 'seeds', jf), 'utf8')).seeds; const n = sd.length, ho = sd.filter((x) => x.split === 'holdout').length;
+                if (n && idm) out[idm[1]] = { total: n, train: n - ho, holdout: ho, file: 'renderer/src/uml/seeds/' + jf, counted: 'json' };
+                continue;
+            }
             if (!/domain_harness/.test(srcText)) { // 自己跑的測試檔（不經 harness）：只靜態數 SEEDS 陣列裡 `{ id: '` 開頭的列，絕不執行（會叫 Python）
                 const m = /const SEEDS = \[/.exec(srcText); const body = m ? srcText.slice(m.index) : ''; const n = (body.match(/^\s*\{ id: '/gm) || []).length; const ho = (body.match(/split: 'holdout'/g) || []).length;
                 const idm = /require\('\.\/domain_(?!registry)([a-z0-9]+)_core\.js'\)/.exec(srcText); if (n && idm) out[idm[1]] = { total: n, train: n - ho, holdout: ho, file: 'renderer/src/uml/' + f, counted: 'static' };

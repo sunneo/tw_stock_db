@@ -93,14 +93,14 @@ check('驗證會檢查可重現（展開兩次一致）', S.validate(B).ok);
     check('產出的 Python 語法形狀', /^def main\(\):\n    n = int\(input\(\)\)\n    a = 3/.test(r.source) || /def main\(\):\n    n = int\(input\(\)\)/.test(r.source), r.source);
     const ints = { id: 'x', layout: 'lines', input: [{ name: 'a', type: 'ints' }], output: { type: 'ints' }, params: { k: [1, 2, 3] }, expr: '[x * k for x in a]' }; const ri = S.fitOp(ints, [{ in: '1 2 3\n', out: '2 4 6\n' }, { in: '5\n', out: '10\n' }], X); check('ints 輸入／輸出', ri.ok && ri.assignment.k === 2 && /list\(map\(int, input\(\)\.split\(\)\)\)/.test(ri.source) && /print\(' '\.join\(map\(str, list\(r\)\)\)\)/.test(ri.source), ri);
     const line = { id: 'y', layout: 'line', input: [{ name: 'a', type: 'int' }, { name: 'b', type: 'int' }], output: { type: 'int' }, params: {}, expr: 'a * b + 1' }; const rl = S.fitOp(line, [{ in: '2 3\n', out: '7\n' }, { in: '4 5\n', out: '21\n' }], X); check('line 版面（同一行多個整數）', rl.ok && /a, b = map\(int, input\(\)\.split\(\)\)/.test(rl.source), rl);
-    const strp = { id: 'z', layout: 'lines', input: [{ name: 's', type: 'str' }], output: { type: 'int' }, params: { t: ['a', 'b', 'ab'] }, expr: 's.count(t)' }; const rs = S.fitOp(strp, [{ in: 'abab\n', out: '2\n' }, { in: 'aab\n', out: '1\n' }], X); check('字串參數', rs.ok && rs.assignment.t === 'ab' && /t = "ab"/.test(rs.source), rs);
+    const strp = { id: 'z', layout: 'lines', input: [{ name: 's', type: 'str' }], output: { type: 'int' }, params: { t: ['a', 'b', 'ab'] }, expr: 's.count(t)' }; const rs = S.fitOp(strp, [{ in: 'abab\n', out: '2\n' }, { in: 'aab\n', out: '1\n' }], X); check('字串參數：兩個候選都對得上範例 → 標 ambiguous，且候選裡有 ab', rs.ok && rs.ambiguous === true && (rs.assignment.t === 'ab' || rs.alternatives.some((c) => c.assignment.t === 'ab')), rs);
 }
 // ---- 矩陣模組（給 FaMatrixSynth.register）----
 (async () => {
-    const mods = S.compileMatrix(M, X); check('每個操作一個模組', mods.length === 2 && mods[0].name === 'user:demo-ops/lin-mod' && mods[0].opts.order === 35);
+    const mods = S.compileMatrix(M, X); check('每個操作一個模組', mods.length === 2 && mods[0].name === 'user:demo-ops/lin-mod' && mods[0].opts.order === 5);
     const r1 = await mods[0].fn({ statement: M.tasks[0].statement, examples: M.tasks[0].examples }); check('模組：命中', r1.ok && r1.kind === 'user-op' && r1.userOp.op === 'lin-mod' && r1.alternatives.length >= 1, r1);
     const r2 = await mods[0].fn({ statement: '輸入一個字串判斷長度', examples: M.tasks[0].examples }); check('模組：敘述沒有關鍵詞就不試', !r2.ok && /關鍵詞/.test(r2.reason));
-    const r3 = await mods[1].fn({ statement: M.tasks[2].statement, examples: M.tasks[0].examples }); check('模組：形狀不符回原因', !r3.ok && /形狀/.test(r3.reason));
+    const r3 = await mods[0].fn({ statement: M.tasks[0].statement, examples: M.tasks[2].examples }); check('模組：形狀不符回原因', !r3.ok && /形狀/.test(r3.reason));
     // ---- buildTasks（blockly 家族→題目；runRef 用假的）----
     const fakeRun = async (src, inp) => { const L = inp.trim().split('\n'); const a = L[1].split(' ').map(Number); return { ok: true, out: String(a.filter((x) => (src.includes('!= 0') ? x % 2 !== 0 : x % 2 === 0)).length) + '\n' }; };
     const bt = await S.buildTasks(B, { runRef: fakeRun, tests: 4, hidden: 2 }); check('buildTasks：題目與測資', bt.problems.length === 0 && bt.tasks.length === 3 && bt.tasks.every((t) => t.tests.length === 4 && t.hidden.length === 2), bt.problems);
