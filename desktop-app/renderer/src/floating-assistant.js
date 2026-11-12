@@ -1436,6 +1436,23 @@ const AI_REASONING_DEADEND_PROMPT = '[系統提示] 你剛才那一輪只完成�
 // featuresCatalog覆寫（host頁面想自己提供內容時）。
 const FA_AI_FEATURES_CATALOG = /*__FA_AI_FEATURES__*/null;
 
+// 領域的「完成判準」：這幾個工具有任何一次成功呼叫＝真的做出產物。模型只用文字說「完成」而判準不成立時，委派流程不收（見 _delegateToSubagentDomainInner 的自我糾正）。
+// 只列「產物很明確」的領域；分析／查詢／操作類（image、music、coding、browser_*…）沒有單一產物，標在 DESIGN.self-correct.md 的待改善。
+const FA_DOMAIN_PRODUCES = {
+    scene_3d: ['render_3d_scene', 'image_to_3d', 'import_3d_model_attachment'],
+    animation_2d: ['render_2d_animation', 'import_2d_animation_attachment'],
+    interactive_component: ['render_interactive_viewer', 'import_interactive_viewer_attachment'],
+    translate: ['translate_text'],
+    worksheet: ['worksheet_make', 'worksheet_topic', 'worksheet_open'],
+    drawing: ['render_drawing', 'render_uml_diagram', 'images_to_pdf'],
+};
+function faDomainProduced(calls, produces) { return !!(Array.isArray(calls) && Array.isArray(produces) && calls.some((c) => c && c.ok && produces.indexOf(c.name) >= 0)); }
+// 糾正訊息：說清楚缺什麼、該用哪個工具、上一次哪個呼叫錯在哪（錯誤原文），不是只叫它「再試一次」
+function faCorrectionNote(calls, produces, label) {
+    const failed = (calls || []).filter((c) => c && !c.ok && produces.indexOf(c.name) >= 0).slice(-2);
+    const f = failed.length ? ' 上次的呼叫失敗：' + failed.map((c) => c.name + '(' + String(c.rawArgs || '').slice(0, 160) + ') → ' + JSON.stringify(c.res || {}).slice(0, 240)).join('；') + '。照錯誤訊息修正參數再呼叫。' : '';
+    return '【上一次嘗試沒有做出成果：你只用文字說明，沒有成功呼叫 ' + produces.join(' 或 ') + '。' + (label ? '這是「' + label + '」領域，成果必須由工具產生。' : '') + f + ' 這次直接呼叫工具；工具回報問題就修正後再呼叫，成功之後才回答。不要再只用文字交差，也不要說「已完成」。】';
+}
 const SUBAGENT_DOMAIN_REGISTRY = {
     knowledge: {
         enabled: true,
@@ -39329,20 +39346,23 @@ const holder = {};
   'use strict';
 
   var TRAVEL = [['機場', 'airport terminal'], ['起飛', 'airplane takeoff'], ['降落', 'airplane landing'], ['北海道', 'Hokkaido Japan landscape'], ['日本', 'Japan'], ['中國', 'China'], ['台灣', 'Taiwan'], ['雲層', 'clouds from airplane window'], ['平流層', 'stratosphere atmosphere layer earth horizon'], ['華航', 'China Airlines Taiwan airplane'], ['長榮', 'EVA Air airplane'], ['機上餐', 'airline meal tray'], ['餐點', 'airline meal tray'], ['行李', 'baggage claim carousel'], ['海關', 'customs airport'], ['登機', 'boarding gate airport'], ['護照', 'passport'], ['安檢', 'airport security'], ['服務', 'airline cabin crew serving passengers'], ['空服', 'flight attendant'], ['空姐', 'flight attendant'], ['機艙', 'airplane cabin'], ['窗外', 'airplane window view'], ['跑道', 'airport runway'], ['塔台', 'airport control tower'], ['翅膀', 'airplane wing'], ['機翼', 'airplane wing'], ['下飛機', 'passengers leaving airplane airport'], ['飛機', 'airplane in flight']];
-  var META = /繁體中文|簡體中文|英文|語速|速度|圖文並茂|可以上網找照片|上網找|找照片|旁白|字幕|簡報|投影片|幼兒教育|小朋友|兒童|的方式|要有|請|幫我|麻煩|圖示|字可以|少一點|加上動畫|動畫|我覺得|直接用|就好/;
+  var META = /讀給我聽|唸給我聽|念給我聽|朗讀|配圖|插圖|[0-9一二兩三四五六七八九十]+\s*分鐘|繁體中文|簡體中文|英文|語速|速度|圖文並茂|可以上網找照片|上網找|找照片|旁白|字幕|簡報|投影片|幼兒教育|小朋友|兒童|的方式|要有|請|幫我|麻煩|圖示|字可以|少一點|加上動畫|動畫|我覺得|直接用|就好/;
 
   function clean(s) { return String(s == null ? '' : s).replace(/\[附件：[^\]]*\]/g, ' ').replace(/^\s*\/\S+\s*/, '').replace(/\s+/g, ' ').trim(); }
+  // 「2分鐘」「兩分鐘」→ 分鐘數（0＝沒說）；用來決定頁數（旁白約一頁 20～25 秒）
+  function minutesOf(b) { var m = /([0-9]+(?:\.[0-9]+)?|[一二兩三四五六七八九十]+)\s*分鐘/.exec(b || ''); if (!m) return 0; var CN = { 一: 1, 二: 2, 兩: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10 }; var n = /^[0-9.]+$/.test(m[1]) ? Number(m[1]) : (CN[m[1]] || 0); return n > 0 && n <= 30 ? n : 0; }
+  function pageRange(req) { if (!req.minutes) return [8, 12]; var n = Math.max(5, Math.min(24, Math.round(req.minutes * 60 / 22))); return [Math.max(5, n - 1), n + 1]; }
   function parseRequest(task) {
     var body = clean(task), sp = Number((/(?:語速|速度|speed)\s*[:：=]?\s*([0-9]*\.?[0-9]+)/i.exec(body) || [])[1]);
     var wantEn = /英文|english/i.test(body) && !/(繁體|簡體|國語|華語)?中文/.test(body.replace(/英文/g, ''));
     var voice = (/\b([ab][fm]_[a-z]+|z[fm]_[a-z]+|zh-[A-Za-z]+-[A-Za-z]+)\b/i.exec(body) || [])[1] || '';
     var tm = /《([^》]{1,24})》/.exec(body), title = tm ? tm[1] : '';
-    return { body: body, lang: wantEn ? 'en' : 'zh-TW', speed: sp >= 0.5 && sp <= 2 ? sp : 0, voice: voice, kids: /幼兒|幼童|小朋友|兒童|繪本|活潑|可愛|寶寶|孩子/.test(body), wantPhotos: /照片|實拍|上網找/.test(body) || /找圖/.test(body), icons: /圖示|icon|字可以少|少字|字少|不要太多字|貼圖|卡通圖|動畫/i.test(body), title: title };
+    return { body: body, lang: wantEn ? 'en' : 'zh-TW', speed: sp >= 0.5 && sp <= 2 ? sp : 0, voice: voice, kids: /幼兒|幼童|小朋友|兒童|繪本|活潑|可愛|寶寶|孩子/.test(body), wantPhotos: /照片|實拍|上網找|圖文並茂|配圖|插圖/.test(body) || /找圖/.test(body), minutes: minutesOf(body), read: /讀給我聽|唸給我聽|念給我聽|朗讀|旁白/.test(body), icons: /圖示|icon|字可以少|少字|字少|不要太多字|貼圖|卡通圖|動畫/i.test(body), title: title };
   }
 
   var ascii = function (s, n) { return String(s == null ? '' : s).replace(/[^A-Za-z0-9 \-']/g, ' ').replace(/\s+/g, ' ').trim().slice(0, n || 40); };
   function outlinePrompt(req) {
-    return '使用者的簡報需求：「' + req.body.slice(0, 700) + '」\n請把它規劃成 8 到 12 頁，每行一頁，格式：\n頁標題｜這一頁要講的重點（一句話）｜找照片用的英文關鍵字（2 到 4 個英文字，不需要照片就寫 none）\n第一頁是封面，最後一頁是總結。需求裡點名的每一件事都要有一頁。只輸出這幾行，不要編號、不要其他說明。';
+    return '使用者的簡報需求：「' + req.body.slice(0, 700) + '」\n請把它規劃成 ' + pageRange(req)[0] + ' 到 ' + pageRange(req)[1] + ' 頁，每行一頁，格式：\n頁標題｜這一頁要講的重點（一句話）｜找照片用的英文關鍵字（2 到 4 個英文字，不需要照片就寫 none）\n第一頁是封面，最後一頁是總結。需求裡點名的每一件事都要有一頁。只輸出這幾行，不要編號、不要其他說明。';
   }
   function parseOutline(text) {
     var out = [];
@@ -39457,7 +39477,7 @@ const holder = {};
   }
   function dropAllVisuals(doc) { var n = 0; doc.chapters.forEach(function (c) { c.slides.forEach(function (s) { if (s.visual) { delete s.visual; n++; } if (s.layout === 'split') s.layout = 'content'; }); }); return n; }
 
-  return { parseRequest: parseRequest, outlinePrompt: outlinePrompt, parseOutline: parseOutline, templateOutline: templateOutline, narrationPrompt: narrationPrompt, acceptNarration: acceptNarration, buildDeck: buildDeck, ICONS: ICONS, iconsFor: iconsFor, buildIconDeck: buildIconDeck, iconList: iconList, repair: repair, dropAllVisuals: dropAllVisuals, TRAVEL: TRAVEL };
+  return { minutesOf: minutesOf, pageRange: pageRange, parseRequest: parseRequest, outlinePrompt: outlinePrompt, parseOutline: parseOutline, templateOutline: templateOutline, narrationPrompt: narrationPrompt, acceptNarration: acceptNarration, buildDeck: buildDeck, ICONS: ICONS, iconsFor: iconsFor, buildIconDeck: buildIconDeck, iconList: iconList, repair: repair, dropAllVisuals: dropAllVisuals, TRAVEL: TRAVEL };
 });
 
 }).call(null, undefined, holder);
@@ -82699,6 +82719,10 @@ ${fnData.code}
                             result.meta.warning = '要求的範圍沒有裁成功（' + String((cropErr && cropErr.message) || cropErr) + '），這張是整個畫面／整頁。';
                         }
                     }
+                    // 簡報任務裡：截圖直接放進簡報素材、回傳圖片代號（@imgN）——下載圖片失敗時（防盜連、要登入、動態載入）模型用截圖就能拿到圖，不必再試下載
+                    if (this._deckRunState && this._deckInDomainRun && !result.meta_deck_done) {
+                        try { const sb = await (await fetch(result.dataUrl)).blob(); const ir = await this._deckImportImageBlob(sb, 'screenshot of a browser tab', 'browser_screenshot'); if (ir && ir.ok) { result.meta = result.meta || {}; result.meta.deck_ref = ir.ref; result.meta.note = (result.meta.note ? result.meta.note + ' ' : '') + '已放進簡報素材，圖片代號 ' + ir.ref + '，可以直接當簡報頁面圖片的 src 用。'; } } catch (_) { /* 放不進素材就維持原行為 */ }
+                    }
                     if (parsed.save || parsed.interpret) {
                         const blob = await (await fetch(result.dataUrl)).blob();
                         const shotName = `screenshot_${new Date().toISOString().replace(/[:.]/g, '-')}.jpg`;
@@ -119220,8 +119244,24 @@ _result
         const rec = await this.fileCache.get(j.file_id).catch(() => null); if (!rec || !rec.blob) return { error: '抓到了但讀不到內容' };
         const text = String(await rec.blob.text()).replace(/\s+/g, ' ').trim(); return text.length >= 40 ? { title: String(j.title || url), text } : { error: '網頁內容太少（可能要登入或被擋）' };
     }
-    async _deckTopicRecipe(task, log) {
-        log = log || (() => {}); const T = FaDeckTopic, req = T.parseRequest(task); if (req.body.length < 6) return { error: '需求太短，看不出要講什麼' };
+    // 開網頁、截圖（頂端＋往下捲幾段），放進簡報素材；回 [{ref}]。瀏覽器沒連線或截不到就拋錯讓呼叫端寫進記錄
+    async _deckPageShots(url, n, log) {
+        const T = this.tools || {}; const call = async (name, args) => { const t = T[name]; if (!t) throw new Error('沒有 ' + name); return JSON.parse(await t.callback.call(this, JSON.stringify(args))); };
+        const st = await call('browser_status', {}).catch(() => null); if (st && st.ok === false) throw new Error('瀏覽器沒有連線：' + String(st.error || '').slice(0, 80));
+        const tab = await call('browser_create_tab', { url, tab_group: 'AI Controlled' }); if (!tab || tab.ok === false || !tab.tab_id) throw new Error('開不了分頁：' + String((tab && tab.error) || '').slice(0, 80));
+        const out = [];
+        try {
+            for (let i = 0; i < Math.max(1, n); i++) {
+                if (i > 0) { try { await call('browser_scroll', { tab_id: tab.tab_id, direction: 'down', amount: 800 }); } catch (_) { break; } }
+                const r = await call('browser_screenshot', { tab_id: tab.tab_id }).catch((e) => ({ ok: false, error: String((e && e.message) || e) }));
+                const ref = r && r.meta && r.meta.deck_ref; if (!ref) { if (i === 0) throw new Error('截不到圖：' + String((r && r.error) || '沒有圖片代號').slice(0, 80)); break; }
+                out.push({ ref }); log('📸 截圖第 ' + (i + 1) + ' 張');
+            }
+        } finally { try { await call('browser_close', { tab_id: tab.tab_id }); } catch (_) { /* 關不掉就留著 */ } }
+        return out;
+    }
+    async _deckTopicRecipe(task, log, opts) {
+        log = log || (() => {}); opts = opts || {}; const T = FaDeckTopic, req = T.parseRequest(task); if (req.body.length < 6) return { error: '需求太短，看不出要講什麼' };
         log('📐 程式自己組簡報（模型只回答小問題，yaml 由程式寫並驗證）：' + [req.kids ? '幼兒風' : '', req.wantPhotos ? '要找網路照片' : '', req.lang, req.speed ? '語速 ' + req.speed : ''].filter(Boolean).join('、'));
         let outline = null, how = '', modelDead = false;
         try { const reply = await this._kiLlm(T.outlinePrompt(req), { systemPrompt: '你是簡報規劃者，只依指定格式輸出。', maxTokens: 900, temperature: 0.3 }, { label: '規劃簡報', timeoutMs: 90000, onStep: log, noOffline: true }); outline = T.parseOutline(reply); if (outline) how = '模型規劃'; else log('　（模型的規劃格式不對，改用樣板）'); }
@@ -119247,6 +119287,12 @@ _result
                 if (r && r.ok && r.photos && r.photos[0]) { photos[i] = r.photos[0]; pOk++; credits.push(o.title + '：' + [r.photos[0].source, r.photos[0].credit, r.photos[0].license].filter(Boolean).join('，')); log('📷 「' + o.title + '」找到照片：' + String(r.photos[0].title).slice(0, 40) + '（' + r.photos[0].source + (r.photos[0].license ? '，' + r.photos[0].license : '') + '）'); }
                 else { pErr.push(o.title + '：' + String((r && r.error) || '').slice(0, 100)); log('📷 「' + o.title + '」沒找到照片（' + String((r && r.error) || '').slice(0, 80) + '），這頁不放圖'); }
             }
+        }
+        // 補圖一：使用者自己給的圖（附件）依序插到沒有照片的頁面（簡報不跟附件綁死，有給就用，沒給也做得出來）
+        let mineN = 0; if (!req.icons) { for (const im of (opts.images || [])) { const k = photos.findIndex((x, i) => !x && i > 0); if (k < 0) break; try { const e = this._deckRun().catalog.add('client-file/' + im.id, { alt: im.name, from: 'user_attachment' }); if (e && e.ref) { photos[k] = { ref: e.ref, source: '使用者提供', credit: im.name }; mineN++; } } catch (_) { /* 這張放不進去就跳過 */ } } if (mineN) log('🖼 放進你提供的 ' + mineN + ' 張圖'); }
+        // 補圖二：要圖文並茂、有網址、找照片找不到（或不夠）→ 用瀏覽器截圖那個頁面（下載失敗也拿得到圖）
+        if (req.wantPhotos && !req.icons && opts.url && photos.filter(Boolean).length < Math.ceil(outline.length / 2)) {
+            try { const shots = await this._deckPageShots(opts.url, Math.min(4, outline.length - 1), log); let n = 0; for (const sh of shots) { const k = photos.findIndex((x, i) => !x && i > 0); if (k < 0) break; photos[k] = { ref: sh.ref, source: '網頁截圖', credit: opts.url }; n++; } if (n) log('📸 照片不夠，用瀏覽器截圖補了 ' + n + ' 頁'); } catch (e) { log('📸 截圖也沒成功：' + String((e && e.message) || e).slice(0, 100)); }
         }
         let doc;
         if (req.icons) { // 圖示模式：每頁幾個圖示（emoji）加動畫，字很少
@@ -129086,8 +129132,9 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             const focus = (isDeck || domain.mixer || Array.isArray(extra.restrictTools)) ? null : this._focusTools(hintedTools, task);
             const runTools = focus ? [...new Set(focus.keep.concat(taskHints.flatMap((h) => h.tools || []).filter((n) => hintedTools.indexOf(n) >= 0)))] : hintedTools;
             if (focus && progress) progress.log('🎯 領域工具太多（' + hintedTools.length + '個）——先只給最相關的 ' + runTools.length + ' 個，其餘需要時再補');
+            const callLog = []; // 這個領域這次委派裡所有工具呼叫（名稱、參數、成敗），給「完成判準」與糾正訊息用
             const runOnce = (taskText) => this._runSubAgentTask(taskText, isDeck ? 90 : (isSkillDomain ? SUBAGENT_DELEGATE_MAX_ROUNDS * 2 : SUBAGENT_DELEGATE_MAX_ROUNDS), {
-                allowedToolNames: runTools,
+                allowedToolNames: runTools, collectCalls: callLog,
                 focusReserve: focus ? focus.reserve : null,
                 meta: extra.meta || { domain: (domain && domain.label) || domainKey, source: '本機', kind: 'local' },
                 systemPrompt: (domain.mixer ? this._mixerPreamble(domainKey, domain) + '\n\n' : (extra.phaseNote ? extra.phaseNote + '\n\n' : '')) + this._resolveDomainSystemPrompt(domain) + skillDirNote,
@@ -129113,29 +129160,47 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             // 任務完全沒有素材（沒有附件、網址、檔案）而模型說「需要素材」——這是對的答案，直接交給使用者；不要當成失敗再逼它交出一份簡報（逼出來的是編造的示範簡報）
             const hasMaterial = (t) => /\[附件：|client-file\/|https?:\/\/|fap:/i.test(String(t || '')) || /[A-Za-z]:[\\\/]/.test(String(t || ''));
             const asksMaterial = (t) => /(source material|please attach|attach (the )?(file|image|picture)s?|provide (the )?(files?|material|url)|need (the )?(source|material|files?)|請(提供|附上|上傳|附)|需要.{0,12}(素材|附件|檔案|來源)|沒有(收到|看到).{0,8}(附件|檔案|素材))/i.test(String(t || ''));
-            const askedForMaterial = (r) => isDeck && r && !r.visual && !hasMaterial(task) && asksMaterial(r.text);
+            // 簡報本來就跟附件無關：只要使用者說了要講什麼（斜線指令之外還有幾個字），就一定做得出簡報，不能因為模型說「需要素材」或任務有／沒有附件就停下來；
+            // 只有連要講什麼都沒說（只剩指令本身）才請使用者補
+            const topicLen = String(task0 || '').replace(/\[附件：[^\]]*\]/g, ' ').replace(/https?:\/\/\S+/g, ' ').replace(/^\s*\/\S+\s*/, '').replace(/\s+/g, '').length;
+            const askedForMaterial = (r) => isDeck && r && !r.visual && !hasMaterial(task) && topicLen < 6 && asksMaterial(r.text);
             if (askedForMaterial(subResult)) { if (progress) progress.finish('需要素材'); return { ok: true, domain: domainKey, result: String(subResult.text || '') + String.fromCharCode(10, 10) + '（這次的任務沒有附上檔案或網址，所以沒有產生簡報。請附上素材（例如要解讀的圖片）再送一次。）' }; }
             // 沒有檔案或網址、只給主題，而模型沒有真的做出簡報：不再叫同一個模型從頭再寫一次（它會犯一樣的錯），由程式自己組（食譜：主題簡報）——
             // 規劃、旁白、找照片、組 yaml、驗證都是封閉的小步驟，每一步都有退路，所以一定做得出來；過程都寫進記錄
             // 只有網址（沒有附件、檔案）也由程式組：先把網頁抓回來，取標題與開頭當素材（2026-11-12 真實事故：給文章網址要 2 分鐘簡報，模型讀完只用文字說「已完成」，程式又因為「帶網址」而放棄，使用者什麼都沒拿到）
             const hasFileMaterial = (t) => /\[附件：|client-file\/|fap:/i.test(String(t || '')) || /[A-Za-z]:[\\\/]/.test(String(t || ''));
-            if (isDeck && !(subResult && subResult.visual) && !askedForMaterial(subResult) && !hasFileMaterial(task) && !(extra.shouldStop && extra.shouldStop())) {
+            if (isDeck && !(subResult && subResult.visual) && !askedForMaterial(subResult) && !(extra.shouldStop && extra.shouldStop())) {
                 const line0 = '⚠️ 模型這次沒有真的做出簡報（沒有成功呼叫 render_presentation）——改由程式自己組：規劃每頁 → 旁白 → 找照片 → 寫 yaml → 驗證';
                 if (progress) progress.log(line0); if (extra.onTrace) extra.onTrace(line0);
                 let recipeTask = task0; const urlM = /https?:\/\/[^\s)）」』]+/i.exec(String(task0 || ''));
                 if (urlM) { try { const br = await this._deckUrlBrief(urlM[0]); if (br && br.text) { recipeTask = String(task0).replace(/https?:\/\/[^\s)）」』]+/gi, ' ').trim() + String.fromCharCode(10, 10) + '【網頁素材：' + br.title + '】' + String.fromCharCode(10) + br.text.slice(0, 1800); const l1 = '🌐 已抓回網頁（' + br.title.slice(0, 40) + '，' + br.text.length + ' 字），拿它當簡報素材'; if (progress) progress.log(l1); if (extra.onTrace) extra.onTrace(l1); } else { const l1 = '✗ 網頁沒抓到內容：' + String((br && br.error) || '').slice(0, 100) + '——只用你的文字描述來組'; if (progress) progress.log(l1); if (extra.onTrace) extra.onTrace(l1); } } catch (e) { /* 抓不到就只用文字描述 */ } }
-                try { const tr = await this._deckTopicRecipe(recipeTask, (x) => { if (progress) progress.log(x); if (extra.onTrace) extra.onTrace(x); }); if (tr && tr.ok) subResult = { text: tr.text, visual: tr.deck }; else { const l = '✗ 程式組簡報沒成功：' + String((tr && tr.error) || '').slice(0, 200); if (progress) progress.log(l); if (extra.onTrace) extra.onTrace(l); this._deckTopicError = (tr && tr.error) || ''; } }
+                try { const myImages = []; { const am = /\[附件：([^\]]*)\]/.exec(String(task0 || '')); if (am) { const re2 = /([^、（]+?)（file_id=([\w-]+)）/g; let xm; while ((xm = re2.exec(am[1]))) if (/\.(png|jpe?g|gif|webp|bmp|avif)$/i.test(xm[1].trim())) myImages.push({ name: xm[1].trim(), id: xm[2] }); } }
+                    const tr = await this._deckTopicRecipe(recipeTask, (x) => { if (progress) progress.log(x); if (extra.onTrace) extra.onTrace(x); }, { url: urlM && urlM[0], images: myImages }); if (tr && tr.ok) subResult = { text: tr.text, visual: tr.deck }; else { const l = '✗ 程式組簡報沒成功：' + String((tr && tr.error) || '').slice(0, 200); if (progress) progress.log(l); if (extra.onTrace) extra.onTrace(l); this._deckTopicError = (tr && tr.error) || ''; } }
                 catch (e) { const l = '✗ 程式組簡報出錯：' + String((e && e.message) || e).slice(0, 200); if (progress) progress.log(l); this._deckTopicError = String((e && e.message) || e); }
             }
             // 簡報領域：模型只用文字說「已完成」、實際沒有成功產生簡報（沒有播放器可以顯示）時不能信——自己重來，最多再兩次；
             // 還是沒有就老實回報失敗，不把空話當成結果交出去
-            for (let attempt = 1; isDeck && attempt <= 1 && !(subResult && subResult.visual) && !askedForMaterial(subResult) && !(extra.shouldStop && extra.shouldStop()); attempt++) {
+            for (let attempt = 1; isDeck && attempt <= 2 && !(subResult && subResult.visual) && !askedForMaterial(subResult) && !(extra.shouldStop && extra.shouldStop()); attempt++) {
                 const line = '⚠️ 子agent說做完了，但實際沒有產生簡報（沒有成功呼叫 render_presentation）——自動重來（第 ' + attempt + ' 次）';
                 if (progress) progress.log(line); if (extra.onTrace) extra.onTrace(line);
                 subResult = await runOnce(task + '\n\n【上一次嘗試沒有成功產生簡報：你只用文字說明、沒有真的呼叫 render_presentation 並得到成功結果。這次直接寫出完整的簡報 yaml 並呼叫 render_presentation；它回報問題就修正後再呼叫，成功之後才回答。不要再只用文字描述。如果這個任務沒有給你任何素材或主題（沒有附件、網址、檔案，也沒有說要講什麼），不要編造內容、也不要做示範簡報，直接用文字說明需要什麼素材。】');
             }
             if (askedForMaterial(subResult)) { if (progress) progress.finish('需要素材'); return { ok: true, domain: domainKey, result: String(subResult.text || '') + String.fromCharCode(10, 10) + '（這次的任務沒有附上檔案或網址，所以沒有產生簡報。請附上素材再送一次。）' }; }
             await trySalvageDeck();
+            // 通用自我糾正：有「完成判準」的領域（FA_DOMAIN_PRODUCES），模型說完成但沒有任何成功的產物工具呼叫 → 帶具體糾正訊息重來（最多 2 次）；還是沒有就誠實失敗（附上次錯誤），不把空話當結果
+            const produces = !isDeck && !isSkillDomain ? FA_DOMAIN_PRODUCES[domainKey] : null;
+            if (produces) {
+                const done = () => faDomainProduced(callLog, produces) || !!(subResult && subResult.visual) || /[?？]\s*$/.test(String((subResult && subResult.text) || '').trim()); // 結尾是問句＝向使用者釐清，不算放棄
+                for (let attempt = 1; attempt <= 2 && !done() && !(extra.shouldStop && extra.shouldStop()); attempt++) {
+                    const l = '⚠️ 子agent說做完了，但沒有成功呼叫 ' + produces.join('／') + '——自動糾正重來（第 ' + attempt + ' 次）'; if (progress) progress.log(l); if (extra.onTrace) extra.onTrace(l);
+                    subResult = await runOnce(task + String.fromCharCode(10, 10) + faCorrectionNote(callLog, produces, domain.label));
+                }
+                if (!done()) {
+                    const lastErr = callLog.filter((x) => !x.ok && produces.indexOf(x.name) >= 0).slice(-1)[0];
+                    if (progress) progress.fail('沒有做出成果');
+                    return { ok: false, error: '「' + domain.label + '」沒有做出成果：已糾正重來 2 次，仍沒有成功呼叫 ' + produces.join('／') + '。' + (lastErr ? '最後一次失敗：' + lastErr.name + ' → ' + JSON.stringify(lastErr.res || {}).slice(0, 240) + '。' : '') + '請補一句具體要做什麼（或附上素材）再送一次；也可以用 /rounds 調高回合。', model_said: String((subResult && subResult.text) || '').slice(0, 300) };
+                }
+            }
             if (isDeck && !(subResult && subResult.visual)) { const mk = /\[附件：[^\]]*\]/.exec(task); this._deckLastFailure = { at: Date.now(), task: task0, marker: mk ? mk[0] : '' }; if (progress) progress.fail('沒有產生簡報'); return { ok: false, error: '沒有做出簡報。模型寫的簡報沒通過檢查或沒有真的呼叫 render_presentation；程式自己組也沒成功（' + (this._deckTopicError || '主題簡報食譜不適用：任務帶有檔案或網址，或需求太短') + '）。過程記錄裡有每一步的結果；補一句具體要講哪幾件事，或附上素材（照片、文件）再送一次。', model_said: String((subResult && subResult.text) || '').slice(0, 600) }; }
             if (isDeck) this._deckLastFailure = null; // 做成了，下一次不是接續
             if (progress) progress.finish('完成');

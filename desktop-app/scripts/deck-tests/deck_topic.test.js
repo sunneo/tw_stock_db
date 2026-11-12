@@ -54,4 +54,9 @@ check('icon deck: pages that talk about flying get a plane that moves (keys) and
 check('icon deck: text is minimal — no bullets, titles up to 12 characters', idoc.chapters.every((c) => c.slides.every((s) => !s.bullets && s.title.length <= 12)));
 check('icon list: unique emoji for the whole deck, with the defaults included', (() => { const l = T.iconList(tpl2); return new Set(l).size === l.length && l.indexOf('✈️') >= 0 && l.indexOf('⭐') >= 0; })());
 check('template: the user own style instructions (圖示就好、字可以少一點、加上動畫) never become pages', !T.templateOutline(T.parseRequest(TASK + '我覺得直接用圖示就好，字可以少一點，加上動畫。')).some((p) => /圖示|字可以|動畫|我覺得/.test(p.title + p.point)) && T.templateOutline(T.parseRequest(TASK + '我覺得直接用圖示就好，字可以少一點，加上動畫。')).slice(-1)[0].title === '總結');
+const RQ = T.parseRequest('/media-presentation https://x.com/a 圖文並茂的描寫這個爆料新聞，2分鐘，請讀給我聽');
+check('request: 圖文並茂 means photos, 2分鐘 is parsed, 讀給我聽 means narration', RQ.wantPhotos === true && RQ.minutes === 2 && RQ.read === true);
+check('request: 兩分鐘 / 3分鐘 parsed; none = 0', T.minutesOf('兩分鐘') === 2 && T.minutesOf('3分鐘') === 3 && T.minutesOf('沒說') === 0);
+check('request: the minutes set the page count (2 min ≈ 5-6 pages; no minutes keeps 8-12)', T.pageRange(RQ)[0] === 5 && T.pageRange(RQ)[1] === 6 && T.pageRange({ minutes: 0 })[0] === 8);
+check('template: 分鐘／讀給我聽／圖文並茂 never become pages', T.templateOutline(RQ, () => '').every((o) => !/分鐘|讀給我聽|圖文並茂/.test(o.title)));
 console.log(bad.length ? 'FAILED:\n  ' + bad.join('\n  ') : 'deck_topic: ' + ok + ' passed'); process.exit(bad.length ? 1 : 0);

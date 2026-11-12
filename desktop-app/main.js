@@ -1656,6 +1656,15 @@ ipcMain.handle("fa:update:apply", async () => {
 // 這時要改指到 AppImage 檔案本身。
 function relaunchApp() {
   if (process.platform === "linux" && process.env.APPIMAGE) {
+    // 2026-11-12：Linux 每次更新後重開都出現「Cannot mount AppImage, please check your FUSE setup」而沒有重啟——
+    // app.relaunch 在舊行程結束的同一刻就啟動新的 AppImage，舊的掛載點還沒卸乾淨、又繼承了舊行程的 APPIMAGE／APPDIR 等環境變數。
+    // 改成：脫離的 shell 先等 2 秒、清掉 AppImage 的環境變數再啟動；如果幾秒內就失敗（FUSE 掛載不了），改用 APPIMAGE_EXTRACT_AND_RUN=1（解開到暫存資料夾再跑，不需要 FUSE）重試
+    try {
+      const env = Object.assign({}, process.env); for (const k of ["APPIMAGE", "APPDIR", "ARGV0", "OWD", "APPIMAGE_SILENT_INSTALL"]) delete env[k];
+      const script = 'A="$1"; shift; sleep 2; s=$(date +%s); "$A" "$@"; rc=$?; e=$(date +%s); if [ "$rc" -ne 0 ] && [ $((e-s)) -lt 8 ]; then APPIMAGE_EXTRACT_AND_RUN=1 "$A" "$@"; fi';
+      const child = require("child_process").spawn("/bin/sh", ["-c", script, "sh", process.env.APPIMAGE].concat(process.argv.slice(1)), { detached: true, stdio: "ignore", env });
+      child.unref(); return;
+    } catch (e) { console.error("[relaunch] 脫離式重啟失敗，改用 app.relaunch：" + ((e && e.message) || e)); }
     app.relaunch({ execPath: process.env.APPIMAGE, args: process.argv.slice(1) });
   } else {
     app.relaunch();

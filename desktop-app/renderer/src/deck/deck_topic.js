@@ -16,20 +16,23 @@
   'use strict';
 
   var TRAVEL = [['機場', 'airport terminal'], ['起飛', 'airplane takeoff'], ['降落', 'airplane landing'], ['北海道', 'Hokkaido Japan landscape'], ['日本', 'Japan'], ['中國', 'China'], ['台灣', 'Taiwan'], ['雲層', 'clouds from airplane window'], ['平流層', 'stratosphere atmosphere layer earth horizon'], ['華航', 'China Airlines Taiwan airplane'], ['長榮', 'EVA Air airplane'], ['機上餐', 'airline meal tray'], ['餐點', 'airline meal tray'], ['行李', 'baggage claim carousel'], ['海關', 'customs airport'], ['登機', 'boarding gate airport'], ['護照', 'passport'], ['安檢', 'airport security'], ['服務', 'airline cabin crew serving passengers'], ['空服', 'flight attendant'], ['空姐', 'flight attendant'], ['機艙', 'airplane cabin'], ['窗外', 'airplane window view'], ['跑道', 'airport runway'], ['塔台', 'airport control tower'], ['翅膀', 'airplane wing'], ['機翼', 'airplane wing'], ['下飛機', 'passengers leaving airplane airport'], ['飛機', 'airplane in flight']];
-  var META = /繁體中文|簡體中文|英文|語速|速度|圖文並茂|可以上網找照片|上網找|找照片|旁白|字幕|簡報|投影片|幼兒教育|小朋友|兒童|的方式|要有|請|幫我|麻煩|圖示|字可以|少一點|加上動畫|動畫|我覺得|直接用|就好/;
+  var META = /讀給我聽|唸給我聽|念給我聽|朗讀|配圖|插圖|[0-9一二兩三四五六七八九十]+\s*分鐘|繁體中文|簡體中文|英文|語速|速度|圖文並茂|可以上網找照片|上網找|找照片|旁白|字幕|簡報|投影片|幼兒教育|小朋友|兒童|的方式|要有|請|幫我|麻煩|圖示|字可以|少一點|加上動畫|動畫|我覺得|直接用|就好/;
 
   function clean(s) { return String(s == null ? '' : s).replace(/\[附件：[^\]]*\]/g, ' ').replace(/^\s*\/\S+\s*/, '').replace(/\s+/g, ' ').trim(); }
+  // 「2分鐘」「兩分鐘」→ 分鐘數（0＝沒說）；用來決定頁數（旁白約一頁 20～25 秒）
+  function minutesOf(b) { var m = /([0-9]+(?:\.[0-9]+)?|[一二兩三四五六七八九十]+)\s*分鐘/.exec(b || ''); if (!m) return 0; var CN = { 一: 1, 二: 2, 兩: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10 }; var n = /^[0-9.]+$/.test(m[1]) ? Number(m[1]) : (CN[m[1]] || 0); return n > 0 && n <= 30 ? n : 0; }
+  function pageRange(req) { if (!req.minutes) return [8, 12]; var n = Math.max(5, Math.min(24, Math.round(req.minutes * 60 / 22))); return [Math.max(5, n - 1), n + 1]; }
   function parseRequest(task) {
     var body = clean(task), sp = Number((/(?:語速|速度|speed)\s*[:：=]?\s*([0-9]*\.?[0-9]+)/i.exec(body) || [])[1]);
     var wantEn = /英文|english/i.test(body) && !/(繁體|簡體|國語|華語)?中文/.test(body.replace(/英文/g, ''));
     var voice = (/\b([ab][fm]_[a-z]+|z[fm]_[a-z]+|zh-[A-Za-z]+-[A-Za-z]+)\b/i.exec(body) || [])[1] || '';
     var tm = /《([^》]{1,24})》/.exec(body), title = tm ? tm[1] : '';
-    return { body: body, lang: wantEn ? 'en' : 'zh-TW', speed: sp >= 0.5 && sp <= 2 ? sp : 0, voice: voice, kids: /幼兒|幼童|小朋友|兒童|繪本|活潑|可愛|寶寶|孩子/.test(body), wantPhotos: /照片|實拍|上網找/.test(body) || /找圖/.test(body), icons: /圖示|icon|字可以少|少字|字少|不要太多字|貼圖|卡通圖|動畫/i.test(body), title: title };
+    return { body: body, lang: wantEn ? 'en' : 'zh-TW', speed: sp >= 0.5 && sp <= 2 ? sp : 0, voice: voice, kids: /幼兒|幼童|小朋友|兒童|繪本|活潑|可愛|寶寶|孩子/.test(body), wantPhotos: /照片|實拍|上網找|圖文並茂|配圖|插圖/.test(body) || /找圖/.test(body), minutes: minutesOf(body), read: /讀給我聽|唸給我聽|念給我聽|朗讀|旁白/.test(body), icons: /圖示|icon|字可以少|少字|字少|不要太多字|貼圖|卡通圖|動畫/i.test(body), title: title };
   }
 
   var ascii = function (s, n) { return String(s == null ? '' : s).replace(/[^A-Za-z0-9 \-']/g, ' ').replace(/\s+/g, ' ').trim().slice(0, n || 40); };
   function outlinePrompt(req) {
-    return '使用者的簡報需求：「' + req.body.slice(0, 700) + '」\n請把它規劃成 8 到 12 頁，每行一頁，格式：\n頁標題｜這一頁要講的重點（一句話）｜找照片用的英文關鍵字（2 到 4 個英文字，不需要照片就寫 none）\n第一頁是封面，最後一頁是總結。需求裡點名的每一件事都要有一頁。只輸出這幾行，不要編號、不要其他說明。';
+    return '使用者的簡報需求：「' + req.body.slice(0, 700) + '」\n請把它規劃成 ' + pageRange(req)[0] + ' 到 ' + pageRange(req)[1] + ' 頁，每行一頁，格式：\n頁標題｜這一頁要講的重點（一句話）｜找照片用的英文關鍵字（2 到 4 個英文字，不需要照片就寫 none）\n第一頁是封面，最後一頁是總結。需求裡點名的每一件事都要有一頁。只輸出這幾行，不要編號、不要其他說明。';
   }
   function parseOutline(text) {
     var out = [];
@@ -144,5 +147,5 @@
   }
   function dropAllVisuals(doc) { var n = 0; doc.chapters.forEach(function (c) { c.slides.forEach(function (s) { if (s.visual) { delete s.visual; n++; } if (s.layout === 'split') s.layout = 'content'; }); }); return n; }
 
-  return { parseRequest: parseRequest, outlinePrompt: outlinePrompt, parseOutline: parseOutline, templateOutline: templateOutline, narrationPrompt: narrationPrompt, acceptNarration: acceptNarration, buildDeck: buildDeck, ICONS: ICONS, iconsFor: iconsFor, buildIconDeck: buildIconDeck, iconList: iconList, repair: repair, dropAllVisuals: dropAllVisuals, TRAVEL: TRAVEL };
+  return { minutesOf: minutesOf, pageRange: pageRange, parseRequest: parseRequest, outlinePrompt: outlinePrompt, parseOutline: parseOutline, templateOutline: templateOutline, narrationPrompt: narrationPrompt, acceptNarration: acceptNarration, buildDeck: buildDeck, ICONS: ICONS, iconsFor: iconsFor, buildIconDeck: buildIconDeck, iconList: iconList, repair: repair, dropAllVisuals: dropAllVisuals, TRAVEL: TRAVEL };
 });
