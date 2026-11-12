@@ -406,3 +406,36 @@ FA_TS_DIR=<含 tree-sitter.js、tree-sitter.wasm、tree-sitter-python.wasm 的�
 - 次像素的平手規則是題目自訂（先出現者），若要與編碼器一致，需另外核對。
 - 工作樹的 `desktop-app/node_modules` 是符號連結（未提交），每次新工作樹都要重建。
 - 本棒沒有嵌入、沒有 build、沒有推送、沒有發布。
+
+### 第五棒（續）：指揮要求的四項，逐項結果（2026-11-12，Haiku 5.5）
+
+提交：`06012887`、`cc2aa69c`、`cf0e1267`、`c177cec7`→`69078162`（P_Skip，後續修正）、`13af5758`（四分之一層、skipinc）、`3bbcd9f5`（I_PCM、共用模組）。
+
+**(1) CABAC bin 比對（有外部向量，範圍有限）**
+- 方法（ffmpeg 解碼器當作參考）：x264 只提供 SPS、PPS；IDR 條帶與 P 條帶都由自寫編碼器產生。ffmpeg 解出的影像與我們送入的樣本逐位元比對。
+- `scripts/eval/cabac-pskip-ffmpeg.js`：64×64、16 個巨集區塊全部 P_Skip（ctxIdx 11），`cabac_init_idc` 0、1、2 × SliceQPY 17、23、33 共 9 組：**9/9 逐位元相同**；負向對照（ctxIdx 11 的 valMPS 翻轉）**9/9 不同**。
+- `scripts/eval/cabac-ipcm-ffmpeg.js`：16 個 I_PCM 巨集區塊，mb_type bin0 用 ctxIdx 3、4、5（增量 0 至 2），bin1 為終止二值，PCM 後重新初始化引擎：**3/3 影像逐位元相同**；負向對照（ctxIdx 3 的 valMPS 翻轉）**3/3 不同**。
+- 驗到的：ctxIdx 3、4、5（I）、11（P，三個 idc）的初始化；算術編碼器（含 LPS 路徑、位元欠款、收尾）；終止二值；I_PCM 對齊與引擎重新初始化。
+- 沒驗到：ctxIdx 12、13 與「非略過鄰居」的增量（需要非略過巨集區塊的語法）；殘差與預測。
+- 負向對照的教訓：第一版把「初始 pStateIdx 加 5」當負向對照，9 組中 5 組仍解出相同結果（全部都是 MPS 的串流對狀態不敏感），鑑別力不足，已改為翻轉 valMPS。
+- 另一個修正：第一版負向對照比較的影格長度寫死為 3072（64×64 時應為 12288），因此比較式永遠不成立，結果是空的。已改為 `2 * FS`。
+- 獨立規格解碼器（同樣讀法，`rt3` 式逐巨集區塊走查）對 I_PCM 16/16 通過；以隨機序列做編碼→解碼往返 300/300 通過。
+
+**(2) 完整初始化表（所有 ctxIdx）：未做，阻礙與要的決定**
+- 阻礙一：H.264 規格正文本機沒有。我嘗試從 ITU 網站下載規格 PDF，權限分類器拒絕（判為繞過 bot 檢查），已停止，不再嘗試其他網址。
+- 阻礙二：沒有規格正文，唯一的外部向量是 x264 的 `common/tables.c`（GPL）。把它的數字整批抄進 repo 需要使用者同意（前面幾棒的政策是不抄整段表）。
+- 替代驗證（已做）：ctxIdx 0–10、60–104（I）與 11–59（P/B 三個 idc）與 x264 逐格相同（147 組＋既有的 I 表）；ctxIdx 3、4、5、11 另有 ffmpeg 逐位元驗證。
+- 需要使用者決定：(a) 使用者自行從 ITU 下載規格 PDF 並放到專案外的路徑，我再寫抽表腳本逐格核對；或 (b) 同意以 x264 表的數字生成完整表（寫明來源與授權）。
+
+**(3) 次像素四分之一層：代價選擇已做；內插值的外部驗證未做**
+- 已做：`h264.subpel.quarter`（中心 2 乘半像素最佳、九點、代價 SAD＋λ 乘距離，平手取先出現者）；測試 pb-qs train 1/1、反序 1/1、holdout 1/1。
+- 未做：四分之一樣本的內插值，以 ffmpeg 驗證。阻礙：需要非略過的 P 巨集區塊（P_L0_16x16、mvd、cbp），而 cbp 的上下文（ctxIdx 73 至 84）在缺的表範圍內；做完之後才能以 ffmpeg 比對四分之一樣本。替代：內插公式已在 `h264.qpel*` 系列以規格記憶寫成並與 train／holdout 參考解比對（第四棒續（二））。
+
+**(4) 其後的熵編碼**
+- 已做：mb_skip_flag 增量（`h264.cabac.skipinc`）、mvd 二值化（`h264.cabac.mvd`）、ref_idx 二值化（`h264.cabac.refidx`）、終止二值與 I_PCM（ffmpeg 驗證）。
+- 未做：mb_type（P／I 的完整二值表）、coded_block_pattern、coded_block_flag、殘差（significant_coeff、last、level）。阻礙：這些語法需要 ctxIdx 60 至 1023 的初始化表，即第 (2) 項；沒有表就無法做逐位元驗證。
+
+**本棒新增的檔案**
+- `renderer/src/uml/domain_h264pb_core.js`、`renderer/src/uml/domain_h264pb.test.js`（14 項，train 7/7、反序 7/7、holdout 7/7）。
+- `scripts/eval/h264-cabac-enc.js`（共用模組，無相依）、`scripts/eval/cabac-pskip-ffmpeg.js`、`scripts/eval/cabac-ipcm-ffmpeg.js`、`scripts/eval/x264-cabac-pb-compare.js`。
+- 嵌入：新核心與測試照前一段的清單登記；`scripts/eval/*` 不需嵌入，手動執行（需要 ffmpeg 含 libx264）。
