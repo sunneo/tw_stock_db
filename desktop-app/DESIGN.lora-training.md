@@ -607,6 +607,33 @@ model card 欄位以 `description`（一句話，來自描述檔，§13.2）與 
 - **descriptor 沒有 eval 欄位**：打包時沒有傳評量 JSON，所以描述檔的 `eval` 是 null，lora-slot-js 的「只自動採用有評量者」規則不會自動選它，只能手動選。
 - **v2 準備中**：`data/multi/decompose_v2.jsonl` = v1 677 列 ＋ self_validate 正例 191 ＋ review_return 265（正負都收）＝ 1,133 列；排在 toolcall／plan／colu 之後自動開跑（`out/multi/run_v2.log`）。v2 只加正例，負例仍欠缺，評量時會看 neg 是否再退步。
 
+### 17.2 decompose v2 實測（2026-11-12，未取代 v1）
+
+**訓練**：`data/multi/decompose_v2.jsonl`（1,133 列，v1 677 列 ＋ self_validate 正例 191 ＋ review_return 265）；`out/multi/decompose_v2/`，一輪，08:02 正常完成（train_loss 0.398，pid 1219294 為自我比對的卡住監看程序，已殺，沒有影響訓練）。
+**評量**：與 v1、基底同一批留出（`heldout_v1.jsonl` 各組 60 列；uml 留出 60 列）。`score_gen.js` 輸出 `out/eval/decompose_v2_scored.txt`；uml 用 `eval_run.py`（`out/eval/decompose_v2_uml.json`）。判準沿用 §6／§18.2（n<20 只報告，不判退步）。
+
+| 範圍 | 組別 | 基底 | v1 | v2 | 與基底比 |
+|---|---|---|---|---|---|
+| 範圍內 | code_split valid | 0/60 | 60/60 | 60/60 | 進步 |
+| 範圍內 | code_split names | 0/60 | 55/60 | 56/60 | 進步 |
+| 範圍內 | code_split calls | 0/60 | 55/60 | 56/60 | 進步 |
+| 範圍內 | code_write_fn def | 60/60 | 60/60 | 60/60 | 持平 |
+| 範圍內 | code_write_fn judge | 8/60 | 20/60 | **16/60** | 進步（但比 v1 少 4） |
+| 範圍內 | uml edit_real | 18/30 | 30/30 | 30/30 | 進步 |
+| 範圍內 | uml edit_shuf | 16/30 | 30/30 | 30/30 | 進步 |
+| 範圍外 | plan_check valid | 52/60 | 59/60 | 60/60 | 進步 |
+| 範圍外 | review_return items | 0/60 | 0/60 | 3/60 | 進步 |
+| 範圍外 | self_validate ok | 25/60 | 25/60 | 43/60 | 進步 |
+| 範圍外 | self_validate 正例 | 23/43 | 16/43 | **43/43** | 進步 |
+| 範圍外 | self_validate 負例 | 2/17 | 9/17 | **0/17** | 退步（n=17 < 20，只報告） |
+
+**判讀**
+- 範圍內沒有退步（相對基底）。judge 比 v1 少 4 列，這是 v1 → v2 的退步，要記下來。
+- 範圍外：正例全對、負例全錯。整體 ok 從 25/60 升到 43/60，但這是「幾乎全判 ok」的模式（43 = 43 正例 ＋ 0 負例），不是真的學會分辨「有缺漏」。這比 v1 的退步更糟：v1 的負例是 9/17。依 §18.2 第 3 條，負例只有 17 列，不能判成退步，但這個模式本身就是問題，不能當成正面結果。
+- uml 結構階段仍然沒有留出列（與 v1 相同），沒有量到。
+
+**決定：v2 不取代 v1，也不打包 v2。** 雖然依 n<20 規則不構成退步，但「self_validate 負例全錯、整體偏向 ok」是實質的行為偏差，不應該用只有 17 列的計數規則放過。v1（`decompose-r4` 1.0.0，已依範圍限縮打包）維持不變。若要改進 v2，需要先補 self_validate 負例（且負例要夠多，至少 20 列），並重新登記判準後，依 §18.2 只量一次。
+
 ## 18. 第二顆 adapter：`toolcall`（2026-11-12 實跑）
 
 **訓練**：`out/multi/toolcall/`，rank 4、alpha 8、7 個投影、學習率 2e-4、一輪、序列 768，79 步，約 2.5 小時（負載 20–60）。資料 1,301 列（`tool_routing` 264、`toolwire` 144、`when2call` 435、`agent` 250、`writer` 146、`natural` 62；`when2call`／`agent`／`toolwire` 降取樣 40%）。**沒有中途檢查點**（這一顆是在可接續改善之前開始的）。
@@ -734,4 +761,37 @@ model card 欄位以 `description`（一句話，來自描述檔，§13.2）與 
 - **描述檔**：沿用 `pack_adapter.js` 的 `manifest.json`，新增 `id`、`version`、`description`、`applies_when:{stages:[…],prompt_format_version}`；既有的 `size`（`total_size`）、`base`、`rank`、`eval` 保留。格式已用 `SendMessage` 提給 lora-slot-js（載入／註冊由它實作），**尚未收到回覆**，回覆後依它的介面調整。
 - **載入**：按需（on demand／lazy）：註冊時只讀描述檔；第一次遇到符合 `applies_when` 的提示才載入該顆權重。實作歸 lora-slot-js。
 - **取捨（尚未驗證）**：多顆各自 rank 8 的總表達力與一顆 rank 16 的比較、多顆同時合併時互相干擾，都還沒實測。
+## 24. toolcall v2 量測結果（2026-11-12，預先登記見 §20，判準見 `EVAL_CRITERIA_v2.md`，登記提交 `18180851`）
+
+**量測**：`toolcall-r4` 權重（v1 訓練那版，**未重訓**），`data/heldout_toolcall_v2.jsonl`（552 列，sha256 `98cba02d…737f1c`），`eval_run.py`，`LORA_EVAL_EVERY=1`，只量一次。輸出 `out/eval/toolcall_v2.json`、`out/eval/toolcall_v2.log`、`out/eval/toolcall_v2_metrics.json`。
+
+**判準逐條**（`EVAL_CRITERIA_v2.md`）
+
+| 條 | 內容 | 結果 | 判定 |
+|---|---|---|---|
+| 1 | 格式合法率（gold 含 tool_call 的 202 列，主要指標，微調 ≥ 基底 + 10 pp） | 基底 111/202（0.5495）→ 微調 156/202（0.7723），+22.3 pp | **通過** |
+| 2 | 缺工具拒絕（`rtool/missing`、`seen/unseen/missing`，同 55 列） | 0/55 → 53/55 | **通過** |
+| 3 | 退步（n ≥ 20 且微調少 ≥ 2 列） | 無組別符合。`toolwire/wiring`（n=126）117 → 116，`seen/unseen/wiring`（n=62）57 → 56，都只少 1 列 | **無退步（依判準）** |
+| 4 | 範圍：範圍內＝toolcall；範圍外＝colu、think_stack、decompose | 範圍內見上；**範圍外本次未量** | 未量 |
+
+**注意：`eval_run.py` 自己的 ship gate 與判準不同。** 它的「no group regresses」會把少 1 列也算退步，所以標成 FAIL，列出 `toolwire/wiring` 與 `seen/unseen/wiring`。依 EVAL_CRITERIA_v2 第 3 條（少 ≥ 2 列才算），這兩組不構成退步；兩份結果都保留，不改判準。另外它的「clearly win」目標組判定只有 `group/worksheet`（n=6，0 → 1）沒過，屬於 ship gate 的啟發式，不在 v2 判準內。
+
+**主要分組（節錄）**
+
+| 組別 | 基底 | 微調 |
+|---|---|---|
+| TOTAL（552 列） | 258/552 | 435/552 |
+| rtool/call | 20/110 | 58/110 |
+| seen/unseen/call | 21/116 | 64/116 |
+| seen/seen/call | 22/56 | 34/56 |
+| tool_routing/choose_tool_full | 6/61 | 47/61 |
+| group/git（全部 28 列） | 15/28 | 17/28 |
+| 　其中新增的 24 列 | 14/24 | 15/24 |
+| 　其中原本的 4 列（`git_inspect`） | 1/4 | 2/4 |
+
+**觀察（不改判準）**
+- 新增的 git 列幾乎沒有提升（14 → 15，24 列）。失敗多數是參數 `ref` 漏了 `fap:` 前綴（例如輸出 `"報告"`、`"tools-repo"`），或是模型回了拒絕句。計分器是精確比對參數，所以這些算錯。這表示 group/git 的進步主要來自原本的 `git_inspect` 那幾列，樣本太少，不能當成 git 能力已學好的證據。
+- `toolwire/wiring` 少 1 列，屬於邊界內的雜訊，但仍應在報告中看到。
+
+**結論**：`toolcall-r4` 的 v1 權重在凍結判準下通過（格式合法率、缺工具拒絕、範圍內無退步）。範圍外（colu、think_stack、decompose）還沒量，所以「範圍外無退步」不能宣稱。已打包的 `toolcall-r4` 1.0.0 的卡片數字還是 v1 的 80 列（0.45 → 0.75），沒有改成這次 v2 的數字；要不要改成這次的數字、以及是否補量範圍外，待指揮決定，這次沒有重新打包。
 
