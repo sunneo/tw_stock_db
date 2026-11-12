@@ -1165,3 +1165,38 @@ model card 欄位以 `description`（一句話，來自描述檔，§13.2）與 
   - 格式名稱由 `shape-v1` 改為 `shape-v2`（輸入定義變了，舊雜湊不能比）。沒有已打包的 shape-v1 adapter，舊格式的 adapter 仍會得到「舊格式」警告。
 - **測試**：`renderer/src/studio/tool_catalog_equal.test.js` 9 項通過，包括：快照檔與原始碼一致（漂移守門）、主程式的真方法本體與訓練端雜湊相等、少一個工具或改一個型別會變、說明文字不影響。另外 `lora_registry.test.js` 109、`studio_server_core.test.js` 138、`lora_manage_core.test.js` 49、`lora_route_wiring.test.js` 30、`build-lora-asset.test.js` 19 通過。pack_adapter 用假 adapter 試跑，記錄的雜湊與共用函式算出的相等。
 - **仍未證明**：快照是從原始碼以替身執行得到的。主程式執行期會依設定分支的登記，替身只走預設分支。真正的執行期值仍需 Electron 內呼叫 `toolCatalogSha256()` 才能確認；目前的相等是「同一份輸入、同一個函式」，不是「執行期實測相等」。
+
+## 30. decompose-r4-v2 評量結果與登錄缺口（2026-11-13）
+
+評量：`out/eval/decompose-r4-v2.json`（keen 工作樹，360 列，`eval_r4.sh decompose_v2`，07:11 完成）。這裡只記結果與判讀，沒有重新打包。
+
+| 組 | 基底 | 微調 | n | 判讀 |
+|---|---|---|---|---|
+| fn_template/code_split | 0 | 23 | 60 | 贏 |
+| fn_template/code_write_fn | 0 | 8 | 60 | 贏 |
+| heldout/fn_template | 0 | 31 | 120 | 贏 |
+| heldout/think_stack | 0 | 36 | 180 | 贏 |
+| uml/edit_real、seen/unseen/edit_real | 18 | 30 | 30 | 贏 |
+| uml/edit_shuf、seen/unseen/edit_shuf、group/uml/edit_* | 16 | 30 | 30 | 贏 |
+| think_stack/review_return | 0 | 15 | 60 | 贏 |
+| think_stack/self_validate | 0 | 21 | 60 | 贏（見下） |
+| think_stack/plan_check | 0 | 0 | 60 | 沒贏（不是退步） |
+
+- 沒有任何一組輸給基底（`regress: []`）。`eval_run.py` 的判準：所有目標組都要贏 ≥10% 且 ≥2 列；`plan_check` 沒過，判 **DO NOT SHIP**。
+- **self_validate 的「贏」是假的**：60 列裡 38 列的標準答案是 `ok:false`（`once` 題），微調全部答錯；贏的 21 列全是 `ok:true` 的乾淨題，微調只是一律答 `ok:true`。基底在這組是 0，所以任何「一律 ok:true」都會被算成贏。這就是 §17.2 記的「負例全錯、偏向判 ok」，在組級指標上被遮住了。
+- 登錄判斷：`evalVerdict` 讀的是 `{adapter, base, n}`（`package_r4.sh` 轉換的格式，已確認相符）。以這份 groups 計算，decompose-r4-v2 `known: true, lose: []` → **會被自動選用**。也就是說，目前的登錄規則不會擋住它。
+
+### 30.1 登錄與管理介面缺口
+
+1. **自動選用看不見負例**：組級「贏」不分正負例，遮住了上面的偏向。這不是格式問題，是指標定義：沒有任何欄位能讓 `evalVerdict` 知道負例錯了。
+2. **卡片揭露文字不準**：decompose-r4-v2 卡片寫「可能偏向判 ok」，但沒有寫出 0/38 的數字。這次 regex 已能標出，但數字本身還沒進卡片。
+3. **需要決定的政策**（沒有擅自改）：
+   - (a) 負例偏向的 adapter 不自動選用，只能手動指定，直到重訓（建議）。
+   - (b) 維持自動選用，只在卡片頂端揭露「負例 0/38」。
+   - (c) 評量時加入「負例通過率」分組，`evalVerdict` 看到負例 lose 就擋住。這要改評量腳本（keen 工作樹的 `eval_run.py`／`score_gen.js`），不在本分支。
+
+### 30.2 沒做的事
+
+- 沒有重新打包 decompose-r4-v2（它的 eval 會變成這份新結果）。
+- 沒有改 `eval_run.py`，沒有重訓。
+- plan_check 的 0/0 沒有分析原因。
