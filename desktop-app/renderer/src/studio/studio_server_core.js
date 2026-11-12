@@ -207,6 +207,13 @@
                 }
                 // 匯出成功後登錄成 kind:'llm' 資產：部署用的權重（q8／Q8_0）與小檔都是資產的一般檔案（進儲存層，.fatrain 會分片）
                 if (method === 'POST' && P === '/api/llm/export/register') {
+                    // 桌面版：主行程直接從磁碟登錄（不經渲染程序的 base64 IPC；大檔會超過字串上限）
+                    if (h.desktop) {
+                        const r = await callHost('studio_llm_register', { jobId: String(body.jobId || ''), name: body.name ? String(body.name) : '' }, 600000);
+                        if (!r || r.ok === false) { const msg = (r && r.error) || '登錄失敗'; return bad(/已存在/.test(msg) ? 409 : (r && r.notDesktop ? 400 : 500), msg, { notDesktop: !!(r && r.notDesktop) }); }
+                        log('登錄 LLM 資產 llm/' + r.name + '（' + r.files.length + ' 個檔，' + r.bytes + ' 位元組；未進資產：' + (r.excluded.join('、') || '無') + '）');
+                        return ok(r);
+                    }
                     const b = await callHost('studio_llm_export_bundle', { jobId: String(body.jobId || '') }, 60000);
                     if (!b || b.ok === false) return bad(b && b.notDesktop ? 400 : 409, (b && b.error) || '登錄失敗', { notDesktop: !!(b && b.notDesktop) });
                     if (!h.localReadBytes) return bad(400, '這個環境不能讀本機檔案（網頁版）；請在桌面版登錄，或在桌面版匯出 .fatrain 後匯入');
@@ -243,9 +250,10 @@
                         const m = await h.storage.loadManifest('llm', it.name); if (!m) continue;
                         const fmt = (m.llm && m.llm.format) || '';
                         const files = Object.keys(m.sha256 || {});
-                        const wOk = files.indexOf('q8/model_quantized.onnx') >= 0 && files.indexOf('q8/tokenizer.json') >= 0;
+                        const tokRel = files.indexOf('tokenizer.json') >= 0 ? 'tokenizer.json' : (files.indexOf('q8/tokenizer.json') >= 0 ? 'q8/tokenizer.json' : '');
+                        const wOk = files.indexOf('q8/model_quantized.onnx') >= 0 && !!tokRel;
                         const ready = fmt === 'onnx' && wOk;
-                        models.push({ name: it.name, format: fmt, quant: (m.llm && m.llm.quant) || '', bytes: (m.counts && m.counts.bytes) || 0, ready, reason: ready ? '' : (fmt === 'gguf' ? 'GGUF 不在網頁版推論範圍（用 llama.cpp）' : '缺 q8/model_quantized.onnx 或 q8/tokenizer.json') });
+                        models.push({ name: it.name, format: fmt, quant: (m.llm && m.llm.quant) || '', bytes: (m.counts && m.counts.bytes) || 0, ready, reason: ready ? '' : (fmt === 'gguf' ? 'GGUF 不在網頁版推論範圍（用 llama.cpp）' : '缺 q8/model_quantized.onnx 或 tokenizer.json') });
                     }
                     return ok({ models, ortAvailable: !!h.llmWeb, desktop: !!h.desktop });
                 }
@@ -258,8 +266,8 @@
                     const r = await h.storage.loadAsset('llm', name); if (!r) return bad(404, '沒有這個 llm 資產');
                     if (!r.verify || !r.verify.ok) return bad(409, '資產雜湊核對不過，不推論：' + ((r.verify && r.verify.message) || ''));
                     if (!r.asset.manifest.llm || r.asset.manifest.llm.format !== 'onnx') return bad(400, '只有 ONNX 格式能在網頁版推論（GGUF 請用 llama.cpp）');
-                    const mdl = r.asset.files['q8/model_quantized.onnx'], tokb = r.asset.files['q8/tokenizer.json'];
-                    if (!mdl || !tokb) return bad(400, '資產缺 q8/model_quantized.onnx 或 q8/tokenizer.json');
+                    const mdl = r.asset.files['q8/model_quantized.onnx'], tokb = r.asset.files['tokenizer.json'] || r.asset.files['q8/tokenizer.json'];
+                    if (!mdl || !tokb) return bad(400, '資產缺 q8/model_quantized.onnx 或 tokenizer.json');
                     let tokj; try { tokj = JSON.parse(dec(tokb)); } catch (e) { return bad(400, 'tokenizer.json 不是合法 JSON：' + e.message); }
                     let tok; try { tok = LlmWeb.createTokenizer(tokj); } catch (e) { return bad(400, '分詞器不能用：' + e.message); }
                     const eosIds = (tokj.added_tokens || []).filter((t) => ['<|im_end|>', '<|endoftext|>'].indexOf(t.content) >= 0).map((t) => t.id);

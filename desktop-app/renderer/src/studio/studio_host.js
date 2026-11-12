@@ -10,6 +10,7 @@ const CpuJs = require('./backend_cpu_js.js');
 const CpuPy = require('./backend_cpu_py.js');
 const Planned = require('./backend_planned.js');
 const LlmExport = require('./llm_export_core.js');
+const Asset = require('./asset_core.js');
 
 // LLM 匯出工具偵測（DESIGN §25）：不再只看 PATH。來源：lora-train/.venv（訓練，有 peft）、lora-train/.venv-export（匯出，有 optimum-cli、onnxruntime、transformers）、
 // 與 <userData>/studio-host/llm-export-config.json 的 { llamaBin, llamaSrc, trainPython, exportPython }（llama.cpp 不在任何 venv 裡，只能設定）。
@@ -170,6 +171,38 @@ function createStudioHost(d) {
     return { ok: true, format: man.format, quant: man.format === 'onnx' ? 'q8' : 'q8_0', recipe: man.recipe || j.recipe || null, files, excluded,
       source: { baseDir: j.baseDir || null, adapterDir: j.adapterDir || null }, outDir: j.outDir };
   }
+  // 登錄（桌面版，主行程端）：把匯出的部署檔直接從磁碟讀進 <userData>/studio-assets/llm/<名稱>/（與 rawfs 儲存層同一個版面），manifest 最後寫。
+  // 不經過渲染程序的 base64 IPC：756 MB 的 q8 在字串上限（約 512 MB）以上，渲染端讀不了（實測的錯誤見 DESIGN §25.13）。
+  function llmRegister(p) {
+    const b = llmBundle(p);
+    if (!b.ok) return b;
+    const name = String(p.name || ('llm-' + b.format + '-' + new Date().toISOString().replace(/[:.]/g, '-')));
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(name)) return { ok: false, error: '名稱不合法（只能用英數、點、底線、連字號，最長 64 字）：' + name };
+    const root = P.join(P.dirname(hostDir), 'studio-assets'), dir = P.join(root, 'llm', name);
+    if (exists(P.join(dir, 'manifest.json'))) return { ok: false, error: '「' + name + '」已存在（換一個名稱）' };
+    const files = {};
+    for (const f of b.files) {
+      const u = fs.readFileSync(f.path);
+      if (u.length !== f.bytes) return { ok: false, error: '大小與 manifest 不符：' + f.rel };
+      files[f.rel] = new Uint8Array(u.buffer, u.byteOffset, u.length);
+    }
+    const base = (b.source.baseDir || '').split(/[\\/]/).pop() || null, adapter = (b.source.adapterDir || '').split(/[\\/]/).pop() || null;
+    const m = Asset.createManifest({ kind: 'llm', name, files, owner: 'user', base, compat: { base, adapter }, counts: {}, eval: null });
+    m.llm = { format: b.format, quant: b.quant, recipe: b.recipe, excluded: b.excluded };
+    m.counts = { files: Object.keys(files).length, bytes: Object.keys(files).reduce((x, k) => x + files[k].length, 0) };
+    const v = Asset.validateManifest(m); if (!v.ok) return { ok: false, error: '資產 manifest 不合法：' + v.errors.join('；') };
+    // 先寫檔（暫存名再改名），每個檔寫完讀回雜湊核對
+    const written = [];
+    try {
+      for (const rel of Object.keys(files)) {
+        const dst = P.join(dir, rel), tmp = dst + '.tmp-' + process.pid; fs.mkdirSync(P.dirname(dst), { recursive: true });
+        fs.writeFileSync(tmp, files[rel]); fs.renameSync(tmp, dst); written.push(dst);
+        const back = fs.readFileSync(dst); if (Asset.sha256Hex(new Uint8Array(back.buffer, back.byteOffset, back.length)) !== m.sha256[rel]) throw new Error('寫入後核對失敗：' + rel);
+      }
+      fs.writeFileSync(P.join(dir, 'manifest.json'), JSON.stringify(m, null, 1)); // manifest 最後寫：沒有它的資料夾視為未完成
+    } catch (e) { for (const f of written) { try { fs.unlinkSync(f); } catch (_) { /* */ } } return { ok: false, error: String((e && e.message) || e) }; }
+    return { ok: true, kind: 'llm', name, files: Object.keys(files), bytes: m.counts.bytes, excluded: b.excluded, dataMayBeLost: false, warning: '', root: dir };
+  }
   // 模型選單（桌面版）：把工作室的 llm 資產設為離線模型。主行程的 main-ext.js 讀 <hostDir>/llm-model-choice.json（沒有就照舊用標準版）
   // 桌面版：資產的權重落在儲存層（rawfs：<userData>/studio-assets/llm/<名稱>/…），模型路徑由名稱決定
   function llmUse(p) {
@@ -317,6 +350,7 @@ function createStudioHost(d) {
     async studio_llm_export(p) { return startLlmExport(p || {}); },
     async studio_llm_export_pause(p) { return stopLlmExport(p || {}, 'paused'); },
     async studio_llm_export_bundle(p) { return llmBundle(p || {}); },
+    async studio_llm_register(p) { return llmRegister(p || {}); },
     async studio_llm_use(p) { return llmUse(p || {}); },
     async studio_llm_use_clear() { return llmUseClear(); },
     async studio_llm_use_current() { return llmUseCurrent(); },
