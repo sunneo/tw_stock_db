@@ -162,7 +162,9 @@
     function routeOf(o) {
         const stage = o && o.stage; const n = Number((o && o.examples) || 0);
         if (stage !== 'reader') return { route: 'blockly-teach', cost: 1, why: '讀取器讀得懂，缺骨架或課：先補 blockly 教學' };
-        if (n > 0) return { route: 'matrix', cost: 2, why: '讀不懂但有可見範例：編成矩陣範本（要額外寫範本）' };
+        // §13.7：未解 holdout 21 條目矩陣覆蓋 0/21，所以「讀不懂有範例」預設不建議矩陣（只有呼叫端明確標 matrixCovered 才走矩陣）
+        if (n > 0 && o.matrixCovered) return { route: 'matrix', cost: 2, why: '讀不懂但有可見範例，且該類題在矩陣量測有覆蓋：編成矩陣範本' };
+        if (n > 0) return { route: 'lora', cost: 3, why: '讀不懂但有可見範例；矩陣覆蓋量測為 0，不建議矩陣：留給 LoRA，或先請使用者補可判題的範例' };
         return { route: 'lora', cost: 3, why: '讀不懂且沒有範例：先請使用者補範例，否則留給 LoRA（訓練最久）' };
     }
     function teachEntry(o) {

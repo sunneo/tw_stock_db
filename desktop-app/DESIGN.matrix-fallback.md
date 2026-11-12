@@ -734,3 +734,32 @@ heldout9（`heldout9_list.jsonl`，16 題）：**ok 15/16，verified 14**（測�
   - 若 A＞0，保留現行 `routeOf`，但在 13.7 寫出覆蓋率與有覆蓋的領域；
   - 不論結果，不對第三批、第二批 held-out 調參；不因為看到覆蓋率就改矩陣範本（改範本要另開新一批 held-out）。
 - 不在判準內：殘留部分混用（需要 UML 建構器語句級資訊，本棒未做，見 13.7 交接）。
+
+**13.7 結果（2026-11-12，只量一次；原始資料在 side-session-notes/matrix-finish-5/，不入庫）**
+
+- 基線重跑（實測，21 個 `domain_*` 測試檔，同一測資、同一判題器）：holdout 120 條目（含「′」改寫），**未解 21**。與 13.6 的 20 題不同（graph3 為 6、13.6 寫 5；其餘逐領域相同）。差異原因未查，推測是 3000ms 時限在負載下的波動（binfmt 有 TLE 紀錄），**推測，未驗證**。
+- 同一次重跑中，訓練（train）條目有失敗：avbits 12/16、inflate 8/10、par 16/22、tarx 9/10（實測；本棒沒有查這四組的根因，與 13.6「全綠」的說法不同，留給下一棒）。
+- **矩陣覆蓋率（實測）：未解 21 條目中 0/21 合成並通過獨立判題。** 測法：`FaMatrixHybrid.tryMatrix`（真的 `FaMatrixSynth`，可見測資合成，只用隱藏測資判題，非多候選、已驗證才算）。失敗原因都是「沒有符合所有範例的範本」或形狀不符（實測）。
+- 依領域（實測，全部 0）：avbits 3、ds 2、graph3 6、inflate 2、linuxfmt 1、linuxtext 1、os 1、par 2、sync2 1、tarx 2。
+- **判準決定（依 §13.7 判準）**：A＝0，所以 `routeOf` 不再對「讀不懂有可見範例」建議 `matrix`，改為 `lora`（理由寫在 why 欄）。只有呼叫端標 `matrixCovered: true` 才會回 `matrix`（目前沒有任何呼叫端標它）。
+  - 改動：`renderer/src/algo/matrix_spec_core.js`（`routeOf`）、`matrix_teach_queue.test.js`（rC 改為 lora，新增 rC2、teachEntry 與摘要計數的期待同步）。`matrix_teach_queue` 26 項、`matrix_spec` 25 項全綠（實測）。
+  - 這個改動只是路由建議，沒有改矩陣範本，也沒有對第二、第三批 held-out 調參。
+- 補量：13.6 說 7 題「blockly 從未呼叫判題器、題目物件沒有記錄」。本棒的 dump 工具從 harness 的 `runOne` 取得敘述、可見測資、隱藏測資，不再依賴判題器呼叫，所以 21 條未解條目都有完整題目物件（實測）。工具是 scratch 版的 harness copy（只加一行 dump），**沒有入庫**；若要重現，用 `side-session-notes/matrix-finish-5/domain_harness.js` 的改法。
+
+**13.6 殘留步驟混用（(1)）：未做。** 原因：
+- 殘留需要 blockly 的語句級資訊（哪幾條語句對、哪條錯），現在 `buildFromUML` 失敗時只有最後一次的整段 `last.source` 與 `reason`，沒有語句級判定；要做要改 UML 建構器，屬於另一個大改動，本棒時間內不做。
+- 目前最接近的現成結構是 Steps 層的 `stepFallback`（步驟級 `chain`、`reducer`、`verdict`），它是步驟粒度，不是語句粒度。下一棒可以從這裡開始評估，但要先決定殘留的粒度。
+- 在 0/21 的量測下，殘留混用即使做了，對這批未解題的增益也還沒有依據（矩陣連整題都沒有合成）。
+
+**13.6 表格 #9、#10（實測根因，已修）**
+
+- #9 `studio_layout_core.test.js`、#10 `studio_server_core.test.js`：根因都是過時的測試期待。commit `1a558fb2`（訓練工作室新增領域）把 `domains` 分頁加進預設左側，分頁數 8→9（實際 9 個），左側 5→6。測試仍寫舊數字，所以失敗。程式行為是正確的，沒有改程式。修正：提交 `e4805372`（只改兩個測試檔的期待）。修正後兩組分別 27/27、91/91（實測）。
+- #4、#5、#6、#11、#13 不屬於矩陣領域，本棒沒有修，見 13.6 表格的 owner 欄。
+
+**交接（給下一棒）**
+
+1. 分支 `claude/angry-wilson-f4d2c5`（worktree），本棒提交：`e4805372`（studio 測試期待）、`a9c216fd`（§13.7 判準）、以及 routeOf 改動與本段結果（這一棒的最後提交）。未推送、未發布、未 embed、未 build、未 `git add -A`。
+2. **嵌入**（總指揮做）：`floating-assistant.js` 的嵌入版仍是舊的，所以產品的 `routeOf` 行為要等重新嵌入 `matrix_spec_core.js` 才會變。`FaMatrixHybrid`（`matrix_hybrid_core.js`）要排在 `FaMatrixSynth` 之後嵌入。
+3. `node_modules` 符號連結在工作樹（`desktop-app/node_modules` → 主倉庫），未追蹤，**不要提交**；是 `??` 狀態。
+4. 未解題的矩陣覆蓋 0/21，下一步要擴充矩陣家族，或在 blockly 的 UML 建構器上做語句級殘留（第 2 點）。擴充家族要用新的 held-out（第四批以後），不對已用掉的批次調參。
+5. 13.6 表格 #4、#5、#6、#11、#13 各有 owner，還沒修；#9、#10 已修（如上）。訓練 train 條目在本次重跑中的 avbits、inflate、par、tarx 失敗，根因還沒查。
