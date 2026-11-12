@@ -3,7 +3,8 @@
 <title>離線訓練工作室</title>
 <style>
 :root{--bg:#fff;--fg:#1f2328;--mut:#656d76;--bd:#d0d7de;--ac:#0969da;--sf:#f6f8fa;--ok:#1a7f37;--er:#cf222e;--wn:#9a6700;--hl:#ddf4ff}
-@media (prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;--mut:#8b949e;--bd:#30363d;--ac:#58a6ff;--sf:#161b22;--ok:#3fb950;--er:#f85149;--wn:#d29922;--hl:#0c2d4a}}
+@media (prefers-color-scheme:dark){:root:not([data-theme]){--bg:#0d1117;--fg:#e6edf3;--mut:#8b949e;--bd:#30363d;--ac:#58a6ff;--sf:#161b22;--ok:#3fb950;--er:#f85149;--wn:#d29922;--hl:#0c2d4a}}
+:root[data-theme="dark"]{--bg:#0d1117;--fg:#e6edf3;--mut:#8b949e;--bd:#30363d;--ac:#58a6ff;--sf:#161b22;--ok:#3fb950;--er:#f85149;--wn:#d29922;--hl:#0c2d4a}
 *{box-sizing:border-box}html,body{height:100%}body{margin:0;background:var(--bg);color:var(--fg);font:13px/1.5 -apple-system,"Segoe UI","Noto Sans TC",sans-serif;display:flex;flex-direction:column}
 header{display:flex;align-items:center;gap:8px;padding:5px 10px;border-bottom:1px solid var(--bd);background:var(--sf);flex-wrap:wrap}
 header b{font-size:14px}.sp{flex:1}
@@ -42,7 +43,8 @@ __SHIM__
 <script>__LAYOUT__</script>
 <script>
 (function(){
-var CFG=__CFG__;var BASE='http://mock.local',Lay=FaStudioLayout,$=function(s){return document.querySelector(s)};
+var CFG=__CFG__;function applyTheme(t){if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t)}applyTheme(CFG.theme);window.addEventListener('message',function(e){var d=e.data;if(d&&d.__fa_theme)applyTheme(d.__fa_theme)});
+var STZH={running:'訓練中',paused:'已暫停',finishing:'收尾中',finished:'已完成',error:'出錯',stopped:'已停止',idle:'待命'};var BASE='http://mock.local',Lay=FaStudioLayout,$=function(s){return document.querySelector(s)};
 var L=Lay.defaults(),INFO={},TITLE={};Lay.TABS.forEach(function(t){TITLE[t.id]=t.icon+' '+t.title});
 function h(tag,a,kids){var e=document.createElement(tag);if(a)for(var k in a){if(k==='text')e.textContent=a[k];else if(k.slice(0,2)==='on')e.addEventListener(k.slice(2),a[k]);else if(a[k]!==false&&a[k]!=null)e.setAttribute(k,a[k]===true?'':a[k])}
  (kids||[]).forEach(function(c){if(c!=null)e.appendChild(typeof c==='string'?document.createTextNode(c):c)});return e}
@@ -501,7 +503,6 @@ function trainWizard(host){
    host.appendChild(h('div',{style:'color:var(--mut);font-size:12px',text:'其他參數（步數、學習率、核心數、輸出資料夾…）都用建議值；要自己調請切到「進階模式」。'}));
    host.appendChild(nav(function(){go(-1)},function(){if(!W.name.trim()){alert('請取個名字');return}go(1)},'▶ 開始訓練'));return}
   // 開始
-  var STZH={running:'訓練中',paused:'已暫停',finishing:'收尾中',finished:'已完成',error:'出錯',stopped:'已停止',idle:'待命'};
   var hd=h('b',{text:'訓練進行中'});host.appendChild(hd);var st=h('div',{text:'啟動中…'}),pg=h('progress',{max:'100',value:'0',style:'width:100%'}),lg=h('pre',{style:'max-height:160px;overflow:auto'}),cv=h('canvas',{width:600,height:60}),prog=h('div',{'class':'card'});prog.appendChild(h('div',{text:''}));prog.appendChild(cv);
   var bP=h('button',{text:'暫停'}),bR=h('button',{text:'繼續',disabled:true}),bX=h('button',{'class':'dng',text:'停止'}),bN=h('button',{text:'再訓練一個',onclick:function(){W.step=0;W.data='';W.name='';draw()}});
   host.appendChild(st);
@@ -558,7 +559,7 @@ async function pollBench(tb,bStart,bStop){bStart.disabled=true;bStop.disabled=fa
  var r=await api('GET','/api/bench/status');tb.textContent='';if(r.ok===false){tb.appendChild(reason(r.error));bStart.disabled=false;bStop.disabled=true;return}
  var t=h('table',{},[h('tr',{},['後端','狀態','token/秒','步時間 p50／p95','峰值記憶體','數值一致性','說明'].map(function(x){return h('th',{text:x})}))]);
  r.rows.forEach(function(w){var x=w.result||{},nc=x.numericCheck;t.appendChild(h('tr',{},[h('td',{text:w.id}),h('td',{text:{pending:'等待',running:'執行中…',skipped:'略過',passed:'通過',failed:'未通過',aborted:'已中斷'}[w.state]||w.state}),h('td',{text:x.tokPerSec?x.tokPerSec.toFixed(1):'—'}),h('td',{text:x.stepMsP50?Math.round(x.stepMsP50)+'／'+Math.round(x.stepMsP95)+' ms':'—'}),h('td',{text:x.peakMemBytes?fmtB(x.peakMemBytes):'—'}),h('td',{text:nc?(nc.pass?'通過':'失敗：'+(nc.failed||[]).join('、')):'—'}),h('td',{text:w.reason||x.reason||''})]))});
- tb.appendChild(t);tb.appendChild(h('div',{style:'color:var(--mut);font-size:12px',text:'狀態：'+r.state+'　用時 '+Math.round(r.elapsedMs/1000)+' 秒'}));
+ tb.appendChild(t);tb.appendChild(h('div',{style:'color:var(--mut);font-size:12px',text:'狀態：'+(STZH[r.state]||r.state)+'　用時 '+Math.round(r.elapsedMs/1000)+' 秒'}));
  if(r.state==='running')pollBench.t=setTimeout(function(){pollBench(tb,bStart,bStop)},1500);else{bStart.disabled=false;bStop.disabled=true}}
 function symTrain(out,kind){
  var NEEDS={blockly:'題目資產（data/tasks.jsonl：{id,statement,solution,tests}）',matrix:'題目資產（data/tasks.jsonl：{id,statement,examples:[{in,out}]}）',uml:'情境與設計對資產（data/pairs.jsonl：{scenario,model}）',colu:'不需要（用目前的採用／退回回饋）',trainer:'不需要（整理目前的成功案例）'};
@@ -583,7 +584,7 @@ function symTrain(out,kind){
 async function pollTrain(prog,cv,once){clearTimeout(pollTrain.t);var r=await api('GET','/api/train/status');if(r.ok===false)return;
  if(r.state==='idle'){return}
  (r.events||[]).forEach(function(e){if(e.type==='log'&&isFinite(e.loss)){if(!lossHist.length||lossHist[lossHist.length-1].s!==e.step)lossHist.push({s:r.step,l:e.loss})}});
- prog.firstChild.textContent='狀態：'+r.state+'　step '+r.step+'　loss '+(r.loss==null?'—':Number(r.loss).toFixed(4))+'　用時 '+Math.round(r.elapsedMs/1000)+' 秒'+(r.errors&&r.errors.length?'　錯誤：'+r.errors.join(' | '):'');
+ prog.firstChild.textContent='狀態：'+(STZH[r.state]||r.state)+'　step '+r.step+'　loss '+(r.loss==null?'—':Number(r.loss).toFixed(4))+'　用時 '+Math.round(r.elapsedMs/1000)+' 秒'+(r.errors&&r.errors.length?'　錯誤：'+r.errors.join(' | '):'');
  var c=cv.getContext('2d');c.clearRect(0,0,cv.width,cv.height);var hs=lossHist.slice(-200);if(hs.length>1){var mx=Math.max.apply(null,hs.map(function(p){return p.l})),mn=Math.min.apply(null,hs.map(function(p){return p.l}));c.strokeStyle='#58a6ff';c.beginPath();hs.forEach(function(p,i){var x=i/(hs.length-1)*cv.width,y=cv.height-4-(mx===mn?.5:(p.l-mn)/(mx-mn))*(cv.height-8);i?c.lineTo(x,y):c.moveTo(x,y)});c.stroke()}
  if(r.running)pollTrain.t=setTimeout(function(){pollTrain(prog,cv)},2000)}
 // ===== 啟動 =====

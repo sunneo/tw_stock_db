@@ -1193,3 +1193,46 @@ Backend {
 - 領域分頁：`載入：這個環境沒有領域載入器（FaStudioDomainRuntime）`（`renderer/src/studio/domain_routes_core.js:45`）還把類別名稱給使用者看，未改。
 - LoRA 登錄的「註冊多顆、延遲載入、槽滿替換」**沒有在這次的實機中操作**：隔離環境沒有 adapter，這與 §26.2 第 3 項的限制相同。`lora_registry.test.js`、`lora_manage_core.test.js` 等單元測試沒有重跑（這輪只改樣板文字）。
 - 「簡單模式」精靈的「目標」「資料」「確認」已在實機看過（截圖 `20-wizard-confirm.png`）；「更新資產」流程沒走，未驗證。
+
+## 28. 「如何使用」簡報與真畫面對齊、工作室跟 app 主題（studio-ux，2026-11-13，指揮追加）
+
+方法：xvfb 下的真 Electron。`scripts/eval/studio_howto_shots.eval.js`（用 `FA_THEME=light|dark FA_TPL=1` 跑）逐步操作：簡單模式五步（想做什麼→目標→資料（語言模型）→確認（CoLU）→開始）、更新資產（挑資產→要做什麼）、進階模式（捲動 8 屏）、預設分頁；每步截圖後才往下做（截圖由啟動器擷取，先等 1.8 秒，否則會截到下一步）。`scripts/eval/studio_howto_check.eval.js` 用工作目錄的簡報模組（`FA_HOWTO=1`）把示意圖排在兩種主題下截圖。
+
+截圖（scratchpad，不進 repo）：真畫面 `…/scratchpad/shots-light/`、`…/shots-dark/`；示意圖對照 `…/scratchpad/check/check-{simple,adv}-{light,dark}.png`。
+
+### 28.1 真畫面與簡報的差異（修正前，以真畫面為準）
+
+| 項目 | 簡報原本 | 真畫面（實測文字） | 處理 |
+|---|---|---|---|
+| 配色 | 寫死深色 `#0f172a`，淺色主題也是深色 | 淺色視窗底 `#fff`、深色 `#0d1117`（跟 OS 或 app） | 色票改為與 `:root` 同一組，依主題產生 |
+| 第 1 步副文字 | 「已經有資產，再訓練／補資料／評量」 | 「已經有一份資產：用新資料再訓練、補資料、或重新評量」 | 改為真文字 |
+| 第 2 步目標名 | 「語言模型（LoRA）」「需要一個…」 | 「🧠 訓練語言模型（LoRA）」「需要一個 .jsonl 資料集」 | 改為真文字 |
+| 第 3 步範例 | 「lora/我的資料」「builtin/範例」（不存在） | 內建資料集名稱（`blockly/內建-內建課 › data/lessons.jsonl` 等） | 改為真名稱；旁白補「只有需要資料的目標才出現」 |
+| 第 4 步 | 五步列，「資料」在內 | CoLU 這類不用挑資料的目標只有四步（想做什麼、目標、確認、開始） | 示意圖與旁白改為四步，旁白說明差別 |
+| 第 5 步 | 狀態 `running`、英文 | 「狀態：訓練中　step 56　loss 1.8300　用時 42 秒」（修正後；原本是英文狀態） | 改真文字；旁白補「沒辦法開始」的原因與解除方法 |
+| 更新資產 | 「對 blockly/我的課」與「重新評量」一起出現 | 重新評量只有積木、矩陣、UML、CoLU 有；離線訓練器只有補充資料與再訓練 | 示意圖用離線訓練器快照，旁白寫明哪些種類才有重新評量 |
+| 進階模式 | 「核心數（auto 或整數）」等少數欄位 | 訓練種類、運算後端（純處理器／網頁處理器／WebGPU、DirectML、Vulkan 不可用）、基準測試、訓練表單、控制、LLM 匯出（格式、adapter 資料夾、基底資料夾） | 各示意圖改用真標籤（後端名稱、表單欄位名、按鈕名） |
+| 分頁 | 旁白說「分頁可以關閉、右鍵選單」 | 分頁列在左右兩側，「＋」「🗖」「還原版面」；資料集預覽等開在右邊；上一頁／下一頁 | 旁白改為實際操作；移除「可以關閉」 |
+| 版面 | 模式按鈕與步驟列重疊 | — | 示意圖版面修正（模式列 y=40、步驟列 y=70） |
+
+### 28.2 工作室跟 app 主題（B）
+
+- 之前：`studio-viewer.template.html` 的色票只跟 OS 的 `prefers-color-scheme`，app 主題切換時工作室視窗不動。
+- 現在：`CFG.theme`（宿主開視窗時的 `_isLightTheme()`）寫進樣板，`<html data-theme>` 優先；只有沒有 `data-theme` 時才跟 OS（`:root:not([data-theme])`）。app 主題之後切換，宿主用 MutationObserver 送 `{__fa_theme}` 給 iframe，樣板即時切換（見 `renderer/src/floating-assistant.js` `_wgBuildStudio`）。
+- 教學簡報：`_wgBuildDeckView` 開簡報時用 `_isLightTheme()` 產生示意圖；簡報開著時切主題不會即時改（簡報是存檔後播放），要重開才換。
+- 實測：`FA_TPL=1 FA_THEME=light` 與 `dark` 各 11 張真畫面（`shots-light`、`shots-dark`）。注意：探測框的主題是由探測傳入 `cfg.theme`，不是 app 主題本身；宿主的 `_wgBuildStudio` 接線只能靠字串測試（見 C）確認，主畫面要等總指揮重新嵌入後才會跑新程式。
+
+### 28.3 測試（C）
+
+`renderer/src/studio/studio_howto_deck.test.js` 23／0：
+- 兩種主題的底色是該主題的色票，舊色 `#0f172a` 不再出現；深淺兩版不同；缺省是淺色。
+- 簡報用到的按鈕與標題文字共 60 條都在 `studio-viewer.template.html`（分頁名稱在 `studio_layout_core.js`）；改了工作室文字，這裡會先失敗。
+- 工作室視窗與簡報都傳入 app 主題，主題變化會 postMessage。
+
+`studio_viewer_tabs.test.js` 13／0。`studio_embed.test.js` 19／1：「檢視器範本一致」失敗是預期的，因為嵌入版（`renderer/src/floating-assistant.js` 內的 `FA_STUDIO_VIEWER_HTML`）還是舊樣板，要總指揮重新嵌入。
+
+### 28.4 未處理
+
+- 重新嵌入之前，主畫面的新主題跟新簡報都不會出現。
+- 伺服器端摘要的英文（`groups 0/8`、`self 3`）與領域分頁的類別名稱（§27.3）仍未改。
+- 截圖只有示意圖與真畫面的文字對照，沒有像素級比對。

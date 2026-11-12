@@ -1,17 +1,17 @@
-// 啟動真的 Electron（xvfb）跑 scripts/eval/studio_firstrun.eval.js；eval 印 "[shot] 名稱" 時，用 import 截整個螢幕到 FA_SHOT_DIR（預設 scratchpad）。
+// 啟動真的 Electron（xvfb）跑探測腳本；探測印 "[shot] 名稱" 時，用 import 截整個螢幕到 FA_SHOT_DIR（預設暫存資料夾）。
 // 用法：xvfb-run -a nice -n 19 node scripts/eval/studio_firstrun.run.js [埠]
+// 環境變數：FA_EVAL=探測名（預設 studio_firstrun，即 scripts/eval/<名>.eval.js）；FA_TPL=1 注入工作目錄未嵌入的 studio-viewer 樣板；FA_THEME=light|dark 指定探測框的主題；FA_HOWTO=1 注入工作目錄未嵌入的 studio_howto_deck.js。
 const { spawn, execFileSync } = require('child_process'), fs = require('fs'), os = require('os'), path = require('path');
 const app = path.join(__dirname, '..', '..'); const exe = path.join(app, 'node_modules', 'electron', 'dist', 'electron');
 const OUT = process.env.FA_SHOT_DIR || path.join(os.tmpdir(), 'fa-firstrun-shots'); fs.mkdirSync(OUT, { recursive: true });
 const ud = fs.mkdtempSync(path.join(os.tmpdir(), 'fa-firstrun-ud-'));
 fs.writeFileSync(path.join(ud, 'desktop-settings.json'), '{"execEnabled":true,"execConfirmRequired":false}');
-// FA_TPL=1：把工作目錄裡的 studio-viewer 樣板（未經嵌入）注入探測用的 globalThis.__FA_TPL，讓未嵌入的修正也能在真畫面上驗證
-let evalFile = path.join(__dirname, 'studio_firstrun.eval.js');
-if (process.env.FA_TPL === '1') {
-    const tpl = fs.readFileSync(path.join(app, 'renderer', 'src', 'studio', 'studio-viewer.template.html'), 'utf8');
-    evalFile = path.join(OUT, 'eval-combined.js');
-    fs.writeFileSync(evalFile, 'globalThis.__FA_TPL = ' + JSON.stringify(tpl) + ';\n' + fs.readFileSync(path.join(__dirname, 'studio_firstrun.eval.js'), 'utf8'));
-}
+const evalSrc = path.join(__dirname, (process.env.FA_EVAL || 'studio_firstrun') + '.eval.js');
+let evalFile = evalSrc; let pre = '';
+if (process.env.FA_TPL === '1') pre += 'globalThis.__FA_TPL = ' + JSON.stringify(fs.readFileSync(path.join(app, 'renderer', 'src', 'studio', 'studio-viewer.template.html'), 'utf8')) + ';\n';
+if (process.env.FA_HOWTO === '1') pre += 'globalThis.__FA_HOWTO_SRC = ' + JSON.stringify(fs.readFileSync(path.join(app, 'renderer', 'src', 'studio', 'studio_howto_deck.js'), 'utf8')) + ';\n';
+if (process.env.FA_THEME) pre += 'globalThis.__FA_THEME = ' + JSON.stringify(process.env.FA_THEME) + ';\n';
+if (pre) { evalFile = path.join(OUT, 'eval-combined.js'); fs.writeFileSync(evalFile, pre + fs.readFileSync(evalSrc, 'utf8')); }
 const env = Object.assign({}, process.env, { HF_HUB_OFFLINE: '1', TRANSFORMERS_OFFLINE: '1', FA_DEBUG_EVAL_FILE: evalFile, FA_DISABLE_MAIN_OVERLAY: '1', FA_BROWSER_CONTROL_PORT: process.argv[2] || '17991', ELECTRON_ENABLE_LOGGING: '1' });
 const p = spawn(exe, [app, '--no-sandbox', '--disable-gpu', '--user-data-dir=' + ud], { env, stdio: ['ignore', 'pipe', 'pipe'] });
 let out = ''; let shotsDone = 0;
@@ -21,12 +21,12 @@ const feed = (d) => {
     if (/\[eval-file\] (result|error)/.test(out) && !p.killed) setTimeout(() => { try { p.kill(); } catch (_) { /* */ } }, 1500);
 };
 p.stdout.on('data', feed); p.stderr.on('data', feed);
-const t = setTimeout(() => { try { p.kill(); } catch (_) { /* */ } console.log('逾時'); }, 240000);
+const t = setTimeout(() => { try { p.kill(); } catch (_) { /* */ } console.log('逾時'); }, 400000);
 p.on('exit', () => {
     clearTimeout(t);
     const m = out.split('\n').filter((l) => /\[eval-file\]/.test(l)).join('\n');
     console.log('截圖 ' + shotsDone + ' 張 → ' + OUT);
-    console.log(m.slice(0, 60000) || out.slice(-3000));
+    console.log(m.slice(0, 80000) || out.slice(-3000));
     try { fs.rmSync(ud, { recursive: true, force: true }); } catch (_) { /* */ }
     process.exit(0);
 });

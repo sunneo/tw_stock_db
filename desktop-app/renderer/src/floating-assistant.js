@@ -93081,15 +93081,18 @@ ${fnData.code}
         const srv = await this._studioServer(); const title = '離線訓練工作室';
         const cfg = { hosts: ['mock.local'], prefixes: null, block: true, allow_hosts: [], deny: this._sandboxDenyHosts(), backend: 'iframe' };
         const shim = '<script>(' + __faMockShim.toString() + ')(' + JSON.stringify(cfg).replace(/</g, '\\u003c') + ')</' + 'script>';
-        const doc = FA_STUDIO_VIEWER_HTML.replace('__CFG__', () => JSON.stringify({ title }).replace(/</g, '\\u003c')).replace('__SHIM__', () => shim).replace('__LAYOUT__', () => FA_STUDIO_LAYOUT_SRC.replace(/<\/script/gi, '<\\/script'));
+        const doc = FA_STUDIO_VIEWER_HTML.replace('__CFG__', () => JSON.stringify({ title, theme: this._isLightTheme() ? 'light' : 'dark' }).replace(/</g, '\\u003c')).replace('__SHIM__', () => shim).replace('__LAYOUT__', () => FA_STUDIO_LAYOUT_SRC.replace(/<\/script/gi, '<\\/script'));
         const card = document.createElement('div'); card.className = 'fwd';
         const bar = document.createElement('div'); bar.className = 'fwd-bar'; const t = document.createElement('span'); t.className = 't'; t.textContent = '🏭 ' + title; bar.appendChild(t);
         const bX = document.createElement('button'); bX.type = 'button'; bX.textContent = '✕'; bX.title = '關閉訓練工作室（背景訓練不會停；重新開啟會接回進度）'; bar.appendChild(bX); card.appendChild(bar);
         const iframe = document.createElement('iframe'); iframe.setAttribute('sandbox', 'allow-scripts allow-forms allow-modals'); card.appendChild(iframe);
         const onMsg = (ev) => { const d = ev.data; if (!d || d.__fa_mock !== 1 || ev.source !== iframe.contentWindow) return; const src = ev.source; srv.handle(d, (m, transfer) => { try { src.postMessage(Object.assign({ __fa_mock_r: 1 }, m), '*', transfer || []); } catch (_) { /* */ } }); };
         window.addEventListener('message', onMsg);
+        // app 主題變了就告訴視窗（視窗的背景跟 app 主題走，沒有主題時才跟 OS）
+        const themeObs = new MutationObserver(() => { try { if (iframe.contentWindow) iframe.contentWindow.postMessage({ __fa_theme: this._isLightTheme() ? 'light' : 'dark' }, '*'); } catch (_) { /* */ } });
+        themeObs.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
         const win = FaWin.decorate(card, { id: 'studio', title: '🏭 ' + title, bar, minW: 480, minH: 320 });
-        const api = { ok: true, node: card, close: () => { window.removeEventListener('message', onMsg); try { srv.close(); } catch (_) { /* */ } try { win.destroy(); } catch (_) { /* */ } card.remove(); } };
+        const api = { ok: true, node: card, close: () => { themeObs.disconnect(); window.removeEventListener('message', onMsg); try { srv.close(); } catch (_) { /* */ } try { win.destroy(); } catch (_) { /* */ } card.remove(); } };
         bX.onclick = () => { api.close(); this._wgClosed(ref.id, Object.assign({ title }, ref)); };
         iframe.srcdoc = doc;
         return { node: card, api };
@@ -93098,7 +93101,7 @@ ${fnData.code}
     // 存進檔案快取後交給 media-presentation 的播放器（旁白走設定好的 TTS），開在可拖曳、可最大化的視窗裡。
     async _wgBuildDeckView(ref) {
         const H = FaStudio.FaStudioHowto; const mode = ref.howto === 'adv' ? 'adv' : 'simple'; const title = String(ref.title || H.title(mode));
-        const saved = await this._deckSaveYaml(H.buildYaml(mode), title);
+        const saved = await this._deckSaveYaml(H.buildYaml(mode, this._isLightTheme() ? 'light' : 'dark'), title);
         const card = document.createElement('div'); card.className = 'fwd';
         const bar = document.createElement('div'); bar.className = 'fwd-bar'; const t = document.createElement('span'); t.className = 't'; t.textContent = '🎞️ ' + title; bar.appendChild(t);
         const bX = document.createElement('button'); bX.type = 'button'; bX.textContent = '✕'; bX.title = '關閉教學簡報'; bar.appendChild(bX); card.appendChild(bar);
