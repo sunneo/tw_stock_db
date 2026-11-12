@@ -30,7 +30,9 @@ function seedCounts(root) {
                 const idm = /require\('\.\/domain_(?!registry)([a-z0-9]+)_core\.js'\)/.exec(srcText); if (n && idm) out[idm[1]] = { total: n, train: n - ho, holdout: ho, file: 'renderer/src/uml/' + f, counted: 'static' };
                 continue;
             }
-            try { require(p); } catch (e) { out['?' + f] = { error: String((e && e.message) || e), file: 'renderer/src/uml/' + f }; continue; }
+            if (/_codegen\.test\.js$/.test(f)) continue; // 骨架產碼的比對測試：不是領域包題目檔，載入時會跑完整比對並 process.exit（會把 embed 整支腳本結束掉，嵌入結果就沒有寫回）
+            const realExit = process.exit; process.exit = (c) => { throw new Error('測試檔在載入時呼叫 process.exit(' + c + ')，略過：' + f); }; // 保險：任何測試檔載入時想結束行程，都不能結束 embed
+            try { require(p); } catch (e) { out['?' + f] = { error: String((e && e.message) || e), file: 'renderer/src/uml/' + f }; continue; } finally { process.exit = realExit; }
             if (!cur || !Array.isArray(cur.seeds) || !Array.isArray(cur.packs)) continue;
             const ids = cur.packs.map((pk) => { try { return pk.make(PAR).id; } catch (_) { return null; } }).filter(Boolean);
             const hold = cur.seeds.filter((s) => s.split === 'holdout').length;

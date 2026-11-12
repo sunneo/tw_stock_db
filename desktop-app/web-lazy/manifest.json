@@ -44,16 +44,16 @@
     "FA_WEBTRAIN_WORKER_SRC",
     "FA_STUDIO_HOST_FILES"
    ],
-   "size": 470863,
-   "md5": "57d1428312314ebc66a5114abf169b37"
+   "size": 541221,
+   "md5": "ae9978a489151851158f7744912bfbe0"
   },
   "studioview": {
    "file": "chunks/studioview.js",
    "names": [
     "FA_STUDIO_VIEWER_HTML"
    ],
-   "size": 66482,
-   "md5": "00790c994ccdad84f664d5bcbb81ddc9"
+   "size": 72485,
+   "md5": "2f856c4432eb3a48ac45590c364cb293"
   },
   "behavior": {
    "file": "chunks/behavior.js",
@@ -229,8 +229,8 @@
    "names": [
     "FaMatrixSynth"
    ],
-   "size": 24374,
-   "md5": "a634550f2265fd83a88367a154e0efd5"
+   "size": 26246,
+   "md5": "9bb480181baef9231647de3045b02e4f"
   },
   "matrixgraph": {
    "file": "chunks/matrixgraph.js",
@@ -317,8 +317,8 @@
    "names": [
     "FaMatrixSketch"
    ],
-   "size": 19317,
-   "md5": "f1ded8fe26c1915577fcd2dce4d53356"
+   "size": 19381,
+   "md5": "61f0fa8dd33bbf887e251fcbf7fe0cfc"
   },
   "matrixlist": {
    "file": "chunks/matrixlist.js",
@@ -341,8 +341,16 @@
    "names": [
     "FaMatrixSpec"
    ],
-   "size": 14023,
-   "md5": "7828fc3742c052b9f08b46d918f2aae6"
+   "size": 14691,
+   "md5": "44e10398d5483d78ae6574405d65c1b1"
+  },
+  "matrixteachqueue": {
+   "file": "chunks/matrixteachqueue.js",
+   "names": [
+    "FaMatrixTeachQueue"
+   ],
+   "size": 2036,
+   "md5": "4c81a164639e83da84de96476d1c135b"
   },
   "teachercheck": {
    "file": "chunks/teachercheck.js",
@@ -429,8 +437,8 @@
    "names": [
     "FaAlgoIntent"
    ],
-   "size": 28160,
-   "md5": "0bd4fd6bde99a74a251dfefa41d18d9c"
+   "size": 28735,
+   "md5": "e236ff9d94487fe4fba2fb2eb6681cbd"
   },
   "pylessons": {
    "file": "chunks/pylessons.js",
@@ -584,13 +592,157 @@
    "size": 7154,
    "md5": "466c5df2b732d1950d484202c4fcd221"
   },
+  "domainfieldcount": {
+   "file": "chunks/domainfieldcount.js",
+   "names": [
+    "FaDomainFieldCount"
+   ],
+   "size": 4312,
+   "md5": "1defd1fe3c3774febd3963122fc3b5fb"
+  },
+  "domainavbits": {
+   "file": "chunks/domainavbits.js",
+   "names": [
+    "FaDomainAvbits"
+   ],
+   "size": 18065,
+   "md5": "dfde7a13da688da75c64886df0d661b6"
+  },
+  "domainbmpx": {
+   "file": "chunks/domainbmpx.js",
+   "names": [
+    "FaDomainBmpx"
+   ],
+   "size": 4574,
+   "md5": "75f3ba4a81f79d94828792ed523ecf4c"
+  },
+  "domaingif": {
+   "file": "chunks/domaingif.js",
+   "names": [
+    "FaDomainGif"
+   ],
+   "size": 5280,
+   "md5": "30d3d9bfdea10a9ca5820fd2204055a0"
+  },
+  "domaininflate": {
+   "file": "chunks/domaininflate.js",
+   "names": [
+    "FaDomainInflate"
+   ],
+   "size": 7732,
+   "md5": "5d29467099396642ffae093342a04a55"
+  },
+  "domainjpeg": {
+   "file": "chunks/domainjpeg.js",
+   "names": [
+    "FaDomainJpeg"
+   ],
+   "size": 9313,
+   "md5": "343cc11c4eb2ab4d72d3e36b936c53dd"
+  },
+  "domainpar": {
+   "file": "chunks/domainpar.js",
+   "names": [
+    "FaDomainPar"
+   ],
+   "size": 5884,
+   "md5": "a8e8333800fc7555e1009b84c2e0a6fb"
+  },
+  "domainpar2": {
+   "file": "chunks/domainpar2.js",
+   "names": [
+    "FaDomainPar2"
+   ],
+   "size": 4252,
+   "md5": "4037eafad554f3ba1b782268e1a6c575"
+  },
+  "domainpar3": {
+   "file": "chunks/domainpar3.js",
+   "names": [
+    "FaDomainPar3"
+   ],
+   "size": 6330,
+   "md5": "1b9f0df905ce4cf0a67c4ec7ca3b8497"
+  },
+  "domainpcx": {
+   "file": "chunks/domainpcx.js",
+   "names": [
+    "FaDomainPcx"
+   ],
+   "size": 3900,
+   "md5": "32b9abfc697317d58ebf91ca01fc515f"
+  },
+  "domainpng": {
+   "file": "chunks/domainpng.js",
+   "names": [
+    "FaDomainPng"
+   ],
+   "size": 4100,
+   "md5": "3abb8c7c0a4a848ee5cc9a4b973733ab"
+  },
+  "domaintarx": {
+   "file": "chunks/domaintarx.js",
+   "names": [
+    "FaDomainTarx"
+   ],
+   "size": 5090,
+   "md5": "2d2affaef0308e77469f38ec9e848a05"
+  },
+  "domainavaudio": {
+   "file": "chunks/domainavaudio.js",
+   "names": [
+    "FaDomainAvaudio"
+   ],
+   "size": 4893,
+   "md5": "06cdf2f16e7fa02bc8b8e754dc88e21f"
+  },
+  "domainavimage": {
+   "file": "chunks/domainavimage.js",
+   "names": [
+    "FaDomainAvimage"
+   ],
+   "size": 6059,
+   "md5": "def8993e0423d6c710ffa8650fb40ad4"
+  },
+  "domainh264cabac": {
+   "file": "chunks/domainh264cabac.js",
+   "names": [
+    "FaDomainH264cabac"
+   ],
+   "size": 12267,
+   "md5": "70602719fb73218b2209a10c224ed18e"
+  },
+  "domainh264dec": {
+   "file": "chunks/domainh264dec.js",
+   "names": [
+    "FaDomainH264dec"
+   ],
+   "size": 20732,
+   "md5": "751ad2a001ac3f23568a9369dbf80f86"
+  },
+  "domainh264motion": {
+   "file": "chunks/domainh264motion.js",
+   "names": [
+    "FaDomainH264motion"
+   ],
+   "size": 6620,
+   "md5": "df6fd29c700692a205cc881c15c32ad5"
+  },
+  "domainh264pb": {
+   "file": "chunks/domainh264pb.js",
+   "names": [
+    "FaDomainH264pb"
+   ],
+   "size": 10672,
+   "md5": "e9cf577f39845dab5a7df0f573e65ecf"
+  },
   "pyumlpipeline": {
    "file": "chunks/pyumlpipeline.js",
    "names": [
     "FaPyUmlPipeline"
    ],
-   "size": 9117,
-   "md5": "fdcbd0cc6e68427f0c76cbe4dea2d73b"
+   "size": 9380,
+   "md5": "abe8f2c8ec6e24c0e68d55495f956a94"
   },
   "codeagent": {
    "file": "chunks/codeagent.js",
@@ -645,8 +797,8 @@
    "names": [
     "FaIrBundle"
    ],
-   "size": 287007,
-   "md5": "41e1920318e9081178cd7f1b15465145"
+   "size": 292154,
+   "md5": "48cfff9b3680b9e79f9cc755d8ccbe8b"
   },
   "view": {
    "file": "chunks/view.js",
@@ -1650,7 +1802,7 @@
   }
  },
  "core": {
-  "size": 5696900,
-  "md5": "1353f7da75fa8e0f7fa4517749fc7a78"
+  "size": 5699212,
+  "md5": "44a1f51367aed6af1131e39836889e37"
  }
 }
