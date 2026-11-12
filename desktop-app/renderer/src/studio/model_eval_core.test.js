@@ -46,4 +46,13 @@ check('全部題數不足：把關不通過，寫無法判定', small.gate.ok ==
 // 沒跑成的組
 const partial = E.compare(base, run(C, [{ group: 'plan_check', heldout: true, n: 25, pass: 13, unavailable: '沒有判題器' }]));
 check('沒跑成的組標「沒跑」，不算退步', partial.rows.find((x) => x.group === 'toolcall/格式').status === '沒跑' && partial.regressed.length === 0 && partial.notes.some((t) => /沒跑成/.test(t)));
+// 第 4 項：完整模型的介面與把關（執行器未接前一律不通過，原因要寫清楚）
+const cmpOk = E.compare(base, run(C, [{ group: 'toolcall/格式', heldout: true, n: 25, pass: 24 }, { group: 'plan_check', heldout: false, n: 25, pass: 24 }]));
+check('完整模型：計畫回傳不能評測與原因', E.planTarget({ kind: 'full', id: 'm1' }).ok === false && /fp32/.test(E.planTarget({ kind: 'full', id: 'm1' }).reason));
+check('完整模型：把關一律不通過（即使比較結果是通過）', cmpOk.gate.ok === true && E.gateFor({ kind: 'full', id: 'm1' }, cmpOk).ok === false && /fp32/.test(E.gateFor({ kind: 'full', id: 'm1' }, cmpOk).reason));
+check('LoRA：把關沿用比較結果', E.gateFor({ kind: 'lora', id: 'a' }, cmpOk).ok === true);
+check('完整模型：沒選模型也不通過', E.gateFor({ kind: 'full', id: '' }, cmpOk).ok === false);
+const cf = E.contractFor('full'), cl = E.contractFor('lora');
+check('介面：完整模型的介面寫明載入待補、資料格式與 LoRA 相同', cf.ok === false && cf.flow[0].indexOf('fp32') >= 0 && /與 LoRA 相同/.test(cf.output) && cf.input.target.indexOf('full') >= 0);
+check('介面：LoRA 介面可用', cl.ok === true && cl.reason === null);
 console.log(ok + ' passed, ' + bad + ' failed'); process.exit(bad ? 1 : 0);

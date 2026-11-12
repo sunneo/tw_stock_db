@@ -389,7 +389,7 @@
                     const tg = (body && body.target) || {}; const plan = ModelEval.planTarget(tg); if (!plan.ok) return bad(400, plan.reason);
                     if (!h.modelEval) return bad(501, '這個環境還沒有接上模型評測的執行器（h.modelEval）。LoRA 的留出題評測需要桌面版的原生推論，請在桌面版執行；網頁版目前不能做這個評測。');
                     let out; try { out = await h.modelEval({ target: tg }); } catch (e) { return bad(409, String((e && e.message) || e)); }
-                    const rec = { target: tg, ranAt: now(), compare: ModelEval.compare(out.base, out.cand), base: ModelEval.publicView(out.base), cand: ModelEval.publicView(out.cand) };
+                    const cmp = ModelEval.compare(out.base, out.cand); cmp.gate = ModelEval.gateFor(tg, cmp); const rec = { target: tg, ranAt: now(), compare: cmp, base: ModelEval.publicView(out.base), cand: ModelEval.publicView(out.cand) };
                     S.modelEvals = Object.assign({}, S.modelEvals || {}); S.modelEvals[tg.kind + '/' + tg.id] = rec; log('模型評測 ' + tg.kind + '/' + tg.id + '：把關' + (rec.compare.gate.ok ? '通過' : '未通過'));
                     return ok(rec);
                 }

@@ -18,6 +18,20 @@
         lora: { kind: 'lora', label: 'LoRA 小檔（疊在基底上）', ok: true },
         full: { kind: 'full', label: '完整模型（合併匯出）', ok: false, reason: '完整模型的載入評測待 fp32 轉 ONNX 補上。目前只有量化後的 ONNX q8 檔，沒有可以逐層比對的 fp32 版本，所以還不能在這裡載入評測。補上後，這裡會跑同一批留出題，結果格式與 LoRA 相同。' },
     };
+    // 完整模型的評測介面（先寫好，等 fp32 轉 ONNX 補上再接執行器）：輸入、資料格式、判定與把關都和 LoRA 相同，只差「載入」這一步。
+    const CONTRACT = {
+        input: { target: '{ kind: "full", id }（完整模型資產名）', base: '同一批留出題的基底結果（與 LoRA 共用）' },
+        flow: ['載入完整模型（fp32 ONNX，待補）', '用同一批留出題生成', '判題（與 LoRA 同一套判準）', '交給 compare 並排比較'],
+        output: 'run 格式與 LoRA 相同：{ target, ranAt, groups[{group, heldout, n, pass, rate, formatN?, formatPass?, latencyMs?}] }',
+        gate: '與 LoRA 相同（至少一組有判斷、所有有判斷的組都不輸基底）；但在執行器接上前，完整模型一律不通過（原因見 TARGETS.full.reason）',
+    };
+    function contractFor(kind) { return kind === 'full' ? Object.assign({}, CONTRACT, { ok: TARGETS.full.ok, reason: TARGETS.full.reason }) : Object.assign({}, CONTRACT, { ok: TARGETS.lora.ok, reason: null }); }
+    // 把關：目標不能評測時（完整模型）永遠不通過，不看比較結果，避免假裝通過
+    function gateFor(target, cmp) {
+        const plan = planTarget(target || {});
+        if (!plan.ok) return { ok: false, reason: plan.reason };
+        return cmp.gate;
+    }
     // 呼叫端先問：這個目標現在能不能評測？不能就回原因（不假裝）
     function planTarget(target) {
         const t = target && TARGETS[target.kind];
@@ -65,5 +79,5 @@
             notes,
         };
     }
-    return { TARGETS, MIN_N, TOL, planTarget, publicView, compare };
+    return { TARGETS, MIN_N, TOL, planTarget, publicView, compare, contractFor, gateFor };
 });

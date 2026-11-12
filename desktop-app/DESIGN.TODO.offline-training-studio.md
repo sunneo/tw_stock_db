@@ -1319,3 +1319,10 @@ Backend {
 - `KNOWN_EVAL`（colu-r4、plan-r4）保留，卡片沒帶數字時仍由表查到，且通過把關。
 - 測試：`lora_gate.test.js` 15／0；既有 `lora_registry.test.js` 96／0、`lora_manage_core.test.js` 47／0。
 - 未驗證：沒有在真 Electron 裡跑卡片的 DOM 探針（探針只會驗證同一套純函式的輸出）。
+
+### 30.4 第 4 項：完整模型的評測接口（介面與把關已做；實際載入未驗證）
+- 接口：`model_eval_core.js` 的 `contractFor(kind)` 寫明完整模型的輸入（`{kind:'full', id}` 與基底結果）、流程（載入 fp32 ONNX → 同一批留出題生成 → 同一套判準判題 → compare）、輸出格式（與 LoRA 的 run 相同）與把關規則。
+- 把關：`gateFor(target, cmp)`。完整模型在執行器接上前一律不通過，不看比較結果，原因是「完整模型的載入評測待 fp32 轉 ONNX 補上」。路由 `POST /api/eval/model` 寫入紀錄時也走這個把關。完整模型目前在 `planTarget` 就回 400，不會進到執行器。
+- 測試：`model_eval_core.test.js` 22／0（含：完整模型比較結果通過仍判不通過；沒選模型不通過；介面內容）。
+- 未驗證（重要）：完整模型的實際載入與評測沒有做過。原因是缺 fp32 版本，只有量化後的 ONNX q8，無法逐層比對。補上 fp32 轉 ONNX 之前，這一項的分數不存在，不能當作已評測。
+- 未驗證：沒有在真 Electron 裡跑完整模型的評測流程（只驗證 400 原因文字與介面說明，見 `studio_eval_models` 探針）。
