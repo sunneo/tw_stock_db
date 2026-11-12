@@ -1017,4 +1017,13 @@ model card 欄位以 `description`（一句話，來自描述檔，§13.2）與 
 6. **四顆同時啟用：容量與記憶體夠、品質不行。** 見 27.3；rank 容量剛好用完（16/16），再多一顆會被拒絕。
 7. **範圍與樣本。** 每題型只有 3 題；原生推論的記憶體用量沒有量（只量到槽版轉換的峰值 RSS 108 MB）；plan 的 `plan_check` 之外的 `self_validate`、`review_return` 沒測；`decompose-r4`（舊版）沒測；網頁版路徑沒測（設計上桌面版才能套用）。
 
+### 27.6 阻礙 1～5 的處理（2026-11-12，同一天）
+
+- **第 1 項（slot-model 被刪）**：v385 已修並有迴歸測試。
+- **第 2 項（沒有 WebGPU 不走原生）**：`FaVlm.effectiveDevicePref`：偏好 gpu 但沒有 WebGPU 視同 auto（選項本來就做不到，resolveDevice 只會退到 WASM）；有 WebGPU 時完全不變（選 WebGPU 不碰原生的規則沒動）。渲染端 `_llmGenerateInner` 的三處判斷改用它。
+- **第 3 項（colu／plan 不自動選用、被觸發字搶走）**：登錄表加 `KNOWN_EVAL`（§19 的留出集數字，只認 id／名稱完全是 `colu-r4`／`plan-r4`），登錄時卡片沒評量就查這張表，所以兩顆會被自動選用。另外 `select`：任務領域已有符合的 adapter 時，只靠觸發字命中的別領域 adapter 讓位；沒有任務領域或領域沒有符合者，觸發字照舊可選用。
+- **第 4 項（toolcall 帶 tools／預填走 WASM）**：`FaVlm.nativeToolMessages` 把工具折進 system（格式同 Qwen3 官方樣板：`# Tools … <tools>…</tools> … <tool_call>`，工具以 `JSON.stringify` 逐行）；歷史有 `tool` 角色或 `tool_calls` 時不處理，改走網頁版。預填：原生樣板接不到預填（`nr-*` 是 md5 釘住的執行包，改它要發 1.22.0-3），所以讓模型自己生成，輸出以預填開頭才採用（回完整字串，與網頁版一致），否則退回網頁版重做。這是「正確優先」的做法：不一致就走舊路徑，不會靜默輸出錯誤。要讓預填一律走原生，需要執行包 1.22.0-3。
+- **第 5 項（執行包 1.22.0-2「尚未發佈」）**：更正：分支 `native-runtime-1.22.0` 在 `eb7fd2a4`，`manifest.json`（`runtimeVersion` 1.22.0-2）與 `parts/nr-*.part` 都可下載，`NATIVE_GITHUB_BASE` 已指向它；先前的說法來自舊註解，已不成立。
+- 未驗證：這三項在真實桌面視窗裡的生成效果（只有單元測試與註冊／樣板的字串核對）；工具折進 system 後與 WASM 樣板的逐字等同只對照了官方樣板文字，沒有跑同一題兩邊比輸出。
+
 未列入阻礙但值得記：套用後第一次生成會重建 session，多花約 1.4～3 秒；`lora_apply` 一次約 0.65 秒（寫 40 MB 到信箱），工作室手動載入約 1.6 秒，四顆一起 3.96 秒。
