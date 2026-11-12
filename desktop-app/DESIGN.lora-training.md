@@ -288,6 +288,33 @@ lora-train/.venv/Scripts/pip install -r lora-train/requirements.txt
 - **descriptor 沒有 eval 欄位**：打包時沒有傳評量 JSON，所以描述檔的 `eval` 是 null，lora-slot-js 的「只自動採用有評量者」規則不會自動選它，只能手動選。
 - **v2 準備中**：`data/multi/decompose_v2.jsonl` = v1 677 列 ＋ self_validate 正例 191 ＋ review_return 265（正負都收）＝ 1,133 列；排在 toolcall／plan／colu 之後自動開跑（`out/multi/run_v2.log`）。v2 只加正例，負例仍欠缺，評量時會看 neg 是否再退步。
 
+### 17.2 decompose v2 實測（2026-11-12，未取代 v1）
+
+**訓練**：`data/multi/decompose_v2.jsonl`（1,133 列，v1 677 列 ＋ self_validate 正例 191 ＋ review_return 265）；`out/multi/decompose_v2/`，一輪，08:02 正常完成（train_loss 0.398，pid 1219294 為自我比對的卡住監看程序，已殺，沒有影響訓練）。
+**評量**：與 v1、基底同一批留出（`heldout_v1.jsonl` 各組 60 列；uml 留出 60 列）。`score_gen.js` 輸出 `out/eval/decompose_v2_scored.txt`；uml 用 `eval_run.py`（`out/eval/decompose_v2_uml.json`）。判準沿用 §6／§18.2（n<20 只報告，不判退步）。
+
+| 範圍 | 組別 | 基底 | v1 | v2 | 與基底比 |
+|---|---|---|---|---|---|
+| 範圍內 | code_split valid | 0/60 | 60/60 | 60/60 | 進步 |
+| 範圍內 | code_split names | 0/60 | 55/60 | 56/60 | 進步 |
+| 範圍內 | code_split calls | 0/60 | 55/60 | 56/60 | 進步 |
+| 範圍內 | code_write_fn def | 60/60 | 60/60 | 60/60 | 持平 |
+| 範圍內 | code_write_fn judge | 8/60 | 20/60 | **16/60** | 進步（但比 v1 少 4） |
+| 範圍內 | uml edit_real | 18/30 | 30/30 | 30/30 | 進步 |
+| 範圍內 | uml edit_shuf | 16/30 | 30/30 | 30/30 | 進步 |
+| 範圍外 | plan_check valid | 52/60 | 59/60 | 60/60 | 進步 |
+| 範圍外 | review_return items | 0/60 | 0/60 | 3/60 | 進步 |
+| 範圍外 | self_validate ok | 25/60 | 25/60 | 43/60 | 進步 |
+| 範圍外 | self_validate 正例 | 23/43 | 16/43 | **43/43** | 進步 |
+| 範圍外 | self_validate 負例 | 2/17 | 9/17 | **0/17** | 退步（n=17 < 20，只報告） |
+
+**判讀**
+- 範圍內沒有退步（相對基底）。judge 比 v1 少 4 列，這是 v1 → v2 的退步，要記下來。
+- 範圍外：正例全對、負例全錯。整體 ok 從 25/60 升到 43/60，但這是「幾乎全判 ok」的模式（43 = 43 正例 ＋ 0 負例），不是真的學會分辨「有缺漏」。這比 v1 的退步更糟：v1 的負例是 9/17。依 §18.2 第 3 條，負例只有 17 列，不能判成退步，但這個模式本身就是問題，不能當成正面結果。
+- uml 結構階段仍然沒有留出列（與 v1 相同），沒有量到。
+
+**決定：v2 不取代 v1，也不打包 v2。** 雖然依 n<20 規則不構成退步，但「self_validate 負例全錯、整體偏向 ok」是實質的行為偏差，不應該用只有 17 列的計數規則放過。v1（`decompose-r4` 1.0.0，已依範圍限縮打包）維持不變。若要改進 v2，需要先補 self_validate 負例（且負例要夠多，至少 20 列），並重新登記判準後，依 §18.2 只量一次。
+
 ## 18. 第二顆 adapter：`toolcall`（2026-11-12 實跑）
 
 **訓練**：`out/multi/toolcall/`，rank 4、alpha 8、7 個投影、學習率 2e-4、一輪、序列 768，79 步，約 2.5 小時（負載 20–60）。資料 1,301 列（`tool_routing` 264、`toolwire` 144、`when2call` 435、`agent` 250、`writer` 146、`natural` 62；`when2call`／`agent`／`toolwire` 降取樣 40%）。**沒有中途檢查點**（這一顆是在可接續改善之前開始的）。
