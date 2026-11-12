@@ -39854,7 +39854,7 @@ const holder = {};
     var wantEn = /英文|english/i.test(body) && !/(繁體|簡體|國語|華語)?中文/.test(body.replace(/英文/g, ''));
     var voice = (/\b([ab][fm]_[a-z]+|z[fm]_[a-z]+|zh-[A-Za-z]+-[A-Za-z]+)\b/i.exec(body) || [])[1] || '';
     var tm = /《([^》]{1,24})》/.exec(body), title = tm ? tm[1] : '';
-    return { body: body, material: sm.material, matTitle: sm.matTitle, lang: wantEn ? 'en' : 'zh-TW', speed: sp >= 0.5 && sp <= 2 ? sp : 0, voice: voice, kids: /幼兒|幼童|小朋友|兒童|繪本|活潑|可愛|寶寶|孩子/.test(body), wantPhotos: /照片|實拍|上網找|圖文並茂|配圖|插圖|生圖|生成圖|產生圖|畫圖/.test(body) || /找圖/.test(body), wantGen: /(?:產生|生成|製作|畫|生)(?:出|一些|幾張)?(?:圖片|圖像|插圖|圖|照片)|AI\s*(?:生|畫|繪)圖|生圖|自己畫|可以(?:畫|生|產生)/.test(body), minutes: minutesOf(body), read: /讀給我聽|唸給我聽|念給我聽|朗讀|旁白/.test(body), icons: /圖示|icon|字可以少|少字|字少|不要太多字|貼圖|卡通圖|動畫/i.test(body), title: title };
+    return { body: body, material: sm.material, matTitle: sm.matTitle, lang: wantEn ? 'en' : 'zh-TW', speed: sp >= 0.5 && sp <= 2 ? sp : 0, voice: voice, kids: /幼兒|幼童|小朋友|兒童|繪本|活潑|可愛|寶寶|孩子/.test(body), wantPhotos: /照片|實拍|上網找|圖文並茂|配圖|插圖|生圖|生成圖|產生圖|畫圖/.test(body) || /找圖/.test(body), wantGen: /圖(?:片|像)?生成|生成(?:工具|圖|圖片|圖像)|(?:產|生|畫|繪|出)(?:出|一些|幾張|張)?(?:圖|圖片|圖像|插圖|照片)|產生(?:出)?.{0,3}(?:圖|照片)|AI\s*.{0,3}(?:生|畫|繪)?圖|生圖|自己畫|可以(?:畫|生|產生)|generate[ _-]?image|image\s*generat/.test(body), minutes: minutesOf(body), read: /讀給我聽|唸給我聽|念給我聽|朗讀|旁白/.test(body), icons: /圖示|icon|字可以少|少字|字少|不要太多字|貼圖|卡通圖|動畫/i.test(body), title: title };
   }
 
   var ascii = function (s, n) { return String(s == null ? '' : s).replace(/[^A-Za-z0-9 \-']/g, ' ').replace(/\s+/g, ' ').trim().slice(0, n || 40); };
@@ -77162,7 +77162,7 @@ const FaDeckTools = (function () {
         '',
         'ICON STYLE ("圖示", "字可以少", "用圖示", "動畫", pictures for small children): EVERY slide is ONE collage (get_presentation_topic("visuals") has the format). The pictures are icons: emoji_picture(emoji) -> "@imgN" (once per distinct icon; reuse the handle). NO bullets and almost no words: a title of at most 6 characters, a short name tag (label) under each icon, and the subtitle. 2-4 icons per slide, each popping in with its own sentence (at: {sentence: N}); 2-3 short narration sentences (<= 20 characters each). Things that travel MOVE: a plane, a car, a walking person, a suitcase on the belt get keys: [{at: {sentence: N}, sec: 3, x, y, rot?}]; add swing / bob for life and sounds: [{sfx: whoosh, sentence: N}] for flying. Keep every item inside the picture area (y + 1.5 * w <= 0.85, so nothing hides behind the subtitle bar). The cover has a big title text (texts, style title) and the last slide is a recap.',
         'DRAWING YOUR OWN PICTURES: for a thing that emoji_picture / cute_picture / find_photo cannot give, draw ONE object as SVG and call svg_picture({svg, name}) -> "@imgN", then use it like any picture (a collage item that pops in and moves). Same size and look for every object of the deck (viewBox 0 0 200 200, transparent background, flat colours with a darker outline, no text). A whole diagram (layers of the sky, a route map) is an svg or shapes visual instead.',
-        'PICTURE PRIORITY (when a slide needs a picture, in THIS order): (1) a picture that is IN the source text itself (the article\'s own images: browser_get_page_structure "images" -> import_image_url; the user\'s attachments); (2) if the user said pictures may be generated ("可以產生圖片", "生圖", "AI畫"): call generate_image(prompt) for that slide -> its client_file_url is the picture (import it with import_image_url / use it as client-file/<id>); (3) a browser_screenshot of the page is the LAST resort -- it is a whole-page view that does not match one slide\'s point, so use it only when (1) and (2) gave nothing. A stock photo (find_photo) for a NEWS story or a named person is never right: it shows somebody else.',
+        'PICTURE PRIORITY (when a slide needs a picture, in THIS order): (1) a picture that is IN the source text itself (the article\'s own images: browser_get_page_structure "images" -> import_image_url; the user\'s attachments); (2) if the user said pictures may be generated ("可以產生圖片", "生圖", "AI畫"): call generate_image(prompt) for that slide -> its client_file_url is the picture (import it with import_image_url / use it as client-file/<id>); (3) a browser_screenshot of the page is the LAST resort -- it is a whole-page view that does not match one slide\'s point, so use it only when (1) and (2) gave nothing. A stock photo (find_photo) for a NEWS story or a named person is never right: it shows somebody else. For a generated picture about a real news event draw a neutral illustration of the situation (a boardroom, a document, a building, a chart) -- never a likeness of a real person. generate_image returns "ref" (@imgN) directly.',
         'REAL PHOTOS FROM THE INTERNET ("可以上網找照片", "要真實照片"): call find_photo(query: 2-5 ENGLISH keywords of what the picture shows, e.g. "Hokkaido snow field", "airport baggage claim carousel") once per slide that needs one -> "@imgN" (+ credit / licence: put it in the slide notes). NEVER write a picture url yourself. find_photo is the quick first choice (free-licence photos, imported at once); when it finds nothing that fits the slide and the browser is connected (browser_status ok), you MAY use the browser tools yourself (search the web, open the page, then import the picture with import_image_url or take a screenshot) -- better matching photos are worth it. If neither works, try other keywords once, then draw that picture yourself (cute_picture / svg) -- one missing photo never stops the deck. Do not call list_uploaded_files when the task has no "[附件：…]" part: there is no attachment. When the user asks to speak at a speed ("語速1.0") set deck.speed.',
         'ATTACHED FILES ARE THE MATERIAL. When the task text contains "[附件：name（file_id=…）、…]" the user attached those files to THIS request: they are the source, in that order. Do NOT call list_uploaded_files to guess among older uploads, never ask which file, and never make up content when files were attached. Pictures: import_uploaded_image(file_id) for each -> "@imgN", one slide per picture (layout visual, or split with the text beside it) in the attached order. A picture with text on it (English captions, a page of a book, a slide): read it with interpret_image(file_id, "transcribe every word on this picture exactly, keep line breaks") and use THAT text -- never invent what is written. A video (mp4): visual kind video with src "client-file/<file_id>" (see get_presentation_topic("visuals")). A PDF / pptx / document: parse_uploaded_file / pptx_to_deck. Your final answer lists which attached file became which slide and says plainly which could not be used.',
         'CHINESE SUBTITLES UNDER AN ENGLISH VOICE ("中文字幕、英語發音", "字幕用中文，聲音念英文"): ONE slide, narration = the English text that is SPOKEN (voice af_* or deck.lang/slide.lang en), caption = the Chinese subtitle shown on screen (same number of sentences, same order; the viewer sees the Chinese while hearing the English). Do NOT make two slides for this. If you only have Chinese text, write narration in Chinese and set the voice to an English one: the app translates it for the voice and keeps your Chinese as the subtitle (deck.captions: original, the default). Both languages on screen at once (Chinese big, English smaller under it): deck.captions: bilingual (or a list of up to 3 tracks, top to bottom: [zh, en]). Every slide still has ONE spoken language.',
@@ -77213,7 +77213,7 @@ const FaDeckTools = (function () {
     ].join('\n');
 
     // 領域登記用的工具名稱（子任務只看得到這些）
-    const DOMAIN_TOOLS = ['render_presentation', 'begin_presentation', 'add_chapters', 'finish_presentation', 'define_snippet', 'verify_presentation', 'article_outline', 'article_section', 'get_presentation_topic',
+    const DOMAIN_TOOLS = ['generate_image', 'browser_get_elements', 'render_presentation', 'begin_presentation', 'add_chapters', 'finish_presentation', 'define_snippet', 'verify_presentation', 'article_outline', 'article_section', 'get_presentation_topic',
         'get_presentation_yaml', 'open_existing_presentation', 'list_source_images', 'cute_picture', 'make_object_sprite', 'make_character_sprite', 'pixel_art', 'import_uploaded_image', 'import_image_url', 'find_photo', 'emoji_picture', 'svg_picture', 'import_fap_image', 'get_3d_scene_topic',
         'list_uploaded_files', 'parse_uploaded_file', 'summarize_large_text', 'list_file_access_points', 'fap_list_files', 'fap_find_file', 'fap_read_file',
         'repo_ask', 'repo_read_doc',
@@ -77279,6 +77279,17 @@ const FaDeckTools = (function () {
             if (!this._deckRunState || !this._deckInDomainRun) return;
             if (/^(render_presentation|begin_presentation|add_chapters|finish_presentation|define_snippet|get_presentation_topic|list_source_images)$/.test(toolName)) return;
             try { this._deckRunState.catalog.scan(typeof result === 'string' ? (() => { try { return JSON.parse(result); } catch (_) { return result; } })() : result, toolName); } catch (_) { /* 目錄只是方便，不能弄壞工具 */ }
+        },
+        // 畫圖工具（generate_image）的結果：把圖放進簡報素材、結果裡直接給 "ref"（@imgN），模型就不必再「匯入」一個 client-file 位址
+        _deckAnnotateResult(toolName, result) {
+            if (toolName !== 'generate_image' || !this._deckRunState || !this._deckInDomainRun || typeof result !== 'string') return result;
+            try {
+                const o = JSON.parse(result); if (!o || o.ok === false || o.error) return result;
+                const cf = o.client_file_url || (o.images && o.images[0] && o.images[0].client_file_url); if (!cf) return result;
+                const e = this._deckRun().catalog.add(String(cf), { alt: 'generated picture', from: 'generated' });
+                if (e && e.ref) { o.ref = e.ref; o.note = 'use "' + e.ref + '" as the picture src of a visual {kind: image}; the generated picture is already in the task (do NOT call import_image_url for it)'; return JSON.stringify(o); }
+            } catch (_) { /* 標不上就原樣 */ }
+            return result;
         },
         _deckParseYaml(text) {
             try { return { data: window.jsyaml.load(String(text)) }; } catch (e) {
@@ -77490,7 +77501,9 @@ const FaDeckTools = (function () {
         },
         async _deckImportImageBlob(blob, label, tool, opt) {
             // 伺服器常回空的或 octet-stream 的 Content-Type：看檔頭位元組認圖（jpg/png/gif/webp/bmp），認得就補上正確 type
-            if (blob && !/^image\//.test(blob.type || '') && (!blob.type || /octet-stream|binary/.test(blob.type)) && blob.size > 12) {
+            // 2026-11-12：有的下載路徑回來的 type 就是 "jpg"（沒有 image/）或空的、octet-stream、text/plain：先把「jpg／png…」補成 image/xxx，不行再看檔頭
+            if (blob && /^(jpe?g|png|gif|webp|bmp)$/i.test(blob.type || '')) { const e0 = String(blob.type).toLowerCase(); blob = blob.slice(0, blob.size, 'image/' + (e0 === 'jpg' ? 'jpeg' : e0)); }
+            if (blob && !/^image\//.test(blob.type || '') && !/html|json|xml/.test(blob.type || '') && blob.size > 12) {
                 try {
                     const h = new Uint8Array(await blob.slice(0, 12).arrayBuffer()); const asc = (a, b) => String.fromCharCode.apply(null, Array.from(h.slice(a, b)));
                     const t = (h[0] === 0xFF && h[1] === 0xD8) ? 'image/jpeg' : (h[0] === 0x89 && asc(1, 4) === 'PNG') ? 'image/png' : asc(0, 3) === 'GIF' ? 'image/gif' : (asc(0, 4) === 'RIFF' && asc(8, 12) === 'WEBP') ? 'image/webp' : asc(0, 2) === 'BM' ? 'image/bmp' : '';
@@ -130734,7 +130747,8 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         const toolName = parsed.tool || parsed.name || parsed.action
             || (parsed.function && typeof parsed.function === 'object' && parsed.function.name);
         if (typeof toolName !== 'string' || !toolName.trim()) return null;
-        if (Array.isArray(availableToolNames) && availableToolNames.length && !availableToolNames.includes(toolName)) return null;
+        // 名單外的工具也要認得（2026-11-12：模型直接叫名單外的 generate_image，這裡原本回 null → 被當成最終答案、沒有任何糾正）：名字長得像工具名就當成「在描述工具呼叫」，由呼叫端決定追加或提醒申請
+        if (Array.isArray(availableToolNames) && availableToolNames.length && !availableToolNames.includes(toolName) && !/^[A-Za-z][A-Za-z0-9_\-]{2,60}$/.test(toolName.trim())) return null;
         const hasArgLikeField = parsed.arguments !== undefined || parsed.args !== undefined
             || parsed.parameters !== undefined || parsed.path !== undefined || parsed.input !== undefined
             || (parsed.function && typeof parsed.function === 'object' && parsed.function.arguments !== undefined);
@@ -130892,7 +130906,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         // ——這樣不管一個item內部實際觸發了幾次HTTP請求，全部都會被同一組
         // 滑動視窗限流器計入，真實請求速率才會確實貼合使用者設定的值。
         const rateLimitPerMinute = options.rateLimitPerMinute != null ? options.rateLimitPerMinute : null;
-        let toolEscalationCount = 0;
+        let toolEscalationCount = 0; const selfRef = this;
         const REQUEST_MORE_TOOLS_NAME = 'request_additional_tools';
         // tw_stock_db客製: 2026-09-13使用者回報——開啟「顯示工具呼叫追蹤與
         // 思考過程」後還是完全看不到子agent在忙什麼，因為_runSubAgentTask
@@ -130991,8 +131005,20 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                     },
                 };
             }
+            { const g = autoGrantTool(fnName); if (g) return this._getToolDefinition(fnName, allowedToolNames); }
             return this._getToolDefinition(fnName, allowedToolNames);
         };
+        // 2026-11-12 使用者：「我們設計申請工具為什麼沒有發揮作用?!」——模型常常不會（或不想）呼叫 request_additional_tools，而是直接叫一個不在名單裡的工具（簡報領域直接叫 generate_image），
+        // 結果被當成「找不到工具」或文字回覆被丟掉。這裡不等它申請：它叫的是一個真的存在的工具、而且不是高風險工具，就替它追加（跟申請同一條上限 SUBAGENT_MAX_TOOL_ESCALATIONS），並在追蹤裡寫明。
+        function autoGrantTool(fnName) {
+            if (!canRequestMore || !fnName || allowedToolNames.includes(fnName)) return false;
+            if (!self_tools()[fnName] || /^(run_command|bash_execute|python_execute|fs_write_file|fs_delete|fs_move|tmux_|delegate_to_machine|coding_workspace|delegate_to_subagent)/.test(fnName)) return false;
+            if (toolEscalationCount >= SUBAGENT_MAX_TOOL_ESCALATIONS) return false;
+            toolEscalationCount++; allowedToolNames.push(fnName);
+            if (onProgress) onProgress('🔧 自動追加工具：' + fnName); if (onTrace) onTrace('🔧 模型直接叫了名單外的工具 ' + fnName + '：它是真的工具、不是高風險，已替它追加（不必再申請）');
+            return true;
+        }
+        function self_tools() { return selfRef.tools || {}; }
         // tw_stock_db客製: 2026-09-17——domain專屬systemPrompt這條路徑完全
         // 繞過_getFinalSystemPrompt()（見上面_getFinalSystemPrompt說明的
         // 那段），必須在這裡另外補一次_getGroundingContext()（系統時鐘+host
@@ -131029,7 +131055,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             const [, stepNum, totalSteps] = pipelineStepPrefixMatch;
             systemPrompt += `\n\n這個任務是一個分階段pipeline的第${stepNum}/${totalSteps}步——你只拿得到這個階段需要的工具，這是刻意設計（避免一次開放整個領域的全部工具讓單一子agent的工具清單過度膨脹），不是遺漏。**不要呼叫${REQUEST_MORE_TOOLS_NAME}申請這個階段本來就沒有分配到的工具**（後面還有其他sibling階段會被依序委派、各自拿到各自那個階段需要的工具，會接手處理）。你的正確任務範圍：只完成「這個階段」用現有工具做得到的部分，然後在最終回答裡清楚交代（1）這個階段實際完成了什麼、產出了什麼（檔案id/資料/結論等）（2）如果這個階段沒辦法完全做完，明確講清楚卡在哪裡、缺什麼，讓委派下一階段的人知道要接續處理什麼，不要自己嘗試繞過工具限制硬做，也不要因為看起來做不完就直接放棄回一句「做不到」。`;
         } else if (canRequestMore) {
-            systemPrompt += `\n\n如果執行到一半發現需要額外的工具/領域能力，可以呼叫${REQUEST_MORE_TOOLS_NAME}({"need":"..."})跟系統申請追加，成功後就能直接呼叫新工具，不用結束對話。`;
+            systemPrompt += `\n\n如果執行到一半發現需要額外的工具/領域能力，可以呼叫${REQUEST_MORE_TOOLS_NAME}({"need":"..."})跟系統申請追加，成功後就能直接呼叫新工具，不用結束對話。名單外但真的存在的工具（例如畫圖的 generate_image）直接呼叫它也行，系統會替你追加；不要把「我要呼叫某工具」寫成一段文字就當作最終回覆。`;
         }
         if (canExtend) systemPrompt += `\n\n【回合預算】你這次大約有 ${Math.round(maxRounds * (this._isAutoAgentMode() ? 2 : 1))} 個回合（每次呼叫工具算一回合）。先評估任務多大：讀取資料最多用掉約 60%，其餘留給整理與寫出結果。知道任務比預算大時（例如讀完大綱才發現有很多頁要讀），呼叫${EXTEND_ROUNDS_NAME}({"estimate":還需要幾個回合,"reason":"做完了什麼、還剩什麼"})，系統會請使用者決定要不要擴展；不要自己默默縮水或亂省略內容。`;
         if (canDelegate && !mixerKids) {
@@ -131297,7 +131323,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                         let result = await this._callToolGuarded(subToolLog, fnName, rawArgs, () => Promise.resolve(toolDef.callback.call(this, rawArgs)));
                         result = await this._persistToolImageResult(fnName, result);
                         this._noteWriteEvidence(writeEvidence, fnName, result);
-                        if (this._deckInDomainRun) this._deckCatalogNote(fnName, result);
+                        if (this._deckInDomainRun) { this._deckCatalogNote(fnName, result); result = this._deckAnnotateResult(fnName, result); }
                         const visual = this._detectVisualToolPayload(result);
                         if (visual) capturedVisual = visual;
                         if (typeof options.onToolResult === 'function') { try { options.onToolResult(fnName, rawArgs, result); } catch (_) { /* 收集失敗不影響任務 */ } }
@@ -131352,7 +131378,11 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                 if (toolTasks.length) { truncated = toolTasks.map((x) => '[CALL:' + x.fnName + '(' + x.fnArgsRaw + ')]').join(String.fromCharCode(10)); if (onTrace) onTrace('🔁 回覆帶了原生工具呼叫（這個模型列標成不支援，但實際有回）：' + toolTasks.map((x) => x.fnName).join('、') + '，照樣執行'); }
             }
             if (!toolTasks.length && autoExecDescribed < 80) {
-                const dc = this._parseDescribedToolCall(this._stripInlineBase64(rawContent).trim(), allowedToolNames);
+                let dc = this._parseDescribedToolCall(this._stripInlineBase64(rawContent).trim(), allowedToolNames);
+                if (!dc && typeof autoGrantTool === 'function') { // 叫的是名單外的工具：看是不是真的存在的工具，是就追加後照常執行
+                    const dc2 = this._parseDescribedToolCall(this._stripInlineBase64(rawContent).trim(), Object.keys(this.tools || {}));
+                    if (dc2 && autoGrantTool(dc2.name)) dc = dc2;
+                }
                 if (dc) {
                     autoExecDescribed++;
                     toolTasks.push({ fnName: dc.name, fnArgsRaw: JSON.stringify(dc.args), described: true });
@@ -131371,6 +131401,11 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                     malformedCallRetries++;
                     if (onProgress) onProgress(`↻ 偵測到用文字描述工具呼叫「${describedTool}」而非真的呼叫，請AI改正語法（第${malformedCallRetries}次）…`);
                     messages.push({ role: 'assistant', content: finalText });
+                    if (!allowedToolNames.includes(describedTool)) { // 名單外的工具（自動追加不了：高風險、上限已到、或不存在）→ 明確教它怎麼辦，而不是讓這段文字變成最終答案
+                        if (onTrace) onTrace('↻ 模型想叫名單外的工具 ' + describedTool + '，不當成最終答案；提醒它申請追加或改用現有工具');
+                        messages.push({ role: 'user', content: '[系統提示] 你剛才想呼叫工具「' + describedTool + '」，但它不在你目前的工具名單裡，沒有被執行（你還沒有拿到任何結果）。' + (canRequestMore ? '先呼叫 ' + REQUEST_MORE_TOOLS_NAME + '({"need":"我需要 ' + describedTool + '，用來……"}) 申請追加，成功後就能直接呼叫它；用真正的工具呼叫，不要把呼叫寫成一段文字。' : '這個任務不能追加工具：改用你現有的工具完成，或如實說明哪一部分做不到。') });
+                        round--; continue;
+                    }
                     messages.push({
                         role: 'user',
                         content: `[系統提示] 你剛才用一段JSON文字描述要呼叫工具「${describedTool}」，但這不是系統真正認得的呼叫語法，這個工具並沒有被執行，你也還沒有拿到任何真實結果。請改用正確語法重新呼叫：[CALL: ${describedTool}(這裡放JSON格式的參數物件)]，例如[CALL: ${describedTool}({"path":"..."})]。不要再用純文字描述你打算做什麼。`,
@@ -131448,7 +131483,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                     let result = await this._callToolGuarded(subToolLog, task.fnName, JSON.stringify(parsedArgs), () => Promise.resolve(toolDef.callback.call(this, JSON.stringify(parsedArgs))));
                     result = await this._persistToolImageResult(task.fnName, result);
                     this._noteWriteEvidence(writeEvidence, task.fnName, result);
-                    if (this._deckInDomainRun) this._deckCatalogNote(task.fnName, result);
+                    if (this._deckInDomainRun) { this._deckCatalogNote(task.fnName, result); result = this._deckAnnotateResult(task.fnName, result); }
                     const visual = this._detectVisualToolPayload(result);
                     if (visual) capturedVisual = visual;
                     if (task.described) {

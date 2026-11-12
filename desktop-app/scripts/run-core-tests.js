@@ -28,6 +28,7 @@ const suites = [
     ['工具預算：短說明、精簡參數、階段切割、檢索', 'renderer/src/tools/tool_budget_core.test.js'],
     ['工具參數消毒（所有工具共用：型別／欄位名／字串化 JSON／args_id＋patch）', 'renderer/src/tools/tool_args_core.test.js'],
     ['選測工具（依相依只測改動與受影響功能）', 'scripts/test-affected.test.js'],
+    ['申請工具：名單外的真工具自動追加、追加不了時退回並教申請、簡報領域有 generate_image', 'scripts/self-correct/tool_request_wiring.test.js'],
     ['本機代理：上游回應標頭很肥（40KB）不能變成 502；連不上仍回 502＋x-fa-error', 'scripts/local-proxy-bigheader.test.js'],
     ['YouTube 下載網路層（502 暫時性判斷、重試退避、具體失敗訊息、同意頁／機器人頁／不完整網頁診斷、yt-dlp 錯誤分類）', 'renderer/src/media/yt_net_core.test.js'],
     ['Agent Model Configure：階段圖、特性估計、自動決定、內建預設、開關不動設定、重置、解析與備援順序、AI 回覆檢查', 'renderer/src/tools/agent_model_core.test.js'],
