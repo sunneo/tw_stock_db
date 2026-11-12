@@ -34,9 +34,9 @@
                 (c, N) => { need(N, 2); if (N.ls.length < 1) throw new Error('要工作量清單'); const n = N.sc[0], p = N.sc[1], a = N.ls[0]; const kinds = c.cand === 'all4' ? '["static", "cyclic", "dynamic", "guided"]' : '["static", "cyclic", "dynamic"]'; return code(['best = ""', 'bs = -1', 'for kd in ' + kinds + ':', '    fin = [0] * ' + p, '    if kd == "static":', '        q, r = divmod(' + n + ', ' + p + ')', '        s = 0', '        for t in range(' + p + '):', '            ln = q + (1 if t < r else 0)', '            fin[t] = sum(' + a + '[s:s + ln])', '            s += ln', '    elif kd == "cyclic":', '        for i in range(' + n + '):', '            fin[i % ' + p + '] += ' + a + '[i]', '    else:', '        s = 0', '        while s < ' + n + ':', '            sz = 1 if kd == "dynamic" else max(1, (' + n + ' - s + ' + p + ' - 1) // ' + p + ')', '            e = min(' + n + ', s + sz)', '            t = fin.index(min(fin))', '            fin[t] += sum(' + a + '[s:e])', '            s = e', '    m = max(fin)', '    if bs < 0 or m ' + (c.tie === 'first' ? '<' : '<=') + ' bs:', '        bs = m', '        best = kd', c.out === 'name' ? 'print(best)' : 'print(bs)']); }, { limit: 8 }),
         ];
         const algos = [
-            ['par-pick', /推薦.{0,8}排程|挑.{0,6}排程|選.{0,8}排程|最佳排程|哪(一)?種排程|best\s*schedule|recommend.{0,12}schedul/i],
-            ['par-dyn', /動態排程|引導式|guided|schedule\s*\(\s*(dynamic|guided)|dynamic\s*schedul/i],
-            ['par-load', /排程.{0,24}(負載|不均衡|最忙|加速比)|(負載|不均衡|加速比).{0,24}排程|不均衡度|load\s*imbalance/i],
+            ['par-pick', /推薦.{0,8}排程|推薦.{0,20}排程|比較.{0,30}排程|挑.{0,6}排程|選.{0,8}排程|最佳排程|哪(一)?種排程|最忙.{0,20}負載最小|best\s*schedule|recommend.{0,12}schedul/i],
+            ['par-dyn', /動態排程|引導式|guided|schedule\s*\(\s*(dynamic|guided)|dynamic\s*schedul|dynamic\s*排程|guided\s*排程|領取.{0,8}塊/i],
+            ['par-load', /排程.{0,24}(負載|不均衡|最忙|加速比)|(負載|不均衡|加速比).{0,24}排程|不均衡度|load\s*imbalance|最忙.{0,20}負載|每個執行緒.{0,8}負載|執行緒的負載|span|耗時.{0,20}(執行緒|總)|總耗時/i],
             ['par-assign', /(靜態|區塊|循環|分塊循環|cyclic|block|static).{0,4}排程|schedule\s*\(\s*static|索引.{0,10}分給.{0,6}執行緒|分給.{0,4}執行緒/i],
         ].map(([key, re]) => ({ key, re, pri: true }));
         const paradigms = {}; for (const sk of skeletons) paradigms[sk.algo] = [sk.paradigm];

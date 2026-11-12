@@ -3,10 +3,12 @@
 // 每個領域包的測試只要給 {name, pack, seeds}：種子題 {id, want, st, rw?, ref, gen(big), split?}。
 //   原敘述＋改寫（rw：換變數名稱）＋選項反序，不給課、0 次模型；測資由「獨立寫的」Python 參考解在 gen 產生的輸入上算出。
 //   split:'holdout' 的題只量測（不計入失敗，只印解出數），用來看泛化；train 題必須全過。
-// 沒有 tree-sitter 快取（FA_TS_DIR）就略過。
+// 沒有 tree-sitter 文法就失敗（不再略過假通過）。
 const fs = require('fs'), path = require('path'), os = require('os'), assert = require('assert'), cp = require('child_process');
 const C2U = require('./py_code2uml_core.js'), PBL = require('./py_blocks_core.js'), RU = require('./py_blocks_rules_core.js'), PB = require('./py_body_core.js'), UC = require('./uml_core.js'), AI = require('./algo_intent_core.js'), PL = require('./py_uml_pipeline_core.js'), CH = require('./py_cnl_choose_core.js'), PAR = require('./py_paradigms_core.js'), DR = require('./domain_registry_core.js');
-const DIR = process.env.FA_TS_DIR || path.join(os.homedir(), '.cache', 'fa-ts');
+// 文法目錄：FA_TS_DIR 優先；否則用 ~/.cache/fa-ts（若有），再退到 git 追蹤的 renderer/vendor/tree-sitter。
+const VENDOR = path.join(__dirname, '..', '..', 'vendor', 'tree-sitter');
+const DIR = process.env.FA_TS_DIR || (fs.existsSync(path.join(os.homedir(), '.cache', 'fa-ts', 'tree-sitter-python.wasm')) ? path.join(os.homedir(), '.cache', 'fa-ts') : VENDOR);
 let seed = 20261107; const rnd = (a, b) => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return a + ((seed >> 8) % (b - a + 1)); };
 const pick = (arr) => arr[rnd(0, arr.length - 1)];
 // 真實 IO 種子（e.real）：gen 回傳 {in, args?, env?, files?, needs?, outFiles?}；參考解在暫存目錄裡真的執行（argv＝args、環境變數＝env、檔案預置），
@@ -32,7 +34,7 @@ function loadSeeds(file) {
     return o.seeds.map((x) => Object.assign({}, x, { rw: x.rw_st ? () => x.rw_st : null, gen: undefined }));
 }
 async function run({ name, packs, seeds, minSkeletons, judge: jd, trainOnly }) {
-    if (!fs.existsSync(path.join(DIR, 'tree-sitter-python.wasm'))) { console.log('略過：找不到 ' + DIR); process.exit(0); }
+    if (!fs.existsSync(path.join(DIR, 'tree-sitter-python.wasm'))) { console.log('失敗：找不到 Python 文法 ' + DIR + '（不算通過）'); console.log('0 passed, 1 failed'); process.exit(1); }
     let nsk = 0; for (const pk of packs) { const reg = DR.register(pk.make(PAR), { AI, PAR }); assert.ok(reg.ok, reg.reason); nsk += reg.skeletons; }
     assert.ok(nsk >= (minSkeletons || 1), '骨架數不足：' + nsk);
     for (const sk of PAR.PARADIGMS) assert.ok(PAR.combos(sk, { limit: 999 }).length <= Math.max(18, sk.limit || 0), sk.id + ' 組合太多（要設 limit ≥ 組合數）');

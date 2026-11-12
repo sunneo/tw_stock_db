@@ -374,3 +374,14 @@ inflate 20/20、tarx 20/20、bmpx 20/20、png 12/12、gif 14/14、pcx 14/14、jp
 - **沒做的**：未嵌入（`embed-code-ui.js` 清單與 `floating-assistant.js` 的 BEGIN／END 標記未加，因不跑 embed，且不改嵌入區塊）；未發布；未跑全套核心測試（本批沒改任何既有共用程式，只新增檔案與一行測試登記，新包只在它自己的測試行程中註冊，不影響其他測試）；未重跑 v1。
 - **接續點**：(1) 擴充讀欄位的觸發詞並用新措辭的 train 題教（不改 v2）；(2) 另寫 holdout v3；(3) 計數的「成員數」型；(4) 嵌入時要一併做：`embed-code-ui.js` 清單、`floating-assistant.js` 的 FIELDCOUNT 標記、`run-core-tests.js`（已登記）。
 - **注意**：工作樹有未追蹤的 `desktop-app/node_modules` 符號連結（指向主工作樹的 node_modules），不要提交；測試用 `FA_TS_DIR=/tmp/fa-ts-cache`。
+## 6. 平行運算與排程領域（2026-11-11 立項）
+
+使用者原話：「找到程式裡面適合平行的演算法，用類似 openmp 的 block schedule 跟 cyclic schedule 來加速影像壓縮、檔案壓縮、撰寫破壞的聲音跟影像壓縮演算法」，回覆「列為新領域」。詳細數字與缺口見 `DESIGN.parallel-domain.md`。
+
+| 子領域 | 狀態 | 範式／內容 | 提交 |
+|---|---|---|---|
+| 排程原語（static 區塊、cyclic、chunked、dynamic、guided）、負載與 span、推薦排程 | ◐ | `domain_par_core.js`（4 個骨架）、`par_sched_core.js`；程式產生器與 JS 參考逐行相同 646／646；單元測試 4212 項 | 本批 |
+| 真的平行執行：OpenMP 區塊 DCT＋量化（有損影像）、多行程分塊 zlib（無損檔案） | ◐ | `tests/parallel/`；各排程與循序版逐位元相同（8 組） | 本批 |
+| 相依分析（攜帶相依的距離型波前）、兩趟前綴和／位元位移、框式量化（block／cyclic／dynamic） | ◐ | `domain_par2_core.js`：train 12/12、holdout 2/3；迴圈程式碼讀取未做 | 前批 |
+| 歸約、競爭條件（原子／臨界區／無同步）、熵編碼位元打包、整數 Haar 有損框變換（block／cyclic／dynamic／guided） | ◐ | `domain_par3_core.js`：train 16/16（反序 16/16）、holdout 3/4；`tests/parallel/race_omp.c` 真執行；MDCT、2 維 DCT 判題、霍夫曼表未做（見 DESIGN.parallel-domain.md §4） | 本批 |
+| 排程原語種子題（train／holdout） | ◐ | `domain_par_core.js`：train 22/22、holdout 3/5；文法用 git 追蹤的 renderer/vendor/tree-sitter | 本批 |
