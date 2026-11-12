@@ -129,6 +129,15 @@ const rm = () => fs.rmSync(tmp, { recursive: true, force: true });
         const bad1 = path.join(tmp, 'std2'); fs.mkdirSync(bad1); fs.writeFileSync(path.join(bad1, 'model_quantized.onnx'), m.bytes.subarray(0, 50));
         const mg4 = mk({ env: { FA_NATIVE_STD_MODEL_PATH: path.join(bad1, 'model_quantized.onnx') } });
         const e3 = await mg4.ensure(); check('壞檔：轉換失敗帶原因，不留半成品', !e3.ok && e3.code === 'slot_build_failed' && !fs.readdirSync(path.join(ud, 'native-lora', 'slot-model')).some((n) => n.endsWith('.partial') && fs.readdirSync(path.join(ud, 'native-lora', 'slot-model', n)).length > 0 && false), e3);
+        // 2026-11-12：安裝包的 app.asar 裡沒有 lora-slot-build.js（舊安裝包），live-update 把它放在 userData/live-patch/ → 子行程要用那份；兩邊都沒有就明確說找過哪裡
+        const ud2 = path.join(tmp, 'ud2'); fs.mkdirSync(path.join(ud2, 'live-patch'), { recursive: true });
+        fs.copyFileSync(path.join(root, 'lora-slot-build.js'), path.join(ud2, 'live-patch', 'lora-slot-build.js'));
+        const mk2 = (extra) => Mgr.create(Object.assign({ fs, path, crypto, cp: require('child_process'), userData: ud2, env: { FA_NATIVE_STD_MODEL_PATH: path.join(std, 'model_quantized.onnx') }, execPath: process.execPath, buildScript: path.join(tmp, 'app.asar', 'lora-slot-build.js') }, extra || {}));
+        const e4 = await mk2().ensure();
+        check('app.asar 裡沒有轉換腳本：改用 live-patch 的副本，轉換成功', e4.ok && fs.existsSync(e4.model), e4);
+        const ud3 = path.join(tmp, 'ud3'); fs.mkdirSync(ud3);
+        const e5 = await mk2({ userData: ud3 }).ensure();
+        check('哪裡都沒有轉換腳本：明確說找不到、列出找過的路徑', !e5.ok && /找不到轉換腳本/.test(e5.message) && /app\.asar/.test(e5.message) && /重新啟動/.test(e5.message), e5);
     } finally { rm(); }
     console.log(`lora_slot_build: ${ok} 通過${bad.length ? '，失敗 ' + bad.length + '：' + bad.join('、') : ''}`);
     process.exit(bad.length ? 1 : 0);

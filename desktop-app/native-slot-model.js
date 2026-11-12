@@ -92,10 +92,22 @@ function create(d) {
             return cache[key] ? cachedFor(cache[key]) : null;
         } catch (_) { return null; }
     }
+    // 子行程的 stderr 摘要：Node 的未捕捉例外最後幾行只是「} Node.js v24」，真正的原因在前面（Error: …／Cannot find module …）——取開頭的錯誤行加結尾，總長有上限
+    function errSummary(t) {
+        const lines = String(t || '').split('\n').map((x) => x.trim()).filter(Boolean); if (!lines.length) return '無輸出';
+        const key = lines.find((x) => /(?:Error|Cannot find module|ENOENT|EACCES|ENOSPC|EPERM|EMFILE)/.test(x)) || lines[0];
+        const tail = lines.slice(-2).filter((x) => x !== key);
+        return (key + (tail.length ? ' … ' + tail.join(' ') : '')).slice(0, 400);
+    }
     function runChild(src, outDir, rank) {
         return new Promise((resolve, reject) => {
             const cp = d.cp;
-            const child = cp.spawn(d.execPath || process.execPath, [d.buildScript, '--cli', src, outDir, String(rank)], { env: Object.assign({}, process.env, { ELECTRON_RUN_AS_NODE: '1' }), windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+            // 轉換腳本要「真的在磁碟上」：子行程不吃主行程的記憶體覆蓋（live-update 的主行程模組是在記憶體裡換內容，檔案路徑還是安裝包內的 app.asar/…）。
+            // 2026-11-12：舊安裝包的 app.asar 裡根本沒有 lora-slot-build.js → 子行程 Cannot find module，使用者只看到結尾的「} Node.js v24」。所以優先用 userData/live-patch/ 裡的副本，其次才是 buildScript。
+            const cands = [d.userData ? path.join(d.userData, 'live-patch', 'lora-slot-build.js') : null, d.buildScript].filter(Boolean);
+            const script = cands.find((f) => { try { return fs.existsSync(f); } catch (_) { return false; } });
+            if (!script) return reject(new Error('找不到轉換腳本 lora-slot-build.js（找過：' + cands.join('、') + '）。請按「🔄 檢查更新」把它下載下來，再重新啟動程式。'));
+            const child = cp.spawn(d.execPath || process.execPath, [script, '--cli', src, outDir, String(rank)], { env: Object.assign({}, process.env, { ELECTRON_RUN_AS_NODE: '1' }), windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
             let out = '', errText = '', result = null;
             child.stdout.on('data', (b) => {
                 out += b.toString();
@@ -106,7 +118,7 @@ function create(d) {
             });
             child.stderr.on('data', (b) => { errText += b.toString(); });
             child.on('error', (e) => reject(e));
-            child.on('close', (code) => { if (code === 0 && result) resolve(result); else reject(new Error('轉換子行程失敗（結束碼 ' + code + '）：' + (errText.trim().split('\n').slice(-3).join(' ') || '無輸出'))); });
+            child.on('close', (code) => { if (code === 0 && result) resolve(result); else reject(new Error('轉換子行程失敗（結束碼 ' + code + '，腳本 ' + script + '）：' + errSummary(errText))); });
         });
     }
     // 確保槽版存在：沒有標準版 → 回 need_std_model（含要下載的檔名／來源／大小）；有 → 算雜湊、轉換、快取。同時只跑一個。
