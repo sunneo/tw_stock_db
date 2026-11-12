@@ -39,7 +39,7 @@
     else root.FaStudioServer = factory(A, F, T, Lay, Ing, Cln, Reg, Ev, Sy, ST, Te, Si, PPl, PLv, PAd, PRt, PLm, LXp, DEd);
 })(typeof self !== 'undefined' ? self : this, function (Asset, Fatrain, Trainer, Layout, Ingest, Clean, LoraReg, EvalCore, Sym, SymTrain, Teacher, SourceInput, PipeLib, PipeLive, PipeAdvice, PipeRoutes, PipeManage, LlmExp, DatasetEdit) {
     'use strict';
-    const KIND_LABEL = { colu: 'CoLU', blockly: '積木課程', matrix: '矩陣層', uml: 'UML 設計', trainer: '離線訓練器', lora: 'LoRA' };
+    const KIND_LABEL = { colu: 'CoLU', blockly: '積木課程', matrix: '矩陣層', uml: 'UML 設計', trainer: '離線訓練器', lora: 'LoRA', llm: 'LLM 模型（匯出）' };
     const dec = (u) => new TextDecoder('utf-8').decode(u);
     const WEB_BACKENDS = [
         { id: 'cpu-py', available: false, reason: '網頁版沒有 Python 子行程；請「匯出訓練包」（.fatrain）後到桌面版訓練' },
@@ -163,7 +163,7 @@
                 if (domainApi && /^\/api\/domains?(\/|$)/.test(P)) { const dr = await domainApi.route(method, u, body); if (dr) return dr; }
                 if (method === 'GET' && P === '/api/info') {
                     const fs = await fapNote();
-                    return ok({ desktop: !!h.desktop, webTrain: !!h.webTrain, storage: fs, kinds: Asset.KINDS.map((k) => ({ kind: k, label: KIND_LABEL[k] })), tabs: Layout.TABS, workDir: h.workDir ? await h.workDir() : null, webgpu: !!(h.webgpu && h.webgpu()) });
+                    return ok({ desktop: !!h.desktop, webTrain: !!h.webTrain, storage: fs, kinds: Asset.KINDS.filter((k) => k !== 'llm').map((k) => ({ kind: k, label: KIND_LABEL[k] })), tabs: Layout.TABS, workDir: h.workDir ? await h.workDir() : null, webgpu: !!(h.webgpu && h.webgpu()) });
                 }
                 if (method === 'GET' && P === '/api/prefs') return ok({ layout: Layout.normalize(((h.prefsGet && h.prefsGet()) || {}).layout) });
                 if (method === 'POST' && P === '/api/prefs') {
@@ -186,6 +186,60 @@
                     if (!body.confirmed) return bad(400, '刪除資產要先確認（confirmed:true）', { needsConfirm: true });
                     if (h.builtin && !(await h.storage.loadManifest(String(body.kind || ''), String(body.name || ''))) && await h.builtin.has(String(body.kind || ''), String(body.name || ''))) return bad(409, '這是內建資產（唯讀，內容來自程式本身），不能刪除');
                     const r = await h.storage.deleteAsset(String(body.kind || ''), String(body.name || '')); log('刪除資產 ' + body.kind + '/' + body.name + '（' + r.removed + ' 個檔案）'); return ok(r);
+                }
+                // LLM 匯出（DESIGN §25）：工具可用性、開始匯出、看進度；網頁版沒有主行程，照實回報
+                if (method === 'GET' && P === '/api/llm/tools') {
+                    const r = await callHost('studio_export_tools', {}, 20000); if (!r || r.ok === false) return bad(r && r.notDesktop ? 400 : 502, r && r.error || '工具偵測失敗', { notDesktop: !!(r && r.notDesktop) });
+                    const av = LlmExp ? LlmExp.exportAvailability(r.tools || {}) : {};
+                    return ok({ tools: r.tools, availability: av, paths: r.paths || null, checkedAt: r.checkedAt });
+                }
+                if (method === 'POST' && P === '/api/llm/export') {
+                    const r = await callHost('studio_llm_export', { format: String(body.format || ''), baseDir: String(body.baseDir || ''), adapterDir: String(body.adapterDir || ''), workDir: String(body.workDir || ''), recipe: String(body.recipe || 'full') }, 60000);
+                    if (!r || r.ok === false) return bad(r && r.notDesktop ? 400 : 409, (r && r.error) || '匯出沒有啟動', { notDesktop: !!(r && r.notDesktop), tools: r && r.tools });
+                    log('LLM 匯出開始（' + body.format + '）：' + r.workDir); return ok({ jobId: r.jobId, workDir: r.workDir, outDir: r.outDir, steps: r.steps });
+                }
+                if (method === 'POST' && (P === '/api/llm/export/pause' || P === '/api/llm/export/cancel' || P === '/api/llm/export/resume')) {
+                    const op = P === '/api/llm/export/pause' ? 'studio_llm_export_pause' : P === '/api/llm/export/cancel' ? 'studio_llm_export_cancel' : 'studio_llm_export_resume';
+                    const r = await callHost(op, { jobId: String(body.jobId || ''), workDir: String(body.workDir || ''), baseDir: String(body.baseDir || ''), adapterDir: String(body.adapterDir || ''), recipe: String(body.recipe || '') }, 30000);
+                    if (!r || r.ok === false) return bad(r && r.notDesktop ? 400 : 409, (r && r.error) || '操作沒有成功', { notDesktop: !!(r && r.notDesktop) });
+                    log('LLM 匯出：' + (P.split('/').pop()) + (r.state ? '（' + r.state + '）' : '') + (r.jobId ? ' ' + r.jobId : '')); return ok(r);
+                }
+                // 匯出成功後登錄成 kind:'llm' 資產（小檔放進資產，權重記在外部位置＋sha256；大權重不進記憶體）
+                if (method === 'POST' && P === '/api/llm/export/register') {
+                    const b = await callHost('studio_llm_export_bundle', { jobId: String(body.jobId || '') }, 60000);
+                    if (!b || b.ok === false) return bad(b && b.notDesktop ? 400 : 409, (b && b.error) || '登錄失敗', { notDesktop: !!(b && b.notDesktop) });
+                    const stamp = new Date(now()).toISOString().replace(/[:.]/g, '-');
+                    const name = String(body.name || ('llm-' + b.format + '-' + stamp));
+                    if (!Asset.safeName(name)) return bad(400, '名稱不合法：' + name);
+                    if (await h.storage.loadManifest('llm', name)) return bad(409, '「' + name + '」已存在（換一個名稱）');
+                    const bytesOf = (x) => Uint8Array.from(atob(x), (c) => c.charCodeAt(0));
+                    const files = {}; Object.keys(b.files).forEach((k) => { files[k] = bytesOf(b.files[k]); });
+                    const m = Asset.createManifest({ kind: 'llm', name, files, owner: 'user', base: (b.source.baseDir || '').split(/[\\/]/).pop() || null, compat: { base: (b.source.baseDir || '').split(/[\\/]/).pop() || null, adapter: (b.source.adapterDir || '').split(/[\\/]/).pop() || null }, counts: {}, eval: null });
+                    const sha = Object.assign({}, m.sha256), ext = {};
+                    Object.keys(b.external).forEach((k) => { sha[k] = b.external[k].sha256; ext[k] = { bytes: b.external[k].bytes, location: b.external[k].location }; });
+                    m.sha256 = sha; m.external = ext; m.llm = { format: b.format, quant: b.quant, recipe: b.recipe, source_out_dir: b.outDir };
+                    m.counts = { files: Object.keys(sha).length, external_files: Object.keys(ext).length };
+                    const v = Asset.validateManifest(m); if (!v.ok) return bad(500, '資產 manifest 不合法：' + v.errors.join('；'));
+                    const w = await h.storage.saveAsset({ manifest: m, files }); if (!w.ok) return bad(500, w.error || '儲存失敗');
+                    log('登錄 LLM 資產 llm/' + name + '（' + Object.keys(sha).length + ' 個檔，外部權重 ' + Object.keys(ext).length + ' 個）' + (w.dataMayBeLost ? '；注意：' + w.warning : ''));
+                    return ok({ kind: 'llm', name, external: Object.keys(ext), dataMayBeLost: !!w.dataMayBeLost, warning: w.warning || '' });
+                }
+                // 模型選單：把 llm 資產設為桌面版離線模型（只有 ONNX 能用；GGUF 只能列出與匯出）
+                if (method === 'GET' && P === '/api/llm/use') { const r = await callHost('studio_llm_use_current', {}, 10000); return r && r.ok === false ? bad(502, r.error || '讀取失敗') : ok(r); }
+                if (method === 'POST' && P === '/api/llm/use/clear') { const r = await callHost('studio_llm_use_clear', {}, 10000); return r && r.ok === false ? bad(502, r.error || '失敗') : ok(r); }
+                if (method === 'POST' && P === '/api/llm/use') {
+                    const name = String(body.name || ''); const m = await h.storage.loadManifest('llm', name); if (!m) return bad(404, '沒有這個 llm 資產');
+                    if (m.llm && m.llm.format !== 'onnx') return bad(400, 'GGUF 不是桌面版離線模型的格式（只能列出、匯出、下載；要用它請在 llama.cpp 端）');
+                    const ex = m.external || {}; const key = Object.keys(ex).find((k) => /^q8\/model_quantized\.onnx$/.test(k)) || Object.keys(ex).find((k) => /\.onnx$/.test(k));
+                    if (!key || !ex[key].location) return bad(409, '這個資產沒有記錄 ONNX 的本機位置（可能是在別台機器匯出的）');
+                    const loc = ex[key].location; const outRoot = loc.replace(/[\\/](q8|fp32)[\\/][^\\/]+$/, '');
+                    const r = await callHost('studio_llm_use', { name, modelPath: loc, tokenizerPath: outRoot + '/tokenizer.json' }, 20000);
+                    if (!r || r.ok === false) return bad(r && r.notDesktop ? 400 : 409, (r && r.error) || '設定失敗', { notDesktop: !!(r && r.notDesktop) });
+                    log('離線模型改用 llm/' + name + '（' + loc + '）'); return ok(r);
+                }
+                if (method === 'GET' && P === '/api/llm/export/status') {
+                    const r = await callHost('studio_llm_export_status', { jobId: Q('jobId') || '' }, 20000); if (!r || r.ok === false) return bad(r && r.notDesktop ? 400 : 502, r && r.error || '讀取匯出狀態失敗', { notDesktop: !!(r && r.notDesktop) });
+                    return ok(r);
                 }
                 if (method === 'POST' && P === '/api/export') {
                     const r = await readAsset(String(body.kind || ''), String(body.name || '')); if (!r) return bad(404, '沒有這個資產');
@@ -265,7 +319,7 @@
                 }
                 if (method === 'GET' && P === '/api/eval') {
                     const out = []; const st1 = await h.storage.listAssets(); for (const it of st1) { const m = await h.storage.loadManifest(it.kind, it.name); if (m && m.eval) out.push({ kind: it.kind, name: it.name, eval: m.eval }); } for (const it of await builtinItems(st1)) if (it.eval) out.push({ kind: it.kind, name: it.name, eval: it.eval, builtin: true });
-                    const p = prefsObj(); return ok({ implemented: true, kinds: Asset.KINDS.map((k) => ({ kind: k, label: KIND_LABEL[k], available: SYMBOLIC.indexOf(k) >= 0 ? !!h.sym : k === 'lora' })), items: out, last: S.evals, gate: Object.assign({}, EvalCore.DEFAULT_GATE, p.evalGate || {}), baseline: p.evalBaseline || {} });
+                    const p = prefsObj(); return ok({ implemented: true, kinds: Asset.KINDS.filter((k) => k !== 'llm').map((k) => ({ kind: k, label: KIND_LABEL[k], available: SYMBOLIC.indexOf(k) >= 0 ? !!h.sym : k === 'lora' })), items: out, last: S.evals, gate: Object.assign({}, EvalCore.DEFAULT_GATE, p.evalGate || {}), baseline: p.evalBaseline || {} });
                 }
                 if (method === 'POST' && P === '/api/eval/run') {
                     const kind = String(body.kind || ''); if (Asset.KINDS.indexOf(kind) < 0) return bad(400, '不認得的種類：' + kind);

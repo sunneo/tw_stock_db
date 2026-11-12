@@ -56,20 +56,26 @@ const check = (n, c, x) => { if (c) ok++; else { bad.push(n); console.log('FAIL'
   check('tasklist：解析千分位的 K 為位元組', parseTasklistMemory('"python.exe","1234","Console","1","1,234,567 K"\r\n') === 1234567 * 1024, parseTasklistMemory('"python.exe","1234","Console","1","1,234,567 K"'));
   check('tasklist：查不到（INFO 訊息）回 null', parseTasklistMemory('INFO: No tasks are running which match the specified criteria.') === null);
   check('tasklist：空輸出回 null', parseTasklistMemory('') === null);
-  // LLM 匯出工具偵測（DESIGN §20.3 第 2 項）：PATH 上找不到就照實回報；找到 optimum-cli 就標 found；onnxruntime 還沒偵測
-  const savedPath = process.env.PATH;
-  try {
-    process.env.PATH = path.join(dir, 'empty-bin');
-    const t0 = await h.handle('studio_export_tools', {});
-    check('匯出工具偵測：回 ok 與三個工具鍵', t0.ok && t0.tools.optimum && t0.tools.onnxruntime && t0.tools.llamaCpp, t0);
-    check('匯出工具偵測：PATH 上沒有 optimum-cli 時 found=false 且寫原因', t0.tools.optimum.found === false && /PATH 上找不到/.test(t0.tools.optimum.reason), t0.tools.optimum);
-    check('匯出工具偵測：onnxruntime 尚未偵測，寫明尚未實作', t0.tools.onnxruntime.found === false && /尚未實作/.test(t0.tools.onnxruntime.reason), t0.tools.onnxruntime);
-    const binDir = path.join(dir, 'bin'); fs.mkdirSync(binDir, { recursive: true });
-    fs.writeFileSync(path.join(binDir, 'optimum-cli'), '#!/bin/sh\n');
-    process.env.PATH = binDir;
-    const t1 = await h.handle('studio_export_tools', {});
-    check('匯出工具偵測：PATH 上有 optimum-cli 就 found=true（只看存在，不執行）', t1.tools.optimum.found === true, t1.tools.optimum);
-    check('匯出工具偵測：沒有的 llama.cpp 仍 found=false', t1.tools.llamaCpp.found === false, t1.tools.llamaCpp);
-  } finally { process.env.PATH = savedPath; }
+  // LLM 匯出工具偵測（DESIGN §25）：來源是 lora-train/.venv-export（optimum-cli、onnxruntime）、.venv（peft）與 llm-export-config.json（llama.cpp）
+  const xt0 = await h.handle('studio_export_tools', {});
+  check('匯出工具偵測：回 ok 與四個工具鍵', xt0.ok && xt0.tools.optimum && xt0.tools.onnxruntime && xt0.tools.llamaCpp && xt0.tools.peft, xt0);
+  check('匯出工具偵測：沒有匯出環境時 optimum 找不到且寫原因', xt0.tools.optimum.found === false && /optimum-cli/.test(xt0.tools.optimum.reason), xt0.tools.optimum);
+  check('匯出工具偵測：沒有匯出環境時 onnxruntime 找不到且寫原因', xt0.tools.onnxruntime.found === false && /匯出環境/.test(xt0.tools.onnxruntime.reason), xt0.tools.onnxruntime);
+  check('匯出工具偵測：沒有設定 llama.cpp 時照實寫原因', xt0.tools.llamaCpp.found === false && /沒有設定 llama\.cpp/.test(xt0.tools.llamaCpp.reason), xt0.tools.llamaCpp);
+  // 匯出環境存在（只看檔案，不執行）：optimum-cli 找得到
+  const venvBin = path.join(dir, 'none', '.venv-export', 'bin'); fs.mkdirSync(venvBin, { recursive: true });
+  fs.writeFileSync(path.join(venvBin, 'optimum-cli'), '#!/bin/sh\n'); fs.writeFileSync(path.join(venvBin, 'python'), '#!/bin/sh\n');
+  const xt1 = await h.handle('studio_export_tools', {});
+  check('匯出工具偵測：匯出環境裡有 optimum-cli 就 found=true（只看存在）', xt1.tools.optimum.found === true && xt1.paths.exportPy === path.join(venvBin, 'python'), xt1);
+  check('匯出工具偵測：onnxruntime 的 import 失敗（沒有真的 Python）時 found=false 並寫原因', xt1.tools.onnxruntime.found === false && /import 失敗/.test(xt1.tools.onnxruntime.reason), xt1.tools.onnxruntime);
+  // 工具不齊：匯出要拒絕，且不啟動任何子行程（cp.spawn 會丟例外）
+  const xr1 = await h.handle('studio_llm_export', { format: 'onnx', baseDir: dir, adapterDir: dir });
+  check('匯出拒絕：工具不齊時回原因、不啟動子行程', xr1.ok === false && /缺工具/.test(xr1.error || ''), xr1);
+  const xr2 = await h.handle('studio_llm_export', { format: 'safetensors', baseDir: dir, adapterDir: dir });
+  check('匯出拒絕：未知格式', xr2.ok === false && /格式/.test(xr2.error || ''), xr2);
+  const xr3 = await h.handle('studio_llm_export', { format: 'onnx', baseDir: path.join(dir, 'nope'), adapterDir: dir });
+  check('匯出拒絕：基底資料夾不存在', xr3.ok === false && /基底模型資料夾不存在/.test(xr3.error || ''), xr3);
+  const st0 = await h.handle('studio_llm_export_status', {});
+  check('匯出狀態：沒有工作時回 idle', st0.ok && st0.state === 'idle', st0);
   console.log(ok + ' passed, ' + bad.length + ' failed', bad); process.exit(bad.length ? 1 : 0);
 })();

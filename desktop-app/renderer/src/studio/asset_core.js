@@ -15,7 +15,7 @@
     'use strict';
     const FORMAT = 'fa-training-asset';
     const VERSION = 2; // 版本 1：舊式（檔案雜湊放在 files／hashes，沒有 compat／counts／eval／owner）
-    const KINDS = ['colu', 'blockly', 'matrix', 'uml', 'trainer', 'lora'];
+    const KINDS = ['colu', 'blockly', 'matrix', 'uml', 'trainer', 'lora', 'llm'];
     const OWNERS = ['user', 'builtin'];
     // 續訓／合併要比對的相容欄位（§3.1）；不看後端與裝置
     const COMPAT_FIELDS = ['base', 'base_sha256', 'rank', 'alpha', 'target_modules', 'prompt_format_version', 'tool_catalog_sha256'];
@@ -126,6 +126,16 @@
         else for (const p of Object.keys(m.sha256)) { if (!safePath(p)) errors.push('sha256 表裡的路徑不合法：' + p); else if (!HEX64.test(String(m.sha256[p]))) errors.push('sha256 值格式不對：' + p); }
         if (!m.compat || typeof m.compat !== 'object') errors.push('compat 缺少');
         if (m.parent != null && (typeof m.parent !== 'object' || !m.parent.name)) errors.push('parent 格式不對（需要 {name, kind, manifest_sha256}）');
+        // llm（DESIGN.lora-training.md §25）：權重太大不放進資產的記憶體，列在 external（路徑相對於資產、可選的本機位置、位元組數）；sha256 表仍然包含它們
+        if (m.kind === 'llm') {
+            if (!m.llm || typeof m.llm !== 'object' || ['onnx', 'gguf'].indexOf(m.llm.format) < 0) errors.push('llm 資產需要 llm.format（onnx 或 gguf）');
+            if (m.external !== undefined && (typeof m.external !== 'object' || Array.isArray(m.external))) errors.push('external 必須是物件');
+            else for (const p of Object.keys(m.external || {})) {
+                const e = m.external[p] || {};
+                if (!safePath(p) || !m.sha256 || m.sha256[p] === undefined) errors.push('external 的路徑沒有對應的 sha256：' + p);
+                if (!Number.isInteger(e.bytes) || e.bytes < 0) errors.push('external 缺少 bytes：' + p);
+            }
+        } else if (m.external !== undefined && Object.keys(m.external || {}).length) errors.push('只有 llm 資產可以有 external 檔案');
         return { ok: !errors.length, errors };
     }
 
@@ -166,7 +176,10 @@
     function verifyFiles(manifest, files, opts) {
         opts = opts || {}; const mismatched = [], missing = [], extra = [];
         const want = manifest.sha256 || {};
+        // opts.external：不在記憶體裡的檔案（llm 的大權重）；這裡不核對，由呼叫端用串流方式另外核對
+        const ext = new Set(opts.external || Object.keys(manifest.external || {}));
         for (const p of Object.keys(want)) {
+            if (ext.has(p) && !files[p]) continue;
             const f = files[p];
             if (!f) { missing.push(p); continue; }
             if (sha256Hex(f) !== want[p]) mismatched.push(p);

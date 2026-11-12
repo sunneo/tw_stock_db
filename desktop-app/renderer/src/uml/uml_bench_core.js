@@ -108,8 +108,18 @@
         else if (A.rate >= o.directOk) { route = 'direct'; why = '大問題一次直接做，' + A.ok + '/' + A.n + ' 個達標：不用拆'; }
         else if (B.rate >= o.umlOk) { route = 'uml'; why = '大問題直接做只有 ' + A.ok + '/' + A.n + ' 個達標，但走 UML design 一次一小題有 ' + B.ok + '/' + B.n + ' 個：做不完的大問題用 UML design 補救'; }
         else { route = 'program_first'; why = '直接做 ' + A.ok + '/' + A.n + '、走 UML design ' + B.ok + '/' + B.n + ' 都沒達標：UML 由程式先讀情境（uml_guide），模型只補程式讀不出的'; }
-        const notes = []; const dr = directRows.filter((r) => !success(r, o)); if (dr.length && route !== 'unknown') notes.push('直接做沒達標的原因：' + Array.from(new Set(dr.map((r) => r.completed ? '該有的東西最少的一項只找到 ' + Math.round(Math.min(r.recall.actors, r.recall.classes, r.recall.usecases) * 100) + '%（參與者 ' + Math.round(r.recall.actors * 100) + '、類別 ' + Math.round(r.recall.classes * 100) + '、使用案例 ' + Math.round(r.recall.usecases * 100) + '），或呼叫順序不足' : r.error))).slice(0, 3).join('｜'));
-        const sr = stepRows.filter((r) => !success(r, o)); if (sr.length && route !== 'unknown') notes.push('走 UML design 沒達標的原因：' + Array.from(new Set(sr.map((r) => r.completed ? '該有的東西最少的一項只找到 ' + Math.round(Math.min(r.recall.actors, r.recall.classes, r.recall.usecases) * 100) + '%，或呼叫順序不足（' + Math.round((r.recall.sequences || 0) * 100) + '% 達標）' : r.error))).slice(0, 3).join('｜'));
+        // 沒達標的真正原因（2026-11-12：以前一律說「最少的一項只找到 100%」——召回 100% 卻沒達標時是誤導；error 是物件時還印出 [object Object]）
+        const errText = (e) => { if (e == null || e === '') return ''; if (typeof e === 'string') return e; if (Array.isArray(e)) return e.map(errText).filter(Boolean).slice(0, 2).join('；'); if (typeof e === 'object') return String(e.message || e.error || e.msg || JSON.stringify(e)).slice(0, 120); return String(e); };
+        const whyNot = (r) => {
+            if (!r.completed) return errText(r.error) || '沒有完成（沒有拿到結果）';
+            const g = r.recall || {}, low = Math.min(g.actors, g.classes, g.usecases), parts = [];
+            if (!r.valid) parts.push('驗證沒通過' + (errText(r.error) ? '（' + errText(r.error) + '）' : ''));
+            if (!(low >= o.successRecall)) parts.push('該有的東西最少的一項只找到 ' + Math.round(low * 100) + '%（要 ≥ ' + Math.round(o.successRecall * 100) + '%；參與者 ' + Math.round(g.actors * 100) + '、類別 ' + Math.round(g.classes * 100) + '、使用案例 ' + Math.round(g.usecases * 100) + '）');
+            if (!((g.sequences || 0) >= o.successSeq)) parts.push('呼叫順序只有 ' + (g.sequences || 0) + ' 步（要 ≥ ' + o.successSeq + ' 步）');
+            return parts.join('；') || '未達標';
+        };
+        const notes = []; const dr = directRows.filter((r) => !success(r, o)); if (dr.length && route !== 'unknown') notes.push('直接做沒達標的原因：' + Array.from(new Set(dr.map(whyNot))).slice(0, 3).join('｜'));
+        const sr = stepRows.filter((r) => !success(r, o)); if (sr.length && route !== 'unknown') notes.push('走 UML design 沒達標的原因：' + Array.from(new Set(sr.map(whyNot))).slice(0, 3).join('｜'));
         if (failed) notes.push(failed + ' 次呼叫失敗，沒算進結果');
         return { route, reason: why, direct: A, uml: B, direct_recall: { actors: avgOf(directRows, 'actors'), classes: avgOf(directRows, 'classes'), usecases: avgOf(directRows, 'usecases'), sequences: avgOf(directRows, 'sequences') }, uml_recall: { actors: avgOf(stepRows, 'actors'), classes: avgOf(stepRows, 'classes'), usecases: avgOf(stepRows, 'usecases'), sequences: avgOf(stepRows, 'sequences') }, notes, scenarios: directRows.length };
     }

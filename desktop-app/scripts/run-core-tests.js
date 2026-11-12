@@ -439,6 +439,20 @@ if (py.status === 0) {
 const pq = spawnSync('python', [path.join(root, 'scripts/test_fa_sqlite.py')], { encoding: 'utf8' });
 if (pq.error) console.log('略過 fa_sqlite（Python）：沒有 python');
 else { const last = String(pq.stdout || '').trim().split('\n').filter(Boolean).pop() || ''; const ok = pq.status === 0 && /0 failed/.test(last); if (!ok) failed++; console.log((ok ? 'PASS ' : 'FAIL ') + 'fa_sqlite（Python 的 sqlite3 相容介面）：' + last); }
+// 離線訓練工作室的匯出 smoke（DESIGN.lora-training.md §25）：用隨機初始化的迷你 Qwen3 跑完合併→ONNX→GGUF→完整微調（暫停、續訓）整條路，
+// 不需要 Qwen3-0.6B 權重。需要：匯出環境 python（FA_EXPORT_PYTHON，預設 lora-train/.venv-export）、Qwen3 基底資料夾（FA_QWEN3_TOKENIZER，只取 tokenizer 與 config）、
+// 訓練環境（FA_TRAIN_PYTHON，預設 lora-train/.venv，有 peft）、llama.cpp（FA_LLAMA_SRC＋FA_LLAMA_BIN）。缺哪個就在腳本裡略過該段並印出原因。
+{
+    const exPy = process.env.FA_EXPORT_PYTHON || path.join(root, 'lora-train', '.venv-export', 'bin', 'python');
+    if (!require('fs').existsSync(exPy)) console.log('略過 匯出 smoke（Python）：沒有匯出環境 python（設 FA_EXPORT_PYTHON，或建立 lora-train/.venv-export）');
+    else {
+        const sm = spawnSync(exPy, [path.join(root, 'lora-train', 'test_export_smoke.py')], { encoding: 'utf8' });
+        const last = String(sm.stdout || '').trim().split('\n').filter(Boolean).pop() || String(sm.stderr || '').trim().split('\n').pop() || '';
+        const ok = sm.status === 0 && /0 failed/.test(last);
+        if (!ok) { failed++; failedNew++; }
+        console.log((ok ? 'PASS ' : 'FAIL(新增) ') + '匯出 smoke（Python，迷你 Qwen3）：' + last);
+    }
+}
 // 報告：test-reports/core-tests-latest.md（人看）與 .json（程式比對）；每次覆寫，歷史靠 git
 try {
     const fs = require('fs'), dir = path.join(root, 'test-reports'); fs.mkdirSync(dir, { recursive: true });

@@ -1909,8 +1909,10 @@ function startNativeMailbox(ctx) {
   }
   // 標準版 q8 → LoRA 槽版（自動轉換並快取，見 native-slot-model.js／lora-slot-build.js）。環境變數指定的模型優先；沒指定時自動找本程式下載位置的標準版。
   const slot = require("./native-slot-model.js").create({ fs: fsSync, path: pathM, crypto: require("crypto"), cp: require("child_process"), https: require("https"), userData, env: process.env, execPath: process.execPath, buildScript: pathM.join(__dirname, "lora-slot-build.js"), baseModelPath: modelPath, log: (s) => console.log("[main-ext] " + s) });
-  const baseModel = () => modelPath || ((slot.findStandard() || {}).model || "");
-  const baseTokenizer = () => tokenizerPath || ((slot.findStandard() || {}).tokenizer || "");
+  // 模型選單（DESIGN §25）：工作室把 llm 資產（匯出的 ONNX）設為離線模型後，寫 <userData>/studio-host/llm-model-choice.json；環境變數優先，其次是選單，最後才是標準版
+  const llmChoice = () => { try { const c = JSON.parse(fsSync.readFileSync(pathM.join(userData, "studio-host", "llm-model-choice.json"), "utf8")); return c && c.modelPath && fsSync.existsSync(c.modelPath) ? c : null; } catch (_) { return null; } };
+  const baseModel = () => modelPath || ((llmChoice() || {}).modelPath) || ((slot.findStandard() || {}).model || "");
+  const baseTokenizer = () => tokenizerPath || ((llmChoice() || {}).tokenizerPath) || ((slot.findStandard() || {}).tokenizer || "");
   const slotModel = () => { const c = slot.currentSlot(); return c ? c.model : ""; };
   const lora = NRL.create({ fs: fsSync, path: pathM, crypto: require("crypto"), userData, box, getRuntime: () => runtime, getModelPath: () => slotModel() || baseModel() });
   const idleStatus = { alive: false, pid: null, pending: 0, consecutiveCrashes: 0, disabled: false, disabledReason: "" };

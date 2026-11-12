@@ -121,6 +121,14 @@ const oracle = async (req) => {
     rt = B.summarizeRoute(badD, okS); const tx2 = B.routeText('測試模型', rt); check('報告文字：兩條路的達標數與結論', /直接做（一次寫出整份）：0\/3/.test(tx2) && /走 UML design（一次一小題）：3\/3/.test(tx2) && /結論：大問題要用 UML design 補救/.test(tx2), tx2);
     check('提示：uml 路線＝大問題先用 uml_design；direct＝做不下去時用 uml_design 補救；program_first 指向 uml_guide', /uml_design/.test(B.hintFor(undefined, 'uml')) && /不要自己一次做完/.test(B.hintFor(undefined, 'uml')) && /uml_design/.test(B.hintFor(undefined, 'direct')) && /uml_guide/.test(B.hintFor(undefined, 'program_first')) && B.hintFor(undefined, 'unknown') === '' && B.hintFor('self', undefined) === '');
 
-    console.log('uml_bench_core: ' + ok + ' passed' + (bad.length ? ', ' + bad.length + ' failed ' + JSON.stringify(bad) : ''));
+    { // 沒達標的原因要說真話：召回 100% 卻驗證沒過時不能說「只找到 100%」；error 是物件時不能印 [object Object]
+  const st0 = { calls: 3, failed: 0, degenerate: 0, errors: [], ms: [] }; const mk0 = (o) => Object.assign({ completed: true, valid: true, recall: { actors: 1, classes: 1, usecases: 1, sequences: 5 }, stats: st0 }, o);
+  const r0 = B.summarizeRoute([mk0({ valid: false, error: [{ message: '關係指向不存在的類別' }] }), mk0({ completed: false, error: { message: '呼叫失敗' } })], [mk0(), mk0(), mk0()]);
+  const txt0 = r0.notes.join('\n');
+  check('原因：驗證沒過就說驗證沒過（含錯誤原文）', /驗證沒通過（關係指向不存在的類別）/.test(txt0), txt0);
+  check('原因：error 是物件也印出文字，不印 [object Object]', /呼叫失敗/.test(txt0) && !/\[object Object\]/.test(txt0), txt0);
+  check('原因：召回 100% 時不說「只找到 100%」', !/只找到 100%/.test(txt0), txt0);
+}
+console.log('uml_bench_core: ' + ok + ' passed' + (bad.length ? ', ' + bad.length + ' failed ' + JSON.stringify(bad) : ''));
     if (bad.length) process.exit(1);
 })();
