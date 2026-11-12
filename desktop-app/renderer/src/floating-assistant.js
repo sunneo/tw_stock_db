@@ -120173,8 +120173,23 @@ _result
         const narr = new Array(outline.length).fill(''); let nOk = 0, nFail = 0;
         for (let i = 0; i < outline.length && !modelDead; i += 3) {
             await Promise.all(outline.slice(i, i + 3).map(async (o, k) => {
-                if (modelDead) return; try { const r = await this._kiLlm(T.narrationPrompt(o, req), { systemPrompt: '你只寫簡報的旁白。', maxTokens: 300, temperature: 0.5 }, { label: '旁白', timeoutMs: 60000, noOffline: true }); const t = T.acceptNarration(r, o, req); if (t) { narr[i + k] = t; nOk++; } else nFail++; }
-                catch (e) { nFail++; if (nFail >= 2 && !nOk) modelDead = true; }
+                if (modelDead) return;
+                // 思考堆疊（FaThinkStack）：每一頁的小問題都帶「目標／現在是第幾頁／全部頁的標題／上一頁與下一頁講什麼」的焦點標頭，弱模型不會忘記這份簡報在講什麼、這一頁該講哪一點；寫不合格（沒照素材、太長…）時用同一個標頭再問一次，仍不行才用重點當旁白
+                const idx = i + k; let head = '';
+                try {
+                    if (typeof FaThinkStack !== 'undefined' && FaThinkStack) {
+                        const S = FaThinkStack.create('做一份 ' + outline.length + ' 頁的簡報：' + String((req.title || req.matTitle || req.body || '')).slice(0, 60));
+                        FaThinkStack.push(S, { path: '第 ' + (idx + 1) + '/' + outline.length + ' 頁', question: '只寫「' + o.title + '」這一頁的旁白（重點：' + String(o.point || '').slice(0, 50) + '）' });
+                        FaThinkStack.decide(S, '全部頁：' + outline.map((x) => x.title).join('、'));
+                        if (idx > 0) FaThinkStack.decide(S, '上一頁講：' + outline[idx - 1].title + '—' + String(outline[idx - 1].point || '').slice(0, 40));
+                        if (idx < outline.length - 1) FaThinkStack.decide(S, '下一頁講：' + outline[idx + 1].title + '（這頁不要先講）');
+                        head = FaThinkStack.header(S) + '\n\n';
+                    }
+                } catch (_) { head = ''; }
+                for (let tryN = 0; tryN < 2; tryN++) {
+                    try { const r = await this._kiLlm(head + T.narrationPrompt(o, req) + (tryN ? '\n（上一次寫的不合格：要只用素材裡有的事實、一到三句、不要編造。請重寫。）' : ''), { systemPrompt: '你只寫簡報的旁白。', maxTokens: 300, temperature: tryN ? 0.2 : 0.5 }, { label: '旁白', timeoutMs: 60000, noOffline: true }); const t = T.acceptNarration(r, o, req); if (t) { narr[idx] = t; nOk++; break; } if (tryN === 1) nFail++; }
+                    catch (e) { nFail++; if (nFail >= 2 && !nOk) modelDead = true; break; }
+                }
             }));
         }
         log('🗣 旁白：' + nOk + ' 頁由模型寫' + (outline.length - nOk ? '、' + (outline.length - nOk) + ' 頁用重點當旁白' : ''));

@@ -44,4 +44,5 @@ check('輸出狀態機：runner 檢查 outputContract、簡報宣告最終產物
     check('簡報狀態機：有 visual 或 render 成功才算完成', C.done({ calls: [], visual: { x: 1 } }) && C.done({ calls: [{ name: 'render_presentation', ok: true }] }) && !C.done({ calls: [{ name: 'import_image_url', ok: true }] }));
     check('簡報狀態機：依呼叫紀錄給不同的下一步', /還沒有送出任何簡報/.test(C.describe({ calls: [] })) && /yaml_id/.test(C.describe({ calls: [{ name: 'render_presentation', ok: false }] })) && /add_chapters/.test(C.describe({ calls: [{ name: 'begin_presentation', ok: true }] })));
 }
+check('簡報程式自組：每頁旁白都帶思考堆疊焦點標頭、不合格再問一次', /FaThinkStack\.create\('做一份 '/.test(fa) && /FaThinkStack\.header\(S\)/.test(fa) && /上一次寫的不合格/.test(fa) && /下一頁講：/.test(fa));
 console.log(bad.length ? 'FAILED:\n  ' + bad.join('\n  ') : 'tool_request_wiring: ' + ok + ' passed'); process.exit(bad.length ? 1 : 0);
