@@ -1080,3 +1080,27 @@ Backend {
 - 提交逐檔加入；嵌入產生檔驗完一定 `git checkout --` 還原，不提交。
 - `embed-code-ui.js` 是 CRLF 的部分檔案，用 binary 讀寫（Python 文字模式會把整檔換成 LF）。
 - 上一輪 `git status` 顯示的 `desktop-app/node_modules` 是符號連結，不加入提交。
+
+## 26. 接手節二（studio-domain-author-2-2，worktree `claude/pensive-shtern-b48175`，2026-11-12）
+
+### 26.1 本輪做了什麼（實測／回報／推測分開）
+- **blockly 種子題搬進資料檔（實測）**：`renderer/src/uml/seeds/domain_*.json` 共 21 檔、428 題（留存 120），格式 `fa-domain-seeds` v1，每題存 `tests`（6）與 `hidden`（2），`rw_st`、`ref` 也在檔裡。`domain_harness.js` 新增 `loadSeeds`、`genCases`；21 個測試檔去掉內嵌 SEEDS；`scripts/domain-seed-counts.js` 改由 harness 取題數（計數與 HEAD 一致）。提交 `2fd394da`。
+  - 實測（node，用 `FA_TS_DIR=/tmp/fa-ts-cache` 的 tree-sitter）：algo2 60／0、dsp 72／0、sync 32／0。
+  - 實測失敗：par 12 題。**HEAD 也同樣失敗（已重現）**，不是這次造成；原因未查明（訊息是「配方沒通過沙盒驗證」或「讀不出解法」）。
+  - 推測：生成器已移出測試檔，資料檔是唯一來源；要改題目需改資料檔，或從 HEAD 歷史取回生成器。
+- **Electron 視窗驗證（實測，xvfb-run -a，CDP 埠 17987，`--no-sandbox`、`FA_DISABLE_MAIN_OVERLAY=1`、`FA_UPDATE_BASE=http://127.0.0.1:9`、臨時 user-data-dir，沒碰 :2.0）**：主視窗（AI Assistant）正常繪製；輸入 `/offline-training-studio` 後工作室卡片出現（沙盒 iframe、資產清單 10 個內建、LoRA 登錄分頁、訓練分頁）；點 LoRA 登錄分頁顯示「沒有 LoRA adapter」空狀態與按需試算輸入框。主頁面 console 無 JS 例外（只有 CSP 警告）。驗完已用 PID 結束自己的程序。
+  - 日誌的 ENOENT（`fa:rawfs:readFile`）：`native-runner-box/resp-*.json` 與 `studio-host/.version` 找不到。推測是輪詢與首次啟動的正常缺檔，未深究。
+  - 工作室的運算後端探測：Python 3.10.12 低於需求的 3.11，所以「cpu-py」不可用（這台機器的環境限制，不是程式錯誤）。
+  - **沒有重產嵌入**（指揮規定）：視窗跑的是目前提交的嵌入。studio_embed 12 過、4 敗，與 §24.5 的預期一致。
+- **LoRA 管理（回報，本輪沒有新增程式）**：多顆註冊、按需延遲載入（`request`）、槽滿替換與原子回滾（`replace`，含 applyFn 失敗時還原）、model card 能力介紹（`renderLoraManageHTML` 的「會附帶的能力」）都已在 `lora_registry_core.js`、`lora_manage_core.js` 實作。測試：lora_registry 80／0、lora_manage_core 41／0、lora_route 18／0、lora_web 54／0、lora_ref_train 全部通過。**沒有在本次 Electron 內實際操作多顆 adapter 與替換**（隔離環境沒有 adapter）；「替換約 2 秒」是介面文字，沒有實測。
+
+### 26.2 未完成（與原因）
+1. **wiki 實測：未連網，等使用者同意**。我已經用 SendMessage 把網址交給總指揮確認（見下）。候選網址：`https://github.com/sunneo/tw_stock_db/wiki`（來自 git remote `origin`）。條件：只取文字、每頁 ≤2 MB、≤40 頁，先取頁面清單，再只抓清單內的頁。**同意前不抓。**
+2. **blockly 題在 App 內重跑：未做**。判題需要桌面版 Python（≥3.11）與 tree-sitter 快取（`~/.cache/fa-ts` 這台沒有）；我只在 node 測試驗證。App 內還要把 `sym_suites` 的題數與資料檔接起來，這一步沒有做。
+3. **LoRA 多顆與替換的實機操作**：需要真的 adapter（或在 staging 頁，見 §24.2）。
+4. **par 的 12 題既有失敗**：未查明原因（見 26.1）。
+
+### 26.3 注意
+- 資料檔共 2.8 MB（tarx 單檔 1.2 MB），是 git 歷史成本。要瘦身可以改存 `ref` 之外的壓縮形式，這次沒做。
+- 測試檔的 `require('path')` 寫在 `H.loadSeeds(...)` 裡，為的是不改每個檔的 import。
+- 提交只加明確路徑；`desktop-app/node_modules` 是符號連結，未提交。
