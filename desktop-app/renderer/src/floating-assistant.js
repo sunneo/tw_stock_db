@@ -8696,6 +8696,947 @@ const holder = {};
 
 }).call(null, undefined, holder);
 (function (module, self) {
+/* 訓練工作室：受限運算式語言（Python 運算式的子集）的解析器與解譯器（UMD，純函式）。設計 §16.2。
+ * 為什麼有它：使用者資產（領域規格）不能放任意 JS 直接執行。矩陣層的「操作」需要一個能在擬合時快速、安全試算的表示：
+ * 運算式只能由整數／字串／清單／布林的字面值、運算子、白名單函式與方法組成；沒有屬性存取、沒有 import、沒有賦值、沒有 lambda、沒有 dunder。
+ * 同一份運算式文字可以原封不動放進 Python 程式（語法是 Python 的子集），所以「擬合時的結果」與「產出的程式」是同一個東西。
+ *
+ *   parse(src) → { ok, ast, vars:[自由變數名稱], error? }       檢查語法與白名單；不執行
+ *   evaluate(src|ast, env, opts) → { ok, value, error? }         env: {名稱: 值}（整數用 BigInt 或可轉成整數的 number）；opts.maxSteps（預設 200000）
+ *   toPy(value) → 字串                                           把結果轉成 print 的樣子（布林 True/False、清單用空白連接見 format）
+ *   format(value, type, o) → 字串                                type: 'int'|'str'|'ints'|'bool'；bool 用 o.yes／o.no
+ * 語意與 Python 對齊：整數是任意精度、// 與 % 向負無窮取整、比較可鏈（a < b < c）、and/or 回傳運算元（短路）。
+ * 不支援（明講，不假裝）：浮點數（小數字面值會被拒絕）、字串格式化、切片步長以外的 Python 特技、遞迴、使用者函式。
+ * 資源上限：解譯步數、range／乘冪／字串重複的大小，超過就回錯誤（不會卡住）。 */
+(function (root, factory) {
+    if (typeof module === 'object' && module.exports) module.exports = factory();
+    else root.FaStudioExpr = factory();
+})(typeof self !== 'undefined' ? self : this, function () {
+    'use strict';
+    const FUNCS = new Set(['len', 'sum', 'min', 'max', 'abs', 'sorted', 'reversed', 'str', 'int', 'range', 'list', 'set', 'bool', 'any', 'all', 'ord', 'chr', 'pow']);
+    const METHODS = new Set(['count', 'upper', 'lower', 'strip', 'join', 'startswith', 'endswith', 'find', 'index', 'isdigit', 'isalpha', 'split', 'replace']);
+    const KW = new Set(['and', 'or', 'not', 'if', 'else', 'for', 'in', 'True', 'False', 'None']);
+    const BAN = /^__|__$/;
+    const MAX_RANGE = 200000, MAX_STR = 1000000, MAX_POW_BITS = 20000;
+
+    // ---- 詞法 ----
+    function lex(src) {
+        const t = []; let i = 0; const s = String(src);
+        while (i < s.length) {
+            const c = s[i];
+            if (/\s/.test(c)) { i++; continue; }
+            if (/[0-9]/.test(c)) { let j = i; while (j < s.length && /[0-9_]/.test(s[j])) j++; if (s[j] === '.' && /[0-9]/.test(s[j + 1] || '')) throw new Error('不支援小數：' + s.slice(i, j + 2)); if (/[eE]/.test(s[j] || '') && /[-+0-9]/.test(s[j + 1] || '')) throw new Error('不支援科學記號'); if (/[A-Za-z_]/.test(s[j] || '')) throw new Error('數字後面不能接字母：' + s.slice(i, j + 1)); t.push({ k: 'num', v: BigInt(s.slice(i, j).replace(/_/g, '')) }); i = j; continue; }
+            if (/[A-Za-z_]/.test(c)) { let j = i; while (j < s.length && /[A-Za-z0-9_]/.test(s[j])) j++; t.push({ k: 'id', v: s.slice(i, j) }); i = j; continue; }
+            if (c === '"' || c === "'") { let j = i + 1, out = ''; while (j < s.length && s[j] !== c) { if (s[j] === '\\') { const n = s[j + 1]; out += n === 'n' ? '\n' : n === 't' ? '\t' : n; j += 2; } else out += s[j++]; } if (j >= s.length) throw new Error('字串沒有結尾'); t.push({ k: 'str', v: out }); i = j + 1; continue; }
+            const three = s.slice(i, i + 3), two = s.slice(i, i + 2);
+            if (three === '//=' || three === '**=') throw new Error('不支援賦值運算');
+            if (['//', '**', '==', '!=', '<=', '>=', '<<', '>>'].includes(two)) { t.push({ k: 'op', v: two }); i += 2; continue; }
+            if ('+-*/%<>()[],:|&^~.'.includes(c)) { if (c === '/') throw new Error('不支援 /（真除法會產生小數）；整數除法請用 //'); if (c === '~') throw new Error('不支援 ~'); t.push({ k: 'op', v: c }); i++; continue; }
+            if (c === '=' || c === '!' || c === ';' || c === '{' || c === '}' || c === '@' || c === '$' || c === '`' || c === '\\') throw new Error('不支援的符號：' + c);
+            throw new Error('不認得的字元：' + c);
+        }
+        t.push({ k: 'end' }); return t;
+    }
+
+    // ---- 語法 ----
+    function parseTokens(t) {
+        let p = 0; const vars = new Set(); const bound = [];
+        const peek = () => t[p], next = () => t[p++];
+        const isOp = (v) => t[p].k === 'op' && t[p].v === v, isId = (v) => t[p].k === 'id' && t[p].v === v;
+        const eatOp = (v) => { if (!isOp(v)) throw new Error('這裡應該是「' + v + '」'); p++; };
+        function ternary() { const a = orx(); if (isId('if')) { p++; const c = orx(); if (!isId('else')) throw new Error('if 後面要有 else'); p++; const b = ternary(); return { t: 'if', c, a, b }; } return a; }
+        function orx() { let a = andx(); while (isId('or')) { p++; a = { t: 'or', a, b: andx() }; } return a; }
+        function andx() { let a = notx(); while (isId('and')) { p++; a = { t: 'and', a, b: notx() }; } return a; }
+        function notx() { if (isId('not')) { p++; return { t: 'not', a: notx() }; } return cmp(); }
+        function cmp() {
+            const first = bor(); const ops = [], rest = [];
+            for (;;) {
+                let o = null; if (t[p].k === 'op' && ['==', '!=', '<', '<=', '>', '>='].includes(t[p].v)) o = next().v; else if (isId('in')) { p++; o = 'in'; } else if (isId('not') && t[p + 1].k === 'id' && t[p + 1].v === 'in') { p += 2; o = 'not in'; } else break;
+                ops.push(o); rest.push(bor());
+            }
+            return ops.length ? { t: 'cmp', first, ops, rest } : first;
+        }
+        const bin = (sub, set) => () => { let a = sub(); while (t[p].k === 'op' && set.includes(t[p].v)) { const o = next().v; a = { t: 'bin', o, a, b: sub() }; } return a; };
+        function unary() { if (isOp('-')) { p++; return { t: 'neg', a: unary() }; } if (isOp('+')) { p++; return unary(); } return power(); }
+        function power() { const a = postfix(); if (isOp('**')) { p++; return { t: 'bin', o: '**', a, b: unary() }; } return a; }
+        const mul = bin(unary, ['*', '//', '%']), add = bin(mul, ['+', '-']), shift = bin(add, ['<<', '>>']), band = bin(shift, ['&']), bxor = bin(band, ['^']), bor = bin(bxor, ['|']);
+        function args() { const a = []; if (!isOp(')')) { for (;;) { a.push(ternary()); if (isOp(',')) { p++; if (isOp(')')) break; continue; } break; } } eatOp(')'); return a; }
+        function postfix() {
+            let a = atom();
+            for (;;) {
+                if (isOp('(')) { if (a.t !== 'name') throw new Error('只能呼叫白名單函式'); if (!FUNCS.has(a.n)) throw new Error('不允許的函式：' + a.n); p++; a = { t: 'call', f: a.n, args: args() }; vars.delete(a.f); }
+                else if (isOp('[')) { p++; let lo = null, hi = null, sl = false; if (!isOp(':')) lo = ternary(); if (isOp(':')) { p++; sl = true; if (!isOp(']')) hi = ternary(); if (isOp(':')) throw new Error('不支援切片步長（反轉請用 reversed 或 sorted）'); } eatOp(']'); a = sl ? { t: 'slice', a, lo, hi } : { t: 'idx', a, i: lo }; }
+                else if (isOp('.')) { p++; const m = next(); if (m.k !== 'id') throw new Error('點後面要是方法名稱'); if (BAN.test(m.v) || !METHODS.has(m.v)) throw new Error('不允許的方法：' + m.v); eatOp('('); a = { t: 'meth', o: a, m: m.v, args: args() }; }
+                else break;
+            }
+            return a;
+        }
+        function atom() {
+            const k = next();
+            if (k.k === 'num') return { t: 'lit', v: k.v };
+            if (k.k === 'str') return { t: 'lit', v: k.v };
+            if (k.k === 'op' && k.v === '(') { const e = ternary(); if (isOp(',')) throw new Error('不支援元組'); eatOp(')'); return e; }
+            if (k.k === 'op' && k.v === '[') {
+                if (isOp(']')) { p++; return { t: 'list', items: [] }; }
+                const before = new Set(vars); const first = ternary();
+                if (isId('for')) { p++; const v = next(); if (v.k !== 'id' || KW.has(v.v) || BAN.test(v.v)) throw new Error('for 後面要是變數名稱'); if (!isId('in')) throw new Error('for 後面要有 in'); p++; bound.push(v.v); const it = orx(); let cond = null; if (isId('if')) { p++; cond = orx(); } bound.pop(); eatOp(']'); if (!before.has(v.v)) vars.delete(v.v); return { t: 'comp', e: first, v: v.v, it, cond }; }
+                const items = [first]; while (isOp(',')) { p++; if (isOp(']')) break; items.push(ternary()); } eatOp(']'); return { t: 'list', items };
+            }
+            if (k.k === 'id') {
+                if (k.v === 'True') return { t: 'lit', v: true }; if (k.v === 'False') return { t: 'lit', v: false };
+                if (k.v === 'None') throw new Error('不支援 None'); if (KW.has(k.v)) throw new Error('關鍵字用錯位置：' + k.v); if (BAN.test(k.v)) throw new Error('不允許的名稱：' + k.v);
+                if (t[p].k === 'op' && t[p].v === '(') return { t: 'name', n: k.v }; // 函式名稱，由 postfix 檢查白名單
+                if (!bound.includes(k.v)) vars.add(k.v); return { t: 'name', n: k.v };
+            }
+            throw new Error(k.k === 'end' ? '運算式不完整' : '這個位置不能放「' + (k.v === undefined ? k.k : k.v) + '」');
+        }
+        const ast = ternary(); if (t[p].k !== 'end') throw new Error('運算式後面多了東西：' + (t[p].v === undefined ? '' : t[p].v));
+        return { ast, vars: [...vars] };
+    }
+    function parse(src) {
+        try { if (typeof src !== 'string' || !src.trim()) throw new Error('運算式是空的'); if (src.length > 600) throw new Error('運算式太長（上限 600 字）'); const r = parseTokens(lex(src)); return { ok: true, ast: r.ast, vars: r.vars }; } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+    }
+
+    // ---- 解譯 ----
+    const isInt = (v) => typeof v === 'bigint', isStr = (v) => typeof v === 'string', isList = (v) => Array.isArray(v), isBool = (v) => typeof v === 'boolean';
+    const kindOf = (v) => (isBool(v) ? 'bool' : isInt(v) ? 'int' : isStr(v) ? 'str' : isList(v) ? 'list' : typeof v);
+    const num = (v) => (isBool(v) ? (v ? 1n : 0n) : v);
+    const truthy = (v) => (isInt(v) ? v !== 0n : isStr(v) || isList(v) ? v.length > 0 : !!v);
+    function cmpv(a, b) { // -1/0/1；型別不同丟錯（Python 也不能比）
+        if ((isInt(a) || isBool(a)) && (isInt(b) || isBool(b))) { const x = num(a), y = num(b); return x < y ? -1 : x > y ? 1 : 0; }
+        if (isStr(a) && isStr(b)) return a < b ? -1 : a > b ? 1 : 0;
+        if (isList(a) && isList(b)) { for (let i = 0; i < Math.min(a.length, b.length); i++) { const c = cmpv(a[i], b[i]); if (c) return c; } return a.length < b.length ? -1 : a.length > b.length ? 1 : 0; }
+        throw new Error('不能比較 ' + kindOf(a) + ' 與 ' + kindOf(b));
+    }
+    const eqv = (a, b) => { if (isList(a) && isList(b)) return a.length === b.length && a.every((x, i) => eqv(x, b[i])); if ((isInt(a) || isBool(a)) && (isInt(b) || isBool(b))) return num(a) === num(b); return a === b; };
+    const fdiv = (a, b) => { if (b === 0n) throw new Error('除以零'); let q = a / b; if ((a % b !== 0n) && ((a < 0n) !== (b < 0n))) q -= 1n; return q; };
+    const fmod = (a, b) => { if (b === 0n) throw new Error('除以零'); return a - fdiv(a, b) * b; };
+    function toInt(v) { if (isBool(v)) return v ? 1n : 0n; if (isInt(v)) return v; if (isStr(v)) { if (!/^\s*[-+]?\d+\s*$/.test(v)) throw new Error('int() 讀不出整數：' + JSON.stringify(v)); return BigInt(v.trim()); } throw new Error('int() 不能用在 ' + kindOf(v)); }
+    function toStr(v) { if (isBool(v)) return v ? 'True' : 'False'; if (isInt(v)) return v.toString(); if (isStr(v)) return v; if (isList(v)) return '[' + v.map(repr).join(', ') + ']'; return String(v); }
+    function repr(v) { return isStr(v) ? "'" + v.replace(/\\/g, '\\\\').replace(/'/g, "\\'") + "'" : toStr(v); }
+    function sortList(a) { return a.slice().sort((x, y) => cmpv(x, y)); }
+    function iterOf(v) { if (isList(v)) return v; if (isStr(v)) return Array.from(v); throw new Error('不能迭代 ' + kindOf(v)); }
+    function normEnv(env) { const o = {}; for (const k of Object.keys(env || {})) { let v = env[k]; if (typeof v === 'number') { if (!Number.isInteger(v)) throw new Error('變數 ' + k + ' 不是整數（不支援浮點數）'); v = BigInt(v); } o[k] = v; } return o; }
+    function run(ast, env, maxSteps) {
+        let steps = 0; const tick = () => { if (++steps > maxSteps) throw new Error('運算步數超過上限（' + maxSteps + '）'); };
+        const lim = (n) => { if (n > MAX_RANGE) throw new Error('範圍太大（上限 ' + MAX_RANGE + '）'); };
+        function ev(n, sc) {
+            tick();
+            switch (n.t) {
+                case 'lit': return n.v;
+                case 'name': if (sc && Object.prototype.hasOwnProperty.call(sc, n.n)) return sc[n.n]; if (Object.prototype.hasOwnProperty.call(env, n.n)) return env[n.n]; throw new Error('沒有這個變數：' + n.n);
+                case 'list': return n.items.map((x) => ev(x, sc));
+                case 'if': return truthy(ev(n.c, sc)) ? ev(n.a, sc) : ev(n.b, sc);
+                case 'or': { const a = ev(n.a, sc); return truthy(a) ? a : ev(n.b, sc); }
+                case 'and': { const a = ev(n.a, sc); return truthy(a) ? ev(n.b, sc) : a; }
+                case 'not': return !truthy(ev(n.a, sc));
+                case 'neg': { const a = ev(n.a, sc); if (!isInt(a) && !isBool(a)) throw new Error('負號只能用在整數'); return -num(a); }
+                case 'cmp': { let l = ev(n.first, sc); for (let i = 0; i < n.ops.length; i++) { const r = ev(n.rest[i], sc); const o = n.ops[i]; let ok;
+                    if (o === 'in' || o === 'not in') { const has = isStr(r) ? (isStr(l) ? r.includes(l) : (() => { throw new Error('字串裡只能找字串'); })()) : isList(r) ? r.some((x) => eqv(x, l)) : (() => { throw new Error('in 的右邊要是字串或清單'); })(); ok = o === 'in' ? has : !has; }
+                    else if (o === '==') ok = eqv(l, r); else if (o === '!=') ok = !eqv(l, r); else { const c = cmpv(l, r); ok = o === '<' ? c < 0 : o === '<=' ? c <= 0 : o === '>' ? c > 0 : c >= 0; }
+                    if (!ok) return false; l = r; } return true; }
+                case 'bin': return binop(n.o, ev(n.a, sc), ev(n.b, sc));
+                case 'idx': { const a = ev(n.a, sc), i = ev(n.i, sc); if (!isStr(a) && !isList(a)) throw new Error('只有字串與清單能取索引'); if (!isInt(i) && !isBool(i)) throw new Error('索引要是整數'); let k = Number(num(i)); if (k < 0) k += a.length; if (k < 0 || k >= a.length) throw new Error('索引超出範圍'); return isStr(a) ? a[k] : a[k]; }
+                case 'slice': { const a = ev(n.a, sc); if (!isStr(a) && !isList(a)) throw new Error('只有字串與清單能切片'); const g = (x, d) => { if (!x) return d; const v = ev(x, sc); let k = Number(toInt(v)); if (k < 0) k = Math.max(0, a.length + k); return Math.min(k, a.length); }; return a.slice(g(n.lo, 0), g(n.hi, a.length)); }
+                case 'comp': { const it = iterOf(ev(n.it, sc)); const out = []; for (const x of it) { const s2 = Object.assign({}, sc || {}, { [n.v]: x }); if (n.cond && !truthy(ev(n.cond, s2))) continue; out.push(ev(n.e, s2)); lim(out.length); } return out; }
+                case 'call': return call(n.f, n.args.map((x) => ev(x, sc)));
+                case 'meth': return meth(ev(n.o, sc), n.m, n.args.map((x) => ev(x, sc)));
+                default: throw new Error('內部錯誤：' + n.t);
+            }
+        }
+        function binop(o, a, b) {
+            if (o === '+') { if (isStr(a) && isStr(b)) return a + b; if (isList(a) && isList(b)) return a.concat(b); }
+            if (o === '*') { if ((isStr(a) || isList(a)) && (isInt(b) || isBool(b))) { const k = Number(num(b)); if (k > 0 && a.length * k > MAX_STR) throw new Error('重複後太大'); if (isStr(a)) return k > 0 ? a.repeat(k) : ''; const r = []; for (let i = 0; i < k; i++) r.push(...a); return r; } if ((isStr(b) || isList(b)) && (isInt(a) || isBool(a))) return binop('*', b, a); }
+            if (o === '%' && isStr(a)) throw new Error('不支援字串格式化');
+            if (!(isInt(a) || isBool(a)) || !(isInt(b) || isBool(b))) throw new Error('運算元型別不對：' + kindOf(a) + ' ' + o + ' ' + kindOf(b));
+            const x = num(a), y = num(b);
+            switch (o) {
+                case '+': return x + y; case '-': return x - y; case '*': return x * y; case '//': return fdiv(x, y); case '%': return fmod(x, y);
+                case '**': { if (y < 0n) throw new Error('不支援負指數（會產生小數）'); if (y > 0n && (x > 1n || x < -1n) && BigInt(x.toString(2).length) * y > BigInt(MAX_POW_BITS)) throw new Error('乘冪太大'); return x ** y; }
+                case '<<': { if (y < 0n || y > 4096n) throw new Error('位移量不合理'); return x << y; } case '>>': { if (y < 0n || y > 100000n) throw new Error('位移量不合理'); return x >> y; }
+                case '&': return x & y; case '|': return x | y; case '^': return x ^ y;
+            }
+            throw new Error('未知運算 ' + o);
+        }
+        function call(f, a) {
+            const need = (n) => { if (a.length !== n) throw new Error(f + ' 需要 ' + n + ' 個參數'); };
+            switch (f) {
+                case 'len': need(1); if (!isStr(a[0]) && !isList(a[0])) throw new Error('len 只能用在字串與清單'); return BigInt(a[0].length);
+                case 'abs': need(1); return (num(a[0]) < 0n) ? -num(a[0]) : num(a[0]);
+                case 'str': need(1); return toStr(a[0]);
+                case 'int': need(1); return toInt(a[0]);
+                case 'bool': need(1); return truthy(a[0]);
+                case 'ord': need(1); if (!isStr(a[0]) || Array.from(a[0]).length !== 1) throw new Error('ord 要一個字元'); return BigInt(a[0].codePointAt(0));
+                case 'chr': need(1); return String.fromCodePoint(Number(toInt(a[0])));
+                case 'pow': if (a.length === 2) return binop('**', a[0], a[1]); if (a.length === 3) { let b = toInt(a[0]), e = toInt(a[1]); const m = toInt(a[2]); if (e < 0n || m === 0n) throw new Error('pow 的參數不合法'); let r = 1n; b = fmod(b, m); while (e > 0n) { tick(); if (e & 1n) r = fmod(r * b, m); b = fmod(b * b, m); e >>= 1n; } return fmod(r, m); } throw new Error('pow 需要 2 或 3 個參數');
+                case 'range': { const v = a.map((x) => toInt(x)); let lo = 0n, hi, st = 1n; if (v.length === 1) hi = v[0]; else if (v.length === 2) { lo = v[0]; hi = v[1]; } else if (v.length === 3) { lo = v[0]; hi = v[1]; st = v[2]; } else throw new Error('range 需要 1～3 個參數'); if (st === 0n) throw new Error('range 步長不能是 0'); const out = []; for (let i = lo; st > 0n ? i < hi : i > hi; i += st) { out.push(i); lim(out.length); } return out; }
+                case 'list': need(1); return iterOf(a[0]).slice();
+                case 'set': need(1); { const out = []; for (const x of iterOf(a[0])) if (!out.some((y) => eqv(x, y))) out.push(x); return sortList(out); } // 以排序後的清單代表集合（與 sorted(set(..)) 一致；直接輸出集合在 Python 沒有固定順序，所以不鼓勵）
+                case 'sorted': need(1); return sortList(iterOf(a[0]));
+                case 'reversed': need(1); return iterOf(a[0]).slice().reverse();
+                case 'sum': { need(1); let s = 0n; for (const x of iterOf(a[0])) { tick(); if (!isInt(x) && !isBool(x)) throw new Error('sum 只能加整數'); s += num(x); } return s; }
+                case 'min': case 'max': { const xs = a.length === 1 ? iterOf(a[0]) : a; if (!xs.length) throw new Error(f + ' 的參數是空的'); let best = xs[0]; for (const x of xs) { const c = cmpv(x, best); if (f === 'min' ? c < 0 : c > 0) best = x; } return best; }
+                case 'any': need(1); return iterOf(a[0]).some(truthy);
+                case 'all': need(1); return iterOf(a[0]).every(truthy);
+            }
+            throw new Error('不允許的函式：' + f);
+        }
+        function meth(o, m, a) {
+            const needS = () => { if (!isStr(o)) throw new Error(m + ' 只能用在字串'); };
+            switch (m) {
+                case 'count': if (isStr(o)) { if (!isStr(a[0]) || a[0] === '') throw new Error('count 要非空字串'); let c = 0, i = 0; while ((i = o.indexOf(a[0], i)) >= 0) { c++; i += a[0].length; } return BigInt(c); } if (isList(o)) return BigInt(o.filter((x) => eqv(x, a[0])).length); throw new Error('count 用在字串或清單');
+                case 'upper': needS(); return o.toUpperCase(); case 'lower': needS(); return o.toLowerCase(); case 'strip': needS(); return o.trim();
+                case 'join': needS(); return iterOf(a[0]).map((x) => { if (!isStr(x)) throw new Error('join 只能接字串'); return x; }).join(o);
+                case 'startswith': needS(); return o.startsWith(a[0]); case 'endswith': needS(); return o.endsWith(a[0]);
+                case 'find': needS(); return BigInt(o.indexOf(a[0])); case 'index': { const i = isStr(o) ? o.indexOf(a[0]) : o.findIndex((x) => eqv(x, a[0])); if (i < 0) throw new Error('index：找不到'); return BigInt(i); }
+                case 'isdigit': needS(); return o.length > 0 && /^[0-9]+$/.test(o); case 'isalpha': needS(); return o.length > 0 && /^\p{L}+$/u.test(o);
+                case 'split': needS(); return a.length ? o.split(a[0]) : o.split(/\s+/).filter(Boolean);
+                case 'replace': needS(); return o.split(a[0]).join(a[1]);
+            }
+            throw new Error('不允許的方法：' + m);
+        }
+        return ev(ast, null);
+    }
+    function evaluate(src, env, opts) {
+        try {
+            const pr = typeof src === 'string' ? parse(src) : { ok: true, ast: src }; if (!pr.ok) return { ok: false, error: pr.error };
+            return { ok: true, value: run(pr.ast, normEnv(env), (opts && opts.maxSteps) || 200000) };
+        } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+    }
+    // 輸出：與矩陣層慣例一致（清單用空白連接；布林用 yes／no 字樣；整數十進位）
+    function format(v, type, o) {
+        o = o || {};
+        if (type === 'bool') { if (!isBool(v) && !isInt(v)) throw new Error('輸出型別是 bool，但算出 ' + kindOf(v)); return truthy(v) ? String(o.yes != null ? o.yes : 'yes') : String(o.no != null ? o.no : 'no'); }
+        if (type === 'int') { if (!isInt(v) && !isBool(v)) throw new Error('輸出型別是 int，但算出 ' + kindOf(v)); return num(v).toString(); }
+        if (type === 'str') { if (!isStr(v)) throw new Error('輸出型別是 str，但算出 ' + kindOf(v)); return v; }
+        if (type === 'ints') { if (!isList(v) || v.some((x) => !isInt(x) && !isBool(x))) throw new Error('輸出型別是 ints，但算出的不是整數清單'); return v.map((x) => num(x).toString()).join(' '); }
+        throw new Error('未知輸出型別：' + type);
+    }
+    const toPy = (v) => (isList(v) ? '[' + v.map(toPy).join(', ') + ']' : isBool(v) ? (v ? 'True' : 'False') : isInt(v) ? v.toString() : isStr(v) ? repr(v) : String(v));
+    return { parse, evaluate, format, toPy, FUNCS: [...FUNCS], METHODS: [...METHODS] };
+});
+
+}).call(null, undefined, holder);
+(function (module, self) {
+/* 訓練工作室：領域規格（domain spec）的格式、驗證器、題目展開、編譯（UMD，純函式，不碰 DOM／網路／檔案）。設計 §16。
+ * 為什麼有它：blockly 與 matrix 兩種資產要能在工作室裡「新增領域」「新增操作」，而且使用者資產裡不能放任意 JS 直接執行。
+ * 所以領域用宣告式、可序列化、可版本化的 JSON 描述；要執行的只有兩種東西：
+ *   1. 受限運算式（dsl_expr_core.js，Python 運算式的子集，由解譯器試算，不是 eval）；
+ *   2. Python 骨架／參考解的文字——只會被送進既有的判題沙盒（judge-runner）執行，工作室本身不執行；進沙盒前先過靜態掃描（匯入白名單＋禁用名稱）。
+ *
+ * 規格（format:'fa-domain-spec'，version:1）共同欄位：
+ *   id        領域識別（小寫英數與連字號，2～40 字，開頭是字母）        kind  'blockly'｜'matrix'
+ *   label     顯示名稱                                                  meta  { license, source, author?, description?, created? }（內建化要求 license 與 source 都在）
+ *   seed      整數，題目展開用的亂數種子（可重現）
+ * kind:'blockly'（積木課程領域包）：
+ *   algos:[{ key, any?:[詞], all?:[詞], veto?:[詞] }]       讀題規則：敘述含 any 任一個且含 all 全部、不含 veto → 算法種類 key（領域詞彙優先於通用詞彙，所以至少要有 all 或 2 個以上 any，避免搶走別人的題）
+ *   judge:{ checker:'tokens'|'float', eps? }
+ *   skeletons:[{ id, algo, paradigm?, label, needs?:{scalars?,lists?,strs?}, facts?:[{name, re, group?, as?:'int'|'str'}], slots:[{id,label,options:[{id,v,label?}]}], lines:[Python 行，可含 {{c.槽位}} {{N.sc.0}} {{N.ls.0}} {{N.s.0}} {{N.g}} {{N.L.0}} {{fact.名稱}}] }]
+ *   families:[{ id, algo, split:'train'|'holdout', want?, statements:[題目樣板，{P} 由 params 代入], params?:{P:[值…]}, ref:Python 參考解, gen:[輸入產生規則], note? }]
+ *   tasks:[{ id, split, statement, solution?, tests:[{in,out}] }]          直接給題目（含測資）
+ * kind:'matrix'（矩陣層操作）：
+ *   ops:[{ id, label, level?, order?:1..89（小的先試，預設 35）, keywords?:[詞], layout?:'lines'|'line', input:[{name,type:'int'|'str'|'ints'}], output:{type:'int'|'str'|'ints'|'bool', yes?, no?}, params?:{名:[值…]}, expr:受限運算式 }]
+ *   tasks:[{ id, op?, split, statement, examples:[{in,out}], hidden?:[{in,out}] }]
+ * 公開函式：
+ *   validate(spec, {builtin}) → {ok, errors[], warnings[]}        schema＋安全掃描＋ train／holdout 不混＋可重現（展開兩次雜湊相同）
+ *   normalize(spec) → 正規化複本（補預設值、鍵排序）；hash(spec) → sha256
+ *   expandStatements(family) → [{id, statement, params}]           只展開敘述（同步、可重現）
+ *   makeInputs(family, {seed, count, big}) → [輸入字串]
+ *   buildTasks(spec, {runRef, tests, hidden}) → async {tasks, problems}   blockly 家族 → 題目（參考解在 runRef 算答案；runRef 由判題沙盒提供）
+ *   compileBlockly(spec, PAR) → 領域包（FaDomains.register 吃的形狀；seeds 的 gen 是函式，只在記憶體）
+ *   compileMatrix(spec, Expr) → [{name, fn, opts}]                  給 FaMatrixSynth.register
+ *   fitOp(op, examples, Expr, o) → {ok, assignment, source, alternatives[], ambiguous, tried, reason}
+ *   replay(op, assignment, input, Expr) → {ok, out}                 用同一份運算式重新算一筆（不用判題器）
+ *   scanPython(text) → [問題]                                        靜態掃描
+ *   toFiles(spec, tasks) / fromFiles(files)                          資產檔案 ↔ 規格 */
+(function (root, factory) {
+    const A = (typeof module === 'object' && module.exports) ? require('./asset_core.js') : root.FaStudioAsset;
+    const E = (typeof module === 'object' && module.exports) ? require('./dsl_expr_core.js') : root.FaStudioExpr;
+    if (typeof module === 'object' && module.exports) module.exports = factory(A, E);
+    else root.FaStudioDomainSpec = factory(A, E);
+})(typeof self !== 'undefined' ? self : this, function (Asset, Expr) {
+    'use strict';
+    const FORMAT = 'fa-domain-spec', VERSION = 1;
+    const ID_RE = /^[a-z][a-z0-9-]{1,39}$/;
+    const KEY_RE = /^[a-z][a-z0-9-]{1,39}$/;
+    const NAME_RE = /^[A-Za-z_][A-Za-z0-9_]{0,23}$/;
+    const stable = (o) => (o === null || typeof o !== 'object' ? JSON.stringify(o) : Array.isArray(o) ? '[' + o.map(stable).join(',') + ']' : '{' + Object.keys(o).sort().filter((k) => o[k] !== undefined).map((k) => JSON.stringify(k) + ':' + stable(o[k])).join(',') + '}');
+    const hash = (spec) => Asset.sha256Hex(stable(spec));
+    const norm = (s) => String(s == null ? '' : s).replace(/\s+/g, ' ').trim().toLowerCase();
+    const isStr = (x) => typeof x === 'string', isObj = (x) => x && typeof x === 'object' && !Array.isArray(x);
+    const ALLOWED_IMPORTS = new Set(['heapq', 'collections', 'math', 'itertools', 'bisect', 'functools', 're', 'string', 'fractions', 'decimal', 'operator', 'copy']);
+    const BANNED = /\b(open|exec|eval|compile|__import__|globals|locals|vars|getattr|setattr|delattr|breakpoint|exit|quit|os|sys|subprocess|socket|shutil|ctypes|pathlib|importlib|builtins|threading|multiprocessing|signal|input_|help|memoryview)\b/;
+    const LIMITS = { statementsPerFamily: 60, families: 200, skeletons: 100, ops: 100, tasks: 2000, lines: 200, lineLen: 400, combos: 24, optionLen: 300, paramValues: 200, hypotheses: 60000 };
+
+    // ---------- 靜態掃描（Python 文字只進判題沙盒，進去前先擋明顯危險的）----------
+    function scanPython(text) {
+        const out = []; const s = String(text);
+        for (const m of s.matchAll(/^\s*(?:from\s+([A-Za-z_][\w.]*)\s+import|import\s+([A-Za-z_][\w., ]*))/gm)) {
+            const mods = (m[1] ? [m[1]] : m[2].split(',').map((x) => x.trim().split(/\s+as\s+/)[0])).map((x) => x.split('.')[0]);
+            for (const mod of mods) if (!ALLOWED_IMPORTS.has(mod)) out.push('不允許匯入 ' + mod + '（允許：' + [...ALLOWED_IMPORTS].join('、') + '）');
+        }
+        const noStr = s.replace(/'(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*"/g, '""');
+        const b = BANNED.exec(noStr); if (b) out.push('不允許的名稱：' + b[1]);
+        if (/__\w+__/.test(noStr)) out.push('不允許 dunder 名稱');
+        return out;
+    }
+
+    // ---------- 驗證 ----------
+    function validate(spec, opts) {
+        opts = opts || {}; const errors = [], warnings = []; const E_ = (m) => errors.push(m), W_ = (m) => warnings.push(m);
+        if (!isObj(spec)) return { ok: false, errors: ['規格不是物件'], warnings };
+        if (spec.format !== FORMAT) E_('format 應為 ' + FORMAT);
+        if (!Number.isInteger(spec.version)) E_('version 缺少或不是整數'); else if (spec.version > VERSION) E_('規格版本（' + spec.version + '）比這個程式支援的（' + VERSION + '）新，請先更新程式');
+        if (spec.kind !== 'blockly' && spec.kind !== 'matrix') E_('kind 必須是 blockly 或 matrix');
+        if (!isStr(spec.id) || !ID_RE.test(spec.id)) E_('id 要是小寫英數與連字號、字母開頭、2～40 字：' + JSON.stringify(spec.id));
+        if (!isStr(spec.label) || !spec.label.trim()) E_('label 不可空白');
+        if (!Number.isInteger(spec.seed)) E_('seed 要是整數（題目展開用，才可重現）');
+        const meta = spec.meta; if (!isObj(meta)) E_('缺少 meta（license、source）'); else {
+            if (!isStr(meta.license) || !meta.license.trim()) (opts.builtin ? E_ : W_)('meta.license（授權）' + (opts.builtin ? '不可缺：內建化要有授權' : '沒填；內建化前一定要填'));
+            if (!isStr(meta.source) || !meta.source.trim()) (opts.builtin ? E_ : W_)('meta.source（來源）' + (opts.builtin ? '不可缺：內建化要有來源' : '沒填；內建化前一定要填'));
+        }
+        if (errors.length && (spec.kind !== 'blockly' && spec.kind !== 'matrix')) return { ok: false, errors, warnings };
+        if (spec.kind === 'blockly') validateBlockly(spec, E_, W_); else if (spec.kind === 'matrix') validateMatrix(spec, E_, W_);
+        // 可重現：展開兩次，雜湊要一樣
+        if (!errors.length && spec.kind === 'blockly') { try { const a = (spec.families || []).map((f) => stable(expandStatements(f))).join('|'), b = (spec.families || []).map((f) => stable(expandStatements(f))).join('|'); if (a !== b) E_('題目展開不可重現'); const g1 = (spec.families || []).map((f) => stable(makeInputs(f, { seed: spec.seed, count: 4 }))).join('|'), g2 = (spec.families || []).map((f) => stable(makeInputs(f, { seed: spec.seed, count: 4 }))).join('|'); if (g1 !== g2) E_('輸入產生不可重現'); } catch (e) { E_('題目展開失敗：' + e.message); } }
+        return { ok: errors.length === 0, errors, warnings };
+    }
+    function checkSplitMix(items, E_, label) { // items: [{id, split, key}]：同 id 不可重複；同敘述不可同時在 train 與 holdout
+        const ids = new Map(), byKey = new Map();
+        for (const it of items) {
+            if (ids.has(it.id)) E_(label + ' id 重複：' + it.id); ids.set(it.id, 1);
+            if (it.split !== 'train' && it.split !== 'holdout') E_(label + ' ' + it.id + ' 的 split 要是 train 或 holdout');
+            const k = it.key; if (!k) continue; const prev = byKey.get(k);
+            if (prev && prev.split !== it.split) E_('留出題混進訓練：' + label + ' ' + it.id + ' 與 ' + prev.id + ' 的敘述相同，但一個是 train 一個是 holdout');
+            if (!prev) byKey.set(k, it);
+        }
+    }
+    function validateGen(g, where, E_) {
+        if (!Array.isArray(g) || !g.length) { E_(where + '.gen 要是非空陣列（每個元素是一行的欄位陣列，或 {rows:{…}}）'); return; }
+        const seen = new Set();
+        const field = (f, w) => {
+            if (!isObj(f) || !isStr(f.name) || !NAME_RE.test(f.name)) { E_(w + ' 欄位要有 name'); return; }
+            const kinds = ['int', 'ints', 'str'].filter((k) => f[k] !== undefined); if (kinds.length !== 1) { E_(w + ' ' + f.name + ' 要恰好一種：int／ints／str'); return; }
+            if (kinds[0] === 'int') { const r = f.int; if (!Array.isArray(r) || r.length !== 2 || !r.every(Number.isInteger) || r[0] > r[1]) E_(w + ' ' + f.name + '.int 要是 [最小, 最大]'); if (f.big && (!Array.isArray(f.big) || f.big.length !== 2 || !f.big.every(Number.isInteger) || f.big[0] > f.big[1])) E_(w + ' ' + f.name + '.big 要是 [最小, 最大]'); }
+            if (kinds[0] === 'ints') { const o = f.ints; if (!isObj(o) || !Array.isArray(o.range) || o.range.length !== 2 || !o.range.every(Number.isInteger)) E_(w + ' ' + f.name + '.ints 要有 range:[最小,最大]'); else if (!(Number.isInteger(o.len) || (Array.isArray(o.len) && o.len.length === 2 && o.len.every(Number.isInteger)) || (isStr(o.len) && seen.has(o.len)))) E_(w + ' ' + f.name + '.ints.len 要是整數、[最小,最大]、或前面已出現的變數名'); }
+            if (kinds[0] === 'str') { const o = f.str; if (!isObj(o) || !isStr(o.alphabet) || !o.alphabet.length || o.alphabet.length > 64) E_(w + ' ' + f.name + '.str 要有 alphabet（1～64 字元）'); else if (!(Number.isInteger(o.len) || (Array.isArray(o.len) && o.len.length === 2 && o.len.every(Number.isInteger)) || (isStr(o.len) && seen.has(o.len)))) E_(w + ' ' + f.name + '.str.len 要是整數、[最小,最大]、或前面已出現的變數名'); }
+            if (seen.has(f.name)) E_(w + ' 欄位名稱重複：' + f.name); seen.add(f.name);
+        };
+        g.forEach((line, i) => {
+            const w = where + '.gen[' + i + ']';
+            if (Array.isArray(line)) line.forEach((f) => field(f, w));
+            else if (isObj(line) && isObj(line.rows)) { const r = line.rows; if (!(Number.isInteger(r.count) || (isStr(r.count) && seen.has(r.count)))) E_(w + '.rows.count 要是整數或前面已出現的變數名'); if (!Array.isArray(r.fields) || !r.fields.length) E_(w + '.rows.fields 要是非空陣列'); else { const save = new Set(seen); r.fields.forEach((f) => field(f, w + '.rows')); seen.clear(); save.forEach((x) => seen.add(x)); } }
+            else E_(w + ' 要是欄位陣列或 {rows:{count,fields}}');
+        });
+    }
+    function validateBlockly(spec, E_, W_) {
+        const algos = spec.algos || [], sks = spec.skeletons || [], fams = spec.families || [], tasks = spec.tasks || [];
+        if (!Array.isArray(algos) || !Array.isArray(sks) || !Array.isArray(fams) || !Array.isArray(tasks)) { E_('algos／skeletons／families／tasks 都要是陣列'); return; }
+        if (sks.length > LIMITS.skeletons) E_('骨架太多（上限 ' + LIMITS.skeletons + '）'); if (fams.length > LIMITS.families) E_('家族太多'); if (tasks.length > LIMITS.tasks) E_('題目太多');
+        if (!algos.length) E_('至少要有一個讀題規則（algos）'); if (!sks.length) W_('沒有骨架：這個領域只有題目與讀題規則，離線 AI 不會因它多解出任何題');
+        const keys = new Set(); const hasTerm = (a) => (a.all || []).length > 0 || (a.any || []).length >= 2;
+        algos.forEach((a, i) => {
+            const w = 'algos[' + i + ']'; if (!isObj(a)) { E_(w + ' 不是物件'); return; }
+            if (!isStr(a.key) || !KEY_RE.test(a.key)) E_(w + '.key 不合法：' + JSON.stringify(a.key)); else if (keys.has(a.key)) E_(w + '.key 重複：' + a.key); else keys.add(a.key);
+            for (const f of ['any', 'all', 'veto']) if (a[f] !== undefined && (!Array.isArray(a[f]) || a[f].some((x) => !isStr(x) || x.length < 2 || x.length > 40))) E_(w + '.' + f + ' 要是字串陣列（每個 2～40 字）');
+            if (!(a.any || []).length && !(a.all || []).length) E_(w + ' 要有 any 或 all 的關鍵詞'); else if (!hasTerm(a)) E_(w + '：只有一個 any 詞、沒有 all，範圍太寬，會搶走內建領域的題目；請加 all 詞或再給一個 any 詞');
+        });
+        const sid = new Set();
+        sks.forEach((s, i) => {
+            const w = 'skeletons[' + i + ']'; if (!isObj(s)) { E_(w + ' 不是物件'); return; }
+            if (!isStr(s.id) || !/^[a-z][a-z0-9.-]{1,59}$/.test(s.id)) E_(w + '.id 不合法'); else if (sid.has(s.id)) E_(w + '.id 重複：' + s.id); else sid.add(s.id);
+            if (!keys.has(s.algo)) E_(w + '.algo「' + s.algo + '」不在 algos 裡');
+            if (!isStr(s.label) || !s.label) E_(w + '.label 不可空白');
+            if (!Array.isArray(s.lines) || !s.lines.length || s.lines.length > LIMITS.lines || s.lines.some((l) => !isStr(l) || l.length > LIMITS.lineLen)) E_(w + '.lines 要是 1～' + LIMITS.lines + ' 行的字串陣列（每行 ≤' + LIMITS.lineLen + ' 字）');
+            else { const probs = scanPython(s.lines.join('\n')); probs.forEach((p) => E_(w + '：' + p)); }
+            const slotIds = new Set(); let prod = 1;
+            if (!Array.isArray(s.slots)) E_(w + '.slots 要是陣列'); else s.slots.forEach((sl, j) => {
+                const ww = w + '.slots[' + j + ']'; if (!isObj(sl) || !isStr(sl.id) || !NAME_RE.test(sl.id)) { E_(ww + '.id 不合法'); return; } if (slotIds.has(sl.id)) E_(ww + ' 槽位 id 重複'); slotIds.add(sl.id);
+                if (!Array.isArray(sl.options) || sl.options.length < 1 || sl.options.length > 12) { E_(ww + '.options 要有 1～12 個'); return; } prod *= sl.options.length;
+                const oid = new Set(); sl.options.forEach((o) => { if (!isObj(o) || !isStr(o.id) || !o.id || !isStr(o.v) || o.v.length > LIMITS.optionLen) E_(ww + ' 選項要有 id 與字串 v（≤' + LIMITS.optionLen + ' 字）'); else { if (oid.has(o.id)) E_(ww + ' 選項 id 重複：' + o.id); oid.add(o.id); const pr = scanPython(o.v); pr.forEach((p) => E_(ww + ' 選項 ' + o.id + '：' + p)); } });
+            });
+            if (prod > LIMITS.combos) E_(w + ' 的槽位組合有 ' + prod + ' 個，超過上限 ' + LIMITS.combos + '（沙盒會逐個試，太多會變慢）');
+            const factNames = new Set(); (s.facts || []).forEach((f, j) => { if (!isObj(f) || !isStr(f.name) || !NAME_RE.test(f.name) || !isStr(f.re)) { E_(w + '.facts[' + j + '] 要有 name 與 re'); return; } try { new RegExp(f.re); } catch (_) { E_(w + '.facts[' + j + '].re 不是合法的正規式'); } if (f.re.length > 200 || /(\.\*|\+|\*)\)?[+*]/.test(f.re)) E_(w + '.facts[' + j + '].re 太複雜或有巢狀重複（可能卡住）'); factNames.add(f.name); });
+            if (Array.isArray(s.lines)) for (const l of s.lines) for (const m of l.matchAll(/\{\{\s*([^}]*?)\s*\}\}/g)) {
+                const r = m[1]; let okRef = false;
+                if (/^c\.[A-Za-z_]\w*$/.test(r)) okRef = slotIds.has(r.slice(2)); else if (/^N\.(sc|ls|s|L)\.\d+$/.test(r) || r === 'N.g') okRef = true; else if (/^fact\.[A-Za-z_]\w*$/.test(r)) okRef = factNames.has(r.slice(5));
+                if (!okRef) E_(w + ' 引用了不存在的 {{' + r + '}}');
+            }
+        });
+        const fid = new Set(); const items = [];
+        fams.forEach((f, i) => {
+            const w = 'families[' + i + ']'; if (!isObj(f)) { E_(w + ' 不是物件'); return; }
+            if (!isStr(f.id) || !/^[a-z][a-z0-9-]{1,59}$/.test(f.id)) E_(w + '.id 不合法'); else if (fid.has(f.id)) E_(w + '.id 重複'); else fid.add(f.id);
+            if (!keys.has(f.algo)) E_(w + '.algo「' + f.algo + '」不在 algos 裡');
+            if (f.split !== 'train' && f.split !== 'holdout') E_(w + '.split 要是 train 或 holdout');
+            if (!Array.isArray(f.statements) || !f.statements.length || f.statements.some((x) => !isStr(x) || x.length < 8 || x.length > 2000)) E_(w + '.statements 要是非空的字串陣列');
+            if (!isStr(f.ref) || !f.ref.trim()) E_(w + '.ref（Python 參考解）不可空白'); else scanPython(f.ref).forEach((p) => E_(w + '.ref：' + p));
+            if (f.want !== undefined && !isStr(f.want)) E_(w + '.want 要是字串');
+            if (f.params !== undefined) { if (!isObj(f.params)) E_(w + '.params 要是物件'); else for (const k of Object.keys(f.params)) { if (!/^[A-Za-z_]\w{0,15}$/.test(k) || !Array.isArray(f.params[k]) || !f.params[k].length || f.params[k].length > LIMITS.paramValues || f.params[k].some((x) => !isStr(x) && typeof x !== 'number')) E_(w + '.params.' + k + ' 要是非空的字串／數字陣列'); } }
+            validateGen(f.gen, w, E_);
+            try { const ex = expandStatements(f); if (ex.length > LIMITS.statementsPerFamily) E_(w + ' 展開出 ' + ex.length + ' 個敘述，超過上限 ' + LIMITS.statementsPerFamily); ex.forEach((x) => items.push({ id: f.id + ':' + x.id, split: f.split, key: norm(x.statement) })); } catch (e) { E_(w + ' 展開失敗：' + e.message); }
+        });
+        tasks.forEach((t, i) => { const w = 'tasks[' + i + ']'; if (!isObj(t) || !isStr(t.id) || !isStr(t.statement)) { E_(w + ' 要有 id 與 statement'); return; } if (!Array.isArray(t.tests) || t.tests.length < 3 || t.tests.some((x) => !isObj(x) || !isStr(x.in) || !isStr(x.out))) E_(w + '.tests 要至少 3 筆 {in,out}（2 筆顯示、其餘隱藏）'); if (t.solution !== undefined) scanPython(t.solution).forEach((p) => E_(w + '.solution：' + p)); items.push({ id: 'task:' + t.id, split: t.split, key: norm(t.statement) }); });
+        checkSplitMix(items, E_, '題目');
+        if (spec.judge !== undefined && (!isObj(spec.judge) || !['tokens', 'float', 'exact', 'lines'].includes(spec.judge.checker))) E_('judge.checker 要是 tokens／float／exact／lines');
+        if (!fams.some((f) => f.split === 'holdout') && !tasks.some((t) => t.split === 'holdout')) W_('沒有任何 holdout 題：看不出泛化能力（建議至少留 1 個家族或 1 題當 holdout）');
+        if (!fams.some((f) => f.split === 'train') && !tasks.some((t) => t.split === 'train')) W_('沒有任何 train 題');
+    }
+    function validateMatrix(spec, E_, W_) {
+        const ops = spec.ops || [], tasks = spec.tasks || [];
+        if (!Array.isArray(ops) || !Array.isArray(tasks)) { E_('ops／tasks 要是陣列'); return; } if (ops.length > LIMITS.ops) E_('操作太多'); if (tasks.length > LIMITS.tasks) E_('題目太多');
+        if (!ops.length) E_('至少要定義一個操作（ops）');
+        const oid = new Set();
+        ops.forEach((op, i) => {
+            const w = 'ops[' + i + ']'; if (!isObj(op)) { E_(w + ' 不是物件'); return; }
+            if (!isStr(op.id) || !/^[a-z][a-z0-9-]{1,39}$/.test(op.id)) E_(w + '.id 不合法'); else if (oid.has(op.id)) E_(w + '.id 重複'); else oid.add(op.id);
+            if (!isStr(op.label) || !op.label) E_(w + '.label 不可空白');
+            if (op.keywords !== undefined && (!Array.isArray(op.keywords) || op.keywords.some((x) => !isStr(x) || !x))) E_(w + '.keywords 要是字串陣列');
+            if (op.layout !== undefined && !['lines', 'line'].includes(op.layout)) E_(w + '.layout 要是 lines 或 line');
+            if (op.order !== undefined && !(Number.isInteger(op.order) && op.order >= 1 && op.order <= 89)) E_(w + '.order 要是 1～89 的整數（小的先試；內建遞推 10、自動機 20、範本 40、公式枚舉 90；預設 35）');
+            const vars = new Set(); if (!Array.isArray(op.input) || !op.input.length) E_(w + '.input 要是非空陣列'); else op.input.forEach((v) => { if (!isObj(v) || !isStr(v.name) || !NAME_RE.test(v.name) || !['int', 'str', 'ints'].includes(v.type)) E_(w + '.input 的每個變數要有 name 與 type（int／str／ints）'); else { if (vars.has(v.name)) E_(w + '.input 變數重複：' + v.name); vars.add(v.name); } });
+            if ((op.layout || 'lines') === 'line' && Array.isArray(op.input) && op.input.some((v) => v.type !== 'int')) E_(w + ' 的 layout:"line" 只能全是 int 變數');
+            if (!isObj(op.output) || !['int', 'str', 'ints', 'bool'].includes(op.output.type)) E_(w + '.output.type 要是 int／str／ints／bool');
+            const params = op.params || {}; let hyp = 1;
+            if (!isObj(params)) E_(w + '.params 要是物件'); else for (const k of Object.keys(params)) { if (!NAME_RE.test(k) || vars.has(k)) E_(w + '.params.' + k + ' 名稱不合法或與輸入變數重複'); const vs = params[k]; if (!Array.isArray(vs) || !vs.length || vs.length > LIMITS.paramValues || vs.some((x) => !Number.isInteger(x) && !isStr(x))) E_(w + '.params.' + k + ' 要是非空的整數／字串陣列（≤' + LIMITS.paramValues + ' 個）'); else hyp *= vs.length; }
+            if (hyp > LIMITS.hypotheses) E_(w + ' 的假設空間有 ' + hyp + ' 個，超過上限 ' + LIMITS.hypotheses);
+            if (!isStr(op.expr)) E_(w + '.expr 要是字串'); else {
+                const pr = Expr.parse(op.expr); if (!pr.ok) E_(w + '.expr：' + pr.error); else {
+                    const bad = pr.vars.filter((v) => !vars.has(v) && !Object.prototype.hasOwnProperty.call(params, v)); if (bad.length) E_(w + '.expr 用到沒宣告的變數：' + bad.join('、'));
+                    if (pr.ast.t === 'call' && pr.ast.f === 'set') E_(w + '.expr 最外層不可是 set（Python 的集合沒有固定順序）；請用 sorted(set(…))');
+                }
+            }
+        });
+        const items = [];
+        tasks.forEach((t, i) => {
+            const w = 'tasks[' + i + ']'; if (!isObj(t) || !isStr(t.id) || !isStr(t.statement)) { E_(w + ' 要有 id 與 statement'); return; }
+            if (t.op !== undefined && !oid.has(t.op)) E_(w + '.op「' + t.op + '」不在 ops 裡');
+            const okEx = (a) => Array.isArray(a) && a.every((x) => isObj(x) && isStr(x.in) && isStr(x.out));
+            if (!okEx(t.examples) || t.examples.length < 2) E_(w + '.examples 要至少 2 筆 {in,out}（用來擬合）'); if (t.hidden !== undefined && !okEx(t.hidden)) E_(w + '.hidden 要是 {in,out} 陣列');
+            if (!(t.hidden || []).length) W_(w + '（' + t.id + '）沒有隱藏範例：擬合結果只能標「沒有被範例以外的資料驗證」');
+            items.push({ id: 'task:' + t.id, split: t.split, key: norm(t.statement) });
+            if (t.split === 'holdout') { /* 同一組輸入不可同時出現在 train 與 holdout */ }
+        });
+        checkSplitMix(items, E_, '題目');
+        const trainIn = new Set(), hoIn = new Set(); tasks.forEach((t) => { if (!isObj(t) || !Array.isArray(t.examples)) return; for (const e of [].concat(t.examples, t.hidden || [])) if (isObj(e) && isStr(e.in)) (t.split === 'holdout' ? hoIn : trainIn).add(t.op + '\u0001' + e.in.trim()); });
+        for (const k of hoIn) if (trainIn.has(k)) { E_('留出題混進訓練：同一個操作的某筆輸入同時出現在 train 與 holdout 範例裡（' + k.split('\u0001')[1].slice(0, 30).replace(/\n/g, '/') + '）'); break; }
+        if (!tasks.some((t) => t && t.split === 'holdout')) W_('沒有任何 holdout 題：看不出泛化能力');
+        if (!tasks.length) W_('沒有題目：操作定義好了但沒有東西可以評量');
+    }
+
+    // ---------- 正規化 ----------
+    function normalize(spec) {
+        const s = JSON.parse(JSON.stringify(spec)); s.format = FORMAT; s.version = s.version || VERSION; s.meta = s.meta || {};
+        if (s.kind === 'blockly') { s.algos = s.algos || []; s.skeletons = s.skeletons || []; s.families = s.families || []; s.tasks = s.tasks || []; s.judge = s.judge || { checker: 'tokens' }; s.skeletons.forEach((k) => { k.paradigm = k.paradigm || 'user-' + s.id; k.slots = k.slots || []; k.facts = k.facts || []; }); s.tasks.forEach((t) => { t.split = t.split || 'train'; }); s.families.forEach((f) => { f.split = f.split || 'train'; }); }
+        if (s.kind === 'matrix') { s.ops = s.ops || []; s.tasks = s.tasks || []; s.ops.forEach((o) => { o.level = o.level || 'L4'; o.layout = o.layout || 'lines'; o.params = o.params || {}; }); s.tasks.forEach((t) => { t.split = t.split || 'train'; }); }
+        return JSON.parse(stable(s));
+    }
+
+    // ---------- 可重現亂數 ----------
+    function rng(seedStr) { let h = 2166136261; const s = String(seedStr); for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } let a = h >>> 0 || 1; return () => { a = (Math.imul(a, 1664525) + 1013904223) >>> 0; return a / 4294967296; }; }
+    const ri = (r, lo, hi) => lo + Math.floor(r() * (hi - lo + 1));
+
+    // ---------- 題目展開 ----------
+    function expandStatements(fam) {
+        const params = fam.params || {}; const names = Object.keys(params).sort(); let combos = [{}];
+        for (const n of names) { const nx = []; for (const c of combos) for (const v of params[n]) nx.push(Object.assign({}, c, { [n]: v })); combos = nx; if (combos.length > 5000) throw new Error('參數組合太多'); }
+        const out = []; let k = 0;
+        for (let si = 0; si < fam.statements.length; si++) for (const c of combos) {
+            let st = fam.statements[si]; const used = {};
+            st = st.replace(/\{([A-Za-z_]\w*)\}/g, (m, p) => { if (!Object.prototype.hasOwnProperty.call(c, p)) throw new Error('敘述樣板用了沒有的參數 {' + p + '}'); used[p] = c[p]; return String(c[p]); });
+            out.push({ id: 's' + si + (names.length ? '-' + (k++) : ''), statement: st, params: used });
+        }
+        const seen = new Set(); return out.filter((x) => { const kk = norm(x.statement); if (seen.has(kk)) return false; seen.add(kk); return true; });
+    }
+    function makeInputs(fam, o) {
+        o = o || {}; const count = o.count || 6; const out = [];
+        for (let t = 0; t < count; t++) {
+            const r = rng((o.seed | 0) + '|' + fam.id + '|' + (o.big ? 'big' : 'small') + '|' + t); const env = {}; const lines = [];
+            const val = (f) => {
+                if (f.int) { const rg = (o.big && f.big) || f.int; const v = ri(r, rg[0], rg[1]); env[f.name] = v; return String(v); }
+                const len = (L) => (typeof L === 'number' ? L : Array.isArray(L) ? ri(r, L[0], L[1]) : Number(env[L]));
+                if (f.ints) { const n = Math.min(len(f.ints.len), 100000); const a = []; for (let i = 0; i < n; i++) a.push(ri(r, f.ints.range[0], f.ints.range[1])); env[f.name] = n; return a.join(' '); }
+                const n = Math.min(len(f.str.len), 100000); let s = ''; for (let i = 0; i < n; i++) s += f.str.alphabet[Math.floor(r() * f.str.alphabet.length)]; return s;
+            };
+            for (const line of fam.gen) {
+                if (Array.isArray(line)) lines.push(line.map(val).join(' '));
+                else { const c = typeof line.rows.count === 'number' ? line.rows.count : Number(env[line.rows.count]); for (let i = 0; i < Math.min(c, 5000); i++) lines.push(line.rows.fields.map(val).join(' ')); }
+            }
+            out.push(lines.join('\n') + '\n');
+        }
+        return out;
+    }
+    // 展開成題目：參考解由 runRef 在判題沙盒算答案（runRef(source, input) → {ok,out}|{ok:false,error}）
+    async function buildTasks(spec, o) {
+        o = o || {}; const tasks = [], problems = [];
+        for (const t of spec.tasks || []) if (spec.kind === 'blockly') tasks.push({ id: t.id, family: null, split: t.split, statement: t.statement, solution: t.solution, tests: t.tests });
+        if (spec.kind !== 'blockly') return { tasks: (spec.tasks || []).map((t) => ({ id: t.id, op: t.op, split: t.split, statement: t.statement, examples: t.examples, hidden: t.hidden || [] })), problems };
+        for (const f of spec.families || []) {
+            if (!o.runRef) { problems.push({ family: f.id, error: '沒有判題沙盒（runRef），無法用參考解算答案；解除條件：桌面版並開啟「允許 AI 執行程式」' }); continue; }
+            const vis = makeInputs(f, { seed: spec.seed, count: o.tests || 6 }), hid = makeInputs(f, { seed: spec.seed, count: o.hidden || 2, big: true });
+            const answer = async (inputs) => { const r = []; for (const inp of inputs) { const a = await o.runRef(f.ref, inp); if (!a || !a.ok || !String(a.out || '').trim()) return null; r.push({ in: inp, out: a.out }); } return r; };
+            const tests = await answer(vis), hidden = await answer(hid);
+            if (!tests || !hidden) { problems.push({ family: f.id, error: '參考解在產生的輸入上沒有輸出（錯誤或空輸出）' }); continue; }
+            for (const x of expandStatements(f)) tasks.push({ id: f.id + ':' + x.id, family: f.id, algo: f.algo, want: f.want || null, split: f.split, statement: x.statement, tests, hidden, params: x.params });
+        }
+        return { tasks, problems };
+    }
+
+    // ---------- 編譯 blockly → 領域包 ----------
+    function termRe(list) { return list.map((x) => '(?=[\\s\\S]*' + x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')').join(''); }
+    function algoRe(a) { const any = (a.any || []).map((x) => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')); return new RegExp('^' + termRe(a.all || []) + (any.length ? '(?=[\\s\\S]*(?:' + any.join('|') + '))' : ''), 'i'); }
+    function vetoRe(a) { const v = (a.veto || []).map((x) => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')); return v.length ? new RegExp(v.join('|'), 'i') : undefined; }
+    function renderLine(line, c, N, I, facts) {
+        return line.replace(/\{\{\s*([^}]*?)\s*\}\}/g, (m, r) => {
+            if (r.startsWith('c.')) { if (!(r.slice(2) in c)) throw new Error('槽位 ' + r.slice(2) + ' 沒有值'); return String(c[r.slice(2)]); }
+            if (r.startsWith('fact.')) { const v = facts[r.slice(5)]; if (v === undefined) throw new Error('敘述裡沒讀到：' + r.slice(5)); return String(v); }
+            if (r === 'N.g') { if (!N.g) throw new Error('這題沒有網格輸入'); return N.g; }
+            const mm = /^N\.(sc|ls|s|L)\.(\d+)$/.exec(r); const arr = N[mm[1]]; const v = arr && arr[Number(mm[2])]; if (v === undefined) throw new Error('這題沒有第 ' + mm[2] + ' 個「' + mm[1] + '」輸入'); return v;
+        });
+    }
+    function readFacts(sk, I) {
+        const out = {}; const st = String((I && I.statement) || '');
+        for (const f of sk.facts || []) { const m = new RegExp(f.re).exec(st); if (!m) continue; const raw = m[f.group == null ? 1 : f.group]; if (raw == null) continue; out[f.name] = f.as === 'int' ? String(parseInt(raw, 10)) : String(raw); if (f.as === 'int' && !/^-?\d+$/.test(out[f.name])) delete out[f.name]; }
+        return out;
+    }
+    function compileBlockly(spec, PAR) {
+        const { S, code } = PAR.dsl; const par = spec.skeletons || [];
+        const skeletons = par.map((s) => {
+            const slots = (s.slots || []).map((sl) => S(sl.id, sl.label || sl.id, sl.options.map((o) => [o.id, o.v, o.label])));
+            const prod = slots.reduce((n, sl) => n * sl.options.length, 1);
+            const sk = { id: s.id, paradigm: s.paradigm || 'user-' + spec.id, algo: s.algo, label: s.label, slots, limit: Math.max(prod, 1), userDomain: spec.id,
+                py: (c, N, I) => { const facts = readFacts(s, I); return code(s.lines.map((l) => renderLine(l, c, N, I, facts))); } };
+            if (s.needs) { const nd = s.needs; sk.shape = (I) => { const cnt = { scalars: 0, lists: 0, strs: 0 }; for (const v of (I && I.vars) || []) { if (v.type === 'list') cnt.lists++; else if (v.type === 'str') cnt.strs++; else cnt.scalars++; } return (nd.scalars == null || cnt.scalars >= nd.scalars) && (nd.lists == null || cnt.lists >= nd.lists) && (nd.strs == null || cnt.strs >= nd.strs); }; }
+            return sk;
+        });
+        const algos = (spec.algos || []).map((a) => Object.assign({ key: a.key, re: algoRe(a), pri: true }, vetoRe(a) ? { veto: vetoRe(a) } : {}));
+        const paradigms = {}; for (const s of par) (paradigms[s.algo] = paradigms[s.algo] || []).includes(s.paradigm || 'user-' + spec.id) || paradigms[s.algo].push(s.paradigm || 'user-' + spec.id);
+        const seeds = []; // 家族 → 種子題（gen 是函式；只在記憶體，與內建領域包的 seeds 同形）
+        for (const f of spec.families || []) { const ex = expandStatements(f); ex.slice(0, 3).forEach((x, i) => seeds.push({ id: f.id + ':' + x.id, st: x.statement, ref: f.ref, want: f.want || undefined, split: f.split, gen: (big, h) => makeInputs(f, { seed: spec.seed + i, count: 1, big: !!big })[0] })); }
+        return { id: 'user-' + spec.id, label: spec.label, requires: [], judge: spec.judge || { checker: 'tokens' }, algos, paradigms, skeletons, seeds, userDomain: true };
+    }
+
+    // ---------- 矩陣層操作 ----------
+    function parseInput(op, text) {
+        const lines = String(text).replace(/\s+$/, '').split('\n'); const env = {}; const layout = op.layout || 'lines';
+        if (layout === 'line') { const t = (lines[0] || '').trim().split(/\s+/); if (lines.length !== 1 || t.length !== op.input.length || t.some((x) => !/^-?\d+$/.test(x))) return null; op.input.forEach((v, i) => { env[v.name] = BigInt(t[i]); }); return env; }
+        if (lines.length !== op.input.length) return null;
+        for (let i = 0; i < op.input.length; i++) {
+            const v = op.input[i], l = lines[i];
+            if (v.type === 'int') { if (!/^\s*-?\d+\s*$/.test(l)) return null; env[v.name] = BigInt(l.trim()); }
+            else if (v.type === 'str') env[v.name] = l.replace(/\r$/, '').trim();
+            else { const t = l.trim() === '' ? [] : l.trim().split(/\s+/); if (t.some((x) => !/^-?\d+$/.test(x))) return null; env[v.name] = t.map((x) => BigInt(x)); }
+        }
+        return env;
+    }
+    function assignments(op) { // 參數笛卡兒積（鍵排序，穩定）
+        const names = Object.keys(op.params || {}).sort(); let acc = [{}];
+        for (const n of names) { const nx = []; for (const a of acc) for (const v of op.params[n]) { nx.push(Object.assign({}, a, { [n]: v })); if (nx.length > LIMITS.hypotheses) return nx; } acc = nx; }
+        return acc;
+    }
+    const pyConst = (v) => (typeof v === 'number' ? String(v) : JSON.stringify(String(v)));
+    function opSource(op, asg) {
+        const L = ['def main():'];
+        if ((op.layout || 'lines') === 'line') L.push('    ' + op.input.map((v) => v.name).join(', ') + ' = map(int, input().split())' + (op.input.length === 1 ? '' : ''));
+        else for (const v of op.input) L.push('    ' + v.name + ' = ' + (v.type === 'int' ? 'int(input())' : v.type === 'str' ? 'input().strip()' : 'list(map(int, input().split()))'));
+        if ((op.layout || 'lines') === 'line' && op.input.length === 1) L[1] = '    ' + op.input[0].name + ' = int(input().split()[0])';
+        for (const k of Object.keys(asg).sort()) L.push('    ' + k + ' = ' + pyConst(asg[k]));
+        L.push('    r = ' + op.expr);
+        const o = op.output; L.push(o.type === 'bool' ? '    print(' + JSON.stringify(o.yes != null ? String(o.yes) : 'yes') + ' if r else ' + JSON.stringify(o.no != null ? String(o.no) : 'no') + ')' : o.type === 'ints' ? "    print(' '.join(map(str, list(r))))" : o.type === 'int' ? '    print(int(r))' : '    print(r)');
+        return L.join('\n') + '\n';
+    }
+    function evalOp(op, asg, env, E_) {
+        const full = Object.assign({}, env); for (const k of Object.keys(asg)) full[k] = typeof asg[k] === 'number' ? BigInt(asg[k]) : asg[k];
+        const r = E_.evaluate(op.expr, full); if (!r.ok) return r;
+        try { return { ok: true, out: E_.format(r.value, op.output.type, op.output) }; } catch (e) { return { ok: false, error: e.message }; }
+    }
+    function fitOp(op, examples, E_, o) {
+        o = o || {}; const parsed = [];
+        for (const ex of examples) { const env = parseInput(op, ex.in); if (!env) return { ok: false, reason: '範例輸入的形狀不符操作 ' + op.id + ' 的 input 宣告', tried: 0 }; parsed.push({ env, out: String(ex.out).trim() }); }
+        const all = assignments(op); const hits = []; let tried = 0, firstErr = '';
+        for (const asg of all) {
+            tried++; let good = true;
+            for (const p of parsed) { const r = evalOp(op, asg, p.env, E_); if (!r.ok) { if (!firstErr) firstErr = r.error; good = false; break; } if (r.out.trim() !== p.out) { good = false; break; } }
+            if (good) { hits.push(asg); if (hits.length >= (o.maxAlternatives || 40)) break; }
+        }
+        if (!hits.length) return { ok: false, reason: '操作 ' + op.id + '：' + tried + ' 個參數組合都對不上範例' + (firstErr ? '（例：' + firstErr + '）' : ''), tried };
+        return { ok: true, assignment: hits[0], source: opSource(op, hits[0]), alternatives: hits.slice(1).map((a) => ({ ok: true, assignment: a, source: opSource(op, a), ambiguous: true })), ambiguous: hits.length > 1, tried };
+    }
+    function replay(op, asg, input, E_) { const env = parseInput(op, input); if (!env) return { ok: false, error: '輸入形狀不符' }; return evalOp(op, asg, env, E_); }
+    function compileMatrix(spec, E_) {
+        E_ = E_ || Expr;
+        return (spec.ops || []).map((op) => {
+            const name = 'user:' + spec.id + '/' + op.id;
+            const fn = async (a) => {
+                const st = String(a.statement || '').toLowerCase();
+                if ((op.keywords || []).length && !op.keywords.some((k) => st.includes(String(k).toLowerCase()))) return { ok: false, reason: '敘述沒有出現操作 ' + op.id + ' 的關鍵詞（' + op.keywords.join('／') + '）', tried: 0 };
+                const r = fitOp(op, a.examples || [], E_);
+                if (!r.ok) return r;
+                const mk = (x) => ({ ok: true, source: x.source, kind: 'user-op', level: op.level || 'L4', size: op.expr.length, tried: r.tried, ambiguous: !!x.ambiguous, desc: '使用者操作「' + op.label + '」：' + op.expr + (Object.keys(x.assignment).length ? '，參數 ' + JSON.stringify(x.assignment) : ''), matrixForm: { kind: 'user-op', name: name }, userOp: { domain: spec.id, op: op.id, assignment: x.assignment } });
+                const first = mk({ source: r.source, assignment: r.assignment, ambiguous: r.ambiguous }); first.alternatives = r.alternatives.map(mk); return first;
+            };
+            return { name, fn, opts: { order: Number.isInteger(op.order) ? op.order : 35, level: op.level || 'L4', note: '使用者領域 ' + spec.id + '：' + op.label } };
+        });
+    }
+
+    // ---------- 資產檔案 ----------
+    const enc = (o) => new TextEncoder().encode(typeof o === 'string' ? o : JSON.stringify(o, null, 1));
+    const dec = (u) => new TextDecoder('utf-8').decode(u);
+    function toFiles(spec, tasks) {
+        const s = normalize(spec); const files = { 'data/domain-spec.json': enc(s) };
+        const rows = (tasks || []).map((t) => JSON.stringify(spec.kind === 'matrix' ? { id: t.id, op: t.op, split: t.split, statement: t.statement, examples: t.examples, hidden: t.hidden } : { id: t.id, family: t.family || undefined, split: t.split, statement: t.statement, solution: t.solution, tests: (t.tests || []).concat(t.hidden || []), want: t.want || undefined }));
+        files['data/tasks.jsonl'] = enc(rows.join('\n') + (rows.length ? '\n' : ''));
+        files['README.txt'] = enc('領域規格 ' + s.id + '（' + s.kind + '，v' + s.version + '）\n' + s.label + '\n授權：' + (s.meta.license || '(未填)') + '\n來源：' + (s.meta.source || '(未填)') + '\n規格雜湊：' + hash(s) + '\n');
+        return files;
+    }
+    function fromFiles(files) {
+        const f = files && files['data/domain-spec.json']; if (!f) return { ok: false, error: '資產裡沒有 data/domain-spec.json（不是領域規格資產）' };
+        let spec; try { spec = JSON.parse(dec(f)); } catch (e) { return { ok: false, error: 'domain-spec.json 不是合法的 JSON：' + e.message }; }
+        return { ok: true, spec };
+    }
+    function summary(spec) {
+        const s = spec; const c = { holdout: 0, train: 0 }; const cnt = (x) => { c[x.split === 'holdout' ? 'holdout' : 'train']++; };
+        if (s.kind === 'blockly') { (s.tasks || []).forEach(cnt); (s.families || []).forEach((f) => { const n = (() => { try { return expandStatements(f).length; } catch (_) { return 0; } })(); c[f.split === 'holdout' ? 'holdout' : 'train'] += n; }); return { kind: 'blockly', algos: (s.algos || []).length, skeletons: (s.skeletons || []).length, families: (s.families || []).length, train: c.train, holdout: c.holdout }; }
+        (s.tasks || []).forEach(cnt); return { kind: 'matrix', ops: (s.ops || []).length, train: c.train, holdout: c.holdout };
+    }
+    return { FORMAT, VERSION, LIMITS, validate, normalize, hash, stable, scanPython, expandStatements, makeInputs, buildTasks, compileBlockly, compileMatrix, fitOp, replay, parseInput, opSource, toFiles, fromFiles, summary, algoRe };
+});
+
+}).call(null, undefined, holder);
+(function (module, self) {
+/* 訓練工作室：領域規格的評量（UMD，依賴注入，不碰 DOM／網路／檔案）。設計 §16.4。
+ * domainSuites(spec, deps) → eval_core.runEval 吃的 suites：
+ *   domain/<id>/train        每個 train 題各算一題：離線 AI（blockly）或矩陣層（matrix）能不能解出、通過隱藏測資
+ *   domain/<id>/holdout      holdout 題（heldout:true，只給組別通過率，不給逐題內容；老師看不到、不能教）
+ *   domain/<id>/不搶內建題    讀題規則是否搶走內建題（需要 deps.corpus；沒給就寫缺什麼）
+ * deps（選填，缺了就在該組寫具體原因與解除條件）：
+ *   runtime            domain_runtime_core 的實例（評量前把規格載入 FaDomains／FaMatrixSynth；載入失敗就整組回原因）
+ *   solve({statement, tests, hidden, checker, eps}) → async {ok, verdict, paradigm, tried, reason}   blockly：離線 AI 解一題（不給課、0 次模型）
+ *   runRef(src, input) → async {ok, out}                                                              blockly：判題沙盒執行參考解（算答案）
+ *   Synth              FaMatrixSynth（要有 synth／register）；Expr 受限運算式；Spec domain_spec_core
+ *   judge({lang, source, problem}) → async {verdict}   矩陣層內建合成器解出的程式用它驗證隱藏範例（沒有就標「未驗證」）
+ *   corpus             [{id, statement}] 內建題敘述（檢查讀題規則是否搶題） */
+(function (root, factory) {
+    const S = (typeof module === 'object' && module.exports) ? require('./domain_spec_core.js') : root.FaStudioDomainSpec;
+    const X = (typeof module === 'object' && module.exports) ? require('./dsl_expr_core.js') : root.FaStudioExpr;
+    if (typeof module === 'object' && module.exports) module.exports = factory(S, X);
+    else root.FaStudioDomainEval = factory(S, X);
+})(typeof self !== 'undefined' ? self : this, function (Spec, Expr) {
+    'use strict';
+    const NO_SOLVE = '需要離線 AI 的解題入口與判題器：桌面版並開啟「允許 AI 執行程式」（判題器會叫 Python 子行程；解題要 tree-sitter）；網頁版沒有 Python 子行程，改在桌面版評量';
+    const clip = (s, n) => { s = String(s == null ? '' : s); return s.length > n ? s.slice(0, n) + '…' : s; };
+
+    async function runMatrixTask(spec, t, d) {
+        const ex = t.examples || [], hid = t.hidden || [];
+        if (!hid.length) return { ok: false, verdict: 'NO_HIDDEN', reason: '沒有隱藏範例，無法驗證' };
+        const r = await d.Synth.synth({ statement: t.statement, examples: ex });
+        if (!r.ok) return { ok: false, verdict: 'NOT_FITTED', reason: clip(r.reason, 200) };
+        const by = (r.matrixForm && r.matrixForm.name) || r.kind || '?';
+        if (r.userOp) { // 使用者操作：同一份受限運算式重算隱藏範例，不需要判題器
+            const op = (spec.ops || []).find((o) => o.id === r.userOp.op); const cands = [r].concat(r.alternatives || []); let chosen = null;
+            for (const c of cands) { if (hid.every((h) => { const q = Spec.replay(op, c.userOp.assignment, h.in, d.Expr || Expr); return q.ok && q.out.trim() === String(h.out).trim(); })) { chosen = c; break; } }
+            if (!chosen) return { ok: false, verdict: 'WA', by, reason: '擬合出的參數對不上隱藏範例（' + cands.length + ' 個候選都不過）' };
+            return { ok: true, verdict: 'AC', by, verified: true, ambiguous: false, desc: chosen.desc, candidates: cands.length };
+        }
+        if (!d.judge) return { ok: false, verdict: 'UNCHECKED', by, verified: false, reason: '內建合成器解出（' + by + '），但沒有判題器驗證隱藏範例，不算通過；解除條件：桌面版並開啟「允許 AI 執行程式」，或把這個操作的 order 調小讓使用者操作先試' };
+        const j = await d.judge({ lang: 'python', source: r.source + '\nmain()\n', problem: { id: 'dom', tests: ex, hidden: hid, checker: 'tokens' } });
+        return { ok: j.verdict === 'AC', verdict: j.verdict, by, verified: j.verdict === 'AC' && !r.ambiguous, reason: j.verdict === 'AC' ? '' : clip(j.detail, 120) };
+    }
+    async function runBlocklyTask(spec, t, d) {
+        const r = await d.solve({ statement: t.statement, tests: t.tests || [], hidden: t.hidden || [], checker: (spec.judge && spec.judge.checker) || 'tokens', eps: spec.judge && spec.judge.eps });
+        if (!r) return { ok: false, verdict: 'NO_RESULT', reason: '解題入口沒有回傳' };
+        const ac = !!r.ok && (!r.verdict || r.verdict === 'AC' || r.verdict === 'UNCHECKED');
+        const wantOk = !t.want || (r.paradigm && (r.paradigm === t.want || String(r.paradigm).includes(t.want)));
+        return { ok: ac && wantOk, verdict: ac ? (wantOk ? 'AC' : 'WRONG_PARADIGM') : (r.verdict || 'FAIL'), by: r.paradigm || r.by || '', tried: r.tried, reason: ac ? (wantOk ? '' : '解出了但不是靠這個領域的範式（' + r.paradigm + '）') : clip(r.reason, 200) };
+    }
+    // 取得所有題目（blockly 家族需要參考解算答案；算過的快取在 deps.cache）
+    async function loadTasks(spec, d) {
+        if (d.cache && d.cache.tasks && d.cache.hash === Spec.hash(Spec.normalize(spec))) return d.cache;
+        let res; if (spec.kind === 'blockly') res = await Spec.buildTasks(spec, { runRef: d.runRef, tests: 4, hidden: 2 }); else res = await Spec.buildTasks(spec, {});
+        const c = { hash: Spec.hash(Spec.normalize(spec)), tasks: res.tasks, problems: res.problems }; if (d.cache) Object.assign(d.cache, c); return c;
+    }
+    function domainSuites(spec, d) {
+        d = d || {}; const out = []; const id = spec.id;
+        const why = (() => {
+            const v = Spec.validate(spec); if (!v.ok) return '規格沒通過驗證：' + v.errors.slice(0, 3).join('；');
+            if (spec.kind === 'blockly' && (!d.solve || !d.runRef)) return NO_SOLVE;
+            if (spec.kind === 'matrix' && !d.Synth) return '沒有載入 matrix_synth_core'; return '';
+        })();
+        for (const split of ['train', 'holdout']) {
+            out.push({ group: 'domain/' + id + '/' + split, heldout: split === 'holdout', note: split === 'holdout' ? '留出題：只給組別通過率，不給逐題內容；老師不能看、不能教' : '訓練題：離線自己解，不給課、不問模型', unavailable: why || undefined,
+                run: async () => {
+                    if (d.runtime) { const l = await d.runtime.ensure(spec); if (!l.ok) return { unavailable: '領域載入失敗：' + l.error }; }
+                    const c = await loadTasks(spec, d); const tasks = c.tasks.filter((t) => t.split === split);
+                    if (!tasks.length) return { unavailable: (c.problems.length ? '題目產生失敗：' + c.problems.map((p) => p.family + '：' + p.error).join('；') : '這個領域沒有 ' + split + ' 題') + '。解除條件：補題目或修正參考解' };
+                    const rows = []; let pass = 0;
+                    for (const t of tasks) { let r; try { r = spec.kind === 'matrix' ? await runMatrixTask(spec, t, d) : await runBlocklyTask(spec, t, d); } catch (e) { r = { ok: false, verdict: 'ERROR', reason: String((e && e.message) || e) }; } if (r.ok) pass++; rows.push({ id: t.id, ok: r.ok, verdict: r.verdict, by: r.by, verified: r.verified, reason: r.reason }); }
+                    return { n: tasks.length, pass, detail: split === 'holdout' ? undefined : rows };
+                } });
+        }
+        out.push({ group: 'domain/' + id + '/不搶內建題', note: '讀題規則不可以把內建題的敘述搶過來（領域詞彙優先於通用詞彙）', unavailable: !d.corpus || !d.corpus.length ? '需要內建題敘述語料（deps.corpus）：App 內由內建課與種子題敘述提供；解除條件：接上語料' : (spec.kind !== 'blockly' ? '只有 blockly 領域有讀題規則' : undefined),
+            run: async () => { const hit = collisions(spec, d.corpus); return { n: d.corpus.length, pass: d.corpus.length - hit.length, detail: hit.slice(0, 20) }; } });
+        return out;
+    }
+    // 哪些語料的敘述會被這個領域的讀題規則搶走（排除這個領域自己的題）
+    function collisions(spec, corpus) {
+        const own = new Set(); try { for (const f of spec.families || []) Spec.expandStatements(f).forEach((x) => own.add(x.statement)); for (const t of spec.tasks || []) own.add(t.statement); } catch (_) { /* */ }
+        const algos = (spec.algos || []).map((a) => ({ key: a.key, re: Spec.algoRe(a), veto: (a.veto || []).length ? new RegExp(a.veto.map((x) => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'), 'i') : null }));
+        const hit = []; for (const c of corpus || []) { if (own.has(c.statement)) continue; const a = algos.find((x) => x.re.test(c.statement) && !(x.veto && x.veto.test(c.statement))); if (a) hit.push({ id: c.id, algo: a.key, statement: clip(c.statement, 80) }); }
+        return hit;
+    }
+    // 一次跑完回總結（給精靈的「預覽／評量」與端到端測試用，不經過 eval_core）
+    async function runDomain(spec, d) {
+        const res = { id: spec.id, kind: spec.kind, groups: {} };
+        for (const s of domainSuites(spec, d)) { if (s.unavailable) { res.groups[s.group] = { unavailable: s.unavailable }; continue; } const r = await s.run(); res.groups[s.group] = r; }
+        return res;
+    }
+    return { domainSuites, collisions, runDomain, runMatrixTask, runBlocklyTask, loadTasks, NO_SOLVE };
+});
+
+}).call(null, undefined, holder);
+(function (module, self) {
+/* 訓練工作室：領域規格的示範（UMD，純資料）。用途：精靈的「載入範例」、端到端測試、內建化往返的示範領域。
+ * 兩個極小領域：blockly「奇偶計數」（讀題規則＋一個帶槽位的骨架＋train／holdout 家族）、matrix「線性同餘與回文」（兩個操作＋題目）。
+ * 全部自行撰寫，授權 MIT。 */
+(function (root, factory) {
+    if (typeof module === 'object' && module.exports) module.exports = factory();
+    else root.FaStudioDomainDemo = factory();
+})(typeof self !== 'undefined' ? self : this, function () {
+    'use strict';
+    const META = { license: 'MIT', source: 'FloatingAssistant 訓練工作室內建示範（自行撰寫）', author: 'floating-assistant', description: '示範領域，用來驗證「新增領域→評量→匯出→內建化」整條流程' };
+    const blockly = () => ({
+        format: 'fa-domain-spec', version: 1, kind: 'blockly', id: 'demo-parity', label: '示範：奇偶計數', seed: 20261111, meta: Object.assign({}, META),
+        algos: [{ key: 'demo-parity-count', any: ['偶數', '奇數'], all: ['個數'] }],
+        judge: { checker: 'tokens' },
+        skeletons: [{
+            id: 'demo.parity-count', algo: 'demo-parity-count', paradigm: 'user-demo-parity', label: '迴圈計數：餘數等於某值的個數',
+            slots: [{ id: 'par', label: '要數的餘數', options: [{ id: '0', v: '0' }, { id: '1', v: '1' }] }],
+            lines: ['cnt_ = 0', 'for v_ in {{N.ls.0}}:', '    if v_ % 2 == {{c.par}}:', '        cnt_ += 1', 'print(cnt_)']
+        }],
+        families: [
+            { id: 'even-count', algo: 'demo-parity-count', split: 'train', want: 'demo.parity-count',
+                statements: ['第一行 n，第二行 n 個整數。請輸出這些整數中偶數的個數。', '第一行 n，第二行 n 個整數。統計其中偶數的個數並輸出。'],
+                ref: 'n = int(input())\na = list(map(int, input().split()))\nprint(sum(1 for x in a if x % 2 == 0))',
+                gen: [[{ name: 'n', int: [1, 8], big: [20, 60] }], [{ name: 'a', ints: { len: 'n', range: [-20, 50] } }]] },
+            { id: 'odd-count', algo: 'demo-parity-count', split: 'holdout', want: 'demo.parity-count',
+                statements: ['第一行 n，第二行 n 個整數。請輸出這些整數中奇數的個數。'],
+                ref: 'n = int(input())\na = list(map(int, input().split()))\nprint(sum(1 for x in a if x % 2 != 0))',
+                gen: [[{ name: 'n', int: [1, 8], big: [20, 60] }], [{ name: 'a', ints: { len: 'n', range: [-20, 50] } }]] }
+        ],
+        tasks: []
+    });
+    const matrix = () => ({
+        format: 'fa-domain-spec', version: 1, kind: 'matrix', id: 'demo-ops', label: '示範：線性同餘與回文', seed: 20261111, meta: Object.assign({}, META),
+        ops: [
+            { id: 'lin-mod', label: '線性同餘 (a·n+b) mod m', level: 'L0', order: 5, keywords: ['同餘', '餘數'], layout: 'lines', input: [{ name: 'n', type: 'int' }], output: { type: 'int' },
+                params: { a: [1, 2, 3, 4, 5, 6, 7], b: [0, 1, 2, 3, 4, 5], m: [7, 9, 10, 11, 13] }, expr: '(a * n + b) % m' },
+            { id: 'is-pal', label: '回文判斷', level: 'L2', order: 6, keywords: ['回文'], layout: 'lines', input: [{ name: 's', type: 'str' }], output: { type: 'bool', yes: 'yes', no: 'no' }, params: {}, expr: 's == "".join(reversed(s))' }
+        ],
+        tasks: [
+            { id: 'lin-3-2-11', op: 'lin-mod', split: 'train', statement: '輸入整數 n，輸出 (3n+2) 除以 11 的餘數（同餘計算）。',
+                examples: [{ in: '1\n', out: '5\n' }, { in: '4\n', out: '3\n' }, { in: '7\n', out: '1\n' }], hidden: [{ in: '10\n', out: '10\n' }, { in: '20\n', out: '7\n' }, { in: '0\n', out: '2\n' }, { in: '13\n', out: '8\n' }] },
+            { id: 'lin-5-1-9', op: 'lin-mod', split: 'holdout', statement: '輸入整數 n，輸出 (5n+1) 除以 9 的餘數（同餘計算）。',
+                examples: [{ in: '2\n', out: '2\n' }, { in: '3\n', out: '7\n' }, { in: '5\n', out: '8\n' }], hidden: [{ in: '9\n', out: '1\n' }, { in: '11\n', out: '2\n' }, { in: '6\n', out: '4\n' }, { in: '14\n', out: '8\n' }] },
+            { id: 'pal-yes-no', op: 'is-pal', split: 'train', statement: '輸入一個字串，若它是回文印 yes，否則印 no。',
+                examples: [{ in: 'abba\n', out: 'yes\n' }, { in: 'abca\n', out: 'no\n' }, { in: 'x\n', out: 'yes\n' }], hidden: [{ in: 'level\n', out: 'yes\n' }, { in: 'ab\n', out: 'no\n' }, { in: 'noon\n', out: 'yes\n' }] },
+            { id: 'pal-holdout', op: 'is-pal', split: 'holdout', statement: '輸入一個小寫字串，判斷它是不是回文，是就印 yes，不是就印 no。',
+                examples: [{ in: 'racecar\n', out: 'yes\n' }, { in: 'abcd\n', out: 'no\n' }, { in: 'aa\n', out: 'yes\n' }], hidden: [{ in: 'abcba\n', out: 'yes\n' }, { in: 'abab\n', out: 'no\n' }, { in: 'z\n', out: 'yes\n' }] }
+        ]
+    });
+    return { META, blockly, matrix };
+});
+
+}).call(null, undefined, holder);
+(function (module, self) {
+/* 訓練工作室「領域」分頁的路由（UMD，依賴注入）。設計 §16.5。由 studio_server_core 在 route() 開頭呼叫 domainApi.route(method, url, body)，回 null 表示不是領域路由。
+ * createDomainApi(c)：
+ *   c.storage / c.prefsGet / c.prefsSet / c.now / c.log(text) / c.push(obj)?     工作室共用
+ *   c.Asset / c.Eval                                                              asset_core／eval_core
+ *   c.sym                                                                         { Synth, judge }（和評量共用）
+ *   c.domain                                                                       { runtime, solve, runRef, corpus? }（App 端提供；缺的在畫面寫具體原因）
+ *   c.teacherAI                                                                    async ({system, prompt, tools, maxRounds}) → {text}（選填）
+ * 路由：
+ *   GET  /api/domains                         已存的領域資產（含啟用狀態、驗證結果）＋範例＋環境能力
+ *   GET  /api/domain?kind&name                規格全文
+ *   POST /api/domain/validate {spec}          驗證＋摘要＋題目預覽（blockly：敘述與輸入範例；matrix：題目）
+ *   POST /api/domain/preview {spec, family?, count?}   預覽家族生成的題目（有判題沙盒就連答案一起算）
+ *   POST /api/domain/fit {spec, op, examples, statement?}   用輸入輸出範例擬合一個操作：顯示擬合結果、候選數、verified
+ *   POST /api/domain/save {spec, replace?}    驗證通過才存成資產（kind blockly／matrix，名稱＝id）
+ *   POST /api/domain/import {spec, fromAsset?, text?, split}   匯入既有題庫（資產 data/tasks.jsonl）或貼上的 JSONL，合併進規格（不改 holdout 題）
+ *   POST /api/domain/enable {kind, name, enabled}   啟用／停用（載入或拿掉 FaDomains／矩陣層登記）
+ *   POST /api/domain/eval {kind, name, saveBaseline?}   train／holdout 通過率、退步標紅（基準存偏好 evalBaseline['domain/<id>']）
+ *   POST /api/domain/teach {kind, name, goal, confirmed}   老師（線上 AI）提議新家族／新範例：先預覽要送出的內容，confirmed 後才送；回來的提議必須經程式驗證才暫存
+ *   POST /api/domain/teach/commit {kind, name, proposalId}   把通過驗證的提議合併進規格（作者標 teacher，只進 train） */
+(function (root, factory) {
+    const S = (typeof module === 'object' && module.exports) ? require('./domain_spec_core.js') : root.FaStudioDomainSpec;
+    const EV = (typeof module === 'object' && module.exports) ? require('./domain_eval_core.js') : root.FaStudioDomainEval;
+    const D = (typeof module === 'object' && module.exports) ? require('./domain_demo_core.js') : root.FaStudioDomainDemo;
+    const X = (typeof module === 'object' && module.exports) ? require('./dsl_expr_core.js') : root.FaStudioExpr;
+    if (typeof module === 'object' && module.exports) module.exports = factory(S, EV, D, X);
+    else root.FaStudioDomainApi = factory(S, EV, D, X);
+})(typeof self !== 'undefined' ? self : this, function (Spec, DEval, Demo, Expr) {
+    'use strict';
+    const dec = (u) => new TextDecoder('utf-8').decode(u);
+    const jsonl = (u8) => dec(u8).split('\n').map((l) => l.trim()).filter(Boolean).map((l) => { try { return JSON.parse(l); } catch (_) { return null; } }).filter(Boolean);
+    const clip = (s, n) => { s = String(s == null ? '' : s); return s.length > n ? s.slice(0, n) + '…' : s; };
+    const KINDS = ['blockly', 'matrix'];
+    const TEACH_LIMITS = { families: 3, statements: 6, chars: 8000 };
+
+    function createDomainApi(c) {
+        const d = c.domain || {}; const now = () => (c.now ? c.now() : Date.now());
+        const ok = (j) => ({ j: Object.assign({ ok: true }, j) }), bad = (s, error, extra) => ({ s, j: Object.assign({ ok: false, error }, extra || {}) });
+        const prefs = () => (c.prefsGet && c.prefsGet()) || {};
+        const enabledMap = () => prefs().domainEnabled || {};
+        const proposals = new Map(); let pseq = 0;
+        const evalDeps = (cache) => ({ runtime: d.runtime, solve: d.solve, runRef: d.runRef, Synth: c.sym && c.sym.Synth, Expr, judge: c.sym && c.sym.judge, corpus: d.corpus, cache: cache || {} });
+        const caps = () => ({
+            blockly: d.solve && d.runRef ? { ok: true } : { ok: false, reason: DEval.NO_SOLVE },
+            matrix: c.sym && c.sym.Synth ? { ok: true, judge: !!(c.sym && c.sym.judge), note: c.sym && c.sym.judge ? '' : '沒有判題器時：使用者操作用同一份運算式重算隱藏範例（照樣可驗證）；內建合成器解出的程式無法驗證隱藏範例' } : { ok: false, reason: '沒有載入 matrix_synth_core' },
+            runtime: d.runtime ? { ok: true } : { ok: false, reason: '這個環境沒有領域載入器（FaStudioDomainRuntime），領域只能編輯、評量，不會被離線 AI 用到' }
+        });
+        async function loadSpec(kind, name) {
+            const r = await c.storage.loadAsset(kind, name); if (!r) return { error: '沒有這個資產：' + kind + '/' + name };
+            const f = Spec.fromFiles(r.asset.files); if (!f.ok) return { error: f.error };
+            const teacher = r.asset.files['data/teacher.jsonl'] ? jsonl(r.asset.files['data/teacher.jsonl']) : [];
+            return { spec: f.spec, manifest: r.asset.manifest, verify: r.verify, teacherRows: teacher, files: r.asset.files };
+        }
+        // 老師暫存的題目列（data/teacher.jsonl）併進題目（只進 train；留出題不收）
+        function withTeacher(spec, rows) {
+            if (!rows || !rows.length) return spec;
+            const s = JSON.parse(JSON.stringify(spec)); const have = new Set((s.tasks || []).map((t) => t.id));
+            rows.forEach((r, i) => { if (!r || r.split === 'holdout' || r.split === 'heldout' || !r.statement) return; const id = 'teacher-' + (r.id || i); if (have.has(id)) return; have.add(id);
+                if (s.kind === 'matrix' && Array.isArray(r.examples) && r.examples.length >= 3) s.tasks.push({ id, op: r.op, split: 'train', statement: r.statement, examples: r.examples.slice(0, 2), hidden: r.examples.slice(2) });
+                if (s.kind === 'blockly' && Array.isArray(r.tests) && r.tests.length >= 3) s.tasks.push({ id, split: 'train', statement: r.statement, solution: r.solution, tests: r.tests }); });
+            return s;
+        }
+        async function saveSpec(spec, opts) {
+            const v = Spec.validate(spec); if (!v.ok) return { ok: false, error: '規格沒通過驗證：' + v.errors.slice(0, 5).join('；'), validation: v };
+            const n = Spec.normalize(spec); let tasks = []; const problems = [];
+            if (n.kind === 'matrix') tasks = (await Spec.buildTasks(n, {})).tasks;
+            else if (d.runRef) { const bt = await Spec.buildTasks(n, { runRef: d.runRef, tests: 4, hidden: 2 }); tasks = bt.tasks; bt.problems.forEach((p) => problems.push(p)); }
+            const files = Spec.toFiles(n, tasks); const sm = Spec.summary(n);
+            const manifest = c.Asset.createManifest({ kind: n.kind, name: n.id, files, counts: { train: sm.train, holdout: sm.holdout, algos: sm.algos, skeletons: sm.skeletons, ops: sm.ops, families: sm.families, tasks_materialized: tasks.length }, owner: 'user', parent: opts && opts.parent || null, created: new Date(now()).toISOString(),
+                extra: { domain: { id: n.id, spec_version: n.version, spec_sha256: Spec.hash(n), license: n.meta.license || null, source: n.meta.source || null, author: n.meta.author || null } } });
+            const old = await c.storage.loadManifest(n.kind, n.id);
+            if (old && !(opts && opts.replace)) return { ok: false, error: '「' + n.id + '」已存在（要覆蓋請帶 replace:true）', exists: true };
+            const w = await c.storage.saveAsset({ manifest, files }, { replace: true }); if (!w.ok) return { ok: false, error: w.error };
+            if (c.log) c.log('儲存領域規格 ' + n.kind + '/' + n.id + '（' + sm.train + ' train、' + sm.holdout + ' holdout）' + (problems.length ? '；有 ' + problems.length + ' 個家族沒能算出測資' : ''));
+            if (c.push) c.push({ type: 'asset_changed' });
+            return { ok: true, name: n.id, kind: n.kind, write: w, summary: sm, warnings: v.warnings, problems };
+        }
+        async function syncRuntime() { if (!d.runtime) return null; const items = (await c.storage.listAssets()).filter((x) => KINDS.indexOf(x.kind) >= 0); return d.runtime.syncEnabled({ list: async () => items, load: async (k, n) => { const r = await loadSpec(k, n); return r.spec || null; } }, enabledMap()); }
+
+        async function route(method, u, body) {
+            const P = u.pathname, Q = (k) => u.searchParams.get(k) || ''; body = body || {};
+            if (!/^\/api\/domains?(\/|$)/.test(P)) return null;
+            try {
+                if (method === 'GET' && P === '/api/domains') {
+                    const items = (await c.storage.listAssets()).filter((x) => KINDS.indexOf(x.kind) >= 0); const out = []; const en = enabledMap();
+                    for (const it of items) { const r = await loadSpec(it.kind, it.name); if (!r.spec) continue; const v = Spec.validate(r.spec); out.push({ kind: it.kind, name: it.name, label: r.spec.label, enabled: en[it.kind + '/' + it.name] === true, loaded: d.runtime ? d.runtime.has(r.spec.id) : false, valid: v.ok, errors: v.errors.slice(0, 3), summary: Spec.summary(r.spec), license: r.spec.meta && r.spec.meta.license || '', source: r.spec.meta && r.spec.meta.source || '', owner: r.manifest.owner, hasTeacherRows: r.teacherRows.length }); }
+                    return ok({ items: out, demos: { blockly: Demo.blockly(), matrix: Demo.matrix() }, caps: caps(), formats: { version: Spec.VERSION, limits: Spec.LIMITS, funcs: Expr.FUNCS, methods: Expr.METHODS }, runtime: d.runtime ? d.runtime.status() : [] });
+                }
+                if (method === 'GET' && P === '/api/domain') { const r = await loadSpec(Q('kind'), Q('name')); if (!r.spec) return bad(404, r.error); return ok({ spec: r.spec, manifest: r.manifest, verify: { ok: r.verify.ok, message: r.verify.message || '' }, teacherRows: r.teacherRows.length }); }
+                if (method === 'POST' && P === '/api/domain/validate') {
+                    const spec = body.spec; const v = Spec.validate(spec, { builtin: !!body.builtin }); const out = { validation: v };
+                    if (v.ok) { out.summary = Spec.summary(spec); out.hash = Spec.hash(Spec.normalize(spec));
+                        if (spec.kind === 'blockly') out.preview = (spec.families || []).map((f) => ({ family: f.id, split: f.split, statements: Spec.expandStatements(f).slice(0, 4).map((x) => x.statement), inputs: Spec.makeInputs(f, { seed: spec.seed, count: 2 }) }));
+                        else out.preview = (spec.tasks || []).slice(0, 8).map((t) => ({ id: t.id, split: t.split, statement: clip(t.statement, 80), examples: (t.examples || []).length, hidden: (t.hidden || []).length })); }
+                    return ok(out);
+                }
+                if (method === 'POST' && P === '/api/domain/preview') {
+                    const spec = body.spec; const v = Spec.validate(spec); if (!v.ok) return bad(400, '規格沒通過驗證：' + v.errors.slice(0, 3).join('；'), { validation: v });
+                    if (spec.kind !== 'blockly') return bad(400, 'matrix 領域沒有家族；預覽請用 validate 的題目清單，或用 fit 看操作擬合');
+                    const f = (spec.families || []).find((x) => x.id === body.family) || (spec.families || [])[0]; if (!f) return bad(400, '沒有家族可預覽');
+                    const n = Math.min(Number(body.count) || 3, 8); const ins = Spec.makeInputs(f, { seed: spec.seed, count: n }); const rows = [];
+                    for (const inp of ins) { let out = null, err = ''; if (d.runRef) { const r = await d.runRef(f.ref, inp); if (r && r.ok) out = r.out; else err = clip(r && r.error, 200) || '參考解沒有輸出'; } rows.push({ in: inp, out, error: err }); }
+                    return ok({ family: f.id, split: f.split, statements: Spec.expandStatements(f).slice(0, 6), tests: rows, answered: !!d.runRef, note: d.runRef ? '' : '沒有判題沙盒，只顯示輸入；解除條件：桌面版並開啟「允許 AI 執行程式」' });
+                }
+                if (method === 'POST' && P === '/api/domain/fit') {
+                    const spec = body.spec; const v = Spec.validate(spec); if (!v.ok) return bad(400, '規格沒通過驗證：' + v.errors.slice(0, 3).join('；'), { validation: v });
+                    const op = (spec.ops || []).find((o) => o.id === body.op); if (!op) return bad(400, '規格裡沒有操作 ' + body.op);
+                    const ex = (body.examples || []).filter((e) => e && typeof e.in === 'string' && typeof e.out === 'string'); if (ex.length < 2) return bad(400, '至少 2 筆範例');
+                    const fit = ex.slice(0, Number(body.fitN) || 2), held = ex.slice(fit.length); const r = Spec.fitOp(op, fit, Expr);
+                    if (!r.ok) return ok({ fitted: false, reason: r.reason, tried: r.tried, verified: false });
+                    const cands = [{ assignment: r.assignment, source: r.source }].concat(r.alternatives); let chosen = cands[0], verified = false, heldPass = 0;
+                    if (held.length) { const good = cands.find((cd) => held.every((h) => { const q = Spec.replay(op, cd.assignment, h.in, Expr); return q.ok && q.out.trim() === String(h.out).trim(); })); if (good) { chosen = good; verified = true; heldPass = held.length; } else verified = false; }
+                    return ok({ fitted: true, assignment: chosen.assignment, source: chosen.source, candidates: cands.length, ambiguous: cands.length > 1 && !verified, verified, heldout: held.length, heldoutPass: heldPass, tried: r.tried,
+                        status: verified ? '已驗證（' + held.length + ' 筆沒參與擬合的範例都對）' : held.length ? '未驗證：擬合出的參數對不上後面 ' + held.length + ' 筆範例' : '未驗證：只有擬合用的範例，' + (cands.length > 1 ? '而且有 ' + cands.length + ' 個候選全對（範例太少）' : '沒有範例以外的資料驗證') });
+                }
+                if (method === 'POST' && P === '/api/domain/save') { const r = await saveSpec(body.spec, { replace: !!body.replace }); return r.ok ? ok(r) : bad(r.exists ? 409 : 400, r.error, r); }
+                if (method === 'POST' && P === '/api/domain/import') {
+                    const spec = JSON.parse(JSON.stringify(body.spec || {})); if (spec.kind !== 'blockly' && spec.kind !== 'matrix') return bad(400, '規格 kind 不對');
+                    let rows = []; if (body.fromAsset) { const m = /^([a-z]+)\/(.+)$/.exec(String(body.fromAsset)); if (!m) return bad(400, '資產參照格式是 kind/name'); const r = await c.storage.loadAsset(m[1], m[2]); const f = r && r.asset.files['data/tasks.jsonl']; if (!f) return bad(404, String(body.fromAsset) + ' 沒有 data/tasks.jsonl'); rows = jsonl(f); }
+                    if (body.text) { rows = rows.concat(String(body.text).split('\n').map((l) => l.trim()).filter(Boolean).map((l) => { try { return JSON.parse(l); } catch (_) { return null; } }).filter(Boolean)); }
+                    if (!rows.length) return bad(400, '沒有讀到任何題目列（每列要是一個 JSON 物件）');
+                    const split = body.split === 'holdout' ? 'holdout' : 'train'; const have = new Set((spec.tasks || []).map((t) => t.id)); spec.tasks = spec.tasks || []; let added = 0, skipped = [];
+                    rows.forEach((r, i) => { const id = String(r.id || ('imp-' + (i + 1))); if (have.has(id)) { skipped.push(id + '：id 已存在'); return; }
+                        if (spec.kind === 'matrix') { if (!r.statement || !Array.isArray(r.examples) || r.examples.length < 2) { skipped.push(id + '：要有 statement 與至少 2 筆 examples'); return; } spec.tasks.push({ id, op: r.op || undefined, split, statement: r.statement, examples: r.examples.slice(0, Math.max(2, Math.min(2, r.examples.length))), hidden: r.hidden || r.examples.slice(2) }); }
+                        else { if (!r.statement || !Array.isArray(r.tests) || r.tests.length < 3) { skipped.push(id + '：要有 statement 與至少 3 筆 tests'); return; } spec.tasks.push({ id, split, statement: r.statement, solution: r.solution, tests: r.tests }); }
+                        have.add(id); added++; });
+                    const v = Spec.validate(spec); return ok({ spec, added, skipped, validation: v });
+                }
+                if (method === 'POST' && P === '/api/domain/enable') {
+                    const kind = String(body.kind || ''), name = String(body.name || ''); const r = await loadSpec(kind, name); if (!r.spec) return bad(404, r.error);
+                    if (body.enabled) { const v = Spec.validate(r.spec); if (!v.ok) return bad(409, '規格沒通過驗證，不能啟用：' + v.errors.slice(0, 3).join('；'), { validation: v }); if (!d.runtime) return bad(501, caps().runtime.reason); }
+                    const np = Object.assign({}, prefs()); np.domainEnabled = Object.assign({}, np.domainEnabled); if (body.enabled) np.domainEnabled[kind + '/' + name] = true; else delete np.domainEnabled[kind + '/' + name]; c.prefsSet(np);
+                    const sync = await syncRuntime(); const failed = sync && sync.failed.find((f) => f.ref === kind + '/' + name);
+                    if (failed) { delete np.domainEnabled[kind + '/' + name]; c.prefsSet(np); await syncRuntime(); return bad(409, '啟用失敗：' + failed.error, { sync }); }
+                    if (c.log) c.log((body.enabled ? '啟用' : '停用') + '領域 ' + kind + '/' + name); return ok({ enabled: !!body.enabled, sync });
+                }
+                if (method === 'POST' && P === '/api/domain/eval') {
+                    const r = await loadSpec(String(body.kind || ''), String(body.name || '')); if (!r.spec) return bad(404, r.error);
+                    const spec = withTeacher(r.spec, r.teacherRows); const key = 'domain/' + spec.id; const p = prefs();
+                    const suites = DEval.domainSuites(spec, evalDeps({}));
+                    const res = await c.Eval.runEval(spec.kind, suites, { baseline: (p.evalBaseline || {})[key] || {}, gate: p.evalGate, now: c.now });
+                    if (body.saveBaseline && res.summary.ran) { const np = Object.assign({}, prefs()); np.evalBaseline = Object.assign({}, np.evalBaseline); np.evalBaseline[key] = c.Eval.saveBaseline(res, np.evalBaseline[key]); c.prefsSet(np); res.baselineSaved = true; }
+                    if (c.log) c.log('領域評量 ' + key + '：' + res.summary.ran + '/' + res.summary.groups + ' 組有跑，退步 ' + res.summary.regressed);
+                    return ok(res);
+                }
+                // ---- 老師：提議新家族／範例（程式驗證才暫存；holdout 不可教）----
+                if (method === 'POST' && P === '/api/domain/teach') {
+                    const r = await loadSpec(String(body.kind || ''), String(body.name || '')); if (!r.spec) return bad(404, r.error);
+                    if (r.spec.kind !== 'blockly') return bad(400, '老師提議新家族只支援 blockly 領域；matrix 領域請用「資料集」分頁的老師迴圈補範例（data/teacher.jsonl 會併進這個領域的 train 題）');
+                    const spec = r.spec; const sendTrain = { id: spec.id, label: spec.label, algos: spec.algos, skeletons: spec.skeletons.map((s) => ({ id: s.id, algo: s.algo, label: s.label, slots: (s.slots || []).map((x) => x.id), needs: s.needs })), train_families: (spec.families || []).filter((f) => f.split === 'train').map((f) => ({ id: f.id, algo: f.algo, statements: f.statements })) }; // 不送 holdout、不送參考解細節以外的東西
+                    const prompt = '你是領域老師。目前領域的規格（只含訓練部分）：\n' + JSON.stringify(sendTrain) + '\n目標：' + String(body.goal || '擴充題目家族') + '\n請只回一個 JSON：{"families":[{"id","algo","statements":[題目樣板…],"params":{…}?,"ref":"Python 參考解","gen":[輸入產生規則]}]}。每個家族 split 一律是 train；statements 要用一致的格式描述輸入；ref 只能用標準輸入輸出與允許的匯入。最多 ' + TEACH_LIMITS.families + ' 個家族、每個最多 ' + TEACH_LIMITS.statements + ' 個敘述。';
+                    if (!body.confirmed) return ok({ needsConfirm: true, willSend: { prompt: clip(prompt, 6000), chars: prompt.length, note: '只送訓練部分的規格摘要與目標，不送 holdout、不送使用者檔案' } });
+                    if (!c.teacherAI) return bad(501, '這個環境沒有接上線上 AI 子任務（teacherAI）；桌面版與網頁版都在設定→AI 有線上模型時才能用老師。也可以手動貼提議到 propose 欄位。');
+                    const ai = await c.teacherAI({ system: '你是嚴謹的題庫老師，只輸出 JSON。', prompt, tools: {}, maxRounds: 2 }); return await receive(spec, String(ai && ai.text || ''), 'teacher');
+                }
+                if (method === 'POST' && P === '/api/domain/teach/propose') { const r = await loadSpec(String(body.kind || ''), String(body.name || '')); if (!r.spec) return bad(404, r.error); return await receive(r.spec, typeof body.proposal === 'string' ? body.proposal : JSON.stringify(body.proposal || {}), body.author === 'teacher' ? 'teacher' : 'user'); }
+                if (method === 'POST' && P === '/api/domain/teach/commit') {
+                    const pr = proposals.get(String(body.proposalId || '')); if (!pr) return bad(409, '沒有這個提議（可能已提交或視窗重開）'); if (pr.kind !== body.kind || pr.name !== body.name) return bad(409, '提議不屬於這個領域');
+                    const r = await loadSpec(pr.kind, pr.name); if (!r.spec) return bad(404, r.error); const spec = JSON.parse(JSON.stringify(r.spec));
+                    if (Spec.hash(Spec.normalize(spec)) !== pr.baseHash) return bad(409, '領域在提議之後被改過，請重新提議');
+                    spec.families = (spec.families || []).concat(pr.families); const sv = await saveSpec(spec, { replace: true, parent: pr.name }); if (!sv.ok) return bad(409, sv.error, sv);
+                    proposals.delete(pr.id); if (d.runtime && d.runtime.has(spec.id)) await syncRuntime(); return ok({ committed: pr.families.map((f) => f.id), summary: sv.summary });
+                }
+                return bad(404, '未知的領域路由：' + P);
+            } catch (e) { return bad(500, String((e && e.message) || e)); }
+        }
+        // 收提議：解析→強制 train→合併驗證→在判題沙盒跑參考解（兩次結果要一致）→通過才暫存
+        async function receive(spec, text, author) {
+            let obj; try { const m = /\{[\s\S]*\}/.exec(text); obj = JSON.parse(m ? m[0] : text); } catch (_) { return bad(422, '提議不是合法的 JSON'); }
+            let fams = Array.isArray(obj.families) ? obj.families : null; if (!fams || !fams.length) return bad(422, '提議裡沒有 families');
+            if (fams.length > TEACH_LIMITS.families) return bad(422, '一次最多 ' + TEACH_LIMITS.families + ' 個家族'); if (JSON.stringify(fams).length > TEACH_LIMITS.chars) return bad(422, '提議太長（上限 ' + TEACH_LIMITS.chars + ' 字元）');
+            const taken = new Set((spec.families || []).map((f) => f.id)); const problems = [];
+            fams = fams.map((f, i) => Object.assign({}, f, { split: 'train', origin: { author, at: now() }, id: taken.has(f.id) ? undefined : f.id }));
+            if (fams.some((f) => !f.id)) return bad(422, '家族 id 缺少或與現有的重複');
+            const merged = JSON.parse(JSON.stringify(spec)); merged.families = (merged.families || []).concat(fams);
+            const v = Spec.validate(merged); if (!v.ok) return bad(422, '提議沒通過規格驗證（含 holdout 不可混入檢查）：' + v.errors.slice(0, 4).join('；'), { validation: v });
+            const evidence = [];
+            if (d.runRef) { for (const f of fams) { const ins = Spec.makeInputs(f, { seed: spec.seed, count: 3 }); for (const inp of ins) { const a = await d.runRef(f.ref, inp), b = await d.runRef(f.ref, inp); if (!a || !a.ok || !String(a.out || '').trim()) { problems.push(f.id + '：參考解在產生的輸入上沒有輸出'); break; } if (a.out !== b.out) { problems.push(f.id + '：參考解兩次結果不一致（不可重現）'); break; } } if (!problems.some((p) => p.startsWith(f.id + '：'))) evidence.push({ family: f.id, verified_by: '判題沙盒執行參考解，輸出非空且可重現' }); } }
+            else problems.push('沒有判題沙盒，無法用程式驗證提議（解除條件：桌面版並開啟「允許 AI 執行程式」）');
+            if (problems.length) return bad(422, '提議沒通過程式驗證', { problems });
+            const id = 'p' + (++pseq); proposals.set(id, { id, kind: spec.kind, name: spec.id, families: fams, baseHash: Spec.hash(Spec.normalize(spec)) });
+            return ok({ proposalId: id, families: fams.map((f) => ({ id: f.id, algo: f.algo, split: f.split, statements: Spec.expandStatements(f).slice(0, 4).map((x) => x.statement) })), evidence, note: '已通過程式驗證，尚未寫入；確認後按提交。提議一律標 train，作者 ' + author });
+        }
+        return { route, saveSpec, loadSpec, syncRuntime, withTeacher };
+    }
+    return { createDomainApi };
+});
+
+}).call(null, undefined, holder);
+(function (module, self) {
 /* Studio 檢視器的「假伺服器」路由核心（UMD，依賴注入，不碰 DOM／window）。檢視器（沙盒 iframe）用 fetch('http://mock.local/api/…') 呼叫，
  * 主程式的 floating-assistant.js 負責把 iframe 的 postMessage 轉進來（同 AIDoc 的做法）。設計見 DESIGN.TODO.offline-training-studio.md §4、§4.1。
  * createServer(h)，h 是主程式提供的接口：
