@@ -155,9 +155,21 @@
         const stage = o.readOk === false ? 'reader' : /矩陣|matrix/i.test(rs.matrix) && !res.ok ? 'matrix' : 'paradigm'; const next = ['online', 'colu', 'teach'];
         return { stage, reasons: rs, next, teach: { statement: String(o.statement || ''), examples: (o.examples || []).slice(0, 4), stuckAt: stage, missing: o.missing || '' } };
     }
+    // 這題該走哪一層（§13.6）：成本由低到高＝blockly 教學（最快）→ 編成矩陣（要額外寫範本）→ 留給 LoRA（訓練最久）。
+    //   讀取器讀得懂（stage 不是 reader）→ blockly 教學：缺的是骨架或課，補一課最便宜；
+    //   讀不懂但有可見範例 → 編成矩陣：範例能驅動合成，但要寫範本；
+    //   讀不懂也沒有範例 → 留給 LoRA（或先請使用者補範例，見 needExamples）。
+    function routeOf(o) {
+        const stage = o && o.stage; const n = Number((o && o.examples) || 0);
+        if (stage !== 'reader') return { route: 'blockly-teach', cost: 1, why: '讀取器讀得懂，缺骨架或課：先補 blockly 教學' };
+        // §13.7：未解 holdout 21 條目矩陣覆蓋 0/21，所以「讀不懂有範例」預設不建議矩陣（只有呼叫端明確標 matrixCovered 才走矩陣）
+        if (n > 0 && o.matrixCovered) return { route: 'matrix', cost: 2, why: '讀不懂但有可見範例，且該類題在矩陣量測有覆蓋：編成矩陣範本' };
+        if (n > 0) return { route: 'lora', cost: 3, why: '讀不懂但有可見範例；矩陣覆蓋量測為 0，不建議矩陣：留給 LoRA，或先請使用者補可判題的範例' };
+        return { route: 'lora', cost: 3, why: '讀不懂且沒有範例：先請使用者補範例，否則留給 LoRA（訓練最久）' };
+    }
     function teachEntry(o) {
         const st = String(o.statement || ''); const f = o.fallback || fallbackInfo(o.result, o);
-        return { id: hash(norm(st)), ts: o.ts || new Date().toISOString(), needTeaching: true, statement: st, examples: (o.examples || []).slice(0, 4).map((e) => ({ in: e.in, out: e.out })), stuckAt: f.stage, reasons: f.reasons, missing: (f.teach && f.teach.missing) || o.missing || '', dataSource: o.dataSource || 'none', count: 1 };
+        return { id: hash(norm(st)), ts: o.ts || new Date().toISOString(), needTeaching: true, statement: st, examples: (o.examples || []).slice(0, 4).map((e) => ({ in: e.in, out: e.out })), stuckAt: f.stage, route: routeOf({ stage: f.stage, examples: (o.examples || []).length }).route, reasons: f.reasons, missing: (f.teach && f.teach.missing) || o.missing || '', dataSource: o.dataSource || 'none', count: 1 };
     }
     const queueLine = (e) => JSON.stringify(e) + '\n';
     function parseQueue(text) { const out = []; for (const l of String(text || '').split('\n')) { const t = l.trim(); if (!t) continue; try { const e = JSON.parse(t); if (e && e.statement) out.push(e); } catch (err) { /* 壞行略過，不丟掉其他行 */ } } return out; }
@@ -167,5 +179,5 @@
         return [...map.values()];
     }
     const queueText = (entries) => entries.map(queueLine).join('');
-    return { proposeInputs, readShape, pickDiscriminating, specFlow, askCard, fallbackInfo, teachEntry, queueLine, parseQueue, mergeQueue, queueText, hash };
+    return { proposeInputs, readShape, pickDiscriminating, specFlow, askCard, fallbackInfo, teachEntry, routeOf, queueLine, parseQueue, mergeQueue, queueText, hash };
 });

@@ -72,21 +72,4 @@ const genEnc = (b) => {
 };
 const REF_ENC = (out) => 'import sys\nL = sys.stdin.read().split("\\n")\nres = b""\nfor t in L[1:1 + int(L[0])]:\n    k, v = t.split(" ", 1)\n    kv = (k + "=" + v + "\\n").encode()\n    n = 1\n    while len(str(n).encode()) + 1 + len(kv) != n: n += 1\n    res += (str(n) + " ").encode() + kv\nprint(' + (out === 'hex' ? 'res.hex()' : 'res.decode(), end=""') + ')\n';
 
-const SEEDS = [
-    { id: 'list-pax', want: 'tarx.list', st: '輸入一行十六進位字串，是一個 tar 封存檔（POSIX.1-2001 PAX 格式）。有些條目前面有 typeflag 為 x 的擴充標頭，資料區是一連串記錄「長度 key=value\\n」（長度以位元組計、含長度欄自己和換行）；其中 path 取代下一個條目的檔名，size 取代下一個條目的大小。請依序輸出每個真正檔案的「檔名 大小」（空格分隔，一行一個）。檔名可能含 UTF-8 字元。', ref: REF_NS, gen: gen('paxu') },
-    { id: 'list-gnu', want: 'tarx.list', st: '輸入一行十六進位字串，是一個 GNU 風格的 tar 封存檔。檔名超過 100 位元組時，前面會有一個 typeflag 為 L 的條目（名稱 ././@LongLink），其資料區就是下一個條目的完整檔名（以 NUL 結尾）。請依序輸出每個真正檔案的「檔名 大小」，一行一個。', ref: REF_NS, gen: gen('gnu') },
-    { id: 'list-prefix', want: 'tarx.list', st: '輸入一行十六進位字串，是一個 ustar tar 封存檔。標頭位元組 345–499 是 prefix 欄，非空時完整檔名是 prefix 加上 "/" 再加位元組 0–99 的名稱。請依序輸出每個檔案的「檔名 大小」，一行一個（大小是八進位欄位的值）。', ref: REF_NS, gen: gen('prefix') },
-    { id: 'list-mix-sn', want: 'tarx.list', st: '輸入一行十六進位字串，是一個 tar 封存檔，可能含 PAX 擴充標頭（typeflag x，記錄 path／size 覆蓋下一個條目）、GNU 長檔名條目（typeflag L）以及 ustar prefix。請依序輸出每個真正檔案的「大小 檔名」（空格分隔，一行一個）。', ref: REF_SN, gen: gen('mix') },
-    { id: 'list-size-override', want: 'tarx.list', st: '輸入一行十六進位字串，是一個 PAX 格式的 tar 封存檔：有些檔案的標頭 size 欄是 0，真正大小放在前面 typeflag x 擴充標頭的 size=… 記錄裡，資料區依這個大小讀取並補到 512 的倍數。請依序輸出每個檔案的「檔名 大小」，一行一個。', ref: REF_NS, gen: gen('size') },
-    { id: 'list-names-only', want: 'tarx.list', st: '輸入一行十六進位字串，是一個 tar 封存檔（可能有 PAX 擴充標頭 x 或 GNU 長檔名 L 或 ustar prefix）。請只輸出每個真正檔案的完整檔名，一行一個。', ref: REF_N, gen: gen('mix') },
-    { id: 'pax-records', want: 'tarx.pax-records', st: '輸入一行十六進位字串，是一個 tar 封存檔，其中有 PAX 擴充標頭（typeflag x）。請取第一個擴充標頭，解析資料區的記錄「長度 key=value\\n」（長度含自身），依出現順序每行輸出 key=value。', ref: REF_REC('seq'), gen: GEN_REC },
-    { id: 'pax-records-sorted', want: 'tarx.pax-records', st: '輸入一行十六進位字串，是一個含 PAX 擴充標頭（typeflag x）的 tar 封存檔。請把第一個擴充標頭的所有記錄（格式「長度 key=value\\n」）解析出來，依 key 的字典序排序後，每行輸出 key=value。', ref: REF_REC('sorted'), gen: GEN_REC },
-    { id: 'pax-enc-hex', want: 'tarx.pax-encode', st: '第一行 n，接著 n 行，每行是「key value」（value 可含空格與 UTF-8 字元）。請把每筆編成 PAX 擴充標頭的記錄「長度 key=value\\n」：長度是整筆記錄的位元組數（UTF-8），且包含長度欄本身的位數與後面的空格和換行（長度位數進位時要重算）。所有記錄串接起來，輸出十六進位（小寫）。', ref: REF_ENC('hex'), gen: genEnc },
-    { id: 'pax-enc-text', want: 'tarx.pax-encode', st: '第一行 n，接著 n 行，每行是「key value」（value 可含 UTF-8 字元）。請為每筆組出 PAX 擴充標頭記錄：十進位長度、一個空格、key=value、換行；長度是整筆記錄的 UTF-8 位元組數（含長度欄自身，位數進位時重算）。依序輸出所有記錄的文字內容。', ref: REF_ENC('text'), gen: genEnc },
-    // holdout：另寫措辭，只量測，不教
-    { id: 'ho-list', split: 'holdout', st: '輸入一行十六進位，內容是 tar 檔（有的檔案前面帶 PAX 的 x 型標頭，用 path 記錄指定很長的路徑）。請把封存檔裡每個檔案的路徑與位元組數印出來，每個檔案一行，路徑與大小以空格隔開。', ref: REF_NS, gen: gen('pax') },
-    { id: 'ho-gnu', split: 'holdout', st: '輸入一行十六進位字串，這是用 GNU tar 做的封存檔，路徑太長的檔案前面附有 L 類型的長檔名區塊。請輸出每個檔案的名稱，一行一個。', ref: REF_N, gen: gen('gnu') },
-    { id: 'ho-rec', split: 'holdout', st: '輸入一行十六進位字串，是一個 tar 檔，開頭附有 typeflag x 的 PAX 標頭。請把標頭裡每條「key=value」記錄列出來（依出現順序，一行一條）。', ref: REF_REC('seq'), gen: GEN_REC },
-    { id: 'ho-enc', split: 'holdout', st: '輸入的第一行是整數 n，之後 n 行各有「欄位名 欄位值」。請產生 PAX 擴充標頭的資料內容：每筆是「總長度 欄位名=欄位值」加換行，總長度要把自己的位數也算進去（以 UTF-8 位元組計）。把全部串起來，用小寫十六進位印出。', ref: REF_ENC('hex'), gen: genEnc }
-];
-H.main({ name: '領域包 tarx', packs: [TX], seeds: SEEDS, minSkeletons: 3, judge: { checker: 'tokens', timeoutMs: 60000 } });
+H.main({ name: '領域包 tarx', packs: [TX], seeds: H.loadSeeds(require('path').join(__dirname, 'seeds', 'domain_tarx.json')), minSkeletons: 3, judge: { checker: 'tokens', timeoutMs: 60000 } });

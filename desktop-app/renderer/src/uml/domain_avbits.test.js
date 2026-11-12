@@ -189,32 +189,6 @@ sqp = pps["qp"] + r.se()
 ` + tail);
 
 const OPENING = '輸入一行十六進位字串，';
-const SEEDS = [
-    { id: 'eg-ue', want: 'av.eg-decode', st: OPENING + '是一段 H.264 語法元素的位元流（MSB 先），裡面全部是連續的 ue(v) 無號 Exp-Golomb 碼，最後以 rbsp_trailing_bits（一個 1 再補 0 到位元組邊界）結束。請依序解碼，輸出每個 ue(v) 的值，以空格分隔。', ref: EG_REF('ue'), gen: egGen('ue') },
-    { id: 'eg-se', want: 'av.eg-decode', st: OPENING + '是連續的 se(v) 有號 Exp-Golomb 碼（codeNum 為奇數對應正數：1→1、2→-1、3→2、4→-2），後面接 rbsp_trailing_bits。請依序解碼，輸出每個 se(v) 的值，以空格分隔。', ref: EG_REF('se'), gen: egGen('se') },
-    { id: 'eg-enc-ue', want: 'av.eg-encode', st: '輸入一行以空白分隔的非負整數，每個都編成 ue(v) 指數哥倫布碼（前面 n 個 0，接著 n+1 位元的 v+1），依序串起來，最後加上 rbsp_trailing_bits（一個 1 再補 0 到位元組邊界）。輸出十六進位（小寫、不加空白）。', ref: EGENC_REF('ue', true), gen: egEncGen('ue') },
-    { id: 'eg-enc-se', want: 'av.eg-encode', st: '輸入一行以空白分隔的整數，每個都編成 se(v)（正數 v 對應 codeNum 2v-1，非正數 v 對應 -2v，再用 ue(v) 編碼），依序串起來，最後加上 rbsp_trailing_bits（一個 1 再補 0 到位元組邊界）。輸出十六進位（小寫、不加空白）。', ref: EGENC_REF('se', true), gen: egEncGen('se') },
-    { id: 'nal-split-ts', want: 'av.nal-split', st: OPENING + '是 H.264 的 Annex B 位元組流，NAL 單元以起始碼 00 00 01 或 00 00 00 01 分隔。請依序列出每個 NAL 單元：每行輸出 nal_unit_type（標頭位元組的低 5 位元）與該 NAL 的位元組數（含 1 位元組標頭、不含起始碼）。', ref: NAL_REF('for n in ns: print(n[0] & 31, len(n))'), gen: synthStream },
-    { id: 'nal-split-real', want: 'av.nal-split', st: OPENING + '是 H.264 的 Annex B 位元組流（可能含 SPS、PPS、SEI、IDR 與非 IDR slice）。請依序輸出每個 NAL 單元的 nal_unit_type，以空格分隔。', ref: NAL_REF('print(*[n[0] & 31 for n in ns])'), gen: streamGen(['baseline', 'main'], false) },
-    { id: 'nal-count', want: 'av.nal-split', st: OPENING + '是 Annex B 位元組流（起始碼 00 00 01 或 00 00 00 01）。請問裡面共有幾個 NAL 單元？輸出一個整數。', ref: NAL_REF('print(len(ns))'), gen: synthStream },
-    { id: 'esc-remove', want: 'av.esc-remove', st: OPENING + '是一個 NAL 單元的負載（已含防競爭位元組）。請做防競爭位元組移除：每遇到 00 00 03，就把 03 去掉，輸出得到的 RBSP，十六進位（小寫、不加空白）。', ref: ESC_REF(false), gen: unescGen },
-    { id: 'esc-insert', want: 'av.esc-insert', st: OPENING + '是一段 RBSP。請做防競爭位元組插入：只要出現 00 00 後面接著 00、01、02 或 03，就在中間插入一個 03；若最後一個位元組是 00，結尾還要補一個 03。輸出十六進位（小寫、不加空白）。', ref: ESC_REF(true), gen: escGen },
-    { id: 'trail-bits', want: 'av.rbsp-trailing', st: OPENING + '是一段 RBSP，最後有 rbsp_trailing_bits：一個值為 1 的停止位元，後面補 0 到位元組邊界。請輸出有效負載的位元數（停止位元之前有幾個位元）。', ref: TR_REF('print(n)'), gen: trailGen },
-    { id: 'sps-all', want: 'av.sps-parse', st: OPENING + '是 H.264 的 Annex B 位元組流，裡面有 SPS 與 PPS。請找出 SPS（nal_unit_type=7），去掉防競爭位元組後解析，依序輸出 profile_idc、level_idc、seq_parameter_set_id、log2_max_frame_num（已加 4）、pic_order_cnt_type、max_num_ref_frames、影像寬、影像高（像素，要扣掉裁切），以空格分隔。', ref: PYREF('s = sps_of(d)\nprint(s["pr"], s["lv"], s["sid"], s["lfn"], s["poc"], s["nref"], s["w"], s["h"])'), gen: streamGen(['baseline', 'main', 'high'], false) },
-    { id: 'sps-wh', want: 'av.sps-parse', st: OPENING + '是 H.264 的 Annex B 位元組流。請找到 SPS，解出影像的寬與高（像素，frame_cropping 要扣掉），以空格分隔輸出。', ref: PYREF('s = sps_of(d)\nprint(s["w"], s["h"])'), gen: streamGen(['baseline', 'main', 'high'], true) },
-    { id: 'pps-all', want: 'av.pps-parse', st: OPENING + '是 H.264 的 Annex B 位元組流。請找出 PPS（nal_unit_type=8），去掉防競爭位元組後解析，依序輸出 pic_parameter_set_id、seq_parameter_set_id、entropy_coding_mode_flag、num_ref_idx_l0_default_active、pic_init_qp（26 加偏移）、chroma_qp_index_offset、deblocking_filter_control_present_flag，以空格分隔。', ref: PYREF('p = pps_of(d)\nprint(p["pid"], p["sid"], p["cabac"], p["ref0"], p["qp"], p["cq"], p["dbf"])'), gen: streamGen(['baseline', 'main'], false) },
-    { id: 'slice-hdr', want: 'av.slice-header', st: OPENING + '是 H.264 的 Annex B 位元組流，含 SPS、PPS 與 slice。請解析第一個 slice 的標頭（需要 SPS 的 log2_max_frame_num 與 poc type、PPS 的旗標），輸出 frame_num 與 slice_qp（pic_init_qp 加 slice_qp_delta），以空格分隔。', ref: SL_REF('print(fnum, sqp)'), gen: streamGen(['baseline'], false) },
-    { id: 'sps-write', want: 'av.sps-write', st: '輸入一行整數：profile_idc level_idc sps_id 寬 高 參考幀數。請寫出基線的 SPS NAL：起始碼 00 00 00 01，標頭 0x67，profile_idc、constraint 旗標位元組 0xc0、level_idc、ue(sps_id)、ue(0) 表示 log2_max_frame_num 為 4、pic_order_cnt_type 為 2、ue(參考幀數)、gaps 為 0、寬與高的巨集區塊數減一、frame_mbs_only 為 1、direct_8x8_inference 為 1、frame_cropping（寬高不是 16 的倍數時以 2 像素為單位補到 16 的倍數）、vui 為 0、rbsp_trailing_bits，並做防競爭位元組插入。輸出十六進位（小寫）。', ref: SPSW_REF('0xc0', 'b"\\x00\\x00\\x00\\x01"'), gen: spswGen },
-    { id: 'pps-write', want: 'av.pps-write', st: '輸入一行整數：pps_id sps_id pic_init_qp chroma_qp_offset ref_idx_l0 deblocking_control。請寫出基線的 PPS NAL：起始碼 00 00 00 01，標頭 0x68，ue(pps_id)、ue(sps_id)、entropy_coding_mode 為 0、bottom_field_pic_order 為 0、slice group 數減一為 ue(0)、ue(ref_idx_l0-1)、ue(0)、weighted_pred 為 0、weighted_bipred_idc 為 00、se(pic_init_qp-26)、se(0)、se(chroma_qp_offset)、deblocking_filter_control_present 取輸入、constrained_intra_pred 為 0、redundant_pic_cnt_present 為 0、rbsp_trailing_bits，做防競爭位元組插入。輸出十六進位（小寫）。', ref: PPSW_REF('b"\\x00\\x00\\x00\\x01"', '0x68'), gen: ppswGen },
-    // holdout：另寫措辭、另一種輸出格式（只量測）
-    { id: 'ho-eg', split: 'holdout', st: '給一行十六進位，內容是一串 ue(v) 哥倫布碼，結尾有 rbsp 停止位元。把所有數字解出來，用空白隔開印出。', ref: EG_REF('ue'), gen: egGen('ue') },
-    { id: 'ho-eg-enc', split: 'holdout', st: '輸入一行整數，請把它們依序以 se(v) 編碼（有號指數哥倫布）連接成位元流，結尾補上 rbsp_trailing_bits，印出十六進位字串。', ref: EGENC_REF('se', true), gen: egEncGen('se') },
-    { id: 'ho-nal', split: 'holdout', st: '輸入一行十六進位字串，是 Annex B 格式的 H.264 串流。請問其中一共有多少個 NAL 單元？', ref: NAL_REF('print(len(ns))'), gen: streamGen(['baseline'], false) },
-    { id: 'ho-esc', split: 'holdout', st: '輸入一行十六進位字串，是帶有防競爭位元組的 NAL 負載。請把防競爭位元組去掉，印出原始 RBSP 的十六進位。', ref: ESC_REF(false), gen: unescGen },
-    { id: 'ho-sps', split: 'holdout', st: '輸入一行十六進位字串，是 H.264 位元組流。解析其中的序列參數集（SPS），輸出畫面寬度與高度（像素）。', ref: PYREF('s = sps_of(d)\nprint(s["w"], s["h"])'), gen: streamGen(['baseline', 'high'], false) },
-    { id: 'ho-pps', split: 'holdout', st: '輸入一行十六進位字串，是 H.264 位元組流。解析其中的圖像參數集（PPS），輸出 pic_init_qp。', ref: PYREF('p = pps_of(d)\nprint(p["qp"])'), gen: streamGen(['baseline', 'main'], false) },
-    { id: 'ho-sps-write', split: 'holdout', st: '輸入一行整數 profile_idc、level_idc、sps_id、寬、高、參考幀數。請組出 SPS NAL 單元（起始碼 00 00 01，標頭 0x67，constraint 旗標位元組 0x00，POC 類型 2，沒有 VUI，必要時加裁切，做防競爭位元組插入），輸出十六進位。', ref: SPSW_REF('0x00', 'b"\\x00\\x00\\x01"'), gen: spswGen }
-];
 // 開頭交叉驗證：參考解 vs ffprobe
 if (HAVE_FF) {
     for (const [p, w, h] of [['baseline', 50, 34], ['main', 64, 48], ['high', 30, 18]]) {
@@ -228,4 +202,4 @@ if (HAVE_FF) {
     console.log('參考解與 ffprobe 的寬高／level 交叉驗證通過');
 } else console.log('略過 ffprobe 交叉驗證（找不到 ffmpeg）');
 if (!HAVE_FF) { console.log('略過：沒有 ffmpeg，真實位元流題無法產生'); console.log('0 passed, 0 failed'); process.exit(0); }
-H.main({ name: '領域包 avbits', packs: [AV], seeds: SEEDS, minSkeletons: 11, judge: { checker: 'tokens', timeoutMs: 60000 } });
+H.main({ name: '領域包 avbits', packs: [AV], seeds: H.loadSeeds(require('path').join(__dirname, 'seeds', 'domain_avbits.json')), minSkeletons: 11, judge: { checker: 'tokens', timeoutMs: 60000 } });

@@ -108,21 +108,4 @@ const REF_LIT = (wrap) => REF_PARSE(wrap, 'for s, l in enumerate(dyn[0][3]):\n  
 const REF_BOTH = (wrap) => REF_PARSE(wrap, 'for s, l in enumerate(dyn[0][3]):\n    if l: print(s, l)\nfor s, l in enumerate(dyn[0][4]):\n    if l: print(s, l)');
 const REF_HDR = (wrap) => REF_PARSE(wrap, 'print(dyn[0][0], dyn[0][1], dyn[0][2])');
 
-const SEEDS = [
-    { id: 'raw-dyn-hex', want: 'df.inflate', st: '輸入一行十六進位字串，是一段原始 DEFLATE 串流（RFC 1951，沒有 zlib 或 gzip 外殼），區塊可能是未壓縮、固定霍夫曼或動態霍夫曼。請完整解壓，輸出還原資料的十六進位（小寫、不加空白）。', ref: REF_DEC('raw', 'r.hex()'), gen: gen('raw', 'any') },
-    { id: 'raw-stored', want: 'df.inflate', st: '輸入一行十六進位字串，是一段原始 DEFLATE 串流，可能含 BTYPE=00 未壓縮、BTYPE=01 固定霍夫曼或 BTYPE=10 動態霍夫曼區塊。請解壓，輸出還原資料的十六進位（小寫、不加空白）。', ref: REF_DEC('raw', 'r.hex()'), gen: gen('raw', 'stored') },
-    { id: 'raw-fixed', want: 'df.inflate', st: '輸入一行十六進位字串，是一段原始 DEFLATE 串流（任何一種區塊都可能出現：未壓縮、固定霍夫曼、動態霍夫曼）。請解壓，輸出還原資料的十六進位（小寫、不加空白）。', ref: REF_DEC('raw', 'r.hex()'), gen: gen('raw', 'fixed') },
-    { id: 'zlib-text', want: 'df.inflate', st: '輸入一行十六進位字串，是一段 zlib 資料（2 位元組標頭、DEFLATE 串流、4 位元組 Adler-32），串流可能含動態霍夫曼區塊。請解壓，輸出還原的 UTF-8 文字。', ref: REF_DEC('zlib', 'r.decode()'), gen: gen('zlib', 'dyn') },
-    { id: 'gzip-hex', want: 'df.inflate', st: '輸入一行十六進位字串，是一個 gzip 檔（10 位元組標頭，可能有原始檔名欄位，DEFLATE 串流，CRC-32 與 ISIZE 尾端）。串流裡可能有動態霍夫曼區塊。請解壓，輸出還原資料的十六進位（小寫、不加空白）。', ref: REF_DEC('gzip', 'r.hex()'), gen: gen('gzip', 'multi', true) },
-    { id: 'blocks-three', want: 'df.block-types', st: '輸入一行十六進位字串，是一段原始 DEFLATE 串流。請統計各種區塊的個數：依序輸出未壓縮（BTYPE=00）、固定霍夫曼（BTYPE=01）、動態霍夫曼（BTYPE=10）三種區塊各有幾個，以空格分隔。', ref: REF_COUNTS('raw'), gen: gen('raw', 'multi') },
-    { id: 'blocks-total-zlib', want: 'df.block-types', st: '輸入一行十六進位字串，是一段 zlib 資料。請統計其中 DEFLATE 區塊的總數（含空的未壓縮區塊），輸出一個整數。', ref: REF_TOTAL('zlib'), gen: gen('zlib', 'multi') },
-    { id: 'lens-lit', want: 'df.code-lengths', st: '輸入一行十六進位字串，是一段原始 DEFLATE 串流，第一個區塊使用動態霍夫曼。請輸出該區塊字面／長度字母表中碼長不為 0 的符號，每行「符號 碼長」，依符號由小到大。', ref: REF_LIT('raw'), gen: gen('raw', 'dyn') },
-    { id: 'lens-both', want: 'df.code-lengths', st: '輸入一行十六進位字串，是一個 gzip 檔，其 DEFLATE 串流的第一個區塊為動態霍夫曼。請先輸出字面／長度碼表中碼長不為 0 的「符號 碼長」逐行，再輸出距離碼表中碼長不為 0 的「符號 碼長」逐行。', ref: REF_BOTH('gzip'), gen: gen('gzip', 'dyn') },
-    { id: 'lens-hdr', want: 'df.code-lengths', st: '輸入一行十六進位字串，是一段 zlib 資料，其中第一個動態霍夫曼區塊的表頭有 HLIT、HDIST、HCLEN。請輸出實際的字面／長度碼數（HLIT+257）、距離碼數（HDIST+1）與長度碼的碼長個數（HCLEN+4），以空格分隔。', ref: REF_HDR('zlib'), gen: gen('zlib', 'dyn') },
-    // holdout：另寫措辭（不同動詞、不同外殼稱呼、不同輸出說法），只量測，不教
-    { id: 'ho-zlib', split: 'holdout', st: '給一行十六進位，是 zlib 格式（開頭兩個位元組的標頭，結尾 Adler-32）的壓縮資料。請把它解壓縮並以小寫十六進位印出原始位元組，不要空白。', ref: REF_DEC('zlib', 'r.hex()'), gen: gen('zlib', 'any') },
-    { id: 'ho-gzip', split: 'holdout', st: '輸入一行十六進位字串，內容是 gzip 壓縮檔（標頭帶有檔名欄位）。請還原成原始文字並輸出。', ref: REF_DEC('gzip', 'r.decode()'), gen: gen('gzip', 'dyn', true) },
-    { id: 'ho-blocks', split: 'holdout', st: '輸入一行十六進位字串，是一段 deflate 位元流。請問這個串流裡共有幾個區塊？輸出一個整數。', ref: REF_TOTAL('raw'), gen: gen('raw', 'multi') },
-    { id: 'ho-lens', split: 'holdout', st: '輸入一行十六進位字串，是 zlib 壓縮資料，第一個區塊採動態霍夫曼。請列出字面／長度碼表中每個有被使用的符號及其碼長，每行「符號 碼長」，符號由小到大。', ref: REF_LIT('zlib'), gen: gen('zlib', 'dyn') }
-];
-H.main({ name: '領域包 inflate', packs: [IN], seeds: SEEDS, minSkeletons: 3, judge: { checker: 'tokens', timeoutMs: 60000 } });
+H.main({ name: '領域包 inflate', packs: [IN], seeds: H.loadSeeds(require('path').join(__dirname, 'seeds', 'domain_inflate.json')), minSkeletons: 3, judge: { checker: 'tokens', timeoutMs: 60000 } });

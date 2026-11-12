@@ -255,7 +255,7 @@
     patchCell('io.print_line', 'pl', { bool: 'print((@0 ? "True" : "False"), "\\n")', '*': 'print(($0), "\\n")' });
     patchCell('io.read_line', 'pl', 'fa_readLine()', ['fa_readLine']);
     patchCell('str.split_ints', 'pl', "[map { int($_) } split(' ', $0)]"); patchCell('str.split_ws', 'pl', "[split(' ', $0)]");
-    patchCell('dict.sorted_keys', 'pl', 'fa_sortedKeys($0)', ['fa_sortedKeys']); patchCell('conv.str', 'pl', '("" . ($0))');
+    patchCell('dict.sorted_keys', 'pl', 'fa_sortedKeys($0)', ['fa_sortedKeys']); patchCell('conv.str', 'pl', { bool: '(($0) ? "True" : "False")', '*': '("" . ($0))' }); // 布林要寫成 True／False（Perl 的 1 與空字串不對）
     patchCell('int.floordiv', 'pl', 'fa_floordiv($0, $1)', ['fa_floordiv']); patchCell('fmt.fixed', 'pl', 'sprintf("%." . ($1) . "f", $0)');
     HELPERS.pl = {
         fa_readLine: 'sub fa_readLine { my $l = <STDIN>; return "" unless defined $l; $l =~ s/\\r?\\n$//; return $l; }',

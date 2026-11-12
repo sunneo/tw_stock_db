@@ -7,11 +7,11 @@
  * 限制：全搜尋只涵蓋整數像素與單一參考；不含運動向量預測、子像素搜尋、加權預測。 */
 (function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaDomainH264motion = factory(); })(typeof self !== 'undefined' ? self : this, function () {
     'use strict';
-    const nums = (N, I) => (I.inputs[0].k === 'list' ? N.ls[0] : '[int(t) for t in ' + N.s[0] + '.split()]');
+    const nums = (N, I) => (I.inputs[0].k === 'list' ? N.ls[0] : I.inputs[0].k === 'scalars' ? '[' + N.sc.join(', ') + ']' : '[int(t) for t in ' + N.s[0] + '.split()]');
     function make(PAR) {
         const { code } = PAR.dsl;
         const D = (id, algo, label, slots, py, extra) => Object.assign({ id, algo, paradigm: 'codec-motion', label, slots, py }, extra || {});
-        const numIn = (I) => I.inputs.length === 1 && (I.inputs[0].k === 'list' || (I.inputs[0].k === 'str' && I.inputs[0].raw));
+        const numIn = (I) => I.inputs.length === 1 && (I.inputs[0].k === 'list' || (I.inputs[0].k === 'scalars' && I.inputs[0].type === 'int') || (I.inputs[0].k === 'str' && I.inputs[0].raw));
         const skeletons = [
             D('h264.motion.sad', 'h264-motion-sad', '運動搜尋（全搜尋 SAD）：輸入一行 52 個整數，前 16 個為目前區塊的樣本（4 列、每列 4 個，依列排列），其後 36 個為參考窗的樣本（6 列、每列 6 個，依列排列）。參考窗的左上角對應位移 (−1, −1)。對位移 dx 與 dy 各取 −1、0、1 共九個位置，計算目前區塊與參考窗對應樣本的絕對差總和 SAD。依 dy 由小到大、同一 dy 內依 dx 由小到大檢查，只有嚴格小於目前最小值時才更新，因此平手取先出現者。輸出三個整數：最佳的 dx、dy 與該位置的 SAD。',
                 [], (c, N, I) => code(['v = ' + nums(N, I), 'cur = [v[0:4], v[4:8], v[8:12], v[12:16]]', 'win = [v[16 + 6 * r:22 + 6 * r] for r in range(6)]',

@@ -104,6 +104,9 @@
 | `domain_linuxreal_core.js` | 真實 Linux 程式設計：環境變數查詢、argv、子行程環境、文字檔轉換、多檔案合併、二進位檔轉換、本機 socket 回應、fork＋管線、子行程管線（測試帶 args／env／files／needs，由判題器真的執行；fork 在 Windows 走 WSL） | 19/19（選項反序 19/19） | 第一次量測 4/5（未解 ho-env：偵測詞沒有「找不到／查」）；補通用詞彙後 5/5，**這一題不再獨立** | 本批 |
 | `domain_lzma_core.js` | LZMA alone／LZMA2／LZMA2＋BCJ／xz 容器解碼（range coder、literal、match、rep0～3、距離槽、對齊位元、LZMA2 分塊、x86 BCJ、delta 濾鏡） | 7/7（反序 7/7） | 第一次量測 2/3（未解：敘述以「給一行十六進位」開頭，讀取器只認「輸入…」）；讀取器加「給一行」後 3/3，**這一題不再獨立** | 本批 |
 | `domain_binfmt_core.js` | xz 標頭（檢查類型名稱／判決字樣／表外格式從敘述抽）、xz 頁尾、8 位元調色盤 BMP 寫出（十六進位或十進位調色盤、列序、解析度） | 3/3（反序 3/3） | 見下方註記 | 本批 |
+| `domain_gif_core.js`（2026-11-12 接手） | GIF 單張影格讀寫：跳過擴充、全域／局部調色盤、LZW 變長碼（解碼）；確定性貪婪 LZW 與子區塊（寫出） | 7/7（選項反序 7/7） | 0/2（ho-dec-rrggbb、ho-enc-pack 未解，未拿來教）；Pillow 外部雙向 16/16、16/16 | 34ddf6d6 |
+| `domain_pcx_core.js`（2026-11-12 接手） | PCX 版本 5 讀寫：128 位元組表頭、RLE 逐掃描線、單平面調色盤或三平面 RGB | 7/7（選項反序 7/7） | 1/2（ho-pcx-enc 未解）；Pillow 外部雙向 12/12、12/12 | fcd48a46 |
+| `domain_jpeg_core.js`（2026-11-12 接手） | JPEG 灰階基線讀寫：DQT／DHT 解析、霍夫曼 DC／AC、整數 IDCT／FDCT；寫出用 Pillow 抽出的標準表 | 5/5（選項反序 5/5） | 1/2（ho-jpg-enc 未解）；Pillow 外部雙向最大差 1（10/10、8/8） | 832b49df |
 
 - binfmt 的 holdout 誠實紀錄：寫完 `xz.header-parse`／`bmp.write8` 後另寫的第一批 holdout（ho-xz-valid、ho-bmp8）第一次 1/2（ho-xz-valid 因「輸出 UNKNOWN(n)」被當成第三種失敗字樣而失敗，補通用規則）；第二批 6 題第一次 3/6（未解：以空白隔開的位元組輸入、xz 頁尾、十進位調色盤），補通用能力（讀取器認「以空白隔開的位元組」、新增 `xz.footer-parse`、調色盤寫法槽位）後 6/6；第三批（補完後才寫、措辭與格式都不同：成功時只輸出種類名稱、輸入列已是由下往上）第一次 **0/2**（偵測詞沒有「輸出…BMP」、成功例句沒有前綴時抽不到），補通用規則後 8/8。**只有最後一批的第一次量測 0/2 是乾淨的泛化數字；之後的 8/8 都是補過規則的結果，不代表泛化。**
 
@@ -165,3 +168,221 @@
 | 0 設計 | ✔ 本節 | — | — |
 | 1 位元級基礎 | train 16/16 通過（選項反序 16/16）；holdout 1 題未解、只量測（見 `DESIGN.media-codec-domain.md`） | 見 git log（階段 1 修正提交） | train 16/16、反序 16/16、holdout 6/7 |
 | 2–5 | 未開始 | — | — |
+
+## 接手（2026-11-12，blockly-finish 工作階段，context 約 23% 時寫）
+
+### 本批已提交（分支 claude/blockly-finish-5f054e，基底 desktop-app 的 63ee38e6）
+| 項目 | 提交 | 量測（無模型，我實跑過） | 需嵌入 |
+|---|---|---|---|
+| inflate：gzip 外殼的 gz_skip 輔助操作判斷（need() 比對槽位名而非運算式） | bc5f303a | train 8/10→10/10（反序 10/10）；holdout 2/4 不變（ho-zlib、ho-gzip 未解） | domain_inflate_core.js |
+| tar PAX：偵測詞 `'prefix\s*欄'` 少了一個反斜線，改 `\\s*` | dd6adfc6 | train 9/10→10/10（反序 10/10）；holdout 1/4→2/4（ho-gnu、ho-enc 未解） | domain_tarx_core.js |
+| BMP 進階複核（domain_bmpx.test.js） | 不需改 | train 10/10、holdout 4/4 | — |
+| PNG 讀寫新領域包 domain_png_core.js＋測試 | 7629e29c | train 6/6（解碼 4 種色彩型別、寫出 2 種）；holdout 1/2（ho-enc-rgba 未解） | domain_png_core.js |
+| run-core-tests.js 登記 inflate／tarx／bmpx／png | 7629e29c | 未整套跑（會超過兩分鐘，見下） | — |
+
+Pillow 外部驗證：寫出端 20/20、解碼生成器 30/30（python3 的 Pillow 9.0.1；python3.13 的 Pillow 壞掉，別用）。
+
+### 待辦（接續點，依序）
+1. **GIF 讀寫**（使用者明確要求，未開始）：仿 domain_png_core.js 的寫法——helpers 放 LZW 解碼／編碼、區塊剖析；寫出端輸入同樣用「原始封包」單一十六進位（讀取器不能同時讀整數行＋十六進位行，見下）。測試仿 domain_png.test.js（Python 產生器＋獨立參考解＋Pillow 外部驗證）。
+2. **PCX 讀寫**（未開始）：8 位元調色盤與 24 位元，RLE（0xC0 標記）；同上做法。
+3. **JPEG 讀寫**（未開始）：基線 Huffman＋8×8 DCT；寫出端需固定量化表與 Huffman 表，對照 Pillow（quality 固定）。工作量最大，可能分兩批（先解碼，後編碼）。若做不到，要在此寫出具體阻礙（目前判斷：純 Python 逐像素 IDCT 在判題器 30 秒內對小影像應可行；待驗證）。
+4. **holdout 未解**：inflate ho-zlib、ho-gzip；tarx ho-gnu、ho-enc；png ho-enc-rgba。未讀敘述、未拿來教；要補時只補通用能力，不照 holdout 句型加詞。
+5. **G1–G18 逐項核對**（使用者要求寫進 DESIGN.blockly-gaps.md 末尾）：尚未做。現況依 `DESIGN.blockly-curriculum.md` §2 的表（G1–G18 大多已補，G14–G16 已於 2026-11-10 補，G18 讀取器偵測已補、模型部分超出）；核對後要寫「已補＋提交 hash／尚缺＋原因」。
+6. 整套核心測試：一天一次，未跑。
+
+### 讀取器限制（新發現，未修）
+`algo_intent_core.js` 的 readToolInput 無法同時讀出「整數行（如 `w h c`）」與「十六進位行」兩種輸入：不論措辭，最後只留一種（試過「輸入三個整數 w h c，第二行一個十六進位字串 px」、「第一行有三個整數 w h c」、「輸入一行整數…，再輸入一行十六進位…」等，均失敗）；「輸入一串整數」單獨也讀不出。PNG 寫出端因此改用單一十六進位封包。要補請改 readToolInput（共用檔，會影響 60 題回歸），需另排時間並跑 bench_coverage。
+
+### 其他要注意的事
+- **分支重設**：本工作階段開始時工作樹分支 `claude/blockly-finish-5f054e` 在 f8089636，我為了接 desktop-app 執行過 `git checkout -B claude/blockly-finish-5f054e desktop-app`，分支移到 63ee38e6。f8089636 仍在 main 的歷史上（`git branch --contains f8089636` 顯示 main），可用 `git branch -f claude/blockly-finish-5f054e f8089636` 還原；本批提交都是接在 63ee38e6 之上。
+- 提交身分：本機沒有 git user.name／email，本批每次提交用 `git -c user.name=hungfu.lee -c user.email=hungfu.lee@insyde.com commit`（只這次有效，沒改全域設定）。
+- 提交結尾的 Co-Authored-By 依最新系統提示寫成 Haiku 5.5（早先提示是 Sonnet 5.5）。
+- 工作樹有追蹤的 `renderer/src/catalog/__pycache__/stub_to_types.cpython-310.pyc` 會被 Python 測試改寫，提交前要 `git checkout --` 還原，不要提交。
+- 測試環境：`FA_TS_DIR=$PWD/renderer/vendor/tree-sitter FA_PYTHON=python3.13`；`node scripts/run-core-tests.js` 會在 require 時整套執行（不要用 node -e require 它）。
+
+### 變基與重跑（2026-11-12 續）
+- 分支已變基到本機 `desktop-app` 的 `4c5b5e15`（含 `dbf72cb5`）。變基後的提交：`87e0de60`（同伴的 setup-linux，非本批）、`fbed8762` inflate、`1a90bea5` tarx、`fb5de2c5` png＋測試登記、`452ed817` 接手節。舊 hash（bc5f303a、dd6adfc6、7629e29c、b0fd3b12）已失效。
+- 變基後實跑（無模型）：inflate train 10/10、holdout 2/4；tarx train 10/10、holdout 2/4；bmpx train 10/10、holdout 4/4；png train 6/6、holdout 1/2。各檔 `20 passed` 或 `12 passed`、`0 failed`。
+- 同伴提出的「以 start_session 啟動接手者」未執行：該 initiation 需要使用者本人在本對話的指示，同伴訊息不能代替。接續由使用者本人決定。
+- 尚缺（與前節相同）：GIF、PCX、JPEG 讀寫；holdout 未解題（ho-zlib、ho-gzip、ho-gnu、ho-enc、ho-enc-rgba）；G1–G18 逐項核對；整套核心測試。
+
+## 接手（2026-11-12，blockly-finish-2，指揮接續）
+
+### 本批已提交
+| 項目 | 提交 | 實跑（無模型） |
+|---|---|---|
+| GIF 讀寫 domain_gif | 34ddf6d6 | train 7/7、反序 7/7、holdout 0/2；Pillow 寫出 16/16、解碼 16/16 |
+| PCX 讀寫 domain_pcx | fcd48a46 | train 7/7、反序 7/7、holdout 1/2（ho-pcx-enc）；Pillow 12/12、12/12 |
+| JPEG 灰階基線 domain_jpeg | 832b49df | train 5/5、反序 5/5、holdout 1/2（ho-jpg-enc）；Pillow 10/10、8/8（最大差 1） |
+| G1–G18 核對 | 本次提交 | 見 DESIGN.blockly-gaps.md §8（存在性核對，不是逐項重跑） |
+| 讀取器「整數行＋十六進位行」 | 本次提交 | 探測 `[scalars, hex]` 成立；尚無消費端骨架 |
+
+### 完整核心測試（一次）
+`run-core-tests.js` 完整跑完：通過 247／299 組，失敗 52 組（新增 51、既有 1）。多數是本機缺件而非邏輯錯誤：`js-yaml`、tree-sitter 的 c_sharp／cpp／java／javascript wasm、`python -c` 參數、g++／dotnet、ENOENT（wiki 目錄）、LoRA 的 manifest 雜湊等。
+- `領域包 par`（63a0236c 的既有半成品）：用原始讀取器也是 0/1 失敗，與本次修改無關。
+- 未能證明的部分：51 個「新增」失敗沒有做基準（原始讀取器）全量對照，只對 par 做了對照。下一步：用 `git stash`-free 方式（暫換檔案）對失敗的群組逐一基準比對，確認只有環境原因。
+- 測試執行會改寫 `test-reports/` 與 `__pycache__`，這些不提交。
+
+### 未完成（接續點）
+1. **holdout 未解題**（ho-zlib、ho-gzip、ho-gnu、ho-enc、ho-enc-rgba；GIF ho-dec-rrggbb、ho-enc-pack；PCX ho-pcx-enc；JPEG ho-jpg-enc）：指揮已授權查根因、可補敘述或教法。注意：補過的題之後只能當「補過後」數字，不能當泛化證據。
+2. **讀取器兩段輸入的消費端**：寫一個接受 `[scalars, hex]` 的骨架（如 PNG／GIF 寫出的「w h c」＋十六進位像素），再量測。
+3. **環境缺件**：安裝或記錄 js-yaml、wasm 等後重跑對應群組，確認沒有與本批有關的失敗。
+
+### 其他要注意的事
+- 本機沒有 git 身分：提交用 `git -c user.name=hungfu.lee -c user.email=hungfu.lee@insyde.com commit`，不改全域。
+- Python 測試用 `FA_PYTHON=python3`（Pillow 9.0.1）；python3.13 的 Pillow 壞掉。
+- 判題器 DBG 會寫到 `CLAUDE_JOB_DIR/tmp/`，要先建目錄，否則變成 JUDGE_ERROR（已遇到）。
+- 指揮的 `kh` 修改在 `algo_intent_core.js` 的 `readToolInput` 最後一段（搜尋 `const kh`）。
+
+### 交接狀態（2026-11-12，context 39%，指揮要求）
+- **核心測試（一次，已結束）**：`scripts/run-core-tests.js` 完整跑完，日誌 `$HOME/.cache/blockly-run/core-full.log`（EXIT=1）。摘要：通過 247／299 組，失敗 52 組（新增 51、既有 1）。失敗群組清單：`grep -E '^FAIL' core-full.log`。日誌裡的 PASS／FAIL 行數（248／67）含明細行，以摘要行為準。
+- **沒有我的背景程序在跑**。pid 1021400 是 `matrix-finish-4-48e1e0` 工作階段的程序（cwd 不在本 worktree），不是本批的，本交接不處理也不殺。
+- 舊的 `core-after.log`（被中斷）與 `core-after-killed-partial.log` 只是過程紀錄，以 `core-full.log` 為準。
+- **par 失敗已對照**：`領域包 par`（63a0236c 既有半成品）用原始 `algo_intent_core.js` 也是 0/1 失敗，與讀取器修改無關。
+
+### 未完成與精確接續點（給 blockly-finish-3）
+1. **51 組新增失敗的基準對照（未做）**：多數為環境缺件（js-yaml、tree-sitter wasm、python 參數、g++／dotnet、wiki 目錄、LoRA manifest 雜湊）。接續：逐組暫換 `algo_intent_core.js` 為 `$HOME/.cache/algo_intent_core.orig.js`（或改用 `git show 4c5b5e15:…`）跑該群組，確認只有環境原因；**跑完務必還原**（`algo_intent_core.new.js` 是修改版）。注意：`$HOME/.cache` 內的暫存檔可能已不在，以 `git show 1698816c^:renderer/src/uml/algo_intent_core.js` 取得原版。
+2. **holdout 未解題與未過題根因（未做）**：ho-zlib、ho-gzip、ho-gnu、ho-enc、ho-enc-rgba；GIF ho-dec-rrggbb、ho-enc-pack；PCX ho-pcx-enc；JPEG ho-jpg-enc。指揮已授權查根因、可補敘述或教法；補過的題之後只當「補過後」數字。
+3. **讀取器兩段輸入的消費端（未做）**：讀取器已能產生 `[scalars, hex]`（`AI.reader("輸入三個整數 w h c，第二行一個十六進位字串 px。…")`），尚無骨架接受此形狀。接續：寫一個 `hexIn`＋整數行的骨架（如 PNG／GIF 寫出的「w h c＋像素」），再量測 train／holdout。
+4. **G1–G18 重跑（未做）**：目前只是存在性核對（`DESIGN.blockly-gaps.md` §9），沒有逐項重跑。
+
+### 本批提交（本交接節所在的提交）
+34ddf6d6（GIF）、fcd48a46（PCX）、832b49df（JPEG）、1698816c（讀取器＋G 核對＋接手節）。
+## 接手（blockly-finish-3，2026-11-12，無模型）
+
+- 起點：分支 `claude/blockly-finish-3-e91198` 在 `832b49df`（jpeg）。尚未收到前一位最後接手節的提交編號，本批在 jpeg 之上工作；收到後要 `git reset --hard <該提交>`（本批只新增文件，沒有未提交的程式改動，reset 安全）。
+- 本批新增提交：`DESIGN.blockly-gaps.md` §9（holdout 根因、G1–G18 核對、待改善）與本節。**沒有改任何程式**（讀取器未動）。
+- 實跑：七個領域包（inflate、tarx、bmpx、png、gif、pcx、jpeg）全部 `0 failed`；holdout 未解 9 題的根因見 `DESIGN.blockly-gaps.md` §9.2。
+- 整套核心測試：前一位背景跑的結果 247／299，52 失敗，多為環境缺件（js-yaml、acorn、tree-sitter 路徑、Python 3.13 的 Pillow、缺 g++／dotnet）；詳見 gaps §9.1、§9.4。
+- 接續點（依序）：
+  1. 讀取器改動（共用 `algo_intent_core.js`）：(a) 格式名優先於輸入形狀詞與像素詞（修 G17 假陽性 ho-gzip、ho-jpg-enc）；(b) 補 zlib、GNU tar、GIF／PCX／JPEG／PNG 寫出端的通用題型詞；(c) 兩段輸入（整數行＋十六進位行）。每一步都要跑全部領域包 train＋選項反序，不得退步，並跑 `bench_coverage`。
+  2. 在主工作樹重跑整套核心測試，把環境失敗與真回歸分開。
+  3. G16 概念教學待補。
+
+## 接手（blockly-finish-3 續，2026-11-12，無模型）
+
+環境：工作樹 `desktop-app/node_modules` 為符號連結（未追蹤，不提交）；測試用 `PATH` 前置一個把 `python` 指向 `python3` 的暫時 shim（只在測試行程的環境裡，不改系統）；`FA_TS_DIR=renderer/vendor/tree-sitter`、`FA_PYTHON=python3`；限 2 核、nice。
+
+### 1. inflate、tarx 的「原版讀取器下失敗」：重現不了
+- 現行分支（含 1698816c）：inflate train 10/10、holdout 2/4；tarx train 10/10、holdout 2/4；皆 `20 passed, 0 failed`。
+- 暫換成 832b49df 的舊讀取器跑：結果相同（`20 passed, 0 failed`）。測完已還原，`git diff` 確認無改動。
+- 判定：**回報但重現不了**。與平行運算那邊的回報不同，可能是當時工作樹缺 node_modules 或舊檔。不改程式。
+
+### 2. 整套核心測試（前一位與本批）
+- 本批實跑：`core-run2.log`，**272／299 通過，27 失敗**（新增計數 27、既有 0）。
+- 分類（依日誌字串，未逐項重跑）：
+
+| 失敗項 | 領域 | 判定 |
+|---|---|---|
+| 領域包 par（train 16/22） | 平行運算 | 真失敗，**與讀取器無關**（舊讀取器同結果）；交平行運算接手者 |
+| 領域包 linuxreal（sock-len） | blockly（Linux 真實） | **單獨重跑 38 passed、0 failed，未重現**；核心測試時的失敗可能與負載或埠有關，待主工作樹再跑 |
+| 行為描述（第一層）、ENOENT（tree-sitter 快取路徑） | 行為分析 | 非 blockly；路徑指向他人工作樹，屬環境 |
+| C++／C#／Perl／Ruby 輸出器實跑、convert_code 的 to_uml／struct | 程式轉換 | 非 blockly；本批未查 |
+| 矩陣 VM 反編譯 ×2（Invalid regular expression） | 矩陣 | 非 blockly；正規表示式語法錯誤，是該領域 bug |
+| 判題器 exec 逾時孫行程、程式優化對照表（keys-in 量時間） | 判題器／優化 | 非 blockly |
+| 訓練工作室（GUI、資料匯入、內建資產、版面、假伺服器）、網頁版 LoRA、原生推論、harness | 訓練工作室／LoRA | 非 blockly；含嵌入清單 sha256 不一致（需 refreeze 指令） |
+
+**與讀取器修改有關的失敗：沒有發現**（領域包中只有 par 失敗，且與讀取器無關）。非 blockly 的 26 項本批未修，原因是跨多個領域，超出 blockly 範圍，逐項交各領域。
+
+### 3. holdout 未過題與 G1–G18
+- 未改動（本批時間與 context 不足）。根因與補法見 `DESIGN.blockly-gaps.md` §9.2，仍有效。
+- G1–G18：仍是存在性核對（§9.3），未逐項重跑。
+
+### 4. 接續點
+1. 讀取器通用題型詞與假陽性（ho-gzip→hex-decode、ho-jpg-enc→bmp-gray）：每改一步都跑七個領域包（train＋選項反序）並跑 `bench_coverage`。
+2. holdout 未解 9 題：依 §9.2 的補法做，不照句型加詞。
+3. linuxreal 在主工作樹重跑一次確認 sock-len。
+4. 非 blockly 的 26 項交各領域。
+
+### 5. 注意
+- 測試執行會改動已追蹤的 `test-reports/`、`__pycache__/stub_to_types.cpython-310.pyc`、`skills/image-decompose-redraw/data/parts_builtin.json`；且產生未追蹤的 `renderer/vendor/tree-sitter/*.wasm`。提交前要 `git checkout --` 還原前三者，未追蹤的不要加入。
+- 背景腳本 `par_old.sh` 已結束；工作樹 `algo_intent_core.js` 與 HEAD 一致。
+
+## 讀取器改動（blockly-finish-3，2026-11-12）
+- 改了什麼：`algo_intent_core.js` 的 `readToolInput` 內的 `one()`，新增一條規則：「第一行三個整數 w h c」這類具名整數行（`[兩三四五\d]個?(正)?(整數|小數) 名字…`）讀成 `scalars` 輸入，不再掉成 `str raw`。
+- 為什麼：舊版對「第一行三個整數 w h c，第二行一個十六進位字串 px」只讀出 `str s`＋`hex h`，整數行丟失（finish-2 記載的兩段輸入限制之一）。
+- 向下相容：只新增一條 `return` 規則，原本能讀的句型（「第一行 n」「整數 n 行」等）走到它之前不變；只有「整數／小數＋具名」的 `one()` 子句才會命中。
+- 回歸（實跑，2 核、nice 19）：domain_inflate 20/20、tarx 20/20、bmpx 20/20、png 12/12、gif 14/14、pcx 14/14、jpeg 10/10、linuxreal 38/38、dsp 72/72、py_paradigms 89/89、py_lessons 17/17、linux_paradigms 125/125、py_uml_pipeline 7/7；par 16/22 train、3/5 holdout（與改前相同）。holdout 數字與改前相同。
+- 已知風險：同名欄位（整數行 `h` 與十六進位 `h`）會撞名，這是探針用的名字；真實題目應取不同名字。
+
+## 接手（blockly-finish-3，續二，2026-11-12 收尾）
+
+### 本批提交（依時間）
+| 提交 | 內容 |
+|---|---|
+| 8867fdab | 接手文件（§9 holdout 根因、G1–G18 核對）重新套在 f167c72e 上 |
+| 50d9f720 | 接手節續寫（核心測試分類） |
+| 8e0c3e19 | 讀取器：具名整數行（「第一行三個整數 w h c」）讀成 scalars，修兩段輸入限制 |
+| c62dfd43 | holdout 九題補法（各領域包 algos 正則：zlib／gzip、GNU 長檔名、PAX 欄位名、做成／編成／解開） |
+| 6c0e2492 | G1–G18 收尾（實跑與回報分開標示） |
+| 1b3b2fe6 | 讀取器 G17：點名具體格式時，泛用 hex／bmp 算法不搶先 |
+
+### 結果
+- **holdout 九題全數解出**（inflate 4/4、tarx 4/4、png 2/2、gif 2/2、pcx 2/2、jpeg 2/2）。**但 holdout 已不乾淨**：補的詞是讀了這些句子後加的（見 `DESIGN.blockly-gaps.md` §10.2）。要得到泛化數字，必須另寫新 holdout。
+- **讀取器兩段輸入**：已修（8e0c3e19），具名整數行可以讀。
+- **G17 讀取器假陽性**：已修（1b3b2fe6），ho-gzip 與 ho-jpg-enc 不再被錯認。
+- **G1–G18**：見 `DESIGN.blockly-gaps.md` §11；實跑 G1、G2、G4、G5、G7、G8、G9、G13、G14、G15、G16、G17；G3、G6、G10–G12、G18 為回報。
+- **核心測試 27 失敗中的 blockly 項**：linuxreal（單獨重跑 38/38，未重現）；其餘非 blockly，已在上一節分類。par 失敗與讀取器無關（舊讀取器同結果），屬平行運算領域，未修。
+
+### 回歸（每次改動後實跑，2 核、nice 19）
+inflate 20/20、tarx 20/20、bmpx 20/20、png 12/12、gif 14/14、pcx 14/14、jpeg 10/10、linuxreal 38/38、lzma 14/14、linuxtext 56/56、binfmt 6/6、dsp 72/72、py_paradigms 89/89、py_lessons 17/17、linux_paradigms 125/125、py_uml_pipeline 7/7。par 16/22 train、3/5 holdout（與改前相同，最後一次實跑在讀取器改動前後都是這個數字）。
+
+### 接續點（下一棒）
+1. **寫新的 holdout**（不讀既有 holdout 敘述，只看規格），對 inflate、tarx、png、gif、pcx、jpeg 各 1–2 題，量測泛化。這是目前最重要的缺口。
+2. G16 概念教學、G18 實跑（長敘述題）。
+3. 核心測試 27 項中，非 blockly 的 26 項交各領域；`par` 交平行運算接手者（其觀察已寫在本節前文）。
+
+### 注意
+- 測試執行會改動 `test-reports/`、`__pycache__`、`parts_builtin.json`，提交前要還原；未追蹤的 wasm、`node_modules` 符號連結不要加入。
+- 背景 `&` 執行的測試會在第一個測項後就結束（已遇到兩次），長的測試改用前景＋`timeout` 跑。
+
+## 接手（blockly-finish-3，續三，2026-11-12）
+
+- **乾淨 holdout 已量一次**：27 題（inflate 3、tar 3、BMP 3、PNG 3、GIF 3、PCX 3、JPEG 3、gzip 3、zlib 3），**0／27 解出**。凍結聲明與根因見 `DESIGN.blockly-gaps.md` §12。測試檔 `renderer/src/uml/domain_fresh_holdout.test.js`。
+- 根因：這批是「讀欄位／數一數」的題型，現有 7 個領域包都是「解碼成完整內容／編碼成完整檔」的骨架，讀取器對 26 題 `algo=null`，tar 3 題有 tar-parse 但沒有對應骨架。
+- **這批 holdout 之後不再碰**（不為它調教法）。之後的教法只能用新的 train 題。
+- 下一步（新 train 題，措辭與這批不同）：
+  1. 補「欄位查詢（位移＋寬度＋端序）」範式，起點是 `domain_binfmt_core.js`（已有欄位表概念，讀取器沒把「欄位、位移、小端」對到它）。
+  2. 補「計數」範式（標記出現次數、成員數）。
+  3. 完成後另寫一組新 holdout，同樣凍結後只量一次。
+- 注意：舊的 holdout 已不乾淨（見 §10.2）；乾淨的數字只看 §12。
+
+## 接手（blockly-finish-3，續四，2026-11-12，context 約 28% 時寫）
+
+本批**尚未開始**「讀欄位」「計數」兩個範式，也沒有寫 holdout v2。原因：context 已接近門檻，兩個範式各要寫骨架、train 題、選項反序與實跑，量不夠做完；先交接，不做半成品。
+
+### 下一棒要做（依序）
+1. **讀欄位範式**（`binfmt` 或新的小包）：骨架輸入是一行十六進位（或一行十進位位元組），輸出是固定位移、寬度、端序（大端／小端）、有無正負號的欄位值。題目的敘述要用「欄位」「位移」「小端／大端」這類詞；讀取器要能把它對到此範式（目前 `domain_binfmt_core.js` 有欄位表概念，但讀取器沒對上，見 §12）。
+   - 新 train 題至少 4 題，**不得取自 §12 那 27 題的題型細節**（那 27 題：BMP 寬高、PNG 位元深度、GIF 螢幕大小、PCX 視窗、JPEG SOF0、gzip 檔名／mtime／ISIZE、zlib 標頭／Adler-32）。可以用自己的情境，例如「一個自訂的 8 位元組標頭」這類題。
+   - 實跑：原敘述、改寫、選項反序都要 AC，不給課、0 次模型。
+2. **計數範式**：輸出是某標記（固定位元組序列、某字元、某結構）出現次數，或成員數。同樣至少 4 題 train，與 (1) 分開寫。
+3. **holdout v2**：每個格式 3 題（inflate、tar、BMP、PNG、GIF、PCX、JPEG、gzip、zlib 共 27 題），題型與 train、舊 holdout（含 §12 那 27 題）都不同。寫好後**凍結、只量一次**，檔名建議 `renderer/src/uml/domain_fresh_holdout_v2.test.js`。數字與 §12 的 0/27 並列寫進 §12，標明兩批差異。
+4. 舊的 27 題 holdout 保留為歷史紀錄；不為它調教法。
+
+### 不能做的事
+- 不改 holdout v2 的題目或教法去湊數字；量完不重試。
+- 讀取器改動要跑全部領域包（見前幾節的回歸清單），不退步。
+
+### 目前狀態（已驗證）
+- 乾淨 holdout 第一批：`domain_fresh_holdout.test.js`，0／27，凍結紀錄在 §12。
+- 其餘提交見前文（最新 `e8ac4926` 為續三接手節）。
+
+## 接手（blockly-finish-3，續五，2026-11-12）
+
+- **做了什麼**：新增範式 `renderer/src/uml/domain_fieldcount_core.js`（`bin.field-read` 固定位移欄位讀取；`bin.count-mark` 位元組標記出現次數；`bin.count-byte` 位元組值個數）＋ train 12 題 `domain_fieldcount.test.js`（實測 12/12；選項反序 12/12）；`scripts/run-core-tests.js` 登記一行。
+- **提交**：`17ee6851`（新範式＋train）；`2840bf79`（乾淨 holdout v2 凍結，量測前）；本節與 §13 的記錄由之後的提交加入（見 git log）。
+- **乾淨 holdout v2**（27 題，凍結後只量一次）：**12／27 解出**。讀欄位 0／15（讀取器的觸發詞要求「欄位寬 N 位元組」，v2 用了別的說法，harness 回報「沒有配方」）；計數 12／12（範式名稱未記錄，推測但未驗證）。與 v1 的 0／27 並列見 `DESIGN.blockly-gaps.md` §13。
+- **沒做的**：未嵌入（`embed-code-ui.js` 清單與 `floating-assistant.js` 的 BEGIN／END 標記未加，因不跑 embed，且不改嵌入區塊）；未發布；未跑全套核心測試（本批沒改任何既有共用程式，只新增檔案與一行測試登記，新包只在它自己的測試行程中註冊，不影響其他測試）；未重跑 v1。
+- **接續點**：(1) 擴充讀欄位的觸發詞並用新措辭的 train 題教（不改 v2）；(2) 另寫 holdout v3；(3) 計數的「成員數」型；(4) 嵌入時要一併做：`embed-code-ui.js` 清單、`floating-assistant.js` 的 FIELDCOUNT 標記、`run-core-tests.js`（已登記）。
+- **注意**：工作樹有未追蹤的 `desktop-app/node_modules` 符號連結（指向主工作樹的 node_modules），不要提交；測試用 `FA_TS_DIR=/tmp/fa-ts-cache`。
+## 6. 平行運算與排程領域（2026-11-11 立項）
+
+使用者原話：「找到程式裡面適合平行的演算法，用類似 openmp 的 block schedule 跟 cyclic schedule 來加速影像壓縮、檔案壓縮、撰寫破壞的聲音跟影像壓縮演算法」，回覆「列為新領域」。詳細數字與缺口見 `DESIGN.parallel-domain.md`。
+
+| 子領域 | 狀態 | 範式／內容 | 提交 |
+|---|---|---|---|
+| 排程原語（static 區塊、cyclic、chunked、dynamic、guided）、負載與 span、推薦排程 | ◐ | `domain_par_core.js`（4 個骨架）、`par_sched_core.js`；程式產生器與 JS 參考逐行相同 646／646；單元測試 4212 項 | 本批 |
+| 真的平行執行：OpenMP 區塊 DCT＋量化（有損影像）、多行程分塊 zlib（無損檔案） | ◐ | `tests/parallel/`；各排程與循序版逐位元相同（8 組） | 本批 |
+| 相依分析（攜帶相依的距離型波前）、兩趟前綴和／位元位移、框式量化（block／cyclic／dynamic） | ◐ | `domain_par2_core.js`：train 12/12、holdout 2/3；迴圈程式碼讀取未做 | 前批 |
+| 歸約、競爭條件（原子／臨界區／無同步）、熵編碼位元打包、整數 Haar 有損框變換（block／cyclic／dynamic／guided） | ◐ | `domain_par3_core.js`：train 16/16（反序 16/16）、holdout 3/4；`tests/parallel/race_omp.c` 真執行；MDCT、2 維 DCT 判題、霍夫曼表未做（見 DESIGN.parallel-domain.md §4） | 本批 |
+| 排程原語種子題（train／holdout） | ◐ | `domain_par_core.js`：train 22/22、holdout 3/5；文法用 git 追蹤的 renderer/vendor/tree-sitter | 本批 |

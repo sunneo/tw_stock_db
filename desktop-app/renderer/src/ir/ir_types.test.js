@@ -10,7 +10,7 @@ const C2U = require('../uml/py_code2uml_core.js'), PB = require('../uml/py_block
 let pass = 0, fail = 0; const t = async (name, fn) => { try { await fn(); pass++; } catch (e) { fail++; console.error('FAIL ' + name + '\n   ' + String(e.message).split('\n').slice(0, 20).join('\n   ')); } };
 const fa = fs.readFileSync(path.join(__dirname, '..', 'floating-assistant.js'), 'utf8').replace(/\r\n/g, '\n');
 const DIR = process.env.FA_TS_DIR || [path.join(os.homedir(), '.cache', 'fa-ts'), path.join(os.tmpdir(), 'fa-ts-cache'), '/tmp/fa-ts-cache'].find((d) => fs.existsSync(path.join(d, 'tree-sitter-python.wasm')));
-const MING = process.env.FA_MINGW_BIN || 'J:\\msys64\\mingw64\\bin'; const GPP = path.join(MING, 'g++.exe'); const ENVM = Object.assign({}, process.env, { PATH: MING + path.delimiter + (process.env.PATH || '') });
+const MING = process.env.FA_MINGW_BIN || 'J:\\msys64\\mingw64\\bin'; const GPP = fs.existsSync(path.join(MING, 'g++.exe')) ? path.join(MING, 'g++.exe') : 'g++'; /* Windows 用 mingw64；Linux 用 PATH 上的 g++ */ const ENVM = Object.assign({}, process.env, { PATH: MING + path.delimiter + (process.env.PATH || '') });
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'irty-'));
 (async () => {
     const a = fa.indexOf('/* IR-BEGIN */'), b = fa.indexOf('/* IR-END */'); assert.ok(a > 0 && b > a); const H = new Function(fa.slice(a + '/* IR-BEGIN */'.length, b).replace('const FaIrBundle', 'var FaIrBundle') + '\nreturn FaIrBundle;')();
@@ -47,7 +47,7 @@ const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'irty-'));
         const e2 = bridge.emit(py, 'java', 'm', { 'total.a': 'list<int>', 'total.return': 'int' }); assert.ok(e2.ok, errs(e2));
     });
     // ④ 真 g++ 編譯補完的 C++，與 node 跑原 JavaScript 對照
-    if (!fs.existsSync(GPP)) console.log('  · 略過 g++ 實跑：找不到 ' + GPP);
+    if (cp.spawnSync(GPP, ['--version']).status !== 0) console.log('  · 略過 g++ 實跑：找不到 ' + GPP);
     else await t('④ 補完型別的 C++ 真 g++ 編譯執行，輸出與 node 跑原 JavaScript 一致', () => {
         const js = SUM + 'function main() { const a = [3, 9, -2, 7]; console.log(sum(a)); console.log(half(7)); console.log(idx(a, 2)); }\nmain();\n';
         const types = { 'sum.a': 'list<int>', 'sum.return': 'int', 'half.n': 'int', 'half.return': 'int', 'idx.a': 'list<int>', 'idx.return': 'int' };

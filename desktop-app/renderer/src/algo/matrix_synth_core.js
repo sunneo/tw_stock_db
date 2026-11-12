@@ -197,6 +197,14 @@
         { name: '到目前為止的最大值', shape: 'nl', out: 'list', kw: /目前為止|prefix max|running max|累積最大/i, js: (n, a) => { let m = -Infinity; return a.map((x) => (m = Math.max(m, x))); }, py: ['r = []', 'm = a[0]', 'for x in a:', '    m = max(m, x)', '    r.append(m)'] },
         { name: '最大值', shape: 'nl', out: 'int', kw: /最大/, js: (n, a) => Math.max(...a), py: ['r = max(a)'] },
         { name: '總和', shape: 'nl', out: 'int', kw: /總和|加總|和/, js: (n, a) => a.reduce((x, y) => x + y, 0), py: ['r = sum(a)'] },
+        // 第二批（dyn／jpeg／range 家族；由 matrix_synth_holdout2.test.js 的題型歸納，見 DESIGN §13.5）
+        { name: '相鄰差（a[i]−a[i−1]）', shape: 'nl', out: 'list', kw: /相鄰.*(差|減)|差分/, js: (n, a) => a.slice(1).map((x, i) => x - a[i]), py: ['r = [a[i] - a[i-1] for i in range(1, n)]'] },
+        { name: '首項保留的差分（DC 差分）', shape: 'nl', out: 'list', kw: /原樣|第一個.*(差|保留|不變)|保留.*第一|DC/, js: (n, a) => (a.length ? [a[0]].concat(a.slice(1).map((x, i) => x - a[i])) : []), py: ['r = [a[0]] + [a[i] - a[i-1] for i in range(1, n)] if n else []'] },
+        { name: '連續相同段數（游程段數）', shape: 'nl', out: 'int', kw: /段數|連續相同|游程|runs?\b/i, js: (n, a) => (a.length ? 1 + a.slice(1).filter((x, i) => x !== a[i]).length : 0), py: ['r = 1 + sum(1 for i in range(1, n) if a[i] != a[i-1]) if n else 0'] },
+        { name: '最長連續 0 的長度', shape: 'nl', out: 'int', kw: /最長.*連續.*0|連續.*0.*最長/, js: (n, a) => { let b = 0, c = 0; for (const x of a) { c = x === 0 ? c + 1 : 0; if (c > b) b = c; } return b; }, py: ['best = cur = 0', 'for x in a:', '    cur = cur + 1 if x == 0 else 0', '    best = max(best, cur)', 'r = best'] },
+        { name: '出現次數最多的次數（眾數的次數）', shape: 'nl', out: 'int', kw: /出現.*最多.*次|最多.*次數|眾數.*次數/, js: (n, a) => { const c = {}; for (const x of a) c[x] = (c[x] || 0) + 1; return a.length ? Math.max(...Object.values(c)) : 0; }, py: ['from collections import Counter', 'r = max(Counter(a).values()) if a else 0'] },
+        { name: '過半多數（否則 −1）', shape: 'nl', out: 'int', kw: /超過一半|過半|多數/, js: (n, a) => { const c = {}; for (const x of a) c[x] = (c[x] || 0) + 1; for (const k of Object.keys(c)) if (c[k] * 2 > n) return Number(k); return -1; }, py: ['from collections import Counter', 'r = -1', 'for k, v in Counter(a).items():', '    if 2 * v > n:', '        r = k', '        break'] },
+        { name: '絕對值的二進位位數（JPEG 類別碼 SSSS）', shape: 'int', out: 'int', kw: /類別碼|SSSS|絕對值.*二進位|JPEG/i, js: (n) => { const x = n < 0n ? -n : n; return x === 0n ? 0 : x.toString(2).length; }, py: ['r = abs(n).bit_length()'] },
         { name: '不同數字個數', shape: 'nl', out: 'int', kw: /不同|相異|distinct/i, js: (n, a) => new Set(a).size, py: ['r = len(set(a))'] },
     ];
     function parseShape(shape, raw) {

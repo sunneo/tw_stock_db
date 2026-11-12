@@ -23,12 +23,13 @@
     // transIdxLPS（表 9-45）；transIdxMPS 為 min(p＋1, 62)，但 62 到 62、63 到 63。
     const TRANS_LPS = [0, 0, 1, 2, 2, 4, 4, 5, 6, 7, 8, 9, 9, 11, 11, 12, 13, 13, 15, 15, 16, 16, 18, 18, 19, 19, 21, 21, 22, 22, 23, 24, 24, 25, 26, 26, 27, 27, 28, 29, 29, 30, 30, 30, 31, 32, 32, 33, 33, 33, 34, 34, 35, 35, 35, 36, 36, 36, 37, 37, 37, 38, 38, 63];
     const TRANS_MPS = (p) => (p < 62 ? p + 1 : p);
-    const nums = (N, I) => (I.inputs[0].k === 'list' ? N.ls[0] : '[int(t) for t in ' + N.s[0] + '.split()]');
+    // 整數一行（scalars）：統合後的讀取器把「一行 1 個整數 v」讀成 scalars，變數在 N.sc；其他形狀仍走清單或字串
+    const nums = (N, I) => (I.inputs[0].k === 'list' ? N.ls[0] : I.inputs[0].k === 'scalars' ? '[' + N.sc.join(', ') + ']' : '[int(t) for t in ' + N.s[0] + '.split()]');
 
     function make(PAR) {
         const { code } = PAR.dsl;
         const D = (id, algo, label, slots, py, extra) => Object.assign({ id, algo, paradigm: 'codec-cabac', label, slots, py }, extra || {});
-        const numIn = (I) => I.inputs.length === 1 && (I.inputs[0].k === 'list' || (I.inputs[0].k === 'str' && I.inputs[0].raw));
+        const numIn = (I) => I.inputs.length === 1 && (I.inputs[0].k === 'list' || (I.inputs[0].k === 'scalars' && I.inputs[0].type === 'int') || (I.inputs[0].k === 'str' && I.inputs[0].raw));
         const tabs = ['tab = ' + JSON.stringify(RANGE_LPS), 'tl = ' + JSON.stringify(TRANS_LPS)];
         // RenormE＋PutBit（9.3.4.2），內嵌於迴圈（不用函式）；pb 為 -1 表示只累加位元欠款。
         const RN = ['while rng < 256:', '    if low < 256:', '        pb = 0', '    elif low >= 512:', '        low = low - 512', '        pb = 1', '    else:', '        low = low - 256', '        outst = outst + 1', '        pb = -1', '    if pb >= 0:', '        if first:', '            first = False', '        else:', '            out.append(pb)', '        while outst > 0:', '            out.append(1 - pb)', '            outst = outst - 1', '    rng = rng << 1', '    low = low << 1'];

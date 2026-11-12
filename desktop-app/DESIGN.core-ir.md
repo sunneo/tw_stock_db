@@ -343,3 +343,79 @@ c++／c#／ruby／perl 的輸出器與樣板實跑；java／c 的「進」；浮
 - 「中間層的資料結構」目前指 JSON 形狀的資料（物件／陣列／基本型別）；IR 內部的 `class`／`struct` 宣告節點還沒有（IR 的型別只有 `list`／`dict`／`set`／`tuple` 與基本型別）。要把任意 Python／Java 類別轉成 struct 沒做。
 - `nodejs` 版的大整數失精度（`JSON.parse` 的限制）；C 版 NUL 字元限制；`JV` 不能直接算術（見 15.3）。
 - 整套核心測試沒跑；只用 `scripts/qrun.js` 一次一個跑了動到的測試檔。
+
+## 16. 缺口清單與接手（2026-11-12，Linux）
+
+本節是 Linux 接手的完整紀錄（取代前一版）。數字標明來源：**【本機實測】**＝這台 Linux 上實際跑出來的；**【交接數字】**＝Windows 交接時的紀錄，這台沒有重跑；**【推測】**＝沒有逐一驗證。
+
+### 16.1 本次提交（分支 claude/ir-finish-1b4497，已 rebase 到 4c5b5e15，並 cherry-pick 遠端的 dbf72cb5）
+
+| 提交 | 內容 | 驗證（本機實測） |
+|---|---|---|
+| `54fc5c25` | Python 探測先試 python3（這台的 python 是 2.7）；C++ 測試找不到 mingw64 時用 PATH 上的 g++（ir_out_more、ir_cpp_ops、json_struct、ir_wire、ir_wire2） | ir_out_more 30/30（g++ 實跑 C++ 10/10）、ir_cpp_ops 13/13、json_struct 19/19（原本略過） |
+| `0a15c6c0` | Perl 布林輸出 True／False（原本 1 與空字串）；新增 ir_perl_bool.test.js | ir_perl_bool 2/2 |
+| `d407980f` | 「進」跟上新版文法：Ruby 本體（body_statement）；C# 的 returns、foreach_statement、賦值運算子（匿名 token）、變數初始值 | ir_in_ruby 12/12（修正前 1/12）；ir_in_typed 24/24（修正前崩潰） |
+| `82eee036` | 手寫 Java 的 a.size()、C++ 的 max_element：樣式變體；ir_handwritten 加回歸斷言 | ir_handwritten 8/8；java 9%→0%、cpp 14%→0% |
+| `e056fab3` | ir_types 的 g++ 實跑在 Linux 上也會跑 | ir_types 7/7（原本略過） |
+| `6bd16714` | 本節第一版 | — |
+| `82c5d3ca` | 遠端 dbf72cb5：setup-linux.sh（ensurepip 缺少時的說明） | 不屬於本次工作，原樣 cherry-pick |
+| `9a5ff2c3` | C#：a.Max()（擴充方法變體）、int.Parse（變體，見 16.3）、內插字串 $"…{x}…" → 拼接＋conv.str；新增 ir_in_csharp_idioms.test.js 3/3 | 手寫 C# 31% → 8%；ir_in_typed 24/24 |
+| `56540ff2` | Ruby：a.each { \|x\| … }（一個區塊參數）→ 走訪迴圈；"n=#{n}" → 拼接＋conv.str；puts x 無括號形式；gets 讀一行；隱含 return；新增 ir_in_ruby_idioms.test.js 3/3 | 手寫 Ruby 27% → 0%；ir_in_ruby 12/12 |
+| `be223681` | Perl：foreach my $x (@$a)（@$name 寫法）；EXPR if COND;；"…$name…\n" 插值；print X, "\n"；print "…\n"；\@a 參考；(a, b, …) 清單；新增 ir_in_perl_idioms.test.js 3/3；修正一項舊斷言（修飾語句不再是原生區塊） | 手寫 Perl 57% → 18%；ir_in_perl 13/13；ir_in_perl_idioms 3/3 |
+| `b70b7392` | nodejs：模板字串 `…${x}…` → 拼接＋conv.str；標籤模板仍是原生區塊；目錄的雙引號字串多收單引號版本；新增 ir_in_brace_idioms.test.js 3/3 | 手寫 nodejs 18% → 6%；ir_in_brace 33/33；ir 48/48；ir_blocks 17/17 |
+| 本提交 | 本節（第 16 節）更新 | — |
+
+### 16.2 各語言原生區塊佔比（ir_handwritten，手寫樣本，本機實測）
+
+| 語言 | 交接數字 【交接數字】 | 現在 【本機實測】 | 剩下的是什麼（16.3 有原因） |
+|---|---|---|---|
+| c | 0% | 0% | 沒有缺口（0% 表示每個敘述都認得） |
+| java | 9% | 0% | 已補 |
+| cpp | 14% | 0% | 已補 |
+| ruby | 27% | 0% | 已補 |
+| csharp | 31% | 8%（1/13） | LINQ：`Console.ReadLine().Split(' ').Select(long.Parse).ToList()`（16.3 第 1 點） |
+| nodejs | 未列 | 6%（1/17） | `lines[1].split(' ').map(Number)`（16.3 第 1 點） |
+| perl | 57% | 18%（3/17） | `<STDIN>`、`chomp $n`、`split ' ', <STDIN>`（16.3 第 2 點） |
+
+### 16.3 尚缺（具體原因與下一步）
+
+1. **語意不等價，刻意沒轉**：`Split(' ')` 遇到連續空白會產生空欄位，`map(Number)`／`Select(long.Parse)` 對空欄位得到 0 或丟例外；目錄的 `str.split_ints`（與 C# 的 `Array.ConvertAll(…RemoveEmptyEntries…)`）會丟掉空欄位。兩者在有連續空白時結果不同，不能當成同一個操作。下一步：新增「依分隔字串切開並逐項轉整數（保留空欄位）」的標準操作（要 8 個語言的格子、相依、測試），或在 IR 加 map。**這是新操作，尚未做。**
+2. **Perl 的 `<STDIN>` 與 `chomp`**：`<STDIN>` 保留換行，`io.read_line` 會去掉換行，不能直接對應；`chomp` 目錄沒有操作（`str.strip` 會去掉兩端空白，語意不同）。下一步二選一：新增「讀一行並保留換行」與「去掉結尾換行」兩個標準操作（8 個語言），或只辨識 `my $x = <STDIN>; chomp $x;` 這一組成對寫法並轉成 io.read_line。**尚未做。**
+3. **Perl／Ruby 的 `unless` 修飾語句**：未做（可用 not 包裝成 if 的 IR，下一步）。
+4. **內插的進階形式**：C# 的格式子句（`{x:F2}`）與對齊子句；Perl／Ruby 的 `@陣列` 與 `$x[…]`、`$x->…`、`${…}` 插值——仍是原生區塊（保留原文）。
+5. **int.Parse 的範圍**：C# 的 `int.Parse` 是 32 位元，IR 的整數是 64 位元；範圍內結果相同，超出 32 位元時手寫程式丟例外而 IR 不會。已在樣式變體的註解裡寫明，沒有加範圍檢查。
+6. **嵌入與建置產物（管理者，見 16.5）**：ir_wire 6/7、ir_wire2 15/19、ir_uml_extract 6/9、fa_struct 8/9 失敗，都是「嵌入版或建置產物跟來源不一致」，不是來源有錯（`renderer/floating-assistant.js` 比 `renderer/src/floating-assistant.js` 舊，這件事在本次修改之前就存在）。
+
+### 16.4 舊文法與 Windows 重跑（**尚未做，原因如下**）
+
+- **舊文法（版本 13–14）**：這台只有版本 15 的文法（見 16.6）。本次 Ruby、C# 的修正盡量寫成「新舊兩種形狀都認」（C#：`returns || type`、`csInit` 兩種都處理、foreach 兩種節點名、賦值運算子兩種都認；Ruby：body_statement 攤平在舊文法是空操作）。但**沒有在版本 13–14 的文法上實跑**。Ruby 的 block_body、插值、nodejs 的 template_string 是否與舊文法一致：**【推測】**，未驗證。
+- **Windows**：這台是 Linux，`scripts/qrun.js` 是 Windows 規則（handoff 第 0.5 節：所有測試與長命令走 `node scripts/qrun.js --timeout <秒> -- <命令>`，命令裡路徑用絕對路徑，一次只跑一個）。在 Windows 上要用原來的文法快取，逐一重跑 16.1 列出的測試，並與 16.2 的數字比對。**這次沒有做，因為這台沒有 Windows。**
+
+### 16.5 需要嵌入的檔案與要重跑的測試（管理者）
+
+**請管理者嵌入（執行 `node scripts/embed-code-ui.js` 與 `build-assistant.js`；本次沒有執行）**。這次改過、需要重新嵌入的模組：
+- `renderer/src/ir/ir_ops_core.js`（Perl 布林，`0a15c6c0`）
+- `renderer/src/ir/ir_in_ruby_core.js`（`d407980f`、`56540ff2`）
+- `renderer/src/ir/ir_in_typed_core.js`（`d407980f`、`82eee036`、`9a5ff2c3`）
+- `renderer/src/ir/ir_in_brace_core.js`（`82eee036`、`b70b7392`）
+- `renderer/src/ir/ir_in_perl_core.js`（`be223681`）
+
+嵌入後要重跑的測試（名稱即檔名）：
+- `ir_wire.test.js`：「嵌入的每個中間語言模組與來源檔逐字一致」應通過（目前失敗）
+- `ir_wire2.test.js`：「嵌入的新模組與來源檔逐字一致」，以及 csharp、ruby 的嵌入橋案例（目前 4 項失敗）
+- `ir_uml_extract.test.js`：csharp、ruby 來源的抽回（目前失敗）；「宿主：convert_code 有 to_uml 動作」需要先由管理者把 `renderer/src/floating-assistant.js` 建置到 `renderer/floating-assistant.js`（既有問題）
+- `fa_struct.test.js`：「⑤ 宿主 convert_code 的 struct 動作」（既有問題，同上）
+
+**不需要嵌入、已在來源層通過**：ir、ir_overflow、ir_design_edit、ir_in_brace（+idioms）、ir_in_typed（+csharp_idioms）、ir_in_ruby（+idioms）、ir_in_perl（+idioms）、ir_perl_bool、ir_handwritten、ir_out_more、ir_cpp_ops、json_struct、ir_types、ir_design、ir_blocks、ir_behavior。
+
+### 16.6 測試環境（接手者必讀）
+
+- 這台 Linux 沒有 tree-sitter 文法快取（`~/.cache/fa-ts`、`/tmp/fa-ts-cache` 都不存在；不下載）。`renderer/vendor/tree-sitter/` 只有 Python 文法與版本 13–14 的執行期。
+- 本次做法：把 VS Code 安裝目錄內建的文法（`/usr/share/code/resources/app/node_modules/@github/copilot/tree-sitter-*.wasm`，版本 15）與執行期（`@vscode/tree-sitter-wasm/wasm/`）**複製**到 scratchpad 的 `fa-ts/` 目錄（不在 repo、不是下載），再用一個本機 shim（`tree-sitter.js`，在 scratchpad 裡，不在 repo）把 VS Code 執行期包成測試要的介面（`Parser.init`、`Parser.Language.load`，並把 `isNamed`、`hasError` 等 getter 包成方法）。
+- 執行方式：`FA_TS_DIR=<那個目錄> FA_PERL=/usr/bin/perl nice -n 10 taskset -c 4-5 node <測試檔>`，一次一個。換機器要重做。
+
+### 16.7 接手者第一步
+
+1. 管理者：嵌入（16.5），然後建置 `renderer/floating-assistant.js`。
+2. Windows（有文法快取）：依 16.4 的 qrun 規則，逐一重跑 16.5 列出的所有測試，比對 16.2 的數字；舊文法的部分一併確認。
+3. 依 16.3 的第 1、2、3、4 點補下一批（每項一個提交、每項要有測試、補完回寫本節）。

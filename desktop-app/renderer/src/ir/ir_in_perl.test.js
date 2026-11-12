@@ -5,7 +5,7 @@ const assert = require('assert'), fs = require('fs'), path = require('path'), os
 const IR = require('./ir_core.js'), PREP = require('./ir_prep_core.js'), INPY = require('./ir_in_python_core.js'), INB = require('./ir_in_perl_core.js'), SAMPLES = require('./ir_samples.js');
 const OUT = { perl: require('./ir_out_perl_core.js'), python: require('./ir_out_python_core.js') };
 const DIR = process.env.FA_TS_DIR || [path.join(os.homedir(), '.cache', 'fa-ts'), path.join(os.tmpdir(), 'fa-ts-cache'), '/tmp/fa-ts-cache'].find((d) => fs.existsSync(path.join(d, 'tree-sitter-python.wasm')));
-let PY = null; for (const c of ['python', 'python3']) { const r = cp.spawnSync(c, ['-I', '-c', 'print(1)'], { encoding: 'utf8' }); if (r.status === 0 && r.stdout.trim() === '1') { PY = c; break; } }
+let PY = null; for (const c of ['python3', 'python']) { const r = cp.spawnSync(c, ['-I', '-c', 'print(1)'], { encoding: 'utf8' }); if (r.status === 0 && r.stdout.trim() === '1') { PY = c; break; } }
 let pass = 0, fail = 0; const notes = [];
 const t = (name, fn) => { try { fn(); pass++; } catch (e) { fail++; console.error('FAIL ' + name + '\n   ' + String(e.message).split('\n').slice(0, 40).join('\n   ')); } };
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'irt-'));
@@ -47,9 +47,9 @@ sub sum { # 標頭註解
 }
 `;
         const r = INB.fromSource(code, { patterns: INB.buildPatterns() });
-        t('手寫 Perl：前置註解、標頭行尾註解、行尾註解，local 與修飾語句收成原生區塊', () => {
+        t('手寫 Perl：前置註解、標頭行尾註解、行尾註解，local 收成原生區塊，if 修飾語句讀成 if（2026-11-12 起認得 EXPR if COND）', () => {
             const fn = r.ir.body[0]; assert.strictEqual(fn.k, 'func'); assert.deepStrictEqual(fn.c && fn.c.b, ['計算總和']); assert.strictEqual(fn.c && fn.c.a, '標頭註解'); assert.strictEqual(fn.params.length, 1); assert.strictEqual(fn.body[0].c && fn.body[0].c.a, '累加'); assert.strictEqual(fn.body[1].k, 'foreach');
-            assert.strictEqual(fn.body.filter((x) => x.k === 'native').length, 2, JSON.stringify(fn.body.map((x) => x.k))); assert.strictEqual(r.coverage.natives, 2);
+            assert.strictEqual(fn.body.filter((x) => x.k === 'native').length, 1, JSON.stringify(fn.body.map((x) => x.k))); assert.strictEqual(r.coverage.natives, 1); assert.ok(fn.body.some((x) => x.k === 'if'), '修飾語句應讀成 if');
         });
     }
     // 布林往返：Perl 沒有布林型別，輸出器把 True／False 寫成 !!1／!!0，「進」認得它還原成布林字面值（以前變成整數 1／0）

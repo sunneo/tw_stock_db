@@ -15,11 +15,12 @@
         { id: 'domains', title: '領域', icon: '🧬' },
         { id: 'eval', title: '評量', icon: '📊' },
         { id: 'train', title: '訓練', icon: '🏋️' },
+        { id: 'pipeline', title: '流程', icon: '🧭' },
         { id: 'teacher', title: '老師', icon: '🎓' },
         { id: 'log', title: '紀錄', icon: '📜' },
     ];
     const IDS = TABS.map((t) => t.id);
-    const DEFAULT = { panes: { left: ['assets', 'lora', 'ingest', 'datasets', 'domains', 'eval'], right: ['train', 'teacher', 'log'] }, active: { left: 'assets', right: 'train' }, closed: [], split: 0.45, max: null };
+    const DEFAULT = { panes: { left: ['assets', 'lora', 'ingest', 'datasets', 'domains', 'eval'], right: ['train', 'pipeline', 'teacher', 'log'] }, active: { left: 'assets', right: 'train' }, closed: [], split: 0.45, max: null };
     const SPLIT_MIN = 0.2, SPLIT_MAX = 0.8, STACK_BELOW = 640;
     const clone = (o) => JSON.parse(JSON.stringify(o));
     const clamp = (v, a, b) => Math.min(b, Math.max(a, v));

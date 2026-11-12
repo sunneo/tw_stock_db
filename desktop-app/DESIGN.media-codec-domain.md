@@ -481,3 +481,40 @@ FA_TS_DIR=<含 tree-sitter.js、tree-sitter.wasm、tree-sitter-python.wasm 的�
 
 **提交（第五棒，全部在 `claude/dazzling-haslett-912eb2`，未推送）**
 `06012887`、`cc2aa69c`、`cf0e1267`、`69078162`、`13af5758`、`3bbcd9f5`、`a83f25f5`、本節收尾提交（見下）。
+
+### 合併整合分支（`refs/heads/desktop-app`，2026-11-12）
+
+**衝突與裁決**
+- `renderer/src/uml/domain_avbits_core.js`（6 處）：兩邊各自把 Exp-Golomb 輔助函式改名。我方 `av_uee`／`av_see`（階段 1 修正 `3c49efed`），整合側 `av_wue`／`av_wse`（`d72ffe6f`）。兩者計算相同：`ue(v)`＝`v+1` 的二進位前置零；`se(v)`＝先把 `v` 映成 codeNum（正數 `2v-1`、非正數 `-2v`）再套用 `ue`。**統一採整合側命名**（已嵌入產品，改動最少）；我方的定義與引用全數改為 `av_wue`／`av_wse`，不留重複定義。
+- 另外三處不是純改名，逐一裁決：
+  - `av-eg-encode` 的正規式：取我方超集（多 `\bue\b|\bse\b`）。
+  - `av-eg-decode` 的正規式：取整合側。我方原本寫成 `'ue\(v\)'`，在 JS 單引號字串裡 `\(` 會變成 `(`，等於一個群組、不是字面括號，是潛在錯誤；整合側的 `ue\\(v\\)` 才正確。
+  - `av-slice-header` 的正規式：取我方（`slice\s*(?:的\s*)?(?:header|標頭)`），測試全數通過（不改）。
+- `DESIGN.blockly-curriculum.md`（1 處）：兩邊都新增內容，全部保留。進度表的同一列兩邊都改過：保留我方的「1 位元級基礎」與「2–5」列；整合側的「1–5 進行中」摘要列與其重複，已移除（記在這裡，不是默默刪除）。整合側其餘新增段落（接手、blockly-finish 等）全數保留。
+
+**合併後發現並修正的回歸（我的程式碼與整合側共用讀取器不相容）**
+- 整合側的 `algo_intent_core.js` 新增「一行 N 個整數 v」→ `scalars` 的輸入形狀。我方的 EG0（`h264.cabac.ueg0`）與 `mo-tp`（六分接頭）骨架只接受 `list` 或原始字串，於是 `cab-ug-tr` 與 `mo-tp-ho` 變成「沒有配方」。
+- 修正（僅限我方骨架，共用引擎不動）：`domain_h264cabac_core.js`、`domain_h264motion_core.js` 的 `numIn` 接受「單一整數的 scalars」，`nums` 對 scalars 取 `N.sc`。
+- 判斷依據：合併前（`HEAD` 的完整 renderer 樹，`git archive` 到暫存目錄）同一批測試 holdout 為 intra 8/11、motion 8/8、dec 2/3、avbits 6/7、avimage 5/7；合併後 intra、dec、avbits、avimage 相同，motion 修正後回到 8/8。
+
+**合併後實跑（本節收尾時）**
+| 測試 | train | 反序 | holdout | 合計 |
+|---|---|---|---|---|
+| domain_avbits | 16/16 | 16/16 | 6/7（未解 `ho-pps`，既有） | 32 passed |
+| domain_avaudio | 2/2 | 2/2 | 2/2 | 4 passed |
+| domain_avimage | 5/5 | 5/5 | 5/7（未解 `legall-ho`、`legall-ho2`，既有） | 10 passed |
+| domain_avhuff／avolap／avpsycho | 1/1 each | 1/1 | 1/1 each | 2 passed each |
+| domain_h264pb | 7/7 | 7/7 | 7/7 | 14 passed |
+| domain_h264cabac | 8/8 | 8/8 | 8/8 | 16 passed |
+| domain_h264motion | 8/8 | 8/8 | 8/8 | 16 passed |
+| domain_h264chroma | 1/1 | 1/1 | 1/1 | 2 passed |
+| domain_h264dec | 3/3 | 3/3 | 2/3（既有） | 6 passed |
+| domain_h264intra | 10/10 | 10/10 | 8/11（既有） | 20 passed |
+| domain_h264cavlc | 2/2 | 2/2 | 1/1 | 4 passed |
+| 外部：`cabac-pskip-ffmpeg.js` | 通過（9/9，負向 9/9） | | | |
+| 外部：`cabac-ipcm-ffmpeg.js` | 通過（3/3，負向 3/3） | | | |
+| 外部：`x264-cabac-pb-compare.js` | 147/147 | | | |
+
+「既有」指合併前也是同樣的結果（見上面的基準）。
+
+**本次合併的嵌入影響**：`domain_h264cabac_core.js` 與 `domain_h264motion_core.js` 有修改（上面的 scalars 相容）。它們與 `domain_h264pb_core.js` 一起需要重新嵌入。

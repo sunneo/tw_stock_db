@@ -22,12 +22,20 @@
     const kids = (n) => n.children.filter((c) => !/comment/.test(c.type));
     function size(n) { return 1 + kids(n).reduce((s, c) => s + size(c), 0); }
     const isPurePlaceholderBin = (p) => { const x = unwrap(p); return x && (x.type === 'binary_expression') && x.namedChildren.every((c) => PH.test(unwrap(c).text)); };
+    // 樣板的變體（只為了讓手寫程式比得上）：java 的 (long) 轉型是我們輸出器加的，手寫的 a.size() 沒有，所以多收一個去掉轉型的版本
+    function variantsOf(lang, t) {
+        const v = [t];
+        if (lang === 'java' && /^\((long long|long)\)/.test(t)) v.push(t.replace(/^\((long long|long)\)/, ''));
+        // nodejs：目錄樣板用雙引號（require("fs")），手寫常用單引號；沒有單引號的樣板才換，語意相同
+        if (lang === 'nodejs' && t.indexOf('"') >= 0 && t.indexOf("'") < 0) v.push(t.replace(/"/g, "'"));
+        return v;
+    }
     function buildPatterns(lang, parse) {
         const key = OPS.LANG_OF[lang] || lang; const out = [];
         for (const id of OPS.ids()) {
             const o = OPS.get(id); const cell = o.cells[key]; if (cell == null) continue;
             const tpls = typeof cell === 'string' ? [cell] : Object.values(cell).filter((x) => x != null);
-            for (const t of tpls) {
+            for (const t0 of tpls) for (const t of variantsOf(lang, t0)) {
                 if (/\$\*/.test(t)) continue; const text = t.replace(/[$@](\d)/g, '__a$1');
                 let root; try { root = parse(wrapTpl(lang, text)); } catch (e) { continue; } const pr = patRoot(lang, root); if (!pr) continue;
                 if (PH.test(unwrap(pr).text)) continue; if (isPurePlaceholderBin(pr)) continue;
@@ -95,6 +103,22 @@
                 case 'number_literal': case 'number': case 'decimal_integer_literal': case 'hex_integer_literal': case 'decimal_floating_point_literal': { const t = txt(n).replace(/_/g, '').replace(/[lL]$/, ''); return at(L(/[.eE]/.test(t) && !/^0x/i.test(t) ? 'float' : 'int', t), n); }
                 case 'true': return at(L('bool', 'true'), n); case 'false': return at(L('bool', 'false'), n); case 'null': case 'null_literal': return at(L('none', 'None'), n);
                 case 'string': case 'string_literal': { const t = txt(n); return at(L('str', unescape(t.slice(1, -1))), n); }
+                // nodejs 模板字串 `n=${n}` → "n=" + conv.str(n)；沒有替換的純文字照常；標籤模板等仍是原生區塊
+                case 'template_string': {
+                    if (lang !== 'nodejs') return nativeE(n, '模板字串');
+                    // 標籤模板 html`…` 的語法樹是 call_expression 的 arguments 直接就是 template_string（沒有 arguments 包裝）；標籤函式拿到的是字串陣列與值，不是拼接好的字串，所以不能轉
+                    const par = n.parent; if (par && par.type === 'call_expression') { const ca = par.childForFieldName('arguments'); if (ca && ca.startIndex === n.startIndex && ca.endIndex === n.endIndex) return nativeE(n, '標籤模板'); }
+                    const parts = [];
+                    for (const c of n.children) {
+                        if (c.type === '`') continue;
+                        if (c.type === 'string_fragment') { const sv = txt(c); if (sv) parts.push(L('str', sv.replace(/\\`/g, '`'))); continue; }
+                        if (c.type === 'template_substitution') { const kids = c.namedChildren; if (kids.length !== 1) return nativeE(n, '模板字串的替換'); parts.push(at({ k: 'call', op: 'conv.str', args: [ex(kids[0])] }, c)); continue; }
+                        return nativeE(n, '模板字串的部分 ' + c.type);
+                    }
+                    if (!parts.length) return at(L('str', ''), n);
+                    let e = parts[0]; for (let i = 1; i < parts.length; i++) e = { k: 'bin', op: '+', l: e, r: parts[i] };
+                    return at(e, n);
+                }
                 case 'binary_expression': {
                     const op = txt(f(n, 'operator')); const l = f(n, 'left'), r = f(n, 'right');
                     if (CMP[op]) return at({ k: 'cmp', op: CMP[op], l: ex(l), r: ex(r) }, n);
@@ -110,6 +134,7 @@
                 case 'cast_expression': return ex(f(n, 'value'));
                 case 'call_expression': {
                     const fn = f(n, 'function'); const a = f(n, 'arguments'); const args = a ? named(a) : [];
+                    if (a && a.type === 'template_string') return nativeE(n, '標籤模板'); // html`…`：參數就是模板本身，不是參數清單
                     if (fn.type === 'identifier') return at({ k: 'call', fn: CL && txt(fn) === 'u_main' ? 'main' : txt(fn), args: args.map(ex) }, n);
                     return nativeE(n, '呼叫的目標不在標準操作目錄');
                 }

@@ -44,6 +44,8 @@
         return null;
     }
     async function buildFromUML(o) {
+        // 殘留（§13.8）：最後一個被判題器判為非 AC／非 UNCHECKED 的候選；失敗時隨回傳帶出，不影響成功路徑
+        let resid = null; const keepResid = (source, v, by) => { if (v && v.verdict !== 'AC' && v.verdict !== 'UNCHECKED') resid = { source, verdict: v.verdict, detail: String(v.detail || '').slice(0, 300), by }; };
         const B = o.B, R = o.R; const intent = o.uml.hints && o.uml.hints.intent;
         // ---- 矩陣層後備（Matrix：只靠敘述＋範例合成；讀取器讀不出意圖、或配方／課／範式骨架都沒解出時才用；回傳 matrix:{kind,level,size,tried,ambiguous,verified}）----
         const tryMatrix = async (prev) => {
@@ -76,7 +78,7 @@
         const rec = recipeCNL(intent);
         if (rec) {
             const ir = parse(rec.cnl); const model = mkModel(ir); const source = o.C2U.toPython(model); let v = { verdict: 'UNCHECKED', detail: '' }; if (o.judge) v = await o.judge(source);
-            res.rounds.push({ by: 'recipe', recipe: rec.name, verdict: v.verdict, detail: v.detail });
+            res.rounds.push({ by: 'recipe', recipe: rec.name, verdict: v.verdict, detail: v.detail }); keepResid(source, v, 'recipe');
             if (v.verdict === 'AC' || v.verdict === 'UNCHECKED') return Object.assign(res, { source, model, recipe: rec.name, cnl: Object.assign(cnl, { solve: rec.cnl }), verdict: v.verdict });
         }
         // ---- 課（老師教過、驗證過的做法）：同一種算法、同樣的輸入形狀就直接套用，不問模型；沙盒驗證沒過才退回 ----
@@ -85,13 +87,13 @@
         if (lesson && lesson.paradigm && o.Paradigms) { const sk = o.Paradigms.forIntent(intent, o.statement); if (sk.length && !sk.some((x) => x.id === lesson.paradigm)) lesson = null; }
         if (lesson) {
             const ap = o.Lessons.applyLesson(lesson, intent); const model = mkModel(ap.body, ap.prelude); const source = o.C2U.toPython(model); let v = { verdict: 'UNCHECKED', detail: '' }; if (o.judge) v = await o.judge(source);
-            res.rounds.push({ by: 'lesson', lesson: lesson.id, verdict: v.verdict, detail: v.detail });
+            res.rounds.push({ by: 'lesson', lesson: lesson.id, verdict: v.verdict, detail: v.detail }); keepResid(source, v, 'lesson');
             if (v.verdict === 'AC' || v.verdict === 'UNCHECKED') return Object.assign(res, { source, model, lesson: lesson.id, cnl: Object.assign(cnl, { solve: lesson.cnl || '' }), verdict: v.verdict });
         }
         // ---- 範式骨架（每個範式一個帶槽位的區塊骨架；槽位選單很小，由程式窮舉組合、逐個交沙盒，第一個 AC 就用，不問模型）----
         if (o.Paradigms && o.Paradigms.forIntent(intent, o.statement).length) {
             let lastModel = null;
-            const pj = async (solveCnl, extra) => { const model = mkModel(parse(solveCnl), undefined, (extra || []).map((h) => ({ name: h.name, params: h.params, body: parse(h.cnl) }))); const source = o.C2U.toPython(model); lastModel = { model, source }; return o.judge ? o.judge(source) : { verdict: 'UNCHECKED', detail: '' }; };
+            const pj = async (solveCnl, extra) => { const model = mkModel(parse(solveCnl), undefined, (extra || []).map((h) => ({ name: h.name, params: h.params, body: parse(h.cnl) }))); const source = o.C2U.toPython(model); lastModel = { model, source }; if (!o.judge) return { verdict: 'UNCHECKED', detail: '' }; const v = await o.judge(source); keepResid(source, v, 'paradigm'); return v; };
             const ps = await o.Paradigms.solve({ intent, statement: o.statement, judge: pj, limit: o.paradigmLimit, rank: o.paradigmRank });
             res.rounds.push({ by: 'paradigm', ok: ps.ok, skeleton: ps.skeleton, tried: ps.tried, verdict: ps.verdict });
             if (ps.ok) return Object.assign(res, { source: lastModel.source, model: lastModel.model, paradigm: ps.skeleton, slots: ps.choice, tried: ps.tried, cnl: Object.assign(cnl, { solve: ps.cnl }), verdict: ps.verdict });
@@ -101,7 +103,7 @@
         { const mx = await tryMatrix(res); res.rounds.push({ by: 'matrix', ok: !!(mx && mx.ok), reason: mx && mx.reason }); if (mx && mx.ok) return mx; if (mx && mx.reason) res.matrixReason = mx.reason; }
         { const sx = await trySteps(res); if (sx && sx.ok) return sx; }
         // ---- 區塊迴圈（模型微選擇）----
-        if (!o.pick) return Object.assign(res, { ok: false, reason: rec ? '配方沒通過沙盒驗證，而且沒有提供模型' : '程式讀不出這題的解法（沒有配方），需要模型' });
+        if (!o.pick) return Object.assign(res, { residual: resid, ok: false, reason: rec ? '配方沒通過沙盒驗證，而且沒有提供模型' : '程式讀不出這題的解法（沒有配方），需要模型' });
         res.usedModel = true; const paramTypes = {}; for (const v of intent.vars) paramTypes[v.name] = v.type === 'list' ? 'list' : v.type;
         const solveOp = { name: 'solve', params: intent.vars.map((v) => v.name), paramTypes, returns: 'void' }; let feedback = '', last = null;
         for (let round = 0; round < (o.rounds || 2); round++) {
@@ -110,11 +112,11 @@
             if (!r.ok) { res.rounds.push({ by: 'blocks', ok: false, reason: r.reason }); last = r; break; }
             const zir = {}; for (const z of ['import', 'declare', 'logic']) zir[z] = r.zones[z] ? parse(r.zones[z]) : [];
             const model = mkModel(zir.declare.concat(zir.logic), zir.import); const source = o.C2U.toPython(model); let v = { verdict: 'UNCHECKED', detail: '' }; if (o.judge) v = await o.judge(source);
-            res.rounds.push({ by: 'blocks', verdict: v.verdict, detail: v.detail }); last = { source, model, solveCnl: r.cnl, verdict: v.verdict };
+            res.rounds.push({ by: 'blocks', verdict: v.verdict, detail: v.detail }); keepResid(source, v, 'blocks'); last = { source, model, solveCnl: r.cnl, verdict: v.verdict };
             if (v.verdict === 'AC' || v.verdict === 'UNCHECKED') break;
             feedback = '上一版 solve 的區塊：\n' + r.cnl + '\n驗證結果：' + v.verdict + (v.detail ? '（' + String(v.detail).slice(0, 160) + '）' : '') + '。請改正。';
         }
-        if (!last || !last.source) return Object.assign(res, { ok: false, reason: (last && last.reason) || '區塊迴圈沒有產生程式' });
+        if (!last || !last.source) return Object.assign(res, { residual: resid, ok: false, reason: (last && last.reason) || '區塊迴圈沒有產生程式' });
         return Object.assign(res, { source: last.source, model: last.model, verdict: last.verdict, cnl: Object.assign(cnl, { solve: last.solveCnl }) });
     }
     return { buildFromUML, readInputCNL, mainCNL, recipeCNL, snake };

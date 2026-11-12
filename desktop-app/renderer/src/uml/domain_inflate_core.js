@@ -138,7 +138,8 @@
         const hx = (N) => N.s[0];
         const wrap = S('wrap', '外殼', [['raw', 'data'], ['zlib', 'data[2:]'], ['gzip', 'data[gz_skip(data):]']]);
         const outSlot = S('out', '輸出', [['hex', 'hex'], ['text', 'text']]);
-        const need = (c) => NEED.concat(c.wrap === 'gzip' ? ['gz_skip'] : []);
+        // 外殼槽位的值是運算式字串（如 'data[gz_skip(data):]'），要看值是否呼叫 gz_skip，不能比對槽位名稱
+        const need = (c) => NEED.concat(/gz_skip\(/.test(c.wrap) ? ['gz_skip'] : []);
         const skeletons = [
             D('df.inflate', 'inflate-any', 'DEFLATE 完整解壓：區塊迴圈（BFINAL／BTYPE：00 未壓縮、01 固定、10 動態），動態區塊先讀 HLIT／HDIST／HCLEN 與長度碼的碼長、展開 16／17／18 的重複，再以範式碼解字面／長度與距離，LZ77 複製；外殼 raw／zlib（2 位元組標頭）／gzip（10 位元組標頭加選用欄位）',
                 [wrap, outSlot],
@@ -163,7 +164,9 @@
         const algos = [
             { key: 'inflate-lengths', re: ALL(FMT, '(?:動態|dynamic|BTYPE\\s*[=＝]?\\s*(?:10|2))', '(?:碼長|code\\s*length|HLIT|HCLEN)'), veto: /解壓縮|還原成/ },
             { key: 'inflate-blocks', re: ALL(FMT, '(?:幾個|多少個|各有|統計|數量|區塊數)[^。]{0,16}區塊|區塊[^。]{0,12}(?:幾個|各有|統計|數量)'), veto: /碼長/ },
-            { key: 'inflate-any', re: ALL(DEC, FMT, '(?:動態|dynamic|BTYPE\\s*[=＝]?\\s*(?:10|2)|三種(?:區塊|類型)|完整|任意|任何|一般|各種)'), veto: /只[含有]固定|僅固定|固定霍夫曼區塊[（(]BFINAL|碼長表|幾個[^。]{0,8}區塊|各有/ }
+            { key: 'inflate-any', re: ALL(DEC, FMT, '(?:動態|dynamic|BTYPE\\s*[=＝]?\\s*(?:10|2)|三種(?:區塊|類型)|完整|任意|任何|一般|各種)'), veto: /只[含有]固定|僅固定|固定霍夫曼區塊[（(]BFINAL|碼長表|幾個[^。]{0,8}區塊|各有/ },
+            // 通用：敘述點名外殼格式（zlib／gzip 的「格式／檔／資料」）且要求解壓，沒有額外限定詞時也走完整 inflate（不靠某一句的措辭）
+            { key: 'inflate-any', re: ALL(DEC, '(?:zlib|gzip)\\s*(?:壓縮)?\\s*(?:資料|檔|格式|串流|外殼)'), veto: /只[含有]固定|僅固定|固定霍夫曼區塊[（(]BFINAL|碼長表|幾個[^。]{0,8}區塊|各有|碼長/ }
         ].map((x) => Object.assign(x, { pri: true }));
         const paradigms = {}; for (const sk of skeletons) paradigms[sk.algo] = ['binary-format'];
         return { id: 'inflate', label: 'DEFLATE 完整 inflate（動態霍夫曼、zlib／gzip 外殼、區塊統計、碼長表）', requires: [], judge: { checker: 'tokens', timeoutMs: 30000 }, algos, paradigms, skeletons };

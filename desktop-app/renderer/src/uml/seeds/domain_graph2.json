@@ -1,0 +1,742 @@
+{
+ "format": "fa-domain-seeds",
+ "version": 1,
+ "source": "renderer/src/uml/domain_graph2.test.js",
+ "name": "領域包 graph2",
+ "minSkeletons": 4,
+ "judge": null,
+ "trainOnly": null,
+ "seeds": [
+  {
+   "id": "mst-total",
+   "st": "第一行 n m，接著 m 行每行 u v w 表示節點 u 和 v 之間有一條權重 w 的無向邊。求最小生成樹的總權重；如果圖不連通就輸出 -1。",
+   "rw_st": null,
+   "ref": "import sys\nd = sys.stdin.read().split()\nn, m = int(d[0]), int(d[1])\nINF = 10**9\nw = [[INF]*(n+1) for _ in range(n+1)]\nfor i in range(m):\n    a, b, c = int(d[2+3*i]), int(d[3+3*i]), int(d[4+3*i])\n    w[a][b] = min(w[a][b], c)\n    w[b][a] = min(w[b][a], c)\nbest = [INF]*(n+1)\nin_t = [False]*(n+1)\nbest[1] = 0\ntot = 0\nmx = 0\ncnt = 0\nfor _ in range(n):\n    u = -1\n    for v in range(1, n+1):\n        if not in_t[v] and (u < 0 or best[v] < best[u]):\n            u = v\n    if best[u] >= INF:\n        print(-1)\n        sys.exit()\n    in_t[u] = True\n    tot += best[u]\n    mx = max(mx, best[u])\n    cnt += 1\n    for v in range(1, n+1):\n        if not in_t[v] and w[u][v] < best[v]:\n            best[v] = w[u][v]\nprint(tot)\n",
+   "tests": [
+    {
+     "in": "3 4\n1 2 15\n1 3 7\n3 2 18\n2 3 5\n",
+     "out": "12\n"
+    },
+    {
+     "in": "6 5\n1 2 17\n1 3 5\n2 4 17\n2 5 8\n5 6 8\n",
+     "out": "55\n"
+    },
+    {
+     "in": "7 11\n1 2 11\n1 3 19\n1 4 18\n3 5 6\n4 6 2\n1 7 14\n3 5 1\n3 2 16\n6 5 19\n3 1 14\n7 2 17\n",
+     "out": "60\n"
+    },
+    {
+     "in": "5 7\n1 2 14\n1 3 18\n3 4 2\n2 5 10\n1 3 2\n1 3 10\n2 5 9\n",
+     "out": "27\n"
+    },
+    {
+     "in": "6 5\n1 2 19\n2 3 15\n1 4 7\n4 5 2\n2 6 20\n",
+     "out": "63\n"
+    },
+    {
+     "in": "4 3\n1 2 18\n2 3 14\n3 4 18\n",
+     "out": "50\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "5 4\n1 2 19\n1 3 15\n1 4 15\n3 5 7\n",
+     "out": "56\n"
+    },
+    {
+     "in": "11 18\n1 2 19\n2 3 11\n3 4 19\n4 5 6\n4 6 6\n2 7 6\n5 8 1\n4 9 5\n1 10 9\n8 11 5\n6 10 12\n6 4 15\n1 4 10\n6 8 7\n5 3 6\n4 8 1\n6 8 16\n5 4 12\n",
+     "out": "60\n"
+    }
+   ],
+   "want": "graph2.mst"
+  },
+  {
+   "id": "mst-max",
+   "st": "第一行 n m，接著 m 行每行 u v w 表示無向加權邊。用 Kruskal 演算法求最小生成樹，輸出樹上最大的那條邊的權重；若無法連通所有點輸出 -1。",
+   "rw_st": null,
+   "ref": "import sys\nd = sys.stdin.read().split()\nn, m = int(d[0]), int(d[1])\nINF = 10**9\nw = [[INF]*(n+1) for _ in range(n+1)]\nfor i in range(m):\n    a, b, c = int(d[2+3*i]), int(d[3+3*i]), int(d[4+3*i])\n    w[a][b] = min(w[a][b], c)\n    w[b][a] = min(w[b][a], c)\nbest = [INF]*(n+1)\nin_t = [False]*(n+1)\nbest[1] = 0\ntot = 0\nmx = 0\ncnt = 0\nfor _ in range(n):\n    u = -1\n    for v in range(1, n+1):\n        if not in_t[v] and (u < 0 or best[v] < best[u]):\n            u = v\n    if best[u] >= INF:\n        print(-1)\n        sys.exit()\n    in_t[u] = True\n    tot += best[u]\n    mx = max(mx, best[u])\n    cnt += 1\n    for v in range(1, n+1):\n        if not in_t[v] and w[u][v] < best[v]:\n            best[v] = w[u][v]\nprint(mx)\n",
+   "tests": [
+    {
+     "in": "8 8\n1 3 17\n2 4 13\n3 5 9\n5 6 17\n4 7 5\n6 8 13\n5 8 11\n7 2 14\n",
+     "out": "-1\n"
+    },
+    {
+     "in": "5 4\n1 3 3\n1 4 3\n4 5 19\n1 2 3\n",
+     "out": "19\n"
+    },
+    {
+     "in": "5 8\n1 2 19\n1 3 7\n1 4 3\n3 5 3\n4 2 14\n3 4 1\n3 2 1\n1 5 20\n",
+     "out": "3\n"
+    },
+    {
+     "in": "8 9\n1 2 13\n2 3 5\n3 4 9\n3 5 17\n4 6 5\n4 7 13\n3 8 17\n3 1 1\n1 4 20\n",
+     "out": "17\n"
+    },
+    {
+     "in": "7 7\n1 2 20\n1 3 20\n3 4 4\n4 5 4\n5 6 20\n4 7 7\n4 2 8\n",
+     "out": "20\n"
+    },
+    {
+     "in": "6 4\n2 3 11\n1 4 11\n4 5 11\n1 6 10\n",
+     "out": "-1\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "5 5\n2 3 1\n2 4 9\n1 5 20\n4 2 7\n3 1 7\n",
+     "out": "20\n"
+    },
+    {
+     "in": "12 20\n1 2 11\n1 3 2\n2 4 10\n1 5 9\n5 6 9\n5 7 13\n7 8 1\n4 9 1\n4 10 1\n3 11 13\n2 12 17\n5 12 12\n12 4 4\n7 11 15\n7 3 3\n3 11 18\n2 10 18\n6 10 2\n6 1 1\n12 11 11\n",
+     "out": "11\n"
+    }
+   ],
+   "want": "graph2.mst"
+  },
+  {
+   "id": "mst-count",
+   "st": "第一行 n m，接著 m 行每行 u v w 表示無向加權邊。求最小生成樹用掉幾條邊；若圖不連通輸出 -1。",
+   "rw_st": null,
+   "ref": "import sys\nd = sys.stdin.read().split()\nn, m = int(d[0]), int(d[1])\nINF = 10**9\nw = [[INF]*(n+1) for _ in range(n+1)]\nfor i in range(m):\n    a, b, c = int(d[2+3*i]), int(d[3+3*i]), int(d[4+3*i])\n    w[a][b] = min(w[a][b], c)\n    w[b][a] = min(w[b][a], c)\nbest = [INF]*(n+1)\nin_t = [False]*(n+1)\nbest[1] = 0\ntot = 0\nmx = 0\ncnt = 0\nfor _ in range(n):\n    u = -1\n    for v in range(1, n+1):\n        if not in_t[v] and (u < 0 or best[v] < best[u]):\n            u = v\n    if best[u] >= INF:\n        print(-1)\n        sys.exit()\n    in_t[u] = True\n    tot += best[u]\n    mx = max(mx, best[u])\n    cnt += 1\n    for v in range(1, n+1):\n        if not in_t[v] and w[u][v] < best[v]:\n            best[v] = w[u][v]\nprint(cnt - 1)\n",
+   "tests": [
+    {
+     "in": "5 5\n1 3 9\n2 4 9\n1 5 5\n4 3 12\n5 4 17\n",
+     "out": "4\n"
+    },
+    {
+     "in": "5 5\n1 2 5\n1 3 16\n2 4 12\n1 5 20\n1 2 11\n",
+     "out": "4\n"
+    },
+    {
+     "in": "7 7\n1 2 19\n1 3 11\n1 4 10\n3 5 10\n3 6 14\n1 7 10\n5 1 6\n",
+     "out": "6\n"
+    },
+    {
+     "in": "8 7\n1 2 4\n2 3 2\n1 4 2\n2 5 14\n3 6 5\n4 7 5\n1 8 1\n",
+     "out": "7\n"
+    },
+    {
+     "in": "3 4\n1 2 13\n1 3 12\n3 2 5\n3 1 20\n",
+     "out": "2\n"
+    },
+    {
+     "in": "8 8\n1 2 17\n1 3 13\n1 4 5\n1 5 4\n3 6 4\n3 7 16\n5 8 4\n4 8 8\n",
+     "out": "7\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "13 24\n1 2 17\n1 3 9\n2 4 5\n2 5 5\n3 6 13\n2 7 20\n5 8 16\n3 9 8\n8 10 8\n5 11 20\n10 12 15\n9 13 3\n4 2 6\n10 6 18\n10 4 1\n5 3 5\n11 8 2\n1 3 15\n3 1 14\n4 10 2\n2 11 10\n8 13 10\n13 4 9\n5 6 12\n",
+     "out": "12\n"
+    },
+    {
+     "in": "30 38\n1 2 10\n2 3 2\n1 4 6\n2 5 5\n1 6 19\n2 7 19\n7 8 7\n1 9 15\n8 10 10\n3 11 17\n3 12 1\n9 13 13\n13 14 4\n14 15 12\n7 16 12\n15 17 11\n2 18 7\n3 19 11\n5 20 11\n19 21 18\n16 22 10\n5 23 14\n9 24 13\n15 25 13\n18 26 1\n23 27 17\n2 28 8\n11 29 20\n2 30 3\n27 9 11\n25 9 10\n29 5 13\n9 1 5\n11 14 4\n2 15 5\n1 19 2\n14 21 5\n5 12 20\n",
+     "out": "29\n"
+    }
+   ],
+   "want": "graph2.mst"
+  },
+  {
+   "id": "scc-count",
+   "st": "第一行 n m，接著 m 行每行 u v 表示一條從 u 到 v 的有向邊。輸出這張有向圖的強連通分量個數。",
+   "rw_st": null,
+   "ref": "import sys\nd = sys.stdin.read().split()\nn, m = int(d[0]), int(d[1])\nr = [[i == j for j in range(n+1)] for i in range(n+1)]\nfor i in range(m):\n    r[int(d[2+2*i])][int(d[3+2*i])] = True\nfor k in range(1, n+1):\n    for i in range(1, n+1):\n        if r[i][k]:\n            for j in range(1, n+1):\n                if r[k][j]:\n                    r[i][j] = True\ngroups = []\ndone = set()\nfor i in range(1, n+1):\n    if i in done:\n        continue\n    g = [j for j in range(1, n+1) if r[i][j] and r[j][i]]\n    done.update(g)\n    groups.append(len(g))\nprint(len(groups))\n",
+   "tests": [
+    {
+     "in": "8 6\n4 8\n7 5\n8 4\n8 4\n8 4\n8 4\n",
+     "out": "7\n"
+    },
+    {
+     "in": "6 8\n2 5\n5 3\n1 2\n6 4\n2 1\n3 5\n4 2\n6 4\n",
+     "out": "4\n"
+    },
+    {
+     "in": "4 1\n1 2\n",
+     "out": "4\n"
+    },
+    {
+     "in": "3 2\n1 3\n1 2\n",
+     "out": "3\n"
+    },
+    {
+     "in": "6 5\n6 4\n1 3\n2 4\n4 2\n6 2\n",
+     "out": "5\n"
+    },
+    {
+     "in": "4 1\n4 3\n",
+     "out": "4\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "29 34\n8 26\n2 7\n23 3\n2 3\n18 16\n12 1\n20 15\n22 16\n11 7\n6 3\n14 15\n25 18\n5 7\n5 29\n21 3\n9 20\n14 9\n16 22\n7 26\n26 8\n26 13\n19 22\n9 21\n16 14\n22 17\n19 29\n7 22\n15 18\n23 17\n10 19\n7 13\n20 29\n23 4\n12 13\n",
+     "out": "22\n"
+    },
+    {
+     "in": "8 6\n6 2\n6 2\n6 2\n6 2\n1 7\n4 7\n",
+     "out": "8\n"
+    }
+   ],
+   "want": "graph2.scc"
+  },
+  {
+   "id": "scc-largest",
+   "st": "第一行 n m，接著 m 行每行 u v 表示一條有向邊 u 到 v。輸出最大的強連通分量包含幾個點。",
+   "rw_st": null,
+   "ref": "import sys\nd = sys.stdin.read().split()\nn, m = int(d[0]), int(d[1])\nr = [[i == j for j in range(n+1)] for i in range(n+1)]\nfor i in range(m):\n    r[int(d[2+2*i])][int(d[3+2*i])] = True\nfor k in range(1, n+1):\n    for i in range(1, n+1):\n        if r[i][k]:\n            for j in range(1, n+1):\n                if r[k][j]:\n                    r[i][j] = True\ngroups = []\ndone = set()\nfor i in range(1, n+1):\n    if i in done:\n        continue\n    g = [j for j in range(1, n+1) if r[i][j] and r[j][i]]\n    done.update(g)\n    groups.append(len(g))\nprint(max(groups))\n",
+   "tests": [
+    {
+     "in": "7 10\n3 7\n5 6\n1 2\n4 1\n5 2\n6 5\n7 5\n1 6\n6 4\n4 2\n",
+     "out": "4\n"
+    },
+    {
+     "in": "3 3\n1 2\n1 3\n3 2\n",
+     "out": "1\n"
+    },
+    {
+     "in": "6 6\n3 1\n2 4\n2 6\n4 3\n5 3\n5 1\n",
+     "out": "1\n"
+    },
+    {
+     "in": "6 5\n6 4\n3 1\n5 3\n1 5\n2 4\n",
+     "out": "3\n"
+    },
+    {
+     "in": "8 11\n4 8\n7 2\n4 6\n4 8\n4 8\n4 8\n4 8\n4 3\n6 2\n6 2\n6 5\n",
+     "out": "1\n"
+    },
+    {
+     "in": "7 10\n5 4\n3 5\n3 4\n7 6\n1 3\n4 2\n4 1\n6 2\n3 1\n4 6\n",
+     "out": "4\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "15 13\n14 4\n10 5\n4 13\n8 12\n8 15\n15 8\n11 2\n12 15\n11 12\n1 5\n13 9\n15 13\n8 10\n",
+     "out": "3\n"
+    },
+    {
+     "in": "5 9\n5 1\n2 1\n4 1\n2 3\n2 5\n5 1\n1 3\n2 1\n1 3\n",
+     "out": "1\n"
+    }
+   ],
+   "want": "graph2.scc"
+  },
+  {
+   "id": "scc-one",
+   "st": "第一行 n m，接著 m 行每行 u v 表示有向邊 u 到 v。判斷整張圖是否強連通，是輸出 YES，否則輸出 NO。",
+   "rw_st": null,
+   "ref": "import sys\nd = sys.stdin.read().split()\nn, m = int(d[0]), int(d[1])\nr = [[i == j for j in range(n+1)] for i in range(n+1)]\nfor i in range(m):\n    r[int(d[2+2*i])][int(d[3+2*i])] = True\nfor k in range(1, n+1):\n    for i in range(1, n+1):\n        if r[i][k]:\n            for j in range(1, n+1):\n                if r[k][j]:\n                    r[i][j] = True\ngroups = []\ndone = set()\nfor i in range(1, n+1):\n    if i in done:\n        continue\n    g = [j for j in range(1, n+1) if r[i][j] and r[j][i]]\n    done.update(g)\n    groups.append(len(g))\nprint(\"YES\" if len(groups) == 1 else \"NO\")\n",
+   "tests": [
+    {
+     "in": "3 2\n2 1\n3 2\n",
+     "out": "NO\n"
+    },
+    {
+     "in": "7 7\n7 6\n3 6\n5 1\n1 4\n3 4\n6 3\n7 2\n",
+     "out": "NO\n"
+    },
+    {
+     "in": "8 6\n4 8\n4 8\n4 8\n8 4\n8 4\n6 2\n",
+     "out": "NO\n"
+    },
+    {
+     "in": "3 1\n2 3\n",
+     "out": "NO\n"
+    },
+    {
+     "in": "5 6\n4 5\n5 3\n4 1\n2 3\n2 1\n5 4\n",
+     "out": "NO\n"
+    },
+    {
+     "in": "8 6\n5 3\n5 8\n4 8\n4 8\n2 6\n2 1\n",
+     "out": "NO\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "7 13\n4 7\n3 5\n7 4\n4 2\n1 3\n2 1\n3 4\n5 6\n4 5\n3 6\n4 3\n5 4\n5 3\n",
+     "out": "NO\n"
+    },
+    {
+     "in": "10 10\n4 1\n9 1\n7 10\n9 1\n9 4\n4 2\n10 6\n6 4\n8 2\n4 5\n",
+     "out": "NO\n"
+    }
+   ],
+   "want": "graph2.scc"
+  },
+  {
+   "id": "bf-dist",
+   "st": "第一行 n m，接著 m 行每行 u v w 表示一條從 u 到 v、權重為 w 的有向邊（權重可以是 0 但保證沒有負環）。用 Bellman-Ford 求從節點 1 到節點 n 的最短距離，無法到達輸出 -1。",
+   "rw_st": null,
+   "ref": "import sys\nd = sys.stdin.read().split()\nn, m = int(d[0]), int(d[1])\nes = [(int(d[2+3*i]), int(d[3+3*i]), int(d[4+3*i])) for i in range(m)]\nINF = float(\"inf\")\ndist = {1: 0}\nfor _ in range(n):\n    nd = dict(dist)\n    for a, b, c in es:\n        if a in dist and dist[a] + c < nd.get(b, INF):\n            nd[b] = dist[a] + c\n    dist = nd\nprint(dist.get(n, -1))\n",
+   "tests": [
+    {
+     "in": "4 1\n1 4 5\n",
+     "out": "5\n"
+    },
+    {
+     "in": "8 1\n2 6 15\n",
+     "out": "-1\n"
+    },
+    {
+     "in": "4 1\n4 3 4\n",
+     "out": "-1\n"
+    },
+    {
+     "in": "7 7\n4 3 -7\n7 2 14\n2 5 0\n7 6 5\n3 6 8\n5 3 3\n2 7 -4\n",
+     "out": "-1\n"
+    },
+    {
+     "in": "6 4\n3 5 0\n1 5 -3\n1 5 1\n1 5 1\n",
+     "out": "-1\n"
+    },
+    {
+     "in": "3 3\n3 2 7\n1 3 8\n3 2 12\n",
+     "out": "8\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "27 51\n5 17 9\n16 6 3\n10 8 3\n18 22 8\n18 11 5\n19 26 15\n20 12 7\n12 10 0\n27 4 9\n27 22 11\n13 20 17\n2 17 -1\n27 11 12\n3 24 6\n27 9 4\n1 2 5\n11 2 12\n16 9 -4\n18 20 11\n26 20 8\n11 1 7\n27 19 5\n18 20 12\n27 15 -1\n14 1 6\n19 20 18\n13 1 10\n3 13 -3\n22 3 12\n13 16 12\n26 22 -3\n19 13 2\n9 14 9\n16 6 0\n17 13 -5\n8 18 -1\n12 18 -5\n2 7 7\n27 4 3\n6 27 -3\n14 11 3\n8 11 6\n11 5 5\n8 7 11\n27 19 2\n21 19 -4\n2 24 4\n13 20 17\n7 8 -4\n25 21 3\n21 5 -3\n",
+     "out": "8\n"
+    },
+    {
+     "in": "19 28\n12 9 2\n3 18 3\n7 6 5\n14 7 0\n18 6 2\n18 10 1\n4 18 3\n17 13 1\n1 10 7\n4 8 12\n10 9 9\n18 9 2\n12 16 2\n11 12 13\n7 2 -2\n13 18 9\n19 2 -7\n18 11 4\n16 14 4\n11 10 7\n18 7 8\n10 17 8\n6 7 7\n9 13 0\n19 14 6\n18 4 4\n6 9 3\n3 5 -3\n",
+     "out": "-1\n"
+    }
+   ],
+   "want": "graph2.bellman"
+  },
+  {
+   "id": "bf-all",
+   "st": "第一行 n m，接著 m 行每行 u v w 表示有向邊 u 到 v 權重 w。用 Bellman-Ford 求節點 1 到每個節點的最短距離，輸出 n 個數字用空白分隔，無法到達的輸出 INF。",
+   "rw_st": null,
+   "ref": "import sys\nd = sys.stdin.read().split()\nn, m = int(d[0]), int(d[1])\nes = [(int(d[2+3*i]), int(d[3+3*i]), int(d[4+3*i])) for i in range(m)]\nINF = float(\"inf\")\ndist = {1: 0}\nfor _ in range(n):\n    nd = dict(dist)\n    for a, b, c in es:\n        if a in dist and dist[a] + c < nd.get(b, INF):\n            nd[b] = dist[a] + c\n    dist = nd\nprint(*[dist.get(i, \"INF\") for i in range(1, n+1)])\n",
+   "tests": [
+    {
+     "in": "4 2\n1 4 12\n4 3 7\n",
+     "out": "0 INF 19 12\n"
+    },
+    {
+     "in": "3 5\n3 1 2\n2 3 12\n1 3 12\n2 3 6\n3 1 -2\n",
+     "out": "0 INF 12\n"
+    },
+    {
+     "in": "3 3\n1 2 14\n3 2 16\n3 2 16\n",
+     "out": "0 14 INF\n"
+    },
+    {
+     "in": "7 9\n4 7 -6\n5 7 -6\n1 7 -7\n4 7 -7\n1 7 -9\n6 3 -2\n2 6 8\n6 7 -3\n7 4 11\n",
+     "out": "0 INF INF 2 INF INF -9\n"
+    },
+    {
+     "in": "3 3\n1 2 2\n3 2 9\n3 2 8\n",
+     "out": "0 2 INF\n"
+    },
+    {
+     "in": "7 5\n6 4 -1\n5 2 -2\n3 1 16\n6 7 8\n5 6 5\n",
+     "out": "0 INF INF INF INF INF INF\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "9 11\n8 5 -5\n6 3 22\n5 4 12\n4 1 0\n4 1 3\n6 2 14\n3 4 6\n2 9 1\n6 2 11\n3 2 -1\n9 7 8\n",
+     "out": "0 INF INF INF INF INF INF INF INF\n"
+    },
+    {
+     "in": "13 14\n9 5 7\n3 7 5\n12 5 4\n7 2 -6\n13 4 -5\n4 13 17\n9 10 5\n3 10 6\n12 8 9\n8 13 -1\n7 3 0\n2 3 13\n8 12 4\n8 5 3\n",
+     "out": "0 INF INF INF INF INF INF INF INF INF INF INF INF\n"
+    }
+   ],
+   "want": "graph2.bellman"
+  },
+  {
+   "id": "td-len",
+   "st": "第一行 n，接著 n-1 行每行 u v 表示樹上的一條邊。輸出樹的直徑（最遠兩點的距離，以邊數計）。",
+   "rw_st": null,
+   "ref": "import sys\nd = sys.stdin.read().split()\nn = int(d[0])\nadj = {i: [] for i in range(1, n+1)}\nfor i in range(n-1):\n    a, b = int(d[1+2*i]), int(d[2+2*i])\n    adj[a].append(b)\n    adj[b].append(a)\nbest = 0\nfor s in range(1, n+1):\n    dd = {s: 0}\n    q = [s]\n    while q:\n        x = q.pop(0)\n        for y in adj[x]:\n            if y not in dd:\n                dd[y] = dd[x] + 1\n                q.append(y)\n    best = max(best, max(dd.values()))\nprint(best)\n",
+   "tests": [
+    {
+     "in": "8\n1 2\n2 3\n3 4\n1 5\n4 6\n4 7\n6 8\n",
+     "out": "6\n"
+    },
+    {
+     "in": "4\n1 2\n2 3\n1 4\n",
+     "out": "3\n"
+    },
+    {
+     "in": "4\n1 2\n2 3\n1 4\n",
+     "out": "3\n"
+    },
+    {
+     "in": "4\n1 2\n1 3\n3 4\n",
+     "out": "3\n"
+    },
+    {
+     "in": "5\n1 2\n1 3\n1 4\n3 5\n",
+     "out": "3\n"
+    },
+    {
+     "in": "4\n1 2\n1 3\n2 4\n",
+     "out": "3\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "29\n1 2\n1 3\n2 4\n3 5\n5 6\n6 7\n3 8\n2 9\n8 10\n8 11\n8 12\n9 13\n13 14\n13 15\n15 16\n4 17\n3 18\n6 19\n15 20\n8 21\n11 22\n6 23\n14 24\n15 25\n9 26\n15 27\n18 28\n3 29\n",
+     "out": "9\n"
+    },
+    {
+     "in": "13\n1 2\n1 3\n1 4\n2 5\n1 6\n4 7\n6 8\n2 9\n9 10\n4 11\n5 12\n4 13\n",
+     "out": "5\n"
+    }
+   ],
+   "want": "graph2.tree-diameter"
+  },
+  {
+   "id": "lca-q",
+   "st": "第一行 n q，接著 n-1 行每行 u v 表示樹上的一條邊（以節點 1 為根），再接著 q 行每行 a b，輸出 a 和 b 的最近共同祖先。",
+   "rw_st": null,
+   "ref": "import sys\nd = sys.stdin.read().split()\nn, q = int(d[0]), int(d[1])\npar = {1: 0}\nfor i in range(n-1):\n    a, b = int(d[2+2*i]), int(d[3+2*i])\n    par[b] = a\nfor i in range(q):\n    a, b = int(d[2+2*(n-1)+2*i]), int(d[3+2*(n-1)+2*i])\n    pa = [a]\n    while par[pa[-1]]:\n        pa.append(par[pa[-1]])\n    pb = [b]\n    while par[pb[-1]]:\n        pb.append(par[pb[-1]])\n    c = next(x for x in pa if x in pb)\n    print(c)\n",
+   "tests": [
+    {
+     "in": "6 4\n1 2\n2 3\n2 4\n4 5\n4 6\n5 1\n5 5\n2 4\n2 6\n",
+     "out": "1\n5\n2\n2\n"
+    },
+    {
+     "in": "4 1\n1 2\n1 3\n1 4\n1 1\n",
+     "out": "1\n"
+    },
+    {
+     "in": "3 5\n1 2\n1 3\n1 2\n3 1\n2 3\n1 1\n1 2\n",
+     "out": "1\n1\n1\n1\n1\n"
+    },
+    {
+     "in": "5 6\n1 2\n1 3\n2 4\n1 5\n3 1\n5 4\n4 2\n1 4\n4 5\n3 3\n",
+     "out": "1\n1\n2\n1\n1\n3\n"
+    },
+    {
+     "in": "3 1\n1 2\n1 3\n2 3\n",
+     "out": "1\n"
+    },
+    {
+     "in": "4 2\n1 2\n1 3\n3 4\n1 1\n1 1\n",
+     "out": "1\n1\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "30 20\n1 2\n1 3\n3 4\n3 5\n5 6\n1 7\n1 8\n8 9\n4 10\n9 11\n2 12\n2 13\n5 14\n14 15\n11 16\n1 17\n9 18\n11 19\n2 20\n13 21\n15 22\n7 23\n5 24\n17 25\n24 26\n6 27\n10 28\n12 29\n21 30\n18 2\n18 24\n22 3\n27 25\n25 24\n14 24\n18 7\n19 5\n21 15\n9 27\n15 3\n26 5\n15 14\n26 16\n16 12\n11 17\n5 11\n17 5\n10 16\n30 5\n",
+     "out": "1\n1\n3\n1\n1\n5\n1\n1\n1\n1\n3\n5\n14\n1\n1\n1\n1\n1\n1\n1\n"
+    },
+    {
+     "in": "29 18\n1 2\n2 3\n2 4\n2 5\n1 6\n1 7\n5 8\n7 9\n9 10\n2 11\n5 12\n8 13\n6 14\n4 15\n6 16\n10 17\n12 18\n4 19\n3 20\n10 21\n7 22\n17 23\n23 24\n13 25\n7 26\n14 27\n2 28\n11 29\n29 13\n8 11\n16 6\n15 9\n6 1\n13 21\n23 15\n23 1\n29 5\n4 20\n4 7\n13 12\n20 19\n22 19\n16 22\n8 21\n2 24\n9 10\n",
+     "out": "2\n2\n6\n1\n1\n1\n1\n1\n2\n2\n1\n5\n2\n1\n1\n1\n1\n9\n"
+    }
+   ],
+   "want": "graph2.lca"
+  },
+  {
+   "id": "lca-dist",
+   "st": "第一行 n q，接著 n-1 行每行 u v 表示樹的一條邊（根是 1），再接著 q 行每行 a b。每個查詢輸出 a 到 b 的樹上距離（邊數）；可以利用最近共同祖先。",
+   "rw_st": null,
+   "ref": "import sys\nd = sys.stdin.read().split()\nn, q = int(d[0]), int(d[1])\npar = {1: 0}\nfor i in range(n-1):\n    a, b = int(d[2+2*i]), int(d[3+2*i])\n    par[b] = a\nfor i in range(q):\n    a, b = int(d[2+2*(n-1)+2*i]), int(d[3+2*(n-1)+2*i])\n    pa = [a]\n    while par[pa[-1]]:\n        pa.append(par[pa[-1]])\n    pb = [b]\n    while par[pb[-1]]:\n        pb.append(par[pb[-1]])\n    c = next(x for x in pa if x in pb)\n    print(pa.index(c) + pb.index(c))\n",
+   "tests": [
+    {
+     "in": "5 5\n1 2\n1 3\n3 4\n1 5\n3 4\n1 3\n3 5\n2 2\n5 5\n",
+     "out": "1\n1\n2\n0\n0\n"
+    },
+    {
+     "in": "3 1\n1 2\n1 3\n3 3\n",
+     "out": "0\n"
+    },
+    {
+     "in": "7 3\n1 2\n1 3\n1 4\n4 5\n4 6\n6 7\n5 4\n1 1\n1 1\n",
+     "out": "1\n0\n0\n"
+    },
+    {
+     "in": "6 2\n1 2\n2 3\n2 4\n4 5\n3 6\n2 5\n3 2\n",
+     "out": "2\n1\n"
+    },
+    {
+     "in": "8 4\n1 2\n1 3\n1 4\n3 5\n2 6\n3 7\n3 8\n6 2\n6 2\n6 1\n1 4\n",
+     "out": "1\n1\n2\n1\n"
+    },
+    {
+     "in": "7 3\n1 2\n1 3\n1 4\n3 5\n3 6\n1 7\n2 1\n4 1\n3 3\n",
+     "out": "1\n1\n0\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "29 11\n1 2\n1 3\n1 4\n2 5\n3 6\n4 7\n1 8\n2 9\n8 10\n4 11\n6 12\n2 13\n13 14\n14 15\n7 16\n2 17\n16 18\n16 19\n11 20\n1 21\n4 22\n1 23\n16 24\n13 25\n24 26\n3 27\n3 28\n13 29\n19 3\n9 24\n20 16\n21 7\n16 11\n7 1\n8 27\n2 22\n26 10\n18 18\n16 21\n",
+     "out": "5\n6\n4\n3\n3\n2\n3\n3\n7\n0\n4\n"
+    },
+    {
+     "in": "13 14\n1 2\n1 3\n1 4\n3 5\n3 6\n3 7\n5 8\n8 9\n5 10\n3 11\n3 12\n7 13\n1 3\n10 6\n2 4\n8 4\n2 13\n11 6\n10 11\n12 12\n1 7\n6 2\n6 5\n2 9\n6 9\n12 2\n",
+     "out": "1\n3\n2\n4\n4\n2\n3\n0\n2\n3\n2\n5\n4\n3\n"
+    }
+   ],
+   "want": "graph2.lca"
+  },
+  {
+   "id": "bip-yn",
+   "st": "第一行 n m，接著 m 行每行 u v 表示一條無向邊。判斷這張圖是不是二分圖，是輸出 YES，否則輸出 NO。",
+   "rw_st": null,
+   "ref": "import sys\nsys.setrecursionlimit(10000)\nd = sys.stdin.read().split()\nn, m = int(d[0]), int(d[1])\nadj = {i: [] for i in range(1, n+1)}\nfor i in range(m):\n    a, b = int(d[2+2*i]), int(d[3+2*i])\n    adj[a].append(b)\n    adj[b].append(a)\ncol = {}\ndef go(x, c):\n    col[x] = c\n    for y in adj[x]:\n        if y in col:\n            if col[y] == c:\n                return False\n        elif not go(y, 1 - c):\n            return False\n    return True\nok = all(go(s, 0) for s in range(1, n+1) if s not in col)\nprint(\"YES\" if ok else \"NO\")\n",
+   "tests": [
+    {
+     "in": "3 3\n1 2\n2 1\n2 1\n",
+     "out": "YES\n"
+    },
+    {
+     "in": "5 3\n4 5\n4 5\n4 5\n",
+     "out": "YES\n"
+    },
+    {
+     "in": "3 3\n2 3\n3 1\n2 1\n",
+     "out": "NO\n"
+    },
+    {
+     "in": "5 5\n2 3\n3 5\n4 2\n5 1\n3 1\n",
+     "out": "NO\n"
+    },
+    {
+     "in": "5 4\n1 2\n2 1\n2 4\n2 3\n",
+     "out": "YES\n"
+    },
+    {
+     "in": "8 3\n4 8\n3 6\n2 6\n",
+     "out": "YES\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "29 15\n25 15\n12 27\n2 7\n24 27\n26 15\n24 9\n9 21\n13 27\n12 8\n3 9\n12 27\n2 23\n26 14\n9 23\n2 29\n",
+     "out": "YES\n"
+    },
+    {
+     "in": "5 4\n1 5\n1 2\n5 1\n5 1\n",
+     "out": "YES\n"
+    }
+   ],
+   "want": "graph2.bipartite"
+  },
+  {
+   "id": "mf-flow",
+   "st": "第一行 n m，接著 m 行每行 u v c 表示一條從 u 到 v 容量為 c 的有向邊。求從節點 1 到節點 n 的最大流量。",
+   "rw_st": null,
+   "ref": "import sys\nd = sys.stdin.read().split()\nn, m = int(d[0]), int(d[1])\ncap = {}\nfor i in range(m):\n    a, b, c = int(d[2+3*i]), int(d[3+3*i]), int(d[4+3*i])\n    cap[(a, b)] = cap.get((a, b), 0) + c\ndef dfs(x, seen, f):\n    if x == n:\n        return f\n    seen.add(x)\n    for y in range(1, n+1):\n        c = cap.get((x, y), 0)\n        if y not in seen and c > 0:\n            r = dfs(y, seen, min(f, c))\n            if r:\n                cap[(x, y)] -= r\n                cap[(y, x)] = cap.get((y, x), 0) + r\n                return r\n    return 0\nflow = 0\nwhile True:\n    r = dfs(1, set(), 10**9)\n    if not r:\n        break\n    flow += r\nprint(flow)\n",
+   "tests": [
+    {
+     "in": "5 5\n3 5 4\n3 1 3\n1 2 3\n4 1 9\n1 5 9\n",
+     "out": "9\n"
+    },
+    {
+     "in": "5 6\n3 4 2\n3 4 4\n2 1 8\n4 2 5\n5 2 3\n1 5 4\n",
+     "out": "4\n"
+    },
+    {
+     "in": "6 8\n6 2 7\n6 1 4\n6 4 6\n6 4 5\n4 6 2\n2 4 6\n3 5 1\n1 6 4\n",
+     "out": "4\n"
+    },
+    {
+     "in": "4 3\n3 1 9\n1 4 9\n1 4 1\n",
+     "out": "10\n"
+    },
+    {
+     "in": "6 6\n2 1 7\n5 6 6\n3 4 3\n3 1 1\n6 4 5\n1 6 5\n",
+     "out": "5\n"
+    },
+    {
+     "in": "5 9\n5 3 5\n1 4 2\n1 5 5\n5 4 7\n2 5 5\n4 1 2\n1 2 4\n4 5 1\n1 5 2\n",
+     "out": "12\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "3 3\n2 1 7\n3 1 9\n1 3 8\n",
+     "out": "8\n"
+    },
+    {
+     "in": "10 14\n5 9 9\n3 6 8\n8 10 1\n8 6 9\n5 1 9\n1 9 8\n8 10 9\n1 5 7\n7 5 5\n3 5 2\n5 3 3\n10 6 1\n1 7 6\n1 10 5\n",
+     "out": "5\n"
+    }
+   ],
+   "want": "graph2.maxflow"
+  },
+  {
+   "id": "ho-mst-sum",
+   "st": "第一行 n m，接著 m 行每行 a b c，代表城市 a 與 b 之間可以鋪設成本 c 的道路（雙向）。要讓所有城市互通，最少總成本是多少？若不可能輸出 -1。",
+   "rw_st": null,
+   "ref": "import sys\nd = sys.stdin.read().split()\nn, m = int(d[0]), int(d[1])\nINF = 10**9\nw = [[INF]*(n+1) for _ in range(n+1)]\nfor i in range(m):\n    a, b, c = int(d[2+3*i]), int(d[3+3*i]), int(d[4+3*i])\n    w[a][b] = min(w[a][b], c)\n    w[b][a] = min(w[b][a], c)\nbest = [INF]*(n+1)\nin_t = [False]*(n+1)\nbest[1] = 0\ntot = 0\nmx = 0\ncnt = 0\nfor _ in range(n):\n    u = -1\n    for v in range(1, n+1):\n        if not in_t[v] and (u < 0 or best[v] < best[u]):\n            u = v\n    if best[u] >= INF:\n        print(-1)\n        sys.exit()\n    in_t[u] = True\n    tot += best[u]\n    mx = max(mx, best[u])\n    cnt += 1\n    for v in range(1, n+1):\n        if not in_t[v] and w[u][v] < best[v]:\n            best[v] = w[u][v]\nprint(tot)\n",
+   "tests": [
+    {
+     "in": "7 7\n1 2 4\n1 3 8\n3 4 20\n1 5 11\n4 6 3\n3 7 3\n4 7 19\n",
+     "out": "48\n"
+    },
+    {
+     "in": "3 4\n1 2 7\n1 3 3\n2 3 8\n1 2 17\n",
+     "out": "10\n"
+    },
+    {
+     "in": "7 9\n1 2 2\n2 3 2\n3 4 6\n3 5 1\n5 6 7\n6 7 17\n3 6 4\n4 5 19\n2 7 6\n",
+     "out": "21\n"
+    },
+    {
+     "in": "5 3\n1 3 11\n3 4 15\n4 5 7\n",
+     "out": "-1\n"
+    },
+    {
+     "in": "3 4\n1 2 14\n2 3 13\n1 2 4\n2 3 18\n",
+     "out": "17\n"
+    },
+    {
+     "in": "4 6\n1 2 2\n1 3 18\n2 4 14\n2 1 9\n1 4 8\n4 3 17\n",
+     "out": "27\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "27 38\n1 2 7\n1 3 14\n1 4 14\n1 5 10\n3 6 13\n3 7 19\n3 8 3\n8 9 2\n9 10 18\n6 11 14\n5 12 5\n8 13 17\n3 14 17\n6 15 5\n15 16 16\n16 17 3\n3 18 3\n11 19 15\n1 20 7\n11 21 3\n4 22 11\n3 23 7\n7 24 18\n15 25 10\n14 26 17\n3 27 13\n6 24 1\n3 12 8\n27 7 3\n22 17 11\n27 1 8\n26 17 4\n3 18 12\n15 3 20\n17 5 11\n17 19 9\n12 13 1\n11 20 8\n",
+     "out": "188\n"
+    },
+    {
+     "in": "18 22\n1 3 20\n3 4 12\n3 5 20\n1 6 16\n3 7 19\n7 8 3\n7 9 19\n8 10 19\n7 11 7\n10 12 19\n2 13 19\n5 14 3\n3 15 6\n1 16 14\n1 17 18\n10 18 14\n4 2 13\n9 13 13\n7 17 9\n13 9 1\n15 17 17\n11 15 13\n",
+     "out": "206\n"
+    }
+   ],
+   "split": "holdout"
+  },
+  {
+   "id": "ho-scc-n",
+   "st": "第一行 n m，接著 m 行每行 x y，表示網頁 x 有連結指向網頁 y。互相可以到達的網頁算同一群，輸出有幾群。",
+   "rw_st": null,
+   "ref": "import sys\nd = sys.stdin.read().split()\nn, m = int(d[0]), int(d[1])\nr = [[i == j for j in range(n+1)] for i in range(n+1)]\nfor i in range(m):\n    r[int(d[2+2*i])][int(d[3+2*i])] = True\nfor k in range(1, n+1):\n    for i in range(1, n+1):\n        if r[i][k]:\n            for j in range(1, n+1):\n                if r[k][j]:\n                    r[i][j] = True\ngroups = []\ndone = set()\nfor i in range(1, n+1):\n    if i in done:\n        continue\n    g = [j for j in range(1, n+1) if r[i][j] and r[j][i]]\n    done.update(g)\n    groups.append(len(g))\nprint(len(groups))\n",
+   "tests": [
+    {
+     "in": "3 3\n1 3\n1 2\n3 2\n",
+     "out": "3\n"
+    },
+    {
+     "in": "5 9\n2 5\n2 5\n5 1\n5 4\n3 2\n3 4\n1 5\n2 5\n3 1\n",
+     "out": "4\n"
+    },
+    {
+     "in": "5 4\n5 1\n5 3\n2 1\n4 5\n",
+     "out": "5\n"
+    },
+    {
+     "in": "3 5\n2 1\n1 3\n3 1\n2 1\n2 1\n",
+     "out": "2\n"
+    },
+    {
+     "in": "4 1\n1 2\n",
+     "out": "4\n"
+    },
+    {
+     "in": "7 9\n5 7\n1 3\n1 5\n3 5\n4 6\n6 2\n5 2\n2 6\n7 6\n",
+     "out": "6\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "17 43\n6 17\n8 1\n4 5\n9 4\n5 14\n13 7\n9 10\n10 2\n9 11\n10 9\n2 3\n4 8\n17 11\n4 17\n1 5\n2 3\n11 2\n9 14\n3 14\n4 6\n13 9\n8 12\n6 8\n8 15\n2 17\n17 11\n16 8\n8 17\n7 12\n10 5\n15 4\n14 11\n5 17\n2 9\n13 12\n5 12\n8 11\n4 15\n3 15\n8 3\n17 11\n3 14\n13 7\n",
+     "out": "5\n"
+    },
+    {
+     "in": "29 51\n26 15\n11 22\n29 6\n19 8\n19 15\n27 20\n23 11\n28 23\n8 11\n8 10\n24 6\n10 6\n21 1\n13 11\n22 23\n18 4\n10 14\n17 14\n2 29\n6 10\n12 8\n29 22\n19 9\n3 29\n6 25\n21 10\n1 21\n6 23\n16 9\n26 21\n29 16\n17 6\n5 1\n20 23\n26 18\n22 2\n28 17\n20 28\n19 1\n28 22\n21 14\n12 24\n2 13\n15 5\n29 8\n14 8\n8 2\n20 24\n29 26\n12 10\n27 6\n",
+     "out": "15\n"
+    }
+   ],
+   "split": "holdout"
+  },
+  {
+   "id": "ho-diam",
+   "st": "第一行 n，接著 n-1 行每行 a b 描述一棵樹。找出樹上相距最遠的兩個點，輸出它們之間經過的邊數。",
+   "rw_st": null,
+   "ref": "import sys\nd = sys.stdin.read().split()\nn = int(d[0])\nadj = {i: [] for i in range(1, n+1)}\nfor i in range(n-1):\n    a, b = int(d[1+2*i]), int(d[2+2*i])\n    adj[a].append(b)\n    adj[b].append(a)\nbest = 0\nfor s in range(1, n+1):\n    dd = {s: 0}\n    q = [s]\n    while q:\n        x = q.pop(0)\n        for y in adj[x]:\n            if y not in dd:\n                dd[y] = dd[x] + 1\n                q.append(y)\n    best = max(best, max(dd.values()))\nprint(best)\n",
+   "tests": [
+    {
+     "in": "4\n1 2\n2 3\n3 4\n",
+     "out": "3\n"
+    },
+    {
+     "in": "6\n1 2\n2 3\n3 4\n2 5\n5 6\n",
+     "out": "4\n"
+    },
+    {
+     "in": "3\n1 2\n1 3\n",
+     "out": "2\n"
+    },
+    {
+     "in": "7\n1 2\n1 3\n1 4\n3 5\n2 6\n1 7\n",
+     "out": "4\n"
+    },
+    {
+     "in": "5\n1 2\n1 3\n3 4\n3 5\n",
+     "out": "3\n"
+    },
+    {
+     "in": "7\n1 2\n1 3\n3 4\n2 5\n4 6\n6 7\n",
+     "out": "6\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "11\n1 2\n1 3\n1 4\n2 5\n3 6\n2 7\n5 8\n3 9\n9 10\n6 11\n",
+     "out": "6\n"
+    },
+    {
+     "in": "10\n1 2\n2 3\n2 4\n1 5\n2 6\n1 7\n6 8\n4 9\n6 10\n",
+     "out": "4\n"
+    }
+   ],
+   "split": "holdout"
+  },
+  {
+   "id": "ho-lca",
+   "st": "第一行 n q，接著 n-1 行每行 a b 描述一棵以 1 為根的樹，再來 q 行每行 x y。對每個詢問輸出 x 與 y 共同的最深祖先編號（LCA）。",
+   "rw_st": null,
+   "ref": "import sys\nd = sys.stdin.read().split()\nn, q = int(d[0]), int(d[1])\npar = {1: 0}\nfor i in range(n-1):\n    a, b = int(d[2+2*i]), int(d[3+2*i])\n    par[b] = a\nfor i in range(q):\n    a, b = int(d[2+2*(n-1)+2*i]), int(d[3+2*(n-1)+2*i])\n    pa = [a]\n    while par[pa[-1]]:\n        pa.append(par[pa[-1]])\n    pb = [b]\n    while par[pb[-1]]:\n        pb.append(par[pb[-1]])\n    c = next(x for x in pa if x in pb)\n    print(c)\n",
+   "tests": [
+    {
+     "in": "3 3\n1 2\n1 3\n3 2\n3 3\n1 3\n",
+     "out": "1\n3\n1\n"
+    },
+    {
+     "in": "5 5\n1 2\n2 3\n1 4\n3 5\n3 2\n2 1\n2 2\n1 2\n4 4\n",
+     "out": "2\n1\n2\n1\n4\n"
+    },
+    {
+     "in": "8 4\n1 2\n1 3\n1 4\n3 5\n3 6\n1 7\n7 8\n3 6\n2 1\n1 1\n1 1\n",
+     "out": "3\n1\n1\n1\n"
+    },
+    {
+     "in": "5 3\n1 2\n2 3\n1 4\n4 5\n3 2\n2 5\n1 1\n",
+     "out": "2\n1\n1\n"
+    },
+    {
+     "in": "5 6\n1 2\n2 3\n3 4\n4 5\n3 4\n2 2\n1 4\n5 3\n5 3\n1 3\n",
+     "out": "3\n2\n1\n3\n3\n1\n"
+    },
+    {
+     "in": "8 4\n1 2\n2 3\n1 4\n4 5\n1 6\n4 7\n7 8\n6 2\n5 5\n8 4\n8 4\n",
+     "out": "1\n5\n4\n4\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "22 11\n1 2\n1 3\n2 4\n3 5\n1 6\n4 7\n2 8\n7 9\n5 10\n6 11\n8 12\n6 13\n4 14\n5 15\n3 16\n7 17\n2 18\n9 19\n3 20\n15 21\n16 22\n17 5\n2 8\n1 13\n11 15\n21 4\n4 4\n22 12\n20 4\n16 16\n2 1\n1 7\n",
+     "out": "1\n2\n1\n1\n1\n4\n1\n1\n16\n1\n1\n"
+    },
+    {
+     "in": "5 15\n1 2\n1 3\n3 4\n3 5\n4 1\n2 2\n2 5\n1 4\n1 1\n5 1\n3 1\n2 4\n4 2\n1 3\n2 5\n2 1\n4 3\n3 5\n4 4\n",
+     "out": "1\n2\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n3\n3\n4\n"
+    }
+   ],
+   "split": "holdout"
+  }
+ ]
+}

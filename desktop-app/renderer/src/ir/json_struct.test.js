@@ -5,10 +5,10 @@
 // 工具鏈：g++＝mingw64（PATH 放最前面）、python；找不到就略過並印原因。
 const assert = require('assert'), fs = require('fs'), path = require('path'), os = require('os'), cp = require('child_process');
 const JS = require('./json_struct_core.js');
-const MING = process.env.FA_MINGW_BIN || 'J:\\msys64\\mingw64\\bin'; const GPP = path.join(MING, 'g++.exe'), GCC = path.join(MING, 'gcc.exe'); const ENVM = Object.assign({}, process.env, { PATH: MING + path.delimiter + (process.env.PATH || '') });
+const MING = process.env.FA_MINGW_BIN || 'J:\\msys64\\mingw64\\bin'; const GPP = fs.existsSync(path.join(MING, 'g++.exe')) ? path.join(MING, 'g++.exe') : 'g++', GCC = fs.existsSync(path.join(MING, 'gcc.exe')) ? path.join(MING, 'gcc.exe') : 'gcc'; const ENVM = Object.assign({}, process.env, { PATH: MING + path.delimiter + (process.env.PATH || '') });
 let pass = 0, fail = 0; const t = (name, fn) => { try { fn(); pass++; } catch (e) { fail++; console.error('FAIL ' + name + '\n   ' + String(e.message).split('\n').slice(0, 14).join('\n   ')); } };
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'jst-'));
-let PY = null; for (const c of ['python', 'python3']) { const r = cp.spawnSync(c, ['-I', '-c', 'print(1)'], { encoding: 'utf8' }); if (r.status === 0 && r.stdout.trim() === '1') { PY = c; break; } }
+let PY = null; for (const c of ['python3', 'python']) { const r = cp.spawnSync(c, ['-I', '-c', 'print(1)'], { encoding: 'utf8' }); if (r.status === 0 && r.stdout.trim() === '1') { PY = c; break; } }
 const pyRef = (text) => { const r = cp.spawnSync(PY, ['-I', '-X', 'utf8', '-c', 'import sys,json\ntry:\n    print(json.dumps(json.loads(sys.stdin.read())))\nexcept Exception:\n    print("ERROR")'], { input: text, encoding: 'utf8' }); return r.stdout.replace(/\r\n/g, '\n').trimEnd(); };
 const build = (schema, tag) => { const gen = JS.genCpp(schema, { main: true }); const f = path.join(tmp, tag + '.cpp'), exe = path.join(tmp, tag + '.exe'); fs.writeFileSync(f, gen.code); const c = cp.spawnSync(GPP, ['-std=c++17', '-O0', '-Wall', '-o', exe, f], { encoding: 'utf8', env: ENVM, timeout: 120000 }); assert.strictEqual(c.status, 0, 'g++ 編譯失敗：\n' + String(c.stderr).split('\n').filter((l) => /error/.test(l)).slice(0, 6).join('\n') + '\n' + gen.code.split('\n').filter((l) => /^struct |^    [A-Za-z:<>_, ]+ [A-Za-z_0-9]+;$/.test(l)).slice(0, 14).join('\n')); return exe; };
 const buildC = (schema, tag) => { const gen = JS.genC(schema, { main: true }); const f = path.join(tmp, tag + '.c'), exe = path.join(tmp, tag + '_c.exe'); fs.writeFileSync(f, gen.code); const c = cp.spawnSync(GCC, ['-std=gnu11', '-O0', '-Wall', '-Wextra', '-Wno-unused-parameter', '-o', exe, f], { encoding: 'utf8', env: ENVM, timeout: 120000 }); assert.strictEqual(c.status, 0, 'gcc 編譯失敗：\n' + String(c.stderr).split('\n').filter((l) => /error|warning/.test(l)).slice(0, 8).join('\n')); assert.ok(!/warning/.test(c.stderr), '產生的 C 有警告：' + String(c.stderr).slice(0, 600)); return exe; };
@@ -30,7 +30,7 @@ const SAMPLES = [
     ['空白與換行', ' \n {"a" : [ 1 , 2 ] ,\n "b":"x" }\n ']
 ];
 (async () => {
-    if (!PY || !fs.existsSync(GPP)) { console.log('略過：找不到 ' + (!PY ? 'python' : GPP) + '\n0 passed, 0 failed'); return; }
+    if (!PY || require('child_process').spawnSync(GPP, ['--version']).status !== 0) { console.log('略過：找不到 ' + (!PY ? 'python' : GPP) + '\n0 passed, 0 failed'); return; }
     SAMPLES.forEach(([name, text], idx) => {
         t(name + '：推結構→C++→load→save 與 Python 一致', () => {
             const schema = JS.inferSchema([text], { name: 'Root' }); const exe = build(schema, 'a' + idx); const want = pyRef(text); assert.notStrictEqual(want, 'ERROR');

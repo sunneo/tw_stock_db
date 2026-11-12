@@ -1,0 +1,1043 @@
+{
+ "format": "fa-domain-seeds",
+ "version": 1,
+ "source": "renderer/src/uml/domain_os.test.js",
+ "name": "領域包 os",
+ "minSkeletons": 6,
+ "judge": null,
+ "trainOnly": null,
+ "seeds": [
+  {
+   "id": "fcfs-wait",
+   "st": "第一行 n，接著 n 行 a b（a 是到達時間，b 是執行時間）。用先來先服務（FCFS）排程，輸出平均等待時間，保留 2 位小數。",
+   "rw_st": "第一行 m，接著 m 行 a b（a 是到達時間，b 是執行時間）。用先來先服務（FCFS）排程，輸出平均等待時間，保留 2 位小數。",
+   "ref": "n = int(input())\nR = [tuple(map(int, input().split())) for _ in range(n)]\nt = 0\ndone = set()\nw = tt = 0\no = []\nwhile len(done) < n:\n    c = [i for i in range(n) if i not in done and R[i][0] <= t]\n    if not c:\n        t = min(R[i][0] for i in range(n) if i not in done)\n        continue\n    i = min(c, key=lambda i: (R[i][0], i))\n    done.add(i)\n    w += t - R[i][0]\n    t += R[i][1]\n    tt += t - R[i][0]\n    o.append(i + 1)\nprint(\"%.2f\" % (w / n))",
+   "tests": [
+    {
+     "in": "4\n9 1\n3 3\n6 1\n0 2\n",
+     "out": "0.00\n"
+    },
+    {
+     "in": "3\n8 6\n1 3\n7 5\n",
+     "out": "1.33\n"
+    },
+    {
+     "in": "4\n0 2\n4 1\n4 6\n6 7\n",
+     "out": "1.50\n"
+    },
+    {
+     "in": "1\n0 1\n",
+     "out": "0.00\n"
+    },
+    {
+     "in": "1\n8 5\n",
+     "out": "0.00\n"
+    },
+    {
+     "in": "5\n8 3\n0 4\n5 4\n5 4\n1 6\n",
+     "out": "5.40\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "8\n2 3\n10 10\n25 9\n1 1\n28 4\n18 3\n19 2\n18 5\n",
+     "out": "4.00\n"
+    },
+    {
+     "in": "5\n22 8\n28 1\n38 10\n2 5\n31 4\n",
+     "out": "0.40\n"
+    }
+   ],
+   "want": "os.sched-np"
+  },
+  {
+   "id": "sjf-turn",
+   "st": "第一行 n，接著 n 行 a b（到達時間、執行時間）。用最短工作優先（SJF，非搶先；同長度時先到的先跑）排程，輸出平均週轉時間（完成時間減到達時間），保留 2 位小數。",
+   "rw_st": "第一行 k，接著 k 行 a b（到達時間、執行時間）。用最短工作優先（SJF，非搶先；同長度時先到的先跑）排程，輸出平均週轉時間（完成時間減到達時間），保留 2 位小數。",
+   "ref": "n = int(input())\nR = [tuple(map(int, input().split())) for _ in range(n)]\nt = 0\ndone = set()\nw = tt = 0\no = []\nwhile len(done) < n:\n    c = [i for i in range(n) if i not in done and R[i][0] <= t]\n    if not c:\n        t = min(R[i][0] for i in range(n) if i not in done)\n        continue\n    i = min(c, key=lambda i: (R[i][1], R[i][0], i))\n    done.add(i)\n    w += t - R[i][0]\n    t += R[i][1]\n    tt += t - R[i][0]\n    o.append(i + 1)\nprint(\"%.2f\" % (tt / n))",
+   "tests": [
+    {
+     "in": "2\n2 6\n1 3\n",
+     "out": "5.50\n"
+    },
+    {
+     "in": "5\n8 5\n0 3\n7 5\n7 4\n4 6\n",
+     "out": "8.80\n"
+    },
+    {
+     "in": "5\n0 2\n0 4\n9 1\n1 2\n9 7\n",
+     "out": "4.40\n"
+    },
+    {
+     "in": "4\n4 7\n4 1\n8 5\n6 3\n",
+     "out": "7.50\n"
+    },
+    {
+     "in": "4\n7 2\n5 5\n6 4\n6 2\n",
+     "out": "7.50\n"
+    },
+    {
+     "in": "3\n1 1\n9 6\n5 2\n",
+     "out": "3.00\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "5\n36 9\n40 8\n32 4\n21 8\n6 12\n",
+     "out": "9.20\n"
+    },
+    {
+     "in": "4\n34 11\n16 12\n31 1\n4 5\n",
+     "out": "7.25\n"
+    }
+   ],
+   "want": "os.sched-np"
+  },
+  {
+   "id": "prio-order",
+   "st": "第一行 n，接著 n 行 a b p（到達時間、執行時間、優先權，p 越小越優先），非搶先排程。依序輸出行程的執行順序（行程編號從 1 起，以空白分隔）。",
+   "rw_st": "第一行 m，接著 m 行 a b p（到達時間、執行時間、優先權，p 越小越優先），非搶先排程。依序輸出行程的執行順序（行程編號從 1 起，以空白分隔）。",
+   "ref": "n = int(input())\nR = [tuple(map(int, input().split())) for _ in range(n)]\nt = 0\ndone = set()\nw = tt = 0\no = []\nwhile len(done) < n:\n    c = [i for i in range(n) if i not in done and R[i][0] <= t]\n    if not c:\n        t = min(R[i][0] for i in range(n) if i not in done)\n        continue\n    i = min(c, key=lambda i: (R[i][2], R[i][0], i))\n    done.add(i)\n    w += t - R[i][0]\n    t += R[i][1]\n    tt += t - R[i][0]\n    o.append(i + 1)\nprint(*o)",
+   "tests": [
+    {
+     "in": "3\n8 4 3\n2 1 3\n2 7 3\n",
+     "out": "2 3 1\n"
+    },
+    {
+     "in": "3\n2 2 4\n5 2 1\n4 1 2\n",
+     "out": "1 3 2\n"
+    },
+    {
+     "in": "2\n7 6 5\n0 7 1\n",
+     "out": "2 1\n"
+    },
+    {
+     "in": "1\n0 6 4\n",
+     "out": "1\n"
+    },
+    {
+     "in": "4\n1 4 2\n9 6 3\n8 5 4\n2 2 3\n",
+     "out": "1 4 3 2\n"
+    },
+    {
+     "in": "6\n9 1 3\n2 1 5\n6 4 1\n7 2 4\n9 6 2\n6 4 5\n",
+     "out": "2 3 5 1 4 6\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "1\n4 11 1\n",
+     "out": "1\n"
+    },
+    {
+     "in": "7\n21 7 5\n14 3 1\n38 10 2\n35 8 2\n10 5 2\n36 5 5\n6 8 4\n",
+     "out": "7 2 5 1 4 3 6\n"
+    }
+   ],
+   "want": "os.sched-np"
+  },
+  {
+   "id": "rr-wait",
+   "st": "第一行 n q，接著 n 行 a b（到達時間、執行時間）。Round Robin 排程，時間片 q；在時間片結束的同一刻，新到達的行程先排進佇列，再把被搶走的行程排到後面。輸出平均等待時間，保留 2 位小數。",
+   "rw_st": "第一行 m tq，接著 m 行 a b（到達時間、執行時間）。Round Robin 排程，時間片 tq；在時間片結束的同一刻，新到達的行程先排進佇列，再把被搶走的行程排到後面。輸出平均等待時間，保留 2 位小數。",
+   "ref": "n, q = map(int, input().split())\nR = [tuple(map(int, input().split())) for _ in range(n)]\nidx = sorted(range(n), key=lambda i: (R[i][0], i))\nrem = [r[1] for r in R]\nt = 0\np = 0\nQ = []\nw = tt = 0\no = []\nwhile p < n or Q:\n    if not Q:\n        t = max(t, R[idx[p]][0])\n    while p < n and R[idx[p]][0] <= t:\n        Q.append(idx[p]); p += 1\n    i = Q.pop(0)\n    r = min(q, rem[i])\n    t += r\n    rem[i] -= r\n    while p < n and R[idx[p]][0] <= t:\n        Q.append(idx[p]); p += 1\n    if rem[i]:\n        Q.append(i)\n    if rem[i] == 0:\n        tt += t - R[i][0]\n        w += t - R[i][0] - R[i][1]\n        o.append(i + 1)\nprint(\"%.2f\" % (w / n))",
+   "tests": [
+    {
+     "in": "4 3\n2 6\n8 4\n0 7\n2 1\n",
+     "out": "6.25\n"
+    },
+    {
+     "in": "4 3\n4 2\n8 6\n4 7\n6 1\n",
+     "out": "4.25\n"
+    },
+    {
+     "in": "1 2\n5 7\n",
+     "out": "0.00\n"
+    },
+    {
+     "in": "3 4\n4 1\n2 3\n8 2\n",
+     "out": "0.33\n"
+    },
+    {
+     "in": "5 1\n4 4\n6 4\n2 6\n6 6\n2 4\n",
+     "out": "13.00\n"
+    },
+    {
+     "in": "1 4\n3 5\n",
+     "out": "0.00\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "6 4\n13 7\n11 11\n19 11\n5 9\n23 4\n19 7\n",
+     "out": "18.33\n"
+    },
+    {
+     "in": "3 1\n25 8\n11 3\n40 7\n",
+     "out": "0.00\n"
+    }
+   ],
+   "want": "os.sched-rr"
+  },
+  {
+   "id": "srtf-wait",
+   "st": "第一行 n，接著 n 行 a b（到達時間、執行時間）。用最短剩餘時間優先（SRTF，可搶先）排程，剩餘時間相同時維持原本在跑的（編號小的）。輸出平均等待時間，保留 2 位小數。",
+   "rw_st": "第一行 m，接著 m 行 a b（到達時間、執行時間）。用最短剩餘時間優先（SRTF，可搶先）排程，剩餘時間相同時維持原本在跑的（編號小的）。輸出平均等待時間，保留 2 位小數。",
+   "ref": "n = int(input())\nR = [tuple(map(int, input().split())) for _ in range(n)]\nrem = [r[1] for r in R]\nt = 0\nfin = 0\nw = 0\nwhile fin < n:\n    c = [i for i in range(n) if R[i][0] <= t and rem[i] > 0]\n    t += 1\n    if c:\n        i = min(c, key=lambda i: (rem[i], i))\n        rem[i] -= 1\n        if rem[i] == 0:\n            fin += 1\n            w += t - R[i][0] - R[i][1]\nprint(\"%.2f\" % (w / n))",
+   "tests": [
+    {
+     "in": "1\n5 4\n",
+     "out": "0.00\n"
+    },
+    {
+     "in": "5\n0 1\n1 2\n8 1\n0 3\n7 7\n",
+     "out": "0.80\n"
+    },
+    {
+     "in": "3\n3 5\n7 1\n1 2\n",
+     "out": "0.33\n"
+    },
+    {
+     "in": "2\n4 3\n3 5\n",
+     "out": "1.50\n"
+    },
+    {
+     "in": "4\n8 4\n0 3\n9 5\n0 7\n",
+     "out": "2.50\n"
+    },
+    {
+     "in": "5\n4 5\n1 3\n8 2\n1 6\n1 7\n",
+     "out": "5.40\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "7\n10 8\n38 8\n20 3\n33 11\n2 11\n12 11\n7 3\n",
+     "out": "5.71\n"
+    },
+    {
+     "in": "4\n19 5\n10 9\n24 12\n34 8\n",
+     "out": "0.50\n"
+    }
+   ],
+   "want": "os.sched-srtf"
+  },
+  {
+   "id": "page-fifo",
+   "st": "第一行 m n，第二行 n 個整數是頁面參照串。實體記憶體有 m 個頁框，用先進先出（FIFO）置換，輸出缺頁次數。",
+   "rw_st": "第一行 f k，第二行 k 個整數是頁面參照串。實體記憶體有 f 個頁框，用先進先出（FIFO）置換，輸出缺頁次數。",
+   "ref": "m, n = map(int, input().split())\nrs = list(map(int, input().split()))\nF = []\nflt = 0\nlast = {}\nfreq = {}\nfor k, p in enumerate(rs):\n    freq[p] = freq.get(p, 0) + 1\n    if p in F:\n        last[p] = k\n        continue\n    flt += 1\n    if len(F) < m:\n        F.append(p)\n    else:\n        F.pop(0)\n        F.append(p)\n    last[p] = k\nprint(flt)",
+   "tests": [
+    {
+     "in": "4 12\n5 5 3 5 1 5 4 2 0 2 3 1\n",
+     "out": "8\n"
+    },
+    {
+     "in": "4 8\n5 1 3 1 1 1 3 3\n",
+     "out": "3\n"
+    },
+    {
+     "in": "4 8\n3 3 3 2 0 4 3 2\n",
+     "out": "4\n"
+    },
+    {
+     "in": "1 7\n3 5 5 1 0 4 0\n",
+     "out": "6\n"
+    },
+    {
+     "in": "1 1\n5\n",
+     "out": "1\n"
+    },
+    {
+     "in": "4 10\n1 2 0 4 2 2 0 0 0 0\n",
+     "out": "4\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "3 27\n1 4 1 2 0 1 0 4 8 3 6 8 5 8 2 1 2 7 4 4 4 7 4 0 4 6 7\n",
+     "out": "18\n"
+    },
+    {
+     "in": "1 25\n3 0 0 3 7 1 6 4 3 1 3 0 0 1 1 3 4 2 4 7 2 7 6 1 6\n",
+     "out": "22\n"
+    }
+   ],
+   "want": "os.page-replace"
+  },
+  {
+   "id": "page-lru",
+   "st": "第一行 m n，第二行 n 個整數是頁面參照串。有 m 個頁框，用最近最少使用（LRU）置換，輸出缺頁次數。",
+   "rw_st": "第一行 f k，第二行 k 個整數是頁面參照串。有 f 個頁框，用最近最少使用（LRU）置換，輸出缺頁次數。",
+   "ref": "m, n = map(int, input().split())\nrs = list(map(int, input().split()))\nF = []\nflt = 0\nlast = {}\nfreq = {}\nfor k, p in enumerate(rs):\n    freq[p] = freq.get(p, 0) + 1\n    if p in F:\n        last[p] = k\n        continue\n    flt += 1\n    if len(F) < m:\n        F.append(p)\n    else:\n        v = min(F, key=lambda x: last[x])\n        F[F.index(v)] = p\n    last[p] = k\nprint(flt)",
+   "tests": [
+    {
+     "in": "1 3\n0 2 1\n",
+     "out": "3\n"
+    },
+    {
+     "in": "4 6\n3 0 2 4 1 2\n",
+     "out": "5\n"
+    },
+    {
+     "in": "1 5\n3 1 1 1 0\n",
+     "out": "3\n"
+    },
+    {
+     "in": "3 1\n1\n",
+     "out": "1\n"
+    },
+    {
+     "in": "2 8\n3 5 3 0 0 2 3 5\n",
+     "out": "6\n"
+    },
+    {
+     "in": "3 10\n4 0 0 2 4 0 3 3 3 0\n",
+     "out": "4\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "1 17\n1 8 4 4 8 7 2 1 4 4 5 5 1 3 1 1 7\n",
+     "out": "13\n"
+    },
+    {
+     "in": "3 47\n1 6 3 7 4 2 8 4 1 4 3 1 6 1 4 8 1 4 7 2 5 5 6 8 3 1 5 0 3 5 4 1 4 3 4 7 0 1 5 6 7 2 6 5 2 6 4\n",
+     "out": "34\n"
+    }
+   ],
+   "want": "os.page-replace"
+  },
+  {
+   "id": "alloc-best",
+   "st": "第一行 m n，第二行 m 個整數是各分割區的大小，第三行 n 個整數是依序到達的行程大小。用最佳配適（Best Fit，選放得下的最小分割區）依序配置，配置後該分割區的剩餘大小要減少。輸出每個行程配到的分割區編號（從 1 起算），配不到輸出 -1，以空白分隔。",
+   "rw_st": "第一行 h k，第二行 h 個整數是各分割區的大小，第三行 k 個整數是依序到達的行程大小。用最佳配適（Best Fit，選放得下的最小分割區）依序配置，配置後該分割區的剩餘大小要減少。輸出每個行程配到的分割區編號（從 1 起算），配不到輸出 -1，以空白分隔。",
+   "ref": "m, n = map(int, input().split())\nh = list(map(int, input().split()))\nps = list(map(int, input().split()))\nr = []\nfor s in ps:\n    b = -1\n    for j in range(m):\n        if h[j] >= s and (b < 0 or h[j] < h[b]):\n            b = j\n    if b >= 0:\n        h[b] -= s\n    r.append(b + 1 if b >= 0 else -1)\nprint(*r)",
+   "tests": [
+    {
+     "in": "2 4\n143 248\n117 127 21 36\n",
+     "out": "1 2 1 2\n"
+    },
+    {
+     "in": "2 1\n227 116\n36\n",
+     "out": "2\n"
+    },
+    {
+     "in": "5 5\n103 125 212 80 179\n122 67 37 69 72\n",
+     "out": "2 4 1 5 5\n"
+    },
+    {
+     "in": "4 3\n173 108 204 175\n132 33 78\n",
+     "out": "1 1 2\n"
+    },
+    {
+     "in": "5 2\n73 226 109 247 60\n108 124\n",
+     "out": "3 2\n"
+    },
+    {
+     "in": "4 4\n232 154 132 171\n45 60 110 136\n",
+     "out": "3 3 2 4\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "5 7\n130 104 221 213 223\n28 142 160 66 62 93 58\n",
+     "out": "2 4 3 4 2 1 3\n"
+    },
+    {
+     "in": "1 4\n283\n74 112 94 71\n",
+     "out": "1 1 1 -1\n"
+    }
+   ],
+   "want": "os.mem-alloc"
+  },
+  {
+   "id": "alloc-first-count",
+   "st": "第一行 m n，第二行 m 個整數是各分割區的大小，第三行 n 個整數是依序到達的行程大小。用首次配適（First Fit，由前往後第一個放得下的分割區）依序配置，配置後該分割區的剩餘大小要減少。輸出成功配置的行程個數。",
+   "rw_st": "第一行 h k，第二行 h 個整數是各分割區的大小，第三行 k 個整數是依序到達的行程大小。用首次配適（First Fit，由前往後第一個放得下的分割區）依序配置，配置後該分割區的剩餘大小要減少。輸出成功配置的行程個數。",
+   "ref": "m, n = map(int, input().split())\nh = list(map(int, input().split()))\nps = list(map(int, input().split()))\nc = 0\nfor s in ps:\n    for j in range(m):\n        if h[j] >= s:\n            h[j] -= s\n            c += 1\n            break\nprint(c)",
+   "tests": [
+    {
+     "in": "5 5\n214 77 64 236 117\n37 104 28 87 54\n",
+     "out": "5\n"
+    },
+    {
+     "in": "4 4\n233 205 226 90\n104 20 143 151\n",
+     "out": "4\n"
+    },
+    {
+     "in": "5 1\n141 78 292 228 213\n111\n",
+     "out": "1\n"
+    },
+    {
+     "in": "4 5\n141 242 81 246\n99 147 75 154 107\n",
+     "out": "4\n"
+    },
+    {
+     "in": "2 3\n276 151\n128 70 141\n",
+     "out": "3\n"
+    },
+    {
+     "in": "1 2\n100\n84 70\n",
+     "out": "1\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "2 7\n267 298\n102 122 74 156 34 66 122\n",
+     "out": "6\n"
+    },
+    {
+     "in": "3 2\n242 96 234\n54 122\n",
+     "out": "2\n"
+    }
+   ],
+   "want": "os.mem-alloc"
+  },
+  {
+   "id": "disk-sstf",
+   "st": "第一行 n h，第二行 n 個整數是磁碟請求的柱面編號，h 是磁頭起點。用最短搜尋時間優先（SSTF）服務，距離相同時取先出現的請求。輸出磁頭總移動距離。",
+   "rw_st": "第一行 k p，第二行 k 個整數是磁碟請求的柱面編號，p 是磁頭起點。用最短搜尋時間優先（SSTF）服務，距離相同時取先出現的請求。輸出磁頭總移動距離。",
+   "ref": "n, h = map(int, input().split())\nq = list(map(int, input().split()))\nt = 0\nwhile q:\n    b = min(range(len(q)), key=lambda i: (abs(q[i] - h), i))\n    t += abs(q[b] - h)\n    h = q.pop(b)\nprint(t)",
+   "tests": [
+    {
+     "in": "3 150\n166 118 166\n",
+     "out": "64\n"
+    },
+    {
+     "in": "6 14\n9 189 41 180 60 108\n",
+     "out": "185\n"
+    },
+    {
+     "in": "6 4\n84 156 156 116 100 68\n",
+     "out": "152\n"
+    },
+    {
+     "in": "4 79\n51 23 35 47\n",
+     "out": "56\n"
+    },
+    {
+     "in": "3 167\n78 78 14\n",
+     "out": "153\n"
+    },
+    {
+     "in": "4 198\n46 17 29 17\n",
+     "out": "181\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "6 33\n184 58 42 66 122 141\n",
+     "out": "151\n"
+    },
+    {
+     "in": "16 154\n130 165 17 108 164 172 151 194 42 109 79 109 169 109 28 162\n",
+     "out": "223\n"
+    }
+   ],
+   "want": "os.disk-sched"
+  },
+  {
+   "id": "disk-look",
+   "st": "第一行 n h，第二行 n 個整數是磁碟請求的柱面編號，h 是磁頭起點。用 LOOK 演算法服務：磁頭先往編號增加的方向走到最遠的請求，再掉頭往回服務剩下的請求。輸出磁頭總移動距離。",
+   "rw_st": "第一行 k p，第二行 k 個整數是磁碟請求的柱面編號，p 是磁頭起點。用 LOOK 演算法服務：磁頭先往編號增加的方向走到最遠的請求，再掉頭往回服務剩下的請求。輸出磁頭總移動距離。",
+   "ref": "n, h = map(int, input().split())\nq = list(map(int, input().split()))\nup = sorted(v for v in q if v >= h)\ndn = sorted((v for v in q if v < h), reverse=True)\nt = 0\nc = h\nfor v in up + dn:\n    t += abs(v - c)\n    c = v\nprint(t)",
+   "tests": [
+    {
+     "in": "3 78\n28 102 14\n",
+     "out": "112\n"
+    },
+    {
+     "in": "5 53\n47 67 183 78 62\n",
+     "out": "266\n"
+    },
+    {
+     "in": "2 22\n9 51\n",
+     "out": "71\n"
+    },
+    {
+     "in": "4 21\n185 181 129 69\n",
+     "out": "164\n"
+    },
+    {
+     "in": "7 197\n81 140 60 108 36 100 132\n",
+     "out": "161\n"
+    },
+    {
+     "in": "4 49\n111 19 159 20\n",
+     "out": "250\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "1 127\n75\n",
+     "out": "52\n"
+    },
+    {
+     "in": "11 90\n138 77 112 16 80 120 59 5 199 18 194\n",
+     "out": "303\n"
+    }
+   ],
+   "want": "os.disk-sched"
+  },
+  {
+   "id": "banker-safe",
+   "st": "銀行家演算法。第一行 n m（行程數、資源種類數），第二行 m 個整數表示目前可用資源（Available），接著 n 行每行 m 個整數表示各行程已配置的資源（Allocation），再接著 n 行每行 m 個整數表示各行程的最大需求（Max）。判斷系統是否處於安全狀態：安全輸出 SAFE，否則輸出 UNSAFE。",
+   "rw_st": "銀行家演算法。第一行 p r（行程數、資源種類數），第二行 r 個整數表示目前可用資源（Available），接著 p 行每行 r 個整數表示各行程已配置的資源（Allocation），再接著 p 行每行 r 個整數表示各行程的最大需求（Max）。判斷系統是否處於安全狀態：安全輸出 SAFE，否則輸出 UNSAFE。",
+   "ref": "n, m = map(int, input().split())\nav = list(map(int, input().split()))\nM1 = [list(map(int, input().split())) for _ in range(n)]\nM2 = [list(map(int, input().split())) for _ in range(n)]\nal, mx = M1, M2\nwork = av[:]\nfin = [False] * n\nseq = []\nmoved = True\nwhile moved:\n    moved = False\n    for i in range(n):\n        if not fin[i] and all(mx[i][j] - al[i][j] <= work[j] for j in range(m)):\n            for j in range(m):\n                work[j] += al[i][j]\n            fin[i] = True\n            seq.append(i)\n            moved = True\n            pass\nprint(\"SAFE\" if all(fin) else \"UNSAFE\")",
+   "tests": [
+    {
+     "in": "3 3\n3 2 3\n2 1 3\n1 1 1\n1 1 1\n3 1 3\n4 4 4\n4 4 4\n",
+     "out": "SAFE\n"
+    },
+    {
+     "in": "2 2\n2 2\n1 1\n0 0\n1 1\n0 3\n",
+     "out": "SAFE\n"
+    },
+    {
+     "in": "3 1\n4\n1\n1\n1\n2\n1\n1\n",
+     "out": "SAFE\n"
+    },
+    {
+     "in": "1 3\n4 4 3\n3 3 2\n5 5 4\n",
+     "out": "SAFE\n"
+    },
+    {
+     "in": "1 1\n1\n3\n6\n",
+     "out": "UNSAFE\n"
+    },
+    {
+     "in": "4 3\n4 3 3\n2 1 2\n2 2 2\n2 2 2\n1 1 1\n3 2 3\n3 3 3\n3 2 4\n1 1 1\n",
+     "out": "SAFE\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "6 3\n4 0 3\n2 1 1\n1 1 1\n1 1 1\n1 1 1\n1 0 0\n0 0 0\n5 4 4\n3 3 3\n3 3 3\n3 3 3\n2 1 1\n1 1 1\n",
+     "out": "UNSAFE\n"
+    },
+    {
+     "in": "1 1\n2\n3\n6\n",
+     "out": "UNSAFE\n"
+    }
+   ],
+   "want": "os.banker"
+  },
+  {
+   "id": "banker-seq",
+   "st": "第一行 n m，第二行 m 個整數是目前可用資源（Available），接著 n 行每行 m 個整數是各行程已配置的資源（Allocation），再接著 n 行每行 m 個整數是各行程的最大需求（Max）。用銀行家演算法找安全序列：每一輪都選編號最小、且剩餘需求能被目前可用資源滿足的行程讓它執行完畢並歸還資源。行程編號從 0 開始，輸出安全序列（以空白分隔）；如果系統不安全就輸出 -1。",
+   "rw_st": "第一行 k m，第二行 m 個整數是目前可用資源（Available），接著 k 行每行 m 個整數是各行程已配置的資源（Allocation），再接著 k 行每行 m 個整數是各行程的最大需求（Max）。用銀行家演算法找安全序列：每一輪都選編號最小、且剩餘需求能被目前可用資源滿足的行程讓它執行完畢並歸還資源。行程編號從 0 開始，輸出安全序列（以空白分隔）；如果系統不安全就輸出 -1。",
+   "ref": "n, m = map(int, input().split())\nav = list(map(int, input().split()))\nM1 = [list(map(int, input().split())) for _ in range(n)]\nM2 = [list(map(int, input().split())) for _ in range(n)]\nal, mx = M1, M2\nwork = av[:]\nfin = [False] * n\nseq = []\nmoved = True\nwhile moved:\n    moved = False\n    for i in range(n):\n        if not fin[i] and all(mx[i][j] - al[i][j] <= work[j] for j in range(m)):\n            for j in range(m):\n                work[j] += al[i][j]\n            fin[i] = True\n            seq.append(i)\n            moved = True\n            break\nprint(*seq) if all(fin) else print(-1)",
+   "tests": [
+    {
+     "in": "4 2\n3 4\n2 0\n0 0\n3 2\n2 2\n4 2\n2 2\n4 3\n3 3\n",
+     "out": "0 1 2 3\n"
+    },
+    {
+     "in": "3 2\n1 3\n0 0\n0 0\n0 0\n0 0\n0 0\n3 3\n",
+     "out": "-1\n"
+    },
+    {
+     "in": "2 1\n4\n0\n0\n0\n0\n",
+     "out": "0 1\n"
+    },
+    {
+     "in": "1 2\n0 0\n3 2\n3 2\n",
+     "out": "0\n"
+    },
+    {
+     "in": "4 3\n2 1 1\n2 2 2\n2 1 0\n0 0 0\n0 0 0\n2 5 5\n5 4 3\n3 2 0\n0 3 2\n",
+     "out": "-1\n"
+    },
+    {
+     "in": "2 1\n4\n1\n1\n2\n1\n",
+     "out": "0 1\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "3 1\n2\n0\n0\n3\n3\n3\n6\n",
+     "out": "-1\n"
+    },
+    {
+     "in": "1 1\n1\n2\n4\n",
+     "out": "-1\n"
+    }
+   ],
+   "want": "os.banker"
+  },
+  {
+   "id": "banker-maxfirst",
+   "st": "銀行家演算法。第一行 n m，第二行 m 個整數表示可用資源（Available），接著 n 行每行 m 個整數表示每個行程的最大需求（Max），再接著 n 行每行 m 個整數表示每個行程目前已配置的資源（Allocation）。系統是安全狀態輸出 YES，否則輸出 NO。",
+   "rw_st": "銀行家演算法。第一行 n w，第二行 w 個整數表示可用資源（Available），接著 n 行每行 w 個整數表示每個行程的最大需求（Max），再接著 n 行每行 w 個整數表示每個行程目前已配置的資源（Allocation）。系統是安全狀態輸出 YES，否則輸出 NO。",
+   "ref": "n, m = map(int, input().split())\nav = list(map(int, input().split()))\nM1 = [list(map(int, input().split())) for _ in range(n)]\nM2 = [list(map(int, input().split())) for _ in range(n)]\nmx, al = M1, M2\nwork = av[:]\nfin = [False] * n\nseq = []\nmoved = True\nwhile moved:\n    moved = False\n    for i in range(n):\n        if not fin[i] and all(mx[i][j] - al[i][j] <= work[j] for j in range(m)):\n            for j in range(m):\n                work[j] += al[i][j]\n            fin[i] = True\n            seq.append(i)\n            moved = True\n            pass\nprint(\"YES\" if all(fin) else \"NO\")",
+   "tests": [
+    {
+     "in": "2 1\n0\n1\n1\n1\n1\n",
+     "out": "YES\n"
+    },
+    {
+     "in": "1 2\n0 1\n3 3\n0 0\n",
+     "out": "NO\n"
+    },
+    {
+     "in": "3 3\n2 4 3\n2 2 5\n4 3 1\n1 1 1\n2 2 2\n1 1 1\n1 1 1\n",
+     "out": "YES\n"
+    },
+    {
+     "in": "1 2\n0 1\n5 5\n3 3\n",
+     "out": "NO\n"
+    },
+    {
+     "in": "3 1\n4\n4\n4\n4\n2\n2\n2\n",
+     "out": "YES\n"
+    },
+    {
+     "in": "2 3\n3 2 4\n2 4 3\n3 2 5\n1 1 0\n0 0 3\n",
+     "out": "NO\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "2 2\n4 1\n3 1\n3 3\n1 0\n2 2\n",
+     "out": "YES\n"
+    },
+    {
+     "in": "1 1\n0\n0\n0\n",
+     "out": "YES\n"
+    }
+   ],
+   "want": "os.banker"
+  },
+  {
+   "id": "page-phys",
+   "st": "分頁位址轉換。第一行 n ps q（頁數、頁大小、查詢數），接著 n 行每行一個整數，是頁表（第 i 行是虛擬頁 i 對應的實體框編號，-1 表示不在記憶體），再接著 q 行每行一個虛擬位址。對每個虛擬位址輸出實體位址（框編號乘以頁大小 ps 再加上頁內位移）；若該頁不在記憶體輸出 FAULT，每行一個。",
+   "rw_st": "分頁位址轉換。第一行 n ps k（頁數、頁大小、查詢數），接著 n 行每行一個整數，是頁表（第 i 行是虛擬頁 i 對應的實體框編號，-1 表示不在記憶體），再接著 k 行每行一個虛擬位址。對每個虛擬位址輸出實體位址（框編號乘以頁大小 ps 再加上頁內位移）；若該頁不在記憶體輸出 FAULT，每行一個。",
+   "ref": "n, ps, q = map(int, input().split())\npt = [int(input().split()[0]) for _ in range(n)]\nfor _ in range(q):\n    v = int(input().split()[0])\n    pg = v // ps\n    off = v % ps\n    if pg >= len(pt) or pt[pg] < 0:\n        print(\"FAULT\")\n    else:\n        print(pt[pg] * ps + off)",
+   "tests": [
+    {
+     "in": "1 100 4\n9\n12\n3\n91\n59\n",
+     "out": "912\n903\n991\n959\n"
+    },
+    {
+     "in": "4 100 4\n9\n3\n2\n8\n390\n145\n20\n324\n",
+     "out": "890\n345\n920\n824\n"
+    },
+    {
+     "in": "1 4 1\n6\n2\n",
+     "out": "26\n"
+    },
+    {
+     "in": "2 8 2\n3\n3\n5\n12\n",
+     "out": "29\n28\n"
+    },
+    {
+     "in": "1 100 4\n5\n19\n70\n82\n198\n",
+     "out": "519\n570\n582\nFAULT\n"
+    },
+    {
+     "in": "2 8 2\n-1\n-1\n23\n14\n",
+     "out": "FAULT\nFAULT\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "7 16 9\n3\n9\n-1\n-1\n-1\n-1\n3\n103\n54\n66\n82\n40\n56\n15\n96\n31\n",
+     "out": "55\nFAULT\nFAULT\nFAULT\nFAULT\nFAULT\n63\n48\n159\n"
+    },
+    {
+     "in": "4 100 8\n7\n6\n1\n-1\n188\n104\n78\n30\n443\n350\n9\n81\n",
+     "out": "688\n604\n778\n730\nFAULT\nFAULT\n709\n781\n"
+    }
+   ],
+   "want": "os.page-translate"
+  },
+  {
+   "id": "page-frame",
+   "st": "第一行 n ps q，接著 n 行每行一個整數：頁表（虛擬頁編號從 0 起，值是實體框編號，-1 代表該頁沒有載入）。再接著 q 行，每行一個虛擬位址，位址所在的虛擬頁＝位址除以頁大小 ps（無條件捨去）。對每個位址輸出它所在頁對應的實體框編號；頁沒有載入就輸出 -1。",
+   "rw_st": "第一行 m ps q，接著 m 行每行一個整數：頁表（虛擬頁編號從 0 起，值是實體框編號，-1 代表該頁沒有載入）。再接著 q 行，每行一個虛擬位址，位址所在的虛擬頁＝位址除以頁大小 ps（無條件捨去）。對每個位址輸出它所在頁對應的實體框編號；頁沒有載入就輸出 -1。",
+   "ref": "n, ps, q = map(int, input().split())\npt = [int(input().split()[0]) for _ in range(n)]\nfor _ in range(q):\n    v = int(input().split()[0])\n    pg = v // ps\n    off = v % ps\n    if pg >= len(pt) or pt[pg] < 0:\n        print(-1)\n    else:\n        print(pt[pg])",
+   "tests": [
+    {
+     "in": "2 8 2\n5\n5\n12\n12\n",
+     "out": "5\n5\n"
+    },
+    {
+     "in": "4 100 3\n3\n7\n3\n1\n212\n363\n43\n",
+     "out": "3\n1\n3\n"
+    },
+    {
+     "in": "4 100 3\n0\n4\n1\n9\n73\n65\n296\n",
+     "out": "0\n0\n1\n"
+    },
+    {
+     "in": "1 4 1\n-1\n0\n",
+     "out": "-1\n"
+    },
+    {
+     "in": "1 100 4\n1\n7\n96\n14\n29\n",
+     "out": "1\n1\n1\n1\n"
+    },
+    {
+     "in": "2 8 2\n-1\n-1\n3\n11\n",
+     "out": "-1\n-1\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "8 4 1\n-1\n-1\n1\n2\n8\n9\n0\n4\n7\n",
+     "out": "-1\n"
+    },
+    {
+     "in": "6 8 6\n2\n-1\n-1\n-1\n-1\n3\n0\n27\n35\n24\n14\n30\n",
+     "out": "2\n-1\n-1\n-1\n-1\n-1\n"
+    }
+   ],
+   "want": "os.page-translate"
+  },
+  {
+   "id": "page-offset",
+   "st": "分頁位址轉換。第一行 n ps q，接著 n 行每行一個整數是頁表（-1 表示不在記憶體），再接著 q 行每行一個虛擬位址。每個位址輸出頁內位移（位址除以頁大小 ps 的餘數）；如果該位址所在的虛擬頁不在記憶體，改輸出 MISS，每行一個。",
+   "rw_st": null,
+   "ref": "n, ps, q = map(int, input().split())\npt = [int(input().split()[0]) for _ in range(n)]\nfor _ in range(q):\n    v = int(input().split()[0])\n    pg = v // ps\n    off = v % ps\n    if pg >= len(pt) or pt[pg] < 0:\n        print(\"MISS\")\n    else:\n        print(off)",
+   "tests": [
+    {
+     "in": "3 8 2\n7\n1\n-1\n2\n17\n",
+     "out": "2\nMISS\n"
+    },
+    {
+     "in": "2 8 2\n1\n1\n5\n3\n",
+     "out": "5\n3\n"
+    },
+    {
+     "in": "1 4 1\n-1\n3\n",
+     "out": "MISS\n"
+    },
+    {
+     "in": "4 100 3\n1\n3\n-1\n8\n326\n429\n49\n",
+     "out": "26\nMISS\n49\n"
+    },
+    {
+     "in": "4 16 3\n7\n1\n3\n5\n33\n0\n32\n",
+     "out": "1\n0\n0\n"
+    },
+    {
+     "in": "4 100 4\n4\n0\n4\n2\n341\n301\n37\n45\n",
+     "out": "41\n1\n37\n45\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "2 8 1\n4\n7\n0\n",
+     "out": "0\n"
+    },
+    {
+     "in": "1 100 10\n3\n54\n101\n37\n9\n81\n72\n142\n7\n75\n18\n",
+     "out": "54\nMISS\n37\n9\n81\n72\nMISS\n7\n75\n18\n"
+    }
+   ],
+   "want": "os.page-translate"
+  },
+  {
+   "id": "ho-prio-high",
+   "st": "有 n 個行程，第一行是 n；接下來 n 行各有三個整數：抵達時刻、需要的 CPU 時間、優先等級（數字越大越重要）。CPU 一次只做一個行程，做完才換（不中斷）；當 CPU 空閒時，從已抵達的行程中挑優先等級最高的。請輸出所有行程的平均等待時間，小數點後兩位。",
+   "rw_st": null,
+   "ref": "n = int(input())\nR = [tuple(map(int, input().split())) for _ in range(n)]\nt = 0\ndone = set()\nw = tt = 0\no = []\nwhile len(done) < n:\n    c = [i for i in range(n) if i not in done and R[i][0] <= t]\n    if not c:\n        t = min(R[i][0] for i in range(n) if i not in done)\n        continue\n    i = min(c, key=lambda i: (-R[i][2], R[i][0], i))\n    done.add(i)\n    w += t - R[i][0]\n    t += R[i][1]\n    tt += t - R[i][0]\n    o.append(i + 1)\nprint(\"%.2f\" % (w / n))",
+   "tests": [
+    {
+     "in": "1\n2 2 5\n",
+     "out": "0.00\n"
+    },
+    {
+     "in": "2\n1 1 4\n5 6 2\n",
+     "out": "0.00\n"
+    },
+    {
+     "in": "1\n3 4 1\n",
+     "out": "0.00\n"
+    },
+    {
+     "in": "4\n4 3 2\n3 1 2\n3 2 1\n0 6 3\n",
+     "out": "3.25\n"
+    },
+    {
+     "in": "4\n4 2 3\n6 2 5\n6 7 4\n5 2 4\n",
+     "out": "1.75\n"
+    },
+    {
+     "in": "4\n6 1 5\n9 7 1\n0 6 3\n8 6 3\n",
+     "out": "1.25\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "10\n26 4 4\n35 6 3\n38 10 5\n16 1 5\n12 5 3\n7 1 3\n18 9 3\n29 5 3\n31 8 3\n9 11 4\n",
+     "out": "9.60\n"
+    },
+    {
+     "in": "10\n25 2 1\n27 1 3\n0 9 2\n27 4 2\n18 4 3\n0 10 3\n20 1 1\n4 8 3\n12 12 4\n36 7 1\n",
+     "out": "15.00\n"
+    }
+   ],
+   "split": "holdout"
+  },
+  {
+   "id": "ho-clock",
+   "st": "第一行 m n，第二行 n 個整數是頁面請求序列。主記憶體只有 m 個框，採用 Clock（第二次機會）頁面置換：每個框有一個參考位元，命中時設為 1，指針繞圈尋找參考位元為 0 的框。輸出發生缺頁的次數。",
+   "rw_st": null,
+   "ref": "m, n = map(int, input().split())\nrs = list(map(int, input().split()))\nF = []\nR = []\nh = 0\nf = 0\nfor p in rs:\n    if p in F:\n        R[F.index(p)] = 1\n        continue\n    f += 1\n    if len(F) < m:\n        F.append(p)\n        R.append(1)\n    else:\n        while R[h]:\n            R[h] = 0\n            h = (h + 1) % m\n        F[h] = p\n        R[h] = 1\n        h = (h + 1) % m\nprint(f)",
+   "tests": [
+    {
+     "in": "2 1\n3\n",
+     "out": "1\n"
+    },
+    {
+     "in": "2 2\n3 3\n",
+     "out": "1\n"
+    },
+    {
+     "in": "2 10\n1 2 2 4 2 5 5 1 5 5\n",
+     "out": "5\n"
+    },
+    {
+     "in": "2 9\n3 5 2 4 2 4 2 2 0\n",
+     "out": "5\n"
+    },
+    {
+     "in": "3 5\n0 3 5 3 5\n",
+     "out": "3\n"
+    },
+    {
+     "in": "1 14\n0 0 0 4 1 5 1 1 4 4 4 4 0 2\n",
+     "out": "8\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "2 14\n4 3 2 5 3 4 0 8 8 6 3 5 5 0\n",
+     "out": "12\n"
+    },
+    {
+     "in": "2 2\n0 7\n",
+     "out": "2\n"
+    }
+   ],
+   "split": "holdout"
+  },
+  {
+   "id": "ho-worst",
+   "st": "第一行 m n，第二行 m 個整數表示記憶體空洞的大小，第三行 n 個整數表示依序到來的請求大小。每個請求放進「最大」的那個空洞（若放得下；請求放進去後空洞變小），輸出每個請求使用的空洞編號（從 1 數起），放不下輸出 -1。",
+   "rw_st": null,
+   "ref": "m, n = map(int, input().split())\nh = list(map(int, input().split()))\nps = list(map(int, input().split()))\nr = []\nfor s in ps:\n    b = max(range(m), key=lambda j: (h[j], -j))\n    if h[b] >= s:\n        h[b] -= s\n        r.append(b + 1)\n    else:\n        r.append(-1)\nprint(*r)",
+   "tests": [
+    {
+     "in": "2 3\n66 74\n38 102 50\n",
+     "out": "2 -1 1\n"
+    },
+    {
+     "in": "4 4\n198 216 298 90\n108 57 22 101\n",
+     "out": "3 2 1 3\n"
+    },
+    {
+     "in": "3 3\n99 77 109\n103 99 71\n",
+     "out": "3 1 2\n"
+    },
+    {
+     "in": "4 4\n98 66 147 186\n151 147 22 94\n",
+     "out": "4 3 1 -1\n"
+    },
+    {
+     "in": "4 1\n253 174 86 55\n100\n",
+     "out": "1\n"
+    },
+    {
+     "in": "3 2\n261 91 256\n100 35\n",
+     "out": "1 3\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "2 2\n199 150\n125 46\n",
+     "out": "1 2\n"
+    },
+    {
+     "in": "2 4\n205 83\n45 52 46 120\n",
+     "out": "1 1 1 -1\n"
+    }
+   ],
+   "split": "holdout"
+  },
+  {
+   "id": "ho-scan-down",
+   "st": "第一行 n h，第二行 n 個柱面請求。磁頭目前在 h，先往編號變小的方向移動並服務沿途請求，走到最小的請求後折返往大的方向。輸出磁頭走過的總距離。",
+   "rw_st": null,
+   "ref": "n, h = map(int, input().split())\nq = list(map(int, input().split()))\ndn = sorted((v for v in q if v <= h), reverse=True)\nup = sorted(v for v in q if v > h)\nt = 0\nc = h\nfor v in dn + up:\n    t += abs(v - c)\n    c = v\nprint(t)",
+   "tests": [
+    {
+     "in": "4 177\n53 193 104 128\n",
+     "out": "264\n"
+    },
+    {
+     "in": "2 7\n91 56\n",
+     "out": "84\n"
+    },
+    {
+     "in": "7 128\n51 102 198 118 102 158 110\n",
+     "out": "224\n"
+    },
+    {
+     "in": "7 134\n1 77 145 101 73 149 121\n",
+     "out": "281\n"
+    },
+    {
+     "in": "1 73\n69\n",
+     "out": "4\n"
+    },
+    {
+     "in": "4 180\n84 4 36 156\n",
+     "out": "176\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "4 195\n143 83 106 138\n",
+     "out": "112\n"
+    },
+    {
+     "in": "19 126\n46 78 169 133 36 12 92 172 28 103 138 98 106 42 66 50 138 21 65\n",
+     "out": "274\n"
+    }
+   ],
+   "split": "holdout"
+  },
+  {
+   "id": "ho-rr-requeue",
+   "st": "第一行 n q，接著 n 行 a b：行程到達時間與所需時間。時間片長度 q。每次時間片用完而尚未完成的行程，先排回佇列尾端，然後才讓剛好在此刻到達的新行程入列。輸出所有行程平均週轉時間（完成時間−到達時間），小數兩位。",
+   "rw_st": null,
+   "ref": "n, q = map(int, input().split())\nR = [tuple(map(int, input().split())) for _ in range(n)]\nidx = sorted(range(n), key=lambda i: (R[i][0], i))\nrem = [r[1] for r in R]\nt = 0\np = 0\nQ = []\nw = tt = 0\no = []\nwhile p < n or Q:\n    if not Q:\n        t = max(t, R[idx[p]][0])\n    while p < n and R[idx[p]][0] <= t:\n        Q.append(idx[p]); p += 1\n    i = Q.pop(0)\n    r = min(q, rem[i])\n    t += r\n    rem[i] -= r\n    if rem[i]:\n        Q.append(i)\n    while p < n and R[idx[p]][0] <= t:\n        Q.append(idx[p]); p += 1\n    if rem[i] == 0:\n        tt += t - R[i][0]\n        w += t - R[i][0] - R[i][1]\n        o.append(i + 1)\nprint(\"%.2f\" % (tt / n))",
+   "tests": [
+    {
+     "in": "1 3\n0 3\n",
+     "out": "3.00\n"
+    },
+    {
+     "in": "4 3\n7 5\n1 2\n4 6\n4 3\n",
+     "out": "7.00\n"
+    },
+    {
+     "in": "3 1\n0 1\n1 5\n8 7\n",
+     "out": "4.33\n"
+    },
+    {
+     "in": "3 3\n6 5\n4 4\n2 2\n",
+     "out": "4.33\n"
+    },
+    {
+     "in": "3 4\n3 1\n8 1\n3 5\n",
+     "out": "3.00\n"
+    },
+    {
+     "in": "4 1\n8 4\n0 5\n2 5\n2 3\n",
+     "out": "10.00\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "3 3\n10 3\n4 3\n2 3\n",
+     "out": "3.33\n"
+    },
+    {
+     "in": "1 3\n3 7\n",
+     "out": "7.00\n"
+    }
+   ],
+   "split": "holdout"
+  },
+  {
+   "id": "ho-banker-yesno",
+   "st": "有 n 個程序和 m 類資源。第一行 n m。第二行是系統目前剩下的各類資源數量。接下來 n 行是每個程序已經拿到的資源，再接下來 n 行是每個程序一共最多需要的資源。請判斷是否存在一個執行順序，讓所有程序都能順利完成：存在就輸出 yes，不存在輸出 no。",
+   "rw_st": null,
+   "ref": "n, m = map(int, input().split())\nav = list(map(int, input().split()))\nM1 = [list(map(int, input().split())) for _ in range(n)]\nM2 = [list(map(int, input().split())) for _ in range(n)]\nal, mx = M1, M2\nwork = av[:]\nfin = [False] * n\nseq = []\nmoved = True\nwhile moved:\n    moved = False\n    for i in range(n):\n        if not fin[i] and all(mx[i][j] - al[i][j] <= work[j] for j in range(m)):\n            for j in range(m):\n                work[j] += al[i][j]\n            fin[i] = True\n            seq.append(i)\n            moved = True\n            pass\nprint(\"yes\" if all(fin) else \"no\")",
+   "tests": [
+    {
+     "in": "2 3\n2 2 0\n1 1 1\n1 1 1\n1 1 1\n1 4 4\n",
+     "out": "no\n"
+    },
+    {
+     "in": "2 2\n4 0\n1 0\n0 0\n1 3\n3 3\n",
+     "out": "no\n"
+    },
+    {
+     "in": "4 3\n0 0 2\n3 3 3\n3 3 3\n2 0 2\n2 1 3\n4 4 3\n3 3 3\n2 0 2\n2 1 3\n",
+     "out": "yes\n"
+    },
+    {
+     "in": "1 1\n0\n0\n0\n",
+     "out": "yes\n"
+    },
+    {
+     "in": "1 2\n1 1\n0 0\n0 0\n",
+     "out": "yes\n"
+    },
+    {
+     "in": "1 1\n3\n0\n0\n",
+     "out": "yes\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "4 3\n2 4 3\n0 0 0\n0 3 3\n3 2 0\n2 0 0\n0 0 0\n3 6 6\n6 5 3\n5 3 3\n",
+     "out": "no\n"
+    },
+    {
+     "in": "3 1\n3\n3\n3\n2\n5\n5\n4\n",
+     "out": "yes\n"
+    }
+   ],
+   "split": "holdout"
+  },
+  {
+   "id": "ho-page-pf",
+   "st": "系統採用分頁，頁面大小是 ps 個位元組。第一行有三個整數 n、ps、q。接下來 n 行依序是第 0 頁到第 n-1 頁所在的頁框編號，如果是 -1 表示這頁還沒載入。最後 q 行是要存取的邏輯位址。請對每個邏輯位址輸出它對應的實體位址；若那一頁還沒載入就輸出 PAGEFAULT。",
+   "rw_st": null,
+   "ref": "n, ps, q = map(int, input().split())\npt = [int(input().split()[0]) for _ in range(n)]\nfor _ in range(q):\n    v = int(input().split()[0])\n    pg = v // ps\n    off = v % ps\n    if pg >= len(pt) or pt[pg] < 0:\n        print(\"PAGEFAULT\")\n    else:\n        print(pt[pg] * ps + off)",
+   "tests": [
+    {
+     "in": "2 8 1\n-1\n-1\n0\n",
+     "out": "PAGEFAULT\n"
+    },
+    {
+     "in": "1 4 4\n3\n2\n2\n2\n2\n",
+     "out": "14\n14\n14\n14\n"
+    },
+    {
+     "in": "3 16 3\n6\n5\n1\n29\n5\n8\n",
+     "out": "93\n101\n104\n"
+    },
+    {
+     "in": "1 4 1\n-1\n0\n",
+     "out": "PAGEFAULT\n"
+    },
+    {
+     "in": "4 100 3\n-1\n-1\n5\n1\n194\n397\n29\n",
+     "out": "PAGEFAULT\n197\nPAGEFAULT\n"
+    },
+    {
+     "in": "2 8 2\n6\n4\n0\n11\n",
+     "out": "48\n35\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "7 16 9\n0\n1\n9\n3\n7\n5\n-1\n24\n8\n7\n87\n47\n87\n79\n78\n44\n",
+     "out": "24\n8\n7\n87\n159\n87\n127\n126\n156\n"
+    },
+    {
+     "in": "5 4 9\n-1\n-1\n-1\n6\n-1\n3\n7\n10\n5\n13\n17\n18\n8\n12\n",
+     "out": "PAGEFAULT\nPAGEFAULT\nPAGEFAULT\nPAGEFAULT\n25\nPAGEFAULT\nPAGEFAULT\nPAGEFAULT\n24\n"
+    }
+   ],
+   "split": "holdout"
+  }
+ ]
+}

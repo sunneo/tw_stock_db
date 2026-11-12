@@ -7,13 +7,13 @@ const IR = require('./ir_core.js'), PREP = require('./ir_prep_core.js'), INPY = 
 const DIR = process.env.FA_TS_DIR || [path.join(os.homedir(), '.cache', 'fa-ts'), path.join(os.tmpdir(), 'fa-ts-cache'), '/tmp/fa-ts-cache'].find((d) => fs.existsSync(path.join(d, 'tree-sitter-python.wasm')));
 const MING = process.env.FA_MINGW_BIN || 'J:\\msys64\\mingw64\\bin';
 const ENVM = Object.assign({}, process.env, { PATH: MING + path.delimiter + (process.env.PATH || '') });
-const GPP = path.join(MING, 'g++.exe');
+const GPP = fs.existsSync(path.join(MING, 'g++.exe')) ? path.join(MING, 'g++.exe') : 'g++'; // Windows 用 mingw64；Linux 用 PATH 上的 g++
 let pass = 0, fail = 0;
 const t = (name, fn) => { try { fn(); pass++; return true; } catch (e) { fail++; console.error('FAIL ' + name + '\n   ' + String(e.message).split('\n').slice(0, 30).join('\n   ')); return false; } };
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'irc-'));
 process.chdir(tmp); // 檔案操作的樣本會在目前目錄寫暫存檔，放在暫存資料夾裡
 const run = (cmd, args, input, env) => { const r = cp.spawnSync(cmd, args, { input, encoding: 'utf8', timeout: 30000, env: env || process.env }); return r.status === 0 ? r.stdout.replace(/\r\n/g, '\n') : 'ERR(' + r.status + '):' + String(r.stderr).slice(-300); };
-let PY = null; for (const c of ['python', 'python3']) { const r = cp.spawnSync(c, ['-I', '-c', 'print(1)'], { encoding: 'utf8' }); if (r.status === 0 && r.stdout.trim() === '1') { PY = c; break; } }
+let PY = null; for (const c of ['python3', 'python']) { const r = cp.spawnSync(c, ['-I', '-c', 'print(1)'], { encoding: 'utf8' }); if (r.status === 0 && r.stdout.trim() === '1') { PY = c; break; } }
 
 // 每個樣本：ops＝IR 裡必須出現的標準操作；inputs＝測試輸入
 const CASES = [
@@ -161,7 +161,7 @@ main()
 
 (async () => {
     if (!DIR || !PY) { console.log('略過：找不到 tree-sitter 快取或 python\n0 passed, 0 failed'); return; }
-    if (!fs.existsSync(GPP)) { console.log('略過：找不到 g++（' + GPP + '）\n0 passed, 0 failed'); return; }
+    if (require('child_process').spawnSync(GPP, ['--version']).status !== 0) { console.log('略過：找不到 g++（' + GPP + '）\n0 passed, 0 failed'); return; }
     const Parser = require(path.join(DIR, 'tree-sitter.js')); await Parser.init({ locateFile: () => path.join(DIR, 'tree-sitter.wasm') }); const P = new Parser(); P.setLanguage(await Parser.Language.load(path.join(DIR, 'tree-sitter-python.wasm')));
     const cov = OPS.ids().filter((id) => { const c = OPS.get(id).cells.cpp; return c != null && !(typeof c === 'object' && Object.keys(c).every((k) => c[k] == null)); }).length;
     t('覆蓋：C++ 72／72 個標準操作都有樣板（json.loads 用通用 JSON 值 JV）', () => { const miss = OPS.ids().filter((id) => OPS.get(id).cells.cpp == null); assert.deepStrictEqual(miss, [], '缺：' + miss.join(',') + '（共 ' + cov + '）'); });

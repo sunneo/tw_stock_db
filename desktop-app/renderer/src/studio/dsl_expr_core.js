@@ -80,8 +80,8 @@
             if (k.k === 'op' && k.v === '(') { const e = ternary(); if (isOp(',')) throw new Error('不支援元組'); eatOp(')'); return e; }
             if (k.k === 'op' && k.v === '[') {
                 if (isOp(']')) { p++; return { t: 'list', items: [] }; }
-                const first = ternary();
-                if (isId('for')) { p++; const v = next(); if (v.k !== 'id' || KW.has(v.v) || BAN.test(v.v)) throw new Error('for 後面要是變數名稱'); if (!isId('in')) throw new Error('for 後面要有 in'); p++; bound.push(v.v); const it = orx(); let cond = null; if (isId('if')) { p++; cond = orx(); } bound.pop(); eatOp(']'); return { t: 'comp', e: first, v: v.v, it, cond }; }
+                const before = new Set(vars); const first = ternary();
+                if (isId('for')) { p++; const v = next(); if (v.k !== 'id' || KW.has(v.v) || BAN.test(v.v)) throw new Error('for 後面要是變數名稱'); if (!isId('in')) throw new Error('for 後面要有 in'); p++; bound.push(v.v); const it = orx(); let cond = null; if (isId('if')) { p++; cond = orx(); } bound.pop(); eatOp(']'); if (!before.has(v.v)) vars.delete(v.v); return { t: 'comp', e: first, v: v.v, it, cond }; }
                 const items = [first]; while (isOp(',')) { p++; if (isOp(']')) break; items.push(ternary()); } eatOp(']'); return { t: 'list', items };
             }
             if (k.k === 'id') {

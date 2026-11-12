@@ -55,6 +55,11 @@ const rm = () => fs.rmSync(tmp, { recursive: true, force: true });
         check('輸出長度與 outBytes 相符', out.length === r.outBytes, [out.length, r.outBytes]);
         const ix = P.indexModel(out);
         check('節點多 21 個', ix.nodes.length === m.nodeCount + 21, ix.nodes.length);
+        // 診斷選項 dqLoraInput（預設關）：每個目標多一個 DequantizeLinear，旁支吃反量化後的啟動值；預設輸出不含它
+        const rq = B.buildSlotModel({ srcBytes: m.bytes, rank: 4, dqLoraInput: true });
+        const ixq = P.indexModel(cat(rq.parts));
+        check('dqLoraInput：每目標多一個 DequantizeLinear（共 7 個）', ixq.nodes.length === m.nodeCount + 28 && ixq.nodes.filter((n) => n.op === 'DequantizeLinear').length === 7, ixq.nodes.length);
+        check('預設（無 dqLoraInput）不含 DequantizeLinear', !ix.nodes.some((n) => n.op === 'DequantizeLinear'));
         check('初始值多 14 個', ix.inits.size === m.nInit + 14, ix.inits.size);
         // 排布：與 make_lora_onnx.py 的 external() 相同——順序 q,k,v,o,gate,up,down × (A,B)，64 對齊
         let off = 0; const want = [];

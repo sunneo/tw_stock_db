@@ -21,6 +21,7 @@ else defaults to False, matching the native runner's hardcoded enable_thinking:f
 (DESIGN.offline-text.md / DESIGN.TODO.native-runner.md).
 """
 import argparse
+import hashlib
 import json
 import os
 import random
@@ -99,6 +100,10 @@ class PadCollator:
 
     def __call__(self, batch):
         max_len = max(len(b["input_ids"]) for b in batch)
+        if os.environ.get("LORA_TRACE_FILE"):   # 測試用：記錄每個 micro-batch 的內容雜湊，驗證續訓不重複／不漏資料
+            h = hashlib.sha256(json.dumps([b["input_ids"] for b in batch]).encode()).hexdigest()[:16]
+            with open(os.environ["LORA_TRACE_FILE"], "a", encoding="utf-8") as f:
+                f.write(h + "\n")
         input_ids, labels, attn = [], [], []
         for b in batch:
             pad_len = max_len - len(b["input_ids"])
@@ -112,6 +117,38 @@ class PadCollator:
         }
 
 
+class FaCkptCallback(TrainerCallback):
+    """每次存檢查點時，在 checkpoint-N/fa-ckpt.json 寫一份與 DESIGN.TODO.offline-training-studio.md §3.1 對照的描述。
+    權重與優化器仍是 HF Trainer 原生格式（adapter_model.safetensors、optimizer.pt、scheduler.pt、rng_state.pth）；
+    differences 欄位列出與 §3.1 不同之處，工作室續訓時要先讀它。"""
+
+    def __init__(self, meta):
+        self.meta = meta
+
+    def on_save(self, args, state, control, **kwargs):
+        ck = os.path.join(args.output_dir, f"checkpoint-{state.global_step}")
+        losses = [h["loss"] for h in state.log_history if "loss" in h]
+        doc = {
+            "format": "fa-ckpt", "version": 1, "producer": "lora-train/train_lora.py", "step": state.global_step, "epoch": state.epoch,
+            "cursor": {"order_seed": args.seed, "micro_batches_per_step": args.gradient_accumulation_steps,
+                       "consumed_micro_batches": state.global_step * args.gradient_accumulation_steps,
+                       "method": "seeded RandomSampler + skip_first_batches on resume"},
+            "rng": {"seed": args.seed, "algo": "hf-rng_state.pth (torch/numpy/python)"},
+            "optimizer": {"kind": "adamw", "lr": args.learning_rate, "schedule": {"type": "linear", "warmup": 10, "total": state.max_steps}},
+            "data_sha256": self.meta["data_sha256"],
+            "compat": {"base": self.meta["base"], "rank": self.meta["rank"], "alpha": self.meta["alpha"],
+                       "target_modules": self.meta["target_modules"], "prompt_format_version": self.meta.get("prompt_format_version", ""),
+                       "tool_catalog_sha256": self.meta.get("tool_catalog_sha256", "")},
+            "produced_by": {"backend": "cpu-py", "precision": "float32", "torch": __import__("torch").__version__},
+            "loss_tail": losses[-20:],
+            "differences": ["權重與優化器不是 lora_A/B.f32、opt_m/opt_v，而是 HF 原生檔", "rng 不是 PCG32，是 HF rng_state.pth",
+                            "資料游標以 seed 重現洗牌並跳過已看的 micro-batch，沒有 shard/offset 欄位"],
+        }
+        os.makedirs(ck, exist_ok=True)
+        with open(os.path.join(ck, "fa-ckpt.json"), "w", encoding="utf-8") as f:
+            json.dump(doc, f, ensure_ascii=False, indent=1)
+
+
 def split_train_val(rows, val_fraction, seed):
     """Carve a validation slice out of the TRAIN split (never the frozen heldout
     files -- those are merged separately by gen/merge_dataset.js and must only be
@@ -119,7 +156,7 @@ def split_train_val(rows, val_fraction, seed):
     rng = random.Random(seed)
     rows = rows[:]
     rng.shuffle(rows)
-    n_val = max(1, int(len(rows) * val_fraction)) if len(rows) > 10 else 0
+    n_val = 0 if val_fraction <= 0 else (max(1, int(len(rows) * val_fraction)) if len(rows) > 10 else 0)
     return rows[n_val:], rows[:n_val]
 
 
@@ -226,13 +263,16 @@ def main():
         seed=args.seed,
     )
 
+    ckpt_meta = {"data_sha256": hashlib.sha256(open(args.train_file, "rb").read()).hexdigest(), "base": args.model_name_or_path,
+                 "rank": args.lora_r, "alpha": args.lora_alpha, "target_modules": sorted(lora_config.target_modules),
+                 "tool_catalog_sha256": None}
     trainer = Trainer(
         model=model,
         args=training_args,
         train_dataset=train_ds,
         eval_dataset=val_ds,
         data_collator=collator,
-        callbacks=[StopFileCallback(args.stop_file)] if args.stop_file else None,
+        callbacks=([StopFileCallback(args.stop_file)] if args.stop_file else []) + [FaCkptCallback(ckpt_meta)],
     )
     trainer.train(resume_from_checkpoint=args.resume_from_checkpoint or None)
 

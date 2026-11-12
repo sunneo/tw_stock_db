@@ -77,7 +77,7 @@ def grade(x, o):
         if k == "ask":
             return ("?" in t or "？" in t or re.search(r"which|what|please|請問|請", t, re.I)) is not None and not re.search(r"not available|沒有", t), t[:60]
         if k == "missing":
-            return bool(re.search(r"not available|isn.t available|does not exist|doesn.t exist|not in the list|不存在|沒有這個", t, re.I)), t[:80]
+            return bool(re.search(r"not available|isn.t available|does not exist|doesn.t exist|not in the list|不存在|沒有這個|工具清單裡沒有|清單裡沒有|沒有「[^」]+」這個工具", t, re.I)), t[:80]
         return True, ""
     if task == "uml":
         if k.startswith("ask"):
@@ -132,6 +132,13 @@ def answer_pos(x):
         return str(p)
     m = re.search(r'"choice"\s*:\s*"?(\d+)', x["prefill"] + x["chosen"]) or re.search(r"^\s*(\d)\s*\}?\s*$", x["chosen"])
     return m.group(1) if m else None
+
+
+def pred_pos(x, o):
+    """模型輸出選的位置／字母（無法判讀回 None）；給訓練工作室的 pipeline view 算位置偏誤。"""
+    t = (x.get("prefill") or "") + (o or "")
+    m_ = re.search(r'"choice"\s*:\s*"?\s*([A-Za-z0-9])', t) or re.match(r"\s*([A-Za-z0-9])\s*\}?\s*$", (o or "").strip().split("\n")[-1] if (o or "").strip() else "")
+    return m_.group(1) if m_ else None
 
 
 def run_model(model, tok, rows, max_new):
@@ -194,7 +201,9 @@ def main():
         ob, ot = safe_grade(x, base_out[i]), safe_grade(x, tuned_out[i])
         for name in group_names(x):
             st[name][0] += 1; st[name][1] += bool(ob[0]); st[name][2] += bool(ot[0])
-        det.append({"i": i, "id": x.get("id"), "key": f"{x['task']}/{x['kind']}", "base_ok": bool(ob[0]), "tuned_ok": bool(ot[0]), "base_out": base_out[i], "tuned_out": tuned_out[i], "note": ot[1]})
+        det.append({"i": i, "id": x.get("id"), "key": f"{x['task']}/{x['kind']}", "base_ok": bool(ob[0]), "tuned_ok": bool(ot[0]), "base_out": base_out[i], "tuned_out": tuned_out[i], "note": ot[1],
+                    "gold": x["chosen"], "pred": tuned_out[i], "base_pred": base_out[i],
+                    "gold_pos": answer_pos(x), "pred_pos": pred_pos(x, tuned_out[i]), "base_pred_pos": pred_pos(x, base_out[i])})
 
     print("group\tn\tbase\ttuned\tflag")
     regress, res = [], {}

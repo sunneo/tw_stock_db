@@ -30,6 +30,7 @@
         const errors = [];
         if (!e || typeof e !== 'object') return ['登錄項必須是物件'];
         if (!e.id || typeof e.id !== 'string') errors.push('缺 id');
+        if (e.version !== undefined && (typeof e.version !== 'string' || !e.version)) errors.push('version 必須是非空字串');
         if (SOURCES.indexOf(e.source) < 0) errors.push('source 必須是 ' + SOURCES.join('／') + '，收到 ' + JSON.stringify(e.source));
         if (!e.base || typeof e.base !== 'string') errors.push('缺 base（基底模型 id）');
         if (!(Number.isInteger(e.rank) && e.rank > 0)) errors.push('rank 必須是正整數');
@@ -55,6 +56,50 @@
         return { ok: reasons.length === 0, level: reasons.length ? 'reject' : (warnings.length ? 'warn' : 'ok'), reasons, warnings };
     }
 
+    // 描述檔 fa-lora-descriptor v1（DESIGN.lora-training.md §13.2）：每顆 adapter 資料夾內的 lora.descriptor.json
+    const DESCRIPTOR_FORMAT = 'fa-lora-descriptor';
+    const DESCRIPTOR_FORMAT_VERSION = 1;
+    const ID_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+    function descriptorErrors(d) {
+        const errs = [];
+        if (!d || typeof d !== 'object' || Array.isArray(d)) return ['描述檔必須是物件'];
+        if (d.format !== DESCRIPTOR_FORMAT) errs.push('format 必須是 ' + DESCRIPTOR_FORMAT);
+        if (d.format_version !== DESCRIPTOR_FORMAT_VERSION) errs.push('format_version 必須是 ' + DESCRIPTOR_FORMAT_VERSION + '，收到 ' + JSON.stringify(d.format_version));
+        if (typeof d.id !== 'string' || !ID_RE.test(d.id)) errs.push('id 格式不對（小寫英數與 -._，最長 64）');
+        if (!d.version || typeof d.version !== 'string') errs.push('缺 version');
+        if (!d.base || typeof d.base !== 'string') errs.push('缺 base（基底模型 id）');
+        if (!(Number.isInteger(d.rank) && d.rank > 0)) errs.push('rank 必須是正整數');
+        if (d.prompt_format_version === undefined || d.prompt_format_version === null || d.prompt_format_version === '') errs.push('缺 prompt_format_version');
+        if (!d.applies || typeof d.applies !== 'object' || Array.isArray(d.applies)) errs.push('缺 applies（物件）');
+        else {
+            if (d.applies.domains !== undefined && !Array.isArray(d.applies.domains)) errs.push('applies.domains 必須是陣列');
+            if (d.applies.triggers !== undefined) {
+                if (!Array.isArray(d.applies.triggers)) errs.push('applies.triggers 必須是陣列');
+                else d.applies.triggers.forEach((t, i) => { try { new RegExp(String(t), 'i'); } catch (_) { errs.push('applies.triggers 第 ' + i + ' 項不是合法正規表示式'); } });
+            }
+        }
+        if (!(Number.isInteger(d.size) && d.size >= 0)) errs.push('size 必須是非負整數');
+        if (!(typeof d.sha256 === 'string' && HEX64.test(d.sha256))) errs.push('sha256 必須是 64 位十六進位小寫');
+        if (!d.location || typeof d.location !== 'string') errs.push('缺 location');
+        if (d.base_sha256 != null && !HEX64.test(String(d.base_sha256))) errs.push('base_sha256 格式不對');
+        if (d.description !== undefined && typeof d.description !== 'string') errs.push('description 必須是字串');
+        if (d.tool_catalog_sha256 != null && !HEX64.test(String(d.tool_catalog_sha256))) errs.push('tool_catalog_sha256 格式不對');
+        return errs;
+    }
+    // 描述檔 → 登錄項（不讀權重）；不合法就丟出列出所有原因的錯誤
+    function descriptorFromJson(d, extra) {
+        const errs = descriptorErrors(d);
+        if (errs.length) throw new Error('描述檔不合法：' + errs.join('；'));
+        const a = d.applies || {};
+        return Object.assign({
+            id: d.id, name: d.name || d.id, version: d.version, description: d.description || '', source: 'imported',
+            base: d.base, base_sha256: d.base_sha256 || undefined, rank: d.rank, alpha: d.alpha,
+            prompt_format_version: d.prompt_format_version, tool_catalog_sha256: d.tool_catalog_sha256 || undefined,
+            domains: (a.domains || []).slice(), triggers: (a.triggers || []).slice(),
+            location: d.location, size: d.size, sha256: d.sha256, eval: d.eval || null, enabled: true,
+        }, extra || {});
+    }
+
     // 評量分數：manifest.eval.groups 每組 {adapter, base}；任何一組輸給基底→ lose；沒資料→ null（不自動選用，可手動）
     function evalVerdict(ev) {
         if (!ev || typeof ev !== 'object') return { known: false };
@@ -70,6 +115,10 @@
         const loader = opts.loader || null;
         const budget = opts.budgetBytes > 0 ? opts.budgetBytes : DEFAULT_BUDGET;
         const maxActive = opts.maxActive >= 1 ? opts.maxActive : 1;
+        const slotCapacity = opts.slotCapacity >= 1 ? opts.slotCapacity : 0;   // 槽的 rank 總容量（0＝不限）；桌面版＝槽版 ONNX 的 rank（匯出時固定）
+        const pins = new Set();               // 釘選：自動淘汰不碰（DESIGN §14）
+        const inUse = new Map();              // id → 推論中的計數；>0 不可淘汰、不可替換
+        const lastUsedById = new Map();       // id → 最後使用時間（卸載後仍保留，給模型卡）
         const now = opts.now || (() => Date.now());
         const entries = new Map();            // id → entry
         const live = new Map();               // id → {handle, size, lastUsed}（Map 插入順序不代表 LRU，靠 lastUsed）
@@ -89,6 +138,7 @@
         function list(filter) { filter = filter || {}; return Array.from(entries.values()).filter((e) => (!filter.source || e.source === filter.source) && (!filter.domain || e.domains.indexOf(filter.domain) >= 0) && (filter.enabled === undefined || e.enabled === filter.enabled)); }
         async function unload(id) {
             const l = live.get(id); if (!l) return false;
+            lastUsedById.set(id, l.lastUsed);
             live.delete(id);
             if (loader && loader.unload) await loader.unload(entries.get(id), l.handle);
             return true;
@@ -156,23 +206,32 @@
             return { plan: chosen, skipped };
         }
 
-        // 讓 plan 裡的 adapter 都載入：預算不夠就依 LRU 卸載不在 plan 裡的；單靠 plan 就超預算則丟掉排序最後的
+        const residentSize = () => Array.from(live.values()).reduce((s, l) => s + l.size, 0);
+        const rankOf = (id) => (entries.get(id) || {}).rank || 0;
+        const usedRank = () => Array.from(live.keys()).reduce((s, id) => s + rankOf(id), 0);
+        const busy = (id) => (inUse.get(id) || 0) > 0;
+        const protectedId = (id) => pins.has(id) || busy(id);
+        const fits = (e) => residentSize() + e.size <= budget && live.size < maxActive && (!slotCapacity || usedRank() + e.rank <= slotCapacity);
+        function noRoomReason(e) {
+            if (slotCapacity && usedRank() + e.rank > slotCapacity) return '槽已滿（rank 容量 ' + slotCapacity + '，已用 ' + usedRank() + '，需要 ' + e.rank + '）且沒有可卸載的（釘選或推論中，或都在本次計畫內）';
+            if (residentSize() + e.size > budget) return '預算或同時啟用數不足，且沒有可卸載的（其餘都在本次計畫內）';
+            return '同時啟用數已達上限 ' + maxActive + '，且沒有可卸載的（其餘都在本次計畫內）';
+        }
+
+        // 讓 plan 裡的 adapter 都載入：超過槽容量或預算就依 LRU 卸載「不釘選、不推論中、不在計畫內」的；卸不掉就寫原因，不硬塞
         async function ensure(plan) {
             if (!loader || typeof loader.load !== 'function') throw new Error('沒有注入載入器（opts.loader）');
             const loaded = [], unloaded = [], skipped = [];
             const keep = plan.slice();
             const sum = (xs) => xs.reduce((s, e) => s + e.size, 0);
             while (keep.length && sum(keep) > budget) { const d = keep.pop(); skipped.push({ id: d.id, reason: '超過記憶體預算（需要 ' + sum(keep.concat([d])) + '，上限 ' + budget + '）' }); }
+            if (slotCapacity) while (keep.length && keep.reduce((s, e) => s + e.rank, 0) > slotCapacity) { const d = keep.pop(); skipped.push({ id: d.id, reason: '計畫的 rank 總和超過槽容量 ' + slotCapacity + '（' + d.rank + ' 放不下）' }); }
             const keepIds = new Set(keep.map((e) => e.id));
-            // 不在計畫內、但超過 maxActive 的一律先讓出（同時駐留數也受 maxActive 限制）
             const need = keep.filter((e) => !live.has(e.id));
-            const residentSize = () => Array.from(live.values()).reduce((s, l) => s + l.size, 0);
-            const victims = () => Array.from(live.keys()).filter((id) => !keepIds.has(id)).sort((a, b) => live.get(a).lastUsed - live.get(b).lastUsed);
+            const victims = () => Array.from(live.keys()).filter((id) => !keepIds.has(id) && !protectedId(id)).sort((a, b) => live.get(a).lastUsed - live.get(b).lastUsed);
             for (const e of need) {
-                while ((residentSize() + e.size > budget || live.size >= maxActive) && victims().length) {
-                    const v = victims()[0]; await unload(v); unloaded.push(v);
-                }
-                if (residentSize() + e.size > budget || live.size >= maxActive) { skipped.push({ id: e.id, reason: '預算或同時啟用數不足，且沒有可卸載的（其餘都在本次計畫內）' }); continue; }
+                while (!fits(e) && victims().length) { const v = victims()[0]; await unload(v); unloaded.push(v); }
+                if (!fits(e)) { skipped.push({ id: e.id, reason: noRoomReason(e) }); continue; }
                 try {
                     const handle = await loader.load(e);
                     live.set(e.id, { handle, size: e.size, lastUsed: stamp() }); loaded.push(e.id);
@@ -181,6 +240,80 @@
             for (const e of keep) { const l = live.get(e.id); if (l) l.lastUsed = stamp(); }
             return { loaded, unloaded, skipped, active: keep.filter((e) => live.has(e.id)).map((e) => e.id) };
         }
+        function pin(id, on) {
+            if (!entries.get(id)) throw new Error('沒有這個 adapter：' + id);
+            if (on) pins.add(id); else pins.delete(id);
+            return { id, pinned: pins.has(id) };
+        }
+        // 推論中標記：推論開始 acquire、結束 release；推論中的 adapter 不會被淘汰或替換
+        function acquire(id) { if (!live.has(id)) return false; inUse.set(id, (inUse.get(id) || 0) + 1); return true; }
+        function release(id) { const n = (inUse.get(id) || 0) - 1; if (n > 0) inUse.set(id, n); else inUse.delete(id); }
+        // 手動卸載：釘選與推論中都拒絕（與自動淘汰同一套保護）
+        async function manualUnload(id) {
+            if (!live.has(id)) return { ok: false, error: id + ' 沒有載入' };
+            if (pins.has(id)) return { ok: false, error: id + ' 已釘選，先解除釘選再卸載' };
+            if (busy(id)) return { ok: false, error: id + ' 推論中，不能卸載' };
+            await unload(id); return { ok: true, id };
+        }
+        function currentHandles() { return Array.from(live.entries()).map(([id, l]) => ({ id, handle: l.handle })); }
+        async function safeUnload(e, h) { try { if (loader && loader.unload) await loader.unload(e, h); } catch (_) { /* 卸載失敗不影響狀態 */ } }
+        const errText = (err) => String((err && err.message) || err);
+        /* replace(outId, inId, {applyFn?, force?}) → {ok, active, rolledBack?, state?, error?}
+         * 原子性（DESIGN §14.4）：①先載入新的，失敗原狀不動；②扣掉舊的後容量不夠，還原舊的、卸新的；
+         * ③applyFn（通知推論端套用新組合）失敗：卸新、重新載入舊、再套一次舊組合，回報 rolledBack；④都成功才釋放舊的。
+         * 舊的釘選或推論中一律拒絕（force 只能繞過釘選，推論中永遠不行）。 */
+        // 替換進行中的記錄（給畫面：status().replacing；完成或失敗都會清掉）
+        let replacing = null;
+        async function replace(outId, inId, o) {
+            replacing = { out: outId, in: inId };
+            try { return await replaceInner(outId, inId, o); }
+            finally { replacing = null; }
+        }
+        async function replaceInner(outId, inId, o) {
+            o = o || {};
+            const out = entries.get(outId), inn = entries.get(inId);
+            if (!out || !inn) return { ok: false, error: '沒有這個 adapter', active: currentHandles().map((x) => x.id) };
+            if (!live.has(outId)) return { ok: false, error: outId + ' 沒有載入，無法替換（請直接載入 ' + inId + '）', active: currentHandles().map((x) => x.id) };
+            if (live.has(inId)) return { ok: false, error: inId + ' 已經載入', active: currentHandles().map((x) => x.id) };
+            if (pins.has(outId) && !o.force) return { ok: false, error: outId + ' 已釘選，先解除釘選', active: currentHandles().map((x) => x.id) };
+            if (busy(outId)) return { ok: false, error: outId + ' 推論中，不能替換', active: currentHandles().map((x) => x.id) };
+            const c = compat(inn); if (!c.ok) return { ok: false, error: '不相容：' + c.reasons.map((r) => r.message).join('；'), active: currentHandles().map((x) => x.id) };
+            let h;
+            try { h = await loader.load(inn); }
+            catch (err) { return { ok: false, error: '載入 ' + inId + ' 失敗，原狀保留：' + errText(err), rolledBack: false, active: currentHandles().map((x) => x.id) }; }
+            const old = live.get(outId); live.delete(outId); lastUsedById.set(outId, old.lastUsed);
+            if (!fits(inn)) {
+                const why = noRoomReason(inn); live.set(outId, old); await safeUnload(inn, h);
+                return { ok: false, error: '容量不足，替換不成立，原狀保留（' + why + '）', rolledBack: true, active: currentHandles().map((x) => x.id) };
+            }
+            live.set(inId, { handle: h, size: inn.size, lastUsed: stamp() });
+            if (typeof o.applyFn === 'function') {
+                let r; try { r = await o.applyFn(currentHandles()); } catch (err) { r = { ok: false, error: errText(err) }; }
+                if (!r || r.ok === false) {
+                    live.delete(inId); await safeUnload(inn, h);
+                    try { const h0 = await loader.load(out); live.set(outId, { handle: h0, size: out.size, lastUsed: old.lastUsed }); }
+                    catch (err) { return { ok: false, error: '套用失敗，且無法還原 ' + outId + '：' + errText(err), state: 'degraded', active: currentHandles().map((x) => x.id) }; }
+                    try { await o.applyFn(currentHandles()); } catch (_) { /* 舊組合再套一次；失敗就維持登錄狀態，由呼叫端顯示 */ }
+                    return { ok: false, error: '套用 ' + inId + ' 失敗，已還原為 ' + outId + '：' + ((r && (r.error || r.message)) || '未知原因'), rolledBack: true, active: currentHandles().map((x) => x.id) };
+                }
+            }
+            await safeUnload(out, old.handle);
+            return { ok: true, out: outId, in: inId, active: currentHandles().map((x) => x.id) };
+        }
+        // 模型卡（給 LoRA 管理畫面）：與 DESIGN §14.6 對齊
+        function card(e) {
+            const ev = evalVerdict(e.eval), c = compat(e);
+            const lu = live.has(e.id) ? live.get(e.id).lastUsed : (lastUsedById.has(e.id) ? lastUsedById.get(e.id) : null);
+            return { id: e.id, name: e.name || e.id, version: e.version || null, description: e.description || '', base: e.base, rank: e.rank, size: e.size, added: e.added || null, lastUsed: lu,
+                domains: e.domains.slice(), triggers: (e.triggers || []).slice(), prompt_format_version: e.prompt_format_version, source: e.source, enabled: !!e.enabled,
+                location: e.location, eval: ev.known ? { lose: ev.lose, win: ev.win } : null, compat: c.level, compatReasons: c.reasons.map((r) => r.message), pinned: pins.has(e.id) };
+        }
+        // 狀態（給 LoRA 管理畫面）：槽位、已載入、最後使用時間、釘選、推論中
+        function status() {
+            const slots = Array.from(live.keys()).map((id) => { const l = live.get(id), e = entries.get(id) || {}; return { id, name: e.name || id, version: e.version || null, rank: e.rank, size: l.size, loaded: true, pinned: pins.has(id), inUse: inUse.get(id) || 0, lastUsed: l.lastUsed }; }).sort((a, b) => b.lastUsed - a.lastUsed);
+            return { replacing: replacing ? Object.assign({}, replacing) : null, slotCapacity: slotCapacity || null, usedRank: usedRank(),freeRank: slotCapacity ? slotCapacity - usedRank() : null, maxActive, budget, usedBytes: residentSize(), slots, registered: list().map(card) };
+        }
+
         // 依需求載入：select ＋ ensure；handles 給呼叫端交給推論（nr-engine 的 opts.lora）
         async function request(req) {
             const s = select(req);
@@ -197,7 +330,14 @@
             for (const e of snap.entries || []) { try { register(e); } catch (err) { bad.push({ id: e && e.id, error: err.message }); } }
             return { bad };
         }
-        return { env, budget, maxActive, register, unregister, get, list, setEnabled, checkCompat: compat, select, ensure, request, unload, unloadAll, loaded: loadedList, snapshot, restore };
+        // 呼叫端用的出口：永不丟例外。沒有 adapter 可用（沒選到、全部載入失敗、沒有載入器）→ fallback:'base'，原因寫在 skipped
+        async function resolve(req) {
+            let r;
+            try { r = await request(req); }
+            catch (err) { return { active: [], handles: [], loaded: [], unloaded: [], skipped: [{ id: '*', reason: '登錄表錯誤，退回基底：' + String((err && err.message) || err) }], fallback: 'base' }; }
+            return Object.assign(r, { fallback: r.active.length ? 'lora' : 'base' });
+        }
+        return { env, budget, maxActive, slotCapacity, register, unregister, get, list, setEnabled, checkCompat: compat, select, ensure, request, resolve, unload, unloadAll, loaded: loadedList, snapshot, restore, pin, acquire, release, manualUnload, replace, status, card };
     }
 
     // 由 pack_adapter.js 的 manifest.json（或 fa-training-asset kind:'lora' 的 manifest）轉成登錄項
@@ -232,5 +372,5 @@
         };
     }
 
-    return { SOURCES, DEFAULT_BUDGET, validateEntry, checkCompat, evalVerdict, createRegistry, entryFromManifest, nrEngineLoader };
+    return { SOURCES, DEFAULT_BUDGET, DESCRIPTOR_FORMAT, DESCRIPTOR_FORMAT_VERSION, validateEntry, descriptorErrors, descriptorFromJson, checkCompat, evalVerdict, createRegistry, entryFromManifest, nrEngineLoader };
 });

@@ -1,0 +1,2135 @@
+{
+ "format": "fa-domain-seeds",
+ "version": 1,
+ "source": "renderer/src/uml/domain_linuxreal.test.js",
+ "name": "領域包 linuxreal",
+ "minSkeletons": 8,
+ "judge": {
+  "checker": "tokens",
+  "timeoutMs": 40000
+ },
+ "trainOnly": null,
+ "seeds": [
+  {
+   "id": "env-count",
+   "st": "標準輸入每行一個環境變數名稱。程式讀取行程的環境變數，每行輸出對應的值；環境裡沒有的名稱輸出「<unset>」。結束碼是沒設定的名稱個數。",
+   "rw_st": null,
+   "ref": "import os, sys\nmiss = 0\nfor n in sys.stdin.read().split():\n    v = os.environ.get(n)\n    if v is None:\n        miss += 1\n        print(\"<unset>\")\n    else:\n        print(v)\nsys.exit(miss)\n",
+   "tests": [
+    {
+     "in": "FZQ_SIAM\nFZQ_CK\nFZQ_IAA\nFZQ_AI\n",
+     "out": "vkisi\n<unset>\nzm\n<unset>\n",
+     "env": {
+      "FZQ_SIAM": "vkisi",
+      "FZQ_IAA": "zm"
+     },
+     "expectExit": 2
+    },
+    {
+     "in": "FZQ_TE\nFZQ_RM\n",
+     "out": "<unset>\ndz\n",
+     "env": {
+      "FZQ_RM": "dz"
+     },
+     "expectExit": 1
+    },
+    {
+     "in": "FZQ_QYJV\nFZQ_YQ\nFZQ_SSS\nFZQ_ADZD\n",
+     "out": "<unset>\nkucuu\n<unset>\nup\n",
+     "env": {
+      "FZQ_YQ": "kucuu",
+      "FZQ_ADZD": "up"
+     },
+     "expectExit": 2
+    },
+    {
+     "in": "FZQ_SAS\nFZQ_DG\nFZQ_YY\n",
+     "out": "nnwwn\nnne\nzm\n",
+     "env": {
+      "FZQ_SAS": "nnwwn",
+      "FZQ_DG": "nne",
+      "FZQ_YY": "zm"
+     }
+    },
+    {
+     "in": "FZQ_GY\nFZQ_GQQ\n",
+     "out": "jp\n<unset>\n",
+     "env": {
+      "FZQ_GY": "jp"
+     },
+     "expectExit": 1
+    },
+    {
+     "in": "FZQ_BF\nFZQ_NZ\nFZQ_CKC\nFZQ_IS\n",
+     "out": "<unset>\naadz\nmu\nsaia\n",
+     "env": {
+      "FZQ_NZ": "aadz",
+      "FZQ_CKC": "mu",
+      "FZQ_IS": "saia"
+     },
+     "expectExit": 1
+    }
+   ],
+   "hidden": [
+    {
+     "in": "FZQ_IM\nFZQ_VH\nFZQ_GGYY\nFZQ_YGG\nFZQ_GQQ\n",
+     "out": "tftfb\nftp\n<unset>\ndfh\n<unset>\n",
+     "env": {
+      "FZQ_IM": "tftfb",
+      "FZQ_VH": "ftp",
+      "FZQ_YGG": "dfh"
+     },
+     "expectExit": 2
+    },
+    {
+     "in": "FZQ_IAI\nFZQ_SIS\nFZQ_AAIS\nFZQ_RQ\nFZQ_WWR\n",
+     "out": "qyt\nne\nn\n<unset>\nrmzvh\n",
+     "env": {
+      "FZQ_IAI": "qyt",
+      "FZQ_SIS": "ne",
+      "FZQ_AAIS": "n",
+      "FZQ_WWR": "rmzvh"
+     },
+     "expectExit": 1
+    }
+   ],
+   "want": "lr.env-report"
+  },
+  {
+   "id": "env-pair-flag",
+   "st": "標準輸入每行一個環境變數名稱。程式查詢行程的環境變數，每行輸出「名稱=值」；環境變數沒設定的輸出「-」。只要有任何一個沒設定，結束碼就是 1，否則是 0。",
+   "rw_st": null,
+   "ref": "import os, sys\nmiss = 0\nfor n in sys.stdin.read().split():\n    v = os.environ.get(n)\n    if v is None:\n        miss += 1\n        print(\"-\")\n    else:\n        print(f\"{n}={v}\")\nsys.exit(1 if miss > 0 else 0)\n",
+   "tests": [
+    {
+     "in": "FZQ_ZQGG\nFZQ_XBP\n",
+     "out": "FZQ_ZQGG=e\n-\n",
+     "env": {
+      "FZQ_ZQGG": "e"
+     },
+     "expectExit": 1
+    },
+    {
+     "in": "FZQ_WN\nFZQ_NRMR\nFZQ_HY\nFZQ_JRV\n",
+     "out": "FZQ_WN=pbxt\nFZQ_NRMR=w\nFZQ_HY=nez\nFZQ_JRV=qyybx\n",
+     "env": {
+      "FZQ_WN": "pbxt",
+      "FZQ_NRMR": "w",
+      "FZQ_HY": "nez",
+      "FZQ_JRV": "qyybx"
+     }
+    },
+    {
+     "in": "FZQ_FTXB\nFZQ_TPEN\nFZQ_NHVH\nFZQ_BXJX\n",
+     "out": "FZQ_FTXB=ss\nFZQ_TPEN=iav\n-\n-\n",
+     "env": {
+      "FZQ_FTXB": "ss",
+      "FZQ_TPEN": "iav"
+     },
+     "expectExit": 1
+    },
+    {
+     "in": "FZQ_GGYY\nFZQ_QYYQ\nFZQ_FTF\nFZQ_UCUC\n",
+     "out": "FZQ_GGYY=ss\nFZQ_QYYQ=vu\n-\nFZQ_UCUC=x\n",
+     "env": {
+      "FZQ_GGYY": "ss",
+      "FZQ_QYYQ": "vu",
+      "FZQ_UCUC": "x"
+     },
+     "expectExit": 1
+    },
+    {
+     "in": "FZQ_ENN\nFZQ_VCK\n",
+     "out": "FZQ_ENN=uucf\nFZQ_VCK=aiaas\n",
+     "env": {
+      "FZQ_ENN": "uucf",
+      "FZQ_VCK": "aiaas"
+     }
+    },
+    {
+     "in": "FZQ_HVC\nFZQ_GG\nFZQ_PWE\n",
+     "out": "FZQ_HVC=vh\nFZQ_GG=mr\nFZQ_PWE=ne\n",
+     "env": {
+      "FZQ_HVC": "vh",
+      "FZQ_GG": "mr",
+      "FZQ_PWE": "ne"
+     }
+    }
+   ],
+   "hidden": [
+    {
+     "in": "FZQ_DRD\nFZQ_VZMR\nFZQ_HY\n",
+     "out": "FZQ_DRD=n\nFZQ_VZMR=rv\n-\n",
+     "env": {
+      "FZQ_DRD": "n",
+      "FZQ_VZMR": "rv"
+     },
+     "expectExit": 1
+    },
+    {
+     "in": "FZQ_HM\nFZQ_VQ\nFZQ_YJP\nFZQ_WW\n",
+     "out": "-\nFZQ_VQ=nwn\nFZQ_YJP=erdzd\nFZQ_WW=ucuu\n",
+     "env": {
+      "FZQ_VQ": "nwn",
+      "FZQ_YJP": "erdzd",
+      "FZQ_WW": "ucuu"
+     },
+     "expectExit": 1
+    }
+   ],
+   "want": "lr.env-report"
+  },
+  {
+   "id": "argv-maxlen",
+   "st": "程式沒有標準輸入，只看命令列引數（不含程式名稱）。先輸出引數個數，接著把引數依字典序由小到大排序後每個一行輸出。結束碼是最長引數的長度（不超過 255）。",
+   "rw_st": null,
+   "ref": "import sys\na = list(sys.argv[1:])\nprint(len(a))\nif \"asc\" == \"asc\":\n    a.sort()\nelif \"asc\" == \"desc\":\n    a.sort()\n    a.reverse()\nfor x in a:\n    print(x)\nm = max(len(x) for x in a)\nsys.exit(min(m, 255))\n",
+   "tests": [
+    {
+     "in": "",
+     "out": "4\nbftfbp\nfjaai\ngqyyqy\nvqqgqq\n",
+     "args": [
+      "bftfbp",
+      "fjaai",
+      "vqqgqq",
+      "gqyyqy"
+     ],
+     "expectExit": 6
+    },
+    {
+     "in": "",
+     "out": "3\ntxbsias\nzmh\nzvsa\n",
+     "args": [
+      "txbsias",
+      "zmh",
+      "zvsa"
+     ],
+     "expectExit": 7
+    },
+    {
+     "in": "",
+     "out": "4\ncuhnwn\neh\nnwwwr\nukcu\n",
+     "args": [
+      "nwwwr",
+      "cuhnwn",
+      "eh",
+      "ukcu"
+     ],
+     "expectExit": 6
+    },
+    {
+     "in": "",
+     "out": "3\nbftptft\npbft\nx\n",
+     "args": [
+      "x",
+      "pbft",
+      "bftptft"
+     ],
+     "expectExit": 7
+    },
+    {
+     "in": "",
+     "out": "2\njxbxtpt\ntx\n",
+     "args": [
+      "jxbxtpt",
+      "tx"
+     ],
+     "expectExit": 7
+    },
+    {
+     "in": "",
+     "out": "1\nis\n",
+     "args": [
+      "is"
+     ],
+     "expectExit": 2
+    }
+   ],
+   "hidden": [
+    {
+     "in": "",
+     "out": "3\ngyyqq\nqtftf\nxjfnn\n",
+     "args": [
+      "gyyqq",
+      "qtftf",
+      "xjfnn"
+     ],
+     "expectExit": 5
+    },
+    {
+     "in": "",
+     "out": "6\nasaimhd\nckuukx\ncupjptf\newkux\nfjx\nx\n",
+     "args": [
+      "ckuukx",
+      "asaimhd",
+      "cupjptf",
+      "x",
+      "ewkux",
+      "fjx"
+     ],
+     "expectExit": 7
+    }
+   ],
+   "want": "lr.argv-report"
+  },
+  {
+   "id": "argv-count",
+   "st": "程式沒有標準輸入，只看命令列引數（不含程式名稱）。先輸出引數個數，接著依原本的順序每個引數一行輸出。結束碼是引數的個數。",
+   "rw_st": null,
+   "ref": "import sys\na = list(sys.argv[1:])\nprint(len(a))\nif \"given\" == \"asc\":\n    a.sort()\nelif \"given\" == \"desc\":\n    a.sort()\n    a.reverse()\nfor x in a:\n    print(x)\nm = max(len(x) for x in a)\nsys.exit(len(a))\n",
+   "tests": [
+    {
+     "in": "",
+     "out": "1\nyqgybrm\n",
+     "args": [
+      "yqgybrm"
+     ],
+     "expectExit": 1
+    },
+    {
+     "in": "",
+     "out": "4\nyggqy\nm\nvhdzv\nmrmkcc\n",
+     "args": [
+      "yggqy",
+      "m",
+      "vhdzv",
+      "mrmkcc"
+     ],
+     "expectExit": 4
+    },
+    {
+     "in": "",
+     "out": "3\njfbf\ne\neeewzd\n",
+     "args": [
+      "jfbf",
+      "e",
+      "eeewzd"
+     ],
+     "expectExit": 3
+    },
+    {
+     "in": "",
+     "out": "4\nmhm\nmufbpbf\nxtasaai\nsvrgyg\n",
+     "args": [
+      "mhm",
+      "mufbpbf",
+      "xtasaai",
+      "svrgyg"
+     ],
+     "expectExit": 4
+    },
+    {
+     "in": "",
+     "out": "3\nptf\neeeeww\nwrvr\n",
+     "args": [
+      "ptf",
+      "eeeeww",
+      "wrvr"
+     ],
+     "expectExit": 3
+    },
+    {
+     "in": "",
+     "out": "4\nygg\ng\nyqyqqy\nq\n",
+     "args": [
+      "ygg",
+      "g",
+      "yqyqqy",
+      "q"
+     ],
+     "expectExit": 4
+    }
+   ],
+   "hidden": [
+    {
+     "in": "",
+     "out": "2\ny\ngy\n",
+     "args": [
+      "y",
+      "gy"
+     ],
+     "expectExit": 2
+    },
+    {
+     "in": "",
+     "out": "2\ngyyqg\ng\n",
+     "args": [
+      "gyyqg",
+      "g"
+     ],
+     "expectExit": 2
+    }
+   ],
+   "want": "lr.argv-report"
+  },
+  {
+   "id": "spawn-clean",
+   "st": "標準輸入第一行是 n 與 k，接著 n 行「名稱=值」，最後一行是一個名稱 q。父行程啟動一個子行程（用同一個 Python 直譯器），子行程的環境變數只有這 n 個（不繼承父行程的），子行程印出環境變數 q 的值（沒有就印 none）並以 k 當結束碼。父行程印出子行程輸出的那一行，並以子行程的結束碼結束。",
+   "rw_st": null,
+   "ref": "import os, sys, subprocess\nrows = sys.stdin.read().split(\"\\n\")\nn, k = map(int, rows[0].split())\nE = {}\nif \"clean\" == \"inherit\":\n    E.update(os.environ)\nfor r in rows[1:1+n]:\n    a, _, b = r.partition(\"=\")\n    E[a] = b\nq = rows[1+n]\ncode = \"import os,sys\\nprint(os.environ.get(sys.argv[1], 'none'))\\nsys.exit(int(sys.argv[2]))\"\nres = subprocess.run([sys.executable, \"-c\", code, q, str(k)], env=E, stdout=subprocess.PIPE)\nprint(res.stdout.decode().strip())\nsys.exit(res.returncode)\n",
+   "tests": [
+    {
+     "in": "1 2\nFZQ_GGG=qqy\nFZQ_GGG\n",
+     "out": "qqy\n",
+     "env": {
+      "FZQ_PARENT": "pgb"
+     },
+     "expectExit": 2
+    },
+    {
+     "in": "1 4\nFZQ_NWRD=wnew\nFZQ_NWRD\n",
+     "out": "wnew\n",
+     "env": {
+      "FZQ_PARENT": "phd"
+     },
+     "expectExit": 4
+    },
+    {
+     "in": "3 9\nFZQ_ZEE=dzdk\nFZQ_FJ=s\nFZQ_ISVH=cukc\nFZQ_AS\n",
+     "out": "none\n",
+     "env": {
+      "FZQ_PARENT": "pvh"
+     },
+     "expectExit": 9
+    },
+    {
+     "in": "3 8\nFZQ_CKUP=xtpn\nFZQ_NN=r\nFZQ_ZMR=qjp\nFZQ_AISA\n",
+     "out": "none\n",
+     "env": {
+      "FZQ_PARENT": "psi"
+     },
+     "expectExit": 8
+    },
+    {
+     "in": "2 6\nFZQ_YQY=gqv\nFZQ_ZB=mcsy\nFZQ_YQY\n",
+     "out": "gqv\n",
+     "env": {
+      "FZQ_PARENT": "pta"
+     },
+     "expectExit": 6
+    },
+    {
+     "in": "3 0\nFZQ_ZD=dccu\nFZQ_XA=a\nFZQ_AMF=zvrt\nFZQ_FNGQ\n",
+     "out": "none\n",
+     "env": {
+      "FZQ_PARENT": "pbp"
+     }
+    }
+   ],
+   "hidden": [
+    {
+     "in": "3 4\nFZQ_WNN=n\nFZQ_WEN=w\nFZQ_VZDC=fja\nFZQ_PARENT\n",
+     "out": "none\n",
+     "env": {
+      "FZQ_PARENT": "paa"
+     },
+     "expectExit": 4
+    },
+    {
+     "in": "1 2\nFZQ_YYG=yyg\nFZQ_TP\n",
+     "out": "none\n",
+     "env": {
+      "FZQ_PARENT": "ptx"
+     },
+     "expectExit": 2
+    }
+   ],
+   "want": "lr.spawn-env"
+  },
+  {
+   "id": "spawn-inherit",
+   "st": "標準輸入第一行是 n 與 k，接著 n 行「名稱=值」，最後一行是名稱 q。父行程啟動子行程（同一個 Python 直譯器），子行程的環境是父行程的環境再加上這 n 個變數，子行程印出環境變數 q 的值（沒有就印 none）並以 k 結束。父行程印出子行程輸出的那一行，自己固定以 0 結束。",
+   "rw_st": null,
+   "ref": "import os, sys, subprocess\nrows = sys.stdin.read().split(\"\\n\")\nn, k = map(int, rows[0].split())\nE = {}\nif \"inherit\" == \"inherit\":\n    E.update(os.environ)\nfor r in rows[1:1+n]:\n    a, _, b = r.partition(\"=\")\n    E[a] = b\nq = rows[1+n]\ncode = \"import os,sys\\nprint(os.environ.get(sys.argv[1], 'none'))\\nsys.exit(int(sys.argv[2]))\"\nres = subprocess.run([sys.executable, \"-c\", code, q, str(k)], env=E, stdout=subprocess.PIPE)\nprint(res.stdout.decode().strip())\n",
+   "tests": [
+    {
+     "in": "1 1\nFZQ_TFB=is\nFZQ_TFB\n",
+     "out": "is\n",
+     "env": {
+      "FZQ_PARENT": "pqy"
+     }
+    },
+    {
+     "in": "2 8\nFZQ_CPIA=s\nFZQ_SII=a\nFZQ_PARENT\n",
+     "out": "pai\n",
+     "env": {
+      "FZQ_PARENT": "pai"
+     }
+    },
+    {
+     "in": "3 4\nFZQ_NN=w\nFZQ_NZDK=ptf\nFZQ_ASAA=s\nFZQ_PARENT\n",
+     "out": "pas\n",
+     "env": {
+      "FZQ_PARENT": "pas"
+     }
+    },
+    {
+     "in": "1 8\nFZQ_ASIA=i\nFZQ_ASIA\n",
+     "out": "i\n",
+     "env": {
+      "FZQ_PARENT": "pcu"
+     }
+    },
+    {
+     "in": "2 2\nFZQ_SIAI=i\nFZQ_SII=v\nFZQ_SII\n",
+     "out": "v\n",
+     "env": {
+      "FZQ_PARENT": "pcp"
+     }
+    },
+    {
+     "in": "3 0\nFZQ_IVF=rmrv\nFZQ_MHV=vhgg\nFZQ_YKU=ccu\nFZQ_IVF\n",
+     "out": "rmrv\n",
+     "env": {
+      "FZQ_PARENT": "ptx"
+     }
+    }
+   ],
+   "hidden": [
+    {
+     "in": "3 2\nFZQ_NENH=hmrm\nFZQ_AAIA=d\nFZQ_VHV=mhdz\nFZQ_VHV\n",
+     "out": "mhdz\n",
+     "env": {
+      "FZQ_PARENT": "ptf"
+     }
+    },
+    {
+     "in": "1 5\nFZQ_BP=ai\nFZQ_BP\n",
+     "out": "ai\n",
+     "env": {
+      "FZQ_PARENT": "pyg"
+     }
+    }
+   ],
+   "want": "lr.spawn-env"
+  },
+  {
+   "id": "file-rev",
+   "st": "目前目錄有文字檔 in.txt。程式讀 in.txt，把每一行的字元順序反轉，寫到 out.txt（每行結尾換行），標準輸出印寫入的行數。",
+   "rw_st": null,
+   "ref": "rows = open(\"in.txt\").read().splitlines()\nif \"rc\" == \"rc\":\n    out = [r[::-1] for r in rows]\nelif \"rc\" == \"rl\":\n    out = list(reversed(rows))\nelif \"rc\" == \"uq\":\n    seen = set()\n    out = []\n    for r in rows:\n        if r not in seen:\n            seen.add(r)\n            out.append(r)\nelif \"rc\" == \"sl\":\n    out = sorted(rows, key=lambda r: len(r))\nelse:\n    out = [\"%d: %s\" % (i, r) for i, r in enumerate(rows, 1)]\nbody = \"\\n\".join(out) + \"\\n\"\nopen(\"out.txt\", \"w\").write(body)\nprint(len(out))\n",
+   "tests": [
+    {
+     "in": "",
+     "out": "5\n",
+     "files": {
+      "in.txt": "jsiaa\nsmfrk\nu\nx\njsiaa\n"
+     },
+     "expectFiles": {
+      "out.txt": "aaisj\nkrfms\nu\nx\naaisj\n"
+     }
+    },
+    {
+     "in": "",
+     "out": "3\n",
+     "files": {
+      "in.txt": "ii\naa\nis\n"
+     },
+     "expectFiles": {
+      "out.txt": "ii\naa\nsi\n"
+     }
+    },
+    {
+     "in": "",
+     "out": "6\n",
+     "files": {
+      "in.txt": "q\njfts\nii\nii\nav\nq\n"
+     },
+     "expectFiles": {
+      "out.txt": "q\nstfj\nii\nii\nva\nq\n"
+     }
+    },
+    {
+     "in": "",
+     "out": "3\n",
+     "files": {
+      "in.txt": "q\ny\ny\n"
+     },
+     "expectFiles": {
+      "out.txt": "q\ny\ny\n"
+     }
+    },
+    {
+     "in": "",
+     "out": "4\n",
+     "files": {
+      "in.txt": "vx\nducukk\nukkup\ntxts\n"
+     },
+     "expectFiles": {
+      "out.txt": "xv\nkkucud\npukku\nstxt\n"
+     }
+    },
+    {
+     "in": "",
+     "out": "3\n",
+     "files": {
+      "in.txt": "ds\nsi\nds\n"
+     },
+     "expectFiles": {
+      "out.txt": "sd\nis\nsd\n"
+     }
+    }
+   ],
+   "hidden": [
+    {
+     "in": "",
+     "out": "6\n",
+     "files": {
+      "in.txt": "ukccf\nis\nas\niv\nyq\nukccf\n"
+     },
+     "expectFiles": {
+      "out.txt": "fccku\nsi\nsa\nvi\nqy\nfccku\n"
+     }
+    },
+    {
+     "in": "",
+     "out": "7\n",
+     "files": {
+      "in.txt": "gy\nyy\nyq\nyq\nzv\nqgqqy\ngy\n"
+     },
+     "expectFiles": {
+      "out.txt": "yg\nyy\nqy\nqy\nvz\nyqqgq\nyg\n"
+     }
+    }
+   ],
+   "want": "lr.file-transform"
+  },
+  {
+   "id": "file-uniq-bytes",
+   "st": "目錄裡有文字檔 in.txt。程式讀 in.txt，去掉重複的行（保留第一次出現的順序），寫到 out.txt，標準輸出印寫入的位元組數。",
+   "rw_st": null,
+   "ref": "rows = open(\"in.txt\").read().splitlines()\nif \"uq\" == \"rc\":\n    out = [r[::-1] for r in rows]\nelif \"uq\" == \"rl\":\n    out = list(reversed(rows))\nelif \"uq\" == \"uq\":\n    seen = set()\n    out = []\n    for r in rows:\n        if r not in seen:\n            seen.add(r)\n            out.append(r)\nelif \"uq\" == \"sl\":\n    out = sorted(rows, key=lambda r: len(r))\nelse:\n    out = [\"%d: %s\" % (i, r) for i, r in enumerate(rows, 1)]\nbody = \"\\n\".join(out) + \"\\n\"\nopen(\"out.txt\", \"w\").write(body)\nprint(len(body.encode()))\n",
+   "tests": [
+    {
+     "in": "",
+     "out": "8\n",
+     "files": {
+      "in.txt": "qg\nzvhq\n"
+     },
+     "expectFiles": {
+      "out.txt": "qg\nzvhq\n"
+     }
+    },
+    {
+     "in": "",
+     "out": "14\n",
+     "files": {
+      "in.txt": "nn\nhdzqgj\nnzm\nnn\n"
+     },
+     "expectFiles": {
+      "out.txt": "nn\nhdzqgj\nnzm\n"
+     }
+    },
+    {
+     "in": "",
+     "out": "18\n",
+     "files": {
+      "in.txt": "drda\npb\nxn\nwn\nyqt\n"
+     },
+     "expectFiles": {
+      "out.txt": "drda\npb\nxn\nwn\nyqt\n"
+     }
+    },
+    {
+     "in": "",
+     "out": "27\n",
+     "files": {
+      "in.txt": "vhgygj\nuu\nck\nzdhvzv\nhvzvzd\n"
+     },
+     "expectFiles": {
+      "out.txt": "vhgygj\nuu\nck\nzdhvzv\nhvzvzd\n"
+     }
+    },
+    {
+     "in": "",
+     "out": "16\n",
+     "files": {
+      "in.txt": "npjisi\nsx\ntf\nbi\nnpjisi\n"
+     },
+     "expectFiles": {
+      "out.txt": "npjisi\nsx\ntf\nbi\n"
+     }
+    },
+    {
+     "in": "",
+     "out": "15\n",
+     "files": {
+      "in.txt": "xtxtft\nfjpt\nii\nii\nii\n"
+     },
+     "expectFiles": {
+      "out.txt": "xtxtft\nfjpt\nii\n"
+     }
+    }
+   ],
+   "hidden": [
+    {
+     "in": "",
+     "out": "6\n",
+     "files": {
+      "in.txt": "sa\nia\n"
+     },
+     "expectFiles": {
+      "out.txt": "sa\nia\n"
+     }
+    },
+    {
+     "in": "",
+     "out": "22\n",
+     "files": {
+      "in.txt": "hvzvuk\ncxbsi\nvz\ndz\nvh\nhvzvuk\n"
+     },
+     "expectFiles": {
+      "out.txt": "hvzvuk\ncxbsi\nvz\ndz\nvh\n"
+     }
+    }
+   ],
+   "want": "lr.file-transform"
+  },
+  {
+   "id": "file-number",
+   "st": "目前目錄有文字檔 in.txt。程式讀 in.txt，每行前面加上行號和冒號與空白（例如「1: abc」，行號從 1 開始），寫到 out.txt，標準輸出印寫入的行數。",
+   "rw_st": null,
+   "ref": "rows = open(\"in.txt\").read().splitlines()\nif \"nm\" == \"rc\":\n    out = [r[::-1] for r in rows]\nelif \"nm\" == \"rl\":\n    out = list(reversed(rows))\nelif \"nm\" == \"uq\":\n    seen = set()\n    out = []\n    for r in rows:\n        if r not in seen:\n            seen.add(r)\n            out.append(r)\nelif \"nm\" == \"sl\":\n    out = sorted(rows, key=lambda r: len(r))\nelse:\n    out = [\"%d: %s\" % (i, r) for i, r in enumerate(rows, 1)]\nbody = \"\\n\".join(out) + \"\\n\"\nopen(\"out.txt\", \"w\").write(body)\nprint(len(out))\n",
+   "tests": [
+    {
+     "in": "",
+     "out": "5\n",
+     "files": {
+      "in.txt": "zmzd\nc\njmpzku\npbxtf\nen\n"
+     },
+     "expectFiles": {
+      "out.txt": "1: zmzd\n2: c\n3: jmpzku\n4: pbxtf\n5: en\n"
+     }
+    },
+    {
+     "in": "",
+     "out": "2\n",
+     "files": {
+      "in.txt": "nw\nwe\n"
+     },
+     "expectFiles": {
+      "out.txt": "1: nw\n2: we\n"
+     }
+    },
+    {
+     "in": "",
+     "out": "5\n",
+     "files": {
+      "in.txt": "mh\ngqyqq\ngyq\nggb\nptpn\n"
+     },
+     "expectFiles": {
+      "out.txt": "1: mh\n2: gqyqq\n3: gyq\n4: ggb\n5: ptpn\n"
+     }
+    },
+    {
+     "in": "",
+     "out": "4\n",
+     "files": {
+      "in.txt": "uck\nuuu\njf\njiisaa\n"
+     },
+     "expectFiles": {
+      "out.txt": "1: uck\n2: uuu\n3: jf\n4: jiisaa\n"
+     }
+    },
+    {
+     "in": "",
+     "out": "5\n",
+     "files": {
+      "in.txt": "j\nnn\new\nwe\nj\n"
+     },
+     "expectFiles": {
+      "out.txt": "1: j\n2: nn\n3: ew\n4: we\n5: j\n"
+     }
+    },
+    {
+     "in": "",
+     "out": "5\n",
+     "files": {
+      "in.txt": "g\nbmt\nia\nvhmh\ng\n"
+     },
+     "expectFiles": {
+      "out.txt": "1: g\n2: bmt\n3: ia\n4: vhmh\n5: g\n"
+     }
+    }
+   ],
+   "hidden": [
+    {
+     "in": "",
+     "out": "5\n",
+     "files": {
+      "in.txt": "hmkc\nkuc\na\ncck\ntxtpta\n"
+     },
+     "expectFiles": {
+      "out.txt": "1: hmkc\n2: kuc\n3: a\n4: cck\n5: txtpta\n"
+     }
+    },
+    {
+     "in": "",
+     "out": "6\n",
+     "files": {
+      "in.txt": "hmzdhd\ngqc\nukx\njxjf\nrdrmzv\nku\n"
+     },
+     "expectFiles": {
+      "out.txt": "1: hmzdhd\n2: gqc\n3: ukx\n4: jxjf\n5: rdrmzv\n6: ku\n"
+     }
+    }
+   ],
+   "want": "lr.file-transform"
+  },
+  {
+   "id": "merge-asc",
+   "st": "命令列引數是若干個檔名，每個檔案每行一個整數。程式依序讀入全部整數，由小到大排序後寫到 out.txt（每行一個），標準輸出印所有整數的總和。",
+   "rw_st": null,
+   "ref": "import sys\nxs = []\nfor f in sys.argv[1:]:\n    with open(f) as h:\n        xs += [int(t) for t in h.read().split()]\nys = list(xs)\nif \"asc\" == \"asc\":\n    ys.sort()\nelif \"asc\" == \"desc\":\n    ys.sort(reverse=True)\nopen(\"out.txt\", \"w\").write(\"\\n\".join(map(str, ys)) + \"\\n\")\nprint(sum(xs))\n",
+   "tests": [
+    {
+     "in": "",
+     "out": "14\n",
+     "args": [
+      "f1.txt",
+      "f2.txt",
+      "f3.txt"
+     ],
+     "files": {
+      "f1.txt": "23\n57\n",
+      "f2.txt": "-32\n-20\n",
+      "f3.txt": "-14\n"
+     },
+     "expectFiles": {
+      "out.txt": "-32\n-20\n-14\n23\n57\n"
+     }
+    },
+    {
+     "in": "",
+     "out": "166\n",
+     "args": [
+      "f1.txt",
+      "f2.txt"
+     ],
+     "files": {
+      "f1.txt": "68\n",
+      "f2.txt": "98\n"
+     },
+     "expectFiles": {
+      "out.txt": "68\n98\n"
+     }
+    },
+    {
+     "in": "",
+     "out": "118\n",
+     "args": [
+      "f1.txt",
+      "f2.txt"
+     ],
+     "files": {
+      "f1.txt": "58\n",
+      "f2.txt": "60\n"
+     },
+     "expectFiles": {
+      "out.txt": "58\n60\n"
+     }
+    },
+    {
+     "in": "",
+     "out": "101\n",
+     "args": [
+      "f1.txt",
+      "f2.txt"
+     ],
+     "files": {
+      "f1.txt": "26\n-12\n-9\n",
+      "f2.txt": "96\n"
+     },
+     "expectFiles": {
+      "out.txt": "-12\n-9\n26\n96\n"
+     }
+    },
+    {
+     "in": "",
+     "out": "18\n",
+     "args": [
+      "f1.txt",
+      "f2.txt"
+     ],
+     "files": {
+      "f1.txt": "20\n",
+      "f2.txt": "-2\n"
+     },
+     "expectFiles": {
+      "out.txt": "-2\n20\n"
+     }
+    },
+    {
+     "in": "",
+     "out": "209\n",
+     "args": [
+      "f1.txt",
+      "f2.txt",
+      "f3.txt"
+     ],
+     "files": {
+      "f1.txt": "-37\n63\n-21\n62\n",
+      "f2.txt": "94\n58\n-44\n",
+      "f3.txt": "-16\n33\n17\n"
+     },
+     "expectFiles": {
+      "out.txt": "-44\n-37\n-21\n-16\n17\n33\n58\n62\n63\n94\n"
+     }
+    }
+   ],
+   "hidden": [
+    {
+     "in": "",
+     "out": "-28\n",
+     "args": [
+      "f1.txt",
+      "f2.txt",
+      "f3.txt"
+     ],
+     "files": {
+      "f1.txt": "12\n",
+      "f2.txt": "-36\n",
+      "f3.txt": "-4\n"
+     },
+     "expectFiles": {
+      "out.txt": "-36\n-4\n12\n"
+     }
+    },
+    {
+     "in": "",
+     "out": "344\n",
+     "args": [
+      "f1.txt",
+      "f2.txt",
+      "f3.txt",
+      "f4.txt"
+     ],
+     "files": {
+      "f1.txt": "-18\n96\n18\n94\n",
+      "f2.txt": "83\n-33\n-50\n",
+      "f3.txt": "27\n-13\n7\n",
+      "f4.txt": "35\n98\n"
+     },
+     "expectFiles": {
+      "out.txt": "-50\n-33\n-18\n-13\n7\n18\n27\n35\n83\n94\n96\n98\n"
+     }
+    }
+   ],
+   "want": "lr.file-merge"
+  },
+  {
+   "id": "merge-given",
+   "st": "命令列引數是若干個檔名，每個檔案每行一個整數。程式依檔名順序讀入全部整數，維持讀入的順序寫到 merged.txt（每行一個），標準輸出印整數的個數。",
+   "rw_st": null,
+   "ref": "import sys\nxs = []\nfor f in sys.argv[1:]:\n    with open(f) as h:\n        xs += [int(t) for t in h.read().split()]\nys = list(xs)\nif \"given\" == \"asc\":\n    ys.sort()\nelif \"given\" == \"desc\":\n    ys.sort(reverse=True)\nopen(\"merged.txt\", \"w\").write(\"\\n\".join(map(str, ys)) + \"\\n\")\nprint(len(xs))\n",
+   "tests": [
+    {
+     "in": "",
+     "out": "2\n",
+     "args": [
+      "f1.txt",
+      "f2.txt"
+     ],
+     "files": {
+      "f1.txt": "32\n",
+      "f2.txt": "-16\n"
+     },
+     "expectFiles": {
+      "merged.txt": "32\n-16\n"
+     }
+    },
+    {
+     "in": "",
+     "out": "5\n",
+     "args": [
+      "f1.txt",
+      "f2.txt"
+     ],
+     "files": {
+      "f1.txt": "77\n",
+      "f2.txt": "35\n17\n-3\n41\n"
+     },
+     "expectFiles": {
+      "merged.txt": "77\n35\n17\n-3\n41\n"
+     }
+    },
+    {
+     "in": "",
+     "out": "9\n",
+     "args": [
+      "f1.txt",
+      "f2.txt",
+      "f3.txt"
+     ],
+     "files": {
+      "f1.txt": "12\n66\n34\n64\n",
+      "f2.txt": "-37\n33\n27\n16\n",
+      "f3.txt": "44\n"
+     },
+     "expectFiles": {
+      "merged.txt": "12\n66\n34\n64\n-37\n33\n27\n16\n44\n"
+     }
+    },
+    {
+     "in": "",
+     "out": "5\n",
+     "args": [
+      "f1.txt",
+      "f2.txt"
+     ],
+     "files": {
+      "f1.txt": "-24\n54\n-18\n",
+      "f2.txt": "14\n24\n"
+     },
+     "expectFiles": {
+      "merged.txt": "-24\n54\n-18\n14\n24\n"
+     }
+    },
+    {
+     "in": "",
+     "out": "11\n",
+     "args": [
+      "f1.txt",
+      "f2.txt",
+      "f3.txt"
+     ],
+     "files": {
+      "f1.txt": "-35\n81\n50\n-34\n",
+      "f2.txt": "80\n-4\n44\n",
+      "f3.txt": "85\n-21\n44\n-36\n"
+     },
+     "expectFiles": {
+      "merged.txt": "-35\n81\n50\n-34\n80\n-4\n44\n85\n-21\n44\n-36\n"
+     }
+    },
+    {
+     "in": "",
+     "out": "7\n",
+     "args": [
+      "f1.txt",
+      "f2.txt",
+      "f3.txt"
+     ],
+     "files": {
+      "f1.txt": "-7\n-43\n",
+      "f2.txt": "94\n72\n",
+      "f3.txt": "63\n61\n93\n"
+     },
+     "expectFiles": {
+      "merged.txt": "-7\n-43\n94\n72\n63\n61\n93\n"
+     }
+    }
+   ],
+   "hidden": [
+    {
+     "in": "",
+     "out": "7\n",
+     "args": [
+      "f1.txt",
+      "f2.txt",
+      "f3.txt",
+      "f4.txt"
+     ],
+     "files": {
+      "f1.txt": "75\n89\n",
+      "f2.txt": "43\n-21\n",
+      "f3.txt": "-41\n60\n",
+      "f4.txt": "-50\n"
+     },
+     "expectFiles": {
+      "merged.txt": "75\n89\n43\n-21\n-41\n60\n-50\n"
+     }
+    },
+    {
+     "in": "",
+     "out": "11\n",
+     "args": [
+      "f1.txt",
+      "f2.txt",
+      "f3.txt",
+      "f4.txt"
+     ],
+     "files": {
+      "f1.txt": "-12\n5\n-5\n",
+      "f2.txt": "90\n-10\n",
+      "f3.txt": "47\n75\n-2\n-22\n",
+      "f4.txt": "-23\n46\n"
+     },
+     "expectFiles": {
+      "merged.txt": "-12\n5\n-5\n90\n-10\n47\n75\n-2\n-22\n-23\n46\n"
+     }
+    }
+   ],
+   "want": "lr.file-merge"
+  },
+  {
+   "id": "bin-xor",
+   "st": "目前目錄有二進位檔 data.bin。程式讀 data.bin，把每個位元組與 0xFF 做互斥或，寫到 out.bin，標準輸出印位元組數。",
+   "rw_st": null,
+   "ref": "d = bytearray(open(\"data.bin\", \"rb\").read())\nop = \"xor\"\nif op == \"xor\":\n    r = bytearray(255 - x for x in d)\nelif op == \"add\":\n    r = bytearray((x + 1) & 255 for x in d)\nelif op == \"swap\":\n    r = bytearray((x // 16) + (x % 16) * 16 for x in d)\nelse:\n    r = bytearray(reversed(d))\nopen(\"out.bin\", \"wb\").write(bytes(r))\nprint(len(r))\n",
+   "tests": [
+    {
+     "in": "",
+     "out": "5\n",
+     "files": {
+      "data.bin": {
+       "hex": "54f414b4d4"
+      }
+     },
+     "expectFiles": {
+      "out.bin": {
+       "hex": "ab0beb4b2b"
+      }
+     }
+    },
+    {
+     "in": "",
+     "out": "5\n",
+     "files": {
+      "data.bin": {
+       "hex": "3454f4144f"
+      }
+     },
+     "expectFiles": {
+      "out.bin": {
+       "hex": "cbab0bebb0"
+      }
+     }
+    },
+    {
+     "in": "",
+     "out": "8\n",
+     "files": {
+      "data.bin": {
+       "hex": "2b7f43b7b6aebc72"
+      }
+     },
+     "expectFiles": {
+      "out.bin": {
+       "hex": "d480bc484951438d"
+      }
+     }
+    },
+    {
+     "in": "",
+     "out": "5\n",
+     "files": {
+      "data.bin": {
+       "hex": "0c4c8ccca7"
+      }
+     },
+     "expectFiles": {
+      "out.bin": {
+       "hex": "f3b3733358"
+      }
+     }
+    },
+    {
+     "in": "",
+     "out": "3\n",
+     "files": {
+      "data.bin": {
+       "hex": "981ef6"
+      }
+     },
+     "expectFiles": {
+      "out.bin": {
+       "hex": "67e109"
+      }
+     }
+    },
+    {
+     "in": "",
+     "out": "7\n",
+     "files": {
+      "data.bin": {
+       "hex": "3e960e265e362e"
+      }
+     },
+     "expectFiles": {
+      "out.bin": {
+       "hex": "c169f1d9a1c9d1"
+      }
+     }
+    }
+   ],
+   "hidden": [
+    {
+     "in": "",
+     "out": "11\n",
+     "files": {
+      "data.bin": {
+       "hex": "d64e01d3d995a1bda9c0f0"
+      }
+     },
+     "expectFiles": {
+      "out.bin": {
+       "hex": "29b1fe2c266a5e42563f0f"
+      }
+     }
+    },
+    {
+     "in": "",
+     "out": "16\n",
+     "files": {
+      "data.bin": {
+       "hex": "ffc3379b2f33e7265ed12dcf8af23ae2"
+      }
+     },
+     "expectFiles": {
+      "out.bin": {
+       "hex": "003cc864d0cc18d9a12ed230750dc51d"
+      }
+     }
+    }
+   ],
+   "want": "lr.file-binary",
+   "binFiles": true
+  },
+  {
+   "id": "bin-rev",
+   "st": "目前目錄有二進位檔 data.bin。程式讀 data.bin 的所有位元組，順序整個反過來寫到 out.bin，標準輸出印位元組數。",
+   "rw_st": null,
+   "ref": "d = bytearray(open(\"data.bin\", \"rb\").read())\nop = \"rev\"\nif op == \"xor\":\n    r = bytearray(255 - x for x in d)\nelif op == \"add\":\n    r = bytearray((x + 1) & 255 for x in d)\nelif op == \"swap\":\n    r = bytearray((x // 16) + (x % 16) * 16 for x in d)\nelse:\n    r = bytearray(reversed(d))\nopen(\"out.bin\", \"wb\").write(bytes(r))\nprint(len(r))\n",
+   "tests": [
+    {
+     "in": "",
+     "out": "3\n",
+     "files": {
+      "data.bin": {
+       "hex": "1add49"
+      }
+     },
+     "expectFiles": {
+      "out.bin": {
+       "hex": "49dd1a"
+      }
+     }
+    },
+    {
+     "in": "",
+     "out": "2\n",
+     "files": {
+      "data.bin": {
+       "hex": "ed40"
+      }
+     },
+     "expectFiles": {
+      "out.bin": {
+       "hex": "40ed"
+      }
+     }
+    },
+    {
+     "in": "",
+     "out": "4\n",
+     "files": {
+      "data.bin": {
+       "hex": "c67ed64e"
+      }
+     },
+     "expectFiles": {
+      "out.bin": {
+       "hex": "4ed67ec6"
+      }
+     }
+    },
+    {
+     "in": "",
+     "out": "7\n",
+     "files": {
+      "data.bin": {
+       "hex": "766e06be168ea6"
+      }
+     },
+     "expectFiles": {
+      "out.bin": {
+       "hex": "a68e16be066e76"
+      }
+     }
+    },
+    {
+     "in": "",
+     "out": "7\n",
+     "files": {
+      "data.bin": {
+       "hex": "ae46fe5669e5d9"
+      }
+     },
+     "expectFiles": {
+      "out.bin": {
+       "hex": "d9e56956fe46ae"
+      }
+     }
+    },
+    {
+     "in": "",
+     "out": "2\n",
+     "files": {
+      "data.bin": {
+       "hex": "bda9"
+      }
+     },
+     "expectFiles": {
+      "out.bin": {
+       "hex": "a9bd"
+      }
+     }
+    }
+   ],
+   "hidden": [
+    {
+     "in": "",
+     "out": "14\n",
+     "files": {
+      "data.bin": {
+       "hex": "cd79b541dd49452cecd474943454"
+      }
+     },
+     "expectFiles": {
+      "out.bin": {
+       "hex": "54349474d4ec2c4549dd41b579cd"
+      }
+     }
+    },
+    {
+     "in": "",
+     "out": "9\n",
+     "files": {
+      "data.bin": {
+       "hex": "b4d474943454f4144f"
+      }
+     },
+     "expectFiles": {
+      "out.bin": {
+       "hex": "4f14f454349474d4b4"
+      }
+     }
+    }
+   ],
+   "want": "lr.file-binary",
+   "binFiles": true
+  },
+  {
+   "id": "sock-up",
+   "st": "命令列第一個引數是埠號。程式在 127.0.0.1 的這個埠開一個 TCP 伺服器並開始 listen。標準輸入每行一則訊息：程式另開一個客戶端 socket 連到伺服器並送出訊息（送完關閉寫入端），伺服器 accept 後收完整則訊息，回覆轉成大寫的內容，客戶端印出收到的回覆。",
+   "rw_st": null,
+   "ref": "import socket, sys, threading\nport = int(sys.argv[1])\nsrv = socket.socket()\nsrv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)\nsrv.bind((\"127.0.0.1\", port))\nsrv.listen(8)\nF = {\"up\": lambda s: s.upper(), \"rev\": lambda s: s[::-1], \"len\": lambda s: str(len(s)), \"sw\": lambda s: s.swapcase()}[\"up\"]\ndef serve():\n    for _ in range(N):\n        c, _a = srv.accept()\n        got = b\"\"\n        while True:\n            p = c.recv(100)\n            if not p:\n                break\n            got += p\n        c.sendall(F(got.decode()).encode())\n        c.close()\nmsgs = sys.stdin.read().split()\nN = len(msgs)\nth = threading.Thread(target=serve)\nth.start()\nfor m in msgs:\n    s = socket.create_connection((\"127.0.0.1\", port))\n    s.sendall(m.encode())\n    s.shutdown(socket.SHUT_WR)\n    r = b\"\"\n    while True:\n        p = s.recv(100)\n        if not p:\n            break\n        r += p\n    print(r.decode())\n    s.close()\nth.join()\n",
+   "tests": [
+    {
+     "in": "hXq\nqQzqy\ntvQzg\n",
+     "out": "HXQ\nQQZQY\nTVQZG\n",
+     "args": [
+      "{{PORT}}"
+     ],
+     "needs": [
+      "socket"
+     ]
+    },
+    {
+     "in": "hXggb\nnweXkcu\nfbfQzj\n",
+     "out": "HXGGB\nNWEXKCU\nFBFQZJ\n",
+     "args": [
+      "{{PORT}}"
+     ],
+     "needs": [
+      "socket"
+     ]
+    },
+    {
+     "in": "tee\nnz\n",
+     "out": "TEE\nNZ\n",
+     "args": [
+      "{{PORT}}"
+     ],
+     "needs": [
+      "socket"
+     ]
+    },
+    {
+     "in": "iQzsa\n",
+     "out": "IQZSA\n",
+     "args": [
+      "{{PORT}}"
+     ],
+     "needs": [
+      "socket"
+     ]
+    },
+    {
+     "in": "hgXq\njXx\nfnnn\n",
+     "out": "HGXQ\nJXX\nFNNN\n",
+     "args": [
+      "{{PORT}}"
+     ],
+     "needs": [
+      "socket"
+     ]
+    },
+    {
+     "in": "rQzqqg\ngjeQzew\n",
+     "out": "RQZQQG\nGJEQZEW\n",
+     "args": [
+      "{{PORT}}"
+     ],
+     "needs": [
+      "socket"
+     ]
+    }
+   ],
+   "hidden": [
+    {
+     "in": "kkuuk\nccuXccu\nxji\naiiaa\n",
+     "out": "KKUUK\nCCUXCCU\nXJI\nAIIAA\n",
+     "args": [
+      "{{PORT}}"
+     ],
+     "needs": [
+      "socket"
+     ]
+    },
+    {
+     "in": "mQzck\n",
+     "out": "MQZCK\n",
+     "args": [
+      "{{PORT}}"
+     ],
+     "needs": [
+      "socket"
+     ]
+    }
+   ],
+   "want": "lr.sock-echo"
+  },
+  {
+   "id": "sock-len",
+   "st": "命令列第一個引數是埠號。程式在 127.0.0.1 的這個埠開 TCP 伺服器並 listen；標準輸入每行一則訊息，程式用客戶端 socket 連線送出（送完關閉寫入端），伺服器 accept 後收完整則訊息，回覆訊息的長度（十進位文字），客戶端印出回覆。",
+   "rw_st": null,
+   "ref": "import socket, sys, threading\nport = int(sys.argv[1])\nsrv = socket.socket()\nsrv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)\nsrv.bind((\"127.0.0.1\", port))\nsrv.listen(8)\nF = {\"up\": lambda s: s.upper(), \"rev\": lambda s: s[::-1], \"len\": lambda s: str(len(s)), \"sw\": lambda s: s.swapcase()}[\"len\"]\ndef serve():\n    for _ in range(N):\n        c, _a = srv.accept()\n        got = b\"\"\n        while True:\n            p = c.recv(100)\n            if not p:\n                break\n            got += p\n        c.sendall(F(got.decode()).encode())\n        c.close()\nmsgs = sys.stdin.read().split()\nN = len(msgs)\nth = threading.Thread(target=serve)\nth.start()\nfor m in msgs:\n    s = socket.create_connection((\"127.0.0.1\", port))\n    s.sendall(m.encode())\n    s.shutdown(socket.SHUT_WR)\n    r = b\"\"\n    while True:\n        p = s.recv(100)\n        if not p:\n            break\n        r += p\n    print(r.decode())\n    s.close()\nth.join()\n",
+   "tests": [
+    {
+     "in": "ts\n",
+     "out": "2\n",
+     "args": [
+      "{{PORT}}"
+     ],
+     "needs": [
+      "socket"
+     ]
+    },
+    {
+     "in": "smhv\n",
+     "out": "4\n",
+     "args": [
+      "{{PORT}}"
+     ],
+     "needs": [
+      "socket"
+     ]
+    },
+    {
+     "in": "kQzf\n",
+     "out": "4\n",
+     "args": [
+      "{{PORT}}"
+     ],
+     "needs": [
+      "socket"
+     ]
+    },
+    {
+     "in": "gqqXgj\nyqQzxj\njXyt\n",
+     "out": "6\n6\n4\n",
+     "args": [
+      "{{PORT}}"
+     ],
+     "needs": [
+      "socket"
+     ]
+    },
+    {
+     "in": "bxXb\n",
+     "out": "4\n",
+     "args": [
+      "{{PORT}}"
+     ],
+     "needs": [
+      "socket"
+     ]
+    },
+    {
+     "in": "bfexjs\n",
+     "out": "6\n",
+     "args": [
+      "{{PORT}}"
+     ],
+     "needs": [
+      "socket"
+     ]
+    }
+   ],
+   "hidden": [
+    {
+     "in": "iaiQzii\nvrQzv\ndXe\neeQzh\ncucXc\n",
+     "out": "7\n5\n3\n5\n5\n",
+     "args": [
+      "{{PORT}}"
+     ],
+     "needs": [
+      "socket"
+     ]
+    },
+    {
+     "in": "ckQzuu\nxsavh\ncQzk\nkuXp\npQzbx\nigqg\n",
+     "out": "6\n5\n4\n4\n5\n4\n",
+     "args": [
+      "{{PORT}}"
+     ],
+     "needs": [
+      "socket"
+     ]
+    }
+   ],
+   "want": "lr.sock-echo"
+  },
+  {
+   "id": "fork-sq",
+   "st": "標準輸入第一行是 n，之後 n 行各一個整數 x。對每個整數 fork 一個子行程：子行程算 x 的平方寫進管線，然後以 x 除以 10 的餘數當結束碼離開；父行程從管線讀結果、waitpid 取得結束碼，每個整數輸出一行「結果 結束碼」。",
+   "rw_st": null,
+   "ref": "import sys\nxs = [int(t) for t in sys.stdin.read().split()][1:]\ndef calc(x):\n    if \"sq\" == \"sq\":\n        return x * x\n    if \"sq\" == \"fac\":\n        r = 1\n        for i in range(2, x + 1):\n            r = r * i % 1000003\n        return r\n    if \"sq\" == \"pop\":\n        return bin(x).count(\"1\")\n    return sum(map(int, str(x)))\nfor x in xs:\n    y = calc(x)\n    print(y, x % 10 if \"mod10\" == \"mod10\" else y % 7)\n",
+   "tests": [
+    {
+     "in": "1\n7\n",
+     "out": "49 7\n",
+     "needs": [
+      "fork"
+     ]
+    },
+    {
+     "in": "1\n1\n",
+     "out": "1 1\n",
+     "needs": [
+      "fork"
+     ]
+    },
+    {
+     "in": "1\n10\n",
+     "out": "100 0\n",
+     "needs": [
+      "fork"
+     ]
+    },
+    {
+     "in": "3\n1\n9\n6\n",
+     "out": "1 1\n81 9\n36 6\n",
+     "needs": [
+      "fork"
+     ]
+    },
+    {
+     "in": "3\n8\n7\n8\n",
+     "out": "64 8\n49 7\n64 8\n",
+     "needs": [
+      "fork"
+     ]
+    },
+    {
+     "in": "1\n2\n",
+     "out": "4 2\n",
+     "needs": [
+      "fork"
+     ]
+    }
+   ],
+   "hidden": [
+    {
+     "in": "2\n60\n20\n",
+     "out": "3600 0\n400 0\n",
+     "needs": [
+      "fork"
+     ]
+    },
+    {
+     "in": "1\n40\n",
+     "out": "1600 0\n",
+     "needs": [
+      "fork"
+     ]
+    }
+   ],
+   "want": "lr.fork-pipe"
+  },
+  {
+   "id": "fork-pop",
+   "st": "標準輸入第一行是 n，之後 n 行各一個整數 x。每個整數 fork 一個子行程：子行程算 x 的二進位中 1 的個數寫進管線，並以這個結果除以 7 的餘數當結束碼離開；父行程依序從管線讀取、waitpid 取結束碼，每個整數輸出一行「結果 結束碼」。",
+   "rw_st": null,
+   "ref": "import sys\nxs = [int(t) for t in sys.stdin.read().split()][1:]\ndef calc(x):\n    if \"pop\" == \"sq\":\n        return x * x\n    if \"pop\" == \"fac\":\n        r = 1\n        for i in range(2, x + 1):\n            r = r * i % 1000003\n        return r\n    if \"pop\" == \"pop\":\n        return bin(x).count(\"1\")\n    return sum(map(int, str(x)))\nfor x in xs:\n    y = calc(x)\n    print(y, x % 10 if \"mod7\" == \"mod10\" else y % 7)\n",
+   "tests": [
+    {
+     "in": "2\n12\n11\n",
+     "out": "2 2\n3 3\n",
+     "needs": [
+      "fork"
+     ]
+    },
+    {
+     "in": "1\n9\n",
+     "out": "2 2\n",
+     "needs": [
+      "fork"
+     ]
+    },
+    {
+     "in": "1\n9\n",
+     "out": "2 2\n",
+     "needs": [
+      "fork"
+     ]
+    },
+    {
+     "in": "3\n11\n9\n8\n",
+     "out": "3 3\n2 2\n1 1\n",
+     "needs": [
+      "fork"
+     ]
+    },
+    {
+     "in": "3\n4\n5\n12\n",
+     "out": "1 1\n2 2\n2 2\n",
+     "needs": [
+      "fork"
+     ]
+    },
+    {
+     "in": "3\n6\n5\n2\n",
+     "out": "2 2\n2 2\n1 1\n",
+     "needs": [
+      "fork"
+     ]
+    }
+   ],
+   "hidden": [
+    {
+     "in": "2\n59\n46\n",
+     "out": "5 5\n4 4\n",
+     "needs": [
+      "fork"
+     ]
+    },
+    {
+     "in": "2\n55\n10\n",
+     "out": "5 5\n2 2\n",
+     "needs": [
+      "fork"
+     ]
+    }
+   ],
+   "want": "lr.fork-pipe"
+  },
+  {
+   "id": "pchain-sort-uniq",
+   "st": "標準輸入是若干行文字。程式把整段文字餵給由兩個子行程接成的管線（各是一個 Python 直譯器的小過濾器）：第一個子行程把所有行排序，第二個子行程把相鄰重複的行去掉；父行程輸出管線最後的輸出。",
+   "rw_st": null,
+   "ref": "import sys\nrows = sys.stdin.read().splitlines()\nif \"sort\" == \"sort\":\n    rows.sort()\nelif \"sort\" == \"up\":\n    rows = [r.upper() for r in rows]\nelse:\n    rows.reverse()\nif \"uniq\" == \"uniq\":\n    o = [r for i, r in enumerate(rows) if i == 0 or rows[i - 1] != r]\n    print(\"\\n\".join(o))\nelif \"uniq\" == \"wc\":\n    print(len(rows))\nelse:\n    for i, r in enumerate(rows):\n        print(i + 1, r)\n",
+   "tests": [
+    {
+     "in": "ezm\nezm\np\nx\n",
+     "out": "ezm\np\nx\n"
+    },
+    {
+     "in": "h\navz\n",
+     "out": "avz\nh\n"
+    },
+    {
+     "in": "r\nr\na\na\na\na\n",
+     "out": "a\nr\n"
+    },
+    {
+     "in": "qq\nqq\nn\nn\n",
+     "out": "n\nqq\n"
+    },
+    {
+     "in": "aa\naa\n",
+     "out": "aa\n"
+    },
+    {
+     "in": "u\nu\nhmk\ncxb\nhmk\n",
+     "out": "cxb\nhmk\nu\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "vzd\nvzd\nvzd\nai\nai\n",
+     "out": "ai\nvzd\n"
+    },
+    {
+     "in": "tai\ntai\n",
+     "out": "tai\n"
+    }
+   ],
+   "want": "lr.pipe-chain"
+  },
+  {
+   "id": "pchain-up-nl",
+   "st": "標準輸入是若干行文字。程式把整段文字餵給由兩個子行程串成的管線（各是 Python 直譯器的小過濾器）：第一個子行程把全部轉成大寫，第二個子行程在每行前面加行號（從 1 開始，後面一個空白）；父行程輸出管線最後的輸出。",
+   "rw_st": null,
+   "ref": "import sys\nrows = sys.stdin.read().splitlines()\nif \"up\" == \"sort\":\n    rows.sort()\nelif \"up\" == \"up\":\n    rows = [r.upper() for r in rows]\nelse:\n    rows.reverse()\nif \"nl\" == \"uniq\":\n    o = [r for i, r in enumerate(rows) if i == 0 or rows[i - 1] != r]\n    print(\"\\n\".join(o))\nelif \"nl\" == \"wc\":\n    print(len(rows))\nelse:\n    for i, r in enumerate(rows):\n        print(i + 1, r)\n",
+   "tests": [
+    {
+     "in": "k\nk\nk\nuk\nc\nuk\n",
+     "out": "1 K\n2 K\n3 K\n4 UK\n5 C\n6 UK\n"
+    },
+    {
+     "in": "q\nsi\ntf\n",
+     "out": "1 Q\n2 SI\n3 TF\n"
+    },
+    {
+     "in": "dzy\ndzy\n",
+     "out": "1 DZY\n2 DZY\n"
+    },
+    {
+     "in": "uu\nu\nu\n",
+     "out": "1 UU\n2 U\n3 U\n"
+    },
+    {
+     "in": "v\nv\nv\nzb\nzb\n",
+     "out": "1 V\n2 V\n3 V\n4 ZB\n5 ZB\n"
+    },
+    {
+     "in": "i\ni\ni\n",
+     "out": "1 I\n2 I\n3 I\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "yg\nyg\nhyy\n",
+     "out": "1 YG\n2 YG\n3 HYY\n"
+    },
+    {
+     "in": "jii\njii\njii\njii\njii\njii\n",
+     "out": "1 JII\n2 JII\n3 JII\n4 JII\n5 JII\n6 JII\n"
+    }
+   ],
+   "want": "lr.pipe-chain"
+  },
+  {
+   "id": "ho-env",
+   "st": "標準輸入每行是一個環境變數的名稱。請查這個行程的環境，依序輸出各名稱的值；若環境中找不到該名稱，就改輸出「N/A」。離開時的結束碼要等於找不到的名稱數量。",
+   "rw_st": null,
+   "ref": "import os, sys\nmiss = 0\nfor n in sys.stdin.read().split():\n    v = os.environ.get(n)\n    if v is None:\n        miss += 1\n        print(\"N/A\")\n    else:\n        print(v)\nsys.exit(miss)\n",
+   "tests": [
+    {
+     "in": "FZQ_WE\nFZQ_WW\nFZQ_WZD\n",
+     "out": "ggyy\ndp\nmzvz\n",
+     "env": {
+      "FZQ_WE": "ggyy",
+      "FZQ_WW": "dp",
+      "FZQ_WZD": "mzvz"
+     }
+    },
+    {
+     "in": "FZQ_YQY\nFZQ_EW\nFZQ_NE\nFZQ_DZM\n",
+     "out": "qy\nqgyyb\nag\nN/A\n",
+     "env": {
+      "FZQ_YQY": "qy",
+      "FZQ_EW": "qgyyb",
+      "FZQ_NE": "ag"
+     },
+     "expectExit": 1
+    },
+    {
+     "in": "FZQ_MZM\nFZQ_KUUK\nFZQ_KKFT\nFZQ_JP\n",
+     "out": "N/A\niai\nN/A\naiii\n",
+     "env": {
+      "FZQ_KUUK": "iai",
+      "FZQ_JP": "aiii"
+     },
+     "expectExit": 2
+    },
+    {
+     "in": "FZQ_IAA\nFZQ_SD\nFZQ_ZTNE\n",
+     "out": "wwu\nN/A\nxew\n",
+     "env": {
+      "FZQ_IAA": "wwu",
+      "FZQ_ZTNE": "xew"
+     },
+     "expectExit": 1
+    },
+    {
+     "in": "FZQ_IIS\nFZQ_SSAA\nFZQ_AWN\n",
+     "out": "N/A\nN/A\nehdry\n",
+     "env": {
+      "FZQ_AWN": "ehdry"
+     },
+     "expectExit": 2
+    },
+    {
+     "in": "FZQ_YBA\nFZQ_VRGQ\nFZQ_GBXB\n",
+     "out": "N/A\njptfw\nnz\n",
+     "env": {
+      "FZQ_VRGQ": "jptfw",
+      "FZQ_GBXB": "nz"
+     },
+     "expectExit": 1
+    }
+   ],
+   "hidden": [
+    {
+     "in": "FZQ_KKU\nFZQ_PTX\n",
+     "out": "jxt\npeer\n",
+     "env": {
+      "FZQ_KKU": "jxt",
+      "FZQ_PTX": "peer"
+     }
+    },
+    {
+     "in": "FZQ_YGG\nFZQ_TEWN\nFZQ_EN\n",
+     "out": "zc\nygjp\njiss\n",
+     "env": {
+      "FZQ_YGG": "zc",
+      "FZQ_TEWN": "ygjp",
+      "FZQ_EN": "jiss"
+     }
+    }
+   ],
+   "split": "holdout"
+  },
+  {
+   "id": "ho-argv",
+   "st": "不讀標準輸入。程式的命令列引數（程式名稱除外）請這樣處理：第一行印出引數個數，然後把引數由大到小（字典序）排列，每行印一個。結束碼為引數個數。",
+   "rw_st": null,
+   "ref": "import sys\na = list(sys.argv[1:])\nprint(len(a))\nif \"desc\" == \"asc\":\n    a.sort()\nelif \"desc\" == \"desc\":\n    a.sort()\n    a.reverse()\nfor x in a:\n    print(x)\nm = max(len(x) for x in a)\nsys.exit(len(a))\n",
+   "tests": [
+    {
+     "in": "",
+     "out": "1\nasia\n",
+     "args": [
+      "asia"
+     ],
+     "expectExit": 1
+    },
+    {
+     "in": "",
+     "out": "4\nyqy\nxeeewew\nrvzqgy\njv\n",
+     "args": [
+      "yqy",
+      "jv",
+      "xeeewew",
+      "rvzqgy"
+     ],
+     "expectExit": 4
+    },
+    {
+     "in": "",
+     "out": "3\ny\nqyqq\njxt\n",
+     "args": [
+      "y",
+      "qyqq",
+      "jxt"
+     ],
+     "expectExit": 3
+    },
+    {
+     "in": "",
+     "out": "1\neenhj\n",
+     "args": [
+      "eenhj"
+     ],
+     "expectExit": 1
+    },
+    {
+     "in": "",
+     "out": "4\nyyt\nmzdzmu\ngyyy\ngy\n",
+     "args": [
+      "mzdzmu",
+      "gy",
+      "gyyy",
+      "yyt"
+     ],
+     "expectExit": 4
+    },
+    {
+     "in": "",
+     "out": "2\ni\naiad\n",
+     "args": [
+      "aiad",
+      "i"
+     ],
+     "expectExit": 2
+    }
+   ],
+   "hidden": [
+    {
+     "in": "",
+     "out": "1\niisdh\n",
+     "args": [
+      "iisdh"
+     ],
+     "expectExit": 1
+    },
+    {
+     "in": "",
+     "out": "5\nzd\nsaiis\nggqqbpj\ndh\nbaiss\n",
+     "args": [
+      "baiss",
+      "saiis",
+      "zd",
+      "dh",
+      "ggqqbpj"
+     ],
+     "expectExit": 5
+    }
+   ],
+   "split": "holdout"
+  },
+  {
+   "id": "ho-file",
+   "st": "工作目錄裡有 in.txt。讀取 in.txt，將所有行的順序顛倒後寫入 out.txt（每行以換行結尾），並在標準輸出印出寫入的位元組數。",
+   "rw_st": null,
+   "ref": "rows = open(\"in.txt\").read().splitlines()\nif \"rl\" == \"rc\":\n    out = [r[::-1] for r in rows]\nelif \"rl\" == \"rl\":\n    out = list(reversed(rows))\nelif \"rl\" == \"uq\":\n    seen = set()\n    out = []\n    for r in rows:\n        if r not in seen:\n            seen.add(r)\n            out.append(r)\nelif \"rl\" == \"sl\":\n    out = sorted(rows, key=lambda r: len(r))\nelse:\n    out = [\"%d: %s\" % (i, r) for i, r in enumerate(rows, 1)]\nbody = \"\\n\".join(out) + \"\\n\"\nopen(\"out.txt\", \"w\").write(body)\nprint(len(body.encode()))\n",
+   "tests": [
+    {
+     "in": "",
+     "out": "6\n",
+     "files": {
+      "in.txt": "zv\nhv\n"
+     },
+     "expectFiles": {
+      "out.txt": "hv\nzv\n"
+     }
+    },
+    {
+     "in": "",
+     "out": "20\n",
+     "files": {
+      "in.txt": "uck\nkckfj\niv\nrd\nuck\n"
+     },
+     "expectFiles": {
+      "out.txt": "uck\nrd\niv\nkckfj\nuck\n"
+     }
+    },
+    {
+     "in": "",
+     "out": "14\n",
+     "files": {
+      "in.txt": "tsye\nww\nww\nnw\n"
+     },
+     "expectFiles": {
+      "out.txt": "nw\nww\nww\ntsye\n"
+     }
+    },
+    {
+     "in": "",
+     "out": "6\n",
+     "files": {
+      "in.txt": "ii\nii\n"
+     },
+     "expectFiles": {
+      "out.txt": "ii\nii\n"
+     }
+    },
+    {
+     "in": "",
+     "out": "11\n",
+     "files": {
+      "in.txt": "mj\npbfb\nmj\n"
+     },
+     "expectFiles": {
+      "out.txt": "mj\npbfb\nmj\n"
+     }
+    },
+    {
+     "in": "",
+     "out": "18\n",
+     "files": {
+      "in.txt": "cx\ncuu\nc\nckkck\ncx\n"
+     },
+     "expectFiles": {
+      "out.txt": "cx\nckkck\nc\ncuu\ncx\n"
+     }
+    }
+   ],
+   "hidden": [
+    {
+     "in": "",
+     "out": "22\n",
+     "files": {
+      "in.txt": "nh\nmz\nzvuucx\nbp\ngw\nyq\n"
+     },
+     "expectFiles": {
+      "out.txt": "yq\ngw\nbp\nzvuucx\nmz\nnh\n"
+     }
+    },
+    {
+     "in": "",
+     "out": "20\n",
+     "files": {
+      "in.txt": "uk\nuk\nuc\ncf\njf\ntx\nk\n"
+     },
+     "expectFiles": {
+      "out.txt": "k\ntx\njf\ncf\nuc\nuk\nuk\n"
+     }
+    }
+   ],
+   "split": "holdout"
+  },
+  {
+   "id": "ho-sock",
+   "st": "第一個命令列引數是埠。在 127.0.0.1 上以該埠建立 TCP 伺服器並開始 listen。標準輸入的每一行是一則訊息：另外建立客戶端 socket 連上去，送出訊息後關閉寫入方向；伺服器 accept 之後收完訊息，回傳字元順序反轉的字串；客戶端把收到的回覆印出來。",
+   "rw_st": null,
+   "ref": "import socket, sys, threading\nport = int(sys.argv[1])\nsrv = socket.socket()\nsrv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)\nsrv.bind((\"127.0.0.1\", port))\nsrv.listen(8)\nF = {\"up\": lambda s: s.upper(), \"rev\": lambda s: s[::-1], \"len\": lambda s: str(len(s)), \"sw\": lambda s: s.swapcase()}[\"rev\"]\ndef serve():\n    for _ in range(N):\n        c, _a = srv.accept()\n        got = b\"\"\n        while True:\n            p = c.recv(100)\n            if not p:\n                break\n            got += p\n        c.sendall(F(got.decode()).encode())\n        c.close()\nmsgs = sys.stdin.read().split()\nN = len(msgs)\nth = threading.Thread(target=serve)\nth.start()\nfor m in msgs:\n    s = socket.create_connection((\"127.0.0.1\", port))\n    s.sendall(m.encode())\n    s.shutdown(socket.SHUT_WR)\n    r = b\"\"\n    while True:\n        p = s.recv(100)\n        if not p:\n            break\n        r += p\n    print(r.decode())\n    s.close()\nth.join()\n",
+   "tests": [
+    {
+     "in": "uucti\n",
+     "out": "itcuu\n",
+     "args": [
+      "{{PORT}}"
+     ],
+     "needs": [
+      "socket"
+     ]
+    },
+    {
+     "in": "iQzsmr\nkQzka\n",
+     "out": "rmszQi\nakzQk\n",
+     "args": [
+      "{{PORT}}"
+     ],
+     "needs": [
+      "socket"
+     ]
+    },
+    {
+     "in": "zmzQzdrv\nmrvXzv\ndhmkx\n",
+     "out": "vrdzQzmz\nvzXvrm\nxkmhd\n",
+     "args": [
+      "{{PORT}}"
+     ],
+     "needs": [
+      "socket"
+     ]
+    },
+    {
+     "in": "wwhdr\n",
+     "out": "rdhww\n",
+     "args": [
+      "{{PORT}}"
+     ],
+     "needs": [
+      "socket"
+     ]
+    },
+    {
+     "in": "yXjm\nyXtii\n",
+     "out": "mjXy\niitXy\n",
+     "args": [
+      "{{PORT}}"
+     ],
+     "needs": [
+      "socket"
+     ]
+    },
+    {
+     "in": "qgQzq\ntew\nwzXvh\n",
+     "out": "qzQgq\nwet\nhvXzw\n",
+     "args": [
+      "{{PORT}}"
+     ],
+     "needs": [
+      "socket"
+     ]
+    }
+   ],
+   "hidden": [
+    {
+     "in": "rmu\nkccuu\n",
+     "out": "umr\nuucck\n",
+     "args": [
+      "{{PORT}}"
+     ],
+     "needs": [
+      "socket"
+     ]
+    },
+    {
+     "in": "kkQzku\njXpjf\nxtsQzas\ndQzt\neQzw\n",
+     "out": "ukzQkk\nfjpXj\nsazQstx\ntzQd\nwzQe\n",
+     "args": [
+      "{{PORT}}"
+     ],
+     "needs": [
+      "socket"
+     ]
+    }
+   ],
+   "split": "holdout"
+  },
+  {
+   "id": "ho-fork",
+   "st": "標準輸入第一行 n，接下來 n 行各一個整數 x。對每個 x 用 fork 建立一個子行程，子行程計算 x 的十進位各位數字之和，經管線傳回父行程後以 x 除以 10 的餘數作為結束碼離開；父行程用 waitpid 取得結束碼，每個 x 輸出一行「數字和 結束碼」。",
+   "rw_st": null,
+   "ref": "import sys\nxs = [int(t) for t in sys.stdin.read().split()][1:]\ndef calc(x):\n    if \"ds\" == \"sq\":\n        return x * x\n    if \"ds\" == \"fac\":\n        r = 1\n        for i in range(2, x + 1):\n            r = r * i % 1000003\n        return r\n    if \"ds\" == \"pop\":\n        return bin(x).count(\"1\")\n    return sum(map(int, str(x)))\nfor x in xs:\n    y = calc(x)\n    print(y, x % 10 if \"mod10\" == \"mod10\" else y % 7)\n",
+   "tests": [
+    {
+     "in": "2\n9\n1\n",
+     "out": "9 9\n1 1\n",
+     "needs": [
+      "fork"
+     ]
+    },
+    {
+     "in": "1\n2\n",
+     "out": "2 2\n",
+     "needs": [
+      "fork"
+     ]
+    },
+    {
+     "in": "3\n5\n10\n6\n",
+     "out": "5 5\n1 0\n6 6\n",
+     "needs": [
+      "fork"
+     ]
+    },
+    {
+     "in": "2\n0\n5\n",
+     "out": "0 0\n5 5\n",
+     "needs": [
+      "fork"
+     ]
+    },
+    {
+     "in": "2\n4\n8\n",
+     "out": "4 4\n8 8\n",
+     "needs": [
+      "fork"
+     ]
+    },
+    {
+     "in": "1\n4\n",
+     "out": "4 4\n",
+     "needs": [
+      "fork"
+     ]
+    }
+   ],
+   "hidden": [
+    {
+     "in": "3\n7\n28\n26\n",
+     "out": "7 7\n10 8\n8 6\n",
+     "needs": [
+      "fork"
+     ]
+    },
+    {
+     "in": "1\n26\n",
+     "out": "8 6\n",
+     "needs": [
+      "fork"
+     ]
+    }
+   ],
+   "split": "holdout"
+  }
+ ]
+}

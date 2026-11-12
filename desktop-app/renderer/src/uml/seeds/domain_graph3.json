@@ -1,0 +1,1473 @@
+{
+ "format": "fa-domain-seeds",
+ "version": 1,
+ "source": "renderer/src/uml/domain_graph3.test.js",
+ "name": "領域包 graph3",
+ "minSkeletons": 7,
+ "judge": null,
+ "trainOnly": null,
+ "seeds": [
+  {
+   "id": "fl-q",
+   "st": "第一行 n m，接著 m 行每行 u v w 表示 u 到 v 有一條權重為 w 的有向邊。接著一行 q，再接 q 行每行 a b。用 Floyd-Warshall 求所有點對的最短路，對每個查詢輸出 a 到 b 的最短距離，不可達輸出 -1。",
+   "rw_st": "第一行 n e，接著 e 行每行 u v w 表示 u 到 v 有一條權重為 w 的有向邊。接著一行 q，再接 q 行每行 a b。用 Floyd-Warshall 求所有點對的最短路，對每個查詢輸出 a 到 b 的最短距離，不可達輸出 -1。",
+   "ref": "import sys\nd = sys.stdin.read().split()\nn, m = int(d[0]), int(d[1])\nes = []\nfor i in range(m):\n    a, b, c = int(d[2+3*i]), int(d[3+3*i]), int(d[4+3*i])\n    es.append((a, b, c))\n    pass\nINF = float(\"inf\")\nD = {}\nfor s in range(1, n+1):\n    t = {v: INF for v in range(1, n+1)}\n    t[s] = 0\n    for _ in range(n):\n        for a, b, c in es:\n            if t[a] + c < t[b]:\n                t[b] = t[a] + c\n    D[s] = t\nq = int(d[2+3*m])\nfor i in range(q):\n    a, b = int(d[3+3*m+2*i]), int(d[4+3*m+2*i])\n    print(-1 if D[a][b] == INF else D[a][b])\n",
+   "tests": [
+    {
+     "in": "4 1\n1 2 8\n5\n4 3\n1 1\n1 1\n1 1\n1 1\n",
+     "out": "-1\n0\n0\n0\n0\n"
+    },
+    {
+     "in": "6 8\n2 6 1\n4 2 8\n1 5 2\n1 4 8\n4 6 2\n4 2 8\n3 1 2\n3 1 4\n5\n4 1\n5 1\n5 4\n2 2\n5 3\n",
+     "out": "-1\n-1\n-1\n0\n-1\n"
+    },
+    {
+     "in": "5 8\n5 4 9\n1 2 8\n4 5 5\n2 4 4\n3 4 2\n5 2 5\n5 4 5\n4 1 8\n4\n1 5\n5 5\n5 5\n3 3\n",
+     "out": "17\n0\n0\n0\n"
+    },
+    {
+     "in": "5 4\n2 3 7\n1 3 5\n4 5 9\n3 4 4\n5\n2 2\n3 2\n3 5\n3 2\n1 5\n",
+     "out": "0\n-1\n13\n-1\n18\n"
+    },
+    {
+     "in": "5 8\n5 2 3\n4 3 2\n1 3 6\n1 5 6\n2 3 5\n5 3 3\n2 4 1\n4 5 9\n3\n2 1\n1 2\n4 5\n",
+     "out": "-1\n9\n9\n"
+    },
+    {
+     "in": "3 3\n1 2 2\n2 1 5\n2 3 3\n3\n3 2\n1 1\n2 2\n",
+     "out": "-1\n0\n0\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "9 11\n9 1 3\n6 8 9\n1 9 5\n3 8 5\n5 7 9\n6 7 1\n6 7 5\n6 9 5\n6 9 8\n5 2 2\n5 7 4\n3\n3 1\n7 3\n4 3\n",
+     "out": "-1\n-1\n-1\n"
+    },
+    {
+     "in": "7 10\n3 5 1\n1 6 8\n7 3 3\n5 6 2\n7 5 8\n7 5 7\n7 5 4\n3 2 1\n1 3 2\n6 1 2\n4\n2 3\n1 3\n6 3\n7 3\n",
+     "out": "-1\n2\n4\n3\n"
+    }
+   ],
+   "want": "graph3.floyd"
+  },
+  {
+   "id": "fl-sum",
+   "st": "第一行 n m，接著 m 行每行 u v w 表示 u 和 v 之間有一條權重為 w 的無向邊。用 Floyd 演算法算出每一對點的最短距離，輸出所有不同點對 (i, j)（i < j）的最短距離總和；不連通的點對不計入。",
+   "rw_st": "第一行 n e，接著 e 行每行 u v w 表示 u 和 v 之間有一條權重為 w 的無向邊。用 Floyd 演算法算出每一對點的最短距離，輸出所有不同點對 (i, j)（i < j）的最短距離總和；不連通的點對不計入。",
+   "ref": "import sys\nd = sys.stdin.read().split()\nn, m = int(d[0]), int(d[1])\nes = []\nfor i in range(m):\n    a, b, c = int(d[2+3*i]), int(d[3+3*i]), int(d[4+3*i])\n    es.append((a, b, c))\n    es.append((b, a, c))\nINF = float(\"inf\")\nD = {}\nfor s in range(1, n+1):\n    t = {v: INF for v in range(1, n+1)}\n    t[s] = 0\n    for _ in range(n):\n        for a, b, c in es:\n            if t[a] + c < t[b]:\n                t[b] = t[a] + c\n    D[s] = t\nprint(sum(D[a][b] for a in D for b in D if a < b and D[a][b] < INF))\n",
+   "tests": [
+    {
+     "in": "6 10\n2 6 1\n3 5 3\n3 5 4\n5 1 9\n3 1 2\n1 3 9\n3 5 9\n5 1 6\n1 5 7\n2 6 7\n",
+     "out": "11\n"
+    },
+    {
+     "in": "6 7\n6 2 9\n3 1 7\n4 3 1\n3 5 4\n1 3 8\n2 3 5\n1 2 3\n",
+     "out": "127\n"
+    },
+    {
+     "in": "3 3\n1 2 4\n2 3 7\n1 2 7\n",
+     "out": "22\n"
+    },
+    {
+     "in": "4 1\n2 1 1\n",
+     "out": "1\n"
+    },
+    {
+     "in": "3 1\n2 1 5\n",
+     "out": "5\n"
+    },
+    {
+     "in": "6 3\n3 1 6\n3 1 1\n2 5 3\n",
+     "out": "4\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "5 4\n3 5 7\n1 4 9\n5 4 6\n4 2 6\n",
+     "out": "124\n"
+    },
+    {
+     "in": "5 5\n3 2 6\n1 3 4\n2 5 9\n5 4 6\n1 5 1\n",
+     "out": "74\n"
+    }
+   ],
+   "want": "graph3.floyd"
+  },
+  {
+   "id": "fl-diam",
+   "st": "第一行 n m，接著 m 行每行 u v w 表示 u 和 v 之間有一條權重為 w 的無向邊。用 Floyd 求出全點對最短路後，輸出所有最短距離裡最大的有限值（圖的直徑）。",
+   "rw_st": "第一行 n e，接著 e 行每行 u v w 表示 u 和 v 之間有一條權重為 w 的無向邊。用 Floyd 求出全點對最短路後，輸出所有最短距離裡最大的有限值（圖的直徑）。",
+   "ref": "import sys\nd = sys.stdin.read().split()\nn, m = int(d[0]), int(d[1])\nes = []\nfor i in range(m):\n    a, b, c = int(d[2+3*i]), int(d[3+3*i]), int(d[4+3*i])\n    es.append((a, b, c))\n    es.append((b, a, c))\nINF = float(\"inf\")\nD = {}\nfor s in range(1, n+1):\n    t = {v: INF for v in range(1, n+1)}\n    t[s] = 0\n    for _ in range(n):\n        for a, b, c in es:\n            if t[a] + c < t[b]:\n                t[b] = t[a] + c\n    D[s] = t\nprint(max(D[a][b] for a in D for b in D if D[a][b] < INF))\n",
+   "tests": [
+    {
+     "in": "3 2\n2 1 5\n3 1 4\n",
+     "out": "9\n"
+    },
+    {
+     "in": "6 5\n2 4 4\n5 1 6\n6 2 2\n1 3 8\n5 1 3\n",
+     "out": "11\n"
+    },
+    {
+     "in": "3 2\n2 1 4\n3 2 3\n",
+     "out": "7\n"
+    },
+    {
+     "in": "4 1\n2 1 7\n",
+     "out": "7\n"
+    },
+    {
+     "in": "5 7\n1 5 9\n3 4 1\n2 1 4\n5 2 6\n4 5 9\n3 4 1\n1 5 5\n",
+     "out": "16\n"
+    },
+    {
+     "in": "6 6\n1 6 3\n5 4 7\n3 1 8\n1 3 6\n5 1 1\n3 5 9\n",
+     "out": "14\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "7 6\n6 2 5\n4 7 5\n5 7 5\n5 3 8\n3 6 4\n3 4 6\n",
+     "out": "20\n"
+    },
+    {
+     "in": "4 1\n3 2 4\n",
+     "out": "4\n"
+    }
+   ],
+   "want": "graph3.floyd"
+  },
+  {
+   "id": "fl-reach",
+   "st": "第一行 n m，接著 m 行每行 u v w 表示 u 到 v 有一條權重為 w 的有向邊。用 Floyd 求所有點對的最短路，輸出有幾對 (a, b)（a ≠ b）可以從 a 走到 b。",
+   "rw_st": "第一行 n e，接著 e 行每行 u v w 表示 u 到 v 有一條權重為 w 的有向邊。用 Floyd 求所有點對的最短路，輸出有幾對 (a, b)（a ≠ b）可以從 a 走到 b。",
+   "ref": "import sys\nd = sys.stdin.read().split()\nn, m = int(d[0]), int(d[1])\nes = []\nfor i in range(m):\n    a, b, c = int(d[2+3*i]), int(d[3+3*i]), int(d[4+3*i])\n    es.append((a, b, c))\n    pass\nINF = float(\"inf\")\nD = {}\nfor s in range(1, n+1):\n    t = {v: INF for v in range(1, n+1)}\n    t[s] = 0\n    for _ in range(n):\n        for a, b, c in es:\n            if t[a] + c < t[b]:\n                t[b] = t[a] + c\n    D[s] = t\nprint(sum(1 for a in D for b in D if a != b and D[a][b] < INF))\n",
+   "tests": [
+    {
+     "in": "3 1\n2 1 6\n",
+     "out": "1\n"
+    },
+    {
+     "in": "6 7\n2 3 8\n3 5 4\n5 6 5\n1 5 6\n3 5 4\n1 5 7\n1 6 6\n",
+     "out": "8\n"
+    },
+    {
+     "in": "6 7\n2 4 8\n3 1 9\n1 5 7\n2 3 6\n4 6 1\n3 5 9\n2 5 6\n",
+     "out": "9\n"
+    },
+    {
+     "in": "5 6\n3 4 6\n3 2 3\n1 5 6\n2 1 4\n4 2 1\n1 2 4\n",
+     "out": "11\n"
+    },
+    {
+     "in": "6 9\n4 2 9\n6 2 6\n1 5 3\n4 2 8\n4 3 5\n5 3 2\n2 6 4\n4 1 9\n2 5 3\n",
+     "out": "14\n"
+    },
+    {
+     "in": "3 3\n3 1 4\n2 3 2\n1 3 6\n",
+     "out": "4\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "4 1\n4 3 8\n",
+     "out": "1\n"
+    },
+    {
+     "in": "6 9\n3 1 2\n5 1 2\n1 5 9\n2 5 3\n5 3 8\n4 6 8\n6 4 8\n4 6 8\n6 5 6\n",
+     "out": "17\n"
+    }
+   ],
+   "want": "graph3.floyd"
+  },
+  {
+   "id": "fl-matrix",
+   "st": "第一行 n m，接著 m 行每行 u v w 表示 u 到 v 有一條權重為 w 的有向邊。用 Floyd 求所有點對最短路，輸出 n 行，第 i 行有 n 個整數，是 i 到每個點的最短距離，不可達輸出 -1。",
+   "rw_st": "第一行 n e，接著 e 行每行 u v w 表示 u 到 v 有一條權重為 w 的有向邊。用 Floyd 求所有點對最短路，輸出 n 行，第 i 行有 n 個整數，是 i 到每個點的最短距離，不可達輸出 -1。",
+   "ref": "import sys\nd = sys.stdin.read().split()\nn, m = int(d[0]), int(d[1])\nes = []\nfor i in range(m):\n    a, b, c = int(d[2+3*i]), int(d[3+3*i]), int(d[4+3*i])\n    es.append((a, b, c))\n    pass\nINF = float(\"inf\")\nD = {}\nfor s in range(1, n+1):\n    t = {v: INF for v in range(1, n+1)}\n    t[s] = 0\n    for _ in range(n):\n        for a, b, c in es:\n            if t[a] + c < t[b]:\n                t[b] = t[a] + c\n    D[s] = t\nfor a in range(1, n+1):\n    print(*[-1 if D[a][b] == INF else D[a][b] for b in range(1, n+1)])\n",
+   "tests": [
+    {
+     "in": "5 6\n3 4 4\n1 5 2\n5 3 2\n5 1 7\n2 4 7\n1 5 2\n",
+     "out": "0 -1 4 8 2\n-1 0 -1 7 -1\n-1 -1 0 4 -1\n-1 -1 -1 0 -1\n7 -1 2 6 0\n"
+    },
+    {
+     "in": "4 1\n3 1 4\n",
+     "out": "0 -1 -1 -1\n-1 0 -1 -1\n4 -1 0 -1\n-1 -1 -1 0\n"
+    },
+    {
+     "in": "6 5\n4 2 3\n1 5 6\n3 1 4\n5 3 1\n5 1 5\n",
+     "out": "0 -1 7 -1 6 -1\n-1 0 -1 -1 -1 -1\n4 -1 0 -1 10 -1\n-1 3 -1 0 -1 -1\n5 -1 1 -1 0 -1\n-1 -1 -1 -1 -1 0\n"
+    },
+    {
+     "in": "3 2\n1 3 6\n2 3 8\n",
+     "out": "0 -1 6\n-1 0 8\n-1 -1 0\n"
+    },
+    {
+     "in": "5 7\n1 4 5\n5 2 4\n1 3 1\n1 3 8\n5 2 2\n2 5 1\n1 2 4\n",
+     "out": "0 4 1 5 5\n-1 0 -1 -1 1\n-1 -1 0 -1 -1\n-1 -1 -1 0 -1\n-1 2 -1 -1 0\n"
+    },
+    {
+     "in": "5 4\n4 5 6\n1 4 2\n2 1 4\n3 2 2\n",
+     "out": "0 -1 -1 2 8\n4 0 -1 6 12\n6 2 0 8 14\n-1 -1 -1 0 6\n-1 -1 -1 -1 0\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "4 3\n3 2 6\n2 4 6\n2 1 7\n",
+     "out": "0 -1 -1 -1\n7 0 -1 6\n13 6 0 12\n-1 -1 -1 0\n"
+    },
+    {
+     "in": "8 6\n8 4 9\n1 7 4\n3 6 4\n6 5 2\n8 2 5\n4 8 3\n",
+     "out": "0 -1 -1 -1 -1 -1 4 -1\n-1 0 -1 -1 -1 -1 -1 -1\n-1 -1 0 -1 6 4 -1 -1\n-1 8 -1 0 -1 -1 -1 3\n-1 -1 -1 -1 0 -1 -1 -1\n-1 -1 -1 -1 2 0 -1 -1\n-1 -1 -1 -1 -1 -1 0 -1\n-1 5 -1 9 -1 -1 -1 0\n"
+    }
+   ],
+   "want": "graph3.floyd"
+  },
+  {
+   "id": "bm-size",
+   "st": "第一行 n m e，二分圖左邊有 n 個點、右邊有 m 個點，接著 e 行每行 a b 表示左邊的 a 和右邊的 b 之間有一條邊。輸出最大匹配數。",
+   "rw_st": null,
+   "ref": "import sys\nd = sys.stdin.read().split()\nn, m, e = int(d[0]), int(d[1]), int(d[2])\nok = {}\nfor i in range(e):\n    ok.setdefault(int(d[3+2*i]), set()).add(int(d[4+2*i]))\ndef best(i, used):\n    if i > n:\n        return 0\n    r = best(i + 1, used)\n    for y in ok.get(i, ()):\n        if y not in used:\n            r = max(r, 1 + best(i + 1, used | {y}))\n    return r\nsize = best(1, frozenset())\nprint(size)\n",
+   "tests": [
+    {
+     "in": "5 5 10\n3 5\n5 1\n3 3\n1 2\n3 2\n2 4\n2 3\n2 5\n2 1\n1 4\n",
+     "out": "4\n"
+    },
+    {
+     "in": "5 4 13\n4 3\n1 2\n2 2\n4 2\n3 2\n5 2\n5 3\n3 3\n3 1\n5 1\n4 4\n2 3\n1 1\n",
+     "out": "4\n"
+    },
+    {
+     "in": "2 2 2\n1 1\n2 2\n",
+     "out": "2\n"
+    },
+    {
+     "in": "5 5 4\n4 2\n5 2\n1 1\n4 3\n",
+     "out": "3\n"
+    },
+    {
+     "in": "3 2 1\n2 2\n",
+     "out": "1\n"
+    },
+    {
+     "in": "5 5 15\n2 1\n4 2\n4 4\n5 5\n3 4\n1 3\n5 4\n4 5\n5 3\n1 2\n1 4\n1 5\n5 1\n3 2\n4 1\n",
+     "out": "5\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "4 4 5\n1 1\n1 4\n3 3\n2 2\n2 1\n",
+     "out": "3\n"
+    },
+    {
+     "in": "4 4 7\n4 4\n3 1\n3 3\n2 2\n1 1\n1 4\n4 3\n",
+     "out": "4\n"
+    }
+   ],
+   "want": "graph3.matching"
+  },
+  {
+   "id": "bm-perfect",
+   "st": "第一行 n m e，二分圖左邊有 n 個點、右邊有 m 個點，接著 e 行每行 a b 表示左邊的 a 和右邊的 b 之間有一條邊。如果左邊每個點都能配到不同的右邊點輸出 YES，否則輸出 NO。",
+   "rw_st": null,
+   "ref": "import sys\nd = sys.stdin.read().split()\nn, m, e = int(d[0]), int(d[1]), int(d[2])\nok = {}\nfor i in range(e):\n    ok.setdefault(int(d[3+2*i]), set()).add(int(d[4+2*i]))\ndef best(i, used):\n    if i > n:\n        return 0\n    r = best(i + 1, used)\n    for y in ok.get(i, ()):\n        if y not in used:\n            r = max(r, 1 + best(i + 1, used | {y}))\n    return r\nsize = best(1, frozenset())\nprint(\"YES\" if size == n else \"NO\")\n",
+   "tests": [
+    {
+     "in": "4 4 1\n3 3\n",
+     "out": "NO\n"
+    },
+    {
+     "in": "4 4 4\n2 2\n1 1\n4 4\n4 3\n",
+     "out": "NO\n"
+    },
+    {
+     "in": "4 4 2\n3 3\n2 2\n",
+     "out": "NO\n"
+    },
+    {
+     "in": "3 3 3\n2 1\n2 2\n3 3\n",
+     "out": "NO\n"
+    },
+    {
+     "in": "5 4 12\n1 2\n4 1\n3 4\n5 3\n5 4\n5 2\n5 1\n3 1\n3 3\n2 2\n4 3\n3 2\n",
+     "out": "NO\n"
+    },
+    {
+     "in": "3 3 5\n2 2\n3 2\n1 3\n1 2\n3 3\n",
+     "out": "NO\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "5 3 9\n1 2\n3 3\n2 3\n4 1\n3 1\n4 3\n5 1\n3 2\n5 2\n",
+     "out": "NO\n"
+    },
+    {
+     "in": "7 5 20\n1 4\n3 4\n6 4\n2 1\n3 3\n2 5\n1 2\n1 5\n6 3\n5 5\n4 2\n2 4\n7 2\n7 1\n6 1\n4 4\n4 1\n5 1\n6 5\n1 3\n",
+     "out": "NO\n"
+    }
+   ],
+   "want": "graph3.matching"
+  },
+  {
+   "id": "bm-free",
+   "st": "第一行 n m e，二分圖左邊有 n 個點、右邊有 m 個點，接著 e 行每行 a b 表示左邊的 a 和右邊的 b 之間有一條邊。求最大匹配後，左邊有幾個點沒有配到對象？",
+   "rw_st": null,
+   "ref": "import sys\nd = sys.stdin.read().split()\nn, m, e = int(d[0]), int(d[1]), int(d[2])\nok = {}\nfor i in range(e):\n    ok.setdefault(int(d[3+2*i]), set()).add(int(d[4+2*i]))\ndef best(i, used):\n    if i > n:\n        return 0\n    r = best(i + 1, used)\n    for y in ok.get(i, ()):\n        if y not in used:\n            r = max(r, 1 + best(i + 1, used | {y}))\n    return r\nsize = best(1, frozenset())\nprint(n - size)\n",
+   "tests": [
+    {
+     "in": "3 3 7\n2 1\n2 2\n1 2\n1 3\n3 2\n3 1\n3 3\n",
+     "out": "0\n"
+    },
+    {
+     "in": "4 4 3\n2 2\n2 1\n1 1\n",
+     "out": "2\n"
+    },
+    {
+     "in": "5 5 4\n2 3\n5 1\n5 4\n3 2\n",
+     "out": "2\n"
+    },
+    {
+     "in": "3 3 2\n1 1\n3 1\n",
+     "out": "2\n"
+    },
+    {
+     "in": "2 5 5\n2 2\n1 5\n1 3\n1 4\n2 4\n",
+     "out": "0\n"
+    },
+    {
+     "in": "2 4 3\n1 1\n2 4\n1 3\n",
+     "out": "0\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "7 5 8\n4 1\n3 5\n2 5\n6 4\n5 4\n6 5\n1 5\n2 4\n",
+     "out": "4\n"
+    },
+    {
+     "in": "6 6 11\n1 3\n6 2\n6 4\n1 4\n1 5\n4 4\n4 6\n2 5\n3 3\n5 3\n3 2\n",
+     "out": "1\n"
+    }
+   ],
+   "want": "graph3.matching"
+  },
+  {
+   "id": "bm-indep",
+   "st": "第一行 n m e，二分圖左邊有 n 個點、右邊有 m 個點，接著 e 行每行 a b 表示左邊的 a 和右邊的 b 之間有一條邊。輸出最大獨立集的大小（提示：點數總和減去最大匹配數）。",
+   "rw_st": null,
+   "ref": "import sys\nd = sys.stdin.read().split()\nn, m, e = int(d[0]), int(d[1]), int(d[2])\nok = {}\nfor i in range(e):\n    ok.setdefault(int(d[3+2*i]), set()).add(int(d[4+2*i]))\ndef best(i, used):\n    if i > n:\n        return 0\n    r = best(i + 1, used)\n    for y in ok.get(i, ()):\n        if y not in used:\n            r = max(r, 1 + best(i + 1, used | {y}))\n    return r\nsize = best(1, frozenset())\nprint(n + m - size)\n",
+   "tests": [
+    {
+     "in": "5 5 5\n3 4\n4 4\n2 2\n2 1\n5 5\n",
+     "out": "7\n"
+    },
+    {
+     "in": "2 2 2\n1 1\n2 2\n",
+     "out": "2\n"
+    },
+    {
+     "in": "5 4 8\n1 3\n5 3\n2 2\n5 2\n3 2\n5 1\n1 4\n2 1\n",
+     "out": "5\n"
+    },
+    {
+     "in": "2 2 2\n1 1\n1 2\n",
+     "out": "3\n"
+    },
+    {
+     "in": "5 4 10\n1 3\n5 3\n3 3\n5 2\n4 2\n1 1\n5 1\n2 4\n4 3\n2 2\n",
+     "out": "5\n"
+    },
+    {
+     "in": "3 2 2\n1 1\n2 2\n",
+     "out": "3\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "3 7 10\n1 6\n3 3\n1 2\n2 2\n3 7\n2 7\n1 3\n3 2\n1 5\n2 5\n",
+     "out": "7\n"
+    },
+    {
+     "in": "6 2 4\n3 2\n1 1\n1 2\n6 2\n",
+     "out": "6\n"
+    }
+   ],
+   "want": "graph3.matching"
+  },
+  {
+   "id": "as-min",
+   "st": "第一行 n，接著 n 行，每行 n 個整數，第 i 行第 j 個數是第 i 位工人做第 j 件工作的成本。每位工人恰好做一件工作，每件工作恰好由一位工人完成，用匈牙利演算法求最小總成本。",
+   "rw_st": "第一行 k，接著 k 行，每行 k 個整數，第 i 行第 j 個數是第 i 位工人做第 j 件工作的成本。每位工人恰好做一件工作，每件工作恰好由一位工人完成，用匈牙利演算法求最小總成本。",
+   "ref": "import itertools\nn = int(input())\nc = [list(map(int, input().split())) for _ in range(n)]\nprint(min(sum(c[i][p[i]] for i in range(n)) for p in itertools.permutations(range(n))))\n",
+   "tests": [
+    {
+     "in": "3\n24 14 4\n4 24 9\n3 29 26\n",
+     "out": "26\n"
+    },
+    {
+     "in": "5\n10 26 14 20 12\n21 7 13 16 28\n30 20 4 15 13\n26 29 13 13 5\n9 19 14 24 4\n",
+     "out": "38\n"
+    },
+    {
+     "in": "3\n5 7 27\n25 24 4\n2 28 6\n",
+     "out": "13\n"
+    },
+    {
+     "in": "5\n2 13 19 5 30\n21 9 29 1 19\n25 25 28 10 18\n24 18 2 18 11\n7 23 22 25 11\n",
+     "out": "34\n"
+    },
+    {
+     "in": "2\n6 3\n3 29\n",
+     "out": "6\n"
+    },
+    {
+     "in": "4\n1 21 21 9\n11 25 10 4\n12 8 20 18\n28 26 16 26\n",
+     "out": "29\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "4\n3 5 23 14\n8 27 1 24\n28 8 18 14\n22 2 29 23\n",
+     "out": "20\n"
+    },
+    {
+     "in": "3\n22 18 14\n16 26 3\n23 21 17\n",
+     "out": "44\n"
+    }
+   ],
+   "want": "graph3.assignment"
+  },
+  {
+   "id": "as-max",
+   "st": "第一行 n，接著 n 行，每行 n 個整數，第 i 行第 j 個數是第 i 位工人做第 j 件工作的收益。每位工人恰好做一件工作，每件工作恰好由一位工人完成，求最大總收益（指派問題）。",
+   "rw_st": null,
+   "ref": "import itertools\nn = int(input())\nc = [list(map(int, input().split())) for _ in range(n)]\nprint(max(sum(c[i][p[i]] for i in range(n)) for p in itertools.permutations(range(n))))\n",
+   "tests": [
+    {
+     "in": "4\n30 12 6 20\n8 24 10 16\n5 17 21 9\n1 13 23 13\n",
+     "out": "88\n"
+    },
+    {
+     "in": "2\n30 30\n18 2\n",
+     "out": "48\n"
+    },
+    {
+     "in": "5\n18 15 27 7 15\n5 20 8 20 12\n3 23 9 18 14\n10 22 3 1 23\n19 14 22 25 23\n",
+     "out": "112\n"
+    },
+    {
+     "in": "4\n9 7 10 28\n21 23 25 10\n18 12 18 16\n4 3 7 27\n",
+     "out": "78\n"
+    },
+    {
+     "in": "2\n7 14\n14 17\n",
+     "out": "28\n"
+    },
+    {
+     "in": "2\n7 22\n30 24\n",
+     "out": "52\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "7\n4 10 27 13 19 27 8\n18 10 18 8 2 3 26\n30 20 18 28 6 14 18\n2 2 2 24 18 6 19\n27 7 7 7 12 16 14\n22 5 21 2 2 4 13\n5 29 27 7 21 13 9\n",
+     "out": "176\n"
+    },
+    {
+     "in": "7\n2 29 21 11 18 18 22\n18 14 16 16 11 13 27\n3 29 21 10 8 10 17\n5 1 11 1 15 11 13\n5 2 18 22 30 8 20\n6 20 18 1 13 25 6\n18 18 5 1 14 20 8\n",
+     "out": "157\n"
+    }
+   ],
+   "want": "graph3.assignment"
+  },
+  {
+   "id": "sp-path",
+   "st": "第一行 n m s t，接著 m 行每行 u v w 表示 u 到 v 有一條權重為 w 的有向邊。輸出從 s 到 t 的最短路徑上依序經過的節點編號，用空白隔開；若有多條最短路徑，輸出字典序最小的那一條；s 到不了 t 輸出 -1。",
+   "rw_st": "第一行 n e s t，接著 e 行每行 u v w 表示 u 到 v 有一條權重為 w 的有向邊。輸出從 s 到 t 的最短路徑上依序經過的節點編號，用空白隔開；若有多條最短路徑，輸出字典序最小的那一條；s 到不了 t 輸出 -1。",
+   "ref": "import sys\nsys.setrecursionlimit(10000)\nd = sys.stdin.read().split()\nn, m, s, t = int(d[0]), int(d[1]), int(d[2]), int(d[3])\nK = 4\nadj = {i: [] for i in range(1, n+1)}\nfor i in range(m):\n    a, b, c = int(d[K+3*i]), int(d[K+1+3*i]), int(d[K+2+3*i])\n    adj[a].append((b, c))\nallp = []\ndef go(x, path, w):\n    if x == t:\n        allp.append((w, path))\n        return\n    for y, c in adj[x]:\n        if y not in path:\n            go(y, path + [y], w + c)\ngo(s, [s], 0)\nallp.sort()\nif not allp:\n    print(-1)\nelse:\n    bw = allp[0][0]\n    print(*min(p for w, p in allp if w == bw))\n",
+   "tests": [
+    {
+     "in": "6 8 4 6\n3 4 7\n4 1 8\n3 1 5\n2 6 5\n6 4 5\n5 3 7\n3 6 3\n4 2 5\n",
+     "out": "4 2 6\n"
+    },
+    {
+     "in": "4 3 1 2\n2 1 1\n1 4 9\n2 1 3\n",
+     "out": "-1\n"
+    },
+    {
+     "in": "3 1 3 1\n2 1 7\n",
+     "out": "-1\n"
+    },
+    {
+     "in": "5 5 3 5\n5 1 5\n1 4 8\n4 3 5\n5 2 4\n4 2 3\n",
+     "out": "-1\n"
+    },
+    {
+     "in": "3 2 3 2\n2 1 8\n1 3 8\n",
+     "out": "-1\n"
+    },
+    {
+     "in": "3 2 1 2\n1 3 5\n1 3 2\n",
+     "out": "-1\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "8 5 7 8\n8 4 3\n4 3 4\n6 2 1\n4 8 3\n8 4 2\n",
+     "out": "-1\n"
+    },
+    {
+     "in": "6 3 6 5\n6 2 8\n5 3 9\n6 2 3\n",
+     "out": "-1\n"
+    }
+   ],
+   "want": "graph3.sp-path"
+  },
+  {
+   "id": "sp-hops",
+   "st": "第一行 n m s t，接著 m 行每行 u v w 表示 u 和 v 之間有一條權重為 w 的無向邊。在所有權重總和最小的 s 到 t 的路徑中，輸出最少需要經過幾條邊；到不了輸出 -1。",
+   "rw_st": "第一行 n e s t，接著 e 行每行 u v w 表示 u 和 v 之間有一條權重為 w 的無向邊。在所有權重總和最小的 s 到 t 的路徑中，輸出最少需要經過幾條邊；到不了輸出 -1。",
+   "ref": "import sys\nsys.setrecursionlimit(10000)\nd = sys.stdin.read().split()\nn, m, s, t = int(d[0]), int(d[1]), int(d[2]), int(d[3])\nK = 4\nadj = {i: [] for i in range(1, n+1)}\nfor i in range(m):\n    a, b, c = int(d[K+3*i]), int(d[K+1+3*i]), int(d[K+2+3*i])\n    adj[a].append((b, c))\n    adj[b].append((a, c))\nallp = []\ndef go(x, path, w):\n    if x == t:\n        allp.append((w, path))\n        return\n    for y, c in adj[x]:\n        if y not in path:\n            go(y, path + [y], w + c)\ngo(s, [s], 0)\nallp.sort()\nif not allp:\n    print(-1)\nelse:\n    bw = allp[0][0]\n    print(min(len(p) - 1 for w, p in allp if w == bw))\n",
+   "tests": [
+    {
+     "in": "4 1 2 3\n2 1 8\n",
+     "out": "-1\n"
+    },
+    {
+     "in": "4 2 3 4\n2 1 1\n1 4 3\n",
+     "out": "-1\n"
+    },
+    {
+     "in": "5 6 5 1\n2 4 2\n5 4 5\n2 1 9\n3 2 6\n2 1 1\n3 2 2\n",
+     "out": "3\n"
+    },
+    {
+     "in": "3 1 2 3\n2 1 5\n",
+     "out": "-1\n"
+    },
+    {
+     "in": "5 5 3 4\n2 5 3\n1 5 4\n3 2 3\n5 1 6\n4 1 7\n",
+     "out": "4\n"
+    },
+    {
+     "in": "3 1 1 2\n1 3 4\n",
+     "out": "-1\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "7 10 5 7\n5 1 5\n5 1 2\n4 1 2\n7 4 5\n2 4 9\n5 7 1\n3 6 1\n3 6 1\n1 2 8\n7 6 7\n",
+     "out": "1\n"
+    },
+    {
+     "in": "8 5 3 4\n6 5 3\n8 4 5\n4 3 8\n2 6 7\n8 3 5\n",
+     "out": "1\n"
+    }
+   ],
+   "want": "graph3.sp-path"
+  },
+  {
+   "id": "sp-count",
+   "st": "第一行 n m s t，接著 m 行每行 u v w 表示 u 到 v 有一條權重為 w 的有向邊。輸出從 s 到 t 的最短路有幾條（權重總和最小的路徑條數）；到不了輸出 0。",
+   "rw_st": "第一行 n e s t，接著 e 行每行 u v w 表示 u 到 v 有一條權重為 w 的有向邊。輸出從 s 到 t 的最短路有幾條（權重總和最小的路徑條數）；到不了輸出 0。",
+   "ref": "import sys\nsys.setrecursionlimit(10000)\nd = sys.stdin.read().split()\nn, m, s, t = int(d[0]), int(d[1]), int(d[2]), int(d[3])\nK = 4\nadj = {i: [] for i in range(1, n+1)}\nfor i in range(m):\n    a, b, c = int(d[K+3*i]), int(d[K+1+3*i]), int(d[K+2+3*i])\n    adj[a].append((b, c))\nallp = []\ndef go(x, path, w):\n    if x == t:\n        allp.append((w, path))\n        return\n    for y, c in adj[x]:\n        if y not in path:\n            go(y, path + [y], w + c)\ngo(s, [s], 0)\nallp.sort()\nif not allp:\n    print(0)\nelse:\n    c = sum(1 for w, p in allp if w == allp[0][0])\n    print(c)\n",
+   "tests": [
+    {
+     "in": "5 7 2 4\n2 1 2\n5 4 5\n5 2 6\n4 5 2\n1 5 7\n4 1 9\n1 2 3\n",
+     "out": "1\n"
+    },
+    {
+     "in": "4 3 2 1\n1 3 7\n1 4 5\n4 3 7\n",
+     "out": "0\n"
+    },
+    {
+     "in": "3 1 1 3\n1 3 4\n",
+     "out": "1\n"
+    },
+    {
+     "in": "6 8 5 4\n3 1 3\n3 5 9\n3 5 5\n3 5 2\n1 5 5\n6 2 6\n3 5 9\n1 4 9\n",
+     "out": "0\n"
+    },
+    {
+     "in": "4 1 4 1\n1 2 6\n",
+     "out": "0\n"
+    },
+    {
+     "in": "6 4 3 1\n4 2 5\n5 3 1\n4 6 4\n3 1 5\n",
+     "out": "1\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "5 8 2 3\n3 1 4\n1 5 4\n2 4 2\n2 5 6\n2 1 4\n3 4 1\n4 5 6\n5 4 8\n",
+     "out": "0\n"
+    },
+    {
+     "in": "3 2 2 3\n1 3 2\n1 2 8\n",
+     "out": "0\n"
+    }
+   ],
+   "want": "graph3.sp-count"
+  },
+  {
+   "id": "sp-unique",
+   "st": "第一行 n m s t，接著 m 行每行 u v w 表示 u 和 v 之間有一條權重為 w 的無向邊。如果從 s 到 t 的最短路徑只有一條輸出 UNIQUE，有多條輸出 MULTI，到不了也輸出 MULTI。",
+   "rw_st": "第一行 n e s t，接著 e 行每行 u v w 表示 u 和 v 之間有一條權重為 w 的無向邊。如果從 s 到 t 的最短路徑只有一條輸出 UNIQUE，有多條輸出 MULTI，到不了也輸出 MULTI。",
+   "ref": "import sys\nsys.setrecursionlimit(10000)\nd = sys.stdin.read().split()\nn, m, s, t = int(d[0]), int(d[1]), int(d[2]), int(d[3])\nK = 4\nadj = {i: [] for i in range(1, n+1)}\nfor i in range(m):\n    a, b, c = int(d[K+3*i]), int(d[K+1+3*i]), int(d[K+2+3*i])\n    adj[a].append((b, c))\n    adj[b].append((a, c))\nallp = []\ndef go(x, path, w):\n    if x == t:\n        allp.append((w, path))\n        return\n    for y, c in adj[x]:\n        if y not in path:\n            go(y, path + [y], w + c)\ngo(s, [s], 0)\nallp.sort()\nif not allp:\n    print(\"MULTI\")\nelse:\n    c = sum(1 for w, p in allp if w == allp[0][0])\n    print(\"UNIQUE\" if c == 1 else \"MULTI\")\n",
+   "tests": [
+    {
+     "in": "6 3 6 1\n4 1 1\n3 4 3\n3 5 1\n",
+     "out": "MULTI\n"
+    },
+    {
+     "in": "3 3 1 2\n2 1 1\n1 2 8\n1 2 5\n",
+     "out": "UNIQUE\n"
+    },
+    {
+     "in": "5 7 2 3\n1 4 2\n5 2 7\n5 2 3\n1 4 9\n2 5 6\n5 4 9\n1 4 5\n",
+     "out": "MULTI\n"
+    },
+    {
+     "in": "3 5 1 3\n2 3 3\n1 3 3\n3 2 3\n1 2 9\n3 2 4\n",
+     "out": "UNIQUE\n"
+    },
+    {
+     "in": "5 4 4 1\n3 4 9\n3 4 5\n4 5 5\n1 2 4\n",
+     "out": "MULTI\n"
+    },
+    {
+     "in": "4 2 4 1\n2 1 8\n1 4 3\n",
+     "out": "UNIQUE\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "8 7 5 6\n4 8 5\n6 5 7\n2 5 2\n1 4 9\n4 3 4\n3 6 9\n6 2 5\n",
+     "out": "MULTI\n"
+    },
+    {
+     "in": "7 9 3 5\n6 1 8\n1 7 9\n2 5 7\n7 6 3\n3 6 4\n3 6 2\n7 3 8\n3 4 9\n4 2 3\n",
+     "out": "UNIQUE\n"
+    }
+   ],
+   "want": "graph3.sp-count"
+  },
+  {
+   "id": "sp-kth",
+   "st": "第一行 n m s t k，接著 m 行每行 u v w 表示 u 到 v 有一條權重為 w 的有向邊。路徑不能重複經過同一個點。輸出從 s 到 t 第 k 短的路徑長度，若路徑不到 k 條輸出 -1。",
+   "rw_st": "第一行 n e s t k，接著 e 行每行 u v w 表示 u 到 v 有一條權重為 w 的有向邊。路徑不能重複經過同一個點。輸出從 s 到 t 第 k 短的路徑長度，若路徑不到 k 條輸出 -1。",
+   "ref": "import sys\nsys.setrecursionlimit(10000)\nd = sys.stdin.read().split()\nn, m, s, t = int(d[0]), int(d[1]), int(d[2]), int(d[3])\nK = 5\nk = int(d[4])\nadj = {i: [] for i in range(1, n+1)}\nfor i in range(m):\n    a, b, c = int(d[K+3*i]), int(d[K+1+3*i]), int(d[K+2+3*i])\n    adj[a].append((b, c))\nallp = []\ndef go(x, path, w):\n    if x == t:\n        allp.append((w, path))\n        return\n    for y, c in adj[x]:\n        if y not in path:\n            go(y, path + [y], w + c)\ngo(s, [s], 0)\nallp.sort()\nls = [w for w, p in allp]\nprint(ls[k-1] if len(ls) >= k else -1)\n",
+   "tests": [
+    {
+     "in": "6 10 1 5 4\n2 6 1\n5 3 2\n4 2 8\n2 4 6\n3 1 6\n6 3 2\n3 4 5\n2 6 9\n5 1 7\n3 5 1\n",
+     "out": "-1\n"
+    },
+    {
+     "in": "6 5 4 3 4\n4 5 2\n5 3 9\n1 2 6\n2 5 1\n1 6 2\n",
+     "out": "-1\n"
+    },
+    {
+     "in": "5 4 2 5 3\n5 3 1\n5 4 2\n1 2 3\n4 3 3\n",
+     "out": "-1\n"
+    },
+    {
+     "in": "4 1 4 1 3\n2 3 3\n",
+     "out": "-1\n"
+    },
+    {
+     "in": "5 6 1 4 4\n5 3 7\n3 4 3\n3 5 5\n1 3 7\n2 3 4\n5 4 5\n",
+     "out": "-1\n"
+    },
+    {
+     "in": "3 2 1 3 1\n2 3 5\n2 1 2\n",
+     "out": "-1\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "3 4 3 1 3\n1 2 7\n1 3 4\n3 2 4\n2 3 4\n",
+     "out": "-1\n"
+    },
+    {
+     "in": "5 7 4 5 1\n5 3 4\n2 4 6\n4 5 2\n2 1 3\n1 4 7\n5 2 1\n3 1 8\n",
+     "out": "2\n"
+    }
+   ],
+   "want": "graph3.sp-kth"
+  },
+  {
+   "id": "sp-kwalk",
+   "st": "第一行 n m s t k，接著 m 行每行 u v w 表示 u 到 v 有一條權重為 w 的有向邊。走的路線可以重複經過同一個點與同一條邊。輸出 s 到 t 第 k 短的走法的總長度（長度相同的走法算不同的走法），不存在輸出 -1。",
+   "rw_st": "第一行 n e s t k，接著 e 行每行 u v w 表示 u 到 v 有一條權重為 w 的有向邊。走的路線可以重複經過同一個點與同一條邊。輸出 s 到 t 第 k 短的走法的總長度（長度相同的走法算不同的走法），不存在輸出 -1。",
+   "ref": "import sys\nsys.setrecursionlimit(10000)\nd = sys.stdin.read().split()\nn, m, s, t = int(d[0]), int(d[1]), int(d[2]), int(d[3])\nK = 5\nk = int(d[4])\nadj = {i: [] for i in range(1, n+1)}\nfor i in range(m):\n    a, b, c = int(d[K+3*i]), int(d[K+1+3*i]), int(d[K+2+3*i])\n    adj[a].append((b, c))\nB = 5\nwhile True:\n    cnt = []\n    def dfs(x, w):\n        if x == t:\n            cnt.append(w)\n        for y, c in adj[x]:\n            if w + c <= B:\n                dfs(y, w + c)\n    dfs(s, 0)\n    if len(cnt) >= k:\n        cnt.sort()\n        print(cnt[k-1])\n        break\n    if B > 60:\n        print(-1)\n        break\n    B *= 2\n",
+   "tests": [
+    {
+     "in": "4 1 2 3 2\n3 2 4\n",
+     "out": "-1\n"
+    },
+    {
+     "in": "3 2 1 2 3\n3 1 3\n2 1 1\n",
+     "out": "-1\n"
+    },
+    {
+     "in": "3 2 1 3 3\n2 1 6\n2 1 5\n",
+     "out": "-1\n"
+    },
+    {
+     "in": "3 3 1 2 1\n2 3 8\n3 1 1\n2 1 7\n",
+     "out": "-1\n"
+    },
+    {
+     "in": "6 3 2 3 2\n5 3 7\n4 1 3\n1 5 7\n",
+     "out": "-1\n"
+    },
+    {
+     "in": "5 5 5 1 2\n4 3 5\n1 5 6\n2 3 1\n5 1 5\n5 3 4\n",
+     "out": "16\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "5 4 5 3 1\n5 2 6\n1 4 1\n1 3 8\n2 1 1\n",
+     "out": "15\n"
+    },
+    {
+     "in": "7 9 1 4 1\n4 5 9\n2 7 2\n4 2 2\n1 6 6\n5 2 9\n1 2 7\n5 4 9\n4 6 8\n7 1 5\n",
+     "out": "-1\n"
+    }
+   ],
+   "want": "graph3.sp-kth"
+  },
+  {
+   "id": "sp-atmost",
+   "st": "第一行 n m s t k，接著 m 行每行 u v w 表示 u 到 v 有一條權重為 w 的有向邊。輸出從 s 到 t 最多使用 k 條邊的最短距離，辦不到輸出 -1。",
+   "rw_st": "第一行 n e s t k，接著 e 行每行 u v w 表示 u 到 v 有一條權重為 w 的有向邊。輸出從 s 到 t 最多使用 k 條邊的最短距離，辦不到輸出 -1。",
+   "ref": "import sys\nsys.setrecursionlimit(10000)\nd = sys.stdin.read().split()\nn, m, s, t = int(d[0]), int(d[1]), int(d[2]), int(d[3])\nK = 5\nk = int(d[4])\nadj = {i: [] for i in range(1, n+1)}\nfor i in range(m):\n    a, b, c = int(d[K+3*i]), int(d[K+1+3*i]), int(d[K+2+3*i])\n    adj[a].append((b, c))\nINF = None\nlayer = {s: 0}\nbest = {s: 0}\nfor _ in range(k):\n    nl = {}\n    for x, w in layer.items():\n        for y, c in adj[x]:\n            if y not in nl or w + c < nl[y]:\n                nl[y] = w + c\n    for y, w in nl.items():\n        if y not in best or w < best[y]:\n            best[y] = w\n    layer = nl\nprint(best.get(t, -1))\n",
+   "tests": [
+    {
+     "in": "3 3 1 3 1\n1 2 1\n2 3 5\n1 3 1\n",
+     "out": "1\n"
+    },
+    {
+     "in": "5 8 3 1 4\n5 1 4\n5 3 7\n5 2 9\n1 3 8\n3 1 4\n1 3 2\n1 5 5\n3 5 8\n",
+     "out": "4\n"
+    },
+    {
+     "in": "5 7 2 3 3\n2 1 6\n1 3 6\n2 3 4\n4 3 7\n4 1 5\n5 3 8\n3 1 1\n",
+     "out": "4\n"
+    },
+    {
+     "in": "6 9 3 4 4\n3 1 9\n6 2 9\n2 6 2\n4 6 6\n6 4 1\n5 1 4\n5 3 6\n2 4 3\n4 1 3\n",
+     "out": "-1\n"
+    },
+    {
+     "in": "5 5 3 5 3\n2 4 1\n2 4 2\n1 2 8\n2 1 9\n4 1 3\n",
+     "out": "-1\n"
+    },
+    {
+     "in": "6 5 3 5 4\n6 4 5\n2 6 9\n2 6 8\n6 1 5\n5 1 1\n",
+     "out": "-1\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "6 8 1 6 2\n1 6 1\n2 1 5\n3 5 9\n6 2 1\n3 1 5\n5 3 6\n6 3 7\n1 5 8\n",
+     "out": "1\n"
+    },
+    {
+     "in": "8 5 5 3 4\n3 6 7\n6 2 1\n8 4 6\n4 3 5\n4 8 2\n",
+     "out": "-1\n"
+    }
+   ],
+   "want": "graph3.sp-limit"
+  },
+  {
+   "id": "sp-exact",
+   "st": "第一行 n m s t k，接著 m 行每行 u v w 表示 u 和 v 之間有一條權重為 w 的無向邊。輸出從 s 到 t 恰好走 k 條邊（可以重複經過點）的最短距離，辦不到輸出 -1。",
+   "rw_st": "第一行 n e s t k，接著 e 行每行 u v w 表示 u 和 v 之間有一條權重為 w 的無向邊。輸出從 s 到 t 恰好走 k 條邊（可以重複經過點）的最短距離，辦不到輸出 -1。",
+   "ref": "import sys\nsys.setrecursionlimit(10000)\nd = sys.stdin.read().split()\nn, m, s, t = int(d[0]), int(d[1]), int(d[2]), int(d[3])\nK = 5\nk = int(d[4])\nadj = {i: [] for i in range(1, n+1)}\nfor i in range(m):\n    a, b, c = int(d[K+3*i]), int(d[K+1+3*i]), int(d[K+2+3*i])\n    adj[a].append((b, c))\n    adj[b].append((a, c))\nINF = None\nlayer = {s: 0}\nfor _ in range(k):\n    nl = {}\n    for x, w in layer.items():\n        for y, c in adj[x]:\n            if y not in nl or w + c < nl[y]:\n                nl[y] = w + c\n    layer = nl\nprint(layer.get(t, -1))\n",
+   "tests": [
+    {
+     "in": "3 1 3 1 1\n1 3 7\n",
+     "out": "7\n"
+    },
+    {
+     "in": "4 1 3 4 2\n1 3 5\n",
+     "out": "-1\n"
+    },
+    {
+     "in": "5 7 1 2 3\n1 5 6\n4 3 6\n1 3 6\n4 2 2\n4 3 1\n1 2 6\n1 3 5\n",
+     "out": "8\n"
+    },
+    {
+     "in": "6 8 5 6 4\n5 1 6\n5 1 5\n4 6 3\n2 4 2\n4 6 3\n4 5 7\n6 2 2\n6 4 4\n",
+     "out": "14\n"
+    },
+    {
+     "in": "4 1 2 1 3\n4 2 7\n",
+     "out": "-1\n"
+    },
+    {
+     "in": "3 4 3 1 1\n3 2 2\n3 1 6\n2 1 8\n3 1 4\n",
+     "out": "4\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "3 4 3 1 3\n1 2 2\n2 1 8\n2 3 6\n3 2 9\n",
+     "out": "-1\n"
+    },
+    {
+     "in": "6 6 2 5 3\n2 5 3\n5 3 1\n4 5 3\n1 5 9\n3 1 6\n5 1 9\n",
+     "out": "5\n"
+    }
+   ],
+   "want": "graph3.sp-limit"
+  },
+  {
+   "id": "ho-floyd",
+   "st": "第一行 n m，接著 m 行每行 a b c，代表 a 與 b 之間有條長度 c 的道路（雙向通行）。接著一行 q，再有 q 行每行 x y，每次詢問 x 到 y 的最短路程，到不了就輸出 -1。請對所有點對先預處理（O(n^3) 的 Floyd）。",
+   "rw_st": null,
+   "ref": "import sys\nd = sys.stdin.read().split()\nn, m = int(d[0]), int(d[1])\nes = []\nfor i in range(m):\n    a, b, c = int(d[2+3*i]), int(d[3+3*i]), int(d[4+3*i])\n    es.append((a, b, c))\n    es.append((b, a, c))\nINF = float(\"inf\")\nD = {}\nfor s in range(1, n+1):\n    t = {v: INF for v in range(1, n+1)}\n    t[s] = 0\n    for _ in range(n):\n        for a, b, c in es:\n            if t[a] + c < t[b]:\n                t[b] = t[a] + c\n    D[s] = t\nq = int(d[2+3*m])\nfor i in range(q):\n    a, b = int(d[3+3*m+2*i]), int(d[4+3*m+2*i])\n    print(-1 if D[a][b] == INF else D[a][b])\n",
+   "tests": [
+    {
+     "in": "3 1\n1 2 1\n5\n2 2\n3 2\n3 2\n1 3\n2 1\n",
+     "out": "0\n-1\n-1\n-1\n1\n"
+    },
+    {
+     "in": "6 6\n2 3 3\n5 1 5\n2 4 5\n2 1 9\n1 5 4\n1 5 2\n2\n2 1\n5 1\n",
+     "out": "9\n2\n"
+    },
+    {
+     "in": "5 5\n1 2 8\n3 5 3\n4 3 8\n3 1 2\n4 3 1\n5\n4 5\n2 3\n5 5\n3 4\n4 2\n",
+     "out": "4\n10\n0\n1\n11\n"
+    },
+    {
+     "in": "6 4\n5 3 3\n5 1 3\n3 5 7\n1 5 2\n2\n6 4\n6 5\n",
+     "out": "-1\n-1\n"
+    },
+    {
+     "in": "3 4\n2 1 4\n3 1 4\n2 1 1\n3 2 5\n5\n1 1\n3 2\n2 3\n1 2\n1 2\n",
+     "out": "0\n5\n5\n1\n1\n"
+    },
+    {
+     "in": "3 5\n3 2 6\n1 3 7\n3 1 6\n3 2 4\n2 3 1\n5\n2 2\n3 3\n1 2\n3 3\n1 2\n",
+     "out": "0\n0\n7\n0\n7\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "4 1\n2 1 6\n2\n1 1\n1 3\n",
+     "out": "0\n-1\n"
+    },
+    {
+     "in": "6 5\n1 5 6\n6 4 8\n4 5 1\n3 1 3\n6 3 3\n4\n5 5\n3 6\n4 5\n1 1\n",
+     "out": "0\n3\n1\n0\n"
+    }
+   ],
+   "split": "holdout"
+  },
+  {
+   "id": "ho-match",
+   "st": "第一行 n m e：有 n 位學生和 m 間社團，接著 e 行每行 a b，表示學生 a 願意加入社團 b；每位學生最多加入一個社團，每個社團最多收一位學生。輸出最多可以讓幾位學生成功入社。",
+   "rw_st": null,
+   "ref": "import sys\nd = sys.stdin.read().split()\nn, m, e = int(d[0]), int(d[1]), int(d[2])\nok = {}\nfor i in range(e):\n    ok.setdefault(int(d[3+2*i]), set()).add(int(d[4+2*i]))\ndef best(i, used):\n    if i > n:\n        return 0\n    r = best(i + 1, used)\n    for y in ok.get(i, ()):\n        if y not in used:\n            r = max(r, 1 + best(i + 1, used | {y}))\n    return r\nsize = best(1, frozenset())\nprint(size)\n",
+   "tests": [
+    {
+     "in": "2 2 1\n2 2\n",
+     "out": "1\n"
+    },
+    {
+     "in": "5 5 12\n3 3\n3 5\n5 2\n2 3\n4 5\n3 2\n3 1\n1 1\n2 4\n5 1\n1 5\n1 2\n",
+     "out": "5\n"
+    },
+    {
+     "in": "2 5 4\n1 5\n2 5\n1 1\n1 2\n",
+     "out": "2\n"
+    },
+    {
+     "in": "4 4 4\n3 3\n3 2\n2 2\n1 3\n",
+     "out": "2\n"
+    },
+    {
+     "in": "4 3 6\n1 1\n1 2\n1 3\n4 3\n4 2\n3 2\n",
+     "out": "3\n"
+    },
+    {
+     "in": "4 4 2\n2 1\n1 1\n",
+     "out": "1\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "3 3 6\n3 1\n3 2\n1 1\n1 2\n3 3\n1 3\n",
+     "out": "2\n"
+    },
+    {
+     "in": "5 3 4\n1 1\n3 2\n5 1\n4 2\n",
+     "out": "2\n"
+    }
+   ],
+   "split": "holdout"
+  },
+  {
+   "id": "ho-assign",
+   "st": "第一行 n，之後 n 行各 n 個整數，第 i 行第 j 個數是派第 i 台機器去做第 j 個任務所需的時間。一台機器只做一個任務、一個任務只由一台機器做，求全部任務完成所需的最小時間總和。",
+   "rw_st": null,
+   "ref": "import itertools\nn = int(input())\nc = [list(map(int, input().split())) for _ in range(n)]\nprint(min(sum(c[i][p[i]] for i in range(n)) for p in itertools.permutations(range(n))))\n",
+   "tests": [
+    {
+     "in": "3\n16 24 12\n14 17 29\n17 2 15\n",
+     "out": "28\n"
+    },
+    {
+     "in": "4\n9 15 5 29\n13 26 12 30\n12 1 13 5\n11 3 1 25\n",
+     "out": "26\n"
+    },
+    {
+     "in": "2\n5 5\n29 29\n",
+     "out": "34\n"
+    },
+    {
+     "in": "2\n26 4\n4 1\n",
+     "out": "8\n"
+    },
+    {
+     "in": "4\n29 19 23 11\n22 24 18 18\n4 4 24 9\n17 30 8 18\n",
+     "out": "45\n"
+    },
+    {
+     "in": "3\n24 23 3\n25 25 13\n26 28 30\n",
+     "out": "54\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "4\n29 17 10 4\n15 19 9 3\n25 13 24 21\n7 3 14 17\n",
+     "out": "33\n"
+    },
+    {
+     "in": "2\n23 3\n3 21\n",
+     "out": "6\n"
+    }
+   ],
+   "split": "holdout"
+  },
+  {
+   "id": "ho-path",
+   "st": "第一行 n m s t，接著 m 行每行 a b c，表示從 a 到 b 的單向道路長 c。請印出從 s 走到 t 最短的一條路線所經過的所有路口編號（依序，空白隔開）；最短的路線有好幾條時，取編號依序比較最小的那條；走不到就印 -1。",
+   "rw_st": null,
+   "ref": "import sys\nsys.setrecursionlimit(10000)\nd = sys.stdin.read().split()\nn, m, s, t = int(d[0]), int(d[1]), int(d[2]), int(d[3])\nK = 4\nadj = {i: [] for i in range(1, n+1)}\nfor i in range(m):\n    a, b, c = int(d[K+3*i]), int(d[K+1+3*i]), int(d[K+2+3*i])\n    adj[a].append((b, c))\nallp = []\ndef go(x, path, w):\n    if x == t:\n        allp.append((w, path))\n        return\n    for y, c in adj[x]:\n        if y not in path:\n            go(y, path + [y], w + c)\ngo(s, [s], 0)\nallp.sort()\nif not allp:\n    print(-1)\nelse:\n    bw = allp[0][0]\n    print(*min(p for w, p in allp if w == bw))\n",
+   "tests": [
+    {
+     "in": "4 2 3 4\n2 1 8\n4 3 1\n",
+     "out": "-1\n"
+    },
+    {
+     "in": "5 3 3 1\n1 2 7\n5 2 8\n3 4 4\n",
+     "out": "-1\n"
+    },
+    {
+     "in": "3 2 3 1\n3 2 4\n3 2 7\n",
+     "out": "-1\n"
+    },
+    {
+     "in": "6 3 3 1\n3 5 5\n1 6 9\n4 2 6\n",
+     "out": "-1\n"
+    },
+    {
+     "in": "3 5 3 2\n3 1 9\n1 2 1\n2 3 1\n3 1 6\n3 2 5\n",
+     "out": "3 2\n"
+    },
+    {
+     "in": "6 2 4 2\n1 5 9\n1 5 7\n",
+     "out": "-1\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "4 2 4 1\n1 4 3\n3 2 8\n",
+     "out": "-1\n"
+    },
+    {
+     "in": "8 4 5 6\n4 8 9\n5 7 8\n2 6 8\n6 5 6\n",
+     "out": "-1\n"
+    }
+   ],
+   "split": "holdout"
+  },
+  {
+   "id": "ho-count",
+   "st": "第一行 n m s t，接著 m 行每行 a b c，表示 a 和 b 之間有一條長度 c 的雙向道路。有多少種不同的走法可以用最短的總長度從 s 抵達 t？走不到輸出 0。",
+   "rw_st": null,
+   "ref": "import sys\nsys.setrecursionlimit(10000)\nd = sys.stdin.read().split()\nn, m, s, t = int(d[0]), int(d[1]), int(d[2]), int(d[3])\nK = 4\nadj = {i: [] for i in range(1, n+1)}\nfor i in range(m):\n    a, b, c = int(d[K+3*i]), int(d[K+1+3*i]), int(d[K+2+3*i])\n    adj[a].append((b, c))\n    adj[b].append((a, c))\nallp = []\ndef go(x, path, w):\n    if x == t:\n        allp.append((w, path))\n        return\n    for y, c in adj[x]:\n        if y not in path:\n            go(y, path + [y], w + c)\ngo(s, [s], 0)\nallp.sort()\nif not allp:\n    print(0)\nelse:\n    c = sum(1 for w, p in allp if w == allp[0][0])\n    print(c)\n",
+   "tests": [
+    {
+     "in": "6 6 1 2\n3 6 7\n6 2 6\n6 5 5\n3 5 8\n5 1 2\n1 2 2\n",
+     "out": "1\n"
+    },
+    {
+     "in": "5 6 1 3\n4 2 6\n3 2 8\n2 5 1\n3 1 4\n2 3 4\n1 5 1\n",
+     "out": "1\n"
+    },
+    {
+     "in": "6 1 1 2\n2 4 6\n",
+     "out": "0\n"
+    },
+    {
+     "in": "5 6 1 5\n3 5 1\n4 3 1\n3 1 5\n1 4 3\n5 3 6\n3 5 2\n",
+     "out": "1\n"
+    },
+    {
+     "in": "4 2 4 1\n1 3 5\n1 4 3\n",
+     "out": "1\n"
+    },
+    {
+     "in": "3 1 1 3\n1 2 8\n",
+     "out": "0\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "5 6 4 5\n1 5 2\n2 1 6\n1 5 8\n4 3 3\n3 2 7\n5 1 8\n",
+     "out": "1\n"
+    },
+    {
+     "in": "7 6 2 7\n5 3 3\n6 5 7\n5 4 8\n2 7 3\n4 7 4\n3 2 9\n",
+     "out": "1\n"
+    }
+   ],
+   "split": "holdout"
+  },
+  {
+   "id": "ho-kth",
+   "st": "第一行 n m s t k，接著 m 行每行 a b c，表示 a 到 b 的單向邊長 c。把 s 到 t 所有不經過重複點的路徑按總長由小到大排好，輸出第 k 條的總長，沒有這麼多條就輸出 -1。",
+   "rw_st": null,
+   "ref": "import sys\nsys.setrecursionlimit(10000)\nd = sys.stdin.read().split()\nn, m, s, t = int(d[0]), int(d[1]), int(d[2]), int(d[3])\nK = 5\nk = int(d[4])\nadj = {i: [] for i in range(1, n+1)}\nfor i in range(m):\n    a, b, c = int(d[K+3*i]), int(d[K+1+3*i]), int(d[K+2+3*i])\n    adj[a].append((b, c))\nallp = []\ndef go(x, path, w):\n    if x == t:\n        allp.append((w, path))\n        return\n    for y, c in adj[x]:\n        if y not in path:\n            go(y, path + [y], w + c)\ngo(s, [s], 0)\nallp.sort()\nls = [w for w, p in allp]\nprint(ls[k-1] if len(ls) >= k else -1)\n",
+   "tests": [
+    {
+     "in": "6 6 6 1 4\n2 4 5\n4 5 7\n3 6 5\n1 3 6\n1 3 3\n5 6 4\n",
+     "out": "-1\n"
+    },
+    {
+     "in": "5 6 3 4 1\n2 3 3\n1 3 1\n3 4 9\n1 4 5\n1 4 2\n3 1 8\n",
+     "out": "9\n"
+    },
+    {
+     "in": "5 5 1 5 3\n1 3 6\n5 3 8\n5 4 7\n5 3 3\n4 3 7\n",
+     "out": "-1\n"
+    },
+    {
+     "in": "3 5 1 3 1\n1 2 2\n3 2 9\n2 3 7\n3 2 5\n3 2 8\n",
+     "out": "9\n"
+    },
+    {
+     "in": "3 2 3 1 1\n3 1 9\n1 2 4\n",
+     "out": "9\n"
+    },
+    {
+     "in": "3 2 3 1 1\n2 1 7\n3 2 9\n",
+     "out": "16\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "7 7 5 7 3\n4 6 8\n6 4 4\n5 1 1\n4 3 1\n7 2 4\n4 6 6\n4 1 1\n",
+     "out": "-1\n"
+    },
+    {
+     "in": "6 8 6 3 2\n4 5 7\n4 6 2\n5 1 9\n6 2 3\n6 4 3\n4 2 1\n2 4 2\n5 2 7\n",
+     "out": "-1\n"
+    }
+   ],
+   "split": "holdout"
+  },
+  {
+   "id": "ho-limit",
+   "st": "第一行 n m s t k，接著 m 行每行 a b c，表示 a 到 b 的單向邊長 c。你最多只能搭 k 段路（用 k 條邊以內），求 s 到 t 的最短總長，走不到輸出 -1。",
+   "rw_st": null,
+   "ref": "import sys\nsys.setrecursionlimit(10000)\nd = sys.stdin.read().split()\nn, m, s, t = int(d[0]), int(d[1]), int(d[2]), int(d[3])\nK = 5\nk = int(d[4])\nadj = {i: [] for i in range(1, n+1)}\nfor i in range(m):\n    a, b, c = int(d[K+3*i]), int(d[K+1+3*i]), int(d[K+2+3*i])\n    adj[a].append((b, c))\nINF = None\nlayer = {s: 0}\nbest = {s: 0}\nfor _ in range(k):\n    nl = {}\n    for x, w in layer.items():\n        for y, c in adj[x]:\n            if y not in nl or w + c < nl[y]:\n                nl[y] = w + c\n    for y, w in nl.items():\n        if y not in best or w < best[y]:\n            best[y] = w\n    layer = nl\nprint(best.get(t, -1))\n",
+   "tests": [
+    {
+     "in": "3 2 2 3 1\n3 2 8\n2 1 9\n",
+     "out": "-1\n"
+    },
+    {
+     "in": "5 7 1 5 3\n3 1 4\n1 3 4\n4 3 9\n2 5 2\n5 2 5\n2 5 6\n1 2 5\n",
+     "out": "7\n"
+    },
+    {
+     "in": "3 4 1 2 1\n3 1 4\n1 2 8\n1 2 4\n3 1 4\n",
+     "out": "4\n"
+    },
+    {
+     "in": "5 7 2 4 3\n3 1 1\n1 3 5\n2 5 5\n4 5 7\n1 5 8\n2 3 4\n2 5 7\n",
+     "out": "-1\n"
+    },
+    {
+     "in": "4 1 4 3 4\n1 4 7\n",
+     "out": "-1\n"
+    },
+    {
+     "in": "4 2 1 2 3\n3 2 1\n1 3 9\n",
+     "out": "10\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "6 5 3 4 4\n5 3 5\n3 5 2\n1 5 9\n3 6 9\n2 3 8\n",
+     "out": "-1\n"
+    },
+    {
+     "in": "7 8 5 6 3\n5 3 2\n1 3 3\n3 7 8\n1 6 4\n2 1 5\n2 6 2\n6 4 5\n2 7 9\n",
+     "out": "-1\n"
+    }
+   ],
+   "split": "holdout"
+  },
+  {
+   "id": "ho2-floyd",
+   "st": "第一行 n m，接著 m 行每行 a b c，表示城市 a 與城市 b 之間有一條長度 c 的雙向公路。接著一行 q，再接 q 行每行 x y。先用 O(n³) 的 Floyd–Warshall 把所有城市兩兩之間的最短距離算好，每次詢問輸出 x 到 y 的最短距離，不連通輸出 -1。",
+   "rw_st": null,
+   "ref": "import sys\nd = sys.stdin.read().split()\nn, m = int(d[0]), int(d[1])\nes = []\nfor i in range(m):\n    a, b, c = int(d[2+3*i]), int(d[3+3*i]), int(d[4+3*i])\n    es.append((a, b, c))\n    es.append((b, a, c))\nINF = float(\"inf\")\nD = {}\nfor s in range(1, n+1):\n    t = {v: INF for v in range(1, n+1)}\n    t[s] = 0\n    for _ in range(n):\n        for a, b, c in es:\n            if t[a] + c < t[b]:\n                t[b] = t[a] + c\n    D[s] = t\nq = int(d[2+3*m])\nfor i in range(q):\n    a, b = int(d[3+3*m+2*i]), int(d[4+3*m+2*i])\n    print(-1 if D[a][b] == INF else D[a][b])\n",
+   "tests": [
+    {
+     "in": "6 4\n2 3 9\n1 6 4\n1 5 4\n3 6 4\n5\n5 6\n6 2\n6 6\n1 3\n5 3\n",
+     "out": "8\n13\n0\n8\n12\n"
+    },
+    {
+     "in": "3 3\n3 2 2\n1 2 8\n2 1 2\n3\n1 1\n3 2\n1 3\n",
+     "out": "0\n2\n4\n"
+    },
+    {
+     "in": "3 2\n1 2 9\n3 2 9\n2\n1 1\n3 3\n",
+     "out": "0\n0\n"
+    },
+    {
+     "in": "5 4\n4 1 5\n1 4 1\n5 4 2\n3 1 3\n2\n4 3\n1 4\n",
+     "out": "4\n1\n"
+    },
+    {
+     "in": "4 3\n4 1 4\n4 3 2\n3 2 7\n2\n1 1\n1 1\n",
+     "out": "0\n0\n"
+    },
+    {
+     "in": "3 5\n2 3 4\n1 2 4\n2 3 6\n2 1 9\n1 3 4\n5\n1 3\n1 3\n2 3\n3 1\n3 1\n",
+     "out": "4\n4\n4\n4\n4\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "3 1\n1 3 2\n4\n3 1\n2 3\n1 2\n1 3\n",
+     "out": "2\n-1\n-1\n2\n"
+    },
+    {
+     "in": "7 12\n5 7 6\n4 5 6\n5 1 3\n3 7 7\n1 2 9\n4 1 2\n6 3 5\n5 1 4\n6 4 4\n6 7 1\n5 1 7\n1 6 4\n3\n7 5\n4 6\n5 1\n",
+     "out": "6\n4\n3\n"
+    }
+   ],
+   "split": "holdout"
+  },
+  {
+   "id": "ho2-floyd-diam",
+   "st": "第一行 n m，接著 m 行每行 a b c，代表 a 和 b 之間有條長度 c 的無向邊。用 Floyd 算出所有點對的最短路後，輸出其中最大的那個距離（只看互相到得了的點對）。",
+   "rw_st": null,
+   "ref": "import sys\nd = sys.stdin.read().split()\nn, m = int(d[0]), int(d[1])\nes = []\nfor i in range(m):\n    a, b, c = int(d[2+3*i]), int(d[3+3*i]), int(d[4+3*i])\n    es.append((a, b, c))\n    es.append((b, a, c))\nINF = float(\"inf\")\nD = {}\nfor s in range(1, n+1):\n    t = {v: INF for v in range(1, n+1)}\n    t[s] = 0\n    for _ in range(n):\n        for a, b, c in es:\n            if t[a] + c < t[b]:\n                t[b] = t[a] + c\n    D[s] = t\nprint(max(D[a][b] for a in D for b in D if D[a][b] < INF))\n",
+   "tests": [
+    {
+     "in": "5 8\n1 4 8\n4 3 3\n3 4 3\n5 4 4\n5 4 1\n1 5 6\n2 4 7\n4 5 7\n",
+     "out": "14\n"
+    },
+    {
+     "in": "3 1\n2 1 5\n",
+     "out": "5\n"
+    },
+    {
+     "in": "5 7\n1 4 2\n4 5 4\n4 3 3\n3 2 7\n2 1 3\n1 4 8\n5 3 7\n",
+     "out": "9\n"
+    },
+    {
+     "in": "3 2\n3 1 4\n3 2 9\n",
+     "out": "13\n"
+    },
+    {
+     "in": "6 7\n4 5 8\n3 5 4\n1 3 9\n6 2 9\n4 6 1\n4 1 2\n3 5 1\n",
+     "out": "19\n"
+    },
+    {
+     "in": "6 6\n2 6 8\n1 3 7\n4 3 1\n1 5 4\n3 5 7\n6 2 4\n",
+     "out": "8\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "7 7\n1 4 9\n3 1 1\n3 4 4\n5 2 6\n5 3 7\n6 4 1\n1 3 5\n",
+     "out": "18\n"
+    },
+    {
+     "in": "3 1\n2 3 9\n",
+     "out": "9\n"
+    }
+   ],
+   "split": "holdout"
+  },
+  {
+   "id": "ho2-match",
+   "st": "第一行 n m e，二分圖左側 n 個頂點、右側 m 個頂點，接著 e 行每行 a b 表示左頂點 a 與右頂點 b 相連。請輸出最大匹配的邊數。",
+   "rw_st": null,
+   "ref": "import sys\nd = sys.stdin.read().split()\nn, m, e = int(d[0]), int(d[1]), int(d[2])\nok = {}\nfor i in range(e):\n    ok.setdefault(int(d[3+2*i]), set()).add(int(d[4+2*i]))\ndef best(i, used):\n    if i > n:\n        return 0\n    r = best(i + 1, used)\n    for y in ok.get(i, ()):\n        if y not in used:\n            r = max(r, 1 + best(i + 1, used | {y}))\n    return r\nsize = best(1, frozenset())\nprint(size)\n",
+   "tests": [
+    {
+     "in": "2 2 2\n1 1\n2 2\n",
+     "out": "2\n"
+    },
+    {
+     "in": "4 4 7\n3 2\n2 2\n2 1\n1 1\n1 4\n4 4\n4 3\n",
+     "out": "4\n"
+    },
+    {
+     "in": "4 4 1\n3 3\n",
+     "out": "1\n"
+    },
+    {
+     "in": "4 3 8\n2 1\n2 3\n1 2\n4 1\n4 2\n3 3\n3 2\n2 2\n",
+     "out": "3\n"
+    },
+    {
+     "in": "3 3 4\n3 3\n2 2\n3 2\n1 3\n",
+     "out": "2\n"
+    },
+    {
+     "in": "3 3 4\n2 2\n1 1\n3 2\n2 3\n",
+     "out": "3\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "2 2 2\n2 2\n2 1\n",
+     "out": "1\n"
+    },
+    {
+     "in": "4 4 8\n3 3\n2 1\n1 1\n4 4\n4 3\n3 2\n2 2\n1 3\n",
+     "out": "4\n"
+    }
+   ],
+   "split": "holdout"
+  },
+  {
+   "id": "ho2-assign",
+   "st": "第一行 n，接著 n 行各 n 個整數，第 i 行第 j 個數是工人 i 完成工作 j 的費用。每位工人必須分配到不同的工作，這是一個指派問題，請輸出總費用最低是多少。",
+   "rw_st": null,
+   "ref": "import itertools\nn = int(input())\nc = [list(map(int, input().split())) for _ in range(n)]\nprint(min(sum(c[i][p[i]] for i in range(n)) for p in itertools.permutations(range(n))))\n",
+   "tests": [
+    {
+     "in": "4\n6 30 24 14\n22 28 24 12\n10 6 14 2\n26 16 17 9\n",
+     "out": "41\n"
+    },
+    {
+     "in": "2\n27 29\n3 15\n",
+     "out": "32\n"
+    },
+    {
+     "in": "2\n19 27\n9 6\n",
+     "out": "25\n"
+    },
+    {
+     "in": "5\n12 25 1 23 25\n19 28 14 7 21\n3 28 18 27 5\n5 25 18 20 10\n22 2 18 6 18\n",
+     "out": "20\n"
+    },
+    {
+     "in": "5\n24 8 7 11 11\n3 27 19 22 14\n7 17 27 7 13\n17 22 8 29 19\n5 9 13 19 3\n",
+     "out": "29\n"
+    },
+    {
+     "in": "2\n19 13\n25 26\n",
+     "out": "38\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "5\n10 20 7 30 28\n24 4 4 2 10\n12 6 28 16 12\n2 20 20 20 18\n16 18 22 1 11\n",
+     "out": "26\n"
+    },
+    {
+     "in": "6\n23 17 27 11 29 3\n3 1 27 5 10 5\n21 30 22 2 26 30\n23 25 25 29 5 19\n29 13 25 25 17 29\n25 6 24 8 18 6\n",
+     "out": "44\n"
+    }
+   ],
+   "split": "holdout"
+  },
+  {
+   "id": "ho2-path",
+   "st": "第一行 n m s t，接著 m 行每行 a b c，表示車站 a 到車站 b 的單向軌道長度為 c。請輸出從 s 到 t 的最短路徑經過的車站編號（依序），若有多條最短路徑則輸出字典序最小的；無法到達輸出 -1。",
+   "rw_st": null,
+   "ref": "import sys\nsys.setrecursionlimit(10000)\nd = sys.stdin.read().split()\nn, m, s, t = int(d[0]), int(d[1]), int(d[2]), int(d[3])\nK = 4\nadj = {i: [] for i in range(1, n+1)}\nfor i in range(m):\n    a, b, c = int(d[K+3*i]), int(d[K+1+3*i]), int(d[K+2+3*i])\n    adj[a].append((b, c))\nallp = []\ndef go(x, path, w):\n    if x == t:\n        allp.append((w, path))\n        return\n    for y, c in adj[x]:\n        if y not in path:\n            go(y, path + [y], w + c)\ngo(s, [s], 0)\nallp.sort()\nif not allp:\n    print(-1)\nelse:\n    bw = allp[0][0]\n    print(*min(p for w, p in allp if w == bw))\n",
+   "tests": [
+    {
+     "in": "3 3 1 2\n1 2 5\n3 1 8\n1 3 4\n",
+     "out": "1 2\n"
+    },
+    {
+     "in": "5 7 2 1\n5 4 9\n4 5 9\n1 3 3\n2 4 9\n3 5 8\n4 5 3\n1 3 6\n",
+     "out": "-1\n"
+    },
+    {
+     "in": "5 7 1 4\n3 5 9\n2 1 7\n2 1 5\n3 4 2\n2 4 5\n3 4 4\n2 1 3\n",
+     "out": "-1\n"
+    },
+    {
+     "in": "3 1 3 2\n3 1 7\n",
+     "out": "-1\n"
+    },
+    {
+     "in": "4 1 1 4\n1 2 9\n",
+     "out": "-1\n"
+    },
+    {
+     "in": "6 7 2 3\n4 2 5\n5 3 1\n3 5 7\n1 5 5\n2 3 1\n6 2 5\n4 2 1\n",
+     "out": "2 3\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "8 4 7 8\n2 6 7\n8 4 6\n2 1 3\n4 8 5\n",
+     "out": "-1\n"
+    },
+    {
+     "in": "3 4 3 1\n3 1 2\n2 3 5\n2 1 5\n3 1 9\n",
+     "out": "3 1\n"
+    }
+   ],
+   "split": "holdout"
+  },
+  {
+   "id": "ho2-count",
+   "st": "第一行 n m s t，接著 m 行每行 a b c，表示 a 與 b 之間有一條長度 c 的雙向道路。請問從 s 到 t 的最短路徑共有幾條？到不了輸出 0。",
+   "rw_st": null,
+   "ref": "import sys\nsys.setrecursionlimit(10000)\nd = sys.stdin.read().split()\nn, m, s, t = int(d[0]), int(d[1]), int(d[2]), int(d[3])\nK = 4\nadj = {i: [] for i in range(1, n+1)}\nfor i in range(m):\n    a, b, c = int(d[K+3*i]), int(d[K+1+3*i]), int(d[K+2+3*i])\n    adj[a].append((b, c))\n    adj[b].append((a, c))\nallp = []\ndef go(x, path, w):\n    if x == t:\n        allp.append((w, path))\n        return\n    for y, c in adj[x]:\n        if y not in path:\n            go(y, path + [y], w + c)\ngo(s, [s], 0)\nallp.sort()\nif not allp:\n    print(0)\nelse:\n    c = sum(1 for w, p in allp if w == allp[0][0])\n    print(c)\n",
+   "tests": [
+    {
+     "in": "4 1 4 1\n1 2 5\n",
+     "out": "0\n"
+    },
+    {
+     "in": "6 7 2 1\n6 4 6\n6 4 2\n2 6 3\n1 3 2\n4 1 7\n5 3 9\n1 3 6\n",
+     "out": "1\n"
+    },
+    {
+     "in": "3 3 2 1\n1 2 3\n1 3 2\n2 1 8\n",
+     "out": "1\n"
+    },
+    {
+     "in": "4 1 3 4\n1 2 7\n",
+     "out": "0\n"
+    },
+    {
+     "in": "5 5 2 4\n2 4 7\n3 2 7\n3 1 7\n1 5 9\n1 5 5\n",
+     "out": "1\n"
+    },
+    {
+     "in": "5 4 2 1\n1 4 7\n1 5 2\n1 4 6\n3 1 6\n",
+     "out": "0\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "6 9 3 5\n6 4 1\n2 5 9\n3 4 2\n1 3 2\n5 3 8\n5 3 1\n5 3 7\n2 6 5\n4 3 4\n",
+     "out": "1\n"
+    },
+    {
+     "in": "3 3 1 2\n2 1 5\n2 3 4\n3 1 6\n",
+     "out": "1\n"
+    }
+   ],
+   "split": "holdout"
+  },
+  {
+   "id": "ho2-kth",
+   "st": "第一行 n m s t k，接著 m 行每行 a b c，表示 a 到 b 的有向邊長度 c。路徑不可重複經過同一個點。請輸出從 s 到 t 第 k 短的路徑長度，不足 k 條輸出 -1。",
+   "rw_st": null,
+   "ref": "import sys\nsys.setrecursionlimit(10000)\nd = sys.stdin.read().split()\nn, m, s, t = int(d[0]), int(d[1]), int(d[2]), int(d[3])\nK = 5\nk = int(d[4])\nadj = {i: [] for i in range(1, n+1)}\nfor i in range(m):\n    a, b, c = int(d[K+3*i]), int(d[K+1+3*i]), int(d[K+2+3*i])\n    adj[a].append((b, c))\nallp = []\ndef go(x, path, w):\n    if x == t:\n        allp.append((w, path))\n        return\n    for y, c in adj[x]:\n        if y not in path:\n            go(y, path + [y], w + c)\ngo(s, [s], 0)\nallp.sort()\nls = [w for w, p in allp]\nprint(ls[k-1] if len(ls) >= k else -1)\n",
+   "tests": [
+    {
+     "in": "3 3 1 3 1\n1 3 5\n1 2 5\n3 1 8\n",
+     "out": "5\n"
+    },
+    {
+     "in": "5 3 4 2 3\n4 5 6\n5 2 9\n4 2 7\n",
+     "out": "-1\n"
+    },
+    {
+     "in": "5 7 5 3 3\n3 5 4\n1 3 7\n1 3 7\n1 5 5\n3 4 5\n1 4 9\n5 2 1\n",
+     "out": "-1\n"
+    },
+    {
+     "in": "4 1 2 4 3\n4 3 7\n",
+     "out": "-1\n"
+    },
+    {
+     "in": "4 1 1 2 2\n3 2 5\n",
+     "out": "-1\n"
+    },
+    {
+     "in": "3 6 2 1 1\n2 1 1\n2 3 9\n2 3 3\n3 2 5\n1 3 4\n3 2 8\n",
+     "out": "1\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "6 4 3 1 3\n3 5 4\n5 6 7\n4 6 4\n6 2 9\n",
+     "out": "-1\n"
+    },
+    {
+     "in": "3 2 1 3 3\n2 3 4\n1 2 5\n",
+     "out": "-1\n"
+    }
+   ],
+   "split": "holdout"
+  },
+  {
+   "id": "ho2-limit",
+   "st": "第一行 n m s t k，接著 m 行每行 a b c，表示 a 到 b 的有向邊長度 c。請輸出 s 到 t 在最多使用 k 條邊的限制下的最短距離，辦不到輸出 -1。",
+   "rw_st": null,
+   "ref": "import sys\nsys.setrecursionlimit(10000)\nd = sys.stdin.read().split()\nn, m, s, t = int(d[0]), int(d[1]), int(d[2]), int(d[3])\nK = 5\nk = int(d[4])\nadj = {i: [] for i in range(1, n+1)}\nfor i in range(m):\n    a, b, c = int(d[K+3*i]), int(d[K+1+3*i]), int(d[K+2+3*i])\n    adj[a].append((b, c))\nINF = None\nlayer = {s: 0}\nbest = {s: 0}\nfor _ in range(k):\n    nl = {}\n    for x, w in layer.items():\n        for y, c in adj[x]:\n            if y not in nl or w + c < nl[y]:\n                nl[y] = w + c\n    for y, w in nl.items():\n        if y not in best or w < best[y]:\n            best[y] = w\n    layer = nl\nprint(best.get(t, -1))\n",
+   "tests": [
+    {
+     "in": "3 3 3 1 2\n3 1 4\n1 3 6\n2 3 8\n",
+     "out": "4\n"
+    },
+    {
+     "in": "5 7 2 5 4\n2 4 8\n2 5 2\n1 2 8\n4 2 1\n4 5 3\n5 1 4\n3 4 5\n",
+     "out": "2\n"
+    },
+    {
+     "in": "6 7 3 1 2\n1 5 2\n5 3 8\n5 3 1\n5 1 5\n2 6 6\n6 5 2\n3 5 4\n",
+     "out": "9\n"
+    },
+    {
+     "in": "3 3 1 2 1\n1 2 3\n3 1 7\n2 1 1\n",
+     "out": "3\n"
+    },
+    {
+     "in": "3 2 1 2 2\n3 1 4\n2 3 1\n",
+     "out": "-1\n"
+    },
+    {
+     "in": "3 5 2 3 1\n3 1 6\n1 2 2\n1 3 5\n2 1 4\n3 1 6\n",
+     "out": "-1\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "7 10 1 5 1\n5 2 5\n1 4 1\n2 7 1\n1 6 5\n2 3 9\n3 7 6\n1 3 4\n6 4 3\n3 7 5\n1 6 3\n",
+     "out": "-1\n"
+    },
+    {
+     "in": "4 1 1 4 2\n2 1 7\n",
+     "out": "-1\n"
+    }
+   ],
+   "split": "holdout"
+  }
+ ]
+}

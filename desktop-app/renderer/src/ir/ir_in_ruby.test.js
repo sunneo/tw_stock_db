@@ -5,7 +5,7 @@ const assert = require('assert'), fs = require('fs'), path = require('path'), os
 const IR = require('./ir_core.js'), PREP = require('./ir_prep_core.js'), INPY = require('./ir_in_python_core.js'), INB = require('./ir_in_ruby_core.js'), SAMPLES = require('./ir_samples.js');
 const OUT = { ruby: require('./ir_out_ruby_core.js'), python: require('./ir_out_python_core.js') };
 const DIR = process.env.FA_TS_DIR || [path.join(os.homedir(), '.cache', 'fa-ts'), path.join(os.tmpdir(), 'fa-ts-cache'), '/tmp/fa-ts-cache'].find((d) => fs.existsSync(path.join(d, 'tree-sitter-python.wasm')));
-let PY = null; for (const c of ['python', 'python3']) { const r = cp.spawnSync(c, ['-I', '-c', 'print(1)'], { encoding: 'utf8' }); if (r.status === 0 && r.stdout.trim() === '1') { PY = c; break; } }
+let PY = null; for (const c of ['python3', 'python']) { const r = cp.spawnSync(c, ['-I', '-c', 'print(1)'], { encoding: 'utf8' }); if (r.status === 0 && r.stdout.trim() === '1') { PY = c; break; } }
 let pass = 0, fail = 0; const notes = [];
 const t = (name, fn) => { try { fn(); pass++; } catch (e) { fail++; console.error('FAIL ' + name + '\n   ' + String(e.message).split('\n').slice(0, 40).join('\n   ')); } };
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'irt-'));

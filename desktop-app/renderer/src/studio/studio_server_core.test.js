@@ -19,12 +19,16 @@ function mk(desktop, hostOps) {
 }
 (async () => {
   const t = mk(true, { studio_probe: () => ({ ok: true, backends: [{ id: 'cpu-py', available: false, reason: '找不到 Python' }] }), studio_select: () => ({ ok: false, chosen: null, reason: '沒有可用的後端' }), studio_train_start: (p) => (p.cfg.trainFile === 'bad' ? { ok: false, error: 'cpu-py 不可用：x' } : { ok: true, jobId: 'train1' }) });
-  let r = await t.req('GET', '/api/info'); check('info', r.j.ok && r.j.desktop && r.j.tabs.length === 8 && r.j.workDir === '/ud/studio', r.j);
+  let r = await t.req('GET', '/api/info'); check('info', r.j.ok && r.j.desktop && r.j.tabs.length === 10 && r.j.workDir === '/ud/studio', r.j);
+  // 流程總覽與建議（DESIGN §19）：路由接上；讀不到的資料照實說
+  let q = await t.req('GET', '/api/pipeline?kind=lora&run=/ud/studio/none'); check('pipeline 路由接上：lora 七個階段，沒有產物時第一段待做', q.j.ok === true && q.j.stages.length === 7 && q.j.stages[0].state === '待做' && q.j.live === null, q.j);
+  q = await t.req('GET', '/api/pipeline?kind=bad'); check('pipeline 未知種類回 400', q.s === 400 && q.j.ok === false, q.j);
+  q = await t.req('GET', '/api/advice?kind=lora&name=none'); check('advice 沒有資產：證據不足，不猜', q.j.ok === true && q.j.suggestions.length === 0 && q.j.insufficient[0].rule === 'eval', q.j);
   check('info 回報 fap 沒授權（資料只在記憶體）', r.j.storage.ok === false && /記憶體/.test(r.j.storage.message), r.j.storage);
   // 版面偏好
   r = await t.req('GET', '/api/prefs'); check('預設版面', r.j.layout.panes.left[0] === 'assets');
   r = await t.req('POST', '/api/prefs', { layout: { panes: { left: ['train'], right: ['assets'] }, split: 0.9 } }); check('偏好存起來並正規化', r.j.layout.split === 0.8 && r.j.layout.panes.left[0] === 'train' && t.prefs().layout.split === 0.8, r.j);
-  r = await t.req('POST', '/api/prefs', { reset: true }); check('還原版面', r.j.layout.split === 0.45 && r.j.layout.panes.left.length === 5);
+  r = await t.req('POST', '/api/prefs', { reset: true }); check('還原版面', r.j.layout.split === 0.45 && r.j.layout.panes.left.length === 6);
   // trainer 往返
   r = await t.req('POST', '/api/trainer/snapshot', { name: 'my-trainer' }); check('快照存成資產', r.j.ok && r.j.name === 'my-trainer', r.j);
   r = await t.req('POST', '/api/trainer/snapshot', { name: 'my-trainer' }); check('同名不覆蓋', r.s === 409);
@@ -124,6 +128,25 @@ function mk(desktop, hostOps) {
   r = await t.req('GET', '/api/lora'); check('登錄表顯示已載入', r.j.entries.find((e) => e.id === 'good').loaded === true && r.j.loaded.length === 1);
   r = await t.req('POST', '/api/lora/enable', { id: 'good', on: false }); r = await t.req('GET', '/api/lora'); check('停用會卸載並記住', !r.j.entries.find((e) => e.id === 'good').enabled && r.j.loaded.length === 0 && t.prefs().loraEnabled.good === false);
   r = await t.req('POST', '/api/lora/load', { domains: ['doc_knowledge'] }); check('停用的不會被載入', r.j.active.length === 0);
+  { // 槽位管理（DESIGN.lora-training.md §14）：槽容量 16；釘選、手動卸載、替換（成功、套用失敗還原）
+    await mkLora('pa', { domains: ['slotA'], eval: { groups: { g: { adapter: 0.9, base: 0.5 } } } }); await mkLora('pb', { domains: ['slotB'], eval: { groups: { g: { adapter: 0.9, base: 0.5 } } } });
+    r = await t.req('POST', '/api/lora/load', { domains: ['slotA'] }); check('槽位：載入 pa', r.j.active.join() === 'pa', r.j);
+    r = await t.req('GET', '/api/lora/status'); check('status：槽容量 16、已用 16、剩 0、slots 只有 pa', r.j.slotCapacity === 16 && r.j.usedRank === 16 && r.j.freeRank === 0 && r.j.slots.length === 1 && r.j.slots[0].id === 'pa', r.j);
+    check('status：registered 含 model card（版本、描述、相容、釘選）', r.j.registered.some((c) => c.id === 'pa' && c.compat === 'ok' && c.pinned === false && 'version' in c && 'description' in c), r.j.registered[0]);
+    r = await t.req('POST', '/api/lora/pin', { id: 'pa' }); check('釘選 pa', r.s === 200 && r.j.pinned === true, r.j);
+    r = await t.req('POST', '/api/lora/unload', { id: 'pa' }); check('釘選的手動卸載 409 並說明', r.s === 409 && /釘選/.test(r.j.error), r.j);
+    r = await t.req('POST', '/api/lora/replace', { outId: 'pa', inId: 'pb' }); check('釘選的替換 409（不強制）', r.s === 409 && /釘選/.test(r.j.error), r.j);
+    r = await t.req('POST', '/api/lora/unpin', { id: 'pa' }); check('解除釘選', r.s === 200 && r.j.pinned === false, r.j);
+    t.h.loraApply = async () => ({ ok: false, error: '主程序拒絕' });
+    r = await t.req('POST', '/api/lora/replace', { outId: 'pa', inId: 'pb' }); check('套用失敗：409、rolledBack、舊的（pa）還在', r.s === 409 && r.j.rolledBack === true && r.j.active.join() === 'pa' && /主程序拒絕/.test(r.j.error), r.j);
+    delete t.h.loraApply;
+    r = await t.req('POST', '/api/lora/replace', { outId: 'pa', inId: 'pb' }); check('替換成功：pb 上線、pa 下線', r.s === 200 && r.j.active.join() === 'pb', r.j);
+    r = await t.req('GET', '/api/lora/status'); check('替換結束後 status.replacing 為 null', r.j.replacing === null, r.j.replacing);
+    r = await t.req('POST', '/api/lora/replace', { outId: 'nope', inId: 'pb' }); check('替換：不存在的 outId 回 404', r.s === 404, r.j);
+    r = await t.req('POST', '/api/lora/pin', { id: 'nope' }); check('釘選：不存在的 id 回 404', r.s === 404, r.j);
+    r = await t.req('POST', '/api/lora/unload', { id: 'pb' }); check('手動卸載：未釘選可卸', r.s === 200 && r.j.status.usedRank === 0, r.j);
+    r = await t.req('POST', '/api/lora/unload', { id: 'nope' }); check('手動卸載：不存在的 id 回 404', r.s === 404);
+  }
   r = await t.req('POST', '/api/lora/enable', { id: 'zzz', on: true }); check('不存在的 adapter 404', r.s === 404);
   await t.storage.deleteAsset('lora', 'noeval'); r = await t.req('GET', '/api/lora'); check('資產刪除後登錄表同步', !r.j.entries.find((e) => e.id === 'noeval'));
   // 網頁版
@@ -164,5 +187,41 @@ function mk(desktop, hostOps) {
   r = await dw3.req('GET', '/api/backends?kind=lora'); check('桌面版清單：wasm-web 用頁內宿主的探測取代，並帶 webTrain 旗標', r.j.desktop === true && r.j.webTrain === true && r.j.backends.find((b) => b.id === 'wasm-web').available === true && r.j.backends.find((b) => b.id === 'cpu-py').available, r.j.backends);
   const dw2 = mk(true, { studio_train_start: () => ({ ok: true, jobId: 'job_desktop' }) }); dw2.h.webTrain = WT;
   r = await dw2.req('POST', '/api/train/start', { name: 'd2', backend: 'cpu-py', cfg: { trainFile: 'x.jsonl', outputDir: '/o' } }); check('桌面版選 cpu-py 仍走子行程', r.j.jobId === 'job_desktop' && !r.j.web, r.j);
-  console.log(ok + ' passed, ' + bad.length + ' failed', bad); process.exit(bad.length ? 1 : 0);
+  // exportCaps 接上主行程偵測（DESIGN §20.3 第 2 項）：流程 API 讀取前會問一次（節流），工具找到也不宣稱可用（執行器未寫）
+  const dx = mk(true, { studio_export_tools: () => ({ ok: true, tools: { optimum: { found: true }, onnxruntime: { found: true }, llamaCpp: { found: true } } }) });
+  r = await dx.req('GET', '/api/pipeline?kind=lora&name=none'); check('流程 API 會向主行程問匯出工具', dx.calls.some((c) => c[0] === 'studio_export_tools'), dx.calls.map((c) => c[0]));
+  check('工具全找到時匯出仍不可用（回應不含 onnx／gguf 可用旗標）', !JSON.stringify(r.j).includes('"onnxExport":true') && !JSON.stringify(r.j).includes('"ggufExport":true'), r.j);
+  const nCalls = dx.calls.filter((c) => c[0] === 'studio_export_tools').length;
+  await dx.req('GET', '/api/pipeline?kind=lora&name=none'); check('節流：30 秒內不重問', dx.calls.filter((c) => c[0] === 'studio_export_tools').length === nCalls);
+  // 資料集逐筆編輯（DESIGN §22.2 第 3 項）：讀分頁、修改、刪除（要確認）、新增；寫回後資產的雜湊核對仍通過；壞檔與非 data/ 路徑拒絕
+  const de = mk(false);
+  const dsFiles = { 'data/train.jsonl': enc('{"q":1}\n{"q":2}\n{"q":3}\n') };
+  const dsMan = Asset.createManifest({ kind: 'trainer', name: 'ds1', files: dsFiles, counts: {}, owner: 'user', created: '2026-11-12T00:00:00.000Z' });
+  await de.storage.saveAsset({ manifest: dsMan, files: dsFiles }, { replace: true });
+  r = await de.req('GET', '/api/dataset/rows?kind=trainer&name=ds1&path=data%2Ftrain.jsonl'); check('逐筆：讀取 3 筆、可編輯、不 evalStale', r.j.ok && r.j.editable === true && r.j.total === 3 && r.j.items[2].index === 2 && r.j.evalStale === false, r.j);
+  r = await de.req('GET', '/api/dataset/rows?kind=trainer&name=ds1&path=data%2Fnope.jsonl'); check('逐筆：沒有的檔案 404', r.s === 404);
+  r = await de.req('GET', '/api/dataset/rows?kind=trainer&name=ds1&path=manifest.json'); check('逐筆：非 data/ 路徑拒絕', r.s === 400);
+  r = await de.req('POST', '/api/dataset/edit', { kind: 'trainer', name: 'ds1', path: 'data/train.jsonl', op: 'update', index: 1, row: { q: 9 } });
+  check('逐筆：修改第 2 筆成功', r.j.ok && r.j.total === 3, r.j);
+  r = await de.req('GET', '/api/dataset/rows?kind=trainer&name=ds1&path=data%2Ftrain.jsonl&offset=1&limit=1'); check('逐筆：修改後讀回是新內容', r.j.items[0].preview === '{"q":9}', r.j);
+  r = await de.req('GET', '/api/asset?kind=trainer&name=ds1'); check('逐筆：寫回後資產雜湊核對仍通過', r.j.verify.ok === true, r.j.verify);
+  r = await de.req('POST', '/api/dataset/edit', { kind: 'trainer', name: 'ds1', path: 'data/train.jsonl', op: 'delete', index: 0 });
+  check('逐筆：刪除沒確認 → 400 並要求確認', r.s === 400 && r.j.needsConfirm === true, r.j);
+  r = await de.req('POST', '/api/dataset/edit', { kind: 'trainer', name: 'ds1', path: 'data/train.jsonl', op: 'delete', index: 0, confirmed: true });
+  check('逐筆：確認後刪除第 1 筆（剩 2 筆）', r.j.ok && r.j.total === 2, r.j);
+  r = await de.req('POST', '/api/dataset/edit', { kind: 'trainer', name: 'ds1', path: 'data/train.jsonl', op: 'add', row: { q: 'new' } });
+  check('逐筆：新增接在尾端（3 筆）', r.j.ok && r.j.total === 3, r.j);
+  r = await de.req('POST', '/api/dataset/edit', { kind: 'trainer', name: 'ds1', path: 'data/train.jsonl', op: 'update', index: 7, row: { q: 1 } });
+  check('逐筆：索引越界 400', r.s === 400, r.j);
+  r = await de.req('POST', '/api/dataset/edit', { kind: 'trainer', name: 'ds1', path: 'data/train.jsonl', op: 'update', index: 0, row: 'str' });
+  check('逐筆：內容不是物件 400', r.s === 400, r.j);
+  r = await de.req('GET', '/api/dataset/rows?kind=trainer&name=ds1&path=data%2Ftrain.jsonl&offset=0&limit=10');
+  check('逐筆：最後內容正確（9、new）', r.j.total === 3 && r.j.items[0].preview === '{"q":9}' && r.j.items[2].preview === '{"q":"new"}', r.j);
+  const dsBad = { 'data/broken.jsonl': enc('{"q":1}\n{oops\n') };
+  await de.storage.saveAsset({ manifest: Asset.createManifest({ kind: 'trainer', name: 'ds2', files: dsBad, counts: {}, owner: 'user', created: '2026-11-12T00:00:00.000Z' }), files: dsBad }, { replace: true });
+  r = await de.req('GET', '/api/dataset/rows?kind=trainer&name=ds2&path=data%2Fbroken.jsonl'); check('逐筆：壞行的檔案不給編，寫第 2 行', r.j.editable === false && /第 2 行/.test(r.j.reason), r.j);
+  r = await de.req('POST', '/api/dataset/edit', { kind: 'trainer', name: 'ds2', path: 'data/broken.jsonl', op: 'add', row: { q: 2 } }); check('逐筆：壞檔的寫入也拒絕（409）', r.s === 409, r.j);
+    // 聊天每輪路由用的登錄表存取器（不需要 HTTP 監聽）
+{ const C2 = require('./studio_server_core.js').createServer({}); check('createServer 回傳 registry()（聊天路由取得登錄表）', typeof C2.registry === 'function' && typeof C2.route === 'function'); }
+console.log(ok + ' passed, ' + bad.length + ' failed', bad); process.exit(bad.length ? 1 : 0);
 })();

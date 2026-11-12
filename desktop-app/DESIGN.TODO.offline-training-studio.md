@@ -675,3 +675,478 @@ Backend {
 - 沒有真的連網抓 GitHub wiki 的 Electron 驗證（規則：不連網路；單元測試用假抓取驗證了網址轉換、頁面探索與確認流程）。
 - blockly 訓練、matrix 訓練的 Electron 端到端沒跑（matrix **評量**在真 Electron 以真 Python 判題器 6/6 通過）。
 - 老師迴圈沒有以真線上 AI 跑過（沒有可用模型；Electron 驗證用 `_runSubAgentTask` 替身確認白名單註冊、驗證、移除與 commit）。
+
+## 16. 工作室新增領域收尾（2026-11-11，Linux 工作階段，分支 claude/studio-domain-author-dcb72c）
+
+### 16.1 這次實際驗證的
+- 單元測試（都在 `renderer/src/studio/`，逐一執行）：`dsl_expr_core.test.js` 77／0；`domain_spec_core.test.js` 85／0；`domain_e2e.test.js` 17／0（matrix 部分全過，blockly 部分因沒有 tree-sitter 快取而略過，見 16.3）；`studio_layout_core.test.js` 27／0；`studio_server_core.test.js` 91／0；`studio_host.test.js` 20／0；`studio_embed.test.js` 16／0；`sym_studio.test.js` 71／0（matrix 真跑 Python 判題）。
+- 修掉的真問題：(a) `dsl_expr_core.js` 推導式 `[x for x in b]` 裡的 `x` 被算成自由變數（元素先解析、綁定後才知道），現在於 for 綁定後移除；(b) 示範 matrix 的輸入 `0` 同時出現在 train 與 holdout（改成 6，留出題混進訓練的檢查正確擋下）；(c) 示範 matrix 一筆期望值算錯（(3·13+2) mod 11 = 8，不是 9）；(d) 版面測試沒跟上「領域」分頁（左欄 6 個）。
+- 其餘測試紅燈多是測試本身過時或期望錯，逐項依真實行為修正並寫在提交訊息，沒有為了綠而改掉規格。
+- 純邏輯端到端：`scripts/training-studio.js pack` → 自我核對 → `verify all --deep`，matrix 示範（train 2／2、holdout 2／2）與 blockly 示範（train 2／2、holdout 2／2）都通過（輸出放在工作階段暫存目錄，未寫進倉庫）。
+
+### 16.2 沒有驗證的
+- **真 Electron 視窗**：這次沒開。`DISPLAY=:2.0` 存在，但只跑了純邏輯測試；工作室畫面、新增領域的按鈕流程、老師迴圈的真畫面都沒看過。
+- **blockly 訓練包裝的 Electron 端到端**：未做（同上，且缺 tree-sitter 快取）。
+- **「新增領域→產生資料→評量」在 App 內的完整點擊流程**：只有純函式與 `training-studio.js` 驗證。
+
+### 16.3 缺口（寫明原因與解除條件）
+1. **`builtin-training/` 目錄不存在**：HANDOFF 0.3 寫「builtin-training/ 已寫並存檔提交」，但 `git log --all -- '*builtin-training*'` 沒有任何提交。`training-studio.js pack` 目前會產生該目錄（預設位置），還沒有提交內容。解除：決定是否要把示範資產 pack 進倉庫（會變成內建資產，需先確認授權與來源欄位）。
+2. **blockly 端到端缺 tree-sitter 快取**：`domain_e2e.test.js` 與 blockly 判題需要 `~/.cache/fa-ts/tree-sitter-python.wasm`（或 `FA_TS_DIR`）。這台找不到專案自己的副本（只有 VS Code 內建的 Copilot 套件裡有一份，來源與版本未核對，沒有拿來用）。解除：由管理者提供專案的 tree-sitter 資產（HANDOFF 的 `assets-tree-sitter` 分支）或同意我下載並核對檔名與大小。
+3. **測試用 `python`**：這台的 `python` 不支援 `-I`，測試與 `training-studio.js` 改用 `FA_PYTHON=python3`（測試檔中 `dsl_expr_core.test.js` 已改為 `python3`；`training-studio.js` 的預設仍是 `python`，尚未改）。
+4. **離線訓練器 GUI（使用者要求優先）**：本次沒有做。本次聚焦在工作室新增領域的正確性。下一步是補齊離線訓練器 GUI 的未實作項目（§15 盤點之外的新缺口需重新盤點）。
+5. **blockly／矩陣訓練包裝的 GUI 端到端**：`lora-train/gen/` 的產生器這次只做了 `training-studio.js` 的純邏輯路徑，沒有在 App 內跑一次。
+6. **老師迴圈**：仍只用替身驗證，沒有真線上 AI（同 §15.5）。
+
+### 16.4 接手（給下一個工作階段）
+- 分支 `claude/studio-domain-author-dcb72c`，本次提交：DSL 與示範修正、版面測試更新（見 `git log`）。沒有推送，沒有 publish，沒有動 `lora-train/`。
+- 接續順序：(1) 決定 16.3-1 與 16.3-2；(2) 離線訓練器 GUI 缺口重新盤點並補齊；(3) 在有顯示的環境下做 Electron 視窗驗證（16.2）；(4) 把 `training-studio.js` 預設 Python 改為可設定（16.3-3）。
+- 注意：未追蹤的 `lora-train/` 修改沒有做，管理者的 `~/fa/desktop-app/lora-train/` 不要碰。
+
+## 17. 流程總覽（pipeline view）設計與進度（2026-11-11）
+
+使用者原話：「訓練工作室除了現有的view, 對於訓練各種(colu, matrix, blockly, LoRA, LLM Model) 想要有一個pipeline view」；另：「不只用來產生LoRA，也能基於基礎的那包qwen，經過資料輸入訓練，產生更強的model，可以選gguf, onnx，預設以當下環境(網頁/desktop-app native) 優先」。
+
+### 17.1 階段圖（左到右）
+| 訓練 | 階段 |
+|---|---|
+| colu／matrix／blockly（符號式） | 資料來源／匯入清洗 → 資料產生（驗證）→ 切分訓練與留出 → 訓練（後端固定 cpu-js）→ 評量（基底 vs 微調，退步列出）→ 打包／匯出 → 按需載入（略過：符號式由程式直接使用） |
+| LoRA | 同上，訓練後端 cpu-py／wasm-web（webgpu、directml、vulkan 仍是研究項，不列入）；打包為 lora.bin／fatrain；按需載入＝登錄與套用 |
+| LLM 模型（完整模型） | 同上，訓練（目前只有 LoRA 路線）→ 評量 → 合併（LoRA 併入基底）→ 匯出（ONNX q8 或 GGUF）→ 按需載入（ONNX 執行包） |
+
+### 17.2 狀態推導（只看真實產物與標記，不自己宣稱完成）
+- 每階段的事實由呼叫端從資產庫與磁碟讀出：`products`（有產物才算）、`done`（有 done 標記）、`running`、`failed`（原因）、`skipped`（原因）、`elapsedMs`。
+- 規則（`pipeline_core.stageState`）：failed 優先 → running → skipped → 前一個必要階段未完成則待做 → 有產物且 done → 完成 → 有產物但無 done → **失敗**（產物不完整）→ 其他待做。
+- 按需載入為非必要階段；未實作階段（`implemented:false`）固定為待做並帶阻礙原因，畫面標「尚未實作」。
+- 產物摘要（`summarizeProduct`）：筆數（train＋holdout）、檔案數、manifest 雜湊前 16 碼；沿用 `asset_core` 的 `manifestHash`，不另起狀態儲存。
+
+### 17.3 匯出格式預設（`pickExportFormat(env, caps)`）
+- 網頁與桌面本機都**優先 ONNX q8**；GGUF（q8_0）只在有 llama.cpp 後端（`caps.ggufExport`）時提供，不會在有 ONNX 時改預設。
+- 只有 GGUF 可用時預設改為 GGUF；兩者都沒有時預設為空，並寫出「尚未實作」原因。
+- 格式由 `caps` 注入，不寫死；env 不合法回錯誤。
+
+### 17.4 已實作與驗證（2026-11-11）
+- `renderer/src/studio/pipeline_core.js`（UMD，純函式）與 `pipeline_core.test.js`：31／0。涵蓋五種階段表、狀態推導（完成、失敗、待做、進行中、略過、前一階段未完成、耗時與產物帶出）、LLM 匯出與載入標示未實作、格式預設（網頁與桌面、有無 llama.cpp、只有 GGUF、無工具）。
+- 測試期間修掉的設計缺陷：第一版「完成」判斷先於「前一階段未完成」，後面階段有殘留產物時會被誤判為完成；已改為先判斷前置階段。
+
+### 17.5 未做（缺口與解除條件）
+1. **GUI 沒接上**：`studio-viewer.template.html` 還沒有流程總覽頁，也沒有 `/api/pipeline` 路由。解除：在 `studio_server_core.js` 加路由，從資產庫與磁碟組出 `facts`，再交給 `deriveStageStates`；畫面每節點顯示狀態、產物、耗時，可點進細節與重跑該階段。
+2. **「重跑該階段」**沒有接任何執行器：符號式的 `sym_train_core` 與 LoRA 的訓練入口已存在，但還沒有依階段 id 分派的介面。
+3. **LLM 完整微調**沒有實作；目前 llm 的訓練階段只有 LoRA 路線。
+4. **ONNX／GGUF 匯出工具**這台都沒有（optimum、llama.cpp）。任何下載都要先回報並由使用者同意。在那之前匯出與載入階段維持「尚未實作」。
+5. **asset kind 沒有 llm**：`asset_core.KINDS` 只有 colu、blockly、matrix、uml、trainer、lora。完整模型的產物目前無法用現有資產 kind 表示。解除條件：先決定 llm 產物是 kind 新增，還是沿用 lora＋export 子產物；需要 schema 版本升級，這次沒有改。
+6. **Electron 視窗與 GUI** 這次沒驗（同 §16.2）。
+
+### 17.6 接手
+- 檔案：`renderer/src/studio/pipeline_core.js`、`pipeline_core.test.js`（新增，未與其他檔案混在一起）。
+- 接續順序：(1) 決定 17.5-5 的 llm 產物表示；(2) 在 `studio_server_core.js` 加 `/api/pipeline`；(3) 在檢視器加流程總覽頁；(4) 把 `facts` 與既有資產的 done 標記對上（先確認各訓練寫不寫 done 標記）。
+
+## 18. 流程總覽：訓練中即時狀態與「下一次該加強什麼」（2026-11-11）
+
+使用者原話：「pipeline view可以在跑訓練時，看到每個階段的狀況，以及可以知道下一次訓練該加強什麼」。兩件事都是純核心＋單元測試；GUI 與路由還沒接（見 18.4）。
+
+### 18.1 訓練進行中的即時狀態（`renderer/src/studio/pipeline_live_core.js`）
+- **資料來源**：日誌逐行經 `backend_cpu_py.parseProgressLine` 解析（已存在、已匯出）。事件型別：`progress`（tqdm 的步數與 s/it）、`log`（loss 字典）、`eval`、`paused`（`[paused] step=N`）、`done`（`[done] adapter saved to …`）、`error`。
+- `liveProgress(events, opts)` 回傳：日誌狀態（進行中／完成／暫停／失敗／待做）、步數與總步數、百分比、每步秒數（優先用日誌的 s/it，沒有才用起始時間推算，並標明來源）、預估剩餘秒數、經過秒數、loss（最後一次與第一次）、評估 loss、記憶體（最後值、峰值、取樣數，**只用呼叫端的真實取樣**；沒有取樣就寫「沒有記憶體取樣」）。
+- **不宣稱完成**：`progressToFacts` 只把日誌轉成 facts 片段（running、failed、logDone、progress、暫停原因）。階段最後是否完成仍由 `pipeline_core` 依產物與 done 標記判斷。日誌寫了 `[done]` 但沒有產物與 done 標記 → 失敗（不算完成）。
+- `pipeline_core.stageState` 因此多了三個規則：暫停 → 進行中（標明暫停）、`logDone` 但沒有 done 標記 → 失敗、階段結果附上 `progress`。
+
+### 18.2 下一次訓練建議（`renderer/src/studio/train_advice_core.js`）
+- 輸入：`eval_run.py --json_out` 的 `groups`（{組名: {n, base, tuned}}）、`rows`（有 `key`、`tuned_ok`、`note`，可選 `gold`、`pred`）、`trainRows`（{"task/kind": 列數}，由呼叫端從資料檔數出）、`source`（證據來源檔名）、`thresholds`（可覆寫）。
+- **規則寫在資料表 `RULES`**（不寫死在畫面）。每條有 scope（group／domain／global）、條件 `[欄位, 運算子, 值或門檻名]`、動作、嚴重度、文字樣板。目前六條：
+  | 規則 | 範圍 | 條件（預設門檻） | 動作 |
+  |---|---|---|---|
+  | regression | 組 | 微調題數 < 基底題數 | 調比重 |
+  | below-gate | 組 | 題數 ≥ 5 且微調正確率 < 60% | 補資料 |
+  | few-rows | 領域 | 訓練列數 < 200 | 補資料 |
+  | format-errors | 領域 | 失敗 ≥ 3 題且格式錯誤占失敗 ≥ 50% | 補資料（格式範例） |
+  | content-errors | 領域 | 失敗 ≥ 3 題且內容錯誤占失敗 ≥ 50% | 補資料（同題型） |
+  | position-bias | 全體 | 有 gold／pred，題數 ≥ 8，某選項被預測占 ≥ 50% | 調比重 |
+- **動作對應**：補資料（到匯入／產生頁）、調比重、換超參數（只在資料足夠時）、先確認（證據不足）。每條建議附 `actionLabel`、`actionHint`，畫面用來連到對應按鈕。
+- **依據**：每條建議都有 `evidence.source`（來源檔與 JSON 路徑，例如 `groups["group/…"]`）與 `evidence.numbers`（規則實際用到的數字）。
+- **證據不足不猜**：條件缺欄位時不給建議，改列入 `insufficient`，寫明缺哪個欄位。目前 `rows` 沒有 `gold`、`pred`，所以位置偏誤一律列為證據不足。
+- 失敗型態從 `note` 分類：`format…` → 格式，`wrong…` → 內容，其他 → 其他。
+
+### 18.3 測試（已跑）
+- `pipeline_core.test.js` 31／0（含本節新增的暫停、logDone 規則）。
+- `pipeline_live_core.test.js` 20／0：用 `parseProgressLine` 解析真實格式的日誌行；涵蓋進行中、s/it 與推算、預估剩餘、loss、記憶體取樣與缺取樣、`[done]`／`[paused]`／錯誤、無事件、與 facts 的串接（含「日誌完成但沒有產物」不算完成）。
+- `train_advice_core.test.js` 23／0：六條規則的觸發與不觸發、門檻覆寫、失敗型態分類、位置偏誤（有欄位才判、題數不足不判）、組別數字不完整與缺列數的證據不足、空輸入不丟例外、每條建議都有依據。
+
+### 18.4 未做與缺口
+1. **GUI 與路由沒接**：流程總覽畫面、`/api/pipeline`（組 facts：讀日誌檔、done 標記、產物、記憶體取樣）、即時更新的輪詢或推送，都還沒做。
+2. **記憶體取樣**沒有實作：呼叫端要用真實程序的 RSS（桌面版可讀程序資訊），本模組只接收取樣。
+3. **`eval_run.py` 缺 gold／pred**：位置偏誤要 `rows` 每列有 `gold`（標準答案字母）與 `pred`（模型預測字母）。`lora-train/eval_run.py` 的 `det` 目前沒寫這兩欄。這是管理者資料夾的改動（`lora-train/` 在本工作樹只讀），需要由管理者在 `eval_run.py` 補上，再提交。
+4. **`trainRows` 的來源**：呼叫端要從 `lora-train/data/*.jsonl` 數出每個 `task/kind` 的列數，目前沒有這段程式。
+5. **還沒用真的評量輸出跑過**：目前只用手寫的 JSON（形狀與 `eval_run.py --json_out` 相同）測試。真實輸出出來後應該再跑一次，確認組名（含 `seen/`、`heldout/`、`pos/` 前綴）與門檻的結果合理。
+6. **門檻是預設值**，沒有依據統計檢定；`eval_run.py` 也已說明「clearly win」只是經驗規則。
+
+### 18.5 接手
+- 檔案：`pipeline_live_core.js`、`pipeline_live_core.test.js`、`train_advice_core.js`、`train_advice_core.test.js`，以及 `pipeline_core.js`（新增 logDone 與 progress 的傳遞）。
+- 接續順序：(1) 管理者在 `eval_run.py` 補 gold／pred；(2) 用真的評量輸出跑 `adviceFromEval` 看結果；(3) 在 `studio_server_core.js` 加 `/api/pipeline` 與 `/api/advice`，組 facts 與 `trainRows`；(4) 畫面：流程總覽顯示即時狀態與建議清單，建議的按鈕連到補資料、調比重、換超參數。
+
+## 19. 流程總覽接上：路由、真實紀錄、畫面與離線訓練器 GUI 盤點（2026-11-12）
+
+管理者指示：先 rebase 到最新 desktop-app（已完成，基底 `4c5b5e15`）；把流程總覽接上（路由、畫面、真實紀錄、記憶體取樣）；LLM 階段圖與格式選擇；離線訓練器 GUI 盤點後逐項做。
+
+### 19.1 真實紀錄（資料從哪裡來）
+- **訓練日誌**：`backend_cpu_py` 把子行程輸出的每一行逐行寫進 `<outputDir>/train.log`（追加；寫不了不影響訓練）。
+- **子行程 pid**：啟動時寫進 `<outputDir>/run.pid`。
+- **完成標記**：資產（manifest.json＋sha256）寫入即為完成；日誌的 `[done]` 只代表日誌寫了，不算完成（§18.1）。
+- **記憶體**：主行程的 `studio_host.studio_run_info` 讀 `run.pid` 對應的 `/proc/<pid>/status` VmRSS（只有 Linux）；主行程 RSS（`process.memoryUsage().rss`）另附。Windows 沒有 /proc，回「尚未實作」並寫明。
+- **事件解析**：在主行程用 `backend_cpu_py.parseProgressLine` 解析成事件，回給伺服器（伺服器與畫面不再解析日誌）。
+
+### 19.2 路由與畫面
+- `renderer/src/studio/pipeline_routes_core.js`（依賴注入，純核心）：`GET /api/pipeline?kind=&name=&run=&env=`、`GET /api/advice?kind=&name=`（讀資產的 `eval.json`，從資料檔數 `trainRows`，holdout 不計）、`POST /api/advice/from-json`（貼上的評量 JSON）。
+- `studio_server_core.js` 接上（依賴以工廠參數注入，和其他模組同一個寫法）。
+- `renderer/src/studio/pipeline_view_core.js`：HTML 產生器（所有外部字串先跳脫）。資料沒有寫「無資料（原因）」；功能沒做寫「尚未實作（阻礙）」。
+- 檢視器：新增「流程」分頁（版面 TABS 加在「訓練」之後），執行中每 2 秒重讀。建議的按鈕目前只顯示「請到『X』分頁操作」（沒有自動切換分頁，這點未做，見 19.5）。
+- 嵌入清單（`scripts/embed-code-ui.js`）已加入新模組（只改清單，**沒有執行嵌入**）。
+
+### 19.3 LLM 模型階段圖與格式選擇
+- 階段：資料→產生→切分→訓練（LoRA 或完整微調；目前只有 LoRA）→評量→合併→匯出（ONNX q8 或 GGUF）→按需載入。
+- 格式預設：網頁與桌面本機都優先 ONNX q8；GGUF 只在有 llama.cpp 後端時提供（`pipeline_core.pickExportFormat`，§17.3）。
+- 目前 `exportCaps` 固定 `{onnxExport:false, ggufExport:false}`：沒有轉換工具，所以預設為空，畫面寫「尚未實作（原因）」。接上工具時只要改這個注入值。
+
+### 19.4 測試（本次數字）
+| 測試 | 結果 | 說明 |
+|---|---|---|
+| `pipeline_core.test.js` | 31／0 | 階段表、狀態推導、格式預設 |
+| `pipeline_live_core.test.js` | 20／0 | 即時狀態、與 facts 串接 |
+| `train_advice_core.test.js` | 23／0 | 建議規則、門檻、證據不足 |
+| `pipeline_routes_core.test.js` | 26／0 | 路由形狀、真實紀錄（假儲存層）、建議讀 eval.json |
+| `pipeline_view_core.test.js` | 18／0 | HTML 跳脫、無資料、尚未實作、建議按鈕 |
+| `studio_layout_core.test.js` | 27／0 | 新增「流程」分頁 |
+| `studio_server_core.test.js` | 94／0 | 含三項新路由檢查（路由接上、未知種類 400、建議證據不足） |
+| `studio_host.test.js` | 20／0 | |
+| `backend_cpu_py.test.js` | 60／0 | 新增 train.log 逐行寫入、run.pid 寫入檢查 |
+| `dsl_expr_core` / `domain_spec_core` / `domain_e2e` / `sym_studio` | 77／0、85／0、17／0、71／0 | 先前的回歸 |
+| `studio_embed.test.js` | **12 過、4 敗（預期）** | 敗的 4 項是「嵌入與來源一致」：來源已改、嵌入尚未重產（見 19.5） |
+
+### 19.5 離線訓練器 GUI 盤點（逐項）
+| # | 項目 | 現況 | 這次處理 |
+|---|---|---|---|
+| 1 | 流程總覽分頁（五種訓練階段圖、即時、建議） | 無 | **做**：核心、路由、畫面、測試（19.2、19.4） |
+| 2 | 訓練紀錄與記憶體取樣 | 無 | **做**：train.log、run.pid、主行程讀取（19.1）；Windows 子行程記憶體未做 |
+| 3 | 建議按鈕自動切換到對應分頁 | 只顯示提示 | **未做**：需要檢視器的分頁切換函式，尚未確認其介面 |
+| 4 | 資料集分頁逐筆編輯 | 只讀（畫面寫明「逐筆編輯還沒做」） | **未做** |
+| 5 | LoRA 套用到推論 | 阻礙：桌面需原生執行包 1.22.0-2 以上；網頁的 transformers.js 接點未接（`LORA_APPLY_BLOCKER`） | **未做**（阻礙寫明，等執行包） |
+| 6 | webgpu／directml／vulkan 後端 | 研究項，`backend_planned.js` 寫明阻礙 | **未做**（§5.2） |
+| 7 | LLM 完整微調 | 只有 LoRA 路線 | **未做** |
+| 8 | ONNX／GGUF 匯出與載入 | 沒有轉換工具（optimum、llama.cpp） | **未做**：任何下載都要先回報並由使用者同意 |
+| 9 | 老師迴圈對 colu／trainer 代做 | 設計上不可（使用者決定） | 不做（by design） |
+| 10 | GitHub wiki 連網抓取實測 | 未測（§15.5） | **未做** |
+| 11 | blockly 種子題在 App 內重跑 | 題目在測試檔，打包不含（§15.1） | **未做** |
+| 12 | Electron 視窗驗證（整個工作室與流程分頁） | 這次未驗（沒有開視窗） | **未做** |
+| 13 | 嵌入重產 | 來源已改，嵌入未重產（studio_embed 4 項預期失敗） | **未做**：需要有權限的人執行 `embed-code-ui.js` |
+| 14 | 評量的位置偏誤 | `eval_run.py` 缺 gold／pred | **未做**：管理者在 `lora-train/` 補；這裡以「無資料」顯示 |
+
+### 19.6 接手
+- 分支 `claude/studio-domain-author-dcb72c`（已 rebase 到 `4c5b5e15`，原分支留在 `backup/studio-pre-rebase-e9da5891`）。
+- 新檔：`pipeline_routes_core.js`、`pipeline_view_core.js` 與各自測試。修改：`backend_cpu_py.js`、`studio_host.js`、`studio_server_core.js`、`studio_layout_core.js`、`studio-viewer.template.html`、`scripts/embed-code-ui.js`，以及對應測試。
+- 下一步順序：(1) 有權限者重產嵌入（studio_embed 會轉綠）；(2) 14 的 gold／pred 由管理者補；(3) 19.5 的 3、4 項；(4) Electron 視窗驗證。
+
+## 20. 收尾第二輪：建議按鈕切換分頁、LLM 匯出純函式、Windows 記憶體取樣（2026-11-12）
+
+總指揮指示：把 DESIGN 待辦與三個使用者需求的未完成項目補完；匯出用的 llama.cpp 與 optimum 由 lora-manager-2 下載（本工作階段不下載、不執行轉換），本工作階段只做介面與純函式；studio_embed 的 4 項預期失敗由總指揮整合時重產嵌入，不在此處理；逐項提交、不推送、不嵌入。
+
+### 20.1 這一輪做了什麼
+- **建議按鈕切換分頁**（§19.5 第 3 項，已完成）：檢視器的流程分頁，按鈕改成 `setL(Lay.activate(L, id))`，資料匯入（ingest）與訓練（train）兩個分頁。
+- **LLM 匯出純函式**（`renderer/src/studio/llm_export_core.js`，新檔，測試 `llm_export_core.test.js`）：
+  - `EXPORT_PLANS`：ONNX q8 與 GGUF q8_0 各五步（合併、轉換、量化、核對、寫入資產）。每步註明要的工具與阻礙。
+  - `exportPlan(format, toolsState)`：每步標「缺工具」「尚未實作」或「待做」。工具找到但執行器沒寫，仍是「尚未實作」，不宣稱可用。
+  - `exportAvailability(toolsState)`：格式是否可用，以及不可用的具體原因（缺哪個工具，或執行器尚未實作）。
+  - `probeExportTools(detect)`：偵測由呼叫端注入，偵測函式丟例外不影響其他工具。
+  - `trainModePlan(mode)`：LoRA 已實作；完整微調未實作，阻礙寫明（記憶體與時間還沒評估、訓練程式沒寫）。
+- **Windows 子行程記憶體**（§19.5 第 2 項的 Windows 部分）：`studio_host.js` 在 win32 用 `tasklist /FI "PID eq <pid>" /FO CSV /NH` 讀子行程記憶體，`parseTasklistMemory` 解析千分位的 K，查不到回原因。
+- **流程總覽接上匯出的目前狀態**：伺服器的 `exportCaps` 仍是固定的全部不可用（沒有偵測結果注入），所以格式預設仍是空，畫面標示未實作。
+
+### 20.2 測試（本輪）
+| 測試 | 結果 |
+|---|---|
+| `llm_export_core.test.js` | 20／0 |
+| `studio_host.test.js` | 23／0（新增 tasklist 解析 3 項） |
+
+先前的測試數字沒有變動（見 §19.4）；本輪只動了上面兩個檔與檢視器樣板，所以其餘套件不需要重跑。
+
+### 20.3 仍未做（逐項，誠實寫出）
+| 項目 | 狀態 | 原因／解除條件 |
+|---|---|---|
+| ONNX／GGUF 的實際轉換執行器（合併→轉換→量化→核對→寫入資產） | 未做 | 需要 lora-manager-2 下載的 optimum、llama.cpp 到位，才能用真工具測試；本輪只做介面與純函式。解除：工具到位後寫 runner，並把 `runner` 旗標改為 true |
+| `exportCaps` 接上真偵測 | 未做 | 需要主行程把 `probeExportTools` 的偵測結果注入伺服器；偵測函式在主行程寫 |
+| LLM 完整微調（訓練程式） | 未做 | 阻礙寫在 `trainModePlan('full')`：記憶體與時間未評估 |
+| LoRA 套用到推論（LORA_APPLY_BLOCKER） | 未做 | 需要原生執行包 1.22.0-2 以上；網頁版 transformers.js 接點未接 |
+| 資料集分頁逐筆編輯 | 未做 | 工作量大，本輪先不動；目前只讀（畫面寫明） |
+| blockly 種子題在 App 內重跑 | 未做 | 題目寫在測試檔、打包不含；解除：抽成資料檔隨程式載入 |
+| GitHub wiki 連網實測 | 未做 | 規則：不連網路；需要使用者同意 |
+| 位置偏誤的 gold／pred | 未做（管理者） | `eval_run.py` 的 `--json_out` 補欄位，由管理者在 `lora-train/` 處理 |
+| Electron 視窗驗證（整個工作室與流程分頁） | 未做 | 這台沒有開視窗；需要有顯示環境的驗證 |
+| 嵌入重產 | 未做（總指揮） | studio_embed 的 4 項預期失敗，等總指揮整合時重產 |
+| `llm_export_core.js` 尚未接進伺服器與嵌入清單 | 未接 | 等 runner 與偵測一起接，避免接了沒有用的模組 |
+
+### 20.4 接手
+- 分支 `claude/studio-domain-author-dcb72c`。本輪提交見 `git log`（檢視器建議切換、LLM 匯出純函式、Windows 記憶體取樣、§20）。沒有推送，沒有嵌入。
+- 下一步順序：(1) lora-manager-2 把 optimum 與 llama.cpp 準備好後，寫 ONNX 與 GGUF 的 runner（先用假工具測流程，再用真工具）；(2) 主行程注入 `probeExportTools`，接到 `exportCaps`；(3) 總指揮重產嵌入；(4) 資料集逐筆編輯；(5) Electron 視窗驗證。
+
+## 21. LoRA 管理介面、model card 欄位與接手（2026-11-12）
+
+使用者需求（原話）：「在離線模型或工作室的configure界面要有LoRA的管理界面，例如註冊後有沒有LoRA的介紹/model card，會附帶什麼能力」。
+
+### 21.1 model card 欄位（`model_card.json`，放在 `lora/<名稱>/`；由 lora-manager-2 產生）
+- 必填：`format` 固定 `"fa-lora-card"`；`version` 固定 `1`；`id`（`lora/<名稱>`）；`name`；`base.name`；`created`（ISO 日期）；`capabilities`（陣列，每項 `{id, label, desc?}`）；`known_limits`（字串陣列，沒有限制也給 `[]`）。
+- 選填建議：`intro`（介紹）、`version_tag`（版本）、`applicable {rank, domains}`、`training {rows, domains:[{domain, rows}], sources}`、`eval {split_legal_rate {base, tuned, n}, fc_format_rate {base, tuned, n}}`（0 到 1 的數字，`n` 為整數題數）。
+- 檢查與摘要：`lora_manage_core.validateModelCard`、`summarizeCard`。缺的評量指標寫「無資料」，樣本少於 30 題警告「只供參考」。
+
+### 21.2 註冊表欄位（描述檔，由 lora-slot-js 提供，草案已送出待對齊）
+- entry：`{id, name, base, rank, size（位元組）, version, path, created?, domains?, lastUsed?（毫秒，卸載後保留）, hasCard}`。
+- 槽位：`[{index, loadedId|null, lastUsed|null}]`。
+- 草案已用 SendMessage 送給 lora-slot-js（對方當時在另一個回合，訊息排隊中，尚未確認讀取）與 lora-manager-2（已送達）。對方回覆的欄位名稱若不同，以對方為準，改 `lora_manage_core.js` 即可。
+
+### 21.3 這一輪做了什麼（提交見 git log）
+- `renderer/src/studio/lora_manage_core.js` ＋ 測試 33／0：card 檢查、評量摘要（差距、判定、樣本少警告、缺資料無資料）、註冊表列（是否載入、槽位、最後使用時間、每個動作能不能做與原因）、規則（註冊、移除、載入、卸載、替換；不改輸入）、HTML（所有外部字串跳脫）。
+- `pipeline_routes_core.js`：新增 `GET /api/lora/card?id=lora/<名稱>`，讀資產的 `model_card.json`，回摘要；沒有檔案照實說；壞掉的 JSON 回 400。測試 31／0（新增 5 項）。
+- `studio_server_core.js`：接上上面的路由（dispatch 與工廠參數）。測試 94／0。
+
+### 21.4 還沒做（誠實寫出）
+- **介面沒接進檢視器**：`lora_manage_core` 的 HTML 還沒放進檢視器的 LoRA 分頁，「介紹」按鈕與載入、卸載、替換的呼叫沒寫。現有的 `/api/lora/load`、`/api/lora/unload`、`/api/lora/select` 可以直接用。
+- **真的註冊表**：目前列表資料來源是假資料（測試裡的 fixtures）。要等 lora-slot-js 的註冊表與槽位狀態（host op）到位。
+- **註冊、移除的伺服器端寫入**：`planAction` 只做規則與下一個狀態，沒有寫入檔案或登錄。
+- **model_card.md**：只定了 JSON，沒有 Markdown 版本。
+- 嵌入：`lora_manage_core.js` 尚未加入 `scripts/embed-code-ui.js` 的清單（沒有執行嵌入，留給總指揮）。
+
+### 21.5 §20.3 的未完成項（本輪沒有處理）
+本輪把時間放在 LoRA 管理介面與欄位對齊。§20.3 的項目（ONNX／GGUF 轉換執行器、伺服器接上工具偵測、資料集逐筆編輯、blockly 種子題重跑、wiki 實測、Electron 驗證）仍然未做，原因與解除條件見 §20.3。
+
+### 21.6 接手
+- 分支 `claude/studio-domain-author-dcb72c`。新檔：`lora_manage_core.js`、`lora_manage_core.test.js`；修改：`pipeline_routes_core.js`（與測試）、`studio_server_core.js`。
+- 順序：(1) 等 lora-slot-js 與 lora-manager-2 回覆欄位，對齊後改 `validateModelCard`、`registryRows`；(2) 把 `renderLoraManageHTML` 接進檢視器 LoRA 分頁，「介紹」按鈕呼叫 `/api/lora/card`；(3) 註冊表與槽位的 host op 到位後，註冊、移除、載入、卸載、替換寫入伺服器；(4) 總指揮重產嵌入（含 `lora_manage_core.js`）。
+
+### 21.5 改接登錄表的真實模型（2026-11-12，lora-slot-js 的回覆）
+- 登錄表（`lora_registry_core`，commit `6a9d4b94`）的容量以 **rank** 計（`slotCapacity` 16、`usedRank`、`freeRank`），不是編號槽。我之前的槽位模型作廢，`registryRows`、`planAction` 已移除。
+- 列表資料來源改為 `registry.status()`：`rowsFromStatus(status)`、`budgetOf(status)`；卡片用 `cardFromRegistered(entry)`（能力標籤 domains、觸發字 triggers、相容性 compat 與 compatReasons、評量 eval.lose／eval.win）。
+- 按鈕可不可按由登錄表的狀態推出提示（已載入、釘選、推論中計數、停用、相容性不通過）；**權威規則仍在登錄表**，按下後以登錄表回傳的 error 為準。相容性不通過的原因比停用先顯示。
+- 兩種「卡片」要分清楚：登錄表卡片（eval 是贏與輸的 domain 清單）與 `model_card.json`（eval 是比率）。畫面兩個都顯示，不合併。
+- pin、replace 的 HTTP 端點還沒有：lora-slot-js 會在 `studio_server_core` 加（同一個 commit 系列）。在那之前，列表上的「釘選」「替換」只會顯示提示、點了會被停用。
+- 替換的時間：桌面約 2 秒（重建推論 session），網頁版 maxActive=1，數秒到數十秒，畫面要顯示「替換中」（`busy` 參數）。
+- 測試：`lora_manage_core.test.js` 32／0（假的 status 形狀）。
+
+## 22. 接手節（給 studio-domain-author-2，2026-11-12）
+
+分支 `claude/studio-domain-author-dcb72c` 的工作樹在 `/home/hungfu.lee/Downloads/SRC/tw_stock_db/.claude/worktrees/studio-domain-author-dcb72c`（分支名以 `git branch --show-current` 為準）。已 rebase 到 `4c5b5e15`。**沒有推送、沒有嵌入**。`studio_embed.test.js` 的 4 項「嵌入與來源一致」預期失敗，由總指揮整合時重產嵌入處理，不在這條線處理。
+
+### 22.1 已完成（提交都在分支上，`git log --oneline 4c5b5e15..HEAD` 可看）
+- 工作室新增領域（DSL、規格、評量、示範）、版面測試：見 §16。
+- 流程總覽（五種訓練階段圖、即時狀態 train.log、建議 eval.json、匯出格式與 LLM 訓練模式）：見 §17、§18、§19。
+  - 路由：`/api/pipeline`、`/api/advice`、`/api/advice/from-json`、`/api/lora/card`（`pipeline_routes_core.js`）。
+  - 畫面：`pipeline_view_core.js`，檢視器「流程」分頁；建議按鈕切換分頁（§20.1）。
+  - 真實紀錄：cpu-py 寫 `train.log`、`run.pid`；主行程 `studio_run_info`（Linux 讀 /proc，Windows 用 tasklist）。
+- LLM 匯出純函式（`llm_export_core.js`）：五步步驟表、可用性與原因、工具偵測（注入式）、訓練模式（LoRA 實作、完整微調寫明阻礙）：見 §20.1。
+- LoRA 管理核心（`lora_manage_core.js`）：model_card.json 檢查與摘要、登錄表 status() 的列與按鈕提示、登錄表卡片、replacing 文字：見 §21。
+- 測試數字（分支上最後一次跑）：pipeline_core 31、pipeline_live 20、train_advice 23、pipeline_routes 31、pipeline_view 18、studio_layout 27、studio_server 94、studio_host 23、backend_cpu_py 60、llm_export 20、lora_manage 34、dsl 77、domain_spec 85、domain_e2e 17、sym_studio 71；studio_embed 12 過、4 敗（預期）。
+
+### 22.2 未完成（逐項，原因與解除條件）
+**§20.3（上一輪留下的，全部未做）**
+1. ONNX／GGUF 轉換執行器（合併→轉換→量化→核對→寫入資產）。工具（optimum、llama.cpp）由 lora-manager-2 下載，尚未到位。解除：工具到位後寫 runner，並把 `llm_export_core.EXPORT_PLANS` 各步的 `runner` 改為 true，同時把 `pipeline_core` 的 export 階段 implemented 改為 true。
+2. 伺服器接上工具偵測：主行程注入 `probeExportTools`，結果送進 `studio_server_core` 的 `exportCaps`（目前寫死全部 false）。
+3. 資料集分頁逐筆編輯（目前只讀）。
+4. blockly 種子題在 App 內重跑（題目在測試檔，打包不含；解除：抽成資料檔隨程式載入）。
+5. GitHub wiki 連網實測（規則：不連網路，需使用者同意）。
+6. Electron 視窗驗證（整個工作室與流程分頁，這台沒有開視窗）。
+7. LLM 完整微調（`trainModePlan('full')` 寫明阻礙：記憶體與時間未評估，訓練程式未寫）。
+8. LoRA 套用到推論（`LORA_APPLY_BLOCKER`；需要原生執行包 1.22.0-2 以上，網頁版 transformers.js 接點未接）。
+9. 位置偏誤的 gold、pred：`lora-train/eval_run.py` 的 `--json_out` 要補欄位，管理者負責。lora-manager-2 已在 `lora-train-eval` 分支處理 pack_adapter，eval 欄位仍需確認。
+
+**LoRA 管理畫面還缺什麼（對照 §21）**
+- 還沒接進檢視器：`renderLoraManageHTML` 沒有放進 LoRA 分頁（`T.lora`），「介紹」按鈕、載入、卸載、釘選、替換、移除的呼叫都沒寫。
+- 替換與釘選的端點在 lora-slot-js 的分支 `claude/lora-slot-equiv`（commit `e9cc0b4b`），**不在這條分支上**。接手者要先合併那條分支（或 cherry-pick 那個提交）才能呼叫。端點：`POST /api/lora/pin {id, on}`、`POST /api/lora/unpin {id}`、`POST /api/lora/replace {outId, inId, force?}`、`POST /api/lora/load`、`POST /api/lora/unload {id?}`、`GET /api/lora/status`（含 `replacing`）。
+- 「替換中」用 `busyText(status)` 產生；畫面要把它傳給 `renderLoraManageHTML({busy})`。
+- 註冊與移除的語意：註冊是資產匯入（沒有獨立 register 端點）；移除是刪除資產（既有的 `/api/asset/delete`）。畫面要沿用這兩個流程，不要自己發明 register API。
+- `hasCard` 不在登錄表欄位裡：由資產清單判斷有沒有 `model_card.json`。
+- `lora_manage_core.js` 尚未加進 `scripts/embed-code-ui.js` 的 UMD 清單（總指揮重產嵌入時一起加；`pipeline_*` 與 `train_advice_core` 已加）。
+- model_card.md：只定了 JSON，沒有 Markdown 版本。
+- 卡片路由 `/api/lora/card?id=lora/<名稱>`（已在 `pipeline_routes_core.js`）用資產 id；登錄表的 id 不帶前綴，畫面層要自己加。
+- `llm_export_core.js` 尚未接進伺服器、也不在嵌入清單裡（等 runner 與偵測一起接）。
+
+### 22.3 精確接續點（依序）
+1. 合併或 cherry-pick `claude/lora-slot-equiv` 的 `e9cc0b4b`（只需要端點與 replacing 欄位），跑 `studio_server_core.test.js` 確認沒有衝突。
+2. 在檢視器的 `T.lora`（`studio-viewer.template.html`，約 `T.lora=async function`）呼叫 `FaStudioLoraManage.renderLoraManageHTML`：資料來自 `GET /api/lora/status` 經 `rowsFromStatus`，容量用 `budgetOf`，忙碌用 `busyText`；按鈕事件分派到 `POST /api/lora/load|unload|pin|replace`；「介紹」呼叫 `/api/lora/card?id=lora/<id>`。
+3. 把 `lora_manage_core.js` 加進 `scripts/embed-code-ui.js` 的 UMD 清單（放在 `pipeline_view_core` 之後、`studio_server_core` 之前），不要執行嵌入。
+4. 工作室要有註冊（資產匯入）與移除（刪資產）的入口，沿用既有 `/api/import/*` 與 `/api/asset/delete`。
+5. §22.2 的 §20.3 項目依上面 1 到 9 的順序處理；1 與 2 需要 lora-manager-2 的工具。
+
+### 22.4 注意事項
+- 不要 `git add -A`；提交只加自己改的檔。
+- 不要推送、不要嵌入、不要跑 `scripts/publish.sh`、`embed-code-ui.js`、`build-assistant.js`。
+- 測試用 `nice -n 10 taskset -c 10-11`，一次跑一個。
+- 主行程目錄 `/home/hungfu.lee/Downloads/SRC/tw_stock_db` 是管理者的工作區，不在那裡提交。
+
+## 23. 第二位接手（studio-domain-author-2，分支 `claude/studio-domain-author-2-ec7d26`，2026-11-12）
+
+基底：`5e5b45e9`（§22 接手節）。**沒有推送、沒有嵌入、沒有跑 `embed-code-ui.js`／`build-assistant.js`。**
+
+### 23.1 提交（`git log --oneline 5e5b45e9..HEAD`）
+- `23a3c8a9` 匯出工具偵測接上伺服器（§20.3 第 2 項）：主行程 `studio_export_tools` 在 PATH 找 `optimum-cli`、`llama-quantize`（只看存在，不執行）；`onnxruntime` 還沒偵測，誠實寫「尚未實作」；伺服器 `exportCaps` 由 `llm_export_core.exportCapsFrom` 推出，節流 30 秒。執行器沒寫，工具找到也不宣稱可用。
+- `c1324129` 資料集逐筆編輯（§20.3 第 3 項）：`dataset_edit_core.js`（jsonl／json；壞一行整份不給編並寫行號；修改、刪除、新增、分頁）；伺服器 `GET /api/dataset/rows`、`POST /api/dataset/edit`（刪除要 `confirmed`；內建資產唯讀；寫回重算 manifest，雜湊核對仍通過；評量結果標示「可能過期」）；檢視器資料集分頁可逐筆改、刪、新增。**另修既有語法錯誤**：模板矩陣擬合按鈕的括號（`]),fitTa]),out]))` → `]),fitTa,out]))`），HEAD 已有，導致整個檢視器無法執行。
+- `f8c0e494` LoRA 介紹（§21／§22.2）：LoRA 登錄每列加「介紹」，讀 `/api/lora/card`，顯示名稱、版本、基底、rank、介紹、能力、限制、評量（沒有的寫無資料）。HTML 由 `lora_manage_core.cardIntroHTML` 產生（跳脫、可測）。
+- `9667cd6b` LoRA 移除：沿用既有 `/api/asset/delete`（先確認）。註冊沿用資產清單的匯入。
+- 嵌入清單（`scripts/embed-code-ui.js`，只改清單）加入：`llm_export_core`、`dataset_edit_core`、`lora_manage_core`（**`lora_manage_core` 必須在 `pipeline_routes_core` 之前**：頁內伺服器在載入時就要它，否則介紹會失效）。
+
+### 23.2 測試（本輪最後一次跑）
+| 測試 | 結果 |
+|---|---|
+| `llm_export_core.test.js` | 23／0（新增 3 項 exportCapsFrom） |
+| `studio_host.test.js` | 28／0（新增 5 項匯出工具偵測；PATH 用暫存目錄，跑完還原） |
+| `studio_server_core.test.js` | 111／0（新增工具偵測節流 3 項、逐筆編輯 11 項） |
+| `dataset_edit_core.test.js` | 34／0（新增） |
+| `lora_manage_core.test.js` | 41／0（新增 cardIntroHTML 7 項） |
+| `pipeline_routes_core` 31、`pipeline_view_core` 18、`pipeline_core` 31、`studio_layout_core` 27 | 全過（沒有變動） |
+| `studio_embed.test.js` | 12 過、4 敗（預期：嵌入未重產，總指揮處理） |
+
+### 23.3 GUI 實跑（已驗證的範圍，誠實標註）
+- 方法：scratchpad 的暫時 harness（不進專案）：node 伺服器用 `createServer` 處理 API，頁面由 `studio-viewer.template.html` 組出，腳本以 `<script>` 逐檔載入，瀏覽器窗格操作。**這不是嵌入後的正式頁面**：正式版的伺服器跑在頁內，嵌入清單是否完整只能在重產嵌入後驗證。
+- 已實跑：資料集逐筆「改」「刪」（先確認）「新增在尾端」、壞檔顯示第幾行、寫回後資產雜湊核對通過；LoRA 登錄的「介紹」（能力、限制、評量、無資料）、「移除」（列表回空狀態）。
+- 未實跑：驗證不通過的資產、內建資產唯讀的畫面、`hasCard:false` 的說明（只有單元測試覆蓋的邏輯）。
+
+### 23.4 還沒做（逐項，原因與解除條件）
+1. **LoRA 管理的 pin／replace／load／unload 與「替換中」**：端點在 `claude/lora-slot-equiv`（`e9cc0b4b` 依賴 `6a9d4b94` 等 lora-slot 線上的前置提交，本分支沒有登錄表本身）。試過 cherry-pick `e9cc0b4b`，衝突，已中止，**沒有留下變更**。依規則，合併別的 session 分支要使用者同意。解除：使用者決定合併 `claude/lora-slot-equiv` 或由 lora-slot-js 整理成可合併的分支；之後在 `T.lora` 接 `POST /api/lora/pin|unpin|replace|load|unload`、`GET /api/lora/status`，`busy` 用 `busyText`。現在 `T.lora` 仍用既有的 `/api/lora`（舊的列表），**不是** `lora_manage_core.renderLoraManageHTML`。
+2. **ONNX／GGUF 轉換執行器**：等 lora-manager-2 把 optimum、llama.cpp 準備好；之後把 `EXPORT_PLANS` 的 `runner` 改 true。
+3. **blockly 種子題在 App 內重跑**：題目在 `renderer/src/uml/domain_*.test.js`（約 30 萬字元，15 個以上檔案），題目由產生器函式即時生成，判題需要 tree-sitter 與 Python。解除方向：寫一個建置腳本把種子（train／holdout 的實例與答案）匯出成資料檔，隨程式載入；判題仍需要桌面版的 Python。這是獨立的一輪工作，建議另開 session。
+4. **GitHub wiki 連網實測**：需要連網，規則要使用者同意（要連哪些網址、何時）。
+5. **Electron 視窗驗證**：需要 matrix-finish-4 下載的 Electron 路徑（已問總指揮，尚未回覆）。
+6. **嵌入重產**：總指揮處理（studio_embed 的 4 項）。
+7. 其餘同 §22.2：LLM 完整微調、LoRA 套用到推論（`LORA_APPLY_BLOCKER`）、位置偏誤的 gold／pred（管理者）。
+
+### 23.5 接續點（依序）
+1. 等使用者決定 `claude/lora-slot-equiv` 合併與否；同意後合併（或 cherry-pick 整串），跑 `studio_server_core.test.js`，再接 §23.4 第 1 項。
+2. 拿到 Electron 路徑後做視窗驗證（工作室、流程、資料集、LoRA 介紹與移除）。
+3. wiki 實測：先問使用者同意。
+4. blockly 種子：另開 session 做成資料檔。
+5. 嵌入由總指揮重產（清單已含 `llm_export_core`、`dataset_edit_core`、`lora_manage_core`）。
+
+### 23.6 注意
+- 提交逐檔加入，沒有用 `git add -A`；新檔要明確 `git add`（`git diff --stat` 看不到未追蹤的新檔）。
+- 換行：`embed-code-ui.js` 是 CRLF 的部分檔案，用 Python 文字模式讀寫會把整檔換成 LF（本輪踩到，已還原）。改這類檔請用 binary 讀寫。
+- 測試用 `nice -n 10 taskset -c 10-11`，一次跑一個。
+
+## 24. 合併 lora-slot-equiv 與端點實跑（studio-domain-author-2，2026-11-12，指揮同意）
+
+### 24.1 合併
+- `2faed9b2` 合併 `claude/lora-slot-equiv`（`f66993a6`）。衝突只在 `studio_server_core.test.js` 兩處：分頁數取 10（保留「流程」分頁）；兩段新增測試都保留。`floating-assistant.js`、`main-ext.js` 自動合併、無衝突。
+- 嵌入清單加 `lora_route_core`（放在 `lora_registry_core` 之後，依 §15.3 步驟 A；`floating-assistant.js` 用 `FaStudio.FaLoraRoute`）。只改清單，未嵌入。§15.3 步驟 B（核心測試清單）未做。
+- 測試（合併後）：studio_server_core 126／0、llm_export 23／0、studio_host 28／0、lora_manage_core 41／0、lora_registry 80／0、lora_route 18／0、pipeline_routes 31／0、pipeline_view 18／0、studio_layout 27／0、dataset_edit 34／0。
+
+### 24.2 LoRA 管理畫面接上登錄表（`9708f849`）
+- `T.lora` 改用 `/api/lora/status` 經 `rowsFromStatus`、`budgetOf`、`busyText` 餵 `renderLoraManageHTML`。事件委派到既有端點：`load`、`unload`、`pin`（`on`）、`enable`（`on`）、`replace`（`outId`、`inId`；換出者唯一時自動選，多個時問使用者）、`remove`（先確認，`/api/asset/delete`）、`card`（`/api/lora/card`）。保留環境列、槽位卡、按需選用試算。
+- GUI 實跑（暫存 harness，node 伺服器，非嵌入版）：替換 200 並生效（`slots` 換成 demo-lora-2）；釘選寫入登錄；釘選且載入中的列，卸載、替換、移除皆 disabled；移除未載入的 LoRA 生效。
+- 注意：`applied:false` 仍在（原生套用器未接，`LORA_APPLY_BLOCKER`）；畫面只說「載入到記憶體」。
+
+### 24.3 Electron 視窗驗證：未完成
+- 用 `/home/hungfu.lee/fa-electron/dist/electron`（指揮提供，DISPLAY :2.0，暫存 user-data-dir）啟動 desktop-app，程序能起來；日誌顯示應用程式「檢查更新」並要求「立即更新」。我沒有點更新，已結束自己啟動的程序。
+- 沒有完成工作室與流程分頁的視窗驗證，原因：(1) 正式版工作室仍是舊的嵌入版，本分支的新程式要重產嵌入後才會出現在 Electron 裡；(2) :2.0 是共用桌面，上面有別人的終端機與更新對話框，操作前需要使用者確認。
+- 解除條件：總指揮重產嵌入後，用暫存 user-data-dir 再跑一次；對話框只按「取消」，且需使用者同意。
+
+### 24.4 還沒做（同 §23.4，去掉已完成的）
+- blockly 種子題（另開 session）、wiki 實測（需使用者同意連網）、轉換執行器（等 lora-manager-2）、Electron 驗證（見 24.3）、嵌入重產（總指揮）。
+- LoRA 管理的 `model_card.md`、註冊入口（沿用資產清單匯入）維持原狀。
+
+### 24.5 驗證用重產嵌入與 Electron（指揮許可，之後已還原）
+- 在本工作樹執行 `node scripts/embed-code-ui.js && node build-assistant.js`（`nice -n 10 taskset -c 0,1`），產生檔只用於驗證，驗完已 `git checkout --` 還原，並刪除新產生的 `web-lazy/chunks/matrix*.js`（8 個）；**沒有提交任何產生檔**。
+- `studio_embed.test.js` 由 12 過、4 敗轉為 **17 過、0 敗**（4 項「嵌入與來源一致」通過）。`studio_server_core` 126／0、`lora_manage_core` 41／0。
+- Electron（`/home/hungfu.lee/fa-electron/dist/electron`，暫存 user-data-dir，DISPLAY :2.0）：應用程式啟動；「立即更新」對話框未按（未點更新）。視窗驗證沒有完成：:2.0 是共用桌面，我的視窗被其他程序的視窗蓋住，要拉到前面會干擾別人的視窗，因此沒有做工作室與流程分頁的視窗操作。已結束自己的程序。
+- 解除條件：在獨立的顯示環境（或使用者同意的情況下）跑 Electron，或用 `FA_UPDATE_BASE`、`FA_DISABLE_MAIN_OVERLAY=1`（見 main-ext.js 第 493 行與 renderer 的覆蓋層說明）避開更新與覆蓋層後再驗。
+
+## 25. 接手節（studio-domain-author-2，分支 `claude/studio-domain-author-2-ec7d26`，2026-11-12，context 達門檻）
+
+### 25.1 目前狀態
+- HEAD `f01aa741`；工作樹乾淨（只有我自己的 `desktop-app/node_modules` 符號連結，**不要提交**）。未推送、未嵌入（驗證用重產已還原）。
+- 本輪提交：`23a3c8a9` 工具偵測、`c1324129` 資料集逐筆編輯、`f8c0e494` LoRA 介紹、`9667cd6b` LoRA 移除、`2faed9b2` 合併 lora-slot-equiv、`9708f849` LoRA 管理接登錄表、`c4fc2a33`／`f01aa741` 文件。
+- 合併後測試：studio_server_core 126／0、lora_manage 41／0、lora_registry 80／0、lora_route 18／0、llm_export 23／0、studio_host 28／0、dataset_edit 34／0；驗證用重產後 studio_embed 17／0。
+
+### 25.2 已完成（不需要再做）
+- §20.3 第 2 項（工具偵測）、第 3 項（資料集逐筆編輯）。
+- LoRA 管理：介紹、移除、load、unload、pin、enable、replace（GUI 暫存頁實跑，見 §24.2）。
+- 修矩陣模板既有語法錯誤（見 §23.1）。
+
+### 25.3 未完成（依序，每項的起點與解除條件）
+1. **blockly 種子題在 App 內重跑**（§20.3 第 4 項）。起點：`renderer/src/uml/domain_*.test.js`（15 個以上，約 30 萬字元，題目由產生器即時生成）；`sym_suites_core.js:78` 目前寫「未跑」。判題需要 tree-sitter 與 Python（桌面版才有）。建議**另開 session**：(a) 寫建置腳本，用 `scripts/domain-seed-counts.js` 的「攔截 harness」方式取得每個檔的 `{packs, seeds}`，把 train／holdout 的實例（已產生好的題目文字與答案，不是產生器）寫成 `renderer/src/uml/seeds/*.json`；(b) 讓 `builtin_assets_core` 或 `sym_suites_core` 讀資料檔算題數與分組；(c) 判題仍是桌面版 Python 的功能，網頁版誠實寫「需要桌面版」。
+2. **wiki 實測**（§20.3 第 5 項）。需要連網，**必須先取得使用者同意**（要連哪些網址、何時、流量上限）。目前沒有同意，我沒有連網。要做時請總指揮向使用者確認。
+3. **Electron 視窗驗證**（最後做）。
+   - 環境：`/home/hungfu.lee/fa-electron/dist/electron`，`cd desktop-app`，`FA_DISABLE_MAIN_OVERLAY=1 FA_UPDATE_BASE=http://127.0.0.1:9`，獨立 `--user-data-dir`，埠 17987（指揮規定，不與他人同埠），`--no-sandbox`。驗證前要先重產嵌入（§24.5 的做法，驗完還原）。
+   - 無視窗實測（本輪）：加 `--ozone-platform=headless --remote-debugging-port=9333 --disable-gpu`，DevTools 有起來（`/json/list` 一度無回應），但程序在 renderer 啟動前後結束（第一次出現 zygote fork 失敗；第二次日誌停在 `local-proxy` 之後，未見視窗）。**未解。** 下一步：xvfb 裝好後改用 `xvfb-run -a`（指揮會通知）；或在 headless 下用 `Target.createTarget` 透過 CDP 開頁再截圖。
+   - 嚴禁碰 :2.0 的他人視窗；驗完關自己的程序（用 PID，不用 pattern）。
+4. 嵌入重產：總指揮統一處理（清單已含 `llm_export_core`、`dataset_edit_core`、`lora_manage_core`、`lora_route_core`）。
+5. 轉換執行器（ONNX／GGUF）：等 lora-manager-2 的 optimum、llama.cpp；之後把 `EXPORT_PLANS` 的 `runner` 改 true。
+
+### 25.4 注意
+- 測試一律 `nice -n 19` 並限 2 核（指揮 06:00 前的要求），例如 `nice -n 19 taskset -c 0,1 node <test>`。
+- 提交逐檔加入；嵌入產生檔驗完一定 `git checkout --` 還原，不提交。
+- `embed-code-ui.js` 是 CRLF 的部分檔案，用 binary 讀寫（Python 文字模式會把整檔換成 LF）。
+- 上一輪 `git status` 顯示的 `desktop-app/node_modules` 是符號連結，不加入提交。
+
+## 26. 接手節二（studio-domain-author-2-2，worktree `claude/pensive-shtern-b48175`，2026-11-12）
+
+### 26.1 本輪做了什麼（實測／回報／推測分開）
+- **blockly 種子題搬進資料檔（實測）**：`renderer/src/uml/seeds/domain_*.json` 共 21 檔、428 題（留存 120），格式 `fa-domain-seeds` v1，每題存 `tests`（6）與 `hidden`（2），`rw_st`、`ref` 也在檔裡。`domain_harness.js` 新增 `loadSeeds`、`genCases`；21 個測試檔去掉內嵌 SEEDS；`scripts/domain-seed-counts.js` 改由 harness 取題數（計數與 HEAD 一致）。提交 `2fd394da`。
+  - 實測（node，用 `FA_TS_DIR=/tmp/fa-ts-cache` 的 tree-sitter）：algo2 60／0、dsp 72／0、sync 32／0。
+  - 實測失敗：par 12 題。**HEAD 也同樣失敗（已重現）**，不是這次造成；原因未查明（訊息是「配方沒通過沙盒驗證」或「讀不出解法」）。
+  - 推測：生成器已移出測試檔，資料檔是唯一來源；要改題目需改資料檔，或從 HEAD 歷史取回生成器。
+- **Electron 視窗驗證（實測，xvfb-run -a，CDP 埠 17987，`--no-sandbox`、`FA_DISABLE_MAIN_OVERLAY=1`、`FA_UPDATE_BASE=http://127.0.0.1:9`、臨時 user-data-dir，沒碰 :2.0）**：主視窗（AI Assistant）正常繪製；輸入 `/offline-training-studio` 後工作室卡片出現（沙盒 iframe、資產清單 10 個內建、LoRA 登錄分頁、訓練分頁）；點 LoRA 登錄分頁顯示「沒有 LoRA adapter」空狀態與按需試算輸入框。主頁面 console 無 JS 例外（只有 CSP 警告）。驗完已用 PID 結束自己的程序。
+  - 日誌的 ENOENT（`fa:rawfs:readFile`）：`native-runner-box/resp-*.json` 與 `studio-host/.version` 找不到。推測是輪詢與首次啟動的正常缺檔，未深究。
+  - 工作室的運算後端探測：Python 3.10.12 低於需求的 3.11，所以「cpu-py」不可用（這台機器的環境限制，不是程式錯誤）。
+  - **沒有重產嵌入**（指揮規定）：視窗跑的是目前提交的嵌入。studio_embed 12 過、4 敗，與 §24.5 的預期一致。
+- **LoRA 管理（回報，本輪沒有新增程式）**：多顆註冊、按需延遲載入（`request`）、槽滿替換與原子回滾（`replace`，含 applyFn 失敗時還原）、model card 能力介紹（`renderLoraManageHTML` 的「會附帶的能力」）都已在 `lora_registry_core.js`、`lora_manage_core.js` 實作。測試：lora_registry 80／0、lora_manage_core 41／0、lora_route 18／0、lora_web 54／0、lora_ref_train 全部通過。**沒有在本次 Electron 內實際操作多顆 adapter 與替換**（隔離環境沒有 adapter）；「替換約 2 秒」是介面文字，沒有實測。
+
+### 26.2 未完成（與原因）
+1. **wiki 實測：已完成（實測，見 §26.5）**。來源是維基百科（指揮更正後），不是 GitHub wiki。
+2. **blockly 題在 App 內重跑：未做**。判題需要桌面版 Python（≥3.11）與 tree-sitter 快取（`~/.cache/fa-ts` 這台沒有）；我只在 node 測試驗證。App 內還要把 `sym_suites` 的題數與資料檔接起來，這一步沒有做。
+3. **LoRA 多顆與替換的實機操作**：需要真的 adapter（或在 staging 頁，見 §24.2）。
+4. **par 的 12 題既有失敗**：未查明原因（見 26.1）。
+
+### 26.3 注意
+- 資料檔共 2.8 MB（tarx 單檔 1.2 MB），是 git 歷史成本。要瘦身可以改存 `ref` 之外的壓縮形式，這次沒做。
+- 測試檔的 `require('path')` 寫在 `H.loadSeeds(...)` 裡，為的是不改每個檔的 import。
+- 提交只加明確路徑；`desktop-app/node_modules` 是符號連結，未提交。
+
+### 26.4 wiki 實測清單（抓取前列出，2026-11-12）
+來源：zh.wikipedia.org（extracts API，explaintext，redirects=1）。選題對應種子題的領域（演算法、資料結構、排程、訊號處理、同步），共 15 頁。
+| 語言版 | 標題 |
+|---|---|
+| zh | 演算法 |
+| zh | 二分搜尋 |
+| zh | 迪傑斯特拉演算法 |
+| zh | 快速排序 |
+| zh | 雜湊表 |
+| zh | 動態規劃 |
+| zh | 鏈結串列 |
+| zh | 紅黑樹 |
+| zh | 離散傅立葉變換 |
+| zh | 互斥鎖 |
+| zh | 霍夫曼編碼 |
+| zh | 卷積 |
+| en | Dijkstra's algorithm |
+| en | Semaphore (programming) |
+| en | Huffman coding |
+
+### 26.5 wiki 實測結果（2026-11-12，實測）
+- 來源與方法：`https://zh.wikipedia.org/w/api.php` 與 `https://en.wikipedia.org/w/api.php`，action=query、prop=extracts、explaintext=1、redirects=1、formatversion=2；純文字，User-Agent `generic-text-fetch/1.0`。
+- 頁數：15 頁（上限 40）。每頁都 ≤2 MB（最大約 33 KB）。
+- 實際大小：純文字 266,483 bytes（約 260 KB）；原始 API 回應 275,393 bytes。兩者都放在專案樹外的 scratchpad（`…/scratchpad/wiki/`）。
+- 與 §26.4 清單的差異（如實記錄）：
+  - 演算法 → 重新導向到「算法」。
+  - 迪傑斯特拉演算法 → 不存在；實際抓的是「迪杰斯特拉算法」（頁面標題為「戴克斯特拉算法」）。
+  - 離散傅立葉變換 → 不存在；實際抓的是「离散傅里叶变换」。
+  - 互斥鎖 → 不存在；實際抓的是「互斥锁」。
+  - 霍夫曼編碼 → 不存在；實際抓的是「霍夫曼编码」。
+  - 動態規劃、紅黑樹、鏈結串列、雜湊表 → 重新導向到简体标题（动态规划、红黑树、链表、哈希表）。
+  - 卷積 → 實際抓的是「卷积」。
+- 限制：zh.wikipedia 的正文是簡體中文，與本專案的繁體規範不同；這份文字沒有轉換。
+- 遇到 HTTP 429 兩次（霍夫曼編碼、卷積、英文頁），等 20 秒後重試成功。
+- 這次只是取得與計量，沒有把內容餵進訓練或評量。
+
+### 26.2 更新
+- wiki 實測：已完成（見 §26.5）。
+- 其餘未做項目見 §26.2 的第 2 到 4 項，都仍然未做。
+
+### 26.6 其餘未做項目的最後狀態（2026-11-12，指揮要求一併處理）
+1. **par 的 12 題失敗：已查明原因，未修**（實測）。失敗的是 load-span、load-cyc-loads、pick-span（原敘述、反序、改寫）。訊息分兩種：「程式讀不出這題的解法（沒有配方），需要模型」與「配方沒通過沙盒驗證，而且沒有提供模型」。HEAD 與 Python 3.11（`FA_PYTHON=/usr/bin/python3.11`）都是同樣 12 題失敗，所以跟直譯器版本無關。結論：par 領域包缺這三種題型的配方，是程式內容的缺口，不是資料檔問題。修法要在 par 包補配方，屬於另一個任務。
+2. **blockly 題在 App 內重跑：未做**。原因有三：(a) 判題需要 tree-sitter 快取，這台機器只有 /tmp/fa-ts-cache，App 的 `~/.cache/fa-ts` 不存在；(b) 這台 PATH 上的 python3 是 3.10.12，App 的 cpu-py 探測會判定太舊（/usr/bin/python3.11 存在，但 App 不會自動選它）；(c) 把題目數與資料檔接進 sym_suites 的顯示與按鈕，這一段沒有寫。資料檔的題數已經由 domain-seed-counts 讀取（428／120，與 HEAD 一致）。
+3. **LoRA 多顆註冊與替換的實機操作：未做**。隔離 user-data-dir 沒有 adapter，要實跑需要真的 lora.bin 與 descriptor。之前的 staging 實跑見 §24.2，這次沒有重跑。替換「約 2 秒」仍然沒有實測。
+4. **wiki 實測：已完成**（§26.5）。

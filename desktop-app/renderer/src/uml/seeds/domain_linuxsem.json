@@ -1,0 +1,1602 @@
+{
+ "format": "fa-domain-seeds",
+ "version": 1,
+ "source": "renderer/src/uml/domain_linuxsem.test.js",
+ "name": "領域包 linuxsem",
+ "minSkeletons": 4,
+ "judge": null,
+ "trainOnly": null,
+ "seeds": [
+  {
+   "id": "fd-returns",
+   "st": "第一行 q，之後 q 行事件：open 名稱、dup fd、dup2 舊 新、close fd。檔案描述符表一開始是空的（0 號 fd 也可以用）：open 回傳最小的空閒 fd 並指向該檔案；dup 回傳最小的空閒 fd 並指向同一個檔案；dup2 讓新 fd 指向舊 fd 的檔案（新 fd 已開著就先關掉），回傳新 fd；close 關閉該 fd。fd 沒開著時 dup、dup2 忽略。輸出每次 open、dup、dup2 回傳的 fd，用空白隔開。",
+   "rw_st": null,
+   "ref": "q = int(input())\nT = [None] * 64\nr = []\ndef lowest():\n    i = 0\n    while T[i] is not None:\n        i += 1\n    return i\nfor _ in range(q):\n    a = input().split()\n    if a[0] == \"open\":\n        i = lowest()\n        T[i] = a[1]\n        r.append(i)\n    elif a[0] == \"dup\":\n        if T[int(a[1])] is not None:\n            i = lowest()\n            T[i] = T[int(a[1])]\n            r.append(i)\n    elif a[0] == \"dup2\":\n        if T[int(a[1])] is not None:\n            T[int(a[2])] = T[int(a[1])]\n            r.append(int(a[2]))\n    else:\n        T[int(a[1])] = None\nprint(*r)\n",
+   "tests": [
+    {
+     "in": "4\nopen f2\nopen f2\nopen f6\nopen f2\n",
+     "out": "0 1 2 3\n"
+    },
+    {
+     "in": "3\nopen f4\nopen f9\nopen f8\n",
+     "out": "0 1 2\n"
+    },
+    {
+     "in": "10\nopen f1\nopen f4\nopen f1\nopen f7\nopen f5\nopen f6\nopen f5\nopen f7\nopen f2\nopen f8\n",
+     "out": "0 1 2 3 4 5 6 7 8 9\n"
+    },
+    {
+     "in": "5\nopen f5\nopen f8\nopen f8\nopen f6\nopen f2\n",
+     "out": "0 1 2 3 4\n"
+    },
+    {
+     "in": "5\nopen f5\nopen f8\nopen f2\nopen f8\nopen f9\n",
+     "out": "0 1 2 3 4\n"
+    },
+    {
+     "in": "9\nopen f1\nopen f9\nopen f5\nopen f4\nopen f5\nopen f4\nopen f2\nopen f5\nopen f4\n",
+     "out": "0 1 2 3 4 5 6 7 8\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "20\nopen f4\nopen f5\nopen f2\nopen f9\nopen f9\nopen f2\nopen f3\nopen f8\nopen f1\nopen f4\nopen f2\nopen f5\nopen f2\nopen f6\nopen f4\nopen f3\nopen f3\nopen f9\nopen f7\nopen f2\n",
+     "out": "0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19\n"
+    },
+    {
+     "in": "8\nopen f8\nopen f4\nopen f5\nopen f6\nopen f9\nopen f8\nopen f5\nopen f5\n",
+     "out": "0 1 2 3 4 5 6 7\n"
+    }
+   ],
+   "want": "lx.fdtable"
+  },
+  {
+   "id": "fd-final",
+   "st": "第一行 q，之後 q 行事件：open 名稱、dup fd、dup2 舊 新、close fd。檔案描述符表一開始是空的（0 號 fd 也可以用）：open 回傳最小的空閒 fd；dup 複製到最小的空閒 fd；dup2 讓新 fd 指向舊 fd 的檔案（新 fd 已開著就先關掉）；close 關閉該 fd。fd 沒開著時 dup、dup2 忽略。最後輸出還開著的 fd，依 fd 由小到大每行一個「fd=名稱」。",
+   "rw_st": null,
+   "ref": "q = int(input())\nT = [None] * 64\nr = []\ndef lowest():\n    i = 0\n    while T[i] is not None:\n        i += 1\n    return i\nfor _ in range(q):\n    a = input().split()\n    if a[0] == \"open\":\n        i = lowest()\n        T[i] = a[1]\n        r.append(i)\n    elif a[0] == \"dup\":\n        if T[int(a[1])] is not None:\n            i = lowest()\n            T[i] = T[int(a[1])]\n            r.append(i)\n    elif a[0] == \"dup2\":\n        if T[int(a[1])] is not None:\n            T[int(a[2])] = T[int(a[1])]\n            r.append(int(a[2]))\n    else:\n        T[int(a[1])] = None\nfor i in range(64):\n    if T[i] is not None:\n        print(str(i) + \"=\" + T[i])\n",
+   "tests": [
+    {
+     "in": "10\nopen f3\nopen f3\nopen f1\nopen f5\nopen f8\nopen f5\nopen f9\nopen f3\nopen f8\nopen f1\n",
+     "out": "0=f3\n1=f3\n2=f1\n3=f5\n4=f8\n5=f5\n6=f9\n7=f3\n8=f8\n9=f1\n"
+    },
+    {
+     "in": "4\nopen f3\nopen f5\nopen f7\nopen f6\n",
+     "out": "0=f3\n1=f5\n2=f7\n3=f6\n"
+    },
+    {
+     "in": "3\nopen f6\nopen f5\nopen f9\n",
+     "out": "0=f6\n1=f5\n2=f9\n"
+    },
+    {
+     "in": "6\nopen f9\nopen f5\nopen f2\nopen f7\nopen f8\nopen f1\n",
+     "out": "0=f9\n1=f5\n2=f2\n3=f7\n4=f8\n5=f1\n"
+    },
+    {
+     "in": "6\nopen f4\nopen f6\nopen f3\nopen f1\nopen f2\nopen f9\n",
+     "out": "0=f4\n1=f6\n2=f3\n3=f1\n4=f2\n5=f9\n"
+    },
+    {
+     "in": "9\nopen f7\nopen f1\nopen f5\nopen f2\nopen f7\nopen f9\nopen f7\nopen f5\nopen f9\n",
+     "out": "0=f7\n1=f1\n2=f5\n3=f2\n4=f7\n5=f9\n6=f7\n7=f5\n8=f9\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "5\nopen f2\nopen f7\nopen f2\nopen f1\nopen f1\n",
+     "out": "0=f2\n1=f7\n2=f2\n3=f1\n4=f1\n"
+    },
+    {
+     "in": "9\nopen f9\nopen f9\nopen f2\nopen f5\nopen f8\nopen f1\nopen f2\nopen f9\nopen f4\n",
+     "out": "0=f9\n1=f9\n2=f2\n3=f5\n4=f8\n5=f1\n6=f2\n7=f9\n8=f4\n"
+    }
+   ],
+   "want": "lx.fdtable"
+  },
+  {
+   "id": "fd-count3",
+   "st": "第一行 q，之後 q 行事件：open 名稱、dup fd、dup2 舊 新、close fd。檔案描述符表一開始是空的，但 0、1、2 保留給標準輸入輸出所以最小的 fd 從 3 開始：open 回傳最小的空閒 fd；dup 複製到最小的空閒 fd；dup2 讓新 fd 指向舊 fd 的檔案；close 關閉該 fd。fd 沒開著時 dup、dup2 忽略。輸出最後還開著的 fd 有幾個。",
+   "rw_st": null,
+   "ref": "q = int(input())\nT = [None] * 64\nr = []\ndef lowest():\n    i = 3\n    while T[i] is not None:\n        i += 1\n    return i\nfor _ in range(q):\n    a = input().split()\n    if a[0] == \"open\":\n        i = lowest()\n        T[i] = a[1]\n        r.append(i)\n    elif a[0] == \"dup\":\n        if T[int(a[1])] is not None:\n            i = lowest()\n            T[i] = T[int(a[1])]\n            r.append(i)\n    elif a[0] == \"dup2\":\n        if T[int(a[1])] is not None:\n            T[int(a[2])] = T[int(a[1])]\n            r.append(int(a[2]))\n    else:\n        T[int(a[1])] = None\nprint(sum(1 for x in T if x is not None))\n",
+   "tests": [
+    {
+     "in": "9\nopen f9\nopen f7\nopen f7\nopen f9\nopen f1\nopen f8\nopen f2\nopen f6\nopen f5\n",
+     "out": "9\n"
+    },
+    {
+     "in": "7\nopen f9\nopen f6\nopen f9\nopen f7\nopen f3\nopen f9\nopen f1\n",
+     "out": "7\n"
+    },
+    {
+     "in": "8\nopen f6\nopen f3\nopen f4\nopen f3\nopen f4\nopen f8\nopen f5\nopen f8\n",
+     "out": "8\n"
+    },
+    {
+     "in": "4\nopen f8\nopen f5\nopen f2\nopen f7\n",
+     "out": "4\n"
+    },
+    {
+     "in": "3\nopen f7\nopen f7\nopen f5\n",
+     "out": "3\n"
+    },
+    {
+     "in": "3\nopen f7\nopen f8\nopen f4\n",
+     "out": "3\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "14\nopen f8\nopen f5\nopen f2\nopen f5\nopen f6\nopen f9\nopen f3\nopen f9\nopen f8\nopen f2\nopen f1\nopen f6\nopen f1\nopen f2\n",
+     "out": "14\n"
+    },
+    {
+     "in": "5\nopen f2\nopen f9\nopen f9\nopen f9\nopen f2\n",
+     "out": "5\n"
+    }
+   ],
+   "want": "lx.fdtable"
+  },
+  {
+   "id": "pipe-reads",
+   "st": "第一行 cap q，之後 q 行事件：write n 或 read n。管線緩衝區容量 cap 位元組：write 在寫不下時只寫得下的部分；read n 讀出最多 n 個位元組。輸出每次 read 實際讀到的位元組數，用空白隔開。",
+   "rw_st": null,
+   "ref": "cap, q = map(int, input().split())\nbuf = 0\nwait = []\nrd = []\nwr = []\nfor _ in range(q):\n    op, n = input().split()\n    n = int(n)\n    if op == \"write\":\n        free = cap - buf\n        if n <= free:\n            buf += n\n            wr.append(n)\n        elif \"partial\" == \"partial\":\n            buf += free\n            wr.append(free)\n        else:\n            wr.append(0)\n            if \"partial\" == \"block\":\n                wait.append(n)\n    else:\n        got = n if n < buf else buf\n        buf -= got\n        rd.append(got)\n        while wait and wait[0] <= cap - buf:\n            buf += wait.pop(0)\nprint(*rd)\n",
+   "tests": [
+    {
+     "in": "7 9\nwrite 7\nwrite 9\nread 9\nwrite 4\nwrite 8\nwrite 8\nwrite 4\nread 11\nwrite 7\n",
+     "out": "7 7\n"
+    },
+    {
+     "in": "14 5\nwrite 6\nwrite 2\nread 2\nwrite 2\nwrite 9\n",
+     "out": "2\n"
+    },
+    {
+     "in": "18 7\nwrite 5\nread 8\nwrite 4\nread 8\nwrite 8\nwrite 12\nwrite 8\n",
+     "out": "5 4\n"
+    },
+    {
+     "in": "15 6\nwrite 7\nwrite 12\nwrite 5\nread 9\nwrite 5\nread 9\n",
+     "out": "9 9\n"
+    },
+    {
+     "in": "20 3\nwrite 1\nread 1\nwrite 4\n",
+     "out": "1\n"
+    },
+    {
+     "in": "18 5\nwrite 3\nwrite 6\nread 5\nread 5\nwrite 8\n",
+     "out": "5 4\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "5 21\nread 7\nwrite 7\nread 3\nread 10\nread 6\nwrite 10\nwrite 6\nwrite 5\nwrite 9\nread 8\nread 12\nwrite 8\nread 3\nread 6\nwrite 5\nread 4\nwrite 12\nwrite 12\nwrite 1\nwrite 7\nwrite 3\n",
+     "out": "0 3 2 0 5 0 3 2 4\n"
+    },
+    {
+     "in": "18 3\nread 7\nread 3\nwrite 3\n",
+     "out": "0 0\n"
+    }
+   ],
+   "want": "lx.pipe"
+  },
+  {
+   "id": "pipe-final-reject",
+   "st": "第一行 cap q，之後 q 行事件：write n 或 read n。管線緩衝區容量 cap 位元組：write n 如果空間不夠整筆放進去就整筆拒絕（寫 0）；read n 讀出最多 n 個位元組。輸出最後緩衝區剩幾個位元組。",
+   "rw_st": null,
+   "ref": "cap, q = map(int, input().split())\nbuf = 0\nwait = []\nrd = []\nwr = []\nfor _ in range(q):\n    op, n = input().split()\n    n = int(n)\n    if op == \"write\":\n        free = cap - buf\n        if n <= free:\n            buf += n\n            wr.append(n)\n        elif \"reject\" == \"partial\":\n            buf += free\n            wr.append(free)\n        else:\n            wr.append(0)\n            if \"reject\" == \"block\":\n                wait.append(n)\n    else:\n        got = n if n < buf else buf\n        buf -= got\n        rd.append(got)\n        while wait and wait[0] <= cap - buf:\n            buf += wait.pop(0)\nprint(buf)\n",
+   "tests": [
+    {
+     "in": "14 9\nread 5\nwrite 8\nread 1\nwrite 1\nwrite 5\nread 12\nwrite 12\nwrite 11\nwrite 11\n",
+     "out": "13\n"
+    },
+    {
+     "in": "5 9\nwrite 3\nwrite 3\nread 7\nwrite 7\nwrite 7\nread 3\nwrite 7\nwrite 10\nread 9\n",
+     "out": "0\n"
+    },
+    {
+     "in": "6 7\nread 1\nread 2\nread 12\nwrite 12\nwrite 3\nwrite 3\nwrite 4\n",
+     "out": "6\n"
+    },
+    {
+     "in": "4 9\nwrite 6\nwrite 1\nread 5\nwrite 1\nwrite 9\nwrite 5\nread 1\nwrite 1\nread 12\n",
+     "out": "0\n"
+    },
+    {
+     "in": "5 6\nwrite 8\nread 8\nwrite 8\nwrite 7\nwrite 7\nwrite 7\n",
+     "out": "0\n"
+    },
+    {
+     "in": "4 9\nwrite 9\nwrite 4\nwrite 4\nread 4\nread 1\nwrite 5\nwrite 8\nwrite 3\nwrite 11\n",
+     "out": "3\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "17 3\nwrite 6\nwrite 10\nwrite 12\n",
+     "out": "16\n"
+    },
+    {
+     "in": "5 4\nwrite 2\nread 1\nwrite 9\nread 9\n",
+     "out": "0\n"
+    }
+   ],
+   "want": "lx.pipe"
+  },
+  {
+   "id": "pipe-block",
+   "st": "第一行 cap q，之後 q 行事件：write n 或 read n。管線緩衝區容量 cap 位元組：write n 空間不夠時整筆排隊阻塞（先排的先寫，read 騰出空間後依序整筆寫進去，排在前面放不下就停止，這次 write 回傳 0）；read n 讀出最多 n 個位元組。輸出每次 write 實際寫入的位元組數（阻塞的算 0），用空白隔開。",
+   "rw_st": null,
+   "ref": "cap, q = map(int, input().split())\nbuf = 0\nwait = []\nrd = []\nwr = []\nfor _ in range(q):\n    op, n = input().split()\n    n = int(n)\n    if op == \"write\":\n        free = cap - buf\n        if n <= free:\n            buf += n\n            wr.append(n)\n        elif \"block\" == \"partial\":\n            buf += free\n            wr.append(free)\n        else:\n            wr.append(0)\n            if \"block\" == \"block\":\n                wait.append(n)\n    else:\n        got = n if n < buf else buf\n        buf -= got\n        rd.append(got)\n        while wait and wait[0] <= cap - buf:\n            buf += wait.pop(0)\nprint(*wr)\n",
+   "tests": [
+    {
+     "in": "6 10\nwrite 4\nwrite 4\nread 12\nread 8\nwrite 12\nwrite 9\nread 5\nwrite 4\nwrite 8\nread 3\n",
+     "out": "4 0 0 0 4 0\n"
+    },
+    {
+     "in": "14 3\nwrite 11\nwrite 11\nwrite 6\n",
+     "out": "11 0 0\n"
+    },
+    {
+     "in": "18 4\nread 9\nwrite 5\nwrite 5\nwrite 12\n",
+     "out": "5 5 0\n"
+    },
+    {
+     "in": "16 5\nwrite 6\nwrite 10\nwrite 6\nread 1\nread 1\n",
+     "out": "6 10 0\n"
+    },
+    {
+     "in": "18 6\nwrite 8\nwrite 11\nwrite 3\nwrite 7\nwrite 3\nread 11\n",
+     "out": "8 0 3 7 0\n"
+    },
+    {
+     "in": "8 5\nwrite 7\nwrite 3\nwrite 2\nwrite 5\nwrite 5\n",
+     "out": "7 0 0 0 0\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "10 20\nwrite 12\nread 12\nwrite 12\nread 8\nwrite 12\nread 12\nwrite 12\nwrite 3\nread 3\nread 8\nread 8\nwrite 8\nread 8\nwrite 8\nread 4\nread 4\nread 4\nread 3\nread 11\nread 9\n",
+     "out": "0 0 0 0 3 8 8\n"
+    },
+    {
+     "in": "5 17\nread 12\nwrite 8\nread 5\nread 5\nread 12\nwrite 4\nwrite 3\nread 11\nwrite 3\nread 7\nread 7\nwrite 3\nwrite 11\nwrite 3\nread 11\nread 2\nwrite 1\n",
+     "out": "0 4 0 3 3 0 0 1\n"
+    }
+   ],
+   "want": "lx.pipe"
+  },
+  {
+   "id": "sig-order",
+   "st": "第一行 q，之後 q 行事件：block s...、unblock s...、kill s（s 是信號編號，一行可以給多個）。信號遮罩一開始是空的：kill 一個沒被遮罩的信號就立刻遞送；被遮罩的信號變成 pending，同一個信號的多次 pending 合併成一個；unblock 時該信號若有 pending 就遞送；一次 unblock 多個信號時照給的順序處理。輸出遞送順序，用空白隔開。",
+   "rw_st": null,
+   "ref": "q = int(input())\nblocked = [False] * 10\npending = [0] * 10\nlog = []\nfor _ in range(q):\n    a = input().split()\n    args = [int(x) for x in a[1:]]\n    if a[0] == \"block\":\n        for s in args:\n            blocked[s] = True\n    elif a[0] == \"unblock\":\n        for s in args:\n            blocked[s] = False\n            if pending[s]:\n                log += [s] * (1 if \"merge\" == \"merge\" else pending[s])\n                pending[s] = 0\n    else:\n        s = args[0]\n        if blocked[s]:\n            pending[s] = 1 if \"merge\" == \"merge\" else pending[s] + 1\n        else:\n            log.append(s)\nprint(*log)\n",
+   "tests": [
+    {
+     "in": "6\nkill 5\nunblock 1 4 1\nunblock 1 4\nblock 3\nunblock 5 1\nblock 1\n",
+     "out": "5\n"
+    },
+    {
+     "in": "7\nkill 5\nunblock 2 1\nkill 5\nunblock 2 5\nunblock 3 3 5\nunblock 4\nunblock 4\n",
+     "out": "5 5\n"
+    },
+    {
+     "in": "7\nunblock 2 1\nkill 3\nkill 4\nkill 4\nkill 1\nunblock 3 5\nunblock 3\n",
+     "out": "3 4 4 1\n"
+    },
+    {
+     "in": "4\nblock 3 3 4\nkill 4\nblock 3\nkill 5\n",
+     "out": "5\n"
+    },
+    {
+     "in": "3\nblock 2\nkill 3\nunblock 1\n",
+     "out": "3\n"
+    },
+    {
+     "in": "7\nkill 3\nkill 4\nunblock 5 2\nkill 3\nunblock 3 5\nunblock 3\nblock 2 3\n",
+     "out": "3 4 3\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "21\nkill 4\nkill 2\nunblock 2 3 2\nunblock 1 1\nunblock 1 4 4\nkill 1\nunblock 2\nkill 1\nunblock 1\nunblock 4 5\nunblock 5 5\nkill 3\nkill 1\nunblock 5\nblock 5\nkill 4\nunblock 1\nkill 5\nkill 2\nkill 3\nunblock 5 5\n",
+     "out": "4 2 1 1 3 1 4 2 3 5\n"
+    },
+    {
+     "in": "9\nblock 2 4\nkill 5\nkill 1\nkill 4\nblock 3 1\nunblock 5 2\nunblock 3 2 1\nunblock 4 2 4\nunblock 5 3\n",
+     "out": "5 1 4\n"
+    }
+   ],
+   "want": "lx.sigmask"
+  },
+  {
+   "id": "sig-count",
+   "st": "第一行 q，之後 q 行事件：block s...、unblock s...、kill s（s 是信號編號，一行可以給多個）。信號遮罩一開始是空的：kill 一個沒被遮罩的信號就立刻遞送；被遮罩的信號變成 pending，每一次 kill 都各算一次 pending（不合併）；unblock 時該信號所有 pending 都遞送；一次 unblock 多個信號時由小到大處理。輸出遞送的總次數。",
+   "rw_st": null,
+   "ref": "q = int(input())\nblocked = [False] * 10\npending = [0] * 10\nlog = []\nfor _ in range(q):\n    a = input().split()\n    args = [int(x) for x in a[1:]]\n    if a[0] == \"block\":\n        for s in args:\n            blocked[s] = True\n    elif a[0] == \"unblock\":\n        for s in sorted(args):\n            blocked[s] = False\n            if pending[s]:\n                log += [s] * (1 if \"count\" == \"merge\" else pending[s])\n                pending[s] = 0\n    else:\n        s = args[0]\n        if blocked[s]:\n            pending[s] = 1 if \"count\" == \"merge\" else pending[s] + 1\n        else:\n            log.append(s)\nprint(len(log))\n",
+   "tests": [
+    {
+     "in": "9\nunblock 1 3\nunblock 4\nunblock 3\nkill 2\nunblock 5 3 1\nunblock 3 1\nkill 1\nunblock 5\nunblock 3 2 1\n",
+     "out": "2\n"
+    },
+    {
+     "in": "7\nunblock 4\nunblock 4 4\nkill 2\nblock 4 4 2\nkill 5\nkill 4\nkill 2\n",
+     "out": "2\n"
+    },
+    {
+     "in": "4\nunblock 4 5\nkill 5\nunblock 4\nkill 2\n",
+     "out": "2\n"
+    },
+    {
+     "in": "5\nblock 3 5\nblock 2\nblock 2 4\nunblock 2 4 3\nkill 1\n",
+     "out": "1\n"
+    },
+    {
+     "in": "3\nunblock 3 2\nunblock 1 3\nblock 2 3\n",
+     "out": "0\n"
+    },
+    {
+     "in": "9\nkill 2\nunblock 2 5 5\nunblock 1 1\nunblock 5 5\nkill 2\nkill 1\nunblock 5 2\nunblock 3 3 3\nunblock 5\n",
+     "out": "3\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "18\nunblock 3 5\nblock 4 5\nunblock 2 3\nkill 1\nunblock 1 3 4\nunblock 2 5 3\nunblock 5\nunblock 4 3\nblock 4 3\nunblock 4\nblock 4 4 3\nblock 5\nkill 2\nkill 1\nkill 5\nunblock 3 2 1\nkill 4\nkill 1\n",
+     "out": "4\n"
+    },
+    {
+     "in": "8\nblock 2\nunblock 1 1 3\nkill 1\nkill 4\nblock 2 1 1\nunblock 5\nunblock 2\nkill 3\n",
+     "out": "3\n"
+    }
+   ],
+   "want": "lx.sigmask"
+  },
+  {
+   "id": "tcp-final",
+   "st": "第一行 q，之後 q 行事件：passive_open、active_open、syn、synack、ack、fin、close、timeout。TCP 連線從 CLOSED 開始，依標準狀態機換狀態（LISTEN、SYN_SENT、SYN_RCVD、ESTABLISHED、FIN_WAIT_1、FIN_WAIT_2、TIME_WAIT、CLOSE_WAIT、LAST_ACK、CLOSED）；目前狀態沒有定義的事件直接忽略。輸出最後的狀態。",
+   "rw_st": null,
+   "ref": "q = int(input())\nnext_state = {\n  (\"CLOSED\", \"passive_open\"): \"LISTEN\", (\"CLOSED\", \"active_open\"): \"SYN_SENT\", (\"LISTEN\", \"syn\"): \"SYN_RCVD\", (\"LISTEN\", \"close\"): \"CLOSED\",\n  (\"SYN_SENT\", \"synack\"): \"ESTABLISHED\", (\"SYN_SENT\", \"close\"): \"CLOSED\", (\"SYN_RCVD\", \"ack\"): \"ESTABLISHED\", (\"SYN_RCVD\", \"close\"): \"FIN_WAIT_1\",\n  (\"ESTABLISHED\", \"close\"): \"FIN_WAIT_1\", (\"ESTABLISHED\", \"fin\"): \"CLOSE_WAIT\", (\"FIN_WAIT_1\", \"ack\"): \"FIN_WAIT_2\", (\"FIN_WAIT_2\", \"fin\"): \"TIME_WAIT\",\n  (\"CLOSING\", \"ack\"): \"TIME_WAIT\", (\"TIME_WAIT\", \"timeout\"): \"CLOSED\", (\"CLOSE_WAIT\", \"close\"): \"LAST_ACK\", (\"LAST_ACK\", \"ack\"): \"CLOSED\"}\ns = \"CLOSED\"\nbad = False\nsteps = []\nfor _ in range(q):\n    e = input().strip()\n    if (s, e) in next_state:\n        s = next_state[(s, e)]\n        steps.append(s)\n    else:\n        bad = True\nprint(s)\n",
+   "tests": [
+    {
+     "in": "5\npassive_open\nsyn\nack\nfin\nclose\n",
+     "out": "LAST_ACK\n"
+    },
+    {
+     "in": "3\nactive_open\nsynack\nfin\n",
+     "out": "CLOSE_WAIT\n"
+    },
+    {
+     "in": "3\npassive_open\nsyn\nack\n",
+     "out": "ESTABLISHED\n"
+    },
+    {
+     "in": "6\nactive_open\nsynack\nclose\nack\nfin\ntimeout\n",
+     "out": "CLOSED\n"
+    },
+    {
+     "in": "2\npassive_open\nsyn\n",
+     "out": "SYN_RCVD\n"
+    },
+    {
+     "in": "5\nclose\nsyn\nack\nfin\nclose\n",
+     "out": "CLOSED\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "7\npassive_open\nsyn\nack\nclose\nack\npassive_open\nsyn\n",
+     "out": "FIN_WAIT_2\n"
+    },
+    {
+     "in": "4\nactive_open\nsynack\nclose\nack\n",
+     "out": "FIN_WAIT_2\n"
+    }
+   ],
+   "want": "lx.tcp"
+  },
+  {
+   "id": "tcp-trace",
+   "st": "第一行 q，之後 q 行事件：passive_open、active_open、syn、synack、ack、fin、close、timeout。TCP 連線從 CLOSED 開始，依標準狀態機換狀態（LISTEN、SYN_SENT、SYN_RCVD、ESTABLISHED、FIN_WAIT_1、FIN_WAIT_2、TIME_WAIT、CLOSE_WAIT、LAST_ACK、CLOSED）；目前狀態沒有定義的事件直接忽略。輸出每次狀態改變後的新狀態，用空白隔開。",
+   "rw_st": null,
+   "ref": "q = int(input())\nnext_state = {\n  (\"CLOSED\", \"passive_open\"): \"LISTEN\", (\"CLOSED\", \"active_open\"): \"SYN_SENT\", (\"LISTEN\", \"syn\"): \"SYN_RCVD\", (\"LISTEN\", \"close\"): \"CLOSED\",\n  (\"SYN_SENT\", \"synack\"): \"ESTABLISHED\", (\"SYN_SENT\", \"close\"): \"CLOSED\", (\"SYN_RCVD\", \"ack\"): \"ESTABLISHED\", (\"SYN_RCVD\", \"close\"): \"FIN_WAIT_1\",\n  (\"ESTABLISHED\", \"close\"): \"FIN_WAIT_1\", (\"ESTABLISHED\", \"fin\"): \"CLOSE_WAIT\", (\"FIN_WAIT_1\", \"ack\"): \"FIN_WAIT_2\", (\"FIN_WAIT_2\", \"fin\"): \"TIME_WAIT\",\n  (\"CLOSING\", \"ack\"): \"TIME_WAIT\", (\"TIME_WAIT\", \"timeout\"): \"CLOSED\", (\"CLOSE_WAIT\", \"close\"): \"LAST_ACK\", (\"LAST_ACK\", \"ack\"): \"CLOSED\"}\ns = \"CLOSED\"\nbad = False\nsteps = []\nfor _ in range(q):\n    e = input().strip()\n    if (s, e) in next_state:\n        s = next_state[(s, e)]\n        steps.append(s)\n    else:\n        bad = True\nprint(*steps)\n",
+   "tests": [
+    {
+     "in": "6\npassive_open\nsyn\nack\nfin\nclose\nack\n",
+     "out": "LISTEN SYN_RCVD ESTABLISHED CLOSE_WAIT LAST_ACK CLOSED\n"
+    },
+    {
+     "in": "5\nactive_open\nsynack\nsyn\nclose\nfin\n",
+     "out": "SYN_SENT ESTABLISHED FIN_WAIT_1\n"
+    },
+    {
+     "in": "7\nactive_open\nsynack\nfin\nclose\nack\nactive_open\nsynack\n",
+     "out": "SYN_SENT ESTABLISHED CLOSE_WAIT LAST_ACK CLOSED SYN_SENT ESTABLISHED\n"
+    },
+    {
+     "in": "6\nactive_open\nsynack\nclose\nack\ntimeout\ntimeout\n",
+     "out": "SYN_SENT ESTABLISHED FIN_WAIT_1 FIN_WAIT_2\n"
+    },
+    {
+     "in": "6\nactive_open\nsynack\nclose\nack\nfin\ntimeout\n",
+     "out": "SYN_SENT ESTABLISHED FIN_WAIT_1 FIN_WAIT_2 TIME_WAIT CLOSED\n"
+    },
+    {
+     "in": "3\nactive_open\nsynack\nfin\n",
+     "out": "SYN_SENT ESTABLISHED CLOSE_WAIT\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "5\npassive_open\nack\nfin\nclose\nack\n",
+     "out": "LISTEN CLOSED\n"
+    },
+    {
+     "in": "6\nactive_open\nsynack\nclose\nclose\nfin\ntimeout\n",
+     "out": "SYN_SENT ESTABLISHED FIN_WAIT_1\n"
+    }
+   ],
+   "want": "lx.tcp"
+  },
+  {
+   "id": "tcp-err",
+   "st": "第一行 q，之後 q 行事件：passive_open、active_open、syn、synack、ack、fin、close、timeout。TCP 連線從 CLOSED 開始，依標準狀態機換狀態（LISTEN、SYN_SENT、SYN_RCVD、ESTABLISHED、FIN_WAIT_1、FIN_WAIT_2、TIME_WAIT、CLOSE_WAIT、LAST_ACK、CLOSED）；只要出現目前狀態沒有定義的事件，最後就輸出 ERROR，否則輸出最後的狀態。",
+   "rw_st": null,
+   "ref": "q = int(input())\nnext_state = {\n  (\"CLOSED\", \"passive_open\"): \"LISTEN\", (\"CLOSED\", \"active_open\"): \"SYN_SENT\", (\"LISTEN\", \"syn\"): \"SYN_RCVD\", (\"LISTEN\", \"close\"): \"CLOSED\",\n  (\"SYN_SENT\", \"synack\"): \"ESTABLISHED\", (\"SYN_SENT\", \"close\"): \"CLOSED\", (\"SYN_RCVD\", \"ack\"): \"ESTABLISHED\", (\"SYN_RCVD\", \"close\"): \"FIN_WAIT_1\",\n  (\"ESTABLISHED\", \"close\"): \"FIN_WAIT_1\", (\"ESTABLISHED\", \"fin\"): \"CLOSE_WAIT\", (\"FIN_WAIT_1\", \"ack\"): \"FIN_WAIT_2\", (\"FIN_WAIT_2\", \"fin\"): \"TIME_WAIT\",\n  (\"CLOSING\", \"ack\"): \"TIME_WAIT\", (\"TIME_WAIT\", \"timeout\"): \"CLOSED\", (\"CLOSE_WAIT\", \"close\"): \"LAST_ACK\", (\"LAST_ACK\", \"ack\"): \"CLOSED\"}\ns = \"CLOSED\"\nbad = False\nsteps = []\nfor _ in range(q):\n    e = input().strip()\n    if (s, e) in next_state:\n        s = next_state[(s, e)]\n        steps.append(s)\n    else:\n        bad = True\nprint(\"ERROR\" if bad else s)\n",
+   "tests": [
+    {
+     "in": "5\nactive_open\nsynack\nfin\nclose\nack\n",
+     "out": "CLOSED\n"
+    },
+    {
+     "in": "4\nclose\nsyn\nack\nclose\n",
+     "out": "ERROR\n"
+    },
+    {
+     "in": "3\nactive_open\nsynack\nclose\n",
+     "out": "FIN_WAIT_1\n"
+    },
+    {
+     "in": "5\ntimeout\nsynack\nclose\nack\ntimeout\n",
+     "out": "ERROR\n"
+    },
+    {
+     "in": "7\nactive_open\nsynack\nfin\nclose\nack\nactive_open\nfin\n",
+     "out": "ERROR\n"
+    },
+    {
+     "in": "6\npassive_open\ntimeout\nack\nclose\nack\npassive_open\n",
+     "out": "ERROR\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "6\nactive_open\nsynack\nfin\nsyn\nack\nactive_open\n",
+     "out": "ERROR\n"
+    },
+    {
+     "in": "12\npassive_open\ntimeout\nack\nfin\nclose\nack\npassive_open\nfin\nack\nfin\nclose\nack\n",
+     "out": "ERROR\n"
+    }
+   ],
+   "want": "lx.tcp"
+  },
+  {
+   "id": "proc-waits",
+   "st": "第一行 q，之後 q 行事件：fork p、exit p、wait p。一開始只有行程 1（init）。fork p：執行中的行程 p 生出一個新子行程，編號從 2 開始遞增；exit p：行程 p 結束變成殭屍（行程 1 不會 exit），它的所有子行程過繼給行程 1，被過繼的殭屍子行程由 init 立刻回收；wait p：回收 p 的一個殭屍子行程（編號最小的）並回傳它的編號，沒有殭屍子行程就回傳 -1。對沒有在執行的行程下指令一律忽略。輸出每次 wait 的回傳值，用空白隔開。",
+   "rw_st": null,
+   "ref": "q = int(input())\nalive = {1}\nparent = {}\nzombies = []\nnxt = 2\nres = []\nfor _ in range(q):\n    a = input().split()\n    x = int(a[1])\n    if a[0] == \"fork\":\n        if x in alive:\n            parent[nxt] = x\n            alive.add(nxt)\n            nxt += 1\n    elif a[0] == \"exit\":\n        if x in alive and x != 1:\n            alive.discard(x)\n            zombies.append(x)\n            kids = [k for k in parent if parent[k] == x]\n            for k in kids:\n                parent[k] = 1\n            zombies = [z for z in zombies if z not in kids]\n    else:\n        if x in alive:\n            c = [z for z in zombies if parent[z] == x]\n            if c:\n                z = min(c)\n                zombies.remove(z)\n                res.append(z)\n            else:\n                res.append(-1)\nprint(*res)\n",
+   "tests": [
+    {
+     "in": "12\nfork 1\nfork 2\nfork 1\nfork 1\nfork 5\nfork 3\nexit 3\nwait 3\nexit 3\nexit 2\nexit 2\nwait 5\n",
+     "out": "-1\n"
+    },
+    {
+     "in": "9\nfork 1\nfork 1\nfork 2\nwait 1\nexit 4\nexit 4\nfork 3\nwait 3\nfork 2\n",
+     "out": "-1 -1\n"
+    },
+    {
+     "in": "5\nfork 1\nfork 2\nfork 2\nfork 2\nwait 1\n",
+     "out": "-1\n"
+    },
+    {
+     "in": "11\nfork 1\nfork 1\nfork 3\nfork 3\nfork 2\nwait 2\nexit 3\nwait 1\nwait 2\nexit 2\nexit 4\n",
+     "out": "-1 3 -1\n"
+    },
+    {
+     "in": "10\nfork 1\nfork 1\nfork 1\nexit 2\nfork 1\nwait 4\nwait 4\nexit 4\nwait 1\nexit 2\n",
+     "out": "-1 -1 2\n"
+    },
+    {
+     "in": "8\nfork 1\nfork 2\nexit 3\nwait 2\nwait 2\nexit 3\nfork 2\nexit 2\n",
+     "out": "3 -1\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "13\nfork 1\nfork 2\nfork 2\nfork 1\nwait 5\nfork 4\nexit 5\nfork 5\nfork 2\nwait 2\nexit 3\nexit 3\nexit 3\n",
+     "out": "-1 -1\n"
+    },
+    {
+     "in": "18\nfork 1\nfork 1\nfork 3\nfork 1\nfork 4\nfork 4\nexit 5\nwait 4\nexit 2\nfork 6\nwait 6\nexit 6\nfork 6\nfork 6\nexit 5\nwait 6\nwait 1\nwait 6\n",
+     "out": "-1 -1 2\n"
+    }
+   ],
+   "want": "lx.proctree"
+  },
+  {
+   "id": "proc-zombies",
+   "st": "第一行 q，之後 q 行事件：fork p、exit p、wait p。一開始只有行程 1（init）。fork p：執行中的行程 p 生出一個新子行程，編號從 2 開始遞增；exit p：行程 p 結束變成殭屍，它的子行程過繼給行程 1，被過繼的殭屍子行程不會被自動回收（要由 wait 1 才收得掉）；wait p：回收 p 的一個殭屍子行程（最早 exit 的那個）並回傳編號，沒有就回傳 -1。對沒有在執行的行程下指令一律忽略。輸出最後還留著的殭屍行程編號，由小到大用空白隔開。",
+   "rw_st": null,
+   "ref": "q = int(input())\nalive = {1}\nparent = {}\nzombies = []\nnxt = 2\nres = []\nfor _ in range(q):\n    a = input().split()\n    x = int(a[1])\n    if a[0] == \"fork\":\n        if x in alive:\n            parent[nxt] = x\n            alive.add(nxt)\n            nxt += 1\n    elif a[0] == \"exit\":\n        if x in alive and x != 1:\n            alive.discard(x)\n            zombies.append(x)\n            kids = [k for k in parent if parent[k] == x]\n            for k in kids:\n                parent[k] = 1\n    else:\n        if x in alive:\n            c = [z for z in zombies if parent[z] == x]\n            if c:\n                z = c[0]\n                zombies.remove(z)\n                res.append(z)\n            else:\n                res.append(-1)\nprint(*sorted(zombies))\n",
+   "tests": [
+    {
+     "in": "7\nfork 1\nfork 2\nfork 2\nexit 3\nexit 2\nwait 1\nfork 3\n",
+     "out": "2\n"
+    },
+    {
+     "in": "11\nfork 1\nfork 1\nfork 1\nexit 2\nwait 2\nexit 4\nexit 3\nexit 3\nexit 4\nwait 1\nexit 3\n",
+     "out": "3 4\n"
+    },
+    {
+     "in": "12\nfork 1\nfork 2\nfork 2\nfork 3\nwait 1\nwait 5\nwait 2\nwait 5\nexit 3\nexit 3\nwait 2\nexit 2\n",
+     "out": "2\n"
+    },
+    {
+     "in": "8\nfork 1\nfork 1\nexit 2\nexit 2\nexit 3\nexit 3\nexit 2\nexit 3\n",
+     "out": "2 3\n"
+    },
+    {
+     "in": "12\nfork 1\nfork 2\nfork 3\nfork 1\nwait 4\nexit 5\nfork 3\nexit 4\nfork 5\nexit 4\nwait 5\nexit 5\n",
+     "out": "4 5\n"
+    },
+    {
+     "in": "10\nfork 1\nfork 2\nfork 1\nexit 2\nexit 3\nfork 4\nexit 3\nfork 1\nexit 4\nwait 4\n",
+     "out": "2 3 4\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "12\nfork 1\nfork 1\nfork 1\nfork 3\nexit 3\nwait 5\nwait 3\nexit 2\nexit 5\nexit 3\nexit 3\nexit 3\n",
+     "out": "2 3 5\n"
+    },
+    {
+     "in": "12\nfork 1\nfork 2\nfork 3\nfork 2\nwait 4\nexit 2\nfork 2\nwait 1\nexit 5\nwait 1\nexit 3\nexit 2\n",
+     "out": "3\n"
+    }
+   ],
+   "want": "lx.proctree"
+  },
+  {
+   "id": "proc-alive",
+   "st": "第一行 q，之後 q 行事件：fork p、exit p、wait p。一開始只有行程 1（init）。fork p：執行中的行程 p 生出一個新子行程，編號從 2 開始遞增；exit p：行程 p 結束變成殭屍，它的子行程過繼給行程 1，被過繼的殭屍子行程由 init 立刻回收；wait p：回收 p 的一個殭屍子行程（編號最小的），沒有就算了。對沒有在執行的行程下指令一律忽略。輸出最後還在執行的行程有幾個。",
+   "rw_st": null,
+   "ref": "q = int(input())\nalive = {1}\nparent = {}\nzombies = []\nnxt = 2\nres = []\nfor _ in range(q):\n    a = input().split()\n    x = int(a[1])\n    if a[0] == \"fork\":\n        if x in alive:\n            parent[nxt] = x\n            alive.add(nxt)\n            nxt += 1\n    elif a[0] == \"exit\":\n        if x in alive and x != 1:\n            alive.discard(x)\n            zombies.append(x)\n            kids = [k for k in parent if parent[k] == x]\n            for k in kids:\n                parent[k] = 1\n            zombies = [z for z in zombies if z not in kids]\n    else:\n        if x in alive:\n            c = [z for z in zombies if parent[z] == x]\n            if c:\n                z = min(c)\n                zombies.remove(z)\n                res.append(z)\n            else:\n                res.append(-1)\nprint(len(alive))\n",
+   "tests": [
+    {
+     "in": "11\nfork 1\nfork 1\nfork 1\nexit 2\nexit 4\nexit 3\nexit 3\nwait 2\nexit 4\nexit 2\nexit 3\n",
+     "out": "1\n"
+    },
+    {
+     "in": "5\nfork 1\nfork 1\nwait 3\nexit 3\nexit 2\n",
+     "out": "1\n"
+    },
+    {
+     "in": "7\nfork 1\nfork 1\nfork 3\nwait 1\nwait 2\nwait 1\nwait 2\n",
+     "out": "4\n"
+    },
+    {
+     "in": "6\nfork 1\nfork 2\nwait 1\nfork 1\nwait 3\nwait 2\n",
+     "out": "4\n"
+    },
+    {
+     "in": "5\nfork 1\nfork 2\nexit 3\nwait 2\nwait 3\n",
+     "out": "2\n"
+    },
+    {
+     "in": "10\nfork 1\nfork 2\nfork 1\nexit 2\nwait 1\nfork 4\nexit 4\nexit 4\nexit 3\nwait 3\n",
+     "out": "2\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "19\nfork 1\nfork 2\nfork 3\nfork 2\nfork 4\nfork 2\nexit 7\nwait 1\nexit 6\nfork 5\nwait 7\nwait 1\nwait 6\nexit 3\nfork 6\nexit 2\nexit 6\nfork 6\nfork 5\n",
+     "out": "5\n"
+    },
+    {
+     "in": "11\nfork 1\nfork 2\nfork 1\nwait 1\nexit 4\nexit 3\nwait 2\nexit 3\nexit 3\nwait 1\nexit 2\n",
+     "out": "1\n"
+    }
+   ],
+   "want": "lx.proctree"
+  },
+  {
+   "id": "listen-accepts",
+   "st": "第一行 cap q，之後 q 行事件：conn 或 accept。伺服器 listen 的 backlog 就是 cap：監聽佇列最多容納 cap 個連線：conn 表示一個客戶端連線抵達（連線編號從 1 開始依抵達順序遞增，不管有沒有進佇列），佇列沒滿就排進去，滿了就丟棄；accept 取出佇列裡最早的連線並回傳其編號，佇列空的回傳 -1。輸出每次 accept 的回傳值，用空白隔開。",
+   "rw_st": null,
+   "ref": "cap, q = map(int, input().split())\ncap += 0\nitems = []\nhead = 0\nn = 0\ndropped = 0\nres = []\nfor _ in range(q):\n    e = input().strip()\n    if e == \"conn\":\n        n += 1\n        if len(items) - head < cap:\n            items.append(n)\n        else:\n            dropped += 1\n    else:\n        if head < len(items):\n            res.append(items[head])\n            head += 1\n        else:\n            res.append(-1)\nprint(*res)\n",
+   "tests": [
+    {
+     "in": "4 10\naccept\naccept\naccept\naccept\naccept\naccept\nconn\naccept\naccept\nconn\n",
+     "out": "-1 -1 -1 -1 -1 -1 1 -1\n"
+    },
+    {
+     "in": "1 11\nconn\nconn\naccept\nconn\nconn\naccept\nconn\naccept\naccept\nconn\naccept\n",
+     "out": "1 3 5 -1 6\n"
+    },
+    {
+     "in": "2 7\nconn\naccept\naccept\nconn\nconn\naccept\naccept\n",
+     "out": "1 -1 2 3\n"
+    },
+    {
+     "in": "2 7\naccept\nconn\naccept\nconn\nconn\nconn\naccept\n",
+     "out": "-1 1 2\n"
+    },
+    {
+     "in": "2 5\nconn\nconn\nconn\nconn\naccept\n",
+     "out": "1\n"
+    },
+    {
+     "in": "2 6\naccept\nconn\nconn\naccept\naccept\naccept\n",
+     "out": "-1 1 2 -1\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "4 25\nconn\nconn\nconn\naccept\nconn\naccept\naccept\nconn\naccept\naccept\nconn\nconn\naccept\nconn\naccept\nconn\nconn\nconn\nconn\nconn\naccept\nconn\nconn\naccept\nconn\n",
+     "out": "1 2 3 4 5 6 7 8 9\n"
+    },
+    {
+     "in": "4 9\nconn\naccept\naccept\nconn\nconn\nconn\naccept\naccept\naccept\n",
+     "out": "1 -1 2 3 4\n"
+    }
+   ],
+   "want": "lx.listen"
+  },
+  {
+   "id": "listen-dropped",
+   "st": "第一行 cap q，之後 q 行事件：conn 或 accept。監聽佇列（backlog）最多容納 cap 個等待中的連線：conn 是新連線抵達，佇列沒滿就排進去，滿了就被丟棄；accept 取出最早的連線。輸出總共有幾個連線被丟棄。",
+   "rw_st": null,
+   "ref": "cap, q = map(int, input().split())\ncap += 0\nitems = []\nhead = 0\nn = 0\ndropped = 0\nres = []\nfor _ in range(q):\n    e = input().strip()\n    if e == \"conn\":\n        n += 1\n        if len(items) - head < cap:\n            items.append(n)\n        else:\n            dropped += 1\n    else:\n        if head < len(items):\n            res.append(items[head])\n            head += 1\n        else:\n            res.append(-1)\nprint(dropped)\n",
+   "tests": [
+    {
+     "in": "2 5\nconn\nconn\nconn\nconn\nconn\n",
+     "out": "3\n"
+    },
+    {
+     "in": "3 8\nconn\nconn\nconn\nconn\nconn\nconn\nconn\nconn\n",
+     "out": "5\n"
+    },
+    {
+     "in": "2 6\naccept\nconn\naccept\naccept\nconn\nconn\n",
+     "out": "0\n"
+    },
+    {
+     "in": "1 11\naccept\naccept\nconn\nconn\naccept\nconn\naccept\nconn\nconn\nconn\naccept\n",
+     "out": "3\n"
+    },
+    {
+     "in": "2 11\naccept\nconn\nconn\nconn\naccept\naccept\naccept\naccept\nconn\naccept\nconn\n",
+     "out": "1\n"
+    },
+    {
+     "in": "1 6\nconn\naccept\naccept\nconn\nconn\nconn\n",
+     "out": "2\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "1 15\nconn\nconn\naccept\nconn\nconn\nconn\nconn\nconn\nconn\naccept\naccept\naccept\naccept\naccept\naccept\n",
+     "out": "6\n"
+    },
+    {
+     "in": "2 14\naccept\nconn\nconn\nconn\naccept\naccept\naccept\nconn\nconn\nconn\naccept\nconn\naccept\nconn\n",
+     "out": "2\n"
+    }
+   ],
+   "want": "lx.listen"
+  },
+  {
+   "id": "listen-plus1",
+   "st": "第一行 cap q，之後 q 行事件：conn 或 accept。listen 的 backlog 是 cap，監聽佇列實際最多容納比 cap 多一個的等待中連線：conn 是新連線抵達，沒滿就排進去，滿了就丟棄；accept 取出最早的連線並回傳編號（連線編號從 1 依抵達順序遞增），空的回傳 -1。輸出最後佇列裡還剩幾個連線。",
+   "rw_st": null,
+   "ref": "cap, q = map(int, input().split())\ncap += 1\nitems = []\nhead = 0\nn = 0\ndropped = 0\nres = []\nfor _ in range(q):\n    e = input().strip()\n    if e == \"conn\":\n        n += 1\n        if len(items) - head < cap:\n            items.append(n)\n        else:\n            dropped += 1\n    else:\n        if head < len(items):\n            res.append(items[head])\n            head += 1\n        else:\n            res.append(-1)\nprint(len(items) - head)\n",
+   "tests": [
+    {
+     "in": "1 5\naccept\nconn\nconn\naccept\naccept\n",
+     "out": "0\n"
+    },
+    {
+     "in": "3 4\nconn\nconn\nconn\nconn\n",
+     "out": "4\n"
+    },
+    {
+     "in": "2 11\nconn\nconn\naccept\nconn\naccept\nconn\naccept\naccept\nconn\nconn\nconn\n",
+     "out": "3\n"
+    },
+    {
+     "in": "1 4\nconn\nconn\nconn\nconn\n",
+     "out": "2\n"
+    },
+    {
+     "in": "3 8\naccept\naccept\naccept\naccept\naccept\nconn\naccept\nconn\n",
+     "out": "1\n"
+    },
+    {
+     "in": "1 4\naccept\nconn\naccept\naccept\n",
+     "out": "0\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "3 5\naccept\nconn\naccept\nconn\nconn\n",
+     "out": "2\n"
+    },
+    {
+     "in": "3 20\nconn\nconn\nconn\naccept\naccept\naccept\naccept\naccept\nconn\nconn\naccept\nconn\nconn\nconn\nconn\nconn\nconn\nconn\naccept\nconn\n",
+     "out": "4\n"
+    }
+   ],
+   "want": "lx.listen"
+  },
+  {
+   "id": "ho-proc",
+   "st": "第一行 q，接著 q 行：fork p、exit p、wait p。系統一開始只有 init（行程 1）。fork 讓還活著的 p 產生新的子行程，新行程號碼由 2 起算往上加；exit 讓 p 變成 zombie（1 號不會離開），p 的孩子改由 1 號收養，其中已是 zombie 的立刻被 1 號清掉；wait 取走 p 的一個 zombie 孩子（號碼最小者）並回報號碼，沒有則回報 -1。已經不在執行狀態的行程所收到的指令不予理會。輸出每個 wait 回報的值，空白隔開。",
+   "rw_st": null,
+   "ref": "q = int(input())\nalive = {1}\nparent = {}\nzombies = []\nnxt = 2\nres = []\nfor _ in range(q):\n    a = input().split()\n    x = int(a[1])\n    if a[0] == \"fork\":\n        if x in alive:\n            parent[nxt] = x\n            alive.add(nxt)\n            nxt += 1\n    elif a[0] == \"exit\":\n        if x in alive and x != 1:\n            alive.discard(x)\n            zombies.append(x)\n            kids = [k for k in parent if parent[k] == x]\n            for k in kids:\n                parent[k] = 1\n            zombies = [z for z in zombies if z not in kids]\n    else:\n        if x in alive:\n            c = [z for z in zombies if parent[z] == x]\n            if c:\n                z = min(c)\n                zombies.remove(z)\n                res.append(z)\n            else:\n                res.append(-1)\nprint(*res)\n",
+   "tests": [
+    {
+     "in": "5\nfork 1\nfork 1\nwait 2\nwait 3\nwait 1\n",
+     "out": "-1 -1 -1\n"
+    },
+    {
+     "in": "11\nfork 1\nfork 2\nfork 3\nwait 1\nfork 1\nexit 2\nfork 1\nexit 2\nfork 1\nwait 3\nexit 2\n",
+     "out": "-1 -1\n"
+    },
+    {
+     "in": "11\nfork 1\nfork 1\nfork 3\nwait 3\nexit 3\nwait 3\nwait 3\nfork 3\nfork 3\nexit 4\nwait 2\n",
+     "out": "-1 -1\n"
+    },
+    {
+     "in": "6\nfork 1\nfork 2\nwait 3\nwait 3\nfork 1\nwait 2\n",
+     "out": "-1 -1 -1\n"
+    },
+    {
+     "in": "6\nfork 1\nfork 2\nexit 3\nwait 3\nwait 1\nwait 2\n",
+     "out": "-1 3\n"
+    },
+    {
+     "in": "8\nfork 1\nfork 2\nwait 3\nexit 3\nexit 3\nexit 3\nwait 2\nexit 2\n",
+     "out": "-1 3\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "22\nfork 1\nfork 2\nfork 3\nfork 1\nfork 3\nfork 5\nfork 4\nfork 1\nfork 2\nexit 2\nexit 6\nexit 4\nfork 6\nexit 2\nwait 2\nwait 4\nwait 4\nwait 7\nfork 4\nfork 3\nexit 5\nfork 2\n",
+     "out": "-1\n"
+    },
+    {
+     "in": "9\nfork 1\nfork 1\nfork 2\nexit 2\nfork 1\nfork 1\nwait 1\nfork 1\nexit 3\n",
+     "out": "2\n"
+    }
+   ],
+   "split": "holdout"
+  },
+  {
+   "id": "ho-listen",
+   "st": "第一行 cap q，接著 q 行：conn 或 accept。某 server 的 accept queue 容量（backlog）是 cap。conn 代表有 client 來連（連線號碼依到達先後從 1 編起，即使被拒也占一個號碼），佇列有空位就進入，否則拒絕；accept 取走最先進入的連線並印出號碼，沒有連線可取時印 -1。輸出每次 accept 的結果，空白隔開。",
+   "rw_st": null,
+   "ref": "cap, q = map(int, input().split())\ncap += 0\nitems = []\nhead = 0\nn = 0\ndropped = 0\nres = []\nfor _ in range(q):\n    e = input().strip()\n    if e == \"conn\":\n        n += 1\n        if len(items) - head < cap:\n            items.append(n)\n        else:\n            dropped += 1\n    else:\n        if head < len(items):\n            res.append(items[head])\n            head += 1\n        else:\n            res.append(-1)\nprint(*res)\n",
+   "tests": [
+    {
+     "in": "4 5\nconn\nconn\nconn\nconn\naccept\n",
+     "out": "1\n"
+    },
+    {
+     "in": "1 7\naccept\nconn\nconn\naccept\naccept\nconn\nconn\n",
+     "out": "-1 1 -1\n"
+    },
+    {
+     "in": "3 12\nconn\naccept\nconn\nconn\nconn\nconn\naccept\nconn\naccept\nconn\naccept\nconn\n",
+     "out": "1 2 3 4\n"
+    },
+    {
+     "in": "1 5\nconn\nconn\nconn\naccept\nconn\n",
+     "out": "1\n"
+    },
+    {
+     "in": "3 12\nconn\naccept\naccept\nconn\naccept\nconn\nconn\nconn\nconn\nconn\naccept\nconn\n",
+     "out": "1 -1 2 3\n"
+    },
+    {
+     "in": "2 12\naccept\nconn\naccept\nconn\naccept\nconn\nconn\nconn\nconn\naccept\naccept\nconn\n",
+     "out": "-1 1 2 3 4\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "4 16\naccept\nconn\naccept\nconn\nconn\naccept\nconn\naccept\naccept\nconn\nconn\naccept\naccept\naccept\nconn\nconn\n",
+     "out": "-1 1 2 3 4 5 6 -1\n"
+    },
+    {
+     "in": "1 18\naccept\naccept\nconn\naccept\nconn\nconn\nconn\nconn\nconn\naccept\naccept\nconn\nconn\naccept\nconn\nconn\naccept\nconn\n",
+     "out": "-1 -1 1 2 -1 7 9\n"
+    }
+   ],
+   "split": "holdout"
+  },
+  {
+   "id": "ho-fd",
+   "st": "第一行 q，接著 q 行操作：open 檔名、dup fd、dup2 a b、close fd。Linux 行程的檔案描述符表起初空白，編號從 0 開始配發最小的未用號碼。open 與 dup 回傳配到的 fd，dup2 把 b 指到 a 的檔案並回傳 b，若 b 已開則先關閉，a 沒開時操作無效。輸出所有有回傳值的操作所回傳的 fd，空白隔開。",
+   "rw_st": null,
+   "ref": "q = int(input())\nT = [None] * 64\nr = []\ndef lowest():\n    i = 0\n    while T[i] is not None:\n        i += 1\n    return i\nfor _ in range(q):\n    a = input().split()\n    if a[0] == \"open\":\n        i = lowest()\n        T[i] = a[1]\n        r.append(i)\n    elif a[0] == \"dup\":\n        if T[int(a[1])] is not None:\n            i = lowest()\n            T[i] = T[int(a[1])]\n            r.append(i)\n    elif a[0] == \"dup2\":\n        if T[int(a[1])] is not None:\n            T[int(a[2])] = T[int(a[1])]\n            r.append(int(a[2]))\n    else:\n        T[int(a[1])] = None\nprint(*r)\n",
+   "tests": [
+    {
+     "in": "3\nopen f2\nopen f3\nopen f9\n",
+     "out": "0 1 2\n"
+    },
+    {
+     "in": "6\nopen f6\nopen f7\nopen f5\nopen f2\nopen f9\nopen f9\n",
+     "out": "0 1 2 3 4 5\n"
+    },
+    {
+     "in": "7\nopen f8\nopen f5\nopen f9\nopen f9\nopen f7\nopen f3\nopen f9\n",
+     "out": "0 1 2 3 4 5 6\n"
+    },
+    {
+     "in": "8\nopen f5\nopen f3\nopen f2\nopen f5\nopen f7\nopen f4\nopen f8\nopen f9\n",
+     "out": "0 1 2 3 4 5 6 7\n"
+    },
+    {
+     "in": "7\nopen f9\nopen f7\nopen f2\nopen f1\nopen f4\nopen f7\nopen f7\n",
+     "out": "0 1 2 3 4 5 6\n"
+    },
+    {
+     "in": "5\nopen f6\nopen f9\nopen f6\nopen f2\nopen f2\n",
+     "out": "0 1 2 3 4\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "12\nopen f2\nopen f1\nopen f6\nopen f7\nopen f8\nopen f7\nopen f7\nopen f9\nopen f6\nopen f3\nopen f7\nopen f9\n",
+     "out": "0 1 2 3 4 5 6 7 8 9 10 11\n"
+    },
+    {
+     "in": "8\nopen f8\nopen f9\nopen f4\nopen f6\nopen f1\nopen f8\nopen f9\nopen f1\n",
+     "out": "0 1 2 3 4 5 6 7\n"
+    }
+   ],
+   "split": "holdout"
+  },
+  {
+   "id": "ho-pipe",
+   "st": "第一行 cap q，接著 q 行：write n 或 read n。一條管線最多暫存 cap 位元組，write 超過剩餘空間時只能寫入剩下的空間，read 最多取 n 位元組。輸出每次 read 取得的位元組數，空白隔開。",
+   "rw_st": null,
+   "ref": "cap, q = map(int, input().split())\nbuf = 0\nwait = []\nrd = []\nwr = []\nfor _ in range(q):\n    op, n = input().split()\n    n = int(n)\n    if op == \"write\":\n        free = cap - buf\n        if n <= free:\n            buf += n\n            wr.append(n)\n        elif \"partial\" == \"partial\":\n            buf += free\n            wr.append(free)\n        else:\n            wr.append(0)\n            if \"partial\" == \"block\":\n                wait.append(n)\n    else:\n        got = n if n < buf else buf\n        buf -= got\n        rd.append(got)\n        while wait and wait[0] <= cap - buf:\n            buf += wait.pop(0)\nprint(*rd)\n",
+   "tests": [
+    {
+     "in": "10 7\nwrite 9\nwrite 1\nwrite 12\nwrite 8\nwrite 8\nwrite 11\nread 1\n",
+     "out": "1\n"
+    },
+    {
+     "in": "12 10\nread 3\nwrite 7\nwrite 11\nwrite 3\nwrite 7\nwrite 3\nwrite 7\nwrite 7\nwrite 10\nwrite 9\n",
+     "out": "0\n"
+    },
+    {
+     "in": "5 3\nread 9\nwrite 11\nread 7\n",
+     "out": "0 5\n"
+    },
+    {
+     "in": "14 9\nread 10\nwrite 11\nwrite 1\nwrite 5\nread 1\nwrite 1\nwrite 12\nread 12\nwrite 12\n",
+     "out": "0 1 12\n"
+    },
+    {
+     "in": "10 5\nwrite 8\nread 12\nread 8\nwrite 12\nread 12\n",
+     "out": "8 0 10\n"
+    },
+    {
+     "in": "17 5\nread 1\nwrite 9\nread 12\nwrite 5\nread 1\n",
+     "out": "0 9 1\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "12 11\nwrite 4\nread 8\nwrite 5\nwrite 1\nwrite 4\nwrite 3\nread 10\nread 2\nread 7\nwrite 1\nwrite 8\n",
+     "out": "4 10 2 0\n"
+    },
+    {
+     "in": "17 24\nwrite 1\nwrite 9\nwrite 9\nwrite 9\nwrite 1\nread 5\nwrite 5\nwrite 8\nread 3\nwrite 10\nwrite 10\nread 5\nread 5\nread 1\nwrite 8\nwrite 11\nread 6\nwrite 2\nread 1\nread 12\nwrite 7\nread 3\nwrite 11\nwrite 10\n",
+     "out": "5 3 5 5 1 6 1 12 3\n"
+    }
+   ],
+   "split": "holdout"
+  },
+  {
+   "id": "ho-sig",
+   "st": "第一行 q，接著 q 行：block s...、unblock s...、kill s。信號遮罩起初是空的。kill 時信號沒被阻塞就馬上處理；被阻塞的先記為 pending（同一個信號只記一次）；unblock 之後若該信號有 pending 就處理它；一行 unblock 給多個信號時依給定順序。輸出被處理的信號編號順序，空白隔開。",
+   "rw_st": null,
+   "ref": "q = int(input())\nblocked = [False] * 10\npending = [0] * 10\nlog = []\nfor _ in range(q):\n    a = input().split()\n    args = [int(x) for x in a[1:]]\n    if a[0] == \"block\":\n        for s in args:\n            blocked[s] = True\n    elif a[0] == \"unblock\":\n        for s in args:\n            blocked[s] = False\n            if pending[s]:\n                log += [s] * (1 if \"merge\" == \"merge\" else pending[s])\n                pending[s] = 0\n    else:\n        s = args[0]\n        if blocked[s]:\n            pending[s] = 1 if \"merge\" == \"merge\" else pending[s] + 1\n        else:\n            log.append(s)\nprint(*log)\n",
+   "tests": [
+    {
+     "in": "4\nkill 1\nunblock 4 3 5\nunblock 1 4 2\nblock 2\n",
+     "out": "1\n"
+    },
+    {
+     "in": "4\nblock 4 5 3\nkill 5\nunblock 5 3\nunblock 1 2 3\n",
+     "out": "5\n"
+    },
+    {
+     "in": "7\nkill 4\nkill 2\nkill 4\nkill 2\nkill 3\nkill 4\nunblock 3\n",
+     "out": "4 2 4 2 3 4\n"
+    },
+    {
+     "in": "3\nunblock 3 2\nkill 3\nkill 1\n",
+     "out": "3 1\n"
+    },
+    {
+     "in": "9\nkill 2\nkill 4\nunblock 3\nkill 1\nunblock 2 3 1\nunblock 2 5\nblock 5\nkill 3\nunblock 5\n",
+     "out": "2 4 1 3\n"
+    },
+    {
+     "in": "6\nunblock 4\nunblock 3\nkill 2\nkill 1\nunblock 5\nblock 4\n",
+     "out": "2 1\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "3\nkill 2\nkill 4\nblock 3\n",
+     "out": "2 4\n"
+    },
+    {
+     "in": "16\nunblock 3 1\nkill 5\nkill 5\nblock 4 2 5\nunblock 3 1 2\nkill 2\nblock 1\nunblock 2\nkill 2\nblock 4 4\nkill 3\nunblock 4 1\nunblock 3 2 2\nblock 1 5 1\nunblock 3 2 5\nkill 1\n",
+     "out": "5 5 2 2 3\n"
+    }
+   ],
+   "split": "holdout"
+  },
+  {
+   "id": "ho-tcp",
+   "st": "第一行 q，接著 q 行事件：passive_open、active_open、syn、synack、ack、fin、close、timeout。TCP 從 CLOSED 起算，依標準的連線與關閉流程換狀態；遇到目前狀態不接受的事件就當沒發生。輸出 TCP 最終停在哪個狀態。",
+   "rw_st": null,
+   "ref": "q = int(input())\nnext_state = {\n  (\"CLOSED\", \"passive_open\"): \"LISTEN\", (\"CLOSED\", \"active_open\"): \"SYN_SENT\", (\"LISTEN\", \"syn\"): \"SYN_RCVD\", (\"LISTEN\", \"close\"): \"CLOSED\",\n  (\"SYN_SENT\", \"synack\"): \"ESTABLISHED\", (\"SYN_SENT\", \"close\"): \"CLOSED\", (\"SYN_RCVD\", \"ack\"): \"ESTABLISHED\", (\"SYN_RCVD\", \"close\"): \"FIN_WAIT_1\",\n  (\"ESTABLISHED\", \"close\"): \"FIN_WAIT_1\", (\"ESTABLISHED\", \"fin\"): \"CLOSE_WAIT\", (\"FIN_WAIT_1\", \"ack\"): \"FIN_WAIT_2\", (\"FIN_WAIT_2\", \"fin\"): \"TIME_WAIT\",\n  (\"CLOSING\", \"ack\"): \"TIME_WAIT\", (\"TIME_WAIT\", \"timeout\"): \"CLOSED\", (\"CLOSE_WAIT\", \"close\"): \"LAST_ACK\", (\"LAST_ACK\", \"ack\"): \"CLOSED\"}\ns = \"CLOSED\"\nbad = False\nsteps = []\nfor _ in range(q):\n    e = input().strip()\n    if (s, e) in next_state:\n        s = next_state[(s, e)]\n        steps.append(s)\n    else:\n        bad = True\nprint(s)\n",
+   "tests": [
+    {
+     "in": "3\npassive_open\nsyn\nsyn\n",
+     "out": "SYN_RCVD\n"
+    },
+    {
+     "in": "4\npassive_open\nclose\nack\nclose\n",
+     "out": "CLOSED\n"
+    },
+    {
+     "in": "5\npassive_open\nsyn\nack\nfin\nclose\n",
+     "out": "LAST_ACK\n"
+    },
+    {
+     "in": "4\nactive_open\nsynack\nclose\nack\n",
+     "out": "FIN_WAIT_2\n"
+    },
+    {
+     "in": "7\nactive_open\nsynack\nfin\nclose\nack\nactive_open\nsynack\n",
+     "out": "ESTABLISHED\n"
+    },
+    {
+     "in": "3\nactive_open\nsynack\nfin\n",
+     "out": "CLOSE_WAIT\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "5\npassive_open\nsyn\nack\nfin\nclose\n",
+     "out": "LAST_ACK\n"
+    },
+    {
+     "in": "6\nactive_open\nsynack\nclose\nack\nfin\ntimeout\n",
+     "out": "CLOSED\n"
+    }
+   ],
+   "split": "holdout"
+  },
+  {
+   "id": "sock-returns",
+   "st": "第一行 q，之後 q 行事件：socket、bind fd port、listen fd n、connect fd port、accept fd、send fd n、recv fd n、close fd。模擬 socket 的生命週期，fd 一開始都是空的（0 號 fd 也可以用）：socket 建立一個新 socket 並回傳最小的空閒 fd；bind 把剛建立、還沒綁過的 fd 綁到 port（同一個 port 已被另一個已綁定或監聽中的 socket 佔用就失敗），成功回傳 0；listen 讓已綁定的 fd 開始監聽，佇列最多容納 n 個等待中的連線，成功回傳 0；connect 讓一個新建立的客戶端 fd 連到正在監聽該 port 的伺服器，佇列沒滿就排進去回傳 0，佇列滿了或沒有伺服器就失敗；accept 取出監聽 fd 佇列裡最早的客戶端，建立一個已連線的新 socket 並回傳它的最小空閒 fd（客戶端也變成已連線），佇列是空的就失敗；send 把 n 位元組送給對端並回傳 n，recv 讀出自己收到的資料最多 n 位元組並回傳實際讀到的位元組數；close 關閉 fd 並回傳 0（它的對端變成沒有對端，還在監聽佇列裡等的客戶端被移出；關掉監聽 fd 時佇列裡的客戶端回到新建立狀態）。任何不合法的操作都回傳 -1。輸出每個事件的回傳值，用空白隔開。",
+   "rw_st": null,
+   "ref": "class K:\n    def __init__(self):\n        self.state = \"new\"\n        self.port = None\n        self.backlog = 0\n        self.wait = []\n        self.peer = None\n        self.inbox = 0\ntab = {}\nres = []\nrecv_total = 0\nq = int(input())\nfor _ in range(q):\n    a = input().split()\n    cmd = a[0]\n    x = int(a[1]) if len(a) > 1 else None\n    sk = tab.get(x)\n    ret = -1\n    if cmd == \"socket\":\n        i = 0\n        while i in tab:\n            i += 1\n        tab[i] = K()\n        ret = i\n    elif cmd == \"bind\" and sk and sk.state == \"new\":\n        port = int(a[2])\n        if not any(o is not sk and o.state in (\"bound\", \"listen\") and o.port == port for o in tab.values()):\n            sk.state = \"bound\"\n            sk.port = port\n            ret = 0\n    elif cmd == \"listen\" and sk and sk.state == \"bound\":\n        sk.state = \"listen\"\n        sk.backlog = int(a[2]) + 0\n        ret = 0\n    elif cmd == \"connect\" and sk and sk.state == \"new\":\n        srv = [o for o in tab.values() if o.state == \"listen\" and o.port == int(a[2])]\n        if srv and len(srv[0].wait) < srv[0].backlog:\n            srv[0].wait.append(x)\n            sk.state = \"wait\"\n            ret = 0\n    elif cmd == \"accept\" and sk and sk.state == \"listen\" and sk.wait:\n        cl = sk.wait.pop(0)\n        i = 0\n        while i in tab:\n            i += 1\n        n = K()\n        n.state = \"conn\"\n        n.peer = cl\n        tab[i] = n\n        tab[cl].state = \"conn\"\n        tab[cl].peer = i\n        ret = i\n    elif cmd == \"send\" and sk and sk.state == \"conn\" and sk.peer in tab:\n        tab[sk.peer].inbox += int(a[2])\n        ret = int(a[2])\n    elif cmd == \"recv\" and sk and sk.state == \"conn\":\n        ret = min(int(a[2]), sk.inbox)\n        sk.inbox -= ret\n        recv_total += ret\n    elif cmd == \"close\" and sk:\n        gone = tab.pop(x)\n        for o in tab.values():\n            if o.peer == x:\n                o.peer = None\n            if x in o.wait:\n                o.wait.remove(x)\n        for cl in gone.wait:\n            if cl in tab:\n                tab[cl].state = \"new\"\n        ret = 0\n    res.append(ret)\nprint(*res)\n",
+   "tests": [
+    {
+     "in": "6\nsocket\nsocket\nsocket\nconnect 0 3\nrecv 1 5\nconnect 1 1\n",
+     "out": "0 1 2 -1 -1 -1\n"
+    },
+    {
+     "in": "7\nsocket\nsocket\nconnect 4 2\nconnect 2 3\nsend 3 3\nlisten 0 3\nbind 2 3\n",
+     "out": "0 1 -1 -1 -1 -1 -1\n"
+    },
+    {
+     "in": "7\nsocket\nsocket\nsocket\nbind 1 1\naccept 5\nrecv 1 2\naccept 3\n",
+     "out": "0 1 2 0 -1 -1 -1\n"
+    },
+    {
+     "in": "9\nsocket\nsocket\nsocket\nsocket\nrecv 1 6\nconnect 5 2\nconnect 0 3\nsend 5 6\nconnect 7 2\n",
+     "out": "0 1 2 3 -1 -1 -1 -1 -1\n"
+    },
+    {
+     "in": "6\nsocket\nsocket\nsocket\naccept 1\nrecv 5 8\nconnect 3 2\n",
+     "out": "0 1 2 -1 -1 -1\n"
+    },
+    {
+     "in": "13\nsocket\nsocket\nsocket\nsocket\nconnect 4 2\nrecv 2 7\naccept 2\naccept 2\nbind 2 3\nrecv 0 7\nclose 7\nsend 2 5\nbind 6 3\n",
+     "out": "0 1 2 3 -1 -1 -1 -1 0 -1 -1 -1 -1\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "7\nsocket\nsocket\nsocket\nsocket\nsocket\nsocket\nsocket\n",
+     "out": "0 1 2 3 4 5 6\n"
+    },
+    {
+     "in": "9\nsocket\nsocket\nsocket\nclose 2\nsend 4 1\nconnect 5 1\nclose 4\nclose 4\naccept 6\n",
+     "out": "0 1 2 0 -1 -1 -1 -1 -1\n"
+    }
+   ],
+   "want": "lx.socket"
+  },
+  {
+   "id": "sock-errors",
+   "st": "第一行 q，之後 q 行事件：socket、bind fd port、listen fd n、connect fd port、accept fd、send fd n、recv fd n、close fd。模擬 socket 的生命週期，fd 從 3 開始編（0、1、2 是標準輸入輸出）：socket 建立新 socket 並回傳最小的空閒 fd；bind 把剛建立、還沒綁過的 fd 綁到 port（同一個 port 已被另一個已綁定或監聽中的 socket 佔用就失敗）；listen 讓已綁定的 fd 開始監聽，佇列實際最多容納 n+1 個等待中的連線；connect 讓新建立的客戶端 fd 連到正在監聽該 port 的伺服器，佇列沒滿就排進去，滿了或沒有伺服器就失敗；accept 取出監聽 fd 佇列裡最早的客戶端，建立已連線的新 socket 並回傳它的最小空閒 fd（客戶端也變成已連線），佇列空就失敗；send 把 n 位元組送給對端，recv 讀出自己收到的資料最多 n 位元組；close 關閉 fd（它的對端變成沒有對端，等在監聽佇列裡的客戶端被移出，關掉監聽 fd 時佇列裡的客戶端回到新建立狀態）。任何不合法的操作都算一次失敗。輸出失敗的事件有幾個。",
+   "rw_st": null,
+   "ref": "class K:\n    def __init__(self):\n        self.state = \"new\"\n        self.port = None\n        self.backlog = 0\n        self.wait = []\n        self.peer = None\n        self.inbox = 0\ntab = {}\nres = []\nrecv_total = 0\nq = int(input())\nfor _ in range(q):\n    a = input().split()\n    cmd = a[0]\n    x = int(a[1]) if len(a) > 1 else None\n    sk = tab.get(x)\n    ret = -1\n    if cmd == \"socket\":\n        i = 3\n        while i in tab:\n            i += 1\n        tab[i] = K()\n        ret = i\n    elif cmd == \"bind\" and sk and sk.state == \"new\":\n        port = int(a[2])\n        if not any(o is not sk and o.state in (\"bound\", \"listen\") and o.port == port for o in tab.values()):\n            sk.state = \"bound\"\n            sk.port = port\n            ret = 0\n    elif cmd == \"listen\" and sk and sk.state == \"bound\":\n        sk.state = \"listen\"\n        sk.backlog = int(a[2]) + 1\n        ret = 0\n    elif cmd == \"connect\" and sk and sk.state == \"new\":\n        srv = [o for o in tab.values() if o.state == \"listen\" and o.port == int(a[2])]\n        if srv and len(srv[0].wait) < srv[0].backlog:\n            srv[0].wait.append(x)\n            sk.state = \"wait\"\n            ret = 0\n    elif cmd == \"accept\" and sk and sk.state == \"listen\" and sk.wait:\n        cl = sk.wait.pop(0)\n        i = 3\n        while i in tab:\n            i += 1\n        n = K()\n        n.state = \"conn\"\n        n.peer = cl\n        tab[i] = n\n        tab[cl].state = \"conn\"\n        tab[cl].peer = i\n        ret = i\n    elif cmd == \"send\" and sk and sk.state == \"conn\" and sk.peer in tab:\n        tab[sk.peer].inbox += int(a[2])\n        ret = int(a[2])\n    elif cmd == \"recv\" and sk and sk.state == \"conn\":\n        ret = min(int(a[2]), sk.inbox)\n        sk.inbox -= ret\n        recv_total += ret\n    elif cmd == \"close\" and sk:\n        gone = tab.pop(x)\n        for o in tab.values():\n            if o.peer == x:\n                o.peer = None\n            if x in o.wait:\n                o.wait.remove(x)\n        for cl in gone.wait:\n            if cl in tab:\n                tab[cl].state = \"new\"\n        ret = 0\n    res.append(ret)\nprint(sum(1 for r in res if r < 0))\n",
+   "tests": [
+    {
+     "in": "14\nsocket\nsocket\nconnect 3 3\nsocket\nlisten 5 1\nrecv 4 1\nsocket\nconnect 1 2\nrecv 2 8\nsend 4 4\nlisten 5 1\nbind 2 2\nbind 5 3\nconnect 1 1\n",
+     "out": "9\n"
+    },
+    {
+     "in": "7\nsocket\nsocket\nsocket\nsocket\nbind 5 3\nbind 1 2\nbind 5 1\n",
+     "out": "2\n"
+    },
+    {
+     "in": "10\nsocket\nsocket\nsocket\nbind 2 3\naccept 2\nbind 6 3\nconnect 2 1\nrecv 2 1\nsocket\nclose 0\n",
+     "out": "6\n"
+    },
+    {
+     "in": "9\nsocket\nsocket\nsocket\nlisten 0 1\nbind 1 3\nrecv 4 5\nconnect 1 1\nclose 0\nsocket\n",
+     "out": "5\n"
+    },
+    {
+     "in": "11\nsocket\nsocket\nconnect 0 2\nlisten 5 3\nsend 3 2\nclose 5\nlisten 5 3\nlisten 4 1\nclose 1\nsend 5 7\naccept 2\n",
+     "out": "9\n"
+    },
+    {
+     "in": "7\nsocket\nsocket\nsocket\nsocket\nrecv 2 5\nrecv 0 2\nsocket\n",
+     "out": "2\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "10\nsocket\nsocket\nlisten 5 1\nrecv 0 7\nbind 5 1\nconnect 4 2\nsend 3 6\nrecv 4 9\naccept 2\nrecv 0 8\n",
+     "out": "8\n"
+    },
+    {
+     "in": "10\nsocket\nsocket\nsocket\nsocket\nbind 2 3\naccept 2\nbind 2 3\naccept 5\nrecv 0 2\nconnect 0 2\n",
+     "out": "6\n"
+    }
+   ],
+   "want": "lx.socket"
+  },
+  {
+   "id": "sock-recv",
+   "st": "第一行 q，之後 q 行事件：socket、bind fd port、listen fd n、connect fd port、accept fd、send fd n、recv fd n、close fd。模擬 socket 的生命週期，fd 從 3 開始編：socket 建立新 socket 並回傳最小的空閒 fd；bind 把剛建立、還沒綁過的 fd 綁到 port（同一個 port 已被另一個已綁定或監聽中的 socket 佔用就失敗）；listen 讓已綁定的 fd 開始監聽，佇列最多容納 n 個等待中的連線；connect 讓新建立的客戶端 fd 連到正在監聽該 port 的伺服器，佇列沒滿就排進去，滿了或沒有伺服器就失敗；accept 取出監聽 fd 佇列裡最早的客戶端，建立已連線的新 socket 並回傳它的最小空閒 fd（客戶端也變成已連線），佇列空就失敗；send 把 n 位元組送給對端（對端已關閉就失敗），recv 讀出自己收到的資料最多 n 位元組；close 關閉 fd（它的對端變成沒有對端，等在監聽佇列裡的客戶端被移出，關掉監聽 fd 時佇列裡的客戶端回到新建立狀態）。輸出所有 recv 實際讀到的位元組總數。",
+   "rw_st": null,
+   "ref": "class K:\n    def __init__(self):\n        self.state = \"new\"\n        self.port = None\n        self.backlog = 0\n        self.wait = []\n        self.peer = None\n        self.inbox = 0\ntab = {}\nres = []\nrecv_total = 0\nq = int(input())\nfor _ in range(q):\n    a = input().split()\n    cmd = a[0]\n    x = int(a[1]) if len(a) > 1 else None\n    sk = tab.get(x)\n    ret = -1\n    if cmd == \"socket\":\n        i = 3\n        while i in tab:\n            i += 1\n        tab[i] = K()\n        ret = i\n    elif cmd == \"bind\" and sk and sk.state == \"new\":\n        port = int(a[2])\n        if not any(o is not sk and o.state in (\"bound\", \"listen\") and o.port == port for o in tab.values()):\n            sk.state = \"bound\"\n            sk.port = port\n            ret = 0\n    elif cmd == \"listen\" and sk and sk.state == \"bound\":\n        sk.state = \"listen\"\n        sk.backlog = int(a[2]) + 0\n        ret = 0\n    elif cmd == \"connect\" and sk and sk.state == \"new\":\n        srv = [o for o in tab.values() if o.state == \"listen\" and o.port == int(a[2])]\n        if srv and len(srv[0].wait) < srv[0].backlog:\n            srv[0].wait.append(x)\n            sk.state = \"wait\"\n            ret = 0\n    elif cmd == \"accept\" and sk and sk.state == \"listen\" and sk.wait:\n        cl = sk.wait.pop(0)\n        i = 3\n        while i in tab:\n            i += 1\n        n = K()\n        n.state = \"conn\"\n        n.peer = cl\n        tab[i] = n\n        tab[cl].state = \"conn\"\n        tab[cl].peer = i\n        ret = i\n    elif cmd == \"send\" and sk and sk.state == \"conn\" and sk.peer in tab:\n        tab[sk.peer].inbox += int(a[2])\n        ret = int(a[2])\n    elif cmd == \"recv\" and sk and sk.state == \"conn\":\n        ret = min(int(a[2]), sk.inbox)\n        sk.inbox -= ret\n        recv_total += ret\n    elif cmd == \"close\" and sk:\n        gone = tab.pop(x)\n        for o in tab.values():\n            if o.peer == x:\n                o.peer = None\n            if x in o.wait:\n                o.wait.remove(x)\n        for cl in gone.wait:\n            if cl in tab:\n                tab[cl].state = \"new\"\n        ret = 0\n    res.append(ret)\nprint(recv_total)\n",
+   "tests": [
+    {
+     "in": "8\nsocket\nsocket\nsocket\nbind 6 2\nbind 5 3\nrecv 6 8\nbind 6 3\nsend 1 5\n",
+     "out": "0\n"
+    },
+    {
+     "in": "6\nsocket\nsocket\nsocket\nsocket\nlisten 2 3\naccept 2\n",
+     "out": "0\n"
+    },
+    {
+     "in": "11\nsocket\nsocket\nsocket\nsocket\naccept 2\nrecv 2 9\nbind 0 2\nsend 3 2\nsend 7 1\nlisten 3 1\nsend 7 6\n",
+     "out": "0\n"
+    },
+    {
+     "in": "14\nsocket\nsocket\nsocket\nsend 1 3\nsend 1 6\nsend 5 6\nsend 1 4\nbind 4 1\nbind 5 1\nsend 4 8\nsocket\nconnect 1 2\nconnect 1 2\naccept 3\n",
+     "out": "0\n"
+    },
+    {
+     "in": "8\nsocket\nsocket\nbind 0 2\nbind 5 1\nlisten 5 3\nlisten 1 3\nlisten 1 1\nsend 1 1\n",
+     "out": "0\n"
+    },
+    {
+     "in": "6\nsocket\nsocket\nsocket\nsocket\nlisten 0 3\nconnect 0 1\n",
+     "out": "0\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "23\nsocket\nsocket\nsocket\nsocket\nclose 4\nclose 5\nbind 4 2\nbind 3 2\nsend 1 5\nsocket\nsend 2 7\nsocket\nsocket\nconnect 6 1\nsocket\nlisten 2 2\nsocket\nlisten 1 2\nsocket\nsend 3 4\nconnect 2 1\nconnect 2 3\nsend 6 8\n",
+     "out": "0\n"
+    },
+    {
+     "in": "13\nsocket\nsocket\nbind 4 2\nbind 3 2\nsocket\nsocket\nrecv 4 9\nrecv 2 4\nbind 0 3\naccept 2\nconnect 1 1\nconnect 2 1\nlisten 1 2\n",
+     "out": "0\n"
+    }
+   ],
+   "want": "lx.socket"
+  },
+  {
+   "id": "ho-sock",
+   "st": "第一行 q，接著 q 行操作：socket、bind fd port、listen fd n、connect fd port、accept fd、send fd n、recv fd n、close fd。fd 編號從 0 起算取最小未用的。socket 產生新的 fd；bind 只能用在剛產生的 fd，且該 port 不能已被別的 bound 或 listening 的 fd 使用；listen 只能用在已 bind 的 fd，n 是等待佇列上限；connect 只能用在剛產生的 fd，目標 port 要有 listening 的 fd 且其佇列未滿，成功就進入佇列等待；accept 只能用在 listening 的 fd 且佇列非空，取最早等待者，配一個新的已連線 fd 給伺服器端並回傳它，等待者也變成已連線並與之互為對端；send 把 n 位元組放進對端的接收緩衝並回傳 n，recv 回傳 min(n, 緩衝量) 並扣除；close 讓 fd 消失並回傳 0，原對端失去對端，等待中的客戶端從佇列移除，若關的是 listening fd，其等待者變回剛產生狀態。做不到的操作回傳 -1。輸出每個操作的回傳值，空白隔開。",
+   "rw_st": null,
+   "ref": "class K:\n    def __init__(self):\n        self.state = \"new\"\n        self.port = None\n        self.backlog = 0\n        self.wait = []\n        self.peer = None\n        self.inbox = 0\ntab = {}\nres = []\nrecv_total = 0\nq = int(input())\nfor _ in range(q):\n    a = input().split()\n    cmd = a[0]\n    x = int(a[1]) if len(a) > 1 else None\n    sk = tab.get(x)\n    ret = -1\n    if cmd == \"socket\":\n        i = 0\n        while i in tab:\n            i += 1\n        tab[i] = K()\n        ret = i\n    elif cmd == \"bind\" and sk and sk.state == \"new\":\n        port = int(a[2])\n        if not any(o is not sk and o.state in (\"bound\", \"listen\") and o.port == port for o in tab.values()):\n            sk.state = \"bound\"\n            sk.port = port\n            ret = 0\n    elif cmd == \"listen\" and sk and sk.state == \"bound\":\n        sk.state = \"listen\"\n        sk.backlog = int(a[2]) + 0\n        ret = 0\n    elif cmd == \"connect\" and sk and sk.state == \"new\":\n        srv = [o for o in tab.values() if o.state == \"listen\" and o.port == int(a[2])]\n        if srv and len(srv[0].wait) < srv[0].backlog:\n            srv[0].wait.append(x)\n            sk.state = \"wait\"\n            ret = 0\n    elif cmd == \"accept\" and sk and sk.state == \"listen\" and sk.wait:\n        cl = sk.wait.pop(0)\n        i = 0\n        while i in tab:\n            i += 1\n        n = K()\n        n.state = \"conn\"\n        n.peer = cl\n        tab[i] = n\n        tab[cl].state = \"conn\"\n        tab[cl].peer = i\n        ret = i\n    elif cmd == \"send\" and sk and sk.state == \"conn\" and sk.peer in tab:\n        tab[sk.peer].inbox += int(a[2])\n        ret = int(a[2])\n    elif cmd == \"recv\" and sk and sk.state == \"conn\":\n        ret = min(int(a[2]), sk.inbox)\n        sk.inbox -= ret\n        recv_total += ret\n    elif cmd == \"close\" and sk:\n        gone = tab.pop(x)\n        for o in tab.values():\n            if o.peer == x:\n                o.peer = None\n            if x in o.wait:\n                o.wait.remove(x)\n        for cl in gone.wait:\n            if cl in tab:\n                tab[cl].state = \"new\"\n        ret = 0\n    res.append(ret)\nprint(*res)\n",
+   "tests": [
+    {
+     "in": "14\nsocket\nsocket\nsocket\nsocket\nrecv 5 3\nsend 6 8\nbind 1 3\nbind 5 3\nconnect 1 3\nconnect 4 1\nconnect 4 2\nsend 4 6\nsocket\nsocket\n",
+     "out": "0 1 2 3 -1 -1 0 -1 -1 -1 -1 -1 4 5\n"
+    },
+    {
+     "in": "10\nsocket\nsocket\nsocket\naccept 4\nbind 0 1\nbind 1 2\nsocket\nsend 6 4\nsend 6 3\nsocket\n",
+     "out": "0 1 2 -1 0 0 3 -1 -1 4\n"
+    },
+    {
+     "in": "8\nsocket\nsocket\nsocket\nsocket\nbind 6 2\nrecv 6 6\nrecv 0 1\nsocket\n",
+     "out": "0 1 2 3 -1 -1 -1 4\n"
+    },
+    {
+     "in": "9\nsocket\nsocket\nsocket\nlisten 2 3\nsend 3 7\nclose 1\nclose 3\nlisten 4 2\nclose 0\n",
+     "out": "0 1 2 -1 -1 0 -1 -1 0\n"
+    },
+    {
+     "in": "6\nsocket\nsocket\nsocket\nsocket\nbind 6 2\nrecv 4 1\n",
+     "out": "0 1 2 3 -1 -1\n"
+    },
+    {
+     "in": "13\nsocket\nsocket\nsend 2 8\nsend 4 1\nsend 4 4\nlisten 2 1\nbind 4 3\nbind 5 1\nbind 4 3\nbind 4 2\nrecv 0 5\nconnect 2 1\nbind 0 3\n",
+     "out": "0 1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 0\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "27\nsocket\nsocket\nsocket\nsocket\nrecv 5 2\nbind 1 2\nrecv 5 7\nrecv 1 4\naccept 6\naccept 6\nbind 6 3\naccept 6\nrecv 6 1\nrecv 5 2\naccept 0\nrecv 0 4\nsend 0 3\nsocket\nconnect 0 3\nsend 3 2\nclose 7\nsend 7 9\nbind 6 1\nbind 6 3\nsocket\nconnect 4 2\nconnect 4 1\n",
+     "out": "0 1 2 3 -1 0 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 4 -1 -1 -1 -1 -1 -1 5 -1 -1\n"
+    },
+    {
+     "in": "29\nsocket\nsocket\nconnect 1 2\nclose 5\nlisten 5 2\nbind 4 1\naccept 2\naccept 0\nbind 5 3\nsocket\nclose 3\nlisten 1 3\nlisten 3 3\nsend 4 7\naccept 4\nrecv 3 5\nrecv 5 9\nbind 4 2\nconnect 1 3\nbind 2 3\nrecv 4 1\nbind 5 3\nclose 0\nsocket\nconnect 2 1\nsocket\nconnect 4 2\nconnect 4 2\nlisten 3 1\n",
+     "out": "0 1 -1 -1 -1 -1 -1 -1 -1 2 -1 -1 -1 -1 -1 -1 -1 -1 -1 0 -1 -1 0 0 -1 3 -1 -1 -1\n"
+    }
+   ],
+   "split": "holdout"
+  },
+  {
+   "id": "ho-sock2",
+   "st": "第一行 q，接著 q 行：socket、bind fd port、listen fd n、connect fd port、accept fd、send fd n、recv fd n、close fd。所有 fd 都由最小的空號開始配（從 3 起）。socket 配一個新的 fd；bind 把新 fd 掛到 port，該 port 已被 bound 或 listening 的其他 fd 佔用就失敗；listen 把 bound 的 fd 轉成 listening，佇列上限是 n 加 1；connect 把新 fd 接到 listening 的伺服器，佇列有位置就排隊；accept 取出最早排隊者並為伺服器端配新 fd 回傳，雙方成為已連線互為對端；send／recv 在已連線的 fd 上以位元組計數搬運資料，recv 最多取 n；close 結束 fd 並整理佇列與對端關係（listening fd 被關時等待者回到新 fd 狀態）。不合規的操作失敗。輸出失敗了幾次。",
+   "rw_st": null,
+   "ref": "class K:\n    def __init__(self):\n        self.state = \"new\"\n        self.port = None\n        self.backlog = 0\n        self.wait = []\n        self.peer = None\n        self.inbox = 0\ntab = {}\nres = []\nrecv_total = 0\nq = int(input())\nfor _ in range(q):\n    a = input().split()\n    cmd = a[0]\n    x = int(a[1]) if len(a) > 1 else None\n    sk = tab.get(x)\n    ret = -1\n    if cmd == \"socket\":\n        i = 3\n        while i in tab:\n            i += 1\n        tab[i] = K()\n        ret = i\n    elif cmd == \"bind\" and sk and sk.state == \"new\":\n        port = int(a[2])\n        if not any(o is not sk and o.state in (\"bound\", \"listen\") and o.port == port for o in tab.values()):\n            sk.state = \"bound\"\n            sk.port = port\n            ret = 0\n    elif cmd == \"listen\" and sk and sk.state == \"bound\":\n        sk.state = \"listen\"\n        sk.backlog = int(a[2]) + 1\n        ret = 0\n    elif cmd == \"connect\" and sk and sk.state == \"new\":\n        srv = [o for o in tab.values() if o.state == \"listen\" and o.port == int(a[2])]\n        if srv and len(srv[0].wait) < srv[0].backlog:\n            srv[0].wait.append(x)\n            sk.state = \"wait\"\n            ret = 0\n    elif cmd == \"accept\" and sk and sk.state == \"listen\" and sk.wait:\n        cl = sk.wait.pop(0)\n        i = 3\n        while i in tab:\n            i += 1\n        n = K()\n        n.state = \"conn\"\n        n.peer = cl\n        tab[i] = n\n        tab[cl].state = \"conn\"\n        tab[cl].peer = i\n        ret = i\n    elif cmd == \"send\" and sk and sk.state == \"conn\" and sk.peer in tab:\n        tab[sk.peer].inbox += int(a[2])\n        ret = int(a[2])\n    elif cmd == \"recv\" and sk and sk.state == \"conn\":\n        ret = min(int(a[2]), sk.inbox)\n        sk.inbox -= ret\n        recv_total += ret\n    elif cmd == \"close\" and sk:\n        gone = tab.pop(x)\n        for o in tab.values():\n            if o.peer == x:\n                o.peer = None\n            if x in o.wait:\n                o.wait.remove(x)\n        for cl in gone.wait:\n            if cl in tab:\n                tab[cl].state = \"new\"\n        ret = 0\n    res.append(ret)\nprint(sum(1 for r in res if r < 0))\n",
+   "tests": [
+    {
+     "in": "10\nsocket\nsocket\naccept 4\nrecv 3 6\nconnect 5 1\nrecv 5 9\nrecv 5 5\nconnect 3 3\nconnect 2 1\nsocket\n",
+     "out": "7\n"
+    },
+    {
+     "in": "12\nsocket\nsocket\nsocket\nclose 2\nrecv 1 7\nrecv 2 4\nsend 3 4\nsocket\nsend 2 3\nsend 4 1\nrecv 4 3\nbind 1 3\n",
+     "out": "8\n"
+    },
+    {
+     "in": "6\nsocket\nsocket\nconnect 3 3\nlisten 4 1\nrecv 2 7\nrecv 4 1\n",
+     "out": "4\n"
+    },
+    {
+     "in": "14\nsocket\nsocket\nrecv 5 2\nsocket\nsocket\nconnect 2 1\nlisten 1 3\nsend 4 9\nconnect 0 3\nconnect 3 1\nlisten 5 1\nclose 3\nbind 4 2\nsocket\n",
+     "out": "7\n"
+    },
+    {
+     "in": "13\nsocket\nsocket\nsocket\nsocket\nsend 7 8\nlisten 3 1\nlisten 7 2\nclose 4\nsocket\nsocket\nclose 2\naccept 2\nrecv 1 1\n",
+     "out": "6\n"
+    },
+    {
+     "in": "7\nsocket\nsocket\nsocket\nconnect 2 1\nsend 6 6\nclose 3\nconnect 1 2\n",
+     "out": "3\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "9\nsocket\nsocket\nlisten 3 1\nlisten 5 3\nbind 2 1\nrecv 2 7\nrecv 3 1\nbind 1 3\nconnect 2 2\n",
+     "out": "7\n"
+    },
+    {
+     "in": "6\nsocket\nsocket\nsocket\nsocket\naccept 6\nbind 6 1\n",
+     "out": "1\n"
+    }
+   ],
+   "split": "holdout"
+  },
+  {
+   "id": "signest-trace",
+   "st": "第一行 q，之後 q 行事件：on s t...、kill s、block s...、unblock s...。信號 s 的處理常式由 on 設定：on s t... 表示執行 s 的處理常式時依序引發信號 t...（沒有 t 就什麼都不做，重新 on 會覆蓋舊的）；kill s 從主程式引發信號 s；block／unblock 改主程式的遮罩，一開始遮罩是空的。引發信號時：如果它被遮罩，就記成 pending（同一個信號重複引發只記一個）；沒有處理常式的信號直接忽略；有處理常式就進入它：執行期間 s 自己會被加進遮罩，處理常式引發的信號當場處理（可以巢狀好幾層），結束時遮罩還原成進入前的樣子，然後把不再被遮罩的 pending 依編號從小到大遞送；unblock 之後也一樣遞送 pending。輸出進入處理常式的信號編號依序，用空白隔開。",
+   "rw_st": null,
+   "ref": "import sys\nsys.setrecursionlimit(10000)\nH = {}\nmask = set()\npend = []\ntr = []\ndep = [0, 0]\ndef deliver():\n    while True:\n        r = [y for y in pend if y not in mask]\n        if not r:\n            return\n        y = min(r)\n        pend.remove(y)\n        rais(y)\ndef rais(s):\n    if s in mask:\n        if s not in pend:\n            pend.append(s)\n    elif s in H:\n        saved = set(mask)\n        mask.add(s)\n        tr.append(str(s))\n        dep[0] += 1\n        dep[1] = max(dep[1], dep[0])\n        for t in H[s]:\n            rais(t)\n        mask.clear()\n        mask.update(saved)\n        dep[0] -= 1\n        deliver()\nq = int(input())\nfor _ in range(q):\n    a = input().split()\n    if a[0] == \"on\":\n        H[int(a[1])] = [int(v) for v in a[2:]]\n    elif a[0] == \"kill\":\n        rais(int(a[1]))\n    elif a[0] == \"block\":\n        for v in a[1:]:\n            mask.add(int(v))\n    elif a[0] == \"unblock\":\n        for v in a[1:]:\n            mask.discard(int(v))\n        deliver()\nprint(*tr)\n",
+   "tests": [
+    {
+     "in": "6\non 2 4 4\non 2 3 3\non 1 6\nunblock 3\nkill 2\non 3 \n",
+     "out": "2\n"
+    },
+    {
+     "in": "6\non 3 6\non 1 3\non 1 \nkill 3\nunblock 6 2\nunblock 6 2\n",
+     "out": "3\n"
+    },
+    {
+     "in": "6\non 3 4\non 3 5 4\non 2 4\nkill 3\non 4 6 6\nunblock 2 3\n",
+     "out": "3\n"
+    },
+    {
+     "in": "15\non 1 \non 4 5\non 4 \non 1 \non 4 5\non 3 \nblock 5\nkill 4\nkill 6\nkill 1\nunblock 5\nkill 4\nblock 5\nkill 1\non 3 6\n",
+     "out": "4 1 4 1\n"
+    },
+    {
+     "in": "13\non 2 3\non 1 5 3\nkill 1\nkill 3\nblock 2 2\non 1 4\nkill 5\nblock 6\nkill 4\nblock 3\non 1 3\nkill 2\nunblock 3\n",
+     "out": "1\n"
+    },
+    {
+     "in": "13\non 1 3 6\non 4 5 5\nunblock 3\non 1 \nblock 5\nkill 3\nkill 3\nkill 3\nkill 5\nkill 4\nkill 1\nkill 3\nkill 3\n",
+     "out": "4 1\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "17\non 3 5\non 2 4\non 3 6\nkill 6\nunblock 1 1\nkill 5\nkill 3\nkill 2\nkill 4\nblock 4 4\nkill 4\nblock 4\non 4 6\nkill 1\nblock 2 6\nunblock 6 4\nunblock 2 4\n",
+     "out": "3 2 4\n"
+    },
+    {
+     "in": "23\non 4 6\non 2 \non 1 \non 1 2\nunblock 5\nkill 3\nblock 3\non 3 4 6\nkill 1\nkill 1\nunblock 1\nkill 6\nblock 1\nunblock 4\non 4 6 5\nunblock 5\nblock 1\nunblock 1\non 2 3\nkill 5\nkill 5\nblock 4 4\nblock 1\n",
+     "out": "1 2 1 2\n"
+    }
+   ],
+   "want": "lx.signest"
+  },
+  {
+   "id": "signest-both",
+   "st": "第一行 q，之後 q 行事件：on s t...、kill s、block s...、unblock s...。信號 s 的處理常式由 on 設定：on s t... 表示執行 s 的處理常式時依序引發信號 t...（沒有 t 就什麼都不做，重新 on 會覆蓋舊的）；kill s 從主程式引發信號 s；block／unblock 改主程式的遮罩，一開始遮罩是空的。引發信號時：如果它被遮罩，就記成 pending（同一個信號重複引發只記一個）；沒有處理常式的信號直接忽略；有處理常式就進入它：執行期間 s 自己會被加進遮罩，處理常式引發的信號當場處理（可以巢狀好幾層），結束時遮罩還原，然後依 pending 排入的先後順序，遞送不再被遮罩的信號；unblock 之後也一樣遞送 pending。輸出進入與離開處理常式的記錄依序：進入寫信號編號 s，離開寫 -s，用空白隔開。",
+   "rw_st": null,
+   "ref": "import sys\nsys.setrecursionlimit(10000)\nH = {}\nmask = set()\npend = []\ntr = []\ndep = [0, 0]\ndef deliver():\n    while True:\n        r = [y for y in pend if y not in mask]\n        if not r:\n            return\n        y = r[0]\n        pend.remove(y)\n        rais(y)\ndef rais(s):\n    if s in mask:\n        if s not in pend:\n            pend.append(s)\n    elif s in H:\n        saved = set(mask)\n        mask.add(s)\n        tr.append(str(s))\n        dep[0] += 1\n        dep[1] = max(dep[1], dep[0])\n        for t in H[s]:\n            rais(t)\n        mask.clear()\n        mask.update(saved)\n        dep[0] -= 1\n        tr.append(\"-\" + str(s))\n        deliver()\nq = int(input())\nfor _ in range(q):\n    a = input().split()\n    if a[0] == \"on\":\n        H[int(a[1])] = [int(v) for v in a[2:]]\n    elif a[0] == \"kill\":\n        rais(int(a[1]))\n    elif a[0] == \"block\":\n        for v in a[1:]:\n            mask.add(int(v))\n    elif a[0] == \"unblock\":\n        for v in a[1:]:\n            mask.discard(int(v))\n        deliver()\nprint(*tr)\n",
+   "tests": [
+    {
+     "in": "10\non 3 4 4\non 1 2 3\non 1 6\nkill 1\nkill 5\nkill 1\nunblock 1\nunblock 2\nunblock 6 2\nkill 3\n",
+     "out": "1 -1 1 -1 3 -3\n"
+    },
+    {
+     "in": "16\non 3 5 6\non 3 6 5\nunblock 2 4\nblock 5\non 1 4\nkill 5\nunblock 6\non 4 6 6\nunblock 3\nunblock 5\nunblock 4 1\nunblock 3\nkill 4\nkill 5\nunblock 2 6\nblock 3\n",
+     "out": "4 -4\n"
+    },
+    {
+     "in": "7\non 3 \non 3 4 5\non 2 4\nunblock 5\non 1 2\nunblock 5\nkill 1\n",
+     "out": "1 2 -2 -1\n"
+    },
+    {
+     "in": "10\non 4 \non 4 5 6\nkill 5\nunblock 2\nkill 5\nkill 1\nblock 1\non 2 5 5\nkill 1\nkill 4\n",
+     "out": "4 -4\n"
+    },
+    {
+     "in": "16\non 2 3\non 1 4 6\nblock 6 2\non 4 \nunblock 4\nkill 6\nunblock 3\nkill 2\non 3 6 6\nkill 5\nunblock 5 1\nkill 4\non 4 6 6\nkill 6\nunblock 3\non 3 \n",
+     "out": "4 -4\n"
+    },
+    {
+     "in": "12\non 2 4 3\non 1 \nblock 4 4\nblock 4 2\nkill 1\non 3 \non 2 4 4\nunblock 3\nblock 3\non 3 6\non 3 4\nblock 3\n",
+     "out": "1 -1\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "17\non 4 \non 3 \nunblock 3\non 1 \nkill 5\nblock 3\nkill 5\nunblock 6 3\nkill 3\nkill 3\nkill 3\nkill 1\non 2 \nkill 3\nkill 2\nunblock 1\nunblock 6 2\n",
+     "out": "3 -3 3 -3 3 -3 1 -1 3 -3 2 -2\n"
+    },
+    {
+     "in": "7\non 3 5 6\non 3 \nkill 4\nkill 3\nblock 4\nkill 2\nunblock 2 6\n",
+     "out": "3 -3\n"
+    }
+   ],
+   "want": "lx.signest"
+  },
+  {
+   "id": "signest-depth",
+   "st": "第一行 q，之後 q 行事件：on s t...、kill s、block s...、unblock s...。信號 s 的處理常式由 on 設定：on s t... 表示執行 s 的處理常式時依序引發信號 t...（沒有 t 就什麼都不做，重新 on 會覆蓋舊的）；kill s 從主程式引發信號 s；block／unblock 改主程式的遮罩，一開始遮罩是空的。引發信號時：被遮罩的信號記成 pending（每次引發都各算一次，不合併）；沒有處理常式的信號直接忽略；有處理常式就進入它：執行期間 s 自己會被加進遮罩，處理常式引發的信號當場處理（可以巢狀好幾層），結束時遮罩還原，然後依編號從小到大遞送不再被遮罩的 pending；unblock 之後也一樣遞送 pending。輸出處理常式同時執行的最深巢狀層數（主程式為 0 層）。",
+   "rw_st": null,
+   "ref": "import sys\nsys.setrecursionlimit(10000)\nH = {}\nmask = set()\npend = []\ntr = []\ndep = [0, 0]\ndef deliver():\n    while True:\n        r = [y for y in pend if y not in mask]\n        if not r:\n            return\n        y = min(r)\n        pend.remove(y)\n        rais(y)\ndef rais(s):\n    if s in mask:\n        if True:\n            pend.append(s)\n    elif s in H:\n        saved = set(mask)\n        mask.add(s)\n        tr.append(str(s))\n        dep[0] += 1\n        dep[1] = max(dep[1], dep[0])\n        for t in H[s]:\n            rais(t)\n        mask.clear()\n        mask.update(saved)\n        dep[0] -= 1\n        deliver()\nq = int(input())\nfor _ in range(q):\n    a = input().split()\n    if a[0] == \"on\":\n        H[int(a[1])] = [int(v) for v in a[2:]]\n    elif a[0] == \"kill\":\n        rais(int(a[1]))\n    elif a[0] == \"block\":\n        for v in a[1:]:\n            mask.add(int(v))\n    elif a[0] == \"unblock\":\n        for v in a[1:]:\n            mask.discard(int(v))\n        deliver()\nprint(dep[1])\n",
+   "tests": [
+    {
+     "in": "9\non 2 3 3\non 1 2 2\non 4 5 5\non 3 \nkill 6\non 1 \nkill 3\nkill 5\non 1 6\n",
+     "out": "1\n"
+    },
+    {
+     "in": "10\non 4 \non 3 \nkill 1\nunblock 2\non 2 \nkill 3\nkill 5\nblock 3\nkill 6\nkill 2\n",
+     "out": "1\n"
+    },
+    {
+     "in": "8\non 3 5 4\non 2 4\non 2 3 3\non 4 5\nkill 5\nunblock 6 2\nkill 2\nunblock 1 3\n",
+     "out": "3\n"
+    },
+    {
+     "in": "10\non 4 6\non 1 2\nunblock 6\nkill 2\nkill 4\nblock 3 3\nkill 5\non 3 5\nunblock 3\nkill 3\n",
+     "out": "1\n"
+    },
+    {
+     "in": "10\non 1 5\non 3 6\non 2 \nkill 4\non 3 5 4\nkill 3\nblock 6 2\nkill 4\nkill 6\non 2 4\n",
+     "out": "1\n"
+    },
+    {
+     "in": "12\non 1 3 3\non 1 6 5\non 1 3 3\nkill 5\nblock 4\nkill 1\nkill 3\nunblock 3 5\nblock 6\non 4 \nkill 6\nblock 4 6\n",
+     "out": "1\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "8\non 3 6\non 3 \non 1 3\nkill 5\nkill 2\non 1 5\nkill 1\nkill 3\n",
+     "out": "1\n"
+    },
+    {
+     "in": "24\non 1 3\non 4 \non 2 4 4\non 2 4 4\nkill 2\non 2 4\nblock 4 1\nkill 5\nkill 5\nunblock 5\nkill 3\nkill 3\nblock 5 3\non 4 6\non 3 \nblock 5\non 3 \nblock 5\non 3 6 5\nunblock 5 5\nunblock 2 6\nblock 4 6\non 1 \non 3 6\n",
+     "out": "2\n"
+    }
+   ],
+   "want": "lx.signest"
+  },
+  {
+   "id": "signest-pending",
+   "st": "第一行 q，之後 q 行事件：on s t...、kill s、block s...、unblock s...。信號 s 的處理常式由 on 設定：on s t... 表示執行 s 的處理常式時依序引發信號 t...（沒有 t 就什麼都不做，重新 on 會覆蓋舊的）；kill s 從主程式引發信號 s；block／unblock 改主程式的遮罩，一開始遮罩是空的。引發信號時：被遮罩的信號記成 pending（同一個信號重複引發只記一個）；沒有處理常式的信號直接忽略；有處理常式就進入它：執行期間 s 自己會被加進遮罩，處理常式引發的信號當場處理（可以巢狀好幾層），結束時遮罩還原，然後依 pending 排入的先後順序遞送不再被遮罩的信號；unblock 之後也一樣遞送 pending。輸出全部事件結束後還有幾個 pending。",
+   "rw_st": null,
+   "ref": "import sys\nsys.setrecursionlimit(10000)\nH = {}\nmask = set()\npend = []\ntr = []\ndep = [0, 0]\ndef deliver():\n    while True:\n        r = [y for y in pend if y not in mask]\n        if not r:\n            return\n        y = r[0]\n        pend.remove(y)\n        rais(y)\ndef rais(s):\n    if s in mask:\n        if s not in pend:\n            pend.append(s)\n    elif s in H:\n        saved = set(mask)\n        mask.add(s)\n        tr.append(str(s))\n        dep[0] += 1\n        dep[1] = max(dep[1], dep[0])\n        for t in H[s]:\n            rais(t)\n        mask.clear()\n        mask.update(saved)\n        dep[0] -= 1\n        deliver()\nq = int(input())\nfor _ in range(q):\n    a = input().split()\n    if a[0] == \"on\":\n        H[int(a[1])] = [int(v) for v in a[2:]]\n    elif a[0] == \"kill\":\n        rais(int(a[1]))\n    elif a[0] == \"block\":\n        for v in a[1:]:\n            mask.add(int(v))\n    elif a[0] == \"unblock\":\n        for v in a[1:]:\n            mask.discard(int(v))\n        deliver()\nprint(len(pend))\n",
+   "tests": [
+    {
+     "in": "10\non 2 4 4\non 2 3\non 2 6 5\nblock 1\nunblock 1 5\nunblock 5\nkill 5\non 1 2 3\nunblock 5\nkill 5\n",
+     "out": "0\n"
+    },
+    {
+     "in": "14\non 4 6\non 3 \non 1 5\nblock 6 6\nkill 1\nunblock 3\nblock 4 2\non 2 \non 2 \nkill 2\nblock 3\nunblock 5\nblock 3\nkill 2\n",
+     "out": "1\n"
+    },
+    {
+     "in": "13\non 4 6\non 3 4 6\non 3 \non 2 \nblock 1\nkill 4\nunblock 2 4\non 4 6\non 3 4\non 2 \non 1 5\non 1 \nblock 3 3\n",
+     "out": "0\n"
+    },
+    {
+     "in": "8\non 1 3\non 3 5\non 3 6\non 3 \nkill 1\non 3 \nkill 5\nblock 2 4\n",
+     "out": "0\n"
+    },
+    {
+     "in": "11\non 2 3 3\non 4 6 5\non 2 \nunblock 3\nkill 3\nblock 2 2\nkill 6\nblock 4 6\nkill 4\nkill 2\nblock 1\n",
+     "out": "2\n"
+    },
+    {
+     "in": "7\non 4 \non 1 \non 1 3 4\non 2 \nblock 2 6\nkill 6\non 4 6\n",
+     "out": "1\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "14\non 3 6\non 3 \non 1 \nkill 5\non 3 5 4\nunblock 1\non 3 4 4\nunblock 3\nkill 1\nkill 1\non 3 \nkill 1\non 3 \nkill 5\n",
+     "out": "0\n"
+    },
+    {
+     "in": "10\non 2 5\non 1 5 4\non 3 4 4\non 2 \nblock 3\nunblock 3\nunblock 1 3\non 3 5 6\non 3 4 5\nunblock 2 6\n",
+     "out": "0\n"
+    }
+   ],
+   "want": "lx.signest"
+  },
+  {
+   "id": "ho-signest",
+   "st": "第一行 q，接著 q 行：on s t...、kill s、block s...、unblock s...。on 為信號 s 註冊 handler，handler 跑的時候會依序 raise 信號 t...；kill s 由主程式 raise s；block、unblock 調整主程式 mask（起初為空）。raise 的信號若在 mask 內就掛為 pending（重複只留一個）；沒有 handler 的信號略過；否則進入 handler：此期間 s 本身加進 mask，handler 裡 raise 的信號立即處理（可多層巢狀），handler 結束 mask 回復，接著把已不在 mask 內的 pending 依編號小到大處理；unblock 後也同樣處理 pending。輸出依序進入 handler 的信號編號，空白隔開。",
+   "rw_st": null,
+   "ref": "import sys\nsys.setrecursionlimit(10000)\nH = {}\nmask = set()\npend = []\ntr = []\ndep = [0, 0]\ndef deliver():\n    while True:\n        r = [y for y in pend if y not in mask]\n        if not r:\n            return\n        y = min(r)\n        pend.remove(y)\n        rais(y)\ndef rais(s):\n    if s in mask:\n        if s not in pend:\n            pend.append(s)\n    elif s in H:\n        saved = set(mask)\n        mask.add(s)\n        tr.append(str(s))\n        dep[0] += 1\n        dep[1] = max(dep[1], dep[0])\n        for t in H[s]:\n            rais(t)\n        mask.clear()\n        mask.update(saved)\n        dep[0] -= 1\n        deliver()\nq = int(input())\nfor _ in range(q):\n    a = input().split()\n    if a[0] == \"on\":\n        H[int(a[1])] = [int(v) for v in a[2:]]\n    elif a[0] == \"kill\":\n        rais(int(a[1]))\n    elif a[0] == \"block\":\n        for v in a[1:]:\n            mask.add(int(v))\n    elif a[0] == \"unblock\":\n        for v in a[1:]:\n            mask.discard(int(v))\n        deliver()\nprint(*tr)\n",
+   "tests": [
+    {
+     "in": "16\non 3 4 5\non 3 \non 3 6 6\non 3 5 5\non 3 4 4\nkill 5\nkill 4\nunblock 4 4\nblock 1\non 2 3\nkill 1\non 1 6 3\nkill 5\nkill 3\nkill 2\nkill 2\n",
+     "out": "3 2 3 2 3\n"
+    },
+    {
+     "in": "6\non 4 \non 3 \non 3 4 4\non 2 \non 1 \nkill 1\n",
+     "out": "1\n"
+    },
+    {
+     "in": "10\non 2 3\non 1 3\non 3 \nkill 6\nblock 6 6\nblock 4 6\nkill 6\nblock 5\nkill 3\nkill 3\n",
+     "out": "3 3\n"
+    },
+    {
+     "in": "14\non 1 6\non 1 \nunblock 4 4\nkill 4\nkill 4\nkill 2\nkill 1\nblock 1\nkill 1\nblock 3\nkill 3\nblock 5\nblock 4 4\nunblock 3 3\n",
+     "out": "1\n"
+    },
+    {
+     "in": "13\non 1 2\non 4 6 5\non 3 6\nkill 3\nunblock 1\nkill 2\nkill 6\nkill 5\nkill 3\nkill 1\nkill 1\nunblock 5\nunblock 3\n",
+     "out": "3 3 1 1\n"
+    },
+    {
+     "in": "8\non 3 4\non 3 5\non 3 4 4\non 3 5 6\non 2 \nunblock 3\nkill 2\nunblock 3\n",
+     "out": "2\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "7\non 3 \non 3 4\nkill 3\nblock 3\nkill 6\nunblock 1\nblock 5\n",
+     "out": "3\n"
+    },
+    {
+     "in": "14\non 1 \non 4 5\non 3 6\non 3 5 6\nkill 4\nkill 3\nunblock 5\non 2 4\nblock 4 2\nkill 4\nkill 1\nunblock 5\nkill 1\non 1 \n",
+     "out": "4 3 1 1\n"
+    }
+   ],
+   "split": "holdout"
+  },
+  {
+   "id": "env-count",
+   "st": "第一行 q，之後 q 行事件：set K V、export K 或 export K V、unset K、echo K、run、exec。模擬殼層的環境變數：set 設定殼層變數 K 的值為 V（沒有匯出的變數子行程看不到）；export K 把 K 標成匯出（K 沒有值的話子行程也看不到它），export K V 同時設值並匯出；unset K 刪掉變數；echo K 印出殼層裡 K 的值；run 啟動一個子行程，子行程只繼承已匯出而且有值的變數；exec 把殼層整個換成新程式（一樣只帶已匯出的變數），exec 之後的事件都不會再執行。輸出每次 run 或 exec 時子行程看到的環境變數個數，用空白隔開。",
+   "rw_st": null,
+   "ref": "vals = {}\nflag = {}\nseen = []\nshown = []\nq = int(input())\nlive = True\nfor _ in range(q):\n    a = input().split()\n    if not live:\n        continue\n    c = a[0]\n    if c == \"set\":\n        vals[a[1]] = a[2]\n        flag.setdefault(a[1], False)\n    elif c == \"export\":\n        if len(a) > 2:\n            vals[a[1]] = a[2]\n        flag[a[1]] = True\n    elif c == \"unset\":\n        vals.pop(a[1], None)\n        flag.pop(a[1], None)\n    elif c == \"echo\":\n        shown.append(vals.get(a[1], \"\"))\n    else:\n        seen.append(sum(1 for k in vals if flag.get(k)))\n        if c == \"exec\":\n            live = False\nprint(*seen)\n",
+   "tests": [
+    {
+     "in": "5\nexport A\nset A 5\necho D\nrun\nset C 4\n",
+     "out": "1\n"
+    },
+    {
+     "in": "7\nexport A 1\nexport D\nset C 1\nrun\nset C 4\nrun\nset B 5\n",
+     "out": "1 1\n"
+    },
+    {
+     "in": "14\nset B 2\nrun\nset A 2\nexport A\necho A\necho A\nset A 3\nrun\nrun\nrun\nunset B\nrun\nrun\nset A 3\n",
+     "out": "0 1 1 1 1 1\n"
+    },
+    {
+     "in": "9\necho A\necho A\nset A 1\necho A\necho A\necho D\necho C\nrun\nrun\n",
+     "out": "0 0\n"
+    },
+    {
+     "in": "14\necho A\nexport D\nunset A\nset A 3\necho A\nexport A\nexport D\nexport D\nset C 2\nrun\nrun\nrun\nrun\nrun\n",
+     "out": "1 1 1 1 1\n"
+    },
+    {
+     "in": "13\nexport B 5\nexport B\nexport A\necho A\nexport D\necho C\nrun\nset C 2\necho A\necho D\necho D\necho D\nexport C\n",
+     "out": "1\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "7\nexport B 1\nset A 4\nset D 4\necho C\nrun\nrun\nset B 3\n",
+     "out": "1 1\n"
+    },
+    {
+     "in": "10\nrun\nexport A\nexport A\nexport A\necho D\nset D 4\nset C 4\nexport B 4\nset B 3\nset A 3\n",
+     "out": "0\n"
+    }
+   ],
+   "want": "lx.envexec"
+  },
+  {
+   "id": "env-echo",
+   "st": "第一行 q，之後 q 行事件：set K V、export K 或 export K V、unset K、echo K、run、exec。模擬殼層的環境變數：set 設定殼層變數 K 的值為 V（沒有匯出的變數子行程看不到）；export K 把 K 標成匯出，export K V 同時設值並匯出；unset K 刪掉變數；echo K 印出殼層裡 K 的值，沒設過的話印一個破折號 -；run 啟動一個子行程；exec 把殼層整個換成新程式，exec 之後的事件都不會再執行。輸出每次 echo 的結果，一行一個。",
+   "rw_st": null,
+   "ref": "vals = {}\nflag = {}\nseen = []\nshown = []\nq = int(input())\nlive = True\nfor _ in range(q):\n    a = input().split()\n    if not live:\n        continue\n    c = a[0]\n    if c == \"set\":\n        vals[a[1]] = a[2]\n        flag.setdefault(a[1], False)\n    elif c == \"export\":\n        if len(a) > 2:\n            vals[a[1]] = a[2]\n        flag[a[1]] = True\n    elif c == \"unset\":\n        vals.pop(a[1], None)\n        flag.pop(a[1], None)\n    elif c == \"echo\":\n        shown.append(vals.get(a[1], \"-\"))\n    else:\n        seen.append(sum(1 for k in vals if flag.get(k)))\n        if c == \"exec\":\n            live = False\nprint(chr(10).join(shown))\n",
+   "tests": [
+    {
+     "in": "11\nexport A\necho A\nset C 1\nexport B 3\nexport A\necho D\nexport C\nunset C\nrun\nset C 2\nexport A 5\n",
+     "out": "-\n-\n"
+    },
+    {
+     "in": "11\nunset A\nexport A\nexport D\necho D\nrun\nset C 2\nset B 3\necho A\nexport D\nexport C\nunset C\n",
+     "out": "-\n-\n"
+    },
+    {
+     "in": "9\nrun\nrun\nexport B 3\nset A 5\nexport A\necho A\nexport A\necho A\nexport A\n",
+     "out": "5\n5\n"
+    },
+    {
+     "in": "13\nrun\nrun\nunset B\nrun\nrun\nset B 4\nrun\nset B 3\nset B 4\nrun\nexport D 3\necho D\nrun\n",
+     "out": "3\n"
+    },
+    {
+     "in": "14\necho D\nunset A\necho D\necho D\nexport D\nrun\nset C 3\nset A 3\necho D\nunset C\nrun\nset B 2\nrun\nset A 3\n",
+     "out": "-\n-\n-\n-\n"
+    },
+    {
+     "in": "13\nrun\nrun\nexport B 5\nset B 3\nrun\nset B 4\necho A\necho A\nexport A\nexport C\nunset C\nunset C\nunset B\n",
+     "out": "-\n-\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "18\nrun\nset C 3\nset A 1\nexport A\necho A\necho A\nexport A\necho A\nexport D\nrun\nrun\nexport D\nset C 3\nunset A\nset A 1\nset A 4\nset A 3\nexport A\n",
+     "out": "1\n1\n1\n"
+    },
+    {
+     "in": "13\nexport A\nset C 4\nset C 2\nrun\nrun\nrun\nset C 2\nrun\nunset B\nset B 2\nset A 2\necho A\nexport A\n",
+     "out": "2\n"
+    }
+   ],
+   "want": "lx.envexec"
+  },
+  {
+   "id": "env-list",
+   "st": "第一行 q，之後 q 行事件：set K V、export K 或 export K V、unset K、echo K、run、exec。模擬殼層的環境變數：set 設定殼層變數 K 的值為 V（沒有匯出的變數子行程看不到）；export K 把 K 標成匯出（沒有值的話子行程也看不到），export K V 同時設值並匯出；unset K 刪掉變數；echo K 印出 K 的值；run 啟動子行程；exec 不會結束殼層，只是和 run 一樣讓子行程看到已匯出的變數，之後的事件照常執行。輸出全部事件結束後，已匯出而且有值的變數，依名稱排序，每行 K=V。",
+   "rw_st": null,
+   "ref": "vals = {}\nflag = {}\nseen = []\nshown = []\nq = int(input())\nlive = True\nfor _ in range(q):\n    a = input().split()\n    if not live:\n        continue\n    c = a[0]\n    if c == \"set\":\n        vals[a[1]] = a[2]\n        flag.setdefault(a[1], False)\n    elif c == \"export\":\n        if len(a) > 2:\n            vals[a[1]] = a[2]\n        flag[a[1]] = True\n    elif c == \"unset\":\n        vals.pop(a[1], None)\n        flag.pop(a[1], None)\n    elif c == \"echo\":\n        shown.append(vals.get(a[1], \"\"))\n    else:\n        seen.append(sum(1 for k in vals if flag.get(k)))\nprint(chr(10).join(k + \"=\" + vals[k] for k in sorted(vals) if flag.get(k)))\n",
+   "tests": [
+    {
+     "in": "12\nrun\nexport A\nset A 4\nexport A\necho A\necho D\nrun\nexport D\necho C\nunset B\nset A 4\necho D\n",
+     "out": "A=4\n"
+    },
+    {
+     "in": "8\necho D\necho C\necho A\nexport A\nset A 1\necho A\nexport A\nset A 1\n",
+     "out": "A=1\n"
+    },
+    {
+     "in": "9\nexport A\nset A 4\nexport C\nrun\nunset B\nexport B 3\nrun\nrun\nexport B 3\n",
+     "out": "A=4\nB=3\n"
+    },
+    {
+     "in": "11\nset A 3\nset A 4\necho D\necho D\nexport D\nrun\nexport C\nunset B\nset B 4\nrun\nexport B 5\n",
+     "out": "B=5\n"
+    },
+    {
+     "in": "6\nrun\nset C 2\nset A 1\nexport A\nrun\nrun\n",
+     "out": "A=1\n"
+    },
+    {
+     "in": "9\nunset C\nexport B 2\nset B 5\nset B 1\nrun\nrun\nexport B 2\nset B 1\nset A 5\n",
+     "out": "B=1\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "9\nexport D\nexport C\nrun\nrun\necho B\nexport B 2\necho A\nexport D\nrun\n",
+     "out": "B=2\n"
+    },
+    {
+     "in": "8\necho D\necho C\nset A 1\nrun\nunset C\nset C 5\nrun\nexport B 2\n",
+     "out": "B=2\n"
+    }
+   ],
+   "want": "lx.envexec"
+  },
+  {
+   "id": "ho-env",
+   "st": "第一行 q，接著 q 行：set K V、export K 或 export K V、unset K、echo K、run、exec。shell 的環境變數：set 只改 shell 自己的變數；export K 讓 K 被子行程繼承（K 沒值就沒東西可繼承），export K V 設值並繼承；unset 移除；echo K 輸出 K 的值；run 開子行程，子行程繼承所有被匯出且有值的變數；exec 以新程式取代 shell，之後的行不再處理，新程式同樣只繼承被匯出的變數。輸出每次 run 或 exec 時子行程繼承到的變數數量，空白隔開。",
+   "rw_st": null,
+   "ref": "vals = {}\nflag = {}\nseen = []\nshown = []\nq = int(input())\nlive = True\nfor _ in range(q):\n    a = input().split()\n    if not live:\n        continue\n    c = a[0]\n    if c == \"set\":\n        vals[a[1]] = a[2]\n        flag.setdefault(a[1], False)\n    elif c == \"export\":\n        if len(a) > 2:\n            vals[a[1]] = a[2]\n        flag[a[1]] = True\n    elif c == \"unset\":\n        vals.pop(a[1], None)\n        flag.pop(a[1], None)\n    elif c == \"echo\":\n        shown.append(vals.get(a[1], \"\"))\n    else:\n        seen.append(sum(1 for k in vals if flag.get(k)))\n        if c == \"exec\":\n            live = False\nprint(*seen)\n",
+   "tests": [
+    {
+     "in": "11\nexport D\nset D 3\nrun\nexport B 1\nrun\nset B 5\nset B 5\nexport A\nexport D\nrun\nset A 3\n",
+     "out": "1 2 2\n"
+    },
+    {
+     "in": "6\nrun\nrun\nrun\nset C 2\nset C 3\nrun\n",
+     "out": "0 0 0 0\n"
+    },
+    {
+     "in": "14\nexport D\necho D\nrun\necho C\nset B 4\nset A 5\nexport D\nexport D\nrun\nunset C\nunset C\nset B 5\nunset C\nset B 3\n",
+     "out": "0 0\n"
+    },
+    {
+     "in": "8\nrun\nset A 1\nset A 5\nset A 4\nset A 3\nset D 3\nrun\nexport C\n",
+     "out": "0 0\n"
+    },
+    {
+     "in": "9\nrun\nrun\nset A 3\necho A\nrun\nexport C\nrun\nexport B 5\nrun\n",
+     "out": "0 0 0 0 1\n"
+    },
+    {
+     "in": "14\nset A 4\nrun\nset C 5\nunset B\nexport B 1\nrun\nexport A 2\nexport A\nset A 4\necho D\nexport D\nexport D\nset C 5\nrun\n",
+     "out": "0 1 2\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "11\nexport B 5\nset A 4\nset B 1\nexport A\nexport D\nexport D\necho D\nexport A\nexport D\nexport D\nrun\n",
+     "out": "2\n"
+    },
+    {
+     "in": "28\necho D\nexport C\nexport C\nset C 5\nrun\nset B 3\necho A\necho D\nunset C\nexport B 1\nset B 2\nset D 3\nunset C\nrun\nunset C\nset C 5\nrun\nrun\nset B 4\nexport B 5\nset A 1\necho D\necho D\nrun\nrun\nrun\nexport B 5\nexport A\n",
+     "out": "1 1 1 1 1 1 1\n"
+    }
+   ],
+   "split": "holdout"
+  }
+ ]
+}

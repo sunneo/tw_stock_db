@@ -18610,6 +18610,10 @@ const holder = {};
 return holder.FaMatrixSpec;
 })();
 /* MATRIXSPEC-END */
+/* MATRIXHYBRID-BEGIN */
+/* MATRIXHYBRID-END */
+/* MATRIXTEACHQUEUE-BEGIN */
+/* MATRIXTEACHQUEUE-END */
 // 2026-11-11 新增的矩陣層模組（文字／校驗碼／位元組／樣式／草圖／清單／作業系統）；只用 install 註冊進註冊表，order 決定誰先試
 try { for (const m of [typeof FaMatrixText !== 'undefined' ? FaMatrixText : null, typeof FaMatrixChecksum !== 'undefined' ? FaMatrixChecksum : null, typeof FaMatrixBytes !== 'undefined' ? FaMatrixBytes : null, typeof FaMatrixRegex !== 'undefined' ? FaMatrixRegex : null, typeof FaMatrixSketch !== 'undefined' ? FaMatrixSketch : null, typeof FaMatrixList !== 'undefined' ? FaMatrixList : null, typeof FaMatrixOS !== 'undefined' ? FaMatrixOS : null]) { if (m && FaMatrixSynth) m.install(FaMatrixSynth); } } catch (e) { /* 新模組裝不上就維持原樣 */ }
 /* TEACHERCHECK-BEGIN */
@@ -22573,6 +22577,30 @@ const holder = {};
 return holder.FaDomainSync2;
 })();
 /* DOMAINSY2-END */
+/* DOMAINFIELDCOUNT-BEGIN */
+/* DOMAINFIELDCOUNT-END */
+/* DOMAINAVBITS-BEGIN */
+/* DOMAINAVBITS-END */
+/* DOMAINBMPX-BEGIN */
+/* DOMAINBMPX-END */
+/* DOMAINGIF-BEGIN */
+/* DOMAINGIF-END */
+/* DOMAININFLATE-BEGIN */
+/* DOMAININFLATE-END */
+/* DOMAINJPEG-BEGIN */
+/* DOMAINJPEG-END */
+/* DOMAINPAR-BEGIN */
+/* DOMAINPAR-END */
+/* DOMAINPAR2-BEGIN */
+/* DOMAINPAR2-END */
+/* DOMAINPAR3-BEGIN */
+/* DOMAINPAR3-END */
+/* DOMAINPCX-BEGIN */
+/* DOMAINPCX-END */
+/* DOMAINPNG-BEGIN */
+/* DOMAINPNG-END */
+/* DOMAINTARX-BEGIN */
+/* DOMAINTARX-END */
 /* PYUMLPIPELINE-BEGIN */
 const FaPyUmlPipeline = (function () {
 const holder = {};
@@ -87355,6 +87383,41 @@ ${fnData.code}
             unloadModel: async () => { me._vlmTerminate('cpu'); } });
         return this._webLoraApplier;
     }
+    // ===== LoRA 每輪路由（DESIGN.lora-training.md §15）：有 task 的生成才決定保留／切換／回基底；沒有 task 的呼叫不動目前的 LoRA =====
+    _loraCore() { if (!this._loraCoreInst) { try { this._loraCoreInst = FaStudio.FaStudioServer.createServer(this._studioHostApi()); } catch (_) { this._loraCoreInst = null; } } return this._loraCoreInst; }
+    async _loraRouteTurn(task) {
+        if (task == null || task === '' || !this._studioDesktop() || typeof FaStudio === 'undefined' || !FaStudio.FaLoraRoute) return null;
+        const core = this._loraCore(); if (!core) return null;
+        const reg = await core.registry().catch(() => null); if (!reg) return null;
+        this._loraTurnReg = reg;
+        const prev = (this._loraTurnState && this._loraTurnState.active) || [];
+        return FaStudio.FaLoraRoute.routeTurn(reg, task, { prevActive: prev });
+    }
+    // 只在組合改變時套用（keep 不動）；套用失敗就回基底並記 log；成功的 adapter 在生成期間 acquire，生成結束 release（推論中不淘汰）
+    async _loraSwitch(route) {
+        if (!route || route.action === 'keep') { if (route) this._loraTurnState = { active: route.active.slice() }; return route; }
+        const applier = await this._studioLoraApplier();
+        if (route.action === 'clear' || !route.handles.length) {
+            const c = await applier.clear().catch((e) => ({ ok: false, error: String((e && e.message) || e) }));
+            this._loraTurnState = { active: [] };
+            return Object.assign(route, { applied: !!c.ok, applyError: c.ok ? null : c.error });
+        }
+        const a = await applier.apply(route.handles.map((x) => ({ id: x.id, bytes: x.handle && x.handle.bytes })));
+        if (a && a.ok) { this._loraTurnState = { active: route.active.slice() }; return Object.assign(route, { applied: true, applyError: null }); }
+        await applier.clear().catch(() => null);
+        this._loraTurnState = { active: [] };
+        return Object.assign(route, { applied: false, applyError: (a && a.error) || '套用失敗', active: [], fallback: 'base' });
+    }
+    // 包住一次生成：路由 → 必要時切換 → 生成（acquire/release 之間推論中不可淘汰）→ 釋放
+    async _llmGenerate(model, a, cb) {
+        let route = null;
+        try { route = await this._loraRouteTurn(a && a.task); if (route) route = await this._loraSwitch(route); }
+        catch (e) { route = { task: String(a && a.task), fallback: 'base', active: [], handles: [], skipped: [], action: 'keep', reason: '路由錯誤，用基底：' + String((e && e.message) || e) }; }
+        const held = route && route.active ? route.active.slice() : [];
+        const reg = this._loraTurnReg; if (reg) held.forEach((id) => reg.acquire(id));
+        try { return await this._llmGenerateInner(model, a, cb); }
+        finally { if (reg) held.forEach((id) => reg.release(id)); }
+    }
     async _studioLoraApplier() {
         if (this._loraApplier) return this._loraApplier;
         const box = await this._nrBox(); if (!box) throw new Error('找不到使用者資料夾（原生信箱）');
@@ -117531,12 +117594,12 @@ ${existingNodeSummaries}
                     const ranked = SEL.retrieve(S.idxInt, t.c.query, 20); const cands = SEL.buildCandidates(S.universe, t.c.truth, ranked, t.k, t.mode, t.seed, S.universe);
                     if (!cands.length) { S.rows.push({ id: t.c.id, kind: t.c.kind === 'neg' ? 'neg' : 'pos', mode: t.mode, k: t.k, cands: [], truth: t.c.truth, choice: 0, ms: 0, no_candidates: true }); }
                     else {
-                        const raw = await this._llmGenerate(S.model, { messages: SEL.selectionMessages(t.c.query, cands, null), deterministic: true, maxTokens: 6 }, {}); const choice = SEL.parseChoice(raw, cands.length); const ms = Date.now() - t0;
+                        const raw = await this._llmGenerate(S.model, { task: 'colu', messages: SEL.selectionMessages(t.c.query, cands, null), deterministic: true, maxTokens: 6 }, {}); const choice = SEL.parseChoice(raw, cands.length); const ms = Date.now() - t0;
                         const row = { id: t.c.id, kind: t.c.kind === 'neg' ? 'neg' : 'pos', mode: t.mode, k: t.k, cands: cands.map((u) => u.id), truth: t.c.truth, choice, ms, raw: String(raw).slice(0, 40) }; S.rows.push(row);
                         const wrong = t.mode !== 'none' && t.c.kind !== 'neg' ? !(choice && t.c.truth.includes(row.cands[choice - 1])) : (choice !== 0); if (wrong && S.failures.length < 80) S.failures.push({ id: t.c.id, query: t.c.query, mode: t.mode, k: t.k, truth: t.c.truth, chose: choice ? row.cands[choice - 1] : (choice === 0 ? '(0 沒有適合的)' : '(解析不了：' + row.raw + ')'), in_list: row.cands.some((c) => t.c.truth.includes(c)) });
                     }
                 } else {
-                    const u = S.byId.get(t.a.unit); const raw = await this._llmGenerate(S.model, { messages: SEL.argsMessages(u, t.a.query), deterministic: true, maxTokens: 120, prefill: '{' }, {}); const got = SEL.parseArgs(raw); const sc = SEL.scoreArgs(t.a.expected, got, u);
+                    const u = S.byId.get(t.a.unit); const raw = await this._llmGenerate(S.model, { task: 'toolcall', messages: SEL.argsMessages(u, t.a.query), deterministic: true, maxTokens: 120, prefill: '{' }, {}); const got = SEL.parseArgs(raw); const sc = SEL.scoreArgs(t.a.expected, got, u);
                     S.argRows.push(Object.assign({ unit: t.a.unit, ms: Date.now() - t0, raw: String(raw).slice(0, 120) }, sc)); if (!sc.exact && S.failures.length < 80) S.failures.push({ id: 'args:' + t.a.unit, query: t.a.query, expected: t.a.expected, got: String(raw).slice(0, 120) });
                 }
             } catch (e) { S.errors++; S.lastError = String((e && e.message) || e); if (S.errors > 5) throw e; }
@@ -120023,7 +120086,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         const host = this._behTsHost(); const PC = await host.loadTreeSitter(); const lang = await PC.Language.load(await host.loadLanguageWasm('python')); const P = new PC(); P.setLanguage(lang); this._pyParser = P; return P;
     }
     // 領域包（DSP…）：第一次用到時註冊進算法詞彙與範式骨架表；判題用領域的容差設定（DSP＝float）
-    _pyDomainsInit() { if (this._pyDomainsDone) return; this._pyDomainsDone = true; for (const pk of [FaDomainDsp, FaDomainAlgo2, FaDomainOs, FaDomainDs, FaDomainLinuxText, FaDomainSync, FaDomainGraph2, FaDomainTwofile, FaDomainLinuxsem, FaDomainLinuxfmt, FaDomainLinuxreal, FaDomainLzma, FaDomainBinfmt, FaDomainFs, FaDomainSync2, FaDomainGraph3]) { try { FaDomains.register(pk.make(FaPyParadigms), { AI: FaAlgoIntent, PAR: FaPyParadigms }); } catch (_) { /* 領域包註冊失敗不影響通用範式 */ } } }
+    _pyDomainsInit() { if (this._pyDomainsDone) return; this._pyDomainsDone = true; for (const pk of [FaDomainDsp, FaDomainAlgo2, FaDomainOs, FaDomainDs, FaDomainLinuxText, FaDomainSync, FaDomainGraph2, FaDomainTwofile, FaDomainLinuxsem, FaDomainLinuxfmt, FaDomainLinuxreal, FaDomainLzma, FaDomainBinfmt, FaDomainFs, FaDomainSync2, FaDomainGraph3, FaDomainFieldCount, FaDomainAvbits, FaDomainBmpx, FaDomainGif, FaDomainInflate, FaDomainJpeg, FaDomainPar, FaDomainPar2, FaDomainPar3, FaDomainPcx, FaDomainPng, FaDomainTarx]) { try { FaDomains.register(pk.make(FaPyParadigms), { AI: FaAlgoIntent, PAR: FaPyParadigms }); } catch (_) { /* 領域包註冊失敗不影響通用範式 */ } } }
     async _offlineStackWire(text, r) { // 不丟例外；缺模組（舊版嵌入）就回空
         const empty = { stack: null, stuckAt: null, header: '', note: '' };
         try { if (typeof FaOfflineStack === 'undefined') return empty; return await FaOfflineStack.wireOffline({ goal: String(text || '').replace(/\s+/g, ' ').slice(0, 60), result: { ok: !!r.ok, rounds: r.rounds, source: r.ok ? r.source : undefined }, enabled: false }); } catch (_) { return empty; }
@@ -120042,11 +120105,13 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
     }
     async _teachQueueRecord(entry) {
         const Sp = FaMatrixSpec; let text = '', where = 'memory';
+        // 合併與摘要走 FaMatrixTeachQueue.mergeText（matrix_teach_queue_core，同一套 mergeQueue 規則）；模組沒嵌入時退回直接合併
+        const teachMerge = (t, e) => { if (typeof FaMatrixTeachQueue !== 'undefined' && FaMatrixTeachQueue && FaMatrixTeachQueue.mergeText) return FaMatrixTeachQueue.mergeText(t, e); const m = Sp.mergeQueue(Sp.parseQueue(t), e); return { text: Sp.queueText(m), count: m.length, summary: null }; };
         try {
             const box = typeof window !== 'undefined' && window.desktopAPI && window.desktopAPI.rawfs ? await this._nrBox() : null;
-            if (box) { const sep = box.indexOf(String.fromCharCode(92)) >= 0 ? String.fromCharCode(92) : '/'; const ud = box.split(sep).slice(0, -1).join('/'); const p = ud + '/teach_queue.jsonl'; try { const r = await window.desktopAPI.rawfs.readFile(p, 'utf8'); text = (r && r.text) || ''; } catch (_) { text = ''; } const merged = Sp.mergeQueue(Sp.parseQueue(text), entry); await window.desktopAPI.rawfs.writeFile(p, { text: Sp.queueText(merged) }); return { where: 'file', path: p, count: merged.length }; }
+            if (box) { const sep = box.indexOf(String.fromCharCode(92)) >= 0 ? String.fromCharCode(92) : '/'; const ud = box.split(sep).slice(0, -1).join('/'); const p = ud + '/teach_queue.jsonl'; try { const r = await window.desktopAPI.rawfs.readFile(p, 'utf8'); text = (r && r.text) || ''; } catch (_) { text = ''; } const mg = teachMerge(text, entry); await window.desktopAPI.rawfs.writeFile(p, { text: mg.text }); return { where: 'file', path: p, count: mg.count, lines: mg.summary ? mg.summary.lines : null }; }
         } catch (_) { /* 檔案寫不了就退到 localStorage */ }
-        try { text = localStorage.getItem('fa_teach_queue') || ''; const merged = Sp.mergeQueue(Sp.parseQueue(text), entry); localStorage.setItem('fa_teach_queue', Sp.queueText(merged)); return { where: 'localStorage', count: merged.length }; } catch (_) { return { where, count: 0 }; }
+        try { text = localStorage.getItem('fa_teach_queue') || ''; const mg = teachMerge(text, entry); localStorage.setItem('fa_teach_queue', mg.text); return { where: 'localStorage', count: mg.count, lines: mg.summary ? mg.summary.lines : null }; } catch (_) { return { where, count: 0 }; }
     }
     async _codeOffline(o, bridge) {
         this._pyDomainsInit();
@@ -120062,7 +120127,12 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         const lessons = o.onlyLessons ? o.onlyLessons : this._pyNoLessons ? [] : (FaPyLessonsBuiltin.lessons || []).concat(this._pyLessonsLoad()); // _pyNoLessons：評測用，不給課、只靠範式骨架
         const r = await FaPyUmlPipeline.buildFromUML({ statement: o.text, uml: readOk ? { hints: uml.hints, model: uml.model } : { hints: null, model: null }, B, R, C2U: FaPyCode2Uml, FaPyBody, Choose: FaPyCnlChoose, judge, Lessons: FaPyLessons, lessons, Paradigms: FaPyParadigms, Matrix: hasMatrix ? FaMatrixSynth : undefined, examples: exs, Steps: (typeof FaStepSplit !== 'undefined' && FaStepSplit) ? FaStepSplit : undefined, stepJudge: async (a) => { const j = await bridge.judge({ lang: 'python', source: a.source + '\nmain()\n', problem: { id: 'step', tests: a.tests, hidden: [], checker: 'tokens' } }); return { verdict: j.verdict, detail: j.detail }; }, ctxTokens: Number(this._getGenerationSettings().contextWindowTokens) || undefined, stepMaxDepth: this._stepMaxDepth || undefined });
         const sw = await this._offlineStackWire(o.text, r); // 思考堆疊缺口 C、E：層框、卡在哪、給模型的標頭（失敗）／成品檢查（成功）
-        if (!r.ok) return Object.assign({ ok: false, reason: r.reason, tried: r.tried, rounds: r.rounds, stack: sw.stack, stuckAt: sw.stuckAt, stackHeader: sw.header, stackNote: sw.note }, await this._matrixSpecNeed(o.text, exs, r, { readOk }));
+        if (!r.ok) {
+            // 混用（DESIGN §13.6）：blockly 整條失敗後才交給矩陣層再試；只有隱藏測資判過、非多候選才採用，其餘照舊回失敗＋教學佇列
+            const hy = (typeof FaMatrixHybrid !== 'undefined' && FaMatrixHybrid && hasMatrix && exs.length) ? await FaMatrixHybrid.tryMatrix({ statement: o.text, examples: exs, judge, synth: (x) => FaMatrixSynth.synth(x) }).catch(() => ({ ok: false })) : { ok: false };
+            if (hy.ok) return { ok: true, rounds: r.rounds, stack: sw.stack, stuckAt: sw.stuckAt, stackNote: sw.note, source: hy.source + '\nmain()\n', verdict: 'AC', by: 'matrix', hybrid: { from: 'blockly-fail', level: hy.level, desc: hy.desc }, matrix: { level: hy.level, kind: hy.kind || null, desc: hy.desc, verified: true, ambiguous: false, editable: false, blocks: null }, tried: r.tried, usedModel: r.usedModel };
+            return Object.assign({ ok: false, reason: r.reason, tried: r.tried, rounds: r.rounds, stack: sw.stack, stuckAt: sw.stuckAt, stackHeader: sw.header, stackNote: sw.note, hybridReason: hy.reason || null }, await this._matrixSpecNeed(o.text, exs, r, { readOk }));
+        }
         // 誠實標示：矩陣層是「用範例合成」的，只對著範例驗證時 AC 不是獨立驗證（範例是學的資料）；有獨立的隱藏測資並通過、且沒有多個候選，才算 verified
         let mx = r.matrix || null; let mxSource = r.source;
         // 範式／課／配方解出時也跑矩陣層（小預算）：兩邊在可見範例上都 AC，才附上矩陣層的區塊（解出的程式本身不換）
@@ -120569,7 +120639,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         if (r && r.ok) return { ok: true, text: String(r.text == null ? acc : r.text) };
         return { ok: false, why: '原生失敗（' + ((r && r.code) || '未知') + '）：' + ((r && r.message) || '沒有訊息') };
     }
-    async _llmGenerate(model, a, cb) {
+    async _llmGenerateInner(model, a, cb) {
         cb = cb || {}; const gpu = await this._omGpuInfo();
         // 原生執行器（桌面版，先試）：只支援純文字生成（沒有工具、沒有預填）。失敗或不可用就退回 WebGPU／WASM，並把實際後端與原因寫進 log。
         const NATIVE_MODEL_ID = 'qwen3-0.6b';
@@ -120708,7 +120778,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         try {
             for (let i = 0; i < FaVlm.BENCH_CASES.length; i++) {
                 const c = FaVlm.BENCH_CASES[i]; if (setStatus) setStatus('第 ' + (i + 1) + '／' + FaVlm.BENCH_CASES.length + ' 題…'); prog.log('題目 ' + (i + 1) + '：' + c.user);
-                const raw = await this._llmGenerate(m, { messages: [{ role: 'system', content: FaVlm.TOOL_STAGE_SYSTEM }, { role: 'user', content: c.user }], tools: specs, deterministic: true, maxTokens: 160 }, { update, log: (s) => prog.log(s) });
+                const raw = await this._llmGenerate(m, { task: 'toolcall', messages: [{ role: 'system', content: FaVlm.TOOL_STAGE_SYSTEM }, { role: 'user', content: c.user }], tools: specs, deterministic: true, maxTokens: 160 }, { update, log: (s) => prog.log(s) });
                 const r = FaVlm.scoreToolCase(c, raw); results.push(Object.assign({ id: c.id }, r)); prog.log((r.ok ? '✅ ' : '❌ ') + r.reason + '　輸出：' + String(raw).replace(/\s+/g, ' ').slice(0, 100));
             }
             const sum = FaVlm.summarizeToolBench(results); const rec = Object.assign({}, sum, { at: Date.now(), device: (this._omLastDevice || {})[m.id] === 'webgpu' ? 'gpu' : 'cpu', ms: Date.now() - t0, details: results.map((r) => ({ id: r.id, ok: r.ok, reason: r.reason })) });
