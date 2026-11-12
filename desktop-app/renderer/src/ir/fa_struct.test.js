@@ -75,7 +75,7 @@ const DIR = process.env.FA_TS_DIR || [path.join(os.homedir(), '.cache', 'fa-ts')
         assert.ok(fa.indexOf(fs.readFileSync(path.join(__dirname, 'json_struct_core.js'), 'utf8').replace(/\r\n/g, '\n').trim()) > 0, '嵌入版與來源不一致');
         const i = fa.indexOf("if (action === 'struct')"); assert.ok(i > 0); const seg = fa.slice(i, i + 1800); assert.ok(/J\.inferSchema\(a\.sample/.test(seg) && /J\.parseTypeDesc\(a\.desc/.test(seg) && /J\.loadSchema\(a\.schema/.test(seg) && /缺少 sample/.test(seg));
         const J = H.FaJsonStruct; const sch = J.inferSchema([SAMPLE]); assert.ok(J.generate(J.loadSchema(J.saveSchema(sch)), 'cpp').code.indexOf('Root_load') > 0);
-        const k = fa.indexOf("registerOptional('convert_code',"); const desc = fa.slice(k, k + 9000); assert.ok(/enum: \['convert', 'to_blocks', 'to_uml', 'struct'\]/.test(desc) && /sample: \{ type: 'string'/.test(desc) && /action:"struct"/.test(desc));
+        const k = fa.indexOf("registerOptional('convert_code',"); const desc = fa.slice(k, k + 9000); assert.ok(/enum: \['convert', 'to_blocks', 'to_uml', 'struct'[,\]]/.test(desc) && /sample: \{ type: 'string'/.test(desc) && /action:"struct"/.test(desc));
     });
     try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_) { /* */ }
     console.log(pass + ' passed, ' + fail + ' failed'); process.exit(fail ? 1 : 0);

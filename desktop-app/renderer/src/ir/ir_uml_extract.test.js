@@ -44,7 +44,7 @@ const DIR = process.env.FA_TS_DIR || [path.join(os.homedir(), '.cache', 'fa-ts')
     }
     await t('宿主：convert_code 有 to_uml 動作（只讀）與工具說明', () => {
         assert.ok(/if \(action === 'to_uml'\)/.test(fa)); assert.ok(/br\.umlFrom\(a\.source, from, a\.name, fromParser/.test(fa)); const i = fa.indexOf("registerOptional('convert_code',"); const seg = fa.slice(i, i + 6500);
-        assert.ok(/enum: \['convert', 'to_blocks', 'to_uml'\]/.test(seg)); assert.ok(/action:"to_uml" 從程式抽回 UML 設計/.test(seg)); assert.ok(/UML: FaUml/.test(fa));
+        assert.ok(/enum: \['convert', 'to_blocks', 'to_uml'[,\]]/.test(seg)); assert.ok(/action:"to_uml" 從程式抽回 UML 設計/.test(seg)); assert.ok(/UML: FaUml/.test(fa));
     });
     console.log('  · ' + JSON.stringify(stat)); console.log(pass + ' passed, ' + fail + ' failed'); process.exit(fail ? 1 : 0);
 })().catch((e) => { console.error(e); process.exit(2); });
