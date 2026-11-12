@@ -973,3 +973,48 @@ model card 欄位以 `description`（一句話，來自描述檔，§13.2）與 
 
 第 6、7、9（工具清單雜湊）、10（plan／colu 數字與範圍外量測）、11、14，以及網頁版路由（第 5 項後半）。原因都寫在 26.1 表格中。
 
+
+## 27. 四顆 LoRA 產品視窗實測（2026-11-12，分支 desktop-app）
+
+目的：在產品視窗（xvfb 下的真 Electron 44.4.0，`FA_DEBUG_EVAL_FILE`）實測 `decompose-r4-v2`、`toolcall-r4`、`colu-r4`、`plan-r4` 四顆，走產品自己的路徑：匯入工作室儲存層 → LoRA 登錄表（`lora_registry`）→ 每輪路由（`lora_route`，`fa._llmGenerate` 帶 `task`）→ 主程序 `lora_apply`／`lora_apply_set`（槽版模型 `native-lora/slot-model`）→ 原生推論。未改任何產品程式；`decompose-r4.fatrain`（舊版）沒測。
+
+### 27.1 環境與來源（沒有下載）
+
+- 腳本（都在 `scripts/eval/`）：`lora_four_adapters.run.js`（啟動器）、`lora_four_adapters.eval.js`（渲染程序內的評估）、`lora_four_adapters.make_items.py`（題目抽樣）、`lora_four_adapters.items.json`（12 題）。重現：`PATH=/tmp/pyshim:$PATH xvfb-run -a nice -n 19 node scripts/eval/lora_four_adapters.run.js --runtime=<1.22.0-2 執行包資料夾> --restore-slot=1`（`--restore-slot=0` 即量產品原樣）。一次約 6 分鐘。
+- 資產來源：本機 `/home/hungfu.lee/fa-adapters-int/assets/`，實際大小（bytes）：`decompose-r4-v2.fatrain` 40,377,272；`toolcall-r4.fatrain` 40,376,888；`colu-r4.fatrain` 40,374,710；`plan-r4.fatrain` 40,375,167。每顆 lora.bin 40,370,176、rank 4（槽寬 16、alpha 8）。匯入各約 1.7 秒，`Fatrain.importAsset` 回 `action: create`。
+- 執行包：本機原有的 `native-runtime/1.22.0-1` 是舊版（`legacy`，沒有 `lora` 功能，不能套 adapter）。用 `scripts/native-runtime-pack.js` 以本機已有的 onnxruntime-node 1.22.0 加上目前的 `nr-*.js` 重新打成 1.22.0-2（37 個檔案、30.0 MB），以 `FA_NATIVE_RUNTIME_LOCAL_SRC` 安裝到隔離的 userData。全程沒有網路下載。
+- 模型：標準版 q8 `model_quantized.onnx` 617,687,575 bytes（從本機複製到隔離 userData，沒有下載）。槽版由產品的 `slot_prepare` 現轉：輸出 617,790,864 bytes（含 40,370,176 bytes 的全零 lora.bin 與 layout.json），轉換 618 毫秒，峰值 RSS 約 108 MB，加輪詢共 1.5 秒。本機原有的 589MB 槽版不能直接複製使用：快取鍵含「路徑｜大小｜修改時間」，換位置就不被認得。
+- 登錄表：預算 256 MiB、`maxActive` 4；四顆相容性都是 ok；評量 verdict：decompose（split_legal_rate 贏基底）、toolcall（fc_format_rate 贏基底）已知，colu、plan 卡片沒有評量數字（`known:false`）。
+- 題目：每題型 3 題，取自留出集（不在訓練集內；`lora-train/data/heldout*.jsonl`，依 id 均勻抽樣），並以確定性解碼、不開思考。因為產品的原生路徑只做純文字（呼叫帶 `tools` 或 `prefill` 會被略過），toolcall 的 tools 依 Qwen3 聊天樣板格式折進 system 訊息，各題型都不帶預填。
+
+### 27.2 每個題型的結果（原生推論，3 題／型）
+
+「格式」＝輸出符合該題型格式；「對」＝與留出集標準答案相同（decompose 比函式名稱集合、toolcall 比工具名稱與參數、colu 比字母、plan 比整段 JSON）。
+
+| 題型 | 選到哪顆 | 套用 | 基底（不套用）格式／對 | 套用後 格式／對 | 延遲（中位數，基底→套用） |
+|---|---|---|---|---|---|
+| decompose（分解） | 每輪路由自動選到 `decompose-r4-v2`（登錄表 verdict 贏） | 成功（`lora_apply` 647 毫秒，原生 `lora_status` 回報該 adapter） | 0/3、0/3：全是 ```json 圍欄的陣列、簡體字、沒有 `{"functions":[…]}` | 2/3、2/3：輸出直接是 `{"functions":[{name,signature,purpose,calls,complex}]}`，有 `main`、calls 指向清單內；第 3 題缺 `main`（`read_input,solve,write_output`） | 8.0 秒 → 10.2 秒（輸出變成結構完整的 JSON，不是更慢的推論）；第一題含重建 session 12.1 秒 |
+| toolcall（工具呼叫 JSON） | 自動選到 `toolcall-r4`（verdict 贏） | 成功（653 毫秒） | 3/3、0/3：基底本來就會寫 `<tool_call>`，但參數帶簡體字或多編的欄位（`"预算表"`、`"diff content"`） | 3/3、2/3：參數與題目一致；第 2 題選了 `fap_find_file`，標準答案是 `fap_copy_to_storage`（選錯工具） | 6.5 秒 → 6.3 秒；第一題含重建 session 8.8 秒 |
+| colu（排名／選單字母） | 自動路由沒選到 `colu-r4`：卡片沒有評量數字，登錄表寫「沒有評量資料，不自動選用」，且被任務文字裡的「工具」觸發字改選 `toolcall-r4`（見 27.4 第 3 項）。改走工作室手動載入（`/api/lora/load` 帶 ids）選到 `colu-r4` | 成功（1.6 秒） | 單一字母 1/3、對 1/3：其餘輸出 `A.`、`E. 都不是` | 單一字母 3/3、對 2/3（B、A 對；一題答 D，標準答案 B） | 0.6 秒 → 0.9 秒；第一題含重建 session 2.1 秒 |
+| plan（規劃 plan_check） | 同 colu：自動路由因沒有評量數字不選 `plan-r4`，改選 `toolcall-r4`（「呼叫」觸發字）；改手動載入選到 `plan-r4` | 成功（1.6 秒） | 合格 JSON 2/3（圍欄；第 3 題是陣列沒有 `checks`）、對 0/3 | 純 JSON 2/3（第 3 題 JSON 後面接了一段 python 碼）、對 0/3；內容品質差：一題 `checks: []`、一題只有一項 | 5.2 秒 → 5.6 秒（一題長輸出 13.2 秒） |
+
+觀察：套用 adapter 之後，decompose、colu 的輸出格式明顯貼近訓練格式（基底完全做不到 → 2/3、3/3）；toolcall 的格式基底本來就可以，改善在參數內容（0/3 → 2/3）；plan 的格式改善有限、內容仍錯。樣本只有 3 題，不是統計結論，只證明「路徑通、adapter 有效、方向對」。
+
+各題原文（節錄）與逐題記錄在評估輸出（`[eval-file] result:`）；加上不套用的基底對照，12 題基底 12/12 都走原生（log「後端：原生」），沒有 LoRA 的路徑完全不受影響。
+
+### 27.3 四顆同時套用（`lora_apply_set`，rank 4×4＝16，剛好填滿槽）
+
+- 套用成功：4 個 adapter 依 rank 串接成一個 `merged-…`（rank 0–3 toolcall、4–7 decompose、8–11 plan、12–15 colu），耗時 3.96 秒；登錄表記憶體 4×40,370,176 ≈ 161.5 MB，在 256 MiB 預算內，同時啟用上限 4 也夠。
+- **但生成品質崩壞**：12 題中 decompose 0/3、toolcall 0/3 沒有任何合格格式（輸出變成重複的「清單」「讀」碎片或「工具清單裡沒有…」），colu 2/3 單一字母但 0/3 對，plan 1/3 合格；延遲也變成 30 秒級（亂輸出一路跑到上限）。串接等於把四顆的 ΔW 全部相加套在每一題上，互相干擾。原因只是推論（沒有逐項驗證）；沒有試過降低 `weight`。**結論：不要把四顆同時啟用當成預設，請維持「每輪只開對應題型那一顆」的路由。**
+
+### 27.4 阻礙與缺陷清單（數字都是這次實測量到的）
+
+1. **產品缺陷：`lora_apply`／`lora_clear` 會把槽版模型刪掉，之後所有帶 LoRA 的原生生成都失敗，且畫面看不出來。** `main-ext.js` 第 926 行（`keep` 集合只有新的 adapter id 或 `_merged`）與第 932 行（`clear()` 全刪）清理的是整個 `<userData>/native-lora`，而轉換好的槽版就放在 `native-lora/slot-model`。實測（臨時除錯腳本，未提交）：套用前 `native-lora` 底下是 `["slot-model"]`，套用後只剩 `["zero-41dfffca"]`，`slot_status` 的 `slot` 變 `null`；之後 `run` 的 `model_path` 變回標準版，子行程回 `load_failed：目前的模型不是 LoRA 槽版（沒有 layout.json）`。渲染程序會「原生失敗 → 改用 WASM」，所以 **`lora_apply` 回 `applied:true`、路由回 `fallback:'lora'`，實際生成卻是沒有 LoRA 的 WASM 結果**。產品原樣實測：LoRA 之後的 26 題（auto-route 8、manual-load 6、all4 12）全部 `load_failed` 退 WASM，輸出與基底相同，只有 log 看得到。解除條件：清理時保留 `slot-model`（`keep` 加上 `"slot-model"`，`clear()` 跳過它）。本次的繞法：啟動器（不是產品）在槽版目錄消失時用硬連結備份即時還原（`--restore-slot=1`，這次還原 7 次）；繞過後四種題型才得到 27.2 的結果。
+2. **預設的離線模型裝置是 `gpu`，沒有 WebGPU 的機器永遠不問原生。** `_omSettings().device` 預設 `gpu`，`wantsNativeBackend('gpu', …)` 為假，整個退到 WASM（第一次實跑 12 題全是 WASM：「載入模型到 CPU（WASM，24 個執行緒）」，LoRA 完全沒生效）。評估腳本用產品自己的設定 `offlineDevicePreference='cpu'` 才走原生。解除條件：沒有 WebGPU 時預設選 auto/cpu，或在畫面提示。
+3. **colu、plan 兩顆不會被自動選用，還會被別的 adapter 的觸發字搶走。** 兩顆卡片沒有評量數字（`eval:null`），登錄表依規則「沒有評量資料，不自動選用」；而 colu 的任務文字含「工具」、plan 的含「呼叫」，命中 `toolcall-r4` 的 `triggers`（`工具|呼叫|tool|function call|參數`），結果這兩個題型的每輪路由選到 `toolcall-r4`（實測：colu 路由 `active: ["toolcall-r4"]`，輸出 `E. 都不是（`；plan 輸出簡體字、格式不合）。解除條件：補上 colu、plan 的評量數字（DESIGN §19 有數字，卡片 eval 欄位只定義兩個指標），並收斂 toolcall 的觸發字。
+4. **產品的真實 toolcall 呼叫不會用到 LoRA。** 原生路徑只做純文字（`a.tools` 或 `a.prefill` 非空就略過原生），而工具呼叫會帶 tools 與預填 `{`，所以走 WASM、沒有 LoRA。本次把 tools 折進 system 文字才量到 adapter 的效果。解除條件：原生路徑支援 tools 樣板與預填，或網頁版 LoRA 路徑接上。
+5. **執行包 1.22.0-2 尚未發佈。** 本機舊的 1.22.0-1 不支援 LoRA（`legacy`）。本次自行以本機檔案重新打包（見 27.1）。
+6. **四顆同時啟用：容量與記憶體夠、品質不行。** 見 27.3；rank 容量剛好用完（16/16），再多一顆會被拒絕。
+7. **範圍與樣本。** 每題型只有 3 題；原生推論的記憶體用量沒有量（只量到槽版轉換的峰值 RSS 108 MB）；plan 的 `plan_check` 之外的 `self_validate`、`review_return` 沒測；`decompose-r4`（舊版）沒測；網頁版路徑沒測（設計上桌面版才能套用）。
+
+未列入阻礙但值得記：套用後第一次生成會重建 session，多花約 1.4～3 秒；`lora_apply` 一次約 0.65 秒（寫 40 MB 到信箱），工作室手動載入約 1.6 秒，四顆一起 3.96 秒。

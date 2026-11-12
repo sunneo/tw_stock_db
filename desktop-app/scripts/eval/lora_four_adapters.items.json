@@ -1,0 +1,226 @@
+[
+ {
+  "type": "decompose",
+  "id": "fn_template:bench_linux_all.jsonl:lx-base64-encode:code_split",
+  "task": "decompose",
+  "messages": [
+   {
+    "role": "system",
+    "content": "你是軟體設計者。把題目切成幾個小函式，只輸出 JSON：{\"functions\":[{\"name\":\"函式名\",\"signature\":\"簽名\",\"purpose\":\"一句話\",\"calls\":[\"它會呼叫的函式名\"],\"complex\":false}]}。必須有函式「main」，負責讀入全部輸入並輸出答案。簡單的題目只要一個函式就好，不要切得太碎；某個函式還是很複雜才把它的 complex 填 true。"
+   },
+   {
+    "role": "user",
+    "content": "【目標】base64 編碼：輸入一行只含英數字的文字。輸出它的 base64（字母表 A–Z a–z 0–9 + /，每 3 位元組切成 4 個 6 位元群，不足補 =）。\n【路徑】program > split\n【現在這題】把題目切成幾個小函式（最多 8 個）\n【做完回到】用 Python 3 寫出符合題目的完整程式\n\n輸入一行只含英數字的文字。輸出它的 base64（字母表 A–Z a–z 0–9 + /，每 3 位元組切成 4 個 6 位元群，不足補 =）。\n範例：\n輸入：\nsfWW\n輸出：\nc2ZXVw==\n輸入：\nCxW\n輸出：\nQ3hX"
+   }
+  ],
+  "gold": "{\"functions\":[{\"name\":\"read_input\",\"signature\":\"read_input()\",\"purpose\":\"讀入全部輸入\",\"calls\":[],\"complex\":false},{\"name\":\"solve\",\"signature\":\"solve(A, s)\",\"purpose\":\"做主要運算\",\"calls\":[],\"complex\":false},{\"name\":\"main\",\"signature\":\"main()\",\"purpose\":\"讀入全部輸入、呼叫其他函式、輸出答案\",\"calls\":[\"read_input\",\"solve\"],\"complex\":false}]}",
+  "maxTokens": 320
+ },
+ {
+  "type": "decompose",
+  "id": "fn_template:heldout4_graph.jsonl:h4-det:code_split",
+  "task": "decompose",
+  "messages": [
+   {
+    "role": "system",
+    "content": "你是軟體設計者。把題目切成幾個小函式，只輸出 JSON：{\"functions\":[{\"name\":\"函式名\",\"signature\":\"簽名\",\"purpose\":\"一句話\",\"calls\":[\"它會呼叫的函式名\"],\"complex\":false}]}。必須有函式「main」，負責讀入全部輸入並輸出答案。簡單的題目只要一個函式就好，不要切得太碎；某個函式還是很複雜才把它的 complex 填 true。"
+   },
+   {
+    "role": "user",
+    "content": "【目標】行列式（新題型，預期做不到）：第一行 n，接著 n 行是 n×n 整數方陣（n≤3，元素 -3..3）。輸出它的行列式。\n【路徑】program > split\n【現在這題】把題目切成幾個小函式（最多 8 個）\n【做完回到】用 Python 3 寫出符合題目的完整程式\n\n第一行 n，接著 n 行是 n×n 整數方陣（n≤3，元素 -3..3）。輸出它的行列式。\n範例：\n輸入：\n2\n1 -2\n-1 2\n輸出：\n0\n輸入：\n3\n3 -3 1\n-2 1 3\n3 1 1\n輸出：\n-44"
+   }
+  ],
+  "gold": "{\"functions\":[{\"name\":\"read_input\",\"signature\":\"read_input()\",\"purpose\":\"讀入全部輸入\",\"calls\":[],\"complex\":false},{\"name\":\"solve\",\"signature\":\"solve(n, A)\",\"purpose\":\"做主要運算並輸出答案\",\"calls\":[],\"complex\":false},{\"name\":\"main\",\"signature\":\"main()\",\"purpose\":\"讀入全部輸入、呼叫其他函式、輸出答案\",\"calls\":[\"read_input\",\"solve\"],\"complex\":false}]}",
+  "maxTokens": 320
+ },
+ {
+  "type": "decompose",
+  "id": "fn_template:heldout9_list.jsonl:h9-mode:code_split",
+  "task": "decompose",
+  "messages": [
+   {
+    "role": "system",
+    "content": "你是軟體設計者。把題目切成幾個小函式，只輸出 JSON：{\"functions\":[{\"name\":\"函式名\",\"signature\":\"簽名\",\"purpose\":\"一句話\",\"calls\":[\"它會呼叫的函式名\"],\"complex\":false}]}。必須有函式「main」，負責讀入全部輸入並輸出答案。簡單的題目只要一個函式就好，不要切得太碎；某個函式還是很複雜才把它的 complex 填 true。"
+   },
+   {
+    "role": "user",
+    "content": "【目標】眾數：第一行是 n，第二行是 n 個整數。輸出出現次數最多的數；如果有好幾個一樣多，輸出其中最小的。\n【路徑】program > split\n【現在這題】把題目切成幾個小函式（最多 8 個）\n【做完回到】用 Python 3 寫出符合題目的完整程式\n\n第一行是 n，第二行是 n 個整數。輸出出現次數最多的數；如果有好幾個一樣多，輸出其中最小的。\n範例：\n輸入：\n3\n3 2 1\n輸出：\n1\n輸入：\n10\n3 1 4 4 1 2 5 3 5 1\n輸出：\n1"
+   }
+  ],
+  "gold": "{\"functions\":[{\"name\":\"read_input\",\"signature\":\"read_input()\",\"purpose\":\"讀入全部輸入\",\"calls\":[],\"complex\":false},{\"name\":\"solve\",\"signature\":\"solve(a)\",\"purpose\":\"做主要運算\",\"calls\":[],\"complex\":false},{\"name\":\"main\",\"signature\":\"main()\",\"purpose\":\"讀入全部輸入、呼叫其他函式、輸出答案\",\"calls\":[\"read_input\",\"solve\"],\"complex\":false}]}",
+  "maxTokens": 320
+ },
+ {
+  "type": "toolcall",
+  "id": "when2call:call:apply_git_patch:0",
+  "task": "toolcall",
+  "messages": [
+   {
+    "role": "system",
+    "content": "You are the assistant of floating-assistant. Use a tool only when one of the listed tools fits the request; give every required argument exactly as the user stated it. If a required value is missing, ask for it. For small talk answer directly. If no tool fits, or the requested tool is not in the list, say so briefly and never guess or keep searching.\n\n# Tools\n\nYou may call one or more functions to assist with the user query.\n\nYou are provided with function signatures within <tools></tools> XML tags:\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"apply_git_patch\", \"description\": \"把一份unified diff（git diff格式）套用到專案——**修改程式碼的唯一入口**\", \"parameters\": {\"type\": \"object\", \"properties\": {\"cwd_abs\": {\"type\": \"string\", \"description\": \"目標專案資料夾（視為git repo根目錄）的File Access Point參照，格式：fap:<名稱或id>[/<子路徑>]\"}, \"patch\": {\"type\": \"string\", \"description\": \"完整的unified diff文字\"}, \"check_only\": {\"type\": \"boolean\", \"description\": \"選填，true=只乾跑驗證不套用\"}, \"strip\": {\"type\": \"number\", \"description\": \"選填，去掉路徑前幾層（a/ b/前綴），預設1\"}}, \"required\": [\"cwd_abs\", \"patch\"], \"additionalProperties\": false}}}\n{\"type\": \"function\", \"function\": {\"name\": \"edit_text_open\", \"description\": \"在對話裡放一個「純文字編輯器」（適用：純文字、記事本、文字檔、日誌）(區塊式文件編輯器,沒動到的區塊原封不動):使用者用\", \"parameters\": {\"type\": \"object\", \"properties\": {\"starter\": {\"type\": \"string\", \"description\": \"起手式\"}, \"text\": {\"type\": \"string\", \"description\": \"開起來時的初始內容\"}, \"title\": {\"type\": \"string\", \"description\": \"文件名稱\"}, \"request\": {\"type\": \"string\", \"description\": \"一句話要怎麼改或寫什麼\"}, \"file_id\": {\"type\": \"string\", \"description\": \"使用者附的文字檔\"}, \"id\": {\"type\": \"string\", \"description\": \"接著原本的專案\"}}, \"additionalProperties\": false}}}\n{\"type\": \"function\", \"function\": {\"name\": \"browser_wait_download\", \"description\": \"等待一個新的檔案下載完成，回傳存檔路徑(path)、網址、mime、大小\", \"parameters\": {\"type\": \"object\", \"properties\": {\"since_ms\": {\"type\": \"number\", \"description\": \"選填，只算這個時間戳記(ms)之後才建立的下載為新下載；不給就用呼叫當下的時間\"}, \"timeout_ms\": {\"type\": \"integer\", \"description\": \"選填，逾時時間(毫秒)，預設20000\"}, \"tab_id\": {\"type\": \"integer\", \"description\": \"分頁id（browser_create_tab/browser_list_tabs取得）。可省略或給過期的id：找不到分頁時會自動在「AI Controlled」群組開新分頁並在回傳的tab_recovered.new_tab_id告訴你新id\"}, \"save_path\": {\"type\": \"string\", \"description\": \"選填，capture擷取到的檔案要同時寫進哪個資料夾（絕對路徑，桌面版）\"}, \"deliver\": {\"type\": \"boolean\", \"description\": \"選填，是否交給FAP下載卡片，預設true\"}}, \"required\": [], \"additionalProperties\": false}}}\n</tools>\n\nFor each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-json-object>}\n</tool_call>"
+   },
+   {
+    "role": "user",
+    "content": "請幫我把一份unified diff。cwd_abs是「預算表」，patch是「蘋果」"
+   }
+  ],
+  "gold": "<tool_call>\n{\"name\":\"apply_git_patch\",\"arguments\":{\"cwd_abs\":\"預算表\",\"patch\":\"蘋果\"}}\n</tool_call>",
+  "toolNames": [
+   "apply_git_patch",
+   "edit_text_open",
+   "browser_wait_download"
+  ],
+  "maxTokens": 160
+ },
+ {
+  "type": "toolcall",
+  "id": "when2call:call:fap_copy_to_storage:0",
+  "task": "toolcall",
+  "messages": [
+   {
+    "role": "system",
+    "content": "You are the assistant of floating-assistant. Use a tool only when one of the listed tools fits the request; give every required argument exactly as the user stated it. If a required value is missing, ask for it. For small talk answer directly. If no tool fits, or the requested tool is not in the list, say so briefly and never guess or keep searching.\n\n# Tools\n\nYou may call one or more functions to assist with the user query.\n\nYou are provided with function signatures within <tools></tools> XML tags:\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"fap_copy_to_storage\", \"description\": \"把File Access Point（真實磁碟資料夾）裡的一個檔案（不限格式，包含fap_read_file讀不了的二進\", \"parameters\": {\"type\": \"object\", \"properties\": {\"ref\": {\"type\": \"string\", \"description\": \"格式：fap:<名稱或id>/<檔案路徑>\"}}, \"required\": [\"ref\"], \"additionalProperties\": false}}}\n{\"type\": \"function\", \"function\": {\"name\": \"sheet_delete_rows\", \"description\": \"在開著的表格編輯器刪列：rows(列號，逗號分隔)、blank(空白列)、duplicates(重複列)、或條件 whe\", \"parameters\": {\"type\": \"object\", \"properties\": {\"rows\": {\"type\": \"string\", \"description\": \"rows\"}, \"blank\": {\"type\": \"boolean\", \"description\": \"blank\"}, \"duplicates\": {\"type\": \"boolean\", \"description\": \"duplicates\"}, \"where_col\": {\"type\": \"string\", \"description\": \"where_col\"}, \"where_op\": {\"type\": \"string\", \"description\": \"where_op\"}, \"where_value\": {\"type\": \"string\", \"description\": \"where_value\"}}, \"required\": [], \"additionalProperties\": false}}}\n{\"type\": \"function\", \"function\": {\"name\": \"fap_find_file\", \"description\": \"在一個File Access Point（真實磁碟資料夾）底下遞迴搜尋檔名包含指定關鍵字的檔案/資料夾（不分大小寫、子字\", \"parameters\": {\"type\": \"object\", \"properties\": {\"ref\": {\"type\": \"string\", \"description\": \"格式：fap:<名稱或id>[/<起始路徑>]\"}, \"query\": {\"type\": \"string\", \"description\": \"要搜尋的檔名關鍵字（子字串、不分大小寫）\"}}, \"required\": [\"ref\", \"query\"], \"additionalProperties\": false}}}\n{\"type\": \"function\", \"function\": {\"name\": \"fap_write_file\", \"description\": \"把文字內容寫入一個File Access Point（真實磁碟資料夾）裡的某個檔案——檔案不存在會自動建立（含中途缺的子\", \"parameters\": {\"type\": \"object\", \"properties\": {\"ref\": {\"type\": \"string\", \"description\": \"格式：fap:<名稱或id>/<檔案路徑>\"}, \"content\": {\"type\": \"string\", \"description\": \"要寫入的純文字內容（整份覆蓋，不是附加）\"}}, \"required\": [\"ref\", \"content\"], \"additionalProperties\": false}}}\n{\"type\": \"function\", \"function\": {\"name\": \"behavior_define\", \"description\": \"補充或管理「程式行為分析」的定義（持久保存在本機、和內建定義合併、可匯出匯入）：讓 explain_code 下次認得新\", \"parameters\": {\"type\": \"object\", \"properties\": {\"action\": {\"type\": \"string\"}, \"lang\": {\"type\": \"string\"}, \"name\": {\"type\": \"string\"}, \"names\": {\"type\": \"array\", \"items\": {\"type\": \"string\"}}, \"summary\": {\"type\": \"string\"}, \"note\": {\"type\": \"string\"}, \"category\": {\"type\": \"string\"}, \"label\": {\"type\": \"string\"}, \"description\": {\"type\": \"string\"}, \"arch\": {\"type\": \"string\"}, \"pattern\": {\"type\": \"array\", \"items\": {\"type\": \"string\"}}, \"template\": {\"type\": \"string\"}, \"parameters\": {\"type\": \"array\", \"items\": {\"type\": \"object\"}}, \"return\": {\"type\": \"object\"}, \"kind\": {\"type\": \"string\"}, \"data\": {}}, \"required\": [\"action\"], \"additionalProperties\": false}}}\n{\"type\": \"function\", \"function\": {\"name\": \"knowledge_remove\", \"description\": \"把一個來源從 Knowledge Inventory 移除（連同它的片段、向量、關聯）\", \"parameters\": {\"type\": \"object\", \"properties\": {\"source\": {\"type\": \"string\", \"description\": \"來源的名稱（可以只寫一部分）或編號，knowledge_sources 看清單\"}}, \"required\": [\"source\"], \"additionalProperties\": false}}}\n</tools>\n\nFor each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-json-object>}\n</tool_call>"
+   },
+   {
+    "role": "user",
+    "content": "請幫我把File Access Point。ref是「預算表」"
+   }
+  ],
+  "gold": "<tool_call>\n{\"name\":\"fap_copy_to_storage\",\"arguments\":{\"ref\":\"預算表\"}}\n</tool_call>",
+  "toolNames": [
+   "fap_copy_to_storage",
+   "sheet_delete_rows",
+   "fap_find_file",
+   "fap_write_file",
+   "behavior_define",
+   "knowledge_remove"
+  ],
+  "maxTokens": 160
+ },
+ {
+  "type": "toolcall",
+  "id": "when2call:call:pptx_to_deck:0",
+  "task": "toolcall",
+  "messages": [
+   {
+    "role": "system",
+    "content": "You are the assistant of floating-assistant. Use a tool only when one of the listed tools fits the request; give every required argument exactly as the user stated it. If a required value is missing, ask for it. For small talk answer directly. If no tool fits, or the requested tool is not in the list, say so briefly and never guess or keep searching.\n\n# Tools\n\nYou may call one or more functions to assist with the user query.\n\nYou are provided with function signatures within <tools></tools> XML tags:\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"define_snippet\", \"description\": \"Store a LONG text for the deck and get a short handle for it\", \"parameters\": {\"type\": \"object\", \"properties\": {\"kind\": {\"type\": \"string\", \"enum\": [\"widget\", \"code\", \"patch\"]}, \"content\": {\"type\": \"string\", \"description\": \"The text itself, exactly as it should appear (no yaml, no extra escaping).\"}, \"snippets\": {\"type\": \"array\", \"description\": \"Several snippets in ONE call: [{kind, content}, ...] (use this instead of kind / content when the deck has more than one code listing or widget). Every valid one is stored; the result lists each handle in order, and an error for the ones that were refused.\", \"items\": {\"type\": \"object\", \"properties\": {\"kind\": {\"type\": \"string\", \"enum\": [\"widget\", \"code\", \"patch\"]}, \"content\": {\"type\": \"string\"}}, \"required\": [\"kind\", \"content\"]}}}, \"required\": [], \"additionalProperties\": false}}}\n{\"type\": \"function\", \"function\": {\"name\": \"sheet_fill_column\", \"description\": \"在開著的 CSV／試算表編輯器把一欄填成同一個值(value)或公式(formula，xlsx，{r} 換成列號)，不動\", \"parameters\": {\"type\": \"object\", \"properties\": {\"col\": {\"type\": \"string\", \"description\": \"col\"}, \"value\": {\"type\": \"string\", \"description\": \"value\"}, \"formula\": {\"type\": \"string\", \"description\": \"formula\"}, \"from\": {\"type\": \"integer\", \"description\": \"from\"}, \"to\": {\"type\": \"integer\", \"description\": \"to\"}}, \"required\": [\"col\"], \"additionalProperties\": false}}}\n{\"type\": \"function\", \"function\": {\"name\": \"extract_pptx_images\", \"description\": \"把已上傳的pptx投影片裡「嵌入的圖片」逐張抽出來，存成圖片檔案（回傳每張的slide投影片編號、順序、file_id）\", \"parameters\": {\"type\": \"object\", \"properties\": {\"file\": {\"type\": \"string\", \"description\": \"pptx的file_id或檔名；留空＝最近上傳的\"}, \"slides\": {\"type\": \"string\", \"description\": \"（選填）投影片範圍，例如\\\"3\\\"或\\\"2-5\\\"，預設全部\"}, \"max_images\": {\"type\": \"integer\", \"description\": \"（選填）最多抽幾張，預設30，最高80\"}}, \"additionalProperties\": false}}}\n{\"type\": \"function\", \"function\": {\"name\": \"edit_docx_open\", \"description\": \"在對話裡放一個「Word 文件編輯器」（適用：Word 文件、合約、公文、履歷、信件、會議紀錄、文章稿）(區塊式,沒動到\", \"parameters\": {\"type\": \"object\", \"properties\": {\"starter\": {\"type\": \"string\", \"description\": \"起手式 blank／letter／report\"}, \"text\": {\"type\": \"string\", \"description\": \"開起來時的純文字(空行分段)\"}, \"title\": {\"type\": \"string\", \"description\": \"文件名稱\"}, \"request\": {\"type\": \"string\", \"description\": \"一句話要怎麼改或寫什麼\"}, \"file_id\": {\"type\": \"string\", \"description\": \"使用者附的 .docx\"}, \"id\": {\"type\": \"string\", \"description\": \"接著原來的專案編輯\"}}}}}\n{\"type\": \"function\", \"function\": {\"name\": \"pptx_to_deck\", \"description\": \"Read a .pptx the user uploaded (file_id from list_uploaded_f\", \"parameters\": {\"type\": \"object\", \"properties\": {\"file_id\": {\"type\": \"string\", \"description\": \"The uploaded .pptx (file id from list_uploaded_files).\"}, \"narration\": {\"type\": \"string\", \"enum\": [\"notes\", \"bullets\", \"none\"]}, \"max_slides\": {\"type\": \"integer\", \"description\": \"Read only the first N slides (default all, at most 150).\"}, \"describe_images\": {\"type\": \"boolean\", \"description\": \"Read slides that are only a picture / chart with the vision model (default true).\"}, \"vision_limit\": {\"type\": \"integer\", \"description\": \"At most this many slides are read with vision (default 12, max 30).\"}, \"title\": {\"type\": \"string\", \"description\": \"Deck title (default: the file name).\"}, \"lang\": {\"type\": \"string\", \"description\": \"zh-TW (default), en, ...\"}}, \"required\": [\"file_id\"], \"additionalProperties\": false}}}\n</tools>\n\nFor each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-json-object>}\n</tool_call>"
+   },
+   {
+    "role": "user",
+    "content": "請幫我Read a .pptx the user uploaded。file_id是「蘋果」"
+   }
+  ],
+  "gold": "<tool_call>\n{\"name\":\"pptx_to_deck\",\"arguments\":{\"file_id\":\"蘋果\"}}\n</tool_call>",
+  "toolNames": [
+   "define_snippet",
+   "sheet_fill_column",
+   "extract_pptx_images",
+   "edit_docx_open",
+   "pptx_to_deck"
+  ],
+  "maxTokens": 160
+ },
+ {
+  "type": "colu",
+  "id": "colu_full:apply_git_patch:plain",
+  "task": "colu",
+  "messages": [
+   {
+    "role": "system",
+    "content": "你負責替使用者的話挑一個合適的工具。只回答一個大寫字母（A～E），不要寫別的。"
+   },
+   {
+    "role": "user",
+    "content": "【目標】路由\n【路徑】離線寫程式 > 選工具\n【現在這題】從選單挑一個合適的（或「都不是」）\n【已定，不要改】\n- 配方：✘ 沒有現成做法\n【做完回到】不用模型，把這題解出來\n\n選單：\nA. 把一個已上傳的影片（工具 transcribe_media）\nB. 把一份unified diff（工具 apply_git_patch）\nC. 說明建置錯誤（工具 explain_build_error）\nD. 在Word 文件編輯器把 find 全部換成 repl（工具 doc_replace_all）\nE. 都不是（一般聊天或問答）\n\n使用者的話：\n會先完整檢查（乾跑）：任何一個hunk對不上，整份patch都不會套用、檔案完全不動，並把錯誤原因（含檔案目前的實際內容）放在stderr，請讀stderr、用coding_read_file重讀最新內容後重寫patch"
+   }
+  ],
+  "gold": "B",
+  "maxTokens": 6
+ },
+ {
+  "type": "colu",
+  "id": "colu_full:edit_markdown_open:plain",
+  "task": "colu",
+  "messages": [
+   {
+    "role": "system",
+    "content": "你負責替使用者的話挑一個合適的工具。只回答一個大寫字母（A～E），不要寫別的。"
+   },
+   {
+    "role": "user",
+    "content": "【目標】路由\n【路徑】離線寫程式 > 選工具\n【現在這題】從選單挑一個合適的（或「都不是」）\n【已定，不要改】\n- 配方：✘ 沒有現成做法\n【做完回到】不用模型，把這題解出來\n\n選單：\nA. 在對話裡放一個「SVG 編輯器」（工具 edit_svg_open）\nB. 在對話裡放一個「Markdown 編輯器」（工具 edit_markdown_open）\nC. 對指定檔案做語法檢查（工具 coding_run_check）\nD. 在對話裡放一個「純文字編輯器」（工具 edit_text_open）\nE. 都不是（一般聊天或問答）\n\n使用者的話：\n參數:starter(blank、notes、readme)、text(開起來時的初始內容)、title、request(一句話:開起來後編輯器自己的 AI 去做)、file_id(使用者附的文字檔)、id(接著原本的專案)"
+   }
+  ],
+  "gold": "B",
+  "maxTokens": 6
+ },
+ {
+  "type": "colu",
+  "id": "colu_full:mcp_manage:plain",
+  "task": "colu",
+  "messages": [
+   {
+    "role": "system",
+    "content": "你負責替使用者的話挑一個合適的工具。只回答一個大寫字母（A～E），不要寫別的。"
+   },
+   {
+    "role": "user",
+    "content": "【目標】路由\n【路徑】離線寫程式 > 選工具\n【現在這題】從選單挑一個合適的（或「都不是」）\n【已定，不要改】\n- 配方：✘ 沒有現成做法\n【做完回到】不用模型，把這題解出來\n\n選單：\nA. 管理已安裝的 MCP 伺服器（工具 mcp_manage）\nB. 在使用者指定範圍的視窗裡找元件（工具 computer_find_element）\nC. 呼叫某個 MCP 伺服器的工具（工具 mcp_call）\nD. 列出已安裝的 MCP 伺服器（工具 mcp_servers）\nE. 都不是（一般聊天或問答）\n\n使用者的話：\n管理已安裝的 MCP 伺服器：start、stop、restart、enable、disable、remove（會先問使用者）、logs（看伺服器的錯誤輸出，排查連不上的原因）"
+   }
+  ],
+  "gold": "A",
+  "maxTokens": 6
+ },
+ {
+  "type": "plan",
+  "id": "think_stack:bench_linux_all.jsonl:lx-base64-encode:plan_check:clean:893",
+  "task": "plan",
+  "messages": [
+   {
+    "role": "system",
+    "content": "你在規劃深入解題的步驟，像交代一個常常忘記前面做了什麼的工程師。只輸出一個 JSON 物件：{\"checks\":[{\"check\":\"要檢查什麼\",\"standard\":\"怎樣算通過（可以一眼判斷）\"}]}。"
+   },
+   {
+    "role": "user",
+    "content": "【目標】base64 編碼：輸入一行只含英數字的文字。輸出它的 base64（字母表 A–Z a–z 0–9 + /，每 3 位元組切成 4 個 6 位元群，不足補 =）。\n【路徑】program\n【現在這題】用 Python 3 寫出符合題目的完整程式（切割→逐函式→驗收）\n【已定，不要改】\n- 函式 main()：讀入全部輸入、呼叫其他函式、輸出答案\n- 函式 solve(A, s)：做主要運算\n- 函式 read_input()：讀入全部輸入\n- split：3 個函式\n\n我現在要往下一層做：逐一寫出每個函式\n做完回到這裡之前，有什麼要先記下來、回來後要檢查的嗎？最多 3 項：check 寫要檢查什麼，standard 寫怎樣算通過（具體、可判斷，例如「每個類別至少一個屬性或操作」）；沒有就給空陣列。"
+   }
+  ],
+  "gold": "{\"checks\":[{\"check\":\"每個被呼叫的函式都有寫出來\",\"standard\":\"函式清單裡每一項都有定義\"},{\"check\":\"簽名與清單一致\",\"standard\":\"名稱與參數個數相同\"}]}",
+  "maxTokens": 120
+ },
+ {
+  "type": "plan",
+  "id": "think_stack:heldout3_graph.jsonl:h3-swap-rc:plan_check:clean:1273",
+  "task": "plan",
+  "messages": [
+   {
+    "role": "system",
+    "content": "你在規劃深入解題的步驟，像交代一個常常忘記前面做了什麼的工程師。只輸出一個 JSON 物件：{\"checks\":[{\"check\":\"要檢查什麼\",\"standard\":\"怎樣算通過（可以一眼判斷）\"}]}。"
+   },
+   {
+    "role": "user",
+    "content": "【目標】行列互換：第一行 r c，之後 r 行，每行 c 個以空白隔開的整數，代表一張表。把這張表的行與列互換後輸出（共 c 行，每行 r 個數）。\n【路徑】program\n【現在這題】用 Python 3 寫出符合題目的完整程式（切割→逐函式→驗收）\n【已定，不要改】\n- 函式 main()：讀入全部輸入、呼叫其他函式、輸出答案\n- 函式 solve(r, c, G)：做主要運算並輸出答案\n- 函式 read_input()：讀入全部輸入\n- split：3 個函式\n\n我現在要往下一層做：逐一寫出每個函式\n做完回到這裡之前，有什麼要先記下來、回來後要檢查的嗎？最多 3 項：check 寫要檢查什麼，standard 寫怎樣算通過（具體、可判斷，例如「每個類別至少一個屬性或操作」）；沒有就給空陣列。"
+   }
+  ],
+  "gold": "{\"checks\":[{\"check\":\"每個被呼叫的函式都有寫出來\",\"standard\":\"函式清單裡每一項都有定義\"},{\"check\":\"簽名與清單一致\",\"standard\":\"名稱與參數個數相同\"}]}",
+  "maxTokens": 120
+ },
+ {
+  "type": "plan",
+  "id": "think_stack:heldout9_list.jsonl:h9-kadane:plan_check:clean:1886",
+  "task": "plan",
+  "messages": [
+   {
+    "role": "system",
+    "content": "你在規劃深入解題的步驟，像交代一個常常忘記前面做了什麼的工程師。只輸出一個 JSON 物件：{\"checks\":[{\"check\":\"要檢查什麼\",\"standard\":\"怎樣算通過（可以一眼判斷）\"}]}。"
+   },
+   {
+    "role": "user",
+    "content": "【目標】最大子陣列和：第一行是 n，第二行是 n 個整數。輸出所有「連續一段」（至少一個數）的和中最大的那個。\n【路徑】program\n【現在這題】用 Python 3 寫出符合題目的完整程式（切割→逐函式→驗收）\n【已定，不要改】\n- 函式 main()：讀入全部輸入、呼叫其他函式、輸出答案\n- 函式 solve(a)：做主要運算\n- 函式 read_input()：讀入全部輸入\n- split：3 個函式\n\n我現在要往下一層做：逐一寫出每個函式\n做完回到這裡之前，有什麼要先記下來、回來後要檢查的嗎？最多 3 項：check 寫要檢查什麼，standard 寫怎樣算通過（具體、可判斷，例如「每個類別至少一個屬性或操作」）；沒有就給空陣列。"
+   }
+  ],
+  "gold": "{\"checks\":[{\"check\":\"每個被呼叫的函式都有寫出來\",\"standard\":\"函式清單裡每一項都有定義\"},{\"check\":\"簽名與清單一致\",\"standard\":\"名稱與參數個數相同\"}]}",
+  "maxTokens": 120
+ }
+]
