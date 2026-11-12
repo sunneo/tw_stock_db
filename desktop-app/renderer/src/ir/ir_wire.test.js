@@ -27,11 +27,12 @@ const TSDIR = path.join(__dirname, '..', '..', 'vendor', 'tree-sitter');
     const B = PB.makeBlocks({ parseTree, C2U }); const H = FaIrBundle;
     const bridge = H.FaIrBlocks.make({ parseTree, C2U, B, IN: H.FaIrInPython, PREP: H.FaIrPrep, OUT: { nodejs: H.FaIrOutJs, java: H.FaIrOutJava, c: H.FaIrOutC, python: H.FaIrOutPython }, BD: H.FaIrBehavior, DES: H.FaIrDesign, IR: H.FaIr });
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ir-wire-')); const run = (exe, args, input) => { const r = cp.spawnSync(exe, args, { input, encoding: 'utf8', timeout: 30000 }); return { ok: !r.error && r.status === 0, out: String(r.stdout || '').replace(/\r\n/g, '\n'), err: String(r.stderr || '') }; };
-    const hasPy = run('python', ['-c', '1'], '').ok; let nOk = 0;
+    let PYX = null; for (const c of ['python3', 'python']) { const r = require('child_process').spawnSync(c, ['-c', 'import sys; print(sys.version_info[0])'], { encoding: 'utf8' }); if (r.status === 0 && r.stdout.trim() === '3') { PYX = c; break; } }
+    const hasPy = PYX ? run(PYX, ['-c', '1'], '').ok : false; let nOk = 0;
     await t('嵌入版的橋：樣本 → 區塊 → nodejs／java／c 全部產生（支援的），nodejs 實跑與 Python 一致', () => {
         for (const s of SAMPLES) {
             const a2 = bridge.fromPython(s.py); const p = bridge.program(a2.funcs.map((f) => ({ name: f.name, params: f.params, cnl: f.cnl })), { ctx: a2.ctx }); assert.ok(p.ok, s.id);
-            for (const lang of s.langs) { const e = bridge.emit(p.python, lang, s.id); assert.ok(e.ok, s.id + ' ' + lang + ' ' + JSON.stringify(e.diags).slice(0, 200)); if (lang === 'nodejs') { const f = path.join(tmp, s.id.replace(/\W/g, '_') + '.js'); fs.writeFileSync(f, e.code); const pf = path.join(tmp, s.id.replace(/\W/g, '_') + '.py'); fs.writeFileSync(pf, s.py); for (const inp of s.inputs.slice(0, 2)) { const g = run(process.execPath, [f], inp); assert.ok(g.ok, s.id + g.err.slice(0, 200)); if (hasPy) assert.strictEqual(g.out, run('python', [pf], inp).out, s.id); } nOk++; } }
+            for (const lang of s.langs) { const e = bridge.emit(p.python, lang, s.id); assert.ok(e.ok, s.id + ' ' + lang + ' ' + JSON.stringify(e.diags).slice(0, 200)); if (lang === 'nodejs') { const f = path.join(tmp, s.id.replace(/\W/g, '_') + '.js'); fs.writeFileSync(f, e.code); const pf = path.join(tmp, s.id.replace(/\W/g, '_') + '.py'); fs.writeFileSync(pf, s.py); for (const inp of s.inputs.slice(0, 2)) { const g = run(process.execPath, [f], inp); assert.ok(g.ok, s.id + g.err.slice(0, 200)); if (hasPy) assert.strictEqual(g.out, run(PYX, [pf], inp).out, s.id); } nOk++; } }
         }
     });
     await t('不支援的目標被如實拒絕（c 不翻字典）；壞區塊回報錯誤不丟例外', () => {

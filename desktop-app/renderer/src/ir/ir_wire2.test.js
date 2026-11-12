@@ -30,8 +30,9 @@ const runCmd = (exe, args, input) => { const r = cp.spawnSync(exe, args, { input
     const PY = await load('tree-sitter-python.wasm'); const LP = { nodejs: await load('tree-sitter-javascript.wasm'), java: await load('tree-sitter-java.wasm'), c: await load('tree-sitter-c.wasm'), cpp: await load('tree-sitter-cpp.wasm'), csharp: await load('tree-sitter-c_sharp.wasm'), ruby: await load('tree-sitter-ruby.wasm'), perl: {} };
     const parseTree = (s) => PY.parse(s); const B = PB.makeBlocks({ parseTree, C2U });
     const bridge = H.FaIrBlocks.make({ parseTree, C2U, B, IN: H.FaIrInPython, PREP: H.FaIrPrep, OUT: { nodejs: H.FaIrOutJs, java: H.FaIrOutJava, c: H.FaIrOutC, cpp: H.FaIrOutCpp, csharp: H.FaIrOutCs, perl: H.FaIrOutPerl, ruby: H.FaIrOutRuby, python: H.FaIrOutPython }, INB: H.FaIrInBrace, INT: H.FaIrInTyped, INR: H.FaIrInRuby, INP: H.FaIrInPerl, BD: H.FaIrBehavior, DES: H.FaIrDesign, IR: H.FaIr });
-    const hasPy = runCmd('python', ['-c', '1'], '').ok; const hasPerl = runCmd(PERL, ['-e', '1'], '').ok; const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'irw2-'));
-    const pyOut = (code, input) => { fs.writeFileSync(path.join(tmp, 'x.py'), code); return runCmd('python', ['-I', path.join(tmp, 'x.py')], input); };
+    let PYX = null; for (const c of ['python3', 'python']) { const r = require('child_process').spawnSync(c, ['-c', 'import sys; print(sys.version_info[0])'], { encoding: 'utf8' }); if (r.status === 0 && r.stdout.trim() === '3') { PYX = c; break; } }
+    const hasPy = PYX ? runCmd(PYX, ['-c', '1'], '').ok : false; const hasPerl = runCmd(PERL, ['-e', '1'], '').ok; const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'irw2-'));
+    const pyOut = (code, input) => { fs.writeFileSync(path.join(tmp, 'x.py'), code); return runCmd(PYX, ['-I', path.join(tmp, 'x.py')], input); };
     const stat = {};
     const EMIT = { nodejs: H.FaIrOutJs, java: H.FaIrOutJava, c: H.FaIrOutC, cpp: H.FaIrOutCpp, csharp: H.FaIrOutCs, ruby: H.FaIrOutRuby, perl: H.FaIrOutPerl };
     for (const lang of ['nodejs', 'java', 'c', 'cpp', 'csharp', 'ruby', 'perl']) {

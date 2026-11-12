@@ -15,7 +15,7 @@ const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'iro-'));
 const sh = (cmd, args, o) => cp.spawnSync(cmd, args, Object.assign({ encoding: 'utf8', timeout: 60000 }, o || {}));
 const norm = (s) => String(s).replace(/\r\n/g, '\n');
 const which = (cmd, args, env) => { try { const r = sh(cmd, args, { env: env || process.env, timeout: 20000 }); return r.status === 0 ? String(r.stdout || r.stderr).split('\n')[0].trim() : null; } catch (e) { return null; } };
-let PY = null; for (const c of ['python', 'python3']) if (which(c, ['-I', '-c', 'print(1)']) === '1') { PY = c; break; }
+let PY = null; for (const c of ['python3', 'python']) if (which(c, ['-I', '-c', 'print(1)']) === '1') { PY = c; break; }
 
 const SRC = `def fact(n: int) -> int:
     r: int = 1

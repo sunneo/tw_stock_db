@@ -12,17 +12,29 @@
     const size = (n) => 1 + kids(n).reduce((s, c) => s + size(c), 0);
     const isPurePlaceholderBin = (p) => { const x = unwrap(p); return x && x.type === 'binary_expression' && x.namedChildren.every((c) => PH.test(unwrap(c).text)); };
     function wrapTpl(lang, tpl) { return lang === 'cpp' ? 'void __f() { auto __o = ' + tpl + '; }' : 'class X { void f() { var o = ' + tpl + '; } }'; }
+    // C# 的變數宣告：舊文法用 equals_value_clause 包住初始值；新文法（tree-sitter-c_sharp 新版）直接接在 name 之後，取最後一個非名稱的具名子節點
+    function csInit(d) { const e = d.namedChildren.find((c) => c.type === 'equals_value_clause'); if (e) return e.namedChildren[0]; const nm = d.childForFieldName('name') || d.namedChildren[0]; const rest = d.namedChildren.filter((c) => !(c.startIndex === nm.startIndex && c.endIndex === nm.endIndex)); return rest.length ? rest[rest.length - 1] : null; }
     function patRoot(lang, root) {
         if (root.hasError()) return null;
-        const find = (n) => { if (lang === 'cpp' && n.type === 'init_declarator') return n.childForFieldName('value'); if (lang === 'cs' && n.type === 'variable_declarator') { const e = n.namedChildren.find((c) => c.type === 'equals_value_clause'); return e ? e.namedChildren[0] : null; } for (const c of n.namedChildren) { const r = find(c); if (r) return r; } return null; };
+        const find = (n) => { if (lang === 'cpp' && n.type === 'init_declarator') return n.childForFieldName('value'); if (lang === 'cs' && n.type === 'variable_declarator') return csInit(n); for (const c of n.namedChildren) { const r = find(c); if (r) return r; } return null; };
         return find(root);
+    }
+    // 樣板的變體（只為了讓手寫程式比得上）：C++ 的目錄樣板寫 std::max_element，手寫常見 using namespace std 之後的 max_element，多收一個去掉 std:: 的版本
+    function variantsOf(lang, t) {
+        const v = [t];
+        if (lang === 'cpp' && /\bstd::/.test(t)) v.push(t.replace(/\bstd::/g, ''));
+        // C#：目錄樣板 Enumerable.Max($0) 是 LINQ 靜態呼叫；手寫多半用擴充方法 a.Max()
+        if (lang === 'cs') { const m = /^Enumerable\.(\w+)\(\$0\)$/.exec(t); if (m) v.push('$0.' + m[1] + '()'); }
+        // C#：int.Parse 是 32 位元；IR 的整數是 64 位元（與 long.Parse 同一個 conv.int 樣板）。範圍內結果相同，超出 32 位元時手寫程式會丟例外而 IR 不會——記在 DESIGN.core-ir.md §16.2
+        if (lang === 'cs') { const m = /^long\.Parse\(\$0\)$/.exec(t); if (m) v.push('int.Parse($0)'); }
+        return v;
     }
     function buildPatterns(lang, parse) {
         const key = OPS.LANG_OF[lang] || lang; const out = [];
         for (const id of OPS.ids()) {
             const o = OPS.get(id); const cell = o.cells[key]; if (cell == null) continue;
             const tpls = typeof cell === 'string' ? [cell] : Object.values(cell).filter((x) => x != null);
-            for (const t of tpls) {
+            for (const t0 of tpls) for (const t of variantsOf(lang, t0)) {
                 if (/\$\*/.test(t)) continue; const text = t.replace(/[$@](\d)/g, '__a$1');
                 let root; try { root = parse(wrapTpl(lang, text)); } catch (e) { continue; } const pr = patRoot(lang, root); if (!pr) continue;
                 if (PH.test(unwrap(pr).text)) continue; if (isPurePlaceholderBin(pr)) continue;
@@ -80,6 +92,20 @@
                 case 'boolean_literal': return at(L('bool', txt(n)), n);
                 case 'null': case 'null_literal': case 'nullptr': return at(L('none', 'None'), n);
                 case 'string_literal': return at(L('str', strVal(n)), n);
+                // C# 內插字串 $"n={n}" → "n=" + conv.str(n)；格式子句（:F2）與對齊子句沒有對應的標準操作，仍是原生區塊
+                case 'interpolated_string_expression': {
+                    if (!CS) return nativeE(n, '內插字串');
+                    const parts = [];
+                    for (const c of n.namedChildren) {
+                        if (c.type === 'interpolation_start') continue;
+                        if (c.type === 'string_content') { const sv = txt(c).replace(/\{\{/g, '{').replace(/\}\}/g, '}'); if (sv) parts.push(L('str', sv)); continue; }
+                        if (c.type === 'interpolation') { const kids = c.namedChildren.filter((x) => x.type !== 'interpolation_brace'); if (kids.length !== 1) return nativeE(n, '內插字串的格式或對齊子句'); parts.push(at({ k: 'call', op: 'conv.str', args: [ex(kids[0])] }, c)); continue; }
+                        return nativeE(n, '內插字串的部分 ' + c.type);
+                    }
+                    if (!parts.length) return at(L('str', ''), n);
+                    let e = parts[0]; for (let i = 1; i < parts.length; i++) e = { k: 'bin', op: '+', l: e, r: parts[i] };
+                    return at(e, n);
+                }
                 case 'binary_expression': {
                     const op = txt(f(n, 'operator')); const l = f(n, 'left'), r = f(n, 'right');
                     if (CS && CMP[op] && l.type === 'invocation_expression' && /^string\.CompareOrdinal\(/.test(txt(l)) && txt(r) === '0') { const a = named(f(l, 'arguments')).map((x) => x.namedChildren[0]); if (a.length === 2) return at({ k: 'cmp', op, l: ex(a[0]), r: ex(a[1]) }, n); }
@@ -123,7 +149,7 @@
         function targetOf(x) { const e = ex(x); return e.k === 'call' && (e.op === 'list.get' || e.op === 'dict.get') && e.args.length === 2 ? { k: 'index', o: e.args[0], i: e.args[1], pos: e.pos } : e; }
         // 宣告：回傳 [{name, ty, value}]；C++ 的 declaration、C# 的 variable_declaration
         function declarators(dn) {
-            if (CS) { const ty = tyOf(lang, txt(f(dn, 'type'))); return named(dn).filter((c) => c.type === 'variable_declarator').map((d) => { const eq = d.namedChildren.find((c) => c.type === 'equals_value_clause'); return { name: txt(d.namedChildren[0]), ty, value: eq ? eq.namedChildren[0] : null, node: d }; }); }
+            if (CS) { const ty = tyOf(lang, txt(f(dn, 'type'))); return named(dn).filter((c) => c.type === 'variable_declarator').map((d) => { return { name: txt(d.namedChildren[0]), ty, value: csInit(d), node: d }; }); }
             const ty = tyOf(lang, txt(f(dn, 'type'))); const out = [];
             for (const d of named(dn).filter((c) => c.type === 'init_declarator' || c.type === 'identifier' || c.type === 'reference_declarator')) { let nm = d, v = null; if (d.type === 'init_declarator') { nm = f(d, 'declarator'); v = f(d, 'value'); } if (!nm || nm.type !== 'identifier') return null; out.push({ name: txt(nm), ty, value: v, node: d }); }
             return out;
@@ -134,7 +160,7 @@
             return out;
         }
         function assignOf(x, n) {
-            const left = f(x, 'left'), right = f(x, 'right'); const opn = x.children.find((c) => !c.isNamed() || c.type === 'assignment_operator'); const op = txt(CS ? x.namedChildren.find((c) => c.type === 'assignment_operator') : f(x, 'operator'));
+            const left = f(x, 'left'), right = f(x, 'right'); const opn = x.children.find((c) => !c.isNamed() || c.type === 'assignment_operator'); const opTok = CS ? x.children.find((c) => !c.isNamed()) : null; const op = CS ? (x.namedChildren.find((c) => c.type === 'assignment_operator') ? txt(x.namedChildren.find((c) => c.type === 'assignment_operator')) : (opTok ? opTok.type : '')) : txt(f(x, 'operator'));
             void opn; if (op !== '=') { const b = op.replace(/=$/, ''); if (IR.BINOPS.indexOf(b) < 0) return [nativeS(n, '複合賦值 ' + op)]; return [at({ k: 'aug', to: targetOf(left), op: b, val: ex(right) }, n)]; }
             if (left.type !== 'identifier' && left.type !== 'subscript_expression' && left.type !== 'element_access_expression') return [nativeS(n, '賦值目標 ' + left.type)];
             return [at({ k: 'assign', to: targetOf(left), val: ex(right) }, n)];
@@ -156,7 +182,7 @@
                 case 'if_statement': return [ifS(n)];
                 case 'while_statement': { const nn = named(n); const w = at({ k: 'while', cond: ex(f(n, 'condition') || nn[0]), body: blk(f(n, 'body') || nn[nn.length - 1], n) }, n); return [attach(w, n, w.body)]; }
                 case 'for_statement': return forS(n);
-                case 'for_range_loop': case 'for_each_statement': {
+                case 'for_range_loop': case 'for_each_statement': case 'foreach_statement': {
                     const v = CS ? f(n, 'left') : f(n, 'declarator'), it = f(n, 'right'); if (!v || v.type !== 'identifier') return [nativeS(n, '迴圈變數')];
                     const body = f(n, 'body'); const vn = txt(v);
                     if (!CS && /^__kv_/.test(vn)) { // 字典走訪：for (const auto &__kv_k : d) { const K k = __kv_k.first; … }
@@ -231,7 +257,7 @@
         }
         function func(n) {
             let name, ps, params, ret;
-            if (CS) { name = txt(f(n, 'name')); ps = f(n, 'parameters'); params = ps ? named(ps).filter((p) => p.type === 'parameter').map((p) => ({ name: txt(f(p, 'name')), ty: tyOf(lang, txt(f(p, 'type'))) })) : []; ret = tyOf(lang, txt(f(n, 'type'))); }
+            if (CS) { name = txt(f(n, 'name')); ps = f(n, 'parameters'); params = ps ? named(ps).filter((p) => p.type === 'parameter').map((p) => ({ name: txt(f(p, 'name')), ty: tyOf(lang, txt(f(p, 'type'))) })) : []; const rt = f(n, 'returns') || f(n, 'type'); ret = rt ? tyOf(lang, txt(rt)) : T.void; }
             else { const fi = cppFuncInfo(n); if (!fi) return nativeS(n, '函式宣告的形式'); name = fi.name; params = named(fi.params).filter((p) => p.type === 'parameter_declaration').map((p) => { let dd = f(p, 'declarator'); while (dd && dd.type !== 'identifier' && dd.namedChildren.length) dd = dd.namedChildren[0]; return dd ? { name: txt(dd), ty: tyOf(lang, txt(f(p, 'type'))) } : null; }).filter(Boolean); ret = tyOf(lang, txt(f(n, 'type'))); }
             const o = at({ k: 'func', name: fixName(name), params: params.map((p) => ({ name: fixName(p.name), ty: p.ty })), ret, body: [] }, n);
             o.body = block(f(n, 'body'), n.startPosition.row); attach(o, n, o.body); return o;
