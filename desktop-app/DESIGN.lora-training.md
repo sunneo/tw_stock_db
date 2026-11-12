@@ -1,3 +1,4 @@
+> **整合版已出**：完整設計（依讀者順序，含驗證現況表與兩份設計提案）見 [DESIGN.offline-training-studio.md](DESIGN.offline-training-studio.md)。本檔保留為時間序的原始紀錄與證據來源，以整合版為準。
 # Qwen3-0.6B LoRA 微調設計文件
 
 > 原始碼：`lora-train/`（`schema.md` 統一資料格式、`gen/*.js` 各領域資料產生器、`train_lora.py`、`merge_and_export.py`）。

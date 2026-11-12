@@ -1,3 +1,4 @@
+> **整合版已出**：完整設計（依讀者順序，含驗證現況表與兩份設計提案）見 [DESIGN.offline-training-studio.md](DESIGN.offline-training-studio.md)。本檔保留為時間序的原始紀錄與證據來源，以整合版為準。
 # DESIGN.TODO.offline-training-studio — 離線訓練工作室（`/offline-training-studio`）
 
 > 狀態：**設計，尚未實作**（2026-11-11）。交給其他 session 實作。§12 是對 `renderer/src/floating-assistant.js`（約 12.7 萬行）實際核對過的接口位置（行號會隨編輯漂移，以函式名為準）；§2–§11 內標「待核對」的是 §12 沒有涵蓋的部分。

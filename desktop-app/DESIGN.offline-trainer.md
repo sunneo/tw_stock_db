@@ -1,3 +1,4 @@
+> **整合版已出**：完整設計（依讀者順序，含驗證現況表與兩份設計提案）見 [DESIGN.offline-training-studio.md](DESIGN.offline-training-studio.md)。本檔保留為時間序的原始紀錄與證據來源，以整合版為準。
 # 離線訓練器（Offline Trainer）與 `/offline-trainer-by-ai` 設計文件
 
 > 原始碼：`renderer/src/floating-assistant.js`（常數 `FA_OT_*`、`FA_SEM_GROUPS`；函式 `_otPlan`、`_otExecute`、`_otExecFsm`、`_faOtFsmRun`、`_faOtDistill`、`_faOtWorkerSource`、`FaOtWorkerHost`、`_otTrainRun`／`_otAdopt`／`_otTrainTurn`、`_otBundle*`、`_otTeacher*`、`_otRegisterPane`）。
