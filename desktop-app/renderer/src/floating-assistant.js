@@ -18610,6 +18610,10 @@ const holder = {};
 return holder.FaMatrixSpec;
 })();
 /* MATRIXSPEC-END */
+/* MATRIXHYBRID-BEGIN */
+/* MATRIXHYBRID-END */
+/* MATRIXTEACHQUEUE-BEGIN */
+/* MATRIXTEACHQUEUE-END */
 // 2026-11-11 新增的矩陣層模組（文字／校驗碼／位元組／樣式／草圖／清單／作業系統）；只用 install 註冊進註冊表，order 決定誰先試
 try { for (const m of [typeof FaMatrixText !== 'undefined' ? FaMatrixText : null, typeof FaMatrixChecksum !== 'undefined' ? FaMatrixChecksum : null, typeof FaMatrixBytes !== 'undefined' ? FaMatrixBytes : null, typeof FaMatrixRegex !== 'undefined' ? FaMatrixRegex : null, typeof FaMatrixSketch !== 'undefined' ? FaMatrixSketch : null, typeof FaMatrixList !== 'undefined' ? FaMatrixList : null, typeof FaMatrixOS !== 'undefined' ? FaMatrixOS : null]) { if (m && FaMatrixSynth) m.install(FaMatrixSynth); } } catch (e) { /* 新模組裝不上就維持原樣 */ }
 /* TEACHERCHECK-BEGIN */
@@ -22573,6 +22577,30 @@ const holder = {};
 return holder.FaDomainSync2;
 })();
 /* DOMAINSY2-END */
+/* DOMAINFIELDCOUNT-BEGIN */
+/* DOMAINFIELDCOUNT-END */
+/* DOMAINAVBITS-BEGIN */
+/* DOMAINAVBITS-END */
+/* DOMAINBMPX-BEGIN */
+/* DOMAINBMPX-END */
+/* DOMAINGIF-BEGIN */
+/* DOMAINGIF-END */
+/* DOMAININFLATE-BEGIN */
+/* DOMAININFLATE-END */
+/* DOMAINJPEG-BEGIN */
+/* DOMAINJPEG-END */
+/* DOMAINPAR-BEGIN */
+/* DOMAINPAR-END */
+/* DOMAINPAR2-BEGIN */
+/* DOMAINPAR2-END */
+/* DOMAINPAR3-BEGIN */
+/* DOMAINPAR3-END */
+/* DOMAINPCX-BEGIN */
+/* DOMAINPCX-END */
+/* DOMAINPNG-BEGIN */
+/* DOMAINPNG-END */
+/* DOMAINTARX-BEGIN */
+/* DOMAINTARX-END */
 /* PYUMLPIPELINE-BEGIN */
 const FaPyUmlPipeline = (function () {
 const holder = {};
@@ -120058,7 +120086,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         const host = this._behTsHost(); const PC = await host.loadTreeSitter(); const lang = await PC.Language.load(await host.loadLanguageWasm('python')); const P = new PC(); P.setLanguage(lang); this._pyParser = P; return P;
     }
     // 領域包（DSP…）：第一次用到時註冊進算法詞彙與範式骨架表；判題用領域的容差設定（DSP＝float）
-    _pyDomainsInit() { if (this._pyDomainsDone) return; this._pyDomainsDone = true; for (const pk of [FaDomainDsp, FaDomainAlgo2, FaDomainOs, FaDomainDs, FaDomainLinuxText, FaDomainSync, FaDomainGraph2, FaDomainTwofile, FaDomainLinuxsem, FaDomainLinuxfmt, FaDomainLinuxreal, FaDomainLzma, FaDomainBinfmt, FaDomainFs, FaDomainSync2, FaDomainGraph3]) { try { FaDomains.register(pk.make(FaPyParadigms), { AI: FaAlgoIntent, PAR: FaPyParadigms }); } catch (_) { /* 領域包註冊失敗不影響通用範式 */ } } }
+    _pyDomainsInit() { if (this._pyDomainsDone) return; this._pyDomainsDone = true; for (const pk of [FaDomainDsp, FaDomainAlgo2, FaDomainOs, FaDomainDs, FaDomainLinuxText, FaDomainSync, FaDomainGraph2, FaDomainTwofile, FaDomainLinuxsem, FaDomainLinuxfmt, FaDomainLinuxreal, FaDomainLzma, FaDomainBinfmt, FaDomainFs, FaDomainSync2, FaDomainGraph3, FaDomainFieldCount, FaDomainAvbits, FaDomainBmpx, FaDomainGif, FaDomainInflate, FaDomainJpeg, FaDomainPar, FaDomainPar2, FaDomainPar3, FaDomainPcx, FaDomainPng, FaDomainTarx]) { try { FaDomains.register(pk.make(FaPyParadigms), { AI: FaAlgoIntent, PAR: FaPyParadigms }); } catch (_) { /* 領域包註冊失敗不影響通用範式 */ } } }
     async _offlineStackWire(text, r) { // 不丟例外；缺模組（舊版嵌入）就回空
         const empty = { stack: null, stuckAt: null, header: '', note: '' };
         try { if (typeof FaOfflineStack === 'undefined') return empty; return await FaOfflineStack.wireOffline({ goal: String(text || '').replace(/\s+/g, ' ').slice(0, 60), result: { ok: !!r.ok, rounds: r.rounds, source: r.ok ? r.source : undefined }, enabled: false }); } catch (_) { return empty; }

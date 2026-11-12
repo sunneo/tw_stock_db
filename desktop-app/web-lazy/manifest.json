@@ -44,16 +44,16 @@
     "FA_WEBTRAIN_WORKER_SRC",
     "FA_STUDIO_HOST_FILES"
    ],
-   "size": 468896,
-   "md5": "1007dacad3aae344f94d1cdf34784c98"
+   "size": 470863,
+   "md5": "57d1428312314ebc66a5114abf169b37"
   },
   "studioview": {
    "file": "chunks/studioview.js",
    "names": [
     "FA_STUDIO_VIEWER_HTML"
    ],
-   "size": 51160,
-   "md5": "028947d93d1cce106c07123c0acc30a7"
+   "size": 66482,
+   "md5": "00790c994ccdad84f664d5bcbb81ddc9"
   },
   "behavior": {
    "file": "chunks/behavior.js",
@@ -229,8 +229,8 @@
    "names": [
     "FaMatrixSynth"
    ],
-   "size": 24328,
-   "md5": "c031ded14a111fe63c79a56db6237ad9"
+   "size": 24374,
+   "md5": "a634550f2265fd83a88367a154e0efd5"
   },
   "matrixgraph": {
    "file": "chunks/matrixgraph.js",
@@ -279,6 +279,70 @@
    ],
    "size": 11337,
    "md5": "c1f0920703a97f352edd3ac87fb2f444"
+  },
+  "matrixtext": {
+   "file": "chunks/matrixtext.js",
+   "names": [
+    "FaMatrixText"
+   ],
+   "size": 15571,
+   "md5": "f15a89134828a2f744962c7808e777e2"
+  },
+  "matrixchecksum": {
+   "file": "chunks/matrixchecksum.js",
+   "names": [
+    "FaMatrixChecksum"
+   ],
+   "size": 10310,
+   "md5": "149c0352020cdcd7b84a9ab616e303c5"
+  },
+  "matrixbytes": {
+   "file": "chunks/matrixbytes.js",
+   "names": [
+    "FaMatrixBytes"
+   ],
+   "size": 6056,
+   "md5": "ca816f9f45f9cd63f8a18b89ee31dd5a"
+  },
+  "matrixregex": {
+   "file": "chunks/matrixregex.js",
+   "names": [
+    "FaMatrixRegex"
+   ],
+   "size": 6881,
+   "md5": "b31dda0a7fae88d68234d081e97a648c"
+  },
+  "matrixsketch": {
+   "file": "chunks/matrixsketch.js",
+   "names": [
+    "FaMatrixSketch"
+   ],
+   "size": 19317,
+   "md5": "f1ded8fe26c1915577fcd2dce4d53356"
+  },
+  "matrixlist": {
+   "file": "chunks/matrixlist.js",
+   "names": [
+    "FaMatrixList"
+   ],
+   "size": 23038,
+   "md5": "a4a0abd3835a2fe41443ce346cbd2ca2"
+  },
+  "matrixos": {
+   "file": "chunks/matrixos.js",
+   "names": [
+    "FaMatrixOS"
+   ],
+   "size": 8922,
+   "md5": "8132899a4615d2d1828d8a120f0be9ce"
+  },
+  "matrixspec": {
+   "file": "chunks/matrixspec.js",
+   "names": [
+    "FaMatrixSpec"
+   ],
+   "size": 14023,
+   "md5": "7828fc3742c052b9f08b46d918f2aae6"
   },
   "teachercheck": {
    "file": "chunks/teachercheck.js",
@@ -581,8 +645,8 @@
    "names": [
     "FaIrBundle"
    ],
-   "size": 282423,
-   "md5": "d0abfe8ae0f5bcbd120d9ac53bd760b6"
+   "size": 287007,
+   "md5": "41e1920318e9081178cd7f1b15465145"
   },
   "view": {
    "file": "chunks/view.js",
@@ -1586,7 +1650,7 @@
   }
  },
  "core": {
-  "size": 5689862,
-  "md5": "bb1fd8c97b4302674fb3e636b40e52dd"
+  "size": 5696900,
+  "md5": "1353f7da75fa8e0f7fa4517749fc7a78"
  }
 }
