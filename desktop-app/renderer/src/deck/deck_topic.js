@@ -37,6 +37,18 @@
     var grounded = req.material ? '\n【網頁素材（標題：' + req.matTitle + '）】\n' + req.material.slice(0, 6000) + '\n規則：每一頁的標題與重點只能取自上面的網頁素材；素材沒寫的人名、數字、事件一律不要寫，不要編造，也不要套用別的新聞。' : '';
     return '使用者的簡報需求：「' + req.body.slice(0, 700) + '」' + grounded + '\n請把它規劃成 ' + pageRange(req)[0] + ' 到 ' + pageRange(req)[1] + ' 頁，每行一頁，格式：\n頁標題｜這一頁要講的重點（一句話）｜找照片用的英文關鍵字（2 到 4 個英文字，不需要照片就寫 none）\n第一頁是封面，最後一頁是總結。需求裡點名的每一件事都要有一頁。只輸出這幾行，不要編號、不要其他說明。';
   }
+  // 逐頁核對（只在有素材時）：標題＋重點的雙字詞，有多少出現在素材裡；太低＝這頁在素材裡找不到依據（可能是編的）。回 { bad: [頁號…], ratios: […] }
+  function ungroundedSlides(outline, material) {
+    var m = String(material || ''); if (m.length < 200) return { bad: [], ratios: [] };
+    var norm = function (t) { return String(t || '').replace(/[^\u4e00-\u9fffA-Za-z0-9]/g, ''); }, mm = norm(m), set = {};
+    for (var i = 0; i + 1 < mm.length; i++) set[mm.slice(i, i + 2)] = 1;
+    var bad = [], ratios = [];
+    (outline || []).forEach(function (o, idx) {
+      var x = norm(o.title + o.point), n = 0, h = 0; for (var j = 0; j + 1 < x.length; j++) { n++; if (set[x.slice(j, j + 2)]) h++; }
+      var r = n ? h / n : 1; ratios.push(Math.round(r * 100) / 100); if (n >= 6 && r < 0.4 && !/^(封面|總結|結語|結論|前言|開場)/.test(o.title)) bad.push(idx);
+    });
+    return { bad: bad, ratios: ratios };
+  }
   function parseOutline(text) {
     var out = [];
     String(text || '').split('\n').forEach(function (ln) {
@@ -160,5 +172,5 @@
   }
   function dropAllVisuals(doc) { var n = 0; doc.chapters.forEach(function (c) { c.slides.forEach(function (s) { if (s.visual) { delete s.visual; n++; } if (s.layout === 'split') s.layout = 'content'; }); }); return n; }
 
-  return { excerptFor: excerptFor, splitMaterial: splitMaterial, minutesOf: minutesOf, pageRange: pageRange, parseRequest: parseRequest, outlinePrompt: outlinePrompt, parseOutline: parseOutline, templateOutline: templateOutline, narrationPrompt: narrationPrompt, acceptNarration: acceptNarration, buildDeck: buildDeck, ICONS: ICONS, iconsFor: iconsFor, buildIconDeck: buildIconDeck, iconList: iconList, repair: repair, dropAllVisuals: dropAllVisuals, TRAVEL: TRAVEL };
+  return { excerptFor: excerptFor, splitMaterial: splitMaterial, minutesOf: minutesOf, pageRange: pageRange, parseRequest: parseRequest, outlinePrompt: outlinePrompt, parseOutline: parseOutline, ungroundedSlides: ungroundedSlides, templateOutline: templateOutline, narrationPrompt: narrationPrompt, acceptNarration: acceptNarration, buildDeck: buildDeck, ICONS: ICONS, iconsFor: iconsFor, buildIconDeck: buildIconDeck, iconList: iconList, repair: repair, dropAllVisuals: dropAllVisuals, TRAVEL: TRAVEL };
 });

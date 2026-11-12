@@ -64,4 +64,14 @@ check('grounding: material is split from the topic and the outline prompt carrie
 check('grounding: narration prompt also carries the material', /輝達董事會/.test(T.narrationPrompt({ title: 'x', point: 'y' }, GR)));
 check('grounding: the deck title is the article title, not the word 封面', (() => { const d = T.buildDeck(GR, [{ title: '封面', point: '一則新聞' }, { title: '董事會', point: '開會決定' }], [], []).deck; return d.title === '黃仁勳婚外情'; })());
 check('long material: the narration excerpt is the part most related to the slide, not the head of the article', (() => { const m = '開頭無關。'.repeat(300) + '董事會決議罷免執行長並任命接班人。' + '結尾無關。'.repeat(300); return T.excerptFor(m, { title: '董事會決議', point: '罷免執行長任命接班人' }, 400).indexOf('董事會決議罷免') >= 0; })());
+
+// ---- 逐頁核對：有素材時每頁要在素材裡找得到依據 ----
+{
+    const mat = '輝達執行長黃仁勳捲入婚外情風波，董事會今天開會決定他的去留，並已攜手外部機構物色接班人選，市場擔心領導真空。'.repeat(6);
+    const ol = [{ title: '封面', point: '黃仁勳風波', kw: '' }, { title: '董事會開會決定去留', point: '董事會今天開會決定他的去留', kw: '' }, { title: '台積電二奈米良率突破', point: '台積電宣布良率達到九成', kw: '' }, { title: '物色接班人選', point: '董事會攜手外部機構物色接班人選', kw: '' }];
+    const g = T.ungroundedSlides(ol, mat);
+    check('ungroundedSlides：素材沒寫的頁被找出來', g.bad.length === 1 && g.bad[0] === 2, g);
+    check('ungroundedSlides：沒有素材不檢查', T.ungroundedSlides(ol, '').bad.length === 0);
+}
+
 console.log(bad.length ? 'FAILED:\n  ' + bad.join('\n  ') : 'deck_topic: ' + ok + ' passed'); process.exit(bad.length ? 1 : 0);

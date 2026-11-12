@@ -45,4 +45,7 @@ check('輸出狀態機：runner 檢查 outputContract、簡報宣告最終產物
     check('簡報狀態機：依呼叫紀錄給不同的下一步', /還沒有送出任何簡報/.test(C.describe({ calls: [] })) && /yaml_id/.test(C.describe({ calls: [{ name: 'render_presentation', ok: false }] })) && /add_chapters/.test(C.describe({ calls: [{ name: 'begin_presentation', ok: true }] })));
 }
 check('簡報程式自組：每頁旁白都帶思考堆疊焦點標頭、不合格再問一次', /FaThinkStack\.create\('做一份 '/.test(fa) && /FaThinkStack\.header\(S\)/.test(fa) && /上一次寫的不合格/.test(fa) && /下一頁講：/.test(fa));
+check('簡報規劃逐頁核對：沒依據的頁重問一次、仍沒有就拿掉', /T\.ungroundedSlides\(outline, req\.material\)/.test(fa) && /在素材裡找不到依據，請模型只用素材重新規劃一次/.test(fa));
+check('生圖逐張檢查：新聞題材有真人臉孔就丟掉；提示詞要求中性示意圖', /生出來的圖有真人臉孔，丟掉/.test(fa) && /Neutral editorial illustration/.test(fa));
+check('領域工具名單：提示詞點名的工具都在名單裡', require('./domain_tools_scan.js').scan().length === 0);
 console.log(bad.length ? 'FAILED:\n  ' + bad.join('\n  ') : 'tool_request_wiring: ' + ok + ' passed'); process.exit(bad.length ? 1 : 0);

@@ -1542,7 +1542,7 @@ const SUBAGENT_DOMAIN_REGISTRY = {
     file_analysis: {
         enabled: true,
         label: '檔案解讀分析（僅限使用者上傳的檔案，不含真實磁碟資料夾；含圖片轉PDF、合併PDF）',
-        toolNames: ['list_uploaded_files', 'parse_uploaded_file', 'article_outline', 'article_section', 'attachment_apply_patch', 'summarize_large_text', 'interpret_image', 'compare_images', 'extract_pptx_images', 'merge_pdfs', 'images_to_pdf', 'remove_pdf_pages', 'extract_pdf_pages', 'extract_pdf_images'],
+        toolNames: ['list_uploaded_files', 'parse_uploaded_file', 'article_outline', 'article_section', 'attachment_apply_patch', 'summarize_large_text', 'interpret_image', 'compare_images', 'extract_pptx_images', 'merge_pdfs', 'images_to_pdf', 'remove_pdf_pages', 'extract_pdf_pages', 'extract_pdf_images', 'bash_execute', 'python_execute'],
         // tw_stock_db客製: 2026-09-15使用者實測回報＋明確要求——「解析他看
         // 不懂，讀取並分析才看得懂」：同一個任務，措辭用「解析」時反覆撞到
         // 空白回應，改用「讀取並分析」就正常。追查發現根因不是模型對這兩個
@@ -1569,7 +1569,7 @@ const SUBAGENT_DOMAIN_REGISTRY = {
     file_access_points: {
         enabled: true,
         label: '使用者授權的檔案存取點（File Access Point）',
-        toolNames: ['list_file_access_points', 'fap_list_files', 'fap_read_file', 'fap_apply_patch', 'fap_write_file', 'fap_find_file', 'fap_copy_from_storage', 'fap_copy_to_storage', 'fap_download_url'],
+        toolNames: ['list_file_access_points', 'fap_list_files', 'fap_read_file', 'fap_apply_patch', 'fap_write_file', 'fap_find_file', 'fap_copy_from_storage', 'fap_copy_to_storage', 'fap_download_url', 'parse_uploaded_file', 'transcribe_media'],
         systemPrompt: '你是一個專門操作使用者授權的File Access Point（真實磁碟資料夾，不是persistentStorage/FileCache那套上傳檔案系統）的子任務助理。先用list_file_access_points確認有哪些已授權的資料夾（拿到id/label/real_path_hint/permission）。**使用者描述要操作哪個資料夾時，可能用三種方式講，你都要能對應到正確的File Access Point，不要因為使用者沒有直接講「fap:」開頭就放棄**：1) 直接講完整路徑（例如「/home/user/Shared/StepAction」或「D:\\Projects\\StepAction」）——比對每個access point的real_path_hint欄位，找出使用者講的路徑跟哪個real_path_hint相同、或使用者的路徑是以某個real_path_hint結尾/該real_path_hint是使用者路徑的子路徑；2) 直接用「fap:名稱」格式；3) 只講別名/資料夾名稱（例如「StepAction」）——比對label欄位。real_path_hint是使用者自己選填的，不是每個access point都一定有填，如果比對不到任何一個，才明確告知使用者「目前沒有找到對應的已授權資料夾，可以到Advance Settings的檔案存取管理新增，或者告訴我正確的別名」，不要一開始就用「沒有權限」這種話直接拒絕、也不要跳過list_file_access_points直接放棄。找到對應的access point後，用它的label或id組成「fap:<名稱或id>[/<路徑>]」格式的ref，交給fap_list_files/fap_find_file瀏覽/搜尋、fap_read_file讀純文字檔案內容、fap_write_file寫入純文字——這幾個工具的ref參數格式統一是「fap:<名稱或id>[/<路徑>]」，例如「fap:我的筆記/2026/todo.txt」。fap_read_file只支援純文字格式；**任何格式的二進位檔案（MP3/MP4/xlsx/pdf/pptx/圖片等）要在File Access Point跟persistentStorage之間搬動，用fap_copy_from_storage（persistentStorage→File Access Point，可選move=true變成真正移動）／fap_copy_to_storage（File Access Point→persistentStorage，讓fap_read_file讀不了的二進位檔案能改用parse_uploaded_file/transcribe_media等既有工具處理）**，不要嘗試用fap_read_file讀二進位內容再用fap_write_file寫回去，那樣會把內容當文字損毀。fap_download_url可以直接把一個網址的內容下載寫進File Access Point（受目標網站CORS限制，不是每個網址都抓得到）。fap_write_file/fap_copy_from_storage/fap_download_url都是真正的磁碟寫入，執行前務必先跟使用者確認要寫的內容/來源跟目標路徑，不要自作主張覆蓋重要檔案。如果某個File Access Point的permission不是"granted"，直接呼叫該工具即可——系統會自動在畫面上跳出一個授權對話框讓使用者當場點擊同意（不用先叫使用者去Advance Settings），呼叫會停在那裡等使用者回應；如果使用者在對話框裡選了拒絕，工具會回報明確的錯誤，屆時再如實告知使用者拒絕了授權。**要改既有檔案的某幾行（程式碼、字幕、設定檔）一律用fap_apply_patch（unified diff，跟git patch同格式），不要用fap_write_file整份覆寫**：流程=fap_read_file分頁（offset/start_line）把要改的區段讀完整→照讀到的內容手寫diff（context行逐字複製）→fap_apply_patch（可先check_only:true乾跑）→再fap_read_file讀回修改處確認結構正確；patch失敗（ok:false）就看stderr、重新讀檔後重寫，不要直接改用整份覆寫。fap_write_file只用在新增檔案，或使用者明確要求整份重寫。git相關操作（clone/pull/commit/push一個repo到某個File Access Point資料夾）不歸這個domain管，改委派給git_operations domain。',
     },
     git_operations: {
@@ -1780,7 +1780,7 @@ const SUBAGENT_DOMAIN_REGISTRY = {
     media_av: {
         enabled: true,
         label: '影音處理（逐字稿／擷取聲音／燒字幕／動畫版影片／語音合成）',
-        toolNames: ['transcribe_media', 'extract_audio', 'burn_subtitles', 'compose_video', 'render_2d_animation', 'render_3d_scene', 'get_2d_animation_yaml', 'get_3d_scene_yaml', 'get_3d_scene_topic', 'text_to_speech', 'concat_audio', 'convert_to_animated_gif', 'convert_video_to_animation', 'extract_video_frames', 'compare_images', 'interpret_image', 'list_uploaded_files', 'youtube_download', 'images_to_pdf'],
+        toolNames: ['transcribe_media', 'extract_audio', 'burn_subtitles', 'compose_video', 'render_2d_animation', 'render_3d_scene', 'get_2d_animation_yaml', 'get_3d_scene_yaml', 'get_3d_scene_topic', 'text_to_speech', 'concat_audio', 'convert_to_animated_gif', 'convert_video_to_animation', 'extract_video_frames', 'compare_images', 'interpret_image', 'list_uploaded_files', 'youtube_download', 'images_to_pdf', 'extract_clip_range'],
         systemPrompt: '你是一個專門處理影片/音檔的子任務助理。能做的事：\n' +
             '- transcribe_media：語音轉逐字稿（中文為預設語言，不做語言自動偵測；會產生一個.srt字幕檔）\n' +
             '- extract_audio：把音軌抽成音檔（預設MP3省空間）\n' +
@@ -1819,7 +1819,7 @@ const SUBAGENT_DOMAIN_REGISTRY = {
     code_execution: {
         enabled: true,
         label: '程式執行環境（bash／python／LLVM IR，瀏覽器沙盒內執行）',
-        toolNames: ['bash_execute', 'python_execute', 'llvm_execute', 'register_saved_script', 'list_saved_scripts', 'get_saved_script', 'images_to_pdf', 'list_uploaded_files'],
+        toolNames: ['bash_execute', 'python_execute', 'llvm_execute', 'register_saved_script', 'list_saved_scripts', 'get_saved_script', 'images_to_pdf', 'list_uploaded_files', 'fap_read_file', 'parse_uploaded_file'],
         systemPrompt: '你是一個專門執行程式的子任務助理，能力：\n' +
             '- **先判斷：圖片轉PDF／把一堆圖片依順序合成PDF／圖片縮放旋轉／灰階／影像強化／減色／模糊／馬賽克，不要在沙盒裡寫Python（沙盒沒有Pillow、img2pdf，也裝不起來，試了只會用光回合）——直接呼叫images_to_pdf（頁面大小、縮放置中、旋轉、每頁不同處理都是參數）。**\n' +
             '- bash_execute：在瀏覽器沙盒內執行一段bash/sh腳本（busybox ash+coreutils：ls/cat/grep/sed/awk/find/mkdir/echo/管線/重導向/&&/||等都支援，額外認得python/python3/jq/xq/column/split這幾個按需下載的指令）。腳本執行過程本身是完全隔離的沙盒，不會碰到使用者電腦的真實檔案系統。\n' +
@@ -39877,6 +39877,18 @@ const holder = {};
     var grounded = req.material ? '\n【網頁素材（標題：' + req.matTitle + '）】\n' + req.material.slice(0, 6000) + '\n規則：每一頁的標題與重點只能取自上面的網頁素材；素材沒寫的人名、數字、事件一律不要寫，不要編造，也不要套用別的新聞。' : '';
     return '使用者的簡報需求：「' + req.body.slice(0, 700) + '」' + grounded + '\n請把它規劃成 ' + pageRange(req)[0] + ' 到 ' + pageRange(req)[1] + ' 頁，每行一頁，格式：\n頁標題｜這一頁要講的重點（一句話）｜找照片用的英文關鍵字（2 到 4 個英文字，不需要照片就寫 none）\n第一頁是封面，最後一頁是總結。需求裡點名的每一件事都要有一頁。只輸出這幾行，不要編號、不要其他說明。';
   }
+  // 逐頁核對（只在有素材時）：標題＋重點的雙字詞，有多少出現在素材裡；太低＝這頁在素材裡找不到依據（可能是編的）。回 { bad: [頁號…], ratios: […] }
+  function ungroundedSlides(outline, material) {
+    var m = String(material || ''); if (m.length < 200) return { bad: [], ratios: [] };
+    var norm = function (t) { return String(t || '').replace(/[^\u4e00-\u9fffA-Za-z0-9]/g, ''); }, mm = norm(m), set = {};
+    for (var i = 0; i + 1 < mm.length; i++) set[mm.slice(i, i + 2)] = 1;
+    var bad = [], ratios = [];
+    (outline || []).forEach(function (o, idx) {
+      var x = norm(o.title + o.point), n = 0, h = 0; for (var j = 0; j + 1 < x.length; j++) { n++; if (set[x.slice(j, j + 2)]) h++; }
+      var r = n ? h / n : 1; ratios.push(Math.round(r * 100) / 100); if (n >= 6 && r < 0.4 && !/^(封面|總結|結語|結論|前言|開場)/.test(o.title)) bad.push(idx);
+    });
+    return { bad: bad, ratios: ratios };
+  }
   function parseOutline(text) {
     var out = [];
     String(text || '').split('\n').forEach(function (ln) {
@@ -40000,7 +40012,7 @@ const holder = {};
   }
   function dropAllVisuals(doc) { var n = 0; doc.chapters.forEach(function (c) { c.slides.forEach(function (s) { if (s.visual) { delete s.visual; n++; } if (s.layout === 'split') s.layout = 'content'; }); }); return n; }
 
-  return { excerptFor: excerptFor, splitMaterial: splitMaterial, minutesOf: minutesOf, pageRange: pageRange, parseRequest: parseRequest, outlinePrompt: outlinePrompt, parseOutline: parseOutline, templateOutline: templateOutline, narrationPrompt: narrationPrompt, acceptNarration: acceptNarration, buildDeck: buildDeck, ICONS: ICONS, iconsFor: iconsFor, buildIconDeck: buildIconDeck, iconList: iconList, repair: repair, dropAllVisuals: dropAllVisuals, TRAVEL: TRAVEL };
+  return { excerptFor: excerptFor, splitMaterial: splitMaterial, minutesOf: minutesOf, pageRange: pageRange, parseRequest: parseRequest, outlinePrompt: outlinePrompt, parseOutline: parseOutline, ungroundedSlides: ungroundedSlides, templateOutline: templateOutline, narrationPrompt: narrationPrompt, acceptNarration: acceptNarration, buildDeck: buildDeck, ICONS: ICONS, iconsFor: iconsFor, buildIconDeck: buildIconDeck, iconList: iconList, repair: repair, dropAllVisuals: dropAllVisuals, TRAVEL: TRAVEL };
 });
 
 }).call(null, undefined, holder);
@@ -120167,6 +120179,19 @@ _result
         let outline = null, how = '', modelDead = false;
         try { const reply = await this._kiLlm(T.outlinePrompt(req), { systemPrompt: '你是簡報規劃者，只依指定格式輸出。', maxTokens: 900, temperature: 0.3 }, { label: '規劃簡報', timeoutMs: 90000, onStep: log, noOffline: true }); outline = T.parseOutline(reply); if (outline) how = '模型規劃'; else log('　（模型的規劃格式不對，改用樣板）'); }
         catch (e) { modelDead = true; log('　（規劃的模型沒回應：' + String((e && e.message) || e).slice(0, 80) + '；改用樣板，旁白也不再問模型）'); }
+        // 逐頁核對（UML design 的「每題檢查」）：有素材時，每一頁的標題＋重點要在素材裡找得到依據；找不到的頁（可能是編的）請模型只用素材重新規劃一次，仍然沒依據的頁拿掉（剩下夠多頁才拿）
+        if (outline && req.material) {
+            const g1 = T.ungroundedSlides(outline, req.material);
+            if (g1.bad.length) {
+                log('🔍 規劃核對：第 ' + g1.bad.map((x) => x + 1).join('、') + ' 頁在素材裡找不到依據，請模型只用素材重新規劃一次');
+                try {
+                    const reply2 = await this._kiLlm(T.outlinePrompt(req) + '\n（上一次規劃裡這幾頁在素材中找不到依據：' + g1.bad.map((x) => outline[x].title).join('、') + '。請只用素材裡寫到的事重新規劃，不要編。）', { systemPrompt: '你是簡報規劃者，只依指定格式輸出。', maxTokens: 900, temperature: 0.2 }, { label: '重新規劃簡報', timeoutMs: 90000, onStep: log, noOffline: true });
+                    const o2 = T.parseOutline(reply2); if (o2) outline = o2;
+                } catch (_) { /* 重問失敗就用原本的 */ }
+                const g2 = T.ungroundedSlides(outline, req.material);
+                if (g2.bad.length && outline.length - g2.bad.length >= 5) { log('🔍 仍然沒有依據的頁拿掉：' + g2.bad.map((x) => outline[x].title).join('、')); outline = outline.filter((_, i) => !g2.bad.includes(i)); }
+            }
+        }
         if (!outline) { outline = T.templateOutline(req, (t) => { try { const s = FaImageRoute.extractSlots(t); return s.subject[0] || ''; } catch (_) { return ''; } }); how = '樣板（把需求拆成子句，一個子句一頁）'; }
         log('📋 ' + how + '：' + outline.length + ' 頁——' + outline.map((o) => o.title).join('、'));
         // 每頁旁白：一個封閉的小問題；格式不對就用重點當旁白；模型整個不通就不再問
@@ -120228,8 +120253,20 @@ _result
             for (let i = 0; i < outline.length; i++) {
                 if (photos[i]) continue; const o = outline[i];
                 try {
-                    const g = await this._imageMake({ prompt: (o.kw ? o.kw + '. ' : '') + o.title + '：' + o.point, show: false });
-                    const cf = g && g.ok !== false && (g.client_file_url || (g.images && g.images[0] && g.images[0].client_file_url)); const e = cf ? this._deckRun().catalog.add(String(cf), { alt: o.title, from: 'generated' }) : null;
+                    const g = await this._imageMake({ prompt: (o.kw ? o.kw + '. ' : '') + o.title + '：' + o.point + (newsy ? '. Neutral editorial illustration of the situation (objects, places, charts); no real person\'s face or likeness, no text.' : ''), show: false });
+                    let cf = g && g.ok !== false && (g.client_file_url || (g.images && g.images[0] && g.images[0].client_file_url));
+                    // 每張生出來的圖也要檢查（逐題檢查）：新聞題材不能出現真人臉孔／長相，看圖模型說有或對不上主題就丟掉這張、這頁不放圖（有看圖模型才檢查；沒有就不擋）
+                    if (cf && newsy && typeof this._interpretImageWithVisionModel === 'function') {
+                        try {
+                            const fid = String(cf).replace(/^client-file\//, ''); const rec = await this.fileCache.get(fid);
+                            if (rec && rec.blob) {
+                                const du = await new Promise((res, rej) => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.onerror = () => rej(fr.error); fr.readAsDataURL(rec.blob); });
+                                const v = await this._interpretImageWithVisionModel(du, 'Is there a clearly recognisable real human face in this picture? Answer exactly YES or NO, then a few words.');
+                                if (v && /^\W*YES/i.test(String(v.description || ''))) { log('🎨 「' + o.title + '」生出來的圖有真人臉孔，丟掉（新聞題材不放真人長相）'); cf = null; }
+                            }
+                        } catch (_) { /* 檢查不了就不擋 */ }
+                    }
+                    const e = cf ? this._deckRun().catalog.add(String(cf), { alt: o.title, from: 'generated' }) : null;
                     if (e && e.ref) { photos[i] = { ref: e.ref, source: 'AI 生成', credit: '' }; genN++; log('🎨 「' + o.title + '」用畫圖工具生了一張'); } else log('🎨 「' + o.title + '」畫不出來（' + String((g && g.error) || '沒有圖').slice(0, 60) + '）');
                 } catch (e) { log('🎨 「' + o.title + '」畫圖失敗（' + String((e && e.message) || e).slice(0, 60) + '）'); }
             }
