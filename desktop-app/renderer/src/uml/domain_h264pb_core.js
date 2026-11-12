@@ -75,14 +75,27 @@
                     'inc = cond if r == 0 else (4 if r == 1 else 5)', 'out.append("c%d=0" % inc)',
                     'print(" ".join(out))']),
                 { shape: numIn, limit: 1, helpers: () => [] }),
+            // 次像素精修（四分之一層）：輸入一行 14 個整數：hx、hy（半像素層的最佳位移，半像素單位）、px、py（預測點，四分之一像素單位）、lam（λ）、其後 9 個 SAD，依序對應四分之一單位的偏移 (−1,−1)、(0,−1)、(1,−1)、(−1,0)、(0,0)、(1,0)、(−1,1)、(0,1)、(1,1)。
+            // 中心為 (2 乘 hx, 2 乘 hy)；每個候選的向量為中心加偏移，代價為 SAD 加 lam 乘 (|mvx 減 px| 加 |mvy 減 py|)。依上列順序，只有嚴格小於時才更新，平手取先出現者。輸出三個整數：最佳的 mvx、mvy（四分之一單位）與其代價。
+            D('h264.subpel.quarter', 'h264-subpel-quarter', '次像素精修（四分之一層）的代價選擇：輸入一行 14 個整數，依序為 hx、hy（半像素層的最佳位移，半像素單位）、px、py（預測點，四分之一像素單位）、lam（λ，非負整數），其後 9 個整數為 SAD，依序對應四分之一單位的偏移 (−1,−1)、(0,−1)、(1,−1)、(−1,0)、(0,0)、(1,0)、(−1,1)、(0,1)、(1,1)。候選向量為 (2 乘 hx 加偏移 dx, 2 乘 hy 加偏移 dy)，代價為 SAD 加上 lam 乘 (|mvx 減 px| 加 |mvy 減 py|)。依上列順序檢查，只有嚴格小於目前最小代價時才更新，因此平手取先出現者。輸出三個整數：最佳的 mvx、mvy（四分之一單位）與其代價。',
+                [], (c, N, I) => code(['v = ' + nums(N, I), 'hx, hy, px, py, lam = v[0], v[1], v[2], v[3], v[4]', 'pos = [(-1, -1), (0, -1), (1, -1), (-1, 0), (0, 0), (1, 0), (-1, 1), (0, 1), (1, 1)]',
+                    'best = None', 'for k in range(9):', '    mx, my = 2 * hx + pos[k][0], 2 * hy + pos[k][1]', '    c = v[5 + k] + lam * (abs(mx - px) + abs(my - py))', '    if best is None or c < best[2]:', '        best = (mx, my, c)',
+                    'print(best[0], best[1], best[2])']),
+                { shape: numIn, limit: 1, helpers: () => [] }),
+            // mb_skip_flag 的上下文增量（9.3.3.1.1.1）：輸入一行 4 個整數：availA、skipA、availB、skipB（各為 0 或 1）。條件項為「可用且不是略過」；增量為兩個條件項之和。
+            D('h264.cabac.skipinc', 'h264-cabac-skipinc', 'CABAC 的 mb_skip_flag 上下文增量：輸入一行 4 個整數，依序為左邊鄰居可用與否 availA、左邊鄰居是否略過 skipA、上面鄰居可用與否 availB、上面鄰居是否略過 skipB（各為 0 或 1）。某鄰居的條件項為 1，當且僅當該鄰居可用且不是略過；否則為 0。上下文增量為兩個條件項之和，輸出這個整數。',
+                [], (c, N, I) => code(['v = ' + nums(N, I), 'ca = 1 if (v[0] == 1 and v[1] == 0) else 0', 'cb = 1 if (v[2] == 1 and v[3] == 0) else 0', 'print(ca + cb)']),
+                { shape: numIn, limit: 1, helpers: () => [] }),
         ];
         const ALL = (...parts) => new RegExp('^' + parts.map((x) => String.raw`(?=[\s\S]*` + x + ')').join(''), 'i');
         const algos = [
             { key: 'h264-cabac-ctxinitpb', re: ALL('CABAC', 'ctxIdx', '(?:P|B)\\s*條帶|cabac_init_idc'), veto: /編碼|旁路|bypass|rangeTabLPS|DecodeDecision|解碼一個|mvd|I 條帶，ctxIdx/i },
             { key: 'h264-mvpred-median', re: ALL('(?:運動向量|motion vector|MV)', '(?:預測|predict)', '(?:中位數|median|參考索引)'), veto: /次像素|mvd|二值|SAD|全搜尋|CABAC/i },
-            { key: 'h264-subpel-refine', re: ALL('(?:次像素|subpel|sub-pel)', '(?:精修|搜尋|refine|search)', '(?:代價|cost|λ|lam)'), veto: /mvd|二值|預測向量的/i },
+            { key: 'h264-subpel-refine', re: ALL('(?:次像素|subpel|sub-pel)', '(?:精修|搜尋|refine|search)', '(?:代價|cost|λ|lam)'), veto: /mvd|二值|四分之一/i },
             { key: 'h264-cabac-mvd', re: ALL('CABAC', '(?:運動向量差|mvd)', '(?:二值|binar)'), veto: /上下文初始化|rangeTabLPS|DecodeDecision|ctxIdx 11/i },
             { key: 'h264-cabac-refidx', re: ALL('CABAC', '(?:參考索引|ref_?idx|refIdx)', '(?:二值|binar|一元)'), veto: /mvd|上下文初始化|rangeTabLPS|DecodeDecision|次像素/i },
+            { key: 'h264-subpel-quarter', re: ALL('(?:次像素|subpel|sub-pel)', '四分之一', '(?:代價|cost|λ|lam)'), veto: /mvd|二值/i },
+            { key: 'h264-cabac-skipinc', re: ALL('CABAC', 'mb_skip', '(?:上下文增量|增量)'), veto: /mvd|ref_?idx|二值化|ctxIdx 11 至/i },
         ].map((x) => Object.assign(x, { pri: true }));
         const paradigms = {}; for (const sk of skeletons) paradigms[sk.algo] = ['codec-pb'];
         return { id: 'h264pb', label: '影音壓縮 3：P／B 條帶（初始化表 11 至 59、運動向量預測、次像素代價、mvd 二值化）', requires: [], judge: { checker: 'tokens', timeoutMs: 30000 }, algos, paradigms, skeletons };

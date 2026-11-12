@@ -131,6 +131,39 @@ const genRI = (b, { rnd }) => [rnd(0, 4), rnd(0, 3)].join(' ');
 const ST_RI = 'CABAC 參考索引（ref_idx）的二值化（一元碼）：輸入一行 2 個整數，依序為 refIdx（非負整數）與 cond（0 至 3，即 condTermFlagA 加 2 乘 condTermFlagB）。一元碼送出 refIdx 個 1 再送一個 0。第 0 個二值的上下文增量為 cond；第 1 個二值的增量為 4；第 2 個及以後的二值增量為 5。輸出一行，以空白分隔：上下文編碼的二值寫成 c 加增量加等號加位元（例如 c0=1）。';
 const HO_RI = 'CABAC 中參考索引的一元二值化：一行 2 個整數，refIdx 與 cond（0 到 3）。得到 refIdx 個 1 再接一個 0；第一個位元用上下文增量 cond，第二個用 4，其餘用 5。以 c增量=位元 的形式、空白分隔輸出。';
 
+const REF_QSUB = `import sys
+v = [int(t) for t in sys.stdin.read().split()]
+hx, hy, px, py, lam = v[0:5]
+sad = v[5:14]
+offs = [(-1, -1), (0, -1), (1, -1), (-1, 0), (0, 0), (1, 0), (-1, 1), (0, 1), (1, 1)]
+cands = []
+for k, (ox, oy) in enumerate(offs):
+    mx, my = 2 * hx + ox, 2 * hy + oy
+    cands.append((sad[k] + lam * (abs(mx - px) + abs(my - py)), k, mx, my))
+best = min(cands, key=lambda t: (t[0], t[1]))
+print(best[2], best[3], best[0])
+`;
+
+const REF_SKIP = `import sys
+v = [int(t) for t in sys.stdin.read().split()]
+avA, skA, avB, skB = v
+condA = 1 if avA and not skA else 0
+condB = 1 if avB and not skB else 0
+print(condA + condB)
+`;
+
+const genQSUB = (b, { rnd }) => {
+    const xs = [rnd(-6, 6), rnd(-6, 6), rnd(-12, 12), rnd(-12, 12), rnd(0, 10)];
+    for (let i = 0; i < 9; i++) xs.push(rnd(0, 500));
+    return xs.join(' ');
+};
+const genSKIP = (b, { rnd }) => [rnd(0, 1), rnd(0, 1), rnd(0, 1), rnd(0, 1)].join(' ');
+
+const ST_QSUB = '次像素精修（四分之一層）的代價選擇：輸入一行 14 個整數，依序為 hx、hy（半像素層的最佳位移，半像素單位）、px、py（預測點，四分之一像素單位）、lam（λ，非負整數），其後 9 個整數為 SAD，依序對應四分之一單位的偏移 (−1,−1)、(0,−1)、(1,−1)、(−1,0)、(0,0)、(1,0)、(−1,1)、(0,1)、(1,1)。候選向量為 (2 乘 hx 加偏移 dx, 2 乘 hy 加偏移 dy)，代價為 SAD 加上 lam 乘 (|mvx 減 px| 加 |mvy 減 py|)。依上列順序檢查，只有嚴格小於目前最小代價時才更新，因此平手取先出現者。輸出三個整數：最佳的 mvx、mvy（四分之一單位）與其代價。';
+const HO_QSUB = '四分之一像素的次像素搜尋：一行 14 個整數，前兩個為半像素最佳位移 hx、hy，接著 px、py（預測，四分之一單位）與 lam，其後 9 個 SAD 依序對應四分之一偏移 (−1,−1) 到 (1,1)（順序同上）。候選為 (2hx＋dx, 2hy＋dy)，代價是 SAD 加 lam 乘以向量與預測的分量差絕對值之和。代價最小者勝，平手取先出現者。輸出 mvx、mvy 與代價。';
+const ST_SKIP = 'CABAC 的 mb_skip_flag 上下文增量：輸入一行 4 個整數，依序為左邊鄰居可用與否 availA、左邊鄰居是否略過 skipA、上面鄰居可用與否 availB、上面鄰居是否略過 skipB（各為 0 或 1）。某鄰居的條件項為 1，當且僅當該鄰居可用且不是略過；否則為 0。上下文增量為兩個條件項之和，輸出這個整數。';
+const HO_SKIP = 'mb_skip_flag 的 CABAC 上下文：一行 4 個 0 或 1 的整數，依序是左鄰可用、左鄰略過、上鄰可用、上鄰略過。左鄰若可用且未略過計 1，上鄰同理；兩者相加即為增量。輸出該增量。';
+
 const SEEDS = [
 
     { id: 'pb-ci-tr', want: 'h264.cabac.ctxinitPB', st: ST_CI, ref: REF_CI, gen: genCI },
@@ -143,6 +176,10 @@ const SEEDS = [
     { id: 'pb-md-ho', split: 'holdout', st: HO_MVD, ref: REF_MVD, gen: genMVD },
     { id: 'pb-ri-tr', want: 'h264.cabac.refidx', st: ST_RI, ref: REF_RI, gen: genRI },
     { id: 'pb-ri-ho', split: 'holdout', st: HO_RI, ref: REF_RI, gen: genRI },
+    { id: 'pb-qs-tr', want: 'h264.subpel.quarter', st: ST_QSUB, ref: REF_QSUB, gen: genQSUB },
+    { id: 'pb-qs-ho', split: 'holdout', st: HO_QSUB, ref: REF_QSUB, gen: genQSUB },
+    { id: 'pb-sk-tr', want: 'h264.cabac.skipinc', st: ST_SKIP, ref: REF_SKIP, gen: genSKIP },
+    { id: 'pb-sk-ho', split: 'holdout', st: HO_SKIP, ref: REF_SKIP, gen: genSKIP },
 ];
 
-H.main({ name: '領域包 h264pb', packs: [PBC], seeds: SEEDS, minSkeletons: 4, judge: { checker: 'tokens', timeoutMs: 60000 } });
+H.main({ name: '領域包 h264pb', packs: [PBC], seeds: SEEDS, minSkeletons: 6, judge: { checker: 'tokens', timeoutMs: 60000 } });
