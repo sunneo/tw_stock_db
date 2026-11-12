@@ -89,7 +89,9 @@
     function exportAsset(asset, opts) {
         opts = opts || {}; const shardBytes = Math.max(16, opts.shardBytes || SHARD_BYTES);
         const m = asset.manifest, files = asset.files || {};
-        if (Object.keys(m.external || {}).length) return { ok: false, error: '這個 llm 資產的大權重在外部檔（' + Object.keys(m.external).join('、') + '），.fatrain 還不能打包外部檔（需要分片串流，尚未實作）；目前只能在這台機器上使用它' };
+        // 外部檔（manifest.external）與一般檔同樣打包：權重必須已在 files 裡（登錄 llm 時寫進儲存層），否則列出缺的檔案
+        const missingExt = Object.keys(m.external || {}).filter((p) => !(p in files));
+        if (missingExt.length) return { ok: false, error: '匯出缺少權重內容：' + missingExt.join('、') + '（manifest 宣告為外部檔，但資產沒有這些檔案的位元組，請重新登錄到儲存層）' };
         const v = Asset.verifyFiles(m, files); if (!v.ok) return { ok: false, error: '匯出前核對失敗：' + v.message };
         const chk = Asset.validateManifest(m); if (!chk.ok) return { ok: false, error: 'manifest 不合法：' + chk.errors.join('；') };
         const entries = []; const shards = {};

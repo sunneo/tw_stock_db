@@ -155,25 +155,31 @@ function createStudioHost(d) {
     if (j.state !== 'finished') return { ok: false, error: '匯出尚未完成（目前：' + j.state + '）' };
     const man = readJson(P.join(j.outDir, 'manifest.json'), null) || readJson(P.join(j.outDir, 'manifest_gguf.json'), null);
     if (!man || !Array.isArray(man.files)) return { ok: false, error: '找不到匯出的 manifest（pack 步驟沒有完成？）' };
-    const WEIGHT = /\.(onnx|onnx_data|gguf)$/, files = {}, external = {};
+    // 要進資產的：部署用的權重（ONNX 的 q8 或 GGUF 的 Q8_0）與小檔（分詞器、設定、核對報告）。fp32 的 ONNX（約 3 GB）是中間產物，不進資產。
+    const DEPLOY = { onnx: ['q8/model_quantized.onnx'], gguf: ['model-q8_0.gguf'] };
+    const want = DEPLOY[man.format] || [];
+    const files = [], excluded = [];
     for (const f of man.files) {
       const abs = P.join(j.outDir, f.path);
       if (!exists(abs)) return { ok: false, error: '缺檔：' + f.path };
       const st = fs.statSync(abs);
       if (st.size !== f.bytes) return { ok: false, error: '大小與 manifest 不符：' + f.path };
-      if (WEIGHT.test(f.path)) external[f.path] = { bytes: f.bytes, sha256: f.sha256, location: abs };
-      else files[f.path] = fs.readFileSync(abs).toString('base64');
+      if (/\.onnx(_data)?$|\.gguf$/.test(f.path) && want.indexOf(f.path) < 0) { excluded.push(f.path); continue; }
+      files.push({ rel: f.path, path: abs, bytes: f.bytes, sha256: f.sha256 });
     }
-    return { ok: true, format: man.format, quant: man.format === 'onnx' ? 'q8' : 'q8_0', recipe: man.recipe || j.recipe || null, files, external,
+    return { ok: true, format: man.format, quant: man.format === 'onnx' ? 'q8' : 'q8_0', recipe: man.recipe || j.recipe || null, files, excluded,
       source: { baseDir: j.baseDir || null, adapterDir: j.adapterDir || null }, outDir: j.outDir };
   }
   // 模型選單（桌面版）：把工作室的 llm 資產設為離線模型。主行程的 main-ext.js 讀 <hostDir>/llm-model-choice.json（沒有就照舊用標準版）
+  // 桌面版：資產的權重落在儲存層（rawfs：<userData>/studio-assets/llm/<名稱>/…），模型路徑由名稱決定
   function llmUse(p) {
-    const modelPath = String(p.modelPath || ''), tokenizerPath = String(p.tokenizerPath || '');
-    if (!modelPath || !exists(modelPath)) return { ok: false, error: '模型檔不存在：' + modelPath };
-    if (!tokenizerPath || !exists(tokenizerPath)) return { ok: false, error: '分詞器檔不存在：' + tokenizerPath };
-    writeJson(jf('llm-model-choice.json'), { name: String(p.name || ''), modelPath, tokenizerPath, chosenAt: now() });
-    return { ok: true, name: String(p.name || ''), modelPath, tokenizerPath };
+    const name = String(p.name || ''); if (!/^[^\/\\.][^\/\\]*$/.test(name)) return { ok: false, error: '名稱不合法' };
+    const root = P.join(P.dirname(hostDir), 'studio-assets', 'llm', name);
+    const modelPath = P.join(root, 'q8', 'model_quantized.onnx'), tokenizerPath = P.join(root, 'tokenizer.json');
+    if (!exists(modelPath)) return { ok: false, error: '資產 llm/' + name + ' 裡沒有 q8/model_quantized.onnx（或還沒寫到儲存層）' };
+    if (!exists(tokenizerPath)) return { ok: false, error: '資產 llm/' + name + ' 裡沒有 tokenizer.json' };
+    writeJson(jf('llm-model-choice.json'), { name, modelPath, tokenizerPath, chosenAt: now() });
+    return { ok: true, name, modelPath, tokenizerPath };
   }
   function llmUseClear() { try { fs.unlinkSync(jf('llm-model-choice.json')); } catch (e) { /* 本來就沒有 */ } return { ok: true }; }
   function llmUseCurrent() { const c = readJson(jf('llm-model-choice.json'), null); return { ok: true, choice: c && exists(c.modelPath) ? c : null }; }

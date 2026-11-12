@@ -86,5 +86,27 @@ const throws = (f, re) => { try { f(); return false; } catch (e) { return re ? r
     check('分卷：每卷 ≤ 上限、命名 .001', vol.length === Math.ceil(ex.bytes.length / 2000) && vol[0].name === 'lora-a.fatrain.001' && vol.every((v) => v.bytes.length <= 2000));
     check('分卷：合併後逐位元相同（亂序也行）', Buffer.compare(Buffer.from(F.joinVolumes(vol.slice().reverse())), Buffer.from(ex.bytes)) === 0);
     check('分卷：缺一卷拒絕', throws(() => F.joinVolumes([vol[0], vol[2]]), /缺少第 002/));
+    // llm 資產（大權重 25MB，預設分片 20MB → 2 片）：匯出不拒絕、分片、讀回 sha256 一致、匯入到儲存層可讀
+    {
+        const w = new Uint8Array(25 * 1048576); for (let i = 0; i < w.length; i++) w[i] = (i * 2654435761) >>> 24;
+        const tok = Buffer.from('{"model":{"type":"BPE"}}');
+        const files = { 'q8/model_quantized.onnx': w, 'q8/tokenizer.json': new Uint8Array(tok) };
+        const m = A.createManifest({ kind: 'llm', name: 'llm-big', files, owner: 'user', base: 'Qwen3-0.6B', compat: {}, counts: {}, eval: null });
+        m.llm = { format: 'onnx', quant: 'q8', recipe: 'full', excluded: [] };
+        const big = { manifest: m, files };
+        const lx = F.exportAsset(big); check('llm 大權重：匯出不拒絕', lx.ok === true && lx.sharded.indexOf('q8/model_quantized.onnx') >= 0, lx && lx.error);
+        if (lx.ok) {
+            const parts = F.readZip(lx.bytes).filter((e) => /\.part\d{4}$/.test(e.name));
+            check('llm 大權重：2 個分片、每片 ≤ 20MB', parts.length === 2 && parts.every((e) => e.data.length <= 20 * 1048576), parts.map((e) => e.name));
+            const rr = F.readAsset(lx.bytes);
+            check('llm 大權重：讀回 sha256 一致、位元相同', rr.ok && A.sha256Hex(rr.asset.files['q8/model_quantized.onnx']) === m.sha256['q8/model_quantized.onnx'] && Buffer.compare(Buffer.from(rr.asset.files['q8/model_quantized.onnx']), Buffer.from(w)) === 0, rr.errors);
+            const st = S.createStorage({ memory: S.createMemoryStore() });
+            const sv = await st.saveAsset(rr.asset); check('llm 大權重：匯入儲存層（saveAsset）成功', sv && sv.ok !== false, sv);
+            const ld = await st.loadAsset('llm', 'llm-big'); const lf = ld && (ld.asset ? ld.asset.files : ld.files) || {};
+            check('llm 大權重：loadAsset 取回 2 個檔、位元相同（verify ok）', ld && ld.ok !== false && Object.keys(lf).length === 2 && Buffer.compare(Buffer.from(lf['q8/model_quantized.onnx']), Buffer.from(w)) === 0, ld && ld.error || ld);
+        }
+        const missing = F.exportAsset({ manifest: Object.assign({}, m, { external: { 'q8/model_quantized.onnx': { bytes: w.length } } }), files: { 'q8/tokenizer.json': files['q8/tokenizer.json'] } });
+        check('llm 外部檔沒有位元組：回報缺哪個檔（不是政策拒絕）', missing.ok === false && /匯出缺少權重內容/.test(missing.error), missing.error);
+    }
     console.log(ok + ' passed, ' + bad + ' failed'); process.exit(bad ? 1 : 0);
 })().catch((e) => { console.log('FAIL 例外 ' + (e && e.stack || e)); process.exit(1); });

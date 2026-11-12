@@ -907,3 +907,25 @@ model card 欄位以 `description`（一句話，來自描述檔，§13.2）與 
 - Electron 實跑（項目 2、3）：下一步＝寫 `FA_DEBUG_EVAL_FILE` 腳本，在真的桌面版裡呼叫 `studio_llm_use` 後生成一次，並比對貪婪 token。
 - LoRA 槽與自選模型的互斥（項目 2）：下一步＝選 llm 時停用 LoRA 槽，或為選定的 llm 建立它自己的槽版。
 - 登錄路由（`/api/llm/export/register`）目前只有「主行程 bundle＋伺服器端 manifest 組裝」的程式路徑，沒有經過真的 HTTP 測試；`llm_export_core` 與 host 的測試都過。
+
+### 25.12 第三輪指揮要求（2026-11-12，同一分支；逐項實測，做不到的寫出具體錯誤）
+
+| # | 要求 | 狀態 | 實測／原因 |
+|---|---|---|---|
+| 1a | `.fatrain` 不再明確拒絕 llm 外部檔 | **完成** | `fatrain_core.exportAsset`：拒絕條件改成「外部檔的位元組不在資產內」才回錯誤，訊息列出缺的檔。llm 登錄時權重就是資產的一般檔案（進儲存層），所以正常路徑不會遇到。 |
+| 1b | 分片（20 MB）、sha256、匯入後權重進儲存層 | **完成** | `fatrain_core.test.js` 新增 25 MB 的 llm 資產：匯出 2 片（每片 ≤ 20 MB）、讀回 sha256 與位元組一致、`saveAsset`→`loadAsset` 取回位元相同、缺位元組時回報缺的檔。`node renderer/src/studio/fatrain_core.test.js` → **46 passed, 0 failed**。另見 25.11：756 MB 的真實 q8 `.fatrain` 往返（37 片）與匯入儲存層，先前已實測。 |
+| 2a | 網頁版：onnxruntime-web 讀 q8 ONNX | **完成（頁面 harness）** | `renderer/src/studio/llm_web_core.js`（UMD，純函式，分詞器＋ KV 貪婪解碼）。`~/fa/web-ort-test/index.html` 在 Chrome（Claude 瀏覽器窗格）內從 CDN 載入 **onnxruntime-web 1.22.0**（wasm EP，1 執行緒），讀 756 MB q8、跑 6 題×16 token，對照 `check.json` 的 q8 參考：**圖最佳化 disabled：54/96（全對 2/6）；圖最佳化 all：28/96**。同一份核心在 Node 的 onnxruntime-node 1.22（cpu EP，圖最佳化 all）：44/96。這是 q8 本身的品質（與 HF fp32 的差距，見 25.4），不是路徑錯誤；網頁版預設改為 disabled。 |
+| 2b | 網頁版：llm 資產可讀、權重在儲存層、GGUF 可列出／匯出／下載 | **完成** | `GET /api/llm/web/models`（列出 kind:llm，ready 與不可用原因；GGUF 標「不在網頁版推論範圍」）、`POST /api/asset/download`（交給 `h.download`，檔名＝路徑最後一段）。資產列表的詳情頁每個檔案都有「下載」鈕。`llm_web_route.test.js` → **13 passed, 0 failed**。GGUF 的匯出在桌面版（llama.cpp）做，登錄後可在網頁版下載。 |
+| 2c | 網頁版模型選單與頁內生成 | **完成（程式與路由），UI 未在完整工作室頁面內點擊實測** | 檢視器「網頁版模型」區塊（`webLlmBox`）：下拉選 ready 的 llm 資產、提示、最多 token、生成；路由 `POST /api/llm/web/generate` 用注入的 `h.llmWeb.loadOrt`（`floating-assistant.js` 的 `_studioHostApi`，網頁版＝CDN 的 onnxruntime-web 1.22.0，桌面版不注入）。路由測試用假的 ORT 驗證串接（session 用 wasm EP、第二次沿用 session、空提示 400、GGUF 400、缺資產 404、沒注入時說明原因）。 |
+| 3a | 桌面版：Electron 內 ORT 1.22 真實測試 | **部分** | 真的 Electron（`xvfb-run ~/fa-electron/dist/electron . --no-sandbox --disable-gpu`，`FA_DEBUG_EVAL_FILE`）：`FaLlmWeb`、`FaStudioServer` 在渲染程序中存在；`desktop: true`；主機回應 `studio_export_tools`（optimum／onnxruntime／llamaCpp／peft）；`studio_llm_use_current` 回 `choice: null`；`/api/llm/web/models` 回 200（新的使用者資料夾，沒有 llm 資產）。**沒做**：Electron 內的 nr-child 用 ORT 1.22 生成（沒找到能從 eval 腳本直接驅動生成的 nr 操作，沒接上）；Electron 內的 `studio_llm_use` → 重啟離線模型 → 生成。ORT 1.22 的數值驗證改在執行包的 onnxruntime-node 1.22（同版本）做，見 2a。 |
+| 3b | 桌面版：模型選單 | **完成（主行程端）** | `studio_llm_use` 寫 `<userData>/studio-host/llm-model-choice.json`，`main-ext.js` 的 baseModel／baseTokenizer 優先讀它；ONNX 才能設（GGUF 400）。端到端＝未在 Electron 內實跑（見 3a）。 |
+| 4 | lora-slot：full 產物 | **完成（沿用 25.11 的實測，本輪程式沒改）** | `ort122_slot_zero.json`：零 LoRA 的 slot 圖在 onnxruntime-node 1.22 上 **44/96（與 q8 一致）**。`ort122_slot_adapter.json`：帶 toolcall-r4 adapter 的 slot 圖 **10/96（全對 0/6）**。注意：這個 10/96 是對 **合併後 HF fp32** 的參考，不是對「PEFT adapter」的參考；adapter 的正確性目前只有 25.11 的 first-step cos 0.926，沒有 adapter 版的貪婪比對。 |
+| 5 | 取消／暫停／續跑 | **完成（真的 studio_host＋子行程）** | `~/fa/lora-export-work/driver/host_cancel_e2e.js`：啟動 ONNX 匯出 → quantize 開始時取消 → `state: cancelled`，步驟 `merge:完成, convert:完成, quantize:中斷, verify:未執行, pack:未執行`；`export_state.json` 的 done＝`[merge, convert]` → 續跑 → `merge:略過（已完成）, convert:略過（已完成）, quantize/verify/pack:完成` → bundle 7 個檔（q8 756,736,915 位元組；fp32 排除）**sha256 全部 MATCH**。暫停（pause）路徑在 25.9 已跑過。 |
+| 6 | Python smoke 進 run-core-tests | **完成** | `run-core-tests.js` 的「匯出 smoke」區塊：直接執行 `lora-train/test_export_smoke.py`（迷你 Qwen3）→ **18 passed, 0 failed, 0 skipped**（輸出行：`匯出 smoke（Python，迷你 Qwen3）：18 passed, 0 failed, 0 skipped`）。大型權重不在 smoke 內（沒有 measureOnly 的大型執行，寫明：完整 Qwen3-0.6B 的匯出見 25.3）。 |
+| 7 | 修到 run-core-tests 全綠 | **未全綠（環境因素，逐項列在下方）** | 本輪修正：`/api/eval` 不列 llm（`/api/eval/run` 對 llm 回 400）；`studio_server_core.test.js` 種類數改為 6（126 passed）。完整執行 `scripts/run-core-tests.js` 三次：第三次（最後）結果 **360/378 組通過，18 組標失敗**：（a）13 組需要 `~/.cache/fa-ts`（tree-sitter 快取）與 1 組需要 ruby 文法，這台沒有，執行器印「略過」但計為失敗；（b）膠水、merge diff 三組：`python` 在 PATH 上是 Python 2.7，單獨用 python3 當 `python` 重跑全過（膠水 23、code_patch 64、code_patch_repair 97、code_patch_wire 7）；（c）程式優化的 prefix-sum 加速比在多工負載下 2.4 倍（門檻 3）、獨自執行 13/13 通過。另：`ingest.test.js` 需要主 checkout 的 `wiki/`，worktree 沒有，以符號連結補上後 67 passed。匯出 smoke 在 run-core-tests 內：18 passed。 |
+
+**沒做完、要寫清楚的**
+- 網頁版模型選單沒有在完整工作室頁面內用瀏覽器點擊實測（只有 harness 頁與路由測試）。
+- Electron 內的 ORT 1.22 生成與「設為離線模型 → 重啟 → 生成」沒做（見 3a）。
+- adapter 版 slot 的貪婪比對對象應改成 PEFT adapter 的 greedy，目前沒有這份參考。
+- 網頁版 q8 的品質：6 題 16 token 的全對只有 2/6，與 HF 的差距仍在（25.4）。
