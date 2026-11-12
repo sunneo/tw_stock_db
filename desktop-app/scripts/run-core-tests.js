@@ -54,6 +54,7 @@ const suites = [
     ['領域包 linuxreal（真實 Linux 程式設計：環境變數、argv、結束碼、子行程、管線、fork、檔案 IO、本機 socket；測試帶 args／env／files／needs，fork 在 Windows 走 WSL；需 tree-sitter 快取）', 'renderer/src/uml/domain_linuxreal.test.js'],
     ['領域包 lzma（LZMA alone／LZMA2／BCJ／xz 容器解碼，對照 Python 標準庫 lzma；需 tree-sitter 快取）', 'renderer/src/uml/domain_lzma.test.js'],
     ['領域包 binfmt（xz 標頭檢查類型名稱、xz 頁尾、8 位元調色盤 BMP 寫出；train 全過、holdout 只量測）', 'renderer/src/uml/domain_binfmt.test.js'],
+    ['領域包 fieldcount（讀欄位：固定位移＋寬度＋端序；計數：位元組標記次數、位元組值個數；train 全過）', 'renderer/src/uml/domain_fieldcount.test.js'],
     ['領域包 inflate（DEFLATE 完整解壓：未壓縮／固定／動態霍夫曼、zlib／gzip 外殼、區塊統計、碼長表；train 全過、holdout 只量測；需 tree-sitter 快取）', 'renderer/src/uml/domain_inflate.test.js'],
     ['領域包 tarx（tar 進階：PAX 擴充標頭、GNU 長檔名、ustar prefix、PAX 記錄編碼；train 全過、holdout 只量測；需 tree-sitter 快取）', 'renderer/src/uml/domain_tarx.test.js'],
     ['領域包 bmpx（BMP 進階讀取：RLE8／RLE4、16／32 位元色彩遮罩；train 全過、holdout 只量測；需 tree-sitter 快取）', 'renderer/src/uml/domain_bmpx.test.js'],
