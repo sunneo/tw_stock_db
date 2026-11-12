@@ -18,6 +18,7 @@ check('版面核心原始碼一致', sandbox.FA_STUDIO_LAYOUT_SRC === rd('render
 // 2026-11-12：領域分頁在桌面版顯示「讀取領域失敗：沒有這個路由：GET /api/domains」——領域路由的五個核心沒嵌進渲染端，self.FaStudioDomainApi 是空的
 check('嵌入的 FaStudio 帶領域路由（FaStudioDomainApi／Spec／Eval／Demo／Expr）', ['FaStudioDomainApi', 'FaStudioDomainSpec', 'FaStudioDomainEval', 'FaStudioDomainDemo', 'FaStudioExpr'].every((k) => !!(sandbox.FaStudio && sandbox.FaStudio[k])), Object.keys(sandbox.FaStudio || {}));
 const files = sandbox.FA_STUDIO_HOST_FILES;
+check('嵌入的訓練資料夾帶 requirements.txt（安裝指令要用）', !!files['lora-train/requirements.txt'] && /transformers>=/.test(files['lora-train/requirements.txt']) && /peft>=/.test(files['lora-train/requirements.txt']));
 Object.keys(files).forEach((n) => { const src = n.indexOf('lora-train/') === 0 ? 'lora-train/' + n.slice(11) : 'renderer/src/studio/' + n; check('嵌入與來源一致：' + n, files[n] === rd(src)); });
 const lit = (t) => JSON.stringify(t).split(String.fromCharCode(0x2028)).join('\u2028').split(String.fromCharCode(0x2029)).join('\u2029');
 check('檢視器範本一致', view.indexOf(lit(rd('renderer/src/studio/studio-viewer.template.html'))) >= 0);

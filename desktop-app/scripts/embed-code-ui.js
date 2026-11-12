@@ -546,7 +546,8 @@ function embedStudio() {
     code += 'const FA_WEBTRAIN_WORKER_SRC = ' + lit(tsrc) + ';\n';
     const HOST = ['backend_core', 'bench_core', 'backend_cpu_js', 'backend_cpu_py', 'backend_planned', 'checkpoint_core', 'studio_config_core', 'llm_export_core', 'studio_host'];
     const files = {}; for (const n of HOST) files[n + '.js'] = rd('renderer/src/studio/' + n + '.js');
-    for (const n of ['train_lora.py', 'lora_common.py']) files['lora-train/' + n] = rd('lora-train/' + n);
+    // requirements.txt 也要帶：安裝指令（installHint）指向 <studio-host>/lora-train/requirements.txt，沒帶就「File not found」（2026-11-12 使用者實測）
+    for (const n of ['train_lora.py', 'lora_common.py', 'requirements.txt']) files['lora-train/' + n] = rd('lora-train/' + n);
     code += 'const FA_STUDIO_HOST_FILES = ' + lit(files) + ';';
     let a = src.indexOf('/* STUDIO-BEGIN */'), b = src.indexOf('/* STUDIO-END */');
     if (a < 0 || b < 0) { const at = src.indexOf('/* AIDOCVIEW-END */'); if (at < 0) throw new Error('找不到 AIDOCVIEW-END 標記'); const cut = at + '/* AIDOCVIEW-END */'.length; src = src.slice(0, cut) + '\n/* STUDIO-BEGIN */\n/* STUDIO-END */\n/* STUDIOVIEW-BEGIN */\n/* STUDIOVIEW-END */' + src.slice(cut); a = src.indexOf('/* STUDIO-BEGIN */'); b = src.indexOf('/* STUDIO-END */'); }
