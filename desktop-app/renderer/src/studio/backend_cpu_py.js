@@ -58,11 +58,22 @@ function defaultDetect(spawnSync, opts) {
 function triedNote(d) { const e = d && d.tried ? d.tried.filter((x) => x.error) : []; return e.length ? '探測失敗項目：' + e.map((x) => x.path + '（' + x.error + '）').join('、') + '。' : ''; }
 
 // 沒有可用環境時 probe 的說明與要執行的安裝指令
-function installHint(loraDir) {
-  const d = loraDir || 'lora-train', v = d + '/.venv', py = v + '/Scripts/python.exe';
-  return '需要 Python 3.11 以上與 torch／transformers／peft，建議在 lora-train/.venv 安裝。安裝指令：'
-    + 'py -3.13 -m venv "' + v + '"；"' + py + '" -m pip install torch --extra-index-url https://download.pytorch.org/whl/cpu；'
-    + '"' + py + '" -m pip install -r "' + d + '/requirements.txt" --extra-index-url https://download.pytorch.org/whl/cpu';
+function installHint(loraDir, plat) {
+  const d = loraDir || 'lora-train', v = d + '/.venv';
+  // 平台：呼叫端給的 > 依資料夾路徑長相判斷（C:\ 或反斜線＝Windows，其餘＝Linux／macOS）。2026-11-12：Ubuntu 使用者看到的是 Windows 的 py -3.13／Scripts\python.exe，照抄不能用
+  const win = plat ? plat === 'win32' : /^[A-Za-z]:|\\/.test(d);
+  const need = '需要 Python 3.11 以上與 torch／transformers／peft，建議在 lora-train/.venv 安裝。安裝指令：';
+  if (win) {
+    const py = v + '/Scripts/python.exe';
+    return need + 'py -3.13 -m venv "' + v + '"；"' + py + '" -m pip install torch --extra-index-url https://download.pytorch.org/whl/cpu；'
+      + '"' + py + '" -m pip install -r "' + d + '/requirements.txt" --extra-index-url https://download.pytorch.org/whl/cpu';
+  }
+  const py = v + '/bin/python';
+  // Linux／macOS：系統的 python3 常常太舊（Ubuntu 22.04 是 3.10，預設套件庫沒有 python3.13）。用 uv 自己抓 Python 3.13（不用 sudo、不動系統 Python）；備案是 Ubuntu 的 deadsnakes PPA
+  return need + 'curl -LsSf https://astral.sh/uv/install.sh | sh；uv venv --python 3.13 "' + v + '"；'
+    + 'uv pip install --python "' + py + '" torch --index-url https://download.pytorch.org/whl/cpu；'
+    + 'uv pip install --python "' + py + '" -r "' + d + '/requirements.txt" --extra-index-url https://download.pytorch.org/whl/cpu'
+    + '（備案，Ubuntu：sudo add-apt-repository ppa:deadsnakes/ppa && sudo apt update && sudo apt install python3.13 python3.13-venv，再 python3.13 -m venv "' + v + '"，用 "' + py + '" -m pip install 安裝同樣的套件）';
 }
 
 // 解析 train_lora.py（HF Trainer）印出的一行：log 字典、評估、tqdm 進度、[done]、[paused]
@@ -119,9 +130,9 @@ function createCpuPyBackend(o) {
       const hw = o.hw || {};
       const fp = { backend: 'cpu-py', cpu: hw.cpuModel || null, cores: hw.cores || null, python_version: d.version || null, torch_version: d.packages && d.packages.torch || null, engine_version: 'train_lora.py' };
       const dev = { name: hw.cpuModel || 'CPU', vendor: 'cpu', fp16: false };
-      if (!d || !d.found) return B.probeResult(false, (d && d.tooOld ? '找到的 Python 版本太舊（' + d.tooOld + '）。' : '找不到 Python。') + triedNote(d) + installHint(o.loraDir) + '；或改匯出訓練包到別台訓練', dev, fp);
+      if (!d || !d.found) return B.probeResult(false, (d && d.tooOld ? '找到的 Python 版本太舊（' + d.tooOld + '）。' : '找不到 Python。') + triedNote(d) + installHint(o.loraDir, o.platform) + '；或改匯出訓練包到別台訓練', dev, fp);
       const missing = ['torch', 'transformers', 'peft'].filter((k) => !(d.packages && d.packages[k]));
-      if (missing.length) return B.probeResult(false, '已找到 Python ' + d.version + (d.path ? '（' + d.path + '）' : '') + '，但缺少套件：' + missing.join('、') + '。' + installHint(o.loraDir), dev, fp);
+      if (missing.length) return B.probeResult(false, '已找到 Python ' + d.version + (d.path ? '（' + d.path + '）' : '') + '，但缺少套件：' + missing.join('、') + '。' + installHint(o.loraDir, o.platform), dev, fp);
       if (!o.fs.existsSync(script())) return B.probeResult(false, '找不到訓練腳本 ' + script(), dev, fp);
       return B.probeResult(true, '', dev, fp);
     },

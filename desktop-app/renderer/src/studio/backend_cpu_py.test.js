@@ -76,7 +76,7 @@ const mkBackend = (o) => { const fs = memfs(); fs.writeFileSync('/lora/train_lor
     const r3 = await P.defaultDetect(sp3, { fs: { existsSync: () => false }, path: winPath, platform: 'win32', venvDirs: [] })();
     check('探測：只有 3.10 → found:false 並記下太舊的版本', !r3.found && r3.tooOld === '3.10.4', r3);
     const pr3 = await P.createCpuPyBackend({ detect: async () => r3, spawn: () => {}, fs: memfs(), path: posix, loraDir: '/lora', hw: { cores: 4 } }).probe();
-    check('太舊：reason 寫明需要 3.11 以上與三個套件、建議 .venv，並附安裝指令與 --extra-index-url', !pr3.available && /3\.10\.4/.test(pr3.reason) && /需要 Python 3\.11 以上與 torch／transformers／peft，建議在 lora-train\/\.venv 安裝/.test(pr3.reason) && /py -3\.13 -m venv/.test(pr3.reason) && /--extra-index-url https:\/\/download\.pytorch\.org\/whl\/cpu/.test(pr3.reason), pr3);
+    check('太舊：reason 寫明需要 3.11 以上與三個套件、建議 .venv，並附安裝指令與 --extra-index-url', !pr3.available && /3\.10\.4/.test(pr3.reason) && /需要 Python 3\.11 以上與 torch／transformers／peft，建議在 lora-train\/\.venv 安裝/.test(pr3.reason) && /uv venv --python 3\.13/.test(pr3.reason) && /--extra-index-url https:\/\/download\.pytorch\.org\/whl\/cpu/.test(pr3.reason), pr3);
     check('pyOk 邊界', P.pyOk('3.11.0') && P.pyOk('3.13.1') && !P.pyOk('3.10.9') && !P.pyOk('2.7.18') && P.pyOk('4.0.0') && !P.pyOk(null));
   }
 
@@ -197,6 +197,17 @@ const mkBackend = (o) => { const fs = memfs(); fs.writeFileSync('/lora/train_lor
   check('規範化檢查點：step 取自 checkpoint-N、loss_tail 取自 trainer_state、格式合法、sha256 一致', cp.ckpt.step === 20 && cp.ckpt.loss_tail.join() === '2,1.5' && C.validateCkptJson(cp.ckpt).ok && C.verifyChecksums(cp).ok, cp.ckpt);
   check('誠實標明缺少優化器張量與原生檢查點位置', cp.ckpt.missing_files.join() === 'opt_m.f32,opt_v.f32' && cp.ckpt.produced_by.native_dir === '/o/checkpoint-20' && /重置/.test(cp.ckpt.notes[0]), cp.ckpt);
   check('safetensors 支援 BF16／F16', (() => { const hb = Buffer.from(JSON.stringify({ x: { dtype: 'BF16', shape: [1], data_offsets: [0, 2] }, y: { dtype: 'F16', shape: [1], data_offsets: [2, 4] } })); const l = Buffer.alloc(8); l.writeBigUInt64LE(BigInt(hb.length)); const d = Buffer.alloc(4); d.writeUInt16LE(0x3fc0, 0); d.writeUInt16LE(0x3c00, 2); const r = P.readSafetensors(Buffer.concat([l, hb, d])); return r[0].data[0] === 1.5 && r[1].data[0] === 1; })());
-  console.log(ok + ' passed, ' + bad.length + ' failed', bad);
+  
+// ---- 安裝指令依平台（Ubuntu 使用者看到的不能是 Windows 的 py -3.13／Scripts\\python.exe）----
+{
+    const BSL = String.fromCharCode(92);
+    const lin = P.installHint('/home/u/.config/app/studio-host/lora-train', 'linux'), linAuto = P.installHint('/home/u/lora-train');
+    check('installHint：Linux 用 uv＋bin/python，不出現 Windows 的指令', /uv venv --python 3\.13/.test(lin) && /\.venv\/bin\/python/.test(lin) && !/Scripts/.test(lin) && !/py -3\.13/.test(lin), lin);
+    check('installHint：Linux 有 Ubuntu 備案（deadsnakes）', /deadsnakes/.test(lin) && /python3\.13-venv/.test(lin));
+    check('installHint：沒給平台時依路徑判斷（/home/… ＝ Linux）', /uv venv/.test(linAuto));
+    check('installHint：Windows 照舊', /py -3\.13 -m venv/.test(P.installHint('D:' + BSL + 'x' + BSL + 'lora-train', 'win32')) && /Scripts\/python\.exe/.test(P.installHint('D:/x/lora-train')), P.installHint('D:/x/lora-train'));
+}
+
+console.log(ok + ' passed, ' + bad.length + ' failed', bad);
   process.exit(bad.length ? 1 : 0);
 })();
