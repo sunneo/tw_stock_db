@@ -328,6 +328,7 @@ lora-train/.venv/Scripts/pip install -r lora-train/requirements.txt
 3. **退步判定要有樣本數**：n < 20 的組只報告，不作退步判定；可以用來提出疑問，但不能拿來 pack 或否決。
 4. **範圍內與範圍外分欄**：報告退步表要分「適用範圍內」與「範圍外」兩欄，範圍外沒評的要寫「未量」。
 5. **已存輸出可以重新評分**（`regrade_*.py`），但重評要註明用的是哪一版判準。
+6. **只量一次**：同一批留出列在同一組判準下只量一次。要再量，就要先擴充留出（新批次）並重新登記，不可以拿同一批反覆量到過為止。
 
 ## 19. 第三、第四顆 adapter：`plan`、`colu`（2026-11-12 實跑，已打包 v1）
 
@@ -357,3 +358,15 @@ lora-train/.venv/Scripts/pip install -r lora-train/requirements.txt
 **打包**：`out/release/plan-r4/`、`out/release/colu-r4/`，各 1 個分片、10,143,496 位元組。卡片的 eval 欄位沒有放（欄位只定義拆題與 function call 格式），數字記在這裡。
 
 **下一步**：`decompose_v2`（1,133 列，約 141 步）正在訓練；v2 的評量依 `EVAL_CRITERIA_v2.md` 的判準（全量 528 列、group/git ≥ 20）。
+
+## 20. toolcall v2 評量（預先登記，2026-11-12；本節只寫判準與步驟，結果在下一次提交補上）
+
+**登記順序（照指揮要求）**
+1. 判準：`lora-train/EVAL_CRITERIA_v2.md`，提交 `8df5bad1`，看 v2 輸出之前寫好。計分器 `eval_run.py`、`regrade_toolcall.py` 沒有改動（最後一次修改在 `4242dc62`）。
+2. 留出擴充：`lora-train/gen/gen_git_heldout.js`，與本節同一提交。group/git 新增 24 列（git_status、git_log、git_pull、git_push、git_commit、git_clone 各 4 句；人工寫的口語句，不是模板）。腳本以工具 schema 驗證參數（未知參數、缺必填、enum 錯都丟掉），並與訓練檔的使用者句逐字比對，有重複就中止；本次比對結果為 0 重複。
+3. 留出檔：`data/heldout_toolcall_v2.jsonl` ＝ v1 的 528 列 ＋ 新增的 24 列 ＝ **552 列**。group/git 由 4 列增至 **28 列**（≥ 20，符合判準）。sha256：`98cba02dc4053eb3fa65e107e6cb04fd166ac5ffed6ea89c6689ed4da7737f1c`。檔案本身不入 git（`data/*.jsonl` 被 `.gitignore` 忽略），由上述腳本與參數重現；新增列的 sha256 為 `a407b5856cd515b472a9d86b10f69287086af9995856cb86cbae836c73d42a61`。
+4. 量測：`eval_run.py`，`LORA_EVAL_EVERY=1`（全部列），基底與 toolcall-r4 同一批 552 列，只量一次。判準同 `EVAL_CRITERIA_v2.md`：格式合法率（主要，微調 ≥ 基底 + 10 個百分點）；缺工具拒絕（句型表）；退步＝n ≥ 20 且微調少 ≥ 2 列；範圍內（toolcall）與範圍外（colu、think_stack、decompose）分欄，範圍外若沒量就寫「未量」。
+
+**本次不重訓**：v2 量的是 toolcall-r4 的權重（v1 訓練的那版），在上述凍結判準下的表現。缺工具拒絕的訓練資料（`when2call` 的 `w2c_missing`，訓練池 `data/train.jsonl` 內 230 列，`data/multi/toolcall.jsonl` 降取樣後 103 列）本來就在 v1 的訓練集內，不需要重新生成；沒有其他指定的新增訓練資料，所以不重訓。若要重訓，須先指定新增資料，視為新版本，並開新的留出批次。
+
+**事後修正的紀錄方式**：量完之後若要改判準，只能寫成事後修正，附上判準改動的提交與理由，結論標明「待新批次以預先登記判準驗證」，不可寫成已驗證。
