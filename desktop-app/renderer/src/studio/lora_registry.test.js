@@ -5,7 +5,7 @@ const H = (c) => c.repeat(64);
 const ENV = { base: 'Qwen/Qwen3-0.6B', rank_slots: [16], prompt_format_version: 3, tool_catalog_sha256: H('a') };
 const MB = 1024 * 1024;
 const good = { score: 1, groups: { tools: { adapter: 53, base: 6 }, ext: { adapter: 9, base: 7 } } };
-const mk = (id, o) => Object.assign({ id, source: 'builtin', base: ENV.base, rank: 16, prompt_format_version: 3, tool_catalog_sha256: H('a'), tool_catalog_scheme: 'shape-v1', domains: ['tool_routing'], location: 'fap:x/' + id, size: 40 * MB, sha256: H('b'), eval: good, added: 1 }, o || {});
+const mk = (id, o) => Object.assign({ id, source: 'builtin', base: ENV.base, rank: 16, prompt_format_version: 3, tool_catalog_sha256: H('a'), tool_catalog_scheme: 'shape-v2', domains: ['tool_routing'], location: 'fap:x/' + id, size: 40 * MB, sha256: H('b'), eval: good, added: 1 }, o || {});
 function mkLoader() { const log = []; return { log, load: async (e) => { log.push('load ' + e.id); return { id: e.id }; }, unload: async (e) => { log.push('unload ' + e.id); } }; }
 let t = 1000; const now = () => ++t;
 
@@ -293,7 +293,7 @@ let t = 1000; const now = () => ++t;
         check('id 不是已知內建的條目沒有評量仍不自動選用', reg2.select({ domains: ['colu'] }).plan.length === 0);
     }
 
-    // 工具清單雜湊（shape-v1）：只看名稱＋參數結構，不看說明文字；舊格式與缺項都要說出來
+    // 工具清單雜湊（shape-v2）：只看名稱＋參數結構，不看說明文字；舊格式與缺項都要說出來
     { const T = (name, props, req, desc) => ({ name, description: desc || 'd', parameters: { type: 'object', properties: props, required: req || [] } });
       const a = [T('b_tool', { q: { type: 'string' } }, ['q']), T('a_tool', { n: { type: 'integer' }, mode: { type: 'string', enum: ['x', 'y'] } }, [])];
       const txtA = R.toolCatalogShapeText(a);
@@ -303,7 +303,7 @@ let t = 1000; const now = () => ++t;
       check('shape：必填改了會變', R.toolCatalogShapeText([T('b_tool', { q: { type: 'string' } }, []), a[1]]) !== txtA);
       check('shape：enum 改了會變', R.toolCatalogShapeText([a[0], T('a_tool', { n: { type: 'integer' }, mode: { type: 'string', enum: ['x'] } }, [])]) !== txtA);
       check('shape：無參數工具與缺 parameters 不拋錯', typeof R.toolCatalogShapeText([{ name: 'z' }, null, { description: 'no name' }]) === 'string' && R.toolCatalogShapeText([{ name: 'z' }]).indexOf('"z"') > 0);
-      check('shape：格式名稱', R.TOOL_HASH_SCHEME === 'shape-v1');
+      check('shape：格式名稱', R.TOOL_HASH_SCHEME === 'shape-v2');
       const e = mk('s', { tool_catalog_sha256: H('c'), tool_catalog_scheme: undefined });
       const cl = R.checkCompat(e, ENV); check('舊格式雜湊 → 警告「舊格式」而不是「已變動」', cl.level === 'warn' && /舊格式/.test(cl.warnings[0].message), cl);
       const cm = R.checkCompat(mk('s', { tool_catalog_sha256: H('c') }), ENV); check('同格式不同雜湊 → 警告「已變動」', cm.level === 'warn' && /已變動/.test(cm.warnings[0].message), cm);

@@ -18,12 +18,14 @@ for (let i = 0, n = 0; i < buf.length; i += SZ, n++) { const b = buf.subarray(i,
 fs.copyFileSync(p.join(adapterDir, 'adapter_config.json'), p.join(out, 'adapter_config.json'));
 const cfg = JSON.parse(fs.readFileSync(p.join(adapterDir, 'adapter_config.json'), 'utf8'));
 const opt = (f) => { try { return sha(fs.readFileSync(p.join(here, f))); } catch (e) { return null; } };
-// 工具清單雜湊用 shape-v1（工具名稱＋參數結構，見 renderer/src/studio/lora_registry_core.js 的 toolCatalogShapeText）：
-// 主程式執行時拿同一套算法比對；檔案位元組的雜湊只留在 tool_catalog_file_sha256 供追溯，不拿來比對。
+// 工具清單雜湊 shape-v2：輸入是 app 內建工具登記的快照 data/app_snapshot_tools.json（lora-train/tool_snapshot.js 產生），
+// 用 lora_registry_core 的 toolCatalogHash（與主程式 _toolCatalogSha256 同一個函式）。檔案位元組的雜湊只留在 tool_catalog_file_sha256 供追溯，不拿來比對。
 const RegCore = require('../renderer/src/studio/lora_registry_core.js');
-const toolShape = (() => { try { return sha(Buffer.from(RegCore.toolCatalogShapeText(JSON.parse(fs.readFileSync(p.join(here, 'data', 'real_tools_all.json'), 'utf8')).tools), 'utf8')); } catch (e) { return null; } })();
+const SNAPSHOT = p.join(here, 'data', 'app_snapshot_tools.json');
+const shaBytes = (u8) => c.createHash('sha256').update(u8).digest('hex');
+const toolShape = (() => { try { return RegCore.toolCatalogHash(JSON.parse(fs.readFileSync(SNAPSHOT, 'utf8')).tools, shaBytes); } catch (e) { return null; } })();
 const man = { name, base: cfg.base_model_name_or_path || 'Qwen/Qwen3-0.6B', format: 'peft-lora', rank: cfg.r, alpha: cfg.lora_alpha, target_modules: cfg.target_modules,
-  trained_on: { train_file_sha256: opt('data/train.jsonl'), tool_catalog_sha256: toolShape, tool_catalog_scheme: toolShape ? RegCore.TOOL_HASH_SCHEME : null, tool_catalog_file_sha256: opt('data/real_tools_all.json') },
+  trained_on: { train_file_sha256: opt('data/train.jsonl'), tool_catalog_sha256: toolShape, tool_catalog_scheme: toolShape ? RegCore.TOOL_HASH_SCHEME : null, tool_catalog_file_sha256: opt('data/app_snapshot_tools.json') },
   file: 'adapter_model.safetensors', total_size: buf.length, sha256: sha(buf), parts, eval: evalPath && fs.existsSync(evalPath) ? JSON.parse(fs.readFileSync(evalPath, 'utf8')) : null, date: new Date().toISOString().slice(0, 10) };
 fs.writeFileSync(p.join(out, 'manifest.json'), JSON.stringify(man, null, 2));
 fs.writeFileSync(p.join(out, 'join.js'), `// node join.js  -> 重組 ${man.file} 並核對 sha256

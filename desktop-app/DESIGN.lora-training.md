@@ -1155,3 +1155,13 @@ model card 欄位以 `description`（一句話，來自描述檔，§13.2）與 
 - 通過：`lora_route_wiring.test.js` 30、`lora_manage_core.test.js` 49。
 - 腳本未入測試：`native_check/*`、`tool_catalog_compare.js`（診斷用，手動執行）。
 - 沒有推送、沒有發布、沒有熱更新送達。
+
+### 29.5 工具雜湊缺陷的修正（shape-v2，指揮要求）
+
+- **原因**：§29.2 的不相等來自輸入不同——訓練端用全部靜態盤點（322），主程式用建構子登記的內建快照（214）。正規化函式本來就是同一個。
+- **修正**：
+  - 新的唯一輸入：`lora-train/data/app_snapshot_tools.json`（214 列，由 `lora-train/tool_snapshot.js --write` 從 floating-assistant.js 的 `_registerBuiltinAiTools` 產生）。
+  - 新的共用函式：`lora_registry_core.toolCatalogHash(tools, shaOfBytes)`。訓練端（`pack_adapter.js`，manifest 的 `trained_on.tool_catalog_sha256`）與主程式（`_toolCatalogSha256`）都呼叫它。
+  - 格式名稱由 `shape-v1` 改為 `shape-v2`（輸入定義變了，舊雜湊不能比）。沒有已打包的 shape-v1 adapter，舊格式的 adapter 仍會得到「舊格式」警告。
+- **測試**：`renderer/src/studio/tool_catalog_equal.test.js` 9 項通過，包括：快照檔與原始碼一致（漂移守門）、主程式的真方法本體與訓練端雜湊相等、少一個工具或改一個型別會變、說明文字不影響。另外 `lora_registry.test.js` 109、`studio_server_core.test.js` 138、`lora_manage_core.test.js` 49、`lora_route_wiring.test.js` 30、`build-lora-asset.test.js` 19 通過。pack_adapter 用假 adapter 試跑，記錄的雜湊與共用函式算出的相等。
+- **仍未證明**：快照是從原始碼以替身執行得到的。主程式執行期會依設定分支的登記，替身只走預設分支。真正的執行期值仍需 Electron 內呼叫 `toolCatalogSha256()` 才能確認；目前的相等是「同一份輸入、同一個函式」，不是「執行期實測相等」。

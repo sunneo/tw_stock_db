@@ -1,0 +1,7091 @@
+{
+ "source": "renderer/src/floating-assistant.js",
+ "method": "_registerBuiltinAiTools",
+ "count": 214,
+ "tools": [
+  {
+   "name": "list_ai_functions",
+   "parameters": null
+  },
+  {
+   "name": "call_ai_function",
+   "parameters": null
+  },
+  {
+   "name": "add_ai_function",
+   "parameters": null
+  },
+  {
+   "name": "delete_ai_function",
+   "parameters": null
+  },
+  {
+   "name": "rag_store_graph_node",
+   "parameters": null
+  },
+  {
+   "name": "rag_query_graph",
+   "parameters": null
+  },
+  {
+   "name": "rag_chunk_document",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "documentText": {
+      "type": "string",
+      "description": "文章內文（跟file_id擇一）"
+     },
+     "file_id": {
+      "type": "string",
+      "description": "（跟documentText擇一）persistentStorage裡的檔案id"
+     },
+     "entry_path": {
+      "type": "string",
+      "description": "（選填）file_id指向壓縮檔時，要處理的內部項目路徑"
+     },
+     "title": {
+      "type": "string",
+      "description": "文章大標題"
+     },
+     "tags": {
+      "type": "string",
+      "description": "（選填）自訂標籤"
+     }
+    },
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "rag_delete",
+   "parameters": null
+  },
+  {
+   "name": "get_tool_details",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "names": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      },
+      "description": "要查詢的工具名稱清單"
+     }
+    },
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "list_ai_features",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "category": {
+      "type": "string",
+      "description": "分類id，例如media、coding、visual"
+     },
+     "id": {
+      "type": "string",
+      "description": "功能id，例如media-transcribe"
+     },
+     "query": {
+      "type": "string",
+      "description": "關鍵字（比對名稱、說明、範例、工具名、指令）"
+     }
+    },
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "delegate_to_subagent",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "task": {
+      "type": "string",
+      "description": "要委派給子agent的任務描述"
+     },
+     "domain": {
+      "type": "string",
+      "description": "（選填）明確知道的領域代號，例如file_analysis；不確定就留空讓系統自動判斷"
+     }
+    },
+    "required": [
+     "task"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "list_file_access_points",
+   "parameters": {
+    "type": "object",
+    "properties": {},
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "fap_list_files",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "ref": {
+      "type": "string",
+      "description": "格式：fap:<名稱或id>[/<路徑>]"
+     }
+    },
+    "required": [
+     "ref"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "fap_read_file",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "ref": {
+      "type": "string",
+      "description": "格式：fap:<名稱或id>/<檔案路徑>"
+     },
+     "offset": {
+      "type": "integer",
+      "description": "選填：從第幾個字元開始讀（分頁用，預設0）"
+     },
+     "max_chars": {
+      "type": "integer",
+      "description": "選填：這次最多讀幾個字元（預設依模型內容窗口自適應）"
+     },
+     "start_line": {
+      "type": "integer",
+      "description": "選填：從第幾行開始讀（1起算，優先於offset）"
+     },
+     "max_lines": {
+      "type": "integer",
+      "description": "選填：這次最多讀幾行"
+     }
+    },
+    "required": [
+     "ref"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "fap_apply_patch",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "ref": {
+      "type": "string",
+      "description": "patch路徑的根資料夾，格式：fap:<名稱或id>[/<子資料夾>]"
+     },
+     "patch": {
+      "type": "string",
+      "description": "完整的unified diff文字（以換行結尾）"
+     },
+     "check_only": {
+      "type": "boolean",
+      "description": "選填：true=只乾跑驗證，不真的寫入"
+     },
+     "strip": {
+      "type": "integer",
+      "description": "選填：去掉路徑前綴的層數，預設1（對應a/ b/）"
+     }
+    },
+    "required": [
+     "ref",
+     "patch"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "attachment_apply_patch",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "file_id": {
+      "type": "string",
+      "description": "要修改的附件id（用list_uploaded_files取得）"
+     },
+     "file_ids": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      },
+      "description": "選填：同時修改多個附件時用這個（patch裡每個檔案各一段）"
+     },
+     "patch": {
+      "type": "string",
+      "description": "完整的unified diff文字（以換行結尾）"
+     },
+     "check_only": {
+      "type": "boolean",
+      "description": "選填：true=只乾跑驗證，不產生新檔案"
+     },
+     "in_place": {
+      "type": "boolean",
+      "description": "選填：true=覆寫原附件（預設false，另存成「.已修改」新附件）"
+     },
+     "strip": {
+      "type": "integer",
+      "description": "選填：去掉路徑前綴的層數，預設1（對應a/ b/）"
+     }
+    },
+    "required": [],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "fap_write_file",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "ref": {
+      "type": "string",
+      "description": "格式：fap:<名稱或id>/<檔案路徑>"
+     },
+     "content": {
+      "type": "string",
+      "description": "要寫入的純文字內容（整份覆蓋，不是附加）"
+     }
+    },
+    "required": [
+     "ref",
+     "content"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "fap_copy_from_storage",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "file_id": {
+      "type": "string",
+      "description": "persistentStorage裡的檔案id（不限uploaded，AI自己產生的檔案也可以）"
+     },
+     "ref": {
+      "type": "string",
+      "description": "格式：fap:<名稱或id>/<路徑>；只給資料夾路徑（\"/\"結尾或留空）會自動沿用來源檔名"
+     },
+     "move": {
+      "type": "boolean",
+      "description": "true=複製後刪除persistentStorage裡的原始檔案（真正移動）；預設false=保留原始檔案（複製）"
+     }
+    },
+    "required": [
+     "file_id",
+     "ref"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "fap_copy_to_storage",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "ref": {
+      "type": "string",
+      "description": "格式：fap:<名稱或id>/<檔案路徑>"
+     }
+    },
+    "required": [
+     "ref"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "fap_download_url",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "url": {
+      "type": "string",
+      "description": "要下載的完整http(s)網址"
+     },
+     "ref": {
+      "type": "string",
+      "description": "格式：fap:<名稱或id>[/<路徑>]；只給資料夾路徑會自動沿用網址檔名"
+     }
+    },
+    "required": [
+     "url",
+     "ref"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "fap_find_file",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "ref": {
+      "type": "string",
+      "description": "格式：fap:<名稱或id>[/<起始路徑>]"
+     },
+     "query": {
+      "type": "string",
+      "description": "要搜尋的檔名關鍵字（子字串、不分大小寫）"
+     }
+    },
+    "required": [
+     "ref",
+     "query"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "git_clone",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "ref": {
+      "type": "string",
+      "description": "目標File Access Point資料夾，格式：fap:<名稱或id>[/<子路徑>]"
+     },
+     "url": {
+      "type": "string",
+      "description": "完整git repo網址，例如 https://github.com/owner/repo.git"
+     },
+     "branch": {
+      "type": "string",
+      "description": "要clone的分支（留空＝預設分支）"
+     },
+     "depth": {
+      "type": "number",
+      "description": "只抓最近N筆commit的淺clone（留空＝完整歷史，repo大時建議指定，例如1）"
+     }
+    },
+    "required": [
+     "ref",
+     "url"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "git_pull",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "ref": {
+      "type": "string",
+      "description": "File Access Point資料夾，格式：fap:<名稱或id>[/<子路徑>]"
+     },
+     "branch": {
+      "type": "string",
+      "description": "要pull的分支（留空＝目前所在分支）"
+     }
+    },
+    "required": [
+     "ref"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "git_status",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "ref": {
+      "type": "string",
+      "description": "File Access Point資料夾，格式：fap:<名稱或id>[/<子路徑>]"
+     }
+    },
+    "required": [
+     "ref"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "git_log",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "ref": {
+      "type": "string",
+      "description": "File Access Point資料夾，格式：fap:<名稱或id>[/<子路徑>]"
+     },
+     "depth": {
+      "type": "number",
+      "description": "要看最近幾筆commit，預設10，上限100"
+     }
+    },
+    "required": [
+     "ref"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "git_commit",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "ref": {
+      "type": "string",
+      "description": "File Access Point資料夾，格式：fap:<名稱或id>[/<子路徑>]"
+     },
+     "message": {
+      "type": "string",
+      "description": "commit訊息"
+     }
+    },
+    "required": [
+     "ref",
+     "message"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "coding_read_file",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "cwd_abs": {
+      "type": "string",
+      "description": "目標專案資料夾（視為git repo根目錄）的File Access Point參照，格式：fap:<名稱或id>[/<子路徑>]"
+     },
+     "path": {
+      "type": "string"
+     },
+     "start_line": {
+      "type": "number"
+     },
+     "line_numbers": {
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "cwd_abs",
+     "path"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "apply_git_patch",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "cwd_abs": {
+      "type": "string",
+      "description": "目標專案資料夾（視為git repo根目錄）的File Access Point參照，格式：fap:<名稱或id>[/<子路徑>]"
+     },
+     "patch": {
+      "type": "string",
+      "description": "完整的unified diff文字"
+     },
+     "check_only": {
+      "type": "boolean",
+      "description": "選填，true=只乾跑驗證不套用"
+     },
+     "strip": {
+      "type": "number",
+      "description": "選填，去掉路徑前幾層（a/ b/前綴），預設1"
+     }
+    },
+    "required": [
+     "cwd_abs",
+     "patch"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "git_inspect",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "cwd_abs": {
+      "type": "string",
+      "description": "目標專案資料夾（視為git repo根目錄）的File Access Point參照，格式：fap:<名稱或id>[/<子路徑>]"
+     },
+     "mode": {
+      "type": "string",
+      "enum": [
+       "status",
+       "diff",
+       "log",
+       "restore",
+       "init"
+      ]
+     },
+     "path": {
+      "type": "string"
+     },
+     "max_commits": {
+      "type": "number"
+     }
+    },
+    "required": [
+     "cwd_abs"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "coding_task_state",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "cwd_abs": {
+      "type": "string",
+      "description": "目標專案資料夾（視為git repo根目錄）的File Access Point參照，格式：fap:<名稱或id>[/<子路徑>]"
+     },
+     "action": {
+      "type": "string",
+      "enum": [
+       "get",
+       "init",
+       "add_todo",
+       "update_todo",
+       "complete_todo",
+       "record_test_result",
+       "set_phase"
+      ]
+     }
+    },
+    "required": [
+     "cwd_abs",
+     "action"
+    ],
+    "additionalProperties": true
+   }
+  },
+  {
+   "name": "playbook_state",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "action": {
+      "type": "string",
+      "enum": [
+       "start",
+       "get",
+       "list",
+       "submit",
+       "todo",
+       "add_todo",
+       "log_experiment",
+       "intent",
+       "abort"
+      ]
+     },
+     "task_id": {
+      "type": "string"
+     },
+     "domain": {
+      "type": "string",
+      "description": "start時必填：領域代號（programming_domains list查）"
+     },
+     "title": {
+      "type": "string"
+     },
+     "goal": {
+      "type": "string"
+     },
+     "description": {
+      "type": "string",
+      "description": "start選填：使用者原本的描述（議題內容）——程式會從標題、目標與這段描述推估意圖（重現步驟、現象、預期，含隱含的）。action:intent 用 text 補充描述後重推"
+     },
+     "artifact": {
+      "type": "object",
+      "description": "submit時填：目前階段要交的成果，欄位見回傳的submit_fields"
+     },
+     "todo_id": {
+      "type": "number"
+     },
+     "status": {
+      "type": "string",
+      "enum": [
+       "in_progress",
+       "done",
+       "blocked"
+      ]
+     },
+     "evidence": {
+      "type": "string",
+      "description": "todo done時必填：實際看到的測試輸出/觀察結果"
+     },
+     "notes": {
+      "type": "string"
+     },
+     "text": {
+      "type": "string"
+     },
+     "test": {
+      "type": "string"
+     },
+     "position": {
+      "type": "string",
+      "enum": [
+       "now",
+       "next",
+       "end"
+      ]
+     },
+     "observed": {
+      "type": "string"
+     },
+     "expected": {
+      "type": "string"
+     },
+     "backend": {
+      "type": "string"
+     },
+     "reason": {
+      "type": "string"
+     },
+     "force": {
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "action"
+    ],
+    "additionalProperties": true
+   }
+  },
+  {
+   "name": "programming_domains",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "action": {
+      "type": "string",
+      "enum": [
+       "list",
+       "describe",
+       "request_tools",
+       "replace_tool",
+       "reset"
+      ]
+     },
+     "domain": {
+      "type": "string"
+     },
+     "tools": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "add": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "remove": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "reason": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "action"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "repo_map",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "action": {
+      "type": "string",
+      "enum": [
+       "status",
+       "build",
+       "find",
+       "explore",
+       "resolve",
+       "refresh",
+       "tree",
+       "index_start",
+       "index_status",
+       "index_stop",
+       "build_index",
+       "annotate",
+       "dive_targets",
+       "save_index",
+       "load_index",
+       "export_index",
+       "import_index",
+       "reset"
+      ]
+     },
+     "symbol": {
+      "type": "string",
+      "description": "annotate：定義的名稱（搭配note寫那個定義的說明）"
+     },
+     "symbols": {
+      "type": "object",
+      "description": "annotate：{定義名稱:說明}"
+     },
+     "items": {
+      "type": "array",
+      "items": {
+       "type": "object"
+      },
+      "description": "annotate：一次多筆 [{path,note,symbols}]（最多40）"
+     },
+     "include_map": {
+      "type": "boolean",
+      "description": "save_index／export_index：連索引資料一起（檔案可能很大）"
+     },
+     "data": {
+      "type": "object",
+      "description": "import_index：export_index匯出的檔案內容"
+     },
+     "max_files": {
+      "type": "number",
+      "description": "index_start：最多分析幾個原始碼檔（預設50000）"
+     },
+     "max_mb": {
+      "type": "number",
+      "description": "index_start：索引大小上限（MB，預設100）"
+     },
+     "reanalyze": {
+      "type": "boolean",
+      "description": "index_start：舊版地圖的檔案重新分析（補上註解與呼叫關係）"
+     },
+     "exports": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "enum": [
+        "sqlite_html",
+        "qa_html"
+       ]
+      },
+      "description": "index_start：完成後自動匯出"
+     },
+     "root": {
+      "type": "string",
+      "description": "專案資料夾：fap:<名稱或id>[/<子路徑>]；桌面版也可以是絕對路徑"
+     },
+     "query": {
+      "type": "string",
+      "description": "find：檔名、功能或專案名稱的關鍵字（模糊也可以）"
+     },
+     "from": {
+      "type": "string",
+      "description": "explore：要探索的檔案或資料夾（相對於root）"
+     },
+     "path": {
+      "type": "string",
+      "description": "resolve／refresh／tree／annotate：路徑（相對於root）"
+     },
+     "depth": {
+      "type": "number",
+      "description": "explore（1-4）／tree（1-6）的深度"
+     },
+     "direction": {
+      "type": "string",
+      "enum": [
+       "imports",
+       "importers",
+       "both"
+      ]
+     },
+     "focus": {
+      "type": "string",
+      "description": "build：只展開／分析這個子資料夾"
+     },
+     "deep": {
+      "type": "boolean",
+      "description": "refresh：連檔案內容有沒有變都檢查"
+     },
+     "force": {
+      "type": "boolean",
+      "description": "explore：已分析過也重新讀"
+     },
+     "include": {
+      "description": "build：不要略過的路徑（相對於root，字串或陣列），例如被當成建置輸出的資料夾裡其實有原始碼",
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "array",
+        "items": {
+         "type": "string"
+        }
+       }
+      ]
+     },
+     "offset": {
+      "type": "number",
+      "description": "清單／目錄樹分頁：從第幾筆開始（上一次回傳的next_offset）"
+     },
+     "limit": {
+      "type": "number",
+      "description": "清單最多回幾筆"
+     },
+     "note": {
+      "type": "string",
+      "description": "annotate：你對這個檔案／資料夾的理解（一兩句）"
+     }
+    },
+    "required": [
+     "action",
+     "root"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "repo_ask",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "root": {
+      "type": "string",
+      "description": "專案資料夾：fap:<名稱或id>[/<子路徑>]；桌面版也可以是絕對路徑"
+     },
+     "question": {
+      "type": "string",
+      "description": "要問的問題（自然語言）"
+     },
+     "action": {
+      "type": "string",
+      "enum": [
+       "ask",
+       "search",
+       "stats",
+       "locate",
+       "callers",
+       "check_citations"
+      ],
+      "description": "locate：除錯定位器，text 放貼上的堆疊或 log 全文，回傳發生點、呼叫鏈、印出該訊息的程式行；callers：name 放函式名，回傳誰呼叫它；check_citations：text 放你的說明，核對引用的 檔案:行 是否都是定位器找到的"
+     },
+     "text": {
+      "type": "string",
+      "description": "locate／check_citations：全文"
+     },
+     "name": {
+      "type": "string",
+      "description": "callers：函式名稱"
+     },
+     "n": {
+      "type": "number",
+      "description": "最多回幾筆（預設8）"
+     },
+     "offset": {
+      "type": "number",
+      "description": "search：跳過排名前幾筆往後翻（回傳的 _page.next_offset）"
+     },
+     "kind": {
+      "type": "string",
+      "enum": [
+       "symbol",
+       "file"
+      ],
+      "description": "search：只找定義或只找檔案"
+     },
+     "snippets": {
+      "type": "boolean",
+      "description": "是否附程式碼片段（預設true）"
+     }
+    },
+    "required": [
+     "root"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "repo_sql",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "root": {
+      "type": "string",
+      "description": "專案資料夾的絕對路徑（桌面版）"
+     },
+     "action": {
+      "type": "string",
+      "enum": [
+       "schema",
+       "query"
+      ]
+     },
+     "sql": {
+      "type": "string",
+      "description": "query：一句 SELECT／WITH／EXPLAIN"
+     },
+     "limit": {
+      "type": "number",
+      "description": "最多回幾列（預設 100，上限 500）"
+     }
+    },
+    "required": [
+     "root"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "repo_read_doc",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "root": {
+      "type": "string",
+      "description": "專案資料夾：fap:<名稱或id>[/<子路徑>]；桌面版也可以是絕對路徑"
+     },
+     "path": {
+      "type": "string",
+      "description": "專案內的檔案路徑（索引裡的路徑）"
+     },
+     "entry": {
+      "type": "string",
+      "description": "壓縮檔：要讀的項目名稱"
+     },
+     "offset": {
+      "type": "number",
+      "description": "從第幾個字元開始（回傳的 next_offset）"
+     },
+     "max_chars": {
+      "type": "number",
+      "description": "這次最多回多少字元"
+     }
+    },
+    "required": [
+     "root",
+     "path"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "repo_wiki",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "action": {
+      "type": "string",
+      "enum": [
+       "plan",
+       "evidence",
+       "write_page",
+       "finalize",
+       "generate",
+       "pages",
+       "query",
+       "define",
+       "page",
+       "add_term",
+       "status",
+       "export"
+      ]
+     },
+     "format": {
+      "type": "string",
+      "enum": [
+       "sqlite_html",
+       "qa_html",
+       "both"
+      ],
+      "description": "export：sqlite_html＝內嵌SQLite的單檔HTML（百科、檔案關聯、問答、可下SQL）；qa_html＝純JS問答頁（較小，不含SQLite）；both＝兩種"
+     },
+     "page_id": {
+      "type": "string",
+      "description": "evidence／write_page／page：百科頁面id（用plan或pages查，例如overview、architecture、mod:xxx）"
+     },
+     "markdown": {
+      "type": "string",
+      "description": "write_page：整頁markdown"
+     },
+     "max_modules": {
+      "type": "number",
+      "description": "plan：最多幾個模組頁面（預設20）"
+     },
+     "rebuild": {
+      "type": "boolean",
+      "description": "plan：重新計算頁面清單（已寫好的頁面保留）"
+     },
+     "offset": {
+      "type": "number"
+     },
+     "root": {
+      "type": "string",
+      "description": "專案資料夾：fap:<名稱或id>[/<子路徑>]"
+     },
+     "q": {
+      "type": "string"
+     },
+     "symbol": {
+      "type": "string"
+     },
+     "path": {
+      "type": "string"
+     },
+     "term": {
+      "type": "string"
+     },
+     "definition": {
+      "type": "string"
+     },
+     "refs": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "write_to_repo": {
+      "type": "boolean"
+     },
+     "show": {
+      "type": "boolean",
+      "description": "generate：是否在畫面開啟頁面（預設true）"
+     },
+     "deliver": {
+      "type": "boolean",
+      "description": "generate：是否提供可下載的HTML檔（預設true）"
+     },
+     "snippet": {
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "action",
+     "root"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "programming_knowledge",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "action": {
+      "type": "string",
+      "enum": [
+       "domains",
+       "lookup",
+       "plan_template"
+      ]
+     },
+     "domain": {
+      "type": "string",
+      "description": "lookup：uefi／openbmc／rust／使用者新增的語言"
+     },
+     "query": {
+      "type": "string",
+      "description": "lookup：關鍵字"
+     },
+     "topic": {
+      "type": "string",
+      "description": "lookup：卡片id（用domains查）"
+     },
+     "playbook": {
+      "type": "string",
+      "description": "plan_template：開發領域，例如prog_bios、prog_bmc"
+     },
+     "layer": {
+      "type": "string",
+      "description": "plan_template：只取某一層（bios：sec／pei／dxe／bds／tsl／rt／al／meta／hii；bmc：kernel／hal／mw_sensor／mw_dbus_ipmi／up_ipmi／up_redfish／up_snmp／up_web／build）"
+     }
+    },
+    "required": [
+     "action"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "uefi_parse",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "action": {
+      "type": "string",
+      "enum": [
+       "parse",
+       "guid"
+      ]
+     },
+     "format": {
+      "type": "string",
+      "enum": [
+       "auto",
+       "inf",
+       "dec",
+       "dsc",
+       "fdf",
+       "uni",
+       "vfr",
+       "vfcf"
+      ]
+     },
+     "text": {
+      "type": "string",
+      "description": "檔案內容"
+     },
+     "uni_text": {
+      "type": "string",
+      "description": "vfr：對應的.uni內容，用來檢查STRING_TOKEN"
+     },
+     "root": {
+      "type": "string",
+      "description": "專案資料夾（fap:名稱；桌面版可用絕對路徑）"
+     },
+     "path": {
+      "type": "string",
+      "description": "檔案路徑（相對於root）"
+     },
+     "uni_path": {
+      "type": "string",
+      "description": "vfr：對應的.uni路徑（相對於root）"
+     },
+     "value": {
+      "type": "string",
+      "description": "guid：要轉換的GUID"
+     },
+     "task_id": {
+      "type": "string",
+      "description": "帶playbook任務id會自動記成一次實驗"
+     },
+     "title": {
+      "type": "string"
+     },
+     "expected": {
+      "type": "string"
+     }
+    },
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "language_explore",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "action": {
+      "type": "string",
+      "enum": [
+       "start",
+       "note",
+       "submit_primer",
+       "status",
+       "list",
+       "remove"
+      ]
+     },
+     "language": {
+      "type": "string"
+     },
+     "exploration_id": {
+      "type": "string"
+     },
+     "url": {
+      "type": "string",
+      "description": "note：來源網址"
+     },
+     "summary": {
+      "type": "string",
+      "description": "note：這個來源的重點（至少40字）"
+     },
+     "primer": {
+      "type": "object",
+      "description": "submit_primer：入門摘要，欄位見start回傳的primer_template"
+     }
+    },
+    "required": [
+     "action"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "offline_trainer",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "action": {
+      "type": "string",
+      "enum": [
+       "status",
+       "dry_run",
+       "resolve",
+       "list",
+       "show",
+       "add_pattern",
+       "remove_pattern",
+       "add_example",
+       "train_rag",
+       "train_chat",
+       "reseed",
+       "set_synonyms",
+       "export",
+       "import",
+       "forget_learned",
+       "init_domain",
+       "link",
+       "add_tool",
+       "add_state",
+       "set_fsm",
+       "show_tool",
+       "remove_tool",
+       "record_case",
+       "distill",
+       "list_unresolved",
+       "clear_unresolved",
+       "run_tool",
+       "rollback_tool",
+       "teach",
+       "teach_status",
+       "teach_stop",
+       "teach_resume",
+       "teach_report"
+      ]
+     },
+     "goal": {
+      "type": "string"
+     },
+     "regex": {
+      "type": "string"
+     },
+     "limit": {
+      "type": "number"
+     },
+     "unattended": {
+      "type": "boolean"
+     },
+     "id": {
+      "type": "string"
+     },
+     "domains": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "mode": {
+      "type": "string",
+      "enum": [
+       "merge",
+       "replace"
+      ]
+     },
+     "include_turns": {
+      "type": "boolean"
+     },
+     "include_solutions": {
+      "type": "boolean"
+     },
+     "deliver": {
+      "type": "boolean"
+     },
+     "dry_run": {
+      "type": "boolean"
+     },
+     "overwrite": {
+      "type": "boolean"
+     },
+     "mock_calls": {
+      "type": "object"
+     },
+     "slots": {
+      "type": "object"
+     },
+     "last_tool_result": {},
+     "assume_yes": {
+      "type": "boolean"
+     },
+     "index": {
+      "type": "number"
+     },
+     "name": {
+      "type": "string"
+     },
+     "description": {
+      "type": "string"
+     },
+     "source": {
+      "type": "string",
+      "description": "add_tool：JavaScript函式本體（可用await；ctx.slots／ctx.text／ctx.call／ctx.last_tool_result／ctx.pretty）"
+     },
+     "tests": {
+      "type": "array",
+      "items": {
+       "type": "object"
+      }
+     },
+     "states": {
+      "type": "object"
+     },
+     "initial": {
+      "type": "string"
+     },
+     "to": {
+      "type": "string"
+     },
+     "tool_calls": {
+      "type": "array",
+      "items": {
+       "type": "object"
+      }
+     },
+     "answer": {
+      "type": "string"
+     },
+     "min_count": {
+      "type": "number"
+     },
+     "force": {
+      "type": "boolean"
+     },
+     "text": {
+      "type": "string"
+     },
+     "domain": {
+      "type": "string"
+     },
+     "pattern": {},
+     "text_example": {
+      "type": "string"
+     },
+     "group": {
+      "type": "string"
+     },
+     "terms": {
+      "type": "string"
+     },
+     "execute": {
+      "type": "boolean"
+     },
+     "no_cache": {
+      "type": "boolean"
+     },
+     "threshold": {
+      "type": "number"
+     },
+     "data": {
+      "type": "object"
+     }
+    },
+    "required": [
+     "action"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "sandbox_capabilities",
+   "parameters": {
+    "type": "object",
+    "properties": {},
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "sandbox_html",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "html": {
+      "type": "string",
+      "description": "HTML（片段或完整文件）。不給＝複製目前畫面"
+     },
+     "css": {
+      "type": "string"
+     },
+     "js": {
+      "type": "string"
+     },
+     "base": {
+      "type": "string",
+      "enum": [
+       "blank",
+       "current_page"
+      ]
+     },
+     "backend": {
+      "type": "string",
+      "enum": [
+       "auto",
+       "iframe",
+       "tab",
+       "popup"
+      ]
+     },
+     "steps": {
+      "type": "array",
+      "items": {
+       "type": "object"
+      }
+     },
+     "mock": {
+      "description": "mock伺服器名稱（字串），或{name,code,hosts,prefixes,block_external,reset}",
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "object"
+       }
+      ]
+     },
+     "width": {
+      "type": "number"
+     },
+     "height": {
+      "type": "number"
+     },
+     "wait_ms": {
+      "type": "number"
+     },
+     "keep_open": {
+      "type": "boolean",
+      "description": "做完不要關掉（要讓使用者看時才用）"
+     },
+     "task_id": {
+      "type": "string"
+     },
+     "title": {
+      "type": "string"
+     },
+     "expected": {
+      "type": "string"
+     }
+    },
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "sandbox_worker",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "code": {
+      "type": "string"
+     },
+     "requests": {
+      "type": "array",
+      "items": {
+       "type": "object"
+      }
+     },
+     "files": {
+      "type": "object",
+      "description": "{\"路徑\":\"內容\"}，執行前寫進持久檔案系統"
+     },
+     "timeout_ms": {
+      "type": "number"
+     },
+     "task_id": {
+      "type": "string"
+     },
+     "title": {
+      "type": "string"
+     },
+     "expected": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "code"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "sandbox_mock",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "action": {
+      "type": "string",
+      "enum": [
+       "deploy",
+       "call",
+       "db",
+       "list",
+       "reset",
+       "export"
+      ]
+     },
+     "name": {
+      "type": "string",
+      "description": "mock伺服器名稱（英數字、底線、連字號），資料與程式都存在這個名稱底下"
+     },
+     "code": {
+      "type": "string",
+      "description": "deploy／call：伺服器程式。call不給code就用上次deploy存的"
+     },
+     "requests": {
+      "type": "array",
+      "items": {
+       "type": "object"
+      },
+      "description": "call：[{\"method\":\"POST\",\"path\":\"/api/todos\",\"json\":{...},\"headers\":{...},\"expect_status\":201}]"
+     },
+     "ws": {
+      "type": "object",
+      "description": "call：WebSocket多人情境 {\"clients\":{\"alice\":\"/chat\",\"bob\":\"/chat\"},\"script\":[{\"client\":\"alice\",\"send\":\"hi\"},{\"wait_ms\":100},{\"client\":\"bob\",\"close\":true}],\"wait_ms\":200}"
+     },
+     "reset": {
+      "type": "boolean",
+      "description": "deploy／call：先清掉這個伺服器的持久資料"
+     },
+     "op": {
+      "type": "string",
+      "enum": [
+       "list",
+       "get",
+       "set",
+       "delete",
+       "clear"
+      ],
+      "description": "db：操作"
+     },
+     "key": {
+      "type": "string"
+     },
+     "value": {},
+     "prefix": {
+      "type": "string"
+     },
+     "what": {
+      "type": "string",
+      "enum": [
+       "data",
+       "all"
+      ],
+      "description": "reset：data只清資料；all連伺服器程式一起刪"
+     },
+     "target": {
+      "type": "string",
+      "enum": [
+       "node",
+       "cloudflare"
+      ],
+      "description": "export：部署目標"
+     },
+     "task_id": {
+      "type": "string"
+     },
+     "title": {
+      "type": "string"
+     },
+     "expected": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "action"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "sandbox_py_app",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "code": {
+      "type": "string"
+     },
+     "packages": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "requests": {
+      "type": "array",
+      "items": {
+       "type": "object"
+      }
+     },
+     "kind": {
+      "type": "string",
+      "enum": [
+       "auto",
+       "wsgi",
+       "asgi"
+      ]
+     },
+     "task_id": {
+      "type": "string"
+     },
+     "title": {
+      "type": "string"
+     },
+     "expected": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "code"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "coding_run_tests",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "cwd_abs": {
+      "type": "string",
+      "description": "目標專案資料夾（視為git repo根目錄）的File Access Point參照，格式：fap:<名稱或id>[/<子路徑>]"
+     },
+     "script": {
+      "type": "string",
+      "description": "要執行的bash腳本，例如 python test_calc.py 或 sh run_tests.sh"
+     }
+    },
+    "required": [
+     "cwd_abs",
+     "script"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "coding_run_check",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "cwd_abs": {
+      "type": "string",
+      "description": "目標專案資料夾（視為git repo根目錄）的File Access Point參照，格式：fap:<名稱或id>[/<子路徑>]"
+     },
+     "paths": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     }
+    },
+    "required": [
+     "cwd_abs",
+     "paths"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "coding_workspace",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "action": {
+      "type": "string",
+      "enum": [
+       "open",
+       "status",
+       "deploy",
+       "discard"
+      ]
+     },
+     "source": {
+      "type": "string",
+      "description": "open：使用者專案資料夾，格式fap:<名稱或id>[/<子路徑>]"
+     },
+     "subpath": {
+      "type": "string",
+      "description": "open：選填，只複製這個子資料夾（專案太大時用）"
+     },
+     "cwd_abs": {
+      "type": "string",
+      "description": "status/deploy/discard：workspace_path（fap:ws-...）"
+     },
+     "dry_run": {
+      "type": "boolean"
+     },
+     "force": {
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "action"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "skill_create",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "name": {
+      "type": "string",
+      "description": "小寫英文/數字/連字號，最長64字元，不可含anthropic/claude"
+     },
+     "description": {
+      "type": "string",
+      "description": "最長1024字元：這個skill做什麼、什麼情境/關鍵字該觸發它（第三人稱）"
+     },
+     "body": {
+      "type": "string",
+      "description": "SKILL.md主體(Markdown)，不要自己寫frontmatter，建議500行內"
+     },
+     "files": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "path": {
+         "type": "string"
+        },
+        "content": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "path",
+        "content"
+       ]
+      }
+     },
+     "overwrite": {
+      "type": "boolean"
+     },
+     "dry_run": {
+      "type": "boolean"
+     },
+     "download": {
+      "type": "boolean"
+     },
+     "save_to": {
+      "type": "string",
+      "description": "File Access Point資料夾，格式fap:<名稱或id>[/<子路徑>]"
+     }
+    },
+    "required": [
+     "name",
+     "description",
+     "body"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "skill_list",
+   "parameters": {
+    "type": "object",
+    "properties": {},
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "explain_code",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "path": {
+      "type": "string"
+     },
+     "root": {
+      "type": "string"
+     },
+     "function": {
+      "type": "string"
+     },
+     "lang": {
+      "type": "string"
+     },
+     "text": {
+      "type": "string"
+     },
+     "max_functions": {
+      "type": "integer"
+     }
+    },
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "behavior_define",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "action": {
+      "type": "string"
+     },
+     "lang": {
+      "type": "string"
+     },
+     "name": {
+      "type": "string"
+     },
+     "names": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "summary": {
+      "type": "string"
+     },
+     "note": {
+      "type": "string"
+     },
+     "category": {
+      "type": "string"
+     },
+     "label": {
+      "type": "string"
+     },
+     "description": {
+      "type": "string"
+     },
+     "arch": {
+      "type": "string"
+     },
+     "pattern": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "template": {
+      "type": "string"
+     },
+     "parameters": {
+      "type": "array",
+      "items": {
+       "type": "object"
+      }
+     },
+     "return": {
+      "type": "object"
+     },
+     "kind": {
+      "type": "string"
+     },
+     "data": {}
+    },
+    "required": [
+     "action"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "lookup_error_code",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "query": {
+      "type": "string",
+      "description": "錯誤碼、名稱或描述，例如 \"errno 13\"、\"0xC0000005\"、\"ERROR_ACCESS_DENIED\"、\"exit code 139\"、\"connection refused\""
+     },
+     "system": {
+      "type": "string",
+      "description": "可選：限定 linux／windows"
+     }
+    },
+    "required": [
+     "query"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "explain_command_line",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "command": {
+      "type": "string",
+      "description": "完整命令列"
+     }
+    },
+    "required": [
+     "command"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "diagnose_log",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "log": {
+      "type": "string",
+      "description": "日誌或錯誤輸出（整段貼上最好，不要只貼最後一行）"
+     },
+     "system": {
+      "type": "string",
+      "description": "可選：已知的系統（bitbake、cmake、make、kernel、journal、gdb…）"
+     }
+    },
+    "required": [
+     "log"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "explain_build_error",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "log": {
+      "type": "string",
+      "description": "建置輸出（整段貼上最好）"
+     }
+    },
+    "required": [
+     "log"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "ref_lookup",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "query": {
+      "type": "string",
+      "description": "要查的東西"
+     }
+    },
+    "required": [
+     "query"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "ref_define",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "action": {
+      "type": "string"
+     },
+     "kind": {
+      "type": "string"
+     },
+     "type_kind": {
+      "type": "string",
+      "description": "kind:\"knowledge_type\" 註冊類型時：新類型的 kind（小寫英文＋底線）"
+     },
+     "label": {
+      "type": "string"
+     },
+     "schema": {
+      "type": "object",
+      "description": "註冊類型：{欄位名: {type,required,range,values,of,kind,extends,...}}"
+     },
+     "version": {
+      "type": "number"
+     },
+     "entry_kind": {
+      "type": "string"
+     },
+     "text": {
+      "type": "string"
+     },
+     "tags": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "customize": {
+      "type": "object",
+      "description": "帶 customize 的條目：結構由該 kind 註冊的類型 schema 決定"
+     },
+     "force": {
+      "type": "boolean"
+     },
+     "source": {
+      "type": "string",
+      "description": "來源：官方文件網址或文件名稱；使用者自己補的寫 user"
+     },
+     "system": {
+      "type": "string"
+     },
+     "code": {
+      "type": "string"
+     },
+     "name": {
+      "type": "string"
+     },
+     "message": {
+      "type": "string"
+     },
+     "note": {
+      "type": "string"
+     },
+     "aliases": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "summary": {
+      "type": "string"
+     },
+     "synopsis": {
+      "type": "string"
+     },
+     "options": {
+      "type": "array",
+      "items": {
+       "type": "object"
+      }
+     },
+     "command": {
+      "type": "string"
+     },
+     "flag": {
+      "type": "string"
+     },
+     "arg": {
+      "type": "string"
+     },
+     "desc": {
+      "type": "string"
+     },
+     "key": {
+      "type": "string"
+     },
+     "rules": {
+      "type": "array",
+      "items": {
+       "type": "object"
+      }
+     },
+     "lang": {
+      "type": "string"
+     },
+     "parameters": {
+      "type": "array",
+      "items": {
+       "type": "object"
+      }
+     },
+     "return": {
+      "type": "object"
+     },
+     "category": {
+      "type": "string"
+     },
+     "names": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "arch": {
+      "type": "string"
+     },
+     "description": {
+      "type": "string"
+     },
+     "pattern": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "template": {
+      "type": "string"
+     },
+     "data": {}
+    },
+    "additionalProperties": true
+   }
+  },
+  {
+   "name": "ref_types",
+   "parameters": {
+    "type": "object",
+    "properties": {},
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "ref_resolve",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "kind": {
+      "type": "string"
+     },
+     "key": {
+      "type": "string"
+     },
+     "depth": {
+      "type": "number",
+      "description": "展開深度上限（預設 8）"
+     }
+    },
+    "required": [
+     "kind",
+     "key"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "ref_validate",
+   "parameters": {
+    "type": "object",
+    "properties": {},
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "ref_expand",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "topic": {
+      "type": "string",
+      "description": "要擴充的主題"
+     },
+     "domain": {
+      "type": "string",
+      "description": "offline（預設）或 aidoc"
+     },
+     "kind": {
+      "type": "string"
+     },
+     "sources": {
+      "type": "string",
+      "description": "使用者提供的資料來源（網址、檔案）"
+     }
+    },
+    "required": [
+     "topic"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "skill_read",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "name": {
+      "type": "string"
+     },
+     "path": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "name"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "browser_status",
+   "parameters": {
+    "type": "object",
+    "properties": {},
+    "required": [],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "browser_create_tab_group",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "urls": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "url": {
+      "type": "string"
+     },
+     "active": {
+      "type": "boolean",
+      "description": "是否把第一個分頁切到前景（會打擾使用者，只有使用者要看時才用），預設false；用active開的分頁回合結束後會保留"
+     },
+     "keep_open": {
+      "type": "boolean",
+      "description": "回合結束後不要自動關閉這些分頁（只有使用者要留著看時才用），預設false"
+     }
+    },
+    "required": [],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "browser_create_tab",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "url": {
+      "type": "string"
+     },
+     "active": {
+      "type": "boolean",
+      "description": "切到前景（會打擾使用者，只有使用者要看時才用）；用active開的分頁回合結束後會保留"
+     },
+     "keep_open": {
+      "type": "boolean",
+      "description": "回合結束後不要自動關閉這個分頁（只有使用者要留著看時才用）"
+     }
+    },
+    "required": [
+     "url"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "browser_list_tabs",
+   "parameters": {
+    "type": "object",
+    "properties": {},
+    "required": [],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "browser_navigate",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "tab_id": {
+      "type": "integer",
+      "description": "分頁id（browser_create_tab/browser_list_tabs取得）。可省略或給過期的id：找不到分頁時會自動在「AI Controlled」群組開新分頁並在回傳的tab_recovered.new_tab_id告訴你新id"
+     },
+     "url": {
+      "type": "string"
+     },
+     "action": {
+      "type": "string",
+      "enum": [
+       "goto",
+       "back",
+       "forward",
+       "reload"
+      ]
+     }
+    },
+    "required": [],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "browser_close",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "tab_id": {
+      "type": "integer",
+      "description": "分頁id（browser_create_tab/browser_list_tabs取得）。可省略或給過期的id：找不到分頁時會自動在「AI Controlled」群組開新分頁並在回傳的tab_recovered.new_tab_id告訴你新id"
+     },
+     "group_id": {
+      "type": "integer"
+     }
+    },
+    "required": [],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "browser_activate_tab",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "tab_id": {
+      "type": "integer",
+      "description": "分頁id（browser_create_tab/browser_list_tabs取得）。可省略或給過期的id：找不到分頁時會自動在「AI Controlled」群組開新分頁並在回傳的tab_recovered.new_tab_id告訴你新id"
+     }
+    },
+    "required": [],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "browser_scroll",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "tab_id": {
+      "type": "integer",
+      "description": "分頁id（browser_create_tab/browser_list_tabs取得）。可省略或給過期的id：找不到分頁時會自動在「AI Controlled」群組開新分頁並在回傳的tab_recovered.new_tab_id告訴你新id"
+     },
+     "direction": {
+      "type": "string",
+      "enum": [
+       "down",
+       "up",
+       "top",
+       "bottom",
+       "left",
+       "right"
+      ]
+     },
+     "amount": {
+      "type": "number"
+     },
+     "selector": {
+      "type": "string"
+     }
+    },
+    "required": [],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "browser_screenshot",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "tab_id": {
+      "type": "integer",
+      "description": "分頁id（browser_create_tab/browser_list_tabs取得）。可省略或給過期的id：找不到分頁時會自動在「AI Controlled」群組開新分頁並在回傳的tab_recovered.new_tab_id告訴你新id"
+     },
+     "full_page": {
+      "type": "boolean"
+     },
+     "quality": {
+      "type": "integer"
+     },
+     "region": {
+      "type": "object",
+      "description": "只截這個範圍：{x,y,width,height}（像素，左上角0,0）",
+      "properties": {
+       "x": {
+        "type": "number"
+       },
+       "y": {
+        "type": "number"
+       },
+       "width": {
+        "type": "number"
+       },
+       "height": {
+        "type": "number"
+       }
+      }
+     },
+     "scale": {
+      "type": "number",
+      "description": "（選填）放大倍率1~3，搭配region放大小範圍"
+     },
+     "save": {
+      "type": "boolean",
+      "description": "（選填）把截圖存成圖片檔案，回傳file_id"
+     },
+     "interpret": {
+      "type": "boolean",
+      "description": "（選填）true＝用vision model實際看這張截圖，描述放在回傳的description"
+     },
+     "question": {
+      "type": "string",
+      "description": "（選填）搭配interpret，想問這張截圖的具體問題"
+     }
+    },
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "browser_get_page_text",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "tab_id": {
+      "type": "integer",
+      "description": "分頁id（browser_create_tab/browser_list_tabs取得）。可省略或給過期的id：找不到分頁時會自動在「AI Controlled」群組開新分頁並在回傳的tab_recovered.new_tab_id告訴你新id"
+     },
+     "offset": {
+      "type": "integer",
+      "description": "選填：從第幾個字元開始讀（分頁用，預設0）"
+     },
+     "max_chars": {
+      "type": "integer",
+      "description": "選填：這次最多讀幾個字元（預設12000）"
+     },
+     "start_line": {
+      "type": "integer",
+      "description": "選填：從第幾行開始讀（1起算，優先於offset）"
+     },
+     "max_lines": {
+      "type": "integer",
+      "description": "選填：這次最多讀幾行"
+     },
+     "output": {
+      "type": "string",
+      "enum": [
+       "auto",
+       "jsonl",
+       "text"
+      ],
+      "description": "頁面文字很長時預設回章節索引（JSONL，三層：索引→區塊→原文偏移）；text＝照舊只回一段"
+     }
+    },
+    "required": [],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "browser_get_page_structure",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "tab_id": {
+      "type": "integer",
+      "description": "分頁id（browser_create_tab/browser_list_tabs取得）。可省略或給過期的id：找不到分頁時會自動在「AI Controlled」群組開新分頁並在回傳的tab_recovered.new_tab_id告訴你新id"
+     },
+     "offset": {
+      "type": "integer",
+      "description": "選填：從第幾個字元開始讀（分頁用，預設0）"
+     },
+     "max_chars": {
+      "type": "integer",
+      "description": "選填：這次最多讀幾個字元（預設12000）"
+     },
+     "start_line": {
+      "type": "integer",
+      "description": "選填：從第幾行開始讀（1起算，優先於offset）"
+     },
+     "max_lines": {
+      "type": "integer",
+      "description": "選填：這次最多讀幾行"
+     },
+     "interpret_images": {
+      "type": "boolean",
+      "description": "選填：true時對前幾張圖片自動呼叫vision model補上description（見上方工具說明）"
+     },
+     "interpret_images_count": {
+      "type": "integer",
+      "description": "選填：搭配interpret_images，要解讀前幾張圖片，預設5、最多10"
+     }
+    },
+    "required": [],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "browser_get_elements",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "tab_id": {
+      "type": "integer",
+      "description": "分頁id（browser_create_tab/browser_list_tabs取得）。可省略或給過期的id：找不到分頁時會自動在「AI Controlled」群組開新分頁並在回傳的tab_recovered.new_tab_id告訴你新id"
+     },
+     "max": {
+      "type": "integer"
+     },
+     "viewport_only": {
+      "type": "boolean"
+     }
+    },
+    "required": [],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "browser_mouse",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "tab_id": {
+      "type": "integer",
+      "description": "分頁id（browser_create_tab/browser_list_tabs取得）。可省略或給過期的id：找不到分頁時會自動在「AI Controlled」群組開新分頁並在回傳的tab_recovered.new_tab_id告訴你新id"
+     },
+     "action": {
+      "type": "string",
+      "enum": [
+       "click",
+       "double_click",
+       "right_click",
+       "move",
+       "wheel",
+       "drag",
+       "down",
+       "up"
+      ]
+     },
+     "x": {
+      "type": "number"
+     },
+     "y": {
+      "type": "number"
+     },
+     "to_x": {
+      "type": "number"
+     },
+     "to_y": {
+      "type": "number"
+     },
+     "delta_x": {
+      "type": "number"
+     },
+     "delta_y": {
+      "type": "number"
+     },
+     "button": {
+      "type": "string",
+      "enum": [
+       "left",
+       "right",
+       "middle"
+      ]
+     },
+     "modifiers": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     }
+    },
+    "required": [
+     "x",
+     "y"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "browser_type_text",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "tab_id": {
+      "type": "integer",
+      "description": "分頁id（browser_create_tab/browser_list_tabs取得）。可省略或給過期的id：找不到分頁時會自動在「AI Controlled」群組開新分頁並在回傳的tab_recovered.new_tab_id告訴你新id"
+     },
+     "text": {
+      "type": "string"
+     },
+     "selector": {
+      "type": "string"
+     },
+     "clear": {
+      "type": "boolean"
+     },
+     "submit": {
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "text"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "browser_press_key",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "tab_id": {
+      "type": "integer",
+      "description": "分頁id（browser_create_tab/browser_list_tabs取得）。可省略或給過期的id：找不到分頁時會自動在「AI Controlled」群組開新分頁並在回傳的tab_recovered.new_tab_id告訴你新id"
+     },
+     "key": {
+      "type": "string"
+     },
+     "modifiers": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     }
+    },
+    "required": [
+     "key"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "browser_click",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "tab_id": {
+      "type": "integer",
+      "description": "分頁id（browser_create_tab/browser_list_tabs取得）。可省略或給過期的id：找不到分頁時會自動在「AI Controlled」群組開新分頁並在回傳的tab_recovered.new_tab_id告訴你新id"
+     },
+     "selector": {
+      "type": "string",
+      "description": "選填，CSS selector"
+     },
+     "text": {
+      "type": "string",
+      "description": "選填，元素可見文字/value/aria-label要包含這段（不分大小寫）"
+     },
+     "index": {
+      "type": "integer",
+      "description": "選填，同時符合多個時選第幾個，0起算，預設0"
+     },
+     "wait_download": {
+      "type": "boolean",
+      "description": "選填，點擊後等待這次觸發的檔案下載完成，回傳存檔路徑"
+     },
+     "download_timeout_ms": {
+      "type": "integer",
+      "description": "選填，等下載的逾時時間(毫秒)，預設20000"
+     },
+     "download_behavior": {
+      "type": "string",
+      "enum": [
+       "capture",
+       "allow",
+       "deny",
+       "default"
+      ],
+      "description": "選填，這次點擊前先設定這個分頁的下載行為：capture=（wait_download:true時的預設，建議）攔下下載、不讓Chrome存檔，位元組串流給FAP並驗證大小與crc32、回傳抓到了什麼（檔名、大小、sha256），再寫進FAP的下載卡片（帶save_path還會寫進該資料夾）；allow=直接存到download_path、不跳「另存新檔」對話框（會一直生效到改成default或分頁關掉）；deny=擋掉下載、只回報有下載想發生（denied:true）；default=還給Chrome自己處理。預期會跳另存新檔對話框時用allow"
+     },
+     "save_path": {
+      "type": "string",
+      "description": "選填，capture擷取到的檔案要同時寫進哪個資料夾（絕對路徑，桌面版才能寫；不給就只進FAP的下載卡片）"
+     },
+     "deliver": {
+      "type": "boolean",
+      "description": "選填，capture的檔案是否交給FAP下載卡片，預設true"
+     },
+     "download_path": {
+      "type": "string",
+      "description": "download_behavior為allow時必填：存檔資料夾的絕對路徑（例如C:\\Users\\你\\Downloads\\ai 或 /home/你/Downloads/ai）"
+     }
+    },
+    "required": [],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "browser_wait_download",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "since_ms": {
+      "type": "number",
+      "description": "選填，只算這個時間戳記(ms)之後才建立的下載為新下載；不給就用呼叫當下的時間"
+     },
+     "timeout_ms": {
+      "type": "integer",
+      "description": "選填，逾時時間(毫秒)，預設20000"
+     },
+     "tab_id": {
+      "type": "integer",
+      "description": "分頁id（browser_create_tab/browser_list_tabs取得）。可省略或給過期的id：找不到分頁時會自動在「AI Controlled」群組開新分頁並在回傳的tab_recovered.new_tab_id告訴你新id"
+     },
+     "save_path": {
+      "type": "string",
+      "description": "選填，capture擷取到的檔案要同時寫進哪個資料夾（絕對路徑，桌面版）"
+     },
+     "deliver": {
+      "type": "boolean",
+      "description": "選填，是否交給FAP下載卡片，預設true"
+     }
+    },
+    "required": [],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "browser_set_download_behavior",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "tab_id": {
+      "type": "integer",
+      "description": "分頁id（browser_create_tab/browser_list_tabs取得）。可省略或給過期的id：找不到分頁時會自動在「AI Controlled」群組開新分頁並在回傳的tab_recovered.new_tab_id告訴你新id"
+     },
+     "behavior": {
+      "type": "string",
+      "enum": [
+       "capture",
+       "allow",
+       "deny",
+       "default"
+      ]
+     },
+     "path": {
+      "type": "string",
+      "description": "behavior為allow時必填，存檔資料夾的絕對路徑"
+     }
+    },
+    "required": [
+     "behavior"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "browser_upload",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "tab_id": {
+      "type": "integer",
+      "description": "分頁id（browser_create_tab/browser_list_tabs取得）。可省略或給過期的id：找不到分頁時會自動在「AI Controlled」群組開新分頁並在回傳的tab_recovered.new_tab_id告訴你新id"
+     },
+     "files": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "name": {
+         "type": "string",
+         "description": "聊天附件或 FAP 檔案的檔名（可以只寫一部分）"
+        },
+        "file_id": {
+         "type": "string"
+        },
+        "path": {
+         "type": "string",
+         "description": "桌面版：本機檔案絕對路徑"
+        }
+       }
+      },
+      "description": "要上傳的檔案（一個或多個）"
+     },
+     "selector": {
+      "type": "string",
+      "description": "檔案欄位（input type=file）的 CSS selector；給了就直接填入"
+     },
+     "index": {
+      "type": "integer",
+      "description": "selector 符合多個欄位時選第幾個（0 起算）"
+     },
+     "click_selector": {
+      "type": "string",
+      "description": "沒有 selector 時：點這個 CSS selector 的元素（會開檔案選擇對話框）"
+     },
+     "click_text": {
+      "type": "string",
+      "description": "沒有 selector 時：點可見文字包含這段的元素（例如「選擇檔案」）"
+     },
+     "click_index": {
+      "type": "integer"
+     },
+     "timeout_ms": {
+      "type": "integer",
+      "description": "點擊後等對話框出現的逾時（毫秒），預設 8000"
+     }
+    },
+    "required": [
+     "files"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "browser_list_downloads",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "max": {
+      "type": "integer",
+      "description": "選填，最多列幾筆，預設10"
+     }
+    },
+    "required": [],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "git_push",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "ref": {
+      "type": "string",
+      "description": "File Access Point資料夾，格式：fap:<名稱或id>[/<子路徑>]"
+     },
+     "branch": {
+      "type": "string",
+      "description": "要push的分支（留空＝目前所在分支）"
+     }
+    },
+    "required": [
+     "ref"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "list_uploaded_files",
+   "parameters": {
+    "type": "object",
+    "properties": {},
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "parse_uploaded_file",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "file_id": {
+      "type": "string",
+      "description": "要解析的檔案id，用list_uploaded_files取得"
+     },
+     "entry_path": {
+      "type": "string",
+      "description": "（選填）壓縮檔內要抽取內容的項目路徑"
+     },
+     "password": {
+      "type": "string",
+      "description": "（選填）加密壓縮檔（zip／7z／rar）的密碼；使用者沒給就不要猜"
+     },
+     "offset": {
+      "type": "integer",
+      "description": "選填：純文字/壓縮檔項目/PDF文字從第幾個字元開始讀（分頁用，預設0）"
+     },
+     "max_chars": {
+      "type": "integer",
+      "description": "選填：這次最多讀幾個字元（預設依模型內容窗口自適應）"
+     },
+     "start_line": {
+      "type": "integer",
+      "description": "選填：從第幾行開始讀（1起算，優先於offset）"
+     },
+     "max_lines": {
+      "type": "integer",
+      "description": "選填：這次最多讀幾行"
+     },
+     "interpret_images": {
+      "type": "boolean",
+      "description": "（選填，僅PDF）true時對含圖片的頁面截圖並交給vision model描述內容，預設false只解析文字"
+     },
+     "interpret_images_count": {
+      "type": "integer",
+      "description": "（選填，僅PDF且interpret_images:true時）最多對幾頁截圖做vision描述，預設3"
+     }
+    },
+    "required": [
+     "file_id"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "interpret_image",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "file_id": {
+      "type": "string",
+      "description": "要解讀的圖片file_id（用list_uploaded_files取得；FAP裡的圖片請先用fap_copy_to_storage複製成file_id）"
+     },
+     "image_url": {
+      "type": "string",
+      "description": "要解讀的圖片網址（http(s)開頭），跟file_id擇一提供"
+     },
+     "question": {
+      "type": "string",
+      "description": "選填：想問關於這張圖片的具體問題，不給的話預設要求詳細描述圖片內容"
+     },
+     "output": {
+      "type": "string",
+      "enum": [
+       "text",
+       "jsonl"
+      ],
+      "description": "選填：jsonl＝逐行輸出每個物件（拆解、列出所有物件這類可能幾千筆的問題，會自動接著寫到說完，結果一頁頁讀：用 big_content 的 page 動作帶 next_cursor，complete 為 true 且 has_more 為 false 才算讀完）；text＝一般文字描述。問題裡有「拆解」「所有物件」等字會自動用 jsonl"
+     }
+    },
+    "required": [],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "extract_pptx_images",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "file": {
+      "type": "string",
+      "description": "pptx的file_id或檔名；留空＝最近上傳的"
+     },
+     "slides": {
+      "type": "string",
+      "description": "（選填）投影片範圍，例如\"3\"或\"2-5\"，預設全部"
+     },
+     "max_images": {
+      "type": "integer",
+      "description": "（選填）最多抽幾張，預設30，最高80"
+     }
+    },
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "merge_pdfs",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "files": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      },
+      "description": "（選填）要依序合併的檔案 file_id或檔名（也可以是 fap:名稱/路徑、桌面版絕對路徑）；留空＝這個對話附加的全部檔案"
+     },
+     "folder": {
+      "type": "string",
+      "description": "（選填）整個資料夾：fap:名稱/路徑 或桌面版絕對路徑，依檔名自然排序"
+     },
+     "pattern": {
+      "type": "string",
+      "description": "（選填）folder 的檔名篩選，例如 \"*.docx\""
+     },
+     "sort": {
+      "type": "string",
+      "enum": [
+       "none",
+       "name",
+       "name_desc",
+       "modified",
+       "reverse"
+      ],
+      "description": "（選填）預設：有給 files＝照給的順序，folder／附件＝依檔名自然排序"
+     },
+     "page_size": {
+      "type": "string",
+      "description": "（選填）圖片與文字頁的頁面大小：a4（預設）／a3／a5／b5／letter／legal／\"210x297mm\""
+     },
+     "orientation": {
+      "type": "string",
+      "enum": [
+       "auto",
+       "portrait",
+       "landscape"
+      ],
+      "description": "（選填）預設 auto（圖片依寬高、文字直式）"
+     },
+     "fit": {
+      "type": "string",
+      "enum": [
+       "contain",
+       "cover",
+       "stretch",
+       "actual"
+      ],
+      "description": "（選填）圖片：contain（預設，等比置中）／cover（填滿裁切）／stretch／actual"
+     },
+     "margin": {
+      "type": "number",
+      "description": "（選填）圖片頁的邊界 pt，預設 0"
+     },
+     "margin_mm": {
+      "type": "number",
+      "description": "（選填）文字頁的邊界 mm，預設 15"
+     },
+     "zoom": {
+      "type": "number"
+     },
+     "background": {
+      "type": "string"
+     },
+     "jpeg_quality": {
+      "type": "number"
+     },
+     "office_engine": {
+      "type": "string",
+      "enum": [
+       "auto",
+       "office",
+       "libreoffice",
+       "simple"
+      ],
+      "description": "（選填）docx／xlsx 等怎麼轉：auto（預設，先 Word／Excel 再 LibreOffice 再簡化版）"
+     },
+     "filename": {
+      "type": "string",
+      "description": "（選填）輸出檔名"
+     },
+     "output_path": {
+      "type": "string",
+      "description": "（選填）把PDF存到：fap:名稱/資料夾 或桌面版絕對路徑"
+     },
+     "on_error": {
+      "type": "string",
+      "enum": [
+       "fail",
+       "skip"
+      ],
+      "description": "（選填）有檔案壞掉時：fail（預設）／skip"
+     }
+    },
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "uml_to_code",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "uml": {
+      "type": "string",
+      "description": "UML 文字（格式見工具說明）"
+     },
+     "language": {
+      "type": "string",
+      "enum": [
+       "python",
+       "typescript",
+       "java"
+      ],
+      "default": "python",
+      "description": "目標語言"
+     },
+     "package": {
+      "type": "string",
+      "description": "（選填）套件／專案名稱，小寫英文"
+     },
+     "scenario": {
+      "type": "string",
+      "description": "（選填）原始情境文字；用來推薦架構與 library（網站、命令列、資料庫、登入、排程…）"
+     },
+     "constraints": {
+      "type": "object",
+      "description": "（選填）指定抉擇，例如 {\"architecture\":\"layered\",\"interface\":\"rest\",\"persistence\":\"sqlite\"}；選項見 design_choices"
+     },
+     "remember": {
+      "type": "boolean",
+      "description": "（選填）true＝把 constraints 記成使用者偏好，以後推薦優先採用"
+     }
+    },
+    "required": [
+     "uml"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "glue_list",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "lang": {
+      "type": "string",
+      "enum": [
+       "python",
+       "typescript",
+       "java"
+      ],
+      "description": "（選填）只列這個語言"
+     }
+    },
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "glue_define",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "type": "string",
+      "description": "小寫英數與連字號，例如 py-fastapi-jwt-auth"
+     },
+     "lang": {
+      "type": "string",
+      "enum": [
+       "python",
+       "typescript",
+       "java"
+      ]
+     },
+     "slot": {
+      "type": "string",
+      "description": "占的位置，例如 api、persistence、auth、cli、services；同一個位置只留分數最高的一塊"
+     },
+     "label": {
+      "type": "string"
+     },
+     "requires": {
+      "type": "object",
+      "description": "（選填）適用條件，例如 {\"interface\":[\"rest\"],\"persistence\":[\"orm\"],\"libs\":[\"fastapi\"]}"
+     },
+     "files": {
+      "type": "array",
+      "items": {
+       "type": "object"
+      },
+      "description": "[{path, template, per:\"project\"|\"entity\"|\"usecase\"}]"
+     },
+     "notes": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "id",
+     "lang",
+     "slot",
+     "files"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "glue_report",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "glue_id": {
+      "type": "string"
+     },
+     "ok": {
+      "type": "boolean",
+      "description": "測試是否通過"
+     },
+     "env": {
+      "type": "object",
+      "description": "（選填）環境，例如 {\"python\":\"3.11\",\"fastapi\":\"0.110.0\"}"
+     },
+     "note": {
+      "type": "string",
+      "description": "（選填）備註，失敗時寫原因"
+     }
+    },
+    "required": [
+     "glue_id",
+     "ok"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "design_choices",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "scenario": {
+      "type": "string",
+      "description": "（選填）情境文字，用來推薦"
+     },
+     "language": {
+      "type": "string",
+      "enum": [
+       "python",
+       "typescript",
+       "java"
+      ],
+      "default": "python"
+     },
+     "constraints": {
+      "type": "object",
+      "description": "（選填）已經指定的抉擇"
+     }
+    },
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "mix_understand",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "text": {
+      "type": "string",
+      "description": "混合內容的文字"
+     },
+     "file_id": {
+      "type": "string"
+     },
+     "path": {
+      "type": "string"
+     }
+    },
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "mix_highlight",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "text": {
+      "type": "string",
+      "description": "混合內容的文字"
+     },
+     "file_id": {
+      "type": "string"
+     },
+     "path": {
+      "type": "string"
+     },
+     "open": {
+      "type": "boolean",
+      "description": "true＝直接開檢視器視窗（預設只放下載卡片，卡片上有「檢視器」按鈕）"
+     }
+    },
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "log_learn",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "text": {
+      "type": "string",
+      "description": "貼上的日誌文字"
+     },
+     "file_id": {
+      "type": "string",
+      "description": "上傳檔案的 file_id"
+     },
+     "path": {
+      "type": "string",
+      "description": "（桌面版）日誌檔的絕對路徑"
+     },
+     "name": {
+      "type": "string",
+      "description": "（選填）格式名稱，之後用它指定"
+     },
+     "confirm": {
+      "type": "boolean",
+      "description": "預設 true：放卡片讓使用者確認；false 直接存"
+     },
+     "kind": {
+      "type": "string",
+      "enum": [
+       "log",
+       "config",
+       "grammar"
+      ],
+      "description": "（選填）強制當日誌、章節式設定檔或自己長文法；省略＝自動判斷"
+     },
+     "extend": {
+      "type": "string",
+      "description": "（選填）已存的文法名稱：讀這份新樣本，讓那份文法繼續長"
+     },
+     "max_lines": {
+      "type": "integer",
+      "description": "最多分析幾行（預設 50000）"
+     }
+    },
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "log_triage",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "root": {
+      "type": "string",
+      "description": "專案資料夾：fap:<名稱>，或桌面版的絕對路徑"
+     },
+     "text": {
+      "type": "string",
+      "description": "貼上的全文"
+     },
+     "action": {
+      "type": "string",
+      "enum": [
+       "triage",
+       "answer"
+      ]
+     },
+     "answers": {
+      "type": "object",
+      "description": "answer：{\"行號\":\"A|B|C\"}"
+     }
+    },
+    "required": [
+     "text"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "log_ask",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "question": {
+      "type": "string",
+      "description": "問題；省略＝摘要"
+     },
+     "format": {
+      "type": "string",
+      "description": "學過的格式名稱（省略＝最近一份）"
+     },
+     "text": {
+      "type": "string",
+      "description": "一行日誌或一行 key = value（問這一行是什麼）、或整份日誌／設定檔文字"
+     },
+     "file_id": {
+      "type": "string"
+     },
+     "path": {
+      "type": "string"
+     },
+     "other_text": {
+      "type": "string",
+      "description": "（設定檔比較）另一份設定檔的文字"
+     },
+     "other_file_id": {
+      "type": "string"
+     },
+     "other_path": {
+      "type": "string"
+     },
+     "kind": {
+      "type": "string",
+      "enum": [
+       "log",
+       "config",
+       "grammar"
+      ]
+     }
+    },
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "webedit_open",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "starter": {
+      "type": "string",
+      "description": "起手式：blank、todo、chat、form、python_api"
+     },
+     "request": {
+      "type": "string",
+      "description": "一句話描述要做的網站"
+     },
+     "spec": {
+      "type": "object",
+      "description": "整份專案描述"
+     },
+     "id": {
+      "type": "string",
+      "description": "重新打開之前的專案"
+     },
+     "title": {
+      "type": "string"
+     }
+    },
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "webedit_topic",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "topic": {
+      "type": "string",
+      "enum": [
+       "format",
+       "edits",
+       "backend",
+       "starters"
+      ]
+     }
+    },
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "worksheet_make",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "request": {
+      "type": "string",
+      "description": "使用者要的學習單（原話）"
+     },
+     "template": {
+      "type": "string",
+      "description": "（選填）範本 id：blank、draw_area、bead_rows、number_bond、count_rows、ten_frames、number_line、equations，或使用者存的 user_…；見 worksheet_topic(templates)"
+     },
+     "reference_file_id": {
+      "type": "string",
+      "description": "（選填）參考圖片的 file_id"
+     },
+     "spec": {
+      "type": "object",
+      "description": "（選填）整份學習單描述，格式見 worksheet_topic"
+     }
+    },
+    "additionalProperties": true
+   }
+  },
+  {
+   "name": "worksheet_adjust",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "edits": {
+      "type": "array",
+      "items": {
+       "type": "object"
+      },
+      "description": "編輯動作，例如 {\"op\":\"set_title\",\"text\":\"…\"}"
+     },
+     "worksheet_id": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "edits"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "worksheet_open",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "worksheet_id": {
+      "type": "string"
+     },
+     "blank": {
+      "type": "boolean",
+      "description": "true＝開一份空白的"
+     }
+    },
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "midi_play",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "file_id": {
+      "type": "string",
+      "description": "使用者上傳的 MIDI 檔"
+     },
+     "song_id": {
+      "type": "string"
+     },
+     "song": {
+      "type": "object",
+      "description": "{title,tempo,timesig,tracks:[{name,program,drum,notes:[[拍,拍長,音高,力度]]}]}"
+     },
+     "title": {
+      "type": "string"
+     }
+    },
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "midi_edit_open",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "file_id": {
+      "type": "string"
+     },
+     "song_id": {
+      "type": "string"
+     },
+     "song": {
+      "type": "object"
+     },
+     "title": {
+      "type": "string"
+     }
+    },
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "midi_song_jsonl",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "action": {
+      "type": "string",
+      "enum": [
+       "read",
+       "write"
+      ]
+     },
+     "song_id": {
+      "type": "string"
+     },
+     "file_id": {
+      "type": "string"
+     },
+     "levels": {
+      "type": "number",
+      "description": "read：0／1／2"
+     },
+     "track": {
+      "type": "number"
+     },
+     "bar": {
+      "type": "number"
+     },
+     "lines": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "text": {
+      "type": "string"
+     },
+     "title": {
+      "type": "string"
+     }
+    },
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "midi_compose",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "description": {
+      "type": "string",
+      "description": "使用者的中文描述,例如「輕快的爵士,D 調,16 小節」"
+     },
+     "style": {
+      "type": "string",
+      "enum": [
+       "pop",
+       "rock",
+       "jazz",
+       "blues",
+       "waltz",
+       "folk",
+       "lofi",
+       "edm",
+       "classical"
+      ]
+     },
+     "key": {
+      "type": "string",
+      "description": "C、D、Eb、F#… 大調或(小調風格)的主音"
+     },
+     "tempo": {
+      "type": "number"
+     },
+     "bars": {
+      "type": "number",
+      "description": "4 到 64,16 以上有前奏／主歌／副歌結構"
+     },
+     "progression": {
+      "type": "number",
+      "description": "風格內的和弦進行編號,從 0 起算"
+     },
+     "seed": {
+      "type": "number"
+     },
+     "title": {
+      "type": "string"
+     }
+    },
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "midi_compose_tree",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "action": {
+      "type": "string",
+      "enum": [
+       "start",
+       "read",
+       "set",
+       "assemble"
+      ]
+     },
+     "description": {
+      "type": "string",
+      "description": "start：曲子的中文描述"
+     },
+     "style": {
+      "type": "string",
+      "enum": [
+       "pop",
+       "rock",
+       "jazz",
+       "blues",
+       "waltz",
+       "folk",
+       "lofi",
+       "edm",
+       "classical"
+      ]
+     },
+     "key": {
+      "type": "string"
+     },
+     "tempo": {
+      "type": "number"
+     },
+     "bars": {
+      "type": "number"
+     },
+     "tree_id": {
+      "type": "string"
+     },
+     "node": {
+      "type": "string",
+      "description": "set／read：節點代號，例如 form、harmony.main、voices.main.texture、motif"
+     },
+     "value": {
+      "type": "string",
+      "description": "set：這個節點的答案（曲式與聲部是一個字母；和聲是羅馬數字和弦串；motif 是「音級:時值」串）"
+     },
+     "seed": {
+      "type": "number"
+     }
+    },
+    "required": [
+     "action"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "music_work_learn",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "name": {
+      "type": "string"
+     },
+     "aliases": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      },
+      "description": "別名、英文名、系列簡稱"
+     },
+     "key": {
+      "type": "string",
+      "description": "主音,如 D、Eb、F#"
+     },
+     "mode": {
+      "type": "string",
+      "enum": [
+       "major",
+       "minor"
+      ]
+     },
+     "tempo": {
+      "type": "number",
+      "description": "40 到 220 拍/分"
+     },
+     "style": {
+      "type": "string",
+      "enum": [
+       "pop",
+       "rock",
+       "jazz",
+       "blues",
+       "waltz",
+       "folk",
+       "lofi",
+       "edm",
+       "classical"
+      ],
+      "description": "最接近的風格範本"
+     },
+     "hint": {
+      "type": "string",
+      "description": "一句話事實:樂器、和弦進行、氛圍,不要寫旋律"
+     },
+     "source_url": {
+      "type": "string",
+      "description": "查到這些事實的網頁網址"
+     }
+    },
+    "required": [
+     "name",
+     "key",
+     "mode",
+     "tempo",
+     "style",
+     "hint",
+     "source_url"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "midi_to_mp3",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "file_id": {
+      "type": "string"
+     },
+     "song_id": {
+      "type": "string"
+     },
+     "song": {
+      "type": "object"
+     },
+     "title": {
+      "type": "string"
+     }
+    },
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "soundtrack_make",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "file_id": {
+      "type": "string"
+     },
+     "song_id": {
+      "type": "string"
+     },
+     "song": {
+      "type": "object"
+     },
+     "soundtrack_id": {
+      "type": "string"
+     },
+     "title": {
+      "type": "string"
+     },
+     "volume": {
+      "type": "number"
+     },
+     "loop": {
+      "type": "boolean"
+     },
+     "fade_in": {
+      "type": "number"
+     },
+     "fade_out": {
+      "type": "number"
+     },
+     "offset": {
+      "type": "number"
+     }
+    },
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "audio_to_midi",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "file_id": {
+      "type": "string",
+      "description": "使用者上傳的音訊檔"
+     },
+     "stems": {
+      "type": "boolean",
+      "description": "true＝先用 Demucs 分軌(下載約 136 MB、很慢)"
+     },
+     "title": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "file_id"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "music_topic",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "topic": {
+      "type": "string",
+      "enum": [
+       "basics",
+       "scales",
+       "chords",
+       "rhythm",
+       "ranges",
+       "instrumentation",
+       "structure",
+       "styles"
+      ]
+     }
+    },
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "worksheet_topic",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "topic": {
+      "type": "string",
+      "enum": [
+       "format",
+       "templates",
+       "draw",
+       "number_bond",
+       "edits",
+       "reference",
+       "colors"
+      ]
+     }
+    },
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "ask_user_card",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "spec": {
+      "type": "object",
+      "description": "卡片規格：{title,description,questions} 或 {title,steps:[…]}，欄位見工具說明"
+     }
+    },
+    "required": [
+     "spec"
+    ],
+    "additionalProperties": true
+   }
+  },
+  {
+   "name": "chat_list_children",
+   "parameters": {
+    "type": "object",
+    "properties": {}
+   }
+  },
+  {
+   "name": "chat_send_to_child",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "chat_id": {
+      "type": "string",
+      "description": "子對話 id（chat_list_children 取得）"
+     },
+     "message": {
+      "type": "string",
+      "description": "要傳給子對話的訊息"
+     }
+    },
+    "required": [
+     "chat_id",
+     "message"
+    ]
+   }
+  },
+  {
+   "name": "chat_get_child_summary",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "chat_id": {
+      "type": "string",
+      "description": "子對話 id"
+     }
+    },
+    "required": [
+     "chat_id"
+    ]
+   }
+  },
+  {
+   "name": "chat_delete_children",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "parent_id": {
+      "type": "string",
+      "description": "父對話 id（省略＝目前對話）"
+     },
+     "filter": {
+      "type": "string",
+      "enum": [
+       "done",
+       "failed",
+       "done_or_failed",
+       "all",
+       "ids"
+      ],
+      "description": "條件；ids 時用 ids"
+     },
+     "ids": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      },
+      "description": "filter 為 ids 時的子對話 id"
+     },
+     "include_running": {
+      "type": "boolean",
+      "description": "也刪除進行中的（預設否）"
+     },
+     "dry_run": {
+      "type": "boolean",
+      "description": "只回傳預覽，不刪"
+     }
+    },
+    "required": [
+     "filter"
+    ]
+   }
+  },
+  {
+   "name": "uml_guide",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "scenario": {
+      "type": "string",
+      "description": "情境（使用者故事、需求文字）"
+     },
+     "language": {
+      "type": "string",
+      "enum": [
+       "python",
+       "typescript",
+       "java"
+      ],
+      "default": "python"
+     },
+     "package": {
+      "type": "string"
+     },
+     "constraints": {
+      "type": "object",
+      "description": "（選填）已經決定的抉擇，卡片會用它當預設值"
+     }
+    },
+    "required": [
+     "scenario"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "write_code",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "task": {
+      "type": "string",
+      "description": "要寫什麼（需求文字；有範例輸入輸出最好一起寫在裡面）"
+     },
+     "language": {
+      "type": "string",
+      "enum": [
+       "python",
+       "nodejs",
+       "c",
+       "cpp",
+       "java",
+       "ruby",
+       "perl",
+       "bash",
+       "asm-x64",
+       "asm-x86",
+       "csharp"
+      ],
+      "description": "（選填）不給就從 task 判斷，判斷不出來用 python"
+     },
+     "tests": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "in": {
+         "type": "string",
+         "description": "標準輸入"
+        },
+        "out": {
+         "type": "string",
+         "description": "期望的標準輸出"
+        }
+       },
+       "required": [
+        "in",
+        "out"
+       ]
+      },
+      "description": "（選填）範例測試（stdin→stdout，最多 20 筆）；有給才會真的執行驗收"
+     },
+     "model": {
+      "type": "string",
+      "enum": [
+       "offline",
+       "online"
+      ],
+      "description": "（選填）用離線小模型或線上模型；不指定就自動選"
+     },
+     "max_rethink": {
+      "type": "integer",
+      "description": "（選填）驗收沒過最多重寫幾次，預設 3、最多 5"
+     }
+    },
+    "required": [
+     "task"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "fix_code",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "source": {
+      "type": "string",
+      "description": "要修的程式碼（整份）"
+     },
+     "language": {
+      "type": "string",
+      "enum": [
+       "python",
+       "nodejs",
+       "c",
+       "cpp",
+       "java",
+       "ruby",
+       "perl",
+       "bash",
+       "csharp"
+      ],
+      "description": "（選填）不給就從程式碼判斷"
+     },
+     "tests": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "in": {
+         "type": "string"
+        },
+        "out": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "in",
+        "out"
+       ]
+      },
+      "description": "（選填）範例測試（stdin→stdout）；有給才會修行為"
+     },
+     "patch": {
+      "type": "string",
+      "description": "（選填）要先合併進這份程式的修補（unified diff）；經 merge diff patcher 套用，沒過語法檢查／測試就回滾"
+     },
+     "goal": {
+      "type": "string",
+      "description": "（選填）這份程式應該做什麼（修行為時給模型看）"
+     },
+     "model": {
+      "type": "string",
+      "enum": [
+       "offline",
+       "online"
+      ],
+      "description": "（選填）需要重寫函式時用的模型"
+     },
+     "max_rethink": {
+      "type": "integer",
+      "description": "（選填）行為驗收沒過最多重寫幾次，預設 3、最多 5"
+     }
+    },
+    "required": [
+     "source"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "merge_patch",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "source": {
+      "type": "string",
+      "description": "使用者目前的程式碼（整份）"
+     },
+     "diff": {
+      "type": "string",
+      "description": "要合併的 unified diff"
+     },
+     "language": {
+      "type": "string",
+      "enum": [
+       "python",
+       "nodejs",
+       "c",
+       "cpp",
+       "java",
+       "ruby",
+       "perl",
+       "bash",
+       "csharp"
+      ],
+      "description": "（選填）不給就從程式碼判斷"
+     },
+     "file_name": {
+      "type": "string",
+      "description": "（選填）diff 含多個檔案時指定合併哪一個"
+     },
+     "tests": {
+      "type": "array",
+      "description": "[{in,out}]：可見測資；有給就在合併後跑判題，沒過回滾",
+      "items": {
+       "type": "object",
+       "properties": {
+        "in": {
+         "type": "string"
+        },
+        "out": {
+         "type": "string"
+        }
+       }
+      }
+     },
+     "hidden": {
+      "type": "array",
+      "description": "[{in,out}]：隱藏測資（選填）",
+      "items": {
+       "type": "object",
+       "properties": {
+        "in": {
+         "type": "string"
+        },
+        "out": {
+         "type": "string"
+        }
+       }
+      }
+     },
+     "require_verify": {
+      "type": "boolean",
+      "description": "（選填）true＝沒有檢查器可用就不合併"
+     }
+    },
+    "required": [
+     "source",
+     "diff"
+    ]
+   }
+  },
+  {
+   "name": "convert_code",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "source": {
+      "type": "string",
+      "description": "要轉換的程式碼（整份；python、nodejs、java、c）"
+     },
+     "sample": {
+      "type": "string",
+      "description": "action:struct 用：範例 JSON 字串（只推得出這一份範例看到的型別；欄位可省略、可空、整數浮點混用這類要明講的，改傳 desc）"
+     },
+     "desc": {
+      "type": "object",
+      "description": "action:struct 用：型別描述，例如 {\"id\":\"int\",\"nick?\":\"str\",\"tags\":[\"str\"],\"meta\":{\"*\":\"float\"}}（值：int float number bigint str bool any，後面加 ? 可空；鍵加 ? 可省略；陣列寫 [型別]；{\"*\":型別} 是鍵不固定的字典）"
+     },
+     "schema": {
+      "type": "string",
+      "description": "action:struct 用：fa-struct 結構描述文字（上一次 struct 回傳的 schema）"
+     },
+     "main": {
+      "type": "boolean",
+      "description": "action:struct 且 target 為 cpp／c／python／nodejs 時，附上讀標準輸入、load 再 save 印出的 main"
+     },
+     "types": {
+      "type": "object",
+      "description": "轉成靜態語言（java／c／cpp／csharp）時，來源沒標型別又推不出來的地方由你補：{\"函式.參數\":\"list<int>\", \"函式.return\":\"int\", \"函式.區域變數\":\"str\"}；型別寫法 int float str bool list<T> dict<K,V> set<T>。第一次轉不成時結果的 needTypes 會列出要補哪些。"
+     },
+     "from": {
+      "type": "string",
+      "enum": [
+       "python",
+       "nodejs",
+       "java",
+       "c",
+       "cpp",
+       "csharp",
+       "ruby",
+       "perl"
+      ],
+      "description": "（選填）來源語言；不給就從程式碼判斷"
+     },
+     "blocks": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "name": {
+         "type": "string"
+        },
+        "params": {
+         "type": "array",
+         "items": {
+          "type": "string"
+         }
+        },
+        "cnl": {
+         "type": "string",
+         "description": "受控自然語言的區塊文字"
+        }
+       },
+       "required": [
+        "name",
+        "cnl"
+       ]
+      },
+      "description": "（與 source 二選一）區塊函式清單"
+     },
+     "target": {
+      "type": "string",
+      "enum": [
+       "nodejs",
+       "java",
+       "c",
+       "cpp",
+       "csharp",
+       "perl",
+       "ruby",
+       "python"
+      ],
+      "description": "目標語言"
+     },
+     "action": {
+      "type": "string",
+      "enum": [
+       "convert",
+       "to_blocks",
+       "to_uml",
+       "struct",
+       "edit_design"
+      ],
+      "description": "預設 convert；to_blocks 把 Python 拆成區塊；edit_design 改設計再改程式（要給 ops）"
+     },
+     "ops": {
+      "type": "array",
+      "items": {
+       "type": "object"
+      },
+      "description": "action:edit_design 用：uml_edit 指令陣列（add_member／remove_member／remove_step／add_step…，先用 to_uml 看類別名與成員）；刪還在被呼叫的函式會被拒絕，新增的函式只有骨架；刪舊加新（同簽名不同名）視為改名，呼叫處一起改"
+     },
+     "overflow": {
+      "type": "string",
+      "enum": [
+       "check"
+      ],
+      "description": "（選填）整數溢位檢查模式：Python 的整數沒有上限，目標語言有（Java／C／C++／C# 為 64 位元、JavaScript 為 2^53、Perl 超過 64 位元變浮點）；給 check 就把 + - * ** 換成檢查溢位的版本，超出範圍明確失敗（不悄悄給錯的數）。預設不檢查（只發警告）"
+     },
+     "name": {
+      "type": "string",
+      "description": "（選填）java 的類別名等"
+     },
+     "keep_blocks": {
+      "type": "boolean",
+      "description": "（選填）先經過區塊再轉，驗證區塊往返"
+     },
+     "tests": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "in": {
+         "type": "string"
+        },
+        "out": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "in",
+        "out"
+       ]
+      },
+      "description": "（選填）有給就實際編譯執行轉出的程式驗證輸出"
+     }
+    },
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "matrix_blocks",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "action": {
+      "type": "string",
+      "enum": [
+       "show",
+       "edit"
+      ],
+      "description": "預設 show"
+     },
+     "source": {
+      "type": "string",
+      "description": "（選填）要看／改的 Python 程式；不給就用最近一次矩陣層結果"
+     },
+     "kind": {
+      "type": "string",
+      "description": "（給 source 時）形態：dfa／recurrence／compose／graph／grid"
+     },
+     "patch": {
+      "type": "object",
+      "description": "edit：dfa 用 delta（每個狀態一個 {字元: 下一狀態}）、start、accept（接受狀態陣列）；recurrence 用 coef、init、mod"
+     },
+     "compose": {
+      "type": "object",
+      "description": "edit（組合層）：{vector, filter, reducer, ch}"
+     },
+     "expected": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "in": {
+         "type": "string"
+        },
+        "out": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "in",
+        "out"
+       ]
+      },
+      "description": "（選填）改完後新定義的期望輸出，有給才實跑驗證"
+     }
+    },
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "behavior_card",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "source": {
+      "type": "string",
+      "description": "要分析的程式碼（整份）"
+     },
+     "language": {
+      "type": "string",
+      "enum": [
+       "python",
+       "nodejs",
+       "java",
+       "c",
+       "cpp"
+      ],
+      "description": "（選填）不給就從程式碼判斷"
+     },
+     "function": {
+      "type": "string",
+      "description": "（選填）只看這個函式"
+     },
+     "level": {
+      "type": "integer",
+      "enum": [
+       1,
+       2
+      ],
+      "description": "（選填）python 預設用完整中間語言（2）；給 1 強制用行為分析器"
+     }
+    },
+    "required": [
+     "source"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "optimize_code",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "source": {
+      "type": "string",
+      "description": "要優化的 Python 程式（整份，要能直接執行、從標準輸入讀資料）"
+     },
+     "tests": {
+      "type": "array",
+      "description": "[{in,out}]：可見測資（必給；輸出就是要保持一致的標準）",
+      "items": {
+       "type": "object",
+       "properties": {
+        "in": {
+         "type": "string"
+        },
+        "out": {
+         "type": "string"
+        }
+       }
+      }
+     },
+     "hidden": {
+      "type": "array",
+      "description": "[{in,out}]：隱藏測資（選填，一樣要保持一致）",
+      "items": {
+       "type": "object",
+       "properties": {
+        "in": {
+         "type": "string"
+        },
+        "out": {
+         "type": "string"
+        }
+       }
+      }
+     },
+     "perf": {
+      "type": "object",
+      "description": "選填：{in,out} 一組「夠大、會顯出差別」的輸入與正確輸出，用來量時間",
+      "properties": {
+       "in": {
+        "type": "string"
+       },
+       "out": {
+        "type": "string"
+       }
+      }
+     }
+    },
+    "required": [
+     "source",
+     "tests"
+    ]
+   }
+  },
+  {
+   "name": "uml_design",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "scenario": {
+      "type": "string",
+      "description": "情境（使用者故事、需求文字）"
+     },
+     "language": {
+      "type": "string",
+      "enum": [
+       "python",
+       "typescript",
+       "java"
+      ],
+      "default": "python"
+     },
+     "package": {
+      "type": "string"
+     },
+     "constraints": {
+      "type": "object",
+      "description": "（選填）指定抉擇"
+     },
+     "model": {
+      "type": "string",
+      "enum": [
+       "offline",
+       "online"
+      ],
+      "description": "（選填）用離線小模型或線上模型；不指定就自動選"
+     }
+    },
+    "required": [
+     "scenario"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "browser_task",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "goal": {
+      "type": "string",
+      "description": "要做什麼（原話，含網址）"
+     },
+     "steps": {
+      "type": "array",
+      "items": {
+       "type": "object"
+      },
+      "description": "選填：自己排好的步驟（會被檢查）"
+     },
+     "mode": {
+      "type": "string",
+      "enum": [
+       "manual",
+       "auto"
+      ]
+     },
+     "max_rounds": {
+      "type": "integer"
+     },
+     "wait_ms": {
+      "type": "integer",
+      "description": "等擴充功能連上的毫秒數，預設 25000"
+     },
+     "once": {
+      "type": "boolean",
+      "description": "只做第一批就回傳"
+     },
+     "use_model": {
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "goal"
+    ]
+   }
+  },
+  {
+   "name": "plan_route",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "need": {
+      "type": "string",
+      "description": "要做的事（原話）"
+     },
+     "mode": {
+      "type": "string",
+      "enum": [
+       "manual",
+       "auto"
+      ],
+      "description": "不給就用 /route 的設定"
+     },
+     "api_provided": {
+      "type": "boolean",
+      "description": "使用者已經提供了 API"
+     }
+    },
+    "required": [
+     "need"
+    ]
+   }
+  },
+  {
+   "name": "register_designed_tool",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "name": {
+      "type": "string"
+     },
+     "description": {
+      "type": "string"
+     },
+     "parameters": {
+      "type": "object",
+      "description": "JSON Schema"
+     },
+     "handler": {
+      "type": "string",
+      "description": "JavaScript 處理程式本體（args 是參數物件）"
+     },
+     "uml": {
+      "type": "string",
+      "description": "設計用的 UML（文字 DSL）"
+     },
+     "scenario": {
+      "type": "string"
+     },
+     "enabled": {
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "name",
+     "description",
+     "handler"
+    ]
+   }
+  },
+  {
+   "name": "intent_parse",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "text": {
+      "type": "string",
+      "description": "描述原文（不要改寫）"
+     },
+     "kind": {
+      "type": "string",
+      "enum": [
+       "bugfix",
+       "testcase",
+       "feature"
+      ],
+      "description": "不填＝程式判斷"
+     },
+     "uml": {
+      "type": "boolean"
+     },
+     "testcase": {
+      "type": "boolean"
+     },
+     "match": {
+      "type": "boolean"
+     },
+     "translate": {
+      "type": "boolean",
+      "description": "讀不出的句子先中英互譯（離線模式預設開）"
+     }
+    },
+    "required": [
+     "text"
+    ]
+   }
+  },
+  {
+   "name": "skill_compile",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "skill": {
+      "type": "string",
+      "description": "技能名稱（省略＝全部）"
+     },
+     "save": {
+      "type": "boolean",
+      "description": "true＝存成食譜（草稿或已編好）"
+     },
+     "design": {
+      "type": "boolean",
+      "description": "true＝缺口用 UML design 設計並登記成待實作的設計工具（手動模式會先問你）"
+     }
+    }
+   }
+  },
+  {
+   "name": "list_designed_tools",
+   "parameters": {
+    "type": "object",
+    "properties": {}
+   }
+  },
+  {
+   "name": "remove_designed_tool",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "name": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "name"
+    ]
+   }
+  },
+  {
+   "name": "llvm_execute",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "ir": {
+      "type": "string",
+      "description": "LLVM IR 文字"
+     },
+     "emit": {
+      "type": "string",
+      "enum": [
+       "run",
+       "check",
+       "wasm"
+      ]
+     },
+     "args": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      },
+      "description": "程式的命令列參數"
+     },
+     "stdin": {
+      "type": "string"
+     },
+     "env": {
+      "type": "object"
+     },
+     "fuel": {
+      "type": "integer",
+      "description": "步數上限（區塊轉換次數），0＝不限"
+     },
+     "name": {
+      "type": "string"
+     },
+     "modules": {
+      "type": "array",
+      "items": {
+       "type": "object"
+      },
+      "description": "選填：要一起連結的其他檔案 [{name, ir}]（ir 可以是 .ll 文字，也可以是 llc -c 產生的物件檔文字）；連結器會解決符號、擋重複定義與簽名衝突"
+     }
+    },
+    "required": [
+     "ir"
+    ]
+   }
+  },
+  {
+   "name": "uml_to_wasm",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "uml": {
+      "type": "string",
+      "description": "UML 文字 DSL（選填）"
+     },
+     "session": {
+      "type": "string"
+     },
+     "run": {
+      "type": "boolean",
+      "description": "false＝只編譯不執行"
+     }
+    }
+   }
+  },
+  {
+   "name": "uml_edit",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "session": {
+      "type": "string",
+      "description": "工作階段 id（不給就用最近一個）"
+     },
+     "ops": {
+      "type": "array",
+      "items": {
+       "type": "object"
+      },
+      "description": "編修指令"
+     },
+     "model_jsonl_read": {
+      "type": "boolean",
+      "description": "把模型攤平成 JSONL 讀（levels 只攤前幾層、path 往下鑽某個節點）"
+     },
+     "levels": {
+      "type": "number"
+     },
+     "path": {
+      "type": "string",
+      "description": "model_jsonl_read：要往下鑽的節點（JSON Pointer，例如 /classes）"
+     },
+     "model_jsonl": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      },
+      "description": "整份模型的 JSONL 行（必須全部展開）；還原後取代目前的模型"
+     },
+     "next": {
+      "type": "boolean",
+      "description": "小窗口分段寫：只回程式算出的下一格（焦點標頭、兄弟的命名、答法範例）；一次只做這一格"
+     },
+     "queue": {
+      "type": "boolean",
+      "description": "套完 ops 後自動附上下一格（next_unit）；每次只回這一格的 ops，直到 done"
+     },
+     "auto_fix": {
+      "type": "boolean",
+      "description": "讓程式找問題、小模型挑修法"
+     },
+     "use_model": {
+      "type": "boolean",
+      "description": "false＝不問模型，全用程式的預設修法"
+     }
+    }
+   }
+  },
+  {
+   "name": "images_to_pdf",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "files": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      },
+      "description": "（選填）圖片 file_id或檔名，照這個順序一張一頁；留空＝這個對話附加的全部圖片（依檔名數字順序）"
+     },
+     "pages": {
+      "type": "array",
+      "description": "（選填）每頁一個物件，順序＝頁序；要逐頁不同的旋轉／縮放／處理時用",
+      "items": {
+       "type": "object",
+       "properties": {
+        "file": {
+         "type": "string",
+         "description": "file_id、檔名、fap:名稱/路徑 或 桌面版絕對路徑"
+        },
+        "rotate": {
+         "type": "number",
+         "description": "順時針角度（90、-90、180、15…）"
+        },
+        "scale": {
+         "type": "number",
+         "description": "圖片像素縮放百分比（50＝縮成一半）"
+        },
+        "ops": {
+         "type": "array",
+         "items": {
+          "type": "object"
+         },
+         "description": "只作用這一頁的處理（接在全部頁面共用的ops後面）"
+        },
+        "zoom": {
+         "type": "number"
+        },
+        "fit": {
+         "type": "string"
+        },
+        "page_size": {
+         "type": "string"
+        },
+        "orientation": {
+         "type": "string"
+        },
+        "margin": {
+         "type": "number"
+        },
+        "background": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "file"
+       ]
+      }
+     },
+     "folder": {
+      "type": "string",
+      "description": "（選填）整個資料夾的圖片：fap:名稱/路徑，或桌面版絕對路徑，依檔名自然排序"
+     },
+     "pattern": {
+      "type": "string",
+      "description": "（選填）folder的檔名篩選，例如 \"*.jpg\""
+     },
+     "sort": {
+      "type": "string",
+      "enum": [
+       "none",
+       "name",
+       "name_desc",
+       "modified",
+       "reverse"
+      ],
+      "description": "（選填）排序：預設——有給files/pages＝照給的順序，folder／附件＝依檔名自然排序"
+     },
+     "ops": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "op": {
+         "type": "string",
+         "enum": [
+          "grayscale",
+          "enhance",
+          "tone",
+          "reduce_colors",
+          "blur",
+          "mosaic",
+          "sharpen",
+          "auto_contrast",
+          "brightness",
+          "contrast",
+          "saturation",
+          "gamma",
+          "threshold",
+          "posterize",
+          "invert",
+          "rotate",
+          "scale",
+          "crop",
+          "flip"
+         ]
+        }
+       },
+       "required": [
+        "op"
+       ],
+       "additionalProperties": true
+      },
+      "description": "（選填）所有頁面共用的處理，依序執行，例如 [{\"op\":\"enhance\"},{\"op\":\"grayscale\"}]"
+     },
+     "page_size": {
+      "type": "string",
+      "description": "（選填）fit（預設）／a3／a4／a5／b5／letter／legal／\"210x297mm\""
+     },
+     "orientation": {
+      "type": "string",
+      "enum": [
+       "auto",
+       "portrait",
+       "landscape"
+      ],
+      "description": "（選填）預設 auto"
+     },
+     "fit": {
+      "type": "string",
+      "enum": [
+       "contain",
+       "cover",
+       "stretch",
+       "actual"
+      ],
+      "description": "（選填）contain（預設，等比置中）／cover（填滿裁切）／stretch／actual"
+     },
+     "zoom": {
+      "type": "number",
+      "description": "（選填）頁面上再縮放的百分比，80＝留邊"
+     },
+     "margin": {
+      "type": "number",
+      "description": "（選填）頁面邊界 pt，預設 0"
+     },
+     "background": {
+      "type": "string",
+      "description": "（選填）頁面底色，例如 \"#ffffff\"（預設白）"
+     },
+     "dpi": {
+      "type": "number",
+      "description": "（選填）fit／actual 用：像素換成實際大小的解析度（預設 96）"
+     },
+     "format": {
+      "type": "string",
+      "enum": [
+       "auto",
+       "jpeg",
+       "png"
+      ],
+      "description": "（選填）嵌進PDF的格式：auto（預設；減色／二值化用png，其餘jpeg）"
+     },
+     "jpeg_quality": {
+      "type": "number",
+      "description": "（選填）0.3～1，預設 0.92"
+     },
+     "filename": {
+      "type": "string",
+      "description": "（選填）輸出檔名"
+     },
+     "output_path": {
+      "type": "string",
+      "description": "（選填）把PDF存到：fap:名稱/資料夾 或桌面版絕對路徑（資料夾或完整 .pdf 路徑）"
+     },
+     "on_error": {
+      "type": "string",
+      "enum": [
+       "fail",
+       "skip"
+      ],
+      "description": "（選填）有圖壞掉時：fail（預設）／skip"
+     },
+     "max_pixels": {
+      "type": "number",
+      "description": "（選填）單張處理前的像素上限（預設約 6000 萬，超過先縮小）"
+     }
+    },
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "remove_pdf_pages",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "file": {
+      "type": "string",
+      "description": "PDF的file_id或檔名"
+     },
+     "pages": {
+      "type": "string",
+      "description": "要移除的頁碼範圍，例如\"1-5,6\""
+     }
+    },
+    "required": [
+     "file",
+     "pages"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "extract_pdf_pages",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "file": {
+      "type": "string",
+      "description": "PDF的file_id或檔名"
+     },
+     "pages": {
+      "type": "string",
+      "description": "要取出的頁碼範圍，例如\"1-5,6\""
+     }
+    },
+    "required": [
+     "file",
+     "pages"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "extract_pdf_images",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "file": {
+      "type": "string",
+      "description": "PDF的file_id或檔名"
+     },
+     "pages": {
+      "type": "string",
+      "description": "要輸出成圖片的頁碼範圍，例如\"1-5,6\""
+     },
+     "scale": {
+      "type": "number",
+      "description": "（選填）渲染解析度倍率，預設2，最高6"
+     }
+    },
+    "required": [
+     "file",
+     "pages"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "compare_images",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "images": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      },
+      "description": "2~6個圖片來源：file_id或http(s)圖片網址；回答會用「圖1、圖2…」（照這個順序）稱呼它們"
+     },
+     "question": {
+      "type": "string",
+      "description": "（選填）想比較什麼；不給就做一般的相同點/差異比較"
+     }
+    },
+    "required": [
+     "images"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "extract_video_frames",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "video": {
+      "type": "string",
+      "description": "影片的file_id或檔名；留空＝最近上傳的"
+     },
+     "times": {
+      "type": "array",
+      "items": {},
+      "description": "要擷取畫面的時間點陣列，秒數或\"1:20\"/\"0:01:20\"字串，最多24個"
+     },
+     "max_width": {
+      "type": "integer",
+      "description": "（選填）輸出寬度px，預設640，範圍160~1280"
+     },
+     "quality": {
+      "type": "number",
+      "description": "（選填）JPEG品質0.3~0.95，預設0.8"
+     }
+    },
+    "required": [
+     "times"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "fetch_web_page",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "url": {
+      "type": "string",
+      "description": "要抓取的網頁完整網址，須以http(s)://開頭"
+     },
+     "output": {
+      "type": "string",
+      "enum": [
+       "auto",
+       "jsonl",
+       "text"
+      ],
+      "description": "內文很長時預設回章節索引（JSONL，三層：索引→區塊→原文）；text＝一律只回預覽"
+     }
+    },
+    "required": [
+     "url"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "docgen_design_guide",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "fap": {
+      "type": "string",
+      "description": "專案資料夾：已授權資料夾的參照 fap:<名稱>[/子路徑]（用 list_file_access_points 查），桌面版也可以是絕對路徑。不給就用使用者 📎 上傳的檔案（zip 會展開）"
+     },
+     "wiki": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      },
+      "description": "選填，說明文件的網址（會抓下來當背景資料；沒有 README 時拿第一頁當簡介）"
+     },
+     "format": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "enum": [
+        "md",
+        "mediawiki",
+        "html",
+        "pdf",
+        "docx"
+       ]
+      },
+      "description": "輸出格式，可多個；不給就用 ⚙ 設定裡的預設"
+     },
+     "template": {
+      "type": "string",
+      "description": "選填，範本代號（用 docgen_list_templates 查）；不給由程式依架構比對挑"
+     },
+     "lang": {
+      "type": "string",
+      "enum": [
+       "zh-TW",
+       "en"
+      ],
+      "description": "文件語言，預設繁體中文"
+     },
+     "level": {
+      "type": "string",
+      "enum": [
+       "brief",
+       "standard",
+       "detailed"
+      ],
+      "description": "詳細程度（表格列數）"
+     },
+     "analysis": {
+      "type": "boolean",
+      "description": "文件最後附上分析附錄（架構比對的所有訊號與分數）"
+     },
+     "noai": {
+      "type": "boolean",
+      "description": "true＝全部由程式寫成，不呼叫模型潤飾"
+     },
+     "version": {
+      "type": "string",
+      "description": "文件版本，例如 1.0"
+     },
+     "request": {
+      "type": "string",
+      "description": "使用者對這份文件的補充要求或讀者（會寫在副標題）"
+     }
+    },
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "docgen_user_guide",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "fap": {
+      "type": "string",
+      "description": "專案資料夾：已授權資料夾的參照 fap:<名稱>[/子路徑]（用 list_file_access_points 查），桌面版也可以是絕對路徑。不給就用使用者 📎 上傳的檔案（zip 會展開）"
+     },
+     "wiki": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      },
+      "description": "選填，說明文件的網址（會抓下來當背景資料；沒有 README 時拿第一頁當簡介）"
+     },
+     "format": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "enum": [
+        "md",
+        "mediawiki",
+        "html",
+        "pdf",
+        "docx"
+       ]
+      },
+      "description": "輸出格式，可多個；不給就用 ⚙ 設定裡的預設"
+     },
+     "template": {
+      "type": "string",
+      "description": "選填，範本代號（用 docgen_list_templates 查）；不給由程式依架構比對挑"
+     },
+     "lang": {
+      "type": "string",
+      "enum": [
+       "zh-TW",
+       "en"
+      ],
+      "description": "文件語言，預設繁體中文"
+     },
+     "level": {
+      "type": "string",
+      "enum": [
+       "brief",
+       "standard",
+       "detailed"
+      ],
+      "description": "詳細程度（表格列數）"
+     },
+     "analysis": {
+      "type": "boolean",
+      "description": "文件最後附上分析附錄（架構比對的所有訊號與分數）"
+     },
+     "noai": {
+      "type": "boolean",
+      "description": "true＝全部由程式寫成，不呼叫模型潤飾"
+     },
+     "version": {
+      "type": "string",
+      "description": "文件版本，例如 1.0"
+     },
+     "request": {
+      "type": "string",
+      "description": "使用者對這份文件的補充要求或讀者（會寫在副標題）"
+     }
+    },
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "docgen_list_templates",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "kind": {
+      "type": "string",
+      "enum": [
+       "design",
+       "user"
+      ]
+     }
+    },
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "generate_image",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "draft": {
+      "type": "boolean",
+      "description": "選填：false＝不畫構圖草稿（預設：場景類的圖會先用通用繪圖畫草稿、給視覺模型看）"
+     },
+     "check": {
+      "type": "boolean",
+      "description": "選填：false＝不請視覺模型檢查成品缺不缺元素"
+     },
+     "retouch": {
+      "type": "boolean",
+      "description": "選填：false＝不做成品後製（自動對比、亮度、飽和度、銳化）"
+     },
+     "reflect": {
+      "type": "boolean",
+      "description": "選填：畫之前先「構想」——查場景素材目錄、請模型想要準備哪些主體與素材、各放哪裡（預設：場景類或不熟的概念才會想；false＝不想）"
+     },
+     "prompt": {
+      "type": "string",
+      "description": "要畫什麼（使用者的需求，中文英文都可以）"
+     },
+     "image": {
+      "type": "string",
+      "description": "選填：使用者貼的圖片的 file_id（會先看懂再生成）"
+     },
+     "base_request": {
+      "type": "string",
+      "description": "選填：要先用純文字畫出的工程圖／示意圖基底的描述"
+     },
+     "route": {
+      "type": "string",
+      "enum": [
+       "auto",
+       "shapes",
+       "diffusion"
+      ],
+      "description": "選填：auto（預設）、shapes（強制用 SVG／Mermaid 純文字畫）、diffusion（強制用擴散模型）"
+     },
+     "style": {
+      "type": "string",
+      "enum": [
+       "photo",
+       "cinematic",
+       "anime",
+       "watercolor",
+       "oil",
+       "sketch",
+       "ink",
+       "render3d",
+       "pixel",
+       "flat",
+       "cyberpunk",
+       "fantasy",
+       "lowpoly",
+       "clay",
+       "illustration"
+      ],
+      "description": "選填：畫風"
+     },
+     "where": {
+      "type": "string",
+      "enum": [
+       "local",
+       "remote"
+      ],
+      "description": "選填：remote＝交給遠端群組的機器畫，圖取回本機"
+     },
+     "machine": {
+      "type": "string",
+      "description": "where=remote 時的機器名稱，或 auto"
+     },
+     "provider": {
+      "type": "string",
+      "enum": [
+       "auto",
+       "online",
+       "local"
+      ],
+      "description": "選填：擴散模型用線上、本機小模型，或自動"
+     },
+     "model": {
+      "type": "string",
+      "description": "選填：線上模型 廠商/模型名"
+     },
+     "width": {
+      "type": "integer"
+     },
+     "height": {
+      "type": "integer"
+     },
+     "steps": {
+      "type": "integer"
+     },
+     "seed": {
+      "type": "integer"
+     },
+     "cfg_scale": {
+      "type": "number"
+     }
+    },
+    "required": [
+     "prompt"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "article_outline",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "max_depth": {
+      "type": "integer",
+      "description": "只列到第幾層標題（1 最上層）"
+     },
+     "url": {
+      "type": "string",
+      "description": "網頁的完整網址（wiki、新聞、小說章節頁…），會自動抓下來轉成文字"
+     },
+     "file_id": {
+      "type": "string",
+      "description": "已上傳的檔案或 fetch_web_page 回傳的 file_id（txt、md、docx、pdf…都可以）"
+     },
+     "text": {
+      "type": "string",
+      "description": "直接給文章文字"
+     }
+    },
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "article_section",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "section": {
+      "description": "章節編號（數字）、標題的一部分（字串），或 {from, to}"
+     },
+     "offset": {
+      "type": "integer",
+      "description": "這一節裡從第幾個字元開始（接續上一次的 next_offset）"
+     },
+     "max_chars": {
+      "type": "integer",
+      "description": "這次最多讀幾個字元，預設 12000"
+     },
+     "url": {
+      "type": "string",
+      "description": "網頁的完整網址（wiki、新聞、小說章節頁…），會自動抓下來轉成文字"
+     },
+     "file_id": {
+      "type": "string",
+      "description": "已上傳的檔案或 fetch_web_page 回傳的 file_id（txt、md、docx、pdf…都可以）"
+     },
+     "text": {
+      "type": "string",
+      "description": "直接給文章文字"
+     }
+    },
+    "required": [
+     "section"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "summarize_large_text",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "file_id": {
+      "type": "string",
+      "description": "要摘要的檔案id，用list_uploaded_files取得"
+     },
+     "entry_path": {
+      "type": "string",
+      "description": "（選填）壓縮檔內要摘要的項目路徑"
+     },
+     "focus": {
+      "type": "string",
+      "description": "（選填）想特別關注的重點方向，會用來引導每個區塊的摘要"
+     }
+    },
+    "required": [
+     "file_id"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "bash_execute",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "script": {
+      "type": "string",
+      "description": "要執行的腳本內容"
+     },
+     "input_files": {
+      "type": "object",
+      "description": "選填，{\"相對路徑\":\"檔案內容\"}，執行前寫進工作目錄，腳本可以直接讀取"
+     },
+     "attachment_files": {
+      "type": "object",
+      "description": "選填：{\"工作目錄相對檔名\":\"📎附件的file_id或檔名\"}（也可給file_id陣列），執行前把附件的原始內容（二進位檔也行）放進工作目錄讓腳本編修；產出的新檔案/修改過的檔案會存回persistentStorage並直接顯示下載卡片給使用者"
+     },
+     "isolated": {
+      "type": "boolean",
+      "description": "選填（只有 python_execute 用）：true＝在獨立的 Worker 裡跑，不卡住畫面（長時間的純計算用，例如影像處理）；Worker 裡沒有轉接層，不能用 subprocess、連網、openai／anthropic 轉接、檔案存取點。預設 false"
+     },
+     "real_input_files": {
+      "type": "object",
+      "description": "選填：{\"工作目錄相對檔名\":\"真實絕對路徑，或'fap:<名稱或id>[/<路徑>]'參照使用者已授權的File Access Point\"}，執行前會先讀取這些真實檔案的目前內容再寫進工作目錄（跟input_files合併，鍵名衝突時以這裡為準）。兩種格式各自需要對應的能力才能用，只有兩者都用不上時才會得到明確錯誤。"
+     },
+     "output_ref": {
+      "type": "string",
+      "description": "選填，\"fap:<名稱>[/<子路徑>]\"存進File Access Point；如果目前環境已經提供對應能力，也可以直接給一個真實磁碟絕對路徑；留空存進persistentStorage（回傳file_id）"
+     }
+    },
+    "required": [
+     "script"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "catalog_onboard",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "modules": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      },
+      "description": "要抽取的模組（匯入名稱，例如 statistics、yaml）"
+     },
+     "packages": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      },
+      "description": "要安裝的 PyPI 套件（可加 ==版本）；標準庫不用填"
+     },
+     "probe": {
+      "type": "boolean",
+      "description": "是否探測純函式（預設 true）"
+     }
+    },
+    "required": [
+     "modules"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "catalog_query",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "action": {
+      "type": "string",
+      "enum": [
+       "search",
+       "show",
+       "path",
+       "plan",
+       "stats"
+      ]
+     },
+     "text": {
+      "type": "string"
+     },
+     "id": {
+      "type": "string"
+     },
+     "from": {
+      "type": "string"
+     },
+     "to": {
+      "type": "string"
+     },
+     "takes": {
+      "type": "string"
+     },
+     "returns": {
+      "type": "string"
+     },
+     "trusted": {
+      "type": "boolean"
+     },
+     "runtime": {
+      "type": "string"
+     },
+     "limit": {
+      "type": "number"
+     },
+     "cast": {
+      "type": "boolean"
+     }
+    },
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "catalog_run",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "program": {
+      "type": "object",
+      "description": "呼叫格式程式（inputs、steps、return）"
+     },
+     "args": {
+      "type": "object",
+      "description": "輸入值（對應 program.inputs）"
+     },
+     "dry_run": {
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "program"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "catalog_bind",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "uml": {
+      "type": "string",
+      "description": "UML 文字（格式見工具說明）"
+     }
+    },
+    "required": [
+     "uml"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "catalog_intent",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "action": {
+      "type": "string",
+      "enum": [
+       "missing",
+       "set",
+       "list"
+      ],
+      "default": "missing"
+     },
+     "items": {
+      "type": "object",
+      "description": "action:\"set\" 用：{單元id: \"一句中文說明\"}"
+     },
+     "limit": {
+      "type": "number",
+      "description": "action:\"missing\" 最多列幾個（預設 30，最多 60）"
+     }
+    },
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "catalog_card",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "url": {
+      "type": "string",
+      "description": "說明文件的網址（GitHub 倉庫網址會自動取 README）"
+     },
+     "text": {
+      "type": "string",
+      "description": "直接給文字（跟 url 二選一）"
+     },
+     "kind": {
+      "type": "string",
+      "enum": [
+       "readme",
+       "qa",
+       "wiki",
+       "guide",
+       "design"
+      ],
+      "description": "文件種類，影響章節的重要性判斷（預設 readme）"
+     },
+     "name": {
+      "type": "string"
+     },
+     "description": {
+      "type": "string",
+      "description": "搜尋結果給的一句話描述（有的話優先當說明）"
+     },
+     "budget_chars": {
+      "type": "number",
+      "description": "最多讀幾個字（預設 12000）"
+     },
+     "context_tokens": {
+      "type": "number",
+      "description": "模型的上下文長度，用來決定每片大小"
+     }
+    },
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "catalog_js",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "url": {
+      "type": "string"
+     },
+     "text": {
+      "type": "string"
+     },
+     "pkg": {
+      "type": "string",
+      "description": "單元名稱的前綴（預設取檔名）"
+     },
+     "version": {
+      "type": "string"
+     }
+    },
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "catalog_discover",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "reflect": {
+      "type": "boolean",
+      "description": "false＝不做反思（預設：找不到或只勉強過門檻的缺口，先想想是不是打錯字、或是新的需求）"
+     },
+     "ask": {
+      "type": "boolean",
+      "description": "false＝遇到分歧也不問使用者，全部用推薦的（預設：只有真的有分歧才問，一次最多3題）"
+     },
+     "max_questions": {
+      "type": "number",
+      "description": "一次最多問幾題，預設3"
+     },
+     "uml": {
+      "type": "string",
+      "description": "UML 文字（格式同 catalog_bind）"
+     },
+     "needs": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      },
+      "description": "沒有 UML 時，直接列需要的能力（中英文都可以）"
+     },
+     "runtime": {
+      "type": "string",
+      "enum": [
+       "browser",
+       "node",
+       "python"
+      ],
+      "default": "browser"
+     },
+     "extract": {
+      "type": "boolean",
+      "description": "false＝不要抽單元，只規劃"
+     },
+     "use_learned": {
+      "type": "boolean",
+      "description": "true＝用 catalog_feedback train 存下來的排名模型（資料夠才有意義）"
+     },
+     "use_embed": {
+      "type": "boolean",
+      "description": "false＝不用嵌入模型排名（語意檢索有啟用才會用）"
+     },
+     "use_model": {
+      "type": "boolean",
+      "description": "true＝用離線小模型把需求改寫成英文搜尋關鍵字（實測這一步它比詞庫好）；預設不用"
+     },
+     "max_gaps": {
+      "type": "number"
+     },
+     "per_gap": {
+      "type": "number"
+     },
+     "context_tokens": {
+      "type": "number"
+     }
+    },
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "catalog_feedback",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "verdict": {
+      "type": "string",
+      "enum": [
+       "adopt",
+       "reject",
+       "run_ok",
+       "run_fail"
+      ]
+     },
+     "gap": {
+      "type": "string",
+      "description": "缺口編號，例如 need/1 或 使用案例/類別.操作"
+     },
+     "url": {
+      "type": "string",
+      "description": "要評的候選網址（不給就是推薦的那個；可以給備選的）"
+     },
+     "plan_id": {
+      "type": "string"
+     },
+     "reason": {
+      "type": "string"
+     },
+     "error": {
+      "type": "string",
+      "description": "run_fail 的錯誤訊息原文"
+     },
+     "action": {
+      "type": "string",
+      "enum": [
+       "stats",
+       "train",
+       "export",
+       "clear"
+      ]
+     },
+     "save": {
+      "type": "boolean"
+     },
+     "force": {
+      "type": "boolean"
+     },
+     "dense": {
+      "type": "boolean",
+      "description": "false＝訓練時不用嵌入特徵"
+     }
+    },
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "mcp_servers",
+   "parameters": {
+    "type": "object",
+    "properties": {},
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "mcp_tools",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "server": {
+      "type": "string",
+      "description": "伺服器名稱（mcp_servers 查得到）"
+     },
+     "tool": {
+      "type": "string",
+      "description": "（選填）要看完整輸入格式的工具名稱"
+     },
+     "query": {
+      "type": "string",
+      "description": "（選填）用關鍵字篩選工具"
+     }
+    },
+    "required": [
+     "server"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "mcp_call",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "server": {
+      "type": "string"
+     },
+     "tool": {
+      "type": "string"
+     },
+     "arguments": {
+      "type": "object",
+      "description": "依工具的輸入格式填的參數"
+     }
+    },
+    "required": [
+     "server",
+     "tool"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "mcp_resources",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "server": {
+      "type": "string"
+     },
+     "uri": {
+      "type": "string",
+      "description": "（選填）要讀取的資源 uri；不給就列出全部"
+     }
+    },
+    "required": [
+     "server"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "mcp_install",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "file_id": {
+      "type": "string",
+      "description": "使用者上傳的檔案 id（list_uploaded_files）"
+     },
+     "file_ids": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "text": {
+      "type": "string",
+      "description": "貼上的 MCP JSON 設定，或遠端 MCP 伺服器的網址"
+     }
+    },
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "mcp_manage",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "server": {
+      "type": "string"
+     },
+     "action": {
+      "type": "string",
+      "enum": [
+       "start",
+       "stop",
+       "restart",
+       "enable",
+       "disable",
+       "remove",
+       "logs"
+      ]
+     }
+    },
+    "required": [
+     "server",
+     "action"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "big_content",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "type": "string",
+      "description": "暫存代號，例如 bc_1"
+     },
+     "action": {
+      "type": "string",
+      "enum": [
+       "info",
+       "read",
+       "grep",
+       "json",
+       "js",
+       "page",
+       "tree",
+       "expand"
+      ]
+     },
+     "levels": {
+      "type": "number",
+      "description": "tree／expand：攤開幾層（tree 預設 2、expand 預設 1）"
+     },
+     "cursor": {
+      "type": "string",
+      "description": "page：上一頁 _page.next_cursor 的值，原樣帶回；第一頁不用給"
+     },
+     "offset": {
+      "type": "number"
+     },
+     "length": {
+      "type": "number"
+     },
+     "pattern": {
+      "type": "string"
+     },
+     "context": {
+      "type": "number"
+     },
+     "max": {
+      "type": "number"
+     },
+     "ignore_case": {
+      "type": "boolean"
+     },
+     "path": {
+      "type": "string",
+      "description": "json：a.b[0].c 或 items[*].id"
+     },
+     "code": {
+      "type": "string",
+      "description": "js：函式本體，可用 text、data，要 return 結果"
+     }
+    },
+    "required": [
+     "id",
+     "action"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "python_execute",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "script": {
+      "type": "string",
+      "description": "要執行的腳本內容"
+     },
+     "input_files": {
+      "type": "object",
+      "description": "選填，{\"相對路徑\":\"檔案內容\"}，執行前寫進工作目錄，腳本可以直接讀取"
+     },
+     "attachment_files": {
+      "type": "object",
+      "description": "選填：{\"工作目錄相對檔名\":\"📎附件的file_id或檔名\"}（也可給file_id陣列），執行前把附件的原始內容（二進位檔也行）放進工作目錄讓腳本編修；產出的新檔案/修改過的檔案會存回persistentStorage並直接顯示下載卡片給使用者"
+     },
+     "isolated": {
+      "type": "boolean",
+      "description": "選填（只有 python_execute 用）：true＝在獨立的 Worker 裡跑，不卡住畫面（長時間的純計算用，例如影像處理）；Worker 裡沒有轉接層，不能用 subprocess、連網、openai／anthropic 轉接、檔案存取點。預設 false"
+     },
+     "real_input_files": {
+      "type": "object",
+      "description": "選填：{\"工作目錄相對檔名\":\"真實絕對路徑，或'fap:<名稱或id>[/<路徑>]'參照使用者已授權的File Access Point\"}，執行前會先讀取這些真實檔案的目前內容再寫進工作目錄（跟input_files合併，鍵名衝突時以這裡為準）。兩種格式各自需要對應的能力才能用，只有兩者都用不上時才會得到明確錯誤。"
+     },
+     "output_ref": {
+      "type": "string",
+      "description": "選填，\"fap:<名稱>[/<子路徑>]\"存進File Access Point；如果目前環境已經提供對應能力，也可以直接給一個真實磁碟絕對路徑；留空存進persistentStorage（回傳file_id）"
+     }
+    },
+    "required": [
+     "script"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "image_decompose_redraw",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "image": {
+      "type": "string",
+      "description": "選填：📎上傳的圖片的 file_id 或檔名；省略時自動用這個對話最新的圖片附件（附了好幾張或找不到時會跳對話框讓使用者選）"
+     },
+     "vision": {
+      "type": "string",
+      "enum": [
+       "off",
+       "auto",
+       "on"
+      ],
+      "description": "預設 off（純幾何）；auto：有支援讀圖的 Model 就用它決定前後順序，否則退回純幾何；on：一定要用，失敗就報錯"
+     },
+     "preview": {
+      "type": "boolean",
+      "description": "是否產生正面與左右各轉 15° 的預覽圖"
+     },
+     "parts": {
+      "type": "boolean",
+      "description": "預設 true：用知識庫的部位知識（臉、眼、鼻、嘴、頭髮、耳朵、動物臉…）偵測並加上凸凹深度；false＝純幾何"
+     },
+     "all_formats": {
+      "type": "boolean",
+      "description": "另外輸出 OBJ＋MTL 與網格 JSON（預設只輸出 SVG、GLB 單檔含貼圖、3D 檢視器 YAML、貼圖 PNG）"
+     },
+     "max_side": {
+      "type": "number",
+      "description": "工作解析度（長邊像素，預設 384）"
+     },
+     "max_leaves": {
+      "type": "number",
+      "description": "格子預算，決定三角形數量（預設 3000）"
+     },
+     "welded": {
+      "type": "boolean",
+      "description": "true＝單片連續網格（2D↔3D 完全一對一，但沒有區域之間的景深落差）"
+     },
+     "output_ref": {
+      "type": "string",
+      "description": "輸出位置：留空＝persistentStorage（下載卡片）；fap:<名稱>[/<子路徑>]＝使用者授權的資料夾"
+     }
+    },
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "image_parts_teach",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "part": {
+      "type": "string",
+      "description": "要校正的部位條目 key，例如 human-eye、human-mouth、human-hair"
+     },
+     "boxes": {
+      "type": "array",
+      "items": {
+       "type": "array",
+       "items": {
+        "type": "number"
+       }
+      },
+      "description": "影像座標的外框 [[x0,y0,x1,y1],…]；幾個框就是幾個部位，兩個當左右對稱"
+     },
+     "container_bbox": {
+      "type": "array",
+      "items": {
+       "type": "number"
+      },
+      "description": "選填：容器（臉）的外框 [x0,y0,x1,y1]；預設用最近一次偵測到的"
+     }
+    },
+    "required": [
+     "part",
+     "boxes"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "image_parts_annotate",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "label": {
+      "type": "string",
+      "description": "選填：開窗時先選好的標籤（物件條目 key 或關節 key，例如 human-eye、coffee-cup、hm-head）；可用 ref_types／ref_lookup 查有哪些"
+     },
+     "new_labels": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      },
+      "description": "選填：要先放進標籤清單的新物件名稱（英文字母開頭，可含數字與 - _，例如 coffee-cup）"
+     },
+     "mode": {
+      "type": "string",
+      "enum": [
+       "assisted",
+       "manual"
+      ],
+      "description": "assisted＝AI／偵測器先猜、人確認；manual＝純手動標註、AI 不猜"
+     }
+    },
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "image_rig_animate",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "skeleton": {
+      "type": "string",
+      "description": "骨架條目 key，例如 head-rig、humanoid-rig；不給就依有沒有偵測到臉決定"
+     },
+     "motions": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      },
+      "description": "要放進去的動作 key；不給就放這個骨架的全部動作"
+     },
+     "active": {
+      "type": "string",
+      "description": "一開始播哪個動作，或 \"all\" 依序輪播"
+     },
+     "figure_bbox": {
+      "type": "array",
+      "items": {
+       "type": "number"
+      },
+      "description": "人形骨架用：人物在影像裡的範圍 [x0,y0,x1,y1]（影像座標，用 parts.json 的座標系）"
+     },
+     "joint_points": {
+      "type": "object",
+      "description": "直接指定關節在影像上的位置 {關節key:[x,y]}（影像座標），覆蓋自動放置"
+     },
+     "static_radius": {
+      "type": "number",
+      "description": "離骨架多遠以外保持不動（場景單位）；不給就自動"
+     }
+    },
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "image_to_text",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "task": {
+      "type": "string",
+      "enum": [
+       "caption",
+       "detailed",
+       "ocr",
+       "objects",
+       "ask"
+      ]
+     },
+     "image": {
+      "type": "string",
+      "description": "選填：圖片的 file_id 或檔名；省略時用這個對話最新的圖片附件"
+     },
+     "prompt": {
+      "type": "string",
+      "description": "task=ask 時要問的問題（英文效果最好）"
+     },
+     "model": {
+      "type": "string",
+      "description": "選填：模型 id（florence-2-base-ft、smolvlm-256m、vit-gpt2、llava-interleave-qwen-0.5b）；省略用預設"
+     },
+     "device": {
+      "type": "string",
+      "enum": [
+       "gpu",
+       "cpu"
+      ],
+      "description": "選填：這次要偏好的裝置；省略用設定"
+     },
+     "max_tokens": {
+      "type": "number",
+      "description": "選填：最多產生多少 token（16～1024）"
+     }
+    },
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "youtube_download",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "text": {
+      "type": "string",
+      "description": "含有YouTube連結的一段文字，會自動抓出裡面所有連結"
+     },
+     "urls": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      },
+      "description": "直接給YouTube連結陣列"
+     }
+    },
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "register_saved_script",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "name": {
+      "type": "string"
+     },
+     "description": {
+      "type": "string"
+     },
+     "language": {
+      "type": "string",
+      "enum": [
+       "python",
+       "bash"
+      ]
+     },
+     "code": {
+      "type": "string"
+     },
+     "entry_file": {
+      "type": "string"
+     },
+     "args_hint": {
+      "type": "string"
+     },
+     "tags": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "output_ref": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "name",
+     "description",
+     "language",
+     "code"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "list_saved_scripts",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "output_ref": {
+      "type": "string"
+     }
+    },
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "get_saved_script",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "name": {
+      "type": "string"
+     },
+     "output_ref": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "name"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "render_3d_scene",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "yaml": {
+      "type": "string",
+      "description": "場景YAML描述"
+     }
+    },
+    "required": [
+     "yaml"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "get_3d_scene_topic",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "topic": {
+      "type": "string",
+      "description": "texture|particles|polygon|defs"
+     }
+    },
+    "required": [
+     "topic"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "get_3d_scene_yaml",
+   "parameters": {
+    "type": "object",
+    "properties": {},
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "import_3d_model_attachment",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "file_id": {
+      "type": "string",
+      "description": "要匯入的3D模型檔案id，用list_uploaded_files取得"
+     }
+    },
+    "required": [
+     "file_id"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "render_drawing",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "svg": {
+      "type": "string",
+      "description": "完整的<svg>...</svg>原始碼"
+     }
+    },
+    "required": [
+     "svg"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "render_uml_diagram",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "mermaid": {
+      "type": "string",
+      "description": "完整的mermaid語法文字"
+     }
+    },
+    "required": [
+     "mermaid"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "render_interactive_viewer",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "yaml": {
+      "type": "string",
+      "description": "viewer YAML描述"
+     }
+    },
+    "required": [
+     "yaml"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "get_interactive_viewer_yaml",
+   "parameters": {
+    "type": "object",
+    "properties": {},
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "get_viewer_state",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "state_namespace": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "state_namespace"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "set_viewer_state",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "state_namespace": {
+      "type": "string"
+     },
+     "state": {
+      "type": "object"
+     }
+    },
+    "required": [
+     "state_namespace",
+     "state"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "import_interactive_viewer_attachment",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "file_id": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "file_id"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "render_2d_animation",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "yaml": {
+      "type": "string",
+      "description": "2D動畫YAML描述"
+     }
+    },
+    "required": [
+     "yaml"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "get_2d_animation_yaml",
+   "parameters": {
+    "type": "object",
+    "properties": {},
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "import_2d_animation_attachment",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "file_id": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "file_id"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "browser_search",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "query": {
+      "type": "string",
+      "description": "搜尋關鍵字"
+     },
+     "sources": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "enum": [
+        "wiki",
+        "stackoverflow",
+        "github",
+        "google",
+        "news",
+        "sourceforge",
+        "codeproject",
+        "deepwiki"
+       ]
+      },
+      "description": "（選填）要查詢的來源子集，留空＝全部來源"
+     }
+    },
+    "required": [
+     "query"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "transcribe_media",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "file": {
+      "type": "string",
+      "description": "要轉錄的影片/音檔的file_id或檔名；留空＝用最近上傳的"
+     },
+     "language": {
+      "type": "string",
+      "enum": [
+       "zh",
+       "en"
+      ],
+      "description": "（選填）指定語言，不填＝自動偵測"
+     }
+    },
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "extract_audio",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "file": {
+      "type": "string",
+      "description": "要擷取聲音的影片/音檔的file_id或檔名；留空＝用最近上傳的"
+     }
+    },
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "burn_subtitles",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "video": {
+      "type": "string",
+      "description": "影片的file_id或檔名；留空＝用最近上傳的"
+     },
+     "subtitle": {
+      "type": "string",
+      "description": "（選填）字幕檔的file_id或檔名；留空＝自動轉逐字稿"
+     },
+     "language": {
+      "type": "string",
+      "enum": [
+       "zh",
+       "en"
+      ],
+      "description": "（選填）自動轉逐字稿時的語言"
+     }
+    },
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "extract_clip_range",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "video": {
+      "type": "string",
+      "description": "影片的file_id或檔名；留空＝用最近上傳的"
+     },
+     "range": {
+      "type": "string",
+      "description": "\"開始-結束\"，例如\"1:20-1:45\"（跟start_seconds/end_seconds擇一）"
+     },
+     "start_seconds": {
+      "description": "開始時間（數字秒，或\"分:秒\"字串）"
+     },
+     "end_seconds": {
+      "description": "結束時間（數字秒，或\"分:秒\"字串）"
+     }
+    },
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "extract_clip_range_audio",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "file": {
+      "type": "string",
+      "description": "影片/音檔的file_id或檔名；留空＝用最近上傳的"
+     },
+     "range": {
+      "type": "string",
+      "description": "\"開始-結束\"，例如\"1:20-1:45\"（跟start_seconds/end_seconds擇一）"
+     },
+     "start_seconds": {
+      "description": "開始時間（數字秒，或\"分:秒\"字串）"
+     },
+     "end_seconds": {
+      "description": "結束時間（數字秒，或\"分:秒\"字串）"
+     }
+    },
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "convert_to_animated_gif",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "video": {
+      "type": "string",
+      "description": "影片的file_id或檔名；留空＝用最近上傳的"
+     },
+     "range": {
+      "type": "string",
+      "description": "（選填）\"開始-結束\"，例如\"1:20-1:45\"，留空＝整支影片"
+     },
+     "start_seconds": {
+      "description": "（選填，跟range擇一）開始時間"
+     },
+     "end_seconds": {
+      "description": "（選填，跟range擇一）結束時間"
+     },
+     "fps": {
+      "type": "number",
+      "description": "（選填）輸出幀率，預設10，最高30"
+     },
+     "max_width": {
+      "type": "number",
+      "description": "（選填）輸出最大寬度(px)，預設480，最高960"
+     }
+    },
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "convert_video_to_animation",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "video": {
+      "type": "string",
+      "description": "影片的file_id或檔名；留空＝用最近上傳的"
+     },
+     "range": {
+      "type": "string",
+      "description": "（選填）\"開始-結束\"，留空＝整支影片"
+     },
+     "start_seconds": {
+      "description": "（選填，跟range擇一）開始時間"
+     },
+     "end_seconds": {
+      "description": "（選填，跟range擇一）結束時間"
+     },
+     "fps": {
+      "type": "number",
+      "description": "（選填）每秒擷取幾個影格，預設5，跟frame_interval擇一（fps優先）"
+     },
+     "frame_interval": {
+      "type": "number",
+      "description": "（選填）每隔幾秒擷取一個影格，跟fps擇一"
+     },
+     "max_frames": {
+      "type": "number",
+      "description": "（選填）最多擷取幾個影格，預設60，最高200"
+     },
+     "max_width": {
+      "type": "number",
+      "description": "（選填）輸出影格寬度(px)，預設320，最高640"
+     },
+     "quality": {
+      "type": "number",
+      "description": "（選填）JPEG壓縮品質0.3~0.95，預設0.75，越高畫質越好但檔案越大"
+     },
+     "loop": {
+      "type": "boolean",
+      "description": "（選填）是否循環播放，預設false"
+     },
+     "opacity_transition": {
+      "type": "boolean",
+      "description": "（選填）true＝用舊版多shape疊加+opacity交叉淡化（柔和過渡）；預設false＝單一shape硬切換src，沒有opacity動畫"
+     }
+    },
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "terminal_create",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "name": {
+      "type": "string",
+      "description": "（選填）自訂終端機名稱，不給會自動編號term-N"
+     },
+     "initial_command": {
+      "type": "string",
+      "description": "（選填）建立後立刻執行的指令"
+     }
+    },
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "terminal_list",
+   "parameters": {
+    "type": "object",
+    "properties": {},
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "terminal_run",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "id_or_name": {
+      "type": "string",
+      "description": "目標terminal的id或name（terminal_list查詢）"
+     },
+     "command": {
+      "type": "string",
+      "description": "要執行的bash指令（同一個session的cwd/檔案系統狀態會延續）"
+     },
+     "output_file": {
+      "type": "string",
+      "description": "（選填）把這次的stdout額外寫進沙盒內這個路徑"
+     },
+     "stderr_file": {
+      "type": "string",
+      "description": "（選填）把這次的stderr額外寫進沙盒內這個路徑"
+     }
+    },
+    "required": [
+     "id_or_name",
+     "command"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "terminal_get_text",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "id_or_name": {
+      "type": "string",
+      "description": "目標terminal的id或name"
+     }
+    },
+    "required": [
+     "id_or_name"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "terminal_cp_to",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "id_or_name": {
+      "type": "string",
+      "description": "目標terminal的id或name"
+     },
+     "src": {
+      "type": "string",
+      "description": "來源：fap:<名稱或id>/<路徑>、附件file_id/檔名、或（桌面版）真實絕對路徑"
+     },
+     "dst_path": {
+      "type": "string",
+      "description": "沙盒內的絕對路徑或資料夾（資料夾用來源檔名）"
+     }
+    },
+    "required": [
+     "id_or_name",
+     "src",
+     "dst_path"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "terminal_cp_from",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "id_or_name": {
+      "type": "string",
+      "description": "來源terminal的id或name"
+     },
+     "src_path": {
+      "type": "string",
+      "description": "沙盒內要取出的絕對路徑"
+     },
+     "dst": {
+      "type": "string",
+      "description": "（選填）目的地：fap:<名稱或id>/<路徑或資料夾>、（桌面版）真實絕對路徑/資料夾；留空＝存成附件並顯示下載卡片"
+     }
+    },
+    "required": [
+     "id_or_name",
+     "src_path"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "compose_video",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "animation_2d": {
+      "type": "string",
+      "description": "2D動畫YAML（跟animation_3d擇一）"
+     },
+     "animation_3d": {
+      "type": "string",
+      "description": "3D場景YAML（跟animation_2d擇一）"
+     },
+     "audio": {
+      "type": "string",
+      "description": "音軌檔的file_id或檔名"
+     },
+     "captions": {
+      "description": "（選填）字幕檔的file_id/檔名，或 [{start,end,text}] 陣列"
+     }
+    },
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "translate_text",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "text": {
+      "type": "string",
+      "description": "要翻的文字（原樣，不要自己先翻或改寫）"
+     },
+     "to": {
+      "type": "string",
+      "enum": [
+       "en",
+       "zh"
+      ],
+      "description": "翻成英文（en）或繁體中文（zh）；不填＝依原文自動判斷"
+     },
+     "engine": {
+      "type": "string",
+      "enum": [
+       "auto",
+       "online",
+       "offline"
+      ],
+      "description": "預設 auto"
+     }
+    },
+    "required": [
+     "text"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "text_to_speech",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "text": {
+      "type": "string",
+      "description": "要念的文字"
+     },
+     "voice": {
+      "type": "string",
+      "description": "（選填）語音代號（用 /media-list-voices 查完整清單，包含使用者自己匯入／建立的聲音，沒指定時會優先用使用者自己的聲音）；留空依文字語言自動判斷"
+     },
+     "speed": {
+      "type": "number",
+      "minimum": 0.5,
+      "maximum": 2,
+      "description": "（選填）語速倍數，0.5~2.0，留空用使用者設定的預設語速（通常是1.0）"
+     }
+    },
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "concat_audio",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "files": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      },
+      "description": "要依序串接的音檔file_id或檔名陣列，至少2個"
+     }
+    },
+    "required": [
+     "files"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "start_dubbing_session",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "video": {
+      "type": "string",
+      "description": "影片的file_id或檔名；留空＝最近上傳的"
+     },
+     "ranges": {
+      "type": "array",
+      "description": "（選填）自己指定要配音的時間段，給了就忽略subtitle；不需要整支轉逐字稿",
+      "items": {
+       "type": "object",
+       "properties": {
+        "start": {
+         "description": "開始時間，秒數或\"M:SS\"/\"H:MM:SS\"字串"
+        },
+        "end": {
+         "description": "（選填）結束時間，格式同start；留空＝start+1秒"
+        },
+        "text": {
+         "type": "string",
+         "description": "（選填）這段的文字說明，顯示在widget上；留空會用時間範圍當說明"
+        }
+       },
+       "required": [
+        "start"
+       ]
+      }
+     },
+     "subtitle": {
+      "type": "string",
+      "description": "（選填，沒給ranges時才有作用）字幕檔的file_id或檔名；留空＝自動先轉逐字稿"
+     }
+    },
+    "additionalProperties": false
+   }
+  }
+ ]
+}

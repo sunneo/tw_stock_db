@@ -71,7 +71,7 @@
             return { has: true, inputs: I.inputs || null, source: I.source, stats: I.stats, sizing: I.sizing, licenses: lic, skipped: (I.skipped || []).slice(0, 30), skippedTotal: (I.skipped || []).length, rejectedTotal: I.rejected.length, rejected: I.rejected.slice(0, 30), preview: I.chunks.slice(0, 8).map(chunkBrief), requests: q, samples: I.samples.length, savedAs: I.savedAs || null };
         };
         // 主程式目前的基底模型與 LoRA 槽版 ONNX 的條件（make_lora_onnx.py build 的單槽 rank 16；提示格式版本 1）。
-        // 工具清單雜湊（shape-v1）由主程式的 h.toolCatalogSha256() 給，第一次使用前由 loraEnv() 填入；算不出來就留空，相容性檢查會寫明「算不出」。
+        // 工具清單雜湊（shape-v2）由主程式的 h.toolCatalogSha256() 給，第一次使用前由 loraEnv() 填入；算不出來就留空，相容性檢查會寫明「算不出」。
         const LORA_ENV = { base: 'Qwen/Qwen3-0.6B', rank_slots: [16], prompt_format_version: 1 };
         async function loraEnv() {
             if (!LORA_ENV.tool_catalog_sha256 && typeof h.toolCatalogSha256 === 'function') {

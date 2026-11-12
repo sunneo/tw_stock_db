@@ -25,10 +25,11 @@
     const SOURCE_RANK = { user: 2, imported: 1, builtin: 0 }; // DESIGN §7：使用者啟用的 > 內建
     const DEFAULT_BUDGET = 256 * 1024 * 1024;
     const HEX64 = /^[0-9a-f]{64}$/;
-    // 工具清單雜湊的格式 shape-v1：只取「工具名稱＋參數結構（名稱、型別、必填、enum）」，不取說明文字。
+    // 工具清單雜湊的格式 shape-v2：輸入＝「app 內建工具登記的快照」（_registerBuiltinAiTools 登記的名稱＋參數結構，見 lora-train/tool_snapshot.js），
+    // 只取「工具名稱＋參數結構（名稱、型別、必填、enum）」，不取說明文字。v1 的輸入是訓練端的全部盤點，兩邊集合不同，已淘汰。
     // 說明文字在主程式裡會依平台插值（${…}），執行時的文字與離線掃描（real_tools_all.json）不會逐字相同，拿來比對會永遠誤報。
     // 代價：只改說明、不改參數的變動偵測不到（DESIGN.lora-training.md §26.2）。沒有 tool_catalog_scheme 的舊雜湊是檔案位元組，無法比對。
-    const TOOL_HASH_SCHEME = 'shape-v1';
+    const TOOL_HASH_SCHEME = 'shape-v2';
     function toolShape(t) {
         const s = (t && (t.parameters || t.parametersSchema || t.schema)) || {};
         const props = s.properties && typeof s.properties === 'object' ? s.properties : {};
@@ -42,6 +43,11 @@
         const rows = (Array.isArray(tools) ? tools : []).filter((t) => t && t.name).map(toolShape);
         rows.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
         return JSON.stringify(rows);
+    }
+    // 同一份雜湊：訓練端（pack_adapter.js）與主程式（floating-assistant.js 的 _toolCatalogSha256）都呼叫這一個函式。
+    // shaOfBytes(Uint8Array) → hex（主程式傳 FaStudioAsset.sha256Hex，訓練端傳 node crypto）。
+    function toolCatalogHash(tools, shaOfBytes) {
+        return shaOfBytes(new TextEncoder().encode(toolCatalogShapeText(tools)));
     }
 
     function validateEntry(e) {
@@ -70,7 +76,7 @@
         const slotRank = entry.slot_rank != null ? entry.slot_rank : entry.rank;
         if (Array.isArray(env.rank_slots) && env.rank_slots.length && env.rank_slots.indexOf(slotRank) < 0) reasons.push({ field: 'rank', expected: env.rank_slots, actual: slotRank, message: 'LoRA 槽寬（rank 槽 ' + slotRank + '）與模型的槽版 ONNX（' + env.rank_slots.join('、') + '）不符，放不進去' });
         if (env.prompt_format_version !== undefined && String(entry.prompt_format_version) !== String(env.prompt_format_version)) reasons.push({ field: 'prompt_format_version', expected: env.prompt_format_version, actual: entry.prompt_format_version, message: '提示格式版本不同：主程式 ' + env.prompt_format_version + '，adapter ' + entry.prompt_format_version + '（格式一改一定要重訓）' });
-        // 工具清單：只有同格式（shape-v1）的雜湊才比得出來；舊格式、主程式算不出、adapter 沒記錄都要說出來，不靜默通過
+        // 工具清單：只有同格式（shape-v2）的雜湊才比得出來；舊格式、主程式算不出、adapter 沒記錄都要說出來，不靜默通過
         if (entry.tool_catalog_sha256 && env.tool_catalog_sha256) {
             if (entry.tool_catalog_scheme !== TOOL_HASH_SCHEME) warnings.push({ field: 'tool_catalog_sha256', message: '工具清單雜湊是舊格式，無法與現在的工具清單比對；用新版重新打包後才判斷得出' });
             else if (entry.tool_catalog_sha256 !== env.tool_catalog_sha256) warnings.push({ field: 'tool_catalog_sha256', message: '工具清單已變動，建議重訓或更新 adapter（仍可載入）' });
@@ -471,5 +477,5 @@
         };
     }
 
-    return { SOURCES, DEFAULT_BUDGET, DESCRIPTOR_FORMAT, DESCRIPTOR_FORMAT_VERSION, TOOL_HASH_SCHEME, toolCatalogShapeText, validateEntry, descriptorErrors, descriptorFromJson, checkCompat, evalVerdict, createRegistry, entryFromManifest, weightFile, summaryOf, diffSummaries, importReport, nrEngineLoader };
+    return { SOURCES, DEFAULT_BUDGET, DESCRIPTOR_FORMAT, DESCRIPTOR_FORMAT_VERSION, TOOL_HASH_SCHEME, toolCatalogShapeText, toolCatalogHash, validateEntry, descriptorErrors, descriptorFromJson, checkCompat, evalVerdict, createRegistry, entryFromManifest, weightFile, summaryOf, diffSummaries, importReport, nrEngineLoader };
 });
