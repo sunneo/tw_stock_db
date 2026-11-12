@@ -337,7 +337,8 @@ function reasonOf(r) {
 for (const [name, file] of suites) {
     const t0 = Date.now(), r = spawnSync(process.execPath, [path.join(root, file)], { encoding: 'utf8' });
     const last = String(r.stdout || '').trim().split('\n').pop();
-    const ok = r.status === 0 && /(0 failed|[0-9]+ passed)/.test(last) && !/FAILED/.test(last);
+    // 結束碼 0 才算過；結尾行接受三種寫法：英文 N passed／0 failed，或中文「全部通過」「通過 N 項，失敗 0 項」「0 失敗」（有些測試用中文結尾：「全部通過」「通過 N 項」「0 失敗」）
+    const ok = r.status === 0 && /(0 failed|[0-9]+ passed|全部通過|失敗 0 項|0 失敗|通過 [0-9]+ 項)/.test(last) && !/FAILED/.test(last);
     const reason = ok ? '' : reasonOf(r), isKnown = !ok && Object.prototype.hasOwnProperty.call(known, file);
     if (!ok) { failed++; if (!isKnown) failedNew++; }
     console.log((ok ? 'PASS ' : (isKnown ? 'FAIL(既有) ' : 'FAIL(新增) ')) + name + '：' + (ok ? last : reason || last));
