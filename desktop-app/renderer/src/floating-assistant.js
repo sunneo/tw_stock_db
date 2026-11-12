@@ -5475,6 +5475,13 @@ const holder = {};
         for (const k of CARD_METRIC_KEYS) { const x = m[k]; if (!x || typeof x.base !== 'number' || typeof x.tuned !== 'number') continue; if (x.tuned > x.base) win.push(k); else if (x.tuned < x.base) lose.push(k); }
         return { known: win.length + lose.length > 0, win, lose, score: win.length - lose.length };
     }
+    // 已知內建 adapter 的評量（DESIGN.lora-training.md §19，留出集實測；卡片的 eval 欄位只定義兩個指標，這兩顆的數字沒有寫進卡片，已匯入的資產也補不上，
+    // 所以登錄時卡片沒有評量就查這張表）。只認 id 與名稱「完全相同」的條目（colu-r4／plan-r4 的 v1），改過權重的新版本要自帶卡片評量。
+    const KNOWN_EVAL = {
+        'colu-r4': { groups: { colu_letter_choice: { adapter: 30, base: 11 }, colu_letter_choice_nonefirst: { adapter: 25, base: 0 } }, source: 'DESIGN §19' },
+        'plan-r4': { groups: { plan_check_valid: { adapter: 60, base: 52 }, review_return_items: { adapter: 50, base: 0 }, self_validate_ok: { adapter: 47, base: 25 } }, source: 'DESIGN §19' },
+    };
+    function knownEval(e) { const k = KNOWN_EVAL[e.id] || KNOWN_EVAL[e.name]; return k ? JSON.parse(JSON.stringify(k)) : null; }
     function evalVerdict(ev) {
         if (!ev || typeof ev !== 'object') return { known: false };
         if (ev.metrics && typeof ev.metrics === 'object') return metricsVerdict(ev.metrics);
@@ -5506,6 +5513,7 @@ const holder = {};
             if (errs.length) throw new Error('登錄項不合法：' + errs.join('；'));
             const e = Object.assign({ enabled: true, priority: 0, domains: [], triggers: [], conflicts_with: [], added: now() }, entry);
             e.domains = e.domains.slice(); e.triggers = (e.triggers || []).slice(); e.conflicts_with = (e.conflicts_with || []).slice();
+            if (!e.eval) e.eval = knownEval(e);
             if (live.has(e.id)) throw new Error('adapter ' + e.id + ' 載入中，先卸載再取代');
             entries.set(e.id, e);
             return e;
@@ -5564,7 +5572,11 @@ const holder = {};
                     if (!v.known) { skipped.push({ id: e.id, reason: '沒有評量資料，不自動選用（可手動指定）' }); continue; }
                     if (v.lose && v.lose.length) { skipped.push({ id: e.id, reason: '評量有組別輸給基底：' + v.lose.join('、') + '，不自動選用（可手動指定）' }); continue; }
                 }
-                pool.push({ e, manual, specific: manual || byDomain || byTrigger });
+                pool.push({ e, manual, byDomain, byTrigger, specific: manual || byDomain || byTrigger });
+            }
+            // 領域已經由任務類型確定時，只靠指令觸發字命中的別領域 adapter 讓位（colu 題目文字裡有「工具」不該改選 toolcall）；沒有領域符合者時觸發字照舊可選用
+            if (want.size && pool.some((p) => p.byDomain && !p.manual)) {
+                for (let i = pool.length - 1; i >= 0; i--) { const p = pool[i]; if (!p.manual && !p.byDomain && p.byTrigger && p.e.domains.length) { skipped.push({ id: p.e.id, reason: '任務領域（' + Array.from(want).join('、') + '）已有符合的 adapter，不因指令觸發字改選別的領域' }); pool.splice(i, 1); } }
             }
             const hasSpecific = pool.some((p) => p.specific);
             const cands = pool.filter((p) => p.specific || (!hasSpecific)).map((p) => p).sort((a, b) => (b.manual - a.manual) || order(a.e, b.e));
@@ -13212,6 +13224,29 @@ const holder = {};
     }
     // 這次呼叫要不要去問原生（只有選 CPU，或 auto 且沒有 WebGPU 時才問；選 WebGPU 不去問主程序）
     function wantsNativeBackend(preference, gpuAvailable) { return preference === 'cpu' || (preference === 'auto' && !gpuAvailable); }
+    // 偏好選 WebGPU 但這台根本沒有 WebGPU：選項本身做不到（resolveDevice 只會退到 WASM），等同 auto——這樣原生（有 LoRA）才有機會被用到。
+    // 有 WebGPU 時原樣不動（選 WebGPU 完全不碰原生的規則不變）。
+    function effectiveDevicePref(preference, gpuAvailable) { return preference === 'gpu' && !gpuAvailable ? 'auto' : preference; }
+    // 原生推論的提示樣板只有純文字（messages）；有工具的呼叫把工具折進 system 訊息，格式與 Qwen3 官方樣板（transformers.js 的 apply_chat_template 用的那份）一致：
+    //   「（原 system 內容）\n\n# Tools\n\n…<tools>\n{工具 JSON}…\n</tools>\n\n…<tool_call>…」。沒有 system 訊息時工具說明自己成為 system。
+    // 有 tool 角色或 tool_calls 的歷史（樣板會改寫成 <tool_response>）這裡不處理，回 {ok:false}，呼叫端改走網頁版，不靠猜。
+    function nativeToolMessages(messages, tools) {
+        const ms = (messages || []).map((m) => ({ role: m.role, content: String(m.content == null ? '' : m.content) }));
+        if (!Array.isArray(tools) || !tools.length) return { ok: true, messages: ms };
+        if ((messages || []).some((m) => m && (m.role === 'tool' || m.tool_calls))) return { ok: false, why: '對話歷史裡有工具回應，原生樣板沒有對應的改寫' };
+        const head = '# Tools\n\nYou may call one or more functions to assist with the user query.\n\nYou are provided with function signatures within <tools></tools> XML tags:\n<tools>';
+        const tail = '\n</tools>\n\nFor each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\n<tool_call>\n{"name": <function-name>, "arguments": <args-json-object>}\n</tool_call>';
+        const block = head + tools.map((t) => '\n' + JSON.stringify(t)).join('') + tail;
+        if (ms.length && ms[0].role === 'system') ms[0] = { role: 'system', content: ms[0].content + '\n\n' + block };
+        else ms.unshift({ role: 'system', content: block });
+        return { ok: true, messages: ms };
+    }
+    // 預填：原生樣板接不到預填，這裡的做法是讓模型自己生成，之後檢查輸出確實以預填開頭才採用（回完整字串，跟網頁版一樣含預填）；不以預填開頭就回 null，呼叫端退回網頁版重做。
+    function nativeWithPrefill(text, prefill) {
+        const t = String(text == null ? '' : text);
+        if (!prefill) return t;
+        return t.indexOf(prefill) === 0 ? t : null;
+    }
 
     // ---------- 任務與提示詞 ----------
     const TASKS = { caption: '簡短描述', detailed: '詳細描述', ocr: '辨識文字（OCR）', objects: '列出物件', ask: '問問題（自訂提示詞）' };
@@ -13563,7 +13598,7 @@ const holder = {};
     // 估算這次下載量（依裝置組合）；已經在快取裡的部分不用再下載
     function estimateDownload(model, device, cachedBytes) { const total = (model.bytes && model.bytes[device === 'webgpu' ? 'gpu' : 'cpu']) || 0; return Math.max(0, total - (Number(cachedBytes) || 0)); }
 
-    return { MODELS, byId, imageModels, textModels, depthModels, DEFAULT_DEPTH_MODEL, segmentModels, DEFAULT_SEGMENT_MODEL, poseModels, DEFAULT_POSE_MODEL, DEFAULT_MODEL, DEFAULT_TEXT_MODEL, THRESHOLD_MIN, THRESHOLD_MAX, clampThreshold, shouldUseOfflineLlm, estimateTokens, trimToTokens, textBudget, composeMessages, textGenParams, compactToolSpecs, parseToolCalls, TOOL_STAGE_SYSTEM, roleConfig, toolsTrust, routeStages, toolResultsAsReferences, looksLikeGarbage, fitMessages, runAgentLoop, placeholderOf, BENCH_TOOLS, BENCH_CASES, scoreToolCase, summarizeToolBench, TASKS, generationParams, defaultMaxTokens, inferTask, pickModel, VISION_POLICIES, visionOrder, combineVision, structuredPrompt, parseStructured, resolveDevice, backendOrder, wantsNativeBackend, resolveThreads, buildTask, formatResult, repoOfUrl, usageByModel, urlsOfModel, fmtBytes, estimateDownload };
+    return { MODELS, byId, imageModels, textModels, depthModels, DEFAULT_DEPTH_MODEL, segmentModels, DEFAULT_SEGMENT_MODEL, poseModels, DEFAULT_POSE_MODEL, DEFAULT_MODEL, DEFAULT_TEXT_MODEL, THRESHOLD_MIN, THRESHOLD_MAX, clampThreshold, shouldUseOfflineLlm, estimateTokens, trimToTokens, textBudget, composeMessages, textGenParams, compactToolSpecs, parseToolCalls, TOOL_STAGE_SYSTEM, roleConfig, toolsTrust, routeStages, toolResultsAsReferences, looksLikeGarbage, fitMessages, runAgentLoop, placeholderOf, BENCH_TOOLS, BENCH_CASES, scoreToolCase, summarizeToolBench, TASKS, generationParams, defaultMaxTokens, inferTask, pickModel, VISION_POLICIES, visionOrder, combineVision, structuredPrompt, parseStructured, resolveDevice, backendOrder, wantsNativeBackend, effectiveDevicePref, nativeToolMessages, nativeWithPrefill, resolveThreads, buildTask, formatResult, repoOfUrl, usageByModel, urlsOfModel, fmtBytes, estimateDownload };
 });
 
 }).call(null, undefined, holder);
@@ -126325,22 +126360,28 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
     async _nrRunNative(a, cb, gen) {
         let acc = '';
         const timeoutMs = a.timeoutMs > 0 ? a.timeoutMs : 240000;
-        const messages = a.messages.map((m) => ({ role: m.role, content: String(m.content == null ? '' : m.content) }));
+        const tm = FaVlm.nativeToolMessages(a.messages, a.tools);
+        if (!tm.ok) return { ok: false, why: tm.why };
+        const messages = tm.messages;
         const r = await this._nrCall('run', { messages, template: 'qwen3-chatml', gen, maxTokens: a.maxTokens || 512, stream: true, timeoutMs }, timeoutMs + 10000, (t) => { acc += t; if (cb.onToken) cb.onToken(acc); });
-        if (r && r.ok) return { ok: true, text: String(r.text == null ? acc : r.text) };
+        if (r && r.ok) {
+            const full = FaVlm.nativeWithPrefill(String(r.text == null ? acc : r.text), a.prefill);
+            if (full == null) return { ok: false, why: '有預填，原生樣板接不到預填，模型的輸出也不是以預填開頭（原生不支援預填，改用網頁版）' };
+            return { ok: true, text: full };
+        }
         return { ok: false, why: '原生失敗（' + ((r && r.code) || '未知') + '）：' + ((r && r.message) || '沒有訊息') };
     }
     async _llmGenerateInner(model, a, cb) {
         cb = cb || {}; const gpu = await this._omGpuInfo();
-        // 原生執行器（桌面版，先試）：只支援純文字生成（沒有工具、沒有預填）。失敗或不可用就退回 WebGPU／WASM，並把實際後端與原因寫進 log。
+        // 原生執行器（桌面版，先試）：工具折進 system 文字、預填靠輸出核對（見 FaVlm.nativeToolMessages／nativeWithPrefill）。失敗或不可用就退回 WebGPU／WASM，並把實際後端與原因寫進 log。
         const NATIVE_MODEL_ID = 'qwen3-0.6b';
         let nativeOk = false, nativeWhy = '';
         // 選 WebGPU（或 auto 且有 WebGPU）：完全不碰原生（連狀態都不問主程序），也不記 log
-        if (model.id !== NATIVE_MODEL_ID || !this._nrOptIn() || !FaVlm.wantsNativeBackend(this._omDevicePrefOf(model), gpu.available)) nativeWhy = '';
-        else if (a.tools && a.tools.length) nativeWhy = '這次呼叫有工具，原生只做純文字生成';
-        else if (a.prefill) nativeWhy = '這次呼叫有預填，原生不支援';
+        // 偏好選 WebGPU 但這台沒有 WebGPU：等同 auto（FaVlm.effectiveDevicePref），原生才有機會用到（LoRA 只在原生生效）
+        const devPref = FaVlm.effectiveDevicePref(this._omDevicePrefOf(model), gpu.available);
+        if (model.id !== NATIVE_MODEL_ID || !this._nrOptIn() || !FaVlm.wantsNativeBackend(devPref, gpu.available)) nativeWhy = '';
         else { const st = await this._nrNativeState(); nativeOk = !!st.ok; if (!st.ok) nativeWhy = st.reason; }
-        const bo = FaVlm.backendOrder(model, this._omDevicePrefOf(model), gpu.available, gpu.f16, nativeOk);
+        const bo = FaVlm.backendOrder(model, devPref, gpu.available, gpu.f16, nativeOk);
         if (bo.native) {
             const gen0 = Object.assign(FaVlm.textGenParams(model, { deterministic: !!(a.strict || a.deterministic) }), a.strict ? { repetition_penalty: 1.2, no_repeat_ngram_size: 5 } : {});
             const r = await this._nrRunNative(a, cb, gen0);

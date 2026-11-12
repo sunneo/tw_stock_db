@@ -15,4 +15,7 @@ check('路由前先備好儲存層（沒開過工作室也能讀登錄表）', /
 // 路由核心認得這四種任務
 for (const [t, d] of [['colu', 'colu'], ['toolcall', 'toolcall'], ['plan', 'plan'], ['decompose', 'decompose']]) check('taskDomain ' + t, Rt.taskDomain(t) === d);
 check('未知任務回 null（走基底）', Rt.taskDomain('chitchat') === null);
+// 原生推論：沒有 WebGPU 視同 auto、工具與預填不再直接略過原生（LoRA 才會在真實呼叫生效）
+check('原生判斷用 effectiveDevicePref（沒有 WebGPU 的 gpu 偏好也能走原生）', /FaVlm\.effectiveDevicePref\(this\._omDevicePrefOf\(model\), gpu\.available\)/.test(SRC) && /FaVlm\.backendOrder\(model, devPref,/.test(SRC));
+check('原生路徑不再因工具／預填略過，改折進 system 與核對預填', !/這次呼叫有工具，原生只做純文字生成/.test(SRC) && /FaVlm\.nativeToolMessages\(a\.messages, a\.tools\)/.test(SRC) && /FaVlm\.nativeWithPrefill\(/.test(SRC));
 console.log(ok + ' passed, ' + bad + ' failed'); process.exit(bad ? 1 : 0);

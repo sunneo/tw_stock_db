@@ -109,6 +109,13 @@
         for (const k of CARD_METRIC_KEYS) { const x = m[k]; if (!x || typeof x.base !== 'number' || typeof x.tuned !== 'number') continue; if (x.tuned > x.base) win.push(k); else if (x.tuned < x.base) lose.push(k); }
         return { known: win.length + lose.length > 0, win, lose, score: win.length - lose.length };
     }
+    // 已知內建 adapter 的評量（DESIGN.lora-training.md §19，留出集實測；卡片的 eval 欄位只定義兩個指標，這兩顆的數字沒有寫進卡片，已匯入的資產也補不上，
+    // 所以登錄時卡片沒有評量就查這張表）。只認 id 與名稱「完全相同」的條目（colu-r4／plan-r4 的 v1），改過權重的新版本要自帶卡片評量。
+    const KNOWN_EVAL = {
+        'colu-r4': { groups: { colu_letter_choice: { adapter: 30, base: 11 }, colu_letter_choice_nonefirst: { adapter: 25, base: 0 } }, source: 'DESIGN §19' },
+        'plan-r4': { groups: { plan_check_valid: { adapter: 60, base: 52 }, review_return_items: { adapter: 50, base: 0 }, self_validate_ok: { adapter: 47, base: 25 } }, source: 'DESIGN §19' },
+    };
+    function knownEval(e) { const k = KNOWN_EVAL[e.id] || KNOWN_EVAL[e.name]; return k ? JSON.parse(JSON.stringify(k)) : null; }
     function evalVerdict(ev) {
         if (!ev || typeof ev !== 'object') return { known: false };
         if (ev.metrics && typeof ev.metrics === 'object') return metricsVerdict(ev.metrics);
@@ -140,6 +147,7 @@
             if (errs.length) throw new Error('登錄項不合法：' + errs.join('；'));
             const e = Object.assign({ enabled: true, priority: 0, domains: [], triggers: [], conflicts_with: [], added: now() }, entry);
             e.domains = e.domains.slice(); e.triggers = (e.triggers || []).slice(); e.conflicts_with = (e.conflicts_with || []).slice();
+            if (!e.eval) e.eval = knownEval(e);
             if (live.has(e.id)) throw new Error('adapter ' + e.id + ' 載入中，先卸載再取代');
             entries.set(e.id, e);
             return e;
@@ -198,7 +206,11 @@
                     if (!v.known) { skipped.push({ id: e.id, reason: '沒有評量資料，不自動選用（可手動指定）' }); continue; }
                     if (v.lose && v.lose.length) { skipped.push({ id: e.id, reason: '評量有組別輸給基底：' + v.lose.join('、') + '，不自動選用（可手動指定）' }); continue; }
                 }
-                pool.push({ e, manual, specific: manual || byDomain || byTrigger });
+                pool.push({ e, manual, byDomain, byTrigger, specific: manual || byDomain || byTrigger });
+            }
+            // 領域已經由任務類型確定時，只靠指令觸發字命中的別領域 adapter 讓位（colu 題目文字裡有「工具」不該改選 toolcall）；沒有領域符合者時觸發字照舊可選用
+            if (want.size && pool.some((p) => p.byDomain && !p.manual)) {
+                for (let i = pool.length - 1; i >= 0; i--) { const p = pool[i]; if (!p.manual && !p.byDomain && p.byTrigger && p.e.domains.length) { skipped.push({ id: p.e.id, reason: '任務領域（' + Array.from(want).join('、') + '）已有符合的 adapter，不因指令觸發字改選別的領域' }); pool.splice(i, 1); } }
             }
             const hasSpecific = pool.some((p) => p.specific);
             const cands = pool.filter((p) => p.specific || (!hasSpecific)).map((p) => p).sort((a, b) => (b.manual - a.manual) || order(a.e, b.e));

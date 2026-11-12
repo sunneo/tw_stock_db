@@ -117,6 +117,29 @@
     }
     // 這次呼叫要不要去問原生（只有選 CPU，或 auto 且沒有 WebGPU 時才問；選 WebGPU 不去問主程序）
     function wantsNativeBackend(preference, gpuAvailable) { return preference === 'cpu' || (preference === 'auto' && !gpuAvailable); }
+    // 偏好選 WebGPU 但這台根本沒有 WebGPU：選項本身做不到（resolveDevice 只會退到 WASM），等同 auto——這樣原生（有 LoRA）才有機會被用到。
+    // 有 WebGPU 時原樣不動（選 WebGPU 完全不碰原生的規則不變）。
+    function effectiveDevicePref(preference, gpuAvailable) { return preference === 'gpu' && !gpuAvailable ? 'auto' : preference; }
+    // 原生推論的提示樣板只有純文字（messages）；有工具的呼叫把工具折進 system 訊息，格式與 Qwen3 官方樣板（transformers.js 的 apply_chat_template 用的那份）一致：
+    //   「（原 system 內容）\n\n# Tools\n\n…<tools>\n{工具 JSON}…\n</tools>\n\n…<tool_call>…」。沒有 system 訊息時工具說明自己成為 system。
+    // 有 tool 角色或 tool_calls 的歷史（樣板會改寫成 <tool_response>）這裡不處理，回 {ok:false}，呼叫端改走網頁版，不靠猜。
+    function nativeToolMessages(messages, tools) {
+        const ms = (messages || []).map((m) => ({ role: m.role, content: String(m.content == null ? '' : m.content) }));
+        if (!Array.isArray(tools) || !tools.length) return { ok: true, messages: ms };
+        if ((messages || []).some((m) => m && (m.role === 'tool' || m.tool_calls))) return { ok: false, why: '對話歷史裡有工具回應，原生樣板沒有對應的改寫' };
+        const head = '# Tools\n\nYou may call one or more functions to assist with the user query.\n\nYou are provided with function signatures within <tools></tools> XML tags:\n<tools>';
+        const tail = '\n</tools>\n\nFor each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\n<tool_call>\n{"name": <function-name>, "arguments": <args-json-object>}\n</tool_call>';
+        const block = head + tools.map((t) => '\n' + JSON.stringify(t)).join('') + tail;
+        if (ms.length && ms[0].role === 'system') ms[0] = { role: 'system', content: ms[0].content + '\n\n' + block };
+        else ms.unshift({ role: 'system', content: block });
+        return { ok: true, messages: ms };
+    }
+    // 預填：原生樣板接不到預填，這裡的做法是讓模型自己生成，之後檢查輸出確實以預填開頭才採用（回完整字串，跟網頁版一樣含預填）；不以預填開頭就回 null，呼叫端退回網頁版重做。
+    function nativeWithPrefill(text, prefill) {
+        const t = String(text == null ? '' : text);
+        if (!prefill) return t;
+        return t.indexOf(prefill) === 0 ? t : null;
+    }
 
     // ---------- 任務與提示詞 ----------
     const TASKS = { caption: '簡短描述', detailed: '詳細描述', ocr: '辨識文字（OCR）', objects: '列出物件', ask: '問問題（自訂提示詞）' };
@@ -468,5 +491,5 @@
     // 估算這次下載量（依裝置組合）；已經在快取裡的部分不用再下載
     function estimateDownload(model, device, cachedBytes) { const total = (model.bytes && model.bytes[device === 'webgpu' ? 'gpu' : 'cpu']) || 0; return Math.max(0, total - (Number(cachedBytes) || 0)); }
 
-    return { MODELS, byId, imageModels, textModels, depthModels, DEFAULT_DEPTH_MODEL, segmentModels, DEFAULT_SEGMENT_MODEL, poseModels, DEFAULT_POSE_MODEL, DEFAULT_MODEL, DEFAULT_TEXT_MODEL, THRESHOLD_MIN, THRESHOLD_MAX, clampThreshold, shouldUseOfflineLlm, estimateTokens, trimToTokens, textBudget, composeMessages, textGenParams, compactToolSpecs, parseToolCalls, TOOL_STAGE_SYSTEM, roleConfig, toolsTrust, routeStages, toolResultsAsReferences, looksLikeGarbage, fitMessages, runAgentLoop, placeholderOf, BENCH_TOOLS, BENCH_CASES, scoreToolCase, summarizeToolBench, TASKS, generationParams, defaultMaxTokens, inferTask, pickModel, VISION_POLICIES, visionOrder, combineVision, structuredPrompt, parseStructured, resolveDevice, backendOrder, wantsNativeBackend, resolveThreads, buildTask, formatResult, repoOfUrl, usageByModel, urlsOfModel, fmtBytes, estimateDownload };
+    return { MODELS, byId, imageModels, textModels, depthModels, DEFAULT_DEPTH_MODEL, segmentModels, DEFAULT_SEGMENT_MODEL, poseModels, DEFAULT_POSE_MODEL, DEFAULT_MODEL, DEFAULT_TEXT_MODEL, THRESHOLD_MIN, THRESHOLD_MAX, clampThreshold, shouldUseOfflineLlm, estimateTokens, trimToTokens, textBudget, composeMessages, textGenParams, compactToolSpecs, parseToolCalls, TOOL_STAGE_SYSTEM, roleConfig, toolsTrust, routeStages, toolResultsAsReferences, looksLikeGarbage, fitMessages, runAgentLoop, placeholderOf, BENCH_TOOLS, BENCH_CASES, scoreToolCase, summarizeToolBench, TASKS, generationParams, defaultMaxTokens, inferTask, pickModel, VISION_POLICIES, visionOrder, combineVision, structuredPrompt, parseStructured, resolveDevice, backendOrder, wantsNativeBackend, effectiveDevicePref, nativeToolMessages, nativeWithPrefill, resolveThreads, buildTask, formatResult, repoOfUrl, usageByModel, urlsOfModel, fmtBytes, estimateDownload };
 });

@@ -297,6 +297,20 @@ check('pose model is registered (full fp32, not int8), not an image model, never
   check('gpuOnly 模型即使原生可用也不加 native（只能 GPU）', JSON.stringify(V.backendOrder(gpuOnlyM, 'gpu', true, true, true)) === JSON.stringify(V.resolveDevice(gpuOnlyM, 'gpu', true, true)));
   check('沒有任何可用裝置時（order 為空）不加 native', V.backendOrder(gpuOnlyM, 'gpu', false, false, true).order.length === 0);
 }
+// 原生推論補強：沒有 WebGPU 時偏好 gpu 視同 auto；有工具的呼叫折進 system；預填靠輸出核對
+{
+  check('effectiveDevicePref：gpu 且沒有 WebGPU → auto；有 WebGPU 或 cpu／auto 不變', V.effectiveDevicePref('gpu', false) === 'auto' && V.effectiveDevicePref('gpu', true) === 'gpu' && V.effectiveDevicePref('cpu', false) === 'cpu' && V.effectiveDevicePref('auto', true) === 'auto');
+  check('gpu 沒有 WebGPU 時原生會被嘗試，有 WebGPU 時不碰原生', V.wantsNativeBackend(V.effectiveDevicePref('gpu', false), false) === true && V.wantsNativeBackend(V.effectiveDevicePref('gpu', true), true) === false);
+  const tools = [{ name: 'a', description: 'd', parameters: { type: 'object', properties: {} } }];
+  const t0 = V.nativeToolMessages([{ role: 'user', content: 'U' }], []);
+  check('沒有工具：訊息原樣', t0.ok && t0.messages.length === 1 && t0.messages[0].content === 'U');
+  const t1 = V.nativeToolMessages([{ role: 'system', content: 'S' }, { role: 'user', content: 'U' }], tools);
+  check('有工具、有 system：折進 system，其後是 user', t1.ok && t1.messages.length === 2 && t1.messages[0].content.startsWith('S\n\n# Tools\n\nYou may call') && t1.messages[0].content.indexOf('<tools>\n' + JSON.stringify(tools[0]) + '\n</tools>') > 0 && t1.messages[0].content.endsWith('</tool_call>') && t1.messages[1].content === 'U');
+  const t2 = V.nativeToolMessages([{ role: 'user', content: 'U' }], tools);
+  check('有工具、沒有 system：新增 system', t2.messages.length === 2 && t2.messages[0].role === 'system' && t2.messages[0].content.startsWith('# Tools'));
+  check('歷史有 tool 角色：不處理（改走網頁版）', V.nativeToolMessages([{ role: 'tool', content: 'x' }], tools).ok === false);
+  check('預填：以預填開頭才採用；沒有預填原樣；不符回 null', V.nativeWithPrefill('{"a":1}', '{') === '{"a":1}' && V.nativeWithPrefill('x', '') === 'x' && V.nativeWithPrefill('<tool_call>', '{') === null);
+}
 console.log(ok + ' passed, ' + bad.length + ' failed', bad);
 process.exit(bad.length ? 1 : 0);
 })();

@@ -274,5 +274,24 @@ let t = 1000; const now = () => ++t;
         check('weightFile 找得到 lora.bin', R.weightFile(man) === 'weights/lora.bin' && R.weightFile({ sha256: { 'data/x.jsonl': H('d') } }) === null);
     }
 
+    // 已知內建 adapter（colu-r4／plan-r4）卡片沒評量也要能自動選用；任務領域已確定時，題目文字的觸發字不能改選別的領域（2026-11-12 四顆 LoRA 實測缺陷）
+    {
+        const reg = R.createRegistry({ env: ENV, now });
+        reg.register(mk('toolcall-r4', { domains: ['toolcall'], triggers: ['工具|呼叫|tool|function call|參數'], eval: good }));
+        reg.register(mk('colu-r4', { domains: ['colu'], eval: null }));
+        reg.register(mk('plan-r4', { domains: ['plan'], eval: null }));
+        check('colu-r4 查內建評量，有評量判為已知且不輸基底', reg.get('colu-r4').eval && R.evalVerdict(reg.get('colu-r4').eval).known && !R.evalVerdict(reg.get('colu-r4').eval).lose.length);
+        const rc = reg.select({ domains: ['colu'], text: '請依工具清單選出正確的字母' });
+        check('colu 任務、文字含「工具」：選 colu-r4，不改選 toolcall-r4', rc.plan.map((e) => e.id).join() === 'colu-r4', { plan: rc.plan.map((e) => e.id), skipped: rc.skipped });
+        const rp = reg.select({ domains: ['plan'], text: '呼叫流程的規劃' });
+        check('plan 任務、文字含「呼叫」：選 plan-r4', rp.plan.map((e) => e.id).join() === 'plan-r4', { plan: rp.plan.map((e) => e.id), skipped: rp.skipped });
+        const rt = reg.select({ domains: ['toolcall'], text: '幫我呼叫工具' });
+        check('toolcall 任務照舊選 toolcall-r4', rt.plan.map((e) => e.id).join() === 'toolcall-r4');
+        const r0 = reg.select({ text: '幫我呼叫工具' });
+        check('沒有任務領域時，觸發字照舊可選用', r0.plan.map((e) => e.id).join() === 'toolcall-r4');
+        const reg2 = R.createRegistry({ env: ENV, now }); reg2.register(mk('other-v9', { name: 'other', domains: ['colu'], eval: null }));
+        check('id 不是已知內建的條目沒有評量仍不自動選用', reg2.select({ domains: ['colu'] }).plan.length === 0);
+    }
+
     console.log(ok + ' passed, ' + bad + ' failed'); process.exit(bad ? 1 : 0);
 })();
