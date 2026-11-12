@@ -98,7 +98,7 @@
                     const parts = [];
                     for (const c of n.namedChildren) {
                         if (c.type === 'interpolation_start') continue;
-                        if (c.type === 'string_content') { const sv = txt(c).replace(/\{\{/g, '{').replace(/\}\}/g, '}'); if (sv) parts.push(L('str', sv)); continue; }
+                        if (c.type === 'string_content' || c.type === 'interpolated_string_text') { const sv = txt(c).replace(/\{\{/g, '{').replace(/\}\}/g, '}'); if (sv) parts.push(L('str', sv)); continue; }
                         if (c.type === 'interpolation') { const kids = c.namedChildren.filter((x) => x.type !== 'interpolation_brace'); if (kids.length !== 1) return nativeE(n, '內插字串的格式或對齊子句'); parts.push(at({ k: 'call', op: 'conv.str', args: [ex(kids[0])] }, c)); continue; }
                         return nativeE(n, '內插字串的部分 ' + c.type);
                     }
