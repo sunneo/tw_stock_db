@@ -1,6 +1,12 @@
 #!/usr/bin/env node
 // 一次跑完所有「純函式核心」的測試（不需要 Electron、不需要瀏覽器）。移植到別的專案（例如 redmine 的 AI 聊天）之後，搬過去的檔案跑這支，確認行為跟這邊一致。
 // 用法：node scripts/run-core-tests.js
+// 環境（這台機器的做法，程式裡不寫死）：
+//   · 若 `python` 是 Python 2.7（會出現 SyntaxError），請用 PATH 墊片指到 python3：建 /tmp/pyshim/python → python3 的符號連結，
+//     再 `PATH=/tmp/pyshim:$PATH node scripts/run-core-tests.js`。不要改系統設定。
+//   · tree-sitter 文法快取用 FA_TS_DIR 指定，例如 `FA_TS_DIR=$HOME/.cache/fa-ts-h264`（要有 tree-sitter.js／tree-sitter.wasm 與各語言的 tree-sitter-<語言>.wasm）。
+//     注意：ruby 的測試找 tree-sitter-ruby.wasm；若快取裡只有 tree-sitter-ruby-v06.wasm，請另建資料夾放符號連結（含 tree-sitter-ruby.wasm → ruby-v06）再指給 FA_TS_DIR。
+//   · 只量測的測試（measureOnly 清單）只看結束碼 0；其他測試要結尾行有通過字樣。
 // 注意：需要真實環境驗證的部分（Electron／瀏覽器裡的標註視窗、蒙皮檢視器、Worker）不在這裡，見 DESIGN.knowledge-portability.md 的「驗證」一節。
 const { spawnSync } = require('child_process');
 const path = require('path');
@@ -386,6 +392,8 @@ const suites = [
     ['merge diff patcher 接進產品（runCode 帶 patch＋剖析器；宿主 merge_patch／_codeAgent 有傳 parser 與 patch）', 'renderer/src/recipe/code_patch_wire.test.js'],
     ['音樂：模型分片下載（續傳、核對、重試）', 'scripts/music-tests/audio_models.test.js'],
 ];
+// 量測型測試（只量測、不斷言，結尾行沒有「passed」字樣）：只要求結束碼 0。清單要明確列檔名，不放寬其他測試的判準
+const measureOnly = new Set(['renderer/src/algo/matrix_synth_holdout2.test.js', 'renderer/src/algo/matrix_synth_holdout3.test.js']);
 let failed = 0, failedNew = 0;
 const results = [], t00 = Date.now();
 // 已知失敗清單（test-reports/known-failures.json：{ "測試檔路徑": "原因與為什麼先不修" }）：列在裡面的失敗標「既有」，不讓入口測試變紅；沒列的失敗是「新增」，一律變紅
@@ -407,7 +415,7 @@ for (const [name, file] of suites) {
     const last = String(r.stdout || '').trim().split('\n').pop();
     // 結束碼 0 才算過；結尾行接受三種寫法：英文 N passed／0 failed，或中文「全部通過」「通過 N 項，失敗 0 項」「0 失敗」（有些測試用中文結尾：「全部通過」「通過 N 項」「0 失敗」）
     // 補登的測試各有自己的結尾寫法（「23 tests passed」「ALL 20 PASS」「69 assertions passed」「19 項全過」「38 通過」「24 項通過」）：結束碼 0 且結尾行有通過字樣、沒有失敗字樣就算過
-    const ok = r.status === 0 && /(0 failed|[0-9]+ passed|passed|全部通過|失敗 0 項|0 失敗|通過 [0-9]+ 項|[0-9]+ 項(全過|通過)|[0-9]+ 通過|全過|ALL [0-9]+ PASS)/i.test(last) && !/FAILED|[1-9][0-9]* failed|失敗 [1-9]/.test(last);
+    const ok = measureOnly.has(file) ? r.status === 0 : r.status === 0 && /(0 failed|[0-9]+ passed|passed|全部通過|失敗 0 項|0 失敗|通過 [0-9]+ 項|[0-9]+ 項(全過|通過)|[0-9]+ 通過|全過|ALL [0-9]+ PASS)/i.test(last) && !/FAILED|[1-9][0-9]* failed|失敗 [1-9]/.test(last);
     const reason = ok ? '' : reasonOf(r), isKnown = !ok && Object.prototype.hasOwnProperty.call(known, file);
     if (!ok) { failed++; if (!isKnown) failedNew++; }
     console.log((ok ? 'PASS ' : (isKnown ? 'FAIL(既有) ' : 'FAIL(新增) ')) + name + '：' + (ok ? last : reason || last));
