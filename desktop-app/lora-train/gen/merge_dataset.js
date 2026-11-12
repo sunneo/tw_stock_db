@@ -22,6 +22,7 @@ const GENERATORS = [
   'gen_wiring.js',
   'gen_uml_edit.js',
   'gen_uml_design.js',
+  'gen_uml_multi.js',
   'gen_think_stack.js',
   'gen_blockly_matrix.js',
   'gen_fn_template.js',

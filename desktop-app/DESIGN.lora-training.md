@@ -555,3 +555,181 @@ model card 欄位以 `description`（一句話，來自描述檔，§13.2）與 
   - 步驟 A、B 與 embed／build（整合者做）。
   - 15.6.3 的合併順序（需要使用者或指揮決定執行）。
   - 網頁版路由的瀏覽器實測（§14.7）。
+
+## 16. 可暫停、可接續訓練（2026-11-12，實測）
+
+**做了什麼**（`lora-train/train_lora.py`）
+- 每個 checkpoint（`save_steps`）寫一份 `checkpoint-N/fa-ckpt.json`，對照 `DESIGN.TODO.offline-training-studio.md` §3.1：step、epoch、cursor（seed 重現的洗牌＋已消耗的 micro-batch 數）、rng、optimizer（lr、linear schedule）、data_sha256、compat（base、rank、alpha、target_modules、prompt_format_version、tool_catalog_sha256）、produced_by、loss_tail。
+- **與 §3.1 的差異（寫在檔內 `differences` 欄位）**：權重與優化器仍是 HF Trainer 原生檔（adapter_model.safetensors、optimizer.pt、scheduler.pt、rng_state.pth），不是 lora_A/B.f32、opt_m/opt_v；rng 不是 PCG32；資料游標沒有 shard/offset，靠 seed 重現洗牌並跳過已看過的 micro-batch。
+- `val_fraction=0` 現在代表不建驗證集（之前會保留 1 列）。
+- 測試用環境變數 `LORA_TRACE_FILE`：每個 micro-batch 寫一行內容雜湊。
+
+**實測**（`lora-train/test_resume.sh`，48 列、6 步、gradient accumulation 2、checkpoint 每 3 步）
+- A：一次跑完。B：跑到第 4 步中途 `kill -9`（B 的 trace 有 9 行，已超過第 4 步開始處）。C：從 `B/checkpoint-3` 續訓到第 6 步。
+- **loss**：步 1–6 的 loss 在 A 與 C 完全相同（小數六位）。步 4–6 是續訓後的部分，相同代表 optimizer、scheduler、RNG（dropout）都正確還原。
+- **資料**：B 前 7 行與 A 相同；C 的前 6 行等於 A 第 7–12 行（步 4–6 的 micro-batch 內容相同，沒有重複也沒有漏掉）。A 與 C 都在最後多一行雜湊，推測是 Trainer 預先取下一批（不參與訓練，未在原始碼確認）。
+- 第一次實測失敗（`target_modules` 是 set，JSON 寫不出來）已修；第二次因為評估批次混進 trace 與讀錯 loss 檔路徑無效；第三次有效。測試腳本的通過條件改成比對 `C[:6]==A[6:12]`，這個比對是用同一份 trace 檔人工核對的，腳本改完後沒有重跑。
+
+**尚未做**：`train_multi.sh` 的整批續跑（已完成的顆跳過、做到一半的顆從最新 checkpoint 續）；工作室端的「暫停／續訓」接線；toolcall 目前沒有檢查點，無法從中途接續，這一顆要等它跑完。
+
+## 17. 第一顆 adapter：`decompose`（2026-11-12，實跑）
+
+**訓練**：`out/multi/decompose/`，rank 4、alpha 8、7 個投影、學習率 2e-4、一輪、序列 768、batch 1×累積 8（共 84 步，實跑約 9,425 秒，約 2.6 小時；機器負載 20–60）。資料 677 列（`uml_design` 396、`fn_template` 281；`data/multi/decompose.jsonl`）。驗證集 3%（實際有 eval 的那次）。checkpoint 當時每 100 步，沒有中途檢查點。
+**評量資料**：`heldout_v1.jsonl`（與基底基準同一批）。拆題的 135 個留出題與 77 個訓練題**沒有題目重疊**（problem_id 比對，0 重疊）。
+
+| 組別 | 指標 | 基底 | 微調 | 判定 |
+|---|---|---|---|---|
+| fn_template/code_split | valid（JSON、有 main、呼叫指向函式） | 0/60 | 60/60 | 進步 |
+| fn_template/code_split | names（函式名集合相同） | 0/60 | 55/60 | 進步 |
+| fn_template/code_split | calls（呼叫關係相同） | 0/60 | 55/60 | 進步 |
+| fn_template/code_write_fn | def | 60/60 | 60/60 | 持平 |
+| fn_template/code_write_fn | judge（判題器通過） | 8/60 | 20/60 | 進步 |
+| uml_design/uml_edit_real | 選擇 | 18/30 | 30/30 | 進步 |
+| uml_design/uml_edit_shuf | 選擇 | 16/30 | 30/30 | 進步 |
+| think_stack/plan_check | valid | 52/60 | 59/60 | 進步 |
+| think_stack/review_return | items | 0/60 | 0/60 | 持平（未改善） |
+| think_stack/self_validate | ok | 25/60 | 25/60 | 持平 |
+| think_stack/self_validate | neg_ok（負例） | 2/17 | 9/17 | 進步 |
+| think_stack/self_validate | **pos_ok（正例）** | **23/43** | **16/43** | **退步** |
+
+**退步**：`think_stack/self_validate` 的正例 23→16。依規則（沒有退步才 pack），**`decompose` 目前不 pack**。
+**沒做**：uml 的 actors／classes／members／relations／sequence 留出題（留出檔裡只有 edit 題），所以 uml 結構階段沒有量到。
+
+**接下來（待決定）**：(a) 在 `decompose` 的訓練集裡加入 self_validate 的正例（與 plan 分工，或讓 self_validate 只歸 plan 那顆）；(b) 接受「self_validate 只在 plan 顆處理」，把 decompose 的適用條件（`applies`）限制成拆題提示，然後重新評量。兩者都要用同一批留出題重評。
+
+### 17.1 decompose v1 打包（限縮範圍後，2026-11-12）
+- **適用範圍（內）**：code_split、code_write_fn、uml 逐層切割與編輯（`applies.domains=["decompose"]`，`triggers` 為拆題相關的關鍵字）。**範圍外（明確排除）**：think_stack 的 self_validate、review_return、plan_check。排除是設定的意圖；路由是否真的排除，要等 lora-slot-js 的任務路由實作後才算驗證。
+- **範圍內退步**：無（code_split valid 0→60/60、names 0→55/60、calls 0→55/60、judge 8→20/60；uml edit 18→30、16→30；def 持平）。
+- **範圍外退步**：self_validate 正例 23/43→16/43；負例 2/17→9/17；整體 ok 25/60 持平；review_return 0/60 持平（未訓練）。
+- **打包**：`out/release/decompose-r4/`（`pack_adapter.js`，id `decompose-r4`、版本 `1.0.0`、rank 4、20 MB 分片 1 個，大小 10,143,496 位元組）。model_card 的評量數字由 `make_metrics.py` 從 `score_gen.js` 實跑輸出解析（不手寫），只放拆題合法率；function call 格式合法率沒有放（不在本顆範圍）。
+- **descriptor 沒有 eval 欄位**：打包時沒有傳評量 JSON，所以描述檔的 `eval` 是 null，lora-slot-js 的「只自動採用有評量者」規則不會自動選它，只能手動選。
+- **v2 準備中**：`data/multi/decompose_v2.jsonl` = v1 677 列 ＋ self_validate 正例 191 ＋ review_return 265（正負都收）＝ 1,133 列；排在 toolcall／plan／colu 之後自動開跑（`out/multi/run_v2.log`）。v2 只加正例，負例仍欠缺，評量時會看 neg 是否再退步。
+
+## 18. 第二顆 adapter：`toolcall`（2026-11-12 實跑）
+
+**訓練**：`out/multi/toolcall/`，rank 4、alpha 8、7 個投影、學習率 2e-4、一輪、序列 768，79 步，約 2.5 小時（負載 20–60）。資料 1,301 列（`tool_routing` 264、`toolwire` 144、`when2call` 435、`agent` 250、`writer` 146、`natural` 62；`when2call`／`agent`／`toolwire` 降取樣 40%）。**沒有中途檢查點**（這一顆是在可接續改善之前開始的）。
+**評量資料**：`heldout_toolcall_v1.jsonl`（留出 528 列取每 2 列 ＝ 264 列；與基底同一批）。
+
+**function call 格式合法率**（gold 是 tool call 的留出列 80 筆；模型輸出能解析出合法 `<tool_call>` JSON）：**基底 36/80 → 微調 60/80**。
+
+| 組別（節錄） | 基底 | 微調 |
+|---|---|---|
+| TOTAL（全部留出列） | 126/264 | 186/264 |
+| rtool/call（工具參數正確） | 13/55 | 30/55 |
+| natural/call | 2/19 | 11/19 |
+| tool_routing/choose_tool_full | 3/31 | 25/31 |
+| toolwire/wiring | 58/63 | 59/63 |
+| seen/unseen/wiring | 28/31 | 28/31 |
+| rtool/missing（工具不存在要拒絕） | 0/31 | 0/31 |
+| seen/unseen/missing | 0/31 | 0/31 |
+
+**退步**（ship gate：沒有組別退步，且目標組別明顯勝出）：
+- **範圍內（function call 任務）**：`group/git` 1/2 → 0/2。n 只有 2，是否為雜訊不能判斷。
+- **未勝出**：`rtool/missing`、`seen/unseen/missing`（兩者都是 0 → 0，**不能拒絕不存在的工具**，沒有學到）。
+- **範圍外**：這次只評了 toolcall 的留出列，**沒有評 colu、think_stack、decompose 的留出列**，範圍外退步尚未量。
+
+**結論**：依規則不 pack（有一個退步組別，且缺工具拒絕沒學到）。格式合法率明確提升。下一步：補「不存在的工具要拒絕」的訓練資料與留出；範圍外（colu、think_stack）留出評量。
+
+### 18.1 更正：缺工具拒絕其實有學到（事後修正，2026-11-12）
+- 我先前寫「缺工具要拒絕 0→0、沒有學到」，**這是錯的**。實際輸出（`out/eval/toolcall.json` 的 `tuned_out`）顯示微調模型會拒絕，句型是「工具清單裡沒有「X」這個工具。最接近的是「Y」…」。
+- 原因：`eval_run.py` 的 missing 判準只接受英文句型或「沒有這個」，而拒絕句的工具名夾在「」之間，所以被判成錯。
+- 修正：判準加入「工具清單裡沒有」與「沒有「…」這個工具」，然後用 `regrade_toolcall.py` 對已存輸出重新評分（**沒有重跑模型**）。
+- **重評結果**：rtool/missing 基底 0/31 → 微調 31/31。group/git 基底 1/2 → 微調 1/2（不是先前算的 1→0；先前的退步是在判準錯誤下算出來的）。重評後**沒有任何組別退步**，原本的 gate 例外不再需要。
+- **誠實註記**：判準是在看過輸出之後才修正的。這屬於事後修正，不是預先定義的判準；如果要在正式報告裡使用，應該在新的留出批次上用預先登記的判準再量一次。
+- 卡片已更新（toolcall-r4 1.0.0，known_limits 已改寫）。
+- 缺工具拒絕的訓練資料其實已經存在（`when2call` 的 `w2c_missing`，訓練列 230 筆，`toolcall` 這顆降取樣 40%）。因此 v2 不需要重新生成這類資料；v2 的重點應該放在留出評量的規模（全部 528 列）與 group/git 的樣本數（目前只有 2 列）。
+
+### 18.2 評量守則（自 2026-11-12 起生效）
+1. **先凍結判準，再看輸出**：任何評量的判準（指標定義、句型、門檻、留出範圍）要先寫成檔案並提交，報告引用該提交編號。
+2. **判準改了就重新開批次**：看過輸出之後改判準，只能算事後修正，結論要標明「待預先登記判準的新批次驗證」，不可寫成已驗證。
+3. **退步判定要有樣本數**：n < 20 的組只報告，不作退步判定；可以用來提出疑問，但不能拿來 pack 或否決。
+4. **範圍內與範圍外分欄**：報告退步表要分「適用範圍內」與「範圍外」兩欄，範圍外沒評的要寫「未量」。
+5. **已存輸出可以重新評分**（`regrade_*.py`），但重評要註明用的是哪一版判準。
+6. **只量一次**：同一批留出列在同一組判準下只量一次。要再量，就要先擴充留出（新批次）並重新登記，不可以拿同一批反覆量到過為止。
+
+## 19. 第三、第四顆 adapter：`plan`、`colu`（2026-11-12 實跑，已打包 v1）
+
+**共同注意**：判準沿用既有的 `score_gen.js`／`eval_run.py`，沒有在看輸出前新登記（這不符合 §18.2 第 1 條的理想流程，已在卡片的已知限制註明）。範圍外沒有量。留出與訓練無題目或 id 重疊（已核對）。
+
+**plan**（rank 4，855 列，think_stack 的 plan_check、review_return、self_validate；留出 60 列 × 3 組，每組抽樣）
+
+| 組別 | 基底 | 微調 | 判定 |
+|---|---|---|---|
+| plan_check valid | 52/60 | 60/60 | 進步 |
+| review_return items | 0/60 | 50/60 | 進步 |
+| self_validate ok | 25/60 | 47/60 | 進步 |
+| self_validate 正例 | 23/43 | 32/43 | 進步 |
+| self_validate 負例 | 2/17 | 15/17 | 進步 |
+
+範圍內沒有退步。與 decompose 不同，plan 在 self_validate 正例上是進步（decompose 是退步 23→16）。
+
+**colu**（rank 4，657 列，colu 541 ＋ blockly_matrix 116；留出 114 列）
+
+| 組別 | 基底 | 微調 | 判定 |
+|---|---|---|---|
+| colu_letter_choice | 11/57 | 30/57 | 進步 |
+| colu_letter_choice_nonefirst | 0/57 | 25/57 | 進步 |
+
+範圍內沒有退步。blockly_matrix 沒有評量。
+
+**打包**：`out/release/plan-r4/`、`out/release/colu-r4/`，各 1 個分片、10,143,496 位元組。卡片的 eval 欄位沒有放（欄位只定義拆題與 function call 格式），數字記在這裡。
+
+**下一步**：`decompose_v2`（1,133 列，約 141 步）正在訓練；v2 的評量依 `EVAL_CRITERIA_v2.md` 的判準（全量 528 列、group/git ≥ 20）。
+
+## 20. toolcall v2 評量（預先登記，2026-11-12；本節只寫判準與步驟，結果在下一次提交補上）
+
+**登記順序（照指揮要求）**
+1. 判準：`lora-train/EVAL_CRITERIA_v2.md`，提交 `8df5bad1`，看 v2 輸出之前寫好。計分器 `eval_run.py`、`regrade_toolcall.py` 沒有改動（最後一次修改在 `4242dc62`）。
+2. 留出擴充：`lora-train/gen/gen_git_heldout.js`，與本節同一提交。group/git 新增 24 列（git_status、git_log、git_pull、git_push、git_commit、git_clone 各 4 句；人工寫的口語句，不是模板）。腳本以工具 schema 驗證參數（未知參數、缺必填、enum 錯都丟掉），並與訓練檔的使用者句逐字比對，有重複就中止；本次比對結果為 0 重複。
+3. 留出檔：`data/heldout_toolcall_v2.jsonl` ＝ v1 的 528 列 ＋ 新增的 24 列 ＝ **552 列**。group/git 由 4 列增至 **28 列**（≥ 20，符合判準）。sha256：`98cba02dc4053eb3fa65e107e6cb04fd166ac5ffed6ea89c6689ed4da7737f1c`。檔案本身不入 git（`data/*.jsonl` 被 `.gitignore` 忽略），由上述腳本與參數重現；新增列的 sha256 為 `a407b5856cd515b472a9d86b10f69287086af9995856cb86cbae836c73d42a61`。
+4. 量測：`eval_run.py`，`LORA_EVAL_EVERY=1`（全部列），基底與 toolcall-r4 同一批 552 列，只量一次。判準同 `EVAL_CRITERIA_v2.md`：格式合法率（主要，微調 ≥ 基底 + 10 個百分點）；缺工具拒絕（句型表）；退步＝n ≥ 20 且微調少 ≥ 2 列；範圍內（toolcall）與範圍外（colu、think_stack、decompose）分欄，範圍外若沒量就寫「未量」。
+
+**本次不重訓**：v2 量的是 toolcall-r4 的權重（v1 訓練的那版），在上述凍結判準下的表現。缺工具拒絕的訓練資料（`when2call` 的 `w2c_missing`，訓練池 `data/train.jsonl` 內 230 列，`data/multi/toolcall.jsonl` 降取樣後 103 列）本來就在 v1 的訓練集內，不需要重新生成；沒有其他指定的新增訓練資料，所以不重訓。若要重訓，須先指定新增資料，視為新版本，並開新的留出批次。
+
+**事後修正的紀錄方式**：量完之後若要改判準，只能寫成事後修正，附上判準改動的提交與理由，結論標明「待新批次以預先登記判準驗證」，不可寫成已驗證。
+
+## 21. 完整微調與匯出（GGUF／ONNX）：`lora-train/` 側骨架與需求（2026-11-12，只有設計，尚未下載任何工具）
+
+使用者原話：「我希望我們的訓練工作室不只用來產生LoRA，也能基於基礎的那包qwen，經過資料輸入訓練，產生更強的model，可以選gguf, onnx，預設以當下環境(網頁/desktop-app native) 優先」。
+
+**app 實際吃的格式**：桌面版 `nr-engine.js` 只吃 ONNX（onnxruntime-node）；網頁版是 transformers.js／ort-web 的 ONNX q8。GGUF 目前只用於評量（`scripts/eval/mini_llama_server.py`）與候選的 Vulkan 後端。所以預設格式不能寫死：`lora-train/export_plan.js` 的 `pickFormats(env)` 依「網頁／桌面」與「有哪些後端」回傳可用格式與預設（網頁→ONNX q8、桌面→ONNX q8、有 llama.cpp 後端才把 GGUF 列為可用），並列出缺的工具。純函式、有自測（`node lora-train/export_plan.js`），已驗證通過的只有這個函式本身。
+
+**兩條路**
+1. **LoRA 訓練後合併再匯出（較實際）**：`merge_and_export.py`（已有，輸出 fp32 safetensors）→ 匯出 ONNX（要 optimum 或自寫 `torch.onnx.export`，輸入輸出必須與 app 吃的 q8 圖一致：`input_ids`／`attention_mask`／`position_ids`／`past_key_values.*`）→ q8 量化；或 `convert_hf_to_gguf.py` → `llama-quantize`。
+2. **全參數微調**：記憶體粗估 fp32 權重 2.4 GB＋梯度 2.4 GB＋AdamW 狀態 4.8 GB≈10 GB 再加啟動記憶體；這台 CPU 能跑，但每步比 LoRA 慢很多，沒有實測；網頁版 WASM 做不到。
+
+**缺的東西（都要下載，需使用者直接同意後才做，這一節不下載）**：`optimum`（pip）、llama.cpp（`convert_hf_to_gguf.py`、`llama-quantize`）、ONNX 量化用的函式庫。**尚未驗證**：匯出圖與 app 的 q8 圖輸入輸出是否一致、量化後精度。工作室 GUI 那一側由 studio-domain-author／指揮線負責。
+
+### 13.1 匯出工具與實測（2026-11-12，使用者已同意兩項下載，範圍僅限這兩項）
+- **llama.cpp**：`github.com/ggml-org/llama.cpp` 標籤 **b12286**（`archive/refs/tags/b12286.tar.gz`，38,850,877 位元組，sha256 `52fa612d…ab8e7`），解在 `~/fa/third_party/llama.cpp-b12286/`（不進倉庫）；用 cmake＋g++ 編出 `llama-quantize`。
+- **optimum**：PyPI `optimum-onnx[onnxruntime]==0.1.0`（連帶 optimum 2.1.0、transformers 4.57.6、onnxruntime 1.31.1、onnx 1.23.2、huggingface_hub 0.36.2 等）。optimum 2.x 把 ONNX 匯出拆到 optimum-onnx，且釘 `transformers<4.58`，若裝進訓練用 `.venv`（transformers 5.22.2）會被降版，所以改裝在**獨立的 `~/fa/desktop-app/lora-train/.venv-export`**（240 MB；用一個 .pth 借用訓練 venv 的 torch，沒有重新下載 torch）。訓練 `.venv` 驗證過沒被動到（transformers 仍 5.22.2）。這與「裝進 .venv」的指示不同，原因就是上述版本衝突。
+- **GGUF（基底實測）**：`convert_hf_to_gguf.py`（`PYTHONPATH=gguf-py`）→ f16 1,509,347,264 位元組 → `llama-quantize Q8_0` 804,753,344 位元組，數秒完成。**尚未用 llama.cpp 跑推論核對品質。**
+- **ONNX（基底實測）**：`optimum-cli export onnx --task text-generation-with-past --dtype fp32 --no-post-process`（不加 `--no-post-process` 時後處理步驟丟錯）。輸出圖輸入 59 個、輸出 57 個，名稱與 app 吃的 `onnx-community/Qwen3-0.6B-ONNX` q8 圖**完全相同**（`input_ids／attention_mask／position_ids／past_key_values.*`）。fp32 ONNX 對 HF 的最後位置 logits：cos 1.0、top1 3/3（3 個提示）。
+- **q8 量化**：`onnxruntime.quantization.quantize_dynamic`。整層共用一個縮放（預設）cos 最差 0.669；`per_channel=True,QUInt8` 三個提示 cos 0.943／0.787／0.796；`per_channel=True,QInt8` 0.940／0.853／0.910；**官方 q8 圖本身對 fp32 是 0.926／0.748／0.785**。所以採 per_channel＋QUInt8（權重型別與官方圖相同，品質不比官方差）。q8 模型 754 MB。
+- **沒驗證**：量化圖與官方 q8 圖的節點結構不同（官方是 ORT 融合後的 SimplifiedLayerNormalization／RotaryEmbedding、`attn.q_proj.MatMul.weight_quantized` 命名），`lora-slot-build.js` 槽版轉換器能不能直接吃我們量化出的圖，**尚未驗證**；桌面版與網頁版載入執行也未驗證。腳本：`lora-train/export_onnx.py`（一條命令：匯出→量化→logits 核對）。
+
+## 22. 基底完整基準（2026-11-12，`eval_gen.py --per_stage 60`，留出檔，貪婪解碼，基底 Qwen3-0.6B，`node score_gen.js`）
+| 組別 | 指標 | 基底 |
+|---|---|---|
+| fn_template/code_split | valid／names／calls | 0/60、0/60、0/60 |
+| fn_template/code_write_fn | def／judge（判題器 AC） | 60/60、8/60 |
+| think_stack/plan_check | valid | 52/60 |
+| think_stack/review_return | items | 0/60 |
+| think_stack/self_validate | ok（負例 ok／正例 ok） | 25/60（2/17、23/43） |
+既有領域（when2call、agent、wiring、colu…）的基底分數要在微調評量時由 `eval_run.py` 同批算出（它一次跑基底與微調）。
+
+## 23. 訓練要點調整（2026-11-12 使用者原話）：未知題目拆題＋function call 格式、多顆可按需載入的 LoRA
+
+使用者原話：「我想要我們LoRA訓練的要點是對於未知題目拆題，function call格式有足夠的能力。float assistant要可以註冊多個LoRA，這些LoRA要on demand loading / lazy loading」。
+
+**1. 優先順序與評量**
+- 訓練優先：(a) 未知題目拆題（`fn_template/code_split`、`code_write_fn` 與 UML 逐層切割 `uml_design/*`）；(b) function call 格式（所有 tool call 的 recipe：輸出格式合法率、參數欄位正確率；既有的 `when2call`／`agent`／`wiring`／`tool_routing` 與 `natural`）。
+- 評量一律用沒進過訓練的題：現有留出檔（`heldout_v1.jsonl`，與基底基準同一批）；另外要有一組「題型完全沒進過訓練」的 unseen 組（拆題用留出題庫的 135 題中的重構切法、未出現在任何訓練題種子的題；function call 用沒有進訓練的工具名）。報告固定列：拆題合法率（`code_split valid`）、function call 格式合法率與參數欄位正確率，**基底對微調**，退步組別逐一列出。
+- 基底現況（§22）：拆題 valid 0/60；review_return 0/60；code_write_fn judge 8/60。function call 組要等 `eval_run.py` 的基底欄位。**尚未做**：unseen 組的正式切分與基底數字。
+
+**2. 多顆 LoRA（不訓練一顆大的）**
+- 依領域切成可獨立載入的多顆，各自訓練、評量、打包：`decompose`（拆題：code_split／uml 切割）、`toolcall`（function call 格式：when2call／agent／wiring／tool_routing／natural）、`colu`（選單選擇）、`plan`（plan 規劃／think_stack）。各顆預設 rank 8（合計不超過載入端的槽數，槽數上限待 lora-slot-js 回覆）。
+- **描述檔**：沿用 `pack_adapter.js` 的 `manifest.json`，新增 `id`、`version`、`description`、`applies_when:{stages:[…],prompt_format_version}`；既有的 `size`（`total_size`）、`base`、`rank`、`eval` 保留。格式已用 `SendMessage` 提給 lora-slot-js（載入／註冊由它實作），**尚未收到回覆**，回覆後依它的介面調整。
+- **載入**：按需（on demand／lazy）：註冊時只讀描述檔；第一次遇到符合 `applies_when` 的提示才載入該顆權重。實作歸 lora-slot-js。
+- **取捨（尚未驗證）**：多顆各自 rank 8 的總表達力與一顆 rank 16 的比較、多顆同時合併時互相干擾，都還沒實測。
+

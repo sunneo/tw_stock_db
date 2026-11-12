@@ -111,11 +111,11 @@ function corrupt(src, node, kind) {
 }
 
 // 跑一遍 solve(stackChecks:true)，ask 依提示的種類回答；mode：clean／once（第一次寫壞）／always（一直寫壞）
-async function stackPass(problem, plan, mode, kind) {
+async function stackPass(problem, plan, mode, kind, ti) {
     const fns = plan.functions; const importFor = withImports(fns, plan.imports || []);
     const planJson = { functions: fns.map((f) => ({ name: f.name, signature: f.signature, purpose: f.purpose || '', calls: f.calls, complex: false })) };
     const asks = []; const last = {}; let corrupted = null; const seen = {};
-    const target = fns.find((f) => f.name !== 'main' && paramCount(f.signature) >= 0) || fns[0];
+    const cands = fns.filter((f) => f.name !== 'main'); const target = cands[(ti || 0) % Math.max(cands.length, 1)] || fns[0];
     const ask = async (msgs, validate) => {
         const sys = msgs[0].content, usr = msgs[msgs.length - 1].content; let ans = null, stage = null;
         if (/你是軟體設計者/.test(sys)) { ans = planJson; stage = null; }
@@ -173,9 +173,12 @@ async function generate() {
         // ---- 思考堆疊的三種封閉題（只收程式用結構檢查算得出答案的）----
         if (plan.functions.length > 1) {
             const seenKey = new Set();
-            for (const [mode, kind] of [['clean', 0], ['once', stat.sv.n % 3], ['always', (stat.sv.n + 1) % 3]]) {
+            const variants = [['clean', 0, 0]];
+            // 負例擴充：兩種模式 × 三種弄壞方式 × 最多三個目標函式（相同題目文字的重複會被 seenKey 去掉）
+            for (const m of ['once', 'always']) for (let k = 0; k < 3; k++) for (let t = 0; t < 3; t++) variants.push([m, k, t]);
+            for (const [mode, kind, ti] of variants) {
                 let asks;
-                try { asks = await stackPass(p, plan, mode, kind); } catch (e) { stat.svErr++; continue; }
+                try { asks = await stackPass(p, plan, mode, kind, ti); } catch (e) { stat.svErr++; continue; }
                 for (const a of asks) {
                     const neg = a.stage === 'self_validate' ? a.ans.ok === false : a.stage === 'review_return' ? a.ans.results.some((x) => x.ok === false) : false;
                     // clean 收全部（正例）；其他版本只收負例，避免同樣的正例重複
