@@ -1074,3 +1074,34 @@ model card 欄位以 `description`（一句話，來自描述檔，§13.2）與 
 
 - 本次只改 `desktop-app/DESIGN.lora-training.md`（新增本節）。沒有改程式、沒有改 `renderer/src/floating-assistant.js`，因此**不需要重新嵌入**。
 - 沒有 embed、build、推送或發布。
+
+## 28. LoRA 缺口第二輪（#9、#11、#12、#14，2026-11-13，分支 lora-train-eval）
+
+總指揮接力後的範圍：先併入 `desktop-app` 最新（fast-forward 到 787e5bb8），再補下列四項。沒有發布、沒有推送、沒有下載。
+
+| # | 項目 | 狀態 | 做了什麼 | 還沒做／限制 |
+|---|---|---|---|---|
+| 14 | 可重現建置（data_sha256） | **完成** | `scripts/build-lora-asset.js` 以訓練檔「內容」算 `data_sha256`，寫入描述檔、`compat.data_sha256`、`extra.lora.data_sha256`。訓練檔來源：`--train-file`，或描述檔的 `train_file`（相對 release 目錄）。拿不到訓練檔、或描述檔記的雜湊（`data_sha256`／`trained_on.train_file_sha256`）與實算不符，都拒絕產出。測試 19 項（含同輸入兩次雜湊相同）。 | 工具清單與程式版本仍未寫進資產（只有雜湊）；`pack_adapter.js` 的 `train_file_sha256` 只在 `data/train.jsonl` 存在時有值。 |
+| 9 | 工具目錄雜湊（漂移偵測） | **部分** | 新格式 `shape-v1`（`lora_registry_core.js` 的 `toolCatalogShapeText`）：只取工具名稱＋參數結構（名稱、型別、必填、enum），**不取說明文字**（主程式說明含 `${…}` 平台插值，執行時與離線掃描不會逐字相同，比對會永遠誤報）。`pack_adapter.js` 以 `shape-v1` 算 `tool_catalog_sha256` 並寫 `tool_catalog_scheme`；主程式用 `_builtinToolNameSnapshot`（啟動時的內建工具）算同一雜湊，經 `h.toolCatalogSha256()` 進 `LORA_ENV`。舊格式（沒有 scheme 的檔案位元組雜湊）會明說「無法比對」；主程式算不出會明說。 | **未實測**：沒有跑 Electron，所以主程式算出的雜湊與訓練端 `real_tools_all.json` 的雜湊是否相等**未驗證**（離線掃描 322 個工具，主程式內建數量與平台條件可能不同）。說明文字改動偵測不到。現有 toolcall-r4 是舊格式，會顯示「無法比對」直到重新打包。 |
+| 12 | lora_route_wiring 接線測試 | **部分** | `renderer/src/studio/lora_route_wiring.test.js` 改為行為測試：從 `floating-assistant.js` 抽出 `_loraRouteTurn`、`_llmGenerate`、`_planModel` 的真實方法本體，放進 vm 沙箱，用假的 this 與真的 `lora_route_core` 執行。檢查：工具任務→領域＋這一輪的話；路由文字取最後一則 user；生成前 acquire、生成後 release（含生成丟錯）；路由丟錯→基底；`_planModel` 預設 plan、UML 拆解 decompose。27 項。 | 閉包內的三個呼叫點（選單 colu、工具參數 toolcall、工具階段 toolcall）跑不到，仍只做原始碼標記檢查，測試輸出中標為「[閉包]」。 |
+| 11 | 原生推論正確性 | **部分（不是原本的 10/96）** | 原本 10/96 的 toolcall-r4 adapter、heldout 與 `ort122_slot_adapter.json` 參考檔在 `~/fa` 清除時一起不見，**無法逐字重跑**。改用現有的 studio bench adapter（rank 16，sha256 `b463bbe8…`，40,422,168 位元組）做等價量測：HF fp32 合併參考 vs onnxruntime-node 1.22.0（app 原生執行包 `1.22.0-1`，已安裝，未下載）。見下表。 | 不是同一顆 adapter，數字不能和 10/96 比；沒在 Electron 內跑；沒有驗證 app 的 `lora.bin`（sha `41dfffca…`）是哪一顆 adapter 產出的。 |
+
+#### 28.1 #11 量測（greedy 16 token × 6 題 = 96 位置，逐位置比對）
+
+| 原生組 | 對 HF fp32＋bench adapter | 對 HF fp32 基底（無 adapter） |
+|---|---|---|
+| (a) q8 基底，無 adapter | 9/96 | 26/96 |
+| (b) 槽版圖，零 lora.bin | 9/96（與 a 逐字相同） | 26/96 |
+| (c) 槽版圖，bench lora.bin | **45/96** | 12/96 |
+
+- 來源與大小：q8 基底 `~/.config/floating-assistant-desktop/native-models/qwen3-0.6b-q8/onnx/model_quantized.onnx`（617,687,575 位元組）；槽版圖 `native-lora/slot-model/ccf8734e…/model_quantized.onnx`（617,790,864 位元組，唯讀，硬連結到暫存資料夾）；lora.bin 由 bench adapter 以 `pack_bench.py`（`make_lora_onnx.py` 的 pack_bytes 同規則；原檔需要 `onnx` 套件，這台 `fa-work/venv` 沒裝）打包，40,370,176 位元組，392 個張量與槽版 layout 相符。
+- 結論能說的：零 adapter 的槽版圖與 q8 基底逐字相同，圖手術本身沒有改變輸出；載入 bench adapter 後，首步 logits 在六題上都往 adapter 參考靠近（餘弦約 0.79–0.87，無 adapter 的 q8 為 −0.20–0.86）。
+- 不能說的：不能說原生路徑與 fp32 加 adapter 一致（q8 噪聲本身就把 9/96 拉低）；位置一致率對第一次分歧很敏感，數字會低估接近程度；這不是 10/96 的重現。
+- 腳本：`lora-train/native_check/`（`prompts.js`、`hf_ref.py`、`pack_bench.py`、`native_run.js`）；結果 JSON 在 `~/fa-work/native_check/native_results.json`（不在版本庫）。
+
+#### 28.2 沒有做的事（誠實列出）
+
+- 桌面版 Electron 內實跑（需要 `xvfb-run` 與 `FA_DEBUG_EVAL_FILE`，本輪沒做）。
+- 主程式工具雜湊與訓練端的相等性（需要 Electron 內算出 `toolCatalogSha256()` 再與 `real_tools_all.json` 比對）。
+- 重新打包 toolcall-r4 成 `shape-v1`（它的 adapter 與發布目錄已不在磁碟上）。
+- 發布、推送、熱更新送達：這次只有 commit，沒有發布。

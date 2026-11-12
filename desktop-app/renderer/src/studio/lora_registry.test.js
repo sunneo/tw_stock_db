@@ -5,7 +5,7 @@ const H = (c) => c.repeat(64);
 const ENV = { base: 'Qwen/Qwen3-0.6B', rank_slots: [16], prompt_format_version: 3, tool_catalog_sha256: H('a') };
 const MB = 1024 * 1024;
 const good = { score: 1, groups: { tools: { adapter: 53, base: 6 }, ext: { adapter: 9, base: 7 } } };
-const mk = (id, o) => Object.assign({ id, source: 'builtin', base: ENV.base, rank: 16, prompt_format_version: 3, tool_catalog_sha256: H('a'), domains: ['tool_routing'], location: 'fap:x/' + id, size: 40 * MB, sha256: H('b'), eval: good, added: 1 }, o || {});
+const mk = (id, o) => Object.assign({ id, source: 'builtin', base: ENV.base, rank: 16, prompt_format_version: 3, tool_catalog_sha256: H('a'), tool_catalog_scheme: 'shape-v1', domains: ['tool_routing'], location: 'fap:x/' + id, size: 40 * MB, sha256: H('b'), eval: good, added: 1 }, o || {});
 function mkLoader() { const log = []; return { log, load: async (e) => { log.push('load ' + e.id); return { id: e.id }; }, unload: async (e) => { log.push('unload ' + e.id); } }; }
 let t = 1000; const now = () => ++t;
 
@@ -291,6 +291,26 @@ let t = 1000; const now = () => ++t;
         check('沒有任務領域時，觸發字照舊可選用', r0.plan.map((e) => e.id).join() === 'toolcall-r4');
         const reg2 = R.createRegistry({ env: ENV, now }); reg2.register(mk('other-v9', { name: 'other', domains: ['colu'], eval: null }));
         check('id 不是已知內建的條目沒有評量仍不自動選用', reg2.select({ domains: ['colu'] }).plan.length === 0);
+    }
+
+    // 工具清單雜湊（shape-v1）：只看名稱＋參數結構，不看說明文字；舊格式與缺項都要說出來
+    { const T = (name, props, req, desc) => ({ name, description: desc || 'd', parameters: { type: 'object', properties: props, required: req || [] } });
+      const a = [T('b_tool', { q: { type: 'string' } }, ['q']), T('a_tool', { n: { type: 'integer' }, mode: { type: 'string', enum: ['x', 'y'] } }, [])];
+      const txtA = R.toolCatalogShapeText(a);
+      check('shape：順序無關', R.toolCatalogShapeText([a[1], a[0]]) === txtA);
+      check('shape：說明文字改了不影響', R.toolCatalogShapeText([T('b_tool', { q: { type: 'string' } }, ['q'], '另一段說明'), a[1]]) === txtA);
+      check('shape：參數多一個欄位會變', R.toolCatalogShapeText([T('b_tool', { q: { type: 'string' }, z: { type: 'string' } }, ['q']), a[1]]) !== txtA);
+      check('shape：必填改了會變', R.toolCatalogShapeText([T('b_tool', { q: { type: 'string' } }, []), a[1]]) !== txtA);
+      check('shape：enum 改了會變', R.toolCatalogShapeText([a[0], T('a_tool', { n: { type: 'integer' }, mode: { type: 'string', enum: ['x'] } }, [])]) !== txtA);
+      check('shape：無參數工具與缺 parameters 不拋錯', typeof R.toolCatalogShapeText([{ name: 'z' }, null, { description: 'no name' }]) === 'string' && R.toolCatalogShapeText([{ name: 'z' }]).indexOf('"z"') > 0);
+      check('shape：格式名稱', R.TOOL_HASH_SCHEME === 'shape-v1');
+      const e = mk('s', { tool_catalog_sha256: H('c'), tool_catalog_scheme: undefined });
+      const cl = R.checkCompat(e, ENV); check('舊格式雜湊 → 警告「舊格式」而不是「已變動」', cl.level === 'warn' && /舊格式/.test(cl.warnings[0].message), cl);
+      const cm = R.checkCompat(mk('s', { tool_catalog_sha256: H('c') }), ENV); check('同格式不同雜湊 → 警告「已變動」', cm.level === 'warn' && /已變動/.test(cm.warnings[0].message), cm);
+      const cg = R.checkCompat(mk('s'), ENV); check('同格式同雜湊 → ok', cg.level === 'ok', cg);
+      const cnoEnv = R.checkCompat(mk('s'), Object.assign({}, ENV, { tool_catalog_sha256: undefined })); check('主程式算不出雜湊 → 明說無法判斷（不靜默）', cnoEnv.level === 'warn' && /算不出/.test(cnoEnv.warnings[0].message), cnoEnv);
+      const cnoEntry = R.checkCompat(mk('s', { tool_catalog_sha256: undefined, tool_catalog_scheme: undefined }), ENV); check('adapter 沒記錄 → 仍照舊說明', cnoEntry.level === 'warn' && /沒記錄/.test(cnoEntry.warnings[0].message), cnoEntry);
+      check('描述檔未知 scheme 拒絕', R.descriptorErrors({ format: 'fa-lora-descriptor', format_version: 1, id: 'x', version: '1', base: 'Qwen/Qwen3-0.6B', rank: 4, alpha: 8, prompt_format_version: '1', applies: {}, size: 1, sha256: H('a'), location: 'l', tool_catalog_scheme: 'weird' }).some((x) => /tool_catalog_scheme/.test(x)));
     }
 
     console.log(ok + ' passed, ' + bad + ' failed'); process.exit(bad ? 1 : 0);

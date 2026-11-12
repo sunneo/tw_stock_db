@@ -247,5 +247,14 @@ function mk(desktop, hostOps) {
     }
     // 聊天每輪路由用的登錄表存取器（不需要 HTTP 監聽）
 { const C2 = require('./studio_server_core.js').createServer({}); check('createServer 回傳 registry()（聊天路由取得登錄表）', typeof C2.registry === 'function' && typeof C2.route === 'function'); }
+    // 工具清單雜湊：主程式給了就進相容性環境（env.tool_catalog_sha256）；給不出來就照實說「算不出」，不假裝比對過
+    { const H = (c) => c.repeat(64); const Fa = require('./fatrain_core.js');
+      void Fa;
+      const t2 = mk(true); t2.h.toolCatalogSha256 = async () => H('e');
+      let rr = await t2.req('GET', '/api/lora'); check('主程式給工具雜湊 → env 帶上', rr.j.env.tool_catalog_sha256 === H('e'), rr.j.env);
+      const t3 = mk(true); t3.h.toolCatalogSha256 = async () => { throw new Error('boom'); };
+      rr = await t3.req('GET', '/api/lora'); check('工具雜湊算失敗 → env 留空、不拋錯', rr.s === 200 && rr.j.env.tool_catalog_sha256 === undefined, rr.j && rr.j.env);
+      const t4 = mk(true); rr = await t4.req('GET', '/api/lora'); check('沒提供工具雜湊函式 → env 沒有此欄', rr.j.env.tool_catalog_sha256 === undefined, rr.j.env);
+    }
 console.log(ok + ' passed, ' + bad.length + ' failed', bad); process.exit(bad.length ? 1 : 0);
 })();

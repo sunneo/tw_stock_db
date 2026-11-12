@@ -1,0 +1,18 @@
+{
+  "task": "native-runner-design-88116691",
+  "quotes": [
+    "子程序只用標準輸入輸出加進度檔",
+    "不要 HTTP",
+    "定稿後直接實作",
+    "桌面版原生優先",
+    "網頁版保留原路徑"
+  ],
+  "consensus": "skills/weak-model-harness/references/consensus/native-runner.json",
+  "allow": [
+    "DESIGN.TODO.native-runner.md"
+  ],
+  "verify": [
+    "node scripts/harness-tests/portable.test.js"
+  ],
+  "created": "2026-11-04T13:58:51.923Z"
+}

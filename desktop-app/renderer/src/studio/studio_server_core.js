@@ -50,8 +50,6 @@
         { id: 'directml', available: false, reason: 'DirectML 只在桌面版原生路徑有意義，且尚未實作', planned: true },
         { id: 'vulkan', available: false, reason: 'Vulkan 後端尚未實作', planned: true },
     ];
-    // 主程式目前的基底模型與 LoRA 槽版 ONNX 的條件（make_lora_onnx.py build 的單槽 rank 16；提示格式版本 1）；工具目錄雜湊目前主程式沒有對應來源，所以不比對（adapter 缺記錄會出警告）
-    const LORA_ENV = { base: 'Qwen/Qwen3-0.6B', rank_slots: [16], prompt_format_version: 1 };
     const LORA_SLOT_RANK = 16;   // 槽版 ONNX 的 rank 總容量（匯出時固定，DESIGN.lora-training.md §14.1）
     const LORA_APPLY_BLOCKER = '目前環境沒有原生推論套用器：桌面版需要原生執行包 1.22.0-2 以上（nr-host／nr-child 轉傳 lora，見設計文件 §14）；網頁版的 transformers.js 接點尚未接（阻礙見 §14）。所以這裡只做到「選用與載入到記憶體」，不假裝已套用';
     const SOURCES = ['wiki', 'open_source', 'book', 'aidoc'];
@@ -74,8 +72,18 @@
             const q = { pending: 0, claimed: 0, done: 0 }; I.requests.forEach((r) => { q[r.status] = (q[r.status] || 0) + 1; });
             return { has: true, inputs: I.inputs || null, source: I.source, stats: I.stats, sizing: I.sizing, licenses: lic, skipped: (I.skipped || []).slice(0, 30), skippedTotal: (I.skipped || []).length, rejectedTotal: I.rejected.length, rejected: I.rejected.slice(0, 30), preview: I.chunks.slice(0, 8).map(chunkBrief), requests: q, samples: I.samples.length, savedAs: I.savedAs || null };
         };
+        // 主程式目前的基底模型與 LoRA 槽版 ONNX 的條件（make_lora_onnx.py build 的單槽 rank 16；提示格式版本 1）。
+        // 工具清單雜湊（shape-v1）由主程式的 h.toolCatalogSha256() 給，第一次使用前由 loraEnv() 填入；算不出來就留空，相容性檢查會寫明「算不出」。
+        const LORA_ENV = { base: 'Qwen/Qwen3-0.6B', rank_slots: [16], prompt_format_version: 1 };
+        async function loraEnv() {
+            if (!LORA_ENV.tool_catalog_sha256 && typeof h.toolCatalogSha256 === 'function') {
+                try { const v = await h.toolCatalogSha256(); if (v) LORA_ENV.tool_catalog_sha256 = String(v); } catch (_) { /* 留空＝相容性檢查寫「主程式算不出」 */ }
+            }
+            return LORA_ENV;
+        }
         // 由 kind:'lora' 且帶權重的資產建立登錄項；只含資料的資產（資料匯入的結果）不是 adapter
         async function syncRegistry() {
+            await loraEnv();
             if (!S.registry) S.registry = LoraReg.createRegistry({ env: LORA_ENV, slotCapacity: LORA_SLOT_RANK, maxActive: h.loraApply ? (h.loraMaxActive >= 1 ? h.loraMaxActive : 4) : 1, loader: LoraReg.nrEngineLoader({ readBytes: async (e) => { const r = await h.storage.loadAsset('lora', e.asset_name); if (!r || !r.asset.files[e.weight_file]) throw new Error('讀不到權重檔 ' + e.weight_file); return r.asset.files[e.weight_file]; }, sha256Hex: Asset.sha256Hex }) });
             const reg = S.registry, prefs = (h.prefsGet && h.prefsGet()) || {}, en = prefs.loraEnabled || {}, imp = new Set(Array.isArray(prefs.imported) ? prefs.imported : []);
             const seen = new Set(), invalid = [], dataOnly = [], items = await h.storage.listAssets();
@@ -306,7 +314,7 @@
                     S.pending = { id: 'imp' + (++S.seq), bytes: f.bytes, name: f.name };
                     // LoRA 說明：相容性（會不會被登錄表拒絕）與同名現有資產的版本差異；不是 LoRA 的不給
                     let loraReport = null; const parsed = Fatrain.readAsset(f.bytes, {});
-                    if (parsed.ok && parsed.asset.manifest.kind === 'lora') { const mf = parsed.asset.manifest; const existing = await h.storage.loadManifest('lora', mf.name).catch(() => null); loraReport = LoraReg.importReport(mf, { env: LORA_ENV, existing: existing || null }); }
+                    if (parsed.ok && parsed.asset.manifest.kind === 'lora') { const mf = parsed.asset.manifest; const existing = await h.storage.loadManifest('lora', mf.name).catch(() => null); loraReport = LoraReg.importReport(mf, { env: await loraEnv(), existing: existing || null }); }
                     return ok(Object.assign({ pendingId: S.pending.id, file: f.name, loraReport }, r));
                 }
                 if (method === 'POST' && P === '/api/import/confirm') {
@@ -498,7 +506,7 @@
                 if (method === 'POST' && P === '/api/train/pause') { const r = await callHost('studio_train_pause', { jobId: body.jobId || S.lastTrain }, 180000); log('暫停訓練：' + (r.ok ? '已存檢查點 step=' + r.step : r.error || r.reason)); return r.ok === false && !r.checkpoint ? bad(409, r.error || r.reason || '暫停失敗', r) : ok(r); }
                 if (method === 'POST' && P === '/api/train/stop') { const r = await callHost('studio_train_stop', { jobId: body.jobId || S.lastTrain }, 30000); log('停止訓練'); return r.ok === false ? bad(409, r.error) : ok(r); }
                 // ---- LoRA 登錄與按需載入（第二輪，接 lora_registry_core）----
-                if (method === 'GET' && P === '/api/lora') { const reg = await syncRegistry(); return ok({ env: LORA_ENV, budget: reg.reg.budget, maxActive: reg.reg.maxActive, entries: reg.entries, invalid: reg.invalid, dataOnly: reg.dataOnly, loaded: reg.reg.loaded(), applyBlocker: h.loraApply ? '' : LORA_APPLY_BLOCKER }); }
+                if (method === 'GET' && P === '/api/lora') { const reg = await syncRegistry(); return ok({ env: await loraEnv(), budget: reg.reg.budget, maxActive: reg.reg.maxActive, entries: reg.entries, invalid: reg.invalid, dataOnly: reg.dataOnly, loaded: reg.reg.loaded(), applyBlocker: h.loraApply ? '' : LORA_APPLY_BLOCKER }); }
                 // 原生模型 LoRA 槽版（標準版 q8 → 槽版，主行程 native-slot-model.js）：狀態／開始轉換／使用者同意後下載
                 if (P === '/api/lora/slot' || P === '/api/lora/slot/prepare' || P === '/api/lora/slot/download') {
                     if (!h.slotCall) return ok({ ok: false, available: false, error: '只有桌面版的原生推論需要 LoRA 槽版；這個環境沒有接上主行程' });

@@ -25,6 +25,24 @@
     const SOURCE_RANK = { user: 2, imported: 1, builtin: 0 }; // DESIGN §7：使用者啟用的 > 內建
     const DEFAULT_BUDGET = 256 * 1024 * 1024;
     const HEX64 = /^[0-9a-f]{64}$/;
+    // 工具清單雜湊的格式 shape-v1：只取「工具名稱＋參數結構（名稱、型別、必填、enum）」，不取說明文字。
+    // 說明文字在主程式裡會依平台插值（${…}），執行時的文字與離線掃描（real_tools_all.json）不會逐字相同，拿來比對會永遠誤報。
+    // 代價：只改說明、不改參數的變動偵測不到（DESIGN.lora-training.md §26.2）。沒有 tool_catalog_scheme 的舊雜湊是檔案位元組，無法比對。
+    const TOOL_HASH_SCHEME = 'shape-v1';
+    function toolShape(t) {
+        const s = (t && (t.parameters || t.parametersSchema || t.schema)) || {};
+        const props = s.properties && typeof s.properties === 'object' ? s.properties : {};
+        const req = Array.isArray(s.required) ? s.required.map(String) : [];
+        return { name: String(t.name), params: Object.keys(props).sort().map((k) => {
+            const p = props[k] || {};
+            return [k, p.type == null ? null : String(p.type), req.indexOf(k) >= 0 ? 1 : 0, Array.isArray(p.enum) ? p.enum.map(String) : null];
+        }), required: req.slice().sort() };
+    }
+    function toolCatalogShapeText(tools) {
+        const rows = (Array.isArray(tools) ? tools : []).filter((t) => t && t.name).map(toolShape);
+        rows.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+        return JSON.stringify(rows);
+    }
 
     function validateEntry(e) {
         const errors = [];
@@ -52,8 +70,12 @@
         const slotRank = entry.slot_rank != null ? entry.slot_rank : entry.rank;
         if (Array.isArray(env.rank_slots) && env.rank_slots.length && env.rank_slots.indexOf(slotRank) < 0) reasons.push({ field: 'rank', expected: env.rank_slots, actual: slotRank, message: 'LoRA 槽寬（rank 槽 ' + slotRank + '）與模型的槽版 ONNX（' + env.rank_slots.join('、') + '）不符，放不進去' });
         if (env.prompt_format_version !== undefined && String(entry.prompt_format_version) !== String(env.prompt_format_version)) reasons.push({ field: 'prompt_format_version', expected: env.prompt_format_version, actual: entry.prompt_format_version, message: '提示格式版本不同：主程式 ' + env.prompt_format_version + '，adapter ' + entry.prompt_format_version + '（格式一改一定要重訓）' });
-        if (env.tool_catalog_sha256 && entry.tool_catalog_sha256 && entry.tool_catalog_sha256 !== env.tool_catalog_sha256) warnings.push({ field: 'tool_catalog_sha256', message: '工具清單已變動，建議重訓或更新 adapter（仍可載入）' });
-        if (env.tool_catalog_sha256 && !entry.tool_catalog_sha256) warnings.push({ field: 'tool_catalog_sha256', message: 'adapter 沒記錄工具清單雜湊，無法判斷是否過期' });
+        // 工具清單：只有同格式（shape-v1）的雜湊才比得出來；舊格式、主程式算不出、adapter 沒記錄都要說出來，不靜默通過
+        if (entry.tool_catalog_sha256 && env.tool_catalog_sha256) {
+            if (entry.tool_catalog_scheme !== TOOL_HASH_SCHEME) warnings.push({ field: 'tool_catalog_sha256', message: '工具清單雜湊是舊格式，無法與現在的工具清單比對；用新版重新打包後才判斷得出' });
+            else if (entry.tool_catalog_sha256 !== env.tool_catalog_sha256) warnings.push({ field: 'tool_catalog_sha256', message: '工具清單已變動，建議重訓或更新 adapter（仍可載入）' });
+        } else if (entry.tool_catalog_sha256 && !env.tool_catalog_sha256) warnings.push({ field: 'tool_catalog_sha256', message: '主程式算不出工具清單雜湊，無法判斷這顆 adapter 是否過期' });
+        else if (env.tool_catalog_sha256 && !entry.tool_catalog_sha256) warnings.push({ field: 'tool_catalog_sha256', message: 'adapter 沒記錄工具清單雜湊，無法判斷是否過期' });
         return { ok: reasons.length === 0, level: reasons.length ? 'reject' : (warnings.length ? 'warn' : 'ok'), reasons, warnings };
     }
 
@@ -85,6 +107,7 @@
         if (d.base_sha256 != null && !HEX64.test(String(d.base_sha256))) errs.push('base_sha256 格式不對');
         if (d.description !== undefined && typeof d.description !== 'string') errs.push('description 必須是字串');
         if (d.tool_catalog_sha256 != null && !HEX64.test(String(d.tool_catalog_sha256))) errs.push('tool_catalog_sha256 格式不對');
+        if (d.tool_catalog_scheme != null && d.tool_catalog_scheme !== TOOL_HASH_SCHEME) errs.push('tool_catalog_scheme 不認得：' + d.tool_catalog_scheme);
         return errs;
     }
     // 描述檔 → 登錄項（不讀權重）；不合法就丟出列出所有原因的錯誤
@@ -95,7 +118,7 @@
         return Object.assign({
             id: d.id, name: d.name || d.id, version: d.version, description: d.description || '', source: 'imported',
             base: d.base, base_sha256: d.base_sha256 || undefined, rank: d.rank, alpha: d.alpha,
-            prompt_format_version: d.prompt_format_version, tool_catalog_sha256: d.tool_catalog_sha256 || undefined,
+            prompt_format_version: d.prompt_format_version, tool_catalog_sha256: d.tool_catalog_sha256 || undefined, tool_catalog_scheme: d.tool_catalog_scheme || undefined,
             domains: (a.domains || []).slice(), triggers: (a.triggers || []).slice(),
             location: d.location, size: d.size, sha256: d.sha256, eval: d.eval || null, enabled: true,
         }, extra || {});
@@ -391,6 +414,7 @@
             rank: lx.trained_rank !== undefined ? lx.trained_rank : (m.rank !== undefined ? m.rank : c.rank), slot_rank: slotRank, alpha: m.alpha !== undefined ? m.alpha : c.alpha,
             prompt_format_version: m.prompt_format_version !== undefined ? m.prompt_format_version : c.prompt_format_version,
             tool_catalog_sha256: m.tool_catalog_sha256 || c.tool_catalog_sha256 || trained.tool_catalog_sha256,
+            tool_catalog_scheme: m.tool_catalog_scheme || c.tool_catalog_scheme || trained.tool_catalog_scheme || undefined,
             domains: extra.domains || m.domains || [], location: extra.location, size: m.total_size !== undefined ? m.total_size : m.size, sha256: m.sha256,
             eval: m.eval || null, enabled: extra.enabled !== false,
         }, extra);
@@ -456,5 +480,5 @@
         };
     }
 
-    return { SOURCES, DEFAULT_BUDGET, DESCRIPTOR_FORMAT, DESCRIPTOR_FORMAT_VERSION, validateEntry, descriptorErrors, descriptorFromJson, checkCompat, evalVerdict, gateOf, createRegistry, entryFromManifest, weightFile, summaryOf, diffSummaries, importReport, nrEngineLoader };
+    return { SOURCES, DEFAULT_BUDGET, DESCRIPTOR_FORMAT, DESCRIPTOR_FORMAT_VERSION, TOOL_HASH_SCHEME, toolCatalogShapeText, validateEntry, descriptorErrors, descriptorFromJson, checkCompat, evalVerdict, gateOf, createRegistry, entryFromManifest, weightFile, summaryOf, diffSummaries, importReport, nrEngineLoader };
 });
