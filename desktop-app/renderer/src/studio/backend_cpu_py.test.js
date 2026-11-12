@@ -221,6 +221,25 @@ const mkBackend = (o) => { const fs = memfs(); fs.writeFileSync('/lora/train_lor
     check('installHint：整段提示裡指令行不跟中文同一行', P.installHint('/home/u/lora-train', 'linux').split('\n').every((x) => !(/[\u4e00-\u9fff]/.test(x) && /\b(?:pip|uv venv|curl|sudo)\b/.test(x))));
 }
 
+
+// ---- 探測快取鍵要跟著 Linux 的 lib/python3.x/site-packages 變（裝了套件後要重新探測；2026-11-12 使用者裝好還是顯示舊結果）----
+{
+    const posixP = require('path').posix; let sp = { v: 100 }; const venvPy = '/h/.config/app/studio-host/lora-train/.venv/bin/python';
+    const fsx = { existsSync: (f) => f === venvPy, statSync: (f) => { if (f === venvPy) return { mtimeMs: 5 }; if (f === '/h/.config/app/studio-host/lora-train/.venv/lib/python3.13/site-packages') return { mtimeMs: sp.v }; throw new Error('ENOENT'); }, readdirSync: (d) => (d === '/h/.config/app/studio-host/lora-train/.venv/lib' ? ['python3.13'] : (() => { throw new Error('ENOENT'); })()) };
+    let calls = 0; const pkgs = { cur: { torch: null, transformers: null, peft: null } };
+    const spawn = async (cmd) => { if (cmd !== venvPy) return { error: { code: 'ENOENT' }, status: null }; calls++; return { status: 0, stdout: JSON.stringify({ version: '3.13.1', packages: pkgs.cur }) + '\n' }; };
+    const cache = new Map(); const det = P.defaultDetect(spawn, { fs: fsx, path: posixP, platform: 'linux', cache, venvDirs: ['/h/.config/app/studio-host/lora-train'] });
+    {
+      const a = await det(); const a2 = await det();
+      check('探測：套件不齊時每次都重新探測（不被舊結果卡住）', calls === 2 && a.path === venvPy && a2.path === venvPy, calls);
+      check('探測：套件不齊的結果不寫進快取', cache.size === 0, cache.size);
+      pkgs.cur = { torch: '2.15', transformers: '5.22', peft: '0.21' }; sp.v = 200;   // 使用者裝了套件：site-packages 修改時間變了
+      const b = await det();
+      check('探測：裝了套件後（Linux site-packages 變動）重新探測，認得齊全的環境', calls === 3 && b.found && b.packages && b.packages.peft === '0.21', [calls, b]);
+      const b2 = await det(); check('探測：套件齊全的結果才用快取', calls === 3 && b2.found, calls);
+    }
+}
+
 console.log(ok + ' passed, ' + bad.length + ' failed', bad);
   process.exit(bad.length ? 1 : 0);
 })();

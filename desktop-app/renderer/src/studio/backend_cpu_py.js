@@ -33,7 +33,14 @@ function defaultDetect(spawnSync, opts) {
     } catch (e) {}
     // 結果快取：鍵＝python 絕對路徑＋執行檔與 site-packages 的修改時間（裝／卸套件會變）；只對絕對路徑的候選用
     const stat = (f2) => { try { return (opts.fs || require('fs')).statSync(f2).mtimeMs; } catch (e) { return 0; } };
-    const keyOf = (cmd) => (P.isAbsolute && P.isAbsolute(cmd)) ? cmd + '|' + stat(cmd) + '|' + stat(P.join(P.dirname(cmd), '..', 'Lib', 'site-packages')) : null;
+    // 套件夾的修改時間：Windows venv 是 Lib/site-packages，Linux／macOS 是 lib/python3.x/site-packages（版本號資料夾要列出來才知道）。
+    // 2026-11-12：只看 Windows 的 Lib → Linux 上裝了 torch／transformers／peft 後快取鍵不變，一直顯示「缺少套件」或舊的「版本太舊」，使用者裝好了還是不認。
+    const siteMtime = (cmd) => {
+      const base = P.join(P.dirname(cmd), '..'); let m = stat(P.join(base, 'Lib', 'site-packages'));
+      try { const F = opts.fs || require('fs'); const ld = P.join(base, 'lib'); if (F.readdirSync) (F.readdirSync(ld) || []).filter((x) => /^python3/.test(x)).forEach((x) => { m += stat(P.join(ld, x, 'site-packages')); }); } catch (e) { /* 沒有 lib 資料夾（Windows 或不是 venv）：只用上面的 */ }
+      return m;
+    };
+    const keyOf = (cmd) => (P.isAbsolute && P.isAbsolute(cmd)) ? cmd + '|' + stat(cmd) + '|' + siteMtime(cmd) : null;
     const tried = [], good = []; let tooOld = null;
     for (const cmd of cands) {
       try {
@@ -41,7 +48,9 @@ function defaultDetect(spawnSync, opts) {
         if (!j) {
           const r = await spawnSync(cmd, ['-I', '-c', code], { encoding: 'utf8', windowsHide: true, timeout: tmo });
           if (!r || r.error || r.status !== 0) { const why = r && r.error && /ETIMEDOUT/.test(String(r.error.code || r.error.message)) ? '逾時（' + Math.round(tmo / 1000) + ' 秒內沒回應）' : (r && r.error ? String(r.error.code || r.error.message) : '結束碼 ' + (r && r.status)); tried.push({ path: cmd, error: why }); continue; }
-          j = JSON.parse(String(r.stdout).trim().split('\n').pop()); if (key) opts.cache.set(key, j);
+          j = JSON.parse(String(r.stdout).trim().split('\n').pop());
+          // 套件還不齊的結果不快取（使用者看到「缺少套件」之後馬上就會去裝；快取住就會一直顯示舊結果）；齊全的、或 Python 太舊的才快取
+          if (key && (!pyOk(j.version) || PY_PKGS.every((k) => j.packages && j.packages[k]))) opts.cache.set(key, j);
         }
         tried.push({ path: cmd, version: j.version, cached: fromCache });
         if (!pyOk(j.version)) { tooOld = tooOld || j.version; continue; }
