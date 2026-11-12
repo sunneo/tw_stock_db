@@ -839,8 +839,11 @@
     var st = {}, y, x, id;
     for (y = 0; y < h; y++) { for (x = 0; x < w; x++) { id = labels[y][x]; if (!id) { continue; } var s = st[id] || (st[id] = { id: id, area: 0, x0: x, y0: y, x1: x, y1: y, sx: 0, sy: 0 }); s.area++; s.sx += x; s.sy += y; if (x < s.x0) { s.x0 = x; } if (x > s.x1) { s.x1 = x; } if (y < s.y0) { s.y0 = y; } if (y > s.y1) { s.y1 = y; } } }
     return Object.keys(st).map(function (k) {
-      var s = st[k], cx = s.sx / s.area, cy = s.sy / s.area, dist = Math.sqrt(Math.pow(cx / w - 0.5, 2) + Math.pow(cy / h - 0.5, 2)) / 0.7071;
-      return { id: s.id, area: s.area, frac: s.area / (w * h), box: [s.x0, s.y0, s.x1, s.y1], cx: cx, cy: cy, score: (s.area / (w * h)) * (1 - 0.8 * dist) };
+      var s = st[k], cx = s.sx / s.area, cy = s.sy / s.area, dist = Math.sqrt(Math.pow(cx / w - 0.5, 2) + Math.pow(cy / h - 0.5, 2)) / 0.7071, frac = s.area / (w * h);
+      // 整片背景不是主體：蓋住大半個畫面（超過 60%），或碰到三個以上的邊。沒有這一條時，滿版封面圖的「最大又最靠中間」就是整片背景，只留下它的結果是一片空白（2026-11-12 實測）；
+      // 只有背景類的候選時，彼此的順序不變（全部乘同一個係數），所以特寫照片裡真正占滿畫面的主體仍然排第一
+      var touch = (s.x0 === 0 ? 1 : 0) + (s.y0 === 0 ? 1 : 0) + (s.x1 === w - 1 ? 1 : 0) + (s.y1 === h - 1 ? 1 : 0), bgLike = frac > 0.6 || touch >= 3;
+      return { id: s.id, area: s.area, frac: frac, box: [s.x0, s.y0, s.x1, s.y1], cx: cx, cy: cy, bgLike: bgLike, score: frac * (1 - 0.8 * dist) * (bgLike ? 0.02 : 1) };
     }).sort(function (a, b) { return b.score - a.score; });
   }
   // keep one label as the only object (id 1), everything else becomes empty
@@ -940,7 +943,7 @@
     // 細緻度（網格格數與總面數）：--detail 1~3，或用說的：「細一點」「更細緻」「面數多一點」＝2，「最細」「非常細」＝3
     out.pose = /--(?:pose|limbs)(?![a-z])|骨架|四肢|手臂|姿態|肢體|pose\s+estimation/i.test(t);   // 明講要用骨架：模型沒下載會問要不要下載；沒講但模型已下載也會用
     out.detail = 1;
-    if ((m = /--max-?faces[=\s]+(\d+)(萬)?/i.exec(t))) { out.maxFaces = clampMaxFaces(parseInt(m[1], 10) * (m[2] ? 10000 : 1)); out.detail = 3; }
+    if ((m = /--max[-_]?faces[=\s]+(\d+)(萬)?/i.exec(t))) { out.maxFaces = clampMaxFaces(parseInt(m[1], 10) * (m[2] ? 10000 : 1)); out.detail = 3; }
     else if ((m = /(?:面數|最多|上限)[^，。,.\n\d]{0,4}(\d+(?:\.\d+)?)\s*(萬|万|k|K)?\s*面?/.exec(t)) && /面/.test(m[0])) { out.maxFaces = clampMaxFaces(parseFloat(m[1]) * (m[2] === '萬' || m[2] === '万' ? 10000 : (m[2] ? 1000 : 1))); out.detail = 3; }
     if (out.maxFaces) { out.detail = 3; }   // 明講面數：就用那個數字
     else if ((m = /--detail[=\s]+([123])(?![0-9])/i.exec(t))) { out.detail = parseInt(m[1], 10); }

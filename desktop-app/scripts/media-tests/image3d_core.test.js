@@ -470,4 +470,28 @@ t('needsLlm：讀得懂不問；讀不準或整句沒讀到東西才問', () => 
   assert(!q('')); assert(!q('把小提琴3d化 只要小提琴跟琴弦，去掉白色背景')); assert(!q('用樂高方塊 --depth 2')); assert(!q('幫我轉成3D')); assert(!q('--subject 咖啡杯'));
   assert(q('希望只有小提琴出現')); assert(q('我想讓整體看起來更有份量一些'));
 });
+
+// ---- 2026-11-12 真實事故：滿版封面圖（標題、橫幅、背景、小動物）用 --segment --subject main，沒說名字時選了「最大又最靠中間」＝整片背景，結果一片空白
+t('rankSubjects: 整片背景（蓋住大半個畫面）不是主體，排在小而居中的物件後面', () => {
+  const W = 20, H = 20, L = grid(W, H, (x, y) => (x >= 7 && x <= 12 && y >= 7 && y <= 12) ? 2 : 1);   // 1＝整張背景，2＝中間的小物件
+  const r = C.rankSubjects(L, W, H);
+  assert.strictEqual(r[0].id, 2, JSON.stringify(r.map((x) => [x.id, x.score]))); assert(r.find((x) => x.id === 1).bgLike === true && r.find((x) => x.id === 2).bgLike === false);
+});
+t('rankSubjects: 碰到三個以上的邊也算背景類（例如底部橫幅）', () => {
+  const W = 30, H = 30, L = grid(W, H, (x, y) => (y >= 22) ? 1 : ((x >= 12 && x <= 17 && y >= 10 && y <= 15) ? 2 : 0));   // 1＝底部橫幅（碰左、右、下三邊）
+  const r = C.rankSubjects(L, W, H); assert.strictEqual(r[0].id, 2, JSON.stringify(r.map((x) => [x.id, x.bgLike, x.score])));
+});
+t('rankSubjects: 特寫照片裡唯一占滿畫面的主體仍然是第一名（只有背景類候選時順序不變）', () => {
+  const W = 20, H = 20, L = grid(W, H, (x, y) => (x < 17) ? 1 : 2);   // 1 大、2 小，兩個都碰邊
+  const r = C.rankSubjects(L, W, H); assert.strictEqual(r[0].id, 1);
+});
+t('rankSubjects: 主體本來就是最大又居中的（沒有背景類）順序跟以前一樣', () => {
+  const W = 20, H = 20, L = grid(W, H, (x, y) => (x >= 4 && x <= 15 && y >= 4 && y <= 15) ? 1 : ((x >= 0 && x <= 2 && y >= 0 && y <= 2) ? 2 : 0));
+  const r = C.rankSubjects(L, W, H); assert.strictEqual(r[0].id, 1); assert(!r[0].bgLike);
+});
+t('parseOptions: --max-faces／--max_faces／--maxfaces 都認得，並把細緻度設成 3', () => {
+  for (const f of ['--max-faces 200000', '--max_faces 200000', '--maxfaces=200000']) { const o = C.parseOptions(f); assert.strictEqual(o.maxFaces, 200000, f); assert.strictEqual(o.detail, 3, f); }
+  assert.strictEqual(C.parseOptions('--max_faces 20萬').maxFaces, 200000);
+});
+t('parseOptions: --detail 1／2／3', () => { for (const d of [1, 2, 3]) assert.strictEqual(C.parseOptions('--detail ' + d).detail, d); });
 console.log(pass + ' passed' + (process.exitCode ? ', with failures' : ''));
