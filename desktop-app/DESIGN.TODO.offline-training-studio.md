@@ -1237,3 +1237,56 @@ Backend {
 - 重新嵌入之前，主畫面的新主題跟新簡報都不會出現。
 - 伺服器端摘要的英文（`groups 0/8`、`self 3`）與領域分頁的類別名稱（§27.3）仍未改。
 - 截圖只有示意圖與真畫面的文字對照，沒有像素級比對。
+
+## 29. 模型類型入口：登錄表、開關守門、盤點（studio-ux，2026-11-13，指揮追加）
+
+目的：把訓練入口改成「先選模型類型」。只做入口、登錄表、守門與說明；不新增任何訓練演算法。
+
+### 29.1 盤點（repo 實查，2026-11-13）
+
+| 模型類型 | 狀態 | 訓練核心 | 資料格式 | 匯出路徑 | repo 證據 |
+|---|---|---|---|---|---|
+| 語言模型（LoRA 小檔與完整模型） | 已完成可用 | `lora_ref_train.js`、`web_train_core.js`、`cpu-py` 後端（桌面版） | `.jsonl` 資料集（每行一筆） | LoRA：工作室資產（`.fatrain` 可匯出）；完整模型：`lora_merge_core.js` ＋ `llm_export_core.js`，進階模式匯出區（ONNX q8、GGUF Q8_0），手動的第二步 | DESIGN.lora-training.md §25 |
+| 離線訓練器（積木課、矩陣層、UML、CoLU、訓練器本身） | 已完成可用 | `sym_train_core.js` | 題目資產、情境配對、採用／退回回饋 | 工作室資產 | sym_train_core.js |
+| 語音合成（念出文字） | 半成品 | 無 | 語音樣本（錄音、清理、切段已有：`tts/voice_recording.js`、`voice_clean.js`、`voice_sample.js`） | 無 | `renderer/src/tts/` 只有推論（`moss_core.js`）與樣本處理，沒有訓練 |
+| 音樂作曲（輸出音符） | 只有設計 | 無 | 無 | 無 | `music/audio_models.js` 只列推論模型 |
+| 語音辨識（聽寫成文字） | 只有設計 | 無 | 無 | 無 | 只有聽寫推論 |
+| 音訊轉音符（把錄音轉成樂譜） | 只有設計 | 無 | 無 | 無 | `music/audio_to_midi.js` 只有推論 |
+| 圖像生成（SDXS 類快速模型） | 只有設計 | 無 | 無 | 無 | `imagegen/sd_turbo_core.js` 只有推論；DESIGN.image-generation.md |
+| 看圖說文字（視覺語言模型） | 只有設計 | 無 | 無 | 無 | `vlm/vlm_core.js` 只有推論 |
+
+分類依據：「已完成可用」＝訓練核心、資料格式、匯出路徑三者都有；「半成品」＝有部分資料準備或推論，缺訓練核心；「只有設計」＝目前只有推論或什麼都沒有。
+
+### 29.2 登錄表（`renderer/src/studio/model_types_core.js`）
+
+- 純函式，UMD，`TYPES`（8 筆）、`listFor(showHalf)`、`canStart(typeId, outputId, showHalf)`、`find`、`isVisible`。之後新增類型只改 `TYPES`；embed 清單已登錄（`scripts/embed-code-ui.js`）。
+- 狀態：`done` 一律顯示；`half`、`design` 要開關開了才顯示，分別標「半成品」「只有設計」。
+- 輸出：`lora`（LoRA 小檔，疊在基底上）與 `full`（完整模型，格式依類型；語言模型是 ONNX q8／GGUF Q8_0，要在進階模式匯出區手動併回基底）。不可用的輸出寫原因與替代做法。
+- 守門：`run`（可以訓練）、`partial`（半成品：寫明目前能做到哪一步、還不能做什麼）、`blocked`（只有設計、或輸出不可用、或開關關著選了）。
+- 測試：`model_types_core.test.js` 27／0（狀態分類、開關、守門、輸出可用性、文字不夾英文縮寫（既有格式與模型名除外）、無簡體字、接線）。
+
+### 29.3 設定與存法
+
+- 設定頁「離線訓練工作室」新增開關「顯示半成品的功能」，預設關。存法與 `offlineDevicePreference` 相同：`advancedSettings.studioShowHalfFinished` → `_saveAdvancedSettings()`（localStorage）。
+- 視窗啟動時由宿主 `_studioModelTypesPayload()` 用登錄表算出清單與守門結果，放進 CFG（`modelTypes`、`guards`、`showHalf`）；開關變更時 `_studioPushModelTypes()` 即時推送給已開的視窗（`__fa_modeltypes`）。視窗只讀結果，不自己判斷。
+
+### 29.4 工作室介面
+
+- 「訓練」分頁最上面（簡單與進階都一樣）：「模型類型」下拉＋說明卡（狀態徽章、一句話說明、資料來源、後端、輸出選項、缺口）。選擇記在這個瀏覽器（`fa_train_modeltype`）；輸出選擇記在 `fa_train_output`。
+- 語言模型：輸出可選「LoRA 小檔」或「完整模型」；開始時 `output` 一起送出。完整模型的併回是現有的「LLM 匯出」手動步驟，這裡不假裝自動接上。
+- 半成品與只有設計：不進入訓練精靈或進階表單；按「▶ 開始訓練」不會訓練，而是顯示「還沒有開始訓練。」加上目前能做到哪一步、還缺什麼（不悄悄失敗）。
+
+### 29.5 驗證（真 Electron，DOM 證據）
+
+`scripts/eval/studio_modeltypes.eval.js`，`FA_MT=1 FA_TPL=1 FA_HALF=0|1 FA_THEME=dark`。截圖在 scratchpad 的 `mt-h0/`、`mt-h1/`，DOM 結果在 `mt-h0.txt`、`mt-h1.txt`。
+
+- 開關關（`FA_HALF=0`）：下拉只有兩項（語言模型、離線訓練器）；沒有半成品與只有設計的選項；`hasHalfToggleDom` 為假（設定頁的開關在宿主頁面，這次的探測框沒有宿主）。
+- 開關開（`FA_HALF=1`）：下拉有八項，半成品「語音合成（念出文字）（半成品）」與四個「（只有設計）」項目都在；選語音合成，輸出 LoRA／完整模型反灰、各自寫原因；開始按鈕之後顯示「還沒有開始訓練。…目前能做到：整理語音樣本（錄音、清理、切段）。還不能做：訓練語音合成模型；匯出語音合成模型…」。
+- 語言模型（簡單與進階）：說明卡顯示「已完成可用」、資料來源、後端、兩種輸出，輸出可切換，並顯示「✅ 可以訓練：語言模型，輸出「完整模型（合併匯出）」」。
+
+### 29.6 未驗證與注意
+
+- 宿主的設定頁開關與即時推送、`_studioModelTypesPayload()`：只有字串測試（`model_types_core.test.js`）。現在執行的是嵌入版，嵌入版還沒有這些程式，要總指揮重新嵌入後才會生效。
+- 語言模型的 LoRA 實際訓練與完整模型合併沒有在這次重跑（沿用既有路徑，沒有改訓練程式）。
+- 「完整模型」在簡單模式只是記錄選擇與說明，匯出仍是進階模式的手動步驟。
+- 文字中保留的英文：LoRA、ONNX、GGUF、Python、WebAssembly、SDXS（模型名）、`.jsonl`、`.fatrain`；都是既有的格式名或模型名，沒有另外縮寫。

@@ -43,7 +43,7 @@ __SHIM__
 <script>__LAYOUT__</script>
 <script>
 (function(){
-var CFG=__CFG__;function applyTheme(t){if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t)}applyTheme(CFG.theme);window.addEventListener('message',function(e){var d=e.data;if(d&&d.__fa_theme)applyTheme(d.__fa_theme)});
+var CFG=__CFG__;function applyTheme(t){if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t)}applyTheme(CFG.theme);window.addEventListener('message',function(e){var d=e.data;if(d&&d.__fa_theme)applyTheme(d.__fa_theme);if(d&&d.__fa_modeltypes){MTYPES=d.__fa_modeltypes.list||[];GUARDS=d.__fa_modeltypes.guards||{};MT_MISSING=!!d.__fa_modeltypes.missing;if(typeof refresh==='function')refresh('train')}});
 var STZH={running:'訓練中',paused:'已暫停',finishing:'收尾中',finished:'已完成',error:'出錯',stopped:'已停止',idle:'待命'};var BASE='http://mock.local',Lay=FaStudioLayout,$=function(s){return document.querySelector(s)};
 var L=Lay.defaults(),INFO={},TITLE={};Lay.TABS.forEach(function(t){TITLE[t.id]=t.icon+' '+t.title});
 function h(tag,a,kids){var e=document.createElement(tag);if(a)for(var k in a){if(k==='text')e.textContent=a[k];else if(k.slice(0,2)==='on')e.addEventListener(k.slice(2),a[k]);else if(a[k]!==false&&a[k]!=null)e.setAttribute(k,a[k]===true?'':a[k])}
@@ -396,8 +396,8 @@ T.train=async function(body){
  var bSimple=h('button',{text:'🧭 簡單模式（一步一步）'}),bAdv=h('button',{text:'🛠 進階模式（全部設定）'});
  function setMode(m){MODE=m;try{localStorage.setItem('fa_train_mode',m)}catch(e){}bSimple.className=m==='simple'?'pri':'';bAdv.className=m==='adv'?'pri':'';wiz.style.display=m==='simple'?'':'none';adv.style.display=m==='adv'?'':'none';if(m==='simple')trainWizard(wiz);else if(!setMode.built){setMode.built=true;build()}}
  bSimple.onclick=function(){setMode('simple')};bAdv.onclick=function(){setMode('adv')};
- body.appendChild(h('div',{'class':'row'},[bSimple,bAdv]));body.appendChild(wiz);body.appendChild(adv);
- var buildTok=0;async function build(){var my=++buildTok;out.textContent='';var kind=ksel.value,r=await api('GET','/api/backends?kind='+kind);if(my!==buildTok)return;if(r.ok===false){out.appendChild(h('div',{'class':'warn',text:'讀取運算後端失敗：'+r.error}));return}
+ body.appendChild(modelTypePanel(function(){refresh('train')}));body.appendChild(h('div',{'class':'row'},[bSimple,bAdv]));body.appendChild(wiz);body.appendChild(adv);
+ var buildTok=0;async function build(){var my=++buildTok;out.textContent='';var mc=mtGet();if(mc&&mc.status!=='done'){out.appendChild(mtWarn(mc));out.appendChild(mtStartBtn(mc));return}if(mc&&mc.goal==='lora'&&ksel.value!=='lora')ksel.value='lora';var kind=ksel.value,r=await api('GET','/api/backends?kind='+kind);if(my!==buildTok)return;if(r.ok===false){out.appendChild(h('div',{'class':'warn',text:'讀取運算後端失敗：'+r.error}));return}
   if(r.backends&&r.backends.some(function(b){return b.probing}))setTimeout(function(){if(my===buildTok)build()},1500);
   /* 2026-11-12：純處理器不可用（缺套件／版本太舊）時，使用者正在照指令安裝——每 8 秒自動重探，裝好就自己變可用，不必切分頁或重啟 */
   if(kind==='lora'&&r.backends&&r.backends.some(function(b){return b.id==='cpu-py'&&!b.available&&!b.probing}))setTimeout(function(){if(my===buildTok&&out.isConnected)build()},8000);
@@ -425,7 +425,7 @@ T.train=async function(body){
   [['名稱',nm],['基底模型（本機已有；離線不下載）',base],['訓練資料：從已匯入／內建的資產挑（資料匯入產生的 train.jsonl、內建資料集都在這）',dsRef],['或自己填訓練資料檔（桌面版：.jsonl 絕對路徑；網頁處理器：資產 lora/名稱）',tf],['輸出資料夾（桌面版）',od],['步數（網頁處理器）',stp],['學習率（網頁處理器）',lrI]].forEach(function(p){out.appendChild(h('label',{text:p[0]}));out.appendChild(p[1])});
   function canRun(){return !!r.desktop||(!!r.webTrain&&bs.value==='wasm-web')}
   var prog=h('div',{'class':'card'}),cv=h('canvas',{width:600,height:60});
-  function body2(resume){return{kind:'lora',name:nm.value.trim(),backend:bs.value,resume:resume,cfg:{base:base.value.trim(),datasetRef:dsRef.value||undefined,trainFile:dsRef.value?undefined:tf.value.trim(),outputDir:od.value.trim()||undefined,fromAsset:tf.value.trim(),steps:parseInt(stp.value,10)||100,lr:parseFloat(lrI.value)||0.001}}}
+  function body2(resume){return{kind:'lora',output:mtOut(),name:nm.value.trim(),backend:bs.value,resume:resume,cfg:{base:base.value.trim(),datasetRef:dsRef.value||undefined,trainFile:dsRef.value?undefined:tf.value.trim(),outputDir:od.value.trim()||undefined,fromAsset:tf.value.trim(),steps:parseInt(stp.value,10)||100,lr:parseFloat(lrI.value)||0.001}}}
   var bGo=h('button',{'class':'pri',text:'開始訓練',disabled:!canRun(),onclick:async function(){var x=await api('POST','/api/train/start',body2(false));if(x.ok===false){alert(x.error);return}if(x.fallback){prog.insertBefore(h('div',{'class':'warn',text:'ℹ️ '+x.fallback.note+'（原因：'+String(x.fallback.reason).slice(0,200)+'）'}),prog.children[1]||null)}lossHist=[];pollTrain(prog,cv)}});
   var bPa=h('button',{text:'暫停（存檢查點）',disabled:!canRun(),onclick:async function(){var x=await api('POST','/api/train/pause',{});if(x.ok===false)alert(x.error||x.reason)}});
   var bRe=h('button',{text:'續訓',disabled:!canRun(),onclick:async function(){var x=await api('POST','/api/train/start',body2(true));if(x.ok===false){alert(x.error);return}pollTrain(prog,cv)}});
@@ -453,6 +453,40 @@ T.train=async function(body){
  ksel.onchange=build;setMode(MODE==='adv'?'adv':'simple')};
 
 // ===== 簡單模式：訓練精靈（選目標 → 選資料 → 確認 → 開始），每一步只問一件事，預設值都填好 =====
+/* ===== 模型類型（模型類型登錄表的結果，由 app 傳入；開關「顯示半成品的功能」改變時會即時更新） ===== */
+var MTYPES=CFG.modelTypes||[],GUARDS=CFG.guards||{},MT_MISSING=!!CFG.modelTypesMissing;
+var MT_KEY='fa_train_modeltype',MT_OUT_KEY='fa_train_output';
+function mtGet(){var id='llm';try{id=localStorage.getItem(MT_KEY)||'llm'}catch(e){} return MTYPES.filter(function(t){return t.id===id})[0]||MTYPES[0]||null}
+function mtSet(id){try{localStorage.setItem(MT_KEY,id)}catch(e){}}
+function mtOut(){var o='lora';try{o=localStorage.getItem(MT_OUT_KEY)||'lora'}catch(e){} return o}
+function mtOutSet(o){try{localStorage.setItem(MT_OUT_KEY,o)}catch(e){}}
+function mtGuard(t){var g=GUARDS[t.id]||{};var o=mtOut();var r=t.outputs.some(function(x){return x.id===o})?g[o]:null;return r||g._default||{level:'blocked',ok:false,message:'模型類型登錄表沒有接上，無法判斷這個類型能不能訓練。請重新整理工作室。'}}
+function mtWarn(t){var g=mtGuard(t);return h('div',{'class':g.level==='run'?'todo':'warn',text:(g.level==='run'?'✅ ':'⚠️ ')+g.message})}
+/* 半成品與只有設計：按「開始」不會訓練，而是把目前能做到哪一步、還缺什麼寫清楚（不悄悄失敗） */
+function mtStartBtn(t){var b=h('button',{'class':'pri',text:'▶ 開始訓練'});var msg=h('div');b.onclick=function(){msg.textContent='';msg.appendChild(h('div',{'class':'warn',text:'還沒有開始訓練。'+mtGuard(t).message}))};return h('div',{},[b,msg])}
+function modelTypePanel(onChange){
+ var box=h('div',{'class':'card',style:'margin-bottom:8px'});
+ if(MT_MISSING||!MTYPES.length){box.appendChild(h('div',{'class':'warn',text:'模型類型登錄表沒有接上，下面只能用既有的訓練。請重新整理工作室。'}));return box}
+ var cur=mtGet();
+ var sel=h('select',{style:'width:100%'},MTYPES.map(function(t){return h('option',{value:t.id,text:t.label})}));if(cur)sel.value=cur.id;
+ sel.onchange=function(){mtSet(sel.value);onChange()};
+ box.appendChild(h('label',{text:'模型類型（先選你要做哪一種模型）'}));box.appendChild(sel);
+ if(!cur)return box;
+ var head=h('div',{style:'margin-top:8px'},[h('b',{text:cur.name}),h('span',{'class':'badge '+(cur.status==='done'?'ok':'wn'),text:cur.status==='done'?'已完成可用':cur.badge}) ]);box.appendChild(head);
+ box.appendChild(h('div',{style:'font-size:12px;color:var(--mut);margin-top:2px',text:cur.summary}));
+ box.appendChild(h('div',{style:'font-size:12px;margin-top:6px',text:'資料來源：'+(cur.sources.length?cur.sources.join('；'):'這一種目前沒有可用的資料來源。')}));
+ box.appendChild(h('div',{style:'font-size:12px;margin-top:2px',text:'後端：'+(cur.backends.length?cur.backends.map(function(b){return b.label}).join('；'):'目前沒有可用的後端（還沒有訓練核心）。')}));
+ var outs=h('div',{style:'margin-top:6px'});outs.appendChild(h('div',{style:'font-size:12px;color:var(--mut)',text:'輸出（LoRA 小檔可以疊在基底上；完整模型是併回基底後匯出）：'}));
+ var row=h('div',{'class':'row',style:'gap:6px'});
+ cur.outputs.forEach(function(o){var on=mtOut()===o.id&&o.available;
+  if(cur.outputs.length<2){row.appendChild(h('span',{'class':'badge ok',text:o.label}));return}
+  row.appendChild(h('button',{'class':on?'pri':'',text:(on?'✅ ':'')+o.label,disabled:!o.available,title:o.available?'':o.reason,onclick:function(){mtOutSet(o.id);onChange()}}))});
+ outs.appendChild(row);
+ cur.outputs.forEach(function(o){if(!o.available)outs.appendChild(h('div',{style:'font-size:12px;color:var(--mut)',text:'• '+o.label+'：'+o.reason}));else if(o.note&&cur.outputs.length>1)outs.appendChild(h('div',{style:'font-size:12px;color:var(--mut)',text:'• '+o.label+'：'+o.note}))});
+ box.appendChild(outs);
+ if(cur.gap)box.appendChild(h('div',{'class':'todo',style:'margin-top:6px;font-size:12px',text:cur.gap}));
+ box.appendChild(mtWarn(cur));
+ return box}
 function trainWizard(host){
  var GOALS=[
   ['lora','🧠 訓練語言模型（LoRA）','讓內建的小模型學會你的資料。需要一個 .jsonl 資料集。','需要資料集'],
@@ -469,7 +503,7 @@ function trainWizard(host){
  function nav(back,next,nextText){var r=h('div',{'class':'row'},[]);if(back)r.appendChild(h('button',{text:'← 上一步',onclick:back}));if(next)r.appendChild(h('button',{'class':'pri',text:nextText||'下一步 →',onclick:next}));return r}
  function go(d){W.step=Math.max(0,W.step+d);draw()}
  function stepName(){return steps()[W.step]}
- async function draw(){host.textContent='';host.appendChild(bar());var sn=stepName();
+ async function draw(){host.textContent='';var mcur=mtGet();if(mcur&&mcur.goal==='lora'&&W.kind!=='lora'){W.kind='lora';W.step=0}if(mcur&&mcur.status!=='done'){host.appendChild(mtWarn(mcur));host.appendChild(mtStartBtn(mcur));host.appendChild(h('div',{style:'color:var(--mut);font-size:12px',text:'要改訓練哪一種模型，請在上面的「模型類型」重新選。'}));return}host.appendChild(bar());var sn=stepName();
   if(sn==='想做什麼'){host.appendChild(h('b',{text:'你想做什麼？'}));
    [['train','🏋 訓練','用資料訓練出新的成果（語言模型、積木課、矩陣層、UML、CoLU…）'],['update','🔄 更新資產','已經有一份資產：用新資料再訓練、補資料、或重新評量']].forEach(function(g){var on=W.intent===g[0];host.appendChild(h('div',{'class':'card',style:'cursor:pointer;'+(on?'border:2px solid var(--ok)':''),onclick:function(){W.intent=g[0];W.data='';W.name='';draw()}},[h('b',{text:(on?'✅ ':'')+g[1]}),h('div',{style:'color:var(--mut);font-size:12px',text:g[2]})]))});
    host.appendChild(nav(null,W.intent?function(){go(1)}:null));if(!W.intent)host.appendChild(h('div',{style:'color:var(--mut);font-size:12px',text:'先點選一個才能下一步。'}));return}
@@ -495,7 +529,7 @@ function trainWizard(host){
    host.appendChild(nav(function(){go(-1)},W.data?function(){go(1)}:null));if(!W.data&&list.length)host.appendChild(h('div',{style:'color:var(--mut);font-size:12px',text:'先點選一份資料才能下一步。'}));return}
   if(sn==='確認'){host.appendChild(h('b',{text:'確認一下，然後開始'}));if(!W.name)W.name=W.kind+'-'+new Date().toISOString().slice(0,10);
    var nm=h('input',{type:'text',value:W.name,oninput:function(){W.name=nm.value}});
-   var info=h('div',{style:'font-size:13px',text:'訓練：'+(GOALS.filter(function(g){return g[0]===W.kind})[0][1])+(needsData(W.kind)?'　資料：'+W.data:'')});
+   var info=h('div',{style:'font-size:13px',text:'訓練：'+(GOALS.filter(function(g){return g[0]===W.kind})[0][1])+(needsData(W.kind)?'　資料：'+W.data:'')+(W.kind==='lora'?'　輸出：'+(mtOut()==='full'?'完整模型（訓練後到進階模式的匯出區併回基底）':'LoRA 小檔（疊在基底上）'):'')});
    host.appendChild(info);host.appendChild(h('label',{text:'給這次訓練取個名字（成果會用這個名字存）'}));host.appendChild(nm);
    var env=h('div',{style:'font-size:12px;color:var(--mut)',text:W.kind==='lora'?'檢查運算環境…':'這一種只用處理器，不需要安裝任何東西。'});host.appendChild(env);
    if(W.kind==='lora'){var r=await api('GET','/api/backends?kind=lora');var ok=r&&r.backends&&r.backends.some(function(b){return b.id==='cpu-py'&&b.available}),web=r&&r.backends&&r.backends.some(function(b){return b.id==='wasm-web'&&b.available});
@@ -507,7 +541,7 @@ function trainWizard(host){
   var bP=h('button',{text:'暫停'}),bR=h('button',{text:'繼續',disabled:true}),bX=h('button',{'class':'dng',text:'停止'}),bN=h('button',{text:'再訓練一個',onclick:function(){W.step=0;W.data='';W.name='';draw()}});
   host.appendChild(st);
   if(W.kind==='lora'){host.appendChild(prog);var lrow=h('div',{'class':'row'},[bP,bX,bN]);host.appendChild(lrow);
-   var body0={kind:'lora',name:W.name.trim(),backend:'auto',cfg:{datasetRef:W.data||undefined,steps:100,lr:0.001}};var x0=await api('POST','/api/train/start',body0);
+   var body0={kind:'lora',output:mtOut(),name:W.name.trim(),backend:'auto',cfg:{datasetRef:W.data||undefined,steps:100,lr:0.001}};var x0=await api('POST','/api/train/start',body0);
    if(x0.ok===false){hd.textContent='沒辦法開始';prog.remove();lrow.remove();st.textContent='';host.insertBefore(h('div',{'class':'warn',text:'沒辦法開始：'+x0.error}),st);return}
    st.textContent=(x0.fallback?'ℹ️ '+x0.fallback.note:'已開始。')+'　成果會存成名字「'+W.name+'」。';lossHist=[];pollTrain(prog,cv);
    bP.onclick=async function(){var y=await api('POST','/api/train/pause',{});if(y.ok===false)alert(y.error||y.reason);else st.textContent='已暫停並存檢查點；到「進階模式」按「續訓」可接著練。'};
