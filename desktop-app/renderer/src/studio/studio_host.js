@@ -11,20 +11,9 @@ const CpuPy = require('./backend_cpu_py.js');
 const Planned = require('./backend_planned.js');
 const LlmExport = require('./llm_export_core.js');
 
-// 在 PATH 上找候選可執行檔（不執行它）。沒有 PATH 或找不到就 found:false 並寫原因。
-const EXPORT_TOOL_BINS = { optimum: ['optimum-cli'], llamaCpp: ['llama-quantize', 'llama-cli'] };
-function detectExportTool(name) {
-    const bins = EXPORT_TOOL_BINS[name];
-    if (!bins) return { found: false, reason: '這版還沒有偵測 ' + name + '（尚未實作）' };
-    const path = require('path'), fs = require('fs');
-    const dirs = String(process.env.PATH || '').split(path.delimiter).filter(Boolean);
-    const exts = process.platform === 'win32' ? ['.exe', '.cmd', ''] : [''];
-    for (const b of bins) for (const dir of dirs) for (const ext of exts) {
-        const f = path.join(dir, b + ext);
-        try { if (fs.statSync(f).isFile()) return { found: true, version: null, path: f }; } catch (e) { /* 不在這裡 */ }
-    }
-    return { found: false, reason: 'PATH 上找不到 ' + bins.join(' 或 ') };
-}
+// LLM 匯出工具偵測（DESIGN §25）：不再只看 PATH。來源：lora-train/.venv（訓練，有 peft）、lora-train/.venv-export（匯出，有 optimum-cli、onnxruntime、transformers）、
+// 與 <userData>/studio-host/llm-export-config.json 的 { llamaBin, llamaSrc, trainPython, exportPython }（llama.cpp 不在任何 venv 裡，只能設定）。
+// 工具找不到就 found:false 並寫原因；不執行模型，只跑 import 與檔案存在檢查。
 
 function createStudioHost(d) {
   const fs = d.fs, P = d.path, os = d.os, cp = d.cp;
@@ -54,7 +43,8 @@ function createStudioHost(d) {
   });
   // Python 探測結果快取（存使用者資料夾；鍵含 python 路徑與修改時間，裝／卸套件後自動失效）
   const detectCache = { get(k) { const m = readJson(jf('cpu-py-detect-cache.json'), {}); return m[k] || null; }, set(k, v) { const m = readJson(jf('cpu-py-detect-cache.json'), {}); m[k] = v; writeJson(jf('cpu-py-detect-cache.json'), m); } };
-  const cpuPy = CpuPy.createCpuPyBackend({ detect: CpuPy.defaultDetect(runAsync, { fs, path: P, cache: detectCache, venvDirs: () => [loraDirOf(), P.join(hostDir, 'lora-train'), d.loraDir].concat(d.loraDirs || []) }), spawn: spawnLow, killTree, fs, path: P, get loraDir() { return loraDirOf(); }, hw, get config() { return config; }, env: d.env || {} });
+  const pyDetect = CpuPy.defaultDetect(runAsync, { fs, path: P, cache: detectCache, venvDirs: () => [loraDirOf(), P.join(hostDir, 'lora-train'), d.loraDir].concat(d.loraDirs || []) });
+  const cpuPy = CpuPy.createCpuPyBackend({ detect: pyDetect, spawn: spawnLow, killTree, fs, path: P, get loraDir() { return loraDirOf(); }, hw, get config() { return config; }, env: d.env || {} });
   registry.register(CpuJs.createCpuJsBackend({ engineVersion: 'tiny-1' }));
   const rawProbe = cpuPy.probe.bind(cpuPy), PROBE_TTL = 60000, probeSt = { val: null, at: 0, running: null };
   const refreshProbe = () => probeSt.running || (probeSt.running = (async () => { try { probeSt.val = await rawProbe(); probeSt.at = now(); } finally { probeSt.running = null; } })());
@@ -84,6 +74,69 @@ function createStudioHost(d) {
   const benchCfg = (id, p) => id === 'cpu-py'
     ? { base: (p && p.base) || 'Qwen/Qwen3-0.6B', trainFile: benchDataFile(), accum: 1, outputDir: P.join(hostDir, 'bench-out'), threads: SC.resolveThreads(config, hw.cores, 'benchmark') }
     : { threads: SC.resolveThreads(config, hw.cores, 'benchmark') };
+
+  // ---- LLM 匯出（DESIGN §25）----
+  const exportJobs = new Map(); let activeExport = null;
+  const llmCfg = () => readJson(jf('llm-export-config.json'), {});
+  const venvPy = (dir, name) => P.join(dir, name, process.platform === 'win32' ? P.join('Scripts', 'python.exe') : P.join('bin', 'python'));
+  const exists = (f) => { try { return !!f && fs.existsSync(f); } catch (e) { return false; } };
+  async function probeLlmTools() {
+    const cfg = llmCfg(), dir = loraDirOf(), tools = {}, paths = {};
+    const trainPy = cfg.trainPython || (await pyDetect().catch(() => ({}))).path || null;
+    const exportPy = cfg.exportPython || (exists(venvPy(dir, '.venv-export')) ? venvPy(dir, '.venv-export') : null);
+    paths.trainPy = trainPy; paths.exportPy = exportPy;
+    const pyCheck = async (py, code, label, want) => {
+        if (!py) return { found: false, reason: '找不到' + label + '的 Python' };
+        const r = await runAsync(py, ['-c', code], { timeout: 30000 });
+        if (r.error || r.status !== 0) return { found: false, reason: label + '（' + py + '）import 失敗' };
+        return { found: true, version: String(r.stdout || '').trim().split(/\r?\n/).pop() || null, path: py };
+    };
+    tools.peft = await pyCheck(trainPy, 'import peft, transformers; print(peft.__version__)', '訓練環境', 'peft');
+    const exOk = await pyCheck(exportPy, 'import onnxruntime, transformers; print(onnxruntime.__version__)', '匯出環境', 'onnxruntime');
+    tools.onnxruntime = exOk;
+    const oc = exportPy ? P.join(P.dirname(exportPy), process.platform === 'win32' ? 'optimum-cli.exe' : 'optimum-cli') : null;
+    tools.optimum = exists(oc) ? { found: true, path: oc, version: null } : { found: false, reason: '匯出環境裡沒有 optimum-cli' };
+    const bin = cfg.llamaBin || null, src = cfg.llamaSrc || null;
+    const hasLlama = bin && exists(P.join(bin, 'llama-quantize' + (process.platform === 'win32' ? '.exe' : ''))) && exists(P.join(bin, 'llama-server' + (process.platform === 'win32' ? '.exe' : '')));
+    const hasConv = src && exists(P.join(src, 'convert_hf_to_gguf.py'));
+    tools.llamaCpp = hasLlama && hasConv ? { found: true, path: bin } : { found: false, reason: !bin ? '沒有設定 llama.cpp（llm-export-config.json 的 llamaBin）' : (!hasLlama ? 'llamaBin 裡沒有 llama-quantize／llama-server' : 'llamaSrc 裡沒有 convert_hf_to_gguf.py') };
+    paths.llamaBin = bin; paths.llamaSrc = src; paths.lora = dir;
+    return { tools, paths };
+  }
+  async function startLlmExport(p) {
+    const format = String(p.format || '');
+    if (!LlmExport.FORMATS.includes(format)) return { ok: false, error: '格式必須是 ' + LlmExport.FORMATS.join(' 或 ') };
+    if (activeExport && activeExport.state === 'running') return { ok: false, error: '已有匯出在執行中（' + activeExport.id + '）' };
+    const baseDir = String(p.baseDir || ''), adapterDir = String(p.adapterDir || '');
+    if (!baseDir || !exists(baseDir)) return { ok: false, error: '基底模型資料夾不存在：' + baseDir };
+    if (!adapterDir && !p.fullDir) return { ok: false, error: '請給 LoRA adapter 資料夾（adapterDir）' };
+    const pr = await probeLlmTools();
+    const av = LlmExport.exportAvailability(pr.tools)[format];
+    if (!av.available) return { ok: false, error: av.reason, tools: pr.tools };
+    const stamp = new Date(now()).toISOString().replace(/[:.]/g, '-');
+    const workDir = String(p.workDir || P.join(pr.paths.lora, 'out', 'llm-export', stamp));
+    if (exists(workDir) && fs.readdirSync(workDir).length) return { ok: false, error: '工作資料夾不是空的：' + workDir };
+    const outDir = P.join(workDir, format);
+    const cmds = LlmExport.buildStepCommands(format, { pyTrain: pr.paths.trainPy, pyExport: pr.paths.exportPy, scriptsDir: pr.paths.lora, baseDir, adapterDir, workDir, outDir, llamaDir: pr.paths.llamaBin, llamaSrc: pr.paths.llamaSrc, recipe: String(p.recipe || 'full') });
+    if (!cmds.ok) return { ok: false, error: cmds.error };
+    const job = { id: newId('llmexp'), format, state: 'running', events: [], result: null, workDir, outDir, startedAt: now(), endedAt: 0 };
+    exportJobs.set(job.id, job); activeExport = job;
+    const runner = (argv) => new Promise((res) => {
+        let out = '', err = '', settled = false; const done = (r) => { if (!settled) { settled = true; res(r); } };
+        let ch; try { ch = cp.spawn(argv[0], argv.slice(1), { cwd: pr.paths.lora, windowsHide: true }); } catch (e) { return done({ code: -1, stdout: '', stderr: String((e && e.message) || e) }); }
+        ch.stdout.on('data', (b) => { out += String(b); if (out.length > 4e6) out = out.slice(-2e6); });
+        ch.stderr.on('data', (b) => { err += String(b); if (err.length > 4e6) err = err.slice(-2e6); });
+        ch.on('error', (e) => done({ code: -1, stdout: out, stderr: err + String((e && e.message) || e) }));
+        ch.on('close', (code) => done({ code, stdout: out, stderr: err }));
+    });
+    job.done = LlmExport.runExportSteps(cmds, runner, { onEvent: (e) => { job.events.push(e); if (job.events.length > 400) job.events.shift(); } })
+        .then((r) => {
+            job.result = r; job.state = r.ok ? 'finished' : 'failed'; job.endedAt = now();
+            writeJson(P.join(workDir, 'export_job.json'), { format, recipe: String(p.recipe || 'full'), ok: r.ok, failedAt: r.failedAt, steps: r.steps, startedAt: job.startedAt, endedAt: job.endedAt, baseDir, adapterDir });
+        })
+        .catch((e) => { job.state = 'failed'; job.result = { ok: false, failedAt: null, steps: [], error: String((e && e.message) || e) }; job.endedAt = now(); });
+    return { ok: true, jobId: job.id, workDir, outDir, steps: cmds.steps.map((s) => ({ id: s.id, label: s.label })) };
+  }
 
   const ops = {
     // 狀態：硬體、設定、各後端是否可用與原因
@@ -173,8 +226,14 @@ function createStudioHost(d) {
     },
     // LLM 匯出工具偵測（DESIGN §20.3 第 2 項）：只在 PATH 上找可執行檔；onnxruntime 要查 python 模組，這版還沒做，照實回報
     async studio_export_tools() {
-        const tools = LlmExport.probeExportTools(detectExportTool);
-        return { ok: true, tools, checkedAt: now() };
+        const pr = await probeLlmTools();
+        return { ok: true, tools: LlmExport.probeExportTools((n) => pr.tools[n]), paths: pr.paths, checkedAt: now() };
+    },
+    // LLM 匯出（DESIGN §25）：背景執行；每一步的 JSON 結果由 llm_export_core.runExportSteps 整理
+    async studio_llm_export(p) { return startLlmExport(p || {}); },
+    async studio_llm_export_status(p) {
+        const j = exportJobs.get(p && p.jobId) || activeExport; if (!j) return { ok: true, state: 'idle' };
+        return { ok: true, jobId: j.id, format: j.format, state: j.state, events: j.events.slice(-100), steps: j.result ? j.result.steps : null, failedAt: j.result ? j.result.failedAt : null, workDir: j.workDir, outDir: j.outDir, elapsedMs: (j.endedAt || now()) - j.startedAt };
     },
     async studio_run_current() { const j = activeTrain || Array.from(jobs.values()).pop(); return { ok: true, runDir: j && j.cfg && j.cfg.outputDir ? j.cfg.outputDir : null }; },
     async studio_train_status(p) {

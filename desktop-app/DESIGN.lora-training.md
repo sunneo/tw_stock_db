@@ -795,3 +795,96 @@ model card 欄位以 `description`（一句話，來自描述檔，§13.2）與 
 
 **結論**：`toolcall-r4` 的 v1 權重在凍結判準下通過（格式合法率、缺工具拒絕、範圍內無退步）。範圍外（colu、think_stack、decompose）還沒量，所以「範圍外無退步」不能宣稱。已打包的 `toolcall-r4` 1.0.0 的卡片數字還是 v1 的 80 列（0.45 → 0.75），沒有改成這次 v2 的數字；要不要改成這次的數字、以及是否補量範圍外，待指揮決定，這次沒有重新打包。
 
+
+## 25. 訓練出新模型並匯出 ONNX／GGUF（2026-11-12，路徑 A 與 B 實測；工作室接線已寫、已測核心，待嵌入）
+
+使用者原話（2026-11-12）：「我希望我們的訓練工作室不只用來產生LoRA，也能基於基礎的那包qwen，經過資料輸入訓練，產生更強的model，可以選gguf, onnx，預設以當下環境(網頁/desktop-app native) 優先」、「麻煩讓離線訓練工作室達成可以訓練出新的onnx,gguf!」。
+
+**結論先講**
+- 路徑 A（LoRA → 合併 → ONNX q8／GGUF Q8_0）**流程全通**：fp32 ONNX 與 HF（PyTorch）逐字一致（96/96 貪婪 token）；GGUF Q8_0 用 llama.cpp 的 llama-server 實際推論，**貪婪 token 不能逐字對上**。
+- **q8 品質不達標**：ONNX q8（動態量化）與 HF 的貪婪 token 只有 19–39／96 連續對上（全部 6 題都對上的只有 0–2 題）。改善後首步 logits 餘弦平均由 0.922 提到 0.989，但貪婪 token 沒有跟著變好，所以**不能宣稱 q8 與基底等價**。GGUF Q8_0 的貪婪對得比 ONNX q8 好（70/96），但仍非逐字一致。
+- 路徑 B（完整微調）**能跑、能暫停續訓、輸出能走路徑 A 的匯出**，只跑了 4 步 smoke；沒有做品質訓練，**不宣稱模型變強**。
+
+### 25.1 工具與來源（已同意的下載，不重下）
+| 項目 | 來源與版本 | 位置（專案樹外） | 實際大小／備註 |
+|---|---|---|---|
+| llama.cpp | `ggml-org/llama.cpp` b12286（§13.1） | `~/fa/third_party/llama.cpp-b12286/` | 本次另外編出 `llama-cli`、`llama-server`（cmake target，已 build）；`llama-quantize` 沿用 |
+| optimum＋onnxruntime 匯出環境 | §13.1：`.venv-export`（optimum-onnx 0.1.0、transformers 4.57.6、onnxruntime 1.31.1） | `~/fa/desktop-app/lora-train/.venv-export` | 沿用，未重裝 |
+| 基底 Qwen3-0.6B | 既有 | `~/fa/desktop-app/lora-train/models/Qwen3-0.6B`（bf16，1.5 GB） | 沿用 |
+| adapter `toolcall-r4` | 既有（PEFT，rank 4，alpha 8） | `~/fa/lora-export-work/adapter`（由 `join.js` 重組，sha256 `65b3247f…2376bac` 與 manifest 相符） | 10,143,496 位元組 |
+
+**沒有新增任何下載**。`onnx_ir`（weight-only 量化要的）沒裝，因為它不在已同意的清單裡，所以 weight-only 方案**未試**。
+
+### 25.2 路徑 A 的實作與修正
+- `lora-train/merge_and_export.py`（改寫）：tokenizer 取自基底；合併前後首步 logits 最大絕對差 **2.96e-05**（PEFT vs 合併後）。
+- **重要修正（實測發現）**：transformers 5.22.2 存的 `config.json` 把 `rope_theta` 改放進 `rope_parameters`，transformers 4.57.6 讀不到就退回預設 10000。實測 4.57 讀 5.x 存的合併權重，首步 logprob 偏掉約 0.2（`-3.297` vs 正確的 `-3.09`；llama.cpp 與 5.x 一致）。修正：合併與訓練存檔都改回基底的 `config.json`（架構相同）。**在這個修正之前產出的任何數字都作廢。**
+- `lora-train/export_onnx.py`（改寫，分 convert／quantize／verify／pack 四步，每步印一行 JSON）。
+- `lora-train/export_gguf.py`（新增，同樣四步；verify 用 llama-server `/completion`，`temperature 0`，`top_k 1`，`return_tokens`）。
+
+### 25.3 路徑 A 實測（`~/fa/lora-export-work/run2`，參考＝合併後模型的 HF fp32，6 個提示，每個 16 個貪婪 token）
+| 產物 | 大小（位元組） | 首步 logits 餘弦（平均／最小） | top-1 | 貪婪 token 連續對上（逐題全對） |
+|---|---:|---|---|---|
+| ONNX fp32 | 3,007,960,375 | 1.000000／1.000000 | 6/6 | 96/96（6/6） |
+| ONNX q8，recipe=full（所有 MatMul 量化，與官方 q8 同結構） | 756,736,915 | 0.9221／0.8324 | 4/6 | 39/96（2/6） |
+| ONNX q8，recipe=mixed（`down_proj` 保留 fp32） | 1,020,789,092 | 0.9886／0.9794 | 3/6 | 19/96（0/6） |
+| GGUF f16 | 1,198,182,240 | 未量（llama-server 不回完整 logits） | — | —（只做轉換） |
+| GGUF Q8_0（llama-server） | 639,446,880 | 未量 | — | 70/96（3/6） |
+
+- 合併後 safetensors：2,384,234,968 位元組（fp32）。
+- 這些數字與 `check.json`／`check_gguf.json`（`~/fa/lora-export-work/run2/`）相同。
+
+### 25.4 q8 品質：查明原因與改善嘗試（全部用同一參考）
+- **原因（有證據）**：ORT 的 `quantize_dynamic` 對啟動值用**每個張量一個縮放**（per-tensor，uint8）。Qwen3 的 `down_proj` 輸入（SwiGLU 之後）有大離群值，這一層的量化誤差最大。把 28 層 `down_proj` 留在 fp32，餘弦平均從 0.922 升到 0.989（最小從 0.83 升到 0.98）。
+- **沒用的**：排除 `lm_head`（它本來就是 fp32，只是讓圖變大）；QInt8 權重（`C_pc_QInt8`，對比 QUInt8 沒有更好，見 `scratch` 探測，未納入產物）。
+- **沒有改善貪婪一致性**：mixed 的餘弦最好，貪婪反而不如 full（19 vs 39）。原因推測：這個模型在測試提示上的首步分佈很平（top-1 機率只有約 0.04），貪婪解碼對很小的誤差很敏感。這是**推測**，未驗證；要判定需要更大的留出集與分佈級的指標（例如 KL）。
+- **與官方 q8 比較：沒有重做**。§13.1 的舊比較是「q8 對 fp32 ONNX」的另一種指標，不能和這裡的「對 HF」直接比。
+- **recipe 的取捨（已寫進預設）**：預設 `full`（與官方 q8 同結構，`lora-slot-build.js` 的 196 個 `MatMulInteger` 目標都在，**可以再套 LoRA 槽**）；`mixed` 餘弦較好但**不能再套 LoRA 槽**（槽轉換器要求每層都是 `MatMulInteger`）。
+
+### 25.5 路徑 B：完整微調（`lora-train/train_full.py`，新增）
+- 沿用 `train_lora.py` 的資料類別、collator、`StopFileCallback`；**不包 PEFT**，整個模型 fp32 可訓練（可訓練參數 596,049,920）。
+- smoke（`~/fa/lora-export-work/full-smoke`）：資料 `~/fa/desktop-app/lora-train/data/train.jsonl`（4,746 筆），batch 2、grad accum 1、seq 512、lr 1e-5、4 步：**訓練 18.3 秒（約 4 秒／步）**，**峰值 RSS 14,494 MB**，總耗時約 26 秒（含載入與存檔）。
+- 暫停／續訓（`full-pause`）：`--stop_file` 存在 → 第 1 步後存 `checkpoint-1` 並停（`[paused] step=1`）；`--resume_from_checkpoint checkpoint-1` 接續到第 4 步（`steps=4`）。`fa-ckpt.json` 的 `step` 為 1。
+- 輸出（HF 資料夾，`config.json` 已換回基底）→ **走路徑 A 的匯出**：`pathB-export`：fp32 ONNX cos 1.000000、96/96；q8 full cos 平均 0.9247、top-1 3/6、貪婪 20/96；GGUF Q8_0 貪婪 61/96。
+- **沒有品質評量**：4 步 smoke 的 loss 在 1.8 到 0.37 之間跳（batch 2，無法判斷趨勢），**不宣稱變好**。完整訓練（資料量、步數、留出評量）不在本次範圍。
+- 磁碟：完整微調每個 checkpoint 另有約 4.8 GB 優化器狀態；`save_total_limit=2`。
+
+### 25.6 工作室接線（已寫、已測核心；未嵌入）
+- `renderer/src/studio/llm_export_core.js`（改寫）：`EXPORT_PLANS` 的五步全部 `runner: true`（腳本存在）；工具改為 `optimum`、`onnxruntime`、`llamaCpp`、`peft`；新增 `buildStepCommands(format, o)`（純函式，argv 陣列、不經 shell）、`runExportSteps(cmds, runner, opts)`（依序執行，遇錯停止，後續標「未執行」）、`parseStepResult`。`LLM_TRAIN_MODES.full` 改為 `implemented: true`（有腳本、只跑過 smoke）。
+- `renderer/src/studio/studio_host.js`（改寫）：探測不再只看 PATH——`lora-train/.venv`（peft）、`lora-train/.venv-export`（onnxruntime、optimum-cli）、`<userData>/studio-host/llm-export-config.json` 的 `{llamaBin, llamaSrc, trainPython, exportPython}`（llama.cpp 只能設定）。新 op：`studio_llm_export`（背景執行、每次新工作資料夾、工具不齊直接拒絕、不啟動子行程）、`studio_llm_export_status`。
+- `renderer/src/studio/studio_server_core.js`（改寫）：`GET /api/llm/tools`、`POST /api/llm/export`、`GET /api/llm/export/status`；網頁版回 `notDesktop`。
+- `renderer/src/studio/studio-viewer.template.html`（改寫）：「訓練」分頁底部新增「LLM 匯出（ONNX／GGUF）」：格式、LoRA 資料夾、基底資料夾、匯出按鈕、檢查工具、每一步狀態（網頁版顯示「只能匯出設定、實際匯出在桌面版」）。
+- 工作資料夾結構：`<workDir>/merged`（合併後 HF）、`<workDir>/<onnx|gguf>/…`、`<workDir>/export_job.json`；ONNX 與 GGUF 的 `manifest.json`（檔名、大小、sha256）與 `check*.json`。
+- **未做**：（a）**資產列表**：`asset_core.js` 的 `KINDS` 沒有 `llm`，而且資產是記憶體中的 `{manifest, files}`，放不下 3 GB 的 ONNX；目前成果只在輸出資料夾，**沒有進資產列表**。（b）**桌面版載入**：`nr-engine.js` 的 `loadModel(modelPath, tokenizerPath, …)` 接受任意路徑，匯出資料夾已經放了 tokenizer 檔；但設定頁沒有選單，也**沒有實際載入驗證**（沒有執行 Electron）。（c）**取消匯出**：沒有做。
+
+**需要總指揮嵌入的檔案**（`scripts/embed-code-ui.js` 的來源；`studio_embed.test.js` 目前會因為嵌入還是舊的而失敗，這是預期的）：
+- `renderer/src/studio/llm_export_core.js`（嵌入 `floating-assistant.js` 的 STUDIO 區塊，名稱 `FaStudioLlmExport`）
+- `renderer/src/studio/studio_host.js`（主行程端）
+- `renderer/src/studio/studio_server_core.js`
+- `renderer/src/studio/studio-viewer.template.html`（`STUDIOVIEW-BEGIN`／`STUDIOVIEW-END` 區塊）
+
+### 25.7 測試
+- `renderer/src/studio/llm_export_core.test.js`：**38 項全過**（2026-11-12 最後一次執行）（步驟表、缺工具與未實作分開、可用性、偵測、命令組裝、執行器用注入的假 runner：全成功、中途失敗、退出碼 0 但沒 JSON、runner 丟例外、事件順序）。已登記於 `scripts/run-core-tests.js`（原本就有一行）。
+- `renderer/src/studio/studio_host.test.js`：**33 項全過**（最後一次執行）（改寫匯出偵測段：沒有匯出環境、只看檔案存在、工具不齊時拒絕且不啟動子行程、未知格式、基底不存在、狀態 idle）。
+- `renderer/src/studio/studio_server_core.test.js` 126 項全過；`pipeline_routes_core.test.js` 31、`pipeline_core.test.js` 31 全過。
+- `renderer/src/studio/studio_embed.test.js`：14 過、3 敗，**原因是嵌入還沒更新**（見 25.6），不是程式錯；嵌入後應全過，尚未驗證。
+- **略過**：Python 匯出腳本（`export_onnx.py`、`export_gguf.py`、`merge_and_export.py`、`train_full.py`）沒有放進 `run-core-tests`，因為它們需要 `.venv-export`、2.4 GB 權重與 llama.cpp；它們的驗證是 25.2–25.5 的實跑記錄。
+
+### 25.8 已驗證／未驗證
+- **已驗證（實跑）**：合併數值、ONNX fp32 與 HF 逐字一致、ONNX q8 的數值（上表）、GGUF 轉換與 Q8_0 量化、llama-server 貪婪推論、完整微調 smoke、暫停與續訓、完整微調產物走匯出。
+- **已驗證（核心測試）**：`llm_export_core` 與 `studio_host` 的匯出路徑（用假 runner／假子行程）。
+- **未驗證**：（1）`studio_host` 真的以子行程跑完整匯出（需要 Electron 主行程，只用 `buildStepCommands`＋真實子行程的驅動腳本跑過，見 25.9）；（2）桌面版 onnxruntime-node 1.22 載入 q8 與 mixed 圖（只用 Python ORT 1.31 驗證）；（3）`lora-slot-build.js` 能否吃 `full` 產物（結構上應可，未實測）；（4）網頁版（不在範圍）。
+
+### 25.9 端到端：用 `llm_export_core` 的執行器跑（不經 Electron）
+- 驅動：`~/fa/lora-export-work/driver/run_export.js`（不在專案樹內）。與主行程用同一組 `buildStepCommands` 與 `runExportSteps`，只把 runner 換成真的子行程。
+- 結果（2026-11-12，同一個 adapter `toolcall-r4`，工作資料夾 `~/fa/lora-export-work/studio-onnx-20261112-125938`、`studio-gguf-20261112-125938`）：
+  - ONNX：merge 完成、convert 完成、quantize（full）完成、verify 完成、pack 完成；`check.json` 與 25.3 的 run2 數字相同（fp32 cos 1.000000、96/96；q8 cos 平均 0.9221、top-1 4/6、貪婪 39/96）。產物：`fp32/model.onnx`＋`model.onnx_data`（3,007,960,375）、`q8/model_quantized.onnx`（756,736,915）、tokenizer 檔、`manifest.json`（每個檔的 sha256）。
+  - GGUF：merge、convert（f16 1,198,182,240）、quantize（Q8_0 639,446,880）、verify（llama-server，貪婪 70/96、全對 3/6）、pack 全部完成。
+  - 每次執行的 `export_job.json` 都寫進工作資料夾，`steps` 是每一步的 JSON 結果。
+- **這次沒有經過 Electron 主行程**：驅動腳本用的是同一份 `buildStepCommands`＋`runExportSteps`，只把執行器換成真的子行程。主行程的 `studio_llm_export`（`spawn` 與 `probeLlmTools`）只有假子行程的測試（25.7），沒有實跑。
+
+### 25.10 接續點
+1. 總指揮：嵌入上面四個檔案，重跑 `studio_embed.test.js`。
+2. 資產列表：決定 `llm` 的形式（建議：只登錄「輸出資料夾＋manifest」路徑，不放進記憶體資產）。
+3. 桌面版設定頁的模型選單（指向匯出資料夾，`tokenizerPath` 用同一資料夾）；用真的 `nr-engine` 載入一次。
+4. q8 品質：要的話用更大的留出集（KL 或分佈級指標），試 weight-only（需要 `onnx_ir`，要先取得同意）；目前不宣稱達標。
+5. 完整微調的品質訓練：資料、步數、留出評量都還沒做。

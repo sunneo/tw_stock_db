@@ -187,6 +187,21 @@
                     if (h.builtin && !(await h.storage.loadManifest(String(body.kind || ''), String(body.name || ''))) && await h.builtin.has(String(body.kind || ''), String(body.name || ''))) return bad(409, '這是內建資產（唯讀，內容來自程式本身），不能刪除');
                     const r = await h.storage.deleteAsset(String(body.kind || ''), String(body.name || '')); log('刪除資產 ' + body.kind + '/' + body.name + '（' + r.removed + ' 個檔案）'); return ok(r);
                 }
+                // LLM 匯出（DESIGN §25）：工具可用性、開始匯出、看進度；網頁版沒有主行程，照實回報
+                if (method === 'GET' && P === '/api/llm/tools') {
+                    const r = await callHost('studio_export_tools', {}, 20000); if (!r || r.ok === false) return bad(r && r.notDesktop ? 400 : 502, r && r.error || '工具偵測失敗', { notDesktop: !!(r && r.notDesktop) });
+                    const av = LlmExp ? LlmExp.exportAvailability(r.tools || {}) : {};
+                    return ok({ tools: r.tools, availability: av, paths: r.paths || null, checkedAt: r.checkedAt });
+                }
+                if (method === 'POST' && P === '/api/llm/export') {
+                    const r = await callHost('studio_llm_export', { format: String(body.format || ''), baseDir: String(body.baseDir || ''), adapterDir: String(body.adapterDir || ''), workDir: String(body.workDir || ''), recipe: String(body.recipe || 'full') }, 60000);
+                    if (!r || r.ok === false) return bad(r && r.notDesktop ? 400 : 409, (r && r.error) || '匯出沒有啟動', { notDesktop: !!(r && r.notDesktop), tools: r && r.tools });
+                    log('LLM 匯出開始（' + body.format + '）：' + r.workDir); return ok({ jobId: r.jobId, workDir: r.workDir, outDir: r.outDir, steps: r.steps });
+                }
+                if (method === 'GET' && P === '/api/llm/export/status') {
+                    const r = await callHost('studio_llm_export_status', { jobId: Q('jobId') || '' }, 20000); if (!r || r.ok === false) return bad(r && r.notDesktop ? 400 : 502, r && r.error || '讀取匯出狀態失敗', { notDesktop: !!(r && r.notDesktop) });
+                    return ok(r);
+                }
                 if (method === 'POST' && P === '/api/export') {
                     const r = await readAsset(String(body.kind || ''), String(body.name || '')); if (!r) return bad(404, '沒有這個資產');
                     if (!r.verify.ok) return bad(409, '資產自己的雜湊核對不過，不匯出：' + (r.verify.message || ''), { verify: r.verify });
