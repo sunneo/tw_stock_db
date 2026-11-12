@@ -1290,3 +1290,13 @@ Backend {
 - 語言模型的 LoRA 實際訓練與完整模型合併沒有在這次重跑（沿用既有路徑，沒有改訓練程式）。
 - 「完整模型」在簡單模式只是記錄選擇與說明，匯出仍是進階模式的手動步驟。
 - 文字中保留的英文：LoRA、ONNX、GGUF、Python、WebAssembly、SDXS（模型名）、`.jsonl`、`.fatrain`；都是既有的格式名或模型名，沒有另外縮寫。
+
+## 30. 模型評測與評量組（studio-ux，2026-11-13，指揮追加；合併 desktop-app 後）
+
+### 30.1 第 1 項：評量分頁的「模型評測」（已做）
+
+- `renderer/src/studio/model_eval_core.js`（純函式）：`planTarget`（目標能不能評測、不能的原因）、`compare(base, cand)`（並排列、退步名單、格式率、答對率、延遲中位數、把關）、`publicView`（留出組只留數字，不含題目與輸出）。判定沿用 EVAL_CRITERIA_v2 的口徑：題數 n ≥ 20 才判斷；低於 0.02 為退步；n < 20 只報告。測試 `model_eval_core.test.js` 16／0。
+- 伺服器：`POST /api/eval/model`。完整模型回 400 與原因「完整模型的載入評測待 fp32 轉 ONNX 補上」；LoRA 需要宿主注入的 `h.modelEval`（桌面版原生執行器），沒有接上時回 501 並說明。結果存在 `S.modelEvals`，`GET /api/eval` 會回傳 `models`。
+- 畫面：評量分頁底部「模型評測」區，選 LoRA（來自 LoRA 登錄）或完整模型，按「跑留出題（與基底並排）」。顯示把關結論、格式率、答對率、延遲，每組列出基底→模型、差值、狀態，退步名單。
+- 驗證（真 Electron，DOM）：`scripts/eval/studio_eval_models.eval.js`（`FA_TPL=1 FA_INJECT=model_eval_core`）。結果：完整模型選項存在；按下後顯示「完整模型的載入評測待 fp32 轉 ONNX 補上…」。探測端用同一個純函式補上未嵌入的路由（見腳本註解）。
+- 未驗證：LoRA 路徑（需要宿主執行器 `h.modelEval`；桌面版的原生執行器尚未接上，`scripts/eval/lora_four_adapters.run.js` 是參考實作）。沒有 LoRA 資產的環境看不到 LoRA 選項。

@@ -35,9 +35,10 @@
     const PLm = (typeof module === 'object' && module.exports) ? require('./lora_manage_core.js') : root.FaStudioLoraManage;
     const LXp = (typeof module === 'object' && module.exports) ? require('./llm_export_core.js') : root.FaStudioLlmExport;
     const DEd = (typeof module === 'object' && module.exports) ? require('./dataset_edit_core.js') : root.FaStudioDatasetEdit;
-    if (typeof module === 'object' && module.exports) module.exports = factory(A, F, T, Lay, Ing, Cln, Reg, Ev, Sy, ST, Te, Si, PPl, PLv, PAd, PRt, PLm, LXp, DEd);
-    else root.FaStudioServer = factory(A, F, T, Lay, Ing, Cln, Reg, Ev, Sy, ST, Te, Si, PPl, PLv, PAd, PRt, PLm, LXp, DEd);
-})(typeof self !== 'undefined' ? self : this, function (Asset, Fatrain, Trainer, Layout, Ingest, Clean, LoraReg, EvalCore, Sym, SymTrain, Teacher, SourceInput, PipeLib, PipeLive, PipeAdvice, PipeRoutes, PipeManage, LlmExp, DatasetEdit) {
+    const MEv = (typeof module === 'object' && module.exports) ? require('./model_eval_core.js') : root.FaStudioModelEval;
+    if (typeof module === 'object' && module.exports) module.exports = factory(A, F, T, Lay, Ing, Cln, Reg, Ev, Sy, ST, Te, Si, PPl, PLv, PAd, PRt, PLm, LXp, DEd, MEv);
+    else root.FaStudioServer = factory(A, F, T, Lay, Ing, Cln, Reg, Ev, Sy, ST, Te, Si, PPl, PLv, PAd, PRt, PLm, LXp, DEd, MEv);
+})(typeof self !== 'undefined' ? self : this, function (Asset, Fatrain, Trainer, Layout, Ingest, Clean, LoraReg, EvalCore, Sym, SymTrain, Teacher, SourceInput, PipeLib, PipeLive, PipeAdvice, PipeRoutes, PipeManage, LlmExp, DatasetEdit, ModelEval) {
     'use strict';
     const KIND_LABEL = { colu: 'CoLU', blockly: '積木課程', matrix: '矩陣層', uml: 'UML 設計', trainer: '離線訓練器', lora: 'LoRA', llm: 'LLM 模型（匯出）' };
     const dec = (u) => new TextDecoder('utf-8').decode(u);
@@ -372,7 +373,7 @@
                 }
                 if (method === 'GET' && P === '/api/eval') {
                     const out = []; const st1 = await h.storage.listAssets(); for (const it of st1) { const m = await h.storage.loadManifest(it.kind, it.name); if (m && m.eval) out.push({ kind: it.kind, name: it.name, eval: m.eval }); } for (const it of await builtinItems(st1)) if (it.eval) out.push({ kind: it.kind, name: it.name, eval: it.eval, builtin: true });
-                    const p = prefsObj(); return ok({ implemented: true, kinds: Asset.KINDS.filter((k) => k !== 'llm').map((k) => ({ kind: k, label: KIND_LABEL[k], available: SYMBOLIC.indexOf(k) >= 0 ? !!h.sym : k === 'lora' })), items: out, last: S.evals, gate: Object.assign({}, EvalCore.DEFAULT_GATE, p.evalGate || {}), baseline: p.evalBaseline || {} });
+                    const p = prefsObj(); return ok({ implemented: true, kinds: Asset.KINDS.filter((k) => k !== 'llm').map((k) => ({ kind: k, label: KIND_LABEL[k], available: SYMBOLIC.indexOf(k) >= 0 ? !!h.sym : k === 'lora' })), items: out, last: S.evals, gate: Object.assign({}, EvalCore.DEFAULT_GATE, p.evalGate || {}), baseline: p.evalBaseline || {}, models: S.modelEvals || {} });
                 }
                 if (method === 'POST' && P === '/api/eval/run') {
                     const kind = String(body.kind || ''); if (Asset.KINDS.indexOf(kind) < 0) return bad(400, '不認得的種類：' + kind); if (kind === 'llm') return bad(400, 'LLM 資產不評量（只能匯出、列出、下載）');
@@ -381,6 +382,15 @@
                     S.evals[kind] = res; log('評量 ' + kind + '：' + res.summary.ran + '/' + res.summary.groups + ' 組有跑，退步 ' + res.summary.regressed + '、未過門檻 ' + res.summary.belowGate);
                     if (body.saveBaseline && res.summary.ran) { const np = Object.assign({}, prefsObj()); np.evalBaseline = Object.assign({}, np.evalBaseline); np.evalBaseline[kind] = EvalCore.saveBaseline(res, np.evalBaseline[kind]); h.prefsSet(np); res.baselineSaved = true; }
                     return ok(res);
+                }
+                // 模型評測：LoRA 與基底在同一批留出題上並排（桌面版由宿主注入 h.modelEval 執行；完整模型現在只回原因）
+                if (method === 'POST' && P === '/api/eval/model') {
+                    const tg = (body && body.target) || {}; const plan = ModelEval.planTarget(tg); if (!plan.ok) return bad(400, plan.reason);
+                    if (!h.modelEval) return bad(501, '這個環境還沒有接上模型評測的執行器（h.modelEval）。LoRA 的留出題評測需要桌面版的原生推論，請在桌面版執行；網頁版目前不能做這個評測。');
+                    let out; try { out = await h.modelEval({ target: tg }); } catch (e) { return bad(409, String((e && e.message) || e)); }
+                    const rec = { target: tg, ranAt: now(), compare: ModelEval.compare(out.base, out.cand), base: ModelEval.publicView(out.base), cand: ModelEval.publicView(out.cand) };
+                    S.modelEvals = Object.assign({}, S.modelEvals || {}); S.modelEvals[tg.kind + '/' + tg.id] = rec; log('模型評測 ' + tg.kind + '/' + tg.id + '：把關' + (rec.compare.gate.ok ? '通過' : '未通過'));
+                    return ok(rec);
                 }
                 if (method === 'POST' && P === '/api/eval/gate') { const np = Object.assign({}, prefsObj()); const d = Number(body.default); np.evalGate = { default: d >= 0 && d <= 1 ? d : EvalCore.DEFAULT_GATE.default, groups: Object.assign({}, body.groups || {}) }; h.prefsSet(np); return ok({ gate: np.evalGate }); }
                 if (method === 'GET' && P === '/api/teacher') { const v = ingestView(); return ok({ implemented: true, canRun: !!h.teacherAI, whyNot: h.teacherAI ? '' : '這個環境沒有接上線上 AI 子任務（h.teacherAI）；桌面版與網頁版都在設定→AI 有線上模型時才能跑老師', tools: Teacher.TOOLS, limits: Teacher.LIMITS, kinds: ['blockly', 'matrix', 'uml', 'lora'], sessions: getTeacher().list(), queue: v.has ? v.requests : null, samples: v.has ? v.samples : 0 }); }

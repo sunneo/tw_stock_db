@@ -10,6 +10,8 @@ const evalSrc = path.join(__dirname, (process.env.FA_EVAL || 'studio_firstrun') 
 let evalFile = evalSrc; let pre = '';
 if (process.env.FA_TPL === '1') pre += 'globalThis.__FA_TPL = ' + JSON.stringify(fs.readFileSync(path.join(app, 'renderer', 'src', 'studio', 'studio-viewer.template.html'), 'utf8')) + ';\n';
 if (process.env.FA_HOWTO === '1') pre += 'globalThis.__FA_HOWTO_SRC = ' + JSON.stringify(fs.readFileSync(path.join(app, 'renderer', 'src', 'studio', 'studio_howto_deck.js'), 'utf8')) + ';\n';
+// FA_INJECT=模組,模組：把工作目錄未嵌入的 studio 模組注入（探測用；UMD 會設定 window.FaStudio<名稱>）
+if (process.env.FA_INJECT) pre += 'globalThis.__FA_INJECT = ' + JSON.stringify(process.env.FA_INJECT.split(',').filter(Boolean).map((n) => ({ name: n, src: fs.readFileSync(path.join(app, 'renderer', 'src', 'studio', n + '.js'), 'utf8') }))) + ';\n';
 if (process.env.FA_MT === '1') pre += 'globalThis.__FA_MT_SRC = ' + JSON.stringify(fs.readFileSync(path.join(app, 'renderer', 'src', 'studio', 'model_types_core.js'), 'utf8')) + ';\n';
 if (process.env.FA_HALF) pre += 'globalThis.__FA_HALF = ' + JSON.stringify(process.env.FA_HALF === '1') + ';\n';
 if (process.env.FA_THEME) pre += 'globalThis.__FA_THEME = ' + JSON.stringify(process.env.FA_THEME) + ';\n';
