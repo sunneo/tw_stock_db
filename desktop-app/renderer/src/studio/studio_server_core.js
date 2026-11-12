@@ -454,7 +454,11 @@
                     const wd = h.workDir ? await h.workDir() : null; const name = String(body.name || '');
                     if (!name || !Asset.safeName(name)) return bad(400, '請先填一個合法的名稱（不可含斜線或 ..）');
                     const cfg = Object.assign({ base: 'Qwen/Qwen3-0.6B', epochs: 1, batch: 1, accum: 4, seqLen: 256, saveSteps: 50 }, body.cfg || {});
-                    if (!cfg.trainFile) return bad(400, '請填訓練資料檔路徑（.jsonl；第二輪的「資料匯入」會自動產生）');
+                    if (cfg.datasetRef) { // 從資產挑的資料集（kind/name::data/xxx.jsonl）：讀出內容交給主程序寫成訓練檔
+                        const m = /^([a-z]+)\/([^:]+)::(.+)$/.exec(String(cfg.datasetRef)); const ra = m && await readAsset(m[1], m[2]); const fb = ra && ra.asset.files[m[3]];
+                        if (!fb) return bad(404, '找不到資料集 ' + cfg.datasetRef); cfg.trainText = dec(fb); cfg.fromAsset = m[1] + '/' + m[2]; delete cfg.trainFile;
+                    }
+                    if (!cfg.trainFile && !cfg.trainText) return bad(400, '請從清單挑一個資料集，或填訓練資料檔路徑（.jsonl）');
                     if (!cfg.outputDir) { if (!wd) return bad(500, '找不到使用者資料夾，請手動指定輸出資料夾'); cfg.outputDir = wd + '/runs/' + name; }
                     const autoPick = !body.backend || body.backend === 'auto', canWebFb = autoPick && kind === 'lora' && !!h.webTrain;
                     // 自動模式：桌面版沒有任何可用的後端（例如 Python 缺 transformers／peft）→ 直接退到網頁處理器，不要叫使用者先去裝套件

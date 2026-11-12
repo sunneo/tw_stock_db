@@ -42,6 +42,10 @@ const check = (n, c, x) => { if (c) ok++; else { bad.push(n); console.log('FAIL'
   check('符號式訓練不走主行程，明說由 sym_train_core 執行', !t1.ok && /sym_train_core/.test(t1.error), t1);
   const t2 = await h.handle('studio_train_start', { kind: 'lora', cfg: { trainFile: 'a', outputDir: 'b' } });
   check('cpu-py 不可用時拒絕並帶原因', !t2.ok && /cpu-py 不可用/.test(t2.error), t2);
+  // 從資產挑的資料集：trainText 要被寫成輸出資料夾的 train.jsonl（即使 cpu-py 不可用被拒絕，檔案也已準備好）
+  const od = fs.mkdtempSync(path.join(os.tmpdir(), 'fa-ds-')); await h.handle('studio_train_start', { kind: 'lora', cfg: { trainText: '{"a":1}\n', outputDir: od } });
+  check('資產資料集：trainText 寫成 train.jsonl', fs.existsSync(path.join(od, 'train.jsonl')) && fs.readFileSync(path.join(od, 'train.jsonl'), 'utf8') === '{"a":1}\n');
+
   const t3 = await h.handle('studio_train_start', { kind: 'lora', backend: 'webgpu', cfg: {} });
   check('webgpu 訓練被拒', !t3.ok && /webgpu/.test(t3.error));
   const ts = await h.handle('studio_train_status', {});

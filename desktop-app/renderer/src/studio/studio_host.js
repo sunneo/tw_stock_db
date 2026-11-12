@@ -282,7 +282,10 @@ function createStudioHost(d) {
       if (p.backend && p.backend !== 'cpu-py') return { ok: false, error: '後端 ' + p.backend + ' 目前只有 cpu-py 能實際訓練' };
       if (activeTrain && (activeTrain.state === 'running' || activeTrain.state === 'pausing')) return { ok: false, error: '已有訓練在執行（' + activeTrain.id + '）' };
       if (activeBench && activeBench.state === 'running') return { ok: false, error: '基準測試進行中，請先等它結束或按停止' };
-      const cfg = p.cfg || {}; if (!cfg.trainFile || !cfg.outputDir) return { ok: false, error: '缺少 trainFile／outputDir' };
+      const cfg = p.cfg || {};
+      // 從資產挑的資料集：伺服器把檔案內容放在 cfg.trainText，這裡寫成輸出資料夾下的 train.jsonl 再當訓練檔（使用者不必自己找路徑）
+      if (cfg.trainText && cfg.outputDir) { try { fs.mkdirSync(cfg.outputDir, { recursive: true }); cfg.trainFile = P.join(cfg.outputDir, 'train.jsonl'); fs.writeFileSync(cfg.trainFile, String(cfg.trainText)); delete cfg.trainText; } catch (e) { return { ok: false, error: '寫入訓練資料失敗：' + String(e && e.message || e) }; } }
+      if (!cfg.trainFile || !cfg.outputDir) return { ok: false, error: '缺少 trainFile／outputDir' };
       const pr = await BackendCore.safeProbe(cpuPy, ctxOf(p)); if (!pr.available) return { ok: false, error: 'cpu-py 不可用：' + pr.reason };
       const job = { id: newId('train'), kind, state: 'running', events: [], lastStep: 0, lastLoss: null, startedAt: now(), cfg };
       const hooks = { onEvent: (e) => { job.events.push(e); if (job.events.length > 400) job.events.shift(); if (e.step) job.lastStep = e.step; if (e.type === 'log') job.lastLoss = e.loss; } };
