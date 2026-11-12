@@ -60,20 +60,25 @@ function triedNote(d) { const e = d && d.tried ? d.tried.filter((x) => x.error) 
 // 沒有可用環境時 probe 的說明與要執行的安裝指令
 function installHint(loraDir, plat) {
   const d = loraDir || 'lora-train', v = d + '/.venv';
-  // 平台：呼叫端給的 > 依資料夾路徑長相判斷（C:\ 或反斜線＝Windows，其餘＝Linux／macOS）。2026-11-12：Ubuntu 使用者看到的是 Windows 的 py -3.13／Scripts\python.exe，照抄不能用
+  // 平台：呼叫端給的 > 依資料夾路徑長相判斷（C:\ 或反斜線＝Windows，其餘＝Linux／macOS）。
+  // 2026-11-12 兩次事故：(1) Ubuntu 使用者看到 Windows 的 py -3.13／Scripts\python.exe；(2) 指令之間用了全形分號「；」，整段貼進終端機不能執行。
+  // 規則：指令一律獨立一行、只用 ASCII（半形標點，用 && 串接，路徑用半形雙引號），中文說明另起一行，絕不跟指令混在同一行。
   const win = plat ? plat === 'win32' : /^[A-Za-z]:|\\/.test(d);
-  const need = '需要 Python 3.11 以上與 torch／transformers／peft，建議在 lora-train/.venv 安裝。安裝指令：';
+  const need = '需要 Python 3.11 以上與 torch／transformers／peft，建議在 lora-train/.venv 安裝。安裝指令（整行複製貼上）：';
+  const idx = 'https://download.pytorch.org/whl/cpu';
   if (win) {
     const py = v + '/Scripts/python.exe';
-    return need + 'py -3.13 -m venv "' + v + '"；"' + py + '" -m pip install torch --extra-index-url https://download.pytorch.org/whl/cpu；'
-      + '"' + py + '" -m pip install -r "' + d + '/requirements.txt" --extra-index-url https://download.pytorch.org/whl/cpu';
+    return need + '\n' + 'py -3.13 -m venv "' + v + '" && "' + py + '" -m pip install torch --extra-index-url ' + idx
+      + ' && "' + py + '" -m pip install -r "' + d + '/requirements.txt" --extra-index-url ' + idx;
   }
   const py = v + '/bin/python';
   // Linux／macOS：系統的 python3 常常太舊（Ubuntu 22.04 是 3.10，預設套件庫沒有 python3.13）。用 uv 自己抓 Python 3.13（不用 sudo、不動系統 Python）；備案是 Ubuntu 的 deadsnakes PPA
-  return need + 'curl -LsSf https://astral.sh/uv/install.sh | sh；uv venv --python 3.13 "' + v + '"；'
-    + 'uv pip install --python "' + py + '" torch --index-url https://download.pytorch.org/whl/cpu；'
-    + 'uv pip install --python "' + py + '" -r "' + d + '/requirements.txt" --extra-index-url https://download.pytorch.org/whl/cpu'
-    + '（備案，Ubuntu：sudo add-apt-repository ppa:deadsnakes/ppa && sudo apt update && sudo apt install python3.13 python3.13-venv，再 python3.13 -m venv "' + v + '"，用 "' + py + '" -m pip install 安裝同樣的套件）';
+  return need + '\n'
+    + 'curl -LsSf https://astral.sh/uv/install.sh | sh && export PATH="$HOME/.local/bin:$PATH" && uv venv --python 3.13 "' + v + '" && uv pip install --python "' + py + '" torch --index-url ' + idx
+    + ' && uv pip install --python "' + py + '" -r "' + d + '/requirements.txt" --extra-index-url ' + idx
+    + '\n備案（Ubuntu，用 deadsnakes 套件庫，需要管理員權限；一樣整行複製貼上）：\n'
+    + 'sudo add-apt-repository -y ppa:deadsnakes/ppa && sudo apt update && sudo apt install -y python3.13 python3.13-venv && python3.13 -m venv "' + v + '" && "' + py + '" -m pip install torch --extra-index-url ' + idx
+    + ' && "' + py + '" -m pip install -r "' + d + '/requirements.txt" --extra-index-url ' + idx;
 }
 
 // 解析 train_lora.py（HF Trainer）印出的一行：log 字典、評估、tqdm 進度、[done]、[paused]

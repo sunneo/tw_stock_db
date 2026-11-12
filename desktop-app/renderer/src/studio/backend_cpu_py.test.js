@@ -208,6 +208,19 @@ const mkBackend = (o) => { const fs = memfs(); fs.writeFileSync('/lora/train_lor
     check('installHint：Windows 照舊', /py -3\.13 -m venv/.test(P.installHint('D:' + BSL + 'x' + BSL + 'lora-train', 'win32')) && /Scripts\/python\.exe/.test(P.installHint('D:/x/lora-train')), P.installHint('D:/x/lora-train'));
 }
 
+
+// ---- 安裝指令可以整行貼進終端機：指令行只能有 ASCII（不能有全形分號「；」等），中文說明另起一行（2026-11-12 使用者連續兩次貼到全形分號）----
+{
+    const cmdLines = (t) => String(t).split('\n').filter((x) => /(?:\bpip\b|\buv\b|\bcurl\b|\bsudo\b|\bvenv\b)/.test(x) && /^[A-Za-z]/.test(x.trim()));
+    for (const [nm, h] of [['Linux', P.installHint('/home/u/lora-train', 'linux')], ['Windows', P.installHint('D:/x/lora-train', 'win32')]]) {
+        const cl = cmdLines(h);
+        check('installHint(' + nm + ')：有指令行', cl.length >= 1, h);
+        check('installHint(' + nm + ')：指令行只含 ASCII（沒有全形標點）', cl.every((x) => /^[\x20-\x7E]+$/.test(x)), cl.filter((x) => !/^[\x20-\x7E]+$/.test(x)));
+        check('installHint(' + nm + ')：指令之間用 && 串接、沒有全形分號', cl.every((x) => !/；|，|：/.test(x)) && cl.every((x) => x.indexOf(' && ') > 0), cl);
+    }
+    check('installHint：整段提示裡指令行不跟中文同一行', P.installHint('/home/u/lora-train', 'linux').split('\n').every((x) => !(/[\u4e00-\u9fff]/.test(x) && /\b(?:pip|uv venv|curl|sudo)\b/.test(x))));
+}
+
 console.log(ok + ' passed, ' + bad.length + ' failed', bad);
   process.exit(bad.length ? 1 : 0);
 })();
