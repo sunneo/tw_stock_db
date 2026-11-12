@@ -397,3 +397,38 @@ lora-train/.venv/Scripts/pip install -r lora-train/requirements.txt
 **本次不重訓**：v2 量的是 toolcall-r4 的權重（v1 訓練的那版），在上述凍結判準下的表現。缺工具拒絕的訓練資料（`when2call` 的 `w2c_missing`，訓練池 `data/train.jsonl` 內 230 列，`data/multi/toolcall.jsonl` 降取樣後 103 列）本來就在 v1 的訓練集內，不需要重新生成；沒有其他指定的新增訓練資料，所以不重訓。若要重訓，須先指定新增資料，視為新版本，並開新的留出批次。
 
 **事後修正的紀錄方式**：量完之後若要改判準，只能寫成事後修正，附上判準改動的提交與理由，結論標明「待新批次以預先登記判準驗證」，不可寫成已驗證。
+
+## 24. toolcall v2 量測結果（2026-11-12，預先登記見 §20，判準見 `EVAL_CRITERIA_v2.md`，登記提交 `18180851`）
+
+**量測**：`toolcall-r4` 權重（v1 訓練那版，**未重訓**），`data/heldout_toolcall_v2.jsonl`（552 列，sha256 `98cba02d…737f1c`），`eval_run.py`，`LORA_EVAL_EVERY=1`，只量一次。輸出 `out/eval/toolcall_v2.json`、`out/eval/toolcall_v2.log`、`out/eval/toolcall_v2_metrics.json`。
+
+**判準逐條**（`EVAL_CRITERIA_v2.md`）
+
+| 條 | 內容 | 結果 | 判定 |
+|---|---|---|---|
+| 1 | 格式合法率（gold 含 tool_call 的 202 列，主要指標，微調 ≥ 基底 + 10 pp） | 基底 111/202（0.5495）→ 微調 156/202（0.7723），+22.3 pp | **通過** |
+| 2 | 缺工具拒絕（`rtool/missing`、`seen/unseen/missing`，同 55 列） | 0/55 → 53/55 | **通過** |
+| 3 | 退步（n ≥ 20 且微調少 ≥ 2 列） | 無組別符合。`toolwire/wiring`（n=126）117 → 116，`seen/unseen/wiring`（n=62）57 → 56，都只少 1 列 | **無退步（依判準）** |
+| 4 | 範圍：範圍內＝toolcall；範圍外＝colu、think_stack、decompose | 範圍內見上；**範圍外本次未量** | 未量 |
+
+**注意：`eval_run.py` 自己的 ship gate 與判準不同。** 它的「no group regresses」會把少 1 列也算退步，所以標成 FAIL，列出 `toolwire/wiring` 與 `seen/unseen/wiring`。依 EVAL_CRITERIA_v2 第 3 條（少 ≥ 2 列才算），這兩組不構成退步；兩份結果都保留，不改判準。另外它的「clearly win」目標組判定只有 `group/worksheet`（n=6，0 → 1）沒過，屬於 ship gate 的啟發式，不在 v2 判準內。
+
+**主要分組（節錄）**
+
+| 組別 | 基底 | 微調 |
+|---|---|---|
+| TOTAL（552 列） | 258/552 | 435/552 |
+| rtool/call | 20/110 | 58/110 |
+| seen/unseen/call | 21/116 | 64/116 |
+| seen/seen/call | 22/56 | 34/56 |
+| tool_routing/choose_tool_full | 6/61 | 47/61 |
+| group/git（全部 28 列） | 15/28 | 17/28 |
+| 　其中新增的 24 列 | 14/24 | 15/24 |
+| 　其中原本的 4 列（`git_inspect`） | 1/4 | 2/4 |
+
+**觀察（不改判準）**
+- 新增的 git 列幾乎沒有提升（14 → 15，24 列）。失敗多數是參數 `ref` 漏了 `fap:` 前綴（例如輸出 `"報告"`、`"tools-repo"`），或是模型回了拒絕句。計分器是精確比對參數，所以這些算錯。這表示 group/git 的進步主要來自原本的 `git_inspect` 那幾列，樣本太少，不能當成 git 能力已學好的證據。
+- `toolwire/wiring` 少 1 列，屬於邊界內的雜訊，但仍應在報告中看到。
+
+**結論**：`toolcall-r4` 的 v1 權重在凍結判準下通過（格式合法率、缺工具拒絕、範圍內無退步）。範圍外（colu、think_stack、decompose）還沒量，所以「範圍外無退步」不能宣稱。已打包的 `toolcall-r4` 1.0.0 的卡片數字還是 v1 的 80 列（0.45 → 0.75），沒有改成這次 v2 的數字；要不要改成這次的數字、以及是否補量範圍外，待指揮決定，這次沒有重新打包。
+
