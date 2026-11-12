@@ -58,6 +58,10 @@ const mkBackend = (o) => { const fs = memfs(); fs.writeFileSync('/lora/train_lor
   const det = P.defaultDetect((cmd, args, opts) => { det.calls.push({ cmd, opts }); return cmd === 'python3' ? { status: 0, stdout: JSON.stringify({ version: '3.11.0', packages: { torch: '2', transformers: '4', peft: '1' } }) + '\n' } : { error: new Error('ENOENT'), status: null }; }); det.calls = [];
   const dr = await det();
   check('預設偵測：python 找不到就試 python3，且 windowsHide', dr.found && dr.path === 'python3' && dr.version === '3.11.0' && det.calls.every((c) => c.opts.windowsHide === true), { dr, calls: det.calls });
+  // python3 是 3.10（太舊）但系統另有 python3.11：要找到 python3.11，不能誤判「版本太舊」
+  const det2 = P.defaultDetect((cmd) => cmd === 'python3' ? { status: 0, stdout: JSON.stringify({ version: '3.10.12', packages: {} }) + '\n' } : cmd === 'python3.11' ? { status: 0, stdout: JSON.stringify({ version: '3.11.0', packages: { torch: '2', transformers: '5', peft: '1' } }) + '\n' } : { error: new Error('ENOENT'), status: null }, { platform: 'linux' });
+  const dr2 = await det2();
+  check('python3 太舊但有 python3.11：用 python3.11', dr2.found && dr2.path === 'python3.11', dr2);
   check('介面型別', B.validateBackend(mkBackend().b).length === 0);
 
   // ---- Python 探測順序（全用注入的假 spawnSync／假 fs，不動真環境）----

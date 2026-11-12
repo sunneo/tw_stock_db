@@ -26,6 +26,8 @@ function defaultDetect(spawnSync, opts) {
     const code = "import sys,json\nfrom importlib import metadata as md\nr={'version':sys.version.split()[0],'packages':{}}\nfor m in ('torch','transformers','peft'):\n    try:\n        r['packages'][m]=md.version(m)\n    except Exception:\n        r['packages'][m]=None\nprint(json.dumps(r))";
     const cands = venvPythons(typeof opts.venvDirs === 'function' ? opts.venvDirs() : opts.venvDirs, P, plat).filter(exists);
     ['python', 'python3', 'py'].forEach((c) => cands.push(c));
+    // 2026-11-12：Ubuntu 22.04 的 python3 是 3.10，但常同時裝有 python3.11／3.12／3.13（遠端機 192.168.21.186 就是 python3.11 + venv）——只試 python3 會誤判「版本太舊」。Linux／macOS 也試帶版本號的指令。
+    if (plat !== 'win32') ['python3.13', 'python3.12', 'python3.11'].forEach((c) => { if (cands.indexOf(c) < 0) cands.push(c); });
     const tmo = opts.timeoutMs || 8000;   // 單項探測逾時
     try {   // py 啟動器列出的各版本（py -0p 每行最後一欄是路徑）
       const l = await spawnSync('py', ['-0p'], { encoding: 'utf8', windowsHide: true, timeout: 5000 });
