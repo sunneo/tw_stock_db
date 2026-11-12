@@ -1,0 +1,1731 @@
+{
+ "format": "fa-domain-seeds",
+ "version": 1,
+ "source": "renderer/src/uml/domain_ds.test.js",
+ "name": "領域包 ds",
+ "minSkeletons": 10,
+ "judge": null,
+ "trainOnly": null,
+ "seeds": [
+  {
+   "id": "hash-linear",
+   "st": "第一行 m q，之後 q 行指令：insert x、find x、delete x。雜湊表有 m 格，用 x % m 當起點、線性探測（往後一格一格找）的開放定址法；插入已存在的值就忽略；刪除用墓碑標記，find 與插入都要越過墓碑（插入可以重用第一個墓碑格）。每個 find 輸出 x 所在的格子編號（從 0 起），找不到輸出 -1。",
+   "rw_st": "第一行 sz r，之後 r 行指令：insert x、find x、delete x。雜湊表有 sz 格，用 x % sz 當起點、線性探測（往後一格一格找）的開放定址法；插入已存在的值就忽略；刪除用墓碑標記，find 與插入都要越過墓碑（插入可以重用第一個墓碑格）。每個 find 輸出 x 所在的格子編號（從 0 起），找不到輸出 -1。",
+   "ref": "m, q = map(int, input().split())\nT = [None] * m\nfor _ in range(q):\n    op, x = input().split()\n    x = int(x)\n    found = -1\n    pr = 0\n    free = -1\n    for s in range(m):\n        i = (x % m + s) % m\n        pr += 1\n        if T[i] is None:\n            if free < 0:\n                free = i\n            break\n        if T[i] == \"T\":\n            if free < 0:\n                free = i\n        elif T[i] == x:\n            found = i\n            break\n    if op == \"insert\":\n        if found < 0 and free >= 0:\n            T[free] = x\n    elif op == \"delete\":\n        if found >= 0:\n            T[found] = \"T\"\n    else:\n        print(found)",
+   "tests": [
+    {
+     "in": "11 7\ndelete 15\ndelete 15\ndelete 18\ndelete 9\nfind 11\nfind 4\nfind 15\n",
+     "out": "-1\n-1\n-1\n"
+    },
+    {
+     "in": "8 13\nfind 6\nfind 3\nfind 7\nfind 8\ninsert 16\ninsert 0\ninsert 11\ndelete 3\ndelete 19\ndelete 10\ndelete 12\ndelete 14\ndelete 2\n",
+     "out": "-1\n-1\n-1\n-1\n"
+    },
+    {
+     "in": "8 4\nfind 6\ninsert 14\ninsert 18\nfind 4\n",
+     "out": "-1\n-1\n"
+    },
+    {
+     "in": "5 7\nfind 14\ninsert 19\ninsert 8\ninsert 13\ninsert 15\ninsert 20\ninsert 0\n",
+     "out": "-1\n"
+    },
+    {
+     "in": "5 12\ninsert 1\ndelete 20\nfind 7\nfind 16\nfind 8\ninsert 12\ninsert 6\ninsert 10\ninsert 1\ninsert 11\ndelete 20\ndelete 14\n",
+     "out": "-1\n-1\n-1\n"
+    },
+    {
+     "in": "11 12\ndelete 17\ninsert 8\ninsert 6\ndelete 15\ninsert 8\ninsert 19\ninsert 10\ninsert 13\ninsert 5\ndelete 10\nfind 11\nfind 12\n",
+     "out": "-1\n-1\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "8 6\nfind 0\ninsert 1\ninsert 1\nfind 29\ninsert 15\ndelete 13\n",
+     "out": "-1\n-1\n"
+    },
+    {
+     "in": "8 13\nfind 9\nfind 24\nfind 34\nfind 33\ninsert 22\ninsert 24\ninsert 25\ndelete 36\nfind 7\nfind 28\nfind 15\nfind 11\ninsert 34\n",
+     "out": "-1\n-1\n-1\n-1\n-1\n-1\n-1\n-1\n"
+    }
+   ],
+   "want": "ds.hash-open"
+  },
+  {
+   "id": "hash-probes",
+   "st": "第一行 m q，之後 q 行指令：insert x、find x、delete x。雜湊表有 m 格，用 x % m 當起點、第 s 次探測看 (x % m + s·s) % m（二次探測）的開放定址法；插入已存在的值就忽略；刪除用墓碑標記，find 與插入都要越過墓碑（插入可以重用第一個墓碑格）。每個 find 輸出探測到結束（找到、碰到空格或探測完 m 次）所看過的格子數。",
+   "rw_st": "第一行 sz r，之後 r 行指令：insert x、find x、delete x。雜湊表有 sz 格，用 x % sz 當起點、第 s 次探測看 (x % sz + s·s) % sz（二次探測）的開放定址法；插入已存在的值就忽略；刪除用墓碑標記，find 與插入都要越過墓碑（插入可以重用第一個墓碑格）。每個 find 輸出探測到結束（找到、碰到空格或探測完 sz 次）所看過的格子數。",
+   "ref": "m, q = map(int, input().split())\nT = [None] * m\nfor _ in range(q):\n    op, x = input().split()\n    x = int(x)\n    found = -1\n    pr = 0\n    free = -1\n    for s in range(m):\n        i = (x % m + s * s) % m\n        pr += 1\n        if T[i] is None:\n            if free < 0:\n                free = i\n            break\n        if T[i] == \"T\":\n            if free < 0:\n                free = i\n        elif T[i] == x:\n            found = i\n            break\n    if op == \"insert\":\n        if found < 0 and free >= 0:\n            T[free] = x\n    elif op == \"delete\":\n        if found >= 0:\n            T[found] = \"T\"\n    else:\n        print(pr)",
+   "tests": [
+    {
+     "in": "5 7\ninsert 8\ninsert 7\ninsert 18\nfind 0\nfind 14\nfind 20\nfind 9\n",
+     "out": "1\n2\n1\n2\n"
+    },
+    {
+     "in": "8 6\ninsert 17\ninsert 1\ninsert 10\nfind 4\nfind 6\ninsert 2\n",
+     "out": "1\n1\n"
+    },
+    {
+     "in": "7 4\ninsert 9\ninsert 19\ndelete 20\nfind 10\n",
+     "out": "1\n"
+    },
+    {
+     "in": "11 6\nfind 10\ninsert 2\ninsert 6\ninsert 3\ninsert 7\nfind 14\n",
+     "out": "1\n2\n"
+    },
+    {
+     "in": "8 7\nfind 17\nfind 2\nfind 4\nfind 11\nfind 8\nfind 15\nfind 9\n",
+     "out": "1\n1\n1\n1\n1\n1\n1\n"
+    },
+    {
+     "in": "8 8\nfind 19\ninsert 2\nfind 18\ninsert 6\ndelete 1\ndelete 5\ndelete 8\ninsert 1\n",
+     "out": "1\n2\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "5 17\ninsert 11\ndelete 33\nfind 28\ninsert 17\ninsert 7\ninsert 1\ninsert 5\ndelete 2\ndelete 40\nfind 23\nfind 9\nfind 10\nfind 21\ninsert 34\ninsert 20\ninsert 21\ninsert 38\n",
+     "out": "1\n5\n5\n5\n5\n"
+    },
+    {
+     "in": "5 23\ninsert 22\ninsert 9\ninsert 1\ninsert 34\ninsert 15\ninsert 8\ninsert 13\ninsert 24\ninsert 13\ninsert 13\ndelete 31\ndelete 20\nfind 28\ninsert 21\ninsert 16\ndelete 10\nfind 36\nfind 23\ninsert 17\ninsert 27\nfind 4\ninsert 8\ndelete 35\n",
+     "out": "5\n5\n5\n5\n"
+    }
+   ],
+   "want": "ds.hash-open"
+  },
+  {
+   "id": "lru-both",
+   "st": "第一行 cap q，之後 q 行指令：get k、put k v。LRU 快取容量為 cap：get 命中輸出值（找不到輸出 -1）並算最近使用；put 既有鍵時更新值並算最近使用；put 新鍵時若已滿，先淘汰最久沒使用的再放入。",
+   "rw_st": "第一行 c r，之後 r 行指令：get k、put k v。LRU 快取容量為 c：get 命中輸出值（找不到輸出 -1）並算最近使用；put 既有鍵時更新值並算最近使用；put 新鍵時若已滿，先淘汰最久沒使用的再放入。",
+   "ref": "cap, q = map(int, input().split())\nd = {}\nO = []\nfor _ in range(q):\n    p = input().split()\n    k = int(p[1])\n    if p[0] == \"get\":\n        if k in d:\n            O.remove(k)\n            O.append(k)\n            print(d[k])\n        else:\n            print(-1)\n    else:\n        if k in d:\n            d[k] = int(p[2])\n            O.remove(k)\n            O.append(k)\n        else:\n            if len(O) >= cap:\n                del d[O.pop(0)]\n            d[k] = int(p[2])\n            O.append(k)",
+   "tests": [
+    {
+     "in": "4 5\nget 3\nput 3 18\nput 5 48\nput 3 56\nput 3 73\n",
+     "out": "-1\n"
+    },
+    {
+     "in": "2 5\nput 1 98\nget 2\nget 1\nput 5 65\nput 5 51\n",
+     "out": "-1\n98\n"
+    },
+    {
+     "in": "1 9\nput 3 36\nget 2\nget 2\nget 3\nput 3 48\nput 5 82\nget 4\nput 5 49\nput 6 13\n",
+     "out": "-1\n-1\n36\n-1\n"
+    },
+    {
+     "in": "3 10\nget 6\nget 6\nget 1\nput 5 48\nput 1 48\nput 5 94\nput 5 41\nput 5 55\nput 1 60\nput 1 36\n",
+     "out": "-1\n-1\n-1\n"
+    },
+    {
+     "in": "1 8\nput 2 18\nput 1 69\nput 3 50\nput 1 48\nput 3 19\nput 1 50\nget 2\nget 5\n",
+     "out": "-1\n-1\n"
+    },
+    {
+     "in": "1 6\nput 5 41\nput 3 31\nput 5 79\nget 4\nget 4\nget 2\n",
+     "out": "-1\n-1\n-1\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "1 18\nget 4\nget 5\nput 1 86\nget 5\nput 1 83\nput 1 35\nget 6\nput 5 80\nput 5 67\nget 6\nget 5\nput 3 25\nget 4\nget 4\nget 4\nget 2\nget 6\nput 3 10\n",
+     "out": "-1\n-1\n-1\n-1\n-1\n67\n-1\n-1\n-1\n-1\n-1\n"
+    },
+    {
+     "in": "2 15\nget 3\nput 3 20\nget 2\nput 3 81\nput 1 92\nput 4 95\nput 3 4\nget 6\nget 6\nget 6\nget 6\nput 3 63\nput 1 95\nget 2\nget 6\n",
+     "out": "-1\n-1\n-1\n-1\n-1\n-1\n-1\n-1\n"
+    }
+   ],
+   "want": "ds.lru"
+  },
+  {
+   "id": "lru-noget",
+   "st": "第一行 cap q，之後 q 行指令：get k、put k v。快取容量為 cap，淘汰最久沒被存取的：只有 put（新增或更新）算存取，get 只讀值（找不到輸出 -1），不改變新舊順序。put 新鍵時若已滿，先淘汰再放入。",
+   "rw_st": "第一行 c r，之後 r 行指令：get k、put k v。快取容量為 c，淘汰最久沒被存取的：只有 put（新增或更新）算存取，get 只讀值（找不到輸出 -1），不改變新舊順序。put 新鍵時若已滿，先淘汰再放入。",
+   "ref": "cap, q = map(int, input().split())\nd = {}\nO = []\nfor _ in range(q):\n    p = input().split()\n    k = int(p[1])\n    if p[0] == \"get\":\n        if k in d:\n            print(d[k])\n        else:\n            print(-1)\n    else:\n        if k in d:\n            d[k] = int(p[2])\n            O.remove(k)\n            O.append(k)\n        else:\n            if len(O) >= cap:\n                del d[O.pop(0)]\n            d[k] = int(p[2])\n            O.append(k)",
+   "tests": [
+    {
+     "in": "1 6\nput 1 1\nget 4\nget 4\nget 2\nget 2\nget 1\n",
+     "out": "-1\n-1\n-1\n-1\n1\n"
+    },
+    {
+     "in": "3 14\nput 6 94\nget 2\nget 6\nput 3 60\nput 3 81\nput 5 93\nput 5 47\nput 3 16\nput 3 39\nget 1\nput 1 34\nput 1 22\nput 3 35\nput 1 14\n",
+     "out": "-1\n94\n-1\n"
+    },
+    {
+     "in": "1 9\nput 1 95\nput 2 3\nput 3 72\nput 3 80\nput 5 22\nget 4\nput 1 48\nput 2 25\nput 1 30\n",
+     "out": "-1\n"
+    },
+    {
+     "in": "2 10\nget 4\nput 1 51\nput 3 12\nput 1 58\nput 5 45\nget 2\nget 2\nget 5\nput 5 83\nput 5 31\n",
+     "out": "-1\n-1\n-1\n45\n"
+    },
+    {
+     "in": "3 9\nput 6 8\nget 4\nget 4\nget 1\nput 3 23\nget 2\nget 2\nget 5\nput 3 16\n",
+     "out": "-1\n-1\n-1\n-1\n-1\n-1\n"
+    },
+    {
+     "in": "3 13\nput 1 83\nput 3 93\nput 5 88\nput 5 12\nget 4\nput 1 86\nget 6\nget 6\nget 1\nput 4 99\nget 4\nput 3 89\nput 5 57\n",
+     "out": "-1\n-1\n-1\n86\n99\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "1 18\nput 4 57\nput 5 34\nget 2\nget 6\nget 2\nget 6\nget 2\nput 1 60\nput 3 60\nget 2\nget 2\nget 1\nput 3 35\nget 6\nget 6\nput 5 55\nput 3 84\nput 3 78\n",
+     "out": "-1\n-1\n-1\n-1\n-1\n-1\n-1\n-1\n-1\n-1\n"
+    },
+    {
+     "in": "4 10\nget 2\nget 1\nput 1 28\nput 3 19\nput 3 8\nget 6\nget 2\nput 3 17\nput 5 96\nput 6 16\n",
+     "out": "-1\n-1\n-1\n-1\n"
+    }
+   ],
+   "want": "ds.lru"
+  },
+  {
+   "id": "heap-min",
+   "st": "第一行 q，之後 q 行指令：push x、pop、top。維護一個最小堆積（優先佇列）：pop 輸出並移除最小值，top 輸出最小值；堆積空時輸出 empty。",
+   "rw_st": "第一行 r，之後 r 行指令：push x、pop、top。維護一個最小堆積（優先佇列）：pop 輸出並移除最小值，top 輸出最小值；堆積空時輸出 empty。",
+   "ref": "import heapq\nq = int(input())\nh = []\nfor _ in range(q):\n    p = input().split()\n    if p[0] == \"push\":\n        heapq.heappush(h, 1 * int(p[1]))\n    elif h:\n        print(1 * (heapq.heappop(h) if p[0] == \"pop\" else h[0]))\n    else:\n        print(\"empty\")",
+   "tests": [
+    {
+     "in": "6\npop\npush 38\npush 50\npush 24\npush 36\ntop\n",
+     "out": "empty\n24\n"
+    },
+    {
+     "in": "5\npop\npush 28\npush 14\npush 38\ntop\n",
+     "out": "empty\n14\n"
+    },
+    {
+     "in": "6\npop\npush 35\npush 27\ntop\ntop\npop\n",
+     "out": "empty\n27\n27\n27\n"
+    },
+    {
+     "in": "3\npop\npush 27\npush 25\n",
+     "out": "empty\n"
+    },
+    {
+     "in": "7\npush 21\ntop\npush 25\npush 18\npush 34\npop\npop\n",
+     "out": "21\n18\n21\n"
+    },
+    {
+     "in": "11\npush 50\npush 12\npush 2\npush 4\npush 36\npush 39\npush 39\npush 35\ntop\npop\npop\n",
+     "out": "2\n2\n4\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "30\npop\npush 48\npush 7\ntop\ntop\ntop\ntop\npop\npop\npush 12\npush 37\ntop\npush 48\npush 25\npush 19\npush 19\ntop\ntop\npush 24\npush 22\npush 6\npush 2\npush 50\npush 36\npush 42\npop\npop\npop\npush 35\ntop\n",
+     "out": "empty\n7\n7\n7\n7\n7\n48\n12\n12\n12\n2\n6\n12\n19\n"
+    },
+    {
+     "in": "40\ntop\npop\npop\npop\npop\npush 16\npush 28\npush 45\ntop\ntop\npush 36\npop\npush 24\npush 10\npush 8\npush 22\npush 40\npop\npush 35\npop\npop\npop\npush 10\npush 31\npush 11\npush 29\ntop\npush 24\npush 11\npush 29\ntop\npop\npop\npush 50\npush 42\npush 34\npush 18\npush 1\npush 41\ntop\n",
+     "out": "empty\nempty\nempty\nempty\nempty\n16\n16\n16\n8\n10\n22\n24\n10\n10\n10\n11\n1\n"
+    }
+   ],
+   "want": "ds.heap-ops"
+  },
+  {
+   "id": "heap-max",
+   "st": "第一行 q，之後 q 行指令：push x、pop、top。維護一個最大堆積（優先佇列）：pop 輸出並移除最大值，top 輸出最大值；堆積空時輸出 EMPTY。",
+   "rw_st": "第一行 r，之後 r 行指令：push x、pop、top。維護一個最大堆積（優先佇列）：pop 輸出並移除最大值，top 輸出最大值；堆積空時輸出 EMPTY。",
+   "ref": "import heapq\nq = int(input())\nh = []\nfor _ in range(q):\n    p = input().split()\n    if p[0] == \"push\":\n        heapq.heappush(h, -1 * int(p[1]))\n    elif h:\n        print(-1 * (heapq.heappop(h) if p[0] == \"pop\" else h[0]))\n    else:\n        print(\"EMPTY\")",
+   "tests": [
+    {
+     "in": "8\ntop\ntop\npop\npop\npop\npush 48\ntop\ntop\n",
+     "out": "EMPTY\nEMPTY\nEMPTY\nEMPTY\nEMPTY\n48\n48\n"
+    },
+    {
+     "in": "10\ntop\ntop\npop\npush 50\npush 19\npush 19\ntop\npush 15\ntop\npop\n",
+     "out": "EMPTY\nEMPTY\nEMPTY\n50\n50\n50\n"
+    },
+    {
+     "in": "11\npop\npop\npop\npop\npop\npush 26\npush 40\npush 40\npush 17\ntop\npush 1\n",
+     "out": "EMPTY\nEMPTY\nEMPTY\nEMPTY\nEMPTY\n40\n"
+    },
+    {
+     "in": "12\npush 30\npush 27\ntop\ntop\ntop\ntop\ntop\npush 49\npush 43\npush 49\ntop\npop\n",
+     "out": "30\n30\n30\n30\n30\n49\n49\n"
+    },
+    {
+     "in": "4\ntop\ntop\ntop\ntop\n",
+     "out": "EMPTY\nEMPTY\nEMPTY\nEMPTY\n"
+    },
+    {
+     "in": "6\npush 24\npop\npush 30\npop\npop\npop\n",
+     "out": "24\n30\nEMPTY\nEMPTY\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "11\npop\npush 14\npush 13\npop\npop\npop\npop\npop\npush 26\npush 41\npop\n",
+     "out": "EMPTY\n14\n13\nEMPTY\nEMPTY\nEMPTY\n41\n"
+    },
+    {
+     "in": "27\npop\npush 28\npush 22\npush 16\npush 37\npop\npop\npop\npop\npop\npush 20\npush 24\npush 17\npush 37\ntop\npop\npush 47\npush 23\ntop\ntop\npop\npop\npop\npop\npop\npop\npop\n",
+     "out": "EMPTY\n37\n28\n22\n16\nEMPTY\n37\n37\n47\n47\n47\n24\n23\n20\n17\nEMPTY\nEMPTY\n"
+    }
+   ],
+   "want": "ds.heap-ops"
+  },
+  {
+   "id": "bst-in",
+   "st": "第一行 n，第二行 n 個整數，依序插入一棵二元搜尋樹（已存在的值略過）。輸出中序走訪，以空白分隔。",
+   "rw_st": "第一行 m，第二行 m 個整數，依序插入一棵二元搜尋樹（已存在的值略過）。輸出中序走訪，以空白分隔。",
+   "ref": "n = int(input())\na = list(map(int, input().split()))\nclass N:\n    def __init__(s, v):\n        s.v = v\n        s.l = s.r = None\nroot = None\nfor v in a:\n    if root is None:\n        root = N(v)\n        continue\n    u = root\n    while True:\n        if v == u.v and True:\n            break\n        if v < u.v:\n            if u.l is None:\n                u.l = N(v)\n                break\n            u = u.l\n        else:\n            if u.r is None:\n                u.r = N(v)\n                break\n            u = u.r\ndef go(u, mode):\n    if u is None:\n        return []\n    if mode == \"in\":\n        return go(u.l, mode) + [u.v] + go(u.r, mode)\n    if mode == \"pre\":\n        return [u.v] + go(u.l, mode) + go(u.r, mode)\n    return go(u.l, mode) + go(u.r, mode) + [u.v]\ndef ht(u):\n    return 0 if u is None else 1 + max(ht(u.l), ht(u.r))\ndef lv(u):\n    if u is None:\n        return 0\n    return 1 if u.l is None and u.r is None else lv(u.l) + lv(u.r)\nprint(*go(root, \"in\"))",
+   "tests": [
+    {
+     "in": "7\n19 7 15 19 14 13 5\n",
+     "out": "5 7 13 14 15 19\n"
+    },
+    {
+     "in": "1\n16\n",
+     "out": "16\n"
+    },
+    {
+     "in": "8\n20 16 8 16 11 15 10 18\n",
+     "out": "8 10 11 15 16 18 20\n"
+    },
+    {
+     "in": "4\n1 11 9 9\n",
+     "out": "1 9 11\n"
+    },
+    {
+     "in": "3\n13 5 12\n",
+     "out": "5 12 13\n"
+    },
+    {
+     "in": "1\n15\n",
+     "out": "15\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "23\n3 34 38 42 2 41 41 8 40 28 43 31 59 47 3 43 22 60 58 34 1 9 25\n",
+     "out": "1 2 3 8 9 22 25 28 31 34 38 40 41 42 43 47 58 59 60\n"
+    },
+    {
+     "in": "20\n52 7 55 35 50 53 9 49 37 5 12 32 19 31 11 3 42 26 54 18\n",
+     "out": "3 5 7 9 11 12 18 19 26 31 32 35 37 42 49 50 52 53 54 55\n"
+    }
+   ],
+   "want": "ds.bst"
+  },
+  {
+   "id": "bst-height",
+   "st": "第一行 n，第二行 n 個整數，依序插入一棵二元搜尋樹（已存在的值略過）。輸出樹的高度（只有根節點的樹高度為 1）。",
+   "rw_st": "第一行 m，第二行 m 個整數，依序插入一棵二元搜尋樹（已存在的值略過）。輸出樹的高度（只有根節點的樹高度為 1）。",
+   "ref": "n = int(input())\na = list(map(int, input().split()))\nclass N:\n    def __init__(s, v):\n        s.v = v\n        s.l = s.r = None\nroot = None\nfor v in a:\n    if root is None:\n        root = N(v)\n        continue\n    u = root\n    while True:\n        if v == u.v and True:\n            break\n        if v < u.v:\n            if u.l is None:\n                u.l = N(v)\n                break\n            u = u.l\n        else:\n            if u.r is None:\n                u.r = N(v)\n                break\n            u = u.r\ndef go(u, mode):\n    if u is None:\n        return []\n    if mode == \"in\":\n        return go(u.l, mode) + [u.v] + go(u.r, mode)\n    if mode == \"pre\":\n        return [u.v] + go(u.l, mode) + go(u.r, mode)\n    return go(u.l, mode) + go(u.r, mode) + [u.v]\ndef ht(u):\n    return 0 if u is None else 1 + max(ht(u.l), ht(u.r))\ndef lv(u):\n    if u is None:\n        return 0\n    return 1 if u.l is None and u.r is None else lv(u.l) + lv(u.r)\nprint(ht(root))",
+   "tests": [
+    {
+     "in": "10\n5 12 4 8 12 8 15 9 3 11\n",
+     "out": "5\n"
+    },
+    {
+     "in": "9\n14 13 1 1 9 13 5 9 1\n",
+     "out": "5\n"
+    },
+    {
+     "in": "1\n5\n",
+     "out": "1\n"
+    },
+    {
+     "in": "7\n16 16 20 12 20 4 16\n",
+     "out": "3\n"
+    },
+    {
+     "in": "2\n4 4\n",
+     "out": "1\n"
+    },
+    {
+     "in": "1\n15\n",
+     "out": "1\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "23\n43 3 19 6 41 57 1 33 45 7 35 26 10 22 10 18 10 33 33 60 28 52 16\n",
+     "out": "8\n"
+    },
+    {
+     "in": "39\n27 26 6 17 9 4 16 23 23 27 19 47 47 15 59 51 47 35 51 31 59 27 31 39 35 27 55 31 43 31 51 23 14 5 17 20 6 12 36\n",
+     "out": "9\n"
+    }
+   ],
+   "want": "ds.bst"
+  },
+  {
+   "id": "bst-pre-dup",
+   "st": "第一行 n，第二行 n 個整數，依序插入一棵二元搜尋樹（相同的值放到右子樹）。輸出前序走訪，以空白分隔。",
+   "rw_st": "第一行 m，第二行 m 個整數，依序插入一棵二元搜尋樹（相同的值放到右子樹）。輸出前序走訪，以空白分隔。",
+   "ref": "n = int(input())\na = list(map(int, input().split()))\nclass N:\n    def __init__(s, v):\n        s.v = v\n        s.l = s.r = None\nroot = None\nfor v in a:\n    if root is None:\n        root = N(v)\n        continue\n    u = root\n    while True:\n        if v == u.v and False:\n            break\n        if v < u.v:\n            if u.l is None:\n                u.l = N(v)\n                break\n            u = u.l\n        else:\n            if u.r is None:\n                u.r = N(v)\n                break\n            u = u.r\ndef go(u, mode):\n    if u is None:\n        return []\n    if mode == \"in\":\n        return go(u.l, mode) + [u.v] + go(u.r, mode)\n    if mode == \"pre\":\n        return [u.v] + go(u.l, mode) + go(u.r, mode)\n    return go(u.l, mode) + go(u.r, mode) + [u.v]\ndef ht(u):\n    return 0 if u is None else 1 + max(ht(u.l), ht(u.r))\ndef lv(u):\n    if u is None:\n        return 0\n    return 1 if u.l is None and u.r is None else lv(u.l) + lv(u.r)\nprint(*go(root, \"pre\"))",
+   "tests": [
+    {
+     "in": "10\n4 3 9 7 5 9 17 1 1 17\n",
+     "out": "4 3 1 1 9 7 5 9 17 17\n"
+    },
+    {
+     "in": "7\n9 12 20 12 20 4 5\n",
+     "out": "9 4 5 12 20 12 20\n"
+    },
+    {
+     "in": "3\n5 1 13\n",
+     "out": "5 1 13\n"
+    },
+    {
+     "in": "1\n17\n",
+     "out": "17\n"
+    },
+    {
+     "in": "7\n1 17 17 9 1 20 3\n",
+     "out": "1 17 9 1 3 17 20\n"
+    },
+    {
+     "in": "5\n11 11 19 19 10\n",
+     "out": "11 10 11 19 19\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "34\n57 47 3 7 7 23 59 15 18 38 30 10 10 1 37 49 33 1 8 27 43 51 7 23 47 55 15 35 59 19 19 3 3 15\n",
+     "out": "57 47 3 1 1 7 3 3 7 23 15 10 8 7 10 18 15 15 19 19 38 30 27 23 37 33 35 43 49 47 51 55 59 59\n"
+    },
+    {
+     "in": "23\n39 2 30 37 17 49 25 5 53 9 57 37 16 56 4 8 59 59 15 23 15 39 3\n",
+     "out": "39 2 30 17 5 4 3 9 8 16 15 15 25 23 37 37 49 39 53 57 56 59 59\n"
+    }
+   ],
+   "want": "ds.bst"
+  },
+  {
+   "id": "trie-prefix",
+   "st": "第一行 n q，第二行 n 個單字，第三行 q 個查詢字串。用前綴樹（Trie）處理：對每個查詢輸出以它為前綴的單字個數（相同的單字重複出現各算一次），每行一個答案。",
+   "rw_st": "第一行 m r，第二行 m 個單字，第三行 r 個查詢字串。用前綴樹（Trie）處理：對每個查詢輸出以它為前綴的單字個數（相同的單字重複出現各算一次），每行一個答案。",
+   "ref": "n, q = map(int, input().split())\nw = input().split()\nfor s in input().split():\n    print(sum(1 for x in w if x.startswith(s)))",
+   "tests": [
+    {
+     "in": "3 1\ncaa cc bbb\ncc\n",
+     "out": "1\n"
+    },
+    {
+     "in": "6 3\nba a c c a a\nbbb ba c\n",
+     "out": "0\n1\n2\n"
+    },
+    {
+     "in": "3 1\ncab ccc ca\ncc\n",
+     "out": "1\n"
+    },
+    {
+     "in": "2 3\nb a\naca ca cc\n",
+     "out": "0\n0\n0\n"
+    },
+    {
+     "in": "5 1\nccca cca bc cb ba\nb\n",
+     "out": "2\n"
+    },
+    {
+     "in": "1 1\nc\ncba\n",
+     "out": "0\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "5 8\nccbc aba ab b b\ncaa c cc bba ac aab c b\n",
+     "out": "0\n1\n1\n0\n0\n0\n1\n2\n"
+    },
+    {
+     "in": "3 15\nb a abcc\nbb bb c b c ac ab bb abc bab b a ccb bbc a\n",
+     "out": "0\n0\n0\n1\n0\n0\n1\n0\n1\n0\n1\n2\n0\n0\n2\n"
+    }
+   ],
+   "want": "ds.trie"
+  },
+  {
+   "id": "dsu-same",
+   "st": "第一行 n q，之後 q 行指令：union a b、same a b。一開始每個編號 1 到 n 各自一組；union 把 a、b 所在的組合併；same 判斷 a、b 是否在同一組，是就輸出 YES，否則輸出 NO。",
+   "rw_st": "第一行 m r，之後 r 行指令：union a b、same a b。一開始每個編號 1 到 m 各自一組；union 把 a、b 所在的組合併；same 判斷 a、b 是否在同一組，是就輸出 YES，否則輸出 NO。",
+   "ref": "n, q = map(int, input().split())\np = list(range(n + 1))\ndef f(x):\n    while p[x] != x:\n        p[x] = p[p[x]]\n        x = p[x]\n    return x\nfor _ in range(q):\n    o, a, b = input().split()\n    a, b = int(a), int(b)\n    if o == \"union\":\n        p[f(a)] = f(b)\n    else:\n        print(\"YES\" if f(a) == f(b) else \"NO\")",
+   "tests": [
+    {
+     "in": "3 10\nunion 2 1\nsame 2 3\nsame 1 2\nsame 2 1\nsame 2 3\nsame 2 2\nsame 3 3\nunion 3 2\nunion 2 2\nsame 1 1\n",
+     "out": "NO\nYES\nYES\nNO\nYES\nYES\nYES\n"
+    },
+    {
+     "in": "5 9\nsame 2 3\nunion 1 1\nunion 2 5\nunion 1 4\nsame 4 1\nunion 4 3\nsame 1 2\nunion 3 5\nunion 2 1\n",
+     "out": "NO\nYES\nNO\n"
+    },
+    {
+     "in": "4 11\nunion 4 4\nsame 4 4\nsame 3 3\nsame 3 2\nsame 1 1\nunion 4 4\nsame 3 3\nsame 3 2\nsame 2 2\nunion 1 1\nsame 1 1\n",
+     "out": "YES\nYES\nNO\nYES\nYES\nNO\nYES\nYES\n"
+    },
+    {
+     "in": "5 3\nsame 2 4\nunion 1 1\nunion 3 2\n",
+     "out": "NO\n"
+    },
+    {
+     "in": "8 4\nsame 3 3\nsame 6 8\nsame 5 5\nsame 5 8\n",
+     "out": "YES\nNO\nYES\nNO\n"
+    },
+    {
+     "in": "7 4\nsame 4 5\nsame 2 5\nunion 4 3\nunion 6 7\n",
+     "out": "NO\nNO\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "8 34\nsame 2 6\nsame 6 2\nunion 2 4\nsame 4 8\nsame 8 4\nsame 4 3\nunion 1 4\nsame 4 8\nunion 3 1\nsame 5 5\nsame 8 4\nsame 7 7\nsame 6 2\nunion 2 1\nunion 4 7\nsame 7 2\nunion 2 6\nsame 6 2\nsame 2 6\nsame 5 5\nunion 5 5\nunion 7 7\nsame 7 7\nunion 2 6\nunion 1 7\nsame 3 5\nsame 5 5\nsame 5 5\nsame 5 5\nsame 5 8\nunion 8 4\nsame 4 8\nunion 3 3\nunion 3 1\n",
+     "out": "NO\nNO\nNO\nNO\nNO\nNO\nYES\nNO\nYES\nNO\nYES\nYES\nYES\nYES\nYES\nNO\nYES\nYES\nYES\nNO\nYES\n"
+    },
+    {
+     "in": "21 35\nunion 19 3\nsame 7 20\nunion 14 15\nsame 5 12\nunion 6 1\nsame 11 14\nsame 2 14\nsame 21 11\nsame 19 13\nsame 13 18\nunion 14 3\nsame 4 2\nsame 8 21\nunion 17 14\nsame 12 10\nsame 13 3\nsame 13 5\nsame 15 13\nsame 10 13\nunion 4 2\nsame 5 11\nunion 1 16\nsame 4 4\nunion 3 4\nunion 17 8\nunion 3 15\nsame 13 2\nunion 9 16\nsame 16 12\nsame 3 17\nsame 16 13\nsame 19 17\nsame 8 19\nunion 8 16\nsame 11 2\n",
+     "out": "NO\nNO\nNO\nNO\nNO\nNO\nNO\nNO\nNO\nNO\nNO\nNO\nNO\nNO\nNO\nYES\nNO\nNO\nYES\nNO\nYES\nYES\nNO\n"
+    }
+   ],
+   "want": "ds.dsu-ops"
+  },
+  {
+   "id": "linked-all",
+   "st": "第一行 q，之後 q 行指令：addfirst x、addlast x、remove x、reverse、print。維護一個單向鏈結串列：remove 刪掉第一個值為 x 的節點（沒有就不動）；print 輸出整個串列，元素以空白分隔，串列是空的就輸出 empty。",
+   "rw_st": "第一行 r，之後 r 行指令：addfirst x、addlast x、remove x、reverse、print。維護一個單向鏈結串列：remove 刪掉第一個值為 x 的節點（沒有就不動）；print 輸出整個串列，元素以空白分隔，串列是空的就輸出 empty。",
+   "ref": "q = int(input())\nL = []\nfor _ in range(q):\n    p = input().split()\n    if p[0] == \"addfirst\":\n        L.insert(0, int(p[1]))\n    elif p[0] == \"addlast\":\n        L.append(int(p[1]))\n    elif p[0] == \"remove\":\n        if int(p[1]) in L:\n            L.remove(int(p[1]))\n    elif p[0] == \"reverse\":\n        L.reverse()\n    else:\n        print(*L) if L else print(\"empty\")",
+   "tests": [
+    {
+     "in": "7\nreverse\naddfirst 4\nremove 5\nprint\naddlast 6\naddlast 5\nremove 3\n",
+     "out": "4\n"
+    },
+    {
+     "in": "6\nreverse\nprint\nremove 3\naddfirst 1\nreverse\naddfirst 2\n",
+     "out": "empty\n"
+    },
+    {
+     "in": "9\nremove 5\nremove 3\nprint\naddlast 2\nreverse\nprint\naddlast 2\nprint\naddfirst 5\n",
+     "out": "empty\n2\n2 2\n"
+    },
+    {
+     "in": "9\naddfirst 5\nprint\naddlast 1\naddfirst 4\nprint\nreverse\naddfirst 4\nremove 1\nprint\n",
+     "out": "5\n4 5 1\n4 5 4\n"
+    },
+    {
+     "in": "4\nreverse\naddlast 1\nprint\nreverse\n",
+     "out": "1\n"
+    },
+    {
+     "in": "11\nprint\nprint\nremove 1\nremove 3\nremove 3\nprint\nprint\nprint\naddlast 2\naddlast 6\nprint\n",
+     "out": "empty\nempty\nempty\nempty\nempty\n2 6\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "38\nreverse\nprint\naddfirst 5\nprint\nremove 6\nprint\nreverse\naddfirst 2\naddfirst 5\nprint\naddlast 6\naddlast 5\naddlast 6\nreverse\naddlast 2\nremove 5\naddfirst 5\nreverse\nremove 5\naddfirst 3\naddlast 4\nremove 6\nprint\nremove 1\nprint\nreverse\nprint\nremove 3\nprint\naddlast 5\nremove 2\nprint\nremove 1\nremove 3\nremove 5\nprint\nremove 1\nprint\n",
+     "out": "empty\n5\n5\n5 2 5\n3 2 2 5 6 5 4\n3 2 2 5 6 5 4\n4 5 6 5 2 2 3\n4 5 6 5 2 2\n4 5 6 5 2 5\n4 6 5 2 5\n4 6 5 2 5\n"
+    },
+    {
+     "in": "3\nprint\naddlast 6\nprint\n",
+     "out": "empty\n6\n"
+    }
+   ],
+   "want": "ds.linked-list"
+  },
+  {
+   "id": "ho-heap-max2",
+   "st": "有 q 筆事件（第一行是 q），每行是 add x、extract 或 peek 其中之一。系統是個優先權最大者先出的佇列：add 放入整數 x，extract 輸出並拿走目前最大的數，peek 輸出目前最大的數但不拿走；佇列空的時候，extract 與 peek 都輸出 none。",
+   "rw_st": null,
+   "ref": "import heapq\nq = int(input())\nh = []\nfor _ in range(q):\n    p = input().split()\n    if p[0] == \"add\":\n        heapq.heappush(h, -int(p[1]))\n    elif not h:\n        print(\"none\")\n    elif p[0] == \"extract\":\n        print(-heapq.heappop(h))\n    else:\n        print(-h[0])",
+   "tests": [
+    {
+     "in": "6\nadd 16\npeek\npeek\nextract\nadd 41\nextract\n",
+     "out": "16\n16\n16\n41\n"
+    },
+    {
+     "in": "7\nadd 18\nadd 32\nadd 21\nadd 35\nadd 9\npeek\npeek\n",
+     "out": "35\n35\n"
+    },
+    {
+     "in": "6\nadd 45\nadd 42\nadd 23\nextract\nadd 14\nadd 8\n",
+     "out": "45\n"
+    },
+    {
+     "in": "9\npeek\nextract\nadd 11\nadd 36\nadd 44\nadd 7\nadd 25\npeek\npeek\n",
+     "out": "none\nnone\n44\n44\n"
+    },
+    {
+     "in": "3\nextract\nadd 30\nadd 20\n",
+     "out": "none\n"
+    },
+    {
+     "in": "11\nadd 45\npeek\npeek\nadd 28\npeek\npeek\npeek\nextract\nextract\nextract\nadd 50\n",
+     "out": "45\n45\n45\n45\n45\n45\n28\nnone\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "27\npeek\nadd 43\nadd 16\nadd 28\nextract\nextract\nextract\nadd 31\nadd 44\nadd 20\nadd 29\npeek\nextract\nadd 6\nadd 24\nadd 15\nadd 23\npeek\npeek\nextract\nadd 48\nadd 6\nadd 36\nadd 4\nadd 14\nextract\nadd 46\n",
+     "out": "none\n43\n28\n16\n44\n44\n31\n31\n31\n48\n"
+    },
+    {
+     "in": "36\nadd 49\nadd 15\nadd 49\nadd 31\npeek\nextract\nextract\nadd 28\nextract\nadd 25\nadd 13\npeek\npeek\npeek\nextract\nadd 40\nextract\nadd 11\nadd 45\nadd 49\npeek\npeek\nextract\nadd 47\nadd 45\nadd 5\nextract\nextract\nextract\nextract\nextract\nadd 6\nadd 27\npeek\nadd 33\nadd 20\n",
+     "out": "49\n49\n49\n31\n28\n28\n28\n28\n40\n49\n49\n49\n47\n45\n45\n25\n15\n27\n"
+    }
+   ],
+   "split": "holdout"
+  },
+  {
+   "id": "ho-bst-edges",
+   "st": "第一行 n，第二行 n 個不重複的整數，依序當成鍵值插入二元搜尋樹。輸出樹高，定義為從根到最深節點經過的邊數（只有一個節點時為 0）。",
+   "rw_st": null,
+   "ref": "n = int(input())\na = list(map(int, input().split()))\nclass N:\n    def __init__(s, v):\n        s.v = v\n        s.l = s.r = None\nroot = None\nfor v in a:\n    if root is None:\n        root = N(v)\n        continue\n    u = root\n    while True:\n        if v == u.v and True:\n            break\n        if v < u.v:\n            if u.l is None:\n                u.l = N(v)\n                break\n            u = u.l\n        else:\n            if u.r is None:\n                u.r = N(v)\n                break\n            u = u.r\ndef go(u, mode):\n    if u is None:\n        return []\n    if mode == \"in\":\n        return go(u.l, mode) + [u.v] + go(u.r, mode)\n    if mode == \"pre\":\n        return [u.v] + go(u.l, mode) + go(u.r, mode)\n    return go(u.l, mode) + go(u.r, mode) + [u.v]\ndef ht(u):\n    return 0 if u is None else 1 + max(ht(u.l), ht(u.r))\ndef lv(u):\n    if u is None:\n        return 0\n    return 1 if u.l is None and u.r is None else lv(u.l) + lv(u.r)\nprint(ht(root) - 1)",
+   "tests": [
+    {
+     "in": "3\n28 48 68\n",
+     "out": "2\n"
+    },
+    {
+     "in": "7\n11 19 43 35 51 59 78\n",
+     "out": "5\n"
+    },
+    {
+     "in": "7\n22 34 46 74 17 1 28\n",
+     "out": "3\n"
+    },
+    {
+     "in": "2\n36 19\n",
+     "out": "1\n"
+    },
+    {
+     "in": "1\n19\n",
+     "out": "0\n"
+    },
+    {
+     "in": "6\n34 14 42 70 77 51\n",
+     "out": "3\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "21\n3 59 67 70 34 78 42 2 46 58 22 66 10 45 29 24 12 32 52 79 55\n",
+     "out": "7\n"
+    },
+    {
+     "in": "17\n2 20 74 38 66 22 34 46 58 54 18 9 73 57 25 52 63\n",
+     "out": "8\n"
+    }
+   ],
+   "split": "holdout"
+  },
+  {
+   "id": "ho-bst-leaves",
+   "st": "第一行 n，第二行 n 個整數，依序插入二元搜尋樹，重複的值直接丟掉。請輸出這棵樹有幾個葉節點（沒有子節點的節點）。",
+   "rw_st": null,
+   "ref": "n = int(input())\na = list(map(int, input().split()))\nclass N:\n    def __init__(s, v):\n        s.v = v\n        s.l = s.r = None\nroot = None\nfor v in a:\n    if root is None:\n        root = N(v)\n        continue\n    u = root\n    while True:\n        if v == u.v and True:\n            break\n        if v < u.v:\n            if u.l is None:\n                u.l = N(v)\n                break\n            u = u.l\n        else:\n            if u.r is None:\n                u.r = N(v)\n                break\n            u = u.r\ndef go(u, mode):\n    if u is None:\n        return []\n    if mode == \"in\":\n        return go(u.l, mode) + [u.v] + go(u.r, mode)\n    if mode == \"pre\":\n        return [u.v] + go(u.l, mode) + go(u.r, mode)\n    return go(u.l, mode) + go(u.r, mode) + [u.v]\ndef ht(u):\n    return 0 if u is None else 1 + max(ht(u.l), ht(u.r))\ndef lv(u):\n    if u is None:\n        return 0\n    return 1 if u.l is None and u.r is None else lv(u.l) + lv(u.r)\nprint(lv(root))",
+   "tests": [
+    {
+     "in": "1\n3\n",
+     "out": "1\n"
+    },
+    {
+     "in": "3\n15 19 15\n",
+     "out": "1\n"
+    },
+    {
+     "in": "5\n7 15 19 14 2\n",
+     "out": "3\n"
+    },
+    {
+     "in": "2\n17 5\n",
+     "out": "1\n"
+    },
+    {
+     "in": "9\n20 20 8 4 4 12 12 12 8\n",
+     "out": "2\n"
+    },
+    {
+     "in": "9\n11 19 6 6 6 1 5 9 5\n",
+     "out": "3\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "37\n49 52 32 51 55 55 31 51 10 30 49 27 39 6 26 17 13 21 33 57 16 60 4 52 15 54 39 39 11 11 35 10 38 54 37 13 9\n",
+     "out": "9\n"
+    },
+    {
+     "in": "37\n45 33 1 17 25 37 52 11 27 42 54 37 45 13 53 25 44 43 23 3 39 27 43 23 51 7 3 19 39 51 23 43 23 59 27 3 43\n",
+     "out": "9\n"
+    }
+   ],
+   "split": "holdout"
+  },
+  {
+   "id": "ho-hash-quad-probes",
+   "st": "第一行 m q，之後 q 行指令：insert x、find x、delete x。使用大小為 m 的雜湊表，雜湊函數 x mod m，碰撞時用二次探測（第 s 次嘗試位置為 (x mod m + s²) mod m，s 從 0 起）。delete 把格子標成墓碑；insert 先確認沒有重複，且可使用第一個遇到的墓碑格。對每個 find 輸出 x 的位置，找不到輸出 -1。",
+   "rw_st": null,
+   "ref": "m, q = map(int, input().split())\nT = [None] * m\nfor _ in range(q):\n    op, x = input().split()\n    x = int(x)\n    found = -1\n    pr = 0\n    free = -1\n    for s in range(m):\n        i = (x % m + s * s) % m\n        pr += 1\n        if T[i] is None:\n            if free < 0:\n                free = i\n            break\n        if T[i] == \"T\":\n            if free < 0:\n                free = i\n        elif T[i] == x:\n            found = i\n            break\n    if op == \"insert\":\n        if found < 0 and free >= 0:\n            T[free] = x\n    elif op == \"delete\":\n        if found >= 0:\n            T[found] = \"T\"\n    else:\n        print(found)",
+   "tests": [
+    {
+     "in": "7 11\ninsert 7\ninsert 2\ninsert 7\ninsert 7\ninsert 13\ndelete 11\ndelete 3\ndelete 2\ndelete 20\nfind 4\ninsert 2\n",
+     "out": "-1\n"
+    },
+    {
+     "in": "5 7\ninsert 2\ninsert 8\ninsert 20\nfind 14\nfind 19\ninsert 9\ninsert 3\n",
+     "out": "-1\n-1\n"
+    },
+    {
+     "in": "11 8\ndelete 0\ninsert 10\ninsert 6\ndelete 15\ndelete 18\ndelete 17\ndelete 11\nfind 5\n",
+     "out": "-1\n"
+    },
+    {
+     "in": "8 13\ndelete 12\nfind 17\ninsert 7\ninsert 4\ninsert 0\ndelete 17\ndelete 15\nfind 11\nfind 3\nfind 12\nfind 3\nfind 20\nfind 16\n",
+     "out": "-1\n-1\n-1\n-1\n-1\n-1\n-1\n"
+    },
+    {
+     "in": "5 14\ninsert 1\ninsert 19\ninsert 6\nfind 3\nfind 10\ninsert 20\ninsert 12\ninsert 5\ninsert 10\ninsert 15\ninsert 10\ndelete 2\ndelete 11\ndelete 9\n",
+     "out": "-1\n-1\n"
+    },
+    {
+     "in": "11 13\nfind 7\nfind 20\nfind 2\nfind 9\ninsert 12\ninsert 2\ninsert 19\ninsert 9\ninsert 17\nfind 17\nfind 2\ninsert 8\ninsert 3\n",
+     "out": "-1\n-1\n-1\n-1\n6\n2\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "5 10\ninsert 7\ndelete 20\ndelete 3\nfind 15\nfind 5\nfind 34\nfind 40\nfind 9\nfind 1\nfind 21\n",
+     "out": "-1\n-1\n-1\n-1\n-1\n-1\n-1\n"
+    },
+    {
+     "in": "7 33\ninsert 7\ninsert 37\ninsert 18\ninsert 16\ninsert 21\ninsert 31\ndelete 26\ndelete 7\ninsert 19\ninsert 3\ninsert 9\ninsert 32\ninsert 27\ninsert 18\ninsert 14\ninsert 17\ndelete 30\ninsert 12\ninsert 30\ndelete 2\nfind 6\ninsert 10\ninsert 29\ninsert 17\ninsert 12\ninsert 33\ninsert 32\ndelete 1\ndelete 32\ndelete 15\ndelete 11\nfind 35\nfind 2\n",
+     "out": "-1\n-1\n-1\n"
+    }
+   ],
+   "split": "holdout"
+  },
+  {
+   "id": "ho-lru-getonly",
+   "st": "第一行 cap q，之後 q 行指令：get k、put k v。實作容量 cap 的 LRU 快取：get 與 put 都算「使用」，被使用的鍵變成最新；put 新鍵遇到已滿，先丟掉最舊的鍵。get 找不到時輸出 -1，找到輸出值。",
+   "rw_st": null,
+   "ref": "cap, q = map(int, input().split())\nd = {}\nO = []\nfor _ in range(q):\n    p = input().split()\n    k = int(p[1])\n    if p[0] == \"get\":\n        if k in d:\n            O.remove(k)\n            O.append(k)\n            print(d[k])\n        else:\n            print(-1)\n    else:\n        if k in d:\n            d[k] = int(p[2])\n            O.remove(k)\n            O.append(k)\n        else:\n            if len(O) >= cap:\n                del d[O.pop(0)]\n            d[k] = int(p[2])\n            O.append(k)",
+   "tests": [
+    {
+     "in": "2 10\nget 3\nput 5 43\nput 3 67\nput 1 45\nput 4 3\nget 4\nget 5\nput 4 4\nget 5\nput 2 23\n",
+     "out": "-1\n3\n-1\n-1\n"
+    },
+    {
+     "in": "2 7\nget 5\nput 5 47\nput 5 57\nget 2\nput 5 95\nget 4\nget 6\n",
+     "out": "-1\n-1\n-1\n-1\n"
+    },
+    {
+     "in": "2 5\nget 4\nget 6\nget 2\nput 1 51\nput 2 92\n",
+     "out": "-1\n-1\n-1\n"
+    },
+    {
+     "in": "3 6\nget 4\nget 4\nget 1\nput 5 38\nput 3 58\nget 4\n",
+     "out": "-1\n-1\n-1\n-1\n"
+    },
+    {
+     "in": "3 5\nput 3 43\nput 5 47\nput 3 8\nput 3 38\nget 6\n",
+     "out": "-1\n"
+    },
+    {
+     "in": "1 5\nput 3 67\nput 6 13\nput 5 8\nget 2\nput 1 33\n",
+     "out": "-1\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "2 13\nget 4\nput 5 34\nput 2 59\nput 5 69\nput 1 28\nput 6 14\nput 1 48\nput 1 89\nget 2\nget 2\nget 3\nput 1 43\nget 2\n",
+     "out": "-1\n-1\n-1\n-1\n-1\n"
+    },
+    {
+     "in": "1 35\nput 6 86\nget 6\nget 6\nget 3\nput 1 77\nput 3 8\nget 4\nget 6\nget 6\nget 4\nget 2\nput 5 48\nput 2 57\nget 2\nput 3 20\nget 2\nget 4\nget 3\nput 5 28\nget 1\nput 3 31\nput 3 58\nput 1 93\nput 5 67\nget 6\nget 6\nget 1\nput 1 34\nget 4\nget 2\nget 6\nget 2\nget 4\nget 4\nput 1 69\n",
+     "out": "86\n86\n-1\n-1\n-1\n-1\n-1\n-1\n57\n-1\n-1\n20\n-1\n-1\n-1\n-1\n-1\n-1\n-1\n-1\n-1\n-1\n"
+    }
+   ],
+   "split": "holdout"
+  },
+  {
+   "id": "avl-in",
+   "st": "第一行 n，第二行 n 個互不相同的整數，依序插入一棵 AVL 樹（自平衡二元搜尋樹）：每次插入後，若某個節點左右子樹的高度差超過 1，就用旋轉（LL 右旋、RR 左旋、LR 與 RL 雙旋轉）恢復平衡。輸出中序走訪，以空白分隔。",
+   "rw_st": "第一行 m，第二行 m 個互不相同的整數，依序插入一棵 AVL 樹（自平衡二元搜尋樹）：每次插入後，若某個節點左右子樹的高度差超過 1，就用旋轉（LL 右旋、RR 左旋、LR 與 RL 雙旋轉）恢復平衡。輸出中序走訪，以空白分隔。",
+   "ref": "import sys\nsys.setrecursionlimit(10000)\nn = int(input())\na = list(map(int, input().split()))\nrot = [0]\nclass Nd:\n    def __init__(s, v):\n        s.v = v\n        s.l = None\n        s.r = None\n        s.h = 1\ndef h(t):\n    return t.h if t else 0\ndef upd(t):\n    t.h = 1 + max(h(t.l), h(t.r))\ndef rr(y):\n    x = y.l\n    y.l = x.r\n    x.r = y\n    upd(y)\n    upd(x)\n    return x\ndef rl(x):\n    y = x.r\n    x.r = y.l\n    y.l = x\n    upd(x)\n    upd(y)\n    return y\ndef ins(t, v):\n    if t is None:\n        return Nd(v)\n    if v == t.v:\n        return t\n    if v < t.v:\n        t.l = ins(t.l, v)\n    else:\n        t.r = ins(t.r, v)\n    upd(t)\n    b = h(t.l) - h(t.r)\n    if b > 1:\n        if h(t.l.l) < h(t.l.r):\n            t.l = rl(t.l)\n            rot[0] += 1\n        t = rr(t)\n        rot[0] += 1\n    elif b < -1:\n        if h(t.r.r) < h(t.r.l):\n            t.r = rr(t.r)\n            rot[0] += 1\n        t = rl(t)\n        rot[0] += 1\n    return t\ndef ino(t):\n    return ino(t.l) + [t.v] + ino(t.r) if t else []\ndef pre(t):\n    return [t.v] + pre(t.l) + pre(t.r) if t else []\nroot = None\nfor v in a:\n    root = ins(root, v)\nprint(*ino(root))\n",
+   "tests": [
+    {
+     "in": "9\n56 15 51 43 39 7 23 35 47\n",
+     "out": "7 15 23 35 39 43 47 51 56\n"
+    },
+    {
+     "in": "8\n58 2 53 9 49 5 40 24\n",
+     "out": "2 5 9 24 40 49 53 58\n"
+    },
+    {
+     "in": "8\n12 17 20 24 25 32 40 57\n",
+     "out": "12 17 20 24 25 32 40 57\n"
+    },
+    {
+     "in": "7\n3 8 15 45 52 55 57\n",
+     "out": "3 8 15 45 52 55 57\n"
+    },
+    {
+     "in": "9\n1 57 53 44 39 55 35 3 7\n",
+     "out": "1 3 7 35 39 44 53 55 57\n"
+    },
+    {
+     "in": "5\n11 34 38 50 14\n",
+     "out": "11 14 34 38 50\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "30\n6 26 54 2 30 34 10 22 38 46 42 41 27 45 53 36 23 59 19 47 11 51 31 39 13 1 44 32 55 25\n",
+     "out": "1 2 6 10 11 13 19 22 23 25 26 27 30 31 32 34 36 38 39 41 42 44 45 46 47 51 53 54 55 59\n"
+    },
+    {
+     "in": "24\n56 16 3 39 43 50 58 38 42 6 30 57 29 21 11 34 46 22 31 47 27 19 35 28\n",
+     "out": "3 6 11 16 19 21 22 27 28 29 30 31 34 35 38 39 42 43 46 47 50 56 57 58\n"
+    }
+   ],
+   "want": "ds.avl"
+  },
+  {
+   "id": "avl-pre",
+   "st": "第一行 n，第二行 n 個互不相同的整數，依序插入一棵 AVL 樹（自平衡二元搜尋樹）：每次插入後，若某個節點左右子樹的高度差超過 1，就用旋轉（LL 右旋、RR 左旋、LR 與 RL 雙旋轉）恢復平衡。輸出前序走訪（先根、再左、再右），以空白分隔。",
+   "rw_st": null,
+   "ref": "import sys\nsys.setrecursionlimit(10000)\nn = int(input())\na = list(map(int, input().split()))\nrot = [0]\nclass Nd:\n    def __init__(s, v):\n        s.v = v\n        s.l = None\n        s.r = None\n        s.h = 1\ndef h(t):\n    return t.h if t else 0\ndef upd(t):\n    t.h = 1 + max(h(t.l), h(t.r))\ndef rr(y):\n    x = y.l\n    y.l = x.r\n    x.r = y\n    upd(y)\n    upd(x)\n    return x\ndef rl(x):\n    y = x.r\n    x.r = y.l\n    y.l = x\n    upd(x)\n    upd(y)\n    return y\ndef ins(t, v):\n    if t is None:\n        return Nd(v)\n    if v == t.v:\n        return t\n    if v < t.v:\n        t.l = ins(t.l, v)\n    else:\n        t.r = ins(t.r, v)\n    upd(t)\n    b = h(t.l) - h(t.r)\n    if b > 1:\n        if h(t.l.l) < h(t.l.r):\n            t.l = rl(t.l)\n            rot[0] += 1\n        t = rr(t)\n        rot[0] += 1\n    elif b < -1:\n        if h(t.r.r) < h(t.r.l):\n            t.r = rr(t.r)\n            rot[0] += 1\n        t = rl(t)\n        rot[0] += 1\n    return t\ndef ino(t):\n    return ino(t.l) + [t.v] + ino(t.r) if t else []\ndef pre(t):\n    return [t.v] + pre(t.l) + pre(t.r) if t else []\nroot = None\nfor v in a:\n    root = ins(root, v)\nprint(*pre(root))\n",
+   "tests": [
+    {
+     "in": "10\n12 60 23 19 7 3 59 14 24 58\n",
+     "out": "23 12 7 3 19 14 59 24 58 60\n"
+    },
+    {
+     "in": "4\n28 36 44 16\n",
+     "out": "36 28 16 44\n"
+    },
+    {
+     "in": "10\n2 17 22 24 30 39 41 47 51 54\n",
+     "out": "24 17 2 22 47 39 30 41 51 54\n"
+    },
+    {
+     "in": "5\n9 12 16 17 41\n",
+     "out": "12 9 17 16 41\n"
+    },
+    {
+     "in": "10\n2 6 8 10 26 36 43 48 50 54\n",
+     "out": "10 6 2 8 48 36 26 43 50 54\n"
+    },
+    {
+     "in": "1\n13\n",
+     "out": "13\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "3\n5 44 45\n",
+     "out": "44 5 45\n"
+    },
+    {
+     "in": "25\n35 19 43 23 42 38 30 53 5 41 17 57 45 16 20 28 24 60 55 7 59 51 47 39 11\n",
+     "out": "35 17 7 5 16 11 23 19 20 28 24 30 53 42 39 38 41 45 43 51 47 57 55 60 59\n"
+    }
+   ],
+   "want": "ds.avl"
+  },
+  {
+   "id": "avl-h",
+   "st": "第一行 n，第二行 n 個互不相同的整數，依序插入一棵 AVL 樹（自平衡二元搜尋樹）：每次插入後，若某個節點左右子樹的高度差超過 1，就用旋轉（LL 右旋、RR 左旋、LR 與 RL 雙旋轉）恢復平衡。輸出整棵樹的高度（只有一個節點時高度為 1）。",
+   "rw_st": null,
+   "ref": "import sys\nsys.setrecursionlimit(10000)\nn = int(input())\na = list(map(int, input().split()))\nrot = [0]\nclass Nd:\n    def __init__(s, v):\n        s.v = v\n        s.l = None\n        s.r = None\n        s.h = 1\ndef h(t):\n    return t.h if t else 0\ndef upd(t):\n    t.h = 1 + max(h(t.l), h(t.r))\ndef rr(y):\n    x = y.l\n    y.l = x.r\n    x.r = y\n    upd(y)\n    upd(x)\n    return x\ndef rl(x):\n    y = x.r\n    x.r = y.l\n    y.l = x\n    upd(x)\n    upd(y)\n    return y\ndef ins(t, v):\n    if t is None:\n        return Nd(v)\n    if v == t.v:\n        return t\n    if v < t.v:\n        t.l = ins(t.l, v)\n    else:\n        t.r = ins(t.r, v)\n    upd(t)\n    b = h(t.l) - h(t.r)\n    if b > 1:\n        if h(t.l.l) < h(t.l.r):\n            t.l = rl(t.l)\n            rot[0] += 1\n        t = rr(t)\n        rot[0] += 1\n    elif b < -1:\n        if h(t.r.r) < h(t.r.l):\n            t.r = rr(t.r)\n            rot[0] += 1\n        t = rl(t)\n        rot[0] += 1\n    return t\ndef ino(t):\n    return ino(t.l) + [t.v] + ino(t.r) if t else []\ndef pre(t):\n    return [t.v] + pre(t.l) + pre(t.r) if t else []\nroot = None\nfor v in a:\n    root = ins(root, v)\nprint(h(root))\n",
+   "tests": [
+    {
+     "in": "3\n47 3 35\n",
+     "out": "2\n"
+    },
+    {
+     "in": "7\n3 7 11 27 31 35 47\n",
+     "out": "3\n"
+    },
+    {
+     "in": "3\n19 55 59\n",
+     "out": "2\n"
+    },
+    {
+     "in": "5\n55 7 15 39 51\n",
+     "out": "3\n"
+    },
+    {
+     "in": "3\n15 19 14\n",
+     "out": "2\n"
+    },
+    {
+     "in": "9\n25 45 49 9 4 52 56 41 32\n",
+     "out": "4\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "2\n40 44\n",
+     "out": "2\n"
+    },
+    {
+     "in": "20\n44 12 29 16 4 60 11 55 54 58 37 17 9 45 5 8 20 24 51 19\n",
+     "out": "5\n"
+    }
+   ],
+   "want": "ds.avl"
+  },
+  {
+   "id": "avl-root",
+   "st": "第一行 n，第二行 n 個互不相同的整數，依序插入一棵 AVL 樹（自平衡二元搜尋樹）：每次插入後，若某個節點左右子樹的高度差超過 1，就用旋轉（LL 右旋、RR 左旋、LR 與 RL 雙旋轉）恢復平衡。輸出最後根節點的鍵值。",
+   "rw_st": null,
+   "ref": "import sys\nsys.setrecursionlimit(10000)\nn = int(input())\na = list(map(int, input().split()))\nrot = [0]\nclass Nd:\n    def __init__(s, v):\n        s.v = v\n        s.l = None\n        s.r = None\n        s.h = 1\ndef h(t):\n    return t.h if t else 0\ndef upd(t):\n    t.h = 1 + max(h(t.l), h(t.r))\ndef rr(y):\n    x = y.l\n    y.l = x.r\n    x.r = y\n    upd(y)\n    upd(x)\n    return x\ndef rl(x):\n    y = x.r\n    x.r = y.l\n    y.l = x\n    upd(x)\n    upd(y)\n    return y\ndef ins(t, v):\n    if t is None:\n        return Nd(v)\n    if v == t.v:\n        return t\n    if v < t.v:\n        t.l = ins(t.l, v)\n    else:\n        t.r = ins(t.r, v)\n    upd(t)\n    b = h(t.l) - h(t.r)\n    if b > 1:\n        if h(t.l.l) < h(t.l.r):\n            t.l = rl(t.l)\n            rot[0] += 1\n        t = rr(t)\n        rot[0] += 1\n    elif b < -1:\n        if h(t.r.r) < h(t.r.l):\n            t.r = rr(t.r)\n            rot[0] += 1\n        t = rl(t)\n        rot[0] += 1\n    return t\ndef ino(t):\n    return ino(t.l) + [t.v] + ino(t.r) if t else []\ndef pre(t):\n    return [t.v] + pre(t.l) + pre(t.r) if t else []\nroot = None\nfor v in a:\n    root = ins(root, v)\nprint(root.v)\n",
+   "tests": [
+    {
+     "in": "3\n14 25 53\n",
+     "out": "25\n"
+    },
+    {
+     "in": "6\n52 27 19 39 23 7\n",
+     "out": "27\n"
+    },
+    {
+     "in": "10\n34 54 14 49 43 52 44 12 28 31\n",
+     "out": "34\n"
+    },
+    {
+     "in": "2\n38 6\n",
+     "out": "38\n"
+    },
+    {
+     "in": "9\n9 17 25 5 45 55 23 27 3\n",
+     "out": "17\n"
+    },
+    {
+     "in": "9\n55 15 44 58 24 38 32 60 51\n",
+     "out": "44\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "5\n35 19 30 49 13\n",
+     "out": "30\n"
+    },
+    {
+     "in": "1\n4\n",
+     "out": "4\n"
+    }
+   ],
+   "want": "ds.avl"
+  },
+  {
+   "id": "avl-rot2",
+   "st": "第一行 n，第二行 n 個互不相同的整數，依序插入一棵 AVL 樹（自平衡二元搜尋樹）：每次插入後，若某個節點左右子樹的高度差超過 1，就用旋轉（LL 右旋、RR 左旋、LR 與 RL 雙旋轉）恢復平衡。輸出整個過程共做了幾次旋轉（每一次單旋轉算一次，所以先轉子樹再轉上面的雙旋轉算兩次）。",
+   "rw_st": null,
+   "ref": "import sys\nsys.setrecursionlimit(10000)\nn = int(input())\na = list(map(int, input().split()))\nrot = [0]\nclass Nd:\n    def __init__(s, v):\n        s.v = v\n        s.l = None\n        s.r = None\n        s.h = 1\ndef h(t):\n    return t.h if t else 0\ndef upd(t):\n    t.h = 1 + max(h(t.l), h(t.r))\ndef rr(y):\n    x = y.l\n    y.l = x.r\n    x.r = y\n    upd(y)\n    upd(x)\n    return x\ndef rl(x):\n    y = x.r\n    x.r = y.l\n    y.l = x\n    upd(x)\n    upd(y)\n    return y\ndef ins(t, v):\n    if t is None:\n        return Nd(v)\n    if v == t.v:\n        return t\n    if v < t.v:\n        t.l = ins(t.l, v)\n    else:\n        t.r = ins(t.r, v)\n    upd(t)\n    b = h(t.l) - h(t.r)\n    if b > 1:\n        if h(t.l.l) < h(t.l.r):\n            t.l = rl(t.l)\n            rot[0] += 1\n        t = rr(t)\n        rot[0] += 1\n    elif b < -1:\n        if h(t.r.r) < h(t.r.l):\n            t.r = rr(t.r)\n            rot[0] += 1\n        t = rl(t)\n        rot[0] += 1\n    return t\ndef ino(t):\n    return ino(t.l) + [t.v] + ino(t.r) if t else []\ndef pre(t):\n    return [t.v] + pre(t.l) + pre(t.r) if t else []\nroot = None\nfor v in a:\n    root = ins(root, v)\nprint(rot[0])\n",
+   "tests": [
+    {
+     "in": "10\n52 4 51 39 31 7 10 13 53 49\n",
+     "out": "6\n"
+    },
+    {
+     "in": "9\n16 24 25 32 38 42 54 56 60\n",
+     "out": "5\n"
+    },
+    {
+     "in": "5\n38 5 21 45 53\n",
+     "out": "3\n"
+    },
+    {
+     "in": "1\n13\n",
+     "out": "0\n"
+    },
+    {
+     "in": "3\n5 17 33\n",
+     "out": "1\n"
+    },
+    {
+     "in": "1\n57\n",
+     "out": "0\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "2\n12 52\n",
+     "out": "0\n"
+    },
+    {
+     "in": "27\n1 2 6 9 11 13 17 18 19 22 23 26 27 30 31 34 35 37 38 42 44 46 47 49 54 58 59\n",
+     "out": "22\n"
+    }
+   ],
+   "want": "ds.avl"
+  },
+  {
+   "id": "avl-rot1",
+   "st": "第一行 n，第二行 n 個互不相同的整數，依序插入一棵 AVL 樹（自平衡二元搜尋樹）：每次插入後，若某個節點左右子樹的高度差超過 1，就用旋轉（LL 右旋、RR 左旋、LR 與 RL 雙旋轉）恢復平衡。輸出整個過程共做了幾次平衡調整，LL、RR 各算一次，LR、RL 的雙旋轉整體也只算一次。",
+   "rw_st": null,
+   "ref": "import sys\nsys.setrecursionlimit(10000)\nn = int(input())\na = list(map(int, input().split()))\nrot = [0]\nclass Nd:\n    def __init__(s, v):\n        s.v = v\n        s.l = None\n        s.r = None\n        s.h = 1\ndef h(t):\n    return t.h if t else 0\ndef upd(t):\n    t.h = 1 + max(h(t.l), h(t.r))\ndef rr(y):\n    x = y.l\n    y.l = x.r\n    x.r = y\n    upd(y)\n    upd(x)\n    return x\ndef rl(x):\n    y = x.r\n    x.r = y.l\n    y.l = x\n    upd(x)\n    upd(y)\n    return y\ndef ins(t, v):\n    if t is None:\n        return Nd(v)\n    if v == t.v:\n        return t\n    if v < t.v:\n        t.l = ins(t.l, v)\n    else:\n        t.r = ins(t.r, v)\n    upd(t)\n    b = h(t.l) - h(t.r)\n    if b > 1:\n        if h(t.l.l) < h(t.l.r):\n            t.l = rl(t.l)\n            rot[0] += 0\n        t = rr(t)\n        rot[0] += 1\n    elif b < -1:\n        if h(t.r.r) < h(t.r.l):\n            t.r = rr(t.r)\n            rot[0] += 0\n        t = rl(t)\n        rot[0] += 1\n    return t\ndef ino(t):\n    return ino(t.l) + [t.v] + ino(t.r) if t else []\ndef pre(t):\n    return [t.v] + pre(t.l) + pre(t.r) if t else []\nroot = None\nfor v in a:\n    root = ins(root, v)\nprint(rot[0])\n",
+   "tests": [
+    {
+     "in": "7\n3 26 57 1 5 29 53\n",
+     "out": "2\n"
+    },
+    {
+     "in": "5\n57 9 37 1 33\n",
+     "out": "1\n"
+    },
+    {
+     "in": "4\n45 25 13 37\n",
+     "out": "1\n"
+    },
+    {
+     "in": "1\n21\n",
+     "out": "0\n"
+    },
+    {
+     "in": "2\n4 35\n",
+     "out": "0\n"
+    },
+    {
+     "in": "6\n18 30 37 42 49 53\n",
+     "out": "3\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "15\n53 57 1 29 41 33 13 21 24 9 39 31 34 17 45\n",
+     "out": "7\n"
+    },
+    {
+     "in": "9\n5 9 21 32 41 45 49 53 57\n",
+     "out": "5\n"
+    }
+   ],
+   "want": "ds.avl"
+  },
+  {
+   "id": "avl-edges",
+   "st": "第一行 n，第二行 n 個互不相同的整數，依序插入一棵 AVL 樹（自平衡二元搜尋樹）：每次插入後，若某個節點左右子樹的高度差超過 1，就用旋轉（LL 右旋、RR 左旋、LR 與 RL 雙旋轉）恢復平衡。輸出樹的高度，定義為從根到最深節點經過的邊數（只有一個節點時為 0）。",
+   "rw_st": null,
+   "ref": "import sys\nsys.setrecursionlimit(10000)\nn = int(input())\na = list(map(int, input().split()))\nrot = [0]\nclass Nd:\n    def __init__(s, v):\n        s.v = v\n        s.l = None\n        s.r = None\n        s.h = 1\ndef h(t):\n    return t.h if t else 0\ndef upd(t):\n    t.h = 1 + max(h(t.l), h(t.r))\ndef rr(y):\n    x = y.l\n    y.l = x.r\n    x.r = y\n    upd(y)\n    upd(x)\n    return x\ndef rl(x):\n    y = x.r\n    x.r = y.l\n    y.l = x\n    upd(x)\n    upd(y)\n    return y\ndef ins(t, v):\n    if t is None:\n        return Nd(v)\n    if v == t.v:\n        return t\n    if v < t.v:\n        t.l = ins(t.l, v)\n    else:\n        t.r = ins(t.r, v)\n    upd(t)\n    b = h(t.l) - h(t.r)\n    if b > 1:\n        if h(t.l.l) < h(t.l.r):\n            t.l = rl(t.l)\n            rot[0] += 1\n        t = rr(t)\n        rot[0] += 1\n    elif b < -1:\n        if h(t.r.r) < h(t.r.l):\n            t.r = rr(t.r)\n            rot[0] += 1\n        t = rl(t)\n        rot[0] += 1\n    return t\ndef ino(t):\n    return ino(t.l) + [t.v] + ino(t.r) if t else []\ndef pre(t):\n    return [t.v] + pre(t.l) + pre(t.r) if t else []\nroot = None\nfor v in a:\n    root = ins(root, v)\nprint(h(root) - 1)\n",
+   "tests": [
+    {
+     "in": "10\n2 15 20 21 22 29 30 31 52 57\n",
+     "out": "3\n"
+    },
+    {
+     "in": "4\n52 32 44 12\n",
+     "out": "2\n"
+    },
+    {
+     "in": "6\n36 44 20 55 47 11\n",
+     "out": "2\n"
+    },
+    {
+     "in": "7\n3 7 19 23 39 42 58\n",
+     "out": "2\n"
+    },
+    {
+     "in": "7\n33 53 45 37 17 49 56\n",
+     "out": "2\n"
+    },
+    {
+     "in": "10\n36 52 12 27 13 1 21 33 40 8\n",
+     "out": "3\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "26\n56 4 48 52 24 39 51 6 30 26 34 58 50 1 45 8 36 35 7 47 59 41 9 49 37 17\n",
+     "out": "5\n"
+    },
+    {
+     "in": "24\n16 59 55 11 7 22 46 6 54 25 37 33 9 49 1 45 17 57 4 19 27 38 10 18\n",
+     "out": "4\n"
+    }
+   ],
+   "want": "ds.avl"
+  },
+  {
+   "id": "sk-found",
+   "st": "第一行 L q，之後 q 行指令：insert k h（把鍵 k 放進第 0 到 h-1 層，1 ≤ h ≤ L）、delete k（從所有層拿掉）、search k。跳躍表共有 L 層（第 L-1 層在最上面），每一層最左邊有一個表頭。search k 從最高層的表頭出發，每一層一直往右走，直到下一個鍵不小於 k（或沒有下一個）為止，再往下一層，一路到第 0 層。每個 search 輸出 YES（找到）或 NO（沒找到）。",
+   "rw_st": null,
+   "ref": "L, q = map(int, input().split())\nclass Nd:\n    def __init__(s, k, h):\n        s.k = k\n        s.nx = [None] * h\nhead = Nd(None, L)\nfor _ in range(q):\n    p = input().split()\n    k = int(p[1])\n    if p[0] == \"search\":\n        x = head\n        rights = 0\n        comps = 0\n        downs = 0\n        for l in range(L - 1, -1, -1):\n            while x.nx[l] is not None:\n                comps += 1\n                if x.nx[l].k < k:\n                    x = x.nx[l]\n                    rights += 1\n                else:\n                    break\n            if l > 0:\n                downs += 1\n        nxt = x.nx[0]\n        found = nxt is not None and nxt.k == k\n        print(\"YES\" if found else \"NO\")\n        continue\n    upd = [None] * L\n    x = head\n    for l in range(L - 1, -1, -1):\n        while x.nx[l] is not None and x.nx[l].k < k:\n            x = x.nx[l]\n        upd[l] = x\n    tg = upd[0].nx[0]\n    has = tg is not None and tg.k == k\n    if p[0] == \"insert\":\n        if has:\n            continue\n        hh = min(int(p[2]), L)\n        nd = Nd(k, hh)\n        for l in range(hh):\n            nd.nx[l] = upd[l].nx[l]\n            upd[l].nx[l] = nd\n    elif has:\n        for l in range(len(tg.nx)):\n            if upd[l].nx[l] is tg:\n                upd[l].nx[l] = tg.nx[l]\n",
+   "tests": [
+    {
+     "in": "2 10\ninsert 9 1\nsearch 9\ninsert 2 2\ninsert 18 2\ninsert 15 1\ninsert 5 1\ninsert 17 1\nsearch 11\ninsert 8 2\nsearch 16\n",
+     "out": "YES\nNO\nNO\n"
+    },
+    {
+     "in": "3 14\ninsert 13 3\ninsert 5 2\nsearch 5\nsearch 11\ninsert 7 2\ninsert 16 3\nsearch 12\nsearch 1\ninsert 1 1\ndelete 1\ninsert 17 2\ninsert 14 2\nsearch 13\nsearch 5\n",
+     "out": "YES\nNO\nNO\nNO\nYES\nYES\n"
+    },
+    {
+     "in": "2 15\ninsert 9 2\ninsert 15 1\nsearch 9\ninsert 1 1\ninsert 8 1\nsearch 10\ninsert 7 1\ninsert 3 1\ninsert 14 2\ninsert 4 1\nsearch 7\nsearch 3\ninsert 13 1\nsearch 11\nsearch 5\n",
+     "out": "YES\nNO\nYES\nYES\nNO\nNO\n"
+    },
+    {
+     "in": "4 17\ninsert 2 2\ninsert 3 4\nsearch 6\nsearch 14\nsearch 9\ninsert 17 2\ninsert 10 2\ninsert 7 4\nsearch 14\ndelete 17\ninsert 1 2\ndelete 7\ninsert 12 4\ninsert 8 4\nsearch 4\ndelete 1\nsearch 10\n",
+     "out": "NO\nNO\nNO\nNO\nNO\nYES\n"
+    },
+    {
+     "in": "2 15\ninsert 13 2\ninsert 5 1\nsearch 2\ninsert 10 1\ninsert 1 1\ninsert 6 2\ninsert 14 2\nsearch 17\nsearch 16\nsearch 9\ndelete 14\nsearch 10\nsearch 2\nsearch 8\nsearch 4\n",
+     "out": "NO\nNO\nNO\nNO\nYES\nNO\nNO\nNO\n"
+    },
+    {
+     "in": "4 11\ninsert 6 4\nsearch 4\ninsert 1 3\ninsert 13 3\ninsert 15 2\nsearch 2\ninsert 9 1\nsearch 3\nsearch 9\nsearch 4\nsearch 6\n",
+     "out": "NO\nNO\nNO\nYES\nNO\nYES\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "4 29\ninsert 2 4\ndelete 2\ninsert 10 2\nsearch 6\ninsert 18 2\nsearch 18\ndelete 18\ninsert 4 2\ninsert 15 1\ninsert 9 1\nsearch 9\ninsert 3 1\ninsert 1 1\nsearch 3\nsearch 5\nsearch 14\nsearch 18\ninsert 2 4\nsearch 1\nsearch 7\nsearch 15\ninsert 14 1\ninsert 5 1\nsearch 2\nsearch 10\ndelete 3\ninsert 18 4\ninsert 6 4\nsearch 6\n",
+     "out": "NO\nYES\nYES\nYES\nNO\nNO\nNO\nYES\nNO\nYES\nYES\nYES\nYES\n"
+    },
+    {
+     "in": "4 24\ninsert 15 3\ninsert 10 4\ndelete 10\ninsert 18 3\ninsert 3 3\ninsert 14 2\nsearch 12\nsearch 5\nsearch 3\ninsert 1 1\nsearch 1\nsearch 15\nsearch 7\nsearch 4\ninsert 2 4\nsearch 15\nsearch 13\nsearch 11\ninsert 9 3\nsearch 7\nsearch 15\nsearch 3\nsearch 1\nsearch 2\n",
+     "out": "NO\nNO\nYES\nYES\nYES\nNO\nNO\nYES\nNO\nNO\nNO\nYES\nYES\nYES\nYES\n"
+    }
+   ],
+   "want": "ds.skiplist"
+  },
+  {
+   "id": "sk-rights",
+   "st": "第一行 L q，之後 q 行指令：insert k h（把鍵 k 放進第 0 到 h-1 層，1 ≤ h ≤ L）、delete k（從所有層拿掉）、search k。跳躍表共有 L 層（第 L-1 層在最上面），每一層最左邊有一個表頭。search k 從最高層的表頭出發，每一層一直往右走，直到下一個鍵不小於 k（或沒有下一個）為止，再往下一層，一路到第 0 層。每個 search 輸出搜尋過程中往右走的總步數（只算往右移動，不算往下）。",
+   "rw_st": null,
+   "ref": "L, q = map(int, input().split())\nclass Nd:\n    def __init__(s, k, h):\n        s.k = k\n        s.nx = [None] * h\nhead = Nd(None, L)\nfor _ in range(q):\n    p = input().split()\n    k = int(p[1])\n    if p[0] == \"search\":\n        x = head\n        rights = 0\n        comps = 0\n        downs = 0\n        for l in range(L - 1, -1, -1):\n            while x.nx[l] is not None:\n                comps += 1\n                if x.nx[l].k < k:\n                    x = x.nx[l]\n                    rights += 1\n                else:\n                    break\n            if l > 0:\n                downs += 1\n        nxt = x.nx[0]\n        found = nxt is not None and nxt.k == k\n        print(rights)\n        continue\n    upd = [None] * L\n    x = head\n    for l in range(L - 1, -1, -1):\n        while x.nx[l] is not None and x.nx[l].k < k:\n            x = x.nx[l]\n        upd[l] = x\n    tg = upd[0].nx[0]\n    has = tg is not None and tg.k == k\n    if p[0] == \"insert\":\n        if has:\n            continue\n        hh = min(int(p[2]), L)\n        nd = Nd(k, hh)\n        for l in range(hh):\n            nd.nx[l] = upd[l].nx[l]\n            upd[l].nx[l] = nd\n    elif has:\n        for l in range(len(tg.nx)):\n            if upd[l].nx[l] is tg:\n                upd[l].nx[l] = tg.nx[l]\n",
+   "tests": [
+    {
+     "in": "2 16\ninsert 12 2\nsearch 5\nsearch 1\ninsert 9 1\ninsert 5 1\ninsert 7 1\nsearch 3\nsearch 4\nsearch 12\ninsert 16 1\ninsert 11 1\nsearch 17\nsearch 11\nsearch 7\nsearch 11\nsearch 17\n",
+     "out": "0\n0\n0\n0\n3\n2\n3\n1\n3\n2\n"
+    },
+    {
+     "in": "2 8\ninsert 17 1\nsearch 17\ndelete 17\ninsert 15 1\ninsert 17 1\nsearch 18\nsearch 4\nsearch 2\n",
+     "out": "0\n2\n0\n0\n"
+    },
+    {
+     "in": "4 17\ninsert 10 4\ndelete 10\ninsert 4 4\nsearch 16\ninsert 14 4\nsearch 15\ninsert 15 3\ninsert 3 2\ninsert 7 4\nsearch 15\nsearch 5\ninsert 6 2\nsearch 12\ninsert 18 1\ninsert 1 1\ndelete 3\nsearch 2\n",
+     "out": "1\n2\n3\n1\n2\n1\n"
+    },
+    {
+     "in": "4 13\ninsert 14 4\ninsert 3 3\ninsert 9 3\ninsert 13 3\ndelete 3\nsearch 16\ndelete 14\ninsert 2 4\nsearch 4\nsearch 18\ninsert 14 4\ninsert 11 3\nsearch 11\n",
+     "out": "1\n1\n3\n2\n"
+    },
+    {
+     "in": "3 9\ninsert 8 3\nsearch 1\ninsert 11 1\ninsert 9 1\nsearch 15\nsearch 1\ninsert 3 1\nsearch 3\nsearch 7\n",
+     "out": "0\n3\n0\n0\n1\n"
+    },
+    {
+     "in": "2 14\ninsert 9 2\nsearch 15\ninsert 1 1\ninsert 13 1\nsearch 18\nsearch 2\ninsert 18 1\nsearch 13\nsearch 13\ninsert 11 2\nsearch 8\ninsert 17 1\ninsert 3 1\nsearch 17\n",
+     "out": "1\n2\n1\n1\n1\n1\n3\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "4 31\ninsert 9 3\nsearch 13\nsearch 14\nsearch 13\nsearch 18\nsearch 4\ninsert 2 1\ninsert 11 1\ninsert 15 1\ninsert 17 1\nsearch 10\nsearch 8\nsearch 2\nsearch 12\nsearch 15\nsearch 7\ninsert 18 4\ninsert 6 3\nsearch 11\nsearch 9\nsearch 9\nsearch 15\nsearch 5\nsearch 2\nsearch 16\nsearch 6\ninsert 5 3\nsearch 11\ninsert 16 4\ndelete 2\nsearch 15\n",
+     "out": "1\n1\n1\n1\n0\n1\n1\n0\n2\n2\n1\n2\n1\n1\n3\n1\n0\n4\n1\n3\n4\n"
+    },
+    {
+     "in": "4 24\ninsert 14 2\nsearch 1\ninsert 7 2\ninsert 18 4\nsearch 6\nsearch 14\nsearch 4\ndelete 14\ndelete 7\ninsert 1 4\nsearch 11\nsearch 2\nsearch 2\ninsert 5 4\nsearch 6\nsearch 17\nsearch 16\nsearch 9\nsearch 1\ninsert 13 1\ninsert 15 1\ninsert 7 1\nsearch 14\nsearch 4\n",
+     "out": "0\n0\n1\n0\n1\n1\n1\n2\n2\n2\n2\n0\n4\n1\n"
+    }
+   ],
+   "want": "ds.skiplist"
+  },
+  {
+   "id": "sk-comps",
+   "st": "第一行 L q，之後 q 行指令：insert k h（把鍵 k 放進第 0 到 h-1 層，1 ≤ h ≤ L）、delete k（從所有層拿掉）、search k。跳躍表共有 L 層（第 L-1 層在最上面），每一層最左邊有一個表頭。search k 從最高層的表頭出發，每一層一直往右走，直到下一個鍵不小於 k（或沒有下一個）為止，再往下一層，一路到第 0 層。每個 search 輸出比較次數：搜尋過程中每次檢查「目前節點的下一個鍵是否小於 k」算一次（下一個節點不存在時不檢查、不算）。",
+   "rw_st": null,
+   "ref": "L, q = map(int, input().split())\nclass Nd:\n    def __init__(s, k, h):\n        s.k = k\n        s.nx = [None] * h\nhead = Nd(None, L)\nfor _ in range(q):\n    p = input().split()\n    k = int(p[1])\n    if p[0] == \"search\":\n        x = head\n        rights = 0\n        comps = 0\n        downs = 0\n        for l in range(L - 1, -1, -1):\n            while x.nx[l] is not None:\n                comps += 1\n                if x.nx[l].k < k:\n                    x = x.nx[l]\n                    rights += 1\n                else:\n                    break\n            if l > 0:\n                downs += 1\n        nxt = x.nx[0]\n        found = nxt is not None and nxt.k == k\n        print(comps)\n        continue\n    upd = [None] * L\n    x = head\n    for l in range(L - 1, -1, -1):\n        while x.nx[l] is not None and x.nx[l].k < k:\n            x = x.nx[l]\n        upd[l] = x\n    tg = upd[0].nx[0]\n    has = tg is not None and tg.k == k\n    if p[0] == \"insert\":\n        if has:\n            continue\n        hh = min(int(p[2]), L)\n        nd = Nd(k, hh)\n        for l in range(hh):\n            nd.nx[l] = upd[l].nx[l]\n            upd[l].nx[l] = nd\n    elif has:\n        for l in range(len(tg.nx)):\n            if upd[l].nx[l] is tg:\n                upd[l].nx[l] = tg.nx[l]\n",
+   "tests": [
+    {
+     "in": "2 10\ninsert 4 2\ninsert 5 1\nsearch 5\ninsert 13 1\ninsert 1 2\nsearch 17\ninsert 17 1\nsearch 3\nsearch 13\nsearch 7\n",
+     "out": "2\n4\n3\n4\n4\n"
+    },
+    {
+     "in": "3 17\ninsert 9 2\nsearch 9\nsearch 16\ninsert 6 3\ninsert 12 1\ninsert 5 2\nsearch 2\nsearch 18\nsearch 16\nsearch 2\nsearch 3\nsearch 6\ninsert 11 3\nsearch 5\nsearch 9\nsearch 14\nsearch 6\n",
+     "out": "2\n1\n3\n3\n3\n3\n3\n4\n3\n4\n3\n4\n"
+    },
+    {
+     "in": "2 15\ninsert 13 1\ndelete 13\ninsert 5 1\ninsert 13 1\ninsert 17 1\nsearch 7\nsearch 13\nsearch 11\ninsert 11 1\ninsert 12 2\ninsert 18 2\nsearch 18\nsearch 12\ninsert 16 2\nsearch 12\n",
+     "out": "2\n2\n2\n5\n4\n4\n"
+    },
+    {
+     "in": "2 12\ninsert 1 1\nsearch 7\nsearch 3\nsearch 9\nsearch 17\ninsert 15 1\ninsert 11 1\nsearch 4\ninsert 16 2\nsearch 16\ninsert 7 1\nsearch 9\n",
+     "out": "1\n1\n1\n1\n2\n5\n4\n"
+    },
+    {
+     "in": "3 13\ninsert 5 3\ninsert 15 1\ninsert 4 3\ninsert 8 2\ninsert 13 1\nsearch 12\ninsert 3 2\nsearch 3\nsearch 15\nsearch 15\nsearch 8\nsearch 18\nsearch 4\n",
+     "out": "4\n3\n5\n5\n4\n5\n4\n"
+    },
+    {
+     "in": "2 9\ninsert 16 2\nsearch 17\nsearch 5\nsearch 13\ninsert 13 2\nsearch 4\nsearch 9\ninsert 17 1\nsearch 7\n",
+     "out": "1\n2\n2\n2\n2\n2\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "3 27\ninsert 8 1\nsearch 1\nsearch 1\ninsert 14 1\nsearch 8\nsearch 1\nsearch 11\nsearch 13\nsearch 14\nsearch 16\nsearch 6\nsearch 3\ninsert 3 1\nsearch 5\nsearch 5\ninsert 15 3\ninsert 17 2\nsearch 13\ninsert 7 1\nsearch 3\nsearch 15\nsearch 17\nsearch 9\nsearch 1\ninsert 16 1\ninsert 10 3\nsearch 5\n",
+     "out": "1\n1\n1\n1\n2\n2\n2\n2\n1\n1\n2\n2\n5\n3\n7\n3\n6\n3\n4\n"
+    },
+    {
+     "in": "2 24\ninsert 9 1\ninsert 7 1\ninsert 1 2\ninsert 8 1\nsearch 15\nsearch 16\nsearch 16\ninsert 11 1\ninsert 13 1\nsearch 6\ninsert 14 2\ndelete 11\nsearch 5\nsearch 4\nsearch 8\nsearch 9\nsearch 9\nsearch 5\nsearch 1\ndelete 7\ninsert 15 1\nsearch 4\nsearch 4\nsearch 10\n",
+     "out": "4\n4\n4\n2\n3\n3\n4\n5\n5\n3\n2\n3\n3\n5\n"
+    }
+   ],
+   "want": "ds.skiplist"
+  },
+  {
+   "id": "sk-steps",
+   "st": "第一行 L q，之後 q 行指令：insert k h（把鍵 k 放進第 0 到 h-1 層，1 ≤ h ≤ L）、delete k（從所有層拿掉）、search k。跳躍表共有 L 層（第 L-1 層在最上面），每一層最左邊有一個表頭。search k 從最高層的表頭出發，每一層一直往右走，直到下一個鍵不小於 k（或沒有下一個）為止，再往下一層，一路到第 0 層。每個 search 輸出總步數：往右走的步數加上往下降的步數（從最高層降到第 0 層共降 L-1 次）。",
+   "rw_st": null,
+   "ref": "L, q = map(int, input().split())\nclass Nd:\n    def __init__(s, k, h):\n        s.k = k\n        s.nx = [None] * h\nhead = Nd(None, L)\nfor _ in range(q):\n    p = input().split()\n    k = int(p[1])\n    if p[0] == \"search\":\n        x = head\n        rights = 0\n        comps = 0\n        downs = 0\n        for l in range(L - 1, -1, -1):\n            while x.nx[l] is not None:\n                comps += 1\n                if x.nx[l].k < k:\n                    x = x.nx[l]\n                    rights += 1\n                else:\n                    break\n            if l > 0:\n                downs += 1\n        nxt = x.nx[0]\n        found = nxt is not None and nxt.k == k\n        print(rights + downs)\n        continue\n    upd = [None] * L\n    x = head\n    for l in range(L - 1, -1, -1):\n        while x.nx[l] is not None and x.nx[l].k < k:\n            x = x.nx[l]\n        upd[l] = x\n    tg = upd[0].nx[0]\n    has = tg is not None and tg.k == k\n    if p[0] == \"insert\":\n        if has:\n            continue\n        hh = min(int(p[2]), L)\n        nd = Nd(k, hh)\n        for l in range(hh):\n            nd.nx[l] = upd[l].nx[l]\n            upd[l].nx[l] = nd\n    elif has:\n        for l in range(len(tg.nx)):\n            if upd[l].nx[l] is tg:\n                upd[l].nx[l] = tg.nx[l]\n",
+   "tests": [
+    {
+     "in": "3 12\ninsert 6 1\nsearch 8\ninsert 4 2\ndelete 4\nsearch 10\ndelete 6\ninsert 11 1\nsearch 10\nsearch 11\nsearch 5\nsearch 3\nsearch 1\n",
+     "out": "3\n3\n2\n2\n2\n2\n2\n"
+    },
+    {
+     "in": "4 10\ninsert 9 1\ninsert 8 4\ninsert 10 4\nsearch 10\ninsert 1 1\ninsert 11 1\nsearch 1\ndelete 1\nsearch 13\nsearch 3\n",
+     "out": "5\n3\n6\n3\n"
+    },
+    {
+     "in": "3 13\ninsert 3 3\ninsert 9 2\ninsert 11 1\ninsert 15 1\nsearch 1\ninsert 8 2\nsearch 16\nsearch 3\ninsert 17 2\ninsert 1 2\ninsert 2 1\nsearch 12\nsearch 2\n",
+     "out": "2\n7\n2\n6\n3\n"
+    },
+    {
+     "in": "3 17\ninsert 9 1\nsearch 13\ninsert 1 1\ninsert 11 2\ninsert 13 3\nsearch 13\nsearch 12\ninsert 12 1\nsearch 12\nsearch 12\nsearch 18\ninsert 7 1\nsearch 11\ninsert 3 1\nsearch 17\nsearch 14\nsearch 16\n",
+     "out": "3\n3\n3\n3\n3\n3\n5\n3\n3\n3\n"
+    },
+    {
+     "in": "3 14\ninsert 12 1\ninsert 2 3\nsearch 16\nsearch 5\nsearch 1\nsearch 12\ninsert 6 3\ndelete 6\ninsert 14 1\nsearch 2\ndelete 12\ninsert 9 2\nsearch 4\nsearch 4\n",
+     "out": "4\n3\n2\n3\n2\n3\n3\n"
+    },
+    {
+     "in": "3 10\ninsert 15 2\ndelete 15\ninsert 18 1\ninsert 9 1\ninsert 7 2\nsearch 10\ndelete 9\nsearch 3\ndelete 7\nsearch 8\n",
+     "out": "4\n2\n2\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "2 13\ninsert 18 1\nsearch 11\nsearch 10\ninsert 15 1\nsearch 4\nsearch 18\nsearch 5\ninsert 3 1\ninsert 5 1\nsearch 3\nsearch 1\nsearch 5\nsearch 12\n",
+     "out": "1\n1\n1\n2\n1\n1\n1\n2\n3\n"
+    },
+    {
+     "in": "2 19\ninsert 3 1\ninsert 10 2\ninsert 15 1\nsearch 10\ninsert 4 2\nsearch 7\nsearch 17\ninsert 7 2\ndelete 7\ninsert 12 2\nsearch 17\ninsert 7 1\nsearch 4\ndelete 10\ndelete 7\nsearch 18\ninsert 11 1\ninsert 13 1\nsearch 8\n",
+     "out": "2\n2\n4\n5\n2\n4\n2\n"
+    }
+   ],
+   "want": "ds.skiplist"
+  },
+  {
+   "id": "sk-levels",
+   "st": "第一行 L q，之後 q 行指令：insert k h（把鍵 k 放進第 0 到 h-1 層，1 ≤ h ≤ L）、delete k（從所有層拿掉）、search k。跳躍表共有 L 層（第 L-1 層在最上面），每一層最左邊有一個表頭。search k 從最高層的表頭出發，每一層一直往右走，直到下一個鍵不小於 k（或沒有下一個）為止，再往下一層，一路到第 0 層。所有指令執行完後，從最高層到第 0 層，每層輸出一行，是該層由小到大的鍵（以空白分隔，該層沒有鍵就是空行）。",
+   "rw_st": null,
+   "ref": "L, q = map(int, input().split())\nclass Nd:\n    def __init__(s, k, h):\n        s.k = k\n        s.nx = [None] * h\nhead = Nd(None, L)\nfor _ in range(q):\n    p = input().split()\n    k = int(p[1])\n    if p[0] == \"search\":\n        x = head\n        rights = 0\n        comps = 0\n        downs = 0\n        for l in range(L - 1, -1, -1):\n            while x.nx[l] is not None:\n                comps += 1\n                if x.nx[l].k < k:\n                    x = x.nx[l]\n                    rights += 1\n                else:\n                    break\n            if l > 0:\n                downs += 1\n        nxt = x.nx[0]\n        found = nxt is not None and nxt.k == k\n        continue\n    upd = [None] * L\n    x = head\n    for l in range(L - 1, -1, -1):\n        while x.nx[l] is not None and x.nx[l].k < k:\n            x = x.nx[l]\n        upd[l] = x\n    tg = upd[0].nx[0]\n    has = tg is not None and tg.k == k\n    if p[0] == \"insert\":\n        if has:\n            continue\n        hh = min(int(p[2]), L)\n        nd = Nd(k, hh)\n        for l in range(hh):\n            nd.nx[l] = upd[l].nx[l]\n            upd[l].nx[l] = nd\n    elif has:\n        for l in range(len(tg.nx)):\n            if upd[l].nx[l] is tg:\n                upd[l].nx[l] = tg.nx[l]\nfor l in range(L - 1, -1, -1):\n    ks = []\n    x = head.nx[l]\n    while x is not None:\n        ks.append(x.k)\n        x = x.nx[l]\n    print(*ks)\n",
+   "tests": [
+    {
+     "in": "4 12\ninsert 3 1\nsearch 15\ninsert 17 1\nsearch 13\ninsert 11 1\ninsert 12 4\nsearch 10\ninsert 4 3\nsearch 15\nsearch 5\nsearch 9\nsearch 6\n",
+     "out": "12\n4 12\n4 12\n3 4 11 12 17\n"
+    },
+    {
+     "in": "2 14\ninsert 14 2\ndelete 14\ninsert 17 1\nsearch 3\nsearch 5\ninsert 11 1\ninsert 1 1\nsearch 17\ninsert 18 2\ninsert 2 1\nsearch 5\nsearch 16\nsearch 11\nsearch 6\n",
+     "out": "18\n1 2 11 17 18\n"
+    },
+    {
+     "in": "4 9\ninsert 2 1\nsearch 9\ninsert 18 4\ninsert 17 3\nsearch 6\nsearch 10\ndelete 18\ndelete 2\nsearch 11\n",
+     "out": "\n17\n17\n17\n"
+    },
+    {
+     "in": "2 11\ninsert 8 1\ninsert 1 1\ninsert 13 1\nsearch 10\nsearch 1\ninsert 2 2\ninsert 6 2\nsearch 8\ninsert 11 2\ninsert 12 2\nsearch 14\n",
+     "out": "2 6 11 12\n1 2 6 8 11 12 13\n"
+    },
+    {
+     "in": "3 17\ninsert 9 3\nsearch 2\nsearch 9\ninsert 5 2\nsearch 7\nsearch 13\ninsert 14 3\ninsert 12 2\ninsert 18 3\ndelete 9\nsearch 11\nsearch 5\nsearch 9\ninsert 15 3\ninsert 3 1\nsearch 14\nsearch 7\n",
+     "out": "14 15 18\n5 12 14 15 18\n3 5 12 14 15 18\n"
+    },
+    {
+     "in": "2 10\ninsert 6 2\ninsert 15 1\ninsert 12 1\ninsert 7 1\ninsert 3 1\nsearch 4\nsearch 5\nsearch 15\ninsert 11 1\nsearch 12\n",
+     "out": "6\n3 6 7 11 12 15\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "2 14\ninsert 1 1\ninsert 17 1\ninsert 16 2\nsearch 16\ninsert 18 2\ninsert 12 2\ninsert 5 1\nsearch 1\nsearch 3\ninsert 13 1\ninsert 4 2\nsearch 3\nsearch 15\nsearch 5\n",
+     "out": "4 12 16 18\n1 4 5 12 13 16 17 18\n"
+    },
+    {
+     "in": "3 11\ninsert 1 2\nsearch 8\nsearch 18\nsearch 13\ninsert 7 3\ndelete 7\ndelete 1\ninsert 17 1\nsearch 17\nsearch 17\nsearch 11\n",
+     "out": "\n\n17\n"
+    }
+   ],
+   "want": "ds.skiplist"
+  },
+  {
+   "id": "st-min",
+   "st": "第一行 n q，第二行 n 個正整數 a，接著 q 行每行 l r，表示查詢區間（位置從 1 開始，含兩端）。用稀疏表（Sparse Table）預處理，對每個查詢輸出區間內所有數的最小值。",
+   "rw_st": "第一行 n k，第二行 n 個正整數 a，接著 k 行每行 l r，表示查詢區間（位置從 1 開始，含兩端）。用稀疏表（Sparse Table）預處理，對每個查詢輸出區間內所有數的最小值。",
+   "ref": "from math import gcd\nfrom functools import reduce\nn, q = map(int, input().split())\na = list(map(int, input().split()))\nfor _ in range(q):\n    l, r = map(int, input().split())\n    print(min(a[l-1:r]))\n",
+   "tests": [
+    {
+     "in": "6 6\n58 34 26 22 50 53\n3 3\n3 3\n5 5\n1 3\n3 3\n5 5\n",
+     "out": "26\n26\n50\n26\n26\n50\n"
+    },
+    {
+     "in": "5 3\n13 1 37 5 16\n1 2\n1 5\n1 2\n",
+     "out": "1\n1\n1\n"
+    },
+    {
+     "in": "5 3\n21 19 7 27 23\n2 2\n2 2\n5 5\n",
+     "out": "19\n19\n23\n"
+    },
+    {
+     "in": "9 3\n53 57 53 29 1 25 5 25 57\n4 4\n1 3\n4 8\n",
+     "out": "29\n53\n1\n"
+    },
+    {
+     "in": "8 4\n28 47 51 59 35 23 38 37\n1 4\n8 8\n7 7\n7 8\n",
+     "out": "28\n37\n38\n37\n"
+    },
+    {
+     "in": "10 2\n58 14 10 10 14 6 6 57 45 37\n3 10\n2 10\n",
+     "out": "6\n6\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "36 2\n47 19 23 14 30 46 50 18 46 22 42 30 54 50 5 53 16 40 12 59 11 43 43 51 42 5 57 49 37 17 25 45 57 12 51 15\n35 35\n7 22\n",
+     "out": "51\n5\n"
+    },
+    {
+     "in": "14 3\n34 10 57 53 53 25 9 37 1 41 45 13 13 32\n10 10\n5 7\n9 12\n",
+     "out": "41\n9\n1\n"
+    }
+   ],
+   "want": "ds.sparse-table"
+  },
+  {
+   "id": "st-max",
+   "st": "第一行 n q，第二行 n 個正整數 a，接著 q 行每行 l r，表示查詢區間（位置從 1 開始，含兩端）。用稀疏表（Sparse Table）預處理，對每個查詢輸出區間內所有數的最大值。",
+   "rw_st": null,
+   "ref": "from math import gcd\nfrom functools import reduce\nn, q = map(int, input().split())\na = list(map(int, input().split()))\nfor _ in range(q):\n    l, r = map(int, input().split())\n    print(max(a[l-1:r]))\n",
+   "tests": [
+    {
+     "in": "8 4\n58 17 53 41 9 5 57 25\n8 8\n8 8\n7 7\n7 7\n",
+     "out": "25\n25\n57\n57\n"
+    },
+    {
+     "in": "11 5\n59 3 23 3 39 7 34 22 6 58 9\n4 8\n8 8\n4 5\n2 3\n7 11\n",
+     "out": "39\n22\n39\n23\n58\n"
+    },
+    {
+     "in": "12 4\n60 48 55 41 43 59 19 55 11 23 11 27\n11 11\n6 7\n10 11\n1 9\n",
+     "out": "11\n59\n23\n60\n"
+    },
+    {
+     "in": "1 4\n13\n1 1\n1 1\n1 1\n1 1\n",
+     "out": "13\n13\n13\n13\n"
+    },
+    {
+     "in": "8 3\n27 23 2 25 33 41 29 45\n1 1\n1 1\n1 4\n",
+     "out": "27\n27\n27\n"
+    },
+    {
+     "in": "12 4\n16 40 8 43 7 55 3 15 50 2 58 38\n1 5\n5 12\n8 10\n8 8\n",
+     "out": "43\n58\n50\n15\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "3 12\n7 39 19\n3 3\n3 3\n2 2\n2 3\n1 3\n3 3\n2 3\n1 1\n3 3\n1 1\n3 3\n2 2\n",
+     "out": "19\n19\n39\n39\n39\n19\n39\n7\n19\n7\n19\n39\n"
+    },
+    {
+     "in": "29 3\n37 57 21 45 9 37 21 5 1 57 33 21 57 21 33 57 9 33 57 44 50 24 22 42 22 26 50 54 2\n10 18\n25 25\n22 24\n",
+     "out": "57\n22\n42\n"
+    }
+   ],
+   "want": "ds.sparse-table"
+  },
+  {
+   "id": "st-gcd",
+   "st": "第一行 n q，第二行 n 個正整數 a，接著 q 行每行 l r，表示查詢區間（位置從 0 開始，含兩端）。用稀疏表（Sparse Table）預處理，對每個查詢輸出區間內所有數的最大公因數。",
+   "rw_st": null,
+   "ref": "from math import gcd\nfrom functools import reduce\nn, q = map(int, input().split())\na = list(map(int, input().split()))\nfor _ in range(q):\n    l, r = map(int, input().split())\n    print(reduce(gcd, a[l:r+1]))\n",
+   "tests": [
+    {
+     "in": "3 1\n31 27 19\n2 2\n",
+     "out": "19\n"
+    },
+    {
+     "in": "11 3\n47 23 27 11 15 10 34 30 13 29 57\n8 10\n2 3\n8 8\n",
+     "out": "1\n1\n13\n"
+    },
+    {
+     "in": "3 4\n20 2 26\n1 1\n1 1\n1 2\n2 2\n",
+     "out": "2\n2\n2\n26\n"
+    },
+    {
+     "in": "9 5\n15 27 26 30 45 49 33 21 29\n5 8\n3 7\n3 7\n0 7\n0 5\n",
+     "out": "1\n1\n1\n1\n1\n"
+    },
+    {
+     "in": "3 6\n34 54 30\n0 0\n2 2\n2 2\n0 2\n0 1\n2 2\n",
+     "out": "34\n30\n30\n2\n2\n30\n"
+    },
+    {
+     "in": "1 5\n37\n0 0\n0 0\n0 0\n0 0\n0 0\n",
+     "out": "37\n37\n37\n37\n37\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "35 1\n41 9 12 60 48 24 24 48 4 52 32 36 24 40 8 20 8 36 8 60 28 8 60 4 20 11 22 50 46 14 57 21 52 60 20\n34 34\n",
+     "out": "20\n"
+    },
+    {
+     "in": "31 8\n55 59 35 11 34 36 19 11 26 30 18 9 9 48 15 47 27 43 15 43 51 7 54 46 41 5 45 53 45 12 8\n2 14\n19 26\n0 28\n11 22\n25 25\n22 23\n15 17\n29 29\n",
+     "out": "1\n1\n1\n1\n5\n2\n1\n12\n"
+    }
+   ],
+   "want": "ds.sparse-table"
+  },
+  {
+   "id": "st-excl",
+   "st": "第一行 n q，第二行 n 個正整數 a，接著 q 行每行 l r，表示查詢區間（位置從 0 開始，左閉右開（r 本身不含））。用稀疏表（Sparse Table）預處理，對每個查詢輸出區間內所有數的最小值。",
+   "rw_st": null,
+   "ref": "from math import gcd\nfrom functools import reduce\nn, q = map(int, input().split())\na = list(map(int, input().split()))\nfor _ in range(q):\n    l, r = map(int, input().split())\n    print(min(a[l:r]))\n",
+   "tests": [
+    {
+     "in": "3 1\n31 7 47\n1 2\n",
+     "out": "7\n"
+    },
+    {
+     "in": "11 3\n11 11 55 46 58 26 42 14 34 42 6\n7 9\n7 8\n4 11\n",
+     "out": "14\n14\n6\n"
+    },
+    {
+     "in": "5 1\n40 39 19 42 46\n1 2\n",
+     "out": "39\n"
+    },
+    {
+     "in": "1 3\n21\n0 1\n0 1\n0 1\n",
+     "out": "21\n21\n21\n"
+    },
+    {
+     "in": "3 3\n1 1 41\n0 2\n0 1\n0 2\n",
+     "out": "1\n1\n1\n"
+    },
+    {
+     "in": "8 6\n28 52 32 23 27 51 19 23\n6 7\n1 8\n1 2\n1 7\n1 8\n0 1\n",
+     "out": "19\n19\n52\n19\n19\n28\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "25 12\n49 16 42 12 32 20 56 32 4 52 55 41 25 29 28 32 8 23 27 27 35 35 19 15 11\n1 12\n18 24\n0 7\n3 8\n7 10\n17 25\n1 12\n11 25\n9 18\n12 22\n0 2\n22 25\n",
+     "out": "4\n15\n12\n12\n4\n11\n4\n8\n8\n8\n16\n11\n"
+    },
+    {
+     "in": "15 5\n10 50 45 13 8 51 19 27 23 43 19 59 11 23 35\n8 15\n8 14\n3 4\n10 12\n1 9\n",
+     "out": "11\n11\n13\n19\n8\n"
+    }
+   ],
+   "want": "ds.sparse-table"
+  },
+  {
+   "id": "st-levels",
+   "st": "第一行 n q，第二行 n 個整數 a。用稀疏表（Sparse Table）處理區間最小值，第 0 層是原陣列，第 j 層的每格涵蓋 2^j 個元素。輸出稀疏表一共有幾層。",
+   "rw_st": null,
+   "ref": "import math\nn, q = map(int, input().split())\nprint(int(math.log2(n)) + 1)\n",
+   "tests": [
+    {
+     "in": "12 6\n60 28 32 51 15 39 35 35 7 39 19 43\n",
+     "out": "4\n"
+    },
+    {
+     "in": "3 3\n27 47 19\n",
+     "out": "2\n"
+    },
+    {
+     "in": "10 1\n17 9 45 9 45 25 41 29 20 40\n",
+     "out": "4\n"
+    },
+    {
+     "in": "3 3\n22 30 26\n",
+     "out": "2\n"
+    },
+    {
+     "in": "8 2\n36 31 27 15 11 30 46 54\n",
+     "out": "4\n"
+    },
+    {
+     "in": "2 4\n6 42\n",
+     "out": "2\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "32 15\n20 59 47 23 38 58 58 38 21 28 28 48 55 27 51 11 51 35 7 35 59 11 51 35 43 55 19 55 39 11 19 38\n",
+     "out": "6\n"
+    },
+    {
+     "in": "28 8\n60 52 51 23 51 15 35 19 35 31 18 57 37 5 37 21 33 25 49 9 5 45 29 49 45 1 41 1\n",
+     "out": "5\n"
+    }
+   ],
+   "want": "ds.sparse-table"
+  },
+  {
+   "id": "ho-avl",
+   "st": "第一行 n，第二行 n 個互不相同的整數。請把它們依序放進一棵 AVL 平衡樹，並輸出建完以後的前序走訪結果（空白分隔）。",
+   "rw_st": null,
+   "ref": "import sys\nsys.setrecursionlimit(10000)\nn = int(input())\na = list(map(int, input().split()))\nrot = [0]\nclass Nd:\n    def __init__(s, v):\n        s.v = v\n        s.l = None\n        s.r = None\n        s.h = 1\ndef h(t):\n    return t.h if t else 0\ndef upd(t):\n    t.h = 1 + max(h(t.l), h(t.r))\ndef rr(y):\n    x = y.l\n    y.l = x.r\n    x.r = y\n    upd(y)\n    upd(x)\n    return x\ndef rl(x):\n    y = x.r\n    x.r = y.l\n    y.l = x\n    upd(x)\n    upd(y)\n    return y\ndef ins(t, v):\n    if t is None:\n        return Nd(v)\n    if v == t.v:\n        return t\n    if v < t.v:\n        t.l = ins(t.l, v)\n    else:\n        t.r = ins(t.r, v)\n    upd(t)\n    b = h(t.l) - h(t.r)\n    if b > 1:\n        if h(t.l.l) < h(t.l.r):\n            t.l = rl(t.l)\n            rot[0] += 1\n        t = rr(t)\n        rot[0] += 1\n    elif b < -1:\n        if h(t.r.r) < h(t.r.l):\n            t.r = rr(t.r)\n            rot[0] += 1\n        t = rl(t)\n        rot[0] += 1\n    return t\ndef ino(t):\n    return ino(t.l) + [t.v] + ino(t.r) if t else []\ndef pre(t):\n    return [t.v] + pre(t.l) + pre(t.r) if t else []\nroot = None\nfor v in a:\n    root = ins(root, v)\nprint(*pre(root))\n",
+   "tests": [
+    {
+     "in": "5\n1 45 5 25 33\n",
+     "out": "5 1 33 25 45\n"
+    },
+    {
+     "in": "8\n40 44 51 35 55 14 18 57\n",
+     "out": "44 35 14 18 40 55 51 57\n"
+    },
+    {
+     "in": "9\n1 8 25 29 43 46 55 59 60\n",
+     "out": "29 8 1 25 46 43 59 55 60\n"
+    },
+    {
+     "in": "4\n5 49 20 28\n",
+     "out": "20 5 49 28\n"
+    },
+    {
+     "in": "2\n43 7\n",
+     "out": "43 7\n"
+    },
+    {
+     "in": "2\n50 42\n",
+     "out": "50 42\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "19\n53 25 41 21 12 48 8 36 24 35 59 23 51 55 39 19 50 9 52\n",
+     "out": "25 21 12 8 9 19 24 23 50 41 36 35 39 48 53 51 52 59 55\n"
+    },
+    {
+     "in": "18\n60 52 51 34 45 21 56 55 39 27 19 54 9 37 24 4 48 32\n",
+     "out": "45 21 9 4 19 34 27 24 32 39 37 55 52 51 48 54 56 60\n"
+    }
+   ],
+   "split": "holdout"
+  },
+  {
+   "id": "ho-sk",
+   "st": "第一行 L q，之後 q 行指令：insert k h 表示鍵 k 出現在跳躍表由下而上的前 h 層；delete k 表示把 k 從每一層移除；search k 表示搜尋 k。總共 L 層、第 L-1 層在最上面，每層最左邊有個表頭。搜尋時從最上層的表頭開始，同一層一直往右直到下一個鍵不小於 k，再下降一層。對每個 search 輸出找到與否（YES 或 NO）。",
+   "rw_st": null,
+   "ref": "L, q = map(int, input().split())\nclass Nd:\n    def __init__(s, k, h):\n        s.k = k\n        s.nx = [None] * h\nhead = Nd(None, L)\nfor _ in range(q):\n    p = input().split()\n    k = int(p[1])\n    if p[0] == \"search\":\n        x = head\n        rights = 0\n        comps = 0\n        downs = 0\n        for l in range(L - 1, -1, -1):\n            while x.nx[l] is not None:\n                comps += 1\n                if x.nx[l].k < k:\n                    x = x.nx[l]\n                    rights += 1\n                else:\n                    break\n            if l > 0:\n                downs += 1\n        nxt = x.nx[0]\n        found = nxt is not None and nxt.k == k\n        print(\"YES\" if found else \"NO\")\n        continue\n    upd = [None] * L\n    x = head\n    for l in range(L - 1, -1, -1):\n        while x.nx[l] is not None and x.nx[l].k < k:\n            x = x.nx[l]\n        upd[l] = x\n    tg = upd[0].nx[0]\n    has = tg is not None and tg.k == k\n    if p[0] == \"insert\":\n        if has:\n            continue\n        hh = min(int(p[2]), L)\n        nd = Nd(k, hh)\n        for l in range(hh):\n            nd.nx[l] = upd[l].nx[l]\n            upd[l].nx[l] = nd\n    elif has:\n        for l in range(len(tg.nx)):\n            if upd[l].nx[l] is tg:\n                upd[l].nx[l] = tg.nx[l]\n",
+   "tests": [
+    {
+     "in": "3 15\ninsert 13 2\ninsert 1 1\ninsert 9 3\nsearch 14\ndelete 1\nsearch 8\nsearch 9\nsearch 15\nsearch 17\ninsert 14 3\ninsert 4 2\ninsert 8 2\ndelete 9\ninsert 10 1\nsearch 17\n",
+     "out": "NO\nNO\nYES\nNO\nNO\nNO\n"
+    },
+    {
+     "in": "2 8\ninsert 14 1\ninsert 15 1\ninsert 7 1\nsearch 11\ninsert 13 1\ninsert 17 2\ninsert 9 1\nsearch 3\n",
+     "out": "NO\nNO\n"
+    },
+    {
+     "in": "3 9\ninsert 5 1\nsearch 15\ninsert 4 3\ndelete 5\nsearch 1\ninsert 9 1\ninsert 10 3\nsearch 4\nsearch 12\n",
+     "out": "NO\nNO\nYES\nNO\n"
+    },
+    {
+     "in": "4 15\ninsert 5 1\ninsert 2 2\nsearch 18\ndelete 2\ninsert 13 2\nsearch 11\nsearch 16\nsearch 12\ndelete 13\nsearch 7\ninsert 1 3\nsearch 5\nsearch 1\nsearch 7\nsearch 15\n",
+     "out": "NO\nNO\nNO\nNO\nNO\nYES\nYES\nNO\nNO\n"
+    },
+    {
+     "in": "3 15\ninsert 16 1\nsearch 5\ninsert 10 1\ninsert 1 2\nsearch 1\ndelete 10\ninsert 5 2\ninsert 17 1\nsearch 5\nsearch 9\nsearch 1\nsearch 17\nsearch 3\nsearch 1\nsearch 9\n",
+     "out": "NO\nYES\nYES\nNO\nYES\nYES\nNO\nYES\nNO\n"
+    },
+    {
+     "in": "3 13\ninsert 4 1\ninsert 5 1\ninsert 7 1\ninsert 16 3\nsearch 12\ndelete 7\ninsert 3 2\ninsert 15 3\ninsert 18 2\nsearch 1\nsearch 17\nsearch 5\nsearch 15\n",
+     "out": "NO\nNO\nNO\nYES\nYES\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "4 10\ninsert 1 1\nsearch 1\nsearch 6\nsearch 12\ninsert 10 4\nsearch 2\nsearch 1\nsearch 1\nsearch 7\nsearch 11\n",
+     "out": "YES\nNO\nNO\nNO\nYES\nYES\nNO\nNO\n"
+    },
+    {
+     "in": "3 29\ninsert 15 1\ndelete 15\ninsert 16 1\nsearch 3\nsearch 9\ndelete 16\ninsert 15 2\ninsert 7 3\nsearch 12\nsearch 18\ndelete 15\ninsert 6 2\ninsert 13 2\nsearch 1\ninsert 2 1\nsearch 4\nsearch 4\ninsert 18 1\nsearch 18\ninsert 8 3\ninsert 11 3\ninsert 14 2\nsearch 9\nsearch 3\nsearch 11\nsearch 11\nsearch 6\ninsert 4 1\nsearch 9\n",
+     "out": "NO\nNO\nNO\nNO\nNO\nNO\nNO\nYES\nNO\nNO\nYES\nYES\nYES\nNO\n"
+    }
+   ],
+   "split": "holdout"
+  },
+  {
+   "id": "ho-st",
+   "st": "第一行 n q，第二行 n 個整數，接著 q 行各兩個整數 x y（位置從 1 算，兩端都包含）。請建立 Sparse Table，並對每筆查詢輸出該區間的最大值。",
+   "rw_st": null,
+   "ref": "from math import gcd\nfrom functools import reduce\nn, q = map(int, input().split())\na = list(map(int, input().split()))\nfor _ in range(q):\n    l, r = map(int, input().split())\n    print(max(a[l-1:r]))\n",
+   "tests": [
+    {
+     "in": "8 5\n45 29 33 12 7 19 59 54\n2 6\n2 5\n2 8\n1 1\n4 8\n",
+     "out": "33\n33\n59\n45\n59\n"
+    },
+    {
+     "in": "8 2\n56 59 11 3 3 19 35 39\n3 7\n3 3\n",
+     "out": "35\n11\n"
+    },
+    {
+     "in": "11 1\n11 51 50 14 50 41 57 17 9 17 60\n4 11\n",
+     "out": "60\n"
+    },
+    {
+     "in": "12 2\n12 16 32 24 24 40 60 56 60 35 39 55\n3 10\n8 8\n",
+     "out": "60\n56\n"
+    },
+    {
+     "in": "8 6\n44 40 8 8 32 52 40 16\n8 8\n8 8\n3 3\n3 6\n5 5\n5 8\n",
+     "out": "16\n16\n8\n52\n32\n52\n"
+    },
+    {
+     "in": "12 6\n8 31 41 43 53 25 24 24 4 8 15 55\n11 11\n3 11\n7 7\n7 9\n3 7\n11 11\n",
+     "out": "15\n53\n24\n24\n53\n15\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "3 10\n23 7 2\n3 3\n1 3\n3 3\n3 3\n3 3\n2 2\n2 3\n2 3\n2 2\n2 2\n",
+     "out": "2\n23\n2\n2\n2\n7\n7\n7\n7\n7\n"
+    },
+    {
+     "in": "21 13\n49 1 13 41 5 25 5 37 41 37 40 55 11 47 55 59 15 23 38 30 50\n4 5\n10 10\n3 21\n15 18\n13 20\n7 19\n21 21\n2 10\n5 7\n4 17\n14 21\n4 10\n21 21\n",
+     "out": "41\n37\n59\n59\n59\n59\n50\n41\n25\n59\n59\n41\n50\n"
+    }
+   ],
+   "split": "holdout"
+  },
+  {
+   "id": "ho2-avl",
+   "st": "第一行 n，第二行 n 個互不相同的整數，依序加入一棵 AVL 樹。請問加入完成後，整棵樹的高度是多少（單一節點高度為 1）？",
+   "rw_st": null,
+   "ref": "import sys\nsys.setrecursionlimit(10000)\nn = int(input())\na = list(map(int, input().split()))\nrot = [0]\nclass Nd:\n    def __init__(s, v):\n        s.v = v\n        s.l = None\n        s.r = None\n        s.h = 1\ndef h(t):\n    return t.h if t else 0\ndef upd(t):\n    t.h = 1 + max(h(t.l), h(t.r))\ndef rr(y):\n    x = y.l\n    y.l = x.r\n    x.r = y\n    upd(y)\n    upd(x)\n    return x\ndef rl(x):\n    y = x.r\n    x.r = y.l\n    y.l = x\n    upd(x)\n    upd(y)\n    return y\ndef ins(t, v):\n    if t is None:\n        return Nd(v)\n    if v == t.v:\n        return t\n    if v < t.v:\n        t.l = ins(t.l, v)\n    else:\n        t.r = ins(t.r, v)\n    upd(t)\n    b = h(t.l) - h(t.r)\n    if b > 1:\n        if h(t.l.l) < h(t.l.r):\n            t.l = rl(t.l)\n            rot[0] += 1\n        t = rr(t)\n        rot[0] += 1\n    elif b < -1:\n        if h(t.r.r) < h(t.r.l):\n            t.r = rr(t.r)\n            rot[0] += 1\n        t = rl(t)\n        rot[0] += 1\n    return t\ndef ino(t):\n    return ino(t.l) + [t.v] + ino(t.r) if t else []\ndef pre(t):\n    return [t.v] + pre(t.l) + pre(t.r) if t else []\nroot = None\nfor v in a:\n    root = ins(root, v)\nprint(h(root))\n",
+   "tests": [
+    {
+     "in": "8\n30 28 18 34 1 49 33 4\n",
+     "out": "4\n"
+    },
+    {
+     "in": "2\n15 17\n",
+     "out": "2\n"
+    },
+    {
+     "in": "3\n27 43 47\n",
+     "out": "2\n"
+    },
+    {
+     "in": "6\n46 37 17 53 41 24\n",
+     "out": "3\n"
+    },
+    {
+     "in": "10\n60 32 12 8 20 23 3 15 35 31\n",
+     "out": "4\n"
+    },
+    {
+     "in": "3\n11 47 23\n",
+     "out": "2\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "22\n1 11 12 14 17 21 22 25 26 29 34 38 41 42 45 46 50 51 53 54 58 59\n",
+     "out": "5\n"
+    },
+    {
+     "in": "26\n50 25 47 3 31 26 54 10 30 33 49 5 37 24 60 52 11 21 17 41 13 45 53 20 32 28\n",
+     "out": "5\n"
+    }
+   ],
+   "split": "holdout"
+  },
+  {
+   "id": "ho2-st",
+   "st": "第一行 n q，第二行 n 個正整數，接著 q 行每行 l r（位置從 1 起算，包含兩端）。請使用稀疏表，輸出每個區間內數字的最大公因數。",
+   "rw_st": null,
+   "ref": "from math import gcd\nfrom functools import reduce\nn, q = map(int, input().split())\na = list(map(int, input().split()))\nfor _ in range(q):\n    l, r = map(int, input().split())\n    print(reduce(gcd, a[l-1:r]))\n",
+   "tests": [
+    {
+     "in": "3 5\n7 15 27\n2 3\n1 2\n2 2\n3 3\n2 3\n",
+     "out": "3\n1\n15\n27\n3\n"
+    },
+    {
+     "in": "8 2\n12 48 32 16 44 12 59 27\n7 7\n7 7\n",
+     "out": "59\n59\n"
+    },
+    {
+     "in": "11 3\n59 47 31 3 55 19 39 35 10 18 26\n6 11\n2 6\n1 7\n",
+     "out": "1\n1\n1\n"
+    },
+    {
+     "in": "9 5\n13 1 37 6 24 46 30 10 6\n8 9\n6 6\n9 9\n9 9\n2 6\n",
+     "out": "2\n46\n6\n6\n1\n"
+    },
+    {
+     "in": "9 3\n37 33 57 49 4 7 51 55 11\n4 6\n5 7\n9 9\n",
+     "out": "1\n1\n11\n"
+    },
+    {
+     "in": "2 5\n27 45\n1 2\n2 2\n1 1\n1 1\n1 1\n",
+     "out": "9\n45\n27\n27\n27\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "3 4\n27 23 11\n2 2\n2 2\n3 3\n3 3\n",
+     "out": "23\n23\n11\n11\n"
+    },
+    {
+     "in": "1 10\n25\n1 1\n1 1\n1 1\n1 1\n1 1\n1 1\n1 1\n1 1\n1 1\n1 1\n",
+     "out": "25\n25\n25\n25\n25\n25\n25\n25\n25\n25\n"
+    }
+   ],
+   "split": "holdout"
+  },
+  {
+   "id": "ho2-sk",
+   "st": "第一行 L q，之後 q 行指令：insert k h（鍵 k 的層數為 h，也就是出現在第 0 到 h-1 層）、delete k、search k。跳躍表共 L 層，每層最左邊有表頭。search 從最高層表頭出發，每層向右走到下一個鍵不小於 k 為止再下降。對每個 search 輸出向右走了幾步。",
+   "rw_st": null,
+   "ref": "L, q = map(int, input().split())\nclass Nd:\n    def __init__(s, k, h):\n        s.k = k\n        s.nx = [None] * h\nhead = Nd(None, L)\nfor _ in range(q):\n    p = input().split()\n    k = int(p[1])\n    if p[0] == \"search\":\n        x = head\n        rights = 0\n        comps = 0\n        downs = 0\n        for l in range(L - 1, -1, -1):\n            while x.nx[l] is not None:\n                comps += 1\n                if x.nx[l].k < k:\n                    x = x.nx[l]\n                    rights += 1\n                else:\n                    break\n            if l > 0:\n                downs += 1\n        nxt = x.nx[0]\n        found = nxt is not None and nxt.k == k\n        print(rights)\n        continue\n    upd = [None] * L\n    x = head\n    for l in range(L - 1, -1, -1):\n        while x.nx[l] is not None and x.nx[l].k < k:\n            x = x.nx[l]\n        upd[l] = x\n    tg = upd[0].nx[0]\n    has = tg is not None and tg.k == k\n    if p[0] == \"insert\":\n        if has:\n            continue\n        hh = min(int(p[2]), L)\n        nd = Nd(k, hh)\n        for l in range(hh):\n            nd.nx[l] = upd[l].nx[l]\n            upd[l].nx[l] = nd\n    elif has:\n        for l in range(len(tg.nx)):\n            if upd[l].nx[l] is tg:\n                upd[l].nx[l] = tg.nx[l]\n",
+   "tests": [
+    {
+     "in": "3 9\ninsert 3 2\ninsert 11 2\nsearch 11\ninsert 1 2\ndelete 3\ninsert 6 1\nsearch 18\nsearch 13\nsearch 11\n",
+     "out": "1\n2\n2\n2\n"
+    },
+    {
+     "in": "2 17\ninsert 4 2\nsearch 14\ninsert 5 1\ninsert 17 1\ninsert 12 1\nsearch 4\nsearch 5\ninsert 9 2\ninsert 7 2\ndelete 12\ndelete 7\nsearch 1\nsearch 5\nsearch 11\ninsert 10 2\nsearch 12\nsearch 4\n",
+     "out": "1\n0\n1\n0\n1\n2\n3\n0\n"
+    },
+    {
+     "in": "3 7\ninsert 1 3\ninsert 18 1\nsearch 14\ndelete 18\nsearch 10\ninsert 5 3\nsearch 5\n",
+     "out": "1\n1\n1\n"
+    },
+    {
+     "in": "2 16\ninsert 2 2\ninsert 6 2\ninsert 11 2\nsearch 17\ninsert 17 2\ninsert 5 1\nsearch 2\nsearch 2\nsearch 7\nsearch 3\ninsert 16 2\nsearch 8\nsearch 14\ndelete 6\nsearch 11\nsearch 11\n",
+     "out": "3\n0\n0\n2\n1\n2\n3\n2\n2\n"
+    },
+    {
+     "in": "2 13\ninsert 4 2\nsearch 5\ninsert 10 2\ninsert 8 2\nsearch 7\ninsert 5 1\ndelete 5\ninsert 13 2\nsearch 8\nsearch 4\ninsert 3 1\nsearch 3\nsearch 16\n",
+     "out": "1\n1\n1\n0\n0\n4\n"
+    },
+    {
+     "in": "2 7\ninsert 15 1\ndelete 15\ninsert 17 2\ninsert 14 2\ninsert 12 1\nsearch 1\nsearch 9\n",
+     "out": "0\n0\n"
+    }
+   ],
+   "hidden": [
+    {
+     "in": "3 30\ninsert 1 2\ninsert 6 2\nsearch 4\ninsert 10 2\ninsert 16 2\ninsert 3 3\nsearch 15\nsearch 12\nsearch 5\nsearch 16\nsearch 14\nsearch 6\nsearch 14\nsearch 18\nsearch 8\nsearch 1\ninsert 13 3\nsearch 10\ndelete 16\nsearch 13\ninsert 17 3\ninsert 5 1\nsearch 6\nsearch 18\nsearch 10\nsearch 4\nsearch 15\nsearch 13\ndelete 10\nsearch 8\n",
+     "out": "1\n3\n3\n1\n3\n3\n1\n3\n4\n2\n0\n2\n3\n2\n3\n2\n1\n2\n3\n2\n"
+    },
+    {
+     "in": "2 19\ninsert 17 1\nsearch 10\ninsert 7 1\ninsert 11 1\ninsert 2 2\nsearch 2\ninsert 13 1\ninsert 3 1\nsearch 9\ninsert 15 1\nsearch 17\ninsert 10 2\nsearch 13\ndelete 3\nsearch 11\nsearch 17\nsearch 15\ndelete 15\nsearch 11\n",
+     "out": "0\n0\n3\n6\n3\n2\n5\n4\n2\n"
+    }
+   ],
+   "split": "holdout"
+  }
+ ]
+}

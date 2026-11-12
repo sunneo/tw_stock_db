@@ -155,21 +155,4 @@ for y in range(abs(h)):
     print(*out)
 `;
 
-const SEEDS = [
-    { id: 'rle8-rgb', want: 'bmpx.rle', st: '輸入一行十六進位字串，是一個 8 位元 BMP，壓縮方式為 BI_RLE8（壓縮欄位＝1）：編碼模式（計數＋索引）、絕對模式（0 n 之後 n 個索引，補到偶數位元組）、跳脫碼（0 0 換行、0 1 結束、0 2 dx dy 位移，被跳過的像素索引為 0）。請解壓縮，並由上到下逐列輸出每個像素的調色盤顏色 RRGGBB（小寫十六進位），同一列以空格分隔。調色盤從位元組 14＋資訊標頭大小開始，每色 B G R 保留。', ref: REF_RLE('rgb', 'top'), gen: genRle(8, true) },
-    { id: 'rle4-idx', want: 'bmpx.rle', st: '輸入一行十六進位字串，是一個 4 位元 BMP，壓縮方式為 RLE4（壓縮欄位＝2）：編碼模式的值位元組含兩個像素（高半位元組先、低半位元組後，計數超過 2 時交替重複）；絕對模式 0 n 後面有 ceil(n/2) 個位元組並補到偶數位元組；0 0 換行、0 1 結束、0 2 位移。請解壓縮，依儲存順序（第一列是影像最下面）逐列輸出每個像素的調色盤索引（十進位），同一列以空格分隔。', ref: REF_RLE('idx', 'st'), gen: genRle(4, true) },
-    { id: 'rle4-rgb', want: 'bmpx.rle', st: '輸入一行十六進位字串，是一個 RLE4 壓縮的 BMP（壓縮欄位 2，4 位元調色盤，高度為正、列由下到上）。請解壓後由上到下輸出每個像素的顏色 RRGGBB（小寫十六進位），同列以空格分隔。', ref: REF_RLE('rgb', 'top'), gen: genRle(4, false) },
-    { id: 'rle8-idx', want: 'bmpx.rle', st: '輸入一行十六進位字串，是 RLE8 壓縮的 BMP（BI_RLE8）。請解壓縮，由上到下逐列輸出每個像素的調色盤索引（十進位），同一列以空格分隔。', ref: REF_RLE('idx', 'top'), gen: genRle(8, false) },
-    { id: 'bf-565-hex', want: 'bmpx.bitfields', st: '輸入一行十六進位字串，是一個 16 位元 BMP，壓縮欄位為 3（BI_BITFIELDS），紅綠藍的遮罩依序放在位元組 54、58、62（各 4 位元組小端）。每個像素取 (像素 & 遮罩) 右移到最低位後，以 值×255÷最大值（整數除法、無條件捨去）換成 8 位元。請由上到下逐列輸出每個像素的 RRGGBB（小寫十六進位），同列以空格分隔。', ref: REF_BF('floor', 'hex'), gen: genBf('rgb565', false) },
-    { id: 'bf-32-dec', want: 'bmpx.bitfields', st: '輸入一行十六進位字串，是一個 32 位元 BMP（BI_BITFIELDS，壓縮欄位 3），紅綠藍遮罩在位元組 54、58、62。通道值是 (像素 & 遮罩) 右移遮罩最低位元的位置，再用 值×255÷最大值（整數除法）換成 0–255。請由上到下逐列輸出每個像素的「R,G,B」（十進位，逗號分隔），同一列的像素以空格分隔。', ref: REF_BF('floor', 'dec'), gen: genBf('bgr_bf', false) },
-    { id: 'bf-10bit', want: 'bmpx.bitfields', st: '輸入一行十六進位字串，是一個 32 位元 BMP，用 BI_BITFIELDS 色彩遮罩（紅綠藍遮罩在位元組 54、58、62，每個通道可能不是 8 位元，例如 10 位元）。通道換成 8 位元的方式是 值×255÷最大值 四捨五入到整數。請由上到下逐列輸出每個像素的 RRGGBB（小寫十六進位），同一列以空格分隔。', ref: REF_BF('round', 'hex'), gen: genBf('r10', false) },
-    { id: 'bf-argb4444', want: 'bmpx.bitfields', st: '輸入一行十六進位字串，是一個 16 位元的 V4 BMP（資訊標頭 108 位元組，壓縮欄位 3，紅綠藍 alpha 遮罩在位元組 54、58、62、66）。通道值以 值×255÷最大值 四捨五入換成 8 位元。請由上到下逐列輸出每個像素的 AARRGGBB（小寫十六進位），同一列以空格分隔。', ref: REF_BF('round', 'argb'), gen: genBf('argb4444', false) },
-    { id: 'bf-default-neg', want: 'bmpx.bitfields', st: '輸入一行十六進位字串，是一個 32 位元 BMP，壓縮欄位 0（沒有遮罩，預設 B G R 各 8 位元，第四個位元組是 alpha 忽略）；高度為負值表示由上到下儲存。請逐列（影像由上到下）輸出每個像素的 RRGGBB（小寫十六進位），同一列以空格分隔。', ref: REF_BF('floor', 'hex'), gen: genBf('argb8888', true) },
-    { id: 'bf-555-default', want: 'bmpx.bitfields', st: '輸入一行十六進位字串，是一個 16 位元 BMP，壓縮欄位 0（預設 5-5-5：紅 0x7C00、綠 0x03E0、藍 0x001F）。通道換成 8 位元用 值×255÷最大值 四捨五入。請由上到下逐列輸出每個像素的 RRGGBB（小寫十六進位），同一列以空格分隔。', ref: REF_BF('round', 'hex'), gen: genBf('rgb555', false) },
-    // holdout：另寫措辭，只量測，不教
-    { id: 'ho-rle8', split: 'holdout', st: '給一行十六進位，是以 RLE8 壓縮的 BMP 檔。請還原每個像素，從影像最上方那一列開始，每列輸出一行，內容是調色盤顏色的 RRGGBB（小寫），用空格隔開。', ref: REF_RLE('rgb', 'top'), gen: genRle(8, true) },
-    { id: 'ho-rle4', split: 'holdout', st: '輸入一行十六進位字串，這是 4 位元、行程長度編碼（壓縮類型 2）的 BMP。請解碼後依序列出每一列（由上往下）每個像素的調色盤索引，列內以空格分隔。', ref: REF_RLE('idx', 'top'), gen: genRle(4, true) },
-    { id: 'ho-565', split: 'holdout', st: '輸入一行十六進位字串，是一個 RGB565 的 BMP（每像素 16 位元，遮罩 F800／07E0／001F 記錄在檔頭的位元組 54 起）。請把每個像素換成 8 位元的 RGB（通道值×255÷最大值，無條件捨去），由上到下逐列輸出 RRGGBB 小寫十六進位，列內以空格分隔。', ref: REF_BF('floor', 'hex'), gen: genBf('rgb565', false) },
-    { id: 'ho-bf32', split: 'holdout', st: '輸入一行十六進位字串，是一個 32 位元 BMP，用色彩遮罩（BITFIELDS）表示像素，遮罩順序是紅、綠、藍，可能含 alpha。請逐列由上到下輸出每個像素的 ARGB（AARRGGBB，小寫十六進位；沒有 alpha 遮罩時 alpha 為 ff），列內以空格分隔。通道以 值×255÷最大值 四捨五入。', ref: REF_BF('round', 'argb'), gen: genBf('rgba_bf', false) }
-];
-H.main({ name: '領域包 bmpx', packs: [BX], seeds: SEEDS, minSkeletons: 2, judge: { checker: 'tokens', timeoutMs: 60000 } });
+H.main({ name: '領域包 bmpx', packs: [BX], seeds: H.loadSeeds(require('path').join(__dirname, 'seeds', 'domain_bmpx.json')), minSkeletons: 2, judge: { checker: 'tokens', timeoutMs: 60000 } });
