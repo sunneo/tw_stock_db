@@ -102,7 +102,7 @@
                 sizeBytes: r.size, loaded, pinned, inUse, slot: null, lastUsed: timeText(sl ? sl.lastUsed : NaN),
                 source: r.source || '未標註', enabled: r.enabled !== false, compat: r.compat || 'ok', compatReasons: Array.isArray(r.compatReasons) ? r.compatReasons : [],
                 domains: Array.isArray(r.domains) ? r.domains : [], triggers: Array.isArray(r.triggers) ? r.triggers : [], description: r.description || '',
-                evalWin: r.eval && Array.isArray(r.eval.win) ? r.eval.win : null, evalLose: r.eval && Array.isArray(r.eval.lose) ? r.eval.lose : null,
+                gate: r.gate && typeof r.gate === 'object' ? r.gate : null, evalWin: r.eval && Array.isArray(r.eval.win) ? r.eval.win : null, evalLose: r.eval && Array.isArray(r.eval.lose) ? r.eval.lose : null,
                 location: r.location || '', created: timeText(Number(r.added)), actions,
                 slotRank: r.slotRank != null ? r.slotRank : r.rank, compatWarnings: Array.isArray(r.compatWarnings) ? r.compatWarnings : [], limits: Array.isArray(r.limits) ? r.limits : [], evalMetrics: r.evalMetrics || null
             };
@@ -161,7 +161,8 @@
 
     function registryCardHTML(r) {
         const chips = (xs) => (xs && xs.length ? xs.map((x) => '<span class="chip">' + esc(x) + '</span>').join('') : '<span class="na">無資料</span>');
-        const comp = (r.compat === 'reject' ? '<div class="err">相容性不通過：' + esc(r.compatReasons.join('；') || '未說明') + '</div>' : '')
+        const comp = (r.gate && !r.gate.pass ? '<div class="warn">未通過把關：' + esc(r.gate.reason) + '</div>' : '')
+            + (r.compat === 'reject' ? '<div class="err">相容性不通過：' + esc(r.compatReasons.join('；') || '未說明') + '</div>' : '')
             + (r.compatWarnings && r.compatWarnings.length ? '<div class="warn">相容性提醒：' + esc(r.compatWarnings.join('；')) + '</div>' : '')
             + (r.compat === 'warn' && r.compatReasons.length ? '<div class="warn">相容性提醒：' + esc(r.compatReasons.join('；')) + '</div>' : '');
         const ev = r.evalMetrics ? evalLinesHTML(r.evalMetrics) : ((r.evalWin || r.evalLose) ? '<div>評量：贏 ' + esc((r.evalWin || []).join('、') || '無') + '；輸 ' + esc((r.evalLose || []).join('、') || '無') + '</div>' : '<div class="na">無資料（沒有評量結果）</div>');

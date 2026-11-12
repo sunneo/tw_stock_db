@@ -126,6 +126,15 @@
         return { known: names.length > 0, lose, win, score: typeof ev.score === 'number' ? ev.score : win.length - lose.length };
     }
 
+    // 把關（§30.3）：「內建」標示與自動選用都要求——有評測數字，而且每一組都不輸基底。沒有數字或有組輸給基底 → 不通過，要寫原因。
+    // 自動選用的判斷在 select() 裡仍用原本的兩個訊息（測試依賴）；這裡給卡片與畫面一句話的結論。
+    function gateOf(ev) {
+        const v = evalVerdict(ev);
+        if (!v.known) return { pass: false, reason: '沒有評測數字，不自動選用（可手動指定）' };
+        if (v.lose && v.lose.length) return { pass: false, reason: '評測有組別輸給基底：' + v.lose.join('、') + '，不自動選用（可手動指定）' };
+        return { pass: true, reason: '評測數字齊全，所有組都不輸基底' };
+    }
+
     function createRegistry(opts) {
         opts = opts || {};
         const env = opts.env || {};
@@ -324,12 +333,12 @@
         }
         // 模型卡（給 LoRA 管理畫面）：與 DESIGN §14.6 對齊
         function card(e) {
-            const ev = evalVerdict(e.eval), c = compat(e);
+            const ev = evalVerdict(e.eval), c = compat(e), gate = gateOf(e.eval);
             const lu = live.has(e.id) ? live.get(e.id).lastUsed : (lastUsedById.has(e.id) ? lastUsedById.get(e.id) : null);
             return { id: e.id, name: e.name || e.id, version: e.version || null, description: e.description || '', base: e.base, rank: e.rank, size: e.size, added: e.added || null, lastUsed: lu,
                 domains: e.domains.slice(), triggers: (e.triggers || []).slice(), prompt_format_version: e.prompt_format_version, source: e.source, enabled: !!e.enabled,
                 location: e.location, eval: ev.known ? { lose: ev.lose, win: ev.win } : null, compat: c.level, compatReasons: c.reasons.map((r) => r.message), compatWarnings: c.warnings.map((w) => w.message), pinned: pins.has(e.id),
-                slotRank: e.slot_rank != null ? e.slot_rank : e.rank, limits: (e.limits || []).slice(), evalMetrics: e.eval && (e.eval.metrics || (CARD_METRIC_KEYS.some((k) => k in e.eval) ? e.eval : null)) || null };
+                slotRank: e.slot_rank != null ? e.slot_rank : e.rank, limits: (e.limits || []).slice(), evalMetrics: e.eval && (e.eval.metrics || (CARD_METRIC_KEYS.some((k) => k in e.eval) ? e.eval : null)) || null, gate: { pass: gate.pass, reason: gate.reason } };
         }
         // 狀態（給 LoRA 管理畫面）：槽位、已載入、最後使用時間、釘選、推論中
         function status() {
@@ -447,5 +456,5 @@
         };
     }
 
-    return { SOURCES, DEFAULT_BUDGET, DESCRIPTOR_FORMAT, DESCRIPTOR_FORMAT_VERSION, validateEntry, descriptorErrors, descriptorFromJson, checkCompat, evalVerdict, createRegistry, entryFromManifest, weightFile, summaryOf, diffSummaries, importReport, nrEngineLoader };
+    return { SOURCES, DEFAULT_BUDGET, DESCRIPTOR_FORMAT, DESCRIPTOR_FORMAT_VERSION, validateEntry, descriptorErrors, descriptorFromJson, checkCompat, evalVerdict, gateOf, createRegistry, entryFromManifest, weightFile, summaryOf, diffSummaries, importReport, nrEngineLoader };
 });

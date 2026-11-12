@@ -1310,3 +1310,12 @@ Backend {
 - 測試 `eval_groups_core.test.js` 21／0（含：標準答案當生成器時四個判題組全部 20／20；亂答時都不通過；沙盒缺席時 code 組寫原因）。
 - 畫面：模型評測區列出五個評測組、題數、來源與不可用原因。驗證：`studio_eval_models`（`FA_INJECT=model_eval_core,eval_groups_core`）。
 - 未驗證：這些組還沒有接上實際的模型生成（宿主的 `h.modelEval` 未接），所以沒有 LoRA 或基底的真實分數。
+
+### 30.3 第 3 項：LoRA 自動把關（已做）
+- 規則：LoRA 要標為「內建」或被路由自動選用，必須同時符合：有評測數字、每一組都不輸基底（`lora_registry_core.js` 的 `gateOf(ev)`）。不符合就寫「未通過把關：原因」。
+- 原因三種：沒有評測數字（「沒有評測數字，不自動選用（可手動指定）」）、有組輸給基底（列出組名）、通過（「評測數字齊全，所有組都不輸基底」）。
+- 卡片：`card(e)` 多一個 `gate: {pass, reason}`；`lora_manage_core.js` 的 `rowsFromStatus` 帶入 `gate`，`registryCardHTML` 對未通過的卡片顯示 `未通過把關：…`。
+- 自動選用：`select()` 的原本訊息與行為不動（「沒有評量資料…」、「評量有組別輸給基底…」），手動指定仍可用。
+- `KNOWN_EVAL`（colu-r4、plan-r4）保留，卡片沒帶數字時仍由表查到，且通過把關。
+- 測試：`lora_gate.test.js` 15／0；既有 `lora_registry.test.js` 96／0、`lora_manage_core.test.js` 47／0。
+- 未驗證：沒有在真 Electron 裡跑卡片的 DOM 探針（探針只會驗證同一套純函式的輸出）。
