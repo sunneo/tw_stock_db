@@ -135,7 +135,7 @@ async function detail(kind,name,body,dt){var r=await api('GET','/api/asset?kind=
  if(r.ok===false){box.appendChild(reason(r.error))}else{box.appendChild(h('div',{},[h('b',{text:kind+'/'+name}),h('span',{'class':'badge '+(r.verify.ok?'ok':'er'),text:r.verify.ok?'雜湊核對通過':'雜湊核對失敗：'+r.verify.message})]));
   box.appendChild(h('pre',{text:JSON.stringify(Object.assign({},r.manifest,{sha256:undefined}),null,1)}));if(r.readonly)box.appendChild(h('div',{'class':'warn',text:'內建資產：唯讀，內容來自程式本身（來源檔案見 manifest.extra.builtin）。'}));
   box.appendChild(h('div',{text:'檔案（點檔名瀏覽前 6000 字元）：'}));var pv=h('pre',{style:'display:none'});
-  r.files.forEach(function(f){box.appendChild(h('button',{text:f.path+'（'+fmtB(f.bytes)+'）',onclick:async function(){if(dt){pushView(dt,{t:'file',path:f.path});return}var x=await api('GET','/api/asset-file?kind='+encodeURIComponent(kind)+'&name='+encodeURIComponent(name)+'&path='+encodeURIComponent(f.path));pv.style.display='block';pv.textContent=x.ok===false?x.error:x.text+(x.truncated?'\n…（只顯示前 6000 字元，共 '+x.bytes+' 位元組）':'')}}))});box.appendChild(pv)}
+  r.files.forEach(function(f){box.appendChild(h('button',{text:f.path+'（'+fmtB(f.bytes)+'）',onclick:async function(){if(dt){pushView(dt,{t:'file',path:f.path});return}var x=await api('GET','/api/asset-file?kind='+encodeURIComponent(kind)+'&name='+encodeURIComponent(name)+'&path='+encodeURIComponent(f.path));pv.style.display='block';pv.textContent=x.ok===false?x.error:x.text+(x.truncated?'\n…（只顯示前 6000 字元，共 '+x.bytes+' 位元組）':'')}}));box.appendChild(h('button',{text:'下載 '+f.path,onclick:async function(){var x=await api('POST','/api/asset/download',{kind:kind,name:name,path:f.path});if(x.ok===false)alert(x.error)}}))});box.appendChild(pv)}
  box.appendChild(h('button',{text:'關閉這個分頁',onclick:function(){closeDetail(kind+'/'+name)}}));body.insertBefore(box,dt?null:(body.children[2]||null))}
 async function applyTrainer(name){var d=await api('POST','/api/trainer/apply',{name:name});if(d.ok===false){alert(d.error);return}
  if(!confirm('把 trainer/'+name+' 合併進目前的離線訓練器？\n預覽結果：'+JSON.stringify(d.result).slice(0,300)))return;var x=await api('POST','/api/trainer/apply',{name:name,confirmed:true});alert(x.ok===false?x.error:'已套用：'+JSON.stringify(x.result).slice(0,300))}
@@ -398,11 +398,26 @@ T.train=async function(body){
   var lGo=h('button',{'class':'pri',text:'匯出',disabled:!r.desktop,onclick:async function(){var x=await api('POST','/api/llm/export',{format:lfm.value,adapterDir:lad.value.trim(),baseDir:lbd.value.trim()});if(x.ok===false){alert(x.error||'匯出沒有啟動');if(x.tools)ltool.textContent=JSON.stringify(x.tools);return}pollLlmExport(lst)}});
   var lChk=h('button',{text:'檢查工具',disabled:!r.desktop,onclick:async function(){var x=await api('GET','/api/llm/tools');if(x.ok===false){ltool.textContent=x.error||'偵測失敗';return}ltool.textContent=Object.keys(x.availability||{}).map(function(k){var a=x.availability[k];return k.toUpperCase()+'：'+(a.available?'可用':'不可用（'+a.reason+'）')}).join('\n')}});
   out.appendChild(h('div',{'class':'row'},[lGo,lChk]));out.appendChild(ltool);out.appendChild(lst);out.appendChild(h('div',{id:'fa-llm-actions','class':'row'}));
+  out.appendChild(webLlmBox());
   if(!r.desktop)out.appendChild(h('div',{'class':'todo',text:'網頁版只能匯出設定、實際匯出在桌面版（需要 Python 與 llama.cpp）。'}));
   if(!r.desktop&&!r.webTrain)out.appendChild(h('div',{'class':'todo',text:'這個環境沒有可用的訓練後端（沒有子行程，頁內處理器訓練也沒接上）。到「資產清單」匯出 .fatrain，拿到桌面版訓練。'}));
   if(!r.desktop&&r.webTrain)out.appendChild(h('div',{'class':'todo',text:'網頁版用頁內處理器訓練：慢但正確；可隨時「暫停」，再「匯出續訓檢查點」帶到另一台（桌面版或另一個網頁）接著訓練。'}));
   out.appendChild(prog);prog.appendChild(h('div',{text:'還沒有訓練。'}));prog.appendChild(cv);pollTrain(prog,cv,true)}
  ksel.onchange=build;build()};
+function webLlmBox(){
+ var box=h('div',{'class':'card'});
+ box.appendChild(h('div',{text:'網頁版模型（ONNX q8，頁內 onnxruntime-web 推論；GGUF 不在這裡）'}));
+ var sel=h('select',{}),info=h('div',{style:'font-size:12px;color:var(--mut);white-space:pre-line'});
+ var prm=h('textarea',{rows:'3',placeholder:'輸入提示（純文字，直接編碼；不套 chat template）'}),mx=h('input',{type:'number',value:'16',min:'1',max:'64'});
+ var outp=h('pre',{style:'white-space:pre-wrap'});
+ async function reload(){var r=await api('GET','/api/llm/web/models');sel.textContent='';if(r.ok===false){info.textContent=r.error||'讀取失敗';return}
+  if(!(r.models||[]).length)info.textContent='還沒有 llm 資產。先匯出並「登錄成 LLM 資產」。';
+  (r.models||[]).forEach(function(m){var o=h('option',{value:m.name,text:m.name+'（'+m.format+' '+m.quant+'，'+fmtB(m.bytes)+'）'+(m.ready?'':' — 不可用：'+m.reason)});if(!m.ready)o.disabled=true;sel.appendChild(o)});
+  info.textContent=r.ortAvailable?'推論時才從 CDN 載入 onnxruntime-web 1.22.0。':'這個環境沒有頁內推論（onnxruntime-web 未注入）。';}
+ var go=h('button',{'class':'pri',text:'生成',onclick:async function(){outp.textContent='生成中…';var x=await api('POST','/api/llm/web/generate',{name:sel.value,prompt:prm.value,maxNew:Number(mx.value)});outp.textContent=x.ok===false?x.error:(x.text+'\n\n（'+x.tokens.length+' token，'+x.stoppedBy+'，載入 '+x.loadMs+' ms，生成 '+x.genMs+' ms）')}});
+ box.appendChild(h('div',{'class':'row'},[sel,h('button',{text:'重新整理',onclick:reload})]));box.appendChild(info);box.appendChild(prm);
+ box.appendChild(h('div',{'class':'row'},[h('label',{text:'最多 token'}),mx,go]));box.appendChild(outp);reload();return box;
+}
 var llmLastJob=null;
 async function pollLlmExport(box){clearTimeout(pollLlmExport.t);var r=await api('GET','/api/llm/export/status');box.textContent='';
  var act=document.getElementById('fa-llm-actions');if(act)act.textContent='';

@@ -141,6 +141,7 @@
         }
 
         // 「領域」分頁（blockly／matrix 新增領域與操作，domain_routes_core.js）：不是領域路由就回 null
+        const LlmWeb = (typeof module === 'object' && module.exports) ? require('./llm_web_core.js') : self.FaLlmWeb;
         const DomApi = (typeof module === 'object' && module.exports) ? require('./domain_routes_core.js') : self.FaStudioDomainApi;
         const domainApi = DomApi ? DomApi.createDomainApi({ storage: h.storage, prefsGet: h.prefsGet, prefsSet: h.prefsSet, now: h.now, Asset, Eval: EvalCore, sym: h.sym, domain: h.domain, teacherAI: h.teacherAI, log: (t) => log(t), push: (o) => { if (S.push) S.push(o); } }) : null;
 
@@ -204,38 +205,82 @@
                     if (!r || r.ok === false) return bad(r && r.notDesktop ? 400 : 409, (r && r.error) || '操作沒有成功', { notDesktop: !!(r && r.notDesktop) });
                     log('LLM 匯出：' + (P.split('/').pop()) + (r.state ? '（' + r.state + '）' : '') + (r.jobId ? ' ' + r.jobId : '')); return ok(r);
                 }
-                // 匯出成功後登錄成 kind:'llm' 資產（小檔放進資產，權重記在外部位置＋sha256；大權重不進記憶體）
+                // 匯出成功後登錄成 kind:'llm' 資產：部署用的權重（q8／Q8_0）與小檔都是資產的一般檔案（進儲存層，.fatrain 會分片）
                 if (method === 'POST' && P === '/api/llm/export/register') {
                     const b = await callHost('studio_llm_export_bundle', { jobId: String(body.jobId || '') }, 60000);
                     if (!b || b.ok === false) return bad(b && b.notDesktop ? 400 : 409, (b && b.error) || '登錄失敗', { notDesktop: !!(b && b.notDesktop) });
+                    if (!h.localReadBytes) return bad(400, '這個環境不能讀本機檔案（網頁版）；請在桌面版登錄，或在桌面版匯出 .fatrain 後匯入');
                     const stamp = new Date(now()).toISOString().replace(/[:.]/g, '-');
                     const name = String(body.name || ('llm-' + b.format + '-' + stamp));
                     if (!Asset.safeName(name)) return bad(400, '名稱不合法：' + name);
                     if (await h.storage.loadManifest('llm', name)) return bad(409, '「' + name + '」已存在（換一個名稱）');
-                    const bytesOf = (x) => Uint8Array.from(atob(x), (c) => c.charCodeAt(0));
-                    const files = {}; Object.keys(b.files).forEach((k) => { files[k] = bytesOf(b.files[k]); });
-                    const m = Asset.createManifest({ kind: 'llm', name, files, owner: 'user', base: (b.source.baseDir || '').split(/[\\/]/).pop() || null, compat: { base: (b.source.baseDir || '').split(/[\\/]/).pop() || null, adapter: (b.source.adapterDir || '').split(/[\\/]/).pop() || null }, counts: {}, eval: null });
-                    const sha = Object.assign({}, m.sha256), ext = {};
-                    Object.keys(b.external).forEach((k) => { sha[k] = b.external[k].sha256; ext[k] = { bytes: b.external[k].bytes, location: b.external[k].location }; });
-                    m.sha256 = sha; m.external = ext; m.llm = { format: b.format, quant: b.quant, recipe: b.recipe, source_out_dir: b.outDir };
-                    m.counts = { files: Object.keys(sha).length, external_files: Object.keys(ext).length };
+                    const files = {};
+                    for (const f of b.files) { const u = await h.localReadBytes(f.path); if (!u) return bad(500, '讀不到 ' + f.path); if (u.length !== f.bytes) return bad(500, '大小與 manifest 不符：' + f.rel); files[f.rel] = u; }
+                    const base = (b.source.baseDir || '').split(/[\\/]/).pop() || null, adapter = (b.source.adapterDir || '').split(/[\\/]/).pop() || null;
+                    const m = Asset.createManifest({ kind: 'llm', name, files, owner: 'user', base, compat: { base, adapter }, counts: {}, eval: null });
+                    m.llm = { format: b.format, quant: b.quant, recipe: b.recipe, excluded: b.excluded };
+                    m.counts = { files: Object.keys(files).length, bytes: Object.keys(files).reduce((x, k) => x + files[k].length, 0) };
                     const v = Asset.validateManifest(m); if (!v.ok) return bad(500, '資產 manifest 不合法：' + v.errors.join('；'));
                     const w = await h.storage.saveAsset({ manifest: m, files }); if (!w.ok) return bad(500, w.error || '儲存失敗');
-                    log('登錄 LLM 資產 llm/' + name + '（' + Object.keys(sha).length + ' 個檔，外部權重 ' + Object.keys(ext).length + ' 個）' + (w.dataMayBeLost ? '；注意：' + w.warning : ''));
-                    return ok({ kind: 'llm', name, external: Object.keys(ext), dataMayBeLost: !!w.dataMayBeLost, warning: w.warning || '' });
+                    log('登錄 LLM 資產 llm/' + name + '（' + Object.keys(files).length + ' 個檔，' + m.counts.bytes + ' 位元組；未進資產：' + (b.excluded.join('、') || '無') + '）' + (w.dataMayBeLost ? '；注意：' + w.warning : ''));
+                    return ok({ kind: 'llm', name, files: Object.keys(files), bytes: m.counts.bytes, excluded: b.excluded, dataMayBeLost: !!w.dataMayBeLost, warning: w.warning || '' });
                 }
-                // 模型選單：把 llm 資產設為桌面版離線模型（只有 ONNX 能用；GGUF 只能列出與匯出）
                 if (method === 'GET' && P === '/api/llm/use') { const r = await callHost('studio_llm_use_current', {}, 10000); return r && r.ok === false ? bad(502, r.error || '讀取失敗') : ok(r); }
                 if (method === 'POST' && P === '/api/llm/use/clear') { const r = await callHost('studio_llm_use_clear', {}, 10000); return r && r.ok === false ? bad(502, r.error || '失敗') : ok(r); }
                 if (method === 'POST' && P === '/api/llm/use') {
                     const name = String(body.name || ''); const m = await h.storage.loadManifest('llm', name); if (!m) return bad(404, '沒有這個 llm 資產');
                     if (m.llm && m.llm.format !== 'onnx') return bad(400, 'GGUF 不是桌面版離線模型的格式（只能列出、匯出、下載；要用它請在 llama.cpp 端）');
-                    const ex = m.external || {}; const key = Object.keys(ex).find((k) => /^q8\/model_quantized\.onnx$/.test(k)) || Object.keys(ex).find((k) => /\.onnx$/.test(k));
-                    if (!key || !ex[key].location) return bad(409, '這個資產沒有記錄 ONNX 的本機位置（可能是在別台機器匯出的）');
-                    const loc = ex[key].location; const outRoot = loc.replace(/[\\/](q8|fp32)[\\/][^\\/]+$/, '');
-                    const r = await callHost('studio_llm_use', { name, modelPath: loc, tokenizerPath: outRoot + '/tokenizer.json' }, 20000);
+                    if (!h.desktop) return bad(400, '桌面版才能設為離線模型（網頁版請用「網頁版模型」）');
+                    const r = await callHost('studio_llm_use', { name }, 20000);
                     if (!r || r.ok === false) return bad(r && r.notDesktop ? 400 : 409, (r && r.error) || '設定失敗', { notDesktop: !!(r && r.notDesktop) });
-                    log('離線模型改用 llm/' + name + '（' + loc + '）'); return ok(r);
+                    log('離線模型改用 llm/' + name); return ok(r);
+                }
+                // 網頁版模型（DESIGN §25）：列出 kind:'llm' 的 ONNX q8 資產；頁內用 onnxruntime-web（h.llmWeb.loadOrt 注入）貪婪解碼
+                if (method === 'GET' && P === '/api/llm/web/models') {
+                    const items = (await h.storage.listAssets()).filter((x) => x.kind === 'llm');
+                    const models = [];
+                    for (const it of items) {
+                        const m = await h.storage.loadManifest('llm', it.name); if (!m) continue;
+                        const fmt = (m.llm && m.llm.format) || '';
+                        const files = Object.keys(m.sha256 || {});
+                        const wOk = files.indexOf('q8/model_quantized.onnx') >= 0 && files.indexOf('q8/tokenizer.json') >= 0;
+                        const ready = fmt === 'onnx' && wOk;
+                        models.push({ name: it.name, format: fmt, quant: (m.llm && m.llm.quant) || '', bytes: (m.counts && m.counts.bytes) || 0, ready, reason: ready ? '' : (fmt === 'gguf' ? 'GGUF 不在網頁版推論範圍（用 llama.cpp）' : '缺 q8/model_quantized.onnx 或 q8/tokenizer.json') });
+                    }
+                    return ok({ models, ortAvailable: !!h.llmWeb, desktop: !!h.desktop });
+                }
+                if (method === 'POST' && P === '/api/llm/web/generate') {
+                    if (!h.llmWeb) return bad(400, '這個環境沒有網頁版推論（onnxruntime-web 未注入）；桌面版請用「設為離線模型」');
+                    if (!LlmWeb) return bad(500, 'llm_web_core 沒有載入');
+                    const name = String(body.name || ''); const prompt = String(body.prompt || '');
+                    const maxNew = Math.max(1, Math.min(64, Number(body.maxNew) || 16));
+                    if (!prompt) return bad(400, '提示是空的');
+                    const r = await h.storage.loadAsset('llm', name); if (!r) return bad(404, '沒有這個 llm 資產');
+                    if (!r.verify || !r.verify.ok) return bad(409, '資產雜湊核對不過，不推論：' + ((r.verify && r.verify.message) || ''));
+                    if (!r.asset.manifest.llm || r.asset.manifest.llm.format !== 'onnx') return bad(400, '只有 ONNX 格式能在網頁版推論（GGUF 請用 llama.cpp）');
+                    const mdl = r.asset.files['q8/model_quantized.onnx'], tokb = r.asset.files['q8/tokenizer.json'];
+                    if (!mdl || !tokb) return bad(400, '資產缺 q8/model_quantized.onnx 或 q8/tokenizer.json');
+                    let tokj; try { tokj = JSON.parse(dec(tokb)); } catch (e) { return bad(400, 'tokenizer.json 不是合法 JSON：' + e.message); }
+                    let tok; try { tok = LlmWeb.createTokenizer(tokj); } catch (e) { return bad(400, '分詞器不能用：' + e.message); }
+                    const eosIds = (tokj.added_tokens || []).filter((t) => ['<|im_end|>', '<|endoftext|>'].indexOf(t.content) >= 0).map((t) => t.id);
+                    const t0 = Date.now();
+                    let ort; try { ort = await h.llmWeb.loadOrt(); } catch (e) { return bad(502, '無法載入 onnxruntime-web：' + String((e && e.message) || e)); }
+                    S.llmSess = S.llmSess || {};
+                    if (!S.llmSess[name]) {
+                        try { S.llmSess[name] = await LlmWeb.loadSession(ort, mdl, { executionProviders: ['wasm'] }); } catch (e) { return bad(502, 'ONNX 模型載入失敗：' + String((e && e.message) || e)); }
+                    }
+                    const loadMs = Date.now() - t0;
+                    let g; try { g = await LlmWeb.greedyGenerate(ort, S.llmSess[name], tok.encode(prompt), { maxNew, eosIds, layers: 28, kvHeads: 8, headDim: 128 }); } catch (e) { return bad(502, '推論失敗：' + String((e && e.message) || e)); }
+                    log('網頁版推論 llm/' + name + '（' + g.tokens.length + ' token，' + g.stoppedBy + '）');
+                    return ok({ name, text: tok.decode(g.tokens), tokens: g.tokens, stoppedBy: g.stoppedBy, loadMs, genMs: Date.now() - t0 - loadMs });
+                }
+                // 下載資產內的一個檔（GGUF 等大檔）：交給主程式的 download（網頁版＝瀏覽器下載；桌面版＝存檔對話框）
+                if (method === 'POST' && P === '/api/asset/download') {
+                    const r = await readAsset(String(body.kind || ''), String(body.name || '')); if (!r) return bad(404, '沒有這個資產');
+                    const f = r.asset.files[String(body.path || '')]; if (!f) return bad(404, '資產裡沒有這個檔案');
+                    const base = String(body.path).split('/').pop();
+                    await h.download(base, f, 'application/octet-stream'); log('下載 ' + body.kind + '/' + body.name + ' › ' + body.path + '（' + f.length + ' 位元組）');
+                    return ok({ file: base, bytes: f.length });
                 }
                 if (method === 'GET' && P === '/api/llm/export/status') {
                     const r = await callHost('studio_llm_export_status', { jobId: Q('jobId') || '' }, 20000); if (!r || r.ok === false) return bad(r && r.notDesktop ? 400 : 502, r && r.error || '讀取匯出狀態失敗', { notDesktop: !!(r && r.notDesktop) });
@@ -322,7 +367,7 @@
                     const p = prefsObj(); return ok({ implemented: true, kinds: Asset.KINDS.filter((k) => k !== 'llm').map((k) => ({ kind: k, label: KIND_LABEL[k], available: SYMBOLIC.indexOf(k) >= 0 ? !!h.sym : k === 'lora' })), items: out, last: S.evals, gate: Object.assign({}, EvalCore.DEFAULT_GATE, p.evalGate || {}), baseline: p.evalBaseline || {} });
                 }
                 if (method === 'POST' && P === '/api/eval/run') {
-                    const kind = String(body.kind || ''); if (Asset.KINDS.indexOf(kind) < 0) return bad(400, '不認得的種類：' + kind);
+                    const kind = String(body.kind || ''); if (Asset.KINDS.indexOf(kind) < 0) return bad(400, '不認得的種類：' + kind); if (kind === 'llm') return bad(400, 'LLM 資產不評量（只能匯出、列出、下載）');
                     if (!h.sym) return bad(501, '這個環境沒有接上評量需要的模組（h.sym）；更新到含 sym 接口的版本');
                     let res; try { res = await evalKind(kind, body.fromAsset); } catch (e) { return bad(409, String((e && e.message) || e)); }
                     S.evals[kind] = res; log('評量 ' + kind + '：' + res.summary.ran + '/' + res.summary.groups + ' 組有跑，退步 ' + res.summary.regressed + '、未過門檻 ' + res.summary.belowGate);
