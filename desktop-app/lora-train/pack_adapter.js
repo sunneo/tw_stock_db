@@ -24,9 +24,17 @@ const RegCore = require('../renderer/src/studio/lora_registry_core.js');
 const SNAPSHOT = p.join(here, 'data', 'app_snapshot_tools.json');
 const shaBytes = (u8) => c.createHash('sha256').update(u8).digest('hex');
 const toolShape = (() => { try { return RegCore.toolCatalogHash(JSON.parse(fs.readFileSync(SNAPSHOT, 'utf8')).tools, shaBytes); } catch (e) { return null; } })();
+// 評量檔正規化：評量腳本（eval_run.py）寫 {tuned, base, n}（可能有 neg／pos）；描述檔格式是 {adapter, base, n}。
+// verdict（ship、not_winning、no_data、degenerate…）原樣保留，登錄會用它擋住自動選用。
+function normEval(e) {
+  if (!e || !e.groups) return e;
+  const g = {};
+  for (const [k, v] of Object.entries(e.groups)) g[k] = Object.assign({ adapter: v.adapter != null ? v.adapter : v.tuned, base: v.base, n: v.n }, v.neg ? { neg: v.neg, pos: v.pos } : {});
+  return Object.assign({}, e, { groups: g });
+}
 const man = { name, base: cfg.base_model_name_or_path || 'Qwen/Qwen3-0.6B', format: 'peft-lora', rank: cfg.r, alpha: cfg.lora_alpha, target_modules: cfg.target_modules,
   trained_on: { train_file_sha256: opt('data/train.jsonl'), tool_catalog_sha256: toolShape, tool_catalog_scheme: toolShape ? RegCore.TOOL_HASH_SCHEME : null, tool_catalog_file_sha256: opt('data/app_snapshot_tools.json') },
-  file: 'adapter_model.safetensors', total_size: buf.length, sha256: sha(buf), parts, eval: evalPath && fs.existsSync(evalPath) ? JSON.parse(fs.readFileSync(evalPath, 'utf8')) : null, date: new Date().toISOString().slice(0, 10) };
+  file: 'adapter_model.safetensors', total_size: buf.length, sha256: sha(buf), parts, eval: evalPath && fs.existsSync(evalPath) ? normEval(JSON.parse(fs.readFileSync(evalPath, 'utf8'))) : null, date: new Date().toISOString().slice(0, 10) };
 fs.writeFileSync(p.join(out, 'manifest.json'), JSON.stringify(man, null, 2));
 fs.writeFileSync(p.join(out, 'join.js'), `// node join.js  -> 重組 ${man.file} 並核對 sha256
 const fs=require('fs'),c=require('crypto'),p=require('path');const m=JSON.parse(fs.readFileSync(p.join(__dirname,'manifest.json')));

@@ -1200,3 +1200,42 @@ model card 欄位以 `description`（一句話，來自描述檔，§13.2）與 
 - 沒有重新打包 decompose-r4-v2（它的 eval 會變成這份新結果）。
 - 沒有改 `eval_run.py`，沒有重訓。
 - plan_check 的 0/0 沒有分析原因。
+
+## 31. 評量把關：退化答案、無資料、登錄不自動選用（指揮決定，2026-11-13）
+
+依指揮決定：decompose-r4-v2 判 DO NOT SHIP，登錄時不自動選用（只能手動選，並在介面標示「評量未過」與原因）。
+
+- **極性**（`lora-train/eval_gate.py` `polarity_of`）：標準答案是 JSON 且有布林 `ok` 欄位時，`ok=false` 為負例、`ok=true` 為正例；其他題型不判。
+- **退化答案**：目標組有負例，而模型對負例全錯（`neg.tuned == 0`）→ 不算贏，列入 `degenerate`。只靠正例得分的「贏」是假的。
+- **無資料**：目標組基底與微調都是 0 → 列入 `no_data`，不算通過（也不當作失敗）。
+- **判定**：`aggregate()` 回傳 `ship`；只有沒有輸給基底、目標組清楚贏、沒有退化、沒有無資料時才為 True。`eval_run.py` 的報告與 JSON（`verdict` 欄）都用同一套。
+- **重算**：`eval_run.py --regate <既有 eval JSON> --eval_file <同一份 jsonl> --json_out <輸出>`，不跑模型，用既有 rows 的 `base_ok`／`tuned_ok` 重算組統計與判定（以 keen 工作樹的 decompose-r4-v2 實測）。
+- **登錄**（`lora_registry_core.js` `evalVerdict`／`withBlocked`）：`win` 不含退化與無資料組；`blocked` 列出輸給基底、退化、無資料、以及評量判定未過的目標組。`select()` 有 `blocked` 就不自動選用，原因寫成「評量未過，不自動選用（可手動指定）：…」。手動 `ids` 指定不受影響。讀取評量腳本原始格式（`tuned`）也能判定。
+- **管理介面**（`lora_manage_core.js`）：卡片頂端的「評量未過（不自動選用，可手動選）」橫幅列出每一項原因。
+- **打包**：`pack_adapter.js` 接受評量腳本的原始 JSON（`normEval` 把 `tuned` 轉成 `adapter`，保留 `neg`／`pos` 與 `verdict`）。
+
+### 31.1 decompose-r4-v2 重算結果（keen 工作樹，360 列）
+
+| 組 | 基底 | 微調 | 負例（微調/n） | 判讀 |
+|---|---|---|---|---|
+| think_stack/self_validate | 0/60 | 21/60 | 0/39 | **退化答案**（只靠 21 個 ok:true 的正例） |
+| heldout/think_stack | 0/180 | 36/180 | 0/39 | **退化答案** |
+| think_stack/plan_check | 0/60 | 0/60 | — | **無資料** |
+| 其餘 fn_template、uml、review_return 等 | — | — | — | 清楚贏 |
+
+- 判定：ship=false，`degenerate: [heldout/think_stack, think_stack/self_validate]`、`no_data: [think_stack/plan_check]`。
+- 登錄層：以這份重算結果計算 → `blocked` 為兩項原因，`select()` 不自動選用，手動指定仍可選（`lora_registry.test.js` 已驗）。
+
+### 31.2 測試
+
+- `lora-train/test_eval_gate.py` 14 項（極性、退化、負例有對、無資料、輸基底、未清楚贏、乾淨清楚贏、targets 不存在）。
+- `renderer/src/studio/lora_registry.test.js` 118 項（含退化、無資料、手動仍可選、評量腳本判定、原始格式）。
+- `renderer/src/studio/lora_manage_core.test.js` 52 項（評量未過的列與卡片橫幅）。
+- 另外通過：`studio_server_core` 138、`lora_route_wiring` 30、`tool_catalog_equal` 9、`build-lora-asset` 19、`studio_embed` 20。
+
+### 31.3 還沒生效的部分（要注意）
+
+- **已打包的 `decompose-r4-v2.fatrain` 還是舊評量**（內含舊的 `groups`，沒有 `neg`、`verdict`），登錄仍會判為「贏」而自動選用，直到重新打包。重新打包需要 keen 工作樹的 `package_r4.sh`（不在本分支）、`make_lora_onnx.py`（需要 onnx）與 `build-lora-asset.js`。這次沒有執行。
+- `eval_run.py` 的新判定只會在之後的評量與 `--regate` 時寫入 `verdict`；已有的 JSON 要用 `--regate` 重算。
+- 負例偵測只認 `ok` 布林欄位。其他有負例但格式不同的題型（例如缺工具拒絕）目前不會被判為退化，要另外擴充。
+- plan_check 0/0 的原因沒有分析（DESIGN §30.2）。

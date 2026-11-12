@@ -5511,14 +5511,44 @@ const holder = {};
         'plan-r4': { groups: { plan_check_valid: { adapter: 60, base: 52 }, review_return_items: { adapter: 50, base: 0 }, self_validate_ok: { adapter: 47, base: 25 } }, source: 'DESIGN §19' },
     };
     function knownEval(e) { const k = KNOWN_EVAL[e.id] || KNOWN_EVAL[e.name]; return k ? JSON.parse(JSON.stringify(k)) : null; }
+    // 評量判定（給登錄與管理畫面）。回傳：
+    //   lose：任一組輸給基底；
+    //   degenerate：有負例（標準答案 ok=false，eval 組內 neg.n>0）而模型對負例全錯 → 退化答案，只靠正例得分，不算贏；
+    //   noData：base 與 tuned 都是 0 → 無資料，不算贏也不算輸；
+    //   win：清楚贏的組（不含退化與無資料）；
+    //   blocked：自動選用被擋下的人話原因（空＝可自動選用）。手動指定不受 blocked 影響。
+    // 評量腳本寫的判定 ev.verdict.ship === false 時，未贏的目標組也列入 blocked（退化與無資料已在上面各自列出）。
     function evalVerdict(ev) {
-        if (!ev || typeof ev !== 'object') return { known: false };
-        if (ev.metrics && typeof ev.metrics === 'object') return metricsVerdict(ev.metrics);
-        if (CARD_METRIC_KEYS.some((k) => k in ev)) return metricsVerdict(ev);
-        const g = ev.groups; if (!g || typeof g !== 'object') return { known: typeof ev.score === 'number', score: ev.score, lose: [] };
-        const names = Object.keys(g), lose = [], win = [];
-        for (const n of names) { const x = g[n]; if (!x || typeof x.adapter !== 'number' || typeof x.base !== 'number') continue; if (x.adapter < x.base) lose.push(n); else if (x.adapter > x.base) win.push(n); }
-        return { known: names.length > 0, lose, win, score: typeof ev.score === 'number' ? ev.score : win.length - lose.length };
+        if (!ev || typeof ev !== 'object') return { known: false, lose: [], win: [], degenerate: [], noData: [], blocked: [] };
+        if (ev.metrics && typeof ev.metrics === 'object') return withBlocked(metricsVerdict(ev.metrics));
+        if (CARD_METRIC_KEYS.some((k) => k in ev)) return withBlocked(metricsVerdict(ev));
+        const g = ev.groups; if (!g || typeof g !== 'object') return { known: typeof ev.score === 'number', score: ev.score, lose: [], win: [], degenerate: [], noData: [], blocked: [] };
+        const names = Object.keys(g), lose = [], win = [], degenerate = [], noData = [];
+        for (const n of names) {
+            const x = g[n]; if (!x || typeof x !== 'object') continue;
+            const tuned = typeof x.adapter === 'number' ? x.adapter : x.tuned;   // 評量腳本的格式是 tuned；打包後的描述檔是 adapter
+            if (typeof tuned !== 'number' || typeof x.base !== 'number') continue;
+            if (tuned < x.base) { lose.push(n); continue; }
+            if (x.neg && x.neg.n > 0 && x.neg.tuned === 0) { degenerate.push(n); continue; }
+            if (x.base === 0 && tuned === 0) { noData.push(n); continue; }
+            if (tuned > x.base) win.push(n);
+        }
+        return withBlocked({ known: names.length > 0, lose, win, degenerate, noData, score: win.length - lose.length }, ev.verdict);
+    }
+    function withBlocked(v, verdict) {
+        v.lose = v.lose || []; v.win = v.win || []; v.degenerate = v.degenerate || []; v.noData = v.noData || [];
+        const blocked = [];
+        if (v.lose.length) blocked.push('輸給基底：' + v.lose.join('、'));
+        if (v.degenerate.length) blocked.push('退化答案（負例全錯、只靠正例得分，不算贏）：' + v.degenerate.join('、'));
+        if (v.noData.length) blocked.push('無資料（基底與微調都是 0，不算通過）：' + v.noData.join('、'));
+        if (verdict && typeof verdict === 'object') {
+            const seen = new Set([].concat(v.lose, v.degenerate, v.noData));
+            const nw = (verdict.not_winning || []).filter((n) => !seen.has(n));
+            if (nw.length) blocked.push('目標組未清楚贏：' + nw.join('、'));
+            if (verdict.ship === false && !blocked.length) blocked.push('評量判定為 DO NOT SHIP');
+        }
+        v.blocked = blocked;
+        return v;
     }
 
     function createRegistry(opts) {
@@ -5599,7 +5629,7 @@ const holder = {};
                 if (!manual) {
                     const v = evalVerdict(e.eval);
                     if (!v.known) { skipped.push({ id: e.id, reason: '沒有評量資料，不自動選用（可手動指定）' }); continue; }
-                    if (v.lose && v.lose.length) { skipped.push({ id: e.id, reason: '評量有組別輸給基底：' + v.lose.join('、') + '，不自動選用（可手動指定）' }); continue; }
+                    if (v.blocked && v.blocked.length) { skipped.push({ id: e.id, reason: '評量未過，不自動選用（可手動指定）：' + v.blocked.join('；') }); continue; }
                 }
                 pool.push({ e, manual, byDomain, byTrigger, specific: manual || byDomain || byTrigger });
             }
@@ -5723,7 +5753,7 @@ const holder = {};
             const lu = live.has(e.id) ? live.get(e.id).lastUsed : (lastUsedById.has(e.id) ? lastUsedById.get(e.id) : null);
             return { id: e.id, name: e.name || e.id, version: e.version || null, description: e.description || '', base: e.base, rank: e.rank, size: e.size, added: e.added || null, lastUsed: lu,
                 domains: e.domains.slice(), triggers: (e.triggers || []).slice(), prompt_format_version: e.prompt_format_version, source: e.source, enabled: !!e.enabled,
-                location: e.location, eval: ev.known ? { lose: ev.lose, win: ev.win } : null, compat: c.level, compatReasons: c.reasons.map((r) => r.message), compatWarnings: c.warnings.map((w) => w.message), pinned: pins.has(e.id),
+                location: e.location, eval: ev.known ? { lose: ev.lose, win: ev.win, degenerate: ev.degenerate, noData: ev.noData, blocked: ev.blocked } : null, compat: c.level, compatReasons: c.reasons.map((r) => r.message), compatWarnings: c.warnings.map((w) => w.message), pinned: pins.has(e.id),
                 slotRank: e.slot_rank != null ? e.slot_rank : e.rank, limits: (e.limits || []).slice(), evalMetrics: e.eval && (e.eval.metrics || (CARD_METRIC_KEYS.some((k) => k in e.eval) ? e.eval : null)) || null };
         }
         // 狀態（給 LoRA 管理畫面）：槽位、已載入、最後使用時間、釘選、推論中
@@ -8181,6 +8211,7 @@ const holder = {};
                 source: r.source || '未標註', enabled: r.enabled !== false, compat: r.compat || 'ok', compatReasons: Array.isArray(r.compatReasons) ? r.compatReasons : [],
                 domains: Array.isArray(r.domains) ? r.domains : [], triggers: Array.isArray(r.triggers) ? r.triggers : [], description: r.description || '',
                 evalWin: r.eval && Array.isArray(r.eval.win) ? r.eval.win : null, evalLose: r.eval && Array.isArray(r.eval.lose) ? r.eval.lose : null,
+                evalBlocked: r.eval && Array.isArray(r.eval.blocked) ? r.eval.blocked : null,
                 location: r.location || '', created: timeText(Number(r.added)), actions,
                 slotRank: r.slotRank != null ? r.slotRank : r.rank, compatWarnings: Array.isArray(r.compatWarnings) ? r.compatWarnings : [], limits: Array.isArray(r.limits) ? r.limits : [], evalMetrics: r.evalMetrics || null
             };
@@ -8203,6 +8234,8 @@ const holder = {};
     // 「沒有保證」「偏向」「範圍外」是 decompose-r4-v2 等卡片的實際用語（範圍外沒量、負例偏少可能偏向判 ok），也要標出來
     const DISCLOSURE_RE = /退步|未量|沒有量|沒有評量|沒有保證|偏向|範圍外|不可用於|不能用於|不可以用於|不可用|不可以/;
     function disclosuresOf(limits) { return (Array.isArray(limits) ? limits : []).filter((x) => DISCLOSURE_RE.test(String(x))); }
+    // 評量未過：登錄不會自動選用（只能手動選），原因列在卡片頂端
+    const evalBlockBanner = (bl) => (Array.isArray(bl) && bl.length ? '<div class="warn"><b>評量未過（不自動選用，可手動選）：</b><ul>' + bl.map((x) => '<li>' + esc(x) + '</li>').join('') + '</ul></div>' : '');
     const discBanner = (limits) => { const d = disclosuresOf(limits); return d.length ? '<div class="warn"><b>卡片揭露（' + d.length + ' 項）：</b><ul>' + d.map((x) => '<li>' + esc(x) + '</li>').join('') + '</ul></div>' : ''; };
 
     // 評量數字的一行文字（只用 card 的 split_legal_rate／fc_format_rate；沒有的寫無資料）
@@ -8245,7 +8278,7 @@ const holder = {};
             + (r.compat === 'warn' && r.compatReasons.length ? '<div class="warn">相容性提醒：' + esc(r.compatReasons.join('；')) + '</div>' : '');
         const ev = r.evalMetrics ? evalLinesHTML(r.evalMetrics) : ((r.evalWin || r.evalLose) ? '<div>評量：贏 ' + esc((r.evalWin || []).join('、') || '無') + '；輸 ' + esc((r.evalLose || []).join('、') || '無') + '</div>' : '<div class="na">無資料（沒有評量結果）</div>');
         const lim = r.limits && r.limits.length ? '<h5>已知限制</h5><ul>' + r.limits.map((x) => '<li>' + esc(x) + '</li>').join('') + '</ul>' : '';
-        return '<div class="card"><div class="ttl">' + esc(r.name) + '</div>' + discBanner(r.limits) + '<div class="intro">' + esc(r.description || '無資料（沒有說明）') + '</div>' +
+        return '<div class="card"><div class="ttl">' + esc(r.name) + '</div>' + evalBlockBanner(r.evalBlocked) + discBanner(r.limits) + '<div class="intro">' + esc(r.description || '無資料（沒有說明）') + '</div>' +
             '<div class="kv">版本 ' + esc(r.version) + '・基底 ' + esc(r.base) + '・訓練秩 ' + esc(r.rank) + '・槽寬 ' + esc(r.slotRank) + '・' + esc(r.size) + '・來源 ' + esc(r.source) + (r.location ? '・位置 ' + esc(r.location) : '') + '</div>' +
             comp + '<h5>能力（適用領域）</h5><div>' + chips(r.domains) + '</div><h5>觸發字</h5><div>' + chips(r.triggers) + '</div><h5>評量</h5>' + ev + lim + '</div>';
     }
