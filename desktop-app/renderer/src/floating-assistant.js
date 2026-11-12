@@ -120077,11 +120077,13 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
     }
     async _teachQueueRecord(entry) {
         const Sp = FaMatrixSpec; let text = '', where = 'memory';
+        // 合併與摘要走 FaMatrixTeachQueue.mergeText（matrix_teach_queue_core，同一套 mergeQueue 規則）；模組沒嵌入時退回直接合併
+        const teachMerge = (t, e) => { if (typeof FaMatrixTeachQueue !== 'undefined' && FaMatrixTeachQueue && FaMatrixTeachQueue.mergeText) return FaMatrixTeachQueue.mergeText(t, e); const m = Sp.mergeQueue(Sp.parseQueue(t), e); return { text: Sp.queueText(m), count: m.length, summary: null }; };
         try {
             const box = typeof window !== 'undefined' && window.desktopAPI && window.desktopAPI.rawfs ? await this._nrBox() : null;
-            if (box) { const sep = box.indexOf(String.fromCharCode(92)) >= 0 ? String.fromCharCode(92) : '/'; const ud = box.split(sep).slice(0, -1).join('/'); const p = ud + '/teach_queue.jsonl'; try { const r = await window.desktopAPI.rawfs.readFile(p, 'utf8'); text = (r && r.text) || ''; } catch (_) { text = ''; } const merged = Sp.mergeQueue(Sp.parseQueue(text), entry); await window.desktopAPI.rawfs.writeFile(p, { text: Sp.queueText(merged) }); return { where: 'file', path: p, count: merged.length }; }
+            if (box) { const sep = box.indexOf(String.fromCharCode(92)) >= 0 ? String.fromCharCode(92) : '/'; const ud = box.split(sep).slice(0, -1).join('/'); const p = ud + '/teach_queue.jsonl'; try { const r = await window.desktopAPI.rawfs.readFile(p, 'utf8'); text = (r && r.text) || ''; } catch (_) { text = ''; } const mg = teachMerge(text, entry); await window.desktopAPI.rawfs.writeFile(p, { text: mg.text }); return { where: 'file', path: p, count: mg.count, lines: mg.summary ? mg.summary.lines : null }; }
         } catch (_) { /* 檔案寫不了就退到 localStorage */ }
-        try { text = localStorage.getItem('fa_teach_queue') || ''; const merged = Sp.mergeQueue(Sp.parseQueue(text), entry); localStorage.setItem('fa_teach_queue', Sp.queueText(merged)); return { where: 'localStorage', count: merged.length }; } catch (_) { return { where, count: 0 }; }
+        try { text = localStorage.getItem('fa_teach_queue') || ''; const mg = teachMerge(text, entry); localStorage.setItem('fa_teach_queue', mg.text); return { where: 'localStorage', count: mg.count, lines: mg.summary ? mg.summary.lines : null }; } catch (_) { return { where, count: 0 }; }
     }
     async _codeOffline(o, bridge) {
         this._pyDomainsInit();
@@ -120097,7 +120099,12 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         const lessons = o.onlyLessons ? o.onlyLessons : this._pyNoLessons ? [] : (FaPyLessonsBuiltin.lessons || []).concat(this._pyLessonsLoad()); // _pyNoLessons：評測用，不給課、只靠範式骨架
         const r = await FaPyUmlPipeline.buildFromUML({ statement: o.text, uml: readOk ? { hints: uml.hints, model: uml.model } : { hints: null, model: null }, B, R, C2U: FaPyCode2Uml, FaPyBody, Choose: FaPyCnlChoose, judge, Lessons: FaPyLessons, lessons, Paradigms: FaPyParadigms, Matrix: hasMatrix ? FaMatrixSynth : undefined, examples: exs, Steps: (typeof FaStepSplit !== 'undefined' && FaStepSplit) ? FaStepSplit : undefined, stepJudge: async (a) => { const j = await bridge.judge({ lang: 'python', source: a.source + '\nmain()\n', problem: { id: 'step', tests: a.tests, hidden: [], checker: 'tokens' } }); return { verdict: j.verdict, detail: j.detail }; }, ctxTokens: Number(this._getGenerationSettings().contextWindowTokens) || undefined, stepMaxDepth: this._stepMaxDepth || undefined });
         const sw = await this._offlineStackWire(o.text, r); // 思考堆疊缺口 C、E：層框、卡在哪、給模型的標頭（失敗）／成品檢查（成功）
-        if (!r.ok) return Object.assign({ ok: false, reason: r.reason, tried: r.tried, rounds: r.rounds, stack: sw.stack, stuckAt: sw.stuckAt, stackHeader: sw.header, stackNote: sw.note }, await this._matrixSpecNeed(o.text, exs, r, { readOk }));
+        if (!r.ok) {
+            // 混用（DESIGN §13.6）：blockly 整條失敗後才交給矩陣層再試；只有隱藏測資判過、非多候選才採用，其餘照舊回失敗＋教學佇列
+            const hy = (typeof FaMatrixHybrid !== 'undefined' && FaMatrixHybrid && hasMatrix && exs.length) ? await FaMatrixHybrid.tryMatrix({ statement: o.text, examples: exs, judge, synth: (x) => FaMatrixSynth.synth(x) }).catch(() => ({ ok: false })) : { ok: false };
+            if (hy.ok) return { ok: true, rounds: r.rounds, stack: sw.stack, stuckAt: sw.stuckAt, stackNote: sw.note, source: hy.source + '\nmain()\n', verdict: 'AC', by: 'matrix', hybrid: { from: 'blockly-fail', level: hy.level, desc: hy.desc }, matrix: { level: hy.level, kind: hy.kind || null, desc: hy.desc, verified: true, ambiguous: false, editable: false, blocks: null }, tried: r.tried, usedModel: r.usedModel };
+            return Object.assign({ ok: false, reason: r.reason, tried: r.tried, rounds: r.rounds, stack: sw.stack, stuckAt: sw.stuckAt, stackHeader: sw.header, stackNote: sw.note, hybridReason: hy.reason || null }, await this._matrixSpecNeed(o.text, exs, r, { readOk }));
+        }
         // 誠實標示：矩陣層是「用範例合成」的，只對著範例驗證時 AC 不是獨立驗證（範例是學的資料）；有獨立的隱藏測資並通過、且沒有多個候選，才算 verified
         let mx = r.matrix || null; let mxSource = r.source;
         // 範式／課／配方解出時也跑矩陣層（小預算）：兩邊在可見範例上都 AC，才附上矩陣層的區塊（解出的程式本身不換）

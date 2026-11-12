@@ -459,3 +459,344 @@ fallback: { stage: 'reader'|'recipe'|'lesson'|'paradigm'|'matrix'|'online'|'colu
 - 誠實註記：`ok` 是 `_codeAgent` 判定通過（含隱藏測資）；回傳的 `verified` 只有 3 題為 true，其餘為 false，我沒有逐題查它的確切含意（推測是合成有歧義、未排除其他解），所以不能把 74 題都說成「已驗證無歧義」。
 - 沒有失敗題，所以沒有失敗原因可寫；heldout4 有 2 題不是由矩陣層解出（`by` 空），沒有區塊，未追查來源。
 - 這批題庫早已被矩陣層量過（純 Node），這裡只是確認真 Electron 的渲染頁行為一致。
+
+## 13. 缺口補完狀態（2026-11-11，接手 session 補；只寫已驗證與明確未做的，不寫成「全部完成」）
+
+**本輪做了什麼（提交見下表）**：半成品存檔 `4eb5fb490` 的 bytes／checksum／list／regex／text／spec／sketch／vm_ops 測試全部重跑；沒有任何測試被刪除，修的是測試本身的錯與 Linux 相容性（`python`→`python3`）與一個真實的模組 bug。
+
+| 提交 | 內容 | 我驗證的 |
+|---|---|---|
+| 083f31f5 | matrix_structure_core：`/^(+\|-)$/` 語法錯誤（整個模組載入失敗）改為 `/^[+-]$/` | structure 56、decompile 15、machine 28、synth 17、graph 7、os 1104、edit 7、memory 11、wire 3 全過 |
+| 0f47ba49 | matrix_sketch_core：階乘乘積 Number 丟精度，改 BigInt 相乘；測試 harness 解除 Python 整數字串上限 | sketch 6 項過（修前 JS／Python 不一致 9/2583） |
+| 61c26382 | matrix_vm_ops 測試：VM→Python 來源已含 `main()`，harness 重複呼叫（測試錯） | vm_ops 1241 項過 |
+| 4f7db5a1 | bytes／checksum／regex／text 測試改 `python3` | bytes 523、checksum 3137、regex 5、text 7 過 |
+| 28beb658 | list 測試：單一範例斷言改為「不標 verified 且附 suggest」（模組 ambiguous 依分數差距判定，verified:false 已符合交接規則）；spec 測試：鑑別輸入組只有 1 筆，原期望 2 筆是測試寫錯 | list 7、spec 25 過 |
+
+heldout9（`heldout9_list.jsonl`，16 題）：**ok 15/16，verified 14**（測試內門檻 ≥12）。heldout7 清單／括號 4/5。這兩批是同一批作者寫、且在模組寫完後才量的，不是獨立泛化數字。
+
+**§12.3 缺口逐項現況（誠實版）**
+
+| # | 缺口 | 現況 | 證據與還缺什麼 |
+|---|---|---|---|
+| G5 | 輸入形狀前端 | **部分** | 邊表／格子在 graph 模組（2026-11-07）；十六進位在 bytes；清單與逐行在 list、text。**還缺**：沒有統一的 `inferShape` 擴充，各模組各自解析，沒有一次量完所有形狀。 |
+| G1 | Mealy 轉換器 | **部分** | text 模組有 `mealy` 家族（凱撒、RLE 解碼等，text 14/14）；霍夫曼成本、varint、CRC 逐位元組各自實作。**還缺**：沒有通用的「DFA＋輸出函數」合成器，也沒有 base64、xxd 管線的 Mealy 範本。 |
+| G3 | VM 整數運算元 | **已做** | `matrix_vm_ops.test.js`：`* // % & \| ^ << >>` 等 10 個算子，400 組（含負數、大位移）對 Python 一致；φ、完全數、k 進位三個 VM 程式與 JS 參考一致、VM→Python 一致。 |
+| G4 | 位元組／位元級 I/O | **已做（範圍內）** | `matrix_bytes`：10 台位元組機器 JS 與 Python 300 次一致；Linux train 位元組類 6/6。 |
+| G6 | 由規格而非範例合成 | **部分／未做** | `matrix_spec` 是「預言機／使用者答案」流程，不是把規格（CRC 多項式、tar 格式）編譯成矩陣。CRC 目前靠 GF(2) 探測＋已知多項式模板（checksum）。**還缺**：規格解析器（格式描述 → 矩陣或 DFA）。 |
+| G2 | GF(2) 半環範本 | **已做** | `matrix_checksum`：矩陣版 CRC32 對 zlib、XMODEM 對 binascii 60 串一致；GF(2) 線性 100/100。 |
+| G7 | 動態表（動態霍夫曼建表、LZMA 機率表） | **未做** | 未寫範本；VM 陣列已夠，缺的是建表的範本與題庫。 |
+| G8 | 閉包修正版 | **已做（2026-11-07）** | 見 §12.3 上方表格。 |
+| G9 | Petri 網 | **未做** | 未開始。 |
+| G10 | 結點配置慣例（堆、樹、雜湊） | **部分** | `matrix_vm_ops`：陣列堆的雜湊集合與二元搜尋樹與 JS 參考、VM→Python 一致。**還缺**：可讀的反編譯回結構體 UML。 |
+
+另有：**teach_queue 接線**：純函式完成（`matrix_spec_core`：`teachEntry`／`queueLine`／`parseQueue`／`mergeQueue`），嵌入在 `floating-assistant.js` 的 FaMatrixSpec 區塊，`_codeOffline` 附近看得到 `specFlow` 呼叫。**寫入待補佇列的檔案路徑與 UI 我沒有驗證**，列為待確認。
+
+**第 3 項（DCT、YCbCr、量化、Z 字形、PNG 濾波器）：未開始**，依交接排在後面。
+
+**沒有做完、也不能說完成的**：G1、G5、G6、G10 的「部分」項；G7、G9；teach_queue 寫檔與 UI；第 3 項全部。
+
+### 13.1 接手（給下一個 session）
+
+- **要嵌入的來源檔**（管理者統一做，我沒有跑 embed）：`renderer/src/algo/matrix_sketch_core.js`（提交 0f47ba49 改了 prod 的 BigInt 行；目前內嵌的 `floating-assistant.js` 仍是舊版）。`matrix_structure_core.js` 不在內嵌清單內，不用嵌入，但它的正規式修正會影響 Node 測試。`matrix_list`、`matrix_spec` 只改了測試，不用嵌入。嵌入指令：`node scripts/embed-code-ui.js && node build-assistant.js`（由管理者執行）。
+- **未做的順序建議**：G7（動態霍夫曼建表範本）→ G9（Petri）→ 第 3 項（DCT／量化等，依使用者說的「寫給圖片壓縮用」）；G5、G1、G6 的「部分」補成統一介面。
+- **分支注意**：這次我在 worktree 分支 `claude/matrix-finish-28f1b5` 上做了一次未先檢查的 `git reset --hard desktop-app`（該分支原本指向 `f8089636`，不在 desktop-app 的祖先鏈上）。`f8089636` 仍在物件庫中，被 `main` 與 `claude/media-codec-domain-bdfe56` 包含，沒有遺失。若要還原：`git branch -f claude/matrix-finish-28f1b5 f8089636`（會丟掉本分支的提交，先確認）。目前分支是 `desktop-app` 的最新提交加上上表 5 個提交（rebase 後 HEAD `28beb658`）。
+- **git 身分**：這台機器沒有設定 `user.name`／`user.email`。我每次用 `git -c user.name=hungfu.lee -c user.email=hungfu.lee@insyde.com commit`，沒有改全域設定。
+- **沒有推送、沒有發布、沒有跑 `publish.sh`、`embed-code-ui.js`、`build-assistant.js`。**
+
+### 13.2 續作（2026-11-12，指揮 session 指示：G7、G9、第 3 項、teach_queue 都要做，做不到寫阻礙）
+
+分支：`claude/matrix-finish-28f1b5`，已 rebase 到 `origin/desktop-app` 之上，再接本機 `desktop-app` 的三個提交（`8c96ee8f`、`c106fc9f`、`4c5b5e15` → 新 hash `3f82aaf0`、`03987174`、`0271ec71`）。沒有推送、沒有發布、沒有跑 embed／build。
+
+| 提交 | 內容 | 驗證（我在這台跑過） |
+|---|---|---|
+| 5ffd9c94 | **G7** `matrix_dyn_core.js`：canonical Huffman（RFC 1951 §3.2.2）、位元流解碼、MTF 動態表 | `matrix_dyn.test.js` 404 項：RFC 範例碼字逐一相同；300 組隨機碼長表與獨立 Python 參照一致；位元流往返 200 組；MTF 與 Python 300 組一致、往返 200 組；過度碼長與提早結束都報錯 |
+| 2d5cd5ba | **G9** `matrix_petri_core.js`：關聯矩陣 C=post−pre、發火、狀態方程 M0+C·x、可達集 BFS | `matrix_petri.test.js` 205 項：150 個隨機網中 **65 個未截斷者**與獨立 Python BFS 的可達數、死結數、最大權杖一致（85 個因權杖無界被截斷，未比對）；狀態方程 200 段與實際標記一致；互斥鎖不變量、互搶鎖死結、生產者－消費者（容量 2，可達 3）符合預期 |
+| 8816ed52 | **第 3 項** `matrix_image_core.js`：DCT-II 基矩陣、YCbCr（JFIF）、Annex K 量化表＋IJG 品質、Z 字形、PNG 濾波器 Sub／Up 的模 256 矩陣形式 | `matrix_image.test.js` 15 項：DCT 與 Python 雙重求和最大差 1.1e-13；往返 2.8e-13；YCbCr 與 Python 一致；Z 字形 64 項與 Python 一致、前 16 項與 JPEG 標準相同；PNG 濾波器 200 筆與 Python 一致；端到端像素誤差在理論上界內（品質 100 最大 0.93、品質 90 最大 13.8、品質 50 最大 60.6） |
+| 54cb9d00 | **teach_queue 寫檔與摘要** `matrix_teach_queue_core.js`（建在 matrix_spec_core 之上） | `matrix_teach_queue.test.js` 12 項（真暫存檔）：新增、同題計次、壞行略過、原子寫無殘留、刪除、清空、摘要 |
+| 0fb08cfc | 核心測試登記 12 條（含先前半成品未登記的 8 條） | 12 條逐一 node 執行 rc=0 |
+
+**本輪重跑的數字（最終）**：bytes 523、checksum 3137、list 7、regex 5、sketch 6、spec 25、text 7、vm_ops 1241、dyn 404、petri 205、image 15、teach_queue 12，共 **5586 項，0 失敗**。
+
+**誠實的未做與阻礙**
+
+- **G7 未完**：FGK／Vitter 動態霍夫曼（每次編碼後重建樹）未做。阻礙：要寫樹重建與參照（zlib 不提供動態霍夫曼的逐步狀態，只能自寫參照）。解除條件：寫出可與獨立參照比對的樹重建。LZMA 機率表的算術編碼未做：要寫範圍編碼器與 LZMA 參照，工作量獨立成一條線。
+- **G7、G9、image 都未接進合成器（synth）**：沒有範本、沒有題庫、沒有 `FaMatrixSynth.register`。阻礙：題目敘述與範例的對應（哪一題該用 Petri、哪一題該用 DCT）需要題庫；目前沒有 held-out 題。解除條件：寫一批新的 held-out 題（例如「互斥鎖是否死結」「給一段 8×8 像素求 DCT 係數」）再量。
+- **第 3 項未完**：霍夫曼熵編碼（JPEG 的 DC／AC 編碼表）、4:2:0 子取樣、JFIF／PNG 檔案讀寫都未做。Average 與 Paeth 明說不矩陣化（含整數除法與比較）。
+- **teach_queue 介面與產品呼叫未做**：寫檔層完成，但 `_codeOffline` 失敗時呼叫 `add`、顯示摘要的視窗都沒有做，這台沒有 Electron 視窗，驗不了。解除條件：宿主（floating-assistant.js）提供 io、在失敗路徑呼叫 `add`，並以真 Electron 驗證。
+- **G1、G5、G6、G10 仍是「部分」**（同 §13 上方表格），本輪沒有再動。
+
+**要嵌入／登錄的檔案（管理者統一做，我沒有跑 embed、build、publish）**
+
+1. **重新嵌入**：`renderer/src/algo/matrix_sketch_core.js`（0f47ba49 改了 prod 的 BigInt 行；內嵌的 floating-assistant.js 仍是舊版）。
+2. **新增嵌入清單**（目前不在 `scripts/embed-code-ui.js` 內，要加入內嵌區塊並給全域名稱）：`matrix_dyn_core.js`（FaMatrixDyn）、`matrix_petri_core.js`（FaMatrixPetri）、`matrix_image_core.js`（FaMatrixImage）、`matrix_teach_queue_core.js`（FaMatrixTeachQueue，依賴 FaMatrixSpec，要在 FaMatrixSpec 之後）。
+3. **不需要嵌入**：`matrix_structure_core.js`（不在內嵌清單，正規式修正只影響 Node 測試）。`matrix_list`、`matrix_spec`、`matrix_vm_ops`、`matrix_bytes`、`matrix_checksum`、`matrix_regex`、`matrix_text` 的改動只在測試檔。
+4. **核心測試登記**：已加入 `scripts/run-core-tests.js`（0fb08cfc）。整套 run-core-tests 這次未跑。
+
+**分支與身分**：`git -c user.name=hungfu.lee -c user.email=hungfu.lee@insyde.com`（沒有改全域設定）。trailer 依系統提醒寫 Haiku 5.5，指揮訊息要求的 Sonnet 5.5 與系統提醒衝突，我依系統提醒。備份 ref：`backup/matrix-b15c2f2f`（指向上一輪的 b15c2f2f，可刪）。
+
+### 13.3 第二輪續作（2026-11-12，指揮指示：G7 動態霍夫曼與算術編碼、合成器範本、teach_queue 產品呼叫與介面、JPEG 熵編碼；context 到 30% 交接）
+
+本輪提交（分支 `claude/matrix-finish-28f1b5`，在 `origin/desktop-app` 之上，未推送、未嵌入）：
+
+| 提交 | 內容 | 驗證（我在這台跑過） |
+|---|---|---|
+| 27714b8a | JPEG 熵編碼（演算法層）：DC 差分＋類別碼、AC 游程、ZRL／EOB、1 補數、0xFF 填充、解碼；標準 DC／AC 亮度表（從 libjpeg 的 DHT 讀出） | `matrix_jpeg_entropy.test.js` 5 項：500 組往返；標準表與 libjpeg DHT 逐一相同；**我們寫的 64×64 檔案經 libjpeg（PIL 9.0.1）解碼，與我們的重建最大差 1**；libjpeg 寫的掃描經我們解碼，與 PIL 像素最大差 1 |
+| 42f3ccbc | G7 動態霍夫曼：每符號後由計數重建最佳碼長、碼字用 `matrix_dyn_core` 的 canonical 規則、計數超過 512 減半 | `matrix_adaptive_huffman.test.js` 3 項：120 組往返（最長 2000，觸發減半）；2203 個採樣狀態的 Kraft 和＝1、加權成本與獨立 Python heapq 最佳成本逐一相同；偏態 3000 符號 6788 位元（定長 12000） |
+| 9f1bbdcf | G7 算術編碼：LZMA 式範圍編碼器（cache／carry 照 LZMA SDK）、位元樹、直接位元；LZMA1 字面量子集 | `matrix_range.test.js` 117 項：100 組隨機操作往返；**15 個 .lzma 檔交給真的 liblzma（Python lzma FORMAT_ALONE）解，逐位元組一致**（含 0xFF 進位）；自解往返一致 |
+| （本提交） | `run-core-tests.js` 登記上面三條，共 15 條；本節 | 三條逐一 node 執行 rc=0 |
+
+**本輪的數字**：jpeg_entropy 5、adaptive_huffman 3、range 117，加上 13.2 的 12 條（5586 項）。整套 `run-core-tests.js` 這一輪沒有跑（需要 tree-sitter 快取，這台沒有）。
+
+**誠實的未做與阻礙（接手者必讀）**
+
+1. **G7 動態霍夫曼是「每符號後重建」**，不是 FGK／Vitter 增量樹。效能每符號 O(n² )（n 是字母表大小，目前 ≤32 測試）。解除條件：寫 FGK 的兄弟性質維護與節點交換，並用同一批序列對照「碼長 Kraft＝1、成本不差於重建版太多」。
+2. **算術編碼只到字面量子集**：沒有比對（重複距離）與完整 LZMA 解碼器。解除條件：實作 LZMA 的 isMatch／isRep／長度與距離樹，用 liblzma 解我們壓的任意資料（已有的 liblzma 外部驗證管線可直接沿用）。
+3. **合成器範本未做**（G7 動態霍夫曼／MTF、Petri、圖片壓縮、JPEG 熵編碼都沒有接進 `FaMatrixSynth`）。阻礙：沒有新 held-out 題，題目的敘述與範例對應要先寫題庫（例如「給一段權杖流程問會不會死結」「給 8×8 係數問 DC 差分」）。解除條件：寫 10 題以上新 held-out（不能回頭用已凍結的題庫），量了再調範本。
+4. **teach_queue 產品呼叫與介面未做**：寫檔層（`matrix_teach_queue_core.js`）完成，但 `floating-assistant.js` 的 `_codeOffline` 失敗路徑沒有呼叫 `add`，也沒有摘要的視窗。阻礙：這台的 node_modules 沒有 Electron 二進位（postinstall 需要下載，規則不允許），也沒有 xvfb，驗不了視窗。解除條件：Electron 二進位由使用者同意下載（列出檔名與大小），或改由有視窗的機器跑 e2e。
+5. **JPEG 熵編碼只有灰階基線**：彩色 4:2:0、漸進式、optimize、JFIF／JPEG 檔案讀寫的領域包都不在這裡。若 blockly-finish-2 已在做 JPEG 讀寫領域包，以它為準；本模組只提供熵編碼的演算法層。
+
+**要嵌入／登錄的檔案（管理者統一做，我沒有跑 embed、build、publish）**
+
+- 重新嵌入：`renderer/src/algo/matrix_sketch_core.js`（13.2 已列）。
+- 新增嵌入清單：`matrix_dyn_core.js`（FaMatrixDyn）、`matrix_petri_core.js`（FaMatrixPetri）、`matrix_image_core.js`（FaMatrixImage）、`matrix_teach_queue_core.js`（FaMatrixTeachQueue，要在 FaMatrixSpec 之後）、`matrix_jpeg_entropy_core.js`（FaMatrixJpegEntropy）、`matrix_adaptive_huffman_core.js`（FaMatrixAdaptiveHuffman，依賴 FaMatrixDyn）、`matrix_range_core.js`（FaMatrixRange）。
+- 核心測試登記：已加入 `scripts/run-core-tests.js`（本提交）。
+
+**接手者的下一步（依順序）**：(a) 寫 10 題以上 held-out（dyn、petri、jpeg、range 各類），量 synth 的 ok／verified 數；(b) 在 `FaMatrixSynth` 註冊範本，只有量到有效才算；(c) 寫 `_codeOffline` 的失敗路徑 `add`（宿主 io 用 `localStorage` 或 host 檔案，兩者都要 try/catch）；(d) 依阻礙 4 的解除條件處理視窗驗證；(e) FGK（阻礙 1）與完整 LZMA（阻礙 2）。
+
+**身分與分支**：`git -c user.name=hungfu.lee -c user.email=hungfu.lee@insyde.com`（沒有改全域設定）。trailer 依系統提醒寫 Haiku 5.5；指揮要求的 Sonnet 5.5 與系統提醒衝突，我依系統提醒。
+
+### 13.4 第三棒接手（2026-11-12，分支 `claude/matrix-finish-3-a3bdb3`，起點 `7cd90ff9`；context 近 30% 交接）
+
+本棒提交：`d0ca84e4`（未推送、未嵌入、未跑 embed／build）。
+
+| 項目 | 狀態 | 證據（我在這台跑過） |
+|---|---|---|
+| **完整 LZMA**（阻礙 2 已解除） | **已做** `matrix_lzma_core.js`（FaMatrixLzma，依賴 FaMatrixRange） | `matrix_lzma.test.js` 31 項：我們的編碼器輸出 **17/17** 經真的 liblzma 解碼逐位元組一致；liblzma 壓縮（preset 0/6/9，未知大小＋結束標記）**51/51** 經我們的解碼器一致；符號種類全部出現（lit 17020、match 1521、rep0 148、rep1 126、rep2 41、rep3 28、shortrep 110）。修過一個 bug：shortrep 多編了一次 isMatch 位元（已修，見測試）。 |
+| **FGK 增量動態霍夫曼**（阻礙 1 已解除） | **已做** `matrix_fgk_core.js`（FaMatrixFgk） | `matrix_fgk.test.js` 6 項：每一步檢查不變量（權重沿位置序不遞減、父＝子和、位置序）、往返一致；**120/120** 組與獨立 Python 參照（物件樹實作同一演算法）逐位元相同。成本：偏態 **1.031×** 重建版、均勻隨機 **1.132×**（均勻分布上增量樹較差，是實測，不是 bug）。 |
+| 核心測試登記 | 已加入 `scripts/run-core-tests.js` 兩條 | 上列 matrix 測試全部逐條 rc=0（共 28 條檔案；整套 runner 這台仍跑不了，需要 tree-sitter 快取） |
+| **合成器範本**（FaMatrixSynth） | **未做** | 阻礙不變：沒有新 held-out 題。解除條件：寫 ≥10 題新 held-out（**不能用已凍結的題**），涵蓋 dyn（動態霍夫曼／MTF）、petri（權杖死結、可達數）、jpeg（DC 差分、AC 游程）、range（LZMA 字面量／比對），量了才註冊；註冊要用 `FaMatrixSynth.register(name, fn, {order, level, note})`（見 `matrix_synth_core.js:239`），現有範例見 `matrix_text_core.js:196` 的 `install`。 |
+| **teach_queue 產品呼叫** | **未做**（寫檔層已完成：`matrix_teach_queue_core.js`） | 現況：`floating-assistant.js` 的 `_codeOffline` 失敗路徑（約 120035～120039 行）已經呼叫 `FaMatrixSpec.teachEntry` 與 `this._teachQueueRecord(entry)`，**但 `_teachQueueRecord`（約 120043 行）是否已用 `FaMatrixTeachQueue` 寫檔，本棒沒有讀完整、沒有驗證**。解除條件：先讀 `_teachQueueRecord` 與 `FaMatrixTeachQueue` 的介面（`add`、`summary`），確認寫檔路徑已接上；視窗（摘要 UI）需要 Electron，這台沒有 Electron 二進位，驗不了；要使用者同意下載（列出檔名與大小）或改由有視窗的機器跑。 |
+| **JPEG 讀寫領域包** | 不在本棒（blockly-finish-2 負責） | — |
+
+**要嵌入／登錄的檔案（管理者統一做）**：
+- 新增：`matrix_lzma_core.js`（FaMatrixLzma，**要放在 FaMatrixRange 之後**）、`matrix_fgk_core.js`（FaMatrixFgk）。
+- 之前 §13.3 列的 7 個清單照舊（dyn、petri、image、teach_queue、jpeg_entropy、adaptive_huffman、range），另加 `matrix_sketch_core.js` 重新嵌入。
+- 注意 `matrix_range_core.js` 的檔頭註解仍寫「完整 LZMA 未做」，那句已過時，下一棒改掉即可（本棒未動）。
+
+**下一棒的接續點（依順序）**：
+1. 讀 `_teachQueueRecord`（floating-assistant.js 約 120043 行）與 `matrix_teach_queue_core.js` 的介面，確認寫檔是否已接；未接就接上，`add` 只在失敗路徑呼叫，io 用 try/catch 包住。
+2. 寫 ≥10 題新 held-out（dyn、petri、jpeg、range 各類），在不看範本的情況下先量 synth 的 ok／verified；量到有效才註冊範本（`register`），沒有效就寫成「待改善」並附數字。
+3. 視窗驗證：依 §13.3 阻礙 4 的解除條件處理（不自行下載 Electron）。
+4. 「待改善」清單（本棒誠實寫下）：FGK 的均勻分布成本 +13%；LZMA 目前只有貪婪比對（沒有最優解析），壓縮率低於 liblzma 預設；整套 `run-core-tests.js` 沒有跑。
+
+**身分與分支**：`git -c user.name="Claude" -c user.email="noreply@anthropic.com"`（依任務指示，沒有改全域設定）；trailer 寫 Haiku 5.5（依系統提醒）。沒有推送、沒有發布、沒有跑 `scripts/embed-code-ui.js`、`build-assistant.js`、沒有用 `git add -A`。
+
+### 13.5 第四棒（2026-11-12，分支 `claude/matrix-finish-4-48e1e0`，起點 `ea5e6f68`）
+
+**提交（未推送、未嵌入、未跑 embed／build、未用 `git add -A`）**
+
+| 提交 | 內容 |
+|---|---|
+| 9ac73f62 | 第二批 held-out 12 題先凍結（`matrix_synth_holdout2.test.js`），才寫任何新範本 |
+| 69d84200 | 合成器範本 +11（相鄰差、首項保留差分、游程段數、最長連續 0、眾數次數、過半多數、絕對值位元數）；第二批與第三批的回歸地板 |
+| 588af9b8 | 第三批 held-out 12 題凍結（`matrix_synth_holdout3.test.js`），換說法與參數，只量一次 |
+| 3d3febbc | teach_queue：`_teachQueueRecord` 改走 `FaMatrixTeachQueue.mergeText`；新增 6 項測試 |
+| af8f8973 | LZMA、FGK 測試結尾行改成執行器認得的格式（內容不變） |
+| b449b3d4 | `matrix_range_core.js` 檔頭「完整 LZMA 未做」改掉（已在 §13.4 完成） |
+
+**合成器（量測，不是獨立檢查的部分要標清楚）**
+
+- 第二批（範本寫在看過它的題型之後，數字偏樂觀）：範本寫之前 **3/12**（兩個對照加一題 DFA），寫之後 **10/12** 合成，隱藏測資 AC 10。未過：`h-mtf`（MTF 是有狀態的清單變換，沒有範本）、`h-tokens`（兩個整數同一行的組合計數，沒有這種輸入形狀）。
+- 第三批（凍結後只量一次，換說法換參數，**這是比較誠實的數字**）：**8/12** 合成，隱藏測資 AC 8。未過：`g-longest-one`（範本寫死「0」，換成「1」就不中：待改善，改成參數化要用新的 held-out 量）、`g-squares`（沒有範本）、`g-balls-boxes`（同第二批 `h-tokens` 的形狀問題）、`g-mtf-alpha`（MTF 有狀態）。
+- 第三批已經用掉。之後再改範本，要換新的一批（第四批）才算數；對第三批再調，就會變成調參。
+- 尚未量：範本的關鍵字分數（`kw`）是看第二批敘述寫的，沒有關鍵字時的召回沒量（待改善）。
+- 既有 `matrix_synth.test.js` 17 項仍全綠；`matrix_synth_holdout2.test.js` 地板 10、`holdout3` 地板 8。
+
+**teach_queue（修正舊的敘述）**
+
+- 13.3 寫「`_codeOffline` 失敗路徑沒有呼叫 add」已過時：失敗路徑經 `_matrixSpecNeed` → `_teachQueueRecord` 寫檔（`floating-assistant.js` 約 120059、120065 行）。
+- 真正的缺口是：`_teachQueueRecord` 自己做合併，沒有用 `FaMatrixTeachQueue`，所以摘要與合併規則有兩份。已改成 `FaMatrixTeachQueue.mergeText`（純函式），沒嵌入時退回直接合併。測試 `matrix_teach_queue.test.js` 17 項全綠（新增第 ⑦ 組 6 項）。
+- `renderer/floating-assistant.js`（建置產物）仍是舊的，這次沒有重嵌入（總指揮統一做）。
+- **Electron 實跑（12/12）**：`~/fa-electron/harness/`（在專案外，不提交）載入真實的 `_teachQueueRecord` 原始碼（用方法起頭搜尋，不用寫死的行號），檔案 API 用真的檔案系統，驗證：新增、同題計次、可重讀、無暫存檔殘留、摘要、localStorage 退路、沒有 `FaMatrixTeachQueue` 時的退路。截圖 `~/fa-electron/run-data/teach_queue_window.png`。
+- **沒有驗到的**：產品的摘要視窗（`floating-assistant.js` 目前沒有摘要 UI，只回傳 `lines`）；完整的產品應用程式（需要嵌入與建置，不在本棒範圍）；因此總指揮要求的隔離環境變數（`FA_DISABLE_MAIN_OVERLAY`、`FA_UPDATE_BASE`、獨立 `--user-data-dir`）沒有用上，因為沒有啟動產品。
+
+**Electron 44.4.0（使用者同意的下載，範圍只限此項）**
+
+- 來源：GitHub 官方發行 `electron/electron` v44.4.0，`electron-v44.4.0-linux-x64.zip`，**122,922,610 位元組（117 MiB，約 123 MB）**，在估計的 100～150 MB 之內（是核對後的實際值）。
+- 校驗：與同一發行的 `SHASUMS256.txt` 比對，sha256 `db661711…c499d` 相符。
+- 位置：`~/fa-electron/`（zip 與 `SHASUMS256.txt`；解壓到 `~/fa-electron/dist/`）。解壓後補回可執行權限（僅限 `electron`、`chrome_crashpad_handler`、`chrome-sandbox`）。`dist/electron --version` 得 `v44.4.0`。
+- 沒有安裝系統套件、沒有改系統設定、沒有放進專案樹。
+- 沙箱：這台 `chrome-sandbox` 沒有 root 擁有的 setuid，只能 `--no-sandbox` 跑驗證（驗證環境的限制，不是產品設定）。
+- DISPLAY `:2.0` 可用（`xdpyinfo` 確認），用的是共用桌面；沒有另開虛擬顯示。
+
+**整套 `run-core-tests` 在這台能不能跑（修正 13.3 與 13.4 的說法）**
+
+- 能跑，會完整跑完 309 組（8 核、nice 10，約 10 分鐘，機器負載高時更久）。
+- 「缺 tree-sitter 快取」的說法**不對**：測試預設讀 `~/.cache/fa-ts`，那個目錄不存在，所以測試印「略過」。文法其實在 git 追蹤的 `renderer/vendor/tree-sitter/`，而且 `~/.cache/fa-ts-h264/` 裡三個檔的 md5 和它完全相同。Blockly 的接手者跑得動，是因為它設了 `FA_TS_DIR=~/.cache/fa-ts-h264`。
+- 我第一次跑時錯誤地設 `FA_TS_DIR` 指到 repo 的 `renderer/vendor/tree-sitter`，結果有些測試會把缺的文法下載進 repo（7 個 `.wasm`，未追蹤）。已刪除，之後改用 `~/.cache/fa-ts-h264`。
+- 另外要有 `python` 指令（這台只有 `python3`）：在工作目錄外的 scratchpad 放一個 `python -> /usr/bin/python3` 的符號連結，只在那次執行時加入 PATH。
+- 工作樹沒有 `node_modules`，缺 `js-yaml`、`acorn` 等。以符號連結指向主倉庫的 `desktop-app/node_modules`（執行後要移除，它不在 `.gitignore`，見下）。
+- 執行器會覆寫 `test-reports/core-tests-latest.*` 與 `renderer/src/catalog/__pycache__/*.pyc`；這兩類都不提交，已還原。
+
+**結果（乾淨環境：`FA_TS_DIR=~/.cache/fa-ts-h264`、`FA_PYTHON=python3`、python shim、node_modules 連結）**
+
+- **285／309 組通過，24 組失敗，全部是「新增」，沒有既有失敗。**
+- 其中 **11 組是格式誤判**：測試本身全部通過（文字寫「全部通過」「0 失敗」「通過 N 項」），但結尾行不符執行器要求的 `N passed` 或 `0 failed`。包括：sym_studio（71）、source_input（33）、lora_web（54）、native_lora_merge（22）、網頁版訓練 LoRA 研究／ONNX 圖／wasm-web 後端、訓練服務、頁內 Worker、交換空間、find_installed_runtime（8）。這些應該改結尾行（和 13.4 的 LZMA 同類問題），本棒沒有逐一改，是待改善。
+- **13 組真失敗或未分類（沒有修，各自有 owner）**：
+  - `par`（平行運算）：`load-span` 的 holdout 報「程式讀不出，需要模型」；
+  - 行為描述第一層：`ENOENT`（缺檔）；
+  - C++／C#／Perl／Ruby 輸出器實跑：10 項失敗；
+  - 從程式抽回 UML（`convert_code` to_uml）與結構轉換（struct）：宿主 enum 缺 `to_uml`／struct 動作；
+  - 判題器 exec 逾時：孫行程變孤兒；
+  - 程式優化對照表：prefix-sum 實測加速 1.5 倍，門檻 3（在高負載下量，可能是環境）；
+  - 訓練工作室整合（視窗版面、假伺服器路由）：版面與 info 數值不符；
+  - 原生推論套用 LoRA：嵌入清單的 sha256 與目前 `nr-*.js` 不同步（需要重跑 refreeze，屬於嵌入流程）；
+  - 內建資產（LoRA 現況）；資料匯入與清洗：`ENOENT: scandir`；harness skill 可攜：1 項。
+- 本棒新增的矩陣測試全部在 run-core-tests 裡通過（`matrix_lzma`、`matrix_fgk` 修完結尾行後為 31 與 6，`matrix_teach_queue` 17，`matrix_synth*`）。
+
+### 13.6 blockly 與 matrix 混用（2026-11-12，指揮指示；分支 `claude/matrix-finish-4-48e1e0`）
+
+**設計（兩層，成本由低到高）**
+
+1. **整條失敗才交給矩陣**：blockly 的 UML→骨架→區塊管線整條失敗後，`_codeOffline` 的失敗路徑把「可見測資」當範例呼叫 `FaMatrixSynth`。矩陣答案只有「隱藏測資獨立判過（`verdict === 'AC'`）、非多候選（`!ambiguous`）、標記已驗證」才採用（`matrix_hybrid_core.js` 的 `tryMatrix`）；否則回傳原因，照舊回失敗＋教學佇列，交給弱模型或 LoRA。沒有獨立判題器時一律不採用，不能把「只對範例」當驗證。
+2. **殘留部分交給矩陣（部分匹配）**：設計上 blockly 拆出的步驟有殘留、或函式本體對不準時，只把殘留那段交給矩陣對應函式，再用判題器或結構檢查驗證。**尚未實作**，原因：blockly 失敗回傳只有 `stage`、`rounds`、`stuckAt`，沒有「哪一步殘留」的語句級資訊；要做需要 UML 建構器輸出語句級差異，這是下一棒的接續點。
+
+**接點（已提交，未嵌入）**
+
+- `renderer/src/algo/matrix_hybrid_core.js`（`FaMatrixHybrid`，純函式，synth 與 judge 注入）。
+- `renderer/src/floating-assistant.js` 失敗路徑：`typeof FaMatrixHybrid` 檢查，未嵌入時完全不動。`FaMatrixHybrid` 要在 `FaMatrixSynth` 之後嵌入（總指揮統一做）。
+- 測試 `matrix_hybrid.test.js` 7 項：真合成＋真判題採用一項（相鄰差）；判題 WA、沒有範本、沒有判題器、多候選、合成器丟例外、沒有範例，共六項拒絕路徑。全綠。
+
+**量測（實跑）**
+
+- 掃描：`domain_*` 測試共 30 包，holdout 未解共 **20 題**（avbits 3、ds 2、graph3 5、inflate 2、linuxfmt 1、linuxtext 1、os 1、par 2、sync2 1、tarx 2）；binfmt 的 `ho3-xz-bare` 在 3000ms 時限下偶發 TLE，本次 8/8 解出，屬於時限波動。
+- 抓題目物件：攔截判題器呼叫取得敘述、可見測資、隱藏測資。**抓到 13 題**；另 7 題 blockly 從未呼叫判題器（沒有候選），題目物件沒有被記錄，這是量測工具的缺口，未補。
+- `FaMatrixSynth` 對這 13 題：**合成 0 題，隱藏測資通過 0 題**。原因：這些題型（Floyd、匹配、分配、路徑、第 k 短、同步偵測、tar 列表、環境變數預設值、cut 半形）不在矩陣現有範本與家族內（失敗訊息都是「沒有符合所有範例的範本」）。
+- 結論：**整題混用在這批未解題上實測補上 0 題**。接點正確，但目前覆蓋到的未解題為零；要靠殘留部分交給矩陣，或擴充矩陣家族，才會有增益。
+
+**teach_queue「該走哪一層」（成本：blockly 教學最快 < 編成矩陣 < LoRA 最久）**
+
+- `matrix_spec_core.routeOf({stage, examples})`：讀得懂（stage ≠ reader）→ `blockly-teach`（缺骨架或課，補一課最便宜）；讀不懂有可見範例 → `matrix`（能合成但要寫範本）；讀不懂也沒有範例 → `lora`（先請使用者補範例，否則留給 LoRA）。
+- `teachEntry` 寫入 `route`（只存名字）；`matrix_teach_queue_core.summarize` 加 `byRoute` 與「建議順序」行。
+- 測試 `matrix_teach_queue.test.js` ⑧ 組 8 項；`matrix_spec.test.js` 25 項全綠。
+- **判斷依據的限制**：route 只看 stage 與範例數，沒有看題型是否落在矩陣家族內，所以「讀不懂有範例 → matrix」在上面的量測裡其實會落空（0/13）。實際是否編成矩陣，應該在量測矩陣覆蓋率之後再決定；這是待改善。
+
+**核心測試執行器與 11 組格式誤判（修正 13.5）**
+
+- `scripts/run-core-tests.js` 結尾行判定加入中文零失敗寫法：「全部通過」「通過 N 項」「0 失敗」「失敗 0 項」；結束碼仍必須為 0，`FAILED` 仍會失敗。這是讓執行器認得既有寫法，沒有逐檔改測試結尾行。
+- 11 組已逐一用執行器同樣的環境與規則實跑：10 組結束碼 0 且結尾行正確；`native_lora_merge`、`find_installed_runtime` 原本是「通過 N 項」，已由新規則接受（規則以 `node -e` 驗過，兩組實際結束碼 0）。
+
+**整套 run-core-tests（乾淨環境，2 核、nice 19）**
+
+- 結果：**296／309 組通過，13 組失敗，全部是新增、沒有既有失敗**。執行約 40 分鐘（負載高，`domain_os` 那一段長時間被 nice 19 餓住）。
+- 乾淨環境：`FA_TS_DIR=~/.cache/fa-ts-h264`、`FA_PYTHON=python3`、`python` 指向 python3 的 shim（只在執行時加入 PATH）、`node_modules` 以符號連結指向主倉庫（執行後已移除，不在 `.gitignore`，不提交）。執行器會覆寫 `test-reports/` 與兩個生成檔，已還原。
+
+**13 組真失敗與根因（逐項；屬矩陣領域者修，其餘寫根因）**
+
+| # | 套件 | 證據（我實跑或讀 log） | 根因／歸屬 |
+|---|---|---|---|
+| 1 | 領域包 os | `disk-sstf（改寫）` 沒有配方；反序變體 TLE | blockly os 包缺 disk-SSTF 的改寫配方；TLE 與負載有關。**歸 blockly os 包，不屬矩陣** |
+| 2 | 領域包 par | `load-span`（原敘述與反序）沒有配方，需要模型 | blockly par 包缺 load-span 家族的配方。**歸 blockly par 包** |
+| 3 | C++／C#／Perl／Ruby 輸出器 | 10 組 `g++ 編譯失敗：undefined`；本機有 g++ 11.4 | 推測：測試假設 mingw 工具鏈，編譯步驟沒有把錯誤文字帶出來。**未驗證，歸 IR 輸出器** |
+| 4 | 從程式抽回 UML（convert_code to_uml） | 期待 `enum: ['convert','to_blocks','to_uml']`，宿主 enum 沒有 `to_uml` | 宿主 convert_code 的動作清單未加 to_uml。**歸 convert_code 宿主** |
+| 5 | 結構轉換 runtime（struct） | 期待 enum 含 `struct` 與說明文字，宿主沒有 | 宿主 convert_code 的 struct 動作未接進 enum 與說明。**歸 convert_code 宿主（同 #4）** |
+| 6 | 判題器 exec 逾時 | 孫行程逾時後還活著（孤兒） | judge-runner 逾時只殺直接子行程，沒有殺整個行程樹。**真缺陷，歸判題器基礎設施** |
+| 7 | 程式優化對照表 | prefix-sum 實測加速 1.5 倍，門檻 ≥3（前次 2 倍） | 實測計時門檻在高負載下不穩（推測）。**歸程式優化測試，建議改相對量測或在空閒時跑** |
+| 8 | 訓練工作室內建資產 | `lora/內建-LoRA現況 {"adapters":0,"datasets":0}` | 測試期待內建 LoRA 資產存在，此 checkout 沒有。**歸 studio 資產（資料未進 repo）** |
+| 9 | 訓練工作室整合：視窗版面 | 預設左右分組與測試期待不符；分頁關閉後 closed 狀態不符 | 版面預設值與測試不一致，根因未查到。**待查，歸 studio 整合** |
+| 10 | 訓練工作室整合：假伺服器路由 | `info` 顯示 `storage.reason = "no-fap"`，webTrain=false | 測試期待有授權資料夾（fap）；無 fap 時的 info 與期待不符，根因未完全查到。**待查，歸 studio 整合** |
+| 11 | 原生推論套用 LoRA | 嵌入清單 sha256 與 `nr-*.js` 不同步，需重跑 `scripts/native-runtime-refreeze-nr.js --write-main-ext` | 有人改了 nr 檔沒有重算清單。**真漂移，歸原生執行包嵌入流程（不在矩陣）** |
+| 12 | 訓練工作室資料匯入與清洗 | `ENOENT scandir …/wiki`（worktree 沒有 wiki 目錄） | 測試依賴未進 repo 的 wiki 資料。**資料依賴，歸 studio 匯入** |
+| 13 | harness skill 可攜 | `vendor/recipe_core.js 與來源一致` 失敗：只差一行（`jsonStep` 那行） | `58f223f9` 改了 `renderer/src/recipe/recipe_core.js` 沒有重新同步 vendor 副本。**真漂移，歸 weak-model-harness skill** |
+
+- 前次（乾淨環境第一輪）的「行為描述」`ENOENT tree-sitter-javascript.wasm` 這次沒有復現（本次通過）；原因未查。
+- 以上 13 組都不是矩陣領域的失敗，所以本棒**沒有修**，只寫根因。
+
+**身分與分支**：提交身分 `Claude <noreply@anthropic.com>`，trailer 寫 Haiku 5.5。未推送、未發布、未跑 `embed-code-ui.js`、`build-assistant.js`，未用 `git add -A`。
+
+**接手者的接續點（依順序）**
+
+1. 量測工具補缺口：7 題 blockly 從未呼叫判題器，要在 `_codeOffline` 之外（或在 buildFromUML 的呼叫端）取得題目物件，才能量完整的 20 題。
+2. 實作部分匹配（本節設計的第 2 層）：需要 UML 建構器輸出語句級殘留，這是第一個真正的技術缺口。
+3. 矩陣家族擴充要以「新 held-out」量測；第三批 held-out 已用掉，不再對它調參（見 §13.5）。
+4. 13 組真失敗：#4、#5 是宿主 convert_code 的 enum 缺動作，#6 是判題器行程樹清理，#11、#13 是同步漂移，這五項最好由各自 owner 修；#9、#10 的根因還沒查完。
+5. 把 `matrix_hybrid_core.js` 與 `FaMatrixHybrid` 的嵌入順序加進嵌入清單（`FaMatrixSynth` 之後）；嵌入與登記由總指揮統一做。
+
+### 13.7 第五棒（2026-11-12，接 matrix-finish-4；判準先寫先 commit，之後只量一次）
+
+**判準（預先登記，量之前寫定）**
+
+- 量測對象：`domain_*` 21 個測試檔中 `split:'holdout'` 的全部條目（含「′」改寫）；以 blockly 基線（同一測資、同一判題器、同一 `buildFromUML`）未 AC 者為「未解」。基線是重跑一次（不改程式），不沿用 13.6 的數字。
+- 指標 A（矩陣覆蓋率）：未解條目中，`FaMatrixSynth.synth` 只用「可見測資」合成，且獨立判題（**只用隱藏測資**）AC、非多候選、標記已驗證者的數量，記為 k／N。
+- 指標 B：依領域包（測試檔）分列 k／N。
+- 判準的決定規則：
+  - 若 A＝0，`routeOf` 不得對該類題建議 `matrix`（改為 `blockly-teach` 或 `lora`），並在 13.7 寫明；
+  - 若 A＞0，保留現行 `routeOf`，但在 13.7 寫出覆蓋率與有覆蓋的領域；
+  - 不論結果，不對第三批、第二批 held-out 調參；不因為看到覆蓋率就改矩陣範本（改範本要另開新一批 held-out）。
+- 不在判準內：殘留部分混用（需要 UML 建構器語句級資訊，本棒未做，見 13.7 交接）。
+
+**13.7 結果（2026-11-12，只量一次；原始資料在 side-session-notes/matrix-finish-5/，不入庫）**
+
+- 基線重跑（實測，21 個 `domain_*` 測試檔，同一測資、同一判題器）：holdout 120 條目（含「′」改寫），**未解 21**。與 13.6 的 20 題不同（graph3 為 6、13.6 寫 5；其餘逐領域相同）。差異原因未查，推測是 3000ms 時限在負載下的波動（binfmt 有 TLE 紀錄），**推測，未驗證**。
+- 同一次重跑中，訓練（train）條目有失敗：avbits 12/16、inflate 8/10、par 16/22、tarx 9/10（實測；本棒沒有查這四組的根因，與 13.6「全綠」的說法不同，留給下一棒）。
+- **矩陣覆蓋率（實測）：未解 21 條目中 0/21 合成並通過獨立判題。** 測法：`FaMatrixHybrid.tryMatrix`（真的 `FaMatrixSynth`，可見測資合成，只用隱藏測資判題，非多候選、已驗證才算）。失敗原因都是「沒有符合所有範例的範本」或形狀不符（實測）。
+- 依領域（實測，全部 0）：avbits 3、ds 2、graph3 6、inflate 2、linuxfmt 1、linuxtext 1、os 1、par 2、sync2 1、tarx 2。
+- **判準決定（依 §13.7 判準）**：A＝0，所以 `routeOf` 不再對「讀不懂有可見範例」建議 `matrix`，改為 `lora`（理由寫在 why 欄）。只有呼叫端標 `matrixCovered: true` 才會回 `matrix`（目前沒有任何呼叫端標它）。
+  - 改動：`renderer/src/algo/matrix_spec_core.js`（`routeOf`）、`matrix_teach_queue.test.js`（rC 改為 lora，新增 rC2、teachEntry 與摘要計數的期待同步）。`matrix_teach_queue` 26 項、`matrix_spec` 25 項全綠（實測）。
+  - 這個改動只是路由建議，沒有改矩陣範本，也沒有對第二、第三批 held-out 調參。
+- 補量：13.6 說 7 題「blockly 從未呼叫判題器、題目物件沒有記錄」。本棒的 dump 工具從 harness 的 `runOne` 取得敘述、可見測資、隱藏測資，不再依賴判題器呼叫，所以 21 條未解條目都有完整題目物件（實測）。工具是 scratch 版的 harness copy（只加一行 dump），**沒有入庫**；若要重現，用 `side-session-notes/matrix-finish-5/domain_harness.js` 的改法。
+
+**13.6 殘留步驟混用（(1)）：未做。** 原因：
+- 殘留需要 blockly 的語句級資訊（哪幾條語句對、哪條錯），現在 `buildFromUML` 失敗時只有最後一次的整段 `last.source` 與 `reason`，沒有語句級判定；要做要改 UML 建構器，屬於另一個大改動，本棒時間內不做。
+- 目前最接近的現成結構是 Steps 層的 `stepFallback`（步驟級 `chain`、`reducer`、`verdict`），它是步驟粒度，不是語句粒度。下一棒可以從這裡開始評估，但要先決定殘留的粒度。
+- 在 0/21 的量測下，殘留混用即使做了，對這批未解題的增益也還沒有依據（矩陣連整題都沒有合成）。
+
+**13.6 表格 #9、#10（實測根因，已修）**
+
+- #9 `studio_layout_core.test.js`、#10 `studio_server_core.test.js`：根因都是過時的測試期待。commit `1a558fb2`（訓練工作室新增領域）把 `domains` 分頁加進預設左側，分頁數 8→9（實際 9 個），左側 5→6。測試仍寫舊數字，所以失敗。程式行為是正確的，沒有改程式。修正：提交 `e4805372`（只改兩個測試檔的期待）。修正後兩組分別 27/27、91/91（實測）。
+- #4、#5、#6、#11、#13 不屬於矩陣領域，本棒沒有修，見 13.6 表格的 owner 欄。
+
+**交接（給下一棒）**
+
+1. 分支 `claude/angry-wilson-f4d2c5`（worktree），本棒提交：`e4805372`（studio 測試期待）、`a9c216fd`（§13.7 判準）、以及 routeOf 改動與本段結果（這一棒的最後提交）。未推送、未發布、未 embed、未 build、未 `git add -A`。
+2. **嵌入**（總指揮做）：`floating-assistant.js` 的嵌入版仍是舊的，所以產品的 `routeOf` 行為要等重新嵌入 `matrix_spec_core.js` 才會變。`FaMatrixHybrid`（`matrix_hybrid_core.js`）要排在 `FaMatrixSynth` 之後嵌入。
+3. `node_modules` 符號連結在工作樹（`desktop-app/node_modules` → 主倉庫），未追蹤，**不要提交**；是 `??` 狀態。
+4. 未解題的矩陣覆蓋 0/21，下一步要擴充矩陣家族，或在 blockly 的 UML 建構器上做語句級殘留（第 2 點）。擴充家族要用新的 held-out（第四批以後），不對已用掉的批次調參。
+5. 13.6 表格 #4、#5、#6、#11、#13 各有 owner，還沒修；#9、#10 已修（如上）。訓練 train 條目在本次重跑中的 avbits、inflate、par、tarx 失敗，根因還沒查。
+
+### 13.8 殘留步驟混用（2026-11-12，第六棒；指揮指示：先寫判準、commit、再量一次）
+
+**判準（預先登記）**
+
+- 母體：§13.7 基線的 **21 個未解 holdout 條目**（固定 id 清單，與 13.7 相同；不重抽題）。
+- 殘留（residual）的定義：`buildFromUML` 失敗時，回傳**最後一次被判題器判過、判為非 AC／非 UNCHECKED 的候選程式**（來源：配方、課、範式、區塊迴圈）。`residual = {source, verdict, detail, by}`；沒有任何候選被判過則為 `null`。
+- 量測 P（殘留池大小）：母體中 `residual ≠ null` 的條目數。
+- 量測 M（混用結果）：對 P 中每個條目，把殘留交給 `FaMatrixHybrid.tryMatrix`，採用條件同 §13.6（隱藏測資獨立判過、非多候選、已驗證）。**判準的硬條件：只有 `tryMatrix` 的既有採用條件成立才算解出**，殘留本身不能當答案。
+- 語句級：本棒**不宣稱**有語句級殘留。判題器只回傳整支程式的 verdict 與一個測資的差異，沒有逐語句判定；若要語句級，需要中間值的 oracle，本棒不造。
+- 決定規則：
+  - P＝0：殘留混用沒有輸入，結論寫「0 by construction」，並寫下一步（需要語句級 oracle 或中間值範例）。
+  - P＞0 且 M＝0：寫出 P 中各條目的殘留來源與 verdict，並指出矩陣為什麼拿不到子問題的範例。
+  - M＞0：寫出採用條目，並由 hidden 判題再核一次。
+- 不對第二、第三批 held-out 調參；矩陣範本不改。
+- UML 建構器檔案（`renderer/src/uml/py_uml_pipeline_core.js`）：2026-11-12 檢查所有 worktree，沒有未提交的修改（`git worktree list` 各目錄 `git status` 為乾淨）。改動限於 `buildFromUML` 的失敗回傳與候選記錄，不改成功路徑。
+
+**13.8 結果（2026-11-12，只量一次；原始資料在 side-session-notes/matrix-finish-5/dump2.jsonl，不入庫）**
+
+- 實作（已提交 `c6833f80`）：`renderer/src/uml/py_uml_pipeline_core.js` 的 `buildFromUML`（最小改動）。新增 `keepResid`，在配方、課、範式（`pj`）、區塊迴圈四處記下最後一個被判為非 AC／非 UNCHECKED 的候選；失敗回傳帶 `residual: {source, verdict, detail, by}`，成功路徑不變。`py_uml_pipeline.test.js` 7 項全綠（實測）。
+- 殘留池 P（實測）：母體 21 條未解 holdout（§13.7 同一批 id）中，**13 條有殘留，8 條沒有**。
+  - 有殘留的 13 條：來源都是 `paradigm`，verdict 為 WA 或 RE（例如 ho-floyd「詞數不同：25 vs 期望 3」、ho-sps-write「結束碼 1」）。
+  - 沒有殘留的 8 條：ho-heap-max2（uml_design 讀不出）、ho-match、ho-assign、ho-path、ho-kth、ho-zlib、ho-dyn-chunks、ho-enc。它們沒有任何候選被判過（實測，`rounds` 無判題紀錄）。
+- 混用結果 M：**0/13（由 §13.7 的 0/21 推得，不是新量）**。理由：`tryMatrix` 的輸入是整題敘述與可見測資，殘留（一支整體 WA 的程式）不是矩陣能用的輸入，所以混用呼叫的內容與 §13.7 相同，結果也相同。
+- **語句級殘留：沒有做。** 判題器只回傳整支程式的 verdict 與第一個差異測資，沒有逐語句的判定，所以無法從殘留切出「哪幾句是對的」。這需要中間值的 oracle（每句之後的變數值），目前題目資料只有 I/O。
+- 結論（量到的數字）：殘留混用在這批題的增益是 **0**，原因是 (a) 殘留池只有 13 條，而且都是整體 WA／RE；(b) 矩陣拿不到子問題的範例，所以殘留無法變成矩陣的輸入。
+- 下一步（寫給接手者）：
+  1. 若要真的做語句級殘留，先要有每句的中間值 oracle。候選是：從參考解（只存在於 harness，產品內沒有）取中間值，但這不能用在產品，所以只能用於量測；或者在 UML 建構器上為每個區塊記錄執行軌跡（需要沙盒支援），這是獨立的工作項目。
+  2. 在有 oracle 之前，殘留混用不應該進產品路徑。目前 `_codeOffline` 的混用仍然只用整題（§13.6），沒有改。
+  3. 13.7 的 routeOf 改動（不建議矩陣）與本節一致，不需要因為殘留再改。
+
+**交接（給總指揮與下一棒）**
+
+- 本棒提交：`8ddf69e0`（§13.8 判準）、`c6833f80`（UML 建構器殘留，最小改動）、以及本段結果（最後一個提交）。未推送、未嵌入、未 build。
+- UML 建構器：`renderer/src/uml/py_uml_pipeline_core.js` 的 `buildFromUML` 新增 `residual` 欄位（失敗時）。要嵌入到 `floating-assistant.js` 才會在產品生效；嵌入由總指揮做。`_codeOffline` 目前不讀 `residual`，所以產品行為沒有改。
+- 檢查：2026-11-12 所有 worktree 對該檔的 `git status` 都是乾淨的（實測），本次改動沒有與其他接手者衝突。
+- 量測用的 harness 副本只在 scratch（加了 dump 與 POOL 過濾），沒有入庫。

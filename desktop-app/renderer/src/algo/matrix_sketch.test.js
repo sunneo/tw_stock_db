@@ -6,7 +6,7 @@
 const assert = require('assert'), fs = require('fs'), path = require('path'), cp = require('child_process');
 const S = require('./matrix_synth_core.js'); const K = require('./matrix_sketch_core.js'); const J = require(path.join(__dirname, '..', '..', '..', 'judge-runner.js'));
 assert.strictEqual(K.install(S), true); assert.ok(S.list().some((x) => x.name === 'sketch'));
-const PY = process.env.PYTHON || 'python'; let passed = 0; const ok = (c, m) => { assert.ok(c, m); passed++; };
+const PY = process.env.PYTHON || (process.platform === 'win32' ? 'python' : 'python3'); let passed = 0; const ok = (c, m) => { assert.ok(c, m); passed++; };
 // ① 抽樣比對
 {
     const all = K.cands.concat(K.rangeCands([3, 5]), K.seriesCands([1000000007]), K.twoIntCands([1000000007]), K.baseCands);
@@ -19,7 +19,7 @@ const PY = process.env.PYTHON || 'python'; let passed = 0; const ok = (c, m) => 
         for (const a of ins) { const cx = K.context(a[0]); cx.args = a; let v; try { v = c.f(cx); } catch (e) { v = null; } exp.push(v === null || v === undefined ? null : label ? (v ? 'Y' : 'N') : String(v)); }
         progs.push({ id: c.id, src, ins: ins.map((a) => a.join(' ')), exp }); expect.push(c);
     }
-    const harness = 'import sys, json, io, builtins\nP = json.loads(sys.stdin.read())\nres = []\nfor p in P:\n    outs = []\n    for line in p["ins"]:\n        ns = {"__name__": "x"}\n        try:\n            exec(p["src"], ns)\n            it = iter([line])\n            builtins_input = builtins.input\n            builtins.input = lambda *a: next(it)\n            buf = io.StringIO(); old = sys.stdout; sys.stdout = buf\n            try:\n                ns["main"]()\n            finally:\n                sys.stdout = old; builtins.input = builtins_input\n            outs.append(buf.getvalue().strip())\n        except Exception as e:\n            outs.append("ERR " + type(e).__name__)\n    res.append(outs)\nprint(json.dumps(res))\n';
+    const harness = 'import sys, json, io, builtins\nif hasattr(sys, "set_int_max_str_digits"): sys.set_int_max_str_digits(0)\nP = json.loads(sys.stdin.read())\nres = []\nfor p in P:\n    outs = []\n    for line in p["ins"]:\n        ns = {"__name__": "x"}\n        try:\n            exec(p["src"], ns)\n            it = iter([line])\n            builtins_input = builtins.input\n            builtins.input = lambda *a: next(it)\n            buf = io.StringIO(); old = sys.stdout; sys.stdout = buf\n            try:\n                ns["main"]()\n            finally:\n                sys.stdout = old; builtins.input = builtins_input\n            outs.append(buf.getvalue().strip())\n        except Exception as e:\n            outs.append("ERR " + type(e).__name__)\n    res.append(outs)\nprint(json.dumps(res))\n';
     const r = cp.spawnSync(PY, ['-I', '-c', harness], { input: JSON.stringify(progs), encoding: 'utf8', timeout: 240000, maxBuffer: 64 * 1024 * 1024 }); assert.strictEqual(r.status, 0, r.stderr);
     const got = JSON.parse(r.stdout); let cmp = 0, bad = 0;
     progs.forEach((p, i) => p.exp.forEach((e, j) => { if (e === null) return; cmp++; if (got[i][j] !== e) { bad++; if (bad < 8) console.log('不一致', p.id, p.ins[j], 'JS=' + e, 'PY=' + got[i][j]); } }));

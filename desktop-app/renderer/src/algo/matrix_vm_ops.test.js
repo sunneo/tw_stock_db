@@ -31,7 +31,7 @@ console.log('② φ 200 個、完全數 120 個、k 進位 200 個與 JS 參考�
 if (PY) {
     for (const [name, prog, gen, show] of [['phi', progs.phi, () => [1 + rnd(5000)], (r) => String(r.value)], ['perfect', progs.perfect, () => [1 + rnd(600)], (r) => String(r.value)], ['base', progs.base, () => [rnd(100000), 2 + rnd(14)], (r) => r.out.join(' ')]]) {
         const pr = ST.vmToPython(prog); ok(pr.ok, name + ' 能轉 Python：' + (pr.reason || '')); let same = 0, tot = 0;
-        for (let t = 0; t < 25; t++) { const toks = gen(); const r = VM.run(prog, toks); const exp = show(r); const got = cp.spawnSync(PY, ['-I', '-c', pr.source + '\nmain()\n'], { input: toks.join(' ') + '\n', encoding: 'utf8', timeout: 20000 }); tot++; if (got.status === 0 && got.stdout.trim().split(/\s+/).join(' ') === (name === 'base' ? exp : exp)) same++; else if (got.status !== 0) console.log(name, got.stderr.slice(0, 200)); }
+        for (let t = 0; t < 25; t++) { const toks = gen(); const r = VM.run(prog, toks); const exp = show(r); const got = cp.spawnSync(PY, ['-I', '-c', pr.source.trimEnd().endsWith('main()') ? pr.source : pr.source + '\nmain()\n'], { input: toks.join(' ') + '\n', encoding: 'utf8', timeout: 20000 }); tot++; if (got.status === 0 && got.stdout.trim().split(/\s+/).join(' ') === (name === 'base' ? exp : exp)) same++; else if (got.status !== 0) console.log(name, got.stderr.slice(0, 200)); }
         ok(same === tot, name + ' VM→Python 在 25 個隨機輸入上一致：' + same + '/' + tot);
     }
     console.log('③ 三個 VM 程式轉成 Python 後與 VM 一致');
@@ -43,7 +43,7 @@ if (PY) {
     for (let t = 0; t < 150; t++) { const n = 1 + rnd(20); const a = Array.from({ length: n }, () => rnd(50)); const want = a.slice().sort((x, y) => x - y); const got = VM.run(T, [n].concat(a)).out.map(Number); ok(got.join() === want.join(), 'BST 中序 = 排序（含重複鍵）：' + a.join()); }
     if (PY) for (const [name, prog, gen, show] of [['hash', H, () => { const n = 1 + rnd(30); return [n].concat(Array.from({ length: n }, () => rnd(300))); }, (r) => String(r.value)], ['bst', T, () => { const n = 1 + rnd(15); return [n].concat(Array.from({ length: n }, () => rnd(40))); }, (r) => r.out.join(' ')]]) {
         const pr = ST.vmToPython(prog); ok(pr.ok, name + ' 能轉 Python：' + (pr.reason || '')); let same = 0, tot = 0;
-        for (let t = 0; t < 20; t++) { const toks = gen(); const r = VM.run(prog, toks); const got = cp.spawnSync(PY, ['-I', '-c', pr.source + '\nmain()\n'], { input: toks.join(' ') + '\n', encoding: 'utf8', timeout: 20000 }); tot++; if (got.status === 0 && got.stdout.trim().split(/\s+/).join(' ') === show(r)) same++; else if (got.status !== 0 && t < 2) console.log(name, String(got.stderr).slice(0, 200)); }
+        for (let t = 0; t < 20; t++) { const toks = gen(); const r = VM.run(prog, toks); const got = cp.spawnSync(PY, ['-I', '-c', pr.source.trimEnd().endsWith('main()') ? pr.source : pr.source + '\nmain()\n'], { input: toks.join(' ') + '\n', encoding: 'utf8', timeout: 20000 }); tot++; if (got.status === 0 && got.stdout.trim().split(/\s+/).join(' ') === show(r)) same++; else if (got.status !== 0 && t < 2) console.log(name, String(got.stderr).slice(0, 200)); }
         ok(same === tot, name + ' VM→Python 一致：' + same + '/' + tot);
     }
     console.log('G10 雜湊集合與二元搜尋樹（陣列堆＋顯式堆疊）與 JS 參考、VM→Python 一致');

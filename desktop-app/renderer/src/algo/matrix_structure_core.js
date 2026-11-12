@@ -126,7 +126,7 @@
                 case 'read': return i.eof ? '一個一個讀輸入，讀完就離開' : '讀入下一個數';
                 case 'const': return isNum(i.value) ? '常數' : '常數矩陣 ' + i.value.length + '×' + i.value[0].length;
                 case 'mul': return '矩陣乘法（照程式選的半環）'; case 'pow': return '矩陣快速冪：用 ' + 'log(次方)' + ' 次乘法算出多步的結果';
-                case 'iarith': return i.f === '+' && (i.b === 'one' || i.b === 1) && i.a === i.dst ? '計數加一' : i.f === '>>1' ? '除以二（向下取整）' : /^(+|-)$/.test(i.f) ? '整數加減' : '整數運算（' + i.f + '）';
+                case 'iarith': return i.f === '+' && (i.b === 'one' || i.b === 1) && i.a === i.dst ? '計數加一' : i.f === '>>1' ? '除以二（向下取整）' : /^[+-]$/.test(i.f) ? '整數加減' : '整數運算（' + i.f + '）';
                 case 'push': return '放進堆疊'; case 'pop': return '從堆疊取出（堆疊空了會出錯）'; case 'enq': return '排進佇列'; case 'deq': return '從佇列取出'; case 'jqe': return '佇列空了就離開迴圈';
                 case 'jlt': case 'jeq': return '比較後分支'; case 'get': return '讀出矩陣的一格'; case 'set': return '寫入矩陣的一格'; case 'halt': return '答案'; case 'print': return '輸出'; case 'onehot': return '位址向量（只有第 i 格是 1）';
                 default: return '';
