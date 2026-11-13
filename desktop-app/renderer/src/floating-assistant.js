@@ -132348,8 +132348,9 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         if (typeof o.getContext === 'function') {
             try { const hc = await o.getContext(); for (const k of ['url', 'title', 'selection']) if (hc && hc[k]) ctx[k] = String(hc[k]); } catch (_) { /* 宿主取不到情境就用預設 */ }
         }
-        if (!args.code && args.text && typeof o.resolveText === 'function') {
-            try { const rt = await o.resolveText(String(args.text)); if (rt && rt.code) { args.code = String(rt.code); if (rt.name && !args.name) args.name = String(rt.name); } } catch (_) { /* 解不出來就交給擴充自己的字典 */ }
+        if ((!args.code || !args.name) && (args.text || args.code) && typeof o.resolveText === 'function') {
+            // 只給代號時也問宿主一次，才補得到名稱（章節標題、旁白會用到）
+            try { const rt = await o.resolveText(String(args.code || args.text)); if (rt && rt.code) { if (!args.code) args.code = String(rt.code); if (rt.name && !args.name) args.name = String(rt.name); } } catch (_) { /* 解不出來就交給擴充自己的字典 */ }
         }
         // 抓網頁走跟 fetch_web_page 同一個代理；抓失敗的來源會被標成「抓取失敗」，不會中斷整個調查
         let proxyBase = null;
