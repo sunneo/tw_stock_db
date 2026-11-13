@@ -1219,3 +1219,56 @@ cd .. && node scripts/native-runtime-pack.js /home/hungfu.lee/fa-work/native-run
 ### 27.8.11 提交
 
 - 這次的提交只包含：`lora-train/` 的新腳本（`rebuild_r4.sh`、`finish_r4.sh`、`eval_r4.sh`、`package_r4.sh`、`build_decompose_v2.py`、`make_eval_subsets.py`、`verify_fatrain.js`）、`lora-train/cards/`、`lora-train/results/r4/`，以及本節。**沒有改動產品程式**（沒有重新嵌入，沒有 build、沒有推送、沒有發布）。
+
+### 27.9 內建 LoRA 擴充（2026-11-13，總指揮追加；同分支）
+
+**範圍**：在 27.8 的四顆（toolcall、plan、decompose、colu）之外，加入 code-write 與閱讀理解兩顆；UML 設計、CoLU、blockly 教學、離線訓練器的資產改用既有資料，不另外再訓一顆。
+
+#### 27.9.1 槽位與第五顆的決定（二選一，選了「獨立第五顆」）
+
+- 槽寬 16、每顆 rank 4 → 槽內最多 4 顆同時啟用（`maxActive` 4）。27.3 已量到四顆同時疊加會崩壞，所以**產品的路由維持每輪只啟用一顆**（27.6 第 3 項的 `select` 規則）。
+- 因為每輪只用一顆，「同時啟用數」不是第五顆的瓶頸；瓶頸是登錄表的預算（256 MiB，每顆約 40 MB，可以登錄六顆）與滿槽時的替換（§14，淘汰策略）。
+- **決定：code-write 獨立成一顆 `codewrite-r4`（rank 4）**，理由：(a) 路由每輪一顆，獨立才能讓路由選到它；(b) 把 toolcall 與 code-write 合併成一顆，會讓同一組 rank 4 的權重同時背工具格式與整份程式，無法分開判定上線（退步判準以組為單位）；(c) 合併需要 rank 8，超過現有 rank 4 的槽位分配，還要重算槽寬。
+- 代價：第五顆與第六顆不能同時在槽內，要用 §14 的替換。這在產品上是已經實作的路徑（登錄表的替換與回滾）。
+
+#### 27.9.2 資料來源盤點（UML、CoLU、blockly、離線訓練器）
+
+| 資產 | 既有訓練資料（`merge_dataset.js`） | 目前用到的 adapter | 狀態 |
+|---|---|---|---|
+| UML 設計（actors、classes、members、relations、sequence、edit） | `uml_design` 396 列（訓練） | decompose-r4-v2 | 已轉入，不重做 |
+| CoLU 字母選單 | `colu` 541 列（訓練） | colu-r4 | 已轉入，不重做 |
+| blockly 教學（微選擇） | `blockly_matrix` 116 列（訓練） | colu-r4 | 已轉入，不重做 |
+| 離線訓練器（符號式規則、內建領域包） | 無：`DESIGN.offline-trainer.md` 的領域包是規則與 JS 工具，不是 prompt＋答案對 | — | **尚未轉換**（需要先定義題目格式，本次不做） |
+| 思考堆疊（plan_check、review_return、self_validate） | `think_stack` 855 列（訓練） | plan-r4、decompose-r4-v2 | 已轉入 |
+
+結論：UML、CoLU、blockly 的資產已經在既有的四顆訓練資料裡；**真正還沒轉的只有離線訓練器的符號式資產**，它的題目不是 prompt／答案對，要先另外設計格式，所以沒有納入本輪。
+
+#### 27.9.3 code-write（`codewrite-r4`，已訓練、已打包前的評量）
+
+- 資料：`fn_template` 的 `code_write_fn` 194 列、`code_write` 20 列、`code_split` 67 列（訓練集，共 281 列）；self_validate、review_return 屬於 plan／decompose，不放進這一顆。
+- 訓練：rank 4、alpha 8、學習率 2e-4、1 輪、序列 768、批次 1 × 累積 8；36 步，`train_loss` 見 `out/multi/codewrite/seg-1.log`（09:07 完成，12 執行緒）。
+- 評量（`eval_codewrite.sh`，`eval_gen.py` ＋ `score_gen.js`，與 §17 同一套判題器）：留出 `code_write_fn`、`code_split`、`code_write`，每組最多 60 列，基底與微調同一批。結果見 §27.9.6。
+
+#### 27.9.4 閱讀理解（第六類，`reading`；資料已產生，訓練與評量排在五顆之後）
+
+- 產生器：`gen/gen_reading.js`（新增）。來源是 `desktop-app/DESIGN.*.md` 的條列句（`- **名詞**：說明`），每條列句成為一題：
+  - `rc_extract`：文中「名詞」指的是什麼？ → 答案＝說明原文（逐字）。
+  - `rc_quote`：請引用文中一句說明「名詞」的原文 → 答案＝那一句（逐字）。
+  - `rc_unanswerable`：問「別篇才有、本篇沒有」的名詞 → 答案＝「文中沒寫」。
+- 長文分塊：超過 1,200 字的文章只取包含目標句的視窗，答案必須落在視窗內才收（`windowFor`）。
+- 驗證：說明與整句都要在文中逐字找得到，否則丟棄（本次 0 列被丟棄）。
+- 切分：文件檔名的 sha256 決定，約 25% 的文章進留出集（文章層級，兩邊不共用文章）。
+- 產出：`data/reading_train.jsonl` 1,569 列、`data/reading_heldout.jsonl` 303 列（三種題型各約 1/3）。
+- **誠實限制**：這是模板題，不是自然語言閱讀理解；同一句說明可能在多份文件裡重複出現，留出集與訓練集可能有相同的說明句（只在文章層級切分，沒有做句子層級去重）。它量的是「依文章作答、逐字引用、沒寫就說沒寫」的做法，**不代表**真實的閱讀理解能力。27.9 的內容不擴張到新演算法。
+- 評量：`eval_reading.py`（判準在檔頭預先寫好）：答對率、逐字引用率（輸出是文中的連續子字串）、無答案拒答率、幻覺率，並與基底比；退步判定只在 n ≥ 20 的組。
+
+#### 27.9.5 內建的方式（決定，尚未實作產品端）
+
+- **權重不打進 patch**：每顆約 40 MB；patch 只能走 `publish.sh` 小檔。**走 GitHub `lora-adapters` 分支下載**，與 native-runtime 分支同一套下載機制（§9.2）。
+- **描述檔與 model card 嵌入**：描述檔與卡片很小（幾 KB），可以放進 `builtin-training/lora/<名稱>/`，由總指揮統一 `embed` 與 `publish`（§9.3 的規則，session 不執行 embed／build）。
+- 內建卡片的評量數字：`eval.groups` 放在描述檔（給登錄表的贏／輸判定），卡片的 `eval`（`split_legal_rate`、`fc_format_rate`）只在有對應量測時才填（與 27.8 相同）。
+- 退步規則：**任何組別退步，該顆不標為內建**；範圍外的組別與範圍內一樣計入，不過範圍外的組別要分欄列出（§18.2）。
+
+#### 27.9.6 結果
+
+（見下方的分段紀錄；尚未完成的部分會寫明。）

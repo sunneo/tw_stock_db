@@ -17,7 +17,9 @@ dataset() {
     decompose_v2) echo data/multi/decompose_v2.jsonl ;;
     toolcall)     echo data/multi/toolcall.jsonl ;;
     plan)         echo data/multi/plan.jsonl ;;
+    codewrite)    echo data/multi/codewrite.jsonl ;;
     colu)         echo data/multi/colu.jsonl ;;
+    reading)      echo data/reading_train.jsonl ;;
   esac
 }
 
