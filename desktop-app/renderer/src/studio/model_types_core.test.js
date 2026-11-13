@@ -45,4 +45,7 @@ check('開關的存法與 offlineDevicePreference 相同：advancedSettings → 
 check('視窗啟動帶入清單與守門；開關變更時即時推送', /modelTypes: mtp\.list, guards: mtp\.guards, showHalf: mtp\.showHalf/.test(FA) && /__fa_modeltypes: p/.test(FA));
 check('樣板只讀 CFG／訊息傳來的結果，不 require 登錄表', /CFG\.modelTypes/.test(TPL) && /CFG\.guards/.test(TPL) && !/model_types_core/.test(TPL));
 check('embed 清單已登錄 model_types_core', /'model_types_core'/.test(fs.readFileSync(path.join(__dirname, '../../../scripts/embed-code-ui.js'), 'utf8')));
+check('沙盒 iframe 讀不到 localStorage 時，型別與輸出選擇改存記憶體（實測缺陷 D1）', /function lsGet\(k,d\)\{try\{var v=localStorage\.getItem\(k\);if\(v\)return v\}catch\(e\)\{\}return MT_MEM\[k\]\|\|d\}/.test(TPL) && /function lsSet/.test(TPL));
+check('外部型別的開始按鈕先過守門，且請求帶輸出（D2）', /var gd=mtGuard\(t\);if\(gd&&gd\.ok===false\)/.test(TPL) && /output:mtOut\(\)/.test(TPL));
+check('Python 路徑不存在時說找不到 Python，不說缺套件（D3）', /找不到訓練用的 Python：/.test(fs.readFileSync(path.join(__dirname, 'studio_host.js'), 'utf8')));
 console.log(ok + ' passed, ' + bad + ' failed'); process.exit(bad ? 1 : 0);
