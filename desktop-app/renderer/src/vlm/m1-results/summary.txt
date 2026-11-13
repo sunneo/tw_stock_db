@@ -1,0 +1,15 @@
+img img_000051 rep 1 tokens=13 same=True total resident=8890ms staged=10352ms  HWM resident=1333MB staged=845MB  (before=61MB)
+img img_000051 rep 2 tokens=13 same=True total resident=8813ms staged=9060ms  HWM resident=1301MB staged=850MB  (before=61MB)
+img img_000101 rep 1 tokens=12 same=True total resident=7337ms staged=8830ms  HWM resident=1295MB staged=849MB  (before=61MB)
+img img_000101 rep 2 tokens=12 same=True total resident=9348ms staged=7371ms  HWM resident=1292MB staged=851MB  (before=61MB)
+img img_000150 rep 1 tokens=12 same=True total resident=7894ms staged=9258ms  HWM resident=1294MB staged=862MB  (before=61MB)
+img img_000150 rep 2 tokens=12 same=True total resident=7552ms staged=7715ms  HWM resident=1285MB staged=888MB  (before=61MB)
+ALL TOKENS SAME: True
+VmHWM median resident=1294 MB staged=850 MB; reduction=34.3%
+loadMs median resident=3072 staged=3214
+switch ('decode', 'load') median ms=1032 min=909 max=1336 n=6
+switch ('decode', 'release') median ms=62 min=43 max=68 n=6
+switch ('encode', 'load') median ms=400 min=360 max=421 n=6
+switch ('encode', 'release') median ms=45 min=38 max=52 n=6
+switch ('vision', 'load') median ms=1604 min=1331 max=2098 n=6
+switch ('vision', 'release') median ms=106 min=82 max=142 n=6

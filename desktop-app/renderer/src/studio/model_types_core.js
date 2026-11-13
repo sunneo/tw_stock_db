@@ -59,12 +59,14 @@
       outputs: [{ id: 'lora', label: 'LoRA 小檔', available: false, formats: [], reason: '沒有圖像生成的訓練核心與圖文配對格式。' }, { id: 'full', label: '完整模型', available: false, formats: [], reason: '沒有圖像生成模型的訓練與匯出路徑。' }],
       gap: '缺：訓練核心、圖文配對資料格式、匯出路徑。已有：快速圖像模型的推論。',
       can: [], cannot: ['訓練圖像生成模型'] },
-    { id: 'vision', name: '看圖說文字（視覺語言模型）', status: 'design',
-      summary: '看圖回答或描述圖片。目前只有既有的看圖推論。',
-      sources: [], backends: [],
-      outputs: [{ id: 'lora', label: 'LoRA 小檔', available: false, formats: [], reason: '沒有視覺語言模型的訓練核心與圖文問答格式。' }, { id: 'full', label: '完整模型', available: false, formats: [], reason: '沒有視覺語言模型的訓練與匯出路徑。' }],
-      gap: '缺：訓練核心、圖文問答資料格式、匯出路徑。已有：看圖推論。',
-      can: [], cannot: ['訓練視覺語言模型'] },
+    { id: 'vision', name: '看圖說文字（視覺語言模型）', status: 'half',
+      summary: '看圖回答或描述圖片。已有小型看圖模型的 LoRA 訓練核心（命令列，用電腦處理器就能跑；資料格式、評量與匯出都實測過）。工作室的介面還沒接上，所以按鈕不會產生模型。',
+      sources: ['圖文問答資料（一行一筆的 .jsonl，圖片用相對路徑，加上兩則訊息）'], backends: [],
+      outputs: [
+        { id: 'lora', label: 'LoRA 小檔', available: false, formats: [], reason: '命令列可以訓練並匯出 LoRA（已實測），但工作室的介面還沒有接上看圖訓練，按開始不會執行它。' },
+        { id: 'full', label: '完整模型', available: false, formats: [], reason: '命令列可以把 LoRA 併回基底並匯出權重檔（已實測），但工作室還沒有接上這條匯出路徑。' } ],
+      gap: '缺：工作室的訓練按鈕與資料匯入（目前只能用命令列）、匯出進工作室資產的路徑、網頁版執行。已有：命令列訓練核心、圖文問答格式與檢查、評量、併回匯出。',
+      can: ['命令列訓練看圖 LoRA（小型看圖模型，用電腦處理器，不需要顯示卡）', '命令列把 LoRA 併回基底，匯出完整模型的權重檔'], cannot: ['在工作室按鈕訓練看圖模型', '把看圖模型存成工作室資產'] },
   ];
 
   function find(id) { for (var i = 0; i < TYPES.length; i++) if (TYPES[i].id === id) return TYPES[i]; return null; }

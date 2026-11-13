@@ -1,0 +1,108 @@
+{
+ "model": "/home/hungfu.lee/fa-work/vlm-studio/full1",
+ "adapter": null,
+ "n": 12,
+ "color_acc": 1.0,
+ "shape_acc": 1.0,
+ "both_acc": 1.0,
+ "gen_sec_mean": 3.397,
+ "max_new_tokens": 24,
+ "items": [
+  {
+   "id": "cap-000151",
+   "combo": "blue-triangle",
+   "text": "A blue triangle on a white background.",
+   "color_ok": true,
+   "shape_ok": true,
+   "sec": 11.25
+  },
+  {
+   "id": "cap-000152",
+   "combo": "blue-triangle",
+   "text": "A blue triangle on a white background.",
+   "color_ok": true,
+   "shape_ok": true,
+   "sec": 4.32
+  },
+  {
+   "id": "cap-000153",
+   "combo": "blue-triangle",
+   "text": "A blue triangle on a white background.",
+   "color_ok": true,
+   "shape_ok": true,
+   "sec": 3.25
+  },
+  {
+   "id": "cap-000154",
+   "combo": "green-circle",
+   "text": "A green circle on a white background.",
+   "color_ok": true,
+   "shape_ok": true,
+   "sec": 2.98
+  },
+  {
+   "id": "cap-000155",
+   "combo": "green-circle",
+   "text": "A green circle on a white background.",
+   "color_ok": true,
+   "shape_ok": true,
+   "sec": 2.99
+  },
+  {
+   "id": "cap-000156",
+   "combo": "green-circle",
+   "text": "A green circle on a white background.",
+   "color_ok": true,
+   "shape_ok": true,
+   "sec": 4.3
+  },
+  {
+   "id": "cap-000247",
+   "combo": "yellow-square",
+   "text": "A yellow square on a white background.",
+   "color_ok": true,
+   "shape_ok": true,
+   "sec": 3.56
+  },
+  {
+   "id": "cap-000248",
+   "combo": "yellow-square",
+   "text": "A yellow square on a white background.",
+   "color_ok": true,
+   "shape_ok": true,
+   "sec": 4.43
+  },
+  {
+   "id": "cap-000249",
+   "combo": "yellow-square",
+   "text": "A yellow square on a white background.",
+   "color_ok": true,
+   "shape_ok": true,
+   "sec": 1.7
+  },
+  {
+   "id": "cap-000340",
+   "combo": "purple-triangle",
+   "text": "A purple triangle on a white background.",
+   "color_ok": true,
+   "shape_ok": true,
+   "sec": 0.73
+  },
+  {
+   "id": "cap-000341",
+   "combo": "purple-triangle",
+   "text": "A purple triangle on a white background.",
+   "color_ok": true,
+   "shape_ok": true,
+   "sec": 0.65
+  },
+  {
+   "id": "cap-000342",
+   "combo": "purple-triangle",
+   "text": "A purple triangle on a white background.",
+   "color_ok": true,
+   "shape_ok": true,
+   "sec": 0.61
+  }
+ ]
+}

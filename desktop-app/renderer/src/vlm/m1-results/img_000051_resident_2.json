@@ -1,0 +1,38 @@
+{
+ "mode": "resident",
+ "tokens": [
+  0,
+  0,
+  250,
+  3925,
+  1275,
+  3925,
+  16,
+  2343,
+  136,
+  10,
+  1104,
+  3618,
+  4
+ ],
+ "imageTokens": 577,
+ "encoderLength": 585,
+ "totalMs": 8813,
+ "loadMs": 3624,
+ "switchMs": [],
+ "maxSessionsAtOnce": null,
+ "mem": {
+  "before": {
+   "VmPeak": 924,
+   "VmHWM": 61,
+   "VmRSS": 61
+  },
+  "after": {
+   "VmPeak": 8996,
+   "VmHWM": 1301,
+   "VmRSS": 561
+  }
+ },
+ "node": "v22.23.4",
+ "ort": "1.22.0"
+}

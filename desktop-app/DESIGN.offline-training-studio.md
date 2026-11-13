@@ -81,6 +81,7 @@ asset/
 | `matrix` | 輸入輸出範例 | 範式（L0–L6 求解參數） | 已實作；評量在真 Electron 以真 Python 判題器 6/6 通過（§15.5） |
 | `uml` | 情境與設計對 | 詞彙補強資產 | 已實作核心；**阻礙**：`uml_core` 的詞彙與模板是常數表，執行期無擴充接口 |
 | `lora` | `lora-train/schema.md` 統一 JSONL | `adapter_model.safetensors` 分片＋`manifest.json`＋`model_card.json`（§6.5） | 已實作並驗證（§6.5、§10） |
+| `vision` | 圖文問答（`lora-train/vlm/`，JSONL：`image`＋`messages` 兩則，`vlm_data.py` 校驗） | SmolVLM-256M 的 LoRA 小檔（`adapter_model.safetensors` 約 9.8 MB，2.44 M 參數，0.94%）；併回基底的完整模型（safetensors 約 1.03 GB，fp32） | **半成品（2026-11-13 改為半成品，原為只有設計）**：命令列訓練、評量、併回匯出都已實測（`DESIGN.lora-training.md` §34）；工作室的訓練按鈕、資料匯入、資產化與網頁版執行**未接**，所以 `model_types_core.js` 的輸出都是 `available:false`。 |
 | `llm` | 不需要（產物即模型） | 匯出的 ONNX q8／fp32、GGUF Q8_0 外部檔，manifest 內 `llm{format,quant,recipe}` 與 `external{路徑:{bytes,location}}` | 部分（§13.4） |
 
 ### 3.2 儲存位置
@@ -472,7 +473,7 @@ Backend {
 
 ## 12. 設計提案 A：網頁版 VLM 與圖像生成使用 IndexedDB 作為交換空間
 
-> **狀態：設計提案，未實作。** 以下數字區分「實測」（有量測紀錄）、「推算」（由實測數字算出）、「未量測」（沒有資料，不編）。
+> **狀態（2026-11-13 更新）：M1 已實作並在 Node＋onnxruntime-node 上實測（§12.7）；M2～M4 未做。** 以下數字區分「實測」（有量測紀錄）、「推算」（由實測數字算出）、「未量測」（沒有資料，不編）。
 
 ### 12.1 現況與要解決的問題
 - 網頁版的視覺模型（`vlm/`、`DESIGN.offline-vision.md`）與本機生圖（`imagegen/local_sd.js`，SDXS）都是一次把整個模型載入 onnxruntime-web 的 WebAssembly 工作階段。WebAssembly 的線性記憶體只有 32 位元，**單一模組上限 4 GiB**（`onnxruntime_webassembly.cmake` 設 `MAXIMUM_MEMORY=4294967296`）。
@@ -554,6 +555,30 @@ Backend {
 | M4：快取鍵與校驗 | 寫入 sha256，讀取比長度；故意截斷一個分片 | 截斷時明確失敗並提示重下載 |
 
 **驗證的硬性要求**：在真實的 Electron 頁面（不是 Node）量，並分開標示 WASM 堆積與程序 RSS；不宣稱沒量到的數字。
+
+### 12.7 實作狀態（2026-11-13，分支 `claude/vlm-studio`）
+
+**做了什麼**
+- `renderer/src/vlm/staged_vlm_core.js`：Florence-2 的三階段（視覺 → 編碼 → 解碼）。每階段只載入自己需要的工作階段，用完釋放；權重用注入的 `store.get(名稱)` 讀（網頁版應接 `swap_store.js` 的 IndexedDB 後端）。常駐與分階段共用同一段數學程式 `runPipeline`，所以比對的是權重載入方式，不是兩套實作。
+- 解碼用 KV 快取的貪婪解碼；編碼器的 KV 只在第一步算一次，之後沿用（第一步之後的 `present.*.encoder.*` 是空的，這是實作時踩到的坑，已修）。
+- `renderer/src/vlm/staged_vlm_bench.js`（Node 量測工具）、`staged_vlm_prep.py`（前處理，與 Florence-2 處理器一致：768×768、雙三次插值、ImageNet 正規化）。
+- 單檔測試 `renderer/src/vlm/staged_vlm_core.test.js`：15 項（替身工作階段）。
+
+**沒有做**：網頁版（Electron WebAssembly）的接線與量測；`vlm/` 的 transformers.js Worker 尚未改用分階段；`swap_store` 的 IndexedDB 讀取沒有在這條路徑上量。
+
+**實測（Node 22＋onnxruntime-node 1.22.0，CPU，量測機器同時有其他工作在跑，負載平均 60～80）**
+
+| 項目 | 數字 | 條件 |
+|---|---|---|
+| 權重（量化版，四個檔） | vision 93.7 MB、encoder 43.7 MB、embed 39.4 MB、decoder 98.2 MB，合計 275 MB | `onnx-community/Florence-2-base-ft` 的 `*_quantized.onnx`，比 §12.2 的 208 MB 大；以實際檔案為準 |
+| 輸出逐字比對 | **6／6 相同**（3 張圖 × 2 次，常駐 vs 分階段，每次 12–13 個權杖） | 同一前處理、同一提示詞 `What does the image describe?` |
+| 峰值（程序 VmHWM，中位數） | 常駐 **1294 MB** → 分階段 **850 MB**，降低 **34.3%** | 每種模式獨立程序；啟動前基線 61 MB（Node＋ORT 本身） |
+| 切換時間（分階段，中位數，n=6） | 視覺載入 1604 ms、編碼載入 400 ms、解碼載入 1032 ms；釋放 106／45／62 ms | 載入含「從檔案讀」與建立工作階段；儲存是檔案而非 IndexedDB |
+| 整段生成時間（中位數） | 常駐 ≈ 8.35 秒、分階段 ≈ 8.95 秒（約 +7%） | 機器負載高，時間只能當方向，不當定論 |
+
+**未量測（照規則不編）**：Electron／WebAssembly 的堆積峰值（只量到 Node 程序 RSS）；IndexedDB 的實際讀取延遲；OPFS；其他模型（Florence-2 的 fp32 版、LLaVA 等）。
+
+**驗收對照（§12.6 M1）**：輸出完全相同 ✔（Node）；峰值有數字 ✔（Node RSS，不是 WASM 堆積，所以只算部分達成）；切換時間有數字 ✔。
 
 ---
 
