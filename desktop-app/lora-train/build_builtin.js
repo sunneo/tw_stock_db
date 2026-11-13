@@ -11,6 +11,8 @@ const fs = require('fs'), path = require('path'), crypto = require('crypto');
 const R = require('../renderer/src/studio/lora_registry_core.js');
 
 const IDS = ['decompose-r4-v2', 'toolcall-r4', 'plan-r4', 'colu-r4', 'codewrite-r4', 'reading-r4'];
+// 預設啟用（桌面版）：這四顆；其餘選用（設定頁手動開，標註未通過把關或未驗證）。寫進 builtin.json 的 defaultOn，App 讀清單決定，不寫死在程式裡。
+const DEFAULT_ON = ['decompose-r4-v2', 'toolcall-r4', 'colu-r4', 'plan-r4'];
 const PART = 20 * 1024 * 1024;
 const sha = (b) => crypto.createHash('sha256').update(b).digest('hex');
 
@@ -52,7 +54,7 @@ if(all.length!==m.size||h(all)!==m.sha256)throw new Error('bad total');fs.writeF
 `);
     entries.push({ id, name: desc && desc.name || id, version: desc && desc.version || '1.0.0', size: buf.length, sha256: sha(buf), dir: id,
       parts: parts.map((p) => ({ file: p.file, size: p.size, sha256: p.sha256 })), domains: desc && desc.applies ? desc.applies.domains : [],
-      gate: { pass: gate.pass, reason: gate.reason } });
+      gate: { pass: gate.pass, reason: gate.reason }, defaultOn: DEFAULT_ON.indexOf(id) >= 0 });
   }
   const builtin = { format: 'fa-lora-builtin', version: 1, base_url: baseUrl, entries };
   fs.writeFileSync(path.join(outDir, 'builtin.json'), JSON.stringify(builtin, null, 2));

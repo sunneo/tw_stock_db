@@ -39,6 +39,31 @@ check('清單缺 base_url 會報錯', B.validManifest({ format: B.FORMAT, entrie
   const r6 = await B.fetchBuiltin(null, deps());
   check('沒有項目回報 no_entry', !r6.ok && r6.code === 'no_entry' && /找不到/.test(r6.message), r6);
   check('humanError 不外露英文代碼', !/[a-z_]{5,}/.test(B.humanError('network', 'x')));
+  // ---- defaultOn 與規劃（DESIGN §32.10）----
+  const mk = (id, extra) => Object.assign({}, entry, { id, dir: 'builtin/' + id }, extra || {});
+  const m4 = { format: B.FORMAT, version: 1, base_url: 'https://x/b/', entries: [
+    mk('decompose-r4-v2', { defaultOn: true, gate: { pass: true, reason: '' } }),
+    mk('codewrite-r4', { defaultOn: false, gate: { pass: true, reason: '' } }),
+    mk('plan-r4', { defaultOn: true, gate: { pass: false, reason: 'self_validate 單邊退化' } }),
+    mk('reading-r4', { gate: undefined }) ] };
+  check('validManifest：defaultOn 非布林拒絕', B.validManifest(Object.assign({}, m4, { entries: [mk('x', { defaultOn: 'yes' })] })).length > 0);
+  check('validManifest：沒有 defaultOn 欄位仍合法（舊清單）', B.validManifest({ format: B.FORMAT, version: 1, base_url: 'https://x/b/', entries: [entry] }).length === 0);
+  const pl = B.planBuiltin(m4, {});
+  const byId = (x) => pl.entries.find((e) => e.id === x);
+  check('規劃：defaultOn 由清單決定（true 預設啟用）', byId('decompose-r4-v2').defaultOn === true && byId('decompose-r4-v2').enabled === true && byId('decompose-r4-v2').optional === false);
+  check('規劃：沒有 defaultOn 的顆是選用，預設不啟用', byId('codewrite-r4').optional === true && byId('codewrite-r4').enabled === false);
+  check('規劃：沒有 defaultOn 欄位的舊清單視為選用', byId('reading-r4').defaultOn === false && byId('reading-r4').enabled === false);
+  check('規劃：未通過把關者寫明原因', byId('plan-r4').gatePass === false && /未通過把關或未驗證：self_validate/.test(byId('plan-r4').note), byId('plan-r4'));
+  check('規劃：沒有把關資料者寫明未驗證', byId('reading-r4').gatePass === false && /未驗證/.test(byId('reading-r4').note));
+  check('規劃：通過把關者沒有註記', byId('decompose-r4-v2').note === '');
+  const pl2 = B.planBuiltin(m4, { enabled: { codewrite_r4: true, 'codewrite-r4': true, 'decompose-r4-v2': false } });
+  check('規劃：使用者設定覆蓋預設（選用開、預設開的關）', byId('decompose-r4-v2') && B.planBuiltin(m4, { enabled: { 'codewrite-r4': true, 'decompose-r4-v2': false } }).entries.find((e) => e.id === 'codewrite-r4').enabled === true && B.planBuiltin(m4, { enabled: { 'decompose-r4-v2': false } }).entries.find((e) => e.id === 'decompose-r4-v2').enabled === false);
+  const off = B.planBuiltin(m4, { master: false });
+  check('規劃：總開關關閉時全部不啟用（不論預設）', off.master === false && off.entries.every((e) => e.enabled === false));
+  const dl = B.planBuiltin(m4, { downloaded: { 'decompose-r4-v2': 40377386 } });
+  const d1 = dl.entries.find((e) => e.id === 'decompose-r4-v2');
+  check('規劃：已下載的顆標示大小與可刪除，未下載的顆不標', d1.downloaded === true && d1.downloadedBytes === 40377386 && d1.deletable === true && dl.entries.find((e) => e.id === 'codewrite-r4').downloaded === false);
+  check('規劃：清單不合法時回傳錯誤、沒有項目', B.planBuiltin({ format: 'x' }, {}).ok === false && B.planBuiltin({ format: 'x' }, {}).entries.length === 0);
   console.log('lora_builtin 測試：通過 ' + ok + '、失敗 ' + bad);
   if (bad) process.exit(1);
 })();

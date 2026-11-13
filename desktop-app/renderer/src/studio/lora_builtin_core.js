@@ -41,6 +41,7 @@
             if (!e || typeof e.id !== 'string') errs.push('entries[' + i + '] 缺 id');
             if (!e || !HEX64.test(String(e.sha256 || ''))) errs.push('entries[' + i + '] sha256 格式不對');
             if (!e || !Array.isArray(e.parts) || !e.parts.length) errs.push('entries[' + i + '] 缺 parts');
+            if (e && e.defaultOn !== undefined && typeof e.defaultOn !== 'boolean') errs.push('entries[' + i + '] defaultOn 必須是 true 或 false');
         });
         return errs;
     }
@@ -80,5 +81,29 @@
         return { ok: true, bytes: all };
     }
 
-    return { FORMAT, humanError, validManifest, listBuiltin, fetchBuiltin };
+    // 規劃（純函式）：每顆的預設、實際是否啟用、把關註記、是否已下載。DESIGN §32.10。
+    //   defaultOn 由清單決定（builtin.json 的 entries[].defaultOn），沒有這個欄位就視為 false（選用）。
+    //   state.master：「使用內建 LoRA 強化」總開關（預設 true；false 時全部不啟用）。
+    //   state.enabled：{id: bool} 使用者對單顆的設定；沒有設定就用 defaultOn。
+    //   state.downloaded：{id: bytes} 已下載的大小（沒有＝尚未下載，第一次被路由選到才下載）。
+    function planBuiltin(manifest, state) {
+        const st = state || {};
+        const master = st.master !== false;
+        const en = st.enabled || {}, dl = st.downloaded || {};
+        const list = listBuiltin(manifest);
+        if (!list.ok) return { ok: false, errors: list.errors, master, entries: [] };
+        const entries = list.entries.map((e) => {
+            const defaultOn = e.defaultOn === true;
+            const pref = Object.prototype.hasOwnProperty.call(en, e.id) ? !!en[e.id] : defaultOn;
+            const gatePass = !!(e.gate && e.gate.pass);
+            const note = gatePass ? '' : '未通過把關或未驗證：' + ((e.gate && e.gate.reason) || '沒有評測數字');
+            const has = Object.prototype.hasOwnProperty.call(dl, e.id);
+            return { id: e.id, name: e.name, version: e.version, size: e.size, domains: e.domains || [],
+                defaultOn, optional: !defaultOn, enabled: master && pref, gatePass, note,
+                downloaded: has, downloadedBytes: has ? Number(dl[e.id]) || 0 : 0, deletable: has };
+        });
+        return { ok: true, errors: [], master, entries };
+    }
+
+    return { FORMAT, humanError, validManifest, listBuiltin, fetchBuiltin, planBuiltin };
 });
