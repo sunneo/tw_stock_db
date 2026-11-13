@@ -157,11 +157,13 @@
         if (ev.metrics && typeof ev.metrics === 'object') return withBlocked(metricsVerdict(ev.metrics));
         if (CARD_METRIC_KEYS.some((k) => k in ev)) return withBlocked(metricsVerdict(ev));
         const g = ev.groups; if (!g || typeof g !== 'object') return { known: typeof ev.score === 'number', score: ev.score, lose: [], win: [], degenerate: [], noData: [], blocked: [] };
-        const names = Object.keys(g), lose = [], win = [], degenerate = [], noData = [], outOfScope = [];
+        const names = Object.keys(g), lose = [], win = [], degenerate = [], noData = [], outOfScope = [], smallN = [];
         for (const n of names) {
             const x = g[n]; if (!x || typeof x !== 'object') continue;
             // scope：'out'＝不在這顆的適用範圍（例：decompose 的 think_stack）。範圍外的組只報告，不計入輸贏、退化與無資料（§32.2）
             if (x.scope === 'out') { outOfScope.push(n); continue; }
+            // n < 20 只報告，不作輸贏或退化的判斷（§18.2 第 3 條、EVAL_CRITERIA_v2）
+            if (typeof x.n === 'number' && x.n < 20) { smallN.push(n); continue; }
             const tuned = typeof x.adapter === 'number' ? x.adapter : x.tuned;   // 評量腳本的格式是 tuned；打包後的描述檔是 adapter
             if (typeof tuned !== 'number' || typeof x.base !== 'number') continue;
             if (tuned < x.base) { lose.push(n); continue; }
@@ -169,7 +171,7 @@
             if (x.base === 0 && tuned === 0) { noData.push(n); continue; }
             if (tuned > x.base) win.push(n);
         }
-        return withBlocked({ known: names.length > 0, lose, win, degenerate, noData, outOfScope, score: win.length - lose.length }, ev.verdict, outOfScope);
+        return withBlocked({ known: names.length > 0, lose, win, degenerate, noData, outOfScope, smallN, score: win.length - lose.length }, ev.verdict, outOfScope);
     }
     // 退化：負例全錯（neg.tuned==0）或正例全錯（pos.tuned==0），只靠另一邊得分（§31、§32.2：後者是新加的，原本只擋負例全錯）
     function oneSided(x) {
@@ -178,7 +180,7 @@
         return false;
     }
     function withBlocked(v, verdict, outOfScope) {
-        v.lose = v.lose || []; v.win = v.win || []; v.degenerate = v.degenerate || []; v.noData = v.noData || []; v.outOfScope = v.outOfScope || [];
+        v.lose = v.lose || []; v.win = v.win || []; v.degenerate = v.degenerate || []; v.noData = v.noData || []; v.outOfScope = v.outOfScope || []; v.smallN = v.smallN || [];
         const blocked = [];
         if (v.lose.length) blocked.push('輸給基底：' + v.lose.join('、'));
         if (v.degenerate.length) blocked.push('退化答案（負例全錯、只靠正例得分，不算贏）：' + v.degenerate.join('、'));

@@ -33,5 +33,13 @@ check('正負都有對 → 贏', R.evalVerdict(sv3).win.indexOf('g') >= 0);
 // 7. 整體 DO NOT SHIP 的判定：範圍外組存在時不當成擋下的原因（判定含範圍外目標組）
 const sv4 = { groups: { 'uml/x': { adapter: 30, base: 18, n: 30 }, 'think_stack/p': { adapter: 0, base: 0, n: 60, scope: 'out' } }, verdict: { ship: false, not_winning: ['think_stack/p'] } };
 check('範圍外的 not_winning 不擋', R.gateOf(sv4).pass === true, R.gateOf(sv4));
+// 8. n < 20 只報告：不計入輸贏（§18.2）
+{
+  const small = { groups: { 'group/git': { adapter: 0, base: 2, n: 3 }, 'big/x': { adapter: 30, base: 10, n: 40 } } };
+  const v = R.evalVerdict(small);
+  check('n<20 的輸組不擋把關', R.gateOf(small).pass === true, R.gateOf(small));
+  check('n<20 列在 smallN', v.smallN.indexOf('group/git') >= 0 && v.lose.length === 0, v);
+  console.log('（n<20 測試完成）');
+}
 console.log('lora_scope 測試：通過 ' + ok + '、失敗 ' + bad);
 if (bad) process.exit(1);
