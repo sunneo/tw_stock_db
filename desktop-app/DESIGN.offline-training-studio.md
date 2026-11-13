@@ -779,3 +779,19 @@ Backend {
 - 環境：`/home/hungfu.lee/fa-work/speech-train-20261113-1942/venv`（Python 3.10，PyTorch 2.14.1 CPU，`kokoro` 0.9.4，`soundfile`）。
 - 執行：`python speech_train.py --config config.json --weights kokoro-v1_0.pth train --data <資料夾> --base-voice af_heart.pt --out <資料夾> --steps 30 --lr 5e-3 --seed 0`。
 - 留出損失是 STFT 損失（不是語音品質分數），數字只能用來比較同一套設定。
+## 13. 圖像生成（image）：從只有設計到有訓練核心（2026-11-13）
+
+### 13.1 狀態變更
+- `renderer/src/studio/model_types_core.js` 的 `image`：`design` → `done`；LoRA 輸出 `available: true`；完整模型輸出維持 `available: false`（說明原因）。
+- 守門：`canStart('image', 'lora')` 回傳 `run`；`canStart('image', 'full')` 回傳 `blocked` 並寫出原因。
+
+### 13.2 已驗證（會寫進工作室的部分）
+- 訓練核心：`lora-train/image_sdxs_lora.py`（CPU，PyTorch，diffusers 0.35.2），JS 核心 `renderer/src/studio/image_lora_core.js`（配對檢查、設定上下限、中繼資料、縮放與合併數學），測試 37 項全過；`model_types_core.test.js` 28 項全過（已更新 image 相關斷言）。
+- 實跑：SDXS-512、8 組合成圖文配對、40 步、CPU 約 16 分鐘；固定雜訊損失 1.233103 → 0.157821。
+- LoRA 檔（fa-sdxs-lora-v1，safetensors，2.9 MB）可從檔案載入，同提示同種子前後差異明顯，從檔案與同程序套用的輸出逐位元組相同。數字與方法見 `DESIGN.lora-training.md` §34。
+
+### 13.3 未驗證／缺口
+- LoRA 還沒有套用到網頁與桌面的 ONNX 生圖執行環境；ONNX 與 PyTorch 的輸出沒有比對。
+- 解碼器範圍：PyTorch 的小型 VAE 解碼器輸出 [0,1]，`imagegen/local_sd.js` 的 `toRgba` 假設 [-1,1]；桌面版 ONNX 解碼器的範圍未驗證，要實機確認。
+- 工作室介面還沒有「開始訓練」與資料匯入的接線；完整模型（ONNX／GGUF 合併匯出）沒做。
+- 訓練資料只有 8 組合成幾何圖形，品質以肉眼判斷，沒有客觀品質量測。

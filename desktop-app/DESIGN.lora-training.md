@@ -1757,3 +1757,38 @@ cd .. && node scripts/native-runtime-pack.js /home/hungfu.lee/fa-work/native-run
 - 共用的 `fa-work/venv` 在本次工作中途被其他工作改壞（`torchvision` 的 `.so` 在 20:10 被換掉，`transformers` 匯入失敗，錯誤是 `torchvision::nms does not exist`）。160 筆的主訓練是在改壞之前跑完的（版本相同），之後的匯出與重現改用本次新建的 `fa-work/vlm-studio/vlmenv`（torch 2.15.0+cpu、transformers 5.22.2、peft 0.21.2，凍結版本見 `results/env_freeze.txt`）。
 - 壞掉的環境裡直接 `import peft` 也會因為同樣的 `torchvision` 問題失敗（先 import transformers 的模型類別才正常）；`merge_export_vlm.py` 已改成先載入模型，再匯入 peft。
 - 訓練用的 `--threads` 不要超過機器的空閒核心數；超額會讓 OpenMP 等待拖慢很多（實測負載 60 以上時，單步時間差很大）。
+## 34. 圖像生成（SDXS-512）LoRA：CPU 訓練核心與實測（2026-11-13）
+
+### 34.1 做了什麼
+- 訓練目標與 `renderer/src/imagegen/local_sd.js` 的一步取樣一致：x = σ·n（σ = 14.6146…，n 由 seed 決定）；eps = unet(x/√(σ²+1), t=999, 文字向量)；x0 = x − σ·eps；損失 = MSE(x0, z)，z = 小型 VAE 編碼器對配對圖片的潛在值。
+- LoRA 只加在 U-Net 的注意力層（attn1／attn2 的 to_q、to_k、to_v、to_out.0，共 48 個線性層），rank 8、alpha 8（縮放 1），可訓練參數 718,848 個。基底凍結。
+- 訓練器：`lora-train/image_sdxs_lora.py`（子命令 make-data、train、generate、verify）。JS 核心：`renderer/src/studio/image_lora_core.js`（配對檢查、設定上下限、中繼資料解析、縮放與合併數學），測試 `image_lora_core.test.js`（37 項全過）。
+- LoRA 檔格式 `fa-sdxs-lora-v1`（safetensors）：鍵 = 基底 U-Net 模組路徑加 `.lora_A`（rank×in）、`.lora_B`（out×rank）；套用 W += (alpha/rank)·強度·B·A。中繼資料含基底 repo 與 commit、rank、alpha、步數、seed、前後損失。
+- 基底：`IDKiro/sdxs-512-dreamshaper`，commit `76f720262bb051da75666b22c902a78c8e16c763`（PyTorch 格式，diffusers 0.35.2）。下載檔案（位元組）：unet 1,263,018,648、text_encoder 492,265,168、vae（小型 AutoencoderTiny）9,793,292。存在 `/home/hungfu.lee/fa-work/sdxs-lora/model/`（工作目錄，不進版本庫）。
+
+### 34.2 已驗證（實測，本機 24 核心 CPU、fp32、無 GPU）
+- 訓練：8 組合成圖文配對（512×512，形狀／顏色的固定清單，`make-data` 產生），40 步，lr 5e-4，seed 1234，共 943.6 秒（約 16 分鐘）。每步 20–31 秒（第一步 29 秒）。
+- 損失（同一組固定雜訊、8 組配對的平均）：訓練前 **1.233103** → 訓練後 **0.157821**。每步的損失會隨配對與雜訊起伏（0.08 到 1.7），所以以固定雜訊的評估為準。
+- 載入與套用：LoRA 檔寫出 2,888,520 bytes，載入時 48 層全部套用、形狀核對通過。
+- 同提示、同種子（1234）前後比對，單步取樣（512×512）：
+  - 訓練用提示「a red circle on a white background」：平均像素差 94.2／255，有變化的像素 91.7%；訓練前是多環目標圖，訓練後是單一橘紅圓形、白底，風格接近訓練配對。
+  - 未在訓練集的提示「a red square on a white background」：平均像素差 50.1／255，有變化的像素 85.1%。
+  - 每次生成約 5–7 秒（取樣本身，不含載入）。
+- 可重現：同一程序內，訓練前同提示同種子兩次生成逐位元組相同。
+- 從檔案載入的一致性：另開新程序，`generate --lora` 的輸出與同程序內套用後的輸出逐位元組相同（兩個提示都通過）。
+- JS 核心 37 項測試通過（配對、設定、中繼資料、縮放、合併數學手算）。
+
+### 34.3 未驗證（誠實列出）
+- **紅色比例指標不可靠**：我用「R 比 G、B 大 60 以上」的像素比例當顏色指標，訓練後反而下降（0.299→0.253，held-out 0.330→0.237）。橘紅色不在這個門檻內，所以這個指標不能證明「顏色變多」。品質以肉眼看圖為準，沒有客觀的品質量測。
+- 訓練資料是 8 組合成的幾何圖形，不是真實照片；泛化只到「同類型的紅色或圓形構圖」，沒有測真實圖片分布。
+- **ONNX 執行環境沒有套用過 LoRA**：網頁與桌面的生圖跑的是 onnxruntime 的 int8／fp16 權重，LoRA 還沒有合併進去，也沒有比對 ONNX 與 PyTorch 的輸出。JS 端的合併數學只在測試中用小矩陣核對過。
+- **解碼器範圍不一致**：diffusers 的小型 VAE 解碼器輸出是 [0,1]（往返 MSE 0.0006），`local_sd.js` 的 `toRgba` 假設 [-1,1]（`/2+0.5`）。桌面版 ONNX 解碼器是否同一範圍**未驗證**；如果是 [0,1]，目前的 JS 轉換會把圖片變灰、變淡，要實機確認。
+- 訓練的重現性只驗了推論（同種子生成），沒有重跑整個訓練比對損失曲線逐位元組相同。
+- 沒有接工作室介面：「開始訓練」按鈕、資料匯入與 LoRA 登錄還沒有串到 `image` 類型。
+- 完整模型（合併匯出 ONNX／GGUF）沒做，`full` 輸出維持不可用。
+- 解析度只支援 512（SDXS-512 固定）；256 沒有評估（不是合格的模型輸出）。
+
+### 34.4 重現指令
+- `python lora-train/image_sdxs_lora.py make-data --out <資料夾>`
+- `python lora-train/image_sdxs_lora.py train --model <模型資料夾> --data <資料夾> --out <lora.safetensors> --steps 40 --rank 8 --alpha 8 --lr 5e-4 --seed 1234`
+- `python lora-train/image_sdxs_lora.py verify --model <模型資料夾> --lora <lora.safetensors> --prompt "a red circle on a white background" --seed 1234 --out-prefix <前綴>`
