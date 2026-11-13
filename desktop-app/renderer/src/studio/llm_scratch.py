@@ -550,7 +550,11 @@ def cmd_pretrain(a):
 
 
 # ---------------------------------------------------------------- sft
+THINKS = []   # 與 load_sft 回傳的 rows 對齊：該筆是「思考＋答案」格式時存思考文字，否則 None
+
+
 def load_sft(path):
+    del THINKS[:]
     rows = []
     with open(path, "r", encoding="utf-8") as f:
         for i, ln in enumerate(f):
@@ -562,15 +566,17 @@ def load_sft(path):
             if not isinstance(msgs, list) or len(msgs) < 2 or msgs[-1].get("role") != "assistant":
                 raise ValueError("第 %d 行 messages 必須是以 assistant 結尾的陣列" % (i + 1))
             rows.append(msgs)
+            THINKS.append(o.get("think") if isinstance(o.get("think"), str) else None)
     return rows
 
 
-def chat_prompt_text(msgs):
-    """與 nr-template.js 的 qwen3-chatml（enable_thinking=false）逐字相同。"""
+def chat_prompt_text(msgs, thinking=False):
+    """thinking=False：與 nr-template.js 的 qwen3-chatml（enable_thinking=false）逐字相同（空思考區塊）；
+    thinking=True：只到「助理」開頭，讓模型自己思考（Qwen3 的思考模式）。"""
     s = ""
     for m in msgs[:-1]:
         s += "<|im_start|>" + m["role"] + "\n" + m["content"] + "<|im_end|>\n"
-    return s + "<|im_start|>assistant\n<think>\n\n</think>\n\n"
+    return s + "<|im_start|>assistant\n" + ("" if thinking else "<think>\n\n</think>\n\n")
 
 
 def cmd_sft(a):
@@ -588,12 +594,18 @@ def cmd_sft(a):
     held_idx, train_idx = order[:n_held], order[n_held:]
     end_id = tok.token_to_id("<|im_end|>")
 
-    def encode_row(msgs):
+    thinks = list(THINKS)
+
+    def encode_row(msgs, think):
+        if think is not None:   # 思考＋答案：提示不帶空思考區塊，模型自己寫 <think>…</think> 再給答案
+            p = tok.encode(chat_prompt_text(msgs, thinking=True)).ids
+            ans = tok.encode("<think>\n" + think + "\n</think>\n\n" + msgs[-1]["content"] + "<|im_end|>").ids
+            return p, ans
         p = tok.encode(chat_prompt_text(msgs)).ids
         ans = tok.encode(msgs[-1]["content"] + "<|im_end|>").ids
         return p, ans
 
-    enc = [encode_row(r) for r in rows]
+    enc = [encode_row(r, t) for r, t in zip(rows, thinks)]
     emit({"event": "start", "rows": len(rows), "train_rows": len(train_idx), "heldout_rows": len(held_idx), "steps": a.steps})
 
     def batch_of(idxs):
@@ -668,6 +680,188 @@ def cmd_sft(a):
     write_json(os.path.join(a.out, "sft_meta.json"), meta)
     emit({"event": "sft_done", "ok": True, "heldout_loss_before": meta["heldout_loss_before"], "heldout_loss_after": meta["heldout_loss_after"],
           "heldout_ppl_before": meta["heldout_ppl_before"], "heldout_ppl_after": meta["heldout_ppl_after"], "elapsed_s": meta["elapsed_s"]})
+
+
+# ---------------------------------------------------------------- 推理模型：算術題、評量、GRPO
+import random as _random
+import re as _re
+
+
+def make_problem(rng, op=None):
+    op = op or rng.choice(["+", "-", "×"])
+    if op == "×":
+        a, b = rng.randint(10, 99), rng.randint(2, 9)
+    else:
+        a, b = rng.randint(10, 99), rng.randint(10, 99)
+        if op == "-" and a < b:
+            a, b = b, a
+    return a, b, op
+
+
+def solve_problem(a, b, op):
+    """回傳（逐步推導文字, 答案）。推導是固定格式，方便可程式核對。"""
+    if op == "+":
+        t = a + b // 10 * 10; ans = t + b % 10
+        return "%d+%d：%d+%d=%d，%d+%d=%d" % (a, b, a, b // 10 * 10, t, t, b % 10, ans), ans
+    if op == "-":
+        t = a - b // 10 * 10; ans = t - b % 10
+        return "%d-%d：%d-%d=%d，%d-%d=%d" % (a, b, a, b // 10 * 10, t, t, b % 10, ans), ans
+    x, y = a // 10 * 10 * b, a % 10 * b
+    return "%d×%d：%d×%d=%d，%d×%d=%d，%d+%d=%d" % (a, b, a // 10 * 10, b, x, a % 10, b, y, x, y, x + y), x + y
+
+
+def question_text(a, b, op):
+    return "計算 %d%s%d 等於多少？" % (a, op, b)
+
+
+def extract_answer(text):
+    m = _re.findall(r"答案是\s*(-?\d+)", text.split("</think>")[-1])
+    return int(m[-1]) if m else None
+
+
+def cmd_gen_math(a):
+    rng = _random.Random(a.seed)
+    held = set()
+    while len(held) < a.n_held:
+        held.add(make_problem(rng))
+    train = set()
+    while len(train) < a.n_train:
+        pr = make_problem(rng)
+        if pr not in held:
+            train.add(pr)
+    os.makedirs(a.out, exist_ok=True)
+
+    def row(pr, mode):
+        aa, bb, op = pr
+        cot, ans = solve_problem(aa, bb, op)
+        r = {"messages": [{"role": "user", "content": question_text(aa, bb, op)}, {"role": "assistant", "content": "答案是%d" % ans}],
+             "a": aa, "b": bb, "op": op, "truth": ans}
+        if mode == "think":
+            r["think"] = cot
+        return r
+    with open(os.path.join(a.out, "math_train_plain.jsonl"), "w", encoding="utf-8") as f:
+        for pr in sorted(train):
+            f.write(json.dumps(row(pr, "plain"), ensure_ascii=False) + "\n")
+    with open(os.path.join(a.out, "math_train_hybrid.jsonl"), "w", encoding="utf-8") as f:
+        rows = [row(pr, "think") for pr in sorted(train)] + [row(pr, "plain") for pr in sorted(train)]
+        _random.Random(a.seed + 1).shuffle(rows)
+        for r in rows:
+            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+    with open(os.path.join(a.out, "math_heldout.jsonl"), "w", encoding="utf-8") as f:
+        for pr in sorted(held):
+            f.write(json.dumps(row(pr, "plain"), ensure_ascii=False) + "\n")
+    emit({"event": "gen_math", "ok": True, "train": len(train), "heldout": len(held), "disjoint": not (train & held)})
+
+
+def sample_cached(m, prompt_ids, n_new, temp, gen, stop_id):
+    import torch
+    out = []; past = None
+    cur = torch.tensor([prompt_ids], dtype=torch.long); total = len(prompt_ids); pos = torch.arange(total).unsqueeze(0)
+    with torch.no_grad():
+        for _ in range(n_new):
+            logits, pres = m(cur, torch.ones(1, total, dtype=torch.long), pos, past)
+            lg = logits[0, -1] / max(temp, 1e-6)
+            nxt = int(torch.multinomial(torch.softmax(lg, -1), 1, generator=gen).item()) if temp > 0 else int(torch.argmax(lg).item())
+            out.append(nxt); past = pres
+            if nxt == stop_id:
+                break
+            cur = torch.tensor([[nxt]], dtype=torch.long); pos = torch.tensor([[total]], dtype=torch.long); total += 1
+    return out
+
+
+def eval_math(m, tok, rows, mode, max_new):
+    end_id = tok.token_to_id("<|im_end|>")
+    ok = fmt = 0; lens = []; ex = []
+    for r in rows:
+        msgs = r["messages"]
+        p = tok.encode(chat_prompt_text(msgs, thinking=(mode == "think"))).ids
+        new = greedy_cached(m, p, max_new)
+        if end_id in new:
+            new = new[:new.index(end_id)]
+        txt = decode_ids(tok, new)
+        got = extract_answer(txt)
+        fmt += got is not None; ok += (got == r["truth"]); lens.append(len(new))
+        if len(ex) < 3:
+            ex.append({"q": msgs[0]["content"], "out": txt[:160], "truth": r["truth"]})
+    n = len(rows)
+    return {"mode": mode, "n": n, "accuracy": round(ok / n, 4), "answer_format_rate": round(fmt / n, 4), "mean_new_tokens": round(float(np.mean(lens)), 1), "examples": ex}
+
+
+def cmd_eval_math(a):
+    import torch
+    from tokenizers import Tokenizer
+    torch.set_num_threads(max(1, a.threads))
+    m, cfg = load_ckpt(a.model)
+    tok = Tokenizer.from_file(os.path.join(a.model, "tokenizer.json"))
+    rows = [json.loads(l) for l in open(a.data, encoding="utf-8") if l.strip()][: a.limit]
+    res = [eval_math(m, tok, rows, md, a.max_new) for md in a.modes.split(",")]
+    write_json(os.path.join(a.model, "eval_math_%s.json" % a.tag), res)
+    emit({"event": "eval_math", "ok": True, "tag": a.tag, "results": res})
+
+
+def cmd_grpo(a):
+    """GRPO（一步一更新、同策略取樣）：每題取樣 G 個回答，答對得 1 分、答錯 0 分；優勢＝組內標準化；
+    沒有參考模型的 KL 項、沒有比例裁切（同策略單步更新時裁切不會觸發）。"""
+    import torch
+    import torch.nn.functional as F
+    from tokenizers import Tokenizer
+    torch.manual_seed(a.seed); torch.set_num_threads(max(1, a.threads))
+    m, cfg = load_ckpt(a.base)
+    tok = Tokenizer.from_file(os.path.join(a.base, "tokenizer.json"))
+    end_id = tok.token_to_id("<|im_end|>")
+    pool = [json.loads(l) for l in open(a.problems, encoding="utf-8") if l.strip()]
+    gen = torch.Generator().manual_seed(a.seed); rng = _random.Random(a.seed)
+    opt = torch.optim.AdamW(m.parameters(), lr=a.lr, weight_decay=0.0)
+    os.makedirs(a.out, exist_ok=True)
+    t0 = time.time(); rewards_hist = []
+    for step in range(1, a.steps + 1):
+        probs = rng.sample(pool, a.prompts)
+        seqs = []   # (prompt_ids, completion_ids, advantage, reward)
+        step_r = []
+        for pr in probs:
+            p = tok.encode(chat_prompt_text(pr["messages"], thinking=True)).ids
+            group = []
+            m.eval()
+            for _ in range(a.group):
+                comp = sample_cached(m, p, a.max_new, a.temp, gen, end_id)
+                got = extract_answer(decode_ids(tok, comp[:-1] if comp and comp[-1] == end_id else comp))
+                group.append((comp, 1.0 if (got == pr["truth"] and comp and comp[-1] == end_id) else 0.0))
+            rs = np.array([g[1] for g in group]); step_r += rs.tolist()
+            sd = rs.std()
+            for comp, r in group:
+                adv = 0.0 if sd < 1e-8 else float((r - rs.mean()) / (sd + 1e-4))
+                if adv != 0.0 and comp:
+                    seqs.append((p, comp, adv))
+        mean_r = float(np.mean(step_r)); rewards_hist.append(mean_r)
+        loss_v = 0.0
+        if seqs:
+            m.train()
+            L = max(len(p) + len(c) for p, c, _ in seqs)
+            X = torch.full((len(seqs), L), PAD_ID, dtype=torch.long); A = torch.zeros((len(seqs), L), dtype=torch.long); M = torch.zeros((len(seqs), L))
+            adv = torch.tensor([x[2] for x in seqs])
+            for j, (p, c, _) in enumerate(seqs):
+                ids = p + c; X[j, :len(ids)] = torch.tensor(ids); A[j, :len(ids)] = 1; M[j, len(p):len(ids)] = 1.0
+            pos = torch.arange(L).unsqueeze(0).expand(len(seqs), -1)
+            logits, _ = m(X, A, pos, None)
+            lp = torch.log_softmax(logits[:, :-1], -1).gather(-1, X[:, 1:].unsqueeze(-1)).squeeze(-1)
+            mk = M[:, 1:]
+            per_seq = (lp * mk).sum(1) / mk.sum(1).clamp(min=1)
+            loss = -(adv * per_seq).mean()
+            if m.aux is not None:
+                loss = loss + cfg["aux_coef"] * m.aux
+            opt.zero_grad(set_to_none=True); loss.backward()
+            torch.nn.utils.clip_grad_norm_(m.parameters(), 1.0); opt.step()
+            loss_v = float(loss.item())
+        emit({"step": step, "loss": round(loss_v, 5), "reward": round(mean_r, 4), "used_seqs": len(seqs), "elapsed_s": round(time.time() - t0, 1)})
+    import shutil
+    torch.save({"config": cfg, "state": m.state_dict()}, os.path.join(a.out, "ckpt.pt"))
+    shutil.copy(os.path.join(a.base, "tokenizer.json"), os.path.join(a.out, "tokenizer.json"))
+    shutil.copy(os.path.join(a.base, "config.json"), os.path.join(a.out, "config.json"))
+    w = max(1, min(10, len(rewards_hist) // 4))
+    meta = {"steps": a.steps, "prompts": a.prompts, "group": a.group, "lr": a.lr, "temp": a.temp, "reward_first_avg": round(float(np.mean(rewards_hist[:w])), 4),
+            "reward_last_avg": round(float(np.mean(rewards_hist[-w:])), 4), "window": w, "reward_curve": [round(x, 3) for x in rewards_hist], "elapsed_s": round(time.time() - t0, 1)}
+    write_json(os.path.join(a.out, "grpo_meta.json"), meta)
+    emit({"event": "grpo_done", "ok": True, "reward_first_avg": meta["reward_first_avg"], "reward_last_avg": meta["reward_last_avg"], "elapsed_s": meta["elapsed_s"]})
 
 
 # ---------------------------------------------------------------- export
@@ -869,11 +1063,17 @@ def main():
     p.add_argument("--steps", type=int, default=300); p.add_argument("--batch", type=int, default=8); p.add_argument("--lr", type=float, default=0.0005)
     p.add_argument("--seq", type=int, default=256); p.add_argument("--seed", type=int, default=0); p.add_argument("--heldout-frac", dest="heldout_frac", type=float, default=0.2)
     p.add_argument("--answer-tokens", dest="answer_tokens", type=int, default=48); p.add_argument("--log-every", dest="log_every", type=int, default=10)
+    p = sub.add_parser("gen-math"); p.add_argument("--out", required=True); p.add_argument("--n-train", dest="n_train", type=int, default=2500); p.add_argument("--n-held", dest="n_held", type=int, default=150); p.add_argument("--seed", type=int, default=0)
+    p = sub.add_parser("eval-math"); p.add_argument("--model", required=True); p.add_argument("--data", required=True); p.add_argument("--modes", default="think,nothink"); p.add_argument("--max-new", dest="max_new", type=int, default=96)
+    p.add_argument("--limit", type=int, default=150); p.add_argument("--tag", default="x"); p.add_argument("--threads", type=int, default=4)
+    p = sub.add_parser("grpo"); p.add_argument("--base", required=True); p.add_argument("--problems", required=True); p.add_argument("--out", required=True)
+    p.add_argument("--steps", type=int, default=200); p.add_argument("--prompts", type=int, default=8); p.add_argument("--group", type=int, default=8); p.add_argument("--lr", type=float, default=2e-5)
+    p.add_argument("--max-new", dest="max_new", type=int, default=72); p.add_argument("--temp", type=float, default=1.0); p.add_argument("--seed", type=int, default=0); p.add_argument("--threads", type=int, default=4)
     p = sub.add_parser("export"); p.add_argument("--model", required=True); p.add_argument("--out", required=True)
     p = sub.add_parser("export-hf"); p.add_argument("--model", required=True); p.add_argument("--out", required=True)
     p = sub.add_parser("check"); p.add_argument("--model-dir", dest="model_dir", required=True)
     a = ap.parse_args()
-    {"prep": cmd_prep, "tokenizer": cmd_tokenizer, "pretrain": cmd_pretrain, "sft": cmd_sft, "export": cmd_export, "export-hf": cmd_export_hf, "check": cmd_check}[a.cmd](a)
+    {"prep": cmd_prep, "tokenizer": cmd_tokenizer, "pretrain": cmd_pretrain, "sft": cmd_sft, "gen-math": cmd_gen_math, "eval-math": cmd_eval_math, "grpo": cmd_grpo, "export": cmd_export, "export-hf": cmd_export_hf, "check": cmd_check}[a.cmd](a)
 
 
 if __name__ == "__main__":

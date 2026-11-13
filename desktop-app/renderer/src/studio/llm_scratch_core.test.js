@@ -36,6 +36,20 @@ check('不認得的模型大小會擋', !X.planFor('llm_scratch', { preset: 'hug
 check('預熱步數不可大於等於總步數', !X.planFor('llm_scratch', { steps: 20, warmup: 20 }, env).ok);
 check('沒有 Python 時說明', /找不到訓練用的 Python/.test(X.planFor('llm_scratch', {}, { outDir: '/o', scriptsDir: '/s' }).errors.join()));
 
+// ---- 架構選單：密集／專家混合／推理 ----
+const pm = X.planFor('llm_scratch', { arch: 'moe', experts: 8, topK: 2 }, env);
+check('MoE：預訓練帶 --arch moe、專家數、前幾名與輔助損失係數', pm.ok && (() => { const a = pm.steps.find((x) => x.id === 'pretrain').args; return a.includes('moe') && a[a.indexOf('--experts') + 1] === '8' && a[a.indexOf('--top-k') + 1] === '2' && a.includes('--aux-coef'); })(), pm.errors);
+check('MoE：每個詞元挑的專家數不能大於專家總數', !X.planFor('llm_scratch', { arch: 'moe', experts: 2, topK: 4 }, env).ok);
+const pr = X.planFor('llm_scratch', { arch: 'reasoning' }, env);
+check('推理：預訓練後依序是算術題、思考＋答案微調、評量、強化學習、評量', pr.steps.map((x) => x.id).join().indexOf('pretrain,math,sft,eval_sft,grpo,eval_rl,export') > 0, pr.steps.map((x) => x.id));
+check('推理：強化學習從微調結果接續，匯出用強化學習後的模型', pr.steps.find((x) => x.id === 'grpo').args.indexOf(env.outDir + '/chat') > 0 && pr.steps.find((x) => x.id === 'export').args.indexOf(env.outDir + '/rl') > 0);
+check('推理：微調用思考＋答案混合資料', pr.steps.find((x) => x.id === 'sft').args.some((a) => /math_train_hybrid\.jsonl$/.test(a)));
+const pg = X.planFor('llm_scratch', { kvHeads: 4, heads: 8 }, env);
+check('鍵值頭數不是 8：不排原生匯出與核對，只輸出標準格式', pg.ok && pg.nativeCompatible === false && !pg.steps.some((x) => ['export', 'check', 'native'].includes(x.id)) && pg.steps.some((x) => x.id === 'hf'));
+check('頭數不是鍵值頭數的倍數會擋', !X.planFor('llm_scratch', { heads: 8, kvHeads: 3 }, env).ok);
+check('不認得的架構會擋', !X.planFor('llm_scratch', { arch: 'mamba' }, env).ok);
+check('原生相容判斷：8 個鍵值頭相容、其他不相容', L.nativeCompatible({}) && L.nativeCompatible({ kvHeads: 8 }) && !L.nativeCompatible({ kvHeads: 2 }));
+
 // ---- 估時間 ----
 const e = L.estimate(X.normalizeParams('llm_scratch', {}).params);
 check('估時間：預設預訓練分鐘數 = 步 × 批 × 序列 ÷ 1000 × 每千 token 秒數 ÷ 60', e.pretrainMin === Math.round(300 * 4 * 128 / 1000 * L.SEC_PER_KTOK.mini / 60) && e.sftMin === Math.round(40 * L.SFT_SEC_PER_STEP.mini / 60) && Math.abs(e.totalMin - (e.pretrainMin + e.sftMin + 3)) <= 1, e);
