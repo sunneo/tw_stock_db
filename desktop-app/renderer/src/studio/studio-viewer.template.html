@@ -498,21 +498,28 @@ function mtGuard(t){var g=GUARDS[t.id]||{};var o=mtOut();var r=t.outputs.some(fu
 function mtWarn(t){var g=mtGuard(t);return h('div',{'class':g.level==='run'?'todo':'warn',text:(g.level==='run'?'✅ ':'⚠️ ')+g.message})}
 /* 半成品與只有設計：按「開始」不會訓練，而是把目前能做到哪一步、還缺什麼寫清楚（不悄悄失敗） */
 function mtStartBtn(t){var b=h('button',{'class':'pri',text:'▶ 開始訓練'});var msg=h('div');b.onclick=function(){msg.textContent='';msg.appendChild(h('div',{'class':'warn',text:'還沒有開始訓練。'+mtGuard(t).message}))};return h('div',{},[b,msg])}
-/* 外部訓練作業（音樂作曲、語音辨識）：按開始呼叫 /api/ext/start，每 2 秒讀 /api/ext/status；寫清楚預估時間與限制，失敗給原因 */
-var EXT_RUN={music:{fields:[],steps:1500,est:'處理器（CPU）約 1 分鐘（1500 步）；以你的電腦為準。'},speech_recognition:{fields:['base','data'],steps:40,est:'處理器（CPU）40 步約 30 秒（實測 29 秒）；步數多時大致成比例增加。'}};
+/* 外部訓練作業（六種型別的命令列核心）：按開始呼叫 /api/ext/start，每 2 秒讀 /api/ext/status；寫清楚預估時間與限制，失敗給原因。
+ * 欄位由 EXT_RUN 描述（步數、路徑、可留空的 Python）。路徑與格式的檢查在主行程做（studio_ext_check），這裡只顯示它的錯誤。 */
+var EXT_RUN={
+ music:{est:'處理器（CPU）約 1 分鐘（1500 步，實測 55 秒）。',steps:1500,paths:[]},
+ speech_recognition:{est:'處理器（CPU）40 步約 30 秒（實測 29 秒）。',steps:40,paths:[{k:'base',t:'dir',label:'基底模型資料夾（小型語音辨識基底）'},{k:'data',t:'file',label:'語音資料檔（data.jsonl）'}]},
+ speech:{est:'處理器（CPU）約 2 秒／步（實測 30 步 51 秒；以你的電腦為準）。',steps:30,paths:[{k:'model',t:'dir',label:'Kokoro-82M 模型資料夾（config.json、kokoro-v1_0.pth）'},{k:'voice',t:'file',label:'基底語音包（.pt）'},{k:'data',t:'dir',label:'配對資料夾（train.jsonl、heldout.jsonl）'}]},
+ audio_to_notes:{est:'處理器（CPU）300 步約 25 秒（實測 24 秒；以你的電腦為準）。只用合成資料。',steps:300,paths:[{k:'base',t:'file',label:'基底轉譜模型（nmp.onnx）'}]},
+ vision:{est:'處理器（CPU）約 1 秒／步（實測 300 步 264 秒）。只用合成的顏色與形狀圖。',steps:300,paths:[{k:'base',t:'dir',label:'基底看圖模型資料夾（SmolVLM 格式）'}]},
+ image:{est:'處理器（CPU）約 1 秒／步（512 解析度，實測 40 步訓練 35 秒）；只用合成圖文配對。',steps:40,paths:[{k:'base',t:'dir',label:'SDXS 基底模型資料夾（unet、vae、text_encoder、tokenizer）'}]}
+};
 function extRunPanel(t){
- var cfg=EXT_RUN[t.id]||{fields:[],steps:100,est:''},box=h('div',{}),st={jobId:null,timer:null};
+ var cfg=EXT_RUN[t.id]||{est:'',steps:100,paths:[]},box=h('div',{}),st={jobId:null,timer:null},inp={};
  var nm=h('input',{type:'text',placeholder:'輸出名稱（英數、中文、底線、連字號）',style:'width:100%'});
  var steps=h('input',{type:'number',min:'1',value:String(cfg.steps),style:'width:140px'});
- var base=h('input',{type:'text',placeholder:'基底模型資料夾（小型語音辨識基底）',style:'width:100%'});
- var data=h('input',{type:'text',placeholder:'資料檔完整路徑（data.jsonl）',style:'width:100%'});
+ var py=h('input',{type:'text',placeholder:'訓練用 Python 路徑（留空＝自動）',style:'width:100%'});
  var msg=h('div',{style:'font-size:12px;margin-top:6px'}),prog=h('div',{style:'font-size:12px;color:var(--mut);margin-top:4px'});
  var bGo=h('button',{'class':'pri',text:'▶ 開始訓練'}),bStop=h('button',{text:'停止',disabled:true});
  box.appendChild(h('div',{style:'font-size:12px;margin-top:6px',text:'預估時間：'+cfg.est}));
  box.appendChild(h('label',{text:'輸出名稱'}));box.appendChild(nm);
  box.appendChild(h('label',{text:'訓練步數'}));box.appendChild(steps);
- if(cfg.fields.indexOf('base')>=0){box.appendChild(h('label',{text:'基底模型資料夾'}));box.appendChild(base)}
- if(cfg.fields.indexOf('data')>=0){box.appendChild(h('label',{text:'資料檔'}));box.appendChild(data)}
+ cfg.paths.forEach(function(pd){var i=h('input',{type:'text',placeholder:pd.t==='dir'?'資料夾完整路徑':'檔案完整路徑',style:'width:100%'});inp[pd.k]=i;box.appendChild(h('label',{text:pd.label}));box.appendChild(i)});
+ box.appendChild(h('label',{text:'Python（進階，留空＝自動）'}));box.appendChild(py);
  box.appendChild(h('div',{'class':'row',style:'gap:6px;margin-top:6px'},[bGo,bStop]));
  box.appendChild(msg);box.appendChild(prog);
  function stopPoll(){if(st.timer){clearInterval(st.timer);st.timer=null}}
@@ -526,8 +533,8 @@ function extRunPanel(t){
   else msg.textContent='失敗：'+(s.message||'未知原因');
  }
  bGo.onclick=async function(){
-  msg.textContent='';var body={type:t.id,name:nm.value.trim(),params:{steps:Number(steps.value)}};
-  if(cfg.fields.indexOf('base')>=0)body.base=base.value.trim();if(cfg.fields.indexOf('data')>=0)body.data=data.value.trim();
+  msg.textContent='';var paths={};cfg.paths.forEach(function(pd){paths[pd.k]=inp[pd.k].value.trim()});
+  var body={type:t.id,name:nm.value.trim(),params:{steps:Number(steps.value)},paths:paths};if(py.value.trim())body.python=py.value.trim();
   var x=await api('POST','/api/ext/start',body);if(x.ok===false){msg.textContent=String(x.error||'沒有啟動');return}
   st.jobId=x.jobId;bGo.disabled=true;bStop.disabled=false;msg.textContent='已開始。'+(x.limitsNote||'');st.timer=setInterval(poll,2000)};
  bStop.onclick=async function(){await api('POST','/api/ext/stop',{jobId:st.jobId});msg.textContent='要求停止中…'};
