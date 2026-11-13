@@ -1806,3 +1806,8 @@ cd .. && node scripts/native-runtime-pack.js /home/hungfu.lee/fa-work/native-run
 **未驗證／未達成**：只在合成資料上驗證，真實錄音未驗證；沒有接進工作室與主行程；微調後的模型沒有登錄進 app。本類型不產生 LoRA 小檔（全參數微調）。細節與表格見 `DESIGN.offline-training-studio.md` 的「音訊轉音符（audio_to_notes）微調核心」一節。
 
 **腳本**：`renderer/src/studio/a2n_train.py`（`train`／`check`）、`renderer/src/studio/a2n_train_core.js`（合成資料與 F1，`gen`／`metrics` 子命令）。執行環境：`/home/hungfu.lee/fa-work/venv/bin/python`（額外安裝 onnx2torch 1.x；torchvision 因版本不符以空模組代替）。
+## 36. 音樂作曲：不是 LoRA（2026-11-13，分支 claude/music-train）
+
+音樂作曲的訓練核心是**從零開始的小型注意力模型**（約 46 萬參數，2 層、4 頭），不是 LoRA，也不是對外部預訓練模型的微調（midigenai 太大，授權未確認，本機 CPU 不可行）。資料是程式作曲（`music_compose.js`）的主旋律，符號格式與語法檢查見 `renderer/src/studio/music_train_core.js`，訓練與取樣見 `renderer/src/studio/music_train.py`。
+
+**已驗證**：留出 90 首的損失 4.756 → 1.150；取樣 36 首的語法合格 2 → 27；從磁碟重新載入的取樣逐首相同；開確定性演算法後同設定重跑逐位元相同。**未驗證**：音樂品質（沒有人聽過）、過擬合（訓練損失 0.28 vs 留出 1.15）、與真實作曲的比較、接進作曲流程。細節見 `DESIGN.offline-training-studio.md` 的「音樂作曲（music）訓練核心」一節。
