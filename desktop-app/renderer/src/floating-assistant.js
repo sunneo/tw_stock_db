@@ -5621,8 +5621,16 @@ const holder = {};
             return (SOURCE_RANK[b.source] - SOURCE_RANK[a.source]) || ((b.priority || 0) - (a.priority || 0)) ||
                 ((evalVerdict(b.eval).score || 0) - (evalVerdict(a.eval).score || 0)) || ((b.added || 0) - (a.added || 0)) || (a.id < b.id ? -1 : 1);
         }
+        // 產品端的觸發政策（DESIGN §32.11）：descriptor 裡的觸發字太寬（reading 的「文章／根據」、codewrite 的「程式」會讓一般聊天被選到），
+        // 這兩個領域改用這裡的規則，不看 descriptor 的觸發字。reading：必須附文章（【文章】標記）且問依文作答；codewrite：必須明確要寫程式或實作函式。
+        const TRIGGER_POLICY = {
+            reading: (t) => /【文章】/.test(t) && /文中|依文|引用|原文/.test(t),
+            codewrite: (t) => /寫程式|實作函式|寫[^\n]{0,8}函式|code\s*write|write\s+(a\s+)?function/i.test(t),
+        };
         function triggerHit(e, text) {
             if (!text) return false;
+            const pol = (e.domains || []).find((d) => Object.prototype.hasOwnProperty.call(TRIGGER_POLICY, d));
+            if (pol) return TRIGGER_POLICY[pol](String(text));
             const low = String(text).toLowerCase();
             for (const t of e.triggers || []) { try { if (new RegExp(t, 'i').test(text)) return true; } catch (_) { if (low.indexOf(String(t).toLowerCase()) >= 0) return true; } }
             return false;
@@ -5916,7 +5924,7 @@ const holder = {};
     else root.FaLoraRoute = factory();
 })(typeof self !== 'undefined' ? self : this, function () {
     'use strict';
-    const TASK_DOMAIN = { decompose: 'decompose', toolcall: 'toolcall', tool_call: 'toolcall', colu: 'colu', menu: 'colu', plan: 'plan', planning: 'plan' };
+    const TASK_DOMAIN = { decompose: 'decompose', toolcall: 'toolcall', tool_call: 'toolcall', colu: 'colu', menu: 'colu', plan: 'plan', planning: 'plan', codewrite: 'codewrite', code_write: 'codewrite', reading: 'reading', read_comp: 'reading' };
 
     function taskDomain(task) {
         const k = String(task || '').trim().toLowerCase();
