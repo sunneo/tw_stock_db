@@ -1,0 +1,9 @@
+
+fn_template/code_split
+  valid   codewrite_base.json 0/60          codewrite_tuned.json 60/60        
+  names   codewrite_base.json 0/60          codewrite_tuned.json 56/60        
+  calls   codewrite_base.json 0/60          codewrite_tuned.json 56/60        
+
+fn_template/code_write_fn
+  def     codewrite_base.json 60/60         codewrite_tuned.json 60/60        
+  judge   codewrite_base.json 8/60          codewrite_tuned.json 18/60        

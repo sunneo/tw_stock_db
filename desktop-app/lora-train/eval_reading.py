@@ -11,11 +11,19 @@
 用法：.venv/bin/python eval_reading.py --out out/eval/rc_base.json [--adapter_dir out/multi/reading]
       --eval_file data/reading_heldout.jsonl --per_stage 60
 """
-import argparse, collections, json, os, random
+import argparse, collections, json, os, random, re
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 NONE = "文中沒寫"
+LONE = re.compile("[\ud800-\udfff]")   # 來源檔的孤立代理字元會讓分詞器拒絕：換成 U+FFFD（與產生器一致）
+
+
+def clean(rows):
+    for r in rows:
+        for m in r["messages"]:
+            m["content"] = LONE.sub("\ufffd", m["content"])
+    return rows
 
 
 def pick(rows, per):
@@ -52,7 +60,7 @@ def main():
     ap.add_argument("--out", required=True)
     a = ap.parse_args()
     torch.set_num_threads(int(os.environ.get("LORA_THREADS", torch.get_num_threads())))
-    rows = pick([json.loads(l) for l in open(a.eval_file, encoding="utf-8") if l.strip()], a.per_stage)
+    rows = pick(clean([json.loads(l) for l in open(a.eval_file, encoding="utf-8") if l.strip()]), a.per_stage)
     tok = AutoTokenizer.from_pretrained(a.base)
     model = AutoModelForCausalLM.from_pretrained(a.base, torch_dtype=torch.float32).eval()
     if a.adapter_dir:

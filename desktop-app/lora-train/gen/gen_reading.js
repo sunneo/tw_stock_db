@@ -20,7 +20,8 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
-const ROOT = path.join(__dirname, '..', '..');           // desktop-app
+// 來源目錄：預設 desktop-app；FA_READING_SRC 可指定凍結的副本（重現既有訓練檔用）
+const ROOT = process.env.FA_READING_SRC || path.join(__dirname, '..', '..');           // desktop-app
 const DATA = path.join(__dirname, '..', 'data');
 const MAX_CHARS = 1200;
 const SYSTEM = '你是閱讀理解助理。只根據使用者給的文章作答，答案必須是文中逐字找得到的文字；文中沒有的，回答「文中沒寫」。';
@@ -52,6 +53,9 @@ function main() {
   let seq = 0;
   for (const d of docs) {
     const sp = split(d.file);
+    // 孤立代理字元（來源檔損毀）會讓分詞器拒絕：整份文章保留，只把這些字元換成 U+FFFD（文章與答案用同一份文字，驗證仍是逐字）
+    const LONE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
+    if (LONE.test(d.text)) { LONE.lastIndex = 0; d.text = d.text.replace(LONE, '\uFFFD'); stats.sanitized_docs = (stats.sanitized_docs || 0) + 1; }
     const items = [...d.text.matchAll(LINE)].map((m) => ({ term: m[1].trim(), expl: m[2].trim(), line: m[0] }));
     for (const it of items) {
       // 驗證：說明與整句都要逐字在文中

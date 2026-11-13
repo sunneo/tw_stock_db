@@ -1271,4 +1271,42 @@ cd .. && node scripts/native-runtime-pack.js /home/hungfu.lee/fa-work/native-run
 
 #### 27.9.6 結果
 
-（見下方的分段紀錄；尚未完成的部分會寫明。）
+**codewrite-r4**（訓練 09:07 完成，`eval_codewrite.sh` 評量，`out/eval/codewrite_scored.txt`；判題器與 §17 相同）：
+
+| 範圍 | 組別 | 基底 | 微調 | 判定 |
+|---|---|---|---|---|
+| 範圍內 | fn_template/code_write_fn judge（判題器 AC） | 8/60 | 18/60 | 進步（+10 個百分點，n=60） |
+| 範圍內 | fn_template/code_write_fn def | 60/60 | 60/60 | 持平 |
+| 範圍外（拆題，屬 decompose 範圍） | code_split valid | 0/60 | 60/60 | 進步 |
+| 範圍外（拆題） | code_split names | 0/60 | 56/60 | 進步 |
+| 範圍外（拆題） | code_split calls | 0/60 | 56/60 | 進步 |
+| — | fn_template/code_write（整份程式） | — | — | **未量**：留出集沒有這個 stage（0 列） |
+
+- 退步：無（範圍內與範圍外都沒有組別退步）。
+- 判定：範圍內 judge 有明顯進步，**依規則可以標為內建候選**；但判準是沿用 §17 的指標，**不是本批預先登記的判準**，結論按 §18.2 第 2 條只算事後，要在新的留出批次上驗證後才能正式內建。
+- 描述檔與卡片：`/home/hungfu.lee/fa-work/assets/codewrite-r4.fatrain`（40,375,003 bytes，sha256 `0280cd123edb249ed4d6b05f6ced6fcfbbb0bd0a49a4e9687ee8e06ef7ba820f`，讀回通過）；卡片的已知限制寫明 judge 只有 18/60、整份程式未量。
+- domain 標籤 `codewrite` 是新的標籤；lora-manager 的標籤表目前只有 decompose、toolcall、colu、plan，**需要確認產品是否接受新的標籤，否則路由不會選它**（未驗證）。
+
+**reading（閱讀理解，`reading-r4`）**：訓練 1,569 列、197 步（09:28 → 11:10，12 執行緒）。評量判準在 `eval_reading.py` 檔頭**於看輸出之前寫好**（預先登記）；留出 303 列取每型 60 列，基底與微調同一批（`results/r4/eval-reading-*.json`）。
+
+| 組別 | 基底 | 微調 | 判定 |
+|---|---|---|---|
+| rc_extract 答對（含說明原文） | 3/60 | 58/60 | 進步 |
+| rc_extract 幻覺（非文中字串、非拒答） | 51/60 | 1/60 | 進步（越低越好） |
+| rc_quote 逐字引用（含整句原文） | 9/60 | 58/60 | 進步 |
+| rc_unanswerable 拒答（含「文中沒寫」） | 0/60 | 59/60 | 進步 |
+
+- 訓練損失 0.042（code-write 為 0.545）：模板答案就是文中原句，損失很低是預期的，但也代表模型可能只是學會複製；這是上一條「只代表做法與格式」的理由之一。
+- 退步：無。
+- 判定：三組都明顯勝出，**依預先登記的判準可以標為內建候選**；但這是模板題（見 §27.9.4 的限制），只代表「做法與格式」，不代表閱讀理解能力。
+- 描述檔與卡片：`/home/hungfu.lee/fa-work/assets/reading-r4.fatrain`（40,374,917 bytes，sha256 `13ab0eff1ae7c3a2dbc5bf8d9c9c7dfa962eeefa0c5a5af25c5cec95a85d8f67`，讀回通過）。domain 標籤 `reading` 是新標籤，同 codewrite 需要確認產品接受。
+- **資料快照的注意事項（已處理）**：`gen_reading.js` 讀的是 `desktop-app/DESIGN.*.md`，而 §27.9 本身有條列句，所以在這份文件上直接重跑會多出 9 列，訓練檔的雜湊會變。已加入 `FA_READING_SRC`，用 `cc861797` 的凍結副本重現，訓練檔雜湊 `ce72761e1b20859c80b3`（與訓練時相同）。之後重產資料都要用凍結副本。
+- 評量前的一個修正：來源的孤立代理字元（`DESIGN.data-viewers.md` 留出列）讓分詞器拒絕，第一次評量中斷；`eval_reading.py` 已在讀入時換成 U+FFFD（訓練檔沒有受影響），然後重跑。
+- code-write 的判準（§27.9.6 上表）不是預先登記的，結論只算事後；reading 的判準是預先登記的。
+
+**尚未完成（誠實列出）**：
+1. 產品端內建：本輪只產生 `.fatrain` 與讀回通過，**沒有**把五顆登錄為產品內建卡片、沒有嵌入、沒有 publish（§9.3 規定由總指揮統一做）。
+2. 離線訓練器的符號式資產沒有轉成訓練資料（§27.9.2）。
+3. 新標籤 `codewrite`、`reading` 是否被產品的路由接受，未驗證。
+4. 產品視窗的路由與套用，這五顆（包含 codewrite、reading）尚未跑過 `lora_four_adapters.run.js`。
+5. 評量都只用一批留出資料，沒有 §18.2 第 6 條要求的新批次重驗。

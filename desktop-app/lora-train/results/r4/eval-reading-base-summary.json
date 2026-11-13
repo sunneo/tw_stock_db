@@ -1,0 +1,18 @@
+{
+ "rc_extract": {
+  "n": 60,
+  "ok": 3,
+  "verbatim": 7,
+  "halluc": 51
+ },
+ "rc_quote": {
+  "n": 60,
+  "ok": 9,
+  "verbatim": 24,
+  "halluc": 32
+ },
+ "rc_unanswerable": {
+  "n": 60,
+  "ok": 0
+ }
+}

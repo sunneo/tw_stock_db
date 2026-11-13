@@ -1,0 +1,28 @@
+{
+ "name": "寫程式（codewrite-r4）",
+ "intro": "依題目與已定的函式清單，寫出單一函式的完整定義（code_write_fn），也能寫整份程式（code_write）。",
+ "capabilities": [
+  {
+   "id": "cap1",
+   "label": "寫單一函式（code_write_fn）"
+  },
+  {
+   "id": "cap2",
+   "label": "依函式清單整份程式（code_write）"
+  }
+ ],
+ "known_limits": [
+  "判題器通過率仍低（18/60）",
+  "code_write（整份程式）留出列為 0，未量",
+  "拆題（code_split）與 decompose-r4-v2 的範圍重疊"
+ ],
+ "sources": "lora-train/gen（fn_template：code_write_fn 194、code_write 20、code_split 67）",
+ "training": {
+  "rank": 4,
+  "alpha": 8,
+  "lr": 0.0002,
+  "epochs": 1,
+  "seq": 768,
+  "batch": "1 × 累積 8"
+ }
+}

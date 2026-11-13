@@ -1,0 +1,32 @@
+{
+ "name": "閱讀理解（reading-r4）",
+ "intro": "依文章作答；文中有的逐字引用，文中沒寫就回答「文中沒寫」。只改善做法與輸出格式，不增加模型容量。",
+ "capabilities": [
+  {
+   "id": "cap1",
+   "label": "依文章作答（抽取說明）"
+  },
+  {
+   "id": "cap2",
+   "label": "逐字引用一句原文"
+  },
+  {
+   "id": "cap3",
+   "label": "無答案時回答「文中沒寫」"
+  }
+ ],
+ "known_limits": [
+  "訓練與評量都是模板題（程式從 DESIGN 文件的條列句生成），不是自然語言閱讀題",
+  "幻覺與拒答的判準只看是否含標準字串，不代表真實文章的理解",
+  "只量了 DESIGN 文件的文章；其他文體沒有量"
+ ],
+ "sources": "lora-train/gen/gen_reading.js（DESIGN.*.md 100 份，文章層級切分；train 1,569、heldout 303；產生器用 FA_READING_SRC 指向 cc861797 的凍結副本重現）",
+ "training": {
+  "rank": 4,
+  "alpha": 8,
+  "lr": 0.0002,
+  "epochs": 1,
+  "seq": 768,
+  "batch": "1 × 累積 8"
+ }
+}
