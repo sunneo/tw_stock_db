@@ -26,6 +26,7 @@ LAYERS, KV_HEADS, HEAD_DIM, HEADS = 28, 8, 128, 8   # 與 nr-engine.js 的 LAYER
 PRESETS = {
     "mini": {"hidden": 96, "intermediate": 256},     # 約 1,400 萬參數（詞彙 8192 時）
     "small": {"hidden": 128, "intermediate": 384},   # 約 2,000 萬參數（詞彙 8192 時）
+    "tiny": {"hidden": 96, "intermediate": 512, "layers": 4},   # 4 層（實驗用，約 300 萬參數）；匯出時補成 28 層介面
 }
 DEFAULT_BUILTIN = os.path.join(HERE, "llm_scratch_builtin_zh.txt")
 DEFAULT_SFT = os.path.join(HERE, "llm_scratch_sft_zh.jsonl")
@@ -176,6 +177,54 @@ def build_model_classes():
         h = x.shape[-1] // 2
         return torch.cat([-x[..., h:], x[..., :h]], dim=-1)
 
+    class DenseMLP(nn.Module):
+        def __init__(s, c):
+            super().__init__()
+            s.gate = nn.Linear(c["hidden"], c["intermediate"], bias=False); s.up = nn.Linear(c["hidden"], c["intermediate"], bias=False)
+            s.down = nn.Linear(c["intermediate"], c["hidden"], bias=False)
+
+        def forward(s, x):
+            return s.down(F.silu(s.gate(x)) * s.up(x)), None
+
+    class MoE(nn.Module):
+        """Qwen3-MoE 式：路由器 softmax → 取前 top_k 名並重新正規化 → 各專家 SwiGLU 加權相加；回傳負載平衡輔助損失。
+        訓練時只算被選到的 token（稀疏）；匯出時（dense_export）算所有專家再乘稀疏權重，數值相同，圖裡只有常見運算子。"""
+        def __init__(s, c):
+            super().__init__()
+            H, I, E = c["hidden"], c["moe_inter"], c["experts"]
+            s.E, s.k = E, c["top_k"]; s.dense_export = False
+            s.router = nn.Linear(H, E, bias=False)
+            s.wg = nn.Parameter(torch.empty(E, H, I)); s.wu = nn.Parameter(torch.empty(E, H, I)); s.wd = nn.Parameter(torch.empty(E, I, H))
+            s.last_load = None
+
+        def forward(s, x):
+            B, S, H = x.shape
+            xf = x.reshape(-1, H)
+            probs = torch.softmax(s.router(xf), dim=-1)                       # (N, E)
+            topv, topi = torch.topk(probs, s.k, dim=-1)
+            topv = topv / topv.sum(-1, keepdim=True)
+            sel = (topi.unsqueeze(-1) == torch.arange(s.E)).to(xf.dtype)       # (N, k, E)
+            wmat = (sel * topv.unsqueeze(-1)).sum(1)                           # (N, E) 稀疏權重
+            if s.dense_export:
+                g = torch.matmul(xf.unsqueeze(0), s.wg); u = torch.matmul(xf.unsqueeze(0), s.wu)       # (E, N, I)
+                o = torch.matmul(F.silu(g) * u, s.wd)                                                    # (E, N, H)
+                out = (o * wmat.t().unsqueeze(-1)).sum(0)
+                return out.reshape(B, S, H), None
+            out = torch.zeros_like(xf)
+            hit = sel.sum(1) > 0
+            for e in range(s.E):
+                idx = torch.nonzero(hit[:, e]).squeeze(-1)
+                if idx.numel() == 0:
+                    continue
+                xe = xf[idx]
+                oe = (F.silu(xe @ s.wg[e]) * (xe @ s.wu[e])) @ s.wd[e]
+                out = out.index_add(0, idx, oe * wmat[idx, e].unsqueeze(-1))
+            f = sel.sum(1).mean(0) / s.k                                       # 各專家被分到的 token 比例（總和 1，計數不可微）
+            Pm = probs.mean(0)                                                 # 各專家平均路由機率（梯度走這裡）
+            aux = s.E * (f.detach() * Pm).sum()                                # 均勻分配時＝1
+            s.last_load = f.detach()
+            return out.reshape(B, S, H), aux
+
     class Block(nn.Module):
         def __init__(s, c):
             super().__init__()
@@ -185,8 +234,7 @@ def build_model_classes():
             s.v = nn.Linear(H, s.kvh * s.hd, bias=False); s.o = nn.Linear(s.h * s.hd, H, bias=False)
             s.qn = RMSNorm(s.hd, c["eps"]); s.kn = RMSNorm(s.hd, c["eps"])
             s.n1 = RMSNorm(H, c["eps"]); s.n2 = RMSNorm(H, c["eps"])
-            s.gate = nn.Linear(H, c["intermediate"], bias=False); s.up = nn.Linear(H, c["intermediate"], bias=False)
-            s.down = nn.Linear(c["intermediate"], H, bias=False)
+            s.mlp = MoE(c) if c.get("arch") == "moe" else DenseMLP(c)
 
         def forward(s, x, cos, sin, addmask, pk, pv):
             B, S, _ = x.shape
@@ -201,17 +249,21 @@ def build_model_classes():
                 k = torch.cat([pk, k], dim=2); v = torch.cat([pv, v], dim=2)
             T = k.shape[2]
             P = T - S
+            ka, va = k, v
+            if s.h != s.kvh:   # 分組查詢注意力：快取只存 kv_heads 個頭，算注意力時才重複
+                rep = s.h // s.kvh
+                ka = k.unsqueeze(2).expand(B, s.kvh, rep, T, s.hd).reshape(B, s.h, T, s.hd)
+                va = v.unsqueeze(2).expand(B, s.kvh, rep, T, s.hd).reshape(B, s.h, T, s.hd)
             qpos = torch.arange(S) + P
             kpos = torch.arange(T)
             causal = torch.where(kpos.unsqueeze(0) <= qpos.unsqueeze(1), 0.0, -1e9)   # (S, T)
-            att = torch.matmul(q, k.transpose(-1, -2)) * (1.0 / math.sqrt(s.hd))
+            att = torch.matmul(q, ka.transpose(-1, -2)) * (1.0 / math.sqrt(s.hd))
             att = att + causal + addmask
             att = torch.softmax(att, dim=-1)
-            y = torch.matmul(att, v).transpose(1, 2).reshape(B, S, s.h * s.hd)
+            y = torch.matmul(att, va).transpose(1, 2).reshape(B, S, s.h * s.hd)
             x = x + s.o(y)
-            h2 = s.n2(x)
-            x = x + s.down(F.silu(s.gate(h2)) * s.up(h2))
-            return x, k, v
+            m, aux = s.mlp(s.n2(x))
+            return x + m, k, v, aux
 
     class LM(nn.Module):
         def __init__(s, c):
@@ -226,52 +278,113 @@ def build_model_classes():
             emb = torch.cat([fr, fr], dim=-1)
             s.register_buffer("cos_t", emb.cos(), persistent=False)
             s.register_buffer("sin_t", emb.sin(), persistent=False)
+            s.aux = None
             for m in s.modules():
                 if isinstance(m, (nn.Linear, nn.Embedding)):
                     nn.init.normal_(m.weight, std=0.02)
+                if isinstance(m, MoE):
+                    for w in (m.wg, m.wu):
+                        nn.init.normal_(w, std=0.02)
+                    nn.init.normal_(m.wd, std=0.02 / math.sqrt(2 * c["layers"]))
             # 殘差輸出投影縮小（GPT-2 式），穩定深層訓練
             for blk in s.layers:
                 nn.init.normal_(blk.o.weight, std=0.02 / math.sqrt(2 * c["layers"]))
-                nn.init.normal_(blk.down.weight, std=0.02 / math.sqrt(2 * c["layers"]))
+                if hasattr(blk.mlp, "down"):
+                    nn.init.normal_(blk.mlp.down.weight, std=0.02 / math.sqrt(2 * c["layers"]))
 
         def forward(s, ids, am, pos, past=None):
             x = s.emb(ids)
             cos = s.cos_t[pos].unsqueeze(1); sin = s.sin_t[pos].unsqueeze(1)
             addmask = ((1.0 - am.to(x.dtype)) * -1e9)[:, None, None, :]
-            pres = []
+            pres = []; auxs = []
             for i, blk in enumerate(s.layers):
                 pk = past[2 * i] if past is not None else None
                 pv = past[2 * i + 1] if past is not None else None
-                x, k, v = blk(x, cos, sin, addmask, pk, pv)
+                x, k, v, aux = blk(x, cos, sin, addmask, pk, pv)
                 pres.append(k); pres.append(v)
+                if aux is not None:
+                    auxs.append(aux)
+            s.aux = (sum(auxs) / len(auxs)) if auxs else None
             x = s.norm(x)
             return x @ s.emb.weight.t(), pres
+
+        def set_dense_export(s, on):
+            for m in s.modules():
+                if isinstance(m, MoE):
+                    m.dense_export = on
 
     return LM
 
 
-def make_config(vocab, preset):
+def make_config(vocab, preset, **o):
+    """preset 給預設寬度；o 可覆寫 layers／heads／kv_heads／head_dim／hidden／intermediate／arch／experts／top_k／moe_inter／aux_coef。
+    iface_layers 固定 28：層數少於 28 的模型匯出時多出的層直接傳遞快取，維持原生執行環境寫死的 28 層介面。"""
     p = PRESETS[preset]
-    return {"model_type": "qwen3", "architectures": ["Qwen3ForCausalLM"], "vocab": int(vocab), "hidden": p["hidden"],
-            "intermediate": p["intermediate"], "layers": LAYERS, "heads": HEADS, "kv_heads": KV_HEADS,
-            "head_dim": HEAD_DIM, "rope_theta": 1000000.0, "max_pos": 4096, "eps": 1e-6, "preset": preset}
+    c = {"model_type": "qwen3", "arch": "dense", "vocab": int(vocab), "hidden": p["hidden"], "intermediate": p["intermediate"],
+         "layers": p.get("layers", LAYERS), "heads": HEADS, "kv_heads": KV_HEADS, "head_dim": HEAD_DIM,
+         "rope_theta": 1000000.0, "max_pos": 4096, "eps": 1e-6, "preset": preset, "iface_layers": LAYERS,
+         "experts": 8, "top_k": 2, "moe_inter": p["intermediate"] // 2, "aux_coef": 0.01}
+    for k, v in o.items():
+        if v is not None:
+            c[k] = v
+    if c["arch"] == "moe":
+        c["architectures"] = ["Qwen3MoeForCausalLM"]; c["model_type"] = "qwen3_moe"
+    else:
+        c["architectures"] = ["Qwen3ForCausalLM"]
+    if c["heads"] % c["kv_heads"]:
+        fail("注意力頭數 %d 必須是鍵值頭數 %d 的倍數" % (c["heads"], c["kv_heads"]))
+    c["native_compatible"] = bool(c["kv_heads"] == KV_HEADS and c["head_dim"] == HEAD_DIM and c["layers"] <= LAYERS)
+    return c
+
+
+def cfg_defaults(c):
+    """舊檢查點的設定沒有新欄位：補預設（密集、介面 28 層）。"""
+    d = {"arch": "dense", "iface_layers": LAYERS, "experts": 8, "top_k": 2, "moe_inter": c.get("intermediate", 256) // 2, "aux_coef": 0.01,
+         "native_compatible": c.get("kv_heads") == KV_HEADS and c.get("head_dim") == HEAD_DIM and c.get("layers", 0) <= LAYERS}
+    for k, v in d.items():
+        c.setdefault(k, v)
+    return c
 
 
 def hf_config(c, tok_vocab):
-    return {"architectures": ["Qwen3ForCausalLM"], "model_type": "qwen3", "vocab_size": c["vocab"],
-            "hidden_size": c["hidden"], "intermediate_size": c["intermediate"], "num_hidden_layers": c["layers"],
-            "num_attention_heads": c["heads"], "num_key_value_heads": c["kv_heads"], "head_dim": c["head_dim"],
-            "rms_norm_eps": c["eps"], "rope_theta": c["rope_theta"], "max_position_embeddings": c["max_pos"],
-            "tie_word_embeddings": True, "hidden_act": "silu", "bos_token_id": None, "eos_token_id": None,
-            "pad_token_id": PAD_ID, "use_cache": True, "torch_dtype": "float32", "tokenizer_vocab_size": tok_vocab}
+    h = {"architectures": c.get("architectures", ["Qwen3ForCausalLM"]), "model_type": c.get("model_type", "qwen3"), "vocab_size": c["vocab"],
+         "hidden_size": c["hidden"], "intermediate_size": c["intermediate"], "num_hidden_layers": c["layers"],
+         "num_attention_heads": c["heads"], "num_key_value_heads": c["kv_heads"], "head_dim": c["head_dim"],
+         "rms_norm_eps": c["eps"], "rope_theta": c["rope_theta"], "max_position_embeddings": c["max_pos"],
+         "tie_word_embeddings": True, "hidden_act": "silu", "bos_token_id": None, "eos_token_id": None,
+         "pad_token_id": PAD_ID, "use_cache": True, "torch_dtype": "float32", "tokenizer_vocab_size": tok_vocab,
+         "iface_layers": c.get("iface_layers", LAYERS), "llm_scratch_arch": c.get("arch", "dense")}
+    if c.get("arch") == "moe":
+        h.update({"num_experts": c["experts"], "num_experts_per_tok": c["top_k"], "moe_intermediate_size": c["moe_inter"], "norm_topk_prob": True,
+                  "decoder_sparse_step": 1, "mlp_only_layers": [], "router_aux_loss_coef": c["aux_coef"], "output_router_logits": False})
+    return h
 
 
 def load_ckpt(model_dir):
     import torch
     LM = build_model_classes()
     ck = torch.load(os.path.join(model_dir, "ckpt.pt"), map_location="cpu", weights_only=False)
-    m = LM(ck["config"]); m.load_state_dict(ck["state"]); m.eval()
+    cfg_defaults(ck["config"])
+    import re
+    state = {re.sub(r"^(layers\.\d+\.)(gate|up|down)\.", r"\1mlp.\2.", k): v for k, v in ck["state"].items()}   # 舊版鍵名（mlp 還沒獨立成一層）
+    m = LM(ck["config"]); m.load_state_dict(state); m.eval()
     return m, ck["config"]
+
+
+def arch_overrides(a):
+    o = {"arch": getattr(a, "arch", None), "layers": getattr(a, "layers", None), "heads": getattr(a, "heads", None), "kv_heads": getattr(a, "kv_heads", None),
+         "hidden": getattr(a, "hidden", None), "intermediate": getattr(a, "intermediate", None), "experts": getattr(a, "experts", None),
+         "top_k": getattr(a, "top_k", None), "moe_inter": getattr(a, "moe_inter", None), "aux_coef": getattr(a, "aux_coef", None)}
+    return {k: v for k, v in o.items() if v is not None}
+
+
+def active_params(m, c):
+    """每個 token 實際用到的參數量：MoE 只算 top_k 個專家；其餘與總參數相同。"""
+    total = count_params(m)
+    if c.get("arch") != "moe":
+        return total
+    per_expert = 3 * c["hidden"] * c["moe_inter"]
+    return total - c["layers"] * (c["experts"] - c["top_k"]) * per_expert
 
 
 def count_params(m):
@@ -319,17 +432,18 @@ def cmd_pretrain(a):
     torch.set_num_threads(max(1, int(a.threads)))
     tok = Tokenizer.from_file(a.tok)
     vocab = tok.get_vocab_size()
-    cfg = make_config(vocab, a.preset)
+    cfg = make_config(vocab, a.preset, **arch_overrides(a))
     LM = build_model_classes()
     m = LM(cfg)
     n_params = count_params(m)
+    n_active = active_params(m, cfg)
     tr = np.load(os.path.join(a.data, "train_ids.npy")).astype(np.int64)
     ho = np.load(os.path.join(a.data, "heldout_ids.npy")).astype(np.int64)
     if tr.size <= a.seq + 1:
         fail("訓練 token 數不足（%d），請用更多語料或縮短序列長度" % tr.size)
     os.makedirs(a.out, exist_ok=True)
     prompts = sample_prompts(a.data)
-    emit({"event": "start", "params": n_params, "vocab": vocab, "train_tokens": int(tr.size), "heldout_tokens": int(ho.size),
+    emit({"event": "start", "params": n_params, "active_params": n_active, "arch": cfg["arch"], "layers": cfg["layers"], "heads": cfg["heads"], "kv_heads": cfg["kv_heads"], "vocab": vocab, "train_tokens": int(tr.size), "heldout_tokens": int(ho.size),
           "preset": a.preset, "steps": a.steps, "batch": a.batch, "seq": a.seq})
 
     # 留出損失：固定的一組視窗（不隨訓練改變）
@@ -389,14 +503,20 @@ def cmd_pretrain(a):
             g["lr"] = lr_at(step - 1)
         logits, _ = m(x, torch.ones(a.batch, a.seq, dtype=torch.long), torch.arange(a.seq).unsqueeze(0).expand(a.batch, -1), None)
         loss = torch.nn.functional.cross_entropy(logits.reshape(-1, vocab), y.reshape(-1))
+        ce_val = float(loss.item())
+        if m.aux is not None:
+            loss = loss + cfg["aux_coef"] * m.aux
         opt.zero_grad(set_to_none=True)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(m.parameters(), 1.0)
         opt.step()
-        lv = float(loss.item()); recent.append(lv)
+        lv = ce_val; recent.append(lv)
         if step % a.log_every == 0 or step == 1:
             curve.append({"step": step, "loss": round(lv, 5)})
-            emit({"step": step, "loss": round(lv, 5), "lr": lr_at(step - 1), "elapsed_s": round(time.time() - t0, 1)})
+            ev = {"step": step, "loss": round(lv, 5), "lr": lr_at(step - 1), "elapsed_s": round(time.time() - t0, 1)}
+            if m.aux is not None:
+                ev["aux"] = round(float(m.aux.item()), 4)
+            emit(ev)
         if step % a.eval_every == 0 and step != a.steps:
             hl = heldout_loss()
             emit({"event": "eval", "step": step, "heldout_loss": round(hl, 5), "heldout_ppl": round(math.exp(hl), 3)})
@@ -418,11 +538,15 @@ def cmd_pretrain(a):
             "lr": a.lr, "seed": a.seed, "heldout_loss_before": round(h0, 5), "heldout_loss_after": round(h1, 5),
             "heldout_ppl_before": round(math.exp(h0), 3), "heldout_ppl_after": round(math.exp(h1), 3),
             "train_loss_first": curve[0]["loss"] if curve else None, "train_loss_last_avg": round(float(np.mean(recent[-20:])), 5),
-            "elapsed_s": round(time.time() - t0, 1), "curve": curve}
+            "elapsed_s": round(time.time() - t0, 1), "curve": curve, "arch": cfg["arch"], "active_params": n_active}
+    loads = [blk.mlp.last_load.tolist() for blk in m.layers if getattr(blk.mlp, "last_load", None) is not None]
+    if loads:
+        meta["expert_load_last_batch"] = [[round(x, 4) for x in l] for l in loads]
+        meta["expert_load_max_over_uniform"] = round(max(max(l) for l in loads) * cfg["experts"], 3)
     write_json(os.path.join(a.out, "pretrain_meta.json"), meta)
     emit({"event": "pretrain_done", "ok": True, "heldout_loss_before": meta["heldout_loss_before"],
           "heldout_loss_after": meta["heldout_loss_after"], "heldout_ppl_before": meta["heldout_ppl_before"],
-          "heldout_ppl_after": meta["heldout_ppl_after"], "params": n_params, "elapsed_s": meta["elapsed_s"]})
+          "heldout_ppl_after": meta["heldout_ppl_after"], "params": n_params, "active_params": n_active, "elapsed_s": meta["elapsed_s"]})
 
 
 # ---------------------------------------------------------------- sft
@@ -519,6 +643,8 @@ def cmd_sft(a):
         pos = torch.arange(X.shape[1]).unsqueeze(0).expand(X.shape[0], -1)
         logits, _ = m(X, A, pos, None)
         loss = F.cross_entropy(logits.reshape(-1, logits.shape[-1]), Y.reshape(-1), ignore_index=-100)
+        if m.aux is not None:
+            loss = loss + cfg["aux_coef"] * m.aux
         opt.zero_grad(set_to_none=True); loss.backward()
         torch.nn.utils.clip_grad_norm_(m.parameters(), 1.0); opt.step()
         if step % a.log_every == 0 or step == 1:
@@ -552,10 +678,11 @@ def cmd_export(a):
     from tokenizers import Tokenizer
     torch.set_num_threads(max(1, os.cpu_count() or 1))
     m, cfg = load_ckpt(a.model)
-    if (cfg["layers"], cfg["kv_heads"], cfg["head_dim"]) != (LAYERS, KV_HEADS, HEAD_DIM):
-        fail("原生執行環境寫死 %d 層／%d 個 KV 頭／head_dim %d，模型不符" % (LAYERS, KV_HEADS, HEAD_DIM))
+    if not cfg["native_compatible"]:
+        fail("原生執行環境寫死 %d 個 KV 頭／head_dim %d／最多 %d 層，這顆模型的形狀不符（鍵值頭 %d、每頭維度 %d、%d 層），不能匯出給它" % (KV_HEADS, HEAD_DIM, LAYERS, cfg["kv_heads"], cfg["head_dim"], cfg["layers"]))
+    m.set_dense_export(True)
     tok = Tokenizer.from_file(os.path.join(a.model, "tokenizer.json"))
-    L = cfg["layers"]
+    L = cfg["iface_layers"]; LR = cfg["layers"]   # L＝介面層數（28）；LR＝實際層數，多出的層直接傳遞快取
     fp_dir = os.path.join(a.out, "fp32"); q_dir = os.path.join(a.out, "q8")
     os.makedirs(fp_dir, exist_ok=True); os.makedirs(q_dir, exist_ok=True)
     fp = os.path.join(fp_dir, "model.onnx"); q8 = os.path.join(q_dir, "model_quantized.onnx")
@@ -572,8 +699,8 @@ def cmd_export(a):
             super().__init__(); s.lm = lm
 
         def forward(s, input_ids, attention_mask, position_ids, *past):
-            logits, pres = s.lm(input_ids, attention_mask, position_ids, list(past))
-            return (logits,) + tuple(pres)
+            logits, pres = s.lm(input_ids, attention_mask, position_ids, list(past[:2 * LR]))
+            return (logits,) + tuple(pres) + tuple(p.clone() for p in past[2 * LR:])
 
     w = Wrap(m).eval()
     ex_ids = torch.tensor([[1, 2, 3, 4]]); ex_am = torch.ones(1, 6, dtype=torch.long); ex_pos = torch.tensor([[2, 3, 4, 5]])
@@ -631,7 +758,7 @@ def cmd_export(a):
     manifest = {"format": "onnx", "quant": "q8", "files": {
                     "q8/model_quantized.onnx": {"sha256": sha256_file(q8), "bytes": os.path.getsize(q8)},
                     "tokenizer.json": {"sha256": sha256_file(os.path.join(a.out, "tokenizer.json")), "bytes": os.path.getsize(os.path.join(a.out, "tokenizer.json"))}},
-                "arch": {"model_type": "qwen3", "layers": L, "kv_heads": cfg["kv_heads"], "head_dim": cfg["head_dim"], "hidden": cfg["hidden"], "vocab": cfg["vocab"]},
+                "arch": {"model_type": cfg["model_type"], "arch": cfg["arch"], "layers": LR, "iface_layers": L, "kv_heads": cfg["kv_heads"], "head_dim": cfg["head_dim"], "hidden": cfg["hidden"], "vocab": cfg["vocab"]},
                 "verify": {"fp32_vs_torch_max_abs_logit_diff": max_abs_fp, "fp32_greedy_matches_torch": fp_match,
                            "q8_greedy_match_fp32_frac": q_match_frac, "q8_max_abs_logit_diff": q_lg_diff, "q8_rel_logit_diff": rel}}
     write_json(os.path.join(a.out, "manifest.json"), manifest)
@@ -655,12 +782,19 @@ def cmd_export_hf(a):
         sd[P + "self_attn.v_proj.weight"] = b.v.weight.detach().clone(); sd[P + "self_attn.o_proj.weight"] = b.o.weight.detach().clone()
         sd[P + "self_attn.q_norm.weight"] = b.qn.weight.detach().clone(); sd[P + "self_attn.k_norm.weight"] = b.kn.weight.detach().clone()
         sd[P + "input_layernorm.weight"] = b.n1.weight.detach().clone(); sd[P + "post_attention_layernorm.weight"] = b.n2.weight.detach().clone()
-        sd[P + "mlp.gate_proj.weight"] = b.gate.weight.detach().clone(); sd[P + "mlp.up_proj.weight"] = b.up.weight.detach().clone(); sd[P + "mlp.down_proj.weight"] = b.down.weight.detach().clone()
+        if cfg.get("arch") == "moe":   # transformers 5 的 Qwen3-MoE：專家合成一個張量（gate 與 up 在輸出維度上串接）
+            mo = b.mlp
+            sd[P + "mlp.gate.weight"] = mo.router.weight.detach().clone()
+            sd[P + "mlp.experts.gate_up_proj"] = torch.cat([mo.wg.detach().transpose(1, 2), mo.wu.detach().transpose(1, 2)], dim=1).contiguous()
+            sd[P + "mlp.experts.down_proj"] = mo.wd.detach().transpose(1, 2).contiguous()
+        else:
+            sd[P + "mlp.gate_proj.weight"] = b.mlp.gate.weight.detach().clone(); sd[P + "mlp.up_proj.weight"] = b.mlp.up.weight.detach().clone(); sd[P + "mlp.down_proj.weight"] = b.mlp.down.weight.detach().clone()
     os.makedirs(a.out, exist_ok=True)
     save_file(sd, os.path.join(a.out, "model.safetensors"), metadata={"format": "pt"})
     hc = hf_config(cfg, tok.get_vocab_size())
     hc.update({"attention_bias": False, "attention_dropout": 0.0, "bos_token_id": tok.token_to_id("<|endoftext|>"), "eos_token_id": tok.token_to_id("<|im_end|>"),
                "rope_scaling": None, "sliding_window": None, "use_sliding_window": False, "max_window_layers": cfg["layers"], "initializer_range": 0.02})
+    hc.pop("iface_layers", None)
     write_json(os.path.join(a.out, "config.json"), hc)
     import shutil
     shutil.copy(os.path.join(a.model, "tokenizer.json"), os.path.join(a.out, "tokenizer.json"))
@@ -689,7 +823,7 @@ def cmd_check(a):
     tok = Tokenizer.from_file(os.path.join(a.model_dir, "tokenizer.json"))
     exp = json.load(open(os.path.join(a.model_dir, "expected.json"), "r", encoding="utf-8"))
     cfg = json.load(open(os.path.join(a.model_dir, "config.json"), "r", encoding="utf-8"))
-    L, KV, HD = cfg["num_hidden_layers"], cfg["num_key_value_heads"], cfg["head_dim"]
+    L, KV, HD = cfg.get("iface_layers", cfg["num_hidden_layers"]), cfg["num_key_value_heads"], cfg["head_dim"]
     q8 = os.path.join(a.model_dir, "q8", "model_quantized.onnx")
     out_names = ["logits"] + [f"present.{l}.{k}" for l in range(L) for k in ("key", "value")]
 
@@ -728,6 +862,9 @@ def main():
     p.add_argument("--seq", type=int, default=256); p.add_argument("--lr", type=float, default=0.002); p.add_argument("--warmup", type=int, default=50)
     p.add_argument("--seed", type=int, default=0); p.add_argument("--eval-every", dest="eval_every", type=int, default=250); p.add_argument("--log-every", dest="log_every", type=int, default=10)
     p.add_argument("--sample-tokens", dest="sample_tokens", type=int, default=48); p.add_argument("--threads", type=int, default=8)
+    p.add_argument("--arch", default=None, choices=["dense", "moe"]); p.add_argument("--layers", type=int); p.add_argument("--heads", type=int); p.add_argument("--kv-heads", dest="kv_heads", type=int)
+    p.add_argument("--hidden", type=int); p.add_argument("--intermediate", type=int); p.add_argument("--experts", type=int); p.add_argument("--top-k", dest="top_k", type=int)
+    p.add_argument("--moe-inter", dest="moe_inter", type=int); p.add_argument("--aux-coef", dest="aux_coef", type=float)
     p = sub.add_parser("sft"); p.add_argument("--base", required=True); p.add_argument("--data", default=""); p.add_argument("--out", required=True)
     p.add_argument("--steps", type=int, default=300); p.add_argument("--batch", type=int, default=8); p.add_argument("--lr", type=float, default=0.0005)
     p.add_argument("--seq", type=int, default=256); p.add_argument("--seed", type=int, default=0); p.add_argument("--heldout-frac", dest="heldout_frac", type=float, default=0.2)
