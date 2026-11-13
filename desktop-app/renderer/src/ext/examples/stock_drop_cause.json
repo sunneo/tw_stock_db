@@ -7,9 +7,20 @@
     "urlPattern": "stock|quote|twse|tpex",
     "codeRe": "^\\d{4,6}$",
     "patterns": [
-      { "re": "([^\\s()（）]{2,12})[（(](\\d{4,6})[)）]", "name": 1, "code": 2 },
-      { "re": "[/=](\\d{4,6})(?!\\d)", "code": 1 }
-    ]
+      {
+        "re": "([^\\s()（）]{2,12})[（(](\\d{4,6})[)）]",
+        "name": 1,
+        "code": 2
+      },
+      {
+        "re": "[/=](\\d{4,6})(?!\\d)",
+        "code": 1
+      }
+    ],
+    "nameToCode": {
+      "大成鋼": "2027"
+    },
+    "nameToCodeNote": "只收已確認的對照；缺的名稱請加入（或之後改查公開的上市公司清單）。"
   },
   "tool": {
     "name": "ext_stock_drop_cause",
@@ -20,27 +31,65 @@
       "id": "quote",
       "label": "報價與成交量",
       "url": "https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY?stockNo={code}&response=json&date={date}",
-      "extract": { "kind": "json_rows", "rowsKey": "data", "fieldsKey": "fields", "pick": "last", "count": 1, "show": ["收盤價", "漲跌價差", "成交股數"] }
+      "extract": {
+        "kind": "json_rows",
+        "rowsKey": "data",
+        "fieldsKey": "fields",
+        "pick": "last",
+        "count": 1,
+        "show": [
+          "日期",
+          "收盤價",
+          "漲跌價差",
+          "成交股數"
+        ]
+      }
     },
     {
       "id": "news",
       "label": "近期新聞（Google 新聞搜尋，只留查詢日前兩天內）",
       "url": "https://news.google.com/rss/search?q={name}%20{code}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant",
-      "needs": ["name"],
-      "extract": { "kind": "rss", "max": 5, "maxAgeDays": 2, "must": ["{name}", "{code}"] }
+      "needs": [
+        "name"
+      ],
+      "extract": {
+        "kind": "rss",
+        "max": 5,
+        "maxAgeDays": 2,
+        "must": [
+          "{name}",
+          "{code}"
+        ]
+      }
     },
     {
       "id": "institutional",
       "label": "三大法人買賣超",
       "url": "https://www.twse.com.tw/rwd/zh/fund/T86?date={date}&selectType=ALL&response=json",
-      "extract": { "kind": "json_rows", "rowsKey": "data", "fieldsKey": "fields", "match": { "col": 0, "equals": "{code}" }, "show": ["外陸資買賣超股數(不含外資自營商)", "投信買賣超股數", "自營商買賣超股數"] }
+      "extract": {
+        "kind": "json_rows",
+        "rowsKey": "data",
+        "fieldsKey": "fields",
+        "match": {
+          "col": 0,
+          "equals": "{code}"
+        },
+        "show": [
+          "外陸資買賣超股數(不含外資自營商)",
+          "投信買賣超股數",
+          "自營商買賣超股數"
+        ]
+      }
     },
     {
       "id": "announce",
       "label": "公開資訊觀測站重大訊息",
       "url": "",
       "optional": true,
-      "extract": { "kind": "text", "max": 5 }
+      "extract": {
+        "kind": "text",
+        "max": 5
+      }
     }
   ],
   "contribute": {

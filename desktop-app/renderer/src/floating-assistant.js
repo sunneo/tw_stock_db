@@ -16510,12 +16510,27 @@ const holder = {};
     }
 
     // 工具參數優先（模型或使用者明說的），網頁情境補不足的部分。
+    // 使用者的原話（args.text，例如「為什麼大成鋼今天下跌」）：代號用數字抓；名稱用 context.nameToCode 的字典找（最長的先找）。
+    function textEntities(ext, text) {
+        var c = ext.context || {}, t = str(text), map = c.nameToCode || {}, out = { code: '', name: '' };
+        var codeRe = new RegExp(c.codeRe || '^\\d{4,6}$');
+        var m = /(?:^|[^\d])(\d{4,6})(?!\d)/.exec(t);
+        if (m && codeRe.test(m[1])) out.code = m[1];
+        Object.keys(map).sort(function (a, b) { return b.length - a.length; }).some(function (k) {
+            if (t.indexOf(k) < 0) return false;
+            out.name = k; if (!out.code) out.code = str(map[k]); return true;
+        });
+        return out;
+    }
+
     function resolveEntities(ext, detected, args) {
-        var codeRe = new RegExp((ext.context && ext.context.codeRe) || '^\\d{4,6}$');
+        var c = ext.context || {}, codeRe = new RegExp(c.codeRe || '^\\d{4,6}$'), map = c.nameToCode || {};
         var a = args || {}, d = (detected && detected.entities) || {};
-        var argCode = str(a.code).trim(), argName = str(a.name).trim();
-        var code = codeRe.test(argCode) ? argCode : (codeRe.test(str(d.code)) ? str(d.code) : '');
+        var fromText = textEntities(ext, a.text);
+        var argCode = str(a.code).trim(), argName = str(a.name).trim() || fromText.name;
+        var code = codeRe.test(argCode) ? argCode : (codeRe.test(str(d.code)) ? str(d.code) : (codeRe.test(fromText.code) ? fromText.code : ''));
         var name = argName || str(d.name).trim();
+        if (!code && name && map[name]) code = str(map[name]);
         if (name === code) name = '';
         return { code: code, name: name };
     }
@@ -16715,6 +16730,7 @@ const holder = {};
                     code: { type: 'string', description: '股票代號（例如 2001）；省略時用目前網頁的代號' },
                     name: { type: 'string', description: '股票名稱（例如 大成鋼）；省略時用目前網頁的名稱' },
                     date: { type: 'string', description: '日期 yyyymmdd；省略時用今天' },
+                    text: { type: 'string', description: '使用者的原話（例如「為什麼大成鋼今天下跌」），會從中找股票名稱與代號' },
                 },
                 required: [],
             },
@@ -16730,7 +16746,7 @@ const holder = {};
         var det = detectContext(ext, input.ctx);
         var ent = resolveEntities(ext, det, input.args);
         if (!ent.code) return { ok: false, error: '找不到股票代號：請提供 code，或在股票網頁上使用' };
-        var date = str(input.date || (input.args && input.args.date)).replace(/\D/g, '');
+        var date = str((input.args && input.args.date) || input.date).replace(/\D/g, ''); // 呼叫端明說的日期優先，沒有才用今天
         var plans = planResearch(ext, ent, { date: date });
         var results = [];
         for (var i = 0; i < plans.length; i++) {
@@ -16764,7 +16780,7 @@ const holder = {};
 }).call(null, undefined, holder);
 return holder.FaExt;
 })();
-const FA_EXT_BUILTIN = [{"id":"stock_drop_cause","name":"股票下跌原因調查","description":"在股票網頁上，調查某檔股票今天為什麼漲跌（報價與成交量、當日新聞、三大法人買賣超），整理成 media-presentation 簡報的一章。","enabled":true,"context":{"urlPattern":"stock|quote|twse|tpex","codeRe":"^\\d{4,6}$","patterns":[{"re":"([^\\s()（）]{2,12})[（(](\\d{4,6})[)）]","name":1,"code":2},{"re":"[/=](\\d{4,6})(?!\\d)","code":1}]},"tool":{"name":"ext_stock_drop_cause","description":"調查一檔股票今天為什麼下跌或上漲：抓報價與成交量、當日新聞、三大法人買賣超，整理成可貢獻給簡報的段落（每筆附來源，抽不到寫查不到，不給買賣建議）。缺股票代號時會用目前網頁的代號與名稱。要做成簡報時，把結果的 deck 交給 render_presentation。"},"research":[{"id":"quote","label":"報價與成交量","url":"https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY?stockNo={code}&response=json&date={date}","extract":{"kind":"json_rows","rowsKey":"data","fieldsKey":"fields","pick":"last","count":1,"show":["收盤價","漲跌價差","成交股數"]}},{"id":"news","label":"近期新聞（Google 新聞搜尋，只留查詢日前兩天內）","url":"https://news.google.com/rss/search?q={name}%20{code}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant","needs":["name"],"extract":{"kind":"rss","max":5,"maxAgeDays":2,"must":["{name}","{code}"]}},{"id":"institutional","label":"三大法人買賣超","url":"https://www.twse.com.tw/rwd/zh/fund/T86?date={date}&selectType=ALL&response=json","extract":{"kind":"json_rows","rowsKey":"data","fieldsKey":"fields","match":{"col":0,"equals":"{code}"},"show":["外陸資買賣超股數(不含外資自營商)","投信買賣超股數","自營商買賣超股數"]}},{"id":"announce","label":"公開資訊觀測站重大訊息","url":"","optional":true,"extract":{"kind":"text","max":5}}],"contribute":{"target":"media-presentation","chapter":"{name}（{code}）下跌原因調查","position":"end","maxBulletsPerSlide":5},"disclaimer":"本簡報為公開資料整理，僅供參考，不構成任何投資建議；買賣請自行判斷並承擔風險。"}];
+const FA_EXT_BUILTIN = [{"id":"stock_drop_cause","name":"股票下跌原因調查","description":"在股票網頁上，調查某檔股票今天為什麼漲跌（報價與成交量、當日新聞、三大法人買賣超），整理成 media-presentation 簡報的一章。","enabled":true,"context":{"urlPattern":"stock|quote|twse|tpex","codeRe":"^\\d{4,6}$","patterns":[{"re":"([^\\s()（）]{2,12})[（(](\\d{4,6})[)）]","name":1,"code":2},{"re":"[/=](\\d{4,6})(?!\\d)","code":1}],"nameToCode":{"大成鋼":"2027"},"nameToCodeNote":"只收已確認的對照；缺的名稱請加入（或之後改查公開的上市公司清單）。"},"tool":{"name":"ext_stock_drop_cause","description":"調查一檔股票今天為什麼下跌或上漲：抓報價與成交量、當日新聞、三大法人買賣超，整理成可貢獻給簡報的段落（每筆附來源，抽不到寫查不到，不給買賣建議）。缺股票代號時會用目前網頁的代號與名稱。要做成簡報時，把結果的 deck 交給 render_presentation。"},"research":[{"id":"quote","label":"報價與成交量","url":"https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY?stockNo={code}&response=json&date={date}","extract":{"kind":"json_rows","rowsKey":"data","fieldsKey":"fields","pick":"last","count":1,"show":["日期","收盤價","漲跌價差","成交股數"]}},{"id":"news","label":"近期新聞（Google 新聞搜尋，只留查詢日前兩天內）","url":"https://news.google.com/rss/search?q={name}%20{code}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant","needs":["name"],"extract":{"kind":"rss","max":5,"maxAgeDays":2,"must":["{name}","{code}"]}},{"id":"institutional","label":"三大法人買賣超","url":"https://www.twse.com.tw/rwd/zh/fund/T86?date={date}&selectType=ALL&response=json","extract":{"kind":"json_rows","rowsKey":"data","fieldsKey":"fields","match":{"col":0,"equals":"{code}"},"show":["外陸資買賣超股數(不含外資自營商)","投信買賣超股數","自營商買賣超股數"]}},{"id":"announce","label":"公開資訊觀測站重大訊息","url":"","optional":true,"extract":{"kind":"text","max":5}}],"contribute":{"target":"media-presentation","chapter":"{name}（{code}）下跌原因調查","position":"end","maxBulletsPerSlide":5},"disclaimer":"本簡報為公開資料整理，僅供參考，不構成任何投資建議；買賣請自行判斷並承擔風險。"}];
 /* EXT-END */
 /* LANGCOLU-BEGIN */
 const FaLangColu = (function () {
@@ -127411,6 +127427,8 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         for (const a of (plan && plan.alternatives) || []) add(a.tool, a.intent, a.score);
         (extraTools || []).forEach((n) => add(n, '', extraScores && extraScores[n] != null ? extraScores[n] : 0.3)); // 橋接：這次請求本來要給線上模型挑的工具（只收登記過的）
         ['ref_lookup', 'browser_search', 'fetch_web_page'].forEach((n) => add(n, '', 0));
+        // 依分數由高到低排（FaRecipe.autoPick 假設第一名是最高分；目錄命中的分數與計畫分數不同尺度，不排的話命中的工具排在後面就選不到）
+        out.sort((a, b) => (Number(b.score) || 0) - (Number(a.score) || 0));
         if (onlyTools) { const ok = new Set(onlyTools); return out.filter((c) => ok.has(c.tool)).slice(0, 6); } // 橋接回 tool_calls 時，只能挑呼叫端真的給了的工具
         return out.slice(0, 6);
     }

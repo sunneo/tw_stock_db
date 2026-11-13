@@ -99,14 +99,30 @@
 
 | 項目 | 狀態 | 證據 |
 |---|---|---|
-| 擴充格式驗證（必要欄位、模板變數、正規表示式可編譯） | 已驗證（單元測試） | `renderer/src/ext/ext_core.test.js` |
-| 情境偵測（網址、標題、代號） | 已驗證（單元測試，固定字串） | 同上 |
-| 來源規劃與跳過原因 | 已驗證（單元測試） | 同上 |
-| `json_rows`／`rss`／`text` 抽取（固定快照） | 已驗證（單元測試，快照為手寫的仿真格式） | 同上 |
-| 數字核對、免責聲明、買賣建議過濾 | 已驗證（單元測試） | 同上 |
-| 貢獻到簡報片段符合 deck 格式（章、頁數、條列數上限） | 已驗證（單元測試，跟 `deck_core` 的 `LIMITS` 比對） | 同上 |
-| 真實公開頁面抽取（2026-11-13 抓取，見下） | 已驗證（固定快照＝真實回應；T86 節錄） | `renderer/src/ext/fixtures/` |
-| 宿主工具登記後，線上工具表與離線目錄看得到 | 未驗證（程式已接線，語法與建置通過；沒有啟動 Electron 看工具表） | — |
-| 離線 AI 經由 CoLU 路由選到這個工具 | 未驗證 | — |
-| 公開資訊觀測站重大訊息 | 未驗證（沒有網址模板，標示「未設定來源」） | — |
-| 桌面版（Electron）端到端 | 未驗證 | — |
+| 擴充格式驗證（必要欄位、模板變數、正規表示式可編譯、未設定網址須標 optional） | 已驗證（單元測試） | `renderer/src/ext/ext_core.test.js` |
+| 情境偵測（網址閘門、標題、代號）與原話（`text`）抽名稱、代號（字典 `nameToCode`） | 已驗證（單元測試，固定字串）；字典只有「大成鋼→2027」一筆，覆蓋率低 | 同上 |
+| 來源規劃與缺條件跳過（缺日期、缺名稱、未設定網址） | 已驗證（單元測試） | 同上 |
+| `json_rows`／`rss`（含 `maxAgeDays`）／`text` 抽取：固定的真實回應快照 | 已驗證（單元測試，快照＝2026-11-13 真實回應；T86 節錄） | `renderer/src/ext/fixtures/` |
+| 數字核對（千分位先去掉）、買賣建議過濾、免責聲明、貢獻到 deck 的版面上限 | 已驗證（單元測試） | `ext_core.test.js` |
+| 工具參數的日期優先順序（呼叫端明說的日期優先） | 已驗證（單元測試；修正過一個錯誤：原本被今天覆蓋） | 同上 |
+| 合併 desktop-app 後嵌入區重新嵌入、無衝突標記、語法檢查、建置 | 已驗證（`embed-code-ui.js`、`build-assistant.js`、`node --check`） | 本分支 |
+| **真 Electron：工具登錄在 `fa.tools`，歸入 host_tools（category host_app），簡報代理人（media-presentation）的系統提示借用到它，離線目錄搜尋（catalog）命中** | 已驗證（`scripts/eval/ext_points.run.js` + `ext_points.eval.js`，xvfb） | 最後一次實測紀錄（見下） |
+| **線上雲端工具表（實際送給雲端模型的 tool 定義）** | 未直接驗證：只確認 `fa.tools` 有它，沒有抓雲端請求內容 | — |
+| **真 Electron：離線路由（`_otPlan` → 目錄命中當 extraTools → `_recipeAnswer` planOnly、noModel）對「為什麼大成鋼今天下跌」選到 `ext_stock_drop_cause`，欄位 `text` 由程式填入** | 已驗證（同上；修正過一個缺陷：候選未依分數排序，命中的工具排在後面，`autoPick` 選不到） | 同上 |
+| **真 Electron：執行工具，經產品的 CORS 代理抓真實公開頁面** | 部分驗證：TWSE 個股日成交 200、有資料；TWSE T86 200（今天尚未公布，查不到）；Google 新聞 RSS 經代理回 HTTP 403（查不到，如實標示） | 同上 |
+| 真實公開頁面、node 直接抓取（不經產品代理）：TWSE STOCK_DAY、T86、Google 新聞 RSS | 已驗證（2026-11-13 curl 抓取，格式與欄位名稱已比對） | `renderer/src/ext/fixtures/` |
+| 簡報每頁附來源、最後一頁為免責聲明 | 已驗證（真 Electron 產出的 deck 結構，與單元測試） | 同上 |
+| 公開資訊觀測站重大訊息 | 未驗證（沒有網址模板，標示「未設定來源網址」） | — |
+| 離線 CoLU 的完整輸入→工具→簡報流程（不只路由） | 未驗證（只到工具執行；簡報的 render_presentation 沒有在離線路徑裡跑） | — |
+| 真實「今天」的完整資料（收盤後的 T86、新聞） | 未驗證（實測時間 11/13 中午，市場未收盤、T86 尚未公布） | — |
+
+### 最後一次真 Electron 實測（2026-11-13，xvfb，隔離 userData）
+
+- 離線路由：`為什麼大成鋼今天下跌` → 選到 `ext_stock_drop_cause`，參數 `{"text":"為什麼大成鋼今天下跌"}`；工具內解出 代號 2027、名稱 大成鋼。
+- 實際抓取（產品代理）：
+  - `https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY?stockNo=2027&response=json&date=20261113`：ok，最後一列為 11/12（11/13 尚未有資料），收盤 49.05、漲跌 −1.05、成交股數 18,068,619。
+  - `https://news.google.com/rss/search?q=%E5%A4%A7%E6%88%90%E9%8B%BC%202027&hl=zh-TW&gl=TW&ceid=TW:zh-Hant`：HTTP 403（產品代理被拒），標示「查不到（抓取失敗：HTTP 403）」。
+  - `https://www.twse.com.tw/rwd/zh/fund/T86?date=20261113&selectType=ALL&response=json`：ok 但無資料列（今天尚未公布），標示「查不到」。
+  - 公開資訊觀測站：未設定來源，標示「查不到（未設定來源網址）」。
+- 簡報結構：封面、報價與成交量（4 條、附來源）、近期新聞（查不到）、三大法人（查不到）、重大訊息（查不到）、免責聲明（最後一頁）。
+- 實測耗時約 0.9 秒（工具內部）。

@@ -52,6 +52,9 @@ const STOCK_PAGE_TITLE = '大成鋼(2027) 股價 - 股市網站';
     check('context: url code must be followed by non-digit', d5.matched && d5.entities.code === '2027', d5);
     check('resolve: args override page, page fills gaps', JSON.stringify(X.resolveEntities(EX, d2, { code: '2330' })) === '{"code":"2330","name":"大成鋼"}', X.resolveEntities(EX, d2, { code: '2330' }));
     check('resolve: bad code from args is ignored', X.resolveEntities(EX, d2, { code: 'abc' }).code === '2027');
+    check('text: name from the user sentence via nameToCode', JSON.stringify(X.resolveEntities(EX, null, { text: '為什麼大成鋼今天下跌' })) === '{"code":"2027","name":"大成鋼"}', X.resolveEntities(EX, null, { text: '為什麼大成鋼今天下跌' }));
+    check('text: code digits in the sentence', X.resolveEntities(EX, null, { text: '2027 為什麼跌' }).code === '2027');
+    check('text: unknown name gives no code (honest)', X.resolveEntities(EX, null, { text: '為什麼台積電今天下跌' }).code === '', X.resolveEntities(EX, null, { text: '為什麼台積電今天下跌' }));
     check('resolve: no page, no args → empty code', X.resolveEntities(EX, null, {}).code === '');
 
     // ---- 來源規劃 ----
@@ -65,7 +68,7 @@ const STOCK_PAGE_TITLE = '大成鋼(2027) 股價 - 股市網站';
 
     // ---- 抽取 ----
     const q = X.extractSource(plan[0], TWSE_DAY, ent);
-    check('extract json_rows: last row, shown fields', q.facts.length === 3 && q.facts[0].text === '收盤價：49.05' && q.facts[1].text === '漲跌價差：-1.05' && q.facts[2].text === '成交股數：18,068,619', q);
+    check('extract json_rows: last row, shown fields', q.facts.length === 4 && q.facts[0].text === '日期：115/11/12' && q.facts[1].text === '收盤價：49.05' && q.facts[2].text === '漲跌價差：-1.05' && q.facts[3].text === '成交股數：18,068,619', q);
     check('extract: source carried on the result', q.source.label === '報價與成交量' && q.source.url.indexOf('twse.com.tw') > 0);
     const inst = X.extractSource(plan[2], TWSE_T86, ent);
     check('extract json_rows: match by code', inst.facts.length === 3 && inst.facts[0].text === '外陸資買賣超股數(不含外資自營商)：-1,139,465', inst);
@@ -138,6 +141,9 @@ const STOCK_PAGE_TITLE = '大成鋼(2027) 股價 - 股市網站';
     check('investigate: statuses', inv.results[0].status === 'ok' && inv.results[1].status === 'ok' && inv.results[2].status === 'ok', inv.results);
     check('investigate: deck contribution present and valid shape', inv.deck && inv.deck.chapters.length === 1 && inv.deck.chapters[0].slides.slice(-1)[0].title === '免責聲明', inv.deckError);
     check('investigate: unavailable lists the skipped source', inv.unavailable.length === 1 && inv.unavailable[0].id === 'announce', inv.unavailable);
+    const argDate = await X.investigate(EX, { args: { code: '2027', name: '大成鋼', date: '20261111' }, date: '20261113', fetchText: async (u) => { calls2.push(u); return null; } });
+    check('investigate: date from args beats the default date', argDate.results[0].url.indexOf('date=20261111') > 0, argDate.results[0].url);
+    const calls2 = [];
     const noCode = await X.investigate(EX, { ctx: { url: 'https://stock.example/home', title: '首頁' }, fetchText: async () => null });
     check('investigate: no code → honest error', !noCode.ok && /找不到股票代號/.test(noCode.error), noCode);
     const throwing = await X.investigate(EX, { args: { code: '2027', name: '大成鋼' }, date: '20261112', fetchText: async () => { throw new Error('網路斷線'); } });
