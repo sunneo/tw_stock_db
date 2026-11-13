@@ -6892,12 +6892,23 @@ function _renderAiStockChartCanvas(bars, opts) {
 // 時間範圍，交給_renderAiStockChartCanvas畫圖。跟其他AI能力一致的錯誤處理
 // 慣例——查無資料/範圍內沒有K棒都回傳{available:false, reason}，不丟例外。
 async function renderAiStockChart(params) {
-  const rawCode = String(params.code || '').trim();
+  let overlayEntry = null;
+  if (params.from_result) {
+    overlayEntry = AiResultStore.get(params.from_result);
+    if (!overlayEntry) return aiResultNotFound(params.from_result);
+    if (!overlayEntry.raw || !overlayEntry.raw.available || overlayEntry.kind !== 'stock_diagnosis') {
+      return { available: false, reason: `result_id "${params.from_result}" 不是diagnose_stock的結果（種類：${overlayEntry.kind}），from_result只能帶診斷結果的編號` };
+    }
+  }
+  const rawCode = String(params.code || (overlayEntry ? overlayEntry.raw.stock_code : '') || '').trim();
   if (!rawCode) return { available: false, reason: '缺少股票代號(code)' };
   const code = resolveAiStockCode(rawCode);
   if (!code) return aiStockCodeNotFoundError(rawCode);
+  if (overlayEntry && overlayEntry.raw.stock_code !== code) {
+    return { available: false, reason: `from_result是${overlayEntry.raw.stock_code}的診斷，跟要畫的${code}不是同一檔，不能把線畫到別檔股票上` };
+  }
 
-  const range = params.range || {};
+  const range = params.range || (overlayEntry ? { days: 120 } : {});
   // tw_stock_db客製: range.intraday===true（或有給range.minutes）代表AI
   // 要的是「今天」的分鐘級走勢圖，不是日K——資料來源改成IntradayFeed
   // （跟人類使用者「走勢圖」分頁看到的同一份即時輪詢+Yahoo backfill資料，
@@ -6941,12 +6952,28 @@ async function renderAiStockChart(params) {
     title = `${code} ${info ? info.stock_name : ''}　${bars[0].trade_date} ~ ${bars[bars.length - 1].trade_date}`;
   }
 
+  let overlay = { lines: [], markers: [] };
+  let scale = params.scale;
+  if (overlayEntry && !isIntraday) {
+    overlay = aiOverlayFromDiagnosis(overlayEntry.raw, Array.isArray(params.overlay) ? params.overlay : null, bars);
+    if (!scale) {
+      // 畫上去的水平線不要被圖的上下緣切掉：Y軸範圍把這些價位一併納入
+      let lo = Math.min(...bars.map(b => b.low)), hi = Math.max(...bars.map(b => b.high));
+      for (const l of overlay.lines) {
+        if (l.type === 'horizontal') { lo = Math.min(lo, l.price); hi = Math.max(hi, l.price); }
+        else if (l.type === 'trend') { lo = Math.min(lo, l.to.price); hi = Math.max(hi, l.to.price); }
+      }
+      const pad = (hi - lo) * 0.08 || hi * 0.02 || 1;
+      scale = { min: lo - pad, max: hi + pad };
+    }
+  }
+
   let dataUrl;
   try {
     dataUrl = _renderAiStockChartCanvas(bars, {
-      scale: params.scale,
-      markers: Array.isArray(params.markers) ? params.markers : [],
-      lines: Array.isArray(params.lines) ? params.lines : [],
+      scale,
+      markers: [...overlay.markers, ...(Array.isArray(params.markers) ? params.markers : [])],
+      lines: [...overlay.lines, ...(Array.isArray(params.lines) ? params.lines : [])],
       indicators: Array.isArray(params.indicators) ? params.indicators : [],
       title,
       isIntraday,
@@ -6986,6 +7013,14 @@ async function renderAiStockChart(params) {
     // 就是把這個編號原樣抄進slides陣列的image_ref欄位，不要嘗試自己填dataUrl。
     image_ref: AiImageRegistry.put(dataUrl),
   };
+  // 圖也進結果倉庫：list_results看得到、跟引用的診斷有關聯（overlay_of）
+  const chartEntry = AiResultStore.put({
+    kind: 'chart', rows: [{ ...meta, title, indicators: Array.isArray(params.indicators) ? params.indicators : [], overlay_lines: overlay.lines.length, overlay_markers: overlay.markers.length }],
+    subject: { stock_code: code, stock_name: info ? info.stock_name : null }, meta: { stock_code: code, image_ref: meta.image_ref },
+  });
+  if (overlayEntry) AiResultStore.link(chartEntry.id, overlayEntry.id, 'overlay_of', `圖上的線與標記取自診斷 ${overlayEntry.id}`);
+  meta.result_id = chartEntry.id;
+  if (overlayEntry) meta.overlay = { from_result: overlayEntry.id, lines: overlay.lines.map(l => l.label).filter(Boolean), markers: overlay.markers.length };
   return { type: 'image', dataUrl, meta };
 }
 
@@ -7470,6 +7505,294 @@ function toToonArray(arr) {
   return header + '\n' + rows.join('\n');
 }
 
+/* ════════════════════════════════════════
+   AI資料API：JSONL＋分頁＋結果倉庫（2026-11-13）
+   問題：工具原本直接把整份結果塞回對話——K棒一次上百行、診斷是一大包巢狀物件、批次結果一長串，
+   模型要嘛吞不下（被截斷、觸發壓縮），要嘛只看到開頭就下結論；產圖、匯出又得靠模型把數字原樣抄一遍。
+   做法（參考藏書閣「目錄→摘要→細節、每項指回來源行號、關聯、記憶」的結構，但這邊是自己的資料倉庫）：
+   ① 每份結果（K棒、清單、診斷、批次結果、圖）存進倉庫，給result_id；對話裡只回第一頁。
+   ② 三層：outline（目錄：每段從第幾行到第幾行）→ summary（摘要：統計與關鍵句，每項附行號）→ detail（逐行原始資料，
+      JSONL，翻頁，絕不截斷）。read_result可以指定layer、where（欄位篩選）、q（關鍵字找）。
+   ③ 關聯：同一檔股票的結果互相連結、圖指回它引用的診斷（只用能核對的證據：股票代號、result_id），list_results／result_links看。
+   ④ 記憶：倉庫在頁面裡、不在對話裡，對話被壓縮後result_id仍有效；產圖(render_stock_chart的from_result)與匯出
+      (export_document的result_id)直接從倉庫取，模型不用再把數字抄一遍。
+   限制：只存在這個分頁的記憶體（最近40份，重新整理就清空）；目前沒有向量檢索，q是字面比對。
+   ════════════════════════════════════════ */
+const AI_PAGE_DEFAULT = 50;
+const AI_PAGE_MAX = 200;
+
+const AiResultStore = (() => {
+  const MAX_ENTRIES = 40;
+  const store = new Map();
+  let seq = 0;
+  const REVERSE = { overlay_of: 'overlaid_by', overlaid_by: 'overlay_of', same_stock: 'same_stock' };
+  function link(aId, bId, relation, evidence) {
+    const A = store.get(aId), B = store.get(bId);
+    if (!A || !B) return;
+    // 有更具體的關係（例如圖引用診斷）就不再留「同一檔股票」這條籠統的
+    if (relation !== 'same_stock') {
+      A.links = A.links.filter(l => !(l.to === bId && l.relation === 'same_stock'));
+      B.links = B.links.filter(l => !(l.to === aId && l.relation === 'same_stock'));
+    }
+    if (relation === 'same_stock' && (A.links.some(l => l.to === bId) || B.links.some(l => l.to === aId))) return;
+    if (!A.links.some(l => l.to === bId && l.relation === relation)) A.links.push({ to: bId, relation, evidence });
+    const back = REVERSE[relation] || relation;
+    if (!B.links.some(l => l.to === aId && l.relation === back)) B.links.push({ to: aId, relation: back, evidence });
+  }
+  function remove(id) {
+    store.delete(id);
+    for (const e of store.values()) e.links = e.links.filter(l => l.to !== id);
+  }
+  function put(entry) {
+    const id = `res_${++seq}`;
+    const full = { ...entry, id, created_at: new Date().toISOString(), links: [] };
+    store.set(id, full);
+    const code = full.subject && full.subject.stock_code;
+    if (code) {
+      for (const other of store.values()) {
+        if (other.id !== id && other.subject && other.subject.stock_code === code) link(id, other.id, 'same_stock', `stock_code=${code}`);
+      }
+    }
+    while (store.size > MAX_ENTRIES) remove(store.keys().next().value);
+    return full;
+  }
+  function get(id) { return store.get(String(id || '')) || null; }
+  function list() { return [...store.values()]; }
+  return { put, get, list, link };
+})();
+
+function aiClampInt(v, def, min, max) {
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.min(max, Math.max(min, Math.floor(n))) : def;
+}
+function aiParseFields(v) {
+  if (Array.isArray(v)) return v.map(String);
+  if (typeof v === 'string' && v.trim()) return v.split(',').map(x => x.trim()).filter(Boolean);
+  return null;
+}
+function aiParseWhere(v) {
+  if (v && typeof v === 'object' && !Array.isArray(v)) return v;
+  if (typeof v === 'string' && v.trim()) {
+    try { const o = JSON.parse(v); return (o && typeof o === 'object' && !Array.isArray(o)) ? o : null; } catch { return null; }
+  }
+  return null;
+}
+function aiMatchWhere(row, where) {
+  for (const [k, want] of Object.entries(where)) {
+    const got = row[k];
+    if (Array.isArray(want) ? !want.map(String).includes(String(got)) : String(got) !== String(want)) return false;
+  }
+  return true;
+}
+// 浮點數雜訊（float32存成48.099998474121094）一律整理成最多4位小數，不改整數與字串；只處理第一層欄位
+function aiTidyRow(row) {
+  if (!row || typeof row !== 'object' || Array.isArray(row)) return row;
+  const o = {};
+  for (const [k, v] of Object.entries(row)) o[k] = (typeof v === 'number' && !Number.isInteger(v)) ? Math.round(v * 10000) / 10000 : v;
+  return o;
+}
+
+// 第0層：目錄——每一段從第幾行到第幾行、是什麼
+function aiOutlineRows(entry) {
+  const rows = entry.rows, out = [];
+  if (!rows.length) return out;
+  if ('section' in rows[0]) {
+    let start = 0;
+    for (let i = 1; i <= rows.length; i++) {
+      if (i === rows.length || rows[i].section !== rows[start].section) {
+        out.push({ layer: 'outline', label: rows[start].section, lines: `${start + 1}-${i}`, count: i - start });
+        start = i;
+      }
+    }
+    return out;
+  }
+  const key = Object.keys(rows[0])[0];
+  const STEP = AI_PAGE_DEFAULT;
+  for (let i = 0; i < rows.length; i += STEP) {
+    const j = Math.min(rows.length, i + STEP);
+    out.push({ layer: 'outline', label: `${key} ${rows[i][key]} ~ ${rows[j - 1][key]}`, lines: `${i + 1}-${j}`, count: j - i });
+  }
+  return out;
+}
+// 第1層：摘要——只有能從原始資料直接算出、並指回行號的東西（不改寫、不推測）
+function aiSummaryRows(entry) {
+  const rows = entry.rows, out = [];
+  if (!rows.length) return out;
+  if (entry.kind === 'stock_diagnosis') {
+    const take = (pred) => rows.map((r, i) => ({ r, n: i + 1 })).filter(x => pred(x.r));
+    for (const x of take(r => ['summary', 'scenario'].includes(r.section))) out.push({ layer: 'summary', lines: `${x.n}`, ...x.r });
+    const r1 = take(r => r.section === 'resistance' && r.rank === 1)[0], s1 = take(r => r.section === 'support' && r.rank === 1)[0];
+    if (r1) out.push({ layer: 'summary', lines: `${r1.n}`, ...r1.r });
+    if (s1) out.push({ layer: 'summary', lines: `${s1.n}`, ...s1.r });
+    for (const x of take(r => r.section === 'pattern')) out.push({ layer: 'summary', lines: `${x.n}`, section: 'pattern', label: x.r.label, scale: x.r.scale, breakout_status: x.r.breakout && x.r.breakout.status_text, target: x.r.target });
+    return out;
+  }
+  out.push({ layer: 'summary', stat: 'count', value: rows.length });
+  const keys = Object.keys(rows[0]);
+  for (const k of keys) {
+    const vals = rows.map((r, i) => ({ v: r[k], n: i + 1 })).filter(x => typeof x.v === 'number' && Number.isFinite(x.v));
+    if (vals.length < rows.length * 0.5 || vals.length < 2) continue;
+    let mn = vals[0], mx = vals[0], sum = 0;
+    for (const x of vals) { if (x.v < mn.v) mn = x; if (x.v > mx.v) mx = x; sum += x.v; }
+    out.push({ layer: 'summary', field: k, min: mn.v, min_at_line: mn.n, max: mx.v, max_at_line: mx.n, avg: Math.round(sum / vals.length * 10000) / 10000, first_line_value: rows[0][k], last_line_value: rows[rows.length - 1][k] });
+  }
+  return out;
+}
+
+function aiJsonlPage(entry, a) {
+  const layer = ['outline', 'summary'].includes(String(a.layer || '').toLowerCase()) ? String(a.layer).toLowerCase() : 'detail';
+  const fields = aiParseFields(a.fields);
+  const where = aiParseWhere(a.where);
+  const q = typeof a.q === 'string' ? a.q.trim() : '';
+  let indexed;
+  if (layer === 'outline') indexed = aiOutlineRows(entry).map((r, i) => ({ r, n: null }));
+  else if (layer === 'summary') indexed = aiSummaryRows(entry).map(r => ({ r, n: null }));
+  else {
+    indexed = entry.rows.map((r, i) => ({ r, n: i + 1 }));
+    if (where) indexed = indexed.filter(x => aiMatchWhere(x.r, where));
+    if (q) {
+      const toks = q.toLowerCase().split(/\s+/).filter(Boolean);
+      indexed = indexed.map(x => {
+        const hay = JSON.stringify(x.r).toLowerCase();
+        return { ...x, score: toks.reduce((c, t) => c + (hay.includes(t) ? 1 : 0), 0) };
+      }).filter(x => x.score > 0).sort((p, q2) => q2.score - p.score || p.n - q2.n);
+    }
+  }
+  const total = indexed.length;
+  const offset = aiClampInt(a.offset, 0, 0, total);
+  const limit = aiClampInt(a.limit, entry.pageSize || AI_PAGE_DEFAULT, 1, AI_PAGE_MAX);
+  const slice = indexed.slice(offset, offset + limit);
+  const next = offset + slice.length;
+  const hasMore = next < total;
+  const nextArgs = { result_id: entry.id, offset: next, ...(layer !== 'detail' ? { layer } : {}), ...(where ? { where } : {}), ...(q ? { q } : {}), ...(fields ? { fields } : {}) };
+  const meta = {
+    result_id: entry.id, kind: entry.kind, layer, total, offset, returned: slice.length, has_more: hasMore,
+    ...(hasMore ? { next_offset: next, next_call: `read_result(${JSON.stringify(nextArgs)})` } : {}),
+    // 每行欄位不一樣的結果（診斷：由section決定其餘欄位）不列欄位清單，免得把第一行的欄位誤當成全部
+    ...(layer === 'detail' ? { ...(entry.rows[0] && 'section' in entry.rows[0] && !fields ? { row_shape: '每行有section欄位，由它決定其餘欄位' } : { fields: fields || (entry.rows[0] ? Object.keys(entry.rows[0]) : []) }), whole_result_lines: entry.rows.length } : {}),
+    ...(where ? { where } : {}), ...(q ? { q } : {}),
+    ...(entry.meta || {}),
+  };
+  const lines = [JSON.stringify({ _meta: meta })];
+  for (const x of slice) {
+    let row = x.r;
+    if (fields && layer === 'detail') { const o = {}; for (const f of fields) if (f in row) o[f] = row[f]; row = o; }
+    lines.push(JSON.stringify(x.n != null ? { _n: x.n, ...row } : row));
+  }
+  return lines.join('\n');
+}
+function aiRespondRows(kind, rows, a, opts = {}) {
+  const entry = AiResultStore.put({
+    kind, rows: rows.map(aiTidyRow), raw: opts.raw, meta: opts.meta, pageSize: opts.pageSize, subject: opts.subject || null,
+  });
+  return aiJsonlPage(entry, a || {});
+}
+// 沒有result_id的純清單（list_results／result_links自己）：同樣的JSONL格式，但不存進倉庫
+function aiPlainJsonl(meta, rows) {
+  return [JSON.stringify({ _meta: { ...meta, total: rows.length } }), ...rows.map(r => JSON.stringify(r))].join('\n');
+}
+function aiResultNotFound(id) {
+  return { ok: false, error: `找不到result_id "${id || ''}"（結果只保留最近40份、重新整理頁面就清空）。用list_results看目前還有哪些，或重新呼叫原本的工具取得新編號，不要自己編造result_id。` };
+}
+
+// 診斷結果展開成「一行一段」：摘要在最前面，細節在後面，一頁就能看到大意，要深入再用where/section取某一段
+function diagnosisToRows(diag) {
+  const rows = [];
+  const add = (section, data) => rows.push({ section, ...data });
+  add('summary', { stock_code: diag.stock_code, stock_name: diag.stock_name, as_of_date: diag.as_of_date, text: diag.plain_summary });
+  if (diag.scenario) {
+    add('scenario', { headline: diag.scenario.headline, bull_trigger: diag.scenario.bull_trigger, bear_trigger: diag.scenario.bear_trigger });
+    for (const t of (diag.scenario.notes || [])) add('scenario_note', { text: t });
+  }
+  add('position', diag.position);
+  const tr = diag.trend || {};
+  add('trend', { label: tr.label, label_simple: tr.label_simple, recent_high: tr.recent_high, recent_low: tr.recent_low, prior_high: tr.prior_high, prior_low: tr.prior_low, swing: tr.swing });
+  const kl = diag.key_levels;
+  if (kl) {
+    kl.resistance.forEach((x, i) => add('resistance', { rank: i + 1, ...x }));
+    kl.support.forEach((x, i) => add('support', { rank: i + 1, ...x }));
+    kl.period_highs.forEach(x => add('period_high', x));
+    add('key_levels_info', { at_new_high: kl.at_new_high, broken_period_highs: kl.broken_period_highs, note: kl.note });
+  }
+  for (const pp of (diag.pattern?.detected || [])) {
+    add('pattern', {
+      type: pp.type, label: pp.label, scale: pp.scaleLabel, lookback_days: pp.scaleLookbackDays, target: pp.target,
+      breakout: pp.breakout,
+      points: (pp.points || []).map(x => ({ label: x.label, price: x.price, date: x.date })),
+      necklines: (pp.necklines || []).map(nl => nl.points
+        ? { points: nl.points.map(x => ({ label: x.label, price: x.price, date: x.date })) }
+        : { resistance: nl.resistance, support: nl.support, from_date: nl.fromDate, to_date: nl.toDate }),
+      basis: pp.basis, note: pp.note,
+    });
+  }
+  if (!(diag.pattern?.detected || []).length && diag.pattern?.note) add('pattern_note', { text: diag.pattern.note });
+  add('kbar_quality', diag.kbar_quality);
+  add('volume_price', diag.volume_price);
+  if (diag.entry_exit?.measured_move) add('measured_move', diag.entry_exit.measured_move);
+  if (diag.entry_exit) { const { measured_move, ...rest } = diag.entry_exit; add('entry_exit', rest); }
+  add('market_linkage', diag.market_linkage);
+  add('risk', { text: diag.risk_note });
+  return rows;
+}
+
+// 用診斷結果自動產生圖上的線與標記（頸線、壓力／支撐、目標價、型態轉折點、趨勢停損）——
+// 模型不用把價位與日期再抄一遍，圖上的數字就是診斷的數字。
+const AI_OVERLAY_DEFAULT = ['necklines', 'levels', 'targets', 'points', 'trend_stop'];
+function aiOverlayFromDiagnosis(diag, include, bars) {
+  const inc = new Set(include && include.length ? include : AI_OVERLAY_DEFAULT);
+  const lines = [], markers = [];
+  const n = bars.length, firstDate = bars[0].trade_date, lastDate = bars[n - 1].trade_date;
+  const idxOf = (d) => _aiChartNearestBarIndex(bars, d);
+  const seen = new Set();
+  const once = (key) => { if (seen.has(key)) return false; seen.add(key); return true; };
+  const lo = Math.min(...bars.map(b => b.low)), hi = Math.max(...bars.map(b => b.high));
+  const nearRange = (price) => price >= lo * 0.88 && price <= hi * 1.15; // 離K棒範圍太遠的價位不畫，免得把整張圖壓扁
+  if (inc.has('necklines')) {
+    for (const p of (diag.pattern?.detected || [])) {
+      const tag = `${p.label}${p.scaleLabel ? '(' + p.scaleLabel.replace('型態', '') + ')' : ''}`;
+      for (const nl of (p.necklines || [])) {
+        if (nl.resistance != null && nl.support != null) {
+          if (once(`h|${nl.resistance}`) && nearRange(nl.resistance)) lines.push({ type: 'horizontal', price: nl.resistance, color: '#f59e0b', dash: true, label: `${tag}上緣 ${nl.resistance}` });
+          if (once(`h|${nl.support}`) && nearRange(nl.support)) lines.push({ type: 'horizontal', price: nl.support, color: '#f59e0b', dash: true, label: `${tag}下緣 ${nl.support}` });
+        } else if (nl.points && nl.points.length >= 2) {
+          const p1 = nl.points[0], p2 = nl.points[nl.points.length - 1];
+          const i1 = idxOf(p1.date), i2 = idxOf(p2.date);
+          const slope = i2 !== i1 ? (p2.price - p1.price) / (i2 - i1) : 0;
+          const endPrice = Math.round((p2.price + slope * (n - 1 - i2)) * 100) / 100; // 頸線往右延伸到最後一根K棒
+          if (once(`t|${p1.date}|${p1.price}|${p2.date}|${p2.price}`)) lines.push({ type: 'trend', from: { date: p1.date, price: p1.price }, to: { date: lastDate, price: endPrice }, color: '#f59e0b', label: `${tag}頸線` });
+        } else if (nl.points && nl.points.length === 1) {
+          const pr = nl.points[0].price;
+          if (once(`h|${pr}`) && nearRange(pr)) lines.push({ type: 'horizontal', price: pr, color: '#f59e0b', label: `${tag}頸線 ${pr}` });
+        }
+      }
+    }
+  }
+  if (inc.has('levels') && diag.key_levels) {
+    for (const x of diag.key_levels.resistance.slice(0, 2)) if (once(`h|${x.price}`) && nearRange(x.price)) lines.push({ type: 'horizontal', price: x.price, color: '#ef4444', dash: true, label: `壓力 ${x.price}（${x.source}）` });
+    for (const x of diag.key_levels.support.slice(0, 2)) if (once(`h|${x.price}`) && nearRange(x.price)) lines.push({ type: 'horizontal', price: x.price, color: '#22c55e', dash: true, label: `支撐 ${x.price}（${x.source}）` });
+  }
+  if (inc.has('targets')) {
+    const tg = [];
+    for (const p of (diag.pattern?.detected || [])) if (p.target != null) tg.push({ price: p.target, label: `${p.label}目標` });
+    const mm = diag.entry_exit?.measured_move;
+    if (mm?.available) { if (mm.n_measure) tg.push({ price: mm.n_measure.target, label: 'N字測量目標' }); if (mm.equal_measure) tg.push({ price: mm.equal_measure.target, label: '等幅測量目標' }); }
+    for (const t of tg) if (once(`h|${t.price}`) && nearRange(t.price)) lines.push({ type: 'horizontal', price: t.price, color: '#3b82f6', dash: true, label: `${t.label} ${t.price}` });
+  }
+  if (inc.has('trend_stop') && diag.entry_exit?.trend_stop_price != null) {
+    const pr = diag.entry_exit.trend_stop_price;
+    if (once(`h|${pr}`) && nearRange(pr)) lines.push({ type: 'horizontal', price: pr, color: '#94a3b8', dash: true, label: `趨勢停損（月線）${pr}` });
+  }
+  if (inc.has('points')) {
+    for (const p of (diag.pattern?.detected || [])) {
+      for (const pt of (p.points || [])) {
+        if (!pt.date || pt.date < firstDate || pt.date > lastDate) continue;
+        if (once(`m|${pt.date}|${pt.price}`)) markers.push({ date: pt.date, price: pt.price, label: pt.label });
+      }
+    }
+  }
+  return { lines, markers };
+}
+
 // tw_stock_db客製: 給AI用的「型態辨識/技術分析原則」動態筆記，類似SKILL.md
 // 但故意不放進system prompt（system prompt每一輪對話都會重送，內容愈大
 // 愈快撐爆context——這是本次session修過好幾次的context膨脹問題的同一個
@@ -7500,6 +7823,7 @@ K棒品質(kbar_quality)：body_pct=|close-open|/open*100，≥2%才算實心K�
 - 旗形(flag)：噴出段3-10根漲跌≥15%，接盤整4-15根，盤整區間/回檔各≤噴出段一半，目標價=噴出段等幅測量。
 - 楔形(wedge)：60根內上下切線同向收斂，收斂幅度≥30%，目標價=等寬測量。
 
+【結果的讀法】diagnose_stock回傳JSONL，一行一段（summary、scenario、position、trend、resistance、support、period_high、pattern、kbar_quality…），下面講的欄位分別在對應那一行裡；where/section可以只取某一段。
 壓力與前高(key_levels)：resistance/support是由近到遠的價位清單（每個都附日期、來源、距現價%），period_highs是20/60/120/240日高（不含今天，close_above=已經收盤站上）；問「離前高多遠」「壓力在哪」一律引用這裡，不要自己從K棒找。nearest_resistance=最近的上方壓力，at_new_high=true代表上方已沒有前波高點。
 型態突破狀態(pattern.detected[].breakout)：型態偵測只找結構，頸線今天站上沒要看這個欄位——status=broken_valid(有效突破：突破當天K棒實體達標且量比≥1.2)/broken_unconfirmed(站上了但K棒或量不達標，problems列原因)/near(逼近，差NEAR%以內)/far/inside(箱型內)/failed(曾站上又收回，疑似假突破)/na(無頸線的型態如V型反轉、圓弧底)；days_since_break=突破後第幾天，retest=有沒有回測頸線。使用者說「做線成功／突破」時，用這個欄位核對，不是用有沒有偵測到型態來回答。
 趨勢(trend)：label改由真正的轉折點比較（trend.swing附最近兩個高點、兩個低點與日期；provisional=最後一個高低點還沒被後續K棒確認）；label_simple是舊的近10日對前20日極值比較，只在對照時參考。
@@ -7673,20 +7997,75 @@ const AI_CAPABILITIES = [
     handler: () => AI_ANALYSIS_PRINCIPLES,
   },
   {
+    name: 'read_result', category: '資料分頁',
+    description: '讀取先前某個工具回傳的完整結果（result_id見該次回傳第一行_meta）。三層可選：layer="outline"（目錄：每段在第幾行到第幾行）→ layer="summary"（摘要：統計與關鍵句，每項附行號）→ 預設"detail"（逐行原始資料）。detail可以用where（欄位等於某值的篩選，例如{"section":"pattern"}）、q（關鍵字，字面比對，依命中數排序）、fields（只取哪些欄位）、offset／limit翻頁。回傳是JSONL，第一行{"_meta":…}告訴你總共幾行、這頁幾行、還有沒有下一頁（has_more）與下一頁怎麼呼叫（next_call）。做完整的分析或報告時，不要因為結果很長就只讀第一頁或自己省略——把has_more翻完，或先看outline／summary再挑要深入的段落讀；結果存在頁面裡，不佔對話空間。',
+    params: {
+      result_id: '工具回傳的result_id，例如 "res_3"',
+      layer: '選填，"outline" | "summary" | "detail"（預設）',
+      offset: '選填，從第幾筆開始，預設0（用上一頁_meta.next_offset）',
+      limit: '選填，這頁幾筆，預設依結果種類（多半50），最多200',
+      fields: '選填，只回這些欄位，陣列或逗號分隔字串，例如 ["trade_date","close"]',
+      where: '選填物件，欄位等於某值才留下，值可以是陣列表示其中之一，例如 {"section":["resistance","support"]}',
+      q: '選填，關鍵字（空白分隔，任一個出現就算命中，依命中個數排序），字面比對',
+    },
+    handler: (a) => {
+      const entry = AiResultStore.get(a.result_id);
+      return entry ? aiJsonlPage(entry, a) : aiResultNotFound(a.result_id);
+    },
+  },
+  {
+    name: 'list_results', category: '資料分頁',
+    description: '列出這個頁面目前存著的所有分析結果（result_id、種類、哪一檔股票、總共幾行、有幾個關聯）——對話被壓縮、或做完整報告前想確認「手上已經有哪些資料」時用，這是你的記憶索引：結果不在對話裡、但在這裡都找得到。可以用stock_code只看某一檔。回傳是JSONL。',
+    params: { stock_code: '選填，只列這檔股票的結果' },
+    handler: (a) => {
+      const code = a.stock_code ? (resolveAiStockCode(a.stock_code) || String(a.stock_code)) : null;
+      const rows = AiResultStore.list()
+        .filter(e => !code || (e.subject && e.subject.stock_code === code))
+        .map(e => ({ result_id: e.id, kind: e.kind, stock_code: e.subject ? e.subject.stock_code : null, stock_name: e.subject ? e.subject.stock_name : null, total_lines: e.rows.length, links: e.links.length, created_at: e.created_at, as_of: e.meta ? (e.meta.as_of_date || e.meta.as_of || null) : null }));
+      return aiPlainJsonl({ kind: 'result_index', note: '用read_result({result_id})讀內容（可加layer看目錄或摘要）；result_links看它跟哪些結果有關聯。' }, rows);
+    },
+  },
+  {
+    name: 'result_links', category: '資料分頁',
+    description: '看某個結果跟哪些其他結果有關聯，每條關聯附證據：same_stock（同一檔股票，證據是股票代號）、overlay_of／overlaid_by（圖是用哪份診斷的線與標記畫的）。關聯只用能核對的證據建立（股票代號、result_id），不是猜的。做某檔股票的完整報告時，先看這個就知道它的診斷、K棒、圖各自的result_id。回傳是JSONL。',
+    params: { result_id: '要查關聯的result_id' },
+    handler: (a) => {
+      const e = AiResultStore.get(a.result_id);
+      if (!e) return aiResultNotFound(a.result_id);
+      const rows = e.links.map(l => { const o = AiResultStore.get(l.to); return { to: l.to, relation: l.relation, evidence: l.evidence, to_kind: o ? o.kind : null, to_total_lines: o ? o.rows.length : null }; });
+      return aiPlainJsonl({ result_id: e.id, kind: e.kind }, rows);
+    },
+  },
+  {
     name: 'get_price_history', category: '技術分析K棒',
-    description: '取得某檔股票近N天的日K OHLCV（開高低收量），依日期升冪排列，是「技術分析」分頁看到的同一份資料。若本機還沒有這檔股票的資料會自動先下載。⚠️回傳的是逐日原始K棒，天數越多佔用的對話上下文越多，一般分析問題請優先呼叫diagnose_stock（回傳的是均線/趨勢/型態等統計結果，遠比原始K棒精簡），只有使用者明確要看「逐日數字」或需要自己計算diagnose_stock沒提供的指標時才用這個工具，且limit盡量給小一點（預設60天已經涵蓋約3個月）。回傳格式是精簡的表格式文字，不是JSON陣列：第一行`[筆數]{欄位1,欄位2,...}:`宣告總筆數跟欄位順序，之後每行是一筆資料、值依欄位順序用逗號分隔（例如`[2]{trade_date,open,high,low,close,volume}:`接著兩行`2026-08-17,45.0,46.2,44.8,45.9,12000`），直接照欄位順序對應解讀即可。',
-    params: { code: '股票代號或公司名稱，例如 2330 或 台積電（名稱會自動解析成代號，唯一命中才會自動採用）', limit: '選填，天數，預設60，非必要不要超過120' },
+    description: '取得某檔股票的日K OHLCV（開高低收量，量的單位是股；價格已整理成最多4位小數），預設最近60天、由新到舊，是「技術分析」分頁看到的同一份資料。若本機還沒有這檔股票的資料會自動先下載。⚠️一般分析問題請優先呼叫diagnose_stock（均線、趨勢、型態、壓力支撐、突破狀態都算好了，比原始K棒精簡得多），只有使用者明確要看「逐日數字」、或需要自己計算diagnose_stock沒提供的指標時才用這個工具。回傳是JSONL：第一行{"_meta":…}（result_id、total、returned、has_more、next_call…），其後每行一筆、開頭的_n是這筆在整份結果裡的行號；還有下一頁就照_meta.next_call呼叫read_result，不要自己截斷、也不要跳著猜。',
+    params: { code: '股票代號或公司名稱，例如 2330 或 台積電（名稱會自動解析成代號，唯一命中才會自動採用）', days: '選填，往回看幾天的範圍，預設60，最多1500', start_date: '選填，YYYY-MM-DD，只要這天（含）之後', end_date: '選填，YYYY-MM-DD，只要這天（含）之前', order: "選填，'desc'（預設，由新到舊）或'asc'（由舊到新）", limit: '選填，這頁幾筆，預設50，最多200', offset: '選填，從第幾筆開始，預設0（翻頁請用read_result）' },
     handler: async (a) => {
       const code = resolveAiStockCode(a.code);
       if (!code) return aiStockCodeNotFoundError(a.code);
-      const limit = a.limit ? Number(a.limit) : 60;
-      await ensureStockHistoryLoadedForAi(code, limit);
-      return toToonArray(DBMgr.getPriceHistory(code, limit));
+      // 舊版的limit是「天數」；新版limit是每頁筆數。沒給days、但limit比預設大，當成舊用法的天數
+      const legacyDays = (a.days == null && Number(a.limit) > 60) ? Number(a.limit) : undefined;
+      let days = aiClampInt(a.days ?? legacyDays, 60, 1, 1500);
+      if (a.start_date) {
+        const calDays = Math.ceil((Date.now() - Date.parse(a.start_date)) / 86400000);
+        if (Number.isFinite(calDays)) days = Math.max(days, Math.min(1500, calDays + 5));
+      }
+      await ensureStockHistoryLoadedForAi(code, days);
+      let bars = DBMgr.getPriceHistory(code, days);
+      if (a.start_date) bars = bars.filter(b => b.trade_date >= a.start_date);
+      if (a.end_date) bars = bars.filter(b => b.trade_date <= a.end_date);
+      const info = DBMgr.getStockInfo(code);
+      const asc = String(a.order || '').toLowerCase() === 'asc';
+      const rows = asc ? bars : bars.slice().reverse();
+      return aiRespondRows('price_history', rows, a, {
+        subject: { stock_code: code, stock_name: info ? info.stock_name : null },
+        meta: { stock_code: code, stock_name: info ? info.stock_name : null, as_of_date: bars.length ? bars[bars.length - 1].trade_date : null, order: asc ? 'asc（由舊到新）' : 'desc（由新到舊）', unit_volume: '股' },
+      });
     },
   },
   {
     name: 'get_intraday_series', category: '走勢圖K棒',
-    description: '取得多檔股票「今天」盤中的分鐘級走勢（清單趨勢欄小圖用的同一份資料，來自中午/收盤後排程抓的盤中快照，粒度較粗、不是逐秒即時，只是輔助判斷用的原始數字）。⚠️如果是要「畫一張帶標記的今日走勢圖」給使用者看，改用render_stock_chart並在range裡加intraday:true（會用即時輪詢+Yahoo backfill的資料源畫出真正的分鐘K線圖，不是這個工具），這個工具只適合要看原始數字時用。查無資料的代號不會出現在回傳結果裡，代號完全解析不出來（打錯字/不存在）會在回傳裡的_errors欄位標出來。',
+    description: '取得多檔股票「今天」盤中的分鐘級走勢（清單趨勢欄小圖用的同一份資料，來自中午/收盤後排程抓的盤中快照，粒度較粗、不是逐秒即時，只是輔助判斷用的原始數字）。⚠️如果是要「畫一張帶標記的今日走勢圖」給使用者看，改用render_stock_chart並在range裡加intraday:true（會用即時輪詢+Yahoo backfill的資料源畫出真正的分鐘K線圖，不是這個工具），這個工具只適合要看原始數字時用。查無資料的代號不會出現在回傳結果裡，代號完全解析不出來（打錯字/不存在）會在回傳裡的_errors欄位標出來。回傳是JSONL：第一行{"_meta":…}（result_id、total、returned、has_more、next_call…），其後每行一筆、開頭的_n是這筆在整份結果裡的行號；還有下一頁就照_meta.next_call呼叫read_result，不要自己截斷、也不要跳著猜。',
     params: { codes: '股票代號或公司名稱陣列，例如 ["2330","2317"]（名稱會自動解析成代號）' },
     handler: (a) => {
       const inputs = Array.isArray(a.codes) ? a.codes : [a.codes];
@@ -7697,15 +8076,26 @@ const AI_CAPABILITIES = [
         if (code) codes.push(code); else errors.push(aiStockCodeNotFoundError(input).error);
       });
       const result = DBMgr.getBatchIntradaySeries(codes);
-      if (errors.length) result._errors = errors;
-      return result;
+      const rows = [];
+      for (const [code, arr] of Object.entries(result)) {
+        (arr || []).forEach((pt, i) => rows.push(pt && typeof pt === 'object' ? { code, ...pt } : { code, i, value: pt }));
+      }
+      return aiRespondRows('intraday_series', rows, a, { pageSize: 100, meta: { codes_found: Object.keys(result), ...(errors.length ? { errors } : {}) } });
     },
   },
   {
     name: 'get_market_index_history', category: '大盤/美股指數',
-    description: '取得大盤或美股觀察指標近N天的OHLCV，指數代號：TAIEX(加權指數)、TPEx(櫃買指數)、SOX(費城半導體)、SPX(標普500)、NASDAQ、DJI(道瓊)。',
-    params: { indexCode: '例如 TAIEX / SOX / DJI', limit: '選填，天數，預設250' },
-    handler: (a) => DBMgr.getMarketIndexHistory(a.indexCode, a.limit ? Number(a.limit) : 250),
+    description: '取得大盤或美股觀察指標近N天的OHLCV，指數代號：TAIEX(加權指數)、TPEx(櫃買指數)、SOX(費城半導體)、SPX(標普500)、NASDAQ、DJI(道瓊)。回傳是JSONL：第一行{"_meta":…}（result_id、total、returned、has_more、next_call…），其後每行一筆、開頭的_n是這筆在整份結果裡的行號；還有下一頁就照_meta.next_call呼叫read_result，不要自己截斷、也不要跳著猜。',
+    params: { indexCode: '例如 TAIEX / SOX / DJI', days: '選填，往回看幾天，預設250，最多1500', order: "選填，'desc'（預設，由新到舊）或'asc'", limit: '選填，這頁幾筆，預設50，最多200', offset: '選填，從第幾筆開始' },
+    handler: (a) => {
+      const days = aiClampInt(a.days ?? ((a.limit && Number(a.limit) > 200) ? a.limit : undefined), 250, 1, 1500);
+      const bars = DBMgr.getMarketIndexHistory(a.indexCode, days);
+      const asc = String(a.order || '').toLowerCase() === 'asc';
+      return aiRespondRows('market_index_history', asc ? bars : bars.slice().reverse(), a, {
+        subject: { index_code: a.indexCode },
+        meta: { index_code: a.indexCode, as_of_date: bars.length ? bars[bars.length - 1].trade_date : null, order: asc ? 'asc（由舊到新）' : 'desc（由新到舊）' },
+      });
+    },
   },
   {
     name: 'get_market_index_latest', category: '大盤/美股指數',
@@ -7721,15 +8111,15 @@ const AI_CAPABILITIES = [
   },
   {
     name: 'scan_sector_rotation', category: '選股',
-    description: '掃描全市場，依產業類股分組比較「哪些類股整體上漲、哪些整體下跌」（類股輪動），依平均漲跌%由高到低排序，每個回傳項目包含類股名稱、成分股數、平均漲跌%、上漲/下跌檔數。跟screen_strong_stocks不同：screen_strong_stocks是在全市場裡挑「個股」，這個是比較「類股」整體表現，回答「今天資金往哪個類股輪動」這類問題用這個。少於3檔股票的類股不列入（樣本太少，平均值容易被單一個股影響）。',
+    description: '掃描全市場，依產業類股分組比較「哪些類股整體上漲、哪些整體下跌」（類股輪動），依平均漲跌%由高到低排序，每個回傳項目包含類股名稱、成分股數、平均漲跌%、上漲/下跌檔數。跟screen_strong_stocks不同：screen_strong_stocks是在全市場裡挑「個股」，這個是比較「類股」整體表現，回答「今天資金往哪個類股輪動」這類問題用這個。少於3檔股票的類股不列入（樣本太少，平均值容易被單一個股影響）。回傳是JSONL：第一行{"_meta":…}（result_id、total、returned、has_more、next_call…），其後每行一筆、開頭的_n是這筆在整份結果裡的行號；還有下一頁就照_meta.next_call呼叫read_result，不要自己截斷、也不要跳著猜。',
     params: {},
-    handler: () => DBMgr.getSectorRotation(),
+    handler: (a) => aiRespondRows('sector_rotation', DBMgr.getSectorRotation(), a),
   },
   {
     name: 'search_stocks', category: '個股資訊',
-    description: '用代號或名稱關鍵字搜尋股票（部分比對，依精確/前綴/包含排序）。',
-    params: { term: '搜尋關鍵字', limit: '選填，最多回傳幾筆，預設20' },
-    handler: (a) => DBMgr.searchStocks(a.term, a.limit ? Number(a.limit) : 20),
+    description: '用代號或名稱關鍵字搜尋股票（部分比對，依精確/前綴/包含排序）。回傳是JSONL：第一行{"_meta":…}（result_id、total、returned、has_more、next_call…），其後每行一筆、開頭的_n是這筆在整份結果裡的行號；還有下一頁就照_meta.next_call呼叫read_result，不要自己截斷、也不要跳著猜。',
+    params: { term: '搜尋關鍵字', limit: '選填，這頁幾筆，預設50，最多200', offset: '選填，從第幾筆開始' },
+    handler: (a) => aiRespondRows('stock_search', DBMgr.searchStocks(a.term, 500), a, { meta: { term: a.term } }),
   },
   {
     name: 'get_stock_info', category: '個股資訊',
@@ -7742,28 +8132,33 @@ const AI_CAPABILITIES = [
   },
   {
     name: 'get_sectors', category: '個股資訊',
-    description: '取得目前有股票的所有產業類股清單（sid/name），對應清單左側「類股」下拉選單。',
+    description: '取得目前有股票的所有產業類股清單（sid/name），對應清單左側「類股」下拉選單。回傳是JSONL：第一行{"_meta":…}（result_id、total、returned、has_more、next_call…），其後每行一筆、開頭的_n是這筆在整份結果裡的行號；還有下一頁就照_meta.next_call呼叫read_result，不要自己截斷、也不要跳著猜。',
     params: {},
-    handler: () => DBMgr.getSectors(),
+    handler: (a) => aiRespondRows('sectors', DBMgr.getSectors(), a),
   },
   {
     name: 'get_stocks_by_sector', category: '個股資訊',
-    description: '取得某個產業類股底下所有股票的最新價格（含漲跌所需的前收盤價），sectorId 用 get_sectors 查。',
-    params: { sectorId: '產業代碼(數字)' },
-    handler: (a) => DBMgr.getStocksBySector(Number(a.sectorId)),
+    description: '取得某個產業類股底下所有股票的最新價格（含漲跌所需的前收盤價），sectorId 用 get_sectors 查。回傳是JSONL：第一行{"_meta":…}（result_id、total、returned、has_more、next_call…），其後每行一筆、開頭的_n是這筆在整份結果裡的行號；還有下一頁就照_meta.next_call呼叫read_result，不要自己截斷、也不要跳著猜。',
+    params: { sectorId: '產業代碼(數字)', limit: '選填，這頁幾筆，預設50，最多200', offset: '選填，從第幾筆開始' },
+    handler: (a) => aiRespondRows('stocks_by_sector', DBMgr.getStocksBySector(Number(a.sectorId)), a, { meta: { sector_id: Number(a.sectorId) } }),
   },
   {
     name: 'screen_strong_stocks', category: '選股',
-    description: '執行強勢股篩選，method="current"是「目前原則」(型態訊號評分，門檻可在設定裡調)，method="xq"是「XQ原則」(RS值動能)，回傳{results, diagnostics}。',
+    description: '執行強勢股篩選，method="current"是「目前原則」(型態訊號評分，門檻可在設定裡調)，method="xq"是「XQ原則」(RS值動能)，回傳{results, diagnostics}。回傳是JSONL：第一行{"_meta":…}（result_id、total、returned、has_more、next_call…），其後每行一筆、開頭的_n是這筆在整份結果裡的行號；還有下一頁就照_meta.next_call呼叫read_result，不要自己截斷、也不要跳著猜。',
     params: { method: "'current' 或 'xq'，預設 'current'", topN: '選填，最多回傳幾檔，預設30' },
     handler: (a) => {
       const topN = a.topN ? Number(a.topN) : 30;
-      if (a.method === 'xq') {
-        const sp = Settings.get('strongParams') || {};
-        return DBMgr.computeStrongXQ(topN, sp.rsThreshold ?? 90, sp.minVolRatio ?? 0.8, sp.nearHighPct ?? 15);
-      }
       const sp = Settings.get('strongParams') || {};
-      return DBMgr.computeStrongCurrent(topN, sp.minScore ?? 2, Settings.get('strongCurrentRules') || {});
+      const method = a.method === 'xq' ? 'xq' : 'current';
+      const res = method === 'xq'
+        ? DBMgr.computeStrongXQ(topN, sp.rsThreshold ?? 90, sp.minVolRatio ?? 0.8, sp.nearHighPct ?? 15)
+        : DBMgr.computeStrongCurrent(topN, sp.minScore ?? 2, Settings.get('strongCurrentRules') || {});
+      const rows = Array.isArray(res) ? res : (res && Array.isArray(res.results) ? res.results : null);
+      if (!rows) return res;
+      // diagnostics是篩選過程的統計（很小），放進meta；太大就只留一個說明，不截斷成半截JSON
+      let diagnostics = res && res.diagnostics;
+      if (diagnostics && JSON.stringify(diagnostics).length > 1500) diagnostics = { note: '篩選統計太長，已省略；篩選結果本身完整在下面各行' };
+      return aiRespondRows('strong_stocks', rows, a, { pageSize: 30, meta: { method, diagnostics } });
     },
   },
   {
@@ -7780,42 +8175,53 @@ const AI_CAPABILITIES = [
   },
   {
     name: 'get_chip_available_dates', category: '盤後籌碼',
-    description: '查詢某檔股票有哪些日期可以查三大法人/股權分布/強制集保資料。',
+    description: '查詢某檔股票有哪些日期可以查三大法人/股權分布/強制集保資料。回傳是JSONL：第一行{"_meta":…}（result_id、total、returned、has_more、next_call…），其後每行一筆、開頭的_n是這筆在整份結果裡的行號；還有下一頁就照_meta.next_call呼叫read_result，不要自己截斷、也不要跳著猜。',
     params: { code: '股票代號' },
-    handler: async (a) => ChipStore.getAvailableDates(a.code),
+    handler: async (a) => {
+      const avail = await ChipStore.getAvailableDates(a.code);
+      const rows = [];
+      for (const [k, v] of Object.entries(avail || {})) {
+        if (k === 'allDates' || !Array.isArray(v)) continue;
+        for (const d of v) rows.push({ table: k.replace(/Dates$/, ''), date: d });
+      }
+      return aiRespondRows('chip_available_dates', rows, a, { pageSize: 100, subject: { stock_code: a.code }, meta: { stock_code: a.code } });
+    },
   },
   {
     name: 'get_chip_data', category: '盤後籌碼',
-    description: '取得某檔股票在指定日期附近的三大法人買賣超/股權分布/強制集保資料（自動對齊到最接近的有資料日期）。',
+    description: '取得某檔股票在指定日期附近的三大法人買賣超/股權分布/強制集保資料（自動對齊到最接近的有資料日期）。回傳是JSONL：第一行{"_meta":…}（result_id、total、returned、has_more、next_call…），其後每行一筆、開頭的_n是這筆在整份結果裡的行號；還有下一頁就照_meta.next_call呼叫read_result，不要自己截斷、也不要跳著猜。',
     params: { code: '股票代號', date: '選填，YYYY-MM-DD，預設今天' },
     handler: async (a) => {
       const avail = await ChipStore.getAvailableDates(a.code);
       const anchor = a.date || taipeiDateStr();
-      return ChipStore.loadDataForDate(a.code, anchor, avail);
+      const data = await ChipStore.loadDataForDate(a.code, anchor, avail);
+      const rows = [];
+      for (const table of ['institutional', 'shareholding', 'custody']) for (const r of (data[table] || [])) rows.push({ table, ...r });
+      return aiRespondRows('chip_data', rows, a, { subject: { stock_code: a.code }, meta: { stock_code: a.code, anchor_date: anchor, ...(data.partialErrors && data.partialErrors.length ? { partial_errors: data.partialErrors } : {}) } });
     },
   },
   {
     name: 'get_lock_list', category: '鎖股名單',
-    description: '取得某一份鎖股名單（做多/做空清單）。source="intraday"是盤中鎖股、"nextday"是隔日鎖股、"week"是下週鎖股；direction不填就回傳整份含方向欄位。每筆的reasons已經是中文說明，寫報告/口頭回覆時一律引用reasons，不要出現程式內部的reason_codes代號（例如"MA_BULLISH"這種），那是給程式邏輯用的、不是給使用者看的。',
+    description: '取得某一份鎖股名單（做多/做空清單）。source="intraday"是盤中鎖股、"nextday"是隔日鎖股、"week"是下週鎖股；direction不填就回傳整份含方向欄位。每筆的reasons已經是中文說明，寫報告/口頭回覆時一律引用reasons，不要出現程式內部的reason_codes代號（例如"MA_BULLISH"這種），那是給程式邏輯用的、不是給使用者看的。回傳是JSONL：第一行{"_meta":…}（result_id、total、returned、has_more、next_call…），其後每行一筆、開頭的_n是這筆在整份結果裡的行號；還有下一頁就照_meta.next_call呼叫read_result，不要自己截斷、也不要跳著猜。',
     params: { source: "'intraday' | 'nextday' | 'week'", direction: "選填，'做多' 或 '做空'" },
     handler: async (a) => {
       await LockList.ensureLoaded(a.source);
       const recs = a.direction ? LockList.getByDirection(a.source, a.direction) : LockList.getByDirection(a.source, '做多').concat(LockList.getByDirection(a.source, '做空'));
-      return recs.map(stripReasonCodes);
+      return aiRespondRows('lock_list', recs.map(stripReasonCodes), a, { pageSize: 30, meta: { source: a.source, direction: a.direction || '全部' } });
     },
   },
   {
     name: 'get_stock_lock_status', category: '鎖股名單',
-    description: '查詢單一股票目前在哪些鎖股名單上（盤中/隔日/下週，各自的方向與評分），不在任何名單上就回傳空物件。每筆的reasons已經是中文說明，寫報告/口頭回覆時一律引用reasons，不要出現程式內部的reason_codes代號（例如"MA_BULLISH"這種），那是給程式邏輯用的、不是給使用者看的。',
+    description: '查詢單一股票目前在哪些鎖股名單上（盤中/隔日/下週，各自的方向與評分），不在任何名單上就回傳空物件。每筆的reasons已經是中文說明，寫報告/口頭回覆時一律引用reasons，不要出現程式內部的reason_codes代號（例如"MA_BULLISH"這種），那是給程式邏輯用的、不是給使用者看的。回傳是JSONL：第一行{"_meta":…}（result_id、total、returned、has_more、next_call…），其後每行一筆、開頭的_n是這筆在整份結果裡的行號；還有下一頁就照_meta.next_call呼叫read_result，不要自己截斷、也不要跳著猜。',
     params: { code: '股票代號' },
     handler: async (a) => {
       await Promise.all(['intraday', 'nextday', 'week'].map(s => LockList.ensureLoaded(s)));
-      return LockList.getAllInfo(a.code).map(stripReasonCodes);
+      return aiRespondRows('stock_lock_status', LockList.getAllInfo(a.code).map(stripReasonCodes), a, { subject: { stock_code: a.code }, meta: { stock_code: a.code } });
     },
   },
   {
     name: 'batch_analyze_stocks', category: '批次分析',
-    description: '【觸發規則，非常重要，請照字面execute】只要你手上已經有一份多檔股票代號的清單（不管是剛用get_lock_list/get_watchlist/search_stocks/get_stocks_by_sector等任何工具拿到的、還是使用者直接列出來的），而且需要的是「對清單裡每一檔股票各自獨立判斷」（例如篩選、逐檔檢查某個條件），下一步就必須直接呼叫這個工具，不要自己接著寫迴圈、一檔接一檔手動呼叫diagnose_stock/get_price_history分析——那樣逐檔的分析過程會不斷疊加進主對話的上下文，股票一多幾乎必定會反覆觸發context壓縮甚至整個任務跑不完（這是實測發生過的真實故障模式）。這個工具會把清單拆成多個獨立子任務、平行分析，每個子任務用跟主對話一樣的工具/系統設定，但對話歷史是獨立、用完即丟的，只會回傳一段精簡結論流回主對話，主對話的上下文增量只等於「筆數×一句話」，不會隨清單長度或分析過程膨脹。唯一不適用的情況是「統整型」問題——需要同時看到全部項目互相比較才能下結論（例如「這20檔裡今天漲幅最大的是哪幾檔」「幫我排名」），這種不要拆開，仍然用get_price_history/diagnose_stock等工具直接在主對話處理。',
+    description: '【觸發規則，非常重要，請照字面execute】只要你手上已經有一份多檔股票代號的清單（不管是剛用get_lock_list/get_watchlist/search_stocks/get_stocks_by_sector等任何工具拿到的、還是使用者直接列出來的），而且需要的是「對清單裡每一檔股票各自獨立判斷」（例如篩選、逐檔檢查某個條件），下一步就必須直接呼叫這個工具，不要自己接著寫迴圈、一檔接一檔手動呼叫diagnose_stock/get_price_history分析——那樣逐檔的分析過程會不斷疊加進主對話的上下文，股票一多幾乎必定會反覆觸發context壓縮甚至整個任務跑不完（這是實測發生過的真實故障模式）。這個工具會把清單拆成多個獨立子任務、平行分析，每個子任務用跟主對話一樣的工具/系統設定，但對話歷史是獨立、用完即丟的，只會回傳一段精簡結論流回主對話，主對話的上下文增量只等於「筆數×一句話」，不會隨清單長度或分析過程膨脹。唯一不適用的情況是「統整型」問題——需要同時看到全部項目互相比較才能下結論（例如「這20檔裡今天漲幅最大的是哪幾檔」「幫我排名」），這種不要拆開，仍然用get_price_history/diagnose_stock等工具直接在主對話處理。回傳是JSONL：第一行{"_meta":…}（result_id、total、returned、has_more、next_call…），其後每行一筆、開頭的_n是這筆在整份結果裡的行號；還有下一頁就照_meta.next_call呼叫read_result，不要自己截斷、也不要跳著猜。',
     params: {
       codes: '股票代號陣列（不吃公司名稱，請先用get_lock_list/search_stocks等工具取得代號清單）',
       instruction: '要對每一檔股票做的分析指示，會套用到每一個子任務，要講清楚判斷條件與希望的回答格式，例如："請用diagnose_stock分析這檔股票，判斷是否符合回後買上漲型態（回檔不破前低、且收紅K站回5日均線），符合請在結論開頭寫MATCH，不符合請寫NO_MATCH"',
@@ -7827,7 +8233,15 @@ const AI_CAPABILITIES = [
       // item（見floating-assistant.js裡的說明），這裡轉回這個工具對外
       // 承諾的code鍵名，維持batch_analyze_stocks本身「吃股票代號」的
       // 語意，呼叫端不用知道底層引擎其實跟股票無關。
-      return Array.isArray(results) ? results.map(r => ({ code: r.item, verdict: r.verdict })) : results;
+      if (!Array.isArray(results)) return results;
+      const entry = AiResultStore.put({ kind: 'batch_analysis', rows: results.map(r => ({ code: r.item, verdict: r.verdict })), pageSize: 30, meta: { instruction: String(a.instruction || '').slice(0, 300) } });
+      // 每一檔跟它已有的診斷／K棒結果連起來（證據：同一個股票代號）
+      for (const r of results) {
+        for (const other of AiResultStore.list()) {
+          if (other.id !== entry.id && other.subject && other.subject.stock_code === String(r.item)) AiResultStore.link(entry.id, other.id, 'same_stock', `stock_code=${r.item}`);
+        }
+      }
+      return aiJsonlPage(entry, a);
     },
   },
   {
@@ -7855,6 +8269,8 @@ const AI_CAPABILITIES = [
       '  get_chart_snapshot工具回傳結果裡meta.image_ref的原始值（一個很短的編號字串，例如"img_3"），這裡會自動\n' +
       '  換回真正的圖片內容；絕對不要自己生成、憑印象編造、或用其他字串頂替image_ref，也不要嘗試自己填dataUrl\n' +
       '  欄位（你根本看不到圖片的二進位內容，硬填只會產生一段沒有意義的亂碼、匯出時解析失敗）。\n' +
+      '- {type: stock_diagnosis, result_id} —— 直接用diagnose_stock回傳的result_id放整份持股診斷（含壓力支撐、型態突破狀態、情境推演），不用自己抄數字、也不會被截斷。\n' +
+      '- {type: table, result_id, heading(選填), columns(選填，結果裡的欄位名陣列), max_rows(選填，預設30，最多200)} —— 把某份清單結果（鎖股、強勢股、自選股、K棒…）直接做成表格，欄位名取自結果。\n' +
       '不要自己發明其他type，不確定該怎麼呈現某段資訊時優先用text或metrics。呼叫這個工具之前，你已經拿到的原始資料（例如diagnose_stock、get_price_history等工具的回傳值）要自己先整理、摘要成上面的slides結構，不要整包塞進單一個text投影片。\n' +
       '簡報美觀原則（比照Claude自己產出報告的水準）：每張投影片都要有明確的視覺變化，不要從頭到尾只用text——\n' +
       '關鍵數字用metrics、多檔/多期間比較用table、有轉折點或型態需要「畫出來」才講得清楚時先呼叫render_stock_chart\n' +
@@ -7896,6 +8312,23 @@ const AI_CAPABILITIES = [
       }
       if (!doc || !Array.isArray(doc.slides) || !doc.slides.length) {
         return { ok: false, error: '內容格式不正確：解析後沒有非空的slides陣列，請確認YAML縮排/結構符合schema說明' };
+      }
+      // 2026-11-13：slides裡帶result_id的stock_diagnosis／table投影片，直接從結果倉庫取內容
+      for (let i = 0; i < doc.slides.length; i++) {
+        const sl = doc.slides[i];
+        if (!sl || !sl.result_id) continue;
+        const entry = AiResultStore.get(sl.result_id);
+        if (!entry) return aiResultNotFound(sl.result_id);
+        if (sl.type === 'stock_diagnosis') {
+          if (!entry.raw || !entry.raw.available) return { ok: false, error: `result_id "${sl.result_id}" 不是diagnose_stock的結果（種類：${entry.kind}），stock_diagnosis投影片只能用診斷結果的編號` };
+          const { result_id, ...restSlide } = sl;
+          doc.slides[i] = { ...entry.raw, ...restSlide, type: 'stock_diagnosis' };
+        } else if (sl.type === 'table' && !Array.isArray(sl.rows)) {
+          const fields = aiParseFields(sl.columns) || (entry.rows[0] ? Object.keys(entry.rows[0]) : []);
+          const maxRows = aiClampInt(sl.max_rows, 30, 1, 200);
+          const cell = (v) => (v == null ? '' : Array.isArray(v) ? v.join('；') : (typeof v === 'object' ? JSON.stringify(v) : String(v)));
+          doc.slides[i] = { type: 'table', heading: sl.heading || entry.kind, columns: fields, rows: entry.rows.slice(0, maxRows).map(r => fields.map(f => cell(r[f]))) };
+        }
       }
       // tw_stock_db客製: text投影片的body如果是長篇markdown（AI常常直接把
       // 口頭分析原封不動塞進單一text投影片），自動依#/##/###標題切成多張、
@@ -7965,7 +8398,7 @@ const AI_CAPABILITIES = [
     name: 'get_watchlist', category: '自選股',
     description: '取得使用者自選股清單（含最新價格）。',
     params: {},
-    handler: () => { const wl = Settings.get('watchlist') || []; return DBMgr.getWatchlistStocks(wl); },
+    handler: (a) => { const wl = Settings.get('watchlist') || []; return aiRespondRows('watchlist', DBMgr.getWatchlistStocks(wl), a); },
   },
   {
     name: 'add_to_watchlist', category: '自選股', mutates: true,
@@ -7981,14 +8414,31 @@ const AI_CAPABILITIES = [
   },
   {
     name: 'diagnose_stock', category: '持股診斷',
-    description: '對單一股票執行持股診斷公式（均線排列、趨勢、K棒品質、量價關係、大盤連動、型態辨識與頸線突破狀態、壓力支撐與前高距離、情境推演、進出場建議），這是網頁「持股診斷」分頁背後的同一套確定性公式，回答持股/技術分析問題時一律呼叫這個工具取得數字，不要自己憑對話內容編造指標或型態判斷。若本機還沒有這檔股票的資料會自動先下載。' +
+    description: '對單一股票執行持股診斷公式（均線排列、趨勢、K棒品質、量價關係、大盤連動、型態辨識與頸線突破狀態、壓力支撐與前高距離、情境推演、進出場建議），這是網頁「持股診斷」分頁背後的同一套確定性公式，回答持股/技術分析問題時一律呼叫這個工具取得數字，不要自己憑對話內容編造指標或型態判斷。若本機還沒有這檔股票的資料會自動先下載。回傳是JSONL：第一行{"_meta":…}（result_id、total、returned、has_more、next_call…），其後每行一筆、開頭的_n是這筆在整份結果裡的行號；還有下一頁就照_meta.next_call呼叫read_result，不要自己截斷、也不要跳著猜。' +
       '⚠️回傳的plain_summary欄位是已經把position/trend/kbar_quality/volume_price等欄位合成好的2-3句白話結論（先講「站在哪個關鍵均線之上/之下、屬於什麼趨勢」，再講「今天這根K棒代表什麼、還要等什麼條件才算確認」）——回答使用者時務必先講這段當開場結論（可以直接引用或改寫成自己的語氣，但方向不能跟plain_summary矛盾），再視需要展開其他欄位當佐證細節，不要一開始就把position/kbar_quality等每個欄位的原始數字條列丟給使用者、也不要只講「✗ 未通過K棒品質判讀鐵律」這種聽起來像檢查失敗的判定卻不解釋代表什麼意思——使用者實測反映過「看不懂AI在分析什麼」，原因就是只丟結構化數字沒有先給結論。完整報告的段落安排另見get_report_style_guide。',
-    params: { code: '股票代號或公司名稱（名稱會自動解析成代號）' },
+    params: {
+      code: '股票代號或公司名稱（名稱會自動解析成代號）',
+      section: '選填，只取某幾段（字串或陣列）：summary、scenario、scenario_note、position、trend、resistance、support、period_high、key_levels_info、pattern、kbar_quality、volume_price、measured_move、entry_exit、market_linkage、risk',
+      limit: '選填，這頁幾行，預設40', offset: '選填，從第幾行開始',
+    },
     handler: async (a) => {
       const code = resolveAiStockCode(a.code);
       if (!code) return aiStockCodeNotFoundError(a.code);
       await ensureStockHistoryLoadedForAi(code, diagnosisHistoryDaysFor(getDiagnosisLookbackDays()));
-      return StockDiagnosis.diagnose(code);
+      const diag = StockDiagnosis.diagnose(code);
+      if (!diag.available) return diag;
+      const rows = diagnosisToRows(diag);
+      const counts = {};
+      for (const r of rows) counts[r.section] = (counts[r.section] || 0) + 1;
+      const a2 = { ...a };
+      if (a.section && !a.where) a2.where = { section: Array.isArray(a.section) ? a.section : String(a.section).split(',').map(x => x.trim()).filter(Boolean) };
+      return aiRespondRows('stock_diagnosis', rows, a2, {
+        raw: diag, pageSize: 40, subject: { stock_code: code, stock_name: diag.stock_name },
+        meta: {
+          stock_code: code, stock_name: diag.stock_name, as_of_date: diag.as_of_date, sections: counts,
+          tip: '一行一段，summary與scenario在最前面；要把頸線、前高、支撐、目標價畫在圖上：render_stock_chart({code, from_result:"這個result_id", indicators:["macd","rsi"]})；要放進PDF／PPTX：export_document的slides放{type:"stock_diagnosis", result_id:"這個result_id"}，不用自己抄數字。',
+        },
+      });
     },
   },
   {
@@ -8077,9 +8527,11 @@ const AI_CAPABILITIES = [
   },
   {
     name: 'render_stock_chart', category: '圖表截圖',
-    description: '自己畫一張指定股票的K線圖並回傳圖片，完全獨立於使用者目前畫面（不會受切股票/切分頁的非同步重繪影響，比get_chart_snapshot更可靠），你可以自訂時間範圍、Y軸範圍、要疊加的標記點與線段、以及下方的MACD/KD/RSI指標副圖，用來輔助說明分析結論（例如標出轉折點、畫頸線/趨勢線、標示爆量的那一天、附上MACD/RSI佐證）。回傳的圖片會直接顯示在對話框裡。⚠️這是唯一能產生「帶MACD/RSI副圖的圖片」的方式——set_chart_indicator/switch_tab只會改變使用者網頁畫面本身的UI狀態，不會產生或回傳任何圖片給你，如果你想要一張帶指標副圖的圖，一定是呼叫這個工具並帶上indicators參數，不要誤以為呼叫set_chart_indicator切換使用者畫面的副圖、再呼叫switch_tab切分頁就能達到同樣效果（那樣做不會有任何圖片進到對話裡，等於什麼都沒畫出來）。⚠️預設畫的是日K：如果使用者要的是「今天/當下/現在」的走勢圖（分鐘級），range一定要加 intraday:true（或給minutes），不要只給startDate=endDate=今天當成日K範圍去畫——那樣日K資料整天只有一根、只會畫出一根K棒，不是真正的分鐘走勢圖。⚠️你在呼叫這個工具「之前」不會知道實際的高低點價位/時間，如果第一次呼叫時markers/lines是憑印象或憑對話內容猜的價位，標記位置很可能對不齊實際畫出來的K棒——每次呼叫回傳的meta欄位（高低點價位+對應時間、頭尾價位）就是這批K棒的真實數字，如果第一次沒帶精準標記、或想確認標記位置對不對，可以看meta後再呼叫一次、把markers的date/price換成meta裡對應的highAt/high、lowAt/low，不要自己憑印象填數字。',
+    description: '自己畫一張指定股票的K線圖並回傳圖片，完全獨立於使用者目前畫面（不會受切股票/切分頁的非同步重繪影響，比get_chart_snapshot更可靠），你可以自訂時間範圍、Y軸範圍、要疊加的標記點與線段、以及下方的MACD/KD/RSI指標副圖，用來輔助說明分析結論（例如標出轉折點、畫頸線/趨勢線、標示爆量的那一天、附上MACD/RSI佐證）。回傳的圖片會直接顯示在對話框裡。⚠️這是唯一能產生「帶MACD/RSI副圖的圖片」的方式——set_chart_indicator/switch_tab只會改變使用者網頁畫面本身的UI狀態，不會產生或回傳任何圖片給你，如果你想要一張帶指標副圖的圖，一定是呼叫這個工具並帶上indicators參數，不要誤以為呼叫set_chart_indicator切換使用者畫面的副圖、再呼叫switch_tab切分頁就能達到同樣效果（那樣做不會有任何圖片進到對話裡，等於什麼都沒畫出來）。⚠️預設畫的是日K：如果使用者要的是「今天/當下/現在」的走勢圖（分鐘級），range一定要加 intraday:true（或給minutes），不要只給startDate=endDate=今天當成日K範圍去畫——那樣日K資料整天只有一根、只會畫出一根K棒，不是真正的分鐘走勢圖。⚠️你在呼叫這個工具「之前」不會知道實際的高低點價位/時間，如果第一次呼叫時markers/lines是憑印象或憑對話內容猜的價位，標記位置很可能對不齊實際畫出來的K棒——每次呼叫回傳的meta欄位（高低點價位+對應時間、頭尾價位）就是這批K棒的真實數字，如果第一次沒帶精準標記、或想確認標記位置對不對，可以看meta後再呼叫一次、把markers的date/price換成meta裡對應的highAt/high、lowAt/low，不要自己憑印象填數字。⚠️【用診斷結果自動畫線】帶from_result（diagnose_stock回傳的result_id）就會把那份診斷裡的頸線、最近的壓力與支撐、目標價、型態轉折點、趨勢停損自動畫在圖上（價位與日期直接取自診斷，不需要你再抄一遍，也比自己猜準），overlay可選要畫哪幾類；沒指定range時用最近120天，讓型態看得到。你自己給的markers／lines仍然會一併畫上去。回傳的meta多了result_id（這張圖在結果倉庫的編號，跟那份診斷有關聯）。',
     params: {
-      code: '股票代號或公司名稱（名稱會自動解析成代號，唯一命中才會自動採用；解析不出來會回傳明確的錯誤，請改用search_stocks查正確代號後重試，不要憑印象猜）',
+      code: '股票代號或公司名稱（名稱會自動解析成代號，唯一命中才會自動採用；解析不出來會回傳明確的錯誤，請改用search_stocks查正確代號後重試，不要憑印象猜）。有給from_result時可以省略，會用那份診斷的股票',
+      from_result: '選填，diagnose_stock回傳的result_id，用那份診斷自動畫頸線、壓力支撐、目標價、轉折點、趨勢停損',
+      overlay: '選填，搭配from_result，要畫哪幾類（陣列）：necklines、levels、targets、points、trend_stop；不填就全部（壓力與支撐各取最近2個）',
       range: '選填物件。日K模式：{days: 天數(預設60)} 或 {startDate:"YYYY-MM-DD", endDate:"YYYY-MM-DD"}。盤中分鐘K模式（畫「今天」的走勢圖時用）：{intraday:true, minutes: 分K級距(預設1，可用1/5/20/60), date:"YYYY-MM-DD"(選填，預設今天，資料來源只保留近5個交易日), startTime:"HH:MM"(選填), endTime:"HH:MM"(選填)}，資料來源是即時輪詢+Yahoo backfill。',
       scale: '選填物件 {min, max}，指定Y軸價格範圍；不填則自動依資料的最高最低價計算',
       markers: '選填陣列，每個標記 {date(選填，有給就會吸附到該根K棒、跟著時間軸；日K模式用"YYYY-MM-DD"，盤中模式可以只給"HH:MM"，會自動套用當天日期；不給則用x/y自由定位), price(選填，配合date標在特定價位，不給就標在該根K棒最高點附近), x, y(選填，0~1之間的比例座標，date沒給時才用這個自由定位、不跟著時間軸), label(標籤文字), color(顏色，例如"#f59e0b")}',
@@ -8314,6 +8766,272 @@ function _buildParamsJsonSchema(params) {
   return { type: 'object', properties, additionalProperties: true };
 }
 
+/* ════════════════════════════════════════
+   擴充點：股市調查能力（2026-11-13）
+   引擎（floating-assistant）新增通用擴充點 register_extension：宿主用宣告式JSON登記一個「調查流程」，
+   研究來源可以寫 host:<名稱>（宿主自己的本機資料）、整理成可貢獻到簡報的一章（每頁附來源、最後固定免責聲明）；
+   登記的工具沒有歸類、落在 host_tools（category host_app），內建 media-presentation 借用得到。
+   這裡登記兩個：
+   ① ext_investigate_stock（調查個股）：快速的現況調查——位置、趨勢結構、壓力與前高、型態與突破狀態、K棒與量價、大盤環境。
+   ② ext_full_analysis_report（全面分析報告）：再加上區間走勢統計、三大法人與大戶持股、鎖股名單，每個來源都不截斷。
+   資料全部來自本機資料庫（跟診斷分頁同一套公式），整份結果存進結果倉庫（AiResultStore，每頁簡報一行，可以翻頁讀完），
+   診斷也存成result_id，簡報要放圖時 render_stock_chart({from_result}) 直接用。
+   引擎會強制：條列裡的數字必須出現在來源、查不到就寫「查不到」、含買賣建議字眼的句子丟掉——所以這裡組文字時
+   不用「停損」「目標價」，改寫「防守位置」「幅度測量目標」。
+   ════════════════════════════════════════ */
+const _invCache = { code: null, at: 0, diag: null, entry: null };
+async function _invDiagnosis(codeIn) {
+  const code = resolveAiStockCode(codeIn);
+  if (!code) throw new Error(`找不到股票「${codeIn}」`);
+  if (_invCache.code === code && Date.now() - _invCache.at < 30000 && _invCache.diag) return _invCache;
+  await ensureStockHistoryLoadedForAi(code, diagnosisHistoryDaysFor(getDiagnosisLookbackDays()));
+  const diag = StockDiagnosis.diagnose(code);
+  if (!diag.available) throw new Error(diag.reason || '本機歷史資料不足，無法診斷');
+  const entry = AiResultStore.put({
+    kind: 'stock_diagnosis', rows: diagnosisToRows(diag).map(aiTidyRow), raw: diag, pageSize: 40,
+    subject: { stock_code: code, stock_name: diag.stock_name }, meta: { stock_code: code, stock_name: diag.stock_name, as_of_date: diag.as_of_date },
+  });
+  Object.assign(_invCache, { code, at: Date.now(), diag, entry });
+  return _invCache;
+}
+const _invN = (v) => (v == null || !Number.isFinite(Number(v)) ? '-' : Number(v).toLocaleString('en-US'));
+const _invSigned = (v) => (v == null ? '-' : (v >= 0 ? '+' : '') + v);
+
+const INV_FETCHERS = {
+  async diag_overview(q) {
+    const { diag: d } = await _invDiagnosis(q.code);
+    const p = d.position, kb = d.kbar_quality, vp = d.volume_price, t = d.trend;
+    const lines = [];
+    lines.push(`${d.stock_name}（${d.stock_code}）資料日期 ${d.as_of_date}，收盤 ${_invN(p.close)}，MA5 ${p.ma[5]}、MA10 ${p.ma[10]}、MA20 ${p.ma[20]}、MA60 ${p.ma[60]}，均線排列：${p.ma_alignment || '資料不足'}，${p.above_ma20 ? '站上' : '跌破'}月線`);
+    lines.push(t.swing
+      ? `趨勢結構（${t.swing.scope}）：${t.label}；${t.swing.basis}${t.swing.provisional ? '（' + t.swing.provisional + '）' : ''}`
+      : `趨勢：${t.label}；近10日高低 ${t.recent_high}／${t.recent_low}`);
+    lines.push(`今天K棒：實體 ${kb.body_pct}%（${kb.is_red ? '收紅' : '收黑'}），上影線占全長 ${kb.upper_wick_pct_of_range}%，K棒品質：${kb.passes ? '通過' : '未通過（' + kb.reason + '）'}`);
+    lines.push(`量能：成交量 ${_invN(vp.volume)} 股，5日均量 ${_invN(vp.vol_ma5)} 股，量比 ${vp.vol_ratio}（${vp.label}）`);
+    return lines.join('\n');
+  },
+  async diag_levels(q) {
+    const { diag: d } = await _invDiagnosis(q.code);
+    const kl = d.key_levels, lines = [];
+    if (kl.at_new_high) lines.push('現價已高於所有前波高點與各期間高點，上方沒有前高壓力');
+    kl.resistance.forEach((x, i) => lines.push(`壓力${i + 1}：${x.price}（${x.source}，${x.date}），距現價 ${_invSigned(x.dist_pct)}%`));
+    kl.support.forEach((x, i) => lines.push(`支撐${i + 1}：${x.price}（${x.source}，${x.date}），距現價 ${_invSigned(x.dist_pct)}%`));
+    kl.period_highs.forEach(x => lines.push(`${x.days}日高（不含今天）：${x.price}（${x.date}），距現價 ${_invSigned(x.dist_pct)}%${x.close_above ? '，已收盤站上' : ''}${x.partial ? '（本機資料只有' + x.actual_days + '天）' : ''}`));
+    const sc = d.scenario;
+    if (sc) {
+      lines.push(sc.headline);
+      if (sc.bull_trigger) lines.push('站上的條件：' + sc.bull_trigger);
+      const ma20 = d.position.ma[20], lastLow = d.trend.swing && d.trend.swing.lows && d.trend.swing.lows[1];
+      const guard = [];
+      if (ma20 != null) guard.push(`收盤跌破月線 ${ma20}`);
+      if (lastLow && lastLow.price < d.position.close) guard.push(`跌破最近一個波段低點 ${lastLow.price}（${lastLow.date}）`);
+      if (guard.length) lines.push('防守位置：' + guard.join('，或') + '，就要重新評估這一波的結構');
+      (sc.notes || []).forEach(n => { if (!/^趨勢結構/.test(n)) lines.push(n); });
+    }
+    return lines.join('\n');
+  },
+  async diag_patterns(q) {
+    const { diag: d } = await _invDiagnosis(q.code);
+    const lines = [];
+    const pats = d.pattern.detected || [];
+    if (!pats.length) lines.push('近期沒有辨識出已定義的型態（機械式規則比對，不代表真的沒有型態，仍需人工看圖）');
+    for (const pp of pats) {
+      const tag = `${pp.scaleLabel ? '[' + pp.scaleLabel + '・近' + pp.scaleLookbackDays + '天] ' : ''}${pp.label}`;
+      lines.push(`${tag}：轉折點 ${pp.points.map(x => `${x.label} ${x.price}（${x.date}）`).join('、')}`);
+      if (pp.breakout && pp.breakout.applicable) lines.push(`${tag}突破狀態：${pp.breakout.status_text}`);
+      else if (pp.breakout) lines.push(`${tag}：${pp.breakout.status_text}`);
+      if (pp.target != null) lines.push(`${tag}幅度測量目標：${pp.target}`);
+    }
+    const mm = d.entry_exit && d.entry_exit.measured_move;
+    if (mm && mm.available) {
+      if (mm.n_measure) lines.push(`N字測量：振幅 ${mm.n_measure.amplitude}，幅度測量目標 ${mm.n_measure.target}`);
+      if (mm.equal_measure) lines.push(`等幅測量：振幅 ${mm.equal_measure.amplitude}，幅度測量目標 ${mm.equal_measure.target}`);
+    }
+    lines.push('型態為機械式偵測，型態本體是否成立仍需人工覆核K線圖');
+    return lines.join('\n');
+  },
+  async market(q) {
+    // 個股走勢是用「個股專屬的月份快照」載入的、不含大盤指數；大盤均線要60根以上，不夠就補載最近幾個月的整月快照（跟診斷分頁的大盤欄位同一份資料）
+    const _have = DBMgr.getMarketIndexHistory('TAIEX', 90);
+    if (!_have || _have.length < 61) {
+      const labels = []; let l = monthLabel(new Date());
+      for (let i = 0; i < 5; i++) { labels.push(l); l = shiftMonthLabel(l, -1); }
+      try { await DBMgr.ensureMonthsLoaded(labels.reverse()); } catch (e) { console.warn('補載大盤指數月份失敗：', e.message); }
+    }
+    const m = diagnoseMarket();
+    const lines = [];
+    for (const [k, label] of [['taiex', '加權指數'], ['tpex', '櫃買指數']]) {
+      const x = m[k];
+      lines.push(x.available ? `${label}（${x.trade_date}）收盤 ${x.close}，均線排列：${x.ma_alignment || '資料不足'}，${x.above_ma20 ? '站上' : '跌破'}月線` : `${label}：資料不足`);
+    }
+    for (const [k, label] of [['sox', '費城半導體'], ['spx', '標普500'], ['nasdaq', '那斯達克'], ['dji', '道瓊工業']]) {
+      const x = m.us_indices[k];
+      lines.push(x.available ? `${label}（${x.trade_date}）收盤 ${x.close}，單日 ${_invSigned(x.chg1_pct)}%，${x.above_ma20 ? '站上' : '跌破'}月線` : `${label}：資料不足`);
+    }
+    lines.push('美股收盤是台股開盤前的領先訊號，不是同步資料');
+    return lines.join('\n');
+  },
+  async price_stats(q) {
+    const code = resolveAiStockCode(q.code);
+    if (!code) throw new Error(`找不到股票「${q.code}」`);
+    await ensureStockHistoryLoadedForAi(code, 130);
+    const bars = DBMgr.getPriceHistory(code, 120);
+    if (bars.length < 5) throw new Error('本機歷史資料不足');
+    const lines = [];
+    const stat = (n, label) => {
+      const b = bars.slice(-n); if (b.length < Math.min(n, 5)) return;
+      const first = b[0], last = b[b.length - 1];
+      let hi = b[0], lo = b[0], vol = 0;
+      for (const x of b) { if (x.high > hi.high) hi = x; if (x.low < lo.low) lo = x; vol += x.volume || 0; }
+      const chg = Math.round((last.close / first.close - 1) * 10000) / 100;
+      lines.push(`${label}（${first.trade_date} 到 ${last.trade_date}，共 ${b.length} 個交易日）：收盤 ${first.close} → ${last.close}（${_invSigned(chg)}%），最高 ${hi.high}（${hi.trade_date}），最低 ${lo.low}（${lo.trade_date}），平均成交量 ${_invN(Math.round(vol / b.length))} 股`);
+    };
+    stat(20, '近20個交易日'); stat(60, '近60個交易日'); stat(120, '近120個交易日');
+    const b60 = bars.slice(-61); // 多取一根當第一天的前收
+    if (b60.length >= 3) {
+      let up = null, down = null;
+      for (let i = 1; i < b60.length; i++) {
+        const c = Math.round((b60[i].close / b60[i - 1].close - 1) * 10000) / 100;
+        if (!up || c > up.c) up = { c, bar: b60[i] };
+        if (!down || c < down.c) down = { c, bar: b60[i] };
+      }
+      lines.push(`近60個交易日單日最大漲幅：${up.bar.trade_date} ${_invSigned(up.c)}%（收盤 ${up.bar.close}，成交量 ${_invN(up.bar.volume)} 股）`);
+      lines.push(`近60個交易日單日最大跌幅：${down.bar.trade_date} ${_invSigned(down.c)}%（收盤 ${down.bar.close}，成交量 ${_invN(down.bar.volume)} 股）`);
+    }
+    return lines.join('\n');
+  },
+  async chip(q) {
+    const code = resolveAiStockCode(q.code);
+    if (!code) throw new Error(`找不到股票「${q.code}」`);
+    const avail = await ChipStore.getAvailableDates(code);
+    const anchor = (avail.allDates && avail.allDates[avail.allDates.length - 1]) || taipeiDateStr();
+    const data = await ChipStore.loadDataForDate(code, anchor, avail);
+    const lines = [];
+    data.institutional = (data.institutional || []).slice().sort((a, b) => (a.trade_date < b.trade_date ? -1 : a.trade_date > b.trade_date ? 1 : 0));
+    if (!data.institutional.length && !(data.shareholding || []).length) return '本機查不到這檔股票的三大法人與股權分散資料';
+    const inst = data.institutional.slice(-5);
+    inst.forEach(r => lines.push(`${r.trade_date} 三大法人買賣超：外資 ${_invN(r.foreign_net)} 股、投信 ${_invN(r.trust_net)} 股、自營商 ${_invN(r.dealer_net)} 股，合計 ${_invN(r.total_net)} 股`));
+    const all = data.institutional || [];
+    for (const [key, label] of [['trust_net', '投信'], ['foreign_net', '外資']]) {
+      let n = 0, sign = 0;
+      for (let i = all.length - 1; i >= 0; i--) { const v = all[i][key]; if (!v) break; const sg = v > 0 ? 1 : -1; if (!sign) sign = sg; if (sg !== sign) break; n++; }
+      if (n >= 2) lines.push(`${label}連續 ${n} 個交易日${sign > 0 ? '買超' : '賣超'}（到 ${all[all.length - 1].trade_date}）`);
+    }
+    const shr = (data.shareholding || []);
+    const lastDate = shr.length ? shr[shr.length - 1].data_date : null;
+    if (lastDate) {
+      const at = (tier) => shr.find(r => r.data_date === lastDate && r.tier === tier);
+      const big = at(15), tot = at(17);
+      if (big) lines.push(`集保戶股權分散（${lastDate}）：持股 1,000 張以上的大戶 ${_invN(big.holders)} 人，持股比例 ${big.pct}%${tot ? '，全部股東 ' + _invN(tot.holders) + ' 人' : ''}`);
+    }
+    if (data.partialErrors && data.partialErrors.length) lines.push(`部分月份的盤後資料下載失敗：${data.partialErrors.join('、')}`);
+    return lines.join('\n');
+  },
+  async lock(q) {
+    const code = resolveAiStockCode(q.code);
+    if (!code) throw new Error(`找不到股票「${q.code}」`);
+    await Promise.all(['intraday', 'nextday', 'week'].map(x => LockList.ensureLoaded(x)));
+    const names = { intraday: '盤中鎖股', nextday: '隔日鎖股', week: '下週鎖股' };
+    const rows = LockList.getAllInfo(code).map(stripReasonCodes);
+    if (!rows.length) return '目前不在盤中、隔日、下週任何一份鎖股名單上';
+    return rows.map(r => `在${names[r.source] || r.source}${r.direction}名單，評分 ${r.score}：${(r.reasons || []).join('；')}`).join('\n');
+  },
+};
+
+function _invExt(id, name, toolName, toolDescription, sources, chapterTpl) {
+  return {
+    id, name, enabled: true,
+    description: toolDescription,
+    context: { patterns: [{ re: '([^\\s()（）]{2,12})[（(](\\d{4,6})[)）]', name: 1, code: 2 }], codeRe: '^\\d{4,6}$' },
+    tool: { name: toolName, description: toolDescription },
+    research: sources,
+    contribute: { target: 'media-presentation', chapter: chapterTpl, position: 'end', maxBulletsPerSlide: 5 },
+    disclaimer: '本簡報為本機資料庫的技術面整理，型態為機械式偵測、僅供參考，不構成任何投資建議；買賣請自行判斷並承擔風險。',
+  };
+}
+const _invSrc = (id, label, fetcher, maxFacts) => ({ id, label, url: `host:${fetcher}?code={code}`, needs: ['code'], extract: { kind: 'lines', maxFacts } });
+
+const INV_EXTENSIONS = [
+  _invExt('stock_investigate', '調查個股', 'ext_investigate_stock',
+    '調查個股：調查某一檔股票現在的狀況，用這個網站本機資料庫（跟持股診斷同一套公式）整理成有出處的事實——位置與均線、趨勢結構、壓力與前高距離、型態與頸線突破狀態、當天K棒與量價、大盤與美股環境。每一條附來源，查不到就寫查不到，不給買賣建議。要做簡報時這個工具的結果可以直接貢獻成簡報的一章（回傳每頁簡報一行，要全部放進簡報，不要省略）；使用者說「調查某某股票」「看看大成鋼現在怎麼樣」「為什麼大成鋼今天下跌」這類話時用它。參數可以只給原話text（會自動找出股票），或給code。回傳的diagnosis_result_id可以交給render_stock_chart的from_result畫出標有頸線、壓力、支撐的走勢圖放進簡報。',
+    [
+      _invSrc('overview', '現況：位置、趨勢、K棒與量價', 'diag_overview', 20),
+      _invSrc('levels', '壓力與支撐、前高距離、站上與防守的條件', 'diag_levels', 60),
+      _invSrc('patterns', '型態與頸線突破狀態', 'diag_patterns', 60),
+      _invSrc('market', '大盤與美股環境', 'market', 20),
+    ], '{name}（{code}）個股調查'),
+  _invExt('stock_full_report', '全面分析報告', 'ext_full_analysis_report',
+    '全面分析報告：對某一檔股票做完整的技術面調查，內容比「調查個股」更多——現況、壓力與支撐與前高、型態與突破狀態、近20／60／120個交易日走勢統計與單日最大漲跌、三大法人買賣超與連續天數、大戶持股、鎖股名單、大盤與美股環境。每個來源都不截斷，每一條附來源，查不到就寫查不到，不給買賣建議。使用者要「全面」「完整」「深入」的分析報告或簡報時用它（內建簡報技能會自動取用）：回傳每頁簡報一行，要全部放進簡報、用read_result翻完，不要省略或改寫數字。參數可以只給原話text，或給code。回傳的diagnosis_result_id交給render_stock_chart的from_result畫圖。',
+    [
+      _invSrc('overview', '現況：位置、趨勢、K棒與量價', 'diag_overview', 40),
+      _invSrc('levels', '壓力與支撐、前高距離、站上與防守的條件', 'diag_levels', 100),
+      _invSrc('patterns', '型態與頸線突破狀態', 'diag_patterns', 100),
+      _invSrc('price', '近期走勢統計', 'price_stats', 40),
+      _invSrc('chip', '三大法人買賣超與大戶持股', 'chip', 60),
+      _invSrc('lock', '鎖股名單', 'lock', 20),
+      _invSrc('market', '大盤與美股環境', 'market', 40),
+    ], '{name}（{code}）全面分析報告'),
+];
+
+// 引擎的investigate結果 → 結果倉庫（每頁簡報一行，可翻頁讀完；診斷另存成result_id給產圖用）
+async function _invWrapResult(out, info) {
+  const code = out.entities.code;
+  const slides = (out.deck && out.deck.chapters && out.deck.chapters.length ? out.deck.chapters[out.deck.chapters.length - 1].slides : []) || [];
+  const rows = slides.map((sl, i) => ({ slide: i + 1, title: sl.title, layout: sl.layout, bullets: sl.bullets || [], caption: sl.caption || '', narration: sl.narration || '' }));
+  const diagId = (_invCache.code === code && _invCache.entry) ? _invCache.entry.id : null;
+  const entry = AiResultStore.put({
+    kind: 'investigation', rows, raw: { deck: out.deck, chapter: out.chapter, results: out.results }, pageSize: 50,
+    subject: { stock_code: code, stock_name: out.entities.name || null },
+    meta: {
+      extension: info.ext.id, tool: info.ext.tool.name, stock_code: code, stock_name: out.entities.name || null, chapter: out.chapter,
+      sources: out.results.map(r => ({ id: r.id, label: r.label, status: r.status, ...(r.note ? { note: r.note } : {}) })),
+      unavailable: out.unavailable, advice_removed: out.adviceRemoved, dropped_by_number_check: out.dropped,
+      ...(diagId ? { diagnosis_result_id: diagId } : {}),
+      how_to_use: '每一行是一頁簡報（title標題、bullets條列、caption來源、narration旁白），最後一行是免責聲明。做簡報時：全部頁面都要放進去（用read_result翻完，has_more=true就照next_call），條列與數字原樣使用、不要省略或改寫；長簡報用begin_presentation／add_chapters分批。要放圖：render_stock_chart({from_result:"' + (diagId || '<diagnosis_result_id>') + '", indicators:["macd","rsi"]}) 取得image_ref後放進簡報的圖片頁。',
+    },
+  });
+  if (diagId) AiResultStore.link(entry.id, diagId, 'same_stock', `stock_code=${code}`);
+  return aiJsonlPage(entry, {});
+}
+
+// 目前使用者正在看哪一檔（技術分析分頁選的股票）當情境；原話裡有股票名稱時用名稱字典解出代號
+function _invContext() {
+  try {
+    if (typeof currentChartSource !== 'undefined' && currentChartSource && currentChartSource.type !== 'index' && currentChartSource.code) {
+      const info = DBMgr.getStockInfo(currentChartSource.code);
+      return { selection: info ? `${info.stock_name}（${info.stock_code}）` : '' };
+    }
+  } catch (_) { /* 沒選股票就沒有情境 */ }
+  return {};
+}
+function _invResolveText(text) {
+  const t = String(text || '');
+  const m = /(?:^|[^\d])(\d{4,6})(?!\d)/.exec(t);
+  if (m && DBMgr.getStockInfo(m[1])) return { code: m[1], name: DBMgr.getStockInfo(m[1]).stock_name };
+  const chars = t.replace(/[^\u4e00-\u9fffA-Za-z0-9\-]/g, ' ').split(/\s+/).filter(Boolean);
+  const seen = new Set();
+  for (let len = 8; len >= 2; len--) {
+    for (const seg of chars) {
+      for (let i = 0; i + len <= seg.length; i++) {
+        const sub = seg.slice(i, i + len);
+        if (seen.has(sub)) continue;
+        seen.add(sub);
+        const hit = DBMgr.searchStocks(sub, 5).find(x => x.stock_name === sub);
+        if (hit) return { code: hit.stock_code, name: hit.stock_name };
+      }
+    }
+  }
+  return null;
+}
+
+function registerAiExtensions(ai) {
+  if (typeof ai.register_extension !== 'function') return; // 舊版引擎沒有通用擴充點
+  for (const ext of INV_EXTENSIONS) {
+    const r = ai.register_extension(ext, { fetchers: INV_FETCHERS, getContext: _invContext, resolveText: _invResolveText, wrapResult: _invWrapResult });
+    if (!r.ok) console.warn('擴充登記失敗：', ext.id, r.errors);
+  }
+}
+
 function registerAiCapabilities(ai) {
   AI_CAPABILITIES.forEach(c => {
     const paramKeys = Object.keys(c.params || {});
@@ -8331,6 +9049,7 @@ function registerAiCapabilities(ai) {
     if (typeof ai.register_domain_category === 'function') {
       ai.register_domain_category('host_app', { label: '宿主網站／應用程式的功能', description: '這個頁面自己提供的資料、分析、圖表、介面操作等工具（由宿主頁面登記）' });
     }
+    registerAiExtensions(ai);
     ai.register_domain('stock_site', {
       label: '台股追蹤網站自己的資料與分析工具（K線與指標、持股診斷、鎖股名單、自選股、備忘錄、圖表、籌碼、匯出…）',
       category: 'host_app',
@@ -8394,6 +9113,12 @@ get_stocks_by_sector等任何工具拿到一份「多檔股票代號清單」，
 get_price_history/diagnose_stock等工具處理。batch_analyze_stocks的instruction參數要把篩選
 條件寫清楚、並要求每個子任務用固定格式回答（例如「結論開頭寫MATCH或NO_MATCH」），拿到結果
 陣列後自己彙整、只列出符合條件的股票給使用者，不用把每一則子任務原始回覆都貼出來。
+資料工具的回傳是JSONL（第一行{"_meta":…}說明總筆數、這頁幾筆、有沒有下一頁、result_id，其後每行一筆）：
+結果都存在頁面的結果倉庫裡，對話只拿到一頁。要看完整就用read_result接著翻頁（has_more=true就照
+_meta.next_call），或先用layer="outline"看目錄、layer="summary"看摘要再挑段落深入——不要只讀第一頁
+就下結論，也不要自己截斷、省略。做完整分析或報告前先list_results確認手上有哪些資料。畫圖用
+render_stock_chart帶from_result（診斷的result_id）自動畫頸線、壓力支撐、目標價；匯出用export_document
+的{type:stock_diagnosis, result_id}，數字都由系統從倉庫取，不要自己抄。
 會修改使用者資料（備忘錄/自選股）或觸發網路下載的工具，description裡有明確標註，執行前
 用一句話跟使用者確認意圖即可，不用要求使用者輸入特定確認字樣。
 匯出檔案：使用者要求把分析結果存成PDF/PPTX/Markdown檔案時，呼叫 export_document（詳細
