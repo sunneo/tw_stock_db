@@ -188,6 +188,16 @@ function embedRecipe() {
     console.log('已更新 FaRecipe（' + core.length + ' 字元）');
 }
 embedRecipe();
+// 擴充點（DESIGN.extension-points.md）：FaExt 核心＋內建擴充清單（renderer/src/ext/examples/*.json）一起嵌進 EXT 區塊，隨 renderer 熱更新送達
+function embedExt() {
+    const core = fs.readFileSync(path.join(root, 'renderer/src/ext/ext_core.js'), 'utf8').replace(/\r\n/g, '\n');
+    const exts = ['renderer/src/ext/examples/stock_drop_cause.json'].map((f) => JSON.parse(fs.readFileSync(path.join(root, f), 'utf8')));
+    const a = src.indexOf('/* EXT-BEGIN */'), b = src.indexOf('/* EXT-END */');
+    if (a < 0 || b < 0) throw new Error('找不到 EXT 標記');
+    src = src.slice(0, a) + '/* EXT-BEGIN */\nconst FaExt = (function () {\nconst holder = {};\n(function (module, self) {\n' + core + '\n}).call(null, undefined, holder);\nreturn holder.FaExt;\n})();\nconst FA_EXT_BUILTIN = ' + JSON.stringify(exts) + ';\n' + src.slice(b);
+    console.log('已更新 FaExt（' + core.length + ' 字元，內建擴充 ' + exts.length + ' 個）');
+}
+embedExt();
 function embedPlan() {
     const core = fs.readFileSync(path.join(root, 'renderer/src/recipe/plan_core.js'), 'utf8').replace(/\r\n/g, '\n');
     const a = src.indexOf('/* PLAN-BEGIN */'), b = src.indexOf('/* PLAN-END */');
