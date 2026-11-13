@@ -586,7 +586,7 @@ def cmd_sft(a):
     import torch.nn.functional as F
     from tokenizers import Tokenizer
     torch.manual_seed(a.seed)
-    torch.set_num_threads(max(1, os.cpu_count() or 1))
+    torch.set_num_threads(max(1, int(getattr(a, 'threads', 8))))
     tok = Tokenizer.from_file(os.path.join(a.base, "tokenizer.json"))
     m, cfg = load_ckpt(a.base)
     rows = load_sft(a.data or DEFAULT_SFT)
@@ -631,8 +631,8 @@ def cmd_sft(a):
             X, Y, A = batch_of(held_idx)
             pos = torch.arange(X.shape[1]).unsqueeze(0).expand(X.shape[0], -1)
             logits, _ = m(X, A, pos, None)
-            tot = float(F.cross_entropy(logits.reshape(-1, logits.shape[-1]), Y.reshape(-1), ignore_index=-100, reduction="sum"))
-            cnt = int((Y != -100).sum())
+            tot = float(F.cross_entropy(logits[:, :-1].reshape(-1, logits.shape[-1]), Y[:, 1:].reshape(-1), ignore_index=-100, reduction="sum"))   # 位置 t 預測第 t+1 個 token
+            cnt = int((Y[:, 1:] != -100).sum())
         m.train()
         return tot / max(cnt, 1)
 
@@ -656,7 +656,7 @@ def cmd_sft(a):
         X, Y, A = batch_of(idxs)
         pos = torch.arange(X.shape[1]).unsqueeze(0).expand(X.shape[0], -1)
         logits, _ = m(X, A, pos, None)
-        loss = F.cross_entropy(logits.reshape(-1, logits.shape[-1]), Y.reshape(-1), ignore_index=-100)
+        loss = F.cross_entropy(logits[:, :-1].reshape(-1, logits.shape[-1]), Y[:, 1:].reshape(-1), ignore_index=-100)   # 位置 t 預測第 t+1 個 token
         if m.aux is not None:
             loss = loss + cfg["aux_coef"] * m.aux
         opt.zero_grad(set_to_none=True); loss.backward()
@@ -893,7 +893,7 @@ def cmd_export(a):
     import onnxruntime as ort
     from onnxruntime.quantization import quantize_dynamic, QuantType
     from tokenizers import Tokenizer
-    torch.set_num_threads(max(1, os.cpu_count() or 1))
+    torch.set_num_threads(max(1, int(getattr(a, 'threads', 8))))
     m, cfg = load_ckpt(a.model)
     if not cfg["native_compatible"]:
         fail("原生執行環境寫死 %d 個 KV 頭／head_dim %d／最多 %d 層，這顆模型的形狀不符（鍵值頭 %d、每頭維度 %d、%d 層），不能匯出給它" % (KV_HEADS, HEAD_DIM, LAYERS, cfg["kv_heads"], cfg["head_dim"], cfg["layers"]))
@@ -1085,7 +1085,7 @@ def main():
     p = sub.add_parser("sft"); p.add_argument("--base", required=True); p.add_argument("--data", default=""); p.add_argument("--out", required=True)
     p.add_argument("--steps", type=int, default=300); p.add_argument("--batch", type=int, default=8); p.add_argument("--lr", type=float, default=0.0005)
     p.add_argument("--seq", type=int, default=256); p.add_argument("--seed", type=int, default=0); p.add_argument("--heldout-frac", dest="heldout_frac", type=float, default=0.2)
-    p.add_argument("--answer-tokens", dest="answer_tokens", type=int, default=48); p.add_argument("--log-every", dest="log_every", type=int, default=10)
+    p.add_argument("--answer-tokens", dest="answer_tokens", type=int, default=48); p.add_argument("--log-every", dest="log_every", type=int, default=10); p.add_argument("--threads", type=int, default=8)
     p = sub.add_parser("expert-load"); p.add_argument("--model", required=True); p.add_argument("--data", required=True); p.add_argument("--seq", type=int, default=128)
     p = sub.add_parser("gen-math"); p.add_argument("--out", required=True); p.add_argument("--n-train", dest="n_train", type=int, default=2500); p.add_argument("--n-held", dest="n_held", type=int, default=150); p.add_argument("--seed", type=int, default=0)
     p = sub.add_parser("eval-math"); p.add_argument("--model", required=True); p.add_argument("--data", required=True); p.add_argument("--modes", default="think,nothink"); p.add_argument("--max-new", dest="max_new", type=int, default=96)
@@ -1093,7 +1093,7 @@ def main():
     p = sub.add_parser("grpo"); p.add_argument("--base", required=True); p.add_argument("--problems", required=True); p.add_argument("--out", required=True)
     p.add_argument("--steps", type=int, default=200); p.add_argument("--prompts", type=int, default=8); p.add_argument("--group", type=int, default=8); p.add_argument("--lr", type=float, default=2e-5)
     p.add_argument("--max-new", dest="max_new", type=int, default=72); p.add_argument("--temp", type=float, default=1.0); p.add_argument("--seed", type=int, default=0); p.add_argument("--threads", type=int, default=4)
-    p = sub.add_parser("export"); p.add_argument("--model", required=True); p.add_argument("--out", required=True)
+    p = sub.add_parser("export"); p.add_argument("--model", required=True); p.add_argument("--out", required=True); p.add_argument("--threads", type=int, default=8)
     p = sub.add_parser("export-hf"); p.add_argument("--model", required=True); p.add_argument("--out", required=True)
     p = sub.add_parser("check"); p.add_argument("--model-dir", dest="model_dir", required=True)
     a = ap.parse_args()
