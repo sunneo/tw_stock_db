@@ -1,0 +1,19 @@
+{
+  "format": "fa-lora-builtin-part",
+  "name": "reading-r4",
+  "file": "reading-r4.fatrain",
+  "size": 40375200,
+  "sha256": "8a69778ac9bd87e1ebd88cc289955ad3f4762e666dd551b97b63104484588f2e",
+  "parts": [
+    {
+      "file": "reading-r4.fatrain.part00",
+      "size": 20971520,
+      "sha256": "aad92699f58b868d826584d764d01dcc3d50ab24c7a83e72edb64878e079befc"
+    },
+    {
+      "file": "reading-r4.fatrain.part01",
+      "size": 19403680,
+      "sha256": "d79076803f4c476349566239a88621cffe8053b8266a36d8fc6ac7be25fe159a"
+    }
+  ]
+}

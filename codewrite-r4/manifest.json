@@ -1,0 +1,19 @@
+{
+  "format": "fa-lora-builtin-part",
+  "name": "codewrite-r4",
+  "file": "codewrite-r4.fatrain",
+  "size": 40375402,
+  "sha256": "db1ffdb12a93e5fa65967d999554d5a4f747521683a3ce33eb2717ab96ec57db",
+  "parts": [
+    {
+      "file": "codewrite-r4.fatrain.part00",
+      "size": 20971520,
+      "sha256": "8c3b7995a6dbb0b8179564d374ce712b64d58019094f4193b470a129c569a8fb"
+    },
+    {
+      "file": "codewrite-r4.fatrain.part01",
+      "size": 19403882,
+      "sha256": "577601c5d05b6940e85d06eea8d551749ee9b619ba58e9c5c296e2f6069f9964"
+    }
+  ]
+}

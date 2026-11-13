@@ -1,0 +1,19 @@
+{
+  "format": "fa-lora-builtin-part",
+  "name": "toolcall-r4",
+  "file": "toolcall-r4.fatrain",
+  "size": 40386075,
+  "sha256": "ff63ec1c99c3f34f20297dcefc59897588307b9a165d2749a15febee271e4dd9",
+  "parts": [
+    {
+      "file": "toolcall-r4.fatrain.part00",
+      "size": 20971520,
+      "sha256": "679eca50ac3e1a5a9c8425554b05a1c43d4b0d81260f332058f29d383cf34314"
+    },
+    {
+      "file": "toolcall-r4.fatrain.part01",
+      "size": 19414555,
+      "sha256": "7612adebcd8aaa7c1679111e7cef5ba09567ef62209de3eab4dffaead4824948"
+    }
+  ]
+}

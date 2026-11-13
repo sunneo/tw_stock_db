@@ -1,0 +1,19 @@
+{
+  "format": "fa-lora-builtin-part",
+  "name": "plan-r4",
+  "file": "plan-r4.fatrain",
+  "size": 40375498,
+  "sha256": "1771fc8838555d52ac329d4a1f528cb078761b5456f65bdeb1ca755357df2207",
+  "parts": [
+    {
+      "file": "plan-r4.fatrain.part00",
+      "size": 20971520,
+      "sha256": "ec6f399518b5bed70d05ec9ef93bd3e1f235d987ac621d1436e01c6f8a17f5a6"
+    },
+    {
+      "file": "plan-r4.fatrain.part01",
+      "size": 19403978,
+      "sha256": "d5ca4e0a45b48cae295bbb75a454ca75e7b74bc25f9e0b02806017fed65552e3"
+    }
+  ]
+}

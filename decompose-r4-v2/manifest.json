@@ -1,0 +1,19 @@
+{
+  "format": "fa-lora-builtin-part",
+  "name": "decompose-r4-v2",
+  "file": "decompose-r4-v2.fatrain",
+  "size": 40377386,
+  "sha256": "400c4ae3cb9342b1ec89c097e807158b4d6a330ad5be8b76813571ec1edaf842",
+  "parts": [
+    {
+      "file": "decompose-r4-v2.fatrain.part00",
+      "size": 20971520,
+      "sha256": "e2ff2648d4128c809d66b084ac9cc678e0d65368b104168c41eff7d6cd700f80"
+    },
+    {
+      "file": "decompose-r4-v2.fatrain.part01",
+      "size": 19405866,
+      "sha256": "e8ef8ac7266354168c6ba39ebf5165062b7aa8b2da6f1435e75ba55e195832c8"
+    }
+  ]
+}

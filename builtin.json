@@ -1,0 +1,188 @@
+{
+  "format": "fa-lora-builtin",
+  "version": 1,
+  "base_url": "https://raw.githubusercontent.com/sunneo/tw_stock_db/lora-adapters/",
+  "entries": [
+    {
+      "id": "decompose-r4-v2",
+      "name": "decompose-r4-v2",
+      "version": "1.0.0",
+      "size": 40377386,
+      "sha256": "400c4ae3cb9342b1ec89c097e807158b4d6a330ad5be8b76813571ec1edaf842",
+      "dir": "decompose-r4-v2",
+      "parts": [
+        {
+          "file": "decompose-r4-v2.fatrain.part00",
+          "size": 20971520,
+          "sha256": "e2ff2648d4128c809d66b084ac9cc678e0d65368b104168c41eff7d6cd700f80"
+        },
+        {
+          "file": "decompose-r4-v2.fatrain.part01",
+          "size": 19405866,
+          "sha256": "e8ef8ac7266354168c6ba39ebf5165062b7aa8b2da6f1435e75ba55e195832c8"
+        }
+      ],
+      "domains": [
+        "decompose"
+      ],
+      "gate": {
+        "pass": true,
+        "reason": "評測數字齊全，所有範圍內的組都不輸基底（範圍外不計：heldout/think_stack、think_stack/plan_check、think_stack/review_return、think_stack/self_validate）"
+      },
+      "defaultOn": true,
+      "limits": []
+    },
+    {
+      "id": "toolcall-r4",
+      "name": "toolcall-r4",
+      "version": "1.0.0",
+      "size": 40386075,
+      "sha256": "ff63ec1c99c3f34f20297dcefc59897588307b9a165d2749a15febee271e4dd9",
+      "dir": "toolcall-r4",
+      "parts": [
+        {
+          "file": "toolcall-r4.fatrain.part00",
+          "size": 20971520,
+          "sha256": "679eca50ac3e1a5a9c8425554b05a1c43d4b0d81260f332058f29d383cf34314"
+        },
+        {
+          "file": "toolcall-r4.fatrain.part01",
+          "size": 19414555,
+          "sha256": "7612adebcd8aaa7c1679111e7cef5ba09567ef62209de3eab4dffaead4824948"
+        }
+      ],
+      "domains": [
+        "toolcall"
+      ],
+      "gate": {
+        "pass": true,
+        "reason": "評測數字齊全，所有範圍內的組都不輸基底"
+      },
+      "defaultOn": true,
+      "limits": []
+    },
+    {
+      "id": "plan-r4",
+      "name": "plan-r4",
+      "version": "1.0.0",
+      "size": 40375498,
+      "sha256": "1771fc8838555d52ac329d4a1f528cb078761b5456f65bdeb1ca755357df2207",
+      "dir": "plan-r4",
+      "parts": [
+        {
+          "file": "plan-r4.fatrain.part00",
+          "size": 20971520,
+          "sha256": "ec6f399518b5bed70d05ec9ef93bd3e1f235d987ac621d1436e01c6f8a17f5a6"
+        },
+        {
+          "file": "plan-r4.fatrain.part01",
+          "size": 19403978,
+          "sha256": "d5ca4e0a45b48cae295bbb75a454ca75e7b74bc25f9e0b02806017fed65552e3"
+        }
+      ],
+      "domains": [
+        "plan"
+      ],
+      "gate": {
+        "pass": false,
+        "reason": "評測有退化答案（只靠一邊得分，不算贏）：heldout/think_stack、think_stack/self_validate，不自動選用（可手動指定）"
+      },
+      "defaultOn": true,
+      "limits": []
+    },
+    {
+      "id": "colu-r4",
+      "name": "colu-r4",
+      "version": "1.0.0",
+      "size": 40374895,
+      "sha256": "b3f915d69d9a861b1f5cf0afabc5160e71460357d271cc18b89e32ec9b91214c",
+      "dir": "colu-r4",
+      "parts": [
+        {
+          "file": "colu-r4.fatrain.part00",
+          "size": 20971520,
+          "sha256": "3612969ab47006840ee37ee06de375e60a4babb893e1df1e50e5d42c8cab6d78"
+        },
+        {
+          "file": "colu-r4.fatrain.part01",
+          "size": 19403375,
+          "sha256": "5c884f00bfccf95802c4a4beb494c5ed072752a6c6e1548b5554650b95b3d8bb"
+        }
+      ],
+      "domains": [
+        "colu"
+      ],
+      "gate": {
+        "pass": true,
+        "reason": "評測數字齊全，所有範圍內的組都不輸基底"
+      },
+      "defaultOn": true,
+      "limits": []
+    },
+    {
+      "id": "codewrite-r4",
+      "name": "codewrite-r4",
+      "version": "1.0.0",
+      "size": 40375402,
+      "sha256": "db1ffdb12a93e5fa65967d999554d5a4f747521683a3ce33eb2717ab96ec57db",
+      "dir": "codewrite-r4",
+      "parts": [
+        {
+          "file": "codewrite-r4.fatrain.part00",
+          "size": 20971520,
+          "sha256": "8c3b7995a6dbb0b8179564d374ce712b64d58019094f4193b470a129c569a8fb"
+        },
+        {
+          "file": "codewrite-r4.fatrain.part01",
+          "size": 19403882,
+          "sha256": "577601c5d05b6940e85d06eea8d551749ee9b619ba58e9c5c296e2f6069f9964"
+        }
+      ],
+      "domains": [
+        "codewrite"
+      ],
+      "gate": {
+        "pass": true,
+        "reason": "評測數字齊全，所有範圍內的組都不輸基底（範圍外不計：fn_template/code_split/valid、fn_template/code_split/names、fn_template/code_split/calls）"
+      },
+      "defaultOn": true,
+      "limits": [
+        "judge 只有 18/60 通過（只量了一部分）",
+        "整份程式沒有量",
+        "判準不是預先登記的"
+      ]
+    },
+    {
+      "id": "reading-r4",
+      "name": "reading-r4",
+      "version": "1.0.0",
+      "size": 40375200,
+      "sha256": "8a69778ac9bd87e1ebd88cc289955ad3f4762e666dd551b97b63104484588f2e",
+      "dir": "reading-r4",
+      "parts": [
+        {
+          "file": "reading-r4.fatrain.part00",
+          "size": 20971520,
+          "sha256": "aad92699f58b868d826584d764d01dcc3d50ab24c7a83e72edb64878e079befc"
+        },
+        {
+          "file": "reading-r4.fatrain.part01",
+          "size": 19403680,
+          "sha256": "d79076803f4c476349566239a88621cffe8053b8266a36d8fc6ac7be25fe159a"
+        }
+      ],
+      "domains": [
+        "reading"
+      ],
+      "gate": {
+        "pass": true,
+        "reason": "評測數字齊全，所有範圍內的組都不輸基底"
+      },
+      "defaultOn": true,
+      "limits": [
+        "模板題（程式生成）：量的是依文作答、逐字引用、沒寫就說沒寫",
+        "代表做法與格式，不代表真實的閱讀理解能力"
+      ]
+    }
+  ]
+}

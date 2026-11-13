@@ -1,0 +1,19 @@
+{
+  "format": "fa-lora-builtin-part",
+  "name": "colu-r4",
+  "file": "colu-r4.fatrain",
+  "size": 40374895,
+  "sha256": "b3f915d69d9a861b1f5cf0afabc5160e71460357d271cc18b89e32ec9b91214c",
+  "parts": [
+    {
+      "file": "colu-r4.fatrain.part00",
+      "size": 20971520,
+      "sha256": "3612969ab47006840ee37ee06de375e60a4babb893e1df1e50e5d42c8cab6d78"
+    },
+    {
+      "file": "colu-r4.fatrain.part01",
+      "size": 19403375,
+      "sha256": "5c884f00bfccf95802c4a4beb494c5ed072752a6c6e1548b5554650b95b3d8bb"
+    }
+  ]
+}
