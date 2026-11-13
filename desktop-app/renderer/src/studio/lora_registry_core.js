@@ -152,6 +152,15 @@
     //   win：清楚贏的組（不含退化與無資料）；
     //   blocked：自動選用被擋下的人話原因（空＝可自動選用）。手動指定不受 blocked 影響。
     // 評量腳本寫的判定 ev.verdict.ship === false 時，未贏的目標組也列入 blocked（退化與無資料已在上面各自列出）。
+    // 產品端的觸發政策（DESIGN §32.11、§33）：領域 → 文字是否符合（true／false）；沒有政策的領域回 null（改看 descriptor 的觸發字）。
+    const TRIGGER_POLICY = {
+        reading: (t) => /【文章】/.test(t) && /文中|依文|引用|原文/.test(t),
+        codewrite: (t) => /寫程式|實作函式|寫[^\n]{0,8}函式|code\s*write|write\s+(a\s+)?function/i.test(t),
+    };
+    function triggerPolicyOk(domain, text) {
+        if (!Object.prototype.hasOwnProperty.call(TRIGGER_POLICY, domain)) return null;
+        return !!TRIGGER_POLICY[domain](String(text || ""));
+    }
     function evalVerdict(ev) {
         if (!ev || typeof ev !== 'object') return { known: false, lose: [], win: [], degenerate: [], noData: [], blocked: [] };
         if (ev.metrics && typeof ev.metrics === 'object') return withBlocked(metricsVerdict(ev.metrics));
@@ -257,10 +266,6 @@
         }
         // 產品端的觸發政策（DESIGN §32.11）：descriptor 裡的觸發字太寬（reading 的「文章／根據」、codewrite 的「程式」會讓一般聊天被選到），
         // 這兩個領域改用這裡的規則，不看 descriptor 的觸發字。reading：必須附文章（【文章】標記）且問依文作答；codewrite：必須明確要寫程式或實作函式。
-        const TRIGGER_POLICY = {
-            reading: (t) => /【文章】/.test(t) && /文中|依文|引用|原文/.test(t),
-            codewrite: (t) => /寫程式|實作函式|寫[^\n]{0,8}函式|code\s*write|write\s+(a\s+)?function/i.test(t),
-        };
         function triggerHit(e, text) {
             if (!text) return false;
             const pol = (e.domains || []).find((d) => Object.prototype.hasOwnProperty.call(TRIGGER_POLICY, d));
@@ -538,5 +543,5 @@
         };
     }
 
-    return { SOURCES, DEFAULT_BUDGET, DESCRIPTOR_FORMAT, DESCRIPTOR_FORMAT_VERSION, TOOL_HASH_SCHEME, toolCatalogShapeText, toolCatalogHash, validateEntry, descriptorErrors, descriptorFromJson, checkCompat, evalVerdict, gateOf, createRegistry, entryFromManifest, weightFile, summaryOf, diffSummaries, importReport, nrEngineLoader };
+    return { triggerPolicyOk, SOURCES, DEFAULT_BUDGET, DESCRIPTOR_FORMAT, DESCRIPTOR_FORMAT_VERSION, TOOL_HASH_SCHEME, toolCatalogShapeText, toolCatalogHash, validateEntry, descriptorErrors, descriptorFromJson, checkCompat, evalVerdict, gateOf, createRegistry, entryFromManifest, weightFile, summaryOf, diffSummaries, importReport, nrEngineLoader };
 });

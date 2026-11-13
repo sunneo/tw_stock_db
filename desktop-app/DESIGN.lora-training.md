@@ -1637,3 +1637,40 @@ cd .. && node scripts/native-runtime-pack.js /home/hungfu.lee/fa-work/native-run
 - 卡片限制（寫進 builtin.json 的 `limits`，由 build_builtin.js 的 `LIMITS` 產生）：
   - codewrite-r4：judge 只有 18/60 通過（只量了一部分）；整份程式沒有量；判準不是預先登記的。
   - reading-r4：模板題（程式生成），量的是依文作答、逐字引用、沒寫就說沒寫；代表做法與格式，不代表真實的閱讀理解能力。
+
+## 33. 內建 LoRA 接進產品：預設啟用、按需下載、設定頁（2026-11-13，分支 claude/builtin-lora-wiring）
+
+使用者決定：預設離線模型在桌面版自動使用六顆內建 LoRA；沒有退步才上（§27.9.6）。本節記錄接線與驗證，驗證與未驗證分開寫。
+
+### 33.1 三批提交
+- `b9e5870c` 批 1（主行程，`main-ext.js` 的 `BLT`）：`builtin_manifest`（網路優先，失敗退回 `builtin-lora/manifest.json` 快取並說明）、`builtin_fetch`（逐片與整檔 SHA-256 核對，只有全部通過才寫 `<userData>/builtin-lora/<id>.fatrain`，先寫 `.partial` 再改名）、`builtin_status`（已下載大小與逐片進度）、`builtin_delete`。逾時 60 秒閒置、整顆 15 分鐘上限，失敗重試一次。清單網址預設指向 lora-adapters 分支，可用環境變數 `FA_BUILTIN_MANIFEST_URL` 覆寫（測試用）。
+- `ace2caea` 批 2（`studio_server_core.js`、`floating-assistant.js`、`lora_registry_core.js`）：`builtinEnsure(task, text)` 在每輪路由前執行。條件：任務領域有對應內建、總開關開、單顆開、把關通過、登錄表還沒有、領域政策符合（reading 要附文章，codewrite 要明確寫程式；其他領域依任務標籤）。符合才下載，下載後以 `Fatrain.importAsset` 放進 LoRA 儲存層（已存在則取代），再照常路由。失敗回基底並寫一行原因，同一顆冷卻 10 分鐘，同時只做一個下載。進度與說明「第一次使用，正在下載『用途』強化模組（約 N MB）」寫進生成的 log。
+- `3325fe9b` 批 3a（`lora_manage_core.js`、`studio-viewer.template.html`）：LoRA 管理頁下方的內建區塊，六張卡片（用途、評量、限制、已下載大小、啟用、下載或刪除重下、被把關擋下的原因、上次失敗原因），總開關；網頁版只顯示「只有桌面版啟用」。
+
+### 33.2 驗證過的
+- 單元與接線測試：`tests/native/builtin_lora.test.js` 37 項（本機 http 伺服器：正常、分片不符、整檔不符、404 重試、轉址、逾時、快取退回、清單格式錯、刪除、白話訊息）；`renderer/src/studio/lora_builtin_wiring.test.js` 24 項（假主行程、六顆暫存檔、真 `Fatrain.importAsset` 與登錄表）；`renderer/src/studio/lora_builtin_cards.test.js` 7 項。既有相關測試全數通過（`native_lora` 66、`appimage_relaunch` 11、`lora_registry` 118、`lora_route` 20、`lora_route_wiring` 30、`lora_policy` 14、`lora_gate` 15、`lora_builtin_core` 23、`studio_server_core` 138、`studio_embed` 25、`studio_host` 34、`lora_manage_core` 52）。
+- 本機檔案伺服器實測：六顆真實分片（`/home/hungfu.lee/fa-work/lora-adapters-stage`，各約 40 MB）全部下載、逐片與整檔校驗通過，每顆 0.1 秒內（本機回環，不代表 GitHub 速度）。
+- 端到端探針（真 Electron、xvfb、`nice -n 19`、乾淨 userData 只帶標準版模型、清單與分片由本機伺服器提供）：`scripts/eval/builtin_lora_probe.run.js` 與 `builtin_lora_probe.eval.js`，結果 `lora-train/results/builtin_lora_probe.json`，16 項全部通過，總時間 39 秒：
+  - 原生執行包 1.22.0-3 與槽版模型就緒。
+  - 乾淨：六顆都未下載。
+  - decompose 第一輪：路由前下載 decompose-r4-v2（有「第一次使用…約 40 MB」說明，11.5 秒含下載與生成），路由選到並套用，原生生成。
+  - toolcall 第二輪：下載 toolcall-r4，路由選到並套用，原生生成。
+  - reading 沒附文章：不下載、用基底（2.2 秒）；附文章：下載 reading-r4、路由選到（5.6 秒）。
+  - 總開關關閉：colu 不下載、回基底，已載入的 LoRA 被清掉（`action: clear`）；重新打開後正常。
+  - 刪除 toolcall-r4 後再下一輪：重新下載並套用。
+  - 卡片 DOM：產品的 `builtinCardsHTML` 產生六張 `.card`，按鈕 14 個。
+- 所有生成都走原生後端（log 記錄為原生）。
+
+### 33.3 未驗證（誠實列出）
+- 真網路：未連 GitHub，清單網址與分片網址未實際抓過。`builtin.json` 的 `base_url` 仍是 `<COMMIT>` 佔位，推送前要換成實際 commit 或分支（§32.3）。
+- 卡片 DOM 探針數的是產品的 HTML 產生器輸出，不是工作室頁面實際渲染的截圖；頁面按鈕的點擊流程沒有在真頁面上點過。
+- `colu-r4`、`codewrite-r4` 沒有被路由選到，只做了總開關關閉時的「不下載」檢查；它們的生成品質沒有在此量。
+- plan-r4 把關未通過：預設啟用、路由擋住、卡片寫明原因（探針 `finalView` 確認 `gatePass: false`、未下載）。
+- 刪除後重下那一輪的回答沒有產生工具呼叫（模型品質問題，不是接線問題；本探針不評量品質）。
+- 批 2 的 `_nrCall` 走信箱協定，`builtin_fetch` 的長時間等待靠 mailbox 逾時設定（900 秒）；長時間下載中途信箱超時的情況沒有單獨測。
+- 沒有推送、沒有發布。
+
+### 33.4 限制與待辦
+- 每輪仍只開一顆：路由已保證同一領域只留一顆（`lora_route_core`），沒有改動 `maxActive`。
+- 網頁版只顯示「只有桌面版啟用」，沒有接網頁版 LoRA 的內建下載。
+- 推送前：`builtin.json` 的 `base_url` 換成實際 commit（或分支），推送 lora-adapters 分支，發布執行包（由總指揮核對後處理）。

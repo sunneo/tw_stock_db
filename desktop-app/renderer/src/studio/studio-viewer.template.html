@@ -323,6 +323,15 @@ T.lora=async function(body){
  else{
   var LM=FaStudioLoraManage, model={rows:LM.rowsFromStatus(st),budget:LM.budgetOf(st),busy:LM.busyText(st)};
   var box=h('div',{}),cardBox=h('div',{});box.innerHTML=LM.renderLoraManageHTML(model);body.appendChild(box);body.appendChild(cardBox);
+  var bv=await api('GET','/api/builtin');var bBox=h('div',{});bBox.innerHTML=LM.builtinCardsHTML(bv);body.appendChild(bBox);
+  bBox.addEventListener('click',async function(ev){var b=ev.target.closest&&ev.target.closest('[data-builtin-action]');if(!b||b.disabled)return;var act=b.getAttribute('data-builtin-action'),bid=b.getAttribute('data-id'),x=null;
+   if(act==='fetch'){b.disabled=true;b.textContent='下載中…';x=await api('POST','/api/builtin/fetch',{id:bid})}
+   else if(act==='delete'){if(!confirm('刪除內建 LoRA「'+bid+'」？之後用到時會重新下載（約 40 MB）。'))return;x=await api('POST','/api/builtin/delete',{id:bid})}
+   else if(act==='refresh')x=await api('POST','/api/builtin/refresh',{});
+   else if(act==='master')x=await api('POST','/api/builtin/master',{on:b.checked});
+   else if(act==='enable')x=await api('POST','/api/builtin/enable',{id:bid,on:b.checked});
+   if(x&&x.ok===false)alert(x.error||x.message||'操作失敗');
+   refresh('lora')});
   if(model.rows.length>1){var sa=h('select',{},model.rows.map(function(q){return h('option',{value:q.id,text:q.name+'（'+q.version+'）'})})),sb=h('select',{},model.rows.map(function(q){return h('option',{value:q.id,text:q.name+'（'+q.version+'）'})}));sb.selectedIndex=1;var cmpBox=h('div',{});
    body.appendChild(h('div',{'class':'grp',text:'版本比較（兩個已登錄的 LoRA）'}));body.appendChild(h('div',{'class':'row'},[sa,sb,h('button',{text:'比較',onclick:async function(){var x=await api('GET','/api/lora/compare?a='+encodeURIComponent(sa.value)+'&b='+encodeURIComponent(sb.value));cmpBox.textContent='';if(x.ok===false){cmpBox.appendChild(reason(x.error));return}cmpBox.innerHTML=LM.renderCompareHTML(x.diff)}})]));body.appendChild(cmpBox)}
   box.addEventListener('click',async function(ev){var b=ev.target.closest&&ev.target.closest('[data-lora-action]');if(!b||b.disabled)return;
