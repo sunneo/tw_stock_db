@@ -104,6 +104,9 @@
                 domains: Array.isArray(r.domains) ? r.domains : [], triggers: Array.isArray(r.triggers) ? r.triggers : [], description: r.description || '',
                 evalWin: r.eval && Array.isArray(r.eval.win) ? r.eval.win : null, evalLose: r.eval && Array.isArray(r.eval.lose) ? r.eval.lose : null,
                 evalBlocked: r.eval && Array.isArray(r.eval.blocked) ? r.eval.blocked : null,
+                evalNegs: r.eval && r.eval.negs && typeof r.eval.negs === 'object' && Object.keys(r.eval.negs).length ? r.eval.negs : null,
+                // 自動選用與否（與登錄表 select() 的規則一致）：有評量未過就只能手動選
+                autoSelect: !(r.eval && Array.isArray(r.eval.blocked) && r.eval.blocked.length),
                 location: r.location || '', created: timeText(Number(r.added)), actions,
                 slotRank: r.slotRank != null ? r.slotRank : r.rank, compatWarnings: Array.isArray(r.compatWarnings) ? r.compatWarnings : [], limits: Array.isArray(r.limits) ? r.limits : [], evalMetrics: r.evalMetrics || null
             };
@@ -170,9 +173,12 @@
             + (r.compat === 'warn' && r.compatReasons.length ? '<div class="warn">相容性提醒：' + esc(r.compatReasons.join('；')) + '</div>' : '');
         const ev = r.evalMetrics ? evalLinesHTML(r.evalMetrics) : ((r.evalWin || r.evalLose) ? '<div>評量：贏 ' + esc((r.evalWin || []).join('、') || '無') + '；輸 ' + esc((r.evalLose || []).join('、') || '無') + '</div>' : '<div class="na">無資料（沒有評量結果）</div>');
         const lim = r.limits && r.limits.length ? '<h5>已知限制</h5><ul>' + r.limits.map((x) => '<li>' + esc(x) + '</li>').join('') + '</ul>' : '';
+        // 負例（標準答案 ok=false）答對數：退化答案的證據，寫出分子與分母（例如 0/39）
+        const negLines = r.evalNegs ? Object.keys(r.evalNegs).map((g) => { const x = r.evalNegs[g]; return '<div>' + esc(g) + '：負例答對 ' + esc(x.tuned) + '/' + esc(x.n) + (x.base !== null && x.base !== undefined ? '（基底 ' + esc(x.base) + '/' + esc(x.n) + '）' : '') + '</div>'; }).join('') : '';
+        const negBlock = negLines ? '<h5>負例</h5>' + negLines : '';
         return '<div class="card"><div class="ttl">' + esc(r.name) + '</div>' + evalBlockBanner(r.evalBlocked) + discBanner(r.limits) + '<div class="intro">' + esc(r.description || '無資料（沒有說明）') + '</div>' +
             '<div class="kv">版本 ' + esc(r.version) + '・基底 ' + esc(r.base) + '・訓練秩 ' + esc(r.rank) + '・槽寬 ' + esc(r.slotRank) + '・' + esc(r.size) + '・來源 ' + esc(r.source) + (r.location ? '・位置 ' + esc(r.location) : '') + '</div>' +
-            comp + '<h5>能力（適用領域）</h5><div>' + chips(r.domains) + '</div><h5>觸發字</h5><div>' + chips(r.triggers) + '</div><h5>評量</h5>' + ev + lim + '</div>';
+            comp + '<h5>能力（適用領域）</h5><div>' + chips(r.domains) + '</div><h5>觸發字</h5><div>' + chips(r.triggers) + '</div><h5>評量</h5>' + ev + negBlock + lim + '</div>';
     }
 
     function renderLoraManageHTML(model) {
@@ -182,7 +188,8 @@
         const btn = (name, label, a, id) => '<button class="act" data-lora-action="' + esc(name) + '" data-id="' + esc(id) + '"' + (a && a.ok ? '' : ' disabled title="' + esc(a && a.reason) + '"') + '>' + esc(label) + '</button>';
         const rows = (m.rows || []).map((r) => {
             const state = r.loaded ? '<span class="badge b-done">載入中（推論中 ' + esc(r.inUse) + '）</span>' : '<span class="na">未載入</span>';
-            const flags = (r.pinned ? '<span class="badge">釘選</span> ' : '') + (r.enabled ? '' : '<span class="badge">停用</span> ') + (r.compat !== 'ok' ? '<span class="badge b-fail">相容 ' + esc(r.compat) + '</span>' : '');
+            const flags = (r.pinned ? '<span class="badge">釘選</span> ' : '') + (r.enabled ? '' : '<span class="badge">停用</span> ') + (r.compat !== 'ok' ? '<span class="badge b-fail">相容 ' + esc(r.compat) + '</span>' : '')
+                + (r.autoSelect === false ? '<span class="badge b-fail" title="' + esc((r.evalBlocked || []).join('；')) + '">評量未過（僅手動選）</span>' : '');
             return '<tr class="' + (r.loaded ? 'on' : '') + '"><td><b>' + esc(r.name) + '</b><div class="id">' + esc(r.id) + '</div>' + flags + '</td><td>' + esc(r.base) + '・rank ' + esc(r.rank) + '</td><td>' + esc(r.size) + '</td><td>' + esc(r.version) + '</td><td>' + state + '</td><td>' + esc(r.lastUsed) + '</td><td>' +
                 '<button class="act" data-lora-action="card" data-id="' + esc(r.id) + '">介紹</button> ' +
                 btn('load', '載入', r.actions.load, r.id) + ' ' + btn('unload', '卸載', r.actions.unload, r.id) + ' ' + btn('pin', r.actions.pin.label, r.actions.pin, r.id) + ' ' + btn('enable', r.actions.enable.label, r.actions.enable, r.id) + ' ' + btn('replace', '替換', r.actions.replace, r.id) + ' ' + btn('remove', '移除', r.actions.remove, r.id) + '</td></tr>';

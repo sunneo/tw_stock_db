@@ -338,6 +338,13 @@ let t = 1000; const now = () => ++t;
         check('評量腳本原始格式（tuned 欄位）也判得出贏', v4.win.length === 1 && v4.blocked.length === 0, v4);
         const v5 = R.evalVerdict({ groups: { 'fn/w': { tuned: 20, base: 0, n: 30, neg: { n: 5, base: 0, tuned: 0 }, pos: { n: 25, base: 0, tuned: 20 } } } });
         check('原始格式的退化也會被擋', v5.degenerate.length === 1 && v5.blocked.length >= 1, v5);
+        // 負例答對數要寫進原因與卡片（分子／分母），不只說「負例全錯」
+        check('退化原因帶出負例答對數 0/39', v.blocked.some((x) => /think_stack\/self_validate（負例答對 0\/39）/.test(x)), v.blocked);
+        check('evalVerdict 帶出負例數字 negs', v.negs['think_stack/self_validate'] && v.negs['think_stack/self_validate'].tuned === 0 && v.negs['think_stack/self_validate'].n === 39 && !v.negs['fn_template/code_split'], v.negs);
+        const cardDeco = r.card(r.get('deco'));
+        check('模型卡的評量帶出負例數字與原因', cardDeco.eval && cardDeco.eval.negs['think_stack/self_validate'].tuned === 0 && cardDeco.eval.blocked.some((x) => /0\/39/.test(x)), cardDeco.eval);
+        const stDeco = r.status().registered.find((c) => c.id === 'deco');
+        check('status 的登錄列也帶出 blocked（列表用）', stDeco && stDeco.eval && stDeco.eval.blocked.length >= 2, stDeco && stDeco.eval);
     }
     console.log(ok + ' passed, ' + bad + ' failed'); process.exit(bad ? 1 : 0);
 })();

@@ -5523,23 +5523,26 @@ const holder = {};
         if (ev.metrics && typeof ev.metrics === 'object') return withBlocked(metricsVerdict(ev.metrics));
         if (CARD_METRIC_KEYS.some((k) => k in ev)) return withBlocked(metricsVerdict(ev));
         const g = ev.groups; if (!g || typeof g !== 'object') return { known: typeof ev.score === 'number', score: ev.score, lose: [], win: [], degenerate: [], noData: [], blocked: [] };
-        const names = Object.keys(g), lose = [], win = [], degenerate = [], noData = [];
+        const names = Object.keys(g), lose = [], win = [], degenerate = [], noData = [], negs = {};
         for (const n of names) {
             const x = g[n]; if (!x || typeof x !== 'object') continue;
             const tuned = typeof x.adapter === 'number' ? x.adapter : x.tuned;   // 評量腳本的格式是 tuned；打包後的描述檔是 adapter
             if (typeof tuned !== 'number' || typeof x.base !== 'number') continue;
+            // 負例（標準答案 ok=false）的答對數：卡片與原因要寫出來（例如 0/39），不只寫「負例全錯」
+            if (x.neg && x.neg.n > 0) negs[n] = { n: x.neg.n, tuned: x.neg.tuned, base: typeof x.neg.base === 'number' ? x.neg.base : null };
             if (tuned < x.base) { lose.push(n); continue; }
             if (x.neg && x.neg.n > 0 && x.neg.tuned === 0) { degenerate.push(n); continue; }
             if (x.base === 0 && tuned === 0) { noData.push(n); continue; }
             if (tuned > x.base) win.push(n);
         }
-        return withBlocked({ known: names.length > 0, lose, win, degenerate, noData, score: win.length - lose.length }, ev.verdict);
+        return withBlocked({ known: names.length > 0, lose, win, degenerate, noData, negs, score: win.length - lose.length }, ev.verdict);
     }
     function withBlocked(v, verdict) {
-        v.lose = v.lose || []; v.win = v.win || []; v.degenerate = v.degenerate || []; v.noData = v.noData || [];
+        v.lose = v.lose || []; v.win = v.win || []; v.degenerate = v.degenerate || []; v.noData = v.noData || []; v.negs = v.negs || {};
         const blocked = [];
+        const negTxt = (n) => (v.negs[n] ? '（負例答對 ' + v.negs[n].tuned + '/' + v.negs[n].n + '）' : '');
         if (v.lose.length) blocked.push('輸給基底：' + v.lose.join('、'));
-        if (v.degenerate.length) blocked.push('退化答案（負例全錯、只靠正例得分，不算贏）：' + v.degenerate.join('、'));
+        if (v.degenerate.length) blocked.push('退化答案（負例全錯、只靠正例得分，不算贏）：' + v.degenerate.map((n) => n + negTxt(n)).join('、'));
         if (v.noData.length) blocked.push('無資料（基底與微調都是 0，不算通過）：' + v.noData.join('、'));
         if (verdict && typeof verdict === 'object') {
             const seen = new Set([].concat(v.lose, v.degenerate, v.noData));
@@ -5753,7 +5756,7 @@ const holder = {};
             const lu = live.has(e.id) ? live.get(e.id).lastUsed : (lastUsedById.has(e.id) ? lastUsedById.get(e.id) : null);
             return { id: e.id, name: e.name || e.id, version: e.version || null, description: e.description || '', base: e.base, rank: e.rank, size: e.size, added: e.added || null, lastUsed: lu,
                 domains: e.domains.slice(), triggers: (e.triggers || []).slice(), prompt_format_version: e.prompt_format_version, source: e.source, enabled: !!e.enabled,
-                location: e.location, eval: ev.known ? { lose: ev.lose, win: ev.win, degenerate: ev.degenerate, noData: ev.noData, blocked: ev.blocked } : null, compat: c.level, compatReasons: c.reasons.map((r) => r.message), compatWarnings: c.warnings.map((w) => w.message), pinned: pins.has(e.id),
+                location: e.location, eval: ev.known ? { lose: ev.lose, win: ev.win, degenerate: ev.degenerate, noData: ev.noData, blocked: ev.blocked, negs: ev.negs } : null, compat: c.level, compatReasons: c.reasons.map((r) => r.message), compatWarnings: c.warnings.map((w) => w.message), pinned: pins.has(e.id),
                 slotRank: e.slot_rank != null ? e.slot_rank : e.rank, limits: (e.limits || []).slice(), evalMetrics: e.eval && (e.eval.metrics || (CARD_METRIC_KEYS.some((k) => k in e.eval) ? e.eval : null)) || null };
         }
         // 狀態（給 LoRA 管理畫面）：槽位、已載入、最後使用時間、釘選、推論中
@@ -8212,6 +8215,9 @@ const holder = {};
                 domains: Array.isArray(r.domains) ? r.domains : [], triggers: Array.isArray(r.triggers) ? r.triggers : [], description: r.description || '',
                 evalWin: r.eval && Array.isArray(r.eval.win) ? r.eval.win : null, evalLose: r.eval && Array.isArray(r.eval.lose) ? r.eval.lose : null,
                 evalBlocked: r.eval && Array.isArray(r.eval.blocked) ? r.eval.blocked : null,
+                evalNegs: r.eval && r.eval.negs && typeof r.eval.negs === 'object' && Object.keys(r.eval.negs).length ? r.eval.negs : null,
+                // 自動選用與否（與登錄表 select() 的規則一致）：有評量未過就只能手動選
+                autoSelect: !(r.eval && Array.isArray(r.eval.blocked) && r.eval.blocked.length),
                 location: r.location || '', created: timeText(Number(r.added)), actions,
                 slotRank: r.slotRank != null ? r.slotRank : r.rank, compatWarnings: Array.isArray(r.compatWarnings) ? r.compatWarnings : [], limits: Array.isArray(r.limits) ? r.limits : [], evalMetrics: r.evalMetrics || null
             };
@@ -8278,9 +8284,12 @@ const holder = {};
             + (r.compat === 'warn' && r.compatReasons.length ? '<div class="warn">相容性提醒：' + esc(r.compatReasons.join('；')) + '</div>' : '');
         const ev = r.evalMetrics ? evalLinesHTML(r.evalMetrics) : ((r.evalWin || r.evalLose) ? '<div>評量：贏 ' + esc((r.evalWin || []).join('、') || '無') + '；輸 ' + esc((r.evalLose || []).join('、') || '無') + '</div>' : '<div class="na">無資料（沒有評量結果）</div>');
         const lim = r.limits && r.limits.length ? '<h5>已知限制</h5><ul>' + r.limits.map((x) => '<li>' + esc(x) + '</li>').join('') + '</ul>' : '';
+        // 負例（標準答案 ok=false）答對數：退化答案的證據，寫出分子與分母（例如 0/39）
+        const negLines = r.evalNegs ? Object.keys(r.evalNegs).map((g) => { const x = r.evalNegs[g]; return '<div>' + esc(g) + '：負例答對 ' + esc(x.tuned) + '/' + esc(x.n) + (x.base !== null && x.base !== undefined ? '（基底 ' + esc(x.base) + '/' + esc(x.n) + '）' : '') + '</div>'; }).join('') : '';
+        const negBlock = negLines ? '<h5>負例</h5>' + negLines : '';
         return '<div class="card"><div class="ttl">' + esc(r.name) + '</div>' + evalBlockBanner(r.evalBlocked) + discBanner(r.limits) + '<div class="intro">' + esc(r.description || '無資料（沒有說明）') + '</div>' +
             '<div class="kv">版本 ' + esc(r.version) + '・基底 ' + esc(r.base) + '・訓練秩 ' + esc(r.rank) + '・槽寬 ' + esc(r.slotRank) + '・' + esc(r.size) + '・來源 ' + esc(r.source) + (r.location ? '・位置 ' + esc(r.location) : '') + '</div>' +
-            comp + '<h5>能力（適用領域）</h5><div>' + chips(r.domains) + '</div><h5>觸發字</h5><div>' + chips(r.triggers) + '</div><h5>評量</h5>' + ev + lim + '</div>';
+            comp + '<h5>能力（適用領域）</h5><div>' + chips(r.domains) + '</div><h5>觸發字</h5><div>' + chips(r.triggers) + '</div><h5>評量</h5>' + ev + negBlock + lim + '</div>';
     }
 
     function renderLoraManageHTML(model) {
@@ -8290,7 +8299,8 @@ const holder = {};
         const btn = (name, label, a, id) => '<button class="act" data-lora-action="' + esc(name) + '" data-id="' + esc(id) + '"' + (a && a.ok ? '' : ' disabled title="' + esc(a && a.reason) + '"') + '>' + esc(label) + '</button>';
         const rows = (m.rows || []).map((r) => {
             const state = r.loaded ? '<span class="badge b-done">載入中（推論中 ' + esc(r.inUse) + '）</span>' : '<span class="na">未載入</span>';
-            const flags = (r.pinned ? '<span class="badge">釘選</span> ' : '') + (r.enabled ? '' : '<span class="badge">停用</span> ') + (r.compat !== 'ok' ? '<span class="badge b-fail">相容 ' + esc(r.compat) + '</span>' : '');
+            const flags = (r.pinned ? '<span class="badge">釘選</span> ' : '') + (r.enabled ? '' : '<span class="badge">停用</span> ') + (r.compat !== 'ok' ? '<span class="badge b-fail">相容 ' + esc(r.compat) + '</span>' : '')
+                + (r.autoSelect === false ? '<span class="badge b-fail" title="' + esc((r.evalBlocked || []).join('；')) + '">評量未過（僅手動選）</span>' : '');
             return '<tr class="' + (r.loaded ? 'on' : '') + '"><td><b>' + esc(r.name) + '</b><div class="id">' + esc(r.id) + '</div>' + flags + '</td><td>' + esc(r.base) + '・rank ' + esc(r.rank) + '</td><td>' + esc(r.size) + '</td><td>' + esc(r.version) + '</td><td>' + state + '</td><td>' + esc(r.lastUsed) + '</td><td>' +
                 '<button class="act" data-lora-action="card" data-id="' + esc(r.id) + '">介紹</button> ' +
                 btn('load', '載入', r.actions.load, r.id) + ' ' + btn('unload', '卸載', r.actions.unload, r.id) + ' ' + btn('pin', r.actions.pin.label, r.actions.pin, r.id) + ' ' + btn('enable', r.actions.enable.label, r.actions.enable, r.id) + ' ' + btn('replace', '替換', r.actions.replace, r.id) + ' ' + btn('remove', '移除', r.actions.remove, r.id) + '</td></tr>';
