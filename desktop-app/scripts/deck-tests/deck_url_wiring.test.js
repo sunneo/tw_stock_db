@@ -36,7 +36,7 @@ check('網頁素材最多收 12000 字（不再 1800）', /br\.text\.slice\(0, 1
     const T = require('../../renderer/src/deck/deck_topic.js');
     const iA = fa.indexOf('_deckArticleImages(opts.url'), iG = fa.indexOf('this._imageMake({ prompt: (o.kw'), iS = fa.indexOf('this._deckPageShots(opts.url');
     check('配方順序：文章原圖 < 生圖 < 截圖', iA > 0 && iG > iA && iS > iG, [iA, iG, iS]);
-    check('提示詞寫了圖片優先順序與 generate_image', /PICTURE PRIORITY/.test(dt) && /generate_image\(prompt\)/.test(dt) && /LAST resort/.test(dt));
+    check('提示詞寫了圖片優先順序與 generate_image', /PICTURE PRIORITY/.test(dt) && /generate_image\(prompt\)/.test(dt) && /SCREENSHOTS OF WEB PAGES/.test(dt) && /region \{x, y, width, height\}/.test(dt));
     check('parseRequest：「可以產生圖片」→ wantGen', T.parseRequest('用這個網址做簡報，圖文並茂，可以產生圖片').wantGen === true && T.parseRequest('介紹貓咪').wantGen === false);
 }
 

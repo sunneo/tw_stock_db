@@ -280,4 +280,41 @@ check('mermaid: a label starting with / or holding parentheses is quoted, real s
   check('inline {shown|spoken}: a caption that is written wins over the shown text of the narration', b.narration === '這個孩子掌高高了。' && b.caption === '他又長高了。');
   check('a narration without marks is unchanged and has no caption of its own; a plain caption is kept (the format already lets narration and caption differ)', c.narration === '沒有標記的旁白。' && !c.caption && d.narration === '念這句。' && d.caption === '字幕是另一句。');
 }
+// ---- 字幕對比：亮色字幕條要配深字；明寫的對比不足會被換掉並警告
+{
+  const pk = C.pickSubtitleText;
+  check('字幕：預設深藍字幕條配白字', pk('rgba(14,40,65,0.82)', null) === '#FFFFFF', pk('rgba(14,40,65,0.82)', null));
+  check('字幕：亮色字幕條（#F5F0EB）沒寫字幕文字，自動配深字', pk('#F5F0EB', null) === '#1B1B1B', pk('#F5F0EB', null));
+  check('字幕：明寫白字但底是亮色，對比不足就換成深字', pk('#F5F0EB', '#FFFFFF') === '#1B1B1B', pk('#F5F0EB', '#FFFFFF'));
+  check('字幕：明寫的對比夠就照寫的', pk('#101010', '#FFF8E7') === '#FFF8E7', pk('#101010', '#FFF8E7'));
+  check('字幕：白底黑字對比是 21', Math.abs(C.contrastRatio([255, 255, 255], [0, 0, 0]) - 21) < 0.01, C.contrastRatio([255, 255, 255], [0, 0, 0]));
+  const colorDeck = (colors) => ({ deck: { title: 't', lang: 'zh-TW', colors: colors }, chapters: [{ title: 'c', slides: [{ title: 's', narration: '一句話。' }] }] });
+  const subW = (d) => C.validate(d).warnings.filter((w) => /subtitle/.test(w));
+  check('字幕：亮色字幕條沒寫深色字幕文字，有警告', subW(colorDeck({ subtitleBar: '#F5F0EB', contentBg: '#FFFFFF' })).some((w) => /subtitleBar is a light colour/.test(w)), subW(colorDeck({ subtitleBar: '#F5F0EB' })));
+  check('字幕：明寫的字幕文字對比不足，有警告', subW(colorDeck({ subtitleBar: '#F5F0EB', subtitleText: '#FFFFFF' })).some((w) => /contrast of/.test(w)), subW(colorDeck({ subtitleBar: '#F5F0EB', subtitleText: '#FFFFFF' })));
+  check('字幕：深色字幕條配白字、或亮條配深字，都沒有字幕警告', subW(colorDeck({ subtitleBar: '#0E2841', subtitleText: '#FFFFFF' })).length === 0 && subW(colorDeck({ subtitleBar: '#F5F0EB', subtitleText: '#1B1B1B' })).length === 0);
+}
+// ---- shapes：沒寫 width／height 要警告；固定寫法的圖形在畫布上真的散開（用真的 2D 繪製引擎＋記錄用的假畫布）
+{
+  const shapesDeck = (scene) => ({ deck: { title: 't', lang: 'zh-TW' }, chapters: [{ title: 'c', slides: [{ title: 's', narration: '一句話。', visual: { kind: 'shapes', scene: scene } }] }] });
+  const sceneW = (d) => C.validate(d).warnings.filter((w) => /no width\/height/.test(w));
+  check('shapes：沒有 width／height 有警告', sceneW(shapesDeck({ duration: 4, shapes: [{ id: 'a', type: 'rect', width: 10, height: 10, position: [5, 5] }] })).length === 1);
+  check('shapes：有 width／height 不警告', sceneW(shapesDeck({ width: 960, height: 540, duration: 4, shapes: [{ id: 'a', type: 'rect', width: 10, height: 10, position: [5, 5] }] })).length === 0);
+  const savedWin = global.window;
+  global.window = { jsyaml: yaml };
+  require('../../renderer/src/deck/viewer2d.js');
+  const two = global.window.AiChat2D._internal;
+  const mock = () => { const log = [], store = {}; const ctx = new Proxy({}, { get(_, k) { if (k === 'measureText') return () => ({ width: 10 }); if (k === 'getTransform') return () => ({ a: 1 }); if (k in store) return store[k]; return (...a) => { log.push([k].concat(a)); }; }, set(_, k, v) { store[k] = v; if (k === 'font') log.push(['set:font', v]); return true; } }); return { ctx, log }; };
+  const scene = { width: 960, height: 540, duration: 4, shapes: [
+    { id: 't', type: 'text', content: '標題', position: [120, 80], font_size: 40, fill: '#0E2841' },
+    { id: 'b', type: 'rect', position: [300, 200], width: 200, height: 100, fill: '#77BD1D', stroke: '#000', stroke_width: 3 },
+    { id: 'c', type: 'circle', position: [600, 380], radius: 40, fill: '#F00' },
+  ] };
+  const data = two.parseAnimation(JSON.stringify(Object.assign({ kind: 'ai_chat_animation_2d' }, scene)));
+  const m = mock(); two.drawFrame(m.ctx, data, {}, 0.5, 960, 540);
+  const at = m.log.filter((e) => e[0] === 'translate').map((e) => [e[1], e[2]]);
+  check('shapes：三個圖形畫在各自的位置（不擠在原點）', JSON.stringify(at.slice(0, 3)) === JSON.stringify([[120, 80], [300, 200], [600, 380]]), at);
+  check('shapes：font_size 40 有生效', m.log.some((e) => e[0] === 'set:font' && e[1] === '40px sans-serif'), m.log.filter((e) => e[0] === 'set:font'));
+  global.window = savedWin;
+}
 console.log(`deck_core: ${ok} passed, ${bad.length} failed`); if (bad.length) { console.log(bad.map(b => ' - ' + b).join('\n')); process.exit(1); }

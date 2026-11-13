@@ -307,7 +307,7 @@
     if (!str(deck.title).trim()) { err('deck.title', 'required'); }
     if (str(deck.title).length > LIMITS.title) { err('deck.title', 'longer than ' + LIMITS.title + ' characters'); }
     if (deck.theme != null && typeof deck.theme !== 'string') { err('deck.theme', 'must be a string'); }
-    if (deck.colors != null) { checkDeckColors(deck.colors, err); }
+    if (deck.colors != null) { checkDeckColors(deck.colors, err); checkSubtitleContrast(deck.colors, warn); }
     if (deck.speed != null && !(typeof deck.speed === 'number' && deck.speed >= 0.5 && deck.speed <= 2)) { err('deck.speed', 'must be a number between 0.5 and 2'); }
     if (deck.captions != null && !(deck.captions === 'original' || deck.captions === 'spoken' || deck.captions === 'bilingual' || (Array.isArray(deck.captions) && deck.captions.length >= 1 && deck.captions.length <= 3 && deck.captions.every(function (c) { return c === 'zh' || c === 'en' || c === 'spoken' || c === 'original'; })))) { err('deck.captions', 'must be original (default: the text you wrote), spoken, bilingual (Chinese on top, small English under it), or a list of up to 3 tracks from zh / en / spoken / original, top to bottom -- the subtitles are stacked, the first track is the big one'); }
     if (deck.bullets != null && deck.bullets !== 'highlight' && deck.bullets !== 'preview' && deck.bullets !== 'legacy') { err('deck.bullets', 'must be highlight (default: a point shows up just BEFORE it is read and is highlighted while it is read), preview (every point is on screen from the start, dimmed; the one being read is highlighted) or legacy (a point appears when its sentence starts)'); }
@@ -441,6 +441,8 @@
     if (v.kind === 'shapes') {
       if (!isObj(v.scene) || !Array.isArray(v.scene.shapes) || !v.scene.shapes.length) { err(vp + '.scene.shapes', 'kind "shapes" needs a "scene" with a non-empty "shapes" list (same format as a 2D animation: circle/rect/polygon/line/text/image + animation)'); }
       else { v.scene.shapes.forEach(function (sh) { if (sh && sh.id) { c.shapeIds.push(sh.id); } }); }
+      // 沒寫畫布大小：繪製端用 480×320，座標稍微寫大就超出畫面；先提醒（不擋存檔）
+      if (isObj(v.scene) && (v.scene.width == null || v.scene.height == null)) { warn(vp + '.scene', 'no width/height: the shapes are drawn on a 480×320 canvas by default -- give width and height (for example 960 and 540) and place the shapes in pixels inside that canvas'); }
     } else if (v.kind === 'scene3d') {
       var hasScene = isObj(v.scene) && Array.isArray(v.scene.nodes) && v.scene.nodes.length;
       if (!str(v.ref).trim() && !hasScene) { err(vp, 'kind "scene3d" needs "ref" (the url of a .3dscene.yaml, e.g. from render_3d_scene) or an inline "scene" with a "nodes" list'); }
@@ -849,6 +851,51 @@
       if (COLOR_KEYS.indexOf(k) < 0) { err('deck.colors.' + k, 'unknown colour; use one of ' + COLOR_KEYS.join(', ')); }
       else if (!COLOR_RE.test(str(c[k]).trim())) { err('deck.colors.' + k, 'must be a colour like "#FF8A65" or "rgba(0,0,0,0.5)"'); }
     });
+  }
+  // ---- 字幕文字的顏色：依字幕條底色的對比（WCAG 相對亮度，4.5 以上才看得清）自動選白字或深字。
+  // 2026-11 使用者實際遇到：字幕條設成亮色、字幕文字沒設，白字壓在亮底上看不見。透明度不算進底色（底下的畫面不知道），以條本身的顏色算。
+  var SUBTITLE_MIN_CONTRAST = 4.5, SUBTITLE_DARK = '#1B1B1B', SUBTITLE_LIGHT = '#FFFFFF';
+  function parseColorRgb(s) {
+    s = String(s == null ? '' : s).trim();
+    var m = /^#([0-9a-fA-F]{3,8})$/.exec(s);
+    if (m) {
+      var h = m[1];
+      if (h.length === 3 || h.length === 4) { h = h.slice(0, 3).split('').map(function (ch) { return ch + ch; }).join(''); }
+      if (h.length !== 6 && h.length !== 8) { return null; }
+      return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
+    }
+    m = /^rgba?\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})/.exec(s);
+    return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
+  }
+  function relLuminance(rgb) {
+    var c = rgb.map(function (v) { var x = v / 255; return x <= 0.03928 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4); });
+    return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+  }
+  function contrastRatio(a, b) { var la = relLuminance(a), lb = relLuminance(b); return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05); }
+  // 沒明寫（或明寫的對比不足）：白字夠清楚就用白字，否則用對比較高的深字。條的顏色看不懂時照舊用明寫的或白字。
+  function pickSubtitleText(barColor, explicitText) {
+    var bar = parseColorRgb(barColor);
+    if (!bar) { return explicitText || SUBTITLE_LIGHT; }
+    var ex = explicitText ? parseColorRgb(explicitText) : null;
+    if (ex && contrastRatio(ex, bar) >= SUBTITLE_MIN_CONTRAST) { return explicitText; }
+    var white = contrastRatio([255, 255, 255], bar), dark = contrastRatio(parseColorRgb(SUBTITLE_DARK), bar);
+    if (white >= SUBTITLE_MIN_CONTRAST) { return SUBTITLE_LIGHT; }
+    return dark >= white ? SUBTITLE_DARK : SUBTITLE_LIGHT;
+  }
+  function subtitleInk() {
+    var ex = ACTIVE_DECK_COLORS && ACTIVE_DECK_COLORS.subtitleText ? str(ACTIVE_DECK_COLORS.subtitleText).trim() : null;
+    return pickSubtitleText(COLORS.subtitleBar, ex);
+  }
+  // 校驗（不擋存檔）：明寫的字幕文字與字幕條對比不足；字幕條是亮色卻沒寫深色字幕文字
+  function checkSubtitleContrast(c, warn) {
+    if (!isObj(c) || c.subtitleBar == null) { return; }
+    var bar = parseColorRgb(c.subtitleBar); if (!bar) { return; }
+    if (c.subtitleText != null) {
+      var t = parseColorRgb(c.subtitleText);
+      if (t && contrastRatio(t, bar) < SUBTITLE_MIN_CONTRAST) { warn('deck.colors', 'subtitleText and subtitleBar have a contrast of ' + contrastRatio(t, bar).toFixed(2) + ' (need 4.5 or more, or the subtitles are hard to read) -- the player switches to a dark or white text by itself, but choose two colours with enough contrast'); }
+    } else if (contrastRatio([255, 255, 255], bar) < SUBTITLE_MIN_CONTRAST) {
+      warn('deck.colors', 'subtitleBar is a light colour: give a dark subtitleText too (for example "#1B1B1B"); without it the player picks a dark text by itself');
+    }
   }
   function checkQuizReferences(doc, warn) {
     var flat = [];
@@ -1807,7 +1854,7 @@
     ctx.textAlign = 'center'; ctx.textBaseline = 'top';
     var cy = y + 15;
     blocks.forEach(function (b) {
-      setFont(ctx, b.size, false); ctx.fillStyle = COLORS.subtitleText; ctx.globalAlpha = b.k === 0 ? 1 : 0.85;
+      setFont(ctx, b.size, false); ctx.fillStyle = subtitleInk(); ctx.globalAlpha = b.k === 0 ? 1 : 0.85;
       b.lines.forEach(function (l) { ctx.fillText(l, g.x + g.w / 2, cy); cy += b.size * 1.35; });
     });
     ctx.globalAlpha = 1;
@@ -2142,7 +2189,7 @@
   var api = {
     STYLES: STYLES, ENVIRONMENTS: ENVIRONMENTS, FLAT_OF: FLAT_OF, STAGE_TRANSITIONS: STAGE_TRANSITIONS,
     W: W, H: H, KIND: KIND, LIMITS: LIMITS, LAYOUTS: LAYOUTS, VISUAL_KINDS: VISUAL_KINDS, TRANSITIONS: TRANSITIONS, IN_EFFECTS: IN_EFFECTS, MOTIONS: MOTIONS,
-    COLORS: COLORS, GEO: GEO, LEAD: LEAD, TAIL: TAIL,
+    COLORS: COLORS, GEO: GEO, LEAD: LEAD, TAIL: TAIL, pickSubtitleText: pickSubtitleText, contrastRatio: contrastRatio, parseColorRgb: parseColorRgb,
     DEFAULT_TEMPLATE: DEFAULT_TEMPLATE, applyTemplate: applyTemplate, template: template, mergeTemplate: mergeTemplate,
     splitSentences: splitSentences, estimateSeconds: estimateSeconds, distribute: distribute,
     parseAt: parseAt, parseTarget: parseTarget, validate: validate, normalize: normalize, parseDeck: parseDeck,

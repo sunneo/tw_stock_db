@@ -85,7 +85,12 @@ const FaDeckTools = (function () {
             return this.known(v) ? v : null;
         }
         listing() {
-            return this.entries.map((e) => { const r = { ref: e.ref, from: e.from }; if (e.alt) r.alt = e.alt; if (e.context) r.context = e.context; return r; });
+            return this.entries.map((e) => { const r = { ref: e.ref, from: e.from }; if (e.alt) r.alt = e.alt; if (e.context) r.context = e.context; if (e.shot) r.shot = { width: e.shot.width, height: e.shot.height, whole_page: !!e.shot.whole_page }; return r; });
+        }
+        // 截圖的寬高與是否整頁（沒有框選範圍）記在條目上，版面檢查才查得到「整頁截圖」
+        markShot(url, shot) {
+            const e = this.byUrl[String(url || '').trim()]; if (!e || !shot) return null;
+            e.shot = { width: Math.round(Number(shot.width) || 0), height: Math.round(Number(shot.height) || 0), whole_page: !!shot.whole_page }; return e;
         }
         // 掃描任何工具結果（物件、陣列、字串）裡的圖片：client-file/ID、markdown 圖片、帶 is_image／image content_type 的物件
         scan(obj, from) {
@@ -227,13 +232,61 @@ const FaDeckTools = (function () {
         return { doc, fixes };
     }
     // 存下來的 yaml：每次送進來的文字都先放進這個任務的暫存（y1、y2…），失敗時回 yaml_id；之後只要送 {yaml_id, edits:[{find, replace}]} 就能重驗，不必整份重打（也就不會一再遇到跳脫字元的問題）
+    // find 的位置：先原樣找；找不到就改成「每行去掉前後空白」的比對（縮排、行尾空白不同時仍能套用）。回 {start, end, indentDelta} 或 null
+    function findInYaml(text, find) {
+        const at = text.indexOf(find);
+        if (at >= 0) return { start: at, end: at + find.length, indentDelta: 0 };
+        const rawLines = String(find).replace(/\r\n/g, '\n').split('\n');
+        const fl = rawLines.map((s) => s.trim());
+        while (fl.length && !fl[0]) { fl.shift(); rawLines.shift(); }
+        while (fl.length && !fl[fl.length - 1]) fl.pop();
+        if (!fl.length) return null;
+        const tl = String(text).split('\n'), starts = []; let pos = 0;
+        tl.forEach((line) => { starts.push(pos); pos += line.length + 1; });
+        const findIndent = rawLines[0].match(/^ */)[0].length;
+        for (let i = 0; i + fl.length <= tl.length; i++) {
+            let ok = true;
+            for (let j = 0; j < fl.length; j++) if (tl[i + j].trim() !== fl[j]) { ok = false; break; }
+            if (!ok) continue;
+            const last = i + fl.length - 1;
+            return { start: starts[i], end: starts[last] + tl[last].length, indentDelta: tl[i].match(/^ */)[0].length - findIndent };
+        }
+        return null;
+    }
+    // 替換內容跟著原文的縮排移動（縮排不同時才動）
+    function reindentText(rep, delta) {
+        if (!delta) return rep;
+        return String(rep).split('\n').map((l) => {
+            if (!l.trim()) return l;
+            if (delta > 0) return ' '.repeat(delta) + l;
+            return l.slice(Math.min(-delta, l.match(/^ */)[0].length));
+        }).join('\n');
+    }
+    // 找不到時：回傳最接近的一段「實際原文」（照抄用）。以第一行的開頭相同字數判斷最接近；都對不上就回空字串
+    function nearestYamlLines(text, find) {
+        const first = String(find).split('\n').map((s) => s.trim()).find((s) => s) || '';
+        if (!first) return '';
+        const tl = String(text).split('\n'); let best = -1, bestLen = 0;
+        tl.forEach((line, i) => { const t = line.trim(); let n = 0; while (n < t.length && n < first.length && t[n] === first[n]) n++; if (n > bestLen) { bestLen = n; best = i; } });
+        if (best < 0) { const key = first.slice(0, 6); best = tl.findIndex((l) => l.indexOf(key) >= 0); }
+        if (best < 0) return '';
+        const count = Math.min(6, String(find).split('\n').length);
+        return tl.slice(best, best + count).join('\n');
+    }
     function applyEdits(text, edits) {
-        const out = { text: String(text || ''), applied: 0, errors: [] };
+        const out = { text: String(text || ''), applied: 0, errors: [], notes: [] };
         (Array.isArray(edits) ? edits : []).slice(0, 50).forEach((e, i) => {
             if (!e || typeof e !== 'object' || typeof e.find !== 'string' || !e.find) { out.errors.push('edits[' + i + '] 要有 find（要找的原文）和 replace（換成什麼）'); return; }
-            const rep = e.replace == null ? '' : String(e.replace), at = out.text.indexOf(e.find);
-            if (at < 0) { out.errors.push('edits[' + i + ']：存下來的 yaml 裡找不到 ' + JSON.stringify(e.find.slice(0, 60))); return; }
-            out.text = e.all ? out.text.split(e.find).join(rep) : out.text.slice(0, at) + rep + out.text.slice(at + e.find.length); out.applied++;
+            let rep = e.replace == null ? '' : String(e.replace);
+            const hit = findInYaml(out.text, e.find);
+            if (!hit) {
+                const near = nearestYamlLines(out.text, e.find);
+                out.errors.push('edits[' + i + ']：存下來的 yaml 裡找不到 ' + JSON.stringify(e.find.slice(0, 60)) + (near ? '；最接近的實際原文是：' + JSON.stringify(near.slice(0, 240)) + '（請照抄這段原文當 find）' : ''));
+                return;
+            }
+            if (hit.indentDelta) { rep = reindentText(rep, hit.indentDelta); out.notes.push('edits[' + i + ']：find 的縮排與原文不同，已照原文對齊後套用'); }
+            out.text = (e.all && e.find && out.text.indexOf(e.find) >= 0) ? out.text.split(e.find).join(rep) : out.text.slice(0, hit.start) + rep + out.text.slice(hit.end);
+            out.applied++;
         });
         return out;
     }
@@ -297,6 +350,30 @@ const FaDeckTools = (function () {
     }
 
 
+    // 截圖的版面警告（非嚴格，不擋存檔）。整頁／整個畫面截圖放進投影片，文字會縮到看不清；長寬比太極端的截圖會變成細細一條。
+    // 門檻：整頁＝沒有框選範圍（whole_page）；長寬比的上限是 3:1。沒有用寫死的像素數：只看比例與是否整頁（查不到版面像素寬度時的退路）。
+    const SHOT_MAX_ASPECT = 3;
+    function shotWarnings(data, catalog) {
+        const out = []; const seen = {};
+        const tip = '建議先用 browser_get_elements 取得重點元素的座標，再用 browser_screenshot 帶 region 裁切 1～3 張重點（要看清楚就加 interpret: true）';
+        eachSlide(data, (slide, path) => {
+            visualNodes(slide.visual).forEach((v, k) => {
+                const np = path + '.visual' + (k ? '.items[' + (k - 1) + ']' : '');
+                const srcs = [];
+                if (v.kind === 'image') { if (Array.isArray(v.images)) v.images.forEach((im) => im && srcs.push(im.src)); else srcs.push(v.src); }
+                else if (v.kind === 'collage') (Array.isArray(v.items) ? v.items : []).forEach((it) => it && srcs.push(it.src));
+                srcs.forEach((src) => {
+                    const e = catalog && catalog.byUrl ? catalog.byUrl[String(src || '').trim()] : null;
+                    if (!e || !e.shot || seen[e.url]) return; seen[e.url] = true;
+                    const w = e.shot.width, h = e.shot.height, ratio = w > 0 && h > 0 ? Math.max(w / h, h / w) : 0;
+                    if (e.shot.whole_page) out.push(np + ': ' + e.ref + ' 是整頁或整個畫面的截圖（' + w + '×' + h + '），放進投影片文字會看不清。' + tip);
+                    else if (ratio > SHOT_MAX_ASPECT) out.push(np + ': ' + e.ref + ' 的長寬比太極端（' + w + '×' + h + '），放進投影片會變成細細一條，文字看不清。' + tip);
+                });
+            });
+        });
+        return out.slice(0, 10);
+    }
+
     // ---------------------------------------------------------------- 存檔前額外拒絕的幾種殘留（在 handle 換成文字之後檢查）
     const isUrlLike = (v) => /^(https?:\/\/|client-file\/|data:)/i.test(String(v || '').trim());
     function deckLeftovers(data) {
@@ -344,13 +421,14 @@ const FaDeckTools = (function () {
         'PLAN TEMPLATE (follow it step by step; every step is a REAL tool call, never text that looks like a call, and never a reply that only describes what you would do): ' +
         'STEP 1 -- read the material: if the system already put the source text / picture handles (@imgN) in your task, use THEM and do not browse again; otherwise read it with the tools. ' +
         'STEP 2 -- plan on paper in your head: 5-8 slides for 2 minutes (about 130 words of narration per minute), one point per slide, each slide = title + 2-3 short bullets + ONE picture + narration (a plain STRING of 1-3 sentences taken from the source). ' +
-        'STEP 3 -- pictures per slide (priority: the article\'s own @imgN -> generate_image if allowed -> screenshot last). ' +
+        'STEP 3 -- pictures per slide (priority: the article\'s own @imgN -> generate_image if allowed -> a CROPPED screenshot as evidence -> a drawn diagram for text-only material; if the user asked for evidence screenshots ("截證據", "截圖當證據") the cropped screenshots come first). ' +
         'STEP 4 -- ONE real call: render_presentation({name, yaml}) for a short deck (up to about 8 slides); for a longer one begin_presentation -> add_chapters (use the draft id it returned) -> finish_presentation. ' +
         'STEP 5 -- if the tool answers with problems, fix ONLY those (send {yaml_id, edits:[{find, replace}]}), do not rewrite the deck; repeat until it is accepted. ' +
         'STEP 6 -- answer in 1-2 sentences (what the deck covers); never paste the yaml. ' +
         'A MINIMAL VALID DECK (copy this shape): deck: {title: "標題", lang: zh-TW}  chapters: [{title: "章", slides: [{title: "封面", layout: title, subtitle: "副標", narration: "一到三句旁白。", visual: {kind: image, src: "@img1", fit: cover}}, {title: "重點", bullets: ["短句一", "短句二"], narration: "旁白。", visual: {kind: image, src: "@img2"}}]}]. ' +
         '(chapters is at the TOP level next to deck; visual is a mapping with kind; narration is a string.)',
-        'PICTURE PRIORITY (when a slide needs a picture, in THIS order): (1) a picture that is IN the source text itself (the article\'s own images: browser_get_page_structure "images" -> import_image_url; the user\'s attachments); (2) if the user said pictures may be generated ("可以產生圖片", "生圖", "AI畫"): call generate_image(prompt) for that slide -> its client_file_url is the picture (import it with import_image_url / use it as client-file/<id>); (3) a browser_screenshot of the page is the LAST resort -- it is a whole-page view that does not match one slide\'s point, so use it only when (1) and (2) gave nothing. A stock photo (find_photo) for a NEWS story or a named person is never right: it shows somebody else. For a generated picture about a real news event draw a neutral illustration of the situation (a boardroom, a document, a building, a chart) -- never a likeness of a real person. generate_image returns "ref" (@imgN) directly.',
+        'PICTURE PRIORITY (when a slide needs a picture, in THIS order): (1) a picture that is IN the source text itself (the article\'s own images: browser_get_page_structure "images" -> import_image_url; the user\'s attachments); (2) if the user said pictures may be generated ("可以產生圖片", "生圖", "AI畫"): call generate_image(prompt) for that slide -> its client_file_url is the picture (import it with import_image_url / use it as client-file/<id>); (3) a CROPPED screenshot (see SCREENSHOTS OF WEB PAGES below) when the slide must show what the page says (a headline, a table, a chart, a key figure); (4) a text-only source with no usable picture gets a DRAWN diagram (visual kind shapes or svg: boxes, arrows and the numbers taken from the text), never a screenshot of the whole page.A stock photo (find_photo) for a NEWS story or a named person is never right: it shows somebody else. For a generated picture about a real news event draw a neutral illustration of the situation (a boardroom, a document, a building, a chart) -- never a likeness of a real person. generate_image returns "ref" (@imgN) directly.',
+        'SCREENSHOTS OF WEB PAGES (a whole page on a slide is never right: a 16:9 slide with a whole news front page gives tiny, unreadable, out-of-focus text). DO NOT put a full-page or whole-window screenshot (browser_screenshot without region) on a slide. DO this instead: (a) call browser_get_elements on the tab to get the coordinates of the element that holds the evidence (the headline block, the table, the chart, the paragraph with the key figure); (b) call browser_screenshot with region {x, y, width, height} of THAT element only (add scale 2 when the crop is small); (c) add interpret: true and question "transcribe the exact text and numbers in this picture" so you can read what the crop says and check it against the page text; (d) use one to three such crops, each on its own image visual (images: [{src, caption}]) or as items of a collage, with callouts on the figure you talk about. A plain news story with no picture of evidence: do NOT screenshot it at all -- read it with browser_get_page_text and draw a diagram (shapes or svg) of the facts. When the user explicitly asks for screenshots as evidence ("截證據", "截圖當證據", "看到原文畫面"), the cropped screenshots come first and are never skipped.',
         'REAL PHOTOS FROM THE INTERNET ("可以上網找照片", "要真實照片"): call find_photo(query: 2-5 ENGLISH keywords of what the picture shows, e.g. "Hokkaido snow field", "airport baggage claim carousel") once per slide that needs one -> "@imgN" (+ credit / licence: put it in the slide notes). NEVER write a picture url yourself. find_photo is the quick first choice (free-licence photos, imported at once); when it finds nothing that fits the slide and the browser is connected (browser_status ok), you MAY use the browser tools yourself (search the web, open the page, then import the picture with import_image_url or take a screenshot) -- better matching photos are worth it. If neither works, try other keywords once, then draw that picture yourself (cute_picture / svg) -- one missing photo never stops the deck. Do not call list_uploaded_files when the task has no "[附件：…]" part: there is no attachment. When the user asks to speak at a speed ("語速1.0") set deck.speed.',
         'ATTACHED FILES ARE THE MATERIAL. When the task text contains "[附件：name（file_id=…）、…]" the user attached those files to THIS request: they are the source, in that order. Do NOT call list_uploaded_files to guess among older uploads, never ask which file, and never make up content when files were attached. Pictures: import_uploaded_image(file_id) for each -> "@imgN", one slide per picture (layout visual, or split with the text beside it) in the attached order. A picture with text on it (English captions, a page of a book, a slide): read it with interpret_image(file_id, "transcribe every word on this picture exactly, keep line breaks") and use THAT text -- never invent what is written. A video (mp4): visual kind video with src "client-file/<file_id>" (see get_presentation_topic("visuals")). A PDF / pptx / document: parse_uploaded_file / pptx_to_deck. Your final answer lists which attached file became which slide and says plainly which could not be used.',
         'CHINESE SUBTITLES UNDER AN ENGLISH VOICE ("中文字幕、英語發音", "字幕用中文，聲音念英文"): ONE slide, narration = the English text that is SPOKEN (voice af_* or deck.lang/slide.lang en), caption = the Chinese subtitle shown on screen (same number of sentences, same order; the viewer sees the Chinese while hearing the English). Do NOT make two slides for this. If you only have Chinese text, write narration in Chinese and set the voice to an English one: the app translates it for the voice and keeps your Chinese as the subtitle (deck.captions: original, the default). Both languages on screen at once (Chinese big, English smaller under it): deck.captions: bilingual (or a list of up to 3 tracks, top to bottom: [zh, en]). Every slide still has ONE spoken language.',
@@ -363,7 +441,7 @@ const FaDeckTools = (function () {
         '2. GATHER THE MATERIAL before writing anything: read the files / pages the request points at with your tools (list_uploaded_files + parse_uploaded_file for uploaded files, fap_read_file / repo_ask for the user\'s folders, the "material" section the main assistant may have attached, text of web pages it read). Read ALL of a long source -- a long article (a wiki page, a news story, a whole novel, a long document) is read by its table of contents: article_outline(url | file_id) lists the sections with their sizes, then article_section(...) reads the ones you need (all of them, one after another, for a deck that covers the whole text) -- never page blindly through it. Then call list_source_images: every picture the sources contain is there as "@img1", "@img2" ... Bring in other pictures with import_fap_image (a picture file in a folder) or import_image_url (a picture on a website).',
         '   TOOLS OF THE APP COME FIRST: when this task\'s prompt also lists tools of the app / website the user is in, the data and pictures that app itself holds (records, charts, analyses, lists) MUST come from those tools -- never open a browser, search the web or guess numbers for something such a tool returns. A tool that returns a picture (a chart) puts its "client-file/<id>" in meta.client_file_url: use that (it is also listed by list_source_images as an "@imgN" handle).',
         '   THE SOURCES THE USER NAMES ARE WHERE TO START, NOT THE LIMIT. If the request names none, or they hold too little, never answer "I found no document / please give me ..." -- that is a failed job. Call get_presentation_topic("ai_features") when the subject is this AI itself, and fill what remains from your own knowledge (see the "sources" topic). A deck from general knowledge is a normal, complete result.',
-        '3. DIGEST, do not copy: decide the storyline (chapters -> slides), what each slide\'s one point is, which picture/table/diagram shows it, and what the narration says. Tables in the source become table visuals; screenshots and diagrams become image visuals with callouts at the parts you talk about; processes and relationships you draw yourself as shapes/mermaid with the steps revealed in step with the narration. Use the source\'s real pictures wherever they carry information. Never invent figures, data or real-world pictures (photos, screenshots, charts) that no tool returned -- illustrations the request asks for that you draw yourself are a different thing (see the rule on drawing below); where the sources lack something, explain it from general knowledge (saying it is general) or omit it.',
+        '3. DIGEST, do not copy: decide the storyline (chapters -> slides), what each slide\'s one point is, which picture/table/diagram shows it, and what the narration says. Tables in the source become table visuals; a CROPPED screenshot of the evidence becomes an image visual with callouts at the part you talk about, while text-only material becomes a drawn diagram (shapes or svg); processes and relationships you draw yourself as shapes/mermaid with the steps revealed in step with the narration. Use the source\'s real pictures wherever they carry information. Never invent figures, data or real-world pictures (photos, screenshots, charts) that no tool returned -- illustrations the request asks for that you draw yourself are a different thing (see the rule on drawing below); where the sources lack something, explain it from general knowledge (saying it is general) or omit it.',
         '4. Write the yaml and call render_presentation. If it reports problems, fix them all and call it again.',
         '5. Answer in the user\'s language: one or two sentences (what the deck covers: slides, chapters, approximate length, which sources it used). If part of the material could not be used (a picture that could not be imported, a table too wide), say that plainly.',
         '',
@@ -380,18 +458,21 @@ const FaDeckTools = (function () {
         'LEARNING FROM A MODEL (a .pptx, an earlier deck, or an existing skill such as a weekly-report skill): when the user gives one as the example to follow, READ IT FIRST and imitate its procedure and its shape, never only its look.',
         '1. A .pptx: call pptx_to_deck(file_id) -- it returns the draft yaml, an outline of every slide, the theme colours / fonts and warnings. (extract_pptx_images + interpret_image let you actually look at a slide picture when the outline is not enough.)',
         '2. A skill: skill_list, then skill_read(name) and read the whole SKILL.md and every script / reference it points to. Write down for yourself in 2-3 lines WHAT IT PRODUCES (sections, slide order, which slide has a table / a screenshot / a chart, the tone, the length) and HOW IT GETS ITS DATA (which files or which people\'s reports it reads, which web pages it opens and screenshots, what it counts or compares).',
-        '3. Redo the SAME procedure for the NEW inputs with your own tools: uploaded files with parse_uploaded_file, folders with fap_*, web pages with the browser_* tools (browser_status first; browser_screenshot with save: true gives a file id you can use as client-file/<id> in an image visual, with callouts pointing at what changed), the app\'s own tools -- then build the deck with the same structure and the same order of sections as the model.',
+        '3. Redo the SAME procedure for the NEW inputs with your own tools: uploaded files with parse_uploaded_file, folders with fap_*, web pages with the browser_* tools (browser_status first; browser_screenshot with region (a crop, see SCREENSHOTS OF WEB PAGES) and save: true gives a file id you can use as client-file/<id> in an image visual, with callouts pointing at what changed), the app\'s own tools -- then build the deck with the same structure and the same order of sections as the model.',
         '4. Say honestly which steps you could not reproduce (no browser connected, a script that needs a program you cannot run, a page that needs a login) and what you did instead. Never make up data to fill a slide the model had. In one sentence offer to save the procedure as a reusable skill (the skill-creator does that); do not do it unasked.',
         '- A video the user attached (an mp4 file id) can play inside a slide: visual kind video (play, replay, fast-forward, speed, an A-B loop that repeats one part N times; see get_presentation_topic("visuals")). You cannot hear it: for "watch this, then answer" use a video slide followed by a quiz slide, and take the correct answer from the transcript the user gave you or ask the user -- never invent what is said.',
         '',
         'RULES THAT MATTER',
+        '- SHAPES (visual kind shapes): the scene needs width and height (for example 960 and 540). Every position is [x, y] in PIXELS inside that canvas, top-left is 0,0. Never write fractions from 0 to 1 (x: 0.1): they all pile up in the corner. Field names: circle radius, rect width and height, text content and font_size, line and polygon points, stroke_width (not strokeWidth). anchor and weight do not exist.',
+        '- SUBTITLES AND COLOURS: a light deck.colors.subtitleBar needs a dark subtitleText too (for example "#1B1B1B"); the two colours must contrast, or the subtitle text cannot be read.',
         '- Length: follow the request ("5 minutes", "3 chapters"); default about 8-12 slides, 25-40 seconds of narration each. Slide 1 is a title slide; the last is a summary. Chapters have 3-6 slides.',
         '- Narration is natural speech in the deck language, short sentences, 2-5 per slide, no markdown/URLs/emoji. Bullets are short fragments that echo the narration, not the narration itself. Make the narration\'s sentences line up with what appears (see cues).',
         '- Every slide with a picture/table/diagram uses layout split or visual; text-only slides are the exception (use them for chapter intros and the summary).',
         '- THE REQUEST IS A CHECKLIST. Before writing the yaml, list for yourself every concrete thing the user asked for (the content, each kind of element, the look: colours / cute / formal, who it is for, how the viewer interacts) and before render_presentation re-read the yaml against that list. Nothing on it may be quietly dropped or replaced by something easier; if a requirement cannot be met, say exactly which one and why in your final answer. The final answer says in one short line how each main requirement was met.',
         '- WHEN THE REQUEST NEEDS PICTURES OR A LOOK ("objects", "cute", "warm colours", "for children", icons, cartoon) and no tool returned real pictures: for everyday things (fruits, animals, sun, house ...) FIRST call cute_picture (no arguments lists them, with correct zhuyin) and use its "@imgN" handles; for anything it does not have, YOU DRAW IT: a visual kind svg (or shapes) with real shapes for each object -- circles, ellipses, rounded rects, paths, a face with two eyes for a cute style, outlines in a darker tone of the fill. A WORD STANDING IN FOR A PICTURE ("Apple" written in grey text, "(picture here)", an empty box) is a failed slide. A big emoji drawn as text inside the svg (font-size 200+) is an acceptable picture when the object is hard to draw (emoji are forbidden only in the narration). Every object looks different and is recognisable on its own. The look the user asked for goes into the visuals: for a warm style give every svg / scene a full background rectangle in a warm colour (#FFF1DC, #FFE0B2) and fill objects from a warm palette (#FFB74D, #FF8A65, #FFD54F, #F48FB1, #A5D6A7); AND set deck.colors (get_presentation_topic "format") to the same warm family so the page frame -- background, titles, bars, subtitle bar -- follows the look too; do this for any look the user names.',
         '- A QUESTION ABOUT A THING ON THE SLIDE: the picture and the question are on the SAME slide (group: picture left, quiz card right), one question per slide, each slide with ITS OWN picture. Ask exactly what the user wanted ("這是什麼?" with the picture shown); the options are real candidates and the right one matches the picture. Never ask the viewer to choose a symbol / word for a picture that is not on the screen, never an answer that is not among the options, never the same picture for different questions. For language-learning decks (注音, ABC, vocabulary) the symbol / letter is shown BIG next to its object, and every fact is checked before you write it: the first sound of the object\'s name must really be that symbol; take the zhuyin of every word from cute_picture, never from memory (蘋果 starts with ㄆ, not ㄅ); when you are not sure of a word, choose one you are sure of.',
-        '- Pictures only by handle ("@img3") or "client-file/<id>" from a tool result. A table has <= 8 columns and <= 12 rows per slide: split long tables over several slides or keep the rows that matter and say so.',
+        '- Screenshots: never a whole page on a slide. Crop the evidence with region (one to three crops, each readable at slide size); a plain text story gets a drawn diagram instead. Wrong: browser_screenshot of the whole front page as the picture. Right: browser_get_elements, then browser_screenshot with region of the headline block, interpret: true.',
+        '- Pictures only by handle ("@img3") or "client-file/<id>" from a tool result.A table has <= 8 columns and <= 12 rows per slide: split long tables over several slides or keep the rows that matter and say so.',
         '- If the request is to change a deck made earlier (it mentions a file id / url), call get_presentation_yaml first and edit THAT yaml.',
         '- 2D and 3D mix in one format: a slide can hold a live 3D model (visual kind scene3d with an inline scene; the viewer can orbit and zoom it), with 2D labels/arrows over it (overlay) or a table/image beside it (group); deck.style: 3d (or stage: 3d on single slides) shows it through a viewport on the normal template page, and each 3D slide gets a CAMERA (slide.camera: a preset name, a shot mapping, or a list of shots with focus on a named node of the model and "at" a sentence) -- 3D here means the relation of the camera to the scene and model, not scenery. "A 3D presentation" = deck.style: 3d with a 3D model and camera shots on most slides (read get_presentation_topic("3d")). Do not use 3D for slides that are only text.',
         '- Interactive slides: long code / a log / a patch (more than ~12 lines) goes into a visual kind code (scrollable, syntax-highlighted, patches shown as a diff) instead of bullets or a picture; a shell the viewer can type into is kind terminal; when the user wants Q&A, a quiz, practice or a game, use kind quiz (scored answer cards, static key or AI grading) or kind widget (YOU write a small game / simulator as one self-contained HTML document, e.g. "reach 100 points at breakout"). Read get_presentation_topic("interactive") first: widget html runs in a no-network sandbox and the topic has the exact rules and a working example. The html of a widget and any long code are given with define_snippet (a handle "@w1" / "@c1" goes in the yaml) -- never paste them into the yaml. Every widget needs a "fallback" sentence (what PPTX / video show instead).',
@@ -400,6 +481,31 @@ const FaDeckTools = (function () {
         '- Voice: leave deck.voice out unless the user named one. Speaking speed: when the user asks for a faster or slower voice ("說話速度 1.5 倍", "speak slowly") set deck.speed to that number (0.5-2, default 1); the slides get shorter or longer by themselves, so keep the same text.',
     ].join('\n');
 
+    // 同一主題第二次要求時回的精簡對照（只列欄位名與型別，幾百字）。沒有列在這裡的主題，第二次就回原文。
+    const TOPIC_RECAP = {
+        visuals: [
+            '欄位對照（圖形 shapes 放在 visual.scene.shapes 底下；type 只有 circle／rect／polygon／line／text／image）：',
+            '- 共同：id（字串，可省略）、type、position: [x, y]（數字）、fill（"#rrggbb" 字串，或漸層物件）、stroke（字串）、stroke_width（數字）、animation（物件，可省略）',
+            '- circle：radius（數字，半徑）。不是 r。',
+            '- rect：width、height（數字）。不是 w、h。',
+            '- polygon、line：points: [[x, y], [x, y], …]（polygon 至少 3 點、line 至少 2 點）。不是 path，也不是 x1 y1 x2 y2。',
+            '- text：content（字串）、font_size（數字）。不是 text。',
+            '- image：src（http(s) 網址或 data: 圖片）、width、height（數字）。',
+            '最小可通過範例（一個 rect、一個 text、一個 circle）：',
+            'visual: {kind: shapes, scene: {width: 960, height: 540, duration: 4, shapes: [',
+            '  {id: box, type: rect, width: 300, height: 160, position: [480, 270], fill: "#0E2841"},',
+            '  {id: label, type: text, content: "重點", font_size: 48, position: [480, 270], fill: "#FFFFFF"},',
+            '  {id: dot, type: circle, radius: 30, position: [640, 180], fill: "#77BD1D"}',
+            ']}}',
+        ].join('\n'),
+        format: [
+            '欄位對照（deck 與 slide）：',
+            '- 最上層：deck: {title（字串）, lang（zh-TW／en…）, speed（0.5～2，可省略）, colors（可省略）}，chapters: [{title, slides: [...]}]',
+            '- slide：title（字串）、layout（title／topic／content／split／visual，可省略）、subtitle、bullets（字串清單，最多 6 句）、narration（一段字串，不是陣列）、visual（物件，要有 kind）、cues、transition（{type, ms} 物件）',
+            '- visual.kind：shapes（scene）、image（src）、collage（items）、code（code）、table（header, rows）、chart、svg（svg）、quiz、widget、video、scene3d、group（items）',
+            '最小可通過範例：deck: {title: "標題", lang: zh-TW}  chapters: [{title: "章", slides: [{title: "封面", layout: title, narration: "一句旁白。"}]}]',
+        ].join('\n'),
+    };
     // 領域登記用的工具名稱（子任務只看得到這些）
     const DOMAIN_TOOLS = ['generate_image', 'browser_get_elements', 'render_presentation', 'begin_presentation', 'add_chapters', 'finish_presentation', 'define_snippet', 'verify_presentation', 'article_outline', 'article_section', 'get_presentation_topic',
         'get_presentation_yaml', 'open_existing_presentation', 'list_source_images', 'cute_picture', 'make_object_sprite', 'make_character_sprite', 'pixel_art', 'import_uploaded_image', 'import_image_url', 'find_photo', 'emoji_picture', 'svg_picture', 'import_fap_image', 'get_3d_scene_topic',
@@ -495,12 +601,14 @@ const FaDeckTools = (function () {
             const res = Core.validate(data);
             const problems = res.errors.slice(); const warnings = [];
             res.warnings.forEach((w) => { if (STRICT_WARNING.test(w)) problems.push(w); else warnings.push(w); });
+            // 核心格式、2D／3D 圖形、圖片 handle 一起檢查、一次全部回報（以前核心有錯就跳過後面，修完一批才冒出下一批，約 10 輪）
+            try { problems.push(...this._deckValidateScenes(data)); } catch (e) { problems.push('圖形檢查失敗：' + String((e && e.message) || e)); }
+            try { problems.push(...resolveImages(data, run.catalog)); } catch (e) { problems.push('圖片檢查失敗：' + String((e && e.message) || e)); }
             if (!problems.length) {
                 const minutes = estimateMinutes(data);
                 if (minutes > MAX_DECK_MINUTES) return { error: 'this deck would play for about ' + Math.round(minutes) + ' minutes; the limit is ' + MAX_DECK_MINUTES + ' minutes for one presentation. Cut the least important parts.' };
-                problems.push(...this._deckValidateScenes(data));
+                warnings.push(...shotWarnings(data, run.catalog));
             }
-            if (!problems.length) problems.push(...resolveImages(data, run.catalog));
             if (problems.length) {
                 const shown = problems.slice(0, MAX_ERRORS_SHOWN);
                 return { error: 'the deck has ' + problems.length + ' problem(s) -- fix them all and call ' + toolName + ' again:\n- ' + shown.join('\n- ') + (problems.length > shown.length ? '\n... and ' + (problems.length - shown.length) + ' more' : '') };
@@ -515,7 +623,7 @@ const FaDeckTools = (function () {
                 visualNodes(slide.visual).forEach((node, k) => {
                     const np = path + '.visual' + (k ? '.items[' + (k - 1) + ']' : '');
                     const check2d = (scene, p) => {
-                        try { const r = this._validate2DAnimationYaml(y.dump(Object.assign({ kind: 'ai_chat_animation_2d' }, scene)), {}); if (r && r.ok === false) problems.push(p + ': ' + r.error); } catch (e) { problems.push(p + ': ' + String(e && e.message || e)); }
+                        try { const r = this._validate2DAnimationYaml(y.dump(Object.assign({ kind: 'ai_chat_animation_2d' }, scene)), {}); if (r && r.ok === false) (r.errors && r.errors.length ? r.errors : [r.error]).forEach((e) => problems.push(p + ': ' + e)); } catch (e) { problems.push(p + ': ' + String(e && e.message || e)); }
                     };
                     if (node.kind === 'shapes' && node.scene && typeof node.scene === 'object') check2d(node.scene, np + '.scene');
                     if (node.overlay && node.overlay.scene && typeof node.overlay.scene === 'object') check2d(node.overlay.scene, np + '.overlay.scene');
@@ -568,7 +676,7 @@ const FaDeckTools = (function () {
             if (Array.isArray(a.edits) && a.edits.length) {
                 if (!text.trim()) return { error: 'edits need a yaml_id (or yaml) to edit' };
                 const r = applyEdits(text, a.edits); if (r.errors.length) return { error: r.errors.join('; ') + ' -- the stored yaml is unchanged; fix the "find" text (copy it exactly) and send the edits again', yaml_id: id || undefined };
-                text = r.text; note = r.applied + ' edit(s) applied to the stored yaml';
+                text = r.text; note = r.applied + ' edit(s) applied to the stored yaml' + (r.notes.length ? '; ' + r.notes.join('; ') : '');
             }
             if (!text.trim()) return { error: 'yaml is required (or yaml_id of one you already sent)' };
             if (!id || !run.yamls[id] || run.yamls[id] !== text) { id = (a.yaml_id && note) ? String(a.yaml_id) : 'y' + (++run.nYamls); run.yamls[id] = text; }
@@ -629,8 +737,13 @@ const FaDeckTools = (function () {
         // 一個主題的規則（get_presentation_topic 的本體）；給過的主題第二次只回提醒，不重複塞一大段文字
         async _deckTopicOne(topic) {
             const run = this._deckRun(); run.topicsGiven = run.topicsGiven || {};
-            if (run.topicsGiven[topic]) { run.topicsGiven[topic]++; return { ok: true, topic, already_given: true, note: 'You already have the "' + topic + '" rules above in this conversation (this is call #' + run.topicsGiven[topic] + '). Use them; do not ask again -- write the deck now.' }; }
             const T = (typeof FA_DECK_SRC !== 'undefined' && FA_DECK_SRC.topics) || {};
+            // 第二次要同一主題：不再只回一句提醒（模型忘了欄位名就卡住），改回精簡對照；沒有對照的主題回原文
+            if (run.topicsGiven[topic]) {
+                run.topicsGiven[topic]++;
+                const recap = TOPIC_RECAP[topic];
+                return { ok: true, topic, already_given: true, details: recap || T[topic] || '', note: (recap ? '這是「' + topic + '」的精簡欄位對照（第 ' + run.topicsGiven[topic] + ' 次要求）。欄位名以這裡為準，照寫就會通過；' : '這是「' + topic + '」的原文（第 ' + run.topicsGiven[topic] + ' 次要求）；') + '寫簡報時直接使用。' };
+            }
             const details = topic === 'ai_features' ? this._deckAiFeaturesText() : T[topic];
             if (!details) return { error: 'unknown topic ' + JSON.stringify(topic) + ' -- must be one of: ' + Object.keys(T).join(', ') };
             run.topicsGiven[topic] = 1;
@@ -705,6 +818,7 @@ const FaDeckTools = (function () {
             const id = await this.fileCache.put('deck-image-' + Date.now().toString(36) + '.' + ext, blob.type, blob, 'uploaded');
             const entry = this._deckRun().catalog.add('client-file/' + id, { alt: label, from: tool });
             if (!entry) return { error: 'the picture could not be added to the catalogue (empty url)' };
+            if (opt && opt.shot) this._deckRun().catalog.markShot('client-file/' + id, opt.shot); // 截圖的寬高與是否整頁：版面檢查要用
             return { ok: true, ref: entry.ref, url: 'client-file/' + id, source: label };
         },
         // 只有圖片／圖表的投影片：真的用視覺模型去讀（走 _visionDescribe：線上視覺模型、離線模型的優先順序與備援，跟 interpret_image 同一條路），
@@ -1131,6 +1245,6 @@ const FaDeckTools = (function () {
             return lines.join('\n');
         },
     };
-    return { methods, Snippets, ImageCatalog, deckSanitize, applyEdits, deckYamlArg, deckArgsFromText, autoQuoteYaml, deckLeftovers, estimateMinutes, resolveImages, visualNodes, eachSlide, SYSTEM_PROMPT, DOMAIN_TOOLS, STRICT_WARNING, MAX_DECK_MINUTES };
+    return { methods, Snippets, ImageCatalog, deckSanitize, applyEdits, deckYamlArg, deckArgsFromText, autoQuoteYaml, deckLeftovers, estimateMinutes, resolveImages, shotWarnings, visualNodes, eachSlide, SYSTEM_PROMPT, DOMAIN_TOOLS, STRICT_WARNING, MAX_DECK_MINUTES, TOPIC_RECAP };
 })();
 if (typeof module === 'object' && module.exports) module.exports = FaDeckTools;
