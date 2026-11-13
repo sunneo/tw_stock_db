@@ -11,8 +11,14 @@ const fs = require('fs'), path = require('path'), crypto = require('crypto');
 const R = require('../renderer/src/studio/lora_registry_core.js');
 
 const IDS = ['decompose-r4-v2', 'toolcall-r4', 'plan-r4', 'colu-r4', 'codewrite-r4', 'reading-r4'];
-// 預設啟用（桌面版）：這四顆；其餘選用（設定頁手動開，標註未通過把關或未驗證）。寫進 builtin.json 的 defaultOn，App 讀清單決定，不寫死在程式裡。
-const DEFAULT_ON = ['decompose-r4-v2', 'toolcall-r4', 'colu-r4', 'plan-r4'];
+// 預設啟用（桌面版）：六顆全部（沒有退步才上，§27.9.6）；寫進 builtin.json 的 defaultOn，App 讀清單決定，不寫死在程式裡。
+// plan-r4 目前把關未通過（self_validate 單邊退化）：預設啟用但路由仍擋，卡片上會寫明原因。
+const DEFAULT_ON = ['decompose-r4-v2', 'toolcall-r4', 'colu-r4', 'plan-r4', 'codewrite-r4', 'reading-r4'];
+// 卡片限制（如實寫明，App 在卡片上顯示）：codewrite 的 judge 只有 18/60、整份程式未量、判準非預先登記；reading 是模板題，代表做法與格式，不代表閱讀理解能力。
+const LIMITS = {
+  'codewrite-r4': ['judge 只有 18/60 通過（只量了一部分）', '整份程式沒有量', '判準不是預先登記的'],
+  'reading-r4': ['模板題（程式生成）：量的是依文作答、逐字引用、沒寫就說沒寫', '代表做法與格式，不代表真實的閱讀理解能力'],
+};
 const PART = 20 * 1024 * 1024;
 const sha = (b) => crypto.createHash('sha256').update(b).digest('hex');
 
@@ -54,7 +60,7 @@ if(all.length!==m.size||h(all)!==m.sha256)throw new Error('bad total');fs.writeF
 `);
     entries.push({ id, name: desc && desc.name || id, version: desc && desc.version || '1.0.0', size: buf.length, sha256: sha(buf), dir: id,
       parts: parts.map((p) => ({ file: p.file, size: p.size, sha256: p.sha256 })), domains: desc && desc.applies ? desc.applies.domains : [],
-      gate: { pass: gate.pass, reason: gate.reason }, defaultOn: DEFAULT_ON.indexOf(id) >= 0 });
+      gate: { pass: gate.pass, reason: gate.reason }, defaultOn: DEFAULT_ON.indexOf(id) >= 0, limits: LIMITS[id] || [] });
   }
   const builtin = { format: 'fa-lora-builtin', version: 1, base_url: baseUrl, entries };
   fs.writeFileSync(path.join(outDir, 'builtin.json'), JSON.stringify(builtin, null, 2));
