@@ -22,11 +22,14 @@
     moe: { label: '專家混合（MoE）', what: '每層有多個專家，路由器為每個詞元挑前幾名並加權；訓練時加負載平衡輔助損失，避免只用少數專家。總參數比密集多，但每個詞元用到的參數與同寬度的密集模型相同。匯出給原生執行環境時，圖裡會把所有專家都算一遍（數值相同，但沒有省算力）。' },
     reasoning: { label: '推理（思考＋答案）', what: '預訓練後先用「思考＋答案」格式做指令微調，再用可以程式核對答案的算術題做強化學習（GRPO，答對才給分）。架構與密集模型相同，差別在訓練方式。' },
   };
-  // 預訓練每 1000 個 token 的秒數、指令微調每步（批次 4）的秒數。mini 為實測（負載平均約 65 的忙碌 24 核機器：1992 秒／77 千 token、
-  // 指令微調 3871 秒／40 步）；small 沒有實測，依參數量比例（約 1.5 倍）估計。電腦閒置時預期較快，但沒有量測。
-  var SEC_PER_KTOK = { mini: 26, small: 39 };
-  var SFT_SEC_PER_STEP = { mini: 97, small: 145 };   // 批次 4；實測 3871/40 ≈ 97
-
+  // 預訓練每 1000 個 token 的秒數：mini 在負載平均約 65 的忙碌 24 核機器上實測（1992 秒／77 千 token）；tiny 實測 2.4（600 步×1024 token＝1453 秒，同樣忙碌）；
+  // small 沒有實測，依參數量比例（約 1.5 倍）估計。電腦閒置時預期較快，但沒有量測。專家混合（MoE）實測 tiny 為 1.09 倍（1586／1453 秒），其他大小沿用這個比例（未實測）。
+  var SEC_PER_KTOK = { mini: 26, small: 39, tiny: 2.4 };
+  var MOE_FACTOR = 1.1;
+  // 指令微調每步（批次 4）的秒數：mini 實測約 3（150 步 444 秒，含評量；先前記成 97 是 24 個執行緒搶核造成的假象，已修正執行緒上限）；
+  // tiny 的算術微調實測約 0.044 秒／筆（1200 步×16 筆 760 秒）；small 依比例估。
+  var SFT_SEC_PER_STEP = { mini: 3, small: 4.5, tiny: 0.18 };
+  var GRPO_SEC_PER_STEP = 12;   // 8 題 × 每題 8 個取樣（tiny，實測 150 步約 30 分鐘）；依「題數×每題取樣數」成比例
   // 參數量（與 llm_scratch.py 的結構一致：詞嵌入與輸出頭共享）
   function paramCount(preset, vocab) {
     var p = PRESETS[preset]; if (!p) return NaN;
@@ -65,7 +68,7 @@
     paths: [],
     limits: { vocab: [512, 32000], steps: [10, 200000], batch: [1, 64], seq: [32, 1024], lr: [1e-5, 0.1], warmup: [1, 5000], seed: [0, 1e9], sftSteps: [1, 5000], sftBatch: [1, 64], sftLr: [1e-6, 0.1], threads: [1, 64], layers: [1, 28], heads: [1, 64], kvHeads: [1, 64], hidden: [16, 2048], intermediate: [16, 8192], experts: [2, 64], topK: [1, 8], moeInter: [8, 4096], auxCoef: [0, 1], mathTrain: [100, 50000], mathSteps: [1, 20000], grpoSteps: [1, 5000], grpoPrompts: [1, 64], grpoGroup: [2, 64], grpoLr: [1e-7, 0.01] },
     defaults: { arch: 'dense', corpus: '', preset: 'mini', sftData: '', vocab: 4096, steps: 300, batch: 4, seq: 128, lr: 0.002, warmup: 20, seed: 0, sftSteps: 40, sftBatch: 4, sftLr: 0.0005, threads: 6, experts: 8, topK: 2, auxCoef: 0.01, mathTrain: 2500, mathSteps: 1500, grpoSteps: 200, grpoPrompts: 8, grpoGroup: 8, grpoLr: 0.00002 },
-    estimate: '處理器（CPU）上，迷你模型預訓練每 1000 個 token 約 26 秒、指令微調每步約 97 秒（實測，在負載很高的 24 核機器上；閒置時預期較快，未量測）。預設 300 步 × 4 × 128 ≈ 15 萬 token，預訓練約 1 小時，指令微調 40 步約 1 小時，全流程約 2 小時；要訓練得像樣需要數十倍以上的 token 與時間。',
+    estimate: '處理器（CPU）上，迷你模型預訓練每 1000 個 token 約 26 秒、指令微調每步約 3 秒（實測，在負載很高的 24 核機器上；閒置時預期較快，未量測）。預設 300 步 × 4 × 128 ≈ 15 萬 token，預訓練約 1 小時，指令微調 40 步約 2 分鐘，全流程約 1 小時；要訓練得像樣需要數十倍以上的 token 與時間。專家混合約慢 1.1 倍（tiny 實測）；推理另加算術微調與強化學習（tiny：強化學習每步約 12 秒）。',
     outputs: ['data/prep_report.json', 'tok/tokenizer.json', 'tok/tokenizer_report.json', 'base/ckpt.pt', 'base/pretrain_meta.json', 'chat/ckpt.pt', 'chat/sft_meta.json', 'export/q8/model_quantized.onnx', 'export/hf/model.safetensors', 'export/hf/config.json', 'export/tokenizer.json', 'export/manifest.json', 'export/check.json'],
     checks: [{ op: 'true', key: 'reload_identical' }, { op: 'true', key: 'matches_export' }],
     explain: explain,
@@ -116,16 +119,20 @@
     steps.push(st('hf', STAGES[5].label, py, [script, 'export-hf', '--model', final, '--out', out + '/export/hf'], { check: [{ op: 'true', key: 'transformers_loads' }, { op: 'true', key: 'greedy_identical' }] }));
     if (native) steps.push(st('check', STAGES[6].label, py, [script, 'check', '--model-dir', out + '/export'], { check: SPEC.checks }));
     if (native && env.nativeRuntimeDir) {
-      steps.push(st('native', STAGES[7].label, env.nodeExec || process.execPath, [sd + '/llm_scratch_core.js', 'native-check', '--runtime', env.nativeRuntimeDir, '--model-dir', out + '/export', '--question', s(p.nativeQuestion || (p.arch === 'reasoning' ? '計算 37+48 等於多少？' : '臺灣的首都是哪裡？'))], { env: { ELECTRON_RUN_AS_NODE: '1' }, check: [{ op: 'true', key: 'native_answered' }, { op: 'true', key: 'native_reload_identical' }] }));
+      steps.push(st('native', STAGES[7].label, env.nodeExec || process.execPath, [sd + '/llm_scratch_core.js', 'native-check', '--runtime', env.nativeRuntimeDir, '--model-dir', out + '/export', '--question', s(p.nativeQuestion || (p.arch === 'reasoning' ? '計算 37+48 等於多少？' : '臺灣的首都是哪裡？'))], { env: { ELECTRON_RUN_AS_NODE: '1' }, check: [{ op: 'true', key: 'native_loaded' }, { op: 'gt0', key: 'n_tokens' }, { op: 'true', key: 'native_reload_identical' }] }));
     }
     return { ok: true, errors: [], steps: steps, nativeCompatible: native };
   }
 
-  // 估時間（分鐘）：預訓練與指令微調的 token 數 × 每千 token 秒數，另加匯出與核對約 3 分鐘
+  // 估時間（分鐘）：預訓練的 token 數 × 每千 token 秒數；指令微調依步數；推理另加算術微調與強化學習；另加匯出與核對約 3 分鐘
   function estimate(p) {
-    var spk = SEC_PER_KTOK[p.preset] || SEC_PER_KTOK.mini;
-    var pre = p.steps * p.batch * p.seq / 1000 * spk / 60, sft = p.sftSteps * (p.sftBatch / 4) * (SFT_SEC_PER_STEP[p.preset] || SFT_SEC_PER_STEP.mini) / 60;
-    return { pretrainMin: Math.round(pre), sftMin: Math.max(1, Math.round(sft)), exportMin: 3, totalMin: Math.round(pre + sft + 3), params: Math.round(paramCount(p.preset, p.vocab)) };
+    var spk = (SEC_PER_KTOK[p.preset] || SEC_PER_KTOK.mini) * (p.arch === 'moe' ? MOE_FACTOR : 1);
+    var pre = p.steps * p.batch * p.seq / 1000 * spk / 60, sfp = SFT_SEC_PER_STEP[p.preset] || SFT_SEC_PER_STEP.mini, grpo = 0, sft;
+    if (p.arch === 'reasoning') {
+      sft = p.mathSteps * (p.sftBatch / 4) * sfp / 60;
+      grpo = (p.grpoSteps || 0) * GRPO_SEC_PER_STEP * ((p.grpoPrompts || 8) * (p.grpoGroup || 8) / 64) / 60;
+    } else sft = p.sftSteps * (p.sftBatch / 4) * sfp / 60;
+    return { pretrainMin: Math.round(pre), sftMin: Math.max(1, Math.round(sft)), grpoMin: Math.round(grpo), exportMin: 3, totalMin: Math.round(pre + sft + grpo + 3), params: Math.round(paramCount(p.preset, p.vocab)) };
   }
 
   // ---- CLI：原生執行環境載入並回答 ----
@@ -144,7 +151,7 @@
     });
   }
 
-  return { SHAPE: SHAPE, PRESETS: PRESETS, ARCHS: ARCHS, nativeCompatible: nativeCompatible, SEC_PER_KTOK: SEC_PER_KTOK, SFT_SEC_PER_STEP: SFT_SEC_PER_STEP, STAGES: STAGES, SPEC: SPEC, paramCount: paramCount, planSteps: planSteps, estimate: estimate, nativeCheck: nativeCheck };
+  return { SHAPE: SHAPE, PRESETS: PRESETS, ARCHS: ARCHS, nativeCompatible: nativeCompatible, SEC_PER_KTOK: SEC_PER_KTOK, SFT_SEC_PER_STEP: SFT_SEC_PER_STEP, GRPO_SEC_PER_STEP: GRPO_SEC_PER_STEP, MOE_FACTOR: MOE_FACTOR, STAGES: STAGES, SPEC: SPEC, paramCount: paramCount, planSteps: planSteps, estimate: estimate, nativeCheck: nativeCheck };
 });
 
 if (typeof require === 'function' && require.main === module) {

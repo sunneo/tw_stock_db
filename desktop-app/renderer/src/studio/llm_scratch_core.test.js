@@ -52,7 +52,10 @@ check('原生相容判斷：8 個鍵值頭相容、其他不相容', L.nativeCom
 
 // ---- 估時間 ----
 const e = L.estimate(X.normalizeParams('llm_scratch', {}).params);
-check('估時間：預設預訓練分鐘數 = 步 × 批 × 序列 ÷ 1000 × 每千 token 秒數 ÷ 60', e.pretrainMin === Math.round(300 * 4 * 128 / 1000 * L.SEC_PER_KTOK.mini / 60) && e.sftMin === Math.round(40 * L.SFT_SEC_PER_STEP.mini / 60) && Math.abs(e.totalMin - (e.pretrainMin + e.sftMin + 3)) <= 1, e);
+check('估時間：預設預訓練分鐘數 = 步 × 批 × 序列 ÷ 1000 × 每千 token 秒數 ÷ 60', e.pretrainMin === Math.round(300 * 4 * 128 / 1000 * L.SEC_PER_KTOK.mini / 60) && e.sftMin === Math.max(1, Math.round(40 * L.SFT_SEC_PER_STEP.mini / 60)) && Math.abs(e.totalMin - (e.pretrainMin + e.sftMin + e.grpoMin + 3)) <= 1, e);
+
+const em = L.estimate(Object.assign({}, X.normalizeParams('llm_scratch', {}).params, { arch: 'moe' })), er = L.estimate(Object.assign({}, X.normalizeParams('llm_scratch', {}).params, { arch: 'reasoning' }));
+check('估時間：MoE 預訓練比密集慢 1.1 倍；推理多出強化學習時間', em.pretrainMin >= e.pretrainMin && em.pretrainMin <= Math.ceil(e.pretrainMin * 1.1) + 1 && er.grpoMin > 0 && er.totalMin > e.totalMin, [e, em, er]);
 
 // ---- 判定規則與進度解析 ----
 check('預訓練進度行解析成 step 事件', X.parseLine('{"step": 5, "loss": 6.5, "lr": 0.001}').type === 'step');
