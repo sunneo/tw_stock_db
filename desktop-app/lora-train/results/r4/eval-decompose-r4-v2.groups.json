@@ -1,0 +1,69 @@
+{
+ "groups": {
+  "fn_template/code_split": {
+   "adapter": 23,
+   "base": 0,
+   "n": 60
+  },
+  "fn_template/code_write_fn": {
+   "adapter": 8,
+   "base": 0,
+   "n": 60
+  },
+  "group/uml/edit_real": {
+   "adapter": 30,
+   "base": 18,
+   "n": 30
+  },
+  "group/uml/edit_shuf": {
+   "adapter": 30,
+   "base": 16,
+   "n": 30
+  },
+  "heldout/fn_template": {
+   "adapter": 31,
+   "base": 0,
+   "n": 120
+  },
+  "heldout/think_stack": {
+   "adapter": 36,
+   "base": 0,
+   "n": 180
+  },
+  "seen/unseen/edit_real": {
+   "adapter": 30,
+   "base": 18,
+   "n": 30
+  },
+  "seen/unseen/edit_shuf": {
+   "adapter": 30,
+   "base": 16,
+   "n": 30
+  },
+  "think_stack/plan_check": {
+   "adapter": 0,
+   "base": 0,
+   "n": 60
+  },
+  "think_stack/review_return": {
+   "adapter": 15,
+   "base": 0,
+   "n": 60
+  },
+  "think_stack/self_validate": {
+   "adapter": 21,
+   "base": 0,
+   "n": 60
+  },
+  "uml/edit_real": {
+   "adapter": 30,
+   "base": 18,
+   "n": 30
+  },
+  "uml/edit_shuf": {
+   "adapter": 30,
+   "base": 16,
+   "n": 30
+  }
+ }
+}

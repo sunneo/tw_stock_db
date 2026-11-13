@@ -1,0 +1,29 @@
+{
+ "groups": {
+  "blockly_matrix/block_micro_select": {
+   "adapter": 34,
+   "base": 0,
+   "n": 48
+  },
+  "colu/colu_letter_choice": {
+   "adapter": 29,
+   "base": 11,
+   "n": 57
+  },
+  "colu/colu_letter_choice_nonefirst": {
+   "adapter": 27,
+   "base": 0,
+   "n": 57
+  },
+  "heldout/blockly_matrix": {
+   "adapter": 34,
+   "base": 0,
+   "n": 48
+  },
+  "heldout/colu": {
+   "adapter": 56,
+   "base": 11,
+   "n": 114
+  }
+ }
+}

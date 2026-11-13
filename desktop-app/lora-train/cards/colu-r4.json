@@ -1,0 +1,27 @@
+{
+ "name": "CoLU 選單（colu-r4）",
+ "intro": "在 CoLU 字母選單與 blockly 微選擇中，只輸出單一字母。",
+ "capabilities": [
+  {
+   "id": "cap1",
+   "label": "CoLU 字母選擇"
+  },
+  {
+   "id": "cap2",
+   "label": "blockly 微選擇（block_micro_select）"
+  }
+ ],
+ "known_limits": [
+  "blockly_matrix 沒有獨立評量",
+  "位置偏誤仍存在（見 eval 的 pos 組）"
+ ],
+ "sources": "lora-train/gen（colu、colu_full、blockly_matrix；657 列）",
+ "training": {
+  "rank": 4,
+  "alpha": 8,
+  "lr": 0.0002,
+  "epochs": 1,
+  "seq": 768,
+  "batch": "1 × 累積 8"
+ }
+}

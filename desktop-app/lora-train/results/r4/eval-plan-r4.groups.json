@@ -1,0 +1,24 @@
+{
+ "groups": {
+  "heldout/think_stack": {
+   "adapter": 105,
+   "base": 0,
+   "n": 180
+  },
+  "think_stack/plan_check": {
+   "adapter": 60,
+   "base": 0,
+   "n": 60
+  },
+  "think_stack/review_return": {
+   "adapter": 15,
+   "base": 0,
+   "n": 60
+  },
+  "think_stack/self_validate": {
+   "adapter": 30,
+   "base": 0,
+   "n": 60
+  }
+ }
+}

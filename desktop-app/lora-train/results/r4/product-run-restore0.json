@@ -1,0 +1,2106 @@
+{
+ "checks": [
+  {
+   "name": "原生執行包就緒且為最新版（含 lora 功能）",
+   "ok": true,
+   "extra": {
+    "ok": true,
+    "version": "1.22.0-2",
+    "reason": "",
+    "protocolOk": true,
+    "modelReady": true,
+    "features": [
+     "lora"
+    ],
+    "legacy": false,
+    "latestVersion": "1.22.0-2"
+   }
+  },
+  {
+   "name": "原生執行器可用（執行包與模型檔就緒）",
+   "ok": true,
+   "extra": {
+    "ok": true,
+    "reason": ""
+   }
+  },
+  {
+   "name": "LoRA 槽版模型已就緒",
+   "ok": true,
+   "extra": {
+    "ok": true,
+    "phase": "ready",
+    "detail": "完成",
+    "done": 2799,
+    "total": 2799,
+    "error": null,
+    "standard": {
+     "model": "/tmp/fa-lora4-ud-C3wQDJ/native-models/qwen3-0.6b-q8/onnx/model_quantized.onnx",
+     "bytes": 617687575,
+     "tokenizer": true
+    },
+    "slot": {
+     "model": "/tmp/fa-lora4-ud-C3wQDJ/native-lora/slot-model/ccf8734e59fdf7475b2dc0c117005e267a3a08342c1d951e0a79f0bce57bf62a/model_quantized.onnx",
+     "rank": 16,
+     "total_bytes": 40370176
+    },
+    "missing": null,
+    "peakRssMB": 108.359375,
+    "ms": 775
+   }
+  },
+  {
+   "name": "四個 .fatrain 都匯入成功",
+   "ok": true,
+   "extra": []
+  },
+  {
+   "name": "儲存層裡看得到四顆 lora 資產",
+   "ok": true,
+   "extra": [
+    "colu-r4",
+    "decompose-r4-v2",
+    "plan-r4",
+    "toolcall-r4"
+   ]
+  },
+  {
+   "name": "每一題都走原生後端（log 記錄為原生）",
+   "ok": true,
+   "extra": "0 題不是原生"
+  }
+ ],
+ "imports": [
+  {
+   "file": "decompose-r4-v2.fatrain",
+   "bytes": 40376412,
+   "statSize": 40376412,
+   "ok": true,
+   "error": null,
+   "plan": {
+    "action": "create",
+    "target": "decompose-r4-v2",
+    "kind": "lora"
+   },
+   "preOk": true,
+   "ms": 1507
+  },
+  {
+   "file": "toolcall-r4.fatrain",
+   "bytes": 40385797,
+   "statSize": 40385797,
+   "ok": true,
+   "error": null,
+   "plan": {
+    "action": "create",
+    "target": "toolcall-r4",
+    "kind": "lora"
+   },
+   "preOk": true,
+   "ms": 1505
+  },
+  {
+   "file": "colu-r4.fatrain",
+   "bytes": 40374621,
+   "statSize": 40374621,
+   "ok": true,
+   "error": null,
+   "plan": {
+    "action": "create",
+    "target": "colu-r4",
+    "kind": "lora"
+   },
+   "preOk": true,
+   "ms": 1544
+  },
+  {
+   "file": "plan-r4.fatrain",
+   "bytes": 40374692,
+   "statSize": 40374692,
+   "ok": true,
+   "error": null,
+   "plan": {
+    "action": "create",
+    "target": "plan-r4",
+    "kind": "lora"
+   },
+   "preOk": true,
+   "ms": 1603
+  }
+ ],
+ "rows": [
+  {
+   "type": "decompose",
+   "id": "fn_template:bench_linux_all.jsonl:lx-base64-encode:code_split",
+   "mode": "base",
+   "ms": 8151,
+   "native": true,
+   "logs": [],
+   "text": "```json\n[\n  {\n    \"name\": \"main\",\n    \"signature\": \"def main():\",\n    \"purpose\": \"读取所有输入并输出其 base64 编码。\",\n    \"calls\": [],\n    \"complex\": false\n  }\n]\n```",
+   "err": null,
+   "sc": {
+    "fmt": false,
+    "match": false,
+    "note": "JSON 沒有 functions 陣列",
+    "strictJson": false
+   },
+   "route": null,
+   "sw": null,
+   "nativeLora": "none"
+  },
+  {
+   "type": "decompose",
+   "id": "fn_template:heldout4_graph.jsonl:h4-det:code_split",
+   "mode": "base",
+   "ms": 7062,
+   "native": true,
+   "logs": [],
+   "text": "```json\n[\n  {\n    \"functions\": [\n      {\n        \"name\": \"main\",\n        \"signature\": \"def main():\",\n        \"purpose\": \"读取输入并计算行列式。\",\n        \"calls\": [\"read_input\"],\n        \"complex\": false\n      }\n    ]\n  }\n]\n```",
+   "err": null,
+   "sc": {
+    "fmt": false,
+    "match": false,
+    "note": "functions=main；calls 指到清單外",
+    "strictJson": false
+   },
+   "route": null,
+   "sw": null,
+   "nativeLora": "none"
+  },
+  {
+   "type": "decompose",
+   "id": "fn_template:heldout9_list.jsonl:h9-mode:code_split",
+   "mode": "base",
+   "ms": 23597,
+   "native": true,
+   "logs": [],
+   "text": "```json\n[\n  {\n    \"name\": \"split\",\n    \"signature\": \"list -> list\",\n    \"purpose\": \"將輸入的整數列表拆分成第一行和第二行的整數。\",\n    \"calls\": [\"main\"],\n    \"complex\": false\n  },\n  {\n    \"name\": \"count_max\",\n    \"signature\": \"list -> int\",\n    \"purpose\": \"計算列表中出現次數最多的數字的出現次數。\",\n    \"calls\": [],\n    \"complex\": false\n  },\n  {\n    \"name\": \"min_duplicate\",\n    \"signature\": \"list -> int\",\n    \"purpose\": \"如果出現次數相同的數字有多个，返回其中最小的數。\",\n    \"calls\"",
+   "err": null,
+   "sc": {
+    "fmt": false,
+    "match": false,
+    "note": "JSON 沒有 functions 陣列",
+    "strictJson": false
+   },
+   "route": null,
+   "sw": null,
+   "nativeLora": "none"
+  },
+  {
+   "type": "toolcall",
+   "id": "when2call:call:apply_git_patch:0",
+   "mode": "base",
+   "ms": 6304,
+   "native": true,
+   "logs": [],
+   "text": "<tool_call>\n{\"name\": \"apply_git_patch\", \"arguments\": {\"cwd_abs\": \"预算表\", \"patch\": \"蘋果\"}}\n</tool_call>",
+   "err": null,
+   "sc": {
+    "fmt": true,
+    "match": false,
+    "note": "name=apply_git_patch args={\"cwd_abs\":\"预算表\",\"patch\":\"蘋果\"}"
+   },
+   "route": null,
+   "sw": null,
+   "nativeLora": "none"
+  },
+  {
+   "type": "toolcall",
+   "id": "when2call:call:fap_copy_to_storage:0",
+   "mode": "base",
+   "ms": 7944,
+   "native": true,
+   "logs": [],
+   "text": "<tool_call>\n{\"name\": \"fap_find_file\", \"arguments\": {\"ref\": \"预算表\", \"query\": \"文件\"}}\n</tool_call>",
+   "err": null,
+   "sc": {
+    "fmt": true,
+    "match": false,
+    "note": "name=fap_find_file args={\"ref\":\"预算表\",\"query\":\"文件\"}"
+   },
+   "route": null,
+   "sw": null,
+   "nativeLora": "none"
+  },
+  {
+   "type": "toolcall",
+   "id": "when2call:call:pptx_to_deck:0",
+   "mode": "base",
+   "ms": 6470,
+   "native": true,
+   "logs": [],
+   "text": "<tool_call>\n{\"name\": \"pptx_to_deck\", \"arguments\": {\"file_id\": \"苹果\"}}\n</tool_call>",
+   "err": null,
+   "sc": {
+    "fmt": true,
+    "match": false,
+    "note": "name=pptx_to_deck args={\"file_id\":\"苹果\"}"
+   },
+   "route": null,
+   "sw": null,
+   "nativeLora": "none"
+  },
+  {
+   "type": "colu",
+   "id": "colu_full:apply_git_patch:plain",
+   "mode": "base",
+   "ms": 926,
+   "native": true,
+   "logs": [],
+   "text": "A.",
+   "err": null,
+   "sc": {
+    "fmt": false,
+    "match": false,
+    "note": "不是單一字母",
+    "strictLetter": false
+   },
+   "route": null,
+   "sw": null,
+   "nativeLora": "none"
+  },
+  {
+   "type": "colu",
+   "id": "colu_full:edit_markdown_open:plain",
+   "mode": "base",
+   "ms": 623,
+   "native": true,
+   "logs": [],
+   "text": "A",
+   "err": null,
+   "sc": {
+    "fmt": true,
+    "match": false,
+    "note": "單一字母",
+    "strictLetter": true
+   },
+   "route": null,
+   "sw": null,
+   "nativeLora": "none"
+  },
+  {
+   "type": "colu",
+   "id": "colu_full:mcp_manage:plain",
+   "mode": "base",
+   "ms": 620,
+   "native": true,
+   "logs": [],
+   "text": "A.",
+   "err": null,
+   "sc": {
+    "fmt": false,
+    "match": true,
+    "note": "不是單一字母",
+    "strictLetter": false
+   },
+   "route": null,
+   "sw": null,
+   "nativeLora": "none"
+  },
+  {
+   "type": "plan",
+   "id": "think_stack:bench_linux_all.jsonl:lx-base64-encode:plan_check:clean:89",
+   "mode": "base",
+   "ms": 4922,
+   "native": true,
+   "logs": [],
+   "text": "{\n  \"checks\": [\n    {\n      \"check\": \"輸入是否為只包含英數字的文字\",\n      \"standard\": \"输入文字中所有字符都是英數字\"\n    }\n  ]\n}",
+   "err": null,
+   "sc": {
+    "fmt": true,
+    "match": false,
+    "note": "checks=1",
+    "strictJson": true
+   },
+   "route": null,
+   "sw": null,
+   "nativeLora": "none"
+  },
+  {
+   "type": "plan",
+   "id": "think_stack:heldout3_graph.jsonl:h3-swap-rc:plan_check:clean:1273",
+   "mode": "base",
+   "ms": 5215,
+   "native": true,
+   "logs": [],
+   "text": "```json\n{\n  \"checks\": [\n    {\n      \"check\": \"要檢查什麼\",\n      \"standard\": \"每個元素是否正確地轉換為另一行的列\"\n    }\n  ]\n}\n```",
+   "err": null,
+   "sc": {
+    "fmt": true,
+    "match": false,
+    "note": "checks=1",
+    "strictJson": false
+   },
+   "route": null,
+   "sw": null,
+   "nativeLora": "none"
+  },
+  {
+   "type": "plan",
+   "id": "think_stack:heldout9_list.jsonl:h9-kadane:plan_check:clean:1886",
+   "mode": "base",
+   "ms": 5689,
+   "native": true,
+   "logs": [],
+   "text": "```json\n[\n    {\n        \"check\": \"是否計算了最大子陣列和？\",\n        \"standard\": \"該程序計算了所有「連續一段」（至少一個數）的和中最大的那個\"\n    }\n]\n```",
+   "err": null,
+   "sc": {
+    "fmt": false,
+    "match": false,
+    "note": "沒有 checks 陣列",
+    "strictJson": false
+   },
+   "route": null,
+   "sw": null,
+   "nativeLora": "none"
+  },
+  {
+   "type": "decompose",
+   "id": "fn_template:bench_linux_all.jsonl:lx-base64-encode:code_split",
+   "mode": "auto-route",
+   "ms": 9192,
+   "native": true,
+   "logs": [],
+   "text": "{\"functions\":[{\"name\":\"solve\",\"signature\":\"solve(a)\",\"purpose\":\"做主要運算\",\"calls\":[],\"complex\":true},{\"name\":\"main\",\"signature\":\"\",\"purpose\":\"讀入全部輸入並輸出答案\",\"calls\":[\"solve\"],\"complex\":false}]}",
+   "err": null,
+   "sc": {
+    "fmt": false,
+    "match": false,
+    "note": "functions=solve,main",
+    "strictJson": true
+   },
+   "route": {
+    "task": "decompose",
+    "domain": "decompose",
+    "fallback": "lora",
+    "active": [
+     "decompose-r4-v2"
+    ],
+    "skipped": [
+     {
+      "id": "colu-r4",
+      "reason": "任務領域（decompose）已有符合的 adapter，不因指令觸發字改選別的領域"
+     }
+    ],
+    "action": "switch",
+    "reason": "「decompose」→ decompose-r4-v2"
+   },
+   "sw": {
+    "ms": 650,
+    "applied": true,
+    "applyError": null,
+    "active": [
+     "decompose-r4-v2"
+    ],
+    "action": "switch",
+    "fallback": "lora"
+   },
+   "sel": {
+    "how": "auto",
+    "active": [
+     "decompose-r4-v2"
+    ]
+   },
+   "nativeLora": {
+    "id": "decompose-r4-v2-d850938d",
+    "size": 40370176,
+    "sha256": "d850938d1a4eccd827434b49788a02da1cbd8cd0a3edfb80566caa00034be44e"
+   }
+  },
+  {
+   "type": "decompose",
+   "id": "fn_template:heldout4_graph.jsonl:h4-det:code_split",
+   "mode": "auto-route",
+   "ms": 10133,
+   "native": true,
+   "logs": [],
+   "text": "{\"functions\":[{\"name\":\"read_input\",\"signature\":\"read_input()\",\"purpose\":\"讀入全部輸入\",\"calls\":[],\"complex\":false},{\"name\":\"solve\",\"signature\":\"solve(n)\",\"purpose\":\"做主要運算\",\"calls\":[],\"complex\":false},{\"name\":\"main\",\"signature\":\"main()\",\"purpose\":\"讀入全部輸入、呼叫其他函式、輸出答案\",\"calls\":[\"read_input\",\"solve\"],\"complex\":false}]}",
+   "err": null,
+   "sc": {
+    "fmt": true,
+    "match": true,
+    "note": "functions=read_input,solve,main",
+    "strictJson": true
+   },
+   "route": {
+    "task": "decompose",
+    "domain": "decompose",
+    "fallback": "lora",
+    "active": [
+     "decompose-r4-v2"
+    ],
+    "skipped": [],
+    "action": "keep",
+    "reason": "「decompose」→ decompose-r4-v2"
+   },
+   "sw": {
+    "ms": 0,
+    "active": [
+     "decompose-r4-v2"
+    ],
+    "action": "keep",
+    "fallback": "lora"
+   },
+   "sel": {
+    "how": "auto",
+    "active": [
+     "decompose-r4-v2"
+    ]
+   },
+   "nativeLora": {
+    "id": "decompose-r4-v2-d850938d",
+    "size": 40370176,
+    "sha256": "d850938d1a4eccd827434b49788a02da1cbd8cd0a3edfb80566caa00034be44e"
+   }
+  },
+  {
+   "type": "decompose",
+   "id": "fn_template:heldout9_list.jsonl:h9-mode:code_split",
+   "mode": "auto-route",
+   "ms": 10010,
+   "native": true,
+   "logs": [],
+   "text": "{\"functions\":[{\"name\":\"read_input\",\"signature\":\"read_input()\",\"purpose\":\"讀入全部輸入\",\"calls\":[],\"complex\":false},{\"name\":\"solve\",\"signature\":\"solve(n)\",\"purpose\":\"做主要運算\",\"calls\":[],\"complex\":false},{\"name\":\"main\",\"signature\":\"main()\",\"purpose\":\"讀入全部輸入、呼叫其他函式、輸出答案\",\"calls\":[\"read_input\",\"solve\"],\"complex\":false}]}",
+   "err": null,
+   "sc": {
+    "fmt": true,
+    "match": true,
+    "note": "functions=read_input,solve,main",
+    "strictJson": true
+   },
+   "route": {
+    "task": "decompose",
+    "domain": "decompose",
+    "fallback": "lora",
+    "active": [
+     "decompose-r4-v2"
+    ],
+    "skipped": [],
+    "action": "keep",
+    "reason": "「decompose」→ decompose-r4-v2"
+   },
+   "sw": {
+    "ms": 0,
+    "active": [
+     "decompose-r4-v2"
+    ],
+    "action": "keep",
+    "fallback": "lora"
+   },
+   "sel": {
+    "how": "auto",
+    "active": [
+     "decompose-r4-v2"
+    ]
+   },
+   "nativeLora": {
+    "id": "decompose-r4-v2-d850938d",
+    "size": 40370176,
+    "sha256": "d850938d1a4eccd827434b49788a02da1cbd8cd0a3edfb80566caa00034be44e"
+   }
+  },
+  {
+   "type": "toolcall",
+   "id": "when2call:call:apply_git_patch:0",
+   "mode": "auto-route",
+   "ms": 10296,
+   "native": true,
+   "logs": [],
+   "text": "<tool_call>\n{\n  \"name\":\"apply_git_patch\",\n  \"arguments\":{\n    \"cwd_abs\":\"預算表\",\n    \"patch\":\"蘋果\"\n  }\n}\n</tool_call>",
+   "err": null,
+   "sc": {
+    "fmt": true,
+    "match": true,
+    "note": "name=apply_git_patch args={\"cwd_abs\":\"預算表\",\"patch\":\"蘋果\"}"
+   },
+   "route": {
+    "task": "toolcall",
+    "domain": "toolcall",
+    "fallback": "lora",
+    "active": [
+     "toolcall-r4"
+    ],
+    "skipped": [],
+    "action": "switch",
+    "reason": "「toolcall」→ toolcall-r4"
+   },
+   "sw": {
+    "ms": 640,
+    "applied": true,
+    "applyError": null,
+    "active": [
+     "toolcall-r4"
+    ],
+    "action": "switch",
+    "fallback": "lora"
+   },
+   "sel": {
+    "how": "auto",
+    "active": [
+     "toolcall-r4"
+    ]
+   },
+   "nativeLora": {
+    "id": "toolcall-r4-743daa3b",
+    "size": 40370176,
+    "sha256": "743daa3b776fd8b610be1705f5b321bf14b0c51a9dde4d4733b1cb64f70888a2"
+   }
+  },
+  {
+   "type": "toolcall",
+   "id": "when2call:call:fap_copy_to_storage:0",
+   "mode": "auto-route",
+   "ms": 5685,
+   "native": true,
+   "logs": [],
+   "text": "<tool_call>\n{\"name\":\"fap_find_file\",\"arguments\":{\"ref\":\"預算表\"}}\n</tool_call>",
+   "err": null,
+   "sc": {
+    "fmt": true,
+    "match": false,
+    "note": "name=fap_find_file args={\"ref\":\"預算表\"}"
+   },
+   "route": {
+    "task": "toolcall",
+    "domain": "toolcall",
+    "fallback": "lora",
+    "active": [
+     "toolcall-r4"
+    ],
+    "skipped": [],
+    "action": "keep",
+    "reason": "「toolcall」→ toolcall-r4"
+   },
+   "sw": {
+    "ms": 0,
+    "active": [
+     "toolcall-r4"
+    ],
+    "action": "keep",
+    "fallback": "lora"
+   },
+   "sel": {
+    "how": "auto",
+    "active": [
+     "toolcall-r4"
+    ]
+   },
+   "nativeLora": {
+    "id": "toolcall-r4-743daa3b",
+    "size": 40370176,
+    "sha256": "743daa3b776fd8b610be1705f5b321bf14b0c51a9dde4d4733b1cb64f70888a2"
+   }
+  },
+  {
+   "type": "toolcall",
+   "id": "when2call:call:pptx_to_deck:0",
+   "mode": "auto-route",
+   "ms": 6323,
+   "native": true,
+   "logs": [],
+   "text": "<tool_call>\n{\"name\":\"pptx_to_deck\",\"arguments\":{\"file_id\":\"蘋果\"}}\n</tool_call>",
+   "err": null,
+   "sc": {
+    "fmt": true,
+    "match": true,
+    "note": "name=pptx_to_deck args={\"file_id\":\"蘋果\"}"
+   },
+   "route": {
+    "task": "toolcall",
+    "domain": "toolcall",
+    "fallback": "lora",
+    "active": [
+     "toolcall-r4"
+    ],
+    "skipped": [],
+    "action": "keep",
+    "reason": "「toolcall」→ toolcall-r4"
+   },
+   "sw": {
+    "ms": 0,
+    "active": [
+     "toolcall-r4"
+    ],
+    "action": "keep",
+    "fallback": "lora"
+   },
+   "sel": {
+    "how": "auto",
+    "active": [
+     "toolcall-r4"
+    ]
+   },
+   "nativeLora": {
+    "id": "toolcall-r4-743daa3b",
+    "size": 40370176,
+    "sha256": "743daa3b776fd8b610be1705f5b321bf14b0c51a9dde4d4733b1cb64f70888a2"
+   }
+  },
+  {
+   "type": "colu",
+   "id": "colu_full:apply_git_patch:plain",
+   "mode": "auto-route",
+   "ms": 3879,
+   "native": true,
+   "logs": [],
+   "text": "C",
+   "err": null,
+   "sc": {
+    "fmt": true,
+    "match": false,
+    "note": "單一字母",
+    "strictLetter": true
+   },
+   "route": {
+    "task": "colu",
+    "domain": "colu",
+    "fallback": "lora",
+    "active": [
+     "colu-r4"
+    ],
+    "skipped": [
+     {
+      "id": "toolcall-r4",
+      "reason": "任務領域（colu）已有符合的 adapter，不因指令觸發字改選別的領域"
+     }
+    ],
+    "action": "switch",
+    "reason": "「colu」→ colu-r4"
+   },
+   "sw": {
+    "ms": 650,
+    "applied": true,
+    "applyError": null,
+    "active": [
+     "colu-r4"
+    ],
+    "action": "switch",
+    "fallback": "lora"
+   },
+   "sel": {
+    "how": "auto",
+    "active": [
+     "colu-r4"
+    ]
+   },
+   "nativeLora": {
+    "id": "colu-r4-aeefc628",
+    "size": 40370176,
+    "sha256": "aeefc628e89cfc7ef8076d91978c54acd1bfc809f6ff90bc3a2e5f4a24d9ee65"
+   }
+  },
+  {
+   "type": "colu",
+   "id": "colu_full:edit_markdown_open:plain",
+   "mode": "auto-route",
+   "ms": 651,
+   "native": true,
+   "logs": [],
+   "text": "A",
+   "err": null,
+   "sc": {
+    "fmt": true,
+    "match": false,
+    "note": "單一字母",
+    "strictLetter": true
+   },
+   "route": {
+    "task": "colu",
+    "domain": "colu",
+    "fallback": "lora",
+    "active": [
+     "colu-r4"
+    ],
+    "skipped": [
+     {
+      "id": "toolcall-r4",
+      "reason": "任務領域（colu）已有符合的 adapter，不因指令觸發字改選別的領域"
+     }
+    ],
+    "action": "keep",
+    "reason": "「colu」→ colu-r4"
+   },
+   "sw": {
+    "ms": 0,
+    "active": [
+     "colu-r4"
+    ],
+    "action": "keep",
+    "fallback": "lora"
+   },
+   "sel": {
+    "how": "auto",
+    "active": [
+     "colu-r4"
+    ]
+   },
+   "nativeLora": {
+    "id": "colu-r4-aeefc628",
+    "size": 40370176,
+    "sha256": "aeefc628e89cfc7ef8076d91978c54acd1bfc809f6ff90bc3a2e5f4a24d9ee65"
+   }
+  },
+  {
+   "type": "colu",
+   "id": "colu_full:mcp_manage:plain",
+   "mode": "auto-route",
+   "ms": 629,
+   "native": true,
+   "logs": [],
+   "text": "A",
+   "err": null,
+   "sc": {
+    "fmt": true,
+    "match": true,
+    "note": "單一字母",
+    "strictLetter": true
+   },
+   "route": {
+    "task": "colu",
+    "domain": "colu",
+    "fallback": "lora",
+    "active": [
+     "colu-r4"
+    ],
+    "skipped": [
+     {
+      "id": "toolcall-r4",
+      "reason": "任務領域（colu）已有符合的 adapter，不因指令觸發字改選別的領域"
+     }
+    ],
+    "action": "keep",
+    "reason": "「colu」→ colu-r4"
+   },
+   "sw": {
+    "ms": 0,
+    "active": [
+     "colu-r4"
+    ],
+    "action": "keep",
+    "fallback": "lora"
+   },
+   "sel": {
+    "how": "auto",
+    "active": [
+     "colu-r4"
+    ]
+   },
+   "nativeLora": {
+    "id": "colu-r4-aeefc628",
+    "size": 40370176,
+    "sha256": "aeefc628e89cfc7ef8076d91978c54acd1bfc809f6ff90bc3a2e5f4a24d9ee65"
+   }
+  },
+  {
+   "type": "plan",
+   "id": "think_stack:bench_linux_all.jsonl:lx-base64-encode:plan_check:clean:89",
+   "mode": "auto-route",
+   "ms": 9061,
+   "native": true,
+   "logs": [],
+   "text": "{\"checks\":[{\"check\":\"每個被呼叫的函式都有寫出來\",\"standard\":\"所有被調用的函式都有定義\"},{\"check\":\"簽名與清單一致\",\"standard\":\"參數個數和名稱個數相同\"}]}",
+   "err": null,
+   "sc": {
+    "fmt": true,
+    "match": false,
+    "note": "checks=2",
+    "strictJson": true
+   },
+   "route": {
+    "task": "plan",
+    "domain": "plan",
+    "fallback": "lora",
+    "active": [
+     "plan-r4"
+    ],
+    "skipped": [
+     {
+      "id": "toolcall-r4",
+      "reason": "任務領域（plan）已有符合的 adapter，不因指令觸發字改選別的領域"
+     },
+     {
+      "id": "decompose-r4-v2",
+      "reason": "任務領域（plan）已有符合的 adapter，不因指令觸發字改選別的領域"
+     },
+     {
+      "id": "colu-r4",
+      "reason": "任務領域（plan）已有符合的 adapter，不因指令觸發字改選別的領域"
+     }
+    ],
+    "action": "switch",
+    "reason": "「plan」→ plan-r4"
+   },
+   "sw": {
+    "ms": 658,
+    "applied": true,
+    "applyError": null,
+    "active": [
+     "plan-r4"
+    ],
+    "action": "switch",
+    "fallback": "lora"
+   },
+   "sel": {
+    "how": "auto",
+    "active": [
+     "plan-r4"
+    ]
+   },
+   "nativeLora": {
+    "id": "plan-r4-e5cb0310",
+    "size": 40370176,
+    "sha256": "e5cb031006205bc9e527be60c0c63fe621f5b2a4b528241e9397822c0c179fc4"
+   }
+  },
+  {
+   "type": "plan",
+   "id": "think_stack:heldout3_graph.jsonl:h3-swap-rc:plan_check:clean:1273",
+   "mode": "auto-route",
+   "ms": 5669,
+   "native": true,
+   "logs": [],
+   "text": "{\"checks\":[{\"check\":\"每個被呼叫的函式都有寫出來\",\"standard\":\"所有被調用的函式都有定義\"},{\"check\":\"簽名與清單一致\",\"standard\":\"名稱與參數個數相同\"}]}",
+   "err": null,
+   "sc": {
+    "fmt": true,
+    "match": false,
+    "note": "checks=2",
+    "strictJson": true
+   },
+   "route": {
+    "task": "plan",
+    "domain": "plan",
+    "fallback": "lora",
+    "active": [
+     "plan-r4"
+    ],
+    "skipped": [
+     {
+      "id": "toolcall-r4",
+      "reason": "任務領域（plan）已有符合的 adapter，不因指令觸發字改選別的領域"
+     },
+     {
+      "id": "decompose-r4-v2",
+      "reason": "任務領域（plan）已有符合的 adapter，不因指令觸發字改選別的領域"
+     }
+    ],
+    "action": "keep",
+    "reason": "「plan」→ plan-r4"
+   },
+   "sw": {
+    "ms": 0,
+    "active": [
+     "plan-r4"
+    ],
+    "action": "keep",
+    "fallback": "lora"
+   },
+   "sel": {
+    "how": "auto",
+    "active": [
+     "plan-r4"
+    ]
+   },
+   "nativeLora": {
+    "id": "plan-r4-e5cb0310",
+    "size": 40370176,
+    "sha256": "e5cb031006205bc9e527be60c0c63fe621f5b2a4b528241e9397822c0c179fc4"
+   }
+  },
+  {
+   "type": "plan",
+   "id": "think_stack:heldout9_list.jsonl:h9-kadane:plan_check:clean:1886",
+   "mode": "auto-route",
+   "ms": 5665,
+   "native": true,
+   "logs": [],
+   "text": "{\"checks\":[{\"check\":\"每個被呼叫的函式都有寫出來\",\"standard\":\"函式清單裡每一項都有定義\"},{\"check\":\"簽名與清單一致\",\"standard\":\"名稱與參數個數相同\"}]}",
+   "err": null,
+   "sc": {
+    "fmt": true,
+    "match": true,
+    "note": "checks=2",
+    "strictJson": true
+   },
+   "route": {
+    "task": "plan",
+    "domain": "plan",
+    "fallback": "lora",
+    "active": [
+     "plan-r4"
+    ],
+    "skipped": [
+     {
+      "id": "toolcall-r4",
+      "reason": "任務領域（plan）已有符合的 adapter，不因指令觸發字改選別的領域"
+     },
+     {
+      "id": "decompose-r4-v2",
+      "reason": "任務領域（plan）已有符合的 adapter，不因指令觸發字改選別的領域"
+     }
+    ],
+    "action": "keep",
+    "reason": "「plan」→ plan-r4"
+   },
+   "sw": {
+    "ms": 0,
+    "active": [
+     "plan-r4"
+    ],
+    "action": "keep",
+    "fallback": "lora"
+   },
+   "sel": {
+    "how": "auto",
+    "active": [
+     "plan-r4"
+    ]
+   },
+   "nativeLora": {
+    "id": "plan-r4-e5cb0310",
+    "size": 40370176,
+    "sha256": "e5cb031006205bc9e527be60c0c63fe621f5b2a4b528241e9397822c0c179fc4"
+   }
+  },
+  {
+   "type": "decompose",
+   "id": "fn_template:bench_linux_all.jsonl:lx-base64-encode:code_split",
+   "mode": "all4",
+   "ms": 6916,
+   "native": true,
+   "logs": [],
+   "text": "{\"functions\":[{\"name\":\"read_input\",\"signature\":\"read_input(s)\",\"purpose\":\"\",\"calls\":[],\"complex\":false},{\"name\":\"write_output\",\"signature\":\"write_output(s)\",\"purpose\":\"\",\"calls\":[],\"complex\":false}]}",
+   "err": null,
+   "sc": {
+    "fmt": false,
+    "match": false,
+    "note": "functions=read_input,write_output；缺 main",
+    "strictJson": true
+   },
+   "route": null,
+   "sw": null,
+   "sel": {
+    "how": "all4",
+    "active": [
+     "toolcall-r4",
+     "decompose-r4-v2",
+     "colu-r4",
+     "plan-r4"
+    ]
+   }
+  },
+  {
+   "type": "decompose",
+   "id": "fn_template:heldout4_graph.jsonl:h4-det:code_split",
+   "mode": "all4",
+   "ms": 29459,
+   "native": true,
+   "logs": [],
+   "text": "{\"functions\":[{\"name\":\"read\",\"signature\":\"\",\"purpose\":\"\",\"calls\":[],\"complex\":false},{\"name\":\"solve\",\"signature\":\"solve(a,b)\",\"purpose\":\"做運算\",\"calls\":[\"a\",\"b\"],\"complex\":false}]}\n{\"functions\":[{\"name\":\"read\",\"signature\":\"\",\"purpose\":\"\",\"calls\":[],\"complex\":false},{\"name\":\"solve\",\"signature\":\"solve(a,b)\",\"purpose\":\"做運算\",\"calls\":[\"a\",\"b\"],\"complex\":false},{\"name\":\"solve2\",\"signature\":\"solve2(a,b)\",\"purpose\":\"做運算\",\"call",
+   "err": null,
+   "sc": {
+    "fmt": false,
+    "match": false,
+    "note": "JSON 沒有 functions 陣列",
+    "strictJson": false
+   },
+   "route": null,
+   "sw": null,
+   "sel": {
+    "how": "all4",
+    "active": [
+     "toolcall-r4",
+     "decompose-r4-v2",
+     "colu-r4",
+     "plan-r4"
+    ]
+   }
+  },
+  {
+   "type": "decompose",
+   "id": "fn_template:heldout9_list.jsonl:h9-mode:code_split",
+   "mode": "all4",
+   "ms": 37881,
+   "native": true,
+   "logs": [],
+   "text": "{\"functions\":[{\"name\":\"read\",\"signature\":\"read(s)\",\"purpose\":\"\",\"calls\":[],\"complex\":false},{\"name\":\"solve\",\"signature\":\"solve(c)\",\"purpose\":\"做函式「c」\",\"calls\":[\"「c」\"],\"complex\":false},{\"name\":\"main\",\"signature:\"\",««««««««««««««««««««««««««««««««««««««««««««««««««««««««««««««««««««««««««««««««««««««««««««««««««««««««««««««««««««««««««««««««««««««««««««««««««««««««««««««««««««««««««««««««««««««««««««««««««««««««««««««««",
+   "err": null,
+   "sc": {
+    "fmt": false,
+    "match": false,
+    "note": "JSON 沒有 functions 陣列",
+    "strictJson": false
+   },
+   "route": null,
+   "sw": null,
+   "sel": {
+    "how": "all4",
+    "active": [
+     "toolcall-r4",
+     "decompose-r4-v2",
+     "colu-r4",
+     "plan-r4"
+    ]
+   }
+  },
+  {
+   "type": "toolcall",
+   "id": "when2call:call:apply_git_patch:0",
+   "mode": "all4",
+   "ms": 26319,
+   "native": true,
+   "logs": [],
+   "text": "工具清單裡沒有「apply_git_patch」。「edit」、「open」、「wait」、「do」、「run」、「call」、「do_call」、「do_run」、「do_run_call」、「do_run_call_call」、「do_run_call_call_call」、「do_run_call_call_call_call」、「do_run_call_call_call_call_call」、「do_run_call_call_call_call_call」、「do_run_call_call_call_call_call」、「do_run_call_call_call_call_call」、「do_run_call_call_call_call_call」、「do_run_call_call_call_call_call」、「do_run_call_call_call_call_call」、「do_run_call_",
+   "err": null,
+   "sc": {
+    "fmt": false,
+    "match": false,
+    "note": "沒有 <tool_call> 標籤"
+   },
+   "route": null,
+   "sw": null,
+   "sel": {
+    "how": "all4",
+    "active": [
+     "toolcall-r4",
+     "decompose-r4-v2",
+     "colu-r4",
+     "plan-r4"
+    ]
+   }
+  },
+  {
+   "type": "toolcall",
+   "id": "when2call:call:fap_copy_to_storage:0",
+   "mode": "all4",
+   "ms": 5068,
+   "native": true,
+   "logs": [],
+   "text": "工具「fap_find_file」被呼叫了。要改嗎？",
+   "err": null,
+   "sc": {
+    "fmt": false,
+    "match": false,
+    "note": "沒有 <tool_call> 標籤"
+   },
+   "route": null,
+   "sw": null,
+   "sel": {
+    "how": "all4",
+    "active": [
+     "toolcall-r4",
+     "decompose-r4-v2",
+     "colu-r4",
+     "plan-r4"
+    ]
+   }
+  },
+  {
+   "type": "toolcall",
+   "id": "when2call:call:pptx_to_deck:0",
+   "mode": "all4",
+   "ms": 5561,
+   "native": true,
+   "logs": [],
+   "text": "{\"name\":\"pptx_to_deck\",\"arguments\":{\"file\":\"蘋果\"}}",
+   "err": null,
+   "sc": {
+    "fmt": false,
+    "match": false,
+    "note": "沒有 <tool_call> 標籤"
+   },
+   "route": null,
+   "sw": null,
+   "sel": {
+    "how": "all4",
+    "active": [
+     "toolcall-r4",
+     "decompose-r4-v2",
+     "colu-r4",
+     "plan-r4"
+    ]
+   }
+  },
+  {
+   "type": "colu",
+   "id": "colu_full:apply_git_patch:plain",
+   "mode": "all4",
+   "ms": 1233,
+   "native": true,
+   "logs": [],
+   "text": "「清」（清）",
+   "err": null,
+   "sc": {
+    "fmt": false,
+    "match": false,
+    "note": "不是單一字母",
+    "strictLetter": false
+   },
+   "route": null,
+   "sw": null,
+   "sel": {
+    "how": "all4",
+    "active": [
+     "toolcall-r4",
+     "decompose-r4-v2",
+     "colu-r4",
+     "plan-r4"
+    ]
+   }
+  },
+  {
+   "type": "colu",
+   "id": "colu_full:edit_markdown_open:plain",
+   "mode": "all4",
+   "ms": 1095,
+   "native": true,
+   "logs": [],
+   "text": "「清單」被選",
+   "err": null,
+   "sc": {
+    "fmt": false,
+    "match": false,
+    "note": "不是單一字母",
+    "strictLetter": false
+   },
+   "route": null,
+   "sw": null,
+   "sel": {
+    "how": "all4",
+    "active": [
+     "toolcall-r4",
+     "decompose-r4-v2",
+     "colu-r4",
+     "plan-r4"
+    ]
+   }
+  },
+  {
+   "type": "colu",
+   "id": "colu_full:mcp_manage:plain",
+   "mode": "all4",
+   "ms": 943,
+   "native": true,
+   "logs": [],
+   "text": "{\"type\":\"tool\",\"name",
+   "err": null,
+   "sc": {
+    "fmt": false,
+    "match": false,
+    "note": "不是單一字母",
+    "strictLetter": false
+   },
+   "route": null,
+   "sw": null,
+   "sel": {
+    "how": "all4",
+    "active": [
+     "toolcall-r4",
+     "decompose-r4-v2",
+     "colu-r4",
+     "plan-r4"
+    ]
+   }
+  },
+  {
+   "type": "plan",
+   "id": "think_stack:bench_linux_all.jsonl:lx-base64-encode:plan_check:clean:89",
+   "mode": "all4",
+   "ms": 2019,
+   "native": true,
+   "logs": [],
+   "text": "「要完成「solve」、「read」、「call」？」",
+   "err": null,
+   "sc": {
+    "fmt": false,
+    "match": false,
+    "note": "沒有 checks 陣列",
+    "strictJson": false
+   },
+   "route": null,
+   "sw": null,
+   "sel": {
+    "how": "all4",
+    "active": [
+     "toolcall-r4",
+     "decompose-r4-v2",
+     "colu-r4",
+     "plan-r4"
+    ]
+   }
+  },
+  {
+   "type": "plan",
+   "id": "think_stack:heldout3_graph.jsonl:h3-swap-rc:plan_check:clean:1273",
+   "mode": "all4",
+   "ms": 3061,
+   "native": true,
+   "logs": [],
+   "text": "{\"checks\":[{\"check\":\"少了函式\",\"standard\":\"\"},{\"check\":\"少了函式\",\"standard\":\"\"}]}",
+   "err": null,
+   "sc": {
+    "fmt": true,
+    "match": false,
+    "note": "checks=2",
+    "strictJson": true
+   },
+   "route": null,
+   "sw": null,
+   "sel": {
+    "how": "all4",
+    "active": [
+     "toolcall-r4",
+     "decompose-r4-v2",
+     "colu-r4",
+     "plan-r4"
+    ]
+   }
+  },
+  {
+   "type": "plan",
+   "id": "think_stack:heldout9_list.jsonl:h9-kadane:plan_check:clean:1886",
+   "mode": "all4",
+   "ms": 2301,
+   "native": true,
+   "logs": [],
+   "text": "</think>\n\n「函式「read_input」」「solve」「read」被呼叫了？」",
+   "err": null,
+   "sc": {
+    "fmt": false,
+    "match": false,
+    "note": "沒有 checks 陣列",
+    "strictJson": false
+   },
+   "route": null,
+   "sw": null,
+   "sel": {
+    "how": "all4",
+    "active": [
+     "toolcall-r4",
+     "decompose-r4-v2",
+     "colu-r4",
+     "plan-r4"
+    ]
+   }
+  }
+ ],
+ "routes": [
+  {
+   "type": "decompose",
+   "expect": "decompose-r4-v2",
+   "route": {
+    "task": "decompose",
+    "domain": "decompose",
+    "fallback": "lora",
+    "active": [
+     "decompose-r4-v2"
+    ],
+    "skipped": [
+     {
+      "id": "colu-r4",
+      "reason": "任務領域（decompose）已有符合的 adapter，不因指令觸發字改選別的領域"
+     }
+    ],
+    "action": "switch",
+    "reason": "「decompose」→ decompose-r4-v2"
+   },
+   "switch": {
+    "ms": 650,
+    "applied": true,
+    "applyError": null,
+    "active": [
+     "decompose-r4-v2"
+    ],
+    "action": "switch",
+    "fallback": "lora"
+   },
+   "firstMs": 9192
+  },
+  {
+   "type": "toolcall",
+   "expect": "toolcall-r4",
+   "route": {
+    "task": "toolcall",
+    "domain": "toolcall",
+    "fallback": "lora",
+    "active": [
+     "toolcall-r4"
+    ],
+    "skipped": [],
+    "action": "switch",
+    "reason": "「toolcall」→ toolcall-r4"
+   },
+   "switch": {
+    "ms": 640,
+    "applied": true,
+    "applyError": null,
+    "active": [
+     "toolcall-r4"
+    ],
+    "action": "switch",
+    "fallback": "lora"
+   },
+   "firstMs": 10296
+  },
+  {
+   "type": "colu",
+   "expect": "colu-r4",
+   "route": {
+    "task": "colu",
+    "domain": "colu",
+    "fallback": "lora",
+    "active": [
+     "colu-r4"
+    ],
+    "skipped": [
+     {
+      "id": "toolcall-r4",
+      "reason": "任務領域（colu）已有符合的 adapter，不因指令觸發字改選別的領域"
+     }
+    ],
+    "action": "switch",
+    "reason": "「colu」→ colu-r4"
+   },
+   "switch": {
+    "ms": 650,
+    "applied": true,
+    "applyError": null,
+    "active": [
+     "colu-r4"
+    ],
+    "action": "switch",
+    "fallback": "lora"
+   },
+   "firstMs": 3879
+  },
+  {
+   "type": "plan",
+   "expect": "plan-r4",
+   "route": {
+    "task": "plan",
+    "domain": "plan",
+    "fallback": "lora",
+    "active": [
+     "plan-r4"
+    ],
+    "skipped": [
+     {
+      "id": "toolcall-r4",
+      "reason": "任務領域（plan）已有符合的 adapter，不因指令觸發字改選別的領域"
+     },
+     {
+      "id": "decompose-r4-v2",
+      "reason": "任務領域（plan）已有符合的 adapter，不因指令觸發字改選別的領域"
+     },
+     {
+      "id": "colu-r4",
+      "reason": "任務領域（plan）已有符合的 adapter，不因指令觸發字改選別的領域"
+     }
+    ],
+    "action": "switch",
+    "reason": "「plan」→ plan-r4"
+   },
+   "switch": {
+    "ms": 658,
+    "applied": true,
+    "applyError": null,
+    "active": [
+     "plan-r4"
+    ],
+    "action": "switch",
+    "fallback": "lora"
+   },
+   "firstMs": 9061
+  }
+ ],
+ "notes": [],
+ "t0": 1794529892241,
+ "native": {
+  "runtime": {
+   "ok": true,
+   "version": "1.22.0-2",
+   "reason": "",
+   "protocolOk": true,
+   "modelReady": true,
+   "features": [
+    "lora"
+   ],
+   "legacy": false,
+   "latestVersion": "1.22.0-2"
+  },
+  "engine": "native",
+  "lora": {
+   "active": null,
+   "adapters": [],
+   "supported": true,
+   "runtimeVersion": "1.22.0-2",
+   "latestRuntimeVersion": "1.22.0-2",
+   "needsRuntimeUpdate": false
+  }
+ },
+ "slot0": {
+  "ok": true,
+  "phase": "idle",
+  "detail": "",
+  "done": 0,
+  "total": 0,
+  "error": null,
+  "standard": {
+   "model": "/tmp/fa-lora4-ud-C3wQDJ/native-models/qwen3-0.6b-q8/onnx/model_quantized.onnx",
+   "bytes": 617687575,
+   "tokenizer": true
+  },
+  "slot": null,
+  "missing": null,
+  "peakRssMB": null,
+  "ms": null
+ },
+ "slotPrepare": {
+  "ok": true,
+  "started": true
+ },
+ "slot": {
+  "ok": true,
+  "phase": "ready",
+  "detail": "完成",
+  "done": 2799,
+  "total": 2799,
+  "error": null,
+  "standard": {
+   "model": "/tmp/fa-lora4-ud-C3wQDJ/native-models/qwen3-0.6b-q8/onnx/model_quantized.onnx",
+   "bytes": 617687575,
+   "tokenizer": true
+  },
+  "slot": {
+   "model": "/tmp/fa-lora4-ud-C3wQDJ/native-lora/slot-model/ccf8734e59fdf7475b2dc0c117005e267a3a08342c1d951e0a79f0bce57bf62a/model_quantized.onnx",
+   "rank": 16,
+   "total_bytes": 40370176
+  },
+  "missing": null,
+  "peakRssMB": 108.359375,
+  "ms": 775
+ },
+ "slotMs": 1519,
+ "studioKeys": [
+  "FaStudioAsset",
+  "FaFatrain",
+  "FaStudioStorage",
+  "FaStudioTrainerAdapter",
+  "FaStudioLayout",
+  "FaLoraRegistry",
+  "FaLoraRoute",
+  "FaLoraApply",
+  "FaOnnxPatch",
+  "FaLoraMerge",
+  "FaLoraWeb",
+  "FaStudioIngest",
+  "FaStudioHowto",
+  "FaStudioClean",
+  "FaStudioBuiltin",
+  "FaStudioEval",
+  "FaStudioSym",
+  "FaStudioSymTrain",
+  "FaStudioTeacher",
+  "FaStudioSourceInput",
+  "FaStudioPipeline",
+  "FaStudioLive",
+  "FaStudioAdvice",
+  "FaStudioLoraManage",
+  "FaStudioPipelineRoutes",
+  "FaStudioPipelineView",
+  "FaStudioLlmExport",
+  "FaLlmWeb",
+  "FaStudioDatasetEdit",
+  "FaStudioExpr",
+  "FaStudioDomainSpec",
+  "FaStudioDomainEval",
+  "FaStudioDomainDemo",
+  "FaStudioDomainApi",
+  "FaStudioServer"
+ ],
+ "storeLoras": [
+  "colu-r4",
+  "decompose-r4-v2",
+  "plan-r4",
+  "toolcall-r4"
+ ],
+ "registry0": {
+  "maxActive": 4,
+  "budget": 268435456,
+  "applyBlocker": "",
+  "invalid": [],
+  "dataOnly": [],
+  "entries": [
+   {
+    "id": "colu-r4",
+    "rank": 4,
+    "size": 40370176,
+    "domains": [
+     "colu"
+    ],
+    "enabled": true,
+    "verdict": {
+     "known": true,
+     "lose": [],
+     "win": [
+      "blockly_matrix/block_micro_select",
+      "colu/colu_letter_choice",
+      "colu/colu_letter_choice_nonefirst",
+      "heldout/blockly_matrix",
+      "heldout/colu"
+     ],
+     "score": 5
+    },
+    "compat": {
+     "ok": true,
+     "level": "ok",
+     "reasons": [],
+     "warnings": []
+    }
+   },
+   {
+    "id": "decompose-r4-v2",
+    "rank": 4,
+    "size": 40370176,
+    "domains": [
+     "decompose"
+    ],
+    "enabled": true,
+    "verdict": {
+     "known": true,
+     "lose": [],
+     "win": [
+      "fn_template/code_split",
+      "fn_template/code_write_fn",
+      "group/uml/edit_real",
+      "group/uml/edit_shuf",
+      "heldout/fn_template",
+      "heldout/think_stack",
+      "seen/unseen/edit_real",
+      "seen/unseen/edit_shuf",
+      "think_stack/review_return",
+      "think_stack/self_validate",
+      "uml/edit_real",
+      "uml/edit_shuf"
+     ],
+     "score": 12
+    },
+    "compat": {
+     "ok": true,
+     "level": "ok",
+     "reasons": [],
+     "warnings": []
+    }
+   },
+   {
+    "id": "plan-r4",
+    "rank": 4,
+    "size": 40370176,
+    "domains": [
+     "plan"
+    ],
+    "enabled": true,
+    "verdict": {
+     "known": true,
+     "lose": [],
+     "win": [
+      "heldout/think_stack",
+      "think_stack/plan_check",
+      "think_stack/review_return",
+      "think_stack/self_validate"
+     ],
+     "score": 4
+    },
+    "compat": {
+     "ok": true,
+     "level": "ok",
+     "reasons": [],
+     "warnings": []
+    }
+   },
+   {
+    "id": "toolcall-r4",
+    "rank": 4,
+    "size": 40370176,
+    "domains": [
+     "toolcall"
+    ],
+    "enabled": true,
+    "verdict": {
+     "known": true,
+     "lose": [],
+     "win": [
+      "agent/call_ref",
+      "agent/use",
+      "group/agent/call_ref",
+      "group/agent/use",
+      "group/apply",
+      "group/begin",
+      "group/browser",
+      "group/catalog",
+      "group/coding",
+      "group/computer",
+      "group/convert",
+      "group/design",
+      "group/doc",
+      "group/docgen",
+      "group/edit",
+      "group/emoji",
+      "group/explain",
+      "group/extract",
+      "group/fap",
+      "group/finish",
+      "group/get",
+      "group/git",
+      "group/knowledge",
+      "group/language",
+      "group/list",
+      "group/log",
+      "group/lookup",
+      "group/matrix",
+      "group/mcp",
+      "group/midi",
+      "group/mix",
+      "group/parse",
+      "group/pptx",
+      "group/sandbox",
+      "group/sheet",
+      "group/terminal",
+      "group/text",
+      "group/toolwire/wiring",
+      "group/uml",
+      "group/video",
+      "group/worksheet",
+      "group/write",
+      "group/writer/answer",
+      "group/writer/copycode",
+      "group/writer/unsure",
+      "heldout/tool_routing",
+      "natural/call",
+      "pos/choose_tool_full/1",
+      "pos/choose_tool_full/2",
+      "pos/choose_tool_full/3",
+      "pos/choose_tool_full/4",
+      "rtool/ask",
+      "rtool/call",
+      "rtool/missing",
+      "seen/seen/call",
+      "seen/unseen/answer",
+      "seen/unseen/ask",
+      "seen/unseen/call",
+      "seen/unseen/call_ref",
+      "seen/unseen/copycode",
+      "seen/unseen/missing",
+      "seen/unseen/unsure",
+      "seen/unseen/use",
+      "seen/unseen/wiring",
+      "tool_routing/choose_tool_full",
+      "toolwire/wiring",
+      "writer/answer",
+      "writer/copycode",
+      "writer/unsure"
+     ],
+     "score": 69
+    },
+    "compat": {
+     "ok": true,
+     "level": "ok",
+     "reasons": [],
+     "warnings": []
+    }
+   }
+  ]
+ },
+ "registry1": [
+  {
+   "id": "colu-r4",
+   "enabled": true,
+   "verdict": {
+    "known": true,
+    "lose": [],
+    "win": [
+     "blockly_matrix/block_micro_select",
+     "colu/colu_letter_choice",
+     "colu/colu_letter_choice_nonefirst",
+     "heldout/blockly_matrix",
+     "heldout/colu"
+    ],
+    "score": 5
+   },
+   "compat": {
+    "ok": true,
+    "level": "ok",
+    "reasons": [],
+    "warnings": []
+   }
+  },
+  {
+   "id": "decompose-r4-v2",
+   "enabled": true,
+   "verdict": {
+    "known": true,
+    "lose": [],
+    "win": [
+     "fn_template/code_split",
+     "fn_template/code_write_fn",
+     "group/uml/edit_real",
+     "group/uml/edit_shuf",
+     "heldout/fn_template",
+     "heldout/think_stack",
+     "seen/unseen/edit_real",
+     "seen/unseen/edit_shuf",
+     "think_stack/review_return",
+     "think_stack/self_validate",
+     "uml/edit_real",
+     "uml/edit_shuf"
+    ],
+    "score": 12
+   },
+   "compat": {
+    "ok": true,
+    "level": "ok",
+    "reasons": [],
+    "warnings": []
+   }
+  },
+  {
+   "id": "plan-r4",
+   "enabled": true,
+   "verdict": {
+    "known": true,
+    "lose": [],
+    "win": [
+     "heldout/think_stack",
+     "think_stack/plan_check",
+     "think_stack/review_return",
+     "think_stack/self_validate"
+    ],
+    "score": 4
+   },
+   "compat": {
+    "ok": true,
+    "level": "ok",
+    "reasons": [],
+    "warnings": []
+   }
+  },
+  {
+   "id": "toolcall-r4",
+   "enabled": true,
+   "verdict": {
+    "known": true,
+    "lose": [],
+    "win": [
+     "agent/call_ref",
+     "agent/use",
+     "group/agent/call_ref",
+     "group/agent/use",
+     "group/apply",
+     "group/begin",
+     "group/browser",
+     "group/catalog",
+     "group/coding",
+     "group/computer",
+     "group/convert",
+     "group/design",
+     "group/doc",
+     "group/docgen",
+     "group/edit",
+     "group/emoji",
+     "group/explain",
+     "group/extract",
+     "group/fap",
+     "group/finish",
+     "group/get",
+     "group/git",
+     "group/knowledge",
+     "group/language",
+     "group/list",
+     "group/log",
+     "group/lookup",
+     "group/matrix",
+     "group/mcp",
+     "group/midi",
+     "group/mix",
+     "group/parse",
+     "group/pptx",
+     "group/sandbox",
+     "group/sheet",
+     "group/terminal",
+     "group/text",
+     "group/toolwire/wiring",
+     "group/uml",
+     "group/video",
+     "group/worksheet",
+     "group/write",
+     "group/writer/answer",
+     "group/writer/copycode",
+     "group/writer/unsure",
+     "heldout/tool_routing",
+     "natural/call",
+     "pos/choose_tool_full/1",
+     "pos/choose_tool_full/2",
+     "pos/choose_tool_full/3",
+     "pos/choose_tool_full/4",
+     "rtool/ask",
+     "rtool/call",
+     "rtool/missing",
+     "seen/seen/call",
+     "seen/unseen/answer",
+     "seen/unseen/ask",
+     "seen/unseen/call",
+     "seen/unseen/call_ref",
+     "seen/unseen/copycode",
+     "seen/unseen/missing",
+     "seen/unseen/unsure",
+     "seen/unseen/use",
+     "seen/unseen/wiring",
+     "tool_routing/choose_tool_full",
+     "toolwire/wiring",
+     "writer/answer",
+     "writer/copycode",
+     "writer/unsure"
+    ],
+    "score": 69
+   },
+   "compat": {
+    "ok": true,
+    "level": "ok",
+    "reasons": [],
+    "warnings": []
+   }
+  }
+ ],
+ "nativeLoraBase": {
+  "ok": true,
+  "active": null,
+  "adapters": [],
+  "supported": true,
+  "runtimeVersion": "1.22.0-2",
+  "latestRuntimeVersion": "1.22.0-2",
+  "needsRuntimeUpdate": false
+ },
+ "all4": {
+  "active": [
+   "toolcall-r4",
+   "decompose-r4-v2",
+   "colu-r4",
+   "plan-r4"
+  ],
+  "applied": true,
+  "applyNote": "已套用到原生推論：4 個 adapter（rank 串接成一個，共用 16／16）；之後的原生生成都會帶它（第一次生成會重建 session）",
+  "applyItems": [
+   {
+    "id": "toolcall-r4",
+    "applied": true,
+    "rank": 4,
+    "offset": 0,
+    "weight": 1,
+    "message": "已併入（rank 0–3，權重 1）"
+   },
+   {
+    "id": "decompose-r4-v2",
+    "applied": true,
+    "rank": 4,
+    "offset": 4,
+    "weight": 1,
+    "message": "已併入（rank 4–7，權重 1）"
+   },
+   {
+    "id": "colu-r4",
+    "applied": true,
+    "rank": 4,
+    "offset": 8,
+    "weight": 1,
+    "message": "已併入（rank 8–11，權重 1）"
+   },
+   {
+    "id": "plan-r4",
+    "applied": true,
+    "rank": 4,
+    "offset": 12,
+    "weight": 1,
+    "message": "已併入（rank 12–15，權重 1）"
+   }
+  ],
+  "skipped": [],
+  "ms": 5672,
+  "http": 200,
+  "nativeLora": {
+   "id": "merged-141a8f40f336",
+   "size": 40370176,
+   "sha256": "141a8f40f3362e1567ca933b0b81ee19bbe5aaa34e5425190ddc29a9872b1280"
+  }
+ },
+ "statusFinal": {
+  "budget": 268435456,
+  "slots": [
+   {
+    "id": "plan-r4",
+    "name": "plan-r4",
+    "version": "1.0.0",
+    "rank": 4,
+    "size": 40370176,
+    "loaded": true,
+    "pinned": false,
+    "inUse": 0,
+    "lastUsed": 1794530060613007
+   },
+   {
+    "id": "colu-r4",
+    "name": "colu-r4",
+    "version": "1.0.0",
+    "rank": 4,
+    "size": 40370176,
+    "loaded": true,
+    "pinned": false,
+    "inUse": 0,
+    "lastUsed": 1794530060613006
+   },
+   {
+    "id": "decompose-r4-v2",
+    "name": "decompose-r4-v2",
+    "version": "1.0.0",
+    "rank": 4,
+    "size": 40370176,
+    "loaded": true,
+    "pinned": false,
+    "inUse": 0,
+    "lastUsed": 1794530060613005
+   },
+   {
+    "id": "toolcall-r4",
+    "name": "toolcall-r4",
+    "version": "1.0.0",
+    "rank": 4,
+    "size": 40370176,
+    "loaded": true,
+    "pinned": false,
+    "inUse": 0,
+    "lastUsed": 1794530060613004
+   }
+  ],
+  "native": {
+   "ok": true,
+   "active": {
+    "id": "merged-141a8f40f336",
+    "size": 40370176,
+    "sha256": "141a8f40f3362e1567ca933b0b81ee19bbe5aaa34e5425190ddc29a9872b1280"
+   },
+   "adapters": [
+    {
+     "id": "toolcall-r4-743daa3b",
+     "rank": 4,
+     "weight": 1
+    },
+    {
+     "id": "decompose-r4-v2-d850938d",
+     "rank": 4,
+     "weight": 1
+    },
+    {
+     "id": "colu-r4-aeefc628",
+     "rank": 4,
+     "weight": 1
+    },
+    {
+     "id": "plan-r4-e5cb0310",
+     "rank": 4,
+     "weight": 1
+    }
+   ],
+   "supported": true,
+   "runtimeVersion": "1.22.0-2",
+   "latestRuntimeVersion": "1.22.0-2",
+   "needsRuntimeUpdate": false
+  }
+ },
+ "summary": {
+  "base/decompose": {
+   "n": 3,
+   "fmt": 0,
+   "match": 0,
+   "native": 3,
+   "medianMs": 8151
+  },
+  "base/toolcall": {
+   "n": 3,
+   "fmt": 3,
+   "match": 0,
+   "native": 3,
+   "medianMs": 6470
+  },
+  "base/colu": {
+   "n": 3,
+   "fmt": 1,
+   "match": 1,
+   "native": 3,
+   "medianMs": 623
+  },
+  "base/plan": {
+   "n": 3,
+   "fmt": 2,
+   "match": 0,
+   "native": 3,
+   "medianMs": 5215
+  },
+  "auto-route/decompose": {
+   "n": 3,
+   "fmt": 2,
+   "match": 2,
+   "native": 3,
+   "medianMs": 10010
+  },
+  "auto-route/toolcall": {
+   "n": 3,
+   "fmt": 3,
+   "match": 2,
+   "native": 3,
+   "medianMs": 6323
+  },
+  "auto-route/colu": {
+   "n": 3,
+   "fmt": 3,
+   "match": 1,
+   "native": 3,
+   "medianMs": 651
+  },
+  "auto-route/plan": {
+   "n": 3,
+   "fmt": 3,
+   "match": 1,
+   "native": 3,
+   "medianMs": 5669
+  },
+  "all4/decompose": {
+   "n": 3,
+   "fmt": 0,
+   "match": 0,
+   "native": 3,
+   "medianMs": 29459
+  },
+  "all4/toolcall": {
+   "n": 3,
+   "fmt": 0,
+   "match": 0,
+   "native": 3,
+   "medianMs": 5561
+  },
+  "all4/colu": {
+   "n": 3,
+   "fmt": 0,
+   "match": 0,
+   "native": 3,
+   "medianMs": 1095
+  },
+  "all4/plan": {
+   "n": 3,
+   "fmt": 1,
+   "match": 0,
+   "native": 3,
+   "medianMs": 2301
+  }
+ },
+ "pass": true,
+ "totalMs": 292929
+}

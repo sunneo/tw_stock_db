@@ -1,0 +1,31 @@
+{
+ "name": "規劃檢查（plan-r4）",
+ "intro": "判斷計畫（plan_check）是否有效、審查退回（review_return）、以及自我驗證（self_validate）。",
+ "capabilities": [
+  {
+   "id": "cap1",
+   "label": "plan_check 封閉題"
+  },
+  {
+   "id": "cap2",
+   "label": "review_return 項目"
+  },
+  {
+   "id": "cap3",
+   "label": "self_validate 判 ok／缺漏"
+  }
+ ],
+ "known_limits": [
+  "plan_check 的內容品質仍差（格式對、內容錯）",
+  "與 decompose-r4-v2 的 think_stack 資料同源，兩者不要同時啟用"
+ ],
+ "sources": "lora-train/gen/gen_think_stack.js（855 列，think_stack 全部）",
+ "training": {
+  "rank": 4,
+  "alpha": 8,
+  "lr": 0.0002,
+  "epochs": 1,
+  "seq": 768,
+  "batch": "1 × 累積 8"
+ }
+}

@@ -1,0 +1,113 @@
+[eval] rows=360 (LORA_EVAL_EVERY=1, limit=0; identical rows for base and tuned)
+Loading weights:   0%|          | 0/311 [00:00<?, ?it/s]Loading weights:   0%|          | 1/311 [00:00<04:12,  1.23it/s]Loading weights:  44%|████▍     | 137/311 [00:00<00:00, 200.80it/s]Loading weights:  68%|██████▊   | 211/311 [00:01<00:00, 238.60it/s]Loading weights:  86%|████████▌ | 266/311 [00:01<00:00, 251.83it/s]Loading weights: 100%|██████████| 311/311 [00:01<00:00, 272.32it/s]Loading weights: 100%|██████████| 311/311 [00:01<00:00, 209.92it/s]
+[eval] 8/360
+[eval] 16/360
+[eval] 24/360
+[eval] 32/360
+[eval] 40/360
+[eval] 48/360
+[eval] 56/360
+[eval] 64/360
+[eval] 72/360
+[eval] 80/360
+[eval] 88/360
+[eval] 96/360
+[eval] 104/360
+[eval] 112/360
+[eval] 120/360
+[eval] 128/360
+[eval] 136/360
+[eval] 144/360
+[eval] 152/360
+[eval] 160/360
+[eval] 168/360
+[eval] 176/360
+[eval] 184/360
+[eval] 192/360
+[eval] 200/360
+[eval] 208/360
+[eval] 216/360
+[eval] 224/360
+[eval] 232/360
+[eval] 240/360
+[eval] 248/360
+[eval] 256/360
+[eval] 264/360
+[eval] 272/360
+[eval] 280/360
+[eval] 288/360
+[eval] 296/360
+[eval] 304/360
+[eval] 312/360
+[eval] 320/360
+[eval] 328/360
+[eval] 336/360
+[eval] 344/360
+[eval] 352/360
+[eval] 360/360
+[eval] 8/360
+[eval] 16/360
+[eval] 24/360
+[eval] 32/360
+[eval] 40/360
+[eval] 48/360
+[eval] 56/360
+[eval] 64/360
+[eval] 72/360
+[eval] 80/360
+[eval] 88/360
+[eval] 96/360
+[eval] 104/360
+[eval] 112/360
+[eval] 120/360
+[eval] 128/360
+[eval] 136/360
+[eval] 144/360
+[eval] 152/360
+[eval] 160/360
+[eval] 168/360
+[eval] 176/360
+[eval] 184/360
+[eval] 192/360
+[eval] 200/360
+[eval] 208/360
+[eval] 216/360
+[eval] 224/360
+[eval] 232/360
+[eval] 240/360
+[eval] 248/360
+[eval] 256/360
+[eval] 264/360
+[eval] 272/360
+[eval] 280/360
+[eval] 288/360
+[eval] 296/360
+[eval] 304/360
+[eval] 312/360
+[eval] 320/360
+[eval] 328/360
+[eval] 336/360
+[eval] 344/360
+[eval] 352/360
+[eval] 360/360
+group	n	base	tuned	flag
+fn_template/code_split	60	0/60	23/60	
+fn_template/code_write_fn	60	0/60	8/60	
+group/uml/edit_real	30	18/30	30/30	
+group/uml/edit_shuf	30	16/30	30/30	
+heldout/fn_template	120	0/120	31/120	
+heldout/think_stack	180	0/180	36/180	
+seen/unseen/edit_real	30	18/30	30/30	
+seen/unseen/edit_shuf	30	16/30	30/30	
+think_stack/plan_check	60	0/60	0/60	
+think_stack/review_return	60	0/60	15/60	
+think_stack/self_validate	60	0/60	21/60	
+uml/edit_real	30	18/30	30/30	
+uml/edit_shuf	30	16/30	30/30	
+TOTAL base 34/360  tuned 127/360
+
+=== ship gate (rule: SHIP only if no group regresses AND target groups clearly win) ===
+[PASS] no group regresses vs base
+[FAIL] every target group wins by >= 10% and >= 2 rows (targets=7) -> not clearly winning: ['think_stack/plan_check']
+Notes: 'clearly win' = +10% and >=2 rows is a heuristic, not a significance test; groups with n<5 are noisy; rule grading != real user experience; not verified on the q8/ONNX runtime.
+VERDICT: DO NOT SHIP

@@ -1,0 +1,1 @@
+{'train_runtime': '4530', 'train_samples_per_second': '0.287', 'train_steps_per_second': '0.036', 'train_loss': '0.3736', 'epoch': '1'}

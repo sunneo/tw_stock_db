@@ -1074,3 +1074,148 @@ model card 欄位以 `description`（一句話，來自描述檔，§13.2）與 
 
 - 本次只改 `desktop-app/DESIGN.lora-training.md`（新增本節）。沒有改程式、沒有改 `renderer/src/floating-assistant.js`，因此**不需要重新嵌入**。
 - 沒有 embed、build、推送或發布。
+
+## 27.8 從零重建四顆 adapter 與執行包 1.22.0-2，並在產品視窗驗證（2026-11-13，分支 claude/assets-rebuild）
+
+**結論（先講）**：四顆 `.fatrain` 與執行包 1.22.0-2 都從零重新產生，全部讀回驗證通過；產品視窗（xvfb 下的真 Electron 44.4.0）驗證過：路由自動選到四顆（含 colu、plan）、原生套用、四顆同時套用的退化、預設裝置設定下全部走原生。**沒有驗證過**：工具呼叫走產品的真 tools 參數路徑（§27.6 第 4 項）、真實使用者的生成品質、四顆同時啟用的正確做法。評量判準是 `eval_run.py` 的規則評分，不是 §17～§24 的 `score_gen.js` 指標，數字不能跟前面幾節直接比。
+
+### 27.8.1 來源與下載（使用者已同意；全部放在 `/home/hungfu.lee/fa-work/`，不在專案樹內）
+
+| 項目 | 來源 | 實際大小（bytes） |
+|---|---|---|
+| 基底模型 `models/Qwen3-0.6B/model.safetensors` | Hugging Face `Qwen/Qwen3-0.6B`（`huggingface_hub.snapshot_download`，10 個檔） | 1,503,300,328（整個資料夾約 1.5 GB） |
+| 標準版 q8 `onnx-q8/onnx/model_quantized.onnx` | Hugging Face `onnx-community/Qwen3-0.6B-ONNX` | 617,687,575（與 §27.1 的紀錄完全相同） |
+| 標準版 tokenizer `onnx-q8/tokenizer.json` | 同上 | 9,117,040（與本機舊檔相同大小） |
+| Python 套件 | PyPI：torch（CPU 版，`download.pytorch.org/whl/cpu`）、`requirements.txt`（transformers、peft、accelerate、datasets、safetensors、sentencepiece）、onnx、numpy | 虛擬環境 `/home/hungfu.lee/fa-work/venv`（Python 3.13.18，torch 2.15.0+cpu、transformers 5.22.2、peft 0.21.2、onnx 1.23.2） |
+| onnxruntime-node 1.22.0 | npm，`--ignore-scripts` 安裝（安裝腳本會嘗試下載 GPU 版 nupkg，沒有執行）；linux x64 的 `libonnxruntime.so.1` 已內含於套件 | `/home/hungfu.lee/fa-work/ort122/node_modules/onnxruntime-node` |
+
+沒有用到本機舊的 `~/fa`、舊的 `native-runtime/1.22.0-1`、舊的 `fa-adapters-int`。`lora-train/.venv`、`lora-train/models` 是指向上表 `fa-work` 的符號連結（不進 git），`desktop-app/node_modules` 是指向主倉庫 `node_modules` 的符號連結（不進 git，供 Electron 使用）。
+
+### 27.8.2 資料集（`gen/merge_dataset.js` 重建，`make_eval_subsets.py` 切評量子集）
+
+- 合併：`data/train.jsonl` 4,746 列、`data/heldout.jsonl` 3,043 列，總共 7,789 列；重複 id 0 列。
+- 四顆的訓練檔由既有的 `split_multi.py` 切出，**列數與 §17～§19 完全相同**：decompose 677（uml_design 396＋fn_template 281）、toolcall 1,301、colu 657、plan 855。
+- **decompose-r4-v2**：`build_decompose_v2.py` 組出 **1,137 列**（v1 677 ＋ self_validate 正例 195 ＋ review_return 265）。§17.2 的紀錄是 1,133 列（正例 191）；目前的產生器多出 4 列正例，**這是與 §17.2 的差異，未追查原因**，訓練與評量都用這次的 1,137 列。
+- 評量子集（`data/eval_<名稱>.jsonl`，依 id 均勻抽樣，基底與微調用同一批）：decompose 360 列、toolcall 412 列、plan 180 列、colu 162 列。留出集與訓練集不重疊（`merge_dataset.js` 強制分開）。
+
+### 27.8.3 訓練（`rebuild_r4.sh`；rank 4、alpha 8、學習率 2e-4、1 輪、序列 768、批次 1 × 累積 8、val 0、每 10 步存檢查點，7 個投影）
+
+- 資源：`nice -n 19`；08:00 以前 4 個執行緒，08:00 以後 12 個（控制器會在時段改變時建立 STOP 檔、存檢查點、以新執行緒數續訓）。**本次四顆都沒有觸發續訓**（每顆 `seg-1.log` 一段跑完），機器負載在 20～50 之間，訓練速度 25～75 秒／步。
+
+| adapter | 列數 | 步數 | 訓練時間（秒） | train_loss | 起訖（2026-11-13） |
+|---|---|---|---|---|---|
+| decompose-r4-v2 | 1,137 | 143 | 5,487 | 0.3182 | 01:17 → 02:49 |
+| toolcall-r4 | 1,301 | 163 | 4,530 | 0.3736 | 02:49 → 04:05 |
+| plan-r4 | 855 | 107 | 6,317 | 0.2355 | 04:05 → 05:51 |
+| colu-r4 | 657 | 83 | 1,030 | 0.4124 | 05:51 → 06:09 |
+
+PEFT 輸出在 `lora-train/out/multi/<名稱>/`（gitignored），每顆的訓練記錄摘要在 `lora-train/results/r4/train-*.txt`。
+
+### 27.8.4 評量（`eval_run.py`，貪婪解碼，基底與微調同一批；`eval_r4.sh`）
+
+判準是 `eval_run.py` 的規則評分（generic：與標準答案完全相同，`<tool_call>` 比名稱與參數，字母比字母）。**注意**：這套判準比 §17～§19 的 `valid`、`names` 等指標嚴格，所以基底數字（例如 plan_check 0/60）與 §19 的 52/60 不能比較。目標組的定義是 `eval_run.py` 的預設（n≥5、基底<50%、不含 pos/*），與 §18.2 的「範圍內／範圍外」分欄不同，下面會分開寫。
+
+**decompose-r4-v2**（360 列；`results/r4/eval-decompose-r4-v2.log`）：總計 基底 34/360 → 微調 127/360，**沒有組別退步**。
+- 範圍內（拆題）：fn_template/code_split 0/60 → 23/60；fn_template/code_write_fn 0/60 → 8/60；uml edit_real 18/30 → 30/30；uml edit_shuf 16/30 → 30/30。
+- 範圍外（think_stack）：plan_check 0/60 → **0/60（沒有贏）**；review_return 0/60 → 15/60；self_validate 0/60 → 21/60。
+- `eval_run.py` 的判定：**DO NOT SHIP**，原因只有一條：plan_check 這個範圍外組沒有明顯勝出。decompose 本來就不應該處理 plan_check（§17.1 的適用範圍），所以這條判定是判準與適用範圍不一致造成的，不是 decompose 退步。**decompose-r4-v2 的上線與否，要以範圍內的組別為準，另行決定。**
+
+**toolcall-r4**（412 列；`results/r4/eval-toolcall-r4.log`）：總計 基底 170/412 → 微調 367/412；**沒有組別退步**；20 個目標組都明顯勝出（判定 SHIP-CANDIDATE）。
+- 缺工具要拒絕：rtool/missing 0/55 → 55/55（§18.1 的舊問題，這次明顯改善）。
+- 工具參數：rtool/call 9/60 → 40/60；natural/call 9/38 → 29/38；rtool/ask 2/25 → 23/25；heldout/tool_routing 6/61 → 52/61；agent call_ref 16/30 → 30/30。
+- 接線：group/toolwire/wiring 54/60 → 55/60（持平偏好）；seen/seen/wiring 29/31 → 29/31（持平）。
+- 注意：這一批的 group/git 只有 3 列（§24 的判準要求至少 20 列），**group/git 的結論不可靠**；本批不是 §24 的 `heldout_toolcall_v2.jsonl`，數字不能跟 §24 比。
+
+**plan-r4**（180 列；`results/r4/eval-plan-r4.log`）：總計 基底 0/180 → 微調 105/180；沒有組別退步；4 個目標組都勝出（SHIP-CANDIDATE）。plan_check 0/60 → 60/60；review_return 0/60 → 15/60；self_validate 0/60 → 30/60。注意 plan_check 的 60/60 是「與標準答案完全相同」，§19 的 `valid` 是合法 JSON 的 60/60，兩者不同。
+
+**colu-r4**（162 列；`results/r4/eval-colu-r4.log`）：總計 基底 11/162 → 微調 90/162；沒有組別退步；5 個目標組都勝出（SHIP-CANDIDATE）。colu_letter_choice 11/57 → 29/57；colu_letter_choice_nonefirst 0/57 → 27/57；blockly block_micro_select 0/48 → 34/48。
+
+評量的權重與判定只是規則，不是真實使用者體驗；每組的 n 最多 60，小組（n<20）只能看方向。評量結果已寫進描述檔的 `eval.groups`（`{adapter, base, n}`，見 `results/r4/eval-*.groups.json`）；**卡片的 `eval` 欄位（`split_legal_rate`、`fc_format_rate`）沒有填**，所以 model card 會顯示「沒有評量數字」的警告，這是刻意的（卡片只接受那兩個指標，我們沒有對應的量）。
+
+### 27.8.5 打包與讀回（`package_r4.sh`、`verify_fatrain.js`）
+
+流程：PEFT adapter → `make_lora_onnx.py pack`（槽版 layout 來自 `lora-slot-build.js` 的 `buildSlotModel`，與產品的 `slot_prepare` 同一個轉換器；alpha/r＝2.0 折進 B）→ `pack_adapter.js`（描述檔＋卡片）→ `scripts/build-lora-asset.js`（`.fatrain`）。
+
+| 資產 | 大小（bytes） | sha256（.fatrain 整檔） | lora.bin sha256 | 描述檔 eval 組數 |
+|---|---|---|---|---|
+| `/home/hungfu.lee/fa-work/assets/decompose-r4-v2.fatrain` | 40,376,412 | `b2b5e5a3434354b14333562c0d0dc4d1c585dab761b71d5f536e10cfaf8eddfb` | `d850938d1a4eccd827434b49788a02da1cbd8cd0a3edfb80566caa00034be44e` | 13 |
+| `/home/hungfu.lee/fa-work/assets/toolcall-r4.fatrain` | 40,385,797 | `95bb31a5bc31ed26f6240aa91983ea0b87bea8a5b0f7d3ff06d294113935e108` | `743daa3b776fd8b610be1705f5b321bf14b0c51a9dde4d4733b1cb64f70888a2` | 78 |
+| `/home/hungfu.lee/fa-work/assets/plan-r4.fatrain` | 40,374,692 | `3a80c191f2caaa6e6876bd9d77778b9aaf9925e521550146d06fc0a0e30c9e3d` | `e5cb031006205bc9e527be60c0c63fe621f5b2a4b528241e9397822c0c179fc4` | 4 |
+| `/home/hungfu.lee/fa-work/assets/colu-r4.fatrain` | 40,374,621 | `8c8485c73078f0be4f42e7c508b3057f3c61a73dcfb118ead3c9d367b020dc44` | `aeefc628e89cfc7ef8076d91978c54acd1bfc809f6ff90bc3a2e5f4a24d9ee65` | 5 |
+
+- 讀回（`node lora-train/verify_fatrain.js <檔…>`，用產品的 `fatrain_core.readAsset`）：四顆都通過（manifest kind＝lora、compat.base＝Qwen/Qwen3-0.6B、compat.rank＝16、`weights/lora.bin` 大小＝40,370,176、manifest 與描述檔的 sha256 與實際權重相符、描述檔規則、model card 規則）。model card 只有「沒有評量數字」的警告。
+- 每顆的 PEFT 權重檔（`adapter_model.safetensors`，10,143,496 bytes）與 `manifest.json`、分片都在 `lora-train/out/release/<名稱>/`（gitignored）。
+
+### 27.8.6 原生執行包 1.22.0-2（`scripts/native-runtime-pack.js`）
+
+- 位置：`/home/hungfu.lee/fa-work/native-runtime/1.22.0-2/`，**59 個檔案，30.0 MB（linux-x64）**；`manifest.json` 的 sha256 `0db5aec5152bb17a1272007dcd0559a4c63e1d5549f8c0aba9f5d6fbf7dc5213`。功能含 `lora`，`legacy` 為 false。
+- onnxruntime 來源：27.8.1 的 npm 1.22.0（不是本機舊檔）。nr-*.js 來自目前的 desktop-app。
+- 標準版 q8 與 tokenizer：放在 `/home/hungfu.lee/fa-work/userdata-src/native-models/qwen3-0.6b-q8/`（供產品視窗的隔離 userData 複製）。
+
+### 27.8.7 產品視窗驗證（`scripts/eval/lora_four_adapters.run.js`，xvfb，真 Electron 44.4.0，隔離 userData）
+
+指令（兩次都在 `desktop-app` 目錄執行，`PATH=/tmp/pyshim:$PATH`，`/tmp/pyshim/python` 只是指向 `/usr/bin/python3` 的符號連結）：
+
+```
+xvfb-run -a nice -n 19 node scripts/eval/lora_four_adapters.run.js --runtime=/home/hungfu.lee/fa-work/native-runtime/1.22.0-2 --assets=/home/hungfu.lee/fa-work/assets --src-userdata=/home/hungfu.lee/fa-work/userdata-src --minutes=45 --restore-slot=0 [--eval=<不設定 cpu 的副本>]
+```
+
+- **A（產品原樣；評估腳本設定 offlineDevicePreference＝cpu）**：`results/r4/product-run-restore0.json`，6 個檢查全部通過；`pass: true`；全部 36 列（12 題 × 基底、每輪路由、四顆同時）都走原生（`native: true`）。
+- **B（不改預設，offlineDevicePreference 保持產品預設 gpu；本機沒有 WebGPU）**：`results/r4/product-run-gpu-default.json`，6 個檢查全部通過；全部 36 列都走原生。這是 §27.6 第 2 項（沒有 WebGPU 時不應該略過原生）的實測：**預設設定下原生路徑有被使用**。
+
+**路由（§27.6 第 3 項）**：四題每一題的每輪路由都選到正確的 adapter：decompose→decompose-r4-v2、toolcall→toolcall-r4、colu→colu-r4、plan→plan-r4。colu 與 plan 都是自動選到（不需要手動載入），且 toolcall 因為領域已有符合者而被跳過（`skipped` 寫明原因）。這是 colu、plan 第一次在產品視窗內自動選用的紀錄。
+
+**套用與槽版（§27.4 第 1 項，`slot-model` 不被刪）**：四次切換（decompose、toolcall、colu、plan）與之後的生成全部 `native: true`，沒有 `load_failed` 退回 WASM；`slot-model` 在整段流程中都在。啟動器沒有使用 `--restore-slot=1`（那是繞過用的），所以這是產品原樣的結果。
+
+**逐題結果（A，每型 3 題；fmt＝格式正確、match＝與標準答案相同）**：
+
+| 組 | 格式 | 對 | 中位延遲 |
+|---|---|---|---|
+| base/decompose | 0/3 | 0/3 | 8.2 秒 |
+| auto-route/decompose | 2/3 | 2/3 | 10.0 秒 |
+| base/toolcall | 3/3 | 0/3 | 6.5 秒 |
+| auto-route/toolcall | 3/3 | 2/3 | 6.3 秒 |
+| base/colu | 1/3 | 1/3 | 0.6 秒 |
+| auto-route/colu | 3/3 | 1/3 | 0.65 秒 |
+| base/plan | 2/3 | 0/3 | 5.2 秒 |
+| auto-route/plan | 3/3 | 1/3 | 5.7 秒 |
+| all4（四顆同時）decompose／toolcall／colu／plan | 0／0／0／1（共 3 題） | 0／0／0／0 | 29.5／5.6／1.1／2.3 秒 |
+
+B 的數字與 A 幾乎相同（只有延遲差幾百毫秒，格式與對的題數相同）。
+
+**四顆同時套用（§27.3）**：仍然退化，與 §27.3 的結論相同——格式幾乎全部失敗、延遲變長。**不要把四顆同時啟用當成預設；維持每輪只開對應的一顆。**
+
+**本次沒有驗證的項目（誠實列出）**：
+1. §27.6 第 4 項（工具呼叫帶真的 tools 參數與預填走原生）：**沒有驗證**。這次的 toolcall 題目是把工具折進 messages 的 system 文字後直接送入，沒有經過產品的 `tools` 參數路徑；`nativeToolMessages` 與 `nativeWithPrefill` 在這次的執行中沒有被呼叫。
+2. 每題型只有 3 題，格式與對的比率只是方向性的證據，不是統計結論。
+3. 真實使用者的對話、真實工具呼叫的端到端效果、WebGPU 機器上的行為：沒有驗證。
+4. 網頁版路徑：沒有驗證。
+
+### 27.8.8 發現的問題（沒有修改產品程式）
+
+- **`train_multi.sh` 會把暫停後的部分訓練誤判為完成**：暫停時 `train_lora.py` 仍會把目前的權重存到 `output_dir` 根目錄（`adapter_model.safetensors`），而 `train_multi.sh` 用那個檔案判斷完成。本次的 `rebuild_r4.sh` 改用 log 的 `[paused]`／`[done]` 標記判斷，沒有修改 `train_multi.sh`（那一支仍有這個問題，要另行修正）。
+- 「每輪路由的觸發字」與 §27.4 第 3 項的問題（toolcall 的觸發字搶走 colu、plan）：這次的路由結果顯示，只要任務領域有符合者，觸發字搶先的情況已被擋下（`skipped` 有明確原因）。
+- 產品的 `KNOWN_EVAL`（`lora_registry_core.js`）裡 colu-r4、plan-r4 的數字是 §19 的舊版數字；這次的新版 descriptor 自帶 `eval.groups`，登錄表優先採用描述檔，所以 KNOWN_EVAL 對新版不影響。若要移除，需另外處理。
+
+### 27.8.9 接續點（下一次要做的事，依序）
+
+1. 決定 decompose-r4-v2 的上線：範圍內全部贏、範圍外 plan_check 沒有贏；建議在 decompose 的適用範圍內只量範圍內組，並在新的留出批次上依 §18.2 的預先登記判準再量一次。
+2. 修 `train_multi.sh` 的完成判定（改用 `[paused]`／`[done]`），或統一改用 `rebuild_r4.sh`。
+3. 工具呼叫的端到端驗證：讓產品路徑用 `tools` 參數走原生（§27.6 第 4 項），並在產品視窗量一次。
+4. 若要上線，需要把四顆的 `.fatrain` 放到 GitHub 的 `lora-adapters` 分支（這一步是發佈，需使用者另外同意；本次沒有推送、沒有發布）。
+
+### 27.8.10 重現（順序）
+
+```
+cd desktop-app/lora-train
+node gen/merge_dataset.js   # 產生 data/train.jsonl、data/heldout.jsonl
+.venv/bin/python split_multi.py && .venv/bin/python build_decompose_v2.py && .venv/bin/python make_eval_subsets.py
+bash rebuild_r4.sh           # 四顆訓練（可續跑）
+bash finish_r4.sh            # 評量＋打包（會等訓練完成）
+node verify_fatrain.js /home/hungfu.lee/fa-work/assets/*.fatrain
+cd .. && node scripts/native-runtime-pack.js /home/hungfu.lee/fa-work/native-runtime/1.22.0-2 --ort-src /home/hungfu.lee/fa-work/ort122
+```
+
+### 27.8.11 提交
+
+- 這次的提交只包含：`lora-train/` 的新腳本（`rebuild_r4.sh`、`finish_r4.sh`、`eval_r4.sh`、`package_r4.sh`、`build_decompose_v2.py`、`make_eval_subsets.py`、`verify_fatrain.js`）、`lora-train/cards/`、`lora-train/results/r4/`，以及本節。**沒有改動產品程式**（沒有重新嵌入，沒有 build、沒有推送、沒有發布）。
