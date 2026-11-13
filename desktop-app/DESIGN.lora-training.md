@@ -1166,3 +1166,136 @@ model card 欄位以 `description`（一句話，來自描述檔，§13.2）與 
 - 同一個面板的「登錄成 LLM 資產」→ `llm-onnx-2026-11-12T22-30-23-453Z`；「設為離線模型（桌面版）」→ `llm-model-choice.json` 已指向該資產（按鈕讀取的名稱欄位要與登錄名稱一致，否則會擋下）。
 - **未完成**：關掉產品再重開（要換成新的離線模型）與重啟後的生成。這一步在嘗試結束產品行程時被自動權限擋下，沒有繞過。
 - 另外：`fa:rawfs:readFile` 對 756 MB 檔案用文字解碼會丟 `ERR_STRING_TOO_LONG`（main-ext.js 已加 32 MB 門檻，改回 base64；**尚未實測**）。
+## 29. LoRA 缺口第三輪（總指揮接力，2026-11-13，分支 lora-train-eval）
+
+接力範圍：(1) 用原本那顆 adapter 重測原生推論；(2) runtime 與訓練端工具目錄雜湊相等性；(3) 三處閉包呼叫點改行為測試；(4) decompose_v2 評量與管理介面缺口。
+
+| # | 項目 | 狀態 | 結果 |
+|---|---|---|---|
+| 1 | 原生推論（原 adapter） | **部分** | 找到原 adapter：`keen-williamson-f167f3/desktop-app/lora-train/out/multi/toolcall/adapter_model.safetensors`（rank 4、alpha 8、10,143,496 位元組）。**§28 說它已不在磁碟上是錯的**，只有它的 release 目錄不見了。用同一套腳本量測：見 29.1。仍不是 10/96 的重現（原 10/96 的 HF 參考與題組設定已無法確認）。 |
+| 2 | 工具目錄雜湊相等 | **未相等（離線模擬）** | 見 29.2。這是 #9 的實質缺陷，不是量測不到。 |
+| 3 | 三處閉包呼叫點 | **完成** | `lora_route_wiring.test.js` 不再有原始碼標記：`_unitCatalogEvalStep`（colu、toolcall）、`_umlModel`（decompose 經真的 `_planModel`）、`_omToolBench`（toolcall）整個外層方法執行，檢查實際送進 `_llmGenerate` 的任務類型。30 項通過。 |
+| 4 | decompose_v2 評量與管理介面 | **部分** | 見 29.3。 |
+
+### 29.1 原 adapter（toolcall-r4，rank 4）的原生量測
+
+- 腳本：`lora-train/native_check/`（`hf_ref.py`、`pack_bench.py`、`native_run.js` 新增 `FA_ADAPTER`／`FA_TAG` 環境變數，預設行為不變）。`pack_bench.py` 以 layout.json 打包，`scale = alpha/r = 2.0`，392 個張量，lora.bin 40,370,176 位元組。
+- 同一題組（6 題 × 16 token = 96 位置）、onnxruntime-node 1.22.0、q8 基底與槽版圖同前。
+
+| 原生組 | 對 HF fp32＋toolcall adapter | 對 HF fp32 基底 |
+|---|---|---|
+| (a) q8 基底，無 adapter | 16/96 | 26/96 |
+| (b) 槽版圖，全零 lora.bin | 16/96（與 a 逐 token 相同） | 26/96 |
+| (c) 槽版圖，toolcall lora.bin | 22/96 | 14/96 |
+
+- 結果檔：`~/fa-work/native_check/native_results_toolcall.json`（不在版本庫）。
+- 能說的：零 adapter 的槽版圖與 q8 逐 token 相同；toolcall adapter 載入後與 HF＋adapter 的一致數高於與無 adapter 的 q8（22 > 16），但仍遠低於 96。
+- 不能說的：不能說原生與 fp32＋adapter 一致；q8 量化噪聲本身就把一致數拉低；未在 Electron 內跑。
+
+### 29.2 工具目錄雜湊：離線模擬的比對結果（未相等）
+
+`lora-train/tool_catalog_compare.js`：vm 執行 `floating-assistant.js` 的 `_registerBuiltinAiTools` 本體（工具替身 no-op，登記表真的），用 `lora_registry_core.toolCatalogShapeText` 算 shape-v1，與 `real_tools_all.json`（322 列）比。
+
+- app 登記名稱 214、訓練端 322；雜湊不相等。
+- 只在訓練端：114（例如 `computer_*`、`add_chapters`、`begin_presentation`，這些在別的登記路徑或條件式模組中登記）。
+- 只在 app：6（`get_tool_details`、`delegate_to_subagent`、`chat_*`，在建構子其他位置直接登記）。
+- 同名但形狀不同：1（`convert_code`，參數結構不同，待查）。
+- **含意**：#9 目前的實作把兩邊定義成不同的集合（訓練端＝全部靜態盤點；app＝建構子快照的內建名單）。一旦 adapter 寫入的是訓練端雜湊，app 每次都會回報「工具清單已變動」，是誤報。這不是單純的量測沒做，要修的是「雜湊涵蓋哪個集合」的合約。
+- 未解的限制：離線模擬沒有執行整個建構子；它也不含條件式模組。要得到真正的主程式值，需要 Electron 內呼叫 `toolCatalogSha256()`。
+- 待決定：合約採用哪一種（(a) 訓練端改成只算「建構子快照」那批名單，需要重新產出 adapter 的 env 資料；(b) app 改算完整靜態集合；(c) 只比名稱集合、不比形狀）。這會影響所有已打包 adapter 的相容性判定，所以沒有擅自改。
+
+### 29.3 decompose_v2 評量與管理介面
+
+- **評量**：`out/eval/decompose-r4-v2.json` 目前還沒有；另一個 session 的 `eval_run.py`（keen 工作樹，pid 1463607，06:09 起）正在跑 360 列，06:16 為 144/360。這台機器負載約 25，沒有再開第二個。它只量拆題組；範圍外（toolcall、colu、plan）退步仍未量，需要另外排程（每組 110～412 列，CPU 上很花時間）。
+- **管理介面（確認的缺口，已修）**：`lora_manage_core.js` 的 `DISCLOSURE_RE` 認不得 decompose-r4-v2 卡片的兩條實際限制（「範圍外…沒有保證」、「可能偏向判 ok」），所以卡片頂端的「卡片揭露」橫幅不會出現。§26.2 原本寫「decompose-r4-v2 會顯示」是錯的。已把「沒有保證」「偏向」「範圍外」加入，測試 49 項通過（新增兩條 decompose-r4-v2 的實際文字）。
+- **管理介面（待決定）**：登錄表的自動選用依 `split_legal_rate` 判 decompose-r4-v2 為「贏」，但 §17.2 已記錄它的 self_validate 負例全錯、整體偏向判 ok（實質行為偏差，§17.2 的決定是「v2 不取代 v1」，之後 §26 改為打包 v2，兩者不一致）。卡片會揭露，但自動選用不看揭露。要不要讓「有揭露的退步」擋住自動選用，是產品政策，沒有擅自改。
+
+### 29.4 測試與提交
+
+- 通過：`lora_route_wiring.test.js` 30、`lora_manage_core.test.js` 49。
+- 腳本未入測試：`native_check/*`、`tool_catalog_compare.js`（診斷用，手動執行）。
+- 沒有推送、沒有發布、沒有熱更新送達。
+
+### 29.5 工具雜湊缺陷的修正（shape-v2，指揮要求）
+
+- **原因**：§29.2 的不相等來自輸入不同——訓練端用全部靜態盤點（322），主程式用建構子登記的內建快照（214）。正規化函式本來就是同一個。
+- **修正**：
+  - 新的唯一輸入：`lora-train/data/app_snapshot_tools.json`（214 列，由 `lora-train/tool_snapshot.js --write` 從 floating-assistant.js 的 `_registerBuiltinAiTools` 產生）。
+  - 新的共用函式：`lora_registry_core.toolCatalogHash(tools, shaOfBytes)`。訓練端（`pack_adapter.js`，manifest 的 `trained_on.tool_catalog_sha256`）與主程式（`_toolCatalogSha256`）都呼叫它。
+  - 格式名稱由 `shape-v1` 改為 `shape-v2`（輸入定義變了，舊雜湊不能比）。沒有已打包的 shape-v1 adapter，舊格式的 adapter 仍會得到「舊格式」警告。
+- **測試**：`renderer/src/studio/tool_catalog_equal.test.js` 9 項通過，包括：快照檔與原始碼一致（漂移守門）、主程式的真方法本體與訓練端雜湊相等、少一個工具或改一個型別會變、說明文字不影響。另外 `lora_registry.test.js` 109、`studio_server_core.test.js` 138、`lora_manage_core.test.js` 49、`lora_route_wiring.test.js` 30、`build-lora-asset.test.js` 19 通過。pack_adapter 用假 adapter 試跑，記錄的雜湊與共用函式算出的相等。
+- **仍未證明**：快照是從原始碼以替身執行得到的。主程式執行期會依設定分支的登記，替身只走預設分支。真正的執行期值仍需 Electron 內呼叫 `toolCatalogSha256()` 才能確認；目前的相等是「同一份輸入、同一個函式」，不是「執行期實測相等」。
+
+## 30. decompose-r4-v2 評量結果與登錄缺口（2026-11-13）
+
+評量：`out/eval/decompose-r4-v2.json`（keen 工作樹，360 列，`eval_r4.sh decompose_v2`，07:11 完成）。這裡只記結果與判讀，沒有重新打包。
+
+| 組 | 基底 | 微調 | n | 判讀 |
+|---|---|---|---|---|
+| fn_template/code_split | 0 | 23 | 60 | 贏 |
+| fn_template/code_write_fn | 0 | 8 | 60 | 贏 |
+| heldout/fn_template | 0 | 31 | 120 | 贏 |
+| heldout/think_stack | 0 | 36 | 180 | 贏 |
+| uml/edit_real、seen/unseen/edit_real | 18 | 30 | 30 | 贏 |
+| uml/edit_shuf、seen/unseen/edit_shuf、group/uml/edit_* | 16 | 30 | 30 | 贏 |
+| think_stack/review_return | 0 | 15 | 60 | 贏 |
+| think_stack/self_validate | 0 | 21 | 60 | 贏（見下） |
+| think_stack/plan_check | 0 | 0 | 60 | 沒贏（不是退步） |
+
+- 沒有任何一組輸給基底（`regress: []`）。`eval_run.py` 的判準：所有目標組都要贏 ≥10% 且 ≥2 列；`plan_check` 沒過，判 **DO NOT SHIP**。
+- **self_validate 的「贏」是假的**：60 列裡 38 列的標準答案是 `ok:false`（`once` 題），微調全部答錯；贏的 21 列全是 `ok:true` 的乾淨題，微調只是一律答 `ok:true`。基底在這組是 0，所以任何「一律 ok:true」都會被算成贏。這就是 §17.2 記的「負例全錯、偏向判 ok」，在組級指標上被遮住了。
+- 登錄判斷：`evalVerdict` 讀的是 `{adapter, base, n}`（`package_r4.sh` 轉換的格式，已確認相符）。以這份 groups 計算，decompose-r4-v2 `known: true, lose: []` → **會被自動選用**。也就是說，目前的登錄規則不會擋住它。
+
+### 30.1 登錄與管理介面缺口
+
+1. **自動選用看不見負例**：組級「贏」不分正負例，遮住了上面的偏向。這不是格式問題，是指標定義：沒有任何欄位能讓 `evalVerdict` 知道負例錯了。
+2. **卡片揭露文字不準**：decompose-r4-v2 卡片寫「可能偏向判 ok」，但沒有寫出 0/38 的數字。這次 regex 已能標出，但數字本身還沒進卡片。
+3. **需要決定的政策**（沒有擅自改）：
+   - (a) 負例偏向的 adapter 不自動選用，只能手動指定，直到重訓（建議）。
+   - (b) 維持自動選用，只在卡片頂端揭露「負例 0/38」。
+   - (c) 評量時加入「負例通過率」分組，`evalVerdict` 看到負例 lose 就擋住。這要改評量腳本（keen 工作樹的 `eval_run.py`／`score_gen.js`），不在本分支。
+
+### 30.2 沒做的事
+
+- 沒有重新打包 decompose-r4-v2（它的 eval 會變成這份新結果）。
+- 沒有改 `eval_run.py`，沒有重訓。
+- plan_check 的 0/0 沒有分析原因。
+
+## 31. 評量把關：退化答案、無資料、登錄不自動選用（指揮決定，2026-11-13）
+
+依指揮決定：decompose-r4-v2 判 DO NOT SHIP，登錄時不自動選用（只能手動選，並在介面標示「評量未過」與原因）。
+
+- **極性**（`lora-train/eval_gate.py` `polarity_of`）：標準答案是 JSON 且有布林 `ok` 欄位時，`ok=false` 為負例、`ok=true` 為正例；其他題型不判。
+- **退化答案**：目標組有負例，而模型對負例全錯（`neg.tuned == 0`）→ 不算贏，列入 `degenerate`。只靠正例得分的「贏」是假的。
+- **無資料**：目標組基底與微調都是 0 → 列入 `no_data`，不算通過（也不當作失敗）。
+- **判定**：`aggregate()` 回傳 `ship`；只有沒有輸給基底、目標組清楚贏、沒有退化、沒有無資料時才為 True。`eval_run.py` 的報告與 JSON（`verdict` 欄）都用同一套。
+- **重算**：`eval_run.py --regate <既有 eval JSON> --eval_file <同一份 jsonl> --json_out <輸出>`，不跑模型，用既有 rows 的 `base_ok`／`tuned_ok` 重算組統計與判定（以 keen 工作樹的 decompose-r4-v2 實測）。
+- **登錄**（`lora_registry_core.js` `evalVerdict`／`withBlocked`）：`win` 不含退化與無資料組；`blocked` 列出輸給基底、退化、無資料、以及評量判定未過的目標組。`select()` 有 `blocked` 就不自動選用，原因寫成「評量未過，不自動選用（可手動指定）：…」。手動 `ids` 指定不受影響。讀取評量腳本原始格式（`tuned`）也能判定。
+- **管理介面**（`lora_manage_core.js`）：卡片頂端的「評量未過（不自動選用，可手動選）」橫幅列出每一項原因。
+- **打包**：`pack_adapter.js` 接受評量腳本的原始 JSON（`normEval` 把 `tuned` 轉成 `adapter`，保留 `neg`／`pos` 與 `verdict`）。
+
+### 31.1 decompose-r4-v2 重算結果（keen 工作樹，360 列）
+
+| 組 | 基底 | 微調 | 負例（微調/n） | 判讀 |
+|---|---|---|---|---|
+| think_stack/self_validate | 0/60 | 21/60 | 0/39 | **退化答案**（只靠 21 個 ok:true 的正例） |
+| heldout/think_stack | 0/180 | 36/180 | 0/39 | **退化答案** |
+| think_stack/plan_check | 0/60 | 0/60 | — | **無資料** |
+| 其餘 fn_template、uml、review_return 等 | — | — | — | 清楚贏 |
+
+- 判定：ship=false，`degenerate: [heldout/think_stack, think_stack/self_validate]`、`no_data: [think_stack/plan_check]`。
+- 登錄層：以這份重算結果計算 → `blocked` 為兩項原因，`select()` 不自動選用，手動指定仍可選（`lora_registry.test.js` 已驗）。
+
+### 31.2 測試
+
+- `lora-train/test_eval_gate.py` 14 項（極性、退化、負例有對、無資料、輸基底、未清楚贏、乾淨清楚贏、targets 不存在）。
+- `renderer/src/studio/lora_registry.test.js` 118 項（含退化、無資料、手動仍可選、評量腳本判定、原始格式）。
+- `renderer/src/studio/lora_manage_core.test.js` 52 項（評量未過的列與卡片橫幅）。
+- 另外通過：`studio_server_core` 138、`lora_route_wiring` 30、`tool_catalog_equal` 9、`build-lora-asset` 19、`studio_embed` 20。
+
+### 31.3 還沒生效的部分（要注意）
+
+- **已打包的 `decompose-r4-v2.fatrain` 還是舊評量**（內含舊的 `groups`，沒有 `neg`、`verdict`），登錄仍會判為「贏」而自動選用，直到重新打包。重新打包需要 keen 工作樹的 `package_r4.sh`（不在本分支）、`make_lora_onnx.py`（需要 onnx）與 `build-lora-asset.js`。這次沒有執行。
+- `eval_run.py` 的新判定只會在之後的評量與 `--regate` 時寫入 `verdict`；已有的 JSON 要用 `--regate` 重算。
+- 負例偵測只認 `ok` 布林欄位。其他有負例但格式不同的題型（例如缺工具拒絕）目前不會被判為退化，要另外擴充。
+- plan_check 0/0 的原因沒有分析（DESIGN §30.2）。

@@ -17,6 +17,9 @@ const BIN = path.join(OUT, 'bin');
 const Q8 = path.join(HOME, '.config/floating-assistant-desktop/native-models/qwen3-0.6b-q8/onnx/model_quantized.onnx');
 const SLOT = path.join(HOME, '.config/floating-assistant-desktop/native-lora/slot-model/ccf8734e59fdf7475b2dc0c117005e267a3a08342c1d951e0a79f0bce57bf62a/model_quantized.onnx');
 const LAYERS = 28, KV = 8, HD = 128, STEPS = 16;
+const TAG = process.env.FA_TAG || '';  // 與 hf_ref.py／pack_bench.py 的 FA_TAG 對應；空字串＝原本的 bench 組
+const BENCH = TAG ? 'lora_' + TAG + '.bin' : 'lora_bench.bin';
+const HFP = TAG ? 'hf_' + TAG + '_' : 'hf_';
 
 function variant(name, model, bin) {
     const d = path.join(OUT, 'run_' + name); fs.mkdirSync(d, { recursive: true });
@@ -49,15 +52,15 @@ const agree = (a, b) => { let n = 0; for (let i = 0; i < a.length; i++) if (a[i]
 
 (async () => {
     const ids = JSON.parse(fs.readFileSync(path.join(OUT, 'ids.json'), 'utf8')).rows;
-    const hf = JSON.parse(fs.readFileSync(path.join(OUT, 'hf_tokens.json'), 'utf8'));
-    const hfFirst = fs.readFileSync(path.join(OUT, 'hf_first_logits.bin'));
+    const hf = JSON.parse(fs.readFileSync(path.join(OUT, HFP + 'tokens.json'), 'utf8'));
+    const hfFirst = fs.readFileSync(path.join(OUT, HFP + 'first_logits.bin'));
     const V = hfFirst.length / 4 / ids.length;
     const hfLogits = (i) => new Float32Array(hfFirst.buffer.slice(hfFirst.byteOffset + i * V * 4, hfFirst.byteOffset + (i + 1) * V * 4));
-    const sizes = { q8: fs.statSync(Q8).size, slot: fs.statSync(SLOT).size, lora_zero: fs.statSync(path.join(BIN, 'lora_zero.bin')).size, lora_bench: fs.statSync(path.join(BIN, 'lora_bench.bin')).size };
+    const sizes = { q8: fs.statSync(Q8).size, slot: fs.statSync(SLOT).size, lora_zero: fs.statSync(path.join(BIN, 'lora_zero.bin')).size, lora_bench: fs.statSync(path.join(BIN, BENCH)).size };
     const models = {
         a_q8_base: variant('q8', Q8, null),
         b_slot_zero: variant('zero', SLOT, path.join(BIN, 'lora_zero.bin')),
-        c_slot_bench: variant('bench', SLOT, path.join(BIN, 'lora_bench.bin')),
+        c_slot_bench: variant('bench' + (TAG ? '_' + TAG : ''), SLOT, path.join(BIN, BENCH)),
     };
     const hfb = JSON.parse(fs.readFileSync(path.join(OUT, 'hf_base_tokens.json'), 'utf8'));
     const hfbFirst = fs.readFileSync(path.join(OUT, 'hf_base_first_logits.bin'));
@@ -89,6 +92,6 @@ const agree = (a, b) => { let n = 0; for (let i = 0; i < a.length; i++) if (a[i]
         vs_hf_adapter: { a_q8_base_no_adapter: totals.a, b_slot_zero: totals.b, c_slot_bench: totals.c },
         vs_hf_base: { a_q8_base: totals.ab, b_slot_zero: totals.bb, c_slot_bench: totals.cb },
     };
-    fs.writeFileSync(path.join(OUT, 'native_results.json'), JSON.stringify(res, null, 1));
+    fs.writeFileSync(path.join(OUT, TAG ? 'native_results_' + TAG + '.json' : 'native_results.json'), JSON.stringify(res, null, 1));
     console.log('TOTAL', JSON.stringify(res.totals), 'onnxruntime-node', res.onnxruntime_node);
 })().catch((e) => { console.error(e); process.exit(1); });

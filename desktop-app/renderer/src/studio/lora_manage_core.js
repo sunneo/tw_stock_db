@@ -103,6 +103,7 @@
                 source: r.source || '未標註', enabled: r.enabled !== false, compat: r.compat || 'ok', compatReasons: Array.isArray(r.compatReasons) ? r.compatReasons : [],
                 domains: Array.isArray(r.domains) ? r.domains : [], triggers: Array.isArray(r.triggers) ? r.triggers : [], description: r.description || '',
                 gate: r.gate && typeof r.gate === 'object' ? r.gate : null, evalWin: r.eval && Array.isArray(r.eval.win) ? r.eval.win : null, evalLose: r.eval && Array.isArray(r.eval.lose) ? r.eval.lose : null,
+                evalBlocked: r.eval && Array.isArray(r.eval.blocked) ? r.eval.blocked : null,
                 location: r.location || '', created: timeText(Number(r.added)), actions,
                 slotRank: r.slotRank != null ? r.slotRank : r.rank, compatWarnings: Array.isArray(r.compatWarnings) ? r.compatWarnings : [], limits: Array.isArray(r.limits) ? r.limits : [], evalMetrics: r.evalMetrics || null
             };
@@ -122,8 +123,11 @@
     }
 
     // 卡片揭露：已知限制裡提到退步、未量、沒有量、不可用於的，要在最上面標出來（不能藏在清單底下）
-    const DISCLOSURE_RE = /退步|未量|沒有量|沒有評量|不可用於|不能用於|不可以用於|不可用|不可以/;
+    // 「沒有保證」「偏向」「範圍外」是 decompose-r4-v2 等卡片的實際用語（範圍外沒量、負例偏少可能偏向判 ok），也要標出來
+    const DISCLOSURE_RE = /退步|未量|沒有量|沒有評量|沒有保證|偏向|範圍外|不可用於|不能用於|不可以用於|不可用|不可以/;
     function disclosuresOf(limits) { return (Array.isArray(limits) ? limits : []).filter((x) => DISCLOSURE_RE.test(String(x))); }
+    // 評量未過：登錄不會自動選用（只能手動選），原因列在卡片頂端
+    const evalBlockBanner = (bl) => (Array.isArray(bl) && bl.length ? '<div class="warn"><b>評量未過（不自動選用，可手動選）：</b><ul>' + bl.map((x) => '<li>' + esc(x) + '</li>').join('') + '</ul></div>' : '');
     const discBanner = (limits) => { const d = disclosuresOf(limits); return d.length ? '<div class="warn"><b>卡片揭露（' + d.length + ' 項）：</b><ul>' + d.map((x) => '<li>' + esc(x) + '</li>').join('') + '</ul></div>' : ''; };
 
     // 評量數字的一行文字（只用 card 的 split_legal_rate／fc_format_rate；沒有的寫無資料）
@@ -167,7 +171,7 @@
             + (r.compat === 'warn' && r.compatReasons.length ? '<div class="warn">相容性提醒：' + esc(r.compatReasons.join('；')) + '</div>' : '');
         const ev = r.evalMetrics ? evalLinesHTML(r.evalMetrics) : ((r.evalWin || r.evalLose) ? '<div>評量：贏 ' + esc((r.evalWin || []).join('、') || '無') + '；輸 ' + esc((r.evalLose || []).join('、') || '無') + '</div>' : '<div class="na">無資料（沒有評量結果）</div>');
         const lim = r.limits && r.limits.length ? '<h5>已知限制</h5><ul>' + r.limits.map((x) => '<li>' + esc(x) + '</li>').join('') + '</ul>' : '';
-        return '<div class="card"><div class="ttl">' + esc(r.name) + '</div>' + discBanner(r.limits) + '<div class="intro">' + esc(r.description || '無資料（沒有說明）') + '</div>' +
+        return '<div class="card"><div class="ttl">' + esc(r.name) + '</div>' + evalBlockBanner(r.evalBlocked) + discBanner(r.limits) + '<div class="intro">' + esc(r.description || '無資料（沒有說明）') + '</div>' +
             '<div class="kv">版本 ' + esc(r.version) + '・基底 ' + esc(r.base) + '・訓練秩 ' + esc(r.rank) + '・槽寬 ' + esc(r.slotRank) + '・' + esc(r.size) + '・來源 ' + esc(r.source) + (r.location ? '・位置 ' + esc(r.location) : '') + '</div>' +
             comp + '<h5>能力（適用領域）</h5><div>' + chips(r.domains) + '</div><h5>觸發字</h5><div>' + chips(r.triggers) + '</div><h5>評量</h5>' + ev + lim + '</div>';
     }

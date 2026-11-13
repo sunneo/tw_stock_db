@@ -25,10 +25,11 @@
     const SOURCE_RANK = { user: 2, imported: 1, builtin: 0 }; // DESIGN §7：使用者啟用的 > 內建
     const DEFAULT_BUDGET = 256 * 1024 * 1024;
     const HEX64 = /^[0-9a-f]{64}$/;
-    // 工具清單雜湊的格式 shape-v1：只取「工具名稱＋參數結構（名稱、型別、必填、enum）」，不取說明文字。
+    // 工具清單雜湊的格式 shape-v2：輸入＝「app 內建工具登記的快照」（_registerBuiltinAiTools 登記的名稱＋參數結構，見 lora-train/tool_snapshot.js），
+    // 只取「工具名稱＋參數結構（名稱、型別、必填、enum）」，不取說明文字。v1 的輸入是訓練端的全部盤點，兩邊集合不同，已淘汰。
     // 說明文字在主程式裡會依平台插值（${…}），執行時的文字與離線掃描（real_tools_all.json）不會逐字相同，拿來比對會永遠誤報。
     // 代價：只改說明、不改參數的變動偵測不到（DESIGN.lora-training.md §26.2）。沒有 tool_catalog_scheme 的舊雜湊是檔案位元組，無法比對。
-    const TOOL_HASH_SCHEME = 'shape-v1';
+    const TOOL_HASH_SCHEME = 'shape-v2';
     function toolShape(t) {
         const s = (t && (t.parameters || t.parametersSchema || t.schema)) || {};
         const props = s.properties && typeof s.properties === 'object' ? s.properties : {};
@@ -42,6 +43,11 @@
         const rows = (Array.isArray(tools) ? tools : []).filter((t) => t && t.name).map(toolShape);
         rows.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
         return JSON.stringify(rows);
+    }
+    // 同一份雜湊：訓練端（pack_adapter.js）與主程式（floating-assistant.js 的 _toolCatalogSha256）都呼叫這一個函式。
+    // shaOfBytes(Uint8Array) → hex（主程式傳 FaStudioAsset.sha256Hex，訓練端傳 node crypto）。
+    function toolCatalogHash(tools, shaOfBytes) {
+        return shaOfBytes(new TextEncoder().encode(toolCatalogShapeText(tools)));
     }
 
     function validateEntry(e) {
@@ -70,7 +76,7 @@
         const slotRank = entry.slot_rank != null ? entry.slot_rank : entry.rank;
         if (Array.isArray(env.rank_slots) && env.rank_slots.length && env.rank_slots.indexOf(slotRank) < 0) reasons.push({ field: 'rank', expected: env.rank_slots, actual: slotRank, message: 'LoRA 槽寬（rank 槽 ' + slotRank + '）與模型的槽版 ONNX（' + env.rank_slots.join('、') + '）不符，放不進去' });
         if (env.prompt_format_version !== undefined && String(entry.prompt_format_version) !== String(env.prompt_format_version)) reasons.push({ field: 'prompt_format_version', expected: env.prompt_format_version, actual: entry.prompt_format_version, message: '提示格式版本不同：主程式 ' + env.prompt_format_version + '，adapter ' + entry.prompt_format_version + '（格式一改一定要重訓）' });
-        // 工具清單：只有同格式（shape-v1）的雜湊才比得出來；舊格式、主程式算不出、adapter 沒記錄都要說出來，不靜默通過
+        // 工具清單：只有同格式（shape-v2）的雜湊才比得出來；舊格式、主程式算不出、adapter 沒記錄都要說出來，不靜默通過
         if (entry.tool_catalog_sha256 && env.tool_catalog_sha256) {
             if (entry.tool_catalog_scheme !== TOOL_HASH_SCHEME) warnings.push({ field: 'tool_catalog_sha256', message: '工具清單雜湊是舊格式，無法與現在的工具清單比對；用新版重新打包後才判斷得出' });
             else if (entry.tool_catalog_sha256 !== env.tool_catalog_sha256) warnings.push({ field: 'tool_catalog_sha256', message: '工具清單已變動，建議重訓或更新 adapter（仍可載入）' });
@@ -139,14 +145,44 @@
         'plan-r4': { groups: { plan_check_valid: { adapter: 60, base: 52 }, review_return_items: { adapter: 50, base: 0 }, self_validate_ok: { adapter: 47, base: 25 } }, source: 'DESIGN §19' },
     };
     function knownEval(e) { const k = KNOWN_EVAL[e.id] || KNOWN_EVAL[e.name]; return k ? JSON.parse(JSON.stringify(k)) : null; }
+    // 評量判定（給登錄與管理畫面）。回傳：
+    //   lose：任一組輸給基底；
+    //   degenerate：有負例（標準答案 ok=false，eval 組內 neg.n>0）而模型對負例全錯 → 退化答案，只靠正例得分，不算贏；
+    //   noData：base 與 tuned 都是 0 → 無資料，不算贏也不算輸；
+    //   win：清楚贏的組（不含退化與無資料）；
+    //   blocked：自動選用被擋下的人話原因（空＝可自動選用）。手動指定不受 blocked 影響。
+    // 評量腳本寫的判定 ev.verdict.ship === false 時，未贏的目標組也列入 blocked（退化與無資料已在上面各自列出）。
     function evalVerdict(ev) {
-        if (!ev || typeof ev !== 'object') return { known: false };
-        if (ev.metrics && typeof ev.metrics === 'object') return metricsVerdict(ev.metrics);
-        if (CARD_METRIC_KEYS.some((k) => k in ev)) return metricsVerdict(ev);
-        const g = ev.groups; if (!g || typeof g !== 'object') return { known: typeof ev.score === 'number', score: ev.score, lose: [] };
-        const names = Object.keys(g), lose = [], win = [];
-        for (const n of names) { const x = g[n]; if (!x || typeof x.adapter !== 'number' || typeof x.base !== 'number') continue; if (x.adapter < x.base) lose.push(n); else if (x.adapter > x.base) win.push(n); }
-        return { known: names.length > 0, lose, win, score: typeof ev.score === 'number' ? ev.score : win.length - lose.length };
+        if (!ev || typeof ev !== 'object') return { known: false, lose: [], win: [], degenerate: [], noData: [], blocked: [] };
+        if (ev.metrics && typeof ev.metrics === 'object') return withBlocked(metricsVerdict(ev.metrics));
+        if (CARD_METRIC_KEYS.some((k) => k in ev)) return withBlocked(metricsVerdict(ev));
+        const g = ev.groups; if (!g || typeof g !== 'object') return { known: typeof ev.score === 'number', score: ev.score, lose: [], win: [], degenerate: [], noData: [], blocked: [] };
+        const names = Object.keys(g), lose = [], win = [], degenerate = [], noData = [];
+        for (const n of names) {
+            const x = g[n]; if (!x || typeof x !== 'object') continue;
+            const tuned = typeof x.adapter === 'number' ? x.adapter : x.tuned;   // 評量腳本的格式是 tuned；打包後的描述檔是 adapter
+            if (typeof tuned !== 'number' || typeof x.base !== 'number') continue;
+            if (tuned < x.base) { lose.push(n); continue; }
+            if (x.neg && x.neg.n > 0 && x.neg.tuned === 0) { degenerate.push(n); continue; }
+            if (x.base === 0 && tuned === 0) { noData.push(n); continue; }
+            if (tuned > x.base) win.push(n);
+        }
+        return withBlocked({ known: names.length > 0, lose, win, degenerate, noData, score: win.length - lose.length }, ev.verdict);
+    }
+    function withBlocked(v, verdict) {
+        v.lose = v.lose || []; v.win = v.win || []; v.degenerate = v.degenerate || []; v.noData = v.noData || [];
+        const blocked = [];
+        if (v.lose.length) blocked.push('輸給基底：' + v.lose.join('、'));
+        if (v.degenerate.length) blocked.push('退化答案（負例全錯、只靠正例得分，不算贏）：' + v.degenerate.join('、'));
+        if (v.noData.length) blocked.push('無資料（基底與微調都是 0，不算通過）：' + v.noData.join('、'));
+        if (verdict && typeof verdict === 'object') {
+            const seen = new Set([].concat(v.lose, v.degenerate, v.noData));
+            const nw = (verdict.not_winning || []).filter((n) => !seen.has(n));
+            if (nw.length) blocked.push('目標組未清楚贏：' + nw.join('、'));
+            if (verdict.ship === false && !blocked.length) blocked.push('評量判定為 DO NOT SHIP');
+        }
+        v.blocked = blocked;
+        return v;
     }
 
     // 把關（§30.3）：「內建」標示與自動選用都要求——有評測數字，而且每一組都不輸基底。沒有數字或有組輸給基底 → 不通過，要寫原因。
@@ -236,7 +272,7 @@
                 if (!manual) {
                     const v = evalVerdict(e.eval);
                     if (!v.known) { skipped.push({ id: e.id, reason: '沒有評量資料，不自動選用（可手動指定）' }); continue; }
-                    if (v.lose && v.lose.length) { skipped.push({ id: e.id, reason: '評量有組別輸給基底：' + v.lose.join('、') + '，不自動選用（可手動指定）' }); continue; }
+                    if (v.blocked && v.blocked.length) { skipped.push({ id: e.id, reason: '評量未過，不自動選用（可手動指定）：' + v.blocked.join('；') }); continue; }
                 }
                 pool.push({ e, manual, byDomain, byTrigger, specific: manual || byDomain || byTrigger });
             }
@@ -360,7 +396,7 @@
             const lu = live.has(e.id) ? live.get(e.id).lastUsed : (lastUsedById.has(e.id) ? lastUsedById.get(e.id) : null);
             return { id: e.id, name: e.name || e.id, version: e.version || null, description: e.description || '', base: e.base, rank: e.rank, size: e.size, added: e.added || null, lastUsed: lu,
                 domains: e.domains.slice(), triggers: (e.triggers || []).slice(), prompt_format_version: e.prompt_format_version, source: e.source, enabled: !!e.enabled,
-                location: e.location, eval: ev.known ? { lose: ev.lose, win: ev.win } : null, compat: c.level, compatReasons: c.reasons.map((r) => r.message), compatWarnings: c.warnings.map((w) => w.message), pinned: pins.has(e.id),
+                location: e.location, eval: ev.known ? { lose: ev.lose, win: ev.win, degenerate: ev.degenerate, noData: ev.noData, blocked: ev.blocked } : null, compat: c.level, compatReasons: c.reasons.map((r) => r.message), compatWarnings: c.warnings.map((w) => w.message), pinned: pins.has(e.id),
                 slotRank: e.slot_rank != null ? e.slot_rank : e.rank, limits: (e.limits || []).slice(), evalMetrics: e.eval && (e.eval.metrics || (CARD_METRIC_KEYS.some((k) => k in e.eval) ? e.eval : null)) || null, gate: { pass: gate.pass, reason: gate.reason } };
         }
         // 狀態（給 LoRA 管理畫面）：槽位、已載入、最後使用時間、釘選、推論中
@@ -480,5 +516,5 @@
         };
     }
 
-    return { SOURCES, DEFAULT_BUDGET, DESCRIPTOR_FORMAT, DESCRIPTOR_FORMAT_VERSION, TOOL_HASH_SCHEME, toolCatalogShapeText, validateEntry, descriptorErrors, descriptorFromJson, checkCompat, evalVerdict, gateOf, createRegistry, entryFromManifest, weightFile, summaryOf, diffSummaries, importReport, nrEngineLoader };
+    return { SOURCES, DEFAULT_BUDGET, DESCRIPTOR_FORMAT, DESCRIPTOR_FORMAT_VERSION, TOOL_HASH_SCHEME, toolCatalogShapeText, toolCatalogHash, validateEntry, descriptorErrors, descriptorFromJson, checkCompat, evalVerdict, gateOf, createRegistry, entryFromManifest, weightFile, summaryOf, diffSummaries, importReport, nrEngineLoader };
 });

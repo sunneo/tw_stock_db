@@ -5,7 +5,7 @@ const H = (c) => c.repeat(64);
 const ENV = { base: 'Qwen/Qwen3-0.6B', rank_slots: [16], prompt_format_version: 3, tool_catalog_sha256: H('a') };
 const MB = 1024 * 1024;
 const good = { score: 1, groups: { tools: { adapter: 53, base: 6 }, ext: { adapter: 9, base: 7 } } };
-const mk = (id, o) => Object.assign({ id, source: 'builtin', base: ENV.base, rank: 16, prompt_format_version: 3, tool_catalog_sha256: H('a'), tool_catalog_scheme: 'shape-v1', domains: ['tool_routing'], location: 'fap:x/' + id, size: 40 * MB, sha256: H('b'), eval: good, added: 1 }, o || {});
+const mk = (id, o) => Object.assign({ id, source: 'builtin', base: ENV.base, rank: 16, prompt_format_version: 3, tool_catalog_sha256: H('a'), tool_catalog_scheme: 'shape-v2', domains: ['tool_routing'], location: 'fap:x/' + id, size: 40 * MB, sha256: H('b'), eval: good, added: 1 }, o || {});
 function mkLoader() { const log = []; return { log, load: async (e) => { log.push('load ' + e.id); return { id: e.id }; }, unload: async (e) => { log.push('unload ' + e.id); } }; }
 let t = 1000; const now = () => ++t;
 
@@ -293,7 +293,7 @@ let t = 1000; const now = () => ++t;
         check('id 不是已知內建的條目沒有評量仍不自動選用', reg2.select({ domains: ['colu'] }).plan.length === 0);
     }
 
-    // 工具清單雜湊（shape-v1）：只看名稱＋參數結構，不看說明文字；舊格式與缺項都要說出來
+    // 工具清單雜湊（shape-v2）：只看名稱＋參數結構，不看說明文字；舊格式與缺項都要說出來
     { const T = (name, props, req, desc) => ({ name, description: desc || 'd', parameters: { type: 'object', properties: props, required: req || [] } });
       const a = [T('b_tool', { q: { type: 'string' } }, ['q']), T('a_tool', { n: { type: 'integer' }, mode: { type: 'string', enum: ['x', 'y'] } }, [])];
       const txtA = R.toolCatalogShapeText(a);
@@ -303,7 +303,7 @@ let t = 1000; const now = () => ++t;
       check('shape：必填改了會變', R.toolCatalogShapeText([T('b_tool', { q: { type: 'string' } }, []), a[1]]) !== txtA);
       check('shape：enum 改了會變', R.toolCatalogShapeText([a[0], T('a_tool', { n: { type: 'integer' }, mode: { type: 'string', enum: ['x'] } }, [])]) !== txtA);
       check('shape：無參數工具與缺 parameters 不拋錯', typeof R.toolCatalogShapeText([{ name: 'z' }, null, { description: 'no name' }]) === 'string' && R.toolCatalogShapeText([{ name: 'z' }]).indexOf('"z"') > 0);
-      check('shape：格式名稱', R.TOOL_HASH_SCHEME === 'shape-v1');
+      check('shape：格式名稱', R.TOOL_HASH_SCHEME === 'shape-v2');
       const e = mk('s', { tool_catalog_sha256: H('c'), tool_catalog_scheme: undefined });
       const cl = R.checkCompat(e, ENV); check('舊格式雜湊 → 警告「舊格式」而不是「已變動」', cl.level === 'warn' && /舊格式/.test(cl.warnings[0].message), cl);
       const cm = R.checkCompat(mk('s', { tool_catalog_sha256: H('c') }), ENV); check('同格式不同雜湊 → 警告「已變動」', cm.level === 'warn' && /已變動/.test(cm.warnings[0].message), cm);
@@ -313,5 +313,31 @@ let t = 1000; const now = () => ++t;
       check('描述檔未知 scheme 拒絕', R.descriptorErrors({ format: 'fa-lora-descriptor', format_version: 1, id: 'x', version: '1', base: 'Qwen/Qwen3-0.6B', rank: 4, alpha: 8, prompt_format_version: '1', applies: {}, size: 1, sha256: H('a'), location: 'l', tool_catalog_scheme: 'weird' }).some((x) => /tool_catalog_scheme/.test(x)));
     }
 
+    // 評量判定：退化答案（負例全錯、只靠正例得分）與無資料（0 對 0）不算贏，自動選用被擋並寫明原因；手動指定仍可選
+    {
+        const L = mkLoader(); const r = R.createRegistry({ env: ENV, loader: L, budgetBytes: 100 * MB, maxActive: 4, now });
+        const degEval = { groups: {
+            'think_stack/self_validate': { adapter: 21, base: 0, n: 60, neg: { n: 39, base: 0, tuned: 0 }, pos: { n: 21, base: 0, tuned: 21 } },
+            'fn_template/code_split': { adapter: 23, base: 0, n: 60 },
+            'think_stack/plan_check': { adapter: 0, base: 0, n: 60 } },
+            verdict: { ship: false, not_winning: [], no_data: ['think_stack/plan_check'], degenerate: ['think_stack/self_validate'], targets: [] } };
+        r.register(mk('deco', { domains: ['decompose'], eval: degEval }));
+        const v = R.evalVerdict(degEval);
+        check('退化：不算贏、列入 degenerate', v.win.indexOf('think_stack/self_validate') < 0 && v.degenerate.indexOf('think_stack/self_validate') >= 0, v);
+        check('無資料：不算贏、列入 noData', v.noData.indexOf('think_stack/plan_check') >= 0 && v.win.indexOf('think_stack/plan_check') < 0, v);
+        check('blocked 含退化與無資料的原因', v.blocked.some((x) => /退化答案/.test(x)) && v.blocked.some((x) => /無資料/.test(x)), v.blocked);
+        const s1 = r.select({ domain: 'decompose' });
+        check('自動選用被擋，原因寫「評量未過」與退化', s1.plan.length === 0 && s1.skipped.some((x) => x.id === 'deco' && /評量未過/.test(x.reason) && /退化答案/.test(x.reason)), s1.skipped);
+        const s2 = r.select({ ids: ['deco'] });
+        check('手動指定仍可選', s2.plan.length === 1 && s2.plan[0].id === 'deco', s2.plan.map((e) => e.id));
+        const v2 = R.evalVerdict({ groups: { 'fn/x': { adapter: 20, base: 0, n: 30 } }, verdict: { ship: false, not_winning: ['fn/x'], no_data: [], degenerate: [] } });
+        check('評量腳本判未過（未清楚贏）→ 擋住', v2.blocked.length === 1 && /未清楚贏/.test(v2.blocked[0]), v2.blocked);
+        const v3 = R.evalVerdict({ groups: { 'fn/y': { adapter: 20, base: 0, n: 30 } }, verdict: { ship: true, not_winning: [], no_data: [], degenerate: [] } });
+        check('乾淨且清楚贏：沒有 blocked、算贏', v3.blocked.length === 0 && v3.win.length === 1, v3);
+        const v4 = R.evalVerdict({ groups: { 'fn/z': { tuned: 20, base: 0, n: 30 } } });
+        check('評量腳本原始格式（tuned 欄位）也判得出贏', v4.win.length === 1 && v4.blocked.length === 0, v4);
+        const v5 = R.evalVerdict({ groups: { 'fn/w': { tuned: 20, base: 0, n: 30, neg: { n: 5, base: 0, tuned: 0 }, pos: { n: 25, base: 0, tuned: 20 } } } });
+        check('原始格式的退化也會被擋', v5.degenerate.length === 1 && v5.blocked.length >= 1, v5);
+    }
     console.log(ok + ' passed, ' + bad + ' failed'); process.exit(bad ? 1 : 0);
 })();

@@ -1,7 +1,8 @@
 // node renderer/src/studio/lora_route_wiring.test.js
-// 行為測試（取代原本的 regex 接線檢查）：從 floating-assistant.js 抽出真正的方法本體（_loraRouteTurn、_llmGenerate、_planModel），
-// 放進 vm 沙箱，用假的 this 與真的 lora_route_core 執行，檢查「任務類型進來 → 登錄表拿到什麼 → 生成前 acquire／生成後 release」這條路。
-// 不啟動產品；閉包內的呼叫點（選單 colu、工具參數 toolcall、工具階段 toolcall）跑不到，只保留少數原始碼標記檢查，並在輸出中標明。
+// 行為測試（取代原本的 regex 接線檢查）：從 floating-assistant.js 抽出真正的方法本體，放進 vm 沙箱，用假的 this 執行。
+// 涵蓋：_loraRouteTurn、_llmGenerate、_planModel（任務類型 → 登錄表 → acquire／release）；
+// 以及三個原本藏在閉包外層方法裡的呼叫點（_unitCatalogEvalStep：選單 colu、工具參數 toolcall；_umlModel：UML 拆解 decompose；
+// _omToolBench：工具階段 toolcall）。這些外層方法整個執行，只替換 UI、儲存與模型本體，檢查實際送進 _llmGenerate 的任務類型。
 const fs = require('fs'); const path = require('path'); const vm = require('vm');
 const Rt = require('./lora_route_core.js');
 const SRC = fs.readFileSync(path.join(__dirname, '..', 'floating-assistant.js'), 'utf8');
@@ -110,11 +111,74 @@ function loadMethods(names, globals) {
     check('呼叫端指定的 a.task 優先', seen[2] && seen[2].task === 'colu', seen);
 }
 
-// ---- 4) 閉包內的呼叫點（無法在測試中執行）：只做原始碼標記檢查，失敗代表呼叫點被改掉 ----
-check('[閉包] 選單呼叫點標 colu', /_llmGenerate\(S\.model, \{ task: 'colu'/.test(SRC));
-check('[閉包] 工具參數呼叫點標 toolcall', /_llmGenerate\(S\.model, \{ task: 'toolcall'/.test(SRC));
-check('[閉包] 工具階段呼叫點標 toolcall', /_llmGenerate\(m, \{ task: 'toolcall'/.test(SRC));
-check('[閉包] UML design 拆解經 _planModel 傳 decompose', /this\._planModel\(\{ task: 'decompose' \}\)/.test(SRC));
+// ---- 4) 原本是閉包內呼叫點的三處：整個外層方法執行，檢查實際送出的任務類型 ----
+// 4a) _unitCatalogEvalStep：選單評量（colu）與工具參數評量（toolcall，預填 "{"）
+{
+    const calls = [];
+    const SEL = {
+        retrieve: () => [], buildCandidates: () => [{ id: 'u1' }, { id: 'u2' }], selectionMessages: () => ['sel'],
+        parseChoice: () => 1, argsMessages: () => ['args'], parseArgs: () => ({ a: 1 }), scoreArgs: () => ({ exact: true }),
+    };
+    const M = loadMethods(['_unitCatalogEvalStep'], { FaCatalogSelect: SEL });
+    const self = {
+        _unitCatalogEval: {
+            i: 0, errors: 0, model: { id: 'm1' }, device: 'cpu', idxInt: {}, universe: [], byId: new Map([['u1', { id: 'u1' }]]),
+            tasks: [
+                { t: 'sel', c: { id: 'c1', query: 'q', kind: 'pos', truth: ['u1'] }, mode: 'none', k: 2 },
+                { t: 'args', a: { unit: 'u1', query: 'q2', expected: { a: 1 } } },
+            ],
+            rows: [], argRows: [], failures: [],
+        },
+        _llmGenerate: async (model, a) => { calls.push({ model: model.id, task: a.task, prefill: a.prefill }); return a.task === 'colu' ? '1' : '{"a":1}'; },
+    };
+    const out = await M._unitCatalogEvalStep.call(self, 5, {});
+    check('選單評量的生成呼叫帶 task=colu', calls[0] && calls[0].task === 'colu' && calls[0].model === 'm1', calls);
+    check('工具參數評量的生成呼叫帶 task=toolcall，並預填 "{"', calls[1] && calls[1].task === 'toolcall' && calls[1].prefill === '{', calls);
+    check('兩段都有結果列、進度推進到底', self._unitCatalogEval.rows.length === 1 && self._unitCatalogEval.argRows.length === 1 && out.done === 2, out);
+}
+// 4b) _umlModel（離線）：經真的 _planModel → _llmGenerate，任務必須是 decompose
+{
+    const seen = [];
+    const ctx = { FaVlm: { routeStages: () => ({ answer: { id: 'm1' } }), resolveDevice: () => ({ order: ['cpu'], reason: '' }), estimateDownload: () => 0 } };
+    const M = loadMethods(['_umlModel', '_planModel'], ctx);
+    const self = {
+        _umlOnlineRow: () => null,
+        _omSettings: () => ({ roles: {}, bench: {}, textModel: 'm1' }),
+        _omInstalled: async () => ({ set: new Set(['m1']), usage: { byModel: {} } }),
+        _omGpuInfo: async () => ({ available: false, f16: false }),
+        _omDevicePrefOf: () => 'auto',
+        _llmGenerate: async (model, a) => { seen.push({ model: model.id, task: a.task }); return 'R'; },
+    };
+    self._planModel = (o) => M._planModel.call(self, o); // 呼叫端 this._planModel 指到真的方法
+    const off = await M._umlModel.call(self, 'offline');
+    check('UML 離線拆解取得可用的模型（沒有錯誤、標示離線模型）', off && off.label === '離線模型' && off.error === undefined, off);
+    const out = await off.gen({ messages: [] });
+    check('UML 離線拆解的生成帶 task=decompose 並回傳生成結果', seen[0] && seen[0].task === 'decompose' && seen[0].model === 'm1' && out === 'R', seen);
+}
+// 4c) _omToolBench：工具階段基準，每一題都以 toolcall 生成
+{
+    const calls = [];
+    const FaVlmStub = {
+        byId: () => ({ id: 'm2', label: 'M2', task: 'text-generation', toolCalling: true, repo: 'x/y' }),
+        resolveDevice: () => ({ order: ['cpu'], reason: '' }), estimateDownload: () => 0, fmtBytes: () => '0',
+        compactToolSpecs: (t) => t, BENCH_TOOLS: [], BENCH_CASES: [{ id: 'b1', user: 'u1' }, { id: 'b2', user: 'u2' }],
+        TOOL_STAGE_SYSTEM: 'SYS', scoreToolCase: () => ({ ok: false, reason: '未通過' }),
+        summarizeToolBench: (rs) => ({ passed: 0, total: rs.length, label: 'L' }),
+    };
+    const M = loadMethods(['_omToolBench'], { FaVlm: FaVlmStub });
+    const self = {
+        advancedSettings: { offlineToolBench: {} }, _omLastDevice: {},
+        _omGpuInfo: async () => ({ available: false, f16: false }),
+        _omDevicePrefOf: () => 'auto',
+        _omInstalled: async () => ({ usage: { byModel: {} } }),
+        _createProgressWidget: () => ({ update() {}, log() {}, finish() {}, fail() {} }),
+        _saveAdvancedSettings: () => {},
+        _llmGenerate: async (m, a) => { calls.push({ model: m.id, task: a.task }); return ''; },
+    };
+    const r = await M._omToolBench.call(self, 'm2', null);
+    check('工具階段基準：兩題都以 task=toolcall 生成', calls.length === 2 && calls.every((c) => c.task === 'toolcall' && c.model === 'm2'), calls);
+    check('工具階段基準完成並回傳 ok', r && r.ok === true && r.result && r.result.total === 2, r);
+}
 
 // 路由核心認得四種任務（純函式）
 for (const [t, d] of [['colu', 'colu'], ['toolcall', 'toolcall'], ['plan', 'plan'], ['decompose', 'decompose']]) check('taskDomain ' + t, Rt.taskDomain(t) === d);
