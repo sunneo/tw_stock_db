@@ -29,7 +29,7 @@ const toolShape = (() => { try { return RegCore.toolCatalogHash(JSON.parse(fs.re
 function normEval(e) {
   if (!e || !e.groups) return e;
   const g = {};
-  for (const [k, v] of Object.entries(e.groups)) g[k] = Object.assign({ adapter: v.adapter != null ? v.adapter : v.tuned, base: v.base, n: v.n }, v.neg ? { neg: v.neg, pos: v.pos } : {});
+  for (const [k, v] of Object.entries(e.groups)) g[k] = Object.assign({ adapter: v.adapter != null ? v.adapter : v.tuned, base: v.base, n: v.n }, v.neg ? { neg: v.neg, pos: v.pos } : {}, v.scope ? { scope: v.scope } : {});
   return Object.assign({}, e, { groups: g });
 }
 const man = { name, base: cfg.base_model_name_or_path || 'Qwen/Qwen3-0.6B', format: 'peft-lora', rank: cfg.r, alpha: cfg.lora_alpha, target_modules: cfg.target_modules,

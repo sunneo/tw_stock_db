@@ -1,0 +1,9 @@
+{
+  "_说明": "每顆的適用範圍（DESIGN.lora-training.md §32.2）。out：正規式命中的組＝範圍外（只報告，不計入把關）；其餘都是範圍內。",
+  "decompose-r4-v2": { "out": ["^think_stack/", "^heldout/think_stack$"] },
+  "plan-r4": { "out": [] },
+  "toolcall-r4": { "out": [] },
+  "colu-r4": { "out": [] },
+  "codewrite-r4": { "out": ["^fn_template/code_split/"] },
+  "reading-r4": { "out": [] }
+}
