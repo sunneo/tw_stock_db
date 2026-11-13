@@ -43,8 +43,7 @@
   },
   "tool": {
     "name": "ext_stock_drop_cause",
-    "description": "調查一檔股票今天為什麼下跌或上漲（報價、新聞、法人買賣超），整理成可貢獻給簡報的段落。缺股票代號時會用目前網頁的代號與名稱。",
-    "parameters": { "code": "string", "name": "string", "date": "string(yyyymmdd，可省略)" }
+    "description": "調查一檔股票今天為什麼下跌或上漲（報價、新聞、法人買賣超），整理成可貢獻給簡報的段落。缺股票代號時會用目前網頁的代號與名稱。"
   },
   "research": [
     { "id": "quote", "label": "報價與成交量", "url": "https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY?stockNo={code}&response=json&date={date}", "extract": { "kind": "json_rows", "rowsKey": "data", "fieldsKey": "fields", "pick": "last", "count": 1, "show": ["收盤價", "成交股數", "漲跌價差"] } },
@@ -60,6 +59,7 @@
 - `context.patterns`：依序試；第一個命中的給代號（必要）與名稱（可選）。`urlPattern` 不命中就不偵測。
 - `research[].url`：模板變數 `{code}`、`{name}`（URL 編碼）、`{date}`。缺值的來源標記為 `skipped`，原因寫明缺哪個變數，不猜。
 - `extract.kind`：`json_rows`（JSON 陣列列，可用 `match` 篩選、`pick: last` 取最後幾列，欄位名從 `fieldsKey` 對應）、`rss`（抽 `<item>` 的標題與日期，`must` 要求標題含這些字）、`text`（去標籤後取含關鍵字的句子）。
+- 工具參數固定由 `toolSpec` 產生：`code`、`name`、`date` 三個選填字串（不用宣告）。
 - `contribute`：整理成一章，章名模板同上；最後一頁**固定**是免責聲明（即使宣告裡沒寫，程式也會補上）。
 
 ## 四、掛點（什麼時候被呼叫）

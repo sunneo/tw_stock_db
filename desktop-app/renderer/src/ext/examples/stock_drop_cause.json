@@ -1,0 +1,53 @@
+{
+  "id": "stock_drop_cause",
+  "name": "股票下跌原因調查",
+  "description": "在股票網頁上，調查某檔股票今天為什麼漲跌（報價與成交量、當日新聞、三大法人買賣超），整理成 media-presentation 簡報的一章。",
+  "enabled": true,
+  "context": {
+    "urlPattern": "stock|quote|twse|tpex",
+    "codeRe": "^\\d{4,6}$",
+    "patterns": [
+      { "re": "([^\\s()（）]{2,12})[（(](\\d{4,6})[)）]", "name": 1, "code": 2 },
+      { "re": "[/=](\\d{4,6})(?!\\d)", "code": 1 }
+    ]
+  },
+  "tool": {
+    "name": "ext_stock_drop_cause",
+    "description": "調查一檔股票今天為什麼下跌或上漲：抓報價與成交量、當日新聞、三大法人買賣超，整理成可貢獻給簡報的段落（每筆附來源，抽不到寫查不到，不給買賣建議）。缺股票代號時會用目前網頁的代號與名稱。要做成簡報時，把結果的 deck 交給 render_presentation。"
+  },
+  "research": [
+    {
+      "id": "quote",
+      "label": "報價與成交量",
+      "url": "https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY?stockNo={code}&response=json&date={date}",
+      "extract": { "kind": "json_rows", "rowsKey": "data", "fieldsKey": "fields", "pick": "last", "count": 1, "show": ["收盤價", "漲跌價差", "成交股數"] }
+    },
+    {
+      "id": "news",
+      "label": "當日新聞搜尋",
+      "url": "https://news.google.com/rss/search?q={name}%20{code}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant",
+      "needs": ["name"],
+      "extract": { "kind": "rss", "max": 5, "must": ["{name}", "{code}"] }
+    },
+    {
+      "id": "institutional",
+      "label": "三大法人買賣超",
+      "url": "https://www.twse.com.tw/rwd/zh/fund/T86?date={date}&selectType=ALL&response=json",
+      "extract": { "kind": "json_rows", "rowsKey": "data", "fieldsKey": "fields", "match": { "col": 0, "equals": "{code}" }, "show": ["外陸資買賣超股數(不含外資自營商)", "投信買賣超股數", "自營商買賣超股數"] }
+    },
+    {
+      "id": "announce",
+      "label": "公開資訊觀測站重大訊息",
+      "url": "",
+      "optional": true,
+      "extract": { "kind": "text", "max": 5 }
+    }
+  ],
+  "contribute": {
+    "target": "media-presentation",
+    "chapter": "{name}（{code}）下跌原因調查",
+    "position": "end",
+    "maxBulletsPerSlide": 5
+  },
+  "disclaimer": "本簡報為公開資料整理，僅供參考，不構成任何投資建議；買賣請自行判斷並承擔風險。"
+}
