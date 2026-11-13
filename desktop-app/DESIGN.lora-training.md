@@ -1674,3 +1674,11 @@ cd .. && node scripts/native-runtime-pack.js /home/hungfu.lee/fa-work/native-run
 - 每輪仍只開一顆：路由已保證同一領域只留一顆（`lora_route_core`），沒有改動 `maxActive`。
 - 網頁版只顯示「只有桌面版啟用」，沒有接網頁版 LoRA 的內建下載。
 - 推送前：`builtin.json` 的 `base_url` 換成實際 commit（或分支），推送 lora-adapters 分支，發布執行包（由總指揮核對後處理）。
+
+## 35. 音訊轉音符：全參數微調（不是 LoRA，命令列，2026-11-13，分支 claude/a2n-train）
+
+**已驗證（合成資料）**：Basic Pitch `nmp.onnx` 經 onnx2torch 轉成 torch，凍結 CQT 前端（16.9 萬參數），微調其後 16,700 個參數 300 步（CPU，約 3 分鐘）。起音正例需要加權（權重 30，在開發集挑）：沒有加權時起音 F1 變 0。留出的 100 段合成資料上，應用程式解碼器的音符 F1 由 0.735 升到 0.941；匯出的 ONNX 可由 onnxruntime 載入，與 torch 差 6.9e-7，與基底差 0.725。同設定重跑逐位元相同。
+
+**未驗證／未達成**：只在合成資料上驗證，真實錄音未驗證；沒有接進工作室與主行程；微調後的模型沒有登錄進 app。本類型不產生 LoRA 小檔（全參數微調）。細節與表格見 `DESIGN.offline-training-studio.md` 的「音訊轉音符（audio_to_notes）微調核心」一節。
+
+**腳本**：`renderer/src/studio/a2n_train.py`（`train`／`check`）、`renderer/src/studio/a2n_train_core.js`（合成資料與 F1，`gen`／`metrics` 子命令）。執行環境：`/home/hungfu.lee/fa-work/venv/bin/python`（額外安裝 onnx2torch 1.x；torchvision 因版本不符以空模組代替）。
