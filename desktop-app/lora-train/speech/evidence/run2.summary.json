@@ -1,0 +1,33 @@
+{
+  "format": "fa-speech-style",
+  "version": 1,
+  "base_voice": "af_heart.pt",
+  "teacher": {
+    "kind": "teacher",
+    "model": "hexgrad/Kokoro-82M",
+    "voice": "af_bella.pt"
+  },
+  "trainable": {
+    "name": "style_delta",
+    "shape": [
+      256
+    ],
+    "params": 256
+  },
+  "steps": 30,
+  "lr": 0.005,
+  "seed": 0,
+  "train_rows": 16,
+  "heldout_rows": 4,
+  "train_loss_first": 2.136411190032959,
+  "train_loss_last": 1.3053532838821411,
+  "heldout_loss_before": 2.103415071964264,
+  "heldout_loss_after": 1.3135783672332764,
+  "voice_bin": {
+    "file": "voice_trained.bin",
+    "bytes": 522240,
+    "sha256": "22468f5bc4ce738b17bbd1c4677f5773e5ed5d371d74c4b03e117f708a928576"
+  },
+  "delta_sha256": "ee9a0eb428c4f3cabc41c0e2306f40258febcf7cda3a127f9c9cb89b45e8ec49",
+  "elapsed_s": 768.5
+}

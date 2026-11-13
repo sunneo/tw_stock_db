@@ -704,3 +704,53 @@ Backend {
 | `DESIGN.offline-vision*.md`、`DESIGN.edit-picture-diffusion.md` | 視覺模型與圖像細化 | §12 |
 
 **讀法建議**：要知道「現在能做什麼」讀 §10 與 §11；要知道「怎麼做的」讀 §2–§9；要對一個數字追根源，用 §10 的出處列表回到舊檔。
+
+---
+
+## 15. 語音合成（speech）訓練：風格偏移，已做到可訓練、可匯出、可合成（2026-11-13）
+
+> **狀態：部分完成。** 離線訓練核心與匯出路徑已實測；**工作室介面沒有接上**（按「開始」不會啟動語音訓練），所以 `model_types_core.js` 的 speech 仍維持 `half`、輸出仍 `available:false`。原因見 §15.4。
+
+### 15.1 做了什麼（對應 repo 既有的語音路徑）
+- repo 現有的語音推論是 **Kokoro-82M**（本機引擎，見 `DESIGN.voice-sample.md`）。它的語音包是 510×256 float32，即 `voices/<代號>.bin`，522,240 位元組。
+- 選的路徑：**只訓練語音包的 256 維風格偏移 δ，其餘 82M 權重凍結**。訓練結果寫成同格式的 `.bin`，可直接當既有自訂語音使用，不必重新匯出整個模型。理由：CPU 可行（本機 24 核，單句前後向約 36 秒，30 步約 5 分鐘）；不需要 Kokoro 沒有的錄音編碼器。
+- 程式：
+  - `lora-train/speech/speech_train.py`（PyTorch，子命令 `make-teacher`、`train`、`synth`）。前向傳播是 `KModel.forward_with_tokens` 的複本，但不包 `no_grad`，並可傳入固定時長。
+  - `renderer/src/studio/speech_core.js`（UMD 純函式：JSONL 配對格式與驗證、訓練／留出切分與洩漏檢查、`.bin` 大小檢查、損失趨勢、摘要檢查）＋ `speech_core.test.js`（35 項，單檔）。
+- 資料格式（沿用 voice-sample 的配對概念）：JSONL 每行 `{id, text, phonemes, audio（相對路徑）, sr:24000, pred_dur（教師時長）, split:'train'|'heldout', source}`。
+- 損失：多解析度 STFT（頻譜收斂＋對數幅度 L1），學生與教師用**同一組時長**對齊，兩段音訊等長。
+
+### 15.2 已驗證（有實測紀錄，證據在 `lora-train/speech/evidence/`）
+| 項目 | 結果 | 證據 |
+|---|---|---|
+| 資料格式與切分（JSONL 解析、路徑、取樣率、洩漏） | 35 項通過 | `node renderer/src/studio/speech_core.test.js` |
+| 訓練前後向與損失下降 | 30 步，留出損失 **2.1034 → 1.3082**（run1）；訓練損失 2.136 → 1.300 | `run1.summary.json`、`run1.log.jsonl` |
+| 可重現（同設定跑兩次） | **近似，不是逐位元相同**：留出損失 1.3082 vs 1.3136（相差 0.4%）；第 1 步損失相差 2.4e-7，之後因多執行緒浮點加總順序而逐步擴大。兩次的 `voice_trained.bin` sha256 不同 | `run2.summary.json`、兩份 log |
+| 匯出 `.bin` 格式 | 522,240 位元組（510×256 float32 小端序），`speech_core.checkVoiceBinSize` 通過 | `run1.summary.json` 的 `voice_bin` |
+| 匯出後可載入並合成 | 以 `speech_train.py synth --voice <.bin>` 獨立程序載入、合成，取樣率 24000、長度 2.125 秒、RMS 0.044 | 命令輸出（見 15.3） |
+| 訓練後輸出與訓練前不同 | 同一句（留出句 "Where is the nearest station?"）：逐點平均絕對差 0.0327（取較短長度比較）；長度 49,800 → 51,000 樣本（學生用自己的時長預測器），所以兩段音訊不是逐點對齊 | 同上 |
+| 訓練後與教師（af_bella）的頻譜距離變小 | 對數頻譜 L1（越小越近）：訓練前 **1.244**，訓練後 **0.824** | 同上（單句，未達統計結論） |
+
+### 15.3 合成實測（留出句，單句，CPU）
+| 語音 | 長度 | 取樣率 | RMS | 與訓練前的關係 |
+|---|---|---|---|---|
+| af_heart（訓練前基底） | 2.075 秒（49,800 樣本） | 24000 | 0.0456 | — |
+| 訓練後 `.bin`（run1） | 2.125 秒（51,000 樣本） | 24000 | 0.0442 | 不同（逐點平均絕對差 0.0327） |
+| af_bella（教師） | 2.175 秒（52,200 樣本） | 24000 | 0.0495 | — |
+
+### 15.4 未驗證／沒做到（誠實列出）
+1. **工作室沒有接線**：`/offline-training-studio` 的「開始」不會呼叫 `speech_train.py`，沒有語音的後端登錄，也沒有 `FaSpeechCore` 的介面呼叫。要做到「工作室能訓練語音」還需要：後端 `speech-py`（子行程，與 `cpu-py` 相同模式）、主行程（`main-ext.js`）接線、工作室資產的 kind（目前沒有 `speech`）。**未做**。
+2. **訓練資料是合成的**：16 句訓練、4 句留出，全部是 Kokoro 的 `af_bella` 語音生成的教師音訊，**不是使用者自己的錄音**。驗證的是「能學會把風格往教師方向拉」，不是「能複製使用者的聲音」。使用者錄音的配對資料格式已定，但**沒有拿真錄音跑過**。
+3. **只訓練風格偏移**：256 維全域偏移，所有 510 列共用。表達能力有限，而且沒有測過不同句長下的穩定度（只有 4 句留出）。
+4. **中文未做**：Kokoro 中文需要另一組權重（`Kokoro-82M-v1.1-zh`）與中文 G2P，本次只跑英文（`lang_code='a'`）。
+5. **JS 推論路徑未驗證**：`.bin` 格式與 repo 的 `kokoro-js`（ONNX）相同，但本次只用 Python 的 `kokoro` 套件載入與合成，沒有在 repo 的 JS／ONNX 推論路徑實跑。
+6. **可重現性只到近似**（見 15.2）。要逐位元相同需要單執行緒並開啟確定性演算法，本次未做（會慢很多）。
+7. **沒有評量到語音品質**：只量了頻譜距離與留出損失，沒有主觀聆聽或語音辨識評分。
+8. **未量長句與多段**：只驗證了單句；長文字會切段，切段後的行為未驗證。
+9. 系統套件：`kokoro` 安裝時拉入 `en_core_web_sm`（spaCy 模型，由 pip 下載，見 15.5）。
+
+### 15.5 環境與來源（可重現）
+- 基底：Hugging Face `hexgrad/Kokoro-82M`（`config.json`、`kokoro-v1_0.pth` 327,212,226 位元組、`voices/af_heart.pt`、`voices/af_bella.pt`，約 523 KB 各）。模型卡標示為 Apache-2.0；該 repo 的 LICENSE 檔未找到（404），授權以模型卡為準。
+- 環境：`/home/hungfu.lee/fa-work/speech-train-20261113-1942/venv`（Python 3.10，PyTorch 2.14.1 CPU，`kokoro` 0.9.4，`soundfile`）。
+- 執行：`python speech_train.py --config config.json --weights kokoro-v1_0.pth train --data <資料夾> --base-voice af_heart.pt --out <資料夾> --steps 30 --lr 5e-3 --seed 0`。
+- 留出損失是 STFT 損失（不是語音品質分數），數字只能用來比較同一套設定。

@@ -1674,3 +1674,15 @@ cd .. && node scripts/native-runtime-pack.js /home/hungfu.lee/fa-work/native-run
 - 每輪仍只開一顆：路由已保證同一領域只留一顆（`lora_route_core`），沒有改動 `maxActive`。
 - 網頁版只顯示「只有桌面版啟用」，沒有接網頁版 LoRA 的內建下載。
 - 推送前：`builtin.json` 的 `base_url` 換成實際 commit（或分支），推送 lora-adapters 分支，發布執行包（由總指揮核對後處理）。
+
+---
+
+## 附：語音合成的風格偏移訓練（2026-11-13，非 LoRA）
+
+本檔是 LoRA 文件；語音合成的訓練不是 LoRA，記在這裡只為了找得到。完整狀態見 `DESIGN.offline-training-studio.md` §15。
+
+- 做法：凍結 Kokoro-82M，只訓練語音包的 256 維風格偏移（全域、所有 510 列共用），匯出為 `voices/*.bin` 格式（522,240 位元組）。
+- 實測（CPU，30 步，16 句訓練、4 句留出、教師為合成音訊）：留出 STFT 損失 2.1034 → 1.3082；匯出的 `.bin` 可獨立程序載入並合成（24 kHz，與訓練前不同）。
+- **已驗證**：資料格式與切分（35 項單元測試）、訓練損失下降、匯出格式與大小、獨立載入合成、與教師的頻譜距離下降（單句）。**近似可重現**（同設定兩次，留出損失相差 0.4%，非逐位元相同）。
+- **未驗證**：工作室接線（沒有 `speech` 後端與資產 kind）、使用者真錄音、中文、JS／ONNX 推論路徑、語音品質的主觀或辨識評分。
+- 證據：`lora-train/speech/evidence/`（兩次 summary 與 log、資料 JSONL、文字清單）；程式 `lora-train/speech/speech_train.py`、`renderer/src/studio/speech_core.js`。
