@@ -298,7 +298,7 @@ function createStudioHost(d) {
     const chk = await extCheck(p); if (!chk.ok) return { ok: false, error: (chk.errors || [chk.error || '檢查沒有通過']).join('；'), check: chk };
     const spec = ExtJob.specOf(type), outDir = P.join(extRoot, type, name);
     if (exists(outDir) && fs.readdirSync(outDir).length) return { ok: false, error: '輸出資料夾已有內容（換一個名稱，不覆寫）：' + outDir };
-    const plan = ExtJob.planFor(type, p.params || {}, { outDir, scriptsDir: chk.scriptsDir, python: chk.python, nodeExec: process.execPath, paths: chk.paths });
+    const plan = ExtJob.planFor(type, p.params || {}, { outDir, scriptsDir: chk.scriptsDir, python: chk.python, nodeExec: process.execPath, paths: chk.paths, nativeRuntimeDir: (typeof d.nativeRuntimeDir === 'function' ? d.nativeRuntimeDir() : null) });
     if (!plan.ok) return { ok: false, error: plan.errors.join('；') };
     fs.mkdirSync(outDir, { recursive: true });
     writeJson(P.join(outDir, 'ext_request.json'), { type, name, params: plan.params, python: chk.python, paths: chk.paths, startedAt: now() });

@@ -136,6 +136,10 @@
     }
   };
 
+  // 外部登錄的型別（自帶步驟規劃）：registerSpec(spec, planSteps(params, env) → { ok, errors[], steps[] })
+  var PLANNERS = {};
+  function registerSpec(spec, planSteps) { SPECS[spec.id] = spec; if (planSteps) PLANNERS[spec.id] = planSteps; return spec; }
+
   function specOf(type) { return SPECS[type] || null; }
 
   // 參數檢查：回傳 { ok, errors[], params }（params 已補上預設值）
@@ -212,6 +216,10 @@
       steps.push(st('data', '產生合成圖文配對', py, [script, 'make-data', '--out', idata]));
       steps.push(st('train', '訓練圖像 LoRA', py, [script, 'train', '--model', paths.base, '--data', idata, '--out', lora, '--steps', String(p.steps), '--rank', String(p.rank), '--alpha', String(p.alpha), '--lr', String(p.lr), '--seed', String(p.seed), '--resolution', '512']));
       steps.push(st('check', '同一提示同一種子重生，核對載入', py, [script, 'verify', '--model', paths.base, '--lora', lora, '--prompt', String(p.prompt), '--seed', String(p.seed), '--out-prefix', out + '/verify'], { checkFile: s.checkFile, check: s.checks }));
+    } else if (PLANNERS[type]) {
+      var ext = PLANNERS[type](p, env);
+      if (!ext.ok) return { ok: false, errors: ext.errors, steps: [], outputs: [] };
+      steps = ext.steps;
     } else {
       return fail(s.name + '：這個型別的步驟還沒有寫');
     }
@@ -296,5 +304,10 @@
     return { state: job.state, message: job.message, steps: job.steps.slice(), step: job.step, loss: job.loss, events: job.events.slice(-50), outDir: job.outDir, outputs: job.outputs.slice(), stderrTail: job.state === 'failed' ? job.stderrTail : '' };
   }
 
-  return { SPECS: SPECS, specOf: specOf, normalizeParams: normalizeParams, checkPaths: checkPaths, planFor: planFor, runJob: runJob, parseLine: parseLine, checkResult: checkResult, publicJob: publicJob, explainCommon: explainCommon, srJsonlError: srJsonlError };
+  // 建立 LLM（從零開始）：自帶規格與步驟規劃（llm_scratch_core.js）。只在 node 載入；檔案不存在（部分內嵌）才略過，其他錯誤照丟
+  if (typeof module === 'object' && module.exports && typeof require === 'function') {
+    try { var LS = require('./llm_scratch_core.js'); registerSpec(LS.SPEC, LS.planSteps); } catch (e) { if (!(e && e.code === 'MODULE_NOT_FOUND')) throw e; }
+  }
+
+  return { SPECS: SPECS, registerSpec: registerSpec, specOf: specOf, normalizeParams: normalizeParams, checkPaths: checkPaths, planFor: planFor, runJob: runJob, parseLine: parseLine, checkResult: checkResult, publicJob: publicJob, explainCommon: explainCommon, srJsonlError: srJsonlError };
 });
