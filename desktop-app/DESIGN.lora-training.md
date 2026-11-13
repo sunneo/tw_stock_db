@@ -1075,7 +1075,6 @@ model card 欄位以 `description`（一句話，來自描述檔，§13.2）與 
 - 本次只改 `desktop-app/DESIGN.lora-training.md`（新增本節）。沒有改程式、沒有改 `renderer/src/floating-assistant.js`，因此**不需要重新嵌入**。
 - 沒有 embed、build、推送或發布。
 
-<<<<<<< HEAD
 ## 28. LoRA 缺口第二輪（#9、#11、#12、#14，2026-11-13，分支 lora-train-eval）
 
 總指揮接力後的範圍：先併入 `desktop-app` 最新（fast-forward 到 787e5bb8），再補下列四項。沒有發布、沒有推送、沒有下載。
@@ -1300,7 +1299,7 @@ model card 欄位以 `description`（一句話，來自描述檔，§13.2）與 
 - `eval_run.py` 的新判定只會在之後的評量與 `--regate` 時寫入 `verdict`；已有的 JSON 要用 `--regate` 重算。
 - 負例偵測只認 `ok` 布林欄位。其他有負例但格式不同的題型（例如缺工具拒絕）目前不會被判為退化，要另外擴充。
 - plan_check 0/0 的原因沒有分析（DESIGN §30.2）。
-=======
+
 ## 27.8 從零重建四顆 adapter 與執行包 1.22.0-2，並在產品視窗驗證（2026-11-13，分支 claude/assets-rebuild）
 
 **結論（先講）**：四顆 `.fatrain` 與執行包 1.22.0-2 都從零重新產生，全部讀回驗證通過；產品視窗（xvfb 下的真 Electron 44.4.0）驗證過：路由自動選到四顆（含 colu、plan）、原生套用、四顆同時套用的退化、預設裝置設定下全部走原生。**沒有驗證過**：工具呼叫走產品的真 tools 參數路徑（§27.6 第 4 項）、真實使用者的生成品質、四顆同時啟用的正確做法。評量判準是 `eval_run.py` 的規則評分，不是 §17～§24 的 `score_gen.js` 指標，數字不能跟前面幾節直接比。
@@ -1536,4 +1535,3 @@ cd .. && node scripts/native-runtime-pack.js /home/hungfu.lee/fa-work/native-run
 3. 新標籤 `codewrite`、`reading` 是否被產品的路由接受，未驗證。
 4. 產品視窗的路由與套用，這五顆（包含 codewrite、reading）尚未跑過 `lora_four_adapters.run.js`。
 5. 評量都只用一批留出資料，沒有 §18.2 第 6 條要求的新批次重驗。
->>>>>>> claude/assets-rebuild
