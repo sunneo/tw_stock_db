@@ -133,12 +133,27 @@
     }
 
     // 工具參數優先（模型或使用者明說的），網頁情境補不足的部分。
+    // 使用者的原話（args.text，例如「為什麼大成鋼今天下跌」）：代號用數字抓；名稱用 context.nameToCode 的字典找（最長的先找）。
+    function textEntities(ext, text) {
+        var c = ext.context || {}, t = str(text), map = c.nameToCode || {}, out = { code: '', name: '' };
+        var codeRe = new RegExp(c.codeRe || '^\\d{4,6}$');
+        var m = /(?:^|[^\d])(\d{4,6})(?!\d)/.exec(t);
+        if (m && codeRe.test(m[1])) out.code = m[1];
+        Object.keys(map).sort(function (a, b) { return b.length - a.length; }).some(function (k) {
+            if (t.indexOf(k) < 0) return false;
+            out.name = k; if (!out.code) out.code = str(map[k]); return true;
+        });
+        return out;
+    }
+
     function resolveEntities(ext, detected, args) {
-        var codeRe = new RegExp((ext.context && ext.context.codeRe) || '^\\d{4,6}$');
+        var c = ext.context || {}, codeRe = new RegExp(c.codeRe || '^\\d{4,6}$'), map = c.nameToCode || {};
         var a = args || {}, d = (detected && detected.entities) || {};
-        var argCode = str(a.code).trim(), argName = str(a.name).trim();
-        var code = codeRe.test(argCode) ? argCode : (codeRe.test(str(d.code)) ? str(d.code) : '');
+        var fromText = textEntities(ext, a.text);
+        var argCode = str(a.code).trim(), argName = str(a.name).trim() || fromText.name;
+        var code = codeRe.test(argCode) ? argCode : (codeRe.test(str(d.code)) ? str(d.code) : (codeRe.test(fromText.code) ? fromText.code : ''));
         var name = argName || str(d.name).trim();
+        if (!code && name && map[name]) code = str(map[name]);
         if (name === code) name = '';
         return { code: code, name: name };
     }
@@ -338,6 +353,7 @@
                     code: { type: 'string', description: '股票代號（例如 2001）；省略時用目前網頁的代號' },
                     name: { type: 'string', description: '股票名稱（例如 大成鋼）；省略時用目前網頁的名稱' },
                     date: { type: 'string', description: '日期 yyyymmdd；省略時用今天' },
+                    text: { type: 'string', description: '使用者的原話（例如「為什麼大成鋼今天下跌」），會從中找股票名稱與代號' },
                 },
                 required: [],
             },
@@ -353,7 +369,7 @@
         var det = detectContext(ext, input.ctx);
         var ent = resolveEntities(ext, det, input.args);
         if (!ent.code) return { ok: false, error: '找不到股票代號：請提供 code，或在股票網頁上使用' };
-        var date = str(input.date || (input.args && input.args.date)).replace(/\D/g, '');
+        var date = str((input.args && input.args.date) || input.date).replace(/\D/g, ''); // 呼叫端明說的日期優先，沒有才用今天
         var plans = planResearch(ext, ent, { date: date });
         var results = [];
         for (var i = 0; i < plans.length; i++) {
