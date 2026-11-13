@@ -1535,3 +1535,55 @@ cd .. && node scripts/native-runtime-pack.js /home/hungfu.lee/fa-work/native-run
 3. 新標籤 `codewrite`、`reading` 是否被產品的路由接受，未驗證。
 4. 產品視窗的路由與套用，這五顆（包含 codewrite、reading）尚未跑過 `lora_four_adapters.run.js`。
 5. 評量都只用一批留出資料，沒有 §18.2 第 6 條要求的新批次重驗。
+
+## 32. 內建 LoRA 六顆、預填走原生、1.22.0-3 執行包（2026-11-13，總指揮追加；同分支）
+
+### 32.1 train_multi 完成判定（369e9e66）
+- 完成只看 `[done]`，遇 `[paused]` 不算完成（修掉「暫停被當成完成」的誤判）。每段寫 `seg-N.log`。
+- 測試：`lora-train/test_train_multi.sh`（假訓練器，7 項通過）。
+
+### 32.2 評量把關：適用範圍、退化、n<20（96bb63d5、5d90c306、9e41a184）
+- `eval_scope.json`：`scope:'out'` 的組不計入輸贏、退化、無資料，只報告（decompose-r4-v2 的 think_stack、codewrite-r4 的 fn_template/code_split）。
+- 退化：負例全錯或正例全錯（只靠另一邊得分）即擋。`n<20` 只報告，不判輸贏（9e41a184）。
+- 卡片評量：`make_card_eval.py` 把原始評量轉成 gate 格式（`fa-lora-card` 之前的 groups 格式），`package_r4.sh` 帶 `--train-file` 打包。
+- 測試：`renderer/src/studio/lora_scope.test.js` 12 項、`lora_gate.test.js` 15 項通過。
+
+### 32.3 內建清單、延遲下載與校驗、上傳 dry-run（2f482442）— 步驟 2、3
+- 清單：`builtin.json`（格式 `fa-lora-builtin` v1），6 筆：`decompose-r4-v2`、`toolcall-r4`、`plan-r4`、`colu-r4`、`codewrite-r4`、`reading-r4`。每筆有 id、sha256、大小、gate、分片（20 MB）與 `join.js`。
+- 下載：`renderer/src/studio/lora_builtin_core.js` 的 `fetchBuiltin` 逐片核對、整檔核對、網路重試；`humanError` 回傳看得懂的原因（network、part_mismatch、total_mismatch、no_entry、bad_manifest）。測試 11 項通過。
+- 暫存：`/home/hungfu.lee/fa-work/lora-adapters-stage`（232 MB，25 檔）。
+- 上傳 dry-run：`bash lora-train/upload_lora_adapters.sh <暫存目錄>`，六顆分片重組與 sha256 全部通過；`--apply` 拒絕執行；只印出計畫指令（2026-11-13 重跑確認）。
+- **注意**：`builtin.json` 的 `base_url` 還是 `<COMMIT>`。推送後要換成實際 commit（或改用分支名）再推一次。推送與發布由總指揮執行。
+- 六顆的 .fatrain（大小、sha256 見 §27.8.1 與 §27.9）。
+
+### 32.4 預填走原生（51b32f43 原生執行包、8f749623 產品端）— 步驟 4
+- 問題（§27.8.8 第 4 項）：原生執行包 1.22.0-2 的樣板收不到預填，預填的工具呼叫只能走網頁版。探針中，`prefill-only` 有 3/3 不是以預填開頭，全數退回 wasm。
+- 修法：
+  - 執行包 1.22.0-3：`nr-protocol.js` 的 `FEATURES = ['lora', 'prefill']`；`run.prefill`（字串，可省略）接在生成提示之後（`nr-template.js` 的 `opts.prefill`）；`nr-host.js`、`nr-child.js`、`nr-engine.js` 同步。
+  - 產品：`vlm_core.js` 的 `nativePrefillPlan(features, prefill)` 只有執行包有 `prefill` 功能時才送 `run.prefill`；`nativeFullText` 在 prepend 時回傳預填＋續寫。`floating-assistant.js` 的 `_nrNativeState` 保留 `features`，`_nrRunNative` 依計畫送出。舊執行包（只有 lora）維持舊做法（生成後檢查開頭）。
+  - 測試：`tests/native/template.test.js` 14 項（含 prefill 協定）、`tests/native/native_lora.test.js` 66 項（已改為 1.22.0-3）、`renderer/src/vlm/vlm_core.test.js` 155 項（含 5 項預填計畫）全部通過。
+- 嵌入清單：`scripts/native-runtime-refreeze-nr.js --version 1.22.0-3 --features lora,prefill --write-main-ext` 重算，`main-ext.js` 的 `NATIVE_RUNTIME_MANIFEST` 已寫入（1.22.0-3、features lora、prefill；nr 檔 4 個有變動）。
+  - 重算輸出：`/home/hungfu.lee/fa-work/refreeze-1.22.0-3`；`manifest.json` md5 `12c1b08b6960f9ef730e30f8a98c9b64`、18899 位元組。
+  - 有變動的分片：`nr-child.js.001.part`（8864 位元組，整檔 sha256 `445615b2f2965b843f9172cc1f23aa176d7801e76ba74442090da0e62d6db1dd`）、`nr-engine.js.001.part`（7886，`ac2c196b36fb362e2755487652f99629f428e88e4a3b079fbda167436d548e5d`）、`nr-host.js.001.part`（11739，`21a74e3d3687a5214a1b2f0164fdc658166b01cf6582e1b1fd910f4b1de26f97`）、`nr-protocol.js.001.part`（6228，`330471c3bbe28bf547185e356718d6a6361e4f304ca1cf115900806f1d3bf03a`）。
+- 執行包本機建置：`/home/hungfu.lee/fa-work/native-runtime/1.22.0-3`（linux-x64，59 檔，30.0 MB）。**發布屬於推送，未做**；發布與釘選 commit 由總指揮核對後處理。
+
+#### 產品視窗探針結果（`native-tools-probe2.json`，xvfb、真 Electron、1.22.0-3）
+- 原生執行包就緒、最新版、features `lora`、`prefill`：通過。四個 .fatrain 匯入、槽版模型就緒、槽版還原 0 次：通過。
+- `tools-only` 原生 3/3（格式正確 2/3，對上 2/3）。
+- `tools+prefill` 原生 2/3（格式正確 3/3，對上 3/3）。
+- `prefill-only` 原生 0/3，全數退回 wasm。
+- **原因（未解決，需要重新嵌入）**：探針跑的是**嵌入的舊產品程式**，不是工作樹的原始碼。`fa-before-embed.js` 與工作樹的 `floating-assistant.js` 不同，userdata 內沒有 `nativePrefillPlan`。所以 `prefill-only` 仍走舊路徑。修正在工作樹中，需要總指揮執行 embed 與 build，然後重跑同一個探針（`scripts/eval/lora_native_tools.eval.js`）。
+- 重跑指令（嵌入後）：
+  `PATH=/tmp/pyshim:$PATH xvfb-run -a nice -n 19 node scripts/eval/lora_four_adapters.run.js --runtime=/home/hungfu.lee/fa-work/native-runtime/1.22.0-3 --assets=/home/hungfu.lee/fa-work/assets --src-userdata=/home/hungfu.lee/fa-work/userdata-src --minutes=30 --restore-slot=0 --eval=scripts/eval/lora_native_tools.eval.js --out=/home/hungfu.lee/fa-work/native-tools-probe3.json`
+
+### 32.5 步驟 5（評測畫面 DOM 探針）— 未完成
+- 現有 `scripts/eval/studio_eval_models.eval.js` 只檢查模型評測面板的下拉與按鈕，不檢查六張卡片的 gate 結果。
+- 要驗證六張卡片的 gate：需要新的探針，列出六顆、讀卡片上的 gate 文字（資料來源 `/api/lora` 的 `gate` 欄位，由 `lora_registry_core.js` 的 `gateOf` 產生）。
+- 目前的 `lora_four_adapters.run.js` 只匯入四顆；要支援六顆必須修改匯入清單。
+- 先決條件：重新嵌入。否則探針讀到的是舊的登錄邏輯（沒有 n<20 規則）。
+
+### 32.6 待辦（依序）
+1. 總指揮：重新嵌入與 build，然後重跑 §32.4 的探針（預期 `prefill-only` 原生 3/3）。
+2. 總指揮：核對 §32.4 的 1.22.0-3 清單與分片後，發布到 native-runtime 分支並釘選 commit。
+3. 總指揮：`builtin.json` 的 `base_url` 換成實際 commit，推送 lora-adapters 分支（dry-run 已通過）。
+4. 補上步驟 5 的六卡片探針（§32.5）。
