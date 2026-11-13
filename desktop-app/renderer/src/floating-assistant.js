@@ -78169,7 +78169,7 @@ const FaRemoteDispatch = (function () {
                 const pkg = JSON.parse(await r.blob.text()), KS = (typeof FaEditHost !== 'undefined' && FaEditHost.KINDS) || {}, K = KS[pkg.kind]; if (!K || !pkg.project) throw new Error('這個編輯器這邊不支援');
                 let js = JSON.stringify(pkg.project); for (const old of Object.keys(pkg.images || {})) { const b = await (await fetch(pkg.images[old])).blob(); const nr = await FaEditStore.putImage(b); js = js.split(old).join(nr); }
                 const id = FaEditStore.newId(K.prefix); await FaEditStore.saveProject(pkg.kind, id, JSON.parse(js));
-                const holder = this._rgOverlay(K.label() + '（來自 ' + group.machine + ' 的副本，修改不會回到對方）'); this._edEditors = this._edEditors || new Map();
+                const holder = this._rgViewOverlay(K.label() + '（來自 ' + group.machine + ' 的副本，修改不會回到對方）'); this._edEditors = this._edEditors || new Map();
                 holder.body.style.cssText = 'width:min(98%,1200px); height:82vh; overflow:auto; background:' + this._getThemePalette().windowBg + '; border-radius:8px; position:relative;';
                 await this._edMount(pkg.kind, id, holder.body); holder.onClose(() => { try { if (holder.body._ed) holder.body._ed.destroy(); } catch (_) { /* */ } }); return;
             }
@@ -78209,7 +78209,8 @@ const FaRemoteDispatch = (function () {
             const close = () => { fns.forEach((f) => { try { f(); } catch (_) { /* */ } }); try { if (card._fwin) card._fwin.destroy(); } catch (_) { /* */ } card.remove(); };
             x.onclick = close; return { body, card, onClose: (f) => fns.push(f), close };
         },
-        _rgOverlay(title) {
+        // 全螢幕黑底的檢視視窗（編輯器副本用）。原本跟群組面板的 _rgOverlay(name) 同名、後面的蓋掉前面的，導致指紋核對／執行記錄／重建群組打不開（2026-11-13 改名）
+        _rgViewOverlay(title) {
             const ov = document.createElement('div'); ov.style.cssText = 'position:fixed; inset:0; z-index:1000002; background:rgba(0,0,0,.8); display:flex; flex-direction:column; align-items:center; justify-content:center; padding:16px; box-sizing:border-box;';
             const bar = document.createElement('div'); bar.style.cssText = 'color:#fff; margin-bottom:8px; font-size:13px;'; bar.textContent = title + '　'; const x = document.createElement('a'); x.href = '#'; x.textContent = '關閉'; x.style.color = '#f87171'; bar.appendChild(x);
             const body = document.createElement('div'); ov.append(bar, body); document.body.appendChild(ov); const fns = [];
