@@ -1792,3 +1792,10 @@ cd .. && node scripts/native-runtime-pack.js /home/hungfu.lee/fa-work/native-run
 - `python lora-train/image_sdxs_lora.py make-data --out <資料夾>`
 - `python lora-train/image_sdxs_lora.py train --model <模型資料夾> --data <資料夾> --out <lora.safetensors> --steps 40 --rank 8 --alpha 8 --lr 5e-4 --seed 1234`
 - `python lora-train/image_sdxs_lora.py verify --model <模型資料夾> --lora <lora.safetensors> --prompt "a red circle on a white background" --seed 1234 --out-prefix <前綴>`
+## 34. 語音辨識 LoRA（whisper-tiny，命令列，2026-11-13，分支 claude/sr-train）
+
+**已驗證**：在 `openai/whisper-tiny` 的 q_proj／v_proj 掛 LoRA（rank 8、alpha 16，147,456 個可訓練參數），用 54 段英文語音訓練 40 步（CPU，30 秒）：損失 0.965 → 0.116；同設定重跑結果逐位元相同；adapter 從磁碟重新載入後，19 段驗證輸出與訓練時一致；輸出與基底不同。
+
+**未驗證／未達成**：驗證集字錯率沒有下降（40 步：15.81% → 15.81%；120 步：17.28%，變差，過擬合）。沒有接進工作室與主行程，沒有併回基底匯出，只有英文。細節與數字見 `DESIGN.offline-training-studio.md` 的「語音辨識（speech_recognition）訓練核心」一節。
+
+**腳本**：`renderer/src/studio/sr_train.py`（`prep`／`train`／`check`），用 `/home/hungfu.lee/fa-work/venv/bin/python` 執行（transformers 5.22.2、peft 0.21.2、torch 2.15 CPU）。
