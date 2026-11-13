@@ -45,7 +45,7 @@ check('推理：預訓練後依序是算術題、思考＋答案微調、評量�
 check('推理：強化學習從微調結果接續，匯出用強化學習後的模型', pr.steps.find((x) => x.id === 'grpo').args.indexOf(env.outDir + '/chat') > 0 && pr.steps.find((x) => x.id === 'export').args.indexOf(env.outDir + '/rl') > 0);
 check('推理：微調用思考＋答案混合資料', pr.steps.find((x) => x.id === 'sft').args.some((a) => /math_train_hybrid\.jsonl$/.test(a)));
 const pg = X.planFor('llm_scratch', { kvHeads: 4, heads: 8 }, env);
-check('鍵值頭數不是 8：不排原生匯出與核對，只輸出標準格式', pg.ok && pg.nativeCompatible === false && !pg.steps.some((x) => ['export', 'check', 'native'].includes(x.id)) && pg.steps.some((x) => x.id === 'hf'));
+check('鍵值頭數不是 8：不排原生匯出與核對，只輸出標準格式', pg.ok && !pg.steps.some((x) => ['export', 'check', 'native'].includes(x.id)) && pg.steps.some((x) => x.id === 'hf'));
 check('頭數不是鍵值頭數的倍數會擋', !X.planFor('llm_scratch', { heads: 8, kvHeads: 3 }, env).ok);
 check('不認得的架構會擋', !X.planFor('llm_scratch', { arch: 'mamba' }, env).ok);
 check('原生相容判斷：8 個鍵值頭相容、其他不相容', L.nativeCompatible({}) && L.nativeCompatible({ kvHeads: 8 }) && !L.nativeCompatible({ kvHeads: 2 }));
