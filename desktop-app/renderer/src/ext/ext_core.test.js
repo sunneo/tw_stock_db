@@ -10,27 +10,15 @@ function check(name, cond, info) {
     else bad.push(name + (info !== undefined ? ' ' + JSON.stringify(info).slice(0, 500) : ''));
 }
 
-// ---- 固定快照 ----
-const TWSE_DAY = JSON.stringify({
-    stat: 'OK', title: '115年11月 2001 大成鋼 各日成交資訊',
-    fields: ['日期', '成交股數', '成交金額', '開盤價', '最高價', '最低價', '收盤價', '漲跌價差', '成交筆數'],
-    data: [
-        ['115/11/11', '1,000,000', '30,000,000', '30.10', '30.50', '29.90', '30.00', '+0.20', '900'],
-        ['115/11/12', '2,345,678', '70,000,000', '30.20', '30.40', '28.80', '29.20', '-0.80', '1,500'],
-    ],
-});
-const TWSE_T86 = JSON.stringify({
-    stat: 'OK', fields: ['證券代號', '證券名稱', '外陸資買賣超股數(不含外資自營商)', '投信買賣超股數', '自營商買賣超股數'],
-    data: [['2001', '大成鋼', '-500,000', '12,000', '-3,000'], ['2330', '台積電', '1,000', '0', '0']],
-});
-const TWSE_EMPTY = JSON.stringify({ stat: '很抱歉，沒有符合條件的資料!', fields: [], data: [] });
-const RSS = '<?xml version="1.0"?><rss><channel>' +
-    '<item><title>大成鋼 股價重挫 - 某財經網</title><link>https://n.example/a</link><pubDate>Thu, 12 Nov 2026 09:10:00 GMT</pubDate></item>' +
-    '<item><title><![CDATA[2001 大成鋼 法說會 &amp; 產能]]></title><link>https://n.example/b</link><pubDate>Thu, 12 Nov 2026 10:00:00 GMT</pubDate></item>' +
-    '<item><title>台積電 新廠動態</title><link>https://n.example/c</link><pubDate>Thu, 12 Nov 2026 08:00:00 GMT</pubDate></item>' +
-    '</channel></rss>';
+// ---- 固定快照：2026-11-13 抓的真實公開頁面（大成鋼 2027）；T86 只節錄 2027、2330 兩列 ----
+const fs = require('fs'), path = require('path');
+const FX = (f) => fs.readFileSync(path.join(__dirname, 'fixtures', f), 'utf8');
+const TWSE_DAY = FX('twse_stock_day_2027_202611.json');   // 2026-11 個股日成交（最後一列 11/12 收盤 49.05）
+const TWSE_T86 = FX('twse_t86_20261112_excerpt.json');     // 三大法人買賣超 20261112（節錄）
+const TWSE_EMPTY = JSON.stringify({ stat: '很抱歉，沒有符合條件的資料!', total: 0 });   // 真實回應：休市日或尚未公布
+const RSS = FX('google_news_rss_2027.xml');                // 真實 Google 新聞 RSS（查詢「大成鋼 2027」）
 const LOGIN_PAGE = '<html><body><form><input type="password" name="p"></form>請先登入才能查看</body></html>';
-const STOCK_PAGE_TITLE = '大成鋼(2001) 股價 - 股市網站';
+const STOCK_PAGE_TITLE = '大成鋼(2027) 股價 - 股市網站';
 
 (async () => {
     // ---- 格式驗證 ----
@@ -52,42 +40,44 @@ const STOCK_PAGE_TITLE = '大成鋼(2001) 股價 - 股市網站';
     check('remove', X.remove(reg, 'stock_drop_cause') && X.list(reg).length === 0);
 
     // ---- 情境偵測 ----
-    const d1 = X.detectContext(EX, { url: 'https://stock.example/quote/2001', title: '', selection: '' });
-    check('context: code from url path', d1.matched && d1.entities.code === '2001' && d1.entities.name === '', d1);
-    const d2 = X.detectContext(EX, { url: 'https://stock.example/quote/2001', title: STOCK_PAGE_TITLE });
-    check('context: name and code from title pattern', d2.matched && d2.entities.code === '2001' && d2.entities.name === '大成鋼', d2);
-    const d3 = X.detectContext(EX, { url: 'https://shop.example/cart?id=2001', title: 'x' });
+    const d1 = X.detectContext(EX, { url: 'https://stock.example/quote/2027', title: '', selection: '' });
+    check('context: code from url path', d1.matched && d1.entities.code === '2027' && d1.entities.name === '', d1);
+    const d2 = X.detectContext(EX, { url: 'https://stock.example/quote/2027', title: STOCK_PAGE_TITLE });
+    check('context: name and code from title pattern', d2.matched && d2.entities.code === '2027' && d2.entities.name === '大成鋼', d2);
+    const d3 = X.detectContext(EX, { url: 'https://shop.example/cart?id=2027', title: 'x' });
     check('context: url gate blocks non-stock pages', !d3.matched, d3);
     const d4 = X.detectContext(EX, { url: 'https://stock.example/home', title: '今日市場' });
     check('context: no code found', !d4.matched && /找不到/.test(d4.reason), d4);
-    const d5 = X.detectContext(EX, { url: 'https://stock.example/quote/2001/abc', title: '', selection: '' });
-    check('context: url code must be followed by non-digit', d5.matched && d5.entities.code === '2001', d5);
+    const d5 = X.detectContext(EX, { url: 'https://stock.example/quote/2027/abc', title: '', selection: '' });
+    check('context: url code must be followed by non-digit', d5.matched && d5.entities.code === '2027', d5);
     check('resolve: args override page, page fills gaps', JSON.stringify(X.resolveEntities(EX, d2, { code: '2330' })) === '{"code":"2330","name":"大成鋼"}', X.resolveEntities(EX, d2, { code: '2330' }));
-    check('resolve: bad code from args is ignored', X.resolveEntities(EX, d2, { code: 'abc' }).code === '2001');
+    check('resolve: bad code from args is ignored', X.resolveEntities(EX, d2, { code: 'abc' }).code === '2027');
     check('resolve: no page, no args → empty code', X.resolveEntities(EX, null, {}).code === '');
 
     // ---- 來源規劃 ----
-    const ent = { code: '2001', name: '大成鋼' };
+    const ent = { code: '2027', name: '大成鋼' };
     const plan = X.planResearch(EX, ent, { date: '20261112' });
-    check('plan: four sources, quote has date in url', plan.length === 4 && plan[0].url.indexOf('stockNo=2001') > 0 && plan[0].url.indexOf('date=20261112') > 0 && !plan[0].skipped, plan[0]);
-    check('plan: news url encodes name', plan[1].url.indexOf('q=%E5%A4%A7') > 0 && plan[1].url.indexOf('2001') > 0, plan[1].url);
+    check('plan: four sources, quote has date in url', plan.length === 4 && plan[0].url.indexOf('stockNo=2027') > 0 && plan[0].url.indexOf('date=20261112') > 0 && !plan[0].skipped, plan[0]);
+    check('plan: news url encodes name', plan[1].url.indexOf('q=%E5%A4%A7') > 0 && plan[1].url.indexOf('2027') > 0, plan[1].url);
     check('plan: missing date skips the date sources with reason', X.planResearch(EX, ent, {})[0].skipped && /日期/.test(X.planResearch(EX, ent, {})[0].reason));
-    check('plan: missing name skips news only', X.planResearch(EX, { code: '2001', name: '' }, { date: '20261112' })[1].skipped && /股票名稱/.test(X.planResearch(EX, { code: '2001', name: '' }, { date: '20261112' })[1].reason));
+    check('plan: missing name skips news only', X.planResearch(EX, { code: '2027', name: '' }, { date: '20261112' })[1].skipped && /股票名稱/.test(X.planResearch(EX, { code: '2027', name: '' }, { date: '20261112' })[1].reason));
     check('plan: source without url is skipped as not configured', plan[3].skipped && /未設定/.test(plan[3].reason));
 
     // ---- 抽取 ----
     const q = X.extractSource(plan[0], TWSE_DAY, ent);
-    check('extract json_rows: last row, shown fields', q.facts.length === 3 && q.facts[0].text === '收盤價：29.20' && q.facts[1].text === '漲跌價差：-0.80' && q.facts[2].text === '成交股數：2,345,678', q);
+    check('extract json_rows: last row, shown fields', q.facts.length === 3 && q.facts[0].text === '收盤價：49.05' && q.facts[1].text === '漲跌價差：-1.05' && q.facts[2].text === '成交股數：18,068,619', q);
     check('extract: source carried on the result', q.source.label === '報價與成交量' && q.source.url.indexOf('twse.com.tw') > 0);
     const inst = X.extractSource(plan[2], TWSE_T86, ent);
-    check('extract json_rows: match by code', inst.facts.length === 3 && inst.facts[0].text === '外陸資買賣超股數(不含外資自營商)：-500,000', inst);
+    check('extract json_rows: match by code', inst.facts.length === 3 && inst.facts[0].text === '外陸資買賣超股數(不含外資自營商)：-1,139,465', inst);
     const instEmpty = X.extractSource(plan[2], TWSE_EMPTY, ent);
     check('extract: holiday / no data is explained, not invented', instEmpty.facts.length === 0 && /沒有資料列/.test(instEmpty.note), instEmpty);
     const instNoCode = X.extractSource(plan[2], TWSE_T86, { code: '9999', name: '' });
     check('extract: code not in data', instNoCode.facts.length === 0 && /找不到這檔股票/.test(instNoCode.note), instNoCode);
     const news = X.extractSource(plan[1], RSS, ent);
-    check('extract rss: keeps only items that mention name or code, decodes entities', news.facts.length === 2 && news.facts[0].text.indexOf('大成鋼 股價重挫') === 0 && news.facts[1].text.indexOf('&') > 0, news.facts);
+    check('extract rss: keeps only items that mention name or code, decodes entities', news.facts.length === 5 && news.facts.every((f) => /大成鋼|2027/.test(f.text)), news.facts);
     const newsNone = X.extractSource(plan[1], RSS, { code: '1234', name: '不存在' });
+    const newsRecent = X.extractSource(plan[1], RSS, ent, { date: '20261112' });
+    check('extract rss: maxAgeDays keeps only items from the two days before the query day', newsRecent.facts.length === 1 && /運價惹得禍/.test(newsRecent.facts[0].text) && !newsRecent.facts.some((f) => /12:17 即時新聞|理財周刊/.test(f.text)) && newsRecent.facts.every((f) => /2026/.test(f.text)), newsRecent.facts);
     check('extract rss: nothing relevant', newsNone.facts.length === 0 && /沒有含股票名稱/.test(newsNone.note));
     const tplan = { label: '公告', url: 'https://x.example', extract: { kind: 'text', max: 3 } };
     const txt = X.extractSource(tplan, '<p>今天大成鋼公告重大訊息，股價下跌。</p><p>無關的句子在這裡，沒有公司名稱。</p>', ent);
@@ -98,11 +88,11 @@ const STOCK_PAGE_TITLE = '大成鋼(2001) 股價 - 股市網站';
     check('blank body → failed note', /抓不到內容/.test(blank.note));
 
     // ---- 數字核對 ----
-    const v1 = X.verifyFacts([{ text: '收盤價：29.20' }, { text: '收盤價：99.99' }], TWSE_DAY);
+    const v1 = X.verifyFacts([{ text: '收盤價：49.05' }, { text: '收盤價：99.99' }], TWSE_DAY);
     check('verify: number not in source is dropped', v1.kept.length === 1 && v1.dropped === 1, v1);
     check('verify: uses checkExtractive when FaRecipe is available', typeof R.checkExtractive === 'function');
-    const v2 = X.verifyFacts([{ text: '收盤價：29.20' }], TWSE_DAY);
-    check('verify: thousands separators are ignored', X.verifyFacts([{ text: '成交股數：2345678' }], TWSE_DAY).kept.length === 1 && v2.kept.length === 1);
+    const v2 = X.verifyFacts([{ text: '收盤價：49.05' }], TWSE_DAY);
+    check('verify: thousands separators are ignored', X.verifyFacts([{ text: '成交股數：18068619' }], TWSE_DAY).kept.length === 1 && v2.kept.length === 1);
 
     // ---- 段落與買賣建議 ----
     const fakeResults = [
@@ -112,7 +102,7 @@ const STOCK_PAGE_TITLE = '大成鋼(2001) 股價 - 股市網站';
     const built = X.buildSections(EX, ent, fakeResults);
     check('sections: advice line removed and counted', built.adviceRemoved === 1 && built.sections[0].bullets.length === 1, built);
     check('sections: nothing found says 查不到 with reason', built.sections[1].bullets[0].text === '查不到（沒有資料列）' && built.unavailable.length === 1);
-    check('sections: chapter title from template', built.title === '大成鋼（2001）下跌原因調查', built.title);
+    check('sections: chapter title from template', built.title === '大成鋼（2027）下跌原因調查', built.title);
 
     // ---- 貢獻到簡報 ----
     const deckIn = { title: '主題', chapters: [{ title: '前言', slides: [{ title: '封面', layout: 'title' }] }] };
@@ -139,18 +129,18 @@ const STOCK_PAGE_TITLE = '大成鋼(2001) 股價 - 股市網站';
     pages[plan[0].url] = TWSE_DAY; pages[plan[1].url] = RSS; pages[plan[2].url] = TWSE_T86;
     const calls = [];
     const inv = await X.investigate(EX, {
-        ctx: { url: 'https://stock.example/quote/2001', title: STOCK_PAGE_TITLE, selection: '' },
+        ctx: { url: 'https://stock.example/quote/2027', title: STOCK_PAGE_TITLE, selection: '' },
         args: {}, date: '20261112',
         fetchText: async (u) => { calls.push(u); return Object.prototype.hasOwnProperty.call(pages, u) ? pages[u] : null; },
     });
-    check('investigate: ok, entities from page', inv.ok && inv.entities.code === '2001' && inv.entities.name === '大成鋼', inv);
+    check('investigate: ok, entities from page', inv.ok && inv.entities.code === '2027' && inv.entities.name === '大成鋼', inv);
     check('investigate: fetched three real sources, skipped the unconfigured one', calls.length === 3 && inv.results[3].status === 'skipped', calls);
     check('investigate: statuses', inv.results[0].status === 'ok' && inv.results[1].status === 'ok' && inv.results[2].status === 'ok', inv.results);
     check('investigate: deck contribution present and valid shape', inv.deck && inv.deck.chapters.length === 1 && inv.deck.chapters[0].slides.slice(-1)[0].title === '免責聲明', inv.deckError);
     check('investigate: unavailable lists the skipped source', inv.unavailable.length === 1 && inv.unavailable[0].id === 'announce', inv.unavailable);
     const noCode = await X.investigate(EX, { ctx: { url: 'https://stock.example/home', title: '首頁' }, fetchText: async () => null });
     check('investigate: no code → honest error', !noCode.ok && /找不到股票代號/.test(noCode.error), noCode);
-    const throwing = await X.investigate(EX, { args: { code: '2001', name: '大成鋼' }, date: '20261112', fetchText: async () => { throw new Error('網路斷線'); } });
+    const throwing = await X.investigate(EX, { args: { code: '2027', name: '大成鋼' }, date: '20261112', fetchText: async () => { throw new Error('網路斷線'); } });
     check('investigate: fetch error becomes a failed source, not a crash', throwing.ok && throwing.results[0].status === 'failed' && /網路斷線/.test(throwing.results[0].note), throwing.results);
     check('investigate: failed sources show 查不到, never a number', throwing.sections[0].bullets[0].text.indexOf('查不到') === 0);
 

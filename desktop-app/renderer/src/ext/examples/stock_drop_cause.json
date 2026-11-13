@@ -24,10 +24,10 @@
     },
     {
       "id": "news",
-      "label": "當日新聞搜尋",
+      "label": "近期新聞（Google 新聞搜尋，只留查詢日前兩天內）",
       "url": "https://news.google.com/rss/search?q={name}%20{code}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant",
       "needs": ["name"],
-      "extract": { "kind": "rss", "max": 5, "must": ["{name}", "{code}"] }
+      "extract": { "kind": "rss", "max": 5, "maxAgeDays": 2, "must": ["{name}", "{code}"] }
     },
     {
       "id": "institutional",

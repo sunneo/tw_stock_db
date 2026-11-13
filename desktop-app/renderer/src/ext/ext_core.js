@@ -196,17 +196,30 @@
         return { facts: facts, note: '' };
     }
 
-    function rssItems(ex, body, ent) {
+    // maxAgeDays：只留查詢日（台北時間）前幾天到當天的新聞；查詢日沒給就不篩。
+    function rssItems(ex, body, ent, opts) {
         var must = (ex.must || []).map(function (t) { return fill(t, ent, '', false).text; }).filter(Boolean);
+        var day0 = dayStartMs(opts && opts.date), maxAge = ex.maxAgeDays > 0 ? ex.maxAgeDays : 0;
         var re = /<item>([\s\S]*?)<\/item>/g, m, out = [];
         while ((m = re.exec(body)) && out.length < 50) {
             var title = tag(m[1], 'title'), date = tag(m[1], 'pubDate');
             if (!title) continue;
             if (must.length && !must.some(function (t) { return title.indexOf(t) >= 0; })) continue;
+            if (maxAge && day0) {
+                var ts = Date.parse(date);
+                if (!(ts >= day0 - maxAge * 864e5 && ts < day0 + 2 * 864e5)) continue;
+            }
             out.push({ text: title + (date ? '（' + date + '）' : '') });
         }
         out = out.slice(0, ex.max || 5);
         return out.length ? { facts: out, note: '' } : { facts: [], note: '沒有含股票名稱或代號的新聞' };
+    }
+
+    // 台北時間 yyyymmdd 當天 00:00 的毫秒數（UTC+8）；沒有或格式不對就是 0
+    function dayStartMs(yyyymmdd) {
+        var s = str(yyyymmdd).replace(/\D/g, '');
+        if (s.length !== 8) return 0;
+        return Date.UTC(+s.slice(0, 4), +s.slice(4, 6) - 1, +s.slice(6, 8)) - 8 * 36e5;
     }
 
     function textSentences(ex, body, ent) {
@@ -240,13 +253,13 @@
     }
 
     // 抽取一個來源：回傳 { label, url, facts, dropped, note }；facts 已通過數字核對。
-    function extractSource(plan, body, ent) {
+    function extractSource(plan, body, ent, opts) {
         var source = { label: plan.label, url: plan.url };
         body = str(body);
         if (!body.trim()) return { source: source, facts: [], dropped: 0, note: '抓不到內容（沒有回應或空白）' };
         var ex = plan.extract || {}, r;
         if (ex.kind === 'json_rows') r = jsonRows(ex, body, ent);
-        else if (ex.kind === 'rss') r = rssItems(ex, body, ent);
+        else if (ex.kind === 'rss') r = rssItems(ex, body, ent, opts);
         else r = textSentences(ex, body, ent);
         var facts = (r.facts || []).slice(0, MAX_FACTS);
         var v = verifyFacts(facts, body);
@@ -348,7 +361,7 @@
             if (p.skipped) { results.push({ id: p.id, label: p.label, source: { label: p.label, url: '' }, facts: [], status: 'skipped', note: p.reason }); continue; }
             var body = null, fetchErr = '';
             try { body = await (input.fetchText ? input.fetchText(p.url) : null); } catch (e) { fetchErr = '抓取失敗：' + str(e && e.message || e); }
-            var ex = fetchErr ? { source: { label: p.label, url: p.url }, facts: [], dropped: 0, note: fetchErr } : extractSource(p, body, ent);
+            var ex = fetchErr ? { source: { label: p.label, url: p.url }, facts: [], dropped: 0, note: fetchErr } : extractSource(p, body, ent, { date: date });
             var status = ex.facts.length ? 'ok' : (fetchErr || !str(body).trim() ? 'failed' : 'empty');
             results.push({ id: p.id, label: p.label, source: ex.source, facts: ex.facts, dropped: ex.dropped, status: status, note: ex.note });
         }

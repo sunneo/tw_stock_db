@@ -47,7 +47,7 @@
   },
   "research": [
     { "id": "quote", "label": "報價與成交量", "url": "https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY?stockNo={code}&response=json&date={date}", "extract": { "kind": "json_rows", "rowsKey": "data", "fieldsKey": "fields", "pick": "last", "count": 1, "show": ["收盤價", "成交股數", "漲跌價差"] } },
-    { "id": "news", "label": "當日新聞搜尋", "url": "https://news.google.com/rss/search?q={name}%20{code}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant", "needs": ["name"], "extract": { "kind": "rss", "max": 5, "must": ["{name}", "{code}"] } },
+    { "id": "news", "label": "近期新聞（Google 新聞搜尋，只留查詢日前兩天內）", "url": "https://news.google.com/rss/search?q={name}%20{code}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant", "needs": ["name"], "extract": { "kind": "rss", "max": 5, "maxAgeDays": 2, "must": ["{name}", "{code}"] } },
     { "id": "institutional", "label": "三大法人買賣超", "url": "https://www.twse.com.tw/rwd/zh/fund/T86?date={date}&selectType=ALL&response=json", "extract": { "kind": "json_rows", "rowsKey": "data", "fieldsKey": "fields", "match": { "col": 0, "equals": "{code}" }, "show": ["外陸資買賣超股數(不含外資自營商)", "投信買賣超股數", "自營商買賣超股數"] } },
     { "id": "announce", "label": "公開資訊觀測站重大訊息", "url": "", "optional": true, "note": "需要 POST 表單，未驗證；沒有網址模板就標示「未設定來源」並跳過。", "extract": { "kind": "text" } }
   ],
@@ -58,7 +58,7 @@
 
 - `context.patterns`：依序試；第一個命中的給代號（必要）與名稱（可選）。`urlPattern` 不命中就不偵測。
 - `research[].url`：模板變數 `{code}`、`{name}`（URL 編碼）、`{date}`。缺值的來源標記為 `skipped`，原因寫明缺哪個變數，不猜。
-- `extract.kind`：`json_rows`（JSON 陣列列，可用 `match` 篩選、`pick: last` 取最後幾列，欄位名從 `fieldsKey` 對應）、`rss`（抽 `<item>` 的標題與日期，`must` 要求標題含這些字）、`text`（去標籤後取含關鍵字的句子）。
+- `extract.kind`：`json_rows`（JSON 陣列列，可用 `match` 篩選、`pick: last` 取最後幾列，欄位名從 `fieldsKey` 對應）、`rss`（抽 `<item>` 的標題與日期，`must` 要求標題含這些字，`maxAgeDays` 只留查詢日前幾天內的新聞）、`text`（去標籤後取含關鍵字的句子）。
 - 工具參數固定由 `toolSpec` 產生：`code`、`name`、`date` 三個選填字串（不用宣告）。
 - `contribute`：整理成一章，章名模板同上；最後一頁**固定**是免責聲明（即使宣告裡沒寫，程式也會補上）。
 
@@ -89,6 +89,14 @@
 
 ## 七、驗證現況表
 
+**真實抓取（2026-11-13，只讀、不登入、不帶任何個人資料，User-Agent 只寫通用名稱）**：
+- `https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY?stockNo=2027&response=json&date=20261112`：200，個股日成交，最後一列 11/12 收盤 49.05、漲跌 −1.05（與範例的欄位名稱相符）。
+- `https://www.twse.com.tw/rwd/zh/fund/T86?date=20261112&selectType=ALL&response=json`：200，三大法人；2027 那列的欄位名稱全部對得上（外陸資買賣超股數、投信買賣超股數、自營商買賣超股數）。
+- `https://news.google.com/rss/search?q=大成鋼 2027&hl=zh-TW&gl=TW&ceid=TW:zh-Hant`：200，32 則含名稱的項目；查詢日前兩天內只剩 1 則。
+- 注意：範例早先誤用 2001 當大成鋼的代號，實際是 **2027**；2001 不是大成鋼（抓 2001 的 STOCK_DAY 回「沒有符合條件的資料」）。已改成固定快照用 2027。
+- 2026-11-13 中午查 11/13 當日的 STOCK_DAY 尚無資料，程式會標示「沒有資料列」，不會猜。
+
+
 | 項目 | 狀態 | 證據 |
 |---|---|---|
 | 擴充格式驗證（必要欄位、模板變數、正規表示式可編譯） | 已驗證（單元測試） | `renderer/src/ext/ext_core.test.js` |
@@ -97,6 +105,8 @@
 | `json_rows`／`rss`／`text` 抽取（固定快照） | 已驗證（單元測試，快照為手寫的仿真格式） | 同上 |
 | 數字核對、免責聲明、買賣建議過濾 | 已驗證（單元測試） | 同上 |
 | 貢獻到簡報片段符合 deck 格式（章、頁數、條列數上限） | 已驗證（單元測試，跟 `deck_core` 的 `LIMITS` 比對） | 同上 |
-| 宿主工具登記後，線上工具表與離線目錄看得到 | 待驗證（需要真的 Electron 啟動） | — |
-| 真實網站抽取（TWSE、Google 新聞） | 見實作紀錄（若有實抓數字才寫進 commit） | — |
+| 真實公開頁面抽取（2026-11-13 抓取，見下） | 已驗證（固定快照＝真實回應；T86 節錄） | `renderer/src/ext/fixtures/` |
+| 宿主工具登記後，線上工具表與離線目錄看得到 | 未驗證（程式已接線，語法與建置通過；沒有啟動 Electron 看工具表） | — |
+| 離線 AI 經由 CoLU 路由選到這個工具 | 未驗證 | — |
+| 公開資訊觀測站重大訊息 | 未驗證（沒有網址模板，標示「未設定來源」） | — |
 | 桌面版（Electron）端到端 | 未驗證 | — |
