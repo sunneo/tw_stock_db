@@ -7,8 +7,8 @@ check('id 不重複', new Set(ids).size === ids.length);
 check('狀態只會是 done／half／design', M.TYPES.every((t) => ['done', 'half', 'design'].indexOf(t.status) >= 0));
 check('已完成：語言模型（LoRA 與完整模型都可輸出）', M.find('llm').status === 'done' && M.find('llm').outputs.every((o) => o.available));
 check('語言模型的完整模型寫明格式與手動的第二步', M.find('llm').outputs[1].formats.join('').indexOf('ONNX') >= 0 && /匯出區/.test(M.find('llm').outputs[1].note));
-check('半成品只有語音合成', M.TYPES.filter((t) => t.status === 'half').map((t) => t.id).join() === 'speech');
-check('只有設計：音樂作曲、語音辨識、音訊轉音符、圖像生成、看圖說文字', ['music', 'speech_recognition', 'audio_to_notes', 'image', 'vision'].every((x) => M.find(x).status === 'design'));
+check('半成品：語音合成、音樂作曲（小型模型的訓練核心已命令列實測，工作室還沒接上）', M.TYPES.filter((t) => t.status === 'half').map((t) => t.id).join() === 'speech,music');
+check('只有設計：語音辨識、音訊轉音符、圖像生成、看圖說文字', ['speech_recognition', 'audio_to_notes', 'image', 'vision'].every((x) => M.find(x).status === 'design'));
 check('每個不可用的輸出都寫原因', M.TYPES.every((t) => t.outputs.every((o) => o.available || (o.reason && o.reason.length > 4))));
 check('每個半成品與只有設計的類型都寫缺口', M.TYPES.filter((t) => t.status !== 'done').every((t) => t.gap && /缺：/.test(t.gap) && /已有：/.test(t.gap)));
 // 開關：預設（關）只顯示已完成

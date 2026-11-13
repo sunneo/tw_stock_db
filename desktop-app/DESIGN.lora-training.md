@@ -1674,3 +1674,9 @@ cd .. && node scripts/native-runtime-pack.js /home/hungfu.lee/fa-work/native-run
 - 每輪仍只開一顆：路由已保證同一領域只留一顆（`lora_route_core`），沒有改動 `maxActive`。
 - 網頁版只顯示「只有桌面版啟用」，沒有接網頁版 LoRA 的內建下載。
 - 推送前：`builtin.json` 的 `base_url` 換成實際 commit（或分支），推送 lora-adapters 分支，發布執行包（由總指揮核對後處理）。
+
+## 36. 音樂作曲：不是 LoRA（2026-11-13，分支 claude/music-train）
+
+音樂作曲的訓練核心是**從零開始的小型注意力模型**（約 46 萬參數，2 層、4 頭），不是 LoRA，也不是對外部預訓練模型的微調（midigenai 太大，授權未確認，本機 CPU 不可行）。資料是程式作曲（`music_compose.js`）的主旋律，符號格式與語法檢查見 `renderer/src/studio/music_train_core.js`，訓練與取樣見 `renderer/src/studio/music_train.py`。
+
+**已驗證**：留出 90 首的損失 4.756 → 1.150；取樣 36 首的語法合格 2 → 27；從磁碟重新載入的取樣逐首相同；開確定性演算法後同設定重跑逐位元相同。**未驗證**：音樂品質（沒有人聽過）、過擬合（訓練損失 0.28 vs 留出 1.15）、與真實作曲的比較、接進作曲流程。細節見 `DESIGN.offline-training-studio.md` 的「音樂作曲（music）訓練核心」一節。
