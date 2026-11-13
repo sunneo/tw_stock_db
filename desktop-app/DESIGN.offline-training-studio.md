@@ -914,3 +914,29 @@ Backend {
 - 工作室按鈕與主行程接線未做；產物未收進工作室資產。
 - 只有一台機器；確定性設定只在這台機器上驗證。
 - midigenai 未做（太大、授權未確認）；若要用它，需要另外的計畫（GPU 或雲端，與授權確認）。
+
+## 外部訓練作業接線（音樂作曲、語音辨識；2026-11-13，分支 claude/studio-wire-six）
+
+**做了什麼**：
+- `renderer/src/studio/ext_job_core.js`（純函式，可測）：每個型別的參數範圍與預設、命令列組裝、進度行解析（腳本印的 `{step, loss}`）、核對規則（`check` 步驟的 JSON：`reloaded_*` 必須等於 `of`）、失敗原因翻譯（缺套件、記憶體不足、路徑不存在）、輸出檔核對。`runJob` 依序跑步驟、可停止，子行程由主行程注入。
+- 主行程 `studio_host.js`：`studio_ext_check`（格式與環境檢查，不跑訓練）、`studio_ext_start`（同名輸出夾已有內容就拒絕，不覆寫）、`studio_ext_status`、`studio_ext_stop`。輸出放 `<userData>/studio-ext/<型別>/<名稱>/`，結束時寫 `ext_job.json`。
+- 工作室伺服器 `/api/ext/check|start|status|stop`（只有桌面版）；樣板的「模型類型」面板對這兩個型別顯示參數、預估時間、限制與進度，不再走 LoRA 精靈。
+- `model_types_core.js`：音樂作曲（完整模型可輸出）與語音辨識（LoRA 可輸出）改為 done；`ext` 欄位與 `ext_job_core.SPECS` 的 wired 必須一致（測試檢查）。
+
+**已驗證（實測，桌面主行程的同一組 op，真的 Python：`fa-work/vlm-studio/vlmenv`，torch 2.15 CPU、transformers 5.22、peft 0.21）**：
+| 型別 | 路徑 | 結果 |
+|---|---|---|
+| 音樂作曲 | `studio_ext_check` → `studio_ext_start`（gen → train → check）→ 狀態輪詢 | 完成，約 55 秒；損失 4.756→1.150（與既有紀錄相同）；從磁碟重新載入 36/36 首逐首相同；輸出 `model.pt` 等 11 個檔；同名再開被拒絕 |
+| 語音辨識 | 同上（train → check；40 步，預設） | 完成，約 29 秒；損失 1.061→0.053；`hyp_reloaded.json` 與 `hyp_after.json` 的 sha256 相同 |
+| 兩者 | `ext_job_core.test.js`（36 項，假子行程）、`ext_route.test.js`（9 項，路由接線）、`model_types_core.test.js`（33 項） | 全過 |
+
+**未驗證／沒做到（誠實列出）**：
+- **沒有在真正的桌面 app 裡按一次「開始」**（沒有 Electron 視窗可以點）。路由與主行程 op 都實測過，但介面按鈕的點擊路徑只靠程式碼審閱與語法檢查。
+- **輸出還沒進工作室資產**：`asset_core` 的種類只有 colu、blockly、matrix、uml、trainer、lora、llm；音樂的權重與語音辨識的適配器都不是既有種類，直接塞進去會被 LoRA 套用路徑誤用。要做需要新增種類（建議 `ext`）與它的清單格式。
+- **腳本位置**：`music_train.py`、`sr_train.py` 與 `music_train_core.js` 只在開發樹的 `renderer/src/studio/`（主行程經 `extScriptDirs` 找）。`music_train_core.js` 依賴 `../music/music_compose.js`，所以不能只複製 `studio-host/`；安裝版要另外打包這些檔案。
+- **語音辨識的字錯率沒有下降**（實測 15.81%→15.81%；120 步變差到 17.28%）。損失下降不代表辨識變好；介面說明文字已寫明。
+- **音樂品質沒有人聽過**，只量結構指標（語法合格 2/36→27/36）；只在程式作曲的資料上訓練。
+- **預估時間**：音樂約 55 秒／1500 步；語音辨識 40 步約 30 秒（實測 29 秒）。舊的 120 步紀錄是 1255 秒，當時的機器負載不同，這裡不採用。
+- 其餘四型別（音訊轉音符、圖像生成、看圖說文字、語音合成）仍 wired:false，原因寫在 `ext_job_core.SPECS.*.reason`，按鈕不會假裝能跑。
+
+**實測檔案（repo 外）**：音樂 `/home/hungfu.lee/fa-work/music/run1/`（既有）與本次驗證輸出；語音辨識 `/home/hungfu.lee/fa-work/sr/`（既有資料與 whisper-tiny）。本次驗證的輸出放在 `scratchpad`，不進 repo。
