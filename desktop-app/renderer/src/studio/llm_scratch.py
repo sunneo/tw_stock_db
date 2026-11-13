@@ -522,6 +522,7 @@ def cmd_pretrain(a):
             emit({"event": "eval", "step": step, "heldout_loss": round(hl, 5), "heldout_ppl": round(math.exp(hl), 3)})
 
     h1 = heldout_loss()
+    loads_final = [blk.mlp.last_load.tolist() for blk in m.layers if getattr(blk.mlp, "last_load", None) is not None]   # 留出視窗的專家負載（先於一個詞元的取樣生成）
     samples_after = gen_samples()
     emit({"event": "eval", "step": a.steps, "heldout_loss": round(h1, 5), "heldout_ppl": round(math.exp(h1), 3)})
     torch.save({"config": cfg, "state": m.state_dict()}, os.path.join(a.out, "ckpt.pt"))
@@ -539,10 +540,11 @@ def cmd_pretrain(a):
             "heldout_ppl_before": round(math.exp(h0), 3), "heldout_ppl_after": round(math.exp(h1), 3),
             "train_loss_first": curve[0]["loss"] if curve else None, "train_loss_last_avg": round(float(np.mean(recent[-20:])), 5),
             "elapsed_s": round(time.time() - t0, 1), "curve": curve, "arch": cfg["arch"], "active_params": n_active}
-    loads = [blk.mlp.last_load.tolist() for blk in m.layers if getattr(blk.mlp, "last_load", None) is not None]
+    loads = loads_final
     if loads:
         meta["expert_load_last_batch"] = [[round(x, 4) for x in l] for l in loads]
         meta["expert_load_max_over_uniform"] = round(max(max(l) for l in loads) * cfg["experts"], 3)
+        meta["experts_unused_min"] = int(min(sum(1 for x in l if x < 0.01) for l in loads))
     write_json(os.path.join(a.out, "pretrain_meta.json"), meta)
     emit({"event": "pretrain_done", "ok": True, "heldout_loss_before": meta["heldout_loss_before"],
           "heldout_loss_after": meta["heldout_loss_after"], "heldout_ppl_before": meta["heldout_ppl_before"],
@@ -864,6 +866,27 @@ def cmd_grpo(a):
     emit({"event": "grpo_done", "ok": True, "reward_first_avg": meta["reward_first_avg"], "reward_last_avg": meta["reward_last_avg"], "elapsed_s": meta["elapsed_s"]})
 
 
+def cmd_expert_load(a):
+    """量測 MoE 各層的專家負載（留出視窗；每個專家分到的詞元比例，均勻＝1/專家數）。"""
+    import torch
+    m, cfg = load_ckpt(a.model)
+    if cfg["arch"] != "moe":
+        fail("不是 MoE 模型")
+    ho = np.load(os.path.join(a.data, "heldout_ids.npy")).astype(np.int64)
+    rng = np.random.default_rng(12345)
+    starts = rng.integers(0, max(1, ho.size - a.seq - 1), size=16)
+    x = torch.tensor(np.stack([ho[s:s + a.seq] for s in starts]))
+    with torch.no_grad():
+        m(x, torch.ones_like(x), torch.arange(a.seq).unsqueeze(0).expand(x.shape[0], -1), None)
+    loads = [blk.mlp.last_load.tolist() for blk in m.layers]
+    E = cfg["experts"]
+    rep = {"event": "expert_load", "ok": True, "tokens": int(x.numel()), "per_layer": [[round(v, 4) for v in l] for l in loads],
+           "max_over_uniform": round(max(max(l) for l in loads) * E, 3), "min_over_uniform": round(min(min(l) for l in loads) * E, 3),
+           "unused_experts_per_layer": [sum(1 for v in l if v < 0.01) for l in loads]}
+    write_json(os.path.join(a.model, "expert_load.json"), rep)
+    emit(rep)
+
+
 # ---------------------------------------------------------------- export
 def cmd_export(a):
     import torch
@@ -1063,6 +1086,7 @@ def main():
     p.add_argument("--steps", type=int, default=300); p.add_argument("--batch", type=int, default=8); p.add_argument("--lr", type=float, default=0.0005)
     p.add_argument("--seq", type=int, default=256); p.add_argument("--seed", type=int, default=0); p.add_argument("--heldout-frac", dest="heldout_frac", type=float, default=0.2)
     p.add_argument("--answer-tokens", dest="answer_tokens", type=int, default=48); p.add_argument("--log-every", dest="log_every", type=int, default=10)
+    p = sub.add_parser("expert-load"); p.add_argument("--model", required=True); p.add_argument("--data", required=True); p.add_argument("--seq", type=int, default=128)
     p = sub.add_parser("gen-math"); p.add_argument("--out", required=True); p.add_argument("--n-train", dest="n_train", type=int, default=2500); p.add_argument("--n-held", dest="n_held", type=int, default=150); p.add_argument("--seed", type=int, default=0)
     p = sub.add_parser("eval-math"); p.add_argument("--model", required=True); p.add_argument("--data", required=True); p.add_argument("--modes", default="think,nothink"); p.add_argument("--max-new", dest="max_new", type=int, default=96)
     p.add_argument("--limit", type=int, default=150); p.add_argument("--tag", default="x"); p.add_argument("--threads", type=int, default=4)
@@ -1073,7 +1097,7 @@ def main():
     p = sub.add_parser("export-hf"); p.add_argument("--model", required=True); p.add_argument("--out", required=True)
     p = sub.add_parser("check"); p.add_argument("--model-dir", dest="model_dir", required=True)
     a = ap.parse_args()
-    {"prep": cmd_prep, "tokenizer": cmd_tokenizer, "pretrain": cmd_pretrain, "sft": cmd_sft, "gen-math": cmd_gen_math, "eval-math": cmd_eval_math, "grpo": cmd_grpo, "export": cmd_export, "export-hf": cmd_export_hf, "check": cmd_check}[a.cmd](a)
+    {"prep": cmd_prep, "tokenizer": cmd_tokenizer, "pretrain": cmd_pretrain, "sft": cmd_sft, "expert-load": cmd_expert_load, "gen-math": cmd_gen_math, "eval-math": cmd_eval_math, "grpo": cmd_grpo, "export": cmd_export, "export-hf": cmd_export_hf, "check": cmd_check}[a.cmd](a)
 
 
 if __name__ == "__main__":
