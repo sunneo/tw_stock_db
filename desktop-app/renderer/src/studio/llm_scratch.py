@@ -5,6 +5,7 @@
   tokenizer  訓練位元組級 BPE 分詞器（HF tokenizers），輸出與原生執行環境相容的 tokenizer.json，並量測留出集壓縮率
   pretrain   預訓練（下一詞預測）；印訓練損失與留出損失／困惑度；前後生成樣本
   sft        指令微調（qwen3-chatml 樣板，只對助理回答算損失）；印留出損失與留出題的生成對照
+  export-hf  標準 Hugging Face Qwen3 格式（safetensors），用 transformers 載入核對；LoRA 微調與加長上下文由此接手
   export     匯出 ONNX fp32，動態量化為 q8，並與 PyTorch 比對（logits 與貪婪 token）
   check      以 onnxruntime 重新載入 q8 模型兩次，貪婪生成，核對兩次與匯出時的結果逐字一致
 架構：Qwen3 同型（RMSNorm、RoPE 旋轉半、q_norm／k_norm、SwiGLU、詞嵌入與輸出頭共享）。
@@ -638,6 +639,48 @@ def cmd_export(a):
           "fp32_bytes": os.path.getsize(fp), "sample": expected["text"]})
 
 
+# ---------------------------------------------------------------- export-hf
+def cmd_export_hf(a):
+    """標準 Hugging Face Qwen3 格式（safetensors＋config.json＋tokenizer.json）：給 LoRA 微調與加長上下文接手，並用 transformers 載入核對。"""
+    import torch
+    from safetensors.torch import save_file
+    from tokenizers import Tokenizer
+    m, cfg = load_ckpt(a.model)
+    tok = Tokenizer.from_file(os.path.join(a.model, "tokenizer.json"))
+    sd = {"model.embed_tokens.weight": m.emb.weight.detach().clone(), "model.norm.weight": m.norm.weight.detach().clone()}
+    for i, b in enumerate(m.layers):
+        P = "model.layers.%d." % i
+        sd[P + "self_attn.q_proj.weight"] = b.q.weight.detach().clone(); sd[P + "self_attn.k_proj.weight"] = b.k.weight.detach().clone()
+        sd[P + "self_attn.v_proj.weight"] = b.v.weight.detach().clone(); sd[P + "self_attn.o_proj.weight"] = b.o.weight.detach().clone()
+        sd[P + "self_attn.q_norm.weight"] = b.qn.weight.detach().clone(); sd[P + "self_attn.k_norm.weight"] = b.kn.weight.detach().clone()
+        sd[P + "input_layernorm.weight"] = b.n1.weight.detach().clone(); sd[P + "post_attention_layernorm.weight"] = b.n2.weight.detach().clone()
+        sd[P + "mlp.gate_proj.weight"] = b.gate.weight.detach().clone(); sd[P + "mlp.up_proj.weight"] = b.up.weight.detach().clone(); sd[P + "mlp.down_proj.weight"] = b.down.weight.detach().clone()
+    os.makedirs(a.out, exist_ok=True)
+    save_file(sd, os.path.join(a.out, "model.safetensors"), metadata={"format": "pt"})
+    hc = hf_config(cfg, tok.get_vocab_size())
+    hc.update({"attention_bias": False, "attention_dropout": 0.0, "bos_token_id": tok.token_to_id("<|endoftext|>"), "eos_token_id": tok.token_to_id("<|im_end|>"),
+               "rope_scaling": None, "sliding_window": None, "use_sliding_window": False, "max_window_layers": cfg["layers"], "initializer_range": 0.02})
+    write_json(os.path.join(a.out, "config.json"), hc)
+    import shutil
+    shutil.copy(os.path.join(a.model, "tokenizer.json"), os.path.join(a.out, "tokenizer.json"))
+    # 訓練環境的 torchvision 與 transformers 版本不合時（import 時 torchvision::nms 不存在），只在這一步讓 transformers 看不到 torchvision（本來就用不到）
+    if "torchvision" not in sys.modules:
+        sys.modules["torchvision"] = None
+    from transformers import AutoModelForCausalLM
+    hm = AutoModelForCausalLM.from_pretrained(a.out, torch_dtype=torch.float32).eval()
+    prompt = tok.encode("<|im_start|>user\n你好<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n").ids
+    with torch.no_grad():
+        ours = m(torch.tensor([prompt]), torch.ones(1, len(prompt), dtype=torch.long), torch.arange(len(prompt)).unsqueeze(0), None)[0]
+        theirs = hm(torch.tensor([prompt])).logits
+        hf_ids = hm.generate(torch.tensor([prompt]), attention_mask=torch.ones(1, len(prompt), dtype=torch.long), max_new_tokens=24, do_sample=False, pad_token_id=0)[0, len(prompt):].tolist()
+    our_ids = greedy_cached(m, prompt, 24)
+    n = min(len(hf_ids), len(our_ids))
+    rep = {"event": "export_hf", "ok": True, "transformers_loads": True, "max_abs_logit_diff": float((ours - theirs).abs().max()),
+           "greedy_identical": hf_ids[:n] == our_ids[:n], "params": count_params(m), "files": ["model.safetensors", "config.json", "tokenizer.json"]}
+    write_json(os.path.join(a.out, "hf_check.json"), rep)
+    emit(rep)
+
+
 # ---------------------------------------------------------------- check
 def cmd_check(a):
     import onnxruntime as ort
@@ -689,9 +732,10 @@ def main():
     p.add_argument("--seq", type=int, default=256); p.add_argument("--seed", type=int, default=0); p.add_argument("--heldout-frac", dest="heldout_frac", type=float, default=0.2)
     p.add_argument("--answer-tokens", dest="answer_tokens", type=int, default=48); p.add_argument("--log-every", dest="log_every", type=int, default=10)
     p = sub.add_parser("export"); p.add_argument("--model", required=True); p.add_argument("--out", required=True)
+    p = sub.add_parser("export-hf"); p.add_argument("--model", required=True); p.add_argument("--out", required=True)
     p = sub.add_parser("check"); p.add_argument("--model-dir", dest="model_dir", required=True)
     a = ap.parse_args()
-    {"prep": cmd_prep, "tokenizer": cmd_tokenizer, "pretrain": cmd_pretrain, "sft": cmd_sft, "export": cmd_export, "check": cmd_check}[a.cmd](a)
+    {"prep": cmd_prep, "tokenizer": cmd_tokenizer, "pretrain": cmd_pretrain, "sft": cmd_sft, "export": cmd_export, "export-hf": cmd_export_hf, "check": cmd_check}[a.cmd](a)
 
 
 if __name__ == "__main__":

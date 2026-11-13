@@ -21,7 +21,7 @@ check('步數不是數字會擋（不靜默退回預設）', !X.normalizeParams(
 
 // ---- 步驟 ----
 const plan = X.planFor('llm_scratch', {}, env);
-check('預設組出六步（沒有原生執行環境就不含原生步驟）', plan.ok && plan.steps.map((s) => s.id).join() === 'prep,tokenizer,pretrain,sft,export,check', plan.errors);
+check('預設組出七步（沒有原生執行環境就不含原生步驟）', plan.ok && plan.steps.map((s) => s.id).join() === 'prep,tokenizer,pretrain,sft,export,hf,check', plan.errors);
 check('沒指定語料用內建小語料', plan.steps[0].args.indexOf('--builtin') > 0 && plan.steps[0].args.indexOf('--corpus') < 0);
 const pc = X.planFor('llm_scratch', { corpus: '/data/my.txt' }, env);
 check('指定語料就傳 --corpus', pc.steps[0].args.indexOf('/data/my.txt') > 0 && pc.steps[0].args.indexOf('--builtin') < 0);
@@ -44,7 +44,7 @@ check('估時間：預設預訓練分鐘數 = 步 × 批 × 序列 ÷ 1000 × �
 check('預訓練進度行解析成 step 事件', X.parseLine('{"step": 5, "loss": 6.5, "lr": 0.001}').type === 'step');
 check('留出評量行不當作進度（沒有 loss 欄）', X.parseLine('{"event":"eval","step":50,"heldout_loss":5.1,"heldout_ppl":164}').type === 'json');
 check('留出損失沒降會失敗', /應該小於/.test(X.checkResult(plan.steps[2].check, { heldout_loss_before: 5, heldout_loss_after: 5.2 })) && X.checkResult(plan.steps[2].check, { heldout_loss_before: 5, heldout_loss_after: 4.9 }) === null);
-check('重載不一致會失敗', /reload_identical/.test(X.checkResult(plan.steps[5].check, { reload_identical: false, matches_export: true })));
+check('重載不一致會失敗', /reload_identical/.test(X.checkResult(plan.steps[6].check, { reload_identical: false, matches_export: true })));
 check('缺 Python 套件時給中文原因', /缺少 Python 套件「torch」/.test(X.specOf('llm_scratch').explain("ModuleNotFoundError: No module named 'torch'")));
 
 // ---- 假子行程跑完整流程（每步印腳本會印的最後一行）----
@@ -54,17 +54,18 @@ const out = {
   pretrain: '{"step":1,"loss":8.3}\n{"event":"pretrain_done","heldout_loss_before":8.3,"heldout_loss_after":6.1}',
   sft: '{"event":"sft_done","heldout_loss_before":6.5,"heldout_loss_after":5.0}',
   export: '{"event":"export_verify","fp32_greedy_matches_torch":true}',
+  hf: '{"event":"export_hf","transformers_loads":true,"greedy_identical":true}',
   check: '{"event":"check","reload_identical":true,"matches_export":true}',
 };
 const files = new Set(plan.outputs.map((f) => '/o/ls/' + f));
-const spawn = (cmd, args) => { const ch = new EE(); ch.stdout = new EE(); ch.stderr = new EE(); const id = args[1]; setImmediate(() => { ch.stdout.emit('data', out[id] + '\n'); ch.emit('close', 0); }); return ch; };
+const spawn = (cmd, args) => { const ch = new EE(); ch.stdout = new EE(); ch.stderr = new EE(); const id = args[1] === 'export-hf' ? 'hf' : args[1]; setImmediate(() => { ch.stdout.emit('data', out[id] + '\n'); ch.emit('close', 0); }); return ch; };
 const job = X.runJob(plan, { spawn, kill() {}, exists: (p) => files.has(p), join: (a, b) => a + '/' + b, readJson() { return {}; } });
 job.done.then((j) => {
-  check('假子行程跑完：六步都完成', j.state === 'finished' && j.steps.every((s) => s.state === 'done'), { s: j.state, m: j.message });
+  check('假子行程跑完：七步都完成', j.state === 'finished' && j.steps.every((s) => s.state === 'done'), { s: j.state, m: j.message });
   check('跑完有進度事件與輸出清單', j.step === 1 && j.loss === 8.3 && j.outputs.length === plan.outputs.length);
   // 預訓練留出損失沒降 → 整個作業失敗並指出原因
   const bad2 = Object.assign({}, out, { pretrain: '{"event":"pretrain_done","heldout_loss_before":8.3,"heldout_loss_after":8.9}' });
-  const sp2 = (cmd, args) => { const ch = new EE(); ch.stdout = new EE(); ch.stderr = new EE(); setImmediate(() => { ch.stdout.emit('data', bad2[args[1]] + '\n'); ch.emit('close', 0); }); return ch; };
+  const sp2 = (cmd, args) => { const ch = new EE(); ch.stdout = new EE(); ch.stderr = new EE(); setImmediate(() => { ch.stdout.emit('data', bad2[args[1] === 'export-hf' ? 'hf' : args[1]] + '\n'); ch.emit('close', 0); }); return ch; };
   return X.runJob(plan, { spawn: sp2, kill() {}, exists: (p) => files.has(p), join: (a, b) => a + '/' + b }).done;
 }).then((j) => {
   check('預訓練留出損失沒降：作業失敗並指出步驟', j.state === 'failed' && /預訓練.*核對不過/.test(j.message), j.message);

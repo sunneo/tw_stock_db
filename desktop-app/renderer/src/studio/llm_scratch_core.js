@@ -33,6 +33,7 @@
     { id: 'pretrain', label: '預訓練', what: '下一詞預測。顯示訓練損失、留出損失與困惑度，並用同一批開頭文字前後對照生成。' },
     { id: 'sft', label: '指令微調', what: '套用聊天樣板（與應用程式原生執行環境同一份），只對助理的回答算損失。' },
     { id: 'export', label: '匯出 ONNX（q8）', what: '匯出 ONNX fp32，再動態量化為 q8；與 PyTorch 比對 logits 與貪婪 token。GGUF 為選配（目前未做）。' },
+    { id: 'hf', label: '輸出標準 Hugging Face 格式', what: '同一顆模型另存成標準 Qwen3 的 safetensors（可直接給 LoRA 微調與加長上下文接手），並用 transformers 載入、與自己的 logits 與貪婪輸出比對。' },
     { id: 'check', label: '重新載入核對', what: '重新載入 q8 模型兩次，貪婪生成，結果須逐字相同，並與匯出時相同。' },
     { id: 'native', label: '原生執行環境載入並回答', what: '用應用程式的原生執行環境（onnxruntime-node）載入並回答一題；僅在找得到執行環境時進行。' },
   ];
@@ -54,7 +55,7 @@
     limits: { vocab: [512, 32000], steps: [10, 200000], batch: [1, 64], seq: [32, 1024], lr: [1e-5, 0.1], warmup: [1, 5000], seed: [0, 1e9], sftSteps: [1, 5000], sftBatch: [1, 64], sftLr: [1e-6, 0.1], threads: [1, 64] },
     defaults: { corpus: '', preset: 'mini', sftData: '', vocab: 4096, steps: 300, batch: 4, seq: 128, lr: 0.002, warmup: 20, seed: 0, sftSteps: 60, sftBatch: 4, sftLr: 0.0005, threads: 6 },
     estimate: '處理器（CPU）上，迷你模型每 1000 個訓練 token 約 14 秒（量測；電腦忙碌時慢數倍）。預設 300 步 × 4 × 128 ≈ 15 萬 token，預訓練約 40 分鐘，全流程約 1 小時；要訓練得像樣需要幾倍到數十倍的時間與語料。',
-    outputs: ['data/prep_report.json', 'tok/tokenizer.json', 'tok/tokenizer_report.json', 'base/ckpt.pt', 'base/pretrain_meta.json', 'chat/ckpt.pt', 'chat/sft_meta.json', 'export/q8/model_quantized.onnx', 'export/tokenizer.json', 'export/manifest.json', 'export/check.json'],
+    outputs: ['data/prep_report.json', 'tok/tokenizer.json', 'tok/tokenizer_report.json', 'base/ckpt.pt', 'base/pretrain_meta.json', 'chat/ckpt.pt', 'chat/sft_meta.json', 'export/q8/model_quantized.onnx', 'export/hf/model.safetensors', 'export/hf/config.json', 'export/tokenizer.json', 'export/manifest.json', 'export/check.json'],
     checks: [{ op: 'true', key: 'reload_identical' }, { op: 'true', key: 'matches_export' }],
     explain: explain,
     limitsNote: '模型只有 1 千萬到 2 千萬參數、語料只有幾 MB 時，預訓練後的文字只會是「像中文的片段」，不是能可靠回答的助理；指令微調只教會它聊天格式與少量範例。這是完整流程的實作與驗證，不是可用的聊天品質。原生執行環境寫死 28 層／8 個 KV 頭／head_dim 128，所以只能調寬度；結束標記不在它寫死的停止清單裡，會一直生成到字數上限（輸出文字會在 <|im_end|> 處截斷）。',
@@ -79,9 +80,10 @@
     if (p.sftData) sft.push('--data', s(p.sftData));
     steps.push(st('sft', STAGES[3].label, py, sft, { check: [{ op: 'lt', a: 'heldout_loss_after', b: 'heldout_loss_before' }] }));
     steps.push(st('export', STAGES[4].label, py, [script, 'export', '--model', out + '/chat', '--out', out + '/export'], { check: [{ op: 'true', key: 'fp32_greedy_matches_torch' }] }));
-    steps.push(st('check', STAGES[5].label, py, [script, 'check', '--model-dir', out + '/export'], { check: SPEC.checks }));
+    steps.push(st('hf', STAGES[5].label, py, [script, 'export-hf', '--model', out + '/chat', '--out', out + '/export/hf'], { check: [{ op: 'true', key: 'transformers_loads' }, { op: 'true', key: 'greedy_identical' }] }));
+    steps.push(st('check', STAGES[6].label, py, [script, 'check', '--model-dir', out + '/export'], { check: SPEC.checks }));
     if (env.nativeRuntimeDir) {
-      steps.push(st('native', STAGES[6].label, env.nodeExec || process.execPath, [sd + '/llm_scratch_core.js', 'native-check', '--runtime', env.nativeRuntimeDir, '--model-dir', out + '/export', '--question', s(p.nativeQuestion || '臺灣的首都是哪裡？')], { env: { ELECTRON_RUN_AS_NODE: '1' }, check: [{ op: 'true', key: 'native_answered' }, { op: 'true', key: 'native_reload_identical' }] }));
+      steps.push(st('native', STAGES[7].label, env.nodeExec || process.execPath, [sd + '/llm_scratch_core.js', 'native-check', '--runtime', env.nativeRuntimeDir, '--model-dir', out + '/export', '--question', s(p.nativeQuestion || '臺灣的首都是哪裡？')], { env: { ELECTRON_RUN_AS_NODE: '1' }, check: [{ op: 'true', key: 'native_answered' }, { op: 'true', key: 'native_reload_identical' }] }));
     }
     return { ok: true, errors: [], steps: steps };
   }
