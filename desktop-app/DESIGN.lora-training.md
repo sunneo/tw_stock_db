@@ -1587,3 +1587,17 @@ cd .. && node scripts/native-runtime-pack.js /home/hungfu.lee/fa-work/native-run
 2. 總指揮：核對 §32.4 的 1.22.0-3 清單與分片後，發布到 native-runtime 分支並釘選 commit。
 3. 總指揮：`builtin.json` 的 `base_url` 換成實際 commit，推送 lora-adapters 分支（dry-run 已通過）。
 4. 補上步驟 5 的六卡片探針（§32.5）。
+
+### 32.7 prefill-only 為何仍不走原生（2026-11-13，診斷）— 原因是產品的建置檔過舊，不是程式邏輯
+- 探針（`scripts/eval/lora_native_tools.eval.js`，已加診斷：只觀察，不改行為）在產品視窗內記錄每次進入 `_nrRunNative` 的狀態與結果：
+  - `FaVlm.nativePrefillPlan` 不存在（`planAt: MISSING: loaded FaVlm has no nativePrefillPlan`）。
+  - 原生狀態 `_nrNativeState()` 回傳的鍵只有 `ok`、`reason`，沒有 `features`（應有 `lora`、`prefill`）。
+- 原因：視窗載入的是 `renderer/floating-assistant.js`（git 追蹤的建置檔，11:34 產生）與 `renderer/floating-assistant.min.js`。這兩份檔案裡有 `nativeToolMessages` 但沒有 `nativePrefillPlan`。工作樹的原始碼 `renderer/src/floating-assistant.js` 與 `renderer/src/vlm/vlm_core.js` 是正確的。
+- 建置步驟是 `node scripts/embed-code-ui.js` 再 `node build-assistant.js`；只跑前者不會更新 `renderer/floating-assistant.js`。`build-assistant.js` 由總指揮執行。
+- 結論：預填的程式邏輯沒有問題，只差建置。`prefill-only` 的 0/3 與 `tools+prefill` 的 2/3 都是舊建置的行為：舊程式不送預填，輸出不以預填開頭，就退回 wasm（與 `原生樣板接不到預填` 的訊息一致）。
+- 探針 5（`native-tools-probe5.json`）的逐題結果：tools-only 3/3 原生；prefill-only 0/3；tools+prefill 2/3。
+- 建置後驗證：重跑同一探針，預期 `planAt` 為 `send:true, prepend:true`、狀態有 `features`、`prefill-only` 3/3 原生。
+
+### 32.8 待辦更新
+- 總指揮：執行 `node build-assistant.js`（或建置流程的完整步驟），確認 `renderer/floating-assistant.js` 含 `nativePrefillPlan`，然後重跑 §32.7 的探針。
+- 步驟 5（六卡片 DOM 探針）：在建置完成前，產品視窗讀到的是舊的登錄邏輯，等建置後再做。

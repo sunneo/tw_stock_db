@@ -64,6 +64,16 @@ return (async () => {
             { name: 'tools+prefill', tools: true, prefill: '<tool_call>\n{' },
         ];
         const model = FaVlm.byId('qwen3-0.6b'); R.nativeTools = [];
+        // 診斷（只觀察，不改行為）：記錄每次進入 _nrRunNative 時的狀態 features、預填計畫、結果；判斷「沒送」與「送了但輸出不以預填開頭」
+        R.diag = { planAt: typeof FaVlm.nativePrefillPlan === 'function' ? FaVlm.nativePrefillPlan(ns && ns.features, '{') : 'MISSING: loaded FaVlm has no nativePrefillPlan', nsFeatures: ns && ns.features, nsKeys: ns ? Object.keys(ns) : null, calls: [] };
+        const origRun = fa._nrRunNative;
+        fa._nrRunNative = async function (a, cb, gen) {
+            const st = await fa._nrNativeState().catch((e) => ({ err: String((e && e.message) || e) }));
+            const plan = typeof FaVlm.nativePrefillPlan === 'function' ? FaVlm.nativePrefillPlan(st && st.features, a.prefill) : 'MISSING';
+            const rr = await origRun.call(fa, a, cb, gen);
+            R.diag.calls.push({ prefill: a.prefill || null, tools: !!(a.tools && a.tools.length), stOk: st && st.ok, stErr: st && st.err || null, stFeatures: st && st.features, plan, result: rr ? { ok: rr.ok, why: rr.why || null, head: rr.text ? String(rr.text).slice(0, 60) : null } : null });
+            return rr;
+        };
         for (const c of cases) {
             for (const [q, name, args] of queries) {
                 const msgs = [{ role: 'system', content: '你是助理。需要時使用工具；不需要工具時直接簡短回答。' }, { role: 'user', content: q }];
@@ -80,6 +90,7 @@ return (async () => {
                 R.nativeTools.push({ case: c.name, q, native, ms: Date.now() - t0, fmt, match, err, why: logs.filter((s) => /原生未使用|原生/.test(s) && !/後端：原生/.test(s)).slice(0, 2), text: String(text).slice(0, 300) });
             }
         }
+        fa._nrRunNative = origRun;
         const byCase = {}; for (const r of R.nativeTools) { const b = byCase[r.case] = byCase[r.case] || { n: 0, native: 0, fmt: 0, match: 0 }; b.n++; b.native += r.native; b.fmt += r.fmt; b.match += r.match; }
         R.byCase = byCase;
         ck('tools-only 走原生', byCase['tools-only'].native === byCase['tools-only'].n, byCase['tools-only']);
