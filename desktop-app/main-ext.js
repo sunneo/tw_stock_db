@@ -1958,6 +1958,8 @@ function startNativeMailbox(ctx) {
         onToken: (t) => { try { fsSync.appendFileSync(tokFile, JSON.stringify({ text: t }) + "\n"); } catch (_) { /* 寫不了就只靠最後結果 */ } },
       };
       if (lr.lora) req.lora = lr.lora;
+      // 預填（1.22.0-3 起）：產品端只在執行包 FEATURES 含 prefill 時才送；沒有就不帶這欄（舊子程序不認得）
+      if (typeof p.prefill === "string" && p.prefill) req.prefill = p.prefill;
       const r = await getHost().run(req);
       const vd = lora.verifyDone(r);
       if (vd) return { ok: false, code: vd.code, message: vd.message, backend: "native" };
