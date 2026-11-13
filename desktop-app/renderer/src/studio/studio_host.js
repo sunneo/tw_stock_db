@@ -11,6 +11,7 @@ const CpuPy = require('./backend_cpu_py.js');
 const Planned = require('./backend_planned.js');
 const LlmExport = require('./llm_export_core.js');
 const Asset = require('./asset_core.js');
+const ExtJob = require('./ext_job_core.js');
 
 // LLM 匯出工具偵測（DESIGN §25）：不再只看 PATH。來源：lora-train/.venv（訓練，有 peft）、lora-train/.venv-export（匯出，有 optimum-cli、onnxruntime、transformers）、
 // 與 <userData>/studio-host/llm-export-config.json 的 { llamaBin, llamaSrc, trainPython, exportPython }（llama.cpp 不在任何 venv 裡，只能設定）。
@@ -255,6 +256,78 @@ function createStudioHost(d) {
     return { ok: true, jobId: j.id, state: kind };
   }
 
+  // ---- 外部訓練作業（六種型別的命令列核心；ext_job_core.js）----
+  // 輸出放 <userData>/studio-ext/<型別>/<名稱>/；每次只跑一個；同名輸出夾已有內容就拒絕（不覆寫）。
+  const extJobsMap = new Map(); let activeExt = null;
+  const extRoot = P.join(P.dirname(hostDir), 'studio-ext');
+  const extKill = (ch) => { try { if (process.platform !== 'win32' && ch.pid) process.kill(-ch.pid, 'SIGTERM'); else ch.kill('SIGTERM'); } catch (e) { try { ch.kill('SIGTERM'); } catch (_) { /* 已結束 */ } } };
+  // 腳本位置：主行程注入的候選資料夾（開發樹的 renderer/src/studio），第一個含該腳本的為準
+  const extScriptsDir = (spec) => { for (const dd of (d.extScriptDirs || [])) { if (dd && exists(P.join(dd, spec.script))) return dd; } return null; };
+  // 訓練用 Python：參數指定 → llm-export-config.json 的 trainPython → 既有的 cpu-py 探測
+  async function extPython(p) { if (p && p.python) return String(p.python); const cfg = llmCfg(); if (cfg.trainPython) return cfg.trainPython; const pr = await pyDetect().catch(() => null); return (pr && pr.path) || null; }
+  // 逐個模組檢查 import（回傳缺的套件與原因；不跑訓練）
+  async function extModules(py, mods) {
+    const missing = [];
+    for (const m of mods) { const r = await runAsync(py, ['-c', 'import ' + m], { timeout: 60000 }); if (r.error || r.status !== 0) missing.push(m); }
+    return missing;
+  }
+  // 語音辨識資料的格式檢查：每行一筆 JSON，要有 audio（相對路徑）、text（參考文字）、split（train 或 eval）；前 50 行就夠判斷
+  function extJsonlFormat(file) {
+    let lines; try { lines = fs.readFileSync(file, 'utf8').split(/\r?\n/).filter((l) => l.trim()).slice(0, 50); } catch (e) { return '讀不到檔案'; }
+    if (!lines.length) return '檔案是空的';
+    for (let i = 0; i < lines.length; i++) {
+      let r; try { r = JSON.parse(lines[i]); } catch (e) { return '第 ' + (i + 1) + ' 行不是合法的 JSON'; }
+      if (typeof r.audio !== 'string' || typeof r.text !== 'string') return '第 ' + (i + 1) + ' 行缺 audio（錄音相對路徑）或 text（參考文字）';
+      if (r.split !== 'train' && r.split !== 'eval') return '第 ' + (i + 1) + ' 行的 split 必須是 train 或 eval';
+    }
+    return '';
+  }
+  async function extCheck(p) {
+    const type = String((p && p.type) || ''), spec = ExtJob.specOf(type);
+    if (!spec) return { ok: false, error: '不認得的型別：' + type };
+    if (!spec.wired) return { ok: false, wired: false, error: spec.name + '：' + spec.reason };
+    const n = ExtJob.normalizeParams(type, p.params || {});
+    const py = await extPython(p), scripts = extScriptsDir(spec);
+    const out = { ok: n.ok && !!py && !!scripts, wired: true, type, params: n.params, errors: n.errors.slice(), python: py, scriptsDir: scripts, estimate: spec.estimate, limitsNote: spec.limitsNote || '' };
+    if (!py) out.errors.push('找不到訓練用的 Python（請先在「運算後端」設定或安裝訓練環境）');
+    if (!scripts) out.errors.push('找不到訓練腳本 ' + spec.script + '（主行程沒有接上腳本資料夾）');
+    if (py && scripts) { out.missing = await extModules(py, spec.python); if (out.missing.length) { out.ok = false; out.errors.push('訓練環境缺套件：' + out.missing.join('、')); } }
+    if (type === 'speech_recognition') {
+      if (!p.base || !exists(p.base)) { out.ok = false; out.errors.push('基底模型資料夾不存在（whisper-tiny）：' + (p.base || '（沒填）')); }
+      if (!p.data || !exists(p.data)) { out.ok = false; out.errors.push('語音資料檔不存在（data.jsonl）：' + (p.data || '（沒填）')); }
+      else { const fmt = extJsonlFormat(p.data); if (fmt) { out.ok = false; out.errors.push('語音資料格式不對：' + fmt); } }
+    }
+    out.ok = out.ok && !out.errors.length;
+    return Object.assign({ ok: out.ok }, out);
+  }
+  async function extStart(p) {
+    if (activeExt && activeExt.job.state === 'running') return { ok: false, error: '已有外部訓練在執行（' + activeExt.id + '）' };
+    if (activeTrain && activeTrain.state === 'running') return { ok: false, error: '內建訓練進行中，請先等它結束或停止' };
+    const type = String((p && p.type) || ''), name = String((p && p.name) || '');
+    if (!/^[A-Za-z0-9\u4e00-\u9fff][A-Za-z0-9._\-\u4e00-\u9fff]{0,63}$/.test(name)) return { ok: false, error: '名稱不合法（英數、中文、點、底線、連字號，最長 64 字）' };
+    const chk = await extCheck(p); if (!chk.ok) return { ok: false, error: (chk.errors || [chk.error || '檢查沒有通過']).join('；'), check: chk };
+    const spec = ExtJob.specOf(type), outDir = P.join(extRoot, type, name);
+    if (exists(outDir) && fs.readdirSync(outDir).length) return { ok: false, error: '輸出資料夾已有內容（換一個名稱，不覆寫）：' + outDir };
+    const plan = ExtJob.planFor(type, p.params || {}, { outDir, scriptsDir: chk.scriptsDir, python: chk.python, nodeExec: process.execPath, paths: { base: p.base, data: p.data } });
+    if (!plan.ok) return { ok: false, error: plan.errors.join('；') };
+    fs.mkdirSync(outDir, { recursive: true });
+    writeJson(P.join(outDir, 'ext_request.json'), { type, name, params: plan.params, python: chk.python, base: p.base || null, data: p.data || null, startedAt: now() });
+    const id = newId('ext');
+    const job = ExtJob.runJob(plan, {
+      spawn: (c, a, o) => cp.spawn(c, a, { cwd: o.cwd, env: Object.assign({}, process.env, o.env || {}), windowsHide: true, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'] }),
+      kill: extKill, exists: (f) => exists(f), join: (a, b) => P.join(a, b),
+    });
+    const rec = { id, type, name, job, startedAt: now(), endedAt: 0, outDir };
+    extJobsMap.set(id, rec); activeExt = rec;
+    job.done.then((j) => { rec.endedAt = now(); writeJson(P.join(outDir, 'ext_job.json'), Object.assign({ type, name, startedAt: rec.startedAt, endedAt: rec.endedAt }, ExtJob.publicJob(j))); });
+    return { ok: true, jobId: id, outDir, steps: plan.steps.map((s) => ({ id: s.id, label: s.label })), estimate: spec.estimate, limitsNote: spec.limitsNote || '' };
+  }
+  function extStatus(p) {
+    const rec = extJobsMap.get(p && p.jobId) || activeExt; if (!rec) return { ok: true, state: 'idle' };
+    return Object.assign({ ok: true, jobId: rec.id, type: rec.type, name: rec.name, outDir: rec.outDir, elapsedMs: (rec.endedAt || now()) - rec.startedAt }, ExtJob.publicJob(rec.job));
+  }
+  function extStop(p) { const rec = extJobsMap.get(p && p.jobId) || activeExt; if (!rec || rec.job.state !== 'running') return { ok: true, already: true }; return rec.job.stop(); }
+
   const ops = {
     // 狀態：硬體、設定、各後端是否可用與原因
     async studio_probe(p) {
@@ -370,7 +443,11 @@ function createStudioHost(d) {
     },
     async studio_train_pause(p) { const j = jobs.get(p && p.jobId) || activeTrain; if (!j || !j.run || j.run.state !== 'running') return { ok: false, error: '沒有執行中的訓練可暫停' }; const r = await j.run.pause(p && p.timeoutMs); return Object.assign({ ok: r.ok }, r); },
     async studio_train_stop(p) { const j = jobs.get(p && p.jobId) || activeTrain; if (!j || !j.run || !(j.run.state === 'running' || j.run.state === 'pausing')) return { ok: true, already: true }; await j.run.stop(); return { ok: true }; },
-    async studio_dispose() { try { if (activeBench) { activeBench.ac.aborted = true; activeBench.ac.listeners.forEach((f) => f()); } if (activeTrain && activeTrain.run && activeTrain.run.state === 'running') await activeTrain.run.stop(); } catch (e) {} return { ok: true }; },
+    async studio_ext_check(p) { return extCheck(p || {}); },
+    async studio_ext_start(p) { return extStart(p || {}); },
+    async studio_ext_status(p) { return extStatus(p || {}); },
+    async studio_ext_stop(p) { return extStop(p || {}); },
+    async studio_dispose() { try { if (activeExt && activeExt.job.state === 'running') activeExt.job.stop(); } catch (e) {} try { if (activeBench) { activeBench.ac.aborted = true; activeBench.ac.listeners.forEach((f) => f()); } if (activeTrain && activeTrain.run && activeTrain.run.state === 'running') await activeTrain.run.stop(); } catch (e) {} return { ok: true }; },
   };
   return { ops, registry, handle: async (op, payload) => { const f = ops[op]; if (!f) return { ok: false, code: 'bad_op', message: '未知的 Studio 操作：' + op }; try { return await f(payload || {}); } catch (e) { return { ok: false, code: 'internal', message: String((e && e.message) || e) }; } } };
 }

@@ -586,6 +586,20 @@
                 if (method === 'POST' && P === '/api/train/sym-stop') { const r = getRunner().stop(body.jobId || S.lastSym); log('停止符號式訓練'); return ok(r); }
                 if (method === 'GET' && P === '/api/train/status') { const r = await callHost('studio_train_status', { jobId: Q('jobId') || S.lastTrain, tail: 30 }); return r.ok === false ? bad(502, r.error) : ok(r); }
                 if (method === 'POST' && P === '/api/train/pause') { const r = await callHost('studio_train_pause', { jobId: body.jobId || S.lastTrain }, 180000); log('暫停訓練：' + (r.ok ? '已存檢查點 step=' + r.step : r.error || r.reason)); return r.ok === false && !r.checkpoint ? bad(409, r.error || r.reason || '暫停失敗', r) : ok(r); }
+                // ---- 外部訓練作業（作曲、語音辨識…；ext_job_core.js）：只有桌面版（主行程跑子行程）----
+                if (P.indexOf('/api/ext/') === 0) {
+                    if (!h.desktop) return bad(400, NOT_DESKTOP);
+                    if (method === 'GET' && P === '/api/ext/check') { const r = await callHost('studio_ext_check', { type: Q('type'), params: {}, base: Q('base') || undefined, data: Q('data') || undefined }, 120000); return ok(r); }
+                    if (method === 'POST' && P === '/api/ext/check') { const r = await callHost('studio_ext_check', { type: body.type, params: body.params || {}, base: body.base, data: body.data, python: body.python }, 120000); return ok(r); }
+                    if (method === 'POST' && P === '/api/ext/start') {
+                        const r = await callHost('studio_ext_start', { type: body.type, name: body.name, params: body.params || {}, base: body.base, data: body.data, python: body.python }, 120000);
+                        if (r.ok === false) { log('外部訓練沒有啟動（' + body.type + '）：' + (r.error || ''), { level: 'error' }); return bad(409, r.error || '啟動失敗', r); }
+                        S.lastExt = r.jobId; log('開始外部訓練 ' + body.type + '/' + body.name + '（' + r.jobId + '）→ ' + r.outDir); return ok(r);
+                    }
+                    if (method === 'GET' && P === '/api/ext/status') { const r = await callHost('studio_ext_status', { jobId: Q('jobId') || S.lastExt }, 20000); return r.ok === false ? bad(404, r.error) : ok(r); }
+                    if (method === 'POST' && P === '/api/ext/stop') { const r = await callHost('studio_ext_stop', { jobId: body.jobId || S.lastExt }, 30000); log('要求停止外部訓練'); return ok(r); }
+                    return bad(404, '沒有這個外部訓練的路由');
+                }
                 if (method === 'POST' && P === '/api/train/stop') { const r = await callHost('studio_train_stop', { jobId: body.jobId || S.lastTrain }, 30000); log('停止訓練'); return r.ok === false ? bad(409, r.error) : ok(r); }
                 // ---- LoRA 登錄與按需載入（第二輪，接 lora_registry_core）----
                 if (method === 'GET' && P === '/api/lora') { const reg = await syncRegistry(); return ok({ env: await loraEnv(), budget: reg.reg.budget, maxActive: reg.reg.maxActive, entries: reg.entries, invalid: reg.invalid, dataOnly: reg.dataOnly, loaded: reg.reg.loaded(), applyBlocker: h.loraApply ? '' : LORA_APPLY_BLOCKER }); }
