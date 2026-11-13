@@ -1686,3 +1686,74 @@ cd .. && node scripts/native-runtime-pack.js /home/hungfu.lee/fa-work/native-run
 - **已驗證**：資料格式與切分（35 項單元測試）、訓練損失下降、匯出格式與大小、獨立載入合成、與教師的頻譜距離下降（單句）。**近似可重現**（同設定兩次，留出損失相差 0.4%，非逐位元相同）。
 - **未驗證**：工作室接線（沒有 `speech` 後端與資產 kind）、使用者真錄音、中文、JS／ONNX 推論路徑、語音品質的主觀或辨識評分。
 - 證據：`lora-train/speech/evidence/`（兩次 summary 與 log、資料 JSONL、文字清單）；程式 `lora-train/speech/speech_train.py`、`renderer/src/studio/speech_core.js`。
+## 34. 看圖說文字（VLM）的 LoRA 訓練核心：SmolVLM-256M 在 CPU 上的小訓練（2026-11-13，分支 `claude/vlm-studio`）
+
+> 目的：`model_types_core.js` 的「看圖說文字」原本是 `status:'design'`。這一節記錄做到的程度：**命令列**訓練、評量、匯出都實測過；**工作室的介面沒接**，所以登錄表改為 `half`，輸出仍標 `available:false`。
+
+### 34.1 檔案
+| 檔案 | 作用 |
+|---|---|
+| `lora-train/vlm/vlm_data.py` | 圖文問答格式（`validate_row`）、標籤遮罩（`mask_labels`）、合成資料（`make_dataset`，PIL 畫色塊，同 seed 位元組相同）、描述打分（`score_caption`，整詞比對） |
+| `lora-train/vlm/vlm_train_core.py` | 處理器與模型載入、圖像特徵快取（`image_features`）、列編碼（`encode_row`）、LoRA 訓練（`train`）。沿用 `lora-train/lora_common.py` 的 `read_jsonl` 與「提示遮罩、只算答案損失」做法 |
+| `lora-train/vlm/train_vlm_lora.py` | 命令列入口：`--data --out --steps --accum --lr --r --alpha --seed --threads` |
+| `lora-train/vlm/eval_vlm.py` | 留出組合的描述評量（貪婪解碼，`max_new_tokens=24`）；`--adapter` 或 `--full` 指定模型，不給就是基底 |
+| `lora-train/vlm/merge_export_vlm.py` | 併回 LoRA、存完整模型（safetensors），重新載入後與「基底＋adapter」逐字比對 |
+| `lora-train/vlm/test_vlm_data.py` | 單檔測試（不需要 torch）：24 項（校驗、遮罩、打分、組合留出、同 seed 位元組） |
+| `lora-train/vlm/test_vlm_train_cache.py` | 單檔測試：圖像特徵快取與完整前向的 loss 一致（誤差 < 1e-4）；標籤遮罩正確 |
+| `lora-train/vlm/results/` | 實測的 JSON（評量、訓練損失、重現、匯出比對）與環境版本 |
+
+### 34.2 模型選擇與理由
+- 基底：`HuggingFaceTB/SmolVLM-256M-Instruct`（safetensors 約 513 MB，258.9 M 參數）。`DESIGN.offline-vision.md` 的模型清單裡，Florence-2 沒有自由問答；LLaVA-Interleave 約 1.4 GB 以上、CPU 單張推論 140～150 秒，訓練不可行；SmolVLM 有問答能力，且在 CPU 上的推論與反向傳播可以在這台機器跑。
+- 只訓練語言部分（`text_model` 的 q、k、v、o、gate、up、down 投影，LoRA r=8、alpha=16、dropout 0）。視覺編碼器與連接器凍結。
+- 圖像特徵快取：視覺編碼器與連接器凍結，同一張圖的 64×576 特徵只算一次。**已驗證與完整前向的 loss 相同**（`test_vlm_train_cache.py`）。這是 CPU 訓練能跑的主因；單步時間在這台機器上從約 14 秒降到約 5 秒（見 34.4，負載不同，只當方向）。
+- 處理器一律 `do_image_splitting=False`（每張圖 64 個影像權杖；預設會切成 17 片、1143 個權杖，CPU 跑不動）。訓練與推論必須用同一設定。
+
+### 34.3 資料（合成，可重現）
+- 14 組顏色×形狀（6 色 × 3 形狀中，扣掉 4 組留出）× 每組 30 張 = 訓練 420 張圖；每張圖 3 列（描述、問顏色、問形狀），共 1260 列。
+- 留出評量：4 組（藍三角、綠圓、黃方、紫三角）× 3 張 = 12 張圖，只用描述題。**這 4 組的組合訓練時沒出現過**，但每個顏色、每個形狀各自都出現過。
+- 描述的答案格式：`A {顏色} {形狀} on a white background.`；評量只看描述是否同時含正確顏色與形狀（整詞）。
+- 限制：合成圖形很單純，結論只能說「學會了這個合成任務的描述格式與顏色形狀」，不能推到真實照片。
+
+### 34.4 訓練（實跑）
+| 項目 | 數字 |
+|---|---|
+| 設定 | 160 筆（每筆一次前向＋反向），每 4 筆更新一次（40 次更新），AdamW，學習率 5e-4（前 5 步線性升溫，之後線性降到 0.1 倍），梯度裁剪 1.0，seed 1234，4 執行緒 |
+| 可訓練參數 | 2,442,240（佔 0.9432%） |
+| 損失（前 10 筆平均 vs 最後 10 筆平均） | 前 10 筆平均 **6.001** → 最後 10 筆平均 **0.0025** |
+| 耗時 | 845 秒（機器同時有其他訓練在跑，負載平均 60～80；只能當方向） |
+| 重現性 | 同設定跑兩次、每一步 20 筆：損失逐位元相同（最大差 0.0，`results/repro_20steps_*.json`） |
+
+### 34.5 評量（留出 12 張圖，greedy，n=12 很小，只能說方向）
+| 模型 | 顏色對 | 形狀對 | 兩者都對 | 每張生成時間（負載高） |
+|---|---|---|---|---|
+| 基底（訓練前） | 66.7%（8/12） | 58.3%（7/12） | 50.0%（6/12） | 約 12.1 秒 |
+| 基底＋LoRA（adapter） | **100%（12/12）** | **100%（12/12）** | **100%（12/12）** | 約 2.1 秒 |
+| 完整模型（併回後） | **100%（12/12）** | **100%（12/12）** | **100%（12/12）** | 約 3.4 秒 |
+
+同一張圖的描述範例（`results/eval_*.json` 有全部）：基底「In this image there is a white color object.」→ 訓練後「A purple triangle on a white background.」。基底常說「white color background」，這是把白底當成主體顏色，訓練後就不見了。
+
+### 34.6 匯出與載入（實測）
+- LoRA 小檔：`adapter_model.safetensors` 9.8 MB＋`adapter_config.json`（`base_model_name_or_path` 是本機絕對路徑，移到別的機器要改）。
+- 完整模型：`merge_and_unload()` 後存成 safetensors，**fp32，1,029.6 MB**（未量化）。
+- 匯出的完整模型重新載入後，對全部 12 張留出圖的描述與「基底＋adapter」**逐字相同**（`results/eval_full_run1.json` 對 `results/eval_adapter_run1.json`）。另外 `merge_export_vlm.py` 自己比對的是前 3 張（`results/export_check_full_vs_adapter.json`，同樣逐字相同）。
+
+### 34.7 已驗證／未驗證
+**已驗證（實測過）**
+- 圖文問答格式、列校驗、標籤遮罩、合成資料的可重現（`test_vlm_data.py`，24 項全過）。
+- 快取特徵與完整前向的 loss 相同，標籤只留答案（`test_vlm_train_cache.py`，全過）。
+- 訓練損失下降（6.0 → 0.0025），同設定兩次重現，損失逐位元相同。
+- 留出組合的描述準確率：基底 50% → adapter 100%，完整模型 100%（n=12）。
+- 完整模型匯出、重新載入、與 adapter 版逐字相同。
+
+**未驗證（沒做，誠實列出）**
+- **工作室介面沒接**：`model_types_core.js` 的看圖訓練沒有按鈕，`canStart` 對 vision 只會回 `partial`（半成品）。
+- **網頁版與桌面版的推論路徑沒有載入這個 adapter**。`vlm/` 的 Worker 仍然只跑 transformers.js 的官方模型；這個 adapter 只能在 Python 裡載入。
+- 真實照片、中文提示、不同顏色與形狀數量、更多訓練步數：都沒有測。評量只有 12 張合成圖。
+- 基底以外的模型（Florence-2、LLaVA）沒有用這套流程訓練。
+- 完整模型沒有量化版本（ONNX q8、GGUF）。
+- 「訓練前後的描述差異」用的是 12 張圖的文字比對，沒有人工逐張判讀。
+
+### 34.8 環境注意（重要）
+- 共用的 `fa-work/venv` 在本次工作中途被其他工作改壞（`torchvision` 的 `.so` 在 20:10 被換掉，`transformers` 匯入失敗，錯誤是 `torchvision::nms does not exist`）。160 筆的主訓練是在改壞之前跑完的（版本相同），之後的匯出與重現改用本次新建的 `fa-work/vlm-studio/vlmenv`（torch 2.15.0+cpu、transformers 5.22.2、peft 0.21.2，凍結版本見 `results/env_freeze.txt`）。
+- 壞掉的環境裡直接 `import peft` 也會因為同樣的 `torchvision` 問題失敗（先 import transformers 的模型類別才正常）；`merge_export_vlm.py` 已改成先載入模型，再匯入 peft。
+- 訓練用的 `--threads` 不要超過機器的空閒核心數；超額會讓 OpenMP 等待拖慢很多（實測負載 60 以上時，單步時間差很大）。

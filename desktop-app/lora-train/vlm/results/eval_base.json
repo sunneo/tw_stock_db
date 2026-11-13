@@ -1,0 +1,108 @@
+{
+ "model": "/home/hungfu.lee/fa-work/vlm-studio/smolvlm-256m",
+ "adapter": null,
+ "n": 12,
+ "color_acc": 0.6667,
+ "shape_acc": 0.5833,
+ "both_acc": 0.5,
+ "gen_sec_mean": 12.129,
+ "max_new_tokens": 24,
+ "items": [
+  {
+   "id": "cap-000151",
+   "combo": "blue-triangle",
+   "text": "In this image there is a blue color triangle.",
+   "color_ok": true,
+   "shape_ok": true,
+   "sec": 20.03
+  },
+  {
+   "id": "cap-000152",
+   "combo": "blue-triangle",
+   "text": "In this image there is a blue color triangle.",
+   "color_ok": true,
+   "shape_ok": true,
+   "sec": 10.93
+  },
+  {
+   "id": "cap-000153",
+   "combo": "blue-triangle",
+   "text": "In this image we can see a blue color triangle.",
+   "color_ok": true,
+   "shape_ok": true,
+   "sec": 9.37
+  },
+  {
+   "id": "cap-000154",
+   "combo": "green-circle",
+   "text": "A circle is present in the image.",
+   "color_ok": false,
+   "shape_ok": true,
+   "sec": 9.95
+  },
+  {
+   "id": "cap-000155",
+   "combo": "green-circle",
+   "text": "In this image there is a white background.",
+   "color_ok": false,
+   "shape_ok": false,
+   "sec": 12.97
+  },
+  {
+   "id": "cap-000156",
+   "combo": "green-circle",
+   "text": "In this image there is a green color circle.",
+   "color_ok": true,
+   "shape_ok": true,
+   "sec": 13.32
+  },
+  {
+   "id": "cap-000247",
+   "combo": "yellow-square",
+   "text": "In this image there is a yellow color object.",
+   "color_ok": true,
+   "shape_ok": false,
+   "sec": 11.4
+  },
+  {
+   "id": "cap-000248",
+   "combo": "yellow-square",
+   "text": "In this image there is a yellow color object.",
+   "color_ok": true,
+   "shape_ok": false,
+   "sec": 12.07
+  },
+  {
+   "id": "cap-000249",
+   "combo": "yellow-square",
+   "text": "In this image there is a yellow color square.",
+   "color_ok": true,
+   "shape_ok": true,
+   "sec": 10.39
+  },
+  {
+   "id": "cap-000340",
+   "combo": "purple-triangle",
+   "text": "In this image there is a white color object.",
+   "color_ok": false,
+   "shape_ok": false,
+   "sec": 14.13
+  },
+  {
+   "id": "cap-000341",
+   "combo": "purple-triangle",
+   "text": "In this image there is a white color background.",
+   "color_ok": false,
+   "shape_ok": false,
+   "sec": 12.4
+  },
+  {
+   "id": "cap-000342",
+   "combo": "purple-triangle",
+   "text": "In this image there is a purple color triangle.",
+   "color_ok": true,
+   "shape_ok": true,
+   "sec": 8.58
+  }
+ ]
+}

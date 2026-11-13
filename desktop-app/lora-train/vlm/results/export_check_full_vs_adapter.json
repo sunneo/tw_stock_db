@@ -1,0 +1,23 @@
+{
+ "out": "/home/hungfu.lee/fa-work/vlm-studio/full1",
+ "size_mb": 1029.6,
+ "n": 3,
+ "same_text_full_vs_adapter": true,
+ "items": [
+  {
+   "id": "cap-000151",
+   "full": "A blue triangle on a white background.",
+   "adapter": "A blue triangle on a white background."
+  },
+  {
+   "id": "cap-000152",
+   "full": "A blue triangle on a white background.",
+   "adapter": "A blue triangle on a white background."
+  },
+  {
+   "id": "cap-000153",
+   "full": "A blue triangle on a white background.",
+   "adapter": "A blue triangle on a white background."
+  }
+ ]
+}

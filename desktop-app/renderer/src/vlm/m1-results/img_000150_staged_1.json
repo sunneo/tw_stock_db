@@ -1,0 +1,68 @@
+{
+ "mode": "staged",
+ "tokens": [
+  0,
+  0,
+  250,
+  2440,
+  3925,
+  16,
+  2343,
+  11,
+  10,
+  12339,
+  3618,
+  4
+ ],
+ "imageTokens": 577,
+ "encoderLength": 585,
+ "totalMs": 9258,
+ "loadMs": 3443,
+ "switchMs": [
+  {
+   "stage": "vision",
+   "phase": "load",
+   "ms": 2098
+  },
+  {
+   "stage": "vision",
+   "phase": "release",
+   "ms": 96
+  },
+  {
+   "stage": "encode",
+   "phase": "load",
+   "ms": 360
+  },
+  {
+   "stage": "encode",
+   "phase": "release",
+   "ms": 38
+  },
+  {
+   "stage": "decode",
+   "phase": "load",
+   "ms": 985
+  },
+  {
+   "stage": "decode",
+   "phase": "release",
+   "ms": 60
+  }
+ ],
+ "maxSessionsAtOnce": 2,
+ "mem": {
+  "before": {
+   "VmPeak": 897,
+   "VmHWM": 61,
+   "VmRSS": 61
+  },
+  "after": {
+   "VmPeak": 5047,
+   "VmHWM": 862,
+   "VmRSS": 456
+  }
+ },
+ "node": "v22.23.4",
+ "ort": "1.22.0"
+}
