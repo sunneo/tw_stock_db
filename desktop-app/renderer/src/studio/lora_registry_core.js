@@ -166,7 +166,7 @@
         if (ev.metrics && typeof ev.metrics === 'object') return withBlocked(metricsVerdict(ev.metrics));
         if (CARD_METRIC_KEYS.some((k) => k in ev)) return withBlocked(metricsVerdict(ev));
         const g = ev.groups; if (!g || typeof g !== 'object') return { known: typeof ev.score === 'number', score: ev.score, lose: [], win: [], degenerate: [], noData: [], blocked: [] };
-        const names = Object.keys(g), lose = [], win = [], degenerate = [], noData = [], outOfScope = [], smallN = [];
+        const names = Object.keys(g), lose = [], win = [], degenerate = [], noData = [], outOfScope = [], smallN = [], negs = {};
         for (const n of names) {
             const x = g[n]; if (!x || typeof x !== 'object') continue;
             // scope：'out'＝不在這顆的適用範圍（例：decompose 的 think_stack）。範圍外的組只報告，不計入輸贏、退化與無資料（§32.2）
@@ -175,12 +175,14 @@
             if (typeof x.n === 'number' && x.n < 20) { smallN.push(n); continue; }
             const tuned = typeof x.adapter === 'number' ? x.adapter : x.tuned;   // 評量腳本的格式是 tuned；打包後的描述檔是 adapter
             if (typeof tuned !== 'number' || typeof x.base !== 'number') continue;
+            // 負例（標準答案 ok=false）的答對數：卡片與原因要寫出來（例如 0/39），不只寫「負例全錯」
+            if (x.neg && x.neg.n > 0) negs[n] = { n: x.neg.n, tuned: x.neg.tuned, base: typeof x.neg.base === 'number' ? x.neg.base : null };
             if (tuned < x.base) { lose.push(n); continue; }
             if (oneSided(x)) { degenerate.push(n); continue; }
             if (x.base === 0 && tuned === 0) { noData.push(n); continue; }
             if (tuned > x.base) win.push(n);
         }
-        return withBlocked({ known: names.length > 0, lose, win, degenerate, noData, outOfScope, smallN, score: win.length - lose.length }, ev.verdict, outOfScope);
+        return withBlocked({ known: names.length > 0, lose, win, degenerate, noData, outOfScope, smallN, negs, score: win.length - lose.length }, ev.verdict, outOfScope);
     }
     // 退化：負例全錯（neg.tuned==0）或正例全錯（pos.tuned==0），只靠另一邊得分（§31、§32.2：後者是新加的，原本只擋負例全錯）
     function oneSided(x) {
@@ -189,10 +191,11 @@
         return false;
     }
     function withBlocked(v, verdict, outOfScope) {
-        v.lose = v.lose || []; v.win = v.win || []; v.degenerate = v.degenerate || []; v.noData = v.noData || []; v.outOfScope = v.outOfScope || []; v.smallN = v.smallN || [];
+        v.lose = v.lose || []; v.win = v.win || []; v.degenerate = v.degenerate || []; v.noData = v.noData || []; v.outOfScope = v.outOfScope || []; v.smallN = v.smallN || []; v.negs = v.negs || {};
         const blocked = [];
+        const negTxt = (n) => (v.negs[n] ? '（負例答對 ' + v.negs[n].tuned + '/' + v.negs[n].n + '）' : '');
         if (v.lose.length) blocked.push('輸給基底：' + v.lose.join('、'));
-        if (v.degenerate.length) blocked.push('退化答案（負例全錯、只靠正例得分，不算贏）：' + v.degenerate.join('、'));
+        if (v.degenerate.length) blocked.push('退化答案（負例全錯、只靠正例得分，不算贏）：' + v.degenerate.map((n) => n + negTxt(n)).join('、'));
         if (v.noData.length) blocked.push('無資料（基底與微調都是 0，不算通過）：' + v.noData.join('、'));
         if (verdict && typeof verdict === 'object') {
             const seen = new Set([].concat(v.lose, v.degenerate, v.noData));
@@ -423,7 +426,7 @@
             const lu = live.has(e.id) ? live.get(e.id).lastUsed : (lastUsedById.has(e.id) ? lastUsedById.get(e.id) : null);
             return { id: e.id, name: e.name || e.id, version: e.version || null, description: e.description || '', base: e.base, rank: e.rank, size: e.size, added: e.added || null, lastUsed: lu,
                 domains: e.domains.slice(), triggers: (e.triggers || []).slice(), prompt_format_version: e.prompt_format_version, source: e.source, enabled: !!e.enabled,
-                location: e.location, eval: ev.known ? { lose: ev.lose, win: ev.win, degenerate: ev.degenerate, noData: ev.noData, blocked: ev.blocked } : null, compat: c.level, compatReasons: c.reasons.map((r) => r.message), compatWarnings: c.warnings.map((w) => w.message), pinned: pins.has(e.id),
+                location: e.location, eval: ev.known ? { lose: ev.lose, win: ev.win, degenerate: ev.degenerate, noData: ev.noData, blocked: ev.blocked, negs: ev.negs } : null, compat: c.level, compatReasons: c.reasons.map((r) => r.message), compatWarnings: c.warnings.map((w) => w.message), pinned: pins.has(e.id),
                 slotRank: e.slot_rank != null ? e.slot_rank : e.rank, limits: (e.limits || []).slice(), evalMetrics: e.eval && (e.eval.metrics || (CARD_METRIC_KEYS.some((k) => k in e.eval) ? e.eval : null)) || null, gate: { pass: gate.pass, reason: gate.reason } };
         }
         // 狀態（給 LoRA 管理畫面）：槽位、已載入、最後使用時間、釘選、推論中

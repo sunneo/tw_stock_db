@@ -1811,3 +1811,14 @@ cd .. && node scripts/native-runtime-pack.js /home/hungfu.lee/fa-work/native-run
 音樂作曲的訓練核心是**從零開始的小型注意力模型**（約 46 萬參數，2 層、4 頭），不是 LoRA，也不是對外部預訓練模型的微調（midigenai 太大，授權未確認，本機 CPU 不可行）。資料是程式作曲（`music_compose.js`）的主旋律，符號格式與語法檢查見 `renderer/src/studio/music_train_core.js`，訓練與取樣見 `renderer/src/studio/music_train.py`。
 
 **已驗證**：留出 90 首的損失 4.756 → 1.150；取樣 36 首的語法合格 2 → 27；從磁碟重新載入的取樣逐首相同；開確定性演算法後同設定重跑逐位元相同。**未驗證**：音樂品質（沒有人聽過）、過擬合（訓練損失 0.28 vs 留出 1.15）、與真實作曲的比較、接進作曲流程。細節見 `DESIGN.offline-training-studio.md` 的「音樂作曲（music）訓練核心」一節。
+### 31.4 管理介面缺口（§30.1 第 2 項，已做完）
+
+- **負例數字進卡片與原因**：`lora_registry_core.js` 的 `evalVerdict` 帶出 `negs`（每組的負例題數與答對數），模型卡的 `eval.negs` 也有。退化原因寫成「退化答案（…）：think_stack/self_validate（負例答對 0/39）」。
+- **卡片「負例」區塊**：`lora_manage_core.js` `registryCardHTML` 逐組列出「負例答對 X/n」（有基底數字時一併列出）；沒有負例資料就不顯示這一區。
+- **列表標記**：列表的 LoRA 狀態欄多一個「評量未過（僅手動選）」標記，原因放在 title；`rowsFromStatus` 多 `autoSelect` 與 `evalNegs`。這樣不用點進卡片也看得出哪個 adapter 不會被自動選用。
+- **測試**：`lora_registry.test.js` 122 項（+4）、`lora_manage_core.test.js` 57 項（+5）。其餘套件沿用前次結果：`studio_server_core` 138、`lora_route_wiring` 30、`tool_catalog_equal` 9、`build-lora-asset` 19、`studio_embed` 20、`eval_gate` 14（python）。已重跑 `scripts/embed-code-ui.js`。
+
+**沒做、也沒驗到的管理介面項目**：
+- 已打包的 `decompose-r4-v2.fatrain` 內仍是舊的 groups 評量（沒有 `neg`，所以列表與卡片**不會**出現「評量未過」）。要重新打包才會顯示；這需要 keen 工作樹的 `package_r4.sh`，本次沒有執行。
+- 「已有 JSON 重算後的登錄」只驗了登錄層的函式，沒有在 Electron 的實際管理畫面上點過。
+- 負例顯示只涵蓋 `ok` 布林題型。

@@ -114,5 +114,20 @@ check('格式函式', M.sizeText(undefined) === '未知' && M.timeText(NaN) === 
   const html = M.renderLoraManageHTML({ rows: [], budget: M.budgetOf({}), registryCard: d });
   check('卡片頂端標示「評量未過（不自動選用，可手動選）」與原因', html.indexOf('評量未過（不自動選用，可手動選）') >= 0 && html.indexOf('退化答案') >= 0 && html.indexOf('無資料') >= 0, html.slice(0, 200));
 }
+// 管理列：評量未過要有標記（列表裡就看得出，不用點進卡片）；卡片寫出負例答對數
+{
+  const negEv = { win: [], lose: [], degenerate: ['think_stack/self_validate'], noData: [], blocked: ['退化答案（負例全錯、只靠正例得分，不算贏）：think_stack/self_validate（負例答對 0/39）'],
+    negs: { 'think_stack/self_validate': { n: 39, tuned: 0, base: 0 } } };
+  const blockedRow = M.rowsFromStatus({ registered: [reg({ id: 'lora/deco2', eval: negEv })], slots: [] })[0];
+  check('列資料：評量未過 → autoSelect 為 false', blockedRow.autoSelect === false && blockedRow.evalNegs['think_stack/self_validate'].n === 39, blockedRow);
+  const cleanRow = M.rowsFromStatus({ registered: [reg({ id: 'lora/clean2', eval: { win: ['x'], lose: [], blocked: [] } })], slots: [] })[0];
+  check('列資料：沒有評量未過 → autoSelect 為 true、沒有負例', cleanRow.autoSelect === true && cleanRow.evalNegs === null, cleanRow);
+  const listHTML = M.renderLoraManageHTML({ rows: [blockedRow, cleanRow], budget: M.budgetOf({}) });
+  check('列表標記「評量未過（僅手動選）」只出現在被擋的列', (listHTML.match(/評量未過（僅手動選）/g) || []).length === 1, listHTML.slice(0, 200));
+  const cardHTML = M.renderLoraManageHTML({ rows: [], budget: M.budgetOf({}), registryCard: blockedRow });
+  check('卡片寫出負例答對數 0/39', cardHTML.indexOf('負例答對 0/39') >= 0 && cardHTML.indexOf('<h5>負例</h5>') >= 0, cardHTML.slice(0, 200));
+  const cleanCard = M.renderLoraManageHTML({ rows: [], budget: M.budgetOf({}), registryCard: cleanRow });
+  check('沒有負例時卡片不出現負例區塊', cleanCard.indexOf('<h5>負例</h5>') < 0, cleanCard.slice(0, 200));
+}
 console.log(ok + ' passed, ' + bad + ' failed');
 process.exit(bad ? 1 : 0);
