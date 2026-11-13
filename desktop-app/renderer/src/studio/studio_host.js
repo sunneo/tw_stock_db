@@ -264,41 +264,30 @@ function createStudioHost(d) {
   // 腳本位置：主行程注入的候選資料夾（開發樹的 renderer/src/studio），第一個含該腳本的為準
   const extScriptsDir = (spec) => { for (const dd of (d.extScriptDirs || [])) { if (dd && exists(P.join(dd, spec.script))) return dd; } return null; };
   // 訓練用 Python：參數指定 → llm-export-config.json 的 trainPython → 既有的 cpu-py 探測
-  async function extPython(p) { if (p && p.python) return String(p.python); const cfg = llmCfg(); if (cfg.trainPython) return cfg.trainPython; const pr = await pyDetect().catch(() => null); return (pr && pr.path) || null; }
+  // 訓練用 Python（每個型別可以不同）：參數指定 → llm-export-config.json 的 extPythons[型別] → trainPython → 既有的 cpu-py 探測
+  async function extPython(p, type) { if (p && p.python) return String(p.python); const cfg = llmCfg(); const per = cfg.extPythons && cfg.extPythons[type]; if (per) return String(per); if (cfg.trainPython) return cfg.trainPython; const pr = await pyDetect().catch(() => null); return (pr && pr.path) || null; }
+  // 路徑：p.paths（新）；舊的 p.base／p.data 也接受
+  function extPaths(p) { const out = Object.assign({}, (p && p.paths) || {}); if (p && p.base && !out.base) out.base = p.base; if (p && p.data && !out.data) out.data = p.data; return out; }
+  const extFsx = { exists: (f) => exists(f), isDir: (f) => { try { return fs.statSync(f).isDirectory(); } catch (e) { return false; } }, readLines: (f, n) => { try { return fs.readFileSync(f, 'utf8').split(/\r?\n/).filter((l) => l.trim()).slice(0, n); } catch (e) { return []; } } };
   // 逐個模組檢查 import（回傳缺的套件與原因；不跑訓練）
   async function extModules(py, mods) {
     const missing = [];
     for (const m of mods) { const r = await runAsync(py, ['-c', 'import ' + m], { timeout: 60000 }); if (r.error || r.status !== 0) missing.push(m); }
     return missing;
   }
-  // 語音辨識資料的格式檢查：每行一筆 JSON，要有 audio（相對路徑）、text（參考文字）、split（train 或 eval）；前 50 行就夠判斷
-  function extJsonlFormat(file) {
-    let lines; try { lines = fs.readFileSync(file, 'utf8').split(/\r?\n/).filter((l) => l.trim()).slice(0, 50); } catch (e) { return '讀不到檔案'; }
-    if (!lines.length) return '檔案是空的';
-    for (let i = 0; i < lines.length; i++) {
-      let r; try { r = JSON.parse(lines[i]); } catch (e) { return '第 ' + (i + 1) + ' 行不是合法的 JSON'; }
-      if (typeof r.audio !== 'string' || typeof r.text !== 'string') return '第 ' + (i + 1) + ' 行缺 audio（錄音相對路徑）或 text（參考文字）';
-      if (r.split !== 'train' && r.split !== 'eval') return '第 ' + (i + 1) + ' 行的 split 必須是 train 或 eval';
-    }
-    return '';
-  }
   async function extCheck(p) {
     const type = String((p && p.type) || ''), spec = ExtJob.specOf(type);
     if (!spec) return { ok: false, error: '不認得的型別：' + type };
     if (!spec.wired) return { ok: false, wired: false, error: spec.name + '：' + spec.reason };
-    const n = ExtJob.normalizeParams(type, p.params || {});
-    const py = await extPython(p), scripts = extScriptsDir(spec);
-    const out = { ok: n.ok && !!py && !!scripts, wired: true, type, params: n.params, errors: n.errors.slice(), python: py, scriptsDir: scripts, estimate: spec.estimate, limitsNote: spec.limitsNote || '' };
-    if (!py) out.errors.push('找不到訓練用的 Python（請先在「運算後端」設定或安裝訓練環境）');
+    const n = ExtJob.normalizeParams(type, (p && p.params) || {});
+    const paths = extPaths(p), py = await extPython(p, type), scripts = extScriptsDir(spec);
+    const out = { ok: false, wired: true, type, params: n.params, errors: n.errors.slice(), python: py, scriptsDir: scripts, estimate: spec.estimate, limitsNote: spec.limitsNote || '', paths };
+    if (!py) out.errors.push('找不到訓練用的 Python（請在「運算後端」設定，或指定這個型別的 Python 路徑）');
     if (!scripts) out.errors.push('找不到訓練腳本 ' + spec.script + '（主行程沒有接上腳本資料夾）');
-    if (py && scripts) { out.missing = await extModules(py, spec.python); if (out.missing.length) { out.ok = false; out.errors.push('訓練環境缺套件：' + out.missing.join('、')); } }
-    if (type === 'speech_recognition') {
-      if (!p.base || !exists(p.base)) { out.ok = false; out.errors.push('基底模型資料夾不存在（whisper-tiny）：' + (p.base || '（沒填）')); }
-      if (!p.data || !exists(p.data)) { out.ok = false; out.errors.push('語音資料檔不存在（data.jsonl）：' + (p.data || '（沒填）')); }
-      else { const fmt = extJsonlFormat(p.data); if (fmt) { out.ok = false; out.errors.push('語音資料格式不對：' + fmt); } }
-    }
-    out.ok = out.ok && !out.errors.length;
-    return Object.assign({ ok: out.ok }, out);
+    out.errors = out.errors.concat(ExtJob.checkPaths(type, paths, extFsx));
+    if (py && scripts) { out.missing = await extModules(py, spec.python); if (out.missing.length) out.errors.push('訓練環境缺套件：' + out.missing.join('、')); }
+    out.ok = out.errors.length === 0;
+    return out;
   }
   async function extStart(p) {
     if (activeExt && activeExt.job.state === 'running') return { ok: false, error: '已有外部訓練在執行（' + activeExt.id + '）' };
@@ -308,14 +297,14 @@ function createStudioHost(d) {
     const chk = await extCheck(p); if (!chk.ok) return { ok: false, error: (chk.errors || [chk.error || '檢查沒有通過']).join('；'), check: chk };
     const spec = ExtJob.specOf(type), outDir = P.join(extRoot, type, name);
     if (exists(outDir) && fs.readdirSync(outDir).length) return { ok: false, error: '輸出資料夾已有內容（換一個名稱，不覆寫）：' + outDir };
-    const plan = ExtJob.planFor(type, p.params || {}, { outDir, scriptsDir: chk.scriptsDir, python: chk.python, nodeExec: process.execPath, paths: { base: p.base, data: p.data } });
+    const plan = ExtJob.planFor(type, p.params || {}, { outDir, scriptsDir: chk.scriptsDir, python: chk.python, nodeExec: process.execPath, paths: chk.paths });
     if (!plan.ok) return { ok: false, error: plan.errors.join('；') };
     fs.mkdirSync(outDir, { recursive: true });
-    writeJson(P.join(outDir, 'ext_request.json'), { type, name, params: plan.params, python: chk.python, base: p.base || null, data: p.data || null, startedAt: now() });
+    writeJson(P.join(outDir, 'ext_request.json'), { type, name, params: plan.params, python: chk.python, paths: chk.paths, startedAt: now() });
     const id = newId('ext');
     const job = ExtJob.runJob(plan, {
       spawn: (c, a, o) => cp.spawn(c, a, { cwd: o.cwd, env: Object.assign({}, process.env, o.env || {}), windowsHide: true, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'] }),
-      kill: extKill, exists: (f) => exists(f), join: (a, b) => P.join(a, b),
+      kill: extKill, exists: (f) => exists(f), join: (a, b) => P.join(a, b), readJson: (f) => JSON.parse(fs.readFileSync(f, 'utf8')),
     });
     const rec = { id, type, name, job, startedAt: now(), endedAt: 0, outDir };
     extJobsMap.set(id, rec); activeExt = rec;

@@ -239,6 +239,8 @@ def cmd_train(a):
             opt.step()
             log({"event": "train", "step": step, "row": train_rows[i]["id"], "loss": float(loss), "grad_norm": gnorm,
                  "elapsed_s": round(time.time() - t0, 2)})
+            # 進度也印到標準輸出（一行一個 JSON），工作室的外部訓練作業用它串流步數與損失；不影響結果
+            print(json.dumps({"step": step, "loss": round(float(loss), 6)}), flush=True)
             if step % a.eval_every == 0 or step == a.steps:
                 h = heldout_loss(m, held_rows, base, delta.detach(), a.data, cache)
                 log({"event": "eval", "step": step, "heldout_loss": h})

@@ -589,10 +589,10 @@
                 // ---- 外部訓練作業（作曲、語音辨識…；ext_job_core.js）：只有桌面版（主行程跑子行程）----
                 if (P.indexOf('/api/ext/') === 0) {
                     if (!h.desktop) return bad(400, NOT_DESKTOP);
-                    if (method === 'GET' && P === '/api/ext/check') { const r = await callHost('studio_ext_check', { type: Q('type'), params: {}, base: Q('base') || undefined, data: Q('data') || undefined }, 120000); return ok(r); }
-                    if (method === 'POST' && P === '/api/ext/check') { const r = await callHost('studio_ext_check', { type: body.type, params: body.params || {}, base: body.base, data: body.data, python: body.python }, 120000); return ok(r); }
+                    if (method === 'GET' && P === '/api/ext/check') { const r = await callHost('studio_ext_check', { type: Q('type'), params: {} }, 120000); return ok(r); }
+                    if (method === 'POST' && P === '/api/ext/check') { const r = await callHost('studio_ext_check', { type: body.type, params: body.params || {}, paths: body.paths || {}, base: body.base, data: body.data, python: body.python }, 120000); return ok(r); }
                     if (method === 'POST' && P === '/api/ext/start') {
-                        const r = await callHost('studio_ext_start', { type: body.type, name: body.name, params: body.params || {}, base: body.base, data: body.data, python: body.python }, 120000);
+                        const r = await callHost('studio_ext_start', { type: body.type, name: body.name, params: body.params || {}, paths: body.paths || {}, base: body.base, data: body.data, python: body.python }, 120000);
                         if (r.ok === false) { log('外部訓練沒有啟動（' + body.type + '）：' + (r.error || ''), { level: 'error' }); return bad(409, r.error || '啟動失敗', r); }
                         S.lastExt = r.jobId; log('開始外部訓練 ' + body.type + '/' + body.name + '（' + r.jobId + '）→ ' + r.outDir); return ok(r);
                     }
