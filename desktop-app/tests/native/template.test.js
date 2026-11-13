@@ -32,6 +32,12 @@ const v2 = proto.validate({ type: 'run', id: '1', messages: [], max_tokens: 1, t
 check('run 不帶 template 也通過（預設 qwen3-chatml）', v2.ok, v2);
 const v3 = proto.validate({ type: 'run', id: '1', messages: [], max_tokens: 1, timeout_ms: 0, stream: false, template: 7 });
 check('run.template 不是字串時拒絕', !v3.ok, v3);
+// 預填（1.22.0-3）：run.prefill 可選；有就必須是字串；功能名稱登記在 FEATURES
+check('FEATURES 含 prefill', proto.FEATURES.indexOf('prefill') >= 0);
+const p1 = proto.validate({ type: 'run', id: '1', messages: [], max_tokens: 1, timeout_ms: 0, stream: false, prefill: '{' });
+check('run 帶 prefill 字串通過驗證', p1.ok, p1);
+const p2 = proto.validate({ type: 'run', id: '1', messages: [], max_tokens: 1, timeout_ms: 0, stream: false, prefill: 3 });
+check('run.prefill 不是字串時拒絕', !p2.ok, p2);
 
 console.log(ok + ' passed, ' + bad.length + ' failed', bad);
 process.exit(bad.length ? 1 : 0);

@@ -74,7 +74,7 @@ async function generate(opts) {
     const gen = validateGen(opts.gen);
     const sess = await loadModel(opts.modelPath, opts.tokenizerPath, opts.threads, opts.lora);
     const ort = ortModule(), tok = cache.tok;
-    const promptIds = tok.encode(applyTemplate(opts.template || 'qwen3-chatml', opts.messages || [], { enable_thinking: false }));
+    const promptIds = tok.encode(applyTemplate(opts.template || 'qwen3-chatml', opts.messages || [], { enable_thinking: false, prefill: opts.prefill }));
     const rng = gen.do_sample ? makeRng(opts.seed != null ? opts.seed : 1) : null;
     const maxNew = Math.max(1, opts.maxTokens || 512);
     let past = kvEmpty(ort), next = null, out = [], pastLen = 0, emitted = 0, finish = 'length';

@@ -151,7 +151,7 @@ async function settle(p) { try { return { ok: true, v: await p }; } catch (e) { 
     // ---------- 6 執行包版本選擇 ----------
     const ud2 = mk('ud2');
     const proto0 = fs.readFileSync(path.join(root, 'nr-protocol.js'));
-    const oldProto = Buffer.from(proto0.toString('utf8').replace(/\nconst FEATURES = \['lora'\];/, '\nconst FEATURES_REMOVED = [];').replace('PROTOCOL_VERSION, FEATURES, MESSAGES', 'PROTOCOL_VERSION, MESSAGES'));
+    const oldProto = Buffer.from(proto0.toString('utf8').replace(/\nconst FEATURES = \[[^\]]*\];/, '\nconst FEATURES_REMOVED = [];').replace('PROTOCOL_VERSION, FEATURES, MESSAGES', 'PROTOCOL_VERSION, MESSAGES'));
     const mkRuntime = (ver, protoBuf, features) => {
         const d = path.join(ud2, 'native-runtime', ver); fs.mkdirSync(d, { recursive: true });
         fs.writeFileSync(path.join(d, 'nr-protocol.js'), protoBuf);
@@ -163,11 +163,11 @@ async function settle(p) { try { return { ok: true, v: await p }; } catch (e) { 
     check('版本選擇：什麼都沒有時回最新版的失敗原因', mainExt._findNativeRuntime(ud2).ok === false);
     mkRuntime('1.22.0-1', oldProto);
     let rt = mainExt._findNativeRuntime(ud2);
-    check('版本選擇：只有舊版時可用、標 legacy、features 為空（不含 lora）', rt.ok && rt.legacy === true && rt.version === '1.22.0-1' && rt.features.length === 0 && rt.latestVersion === '1.22.0-2', rt);
-    mkRuntime('1.22.0-2', proto0, ['lora']);
+    check('版本選擇：只有舊版時可用、標 legacy、features 為空（不含 lora）', rt.ok && rt.legacy === true && rt.version === '1.22.0-1' && rt.features.length === 0 && rt.latestVersion === '1.22.0-3', rt);
+    mkRuntime('1.22.0-3', proto0, ['lora', 'prefill']);
     rt = mainExt._findNativeRuntime(ud2);
-    check('版本選擇：新舊並存時新版優先，features 含 lora', rt.ok && !rt.legacy && rt.version === '1.22.0-2' && rt.features.indexOf('lora') >= 0, rt);
-    fs.appendFileSync(path.join(ud2, 'native-runtime', '1.22.0-2', 'nr-protocol.js'), '// 竄改');
+    check('版本選擇：新舊並存時新版優先，features 含 lora', rt.ok && !rt.legacy && rt.version === '1.22.0-3' && rt.features.indexOf('lora') >= 0, rt);
+    fs.appendFileSync(path.join(ud2, 'native-runtime', '1.22.0-3', 'nr-protocol.js'), '// 竄改');
     rt = mainExt._findNativeRuntime(ud2);
     check('版本選擇：新版 md5 核對失敗時退回舊版（不用半個）', rt.ok && rt.legacy && rt.version === '1.22.0-1', rt);
 
@@ -198,9 +198,9 @@ async function settle(p) { try { return { ok: true, v: await p }; } catch (e) { 
 
     // ---------- 8 清單重算工具與嵌入清單一致 ----------
     const out = path.join(tmp, 'refreeze');
-    const rf = refreeze({ out, version: '1.22.0-2', features: ['lora'], writeMainExt: false });
+    const rf = refreeze({ out, version: '1.22.0-3', features: ['lora', 'prefill'], writeMainExt: false });
     const nrFiles = ['nr-child.js', 'nr-engine.js', 'nr-host.js', 'nr-protocol.js', 'nr-gen-params.js', 'nr-template.js', 'nr-tokenizer.js'];
-    check('清單重算：版本與 features 正確、每個 nr 檔的 sha256 等於目前檔案', rf.manifest.runtimeVersion === '1.22.0-2' && rf.manifest.features[0] === 'lora' && nrFiles.every((n) => rf.manifest.files.find((f) => f.path === n).sha256 === sha(fs.readFileSync(path.join(root, n)))), rf.manifest.runtimeVersion);
+    check('清單重算：版本與 features 正確、每個 nr 檔的 sha256 等於目前檔案', rf.manifest.runtimeVersion === '1.22.0-3' && rf.manifest.features[0] === 'lora' && nrFiles.every((n) => rf.manifest.files.find((f) => f.path === n).sha256 === sha(fs.readFileSync(path.join(root, n)))), rf.manifest.runtimeVersion);
     check('清單重算：輸出的分割段 md5／大小與清單一致', rf.changed.every((n) => { const f = rf.manifest.files.find((x) => x.path === n), p = fs.readFileSync(path.join(out, 'parts', f.parts[0].name)); return md5(p) === f.parts[0].md5 && p.length === f.size; }));
     check('清單重算：onnxruntime 檔案沒有被動到', rf.manifest.files.filter((f) => !/^nr-/.test(f.path)).every((f, i) => JSON.stringify(f) === JSON.stringify(mainExt._NATIVE_RUNTIME_MANIFEST.files.find((x) => x.path === f.path))));
     const emb = mainExt._NATIVE_RUNTIME_MANIFEST;

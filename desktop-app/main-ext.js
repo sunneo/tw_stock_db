@@ -773,10 +773,10 @@ function installTray(ctx, ipcMain) {
 
 // 執行包（見 DESIGN.TODO.native-runner.md 交接第 (2) 節）：子程序程式（nr-*.js）與 onnxruntime-node 1.22.0 原生檔放在
 // userData/native-runtime/<版本>/，manifest.json 記錄每個檔案的大小與 md5。載入前全部核對；任何一個對不上就當作沒有執行包（不用半個）。
-// 版本沿革：1.22.0-1＝第一版（沒有 lora 欄位轉傳）；1.22.0-2＝nr-protocol／nr-child／nr-host／nr-engine 轉傳並套用 lora（FEATURES 含 'lora'）。
+// 版本沿革：1.22.0-1＝第一版（沒有 lora 欄位轉傳）；1.22.0-2＝nr-protocol／nr-child／nr-host／nr-engine 轉傳並套用 lora（FEATURES 含 'lora'）；1.22.0-3＝另外轉傳 prefill（FEATURES 含 'prefill'）。
 // 安裝與移除的目標永遠是最新版；舊版資料夾若還在且核對通過，仍可使用（不含 lora，畫面會明說需更新執行包），不強迫使用者重新下載才能用原生推論。
-const NATIVE_RUNTIME_VERSION = "1.22.0-2";
-const NATIVE_RUNTIME_LEGACY_VERSIONS = ["1.22.0-1"];
+const NATIVE_RUNTIME_VERSION = "1.22.0-3";
+const NATIVE_RUNTIME_LEGACY_VERSIONS = ["1.22.0-2", "1.22.0-1"];   // 1.22.0-2 仍可用（有 lora、沒有 prefill）
 // 執行包來源（見 main-ext.js 的 NRI）：來源 1 是 npm 官方庫的 tgz；來源 2 是 GitHub 分支 native-runtime-1.22.0，釘住 commit SHA 的 raw 網址。
 const NATIVE_NPM_TARBALL = "https://registry.npmjs.org/onnxruntime-node/-/onnxruntime-node-1.22.0.tgz";
 // 1.22.0-2 的來源 2：分支 native-runtime-1.22.0 上「含新版 nr-*.js 分割段」的 commit。尚未推送，所以先留空：留空時安裝會在下載前明確失敗（不是靜默用舊版）。
@@ -994,7 +994,7 @@ const NRL = (function () {
 // 執行包按需安裝（併入本檔，因為 main-ext.js 不能 require 不在熱更新清單內的檔案；見 DESIGN.TODO.native-runner.md 第 4 項與「安裝路徑」教訓）。
 // 執行包的分割清單（與 GitHub 分支 native-runtime-1.22.0 的 manifest.json 逐位元組相同；內嵌在本檔，因為外部資料檔熱更新送不到舊安裝）。
 const NATIVE_RUNTIME_MANIFEST = {
-  "runtimeVersion": "1.22.0-2",
+  "runtimeVersion": "1.22.0-3",
   "ortVersion": "1.22.0",
   "license": "MIT",
   "partMaxBytes": 5242880,
@@ -1014,8 +1014,8 @@ const NATIVE_RUNTIME_MANIFEST = {
     }
   },
   "platforms": {
-    "win32-x64": 21713939,
-    "linux-x64": 31440107
+    "win32-x64": 21714525,
+    "linux-x64": 31440693
   },
   "files": [
     {
@@ -1482,52 +1482,52 @@ const NATIVE_RUNTIME_MANIFEST = {
     {
       "path": "nr-child.js",
       "platform": "all",
-      "size": 8820,
-      "sha256": "aceb9942a11b5a4a0019b9522962d44bb2a950d0db879cddc1084ea66f70e0f6",
+      "size": 8864,
+      "sha256": "445615b2f2965b843f9172cc1f23aa176d7801e76ba74442090da0e62d6db1dd",
       "parts": [
         {
           "name": "nr-child.js.001.part",
-          "size": 8820,
-          "md5": "6178c509cd10e08e1608c6f12796f854"
+          "size": 8864,
+          "md5": "ffc4aa3c7f09f5b048c4d07c49bad4b3"
         }
       ]
     },
     {
       "path": "nr-engine.js",
       "platform": "all",
-      "size": 7863,
-      "sha256": "b7c6081ff60df46fd00118dade546cfe4bd6557207ee9136b46ef8fba0df6591",
+      "size": 7886,
+      "sha256": "ac2c196b36fb362e2755487652f99629f428e88e4a3b079fbda167436d548e5d",
       "parts": [
         {
           "name": "nr-engine.js.001.part",
-          "size": 7863,
-          "md5": "a5fa5416ee7b3f7225452d9f22460957"
+          "size": 7886,
+          "md5": "fa898d4a13da9a3b550f6dcf801d0b6c"
         }
       ]
     },
     {
       "path": "nr-host.js",
       "platform": "all",
-      "size": 11523,
-      "sha256": "475910b0119da40a9629fd66181722d01d947896615479ce4e3b63212bd1ef1b",
+      "size": 11739,
+      "sha256": "21a74e3d3687a5214a1b2f0164fdc658166b01cf6582e1b1fd910f4b1de26f97",
       "parts": [
         {
           "name": "nr-host.js.001.part",
-          "size": 11523,
-          "md5": "4ab2df1e1105d57c796bbe6eaeb478a7"
+          "size": 11739,
+          "md5": "85fda40ff8ec443a46428b2289399897"
         }
       ]
     },
     {
       "path": "nr-protocol.js",
       "platform": "all",
-      "size": 5925,
-      "sha256": "33b5ffef00f72df8aebeb52e84a1b73a0fa8ae6c7e05d159187bf73b2199f095",
+      "size": 6228,
+      "sha256": "330471c3bbe28bf547185e356718d6a6361e4f304ca1cf115900806f1d3bf03a",
       "parts": [
         {
           "name": "nr-protocol.js.001.part",
-          "size": 5925,
-          "md5": "d04c81af2a86709497e8cca28bf4ac61"
+          "size": 6228,
+          "md5": "0bc031befbb5c2799233a58e6bbf5748"
         }
       ]
     },
@@ -1572,7 +1572,8 @@ const NATIVE_RUNTIME_MANIFEST = {
     }
   ],
   "features": [
-    "lora"
+    "lora",
+    "prefill"
   ]
 };
 
@@ -1918,7 +1919,7 @@ function startNativeMailbox(ctx) {
     try { const li = installNativeRuntimeFromLocal(userData, localSrc); if (li.ok) runtime = findNativeRuntime(userData); else if (!runtime.ok) runtime = li; } catch (e) { if (!runtime.ok) runtime = { ok: false, reason: "本機來源安裝失敗：" + String((e && e.message) || e) }; }
   }
   const protocolOk = !!(runtime.ok && runtime.protocolLoaded);
-  console.log("[main-ext] 執行包：" + (runtime.ok ? "就緒 " + runtime.version + "（onnxruntime-node " + runtime.ortVersion + "）" + (runtime.legacy ? "，舊版（最新為 " + NATIVE_RUNTIME_VERSION + "，不支援 LoRA）" : "") : "沒有可用（" + runtime.reason + "）"));
+  console.log("[main-ext] 執行包：" + (runtime.ok ? "就緒 " + runtime.version + "（onnxruntime-node " + runtime.ortVersion + "）" + (runtime.legacy ? (((runtime.features || []).indexOf("lora") >= 0) ? "，非最新版（最新為 " + NATIVE_RUNTIME_VERSION + "；支援 LoRA，不含預填轉傳）" : "，舊版（最新為 " + NATIVE_RUNTIME_VERSION + "，不支援 LoRA）") : "") : "沒有可用（" + runtime.reason + "）"));
   // 真引擎：子程序由 nr-host.js 管理（懶啟動、握手、逾時、崩潰重啟）。模型檔與分詞器路徑由環境變數給（產品端的下載位置見第 4 項）。
   const modelPath = process.env.FA_NATIVE_MODEL_PATH || "", tokenizerPath = process.env.FA_NATIVE_TOKENIZER_PATH || "";
   let host = null;

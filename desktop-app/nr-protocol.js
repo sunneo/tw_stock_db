@@ -8,7 +8,7 @@ const PROTOCOL_VERSION = 1;
 // 這份執行包的子程序／主程序程式支援的選配功能。主程序（main-ext.js）載入前讀它：舊執行包的 nr-protocol.js 沒有這個匯出（＝空），
 // 所以「需要 lora 的操作」會被明確拒絕（畫面顯示需更新執行包），而不是送出一個會被舊子程序默默忽略的 lora 欄位。
 // 新增功能時只加進這裡；協定版本號 PROTOCOL_VERSION 只在不相容改動時才升。
-const FEATURES = ['lora'];
+const FEATURES = ['lora', 'prefill'];   // prefill：run.prefill 接在生成提示之後（1.22.0-3 起；舊包沒有這個功能，產品端依 FEATURES 決定要不要送）
 
 // 訊息種類表：方向、必填欄位。驗證函式以此為準。
 const MESSAGES = {
@@ -44,6 +44,7 @@ function validate(msg) {
     if (msg.type === 'error' && ERROR_CODES.indexOf(msg.code) < 0) return { ok: false, error: 'error.code 不合法：' + String(msg.code) };
     // run 的 template 欄位是可選的（提示樣板名稱，預設 'qwen3-chatml'；由 template.js 登記，其他模型各自一個樣板）
     if (msg.type === 'run' && msg.template !== undefined && typeof msg.template !== 'string') return { ok: false, error: 'run.template 必須是字串' };
+    if (msg.type === 'run' && msg.prefill !== undefined && typeof msg.prefill !== 'string') return { ok: false, error: 'run.prefill 必須是字串' };
     // run 的 gen 欄位：產品端 FaVlm.textGenParams 的結果（照字面套用，原生端不自訂預設）
     if (msg.type === 'run' && msg.gen !== undefined && (msg.gen === null || typeof msg.gen !== 'object' || Array.isArray(msg.gen))) return { ok: false, error: 'run.gen 必須是物件' };
     // run 的真引擎欄位（可選）：模型檔與分詞器路徑（字串）、取樣種子（數字）。有 model_path 就用真推論，沒有就用假引擎。

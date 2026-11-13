@@ -84,7 +84,7 @@ async function runReal(msg) {
     catch (e) { send({ type: 'error', id: msg.id, code: 'load_failed', message: String((e && e.message) || e) }); return; }
     try {
         const r = await engine.generate({
-            modelPath: msg.model_path, tokenizerPath, messages: msg.messages || [], template: msg.template || 'qwen3-chatml', lora,
+            modelPath: msg.model_path, tokenizerPath, messages: msg.messages || [], template: msg.template || 'qwen3-chatml', lora, prefill: msg.prefill,
             gen: msg.gen, maxTokens: msg.max_tokens, seed: msg.seed, threads: 4,
             isCancelled: () => cancelled.has(msg.id),
             onToken: (t) => { if (msg.stream) send({ type: 'token', id: msg.id, text: t }); },
@@ -125,7 +125,7 @@ function handle(msg) {
     if (msg.type === 'run') {
         // 提示樣板：假引擎不使用文字，但仍要驗證樣板名稱存在、messages 能套用（與真引擎行為一致）
         try {
-            require('./nr-template.js').applyTemplate(msg.template || 'qwen3-chatml', msg.messages || [], { enable_thinking: false });
+            require('./nr-template.js').applyTemplate(msg.template || 'qwen3-chatml', msg.messages || [], { enable_thinking: false, prefill: msg.prefill });
             // gen 有給就要通過驗證（與真引擎相同的規則）；假引擎不實際取樣
             if (msg.gen !== undefined) require('./nr-gen-params.js').validateGen(msg.gen);
         }
