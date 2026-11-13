@@ -25,6 +25,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ctx_common import rope_tables, sha256_file  # noqa: E402
 
+COS_MIN = 0.9
 LIN = [("self_attn.q_proj", "attn.q_proj"), ("self_attn.k_proj", "attn.k_proj"),
        ("self_attn.v_proj", "attn.v_proj"), ("self_attn.o_proj", "attn.o_proj"),
        ("mlp.gate_proj", "mlp.gate_proj"), ("mlp.up_proj", "mlp.up_proj"), ("mlp.down_proj", "mlp.down_proj")]
@@ -161,8 +162,12 @@ def cmd_verify(a):
                "ort_prefill_seconds": round(ort_secs, 1), "total_seconds": round(time.time() - t0, 1)}
         res.append(row)
         print(json.dumps(row, ensure_ascii=False), flush=True)
+    # 預先登記的驗收門檻（在量測前寫定）：每個長度的首步 logits 餘弦 ≥ 0.9，且首步 top-1 一致。
+    # 這只檢查「替換後的圖與 HF 權重一致到量化誤差」，不代表長上下文的品質（品質另由 ctx_eval 量）。
+    ok = bool(res) and all(r["logits_cosine"] >= COS_MIN and r["first_top1_agree"] for r in res)
     with open(a.out, "w", encoding="utf-8") as f:
-        json.dump({"onnx": a.onnx, "hf": a.hf, "results": res}, f, ensure_ascii=False, indent=1)
+        json.dump({"onnx": a.onnx, "hf": a.hf, "results": res, "ok": ok, "gate": {"logits_cosine_min": COS_MIN, "first_top1_agree": True}},
+                  f, ensure_ascii=False, indent=1)
 
 
 def main():

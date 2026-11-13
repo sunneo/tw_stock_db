@@ -133,6 +133,23 @@
       checks: [{ op: 'true', key: 'repeat_identical_before' }, { op: 'true', key: 'fresh_process_identical_to_in_process' }],
       explain: explainCommon,
       limitsNote: '只用合成的圖文配對訓練，輸出只有 LoRA（沒有完整模型）。LoRA 還沒有接進網頁或桌面的 ONNX 生圖執行環境（未驗證）。'
+    },
+    // 加長上下文（DESIGN.offline-training-studio.md §16）：長文 LoRA（YaRN）→ 合併 → 替換 q8 圖的旋轉表與線性層 → 以 ORT 核對
+    context_extend: {
+      id: 'context_extend', name: '加長上下文', wired: true, script: 'lora-train/ctx_extend/ctx_train.py', python: ['torch', 'transformers', 'peft', 'onnxruntime', 'onnx'], needsNode: false,
+      summary: '把基底語言模型的上下文加寬為 2 倍或 4 倍（YaRN 旋轉位置），用長文做一段 LoRA 微調，合併後輸出新的完整模型（ONNX q8）。',
+      paths: [
+        { key: 'base', kind: 'dir', label: '基底模型資料夾（Qwen3-0.6B：config.json、model.safetensors）', must: ['config.json', 'model.safetensors'] },
+        { key: 'q8', kind: 'file', label: '基底 ONNX q8 圖（model_quantized.onnx，結構要與 app 內的相同）' }
+      ],
+      limits: { factor: [2, 4], steps: [1, 2000], longLen: [1024, 16384], shortLen: [256, 4096], rank: [1, 64], lr: [1e-6, 0.1], seed: [0, 1e9] },
+      defaults: { factor: 2, steps: 40, longLen: 8192, shortLen: 1024, rank: 8, lr: 0.0001, seed: 42 },
+      estimate: '處理器（CPU）：一步約 1 段長窗＋2 段短窗的前後向，實測時間見 DESIGN §16.5（以你的電腦為準）；另加合併、匯出與核對。',
+      outputs: ['onnx/model_quantized.onnx', 'onnx/build.json', 'verify.json', 'train/train_log.json'],
+      checkFile: 'verify.json',
+      checks: [{ op: 'true', key: 'ok' }],
+      explain: explainCommon,
+      limitsNote: '只用 repo 內的 DESIGN 文件當長文（留出文件不進訓練）。驗收門檻見 verify 步驟（預先登記：餘弦 ≥ 0.9、首步 top-1 一致）。長度超過 4 倍（163840）在 CPU 上不實測。'
     }
   };
 
@@ -220,6 +237,13 @@
       var ext = PLANNERS[type](p, env);
       if (!ext.ok) return { ok: false, errors: ext.errors, steps: [], outputs: [] };
       steps = ext.steps;
+    } else if (type === 'context_extend') {
+      if (!paths.base) return fail('缺基底模型資料夾（Qwen3-0.6B）');
+      if (!paths.q8) return fail('缺基底 ONNX q8 圖');
+      var ctxTrain = out + '/train', ctxOnnx = out + '/onnx', ctxPy = sd + '/lora-train/ctx_extend/ctx_onnx.py';
+      steps.push(st('train', '長文 LoRA 微調（YaRN ×' + p.factor + '）', py, [script, '--base', paths.base, '--factor', String(p.factor), '--out', ctxTrain, '--steps', String(p.steps), '--long_len', String(p.longLen), '--short_len', String(p.shortLen), '--rank', String(p.rank), '--lr', String(p.lr), '--seed', String(p.seed)]));
+      steps.push(st('build', '替換旋轉表與線性層，寫 ONNX q8', py, [ctxPy, 'build', '--hf', ctxTrain + '/hf', '--factor', String(p.factor), '--src', paths.q8, '--out', ctxOnnx]));
+      steps.push(st('verify', '與 HF fp32 比對（ORT）', py, [ctxPy, 'verify', '--hf', ctxTrain + '/hf', '--onnx', ctxOnnx + '/model_quantized.onnx', '--lengths', '512', '2048', '--out', out + '/verify.json'], { checkFile: s.checkFile, check: s.checks }));
     } else {
       return fail(s.name + '：這個型別的步驟還沒有寫');
     }
