@@ -283,9 +283,10 @@ function createStudioHost(d) {
     const paths = extPaths(p), py = await extPython(p, type), scripts = extScriptsDir(spec);
     const out = { ok: false, wired: true, type, params: n.params, errors: n.errors.slice(), python: py, scriptsDir: scripts, estimate: spec.estimate, limitsNote: spec.limitsNote || '', paths };
     if (!py) out.errors.push('找不到訓練用的 Python（請在「運算後端」設定，或指定這個型別的 Python 路徑）');
+    if (py && /[\\/]/.test(py) && !exists(py)) out.errors.push('找不到訓練用的 Python：' + py + '（路徑不存在，請改指定正確的 Python）');
     if (!scripts) out.errors.push('找不到訓練腳本 ' + spec.script + '（主行程沒有接上腳本資料夾）');
     out.errors = out.errors.concat(ExtJob.checkPaths(type, paths, extFsx));
-    if (py && scripts) { out.missing = await extModules(py, spec.python); if (out.missing.length) out.errors.push('訓練環境缺套件：' + out.missing.join('、')); }
+    if (py && scripts && !(/[\\/]/.test(py) && !exists(py))) { out.missing = await extModules(py, spec.python); if (out.missing.length) out.errors.push('訓練環境缺套件：' + out.missing.join('、')); }
     out.ok = out.errors.length === 0;
     return out;
   }

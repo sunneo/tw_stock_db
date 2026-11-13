@@ -490,10 +490,13 @@ T.train=async function(body){
 /* ===== 模型類型（模型類型登錄表的結果，由 app 傳入；開關「顯示半成品的功能」改變時會即時更新） ===== */
 var MTYPES=CFG.modelTypes||[],GUARDS=CFG.guards||{},MT_MISSING=!!CFG.modelTypesMissing;
 var MT_KEY='fa_train_modeltype',MT_OUT_KEY='fa_train_output';
-function mtGet(){var id='llm';try{id=localStorage.getItem(MT_KEY)||'llm'}catch(e){} return MTYPES.filter(function(t){return t.id===id})[0]||MTYPES[0]||null}
-function mtSet(id){try{localStorage.setItem(MT_KEY,id)}catch(e){}}
-function mtOut(){var o='lora';try{o=localStorage.getItem(MT_OUT_KEY)||'lora'}catch(e){} return o}
-function mtOutSet(o){try{localStorage.setItem(MT_OUT_KEY,o)}catch(e){}}
+var MT_MEM={};
+function lsGet(k,d){try{var v=localStorage.getItem(k);if(v)return v}catch(e){}return MT_MEM[k]||d}
+function lsSet(k,v){MT_MEM[k]=v;try{localStorage.setItem(k,v)}catch(e){}}
+function mtGet(){var id=lsGet(MT_KEY,'llm');return MTYPES.filter(function(t){return t.id===id})[0]||MTYPES[0]||null}
+function mtSet(id){lsSet(MT_KEY,id)}
+function mtOut(){return lsGet(MT_OUT_KEY,'lora')}
+function mtOutSet(o){lsSet(MT_OUT_KEY,o)}
 function mtGuard(t){var g=GUARDS[t.id]||{};var o=mtOut();var r=t.outputs.some(function(x){return x.id===o})?g[o]:null;return r||g._default||{level:'blocked',ok:false,message:'模型類型登錄表沒有接上，無法判斷這個類型能不能訓練。請重新整理工作室。'}}
 function mtWarn(t){var g=mtGuard(t);return h('div',{'class':g.level==='run'?'todo':'warn',text:(g.level==='run'?'✅ ':'⚠️ ')+g.message})}
 /* 半成品與只有設計：按「開始」不會訓練，而是把目前能做到哪一步、還缺什麼寫清楚（不悄悄失敗） */
@@ -533,8 +536,9 @@ function extRunPanel(t){
   else msg.textContent='失敗：'+(s.message||'未知原因');
  }
  bGo.onclick=async function(){
-  msg.textContent='';var paths={};cfg.paths.forEach(function(pd){paths[pd.k]=inp[pd.k].value.trim()});
-  var body={type:t.id,name:nm.value.trim(),params:{steps:Number(steps.value)},paths:paths};if(py.value.trim())body.python=py.value.trim();
+  msg.textContent='';var gd=mtGuard(t);if(gd&&gd.ok===false){msg.textContent='目前選的輸出不能用：'+(gd.message||'請改選其他輸出。');return}
+  var paths={};cfg.paths.forEach(function(pd){paths[pd.k]=inp[pd.k].value.trim()});
+  var body={type:t.id,output:mtOut(),name:nm.value.trim(),params:{steps:Number(steps.value)},paths:paths};if(py.value.trim())body.python=py.value.trim();
   var x=await api('POST','/api/ext/start',body);if(x.ok===false){msg.textContent=String(x.error||'沒有啟動');return}
   st.jobId=x.jobId;bGo.disabled=true;bStop.disabled=false;msg.textContent='已開始。'+(x.limitsNote||'');st.timer=setInterval(poll,2000)};
  bStop.onclick=async function(){await api('POST','/api/ext/stop',{jobId:st.jobId});msg.textContent='要求停止中…'};
