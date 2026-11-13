@@ -13,7 +13,7 @@
     else root.FaLoraRoute = factory();
 })(typeof self !== 'undefined' ? self : this, function () {
     'use strict';
-    const TASK_DOMAIN = { decompose: 'decompose', toolcall: 'toolcall', tool_call: 'toolcall', colu: 'colu', menu: 'colu', plan: 'plan', planning: 'plan' };
+    const TASK_DOMAIN = { decompose: 'decompose', toolcall: 'toolcall', tool_call: 'toolcall', colu: 'colu', menu: 'colu', plan: 'plan', planning: 'plan', codewrite: 'codewrite', code_write: 'codewrite', reading: 'reading', read_comp: 'reading' };
 
     function taskDomain(task) {
         const k = String(task || '').trim().toLowerCase();
