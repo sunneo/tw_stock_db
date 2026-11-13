@@ -1601,3 +1601,23 @@ cd .. && node scripts/native-runtime-pack.js /home/hungfu.lee/fa-work/native-run
 ### 32.8 待辦更新
 - 總指揮：執行 `node build-assistant.js`（或建置流程的完整步驟），確認 `renderer/floating-assistant.js` 含 `nativePrefillPlan`，然後重跑 §32.7 的探針。
 - 步驟 5（六卡片 DOM 探針）：在建置完成前，產品視窗讀到的是舊的登錄邏輯，等建置後再做。
+
+### 32.9 預填輸出重複的根因與修正（2026-11-13，probe6）
+- 根因：`main-ext.js` 組 `run` 請求時只取固定欄位，沒有帶 `prefill`。子程序收不到預填，模型從頭生成；產品端又把預填拼在前面，所以輸出重複（`<tool_call>\n{<tool_call>\n{"name"…`）。
+- 修正（b25a690b）：`main-ext.js` 在字串且非空時才帶 `req.prefill`（舊子程序不受影響，產品端只在 FEATURES 含 prefill 時才送）。`main-ext.js` 不在嵌入清單內，不需要重算清單。回歸測試：`tests/native/prefill_forward.test.js`（7 項通過；未修正前第一項會失敗）。
+- 探針 6（`native-tools-probe6.json`，同一批 9 題，原生與網頁版並排；原生 vs 網頁版）：
+
+| 題型 | 題目 | 原生輸出 | 網頁版輸出 | 格式 原生／網頁 |
+|---|---|---|---|---|
+| tools+prefill | 查台北的天氣 | `<tool_call>\n{ "name":"get_weather", "arguments": { "city":"Taipei" } }` | `…{ "city": "台北" }` | 是／是（參數不符：原生 Taipei） |
+| tools+prefill | 幫我算 3 加 4 | `{ "name":"add_numbers","arguments":{"a":3,"b":4}}`（缺結尾標籤） | 完整 | 是／是 |
+| tools+prefill | 搜尋筆記裡的預算 | `{ "name":"search_notes","arguments":{}}`（缺 query） | `{ "query": "預算" }` | 是／是（參數不符：原生缺 query） |
+| prefill-only | 三題 | 續寫正常接在 `{` 後（沒有重複），但內容是散文 | 散文或錯誤 | 0／0 |
+| tools-only | 三題 | 3/3 原生，格式 2/3 | 格式 2/3 | 同 |
+
+- 判讀：
+  - 重複已消除，預填正確接在生成提示之後，續寫與預填無縫銜接（`prefill-only` 的 `{query}…` 與 `{工具清單}…` 證明續寫不含重複的 `{`）。
+  - `tools+prefill` 的格式與網頁版一致（3/3）；參數正確率原生 2/3、網頁版 3/3。差異來自模型量化（原生 ONNX 與網頁版權重不同），以及 `Taipei` 與缺 `query` 兩筆；這是品質差距，不是預填的錯。
+  - `prefill-only` 兩邊都是 0/3：這個探針題目沒有提供工具，模型不會輸出工具呼叫，不是原生的問題。
+  - 決定：預填維持走原生（格式與網頁版一致），參數品質差距在 §32 結論中寫明；若要求參數 3/3，需另外處理（例如 `tools+prefill` 的 `gen` 設定或量化權重），本次不改。
+- 工作室之外的待辦（不在本次範圍）：探針 6 的網頁版對照已記錄於 `native-tools-probe6.json` 的 `side` 欄位。

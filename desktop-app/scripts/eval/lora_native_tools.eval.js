@@ -91,6 +91,28 @@ return (async () => {
             }
         }
         fa._nrRunNative = origRun;
+        // 網頁版對照（同一批題目，關閉原生、走 WASM／WebGPU）：每題輸出並排記錄，判斷原生帶預填的品質是否與網頁版一致
+        R.webTools = []; const optWas = fa._nrOptIn && fa._nrOptIn();
+        fa._nrSetOptIn(false);
+        try {
+            for (const c of cases) {
+                for (const [q, name, args] of queries) {
+                    const msgs = [{ role: 'system', content: '你是助理。需要時使用工具；不需要工具時直接簡短回答。' }, { role: 'user', content: q }];
+                    const logs = []; let text = '', err = null; const t0 = Date.now();
+                    const a = { task: 'toolcall', messages: msgs, deterministic: true, maxTokens: 160 };
+                    if (c.tools) a.tools = specs;
+                    if (c.prefill) a.prefill = c.prefill;
+                    try { text = await fa._llmGenerate(model, a, { log: (s) => logs.push(String(s)) }); } catch (e) { err = String((e && e.message) || e); }
+                    const m = /<tool_call>\s*(\{[\s\S]*?\})\s*<\/tool_call>/.exec(String(text)) || /(\{[\s\S]*\})/.exec(String(text));
+                    let j = null; try { j = m ? JSON.parse(m[1]) : null; } catch (_) { j = null; }
+                    const fmt = !!(j && typeof j.name === 'string' && specs.some((s) => s.name === j.name));
+                    const match = !!(fmt && j.name === name && JSON.stringify(j.arguments || j) === JSON.stringify(args));
+                    R.webTools.push({ case: c.name, q, fmt, match, err, ms: Date.now() - t0, text: String(text).slice(0, 300) });
+                }
+            }
+        } finally { fa._nrSetOptIn(optWas === true); }
+        // 並排：同一題的原生輸出與網頁版輸出
+        R.side = R.nativeTools.map((r, i) => ({ case: r.case, q: r.q, native: r.native, nativeFmt: r.fmt, nativeText: r.text, webFmt: R.webTools[i] && R.webTools[i].fmt, webText: R.webTools[i] && R.webTools[i].text }));
         const byCase = {}; for (const r of R.nativeTools) { const b = byCase[r.case] = byCase[r.case] || { n: 0, native: 0, fmt: 0, match: 0 }; b.n++; b.native += r.native; b.fmt += r.fmt; b.match += r.match; }
         R.byCase = byCase;
         ck('tools-only 走原生', byCase['tools-only'].native === byCase['tools-only'].n, byCase['tools-only']);
