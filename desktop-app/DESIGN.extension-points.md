@@ -126,3 +126,17 @@
   - 公開資訊觀測站：未設定來源，標示「查不到（未設定來源網址）」。
 - 簡報結構：封面、報價與成交量（4 條、附來源）、近期新聞（查不到）、三大法人（查不到）、重大訊息（查不到）、免責聲明（最後一頁）。
 - 實測耗時約 0.9 秒（工具內部）。
+
+
+## 八、宿主頁面登記自己的擴充（register_extension，2026-11-13）
+
+起因：股市網站要把自己的「調查個股」「全面分析報告」登記給 media-presentation 用，資料是頁面自己的本機資料庫（K 線、診斷、籌碼、鎖股），不是公開網址。
+
+- **`fa.register_extension(ext, opts)`**：ext 是第三節的宣告式 JSON（同樣驗證），工具登記成宿主工具（沒有歸類，落在 host_tools／host_app，media-presentation 借用得到）。回傳 `{ok, replaced, tool}` 或 `{ok:false, errors}`。
+- **`host:` 來源**：`research[].url` 可以寫 `host:<名稱>?code={code}&name={name}&date={date}`，由 `opts.fetchers[名稱](query, {ext, args})` 取文字（不上網、不經代理）。模板變數與缺條件跳過的規則跟網址一樣。
+- **`extract.kind: "lines"`**：來源文字一行一條事實，不做關鍵字篩選。
+- **不截斷**：`extract.maxFacts`（1～400）放寬每個來源的條數（預設仍是 8）；單條超過 220 字時依「。；;」拆成多條（一個字都不丟，也不加省略號），不再用「…」截掉。
+- **宿主接線 opts**（都選填）：`getContext()`（目前頁面的情境，例如使用者正在看哪一檔）、`resolveText(原話)`（用宿主的名稱字典解出代號）、`wrapResult(out, {args, ext})`（宿主決定回給模型的格式，例如存進自己的結果倉庫、分頁；不給就回預設 JSON）。
+- 買賣建議過濾、數字核對、免責聲明仍然由程式強制；`host:` 來源的文字也一樣（所以宿主組文字時避免用「停損」「目標價」等字，改用「防守位置」「幅度測量目標」）。
+- 測試：`ext_core.test.js` 59 → 68 項（host: 與 lines 驗證、maxFacts 上限、條數放寬、長句拆開不丟字、建議字眼仍被過濾）。
+- 還沒做：`unregister_extension`；使用者自訂擴充的匯入。

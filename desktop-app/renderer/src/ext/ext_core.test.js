@@ -150,6 +150,45 @@ const STOCK_PAGE_TITLE = '大成鋼(2027) 股價 - 股市網站';
     check('investigate: fetch error becomes a failed source, not a crash', throwing.ok && throwing.results[0].status === 'failed' && /網路斷線/.test(throwing.results[0].note), throwing.results);
     check('investigate: failed sources show 查不到, never a number', throwing.sections[0].bullets[0].text.indexOf('查不到') === 0);
 
+    // ---- 宿主本機來源（host:）、lines、不截斷（2026-11-13）----
+    const HOSTEXT = {
+        id: 'host_demo', name: '本機調查', tool: { name: 'ext_host_demo', description: '用宿主本機資料調查一檔股票' },
+        context: { patterns: [{ re: '([^\\s()（）]{2,12})[（(](\\d{4,6})[)）]', name: 1, code: 2 }] },
+        research: [
+            { id: 'many', label: '很多條', url: 'host:many?code={code}', extract: { kind: 'lines', maxFacts: 20 } },
+            { id: 'few', label: '預設上限', url: 'host:many?code={code}', extract: { kind: 'lines' } },
+            { id: 'long', label: '很長的一條', url: 'host:long?code={code}', extract: { kind: 'lines' } },
+            { id: 'adv', label: '含建議字眼', url: 'host:adv?code={code}', extract: { kind: 'lines' } },
+        ],
+        contribute: { target: 'media-presentation', chapter: '{name}（{code}）本機調查', maxBulletsPerSlide: 6 },
+    };
+    check('host: url and lines kind are valid', X.validate(HOSTEXT).ok, X.validate(HOSTEXT).errors);
+    const badHost = JSON.parse(JSON.stringify(HOSTEXT)); badHost.research[0].url = 'host:Bad Name'; badHost.research[1].extract.maxFacts = 9999;
+    const vh = X.validate(badHost);
+    check('reject: malformed host: name and maxFacts over the cap', !vh.ok && vh.errors.length === 2, vh.errors);
+    const manyLines = Array.from({ length: 12 }, (_, i) => '第' + (i + 1) + '條事實，數值 ' + (100 + i)).join('\n');
+    const longSentence = Array.from({ length: 6 }, (_, i) => '這是第' + (i + 1) + '句很長的說明，內容有五十個字左右，用來測試單條上限被拆開而不是被截成省略號，數字 ' + (1000 + i) + '。').join('');
+    const hostCalls = [];
+    const hinv = await X.investigate(HOSTEXT, {
+        args: { code: '2027', name: '大成鋼' }, date: '20261113',
+        fetchText: async (u) => {
+            hostCalls.push(u);
+            if (/^host:many/.test(u)) return manyLines;
+            if (/^host:long/.test(u)) return longSentence;
+            if (/^host:adv/.test(u)) return '收盤 49 元\n建議買進 50 元\n跌破月線 47.85';
+            return null;
+        },
+    });
+    check('host: sources are asked with the template filled', hostCalls.length === 4 && hostCalls[0] === 'host:many?code=2027', hostCalls);
+    check('maxFacts raises the per-source cap, default stays 8', hinv.sections[0].bullets.length === 12 && hinv.sections[1].bullets.length === 8, [hinv.sections[0].bullets.length, hinv.sections[1].bullets.length]);
+    const longSlides = hinv.deck.chapters[0].slides.filter((sl) => sl.title.indexOf('很長的一條') === 0);
+    const longBullets = [].concat.apply([], longSlides.map((sl) => sl.bullets));
+    check('long fact is split, every piece within the limit', longBullets.length > 1 && longBullets.every((b) => b.length <= X.LIMITS.bullet), longBullets.map((b) => b.length));
+    check('long fact loses nothing when split', longBullets.join('') === longSentence, [longBullets.join('').length, longSentence.length]);
+    check('no ellipsis added to split facts', longBullets.every((b) => b.slice(-1) !== '…'));
+    check('advice wording is still removed from host sources', hinv.adviceRemoved === 1 && hinv.sections[3].bullets.length === 2, [hinv.adviceRemoved, hinv.sections[3].bullets.map((b) => b.text)]);
+    check('splitBullet keeps short text as is', X.splitBullet('短句').join() === '短句');
+
     console.log('ext_core: ' + ok + ' 項通過' + (bad.length ? '，' + bad.length + ' 項失敗' : '，全部通過'));
     bad.forEach((b) => console.log('FAIL ' + b));
     process.exit(bad.length ? 1 : 0);

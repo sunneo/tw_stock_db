@@ -19,7 +19,7 @@
     var ADVICE_RE = /買進|賣出|加碼|減碼|停損|停利|目標價|必漲|必跌|穩賺|強力推薦/;
     var MAX_FACTS = 8;
     var LABELS = { code: '股票代號', name: '股票名稱', date: '日期' };
-    var LIMITS = { chapters: 30, slides: 150, bullets: 6, bullet: 220, narration: 1200 };
+    var LIMITS = { chapters: 30, slides: 150, bullets: 6, bullet: 220, narration: 1200, maxFacts: 400 };
 
     function str(x) { return x == null ? '' : String(x); }
     function clip(s, n) { s = str(s); return s.length > n ? s.slice(0, n - 1) + '…' : s; }
@@ -70,10 +70,12 @@
             ids[str(s && s.id)] = true;
             if (!str(s && s.label).trim()) err(p + '.label', '必填');
             if (typeof (s && s.url) !== 'string') err(p + '.url', '必須是字串（沒有網址模板就用空字串並標 optional）');
-            else if (s.url && !/^https:\/\//.test(s.url)) err(p + '.url', '必須是 https 網址');
+            else if (s.url && !/^https:\/\//.test(s.url) && !/^host:[a-z][a-z0-9_]{0,40}(\?.*)?$/.test(s.url)) err(p + '.url', '必須是 https 網址，或 host:<名稱>（宿主頁面提供的本機資料來源，由 register_extension 的 fetchers 取得）');
             else if (!s.url && !s.optional) err(p + '.url', '沒有網址的來源必須標 optional');
             var k = s && s.extract && s.extract.kind;
-            if (['json_rows', 'rss', 'text'].indexOf(k) < 0) err(p + '.extract.kind', '必須是 json_rows、rss 或 text');
+            if (['json_rows', 'rss', 'text', 'lines'].indexOf(k) < 0) err(p + '.extract.kind', '必須是 json_rows、rss、text 或 lines');
+            var mf = s && s.extract && s.extract.maxFacts;
+            if (mf != null && !(mf >= 1 && mf <= LIMITS.maxFacts)) err(p + '.extract.maxFacts', '必須是 1～' + LIMITS.maxFacts);
         });
         var ct = ext.contribute || {};
         if (ct.target !== 'media-presentation') err('contribute.target', '目前只支援 media-presentation');
@@ -237,6 +239,12 @@
         return Date.UTC(+s.slice(0, 4), +s.slice(4, 6) - 1, +s.slice(6, 8)) - 8 * 36e5;
     }
 
+    // lines：宿主提供的本機資料來源（host:）自己組好的文字，一行一條事實，不做關鍵字篩選、不截斷。
+    function plainLines(ex, body) {
+        var lines = str(body).split(/\r?\n/).map(function (l) { return l.trim(); }).filter(Boolean);
+        return lines.length ? { facts: lines.map(function (l) { return { text: l }; }), note: '' } : { facts: [], note: '沒有內容' };
+    }
+
     function textSentences(ex, body, ent) {
         var plain = body.replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>/gi, ' ').replace(/<[^>]+>/g, ' ');
         plain = decodeEntities(plain).replace(/\s+/g, ' ');
@@ -275,8 +283,11 @@
         var ex = plan.extract || {}, r;
         if (ex.kind === 'json_rows') r = jsonRows(ex, body, ent);
         else if (ex.kind === 'rss') r = rssItems(ex, body, ent, opts);
+        else if (ex.kind === 'lines') r = plainLines(ex, body);
         else r = textSentences(ex, body, ent);
-        var facts = (r.facts || []).slice(0, MAX_FACTS);
+        // 預設每個來源最多 8 條事實；宣告 extract.maxFacts 可以放寬（全面報告不想被截斷）
+        var cap = ex.maxFacts > 0 ? Math.min(ex.maxFacts, LIMITS.maxFacts) : MAX_FACTS;
+        var facts = (r.facts || []).slice(0, cap);
         var v = verifyFacts(facts, body);
         var note = r.note || '';
         if (!v.kept.length && !note) note = '抽到的內容沒有通過數字核對';
@@ -311,6 +322,20 @@
     }
 
     // ───── 貢獻到 media-presentation 的簡報（一章；每頁附來源；最後一頁固定免責聲明）─────
+    // 超過單條上限的句子：依「。；;」拆開再湊到上限內，還是太長才硬切——內容一個字都不丟。
+    function splitBullet(text) {
+        text = str(text);
+        if (text.length <= LIMITS.bullet) return [text];
+        var parts = text.split(/(?<=[。；;])/).map(function (x) { return x.trim(); }).filter(Boolean);
+        var out = [], cur = '';
+        parts.forEach(function (x) {
+            while (x.length > LIMITS.bullet) { if (cur) { out.push(cur); cur = ''; } out.push(x.slice(0, LIMITS.bullet)); x = x.slice(LIMITS.bullet); }
+            if (cur && (cur + x).length > LIMITS.bullet) { out.push(cur); cur = x; } else cur += x;
+        });
+        if (cur) out.push(cur);
+        return out;
+    }
+
     function contributeToDeck(deck, built, ext) {
         var d = JSON.parse(JSON.stringify(deck || {}));
         if (!Array.isArray(d.chapters)) d.chapters = [];
@@ -318,7 +343,8 @@
         var chap = { title: clip(built.title, 120), slides: [] };
         chap.slides.push({ title: clip(built.title, 120), layout: 'title', narration: clip(built.title, LIMITS.narration) });
         built.sections.forEach(function (sec) {
-            var items = sec.bullets;
+            var items = [];
+            sec.bullets.forEach(function (b) { splitBullet(b.text).forEach(function (t) { items.push({ text: t, source: b.source }); }); });
             var srcs = uniq(items.map(function (b) { return b.source.label + (b.source.url ? '（' + b.source.url + '）' : ''); }));
             for (var i = 0, part = 0; i < items.length; i += per, part++) {
                 var chunk = items.slice(i, i + per);
@@ -395,7 +421,7 @@
         DISCLAIMER_DEFAULT: DISCLAIMER_DEFAULT, ADVICE_RE: ADVICE_RE, LIMITS: LIMITS, LABELS: LABELS,
         validate: validate, createRegistry: createRegistry, register: register, loadAll: loadAll, remove: remove, list: list,
         detectContext: detectContext, resolveEntities: resolveEntities, fill: fill, planResearch: planResearch,
-        extractSource: extractSource, verifyFacts: verifyFacts, buildSections: buildSections,
+        extractSource: extractSource, verifyFacts: verifyFacts, buildSections: buildSections, splitBullet: splitBullet,
         contributeToDeck: contributeToDeck, toolSpec: toolSpec, investigate: investigate, disclaimerOf: disclaimerOf,
     };
 });
