@@ -5518,6 +5518,15 @@ const holder = {};
     //   win：清楚贏的組（不含退化與無資料）；
     //   blocked：自動選用被擋下的人話原因（空＝可自動選用）。手動指定不受 blocked 影響。
     // 評量腳本寫的判定 ev.verdict.ship === false 時，未贏的目標組也列入 blocked（退化與無資料已在上面各自列出）。
+    // 產品端的觸發政策（DESIGN §32.11、§33）：領域 → 文字是否符合（true／false）；沒有政策的領域回 null（改看 descriptor 的觸發字）。
+    const TRIGGER_POLICY = {
+        reading: (t) => /【文章】/.test(t) && /文中|依文|引用|原文/.test(t),
+        codewrite: (t) => /寫程式|實作函式|寫[^\n]{0,8}函式|code\s*write|write\s+(a\s+)?function/i.test(t),
+    };
+    function triggerPolicyOk(domain, text) {
+        if (!Object.prototype.hasOwnProperty.call(TRIGGER_POLICY, domain)) return null;
+        return !!TRIGGER_POLICY[domain](String(text || ""));
+    }
     function evalVerdict(ev) {
         if (!ev || typeof ev !== 'object') return { known: false, lose: [], win: [], degenerate: [], noData: [], blocked: [] };
         if (ev.metrics && typeof ev.metrics === 'object') return withBlocked(metricsVerdict(ev.metrics));
@@ -5621,8 +5630,12 @@ const holder = {};
             return (SOURCE_RANK[b.source] - SOURCE_RANK[a.source]) || ((b.priority || 0) - (a.priority || 0)) ||
                 ((evalVerdict(b.eval).score || 0) - (evalVerdict(a.eval).score || 0)) || ((b.added || 0) - (a.added || 0)) || (a.id < b.id ? -1 : 1);
         }
+        // 產品端的觸發政策（DESIGN §32.11）：descriptor 裡的觸發字太寬（reading 的「文章／根據」、codewrite 的「程式」會讓一般聊天被選到），
+        // 這兩個領域改用這裡的規則，不看 descriptor 的觸發字。reading：必須附文章（【文章】標記）且問依文作答；codewrite：必須明確要寫程式或實作函式。
         function triggerHit(e, text) {
             if (!text) return false;
+            const pol = (e.domains || []).find((d) => Object.prototype.hasOwnProperty.call(TRIGGER_POLICY, d));
+            if (pol) return TRIGGER_POLICY[pol](String(text));
             const low = String(text).toLowerCase();
             for (const t of e.triggers || []) { try { if (new RegExp(t, 'i').test(text)) return true; } catch (_) { if (low.indexOf(String(t).toLowerCase()) >= 0) return true; } }
             return false;
@@ -5896,7 +5909,7 @@ const holder = {};
         };
     }
 
-    return { SOURCES, DEFAULT_BUDGET, DESCRIPTOR_FORMAT, DESCRIPTOR_FORMAT_VERSION, TOOL_HASH_SCHEME, toolCatalogShapeText, toolCatalogHash, validateEntry, descriptorErrors, descriptorFromJson, checkCompat, evalVerdict, gateOf, createRegistry, entryFromManifest, weightFile, summaryOf, diffSummaries, importReport, nrEngineLoader };
+    return { triggerPolicyOk, SOURCES, DEFAULT_BUDGET, DESCRIPTOR_FORMAT, DESCRIPTOR_FORMAT_VERSION, TOOL_HASH_SCHEME, toolCatalogShapeText, toolCatalogHash, validateEntry, descriptorErrors, descriptorFromJson, checkCompat, evalVerdict, gateOf, createRegistry, entryFromManifest, weightFile, summaryOf, diffSummaries, importReport, nrEngineLoader };
 });
 
 }).call(null, undefined, holder);
@@ -5916,7 +5929,7 @@ const holder = {};
     else root.FaLoraRoute = factory();
 })(typeof self !== 'undefined' ? self : this, function () {
     'use strict';
-    const TASK_DOMAIN = { decompose: 'decompose', toolcall: 'toolcall', tool_call: 'toolcall', colu: 'colu', menu: 'colu', plan: 'plan', planning: 'plan' };
+    const TASK_DOMAIN = { decompose: 'decompose', toolcall: 'toolcall', tool_call: 'toolcall', colu: 'colu', menu: 'colu', plan: 'plan', planning: 'plan', codewrite: 'codewrite', code_write: 'codewrite', reading: 'reading', read_comp: 'reading' };
 
     function taskDomain(task) {
         const k = String(task || '').trim().toLowerCase();
@@ -5948,6 +5961,118 @@ const holder = {};
     }
 
     return { TASK_DOMAIN, taskDomain, decideTurn, routeTurn };
+});
+
+}).call(null, undefined, holder);
+(function (module, self) {
+/* 內建 LoRA 的清單、延遲下載與校驗（UMD，純函式＋依賴注入；不碰 DOM／檔案系統；Node 與瀏覽器都能載入）。DESIGN.lora-training.md §32.3。
+ *
+ * 內建清單 builtin.json（放在 lora-adapters 分支根目錄，由 lora-train/build_builtin.js 產生）：
+ *   { format: 'fa-lora-builtin', version: 1, base_url: '<raw.githubusercontent.com/…/<commit>>', entries: [
+ *       { id, name, version, size, sha256, dir, parts: [{file, size, sha256}], domains, gate: {pass, reason} } ] }
+ *   權重不嵌入 app：首次需要時才下載（fetchBuiltin），下載的分片逐一核對大小與 sha256，接成 .fatrain 後再核對整檔。
+ *   任何一步不對都不寫入，回傳看得懂的原因（humanError），不拋出例外給使用者看。
+ *
+ *  listBuiltin(manifest, opts) → [{ id, name, version, size, sha256, dir, domains, gate, url }]
+ *  fetchBuiltin(entry, deps)   → async，{ ok:true, bytes } | { ok:false, code, message }
+ *     deps.fetch(url) → Promise<Uint8Array>（失敗就拋出）；deps.hash(bytes) → hex sha256（同步）
+ *     opts.retries（預設 1）：單一分片下載失敗時重試次數
+ */
+(function (root, factory) {
+    if (typeof module === 'object' && module.exports) module.exports = factory();
+    else root.FaLoraBuiltin = factory();
+})(typeof self !== 'undefined' ? self : this, function () {
+    'use strict';
+    const FORMAT = 'fa-lora-builtin';
+    const HEX64 = /^[0-9a-f]{64}$/;
+
+    function humanError(code, id) {
+        const who = id ? '內建 LoRA「' + id + '」' : '內建 LoRA';
+        switch (code) {
+            case 'network': return who + '下載失敗：連不上 GitHub（網路不通或暫時無法連線）。請確認網路後再試一次；這不影響其他功能。';
+            case 'part_mismatch': return who + '的下載檔案校驗不符（下載可能中斷或被截斷）。已丟棄，請再試一次。';
+            case 'total_mismatch': return who + '重組後的檔案校驗不符。已丟棄，請再試一次；若一直失敗，請回報這個版本的 sha256。';
+            case 'no_entry': return '找不到這個內建 LoRA 的清單項目（可能是舊版的清單）。請更新程式後再試。';
+            case 'bad_manifest': return '內建 LoRA 清單格式不對（缺少必要欄位），無法下載。請回報這個問題。';
+            default: return who + '發生未知錯誤（' + code + '）。請再試一次。';
+        }
+    }
+
+    function validManifest(m) {
+        const errs = [];
+        if (!m || typeof m !== 'object') return ['清單不是物件'];
+        if (m.format !== FORMAT) errs.push('format 應為 ' + FORMAT);
+        if (typeof m.base_url !== 'string' || !m.base_url) errs.push('缺 base_url');
+        if (!Array.isArray(m.entries)) errs.push('缺 entries');
+        else m.entries.forEach((e, i) => {
+            if (!e || typeof e.id !== 'string') errs.push('entries[' + i + '] 缺 id');
+            if (!e || !HEX64.test(String(e.sha256 || ''))) errs.push('entries[' + i + '] sha256 格式不對');
+            if (!e || !Array.isArray(e.parts) || !e.parts.length) errs.push('entries[' + i + '] 缺 parts');
+            if (e && e.defaultOn !== undefined && typeof e.defaultOn !== 'boolean') errs.push('entries[' + i + '] defaultOn 必須是 true 或 false');
+        });
+        return errs;
+    }
+
+    function listBuiltin(manifest) {
+        const errs = validManifest(manifest);
+        if (errs.length) return { ok: false, errors: errs, entries: [] };
+        const entries = manifest.entries.map((e) => Object.assign({}, e, { url: manifest.base_url.replace(/\/+$/, '') + '/' + e.dir }));
+        return { ok: true, errors: [], entries };
+    }
+
+    async function fetchBuiltin(entry, deps, opts) {
+        const retries = opts && opts.retries >= 0 ? opts.retries : 1;
+        if (!entry || !Array.isArray(entry.parts) || !entry.parts.length || !HEX64.test(String(entry.sha256 || ''))) {
+            return { ok: false, code: 'no_entry', message: humanError('no_entry', entry && entry.id) };
+        }
+        const base = (deps.baseUrl || '').replace(/\/+$/, '');
+        const chunks = [];
+        for (const p of entry.parts) {
+            const url = base + '/' + entry.dir + '/' + p.file;
+            let bytes = null, lastErr = null;
+            for (let t = 0; t <= retries && !bytes; t++) {
+                try { bytes = await deps.fetch(url); } catch (e) { lastErr = e; }
+            }
+            if (!bytes) return { ok: false, code: 'network', message: humanError('network', entry.id), detail: String(lastErr && lastErr.message || lastErr) };
+            if (bytes.length !== p.size || deps.hash(bytes) !== p.sha256) {
+                return { ok: false, code: 'part_mismatch', message: humanError('part_mismatch', entry.id), detail: p.file };
+            }
+            chunks.push(bytes);
+        }
+        const total = chunks.reduce((n, c) => n + c.length, 0);
+        const all = new Uint8Array(total); let off = 0;
+        for (const c of chunks) { all.set(c, off); off += c.length; }
+        if (total !== entry.size || deps.hash(all) !== entry.sha256) {
+            return { ok: false, code: 'total_mismatch', message: humanError('total_mismatch', entry.id) };
+        }
+        return { ok: true, bytes: all };
+    }
+
+    // 規劃（純函式）：每顆的預設、實際是否啟用、把關註記、是否已下載。DESIGN §32.10。
+    //   defaultOn 由清單決定（builtin.json 的 entries[].defaultOn），沒有這個欄位就視為 false（選用）。
+    //   state.master：「使用內建 LoRA 強化」總開關（預設 true；false 時全部不啟用）。
+    //   state.enabled：{id: bool} 使用者對單顆的設定；沒有設定就用 defaultOn。
+    //   state.downloaded：{id: bytes} 已下載的大小（沒有＝尚未下載，第一次被路由選到才下載）。
+    function planBuiltin(manifest, state) {
+        const st = state || {};
+        const master = st.master !== false;
+        const en = st.enabled || {}, dl = st.downloaded || {};
+        const list = listBuiltin(manifest);
+        if (!list.ok) return { ok: false, errors: list.errors, master, entries: [] };
+        const entries = list.entries.map((e) => {
+            const defaultOn = e.defaultOn === true;
+            const pref = Object.prototype.hasOwnProperty.call(en, e.id) ? !!en[e.id] : defaultOn;
+            const gatePass = !!(e.gate && e.gate.pass);
+            const note = gatePass ? '' : '未通過把關或未驗證：' + ((e.gate && e.gate.reason) || '沒有評測數字');
+            const has = Object.prototype.hasOwnProperty.call(dl, e.id);
+            return { id: e.id, name: e.name, version: e.version, size: e.size, domains: e.domains || [],
+                defaultOn, optional: !defaultOn, enabled: master && pref, gatePass, note,
+                downloaded: has, downloadedBytes: has ? Number(dl[e.id]) || 0 : 0, deletable: has };
+        });
+        return { ok: true, errors: [], master, entries };
+    }
+
+    return { FORMAT, humanError, validManifest, listBuiltin, fetchBuiltin, planBuiltin };
 });
 
 }).call(null, undefined, holder);
@@ -10216,6 +10341,8 @@ const holder = {};
     const Ing = (typeof module === 'object' && module.exports) ? require('./ingest_core.js') : root.FaStudioIngest;
     const Cln = (typeof module === 'object' && module.exports) ? require('./clean_core.js') : root.FaStudioClean;
     const Reg = (typeof module === 'object' && module.exports) ? require('./lora_registry_core.js') : root.FaLoraRegistry;
+    const LoraBuiltin = (typeof module === 'object' && module.exports) ? require('./lora_builtin_core.js') : root.FaLoraBuiltin;
+    const LoraRoute = (typeof module === 'object' && module.exports) ? require('./lora_route_core.js') : root.FaLoraRoute;
     const Ev = (typeof module === 'object' && module.exports) ? require('./eval_core.js') : root.FaStudioEval;
     const Sy = (typeof module === 'object' && module.exports) ? require('./sym_suites_core.js') : root.FaStudioSym;
     const ST = (typeof module === 'object' && module.exports) ? require('./sym_train_core.js') : root.FaStudioSymTrain;
@@ -10230,9 +10357,9 @@ const holder = {};
     const DEd = (typeof module === 'object' && module.exports) ? require('./dataset_edit_core.js') : root.FaStudioDatasetEdit;
     const MEv = (typeof module === 'object' && module.exports) ? require('./model_eval_core.js') : root.FaStudioModelEval;
     const EGr = (typeof module === 'object' && module.exports) ? require('./eval_groups_core.js') : root.FaStudioEvalGroups;
-    if (typeof module === 'object' && module.exports) module.exports = factory(A, F, T, Lay, Ing, Cln, Reg, Ev, Sy, ST, Te, Si, PPl, PLv, PAd, PRt, PLm, LXp, DEd, MEv, EGr);
-    else root.FaStudioServer = factory(A, F, T, Lay, Ing, Cln, Reg, Ev, Sy, ST, Te, Si, PPl, PLv, PAd, PRt, PLm, LXp, DEd, MEv, EGr);
-})(typeof self !== 'undefined' ? self : this, function (Asset, Fatrain, Trainer, Layout, Ingest, Clean, LoraReg, EvalCore, Sym, SymTrain, Teacher, SourceInput, PipeLib, PipeLive, PipeAdvice, PipeRoutes, PipeManage, LlmExp, DatasetEdit, ModelEval, EvalGroups) {
+    if (typeof module === 'object' && module.exports) module.exports = factory(A, F, T, Lay, Ing, Cln, Reg, LoraBuiltin, LoraRoute, Ev, Sy, ST, Te, Si, PPl, PLv, PAd, PRt, PLm, LXp, DEd, MEv, EGr);
+    else root.FaStudioServer = factory(A, F, T, Lay, Ing, Cln, Reg, LoraBuiltin, LoraRoute, Ev, Sy, ST, Te, Si, PPl, PLv, PAd, PRt, PLm, LXp, DEd, MEv, EGr);
+})(typeof self !== 'undefined' ? self : this, function (Asset, Fatrain, Trainer, Layout, Ingest, Clean, LoraReg, LoraBuiltin, LoraRoute, EvalCore, Sym, SymTrain, Teacher, SourceInput, PipeLib, PipeLive, PipeAdvice, PipeRoutes, PipeManage, LlmExp, DatasetEdit, ModelEval, EvalGroups) {
     'use strict';
     const KIND_LABEL = { colu: 'CoLU', blockly: '積木課程', matrix: '矩陣層', uml: 'UML 設計', trainer: '離線訓練器', lora: 'LoRA', llm: 'LLM 模型（匯出）' };
     const dec = (u) => new TextDecoder('utf-8').decode(u);
@@ -10274,11 +10401,81 @@ const holder = {};
             }
             return LORA_ENV;
         }
+        // ---- 內建 LoRA（DESIGN §33 批 2）：清單與下載在主行程（h.builtinCall），這裡做規劃、匯入儲存層、以及每輪按需下載（只下載路由真的會選的）
+        const BUILTIN_PURPOSE = { decompose: '拆題', toolcall: '工具呼叫', colu: '選單', plan: '規劃', codewrite: '寫程式', reading: '閱讀理解' };
+        const builtinPrefs = () => { const p = (h.prefsGet && h.prefsGet()) || {}, b = p.builtinLora || {}; return { master: b.master !== false, enabled: Object.assign({}, b.enabled), ids: Array.isArray(p.builtinIds) ? p.builtinIds.slice() : [] }; };
+        const builtinOn = (id, defaultOn) => { const b = builtinPrefs(); if (!b.master) return false; return Object.prototype.hasOwnProperty.call(b.enabled, id) ? !!b.enabled[id] : !!defaultOn; };
+        const builtinSave = (patch) => { const p = Object.assign({}, (h.prefsGet && h.prefsGet()) || {}), b = builtinPrefs(); p.builtinLora = { master: patch.master !== undefined ? !!patch.master : b.master, enabled: Object.assign({}, b.enabled, patch.enabled || {}) }; if (patch.ids) p.builtinIds = patch.ids; h.prefsSet(p); };
+        const bl = { manifest: null, at: 0, failed: {}, busy: null }; // 清單快取 10 分鐘；下載失敗冷卻 10 分鐘（不每一輪重試）；同時只做一個下載
+        const BL_COOL = 600000;
+        async function builtinManifest(force) {
+            if (!h.builtinCall) return { ok: false, available: false, message: '只有桌面版可以下載內建 LoRA' };
+            if (!force && bl.manifest && Date.now() - bl.at < BL_COOL) return bl.manifest;
+            const r = await h.builtinCall('builtin_manifest', {}, 60000).catch((e) => ({ ok: false, code: 'network', message: String((e && e.message) || e) }));
+            if (!r || !r.ok) { bl.manifest = null; return { ok: false, available: true, message: (r && r.message) || '抓不到內建清單' }; }
+            const v = LoraBuiltin.validManifest ? LoraBuiltin.validManifest(r.manifest) : [];
+            if (v && v.length) return { ok: false, available: true, message: '內建清單格式不對：' + v.join('；') };
+            bl.manifest = { ok: true, available: true, manifest: r.manifest, source: r.source, note: r.note || '' }; bl.at = Date.now();
+            return bl.manifest;
+        }
+        async function builtinView() {
+            const b = builtinPrefs(), m = await builtinManifest(false);
+            if (!h.builtinCall) return { ok: false, available: false, master: b.master, entries: [], message: '只有桌面版可以使用內建 LoRA（網頁版目前只有桌面版啟用）' };
+            if (!m.ok) return { ok: false, available: true, master: b.master, entries: [], message: m.message };
+            const st = (await h.builtinCall('builtin_status', {}, 10000).catch(() => null)) || {};
+            const plan = LoraBuiltin.planBuiltin(m.manifest, { master: b.master, enabled: b.enabled, downloaded: st.downloaded || {} });
+            const entries = plan.entries.map((x) => {
+                const raw = m.manifest.entries.find((y) => y.id === x.id) || {};
+                const pr = (st.progress || {})[x.id] || null;
+                return Object.assign({}, x, { purpose: (x.domains || []).map((d) => BUILTIN_PURPOSE[d] || d).join('、'), limits: raw.limits || [], evalSummary: raw.gate && raw.gate.reason || '', sizeMB: Math.round(x.size / 1e5) / 10, failed: bl.failed[x.id] ? bl.failed[x.id].message : '', progress: pr && pr.state === 'running' ? { part: pr.part, parts: pr.parts } : null });
+            });
+            return { ok: true, available: true, master: b.master, source: m.source, note: m.note, entries, message: '' };
+        }
+        // 下載＋逐片校驗（主行程）→ 讀位元組 → 放進 LoRA 儲存層（沿用 Fatrain.importAsset；已存在就取代）
+        async function builtinDownload(e, onProgress) {
+            const note = '第一次使用，正在下載『' + ((e.domains || []).map((d) => BUILTIN_PURPOSE[d] || d).join('、') || e.id) + '』強化模組（約 ' + Math.round(e.size / 1e6) + ' MB）';
+            if (onProgress) { try { onProgress(note); } catch (_) { /* */ } }
+            const timer = onProgress ? setInterval(async () => { const st = await h.builtinCall('builtin_status', {}, 5000).catch(() => null); const pr = st && st.progress && st.progress[e.id]; if (pr && pr.state === 'running') { try { onProgress('正在下載『' + e.id + '』：第 ' + pr.part + ' ／ ' + pr.parts + ' 片'); } catch (_) { /* */ } } }, 1000) : null;
+            let r = null;
+            try { r = await h.builtinCall('builtin_fetch', { id: e.id }, 900000); } finally { if (timer) clearInterval(timer); }
+            if (!r || !r.ok) return { ok: false, id: e.id, message: (r && r.message) || '下載失敗' };
+            let bytes; try { bytes = await h.readBytes(r.path); } catch (err) { return { ok: false, id: e.id, message: '讀取下載的檔案失敗：' + String((err && err.message) || err) }; }
+            const existing = await h.storage.loadManifest('lora', e.id).catch(() => null);
+            const imp = await Fatrain.importAsset(bytes, { storage: h.storage, confirmed: true, mode: existing ? 'replace' : 'auto' });
+            if (!imp || !imp.ok) return { ok: false, id: e.id, message: '放進 LoRA 儲存層失敗：' + ((imp && (imp.error || (imp.errors || []).join('；'))) || '未知原因') };
+            const ids = Array.from(new Set(builtinPrefs().ids.concat([e.id])));
+            builtinSave({ ids });
+            bl.failed[e.id] && delete bl.failed[e.id];
+            return { ok: true, id: e.id, bytes: bytes.length };
+        }
+        // 每輪路由前呼叫：這個任務領域有內建 LoRA、它還沒載入、領域政策也符合，才下載（失敗不丟例外，回原因，呼叫端用基底）
+        async function builtinEnsure(task, text, onProgress) {
+            const domain = LoraRoute && LoraRoute.taskDomain(task);
+            if (!domain || !h.builtinCall) return { ok: true, skipped: 'no-domain' };
+            if (!builtinPrefs().master) return { ok: true, skipped: 'master-off' };
+            if (LoraReg.triggerPolicyOk(domain, text) === false) return { ok: true, skipped: 'policy' };
+            const m = await builtinManifest(false);
+            if (!m.ok) return { ok: true, skipped: 'no-manifest', message: m.message };
+            const cands = m.manifest.entries.filter((e) => (e.domains || []).indexOf(domain) >= 0 && e.gate && e.gate.pass && builtinOn(e.id, e.defaultOn === true));
+            if (!cands.length) return { ok: true, skipped: 'none' };
+            const reg = (await syncRegistry()).reg;
+            const need = cands.find((e) => !reg.get(e.id));
+            if (!need) return { ok: true, skipped: 'loaded' };
+            const f = bl.failed[need.id];
+            if (f && Date.now() - f.at < BL_COOL) return { ok: false, id: need.id, cooldown: true, message: f.message };
+            if (bl.busy) return bl.busy;
+            bl.busy = builtinDownload(need, onProgress).then((r) => {
+                if (r.ok) return { ok: true, id: need.id, downloaded: true };
+                bl.failed[need.id] = { at: Date.now(), message: r.message };
+                return { ok: false, id: need.id, message: r.message };
+            }).finally(() => { bl.busy = null; });
+            return bl.busy;
+        }
         // 由 kind:'lora' 且帶權重的資產建立登錄項；只含資料的資產（資料匯入的結果）不是 adapter
         async function syncRegistry() {
             await loraEnv();
             if (!S.registry) S.registry = LoraReg.createRegistry({ env: LORA_ENV, slotCapacity: LORA_SLOT_RANK, maxActive: h.loraApply ? (h.loraMaxActive >= 1 ? h.loraMaxActive : 4) : 1, loader: LoraReg.nrEngineLoader({ readBytes: async (e) => { const r = await h.storage.loadAsset('lora', e.asset_name); if (!r || !r.asset.files[e.weight_file]) throw new Error('讀不到權重檔 ' + e.weight_file); return r.asset.files[e.weight_file]; }, sha256Hex: Asset.sha256Hex }) });
-            const reg = S.registry, prefs = (h.prefsGet && h.prefsGet()) || {}, en = prefs.loraEnabled || {}, imp = new Set(Array.isArray(prefs.imported) ? prefs.imported : []);
+            const reg = S.registry, prefs = (h.prefsGet && h.prefsGet()) || {}, en = prefs.loraEnabled || {}, imp = new Set(Array.isArray(prefs.imported) ? prefs.imported : []), bIds = new Set(builtinPrefs().ids);
             const seen = new Set(), invalid = [], dataOnly = [], items = await h.storage.listAssets();
             for (const it of items) {
                 if (it.kind !== 'lora') continue;
@@ -10288,13 +10485,15 @@ const holder = {};
                 // 只含資料的 lora 資產（資料匯入存下來的 corpus、requests、train.jsonl）不是 adapter：列在 dataOnly，不進登錄表，但也不會靜默消失
                 if (!wf) { dataOnly.push(it.name); continue; }
                 const ex = (m.extra && m.extra.lora) || {}, id = it.name;
-                const e = LoraReg.entryFromManifest(Object.assign({}, m, { sha256: undefined, total_size: undefined, size: undefined }), { id, name: it.name, source: m.owner === 'builtin' ? 'builtin' : (imp.has('lora/' + it.name) ? 'imported' : 'user'), domains: ex.domains || m.domains || [], location: 'asset:lora/' + it.name, size: ex.size || (m.counts && m.counts.weight_bytes) || 0, sha256: m.sha256[wf], enabled: en[id] !== false, asset_name: it.name, weight_file: wf, triggers: ex.triggers, priority: ex.priority });
+                const e = LoraReg.entryFromManifest(Object.assign({}, m, { sha256: undefined, total_size: undefined, size: undefined }), { id, name: it.name, source: (m.owner === 'builtin' || bIds.has(it.name)) ? 'builtin' : (imp.has('lora/' + it.name) ? 'imported' : 'user'), domains: ex.domains || m.domains || [], location: 'asset:lora/' + it.name, size: ex.size || (m.counts && m.counts.weight_bytes) || 0, sha256: m.sha256[wf], enabled: en[id] !== false, asset_name: it.name, weight_file: wf, triggers: ex.triggers, priority: ex.priority });
                 seen.add(id);
                 const cur = reg.get(id);
                 if (cur && S.regSha[id] === e.sha256) continue;
                 try { if (cur) await reg.unregister(id); reg.register(e); S.regSha[id] = e.sha256; } catch (err) { invalid.push({ id, error: String((err && err.message) || err) }); seen.delete(id); }
             }
             for (const e of reg.list()) if (!seen.has(e.id)) await reg.unregister(e.id);
+            // 內建 LoRA 的啟用狀態來自 builtinLora（總開關＋單顆），與使用者手動啟用的 loraEnabled 分開
+            for (const x of reg.list()) if (x.source === 'builtin') { const want = builtinOn(x.id, true); if (!!x.enabled !== want) await reg.setEnabled(x.id, want); }
             const loaded = new Set(reg.loaded().map((x) => x.id));
             const entries = reg.list().map((e) => ({ id: e.id, name: e.name, source: e.source, base: e.base, rank: e.rank, size: e.size, domains: e.domains, enabled: e.enabled, compat: reg.checkCompat(e), verdict: LoraReg.evalVerdict(e.eval), loaded: loaded.has(e.id), prompt_format_version: e.prompt_format_version }));
             return { reg, entries, invalid, dataOnly };
@@ -10716,6 +10915,31 @@ const holder = {};
                     const r = await h.slotCall(op, op === 'slot_download' ? { confirm: body.confirm === true, files: body.files } : {}, op === 'slot_download' ? 3600000 : 20000);
                     return ok(r || { ok: false, error: '主行程沒有回應' });
                 }
+                // ---- 內建 LoRA 設定（DESIGN §33 批 3 的後端）：總開關、單顆、手動下載、刪除重下、清單重抓
+                if (method === 'GET' && P === '/api/builtin') return ok(await builtinView());
+                if (method === 'POST' && P === '/api/builtin/master') { if (!h.builtinCall) return bad(501, '只有桌面版可以使用內建 LoRA'); builtinSave({ master: body.on !== false }); log('內建 LoRA 總開關：' + (body.on !== false ? '開' : '關')); await syncRegistry(); return ok(await builtinView()); }
+                if (method === 'POST' && P === '/api/builtin/enable') {
+                    if (!h.builtinCall) return bad(501, '只有桌面版可以使用內建 LoRA');
+                    const m = await builtinManifest(false); if (!m.ok) return bad(409, m.message);
+                    const id = String(body.id || ''); if (!m.manifest.entries.find((e) => e.id === id)) return bad(404, '沒有這個內建 LoRA');
+                    builtinSave({ enabled: { [id]: !!body.on } }); const reg = (await syncRegistry()).reg; if (reg.get(id)) await reg.setEnabled(id, builtinOn(id, true));
+                    log((body.on ? '啟用' : '停用') + '內建 LoRA ' + id); return ok(await builtinView());
+                }
+                if (method === 'POST' && P === '/api/builtin/fetch') {
+                    if (!h.builtinCall) return bad(501, '只有桌面版可以使用內建 LoRA');
+                    const m = await builtinManifest(true); if (!m.ok) return bad(409, m.message);
+                    const e = m.manifest.entries.find((x) => x.id === String(body.id || '')); if (!e) return bad(404, '沒有這個內建 LoRA');
+                    const r = await builtinDownload(e, null); if (!r.ok) { bl.failed[e.id] = { at: Date.now(), message: r.message }; return bad(409, r.message); }
+                    await syncRegistry(); log('下載內建 LoRA ' + e.id + '（' + r.bytes + ' 位元組，已校驗並放進 LoRA 儲存層）'); return ok(await builtinView());
+                }
+                if (method === 'POST' && P === '/api/builtin/delete') {
+                    if (!h.builtinCall) return bad(501, '只有桌面版可以使用內建 LoRA');
+                    const id = String(body.id || ''); const r = await h.builtinCall('builtin_delete', { id }, 20000);
+                    if (!r || !r.ok) return bad(409, (r && r.message) || '刪除失敗');
+                    if (h.storage.deleteAsset) await h.storage.deleteAsset('lora', id).catch(() => null);
+                    builtinSave({ ids: builtinPrefs().ids.filter((x) => x !== id) }); await syncRegistry(); log('刪除內建 LoRA ' + id + '（之後需要時會重新下載）'); return ok(await builtinView());
+                }
+                if (method === 'POST' && (P === '/api/builtin/refresh')) { await builtinManifest(true); return ok(await builtinView()); }
                 if (method === 'POST' && P === '/api/lora/enable') {
                     const reg = await syncRegistry(); if (!reg.reg.get(String(body.id || ''))) return bad(404, '沒有這個 adapter');
                     await reg.reg.setEnabled(body.id, !!body.on); const p = Object.assign({}, h.prefsGet ? h.prefsGet() : {}); p.loraEnabled = Object.assign({}, p.loraEnabled); p.loraEnabled[body.id] = !!body.on; h.prefsSet(p);
@@ -10853,7 +11077,7 @@ const holder = {};
                 return bad(404, '沒有這個路由：' + method + ' ' + P);
             } catch (e) { return bad(500, String((e && e.message) || e)); }
         }
-        return { route, S, log, push: null, setPush(f) { S.push = f; }, registry: async () => (await syncRegistry()).reg }; // registry：聊天每輪路由取得登錄表（不需要 HTTP 監聽）
+        return { route, S, log, push: null, setPush(f) { S.push = f; }, registry: async () => (await syncRegistry()).reg, builtinEnsure, builtinView }; // registry：聊天每輪路由取得登錄表（不需要 HTTP 監聽）
     }
     return { createServer, WEB_BACKENDS, KIND_LABEL, NOT_DESKTOP };
 });
@@ -93381,15 +93605,19 @@ ${fnData.code}
         if (!tools.length) return null;
         return L.toolCatalogHash(tools, (u8) => FaStudio.FaStudioAsset.sha256Hex(u8)); // 與訓練端 pack_adapter.js 同一個函式
     }
-    async _loraRouteTurn(task, text) {
+    async _loraRouteTurn(task, text, onProgress) {
         if (task == null || task === '' || !this._studioDesktop() || typeof FaStudio === 'undefined' || !FaStudio.FaLoraRoute) return null;
         // 沒開過訓練工作室時 _studioStoreSync 還沒設，登錄表讀不到資產、路由整個靜默失效：先把儲存層準備好
         if (!this._studioStoreSync) { try { this._studioStoreSync = await this._studioStorage(); } catch (_) { return null; } }
         const core = this._loraCore(); if (!core) return null;
+        // 內建 LoRA（DESIGN §33）：這個領域有內建、還沒載入、政策符合才先下載匯入（失敗不丟例外，這一輪用基底）。要在登錄表取得前做，才看得到新匯入的。
+        const ens = core.builtinEnsure ? await core.builtinEnsure(task, text || '', onProgress).catch((e) => ({ ok: false, message: String((e && e.message) || e) })) : null;
         const reg = await core.registry().catch(() => null); if (!reg) return null;
         this._loraTurnReg = reg;
         const prev = (this._loraTurnState && this._loraTurnState.active) || [];
-        return FaStudio.FaLoraRoute.routeTurn(reg, task, { prevActive: prev, text: text || '' });
+        const route = await FaStudio.FaLoraRoute.routeTurn(reg, task, { prevActive: prev, text: text || '' });
+        if (ens && ens.ok === false && ens.message) route.reason = ens.message + '（這一輪用基底回答）' + (route.reason ? '；' + route.reason : '');
+        return route;
     }
     // 只在組合改變時套用（keep 不動）；套用失敗就回基底並記 log；成功的 adapter 在生成期間 acquire，生成結束 release（推論中不淘汰）
     async _loraSwitch(route) {
@@ -93411,7 +93639,8 @@ ${fnData.code}
         let route = null;
         // 這一輪使用者的話（最後一則 user 訊息）：給觸發字比對用
         const turnText = a && (a.text || (Array.isArray(a.messages) ? String(((a.messages.filter((m) => m && m.role === 'user').pop()) || {}).content || '') : '') || a.prompt || '');
-        try { route = await this._loraRouteTurn(a && a.task, turnText); if (route) route = await this._loraSwitch(route); }
+        const onProgress = (msg) => { try { if (cb && typeof cb.log === 'function') cb.log(msg); } catch (_) { /* 顯示失敗不影響生成 */ } };
+        try { route = await this._loraRouteTurn(a && a.task, turnText, onProgress); if (route) route = await this._loraSwitch(route); }
         catch (e) { route = { task: String(a && a.task), fallback: 'base', active: [], handles: [], skipped: [], action: 'keep', reason: '路由錯誤，用基底：' + String((e && e.message) || e) }; }
         const held = route && route.active ? route.active.slice() : [];
         const reg = this._loraTurnReg; if (reg) held.forEach((id) => reg.acquire(id));
@@ -93493,6 +93722,9 @@ ${fnData.code}
             loraStatus: me._studioDesktop() ? async () => (await me._studioLoraApplier()).status() : null,
             toolCatalogSha256: () => me._toolCatalogSha256(),
             slotCall: me._studioDesktop() ? async (op, payload, t) => me._nrCall(op, payload, t || 20000) : null,
+            // 內建 LoRA（DESIGN §33）：清單／下載／校驗在主行程（builtin_* 操作）；readBytes 讀下載好的 .fatrain 位元組交給 Fatrain.importAsset
+            builtinCall: me._studioDesktop() ? async (op, payload, t) => me._nrCall(op, payload, t || 20000) : null,
+            readBytes: me._studioDesktop() && window.desktopAPI && window.desktopAPI.rawfs ? async (p) => { const r = await window.desktopAPI.rawfs.readFile(p, "base64"); return me._studioB64ToU8(r.base64); } : null,
             call: async (op, payload, t) => { const e = await me._studioHostEnsure(); if (!e.ok) return { ok: false, error: e.error }; return me._nrCall(op, payload, t || 20000); },
             workDir: async () => { const box = await me._nrBox().catch(() => null); if (!box) return null; const sep = box.indexOf(String.fromCharCode(92)) >= 0 ? String.fromCharCode(92) : '/'; return box.split(sep).slice(0, -1).join('/') + '/studio'; },
             download: async (name, u8, mime) => { const u = URL.createObjectURL(new Blob([u8], { type: mime || 'application/octet-stream' })); const a = document.createElement('a'); a.href = u; a.download = name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(u), 8000); },
