@@ -194,6 +194,32 @@
         return '<div class="lora-manage"><div class="ttl">LoRA 管理</div>' + bud + busy + table + regCard + card + '</div>';
     }
 
+    // 內建 LoRA 卡片（DESIGN §33 批 3）：總開關、六顆卡片（用途、評量、限制、已下載大小、啟用、下載／刪除重下）、被把關擋下的原因、下載失敗的原因。
+    // v 來自 studio_server_core 的 GET /api/builtin：{ok, available, master, source, note, entries:[…], message}。所有外部字串跳脫。
+    function builtinCardsHTML(v) {
+        const head = '<div class="grp">內建 LoRA（預設使用）</div>';
+        if (!v) return '';
+        if (v.available === false) return head + '<div class="na">' + esc(v.message || '只有桌面版啟用') + '</div>';
+        if (!v.ok) return head + '<div class="warn">' + esc(v.message || '抓不到內建清單') + '</div><button class="act" data-builtin-action="refresh">重新抓清單</button>';
+        const note = v.source === 'cache' && v.note ? '<div class="warn">' + esc(v.note) + '</div>' : '';
+        const master = '<label><input type="checkbox" data-builtin-action="master"' + (v.master ? ' checked' : '') + '> 使用內建 LoRA 強化（總開關）</label>';
+        const cards = (v.entries || []).map((e) => {
+            const dl = e.downloaded ? '已下載 ' + sizeText(e.downloadedBytes) + '（可刪除，之後會重新下載）' : '未下載（第一次被路由選到時才下載，約 ' + esc(e.sizeMB) + ' MB）';
+            const prog = e.progress ? '<div class="kv">下載中：第 ' + esc(e.progress.part) + ' ／ ' + esc(e.progress.parts) + ' 片</div>' : '';
+            const blocked = e.gatePass ? '' : '<div class="warn">被把關擋下，不會自動使用：' + esc(e.note) + '</div>';
+            const failed = e.failed ? '<div class="err">上次下載失敗：' + esc(e.failed) + '</div>' : '';
+            const lim = (e.limits || []).length ? '<h5>已知限制</h5><ul>' + e.limits.map((x) => '<li>' + esc(x) + '</li>').join('') + '</ul>' : '';
+            const act = e.downloaded
+                ? '<button class="act" data-builtin-action="delete" data-id="' + esc(e.id) + '">刪除（之後重新下載）</button>'
+                : '<button class="act" data-builtin-action="fetch" data-id="' + esc(e.id) + '"' + (e.progress ? ' disabled' : '') + '>下載</button>';
+            return '<div class="card"><div class="ttl">' + esc(e.name) + '</div><div class="intro">用途：' + esc(e.purpose || '無資料') + '</div>' +
+                '<div class="kv">評量：' + esc(e.evalSummary || '無資料') + '</div>' + blocked + failed + prog +
+                '<div class="kv">' + dl + '</div>' + lim +
+                '<label><input type="checkbox" data-builtin-action="enable" data-id="' + esc(e.id) + '"' + (e.enabled ? ' checked' : '') + (v.master ? '' : ' disabled') + '> 啟用這顆</label> ' + act + '</div>';
+        }).join('');
+        return head + note + '<div class="kv">' + master + '</div>' + cards + '<button class="act" data-builtin-action="refresh">重新抓清單</button>';
+    }
+
     // LoRA 介紹（model card，§21）：summarizeCard 的結果 → HTML（所有外部字串跳脫；沒有的評量寫「無資料」）
     function cardIntroHTML(c) {
         if (!c) return '<div class="todo">沒有介紹資料</div>';
@@ -211,5 +237,5 @@
             + '</div>';
     }
 
-    return { CARD_FORMAT, CARD_VERSION, METRIC_KEYS, validateModelCard, summarizeCard, budgetOf, busyText, rowsFromStatus, cardFromRegistered, renderLoraManageHTML, cardIntroHTML, sizeText, timeText, disclosuresOf, renderCompareHTML, evalLinesHTML, registryCardHTML };
+    return { CARD_FORMAT, CARD_VERSION, METRIC_KEYS, validateModelCard, summarizeCard, budgetOf, busyText, rowsFromStatus, cardFromRegistered, renderLoraManageHTML, builtinCardsHTML, cardIntroHTML, sizeText, timeText, disclosuresOf, renderCompareHTML, evalLinesHTML, registryCardHTML };
 }));
