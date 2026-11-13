@@ -1,0 +1,40 @@
+{
+ "steps": 20,
+ "batch": 16,
+ "lr": 0.001,
+ "seed": 0,
+ "sample_seed": 123,
+ "params": 462848,
+ "d": 128,
+ "layers": 2,
+ "heads": 4,
+ "ctx": 320,
+ "max_len": 320,
+ "train_songs": 720,
+ "eval_songs": 90,
+ "eval_loss_before": 4.755977803888528,
+ "eval_loss_after": 1.4041882535038033,
+ "eval_ppl_before": 116.27729398633333,
+ "eval_ppl_after": 4.072219789100152,
+ "train_loss_first": 4.754174,
+ "train_loss_last": 1.403466,
+ "metrics_before": {
+  "songs": 36,
+  "grammar_valid": 2,
+  "grammar_valid_rate": 0.05555555555555555,
+  "notes": 25,
+  "leap_ok_rate": 0.45454545454545453,
+  "pitch_in_range_rate": 1
+ },
+ "metrics_after": {
+  "songs": 36,
+  "grammar_valid": 1,
+  "grammar_valid_rate": 0.027777777777777776,
+  "notes": 519,
+  "leap_ok_rate": 0.7244897959183674,
+  "pitch_in_range_rate": 1
+ },
+ "model_sha256": "60f7de55b12c2054d5725a5c2c56238a045bf3a23c383c3a1b9d3beb7dbe80c3",
+ "model_bytes": 2269569,
+ "seconds": 7.0
+}

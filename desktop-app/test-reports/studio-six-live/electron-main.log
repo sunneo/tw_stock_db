@@ -1,0 +1,1726 @@
+[main-ext] 啟動 platform=linux electron=44.4.0 app=1.1.0 installDir=/home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app
+[main-ext] 執行包：沒有可用（沒有執行包）
+
+DevTools listening on ws://127.0.0.1:9555/devtools/browser/ff18d1ae-a7a7-4145-a89a-ff09db48d6b9
+[local-proxy] 監聽 http://127.0.0.1:44681
+[main-ext] 檢查更新：目前 1.1.0，遠端 399，來源 1614f4b6e637，要更新 3 個檔案：renderer/floating-assistant.js、renderer/floating-assistant.min.js、main-ext.js
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf20cf20nlu.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf20cf20nlu.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf20cje3azb.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf20cje3azb.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/studio-host/.version'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/studio-host/.version'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf24t5377c6.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf24t5377c6.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf24t9evjlp.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf24t9evjlp.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf24z5vc3se.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf24z5vc3se.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf24z5vc3se.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf24z5vc3se.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf24z5vc3se.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf24z5vc3se.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf24z5vc3se.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf24z5vc3se.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf24z5vc3se.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf24z5vc3se.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf24z5vc3se.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf24z5vc3se.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf24z5vc3se.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf24z5vc3se.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf251j20lo3.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf251j20lo3.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2532l7436.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2532l7436.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf254m5gx6a.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf254m5gx6a.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2565qdlb6.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2565qdlb6.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2598te0vn.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2598te0vn.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf25asefqky.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf25asefqky.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf25cbztafu.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf25cbztafu.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf25dvh1ucl.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf25dvh1ucl.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf25sel0n7g.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf25sel0n7g.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf25sel0n7g.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf25sel0n7g.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf25sel0n7g.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf25sel0n7g.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf25sel0n7g.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf25sel0n7g.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf25sel0n7g.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf25sel0n7g.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf25sel0n7g.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf25sel0n7g.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf25sel0n7g.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf25sel0n7g.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf25sel0n7g.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf25sel0n7g.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf25sel0n7g.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf25sel0n7g.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf25sel0n7g.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf25sel0n7g.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf25sel0n7g.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf25sel0n7g.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf25sel0n7g.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf25sel0n7g.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf25sel0n7g.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf25sel0n7g.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf25sel0n7g.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf25sel0n7g.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf25sel0n7g.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf25sel0n7g.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf25sel0n7g.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf25sel0n7g.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf25sel0n7g.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf25sel0n7g.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf25sel0n7g.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf25sel0n7g.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf25sel0n7g.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf25sel0n7g.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf25sel0n7g.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf25sel0n7g.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf25sel0n7g.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf25sel0n7g.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf25sel0n7g.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf25sel0n7g.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf25sel0n7g.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf25sel0n7g.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf25wngvoep.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf25wngvoep.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf25y71wlzx.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf25y71wlzx.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf25zqns4wr.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf25zqns4wr.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf261a3mte8.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf261a3mte8.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf262u8hs24.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf262u8hs24.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf264daftx4.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf264daftx4.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf265wt8npe.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf265wt8npe.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf26gsu5b64.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf26gsu5b64.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf26gsu5b64.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf26gsu5b64.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf26gsu5b64.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf26gsu5b64.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf26gsu5b64.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf26gsu5b64.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf26gsu5b64.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf26gsu5b64.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf26gsu5b64.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf26gsu5b64.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf26gsu5b64.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf26gsu5b64.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf29cglcw2s.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf29cglcw2s.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf29cglcw2s.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf29cglcw2s.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf29cglcw2s.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf29cglcw2s.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf29cglcw2s.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf29cglcw2s.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf29cglcw2s.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf29cglcw2s.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf29cglcw2s.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf29cglcw2s.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf29cglcw2s.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf29cglcw2s.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf29cglcw2s.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf29cglcw2s.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf29cglcw2s.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf29cglcw2s.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf29cglcw2s.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf29cglcw2s.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf29cglcw2s.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf29cglcw2s.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf29cglcw2s.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf29cglcw2s.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf29cglcw2s.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf29cglcw2s.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf29cglcw2s.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf29cglcw2s.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf29cglcw2s.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf29cglcw2s.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf29cglcw2s.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf29cglcw2s.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf29cglcw2s.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf29cglcw2s.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf29cglcw2s.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf29cglcw2s.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf29cglcw2s.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf29cglcw2s.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf29g8a5oa1.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf29g8a5oa1.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf29hrx3glb.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf29hrx3glb.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf29jbdqirp.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf29jbdqirp.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf29kux0zt3.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf29kux0zt3.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf29mek5fdy.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf29mek5fdy.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf29ny5onlm.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf29ny5onlm.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf29phv0ym2.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf29phv0ym2.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf29r1a1lru.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf29r1a1lru.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf29sktenyk.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf29sktenyk.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf29u4b1vce.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf29u4b1vce.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2a1epzhzp.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2a1epzhzp.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2a1epzhzp.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2a1epzhzp.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2a1epzhzp.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2a1epzhzp.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2a1epzhzp.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2a1epzhzp.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2a1epzhzp.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2a1epzhzp.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2a1epzhzp.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2a1epzhzp.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2a1epzhzp.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2a1epzhzp.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2a3rt7vqk.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2a3rt7vqk.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2b1se64z5.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2b1se64z5.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2b1se64z5.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2b1se64z5.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2b1se64z5.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2b1se64z5.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2b1se64z5.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2b1se64z5.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2b1se64z5.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2b1se64z5.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2dhckt0s9.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2dhckt0s9.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2dhckt0s9.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2dhckt0s9.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2dhckt0s9.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2dhckt0s9.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2dhckt0s9.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2dhckt0s9.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2dhckt0s9.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2dhckt0s9.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2djhoddn1.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2djhoddn1.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2dl15x1do.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2dl15x1do.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2dv3zgquc.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2dv3zgquc.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2dv3zgquc.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2dv3zgquc.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2dv3zgquc.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2dv3zgquc.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2dv3zgquc.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2dv3zgquc.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2dv3zgquc.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2dv3zgquc.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2dv3zgquc.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2dv3zgquc.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2dv3zgquc.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2dv3zgquc.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2dv3zgquc.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2dv3zgquc.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2dv3zgquc.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2dv3zgquc.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2dv3zgquc.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2dv3zgquc.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2dv3zgquc.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2dv3zgquc.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2dv3zgquc.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2dv3zgquc.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2dv3zgquc.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2dv3zgquc.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2dv3zgquc.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2dv3zgquc.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2dv3zgquc.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2dv3zgquc.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2dyf5i54k.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2dyf5i54k.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2dzytgier.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2dzytgier.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2e1i8u26p.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2e1i8u26p.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2e2dx5dr5.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2e2dx5dr5.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2e31w1754.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2e31w1754.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2e93nvf2f.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2e93nvf2f.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2e93nvf2f.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2e93nvf2f.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2e93nvf2f.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2e93nvf2f.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2e93nvf2f.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2e93nvf2f.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2e93nvf2f.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2e93nvf2f.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2e93nvf2f.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2e93nvf2f.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2e93nvf2f.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2e93nvf2f.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2e93nvf2f.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2e93nvf2f.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2e93nvf2f.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2e93nvf2f.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2e93nvf2f.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2e93nvf2f.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2e93nvf2f.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2e93nvf2f.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2e93nvf2f.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2e93nvf2f.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2e93nvf2f.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2e93nvf2f.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2e93nvf2f.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2e93nvf2f.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2e93nvf2f.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2e93nvf2f.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2e93nvf2f.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2e93nvf2f.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2e93nvf2f.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2e93nvf2f.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2e93nvf2f.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2e93nvf2f.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2e93nvf2f.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2e93nvf2f.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2ecvoaifs.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2ecvoaifs.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2eef20l4b.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2eef20l4b.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2efyizzx7.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2efyizzx7.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2ehhzobwi.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2ehhzobwi.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2ehk9p0rg.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2ehk9p0rg.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2ej1lo4z0.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2ej1lo4z0.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2eroluw31.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2eroluw31.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2eroluw31.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2eroluw31.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2eroluw31.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2eroluw31.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2eroluw31.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2eroluw31.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2eroluw31.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2eroluw31.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2eroluw31.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2eroluw31.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2eroluw31.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2eroluw31.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2eroluw31.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2eroluw31.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2eroluw31.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2eroluw31.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2eroluw31.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2eroluw31.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2eroluw31.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2eroluw31.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2eroluw31.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2eroluw31.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2eroluw31.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2eroluw31.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2eroluw31.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2eroluw31.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2eroluw31.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2eroluw31.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2eroluw31.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2eroluw31.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2eroluw31.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2eroluw31.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2eroluw31.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2eroluw31.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2exlzti1q.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2exlzti1q.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2fh6a4ni3.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2fh6a4ni3.json'
+}
+Error occurred in handler for 'fa:rawfs:readFile': Error: ENOENT: no such file or directory, open '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2fhao8ooa.json'
+    at async open (node:internal/fs/promises:1345:25)
+    at async Object.readFile (node:internal/fs/promises:1996:14)
+    at async /home/hungfu.lee/Downloads/SRC/tw_stock_db/desktop-app/main-ext.js:193:17
+    at async Session.<anonymous> (node:electron/js2c/browser_init:1:118162) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/home/hungfu.lee/fa-work/studio-live/ud/native-runner-box/resp-mwf2fhao8ooa.json'
+}

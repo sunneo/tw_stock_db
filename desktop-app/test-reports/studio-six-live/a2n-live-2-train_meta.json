@@ -1,0 +1,86 @@
+{
+ "base": "Basic Pitch nmp.onnx",
+ "base_sha256": "2c3c1d144bfa61ad236e92e169c13535c880469a12a047d4e73451f2c059a0ec",
+ "steps": 5,
+ "pos_w_onset": 1.0,
+ "pos_w_note": 1.0,
+ "batch": 4,
+ "lr": 0.0001,
+ "seed": 0,
+ "train_clips": 200,
+ "eval_clips": 40,
+ "params_total": 185292,
+ "params_frozen_cqt": 168592,
+ "params_trainable": 16700,
+ "loss_first": 0.220771,
+ "loss_last": 0.177562,
+ "before": {
+  "threshold": 0.5,
+  "clips": 40,
+  "note_frame": {
+   "tp": 4222,
+   "fp": 603,
+   "fn": 65,
+   "precision": 0.8750259067357513,
+   "recall": 0.9848378819687427,
+   "f1": 0.9266900790166813,
+   "n": 40
+  },
+  "onset_tol1": {
+   "tp": 97,
+   "fp": 515,
+   "fn": 0,
+   "precision": 0.15849673202614378,
+   "recall": 1,
+   "f1": 0.2736248236953456,
+   "n": 40
+  }
+ },
+ "after": {
+  "threshold": 0.5,
+  "clips": 40,
+  "note_frame": {
+   "tp": 4213,
+   "fp": 438,
+   "fn": 74,
+   "precision": 0.9058267039346377,
+   "recall": 0.9827385117797994,
+   "f1": 0.9427164913850973,
+   "n": 40
+  },
+  "onset_tol1": {
+   "tp": 97,
+   "fp": 341,
+   "fn": 0,
+   "precision": 0.22146118721461186,
+   "recall": 1,
+   "f1": 0.3626168224299065,
+   "n": 40
+  }
+ },
+ "export": {
+  "ort_vs_torch_max_abs": 7.152557373046875e-07,
+  "ort_ft_vs_base_max_abs": 0.17942073941230774,
+  "ort_outputs_shape": [
+   [
+    1,
+    172,
+    88
+   ],
+   [
+    1,
+    172,
+    88
+   ],
+   [
+    1,
+    172,
+    264
+   ]
+  ],
+  "input_name": "serving_default_input_2:0"
+ },
+ "model_sha256": "27a97f4b75fbc9bfe0e875c6a8ae21d174dd08e9cc8c7d10ff74d776fa101cc0",
+ "model_bytes": 398778,
+ "seconds": 1.4
+}

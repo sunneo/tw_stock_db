@@ -1,0 +1,11 @@
+2s: 停止 | 訓練環境缺套件：torch、transformers、peft
+--- final panel ---
+預估時間：處理器（CPU）40 步約 30 秒（實測 29 秒）。
+輸出名稱
+訓練步數
+基底模型資料夾（小型語音辨識基底）
+語音資料檔（data.jsonl）
+Python（進階，留空＝自動）
+▶ 開始訓練
+停止
+訓練環境缺套件：torch、transformers、peft

@@ -1,0 +1,25 @@
+{
+ "base": "whisper-tiny",
+ "steps": 5,
+ "batch": 4,
+ "lr": 0.001,
+ "rank": 8,
+ "alpha": 16,
+ "seed": 0,
+ "target_modules": [
+  "q_proj",
+  "v_proj"
+ ],
+ "trainable_params": 147456,
+ "total_params": 37908096,
+ "train_rows": 54,
+ "eval_rows": 19,
+ "loss_first": 1.061253,
+ "loss_last": 0.803429,
+ "seconds": 6.1,
+ "adapter_sha256": {
+  "adapter_config.json": "05ec0b4517fc56bad66dbc961a8cd18477f4cbef3edc0bdb286c1536965644eb",
+  "adapter_model.safetensors": "e6fc78722dc5934df2a9c0deb8eda8113cde5aca86e5a15a909eed8e6c43ccae",
+  "README.md": "0e54aaa50f914278dd75c0eef3e866f1fea5d156ed5dead07c14db7da630be91"
+ }
+}
