@@ -157,29 +157,39 @@
         if (ev.metrics && typeof ev.metrics === 'object') return withBlocked(metricsVerdict(ev.metrics));
         if (CARD_METRIC_KEYS.some((k) => k in ev)) return withBlocked(metricsVerdict(ev));
         const g = ev.groups; if (!g || typeof g !== 'object') return { known: typeof ev.score === 'number', score: ev.score, lose: [], win: [], degenerate: [], noData: [], blocked: [] };
-        const names = Object.keys(g), lose = [], win = [], degenerate = [], noData = [];
+        const names = Object.keys(g), lose = [], win = [], degenerate = [], noData = [], outOfScope = [];
         for (const n of names) {
             const x = g[n]; if (!x || typeof x !== 'object') continue;
+            // scope：'out'＝不在這顆的適用範圍（例：decompose 的 think_stack）。範圍外的組只報告，不計入輸贏、退化與無資料（§32.2）
+            if (x.scope === 'out') { outOfScope.push(n); continue; }
             const tuned = typeof x.adapter === 'number' ? x.adapter : x.tuned;   // 評量腳本的格式是 tuned；打包後的描述檔是 adapter
             if (typeof tuned !== 'number' || typeof x.base !== 'number') continue;
             if (tuned < x.base) { lose.push(n); continue; }
-            if (x.neg && x.neg.n > 0 && x.neg.tuned === 0) { degenerate.push(n); continue; }
+            if (oneSided(x)) { degenerate.push(n); continue; }
             if (x.base === 0 && tuned === 0) { noData.push(n); continue; }
             if (tuned > x.base) win.push(n);
         }
-        return withBlocked({ known: names.length > 0, lose, win, degenerate, noData, score: win.length - lose.length }, ev.verdict);
+        return withBlocked({ known: names.length > 0, lose, win, degenerate, noData, outOfScope, score: win.length - lose.length }, ev.verdict, outOfScope);
     }
-    function withBlocked(v, verdict) {
-        v.lose = v.lose || []; v.win = v.win || []; v.degenerate = v.degenerate || []; v.noData = v.noData || [];
+    // 退化：負例全錯（neg.tuned==0）或正例全錯（pos.tuned==0），只靠另一邊得分（§31、§32.2：後者是新加的，原本只擋負例全錯）
+    function oneSided(x) {
+        if (x.neg && x.neg.n > 0 && x.neg.tuned === 0) return true;
+        if (x.pos && x.pos.n > 0 && x.pos.tuned === 0) return true;
+        return false;
+    }
+    function withBlocked(v, verdict, outOfScope) {
+        v.lose = v.lose || []; v.win = v.win || []; v.degenerate = v.degenerate || []; v.noData = v.noData || []; v.outOfScope = v.outOfScope || [];
         const blocked = [];
         if (v.lose.length) blocked.push('輸給基底：' + v.lose.join('、'));
         if (v.degenerate.length) blocked.push('退化答案（負例全錯、只靠正例得分，不算贏）：' + v.degenerate.join('、'));
         if (v.noData.length) blocked.push('無資料（基底與微調都是 0，不算通過）：' + v.noData.join('、'));
         if (verdict && typeof verdict === 'object') {
             const seen = new Set([].concat(v.lose, v.degenerate, v.noData));
-            const nw = (verdict.not_winning || []).filter((n) => !seen.has(n));
+            const oos = new Set(outOfScope || []);
+            const nw = (verdict.not_winning || []).filter((n) => !seen.has(n) && !oos.has(n));
             if (nw.length) blocked.push('目標組未清楚贏：' + nw.join('、'));
-            if (verdict.ship === false && !blocked.length) blocked.push('評量判定為 DO NOT SHIP');
+            // 整體 DO NOT SHIP 只在沒有範圍外組時才當原因（有範圍外組時，判定含了範圍外的目標組，看範圍內的組別即可）
+            if (verdict.ship === false && !blocked.length && !(outOfScope && outOfScope.length)) blocked.push('評量判定為 DO NOT SHIP');
         }
         v.blocked = blocked;
         return v;
@@ -191,7 +201,9 @@
         const v = evalVerdict(ev);
         if (!v.known) return { pass: false, reason: '沒有評測數字，不自動選用（可手動指定）' };
         if (v.lose && v.lose.length) return { pass: false, reason: '評測有組別輸給基底：' + v.lose.join('、') + '，不自動選用（可手動指定）' };
-        return { pass: true, reason: '評測數字齊全，所有組都不輸基底' };
+        if (v.degenerate && v.degenerate.length) return { pass: false, reason: '評測有退化答案（只靠一邊得分，不算贏）：' + v.degenerate.join('、') + '，不自動選用（可手動指定）' };
+        if (v.noData && v.noData.length) return { pass: false, reason: '評測無資料（基底與微調都是 0）：' + v.noData.join('、') + '，不自動選用（可手動指定）' };
+        return { pass: true, reason: '評測數字齊全，所有範圍內的組都不輸基底' + (v.outOfScope && v.outOfScope.length ? '（範圍外不計：' + v.outOfScope.join('、') + '）' : '') };
     }
 
     function createRegistry(opts) {
