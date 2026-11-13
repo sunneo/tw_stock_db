@@ -1,5 +1,5 @@
 {
-  "runtimeVersion": "1.22.0-2",
+  "runtimeVersion": "1.22.0-3",
   "ortVersion": "1.22.0",
   "license": "MIT",
   "partMaxBytes": 5242880,
@@ -19,8 +19,8 @@
     }
   },
   "platforms": {
-    "win32-x64": 21714049,
-    "linux-x64": 31440217
+    "win32-x64": 21714525,
+    "linux-x64": 31440693
   },
   "files": [
     {
@@ -487,52 +487,52 @@
     {
       "path": "nr-child.js",
       "platform": "all",
-      "size": 8820,
-      "sha256": "aceb9942a11b5a4a0019b9522962d44bb2a950d0db879cddc1084ea66f70e0f6",
+      "size": 8864,
+      "sha256": "445615b2f2965b843f9172cc1f23aa176d7801e76ba74442090da0e62d6db1dd",
       "parts": [
         {
           "name": "nr-child.js.001.part",
-          "size": 8820,
-          "md5": "6178c509cd10e08e1608c6f12796f854"
+          "size": 8864,
+          "md5": "ffc4aa3c7f09f5b048c4d07c49bad4b3"
         }
       ]
     },
     {
       "path": "nr-engine.js",
       "platform": "all",
-      "size": 7973,
-      "sha256": "e6500cea13d1e4b68567726a920a6d4076a9a8c3db5d4f64543edeeb76981bed",
+      "size": 7886,
+      "sha256": "ac2c196b36fb362e2755487652f99629f428e88e4a3b079fbda167436d548e5d",
       "parts": [
         {
           "name": "nr-engine.js.001.part",
-          "size": 7973,
-          "md5": "4a3723c6c21fa270c5b63df21afcb28b"
+          "size": 7886,
+          "md5": "fa898d4a13da9a3b550f6dcf801d0b6c"
         }
       ]
     },
     {
       "path": "nr-host.js",
       "platform": "all",
-      "size": 11523,
-      "sha256": "475910b0119da40a9629fd66181722d01d947896615479ce4e3b63212bd1ef1b",
+      "size": 11739,
+      "sha256": "21a74e3d3687a5214a1b2f0164fdc658166b01cf6582e1b1fd910f4b1de26f97",
       "parts": [
         {
           "name": "nr-host.js.001.part",
-          "size": 11523,
-          "md5": "4ab2df1e1105d57c796bbe6eaeb478a7"
+          "size": 11739,
+          "md5": "85fda40ff8ec443a46428b2289399897"
         }
       ]
     },
     {
       "path": "nr-protocol.js",
       "platform": "all",
-      "size": 5925,
-      "sha256": "33b5ffef00f72df8aebeb52e84a1b73a0fa8ae6c7e05d159187bf73b2199f095",
+      "size": 6228,
+      "sha256": "330471c3bbe28bf547185e356718d6a6361e4f304ca1cf115900806f1d3bf03a",
       "parts": [
         {
           "name": "nr-protocol.js.001.part",
-          "size": 5925,
-          "md5": "d04c81af2a86709497e8cca28bf4ac61"
+          "size": 6228,
+          "md5": "0bc031befbb5c2799233a58e6bbf5748"
         }
       ]
     },
@@ -577,6 +577,7 @@
     }
   ],
   "features": [
-    "lora"
+    "lora",
+    "prefill"
   ]
 }
