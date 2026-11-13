@@ -1674,3 +1674,11 @@ cd .. && node scripts/native-runtime-pack.js /home/hungfu.lee/fa-work/native-run
 - 每輪仍只開一顆：路由已保證同一領域只留一顆（`lora_route_core`），沒有改動 `maxActive`。
 - 網頁版只顯示「只有桌面版啟用」，沒有接網頁版 LoRA 的內建下載。
 - 推送前：`builtin.json` 的 `base_url` 換成實際 commit（或分支），推送 lora-adapters 分支，發布執行包（由總指揮核對後處理）。
+
+## 34. 語音辨識 LoRA（whisper-tiny，命令列，2026-11-13，分支 claude/sr-train）
+
+**已驗證**：在 `openai/whisper-tiny` 的 q_proj／v_proj 掛 LoRA（rank 8、alpha 16，147,456 個可訓練參數），用 54 段英文語音訓練 40 步（CPU，30 秒）：損失 0.965 → 0.116；同設定重跑結果逐位元相同；adapter 從磁碟重新載入後，19 段驗證輸出與訓練時一致；輸出與基底不同。
+
+**未驗證／未達成**：驗證集字錯率沒有下降（40 步：15.81% → 15.81%；120 步：17.28%，變差，過擬合）。沒有接進工作室與主行程，沒有併回基底匯出，只有英文。細節與數字見 `DESIGN.offline-training-studio.md` 的「語音辨識（speech_recognition）訓練核心」一節。
+
+**腳本**：`renderer/src/studio/sr_train.py`（`prep`／`train`／`check`），用 `/home/hungfu.lee/fa-work/venv/bin/python` 執行（transformers 5.22.2、peft 0.21.2、torch 2.15 CPU）。

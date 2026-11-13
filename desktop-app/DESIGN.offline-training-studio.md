@@ -704,3 +704,44 @@ Backend {
 | `DESIGN.offline-vision*.md`、`DESIGN.edit-picture-diffusion.md` | 視覺模型與圖像細化 | §12 |
 
 **讀法建議**：要知道「現在能做什麼」讀 §10 與 §11；要知道「怎麼做的」讀 §2–§9；要對一個數字追根源，用 §10 的出處列表回到舊檔。
+
+---
+
+## 語音辨識（speech_recognition）訓練核心（2026-11-13，分支 claude/sr-train）
+
+狀態：**半成品**（`model_types_core.js` 已改 `half`）。訓練核心已用命令列實測；工作室的開始按鈕與主行程接線**沒有做**，所以不標 done、輸出維持 `available:false`。
+
+**做法與基底選擇**：基底 `openai/whisper-tiny`（約 3,790 萬參數，權重 149 MB，從 Hugging Face 下載到 `/home/hungfu.lee/fa-work/sr/whisper-tiny`）。本機 24 核 CPU 足夠，不需要 GPU。只在 `q_proj`、`v_proj` 掛 LoRA（rank 8、alpha 16，可訓練參數 147,456，佔 0.39%）。沒有換更小的模型：tiny 已是 Whisper 最小的版本。
+
+**程式**：
+- `renderer/src/studio/sr_train.py`：`prep`（parquet → 16 kHz 單聲道 WAV＋data.jsonl）、`train`（先跑基底驗證集、再訓 LoRA、寫 adapter／log／hyp／meta）、`check`（從磁碟重新載入 adapter，重跑驗證集並與訓練時的輸出逐句比對）。
+- `renderer/src/studio/sr_train_core.js`：資料格式檢查、正規化、切分規則（列號 %4==0 為驗證）、字錯率（語料級）、產物清單。
+- `renderer/src/studio/sr_train_core.test.js`：22 項，`node renderer/src/studio/sr_train_core.test.js`。
+
+**資料格式**（`data.jsonl`，每行一筆）：`{"id","audio"(相對 .wav 路徑，16 kHz 單聲道 16 位元),"text","split":"train"|"eval"}`。訓練目標文字為小寫、去標點（`normalizeText` 與 `sr_train.py` 的 `normalize` 相同）。
+
+**資料來源（授權：LibriSpeech，CC BY 4.0，英文）**：Hugging Face `hf-internal-testing/librispeech_asr_dummy` 的 validation 分割，73 段（8.9 MB）。切分 54 訓練／19 驗證。這是**英文**資料；類型名是「語音辨識」，但目前只驗證了英文。
+
+### 已驗證（實測，命令列，本機 CPU）
+| 項目 | 數字 |
+|---|---|
+| 訓練（40 步、batch 4、lr 1e-3、seed 0） | 30.2 秒；損失前 5 步平均 0.965 → 後 5 步平均 0.116（最後一步 0.053）|
+| 同設定重跑（run1b） | 損失紀錄 `log.jsonl` 與驗證輸出 `hyp_after.json` **逐位元相同** |
+| 基底驗證集字錯率（WER） | 15.81%（43 錯 ／ 272 字，19 段）|
+| 訓練 40 步後字錯率（run1） | 15.81%（43 ／ 272）：**沒有下降，也沒有上升** |
+| 輸出是否改變（run1） | 19 段中 19 段的原始輸出與基底不同（大小寫、標點、部分字詞）；正規化後有 14 段不同 |
+| 從磁碟重新載入 adapter（`check`） | 19 段中 19 段與訓練當時的輸出一致（`reloaded_matches_training_run: 19`）|
+| 訓練 120 步（run2，較長） | 損失後 5 步平均 0.010；字錯率 **17.28%（47 ／ 272），變差**：過擬合 |
+| 介面測試 `model_types_core.test.js` | 27 項全過 |
+
+### 未驗證／未達成
+- **準確度沒有改善**。在 19 段驗證集上，40 步的 LoRA 沒有降低字錯率；120 步反而變差。這是誠實結果，不是 bug：訓練資料只有 54 段，且大部分損失下降來自學會寫法（例如 "Mr." → "mister"、大小寫）。要看到真正的改善，需要更多資料或更仔細的超參數搜尋（驗證集不能用來挑參數，需要另外切一份開發集）。
+- 工作室沒有開始按鈕；`sr_train.py` 只能命令列執行。主行程接線（`main-ext.js`）未做。
+- 產物未收進工作室資產（`fa-training-asset`），也沒有併回基底的匯出。
+- 只驗證英文；中文或其他語言未驗證。
+- 只有一台機器、一個種子；跨機器的數值重現未驗證。
+- 輸出（LoRA 檔）的載入只在 Python（peft）側驗證，沒有在桌面版 App 內載入。
+- 驗證集只有 19 段，字錯率的抽樣誤差很大，差異不到幾個字的不應解讀。
+
+### 實測檔案（repo 外）
+`/home/hungfu.lee/fa-work/sr/run1/`（40 步，含 `adapter/`、`log.jsonl`、`hyp_before.json`、`hyp_after.json`、`train_meta.json`）、`run1b/`（重跑）、`run2/`（120 步）。
