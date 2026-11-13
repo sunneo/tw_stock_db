@@ -1,0 +1,60 @@
+[eval] rows=180 (LORA_EVAL_EVERY=1, limit=0; identical rows for base and tuned)
+Loading weights:   0%|          | 0/311 [00:00<?, ?it/s]Loading weights:   0%|          | 1/311 [00:00<02:18,  2.24it/s]Loading weights:  39%|███▊      | 120/311 [00:00<00:00, 284.66it/s]Loading weights:  60%|█████▉    | 186/311 [00:00<00:00, 372.44it/s]Loading weights:  80%|████████  | 250/311 [00:00<00:00, 433.30it/s]Loading weights: 100%|██████████| 311/311 [00:00<00:00, 358.58it/s]
+[eval] 8/180
+[eval] 16/180
+[eval] 24/180
+[eval] 32/180
+[eval] 40/180
+[eval] 48/180
+[eval] 56/180
+[eval] 64/180
+[eval] 72/180
+[eval] 80/180
+[eval] 88/180
+[eval] 96/180
+[eval] 104/180
+[eval] 112/180
+[eval] 120/180
+[eval] 128/180
+[eval] 136/180
+[eval] 144/180
+[eval] 152/180
+[eval] 160/180
+[eval] 168/180
+[eval] 176/180
+[eval] 180/180
+[eval] 8/180
+[eval] 16/180
+[eval] 24/180
+[eval] 32/180
+[eval] 40/180
+[eval] 48/180
+[eval] 56/180
+[eval] 64/180
+[eval] 72/180
+[eval] 80/180
+[eval] 88/180
+[eval] 96/180
+[eval] 104/180
+[eval] 112/180
+[eval] 120/180
+[eval] 128/180
+[eval] 136/180
+[eval] 144/180
+[eval] 152/180
+[eval] 160/180
+[eval] 168/180
+[eval] 176/180
+[eval] 180/180
+group	n	base	tuned	flag
+heldout/think_stack	180	0/180	105/180	
+think_stack/plan_check	60	0/60	60/60	
+think_stack/review_return	60	0/60	15/60	
+think_stack/self_validate	60	0/60	30/60	
+TOTAL base 0/180  tuned 105/180
+
+=== ship gate (rule: SHIP only if no group regresses AND target groups clearly win) ===
+[PASS] no group regresses vs base
+[PASS] every target group wins by >= 10% and >= 2 rows (targets=4)
+Notes: 'clearly win' = +10% and >=2 rows is a heuristic, not a significance test; groups with n<5 are noisy; rule grading != real user experience; not verified on the q8/ONNX runtime.
+VERDICT: SHIP-CANDIDATE

@@ -1,0 +1,20 @@
+{
+ "groups": {
+  "rc_extract": {
+   "n": 60,
+   "base": 3,
+   "tuned": 58
+  },
+  "rc_quote": {
+   "n": 60,
+   "base": 9,
+   "tuned": 58
+  },
+  "rc_unanswerable": {
+   "n": 60,
+   "base": 0,
+   "tuned": 59
+  }
+ },
+ "source": "eval_reading.py out/eval/rc_{base,tuned}.json（預先登記判準，見檔頭）"
+}

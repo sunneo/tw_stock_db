@@ -1,0 +1,57 @@
+[eval] rows=162 (LORA_EVAL_EVERY=1, limit=0; identical rows for base and tuned)
+Loading weights:   0%|          | 0/311 [00:00<?, ?it/s]Loading weights: 100%|██████████| 311/311 [00:00<00:00, 3542.61it/s]
+[eval] 8/162
+[eval] 16/162
+[eval] 24/162
+[eval] 32/162
+[eval] 40/162
+[eval] 48/162
+[eval] 56/162
+[eval] 64/162
+[eval] 72/162
+[eval] 80/162
+[eval] 88/162
+[eval] 96/162
+[eval] 104/162
+[eval] 112/162
+[eval] 120/162
+[eval] 128/162
+[eval] 136/162
+[eval] 144/162
+[eval] 152/162
+[eval] 160/162
+[eval] 162/162
+[eval] 8/162
+[eval] 16/162
+[eval] 24/162
+[eval] 32/162
+[eval] 40/162
+[eval] 48/162
+[eval] 56/162
+[eval] 64/162
+[eval] 72/162
+[eval] 80/162
+[eval] 88/162
+[eval] 96/162
+[eval] 104/162
+[eval] 112/162
+[eval] 120/162
+[eval] 128/162
+[eval] 136/162
+[eval] 144/162
+[eval] 152/162
+[eval] 160/162
+[eval] 162/162
+group	n	base	tuned	flag
+blockly_matrix/block_micro_select	48	0/48	34/48	
+colu/colu_letter_choice	57	11/57	29/57	
+colu/colu_letter_choice_nonefirst	57	0/57	27/57	
+heldout/blockly_matrix	48	0/48	34/48	
+heldout/colu	114	11/114	56/114	
+TOTAL base 11/162  tuned 90/162
+
+=== ship gate (rule: SHIP only if no group regresses AND target groups clearly win) ===
+[PASS] no group regresses vs base
+[PASS] every target group wins by >= 10% and >= 2 rows (targets=5)
+Notes: 'clearly win' = +10% and >=2 rows is a heuristic, not a significance test; groups with n<5 are noisy; rule grading != real user experience; not verified on the q8/ONNX runtime.
+VERDICT: SHIP-CANDIDATE

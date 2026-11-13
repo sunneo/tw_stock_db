@@ -1,0 +1,394 @@
+{
+ "groups": {
+  "agent/ask": {
+   "adapter": 10,
+   "base": 10,
+   "n": 10
+  },
+  "agent/call_ref": {
+   "adapter": 30,
+   "base": 16,
+   "n": 30
+  },
+  "agent/direct": {
+   "adapter": 20,
+   "base": 20,
+   "n": 20
+  },
+  "agent/nofit": {
+   "adapter": 5,
+   "base": 5,
+   "n": 5
+  },
+  "agent/use": {
+   "adapter": 30,
+   "base": 28,
+   "n": 30
+  },
+  "group/agent/ask": {
+   "adapter": 10,
+   "base": 10,
+   "n": 10
+  },
+  "group/agent/call_ref": {
+   "adapter": 30,
+   "base": 16,
+   "n": 30
+  },
+  "group/agent/direct": {
+   "adapter": 20,
+   "base": 20,
+   "n": 20
+  },
+  "group/agent/nofit": {
+   "adapter": 5,
+   "base": 5,
+   "n": 5
+  },
+  "group/agent/use": {
+   "adapter": 30,
+   "base": 28,
+   "n": 30
+  },
+  "group/apply": {
+   "adapter": 4,
+   "base": 1,
+   "n": 4
+  },
+  "group/begin": {
+   "adapter": 3,
+   "base": 1,
+   "n": 3
+  },
+  "group/browser": {
+   "adapter": 10,
+   "base": 1,
+   "n": 13
+  },
+  "group/catalog": {
+   "adapter": 2,
+   "base": 0,
+   "n": 4
+  },
+  "group/coding": {
+   "adapter": 6,
+   "base": 1,
+   "n": 6
+  },
+  "group/computer": {
+   "adapter": 9,
+   "base": 0,
+   "n": 11
+  },
+  "group/convert": {
+   "adapter": 1,
+   "base": 0,
+   "n": 3
+  },
+  "group/design": {
+   "adapter": 1,
+   "base": 0,
+   "n": 2
+  },
+  "group/doc": {
+   "adapter": 10,
+   "base": 3,
+   "n": 11
+  },
+  "group/docgen": {
+   "adapter": 4,
+   "base": 0,
+   "n": 4
+  },
+  "group/edit": {
+   "adapter": 3,
+   "base": 0,
+   "n": 4
+  },
+  "group/emoji": {
+   "adapter": 2,
+   "base": 0,
+   "n": 2
+  },
+  "group/explain": {
+   "adapter": 4,
+   "base": 1,
+   "n": 6
+  },
+  "group/extract": {
+   "adapter": 2,
+   "base": 0,
+   "n": 4
+  },
+  "group/fap": {
+   "adapter": 6,
+   "base": 1,
+   "n": 6
+  },
+  "group/finish": {
+   "adapter": 3,
+   "base": 1,
+   "n": 3
+  },
+  "group/get": {
+   "adapter": 3,
+   "base": 1,
+   "n": 3
+  },
+  "group/git": {
+   "adapter": 3,
+   "base": 0,
+   "n": 3
+  },
+  "group/knowledge": {
+   "adapter": 1,
+   "base": 0,
+   "n": 2
+  },
+  "group/language": {
+   "adapter": 3,
+   "base": 0,
+   "n": 3
+  },
+  "group/list": {
+   "adapter": 2,
+   "base": 0,
+   "n": 2
+  },
+  "group/log": {
+   "adapter": 1,
+   "base": 0,
+   "n": 3
+  },
+  "group/lookup": {
+   "adapter": 2,
+   "base": 0,
+   "n": 3
+  },
+  "group/matrix": {
+   "adapter": 1,
+   "base": 0,
+   "n": 2
+  },
+  "group/mcp": {
+   "adapter": 5,
+   "base": 0,
+   "n": 5
+  },
+  "group/midi": {
+   "adapter": 1,
+   "base": 0,
+   "n": 2
+  },
+  "group/mix": {
+   "adapter": 1,
+   "base": 0,
+   "n": 2
+  },
+  "group/parse": {
+   "adapter": 3,
+   "base": 0,
+   "n": 3
+  },
+  "group/pptx": {
+   "adapter": 3,
+   "base": 1,
+   "n": 3
+  },
+  "group/sandbox": {
+   "adapter": 2,
+   "base": 0,
+   "n": 2
+  },
+  "group/sheet": {
+   "adapter": 9,
+   "base": 4,
+   "n": 11
+  },
+  "group/terminal": {
+   "adapter": 3,
+   "base": 0,
+   "n": 3
+  },
+  "group/text": {
+   "adapter": 16,
+   "base": 1,
+   "n": 17
+  },
+  "group/toolwire/wiring": {
+   "adapter": 55,
+   "base": 54,
+   "n": 60
+  },
+  "group/uml": {
+   "adapter": 3,
+   "base": 1,
+   "n": 3
+  },
+  "group/video": {
+   "adapter": 10,
+   "base": 2,
+   "n": 13
+  },
+  "group/worksheet": {
+   "adapter": 2,
+   "base": 0,
+   "n": 4
+  },
+  "group/write": {
+   "adapter": 3,
+   "base": 0,
+   "n": 3
+  },
+  "group/writer/answer": {
+   "adapter": 12,
+   "base": 7,
+   "n": 12
+  },
+  "group/writer/copycode": {
+   "adapter": 3,
+   "base": 2,
+   "n": 3
+  },
+  "group/writer/unsure": {
+   "adapter": 3,
+   "base": 2,
+   "n": 3
+  },
+  "heldout/tool_routing": {
+   "adapter": 52,
+   "base": 6,
+   "n": 61
+  },
+  "natural/call": {
+   "adapter": 29,
+   "base": 9,
+   "n": 38
+  },
+  "pos/choose_tool_full/1": {
+   "adapter": 17,
+   "base": 1,
+   "n": 18
+  },
+  "pos/choose_tool_full/2": {
+   "adapter": 12,
+   "base": 2,
+   "n": 12
+  },
+  "pos/choose_tool_full/3": {
+   "adapter": 11,
+   "base": 3,
+   "n": 16
+  },
+  "pos/choose_tool_full/4": {
+   "adapter": 12,
+   "base": 0,
+   "n": 15
+  },
+  "rtool/ask": {
+   "adapter": 23,
+   "base": 2,
+   "n": 25
+  },
+  "rtool/call": {
+   "adapter": 40,
+   "base": 9,
+   "n": 60
+  },
+  "rtool/missing": {
+   "adapter": 55,
+   "base": 0,
+   "n": 55
+  },
+  "seen/seen/call": {
+   "adapter": 23,
+   "base": 8,
+   "n": 32
+  },
+  "seen/seen/wiring": {
+   "adapter": 29,
+   "base": 29,
+   "n": 31
+  },
+  "seen/unseen/answer": {
+   "adapter": 12,
+   "base": 7,
+   "n": 12
+  },
+  "seen/unseen/ask": {
+   "adapter": 33,
+   "base": 12,
+   "n": 35
+  },
+  "seen/unseen/call": {
+   "adapter": 46,
+   "base": 10,
+   "n": 66
+  },
+  "seen/unseen/call_ref": {
+   "adapter": 30,
+   "base": 16,
+   "n": 30
+  },
+  "seen/unseen/copycode": {
+   "adapter": 3,
+   "base": 2,
+   "n": 3
+  },
+  "seen/unseen/direct": {
+   "adapter": 20,
+   "base": 20,
+   "n": 20
+  },
+  "seen/unseen/missing": {
+   "adapter": 55,
+   "base": 0,
+   "n": 55
+  },
+  "seen/unseen/nofit": {
+   "adapter": 5,
+   "base": 5,
+   "n": 5
+  },
+  "seen/unseen/unsure": {
+   "adapter": 3,
+   "base": 2,
+   "n": 3
+  },
+  "seen/unseen/use": {
+   "adapter": 30,
+   "base": 28,
+   "n": 30
+  },
+  "seen/unseen/wiring": {
+   "adapter": 26,
+   "base": 25,
+   "n": 29
+  },
+  "tool_routing/choose_tool_full": {
+   "adapter": 52,
+   "base": 6,
+   "n": 61
+  },
+  "toolwire/wiring": {
+   "adapter": 55,
+   "base": 54,
+   "n": 60
+  },
+  "writer/answer": {
+   "adapter": 12,
+   "base": 7,
+   "n": 12
+  },
+  "writer/copycode": {
+   "adapter": 3,
+   "base": 2,
+   "n": 3
+  },
+  "writer/unsure": {
+   "adapter": 3,
+   "base": 2,
+   "n": 3
+  }
+ }
+}

@@ -1,0 +1,27 @@
+{
+ "name": "拆題（decompose-r4-v2）",
+ "intro": "把一個大題拆成函式清單（functions、main、calls），並做 UML 編輯封閉題與 self_validate／review_return 的判斷。",
+ "capabilities": [
+  {
+   "id": "cap1",
+   "label": "拆題成 functions 清單（JSON）"
+  },
+  {
+   "id": "cap2",
+   "label": "UML 編輯的封閉選擇"
+  }
+ ],
+ "known_limits": [
+  "只在拆題類任務上量過；範圍外（工具呼叫、CoLU 選單）沒有保證",
+  "訓練資料為 v1 加 self_validate 正例與 review_return，負例偏少，可能偏向判 ok"
+ ],
+ "sources": "lora-train/gen/gen_fn_template.js、gen_uml_design.js、gen_think_stack.js（data/multi/decompose_v2.jsonl，1,137 列；build_decompose_v2.py）",
+ "training": {
+  "rank": 4,
+  "alpha": 8,
+  "lr": 0.0002,
+  "epochs": 1,
+  "seq": 768,
+  "batch": "1 × 累積 8"
+ }
+}
