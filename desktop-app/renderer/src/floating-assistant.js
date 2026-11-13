@@ -13708,6 +13708,17 @@ const holder = {};
         if (!prefill) return t;
         return t.indexOf(prefill) === 0 ? t : null;
     }
+    // 預填（1.22.0-3 起）：執行包有 'prefill' 功能時，預填經 run.prefill 接在生成提示之後，原生樣板直接接上，輸出就是預填＋續寫（prepend）。
+    // 舊執行包（沒有這個功能）維持舊做法：讓模型自己生成，之後檢查輸出確實以預填開頭才採用，不是就回 null，呼叫端退回網頁版。
+    function nativePrefillPlan(features, prefill) {
+        if (!prefill) return { send: false, prepend: false };
+        if (Array.isArray(features) && features.indexOf('prefill') >= 0) return { send: true, prepend: true };
+        return { send: false, prepend: false };
+    }
+    function nativeFullText(text, prefill, plan) {
+        if (plan && plan.prepend) return String(prefill) + String(text == null ? '' : text);
+        return nativeWithPrefill(text, prefill);
+    }
 
     // ---------- 任務與提示詞 ----------
     const TASKS = { caption: '簡短描述', detailed: '詳細描述', ocr: '辨識文字（OCR）', objects: '列出物件', ask: '問問題（自訂提示詞）' };
@@ -14059,7 +14070,7 @@ const holder = {};
     // 估算這次下載量（依裝置組合）；已經在快取裡的部分不用再下載
     function estimateDownload(model, device, cachedBytes) { const total = (model.bytes && model.bytes[device === 'webgpu' ? 'gpu' : 'cpu']) || 0; return Math.max(0, total - (Number(cachedBytes) || 0)); }
 
-    return { MODELS, byId, imageModels, textModels, depthModels, DEFAULT_DEPTH_MODEL, segmentModels, DEFAULT_SEGMENT_MODEL, poseModels, DEFAULT_POSE_MODEL, DEFAULT_MODEL, DEFAULT_TEXT_MODEL, THRESHOLD_MIN, THRESHOLD_MAX, clampThreshold, shouldUseOfflineLlm, estimateTokens, trimToTokens, textBudget, composeMessages, textGenParams, compactToolSpecs, parseToolCalls, TOOL_STAGE_SYSTEM, roleConfig, toolsTrust, routeStages, toolResultsAsReferences, looksLikeGarbage, fitMessages, runAgentLoop, placeholderOf, BENCH_TOOLS, BENCH_CASES, scoreToolCase, summarizeToolBench, TASKS, generationParams, defaultMaxTokens, inferTask, pickModel, VISION_POLICIES, visionOrder, combineVision, structuredPrompt, parseStructured, resolveDevice, backendOrder, wantsNativeBackend, effectiveDevicePref, nativeToolMessages, nativeWithPrefill, resolveThreads, buildTask, formatResult, repoOfUrl, usageByModel, urlsOfModel, fmtBytes, estimateDownload };
+    return { nativePrefillPlan, nativeFullText, MODELS, byId, imageModels, textModels, depthModels, DEFAULT_DEPTH_MODEL, segmentModels, DEFAULT_SEGMENT_MODEL, poseModels, DEFAULT_POSE_MODEL, DEFAULT_MODEL, DEFAULT_TEXT_MODEL, THRESHOLD_MIN, THRESHOLD_MAX, clampThreshold, shouldUseOfflineLlm, estimateTokens, trimToTokens, textBudget, composeMessages, textGenParams, compactToolSpecs, parseToolCalls, TOOL_STAGE_SYSTEM, roleConfig, toolsTrust, routeStages, toolResultsAsReferences, looksLikeGarbage, fitMessages, runAgentLoop, placeholderOf, BENCH_TOOLS, BENCH_CASES, scoreToolCase, summarizeToolBench, TASKS, generationParams, defaultMaxTokens, inferTask, pickModel, VISION_POLICIES, visionOrder, combineVision, structuredPrompt, parseStructured, resolveDevice, backendOrder, wantsNativeBackend, effectiveDevicePref, nativeToolMessages, nativeWithPrefill, resolveThreads, buildTask, formatResult, repoOfUrl, usageByModel, urlsOfModel, fmtBytes, estimateDownload };
 });
 
 }).call(null, undefined, holder);
@@ -126847,7 +126858,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             const rt = r.runtime || {};
             if (!rt.ok) v = { ok: false, reason: '沒有可用的執行包（' + (rt.reason || '未知') + '）' };
             else if (!rt.modelReady) v = { ok: false, reason: '原生執行器沒有設定模型檔' };
-            else v = { ok: true, reason: '' };
+            else v = { ok: true, reason: '', features: Array.isArray(rt.features) ? rt.features.slice() : [] };
         }
         this._nrStateCache = { at: now, v };
         return v;
@@ -126859,9 +126870,14 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         const tm = FaVlm.nativeToolMessages(a.messages, a.tools);
         if (!tm.ok) return { ok: false, why: tm.why };
         const messages = tm.messages;
-        const r = await this._nrCall('run', { messages, template: 'qwen3-chatml', gen, maxTokens: a.maxTokens || 512, stream: true, timeoutMs }, timeoutMs + 10000, (t) => { acc += t; if (cb.onToken) cb.onToken(acc); });
+        // 預填：執行包有 'prefill' 功能就經 run.prefill 送進去（輸出＝預填＋續寫）；沒有就維持舊做法（見 FaVlm.nativePrefillPlan）
+        const st = await this._nrNativeState().catch(() => null);
+        const plan = FaVlm.nativePrefillPlan(st && st.features, a.prefill);
+        const payload = { messages, template: 'qwen3-chatml', gen, maxTokens: a.maxTokens || 512, stream: true, timeoutMs };
+        if (plan.send) { payload.prefill = a.prefill; acc = String(a.prefill); }
+        const r = await this._nrCall('run', payload, timeoutMs + 10000, (t) => { acc += t; if (cb.onToken) cb.onToken(acc); });
         if (r && r.ok) {
-            const full = FaVlm.nativeWithPrefill(String(r.text == null ? acc : r.text), a.prefill);
+            const full = FaVlm.nativeFullText(String(r.text == null ? acc : r.text), a.prefill, plan);
             if (full == null) return { ok: false, why: '有預填，原生樣板接不到預填，模型的輸出也不是以預填開頭（原生不支援預填，改用網頁版）' };
             return { ok: true, text: full };
         }

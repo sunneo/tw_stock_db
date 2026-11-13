@@ -310,6 +310,12 @@ check('pose model is registered (full fp32, not int8), not an image model, never
   check('有工具、沒有 system：新增 system', t2.messages.length === 2 && t2.messages[0].role === 'system' && t2.messages[0].content.startsWith('# Tools'));
   check('歷史有 tool 角色：不處理（改走網頁版）', V.nativeToolMessages([{ role: 'tool', content: 'x' }], tools).ok === false);
   check('預填：以預填開頭才採用；沒有預填原樣；不符回 null', V.nativeWithPrefill('{"a":1}', '{') === '{"a":1}' && V.nativeWithPrefill('x', '') === 'x' && V.nativeWithPrefill('<tool_call>', '{') === null);
+  // 預填計畫（§32.4）：執行包有 prefill 功能才經 run.prefill 送；沒有就維持舊做法（生成後檢查）
+  check('預填計畫：沒有預填不送', JSON.stringify(V.nativePrefillPlan(['lora', 'prefill'], '')) === '{"send":false,"prepend":false}');
+  check('預填計畫：執行包有 prefill 功能才送且接在前面', JSON.stringify(V.nativePrefillPlan(['lora', 'prefill'], '{')) === '{"send":true,"prepend":true}');
+  check('預填計畫：舊執行包（只有 lora）不送', JSON.stringify(V.nativePrefillPlan(['lora'], '{')) === '{"send":false,"prepend":false}' && JSON.stringify(V.nativePrefillPlan(undefined, '{')) === '{"send":false,"prepend":false}');
+  check('nativeFullText：prepend 時＝預填＋續寫（不做開頭檢查）', V.nativeFullText('"name"', '{', { send: true, prepend: true }) === '{"name"' && V.nativeFullText(null, '{', { send: true, prepend: true }) === '{');
+  check('nativeFullText：不 prepend 時走舊檢查（不符回 null）', V.nativeFullText('<tool_call>', '{', { send: false, prepend: false }) === null && V.nativeFullText('{"a":1}', '{', { send: false, prepend: false }) === '{"a":1}');
 }
 console.log(ok + ' passed, ' + bad.length + ' failed', bad);
 process.exit(bad.length ? 1 : 0);
