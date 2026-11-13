@@ -828,6 +828,167 @@ function installNativeRuntimeFromLocal(userData, srcDir) {
   return checkNativeRuntimeDir(dst);
 }
 
+// ===== 內建 LoRA 下載（DESIGN.lora-training.md §33，批 1）=====
+// 主行程端：讀內建清單（lora-adapters 分支的 builtin.json）、逐片下載、逐片與整檔 SHA-256 核對，全部通過才寫入 <userData>/builtin-lora/<id>.fatrain（先寫 .partial 再改名）。
+// 之後由渲染程序讀這個檔，交給 Fatrain.importAsset 放進 LoRA 儲存層（沿用既有匯入路徑）。失敗時不留下半個檔。
+// 清單抓不到時退回上次成功抓到的快取（builtin-lora/manifest.json），並說明原因。寫在本檔，隨熱更新送達。
+// 純邏輯、依賴注入（fs／crypto／get），測試時不需要 Electron；網路逾時與總時間上限見 opts。
+const BLT = (function () {
+  const FORMAT = "fa-lora-builtin";
+  const DEFAULT_MANIFEST_URL = "https://raw.githubusercontent.com/sunneo/tw_stock_db/lora-adapters/builtin.json";
+  const HEX64 = /^[0-9a-f]{64}$/;
+  const SAFE = /^[A-Za-z0-9._-]{1,120}$/;
+  const MAX_REDIRECTS = 5;
+  const HUMAN = {
+    network: "連不上 GitHub（網路不通或暫時無法連線）。請確認網路後再試一次；這不影響其他功能。",
+    timeout: "下載逾時（網路太慢或中斷，超過等待上限）。請確認網路後再試一次；這不影響其他功能。",
+    http: "伺服器回應錯誤（HTTP {status}）。請稍後再試。",
+    part_mismatch: "下載的檔案校驗不符（下載可能中斷或被截斷）。已丟棄，請再試一次。",
+    total_mismatch: "重組後的檔案校驗不符。已丟棄，請再試一次；若一直失敗，請回報這個版本的 sha256。",
+    no_entry: "找不到這個內建 LoRA 的清單項目（可能是舊版的清單）。請更新程式後再試。",
+    bad_manifest: "內建 LoRA 清單格式不對（缺少必要欄位），無法下載。請回報這個問題。",
+    bad_id: "內建 LoRA 的編號不合法。",
+    busy: "這個內建 LoRA 正在下載中，請等它完成。",
+    write_failed: "寫入本機檔案失敗（磁碟空間不足或權限不夠）。",
+    no_manifest: "抓不到內建 LoRA 清單，而且本機也沒有上次的快取。請確認網路後再試一次。",
+  };
+  function humanError(code, id, status) {
+    const who = id ? "內建 LoRA「" + id + "」" : "內建 LoRA";
+    const body = (HUMAN[code] || "發生未知錯誤（" + code + "）。請再試一次。").replace("{status}", String(status || ""));
+    return code === "no_manifest" || code === "bad_id" ? body : who + "：" + body;
+  }
+  function validManifest(m) {
+    const errs = [];
+    if (!m || typeof m !== "object") return ["清單不是物件"];
+    if (m.format !== FORMAT) errs.push("format 應為 " + FORMAT);
+    if (typeof m.base_url !== "string" || !m.base_url) errs.push("缺 base_url");
+    if (!Array.isArray(m.entries)) errs.push("缺 entries");
+    else m.entries.forEach((e, i) => {
+      if (!e || typeof e.id !== "string" || !SAFE.test(e.id)) errs.push("entries[" + i + "] id 不合法");
+      if (!e || typeof e.dir !== "string" || !SAFE.test(e.dir)) errs.push("entries[" + i + "] dir 不合法");
+      if (!e || !HEX64.test(String(e.sha256 || ""))) errs.push("entries[" + i + "] sha256 格式不對");
+      if (!e || !Array.isArray(e.parts) || !e.parts.length) errs.push("entries[" + i + "] 缺 parts");
+      else e.parts.forEach((p, j) => { if (!p || typeof p.file !== "string" || !(p.size > 0) || !HEX64.test(String(p.sha256 || ""))) errs.push("entries[" + i + "].parts[" + j + "] 不合法"); });
+    });
+    return errs;
+  }
+  // 網路錯誤分類：逾時、HTTP 狀態、其他網路不通
+  function classify(e) { return e && e.code === "timeout" ? "timeout" : e && e.code === "http" ? "http" : "network"; }
+  // 一次 GET（Node http／https，跟隨轉址，閒置逾時）；回傳 Buffer；錯誤帶 code：timeout／http（與 status）／其他
+  function httpGet(url, timeoutMs, redirects) {
+    const https = require("https"), http = require("http");
+    return new Promise((resolve, reject) => {
+      const mod = /^https:/i.test(url) ? https : http;
+      let settled = false; const done = (fn, v) => { if (!settled) { settled = true; fn(v); } };
+      const req = mod.get(url, { headers: { "User-Agent": "FloatingAssistant" } }, (res) => {
+        const s = res.statusCode || 0;
+        if (s >= 300 && s < 400 && res.headers.location && redirects > 0) {
+          res.resume();
+          let next; try { next = new URL(res.headers.location, url).toString(); } catch (_) { return done(reject, Object.assign(new Error("bad redirect"), { code: "network" })); }
+          return httpGet(next, timeoutMs, redirects - 1).then((b) => done(resolve, b), (e) => done(reject, e));
+        }
+        if (s !== 200) { res.resume(); return done(reject, Object.assign(new Error("http " + s), { code: "http", status: s })); }
+        const chunks = [];
+        res.on("data", (c) => chunks.push(c));
+        res.on("end", () => done(resolve, Buffer.concat(chunks)));
+        res.on("error", (e) => done(reject, Object.assign(e, { code: "network" })));
+        res.on("aborted", () => done(reject, Object.assign(new Error("aborted"), { code: "network" })));
+      });
+      req.setTimeout(timeoutMs, () => req.destroy(Object.assign(new Error("timeout"), { code: "timeout" })));
+      req.on("error", (e) => done(reject, e.code === "timeout" ? e : Object.assign(e, { code: "network" })));
+    });
+  }
+  function create(d) {
+    const fs = d.fs, path = d.path, crypto = d.crypto;
+    const get = d.get || ((u, t) => httpGet(u, t, MAX_REDIRECTS));
+    const timeoutMs = d.timeoutMs > 0 ? d.timeoutMs : 60000;   // 閒置逾時：單一請求超過就放棄
+    const totalMs = d.totalMs > 0 ? d.totalMs : 15 * 60 * 1000; // 整顆下載的總上限
+    const retries = d.retries >= 0 ? d.retries : 1;
+    const manifestUrl = d.manifestUrl || DEFAULT_MANIFEST_URL;
+    const root = path.join(d.userData, "builtin-lora");
+    const fileOf = (id) => path.join(root, id + ".fatrain");
+    const cacheOf = path.join(root, "manifest.json");
+    const sha = (b) => crypto.createHash("sha256").update(b).digest("hex");
+    const progress = {}; // id → {state: running|done|error, part, parts, done, total, code?, message?}
+    const rmSafe = (p) => { try { fs.rmSync(p, { force: true }); } catch (_) { /* */ } };
+    // 清單：先網路，失敗再退回快取；兩者都沒有才回錯
+    async function loadManifest() {
+      let err = null;
+      try {
+        const text = (await get(manifestUrl, timeoutMs)).toString("utf8");
+        let m = null; try { m = JSON.parse(text); } catch (_) { m = null; }
+        const errs = validManifest(m);
+        if (errs.length) return { ok: false, code: "bad_manifest", message: humanError("bad_manifest"), errors: errs };
+        try { fs.mkdirSync(root, { recursive: true }); const tmp = cacheOf + ".partial"; fs.writeFileSync(tmp, text); fs.renameSync(tmp, cacheOf); } catch (_) { /* 快取寫不進去不影響本次 */ }
+        return { ok: true, source: "network", manifest: m, note: "" };
+      } catch (e) { err = classify(e); }
+      try {
+        const m = JSON.parse(fs.readFileSync(cacheOf, "utf8"));
+        if (!validManifest(m).length) return { ok: true, source: "cache", manifest: m, note: humanError(err) + "（目前顯示的是上次的清單快取）" };
+      } catch (_) { /* 沒有快取 */ }
+      return { ok: false, code: err, message: humanError("no_manifest") + "（" + humanError(err).replace(/^內建 LoRA：/, "") + "）" };
+    }
+    async function fetchBuiltin(id) {
+      if (!SAFE.test(String(id || ""))) return { ok: false, code: "bad_id", message: humanError("bad_id") };
+      if (progress[id] && progress[id].state === "running") return { ok: false, code: "busy", message: humanError("busy", id) };
+      const ml = await loadManifest();
+      if (!ml.ok) return { ok: false, code: ml.code, message: ml.message };
+      const entry = ml.manifest.entries.find((e) => e.id === id);
+      if (!entry) return { ok: false, code: "no_entry", message: humanError("no_entry", id) };
+      const base = String(ml.manifest.base_url).replace(/\/+$/, "");
+      const deadline = Date.now() + totalMs;
+      const p = (progress[id] = { state: "running", part: 0, parts: entry.parts.length, done: 0, total: entry.size, startedAt: Date.now(), source: ml.source });
+      const fail = (code, status) => { progress[id] = Object.assign({}, p, { state: "error", code, message: humanError(code, id, status) }); return { ok: false, code, message: progress[id].message }; };
+      const chunks = [];
+      for (let i = 0; i < entry.parts.length; i++) {
+        const part = entry.parts[i], url = base + "/" + entry.dir + "/" + part.file;
+        let bytes = null, lastCode = "network", lastStatus = 0;
+        for (let t = 0; t <= retries && !bytes; t++) {
+          if (Date.now() > deadline) { lastCode = "timeout"; break; }
+          try { bytes = await get(url, timeoutMs); }
+          catch (e) { lastCode = classify(e); lastStatus = e && e.status; }
+        }
+        if (!bytes) return fail(lastCode, lastStatus);
+        if (bytes.length !== part.size || sha(bytes) !== part.sha256) return fail("part_mismatch");
+        chunks.push(bytes); p.part = i + 1; p.done += bytes.length;
+      }
+      const all = Buffer.concat(chunks);
+      if (all.length !== entry.size || sha(all) !== entry.sha256) return fail("total_mismatch");
+      const dst = fileOf(id), tmp = dst + ".partial";
+      try { fs.mkdirSync(root, { recursive: true }); fs.writeFileSync(tmp, all); fs.renameSync(tmp, dst); }
+      catch (_) { rmSafe(tmp); return fail("write_failed"); }
+      progress[id] = Object.assign({}, p, { state: "done", done: all.length });
+      return { ok: true, id, path: dst, size: all.length, sha256: entry.sha256, source: ml.source, note: ml.note || "" };
+    }
+    function status() {
+      const downloaded = {};
+      try {
+        for (const n of fs.readdirSync(root)) {
+          const m = /^([A-Za-z0-9._-]{1,120})\.fatrain$/.exec(n); if (!m) continue;
+          try { downloaded[m[1]] = fs.statSync(path.join(root, n)).size; } catch (_) { /* 剛被刪 */ }
+        }
+      } catch (_) { /* 還沒下載過 */ }
+      return { ok: true, downloaded, progress: JSON.parse(JSON.stringify(progress)) };
+    }
+    function remove(id) {
+      if (!SAFE.test(String(id || ""))) return { ok: false, code: "bad_id", message: humanError("bad_id") };
+      if (progress[id] && progress[id].state === "running") return { ok: false, code: "busy", message: humanError("busy", id) };
+      const had = fs.existsSync(fileOf(id)); rmSafe(fileOf(id)); delete progress[id];
+      return { ok: true, id, removed: had };
+    }
+    async function handle(op, p) {
+      p = p || {};
+      if (op === "builtin_manifest") { const r = await loadManifest(); return r.ok ? { ok: true, source: r.source, note: r.note, manifest: r.manifest } : { ok: false, code: r.code, message: r.message }; }
+      if (op === "builtin_fetch") return fetchBuiltin(String(p.id || ""));
+      if (op === "builtin_status") return status();
+      if (op === "builtin_delete") return remove(String(p.id || ""));
+      return { ok: false, code: "bad_op", message: "未知的內建 LoRA 操作：" + op };
+    }
+    return { handle, fetchBuiltin, loadManifest, status, remove, humanError, _progress: progress };
+  }
+  return { create, humanError, validManifest, httpGet, FORMAT, DEFAULT_MANIFEST_URL };
+})();
+
 // ===== LoRA adapter 管理（NRL；見 DESIGN.lora-training.md §7／§10、DESIGN.TODO.offline-training-studio.md §13）=====
 // 渲染程序（Studio 的 LoRA 登錄載入器）把 adapter 位元組寫到 <信箱>/lora-in/<id>/lora.bin，再送 lora_apply；這裡核對大小與 SHA-256、核對模型是 LoRA 槽版、
 // 搬到 <userData>/native-lora/<id>/lora.bin，之後每次 run 都帶 lora:{id,path,sha256,size} 給子程序（子程序自己讀檔再核對一次）。
@@ -1944,6 +2105,7 @@ function startNativeMailbox(ctx) {
   const baseTokenizer = () => tokenizerPath || ((llmChoice() || {}).tokenizerPath) || ((slot.findStandard() || {}).tokenizer || "");
   const slotModel = () => { const c = slot.currentSlot(); return c ? c.model : ""; };
   const lora = NRL.create({ fs: fsSync, path: pathM, crypto: require("crypto"), userData, box, getRuntime: () => runtime, getModelPath: () => slotModel() || baseModel() });
+  const blt = BLT.create({ fs: fsSync, path: pathM, crypto: require("crypto"), userData, manifestUrl: process.env.FA_BUILTIN_MANIFEST_URL || undefined });
   const idleStatus = { alive: false, pid: null, pending: 0, consecutiveCrashes: 0, disabled: false, disabledReason: "" };
   let runQueue = Promise.resolve(); // 生成一次只跑一個（子程序一次只處理一個生成）
   async function doRun(id, p) {
@@ -2054,6 +2216,7 @@ function startNativeMailbox(ctx) {
   async function handle(op, payload, id) {
     const p = payload || {};
     if (op.indexOf("studio_") === 0) return handleStudio(op, p);
+    if (op.indexOf("builtin_") === 0) return blt.handle(op, p);
     if (op === "status") return { ok: true, status: host ? host.status() : idleStatus, engine: runtime.ok && baseModel() ? "native" : "none", box, runtime: { ok: runtime.ok, version: runtime.version || null, reason: runtime.ok ? "" : runtime.reason, protocolOk, modelReady: !!(runtime.ok && baseModel() && baseTokenizer()), features: runtime.features || [], legacy: !!runtime.legacy, latestVersion: NATIVE_RUNTIME_VERSION }, lora: lora.status() };
     if (op === "lora_apply" || op === "lora_apply_set") {
       // 模型不是槽版時先自動轉換（有標準版）或回具體說明（沒有標準版：要下載的檔名／來源／大小）
@@ -2162,4 +2325,4 @@ function startNativeMailbox(ctx) {
   return { ok: true, box };
 }
 
-module.exports = { register, _installAppImageRelaunch: installAppImageRelaunch, _NRI: NRI, _NRT: NRT, _NRL: NRL, _findNativeRuntime: findNativeRuntime, _checkNativeRuntimeDir: checkNativeRuntimeDir, _NATIVE_RUNTIME_VERSION: NATIVE_RUNTIME_VERSION, _NATIVE_RUNTIME_MANIFEST: NATIVE_RUNTIME_MANIFEST };
+module.exports = { register, _installAppImageRelaunch: installAppImageRelaunch, _BLT: BLT, _NRI: NRI, _NRT: NRT, _NRL: NRL, _findNativeRuntime: findNativeRuntime, _checkNativeRuntimeDir: checkNativeRuntimeDir, _NATIVE_RUNTIME_VERSION: NATIVE_RUNTIME_VERSION, _NATIVE_RUNTIME_MANIFEST: NATIVE_RUNTIME_MANIFEST };
