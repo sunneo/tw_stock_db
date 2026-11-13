@@ -958,3 +958,91 @@ Backend {
 - 輸出仍在外部訓練資料夾，**還沒進工作室資產**（同上一批的原因）。音訊轉音符的 ONNX 還沒有接進應用程式的轉譜流程；圖像 LoRA 還沒有接進網頁或桌面的 ONNX 生圖執行環境（未驗證）。
 - 之前記錄的「圖像每步約 20 秒」與本次實測（約 1 秒／步）不一致。本次數字是在這台機器、這個 Python 環境實測的，介面與文件都以本次為準。
 - 語音合成的訓練腳本新增了每步一行的標準輸出（進度用），不影響數值。
+
+## 建立 LLM（從零開始）訓練核心（2026-11-13，分支 claude/llm-scratch）
+
+使用者要求：工作室要有「從頭到尾建立 LLM」的功能，產出應用程式能載入、能對話的小模型，並能接到兄弟線（LoRA 微調、加長上下文）。型別 id：`llm_scratch`（`ext: 'llm_scratch'`）。
+
+### 參考的做法（依記憶整理，這次沒有逐一上網核對原文）
+- Sebastian Raschka《Build a Large Language Model (From Scratch)》（Manning，2024）：文字資料 → 分詞（含 BPE）→ 注意力與 GPT 架構 → 預訓練（下一詞預測、看訓練與驗證損失）→ 微調（分類、指令）→ 評量。本實作的階段順序照這條線。
+- Andrej Karpathy 的 nanoGPT 與 llm.c（以及「Let's build GPT」「Let's build the GPT Tokenizer」影片）：最小可讀的預訓練迴圈（隨機視窗取批次、AdamW、暖身加餘弦衰減、梯度裁切、定期評留出損失）；分詞器獨立成一步並量壓縮率。
+- MiniMind（jingyaogong/minimind）：2 千萬到 1 億級參數、單機可跑的完整流程（分詞器 → 預訓練 → 指令微調 → LoRA），證明小模型走完全流程是可行的；本實作同樣把每一階段拆成獨立可看的步驟。
+- Qwen3 架構（Qwen3 技術報告，2025）：RMSNorm、旋轉位置編碼（rotate-half）、每頭 q／k 各做一次 RMSNorm（q_norm／k_norm）、SwiGLU、無偏置、詞嵌入與輸出頭共享。選它是因為應用程式的原生執行環境（`nr-engine.js`）與網頁版（`llm_web_core.js`）都是按這個圖的輸入輸出名稱寫的。
+- Chinchilla（Hoffmann 等，2022）的經驗值：約每個參數 20 個訓練詞元。以此標準，1 千 3 百萬參數的模型需要約 2.7 億個詞元；這次實測只用了約 7.7 萬個（約 0.03%），所以結果只是「流程跑通」，不是「模型可用」。
+
+### 流程
+```
+ 語料（自己的文字檔／資料夾，或內建小語料）
+   │ ① prep       統一編碼 NFC、去控制字元與重複行、濾掉不是文字的行；以 20 行為區塊切出約 5% 留出集
+   ▼
+ train.txt / heldout.txt ──② tokenizer  位元組級 BPE（Qwen 同款預分詞規則，繁體中文由位元組合併處理）
+   │                                    量測：留出文字壓縮率（位元組／詞元、字／詞元）、編碼後可還原
+   ▼
+ tokenizer.json（相容原生執行環境的 nr-tokenizer.js）＋ 訓練／留出的詞元陣列
+   │ ③ pretrain   Qwen3 同型（28 層、8 個 KV 頭、head_dim 128，只調寬度）；AdamW、暖身＋餘弦、梯度裁切
+   ▼                輸出：訓練損失、留出損失與困惑度；同一批開頭文字的前後生成對照
+ base/ckpt.pt
+   │ ④ sft        套用 qwen3-chatml 聊天樣板（與 nr-template.js 逐字相同，含空思考區塊），只對助理回答算損失
+   ▼                輸出：留出損失／困惑度，留出問題的前後回答
+ chat/ckpt.pt
+   │ ⑤ export     ONNX fp32（輸入輸出名稱與 nr-engine.js 相同）→ 動態量化 q8 → 與訓練框架比對
+   │ ⑥ export-hf  標準 Hugging Face Qwen3 safetensors → 用 transformers 載入並比對 logits 與貪婪輸出
+   │ ⑦ check      重新載入 q8 兩次、貪婪生成，須逐字相同且等於匯出時的結果
+   │ ⑧ native     （找得到原生執行環境才做）用 nr-engine.js＋onnxruntime-node 載入並回答一題
+   ▼
+ export/q8/model_quantized.onnx ＋ export/tokenizer.json ＋ export/manifest.json（sha256）＋ export/hf/
+```
+每一步都是 `ext_job_core.js` 的一個步驟：進度行（`{"step":N,"loss":X}`）串流到工作室、可停止、結束後核對輸出檔與判定規則（分詞器要可還原；預訓練與指令微調的留出損失必須下降；匯出要與訓練框架貪婪一致；重新載入要逐字相同）。
+
+### 程式與接法
+- `renderer/src/studio/llm_scratch.py`：命令列腳本，子命令 prep／tokenizer／pretrain／sft／export／export-hf／check。
+- `renderer/src/studio/llm_scratch_core.js`：型別規格、步驟組裝、估時、參數量公式、原生執行環境核對（`node llm_scratch_core.js native-check`）。
+- `ext_job_core.js` 只加了一個通用的 `registerSpec(spec, planSteps)`，並在檔尾註冊本型別；其他型別的分支沒動。
+- `studio_host.js` 傳 `nativeRuntimeDir` 給步驟規劃；`main-ext.js` 以 `findNativeRuntime(userData)` 提供（找不到就沒有原生那一步）。
+- 介面：`studio-viewer.template.html` 的 `EXT_RUN` 加一項（語料路徑、模型大小、詞彙表、批次、序列長度、指令微調步數；進度列出各階段 ✓／▶／○）。
+- 內建資料：`llm_scratch_builtin_zh.txt`（約 2 千字，只夠示範）與 `llm_scratch_sft_zh.jsonl`（34 筆範例對話）。
+- 模型大小：`mini`（hidden 96、intermediate 256）詞彙 4096 時 13,480,288 參數；`small`（128／384）詞彙 8192 時約 2 千萬。
+
+### 為什麼只能調寬度
+`nr-engine.js` 把 `LAYERS = 28, KV = 8, HD = 128` 與停止詞元 `[151645, 151643]` 寫死。所以這個型別固定 28 層、8 個 KV 頭、head_dim 128，只改 hidden／intermediate／詞彙表。停止詞元的 id 比小詞彙表大得多，模型的 `<|im_end|>` 不在清單裡：原生執行環境會一直生成到字數上限，但回傳文字會在 `<|im_end|>` 處截斷（`cleanText`）。要改成讀模型旁的設定檔，是改原生執行環境的工作，沒有在這次做。
+
+### 已驗證（實測，命令列，本機 24 核處理器，機器同時有其他訓練在跑，負載平均約 65）
+輸出在 `~/fa-work/llm-scratch/real/`（repo 外）；語料是本 repo 的 101 份 `DESIGN.*.md`（約 170 萬字，清理後 166 萬字）。迷你模型 13,480,288 參數，詞彙 4096，預訓練 150 步 × 批次 4 × 序列 128（約 7.7 萬詞元），指令微調 40 步 × 批次 4。
+
+| 項目 | 結果 |
+|---|---|
+| 語料清理 | 25,306 行 → 保留 17,919 行；訓練 1,579,783 字、留出 82,133 字 |
+| 分詞器（留出 900 行） | 151,518 位元組 → 47,492 詞元＝3.19 位元組／詞元（1.73 字／詞元）；900/900 行編碼後可原樣還原 |
+| 預訓練留出損失／困惑度 | 8.336 → 7.224（困惑度 4,170 → 1,372；第 50、100 步為 7.318、7.261） |
+| 預訓練訓練損失 | 第 1 步 8.345，最後 20 步平均 7.252 |
+| 指令微調留出損失／困惑度 | 8.263 → 6.598（困惑度 3,877 → 734）；留出 7 題 |
+| ONNX fp32 對訓練框架 | 首步 logits 最大差 1.9e-6；24 個貪婪 token 完全一致 |
+| ONNX q8 | 19.2 MB（fp32 60.3 MB）；與 fp32 的貪婪 token 一致率 100%；logits 相對差 0.54% |
+| 重新載入 q8 兩次 | 24 個 token 逐一相同，且等於匯出時紀錄（`check.json`） |
+| 標準 Hugging Face 格式 | transformers 的 `Qwen3ForCausalLM` 直接載入；logits 最大差 1.9e-6；貪婪輸出一致 |
+| 原生執行環境（`nr-engine.js`＋onnxruntime-node） | 載入成功並回答「臺灣的首都是哪裡？」；兩個獨立程序輸出逐位元相同 |
+| 時間（忙碌機器） | 預訓練 1,992 秒（約 26 秒／千詞元）；指令微調 3,871 秒（約 97 秒／步）；匯出與核對數分鐘 |
+
+生成樣本前後對照：
+- 預訓練前（隨機初始化）接續「這份合併了原本分散的 3」→「支援支援支援…」；預訓練後同一批開頭都變成空白。
+- 指令微調前，7 題留出問題的回答全是空白；微調後全是「，，，，…」。
+- 原生執行環境對「臺灣的首都是哪裡？」回答「，，，，…」（32 詞元上限，`finish_reason: length`）。
+結論：損失與困惑度都明顯下降，流程每一段都跑通並互相核對過；但**模型沒有學到可用的語言**，生成文字是重複的標點或空白。原因是訓練量只有 Chinchilla 建議的約 0.03%。
+
+### 未驗證／沒做到
+- **沒有訓練到可用**：沒有人工評量，也沒有任何「回答正確」的實測；不要把「困惑度下降」讀成「能對話」。更長訓練（數十倍詞元）沒有跑，品質曲線未知。
+- 內建小語料（約 2 千字）只通過冒煙測試（13 M 參數、20 步）；沒有用它跑完整流程。
+- `small` 模型（約 2 千萬）沒有實跑，它的時間是依參數量比例估的（`SEC_PER_KTOK.small`）。
+- 時間只在負載很高的機器上量過；閒置機器的速度沒有量測。
+- 同設定重跑逐位元相同：**沒有驗證**（訓練端）；只驗證了重新載入的輸出逐字一致。
+- 從工作室介面按開始、`/api/ext/start` 完整走一遍：**沒有做**（只有核心單元測試與用假子行程跑完整流程的測試；分步命令列是實跑的）。因此也沒驗證原生那一步在工作室裡由 `findNativeRuntime` 提供的路徑。
+- 指令微調結束標記的學會率：這次執行時腳本的 `answer_end_rate_after` 算法有誤（先截斷再判斷，恆為 1），已在腳本修正，但這次實跑的數字不採用；新版沒有重跑。
+- GGUF 匯出：沒做（選配）。
+- 自動註冊成「離線模型」：沒做；輸出的 `export/` 版型是 `q8/model_quantized.onnx` ＋ `tokenizer.json`，與工作室資產 `llm/<名稱>` 的路徑約定一致，手動複製即可；自動收進清單沒接。
+- 熱更新：`llm_scratch_core.js` 隨嵌入的主行程端檔案送達；`llm_scratch.py` 與兩個內建資料檔是隨安裝包的腳本，修改它們需要重新安裝。
+- 環境：訓練環境的 torchvision 與 transformers 版本不合時，`export-hf` 會在該命令內讓 transformers 看不到 torchvision（只影響那個程序）。
+
+### 接到兄弟線
+- **LoRA／微調**（`llm-finetune`）：`export/hf/`（model.safetensors、config.json、tokenizer.json）是標準 `Qwen3ForCausalLM`，transformers 與 peft 可直接載入，LoRA 目標層名稱同 Qwen3（q_proj、k_proj、v_proj、o_proj、gate_proj、up_proj、down_proj）。訓練完要走既有的合併與匯出路徑（`llm_export_core.js`），注意該路徑與本模型的 28／8／128 形狀相容。
+- **加長上下文**（`llm-context`）：模型的設定檔 `max_position_embeddings` 為 4096、`rope_theta` 為 1e6，訓練序列只有 128。加長要在 `export/hf/` 上改 `rope_scaling`（位置內插或 YaRN）再做短程續訓；這步沒有做，這裡只留入口。
+- 介面上留的入口：型別說明的「輸出」欄寫明標準格式資料夾可當基底；尚未在介面上放「用這顆模型訓練 LoRA」的按鈕。

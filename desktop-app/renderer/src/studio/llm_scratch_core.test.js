@@ -38,7 +38,7 @@ check('沒有 Python 時說明', /找不到訓練用的 Python/.test(X.planFor('
 
 // ---- 估時間 ----
 const e = L.estimate(X.normalizeParams('llm_scratch', {}).params);
-check('估時間：預設預訓練分鐘數 = 步 × 批 × 序列 ÷ 1000 × 每千 token 秒數 ÷ 60', e.pretrainMin === Math.round(300 * 4 * 128 / 1000 * L.SEC_PER_KTOK.mini / 60) && e.totalMin >= e.pretrainMin + 3, e);
+check('估時間：預設預訓練分鐘數 = 步 × 批 × 序列 ÷ 1000 × 每千 token 秒數 ÷ 60', e.pretrainMin === Math.round(300 * 4 * 128 / 1000 * L.SEC_PER_KTOK.mini / 60) && e.sftMin === Math.round(40 * L.SFT_SEC_PER_STEP.mini / 60) && Math.abs(e.totalMin - (e.pretrainMin + e.sftMin + 3)) <= 1, e);
 
 // ---- 判定規則與進度解析 ----
 check('預訓練進度行解析成 step 事件', X.parseLine('{"step": 5, "loss": 6.5, "lr": 0.001}').type === 'step');

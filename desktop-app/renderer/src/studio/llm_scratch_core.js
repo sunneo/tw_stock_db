@@ -16,8 +16,10 @@
     mini: { label: '迷你（約 1 千 3 百萬參數）', hidden: 96, intermediate: 256 },
     small: { label: '小型（約 2 千萬參數）', hidden: 128, intermediate: 384 },
   };
-  // 每 1000 個訓練 token 的秒數（處理器；量測值，見設計文件；電腦忙碌時會慢數倍）。pretrain 為前向加反向。
-  var SEC_PER_KTOK = { mini: 14, small: 22 };
+  // 預訓練每 1000 個 token 的秒數、指令微調每步（批次 4）的秒數。mini 為實測（負載平均約 65 的忙碌 24 核機器：1992 秒／77 千 token、
+  // 指令微調 3871 秒／40 步）；small 沒有實測，依參數量比例（約 1.5 倍）估計。電腦閒置時預期較快，但沒有量測。
+  var SEC_PER_KTOK = { mini: 26, small: 39 };
+  var SFT_SEC_PER_STEP = { mini: 97, small: 145 };   // 批次 4；實測 3871/40 ≈ 97
 
   // 參數量（與 llm_scratch.py 的結構一致：詞嵌入與輸出頭共享）
   function paramCount(preset, vocab) {
@@ -53,8 +55,8 @@
     summary: '從語料開始，訓練分詞器、預訓練、指令微調，匯出可在應用程式離線載入的小模型（Qwen3 同型，約 1 千萬到 2 千萬參數）。',
     paths: [],
     limits: { vocab: [512, 32000], steps: [10, 200000], batch: [1, 64], seq: [32, 1024], lr: [1e-5, 0.1], warmup: [1, 5000], seed: [0, 1e9], sftSteps: [1, 5000], sftBatch: [1, 64], sftLr: [1e-6, 0.1], threads: [1, 64] },
-    defaults: { corpus: '', preset: 'mini', sftData: '', vocab: 4096, steps: 300, batch: 4, seq: 128, lr: 0.002, warmup: 20, seed: 0, sftSteps: 60, sftBatch: 4, sftLr: 0.0005, threads: 6 },
-    estimate: '處理器（CPU）上，迷你模型每 1000 個訓練 token 約 14 秒（量測；電腦忙碌時慢數倍）。預設 300 步 × 4 × 128 ≈ 15 萬 token，預訓練約 40 分鐘，全流程約 1 小時；要訓練得像樣需要幾倍到數十倍的時間與語料。',
+    defaults: { corpus: '', preset: 'mini', sftData: '', vocab: 4096, steps: 300, batch: 4, seq: 128, lr: 0.002, warmup: 20, seed: 0, sftSteps: 40, sftBatch: 4, sftLr: 0.0005, threads: 6 },
+    estimate: '處理器（CPU）上，迷你模型預訓練每 1000 個 token 約 26 秒、指令微調每步約 97 秒（實測，在負載很高的 24 核機器上；閒置時預期較快，未量測）。預設 300 步 × 4 × 128 ≈ 15 萬 token，預訓練約 1 小時，指令微調 40 步約 1 小時，全流程約 2 小時；要訓練得像樣需要數十倍以上的 token 與時間。',
     outputs: ['data/prep_report.json', 'tok/tokenizer.json', 'tok/tokenizer_report.json', 'base/ckpt.pt', 'base/pretrain_meta.json', 'chat/ckpt.pt', 'chat/sft_meta.json', 'export/q8/model_quantized.onnx', 'export/hf/model.safetensors', 'export/hf/config.json', 'export/tokenizer.json', 'export/manifest.json', 'export/check.json'],
     checks: [{ op: 'true', key: 'reload_identical' }, { op: 'true', key: 'matches_export' }],
     explain: explain,
@@ -91,7 +93,7 @@
   // 估時間（分鐘）：預訓練與指令微調的 token 數 × 每千 token 秒數，另加匯出與核對約 3 分鐘
   function estimate(p) {
     var spk = SEC_PER_KTOK[p.preset] || SEC_PER_KTOK.mini;
-    var pre = p.steps * p.batch * p.seq / 1000 * spk / 60, sft = p.sftSteps * p.sftBatch * 80 / 1000 * spk / 60;
+    var pre = p.steps * p.batch * p.seq / 1000 * spk / 60, sft = p.sftSteps * (p.sftBatch / 4) * (SFT_SEC_PER_STEP[p.preset] || SFT_SEC_PER_STEP.mini) / 60;
     return { pretrainMin: Math.round(pre), sftMin: Math.max(1, Math.round(sft)), exportMin: 3, totalMin: Math.round(pre + sft + 3), params: Math.round(paramCount(p.preset, p.vocab)) };
   }
 
@@ -111,7 +113,7 @@
     });
   }
 
-  return { SHAPE: SHAPE, PRESETS: PRESETS, SEC_PER_KTOK: SEC_PER_KTOK, STAGES: STAGES, SPEC: SPEC, paramCount: paramCount, planSteps: planSteps, estimate: estimate, nativeCheck: nativeCheck };
+  return { SHAPE: SHAPE, PRESETS: PRESETS, SEC_PER_KTOK: SEC_PER_KTOK, SFT_SEC_PER_STEP: SFT_SEC_PER_STEP, STAGES: STAGES, SPEC: SPEC, paramCount: paramCount, planSteps: planSteps, estimate: estimate, nativeCheck: nativeCheck };
 });
 
 if (typeof require === 'function' && require.main === module) {

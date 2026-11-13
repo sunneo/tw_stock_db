@@ -509,7 +509,7 @@ var EXT_RUN={
  speech:{est:'處理器（CPU）約 2 秒／步（實測 30 步 51 秒；以你的電腦為準）。',steps:30,paths:[{k:'model',t:'dir',label:'Kokoro-82M 模型資料夾（config.json、kokoro-v1_0.pth）'},{k:'voice',t:'file',label:'基底語音包（.pt）'},{k:'data',t:'dir',label:'配對資料夾（train.jsonl、heldout.jsonl）'}]},
  audio_to_notes:{est:'處理器（CPU）300 步約 25 秒（實測 24 秒；以你的電腦為準）。只用合成資料。',steps:300,paths:[{k:'base',t:'file',label:'基底轉譜模型（nmp.onnx）'}]},
  vision:{est:'處理器（CPU）約 1 秒／步（實測 300 步 264 秒）。只用合成的顏色與形狀圖。',steps:300,paths:[{k:'base',t:'dir',label:'基底看圖模型資料夾（SmolVLM 格式）'}]},
- llm_scratch:{est:'處理器（CPU）迷你模型每 1000 個訓練 token 約 14 秒（量測；電腦忙碌時慢數倍）。預設 300 步約 40 分鐘預訓練、全流程約 1 小時。步數欄位＝預訓練步數。',steps:300,paths:[{k:'corpus',t:'file',label:'語料（文字檔或資料夾；留空＝內建小語料，只夠示範）'}],fields:[{k:'preset',label:'模型大小（mini＝約 1 千 3 百萬參數、small＝約 2 千萬）',value:'mini'},{k:'vocab',label:'分詞器詞彙表大小',value:'4096'},{k:'batch',label:'預訓練批次',value:'4'},{k:'seq',label:'序列長度',value:'128'},{k:'sftSteps',label:'指令微調步數',value:'60'}]},
+ llm_scratch:{est:'處理器（CPU）迷你模型：預訓練每 1000 個 token 約 26 秒、指令微調每步約 97 秒（實測，負載很高的機器；閒置時預期較快，未量測）。預設全流程約 2 小時，結果只是示範等級。步數欄位＝預訓練步數。',steps:300,paths:[{k:'corpus',t:'file',label:'語料（文字檔或資料夾；留空＝內建小語料，只夠示範）'}],fields:[{k:'preset',label:'模型大小（mini＝約 1 千 3 百萬參數、small＝約 2 千萬）',value:'mini'},{k:'vocab',label:'分詞器詞彙表大小',value:'4096'},{k:'batch',label:'預訓練批次',value:'4'},{k:'seq',label:'序列長度',value:'128'},{k:'sftSteps',label:'指令微調步數',value:'40'}]},
  image:{est:'處理器（CPU）約 1 秒／步（512 解析度，實測 40 步訓練 35 秒）；只用合成圖文配對。',steps:40,paths:[{k:'base',t:'dir',label:'SDXS 基底模型資料夾（unet、vae、text_encoder、tokenizer）'}]}
 };
 function extRunPanel(t){

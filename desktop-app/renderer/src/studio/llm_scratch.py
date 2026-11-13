@@ -503,9 +503,10 @@ def cmd_sft(a):
         for i in held_idx:
             p, _ = enc[i]
             new = greedy_cached(m, p, a.answer_tokens)
-            if end_id in new:
+            ended = end_id in new
+            if ended:
                 new = new[:new.index(end_id)]
-            out.append({"question": rows[i][-2]["content"], "expected": rows[i][-1]["content"], "answer": decode_ids(tok, new)})
+            out.append({"question": rows[i][-2]["content"], "expected": rows[i][-1]["content"], "answer": decode_ids(tok, new), "ended": ended})
         return out
 
     h0 = heldout_loss(); ans0 = answers()
@@ -536,7 +537,7 @@ def cmd_sft(a):
     meta = {"rows": len(rows), "train_rows": int(len(train_idx)), "heldout_rows": int(len(held_idx)), "steps": a.steps,
             "lr": a.lr, "batch": a.batch, "seed": a.seed, "heldout_loss_before": round(h0, 5), "heldout_loss_after": round(h1, 5),
             "heldout_ppl_before": round(math.exp(h0), 3), "heldout_ppl_after": round(math.exp(h1), 3),
-            "answer_end_rate_after": round(float(np.mean([("<|im_end|>" not in r["answer"]) for r in ans1])), 3),
+            "answer_end_rate_before": round(float(np.mean([r["ended"] for r in ans0])), 3), "answer_end_rate_after": round(float(np.mean([r["ended"] for r in ans1])), 3),
             "elapsed_s": round(time.time() - t0, 1)}
     write_json(os.path.join(a.out, "sft_meta.json"), meta)
     emit({"event": "sft_done", "ok": True, "heldout_loss_before": meta["heldout_loss_before"], "heldout_loss_after": meta["heldout_loss_after"],
