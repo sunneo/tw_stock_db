@@ -1621,3 +1621,19 @@ cd .. && node scripts/native-runtime-pack.js /home/hungfu.lee/fa-work/native-run
   - `prefill-only` 兩邊都是 0/3：這個探針題目沒有提供工具，模型不會輸出工具呼叫，不是原生的問題。
   - 決定：預填維持走原生（格式與網頁版一致），參數品質差距在 §32 結論中寫明；若要求參數 3/3，需另外處理（例如 `tools+prefill` 的 `gen` 設定或量化權重），本次不改。
 - 工作室之外的待辦（不在本次範圍）：探針 6 的網頁版對照已記錄於 `native-tools-probe6.json` 的 `side` 欄位。
+
+### 32.10 預設啟用（2026-11-13，relay 轉述使用者決定）
+- 六顆全部 `defaultOn:true`（沒有退步才上，§27.9.6）。`defaultOn` 寫在 `builtin.json` 的 entries 欄位，由 `lora-train/build_builtin.js` 的 `DEFAULT_ON` 產生，App 讀清單決定，不寫死在程式裡。
+- `lora_builtin_core.js` 的 `planBuiltin`：回傳每顆的預設、實際啟用（總開關＋單顆設定）、把關註記（未通過或未驗證時寫明原因）、已下載大小與可否刪除。測試 23 項。
+- plan-r4 把關未通過（self_validate 單邊退化）：預設啟用，但路由仍擋（`evalVerdict` 的 blocked），卡片上寫明。
+- 尚未做（需要產品接線與建置後驗證）：自動登錄到儲存層、延遲下載接在路由上、設定頁開關與卡片、網頁版說明、乾淨 userData 的端到端探針、六卡片 DOM 探針。
+
+### 32.11 路由政策：領域標籤與反例（2026-11-13）
+- 任務標籤（`lora_route_core.js` 的 TASK_DOMAIN）：`codewrite`、`code_write` → codewrite；`reading`、`read_comp` → reading。
+- descriptor 裡的觸發字太寬（reading：「文章、根據」；codewrite：「程式、def」），若照用會讓一般聊天被選到。所以 `lora_registry_core.js` 對這兩個領域改用產品端政策（`TRIGGER_POLICY`），不看 descriptor 的觸發字（不重新打包）：
+  - reading：必須附文章（`【文章】` 標記）且問依文作答（文中／依文／引用／原文）。
+  - codewrite：必須明確要寫程式或實作函式（寫程式、實作函式、寫…函式、code write）。
+- 每輪仍只開一顆（maxActive=1）。`lora_policy.test.js` 14 項：正例與反例（一般聊天「根據」、「程式語言」、只提「文章」沒附文章、有文章但沒問依文）皆不選；一般問答不選任何 LoRA。
+- 卡片限制（寫進 builtin.json 的 `limits`，由 build_builtin.js 的 `LIMITS` 產生）：
+  - codewrite-r4：judge 只有 18/60 通過（只量了一部分）；整份程式沒有量；判準不是預先登記的。
+  - reading-r4：模板題（程式生成），量的是依文作答、逐字引用、沒寫就說沒寫；代表做法與格式，不代表真實的閱讀理解能力。
