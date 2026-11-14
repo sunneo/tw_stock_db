@@ -291,13 +291,14 @@
   }
   function allNodes(el, out) {
     out = out || [];
-    (el.children || []).forEach(function (c) { out.push(c); allNodes(c, out); });
+    // a real DOM's children is an HTMLCollection (no forEach): copy it into an array first
+    Array.prototype.slice.call(el.children || []).forEach(function (c) { out.push(c); allNodes(c, out); });
     return out;
   }
   // Paints a window with its theme: { palette:{bg,fg,accent,danger,muted}, font, size, radius }. Called after the window's own style is set
   // (the host replaces the whole style text), and safe to call with no theme.
   function applyTheme(win, theme) {
-    if (!win || !win.style || !theme) { return; }
+    if (!win || !win.style || !theme || !Object.keys(theme).length) { return; }
     var p = theme.palette || {}, st = win.style;
     function v(name, value) { if (st.setProperty) { st.setProperty(name, value); } else { st[name] = value; } }
     Object.keys(p).forEach(function (k) { v('--gui-' + k, p[k]); });

@@ -18,11 +18,12 @@ const fsStore = await fa._ensureTerminalFsStore(session, await fa._ensureBashWas
 const put = (name, text) => fa._writeBytesToTerminalFs(fsStore, '/work/' + name, new TextEncoder().encode(text));
 
 // 1. 目錄
-put('catalog.py', 'import guitpl\nids = [e["id"] for e in guitpl.catalog() if e["standalone"]]\nprint("IDS=" + ",".join(ids))\nprint("ALL=%d" % len(guitpl.catalog()))\n');
+put('catalog.py', 'import gui\nimport guitpl\nids = [e["id"] for e in guitpl.catalog() if e["standalone"]]\nfor i in ids:\n    print("ID=" + i)\nprint("ALL=%d" % len(guitpl.catalog()))\n');
 await fa._runTerminalCommand(session, 'python3 catalog.py');
 const txt = termText(session);
-const m = /IDS=([^\n\r]*)/.exec(txt);
-R.catalog_output_tail = txt.split('\n').slice(-6).join('\n');
+const m = [null, (txt.match(/^ID=\S+/gm) || []).map((s) => s.slice(3)).join(',')];
+R.catalog_output_tail = txt.split('\n').filter((l) => l.trim()).slice(-8).join('\n');
+R.loaded = { scripts: Array.from(document.scripts).map((s) => s.src).filter((s) => /floating-assistant/.test(s)), has_py_worker: typeof fa._terminalRunPythonWorker === 'function' };
 // 變體（main_dark 等）只是覆寫 style 與參數，這裡只實跑每個領域的 main（變體由本機 lint 檢查）
 R.all_standalone = m && m[1] ? m[1].split(',').filter(Boolean) : [];
 const ids = R.all_standalone.filter((i) => /\/main$/.test(i));
@@ -33,7 +34,7 @@ for (const id of ids) {
   const r = { window_rendered: false };
   R.templates[id] = r;
   const before = termText(session).length;
-  put('run_one.py', 'import guitpl\nguitpl.run(' + JSON.stringify(id) + ')\nprint("RUN-END")\n');
+  put('run_one.py', 'import gui\nimport guitpl\nguitpl.run(' + JSON.stringify(id) + ')\nprint("RUN-END")\n');
   let done = false;
   const p = fa._runTerminalCommand(session, 'python3 run_one.py').then(() => { done = true; }, () => { done = true; });
   const el = await until(() => document.querySelector('.gui-window[data-window] .gui-button, .gui-window[data-window] .gui-label'), 20000);
@@ -54,7 +55,7 @@ for (const id of ids) {
   await until(() => done, 20000);
   r.finished = done;
   const out = termText(session).slice(before);
-  r.traceback = /Traceback/.test(out) ? out.slice(out.indexOf('Traceback')).slice(0, 600) : '';
+  r.traceback = /Traceback/.test(out) ? out.slice(-700) : '';
   r.guitpl_errors = (out.match(/\[guitpl\][^\n\r]*/g) || []).slice(0, 5);
   r.run_end = /RUN-END/.test(out);
   r.closed = !document.querySelector('.gui-window[data-window]');

@@ -156,6 +156,14 @@ assert.strictEqual(violations.length, 0); ok();
   assert.strictEqual(byNode(w, 'pb').style.accentColor, '#ffffcc'); ok();
   assert.strictEqual(R.textOn('#102030'), '#ffffff'); assert.strictEqual(R.textOn('#fff'), '#000000'); ok();
   assert.strictEqual(find(w, (e) => e.className === 'gui-titlebar').style.background, 'rgba(127,127,127,.25)'); ok();
+  // a real DOM's children is an array-like without forEach (HTMLCollection): the theme must still apply
+  {
+    const mk = (tag) => ({ tagName: tag, style: {}, className: '', _kids: [], get children() { return { length: this._kids.length, item: (i) => this._kids[i], 0: this._kids[0], 1: this._kids[1], 2: this._kids[2] }; } });
+    const root = mk('div'); const b = mk('button'); root._kids.push(b);
+    R.applyTheme(root, { palette: { bg: '#000000', accent: '#ffd400' } });
+    assert.strictEqual(b.style.background, '#ffd400'); ok();
+    R.applyTheme(root, {}); R.applyTheme(root, null); ok();
+  }
   // no theme: nothing is touched
   const plain = R.renderWindow(doc, { id: 'p', title: 'P', width: 100, root: { id: 'root', kind: 'column', children: [] } }, () => {}, () => {});
   assert.strictEqual(plain.style.background, undefined); ok();
