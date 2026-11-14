@@ -1,0 +1,103 @@
+{
+  "dates": {
+    "2026-11-01": {
+      "daily_prices": "1b049aaebcf7fc555f633b1ad84632d8",
+      "intraday_quotes": "bac52833927cbdc3e19ff63121bae721",
+      "market_index": "8483975c6b9e1d23bd605f8790439500",
+      "stocks": "6622e4ea2709ac45c8fdf5f70e4dcd7e",
+      "technical_indicators": "383f3f042cd058d755637d800823b815"
+    },
+    "2026-11-02": {
+      "daily_prices": "f72b656f4da5ed1ad4ef8cb39bd0edc4",
+      "intraday_quotes": "bf18f06f755e0ff2f0c252a6c8529735",
+      "market_index": "7103b97e775d426e6b63c6efdb56ee80",
+      "stocks": "6622e4ea2709ac45c8fdf5f70e4dcd7e",
+      "technical_indicators": "b2c2ec57e15df5d5ee4282a3ad375d98"
+    },
+    "2026-11-03": {
+      "daily_prices": "0141eb3722a91457f4e0547ad72f8d31",
+      "intraday_quotes": "a03d48bcacd303d3dbddae5a79c7204a",
+      "market_index": "f7dfdd87635a5a80ece44d74509e770f",
+      "stocks": "6622e4ea2709ac45c8fdf5f70e4dcd7e",
+      "technical_indicators": "e6851eea1cbb5a7e819464e370607447"
+    },
+    "2026-11-04": {
+      "daily_prices": "5b63afe0ec0cb543e23364edb2736d90",
+      "intraday_quotes": "ff462fd268253a760093b6d525b178d2",
+      "market_index": "5fe6ddf44f94f8ba0e12801da108b901",
+      "stocks": "6622e4ea2709ac45c8fdf5f70e4dcd7e",
+      "technical_indicators": "b0cbf33584ae0cd4fa1611fb72a3dc31"
+    },
+    "2026-11-05": {
+      "daily_prices": "9fdc346db3d7f7fe7060fbc6e52ae931",
+      "intraday_quotes": "98373c610e211b7393efcf7d71ad72e6",
+      "market_index": "712ac8c07e7510c4900bc6f7c4551910",
+      "stocks": "6622e4ea2709ac45c8fdf5f70e4dcd7e",
+      "technical_indicators": "dfc6a9521ad6cfe73fe45162ba4aa4a7"
+    },
+    "2026-11-06": {
+      "daily_prices": "2ff12613c342f6842376e66192717fe3",
+      "intraday_quotes": "1ba912bd2a9c47b4af7e7438d8ce5d7c",
+      "market_index": "90221609c34ac1c69a22aa2031826dd7",
+      "stocks": "6622e4ea2709ac45c8fdf5f70e4dcd7e",
+      "technical_indicators": "9136e2fd7dd9599dc769e4fade4b7aa4"
+    },
+    "2026-11-07": {
+      "daily_prices": "1b049aaebcf7fc555f633b1ad84632d8",
+      "intraday_quotes": "4b806a4e28f734883566741c9d6f267d",
+      "market_index": "b2abf3a3cf9a9a52c2d0b1e6ad125bee",
+      "stocks": "6622e4ea2709ac45c8fdf5f70e4dcd7e",
+      "technical_indicators": "383f3f042cd058d755637d800823b815"
+    },
+    "2026-11-08": {
+      "daily_prices": "1b049aaebcf7fc555f633b1ad84632d8",
+      "intraday_quotes": "75e94867f5b3e77699b38e1c042ce7fa",
+      "market_index": "b2abf3a3cf9a9a52c2d0b1e6ad125bee",
+      "stocks": "6622e4ea2709ac45c8fdf5f70e4dcd7e",
+      "technical_indicators": "383f3f042cd058d755637d800823b815"
+    },
+    "2026-11-09": {
+      "daily_prices": "3340ed3b741e2ddf3688a78cdedc5772",
+      "intraday_quotes": "ccaee086f07cad5b5904881b7bdc6cf1",
+      "market_index": "aa999c6e1c0844cba1edd228c723f756",
+      "stocks": "6622e4ea2709ac45c8fdf5f70e4dcd7e",
+      "technical_indicators": "d59ae309cb0e2e6f9e42cae90890d175"
+    },
+    "2026-11-10": {
+      "daily_prices": "2d7ba809420616571d938fbb2f133df9",
+      "intraday_quotes": "fa7af25fa3f7148926dfea03b8f65111",
+      "market_index": "562929e78cc0f87c8c71174e4c2633d2",
+      "stocks": "6622e4ea2709ac45c8fdf5f70e4dcd7e",
+      "technical_indicators": "68754cc99c67660114f1417685dfaf1d"
+    },
+    "2026-11-11": {
+      "daily_prices": "bb245caafa601c367a29dcf8bd13d1a6",
+      "intraday_quotes": "ff9c19567924290b946f41dd2baf71f3",
+      "market_index": "aacb1ff3f1b2fb1f9e5528d877a0c01f",
+      "stocks": "6622e4ea2709ac45c8fdf5f70e4dcd7e",
+      "technical_indicators": "daf698fe7cf812d2daf9668c1bd2553c"
+    },
+    "2026-11-12": {
+      "daily_prices": "b46aa7cea47f440e96d617aa51ded920",
+      "intraday_quotes": "4be96916510978bafda2200c056ddfae",
+      "market_index": "307343e146c4726f5a58892c2707d286",
+      "stocks": "6622e4ea2709ac45c8fdf5f70e4dcd7e",
+      "technical_indicators": "84946907601b6ee086fc3e4a4253fa8c"
+    },
+    "2026-11-13": {
+      "daily_prices": "edab9f71c884d522a0c33e6bedadd352",
+      "intraday_quotes": "a6a5dc64a2c6183a934d05000457b93f",
+      "market_index": "c41c520564dea3807abcc94cf061488f",
+      "stocks": "6622e4ea2709ac45c8fdf5f70e4dcd7e",
+      "technical_indicators": "fb33da157a0c51b43fcd90a86a90664e"
+    },
+    "2026-11-14": {
+      "daily_prices": "1b049aaebcf7fc555f633b1ad84632d8",
+      "intraday_quotes": "f00ace31c44e90d4fe0030cbf3c2342b",
+      "market_index": "1f814dc395846f6a396432d15ce33e3e",
+      "stocks": "305861d6fe89397d2394e4f2511c1271",
+      "technical_indicators": "383f3f042cd058d755637d800823b815"
+    }
+  },
+  "generated_at": "2026-11-14T10:09:23.461256+00:00"
+}
