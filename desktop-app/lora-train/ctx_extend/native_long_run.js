@@ -21,7 +21,7 @@ function build(chars) {
   for (let i = 0; i < 6 && Math.abs(n - target) > target * 0.03; i++) { chars = Math.floor(chars * target / n); text = build(chars); n = tok.encode(text).length; }
   const t0 = Date.now(); let peak = 0;
   const iv = setInterval(() => { peak = Math.max(peak, process.memoryUsage().rss); }, 500);
-  const r = await engine.generate({ modelPath, tokenizerPath: tokPath, threads: 24, messages: [{ role: 'user', content: text }], gen: { do_sample: false }, maxTokens: 12 });
+  const r = await engine.generate({ modelPath, tokenizerPath: tokPath, threads: 24, messages: [{ role: 'user', content: text }], gen: { do_sample: false }, maxTokens: 30 });
   clearInterval(iv); peak = Math.max(peak, process.memoryUsage().rss);
   const res = { model: modelPath, prompt_tokens: n, answer: r.text, pass: r.text.includes(NUM), seconds: (Date.now() - t0) / 1000, peak_rss_mb: Math.round(peak / 1048576) };
   console.log(JSON.stringify(res)); if (outPath) fs.writeFileSync(outPath, JSON.stringify(res, null, 1));
