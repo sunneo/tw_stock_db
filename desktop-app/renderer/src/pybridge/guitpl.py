@@ -510,8 +510,16 @@ def run(cid, params=None, roots=None, available=None, loop=True, window=None):
             break
         key = ("shortcut:%s" % ev.get("value")) if ev.get("event") == "shortcut" else "%s:%s" % (ev.get("event"), by_id.get(ev.get("node"), ev.get("node")))
         ctx.event = ev
-        _dispatch(ctx, comp, key, handlers, calls)
-    win.close()
+        try:
+            _dispatch(ctx, comp, key, handlers, calls)
+        except Exception as e:  # 一個事件處理出錯不能讓整個程式掛掉；視窗已經沒了就收工
+            if win.closed or "is not open" in str(e):
+                break
+            ctx.error("處理事件 %s 出錯：%s: %s" % (key, type(e).__name__, e))
+    try:
+        win.close()
+    except Exception:  # 視窗已經被使用者關掉
+        pass
     return {"win": win, "ids": ids, "state": state, "component": comp, "scene": ctx.scene}
 
 

@@ -39,7 +39,15 @@ for (const id of ids) {
   const p = fa._runTerminalCommand(session, 'python3 run_one.py').then(() => { done = true; }, () => { done = true; });
   const el = await until(() => document.querySelector('.gui-window[data-window] .gui-button, .gui-window[data-window] .gui-label'), 20000);
   r.window_rendered = !!el;
-  const winEl = el && el.closest('.gui-window');
+  // 視窗一開就先出現、節點還在陸續加：等節點數穩定 800 毫秒再動作
+  let lastCount = -1, stableSince = Date.now();
+  while (Date.now() - stableSince < 800 && Date.now() < stableSince + 15000) {
+    const c = document.querySelectorAll('.gui-window[data-window] [data-node]').length;
+    if (c !== lastCount) { lastCount = c; stableSince = Date.now(); }
+    await wait(150);
+  }
+  r.node_count = lastCount;
+  const winEl = (el && el.closest('.gui-window')) || document.querySelector('.gui-window[data-window]');
   r.title = winEl && (winEl.querySelector('.gui-titlebar') || {}).textContent;
   const buttons = winEl ? Array.from(winEl.querySelectorAll('.gui-button')) : [];
   r.buttons = buttons.map((b) => b.textContent.trim());

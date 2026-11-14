@@ -9,4 +9,4 @@
 {"kind":"scene","id":"stopped","title":"停止","note":"可以改速度、按播放","show":["play","bpm"],"hide":["stop"],"on":{"click:play":"playing"}}
 {"kind":"scene","id":"playing","title":"播放中","note":"播放頭移動、按停止結束","show":["stop"],"hide":["play","bpm"],"on":{"click:stop":"stopped"}}
 {"kind":"shortcut","keys":"Ctrl+P","do":"play"}
-{"kind":"shortcut","keys":"Escape","do":"stop"}
+{"kind":"shortcut","keys":"Esc","do":"stop"}

@@ -274,7 +274,7 @@
   }
 
   // ---- theme and shortcuts (window-level look and keys; the bridge validated every value) ----
-  var KEY_NAMES = { ' ': 'Space', Enter: 'Enter', Escape: 'Esc', ArrowUp: 'Up', ArrowDown: 'Down', ArrowLeft: 'Left', ArrowRight: 'Right' };
+  var KEY_NAMES = { ' ': 'Space', Enter: 'Enter', Escape: 'Esc', ArrowUp: 'Up', ArrowDown: 'Down', ArrowLeft: 'Left', ArrowRight: 'Right', Delete: 'Delete', Backspace: 'Backspace', Tab: 'Tab' };
   // a keydown as the bridge's shortcut text: Ctrl+Shift+Alt+<key> (Cmd counts as Ctrl); null for a key with no name
   function shortcutKey(e) {
     var key = String(e.key || '');

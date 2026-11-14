@@ -31,7 +31,7 @@
   var PALETTE_KEYS = ['bg', 'fg', 'accent', 'danger', 'muted'];
   var FONTS = ['sans-serif', 'serif', 'monospace'];
   var WAVES = ['sine', 'square', 'triangle', 'sawtooth'];
-  var SHORTCUT_RE = /^(Ctrl\+)?(Shift\+)?(Alt\+)?([A-Z0-9]|F([1-9]|1[0-2])|Enter|Esc|Space|Up|Down|Left|Right)$/;
+  var SHORTCUT_RE = /^(Ctrl\+)?(Shift\+)?(Alt\+)?([A-Z0-9]|F([1-9]|1[0-2])|Enter|Esc|Space|Up|Down|Left|Right|Delete|Backspace|Tab)$/;
   var MAX_SHORTCUTS = 40;
   var CONTAINERS = ['column', 'row', 'expander', 'grid', 'scroll'];
   var MAX_COLUMNS = 30, MAX_DRAW = 200, MAX_CANVAS = 1200, MAX_FPS = 60;

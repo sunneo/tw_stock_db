@@ -16,7 +16,7 @@
   var STEP_ORDER = ['layout', 'behavior', 'palette', 'theme', 'shortcuts', 'sound'];
   var PALETTE_KEYS = ['bg', 'fg', 'accent', 'danger', 'muted'];
   var COLOR_RE = /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
-  var KEYS_RE = /^((Ctrl|Shift|Alt)\+)*([A-Za-z0-9]|F([1-9]|1[0-2])|Enter|Esc|Space|Up|Down|Left|Right)$/;
+  var KEYS_RE = /^((Ctrl|Shift|Alt)\+)*([A-Za-z0-9]|F([1-9]|1[0-2])|Enter|Esc|Space|Up|Down|Left|Right|Delete|Backspace|Tab)$/;
   var LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
   // 領域領先第二名多少分才算「決定」
   var DOMAIN_MARGIN = 1;

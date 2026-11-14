@@ -26,6 +26,8 @@ PROPS = {
     'multilist': ['items', 'selected', 'enabled'], 'table': ['columns', 'rows', 'enabled'], 'canvas': ['width', 'height', 'fps'],
 }
 CONTAINERS = ('column', 'row', 'expander', 'grid', 'scroll')
+import re
+SHORTCUT_RE = re.compile(r'^(Ctrl\+)?(Shift\+)?(Alt\+)?([A-Z0-9]|F([1-9]|1[0-2])|Enter|Esc|Space|Up|Down|Left|Right|Delete|Backspace|Tab)$')
 kinds_of = {}
 
 
@@ -44,6 +46,12 @@ def fake_call(op, args=None, timeout=240.0):
         if kinds_of.get(args.get('parent', 'root')) not in CONTAINERS:
             raise ValueError('橋接：父節點不是容器')
         kinds_of[node['id']] = node['kind']
+    elif op == 'gui.shortcut':
+        if not SHORTCUT_RE.match(str(args['keys'])):
+            raise ValueError('橋接不認得快捷鍵寫法 %s（要像 Ctrl+S、Ctrl+Shift+Z、F5、Esc、Delete；修飾鍵順序固定 Ctrl、Shift、Alt）' % args['keys'])
+    elif op == 'gui.tone':
+        if not (40 <= args['freq'] <= 8000 and 10 <= args['ms'] <= 2000):
+            raise ValueError('橋接：音效 freq 要 40-8000、ms 要 10-2000')
     elif op == 'gui.set':
         kind = kinds_of.get(args['node'])
         if kind is None:
