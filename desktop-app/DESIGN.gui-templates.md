@@ -1,7 +1,7 @@
 # 圖形介面程式設計範本（GUI 範本線）
 
 > 日期：2026-11-14。使用者原話見 `docs/HANDOFF.gui-templates.md` 第 5 節。
-> 狀態：第 1 節（現況）已完成；第 2 節起（設計）尚未寫。行號是 2026-11-14 在分支 `desktop-app` 讀到的，`floating-assistant.js` 很大且常改，行號只當入口，請用字串再搜。
+> 狀態：第 1 節（現況）與第 2 節（設計）已完成；待辦 3 起為實作。行號是 2026-11-14 在分支 `desktop-app` 讀到的，`floating-assistant.js` 很大且常改，行號只當入口，請用字串再搜。
 
 ## 1. 現況（唯讀調查）
 
@@ -63,4 +63,162 @@
 
 ## 2. 設計
 
-（待寫：範本資料格式、逐步詢問、找不到範本的自行設計路徑、分鏡格式、設計工作室與使用者範本回流。）
+> 決定原則（歧義已自行決定，標「決定」）：程式能決定的不問模型（沿用食譜原則）；範本是**設計規格（資料）**，程式碼由組合器確定性產生，這樣使用者微調的是規格、不是程式文字，存成範本才可重用；桌面版優先，網頁版同一份資料也能跑。
+
+### 2.1 總覽
+
+```
+使用者需求
+  → 領域判斷（十三個領域＋「其他」）
+  → 逐步詢問：版面 → 應用程式行為 → 配色 → 佈景 → 快捷鍵 → 聲音（每步先找範本，找不到才自行設計）
+  → 設計規格（一份 JSON，七個區塊，見 2.2）
+  → 組合器：規格 → Python 程式（確定性）
+  → 驗收：語法檢查＋橋接協定檢查＋假橋接空跑（見 2.7）
+  → 成品＋分鏡＋設計工作室（微調後可存成使用者範本）
+```
+
+### 2.2 設計規格（成品的中間格式，也是範本的內容）
+
+存成 JSON，欄位如下（決定：用 JSON 不用 YAML，因為工具鏈與校驗已有，且使用者範本要程式讀寫）：
+
+```json
+{
+  "format": "guitpl/1",
+  "id": "text-editor-basic",
+  "domain": "text-editor",
+  "title": "基本文字編輯器",
+  "source": "builtin | user | designed",
+  "layout":    { "window": {"title":"…","width":640,"resizable":true},
+                 "tree": [ {"kind":"column","children":[ … 節點樹，種類限橋接支援的，加上新容器 ]} ] },
+  "behavior":  { "state": {"dirty":false},
+                 "handlers": [ {"on":"click:save","do":"save_file"}, {"on":"input:editor","do":"mark_dirty"} ],
+                 "loop": "wait | poll_frame" },
+  "palette":   { "bg":"#1e1e1e","fg":"#dddddd","accent":"#4aa3ff","danger":"#e5534b","muted":"#888888" },
+  "theme":     { "name":"dark","font":"monospace","size":14,"radius":4,"density":"normal" },
+  "shortcuts": [ {"keys":"Ctrl+S","do":"save_file"}, {"keys":"Ctrl+Z","do":"undo"} ],
+  "sound":     [ {"on":"save_file","tone":"ok"} ],
+  "scenes":    [ {"id":"main","title":"主畫面","note":"…","shows":["layout.main"]},
+                 {"id":"empty","title":"空白文件","state":{"dirty":false}} ],
+  "slots":     { "app_name": "我的編輯器" }
+}
+```
+
+- `layout.tree`：節點種類以橋接 `KINDS` 為準（`gui_bridge.js:36`），再加待辦 3 新增的 `grid`、`tabs`、`split`、`scroll`、`menubar`、`menu`。
+- `behavior.do` 指到**動作表**（`actions`）的名稱；動作是一小段 Python 函式範本（見 2.3），規格只引用名稱。
+- `palette` 欄位名稱固定（上列五個必有，其餘可加），佈景 `theme` 是版面細節（字型、字級、圓角、密度），與配色分開（決定：使用者原話把配色與佈景主題並列）。
+- `shortcuts.keys` 寫法固定為 `Ctrl+Shift+Alt+<鍵>`，鍵是單一字元或 `F1`–`F12`、`Enter`、`Esc`、`Space`、方向鍵名。
+- `scenes` 給分鏡用（2.8）；`slots` 是範本裡可替換的文字。
+
+### 2.3 範本檔格式（領域 → 步驟 → 選項）
+
+位置：`renderer/src/guitpl/data/<領域>.json`，一個領域一個檔；使用者範本存在使用者資料區（2.9）。
+
+```json
+{
+  "format": "guitpl-domain/1",
+  "domain": "text-editor",
+  "label": "文字編輯器",
+  "keywords": ["文字編輯","筆記","記事本","editor","notepad"],
+  "steps": [
+    { "id": "layout", "ask": "版面要哪一種？",
+      "options": [ { "id":"menu-top", "label":"上方選單＋大編輯區＋狀態列",
+                     "keywords":["傳統","選單"], "default":true,
+                     "fragment": { "layout": { … 規格的 layout 區塊 … } },
+                     "needs": ["menubar","scroll"] } ] },
+    { "id": "behavior", … }, { "id": "palette", … }, { "id": "theme", … },
+    { "id": "shortcuts", … }, { "id": "sound", "optional": true, … }
+  ],
+  "actions": { "save_file": { "params": [], "python": "def save_file(ctx):\n    …" } },
+  "examples": [ "scripts/eval/gui_examples/text_editor.py" ]
+}
+```
+
+- **組合規則**：每步選一個選項，把各選項的 `fragment` 依步驟順序合併進規格；同一個欄位後來的覆蓋先來的，但 `layout.tree` 與 `behavior.handlers` 是**附加**（串接）；`needs` 若是 Python 端還沒有的能力，組合器在驗收階段報「缺能力」而不是產出壞程式。
+- **共用步驟選項**：配色、佈景、快捷鍵常用組合放 `data/_common.json`（例如 `palette: dark | light | high-contrast | warm`、`theme: compact | comfy`、`shortcuts: office | editor | game-wasd`），各領域用 `use: "_common:palette"` 引用，不重複寫（決定：十三個領域共用，減少維護）。
+- **整套範本**：領域檔的 `presets` 可列「一次選好所有步驟」的套餐，使用者說「給我一個簡單的記事本」就直接套用，不逐步問。
+
+### 2.4 檢索
+
+純函式、確定性、不靠模型（離線也一樣）：
+
+1. 領域分數：需求文字與各領域 `keywords` 的命中數（含中文詞與英文詞）；最高分且領先第二名一個門檻才算決定，否則走 2.5 問使用者。
+2. 步驟內選項分數：需求文字與 `keywords`、`label` 的命中；平手取 `default`。
+3. 使用者範本（`source:"user"`）**加權優先**，且完整規格案例會被列為「參考案例」附給 AI（2.6），不只是被套用。
+4. 回傳 `{domain, preset?, picks:{步驟:選項}, confidence, reasons[]}`，供決策記錄使用。
+
+### 2.5 逐步詢問流程
+
+**共同骨架**：程式持有狀態（目前領域、已選步驟、未決步驟）；每一輪只問一個步驟；有 `default` 的步驟，信心夠就自動選並在結尾列出「我替你選了這些，想改再說」。
+
+- **線上 AI**：宿主工具 `gui_template_find`（找領域與選項）、`gui_template_compose`（規格→程式）；系統提示加一段短指引：「寫圖形介面程式前先呼叫 `gui_template_find`；有範本就逐步確認；沒有就自行設計並走 2.6」。線上可直接用自然語言問使用者，使用者答一句話就視為選定。
+- **離線 AI**：用食譜＋字母選擇題（`FaRecipe` 的編號選單）：每步產生 A、B、C… 的封閉題，模型只回一個字母；程式驗證字母合法、不合法退回、兩次退回後用預設。使用者若直接說了偏好（例如「深色」），程式先用檢索套用，不問模型（決定：能用程式決定就不問）。
+- **跳過規則**：需求文字已包含該步驟的明確關鍵字就不問；使用者說「你決定」就全部走預設。
+
+### 2.6 找不到範本時的自行設計
+
+觸發：領域分數過低，或使用者要求的某一步沒有任何選項命中。
+
+- 沿用 UML design 的逐層切割（`renderer/src/uml/design_core.js`）：需求 → 畫面（場景）→ 每個畫面的區塊 → 每個區塊的控件；切到的最小單位正好對應規格的節點樹與動作表。
+- **只生成規格，不直接生成 Python**：模型（或離線的引導寫作）填同一份規格 JSON 的缺漏欄位，再交給同一個組合器。好處：驗收、分鏡、工作室對「自行設計」與「範本」完全一樣。
+- **參考案例**：把檢索到的最相近的 1–3 份規格（含使用者範本）放進提示，離線版放進引導寫作的案例區；標明「僅供參考，依本次需求改」。
+- 產生的規格 `source:"designed"`；使用者在工作室確認後才有資格存成範本（2.9）。
+
+### 2.7 組合器與驗收
+
+組合器 `renderer/src/guitpl/compose_core.js`（待辦 3）：規格＋動作表 → 一支完整 Python 程式，結構固定：`import gui` → 主題與配色呼叫 → 建節點樹 → 登記快捷鍵與選單 → 動作函式 → 事件迴圈（`wait` 或 `poll` 畫面）。
+
+驗收三關，任一關不過不交付、不存範本：
+1. `python -m py_compile` 同等的語法檢查（桌面版原生、網頁版用 Pyodide）。
+2. 協定檢查：把節點樹丟給 `gui_bridge.js` 的驗證（種類、屬性、上限），不過就列出哪個節點。
+3. 假橋接空跑：用測試用的假橋接（`gui_py_test.py` 的作法）跑一輪「建樹→送幾個事件→關閉」，確認動作表引用都存在、沒有未捕捉的例外。
+
+### 2.8 分鏡（storyboard）
+
+- 資料：`scenes[]`，每個場景 = 標題、說明、進入條件（狀態值）、節點樹快照（取規格的某個狀態）、可觸發的動作與去向場景。
+- 產生：組合器從規格＋各場景狀態確定性展開（不跑 Python）；範本自帶 `scenes`，自行設計的由模型補場景清單。
+- 輸出：一個 HTML 檔，一個場景一張卡，卡內用與 `gui_render.js` 相同的畫法畫出節點樹的靜態樣子（畫面層本來就能在一般頁面渲染，決定：不另寫第二套繪圖），卡之間用箭頭標動作；同時給純文字版（給離線 AI 與終端機）。
+- 位置：成品旁邊的 `<名稱>.storyboard.html`，並可在對話裡以產出檔案的方式提供。
+
+### 2.9 設計工作室與使用者範本
+
+- **工作室**：一個 `gui.Window` 程式（吃自己的狗食）加桌面版專用的完整版：左邊場景清單與節點樹，中間即時預覽，右邊屬性（文字、配色、佈景、快捷鍵、聲音）。微調的對象是規格；每次改動重新驗收（2.7），預覽用同一組合器。
+- **存成範本**：按「存成我的範本」→ 輸入名稱與關鍵字 → 驗收通過 → 寫入使用者範本庫。桌面版寫在使用者資料區的 `guitpl-user/*.json`（一範本一檔，可備份、可手改）；網頁版寫在 `persistentStorage` 的 `fa_guitpl_user`（已有的網頁端存放機制）。
+- **回流**：使用者範本進 2.4 的檢索（加權優先）與 2.6 的參考案例；可匯出匯入（單檔 JSON）。
+- **隱私**：範本只存在本機；不上傳、不寫進對外請求。
+
+### 2.10 十三個領域的切法（待辦 4 的清單）
+
+辦公、文件、遊戲設計、專案設計、投影片軟體、進銷存、美顏拍貼、證件照、MIDI 設計、文字編輯器、網頁設計、影像處理、多媒體編碼解碼與播放。各領域檔至少有：一個版面套餐、動作表、兩種配色、一種佈景、一組快捷鍵、一支範例程式（`scripts/eval/gui_examples/<領域>.py`）。圖像與影音類領域在 Python 端受限於畫布一幀 200 道指令與圖片大小（`gui_bridge.js:30-35`），範本要誠實標「簡化版預覽」，列入待改善而不是假裝做完。
+
+### 2.11 Python 端與橋接要補的能力（待辦 3 清單，依優先）
+
+1. `w.set(nid, **props)`（改屬性）、checkbox／progress／list／textarea 的封裝。
+2. `w.theme(...)`（配色與佈景：頁面端以 CSS 變數套用，橋接新增 `theme` 操作與白名單欄位）。
+3. `w.shortcut(keys, name)`（視窗層級快捷鍵，事件 `shortcut`）與 `menubar`／`menu`（選單項可帶快捷鍵提示）。
+4. 容器：`grid`、`tabs`、`split`、`scroll`。
+5. 聲音：`w.tone(name_or_freq, ms)`（頁面端網頁音訊合成短音效；桌面版可再接原生）；pygame 相容層補最小的 `mixer.Sound` 轉呼叫。
+6. 對話框：`w.message(text)`、`w.confirm(text)`、`w.pick_file()`（走既有 zenity 路徑）。
+
+每項補上都要有橋接測試、畫面測試與 Python 測試，且不改動既有協定的行為（舊程式照跑）。
+
+### 2.12 目錄與檔案（待辦 3 起建立）
+
+```
+renderer/src/guitpl/
+  guitpl_core.js          規格校驗、檢索、逐步詢問狀態機（純函式、UMD）
+  compose_core.js         規格→Python 組合器
+  storyboard_core.js      分鏡展開與 HTML 產生
+  user_store.js           使用者範本庫（桌面檔案／網頁 persistentStorage 兩種後端）
+  studio_gui.py           設計工作室（gui.Window 程式）
+  data/_common.json  data/<領域>.json
+  *.test.js
+```
+
+接線：`scripts/embed-code-ui.js` 加嵌入區塊（改來源模組，不改嵌入後的那份）；宿主工具用 2.5 的兩個工具名登記，離線自動進工具目錄。
+
+### 2.13 待確認但已自行決定的歧義
+
+- 範本格式用 JSON、不用 YAML（理由見 2.2）。
+- 設計工作室微調規格而不是微調程式文字；使用者若要改程式本身，走原本的編輯流程，改完不能回存成範本（規格與程式會分叉）。
+- 聲音用網頁音訊合成短音效，不做音檔播放（先求有，音檔列待改善）。
+- 找不到範本時模型填規格而不直接寫程式（驗收一致）。
