@@ -127,7 +127,7 @@
 方式：真 Electron 桌面版（獨立資料夾、換埠、`FA_UPDATE_BASE` 指向不存在的位址避免自動更新視窗），驅動程式 `scripts/eval/gui_shots.js`，結果 `docs/gui-templates-shots/result.json`。跑了兩次（第一次視窗被放置區域裁掉，改成先按「彈出」鈕再截）。
 
 - **截圖**：十三個領域的主範本，淺色與深色各一張（26 張，`docs/gui-templates-shots/<領域>_light.png`、`<領域>_dark.png`；淺色用 `main_light`，沒有就用 `main`；深色用 `main_dark`）。全部開窗成功、關窗成功、畫面不是空白（顏色數 241 到 2703）、沒有 Traceback 或 [guitpl] 錯誤。截圖是範本的實際外觀；改版前沒有樣式表（全是瀏覽器預設），沒有另存「改版前」截圖。
-- **真實鍵盤與滑鼠（文件範本）**：真滑鼠點進編輯區、真鍵盤打字，打字後焦點還在編輯區（`still_focused: true`），字數標籤跟著更新（就地更新有效）；游標在第 5 個字元時按「插入段落」→ 在游標處插入、「新段落」被選起來、編輯區保持焦點、訊息「已在游標處插入新段落」；接著打字把預設字蓋掉；點大綱第二項→游標跳到「## 第一節」那一行並選起來。畫面截圖 `document_after_editing.png` 未產生（驅動程式在最後一段才截，已存入結果 json 但沒有檔案的話代表沒截到）。
+- **真實鍵盤與滑鼠（文件範本）**：真滑鼠點進編輯區、真鍵盤打字，打字後焦點還在編輯區（`still_focused: true`），字數標籤跟著更新（就地更新有效）；游標在第 5 個字元時按「插入段落」→ 在游標處插入、「新段落」被選起來、編輯區保持焦點、訊息「已在游標處插入新段落」；接著打字把預設字蓋掉；點大綱第二項→游標跳到「## 第一節」那一行並選起來。編輯後的畫面存成 `docs/gui-templates-shots/document_after_editing.png`。
 - **單元測試**：`gui_bridge`（133）、`gui_render`（104）、`gui_host`（42）、`py_worker`、`py_async`、`js_program`、`gui_py_test`（52）、`gui_pygame_test`、`guitpl_test`、`document_test`（25）、`guitpl_ai`、`jsonl_core`、`yaml_core`；lint 71 個元件 0 個有問題（含新規則：主範本要 resizable、有 height、有 grow）。
 - **未重跑**：`guitpl_verify.eval.js`（43 個範本逐一送事件）因為第一次啟動被自動更新視窗擋住沒有結果，之後沒有再跑；`native_driver.js` 的鍵盤段仍有舊的遮罩問題（用 `FA_UPDATE_BASE` 繞過應可解，未驗證）。
 - **已知限制**：游標位置只在鍵盤放開、滑鼠放開、取得或失去焦點時回報；編輯器沒有自動換行；`prose` 模式為了不讓游標與上色層錯位，上色不用粗體與斜體（只用顏色）；選單下拉在點外面時不會自動收起。
