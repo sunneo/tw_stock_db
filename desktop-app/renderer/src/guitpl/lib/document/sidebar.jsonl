@@ -1,0 +1,3 @@
+{"kind":"meta","id":"document/sidebar","title":"大綱側欄（依 # 標題列出章節）","keywords":["大綱","側欄","目錄","章節清單"],"entry":"build"}
+{"kind":"require","module":"gui","source":"builtin"}
+{"kind":"layout","tree":[{"kind":"column","children":[{"id":"outline_title","kind":"label","text":"大綱"},{"id":"outline_hint","kind":"label","text":"還沒有章節：用 # 開頭的行會出現在這裡"},{"id":"outline","kind":"textarea","value":"","rows":16,"enabled":false}]}]}

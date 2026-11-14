@@ -105,6 +105,126 @@ check('toggle updates expander', w3.value(x) is False)
 check('input updates editor', w3.value(ed) == 'x = 2')
 check('select updates multilist', w3.value(ml) == ['red', 'blue'])
 
+# textarea, checkbox, progress, listbox and set()
+w4 = gui.Window('More widgets')
+calls.clear()
+ta = w4.textarea('note', rows=3, placeholder='say')
+check('textarea add', calls[-1][1]['node'] == {'id': ta, 'kind': 'textarea', 'value': 'note', 'rows': 3, 'placeholder': 'say'})
+cb = w4.checkbox('Keep', checked=True)
+check('checkbox add', calls[-1][1]['node'] == {'id': cb, 'kind': 'checkbox', 'text': 'Keep', 'checked': True})
+check('checkbox initial value', w4.value(cb) is True)
+pb = w4.progress(10, max=50)
+check('progress add', calls[-1][1]['node'] == {'id': pb, 'kind': 'progress', 'value': 10.0, 'max': 50.0})
+lb = w4.listbox(['a', 'b'], selected='b')
+check('listbox add', calls[-1][1]['node'] == {'id': lb, 'kind': 'list', 'items': ['a', 'b'], 'selected': 'b'})
+check('listbox initial value', w4.value(lb) == 'b')
+btn = w4.button('Go')
+w4.set(btn, text='Stop', enabled=False)
+check('set op', calls[-1] == ('gui.set', {'id': w4.id, 'node': btn, 'props': {'text': 'Stop', 'enabled': False}}))
+w4.set(cb, checked=False)
+check('set checked updates value', w4.value(cb) is False)
+w4.set(ta, value='x')
+check('set value updates textarea', w4.value(ta) == 'x')
+w4.set(pb, value=40)
+check('set on node without value keeps no value', w4.value(pb) is None)
+replies[:] = [{'v': 1, 'event': 'change', 'id': w4.id, 'node': cb, 'value': True},
+              {'v': 1, 'event': 'select', 'id': w4.id, 'node': lb, 'value': 'a'},
+              {'v': 1, 'event': 'click', 'id': w4.id, 'node': btn}]
+ev = w4.wait(timeout=30)
+check('change and select do not return', ev is not None and ev['event'] == 'click')
+check('change updates checkbox', w4.value(cb) is True)
+check('select updates listbox', w4.value(lb) == 'a')
+replies[:] = [{'v': 1, 'event': 'change', 'id': w4.id, 'node': cb, 'value': False}]
+ev = w4.poll()
+check('poll returns change and stores it', ev['event'] == 'change' and w4.value(cb) is False)
+
+# grid and scroll containers
+calls.clear()
+g = w4.grid(3)
+check('grid add', calls[-1][1]['node'] == {'id': g, 'kind': 'grid', 'columns': 3})
+s = w4.scroll(150)
+check('scroll add', calls[-1][1]['node'] == {'id': s, 'kind': 'scroll', 'height': 150})
+lab = w4.label('in grid', parent=g)
+check('grid child parent', calls[-1][1]['parent'] == g)
+
+# theme, shortcut, tone
+calls.clear()
+w4.theme(palette={'bg': '#111111'}, font='monospace', size=14, radius=4)
+check('theme op', calls[-1] == ('gui.theme', {'id': w4.id, 'palette': {'bg': '#111111'}, 'font': 'monospace', 'size': 14, 'radius': 4}))
+w4.theme(size=16)
+check('theme sends only what is given', calls[-1] == ('gui.theme', {'id': w4.id, 'size': 16}))
+w4.shortcut('Ctrl+S', 'save')
+check('shortcut op', calls[-1] == ('gui.shortcut', {'id': w4.id, 'keys': 'Ctrl+S', 'name': 'save'}))
+w4.shortcut('Ctrl+S', None)
+check('shortcut remove', calls[-1] == ('gui.shortcut', {'id': w4.id, 'keys': 'Ctrl+S', 'name': None}))
+w4.tone(880, 50, 'square')
+check('tone op', calls[-1] == ('gui.tone', {'id': w4.id, 'freq': 880.0, 'ms': 50, 'wave': 'square'}))
+w4.tone()
+check('tone defaults', calls[-1][1]['freq'] == 440.0 and calls[-1][1]['ms'] == 120 and calls[-1][1]['wave'] == 'sine')
+replies[:] = [{'v': 1, 'event': 'shortcut', 'id': w4.id, 'node': 'root', 'value': 'save'}]
+ev = w4.wait(timeout=30)
+check('shortcut event is returned', ev is not None and ev['event'] == 'shortcut' and ev['value'] == 'save')
+
+# tabs, split, menus, dialogs
+w5 = gui.Window('Tabs')
+tb = w5.tabs()
+p1 = w5.tab('One', tb)
+p2 = w5.tab('Two', tb)
+check('tabs value is the first page', w5.value(tb) == p1)
+check('tab op', calls[-1] == ('gui.add', {'id': w5.id, 'parent': tb, 'node': {'id': p2, 'kind': 'tab', 'text': 'Two'}}))
+replies[:] = [{'v': 1, 'event': 'select', 'id': w5.id, 'node': tb, 'value': p2}, {'v': 1, 'event': 'click', 'id': w5.id, 'node': 'x'}]
+w5.wait(timeout=30)
+check('select event stores the page', w5.value(tb) == p2)
+sp = w5.split('column', 40)
+check('split op', calls[-1][1]['node']['kind'] == 'split' and calls[-1][1]['node']['ratio'] == 40 and calls[-1][1]['node']['direction'] == 'column')
+mb = w5.menubar()
+mn = w5.menu('File', mb)
+mi = w5.menuitem('Save', mn, keys='Ctrl+S')
+check('menuitem op', calls[-1][1]['node'] == {'id': mi, 'kind': 'menuitem', 'text': 'Save', 'keys': 'Ctrl+S'} and calls[-1][1]['parent'] == mn)
+def wait_only(op, args=None, timeout=240.0):
+    calls.append((op, args))
+    if op == 'gui.wait':
+        return replies.pop(0) if replies else {'v': 1, 'event': 'close', 'id': args['id'], 'node': 'root'}
+    return None
+
+
+stub.call = wait_only
+# dialogs: the label is n1, the row is n2, the buttons follow (n3, n4); answered by a click on one of them
+replies[:] = [{'v': 1, 'event': 'click', 'id': 'x', 'node': 'n3'}]
+check('confirm yes', gui.confirm('sure?') is True)
+replies[:] = [{'v': 1, 'event': 'click', 'id': 'x', 'node': 'n4'}]
+check('confirm no', gui.confirm('sure?') is False)
+replies[:] = [{'v': 1, 'event': 'close', 'id': 'x', 'node': 'root'}]
+check('confirm closed is no', gui.confirm('sure?') is False)
+replies[:] = [{'v': 1, 'event': 'click', 'id': 'x', 'node': 'n3'}]
+gui.message('hello')
+check('message closes its window', calls[-1][0] == 'gui.close')
+
+# pick_file
+import base64
+picked = []
+
+
+def pick_stub(op, args=None, timeout=240.0):
+    calls.append((op, args))
+    if op == 'gui.pickfile':
+        return picked.pop(0) if picked else None
+    return None
+
+
+stub.call = pick_stub
+picked[:] = [{'name': 'a.png', 'size': 3, 'mime': 'image/png', 'data': base64.b64encode(b'abc').decode(), 'path': 'C:/a.png'}]
+f = gui.pick_file('Open', accept='image/*', max_bytes=1000)
+check('pick_file op', calls[-1] == ('gui.pickfile', {'title': 'Open', 'accept': 'image/*', 'max_bytes': 1000}))
+check('pick_file result', f == {'name': 'a.png', 'size': 3, 'mime': 'image/png', 'data': b'abc', 'path': 'C:/a.png'})
+check('pick_file cancel is None', gui.pick_file() is None)
+picked[:] = [{'error': 'too big'}]
+try:
+    gui.pick_file()
+    check('pick_file error raises', False)
+except ValueError as e:
+    check('pick_file error raises', 'too big' in str(e))
+
 if failures:
     print('%d failure(s)' % len(failures))
     sys.exit(1)

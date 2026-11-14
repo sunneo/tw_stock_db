@@ -46,6 +46,18 @@ cd "$APP"
 BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 [ "$BRANCH" = "desktop-app" ] || { echo "目前在分支「$BRANCH」，要在 desktop-app 分支發布" >&2; exit 1; }
 
+# ---- 0. 來源要先提交 ----
+# 發布只提交「建置產生的檔案」。同一個資料夾可能有別的工作階段改到一半，
+# 沒提交的來源變更會被嵌入、建置進發布內容，所以有就停下來（2026-11-14 v403／v404 掃進半成品的教訓）。
+GENERATED_RE='^(renderer/floating-assistant\.js|renderer/floating-assistant\.min\.js|renderer/update-manifest\.json|web-lazy/.*)$'
+PREFIX="$(git rev-parse --show-prefix)"   # 例如 desktop-app/；porcelain 的路徑是相對於 repo 根目錄
+DIRTY="$(git -c core.quotepath=false status --porcelain --untracked-files=all -- renderer scripts skills '*.js' '*.json' | cut -c4- | sed 's/.* -> //; s/^"//; s/"$//' | sed "s#^$PREFIX##" | grep -Ev "$GENERATED_RE" || true)"
+if [ -n "$DIRTY" ]; then
+  echo "還有沒提交的來源變更（可能是別的工作階段做到一半），發布會把它們嵌入建置；請先提交或等對方完成：" >&2
+  printf '%s\n' "$DIRTY" | sed 's/^/  /' >&2
+  if [ "$DRY" = 1 ]; then echo "（dry-run：只警告，繼續）" >&2; else exit 1; fi
+fi
+
 # ---- 1. 建置與檢查 ----
 if [ "$BUILD" = 1 ]; then
   say "建置（embed-code-ui → build-assistant）"
@@ -64,8 +76,10 @@ node scripts/web-lazy-check.js || exit 1
 say "版號 $VERSION（PATCH_VERSION 跟這次提交一起更新）"
 if [ "$DRY" != 1 ]; then node scripts/release-version.js claim "$VERSION" || exit 1; git add PATCH_VERSION; fi
 say "提交並推到 $REMOTE/desktop-app"
-git add -A renderer scripts web-lazy
-if git diff --cached --quiet; then echo "沒有新的 renderer／scripts 變更要提交"; else
+# 只提交建置產生的檔案（嵌入後的 renderer/src/floating-assistant.js、組合檔、更新清單、網頁區塊）
+git add -- renderer/src/floating-assistant.js renderer/floating-assistant.js renderer/floating-assistant.min.js renderer/update-manifest.json
+git add -A -- web-lazy
+if git diff --cached --quiet; then echo "沒有新的建置產物要提交"; else
   MSG_FILE="$(mktemp)"; with_trailer "$COMMIT_MSG" > "$MSG_FILE"
   run git commit -q -F "$MSG_FILE"; rm -f "$MSG_FILE"
 fi

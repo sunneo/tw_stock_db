@@ -1,0 +1,5 @@
+{"kind":"meta","id":"text-editor/main_contrast","title":"高對比文字編輯器（黑底、黃色重點）","keywords":["高對比","弱視","高對比編輯器"],"extends":"text-editor/main"}
+{"kind":"param","name":"title","default":"高對比文字編輯器","ask":"視窗標題要寫什麼？"}
+{"kind":"require","module":"importlib","source":"builtin"}
+{"kind":"require","module":"os","source":"builtin"}
+{"kind":"style","palette":{"bg":"#000000","fg":"#ffffff","accent":"#ffd400","danger":"#ff5c5c","muted":"#bbbbbb"}}

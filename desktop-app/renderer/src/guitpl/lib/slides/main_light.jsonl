@@ -1,0 +1,5 @@
+{"kind":"meta","id":"slides/main_light","title":"投影片編輯器（明亮）","keywords":["投影片","簡報","淺色","明亮","編輯器"],"extends":"slides/main"}
+{"kind":"param","name":"title","default":"投影片編輯器（明亮）","ask":"視窗標題要寫什麼？"}
+{"kind":"require","module":"importlib","source":"builtin"}
+{"kind":"require","module":"os","source":"builtin"}
+{"kind":"style","palette":{"bg":"#fafaf9","fg":"#1c1917","accent":"#7c3aed","danger":"#dc2626","muted":"#a8a29e"}}

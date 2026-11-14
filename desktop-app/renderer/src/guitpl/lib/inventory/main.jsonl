@@ -1,0 +1,12 @@
+{"kind":"meta","id":"inventory/main","title":"進銷存","keywords":["進銷存","庫存","進貨","銷貨","商品"],"entry":"build","standalone":true}
+{"kind":"param","name":"shop","default":"我的小店","ask":"店名要寫什麼？"}
+{"kind":"param","name":"low","default":"5","ask":"庫存低於幾件要警示？"}
+{"kind":"require","module":"gui","source":"builtin"}
+{"kind":"style","palette":{"bg":"#ffffff","fg":"#222222","accent":"#2563eb","danger":"#dc2626","muted":"#9ca3af"},"font":"sans-serif","size":14,"radius":6}
+{"kind":"layout","window":{"title":"{{shop}} 進銷存","width":520,"resizable":true},"tree":[{"kind":"column","children":[{"slot":"toolbar"},{"id":"edit_panel","kind":"column","children":[{"kind":"label","text":"選商品與數量"},{"id":"prod_pick","kind":"list","items":["紙杯","吸管","湯匙"],"selected":"紙杯"},{"id":"qty","kind":"entry","value":"1"},{"kind":"row","children":[{"id":"stock_in","kind":"button","text":"進貨"},{"id":"stock_out","kind":"button","text":"銷貨"},{"id":"stats_btn","kind":"button","text":"統計"}]},{"id":"msg","kind":"label","text":"就緒"}]},{"id":"stats_panel","kind":"column","children":[{"kind":"label","text":"庫存統計"},{"id":"stock_table","kind":"table","columns":["商品","庫存"],"rows":[["紙杯","12"],["吸管","30"],["湯匙","8"]]},{"id":"stat_total","kind":"label","text":"共 50 件、3 種商品"},{"id":"stat_low","kind":"label","text":"低於警示門檻的商品"},{"id":"low_hint","kind":"label","text":"警示門檻：低於 {{low}} 件"},{"id":"back_btn","kind":"button","text":"回到進銷"}]},{"slot":"statusbar"}]}]}
+{"kind":"slot","name":"toolbar","use":"inventory/toolbar","params":{"caption":"進銷"}}
+{"kind":"slot","name":"statusbar","use":"inventory/statusbar","params":{"hint":"歡迎使用 {{shop}}"}}
+{"kind":"scene","id":"edit","title":"進貨與銷貨","note":"選商品、輸入數量、按進貨或銷貨","show":["edit_panel"],"hide":["stats_panel"],"on":{"click:stats_btn":"stats","click:tb_stats":"stats"}}
+{"kind":"scene","id":"stats","title":"庫存統計","note":"顯示商品庫存表與警示","show":["stats_panel"],"hide":["edit_panel"],"on":{"click:back_btn":"edit","click:tb_form":"edit"}}
+{"kind":"shortcut","keys":"Ctrl+I","do":"stock_in"}
+{"kind":"shortcut","keys":"Ctrl+O","do":"stock_out"}

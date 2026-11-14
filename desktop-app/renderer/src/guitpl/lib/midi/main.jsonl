@@ -1,0 +1,12 @@
+{"kind":"meta","id":"midi/main","title":"鋼琴卷簾編曲器","keywords":["MIDI","鋼琴卷簾","音符","編曲","播放"],"entry":"build","standalone":true}
+{"kind":"param","name":"title","default":"鋼琴卷簾","ask":"視窗標題要寫什麼？"}
+{"kind":"param","name":"bpm","default":"120","ask":"速度要設幾 BPM（每分鐘拍數，20 到 300）？"}
+{"kind":"require","module":"gui","source":"builtin"}
+{"kind":"style","palette":{"bg":"#ffffff","fg":"#222222","accent":"#2563eb","danger":"#dc2626","muted":"#9ca3af"},"font":"sans-serif","size":14,"radius":6}
+{"kind":"layout","window":{"title":"{{title}}","width":380,"resizable":true},"tree":[{"kind":"column","children":[{"slot":"transport"},{"id":"roll","kind":"canvas","width":320,"height":168,"fps":20},{"id":"notes","kind":"table","columns":["音高","起拍","長度（拍）"],"rows":[["C4","0","1"],["E4","1","1"],["G4","2","1"],["C5","3","1"],["B4","4","0.5"],["A4","4.5","0.5"],["G4","5","2"]]},{"slot":"statusbar"}]}]}
+{"kind":"slot","name":"transport","use":"midi/transport","params":{"bpm":"{{bpm}}"}}
+{"kind":"slot","name":"statusbar","use":"midi/statusbar"}
+{"kind":"scene","id":"stopped","title":"停止","note":"可以改速度、按播放","show":["play","bpm"],"hide":["stop"],"on":{"click:play":"playing"}}
+{"kind":"scene","id":"playing","title":"播放中","note":"播放頭移動、按停止結束","show":["stop"],"hide":["play","bpm"],"on":{"click:stop":"stopped"}}
+{"kind":"shortcut","keys":"Ctrl+P","do":"play"}
+{"kind":"shortcut","keys":"Esc","do":"stop"}

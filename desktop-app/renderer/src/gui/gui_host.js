@@ -108,6 +108,8 @@
           }
         }
       }
+      // the window's own style text replaced the theme's colors above: put the theme back
+      if (render.applyTheme) { render.applyTheme(view, snap.theme); }
       ensureLayer().appendChild(view);
       if (opts.decorate && (snap.resizable || snap.maximizable)) {
         var bar = view.querySelector && view.querySelector('.gui-titlebar');
@@ -174,6 +176,24 @@
       if (opts.onClosed) { opts.onClosed(winId); }
     }
 
+    // a short beep: opts.tone(freq, ms, wave) when the caller gave one (tests, a native path), else the page's audio. A page that cannot
+    // play (no audio, blocked until a click) just stays silent: a tone never fails the program.
+    var audio = null;
+    function playTone(freq, ms, wave) {
+      try {
+        if (opts.tone) { opts.tone(freq, ms, wave); return; }
+        var view = doc.defaultView || root;
+        var Ctx = view && (view.AudioContext || view.webkitAudioContext);
+        if (!Ctx) { return; }
+        audio = audio || new Ctx();
+        var osc = audio.createOscillator(), gain = audio.createGain();
+        osc.type = wave; osc.frequency.value = freq;
+        gain.gain.value = 0.15;
+        osc.connect(gain); gain.connect(audio.destination);
+        osc.start(); osc.stop(audio.currentTime + ms / 1000);
+      } catch (e) { /* silent */ }
+    }
+
     // apply one "@gui" line (or an already parsed message). Returns {ok} or {ok:false, error}; never throws.
     function apply(line) {
       var parsed = bridge.parseLine(line);
@@ -183,7 +203,8 @@
       if (!result.ok) { return result; }
       if (msg.op === 'open') { show(msg.id); }
       else if (msg.op === 'close') { teardown(msg.id); }
-      else if (msg.op === 'add' || msg.op === 'set' || msg.op === 'remove') { show(msg.id); }
+      else if (msg.op === 'add' || msg.op === 'set' || msg.op === 'remove' || msg.op === 'theme' || msg.op === 'shortcut') { show(msg.id); }
+      else if (msg.op === 'tone') { playTone(msg.freq, msg.ms, msg.wave || 'sine'); }
       else if (msg.op === 'draw') { paint(msg.id); }
       else if (msg.op === 'image') { repaintCanvas(msg.id, msg.node); }
       return { ok: true };

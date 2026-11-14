@@ -1,0 +1,5 @@
+{"kind":"meta","id":"inventory/main_dark","title":"深色進銷存","keywords":["深色進銷存","夜間進銷存"],"extends":"inventory/main"}
+{"kind":"param","name":"shop","default":"夜間小店","ask":"店名要寫什麼？"}
+{"kind":"require","module":"importlib","source":"builtin"}
+{"kind":"require","module":"os","source":"builtin"}
+{"kind":"style","palette":{"bg":"#1e1e1e","fg":"#dddddd","accent":"#4aa3ff","muted":"#6b7280"},"font":"monospace"}

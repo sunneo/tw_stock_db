@@ -1,0 +1,5 @@
+{"kind":"meta","id":"text-editor/main_dark","title":"深色文字編輯器（深灰底、亮藍重點）","keywords":["深色編輯器","夜間編輯","深色記事本"],"extends":"text-editor/main"}
+{"kind":"param","name":"title","default":"夜間文字編輯器","ask":"視窗標題要寫什麼？"}
+{"kind":"require","module":"importlib","source":"builtin"}
+{"kind":"require","module":"os","source":"builtin"}
+{"kind":"style","palette":{"bg":"#1e1e1e","fg":"#dddddd","accent":"#4aa3ff","danger":"#e5534b","muted":"#888888"}}

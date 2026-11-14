@@ -1,0 +1,5 @@
+{"kind":"meta","id":"game/main_dark","title":"打磚塊（夜間）","keywords":["遊戲","打磚塊","深色","夜間"],"extends":"game/main"}
+{"kind":"param","name":"title","default":"打磚塊（夜間）","ask":"視窗標題要寫什麼？"}
+{"kind":"require","module":"importlib","source":"builtin"}
+{"kind":"require","module":"os","source":"builtin"}
+{"kind":"style","palette":{"bg":"#000000","fg":"#e5e7eb","accent":"#4ade80","danger":"#f87171","muted":"#4b5563"}}

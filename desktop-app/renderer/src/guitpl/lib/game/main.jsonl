@@ -1,0 +1,15 @@
+{"kind":"meta","id":"game/main","title":"打磚塊（畫布小遊戲）","keywords":["遊戲","打磚塊","小遊戲","畫布","canvas"],"entry":"build","standalone":true}
+{"kind":"param","name":"title","default":"打磚塊","ask":"視窗標題要寫什麼？"}
+{"kind":"param","name":"lives","default":"3","ask":"一開始有幾條命？"}
+{"kind":"param","name":"rows","default":"4","ask":"磚塊有幾排（1 到 6）？"}
+{"kind":"require","module":"gui","source":"builtin"}
+{"kind":"require","module":"random","source":"builtin"}
+{"kind":"style","palette":{"bg":"#111827","fg":"#f9fafb","accent":"#22c55e","danger":"#ef4444","muted":"#6b7280"},"font":"sans-serif","size":14,"radius":6}
+{"kind":"layout","window":{"title":"{{title}}","width":480,"resizable":false},"tree":[{"kind":"column","children":[{"slot":"toolbar"},{"id":"screen","kind":"canvas","width":400,"height":300,"fps":15},{"slot":"statusbar"},{"id":"help","kind":"label","text":"左右鍵移動擋板，空白鍵發球。"},{"id":"over_box","kind":"label","text":"遊戲結束"}]}]}
+{"kind":"slot","name":"toolbar","use":"game/toolbar","params":{}}
+{"kind":"slot","name":"statusbar","use":"game/statusbar","params":{"lives":"{{lives}}"}}
+{"kind":"scene","id":"play","title":"進行中","note":"畫布與操作說明","show":["screen","help"],"hide":["over_box"],"on":{"click:restart":"play"}}
+{"kind":"scene","id":"over","title":"結束","note":"只顯示結束訊息，可重新開始","show":["over_box"],"hide":["screen","help"],"on":{"click:restart":"play"}}
+{"kind":"shortcut","keys":"Left","do":"left"}
+{"kind":"shortcut","keys":"Right","do":"right"}
+{"kind":"shortcut","keys":"Space","do":"serve"}

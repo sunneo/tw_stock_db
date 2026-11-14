@@ -1,0 +1,5 @@
+{"kind":"meta","id":"midi/main_dark","title":"深色鋼琴卷簾","keywords":["深色","夜間","鋼琴卷簾"],"extends":"midi/main"}
+{"kind":"param","name":"title","default":"夜間鋼琴卷簾","ask":"視窗標題要寫什麼？"}
+{"kind":"require","module":"importlib","source":"builtin"}
+{"kind":"require","module":"os","source":"builtin"}
+{"kind":"style","palette":{"bg":"#1e1e1e","fg":"#dddddd","accent":"#4aa3ff","danger":"#ef4444","muted":"#555555"},"font":"monospace"}

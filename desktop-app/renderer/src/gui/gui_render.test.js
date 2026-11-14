@@ -134,4 +134,112 @@ assert.deepStrictEqual(events2[5], ['select', 'ml', []]); ok();
 
 assert.strictEqual(violations.length, 0); ok();
 
+// theme: colors, font, size, radius reach the window and its controls; shortcuts fire "shortcut" on the window
+{
+  const S = G.createSession();
+  const ap = (m) => { const r = G.apply(S, m); assert.ok(r.ok, r.error); };
+  ap({ op: 'open', id: 'wt', title: 'T', width: 300 });
+  ap({ op: 'add', id: 'wt', node: { id: 'b', kind: 'button', text: 'Go' } });
+  ap({ op: 'add', id: 'wt', node: { id: 'e', kind: 'entry', value: '' } });
+  ap({ op: 'add', id: 'wt', node: { id: 'pb', kind: 'progress', value: 1, max: 2 } });
+  ap({ op: 'theme', id: 'wt', palette: { bg: '#102030', fg: '#eeeeee', accent: '#ffffcc', muted: '#778899' }, font: 'monospace', size: 15, radius: 6 });
+  ap({ op: 'shortcut', id: 'wt', keys: 'Ctrl+S', name: 'save' });
+  ap({ op: 'shortcut', id: 'wt', keys: 'Q', name: 'quit' });
+  const evs = [];
+  const w = R.renderWindow(doc, G.snapshot(S, 'wt'), (name, node, value) => evs.push([name, node, value]), () => {});
+  assert.strictEqual(w.style.background, '#102030'); assert.strictEqual(w.style.color, '#eeeeee'); ok();
+  assert.strictEqual(w.style.fontFamily, 'monospace'); assert.strictEqual(w.style.fontSize, '15px'); assert.strictEqual(w.style.borderRadius, '6px'); ok();
+  assert.strictEqual(w.style['--gui-accent'], '#ffffcc'); ok();
+  const b = byNode(w, 'b');
+  assert.strictEqual(b.style.background, '#ffffcc'); assert.strictEqual(b.style.color, '#000000', 'dark text on a light accent'); ok();
+  assert.strictEqual(byNode(w, 'e').style.background, '#102030'); assert.strictEqual(byNode(w, 'e').style.border, '1px solid #778899'); ok();
+  assert.strictEqual(byNode(w, 'pb').style.accentColor, '#ffffcc'); ok();
+  assert.strictEqual(R.textOn('#102030'), '#ffffff'); assert.strictEqual(R.textOn('#fff'), '#000000'); ok();
+  assert.strictEqual(find(w, (e) => e.className === 'gui-titlebar').style.background, 'rgba(127,127,127,.25)'); ok();
+  // a real DOM's children is an array-like without forEach (HTMLCollection): the theme must still apply
+  {
+    const mk = (tag) => ({ tagName: tag, style: {}, className: '', _kids: [], get children() { return { length: this._kids.length, item: (i) => this._kids[i], 0: this._kids[0], 1: this._kids[1], 2: this._kids[2] }; } });
+    const root = mk('div'); const b = mk('button'); root._kids.push(b);
+    R.applyTheme(root, { palette: { bg: '#000000', accent: '#ffd400' } });
+    assert.strictEqual(b.style.background, '#ffd400'); ok();
+    R.applyTheme(root, {}); R.applyTheme(root, null); ok();
+  }
+  // no theme: nothing is touched
+  const plain = R.renderWindow(doc, { id: 'p', title: 'P', width: 100, root: { id: 'root', kind: 'column', children: [] } }, () => {}, () => {});
+  assert.strictEqual(plain.style.background, undefined); ok();
+
+  // shortcuts
+  const key = (o) => Object.assign({ target: { tagName: 'div' }, preventDefault() { this.stopped = true; } }, o);
+  assert.strictEqual(R.shortcutKey({ key: 's', ctrlKey: true }), 'Ctrl+S');
+  assert.strictEqual(R.shortcutKey({ key: 'Z', ctrlKey: true, shiftKey: true }), 'Ctrl+Shift+Z');
+  assert.strictEqual(R.shortcutKey({ key: 'z', metaKey: true, altKey: true }), 'Ctrl+Alt+Z');
+  assert.strictEqual(R.shortcutKey({ key: 'Escape' }), 'Esc'); assert.strictEqual(R.shortcutKey({ key: ' ' }), 'Space');
+  assert.strictEqual(R.shortcutKey({ key: 'ArrowLeft' }), 'Left'); assert.strictEqual(R.shortcutKey({ key: 'F5' }), 'F5');
+  assert.strictEqual(R.shortcutKey({ key: 'Shift' }), null); ok();
+  assert.strictEqual(w.attrs.tabindex, undefined); assert.strictEqual(w.tabIndex, -1, 'the window can take the keyboard'); ok();
+  const e1 = key({ key: 's', ctrlKey: true });
+  (w.listeners.keydown || []).forEach((fn) => fn(e1));
+  assert.deepStrictEqual(evs[evs.length - 1], ['shortcut', 'root', 'save']); assert.strictEqual(e1.stopped, true); ok();
+  const before = evs.length;
+  (w.listeners.keydown || []).forEach((fn) => fn(key({ key: 'x', ctrlKey: true })));
+  assert.strictEqual(evs.length, before, 'an unregistered key sends nothing'); ok();
+  (w.listeners.keydown || []).forEach((fn) => fn(key({ key: 'q', target: { tagName: 'input' } })));
+  assert.strictEqual(evs.length, before, 'a bare letter is typing in a text box'); ok();
+  (w.listeners.keydown || []).forEach((fn) => fn(key({ key: 'q' })));
+  assert.deepStrictEqual(evs[evs.length - 1], ['shortcut', 'root', 'quit']); ok();
+  (w.listeners.keydown || []).forEach((fn) => fn(key({ key: 's', ctrlKey: true, target: { tagName: 'input' } })));
+  assert.deepStrictEqual(evs[evs.length - 1], ['shortcut', 'root', 'save'], 'Ctrl+S works inside a text box'); ok();
+}
+
+// grid and scroll containers
+{
+  const S = G.createSession();
+  const ap = (m) => { const r = G.apply(S, m); assert.ok(r.ok, r.error); };
+  ap({ op: 'open', id: 'wg', title: 'G' });
+  ap({ op: 'add', id: 'wg', node: { id: 'g1', kind: 'grid', columns: 3 } });
+  ap({ op: 'add', id: 'wg', parent: 'g1', node: { id: 'l1', kind: 'label', text: 'a' } });
+  ap({ op: 'add', id: 'wg', node: { id: 's1', kind: 'scroll', height: 120 } });
+  ap({ op: 'add', id: 'wg', parent: 's1', node: { id: 'l2', kind: 'label', text: 'b' } });
+  const w = R.renderWindow(doc, G.snapshot(S, 'wg'), () => {}, () => {});
+  const g = byNode(w, 'g1'), sc = byNode(w, 's1');
+  assert.strictEqual(g.style.display, 'grid'); assert.strictEqual(g.style.gridTemplateColumns, 'repeat(3, 1fr)'); ok();
+  assert.strictEqual(g.children.length, 1); assert.strictEqual(g.children[0].textContent, 'a'); ok();
+  assert.strictEqual(sc.style.overflow, 'auto'); assert.strictEqual(sc.style.maxHeight, '120px'); ok();
+  assert.strictEqual(sc.children[0].textContent, 'b'); ok();
+}
+
+// tabs, split, menus
+{
+  El.prototype.insertBefore = function (c, ref) { const i = ref ? this.children.indexOf(ref) : -1; if (i < 0) { this.children.push(c); } else { this.children.splice(i, 0, c); } return c; };
+  Object.defineProperty(El.prototype, 'firstChild', { get() { return this.children[0] || null; } });
+  const S = G.createSession();
+  const ap = (m) => { const r = G.apply(S, m); assert.ok(r.ok, r.error); };
+  ap({ op: 'open', id: 'wt', title: 'T' });
+  ap({ op: 'add', id: 'wt', node: { id: 'tb', kind: 'tabs' } });
+  ap({ op: 'add', id: 'wt', parent: 'tb', node: { id: 'p1', kind: 'tab', text: 'One' } });
+  ap({ op: 'add', id: 'wt', parent: 'tb', node: { id: 'p2', kind: 'tab', text: 'Two' } });
+  ap({ op: 'add', id: 'wt', parent: 'p1', node: { id: 'a', kind: 'label', text: 'A' } });
+  ap({ op: 'add', id: 'wt', node: { id: 'sp', kind: 'split', direction: 'row', ratio: 30 } });
+  ap({ op: 'add', id: 'wt', parent: 'sp', node: { id: 'l', kind: 'label', text: 'left' } });
+  ap({ op: 'add', id: 'wt', parent: 'sp', node: { id: 'r', kind: 'label', text: 'right' } });
+  ap({ op: 'add', id: 'wt', node: { id: 'mb', kind: 'menubar' } });
+  ap({ op: 'add', id: 'wt', parent: 'mb', node: { id: 'mn', kind: 'menu', text: 'File' } });
+  ap({ op: 'add', id: 'wt', parent: 'mn', node: { id: 'mi', kind: 'menuitem', text: 'Save', keys: 'Ctrl+S' } });
+  const ev = [];
+  const w = R.renderWindow(doc, G.snapshot(S, 'wt'), (name, node, value) => ev.push([name, node, value]), () => {});
+  const tabs = byNode(w, 'tb');
+  const bar = tabs.children[0];
+  assert.strictEqual(bar.children.length, 2); assert.strictEqual(bar.children[0].textContent, 'One'); ok();
+  assert.strictEqual(byNode(w, 'p1').hidden, false); assert.strictEqual(byNode(w, 'p2').hidden, true); ok();
+  bar.children[1].fire('click');
+  assert.strictEqual(byNode(w, 'p1').hidden, true); assert.strictEqual(byNode(w, 'p2').hidden, false); ok();
+  assert.deepStrictEqual(ev[ev.length - 1], ['select', 'tb', 'p2']); ok();
+  const sp = byNode(w, 'sp');
+  assert.strictEqual(sp.style.display, 'flex'); assert.strictEqual(sp.children[0].style.flex, '0 0 30%'); assert.strictEqual(sp.children[1].style.flex, '1 1 0'); ok();
+  const mi = byNode(w, 'mi');
+  assert.strictEqual(mi.textContent, 'Save    Ctrl+S'); mi.fire('click');
+  assert.deepStrictEqual(ev[ev.length - 1], ['click', 'mi', undefined]); ok();
+  assert.strictEqual(byNode(w, 'mn').children[0].textContent, 'File'); ok();
+}
+
 console.log('gui_render: ' + n + ' assertions passed');

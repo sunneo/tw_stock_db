@@ -1,0 +1,13 @@
+{"kind":"meta","id":"document/main","title":"文件編輯（大綱側欄加編輯區）","keywords":["文件","文件編輯","大綱","章節","文稿","document"],"entry":"build","standalone":true}
+{"kind":"param","name":"title","default":"文件編輯","ask":"視窗標題要寫什麼？"}
+{"kind":"param","name":"doc_name","default":"未命名文件","ask":"文件名稱要寫什麼？（會顯示在編輯區上方）"}
+{"kind":"require","module":"gui","source":"builtin"}
+{"kind":"style","palette":{"bg":"#ffffff","fg":"#222222","accent":"#2563eb","danger":"#dc2626","muted":"#9ca3af"},"font":"serif","size":15,"radius":4}
+{"kind":"layout","window":{"title":"{{title}}","width":760,"resizable":true},"tree":[{"kind":"column","children":[{"id":"doc_label","kind":"label","text":"{{doc_name}}"},{"slot":"toolbar"},{"kind":"row","children":[{"slot":"sidebar"},{"id":"body","kind":"editor","value":"","lang":"text","rows":18}]},{"slot":"statusbar"}]}]}
+{"kind":"slot","name":"toolbar","use":"document/toolbar","params":{}}
+{"kind":"slot","name":"sidebar","use":"document/sidebar","params":{}}
+{"kind":"slot","name":"statusbar","use":"document/statusbar","params":{}}
+{"kind":"scene","id":"no_outline","title":"沒有大綱","note":"只顯示提示；用 # 開頭寫一行標題後，大綱就會出現","show":["outline_hint"],"hide":["outline"],"on":{"click:add_heading":"has_outline"}}
+{"kind":"scene","id":"has_outline","title":"有大綱","note":"大綱側欄列出所有標題，縮排表示層級","show":["outline"],"hide":["outline_hint"]}
+{"kind":"shortcut","keys":"Ctrl+S","do":"save"}
+{"kind":"shortcut","keys":"Ctrl+Shift+H","do":"add_heading"}

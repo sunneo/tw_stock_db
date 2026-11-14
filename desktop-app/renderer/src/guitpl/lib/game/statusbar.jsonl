@@ -1,0 +1,4 @@
+{"kind":"meta","id":"game/statusbar","title":"遊戲狀態列（分數、剩餘命數）","keywords":["狀態列","分數","命數","遊戲"],"entry":"build"}
+{"kind":"param","name":"lives","default":"3","ask":"剩幾條命？"}
+{"kind":"require","module":"gui","source":"builtin"}
+{"kind":"layout","tree":[{"kind":"row","children":[{"id":"score_text","kind":"label","text":"分數 0"},{"id":"lives_text","kind":"label","text":"命 {{lives}}"}]}]}

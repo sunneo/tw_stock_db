@@ -102,4 +102,84 @@ assert.match(G.parseWait('wait bad!id').error, /window id/); ok();
 assert.match(G.parseWait('wait w1 1ANS').error, /shell variable name/); ok();
 assert.match(G.parseWait('wait w1 a=b').error, /shell variable name/); ok();
 
+// theme, shortcut, tone (window-level look, keys and beeps)
+{
+  const S = G.createSession();
+  run(S, msg({ op: 'open', id: 'wt', title: 'T' }));
+  assert.deepStrictEqual(G.snapshot(S, 'wt').theme, {}); assert.deepStrictEqual(G.snapshot(S, 'wt').shortcuts, {}); ok();
+  assert.deepStrictEqual(run(S, msg({ op: 'theme', id: 'wt', palette: { bg: '#112233', accent: '#4aa' }, font: 'monospace', size: 14, radius: 4 })), { ok: true }); ok();
+  assert.deepStrictEqual(G.snapshot(S, 'wt').theme, { palette: { bg: '#112233', accent: '#4aa' }, font: 'monospace', size: 14, radius: 4 }); ok();
+  run(S, msg({ op: 'theme', id: 'wt', palette: { fg: '#eee' } }));
+  assert.deepStrictEqual(G.snapshot(S, 'wt').theme.palette, { bg: '#112233', accent: '#4aa', fg: '#eee' }, 'palette merges, size stays'); assert.strictEqual(G.snapshot(S, 'wt').theme.size, 14); ok();
+  assert.match(run(S, msg({ op: 'theme', id: 'wt', palette: { bg: 'red' } })).error, /palette\.bg/); ok();
+  assert.match(run(S, msg({ op: 'theme', id: 'wt', palette: { sky: '#fff' } })).error, /not supported/); ok();
+  assert.match(run(S, msg({ op: 'theme', id: 'wt', font: 'comic' })).error, /font must/); ok();
+  assert.match(run(S, msg({ op: 'theme', id: 'wt', size: 99 })).error, /size must/); ok();
+  assert.strictEqual(G.snapshot(S, 'wt').theme.size, 14, 'a refused theme changes nothing'); ok();
+
+  assert.deepStrictEqual(run(S, msg({ op: 'shortcut', id: 'wt', keys: 'Ctrl+S', name: 'save' })), { ok: true }); ok();
+  run(S, msg({ op: 'shortcut', id: 'wt', keys: 'Ctrl+Shift+Z', name: 'redo' }));
+  run(S, msg({ op: 'shortcut', id: 'wt', keys: 'F5', name: 'run' }));
+  assert.deepStrictEqual(G.snapshot(S, 'wt').shortcuts, { 'Ctrl+S': 'save', 'Ctrl+Shift+Z': 'redo', F5: 'run' }); ok();
+  assert.match(run(S, msg({ op: 'shortcut', id: 'wt', keys: 'Ctrl+Ctrl', name: 'x' })).error, /keys must/); ok();
+  assert.match(run(S, msg({ op: 'shortcut', id: 'wt', keys: 'S', name: 'bad name' })).error, /name must/); ok();
+  assert.match(run(S, msg({ op: 'shortcut', id: 'wt', keys: 'Shift+Ctrl+S', name: 'x' })).error, /keys must/, 'modifier order is fixed'); ok();
+  run(S, msg({ op: 'shortcut', id: 'wt', keys: 'F5', name: null }));
+  assert.strictEqual(G.snapshot(S, 'wt').shortcuts.F5, undefined); ok();
+  for (let i = 0; i < 40; i++) { run(S, msg({ op: 'shortcut', id: 'wt', keys: (i < 36 ? 'Alt+' : 'Ctrl+Alt+') + 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'[i % 36], name: 'n' + i })); }
+  assert.match(run(S, msg({ op: 'shortcut', id: 'wt', keys: 'Ctrl+Alt+Q', name: 'more' })).error || '', /at most 40/); ok();
+
+  // the event: only for a registered name, on the window ("root")
+  assert.deepStrictEqual(JSON.parse(G.eventLine(S, 'wt', 'root', 'shortcut', 'save')), { v: 1, event: 'shortcut', id: 'wt', node: 'root', value: 'save' }); ok();
+  assert.strictEqual(G.eventLine(S, 'wt', 'root', 'shortcut', 'unknown'), null); ok();
+  assert.strictEqual(G.eventLine(S, 'wt', 'n1', 'shortcut', 'save'), null); ok();
+  assert.strictEqual(G.eventLine(S, 'wt', 'root', 'shortcut', 5), null); ok();
+
+  assert.deepStrictEqual(run(S, msg({ op: 'tone', id: 'wt', freq: 440, ms: 120, wave: 'square' })), { ok: true }); ok();
+  assert.deepStrictEqual(run(S, msg({ op: 'tone', id: 'wt', freq: 440, ms: 120 })), { ok: true }); ok();
+  assert.match(run(S, msg({ op: 'tone', id: 'wt', freq: 10, ms: 120 })).error, /freq/); ok();
+  assert.match(run(S, msg({ op: 'tone', id: 'wt', freq: 440, ms: 99999 })).error, /ms/); ok();
+  assert.match(run(S, msg({ op: 'tone', id: 'wt', freq: 440, ms: 100, wave: 'noise' })).error, /wave/); ok();
+  assert.match(run(S, msg({ op: 'tone', id: 'nope', freq: 440, ms: 100 })).error, /not open/); ok();
+  assert.ok(G.OPS.indexOf('theme') >= 0 && G.OPS.indexOf('shortcut') >= 0 && G.OPS.indexOf('tone') >= 0); ok();
+}
+
+// grid and scroll containers
+{
+  const S = G.createSession();
+  run(S, msg({ op: 'open', id: 'wg', title: 'G' }));
+  assert.deepStrictEqual(run(S, msg({ op: 'add', id: 'wg', node: { id: 'g1', kind: 'grid', columns: 3 } })), { ok: true }); ok();
+  assert.deepStrictEqual(run(S, msg({ op: 'add', id: 'wg', parent: 'g1', node: { id: 'l1', kind: 'label', text: 'a' } })), { ok: true }); ok();
+  assert.deepStrictEqual(run(S, msg({ op: 'add', id: 'wg', node: { id: 's1', kind: 'scroll', height: 120 } })), { ok: true }); ok();
+  assert.deepStrictEqual(run(S, msg({ op: 'add', id: 'wg', parent: 's1', node: { id: 'l2', kind: 'label', text: 'b' } })), { ok: true }); ok();
+  assert.strictEqual(G.snapshot(S, 'wg').root.children[0].columns, 3); ok();
+  assert.match(run(S, msg({ op: 'add', id: 'wg', node: { id: 'g2', kind: 'grid', columns: 99 } })).error, /columns must/); ok();
+  assert.match(run(S, msg({ op: 'add', id: 'wg', node: { id: 's2', kind: 'scroll', height: 5 } })).error, /height must/); ok();
+  assert.deepStrictEqual(run(S, msg({ op: 'set', id: 'wg', node: 'g1', props: { columns: 2 } })), { ok: true }); ok();
+}
+
+// tabs, split, menus
+{
+  const S = G.createSession();
+  run(S, msg({ op: 'open', id: 'wt2', title: 'T' }));
+  const add = (parent, node) => run(S, msg({ op: 'add', id: 'wt2', parent, node }));
+  assert.deepStrictEqual(add('root', { id: 'tb', kind: 'tabs' }), { ok: true }); ok();
+  assert.match(add('root', { id: 'bad', kind: 'tab', text: 'x' }).error, /only be added to a tabs/); ok();
+  assert.match(add('tb', { id: 'bad2', kind: 'label', text: 'x' }).error, /only holds tab/); ok();
+  assert.deepStrictEqual(add('tb', { id: 'p1', kind: 'tab', text: 'One' }), { ok: true }); ok();
+  assert.deepStrictEqual(add('tb', { id: 'p2', kind: 'tab', text: 'Two' }), { ok: true }); ok();
+  assert.deepStrictEqual(add('p2', { id: 'inside', kind: 'label', text: 'in two' }), { ok: true }); ok();
+  assert.strictEqual(G.eventLine(S, 'wt2', 'tb', 'select', 'zzz'), null); ok();
+  const line = JSON.parse(G.eventLine(S, 'wt2', 'tb', 'select', 'p2'));
+  assert.strictEqual(line.value, 'p2'); assert.strictEqual(G.snapshot(S, 'wt2').root.children[0].selected, 'p2'); ok();
+  assert.deepStrictEqual(add('root', { id: 'sp', kind: 'split', direction: 'column', ratio: 30 }), { ok: true }); ok();
+  assert.match(add('root', { id: 'sp2', kind: 'split', ratio: 5 }).error, /ratio must/); ok();
+  assert.match(add('root', { id: 'sp3', kind: 'split', direction: 'diag' }).error, /direction/); ok();
+  assert.deepStrictEqual(add('root', { id: 'mb', kind: 'menubar' }), { ok: true }); ok();
+  assert.match(add('mb', { id: 'mi0', kind: 'menuitem', text: 'x' }).error, /only be added to a menu/); ok();
+  assert.deepStrictEqual(add('mb', { id: 'mn', kind: 'menu', text: 'File' }), { ok: true }); ok();
+  assert.deepStrictEqual(add('mn', { id: 'mi', kind: 'menuitem', text: 'Save', keys: 'Ctrl+S' }), { ok: true }); ok();
+  assert.strictEqual(JSON.parse(G.eventLine(S, 'wt2', 'mi', 'click')).node, 'mi'); ok();
+}
+
 console.log('gui_bridge: ' + n + ' assertions passed');

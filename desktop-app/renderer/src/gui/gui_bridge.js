@@ -25,8 +25,18 @@
   var VERSION = 1, PREFIX = '@gui ';
   var MAX_LINE = 8192, MAX_WINDOWS = 4, MAX_NODES = 200, MAX_TEXT = 2000, MAX_ITEMS = 500, MAX_DEPTH = 8;
   var ID_RE = /^[A-Za-z0-9_-]{1,40}$/;
-  var OPS = ['open', 'add', 'set', 'remove', 'close', 'draw', 'image'];
-  var CONTAINERS = ['column', 'row', 'expander'];
+  var OPS = ['open', 'add', 'set', 'remove', 'close', 'draw', 'image', 'theme', 'shortcut', 'tone'];
+  // window-level look: palette (five named colors), font family, size, corner radius; shortcuts: "Ctrl+Shift+Alt+<key>" -> a name the
+  // program gets back as a "shortcut" event; tone: a short beep played by the page (nothing is stored)
+  var PALETTE_KEYS = ['bg', 'fg', 'accent', 'danger', 'muted'];
+  var FONTS = ['sans-serif', 'serif', 'monospace'];
+  var WAVES = ['sine', 'square', 'triangle', 'sawtooth'];
+  var SHORTCUT_RE = /^(Ctrl\+)?(Shift\+)?(Alt\+)?([A-Z0-9]|F([1-9]|1[0-2])|Enter|Esc|Space|Up|Down|Left|Right|Delete|Backspace|Tab)$/;
+  var MAX_SHORTCUTS = 40;
+  var CONTAINERS = ['column', 'row', 'expander', 'grid', 'scroll', 'tabs', 'tab', 'split', 'menubar', 'menu'];
+  // where a kind may be added: tab pages only inside tabs (and tabs hold only tab pages); menus only in a menubar, menu items only in a menu
+  var PARENT_OF = { tab: 'tabs', menu: 'menubar', menuitem: 'menu' };
+  var ONLY_CHILDREN = { tabs: ['tab'], menubar: ['menu'], menu: ['menuitem'] };
   var MAX_COLUMNS = 30, MAX_DRAW = 200, MAX_CANVAS = 1200, MAX_FPS = 60;
   var MAX_IMAGES = 16, MAX_IMAGE_BYTES = 256 * 1024;
   var COLOR_RE = /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
@@ -37,6 +47,18 @@
     column: { props: [] },
     row: { props: [] },
     expander: { props: ['text', 'expanded'], events: ['toggle'] },
+    // grid: children fill a table of `columns` equal columns, row by row; scroll: a column at most `height` pixels high that scrolls
+    grid: { props: ['columns'] },
+    scroll: { props: ['height'] },
+    // tabs: its children are tab pages (kind tab, text = the title); selected is the page's node id (the first page when empty); the user's click comes
+    // back as select with the page id. split: two or more children side by side (direction row) or stacked (column), the first one ratio percent wide.
+    // menubar > menu (text) > menuitem (text, keys = the shortcut hint shown beside it, e.g. Ctrl+S; click event)
+    tabs: { props: ['selected'], events: ['select'] },
+    tab: { props: ['text'] },
+    split: { props: ['direction', 'ratio'] },
+    menubar: { props: [] },
+    menu: { props: ['text'] },
+    menuitem: { props: ['text', 'keys', 'enabled'], events: ['click'] },
     label: { props: ['text'] },
     button: { props: ['text', 'enabled'], events: ['click'] },
     entry: { props: ['value', 'placeholder', 'enabled', 'secret'], events: ['input'] },
@@ -74,7 +96,7 @@
   // one prop, checked by its name; the same rules serve add (node props) and set
   function prop(kind, name, v) {
     switch (name) {
-      case 'text': case 'value': case 'placeholder': case 'lang': return text(v, name);
+      case 'text': case 'value': case 'placeholder': case 'lang': case 'keys': return text(v, name);
       case 'enabled': case 'checked': case 'visible': case 'secret': case 'expanded': return bool(v, name);
       case 'rows': return num(v, name, 1, 30);
       case 'max': return num(v, name, 0, 1e12);
@@ -89,6 +111,11 @@
   // progress takes a number for value; everything else with a value is text
   function propValue(kind, name, v) {
     if (kind === 'progress' && name === 'value') { return num(v, 'value', 0, 1e12); }
+    if (kind === 'grid' && name === 'columns') { return num(v, name, 1, 12); }
+    if (kind === 'split' && name === 'ratio') { return num(v, name, 10, 90); }
+    if (kind === 'split' && name === 'direction') { if (v !== 'row' && v !== 'column') { throw new Error('direction must be row or column'); } return v; }
+    if (kind === 'menuitem' && name === 'keys') { return text(v, name); }
+    if (kind === 'scroll' && name === 'height') { return num(v, name, 40, 1200); }
     if (kind === 'canvas' && (name === 'width' || name === 'height')) { return num(v, name, 1, MAX_CANVAS); }
     if (kind === 'canvas' && name === 'fps') { return num(v, name, 0, MAX_FPS); }
     if (kind === 'table' && name === 'columns') { return cellList(v, 'columns', 1, MAX_COLUMNS); }
@@ -199,12 +226,45 @@
         // resizable: the user can drag the window's corner; maximizable: a button fills the terminal's area (both off by default)
         var resizable = msg.resizable === undefined ? false : bool(msg.resizable, 'resizable');
         var maximizable = msg.maximizable === undefined ? false : bool(msg.maximizable, 'maximizable');
-        session.windows[wid] = { id: wid, title: title, width: width, resizable: resizable, maximizable: maximizable, nodes: { root: { id: 'root', kind: 'column', parent: null, children: [] } } };
+        session.windows[wid] = { id: wid, title: title, width: width, resizable: resizable, maximizable: maximizable, theme: {}, shortcuts: {}, nodes: { root: { id: 'root', kind: 'column', parent: null, children: [] } } };
         return { ok: true };
       }
       var win = session.windows[wid];
       if (!win) { return fail('window "' + wid + '" is not open'); }
       if (msg.op === 'close') { delete session.windows[wid]; return { ok: true }; }
+      if (msg.op === 'theme') {
+        // only the fields given change; a palette color not given keeps its value
+        var th = {};
+        if (msg.palette !== undefined) {
+          if (!isObj(msg.palette)) { return fail('palette must be an object'); }
+          th.palette = {};
+          Object.keys(msg.palette).forEach(function (k) {
+            if (PALETTE_KEYS.indexOf(k) < 0) { throw new Error('palette color "' + k + '" is not supported (use ' + PALETTE_KEYS.join(', ') + ')'); }
+            if (typeof msg.palette[k] !== 'string' || !COLOR_RE.test(msg.palette[k])) { throw new Error('palette.' + k + ' must be #rgb or #rrggbb'); }
+            th.palette[k] = msg.palette[k];
+          });
+        }
+        if (msg.font !== undefined) { if (FONTS.indexOf(msg.font) < 0) { return fail('font must be one of ' + FONTS.join(', ')); } th.font = msg.font; }
+        if (msg.size !== undefined) { th.size = num(msg.size, 'size', 10, 24); }
+        if (msg.radius !== undefined) { th.radius = num(msg.radius, 'radius', 0, 16); }
+        win.theme = Object.assign({}, win.theme, th, th.palette ? { palette: Object.assign({}, win.theme.palette || {}, th.palette) } : {});
+        return { ok: true };
+      }
+      if (msg.op === 'shortcut') {
+        if (typeof msg.keys !== 'string' || !SHORTCUT_RE.test(msg.keys)) { return fail('keys must look like Ctrl+S, Ctrl+Shift+Z, F5, Esc'); }
+        if (msg.name === null) { delete win.shortcuts[msg.keys]; return { ok: true }; }
+        var sname = id(msg.name, 'name');
+        if (!Object.prototype.hasOwnProperty.call(win.shortcuts, msg.keys) && Object.keys(win.shortcuts).length >= MAX_SHORTCUTS) { return fail('at most ' + MAX_SHORTCUTS + ' shortcuts'); }
+        win.shortcuts[msg.keys] = sname;
+        return { ok: true };
+      }
+      if (msg.op === 'tone') {
+        // validated and then played by the page; the bridge keeps nothing (the host reads the message)
+        num(msg.freq, 'freq', 40, 8000);
+        num(msg.ms, 'ms', 10, 2000);
+        if (msg.wave !== undefined && WAVES.indexOf(msg.wave) < 0) { return fail('wave must be one of ' + WAVES.join(', ')); }
+        return { ok: true };
+      }
       if (msg.op === 'add') {
         var parent = msg.parent === undefined ? 'root' : id(msg.parent, 'parent');
         var p = win.nodes[parent];
@@ -212,6 +272,8 @@
         if (CONTAINERS.indexOf(p.kind) < 0) { return fail('parent "' + parent + '" is a ' + p.kind + ', not a container'); }
         if (depthOf(win, parent) + 1 > MAX_DEPTH) { return fail('nesting deeper than ' + MAX_DEPTH); }
         var n = checkNode(msg.node, 'node');
+        if (PARENT_OF[n.kind] && p.kind !== PARENT_OF[n.kind]) { return fail('a ' + n.kind + ' can only be added to a ' + PARENT_OF[n.kind] + ', not to "' + parent + '" (a ' + p.kind + ')'); }
+        if (ONLY_CHILDREN[p.kind] && ONLY_CHILDREN[p.kind].indexOf(n.kind) < 0) { return fail('a ' + p.kind + ' only holds ' + ONLY_CHILDREN[p.kind].join(', ') + ', not ' + n.kind); }
         if (win.nodes[n.id]) { return fail('node "' + n.id + '" already exists in window "' + wid + '"'); }
         if (nodeCount(win) >= MAX_NODES) { return fail('at most ' + MAX_NODES + ' nodes per window'); }
         n.parent = parent;
@@ -267,8 +329,18 @@
     var win = session.windows[winId];
     var node = win && win.nodes[nodeId];
     if (!node) { return null; }
+    // a shortcut belongs to the window (node "root") and must be one the program registered
+    if (eventName === 'shortcut') {
+      if (nodeId !== 'root' || typeof value !== 'string' || Object.keys(win.shortcuts || {}).every(function (k) { return win.shortcuts[k] !== value; })) { return null; }
+      return JSON.stringify({ v: VERSION, event: 'shortcut', id: winId, node: 'root', value: value });
+    }
     var declared = KINDS[node.kind].events || [];
     if (declared.indexOf(eventName) < 0) { return null; }
+    // tabs: the click names a page of this tabs node; the bridge keeps it so a rebuild of the window shows the same page
+    if (node.kind === 'tabs' && eventName === 'select') {
+      if (typeof value !== 'string' || node.children.indexOf(value) < 0) { return null; }
+      node.selected = value;
+    }
     if ((eventName === 'key' || eventName === 'frame' || eventName === 'mouse' || eventName === 'wheel' || eventName === 'resize') && value === undefined) { return null; } // these always carry a value
     var ev = { v: VERSION, event: eventName, id: winId, node: nodeId };
     if (value !== undefined) {
@@ -323,7 +395,7 @@
       out.children = n.children.map(build);
       return out;
     }
-    return { id: win.id, title: win.title, width: win.width, resizable: win.resizable, maximizable: win.maximizable, root: build('root') };
+    return { id: win.id, title: win.title, width: win.width, resizable: win.resizable, maximizable: win.maximizable, theme: win.theme || {}, shortcuts: win.shortcuts || {}, root: build('root') };
   }
 
   // shell side: `gui wait <window-id> [VAR]` (the words after `gui`). Returns {ok, win, varName} or {ok:false, error}.
@@ -339,7 +411,7 @@
   }
 
   return {
-    VERSION: VERSION, PREFIX: PREFIX, KINDS: KINDS, LIMITS: { MAX_LINE: MAX_LINE, MAX_WINDOWS: MAX_WINDOWS, MAX_NODES: MAX_NODES, MAX_TEXT: MAX_TEXT, MAX_ITEMS: MAX_ITEMS, MAX_DEPTH: MAX_DEPTH },
+    VERSION: VERSION, PREFIX: PREFIX, KINDS: KINDS, OPS: OPS, PALETTE_KEYS: PALETTE_KEYS, LIMITS: { MAX_LINE: MAX_LINE, MAX_WINDOWS: MAX_WINDOWS, MAX_NODES: MAX_NODES, MAX_TEXT: MAX_TEXT, MAX_ITEMS: MAX_ITEMS, MAX_DEPTH: MAX_DEPTH },
     createSession: createSession, parseLine: parseLine, parseWait: parseWait, apply: apply, eventLine: eventLine, snapshot: snapshot
   };
 }));

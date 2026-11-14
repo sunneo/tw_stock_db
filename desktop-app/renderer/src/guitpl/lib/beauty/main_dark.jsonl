@@ -1,0 +1,5 @@
+{"kind":"meta","id":"beauty/main_dark","title":"深色美顏拍貼（簡化版）","keywords":["深色美顏","夜間美顏"],"extends":"beauty/main"}
+{"kind":"param","name":"name","default":"夜間美顏拍貼","ask":"視窗標題要寫什麼？"}
+{"kind":"require","module":"importlib","source":"builtin"}
+{"kind":"require","module":"os","source":"builtin"}
+{"kind":"style","palette":{"bg":"#1e1e1e","fg":"#f3e8ee","accent":"#f472b6","muted":"#6b7280"},"font":"monospace"}

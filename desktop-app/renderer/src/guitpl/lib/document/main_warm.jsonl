@@ -1,0 +1,5 @@
+{"kind":"meta","id":"document/main_warm","title":"暖色文件編輯","keywords":["暖色文件","護眼文件"],"extends":"document/main"}
+{"kind":"param","name":"title","default":"暖色文件編輯","ask":"視窗標題要寫什麼？"}
+{"kind":"require","module":"importlib","source":"builtin"}
+{"kind":"require","module":"os","source":"builtin"}
+{"kind":"style","palette":{"bg":"#fbf4e6","fg":"#3b2f20","accent":"#d9822b","danger":"#b91c1c","muted":"#a8946b"}}

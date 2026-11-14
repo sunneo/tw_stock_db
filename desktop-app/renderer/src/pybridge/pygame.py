@@ -25,7 +25,7 @@ Supported: display (set_mode, set_caption, flip, update, get_surface), draw (rec
 render), image (load: PNG, JPEG, GIF, WebP), transform (scale), event (get; QUIT, KEYDOWN, KEYUP, MOUSEMOTION, MOUSEBUTTONDOWN,
 MOUSEBUTTONUP, MOUSEWHEEL, VIDEORESIZE; set_mode(size, RESIZABLE) makes the window resizable and maximizable), key (get_pressed), mouse (get_pos, get_pressed), time (Clock, get_ticks, wait), and the K_ key constants below.
 The mouse positions are in the screen's pixels; button 1 is the left button, 2 the middle one, 3 the right one.
-Limits: the text size and font are the page's (the size argument is ignored); no sound; no offscreen Surface drawing (only the
+Limits: the text size and font are the page's (the size argument is ignored); sound is a beep (mixer.Sound(...).play() and mixer.music.play() call the page's tone; no sample files); no offscreen Surface drawing (only the
 screen, and a picture can be blitted onto it); line and circle widths other than 1 and 0 raise NotImplementedError; a frame has at
 most 200 commands; a picture is at most 256 KB and at most 16 per window, and image.load needs set_mode first (the picture is
 registered on the window's canvas). Pictures are drawn at their own size or the size transform.scale gives; their own alpha
@@ -449,6 +449,82 @@ def quit():
     _state["canvas"] = None
     _state["screen"] = None
 
+
+class _Sound(object):
+    """A sound is a short beep (the page plays tones, not sample files): the pitch comes from the file name or a given frequency, so the same
+    sound always has the same pitch. Sound("hit.wav").play() beeps; set_volume only keeps the number."""
+    def __init__(self, file=None, buffer=None, frequency=None, ms=150):
+        name = str(file if file is not None else (buffer if buffer is not None else "sound"))
+        self.frequency = float(frequency) if frequency is not None else 220.0 + (sum(ord(c) for c in name) * 31 % 660)
+        self.ms = int(ms)
+        self._volume = 1.0
+
+    def play(self, loops=0, maxtime=0, fade_ms=0):
+        win = _state["window"]
+        if win is not None and self._volume > 0:
+            ms = int(maxtime) if maxtime else self.ms
+            win.tone(self.frequency, max(10, min(2000, ms)))
+        return self
+
+    def stop(self):
+        return None
+
+    def set_volume(self, value):
+        self._volume = max(0.0, min(1.0, float(value)))
+
+    def get_volume(self):
+        return self._volume
+
+    def get_length(self):
+        return self.ms / 1000.0
+
+
+class _Music(object):
+    def __init__(self):
+        self._sound = None
+        self._volume = 1.0
+
+    def load(self, file):
+        self._sound = _Sound(file)
+
+    def play(self, loops=0, start=0.0, fade_ms=0):
+        if self._sound is None:
+            raise error("music.play before music.load")
+        self._sound.set_volume(self._volume)
+        self._sound.play()
+
+    def stop(self):
+        return None
+
+    def set_volume(self, value):
+        self._volume = max(0.0, min(1.0, float(value)))
+
+    def get_busy(self):
+        return False
+
+
+class _Mixer(object):
+    """pygame.mixer for the page: Sound(...).play() and music.play() turn into one short beep each (gui tone)."""
+    Sound = _Sound
+
+    def __init__(self):
+        self.music = _Music()
+        self._ready = False
+
+    def pre_init(self, *args, **kwargs):
+        return None
+
+    def init(self, *args, **kwargs):
+        self._ready = True
+
+    def quit(self):
+        self._ready = False
+
+    def get_init(self):
+        return (44100, -16, 2) if self._ready else None
+
+
+mixer = _Mixer()
 
 display = _Display()
 draw = _Draw()

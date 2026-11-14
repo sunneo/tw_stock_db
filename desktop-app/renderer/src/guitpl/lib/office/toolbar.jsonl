@@ -1,0 +1,3 @@
+{"kind":"meta","id":"office/toolbar","title":"待辦工具列（輸入、新增、清除已完成）","keywords":["待辦工具列","新增待辦","清除已完成"],"entry":"build"}
+{"kind":"require","module":"gui","source":"builtin"}
+{"kind":"layout","tree":[{"kind":"row","children":[{"id":"task","kind":"entry","value":""},{"id":"add","kind":"button","text":"新增"},{"id":"clear_done","kind":"button","text":"清除已完成"}]}]}

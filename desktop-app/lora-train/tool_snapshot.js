@@ -16,6 +16,7 @@ const REGISTER_METHOD = '_registerBuiltinAiTools';
 
 // 抽出類別內的一個方法（4 格縮排的成員宣告；收尾是獨占一行的 4 格「}」）
 function methodSource(src, name) {
+    src = src.replace(/\r\n/g, '\n'); // Windows 工作目錄是 CRLF，收尾比對以 LF 為準
     const re = new RegExp('\\n    (async )?' + name + '\\(');
     const m = re.exec(src); if (!m) throw new Error('找不到方法 ' + name);
     const endAt = src.indexOf('\n    }\n', m.index + 1);

@@ -1,0 +1,13 @@
+{"kind":"meta","id":"beauty/main","title":"美顏拍貼（簡化版）","keywords":["美顏","拍貼","濾鏡","貼紙","自拍"],"entry":"build","standalone":true}
+{"kind":"param","name":"name","default":"美顏拍貼","ask":"視窗標題要寫什麼？"}
+{"kind":"param","name":"strength","default":"50","ask":"美顏強度預設多少（0 到 100）？"}
+{"kind":"require","module":"gui","source":"builtin"}
+{"kind":"style","palette":{"bg":"#fff7fb","fg":"#3b1d2a","accent":"#e11d74","danger":"#dc2626","muted":"#a8899a"},"font":"sans-serif","size":14,"radius":8}
+{"kind":"layout","window":{"title":"{{name}}","width":560,"resizable":true},"tree":[{"kind":"column","children":[{"slot":"toolbar"},{"id":"edit_panel","kind":"column","children":[{"kind":"row","children":[{"id":"view","kind":"canvas","width":300,"height":300},{"kind":"column","children":[{"kind":"label","text":"濾鏡"},{"id":"filter_list","kind":"list","items":["原圖","柔焦","暖色","冷色","黑白"],"selected":"原圖"},{"kind":"label","text":"貼紙（可多選）"},{"id":"sticker_list","kind":"multilist","items":["星星","愛心","皇冠","貓"],"selected":[]}]}]},{"kind":"label","text":"美顏強度（0 到 100）"},{"kind":"row","children":[{"id":"strength_bar","kind":"progress","value":"{{strength}}","max":100},{"id":"strength_in","kind":"entry","value":"{{strength}}"}]},{"kind":"row","children":[{"id":"apply_btn","kind":"button","text":"套用"},{"id":"snap_btn","kind":"button","text":"拍照"}]}]},{"id":"result_panel","kind":"column","children":[{"id":"result_txt","kind":"label","text":"拍好了（簡化版：只示意，未存檔）"},{"id":"again_btn","kind":"button","text":"再拍一張"}]},{"slot":"statusbar"}]}]}
+{"kind":"slot","name":"toolbar","use":"beauty/toolbar","params":{"caption":"美顏工具"}}
+{"kind":"slot","name":"statusbar","use":"beauty/statusbar","params":{"hint":"選濾鏡與貼紙後按拍照"}}
+{"kind":"scene","id":"edit","title":"編輯中","note":"預覽、濾鏡、強度、貼紙","show":["edit_panel"],"hide":["result_panel"],"on":{"click:snap_btn":"result","shortcut:snap":"result"}}
+{"kind":"scene","id":"result","title":"已拍照","note":"只顯示完成訊息","show":["result_panel"],"hide":["edit_panel"],"on":{"click:again_btn":"edit"}}
+{"kind":"shortcut","keys":"Ctrl+P","do":"snap"}
+{"kind":"shortcut","keys":"Ctrl+Right","do":"next_filter"}
+{"kind":"shortcut","keys":"Ctrl+R","do":"redraw"}

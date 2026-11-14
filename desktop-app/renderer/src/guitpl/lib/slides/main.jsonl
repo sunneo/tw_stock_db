@@ -1,0 +1,13 @@
+{"kind":"meta","id":"slides/main","title":"投影片編輯器（清單、編輯、備忘稿）","keywords":["投影片","簡報","編輯器","備忘稿","放映"],"entry":"build","standalone":true}
+{"kind":"param","name":"title","default":"投影片編輯器","ask":"視窗標題要寫什麼？"}
+{"kind":"param","name":"deck_name","default":"我的簡報","ask":"簡報名稱要寫什麼？"}
+{"kind":"param","name":"first_title","default":"歡迎","ask":"第一張投影片的標題要寫什麼？"}
+{"kind":"require","module":"gui","source":"builtin"}
+{"kind":"style","palette":{"bg":"#ffffff","fg":"#1f2937","accent":"#2563eb","danger":"#dc2626","muted":"#9ca3af"},"font":"sans-serif","size":14,"radius":6}
+{"kind":"layout","window":{"title":"{{title}}","width":680,"resizable":true},"tree":[{"kind":"column","children":[{"slot":"toolbar"},{"kind":"row","children":[{"id":"slide_list","kind":"list","items":["1. {{first_title}}"],"selected":"1. {{first_title}}"},{"kind":"column","children":[{"id":"slide_title","kind":"entry","value":"{{first_title}}"},{"id":"slide_body","kind":"editor","value":"在這裡寫投影片內容。","lang":"text","rows":8},{"id":"present_view","kind":"label","text":""},{"id":"back","kind":"button","text":"返回編輯"}]}]},{"id":"notes_label","kind":"label","text":"備忘稿（只給講者看）"},{"id":"speaker_notes","kind":"textarea","value":"","rows":4,"placeholder":"講者要說的話"},{"slot":"statusbar"}]}]}
+{"kind":"slot","name":"toolbar","use":"slides/toolbar","params":{}}
+{"kind":"slot","name":"statusbar","use":"slides/statusbar","params":{"deck":"{{deck_name}}"}}
+{"kind":"scene","id":"edit","title":"編輯中","note":"左邊清單、中間編輯區、下方備忘稿","show":["slide_list","slide_title","slide_body","notes_label","speaker_notes"],"hide":["present_view","back"],"on":{"click:present":"present","shortcut:present":"present"}}
+{"kind":"scene","id":"present","title":"放映中","note":"只顯示這張投影片的標題與內容","show":["present_view","back"],"hide":["slide_list","slide_title","slide_body","notes_label","speaker_notes"],"on":{"click:back":"edit"}}
+{"kind":"shortcut","keys":"Ctrl+M","do":"new"}
+{"kind":"shortcut","keys":"F5","do":"present"}

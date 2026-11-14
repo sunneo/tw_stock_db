@@ -1,0 +1,12 @@
+{"kind":"meta","id":"media/main","title":"多媒體播放與編碼（簡化版）","keywords":["多媒體","影片","音訊","播放","編碼","解碼","格式"],"entry":"build","standalone":true}
+{"kind":"param","name":"title","default":"多媒體播放器","ask":"視窗標題要寫什麼？"}
+{"kind":"param","name":"bitrate","default":"1500","ask":"預設編碼位元率要設多少 kbps？"}
+{"kind":"require","module":"gui","source":"builtin"}
+{"kind":"style","palette":{"bg":"#ffffff","fg":"#1f2937","accent":"#2563eb","danger":"#dc2626","muted":"#6b7280"},"font":"sans-serif","size":14,"radius":6}
+{"kind":"layout","window":{"title":"{{title}}","width":520,"resizable":true},"tree":[{"kind":"column","children":[{"kind":"row","children":[{"kind":"column","children":[{"kind":"label","text":"播放清單"},{"id":"playlist","kind":"list","items":["片段 A（30 秒）","片段 B（45 秒）","片段 C（20 秒）"],"selected":"片段 A（30 秒）"}]},{"id":"screen","kind":"canvas","width":240,"height":135,"fps":10}]},{"id":"progress","kind":"progress","value":0,"max":100},{"slot":"transport"},{"kind":"row","children":[{"kind":"label","text":"格式"},{"id":"fmt","kind":"list","items":["MP4","WebM","MP3"],"selected":"MP4"},{"kind":"label","text":"位元率 kbps"},{"id":"bitrate","kind":"entry","value":"{{bitrate}}"},{"id":"encode","kind":"button","text":"編碼"}]},{"slot":"statusbar"}]}]}
+{"kind":"slot","name":"transport","use":"media/transport"}
+{"kind":"slot","name":"statusbar","use":"media/statusbar"}
+{"kind":"scene","id":"idle","title":"停止中","note":"按播放開始；清單可切換片段","show":["play"],"hide":["pause"],"on":{"click:play":"playing"}}
+{"kind":"scene","id":"playing","title":"播放中","note":"進度條與畫面隨時間前進","show":["pause"],"hide":["play"],"on":{"click:pause":"idle"}}
+{"kind":"shortcut","keys":"Space","do":"toggle"}
+{"kind":"shortcut","keys":"Ctrl+E","do":"encode"}

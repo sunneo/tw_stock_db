@@ -1,0 +1,12 @@
+{"kind":"meta","id":"web-design/main","title":"網頁版面設計器","keywords":["網頁","設計","HTML","版面","元件"],"entry":"build","standalone":true}
+{"kind":"param","name":"title","default":"網頁設計","ask":"視窗標題要寫什麼？"}
+{"kind":"param","name":"page_title","default":"我的網頁","ask":"匯出的網頁標題要寫什麼？"}
+{"kind":"require","module":"gui","source":"builtin"}
+{"kind":"style","palette":{"bg":"#ffffff","fg":"#1f2937","accent":"#2563eb","danger":"#dc2626","muted":"#6b7280"},"font":"sans-serif","size":14,"radius":6}
+{"kind":"layout","window":{"title":"{{title}}","width":600,"resizable":true},"tree":[{"kind":"column","children":[{"slot":"toolbar"},{"kind":"row","children":[{"id":"left","kind":"column","children":[{"id":"comp_list","kind":"list","items":[]},{"id":"apply","kind":"button","text":"套用屬性"}]},{"id":"right","kind":"column","children":[{"id":"preview","kind":"canvas","width":320,"height":200},{"id":"attr_text","kind":"entry","value":""},{"id":"attr_color","kind":"entry","value":""}]}]},{"id":"to_code","kind":"button","text":"看 HTML 程式碼"},{"id":"code","kind":"editor","value":"","lang":"html","rows":12},{"id":"to_visual","kind":"button","text":"回到設計"},{"slot":"statusbar"}]}]}
+{"kind":"slot","name":"toolbar","use":"web-design/toolbar","params":{"page_title":"{{page_title}}"}}
+{"kind":"slot","name":"statusbar","use":"web-design/statusbar"}
+{"kind":"scene","id":"visual","title":"設計","note":"元件列表、預覽與屬性","show":["left","right","to_code"],"hide":["code","to_visual"],"on":{"click:to_code":"code"}}
+{"kind":"scene","id":"code","title":"程式碼","note":"匯出後的 HTML，可以直接改","show":["code","to_visual"],"hide":["left","right","to_code"],"on":{"click:to_visual":"visual"}}
+{"kind":"shortcut","keys":"Ctrl+N","do":"add"}
+{"kind":"shortcut","keys":"Delete","do":"remove"}
