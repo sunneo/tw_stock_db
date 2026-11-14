@@ -96,11 +96,9 @@ app.whenReady().then(async () => {
     // 對焦第一個輸入框（真的滑鼠點擊），逐字輸入
     const entry = await ev('return window.__v.rect("input.gui-entry");');
     k.entry_found = !!entry;
-    if (entry) k.entry_rect = entry; if (entry) k.hit = await ev('const e = document.elementFromPoint(' + (entry.x + 10) + ',' + (entry.y + entry.height / 2) + '); return e ? e.tagName + "." + (e.className || "") + " <" + (e.parentElement ? e.parentElement.tagName + "." + e.parentElement.className + " " + (e.parentElement.parentElement ? e.parentElement.parentElement.className : "") : "") + "> " + (e.innerText || '').slice(0, 300) : "none"; ') + '|inner=' + (await ev('return innerWidth + "x" + innerHeight;'));
     if (entry) {
       main.show(); main.focus(); wc.focus();
       await click(entry.x + 10, entry.y + entry.height / 2);
-      k.focus_after_click = await ev('const a = document.activeElement; return (a ? a.tagName + "." + (a.className||"") : "none") + "|hasFocus=" + document.hasFocus();');
       await typeText('Hello');
       k.entry_value = await ev('const e = window.__v.W().querySelector("input.gui-entry"); return e && e.value;');
       // 真實快捷鍵：Ctrl+Enter（新增待辦）
