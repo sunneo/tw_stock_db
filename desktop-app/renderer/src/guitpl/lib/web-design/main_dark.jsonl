@@ -1,0 +1,5 @@
+{"kind":"meta","id":"web-design/main_dark","title":"深色網頁設計器","keywords":["深色","夜間","網頁設計"],"extends":"web-design/main"}
+{"kind":"param","name":"title","default":"夜間網頁設計","ask":"視窗標題要寫什麼？"}
+{"kind":"require","module":"importlib","source":"builtin"}
+{"kind":"require","module":"os","source":"builtin"}
+{"kind":"style","palette":{"bg":"#1e1e1e","fg":"#e5e7eb","accent":"#4aa3ff","danger":"#ef4444","muted":"#9ca3af"},"font":"monospace"}

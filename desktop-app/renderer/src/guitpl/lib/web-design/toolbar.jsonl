@@ -1,0 +1,6 @@
+{"kind":"meta","id":"web-design/toolbar","title":"元件工具列（新增、刪除、匯出）","keywords":["工具列","新增","刪除","匯出"],"entry":"build"}
+{"kind":"param","name":"page_title","default":"我的網頁","ask":"匯出的網頁標題要寫什麼？"}
+{"kind":"require","module":"gui","source":"builtin"}
+{"kind":"require","module":"html","source":"builtin"}
+{"kind":"require","module":"re","source":"builtin"}
+{"kind":"layout","tree":[{"kind":"row","children":[{"id":"add","kind":"button","text":"新增元件"},{"id":"remove","kind":"button","text":"刪除"},{"id":"export","kind":"button","text":"匯出 HTML"}]}]}

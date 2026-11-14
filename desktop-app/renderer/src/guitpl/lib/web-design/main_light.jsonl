@@ -1,0 +1,5 @@
+{"kind":"meta","id":"web-design/main_light","title":"淺色網頁設計器","keywords":["淺色","明亮","網頁設計"],"extends":"web-design/main"}
+{"kind":"param","name":"title","default":"淺色網頁設計","ask":"視窗標題要寫什麼？"}
+{"kind":"require","module":"importlib","source":"builtin"}
+{"kind":"require","module":"os","source":"builtin"}
+{"kind":"style","palette":{"bg":"#fafaf9","fg":"#111827","accent":"#7c3aed","danger":"#e11d48","muted":"#6b7280"}}
