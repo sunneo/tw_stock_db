@@ -1,42 +1,33 @@
 # 交接：圖形介面程式設計範本（GUI 範本線）
 
-> 這是「GUI 範本」這條工作線自己的交接起點頁，每次交接整份覆寫（舊版看 git 歷史）。管理者的總交接在 `docs/HANDOFF.md`，不要改那份。目前是第 2 份（交接 2 的接手者讀這份）。
+> 這是「GUI 範本」這條工作線自己的交接起點頁，每次交接整份覆寫（舊版看 git 歷史）。管理者的總交接在 `docs/HANDOFF.md`，不要改那份。目前是第 3 份（交接 3 的接手者讀這份）。
 
 ## 1. 開場提示（接手者收到的原文）
 
-請接續 `desktop-app/docs/HANDOFF.gui-templates.md`：完整讀完（含第 5 節使用者原話與第 4 節工作方式）並照著做。執行 low-context-long-run 技能（門檻 30%）：做第 3 節的下一個待辦；到門檻就把這份文件整份改寫成下一份交接、提交，再啟動自己的接手者（同一個資料夾、不開工作樹、模型 claude-sonnet-5-5、推理強度 medium、標題「GUI 範本 · 交接 N」）。第一則訊息用一行確認你讀過文件、要從哪個待辦開始。使用者原話的核心：「我想要線上ai跟離線ai在創作gui程式的時候有快速引導的範本，涵蓋layout，應用程式行為，配色，佈景主題，快捷鍵等framework與客製化」「如果找不到範本，就ai自己按照使用者需求設計」「在成品完成時，也可以產出各場景的storyboard與gui設計工作室，當使用者微調後，可以儲存為自己的gui設計的範本，並讓範本成為下次ai設計時可參考的案例」。
+請接續 `desktop-app/docs/HANDOFF.gui-templates.md`：完整讀完（含第 5 節使用者原話與第 4 節工作方式）並照著做。執行 low-context-long-run 技能（門檻 30%）：做第 3 節的下一個待辦（目前是待辦 4）；到門檻就把這份文件整份改寫成下一份交接、提交，再啟動自己的接手者（同一個資料夾、不開工作樹、模型 claude-sonnet-5-5、推理強度 medium、標題「GUI 範本 · 交接 N」）。第一則訊息用一行確認你讀過文件、要從哪個待辦開始。每完成一項待辦就跑動到的測試、嵌入、建置、`node --check`、提交並推送 origin desktop-app，再傳訊息給管理者 `local_49f6c57d-8f18-427b-a8f1-7b1d23efc5f5`（提交編號、做了什麼、哪些在模擬器實跑過）。不准執行發布腳本。使用者原話的核心：「我想要線上ai跟離線ai在創作gui程式的時候有快速引導的範本」「如果找不到範本，就ai自己按照使用者需求設計」「在成品完成時，也可以產出各場景的storyboard與gui設計工作室，當使用者微調後，可以儲存為自己的gui設計的範本，並讓範本成為下次ai設計時可參考的案例」「還沒做的先安排下去」。
 
 ## 2. 概況
 
-- **目標**：Python 模擬器已接上圖形介面（畫布、聲音、鍵盤滑鼠輸入）。要讓線上 AI 與離線 AI 寫圖形介面程式時，有分領域、逐步切割與詢問的設計範本（版面、應用程式行為、配色、佈景主題、快捷鍵；框架＋客製化），各步驟找範本、最後組合；找不到就依需求自行設計；成品完成時產出各場景分鏡（storyboard）與「圖形介面設計工作室」，使用者微調後可存成自己的範本，成為下次設計的參考案例。
-- **領域（使用者列的）**：辦公、文件、遊戲設計、專案設計、投影片軟體、進銷存、美顏拍貼、證件照、MIDI 設計、文字編輯器、網頁設計、影像處理、多媒體編碼解碼與播放。
-- **環境**：Windows，專案 `D:\Downloads\videos-嗨投資-desktop-app\desktop-app`，分支 `desktop-app`，與管理者共用這個資料夾（不開工作樹）。本機有 Python 3.10（`python -I`），沒有 `python3`。
-- **設計文件**：`desktop-app/DESIGN.gui-templates.md`——第 1 節現況、第 2 節設計（規格格式 2.2、範本檔格式 2.3、檢索 2.4、逐步詢問 2.5、自行設計 2.6、組合與驗收 2.7、分鏡 2.8、工作室與使用者範本 2.9、十三領域 2.10、要補的能力 2.11、目錄 2.12）、第 3 節實作現況與決定記錄。**接手前先讀第 2、3 節。**
-- **已完成並提交（分支 `desktop-app`，尚未推送）**：
-  - 待辦 1（現況調查）`5b62f7aaf`、待辦 2（設計）`d72241221`。
-  - 範本核心 `guitpl_core.js`（`a1d946aaf`）；組合器 `compose_core.js`＋假橋接空跑 `fake_run.py`（`2d7c9997a`）；範本庫載入與一條龍 `guitpl_run.js`＋`data/_common.json`＋`data/text-editor.json`（`e29c56254`）。全部在 `renderer/src/guitpl/`，各有測試檔（`node 檔名.test.js`）。
-  - Python 與橋接新能力：`set()`、textarea／checkbox／progress／listbox（`398dd2d09`）；`theme`／`shortcut`／`tone` 貫通橋接→畫面→主機→Python（`5c8b32997`、`f68dbcd85`）；`grid`／`scroll` 容器（`2bdf0cd24`）。
-  - 設計文件第 3 節實作現況 `90cb6a144`。
-- **待辦 3 未完成的部分**（2.11 清單）：`tabs`、`split`、`menubar`／`menu`、對話框（`message`／`confirm`／`pick_file`，走 `renderer/src/gui/zenity.js` 那條路）、pygame 相容層 `mixer`（最小：`mixer.Sound` 轉呼叫 `tone`）。
-- **未發布**：本線的改動都還沒發布（不准執行發布腳本，由管理者決定）。
-
-## 2.1 進度更新（2026-11-14 收尾；這條線在 15:00 額度重置時結束，不再交接，文件留著供之後重開）
-
-- 新框架（取代上面第 2 節的單一 JSON 流程）：`renderer/src/pybridge/guitpl.py`（一對 jsonl＋py）、`renderer/src/guitpl/lint.py`、`lib/` 十三個領域各一個 `main`＋兩個子元件＋兩到三個變體（共 70 個元件），格式見 `DESIGN.gui-templates.md` 第 4 節。
-- **模擬器實跑過**（真 Electron 終端機 python3、Worker 路徑，`scripts/eval/guitpl_emulator.eval.js`）：十三個領域的 `main` 全部：beauty、document、game、idphoto、image、inventory、media、midi、office、project、slides、text-editor、web-design；每個都開窗、點每個按鈕、關窗、沒有錯誤輸出。實跑中抓到並修掉：視窗配色在真 DOM 上丟錯（所有視窗打不開，已修並推送）、快捷鍵名稱不合法、畫面關閉後仍畫圖的競爭。
-- **只過本機檢查（lint＋假橋接）**：各領域的變體（`main_dark`、`main_light`、`main_warm`、`main_contrast`、`demo/notes_dark`）與子元件。
-- **未做**：`tabs`、`split`、選單列、對話框、pygame `mixer`；接到 AI 的宿主工具（`gui_template_find` 等，目前 AI 只能讀 `gui.py` 文件字串裡的 `guitpl.catalog`／`guitpl.run` 說明）；分鏡畫面、設計工作室、使用者範本存檔；「編譯成單一 Python 檔」；YAML 撰寫格式；舊 `data/*.json` 流程與 `guitpl_core.js` 的檢索改讀 jsonl（`jsonl_core.js` 已能讀 meta／param／scene）。
-- 已知限制：模擬器評估只點按鈕，沒有送輸入框文字、快捷鍵、畫布事件；圖像與影音領域是簡化版；發布由管理者決定（本線沒有執行發布腳本）。
+- **目標**：Python 模擬器已接上圖形介面（畫布、聲音、鍵盤滑鼠輸入）。讓線上與離線 AI 寫圖形介面程式時有分領域的範本（一個 jsonl 配一個 py，含引用、覆寫、相依檢查、外部呼叫、場景），隨想隨生：一句話生出可跑程式、只問真歧義、附分鏡、改一處只重生一處。所有設計都要能在 Python 模擬器達成。
+- **環境**：Windows，專案 `D:\Downloads\videos-嗨投資-desktop-app\desktop-app`，分支 `desktop-app`，與管理者共用這個資料夾（不開工作樹）。本機有 Python 3.10（`python -I`），沒有 `python3`。Node 16。
+- **設計文件**：`DESIGN.gui-templates.md`——第 4 節是 jsonl 格式；第 5 至 7 節是交接 2 新增的（接到 AI、分鏡與工作室與我的範本、元件補齊）。
+- **框架與範本**：`renderer/src/pybridge/guitpl.py`（執行模組）、`guitpl_studio.py`（設計工作室）、`renderer/src/guitpl/lint.py`、`renderer/src/guitpl/lib/` 十三領域 70 個元件；jsonl 檢索與組合在 `renderer/src/guitpl/jsonl_core.js`、`guitpl_ai.js`（嵌進 `floating-assistant.js` 的 GUITPL 區塊，由 `scripts/embed-code-ui.js` 的 `embedGuiTpl` 產生）。
+- **交接 2 已完成並推送（管理者已收到回報）**：
+  1. 接到 AI：宿主工具 `gui_template_find`、`gui_template_compose`（`floating-assistant.js` 的 `_guiTplRegisterTools`）；舊的單一 JSON 流程已刪除。提交 `0fddd0a76`、`c0cc8dd03`。模擬器實跑：`scripts/eval/guitpl_ai_tools.eval.js`。
+  2. 分鏡、設計工作室（`guitpl.studio`）、我的範本（`guitpl.save_template`、橋接操作 `gui.usertpl`、localStorage `fa_gui_user_templates`）；使用者範本進檢索並當參考案例。提交 `4c245c009`。實跑：`scripts/eval/guitpl_studio.eval.js`。
+  3. 元件補齊：`tabs`、`split`、選單列、對話框 `message`／`confirm`／`ask`、`pygame.mixer`。提交 `be483fad3`。實跑：`scripts/eval/gui_widgets.eval.js`。
+- **未發布**：不准執行發布腳本，由管理者決定。
 
 ## 3. 待辦（依序；管理者代決，全部做完才停）
 
-1. **接到 AI（最優先）**：宿主工具 `gui_template_find`／`gui_template_compose`（或同等名稱），讀 `lib/` 的 jsonl 元件；線上系統提示加短指引（找範本 → 逐步只問真歧義 → 組合 → 執行）；離線走食譜或 CoLU 字母選擇題；找不到範本時由模型照同一格式寫出 jsonl＋py 再交給同一個執行模組。舊的 `data/*.json` 流程與 `guitpl_core.js` 檢索改讀 jsonl，舊流程能刪就刪，不留兩套。
-2. **分鏡＋設計工作室＋使用者範本**：成品完成時產生各場景分鏡；設計工作室用 `gui.Window` 寫，可微調參數、配色、版面並即時重跑；「存成我的範本」寫成新的一對 jsonl＋py（覆寫行），桌面版存使用者資料區、網頁版存 `persistentStorage`；使用者範本進檢索並當下次設計的參考案例。
-3. **元件補齊**：`tabs`、`split`、選單列、對話框、pygame `mixer`（最小：轉呼叫 `tone`）；每個新操作走完整鏈（橋接、畫面、主機、`py_worker.js` 的 `GUI_OPS`、Python）。
-4. **編譯成單一 Python 檔**（引用與外部呼叫內嵌，輸出可獨立執行），時間夠再做 YAML 撰寫格式。
-5. **實機驗證**：模擬器評估補上輸入框文字、快捷鍵、畫布事件，以及各配色變體與子元件；寫驗證報告。
+1. ~~接到 AI~~ 已完成。
+2. ~~分鏡＋設計工作室＋使用者範本~~ 已完成。
+3. ~~元件補齊~~ 已完成。
+4. **編譯成單一 Python 檔（下一個要做）**：把一個範本（含 slot 引用、extends 覆寫、外部呼叫的 py）內嵌，輸出可獨立執行的程式（不需要 guitpl 與 jsonl 檔，只依賴 `gui`）。建議做法：`guitpl.compile(cid, params=None, roots=None) -> str`：載入元件樹，把每個元件的 layout、style、scenes、shortcuts 用 Python 字面值寫進輸出，各元件的 py 原始碼包成內嵌模組（`types.ModuleType` 加 `exec`，或轉成函式），再附一份精簡的執行器（建視窗、掛快捷鍵、場景切換、事件迴圈；可從 `guitpl.run` 抽出共用）。驗證：Python 測試用假橋接比對「編譯後的程式」與 `guitpl.run` 的操作序列相同；模擬器實跑（仿 `guitpl_ai_tools.eval.js`）編譯十三個領域的 main 並開窗點按鈕。加宿主工具選項（`gui_template_compose` 加 `standalone: true` 回單一檔程式）。時間夠再做 YAML 撰寫格式（jsonl 的等價寫法，載入時轉成同樣的紀錄）。
+5. **實機驗證**：模擬器評估補上輸入框文字、快捷鍵、畫布事件，以及各配色變體（`main_dark`、`main_light`、`main_warm`、`main_contrast`、`demo/notes_dark`）與子元件；把 `scripts/eval/guitpl_emulator.eval.js` 擴充（現在只點每個領域 main 的按鈕）；寫驗證報告（建議 `docs/` 下一頁，列出每個領域、每個變體的實跑結果與已知限制）。
+6. 全部做完：向管理者回報最終總結（不再交接），並在 `DESIGN.gui-templates.md` 補上第 8 節。
 
-規則：每完成一項就跑動到的測試、嵌入、建置、`node --check`、提交並推送 origin desktop-app，然後傳訊息給管理者 `local_49f6c57d-8f18-427b-a8f1-7b1d23efc5f5`（提交編號、做了什麼、哪些在模擬器實跑過）；不准執行發布腳本。共用檔（`floating-assistant.js`、嵌入、建置）只由主工作者改。
+規則：每完成一項就跑動到的測試、嵌入、建置、`node --check`、提交並推送 origin desktop-app，然後傳訊息給管理者 `local_49f6c57d-8f18-427b-a8f1-7b1d23efc5f5`；不准執行發布腳本。共用檔（`floating-assistant.js`、嵌入、建置）只由主工作者改。
 
 ## 4. 工作方式（照抄規則）
 
@@ -45,7 +36,7 @@
 - 使用者列了順序就做到底，不要做一半問「接著做哪個」。
 - **改嵌入區塊要改來源模組**：`renderer/src/floating-assistant.js` 裡嵌入的區塊會被 `node scripts/embed-code-ui.js` 覆蓋；改來源後跑 embed、再 `node build-assistant.js`、`node --check`。
 - **使用者 build 前會 `git checkout ./`**：做到一半也要先提交。每批改動：通過動到的測試才提交；只 `git add` 自己改的檔案。提交訊息結尾 `Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>`。
-- **可以 push 到 origin desktop-app；不准發布（`scripts/publish.sh`）**，發布由管理者決定。（交接 1 沒有推送；交接 2 在第一個穩定批次後推送一次。）
+- **可以 push 到 origin desktop-app；不准發布（`scripts/publish.sh`）**，發布由管理者決定。（每完成一項待辦就推送。）
 - 改程式用 Edit／Write 工具，**不要用 shell 內嵌改檔**（交接 1 又犯了一次：node -e 內嵌吃掉跳脫字元，最後改用 sed 單行才收拾）；修補或測試腳本先用 Write 寫成檔再執行。
 - 整套核心測試一天只跑一次，平常只跑動到的測試：`node renderer/src/gui/gui_bridge.test.js`、`gui_render.test.js`、`gui_host.test.js`、`py_worker.test.js`、`py_async.test.js`、`js_program.test.js`；`python -I renderer/src/gui/gui_py_test.py`、`gui_pygame_test.py`；`node renderer/src/guitpl/*.test.js`。
 - 不准擅自安裝套件、不准刪 `node_modules`、不准掃整台電腦、下載要先問管理者。
@@ -83,3 +74,11 @@
 - `git status` 常看到 `renderer/update-manifest.json`、`web-lazy/chunks/*.js`、`wiki/` 的變動：是建置副產物或別人的檔案，不要提交。
 - 本機 `settings.json` 設的自動壓縮 50% 目前看起來沒生效，所以要自己照門檻交接，不要等自動壓縮。
 - 每次補橋接能力都要完整走鏈（見待辦 1），漏掉 `py_worker.js` 的 `GUI_OPS` 會讓新操作在 Python 端被拒（`沒有這個 GUI 操作`）。
+- 工具呼叫裡的 shell 內嵌（heredoc）會把 Python／JavaScript 字串裡的反斜線加 n 變成真換行，寫出壞檔：含 `
+`、正規式的修補一律用 Write 寫成腳本檔（放 scratchpad）再執行，或用 Edit 工具。
+- 測試用的假橋接：`gui_py_test.py` 的 `fake_call` 每次呼叫都會消耗 `replies`，所以要模擬對話框等「開窗後才回事件」的情況，要像 `wait_only` 那樣只對 `gui.wait` 回覆。
+- `gui_host.js` 每次 add／set 都會重建視窗：評估檔裡不要長期持有視窗元素，每次用 `winByTitle` 重新查。
+- 終端機緩衝區是固定列數，用 `slice(before長度)` 取新輸出會取到空白；評估檔改用計數出現次數（`RUN-END` 前面還有提示字元，不能用 `^`）。
+- `lora-train/tool_snapshot.js` 的 `tool_catalog_equal.test.js` 在 CRLF 工作目錄下本來就失敗（找不到方法收尾），與本線無關。
+- 我的範本存在 localStorage（桌面版即使用者資料區）；評估檔開頭會清掉，不要在使用者真實環境裡亂清。
+- 啟動真 Electron 評估：`FA_DEBUG_EVAL_FILE=<絕對路徑> FA_DISABLE_MAIN_OVERLAY=1 FA_BROWSER_CONTROL_PORT=<17932 以上，不可用 17923> node_modules/electron/dist/electron.exe . --no-sandbox --disable-gpu --user-data-dir=<全新暫存資料夾>`，結果在標準輸出的 `[eval-file] result:`。
