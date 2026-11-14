@@ -271,3 +271,10 @@ renderer/src/guitpl/
 - 執行：`guitpl.run(代號, params, roots)` 直接載入並執行（主路徑）；「編譯成單一 Python 檔」尚未做。
 - 驗收：meta 標 `"standalone": true` 的元件（整個領域的範本）用 `lint.py` 以假橋接真的執行，每個按鈕、輸入、快捷鍵、場景都走過。**只在桌面 Python 跑過不算完成；模擬器內的實際執行還需要真實桌面版驗證（待辦）。**
 - 舊的單一 JSON 流程（`guitpl_core.js`、`compose_core.js`、`guitpl_run.js`、`data/*.json`）保留，檢索與逐步詢問（`findDomain`、`choiceMenu`）之後要改讀 jsonl 的 meta／param；`data/text-editor.json` 待轉成成對檔案。
+
+## 5. 接到 AI（2026-11-14，交接 2）
+
+- 舊的單一 JSON 流程（`guitpl_core.js`、`compose_core.js`、`guitpl_run.js`、`fake_run.py`、`data/*.json`）已刪除，只留一套：一個 jsonl 配一個 py。
+- `renderer/src/guitpl/guitpl_ai.js`（`FaGuiTplAI`）：`find` 檢索與逐步詢問（前兩名同分時回離線字母選擇題）、`compose` 把範本代號加參數組成 `guitpl.run(...)` 的程式；模型自寫的 jsonl（沒寫 py 補空的 `build`）會在程式開頭寫進暫存資料夾，與現成範本走同一個執行模組。
+- 宿主工具 `gui_template_find`、`gui_template_compose`（`floating-assistant.js` 的 `_guiTplRegisterTools`），範本來源是 `FA_PYBRIDGE_FILES` 的 `guitpl_lib/*.jsonl`，加上使用者範本（`_guiTplUserTemplates`，待辦 2 實作）。線上指引放在工具說明（`FaGuiTplAI.GUIDE`）。
+- 實跑：`scripts/eval/guitpl_ai_tools.eval.js`（真 Electron 模擬器；找範本、組合、開窗、關窗；模型自寫 jsonl 同樣）。
