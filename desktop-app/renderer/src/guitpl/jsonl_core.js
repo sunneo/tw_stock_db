@@ -32,7 +32,7 @@
     return {
       id: id, title: meta.title || id, keywords: meta.keywords || [], standalone: !!meta.standalone, extends: meta.extends || null,
       params: of('param').map(function (r) { return { name: r.name, ask: r.ask || '', default: r.default }; }),
-      scenes: of('scene').map(function (r) { return { id: r.id, title: r.title, note: r.note || '' }; }),
+      scenes: of('scene').map(function (r) { return { id: r.id, title: r.title, note: r.note || '', show: r.show || [], hide: r.hide || [], on: r.on || {} }; }),
       requires: of('require').map(function (r) { return r.module; }),
       slots: of('slot').map(function (r) { return { name: r.name, use: r.use }; })
     };

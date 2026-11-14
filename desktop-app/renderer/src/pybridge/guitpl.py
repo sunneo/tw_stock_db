@@ -73,7 +73,40 @@ def _subst(value, params):
 
 def default_roots():
     """The template library that ships with the app: the guitpl_lib folder next to this file (in the emulator, /fa_pybridge/guitpl_lib)."""
-    return [os.path.join(os.path.dirname(os.path.abspath(__file__)), "guitpl_lib")]
+    roots = [os.path.join(os.path.dirname(os.path.abspath(__file__)), "guitpl_lib")]
+    user = user_root()
+    if user:
+        roots.append(user)
+    return roots
+
+
+_USER_ROOT = [None, False]
+
+
+def user_root():
+    """The user's own templates (saved from the design studio) as a folder: the page keeps them, and they are written out once per run of the
+    program. None when there are none or this program has no page behind it (tests, plain python)."""
+    if _USER_ROOT[1]:
+        return _USER_ROOT[0]
+    _USER_ROOT[1] = True
+    try:
+        import gui
+        found = gui.usertpl("list") or {}
+    except Exception:  # no page behind this program: only the shipped templates
+        return None
+    if not isinstance(found, dict) or not found:
+        return None
+    import tempfile
+    d = tempfile.mkdtemp()
+    for cid, files in found.items():
+        for ext, key in ((".jsonl", "jsonl"), (".py", "py")):
+            if files.get(key):
+                p = os.path.join(d, *cid.split("/")) + ext
+                os.makedirs(os.path.dirname(p), exist_ok=True)
+                with open(p, "w", encoding="utf-8") as f:
+                    f.write(files[key])
+    _USER_ROOT[0] = d
+    return d
 
 
 class Library(object):
@@ -403,6 +436,7 @@ def _entry(comp):
 def prepare(cid, params=None, roots=None, available=None):
     """Load, bind parameters, and check. Returns the component (raises GuiTplError with every problem listed)."""
     lib = Library(roots)
+    _ACTIVE[0] = lib.roots
     comp = lib.load(cid)
     errors = check(comp, available)
     if errors:
@@ -441,13 +475,85 @@ def catalog(roots=None, query=None):
     return out
 
 
+def _calls_of(comp):
+    calls = {}
+    for c in comp["calls"]:
+        calls.setdefault(c["on"], []).append(c)
+    return calls
+
+
+_ACTIVE = [None]
+
+
+def base_build(cid):
+    """The build function of another component (for a customized copy that only changes looks: its .py hands the work to the base)."""
+    lib = Library(_ACTIVE[0])
+    pyfile = lib.path(cid, ".py")
+    if pyfile is None:
+        raise GuiTplError("找不到範本 %s 的 .py（找過：%s）" % (cid, "、".join(lib.roots)))
+    comp = lib.load(cid)
+    return _entry(comp)
+
+
+def storyboard_text(comp):
+    """The scenes as readable text: one block per scene, what it shows and hides, and where each event leads."""
+    lines = ["分鏡：%s（%s）" % (comp["meta"].get("title", comp["id"]), comp["id"])]
+    if not comp["scenes"]:
+        lines.append("（這個範本沒有場景，只有一個畫面）")
+    for i, s in enumerate(comp["scenes"], 1):
+        lines.append("%d. %s [%s]%s" % (i, s["title"], s["id"], "：" + s["note"] if s.get("note") else ""))
+        if s.get("show"):
+            lines.append("   顯示：" + "、".join(s["show"]))
+        if s.get("hide"):
+            lines.append("   隱藏：" + "、".join(s["hide"]))
+        for ev, target in (s.get("on") or {}).items():
+            lines.append("   %s → 換到 %s" % (ev, target))
+    return "\n".join(lines)
+
+
+def save_template(base_id, new_id, params=None, palette=None, font=None, size=None, radius=None, title=None, keywords=None, roots=None):
+    """Save a customized copy as the user's own template: a new jsonl+py pair under user/ that `extends` base_id and holds only the changed
+    lines (new defaults for params, a style line). The page keeps it (desktop: the user data area; web: persistent storage) and the next
+    catalog() lists it. Returns the new id."""
+    import gui
+    if not (isinstance(new_id, str) and new_id.startswith("user/") and len(new_id) > 5):
+        raise GuiTplError("我的範本的代號要寫成 user/名稱（小寫英數、底線、連字號）：%s" % (new_id,))
+    import re
+    if not re.match(r"^user(/[a-z0-9_][a-z0-9_\-]*)+$", new_id):
+        raise GuiTplError("我的範本的代號只能用小寫英數、底線、連字號與斜線：%s" % new_id)
+    comp = Library(roots).load(base_id)
+    given = dict(params or {})
+    for name in given:
+        if name not in comp["params"]:
+            raise GuiTplError("範本 %s 沒有參數 %s" % (base_id, name))
+    meta = {"kind": "meta", "id": new_id, "title": title or ("我的" + comp["meta"].get("title", base_id)),
+            "keywords": list(keywords or []) + list(comp["meta"].get("keywords", [])), "extends": base_id, "standalone": True}
+    records = [meta]
+    for name, value in given.items():
+        records.append({"kind": "param", "name": name, "default": value, "ask": comp["params"][name].get("ask", "")})
+    st = {"kind": "style"}
+    if palette:
+        st["palette"] = dict(palette)
+    for k, v in (("font", font), ("size", size), ("radius", radius)):
+        if v is not None:
+            st[k] = v
+    if len(st) > 1:
+        records.append(st)
+    jsonl = "\n".join(json.dumps(r, ensure_ascii=False) for r in records) + "\n"
+    py = ("# -*- coding: utf-8 -*-\n# 我的範本（由設計工作室存成）：只改外觀與預設值，行為交給 %s。\nimport guitpl\n\n\n"
+          "def build(win, spec, slots):\n    return guitpl.base_build(%s)(win, spec, slots)\n") % (base_id, json.dumps(base_id))
+    gui.usertpl("save", id=new_id, jsonl=jsonl, py=py)
+    _USER_ROOT[1] = False
+    return new_id
+
+
 def storyboard(comp):
     """The scenes of a component as plain data: [{"id","title","note","show","hide","on"}]."""
     return [{"id": s["id"], "title": s["title"], "note": s.get("note", ""), "show": s.get("show", []), "hide": s.get("hide", []),
              "on": s.get("on", {})} for s in comp["scenes"]]
 
 
-def run(cid, params=None, roots=None, available=None, loop=True, window=None):
+def run(cid, params=None, roots=None, available=None, loop=True, window=None, style=None):
     """Load a component, check it, build its window, wire shortcuts, scenes and handlers, and run the event loop.
     Returns {"win","ids","state","component","scene"} when the window closes (or at once with loop=False)."""
     comp = prepare(cid, params, roots, available)
@@ -457,7 +563,7 @@ def run(cid, params=None, roots=None, available=None, loop=True, window=None):
     if layout is None:
         raise GuiTplError("範本 %s 沒有 layout 紀錄，不能執行" % cid)
     layout = _subst(layout, values)
-    style = _subst(comp["style"], values)
+    style = _subst(Library._merge_style(comp["style"], style or {}), values)
     window_spec = layout.get("window", {})
     win = window or gui.Window(window_spec.get("title", comp["meta"].get("title", cid)), width=window_spec.get("width", 360),
                                resizable=bool(window_spec.get("resizable", False)), maximizable=bool(window_spec.get("maximizable", False)))
@@ -496,11 +602,10 @@ def run(cid, params=None, roots=None, available=None, loop=True, window=None):
     if scenes:
         ctx.goto(scenes[0]["id"])
     if not loop:
-        return {"win": win, "ids": ids, "state": state, "component": comp, "scene": ctx.scene, "ctx": ctx, "handlers": handlers}
+        return {"win": win, "ids": ids, "state": state, "component": comp, "scene": ctx.scene, "ctx": ctx, "handlers": handlers,
+                "calls": _calls_of(comp), "by_id": {v: k for k, v in ids.items()}}
     by_id = {v: k for k, v in ids.items()}
-    calls = {}
-    for c in comp["calls"]:
-        calls.setdefault(c["on"], []).append(c)
+    calls = _calls_of(comp)
     while ctx.running:
         ev = win.poll()
         if ev is None:
@@ -546,3 +651,10 @@ def _dispatch(ctx, comp, key, handlers, calls):
             target(ctx, **c.get("args", {}))
         except Exception as e:  # 外部程式出錯不能讓整個程式掛掉
             ctx.error("外部呼叫 %s:%s 出錯：%s: %s" % (c["file"], c["function"], type(e).__name__, e))
+
+
+def studio(cid, params=None, roots=None, window=None):
+    """The design studio (a gui.Window): tweak a template's params, colors, font and size, preview it, see its storyboard, save it as
+    "my template" (user/<name>). See guitpl_studio.py."""
+    import guitpl_studio
+    return guitpl_studio.studio(cid, params, roots, window)

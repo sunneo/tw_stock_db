@@ -137,7 +137,7 @@
   ].join('\n');
 
   // gui.* 橋接操作（gui.py 呼叫的名字，去掉 gui. 前綴）。與 gui_bridge.js 的 OPS 對應，另外 poll／wait／image 由頁面處理。
-  var GUI_OPS = ['open', 'add', 'set', 'remove', 'close', 'draw', 'image', 'theme', 'shortcut', 'tone', 'poll', 'wait'];
+  var GUI_OPS = ['open', 'add', 'set', 'remove', 'close', 'draw', 'image', 'theme', 'shortcut', 'tone', 'usertpl', 'poll', 'wait'];
 
   // 把 gui.py 送來的參數轉成 "@gui" 協定訊息（v:1 + op + 其餘欄位，欄位名與 gui.py 一致）
   function guiMessage(op, args) {

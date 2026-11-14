@@ -235,3 +235,9 @@ class Window(object):
         if not self.closed:
             self.closed = True
             fa_bridge.call("gui.close", {"id": self.id})
+
+
+def usertpl(action, id=None, jsonl=None, py=None):
+    """The user's own GUI templates kept by the page. "list" -> {id: {"jsonl", "py"}}; "save" stores one pair (id must be user/...);
+    "delete" removes one. Used by guitpl (catalog, run) and the design studio; there is no page behind a plain python run (it raises)."""
+    return fa_bridge.call("gui.usertpl", {"action": str(action), "id": id, "jsonl": jsonl, "py": py})

@@ -22,8 +22,8 @@
    "names": [
     "FA_PYBRIDGE_FILES"
    ],
-   "size": 318559,
-   "md5": "e4a4435f900d923720212cec4e50f084"
+   "size": 319714,
+   "md5": "221132b39017bf8afeaba44f092f27d5"
   },
   "aidocview": {
    "file": "chunks/aidocview.js",
@@ -175,6 +175,16 @@
    ],
    "size": 22892,
    "md5": "b0a50dd92e88d423c255f57f7907c125"
+  },
+  "guitpl": {
+   "file": "chunks/guitpl.js",
+   "names": [
+    "FaGuiTplMods",
+    "FaGuiTplIndex",
+    "FaGuiTplAI"
+   ],
+   "size": 6476,
+   "md5": "7813bbfce04b303085e5db456b98b246"
   },
   "langcolu": {
    "file": "chunks/langcolu.js",
@@ -1810,7 +1820,7 @@
   }
  },
  "core": {
-  "size": 5788710,
-  "md5": "62f47195c5ea651caae5c05a3ededd61"
+  "size": 5790762,
+  "md5": "b5fa65f31fd7c24d39032631108583ec"
  }
 }

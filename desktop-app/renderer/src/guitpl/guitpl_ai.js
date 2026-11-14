@@ -24,19 +24,38 @@
     var limit = (opts && opts.limit) || 5;
     var idx = Index.buildIndex(files || {});
     var hits = Index.search(idx, query, limit);
+    var userIds = (opts && opts.userIds) || [];
+    // 使用者自己存的範本加一分（同分時排前面），並標出來
+    hits.forEach(function (h) { if (userIds.indexOf(h.id) >= 0) { h.score += 1; h.user = true; } });
+    hits.sort(function (a, b) { return b.score - a.score || (a.id < b.id ? -1 : 1); });
     var byId = {};
     idx.entries.forEach(function (e) { byId[e.id] = e; });
     var candidates = hits.map(function (h) {
       var e = byId[h.id];
-      return { id: e.id, title: e.title, score: h.score, questions: Index.questions(e), scenes: e.scenes, requires: e.requires };
+      return { id: e.id, title: e.title, score: h.score, user: !!h.user, questions: Index.questions(e), scenes: e.scenes, requires: e.requires };
     });
     if (!candidates.length) {
-      return { status: 'none', candidates: [], hint: '沒有現成範本：照 gui_template_compose 的 jsonl／py 格式自己寫一份，交給同一個執行模組。可參考的範本：' + idx.entries.slice(0, 8).map(function (e) { return e.id; }).join('、') };
+      // 沒有現成的：把使用者自己存過的範本全文當參考案例給模型（照同一格式寫新的）
+      var refs = userIds.slice(0, 2).map(function (id) { return { id: id, jsonl: files[id] }; }).filter(function (r) { return r.jsonl; });
+      return { status: 'none', candidates: [], references: refs, hint: '沒有現成範本：照 gui_template_compose 的 jsonl／py 格式自己寫一份，交給同一個執行模組。可參考的範本：' + idx.entries.slice(0, 8).map(function (e) { return e.id; }).join('、') };
     }
     var tied = candidates.length > 1 && candidates[0].score - candidates[1].score < 1;
     var out = { status: tied ? 'choose' : 'ok', candidates: candidates, hint: tied ? '前兩名分數相同，請使用者用字母選一個' : '只問 questions 裡真正有歧義的；使用者沒說的用 default' };
     if (tied) { out.menu = menu(candidates.filter(function (c) { return c.score === candidates[0].score; }).slice(0, LETTERS.length)); }
     return out;
+  }
+
+  // 各場景分鏡（文字）：每個場景顯示與隱藏哪些節點、哪個事件換到哪個場景
+  function storyboard(summary) {
+    var lines = ['分鏡：' + summary.title + '（' + summary.id + '）'];
+    if (!summary.scenes.length) { lines.push('（這個範本沒有場景，只有一個畫面）'); }
+    summary.scenes.forEach(function (s, i) {
+      lines.push((i + 1) + '. ' + s.title + ' [' + s.id + ']' + (s.note ? '：' + s.note : ''));
+      if (s.show && s.show.length) { lines.push('   顯示：' + s.show.join('、')); }
+      if (s.hide && s.hide.length) { lines.push('   隱藏：' + s.hide.join('、')); }
+      Object.keys(s.on || {}).forEach(function (ev) { lines.push('   ' + ev + ' → 換到 ' + s.on[ev]); });
+    });
+    return lines.join('\n');
   }
 
   function menu(candidates) {
@@ -101,8 +120,8 @@
     }
     var call = 'guitpl.run(' + JSON.stringify(id) + ', params=json.loads(' + JSON.stringify(JSON.stringify(given)) + ')' + (written.length ? ', roots=[_d] + guitpl.default_roots()' : '') + ')';
     lines.push(call);
-    return { ok: true, id: id, code: lines.join('\n') + '\n', scenes: summary.scenes, defaulted: defaulted, errors: [], custom: custom };
+    return { ok: true, id: id, code: lines.join('\n') + '\n', scenes: summary.scenes, storyboard: storyboard(summary), defaulted: defaulted, errors: [], custom: custom };
   }
 
-  return { find: find, compose: compose, letterToId: letterToId, menu: menu, GUIDE: GUIDE };
+  return { find: find, compose: compose, storyboard: storyboard, letterToId: letterToId, menu: menu, GUIDE: GUIDE };
 }));

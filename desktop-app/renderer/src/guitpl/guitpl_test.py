@@ -11,15 +11,32 @@ import types
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, '..', 'pybridge'))
 
+usertpl_store = {}
+
+
+def usertpl_op(args):
+    if args['action'] == 'list':
+        return dict(usertpl_store)
+    if args['action'] == 'save':
+        usertpl_store[args['id']] = {'jsonl': args['jsonl'], 'py': args['py']}
+    return None
+
+
 ops = []
 pending = []
 
 
 def fake_call(op, args=None, timeout=240.0):
     ops.append((op, args))
+    if op == 'gui.usertpl':
+        return usertpl_op(args)
     if op in ('gui.wait', 'gui.poll'):
         if pending:
             ev = dict(pending.pop(0))
+            if '_text' in ev:  # a click on the button whose text is this (looked up in the nodes added so far)
+                want = ev.pop('_text')
+                ev['node'] = [o[1]['node']['id'] for o in ops if o[0] == 'gui.add' and o[1]['node'].get('text') == want][-1]
+            ev.setdefault('event', 'click')
             ev.setdefault('v', 1)
             ev.setdefault('id', args['id'])
             ev.setdefault('node', 'root')
@@ -203,6 +220,46 @@ found = guitpl.catalog([LIB], query='我想做一個筆記')
 check('catalog query', found and found[0]['id'] == 'demo/notes')
 check('catalog query no match', guitpl.catalog([LIB], query='完全不相干xyz') == [])
 check('default roots', guitpl.default_roots()[0].endswith('guitpl_lib'))
+
+# 6. 我的範本與設計工作室
+check('user_root none at first', guitpl.user_root() is None)
+guitpl._USER_ROOT[1] = False
+new_id = guitpl.save_template('demo/notes', 'user/my_notes', params={'title': '我的筆記本'}, palette={'bg': '#101010'}, roots=[LIB])
+check('saved id', new_id == 'user/my_notes' and 'user/my_notes' in usertpl_store)
+check('saved jsonl extends base', '"extends": "demo/notes"' in usertpl_store['user/my_notes']['jsonl'] and '#101010' in usertpl_store['user/my_notes']['jsonl'])
+check('bad user id', raises(lambda: guitpl.save_template('demo/notes', 'demo/x', roots=[LIB]), 'user/'))
+check('unknown param on save', raises(lambda: guitpl.save_template('demo/notes', 'user/x', params={'zz': 1}, roots=[LIB]), '沒有參數'))
+guitpl._USER_ROOT[1] = False
+real_default_roots = guitpl.default_roots
+guitpl.default_roots = lambda: [LIB] + [u for u in [guitpl.user_root()] if u]  # the shipped lib is a sibling folder only in the emulator
+roots = guitpl.default_roots()
+check('default roots include the user folder', len(roots) == 2 and os.path.isfile(os.path.join(roots[1], 'user', 'my_notes.jsonl')))
+cat2 = guitpl.catalog()
+mine = [e for e in cat2 if e['id'] == 'user/my_notes']
+check('catalog lists my template', mine and mine[0]['params'][0]['default'] == '我的筆記本')
+ops.clear()
+pending[:] = [{'event': 'click', 'node': 'x'}]
+r3 = guitpl.run('user/my_notes', roots=roots, loop=False)
+check('my template runs through the base build', ops[0][1]['title'] == '我的筆記本' and any(o[0] == 'gui.theme' and o[1]['palette']['bg'] == '#101010' for o in ops))
+check('storyboard text', '分鏡：' in guitpl.storyboard_text(r3['component']) and '換到 help' in guitpl.storyboard_text(r3['component']))
+pending.clear()
+
+# the studio: preview, storyboard, save, close
+usertpl_store.clear()
+guitpl._USER_ROOT[1] = False
+ops.clear()
+pending[:] = [{'_text': '預覽'}, {'_text': '分鏡'}, {'_text': '存成我的範本'}]
+guitpl.studio('demo/notes', roots=[LIB])
+check('studio opened a preview window', sum(1 for o in ops if o[0] == 'gui.open') == 2)
+check('studio saved nothing changed as a plain extension', 'user/my_notes' in usertpl_store)
+check('studio showed the storyboard', any(o[0] == 'gui.set' and '分鏡：' in str(o[1]['props'].get('value', '')) for o in ops))
+check('studio status after save', any(o[0] == 'gui.set' and '已存成我的範本' in str(o[1]['props'].get('text', '')) for o in ops))
+usertpl_store.clear()
+guitpl._USER_ROOT[1] = False
+ops.clear()
+pending[:] = []
+guitpl.studio('demo/notes', roots=[LIB])  # closes at once
+check('studio closes cleanly', ops[-1][0] in ('gui.close', 'gui.poll'))
 
 if failures:
     print('%d failure(s)' % len(failures))
