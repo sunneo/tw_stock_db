@@ -131,3 +131,11 @@
 - **單元測試**：`gui_bridge`（133）、`gui_render`（104）、`gui_host`（42）、`py_worker`、`py_async`、`js_program`、`gui_py_test`（52）、`gui_pygame_test`、`guitpl_test`、`document_test`（25）、`guitpl_ai`、`jsonl_core`、`yaml_core`；lint 71 個元件 0 個有問題（含新規則：主範本要 resizable、有 height、有 grow）。
 - **未重跑**：`guitpl_verify.eval.js`（43 個範本逐一送事件）因為第一次啟動被自動更新視窗擋住沒有結果，之後沒有再跑；`native_driver.js` 的鍵盤段仍有舊的遮罩問題（用 `FA_UPDATE_BASE` 繞過應可解，未驗證）。
 - **已知限制**：游標位置只在鍵盤放開、滑鼠放開、取得或失去焦點時回報；編輯器沒有自動換行；`prose` 模式為了不讓游標與上色層錯位，上色不用粗體與斜體（只用顏色）；選單下拉在點外面時不會自動收起。
+
+
+## 2026-11-15 管理者回饋修正驗證（預覽、自動換行、範例程式、重跑）
+
+- **修好的點**：（1）「插入的標題黏在同一行」：驅動程式原本用字元事件打 `\n`，真鍵盤並沒有換行，所以 `## abc` 跟前一行黏在一起，是驅動的問題不是範本；改成真的 Return 鍵後，最後一行確實是獨立的 `## abc`（`typed.own_line: true`），插入段落在函式裡本來就會前後各留一個空行。（2）文件範本新增「預覽」鍵（Ctrl+E）：編輯與預覽切換，預覽用新的唯讀 `markdown` 元件把標題、粗體、清單畫成排版後的樣子；真桌面版量到預覽有 1 個一級標題、2 個二級標題，一級標題字級 29.9 像素（`k.preview`），截圖 `docs/gui-templates-shots/document_preview.png`。（3）文字編輯器開窗就帶一段 Python 範例，上色、多行行號、捲軸都看得到（`text-editor_light.png`、`text-editor_dark.png`）。（4）編輯器新增 `wrap`：文件預設開、程式編輯器預設關，文字編輯器工具列有「自動換行」勾選。
+- **截圖驅動**：跑一次，26 張全部成功、非空白，沒有 Traceback 或 [guitpl] 錯誤；鍵盤與滑鼠檢查全部通過（打字保持焦點、插入段落、點大綱跳轉）。預覽範例文件裡沒有粗體與清單所以量到 0 個，粗體與清單的排版由 `gui_render` 單元測試覆蓋。
+- **全範本事件驗證 `guitpl_verify.eval.js`**：跑了兩次。第一次 44 個完整範本有 6 個失敗（idphoto、image 的 main 與兩個配色變體），原因是「開啟照片／圖片」按鈕叫出系統檔案選擇視窗，程式等人選檔，自動化無法回答，所以視窗關了程式也沒結束；不是版面改版造成的程式錯誤。驅動程式改成略過這兩個按鈕並記錄（`skipped_file_dialog`）後第二次：44 個完整範本、28 個子元件全部通過（沒有 Traceback、沒有 [guitpl] 錯誤、程式都正常結束）。**已知限制**：檔案選擇視窗的流程沒有被自動驗證。
+- **單元測試**：`gui_bridge` 137、`gui_render` 112、`gui_host` 42、`gui_py_test` 54、`document_test` 28、`guitpl_test`；lint 71 個元件 0 個有問題。

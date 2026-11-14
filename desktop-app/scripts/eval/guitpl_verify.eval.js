@@ -91,8 +91,14 @@ for (const id of entries) {
   }
   // 按鈕
   let clicked = 0;
-  for (const b of Array.from(w() ? w().querySelectorAll('.gui-button') : [])) { if (document.body.contains(b)) { b.click(); clicked++; await wait(150); } }
-  r.clicked = clicked;
+  // 「開啟照片／圖片」會叫出系統檔案選擇視窗，程式要等人選檔，自動化沒辦法回答，所以略過並記下來（已知限制）
+  let skipped = 0;
+  for (const b of Array.from(w() ? w().querySelectorAll('.gui-button') : [])) {
+    if (!document.body.contains(b)) continue;
+    if (/^\s*(\S\s)?開啟(照片|圖片)/.test(b.textContent || '')) { skipped++; continue; }
+    b.click(); clicked++; await wait(150);
+  }
+  r.clicked = clicked; if (skipped) { r.skipped_file_dialog = skipped; }
   await wait(300);
   r.changed = winText(firstWin()) !== before;
   const f = await h.finish();

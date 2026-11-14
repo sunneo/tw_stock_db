@@ -30,8 +30,8 @@
     900,
     620
    ],
-   "colors": 262,
-   "mean": 252,
+   "colors": 762,
+   "mean": 249,
    "not_blank": true,
    "closed": true
   },
@@ -65,8 +65,8 @@
     900,
     620
    ],
-   "colors": 241,
-   "mean": 33,
+   "colors": 650,
+   "mean": 35,
    "not_blank": true,
    "closed": true
   },
@@ -170,7 +170,7 @@
     960,
     700
    ],
-   "colors": 407,
+   "colors": 411,
    "mean": 250,
    "not_blank": true,
    "closed": true
@@ -205,7 +205,7 @@
     960,
     700
    ],
-   "colors": 343,
+   "colors": 342,
    "mean": 35,
    "not_blank": true,
    "closed": true
@@ -934,19 +934,21 @@
   },
   "editor_found": true,
   "typed": {
-   "value_tail": "節。## abc",
+   "value_tail": "\n\n## abc",
    "focused": true,
    "same_node": true,
-   "grew": true
+   "grew": true,
+   "own_line": true
   },
   "after_status": {
    "still_focused": true,
    "count_label": [
-    "90 字"
+    "92 字"
    ],
    "outline": [
     "未命名文件",
-    "  第一節"
+    "  第一節",
+    "  abc"
    ]
   },
   "insert": {
@@ -964,6 +966,14 @@
    "selected": "## 第一節",
    "is_heading": true,
    "focused": true
+  },
+  "preview": {
+   "shown": true,
+   "h1": 1,
+   "h2": 2,
+   "strong": 0,
+   "li": 0,
+   "h1_font": "29.925px"
   },
   "closed": true
  },
