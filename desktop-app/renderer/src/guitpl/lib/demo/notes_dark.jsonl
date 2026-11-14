@@ -1,0 +1,5 @@
+{"kind":"meta","id":"demo/notes_dark","title":"深色筆記","keywords":["深色筆記"],"extends":"demo/notes"}
+{"kind":"param","name":"title","default":"夜間筆記","ask":"視窗標題要寫什麼？"}
+{"kind":"require","module":"importlib","source":"builtin"}
+{"kind":"require","module":"os","source":"builtin"}
+{"kind":"style","palette":{"bg":"#1e1e1e","fg":"#dddddd","accent":"#4aa3ff"},"font":"monospace"}

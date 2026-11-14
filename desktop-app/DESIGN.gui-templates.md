@@ -3,6 +3,18 @@
 > 日期：2026-11-14。使用者原話見 `docs/HANDOFF.gui-templates.md` 第 5 節。
 > 狀態：第 1 節（現況）與第 2 節（設計）已完成；待辦 3 起為實作。行號是 2026-11-14 在分支 `desktop-app` 讀到的，`floating-assistant.js` 很大且常改，行號只當入口，請用字串再搜。
 
+## 0. 設計原則（使用者最高目標，取捨時照它）
+
+使用者原話（2026-11-14）：「我的理想是把概念上的「what you think is what you build」「gui應用程式就像自來水一樣，隨想隨生」」
+
+1. **一句話就能生出可跑的程式**：預設值要完整；逐步詢問只問真正有歧義的，其餘直接套範本先生出來，生完再讓使用者在設計工作室微調。不做長問卷。
+2. **速度快**：組合範本這一步全由程式完成（離線、弱模型也能做）；模型只負責選範本與填內容（參數）。
+3. **想的和做的對得上**：每次生成都附分鏡，使用者馬上看出哪裡不符；改一處只重生那一處（範本是一對一對的小元件，重生範圍就是被改的那個元件）。
+4. **一對檔案**：最小單位是 `<名稱>.jsonl` 加同名 `<名稱>.py`；客製化＝加行或覆寫行；超出範圍的客製化走外部呼叫（參考另一個 Python 檔的函式）。見第 4 節。
+5. **所有設計都要能在 Python 模擬器裡跑**，套件相依性寫在每個範本檔的 `require` 紀錄裡；只在一般桌面 Python 跑過的不算完成。
+
+（第 2 節是 2026-11-14 早先寫的第一版設計，用單一 JSON 規格；第 4 節的成對檔案格式取代它的 2.2、2.3，其餘（檢索、詢問、分鏡、工作室）仍有效。）
+
 ## 1. 現況（唯讀調查）
 
 ### 1.1 Python 端圖形介面能做什麼、缺什麼
@@ -244,3 +256,18 @@ renderer/src/guitpl/
 - `tone` 用頁面的音訊合成，頁面不能播放時靜默，不讓程式失敗。
 - 事件迴圈：只有 click 與 shortcut 用 `wait`；有 input／change／select／toggle／cell／frame／key／mouse 就改用 `poll`（`wait` 只回傳按鈕、快捷鍵、關閉）。
 - 組合器對不支援的節點種類或屬性直接報錯，不產生壞程式。
+
+## 4. 成對檔案格式與框架（2026-11-14 取代 2.2、2.3 的單一 JSON）
+
+使用者原話：「我希望最核心的元件跟描述都是一個jsonl對一個python，達到最高的範本化與客製化」「所有的設計都要可以在python emulator達成，所以連套件相依性都是描述在每個範本檔裡面」。
+
+**理由**：JSONL 每行一筆紀錄，Python 逐行 `json.loads` 就能讀，不需要額外套件（模擬器裡不保證有 YAML 套件）；一行一筆讓「客製化＝加行或覆寫行」成立，使用者範本只寫幾行；同名的 `.py` 是元件的核心，版面、配色、分鏡都是交給它的資料。YAML 可以之後當撰寫格式、轉成 JSONL。
+
+- 實作：`renderer/src/pybridge/guitpl.py`（載入、引用解析含循環偵測、覆寫、相依收集與檢查、執行、外部呼叫、場景）；檢查工具 `renderer/src/guitpl/lint.py`；測試 `renderer/src/guitpl/guitpl_test.py`；範例 `renderer/src/guitpl/lib/`（`common/toolbar_basic`、`demo/notes`、`demo/notes_dark`、外部呼叫範例 `demo/ext_export.py`）。格式說明在 `guitpl.py` 開頭的文件字串（紀錄種類：meta、param、style、layout、slot、scene、shortcut、call、require）。
+- 一個元件 = `<名稱>.jsonl` ＋ 同名 `<名稱>.py`，代號是相對於範本根目錄的路徑（`office/toolbar_basic`）。進入函式 `build(win, spec, slots)` 回傳字典，`handlers` 欄位 `{"click:save": fn(ctx)}` 接事件；`slots` 是子元件的回傳值（由下往上建）。
+- 相依：每個元件的 jsonl 都要用 `require` 宣告 `.py` 用到的每個模組（標準函式庫與 `gui` 也要）；`check` 抓「用了沒宣告」與「宣告了模擬器沒有」，錯誤是中文並寫明哪個範本缺哪個套件。
+- 客製化：新元件的 meta 寫 `"extends"`，只寫要改的行（同 kind 同 key 的行取代；style 是合併）；超出範圍的行為用 `call` 紀錄參考任何 `.py` 的函式，找不到檔案、找不到函式、函式丟例外都只回報、不讓程式掛掉。
+- 分鏡：`scene` 紀錄（`show`／`hide` 節點名稱、`on` 事件觸發切換），`guitpl.storyboard(comp)` 取出純資料。
+- 執行：`guitpl.run(代號, params, roots)` 直接載入並執行（主路徑）；「編譯成單一 Python 檔」尚未做。
+- 驗收：meta 標 `"standalone": true` 的元件（整個領域的範本）用 `lint.py` 以假橋接真的執行，每個按鈕、輸入、快捷鍵、場景都走過。**只在桌面 Python 跑過不算完成；模擬器內的實際執行還需要真實桌面版驗證（待辦）。**
+- 舊的單一 JSON 流程（`guitpl_core.js`、`compose_core.js`、`guitpl_run.js`、`data/*.json`）保留，檢索與逐步詢問（`findDomain`、`choiceMenu`）之後要改讀 jsonl 的 meta／param；`data/text-editor.json` 待轉成成對檔案。

@@ -1,0 +1,11 @@
+{"kind":"meta","id":"demo/notes","title":"簡單筆記","keywords":["筆記","記事本"],"entry":"build","standalone":true}
+{"kind":"param","name":"title","default":"我的筆記","ask":"視窗標題要寫什麼？"}
+{"kind":"require","module":"gui","source":"builtin"}
+{"kind":"require","module":"time","source":"builtin"}
+{"kind":"style","palette":{"bg":"#ffffff","fg":"#222222","accent":"#2563eb","danger":"#dc2626","muted":"#9ca3af"},"font":"sans-serif","size":14,"radius":6}
+{"kind":"layout","window":{"title":"{{title}}","width":480,"resizable":true},"tree":[{"kind":"column","children":[{"slot":"toolbar"},{"id":"editor","kind":"editor","value":"","lang":"text","rows":10},{"id":"status","kind":"label","text":"就緒"},{"id":"help_btn","kind":"button","text":"說明"},{"id":"help","kind":"label","text":"在上面寫字，按存檔。"},{"id":"back_btn","kind":"button","text":"回到編輯"},{"id":"export","kind":"button","text":"匯出"}]}]}
+{"kind":"slot","name":"toolbar","use":"common/toolbar_basic","params":{"save_text":"儲存「{{title}}」"}}
+{"kind":"scene","id":"edit","title":"編輯中","note":"工具列、編輯區、狀態列","hide":["help","back_btn"],"show":["help_btn","editor"],"on":{"click:help_btn":"help"}}
+{"kind":"scene","id":"help","title":"說明","note":"只顯示說明文字","show":["help","back_btn"],"hide":["help_btn","editor"],"on":{"click:back_btn":"edit"}}
+{"kind":"shortcut","keys":"Ctrl+S","do":"save"}
+{"kind":"call","on":"click:export","file":"ext_export.py","function":"on_export","args":{"fmt":"txt"}}

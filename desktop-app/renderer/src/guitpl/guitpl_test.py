@@ -1,0 +1,200 @@
+# -*- coding: utf-8 -*-
+# guitpl.py（一對 jsonl＋py 的範本框架）：讀取與檢查、引用與循環、覆寫、相依檢查、外部呼叫、場景、事件迴圈。
+# 用法：python -I renderer/src/guitpl/guitpl_test.py
+import json
+import os
+import shutil
+import sys
+import tempfile
+import types
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(HERE, '..', 'pybridge'))
+
+ops = []
+pending = []
+
+
+def fake_call(op, args=None, timeout=240.0):
+    ops.append((op, args))
+    if op in ('gui.wait', 'gui.poll'):
+        if pending:
+            ev = dict(pending.pop(0))
+            ev.setdefault('v', 1)
+            ev.setdefault('id', args['id'])
+            ev.setdefault('node', 'root')
+            return ev
+        return {'v': 1, 'event': 'close', 'id': args['id'], 'node': 'root'}
+    return None
+
+
+stub = types.ModuleType('fa_bridge')
+stub.call = fake_call
+sys.modules['fa_bridge'] = stub
+
+import guitpl  # noqa: E402
+
+LIB = os.path.join(HERE, 'lib')
+failures = []
+
+
+def check(name, cond):
+    if not cond:
+        failures.append(name)
+        print('FAIL', name)
+
+
+def raises(fn, text):
+    try:
+        fn()
+    except guitpl.GuiTplError as e:
+        return text in str(e)
+    return False
+
+
+def write(root, cid, lines, py=None):
+    base = os.path.join(root, *cid.split('/'))
+    os.makedirs(os.path.dirname(base), exist_ok=True)
+    with open(base + '.jsonl', 'w', encoding='utf-8') as f:
+        f.write('\n'.join(json.dumps(l, ensure_ascii=False) if not isinstance(l, str) else l for l in lines) + '\n')
+    if py is not None:
+        with open(base + '.py', 'w', encoding='utf-8') as f:
+            f.write(py)
+
+
+# 1. 載入：引用、參數、覆寫
+lib = guitpl.Library([LIB])
+comp = lib.load('demo/notes')
+check('meta id', comp['meta']['id'] == 'demo/notes')
+check('slot child loaded', comp['children']['toolbar']['id'] == 'common/toolbar_basic')
+check('params', comp['params']['title']['default'] == '我的筆記')
+check('bind default', guitpl.bind_params(comp)['title'] == '我的筆記')
+check('bind given', guitpl.bind_params(comp, {'title': 'X'})['title'] == 'X')
+check('unknown param is an error', raises(lambda: guitpl.bind_params(comp, {'nope': 1}), '沒有這些參數'))
+dark = lib.load('demo/notes_dark')
+check('extends keeps base layout', dark['layout'] is not None and dark['children']['toolbar']['id'] == 'common/toolbar_basic')
+check('extends overrides param default', dark['params']['title']['default'] == '夜間筆記')
+check('style merges palette', dark['style']['palette']['bg'] == '#1e1e1e' and dark['style']['palette']['danger'] == '#dc2626')
+check('style font override', dark['style']['font'] == 'monospace' and dark['style']['size'] == 14)
+check('scenes inherited', [s['id'] for s in dark['scenes']] == ['edit', 'help'])
+check('extends meta title', dark['meta']['title'] == '深色筆記')
+
+# 2. 相依：收集與檢查
+req = guitpl.collect_requires(comp)
+check('requires dedupe', set(req) == {'gui', 'time'} and req['gui']['by'] == ['demo/notes', 'common/toolbar_basic'])
+check('check is clean', guitpl.check(comp) == [])
+check('check dark is clean', guitpl.check(dark) == [])
+
+tmp = tempfile.mkdtemp()
+try:
+    # 循環
+    write(tmp, 'a/x', [{'kind': 'meta', 'id': 'a/x'}, {'kind': 'slot', 'name': 's', 'use': 'a/y'}], 'def build(win, spec, slots):\n    return {}\n')
+    write(tmp, 'a/y', [{'kind': 'meta', 'id': 'a/y'}, {'kind': 'slot', 'name': 's', 'use': 'a/x'}], 'def build(win, spec, slots):\n    return {}\n')
+    check('slot cycle', raises(lambda: guitpl.Library([tmp]).load('a/x'), '循環引用：a/x → a/y → a/x'))
+    write(tmp, 'b/p', [{'kind': 'meta', 'id': 'b/p', 'extends': 'b/q'}])
+    write(tmp, 'b/q', [{'kind': 'meta', 'id': 'b/q', 'extends': 'b/p'}])
+    check('extends cycle', raises(lambda: guitpl.Library([tmp]).load('b/p'), '循環引用'))
+    # 格式錯誤
+    write(tmp, 'c/bad', [{'kind': 'meta', 'id': 'c/bad'}, '{not json}'])
+    check('bad json line', raises(lambda: guitpl.Library([tmp]).load('c/bad'), '第 2 行不是合法的 JSON'))
+    write(tmp, 'c/kind', [{'kind': 'meta', 'id': 'c/kind'}, {'kind': 'weird'}])
+    check('bad kind', raises(lambda: guitpl.Library([tmp]).load('c/kind'), 'kind 必須是'))
+    write(tmp, 'c/field', [{'kind': 'meta', 'id': 'c/field'}, {'kind': 'param', 'name': 'x'}])
+    check('missing field', raises(lambda: guitpl.Library([tmp]).load('c/field'), '缺少欄位 default'))
+    write(tmp, 'c/src', [{'kind': 'meta', 'id': 'c/src'}, {'kind': 'require', 'module': 'x', 'source': 'pip'}])
+    check('bad source', raises(lambda: guitpl.Library([tmp]).load('c/src'), 'require.source'))
+    check('missing component', raises(lambda: guitpl.Library([tmp]).load('nope/zzz'), '找不到範本 nope/zzz'))
+    write(tmp, 'c/nometa', ['{"kind":"param","name":"a","default":1}'])
+    check('missing meta', raises(lambda: guitpl.Library([tmp]).load('c/nometa'), '缺少 meta'))
+    # 相依檢查：.py import 了但沒宣告；宣告了但模擬器沒有；沒有 py
+    write(tmp, 'd/undeclared', [{'kind': 'meta', 'id': 'd/undeclared'}, {'kind': 'require', 'module': 'gui', 'source': 'builtin'}],
+          'import gui\nimport json\n\n\ndef build(win, spec, slots):\n    return {}\n')
+    errs = guitpl.check(guitpl.Library([tmp]).load('d/undeclared'))
+    check('undeclared import', len(errs) == 1 and 'json' in errs[0] and '沒有宣告' in errs[0])
+    write(tmp, 'd/missing', [{'kind': 'meta', 'id': 'd/missing'}, {'kind': 'require', 'module': 'numpy_not_here', 'source': 'pyodide'}],
+          'import numpy_not_here\n\n\ndef build(win, spec, slots):\n    return {}\n')
+    errs = guitpl.check(guitpl.Library([tmp]).load('d/missing'))
+    check('missing package', len(errs) == 1 and 'numpy_not_here' in errs[0] and 'd/missing' in errs[0] and '模擬器裡沒有' in errs[0])
+    check('optional package is fine', guitpl.check(guitpl.Library([tmp]).load('d/missing'), available=lambda m, s: True) == [])
+    write(tmp, 'd/nopy', [{'kind': 'meta', 'id': 'd/nopy'}])
+    check('missing py', 'd/nopy' in guitpl.check(guitpl.Library([tmp]).load('d/nopy'))[0] and '.py' in guitpl.check(guitpl.Library([tmp]).load('d/nopy'))[0])
+    write(tmp, 'd/optional', [{'kind': 'meta', 'id': 'd/optional'}, {'kind': 'require', 'module': 'zzz_none', 'source': 'micropip', 'optional': True}],
+          'import zzz_none\n\n\ndef build(win, spec, slots):\n    return {}\n')
+    check('optional require skipped', guitpl.check(guitpl.Library([tmp]).load('d/optional')) == [])
+    write(tmp, 'd/file', [{'kind': 'meta', 'id': 'd/file'}, {'kind': 'require', 'module': 'helper.py', 'source': 'file'}],
+          'import helper\n\n\ndef build(win, spec, slots):\n    return {}\n')
+    errs = guitpl.check(guitpl.Library([tmp]).load('d/file'))
+    check('file source missing', len(errs) == 1 and 'helper.py' in errs[0])
+    with open(os.path.join(tmp, 'd', 'helper.py'), 'w') as f:
+        f.write('X = 1\n')
+    check('file source present', guitpl.check(guitpl.Library([tmp]).load('d/file')) == [])
+    # prepare 把所有問題一次講完
+    check('prepare lists problems', raises(lambda: guitpl.prepare('d/undeclared', roots=[tmp]), '沒有宣告'))
+    # 外部呼叫：找不到檔案、找不到函式、函式丟例外，都不能讓整個程式掛掉
+    write(tmp, 'e/calls', [{'kind': 'meta', 'id': 'e/calls'}, {'kind': 'require', 'module': 'gui', 'source': 'builtin'},
+                           {'kind': 'layout', 'window': {'title': 'T'}, 'tree': [{'kind': 'button', 'id': 'go', 'text': 'Go'}, {'kind': 'label', 'id': 'status', 'text': ''}]},
+                           {'kind': 'call', 'id': 'c1', 'on': 'click:go', 'file': 'nofile.py', 'function': 'f'},
+                           {'kind': 'call', 'id': 'c2', 'on': 'click:go', 'file': 'ext.py', 'function': 'missing_fn'},
+                           {'kind': 'call', 'id': 'c3', 'on': 'click:go', 'file': 'ext.py', 'function': 'boom'},
+                           {'kind': 'call', 'id': 'c4', 'on': 'click:go', 'file': 'ext.py', 'function': 'fine', 'args': {'word': '好'}}],
+          'import gui\n\n\ndef build(win, spec, slots):\n    return {}\n')
+    with open(os.path.join(tmp, 'e', 'ext.py'), 'w', encoding='utf-8') as f:
+        f.write('def boom(ctx):\n    raise ValueError("壞掉")\n\n\ndef fine(ctx, word):\n    ctx.set("status", text="ok " + word)\n')
+    ops.clear()
+    r = guitpl.run('e/calls', roots=[tmp], loop=False)
+    errbuf = []
+    r['ctx'].error = errbuf.append
+    comp_e = r['component']
+    calls = {}
+    for c in comp_e['calls']:
+        calls.setdefault(c['on'], []).append(c)
+    guitpl._dispatch(r['ctx'], comp_e, 'click:go', r['handlers'], calls)
+    check('missing file reported', any('找不到檔案 nofile.py' in e for e in errbuf))
+    check('missing function reported', any('沒有函式 missing_fn' in e for e in errbuf))
+    check('raising call reported, program lives', any('boom' in e and '壞掉' in e for e in errbuf))
+    check('good call still runs after bad ones', ops[-1][0] == 'gui.set' and ops[-1][1]['props'] == {'text': 'ok 好'})
+finally:
+    shutil.rmtree(tmp, ignore_errors=True)
+
+# 3. 執行：視窗、主題、插槽、參數替換、場景、快捷鍵、外部呼叫（真的範本）
+ops.clear()
+r = guitpl.run('demo/notes', params={'title': '週記'}, roots=[LIB], loop=False)
+check('window title substituted', ops[0][0] == 'gui.open' and ops[0][1]['title'] == '週記' and ops[0][1]['width'] == 480)
+check('theme applied', any(o[0] == 'gui.theme' and o[1]['palette']['accent'] == '#2563eb' and o[1]['size'] == 14 for o in ops))
+check('named nodes', set(r['ids']) >= {'editor', 'status', 'save', 'clear', 'help', 'help_btn', 'back_btn', 'export'})
+check('slot param substituted into child', any(o[0] == 'gui.add' and o[1]['node'].get('text') == '儲存「週記」' for o in ops))
+check('shortcut registered', any(o[0] == 'gui.shortcut' and o[1]['keys'] == 'Ctrl+S' and o[1]['name'] == 'save' for o in ops))
+check('first scene applied', r['scene'] == 'edit' and any(o[0] == 'gui.set' and o[1]['node'] == r['ids']['help'] and o[1]['props'] == {'visible': False} for o in ops))
+ctx = r['ctx']
+comp_n = r['component']
+calls = {}
+for c in comp_n['calls']:
+    calls.setdefault(c['on'], []).append(c)
+guitpl._dispatch(ctx, comp_n, 'click:save', r['handlers'], calls)
+guitpl._dispatch(ctx, comp_n, 'shortcut:save', r['handlers'], calls)
+check('toolbar handler and shortcut share state', r['state']['saved'] == 2 and ops[-1][1]['props'] == {'text': '已存 2 次'})
+guitpl._dispatch(ctx, comp_n, 'click:help_btn', r['handlers'], calls)
+check('scene switch by trigger', ctx.scene == 'help')
+guitpl._dispatch(ctx, comp_n, 'click:back_btn', r['handlers'], calls)
+check('scene switch back', ctx.scene == 'edit')
+ctx.w.set(r['ids']['editor'], value='abc')
+guitpl._dispatch(ctx, comp_n, 'click:export', r['handlers'], calls)
+check('foreign call from the real template', ops[-1][1]['props']['text'] == '已匯出為 txt（3 字）')
+check('storyboard data', [s['id'] for s in guitpl.storyboard(comp_n)] == ['edit', 'help'] and guitpl.storyboard(comp_n)[0]['on'] == {'click:help_btn': 'help'})
+check('goto unknown scene', raises(lambda: ctx.goto('zzz'), '沒有這個場景'))
+
+# 4. 事件迴圈：同樣的節點代號再跑一次，事件走輪詢，最後關閉
+ids = r['ids']
+pending[:] = [{'event': 'click', 'node': ids['save']}, {'event': 'shortcut', 'value': 'save'}, {'event': 'click', 'node': ids['help_btn']},
+              {'event': 'click', 'node': ids['back_btn']}]
+ops.clear()
+r2 = guitpl.run('demo/notes_dark', roots=[LIB])
+check('loop ran every event', r2['state']['saved'] == 2 and r2['scene'] == 'edit')
+check('dark theme applied', any(o[0] == 'gui.theme' and o[1]['palette']['bg'] == '#1e1e1e' and o[1]['font'] == 'monospace' for o in ops))
+check('dark default title', ops[0][1]['title'] == '夜間筆記')
+check('loop ends on close', ops[-1][0] == 'gui.poll')
+
+if failures:
+    print('%d failure(s)' % len(failures))
+    sys.exit(1)
+print('guitpl: all checks passed')
