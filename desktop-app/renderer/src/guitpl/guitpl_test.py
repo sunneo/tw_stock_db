@@ -312,6 +312,38 @@ check('ctx dialogs', c7.confirm('sure') is True and c7.ask('q', 'a') == 'a!' and
 sys.modules['gui'] = real_gui
 shutil.rmtree(tmp)
 
+# 8. compile_standalone: one file with everything inside; same operations as guitpl.run
+def shape(op_list):
+    out = []
+    for o in op_list:
+        a = dict(o[1] or {})
+        a.pop('id', None)
+        out.append((o[0], json.dumps(a, sort_keys=True, ensure_ascii=False)))
+    return out
+
+
+for cid in ('demo/notes_dark', 'office/main_warm', 'text-editor/main'):
+    ops.clear()
+    pending[:] = []
+    guitpl.run(cid, roots=[LIB])
+    expect = shape(ops)
+    text = guitpl.compile_standalone(cid, roots=[LIB])
+    check('standalone has no jsonl dependency on disk', 'tempfile.mkdtemp' in text and '__main__' in text)
+    ops.clear()
+    pending[:] = []
+    real_guitpl = sys.modules['guitpl']
+    try:
+        exec(compile(text, 'standalone_%s.py' % cid.replace('/', '_'), 'exec'), {'__name__': '__main__'})
+    finally:
+        sys.modules['guitpl'] = real_guitpl
+    check('standalone %s does what run() does' % cid, shape(ops) == expect and len(expect) > 5)
+
+# params are baked in, and a template with a foreign call keeps its file
+text = guitpl.compile_standalone('demo/notes', params={'title': 'Baked'}, roots=[LIB])
+check('params baked in', 'Baked' in text)
+check('foreign call file inside', 'ext_export.py' in text)
+check('bad param refused', raises(lambda: guitpl.compile_standalone('demo/notes', params={'zzz': 1}, roots=[LIB]), '沒有這些參數'))
+
 if failures:
     print('%d failure(s)' % len(failures))
     sys.exit(1)

@@ -567,6 +567,70 @@ def save_template(base_id, new_id, params=None, palette=None, font=None, size=No
     return new_id
 
 
+_STANDALONE_HEAD = '''# -*- coding: utf-8 -*-
+# 單一檔案的程式（由 guitpl.compile_standalone 產生）：範本、引用、外部呼叫與執行器都在這個檔裡，只需要 gui（與標準函式庫）。
+import gui  # noqa: F401 (the page runs programs that import gui as windows programs)
+import json
+import os
+import sys
+import tempfile
+import types
+
+_FILES = json.loads(%s)
+_RUNTIME = json.loads(%s)
+_d = tempfile.mkdtemp()
+for _name, _text in _FILES.items():
+    _p = os.path.join(_d, *_name.split("/"))
+    os.makedirs(os.path.dirname(_p), exist_ok=True)
+    with open(_p, "w", encoding="utf-8") as _f:
+        _f.write(_text)
+guitpl = types.ModuleType("guitpl")
+guitpl.__file__ = os.path.join(_d, "guitpl.py")
+sys.modules["guitpl"] = guitpl
+exec(compile(_RUNTIME, "guitpl.py", "exec"), guitpl.__dict__)
+
+if __name__ == "__main__":
+    guitpl.run(%s, params=json.loads(%s), roots=[_d])
+'''
+
+
+def compile_standalone(cid, params=None, roots=None):
+    """One self-contained python program for a template: the component tree (every slot, every extends base, every foreign-call file) and the
+    runtime are written into the text, so it needs only gui. Returns the program text; the same checks as run() are done first."""
+    lib = Library(roots)
+    comp = prepare(cid, params, roots)
+    values = bind_params(comp, params)
+    files = {}
+    todo = [cid]
+    seen = set()
+    while todo:
+        c = todo.pop()
+        if c in seen:
+            continue
+        seen.add(c)
+        recs = lib.read(c)
+        for ext in (".jsonl", ".py"):
+            p = lib.path(c, ext)
+            if p:
+                with open(p, encoding="utf-8") as f:
+                    files[c + ext] = f.read()
+        base_dir = os.path.dirname(c)
+        for r in recs:
+            if r["kind"] == "meta" and r.get("extends"):
+                todo.append(r["extends"])
+            elif r["kind"] == "slot":
+                todo.append(r["use"])
+            elif r["kind"] == "call":
+                p = os.path.join(os.path.dirname(lib.path(c, ".jsonl")), r["file"])
+                if os.path.isfile(p):
+                    with open(p, encoding="utf-8") as f:
+                        files[(base_dir + "/" if base_dir else "") + r["file"]] = f.read()
+    with open(os.path.abspath(__file__), encoding="utf-8") as f:
+        runtime = f.read()
+    q = lambda v: json.dumps(json.dumps(v, ensure_ascii=False))
+    return _STANDALONE_HEAD % (q(files), q(runtime), json.dumps(cid), q(values))
+
+
 def storyboard(comp):
     """The scenes of a component as plain data: [{"id","title","note","show","hide","on"}]."""
     return [{"id": s["id"], "title": s["title"], "note": s.get("note", ""), "show": s.get("show", []), "hide": s.get("hide", []),

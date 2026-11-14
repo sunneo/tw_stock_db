@@ -80,4 +80,9 @@ assert.ok(fn.status === 'none' && fn.references.length === 1 && fn.references[0]
 const cu = A.compose(withUser, { id: 'user/my_todo' }, { userFiles: { 'user/my_todo': { jsonl: mine, py: 'x' } } });
 assert.ok(cu.ok && cu.code.indexOf('_w("user/my_todo", ".jsonl"') >= 0 && cu.code.indexOf('roots=[_d]') >= 0, cu.errors && cu.errors.join()); ok();
 
+const cs = A.compose(files, { id: 'office/main', params: { title: 'X' }, standalone: true, output: 'todo_app.py' });
+assert.ok(cs.ok && cs.standalone && cs.code.indexOf('compile_standalone("office/main"') >= 0 && cs.code.indexOf('"todo_app.py"') >= 0, cs.errors && cs.errors.join()); ok();
+r = pyCheck(cs.code.replace('guitpl.compile_standalone(', 'guitpl.prepare(').split('f = open')[0]);
+assert.strictEqual(r.status, 0, r.stderr); ok();
+
 console.log('guitpl_ai.test.js: ' + n + ' groups OK');

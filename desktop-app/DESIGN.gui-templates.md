@@ -294,3 +294,10 @@ renderer/src/guitpl/
 - 範本節點：`tabs`、`tab`（`title`）、`split`、`menubar`、`menu`（`title`）、`menuitem`（`text`、`keys`）。選單項目帶 `keys` 時自動登記同鍵快捷鍵，按下去等於點選單項目（事件鍵 `click:<節點名稱>`）。`ctx.message()`、`ctx.confirm()`、`ctx.ask()` 可在處理函式裡用。
 - `pygame.mixer`：`Sound(...).play()`、`music.load/play`、`init/quit/get_init` 轉成一次 `tone`（音高由檔名決定，沒有取樣檔案）。
 - 實跑：`scripts/eval/gui_widgets.eval.js`（真 Electron：選單列、分割、分頁切換、選單項目觸發確認對話框）。
+
+## 8. 編譯成單一 Python 檔（2026-11-14，交接 2）
+
+- `guitpl.compile_standalone(代號, params, roots)`（`pybridge/guitpl.py`）：載入並檢查（與 `run` 相同的檢查）後，把整棵元件樹（每個 slot 引用、extends 的底層、外部呼叫的檔案）與執行器本身內嵌成一個 .py 文字；輸出只需要 `gui` 與標準函式庫，參數在編譯時就寫死。執行時會把內嵌檔案寫進暫存資料夾，再用同一個 `guitpl.run`（所以行為與直接執行完全一樣）。
+- 宿主工具 `gui_template_compose` 加 `standalone: true`（可加 `output` 檔名）：回傳的 code 執行後寫出單一檔案程式。產生的程式第一行有 `import gui`，頁面才會把它當視窗程式走 Worker 路徑。
+- 測試：`guitpl_test.py` 比對編譯後的程式與 `run` 的操作序列相同（三個範本）；實跑：`scripts/eval/guitpl_standalone.eval.js`（真 Electron，十三個領域的 main 全部：產生 → 直接執行 → 開窗、點按鈕、關窗，無錯誤）。
+- 未做：YAML 撰寫格式。

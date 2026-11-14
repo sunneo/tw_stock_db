@@ -101,7 +101,7 @@
     }
     if (errors.length) { return { ok: false, errors: errors, id: id, custom: custom }; }
 
-    var lines = ['import json', 'import guitpl'];
+    var lines = ['import json', 'import gui', 'import guitpl'];
     var written = [];
     var extra = {};
     if (custom) { extra[id] = { jsonl: args.jsonl, py: typeof args.py === 'string' && args.py.trim() ? args.py : STUB_PY }; }
@@ -119,8 +119,14 @@
       });
     }
     var call = 'guitpl.run(' + JSON.stringify(id) + ', params=json.loads(' + JSON.stringify(JSON.stringify(given)) + ')' + (written.length ? ', roots=[_d] + guitpl.default_roots()' : '') + ')';
-    lines.push(call);
-    return { ok: true, id: id, code: lines.join('\n') + '\n', scenes: summary.scenes, storyboard: storyboard(summary), defaulted: defaulted, errors: [], custom: custom };
+    if (args.standalone) {
+      // 單一檔案的程式：不執行，而是寫出一個可獨立執行的 .py（範本、引用、外部呼叫與執行器都在裡面，只需要 gui）
+      var outName = String(args.output || (id.replace(/[^a-z0-9_\-]+/g, '_') + '_app.py'));
+      call = 'src = guitpl.compile_standalone(' + JSON.stringify(id) + ', params=json.loads(' + JSON.stringify(JSON.stringify(given)) + ')' + (written.length ? ', roots=[_d] + guitpl.default_roots()' : '') + ')';
+      lines.push(call);
+      lines.push('f = open(' + JSON.stringify(outName) + ', "w", encoding="utf-8")', 'f.write(src)', 'f.close()', 'print("已寫出單一檔案程式：" + ' + JSON.stringify(outName) + ')');
+    } else { lines.push(call); }
+    return { ok: true, id: id, code: lines.join('\n') + '\n', scenes: summary.scenes, storyboard: storyboard(summary), defaulted: defaulted, errors: [], custom: custom, standalone: !!args.standalone };
   }
 
   return { find: find, compose: compose, storyboard: storyboard, letterToId: letterToId, menu: menu, GUIDE: GUIDE };
