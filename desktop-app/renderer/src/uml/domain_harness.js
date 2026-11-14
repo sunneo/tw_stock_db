@@ -5,6 +5,13 @@
 //   split:'holdout' 的題只量測（不計入失敗，只印解出數），用來看泛化；train 題必須全過。
 // 沒有 tree-sitter 文法就失敗（不再略過假通過）。
 const fs = require('fs'), path = require('path'), os = require('os'), assert = require('assert'), cp = require('child_process');
+// Python 執行檔：FA_PYTHON 優先；沒設時試 python3，不能用（例如 Windows 的市集佔位檔）就改用 python／py，
+// 並寫回 FA_PYTHON，讓各領域測試檔的「process.env.FA_PYTHON || 'python3'」都拿到同一個可用的執行檔。
+if (!process.env.FA_PYTHON) {
+    const ok = (c) => { try { const r = cp.spawnSync(c, ['-c', 'print(1)'], { encoding: 'utf8', timeout: 15000 }); return r.status === 0 && (r.stdout || '').trim() === '1'; } catch (_) { return false; } };
+    const found = ['python3', 'python', 'py'].find(ok);
+    if (found && found !== 'python3') process.env.FA_PYTHON = found;
+}
 const C2U = require('./py_code2uml_core.js'), PBL = require('./py_blocks_core.js'), RU = require('./py_blocks_rules_core.js'), PB = require('./py_body_core.js'), UC = require('./uml_core.js'), AI = require('./algo_intent_core.js'), PL = require('./py_uml_pipeline_core.js'), CH = require('./py_cnl_choose_core.js'), PAR = require('./py_paradigms_core.js'), DR = require('./domain_registry_core.js');
 // 文法目錄：FA_TS_DIR 優先；否則用 ~/.cache/fa-ts（若有），再退到 git 追蹤的 renderer/vendor/tree-sitter。
 const VENDOR = path.join(__dirname, '..', '..', 'vendor', 'tree-sitter');
