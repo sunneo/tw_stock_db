@@ -1,0 +1,5 @@
+{"kind":"meta","id":"project/main_light","title":"專案任務板（明亮）","keywords":["專案","任務","淺色","明亮","進度"],"extends":"project/main"}
+{"kind":"param","name":"title","default":"專案任務板（明亮）","ask":"視窗標題要寫什麼？"}
+{"kind":"require","module":"importlib","source":"builtin"}
+{"kind":"require","module":"os","source":"builtin"}
+{"kind":"style","palette":{"bg":"#ffffff","fg":"#0f172a","accent":"#0f766e","danger":"#b91c1c","muted":"#94a3b8"}}

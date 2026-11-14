@@ -1,0 +1,3 @@
+{"kind":"meta","id":"project/toolbar","title":"任務工具列（新增、標記完成、刪除、報告）","keywords":["工具列","任務","新增","報告"],"entry":"build"}
+{"kind":"require","module":"gui","source":"builtin"}
+{"kind":"layout","tree":[{"kind":"row","children":[{"id":"add","kind":"button","text":"新增任務"},{"id":"done","kind":"button","text":"標記完成"},{"id":"remove","kind":"button","text":"刪除所選"},{"id":"report","kind":"button","text":"進度報告"}]}]}
