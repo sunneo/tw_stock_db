@@ -529,6 +529,7 @@ def save_template(base_id, new_id, params=None, palette=None, font=None, size=No
     meta = {"kind": "meta", "id": new_id, "title": title or ("我的" + comp["meta"].get("title", base_id)),
             "keywords": list(keywords or []) + list(comp["meta"].get("keywords", [])), "extends": base_id, "standalone": True}
     records = [meta]
+    records.append({"kind": "require", "module": "guitpl", "source": "builtin"})
     for name, value in given.items():
         records.append({"kind": "param", "name": name, "default": value, "ask": comp["params"][name].get("ask", "")})
     st = {"kind": "style"}

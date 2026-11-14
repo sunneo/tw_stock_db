@@ -69,4 +69,15 @@ assert.ok(!A.compose(files, { name: 'Bad Name', jsonl: custom }).ok); ok();
 assert.ok(!A.compose(files, { name: 'user/x', jsonl: '{bad' }).ok); ok();
 assert.ok(!A.compose(files, { name: 'user/x', jsonl: '{"kind":"meta","id":"x","title":"t"}' }).ok, '沒標 standalone 不能直接執行'); ok();
 
+// 分鏡與使用者範本
+assert.ok(c1.storyboard.indexOf('分鏡：') === 0 && c1.storyboard.indexOf('換到 list') >= 0, c1.storyboard); ok();
+const mine = '{"kind":"meta","id":"user/my_todo","title":"我的待辦","keywords":["我的待辦","待辦","待辦清單"],"extends":"office/main","standalone":true}\n{"kind":"require","module":"guitpl","source":"builtin"}';
+const withUser = Object.assign({}, files, { 'user/my_todo': mine });
+const fu = A.find(withUser, "我的待辦清單", { userIds: ['user/my_todo'] });
+assert.ok(fu.candidates[0].user === true && fu.candidates[0].id === 'user/my_todo', JSON.stringify(fu.candidates.map((x) => [x.id, x.score]))); ok();
+const fn = A.find(withUser, '完全不相干的事情', { userIds: ['user/my_todo'] });
+assert.ok(fn.status === 'none' && fn.references.length === 1 && fn.references[0].id === 'user/my_todo'); ok();
+const cu = A.compose(withUser, { id: 'user/my_todo' }, { userFiles: { 'user/my_todo': { jsonl: mine, py: 'x' } } });
+assert.ok(cu.ok && cu.code.indexOf('_w("user/my_todo", ".jsonl"') >= 0 && cu.code.indexOf('roots=[_d]') >= 0, cu.errors && cu.errors.join()); ok();
+
 console.log('guitpl_ai.test.js: ' + n + ' groups OK');

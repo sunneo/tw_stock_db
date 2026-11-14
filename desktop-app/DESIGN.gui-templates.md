@@ -278,3 +278,11 @@ renderer/src/guitpl/
 - `renderer/src/guitpl/guitpl_ai.js`（`FaGuiTplAI`）：`find` 檢索與逐步詢問（前兩名同分時回離線字母選擇題）、`compose` 把範本代號加參數組成 `guitpl.run(...)` 的程式；模型自寫的 jsonl（沒寫 py 補空的 `build`）會在程式開頭寫進暫存資料夾，與現成範本走同一個執行模組。
 - 宿主工具 `gui_template_find`、`gui_template_compose`（`floating-assistant.js` 的 `_guiTplRegisterTools`），範本來源是 `FA_PYBRIDGE_FILES` 的 `guitpl_lib/*.jsonl`，加上使用者範本（`_guiTplUserTemplates`，待辦 2 實作）。線上指引放在工具說明（`FaGuiTplAI.GUIDE`）。
 - 實跑：`scripts/eval/guitpl_ai_tools.eval.js`（真 Electron 模擬器；找範本、組合、開窗、關窗；模型自寫 jsonl 同樣）。
+
+## 6. 分鏡、設計工作室、我的範本（2026-11-14，交接 2）
+
+- 分鏡：`gui_template_compose` 回傳 `storyboard`（文字，每個場景顯示／隱藏哪些節點、事件換到哪個場景）；Python 端是 `guitpl.storyboard_text(comp)`。
+- 設計工作室：`guitpl.studio("範本代號")`（`pybridge/guitpl_studio.py`，用 `gui.Window` 寫）：改參數、五色配色、字型、文字大小、圓角，「預覽」開真的第二個視窗（用範本自己的處理函式運作，再按一次用新設定重開），「分鏡」顯示分鏡，「存成我的範本」。
+- 我的範本：`guitpl.save_template` 寫成新的一對 jsonl＋py（meta 帶 `extends`，只存有改的參數預設值與 style；py 呼叫 `guitpl.base_build(底層代號)`），代號一定在 `user/` 底下。新增橋接操作 `gui.usertpl`（list／save／delete；`py_worker.js` 的 `GUI_OPS`、`_pyBridgeGui` 處理）；頁面把它們存在 localStorage `fa_gui_user_templates`（桌面版是使用者資料區，網頁版是瀏覽器持久儲存）。`guitpl.default_roots()` 會把它們寫進暫存資料夾當第二個根目錄，所以 `catalog`、`run` 自動看得到。
+- 當參考案例：`gui_template_find` 把使用者範本加一分並標 `user`；找不到現成範本時回 `references`（最多兩份使用者範本全文）給模型照同格式寫新的。
+- 實跑：`scripts/eval/guitpl_studio.eval.js`（真 Electron：工作室開窗、預覽背景色真的變、存檔、工具找得到、`guitpl.run("user/my_main")` 開窗）。
