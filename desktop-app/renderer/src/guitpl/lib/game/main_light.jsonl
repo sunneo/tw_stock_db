@@ -1,0 +1,5 @@
+{"kind":"meta","id":"game/main_light","title":"打磚塊（明亮）","keywords":["遊戲","打磚塊","淺色","明亮"],"extends":"game/main"}
+{"kind":"param","name":"title","default":"打磚塊（明亮）","ask":"視窗標題要寫什麼？"}
+{"kind":"require","module":"importlib","source":"builtin"}
+{"kind":"require","module":"os","source":"builtin"}
+{"kind":"style","palette":{"bg":"#f8fafc","fg":"#0f172a","accent":"#2563eb","danger":"#dc2626","muted":"#94a3b8"}}
