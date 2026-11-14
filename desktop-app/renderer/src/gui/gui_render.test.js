@@ -278,7 +278,7 @@ assert.strictEqual(violations.length, 0); ok();
   assert.strictEqual(T('javascript', 'a /* open', '').state, 'cmt'); assert.strictEqual(T('javascript', 'close */ b', 'cmt').state, ''); assert.strictEqual(T('javascript', 'x = `open', '').state, 'tpl'); ok();
   assert.strictEqual(cls(T('json', '{"k": "v"}', ''), '"k"'), 'key'); assert.strictEqual(cls(T('json', '{"k": "v"}', ''), '"v"'), 'string'); ok();
   assert.strictEqual(T('markdown', '```py', '').state, 'fence'); assert.strictEqual(T('markdown', 'code here', 'fence').tokens[0][0], 'code'); assert.strictEqual(T('markdown', '```', 'fence').state, ''); ok();
-  assert.strictEqual(T('markdown', '# Hi', '').tokens[0][0], 'heading'); ok();
+  assert.strictEqual(T('markdown', '# Hi', '').tokens[0][0], 'mark'); assert.strictEqual(T('markdown', '# Hi', '').tokens[1][0], 'heading'); ok();
   assert.strictEqual(cls(T('html', '<a href="x">', ''), 'a'), 'tag'); assert.strictEqual(cls(T('html', '<a href="x">', ''), 'href'), 'attr'); assert.strictEqual(T('html', '<!-- open', '').state, 'hcmt'); assert.strictEqual(T('html', '<div', '').state, 'tag'); ok();
   assert.strictEqual(cls(T('css', 'a { color: red; }', ''), 'color'), 'attr'); assert.strictEqual(T('css', '/* open', '').state, 'c'); assert.strictEqual(T('css', 'a {', '').state, '1'); ok();
   assert.strictEqual(T('python', 'x' .repeat(3000), '').tokens.length, 1, 'a very long line is left plain'); ok();
@@ -305,6 +305,28 @@ assert.strictEqual(violations.length, 0); ok();
   assert.strictEqual(R.patchNode(byNode(w, 'lb'), node('lb'), { visible: false }), true); ok();
   assert.strictEqual(R.patchNode(byNode(w, 'lb'), node('lb'), { grow: 1 }), false, 'a layout prop needs a rebuild'); ok();
   assert.strictEqual(R.patchNode(byNode(w, 'bt'), node('bt'), { icon: 'x' }), false); ok();
+}
+
+// markdown view: real elements, no markup from the text; editor wrap
+{
+  const S = G.createSession();
+  const ap = (m) => { const r = G.apply(S, m); assert.ok(r.ok, r.error); };
+  ap({ op: 'open', id: 'wm', title: 'M' });
+  const MD = ['# Title', '', 'some **bold** and *it* `c` [l](u)', '', '- a', '- b', '', '> q', '', '```', 'code <b>x</b>', '```', '', '---'].join(String.fromCharCode(10));
+  ap({ op: 'add', id: 'wm', node: { id: 'md', kind: 'markdown', value: MD } });
+  ap({ op: 'add', id: 'wm', node: { id: 'ed', kind: 'editor', value: 'x', wrap: true } });
+  const w = R.renderWindow(doc, G.snapshot(S, 'wm'), () => {}, () => {});
+  const md = byNode(w, 'md');
+  const tags = md.children.map((c) => c.tagName);
+  assert.deepStrictEqual(tags, ['h1', 'p', 'ul', 'blockquote', 'pre', 'hr']); ok();
+  assert.strictEqual(md.children[0].children[0].textContent, 'Title'); ok();
+  const para = md.children[1].children.map((c) => c.tagName);
+  assert.ok(para.indexOf('strong') >= 0 && para.indexOf('em') >= 0 && para.indexOf('code') >= 0); ok();
+  assert.strictEqual(md.children[2].children.length, 2); ok();
+  assert.strictEqual(md.children[4].children[0].textContent, 'code <b>x</b>'); ok();
+  assert.ok(/gui-editor-wrap/.test(byNode(w, 'ed').className)); ok();
+  assert.strictEqual(find(byNode(w, 'ed'), (e) => e.className === 'gui-ed-gutter'), null); ok();
+  assert.strictEqual(violations.length, 0); ok();
 }
 
 console.log('gui_render: ' + n + ' assertions passed');

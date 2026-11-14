@@ -21,7 +21,7 @@ ops = []
 PROPS = {
     'column': [], 'row': [], 'grid': ['columns'], 'scroll': ['height'], 'expander': ['text', 'expanded'], 'label': ['text'],
     'button': ['text', 'enabled', 'icon'], 'entry': ['value', 'placeholder', 'enabled', 'secret'],
-    'textarea': ['value', 'placeholder', 'rows', 'enabled'], 'editor': ['value', 'lang', 'rows', 'enabled', 'numbers', 'prose', 'caret', 'caret_to'],
+    'textarea': ['value', 'placeholder', 'rows', 'enabled'], 'editor': ['value', 'lang', 'rows', 'enabled', 'numbers', 'prose', 'wrap', 'caret', 'caret_to'], 'markdown': ['value'],
     'checkbox': ['text', 'checked', 'enabled'], 'progress': ['value', 'max'], 'list': ['items', 'selected', 'enabled'],
     'multilist': ['items', 'selected', 'enabled'], 'table': ['columns', 'rows', 'enabled'], 'canvas': ['width', 'height', 'fps', 'fit'],
     'tabs': ['selected'], 'tab': ['text'], 'split': ['direction', 'ratio'], 'menubar': [], 'menu': ['text'], 'menuitem': ['text', 'keys', 'enabled'],

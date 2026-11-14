@@ -38,6 +38,12 @@ def next_lang(ctx):
     ctx.set("status", text="語法：" + lang_label(nxt))
 
 
+def toggle_wrap(ctx):
+    on = bool(ctx.get("wrap"))
+    ctx.set("editor", wrap=on)  # 版面重畫，輸入的文字會保留
+    ctx.set("status", text="自動換行：" + ("開" if on else "關"))
+
+
 def build(win, spec, slots):
     sound = spec["params"].get("sound") == "yes"
     start_lang = spec["params"].get("lang") or "text"
@@ -52,5 +58,6 @@ def build(win, spec, slots):
             "click:save": lambda ctx: save_file(ctx, sound),
             "click:new": lambda ctx: new_file(ctx, sound),
             "click:lang_btn": next_lang,
+            "change:wrap": toggle_wrap,
         }
     }

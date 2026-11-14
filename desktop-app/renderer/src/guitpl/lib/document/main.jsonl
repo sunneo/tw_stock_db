@@ -4,7 +4,7 @@
 {"kind":"param","name":"doc_text","default":"# 未命名文件\n\n在這裡開始寫。用上方的按鈕設定標題、粗體、清單，按「插入段落」會在游標處加一段新的。\n\n## 第一節\n\n左邊的大綱會列出所有標題，點一下就跳到那一節。","ask":"文件一開始要寫什麼？（# 開頭的行是標題）"}
 {"kind":"require","module":"gui","source":"builtin"}
 {"kind":"style","palette":{"bg":"#ffffff","fg":"#1f2328","accent":"#2563eb","danger":"#dc2626","muted":"#6b7280"},"font":"serif","size":15,"radius":6}
-{"kind":"layout","window":{"title":"{{title}}","width":980,"height":700,"resizable":true},"tree":[{"kind":"column","role":"page","children":[{"slot":"toolbar"},{"kind":"row","grow":1,"children":[{"slot":"sidebar","role":"sidebar"},{"id":"body","kind":"editor","value":"{{doc_text}}","lang":"markdown","rows":18,"numbers":false,"prose":true,"grow":1}]},{"slot":"statusbar"}]}]}
+{"kind":"layout","window":{"title":"{{title}}","width":980,"height":700,"resizable":true},"tree":[{"kind":"column","role":"page","children":[{"slot":"toolbar"},{"kind":"row","grow":1,"children":[{"slot":"sidebar","role":"sidebar"},{"id":"body","kind":"editor","value":"{{doc_text}}","lang":"markdown","rows":18,"numbers":false,"prose":true,"grow":1,"wrap":true},{"id":"view","kind":"markdown","value":"","visible":false,"grow":1}]},{"slot":"statusbar"}]}]}
 {"kind":"slot","name":"toolbar","use":"document/toolbar","params":{}}
 {"kind":"slot","name":"sidebar","use":"document/sidebar","params":{"doc_name":"{{doc_name}}"}}
 {"kind":"slot","name":"statusbar","use":"document/statusbar","params":{}}
@@ -17,3 +17,4 @@
 {"kind":"shortcut","keys":"Ctrl+2","do":"h2"}
 {"kind":"shortcut","keys":"Ctrl+3","do":"h3"}
 {"kind":"shortcut","keys":"Ctrl+Enter","do":"insert_para"}
+{"kind":"shortcut","keys":"Ctrl+E","do":"preview_btn"}

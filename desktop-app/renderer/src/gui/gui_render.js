@@ -127,6 +127,7 @@
     '.gui-editor{position:relative;display:flex;flex-direction:row;min-height:0;min-width:0;border:1px solid var(--gui-border);border-radius:var(--gui-radius);overflow:hidden;background:var(--gui-bg);',
     'font-family:var(--gui-mono);font-size:13px;line-height:var(--gui-ed-lh,20px)}',
     '.gui-column>.gui-editor,.gui-row>.gui-editor{flex-shrink:0}',
+    '.gui-editor-wrap .gui-ed-cur{display:none}.gui-editor-wrap .gui-ed-ta,.gui-editor-wrap .gui-ed-hl{white-space:pre-wrap;overflow-wrap:break-word}.gui-editor-wrap .gui-ed-ta{overflow-x:hidden}',
     '.gui-ed-cur{position:absolute;left:0;right:0;height:var(--gui-ed-lh,20px);background:var(--gui-hover);pointer-events:none;top:0;opacity:0;transition:opacity var(--gui-ease)}.gui-editor:focus-within .gui-ed-cur{opacity:1}',
     '.gui-ed-gutter{position:relative;flex:0 0 auto;overflow:hidden;background:var(--gui-surface);border-right:1px solid var(--gui-border);color:var(--gui-muted);text-align:right;user-select:none}',
     '.gui-ed-gutter pre,.gui-ed-hl{margin:0;font:inherit;line-height:var(--gui-ed-lh,20px);position:absolute;left:0;top:0;white-space:pre;will-change:transform}',
@@ -136,10 +137,18 @@
     'white-space:pre;overflow:auto;background:transparent;color:transparent;caret-color:var(--gui-fg);tab-size:2;-moz-tab-size:2}',
     '.gui-ed-ta::selection{background:var(--gui-accent-soft);color:transparent}.gui-ed-ta:disabled{opacity:.6}',
     '.gui-editor-prose{font-family:var(--gui-font,var(--gui-sans));font-size:15px}.gui-editor-prose [class^=gui-tok-]{font-weight:400!important;font-style:normal!important;text-decoration:none!important}',
+    '.gui-md{overflow:auto;min-height:0;min-width:0;padding:var(--gui-s3) var(--gui-s4);border:1px solid var(--gui-border);border-radius:var(--gui-radius);background:var(--gui-bg);font-size:1.05em;line-height:1.75}',
+    '.gui-md h1,.gui-md h2,.gui-md h3,.gui-md h4,.gui-md h5,.gui-md h6{margin:1.1em 0 .45em;line-height:1.3;font-weight:700}.gui-md>:first-child{margin-top:0}',
+    '.gui-md h1{font-size:1.9em;padding-bottom:.25em;border-bottom:1px solid var(--gui-border)}.gui-md h2{font-size:1.5em}.gui-md h3{font-size:1.25em}.gui-md h4,.gui-md h5,.gui-md h6{font-size:1.05em}',
+    '.gui-md p{margin:.6em 0}.gui-md ul,.gui-md ol{margin:.6em 0;padding-left:1.6em}.gui-md li{margin:.2em 0}',
+    '.gui-md blockquote{margin:.8em 0;padding:.2em 1em;border-left:4px solid var(--gui-accent);color:var(--gui-muted);background:var(--gui-surface)}',
+    '.gui-md pre{margin:.8em 0;padding:var(--gui-s3);border-radius:var(--gui-radius);background:var(--gui-surface2);font-family:var(--gui-mono);font-size:.9em;line-height:1.5;overflow:auto}',
+    '.gui-md code{font-family:var(--gui-mono);font-size:.9em;padding:.1em .35em;border-radius:4px;background:var(--gui-surface2)}.gui-md pre code{padding:0;background:none}',
+    '.gui-md hr{border:none;border-top:1px solid var(--gui-border);margin:1.2em 0}.gui-md strong{font-weight:700}.gui-md em{font-style:italic}.gui-md .gui-md-link{color:var(--gui-accent);text-decoration:underline}',
     '.gui-tok-comment{color:var(--gui-t-comment);font-style:italic}.gui-tok-string{color:var(--gui-t-string)}.gui-tok-number{color:var(--gui-t-number)}',
     '.gui-tok-keyword{color:var(--gui-t-keyword)}.gui-tok-const{color:var(--gui-t-const)}.gui-tok-fn{color:var(--gui-t-fn)}.gui-tok-type{color:var(--gui-t-type)}',
     '.gui-tok-attr{color:var(--gui-t-attr)}.gui-tok-tag{color:var(--gui-t-tag)}.gui-tok-punct{color:var(--gui-t-punct)}.gui-tok-key{color:var(--gui-t-key)}',
-    '.gui-tok-heading{color:var(--gui-t-heading);font-weight:700}.gui-tok-bold{font-weight:700}.gui-tok-italic{font-style:italic}',
+    '.gui-tok-mark{color:var(--gui-muted);opacity:.55}.gui-tok-heading{color:var(--gui-t-heading);font-weight:700}.gui-tok-bold{font-weight:700}.gui-tok-italic{font-style:italic}',
     '.gui-tok-link{color:var(--gui-t-link);text-decoration:underline}.gui-tok-code{color:var(--gui-t-string)}.gui-tok-quote{color:var(--gui-t-comment)}',
     // scrollbars: thin, rounded, follow the palette
     '.gui-window ::-webkit-scrollbar{width:12px;height:12px}.gui-window ::-webkit-scrollbar-track{background:transparent}',
@@ -254,7 +263,7 @@
       push('code', s); return { tokens: out, state: 'fence' };
     }
     if (/^\s*```/.test(s)) { push('punct', s); return { tokens: out, state: 'fence' }; }
-    if (/^#{1,6}(\s|$)/.test(s)) { push('heading', s); return { tokens: out, state: '' }; }
+    if (/^#{1,6}(\s|$)/.test(s)) { m = /^#{1,6}\s*/.exec(s); push('mark', m[0]); push('heading', s.slice(m[0].length)); return { tokens: out, state: '' }; }
     if (/^\s*>/.test(s)) { push('quote', s); return { tokens: out, state: '' }; }
     if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(s)) { push('punct', s); return { tokens: out, state: '' }; }
     var rest = s;
@@ -377,12 +386,12 @@
   // works like typing). Only createElement, appendChild, addEventListener, style and textContent are used.
   var PAD_T = 8, PAD_L = 8, BUFFER = 30;
   function buildEditor(doc, n, onEvent) {
-    var LINE_H = n.prose ? 26 : 20;
+    var LINE_H = n.prose ? 26 : 20, wrap = !!n.wrap;
     var box = doc.createElement('div');
-    box.className = 'gui-editor' + (n.prose ? ' gui-editor-prose' : '');
+    box.className = 'gui-editor' + (n.prose ? ' gui-editor-prose' : '') + (wrap ? ' gui-editor-wrap' : '');
     if (box.style.setProperty) { box.style.setProperty('--gui-ed-lh', LINE_H + 'px'); }
     var lang = String(n.lang || '').toLowerCase();
-    var showNumbers = n.numbers !== false;
+    var showNumbers = n.numbers !== false && !wrap;
     var gutter = doc.createElement('div'); gutter.className = 'gui-ed-gutter';
     var gnums = doc.createElement('pre');
     gutter.appendChild(gnums);
@@ -391,7 +400,7 @@
     var hl = doc.createElement('pre'); hl.className = 'gui-ed-hl';
     var ta = doc.createElement('textarea'); ta.className = 'gui-ed-ta';
     ta.spellcheck = false; ta.value = n.value || ''; ta.disabled = n.enabled === false;
-    ta.setAttribute('wrap', 'off'); ta.setAttribute('aria-label', 'editor');
+    ta.setAttribute('wrap', wrap ? 'soft' : 'off'); ta.setAttribute('aria-label', 'editor');
     if (n.placeholder) { ta.placeholder = n.placeholder; }
     main.appendChild(hl); main.appendChild(ta);
     if (showNumbers) { box.appendChild(gutter); }
@@ -417,6 +426,7 @@
     }
     function lineCountOf(value, upto) { var c = 0; for (var i = 0; i < upto; i++) { if (value.charCodeAt(i) === 10) { c++; } } return c; }
     function visibleRange(total) {
+      if (wrap) { return { first: 0, last: total - 1 }; } // wrapped rows have no fixed height: every line is drawn
       var top = ta.scrollTop || 0, h = ta.clientHeight || (n.rows || 8) * LINE_H;
       var first = Math.max(0, Math.floor((top - PAD_T) / LINE_H) - BUFFER);
       var last = Math.min(total - 1, Math.ceil((top + h - PAD_T) / LINE_H) + BUFFER);
@@ -424,6 +434,7 @@
     }
     function position() {
       var top = ta.scrollTop || 0, left = ta.scrollLeft || 0;
+      if (wrap) { hl.style.width = Math.max(0, (ta.clientWidth || 0) - PAD_L - 12) + 'px'; }  // same wrapping width as the textarea (its scrollbar is not part of it)
       hl.style.transform = 'translate(' + (PAD_L - left) + 'px,' + (PAD_T - top + (rendered.from < 0 ? 0 : rendered.from) * LINE_H) + 'px)';
       gnums.style.transform = 'translateY(' + (PAD_T - top + (rendered.from < 0 ? 0 : rendered.from) * LINE_H) + 'px)';
       cur.style.transform = 'translateY(' + (PAD_T - top + curLine * LINE_H) + 'px)';
@@ -498,16 +509,34 @@
         }
       }
     });
+    // wrapped mode: the y of a character offset (from the highlight layer, which wraps like the textarea)
+    function wrapY(off) {
+      var acc = 0, kids = hl.childNodes || [];
+      for (var i = 0; i < kids.length; i++) {
+        var len = (kids[i].textContent || '').length;
+        if (off <= acc + len) {
+          var t = kids[i].nodeType === 3 ? kids[i] : kids[i].firstChild;
+          if (!t) { return null; }
+          var rg = doc.createRange(); rg.setStart(t, Math.max(0, Math.min(off - acc, (t.textContent || '').length))); rg.collapse(true);
+          var rr = rg.getBoundingClientRect(), hr = hl.getBoundingClientRect();
+          return rr && hr ? PAD_T + (rr.top - hr.top) : null;
+        }
+        acc += len;
+      }
+      return null;
+    }
     // move the caret (select from a to b), focus the editor and bring the line into view
     box.setCaret = function (a, b) {
       var len = ta.value.length;
       a = Math.max(0, Math.min(len, a)); b = b === undefined ? a : Math.max(0, Math.min(len, b));
       if (ta.focus) { ta.focus(); }
       if (ta.setSelectionRange) { ta.setSelectionRange(Math.min(a, b), Math.max(a, b)); } else { ta.selectionStart = Math.min(a, b); ta.selectionEnd = Math.max(a, b); }
-      var line = lineCountOf(ta.value, b), y = PAD_T + line * LINE_H, h = ta.clientHeight || 0;
-      if (h && (y < ta.scrollTop + LINE_H || y > ta.scrollTop + h - LINE_H * 2)) { ta.scrollTop = Math.max(0, y - Math.floor(h / 3)); }
+      var line = lineCountOf(ta.value, b);
       lastCaret = Math.min(a, b) + ',' + Math.max(a, b);
       curLine = line; rendered.count = -1; paint(true);
+      var y = PAD_T + line * LINE_H, h = ta.clientHeight || 0;
+      if (wrap && doc.createRange) { var wy = wrapY(a); if (wy !== null) { y = wy; } }
+      if (h && (y < ta.scrollTop + LINE_H || y > ta.scrollTop + h - LINE_H * 2)) { ta.scrollTop = Math.max(0, y - Math.floor(h / 3)); position(); }
     };
     box.paintNow = function () { paint(true); };
     box.focusEditor = function () { if (ta.focus) { ta.focus(); } };
@@ -532,6 +561,55 @@
     if (k) { var ox = r.left + (r.width - el.width * k) / 2, oy = r.top + (r.height - el.height * k) / 2; return { x: (e.clientX - ox) / k, y: (e.clientY - oy) / k }; }
     var sx = r.width ? el.width / r.width : 1, sy = r.height ? el.height / r.height : 1;
     return { x: (e.clientX - r.left) * sx, y: (e.clientY - r.top) * sy };
+  }
+
+  // Markdown text as elements (only createElement and textContent, never markup): headings, paragraphs, bullet and numbered lists, quotes, code fences,
+  // rules, and inline bold, italic, code and links (a link is drawn, not followed).
+  function mdInline(doc, parent, s) {
+    var re = /`([^`]+)`|\*\*([^*]+)\*\*|__([^_]+)__|\*([^*\s][^*]*)\*|_([^_\s][^_]*)_|\[([^\]]*)\]\(([^)]*)\)/g, last = 0, m;
+    function add(tag, cls, text) { var e = doc.createElement(tag); if (cls) { e.className = cls; } e.textContent = text; parent.appendChild(e); }
+    function plain(t) { if (t) { var sp = doc.createElement('span'); sp.textContent = t; parent.appendChild(sp); } }
+    while ((m = re.exec(s))) {
+      plain(s.slice(last, m.index));
+      if (m[1] !== undefined) { add('code', '', m[1]); } else if (m[2] !== undefined || m[3] !== undefined) { add('strong', '', m[2] !== undefined ? m[2] : m[3]); }
+      else if (m[4] !== undefined || m[5] !== undefined) { add('em', '', m[4] !== undefined ? m[4] : m[5]); } else { add('span', 'gui-md-link', m[6]); }
+      last = m.index + m[0].length;
+    }
+    plain(s.slice(last));
+  }
+  function fillMarkdown(doc, el, text) {
+    el.textContent = '';
+    var lines = String(text).split('\n'), i = 0, para = [], list = null;
+    function flush() { if (para.length) { var p = doc.createElement('p'); mdInline(doc, p, para.join(' ')); el.appendChild(p); para = []; } }
+    function endList() { list = null; }
+    while (i < lines.length) {
+      var ln = lines[i], m;
+      if (/^\s*```/.test(ln)) {
+        flush(); endList();
+        var pre = doc.createElement('pre'), code = doc.createElement('code'), buf = [];
+        i++;
+        while (i < lines.length && !/^\s*```/.test(lines[i])) { buf.push(lines[i]); i++; }
+        code.textContent = buf.join('\n'); pre.appendChild(code); el.appendChild(pre); i++; continue;
+      }
+      if (!ln.trim()) { flush(); endList(); i++; continue; }
+      if ((m = /^(#{1,6})\s+(.*)$/.exec(ln))) { flush(); endList(); var h = doc.createElement('h' + m[1].length); mdInline(doc, h, m[2].trim()); el.appendChild(h); i++; continue; }
+      if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(ln)) { flush(); endList(); el.appendChild(doc.createElement('hr')); i++; continue; }
+      if ((m = /^\s*>\s?(.*)$/.exec(ln))) {
+        flush(); endList();
+        var bq = doc.createElement('blockquote'), qb = [m[1]];
+        i++;
+        while (i < lines.length && (m = /^\s*>\s?(.*)$/.exec(lines[i]))) { qb.push(m[1]); i++; }
+        var qp = doc.createElement('p'); mdInline(doc, qp, qb.join(' ')); bq.appendChild(qp); el.appendChild(bq); continue;
+      }
+      if ((m = /^\s*([-*+]|\d+[.)])\s+(.*)$/.exec(ln))) {
+        flush();
+        var ordered = /\d/.test(m[1]);
+        if (!list || list.tag !== (ordered ? 'OL' : 'UL')) { list = doc.createElement(ordered ? 'ol' : 'ul'); list.tag = ordered ? 'OL' : 'UL'; el.appendChild(list); }
+        var li = doc.createElement('li'); mdInline(doc, li, m[2]); list.appendChild(li); i++; continue;
+      }
+      endList(); para.push(ln.trim()); i++;
+    }
+    flush();
   }
 
   // opts.image(nodeId, name) gives the decoded picture of a canvas (see paintFrame); without it no picture is drawn
@@ -715,6 +793,11 @@
         tableEl.appendChild(tbody);
         el.appendChild(tableEl);
         break;
+      case 'markdown':
+        el = doc.createElement('div');
+        el.className = 'gui-md';
+        fillMarkdown(doc, el, n.value || '');
+        break;
       case 'canvas':
         el = doc.createElement('canvas');
         el.className = 'gui-canvas';
@@ -829,6 +912,7 @@
       if (kind === 'button' && (k === 'text' || k === 'enabled')) { continue; }
       if ((kind === 'entry' || kind === 'textarea') && (k === 'value' || k === 'enabled' || k === 'placeholder')) { continue; }
       if (kind === 'editor' && (k === 'value' || k === 'enabled')) { continue; }
+      if (kind === 'markdown' && k === 'value') { continue; }
       if (kind === 'checkbox' && (k === 'checked' || k === 'text' || k === 'enabled')) { continue; }
       if (kind === 'progress' && (k === 'value' || k === 'max')) { continue; }
       if ((kind === 'list' || kind === 'multilist') && (k === 'selected' || k === 'enabled' || k === 'items')) { continue; }
@@ -847,6 +931,8 @@
         else { var kids = el.children || []; if (kids.length > 1 && kids[0].className === 'gui-icon') { kids[kids.length - 1].textContent = v; } else { el.textContent = v; } }
       } else if (kind === 'entry' || kind === 'textarea') {
         if (k === 'value') { if (el.value !== v) { el.value = v; } } else if (k === 'enabled') { el.disabled = v === false; } else { el.placeholder = v; }
+      } else if (kind === 'markdown') {
+        fillMarkdown(el.ownerDocument, el, v);
       } else if (kind === 'editor') {
         if (k === 'value') { if (el.value !== v) { el.value = v; } } else { el.disabled = v === false; }
       } else if (kind === 'checkbox') {

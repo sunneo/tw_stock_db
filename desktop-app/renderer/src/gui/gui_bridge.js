@@ -67,7 +67,9 @@
     // editor: a code or text editing surface with line numbers (numbers), syntax colors for lang (python, javascript, json, markdown, html, css; anything else is plain), scrollbars
     // prose: a proportional reading font and roomier lines (documents); caret / caret_to (set only, not stored): move the caret (and select to caret_to)
     // and focus the editor; the user's caret and selection come back as the "caret" event {start, end} (character offsets)
-    editor: { props: ['value', 'lang', 'rows', 'enabled', 'numbers', 'prose'], events: ['input', 'caret'] },
+    // wrap: long lines wrap at the editor's width (no line numbers then); markdown: a read-only view of Markdown text drawn with real headings, bold, lists, quotes and code
+    editor: { props: ['value', 'lang', 'rows', 'enabled', 'numbers', 'prose', 'wrap'], events: ['input', 'caret'] },
+    markdown: { props: ['value'] },
     checkbox: { props: ['text', 'checked', 'enabled'], events: ['change'] },
     progress: { props: ['value', 'max'] },
     list: { props: ['items', 'selected', 'enabled'], events: ['select'] },
@@ -106,7 +108,7 @@
     switch (name) {
       case 'text': case 'value': case 'placeholder': case 'lang': case 'keys': return text(v, name);
       case 'icon': if (typeof v !== 'string' || v.length > 8) { throw new Error('icon must be a short text (a symbol or emoji, at most 8 characters)'); } return v;
-      case 'enabled': case 'checked': case 'visible': case 'secret': case 'expanded': case 'numbers': case 'fit': case 'prose': return bool(v, name);
+      case 'enabled': case 'checked': case 'visible': case 'secret': case 'expanded': case 'numbers': case 'fit': case 'prose': case 'wrap': return bool(v, name);
       case 'rows': return num(v, name, 1, 30);
       case 'grow': return num(v, name, 0, 10);
       case 'gap': case 'pad': return num(v, name, 0, 32);

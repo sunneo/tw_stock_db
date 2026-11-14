@@ -1,5 +1,5 @@
-{"kind":"meta","id":"text-editor/toolbar","title":"文字編輯工具列（新增、存檔、語法）","keywords":["文字編輯工具列","新增","存檔","語法上色"],"entry":"build"}
+{"kind":"meta","id":"text-editor/toolbar","title":"文字編輯工具列（新增、存檔、語法、自動換行）","keywords":["文字編輯工具列","新增","存檔","語法上色","自動換行"],"entry":"build"}
 {"kind":"param","name":"sound","default":"no","ask":"提示音要開嗎？（yes 或 no）"}
 {"kind":"param","name":"lang","default":"text","ask":"程式碼語法要上色嗎？（text 不上色，或 python、javascript、json、markdown、html、css）"}
 {"kind":"require","module":"gui","source":"builtin"}
-{"kind":"layout","tree":[{"kind":"row","role":"toolbar","children":[{"id":"new","kind":"button","text":"新增","icon":"＋"},{"id":"save","kind":"button","text":"存檔","icon":"⬇","role":"primary"},{"kind":"label","text":"","role":"divider"},{"id":"lang_btn","kind":"button","text":"語法：純文字","icon":"</>","role":"outline"}]}]}
+{"kind":"layout","tree":[{"kind":"row","role":"toolbar","children":[{"id":"new","kind":"button","text":"新增","icon":"＋"},{"id":"save","kind":"button","text":"存檔","icon":"⬇","role":"primary"},{"kind":"label","text":"","role":"divider"},{"id":"lang_btn","kind":"button","text":"語法：純文字","icon":"</>","role":"outline"},{"id":"wrap","kind":"checkbox","text":"自動換行","checked":false}]}]}

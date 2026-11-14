@@ -96,6 +96,16 @@ lint.ops.clear()
 handlers['select:outline'](ctx)
 sets = [a for o, a in lint.ops if o == 'gui.set' and a['node'] == ids['body']]
 check('outline click moves the caret to the heading', len(sets) == 1 and sets[0]['props']['caret'] == ctx.state['outline'][1][2])
+lint.ops.clear()
+handlers['click:preview_btn'](ctx)
+sets = [(a['node'], a['props']) for o, a in lint.ops if o == 'gui.set']
+check('preview shows the rendered view and hides the editor', (ids['view'], {'visible': True}) in sets and (ids['body'], {'visible': False}) in sets
+      and any(n == ids['view'] and 'value' in p for n, p in sets))
+before = ctx.get('body')
+handlers['click:bold'](ctx)
+check('no editing while previewing', ctx.get('body') == before)
+handlers['click:preview_btn'](ctx)
+check('back to editing', ctx.state['preview'] is False)
 check('no errors', not errs)
 
 if failures:

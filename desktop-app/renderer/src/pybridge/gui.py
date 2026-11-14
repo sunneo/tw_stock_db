@@ -125,14 +125,19 @@ class Window(object):
         self._values[nid] = bool(expanded)
         return nid
 
-    def editor(self, value="", lang="", rows=8, parent=None, numbers=True, prose=False):
+    def editor(self, value="", lang="", rows=8, parent=None, numbers=True, prose=False, wrap=False):
         """A code and text editing surface: monospace, line numbers (numbers=False hides them), the current line highlighted, scrollbars,
         and syntax colors for lang "python", "javascript", "json", "markdown", "html" or "css" (anything else is plain). value() is its text.
         Give it grow=1 to fill its parent. prose=True uses a reading font and roomier lines (a document). caret(nid) is the user's caret or
         selection; set(nid, value=..., caret=a, caret_to=b) writes new text, moves the caret (selects a..b), focuses the editor and scrolls to it."""
-        nid = self._node("editor", parent, value=str(value), lang=str(lang), rows=int(rows), numbers=bool(numbers), **({"prose": True} if prose else {}))
+        nid = self._node("editor", parent, value=str(value), lang=str(lang), rows=int(rows), numbers=bool(numbers), **({"prose": True} if prose else {}), **({"wrap": True} if wrap else {}))
         self._values[nid] = str(value)
         return nid
+
+    def markdown(self, value="", parent=None):
+        """A read-only view of Markdown text, drawn with real headings, bold, italic, lists, quotes, code and rules (the preview of a document).
+        Change it with set(nid, value=...). Give it grow=1 to fill its parent."""
+        return self._node("markdown", parent, value=str(value))
 
     def table(self, columns, rows=(), parent=None):
         """A grid of text cells: columns is a list of headings, rows a list of lists (one text per column).
@@ -334,7 +339,7 @@ def _styled(fn):
 
 
 for _name in ("label", "button", "entry", "row", "column", "grid", "scroll", "tabs", "tab", "split", "menubar", "menu", "menuitem", "expander",
-              "editor", "table", "multilist", "textarea", "checkbox", "progress", "listbox", "canvas"):
+              "editor", "table", "multilist", "textarea", "checkbox", "progress", "listbox", "canvas", "markdown"):
     setattr(Window, _name, _styled(getattr(Window, _name)))
 
 

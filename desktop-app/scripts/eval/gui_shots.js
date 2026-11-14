@@ -82,9 +82,10 @@ app.whenReady().then(async () => {
     };
     const typeText = async (s) => {
       for (const ch of s) {
-        wc.sendInputEvent({ type: 'keyDown', keyCode: ch });
-        wc.sendInputEvent({ type: 'char', keyCode: ch });
-        wc.sendInputEvent({ type: 'keyUp', keyCode: ch });
+        const kc = ch === '\n' ? 'Return' : ch;   // 換行要用真的 Return 鍵
+        wc.sendInputEvent({ type: 'rawKeyDown', keyCode: kc });
+        wc.sendInputEvent({ type: 'char', keyCode: ch === '\n' ? '\r' : ch });
+        wc.sendInputEvent({ type: 'keyUp', keyCode: kc });
         await wait(40);
       }
       await wait(250);
@@ -153,6 +154,7 @@ app.whenReady().then(async () => {
         await typeText('\n\n## abc');
         k.typed = await ev('const w = window.__v.W(); const t = w.querySelector(".gui-ed-ta"); return { value_tail: t.value.slice(-8), focused: document.activeElement === t, same_node: true };');
         k.typed.grew = k.typed.value_tail.indexOf('abc') >= 0;
+        k.typed.own_line = await ev('const t = window.__v.W().querySelector(".gui-ed-ta"); const ls = t.value.split("\\n"); return ls[ls.length - 1] === "## abc" && ls.length >= 3;');
         await wait(500);   // Python 端收到輸入後更新字數與大綱（用 set，不能把游標重畫掉）
         k.after_status = await ev('const w = window.__v.W(); const t = w.querySelector(".gui-ed-ta"); const c = Array.from(w.querySelectorAll(".gui-label")).map((l) => l.textContent).filter((x) => /字/.test(x)); return { still_focused: document.activeElement === t, count_label: c, outline: Array.from(w.querySelectorAll(".gui-list option")).map((o) => o.textContent) };');
         // 插入段落：按工具列按鈕（真的滑鼠點擊）
@@ -178,6 +180,19 @@ app.whenReady().then(async () => {
           const page = await ev('return { w: window.innerWidth, h: window.innerHeight };');
           const img = await wc.capturePage({ x: Math.max(0, full.x), y: Math.max(0, full.y), width: Math.min(full.width, page.w - Math.max(0, full.x)), height: Math.min(full.height, page.h - Math.max(0, full.y)) });
           fs.writeFileSync(path.join(OUT, 'document_after_editing.png'), img.toPNG());
+        }
+      }
+      // 預覽：按「預覽」，Markdown 畫成排版後的樣子
+      const pbtn = await ev('return window.__v.rectOf(window.__v.byText("button", "預覽"));');
+      if (pbtn) {
+        await click(pbtn.x + pbtn.width / 2, pbtn.y + pbtn.height / 2);
+        await wait(800);
+        k.preview = await ev('const w = window.__v.W(); const v = w.querySelector(".gui-md"); return { shown: !!v && v.offsetParent !== null, h1: v ? v.querySelectorAll("h1").length : 0, h2: v ? v.querySelectorAll("h2").length : 0, strong: v ? v.querySelectorAll("strong").length : 0, li: v ? v.querySelectorAll("li").length : 0, h1_font: v && v.querySelector("h1") ? getComputedStyle(v.querySelector("h1")).fontSize : null };');
+        const f2 = await ev('return window.__v.rectOf(window.__v.W());');
+        const p2 = await ev('return { w: window.innerWidth, h: window.innerHeight };');
+        if (f2) {
+          const im2 = await wc.capturePage({ x: Math.max(0, f2.x), y: Math.max(0, f2.y), width: Math.min(f2.width, p2.w - Math.max(0, f2.x)), height: Math.min(f2.height, p2.h - Math.max(0, f2.y)) });
+          fs.writeFileSync(path.join(OUT, 'document_preview.png'), im2.toPNG());
         }
       }
       k.closed = await ev('return await window.__v.closeAll();');

@@ -70,6 +70,8 @@ def apply_paragraph(text, a, b, placeholder="新段落"):
 
 
 def _edit(ctx, fn):
+    if ctx.state.get("preview"):
+        return  # 預覽中不能改文字
     a, b = ctx.caret("body")
     text, s, e = fn(ctx.get("body"), a, b)
     ctx.set("body", value=text, caret=s, caret_to=e)
@@ -100,6 +102,25 @@ def insert_para(ctx):
     ctx.set("msg", text="已在游標處插入新段落")
 
 
+def toggle_preview(ctx):
+    """編輯與預覽切換：預覽把 Markdown 畫成排版後的樣子（標題變大變粗、粗體變粗、清單有項目符號）。"""
+    on = not ctx.state.get("preview", False)
+    ctx.state["preview"] = on
+    if on:
+        ctx.set("view", value=ctx.get("body"))
+        ctx.set("body", visible=False)
+        ctx.set("view", visible=True)
+        ctx.set("preview_btn", text="編輯", icon="✎")
+        ctx.set("msg", text="預覽：排版後的樣子（按「編輯」回去改）")
+    else:
+        ctx.set("view", visible=False)
+        ctx.set("body", visible=True)
+        a, b = ctx.caret("body")
+        ctx.set("body", caret=a, caret_to=b)
+        ctx.set("preview_btn", text="預覽", icon="◉")
+        ctx.set("msg", text="編輯")
+
+
 def save(ctx):
     ctx.state["saved"] = ctx.state.get("saved", 0) + 1
     ctx.set("msg", text="已存 %d 次" % ctx.state["saved"])
@@ -109,5 +130,5 @@ def build(win, spec, slots):
     return {"handlers": {
         "click:h1": heading(1), "click:h2": heading(2), "click:h3": heading(3),
         "click:bold": bold, "click:italic": italic, "click:bullet": bullet, "click:quote": quote,
-        "click:insert_para": insert_para, "click:save": save,
+        "click:insert_para": insert_para, "click:save": save, "click:preview_btn": toggle_preview,
     }}

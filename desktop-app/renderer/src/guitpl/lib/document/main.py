@@ -22,6 +22,8 @@ def build(win, spec, slots):
     for name in ("h1", "h2", "h3", "bold", "italic", "bullet", "quote", "insert_para"):
         handlers["click:" + name] = after(tb["click:" + name])
         handlers["shortcut:" + name] = handlers["click:" + name]
+    handlers["click:preview_btn"] = tb["click:preview_btn"]
+    handlers["shortcut:preview_btn"] = tb["click:preview_btn"]
     handlers["click:save"] = tb["click:save"]
     handlers["shortcut:save"] = tb["click:save"]
     return {"handlers": handlers}
