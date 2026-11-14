@@ -1,0 +1,12 @@
+{"kind":"meta","id":"office/main","title":"待辦清單","keywords":["待辦","待辦清單","todo","清單","任務"],"entry":"build","standalone":true}
+{"kind":"param","name":"title","default":"待辦清單","ask":"視窗標題要寫什麼？"}
+{"kind":"param","name":"owner","default":"我","ask":"這份清單是誰的？（會顯示在清單最上方）"}
+{"kind":"require","module":"gui","source":"builtin"}
+{"kind":"style","palette":{"bg":"#ffffff","fg":"#222222","accent":"#2563eb","danger":"#dc2626","muted":"#9ca3af"},"font":"sans-serif","size":14,"radius":6}
+{"kind":"layout","window":{"title":"{{title}}","width":440,"resizable":true},"tree":[{"kind":"column","children":[{"id":"heading","kind":"label","text":"{{owner}} 的待辦"},{"slot":"toolbar"},{"id":"hint","kind":"label","text":"還沒有待辦。在上面輸入內容後按「新增」（或 Ctrl+Enter）。"},{"id":"tasks","kind":"editor","value":"","lang":"text","rows":12},{"slot":"statusbar"}]}]}
+{"kind":"slot","name":"toolbar","use":"office/toolbar","params":{}}
+{"kind":"slot","name":"statusbar","use":"office/statusbar","params":{}}
+{"kind":"scene","id":"empty","title":"沒有待辦","note":"只顯示提示文字","show":["hint"],"hide":["tasks"],"on":{"click:add":"list"}}
+{"kind":"scene","id":"list","title":"有待辦","note":"顯示清單編輯區與件數","show":["tasks"],"hide":["hint"]}
+{"kind":"shortcut","keys":"Ctrl+Enter","do":"add_task"}
+{"kind":"shortcut","keys":"Ctrl+L","do":"clear_done"}

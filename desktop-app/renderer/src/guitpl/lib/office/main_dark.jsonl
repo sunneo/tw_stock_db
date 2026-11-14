@@ -1,0 +1,5 @@
+{"kind":"meta","id":"office/main_dark","title":"深色待辦清單","keywords":["深色待辦","夜間待辦"],"extends":"office/main"}
+{"kind":"param","name":"title","default":"夜間待辦清單","ask":"視窗標題要寫什麼？"}
+{"kind":"require","module":"importlib","source":"builtin"}
+{"kind":"require","module":"os","source":"builtin"}
+{"kind":"style","palette":{"bg":"#1e1e1e","fg":"#dddddd","accent":"#4aa3ff","danger":"#e5534b","muted":"#888888"}}
