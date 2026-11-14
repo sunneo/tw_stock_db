@@ -1,0 +1,5 @@
+{"kind":"meta","id":"image/main_light","title":"淺色影像處理（簡化版）","keywords":["淺色","明亮","影像"],"extends":"image/main"}
+{"kind":"param","name":"title","default":"淺色影像處理","ask":"視窗標題要寫什麼？"}
+{"kind":"require","module":"importlib","source":"builtin"}
+{"kind":"require","module":"os","source":"builtin"}
+{"kind":"style","palette":{"bg":"#fafaf9","fg":"#111827","accent":"#7c3aed","danger":"#e11d48","muted":"#6b7280"}}

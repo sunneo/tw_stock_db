@@ -1,0 +1,3 @@
+{"kind":"meta","id":"image/toolbar","title":"圖層工具列（復原、清空）","keywords":["工具列","復原","清空","圖層"],"entry":"build"}
+{"kind":"require","module":"gui","source":"builtin"}
+{"kind":"layout","tree":[{"kind":"row","children":[{"id":"undo","kind":"button","text":"復原一層"},{"id":"clear","kind":"button","text":"清空圖層"}]}]}
