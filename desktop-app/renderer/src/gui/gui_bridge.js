@@ -33,7 +33,10 @@
   var WAVES = ['sine', 'square', 'triangle', 'sawtooth'];
   var SHORTCUT_RE = /^(Ctrl\+)?(Shift\+)?(Alt\+)?([A-Z0-9]|F([1-9]|1[0-2])|Enter|Esc|Space|Up|Down|Left|Right|Delete|Backspace|Tab)$/;
   var MAX_SHORTCUTS = 40;
-  var CONTAINERS = ['column', 'row', 'expander', 'grid', 'scroll'];
+  var CONTAINERS = ['column', 'row', 'expander', 'grid', 'scroll', 'tabs', 'tab', 'split', 'menubar', 'menu'];
+  // where a kind may be added: tab pages only inside tabs (and tabs hold only tab pages); menus only in a menubar, menu items only in a menu
+  var PARENT_OF = { tab: 'tabs', menu: 'menubar', menuitem: 'menu' };
+  var ONLY_CHILDREN = { tabs: ['tab'], menubar: ['menu'], menu: ['menuitem'] };
   var MAX_COLUMNS = 30, MAX_DRAW = 200, MAX_CANVAS = 1200, MAX_FPS = 60;
   var MAX_IMAGES = 16, MAX_IMAGE_BYTES = 256 * 1024;
   var COLOR_RE = /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
@@ -47,6 +50,15 @@
     // grid: children fill a table of `columns` equal columns, row by row; scroll: a column at most `height` pixels high that scrolls
     grid: { props: ['columns'] },
     scroll: { props: ['height'] },
+    // tabs: its children are tab pages (kind tab, text = the title); selected is the page's node id (the first page when empty); the user's click comes
+    // back as select with the page id. split: two or more children side by side (direction row) or stacked (column), the first one ratio percent wide.
+    // menubar > menu (text) > menuitem (text, keys = the shortcut hint shown beside it, e.g. Ctrl+S; click event)
+    tabs: { props: ['selected'], events: ['select'] },
+    tab: { props: ['text'] },
+    split: { props: ['direction', 'ratio'] },
+    menubar: { props: [] },
+    menu: { props: ['text'] },
+    menuitem: { props: ['text', 'keys', 'enabled'], events: ['click'] },
     label: { props: ['text'] },
     button: { props: ['text', 'enabled'], events: ['click'] },
     entry: { props: ['value', 'placeholder', 'enabled', 'secret'], events: ['input'] },
@@ -84,7 +96,7 @@
   // one prop, checked by its name; the same rules serve add (node props) and set
   function prop(kind, name, v) {
     switch (name) {
-      case 'text': case 'value': case 'placeholder': case 'lang': return text(v, name);
+      case 'text': case 'value': case 'placeholder': case 'lang': case 'keys': return text(v, name);
       case 'enabled': case 'checked': case 'visible': case 'secret': case 'expanded': return bool(v, name);
       case 'rows': return num(v, name, 1, 30);
       case 'max': return num(v, name, 0, 1e12);
@@ -100,6 +112,9 @@
   function propValue(kind, name, v) {
     if (kind === 'progress' && name === 'value') { return num(v, 'value', 0, 1e12); }
     if (kind === 'grid' && name === 'columns') { return num(v, name, 1, 12); }
+    if (kind === 'split' && name === 'ratio') { return num(v, name, 10, 90); }
+    if (kind === 'split' && name === 'direction') { if (v !== 'row' && v !== 'column') { throw new Error('direction must be row or column'); } return v; }
+    if (kind === 'menuitem' && name === 'keys') { return text(v, name); }
     if (kind === 'scroll' && name === 'height') { return num(v, name, 40, 1200); }
     if (kind === 'canvas' && (name === 'width' || name === 'height')) { return num(v, name, 1, MAX_CANVAS); }
     if (kind === 'canvas' && name === 'fps') { return num(v, name, 0, MAX_FPS); }
@@ -257,6 +272,8 @@
         if (CONTAINERS.indexOf(p.kind) < 0) { return fail('parent "' + parent + '" is a ' + p.kind + ', not a container'); }
         if (depthOf(win, parent) + 1 > MAX_DEPTH) { return fail('nesting deeper than ' + MAX_DEPTH); }
         var n = checkNode(msg.node, 'node');
+        if (PARENT_OF[n.kind] && p.kind !== PARENT_OF[n.kind]) { return fail('a ' + n.kind + ' can only be added to a ' + PARENT_OF[n.kind] + ', not to "' + parent + '" (a ' + p.kind + ')'); }
+        if (ONLY_CHILDREN[p.kind] && ONLY_CHILDREN[p.kind].indexOf(n.kind) < 0) { return fail('a ' + p.kind + ' only holds ' + ONLY_CHILDREN[p.kind].join(', ') + ', not ' + n.kind); }
         if (win.nodes[n.id]) { return fail('node "' + n.id + '" already exists in window "' + wid + '"'); }
         if (nodeCount(win) >= MAX_NODES) { return fail('at most ' + MAX_NODES + ' nodes per window'); }
         n.parent = parent;
@@ -319,6 +336,11 @@
     }
     var declared = KINDS[node.kind].events || [];
     if (declared.indexOf(eventName) < 0) { return null; }
+    // tabs: the click names a page of this tabs node; the bridge keeps it so a rebuild of the window shows the same page
+    if (node.kind === 'tabs' && eventName === 'select') {
+      if (typeof value !== 'string' || node.children.indexOf(value) < 0) { return null; }
+      node.selected = value;
+    }
     if ((eventName === 'key' || eventName === 'frame' || eventName === 'mouse' || eventName === 'wheel' || eventName === 'resize') && value === undefined) { return null; } // these always carry a value
     var ev = { v: VERSION, event: eventName, id: winId, node: nodeId };
     if (value !== undefined) {

@@ -79,6 +79,39 @@ class Window(object):
         """A column at most `height` pixels high (40-1200); what does not fit scrolls."""
         return self._node("scroll", parent, height=int(height))
 
+    def tabs(self, parent=None):
+        """A container of tab pages: add pages with tab(title, parent=<its id>), put the page's content in with parent=<page id>.
+        value() is the id of the page shown (the first one until the user clicks another); a click makes a "select" event."""
+        nid = self._node("tabs", parent)
+        self._values[nid] = None
+        return nid
+
+    def tab(self, title, parent):
+        """One page of a tabs container (parent is the tabs id). Returns the page's id: children of the page take parent=<this id>."""
+        nid = self._node("tab", parent, text=str(title))
+        if self._values.get(parent) is None:
+            self._values[parent] = nid
+        return nid
+
+    def split(self, direction="row", ratio=50, parent=None):
+        """Two or more children side by side (direction "row") or stacked ("column"); the first one gets `ratio` percent (10-90)."""
+        return self._node("split", parent, direction=str(direction), ratio=int(ratio))
+
+    def menubar(self, parent=None):
+        """A bar of menus: add menu(title, parent=<its id>), then menuitem(text, parent=<menu id>)."""
+        return self._node("menubar", parent)
+
+    def menu(self, title, parent):
+        return self._node("menu", parent, text=str(title))
+
+    def menuitem(self, text, parent, keys=""):
+        """An item of a menu; a click gives {"event": "click", "node": id}. keys is only the hint shown beside the text (for example
+        "Ctrl+S"): register the real key with shortcut()."""
+        fields = {"text": str(text)}
+        if keys:
+            fields["keys"] = str(keys)
+        return self._node("menuitem", parent, **fields)
+
     def expander(self, text, expanded=False, parent=None):
         """A collapsible container: children take parent=<its id>. value() is True while it is open."""
         nid = self._node("expander", parent, text=str(text), expanded=bool(expanded))
@@ -241,3 +274,41 @@ def usertpl(action, id=None, jsonl=None, py=None):
     """The user's own GUI templates kept by the page. "list" -> {id: {"jsonl", "py"}}; "save" stores one pair (id must be user/...);
     "delete" removes one. Used by guitpl (catalog, run) and the design studio; there is no page behind a plain python run (it raises)."""
     return fa_bridge.call("gui.usertpl", {"action": str(action), "id": id, "jsonl": jsonl, "py": py})
+
+
+def _dialog(title, text, buttons, entry=None, width=340):
+    """A small modal window: shows text (and an entry when entry is a string), waits for one of the buttons. Returns (button index, entry text)
+    or (None, None) when the user closed the window."""
+    w = Window(title, width=width)
+    w.label(text)
+    box = w.entry(entry) if entry is not None else None
+    row = w.row()
+    ids = [w.button(b, parent=row) for b in buttons]
+    result = (None, None)
+    while True:
+        ev = w.wait(timeout=300)
+        if ev is None:
+            continue
+        if ev.get("event") == "close":
+            break
+        if ev.get("event") == "click" and ev.get("node") in ids:
+            result = (ids.index(ev["node"]), w.value(box) if box else None)
+            break
+    w.close()
+    return result
+
+
+def message(text, title="Message", ok="OK"):
+    """Show a message in a small window and wait until the user presses the button (or closes it)."""
+    _dialog(title, text, [ok])
+
+
+def confirm(text, title="Confirm", yes="Yes", no="No"):
+    """Ask a yes/no question in a small window. True for the first button; False for the second button or closing the window."""
+    return _dialog(title, text, [yes, no])[0] == 0
+
+
+def ask(text, default="", title="Input", ok="OK", cancel="Cancel"):
+    """Ask for one line of text in a small window. Returns the text, or None when the user cancels or closes the window."""
+    index, value = _dialog(title, text, [ok, cancel], entry=str(default))
+    return value if index == 0 else None
