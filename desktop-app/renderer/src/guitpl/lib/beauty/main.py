@@ -75,4 +75,5 @@ def build(win, spec, slots):
         "click:snap_btn": snap,
         "shortcut:snap": snap,
         "click:tb_reset": reset,
+        "start": _redraw,
     }}

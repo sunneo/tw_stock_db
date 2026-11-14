@@ -19,6 +19,8 @@ def draw(ctx, colors):
     cs = ctx.state.get("comps", [])
     sel = ctx.state.get("sel")
     ops = [["clear", colors["bg"]]]
+    if not cs:
+        ops.append(["text", 10, 12, "尚無元件：從工具列新增", colors["fg"]])
     for i, c in enumerate(cs[:6]):
         y = i * TYPE_H + 4
         custom = c.get("color") if valid_color(c.get("color")) else None
@@ -73,6 +75,7 @@ def make(colors, toolbar):
     handlers = {key: redraw_after(fn) for key, fn in toolbar.items()}
     handlers["select:comp_list"] = on_select
     handlers["click:apply"] = apply
+    handlers["start"] = lambda ctx: draw(ctx, colors)
     return handlers
 
 

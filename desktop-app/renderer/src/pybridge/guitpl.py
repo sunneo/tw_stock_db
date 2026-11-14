@@ -721,6 +721,11 @@ def run(cid, params=None, roots=None, available=None, loop=True, window=None, st
                 "calls": _calls_of(comp), "by_id": {v: k for k, v in ids.items()}}
     by_id = {v: k for k, v in ids.items()}
     calls = _calls_of(comp)
+    if "start" in handlers:  # 開窗後先呼叫一次「start」處理函式，讓畫布一開始就有畫面
+        try:
+            handlers["start"](ctx)
+        except Exception as e:
+            ctx.error("處理事件 start 出錯：%s: %s" % (type(e).__name__, e))
     while ctx.running:
         ev = win.poll()
         if ev is None:

@@ -84,3 +84,5 @@
 - `lora-train/tool_snapshot.js` 的 `tool_catalog_equal.test.js` 在 CRLF 工作目錄下本來就失敗（找不到方法收尾），與本線無關。
 - 我的範本存在 localStorage（桌面版即使用者資料區）；評估檔開頭會清掉，不要在使用者真實環境裡亂清。
 - 啟動真 Electron 評估：`FA_DEBUG_EVAL_FILE=<絕對路徑> FA_DISABLE_MAIN_OVERLAY=1 FA_BROWSER_CONTROL_PORT=<17932 以上，不可用 17923> node_modules/electron/dist/electron.exe . --no-sandbox --disable-gpu --user-data-dir=<全新暫存資料夾>`，結果在標準輸出的 `[eval-file] result:`。
+
+- 2026-11-14 第二輪待改善全部處理完：pick_file（v407）、YAML（v408）、子元件逐個驗證（28 個）、畫布截圖比對（順手修好三個空白畫布，新增 `start` 處理函式）、真實鍵盤與 Ctrl+C。只剩已知限制：`scripts/eval/native_driver.js` 的鍵盤段會被一個啟動後出現的全螢幕遮罩擋住（詳見 `docs/VERIFY.gui-templates.md` 補充驗證）。原生驅動會搶焦點，不要頻繁重跑。

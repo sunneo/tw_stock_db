@@ -114,6 +114,7 @@ def build(win, spec, slots):
     handlers["click:add"] = add
     handlers["click:open_img"] = open_image
     handlers["shortcut:add"] = add
+    handlers["start"] = lambda ctx: draw(ctx, colors)
     handlers["click:orig"] = redraw_after(lambda ctx: None)
     handlers["click:back"] = redraw_after(lambda ctx: None)
     return {"handlers": handlers}
