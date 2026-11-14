@@ -20,6 +20,14 @@
 - **待辦 3 未完成的部分**（2.11 清單）：`tabs`、`split`、`menubar`／`menu`、對話框（`message`／`confirm`／`pick_file`，走 `renderer/src/gui/zenity.js` 那條路）、pygame 相容層 `mixer`（最小：`mixer.Sound` 轉呼叫 `tone`）。
 - **未發布**：本線的改動都還沒發布（不准執行發布腳本，由管理者決定）。
 
+## 2.1 進度更新（2026-11-14 收尾；這條線在 15:00 額度重置時結束，不再交接，文件留著供之後重開）
+
+- 新框架（取代上面第 2 節的單一 JSON 流程）：`renderer/src/pybridge/guitpl.py`（一對 jsonl＋py）、`renderer/src/guitpl/lint.py`、`lib/` 十三個領域各一個 `main`＋兩個子元件＋兩到三個變體（共 70 個元件），格式見 `DESIGN.gui-templates.md` 第 4 節。
+- **模擬器實跑過**（真 Electron 終端機 python3、Worker 路徑，`scripts/eval/guitpl_emulator.eval.js`）：十三個領域的 `main` 全部：beauty、document、game、idphoto、image、inventory、media、midi、office、project、slides、text-editor、web-design；每個都開窗、點每個按鈕、關窗、沒有錯誤輸出。實跑中抓到並修掉：視窗配色在真 DOM 上丟錯（所有視窗打不開，已修並推送）、快捷鍵名稱不合法、畫面關閉後仍畫圖的競爭。
+- **只過本機檢查（lint＋假橋接）**：各領域的變體（`main_dark`、`main_light`、`main_warm`、`main_contrast`、`demo/notes_dark`）與子元件。
+- **未做**：`tabs`、`split`、選單列、對話框、pygame `mixer`；接到 AI 的宿主工具（`gui_template_find` 等，目前 AI 只能讀 `gui.py` 文件字串裡的 `guitpl.catalog`／`guitpl.run` 說明）；分鏡畫面、設計工作室、使用者範本存檔；「編譯成單一 Python 檔」；YAML 撰寫格式；舊 `data/*.json` 流程與 `guitpl_core.js` 的檢索改讀 jsonl（`jsonl_core.js` 已能讀 meta／param／scene）。
+- 已知限制：模擬器評估只點按鈕，沒有送輸入框文字、快捷鍵、畫布事件；圖像與影音領域是簡化版；發布由管理者決定（本線沒有執行發布腳本）。
+
 ## 3. 待辦（依序）
 
 1. **待辦 3 收尾（缺的能力）**：依序補 `tabs`（容器，子節點各帶 `title`，或 `tab` 子容器）、`split`、`menubar`／`menu`（項目可帶快捷鍵提示並與 `shortcut` 連動）、對話框（先讀 `zenity.js` 看 `gui.Window` 怎麼接）、pygame `mixer`。每項都要走完整鏈：`gui_bridge.js`（KINDS／CONTAINERS／屬性檢查）→ `gui_render.js` → `gui_host.js`（若有新操作）→ `py_worker.js`（`GUI_OPS`，若有新操作）→ `pybridge/gui.py` → `compose_core.js`（`KIND_METHODS`）→ 各自測試；最後 `node scripts/embed-code-ui.js`、`node build-assistant.js`、`node --check renderer/src/floating-assistant.js`，再提交（含 `renderer/floating-assistant.js`、`renderer/floating-assistant.min.js`、`renderer/src/floating-assistant.js`；`update-manifest.json` 與 `web-lazy/` 是建置副產物，不提交）。做不到的項目寫進設計文件第 3 節「未完成」並繼續下一步，不卡住。

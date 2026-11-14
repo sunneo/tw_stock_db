@@ -21,7 +21,7 @@ const put = (name, text) => fa._writeBytesToTerminalFs(fsStore, '/work/' + name,
 put('catalog.py', 'import gui\nimport guitpl\nids = [e["id"] for e in guitpl.catalog() if e["standalone"]]\nfor i in ids:\n    print("ID=" + i)\nprint("ALL=%d" % len(guitpl.catalog()))\n');
 await fa._runTerminalCommand(session, 'python3 catalog.py');
 const txt = termText(session);
-const m = [null, (txt.match(/^ID=\S+/gm) || []).map((s) => s.slice(3)).join(',')];
+const m = [null, (txt.match(/(?:^|\s)ID=\S+/gm) || []).map((s) => s.trim().slice(3)).join(',')];
 R.catalog_output_tail = txt.split('\n').filter((l) => l.trim()).slice(-8).join('\n');
 R.loaded = { scripts: Array.from(document.scripts).map((s) => s.src).filter((s) => /floating-assistant/.test(s)), has_py_worker: typeof fa._terminalRunPythonWorker === 'function' };
 // 變體（main_dark 等）只是覆寫 style 與參數，這裡只實跑每個領域的 main（變體由本機 lint 檢查）
