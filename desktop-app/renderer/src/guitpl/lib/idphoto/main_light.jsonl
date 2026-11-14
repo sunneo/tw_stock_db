@@ -1,0 +1,5 @@
+{"kind":"meta","id":"idphoto/main_light","title":"淺色證件照（簡化版）","keywords":["淺色證件照","明亮證件照"],"extends":"idphoto/main"}
+{"kind":"param","name":"bg","default":"淺藍","ask":"預設背景色要選哪一個（白、淺藍、淺灰、紅）？"}
+{"kind":"require","module":"importlib","source":"builtin"}
+{"kind":"require","module":"os","source":"builtin"}
+{"kind":"style","palette":{"bg":"#f8fafc","fg":"#0f172a","accent":"#059669"},"font":"sans-serif","radius":10}

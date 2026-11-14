@@ -1,0 +1,5 @@
+{"kind":"meta","id":"idphoto/main_dark","title":"深色證件照（簡化版）","keywords":["深色證件照","夜間證件照"],"extends":"idphoto/main"}
+{"kind":"param","name":"name","default":"夜間證件照","ask":"視窗標題要寫什麼？"}
+{"kind":"require","module":"importlib","source":"builtin"}
+{"kind":"require","module":"os","source":"builtin"}
+{"kind":"style","palette":{"bg":"#1e1e1e","fg":"#dddddd","accent":"#4aa3ff","muted":"#6b7280"},"font":"monospace"}
