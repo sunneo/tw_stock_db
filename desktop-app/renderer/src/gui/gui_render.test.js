@@ -134,4 +134,53 @@ assert.deepStrictEqual(events2[5], ['select', 'ml', []]); ok();
 
 assert.strictEqual(violations.length, 0); ok();
 
+// theme: colors, font, size, radius reach the window and its controls; shortcuts fire "shortcut" on the window
+{
+  const S = G.createSession();
+  const ap = (m) => { const r = G.apply(S, m); assert.ok(r.ok, r.error); };
+  ap({ op: 'open', id: 'wt', title: 'T', width: 300 });
+  ap({ op: 'add', id: 'wt', node: { id: 'b', kind: 'button', text: 'Go' } });
+  ap({ op: 'add', id: 'wt', node: { id: 'e', kind: 'entry', value: '' } });
+  ap({ op: 'add', id: 'wt', node: { id: 'pb', kind: 'progress', value: 1, max: 2 } });
+  ap({ op: 'theme', id: 'wt', palette: { bg: '#102030', fg: '#eeeeee', accent: '#ffffcc', muted: '#778899' }, font: 'monospace', size: 15, radius: 6 });
+  ap({ op: 'shortcut', id: 'wt', keys: 'Ctrl+S', name: 'save' });
+  ap({ op: 'shortcut', id: 'wt', keys: 'Q', name: 'quit' });
+  const evs = [];
+  const w = R.renderWindow(doc, G.snapshot(S, 'wt'), (name, node, value) => evs.push([name, node, value]), () => {});
+  assert.strictEqual(w.style.background, '#102030'); assert.strictEqual(w.style.color, '#eeeeee'); ok();
+  assert.strictEqual(w.style.fontFamily, 'monospace'); assert.strictEqual(w.style.fontSize, '15px'); assert.strictEqual(w.style.borderRadius, '6px'); ok();
+  assert.strictEqual(w.style['--gui-accent'], '#ffffcc'); ok();
+  const b = byNode(w, 'b');
+  assert.strictEqual(b.style.background, '#ffffcc'); assert.strictEqual(b.style.color, '#000000', 'dark text on a light accent'); ok();
+  assert.strictEqual(byNode(w, 'e').style.background, '#102030'); assert.strictEqual(byNode(w, 'e').style.border, '1px solid #778899'); ok();
+  assert.strictEqual(byNode(w, 'pb').style.accentColor, '#ffffcc'); ok();
+  assert.strictEqual(R.textOn('#102030'), '#ffffff'); assert.strictEqual(R.textOn('#fff'), '#000000'); ok();
+  assert.strictEqual(find(w, (e) => e.className === 'gui-titlebar').style.background, 'rgba(127,127,127,.25)'); ok();
+  // no theme: nothing is touched
+  const plain = R.renderWindow(doc, { id: 'p', title: 'P', width: 100, root: { id: 'root', kind: 'column', children: [] } }, () => {}, () => {});
+  assert.strictEqual(plain.style.background, undefined); ok();
+
+  // shortcuts
+  const key = (o) => Object.assign({ target: { tagName: 'div' }, preventDefault() { this.stopped = true; } }, o);
+  assert.strictEqual(R.shortcutKey({ key: 's', ctrlKey: true }), 'Ctrl+S');
+  assert.strictEqual(R.shortcutKey({ key: 'Z', ctrlKey: true, shiftKey: true }), 'Ctrl+Shift+Z');
+  assert.strictEqual(R.shortcutKey({ key: 'z', metaKey: true, altKey: true }), 'Ctrl+Alt+Z');
+  assert.strictEqual(R.shortcutKey({ key: 'Escape' }), 'Esc'); assert.strictEqual(R.shortcutKey({ key: ' ' }), 'Space');
+  assert.strictEqual(R.shortcutKey({ key: 'ArrowLeft' }), 'Left'); assert.strictEqual(R.shortcutKey({ key: 'F5' }), 'F5');
+  assert.strictEqual(R.shortcutKey({ key: 'Shift' }), null); ok();
+  assert.strictEqual(w.attrs.tabindex, undefined); assert.strictEqual(w.tabIndex, -1, 'the window can take the keyboard'); ok();
+  const e1 = key({ key: 's', ctrlKey: true });
+  (w.listeners.keydown || []).forEach((fn) => fn(e1));
+  assert.deepStrictEqual(evs[evs.length - 1], ['shortcut', 'root', 'save']); assert.strictEqual(e1.stopped, true); ok();
+  const before = evs.length;
+  (w.listeners.keydown || []).forEach((fn) => fn(key({ key: 'x', ctrlKey: true })));
+  assert.strictEqual(evs.length, before, 'an unregistered key sends nothing'); ok();
+  (w.listeners.keydown || []).forEach((fn) => fn(key({ key: 'q', target: { tagName: 'input' } })));
+  assert.strictEqual(evs.length, before, 'a bare letter is typing in a text box'); ok();
+  (w.listeners.keydown || []).forEach((fn) => fn(key({ key: 'q' })));
+  assert.deepStrictEqual(evs[evs.length - 1], ['shortcut', 'root', 'quit']); ok();
+  (w.listeners.keydown || []).forEach((fn) => fn(key({ key: 's', ctrlKey: true, target: { tagName: 'input' } })));
+  assert.deepStrictEqual(evs[evs.length - 1], ['shortcut', 'root', 'save'], 'Ctrl+S works inside a text box'); ok();
+}
+
 console.log('gui_render: ' + n + ' assertions passed');

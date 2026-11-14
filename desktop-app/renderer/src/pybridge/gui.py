@@ -22,6 +22,8 @@ listbox selection), "change" (a checkbox).
 Node kinds: label, button, entry, textarea, checkbox, progress, listbox, row, column, expander, editor, table, multilist,
 canvas. Rows, columns and expanders take a parent=... argument to hold other nodes. set(node, text=..., enabled=...,
 visible=..., value=...) changes a node that was already added.
+Look and keys: theme(palette={...}, font=..., size=..., radius=...) colors and styles the window; shortcut("Ctrl+S", "save")
+makes wait() and poll() return {"event": "shortcut", "value": "save"} when the key is pressed; tone(freq, ms, wave) beeps.
 """
 import base64
 import os
@@ -124,6 +126,33 @@ class Window(object):
         for key in ("value", "checked", "selected"):
             if key in props and nid in self._values:
                 self._values[nid] = props[key]
+
+    def theme(self, palette=None, font=None, size=None, radius=None):
+        """The window's look. palette: a dict with any of bg, fg, accent, danger, muted ("#rgb" or "#rrggbb"; the ones not given
+        keep their value). font: "sans-serif", "serif" or "monospace". size: text size 10-24. radius: corner radius 0-16.
+        Only what is given changes, so it can be called again later (for example to switch dark and light)."""
+        args = {"id": self.id}
+        if palette is not None:
+            args["palette"] = dict(palette)
+        if font is not None:
+            args["font"] = str(font)
+        if size is not None:
+            args["size"] = int(size)
+        if radius is not None:
+            args["radius"] = int(radius)
+        fa_bridge.call("gui.theme", args)
+
+    def shortcut(self, keys, name):
+        """Register a window shortcut. keys: "Ctrl+S", "Ctrl+Shift+Z", "Alt+Left", "F5", "Esc" (modifiers in the order Ctrl, Shift,
+        Alt; a letter or digit, F1-F12, Enter, Esc, Space, Up, Down, Left or Right). When the user presses it, wait() and
+        poll() return {"event": "shortcut", "value": name}. name None removes the shortcut. A key with no Ctrl or Alt is
+        ignored while the user types in a text box."""
+        fa_bridge.call("gui.shortcut", {"id": self.id, "keys": str(keys), "name": None if name is None else str(name)})
+
+    def tone(self, freq=440, ms=120, wave="sine"):
+        """Play a short beep in the page: freq 40-8000 Hz, ms 10-2000, wave "sine", "square", "triangle" or "sawtooth".
+        It returns at once and stays silent if the page cannot play sound (nothing is raised)."""
+        fa_bridge.call("gui.tone", {"id": self.id, "freq": float(freq), "ms": int(ms), "wave": str(wave)})
 
     def canvas(self, width=320, height=240, fps=0, parent=None):
         """A drawing area for frames (pygame uses this). draw(nid, ops) paints one whole frame. fps > 0 queues "frame" events for poll()."""

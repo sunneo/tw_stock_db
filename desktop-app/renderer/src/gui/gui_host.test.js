@@ -135,5 +135,35 @@ const eventOf = (line) => JSON.parse(line);
     assert.deepStrictEqual(closed, ['a1', 'a2']); ok();
   }
 
+  // theme, shortcut and tone ops: theme and shortcut redraw the window (and re-apply the theme after the window style); a shortcut event is queued;
+  // tone goes to the caller's player and never creates a window
+  {
+    const tones = [], themed = [];
+    const rr = Object.assign({}, fakeRender, { applyTheme(view, theme) { themed.push(theme); } });
+    const { host } = newHost({ render: rr, tone: (f, ms, wave) => tones.push([f, ms, wave]) });
+    host.apply(msg({ op: 'open', id: 'w1', title: 'A' }));
+    const shows = renders.length;
+    assert.strictEqual(host.apply(msg({ op: 'theme', id: 'w1', palette: { bg: '#000' }, size: 14 })).ok, true);
+    assert.strictEqual(renders.length, shows + 1, 'theme redraws'); ok();
+    assert.deepStrictEqual(themed[themed.length - 1], { palette: { bg: '#000' }, size: 14 }); ok();
+    assert.strictEqual(host.apply(msg({ op: 'shortcut', id: 'w1', keys: 'Ctrl+S', name: 'save' })).ok, true);
+    assert.strictEqual(renders.length, shows + 2, 'shortcut redraws'); ok();
+    renders[renders.length - 1].onEvent('shortcut', 'root', 'save');
+    assert.deepStrictEqual(eventOf(host.poll('w1')), { v: 1, event: 'shortcut', id: 'w1', node: 'root', value: 'save' }); ok();
+    renders[renders.length - 1].onEvent('shortcut', 'root', 'other');
+    assert.strictEqual(host.poll('w1'), null, 'an unregistered name is dropped'); ok();
+    assert.strictEqual(host.apply(msg({ op: 'tone', id: 'w1', freq: 440, ms: 100, wave: 'square' })).ok, true);
+    assert.deepStrictEqual(tones, [[440, 100, 'square']]); ok();
+    host.apply(msg({ op: 'tone', id: 'w1', freq: 880, ms: 50 }));
+    assert.deepStrictEqual(tones[1], [880, 50, 'sine'], 'default wave'); ok();
+    assert.strictEqual(renders.length, shows + 2, 'tone does not redraw'); ok();
+    assert.strictEqual(host.apply(msg({ op: 'tone', id: 'w1', freq: 1, ms: 50 })).ok, false); ok();
+    assert.strictEqual(tones.length, 2, 'a refused tone is not played'); ok();
+    // a player that throws never fails the program
+    const { host: h2 } = newHost({ tone: () => { throw new Error('no audio'); } });
+    h2.apply(msg({ op: 'open', id: 'w9' }));
+    assert.strictEqual(h2.apply(msg({ op: 'tone', id: 'w9', freq: 440, ms: 100 })).ok, true); ok();
+  }
+
   console.log('gui_host: ' + n + ' assertions passed');
 })().catch((e) => { console.error(e); process.exit(1); });

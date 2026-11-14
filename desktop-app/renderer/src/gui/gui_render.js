@@ -260,7 +260,72 @@
     }
   }
 
-  // snapshot = { id, title, width, resizable, maximizable, root }; onEvent(name, nodeId, value) is called for user actions in the window;
+  // ---- theme and shortcuts (window-level look and keys; the bridge validated every value) ----
+  var KEY_NAMES = { ' ': 'Space', Enter: 'Enter', Escape: 'Esc', ArrowUp: 'Up', ArrowDown: 'Down', ArrowLeft: 'Left', ArrowRight: 'Right' };
+  // a keydown as the bridge's shortcut text: Ctrl+Shift+Alt+<key> (Cmd counts as Ctrl); null for a key with no name
+  function shortcutKey(e) {
+    var key = String(e.key || '');
+    var name = KEY_NAMES[key] || (/^F([1-9]|1[0-2])$/.test(key) ? key : (key.length === 1 ? key.toUpperCase() : null));
+    if (!name) { return null; }
+    return ((e.ctrlKey || e.metaKey) ? 'Ctrl+' : '') + (e.shiftKey ? 'Shift+' : '') + (e.altKey ? 'Alt+' : '') + name;
+  }
+  // black or white, whichever reads better on the color (#rgb or #rrggbb)
+  function textOn(color) {
+    var h = String(color).replace('#', '');
+    if (h.length === 3) { h = h.charAt(0) + h.charAt(0) + h.charAt(1) + h.charAt(1) + h.charAt(2) + h.charAt(2); }
+    var r = parseInt(h.slice(0, 2), 16), g = parseInt(h.slice(2, 4), 16), b = parseInt(h.slice(4, 6), 16);
+    return (0.299 * r + 0.587 * g + 0.114 * b) > 150 ? '#000000' : '#ffffff';
+  }
+  function allNodes(el, out) {
+    out = out || [];
+    (el.children || []).forEach(function (c) { out.push(c); allNodes(c, out); });
+    return out;
+  }
+  // Paints a window with its theme: { palette:{bg,fg,accent,danger,muted}, font, size, radius }. Called after the window's own style is set
+  // (the host replaces the whole style text), and safe to call with no theme.
+  function applyTheme(win, theme) {
+    if (!win || !win.style || !theme) { return; }
+    var p = theme.palette || {}, st = win.style;
+    function v(name, value) { if (st.setProperty) { st.setProperty(name, value); } else { st[name] = value; } }
+    Object.keys(p).forEach(function (k) { v('--gui-' + k, p[k]); });
+    if (p.bg) { st.background = p.bg; }
+    if (p.fg) { st.color = p.fg; }
+    if (theme.font) { st.fontFamily = theme.font; }
+    if (theme.size) { st.fontSize = theme.size + 'px'; }
+    if (theme.radius !== undefined) { st.borderRadius = theme.radius + 'px'; }
+    allNodes(win).forEach(function (el) {
+      var tag = String(el.tagName || '').toLowerCase();
+      if (!el.style) { return; }
+      if (el.className === 'gui-titlebar') { el.style.background = 'rgba(127,127,127,.25)'; el.style.borderBottom = '1px solid ' + (p.muted || 'rgba(127,127,127,.6)'); }
+      else if (el.className === 'gui-close' || el.className === 'gui-maximize') { if (p.fg) { el.style.color = p.fg; } }
+      if (tag === 'button' && !(el.className === 'gui-close' || el.className === 'gui-maximize')) {
+        if (p.accent) { el.style.background = p.accent; el.style.color = textOn(p.accent); el.style.border = 'none'; }
+        if (theme.radius !== undefined) { el.style.borderRadius = theme.radius + 'px'; }
+      } else if (tag === 'input' || tag === 'textarea' || tag === 'select') {
+        if (p.bg) { el.style.background = p.bg; }
+        if (p.fg) { el.style.color = p.fg; }
+        if (p.muted) { el.style.border = '1px solid ' + p.muted; }
+        if (p.accent && el.type === 'checkbox') { el.style.accentColor = p.accent; }
+      } else if (tag === 'progress' && p.accent) { el.style.accentColor = p.accent; }
+    });
+  }
+
+  // keys the window answers: shortcuts is { 'Ctrl+S': 'save' }. A key with no Ctrl or Alt is ignored while typing in a text box.
+  function bindShortcuts(win, shortcuts, onEvent) {
+    var names = shortcuts || {};
+    if (!Object.keys(names).length) { return; }
+    win.tabIndex = -1; // a click into the window focuses it, so its keys arrive here
+    win.addEventListener('keydown', function (e) {
+      var combo = shortcutKey(e);
+      if (!combo || !Object.prototype.hasOwnProperty.call(names, combo)) { return; }
+      var tag = String((e.target && e.target.tagName) || '').toLowerCase();
+      if ((tag === 'input' || tag === 'textarea' || tag === 'select') && !/Ctrl\+|Alt\+/.test(combo)) { return; }
+      if (e.preventDefault) { e.preventDefault(); }
+      onEvent('shortcut', 'root', names[combo]);
+    });
+  }
+
+  // snapshot = { id, title, width, resizable, maximizable, theme, shortcuts, root }; onEvent(name, nodeId, value) is called for user actions in the window;
   // opts (optional) = { image(nodeId, name) } for the pictures of the canvases
   var CONTROL_BUTTON_CSS = 'border:none;background:transparent;cursor:pointer;font:14px sans-serif;line-height:1;padding:2px 7px;border-radius:4px;color:#222;';
   function renderWindow(doc, snap, onEvent, onClose, opts) {
@@ -300,8 +365,10 @@
       body.style.cssText = 'display:flex;flex-direction:column;flex:1 1 auto;min-height:0;';
     }
     win.appendChild(body);
+    bindShortcuts(win, snap.shortcuts, onEvent);
+    applyTheme(win, snap.theme); // the host sets the window's own style text afterwards and calls applyTheme again
     return win;
   }
 
-  return { CONTROL_BUTTON_CSS: CONTROL_BUTTON_CSS, renderWindow: renderWindow, paintFrame: paintFrame };
+  return { CONTROL_BUTTON_CSS: CONTROL_BUTTON_CSS, renderWindow: renderWindow, paintFrame: paintFrame, applyTheme: applyTheme, shortcutKey: shortcutKey, textOn: textOn };
 }));

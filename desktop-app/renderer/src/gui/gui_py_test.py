@@ -138,6 +138,24 @@ replies[:] = [{'v': 1, 'event': 'change', 'id': w4.id, 'node': cb, 'value': Fals
 ev = w4.poll()
 check('poll returns change and stores it', ev['event'] == 'change' and w4.value(cb) is False)
 
+# theme, shortcut, tone
+calls.clear()
+w4.theme(palette={'bg': '#111111'}, font='monospace', size=14, radius=4)
+check('theme op', calls[-1] == ('gui.theme', {'id': w4.id, 'palette': {'bg': '#111111'}, 'font': 'monospace', 'size': 14, 'radius': 4}))
+w4.theme(size=16)
+check('theme sends only what is given', calls[-1] == ('gui.theme', {'id': w4.id, 'size': 16}))
+w4.shortcut('Ctrl+S', 'save')
+check('shortcut op', calls[-1] == ('gui.shortcut', {'id': w4.id, 'keys': 'Ctrl+S', 'name': 'save'}))
+w4.shortcut('Ctrl+S', None)
+check('shortcut remove', calls[-1] == ('gui.shortcut', {'id': w4.id, 'keys': 'Ctrl+S', 'name': None}))
+w4.tone(880, 50, 'square')
+check('tone op', calls[-1] == ('gui.tone', {'id': w4.id, 'freq': 880.0, 'ms': 50, 'wave': 'square'}))
+w4.tone()
+check('tone defaults', calls[-1][1]['freq'] == 440.0 and calls[-1][1]['ms'] == 120 and calls[-1][1]['wave'] == 'sine')
+replies[:] = [{'v': 1, 'event': 'shortcut', 'id': w4.id, 'node': 'root', 'value': 'save'}]
+ev = w4.wait(timeout=30)
+check('shortcut event is returned', ev is not None and ev['event'] == 'shortcut' and ev['value'] == 'save')
+
 if failures:
     print('%d failure(s)' % len(failures))
     sys.exit(1)
