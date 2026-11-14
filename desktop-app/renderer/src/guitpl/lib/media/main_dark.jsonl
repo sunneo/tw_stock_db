@@ -1,0 +1,5 @@
+{"kind":"meta","id":"media/main_dark","title":"深色多媒體播放器（簡化版）","keywords":["深色","夜間","播放器"],"extends":"media/main"}
+{"kind":"param","name":"title","default":"夜間播放器","ask":"視窗標題要寫什麼？"}
+{"kind":"require","module":"importlib","source":"builtin"}
+{"kind":"require","module":"os","source":"builtin"}
+{"kind":"style","palette":{"bg":"#1e1e1e","fg":"#e5e7eb","accent":"#4aa3ff","danger":"#ef4444","muted":"#9ca3af"},"font":"monospace"}
