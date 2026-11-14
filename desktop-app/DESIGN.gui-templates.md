@@ -222,3 +222,25 @@ renderer/src/guitpl/
 - 設計工作室微調規格而不是微調程式文字；使用者若要改程式本身，走原本的編輯流程，改完不能回存成範本（規格與程式會分叉）。
 - 聲音用網頁音訊合成短音效，不做音檔播放（先求有，音檔列待改善）。
 - 找不到範本時模型填規格而不直接寫程式（驗收一致）。
+
+## 3. 實作現況（2026-11-14，交接 1 結束時）
+
+已實作並提交（都有測試，詳見各測試檔）：
+
+| 項目 | 檔案 | 說明 |
+|---|---|---|
+| 範本核心 | `renderer/src/guitpl/guitpl_core.js` | 規格檢查、領域檔檢查、共用步驟展開、領域檢索、逐步詢問狀態機、合併、離線字母選擇題 |
+| 組合器 | `renderer/src/guitpl/compose_core.js` | 規格＋動作表 → Python 程式；事件含輪詢與等待兩種迴圈；音效名對照表 |
+| 假橋接空跑 | `renderer/src/guitpl/fake_run.py` | 驗收第三關：假橋接送事件、回報例外 |
+| 一條龍 | `renderer/src/guitpl/guitpl_run.js` | 載入 `data/*.json`、需求→領域→逐步選擇→程式；預設組、指定領域、「你決定」 |
+| 範本資料 | `renderer/src/guitpl/data/_common.json`、`text-editor.json` | 共用配色四種與佈景四種；文字編輯器是第一個領域（兩版面、兩行為、兩快捷鍵、兩音效） |
+| 橋接新能力 | `gui_bridge.js`、`gui_render.js`、`gui_host.js`、`py_worker.js`、`pybridge/gui.py` | `theme`（配色、字型、字級、圓角）、`shortcut`（視窗快捷鍵＋事件）、`tone`（短音效）、`set()` 改屬性、textarea／checkbox／progress／listbox 封裝、`grid`／`scroll` 容器 |
+
+與 2.11 清單的對照：第 1、2、5（短音效部分）項與第 4 項的 `grid`、`scroll` 已完成；**未完成**：`tabs`、`split`、`menubar`／`menu`、對話框（`message`／`confirm`／`pick_file`）、pygame 相容層的 `mixer`。
+
+決定記錄（實作時自行決定）：
+- 快捷鍵事件名稱就是動作名稱（`w.shortcut("Ctrl+S", "save_file")`），組合器自動把快捷鍵併入事件路由。
+- 沒有 Ctrl 或 Alt 的單鍵快捷鍵，在使用者於文字框輸入時不觸發（避免吃掉打字）。
+- `tone` 用頁面的音訊合成，頁面不能播放時靜默，不讓程式失敗。
+- 事件迴圈：只有 click 與 shortcut 用 `wait`；有 input／change／select／toggle／cell／frame／key／mouse 就改用 `poll`（`wait` 只回傳按鈕、快捷鍵、關閉）。
+- 組合器對不支援的節點種類或屬性直接報錯，不產生壞程式。
