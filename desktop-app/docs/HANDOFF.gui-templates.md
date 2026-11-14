@@ -28,13 +28,15 @@
 - **未做**：`tabs`、`split`、選單列、對話框、pygame `mixer`；接到 AI 的宿主工具（`gui_template_find` 等，目前 AI 只能讀 `gui.py` 文件字串裡的 `guitpl.catalog`／`guitpl.run` 說明）；分鏡畫面、設計工作室、使用者範本存檔；「編譯成單一 Python 檔」；YAML 撰寫格式；舊 `data/*.json` 流程與 `guitpl_core.js` 的檢索改讀 jsonl（`jsonl_core.js` 已能讀 meta／param／scene）。
 - 已知限制：模擬器評估只點按鈕，沒有送輸入框文字、快捷鍵、畫布事件；圖像與影音領域是簡化版；發布由管理者決定（本線沒有執行發布腳本）。
 
-## 3. 待辦（依序）
+## 3. 待辦（依序；管理者代決，全部做完才停）
 
-1. **待辦 3 收尾（缺的能力）**：依序補 `tabs`（容器，子節點各帶 `title`，或 `tab` 子容器）、`split`、`menubar`／`menu`（項目可帶快捷鍵提示並與 `shortcut` 連動）、對話框（先讀 `zenity.js` 看 `gui.Window` 怎麼接）、pygame `mixer`。每項都要走完整鏈：`gui_bridge.js`（KINDS／CONTAINERS／屬性檢查）→ `gui_render.js` → `gui_host.js`（若有新操作）→ `py_worker.js`（`GUI_OPS`，若有新操作）→ `pybridge/gui.py` → `compose_core.js`（`KIND_METHODS`）→ 各自測試；最後 `node scripts/embed-code-ui.js`、`node build-assistant.js`、`node --check renderer/src/floating-assistant.js`，再提交（含 `renderer/floating-assistant.js`、`renderer/floating-assistant.min.js`、`renderer/src/floating-assistant.js`；`update-manifest.json` 與 `web-lazy/` 是建置副產物，不提交）。做不到的項目寫進設計文件第 3 節「未完成」並繼續下一步，不卡住。
-2. **待辦 4：十三個領域的範本**：在 `renderer/src/guitpl/data/` 為其餘十二個領域各建一個檔（仿 `text-editor.json`：`steps` 六步、`actions`、`presets`、至少兩種配色用共用的、一種佈景、一組快捷鍵、一支範例），並在 `scripts/eval/gui_examples/` 放各領域組合出的範例程式；`guitpl_run.test.js` 會自動對每個領域的每個選項跑組合＋空跑。圖像、影音、MIDI 類受限於畫布一幀 200 道指令與圖片大小，要在範本裡誠實標「簡化版預覽」，列入待改善。遊戲領域優先參考 `scripts/eval/gui_examples/breakout.py` 與 `renderer/src/game/game_templates.js`。
-3. **待辦 5：接到 AI**：宿主工具 `gui_template_find`／`gui_template_compose`（用 `register_openai_tool`，參考 `DESIGN.extension-points.md`）；線上系統提示加短指引；離線用食譜（`FaRecipe`）或 CoLU 字母選擇題走 `guitpl_core.js` 的 `choiceMenu`／`letterToOption`；找不到領域時的自行設計路徑（2.6，模型填規格 JSON 再交給同一個組合器）。嵌入新模組要改 `scripts/embed-code-ui.js`（來源模組在 `renderer/src/guitpl/`，不要改嵌入後的那份）。
-4. **待辦 6：分鏡＋設計工作室＋存範本**：`storyboard_core.js`（2.8）、`studio_gui.py`（用 `gui.Window` 寫，吃自己的狗食）、`user_store.js`（桌面檔案、網頁 `persistentStorage` 兩種後端；使用者範本進 `findDomain` 的 `userSpecs` 加權與參考案例）。
-5. **待辦 7：真實桌面版驗證**：照 `reference_real_electron_eval_verification`（評估檔＋獨立 `--user-data-dir`＋換埠，`FA_BROWSER_CONTROL_PORT` 不可用 17923）。寫驗證報告（`scripts/eval/` 一支新的評估檔，驗證主題、快捷鍵、聲音、容器在真畫面上的效果）。做完回報管理者 `local_49f6c57d-8f18-427b-a8f1-7b1d23efc5f5`，由管理者決定發布。
+1. **接到 AI（最優先）**：宿主工具 `gui_template_find`／`gui_template_compose`（或同等名稱），讀 `lib/` 的 jsonl 元件；線上系統提示加短指引（找範本 → 逐步只問真歧義 → 組合 → 執行）；離線走食譜或 CoLU 字母選擇題；找不到範本時由模型照同一格式寫出 jsonl＋py 再交給同一個執行模組。舊的 `data/*.json` 流程與 `guitpl_core.js` 檢索改讀 jsonl，舊流程能刪就刪，不留兩套。
+2. **分鏡＋設計工作室＋使用者範本**：成品完成時產生各場景分鏡；設計工作室用 `gui.Window` 寫，可微調參數、配色、版面並即時重跑；「存成我的範本」寫成新的一對 jsonl＋py（覆寫行），桌面版存使用者資料區、網頁版存 `persistentStorage`；使用者範本進檢索並當下次設計的參考案例。
+3. **元件補齊**：`tabs`、`split`、選單列、對話框、pygame `mixer`（最小：轉呼叫 `tone`）；每個新操作走完整鏈（橋接、畫面、主機、`py_worker.js` 的 `GUI_OPS`、Python）。
+4. **編譯成單一 Python 檔**（引用與外部呼叫內嵌，輸出可獨立執行），時間夠再做 YAML 撰寫格式。
+5. **實機驗證**：模擬器評估補上輸入框文字、快捷鍵、畫布事件，以及各配色變體與子元件；寫驗證報告。
+
+規則：每完成一項就跑動到的測試、嵌入、建置、`node --check`、提交並推送 origin desktop-app，然後傳訊息給管理者 `local_49f6c57d-8f18-427b-a8f1-7b1d23efc5f5`（提交編號、做了什麼、哪些在模擬器實跑過）；不准執行發布腳本。共用檔（`floating-assistant.js`、嵌入、建置）只由主工作者改。
 
 ## 4. 工作方式（照抄規則）
 
@@ -64,6 +66,7 @@
 - 2026-11-14：「我希望最核心的元件跟描述都是一個jsonl對一個python，達到最高的範本化與客製化」
 - 2026-11-14：「建議，framework程式這個要優先出，接著大量填範本」
 - 2026-11-14：「所有的設計都要可以在python emulator達成，所以連套件相依性都是描述在每個範本檔裡面」
+- 2026-11-14：「還沒做的先安排下去」
 
 ## 6. 交接程序（自我遞迴）
 
