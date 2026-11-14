@@ -5,12 +5,34 @@
 //   FaGuiTplIndex.search(index, query, n) -> 依關鍵字命中數排序的 [{ id, score, title }]（平手以代號排）
 //   FaGuiTplIndex.questions(entry)        -> 逐步詢問要問的話：[{ name, ask, default }]
 (function (root, factory) {
-  if (typeof module === 'object' && module.exports) { module.exports = factory(); } else { root.FaGuiTplIndex = factory(); }
-}(typeof self !== 'undefined' ? self : this, function () {
+  var req = (typeof require === 'function' && typeof module === 'object');
+  var Yaml = req ? require('./yaml_core.js') : root.FaGuiTplYaml;
+  if (typeof module === 'object' && module.exports) { module.exports = factory(Yaml); } else { root.FaGuiTplIndex = factory(Yaml); }
+}(typeof self !== 'undefined' ? self : this, function (Yaml) {
   'use strict';
+
+  // 範本文字是 jsonl（第一個有內容的行以 { 開頭）還是 YAML 子集（yaml_core.js）
+  function isYaml(text) {
+    var lines = String(text || '').split(/\r?\n/);
+    for (var i = 0; i < lines.length; i++) {
+      var s = lines[i].trim();
+      if (!s || s.charAt(0) === '#') { continue; }
+      return s.charAt(0) !== '{';
+    }
+    return false;
+  }
 
   function parseJsonl(text) {
     var records = [], errors = [];
+    if (isYaml(text)) {
+      if (!Yaml) { return { records: [], errors: ['這個環境沒有 YAML 解析'] }; }
+      try {
+        Yaml.parseDocuments(text).forEach(function (rec, i) {
+          if (!rec.kind) { errors.push('第 ' + (i + 1) + ' 筆缺少 kind'); } else { records.push(rec); }
+        });
+      } catch (e) { errors.push('YAML 寫法有問題：' + e.message); }
+      return { records: records, errors: errors };
+    }
     String(text || '').split(/\r?\n/).forEach(function (line, i) {
       var s = line.trim();
       if (!s || s.charAt(0) === '#') { return; }

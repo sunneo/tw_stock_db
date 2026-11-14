@@ -385,6 +385,34 @@ for cid, btn, canvas_text in (('image/main', '開啟圖片', 'preview'), ('idpho
     check('%s draws it with an image op' % cid, any(o[0] == 'gui.draw' and any(op_[0] == 'image' for op_ in o[1]['ops']) for o in ops))
     pending.clear()
 
+# 10. YAML templates: same records, same checks, same run; errors are Chinese GuiTplError
+ops.clear()
+pending[:] = []
+r10 = guitpl.run('demo/todo_yaml', roots=[LIB])
+check('yaml template runs', r10['component']['meta']['title'] == 'YAML 待辦示範' and any(o[0] == 'gui.open' and o[1]['title'] == 'YAML 待辦' for o in ops))
+check('yaml params and scenes', [s['id'] for s in r10['component']['scenes']] == ['main'])
+check('yaml in the catalog', any(e['id'] == 'demo/todo_yaml' and e['standalone'] for e in guitpl.catalog([LIB])))
+tmp2 = tempfile.mkdtemp()
+write(tmp2, 'bad/tab', ['x'], py='def build(win, spec, slots):\n    return {}\n')
+os.remove(os.path.join(tmp2, 'bad', 'tab.jsonl'))
+with open(os.path.join(tmp2, 'bad', 'tab.yaml'), 'w', encoding='utf-8') as f:
+    f.write('kind: meta\nid: bad/tab\ntitle: x\n---\nkind: layout\ntree:\n\t- kind: label\n')
+check('yaml error is a Chinese GuiTplError', raises(lambda: guitpl.Library([tmp2]).load('bad/tab'), 'YAML 寫法有問題'))
+shutil.rmtree(tmp2)
+text = guitpl.compile_standalone('demo/todo_yaml', roots=[LIB])
+check('standalone carries the yaml file and its parser', 'todo_yaml.yaml' in text and 'guitpl_yaml.py' in text)
+ops.clear()
+pending[:] = []
+real_guitpl3 = sys.modules['guitpl']
+real_yaml = sys.modules.get('guitpl_yaml')
+try:
+    exec(compile(text, 'standalone_yaml.py', 'exec'), {'__name__': '__main__'})
+finally:
+    sys.modules['guitpl'] = real_guitpl3
+    if real_yaml is not None:
+        sys.modules['guitpl_yaml'] = real_yaml
+check('standalone yaml opens the window', any(o[0] == 'gui.open' and o[1]['title'] == 'YAML 待辦' for o in ops))
+
 if failures:
     print('%d failure(s)' % len(failures))
     sys.exit(1)

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-guitpl -- GUI design templates: one `<name>.jsonl` plus one `<name>.py` is a component (see DESIGN.gui-templates.md section 4).
+guitpl -- GUI design templates: one `<name>.jsonl` (or `<name>.yaml`, a YAML subset, see guitpl_yaml.py) plus one `<name>.py` is a component (see DESIGN.gui-templates.md section 4).
 
     import guitpl
     guitpl.run("demo/hello", roots=["/templates"])           # load, resolve slots, check, build the window, run the events
@@ -101,7 +101,7 @@ def user_root():
     import tempfile
     d = tempfile.mkdtemp()
     for cid, files in found.items():
-        for ext, key in ((".jsonl", "jsonl"), (".py", "py")):
+        for ext, key in ((".jsonl", "jsonl"), (".yaml", "yaml"), (".py", "py")):
             if files.get(key):
                 p = os.path.join(d, *cid.split("/")) + ext
                 os.makedirs(os.path.dirname(p), exist_ok=True)
@@ -126,26 +126,49 @@ class Library(object):
                 return p
         return None
 
+    def source_path(self, cid):
+        """The file that holds the records: <id>.jsonl, else <id>.yaml, else <id>.yml (the first root that has one wins)."""
+        for r in self.roots:
+            for ext in (".jsonl", ".yaml", ".yml"):
+                p = os.path.join(r, *cid.split("/")) + ext
+                if os.path.isfile(p):
+                    return p
+        return None
+
     def read(self, cid):
         """The checked records of a component's JSONL file (list of dicts)."""
-        p = self.path(cid, ".jsonl")
+        p = self.source_path(cid)
         if p is None:
             raise GuiTplError("找不到範本 %s（找過：%s）" % (cid, "、".join(self.roots)))
         records = []
-        with open(p, encoding="utf-8") as f:
-            for n, line in enumerate(f, 1):
-                s = line.strip()
+        if p.endswith(".jsonl"):
+            with open(p, encoding="utf-8") as f:
+                items = [(n, line.strip()) for n, line in enumerate(f, 1)]
+            for n, s in items:
                 if not s or s.startswith("#"):
                     continue
                 try:
                     rec = json.loads(s)
                 except ValueError as e:
                     raise GuiTplError("%s 第 %d 行不是合法的 JSON：%s" % (cid, n, e))
-                if not isinstance(rec, dict) or rec.get("kind") not in KINDS:
-                    raise GuiTplError("%s 第 %d 行的 kind 必須是 %s 之一" % (cid, n, "、".join(KINDS)))
-                rec["_line"] = n
-                self._check(cid, n, rec)
-                records.append(rec)
+                records.append((n, rec))
+        else:  # .yaml / .yml: the same records, one YAML document each (see guitpl_yaml.py)
+            import guitpl_yaml
+            with open(p, encoding="utf-8") as f:
+                text = f.read()
+            try:
+                docs = guitpl_yaml.parse_documents(text)
+            except guitpl_yaml.YamlError as e:
+                raise GuiTplError("%s 的 YAML 寫法有問題：%s" % (cid, e))
+            records = [(i, rec) for i, rec in enumerate(docs, 1)]
+        checked = []
+        for n, rec in records:
+            if not isinstance(rec, dict) or rec.get("kind") not in KINDS:
+                raise GuiTplError("%s 第 %d 筆的 kind 必須是 %s 之一" % (cid, n, "、".join(KINDS)))
+            rec["_line"] = n
+            self._check(cid, n, rec)
+            checked.append(rec)
+        records = checked
         if not any(r["kind"] == "meta" for r in records):
             raise GuiTplError("%s 缺少 meta 紀錄" % cid)
         return records
@@ -188,7 +211,7 @@ class Library(object):
             base = self.load_records(meta["extends"], stack)
             records = self._override(base, records)
             meta = dict(base["meta"], **{k: v for k, v in meta.items() if k != "_line"})
-        comp = {"id": cid, "meta": meta, "dir": os.path.dirname(self.path(cid, ".jsonl")), "pyfile": self.path(cid, ".py"),
+        comp = {"id": cid, "meta": meta, "dir": os.path.dirname(self.source_path(cid)), "pyfile": self.path(cid, ".py"),
                 "params": {}, "style": {}, "layout": None, "slots": {}, "scenes": [], "shortcuts": [], "calls": [], "requires": [],
                 "records": records}
         for r in records:
@@ -476,8 +499,8 @@ def catalog(roots=None, query=None):
     for root in lib.roots:
         for base, _dirs, files in os.walk(root):
             for f in sorted(files):
-                if f.endswith(".jsonl"):
-                    ids.append(os.path.relpath(os.path.join(base, f), root)[:-6].replace(os.sep, "/"))
+                if f.endswith((".jsonl", ".yaml", ".yml")):
+                    ids.append(os.path.relpath(os.path.join(base, f), root).rsplit(".", 1)[0].replace(os.sep, "/"))
     out = []
     for cid in sorted(set(ids)):
         try:
@@ -589,6 +612,7 @@ for _name, _text in _FILES.items():
     os.makedirs(os.path.dirname(_p), exist_ok=True)
     with open(_p, "w", encoding="utf-8") as _f:
         _f.write(_text)
+sys.path.insert(0, _d)
 guitpl = types.ModuleType("guitpl")
 guitpl.__file__ = os.path.join(_d, "guitpl.py")
 sys.modules["guitpl"] = guitpl
@@ -614,11 +638,10 @@ def compile_standalone(cid, params=None, roots=None):
             continue
         seen.add(c)
         recs = lib.read(c)
-        for ext in (".jsonl", ".py"):
-            p = lib.path(c, ext)
+        for p in (lib.source_path(c), lib.path(c, ".py")):
             if p:
                 with open(p, encoding="utf-8") as f:
-                    files[c + ext] = f.read()
+                    files[c + os.path.splitext(p)[1]] = f.read()
         base_dir = os.path.dirname(c)
         for r in recs:
             if r["kind"] == "meta" and r.get("extends"):
@@ -626,12 +649,15 @@ def compile_standalone(cid, params=None, roots=None):
             elif r["kind"] == "slot":
                 todo.append(r["use"])
             elif r["kind"] == "call":
-                p = os.path.join(os.path.dirname(lib.path(c, ".jsonl")), r["file"])
+                p = os.path.join(os.path.dirname(lib.source_path(c)), r["file"])
                 if os.path.isfile(p):
                     with open(p, encoding="utf-8") as f:
                         files[(base_dir + "/" if base_dir else "") + r["file"]] = f.read()
     with open(os.path.abspath(__file__), encoding="utf-8") as f:
         runtime = f.read()
+    if any(k.endswith((".yaml", ".yml")) for k in files):  # a YAML template needs its parser at run time
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "guitpl_yaml.py"), encoding="utf-8") as f:
+            files["guitpl_yaml.py"] = f.read()
     q = lambda v: json.dumps(json.dumps(v, ensure_ascii=False))
     return _STANDALONE_HEAD % (q(files), q(runtime), json.dumps(cid), q(values))
 

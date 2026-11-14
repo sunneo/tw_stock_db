@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # 範本檢查工具：python -I renderer/src/guitpl/lint.py <範本根目錄> [範本代號 或 資料夾前綴 ...]
 #   例：python -I renderer/src/guitpl/lint.py renderer/src/guitpl/lib office
-# 對每個元件檢查：格式、引用與循環、相依宣告（py 用到的 import 都要在 jsonl 宣告）、id 與路徑一致、每個參數有 ask、
+# 對每個元件檢查：格式、引用與循環、相依宣告（py 用到的 import 都要在 jsonl 或 yaml 宣告；範本可以是 .jsonl 或 .yaml）、id 與路徑一致、每個參數有 ask、
 # 場景與快捷鍵指到存在的節點與處理函式。meta 有 "standalone": true 的元件（整個領域的範本）還會用假橋接真的執行：
 # 對每個按鈕與核取方塊送事件、對每個輸入框送文字、對每個快捷鍵送按鍵、走過每個場景，任何例外都算失敗。
 # 結束碼 0＝全部通過，1＝有問題（問題逐行印出）。
@@ -24,8 +24,9 @@ PROPS = {
     'textarea': ['value', 'placeholder', 'rows', 'enabled'], 'editor': ['value', 'lang', 'rows', 'enabled'],
     'checkbox': ['text', 'checked', 'enabled'], 'progress': ['value', 'max'], 'list': ['items', 'selected', 'enabled'],
     'multilist': ['items', 'selected', 'enabled'], 'table': ['columns', 'rows', 'enabled'], 'canvas': ['width', 'height', 'fps'],
+    'tabs': ['selected'], 'tab': ['text'], 'split': ['direction', 'ratio'], 'menubar': [], 'menu': ['text'], 'menuitem': ['text', 'keys', 'enabled'],
 }
-CONTAINERS = ('column', 'row', 'expander', 'grid', 'scroll')
+CONTAINERS = ('column', 'row', 'expander', 'grid', 'scroll', 'tabs', 'tab', 'split', 'menubar', 'menu')
 import re
 SHORTCUT_RE = re.compile(r'^(Ctrl\+)?(Shift\+)?(Alt\+)?([A-Z0-9]|F([1-9]|1[0-2])|Enter|Esc|Space|Up|Down|Left|Right|Delete|Backspace|Tab)$')
 kinds_of = {}
@@ -81,9 +82,10 @@ def ids_under(root):
     out = []
     for base, _dirs, files in os.walk(root):
         for f in sorted(files):
-            if f.endswith('.jsonl'):
-                rel = os.path.relpath(os.path.join(base, f), root)[:-6].replace(os.sep, '/')
-                out.append(rel)
+            if f.endswith(('.jsonl', '.yaml', '.yml')):
+                rel = os.path.relpath(os.path.join(base, f), root).rsplit('.', 1)[0].replace(os.sep, '/')
+                if rel not in out:
+                    out.append(rel)
     return sorted(out)
 
 

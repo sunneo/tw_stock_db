@@ -11,8 +11,9 @@
 (function (root, factory) {
   var req = (typeof require === 'function' && typeof module === 'object');
   var Index = req ? require('./jsonl_core.js') : root.FaGuiTplIndex;
-  if (typeof module === 'object' && module.exports) { module.exports = factory(Index); } else { root.FaGuiTplAI = factory(Index); }
-}(typeof self !== 'undefined' ? self : this, function (Index) {
+  var Yaml = req ? require('./yaml_core.js') : root.FaGuiTplYaml;
+  if (typeof module === 'object' && module.exports) { module.exports = factory(Index, Yaml); } else { root.FaGuiTplAI = factory(Index, Yaml); }
+}(typeof self !== 'undefined' ? self : this, function (Index, Yaml) {
   'use strict';
 
   var LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
@@ -78,6 +79,10 @@
   function compose(files, args, opts) {
     args = args || {}; opts = opts || {};
     var errors = [];
+    // 自己寫的範本可以給 jsonl 或 yaml（YAML 子集）；YAML 先轉成同樣的紀錄再走同一套檢查與執行
+    if (typeof args.yaml === 'string' && args.yaml.trim() !== '' && !(typeof args.jsonl === 'string' && args.jsonl.trim() !== '')) {
+      try { args = Object.assign({}, args, { jsonl: Yaml.toJsonl(args.yaml) }); } catch (e) { return { ok: false, errors: ['YAML 寫法有問題：' + e.message], id: String(args.id || args.name || ''), custom: true }; }
+    }
     var custom = typeof args.jsonl === 'string' && args.jsonl.trim() !== '';
     var id = String(args.id || args.name || '').trim();
     var summary;

@@ -1,0 +1,56 @@
+# 用 YAML 寫的範本（示範）：內容與 jsonl 範本的紀錄完全一樣，一筆紀錄一份文件，以 --- 分開。
+# {{參數}} 要加雙引號（不加的話 YAML 會把它當成行內對照）。
+kind: meta
+id: demo/todo_yaml
+title: YAML 待辦示範
+keywords: [yaml待辦, 示範待辦]
+entry: build
+standalone: true
+---
+kind: param
+name: title
+default: YAML 待辦
+ask: 視窗標題要寫什麼？
+---
+kind: require
+module: gui
+source: builtin
+---
+kind: style
+palette:
+  bg: "#ffffff"
+  fg: "#222222"
+  accent: "#2563eb"
+  danger: "#dc2626"
+  muted: "#9ca3af"
+font: sans-serif
+size: 14
+radius: 6
+---
+kind: layout
+window: {title: "{{title}}", width: 420, resizable: true}
+tree:
+  - kind: column
+    children:
+      - id: heading
+        kind: label
+        text: "{{title}}"
+      - kind: row
+        children:
+          - {id: item, kind: entry, value: "", placeholder: 要做的事}
+          - {id: add, kind: button, text: 新增}
+      - id: items
+        kind: list
+        items: []
+      - id: status
+        kind: label
+        text: 還沒有項目
+---
+kind: shortcut
+keys: Ctrl+Enter
+do: add
+---
+kind: scene
+id: main
+title: 清單
+note: 輸入、清單與狀態列

@@ -85,4 +85,15 @@ assert.ok(cs.ok && cs.standalone && cs.code.indexOf('compile_standalone("office/
 r = pyCheck(cs.code.replace('guitpl.compile_standalone(', 'guitpl.prepare(').split('f = open')[0]);
 assert.strictEqual(r.status, 0, r.stderr); ok();
 
+// YAML：自己寫的範本、內建的 YAML 範本進檢索
+const yamlTpl = 'kind: meta\nid: user/yhello\ntitle: YAML 招呼\nstandalone: true\n---\nkind: param\nname: who\ndefault: 世界\nask: 跟誰打招呼？\n---\nkind: require\nmodule: gui\nsource: builtin\n---\nkind: layout\nwindow: {title: "hi", width: 300}\ntree:\n  - kind: column\n    children:\n      - {id: t, kind: label, text: "哈囉 {{who}}"}\n';
+const cy = A.compose(files, { name: 'user/yhello', yaml: yamlTpl, params: { who: '你' } });
+assert.ok(cy.ok && cy.custom, cy.errors && cy.errors.join()); ok();
+r = pyCheck(cy.code);
+assert.strictEqual(r.status, 0, r.stderr); ok();
+assert.match(A.compose(files, { name: 'user/ybad', yaml: 'kind: x\n\tbad: 1\n' }).errors[0], /YAML 寫法有問題/); ok();
+const withYaml = Object.assign({}, files, { 'demo/todo_yaml': fs.readFileSync(path.join(lib, 'demo', 'todo_yaml.yaml'), 'utf8') });
+const fy = A.find(withYaml, '我要一個yaml待辦');
+assert.ok(fy.candidates.some((c) => c.id === 'demo/todo_yaml' && c.questions[0].name === 'title'), JSON.stringify(fy.candidates.map((c) => c.id))); ok();
+
 console.log('guitpl_ai.test.js: ' + n + ' groups OK');

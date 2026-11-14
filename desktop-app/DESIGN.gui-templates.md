@@ -309,3 +309,14 @@ renderer/src/guitpl/
 - 頁面層 `_guiPickFile`：浮出一個小面板（「選擇檔案…」「取消」），使用者真的點擊後才開瀏覽器或桌面版的檔案選擇器（程式自己呼叫沒有使用者手勢，開不了）；桌面版的檔案物件帶真實路徑 `path`，網頁版是空字串。預設上限 256 KB（最多 8 MB，與畫布圖片上限一致）。測試可設 `fa._guiPickFileHook` 略過面板。
 - 範本：`ctx.pick_file(...)`；影像處理的「開啟圖片」、證件照的「開啟照片」用它把圖片登記到畫布（`Window.image`）並畫出來（簡化版：影像處理的圖層效果不套在開啟的圖片上；證件照不做人臉偵測與去背，只縮放進裁切框）。
 - 實跑：`scripts/eval/guitpl_pickfile.eval.js`（面板、取消、真的 File 物件、超過上限、兩個範本畫布真的出現圖片的紅色像素）。作業系統原生的檔案選擇視窗無法被自動化點選，所以用 File 物件代替使用者選好檔案。
+
+
+## 10. YAML 撰寫格式（2026-11-14，交接 2）
+
+- 範本可以寫成 `<名稱>.yaml`（或 `.yml`）配 `<名稱>.py`：內容是同樣的紀錄，一筆紀錄一份 YAML 文件，以單獨一行的 `---` 分開；轉成與 jsonl 完全相同的紀錄後，走同一套檢查（`Library._check`、`check`、lint）與同一個執行器。同一個代號同時有 jsonl 與 yaml 時，jsonl 優先。示範：`lib/demo/todo_yaml.yaml`。
+- 模擬器裡不保證有 YAML 套件，所以自己寫了子集解析器：Python 版 `pybridge/guitpl_yaml.py`（執行時、lint、編譯用）、JavaScript 版 `guitpl/yaml_core.js`（檢索、`gui_template_compose` 的 `yaml` 欄位用）。兩個實作用同一批樣本比對（`yaml_core.test.js`），寫錯時兩邊都丟中文錯誤。
+- **支援範圍**：區塊對照與區塊陣列（只能用空格縮排）、`- key: value`（後面的鍵縮排對齊）、行內陣列 `[a, b]` 與行內對照 `{a: 1}`（可巢狀）、雙引號字串（JSON 跳脫）、單引號字串（`''` 表示一個引號）、純文字、整數、小數、`true`／`false`／`null`／`~`、註解（行首或空格後的 `#`，引號內不算）。
+- **不支援（會報錯）**：錨點與別名（`&`、`*`）、標籤（`!`）、多行字串（`|`、`>`，請用雙引號加 `
+`）、複雜鍵（`? `）、合併鍵（`<<`）、tab 縮排、不是「鍵: 值」紀錄的文件、重複的鍵。注意：`{{參數}}` 一定要加雙引號（不加會被當成行內對照）；顏色 `"#ffffff"` 要加引號（`#` 前有空格會被當成註解）。
+- 編譯成單一檔時，YAML 範本與 `guitpl_yaml.py` 一起內嵌。`gui_template_compose` 加 `yaml` 欄位（與 `jsonl` 二選一），模型可以用 YAML 自寫範本。lint 也順便補上 tabs、split、選單列等新節點種類的假橋接檢查。
+- 實跑：`scripts/eval/guitpl_yaml.eval.js`（真 Electron：直接執行 .yaml 範本並輸入、點新增、Ctrl+Enter；編譯成單一檔後執行；模型自寫的 YAML）。
