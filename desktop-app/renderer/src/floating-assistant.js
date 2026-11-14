@@ -16842,6 +16842,197 @@ return holder.FaExt;
 })();
 const FA_EXT_BUILTIN = [{"id":"stock_drop_cause","name":"股票下跌原因調查","description":"在股票網頁上，調查某檔股票今天為什麼漲跌（報價與成交量、當日新聞、三大法人買賣超），整理成 media-presentation 簡報的一章。","enabled":true,"context":{"urlPattern":"stock|quote|twse|tpex","codeRe":"^\\d{4,6}$","patterns":[{"re":"([^\\s()（）]{2,12})[（(](\\d{4,6})[)）]","name":1,"code":2},{"re":"[/=](\\d{4,6})(?!\\d)","code":1}],"nameToCode":{"大成鋼":"2027"},"nameToCodeNote":"只收已確認的對照；缺的名稱請加入（或之後改查公開的上市公司清單）。"},"tool":{"name":"ext_stock_drop_cause","description":"調查一檔股票今天為什麼下跌或上漲：抓報價與成交量、當日新聞、三大法人買賣超，整理成可貢獻給簡報的段落（每筆附來源，抽不到寫查不到，不給買賣建議）。缺股票代號時會用目前網頁的代號與名稱。要做成簡報時，把結果的 deck 交給 render_presentation。"},"research":[{"id":"quote","label":"報價與成交量","url":"https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY?stockNo={code}&response=json&date={date}","extract":{"kind":"json_rows","rowsKey":"data","fieldsKey":"fields","pick":"last","count":1,"show":["日期","收盤價","漲跌價差","成交股數"]}},{"id":"news","label":"近期新聞（Google 新聞搜尋，只留查詢日前兩天內）","url":"https://news.google.com/rss/search?q={name}%20{code}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant","needs":["name"],"extract":{"kind":"rss","max":5,"maxAgeDays":2,"must":["{name}","{code}"]}},{"id":"institutional","label":"三大法人買賣超","url":"https://www.twse.com.tw/rwd/zh/fund/T86?date={date}&selectType=ALL&response=json","extract":{"kind":"json_rows","rowsKey":"data","fieldsKey":"fields","match":{"col":0,"equals":"{code}"},"show":["外陸資買賣超股數(不含外資自營商)","投信買賣超股數","自營商買賣超股數"]}},{"id":"announce","label":"公開資訊觀測站重大訊息","url":"","optional":true,"extract":{"kind":"text","max":5}}],"contribute":{"target":"media-presentation","chapter":"{name}（{code}）下跌原因調查","position":"end","maxBulletsPerSlide":5},"disclaimer":"本簡報為公開資料整理，僅供參考，不構成任何投資建議；買賣請自行判斷並承擔風險。"}];
 /* EXT-END */
+/* GUITPL-BEGIN */
+const FaGuiTplMods = (function () {
+const holder = {};
+(function (module, self) {
+// 範本索引（純函式、UMD）：讀 jsonl 範本的 meta／param／scene，讓線上與離線 AI 檢索範本、逐步詢問參數（設計見 DESIGN.gui-templates.md 第 4 節）
+//   FaGuiTplIndex.parseJsonl(text)        -> { records[], errors[] }
+//   FaGuiTplIndex.summarize(id, text)     -> { id, title, keywords, standalone, extends, params[], scenes[], requires[], slots[] } 或 { error }
+//   FaGuiTplIndex.buildIndex(files)       -> files 是 { '代號': jsonl 文字 }；只收 standalone 的領域範本當入口，其餘當元件
+//   FaGuiTplIndex.search(index, query, n) -> 依關鍵字命中數排序的 [{ id, score, title }]（平手以代號排）
+//   FaGuiTplIndex.questions(entry)        -> 逐步詢問要問的話：[{ name, ask, default }]
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) { module.exports = factory(); } else { root.FaGuiTplIndex = factory(); }
+}(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+
+  function parseJsonl(text) {
+    var records = [], errors = [];
+    String(text || '').split(/\r?\n/).forEach(function (line, i) {
+      var s = line.trim();
+      if (!s || s.charAt(0) === '#') { return; }
+      try {
+        var rec = JSON.parse(s);
+        if (!rec || typeof rec !== 'object' || Array.isArray(rec) || !rec.kind) { errors.push('第 ' + (i + 1) + ' 行缺少 kind'); return; }
+        records.push(rec);
+      } catch (e) { errors.push('第 ' + (i + 1) + ' 行不是合法的 JSON'); }
+    });
+    return { records: records, errors: errors };
+  }
+
+  function summarize(id, text) {
+    var p = parseJsonl(text);
+    if (p.errors.length) { return { id: id, error: p.errors.join('；') }; }
+    var meta = p.records.filter(function (r) { return r.kind === 'meta'; })[0];
+    if (!meta) { return { id: id, error: '缺少 meta 紀錄' }; }
+    var of = function (k) { return p.records.filter(function (r) { return r.kind === k; }); };
+    return {
+      id: id, title: meta.title || id, keywords: meta.keywords || [], standalone: !!meta.standalone, extends: meta.extends || null,
+      params: of('param').map(function (r) { return { name: r.name, ask: r.ask || '', default: r.default }; }),
+      scenes: of('scene').map(function (r) { return { id: r.id, title: r.title, note: r.note || '' }; }),
+      requires: of('require').map(function (r) { return r.module; }),
+      slots: of('slot').map(function (r) { return { name: r.name, use: r.use }; })
+    };
+  }
+
+  function buildIndex(files) {
+    var entries = [], parts = [], errors = [];
+    Object.keys(files).sort().forEach(function (id) {
+      var s = summarize(id, files[id]);
+      if (s.error) { errors.push(id + '：' + s.error); return; }
+      (s.standalone || s.extends ? entries : parts).push(s);
+    });
+    return { entries: entries, parts: parts, errors: errors };
+  }
+
+  function search(index, query, n) {
+    var q = String(query || '').toLowerCase();
+    var out = index.entries.map(function (e) {
+      var score = 0;
+      (e.keywords || []).concat([e.title]).forEach(function (w) { var lw = String(w).toLowerCase(); if (lw && q.indexOf(lw) >= 0) { score++; } });
+      var dom = e.id.split('/')[0].toLowerCase();
+      if (dom && q.indexOf(dom) >= 0) { score++; }
+      return { id: e.id, score: score, title: e.title };
+    }).filter(function (x) { return x.score > 0; });
+    out.sort(function (a, b) { return b.score - a.score || (a.id < b.id ? -1 : 1); });
+    return out.slice(0, n || 5);
+  }
+
+  function questions(entry) {
+    return entry.params.filter(function (p) { return p.ask; }).map(function (p) { return { name: p.name, ask: p.ask, default: p.default }; });
+  }
+
+  return { parseJsonl: parseJsonl, summarize: summarize, buildIndex: buildIndex, search: search, questions: questions };
+}));
+
+}).call(null, undefined, holder);
+(function (module, self) {
+// 接到 AI 的範本檢索與組合（純函式、UMD；讀的是 lib 底下一對一對的 jsonl＋py，格式見 DESIGN.gui-templates.md 第 4 節）
+//   FaGuiTplAI.find(files, query, opts)   -> { status:'ok'|'choose'|'none', candidates[], menu?, hint }
+//        files：{ '範本代號': jsonl 文字 }（內建的加使用者的）；opts.limit 預設 5
+//        candidates：[{ id, title, score, questions:[{name,ask,default}], scenes:[{id,title,note}], requires[] }]
+//        前兩名分數相同或差距太小時 status 為 'choose'，menu 是離線字母選擇題（{ letters:{A:id}, text }）
+//   FaGuiTplAI.compose(files, args, opts) -> { ok, id, code, scenes[], defaulted[], errors[], custom }
+//        args：{ id, params?, jsonl?, py?, name? }；有 jsonl 就是模型自己寫的新範本（找不到現成的時候），和現成範本走同一個執行模組
+//        opts.userFiles：{ 代號: { jsonl, py } }（使用者範本；組合到使用者範本時一起寫進暫存資料夾）
+//   FaGuiTplAI.letterToId(menu, reply)    -> 範本代號或 null
+//   FaGuiTplAI.GUIDE                      -> 給線上系統提示的短指引
+(function (root, factory) {
+  var req = (typeof require === 'function' && typeof module === 'object');
+  var Index = req ? require('./jsonl_core.js') : root.FaGuiTplIndex;
+  if (typeof module === 'object' && module.exports) { module.exports = factory(Index); } else { root.FaGuiTplAI = factory(Index); }
+}(typeof self !== 'undefined' ? self : this, function (Index) {
+  'use strict';
+
+  var LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+  var GUIDE = '要寫有視窗的程式（辦公、文件、遊戲、專案、投影片、進銷存、美顏拍貼、證件照、MIDI、文字編輯器、網頁設計、影像處理、多媒體）時，先用 gui_template_find 找現成範本；'
+    + '有候選就只問使用者真正有歧義的參數（questions 裡沒問過的用預設），再用 gui_template_compose 組合，把回傳的 code 存成 .py 用 python3 執行；'
+    + '找不到範本時，照同一格式自己寫 jsonl（meta、param、require、style、layout、scene、shortcut）與選配的 py，一起交給 gui_template_compose（jsonl、py 欄位），不要另寫一套視窗程式。';
+
+  function find(files, query, opts) {
+    var limit = (opts && opts.limit) || 5;
+    var idx = Index.buildIndex(files || {});
+    var hits = Index.search(idx, query, limit);
+    var byId = {};
+    idx.entries.forEach(function (e) { byId[e.id] = e; });
+    var candidates = hits.map(function (h) {
+      var e = byId[h.id];
+      return { id: e.id, title: e.title, score: h.score, questions: Index.questions(e), scenes: e.scenes, requires: e.requires };
+    });
+    if (!candidates.length) {
+      return { status: 'none', candidates: [], hint: '沒有現成範本：照 gui_template_compose 的 jsonl／py 格式自己寫一份，交給同一個執行模組。可參考的範本：' + idx.entries.slice(0, 8).map(function (e) { return e.id; }).join('、') };
+    }
+    var tied = candidates.length > 1 && candidates[0].score - candidates[1].score < 1;
+    var out = { status: tied ? 'choose' : 'ok', candidates: candidates, hint: tied ? '前兩名分數相同，請使用者用字母選一個' : '只問 questions 裡真正有歧義的；使用者沒說的用 default' };
+    if (tied) { out.menu = menu(candidates.filter(function (c) { return c.score === candidates[0].score; }).slice(0, LETTERS.length)); }
+    return out;
+  }
+
+  function menu(candidates) {
+    var letters = {}, lines = [];
+    candidates.forEach(function (c, i) { letters[LETTERS.charAt(i)] = c.id; lines.push(LETTERS.charAt(i) + '. ' + c.title + '（' + c.id + '）'); });
+    return { letters: letters, text: '請選一個，只回一個字母：\n' + lines.join('\n') };
+  }
+
+  function letterToId(m, reply) {
+    var s = String(reply == null ? '' : reply).trim().toUpperCase();
+    var mm = /^[（(]?([A-Z])[)）.。]?$/.exec(s);
+    return mm && m && m.letters[mm[1]] ? m.letters[mm[1]] : null;
+  }
+
+  function pyStr(s) { return 'json.loads(' + JSON.stringify(JSON.stringify(s)) + ')'; }
+  // 一個 jsonl 要配一個 py：模型沒寫行為時補一支空的（只有版面，沒有事件處理）
+  var STUB_PY = ['# -*- coding: utf-8 -*-', '', '', 'def build(win, spec, slots):', '    return {"handlers": {}}', ''].join('\n');
+  var ID_RE = /^[a-z0-9_][a-z0-9_\-]*(\/[a-z0-9_][a-z0-9_\-]*)*$/;
+
+  function compose(files, args, opts) {
+    args = args || {}; opts = opts || {};
+    var errors = [];
+    var custom = typeof args.jsonl === 'string' && args.jsonl.trim() !== '';
+    var id = String(args.id || args.name || '').trim();
+    var summary;
+    if (custom) {
+      if (!id) { errors.push('自己寫的範本要給 name（例如 user/my_app）'); }
+      else if (!ID_RE.test(id)) { errors.push('範本代號只能用小寫英數、底線、連字號與斜線：' + id); }
+      summary = Index.summarize(id || 'x', args.jsonl);
+      if (summary.error) { errors.push(summary.error); }
+      else if (!(summary.standalone || summary.extends)) { errors.push('meta 要標 "standalone":true（整個應用程式）或 "extends"（變體）才能直接執行'); }
+    } else {
+      if (!id) { errors.push('缺少 id'); }
+      else if (!files || files[id] == null) { errors.push('沒有這個範本：' + id + '（先用 gui_template_find 找）'); }
+      else { summary = Index.summarize(id, files[id]); if (summary.error) { errors.push(summary.error); } }
+    }
+    var given = args.params && typeof args.params === 'object' && !Array.isArray(args.params) ? args.params : {};
+    var defaulted = [];
+    if (summary && !summary.error) {
+      var known = {};
+      summary.params.forEach(function (p) { known[p.name] = true; if (!(p.name in given)) { defaulted.push(p.name); } });
+      Object.keys(given).forEach(function (k) { if (!known[k]) { errors.push('範本沒有參數 ' + k + '（有：' + (summary.params.map(function (p) { return p.name; }).join('、') || '無') + '）'); } });
+    }
+    if (errors.length) { return { ok: false, errors: errors, id: id, custom: custom }; }
+
+    var lines = ['import json', 'import guitpl'];
+    var written = [];
+    var extra = {};
+    if (custom) { extra[id] = { jsonl: args.jsonl, py: typeof args.py === 'string' && args.py.trim() ? args.py : STUB_PY }; }
+    else if (/^user\//.test(id) && opts.userFiles) {
+      Object.keys(opts.userFiles).forEach(function (k) { extra[k] = opts.userFiles[k]; });
+    }
+    Object.keys(extra).forEach(function (k) { written.push(k); });
+    if (written.length) {
+      lines.push('import os', 'import tempfile', '_d = tempfile.mkdtemp()');
+      lines.push('def _w(cid, ext, text):', '    p = os.path.join(_d, *cid.split("/")) + ext', '    os.makedirs(os.path.dirname(p), exist_ok=True)',
+        '    f = open(p, "w", encoding="utf-8")', '    f.write(text)', '    f.close()');
+      written.forEach(function (k) {
+        lines.push('_w(' + JSON.stringify(k) + ', ".jsonl", ' + pyStr(extra[k].jsonl) + ')');
+        if (extra[k].py) { lines.push('_w(' + JSON.stringify(k) + ', ".py", ' + pyStr(extra[k].py) + ')'); }
+      });
+    }
+    var call = 'guitpl.run(' + JSON.stringify(id) + ', params=json.loads(' + JSON.stringify(JSON.stringify(given)) + ')' + (written.length ? ', roots=[_d] + guitpl.default_roots()' : '') + ')';
+    lines.push(call);
+    return { ok: true, id: id, code: lines.join('\n') + '\n', scenes: summary.scenes, defaulted: defaulted, errors: [], custom: custom };
+  }
+
+  return { find: find, compose: compose, letterToId: letterToId, menu: menu, GUIDE: GUIDE };
+}));
+
+}).call(null, undefined, holder);
+return holder;
+})();
+const FaGuiTplIndex = FaGuiTplMods.FaGuiTplIndex;
+const FaGuiTplAI = FaGuiTplMods.FaGuiTplAI;
+/* GUITPL-END */
 /* LANGCOLU-BEGIN */
 const FaLangColu = (function () {
 const holder = {};
@@ -82562,6 +82753,7 @@ class FloatingAssistant {
         this._builtinToolNameSnapshot = new Set(Object.keys(this.tools));
         this._registerHostToolsDomain();
         this._extRegisterTools();
+        this._guiTplRegisterTools();
         this._updateDelegateToSubagentDescription();
         this._syncCustomToolSlashCommands();
         // tw_stock_db客製: 只在「完全沒有對話紀錄」時（全新安裝、或上次
@@ -132512,6 +132704,40 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
     // 擴充點（DESIGN.extension-points.md）：把宣告式擴充登記成宿主工具。登記成 register_openai_tool 之後，它沒有歸類、
     // 就落在 host_tools 領域（category host_app）；內建 media-presentation 借用 category:host_app，所以簡報代理人也用得到，
     // 離線 AI 則經由工具目錄與 CoLU 路由選用。這裡只做接線；查什麼、怎麼抽、怎麼貢獻都在 FaExt（renderer/src/ext/ext_core.js）。
+    // 圖形介面範本接到 AI（DESIGN.gui-templates.md）：宿主工具 gui_template_find／gui_template_compose，讀 guitpl_lib 的 jsonl（內建）加使用者範本
+    _guiTplFiles() {
+        const out = {};
+        try {
+            for (const k of Object.keys(FA_PYBRIDGE_FILES)) {
+                const m = /^guitpl_lib\/(.+)\.jsonl$/.exec(k);
+                if (m) out[m[1]] = FA_PYBRIDGE_FILES[k];
+            }
+        } catch (_) { /* 沒有內建範本庫就只剩使用者範本 */ }
+        const u = this._guiTplUserTemplates ? this._guiTplUserTemplates() : {};
+        for (const id of Object.keys(u)) out[id] = u[id].jsonl;
+        return out;
+    }
+
+    _guiTplRegisterTools() {
+        if (typeof FaGuiTplAI === 'undefined' || !FaGuiTplAI) return;
+        const parse = (raw) => { try { return JSON.parse(String(raw || '{}')) || {}; } catch (_) { return {}; } };
+        this.register_openai_tool('gui_template_find',
+            '找圖形介面（有視窗的程式）現成範本。' + FaGuiTplAI.GUIDE,
+            (raw) => {
+                const a = parse(raw);
+                return JSON.stringify(FaGuiTplAI.find(this._guiTplFiles(), String(a.query || ''), { limit: Number(a.limit) || 5 }));
+            },
+            { type: 'object', properties: { query: { type: 'string', description: '使用者想做的程式（原話）' }, limit: { type: 'number', description: '最多幾個候選，預設 5' } }, required: ['query'] });
+        this.register_openai_tool('gui_template_compose',
+            '把選好的圖形介面範本（id 加 params）組合成可執行的 Python 程式，回傳 code（存成 .py 用 python3 執行）與各場景分鏡。找不到範本時，把自己寫的 jsonl（一行一筆紀錄：meta、param、require、style、layout、scene、shortcut）與選配的 py（def build(win, spec, slots) 回傳 {"handlers": {...}}）放進 jsonl／py 欄位，並用 name 命名（例如 user/my_app）。',
+            (raw) => {
+                const a = parse(raw);
+                const userFiles = this._guiTplUserTemplates ? this._guiTplUserTemplates() : {};
+                return JSON.stringify(FaGuiTplAI.compose(this._guiTplFiles(), a, { userFiles }));
+            },
+            { type: 'object', properties: { id: { type: 'string', description: '範本代號（gui_template_find 回的 id）' }, params: { type: 'object', description: '參數（名稱對應值；沒給的用預設）' }, name: { type: 'string', description: '自己寫範本時的代號，例如 user/my_app' }, jsonl: { type: 'string', description: '自己寫的範本 jsonl 全文' }, py: { type: 'string', description: '自己寫的範本 py 全文（可省略，沒有事件處理）' } } });
+    }
+
     _extRegisterTools() {
         if (typeof FaExt === 'undefined' || !FaExt) return;
         if (!this._extReg) this._extReg = FaExt.createRegistry();
