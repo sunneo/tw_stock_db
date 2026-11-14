@@ -1,4 +1,4 @@
 {"kind":"meta","id":"beauty/toolbar","title":"美顏工具列","keywords":["美顏工具列","工具列"],"entry":"build"}
 {"kind":"param","name":"caption","default":"美顏工具","ask":"工具列左邊要顯示什麼字？"}
 {"kind":"require","module":"gui","source":"builtin"}
-{"kind":"layout","tree":[{"kind":"row","role":"toolbar","children":[{"kind":"label","text":"{{caption}}"},{"id":"tb_reset","kind":"button","text":"全部重設"}]}]}
+{"kind":"layout","tree":[{"kind":"row","role":"toolbar","children":[{"kind":"label","text":"{{caption}}"},{"id":"tb_reset","kind":"button","text":"全部重設","icon":"↺"}]}]}

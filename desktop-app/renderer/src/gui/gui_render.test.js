@@ -285,4 +285,26 @@ assert.strictEqual(violations.length, 0); ok();
 }
 
 
+// patchNode: a set of plain props changes the one element in place; anything else says "rebuild" (false)
+{
+  const S = G.createSession();
+  const ap = (m) => { const r = G.apply(S, m); assert.ok(r.ok, r.error); };
+  ap({ op: 'open', id: 'wp', title: 'P' });
+  ap({ op: 'add', id: 'wp', node: { id: 'lb', kind: 'label', text: 'a' } });
+  ap({ op: 'add', id: 'wp', node: { id: 'en', kind: 'entry', value: '' } });
+  ap({ op: 'add', id: 'wp', node: { id: 'bt', kind: 'button', text: 'Go', icon: '+' } });
+  ap({ op: 'add', id: 'wp', node: { id: 'pg', kind: 'progress', value: 1, max: 10 } });
+  const w = R.renderWindow(doc, G.snapshot(S, 'wp'), () => {}, () => {});
+  const node = (id) => G.snapshot(S, 'wp').root.children.find((c) => c.id === id);
+  assert.strictEqual(R.patchNode(byNode(w, 'lb'), Object.assign({}, node('lb'), { text: 'b' }), { text: 'b' }), true); assert.strictEqual(byNode(w, 'lb').textContent, 'b'); ok();
+  assert.strictEqual(R.patchNode(byNode(w, 'en'), Object.assign({}, node('en'), { value: 'hi' }), { value: 'hi' }), true); assert.strictEqual(byNode(w, 'en').value, 'hi'); ok();
+  assert.strictEqual(R.patchNode(byNode(w, 'bt'), Object.assign({}, node('bt'), { text: 'Stop' }), { text: 'Stop' }), true);
+  assert.strictEqual(byNode(w, 'bt').children[1].textContent, 'Stop'); assert.strictEqual(byNode(w, 'bt').children[0].textContent, '+', 'the icon stays'); ok();
+  assert.strictEqual(R.patchNode(byNode(w, 'bt'), Object.assign({}, node('bt'), { enabled: false }), { enabled: false }), true); assert.strictEqual(byNode(w, 'bt').disabled, true); ok();
+  assert.strictEqual(R.patchNode(byNode(w, 'pg'), Object.assign({}, node('pg'), { value: 5 }), { value: 5 }), true); assert.strictEqual(byNode(w, 'pg').value, 5); ok();
+  assert.strictEqual(R.patchNode(byNode(w, 'lb'), node('lb'), { visible: false }), true); ok();
+  assert.strictEqual(R.patchNode(byNode(w, 'lb'), node('lb'), { grow: 1 }), false, 'a layout prop needs a rebuild'); ok();
+  assert.strictEqual(R.patchNode(byNode(w, 'bt'), node('bt'), { icon: 'x' }), false); ok();
+}
+
 console.log('gui_render: ' + n + ' assertions passed');

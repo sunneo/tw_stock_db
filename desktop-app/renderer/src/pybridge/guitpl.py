@@ -35,9 +35,9 @@ KEYS = {"param": "name", "slot": "name", "scene": "id", "shortcut": "keys", "req
 NODES = {
     "column": ("column", [], []), "row": ("row", [], []),
     "grid": ("grid", [], ["columns"]), "scroll": ("scroll", [], ["height"]),
-    "expander": ("expander", ["text"], ["expanded"]), "label": ("label", ["text"], []), "button": ("button", ["text"], []),
+    "expander": ("expander", ["text"], ["expanded"]), "label": ("label", ["text"], []), "button": ("button", ["text"], ["icon"]),
     "entry": ("entry", ["value"], []), "textarea": ("textarea", ["value"], ["rows", "placeholder"]),
-    "editor": ("editor", ["value"], ["lang", "rows", "numbers"]), "checkbox": ("checkbox", ["text"], ["checked"]),
+    "editor": ("editor", ["value"], ["lang", "rows", "numbers", "prose"]), "checkbox": ("checkbox", ["text"], ["checked"]),
     "progress": ("progress", ["value"], ["max"]), "list": ("listbox", ["items"], ["selected"]),
     "multilist": ("multilist", ["items"], ["selected"]), "table": ("table", ["columns", "rows"], []),
     "canvas": ("canvas", [], ["width", "height", "fps", "fit"]),
@@ -398,6 +398,10 @@ class Ctx(object):
     def get(self, name):
         return self.w.value(self.ids[name])
 
+    def caret(self, name):
+        """The user's caret or selection in an editor: (start, end) character offsets into ctx.get(name)."""
+        return self.w.caret(self.ids[name])
+
     def set(self, name, **props):
         self.w.set(self.ids[name], **props)
 
@@ -661,7 +665,7 @@ def compile_standalone(cid, params=None, roots=None):
     if any(k.endswith((".yaml", ".yml")) for k in files):  # a YAML template needs its parser at run time
         with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "guitpl_yaml.py"), encoding="utf-8") as f:
             files["guitpl_yaml.py"] = f.read()
-    q = lambda v: json.dumps(json.dumps(v, ensure_ascii=False))
+    q = lambda v: json.dumps(json.dumps(v, ensure_ascii=False), ensure_ascii=False)  # no escapes: an emoji would turn into two lone surrogates
     return _STANDALONE_HEAD % (q(files), q(runtime), json.dumps(cid), q(values))
 
 

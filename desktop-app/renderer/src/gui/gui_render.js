@@ -60,7 +60,8 @@
     '.gui-column,.gui-tab,.gui-scroll{display:flex;flex-direction:column;gap:var(--gui-s2);min-width:0}',
     '.gui-column>*,.gui-tab>*,.gui-scroll>*{flex-shrink:0}',
     '.gui-column>.gui-button,.gui-column>.gui-checkbox,.gui-column>.gui-label{align-self:flex-start}',
-    '.gui-row{display:flex;flex-direction:row;align-items:center;gap:var(--gui-s2);min-width:0}',
+    '.gui-row{display:flex;flex-direction:row;align-items:stretch;gap:var(--gui-s2);min-width:0}',
+    '.gui-row>.gui-label,.gui-row>.gui-progress,.gui-row>.gui-checkbox{align-self:center}',
     '.gui-row>.gui-entry{flex:1 1 0;min-width:0}.gui-row>.gui-label{min-width:0}',
     '.gui-grid{gap:var(--gui-s2)}.gui-scroll{overflow:auto}',
     '.gui-label{display:block}',
@@ -82,7 +83,7 @@
     '.gui-button{font:inherit;display:inline-flex;align-items:center;justify-content:center;gap:var(--gui-s1);padding:5px 14px;border:1px solid var(--gui-border);border-radius:var(--gui-radius);',
     'background:var(--gui-surface);color:var(--gui-fg);cursor:pointer;transition:background var(--gui-ease),border-color var(--gui-ease),box-shadow var(--gui-ease);white-space:nowrap}',
     '.gui-button:hover:not(:disabled){background:var(--gui-surface2);border-color:color-mix(in srgb,var(--gui-fg) 26%,var(--gui-bg))}',
-    '.gui-button:active:not(:disabled){background:var(--gui-press)}.gui-button:disabled{opacity:.45;cursor:default}',
+    '.gui-button:active:not(:disabled){background:var(--gui-press)}.gui-button:disabled{opacity:.45;cursor:default}.gui-icon{font-size:1.05em;line-height:1}',
     '.gui-button:focus-visible,.gui-entry:focus-visible,.gui-textarea:focus-visible,.gui-list:focus-visible{outline:2px solid var(--gui-accent);outline-offset:1px}',
     '.gui-button.gui-role-primary{background:var(--gui-accent);border-color:var(--gui-accent);color:var(--gui-on-accent);font-weight:600}',
     '.gui-button.gui-role-primary:hover:not(:disabled){background:color-mix(in srgb,var(--gui-accent) 86%,var(--gui-fg));border-color:transparent}',
@@ -124,16 +125,17 @@
     '.gui-canvas{background:#000;border-radius:calc(var(--gui-radius) - 1px)}.gui-canvas-fit{background:var(--gui-surface2)}',
     // the editor: a line number gutter, a highlight layer under a transparent textarea (so it keeps native editing, undo and scrollbars)
     '.gui-editor{position:relative;display:flex;flex-direction:row;min-height:0;min-width:0;border:1px solid var(--gui-border);border-radius:var(--gui-radius);overflow:hidden;background:var(--gui-bg);',
-    'font-family:var(--gui-mono);font-size:13px;line-height:20px}',
+    'font-family:var(--gui-mono);font-size:13px;line-height:var(--gui-ed-lh,20px)}',
     '.gui-column>.gui-editor,.gui-row>.gui-editor{flex-shrink:0}',
-    '.gui-ed-cur{position:absolute;left:0;right:0;height:20px;background:var(--gui-hover);pointer-events:none;top:0}',
+    '.gui-ed-cur{position:absolute;left:0;right:0;height:var(--gui-ed-lh,20px);background:var(--gui-hover);pointer-events:none;top:0;opacity:0;transition:opacity var(--gui-ease)}.gui-editor:focus-within .gui-ed-cur{opacity:1}',
     '.gui-ed-gutter{position:relative;flex:0 0 auto;overflow:hidden;background:var(--gui-surface);border-right:1px solid var(--gui-border);color:var(--gui-muted);text-align:right;user-select:none}',
-    '.gui-ed-gutter pre,.gui-ed-hl{margin:0;font:inherit;line-height:20px;position:absolute;left:0;top:0;white-space:pre;will-change:transform}',
+    '.gui-ed-gutter pre,.gui-ed-hl{margin:0;font:inherit;line-height:var(--gui-ed-lh,20px);position:absolute;left:0;top:0;white-space:pre;will-change:transform}',
     '.gui-ed-gutter pre{right:0;padding:0 10px 0 8px}.gui-ed-gutter .gui-ed-now{color:var(--gui-fg);font-weight:600}',
     '.gui-ed-main{position:relative;flex:1 1 0;min-width:0;overflow:hidden}.gui-ed-hl{pointer-events:none;color:var(--gui-fg)}',
-    '.gui-ed-ta{position:absolute;left:0;top:0;right:0;bottom:0;width:100%;height:100%;margin:0;border:none;outline:none;resize:none;padding:8px 12px 8px 8px;font:inherit;line-height:20px;',
+    '.gui-ed-ta{position:absolute;left:0;top:0;right:0;bottom:0;width:100%;height:100%;margin:0;border:none;outline:none;resize:none;padding:8px 12px 8px 8px;font:inherit;line-height:var(--gui-ed-lh,20px);',
     'white-space:pre;overflow:auto;background:transparent;color:transparent;caret-color:var(--gui-fg);tab-size:2;-moz-tab-size:2}',
     '.gui-ed-ta::selection{background:var(--gui-accent-soft);color:transparent}.gui-ed-ta:disabled{opacity:.6}',
+    '.gui-editor-prose{font-family:var(--gui-font,var(--gui-sans));font-size:15px}.gui-editor-prose [class^=gui-tok-]{font-weight:400!important;font-style:normal!important;text-decoration:none!important}',
     '.gui-tok-comment{color:var(--gui-t-comment);font-style:italic}.gui-tok-string{color:var(--gui-t-string)}.gui-tok-number{color:var(--gui-t-number)}',
     '.gui-tok-keyword{color:var(--gui-t-keyword)}.gui-tok-const{color:var(--gui-t-const)}.gui-tok-fn{color:var(--gui-t-fn)}.gui-tok-type{color:var(--gui-t-type)}',
     '.gui-tok-attr{color:var(--gui-t-attr)}.gui-tok-tag{color:var(--gui-t-tag)}.gui-tok-punct{color:var(--gui-t-punct)}.gui-tok-key{color:var(--gui-t-key)}',
@@ -373,10 +375,12 @@
   // stays fast) under a transparent textarea that keeps real editing, selection, undo and the scrollbars. Same font and line height in both, so
   // the colored text sits exactly under the typed text. Returns the box; box.value reads and writes the text (a synthetic input event on the box
   // works like typing). Only createElement, appendChild, addEventListener, style and textContent are used.
-  var LINE_H = 20, PAD_T = 8, PAD_L = 8, BUFFER = 30;
+  var PAD_T = 8, PAD_L = 8, BUFFER = 30;
   function buildEditor(doc, n, onEvent) {
+    var LINE_H = n.prose ? 26 : 20;
     var box = doc.createElement('div');
-    box.className = 'gui-editor';
+    box.className = 'gui-editor' + (n.prose ? ' gui-editor-prose' : '');
+    if (box.style.setProperty) { box.style.setProperty('--gui-ed-lh', LINE_H + 'px'); }
     var lang = String(n.lang || '').toLowerCase();
     var showNumbers = n.numbers !== false;
     var gutter = doc.createElement('div'); gutter.className = 'gui-ed-gutter';
@@ -474,7 +478,13 @@
       var r = visibleRange(rendered.count < 0 ? lines().length : rendered.count);
       if (r.first < rendered.from + 5 && rendered.from > 0 || r.last > rendered.to - 5 && rendered.to < rendered.count - 1) { schedule(true); } else { position(); }
     });
-    ['keyup', 'click', 'mouseup', 'focus'].forEach(function (t) { ta.addEventListener(t, updateCaret); });
+    var lastCaret = '';
+    function reportCaret() { // the caret or selection, for programs that insert text at the cursor (only when it changed)
+      var a = ta.selectionStart || 0, b = ta.selectionEnd || 0, key = a + ',' + b;
+      if (key !== lastCaret) { lastCaret = key; onEvent('caret', n.id, { start: a, end: b }); }
+    }
+    ['keyup', 'click', 'mouseup', 'focus'].forEach(function (t) { ta.addEventListener(t, function () { updateCaret(); reportCaret(); }); });
+    ta.addEventListener('blur', reportCaret);
     ta.addEventListener('keydown', function (e) {
       if (e.key === 'Tab' && !e.shiftKey) { e.preventDefault(); insertText('  '); onEvent('input', n.id, ta.value); schedule(true); return; }
       if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
@@ -488,6 +498,17 @@
         }
       }
     });
+    // move the caret (select from a to b), focus the editor and bring the line into view
+    box.setCaret = function (a, b) {
+      var len = ta.value.length;
+      a = Math.max(0, Math.min(len, a)); b = b === undefined ? a : Math.max(0, Math.min(len, b));
+      if (ta.focus) { ta.focus(); }
+      if (ta.setSelectionRange) { ta.setSelectionRange(Math.min(a, b), Math.max(a, b)); } else { ta.selectionStart = Math.min(a, b); ta.selectionEnd = Math.max(a, b); }
+      var line = lineCountOf(ta.value, b), y = PAD_T + line * LINE_H, h = ta.clientHeight || 0;
+      if (h && (y < ta.scrollTop + LINE_H || y > ta.scrollTop + h - LINE_H * 2)) { ta.scrollTop = Math.max(0, y - Math.floor(h / 3)); }
+      lastCaret = Math.min(a, b) + ',' + Math.max(a, b);
+      curLine = line; rendered.count = -1; paint(true);
+    };
     box.paintNow = function () { paint(true); };
     box.focusEditor = function () { if (ta.focus) { ta.focus(); } };
     if (win && win.ResizeObserver) { new win.ResizeObserver(function () { schedule(true); }).observe(main); }
@@ -581,7 +602,7 @@
         el = doc.createElement('button');
         el.type = 'button';
         el.className = 'gui-button';
-        el.textContent = n.text || '';
+        if (n.icon) { var ic = label(n.icon); ic.className = 'gui-icon'; el.appendChild(ic); el.appendChild(label(n.text || '')); } else { el.textContent = n.text || ''; }
         el.disabled = n.enabled === false;
         on('click', function () { onEvent('click', n.id); });
         break;
@@ -702,7 +723,7 @@
         el.tabIndex = 0; // focusable, so key presses reach it
         if (n.fit) {
           // the drawing space stays width x height; the box is scaled to fill the area (whole picture visible, centered)
-          el.style.cssText = 'display:block;object-fit:contain;min-width:0;min-height:0;' + (n.grow > 0 ? 'contain:size;' : 'width:100%;height:auto;');
+          el.style.cssText = 'display:block;object-fit:contain;min-width:0;min-height:0;' + (n.grow > 0 ? 'contain:size;aspect-ratio:auto;align-self:stretch;' : 'width:100%;height:auto;');
           el.className += ' gui-canvas-fit';
         } else if (opts && opts.resizable) {
           // in a resizable window the canvas fills the window and gets one pixel per screen pixel; its new size goes back as "resize"
@@ -789,6 +810,65 @@
     });
     el.insertBefore(bar, el.firstChild || null);
     show(chosen);
+  }
+
+  // Changes one element in place for a "set" (so typing keeps its focus, caret and scroll; a rebuild would lose them). props are the changed props,
+  // node the node after the change. Returns false when the page cannot patch it (a layout prop, a table, a list's items ...): the caller rebuilds.
+  var PATCHABLE = { text: 1, value: 1, enabled: 1, checked: 1, visible: 1, selected: 1, max: 1, placeholder: 1, expanded: 1, icon: 1, items: 1, caret: 1, caret_to: 1 };
+  function rank(k) { return k === 'items' ? 0 : (k === 'caret' || k === 'caret_to' ? 2 : 1); } // items first, the caret last
+  function patchNode(el, node, props) {
+    var keys = Object.keys(props || {}).sort(function (x, y) { return rank(x) - rank(y); });
+    if (!el || !keys.length) { return false; }
+    var kind = node.kind;
+    for (var i = 0; i < keys.length; i++) {
+      var k = keys[i];
+      if (!PATCHABLE[k]) { return false; }
+      if (k === 'visible') { continue; }
+      if (k === 'icon') { return false; }
+      if (kind === 'label' && k === 'text') { continue; }
+      if (kind === 'button' && (k === 'text' || k === 'enabled')) { continue; }
+      if ((kind === 'entry' || kind === 'textarea') && (k === 'value' || k === 'enabled' || k === 'placeholder')) { continue; }
+      if (kind === 'editor' && (k === 'value' || k === 'enabled')) { continue; }
+      if (kind === 'checkbox' && (k === 'checked' || k === 'text' || k === 'enabled')) { continue; }
+      if (kind === 'progress' && (k === 'value' || k === 'max')) { continue; }
+      if ((kind === 'list' || kind === 'multilist') && (k === 'selected' || k === 'enabled' || k === 'items')) { continue; }
+      if (kind === 'editor' && (k === 'caret' || k === 'caret_to')) { continue; }
+      if (kind === 'expander' && (k === 'expanded' || k === 'text')) { continue; }
+      return false;
+    }
+    keys.forEach(function (k) {
+      var v = node[k];
+      if (k === 'visible') { el.hidden = v === false; return; }
+      if (k === 'caret_to') { return; }
+      if (k === 'caret') { if (el.setCaret) { el.setCaret(props.caret, props.caret_to); } return; }
+      if (kind === 'label') { el.textContent = v; }
+      else if (kind === 'button') {
+        if (k === 'enabled') { el.disabled = v === false; }
+        else { var kids = el.children || []; if (kids.length > 1 && kids[0].className === 'gui-icon') { kids[kids.length - 1].textContent = v; } else { el.textContent = v; } }
+      } else if (kind === 'entry' || kind === 'textarea') {
+        if (k === 'value') { if (el.value !== v) { el.value = v; } } else if (k === 'enabled') { el.disabled = v === false; } else { el.placeholder = v; }
+      } else if (kind === 'editor') {
+        if (k === 'value') { if (el.value !== v) { el.value = v; } } else { el.disabled = v === false; }
+      } else if (kind === 'checkbox') {
+        var box = el.querySelector ? el.querySelector('input') : null, caption = el.querySelector ? el.querySelector('span') : null;
+        if (!box) { return; }
+        if (k === 'checked') { box.checked = !!v; } else if (k === 'enabled') { box.disabled = v === false; } else if (caption) { caption.textContent = v; }
+      } else if (kind === 'progress') {
+        if (k === 'value') { el.value = v; } else { el.max = v; }
+      } else if (kind === 'list' && k === 'items' || kind === 'multilist' && k === 'items') {
+        // new options, the selection kept when the item is still there; the list keeps its scroll position
+        el.textContent = '';
+        (v || []).forEach(function (text) { var o = el.ownerDocument ? el.ownerDocument.createElement('option') : null; if (!o) { return; } o.textContent = text; o.value = text; o.selected = kind === 'list' ? text === node.selected : (node.selected || []).indexOf(text) >= 0; el.appendChild(o); });
+        el.size = Math.min(8, Math.max(2, (v || []).length));
+      } else if (kind === 'list') {
+        if (k === 'selected') { el.value = v; } else { el.disabled = v === false; }
+      } else if (kind === 'multilist') {
+        if (k === 'selected') { Array.prototype.forEach.call(el.options || [], function (o) { o.selected = (v || []).indexOf(o.value) >= 0; }); } else { el.disabled = v === false; }
+      } else if (kind === 'expander') {
+        if (k === 'expanded') { el.open = !!v; } else { var sm = el.querySelector ? el.querySelector('summary') : null; if (sm) { sm.textContent = v; } }
+      }
+    });
+    return true;
   }
 
   // maximize fills the window's box (the terminal's area); the first click remembers the place and size, the next one restores them
@@ -915,5 +995,5 @@
     return win;
   }
 
-  return { GUI_CSS: GUI_CSS, tokenizeLine: tokenizeLine, isDark: isDark, CONTROL_BUTTON_CSS: CONTROL_BUTTON_CSS, renderWindow: renderWindow, paintFrame: paintFrame, applyTheme: applyTheme, shortcutKey: shortcutKey, textOn: textOn };
+  return { patchNode: patchNode, GUI_CSS: GUI_CSS, tokenizeLine: tokenizeLine, isDark: isDark, CONTROL_BUTTON_CSS: CONTROL_BUTTON_CSS, renderWindow: renderWindow, paintFrame: paintFrame, applyTheme: applyTheme, shortcutKey: shortcutKey, textOn: textOn };
 }));

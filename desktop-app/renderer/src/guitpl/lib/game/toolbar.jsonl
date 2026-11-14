@@ -1,3 +1,3 @@
 {"kind":"meta","id":"game/toolbar","title":"遊戲工具列（發球、暫停、重新開始）","keywords":["工具列","遊戲","發球","暫停"],"entry":"build"}
 {"kind":"require","module":"gui","source":"builtin"}
-{"kind":"layout","tree":[{"kind":"row","role":"toolbar","children":[{"id":"serve","kind":"button","text":"發球"},{"id":"pause","kind":"button","text":"暫停"},{"id":"restart","kind":"button","text":"重新開始"}]}]}
+{"kind":"layout","tree":[{"kind":"row","role":"toolbar","children":[{"id":"serve","kind":"button","text":"發球","icon":"▶","role":"primary"},{"id":"pause","kind":"button","text":"暫停","icon":"⏸"},{"id":"restart","kind":"button","text":"重新開始","icon":"↻"}]}]}

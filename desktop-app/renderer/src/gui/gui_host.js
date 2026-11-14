@@ -30,13 +30,14 @@
     function enqueue(winId, name, line) {
       var q = queues[winId] || (queues[winId] = []);
       var move = name === 'mouse' && /"kind":"move"/.test(line);
-      if (name === 'frame') { for (var i = q.length - 1; i >= 0; i--) { if (q[i].name === 'frame') { q.splice(i, 1); } } }
+      if (name === 'frame' || name === 'caret') { for (var i = q.length - 1; i >= 0; i--) { if (q[i].name === name && (name === 'frame' || q[i].node === nodeOf(line))) { q.splice(i, 1); } } }
       else if (move && q.length && q[q.length - 1].move) { q.pop(); }
-      q.push({ name: name, line: line, move: move });
+      q.push({ name: name, line: line, move: move, node: name === 'caret' ? nodeOf(line) : null });
       if (q.length > QUEUE_MAX) { q.shift(); }
       var w = waiters[winId];
       if (w && q.length) { delete waiters[winId]; w(take(winId)); }
     }
+    function nodeOf(line) { try { return JSON.parse(line).node; } catch (e) { return null; } }
     function take(winId) { var q = queues[winId] || []; return q.length ? q.shift().line : null; }
 
     function onEventFor(winId) {
@@ -196,6 +197,16 @@
       } catch (e) { /* silent */ }
     }
 
+    // a set of plain props (text, value, enabled, checked, visible, selected ...) changes the one element in place: the user keeps the focus, the
+    // caret and the scroll position of what they are typing in. Anything else (a layout prop, a table's rows, a list's items) rebuilds the window.
+    function patch(msg) {
+      if (!render.patchNode) { return false; }
+      var win = session.windows[msg.id], node = win && win.nodes[msg.node], view = views[msg.id];
+      if (!node || !view || !view.querySelector) { return false; }
+      var el = view.querySelector('[data-node="' + msg.node + '"]');
+      try { return !!(el && render.patchNode(el, node, msg.props)); } catch (e) { return false; }
+    }
+
     // apply one "@gui" line (or an already parsed message). Returns {ok} or {ok:false, error}; never throws.
     function apply(line) {
       var parsed = bridge.parseLine(line);
@@ -205,7 +216,8 @@
       if (!result.ok) { return result; }
       if (msg.op === 'open') { show(msg.id); }
       else if (msg.op === 'close') { teardown(msg.id); }
-      else if (msg.op === 'add' || msg.op === 'set' || msg.op === 'remove' || msg.op === 'theme' || msg.op === 'shortcut') { show(msg.id); }
+      else if (msg.op === 'set') { if (!patch(msg)) { show(msg.id); } }
+      else if (msg.op === 'add' || msg.op === 'remove' || msg.op === 'theme' || msg.op === 'shortcut') { show(msg.id); }
       else if (msg.op === 'tone') { playTone(msg.freq, msg.ms, msg.wave || 'sine'); }
       else if (msg.op === 'draw') { paint(msg.id); }
       else if (msg.op === 'image') { repaintCanvas(msg.id, msg.node); }

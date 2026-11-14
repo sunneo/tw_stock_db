@@ -1,4 +1,4 @@
 {"kind":"meta","id":"inventory/toolbar","title":"進銷存工具列","keywords":["工具列","進銷存"],"entry":"build"}
 {"kind":"param","name":"caption","default":"進銷","ask":"工具列左邊要顯示什麼字？"}
 {"kind":"require","module":"gui","source":"builtin"}
-{"kind":"layout","tree":[{"kind":"row","role":"toolbar","children":[{"kind":"label","text":"{{caption}}"},{"id":"tb_form","kind":"button","text":"進銷"},{"id":"tb_stats","kind":"button","text":"統計"},{"id":"tb_clear","kind":"button","text":"清除訊息"}]}]}
+{"kind":"layout","tree":[{"kind":"row","role":"toolbar","children":[{"kind":"label","text":"{{caption}}"},{"id":"tb_form","kind":"button","text":"進銷","icon":"▤"},{"id":"tb_stats","kind":"button","text":"統計","icon":"▥"},{"kind":"label","text":"","role":"divider"},{"id":"tb_clear","kind":"button","text":"清除訊息","icon":"✖"}]}]}

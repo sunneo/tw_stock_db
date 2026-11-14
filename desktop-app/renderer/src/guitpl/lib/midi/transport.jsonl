@@ -1,4 +1,4 @@
 {"kind":"meta","id":"midi/transport","title":"播放控制列（播放、停止、速度）","keywords":["播放","停止","速度","控制"],"entry":"build"}
 {"kind":"param","name":"bpm","default":"120","ask":"速度要設幾 BPM？"}
 {"kind":"require","module":"gui","source":"builtin"}
-{"kind":"layout","tree":[{"kind":"row","role":"toolbar","children":[{"id":"play","kind":"button","text":"播放"},{"id":"stop","kind":"button","text":"停止"},{"kind":"label","text":"速度 BPM"},{"id":"bpm","kind":"entry","value":"{{bpm}}"}]}]}
+{"kind":"layout","tree":[{"kind":"row","role":"toolbar","children":[{"id":"play","kind":"button","text":"播放","icon":"▶","role":"primary"},{"id":"stop","kind":"button","text":"停止","icon":"■"},{"kind":"label","text":"速度 BPM"},{"id":"bpm","kind":"entry","value":"{{bpm}}"}]}]}

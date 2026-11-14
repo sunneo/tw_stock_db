@@ -60,11 +60,14 @@
     menu: { props: ['text'] },
     menuitem: { props: ['text', 'keys', 'enabled'], events: ['click'] },
     label: { props: ['text'] },
-    button: { props: ['text', 'enabled'], events: ['click'] },
+    // button icon: a short symbol or emoji shown before the text (the toolbar look: icon plus text)
+    button: { props: ['text', 'enabled', 'icon'], events: ['click'] },
     entry: { props: ['value', 'placeholder', 'enabled', 'secret'], events: ['input'] },
     textarea: { props: ['value', 'placeholder', 'rows', 'enabled'], events: ['input'] },
     // editor: a code or text editing surface with line numbers (numbers), syntax colors for lang (python, javascript, json, markdown, html, css; anything else is plain), scrollbars
-    editor: { props: ['value', 'lang', 'rows', 'enabled', 'numbers'], events: ['input'] },
+    // prose: a proportional reading font and roomier lines (documents); caret / caret_to (set only, not stored): move the caret (and select to caret_to)
+    // and focus the editor; the user's caret and selection come back as the "caret" event {start, end} (character offsets)
+    editor: { props: ['value', 'lang', 'rows', 'enabled', 'numbers', 'prose'], events: ['input', 'caret'] },
     checkbox: { props: ['text', 'checked', 'enabled'], events: ['change'] },
     progress: { props: ['value', 'max'] },
     list: { props: ['items', 'selected', 'enabled'], events: ['select'] },
@@ -78,7 +81,7 @@
   };
   // layout and look hints every node may carry: grow = share of the free space in its parent (0 none, 1-10 weight; a row grows sideways,
   // a column downwards), gap = space between its children and pad = inner space (pixels), role = a named look from the design system
-  var ROLES = ['toolbar', 'sidebar', 'statusbar', 'card', 'panel', 'heading', 'title', 'muted', 'primary', 'danger', 'surface', 'group', 'outline', 'page'];
+  var ROLES = ['toolbar', 'sidebar', 'statusbar', 'card', 'panel', 'heading', 'title', 'muted', 'primary', 'danger', 'surface', 'group', 'divider', 'outline', 'page'];
   var COMMON = ['visible', 'grow', 'gap', 'pad', 'role'];
 
   function fail(error) { return { ok: false, error: error }; }
@@ -102,7 +105,8 @@
   function prop(kind, name, v) {
     switch (name) {
       case 'text': case 'value': case 'placeholder': case 'lang': case 'keys': return text(v, name);
-      case 'enabled': case 'checked': case 'visible': case 'secret': case 'expanded': case 'numbers': case 'fit': return bool(v, name);
+      case 'icon': if (typeof v !== 'string' || v.length > 8) { throw new Error('icon must be a short text (a symbol or emoji, at most 8 characters)'); } return v;
+      case 'enabled': case 'checked': case 'visible': case 'secret': case 'expanded': case 'numbers': case 'fit': case 'prose': return bool(v, name);
       case 'rows': return num(v, name, 1, 30);
       case 'grow': return num(v, name, 0, 10);
       case 'gap': case 'pad': return num(v, name, 0, 32);
@@ -298,6 +302,11 @@
       if (msg.op === 'set') {
         if (!isObj(msg.props)) { return fail('props must be an object'); }
         Object.keys(msg.props).forEach(function (k) {
+          if (k === 'caret' || k === 'caret_to') { // a one-time move of an editor's caret: checked, not stored
+            if (target.kind !== 'editor') { throw new Error('prop "' + k + '" is not allowed on ' + target.kind); }
+            num(msg.props[k], k, 0, 1e8);
+            return;
+          }
           var allowed = KINDS[target.kind].props.concat(COMMON);
           if (allowed.indexOf(k) < 0) { throw new Error('prop "' + k + '" is not allowed on ' + target.kind); }
           target[k] = propValue(target.kind, k, msg.props[k]);
@@ -335,6 +344,16 @@
     }
   }
 
+  // What the user typed or picked is kept in the node, so a rebuilt window (an add, or a set the page cannot patch in place) shows it again
+  function remember(node, eventName, v) {
+    if (eventName === 'input' && typeof v === 'string') { node.value = v; }
+    else if (eventName === 'change') { node.checked = !!v; }
+    else if (eventName === 'toggle') { node.expanded = !!v; }
+    else if (eventName === 'select' && node.kind === 'list' && typeof v === 'string') { node.selected = v; }
+    else if (eventName === 'select' && node.kind === 'multilist' && Array.isArray(v)) { node.selected = v; }
+    else if (eventName === 'cell' && node.rows && v && node.rows[v.row]) { node.rows[v.row][v.col] = v.text; }
+  }
+
   // Page -> program event line. Only the event each kind declares is allowed; the value is text (or a number for checkbox/progress).
   function eventLine(session, winId, nodeId, eventName, value) {
     var win = session.windows[winId];
@@ -352,7 +371,7 @@
       if (typeof value !== 'string' || node.children.indexOf(value) < 0) { return null; }
       node.selected = value;
     }
-    if ((eventName === 'key' || eventName === 'frame' || eventName === 'mouse' || eventName === 'wheel' || eventName === 'resize') && value === undefined) { return null; } // these always carry a value
+    if ((eventName === 'key' || eventName === 'frame' || eventName === 'mouse' || eventName === 'wheel' || eventName === 'resize' || eventName === 'caret') && value === undefined) { return null; } // these always carry a value
     var ev = { v: VERSION, event: eventName, id: winId, node: nodeId };
     if (value !== undefined) {
       if (eventName === 'change' || eventName === 'toggle') { ev.value = !!value; }
@@ -379,6 +398,11 @@
         var wx = Math.round(Number(value.x)), wy = Math.round(Number(value.y)), dy = Number(value.dy);
         if (!isFinite(wx) || !isFinite(wy) || !isFinite(dy) || dy === 0) { return null; }
         ev.value = { x: Math.min(node.width, Math.max(0, wx)), y: Math.min(node.height, Math.max(0, wy)), dy: Math.max(-1000, Math.min(1000, Math.round(dy))) };
+      } else if (eventName === 'caret') {
+        // {start, end}: the editor's caret or selection as character offsets (start <= end)
+        var cs = Math.round(Number(value && value.start)), ce = Math.round(Number(value && value.end));
+        if (!isFinite(cs) || !isFinite(ce) || cs < 0 || ce < 0 || cs > 1e8 || ce > 1e8) { return null; }
+        ev.value = { start: Math.min(cs, ce), end: Math.max(cs, ce) };
       } else if (eventName === 'resize') {
         // {width, height}: the canvas's new size in pixels (16 to 2000 each). The bridge keeps the new size, so the clamps above follow it.
         var rw = Math.round(Number(value.width)), rh = Math.round(Number(value.height));
@@ -392,6 +416,7 @@
         ev.value = { row: row, col: col, text: String(value.text).slice(0, MAX_TEXT) };
       } else if (Array.isArray(value)) { ev.value = value.slice(0, MAX_ITEMS).map(function (s) { return String(s).slice(0, MAX_TEXT); }); }
       else { ev.value = String(value).slice(0, MAX_TEXT); }
+      remember(node, eventName, ev.value);
     }
     return JSON.stringify(ev);
   }

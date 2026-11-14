@@ -1,3 +1,3 @@
-{"kind":"meta","id":"document/statusbar","title":"文件狀態列（字數與訊息）","keywords":["文件狀態列","字數","存檔訊息"],"entry":"build"}
+{"kind":"meta","id":"document/statusbar","title":"文件狀態列（字數、游標位置與訊息）","keywords":["文件狀態列","字數","存檔訊息"],"entry":"build"}
 {"kind":"require","module":"gui","source":"builtin"}
-{"kind":"layout","tree":[{"kind":"row","role":"statusbar","children":[{"id":"count","kind":"label","text":"0 字"},{"id":"msg","kind":"label","text":"就緒"}]}]}
+{"kind":"layout","tree":[{"kind":"row","role":"statusbar","children":[{"id":"count","kind":"label","text":"0 字"},{"id":"pos","kind":"label","text":"第 1 行，第 1 欄"},{"id":"msg","kind":"label","text":"就緒"}]}]}

@@ -200,4 +200,21 @@ assert.match(G.parseWait('wait w1 a=b').error, /shell variable name/); ok();
 }
 
 
+// what the user typed or picked stays in the node (a rebuilt window shows it again)
+{
+  const S = G.createSession();
+  const ap = (m) => { const r = G.apply(S, m); assert.ok(r.ok, r.error); };
+  ap({ op: 'open', id: 'wr', title: 'R' });
+  ap({ op: 'add', id: 'wr', node: { id: 'e', kind: 'entry', value: '' } });
+  ap({ op: 'add', id: 'wr', node: { id: 'c', kind: 'checkbox', text: 'x' } });
+  ap({ op: 'add', id: 'wr', node: { id: 'l', kind: 'list', items: ['a', 'b'], selected: 'a' } });
+  ap({ op: 'add', id: 'wr', node: { id: 'ml', kind: 'multilist', items: ['a', 'b'], selected: [] } });
+  ap({ op: 'add', id: 'wr', node: { id: 'tb', kind: 'table', columns: ['x'], rows: [['1']] } });
+  G.eventLine(S, 'wr', 'e', 'input', 'typed'); G.eventLine(S, 'wr', 'c', 'change', true); G.eventLine(S, 'wr', 'l', 'select', 'b');
+  G.eventLine(S, 'wr', 'ml', 'select', ['a', 'b']); G.eventLine(S, 'wr', 'tb', 'cell', { row: 0, col: 0, text: '9' });
+  const kids = G.snapshot(S, 'wr').root.children;
+  assert.strictEqual(kids[0].value, 'typed'); assert.strictEqual(kids[1].checked, true); assert.strictEqual(kids[2].selected, 'b'); ok();
+  assert.deepStrictEqual(kids[3].selected, ['a', 'b']); assert.strictEqual(kids[4].rows[0][0], '9'); ok();
+}
+
 console.log('gui_bridge: ' + n + ' assertions passed');

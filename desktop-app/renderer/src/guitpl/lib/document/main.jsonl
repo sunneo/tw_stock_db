@@ -1,13 +1,19 @@
-{"kind":"meta","id":"document/main","title":"文件編輯（大綱側欄加編輯區）","keywords":["文件","文件編輯","大綱","章節","文稿","document"],"entry":"build","standalone":true}
+{"kind":"meta","id":"document/main","title":"文件編輯（工具列、大綱側欄、整面編輯區、狀態列）","keywords":["文件","文件編輯","大綱","章節","文稿","段落","標題","word","document"],"entry":"build","standalone":true}
 {"kind":"param","name":"title","default":"文件編輯","ask":"視窗標題要寫什麼？"}
 {"kind":"param","name":"doc_name","default":"未命名文件","ask":"文件名稱要寫什麼？（會顯示在編輯區上方）"}
+{"kind":"param","name":"doc_text","default":"# 未命名文件\n\n在這裡開始寫。用上方的按鈕設定標題、粗體、清單，按「插入段落」會在游標處加一段新的。\n\n## 第一節\n\n左邊的大綱會列出所有標題，點一下就跳到那一節。","ask":"文件一開始要寫什麼？（# 開頭的行是標題）"}
 {"kind":"require","module":"gui","source":"builtin"}
-{"kind":"style","palette":{"bg":"#ffffff","fg":"#222222","accent":"#2563eb","danger":"#dc2626","muted":"#9ca3af"},"font":"serif","size":15,"radius":4}
-{"kind":"layout","window":{"title":"{{title}}","width":900,"resizable":true,"height":640},"tree":[{"kind":"column","role":"page","children":[{"id":"doc_label","kind":"label","text":"{{doc_name}}","role":"heading","pad":10},{"slot":"toolbar"},{"kind":"row","grow":1,"children":[{"slot":"sidebar","role":"sidebar"},{"id":"body","kind":"editor","value":"","lang":"text","rows":18,"numbers":false,"grow":1}]},{"slot":"statusbar"}]}]}
+{"kind":"style","palette":{"bg":"#ffffff","fg":"#1f2328","accent":"#2563eb","danger":"#dc2626","muted":"#6b7280"},"font":"serif","size":15,"radius":6}
+{"kind":"layout","window":{"title":"{{title}}","width":980,"height":700,"resizable":true},"tree":[{"kind":"column","role":"page","children":[{"slot":"toolbar"},{"kind":"row","grow":1,"children":[{"slot":"sidebar","role":"sidebar"},{"id":"body","kind":"editor","value":"{{doc_text}}","lang":"markdown","rows":18,"numbers":false,"prose":true,"grow":1}]},{"slot":"statusbar"}]}]}
 {"kind":"slot","name":"toolbar","use":"document/toolbar","params":{}}
-{"kind":"slot","name":"sidebar","use":"document/sidebar","params":{}}
+{"kind":"slot","name":"sidebar","use":"document/sidebar","params":{"doc_name":"{{doc_name}}"}}
 {"kind":"slot","name":"statusbar","use":"document/statusbar","params":{}}
-{"kind":"scene","id":"no_outline","title":"沒有大綱","note":"只顯示提示；用 # 開頭寫一行標題後，大綱就會出現","show":["outline_hint"],"hide":["outline"],"on":{"click:add_heading":"has_outline"}}
-{"kind":"scene","id":"has_outline","title":"有大綱","note":"大綱側欄列出所有標題，縮排表示層級","show":["outline"],"hide":["outline_hint"]}
+{"kind":"scene","id":"no_outline","title":"沒有大綱","note":"只顯示提示；用 # 開頭寫一行標題後，大綱就會出現","show":["outline_hint"],"hide":["outline"]}
+{"kind":"scene","id":"has_outline","title":"有大綱","note":"大綱側欄列出所有標題，縮排表示層級，點一下就跳到那一節","show":["outline"],"hide":["outline_hint"]}
 {"kind":"shortcut","keys":"Ctrl+S","do":"save"}
-{"kind":"shortcut","keys":"Ctrl+Shift+H","do":"add_heading"}
+{"kind":"shortcut","keys":"Ctrl+B","do":"bold"}
+{"kind":"shortcut","keys":"Ctrl+I","do":"italic"}
+{"kind":"shortcut","keys":"Ctrl+1","do":"h1"}
+{"kind":"shortcut","keys":"Ctrl+2","do":"h2"}
+{"kind":"shortcut","keys":"Ctrl+3","do":"h3"}
+{"kind":"shortcut","keys":"Ctrl+Enter","do":"insert_para"}

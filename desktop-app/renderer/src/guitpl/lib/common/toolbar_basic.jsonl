@@ -1,4 +1,4 @@
 {"kind":"meta","id":"common/toolbar_basic","title":"基本工具列（存檔、清除）","keywords":["工具列","存檔","清除"],"entry":"build"}
 {"kind":"param","name":"save_text","default":"存檔","ask":"存檔按鈕要寫什麼字？"}
 {"kind":"require","module":"gui","source":"builtin"}
-{"kind":"layout","tree":[{"kind":"row","role":"toolbar","children":[{"id":"save","kind":"button","text":"{{save_text}}"},{"id":"clear","kind":"button","text":"清除"}]}]}
+{"kind":"layout","tree":[{"kind":"row","role":"toolbar","children":[{"id":"save","kind":"button","text":"{{save_text}}","icon":"⬇","role":"primary"},{"id":"clear","kind":"button","text":"清除","icon":"✖"}]}]}

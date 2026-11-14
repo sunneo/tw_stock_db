@@ -1,10 +1,11 @@
 {"kind":"meta","id":"text-editor/main","title":"文字編輯器（上方工具列、中間編輯區、下方狀態列）","keywords":["文字編輯","編輯器","記事本","筆記","日記","notepad","editor"],"entry":"build","standalone":true}
 {"kind":"param","name":"title","default":"文字編輯器","ask":"視窗標題要寫什麼？"}
 {"kind":"param","name":"sound","default":"no","ask":"存檔與新增要有提示音嗎？（yes 或 no）"}
+{"kind":"param","name":"lang","default":"text","ask":"文字要用哪種語法上色？（text 不上色，或 python、javascript、json、markdown、html、css）"}
 {"kind":"require","module":"gui","source":"builtin"}
 {"kind":"style","palette":{"bg":"#ffffff","fg":"#222222","accent":"#2563eb","danger":"#dc2626","muted":"#9ca3af"},"font":"sans-serif","size":14,"radius":6}
-{"kind":"layout","window":{"title":"{{title}}","width":900,"resizable":true,"height":620},"tree":[{"kind":"column","role":"page","children":[{"slot":"toolbar"},{"id":"editor","kind":"editor","value":"","lang":"text","rows":16,"grow":1},{"id":"saved_tip","kind":"label","text":"已存檔","role":"muted","pad":6},{"slot":"statusbar"}]}]}
-{"kind":"slot","name":"toolbar","use":"text-editor/toolbar","params":{"sound":"{{sound}}"}}
+{"kind":"layout","window":{"title":"{{title}}","width":900,"resizable":true,"height":620},"tree":[{"kind":"column","role":"page","children":[{"slot":"toolbar"},{"id":"editor","kind":"editor","value":"","lang":"{{lang}}","rows":16,"grow":1},{"id":"saved_tip","kind":"label","text":"已存檔","role":"muted","pad":6},{"slot":"statusbar"}]}]}
+{"kind":"slot","name":"toolbar","use":"text-editor/toolbar","params":{"sound":"{{sound}}","lang":"{{lang}}"}}
 {"kind":"slot","name":"statusbar","use":"text-editor/statusbar","params":{}}
 {"kind":"scene","id":"edit","title":"編輯中","note":"工具列、編輯區、狀態列；存檔後切到「存檔後」","show":["editor"],"hide":["saved_tip"],"on":{"click:save":"saved"}}
 {"kind":"scene","id":"saved","title":"存檔後","note":"顯示「已存檔」；再輸入文字就切回編輯中","show":["saved_tip"],"hide":[],"on":{"input:editor":"edit"}}

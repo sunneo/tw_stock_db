@@ -20,14 +20,14 @@ ops = []
 # 真橋接（renderer/src/gui/gui_bridge.js 的 KINDS）允許的屬性：假橋接也照這張表擋，不然本機通過、真橋接才報錯
 PROPS = {
     'column': [], 'row': [], 'grid': ['columns'], 'scroll': ['height'], 'expander': ['text', 'expanded'], 'label': ['text'],
-    'button': ['text', 'enabled'], 'entry': ['value', 'placeholder', 'enabled', 'secret'],
-    'textarea': ['value', 'placeholder', 'rows', 'enabled'], 'editor': ['value', 'lang', 'rows', 'enabled', 'numbers'],
+    'button': ['text', 'enabled', 'icon'], 'entry': ['value', 'placeholder', 'enabled', 'secret'],
+    'textarea': ['value', 'placeholder', 'rows', 'enabled'], 'editor': ['value', 'lang', 'rows', 'enabled', 'numbers', 'prose', 'caret', 'caret_to'],
     'checkbox': ['text', 'checked', 'enabled'], 'progress': ['value', 'max'], 'list': ['items', 'selected', 'enabled'],
     'multilist': ['items', 'selected', 'enabled'], 'table': ['columns', 'rows', 'enabled'], 'canvas': ['width', 'height', 'fps', 'fit'],
     'tabs': ['selected'], 'tab': ['text'], 'split': ['direction', 'ratio'], 'menubar': [], 'menu': ['text'], 'menuitem': ['text', 'keys', 'enabled'],
 }
 COMMON = ('visible', 'grow', 'gap', 'pad', 'role')  # 任何節點都可以有的版面與外觀提示
-ROLES = ('toolbar', 'sidebar', 'statusbar', 'card', 'panel', 'heading', 'title', 'muted', 'primary', 'danger', 'surface', 'group', 'outline', 'page')
+ROLES = ('toolbar', 'sidebar', 'statusbar', 'card', 'panel', 'heading', 'title', 'muted', 'primary', 'danger', 'surface', 'group', 'divider', 'outline', 'page')
 CONTAINERS = ('column', 'row', 'expander', 'grid', 'scroll', 'tabs', 'tab', 'split', 'menubar', 'menu')
 import re
 SHORTCUT_RE = re.compile(r'^(Ctrl\+)?(Shift\+)?(Alt\+)?([A-Z0-9]|F([1-9]|1[0-2])|Enter|Esc|Space|Up|Down|Left|Right|Delete|Backspace|Tab)$')

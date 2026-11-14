@@ -44,6 +44,7 @@ class Window(object):
         self._values = {}
         self._images = 0
         self._tables = set()
+        self._carets = {}
         self.closed = False
         self._style = {}
         args = {"id": self.id, "title": str(title), "width": int(width), "resizable": bool(resizable), "maximizable": bool(maximizable)}
@@ -62,8 +63,9 @@ class Window(object):
     def label(self, text, parent=None):
         return self._node("label", parent, text=str(text))
 
-    def button(self, text, parent=None):
-        return self._node("button", parent, text=str(text))
+    def button(self, text, parent=None, icon=""):
+        """A push button. icon is a short symbol or emoji shown before the text (toolbar look)."""
+        return self._node("button", parent, text=str(text), **({"icon": str(icon)} if icon else {}))
 
     def entry(self, value="", parent=None):
         nid = self._node("entry", parent, value=str(value))
@@ -123,11 +125,12 @@ class Window(object):
         self._values[nid] = bool(expanded)
         return nid
 
-    def editor(self, value="", lang="", rows=8, parent=None, numbers=True):
+    def editor(self, value="", lang="", rows=8, parent=None, numbers=True, prose=False):
         """A code and text editing surface: monospace, line numbers (numbers=False hides them), the current line highlighted, scrollbars,
         and syntax colors for lang "python", "javascript", "json", "markdown", "html" or "css" (anything else is plain). value() is its text.
-        Give it grow=1 to fill its parent."""
-        nid = self._node("editor", parent, value=str(value), lang=str(lang), rows=int(rows), numbers=bool(numbers))
+        Give it grow=1 to fill its parent. prose=True uses a reading font and roomier lines (a document). caret(nid) is the user's caret or
+        selection; set(nid, value=..., caret=a, caret_to=b) writes new text, moves the caret (selects a..b), focuses the editor and scrolls to it."""
+        nid = self._node("editor", parent, value=str(value), lang=str(lang), rows=int(rows), numbers=bool(numbers), **({"prose": True} if prose else {}))
         self._values[nid] = str(value)
         return nid
 
@@ -176,6 +179,8 @@ class Window(object):
         """Change properties of a node already added: set(btn, text="Save", enabled=False), set(box, visible=False),
         set(pb, value=40), set(lbl, text="..."). value() follows value / checked / selected."""
         fa_bridge.call("gui.set", {"id": self.id, "node": nid, "props": props})
+        if "caret" in props:
+            self._carets[nid] = (int(props["caret"]), int(props.get("caret_to", props["caret"])))
         for key in ("value", "checked", "selected"):
             if key in props and nid in self._values:
                 self._values[nid] = props[key]
@@ -237,7 +242,9 @@ class Window(object):
         ev = fa_bridge.call("gui.poll", {"id": self.id})
         if ev is None:
             return None
-        if ev.get("event") in ("input", "cell", "toggle", "select", "change"):
+        if ev.get("event") == "caret":
+            self._store_caret(ev)
+        elif ev.get("event") in ("input", "cell", "toggle", "select", "change"):
             self._event_value(ev)
         if ev.get("event") == "close":
             self.closed = True
@@ -246,6 +253,20 @@ class Window(object):
     def value(self, nid):
         """The current value of a widget: entry text, editor text, table rows, expander open flag, multilist selection."""
         return self._values.get(nid)
+
+    def _store_caret(self, ev):
+        v = ev.get("value") or {}
+        self._carets[ev.get("node")] = (int(v.get("start", 0)), int(v.get("end", 0)))
+
+    def caret(self, nid):
+        """The user's caret or selection in an editor as (start, end) character offsets into value(nid); both are the end of the text until the
+        user has clicked into it. Reported by the page as "caret" events (poll() returns them, wait() takes them in)."""
+        c = self._carets.get(nid)
+        if c is None:
+            n = len(self._values.get(nid) or "")
+            return (n, n)
+        n = len(self._values.get(nid) or "")
+        return (min(c[0], n), min(c[1], n))
 
     def _event_value(self, ev):
         """Store a value-changing event (input, cell, toggle, select) in value()."""
@@ -269,6 +290,9 @@ class Window(object):
             if ev is None:
                 return None
             kind = ev.get("event")
+            if kind == "caret":
+                self._store_caret(ev)
+                continue
             if kind in ("input", "cell", "toggle", "select", "change"):
                 self._event_value(ev)
                 continue
@@ -284,7 +308,7 @@ class Window(object):
 
 # Every node method also takes these look and layout keywords: grow (0-10, the share of the free space in the parent: a row grows sideways,
 # a column downwards; the window body fills a resizable window), gap and pad (0-32 pixels, space between the children and inside), and role
-# (the design system's look: toolbar, sidebar, statusbar, card, panel, heading, title, muted, primary, danger, surface, group, outline, page).
+# (the design system's look: toolbar, sidebar, statusbar, card, panel, heading, title, muted, primary, danger, surface, group, divider, outline, page).
 # Example: w.editor(parent=col, grow=1); bar = w.row(role="toolbar").
 _STYLE_KEYS = ("grow", "gap", "pad", "role")
 

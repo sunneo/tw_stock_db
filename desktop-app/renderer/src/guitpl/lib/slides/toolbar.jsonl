@@ -1,3 +1,3 @@
 {"kind":"meta","id":"slides/toolbar","title":"投影片工具列（新增、刪除、放映）","keywords":["工具列","投影片","新增","放映"],"entry":"build"}
 {"kind":"require","module":"gui","source":"builtin"}
-{"kind":"layout","tree":[{"kind":"row","role":"toolbar","children":[{"id":"add","kind":"button","text":"新增投影片"},{"id":"del","kind":"button","text":"刪除投影片"},{"id":"present","kind":"button","text":"放映"}]}]}
+{"kind":"layout","tree":[{"kind":"row","role":"toolbar","children":[{"id":"add","kind":"button","text":"新增投影片","icon":"＋","role":"primary"},{"id":"del","kind":"button","text":"刪除投影片","icon":"✖"},{"kind":"label","text":"","role":"divider"},{"id":"present","kind":"button","text":"放映","icon":"▶"}]}]}

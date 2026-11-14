@@ -1,4 +1,4 @@
 {"kind":"meta","id":"idphoto/toolbar","title":"證件照工具列","keywords":["證件照工具列","工具列"],"entry":"build"}
 {"kind":"param","name":"caption","default":"證件照工具","ask":"工具列左邊要顯示什麼字？"}
 {"kind":"require","module":"gui","source":"builtin"}
-{"kind":"layout","tree":[{"kind":"row","role":"toolbar","children":[{"kind":"label","text":"{{caption}}"},{"id":"tb_reset","kind":"button","text":"重設"},{"id":"tb_guide","kind":"button","text":"裁切線開關"}]}]}
+{"kind":"layout","tree":[{"kind":"row","role":"toolbar","children":[{"kind":"label","text":"{{caption}}"},{"id":"tb_reset","kind":"button","text":"重設","icon":"↺"},{"id":"tb_guide","kind":"button","text":"裁切線開關","icon":"⌗"}]}]}

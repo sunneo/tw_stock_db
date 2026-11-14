@@ -165,5 +165,17 @@ const eventOf = (line) => JSON.parse(line);
     assert.strictEqual(h2.apply(msg({ op: 'tone', id: 'w9', freq: 440, ms: 100 })).ok, true); ok();
   }
 
+
+  // caret events of one editor merge (only the newest is kept); other events stay
+  {
+    const { host } = newHost();
+    host.apply(msg({ op: 'open', id: 'wc' }));
+    host.apply(msg({ op: 'add', id: 'wc', node: { id: 'ed', kind: 'editor', value: 'abc' } }));
+    const view = renders[renders.length - 1];
+    view.onEvent('caret', 'ed', { start: 1, end: 1 }); view.onEvent('input', 'ed', 'abcd'); view.onEvent('caret', 'ed', { start: 2, end: 3 });
+    const a = eventOf(host.poll('wc')), b = eventOf(host.poll('wc'));
+    assert.strictEqual(a.event, 'input'); assert.deepStrictEqual(b.value, { start: 2, end: 3 }); assert.strictEqual(host.poll('wc'), null); ok();
+  }
+
   console.log('gui_host: ' + n + ' assertions passed');
 })().catch((e) => { console.error(e); process.exit(1); });

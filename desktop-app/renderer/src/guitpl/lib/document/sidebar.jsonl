@@ -1,3 +1,4 @@
-{"kind":"meta","id":"document/sidebar","title":"大綱側欄（依 # 標題列出章節）","keywords":["大綱","側欄","目錄","章節清單"],"entry":"build"}
+{"kind":"meta","id":"document/sidebar","title":"大綱側欄（依 # 標題列出章節，點一下跳過去）","keywords":["大綱","側欄","目錄","章節清單"],"entry":"build"}
+{"kind":"param","name":"doc_name","default":"未命名文件","ask":"文件名稱要寫什麼？"}
 {"kind":"require","module":"gui","source":"builtin"}
-{"kind":"layout","tree":[{"kind":"column","children":[{"id":"outline_title","kind":"label","text":"大綱"},{"id":"outline_hint","kind":"label","text":"還沒有章節：用 # 開頭的行會出現在這裡"},{"id":"outline","kind":"textarea","value":"","rows":16,"enabled":false}]}]}
+{"kind":"layout","tree":[{"kind":"column","grow":1,"gap":6,"children":[{"id":"doc_label","kind":"label","text":"{{doc_name}}","role":"muted"},{"id":"outline_title","kind":"label","text":"大綱","role":"heading"},{"id":"outline_hint","kind":"label","text":"還沒有章節：用 # 開頭的行會出現在這裡","role":"muted"},{"id":"outline","kind":"list","items":[],"grow":1}]}]}
