@@ -102,4 +102,46 @@ assert.match(G.parseWait('wait bad!id').error, /window id/); ok();
 assert.match(G.parseWait('wait w1 1ANS').error, /shell variable name/); ok();
 assert.match(G.parseWait('wait w1 a=b').error, /shell variable name/); ok();
 
+// theme, shortcut, tone (window-level look, keys and beeps)
+{
+  const S = G.createSession();
+  run(S, msg({ op: 'open', id: 'wt', title: 'T' }));
+  assert.deepStrictEqual(G.snapshot(S, 'wt').theme, {}); assert.deepStrictEqual(G.snapshot(S, 'wt').shortcuts, {}); ok();
+  assert.deepStrictEqual(run(S, msg({ op: 'theme', id: 'wt', palette: { bg: '#112233', accent: '#4aa' }, font: 'monospace', size: 14, radius: 4 })), { ok: true }); ok();
+  assert.deepStrictEqual(G.snapshot(S, 'wt').theme, { palette: { bg: '#112233', accent: '#4aa' }, font: 'monospace', size: 14, radius: 4 }); ok();
+  run(S, msg({ op: 'theme', id: 'wt', palette: { fg: '#eee' } }));
+  assert.deepStrictEqual(G.snapshot(S, 'wt').theme.palette, { bg: '#112233', accent: '#4aa', fg: '#eee' }, 'palette merges, size stays'); assert.strictEqual(G.snapshot(S, 'wt').theme.size, 14); ok();
+  assert.match(run(S, msg({ op: 'theme', id: 'wt', palette: { bg: 'red' } })).error, /palette\.bg/); ok();
+  assert.match(run(S, msg({ op: 'theme', id: 'wt', palette: { sky: '#fff' } })).error, /not supported/); ok();
+  assert.match(run(S, msg({ op: 'theme', id: 'wt', font: 'comic' })).error, /font must/); ok();
+  assert.match(run(S, msg({ op: 'theme', id: 'wt', size: 99 })).error, /size must/); ok();
+  assert.strictEqual(G.snapshot(S, 'wt').theme.size, 14, 'a refused theme changes nothing'); ok();
+
+  assert.deepStrictEqual(run(S, msg({ op: 'shortcut', id: 'wt', keys: 'Ctrl+S', name: 'save' })), { ok: true }); ok();
+  run(S, msg({ op: 'shortcut', id: 'wt', keys: 'Ctrl+Shift+Z', name: 'redo' }));
+  run(S, msg({ op: 'shortcut', id: 'wt', keys: 'F5', name: 'run' }));
+  assert.deepStrictEqual(G.snapshot(S, 'wt').shortcuts, { 'Ctrl+S': 'save', 'Ctrl+Shift+Z': 'redo', F5: 'run' }); ok();
+  assert.match(run(S, msg({ op: 'shortcut', id: 'wt', keys: 'Ctrl+Ctrl', name: 'x' })).error, /keys must/); ok();
+  assert.match(run(S, msg({ op: 'shortcut', id: 'wt', keys: 'S', name: 'bad name' })).error, /name must/); ok();
+  assert.match(run(S, msg({ op: 'shortcut', id: 'wt', keys: 'Shift+Ctrl+S', name: 'x' })).error, /keys must/, 'modifier order is fixed'); ok();
+  run(S, msg({ op: 'shortcut', id: 'wt', keys: 'F5', name: null }));
+  assert.strictEqual(G.snapshot(S, 'wt').shortcuts.F5, undefined); ok();
+  for (let i = 0; i < 40; i++) { run(S, msg({ op: 'shortcut', id: 'wt', keys: (i < 36 ? 'Alt+' : 'Ctrl+Alt+') + 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'[i % 36], name: 'n' + i })); }
+  assert.match(run(S, msg({ op: 'shortcut', id: 'wt', keys: 'Ctrl+Alt+Q', name: 'more' })).error || '', /at most 40/); ok();
+
+  // the event: only for a registered name, on the window ("root")
+  assert.deepStrictEqual(JSON.parse(G.eventLine(S, 'wt', 'root', 'shortcut', 'save')), { v: 1, event: 'shortcut', id: 'wt', node: 'root', value: 'save' }); ok();
+  assert.strictEqual(G.eventLine(S, 'wt', 'root', 'shortcut', 'unknown'), null); ok();
+  assert.strictEqual(G.eventLine(S, 'wt', 'n1', 'shortcut', 'save'), null); ok();
+  assert.strictEqual(G.eventLine(S, 'wt', 'root', 'shortcut', 5), null); ok();
+
+  assert.deepStrictEqual(run(S, msg({ op: 'tone', id: 'wt', freq: 440, ms: 120, wave: 'square' })), { ok: true }); ok();
+  assert.deepStrictEqual(run(S, msg({ op: 'tone', id: 'wt', freq: 440, ms: 120 })), { ok: true }); ok();
+  assert.match(run(S, msg({ op: 'tone', id: 'wt', freq: 10, ms: 120 })).error, /freq/); ok();
+  assert.match(run(S, msg({ op: 'tone', id: 'wt', freq: 440, ms: 99999 })).error, /ms/); ok();
+  assert.match(run(S, msg({ op: 'tone', id: 'wt', freq: 440, ms: 100, wave: 'noise' })).error, /wave/); ok();
+  assert.match(run(S, msg({ op: 'tone', id: 'nope', freq: 440, ms: 100 })).error, /not open/); ok();
+  assert.ok(G.OPS.indexOf('theme') >= 0 && G.OPS.indexOf('shortcut') >= 0 && G.OPS.indexOf('tone') >= 0); ok();
+}
+
 console.log('gui_bridge: ' + n + ' assertions passed');

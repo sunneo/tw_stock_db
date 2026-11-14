@@ -25,7 +25,14 @@
   var VERSION = 1, PREFIX = '@gui ';
   var MAX_LINE = 8192, MAX_WINDOWS = 4, MAX_NODES = 200, MAX_TEXT = 2000, MAX_ITEMS = 500, MAX_DEPTH = 8;
   var ID_RE = /^[A-Za-z0-9_-]{1,40}$/;
-  var OPS = ['open', 'add', 'set', 'remove', 'close', 'draw', 'image'];
+  var OPS = ['open', 'add', 'set', 'remove', 'close', 'draw', 'image', 'theme', 'shortcut', 'tone'];
+  // window-level look: palette (five named colors), font family, size, corner radius; shortcuts: "Ctrl+Shift+Alt+<key>" -> a name the
+  // program gets back as a "shortcut" event; tone: a short beep played by the page (nothing is stored)
+  var PALETTE_KEYS = ['bg', 'fg', 'accent', 'danger', 'muted'];
+  var FONTS = ['sans-serif', 'serif', 'monospace'];
+  var WAVES = ['sine', 'square', 'triangle', 'sawtooth'];
+  var SHORTCUT_RE = /^(Ctrl\+)?(Shift\+)?(Alt\+)?([A-Z0-9]|F([1-9]|1[0-2])|Enter|Esc|Space|Up|Down|Left|Right)$/;
+  var MAX_SHORTCUTS = 40;
   var CONTAINERS = ['column', 'row', 'expander'];
   var MAX_COLUMNS = 30, MAX_DRAW = 200, MAX_CANVAS = 1200, MAX_FPS = 60;
   var MAX_IMAGES = 16, MAX_IMAGE_BYTES = 256 * 1024;
@@ -199,12 +206,45 @@
         // resizable: the user can drag the window's corner; maximizable: a button fills the terminal's area (both off by default)
         var resizable = msg.resizable === undefined ? false : bool(msg.resizable, 'resizable');
         var maximizable = msg.maximizable === undefined ? false : bool(msg.maximizable, 'maximizable');
-        session.windows[wid] = { id: wid, title: title, width: width, resizable: resizable, maximizable: maximizable, nodes: { root: { id: 'root', kind: 'column', parent: null, children: [] } } };
+        session.windows[wid] = { id: wid, title: title, width: width, resizable: resizable, maximizable: maximizable, theme: {}, shortcuts: {}, nodes: { root: { id: 'root', kind: 'column', parent: null, children: [] } } };
         return { ok: true };
       }
       var win = session.windows[wid];
       if (!win) { return fail('window "' + wid + '" is not open'); }
       if (msg.op === 'close') { delete session.windows[wid]; return { ok: true }; }
+      if (msg.op === 'theme') {
+        // only the fields given change; a palette color not given keeps its value
+        var th = {};
+        if (msg.palette !== undefined) {
+          if (!isObj(msg.palette)) { return fail('palette must be an object'); }
+          th.palette = {};
+          Object.keys(msg.palette).forEach(function (k) {
+            if (PALETTE_KEYS.indexOf(k) < 0) { throw new Error('palette color "' + k + '" is not supported (use ' + PALETTE_KEYS.join(', ') + ')'); }
+            if (typeof msg.palette[k] !== 'string' || !COLOR_RE.test(msg.palette[k])) { throw new Error('palette.' + k + ' must be #rgb or #rrggbb'); }
+            th.palette[k] = msg.palette[k];
+          });
+        }
+        if (msg.font !== undefined) { if (FONTS.indexOf(msg.font) < 0) { return fail('font must be one of ' + FONTS.join(', ')); } th.font = msg.font; }
+        if (msg.size !== undefined) { th.size = num(msg.size, 'size', 10, 24); }
+        if (msg.radius !== undefined) { th.radius = num(msg.radius, 'radius', 0, 16); }
+        win.theme = Object.assign({}, win.theme, th, th.palette ? { palette: Object.assign({}, win.theme.palette || {}, th.palette) } : {});
+        return { ok: true };
+      }
+      if (msg.op === 'shortcut') {
+        if (typeof msg.keys !== 'string' || !SHORTCUT_RE.test(msg.keys)) { return fail('keys must look like Ctrl+S, Ctrl+Shift+Z, F5, Esc'); }
+        if (msg.name === null) { delete win.shortcuts[msg.keys]; return { ok: true }; }
+        var sname = id(msg.name, 'name');
+        if (!Object.prototype.hasOwnProperty.call(win.shortcuts, msg.keys) && Object.keys(win.shortcuts).length >= MAX_SHORTCUTS) { return fail('at most ' + MAX_SHORTCUTS + ' shortcuts'); }
+        win.shortcuts[msg.keys] = sname;
+        return { ok: true };
+      }
+      if (msg.op === 'tone') {
+        // validated and then played by the page; the bridge keeps nothing (the host reads the message)
+        num(msg.freq, 'freq', 40, 8000);
+        num(msg.ms, 'ms', 10, 2000);
+        if (msg.wave !== undefined && WAVES.indexOf(msg.wave) < 0) { return fail('wave must be one of ' + WAVES.join(', ')); }
+        return { ok: true };
+      }
       if (msg.op === 'add') {
         var parent = msg.parent === undefined ? 'root' : id(msg.parent, 'parent');
         var p = win.nodes[parent];
@@ -267,6 +307,11 @@
     var win = session.windows[winId];
     var node = win && win.nodes[nodeId];
     if (!node) { return null; }
+    // a shortcut belongs to the window (node "root") and must be one the program registered
+    if (eventName === 'shortcut') {
+      if (nodeId !== 'root' || typeof value !== 'string' || Object.keys(win.shortcuts || {}).every(function (k) { return win.shortcuts[k] !== value; })) { return null; }
+      return JSON.stringify({ v: VERSION, event: 'shortcut', id: winId, node: 'root', value: value });
+    }
     var declared = KINDS[node.kind].events || [];
     if (declared.indexOf(eventName) < 0) { return null; }
     if ((eventName === 'key' || eventName === 'frame' || eventName === 'mouse' || eventName === 'wheel' || eventName === 'resize') && value === undefined) { return null; } // these always carry a value
@@ -323,7 +368,7 @@
       out.children = n.children.map(build);
       return out;
     }
-    return { id: win.id, title: win.title, width: win.width, resizable: win.resizable, maximizable: win.maximizable, root: build('root') };
+    return { id: win.id, title: win.title, width: win.width, resizable: win.resizable, maximizable: win.maximizable, theme: win.theme || {}, shortcuts: win.shortcuts || {}, root: build('root') };
   }
 
   // shell side: `gui wait <window-id> [VAR]` (the words after `gui`). Returns {ok, win, varName} or {ok:false, error}.
@@ -339,7 +384,7 @@
   }
 
   return {
-    VERSION: VERSION, PREFIX: PREFIX, KINDS: KINDS, LIMITS: { MAX_LINE: MAX_LINE, MAX_WINDOWS: MAX_WINDOWS, MAX_NODES: MAX_NODES, MAX_TEXT: MAX_TEXT, MAX_ITEMS: MAX_ITEMS, MAX_DEPTH: MAX_DEPTH },
+    VERSION: VERSION, PREFIX: PREFIX, KINDS: KINDS, OPS: OPS, PALETTE_KEYS: PALETTE_KEYS, LIMITS: { MAX_LINE: MAX_LINE, MAX_WINDOWS: MAX_WINDOWS, MAX_NODES: MAX_NODES, MAX_TEXT: MAX_TEXT, MAX_ITEMS: MAX_ITEMS, MAX_DEPTH: MAX_DEPTH },
     createSession: createSession, parseLine: parseLine, parseWait: parseWait, apply: apply, eventLine: eventLine, snapshot: snapshot
   };
 }));
