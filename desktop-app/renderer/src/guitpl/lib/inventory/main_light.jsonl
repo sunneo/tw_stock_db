@@ -1,0 +1,5 @@
+{"kind":"meta","id":"inventory/main_light","title":"淺色進銷存","keywords":["淺色進銷存","明亮進銷存"],"extends":"inventory/main"}
+{"kind":"param","name":"shop","default":"明亮小店","ask":"店名要寫什麼？"}
+{"kind":"require","module":"importlib","source":"builtin"}
+{"kind":"require","module":"os","source":"builtin"}
+{"kind":"style","palette":{"bg":"#f8fafc","fg":"#0f172a","accent":"#059669"},"font":"sans-serif","radius":10}
