@@ -71,8 +71,15 @@ def _subst(value, params):
     return value
 
 
+def default_roots():
+    """The template library that ships with the app: the guitpl_lib folder next to this file (in the emulator, /fa_pybridge/guitpl_lib)."""
+    return [os.path.join(os.path.dirname(os.path.abspath(__file__)), "guitpl_lib")]
+
+
 class Library(object):
-    def __init__(self, roots):
+    def __init__(self, roots=None):
+        if not roots:
+            roots = default_roots()
         if isinstance(roots, str):
             roots = [roots]
         self.roots = [str(r) for r in roots]
@@ -395,12 +402,43 @@ def _entry(comp):
 
 def prepare(cid, params=None, roots=None, available=None):
     """Load, bind parameters, and check. Returns the component (raises GuiTplError with every problem listed)."""
-    lib = Library(roots or [])
+    lib = Library(roots)
     comp = lib.load(cid)
     errors = check(comp, available)
     if errors:
         raise GuiTplError("；".join(errors))
     return comp
+
+
+def catalog(roots=None, query=None):
+    """The ready-made templates: [{"id","title","keywords","standalone","params":[{"name","default","ask"}],"scenes":[ids]}] (standalone
+    ones are whole apps; the others are parts). With query, only those whose title, keywords or id share a word with it, best first."""
+    lib = Library(roots)
+    ids = []
+    for root in lib.roots:
+        for base, _dirs, files in os.walk(root):
+            for f in sorted(files):
+                if f.endswith(".jsonl"):
+                    ids.append(os.path.relpath(os.path.join(base, f), root)[:-6].replace(os.sep, "/"))
+    out = []
+    for cid in sorted(set(ids)):
+        try:
+            comp = lib.load(cid)
+        except GuiTplError:
+            continue
+        out.append({"id": cid, "title": comp["meta"].get("title", cid), "keywords": comp["meta"].get("keywords", []),
+                    "standalone": bool(comp["meta"].get("standalone")),
+                    "params": [{"name": n, "default": r["default"], "ask": r.get("ask", "")} for n, r in comp["params"].items()],
+                    "scenes": [s["id"] for s in comp["scenes"]]})
+    if query:
+        q = str(query).lower()
+        scored = []
+        for e in out:
+            score = sum(1 for w in list(e["keywords"]) + [e["title"], e["id"].split("/")[0]] if str(w).lower() and str(w).lower() in q)
+            if score:
+                scored.append((-score, e["id"], e))
+        out = [e for _s, _i, e in sorted(scored)]
+    return out
 
 
 def storyboard(comp):

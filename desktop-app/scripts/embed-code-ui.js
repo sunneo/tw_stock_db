@@ -29,6 +29,9 @@ function embedPyBridge() {
     const dir = path.join(root, 'renderer/src/pybridge');
     const out = {};
     (function walk(d, rel) { for (const n of fs.readdirSync(d).sort()) { const p = path.join(d, n), r = rel ? rel + '/' + n : n; if (fs.statSync(p).isDirectory()) { if (n !== '__pycache__') walk(p, r); } else if (/\.py$/.test(n)) out[r] = fs.readFileSync(p, 'utf8').replace(/\r\n/g, '\n'); } })(dir, '');
+    // GUI 範本庫（renderer/src/guitpl/lib 的 .jsonl 與 .py）也放進同一份：模擬器裡 guitpl.py 預設到同層的 guitpl_lib/ 找範本
+    const libDir = path.join(root, 'renderer/src/guitpl/lib');
+    if (fs.existsSync(libDir)) (function walk(d, rel) { for (const n of fs.readdirSync(d).sort()) { const p = path.join(d, n), r = rel ? rel + '/' + n : n; if (fs.statSync(p).isDirectory()) { if (n !== '__pycache__') walk(p, r); } else if (/\.(py|jsonl)$/.test(n)) out['guitpl_lib/' + r] = fs.readFileSync(p, 'utf8').replace(/\r\n/g, '\n'); } })(libDir, '');
     const a = src.indexOf('/* PYBRIDGE-BEGIN */'), b = src.indexOf('/* PYBRIDGE-END */');
     if (a < 0 || b < 0) throw new Error('找不到 PYBRIDGE 標記');
     src = src.slice(0, a) + '/* PYBRIDGE-BEGIN */\nconst FA_PYBRIDGE_FILES = ' + lit(out) + ';\n' + src.slice(b);

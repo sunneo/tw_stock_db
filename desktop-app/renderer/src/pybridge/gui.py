@@ -22,6 +22,9 @@ listbox selection), "change" (a checkbox).
 Node kinds: label, button, entry, textarea, checkbox, progress, listbox, row, column, expander, editor, table, multilist,
 canvas. Rows, columns and expanders take a parent=... argument to hold other nodes. set(node, text=..., enabled=...,
 visible=..., value=...) changes a node that was already added.
+Ready-made apps: before writing a window program from scratch, look for a template: `import guitpl; guitpl.catalog("what the
+user asked for")` lists matching templates (id, title, params with the question to ask); `guitpl.run("office/main", params={...})`
+builds and runs one (customize by passing params, or write a new .jsonl/.py pair that "extends" it).
 Look and keys: theme(palette={...}, font=..., size=..., radius=...) colors and styles the window; shortcut("Ctrl+S", "save")
 makes wait() and poll() return {"event": "shortcut", "value": "save"} when the key is pressed; tone(freq, ms, wave) beeps.
 """

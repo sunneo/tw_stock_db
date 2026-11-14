@@ -194,6 +194,16 @@ check('dark theme applied', any(o[0] == 'gui.theme' and o[1]['palette']['bg'] ==
 check('dark default title', ops[0][1]['title'] == '夜間筆記')
 check('loop ends on close', ops[-1][0] == 'gui.poll')
 
+# 5. 範本目錄與預設根目錄
+cat = guitpl.catalog([LIB])
+check('catalog lists entries and parts', {'demo/notes', 'common/toolbar_basic'} <= {e['id'] for e in cat})
+notes = [e for e in cat if e['id'] == 'demo/notes'][0]
+check('catalog entry fields', notes['standalone'] is True and notes['params'][0]['ask'] and notes['scenes'] == ['edit', 'help'])
+found = guitpl.catalog([LIB], query='我想做一個筆記')
+check('catalog query', found and found[0]['id'] == 'demo/notes')
+check('catalog query no match', guitpl.catalog([LIB], query='完全不相干xyz') == [])
+check('default roots', guitpl.default_roots()[0].endswith('guitpl_lib'))
+
 if failures:
     print('%d failure(s)' % len(failures))
     sys.exit(1)
