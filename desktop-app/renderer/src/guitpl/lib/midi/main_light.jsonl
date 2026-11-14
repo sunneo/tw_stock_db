@@ -1,0 +1,5 @@
+{"kind":"meta","id":"midi/main_light","title":"淺色鋼琴卷簾","keywords":["淺色","明亮","鋼琴卷簾"],"extends":"midi/main"}
+{"kind":"param","name":"title","default":"淺色鋼琴卷簾","ask":"視窗標題要寫什麼？"}
+{"kind":"require","module":"importlib","source":"builtin"}
+{"kind":"require","module":"os","source":"builtin"}
+{"kind":"style","palette":{"bg":"#fafaf9","fg":"#111827","accent":"#7c3aed","danger":"#e11d48","muted":"#d1d5db"}}
