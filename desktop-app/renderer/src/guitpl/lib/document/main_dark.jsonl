@@ -1,0 +1,5 @@
+{"kind":"meta","id":"document/main_dark","title":"深色文件編輯","keywords":["深色文件","夜間文件"],"extends":"document/main"}
+{"kind":"param","name":"title","default":"夜間文件編輯","ask":"視窗標題要寫什麼？"}
+{"kind":"require","module":"importlib","source":"builtin"}
+{"kind":"require","module":"os","source":"builtin"}
+{"kind":"style","palette":{"bg":"#1e1e1e","fg":"#dddddd","accent":"#4aa3ff","danger":"#e5534b","muted":"#888888"}}
