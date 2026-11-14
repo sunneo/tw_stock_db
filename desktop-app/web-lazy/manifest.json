@@ -22,8 +22,8 @@
    "names": [
     "FA_PYBRIDGE_FILES"
    ],
-   "size": 360709,
-   "md5": "0e3d2dfe1dfe83de544b6eff980bfdc9"
+   "size": 361231,
+   "md5": "db6a22b23bfa3e72060c8a7645f56c1a"
   },
   "aidocview": {
    "file": "chunks/aidocview.js",
@@ -44,8 +44,8 @@
     "FA_WEBTRAIN_WORKER_SRC",
     "FA_STUDIO_HOST_FILES"
    ],
-   "size": 836986,
-   "md5": "d2d08c89767e51b4710563930537e3dd"
+   "size": 837667,
+   "md5": "59d98c1294c3c52ac83f6144e99d8a53"
   },
   "studioview": {
    "file": "chunks/studioview.js",
