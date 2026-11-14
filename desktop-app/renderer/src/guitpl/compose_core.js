@@ -15,6 +15,8 @@
     column: { method: 'column', positional: [], props: [] },
     row: { method: 'row', positional: [], props: [] },
     expander: { method: 'expander', positional: ['text'], props: ['expanded'] },
+    grid: { method: 'grid', positional: [], props: ['columns'] },
+    scroll: { method: 'scroll', positional: [], props: ['height'] },
     label: { method: 'label', positional: ['text'], props: [] },
     button: { method: 'button', positional: ['text'], props: [] },
     entry: { method: 'entry', positional: ['value'], props: [] },
@@ -27,7 +29,7 @@
     table: { method: 'table', positional: ['columns', 'rows'], props: [] },
     canvas: { method: 'canvas', positional: [], props: ['width', 'height', 'fps'] }
   };
-  var CONTAINERS = ['column', 'row', 'expander'];
+  var CONTAINERS = ['column', 'row', 'expander', 'grid', 'scroll'];
   // 加在節點後用 w.set 設定的通用屬性
   var AFTER_PROPS = ['enabled', 'visible'];
   // 音效名 → 頻率、毫秒、波形

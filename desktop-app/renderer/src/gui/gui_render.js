@@ -50,6 +50,19 @@
         el = doc.createElement('div');
         el.className = 'gui-' + n.kind;
         break;
+      case 'grid':
+        el = doc.createElement('div');
+        el.className = 'gui-grid';
+        el.style.display = 'grid';
+        el.style.gap = '6px';
+        el.style.gridTemplateColumns = 'repeat(' + (n.columns || 2) + ', 1fr)';
+        break;
+      case 'scroll':
+        el = doc.createElement('div');
+        el.className = 'gui-scroll';
+        el.style.overflow = 'auto';
+        el.style.maxHeight = (n.height || 200) + 'px';
+        break;
       case 'label':
         el = label(n.text || '');
         el.className = 'gui-label';

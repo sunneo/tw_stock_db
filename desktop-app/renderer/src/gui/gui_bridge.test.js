@@ -144,4 +144,18 @@ assert.match(G.parseWait('wait w1 a=b').error, /shell variable name/); ok();
   assert.ok(G.OPS.indexOf('theme') >= 0 && G.OPS.indexOf('shortcut') >= 0 && G.OPS.indexOf('tone') >= 0); ok();
 }
 
+// grid and scroll containers
+{
+  const S = G.createSession();
+  run(S, msg({ op: 'open', id: 'wg', title: 'G' }));
+  assert.deepStrictEqual(run(S, msg({ op: 'add', id: 'wg', node: { id: 'g1', kind: 'grid', columns: 3 } })), { ok: true }); ok();
+  assert.deepStrictEqual(run(S, msg({ op: 'add', id: 'wg', parent: 'g1', node: { id: 'l1', kind: 'label', text: 'a' } })), { ok: true }); ok();
+  assert.deepStrictEqual(run(S, msg({ op: 'add', id: 'wg', node: { id: 's1', kind: 'scroll', height: 120 } })), { ok: true }); ok();
+  assert.deepStrictEqual(run(S, msg({ op: 'add', id: 'wg', parent: 's1', node: { id: 'l2', kind: 'label', text: 'b' } })), { ok: true }); ok();
+  assert.strictEqual(G.snapshot(S, 'wg').root.children[0].columns, 3); ok();
+  assert.match(run(S, msg({ op: 'add', id: 'wg', node: { id: 'g2', kind: 'grid', columns: 99 } })).error, /columns must/); ok();
+  assert.match(run(S, msg({ op: 'add', id: 'wg', node: { id: 's2', kind: 'scroll', height: 5 } })).error, /height must/); ok();
+  assert.deepStrictEqual(run(S, msg({ op: 'set', id: 'wg', node: 'g1', props: { columns: 2 } })), { ok: true }); ok();
+}
+
 console.log('gui_bridge: ' + n + ' assertions passed');

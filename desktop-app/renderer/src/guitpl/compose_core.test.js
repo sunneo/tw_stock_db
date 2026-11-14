@@ -56,8 +56,11 @@ assert.strictEqual(C.compose(spec(), actions()).code, r.code, '確定性：同�
 
 // 3. 拒絕的情況
 {
-  let s = spec(); s.layout.tree[0].children.push({ id: 'g', kind: 'grid' });
-  let x = C.compose(s, actions()); assert.strictEqual(x.ok, false); assert.ok(x.errors.some((e) => /不支援的節點種類 grid/.test(e))); ok();
+  let s = spec(); s.layout.tree[0].children.push({ id: 'g', kind: 'tabs' });
+  let x = C.compose(s, actions()); assert.strictEqual(x.ok, false); assert.ok(x.errors.some((e) => /不支援的節點種類 tabs/.test(e))); ok();
+  s = spec(); s.layout.tree[0].children.push({ kind: 'grid', columns: 2, children: [{ kind: 'scroll', height: 80, children: [{ kind: 'label', text: 'x' }] }] });
+  x = C.compose(s, actions()); assert.ok(x.ok, x.errors.join('；'));
+  assert.ok(/= w\.grid\(columns=2, parent=ids\["auto_\d+"\]\)|= w\.grid\(columns=2, parent=/.test(x.code) && /w\.scroll\(height=80, parent=/.test(x.code)); ok();
   s = spec(); x = C.compose(s, { save_file: actions().save_file });
   assert.ok(!x.ok && x.errors.some((e) => /動作不存在：toggle_wrap/.test(e))); ok();
   s = spec(); const a = actions(); a.save_file.python = 'def other(ctx):\n    pass';

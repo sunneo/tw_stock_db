@@ -33,7 +33,7 @@
   var WAVES = ['sine', 'square', 'triangle', 'sawtooth'];
   var SHORTCUT_RE = /^(Ctrl\+)?(Shift\+)?(Alt\+)?([A-Z0-9]|F([1-9]|1[0-2])|Enter|Esc|Space|Up|Down|Left|Right)$/;
   var MAX_SHORTCUTS = 40;
-  var CONTAINERS = ['column', 'row', 'expander'];
+  var CONTAINERS = ['column', 'row', 'expander', 'grid', 'scroll'];
   var MAX_COLUMNS = 30, MAX_DRAW = 200, MAX_CANVAS = 1200, MAX_FPS = 60;
   var MAX_IMAGES = 16, MAX_IMAGE_BYTES = 256 * 1024;
   var COLOR_RE = /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
@@ -44,6 +44,9 @@
     column: { props: [] },
     row: { props: [] },
     expander: { props: ['text', 'expanded'], events: ['toggle'] },
+    // grid: children fill a table of `columns` equal columns, row by row; scroll: a column at most `height` pixels high that scrolls
+    grid: { props: ['columns'] },
+    scroll: { props: ['height'] },
     label: { props: ['text'] },
     button: { props: ['text', 'enabled'], events: ['click'] },
     entry: { props: ['value', 'placeholder', 'enabled', 'secret'], events: ['input'] },
@@ -96,6 +99,8 @@
   // progress takes a number for value; everything else with a value is text
   function propValue(kind, name, v) {
     if (kind === 'progress' && name === 'value') { return num(v, 'value', 0, 1e12); }
+    if (kind === 'grid' && name === 'columns') { return num(v, name, 1, 12); }
+    if (kind === 'scroll' && name === 'height') { return num(v, name, 40, 1200); }
     if (kind === 'canvas' && (name === 'width' || name === 'height')) { return num(v, name, 1, MAX_CANVAS); }
     if (kind === 'canvas' && name === 'fps') { return num(v, name, 0, MAX_FPS); }
     if (kind === 'table' && name === 'columns') { return cellList(v, 'columns', 1, MAX_COLUMNS); }

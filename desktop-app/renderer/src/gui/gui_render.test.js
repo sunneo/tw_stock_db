@@ -183,4 +183,21 @@ assert.strictEqual(violations.length, 0); ok();
   assert.deepStrictEqual(evs[evs.length - 1], ['shortcut', 'root', 'save'], 'Ctrl+S works inside a text box'); ok();
 }
 
+// grid and scroll containers
+{
+  const S = G.createSession();
+  const ap = (m) => { const r = G.apply(S, m); assert.ok(r.ok, r.error); };
+  ap({ op: 'open', id: 'wg', title: 'G' });
+  ap({ op: 'add', id: 'wg', node: { id: 'g1', kind: 'grid', columns: 3 } });
+  ap({ op: 'add', id: 'wg', parent: 'g1', node: { id: 'l1', kind: 'label', text: 'a' } });
+  ap({ op: 'add', id: 'wg', node: { id: 's1', kind: 'scroll', height: 120 } });
+  ap({ op: 'add', id: 'wg', parent: 's1', node: { id: 'l2', kind: 'label', text: 'b' } });
+  const w = R.renderWindow(doc, G.snapshot(S, 'wg'), () => {}, () => {});
+  const g = byNode(w, 'g1'), sc = byNode(w, 's1');
+  assert.strictEqual(g.style.display, 'grid'); assert.strictEqual(g.style.gridTemplateColumns, 'repeat(3, 1fr)'); ok();
+  assert.strictEqual(g.children.length, 1); assert.strictEqual(g.children[0].textContent, 'a'); ok();
+  assert.strictEqual(sc.style.overflow, 'auto'); assert.strictEqual(sc.style.maxHeight, '120px'); ok();
+  assert.strictEqual(sc.children[0].textContent, 'b'); ok();
+}
+
 console.log('gui_render: ' + n + ' assertions passed');

@@ -67,6 +67,14 @@ class Window(object):
     def column(self, parent=None):
         return self._node("column", parent)
 
+    def grid(self, columns=2, parent=None):
+        """A container that lays its children out in `columns` equal columns, row by row (1-12)."""
+        return self._node("grid", parent, columns=int(columns))
+
+    def scroll(self, height=200, parent=None):
+        """A column at most `height` pixels high (40-1200); what does not fit scrolls."""
+        return self._node("scroll", parent, height=int(height))
+
     def expander(self, text, expanded=False, parent=None):
         """A collapsible container: children take parent=<its id>. value() is True while it is open."""
         nid = self._node("expander", parent, text=str(text), expanded=bool(expanded))

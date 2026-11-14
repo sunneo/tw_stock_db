@@ -138,6 +138,15 @@ replies[:] = [{'v': 1, 'event': 'change', 'id': w4.id, 'node': cb, 'value': Fals
 ev = w4.poll()
 check('poll returns change and stores it', ev['event'] == 'change' and w4.value(cb) is False)
 
+# grid and scroll containers
+calls.clear()
+g = w4.grid(3)
+check('grid add', calls[-1][1]['node'] == {'id': g, 'kind': 'grid', 'columns': 3})
+s = w4.scroll(150)
+check('scroll add', calls[-1][1]['node'] == {'id': s, 'kind': 'scroll', 'height': 150})
+lab = w4.label('in grid', parent=g)
+check('grid child parent', calls[-1][1]['parent'] == g)
+
 # theme, shortcut, tone
 calls.clear()
 w4.theme(palette={'bg': '#111111'}, font='monospace', size=14, radius=4)
