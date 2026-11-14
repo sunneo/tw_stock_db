@@ -286,3 +286,11 @@ renderer/src/guitpl/
 - 我的範本：`guitpl.save_template` 寫成新的一對 jsonl＋py（meta 帶 `extends`，只存有改的參數預設值與 style；py 呼叫 `guitpl.base_build(底層代號)`），代號一定在 `user/` 底下。新增橋接操作 `gui.usertpl`（list／save／delete；`py_worker.js` 的 `GUI_OPS`、`_pyBridgeGui` 處理）；頁面把它們存在 localStorage `fa_gui_user_templates`（桌面版是使用者資料區，網頁版是瀏覽器持久儲存）。`guitpl.default_roots()` 會把它們寫進暫存資料夾當第二個根目錄，所以 `catalog`、`run` 自動看得到。
 - 當參考案例：`gui_template_find` 把使用者範本加一分並標 `user`；找不到現成範本時回 `references`（最多兩份使用者範本全文）給模型照同格式寫新的。
 - 實跑：`scripts/eval/guitpl_studio.eval.js`（真 Electron：工作室開窗、預覽背景色真的變、存檔、工具找得到、`guitpl.run("user/my_main")` 開窗）。
+
+## 7. 元件補齊（2026-11-14，交接 2）
+
+- 橋接新種類：`tabs`（子節點是 `tab` 頁，`selected`＝頁的代號，使用者點擊回 `select`，橋接記住選中的頁，重建視窗不會跳回）、`split`（`direction` row／column、`ratio` 10-90）、`menubar`／`menu`／`menuitem`（`keys` 是顯示在旁邊的快捷鍵提示）。加入位置有檢查（`tab` 只能在 `tabs`、`menuitem` 只能在 `menu` 等）。畫面在 `gui_render.js`（含 `buildTabs`）。
+- `gui.py`：`tabs()`、`tab(title, parent)`、`split()`、`menubar()`、`menu(title, parent)`、`menuitem(text, parent, keys)`；對話框 `message()`、`confirm()`、`ask()`（用一個小視窗實作，不新增橋接操作，也沒有 `pick_file`，要選檔請用輸入框）。
+- 範本節點：`tabs`、`tab`（`title`）、`split`、`menubar`、`menu`（`title`）、`menuitem`（`text`、`keys`）。選單項目帶 `keys` 時自動登記同鍵快捷鍵，按下去等於點選單項目（事件鍵 `click:<節點名稱>`）。`ctx.message()`、`ctx.confirm()`、`ctx.ask()` 可在處理函式裡用。
+- `pygame.mixer`：`Sound(...).play()`、`music.load/play`、`init/quit/get_init` 轉成一次 `tone`（音高由檔名決定，沒有取樣檔案）。
+- 實跑：`scripts/eval/gui_widgets.eval.js`（真 Electron：選單列、分割、分頁切換、選單項目觸發確認對話框）。

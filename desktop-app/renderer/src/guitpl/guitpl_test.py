@@ -261,6 +261,57 @@ pending[:] = []
 guitpl.studio('demo/notes', roots=[LIB])  # closes at once
 check('studio closes cleanly', ops[-1][0] in ('gui.close', 'gui.poll'))
 
+# 7. tabs, split, menus and dialogs as template nodes; a menu item's keys is a real shortcut that clicks it
+tmp = tempfile.mkdtemp()
+write(tmp, 'demo/shell', [
+    {"kind": "meta", "id": "demo/shell", "title": "shell", "standalone": True},
+    {"kind": "require", "module": "gui", "source": "builtin"},
+    {"kind": "layout", "window": {"title": "shell", "width": 400}, "tree": [
+        {"kind": "menubar", "children": [{"kind": "menu", "title": "File", "children": [
+            {"id": "save", "kind": "menuitem", "text": "Save", "keys": "Ctrl+S"}]}]},
+        {"kind": "split", "direction": "row", "ratio": 30, "children": [{"kind": "label", "text": "left"}, {"kind": "label", "text": "right"}]},
+        {"id": "pages", "kind": "tabs", "children": [
+            {"kind": "tab", "title": "One", "children": [{"id": "status", "kind": "label", "text": "ready"}]},
+            {"kind": "tab", "title": "Two", "children": [{"kind": "label", "text": "two"}]}]}]},
+], py="""def build(win, spec, slots):
+    def save(ctx):
+        ctx.state["n"] = ctx.state.get("n", 0) + 1
+        ctx.set("status", text="saved %d" % ctx.state["n"])
+    return {"handlers": {"click:save": save}}
+""")
+ops.clear()
+pending[:] = [{'event': 'shortcut', 'value': 'menu_save'}, {'event': 'click', '_text': 'Save'}]
+r7 = guitpl.run('demo/shell', roots=[tmp])
+kinds = [o[1]['node']['kind'] for o in ops if o[0] == 'gui.add']
+check('shell nodes added', kinds[:3] == ['menubar', 'menu', 'menuitem'] and 'tabs' in kinds and kinds.count('tab') == 2 and 'split' in kinds)
+check('menuitem keys is registered as a shortcut', any(o[0] == 'gui.shortcut' and o[1]['keys'] == 'Ctrl+S' and o[1]['name'] == 'menu_save' for o in ops))
+check('shortcut and click both reach the click handler', r7['state']['n'] == 2)
+msgs = []
+
+
+class FakeGui(object):
+    @staticmethod
+    def message(text, title='', ok=''):
+        msgs.append(('message', text))
+
+    @staticmethod
+    def confirm(text, title='', yes='', no=''):
+        msgs.append(('confirm', text))
+        return True
+
+    @staticmethod
+    def ask(text, default='', title='', ok='', cancel=''):
+        return default + '!'
+
+
+real_gui = sys.modules.get('gui')
+sys.modules['gui'] = FakeGui
+c7 = guitpl.Ctx(None, {}, {}, [])
+c7.message('hi')
+check('ctx dialogs', c7.confirm('sure') is True and c7.ask('q', 'a') == 'a!' and msgs[0] == ('message', 'hi'))
+sys.modules['gui'] = real_gui
+shutil.rmtree(tmp)
+
 if failures:
     print('%d failure(s)' % len(failures))
     sys.exit(1)

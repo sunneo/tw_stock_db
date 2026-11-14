@@ -208,4 +208,38 @@ assert.strictEqual(violations.length, 0); ok();
   assert.strictEqual(sc.children[0].textContent, 'b'); ok();
 }
 
+// tabs, split, menus
+{
+  El.prototype.insertBefore = function (c, ref) { const i = ref ? this.children.indexOf(ref) : -1; if (i < 0) { this.children.push(c); } else { this.children.splice(i, 0, c); } return c; };
+  Object.defineProperty(El.prototype, 'firstChild', { get() { return this.children[0] || null; } });
+  const S = G.createSession();
+  const ap = (m) => { const r = G.apply(S, m); assert.ok(r.ok, r.error); };
+  ap({ op: 'open', id: 'wt', title: 'T' });
+  ap({ op: 'add', id: 'wt', node: { id: 'tb', kind: 'tabs' } });
+  ap({ op: 'add', id: 'wt', parent: 'tb', node: { id: 'p1', kind: 'tab', text: 'One' } });
+  ap({ op: 'add', id: 'wt', parent: 'tb', node: { id: 'p2', kind: 'tab', text: 'Two' } });
+  ap({ op: 'add', id: 'wt', parent: 'p1', node: { id: 'a', kind: 'label', text: 'A' } });
+  ap({ op: 'add', id: 'wt', node: { id: 'sp', kind: 'split', direction: 'row', ratio: 30 } });
+  ap({ op: 'add', id: 'wt', parent: 'sp', node: { id: 'l', kind: 'label', text: 'left' } });
+  ap({ op: 'add', id: 'wt', parent: 'sp', node: { id: 'r', kind: 'label', text: 'right' } });
+  ap({ op: 'add', id: 'wt', node: { id: 'mb', kind: 'menubar' } });
+  ap({ op: 'add', id: 'wt', parent: 'mb', node: { id: 'mn', kind: 'menu', text: 'File' } });
+  ap({ op: 'add', id: 'wt', parent: 'mn', node: { id: 'mi', kind: 'menuitem', text: 'Save', keys: 'Ctrl+S' } });
+  const ev = [];
+  const w = R.renderWindow(doc, G.snapshot(S, 'wt'), (name, node, value) => ev.push([name, node, value]), () => {});
+  const tabs = byNode(w, 'tb');
+  const bar = tabs.children[0];
+  assert.strictEqual(bar.children.length, 2); assert.strictEqual(bar.children[0].textContent, 'One'); ok();
+  assert.strictEqual(byNode(w, 'p1').hidden, false); assert.strictEqual(byNode(w, 'p2').hidden, true); ok();
+  bar.children[1].fire('click');
+  assert.strictEqual(byNode(w, 'p1').hidden, true); assert.strictEqual(byNode(w, 'p2').hidden, false); ok();
+  assert.deepStrictEqual(ev[ev.length - 1], ['select', 'tb', 'p2']); ok();
+  const sp = byNode(w, 'sp');
+  assert.strictEqual(sp.style.display, 'flex'); assert.strictEqual(sp.children[0].style.flex, '0 0 30%'); assert.strictEqual(sp.children[1].style.flex, '1 1 0'); ok();
+  const mi = byNode(w, 'mi');
+  assert.strictEqual(mi.textContent, 'Save    Ctrl+S'); mi.fire('click');
+  assert.deepStrictEqual(ev[ev.length - 1], ['click', 'mi', undefined]); ok();
+  assert.strictEqual(byNode(w, 'mn').children[0].textContent, 'File'); ok();
+}
+
 console.log('gui_render: ' + n + ' assertions passed');

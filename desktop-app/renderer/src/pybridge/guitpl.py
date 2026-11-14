@@ -41,8 +41,10 @@ NODES = {
     "progress": ("progress", ["value"], ["max"]), "list": ("listbox", ["items"], ["selected"]),
     "multilist": ("multilist", ["items"], ["selected"]), "table": ("table", ["columns", "rows"], []),
     "canvas": ("canvas", [], ["width", "height", "fps"]),
+    "tabs": ("tabs", [], []), "tab": ("tab", ["title"], []), "split": ("split", [], ["direction", "ratio"]),
+    "menubar": ("menubar", [], []), "menu": ("menu", ["title"], []), "menuitem": ("menuitem", ["text"], ["keys"]),
 }
-DEFAULTS = {"text": "", "value": "", "items": [], "columns": [], "rows": []}
+DEFAULTS = {"text": "", "value": "", "items": [], "columns": [], "rows": [], "title": ""}
 AFTER = ("enabled", "visible")
 IGNORED_IMPORTS = ("__future__",)
 
@@ -376,6 +378,21 @@ class Ctx(object):
     def tone(self, freq=440, ms=120, wave="sine"):
         self.w.tone(freq, ms, wave)
 
+    def message(self, text, title="訊息"):
+        """A small window with the text and one button; returns when the user answers (dialogs wait, so the program waits too)."""
+        import gui
+        gui.message(text, title=title, ok="確定")
+
+    def confirm(self, text, title="確認"):
+        """A yes/no window: True for 是, False for 否 or closing it."""
+        import gui
+        return gui.confirm(text, title=title, yes="是", no="否")
+
+    def ask(self, text, default="", title="輸入"):
+        """A one-line input window: the text, or None when cancelled."""
+        import gui
+        return gui.ask(text, default, title=title, ok="確定", cancel="取消")
+
     def quit(self):
         self.running = False
 
@@ -411,6 +428,8 @@ def _build_nodes(win, nodes, parent, ids, children, comp_params, slot_results, l
         if parent:
             kwargs["parent"] = parent
         nid = getattr(win, method)(*args, **kwargs)
+        if n.get("kind") == "menuitem" and n.get("keys") and n.get("id"):
+            win.shortcut(n["keys"], "menu_" + n["id"])  # the hint beside the item is a real key that clicks it
         if n.get("id"):
             if n["id"] in ids:
                 raise GuiTplError("節點名稱重複：%s" % n["id"])
@@ -614,7 +633,7 @@ def run(cid, params=None, roots=None, available=None, loop=True, window=None, st
             continue
         if ev.get("event") == "close":
             break
-        key = ("shortcut:%s" % ev.get("value")) if ev.get("event") == "shortcut" else "%s:%s" % (ev.get("event"), by_id.get(ev.get("node"), ev.get("node")))
+        key = _key_of(ev, by_id)
         ctx.event = ev
         try:
             _dispatch(ctx, comp, key, handlers, calls)
@@ -627,6 +646,16 @@ def run(cid, params=None, roots=None, available=None, loop=True, window=None, st
     except Exception:  # 視窗已經被使用者關掉
         pass
     return {"win": win, "ids": ids, "state": state, "component": comp, "scene": ctx.scene}
+
+
+def _key_of(ev, by_id):
+    """The handler key of an event: "click:save" (node name), "shortcut:save"; a menu item's own shortcut counts as a click on it."""
+    if ev.get("event") == "shortcut":
+        v = str(ev.get("value"))
+        if v.startswith("menu_"):
+            return "click:" + v[5:]
+        return "shortcut:%s" % v
+    return "%s:%s" % (ev.get("event"), by_id.get(ev.get("node"), ev.get("node")))
 
 
 def _dispatch(ctx, comp, key, handlers, calls):

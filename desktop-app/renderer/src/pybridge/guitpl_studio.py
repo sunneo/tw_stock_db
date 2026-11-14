@@ -129,7 +129,7 @@ def studio(cid, params=None, roots=None, window=None):
         if ev.get("event") == "close":
             pv[0] = None
             return True
-        key = ("shortcut:%s" % ev.get("value")) if ev.get("event") == "shortcut" else "%s:%s" % (ev.get("event"), p["by_id"].get(ev.get("node"), ev.get("node")))
+        key = guitpl._key_of(ev, p["by_id"])
         p["ctx"].event = ev
         try:
             guitpl._dispatch(p["ctx"], p["component"], key, p["handlers"], p["calls"])

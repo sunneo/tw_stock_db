@@ -158,4 +158,28 @@ assert.match(G.parseWait('wait w1 a=b').error, /shell variable name/); ok();
   assert.deepStrictEqual(run(S, msg({ op: 'set', id: 'wg', node: 'g1', props: { columns: 2 } })), { ok: true }); ok();
 }
 
+// tabs, split, menus
+{
+  const S = G.createSession();
+  run(S, msg({ op: 'open', id: 'wt2', title: 'T' }));
+  const add = (parent, node) => run(S, msg({ op: 'add', id: 'wt2', parent, node }));
+  assert.deepStrictEqual(add('root', { id: 'tb', kind: 'tabs' }), { ok: true }); ok();
+  assert.match(add('root', { id: 'bad', kind: 'tab', text: 'x' }).error, /only be added to a tabs/); ok();
+  assert.match(add('tb', { id: 'bad2', kind: 'label', text: 'x' }).error, /only holds tab/); ok();
+  assert.deepStrictEqual(add('tb', { id: 'p1', kind: 'tab', text: 'One' }), { ok: true }); ok();
+  assert.deepStrictEqual(add('tb', { id: 'p2', kind: 'tab', text: 'Two' }), { ok: true }); ok();
+  assert.deepStrictEqual(add('p2', { id: 'inside', kind: 'label', text: 'in two' }), { ok: true }); ok();
+  assert.strictEqual(G.eventLine(S, 'wt2', 'tb', 'select', 'zzz'), null); ok();
+  const line = JSON.parse(G.eventLine(S, 'wt2', 'tb', 'select', 'p2'));
+  assert.strictEqual(line.value, 'p2'); assert.strictEqual(G.snapshot(S, 'wt2').root.children[0].selected, 'p2'); ok();
+  assert.deepStrictEqual(add('root', { id: 'sp', kind: 'split', direction: 'column', ratio: 30 }), { ok: true }); ok();
+  assert.match(add('root', { id: 'sp2', kind: 'split', ratio: 5 }).error, /ratio must/); ok();
+  assert.match(add('root', { id: 'sp3', kind: 'split', direction: 'diag' }).error, /direction/); ok();
+  assert.deepStrictEqual(add('root', { id: 'mb', kind: 'menubar' }), { ok: true }); ok();
+  assert.match(add('mb', { id: 'mi0', kind: 'menuitem', text: 'x' }).error, /only be added to a menu/); ok();
+  assert.deepStrictEqual(add('mb', { id: 'mn', kind: 'menu', text: 'File' }), { ok: true }); ok();
+  assert.deepStrictEqual(add('mn', { id: 'mi', kind: 'menuitem', text: 'Save', keys: 'Ctrl+S' }), { ok: true }); ok();
+  assert.strictEqual(JSON.parse(G.eventLine(S, 'wt2', 'mi', 'click')).node, 'mi'); ok();
+}
+
 console.log('gui_bridge: ' + n + ' assertions passed');

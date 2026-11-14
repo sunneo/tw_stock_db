@@ -165,6 +165,41 @@ replies[:] = [{'v': 1, 'event': 'shortcut', 'id': w4.id, 'node': 'root', 'value'
 ev = w4.wait(timeout=30)
 check('shortcut event is returned', ev is not None and ev['event'] == 'shortcut' and ev['value'] == 'save')
 
+# tabs, split, menus, dialogs
+w5 = gui.Window('Tabs')
+tb = w5.tabs()
+p1 = w5.tab('One', tb)
+p2 = w5.tab('Two', tb)
+check('tabs value is the first page', w5.value(tb) == p1)
+check('tab op', calls[-1] == ('gui.add', {'id': w5.id, 'parent': tb, 'node': {'id': p2, 'kind': 'tab', 'text': 'Two'}}))
+replies[:] = [{'v': 1, 'event': 'select', 'id': w5.id, 'node': tb, 'value': p2}, {'v': 1, 'event': 'click', 'id': w5.id, 'node': 'x'}]
+w5.wait(timeout=30)
+check('select event stores the page', w5.value(tb) == p2)
+sp = w5.split('column', 40)
+check('split op', calls[-1][1]['node']['kind'] == 'split' and calls[-1][1]['node']['ratio'] == 40 and calls[-1][1]['node']['direction'] == 'column')
+mb = w5.menubar()
+mn = w5.menu('File', mb)
+mi = w5.menuitem('Save', mn, keys='Ctrl+S')
+check('menuitem op', calls[-1][1]['node'] == {'id': mi, 'kind': 'menuitem', 'text': 'Save', 'keys': 'Ctrl+S'} and calls[-1][1]['parent'] == mn)
+def wait_only(op, args=None, timeout=240.0):
+    calls.append((op, args))
+    if op == 'gui.wait':
+        return replies.pop(0) if replies else {'v': 1, 'event': 'close', 'id': args['id'], 'node': 'root'}
+    return None
+
+
+stub.call = wait_only
+# dialogs: the label is n1, the row is n2, the buttons follow (n3, n4); answered by a click on one of them
+replies[:] = [{'v': 1, 'event': 'click', 'id': 'x', 'node': 'n3'}]
+check('confirm yes', gui.confirm('sure?') is True)
+replies[:] = [{'v': 1, 'event': 'click', 'id': 'x', 'node': 'n4'}]
+check('confirm no', gui.confirm('sure?') is False)
+replies[:] = [{'v': 1, 'event': 'close', 'id': 'x', 'node': 'root'}]
+check('confirm closed is no', gui.confirm('sure?') is False)
+replies[:] = [{'v': 1, 'event': 'click', 'id': 'x', 'node': 'n3'}]
+gui.message('hello')
+check('message closes its window', calls[-1][0] == 'gui.close')
+
 if failures:
     print('%d failure(s)' % len(failures))
     sys.exit(1)
