@@ -59,6 +59,8 @@
 - 2026-11-14：「所有的設計都要可以在python emulator達成，所以連套件相依性都是描述在每個範本檔裡面」
 - 2026-11-14：「還沒做的先安排下去」
 
+- 2026-11-14：「為什麼待改善，可以接續完成嗎，once forall」
+
 ## 6. 交接程序（自我遞迴）
 
 執行 low-context-long-run 技能，門檻 30%：每完成並提交一批就用 `mcp__ccd_session_mgmt__get_usage` 看自己的上下文百分比；到門檻（或額度近 90%）就：完成並提交手上這批 → 整份改寫本文件（七節順序固定，原話區只追加不改寫）→ 提交（訊息寫「交接」）→ 用 `start_session`（initiation "user_asked"、context "fresh"、use_worktree false、model "claude-sonnet-5-5"、effort "medium"、標題「GUI 範本 · 交接 N」）啟動接手者，提示用第 1 節 → 等接手者確認讀過並開始 → 才標記完成並封存自己。待辦全做完且驗證過就不再交接，改向管理者回報。**管理者工作階段 `local_49f6c57d-…` 不封存、不屬於這條鏈。**

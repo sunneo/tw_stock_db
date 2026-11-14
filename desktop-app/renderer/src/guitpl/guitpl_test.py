@@ -344,6 +344,47 @@ check('params baked in', 'Baked' in text)
 check('foreign call file inside', 'ext_export.py' in text)
 check('bad param refused', raises(lambda: guitpl.compile_standalone('demo/notes', params={'zzz': 1}, roots=[LIB]), '沒有這些參數'))
 
+# 9. pick_file in templates: image and idphoto open a picture the user chose
+class PickGui(object):
+    """Stands in for gui.pick_file / Window.image behind ctx.pick_file."""
+    answers = []
+
+    @staticmethod
+    def pick_file(title='', accept='', max_bytes=0):
+        a = PickGui.answers.pop(0)
+        if isinstance(a, Exception):
+            raise a
+        return a
+
+
+real_gui2 = sys.modules.get('gui')
+for cid, btn, canvas_text in (('image/main', '開啟圖片', 'preview'), ('idphoto/main', '開啟照片', 'view')):
+    ops.clear()
+    PickGui.answers[:] = [{'name': 'p.png', 'size': 4, 'mime': 'image/png', 'data': b'\x89PNG', 'path': ''}]
+    pending[:] = [{'_text': btn}]
+    real_pick = guitpl.Ctx.pick_file
+
+    def patched(self, title='', accept='', max_bytes=0):
+        return PickGui.pick_file(title, accept, max_bytes)
+    guitpl.Ctx.pick_file = patched
+    # Window.image goes through fa_bridge: answer it with a size
+    base_call = stub.call
+
+    def image_aware(op, args=None, timeout=240.0, _b=base_call):
+        if op == 'gui.image':
+            ops.append((op, args))
+            return {'w': 40, 'h': 30}
+        return _b(op, args, timeout)
+    stub.call = image_aware
+    try:
+        guitpl.run(cid, roots=[LIB])
+    finally:
+        stub.call = base_call
+        guitpl.Ctx.pick_file = real_pick
+    check('%s registers the chosen picture' % cid, any(o[0] == 'gui.image' for o in ops))
+    check('%s draws it with an image op' % cid, any(o[0] == 'gui.draw' and any(op_[0] == 'image' for op_ in o[1]['ops']) for o in ops))
+    pending.clear()
+
 if failures:
     print('%d failure(s)' % len(failures))
     sys.exit(1)

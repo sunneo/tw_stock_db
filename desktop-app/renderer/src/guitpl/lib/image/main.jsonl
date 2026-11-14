@@ -3,10 +3,10 @@
 {"kind":"param","name":"layer_max","default":"8","ask":"圖層最多可以疊幾層？"}
 {"kind":"require","module":"gui","source":"builtin"}
 {"kind":"style","palette":{"bg":"#ffffff","fg":"#1f2937","accent":"#2563eb","danger":"#dc2626","muted":"#6b7280"},"font":"sans-serif","size":14,"radius":6}
-{"kind":"layout","window":{"title":"{{title}}","width":520,"resizable":true},"tree":[{"kind":"column","children":[{"slot":"toolbar"},{"kind":"row","children":[{"id":"left","kind":"column","children":[{"kind":"label","text":"工具（點選後加入圖層）"},{"id":"tools","kind":"list","items":["反相","灰階","提亮","變暗","紅色通道"],"selected":"反相"},{"id":"add","kind":"button","text":"加入圖層"}]},{"id":"right","kind":"column","children":[{"id":"preview","kind":"canvas","width":312,"height":208},{"kind":"label","text":"圖層（由下往上套用）"},{"id":"layers","kind":"list","items":[]}]}]},{"id":"orig","kind":"button","text":"看原圖比對"},{"id":"note","kind":"label","text":"原圖（未套用任何圖層）"},{"id":"back","kind":"button","text":"回到編輯"},{"slot":"statusbar"}]}]}
+{"kind":"layout","window":{"title":"{{title}}","width":520,"resizable":true},"tree":[{"kind":"column","children":[{"slot":"toolbar"},{"kind":"row","children":[{"id":"left","kind":"column","children":[{"kind":"label","text":"工具（點選後加入圖層）"},{"id":"tools","kind":"list","items":["反相","灰階","提亮","變暗","紅色通道"],"selected":"反相"},{"id":"add","kind":"button","text":"加入圖層"}]},{"id":"right","kind":"column","children":[{"id":"preview","kind":"canvas","width":312,"height":208},{"kind":"label","text":"圖層（由下往上套用）"},{"id":"layers","kind":"list","items":[]}]}]},{"id":"open_img","kind":"button","text":"開啟圖片"},{"id":"orig","kind":"button","text":"看原圖比對"},{"id":"note","kind":"label","text":"原圖（未套用任何圖層）"},{"id":"back","kind":"button","text":"回到編輯"},{"slot":"statusbar"}]}]}
 {"kind":"slot","name":"toolbar","use":"image/toolbar"}
 {"kind":"slot","name":"statusbar","use":"image/statusbar"}
-{"kind":"scene","id":"edit","title":"編輯中","note":"工具、圖層與預覽","show":["left","right","orig"],"hide":["note","back"],"on":{"click:orig":"compare"}}
-{"kind":"scene","id":"compare","title":"比對原圖","note":"只顯示原圖","show":["right","note","back"],"hide":["left","orig"],"on":{"click:back":"edit"}}
+{"kind":"scene","id":"edit","title":"編輯中","note":"工具、圖層與預覽","show":["left","right","orig","open_img"],"hide":["note","back"],"on":{"click:orig":"compare"}}
+{"kind":"scene","id":"compare","title":"比對原圖","note":"只顯示原圖","show":["right","note","back"],"hide":["left","orig","open_img"],"on":{"click:back":"edit"}}
 {"kind":"shortcut","keys":"Ctrl+Enter","do":"add"}
 {"kind":"shortcut","keys":"Ctrl+Z","do":"undo"}

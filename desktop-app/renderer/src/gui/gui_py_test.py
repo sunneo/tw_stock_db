@@ -200,6 +200,31 @@ replies[:] = [{'v': 1, 'event': 'click', 'id': 'x', 'node': 'n3'}]
 gui.message('hello')
 check('message closes its window', calls[-1][0] == 'gui.close')
 
+# pick_file
+import base64
+picked = []
+
+
+def pick_stub(op, args=None, timeout=240.0):
+    calls.append((op, args))
+    if op == 'gui.pickfile':
+        return picked.pop(0) if picked else None
+    return None
+
+
+stub.call = pick_stub
+picked[:] = [{'name': 'a.png', 'size': 3, 'mime': 'image/png', 'data': base64.b64encode(b'abc').decode(), 'path': 'C:/a.png'}]
+f = gui.pick_file('Open', accept='image/*', max_bytes=1000)
+check('pick_file op', calls[-1] == ('gui.pickfile', {'title': 'Open', 'accept': 'image/*', 'max_bytes': 1000}))
+check('pick_file result', f == {'name': 'a.png', 'size': 3, 'mime': 'image/png', 'data': b'abc', 'path': 'C:/a.png'})
+check('pick_file cancel is None', gui.pick_file() is None)
+picked[:] = [{'error': 'too big'}]
+try:
+    gui.pick_file()
+    check('pick_file error raises', False)
+except ValueError as e:
+    check('pick_file error raises', 'too big' in str(e))
+
 if failures:
     print('%d failure(s)' % len(failures))
     sys.exit(1)

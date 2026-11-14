@@ -44,6 +44,12 @@ def draw(ctx, colors):
     layers = ctx.state.get("layers", [])
     original = ctx.scene == "compare"
     ops = [["clear", colors["bg"]]]
+    photo = ctx.state.get("photo")
+    if photo:  # 使用者開啟的圖片：整張畫在畫布上（簡化版：圖層效果只套在示範小圖，不套在開啟的圖片）
+        ops.append(["image", photo, 0, 0, W * CELL, H * CELL])
+        ctx.w.draw(ctx.id("preview"), ops)
+        ctx.set("layers", items=["%d. %s" % (i + 1, n) for i, n in enumerate(layers)])
+        return
     for y in range(H):
         for x in range(W):
             c = base(x, y) if original else pixel(x, y, layers)
@@ -80,6 +86,24 @@ def build(win, spec, slots):
         ctx.set("status", text="已加入「%s」" % name)
         draw(ctx, colors)
 
+    def open_image(ctx):
+        try:
+            f = ctx.pick_file("開啟圖片", accept="image/*", max_bytes=256 * 1024)
+        except ValueError as e:
+            ctx.set("status", text=str(e))
+            return
+        if f is None:
+            ctx.set("status", text="沒有選檔案")
+            return
+        try:
+            name, w, h = ctx.w.image(ctx.id("preview"), f["data"], f["mime"])
+        except Exception as e:  # 瀏覽器解不開的圖片
+            ctx.set("status", text="開不了這張圖片：%s" % e)
+            return
+        ctx.state["photo"] = name
+        ctx.set("status", text="已開啟 %s（%d×%d；簡化版：圖層效果不套在開啟的圖片上）" % (f["name"], w, h))
+        draw(ctx, colors)
+
     def redraw_after(fn):
         def handler(ctx):
             fn(ctx)
@@ -88,6 +112,7 @@ def build(win, spec, slots):
 
     handlers = {key: redraw_after(fn) for key, fn in tb.items()}
     handlers["click:add"] = add
+    handlers["click:open_img"] = open_image
     handlers["shortcut:add"] = add
     handlers["click:orig"] = redraw_after(lambda ctx: None)
     handlers["click:back"] = redraw_after(lambda ctx: None)

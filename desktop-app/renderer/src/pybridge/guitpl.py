@@ -378,6 +378,11 @@ class Ctx(object):
     def tone(self, freq=440, ms=120, wave="sine"):
         self.w.tone(freq, ms, wave)
 
+    def pick_file(self, title="選擇檔案", accept="", max_bytes=262144):
+        """The user's file ({"name","size","mime","data","path"}) or None when cancelled (see gui.pick_file); too big raises ValueError."""
+        import gui
+        return gui.pick_file(title=title, accept=accept, max_bytes=max_bytes)
+
     def message(self, text, title="訊息"):
         """A small window with the text and one button; returns when the user answers (dialogs wait, so the program waits too)."""
         import gui

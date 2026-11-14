@@ -22,10 +22,16 @@ def _redraw(ctx):
     ops = [
         ["clear", "#444444"],
         ["rect", int(x0), int(y0), int(bw), int(bh), BG.get(bg, "#ffffff")],
-        ["circle", int(cx), int(y0 + bh * 0.35), int(bh * 0.14), "#e8b48a"],
-        ["rect", int(cx - bw * 0.3), int(y0 + bh * 0.52), int(bw * 0.6), int(bh * 0.4), "#3b4a6b"],
-        ["text", 8, 16, size, "#ffffff"],
     ]
+    photo = ctx.state.get("photo")
+    if photo:  # 使用者開啟的照片：縮放塞進裁切框（簡化版：不做人臉偵測，也不去背）
+        ops.append(["image", photo, int(x0), int(y0), int(bw), int(bh)])
+    else:
+        ops += [
+            ["circle", int(cx), int(y0 + bh * 0.35), int(bh * 0.14), "#e8b48a"],
+            ["rect", int(cx - bw * 0.3), int(y0 + bh * 0.52), int(bw * 0.6), int(bh * 0.4), "#3b4a6b"],
+        ]
+    ops.append(["text", 8, 16, size, "#ffffff"])
     if guide:
         eye = int(y0 + bh * 0.3)
         ops += [
@@ -47,6 +53,23 @@ def build(win, spec, slots):
         ctx.state["guide"] = True
         _redraw(ctx)
 
+    def open_photo(ctx):
+        try:
+            f = ctx.pick_file("開啟照片", accept="image/*", max_bytes=256 * 1024)
+        except ValueError as e:
+            ctx.set("info", text=str(e))
+            return
+        if f is None:
+            return
+        try:
+            name, w, h = ctx.w.image(ctx.id("view"), f["data"], f["mime"])
+        except Exception as e:  # 瀏覽器解不開的圖片
+            ctx.set("info", text="開不了這張照片：%s" % e)
+            return
+        ctx.state["photo"] = name
+        _redraw(ctx)
+        ctx.set("info", text="已開啟 %s（%d×%d），縮放進裁切框" % (f["name"], w, h))
+
     def toggle_guide(ctx):
         ctx.state["guide"] = not ctx.state.get("guide", True)
         _redraw(ctx)
@@ -60,6 +83,7 @@ def build(win, spec, slots):
         "select:size_list": _redraw,
         "select:bg_list": _redraw,
         "click:preview_btn": _redraw,
+        "click:open_btn": open_photo,
         "shortcut:redraw": _redraw,
         "click:tb_guide": toggle_guide,
         "click:tb_reset": reset,

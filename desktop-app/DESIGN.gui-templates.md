@@ -301,3 +301,11 @@ renderer/src/guitpl/
 - 宿主工具 `gui_template_compose` 加 `standalone: true`（可加 `output` 檔名）：回傳的 code 執行後寫出單一檔案程式。產生的程式第一行有 `import gui`，頁面才會把它當視窗程式走 Worker 路徑。
 - 測試：`guitpl_test.py` 比對編譯後的程式與 `run` 的操作序列相同（三個範本）；實跑：`scripts/eval/guitpl_standalone.eval.js`（真 Electron，十三個領域的 main 全部：產生 → 直接執行 → 開窗、點按鈕、關窗，無錯誤）。
 - 未做：YAML 撰寫格式。
+
+
+## 9. 選檔案對話框 pick_file（2026-11-14，交接 2）
+
+- `gui.pick_file(title, accept, max_bytes)`：回 `{name, size, mime, data(bytes), path}`，取消回 None，太大或讀不了丟 `ValueError`。新增橋接操作 `gui.pickfile`（`GUI_OPS`；不需要視窗，`_pyBridgeGui` 先處理）。
+- 頁面層 `_guiPickFile`：浮出一個小面板（「選擇檔案…」「取消」），使用者真的點擊後才開瀏覽器或桌面版的檔案選擇器（程式自己呼叫沒有使用者手勢，開不了）；桌面版的檔案物件帶真實路徑 `path`，網頁版是空字串。預設上限 256 KB（最多 8 MB，與畫布圖片上限一致）。測試可設 `fa._guiPickFileHook` 略過面板。
+- 範本：`ctx.pick_file(...)`；影像處理的「開啟圖片」、證件照的「開啟照片」用它把圖片登記到畫布（`Window.image`）並畫出來（簡化版：影像處理的圖層效果不套在開啟的圖片上；證件照不做人臉偵測與去背，只縮放進裁切框）。
+- 實跑：`scripts/eval/guitpl_pickfile.eval.js`（面板、取消、真的 File 物件、超過上限、兩個範本畫布真的出現圖片的紅色像素）。作業系統原生的檔案選擇視窗無法被自動化點選，所以用 File 物件代替使用者選好檔案。
