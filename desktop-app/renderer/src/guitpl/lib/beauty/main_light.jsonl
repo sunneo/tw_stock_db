@@ -1,0 +1,5 @@
+{"kind":"meta","id":"beauty/main_light","title":"淺色美顏拍貼（簡化版）","keywords":["淺色美顏","明亮美顏"],"extends":"beauty/main"}
+{"kind":"param","name":"strength","default":"70","ask":"美顏強度預設多少（0 到 100）？"}
+{"kind":"require","module":"importlib","source":"builtin"}
+{"kind":"require","module":"os","source":"builtin"}
+{"kind":"style","palette":{"bg":"#ffffff","accent":"#8b5cf6"},"radius":12}
