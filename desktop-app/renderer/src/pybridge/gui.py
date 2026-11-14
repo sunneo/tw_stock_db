@@ -17,9 +17,11 @@ A window is drawn in the terminal named in python_execute's "terminal" (the same
     w.close()
 
 Events: "click" (buttons), "close" (the user closed the window). These update value() and do not return from wait():
-"input" (entry or editor text), "cell" (a table cell), "toggle" (an expander), "select" (a multilist selection).
-Node kinds: label, button, entry, row, column, expander, editor, table, multilist. Rows, columns and expanders take a
-parent=... argument to hold other nodes.
+"input" (entry, textarea or editor text), "cell" (a table cell), "toggle" (an expander), "select" (a multilist or
+listbox selection), "change" (a checkbox).
+Node kinds: label, button, entry, textarea, checkbox, progress, listbox, row, column, expander, editor, table, multilist,
+canvas. Rows, columns and expanders take a parent=... argument to hold other nodes. set(node, text=..., enabled=...,
+visible=..., value=...) changes a node that was already added.
 """
 import base64
 import os
@@ -93,6 +95,36 @@ class Window(object):
         self._values[nid] = [str(s) for s in selected]
         return nid
 
+    def textarea(self, value="", rows=4, placeholder="", parent=None):
+        """A multi-line text box (not monospace, no language). value() is its text."""
+        nid = self._node("textarea", parent, value=str(value), rows=int(rows), placeholder=str(placeholder))
+        self._values[nid] = str(value)
+        return nid
+
+    def checkbox(self, text, checked=False, parent=None):
+        """A tick box with a label. value() is True while ticked; a "change" event is queued for poll()."""
+        nid = self._node("checkbox", parent, text=str(text), checked=bool(checked))
+        self._values[nid] = bool(checked)
+        return nid
+
+    def progress(self, value=0, max=100, parent=None):
+        """A progress bar. Change it with set(nid, value=...)."""
+        return self._node("progress", parent, value=float(value), max=float(max))
+
+    def listbox(self, items, selected="", parent=None):
+        """A list where one item is selected. value() is the selected item's text ("" when none)."""
+        nid = self._node("list", parent, items=[str(i) for i in items], selected=str(selected))
+        self._values[nid] = str(selected)
+        return nid
+
+    def set(self, nid, **props):
+        """Change properties of a node already added: set(btn, text="Save", enabled=False), set(box, visible=False),
+        set(pb, value=40), set(lbl, text="..."). value() follows value / checked / selected."""
+        fa_bridge.call("gui.set", {"id": self.id, "node": nid, "props": props})
+        for key in ("value", "checked", "selected"):
+            if key in props and nid in self._values:
+                self._values[nid] = props[key]
+
     def canvas(self, width=320, height=240, fps=0, parent=None):
         """A drawing area for frames (pygame uses this). draw(nid, ops) paints one whole frame. fps > 0 queues "frame" events for poll()."""
         return self._node("canvas", parent, width=int(width), height=int(height), fps=int(fps))
@@ -116,7 +148,7 @@ class Window(object):
         ev = fa_bridge.call("gui.poll", {"id": self.id})
         if ev is None:
             return None
-        if ev.get("event") in ("input", "cell", "toggle", "select"):
+        if ev.get("event") in ("input", "cell", "toggle", "select", "change"):
             self._event_value(ev)
         if ev.get("event") == "close":
             self.closed = True
@@ -148,7 +180,7 @@ class Window(object):
             if ev is None:
                 return None
             kind = ev.get("event")
-            if kind in ("input", "cell", "toggle", "select"):
+            if kind in ("input", "cell", "toggle", "select", "change"):
                 self._event_value(ev)
                 continue
             if kind == "close":
