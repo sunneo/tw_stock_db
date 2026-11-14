@@ -23,7 +23,9 @@ await fa._runTerminalCommand(session, 'python3 catalog.py');
 const txt = termText(session);
 const m = /IDS=([^\n\r]*)/.exec(txt);
 R.catalog_output_tail = txt.split('\n').slice(-6).join('\n');
-const ids = m && m[1] ? m[1].split(',').filter(Boolean) : [];
+// 變體（main_dark 等）只是覆寫 style 與參數，這裡只實跑每個領域的 main（變體由本機 lint 檢查）
+R.all_standalone = m && m[1] ? m[1].split(',').filter(Boolean) : [];
+const ids = R.all_standalone.filter((i) => /\/main$/.test(i));
 R.standalone_ids = ids;
 
 // 2. 逐個範本
