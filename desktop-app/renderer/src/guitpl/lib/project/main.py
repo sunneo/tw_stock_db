@@ -29,7 +29,7 @@ def _overall(G):
 def _sync(ctx, G):
     rows = [list(r) for r in G["rows"]]
     labels = _labels(G)
-    ctx.set("tasks", value=rows, rows=rows)
+    ctx.set("tasks", rows=rows)
     ctx.set("task_pick", items=labels, selected=labels[G["cur"]] if labels else "")
     avg = _overall(G)
     ctx.set("overall", value=avg)

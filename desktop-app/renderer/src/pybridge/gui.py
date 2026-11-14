@@ -42,6 +42,7 @@ class Window(object):
         self._nodes = 0
         self._values = {}
         self._images = 0
+        self._tables = set()
         self.closed = False
         fa_bridge.call("gui.open", {"id": self.id, "title": str(title), "width": int(width),
                                     "resizable": bool(resizable), "maximizable": bool(maximizable)})
@@ -100,6 +101,7 @@ class Window(object):
                 raise ValueError("table row %d has %d cells, the table has %d columns" % (i, len(r), len(cols)))
         nid = self._node("table", parent, columns=cols, rows=data)
         self._values[nid] = [list(r) for r in data]
+        self._tables.add(nid)
         return nid
 
     def multilist(self, items, selected=(), parent=None):
@@ -137,6 +139,8 @@ class Window(object):
         for key in ("value", "checked", "selected"):
             if key in props and nid in self._values:
                 self._values[nid] = props[key]
+        if "rows" in props and nid in self._tables:
+            self._values[nid] = [[str(c) for c in r] for r in props["rows"]]
 
     def theme(self, palette=None, font=None, size=None, radius=None):
         """The window's look. palette: a dict with any of bg, fg, accent, danger, muted ("#rgb" or "#rrggbb"; the ones not given

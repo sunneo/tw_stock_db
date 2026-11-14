@@ -17,8 +17,40 @@ pending = []
 ops = []
 
 
+# 真橋接（renderer/src/gui/gui_bridge.js 的 KINDS）允許的屬性：假橋接也照這張表擋，不然本機通過、真橋接才報錯
+PROPS = {
+    'column': [], 'row': [], 'grid': ['columns'], 'scroll': ['height'], 'expander': ['text', 'expanded'], 'label': ['text'],
+    'button': ['text', 'enabled'], 'entry': ['value', 'placeholder', 'enabled', 'secret'],
+    'textarea': ['value', 'placeholder', 'rows', 'enabled'], 'editor': ['value', 'lang', 'rows', 'enabled'],
+    'checkbox': ['text', 'checked', 'enabled'], 'progress': ['value', 'max'], 'list': ['items', 'selected', 'enabled'],
+    'multilist': ['items', 'selected', 'enabled'], 'table': ['columns', 'rows', 'enabled'], 'canvas': ['width', 'height', 'fps'],
+}
+CONTAINERS = ('column', 'row', 'expander', 'grid', 'scroll')
+kinds_of = {}
+
+
 def fake_call(op, args=None, timeout=240.0):
     ops.append((op, args))
+    if op == 'gui.open':
+        kinds_of.clear()
+        kinds_of['root'] = 'column'
+    elif op == 'gui.add':
+        node = args['node']
+        if node['kind'] not in PROPS:
+            raise ValueError('橋接不支援節點種類 %s' % node['kind'])
+        for k in node:
+            if k not in ('id', 'kind', 'visible') and k not in PROPS[node['kind']]:
+                raise ValueError('橋接不允許 %s 節點有屬性 %s' % (node['kind'], k))
+        if kinds_of.get(args.get('parent', 'root')) not in CONTAINERS:
+            raise ValueError('橋接：父節點不是容器')
+        kinds_of[node['id']] = node['kind']
+    elif op == 'gui.set':
+        kind = kinds_of.get(args['node'])
+        if kind is None:
+            raise ValueError('橋接：節點 %s 不存在' % args['node'])
+        for k in args['props']:
+            if k != 'visible' and k not in PROPS[kind]:
+                raise ValueError('橋接不允許 %s 節點用 set 改屬性 %s' % (kind, k))
     if op in ('gui.wait', 'gui.poll'):
         if pending:
             ev = dict(pending.pop(0))
