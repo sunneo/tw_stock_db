@@ -176,7 +176,9 @@ finally:
 # 3. 執行：視窗、主題、插槽、參數替換、場景、快捷鍵、外部呼叫（真的範本）
 ops.clear()
 r = guitpl.run('demo/notes', params={'title': '週記'}, roots=[LIB], loop=False)
-check('window title substituted', ops[0][0] == 'gui.open' and ops[0][1]['title'] == '週記' and ops[0][1]['width'] == 480)
+check('window title substituted', ops[0][0] == 'gui.open' and ops[0][1]['title'] == '週記' and ops[0][1]['width'] == 560 and ops[0][1]['height'] == 460)
+check('layout grow and role reach the bridge', any(o[0] == 'gui.add' and o[1]['node'].get('grow') == 1.0 and o[1]['node']['kind'] == 'editor' for o in ops) and any(o[0] == 'gui.add' and o[1]['node'].get('role') == 'page' for o in ops))
+check('toolbar row has its role', any(o[0] == 'gui.add' and o[1]['node'].get('role') == 'toolbar' for o in ops))
 check('theme applied', any(o[0] == 'gui.theme' and o[1]['palette']['accent'] == '#2563eb' and o[1]['size'] == 14 for o in ops))
 check('named nodes', set(r['ids']) >= {'editor', 'status', 'save', 'clear', 'help', 'help_btn', 'back_btn', 'export'})
 check('slot param substituted into child', any(o[0] == 'gui.add' and o[1]['node'].get('text') == '儲存「週記」' for o in ops))

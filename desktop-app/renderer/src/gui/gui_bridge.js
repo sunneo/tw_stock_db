@@ -63,7 +63,8 @@
     button: { props: ['text', 'enabled'], events: ['click'] },
     entry: { props: ['value', 'placeholder', 'enabled', 'secret'], events: ['input'] },
     textarea: { props: ['value', 'placeholder', 'rows', 'enabled'], events: ['input'] },
-    editor: { props: ['value', 'lang', 'rows', 'enabled'], events: ['input'] },
+    // editor: a code or text editing surface with line numbers (numbers), syntax colors for lang (python, javascript, json, markdown, html, css; anything else is plain), scrollbars
+    editor: { props: ['value', 'lang', 'rows', 'enabled', 'numbers'], events: ['input'] },
     checkbox: { props: ['text', 'checked', 'enabled'], events: ['change'] },
     progress: { props: ['value', 'max'] },
     list: { props: ['items', 'selected', 'enabled'], events: ['select'] },
@@ -72,9 +73,13 @@
     // a canvas is drawn by whole frames (op "draw" replaces the frame); fps > 0 makes the page send "frame" events, key presses come as "key",
     // the pointer as "mouse" ({kind: down | up | move, x, y, button} with x and y inside the canvas), the wheel as "wheel" ({x, y, dy}),
     // and "resize" ({width, height}: the canvas's new size in pixels when its window is resized or maximized)
-    canvas: { props: ['width', 'height', 'fps'], events: ['key', 'frame', 'mouse', 'wheel', 'resize'] }
+    // fit: the canvas keeps its width x height as the drawing space and is scaled (centered, whole picture visible) to fill the area it is given (grow)
+    canvas: { props: ['width', 'height', 'fps', 'fit'], events: ['key', 'frame', 'mouse', 'wheel', 'resize'] }
   };
-  var COMMON = ['visible'];
+  // layout and look hints every node may carry: grow = share of the free space in its parent (0 none, 1-10 weight; a row grows sideways,
+  // a column downwards), gap = space between its children and pad = inner space (pixels), role = a named look from the design system
+  var ROLES = ['toolbar', 'sidebar', 'statusbar', 'card', 'panel', 'heading', 'title', 'muted', 'primary', 'danger', 'surface', 'group', 'outline', 'page'];
+  var COMMON = ['visible', 'grow', 'gap', 'pad', 'role'];
 
   function fail(error) { return { ok: false, error: error }; }
   function isObj(v) { return v !== null && typeof v === 'object' && !Array.isArray(v); }
@@ -97,8 +102,11 @@
   function prop(kind, name, v) {
     switch (name) {
       case 'text': case 'value': case 'placeholder': case 'lang': case 'keys': return text(v, name);
-      case 'enabled': case 'checked': case 'visible': case 'secret': case 'expanded': return bool(v, name);
+      case 'enabled': case 'checked': case 'visible': case 'secret': case 'expanded': case 'numbers': case 'fit': return bool(v, name);
       case 'rows': return num(v, name, 1, 30);
+      case 'grow': return num(v, name, 0, 10);
+      case 'gap': case 'pad': return num(v, name, 0, 32);
+      case 'role': if (ROLES.indexOf(v) < 0) { throw new Error('role must be one of ' + ROLES.join(', ')); } return v;
       case 'max': return num(v, name, 0, 1e12);
       case 'selected': return text(v, name);
       case 'items':
@@ -226,7 +234,9 @@
         // resizable: the user can drag the window's corner; maximizable: a button fills the terminal's area (both off by default)
         var resizable = msg.resizable === undefined ? false : bool(msg.resizable, 'resizable');
         var maximizable = msg.maximizable === undefined ? false : bool(msg.maximizable, 'maximizable');
-        session.windows[wid] = { id: wid, title: title, width: width, resizable: resizable, maximizable: maximizable, theme: {}, shortcuts: {}, nodes: { root: { id: 'root', kind: 'column', parent: null, children: [] } } };
+        // height: the window's first height in pixels (a resizable window fills it; without it the window is as high as its content)
+        var height = msg.height === undefined || msg.height === null ? 0 : num(msg.height, 'height', 120, 1600);
+        session.windows[wid] = { id: wid, title: title, width: width, height: height, resizable: resizable, maximizable: maximizable, theme: {}, shortcuts: {}, nodes: { root: { id: 'root', kind: 'column', parent: null, children: [] } } };
         return { ok: true };
       }
       var win = session.windows[wid];
@@ -247,6 +257,7 @@
         if (msg.font !== undefined) { if (FONTS.indexOf(msg.font) < 0) { return fail('font must be one of ' + FONTS.join(', ')); } th.font = msg.font; }
         if (msg.size !== undefined) { th.size = num(msg.size, 'size', 10, 24); }
         if (msg.radius !== undefined) { th.radius = num(msg.radius, 'radius', 0, 16); }
+        if (msg.density !== undefined) { if (['compact', 'normal', 'comfy'].indexOf(msg.density) < 0) { return fail('density must be compact, normal or comfy'); } th.density = msg.density; }
         win.theme = Object.assign({}, win.theme, th, th.palette ? { palette: Object.assign({}, win.theme.palette || {}, th.palette) } : {});
         return { ok: true };
       }
@@ -395,7 +406,7 @@
       out.children = n.children.map(build);
       return out;
     }
-    return { id: win.id, title: win.title, width: win.width, resizable: win.resizable, maximizable: win.maximizable, theme: win.theme || {}, shortcuts: win.shortcuts || {}, root: build('root') };
+    return { id: win.id, title: win.title, width: win.width, height: win.height || 0, resizable: win.resizable, maximizable: win.maximizable, theme: win.theme || {}, shortcuts: win.shortcuts || {}, root: build('root') };
   }
 
   // shell side: `gui wait <window-id> [VAR]` (the words after `gui`). Returns {ok, win, varName} or {ok:false, error}.

@@ -1,4 +1,4 @@
 {"kind":"meta","id":"text-editor/toolbar","title":"文字編輯工具列（新增、存檔、自動換行）","keywords":["文字編輯工具列","新增","存檔","自動換行"],"entry":"build"}
 {"kind":"param","name":"sound","default":"no","ask":"提示音要開嗎？（yes 或 no）"}
 {"kind":"require","module":"gui","source":"builtin"}
-{"kind":"layout","tree":[{"kind":"row","children":[{"id":"new","kind":"button","text":"新增"},{"id":"save","kind":"button","text":"存檔"},{"id":"wrap","kind":"checkbox","text":"自動換行","checked":true}]}]}
+{"kind":"layout","tree":[{"kind":"row","role":"toolbar","children":[{"id":"new","kind":"button","text":"新增"},{"id":"save","kind":"button","text":"存檔"},{"id":"wrap","kind":"checkbox","text":"自動換行","checked":true}]}]}

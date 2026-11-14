@@ -36,7 +36,7 @@ import fa_bridge
 
 
 class Window(object):
-    def __init__(self, title, width=360, resizable=False, maximizable=False):
+    def __init__(self, title, width=360, resizable=False, maximizable=False, height=None):
         # resizable: the user can drag the window's corner bigger or smaller; maximizable: a button fills the terminal's area.
         # A canvas in a resizable window reports its new size with a "resize" event.
         self.id = "w" + os.urandom(4).hex()
@@ -45,13 +45,17 @@ class Window(object):
         self._images = 0
         self._tables = set()
         self.closed = False
-        fa_bridge.call("gui.open", {"id": self.id, "title": str(title), "width": int(width),
-                                    "resizable": bool(resizable), "maximizable": bool(maximizable)})
+        self._style = {}
+        args = {"id": self.id, "title": str(title), "width": int(width), "resizable": bool(resizable), "maximizable": bool(maximizable)}
+        if height:
+            args["height"] = int(height)  # the window's first height; a resizable window's body fills it (see grow)
+        fa_bridge.call("gui.open", args)
 
     def _node(self, kind, parent, **fields):
         self._nodes += 1
         node = {"id": "n%d" % self._nodes, "kind": kind}
         node.update(fields)
+        node.update(self._style)
         fa_bridge.call("gui.add", {"id": self.id, "parent": parent or "root", "node": node})
         return node["id"]
 
@@ -119,9 +123,11 @@ class Window(object):
         self._values[nid] = bool(expanded)
         return nid
 
-    def editor(self, value="", lang="", rows=8, parent=None):
-        """A multi-line monospace text box. value() is its text."""
-        nid = self._node("editor", parent, value=str(value), lang=str(lang), rows=int(rows))
+    def editor(self, value="", lang="", rows=8, parent=None, numbers=True):
+        """A code and text editing surface: monospace, line numbers (numbers=False hides them), the current line highlighted, scrollbars,
+        and syntax colors for lang "python", "javascript", "json", "markdown", "html" or "css" (anything else is plain). value() is its text.
+        Give it grow=1 to fill its parent."""
+        nid = self._node("editor", parent, value=str(value), lang=str(lang), rows=int(rows), numbers=bool(numbers))
         self._values[nid] = str(value)
         return nid
 
@@ -176,7 +182,7 @@ class Window(object):
         if "rows" in props and nid in self._tables:
             self._values[nid] = [[str(c) for c in r] for r in props["rows"]]
 
-    def theme(self, palette=None, font=None, size=None, radius=None):
+    def theme(self, palette=None, font=None, size=None, radius=None, density=None):
         """The window's look. palette: a dict with any of bg, fg, accent, danger, muted ("#rgb" or "#rrggbb"; the ones not given
         keep their value). font: "sans-serif", "serif" or "monospace". size: text size 10-24. radius: corner radius 0-16.
         Only what is given changes, so it can be called again later (for example to switch dark and light)."""
@@ -189,6 +195,8 @@ class Window(object):
             args["size"] = int(size)
         if radius is not None:
             args["radius"] = int(radius)
+        if density is not None:
+            args["density"] = str(density)  # "compact", "normal" or "comfy": the spacing scale
         fa_bridge.call("gui.theme", args)
 
     def shortcut(self, keys, name):
@@ -203,9 +211,12 @@ class Window(object):
         It returns at once and stays silent if the page cannot play sound (nothing is raised)."""
         fa_bridge.call("gui.tone", {"id": self.id, "freq": float(freq), "ms": int(ms), "wave": str(wave)})
 
-    def canvas(self, width=320, height=240, fps=0, parent=None):
-        """A drawing area for frames (pygame uses this). draw(nid, ops) paints one whole frame. fps > 0 queues "frame" events for poll()."""
-        return self._node("canvas", parent, width=int(width), height=int(height), fps=int(fps))
+    def canvas(self, width=320, height=240, fps=0, parent=None, fit=False):
+        """A drawing area for frames (pygame uses this). draw(nid, ops) paints one whole frame. fps > 0 queues "frame" events for poll().
+        fit=True keeps width x height as the drawing space and scales it (whole picture visible, centered) to fill the area the canvas is given
+        (with grow=1): draw once in fixed coordinates and it fills any window size. Without fit, a canvas in a resizable window is resized to
+        the window and reports "resize"."""
+        return self._node("canvas", parent, width=int(width), height=int(height), fps=int(fps), **({"fit": True} if fit else {}))
 
     def draw(self, nid, ops):
         """Paint one frame on a canvas. ops: lists such as ["rect", x, y, w, h, "#rrggbb"], ["circle", x, y, r, color],
@@ -269,6 +280,38 @@ class Window(object):
         if not self.closed:
             self.closed = True
             fa_bridge.call("gui.close", {"id": self.id})
+
+
+# Every node method also takes these look and layout keywords: grow (0-10, the share of the free space in the parent: a row grows sideways,
+# a column downwards; the window body fills a resizable window), gap and pad (0-32 pixels, space between the children and inside), and role
+# (the design system's look: toolbar, sidebar, statusbar, card, panel, heading, title, muted, primary, danger, surface, group, outline, page).
+# Example: w.editor(parent=col, grow=1); bar = w.row(role="toolbar").
+_STYLE_KEYS = ("grow", "gap", "pad", "role")
+
+
+def _styled(fn):
+    def wrapper(self, *args, **kwargs):
+        style = {}
+        for k in _STYLE_KEYS:
+            if k in kwargs:
+                v = kwargs.pop(k)
+                if v is not None:
+                    style[k] = v if k == "role" else float(v)
+                    if k == "role":
+                        style[k] = str(v)
+        self._style = style
+        try:
+            return fn(self, *args, **kwargs)
+        finally:
+            self._style = {}
+    wrapper.__name__ = fn.__name__
+    wrapper.__doc__ = fn.__doc__
+    return wrapper
+
+
+for _name in ("label", "button", "entry", "row", "column", "grid", "scroll", "tabs", "tab", "split", "menubar", "menu", "menuitem", "expander",
+              "editor", "table", "multilist", "textarea", "checkbox", "progress", "listbox", "canvas"):
+    setattr(Window, _name, _styled(getattr(Window, _name)))
 
 
 def pick_file(title="Choose a file", accept="", max_bytes=262144):

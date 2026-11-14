@@ -21,11 +21,13 @@ ops = []
 PROPS = {
     'column': [], 'row': [], 'grid': ['columns'], 'scroll': ['height'], 'expander': ['text', 'expanded'], 'label': ['text'],
     'button': ['text', 'enabled'], 'entry': ['value', 'placeholder', 'enabled', 'secret'],
-    'textarea': ['value', 'placeholder', 'rows', 'enabled'], 'editor': ['value', 'lang', 'rows', 'enabled'],
+    'textarea': ['value', 'placeholder', 'rows', 'enabled'], 'editor': ['value', 'lang', 'rows', 'enabled', 'numbers'],
     'checkbox': ['text', 'checked', 'enabled'], 'progress': ['value', 'max'], 'list': ['items', 'selected', 'enabled'],
-    'multilist': ['items', 'selected', 'enabled'], 'table': ['columns', 'rows', 'enabled'], 'canvas': ['width', 'height', 'fps'],
+    'multilist': ['items', 'selected', 'enabled'], 'table': ['columns', 'rows', 'enabled'], 'canvas': ['width', 'height', 'fps', 'fit'],
     'tabs': ['selected'], 'tab': ['text'], 'split': ['direction', 'ratio'], 'menubar': [], 'menu': ['text'], 'menuitem': ['text', 'keys', 'enabled'],
 }
+COMMON = ('visible', 'grow', 'gap', 'pad', 'role')  # 任何節點都可以有的版面與外觀提示
+ROLES = ('toolbar', 'sidebar', 'statusbar', 'card', 'panel', 'heading', 'title', 'muted', 'primary', 'danger', 'surface', 'group', 'outline', 'page')
 CONTAINERS = ('column', 'row', 'expander', 'grid', 'scroll', 'tabs', 'tab', 'split', 'menubar', 'menu')
 import re
 SHORTCUT_RE = re.compile(r'^(Ctrl\+)?(Shift\+)?(Alt\+)?([A-Z0-9]|F([1-9]|1[0-2])|Enter|Esc|Space|Up|Down|Left|Right|Delete|Backspace|Tab)$')
@@ -42,10 +44,14 @@ def fake_call(op, args=None, timeout=240.0):
         if node['kind'] not in PROPS:
             raise ValueError('橋接不支援節點種類 %s' % node['kind'])
         for k in node:
-            if k not in ('id', 'kind', 'visible') and k not in PROPS[node['kind']]:
+            if k not in ('id', 'kind') and k not in COMMON and k not in PROPS[node['kind']]:
                 raise ValueError('橋接不允許 %s 節點有屬性 %s' % (node['kind'], k))
         if kinds_of.get(args.get('parent', 'root')) not in CONTAINERS:
             raise ValueError('橋接：父節點不是容器')
+        if 'grow' in node and not (isinstance(node['grow'], (int, float)) and 0 <= node['grow'] <= 10):
+            raise ValueError('橋接：grow 要是 0 到 10 的數字')
+        if 'role' in node and node['role'] not in ROLES:
+            raise ValueError('橋接：role 要是 %s 其中之一' % '、'.join(ROLES))
         kinds_of[node['id']] = node['kind']
     elif op == 'gui.shortcut':
         if not SHORTCUT_RE.match(str(args['keys'])):
@@ -58,7 +64,7 @@ def fake_call(op, args=None, timeout=240.0):
         if kind is None:
             raise ValueError('橋接：節點 %s 不存在' % args['node'])
         for k in args['props']:
-            if k != 'visible' and k not in PROPS[kind]:
+            if k not in COMMON and k not in PROPS[kind]:
                 raise ValueError('橋接不允許 %s 節點用 set 改屬性 %s' % (kind, k))
     if op in ('gui.wait', 'gui.poll'):
         if pending:
@@ -100,6 +106,7 @@ def node_names(nodes, out=None):
 
 def all_nodes(comp):
     names, kinds = [], {}
+    grows = []
     def walk(c):
         if c['layout']:
             def go(nodes):
@@ -107,11 +114,14 @@ def all_nodes(comp):
                     if n.get('id'):
                         names.append(n['id'])
                         kinds[n['id']] = n.get('kind')
+                    if n.get('grow'):
+                        grows.append(n.get('id') or n.get('kind') or n.get('slot'))
                     go(n.get('children', []))
             go(c['layout']['tree'])
         for ch in c['children'].values():
             walk(ch)
     walk(comp)
+    all_nodes.grows = grows
     return names, kinds
 
 
@@ -131,6 +141,15 @@ def lint_one(lib_root, cid):
         problems.append('%s：meta 需要 title 與 keywords（檢索用）' % cid)
     problems.extend(guitpl.check(comp))
     names, kinds = all_nodes(comp)
+    if comp['meta'].get('standalone') and comp['meta'].get('main', True):
+        # 主範本：視窗要能縮放、有起始高度，而且至少有一個會填滿的主要區域（grow），不然視窗放大時內容只會停在左上角
+        win = (comp['layout'] or {}).get('window', {})
+        if not win.get('resizable'):
+            problems.append('%s：主範本的視窗要 resizable，放大視窗時內容才會跟著變' % cid)
+        if not win.get('height'):
+            problems.append('%s：主範本的 window 要有起始高度 height（填滿要有高度可填）' % cid)
+        if not all_nodes.grows:
+            problems.append('%s：主範本必須有一個填滿的主要區域（節點加 "grow":1，例如編輯區、畫布或清單）' % cid)
     for s in comp['scenes']:
         for n in list(s.get('show', [])) + list(s.get('hide', [])):
             if n not in names:

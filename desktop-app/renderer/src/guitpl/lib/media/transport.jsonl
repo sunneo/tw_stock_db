@@ -1,3 +1,3 @@
 {"kind":"meta","id":"media/transport","title":"播放控制列（上一首、播放、暫停、停止、下一首）","keywords":["播放","暫停","停止","上一首","下一首"],"entry":"build"}
 {"kind":"require","module":"gui","source":"builtin"}
-{"kind":"layout","tree":[{"kind":"row","children":[{"id":"prev","kind":"button","text":"上一首"},{"id":"play","kind":"button","text":"播放"},{"id":"pause","kind":"button","text":"暫停"},{"id":"stop","kind":"button","text":"停止"},{"id":"next","kind":"button","text":"下一首"}]}]}
+{"kind":"layout","tree":[{"kind":"row","role":"toolbar","children":[{"id":"prev","kind":"button","text":"上一首"},{"id":"play","kind":"button","text":"播放"},{"id":"pause","kind":"button","text":"暫停"},{"id":"stop","kind":"button","text":"停止"},{"id":"next","kind":"button","text":"下一首"}]}]}

@@ -1,4 +1,4 @@
 {"kind":"meta","id":"project/statusbar","title":"專案狀態列（專案名稱、任務數）","keywords":["狀態列","專案","任務數"],"entry":"build"}
 {"kind":"param","name":"project","default":"新專案","ask":"專案名稱要寫什麼？"}
 {"kind":"require","module":"gui","source":"builtin"}
-{"kind":"layout","tree":[{"kind":"row","children":[{"id":"project_name","kind":"label","text":"{{project}}"},{"id":"count_text","kind":"label","text":"任務 2 項"}]}]}
+{"kind":"layout","tree":[{"kind":"row","role":"statusbar","children":[{"id":"project_name","kind":"label","text":"{{project}}"},{"id":"count_text","kind":"label","text":"任務 2 項"}]}]}

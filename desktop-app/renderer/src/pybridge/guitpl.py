@@ -37,15 +37,18 @@ NODES = {
     "grid": ("grid", [], ["columns"]), "scroll": ("scroll", [], ["height"]),
     "expander": ("expander", ["text"], ["expanded"]), "label": ("label", ["text"], []), "button": ("button", ["text"], []),
     "entry": ("entry", ["value"], []), "textarea": ("textarea", ["value"], ["rows", "placeholder"]),
-    "editor": ("editor", ["value"], ["lang", "rows"]), "checkbox": ("checkbox", ["text"], ["checked"]),
+    "editor": ("editor", ["value"], ["lang", "rows", "numbers"]), "checkbox": ("checkbox", ["text"], ["checked"]),
     "progress": ("progress", ["value"], ["max"]), "list": ("listbox", ["items"], ["selected"]),
     "multilist": ("multilist", ["items"], ["selected"]), "table": ("table", ["columns", "rows"], []),
-    "canvas": ("canvas", [], ["width", "height", "fps"]),
+    "canvas": ("canvas", [], ["width", "height", "fps", "fit"]),
     "tabs": ("tabs", [], []), "tab": ("tab", ["title"], []), "split": ("split", [], ["direction", "ratio"]),
     "menubar": ("menubar", [], []), "menu": ("menu", ["title"], []), "menuitem": ("menuitem", ["text"], ["keys"]),
 }
 DEFAULTS = {"text": "", "value": "", "items": [], "columns": [], "rows": [], "title": ""}
 AFTER = ("enabled", "visible")
+# look and layout hints any node may carry (see gui.py): grow fills free space, gap and pad are spacing, role is a design system look
+STYLE_KEYS = ("grow", "gap", "pad", "role")
+# editor: also numbers (line numbers on or off)
 IGNORED_IMPORTS = ("__future__",)
 
 
@@ -443,7 +446,7 @@ def _build_nodes(win, nodes, parent, ids, children, comp_params, slot_results, l
     for n in nodes:
         if "slot" in n:
             name = n["slot"]
-            holder = win.column(parent=parent)
+            holder = win.column(parent=parent, **{k: n[k] for k in STYLE_KEYS if k in n})
             if name in lib_children:
                 builders.append((name, lib_children[name], holder))
             continue
@@ -452,7 +455,7 @@ def _build_nodes(win, nodes, parent, ids, children, comp_params, slot_results, l
             raise GuiTplError("不認得的節點種類 %s" % n.get("kind"))
         method, positional, keywords = spec
         args = [n[p] if p in n else DEFAULTS.get(p, "") for p in positional]
-        kwargs = {k: n[k] for k in keywords if k in n}
+        kwargs = {k: n[k] for k in keywords + list(STYLE_KEYS) if k in n}
         if parent:
             kwargs["parent"] = parent
         nid = getattr(win, method)(*args, **kwargs)
@@ -681,9 +684,9 @@ def run(cid, params=None, roots=None, available=None, loop=True, window=None, st
     style = _subst(Library._merge_style(comp["style"], style or {}), values)
     window_spec = layout.get("window", {})
     win = window or gui.Window(window_spec.get("title", comp["meta"].get("title", cid)), width=window_spec.get("width", 360),
-                               resizable=bool(window_spec.get("resizable", False)), maximizable=bool(window_spec.get("maximizable", False)))
+                               resizable=bool(window_spec.get("resizable", False)), maximizable=bool(window_spec.get("maximizable", False)), height=window_spec.get("height"))
     if style:
-        win.theme(palette=style.get("palette"), font=style.get("font"), size=style.get("size"), radius=style.get("radius"))
+        win.theme(palette=style.get("palette"), font=style.get("font"), size=style.get("size"), radius=style.get("radius"), density=style.get("density"))
     ids = {}
     builders = []
     slot_names = {name: child for name, child in comp["children"].items()}

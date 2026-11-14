@@ -28,23 +28,35 @@ size: 14
 radius: 6
 ---
 kind: layout
-window: {title: "{{title}}", width: 420, resizable: true}
+window: {title: "{{title}}", width: 480, height: 460, resizable: true}
 tree:
   - kind: column
+    role: page
     children:
       - id: heading
         kind: label
         text: "{{title}}"
+        role: title
+        pad: 16
       - kind: row
+        role: toolbar
         children:
           - {id: item, kind: entry, value: "", placeholder: 要做的事}
-          - {id: add, kind: button, text: 新增}
-      - id: items
-        kind: list
-        items: []
+          - {id: add, kind: button, text: 新增, role: primary}
+      - kind: column
+        grow: 1
+        pad: 12
+        gap: 8
+        children:
+          - id: items
+            kind: list
+            items: []
+            grow: 1
       - id: status
         kind: label
         text: 還沒有項目
+        role: muted
+        pad: 8
 ---
 kind: shortcut
 keys: Ctrl+Enter

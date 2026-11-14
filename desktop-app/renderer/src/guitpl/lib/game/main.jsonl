@@ -5,7 +5,7 @@
 {"kind":"require","module":"gui","source":"builtin"}
 {"kind":"require","module":"random","source":"builtin"}
 {"kind":"style","palette":{"bg":"#111827","fg":"#f9fafb","accent":"#22c55e","danger":"#ef4444","muted":"#6b7280"},"font":"sans-serif","size":14,"radius":6}
-{"kind":"layout","window":{"title":"{{title}}","width":480,"resizable":false},"tree":[{"kind":"column","children":[{"slot":"toolbar"},{"id":"screen","kind":"canvas","width":400,"height":300,"fps":15},{"slot":"statusbar"},{"id":"help","kind":"label","text":"左右鍵移動擋板，空白鍵發球。"},{"id":"over_box","kind":"label","text":"遊戲結束"}]}]}
+{"kind":"layout","window":{"title":"{{title}}","width":640,"resizable":true,"height":560},"tree":[{"kind":"column","role":"page","children":[{"slot":"toolbar"},{"id":"screen","kind":"canvas","width":400,"height":300,"fps":15,"fit":true,"grow":1},{"id":"over_box","kind":"label","text":"遊戲結束","role":"title","grow":1},{"slot":"statusbar"},{"id":"help","kind":"label","text":"左右鍵移動擋板，空白鍵發球。","role":"muted","pad":8}]}]}
 {"kind":"slot","name":"toolbar","use":"game/toolbar","params":{}}
 {"kind":"slot","name":"statusbar","use":"game/statusbar","params":{"lives":"{{lives}}"}}
 {"kind":"scene","id":"play","title":"進行中","note":"畫布與操作說明","show":["screen","help"],"hide":["over_box"],"on":{"click:restart":"play"}}

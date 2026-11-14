@@ -73,7 +73,7 @@ check('expander child parent', calls[-1][1]['parent'] == x and inner != x)
 
 # editor: text value, input event updates it
 ed = w3.editor('print(1)', lang='python', rows=4)
-check('editor add', calls[-1][1]['node'] == {'id': ed, 'kind': 'editor', 'value': 'print(1)', 'lang': 'python', 'rows': 4})
+check('editor add', calls[-1][1]['node'] == {'id': ed, 'kind': 'editor', 'value': 'print(1)', 'lang': 'python', 'rows': 4, 'numbers': True})
 check('editor initial value', w3.value(ed) == 'print(1)')
 
 # table: columns and rows, cell events update the grid
@@ -224,6 +224,20 @@ try:
     check('pick_file error raises', False)
 except ValueError as e:
     check('pick_file error raises', 'too big' in str(e))
+
+# look and layout hints on any node: grow, gap, pad, role (and the window's first height)
+wl = gui.Window("L", width=300, resizable=True, height=420)
+check('open height', calls[-1][1].get('height') == 420)
+col = wl.column(role="page", gap=0)
+check('column role gap', calls[-1][1]['node'].get('role') == 'page' and calls[-1][1]['node'].get('gap') == 0.0)
+ed2 = wl.editor("", parent=col, grow=1)
+check('editor grow', calls[-1][1]['node'].get('grow') == 1.0 and calls[-1][1]['parent'] == col)
+wl.label("x", parent=col)
+check('no style leaks to the next node', 'grow' not in calls[-1][1]['node'] and 'role' not in calls[-1][1]['node'])
+wl.set(ed2, grow=2)
+check('set grow', calls[-1][1]['props'] == {'grow': 2})
+wl.theme(density="compact")
+check('theme density', calls[-1][1].get('density') == 'compact')
 
 if failures:
     print('%d failure(s)' % len(failures))

@@ -3,7 +3,7 @@
 {"kind":"param","name":"sound","default":"no","ask":"存檔與新增要有提示音嗎？（yes 或 no）"}
 {"kind":"require","module":"gui","source":"builtin"}
 {"kind":"style","palette":{"bg":"#ffffff","fg":"#222222","accent":"#2563eb","danger":"#dc2626","muted":"#9ca3af"},"font":"sans-serif","size":14,"radius":6}
-{"kind":"layout","window":{"title":"{{title}}","width":560,"resizable":true},"tree":[{"kind":"column","children":[{"slot":"toolbar"},{"id":"editor","kind":"editor","value":"","lang":"text","rows":16},{"id":"saved_tip","kind":"label","text":"已存檔"},{"slot":"statusbar"}]}]}
+{"kind":"layout","window":{"title":"{{title}}","width":900,"resizable":true,"height":620},"tree":[{"kind":"column","role":"page","children":[{"slot":"toolbar"},{"id":"editor","kind":"editor","value":"","lang":"text","rows":16,"grow":1},{"id":"saved_tip","kind":"label","text":"已存檔","role":"muted","pad":6},{"slot":"statusbar"}]}]}
 {"kind":"slot","name":"toolbar","use":"text-editor/toolbar","params":{"sound":"{{sound}}"}}
 {"kind":"slot","name":"statusbar","use":"text-editor/statusbar","params":{}}
 {"kind":"scene","id":"edit","title":"編輯中","note":"工具列、編輯區、狀態列；存檔後切到「存檔後」","show":["editor"],"hide":["saved_tip"],"on":{"click:save":"saved"}}

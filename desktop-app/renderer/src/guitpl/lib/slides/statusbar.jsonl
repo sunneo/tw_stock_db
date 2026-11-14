@@ -1,4 +1,4 @@
 {"kind":"meta","id":"slides/statusbar","title":"投影片狀態列（簡報名稱、頁碼）","keywords":["狀態列","投影片","頁碼","簡報名稱"],"entry":"build"}
 {"kind":"param","name":"deck","default":"我的簡報","ask":"簡報名稱要寫什麼？"}
 {"kind":"require","module":"gui","source":"builtin"}
-{"kind":"layout","tree":[{"kind":"row","children":[{"id":"deck_name","kind":"label","text":"{{deck}}"},{"id":"page_info","kind":"label","text":"第 1 張／共 1 張"}]}]}
+{"kind":"layout","tree":[{"kind":"row","role":"statusbar","children":[{"id":"deck_name","kind":"label","text":"{{deck}}"},{"id":"page_info","kind":"label","text":"第 1 張／共 1 張"}]}]}

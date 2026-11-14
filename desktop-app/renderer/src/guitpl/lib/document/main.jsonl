@@ -3,7 +3,7 @@
 {"kind":"param","name":"doc_name","default":"未命名文件","ask":"文件名稱要寫什麼？（會顯示在編輯區上方）"}
 {"kind":"require","module":"gui","source":"builtin"}
 {"kind":"style","palette":{"bg":"#ffffff","fg":"#222222","accent":"#2563eb","danger":"#dc2626","muted":"#9ca3af"},"font":"serif","size":15,"radius":4}
-{"kind":"layout","window":{"title":"{{title}}","width":760,"resizable":true},"tree":[{"kind":"column","children":[{"id":"doc_label","kind":"label","text":"{{doc_name}}"},{"slot":"toolbar"},{"kind":"row","children":[{"slot":"sidebar"},{"id":"body","kind":"editor","value":"","lang":"text","rows":18}]},{"slot":"statusbar"}]}]}
+{"kind":"layout","window":{"title":"{{title}}","width":900,"resizable":true,"height":640},"tree":[{"kind":"column","role":"page","children":[{"id":"doc_label","kind":"label","text":"{{doc_name}}","role":"heading","pad":10},{"slot":"toolbar"},{"kind":"row","grow":1,"children":[{"slot":"sidebar","role":"sidebar"},{"id":"body","kind":"editor","value":"","lang":"text","rows":18,"numbers":false,"grow":1}]},{"slot":"statusbar"}]}]}
 {"kind":"slot","name":"toolbar","use":"document/toolbar","params":{}}
 {"kind":"slot","name":"sidebar","use":"document/sidebar","params":{}}
 {"kind":"slot","name":"statusbar","use":"document/statusbar","params":{}}

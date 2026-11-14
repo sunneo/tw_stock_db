@@ -92,9 +92,11 @@
       if (view.addEventListener) { view.addEventListener('mousedown', function () { view.classList.add('ai-chat-wheel-on'); }, true); }
       // a window sits in the layer at its own spot; pointer events are on again for the window itself
       if (view.style) {
-        view.style.cssText = 'position:absolute;left:12px;top:12px;pointer-events:auto;background:#fff;color:#111;border:1px solid #888;border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,.4);font:13px sans-serif;box-sizing:border-box;width:' + snap.width + 'px;'
-          // a resizable window: the corner drags (CSS resize), the body fills the rest (flex column), the content never spills out
-          + (snap.resizable ? 'display:flex;flex-direction:column;resize:both;overflow:hidden;min-width:200px;min-height:120px;' : '');
+        // the look (colors, font, border, shadow) comes from the stylesheet and the window's palette variables (gui_render.js GUI_CSS)
+        view.style.cssText = 'position:absolute;left:12px;top:12px;pointer-events:auto;box-sizing:border-box;width:' + snap.width + 'px;'
+          // a window with a first height keeps it (the body's grow areas fill it); a resizable one: the corner drags (CSS resize), the content never spills out
+          + (snap.height ? 'height:' + snap.height + 'px;' : '')
+          + (snap.resizable ? 'resize:both;overflow:hidden;min-width:200px;min-height:120px;' : '');
         // a re-show (add, set) keeps the place and size the user gave the window, and a maximized window stays maximized
         if (prev) {
           if (prev.left) { view.style.left = prev.left; }

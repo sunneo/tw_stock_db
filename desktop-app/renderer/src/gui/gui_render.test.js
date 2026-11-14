@@ -87,7 +87,7 @@ const win2 = R.renderWindow(doc, G.snapshot(s, 'w2'), (name, node, value) => eve
 
 // table: header from columns, one text input per cell, drawn with the row and column indexes
 const tbl = byNode(win2, 'tb');
-assert.strictEqual(tbl.className, 'gui-table'); ok();
+assert.strictEqual(tbl.className, 'gui-tablebox'); assert.strictEqual(find(tbl, (e) => e.tagName === 'table').className, 'gui-table'); ok();
 assert.deepStrictEqual(find(tbl, (e) => e.tagName === 'thead').children[0].children.map((th) => th.textContent), ['name', 'qty']); ok();
 const cells = find(tbl, (e) => e.tagName === 'tbody').children.map((tr) => tr.children.map((td) => td.children[0].value));
 assert.deepStrictEqual(cells, [['a', '1'], ['b', '2']]); ok();
@@ -109,9 +109,13 @@ ex.open = false; ex.fire('toggle');
 assert.deepStrictEqual(events2[1], ['toggle', 'ex', false]); ok();
 
 // editor: monospace textarea, text value, Tab inserts two spaces, Shift+Tab is left alone
-const ed = byNode(win2, 'ed');
-assert.strictEqual(ed.tagName, 'textarea'); assert.strictEqual(ed.className, 'gui-editor'); ok();
-assert.strictEqual(ed.spellcheck, false); assert.strictEqual(ed.rows, 6); assert.strictEqual(ed.value, 'if x:\n\tpass'); ok();
+const edBox = byNode(win2, 'ed');
+assert.strictEqual(edBox.className, 'gui-editor'); assert.strictEqual(edBox.attrs['data-lang'], 'python'); ok();
+const ed = find(edBox, (e) => e.tagName === 'textarea');
+assert.strictEqual(ed.className, 'gui-ed-ta'); assert.strictEqual(edBox.value, 'if x:\n\tpass'); ok();
+assert.strictEqual(find(edBox, (e) => e.className === 'gui-ed-gutter') !== null, true, 'line numbers'); ok();
+assert.ok(find(edBox, (e) => e.className === 'gui-tok-keyword' && e.textContent === 'if'), 'python keywords are colored'); ok();
+assert.strictEqual(ed.spellcheck, false); assert.strictEqual(ed.value, 'if x:\n\tpass'); ok();
 let prevented = 0;
 ed.value = 'ab'; ed.selectionStart = 1; ed.selectionEnd = 1;
 ed.listeners.keydown[0]({ key: 'Tab', shiftKey: false, preventDefault() { prevented++; } });
@@ -119,7 +123,7 @@ assert.strictEqual(ed.value, 'a  b'); assert.strictEqual(ed.selectionStart, 3); 
 assert.deepStrictEqual(events2[2], ['input', 'ed', 'a  b']); ok();
 ed.listeners.keydown[0]({ key: 'Tab', shiftKey: true, preventDefault() { prevented++; } });
 assert.strictEqual(prevented, 1); assert.strictEqual(ed.value, 'a  b'); ok();
-ed.value = 'typed'; ed.fire('input');
+ed.value = 'typed'; edBox.fire('input');
 assert.deepStrictEqual(events2[3], ['input', 'ed', 'typed']); ok();
 
 // multilist: a multiple select, options selected from the list, change sends the picked items in order
@@ -148,20 +152,18 @@ assert.strictEqual(violations.length, 0); ok();
   const evs = [];
   const w = R.renderWindow(doc, G.snapshot(S, 'wt'), (name, node, value) => evs.push([name, node, value]), () => {});
   assert.strictEqual(w.style.background, '#102030'); assert.strictEqual(w.style.color, '#eeeeee'); ok();
-  assert.strictEqual(w.style.fontFamily, 'monospace'); assert.strictEqual(w.style.fontSize, '15px'); assert.strictEqual(w.style.borderRadius, '6px'); ok();
+  assert.strictEqual(w.style.fontFamily, 'var(--gui-mono)'); assert.strictEqual(w.style.fontSize, '15px'); assert.strictEqual(w.style['--gui-radius'], '6px'); ok();
   assert.strictEqual(w.style['--gui-accent'], '#ffffcc'); ok();
   const b = byNode(w, 'b');
-  assert.strictEqual(b.style.background, '#ffffcc'); assert.strictEqual(b.style.color, '#000000', 'dark text on a light accent'); ok();
-  assert.strictEqual(byNode(w, 'e').style.background, '#102030'); assert.strictEqual(byNode(w, 'e').style.border, '1px solid #778899'); ok();
-  assert.strictEqual(byNode(w, 'pb').style.accentColor, '#ffffcc'); ok();
+  assert.strictEqual(w.style['--gui-on-accent'], '#000000', 'dark text on a light accent'); assert.strictEqual(w.style['--gui-muted'], '#778899'); ok();
+  assert.strictEqual(w.attrs['data-scheme'], 'dark'); assert.strictEqual(w.style['--gui-radius'], '6px'); ok();
   assert.strictEqual(R.textOn('#102030'), '#ffffff'); assert.strictEqual(R.textOn('#fff'), '#000000'); ok();
-  assert.strictEqual(find(w, (e) => e.className === 'gui-titlebar').style.background, 'rgba(127,127,127,.25)'); ok();
   // a real DOM's children is an array-like without forEach (HTMLCollection): the theme must still apply
   {
     const mk = (tag) => ({ tagName: tag, style: {}, className: '', _kids: [], get children() { return { length: this._kids.length, item: (i) => this._kids[i], 0: this._kids[0], 1: this._kids[1], 2: this._kids[2] }; } });
     const root = mk('div'); const b = mk('button'); root._kids.push(b);
     R.applyTheme(root, { palette: { bg: '#000000', accent: '#ffd400' } });
-    assert.strictEqual(b.style.background, '#ffd400'); ok();
+    assert.strictEqual(root.style['--gui-accent'], '#ffd400'); ok();
     R.applyTheme(root, {}); R.applyTheme(root, null); ok();
   }
   // no theme: nothing is touched
@@ -237,9 +239,50 @@ assert.strictEqual(violations.length, 0); ok();
   const sp = byNode(w, 'sp');
   assert.strictEqual(sp.style.display, 'flex'); assert.strictEqual(sp.children[0].style.flex, '0 0 30%'); assert.strictEqual(sp.children[1].style.flex, '1 1 0'); ok();
   const mi = byNode(w, 'mi');
-  assert.strictEqual(mi.textContent, 'Save    Ctrl+S'); mi.fire('click');
+  assert.strictEqual(mi.textContent, 'Save'); assert.strictEqual(find(mi, (e) => e.className === 'gui-keys').textContent, 'Ctrl+S'); mi.fire('click');
   assert.deepStrictEqual(ev[ev.length - 1], ['click', 'mi', undefined]); ok();
   assert.strictEqual(byNode(w, 'mn').children[0].textContent, 'File'); ok();
 }
+
+// grow, gap, pad, role: hints for the flex layout and the design system; the window's first height
+{
+  const S = G.createSession();
+  const ap = (m) => { const r = G.apply(S, m); assert.ok(r.ok, r.error); };
+  ap({ op: 'open', id: 'wl', title: 'L', width: 400, height: 300, resizable: true });
+  ap({ op: 'add', id: 'wl', node: { id: 'page', kind: 'column', role: 'page' } });
+  ap({ op: 'add', id: 'wl', parent: 'page', node: { id: 'bar', kind: 'row', role: 'toolbar', gap: 4, pad: 6 } });
+  ap({ op: 'add', id: 'wl', parent: 'page', node: { id: 'main', kind: 'editor', value: 'x = 1', lang: 'python', grow: 2, numbers: false } });
+  const w = R.renderWindow(doc, G.snapshot(S, 'wl'), () => {}, () => {});
+  const main = byNode(w, 'main');
+  assert.strictEqual(main.style.flex, '2 1 0%'); assert.strictEqual(main.attrs['data-grow'], '2'); assert.strictEqual(main.style.height, ''); ok();
+  assert.ok(/gui-role-page/.test(byNode(w, 'page').className)); assert.ok(/gui-role-toolbar/.test(byNode(w, 'bar').className)); ok();
+  assert.strictEqual(byNode(w, 'bar').style.gap, '4px'); assert.strictEqual(byNode(w, 'bar').style.padding, '6px'); ok();
+  assert.ok(/gui-body/.test(w.children[1].className), 'the window body fills the window'); ok();
+  assert.strictEqual(find(main, (e) => e.className === 'gui-ed-gutter'), null, 'numbers:false hides the gutter'); ok();
+  assert.ok(R.GUI_CSS.indexOf('.gui-role-toolbar') > 0 && R.GUI_CSS.indexOf('data-scheme=dark') > 0); ok();
+}
+
+// syntax coloring: every line's tokens join back to its text; states carry multi-line constructs
+{
+  const T = R.tokenizeLine;
+  const join = (r) => r.tokens.map((t) => t[1]).join('');
+  const cls = (r, text) => (r.tokens.find((t) => t[1] === text) || [])[0];
+  const samples = [
+    ['python', 'def foo(x, y=3):  # note'], ['python', 'f"hello {name}" + \'a\''], ['javascript', 'const a = `t${1}` + /* c */ 5; // end'], ['json', '{"a": [1, 2.5e3, true, null], "b": "s"}'],
+    ['markdown', '## Title'], ['markdown', '- item **bold** and `code` and [x](http://y)'], ['html', '<div class="a" id=b>text &amp; more</div>'], ['css', '.a:hover { color: #fff; margin: 4px 0 !important; }'], ['text', 'plain text'], ['', '']
+  ];
+  samples.forEach(([l, t]) => { assert.strictEqual(join(T(l, t, '')), t, l + ': ' + t); ok(); });
+  assert.strictEqual(cls(T('python', 'def foo(x):', ''), 'def'), 'keyword'); assert.strictEqual(cls(T('python', 'def foo(x):', ''), 'foo'), 'fn'); ok();
+  assert.strictEqual(cls(T('python', 'x = None', ''), 'None'), 'const'); assert.strictEqual(cls(T('python', 'x = 42', ''), '42'), 'number'); ok();
+  assert.strictEqual(T('python', 's = """open', '').state, 'q3d'); assert.strictEqual(T('python', 'still inside', 'q3d').tokens[0][0], 'string'); assert.strictEqual(T('python', 'end""" + x', 'q3d').state, ''); ok();
+  assert.strictEqual(T('javascript', 'a /* open', '').state, 'cmt'); assert.strictEqual(T('javascript', 'close */ b', 'cmt').state, ''); assert.strictEqual(T('javascript', 'x = `open', '').state, 'tpl'); ok();
+  assert.strictEqual(cls(T('json', '{"k": "v"}', ''), '"k"'), 'key'); assert.strictEqual(cls(T('json', '{"k": "v"}', ''), '"v"'), 'string'); ok();
+  assert.strictEqual(T('markdown', '```py', '').state, 'fence'); assert.strictEqual(T('markdown', 'code here', 'fence').tokens[0][0], 'code'); assert.strictEqual(T('markdown', '```', 'fence').state, ''); ok();
+  assert.strictEqual(T('markdown', '# Hi', '').tokens[0][0], 'heading'); ok();
+  assert.strictEqual(cls(T('html', '<a href="x">', ''), 'a'), 'tag'); assert.strictEqual(cls(T('html', '<a href="x">', ''), 'href'), 'attr'); assert.strictEqual(T('html', '<!-- open', '').state, 'hcmt'); assert.strictEqual(T('html', '<div', '').state, 'tag'); ok();
+  assert.strictEqual(cls(T('css', 'a { color: red; }', ''), 'color'), 'attr'); assert.strictEqual(T('css', '/* open', '').state, 'c'); assert.strictEqual(T('css', 'a {', '').state, '1'); ok();
+  assert.strictEqual(T('python', 'x' .repeat(3000), '').tokens.length, 1, 'a very long line is left plain'); ok();
+}
+
 
 console.log('gui_render: ' + n + ' assertions passed');

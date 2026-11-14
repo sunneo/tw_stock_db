@@ -1,4 +1,4 @@
 {"kind":"meta","id":"idphoto/statusbar","title":"證件照狀態列","keywords":["證件照狀態列","狀態列"],"entry":"build"}
 {"kind":"param","name":"hint","default":"請選尺寸與背景色","ask":"狀態列一開始要顯示什麼字？"}
 {"kind":"require","module":"gui","source":"builtin"}
-{"kind":"layout","tree":[{"kind":"row","children":[{"id":"sb_text","kind":"label","text":"{{hint}}"}]}]}
+{"kind":"layout","tree":[{"kind":"row","role":"statusbar","children":[{"id":"sb_text","kind":"label","text":"{{hint}}"}]}]}

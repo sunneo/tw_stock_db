@@ -182,4 +182,22 @@ assert.match(G.parseWait('wait w1 a=b').error, /shell variable name/); ok();
   assert.strictEqual(JSON.parse(G.eventLine(S, 'wt2', 'mi', 'click')).node, 'mi'); ok();
 }
 
+// grow, gap, pad, role on any node; the window's first height; theme density
+{
+  const S = G.createSession();
+  const ap = (m) => G.apply(S, m);
+  assert.ok(ap({ op: 'open', id: 'wg2', title: 'G', height: 400, resizable: true }).ok); ok();
+  assert.strictEqual(G.snapshot(S, 'wg2').height, 400); ok();
+  assert.ok(!ap({ op: 'open', id: 'wg3', title: 'G', height: 20 }).ok); ok();
+  assert.ok(ap({ op: 'add', id: 'wg2', node: { id: 'ed', kind: 'editor', grow: 1, role: 'card', gap: 4, pad: 8, numbers: false } }).ok); ok();
+  assert.ok(!ap({ op: 'add', id: 'wg2', node: { id: 'e2', kind: 'editor', grow: 11 } }).ok); ok();
+  assert.ok(!ap({ op: 'add', id: 'wg2', node: { id: 'e3', kind: 'label', role: 'nope' } }).ok); ok();
+  assert.ok(!ap({ op: 'add', id: 'wg2', node: { id: 'e4', kind: 'label', pad: 99 } }).ok); ok();
+  assert.ok(ap({ op: 'set', id: 'wg2', node: 'ed', props: { grow: 3, role: 'surface' } }).ok); ok();
+  assert.strictEqual(G.snapshot(S, 'wg2').root.children[0].grow, 3); ok();
+  assert.ok(ap({ op: 'theme', id: 'wg2', density: 'compact' }).ok); assert.ok(!ap({ op: 'theme', id: 'wg2', density: 'tiny' }).ok); ok();
+  assert.strictEqual(G.snapshot(S, 'wg2').theme.density, 'compact'); ok();
+}
+
+
 console.log('gui_bridge: ' + n + ' assertions passed');

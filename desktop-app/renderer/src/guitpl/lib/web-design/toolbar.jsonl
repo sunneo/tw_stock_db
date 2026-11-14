@@ -3,4 +3,4 @@
 {"kind":"require","module":"gui","source":"builtin"}
 {"kind":"require","module":"html","source":"builtin"}
 {"kind":"require","module":"re","source":"builtin"}
-{"kind":"layout","tree":[{"kind":"row","children":[{"id":"add","kind":"button","text":"新增元件"},{"id":"remove","kind":"button","text":"刪除"},{"id":"export","kind":"button","text":"匯出 HTML"}]}]}
+{"kind":"layout","tree":[{"kind":"row","role":"toolbar","children":[{"id":"add","kind":"button","text":"新增元件"},{"id":"remove","kind":"button","text":"刪除"},{"id":"export","kind":"button","text":"匯出 HTML"}]}]}
