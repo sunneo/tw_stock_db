@@ -1,6 +1,6 @@
 # 交接：圖形介面程式設計範本（GUI 範本線）
 
-> 這是「GUI 範本」這條工作線自己的交接起點頁，每次交接整份覆寫（舊版看 git 歷史）。管理者的總交接在 `docs/HANDOFF.md`，不要改那份。目前是第 3 份（交接 3 的接手者讀這份）。
+> 這是「GUI 範本」這條工作線自己的交接起點頁，每次交接整份覆寫（舊版看 git 歷史）。管理者的總交接在 `docs/HANDOFF.md`，不要改那份。目前是第 3 份；待辦已全部完成，不需要再交接。
 
 ## 1. 開場提示（接手者收到的原文）
 
@@ -23,9 +23,9 @@
 1. ~~接到 AI~~ 已完成。
 2. ~~分鏡＋設計工作室＋使用者範本~~ 已完成。
 3. ~~元件補齊~~ 已完成。
-4. **編譯成單一 Python 檔（下一個要做）**：把一個範本（含 slot 引用、extends 覆寫、外部呼叫的 py）內嵌，輸出可獨立執行的程式（不需要 guitpl 與 jsonl 檔，只依賴 `gui`）。建議做法：`guitpl.compile(cid, params=None, roots=None) -> str`：載入元件樹，把每個元件的 layout、style、scenes、shortcuts 用 Python 字面值寫進輸出，各元件的 py 原始碼包成內嵌模組（`types.ModuleType` 加 `exec`，或轉成函式），再附一份精簡的執行器（建視窗、掛快捷鍵、場景切換、事件迴圈；可從 `guitpl.run` 抽出共用）。驗證：Python 測試用假橋接比對「編譯後的程式」與 `guitpl.run` 的操作序列相同；模擬器實跑（仿 `guitpl_ai_tools.eval.js`）編譯十三個領域的 main 並開窗點按鈕。加宿主工具選項（`gui_template_compose` 加 `standalone: true` 回單一檔程式）。時間夠再做 YAML 撰寫格式（jsonl 的等價寫法，載入時轉成同樣的紀錄）。
-5. **實機驗證**：模擬器評估補上輸入框文字、快捷鍵、畫布事件，以及各配色變體（`main_dark`、`main_light`、`main_warm`、`main_contrast`、`demo/notes_dark`）與子元件；把 `scripts/eval/guitpl_emulator.eval.js` 擴充（現在只點每個領域 main 的按鈕）；寫驗證報告（建議 `docs/` 下一頁，列出每個領域、每個變體的實跑結果與已知限制）。
-6. 全部做完：向管理者回報最終總結（不再交接），並在 `DESIGN.gui-templates.md` 補上第 8 節。
+4. ~~編譯成單一 Python 檔~~ 已完成（`guitpl.compile_standalone`；提交 `ac1af3e59`；實跑 `scripts/eval/guitpl_standalone.eval.js`）。
+5. ~~實機驗證~~ 已完成：`scripts/eval/guitpl_verify.eval.js`，報告 `docs/VERIFY.gui-templates.md`（43 個完整範本含輸入框文字、畫布事件、快捷鍵、配色變體，28 個子元件，全部通過）。
+6. 這條線的待辦全部做完。**待改善（沒做）**：YAML 撰寫格式（jsonl 的等價寫法）；對話框 `pick_file`；子元件單獨點按鈕的驗證；畫布內容的截圖比對。
 
 規則：每完成一項就跑動到的測試、嵌入、建置、`node --check`、提交並推送 origin desktop-app，然後傳訊息給管理者 `local_49f6c57d-8f18-427b-a8f1-7b1d23efc5f5`；不准執行發布腳本。共用檔（`floating-assistant.js`、嵌入、建置）只由主工作者改。
 
