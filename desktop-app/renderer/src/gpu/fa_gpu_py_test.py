@@ -271,6 +271,103 @@ def t_unsupported_api_message():
         raise AssertionError("RawKernel 應該丟出 CupyCompatError")
 
 
+def t_torch_example_trains():
+    out, _ = run_example("torch_mlp_train.py")
+    assert "最後損失低於第一輪： True" in out, out
+    assert "訓練準確率 ≥ 0.8： True" in out, out
+
+
+def t_torch_grad_check_mse():
+    import torch
+    torch.manual_seed(1)
+    lin = torch.nn.Linear(3, 2)
+    x = torch.tensor(np.random.RandomState(2).randn(5, 3))
+    t = torch.tensor(np.random.RandomState(3).randn(5, 2))
+    loss = torch.nn.functional.mse_loss(lin(x), t)
+    loss.backward()
+    g_auto = np.array(lin.weight.grad, copy=True)
+    W = lin.weight.data.copy()
+    eps = 1e-3
+    g_num = np.zeros_like(W)
+    for i in range(W.shape[0]):
+        for j in range(W.shape[1]):
+            vals = []
+            for sgn in (1.0, -1.0):
+                Wp = W.copy()
+                Wp[i, j] += sgn * eps
+                lin.weight.data[...] = Wp
+                vals.append(float(torch.nn.functional.mse_loss(lin(x), t).item()))
+            g_num[i, j] = (vals[0] - vals[1]) / (2 * eps)
+    lin.weight.data[...] = W
+    assert np.allclose(g_auto, g_num, atol=2e-3), (g_auto, g_num)
+
+
+def t_torch_grad_check_cross_entropy():
+    import torch
+    rs = np.random.RandomState(4)
+    logits = torch.tensor(rs.randn(6, 4), requires_grad=True)
+    labels = torch.tensor(rs.randint(0, 4, size=6))
+    loss = torch.nn.functional.cross_entropy(logits, labels)
+    loss.backward()
+    g_auto = np.array(logits.grad, copy=True)
+    L = logits.data.copy()
+    eps = 1e-3
+    g_num = np.zeros_like(L)
+    for i in range(L.shape[0]):
+        for j in range(L.shape[1]):
+            vals = []
+            for sgn in (1.0, -1.0):
+                Lp = L.copy()
+                Lp[i, j] += sgn * eps
+                logits.data[...] = Lp
+                vals.append(float(torch.nn.functional.cross_entropy(logits, labels).item()))
+            g_num[i, j] = (vals[0] - vals[1]) / (2 * eps)
+    logits.data[...] = L
+    assert np.allclose(g_auto, g_num, atol=2e-3), (g_auto, g_num)
+
+
+def t_torch_cuda_flags_and_matmul_gpu():
+    import torch
+    fa_gpu.STATS["ops"].clear()
+    assert torch.cuda.is_available() is True
+    assert torch.cuda.device_count() == 1
+    m = torch.nn.Linear(2, 2).to("cuda")
+    assert m.weight.device == "cuda"
+    a = torch.tensor(np.ones((2, 3))).to("cuda")
+    b = torch.tensor(np.ones((3, 2))).to("cuda")
+    c = a @ b
+    assert np.allclose(c.numpy(), 3.0)
+    assert fa_gpu.STATS["ops"].get("matmul") == 1, fa_gpu.STATS["ops"]
+
+
+def t_torch_unsupported_names_explain():
+    import torch
+    try:
+        torch.compile
+    except torch.TorchCompatError as e:
+        assert "未支援：torch.compile" in str(e) and "建議" in str(e), str(e)
+    else:
+        raise AssertionError("torch.compile 應該丟出 TorchCompatError")
+
+
+def t_pycuda_memcpy_roundtrip_and_source_refused():
+    import pycuda.autoinit  # noqa: F401
+    import pycuda.driver as drv
+    from pycuda.compiler import SourceModule, CompileUnsupported
+    src = np.arange(10, dtype=np.float32)
+    dev = drv.mem_alloc(src.nbytes)
+    drv.memcpy_htod(dev, src)
+    back = np.zeros_like(src)
+    drv.memcpy_dtoh(back, dev)
+    assert np.array_equal(back, src)
+    try:
+        SourceModule("__global__ void f(){}")
+    except CompileUnsupported as e:
+        assert "@cuda.jit" in str(e), str(e)
+    else:
+        raise AssertionError("SourceModule 應該回報不支援")
+
+
 for name, fn in list(globals().items()):
     if name.startswith("t_") and callable(fn):
         check(name[2:], fn)

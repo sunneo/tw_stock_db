@@ -393,10 +393,6 @@ def jit(signature_or_fn=None, **kwargs):
     return deco
 
 
-class _CudaModule(object):
-    pass
-
-
 # numba.cuda 的其他常用名稱，第一階段只提供最少，其餘呼叫時丟出說明（見 __getattr__）
 _UNSUPPORTED = {"compile_ptx", "jit_compile", "external_stream", "stream", "event", "pinned"}
 
