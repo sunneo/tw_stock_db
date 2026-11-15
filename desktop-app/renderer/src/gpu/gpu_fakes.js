@@ -106,6 +106,10 @@ function fakeNavigator(opts) {
       // 綁定順序：0 x、1 y、2 uniform（n u32）
       const n = u32(e[2])[0];
       f32(e[1], n).set(NN.siluRef(f32(e[0], n)));
+    } else if (k === 'rope') {
+      // 綁定順序：0 x、1 y、2 uniform（T、H、hd 皆為 u32，dir 為 f32 位於位元組 12）
+      const T = u32(e[2])[0], H = u32(e[2])[1], hd = u32(e[2])[2], dir = new Float32Array(e[2].data, 12, 1)[0];
+      f32(e[1], T * H * hd).set(NN.ropeRef(f32(e[0], T * H * hd), T, H, hd, dir));
     } else if (k === 'axpy' || k === 'scal') {
       const n = u32(e[e.length - 1])[0];
       const alpha = new Float32Array(e[e.length - 1].data, 4, 1)[0];

@@ -200,4 +200,62 @@ async function silu(x, opts) {
     () => siluRef(xf));
 }
 
-module.exports = { rmsnormRef, rmsnorm, softmaxRef, softmax, siluRef, silu, runWgsl, getDevice, tryLayers, WGSL_RMSNORM, WGSL_SOFTMAX, WGSL_SILU, NOTE_T3 };
+// ---------- RoPE（旋轉位置編碼）----------
+// x 為 T×(H·hd) 列主序；每個 head 內相鄰兩維一組，角度 θ = t · 10000^(−2i/hd)；dir=−1 為反向（轉置旋轉）
+function ropeRef(x, T, H, hd, dir) {
+  if (x.length !== T * H * hd) throw new Error('rope：x 的長度 ' + x.length + ' 與 T×H×hd=' + (T * H * hd) + ' 不符');
+  if (hd % 2 !== 0) throw new Error('rope：hd 必須是偶數（收到 ' + hd + '）');
+  const y = new Float64Array(x.length), d = H * hd;
+  for (let t = 0; t < T; t++) for (let h = 0; h < H; h++) for (let i = 0; i < hd / 2; i++) {
+    const th = t * Math.pow(10000, -2 * i / hd), c = Math.cos(th), s = dir * Math.sin(th);
+    const o = t * d + h * hd + 2 * i;
+    const a = x[o], b = x[o + 1];
+    y[o] = a * c - b * s;
+    y[o + 1] = a * s + b * c;
+  }
+  return y;
+}
+
+const WGSL_ROPE = `
+struct P { T: u32, H: u32, hd: u32, dir: f32 }
+@group(0) @binding(0) var<storage, read> x: array<f32>;
+@group(0) @binding(1) var<storage, read_write> y: array<f32>;
+@group(0) @binding(2) var<uniform> p: P;
+// @kernel rope
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let hp = p.hd / 2u;
+  let total = p.T * p.H * hp;
+  let k = gid.x;
+  if (k >= total) { return; }
+  let i = k % hp;
+  let h = (k / hp) % p.H;
+  let t = k / (hp * p.H);
+  let d = p.H * p.hd;
+  let th = f32(t) * pow(10000.0, -2.0 * f32(i) / f32(p.hd));
+  let c = cos(th);
+  let s = p.dir * sin(th);
+  let o = t * d + h * p.hd + 2u * i;
+  let a = x[o];
+  let b = x[o + 1u];
+  y[o] = a * c - b * s;
+  y[o + 1u] = a * s + b * c;
+}
+`;
+
+async function rope(x, T, H, hd, dir, opts) {
+  const xf = Float32Array.from(x);
+  return tryLayers('rope', opts,
+    async (dev) => {
+      const uni = new ArrayBuffer(16);
+      new Uint32Array(uni, 0, 3).set([T, H, hd]);
+      new Float32Array(uni, 12, 1)[0] = dir;
+      const outs = await runWgsl(dev, WGSL_ROPE,
+        [{ data: xf, out: false }, { data: new Float32Array(xf.length), out: true }],
+        uni, Math.ceil(T * H * (hd / 2) / 64));
+      return outs[0];
+    },
+    () => ropeRef(xf, T, H, hd, dir));
+}
+
+module.exports = { rmsnormRef, rmsnorm, softmaxRef, softmax, siluRef, silu, ropeRef, rope, runWgsl, getDevice, tryLayers, WGSL_RMSNORM, WGSL_SOFTMAX, WGSL_SILU, WGSL_ROPE, NOTE_T3 };

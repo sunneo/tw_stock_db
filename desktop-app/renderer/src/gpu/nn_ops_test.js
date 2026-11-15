@@ -119,6 +119,42 @@ function maxAbs(a, b) { let m = 0; for (let i = 0; i < a.length; i++) m = Math.m
     assert.ok(r.info.reason.includes(NN.NOTE_T3));
   });
 
+  // ---- RoPE ----
+  const RT = 6, RH = 2, Rhd = 8;
+  const rx = seeded(RT * RH * Rhd, 5);
+
+  await check('ropeRef：位置 0 不旋轉（θ=0）；每對維度的長度保持不變（正交）', async () => {
+    const y = NN.ropeRef(rx, RT, RH, Rhd, 1);
+    for (let i = 0; i < RH * Rhd; i++) assert.ok(Math.abs(y[i] - rx[i]) < 1e-12, '位置 0 第 ' + i);
+    for (let t = 0; t < RT; t++) for (let h = 0; h < RH; h++) for (let i = 0; i < Rhd / 2; i++) {
+      const o = t * RH * Rhd + h * Rhd + 2 * i;
+      const n0 = Math.hypot(rx[o], rx[o + 1]), n1 = Math.hypot(y[o], y[o + 1]);
+      assert.ok(Math.abs(n0 - n1) < 1e-9, '第 t=' + t + ' 對 ' + i + ' 長度改變');
+    }
+  });
+
+  await check('ropeRef：反向（dir=−1）還原正向結果', async () => {
+    const fwd = NN.ropeRef(rx, RT, RH, Rhd, 1);
+    const back = NN.ropeRef(fwd, RT, RH, Rhd, -1);
+    assert.ok(maxAbs(back, rx) < 1e-9, '差 ' + maxAbs(back, rx));
+  });
+
+  await check('rope 經 WGSL（假裝置）：層為 T1，結果與參考版一致', async () => {
+    const r = await NN.rope(rx, RT, RH, Rhd, 1, { navigator: fakeNavigator().nav });
+    assert.strictEqual(r.info.layer, 'T1');
+    assert.ok(maxAbs(r.result, NN.ropeRef(rx, RT, RH, Rhd, 1)) < 1e-5, '差 ' + maxAbs(r.result, NN.ropeRef(rx, RT, RH, Rhd, 1)));
+  });
+
+  await check('rope 沒有 WebGPU：退到 cpu-js 並寫明原因', async () => {
+    const r = await NN.rope(rx, RT, RH, Rhd, -1, { navigator: {} });
+    assert.strictEqual(r.info.layer, 'cpu-js');
+    assert.ok(r.info.reason.includes(NN.NOTE_T3));
+  });
+
+  await check('rope：hd 為奇數直接丟錯', async () => {
+    assert.throws(() => NN.ropeRef(new Float32Array(RT * RH * 7), RT, RH, 7, 1), /hd 必須是偶數/);
+  });
+
   await check('形狀不符：直接丟錯（不降級，避免默默算錯）', async () => {
     assert.throws(() => NN.rmsnormRef(x.slice(1), g, T, d, eps), /x 的長度/);
     assert.throws(() => NN.rmsnormRef(x, g.slice(1), T, d, eps), /g 的長度/);
