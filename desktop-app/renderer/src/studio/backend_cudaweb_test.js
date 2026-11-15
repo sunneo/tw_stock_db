@@ -65,12 +65,23 @@ const toks = [1, 4, 7, 2, 9, 3];
         assert.strictEqual(after, before);
     });
 
-    await check('step 回報實際層（給後端選單顯示）', async () => {
+    await check('step 回報實際層：矩陣乘（T1）與五個核心（opsLayer，T1）都走 GPU', async () => {
         const rt = core.createRuntime({ navigator: fakeNavigator().nav, webgl2: null });
-        const b = createCudawebBackend({ getRuntime: () => rt });
+        const b = createCudawebBackend({ getRuntime: () => rt, navigator: fakeNavigator().nav });
         await b.init({ cfg, seed: 4, lr: 0.01 });
         const r = await b.step(toks);
         assert.strictEqual(r.layer, 'T1');
+        assert.strictEqual(r.opsLayer, 'T1');
+        assert.ok(r.opsCalls > 0);
+    });
+
+    await check('沒有 GPU 導航器時：矩陣乘仍可走執行期，五個核心退到 cpu-js 並寫明原因', async () => {
+        const rt = core.createRuntime({ navigator: {}, webgl2: null });
+        const b = createCudawebBackend({ getRuntime: () => rt, navigator: {} });
+        await b.init({ cfg, seed: 4, lr: 0.01 });
+        const r = await b.step(toks);
+        assert.strictEqual(r.opsLayer, 'cpu-js');
+        assert.ok(r.opsReason.includes('WebGPU 不可用'), r.opsReason);
     });
 
     console.log('\n' + pass + ' 通過，' + fail + ' 失敗');

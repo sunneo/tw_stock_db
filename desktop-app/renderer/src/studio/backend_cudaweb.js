@@ -5,6 +5,7 @@
 // probe 依真實能力回報：有可用的 WebGPU 裝置或 WebGL2 上下文、且拿得到運算執行期時才 available:true，reason 寫明實際層。
 const B = require('./backend_core.js');
 const T = require('./lora_ref_train.js');
+const NN = require('../gpu/nn_ops.js');
 
 function layerText(bi) {
   const last = bi && bi.last;
@@ -20,7 +21,12 @@ function createCudawebBackend(o) {
   function runtime() {
     try { return opts.getRuntime ? opts.getRuntime() : null; } catch (e) { return null; }
   }
-  let st = null; // { m, adam, lr, be }
+  let st = null; // { m, adam, lr, be, ops }
+  // 回報：矩陣乘的層（cudaweb 執行期）與五個核心最後一次實際使用的層（給後端選單與測試）
+  function layerReport(loss) {
+    const ol = st.ops.stats.last;
+    return { loss: loss, layer: st.be.layer, reason: st.be.reason, opsLayer: ol ? ol.layer : null, opsReason: ol ? ol.reason : null, opsCalls: st.ops.stats.calls };
+  }
   function need() {
     const rt = runtime();
     if (!rt) throw new Error('cudaweb 不可用：此執行環境沒有 GPU 運算執行期（需要在渲染行程裡執行）');
@@ -45,19 +51,22 @@ function createCudawebBackend(o) {
       const rt = need();
       const s = spec || {};
       const m = T.makeModel(s.cfg, s.seed || 1);
-      st = { m, adam: T.adamInit(m), lr: s.lr || 0.01, be: T.cudawebMatmulBackend(rt) };
+      // 五個逐元素／列運算與 AdamW 走 nn_ops 的三層降級（T1 → T3 → cpu-js）；矩陣乘走 cudaweb 執行期
+      const nav = opts.navigator !== undefined ? opts.navigator : (typeof navigator !== 'undefined' ? navigator : undefined);
+      const ops = NN.trainerOps({ navigator: nav, gl: opts.gl });
+      st = { m, adam: T.adamInit(m), lr: s.lr || 0.01, be: T.cudawebMatmulBackend(rt), ops: ops };
       return { ok: true, layer: null };
     },
     async step(tokens) {
       if (!st) throw new Error('cudaweb：尚未 init');
-      const r = await T.lossAndGradsAsync(st.m, tokens, { backend: st.be });
-      T.adamStep(st.m, r.grads, st.adam, st.lr);
-      return { loss: r.loss, layer: st.be.layer, reason: st.be.reason };
+      const r = await T.lossAndGradsAsync(st.m, tokens, { backend: st.be, ops: st.ops });
+      await T.adamStepAsync(st.m, r.grads, st.adam, st.lr, st.ops);
+      return layerReport(r.loss);
     },
     async evalLoss(tokens) {
       if (!st) throw new Error('cudaweb：尚未 init');
-      const r = await T.lossAndGradsAsync(st.m, tokens, { backend: st.be, noGrad: true });
-      return { loss: r.loss, layer: st.be.layer, reason: st.be.reason };
+      const r = await T.lossAndGradsAsync(st.m, tokens, { backend: st.be, ops: st.ops, noGrad: true });
+      return layerReport(r.loss);
     },
     async saveCheckpoint() {
       if (!st) throw new Error('cudaweb：尚未 init');
