@@ -1725,19 +1725,27 @@ select:focus { outline: 2px solid var(--acc); }
   // 新核心認得 __FA_LAZY_BASES（jsDelivr 優先，raw 退路）。
   window.__FA_LAZY_BASE = RAWB + 'chunks/';
   window.__FA_PREFETCH = {};
-  // 依序嘗試 jsDelivr → raw；每個來源 8 秒逾時，失敗寫 console.warn（檔名、來源、錯誤、耗時）
+  // 依序嘗試 jsDelivr → raw。8 秒內沒有回應標頭就換來源（回應開始後不設逾時，慢網路下完整下載不算失敗）；
+  // 失敗寫 console.warn（檔名、來源、錯誤、耗時）
   window.__faFetchFirst = function (rel) {
     var i = 0;
     function attempt() {
       var root = roots[i];
       var t0 = performance.now();
       var ctl = typeof AbortController !== 'undefined' ? new AbortController() : null;
-      var timer = ctl ? setTimeout(function () { ctl.abort(); }, TIMEOUT_MS) : null;
+      var headersTimer = ctl ? setTimeout(function () { ctl.abort(); }, TIMEOUT_MS) : null;
       return fetch(root + rel, ctl ? { signal: ctl.signal } : undefined)
-        .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.text(); })
-        .then(function (text) { if (timer) clearTimeout(timer); return { text: text, source: root }; }, function (e) {
-          if (timer) clearTimeout(timer);
-          var msg = (e && e.name === 'AbortError') ? '逾時 ' + TIMEOUT_MS + ' 毫秒' : ((e && e.message) || String(e));
+        .then(function (r) {
+          clearTimeout(headersTimer);
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          if (!r.body || !r.body.getReader) return r.text();
+          var reader = r.body.getReader(); var parts = []; var got = 0;
+          function pump() { return reader.read().then(function (x) { if (x.done) return; parts.push(x.value); got += x.value.length; return pump(); }); }
+          return pump().then(function () { var all = new Uint8Array(got); var o = 0; parts.forEach(function (p) { all.set(p, o); o += p.length; }); return new TextDecoder('utf-8').decode(all); });
+        })
+        .then(function (text) { clearTimeout(headersTimer); return { text: text, source: root }; }, function (e) {
+          clearTimeout(headersTimer);
+          var msg = (e && e.name === 'AbortError') ? '連線 ' + (TIMEOUT_MS / 1000) + ' 秒內沒有回應' : ((e && e.message) || String(e));
           var more = (i + 1 < roots.length) ? '，改用下一個來源' : '，已無退路';
           console.warn('[網頁版載入] ' + rel + ' 從 ' + root + ' 失敗：' + msg + '，耗時 ' + Math.round(performance.now() - t0) + ' 毫秒' + more);
           if (++i < roots.length) return attempt();
@@ -1752,7 +1760,7 @@ select:focus { outline: 2px solid var(--acc); }
     var bootP = window.__faFetchFirst('boot.json').then(function (x) { return JSON.parse(x.text); }, function () { return []; });
     var coreP = window.__faFetchFirst('core.js');
     return Promise.all([coreP, bootP]).then(function (res) {
-      var names = Array.isArray(res[1]) ? res[1] : [];
+      var names = Array.isArray(res[1]) ? res[1] : (res[1] && Array.isArray(res[1].names) ? res[1].names : []);
       return Promise.all(names.map(function (n) {
         return window.__faFetchFirst('chunks/' + n + '.js').then(function (x) { window.__FA_PREFETCH[n] = x.text; }, function () { /* 沒預抓到，核心會同步載入 */ });
       })).then(function () { return res[0].text; });

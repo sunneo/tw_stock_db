@@ -6,6 +6,10 @@
 <!-- 離線模型（Whisper、離線圖像轉文字）的多執行緒需要 SharedArrayBuffer：靜態網站不能設標頭，用 coi-serviceworker 取得 cross-origin isolated（?nocoi 可關閉） -->
 <script src="../coi-serviceworker.js"></script>
 <title>AI 助理</title>
+<!-- 2026-11-15 冷載入優化：先建立到 jsDelivr 與 raw 的連線，並讓核心下載在這段 script 執行前就開始（網址與下方載入器一致）。 -->
+<link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+<link rel="preconnect" href="https://raw.githubusercontent.com" crossorigin>
+<link rel="preload" as="fetch" crossorigin href="https://cdn.jsdelivr.net/gh/sunneo/tw_stock_db@a575ce383e47b7312a84736e86eb53a3e59b3d9f/desktop-app/web-lazy/core.js">
 <style>
   :root {
     --bar-bg: #161b22; --bar-border: #30363d; --bar-fg: #cbd5e1;
@@ -42,6 +46,14 @@
   /* 這頁本來就該一直展開，❌ 關閉鈕點下去只會收合、整頁變空白，隱藏（主頁、桌面版同作法） */
   #ai-btn-close { display: none !important; }
   #load-error { padding: 16px; color: #f87171; font-size: 14px; }
+  /* 2026-11-15 冷載入優化：核心下載完成前顯示的骨架（標題、對話區、輸入框、進度條）；核心就緒時整段移除，換成真介面。 */
+  #fa-skeleton { padding: 12px 16px; color: var(--bar-fg, #cbd5e1); }
+  #fa-skeleton .sk-title { height: 22px; width: 160px; border-radius: 6px; background: var(--btn-bg, #21262d); margin-bottom: 14px; }
+  #fa-skeleton .sk-chat { height: 40vh; border-radius: 10px; background: var(--btn-bg, #21262d); margin-bottom: 12px; }
+  #fa-skeleton .sk-input { height: 44px; border-radius: 10px; border: 1px solid var(--bar-border, #30363d); background: var(--page-bg, #0d1117); }
+  #fa-skeleton .sk-progress { margin-top: 12px; height: 4px; border-radius: 2px; background: var(--bar-border, #30363d); overflow: hidden; }
+  #fa-skeleton .sk-progress > i { display: block; height: 100%; width: 0; background: #58a6ff; transition: width .2s; }
+  #fa-skeleton .sk-text { font-size: 13px; margin-top: 6px; opacity: .8; }
 </style>
 </head>
 <body>
@@ -59,7 +71,7 @@
          說明），失敗就維持這個後備連結不變。 -->
     <a class="btn" id="get-desktop-app" href="https://github.com/sunneo/tw_stock_db/releases" target="_blank" rel="noopener noreferrer" title="下載桌面版 FloatingAssistant（Windows／Linux 安裝檔）">💻 取得 Desktop App</a>
   </div>
-  <div id="app" style="display:block;"></div>
+  <div id="app" style="display:block;"><div id="fa-skeleton" aria-live="polite"><div class="sk-title"></div><div class="sk-chat"></div><div class="sk-input"></div><div class="sk-progress"><i id="fa-sk-bar"></i></div><div class="sk-text" id="fa-sk-text">載入 AI 引擎中…</div></div></div>
 
 <script>
 'use strict';
@@ -78,7 +90,7 @@
    是否載入成功）——即使GitHub API呼叫失敗（額度用完、離線等），
    <a id="get-desktop-app">本來就有寫死的靜態href（連到releases首頁），
    使用者退而求其次還是找得到下載頁，不會完全連不到任何東西。 */
-(function detectDesktopAppAsset() {
+function detectDesktopAppAsset() {
   var link = document.getElementById('get-desktop-app');
   if (!link) return;
   var ua = navigator.userAgent || '';
@@ -129,7 +141,7 @@
   }
   if (typeof requestIdleCallback === 'function') requestIdleCallback(query, { timeout: 4000 });
   else setTimeout(query, 2000);
-})();
+}
 </script>
 
 <script>
@@ -170,14 +182,12 @@ try {
   }
 } catch (_) { /* 隱私模式等情況下 localStorage 不可用，仍可使用 AI 設定面板手動填 */ }
 
-// ---- 載入 floating-assistant.js（raw.githubusercontent.com 回傳 text/plain +
-// nosniff，不能直接 <script src>；fetch 文字→Blob→blob URL，主頁同一招）----
-// ⚠️ 2026-09-30起改用「完整commit SHA釘住」的網址（內容不可變，不會被GitHub raw CDN的分支快取拖累——
-// 原本的分支網址+?v=實測擋不住CDN快取，使用者會載到舊版）。發版時把下面URL裡的SHA換成desktop-app分支最新commit的
-// 完整40字元SHA，且必須跟 web/index.html 的一模一樣（兩頁共用同一個 floating-assistant.js，
-// 改了 desktop-app 分支的檔案後兩邊一起調）。
-// 2026-11-15 冷載入優化：與 web/index.html 同一套（jsDelivr 釘 SHA 優先、raw 退路、8 秒逾時、
-// 失敗寫 console.warn）；boot.json 列出的開機區塊並行預抓進 window.__FA_PREFETCH。
+/// ---- 載入 floating-assistant.js（2026-11-15 冷載入優化）----
+// 與 web/index.html 同一套：jsDelivr 釘 SHA 優先、raw 退路。8 秒逾時只限「連線與回應標頭」：
+// 8 秒內拿不到回應就換下一個來源。回應開始後不設逾時（慢網路下完整下載 2 MB 核心可能超過 8 秒，不應換來源），
+// 中途斷線由瀏覽器回報錯誤。失敗寫 console.warn（檔名、來源、錯誤、耗時）。
+// 核心下載時更新骨架進度（分母 = 解壓後的核心位元組數，來自 boot.json 的 coreBytes）；
+// 開機區塊（boot.json 的 names）並行預抓進 window.__FA_PREFETCH，核心執行時直接用，不再同步 XHR 逐一載入。
 var FA_SHA = 'a575ce383e47b7312a84736e86eb53a3e59b3d9f';
 var FA_JSD = 'https://cdn.jsdelivr.net/gh/sunneo/tw_stock_db@' + FA_SHA + '/desktop-app/web-lazy/';
 var FA_RAWB = RAW + '/' + FA_SHA + '/desktop-app/web-lazy/';
@@ -187,18 +197,49 @@ window.__FA_LAZY_BASES = [FA_JSD + 'chunks/', FA_RAWB + 'chunks/'];
 // 舊核心只認 __FA_LAZY_BASE、沒有退路，維持 raw（與改版前相同）；新核心認得 __FA_LAZY_BASES（jsDelivr 優先）。
 window.__FA_LAZY_BASE = FA_RAWB + 'chunks/';
 window.__FA_PREFETCH = {};
-function faFetchFirst(rel) {
+function faSetProgress(pct, text) {
+  var bar = document.getElementById('fa-sk-bar');
+  if (bar) bar.style.width = Math.max(0, Math.min(100, pct)) + '%';
+  var t = document.getElementById('fa-sk-text');
+  if (t && text) t.textContent = text;
+  var st = document.getElementById('status');
+  if (st && text) st.textContent = text;
+}
+// 讀取回應本文；有串流就逐塊讀並回報已收到的解壓後位元組數（onChunk(已收到)）。沒有串流就整包 text()。
+function faReadBody(r, onChunk) {
+  if (!r.body || !r.body.getReader) return r.text();
+  var reader = r.body.getReader(); var parts = []; var got = 0;
+  function pump() {
+    return reader.read().then(function (x) {
+      if (x.done) return;
+      parts.push(x.value); got += x.value.length;
+      if (onChunk) onChunk(got);
+      return pump();
+    });
+  }
+  return pump().then(function () {
+    var all = new Uint8Array(got); var o = 0;
+    parts.forEach(function (p) { all.set(p, o); o += p.length; });
+    return new TextDecoder('utf-8').decode(all);
+  });
+}
+// 依序嘗試 jsDelivr → raw。8 秒內沒有回應標頭就換來源；失敗寫 console.warn 並換下一個來源。
+function faFetchFirst(rel, onChunk) {
   var i = 0;
   function attempt() {
     var root = FA_ROOTS[i];
     var t0 = performance.now();
     var ctl = typeof AbortController !== 'undefined' ? new AbortController() : null;
-    var timer = ctl ? setTimeout(function () { ctl.abort(); }, FA_TIMEOUT_MS) : null;
+    var headersTimer = ctl ? setTimeout(function () { ctl.abort(); }, FA_TIMEOUT_MS) : null;
     return fetch(root + rel, ctl ? { signal: ctl.signal } : undefined)
-      .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.text(); })
-      .then(function (text) { if (timer) clearTimeout(timer); return { text: text, source: root }; }, function (e) {
-        if (timer) clearTimeout(timer);
-        var msg = (e && e.name === 'AbortError') ? '逾時 ' + FA_TIMEOUT_MS + ' 毫秒' : ((e && e.message) || String(e));
+      .then(function (r) {
+        clearTimeout(headersTimer);
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return faReadBody(r, onChunk);
+      })
+      .then(function (text) { clearTimeout(headersTimer); return { text: text, source: root }; }, function (e) {
+        clearTimeout(headersTimer);
+        var msg = (e && e.name === 'AbortError') ? '連線 ' + (FA_TIMEOUT_MS / 1000) + ' 秒內沒有回應' : ((e && e.message) || String(e));
         console.warn('[網頁版載入] ' + rel + ' 從 ' + root + ' 失敗：' + msg + '，耗時 ' + Math.round(performance.now() - t0) + ' 毫秒' + (i + 1 < FA_ROOTS.length ? '，改用下一個來源' : '，已無退路'));
         if (++i < FA_ROOTS.length) return attempt();
         throw e;
@@ -207,21 +248,34 @@ function faFetchFirst(rel) {
   return attempt();
 }
 function loadAssistantScript() {
-  var bootP = faFetchFirst('boot.json').then(function (x) { return JSON.parse(x.text); }, function () { return []; });
-  var coreP = faFetchFirst('core.js');
+  var bootP = faFetchFirst('boot.json').then(function (x) { return JSON.parse(x.text); }, function () { return null; });
+  var coreP = faFetchFirst('core.js', function (got) {
+    var total = window.__faCoreBytes || 0;
+    if (total > 0) {
+      var pct = Math.min(99, Math.round(got / total * 100));
+      faSetProgress(pct, '載入核心 ' + pct + '%');
+    } else {
+      faSetProgress(0, '載入核心中…（已收到 ' + (got / 1048576).toFixed(1) + ' MB）');
+    }
+  });
   return Promise.all([coreP, bootP]).then(function (res) {
-    var names = Array.isArray(res[1]) ? res[1] : [];
+    var b = res[1];
+    var names = Array.isArray(b) ? b : (b && Array.isArray(b.names) ? b.names : []);
+    if (b && typeof b.coreBytes === 'number') window.__faCoreBytes = b.coreBytes;
+    var done = 0;
+    if (names.length) faSetProgress(0, '載入分塊 0/' + names.length);
     return Promise.all(names.map(function (n) {
-      return faFetchFirst('chunks/' + n + '.js').then(function (x) { window.__FA_PREFETCH[n] = x.text; }, function () { /* 沒預抓到，核心會同步載入 */ });
+      return faFetchFirst('chunks/' + n + '.js').then(function (x) { window.__FA_PREFETCH[n] = x.text; }, function () { /* 沒預抓到，核心會同步載入 */ })
+        .then(function () { done++; faSetProgress(100 * done / names.length, '載入分塊 ' + done + '/' + names.length); });
     })).then(function () { return res[0].text; });
   }).then(text => new Promise((resolve, reject) => {
-      const url = URL.createObjectURL(new Blob([text], { type: 'application/javascript' }));
-      const s = document.createElement('script');
-      s.src = url;
-      s.onload = () => { URL.revokeObjectURL(url); resolve(); };
-      s.onerror = () => { URL.revokeObjectURL(url); reject(new Error('floating-assistant.js 執行失敗')); };
-      document.head.appendChild(s);
-    }));
+    const url = URL.createObjectURL(new Blob([text], { type: 'application/javascript' }));
+    const s = document.createElement('script');
+    s.src = url;
+    s.onload = () => { URL.revokeObjectURL(url); resolve(); };
+    s.onerror = () => { URL.revokeObjectURL(url); reject(new Error('floating-assistant.js 執行失敗')); };
+    document.head.appendChild(s);
+  }));
 }
 
 function showError(msg) {
@@ -255,6 +309,9 @@ loadAssistantScript().then(() => {
     });
   }
 
+  // 2026-11-15：核心就緒，骨架換成真介面（FloatingAssistant 同步建好 UI，不會閃一下）
+  var skel = document.getElementById('fa-skeleton'); if (skel) skel.remove();
+  faSetProgress(100, '載入 AI 引擎完成');
   const fa = new FloatingAssistant({
     mountSelector: '#app',
     buttonStyle: 'display:none;',
@@ -262,7 +319,9 @@ loadAssistantScript().then(() => {
     // 左邊可收合、可分群組的對話清單（每個對話各有訊息，存在瀏覽器persistentStorage）。台股頁（web/index.html）不開。
     chatList: true,
   });
-  window.fa = fa; // 方便除錯；正式功能不依賴這個全域變數
+  window.fa = fa;
+  // 2026-11-15：桌面版下載連結的 GitHub 查詢移到就緒之後（閒置時才查，見 detectDesktopAppAsset）
+  detectDesktopAppAsset(); // 方便除錯；正式功能不依賴這個全域變數
   fa.toggleWindow(); // 這頁本來就該一直展開
 
   themeBtn.addEventListener('click', () => {
