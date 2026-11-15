@@ -1704,6 +1704,61 @@ select:focus { outline: 2px solid var(--acc); }
     .catch(e => { throw new Error('sql-wasm.wasm 載入失敗：' + e.message); });
 </script>
 
+<!-- 2026-11-15 冷載入優化（沒有快取時盡快顯示）：
+     1. 核心與分塊先走 jsDelivr（釘完整 commit SHA，內容不可變，實測 0.15 秒、一年快取），
+        任一檔失敗（網路錯誤、8 秒逾時、非 200）就退回 raw.githubusercontent.com（實測約 2.2 秒、快取 5 分鐘），
+        每次失敗都 console.warn 寫出來源、錯誤與耗時。
+     2. 開機要用的區塊清單 web-lazy/boot.json（由 scripts/web-cold-load-probe.js 量出）在核心執行前平行抓好，
+        放進 window.__FA_PREFETCH；沒有預抓到的區塊照舊由核心同步載入（行為不變）。
+     3. preconnect／preload 讓核心下載在這段 script 執行前就開始。 -->
+<link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+<link rel="preload" as="fetch" crossorigin href="https://cdn.jsdelivr.net/gh/sunneo/tw_stock_db@a575ce383e47b7312a84736e86eb53a3e59b3d9f/desktop-app/web-lazy/core.js">
+<script>
+(function () {
+  var SHA = 'a575ce383e47b7312a84736e86eb53a3e59b3d9f';
+  var JSD = 'https://cdn.jsdelivr.net/gh/sunneo/tw_stock_db@' + SHA + '/desktop-app/web-lazy/';
+  var RAWB = 'https://raw.githubusercontent.com/sunneo/tw_stock_db/' + SHA + '/desktop-app/web-lazy/';
+  var TIMEOUT_MS = 8000;
+  var roots = [JSD, RAWB];
+  window.__FA_LAZY_BASES = [JSD + 'chunks/', RAWB + 'chunks/'];
+  window.__FA_LAZY_BASE = JSD + 'chunks/';
+  window.__FA_PREFETCH = {};
+  // 依序嘗試 jsDelivr → raw；每個來源 8 秒逾時，失敗寫 console.warn（檔名、來源、錯誤、耗時）
+  window.__faFetchFirst = function (rel) {
+    var i = 0;
+    function attempt() {
+      var root = roots[i];
+      var t0 = performance.now();
+      var ctl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+      var timer = ctl ? setTimeout(function () { ctl.abort(); }, TIMEOUT_MS) : null;
+      return fetch(root + rel, ctl ? { signal: ctl.signal } : undefined)
+        .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.text(); })
+        .then(function (text) { if (timer) clearTimeout(timer); return { text: text, source: root }; }, function (e) {
+          if (timer) clearTimeout(timer);
+          var msg = (e && e.name === 'AbortError') ? '逾時 ' + TIMEOUT_MS + ' 毫秒' : ((e && e.message) || String(e));
+          var more = (i + 1 < roots.length) ? '，改用下一個來源' : '，已無退路';
+          console.warn('[網頁版載入] ' + rel + ' 從 ' + root + ' 失敗：' + msg + '，耗時 ' + Math.round(performance.now() - t0) + ' 毫秒' + more);
+          if (++i < roots.length) return attempt();
+          throw e;
+        });
+    }
+    return attempt();
+  };
+  // 核心與開機區塊清單並行下載；區塊清單抓不到就當成空的（核心照舊同步載入，不擋開機）；
+  // 回傳 Promise<核心原始碼文字>，此時 window.__FA_PREFETCH 已裝好開機要用的區塊
+  window.__faLoadCore = function () {
+    var bootP = window.__faFetchFirst('boot.json').then(function (x) { return JSON.parse(x.text); }, function () { return []; });
+    var coreP = window.__faFetchFirst('core.js');
+    return Promise.all([coreP, bootP]).then(function (res) {
+      var names = Array.isArray(res[1]) ? res[1] : [];
+      return Promise.all(names.map(function (n) {
+        return window.__faFetchFirst('chunks/' + n + '.js').then(function (x) { window.__FA_PREFETCH[n] = x.text; }, function () { /* 沒預抓到，核心會同步載入 */ });
+      })).then(function () { return res[0].text; });
+    });
+  };
+})();
+</script>
+
 <!-- AI助理widget（設定裡預設關閉，見 aiAssistantEnabled/renderAiTab）；
      載入這個外部函式庫本身很輕量、不會主動連線，只有使用者真的點進AI分頁
      才會 new FloatingAssistant()，見 renderAiTab 的一次性初始化guard。
@@ -1747,8 +1802,7 @@ select:focus { outline: 2px solid var(--acc); }
      floating-assistant.js`——已實測驗證`curl`拿掉其中一個`desktop-app`
      會是404，兩個都要保留。 -->
 <script>
-  window.__floatingAssistantJsReady = (window.__FA_LAZY_BASE = 'https://raw.githubusercontent.com/sunneo/tw_stock_db/a575ce383e47b7312a84736e86eb53a3e59b3d9f/desktop-app/web-lazy/chunks/', fetch('https://raw.githubusercontent.com/sunneo/tw_stock_db/a575ce383e47b7312a84736e86eb53a3e59b3d9f/desktop-app/web-lazy/core.js'))
-    .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.text(); })
+  window.__floatingAssistantJsReady = window.__faLoadCore()
     .then(text => new Promise((resolve, reject) => {
       const blob = new Blob([text], { type: 'application/javascript' });
       const blobUrl = URL.createObjectURL(blob);

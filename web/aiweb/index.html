@@ -90,18 +90,45 @@
   var isLinux = /Linux/i.test(ua) && !/Android/i.test(ua);
   if (!isWindows && !isLinux) return; // 不支援的平台（macOS/其他）：維持原本releases首頁連結
 
-  fetch('https://api.github.com/repos/sunneo/tw_stock_db/releases/latest')
-    .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
-    .then(function (release) {
-      var assets = (release && release.assets) || [];
-      var pattern = isWindows ? /\.exe$/i : /\.AppImage$/i;
-      var asset = assets.find(function (a) { return pattern.test(a.name || ''); });
-      if (!asset) return; // 這個release沒有對應平台的安裝檔，維持原本releases首頁連結
-      link.href = asset.browser_download_url;
-      link.title = '下載 ' + asset.name + '（' + (release.tag_name || '最新版') + '）';
-      link.textContent = isWindows ? '💻 下載 Desktop App（Windows）' : '💻 下載 Desktop App（Linux）';
-    })
-    .catch(function () { /* 保留原本寫死的releases首頁連結，不用另外提示錯誤 */ });
+  // 2026-11-15 冷載入優化：這個查詢不在開機路徑上。結果存 localStorage 24 小時（有快取就直接套用、不重查），
+  // 沒快取才在瀏覽器閒置時（requestIdleCallback，逾時 4 秒；沒有就 2 秒後）才打 GitHub API。
+  // localStorage 不可用（隱私模式）就照舊每次查，失敗一律保留 releases 首頁連結。
+  var CACHE_KEY = 'fa-desktop-asset-v1';
+  var TTL_MS = 24 * 60 * 60 * 1000;
+  var pattern = isWindows ? /\.exe$/i : /\.AppImage$/i;
+  function apply(info) {
+    link.href = info.href;
+    link.title = info.title;
+    link.textContent = isWindows ? '💻 下載 Desktop App（Windows）' : '💻 下載 Desktop App（Linux）';
+  }
+  function readCache() {
+    try { var c = JSON.parse(localStorage.getItem(CACHE_KEY) || 'null'); return c && c.platform === (isWindows ? 'win' : 'linux') ? c : null; } catch (_) { return null; }
+  }
+  function writeCache(info) {
+    try { localStorage.setItem(CACHE_KEY, JSON.stringify(info)); } catch (_) { /* 隱私模式等情況下不快取 */ }
+  }
+  var cached = readCache();
+  if (cached && cached.href && Date.now() - cached.t < TTL_MS) { apply(cached); return; }
+  function query() {
+    fetch('https://api.github.com/repos/sunneo/tw_stock_db/releases/latest')
+      .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+      .then(function (release) {
+        var assets = (release && release.assets) || [];
+        var asset = assets.find(function (a) { return pattern.test(a.name || ''); });
+        if (!asset) return; // 這個release沒有對應平台的安裝檔，維持原本releases首頁連結
+        var info = {
+          t: Date.now(),
+          platform: isWindows ? 'win' : 'linux',
+          href: asset.browser_download_url,
+          title: '下載 ' + asset.name + '（' + (release.tag_name || '最新版') + '）'
+        };
+        writeCache(info);
+        apply(info);
+      })
+      .catch(function () { /* 保留原本寫死的releases首頁連結，不用另外提示錯誤 */ });
+  }
+  if (typeof requestIdleCallback === 'function') requestIdleCallback(query, { timeout: 4000 });
+  else setTimeout(query, 2000);
 })();
 </script>
 
@@ -149,11 +176,44 @@ try {
 // 原本的分支網址+?v=實測擋不住CDN快取，使用者會載到舊版）。發版時把下面URL裡的SHA換成desktop-app分支最新commit的
 // 完整40字元SHA，且必須跟 web/index.html 的一模一樣（兩頁共用同一個 floating-assistant.js，
 // 改了 desktop-app 分支的檔案後兩邊一起調）。
+// 2026-11-15 冷載入優化：與 web/index.html 同一套（jsDelivr 釘 SHA 優先、raw 退路、8 秒逾時、
+// 失敗寫 console.warn）；boot.json 列出的開機區塊並行預抓進 window.__FA_PREFETCH。
+var FA_SHA = 'a575ce383e47b7312a84736e86eb53a3e59b3d9f';
+var FA_JSD = 'https://cdn.jsdelivr.net/gh/sunneo/tw_stock_db@' + FA_SHA + '/desktop-app/web-lazy/';
+var FA_RAWB = RAW + '/' + FA_SHA + '/desktop-app/web-lazy/';
+var FA_ROOTS = [FA_JSD, FA_RAWB];
+var FA_TIMEOUT_MS = 8000;
+window.__FA_LAZY_BASES = [FA_JSD + 'chunks/', FA_RAWB + 'chunks/'];
+window.__FA_LAZY_BASE = FA_JSD + 'chunks/';
+window.__FA_PREFETCH = {};
+function faFetchFirst(rel) {
+  var i = 0;
+  function attempt() {
+    var root = FA_ROOTS[i];
+    var t0 = performance.now();
+    var ctl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    var timer = ctl ? setTimeout(function () { ctl.abort(); }, FA_TIMEOUT_MS) : null;
+    return fetch(root + rel, ctl ? { signal: ctl.signal } : undefined)
+      .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.text(); })
+      .then(function (text) { if (timer) clearTimeout(timer); return { text: text, source: root }; }, function (e) {
+        if (timer) clearTimeout(timer);
+        var msg = (e && e.name === 'AbortError') ? '逾時 ' + FA_TIMEOUT_MS + ' 毫秒' : ((e && e.message) || String(e));
+        console.warn('[網頁版載入] ' + rel + ' 從 ' + root + ' 失敗：' + msg + '，耗時 ' + Math.round(performance.now() - t0) + ' 毫秒' + (i + 1 < FA_ROOTS.length ? '，改用下一個來源' : '，已無退路'));
+        if (++i < FA_ROOTS.length) return attempt();
+        throw e;
+      });
+  }
+  return attempt();
+}
 function loadAssistantScript() {
-  window.__FA_LAZY_BASE = RAW + '/a575ce383e47b7312a84736e86eb53a3e59b3d9f/desktop-app/web-lazy/chunks/';
-  return fetch(RAW + '/a575ce383e47b7312a84736e86eb53a3e59b3d9f/desktop-app/web-lazy/core.js')
-    .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.text(); })
-    .then(text => new Promise((resolve, reject) => {
+  var bootP = faFetchFirst('boot.json').then(function (x) { return JSON.parse(x.text); }, function () { return []; });
+  var coreP = faFetchFirst('core.js');
+  return Promise.all([coreP, bootP]).then(function (res) {
+    var names = Array.isArray(res[1]) ? res[1] : [];
+    return Promise.all(names.map(function (n) {
+      return faFetchFirst('chunks/' + n + '.js').then(function (x) { window.__FA_PREFETCH[n] = x.text; }, function () { /* 沒預抓到，核心會同步載入 */ });
+    })).then(function () { return res[0].text; });
+  }).then(text => new Promise((resolve, reject) => {
       const url = URL.createObjectURL(new Blob([text], { type: 'application/javascript' }));
       const s = document.createElement('script');
       s.src = url;
