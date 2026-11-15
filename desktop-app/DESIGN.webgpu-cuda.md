@@ -627,7 +627,7 @@ C／C++（clang）或 Rust ──► LLVM IR ──► NVPTX 後端 ──► PT
 
 **驗證現況**：
 - node：20 項全過（`node renderer/src/gpu/gpu_core.test.js`）。
-- Python：8 項全過（`python renderer/src/gpu/cudaweb_py_test.py`）。
+- Python：10 項全過（`python renderer/src/gpu/cudaweb_py_test.py`）。其中含 `cudaweb.cublas.sgemm` 的最小介面：只支援 transa=transb='N'、alpha=1、beta=0，其他組合直接報錯；A、B、C 是列主序扁平 list，不是 cuBLAS 的欄主序裸指標。
 - 真桌面版（真 Electron，不加 `--disable-gpu`，獨立 userData，換埠 18931）：**執行了一次，但結果遺失**。原因是評估檔最外層的 `return` 缺漏，腳本沒把結果回傳給啟動器。已修正並用假 WebGPU 離線模擬，6 項檢查全過。**沒有再開一次真桌面版**（規則：最多一次）。因此真 WebGPU 的 adapter、功能清單與核心結果目前**未驗證**。
 - 網頁版真瀏覽器：**未驗證**。
 - 數值容差仍是暫定值，**未實測**。

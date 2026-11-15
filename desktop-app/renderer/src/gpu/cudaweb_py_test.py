@@ -141,6 +141,26 @@ def t_backend_info_passthrough():
     assert calls == [('backend_info', {})], calls
 
 
+def t_cublas_sgemm():
+    install_host(True)
+    del calls[:]
+    reply['value'] = ok([58, 64, 139, 154])
+    # 列主序扁平：A 2×3、B 3×2 → C 2×2
+    r = cudaweb.cublas.sgemm('N', 'N', 2, 2, 3, 1.0, [1, 2, 3, 4, 5, 6], [7, 8, 9, 10, 11, 12], 0.0, None)
+    assert r == [58, 64, 139, 154], r
+    assert calls[-1] == ('matmul', {'a': [1, 2, 3, 4, 5, 6], 'b': [7, 8, 9, 10, 11, 12], 'm': 2, 'k': 3, 'n': 2}), calls[-1]
+
+
+def t_cublas_unsupported_combinations():
+    install_host(True)
+    del calls[:]
+    expect_error(lambda: cudaweb.cublas.sgemm('T', 'N', 2, 2, 3, 1.0, [0] * 6, [0] * 6, 0.0, None), "只支援 transa='N'")
+    expect_error(lambda: cudaweb.cublas.sgemm('N', 'N', 2, 2, 3, 2.0, [0] * 6, [0] * 6, 0.0, None), '只支援 alpha=1')
+    expect_error(lambda: cudaweb.cublas.sgemm('N', 'N', 2, 2, 3, 1.0, [0] * 6, [0] * 6, 0.5, None), '只支援 alpha=1、beta=0')
+    expect_error(lambda: cudaweb.cublas.sgemm('N', 'N', 2, 2, 3, 1.0, [0] * 5, [0] * 6, 0.0, None), 'A 的元素數 5')
+    assert calls == [], '不支援的組合不應呼叫宿主'
+
+
 def main():
     check('不在模擬器裡：明確報錯、不呼叫宿主', t_not_emscripten)
     check('vector_add 來回：參數與結果正確', t_vector_add_roundtrip)
@@ -150,6 +170,8 @@ def main():
     check('sum 回傳 float', t_sum_returns_float)
     check('宿主錯誤會變成 CudaWebError', t_host_error_is_raised)
     check('backend_info 原樣回傳', t_backend_info_passthrough)
+    check('cublas.sgemm（N、N、alpha=1、beta=0）對應 matmul', t_cublas_sgemm)
+    check('cublas.sgemm 不支援的組合：報錯、不呼叫宿主', t_cublas_unsupported_combinations)
     print('\n%d 通過，%d 失敗' % (passes, len(failures)))
     if failures:
         sys.exit(1)

@@ -80,3 +80,27 @@ def sum(a):
 def backend_info():
     """目前的能力與降級狀態：hasWebGPU、hasAdapter、deviceReady、last（最後一次呼叫的層與原因）、degradeLog 等。"""
     return _call("backend_info", {})
+
+
+class _Cublas(object):
+    """cuBLAS 風格的最小介面（DESIGN.webgpu-cuda.md §12.1，第一階段）。
+    只支援 sgemm 的 transa='N'、transb='N'、alpha=1、beta=0；其他組合直接報錯，不默默算錯。
+    A 為 m×k、B 為 k×n、C 為 m×n，都是列主序的扁平 list（cuBLAS 原本是欄主序與裸指標，這裡用 list 代替，已記錄於設計文件）。
+    """
+
+    def sgemm(self, transa, transb, m, n, k, alpha, A, B, beta, C=None):
+        if transa != "N" or transb != "N":
+            raise CudaWebError("cudaweb.cublas.sgemm：第一階段只支援 transa='N'、transb='N'（收到 %r、%r）" % (transa, transb))
+        if float(alpha) != 1.0 or float(beta) != 0.0:
+            raise CudaWebError("cudaweb.cublas.sgemm：第一階段只支援 alpha=1、beta=0（收到 alpha=%r、beta=%r）" % (alpha, beta))
+        A = list(A)
+        B = list(B)
+        if len(A) != m * k:
+            raise CudaWebError("cudaweb.cublas.sgemm：A 的元素數 %d 與 m×k=%d 不符" % (len(A), m * k))
+        if len(B) != k * n:
+            raise CudaWebError("cudaweb.cublas.sgemm：B 的元素數 %d 與 k×n=%d 不符" % (len(B), k * n))
+        flat = _call("matmul", {"a": A, "b": B, "m": int(m), "k": int(k), "n": int(n)})
+        return list(flat)
+
+
+cublas = _Cublas()
