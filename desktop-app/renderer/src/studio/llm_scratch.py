@@ -90,7 +90,9 @@ def cmd_prep(a):
     if not files:
         fail("語料資料夾裡沒有 .txt 或 .md 檔")
     raw_chars, lines_in, kept = 0, 0, []
+    sources = []
     for f in files:
+        sources.append({"path": os.path.abspath(f), "bytes": os.path.getsize(f), "sha256": sha256_file(f)})  # 來源雜湊：讀之前先記
         with open(f, "r", encoding="utf-8", errors="replace") as fh:
             txt = fh.read()
         raw_chars += len(txt)
@@ -112,7 +114,9 @@ def cmd_prep(a):
         f.write("\n".join(held) + "\n")
     rep = {"files": len(files), "raw_chars": raw_chars, "lines_in": lines_in, "lines_kept": len(kept),
            "clean_chars": sum(len(x) for x in kept), "train_chars": sum(len(x) for x in train),
-           "heldout_chars": sum(len(x) for x in held), "builtin": bool(a.builtin)}
+           "heldout_chars": sum(len(x) for x in held), "builtin": bool(a.builtin), "sources": sources,
+           "train_txt_sha256": sha256_file(os.path.join(a.out, "train.txt")),
+           "heldout_txt_sha256": sha256_file(os.path.join(a.out, "heldout.txt"))}
     write_json(os.path.join(a.out, "prep_report.json"), rep)
     emit(dict(rep, event="prep", ok=True))
 
@@ -434,7 +438,8 @@ def cmd_pretrain(a):
     vocab = tok.get_vocab_size()
     cfg = make_config(vocab, a.preset, **arch_overrides(a))
     LM = build_model_classes()
-    m = LM(cfg)
+    dev = torch.device(a.device)
+    m = LM(cfg).to(dev)
     n_params = count_params(m)
     n_active = active_params(m, cfg)
     tr = np.load(os.path.join(a.data, "train_ids.npy")).astype(np.int64)
@@ -457,10 +462,10 @@ def cmd_pretrain(a):
         with torch.no_grad():
             for i in range(0, n_eval_win, 8):
                 ss = starts[i:i + 8]
-                x = torch.tensor(np.stack([ho[s:s + a.seq] for s in ss]))
-                y = torch.tensor(np.stack([ho[s + 1:s + a.seq + 1] for s in ss]))
+                x = torch.tensor(np.stack([ho[s:s + a.seq] for s in ss])).to(dev)
+                y = torch.tensor(np.stack([ho[s + 1:s + a.seq + 1] for s in ss])).to(dev)
                 B = x.shape[0]
-                logits, _ = m(x, torch.ones(B, a.seq, dtype=torch.long), torch.arange(a.seq).unsqueeze(0).expand(B, -1), None)
+                logits, _ = m(x, torch.ones(B, a.seq, dtype=torch.long, device=dev), torch.arange(a.seq, device=dev).unsqueeze(0).expand(B, -1), None)
                 l = F.cross_entropy(logits.reshape(-1, vocab), y.reshape(-1), reduction="sum")
                 tot += float(l); cnt += y.numel()
         m.train()
@@ -474,8 +479,16 @@ def cmd_pretrain(a):
             res.append({"prompt": p, "completion": decode_ids(tok, new)})
         return res
 
+    def on_cpu(fn):
+        # 取樣的貪婪迴圈在 CPU 上做（與原生執行環境一致），做完再搬回訓練裝置
+        m.to("cpu")
+        try:
+            return fn()
+        finally:
+            m.to(dev)
+
     h0 = heldout_loss()
-    samples_before = gen_samples()
+    samples_before = on_cpu(gen_samples)
     emit({"event": "eval", "step": 0, "heldout_loss": round(h0, 5), "heldout_ppl": round(math.exp(h0), 3)})
 
     decay, no_decay = [], []
@@ -497,11 +510,11 @@ def cmd_pretrain(a):
     recent = []
     for step in range(1, a.steps + 1):
         idx = rng.integers(0, tr.size - a.seq - 1, size=a.batch)
-        x = torch.tensor(np.stack([tr[i:i + a.seq] for i in idx]))
-        y = torch.tensor(np.stack([tr[i + 1:i + a.seq + 1] for i in idx]))
+        x = torch.tensor(np.stack([tr[i:i + a.seq] for i in idx])).to(dev)
+        y = torch.tensor(np.stack([tr[i + 1:i + a.seq + 1] for i in idx])).to(dev)
         for g in opt.param_groups:
             g["lr"] = lr_at(step - 1)
-        logits, _ = m(x, torch.ones(a.batch, a.seq, dtype=torch.long), torch.arange(a.seq).unsqueeze(0).expand(a.batch, -1), None)
+        logits, _ = m(x, torch.ones(a.batch, a.seq, dtype=torch.long, device=dev), torch.arange(a.seq, device=dev).unsqueeze(0).expand(a.batch, -1), None)
         loss = torch.nn.functional.cross_entropy(logits.reshape(-1, vocab), y.reshape(-1))
         ce_val = float(loss.item())
         if m.aux is not None:
@@ -523,9 +536,9 @@ def cmd_pretrain(a):
 
     h1 = heldout_loss()
     loads_final = [blk.mlp.last_load.tolist() for blk in m.layers if getattr(blk.mlp, "last_load", None) is not None]   # 留出視窗的專家負載（先於一個詞元的取樣生成）
-    samples_after = gen_samples()
+    samples_after = on_cpu(gen_samples)
     emit({"event": "eval", "step": a.steps, "heldout_loss": round(h1, 5), "heldout_ppl": round(math.exp(h1), 3)})
-    torch.save({"config": cfg, "state": m.state_dict()}, os.path.join(a.out, "ckpt.pt"))
+    torch.save({"config": cfg, "state": {k: v.detach().cpu() for k, v in m.state_dict().items()}}, os.path.join(a.out, "ckpt.pt"))
     write_json(os.path.join(a.out, "config.json"), hf_config(cfg, vocab))
     with open(os.path.join(a.out, "samples_before.jsonl"), "w", encoding="utf-8") as f:
         for s in samples_before:
@@ -1034,6 +1047,38 @@ def cmd_export_hf(a):
 
 
 # ---------------------------------------------------------------- check
+def cmd_preflight(a):
+    """真規模前的環境檢查（只讀，不下載、不訓練）。每項給事實，不給判定之外的推論。"""
+    import shutil
+    rep = {"python": sys.version.split()[0]}
+    try:
+        import torch
+        rep["torch"] = torch.__version__
+        rep["cuda_available"] = bool(torch.cuda.is_available())
+        if rep["cuda_available"]:
+            rep["gpu_name"] = torch.cuda.get_device_name(0)
+            rep["gpu_vram_gb"] = round(torch.cuda.get_device_properties(0).total_memory / 2**30, 1)
+    except Exception as e:  # noqa: BLE001
+        rep["torch_error"] = repr(e)
+    try:
+        import transformers
+        rep["transformers"] = transformers.__version__
+    except Exception as e:  # noqa: BLE001
+        rep["transformers_error"] = repr(e)
+    try:
+        import tokenizers
+        rep["tokenizers"] = tokenizers.__version__
+    except Exception as e:  # noqa: BLE001
+        rep["tokenizers_error"] = repr(e)
+    try:
+        import psutil
+        rep["ram_gb"] = round(psutil.virtual_memory().total / 2**30, 1)
+    except Exception:
+        rep["ram_gb"] = None  # 未安裝 psutil 時不猜
+    rep["disk_free_gb"] = round(shutil.disk_usage(HERE).free / 2**30, 1)
+    emit({"ok": True, "preflight": rep})
+
+
 def cmd_check(a):
     import onnxruntime as ort
     from tokenizers import Tokenizer
@@ -1082,6 +1127,7 @@ def main():
     p.add_argument("--arch", default=None, choices=["dense", "moe"]); p.add_argument("--layers", type=int); p.add_argument("--heads", type=int); p.add_argument("--kv-heads", dest="kv_heads", type=int)
     p.add_argument("--hidden", type=int); p.add_argument("--intermediate", type=int); p.add_argument("--experts", type=int); p.add_argument("--top-k", dest="top_k", type=int)
     p.add_argument("--moe-inter", dest="moe_inter", type=int); p.add_argument("--aux-coef", dest="aux_coef", type=float)
+    p.add_argument("--device", default="cpu", choices=["cpu", "cuda"])
     p = sub.add_parser("sft"); p.add_argument("--base", required=True); p.add_argument("--data", default=""); p.add_argument("--out", required=True)
     p.add_argument("--steps", type=int, default=300); p.add_argument("--batch", type=int, default=8); p.add_argument("--lr", type=float, default=0.0005)
     p.add_argument("--seq", type=int, default=256); p.add_argument("--seed", type=int, default=0); p.add_argument("--heldout-frac", dest="heldout_frac", type=float, default=0.2)
@@ -1096,8 +1142,9 @@ def main():
     p = sub.add_parser("export"); p.add_argument("--model", required=True); p.add_argument("--out", required=True); p.add_argument("--threads", type=int, default=8)
     p = sub.add_parser("export-hf"); p.add_argument("--model", required=True); p.add_argument("--out", required=True)
     p = sub.add_parser("check"); p.add_argument("--model-dir", dest="model_dir", required=True)
+    sub.add_parser("preflight")
     a = ap.parse_args()
-    {"prep": cmd_prep, "tokenizer": cmd_tokenizer, "pretrain": cmd_pretrain, "sft": cmd_sft, "expert-load": cmd_expert_load, "gen-math": cmd_gen_math, "eval-math": cmd_eval_math, "grpo": cmd_grpo, "export": cmd_export, "export-hf": cmd_export_hf, "check": cmd_check}[a.cmd](a)
+    {"preflight": cmd_preflight, "prep": cmd_prep, "tokenizer": cmd_tokenizer, "pretrain": cmd_pretrain, "sft": cmd_sft, "expert-load": cmd_expert_load, "gen-math": cmd_gen_math, "eval-math": cmd_eval_math, "grpo": cmd_grpo, "export": cmd_export, "export-hf": cmd_export_hf, "check": cmd_check}[a.cmd](a)
 
 
 if __name__ == "__main__":
