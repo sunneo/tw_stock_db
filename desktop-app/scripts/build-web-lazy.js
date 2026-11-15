@@ -63,6 +63,11 @@ async function build(code, minifyOpts) {
     fs.writeFileSync(path.join(OUT, 'core.js'), r.code, 'utf8');
     manifest.core = { size: Buffer.byteLength(r.code), md5: crypto.createHash('md5').update(r.code).digest('hex') };
     fs.writeFileSync(path.join(OUT, 'manifest.json'), JSON.stringify(manifest, null, 1) + '\n', 'utf8');
+    // 開機要用的區塊清單（網頁版在核心執行前平行預抓）：scripts/web-lazy-boot.json，預設 []。
+    // 內容由 scripts/web-cold-load-probe.js 在真瀏覽器量出（window.__faLazyTrace 的名稱），確認後手動寫進該檔。
+    const bootList = fs.existsSync(path.join(__dirname, 'web-lazy-boot.json')) ? JSON.parse(fs.readFileSync(path.join(__dirname, 'web-lazy-boot.json'), 'utf8')) : [];
+    for (const k of bootList) if (!manifest.chunks[k]) throw new Error('web-lazy-boot.json 的區塊 ' + k + ' 不在 manifest 裡');
+    fs.writeFileSync(path.join(OUT, 'boot.json'), JSON.stringify(bootList) + '\n', 'utf8');
     const tot = Object.values(manifest.chunks).reduce((a, c) => a + c.size, 0);
     console.log('[build-web-lazy] core.js ' + (manifest.core.size / 1024).toFixed(0) + 'K；' + picked.length + ' 個區塊共 ' + (tot / 1024).toFixed(0) + 'K 搬成獨立檔');
     return manifest;
