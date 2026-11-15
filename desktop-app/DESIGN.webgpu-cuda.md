@@ -413,6 +413,7 @@ C／C++（clang）或 Rust ──► LLVM IR ──► NVPTX 後端 ──► PT
 9. 本機顯示卡型號（GT 720 與 TODO 第 119 行的衝突）與 WebGPU adapter（§8）。
 10. 容差數字（§4.5）全部未實測。
 11. 法律意見：CUDA 授權與 PTX 轉譯器的界線（§2.6），本文件不是法律意見。
+12. **請使用者補充**：哪些原語或函式庫（例如 cuBLAS、cuDNN、warp 原語、Tensor Core）是從社群論文演進進來的，以及大致年代與出處。使用者提供後補進 §11 演進表；目前這些出處只有【使用者口述】，沒有文獻。
 
 ---
 
@@ -462,7 +463,8 @@ C／C++（clang）或 Rust ──► LLVM IR ──► NVPTX 後端 ──► PT
 
 ### 11.1 查證說明
 
-- **「CUDA 原語來自 GTC 論文徵集」這個說法：未查證。** 本輪只查到現行 GTC 的投稿頁（[NVIDIA GTC 投稿頁](https://www.nvidia.com/en-us/gtc/present/call-for-submissions/)，2027 年 3 月 GTC 的海報徵集），沒有查到任何文件說明某個 CUDA 原語是經由 GTC 論文徵集併入。WMMA 首次公開是在 GTC 2017 的 CUDA 9 公告（[NVIDIA 部落格](https://developer.nvidia.com/blog/?p=7874)），那是**發表場合**，不等於「論文徵集併入」。因此本文件不採用這個說法作為事實。
+- **兩種來源分開標示**：【文獻查證】＝本文件引用的網路來源；【使用者口述】＝使用者本人經歷 CUDA 發展與研究歷程的第一手說法，**未附文獻，不是已查證事實**。使用者口述的脈絡：深度學習 → AlexNet 發現深度網路適合平行運算 → 研究社群投稿（含 GTC 徵稿）→ 被 NVIDIA 採用併入 CUDA。
+- **「CUDA 原語來自 GTC 論文徵集」這個說法：文獻未查證；使用者口述為上述脈絡。** 兩者不能互相取代，下表的出處欄會分開標示。 本輪只查到現行 GTC 的投稿頁（[NVIDIA GTC 投稿頁](https://www.nvidia.com/en-us/gtc/present/call-for-submissions/)，2027 年 3 月 GTC 的海報徵集），沒有查到任何文件說明某個 CUDA 原語是經由 GTC 論文徵集併入。WMMA 首次公開是在 GTC 2017 的 CUDA 9 公告（[NVIDIA 部落格](https://developer.nvidia.com/blog/?p=7874)），那是**發表場合**，不等於「論文徵集併入」。因此本文件不採用這個說法作為事實。
 - 下表每列寫明：引入版本與來源、查證狀態。標【推測】的年份沒有在本輪查證中核對。
 
 ### 11.2 演進表
