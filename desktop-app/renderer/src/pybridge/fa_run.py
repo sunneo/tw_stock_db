@@ -47,6 +47,12 @@ def main():
     sys.path.insert(1, os.path.dirname(script))  # 跟直接 python script.py 一樣，腳本所在資料夾在 sys.path 裡
     sys.argv = [script] + argv[1:]
     try:
+        import fa_gpu
+        if os.environ.get("FA_CUDA_COMPAT", "on") != "off":
+            fa_gpu.install()  # GPU 相容層：numba／cupy 墊片（真套件存在時不遮蔽）
+    except Exception as e:
+        sys.stderr.write("[fa-bridge] gpu compat: %s" % e + chr(10))
+    try:
         import fa_bridge
         fa_bridge.install_hooks()  # 直接送 HTTP 的 LLM 呼叫（OpenAI 標準與 Claude 格式）轉給助理的模型
     except Exception as e:
