@@ -41,7 +41,7 @@ def check(name, fn):
 
 # ---------------------------------------------------------------- 假的宿主
 host_calls = []
-host = {"info": {"hasWebGPU": True, "hasAdapter": True, "deviceReady": True, "adapter": "假的 NVIDIA（測試）", "ops": {}},
+host = {"info": {"hasWebGPU": True, "hasAdapter": True, "deviceReady": True, "adapter": "假的 NVIDIA（測試）", "ops": {}, "f64Mode": "auto"},
         "fail": False}
 
 
@@ -462,16 +462,26 @@ def _kernel_host(fn):
         KERNEL_SEEN.append(args["wgsl"])
         arrays = {}
         for b in args["bindings"]:
-            dt = np.float32 if b["dtype"] == "f32" else np.int32
+            dt = np.int32 if b["dtype"] == "i32" else np.float32
             arr = np.fromfile(b["bin"], dtype=dt) if "bin" in b else np.asarray(b["list"], dtype=dt)
-            arrays[b["name"]] = arr.reshape(b["shape"])
+            if b["dtype"] == "dd":  # 雙 float32：hi、lo 交錯，還原成 float64
+                v = arr.reshape(-1, 2)
+                arrays[b["name"]] = (v[:, 0].astype(np.float64) + v[:, 1].astype(np.float64)).reshape(b["shape"])
+            else:
+                arrays[b["name"]] = arr.reshape(b["shape"])
         res = fn(args["wgsl"], arrays)
         outs = {}
         for b in args["bindings"]:
             if not b["write"]:
                 continue
-            dt = np.float32 if b["dtype"] == "f32" else np.int32
-            data = np.asarray(res[b["name"]], dtype=dt).reshape(-1)
+            dt = np.int32 if b["dtype"] == "i32" else np.float32
+            if b["dtype"] == "dd":
+                val = np.asarray(res[b["name"]], dtype=np.float64).reshape(-1)
+                hi = val.astype(np.float32)
+                lo = (val - hi.astype(np.float64)).astype(np.float32)
+                data = np.stack([hi, lo], axis=1).reshape(-1)
+            else:
+                data = np.asarray(res[b["name"]], dtype=dt).reshape(-1)
             if "out" in b:
                 data.tofile(b["out"])
                 outs[b["name"]] = {"bin": b["out"]}
@@ -534,7 +544,7 @@ def t_wgsl_refuses_unsupported_with_reason():
     from numba import wgsl
     a64 = np.zeros(4, np.float64)
     try:
-        wgsl.compile_kernel("k", "def k(x):\n    i = cuda.grid(1)\n    x[i] = 1.0\n", [a64], (1, 1, 1), (4, 1, 1))
+        wgsl.compile_kernel("k", "def k(x):\n    i = cuda.grid(1)\n    x[i] = 1.0\n", [a64], (1, 1, 1), (4, 1, 1), mode="exact")
     except wgsl.NotCompilable as e:
         assert "float32" in str(e), str(e)
     else:
@@ -752,6 +762,147 @@ def t_desktop_mailbox_runs_script_file_with_kernel():
     assert p.returncode == 0, (err or out)[-800:]
     assert "DESK_ADD True DESK_MUL True" in out, out + err
     assert "此核心因為" in err and "沒有用到 GPU" in err, err
+
+
+# ---------------------------------------------------------------- float64（Python 預設）：exact／f32／auto(dd)
+def _f64_fn(wgsl_text, arrays):
+    """假的 GPU 結果（用 numpy 的 float64 算 scale_add）：out = x*2.5 + y - 0.125。"""
+    return {"a_out": arrays["a_x"] * 2.5 + arrays["a_y"] - 0.125}
+
+
+def _with_mode(mode, fn):
+    saved = host["info"].get("f64Mode")
+    host["info"]["f64Mode"] = mode
+    try:
+        return fn()
+    finally:
+        host["info"]["f64Mode"] = saved
+
+
+def _run_f64_example(kernel_impl):
+    host["kernel_impl"] = kernel_impl
+    try:
+        return run_example("numba_float64.py")
+    finally:
+        host["kernel_impl"] = None
+
+
+def t_wgsl_dd_text_and_refusals():
+    from numba import wgsl
+    x = np.zeros(4)
+    y = np.zeros(4)
+    out = np.zeros(4)
+    src = "def add_kernel(x, y, out):\n    idx = cuda.grid(1)\n    if idx < out.size:\n        out[idx] = x[idx] + y[idx]\n"
+    plan = wgsl.compile_kernel("add_kernel", src, [x, y, out], (1, 1, 1), (4, 1, 1), mode="dd")
+    assert "fn dd_add(" in plan.wgsl and "a_out[v_idx] = dd_add(a_x[v_idx], a_y[v_idx]);" in plan.wgsl, plan.wgsl
+    assert "array<vec2<f32>>" in plan.wgsl, plan.wgsl
+    by = {b["wname"]: b for b in plan.bindings}
+    assert by["a_x"]["dtype"] == "dd" and by["a_out"]["write"] and by["a_out"]["dtype"] == "dd", by
+    assert plan.fmode == "dd"
+    div = "def k(x):\n    i = cuda.grid(1)\n    x[i] = x[i] / 3.0\n"
+    for bad, want in ((div, "除法"), ("def k(x):\n    i = cuda.grid(1)\n    x[i] = math.sqrt(x[i])\n", "math.sqrt")):
+        try:
+            wgsl.compile_kernel("k", bad, [np.zeros(4)], (1, 1, 1), (4, 1, 1), mode="dd")
+        except wgsl.NotCompilable as e:
+            assert want in str(e), str(e)
+        else:
+            raise AssertionError("dd 模式應該拒絕：" + want)
+    f32plan = wgsl.compile_kernel("add_kernel", src, [x, y, out], (1, 1, 1), (4, 1, 1), mode="f32")
+    assert {b["wname"]: b["dtype"] for b in f32plan.bindings}["a_x"] == "f32"
+    try:
+        wgsl.compile_kernel("add_kernel", src, [x, y, out], (1, 1, 1), (4, 1, 1), mode="exact")
+    except wgsl.NotCompilable as e:
+        assert "cudaCompatFloat64=exact" in str(e), str(e)
+    else:
+        raise AssertionError("exact 模式應該拒絕 float64 陣列")
+
+
+def t_float64_example_auto_uses_dd_and_matches():
+    before = len(KERNEL_SEEN)
+    out, err = _with_mode("auto", lambda: _run_f64_example(_kernel_host(_f64_fn)))
+    assert "與 numpy 一致： True" in out, out + err
+    assert len(KERNEL_SEEN) == before + 1, "auto 模式應該把核心送到 GPU"
+    assert "雙 float32（約 48 位元有效精度）在 WebGPU 執行" in err, err
+    assert "此核心因為" not in err, err
+
+
+def t_float64_auto_sample_check_rejects_wrong_gpu_result():
+    def wrong(wgsl_text, arrays):
+        return {"a_out": arrays["a_x"] * 2.5 + arrays["a_y"] - 0.125 + 1e-3}  # 故意算錯
+    before = len(KERNEL_SEEN)
+    out, err = _with_mode("auto", lambda: _run_f64_example(_kernel_host(wrong)))
+    assert len(KERNEL_SEEN) == before + 1, "應該真的送到 GPU 才發現不一致"
+    assert "抽樣檢查不一致" in err and "改用本機 Python 模擬" in err, err
+    assert "與 numpy 一致： True" in out, out + err  # 退回模擬後結果仍正確
+
+
+def t_float64_exact_mode_stays_on_python():
+    before = len(KERNEL_SEEN)
+    out, err = _with_mode("exact", lambda: _run_f64_example(_kernel_host(_f64_fn)))
+    assert len(KERNEL_SEEN) == before, "exact 模式不應該送 GPU"
+    assert "cudaCompatFloat64=exact" in err and "沒有用到 GPU" in err, err
+    assert "與 numpy 一致： True" in out, out + err
+
+
+def t_float64_f32_mode_runs_and_says_precision():
+    before = len(KERNEL_SEEN)
+    out, err = _with_mode("f32", lambda: _run_f64_example(_kernel_host(_f64_fn)))
+    assert len(KERNEL_SEEN) == before + 1, "f32 模式應該送 GPU"
+    assert "精度降為 float32" in err, err
+    assert "dtype" not in err
+
+
+def t_dd_pack_roundtrip_precision():
+    a = np.array([1.0 / 3.0, 1e10 + 0.1, -2.5e-7, 123456.789012345])
+    flat = fa_gpu._pack_flat(a, "dd")
+    assert flat.dtype == np.float32 and flat.size == 2 * a.size
+    back = fa_gpu._unpack_flat(flat, "dd", a.shape)
+    assert np.max(np.abs(back - a) / np.abs(a)) < 1e-13, (back, a)
+
+
+def t_dd_algorithm_mirror_precision():
+    # 用 numpy 的 float32 逐步模擬 WGSL 的 dd_add／dd_mul（fma 用 float64 精確算出後一次捨入，與 WGSL 的 fma 相同），
+    # 驗證「雙 float32」的演算法有約 48 位元精度。WGSL 本身的正確性仍要在真的 GPU 上驗證。
+    f32 = np.float32
+
+    def two_sum(a, b):
+        s = f32(a + b)
+        bb = f32(s - a)
+        return s, f32(f32(a - f32(s - bb)) + f32(b - bb))
+
+    def quick(a, b):
+        s = f32(a + b)
+        return s, f32(b - f32(s - a))
+
+    def dd_add(a, b):
+        s, t1 = two_sum(a[0], b[0])
+        t, t2 = two_sum(a[1], b[1])
+        q1 = quick(s, f32(t1 + t))
+        return quick(q1[0], f32(q1[1] + t2))
+
+    def dd_mul(a, b):
+        p = f32(a[0] * b[0])
+        e = f32(np.float64(a[0]) * np.float64(b[0]) - np.float64(p))
+        e = f32(e + f32(f32(a[0] * b[1]) + f32(a[1] * b[0])))
+        return quick(p, e)
+
+    def split(x):
+        hi = f32(x)
+        return hi, f32(x - np.float64(hi))
+
+    def val(d):
+        return np.float64(d[0]) + np.float64(d[1])
+
+    rs = np.random.RandomState(7)
+    worst_add = worst_mul = 0.0
+    for _ in range(2000):
+        x, y = rs.uniform(-1e3, 1e3, 2)
+        ax, ay = split(x), split(y)
+        s = val(dd_add(ax, ay))
+        p = val(dd_mul(ax, ay))
+        worst_add = max(worst_add, abs(s - (x + y)) / (abs(x) + abs(y)))
+        worst_mul = max(worst_mul, abs(p - x * y) / abs(x * y))
+    assert worst_add < 1e-13 and worst_mul < 1e-13, (worst_add, worst_mul)
 
 
 for name, fn in list(globals().items()):

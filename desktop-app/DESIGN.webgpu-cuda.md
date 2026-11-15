@@ -150,7 +150,7 @@ Python 端 `cudaweb.backend_info()` 與 JS 端 `runtime.backendInfo()` 回傳相
 | f16 | 有（`shader-f16`，檔 C） | 沒有 `shader-f16`：整個核心改用 f32 版本 | RGBA16F（需 EXT_color_buffer_half_float） | f32 計算 | 低 | 1 |
 | bf16 | 沒有 | 以 u16 位元移位轉成 f32 計算 | 同左 | 同左 | 低 | 2 |
 | tf32 | 沒有 | 以 f32 計算（精度較高，結果不位元相同） | 同左 | 同左 | 低 | 2 |
-| f64 | 沒有 | 雙 f32（double-float，`hi + lo`，TwoSum、TwoProd）；有效尾數約 48 位元（預估，待實測） | 同左，每個運算約 10 至 20 倍工作量 | 原生 f64 | 高（每個運算 10 至 20 倍） | 2 |
+| f64 | 沒有 | 雙 f32（double-float，`hi + lo`，TwoSum、TwoProd、WGSL `fma`）；有效尾數約 48 位元（Python 鏡像實測約 1e-13 相對誤差，GPU 上尚未實測）。已接上 numba 逐元素 `+ − ×`、比較、min／max；除法等尚未支援。由 `cudaCompatFloat64` 設定：`exact`（退回模擬，與 CUDA 同精度）／`f32`（精度降為 float32）／`auto`（預設，雙 f32＋抽樣檢查，見 DESIGN.python-api-bridge.md「GPU 相容層」） | 同左，每個運算約 10 至 20 倍工作量 | 原生 f64 | 高（每個運算 10 至 20 倍） | 2 |
 | 64 位元整數 i64、u64 | 沒有 | 兩個 u32 加進位與借位；乘法用 16 位元分段 | 同左 | 原生 | 中到高 | 2 |
 | 8、16 位元整數原子 | 沒有 | 用 32 位元原子加遮罩模擬 | 不需要原子 | 原生 | 中 | 3 |
 

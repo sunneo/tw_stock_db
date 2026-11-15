@@ -128,6 +128,12 @@ def note_cpu(reason):
     _note("Python 本機執行（不經過 GPU）", reason)
 
 
+def note_precision(text):
+    """精度相關的說明（每次執行都印，讓使用者知道結果的精度）。"""
+    sys.stderr.write("[fa-bridge] %s\n" % text)
+    sys.stderr.flush()
+
+
 def note_fallback(reason):
     """numba 核心沒有在 GPU 執行時呼叫：每一次都印出具體原因（不只第一次），讓使用者知道這段沒有用到 GPU。"""
     STATS["fallbacks"] = STATS.get("fallbacks", 0) + 1
@@ -138,18 +144,49 @@ def note_fallback(reason):
 
 
 def _np_dtype(name):
+    """綁定的 WGSL 型別對應到傳輸用的 numpy 型別。dd（雙 float32）以 float32 交錯傳送（hi, lo, hi, lo…）。"""
     import numpy as np
-    return {"f32": np.float32, "i32": np.int32}[name]
+    return {"f32": np.float32, "i32": np.int32, "dd": np.float32}[name]
 
 
-def run_kernel(plan, arrays):
+def _pack_flat(arr, dtname):
+    """numpy 陣列 → 傳輸用的一維陣列。dd：float64 拆成 hi（float32）與 lo（float32 的餘數）交錯排列。"""
+    import numpy as np
+    if dtname == "dd":
+        a = np.ascontiguousarray(arr, dtype=np.float64).reshape(-1)
+        hi = a.astype(np.float32)
+        lo = (a - hi.astype(np.float64)).astype(np.float32)
+        return np.stack([hi, lo], axis=1).reshape(-1)
+    return np.ascontiguousarray(arr).reshape(-1).astype(_np_dtype(dtname))
+
+
+def _unpack_flat(vals, dtname, shape):
+    """宿主回傳的 float32／int32 一維陣列 → 目標形狀的值（dd 會合併成 float64）。"""
+    import numpy as np
+    if dtname == "dd":
+        v = np.asarray(vals, dtype=np.float32).reshape(-1, 2)
+        return (v[:, 0].astype(np.float64) + v[:, 1].astype(np.float64)).reshape(shape)
+    return np.asarray(vals, dtype=_np_dtype(dtname)).reshape(shape)
+
+
+def f64_mode():
+    """設定 cudaCompatFloat64（exact／f32／auto）。宿主在 gpu.info 回傳；沒有橋接時回 auto（之後執行會說明橋接不可用）。"""
+    try:
+        m = str(info().get("f64Mode") or "auto")
+    except (GpuCompatError, AttributeError):
+        return "auto"
+    return m if m in ("exact", "f32", "auto") else "auto"
+
+
+def run_kernel(plan, arrays, check=None):
     """把轉譯好的 WGSL（numba/wgsl.py 的 Plan）交給宿主在 WebGPU 執行。
-    arrays：參數名 → numpy 陣列。回傳 (是否在 GPU 執行, 原因)；成功時，可寫入的陣列已就地更新。"""
+    arrays：參數名 → numpy 陣列。check(outs) 若有給，會在寫回前呼叫（outs：參數名 → 結果陣列），回傳 (通過?, 原因)；
+    不通過就不寫回，回傳 (False, 原因)。回傳 (是否在 GPU 執行, 原因)；成功時，可寫入的陣列已就地更新。"""
     import numpy as np
     items, inputs, outs = [], [], []
     try:
         for b in plan.bindings:
-            flat = np.ascontiguousarray(arrays[b["param"]]).reshape(-1)
+            flat = _pack_flat(arrays[b["param"]], b["dtype"])
             dt = _np_dtype(b["dtype"])
             item = {"name": b["wname"], "dtype": b["dtype"], "n": int(flat.size), "write": bool(b["write"]),
                     "atomic": bool(b["atomic"]), "shape": list(b["shape"])}
@@ -180,6 +217,7 @@ def run_kernel(plan, arrays):
     STATS["ops"]["kernel"] = STATS["ops"].get("kernel", 0) + 1
     if not res.get("ran"):
         return False, res.get("reason") or "宿主沒有回報原因"
+    outs_np = {}
     for b in plan.bindings:
         if not b["write"]:
             continue
@@ -195,7 +233,13 @@ def run_kernel(plan, arrays):
                 pass
         else:
             vals = np.asarray(o.get("list", []), dtype=dt)
-        arr[...] = vals.reshape(arr.shape)
+        outs_np[b["param"]] = _unpack_flat(vals, b["dtype"], arr.shape)
+    if check is not None:
+        ok, why = check(outs_np)
+        if not ok:
+            return False, why
+    for p, v in outs_np.items():
+        arrays[p][...] = v
     _note("WebGPU（T1，numba 核心已編譯成 WGSL）", "numba 核心已在 WebGPU 執行")
     return True, ""
 

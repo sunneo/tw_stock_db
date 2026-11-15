@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-numba.cuda 核心 → WGSL 轉譯（GPU 相容層，第一批；DESIGN.webgpu-cuda.md §4）。
+numba.cuda 核心 → WGSL 轉譯（GPU 相容層；DESIGN.webgpu-cuda.md §3、§4）。
 
 支援：
 - cuda.grid(1)、cuda.grid(2)（對應 WGSL 的 global_invocation_id.x／.y；工作群組大小 = kernel[blocks, threads] 的 threads）
@@ -10,8 +10,13 @@ numba.cuda 核心 → WGSL 轉譯（GPU 相容層，第一批；DESIGN.webgpu-cu
 - 算術（+ - * / // % **）、比較、and／or／not、min／max／abs／float／int、math.sqrt 等
 - cuda.atomic.add（int32 陣列，WGSL atomicAdd）
 
-不支援（丟 NotCompilable，訊息帶行號與原因，上層會在本機 Python 模擬並說明原因）：
-shared 記憶體與 syncthreads（下一批）、float64／int64 陣列、float32 原子、try、lambda、推導式、遞迴、print 等。
+float64（Python 預設）的三種模式（由呼叫端選，對應設定 cudaCompatFloat64）：
+- exact：float64 陣列不轉換（丟 NotCompilable，由上層退回本機 Python 模擬，與 CUDA 同精度）
+- f32：float64 陣列轉成 float32 在 GPU 執行（精度降為 float32，結果轉回 float64）
+- dd：float64 陣列以「雙 float32」（hi + lo，約 48 位元有效精度）在 GPU 執行。只支援 + − × 與比較、min、max、abs、neg、float、int；
+  除法、次方、math.* 尚未實作（丟 NotCompilable，附原因）。
+
+不支援（丟 NotCompilable，訊息帶行號與原因）：shared 記憶體與 syncthreads、f64 原子、try、lambda、推導式、遞迴、print 等。
 
 注意：Python 的 // 與 WGSL 的整數除法對負數的取整不同（WGSL 向零取整）；核心的索引通常是非負數，所以結果一致。
 """
@@ -25,31 +30,89 @@ class NotCompilable(RuntimeError):
     """核心不能轉成 WGSL；字串是給使用者看的具體原因。"""
 
 
-F32, I32, BOOL = "f32", "i32", "bool"
+F32, I32, BOOL, DD = "f32", "i32", "bool", "dd"
+_WTY = {F32: "f32", I32: "i32", BOOL: "bool", DD: "vec2<f32>"}
+_BIND = {F32: "f32", I32: "i32", DD: "dd"}
 _DT = {np.dtype(np.float32): F32, np.dtype(np.int32): I32}
 _MATH1 = {"sqrt": "sqrt", "exp": "exp", "log": "log", "sin": "sin", "cos": "cos", "tan": "tan",
           "tanh": "tanh", "floor": "floor", "ceil": "ceil", "fabs": "abs"}
-_WTY = {F32: "f32", I32: "i32", BOOL: "bool"}
+_WIDEN = {(I32, F32), (I32, DD), (F32, DD)}
+EXACT_MSG = ("參數 %s 是 float64 陣列；cudaCompatFloat64=exact，保持與 CUDA 同精度，所以在本機 Python 模擬。"
+             "要用 GPU 請把設定改成 auto（雙 float32，約 48 位元）或 f32（精度降為 float32）")
+
+# 雙 float32（DESIGN.webgpu-cuda.md §3 的 f64 替代）。用 WGSL 內建 fma 做乘法的誤差項。
+DD_LIB = """// 雙 float32（hi + lo）的運算庫：float64 核心在 cudaCompatFloat64=auto 時用這組函式
+fn dd_of_f32(a: f32) -> vec2<f32> { return vec2<f32>(a, 0.0); }
+fn dd_to_f32(a: vec2<f32>) -> f32 { return a.x + a.y; }
+fn dd_neg(a: vec2<f32>) -> vec2<f32> { return -a; }
+fn dd_two_sum(a: f32, b: f32) -> vec2<f32> {
+  let s = a + b;
+  let bb = s - a;
+  let e = (a - (s - bb)) + (b - bb);
+  return vec2<f32>(s, e);
+}
+fn dd_quick_two_sum(a: f32, b: f32) -> vec2<f32> {
+  let s = a + b;
+  let e = b - (s - a);
+  return vec2<f32>(s, e);
+}
+fn dd_add(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
+  let s = dd_two_sum(a.x, b.x);
+  let t = dd_two_sum(a.y, b.y);
+  let q1 = dd_quick_two_sum(s.x, s.y + t.x);
+  return dd_quick_two_sum(q1.x, q1.y + t.y);
+}
+fn dd_sub(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> { return dd_add(a, dd_neg(b)); }
+fn dd_mul(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
+  let p = a.x * b.x;
+  let e = fma(a.x, b.x, -p) + (a.x * b.y + a.y * b.x);
+  return dd_quick_two_sum(p, e);
+}
+fn dd_lt(a: vec2<f32>, b: vec2<f32>) -> bool { return (a.x < b.x) || ((a.x == b.x) && (a.y < b.y)); }
+fn dd_eq(a: vec2<f32>, b: vec2<f32>) -> bool { return (a.x == b.x) && (a.y == b.y); }
+fn dd_le(a: vec2<f32>, b: vec2<f32>) -> bool { return dd_lt(a, b) || dd_eq(a, b); }
+fn dd_gt(a: vec2<f32>, b: vec2<f32>) -> bool { return dd_lt(b, a); }
+fn dd_ge(a: vec2<f32>, b: vec2<f32>) -> bool { return dd_le(b, a); }
+fn dd_ne(a: vec2<f32>, b: vec2<f32>) -> bool { return !dd_eq(a, b); }
+fn dd_min(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> { if (dd_lt(b, a)) { return b; } return a; }
+fn dd_max(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> { if (dd_lt(a, b)) { return b; } return a; }
+fn dd_abs(a: vec2<f32>) -> vec2<f32> { if (a.x < 0.0) { return -a; } return a; }
+"""
 
 
-def _lit(v):
-    """Python 常數 → (WGSL 運算式, 型別)。"""
-    if isinstance(v, (bool, np.bool_)):
-        return ("true" if v else "false"), BOOL
-    if isinstance(v, (int, np.integer)):
-        iv = int(v)
-        if not -(2 ** 31) <= iv < 2 ** 31:
-            raise NotCompilable("整數常數 %d 超出 i32 範圍" % iv)
-        return "(%di)" % iv, I32
-    if isinstance(v, (float, np.floating)):
-        fv = float(v)
-        if not math.isfinite(fv):
-            raise NotCompilable("浮點常數不是有限數字（%r）" % fv)
-        s = repr(fv)
-        if "." not in s and "e" not in s and "E" not in s:
-            s += ".0"
-        return "(%sf)" % s, F32
-    raise NotCompilable("不支援的常數型別 %s" % type(v).__name__)
+def _fl(x):
+    """Python 浮點數 → WGSL f32 字面值（帶括號與 f 後綴）。"""
+    s = repr(float(x))
+    if "." not in s and "e" not in s and "E" not in s:
+        s += ".0"
+    return "(%sf)" % s
+
+
+def _int_lit(v):
+    iv = int(v)
+    if not -(2 ** 31) <= iv < 2 ** 31:
+        raise NotCompilable("整數常數 %d 超出 i32 範圍" % iv)
+    return "(%di)" % iv
+
+
+class _Arr(object):
+    def __init__(self, param, dtype, shape):
+        self.param = param
+        self.w = "a_" + param
+        self.dtype = dtype
+        self.shape = tuple(shape)
+        self.atomic = False
+        self.write = False
+
+
+class Plan(object):
+    """轉譯結果：WGSL 原始碼、綁定（依 binding 編號排列）、工作群組數、浮點模式。"""
+
+    def __init__(self, wgsl, bindings, groups, fmode):
+        self.wgsl = wgsl
+        self.bindings = bindings  # 每個 dict：param（numba 參數名）、wname（WGSL 名）、dtype（f32／i32／dd）、shape、write、atomic
+        self.groups = groups
+        self.fmode = fmode        # 'f32' 或 'dd'
 
 
 def _is_cuda_attr(n, attr):
@@ -66,30 +129,12 @@ def _is_atomic_add(n):
         and _is_cuda_attr(n.func.value, "atomic")
 
 
-class _Arr(object):
-    def __init__(self, param, dtype, shape):
-        self.param = param
-        self.w = "a_" + param
-        self.dtype = dtype
-        self.shape = tuple(shape)
-        self.atomic = False
-        self.write = False
-
-
-class Plan(object):
-    """轉譯結果：WGSL 原始碼、綁定（依 binding 編號排列）、工作群組數。"""
-
-    def __init__(self, wgsl, bindings, groups):
-        self.wgsl = wgsl
-        self.bindings = bindings  # 每個 dict：param（numba 參數名）、wname（WGSL 名）、dtype、shape、write、atomic
-        self.groups = groups
-
-
 class _Gen(object):
-    def __init__(self, arrays, consts, threads):
+    def __init__(self, arrays, consts, threads, fmode):
         self.arrays = arrays
-        self.consts = consts
+        self.consts = consts      # 參數名 → Python 純量
         self.threads = threads
+        self.fmode = fmode        # 'f32' 或 'dd'：Python 浮點常數與浮點運算的表示
         self.locals = {}
         self.lines = []
         self.ind = 1
@@ -106,20 +151,52 @@ class _Gen(object):
         if arr not in self.used:
             self.used.append(arr)
 
+    def flit(self, v):
+        if self.fmode == DD:
+            hi = float(np.float32(v))
+            lo = float(np.float32(float(v) - hi))
+            return "vec2<f32>(%s, %s)" % (_fl(hi), _fl(lo)), DD
+        return _fl(v), F32
+
+    def lit(self, v):
+        if isinstance(v, (bool, np.bool_)):
+            return ("true" if v else "false"), BOOL
+        if isinstance(v, (int, np.integer)):
+            return _int_lit(v), I32
+        if isinstance(v, (float, np.floating)):
+            fv = float(v)
+            if not math.isfinite(fv):
+                raise NotCompilable("浮點常數不是有限數字（%r）" % fv)
+            return self.flit(fv)
+        raise NotCompilable("不支援的常數型別 %s" % type(v).__name__)
+
     def coerce(self, node, code, t, to):
         if t == to:
             return code
-        if to == F32 and t == I32:
-            return "f32(%s)" % code
-        if to == I32 and t == F32:
-            return "i32(%s)" % code
-        self.err(node, "型別不相容（%s 與 %s）" % (t, to))
+        if to == F32:
+            if t == I32:
+                return "f32(%s)" % code
+            if t == DD:
+                return "dd_to_f32(%s)" % code
+        if to == DD:
+            if t == F32:
+                return "dd_of_f32(%s)" % code
+            if t == I32:
+                return "dd_of_f32(f32(%s))" % code
+        if to == I32:
+            if t == F32:
+                return "i32(%s)" % code
+            if t == DD:
+                return "i32(dd_to_f32(%s))" % code
+        self.err(node, "型別不相容（%s 與 %s）" % (_WTY[t], _WTY[to]))
 
     def boolean(self, node, code, t):
         if t == BOOL:
             return code
         if t == I32:
             return "(%s != 0i)" % code
+        if t == DD:
+            return "(dd_to_f32(%s) != 0.0f)" % code
         return "(%s != 0.0f)" % code
 
     def i32(self, node):
@@ -134,12 +211,12 @@ class _Gen(object):
     # ---- 運算式
     def expr(self, n):
         if isinstance(n, ast.Constant):
-            return _lit(n.value)
+            return self.lit(n.value)
         if isinstance(n, ast.Name):
             if n.id in self.locals:
                 return self.locals[n.id]
             if n.id in self.consts:
-                return self.consts[n.id]
+                return self.lit(self.consts[n.id])
             if n.id in self.arrays:
                 self.err(n, "陣列 %s 不能直接當數值使用（請用 %s[索引]）" % (n.id, n.id))
             self.err(n, "未定義的名稱 %s（核心只能用參數、迴圈變數與區域變數）" % n.id)
@@ -150,25 +227,14 @@ class _Gen(object):
             if t == BOOL:
                 self.err(n, "布林值不能做正負號運算")
             if isinstance(n.op, ast.USub):
-                return "(-%s)" % c, t
+                return ("dd_neg(%s)" % c if t == DD else "(-%s)" % c), t
             if isinstance(n.op, ast.UAdd):
                 return c, t
             self.err(n, "不支援的一元運算")
         if isinstance(n, ast.BinOp):
             return self.binop(n)
         if isinstance(n, ast.Compare):
-            if len(n.ops) != 1:
-                self.err(n, "不支援鏈式比較（請改成 and）")
-            ops = {ast.Lt: "<", ast.LtE: "<=", ast.Gt: ">", ast.GtE: ">=", ast.Eq: "==", ast.NotEq: "!="}
-            op = ops.get(type(n.ops[0]))
-            if op is None:
-                self.err(n, "不支援的比較運算")
-            a, at = self.expr(n.left)
-            b, bt = self.expr(n.comparators[0])
-            if BOOL in (at, bt):
-                self.err(n, "布林值不能直接比較")
-            t = F32 if F32 in (at, bt) else I32
-            return "(%s %s %s)" % (self.coerce(n, a, at, t), op, self.coerce(n, b, bt, t)), BOOL
+            return self.compare(n)
         if isinstance(n, ast.BoolOp):
             sym = "&&" if isinstance(n.op, ast.And) else "||"
             parts = []
@@ -202,16 +268,27 @@ class _Gen(object):
             return self.call(n)
         self.err(n, "不支援的運算式 %s" % type(n).__name__)
 
+    def _dd_mode_float(self, at, bt):
+        return self.fmode == DD and (DD in (at, bt) or F32 in (at, bt))
+
     def binop(self, n):
         a, at = self.expr(n.left)
         b, bt = self.expr(n.right)
         if BOOL in (at, bt):
             self.err(n, "布林值不能參與算術運算")
         op = type(n.op)
+        if self._dd_mode_float(at, bt):
+            fn = {ast.Add: "dd_add", ast.Sub: "dd_sub", ast.Mult: "dd_mul"}.get(op)
+            if fn is None:
+                self.err(n, "雙 float32 模式目前只支援 + − ×、比較、min、max、abs（除法、次方、取餘與 math 函式尚未實作，DESIGN.webgpu-cuda.md §3）；"
+                            "可改用 cudaCompatFloat64=f32（精度降為 float32）或 exact")
+            return "%s(%s, %s)" % (fn, self.coerce(n, a, at, DD), self.coerce(n, b, bt, DD)), DD
         if op in (ast.Add, ast.Sub, ast.Mult):
             sym = {ast.Add: "+", ast.Sub: "-", ast.Mult: "*"}[op]
             t = F32 if F32 in (at, bt) else I32
             return "(%s %s %s)" % (self.coerce(n, a, at, t), sym, self.coerce(n, b, bt, t)), t
+        if self.fmode == DD and op in (ast.Div, ast.Pow):
+            self.err(n, "雙 float32 模式尚未支援整數除法與次方（DESIGN.webgpu-cuda.md §3，之後再做）；請改用 cudaCompatFloat64=f32 或 exact")
         if op is ast.Div:
             return "(%s / %s)" % (self.coerce(n, a, at, F32), self.coerce(n, b, bt, F32)), F32
         if op is ast.FloorDiv:
@@ -223,24 +300,53 @@ class _Gen(object):
             return "pow(%s, %s)" % (self.coerce(n, a, at, F32), self.coerce(n, b, bt, F32)), F32
         self.err(n, "不支援的運算子 %s" % op.__name__)
 
+    def compare(self, n):
+        if len(n.ops) != 1:
+            self.err(n, "不支援鏈式比較（請改成 and）")
+        a, at = self.expr(n.left)
+        b, bt = self.expr(n.comparators[0])
+        if BOOL in (at, bt):
+            self.err(n, "布林值不能直接比較")
+        if self._dd_mode_float(at, bt):
+            fn = {ast.Lt: "dd_lt", ast.LtE: "dd_le", ast.Gt: "dd_gt", ast.GtE: "dd_ge",
+                  ast.Eq: "dd_eq", ast.NotEq: "dd_ne"}.get(type(n.ops[0]))
+            if fn is None:
+                self.err(n, "不支援的比較運算")
+            return "%s(%s, %s)" % (fn, self.coerce(n, a, at, DD), self.coerce(n, b, bt, DD)), BOOL
+        ops = {ast.Lt: "<", ast.LtE: "<=", ast.Gt: ">", ast.GtE: ">=", ast.Eq: "==", ast.NotEq: "!="}
+        op = ops.get(type(n.ops[0]))
+        if op is None:
+            self.err(n, "不支援的比較運算")
+        t = F32 if F32 in (at, bt) else I32
+        return "(%s %s %s)" % (self.coerce(n, a, at, t), op, self.coerce(n, b, bt, t)), BOOL
+
     def call(self, n):
         f = n.func
         if isinstance(f, ast.Name) and f.id in ("min", "max") and len(n.args) == 2:
             a, at = self.expr(n.args[0])
             b, bt = self.expr(n.args[1])
+            if self._dd_mode_float(at, bt):
+                return "dd_%s(%s, %s)" % (f.id, self.coerce(n, a, at, DD), self.coerce(n, b, bt, DD)), DD
             t = F32 if F32 in (at, bt) else I32
             return "%s(%s, %s)" % (f.id, self.coerce(n, a, at, t), self.coerce(n, b, bt, t)), t
         if isinstance(f, ast.Name) and f.id == "abs" and len(n.args) == 1:
             a, at = self.expr(n.args[0])
             if at == BOOL:
                 self.err(n, "abs 不能用在布林值")
+            if at == DD:
+                return "dd_abs(%s)" % a, DD
             return "abs(%s)" % a, at
         if isinstance(f, ast.Name) and f.id in ("float", "int") and len(n.args) == 1:
             a, at = self.expr(n.args[0])
-            to = F32 if f.id == "float" else I32
+            if f.id == "float":
+                to = DD if self.fmode == DD else F32
+            else:
+                to = I32
             return self.coerce(n, a, at, to), to
         if isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name) and f.value.id == "math" \
                 and f.attr in _MATH1 and len(n.args) == 1:
+            if self.fmode == DD:
+                self.err(n, "雙 float32 模式尚未支援 math.%s（超越函數之後再做）；請改用 cudaCompatFloat64=f32 或 exact" % f.attr)
             a, at = self.expr(n.args[0])
             return "%s(%s)" % (_MATH1[f.attr], self.coerce(n, a, at, F32)), F32
         if _is_grid_call(n) or _is_atomic_add(n):
@@ -330,8 +436,8 @@ class _Gen(object):
         if name in self.locals:
             w, lt = self.locals[name]
             if lt != t:
-                if lt == F32 and t == I32:
-                    c = "f32(%s)" % c
+                if (t, lt) in _WIDEN:
+                    c = self.coerce(s, c, t, lt)
                 else:
                     self.err(s, "變數 %s 的型別從 %s 變成 %s（WGSL 需要固定型別，請統一寫法，例如浮點數初值用 0.0）" % (name, _WTY[lt], _WTY[t]))
             self.emit("%s = %s;" % (w, c))
@@ -423,8 +529,14 @@ def _mark_atomics(fdef, arrays):
             arr.atomic = True
 
 
-def compile_kernel(name, src, values, blocks, threads):
-    """把 numba 核心轉成 WGSL。values 是依參數順序的 numpy 陣列或 Python 純量。丟 NotCompilable 時帶具體原因。"""
+def compile_kernel(name, src, values, blocks, threads, mode="f32"):
+    """把 numba 核心轉成 WGSL。
+    values：依參數順序的 numpy 陣列或 Python 純量。
+    mode：'exact'（float64 陣列拒絕）、'f32'（float64 陣列當 float32）、'dd'（float64 陣列用雙 float32）。
+    丟 NotCompilable 時帶具體原因。"""
+    if mode not in ("exact", "f32", "dd"):
+        raise NotCompilable("未知的浮點模式 %r" % (mode,))
+    fmode = DD if mode == "dd" else F32
     if blocks[2] != 1 or threads[2] != 1:
         raise NotCompilable("三維的 blocks／threads 第一批尚未支援")
     if threads[0] * threads[1] > 256:
@@ -448,18 +560,23 @@ def compile_kernel(name, src, values, blocks, threads):
     arrays, consts = {}, {}
     for p, v in zip(params, values):
         if isinstance(v, np.ndarray):
-            dt = _DT.get(v.dtype)
-            if dt is None:
-                raise NotCompilable("參數 %s 是 %s 陣列；WebGPU 第一批只支援 float32 與 int32（改成 float32 會改變數值精度，所以不自動轉換）" % (p, v.dtype))
+            if v.dtype == np.float64:
+                if mode == "exact":
+                    raise NotCompilable(EXACT_MSG % p)
+                dt = DD if mode == "dd" else F32
+            else:
+                dt = _DT.get(v.dtype)
+                if dt is None:
+                    raise NotCompilable("參數 %s 是 %s 陣列；WebGPU 只支援 float32、int32 與（設定允許時）float64" % (p, v.dtype))
             if v.ndim not in (1, 2):
                 raise NotCompilable("參數 %s 是 %d 維陣列，第一批只支援一維與二維" % (p, v.ndim))
             arrays[p] = _Arr(p, dt, v.shape)
         elif isinstance(v, (bool, int, float, np.integer, np.floating, np.bool_)):
-            consts[p] = _lit(v)
+            consts[p] = v
         else:
             raise NotCompilable("參數 %s 的型別 %s 不支援" % (p, type(v).__name__))
     _mark_atomics(fdef, arrays)
-    g = _Gen(arrays, consts, threads)
+    g = _Gen(arrays, consts, threads, fmode)
     g.stmts(fdef.body)
 
     decls, bindings = [], []
@@ -467,9 +584,10 @@ def compile_kernel(name, src, values, blocks, threads):
         acc = "read_write" if arr.write else "read"
         elem = "atomic<i32>" if arr.atomic else _WTY[arr.dtype]
         decls.append("@group(0) @binding(%d) var<storage, %s> %s: array<%s>;" % (k, acc, arr.w, elem))
-        bindings.append({"param": arr.param, "wname": arr.w, "dtype": "i32" if arr.dtype == I32 else "f32",
+        bindings.append({"param": arr.param, "wname": arr.w, "dtype": "i32" if arr.dtype == I32 else _BIND[arr.dtype],
                          "shape": list(arr.shape), "write": bool(arr.write), "atomic": bool(arr.atomic)})
     head = "@compute @workgroup_size(%d, %d, 1)\nfn main(@builtin(global_invocation_id) gid: vec3<u32>) {" % (threads[0], threads[1])
-    wgsl = "// 由 numba 核心轉譯（GPU 相容層第一批）\n" + "\n".join(decls) + "\n\n" + head + "\n" \
+    lib = (DD_LIB + "\n") if fmode == DD else ""
+    wgsl = "// 由 numba 核心轉譯（GPU 相容層）\n" + lib + "\n".join(decls) + "\n\n" + head + "\n" \
         + "\n".join(g.lines) + ("\n" if g.lines else "") + "}\n"
-    return Plan(wgsl, bindings, (int(blocks[0]), int(blocks[1])))
+    return Plan(wgsl, bindings, (int(blocks[0]), int(blocks[1])), fmode)

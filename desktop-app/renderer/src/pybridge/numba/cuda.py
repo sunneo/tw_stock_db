@@ -156,7 +156,7 @@ def to_device(obj, stream=0):
     return DeviceArray(np.array(obj, copy=True))
 
 
-def device_array(shape, dtype=np.float32, stream=0):
+def device_array(shape, dtype=np.float64, stream=0):  # 與 numba 相同：預設 float64
     return DeviceArray(np.zeros(shape, dtype=dtype))
 
 
@@ -330,30 +330,52 @@ class _Launcher(object):
             _check_subset(k.__name__, k._source())
             k._checked = True
         real_args = [_unwrap(a) for a in args]
-        # 先試 GPU：核心轉成 WGSL，交給 WebGPU 執行（見 numba/wgsl.py 的支援範圍）
-        reason = None
-        try:
-            plan = wgsl.compile_kernel(k.__name__, k._source(), real_args, self._b, self._t)
-        except wgsl.NotCompilable as e:
-            plan, reason = None, str(e)
-        if plan is not None:
-            names = list(inspect.signature(k._fn).parameters)
-            ran, why = fa_gpu.run_kernel(plan, dict(zip(names, real_args)))
+        src = k._source()
+        names = list(inspect.signature(k._fn).parameters)
+        blocks, threads = self._b, self._t
+        if not any(isinstance(a, np.ndarray) and a.dtype == np.float64 for a in real_args):
+            # 沒有 float64 陣列：照原本的 float32／int32 路徑在 GPU 執行
+            ran, why = _try_gpu(k, blocks, threads, real_args, names, "exact")
             if ran:
                 return
-            reason = why
-        # 退回本機 Python 模擬：每次都說明原因，讓使用者知道沒有用到 GPU
-        _launch(k._fn, self._b, self._t, real_args, uses_sync="syncthreads" in k._source())
-        fa_gpu.note_fallback(reason or "沒有說明")
+            _emulate(k, blocks, threads, real_args, src, why)
+            return
+        # 有 float64 陣列（Python 預設）：依設定 cudaCompatFloat64 處理（exact／f32／auto）
+        mode = fa_gpu.f64_mode()
+        if mode == "f32":
+            ran, why = _try_gpu(k, blocks, threads, real_args, names, "f32")
+            if ran:
+                fa_gpu.note_precision("cudaCompatFloat64=f32：float64 陣列已轉成 float32 在 WebGPU 執行，精度降為 float32（結果已轉回 float64）")
+                return
+            _emulate(k, blocks, threads, real_args, src, why)
+            return
+        if mode == "exact":
+            _emulate(k, blocks, threads, real_args, src,
+                     "cudaCompatFloat64=exact：float64 陣列保持與 CUDA 同精度，所以不用 GPU（設定可改為 auto 或 f32）")
+            return
+        # auto：雙 float32（約 48 位元）在 GPU 執行，寫回前做抽樣檢查（CPU 參考版與 GPU 在前一個區塊相符）
+        if "cuda.atomic" in src:
+            _emulate(k, blocks, threads, real_args, src,
+                     "cudaCompatFloat64=auto：核心同時用了原子加，無法做抽樣檢查，所以不用 GPU（可改為 f32 或 exact）")
+            return
+        check = lambda outs: _sample_check(k._fn, blocks, threads, real_args, names, outs)  # noqa: E731
+        ran, why = _try_gpu(k, blocks, threads, real_args, names, "dd", check)
+        if ran:
+            fa_gpu.note_precision("float64 核心以雙 float32（約 48 位元有效精度）在 WebGPU 執行（cudaCompatFloat64=auto）")
+            return
+        _emulate(k, blocks, threads, real_args, src, "cudaCompatFloat64=auto：" + why)
 
 
-def _launch(fn, blocks, threads, args, uses_sync):
+def _launch(fn, blocks, threads, args, uses_sync, only_block=None):
+    """逐執行緒模擬。only_block 若有給（例如 (0,0,0)），只模擬那一個區塊（抽樣檢查用）。"""
     gdim = _Triple(*blocks)
     bdim = _Triple(*threads)
     n_threads = threads[0] * threads[1] * threads[2]
     for bz in range(blocks[2]):
         for by in range(blocks[1]):
             for bx in range(blocks[0]):
+                if only_block is not None and (bx, by, bz) != tuple(only_block):
+                    continue
                 block = _Triple(bx, by, bz)
                 shared_store, shared_lock = [], threading.Lock()
                 barrier = threading.Barrier(n_threads) if uses_sync and n_threads > 1 else None
@@ -394,6 +416,51 @@ def _run_one(fn, args, tid, block, bdim, gdim, shared_store, shared_lock, barrie
         fn(*args)
     finally:
         _tls.ctx = None
+
+
+def _try_gpu(k, blocks, threads, real_args, names, mode, check=None):
+    """轉成 WGSL（mode：exact／f32／dd）並在 GPU 執行。回傳 (是否在 GPU 執行, 原因)。"""
+    try:
+        plan = wgsl.compile_kernel(k.__name__, k._source(), real_args, blocks, threads, mode=mode)
+    except wgsl.NotCompilable as e:
+        return False, str(e)
+    try:
+        return fa_gpu.run_kernel(plan, dict(zip(names, real_args)), check)
+    except Exception as e:  # run_kernel 應該不丟例外；保險起見仍說明原因
+        return False, "GPU 執行失敗（%s）" % e
+
+
+def _emulate(k, blocks, threads, real_args, src, reason):
+    """退回本機 Python 逐執行緒模擬，並把原因說明給使用者（沒有用到 GPU）。"""
+    _launch(k._fn, blocks, threads, real_args, uses_sync="syncthreads" in src)
+    fa_gpu.note_fallback(reason or "沒有說明")
+
+
+def _sample_check(fn, blocks, threads, args, names, outs):
+    """抽樣檢查：用 Python 模擬只跑第一個區塊（不寫回真的陣列），與 GPU 結果比對（相對誤差 1e-9）。
+    只檢查浮點輸出；輸出位置由模擬的寫入決定（用 NaN 當記號）。回傳 (通過?, 原因)。"""
+    copies = []
+    for n, a in zip(names, args):
+        c = np.array(a, copy=True)
+        if n in outs and c.dtype.kind == "f":
+            c[...] = np.nan
+        copies.append(c)
+    _launch(fn, blocks, threads, copies, uses_sync=False, only_block=(0, 0, 0))
+    for i, n in enumerate(names):
+        if n not in outs or copies[i].dtype.kind != "f":
+            continue
+        ref = copies[i].reshape(-1)
+        mask = ~np.isnan(ref)
+        if not mask.any():
+            continue
+        r = ref[mask].astype(np.float64)
+        g = np.asarray(outs[n]).reshape(-1)[mask].astype(np.float64)
+        bad = np.abs(g - r) > (1e-9 * np.abs(r) + 1e-12)
+        if bad.any():
+            j = int(np.flatnonzero(bad)[0])
+            pos = int(np.flatnonzero(mask)[j])
+            return False, "抽樣檢查不一致：參數 %s 第 %d 個元素 GPU=%r、CPU 參考=%r，改用本機 Python 模擬" % (n, pos, float(g[j]), float(r[j]))
+    return True, ""
 
 
 def jit(signature_or_fn=None, **kwargs):
