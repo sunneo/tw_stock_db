@@ -15,7 +15,17 @@ for (const [f, m] of Object.entries(expect)) {
 }
 const actual = [];
 (function walk(d, rel) { for (const e of fs.readdirSync(d, { withFileTypes: true })) { const r = rel ? rel + '/' + e.name : e.name; e.isDirectory() ? walk(path.join(d, e.name), r) : actual.push(r); } })(dir, '');
-for (const f of actual) if (f !== 'manifest.json' && !expect[f]) errors.push('manifest 沒有列到：' + f);
+// boot.json：開機要平行預抓的區塊清單（scripts/build-web-lazy.js 產生，載入器在核心執行前讀它），不是區塊檔，所以不列進 manifest；
+// 但內容要合法，且清單裡的每個區塊都必須在 manifest 裡（否則載入器會預抓到不存在的檔案）。
+const SIDE_FILES = new Set(['manifest.json', 'boot.json']);
+if (actual.indexOf('boot.json') >= 0) {
+    try {
+        const b = JSON.parse(fs.readFileSync(path.join(dir, 'boot.json'), 'utf8'));
+        if (!b || !Array.isArray(b.names)) errors.push('boot.json 格式不符（要有 names 陣列）');
+        else for (const n of b.names) if (!man.chunks[n]) errors.push('boot.json 列了不在 manifest 的區塊：' + n);
+    } catch (e) { errors.push('boot.json 無法解析：' + (e && e.message)); }
+}
+for (const f of actual) if (!SIDE_FILES.has(f) && !expect[f]) errors.push('manifest 沒有列到：' + f);
 if (errors.length) { console.error('web-lazy 檢查失敗：\n' + errors.join('\n')); process.exit(1); }
 console.log('web-lazy 本機檢查通過：core.js＋' + Object.keys(man.chunks).length + ' 個區塊檔');
 const i = process.argv.indexOf('--remote');
