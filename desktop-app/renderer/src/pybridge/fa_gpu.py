@@ -200,6 +200,99 @@ def run_kernel(plan, arrays):
     return True, ""
 
 
+# ---------------------------------------------------------------- 核心原始碼的取得
+# 網頁版的助理用 runPythonAsync(字串) 執行使用者腳本：函式沒有檔案，inspect.getsource 必然失敗。
+# 所以主機端在執行前把腳本文字登記進來（register_script），找不到時依函式名稱與行號從登記的腳本裡找出來。
+_SCRIPTS = []
+
+
+class SourceUnavailable(RuntimeError):
+    """取不到函式原始碼（inspect 與登記的腳本都找不到）。"""
+
+
+def register_script(text):
+    """登記一份腳本原始碼（只留最近 8 份）。主機端在執行使用者腳本前呼叫。"""
+    t = str(text or "")
+    if not t:
+        return
+    _SCRIPTS[:] = [s for s in _SCRIPTS if s != t][-7:] + [t]
+
+
+def _block_from_text(text, name, firstlineno):
+    """在腳本文字裡找出名為 name、起始行（含裝飾器）等於 firstlineno 的函式定義，回傳它的原始碼區塊。"""
+    import ast
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return None
+    lines = text.splitlines(True)
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
+            start = min([node.lineno] + [d.lineno for d in node.decorator_list])
+            if firstlineno in (start, node.lineno):
+                end = getattr(node, "end_lineno", None) or len(lines)
+                return "".join(lines[start - 1:end])
+    return None
+
+
+def _code_equal(x, y):
+    """兩個 code 物件的位元組碼、名稱與常數都相同（不比行號，因為同一段程式在不同腳本裡行號可能不同）。"""
+    import inspect
+    if x.co_code != y.co_code or x.co_names != y.co_names or len(x.co_consts) != len(y.co_consts):
+        return False
+    for a, b in zip(x.co_consts, y.co_consts):
+        if inspect.iscode(a) or inspect.iscode(b):
+            if not (inspect.iscode(a) and inspect.iscode(b) and _code_equal(a, b)):
+                return False
+        elif a != b:
+            return False
+    return True
+
+
+def _matching_code(block, name):
+    import inspect
+    import textwrap
+    try:
+        mod = compile(textwrap.dedent(block), "<fa-kernel-src>", "exec")
+    except SyntaxError:
+        return None
+    for c in mod.co_consts:
+        if inspect.iscode(c) and c.co_name == name:
+            return c
+    return None
+
+
+def find_kernel_source(fn):
+    """取得 Python 函式的原始碼。(a) inspect.getsource；(b) 登記的腳本（從新到舊）：
+    先找「名稱、起始行相同、而且編譯後的程式碼與 fn 相同」的區塊，找不到才退回「名稱與起始行相同」的區塊。
+    兩者都失敗就丟 SourceUnavailable，並說明原因與解法。"""
+    import inspect
+    try:
+        return inspect.getsource(fn)
+    except (OSError, TypeError):
+        pass
+    code = getattr(fn, "__code__", None)
+    if code is not None:
+        loose = None
+        for text in reversed(_SCRIPTS):
+            blk = _block_from_text(text, fn.__name__, code.co_firstlineno)
+            if blk is None:
+                continue
+            same = _matching_code(blk, fn.__name__)
+            if same is not None and _code_equal(code, same):
+                return blk
+            if loose is None:
+                loose = blk
+        if loose is not None:
+            return loose
+    raise SourceUnavailable(
+        "無法取得核心「%s」的原始碼：檔案來源與登記的腳本都找不到這個函式。"
+        "這通常是 python -c、REPL，或程式碼是用 exec／動態產生的。"
+        "助理在網頁版是以字串執行腳本，已登記的腳本仍找不到時就會這樣。"
+        "解法：把 @cuda.jit 核心直接寫在腳本裡（不要用 exec 或動態產生），或把腳本存成 .py 檔再用 python 執行。" % fn.__name__
+    )
+
+
 # ---------------------------------------------------------------- 墊片的尋找器
 class _ShimFinder(object):
     """真套件存在 → 回傳真套件的 spec（不遮蔽）；不存在 → 回傳墊片。只處理最上層名稱，子模組交給父套件的 __path__。"""

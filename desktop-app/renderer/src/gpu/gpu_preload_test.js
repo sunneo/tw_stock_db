@@ -90,6 +90,10 @@ function fakePyodide(opts) {
     assert.ok(src.indexOf("_gpuPrepareRun(pyodide, scriptText, '')") > 0, '執行前準備沒有接上');
     assert.ok(src.indexOf("stderrChunks.push('[fa-bridge] CUDA 相容層安裝失敗：' + instErr)") > 0, '安裝錯誤沒有寫進 stderr');
     assert.ok(src.indexOf('const instErr = this._pyBridgeInstallForRun(pyodide);') > 0, '安裝沒有改用 _pyBridgeInstallForRun');
+    // 腳本原始碼要在執行前登記給墊片（網頁版字串執行才取得得到 @cuda.jit 核心的來源）
+    const reg = src.split('this._gpuRegisterScript(pyodide, scriptText);').length - 1;
+    assert.ok(reg >= 2, '執行前沒有登記腳本原始碼（_gpuRegisterScript）：出現 ' + reg + ' 次，應該在同步與非同步兩條路徑都有');
+    assert.ok(src.indexOf("fa_gpu.register_script(__fa_script_src__)") > 0, '_gpuRegisterScript 沒有呼叫 fa_gpu.register_script');
   });
 
   console.log('\n' + pass + ' 通過，' + fail + ' 失敗');

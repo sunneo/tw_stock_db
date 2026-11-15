@@ -614,6 +614,146 @@ def t_fa_gpu_installs_without_numpy():
     assert r.returncode == 0 and "OK" in r.stdout, (r.stderr or r.stdout)[-600:]
 
 
+# ---------------------------------------------------------------- 字串執行的腳本（網頁版 runPythonAsync）取得核心原始碼
+# 模擬助理的網頁版：腳本是字串，用 compile(字串, "<exec>") 執行，沒有檔案；主機端先 register_script 登記。
+STRING_SCRIPT = '''import numpy as np
+from numba import cuda
+
+
+@cuda.jit
+def add(a, b, c):
+    i = cuda.grid(1)
+    if i < c.size:
+        c[i] = a[i] + b[i]
+
+
+@cuda.jit(
+    'void(float32[:], float32[:], float32[:])'
+)
+def mul(a, b,
+        c):
+    i = cuda.grid(1)
+    if i < c.size:
+        if a[i] > -1.0:
+            for k in range(1):
+                c[i] = a[i] * b[i]
+
+
+n = 8
+a = np.arange(n, dtype=np.float32)
+b = a * 2
+c1 = np.zeros(n, np.float32)
+c2 = np.zeros(n, np.float32)
+add[1, 8](a, b, c1)
+mul[1, 8](a, b, c2)
+print("ADD", bool(np.allclose(c1, a + b)), "MUL", bool(np.allclose(c2, a * b)))
+'''
+
+
+def _run_string_script(text, isolated):
+    import contextlib as _cl
+    import io as _io
+    g = {"__name__": "__main__"} if not isolated else {"__name__": "__fa_isolated__"}
+    buf = _io.StringIO()
+    with _cl.redirect_stdout(buf):
+        exec(compile(text, "<exec>", "exec"), g)
+    return buf.getvalue()
+
+
+def t_string_script_kernels_get_source_from_registry():
+    import inspect as _insp
+    fa_gpu.register_script(STRING_SCRIPT)
+    out = _run_string_script(STRING_SCRIPT, isolated=False)
+    assert "ADD True MUL True" in out, out
+    # 確認這個情境真的走到退路：inspect 取不到來源
+    g = {}
+    exec(compile(STRING_SCRIPT, "<exec>", "exec"), g)
+    try:
+        _insp.getsource(g["add"])
+    except (OSError, TypeError):
+        pass
+    else:
+        raise AssertionError("測試前提不成立：inspect 竟然取得了字串腳本的來源")
+
+
+def t_string_script_isolated_globals():
+    fa_gpu.register_script(STRING_SCRIPT)
+    out = _run_string_script(STRING_SCRIPT, isolated=True)
+    assert "ADD True MUL True" in out, out
+
+
+def t_string_script_two_scripts_registered_pick_right_one():
+    other = STRING_SCRIPT.replace("c[i] = a[i] + b[i]", "c[i] = a[i] - b[i]").replace("ADD", "ADDX")
+    fa_gpu.register_script(other)
+    fa_gpu.register_script(STRING_SCRIPT)
+    out = _run_string_script(other, isolated=True)
+    assert "ADDX" in out and "ADDX False" in out, out  # 先執行 other，但它的 add 是減法，結果對不上加法的檢查
+    out2 = _run_string_script(STRING_SCRIPT, isolated=True)
+    assert "ADD True MUL True" in out2, out2
+
+
+def t_unregistered_source_message_explains_cause():
+    import fa_gpu as _fg
+    saved = list(_fg._SCRIPTS)
+    del _fg._SCRIPTS[:]
+    try:
+        g = {}
+        exec(compile("from numba import cuda\n\n@cuda.jit\ndef zz_unregistered(c):\n    c[0] = 1\n", "<stdin>", "exec"), g)
+        try:
+            fa_gpu.find_kernel_source(g["zz_unregistered"])
+        except fa_gpu.SourceUnavailable as e:
+            msg = str(e)
+            assert "python -c" in msg and "REPL" in msg and "exec" in msg and "解法" in msg and ".py" in msg, msg
+        else:
+            raise AssertionError("沒有登記時應該丟 SourceUnavailable")
+    finally:
+        _fg._SCRIPTS[:] = saved
+
+
+def t_desktop_mailbox_runs_script_file_with_kernel():
+    # 桌面版：python fa_run.py --rpc <信箱> -- script.py（真的 Python 跑檔案），信箱的回應由這裡的假宿主處理
+    import subprocess
+    import shutil
+    import time
+    import json as _json
+    d = tempfile.mkdtemp(prefix="fa-gpu-desk-")
+    rpc = os.path.join(d, "rpc")
+    os.makedirs(rpc)
+    script = os.path.join(d, "desk_kernel.py")
+    with io.open(script, "w", encoding="utf-8") as f:
+        f.write(STRING_SCRIPT.replace("ADD", "DESK_ADD").replace("MUL", "DESK_MUL"))
+    runner = os.path.join(PYBRIDGE, "fa_run.py")
+    env = dict(os.environ, FA_GPU_FORCE_SHIM="1", PYTHONIOENCODING="utf-8")
+    p = subprocess.Popen([sys.executable, runner, "--rpc", rpc, "--", script], env=env,
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding="utf-8", errors="replace")
+    deadline = time.time() + 120
+    try:
+        while p.poll() is None and time.time() < deadline:
+            for n in os.listdir(rpc):
+                if not (n.startswith("req-") and n.endswith(".json")):
+                    continue
+                rid = n[4:-5]
+                req = _json.load(io.open(os.path.join(rpc, n), encoding="utf-8"))
+                os.remove(os.path.join(rpc, n))
+                if req["op"] == "gpu.info":
+                    res = {"ok": True, "result": host["info"]}
+                elif req["op"] == "gpu.kernel":
+                    res = {"ok": True, "result": {"ran": False, "layer": "CPU", "reason": "測試：無 WebGPU", "outputs": {}}}
+                else:
+                    res = {"ok": False, "error": "測試宿主沒有實作：" + req["op"]}
+                with io.open(os.path.join(rpc, "res-" + rid + ".json"), "w", encoding="utf-8") as f:
+                    f.write(_json.dumps(res, ensure_ascii=False))
+            time.sleep(0.02)
+        out, err = p.communicate(timeout=60)
+    finally:
+        if p.poll() is None:
+            p.kill()
+        shutil.rmtree(d, ignore_errors=True)
+    assert p.returncode == 0, (err or out)[-800:]
+    assert "DESK_ADD True DESK_MUL True" in out, out + err
+    assert "此核心因為" in err and "沒有用到 GPU" in err, err
+
+
 for name, fn in list(globals().items()):
     if name.startswith("t_") and callable(fn):
         check(name[2:], fn)

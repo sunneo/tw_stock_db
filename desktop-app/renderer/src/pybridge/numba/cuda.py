@@ -251,7 +251,9 @@ def _check_subset(fn_name, src):
             break
     if fdef is None:
         raise CudaSubsetError("找不到核心函式 %s 的定義" % fn_name)
-    for node in ast.walk(fdef):
+    # 只檢查函式本體（不含裝飾器：@cuda.jit('簽名') 是 numba 的寫法，本來就允許）
+    body_nodes = [n for stmt in fdef.body for n in ast.walk(stmt)]
+    for node in body_nodes:
         if isinstance(node, ast.FunctionDef) and node is not fdef:
             raise CudaSubsetError("第 %d 行：核心內不能再定義函式（建議：把它寫成核心的 for／if，或另外用 @cuda.jit(device=True)——後者第一階段不支援）" % node.lineno)
         for cls, msg in _BANNED.items():
@@ -292,9 +294,9 @@ class _Kernel(object):
     def _source(self):
         if self._src is None:
             try:
-                raw = inspect.getsource(self._fn)
-            except (OSError, TypeError) as e:
-                raise CudaSubsetError("無法取得核心原始碼（%s）：這個環境看不到檔案來源；請把核心寫在獨立的 .py 檔裡再執行" % e)
+                raw = fa_gpu.find_kernel_source(self._fn)  # inspect，再退到登記的腳本（網頁版字串執行）
+            except fa_gpu.SourceUnavailable as e:
+                raise CudaSubsetError(str(e))
             self._src = textwrap.dedent(raw)
         return self._src
 

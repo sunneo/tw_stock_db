@@ -120,6 +120,7 @@ Pyodide 的檔案寫入繞進 fap：`/fap/<名稱>/…`、`fap:<名稱>/…` 指
 - `numba.cuda` 核心先轉成 WGSL（`renderer/src/pybridge/numba/wgsl.py`，`DESIGN.webgpu-cuda.md` §4 的第一批），交給宿主的 `kernel` 操作在 WebGPU（T1）執行。支援範圍：逐元素一維與二維 `cuda.grid`、二維陣列索引、`for i in range(…)`、if／else、算術與比較、`cuda.atomic.add`（int32 陣列，WGSL `atomicAdd`）、純量參數（寫成常數）。
 - **退回本機 Python 模擬的情況**（每次都會印出具體原因）：核心含 shared 記憶體或 `cuda.syncthreads`（需要工作群組共享記憶體，下一批）、float64／int64 陣列（WebGPU 沒有 f64，不自動降精度）、float32 原子、三維 blocks／threads、每個工作群組超過 256 個執行緒、宿主沒有 WebGPU（此時 WebGL2 沒有任意核心的執行路徑）、或 WGSL 執行失敗。訊息格式：「此核心因為 <原因> 在本機 Python 模擬執行，沒有用到 GPU」。
 - WGSL 的正確性只能在真的 GPU 上驗證（測試宿主只驗證傳輸與寫回，見下方「測試」）。
+- **核心原始碼怎麼取得**：`@cuda.jit` 需要函式的原始碼。先用 `inspect.getsource`（桌面版跑檔案時成立）；網頁版助理用字串執行腳本（`runPythonAsync`），沒有檔案，所以主機端在每次執行前用 `fa_gpu.register_script` 登記腳本文字，墊片依函式名稱、起始行與編譯後的程式碼對應出區塊（裝飾器與多行簽名都包含）。都找不到時的錯誤會說明原因（python -c、REPL、exec 產生的程式）與解法。
 - `cupy` 的 matmul、dot、一維 sum 與 `torch` 的 cuda 裝置前向 matmul 會經過 GPU 橋接（cudaweb）；GPU 橋接失敗時退回 numpy 並說明。
 - `torch` 的反向傳播一律在 numpy 做（第一階段）。
 
