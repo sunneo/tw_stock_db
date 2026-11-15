@@ -75253,6 +75253,28 @@ const FA_ASSET_CDN = {
 };
 const _faAssetFallback = new Map(Object.keys(FA_ASSET_CDN).map(k => [FA_ASSET_URLS[k], FA_ASSET_CDN[k]]));
 
+/* DESKTOP-ONLY-BEGIN */
+// tw_stock_db客製: 2026-11-15——桌面版專屬設定。fa-local://是只有Electron桌面版才認得的協定（桌面版的本地proxy），
+// 網頁版拿到它只會全部Failed to fetch（使用者把桌面版設定匯入網頁版，assetBackupProxyUrl等四項就變成fa-local://app，
+// 結果Pyodide主要來源與備份分支全斷）。網頁版（沒有window.desktopAPI）一律當成空字串：匯入設定時直接丟掉（並列出鍵名），
+// 讀取既有設定時只在使用的地方忽略、不改使用者存下來的原始資料，這樣回到桌面版設定還在。桌面版照用。
+const FA_DESKTOP_ONLY_SETTING_KEYS = ['assetBackupProxyUrl', 'browserSearchProxyUrl', 'gitCorsProxyUrl', 'ttsApiProxyUrl'];
+function faInDesktopEnv() { return typeof window !== 'undefined' && !!window.desktopAPI; }
+function faIsDesktopOnlyValue(v) { return typeof v === 'string' && /^\s*fa-local:/i.test(v); }
+// 會原地修改傳入的設定物件（呼叫端傳入的是剛JSON.parse出來的副本），回傳被略過的鍵名清單。
+function faStripDesktopOnlySettings(config) {
+    if (faInDesktopEnv() || !config || typeof config !== 'object') return [];
+    const skipped = [];
+    if (faIsDesktopOnlyValue(config.apiUrl)) { skipped.push('apiUrl'); delete config.apiUrl; }
+    const adv = config.advancedSettings;
+    if (adv && typeof adv === 'object') {
+        for (const k of FA_DESKTOP_ONLY_SETTING_KEYS) if (faIsDesktopOnlyValue(adv[k])) { skipped.push(k); adv[k] = ''; }
+        if (Array.isArray(adv.llmModelRows)) adv.llmModelRows.forEach((row, i) => { if (row && typeof row === 'object' && faIsDesktopOnlyValue(row.apiUrl)) { skipped.push('llmModelRows[' + i + '].apiUrl'); row.apiUrl = ''; } });
+    }
+    return skipped;
+}
+/* DESKTOP-ONLY-END */
+
 const _faExportScriptCache = new Map();
 function _faLoadScriptOnce(url) {
     const p0 = _faLoadScriptOnceRaw(url), alt = _faAssetFallback.get(url);
@@ -89711,7 +89733,7 @@ ${fnData.code}
             // 舊網址。如果apiUrl背後的端點其實沒有部署/browser-search這條
             // 路由（例如直接打官方NVIDIA端點），下面的fetch會收到404，錯誤
             // 訊息會清楚說明狀況，不是靜默失敗。
-            const proxyUrl = String(this.advancedSettings.browserSearchProxyUrl || '').trim() || this._getApiConfig().apiUrl;
+            const proxyUrl = this._advUrlSetting('browserSearchProxyUrl') || this._getApiConfig().apiUrl;
             if (!proxyUrl) {
                 for (const source of misses) results[source] = { error: '尚未設定browserSearchProxyUrl（Cloudflare Worker端點），且目前也沒有可用的API網址可以沿用，請先在Advance Settings的「子Agent」分頁填入後再使用browser_search。' };
                 return { ok: true, query, results };
@@ -90296,8 +90318,8 @@ ${fnData.code}
     // _decodeAudioBuffer解碼一次拿精確duration（2026-09-12實測發現語速
     // 估計值誤差太大，直接解碼比較可靠，見下面的說明）。
     async _synthesizeSpeechViaApi(t, voice, onProgress, speed) {
-        const proxyUrl = String(this.advancedSettings.ttsApiProxyUrl || '').trim()
-            || String(this.advancedSettings.browserSearchProxyUrl || '').trim()
+        const proxyUrl = this._advUrlSetting('ttsApiProxyUrl')
+            || this._advUrlSetting('browserSearchProxyUrl')
             || this._getApiConfig().apiUrl;
         if (!proxyUrl) {
             return { ok: false, error: '沒有設定Worker端點（ttsApiProxyUrl留空時會沿用browser_search的Worker網址或目前的LLM API網址，但這兩個目前也都是空的），請先在設定裡填一個。' };
@@ -91485,7 +91507,7 @@ ${fnData.code}
     }
 
     _resolveGitCorsProxyUrl() {
-        const explicit = String(this.advancedSettings.gitCorsProxyUrl || '').trim();
+        const explicit = this._advUrlSetting('gitCorsProxyUrl');
         const base = explicit || this._getApiConfig().apiUrl;
         if (!base) throw new Error('找不到可用的Cloudflare Worker網址（git功能需要走/git-proxy路由避開瀏覽器CORS限制），請先在Advance Settings設定AI端點或git專用的corsProxy網址。');
         return String(base).trim().replace(/\/+$/, '').replace(/\/(v1|openrouter)$/i, '') + '/git-proxy';
@@ -91501,7 +91523,7 @@ ${fnData.code}
     // 部署對應的/proxy路由（跟browser_search/git一樣，沒部署就是使用者
     // 自己的環境限制，不是這裡的bug，呼叫端會如實回報連線錯誤)。
     _resolveWebFetchProxyUrl() {
-        const explicit = String(this.advancedSettings.gitCorsProxyUrl || '').trim();
+        const explicit = this._advUrlSetting('gitCorsProxyUrl');
         const base = explicit || this._getApiConfig().apiUrl;
         if (!base) throw new Error('找不到可用的CORS代理網址（抓取外部網頁需要走/proxy路由避開瀏覽器CORS限制），請先在Advance Settings設定AI端點或git專用的corsProxy網址。');
         return String(base).trim().replace(/\/+$/, '').replace(/\/(v1|openrouter)$/i, '') + '/proxy/';
@@ -110342,6 +110364,9 @@ ${sourceTool.handlerScript}
         reader.onload = (e) => {
             try {
                 const config = JSON.parse(e.target.result);
+                // tw_stock_db客製: 2026-11-15——網頁版匯入桌面版設定檔時，fa-local://等桌面專屬值一律丟掉（見
+                // FA_DESKTOP_ONLY_SETTING_KEYS的說明），並在提示裡列出鍵名。桌面版匯入不受影響。
+                const skippedDesktopOnly = faStripDesktopOnlySettings(config);
                 // tw_stock_db客製: 2026-09-17使用者實測回報——把桌面版匯出的
                 // 設定檔匯入網頁版（或匯入到port不同的另一個桌面版session）
                 // 後AI完全打不通。根因：桌面版bootstrap.js的本地proxy
@@ -110377,7 +110402,7 @@ ${sourceTool.handlerScript}
                 // 任何input.value，_renderAdvancedSettings()呼叫的
                 // _renderModelRowsList()會自動反映最新的row清單。
                 this._renderAdvancedSettings();
-                alert('設定已成功匯入！');
+                alert('設定已成功匯入！' + (skippedDesktopOnly.length ? `\n已略過 ${skippedDesktopOnly.length} 項桌面版專屬設定：${skippedDesktopOnly.join('、')}` : ''));
             } catch (err) {
                 alert('匯入失敗：' + err.message);
             }
@@ -110936,15 +110961,42 @@ ${sourceTool.handlerScript}
     // 路由轉發——跟_resolveGitCorsProxyUrl（git專用/git-proxy路由）同一套
     // 「留空=直接、有填=經proxy」慣例，只是這裡指到不同的路由前綴。
     _resolveAssetProxyUrl() {
-        const explicit = String(this.advancedSettings.assetBackupProxyUrl || '').trim();
+        const explicit = this._advUrlSetting('assetBackupProxyUrl');
         if (!explicit) return '';
         return explicit.replace(/\/+$/, '') + '/proxy/';
+    }
+
+    // tw_stock_db客製: 2026-11-15——讀取proxy類設定的唯一入口。網頁版遇到桌面專屬值（fa-local://）
+    // 回傳空字串（見FA_DESKTOP_ONLY_SETTING_KEYS的說明），原始資料不動。
+    _advUrlSetting(key) {
+        const v = String((this.advancedSettings && this.advancedSettings[key]) || '').trim();
+        return faIsDesktopOnlyValue(v) && !faInDesktopEnv() ? '' : v;
     }
 
     _viaAssetProxy(url) {
         if (this._sandboxDirectOnly > 0) return url; // 沙盒執行期間不經過proxy（Cloudflare Worker）
         const proxyBase = this._resolveAssetProxyUrl();
         return proxyBase ? proxyBase + url : url;
+    }
+
+    // tw_stock_db客製: 2026-11-15——proxy失敗要真的退回直連。原本的問題：備份分支與主要來源都先包成proxy網址，
+    // _faLoadScriptOnce的備援表又只認原始CDN網址，所以proxy掛掉時永遠碰不到直連。這裡統一：依序試
+    // [經proxy, 直連]（同一網址只試一次），回傳第一個ok的回應；全部失敗才throw，訊息列出每個來源的
+    // HTTP狀態或錯誤與耗時。
+    async _fetchViaProxyThenDirect(url, init) {
+        const cands = [...new Set([this._viaAssetProxy(url), url])];
+        const errs = [];
+        for (const cand of cands) {
+            const t0 = Date.now();
+            try {
+                const r = await fetch(cand, init);
+                if (r.ok) return r;
+                errs.push(`${cand.slice(0, 160)} → HTTP ${r.status}（${Date.now() - t0}ms）`);
+            } catch (e) {
+                errs.push(`${cand.slice(0, 160)} → ${(e && e.message) || e}（${Date.now() - t0}ms）`);
+            }
+        }
+        throw new Error('資源取得失敗：' + errs.join('；'));
     }
 
     // tw_stock_db客製: 見FA_ASSET_URLS.bashWasmBackupBase/pyodideBackupBase
@@ -110960,8 +111012,8 @@ ${sourceTool.handlerScript}
         let manifest = this._assetBackupManifestCache.get(backupBase);
         if (manifest === undefined) {
             try {
-                const r = await fetch(this._viaAssetProxy(backupBase + 'manifest.json'), { cache: 'no-cache' });
-                manifest = r.ok ? await r.json() : null;
+                const r = await this._fetchViaProxyThenDirect(backupBase + 'manifest.json', { cache: 'no-cache' });
+                manifest = await r.json();
             } catch (_) { manifest = null; }
             this._assetBackupManifestCache.set(backupBase, manifest);
         }
@@ -110970,9 +111022,8 @@ ${sourceTool.handlerScript}
         if (partCount) {
             const buffers = [];
             for (let i = 0; i < partCount; i++) {
-                const partUrl = this._viaAssetProxy(backupBase + relPath + '.part' + String(i).padStart(3, '0'));
-                const r = await fetch(partUrl, { cache: 'no-cache' });
-                if (!r.ok) throw new Error(`${partUrl} → HTTP ${r.status}`);
+                const partUrl = backupBase + relPath + '.part' + String(i).padStart(3, '0');
+                const r = await this._fetchViaProxyThenDirect(partUrl, { cache: 'no-cache' });
                 buffers.push(await r.arrayBuffer());
             }
             const total = buffers.reduce((s, b) => s + b.byteLength, 0);
@@ -110984,8 +111035,7 @@ ${sourceTool.handlerScript}
             }
             return merged.buffer;
         }
-        const r = await fetch(this._viaAssetProxy(backupBase + relPath), { cache: 'no-cache' });
-        if (!r.ok) throw new Error(`${backupBase + relPath} → HTTP ${r.status}`);
+        const r = await this._fetchViaProxyThenDirect(backupBase + relPath, { cache: 'no-cache' });
         return await r.arrayBuffer();
     }
 
@@ -116609,23 +116659,27 @@ ${sourceTool.handlerScript}
         if (this._pyodideInstance) return this._pyodideInstance;
         if (this._pyodideLoadPromise) return this._pyodideLoadPromise;
         this._pyodideLoadPromise = (async () => {
-            let indexURL;
-            if (typeof loadPyodide !== 'function') {
+            // tw_stock_db客製: 2026-11-15——四個候選依序試：[主要來源經proxy、主要來源直連、備份分支經proxy、備份直連]
+            // （同一網址只試一次；沒設proxy時就只剩直連兩個）。每個候選分兩步：先載pyodide.js（尚未有loadPyodide時），
+            // 再loadPyodide({indexURL})；任一步失敗就記下該來源的錯誤與耗時，換下一個。全部失敗才throw，訊息列出每一個來源。
+            const bases = [...new Set([
+                this._viaAssetProxy(FA_ASSET_URLS.pyodideJsBase), FA_ASSET_URLS.pyodideJsBase,
+                this._viaAssetProxy(FA_ASSET_URLS.pyodideBackupBase), FA_ASSET_URLS.pyodideBackupBase,
+            ])];
+            const errs = [];
+            let indexURL = null, instance = null;
+            for (const base of bases) {
+                const t0 = Date.now();
                 try {
-                    await _faLoadScriptOnce(this._viaAssetProxy(FA_ASSET_URLS.pyodideJsBase + 'pyodide.js'));
-                    indexURL = this._viaAssetProxy(FA_ASSET_URLS.pyodideJsBase);
-                } catch (primaryErr) {
-                    try {
-                        await _faLoadScriptOnce(this._viaAssetProxy(FA_ASSET_URLS.pyodideBackupBase + 'pyodide.js'));
-                        indexURL = this._viaAssetProxy(FA_ASSET_URLS.pyodideBackupBase);
-                    } catch (backupErr) {
-                        throw new Error(`python 執行環境載入失敗——主要來源：${primaryErr.message}；備份分支：${backupErr.message}`);
-                    }
+                    if (typeof loadPyodide !== 'function') await _faLoadScriptOnceRaw(base + 'pyodide.js');
+                    instance = await loadPyodide({ indexURL: base });
+                    indexURL = base;
+                    break;
+                } catch (e) {
+                    errs.push(`${base.slice(0, 160)} → ${(e && e.message) || e}（${Date.now() - t0}ms）`);
                 }
-            } else {
-                indexURL = this._viaAssetProxy(FA_ASSET_URLS.pyodideJsBase);
             }
-            const instance = await loadPyodide({ indexURL });
+            if (!instance) throw new Error(`python 執行環境載入失敗（試了 ${bases.length} 個來源）：` + errs.join('；'));
             // tw_stock_db客製: 2026-09-16——見PYODIDE_SUBPROCESS_SHIM_SRC的
             // 說明。只在instance第一次載入時裝一次：先掛_fa_shell_bridge這個
             // JS module給python的`import _fa_shell_bridge`用（registerJsModule
