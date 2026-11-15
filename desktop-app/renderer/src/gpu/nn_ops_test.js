@@ -4,7 +4,7 @@
 'use strict';
 const assert = require('assert');
 const NN = require('./nn_ops.js');
-const { fakeNavigator } = require('./gpu_fakes.js');
+const { fakeNavigator, fakeGl } = require('./gpu_fakes.js');
 
 let pass = 0, fail = 0;
 async function check(name, fn) {
@@ -45,8 +45,23 @@ function maxAbs(a, b) { let m = 0; for (let i = 0; i < a.length; i++) m = Math.m
     const r = await NN.rmsnorm(x, g, T, d, eps, { navigator: {} });
     assert.strictEqual(r.info.layer, 'cpu-js');
     assert.ok(r.info.reason.includes('WebGPU 不可用'), r.info.reason);
-    assert.ok(r.info.reason.includes(NN.NOTE_T3));
+    assert.ok(r.info.reason.includes('WebGL2'));
     assert.ok(maxAbs(r.result, NN.rmsnormRef(x, g, T, d, eps)) < 1e-12);
+  });
+
+  await check('rmsnorm 沒有 WebGPU、有 WebGL2（假上下文）：層為 T3，結果與參考版一致', async () => {
+    const r = await NN.rmsnorm(x, g, T, d, eps, { navigator: {}, gl: fakeGl() });
+    assert.strictEqual(r.info.layer, 'T3');
+    assert.strictEqual(r.info.webgl2, 'native');
+    assert.ok(r.info.reason.includes('WebGPU 不可用'), '應寫明為何退到 T3：' + r.info.reason);
+    assert.ok(maxAbs(r.result, NN.rmsnormRef(x, g, T, d, eps)) < 1e-6, '差 ' + maxAbs(r.result, NN.rmsnormRef(x, g, T, d, eps)));
+  });
+
+  await check('rmsnorm 的 WebGL2 沒有 EXT_color_buffer_float：不走 T3，退到 cpu-js 並寫明原因', async () => {
+    const r = await NN.rmsnorm(x, g, T, d, eps, { navigator: {}, gl: fakeGl({ noFloat: true }) });
+    assert.strictEqual(r.info.layer, 'cpu-js');
+    assert.strictEqual(r.info.webgl2, 'missing');
+    assert.ok(r.info.reason.includes('EXT_color_buffer_float'), r.info.reason);
   });
 
   await check('WGSL 執行失敗：退回 CPU，原因寫明失敗訊息', async () => {
@@ -87,7 +102,7 @@ function maxAbs(a, b) { let m = 0; for (let i = 0; i < a.length; i++) m = Math.m
   await check('softmax 沒有 WebGPU：退到 cpu-js 並寫明原因', async () => {
     const r = await NN.softmax(sx, SR, SC, { navigator: {} });
     assert.strictEqual(r.info.layer, 'cpu-js');
-    assert.ok(r.info.reason.includes(NN.NOTE_T3));
+    assert.ok(r.info.reason.includes('WebGL2'));
   });
 
   await check('softmaxRef 形狀不符丟錯', async () => {
@@ -116,7 +131,7 @@ function maxAbs(a, b) { let m = 0; for (let i = 0; i < a.length; i++) m = Math.m
   await check('silu 沒有 WebGPU：退到 cpu-js 並寫明原因', async () => {
     const r = await NN.silu(sv, { navigator: {} });
     assert.strictEqual(r.info.layer, 'cpu-js');
-    assert.ok(r.info.reason.includes(NN.NOTE_T3));
+    assert.ok(r.info.reason.includes('WebGL2'));
   });
 
   // ---- RoPE ----
@@ -148,7 +163,7 @@ function maxAbs(a, b) { let m = 0; for (let i = 0; i < a.length; i++) m = Math.m
   await check('rope 沒有 WebGPU：退到 cpu-js 並寫明原因', async () => {
     const r = await NN.rope(rx, RT, RH, Rhd, -1, { navigator: {} });
     assert.strictEqual(r.info.layer, 'cpu-js');
-    assert.ok(r.info.reason.includes(NN.NOTE_T3));
+    assert.ok(r.info.reason.includes('WebGL2'));
   });
 
   await check('rope：hd 為奇數直接丟錯', async () => {
@@ -192,7 +207,7 @@ function maxAbs(a, b) { let m = 0; for (let i = 0; i < a.length; i++) m = Math.m
   await check('adamw 沒有 WebGPU：退到 cpu-js 並寫明原因', async () => {
     const r = await NN.adamw(ap, ag, am, av, A.t, A.lr, A.b1, A.b2, A.eps, A.wd, { navigator: {} });
     assert.strictEqual(r.info.layer, 'cpu-js');
-    assert.ok(r.info.reason.includes(NN.NOTE_T3));
+    assert.ok(r.info.reason.includes('WebGL2'));
   });
 
   // ---- 批次提交 ----

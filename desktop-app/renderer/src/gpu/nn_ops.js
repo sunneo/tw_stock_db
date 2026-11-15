@@ -6,7 +6,94 @@
 const core = require('./gpu_core.js');
 
 const USAGE = { MAP_READ: 0x0001, COPY_SRC: 0x0004, COPY_DST: 0x0008, UNIFORM: 0x0040, STORAGE: 0x0080 };
-const NOTE_T3 = 'WebGL2 版尚未實作';
+// WebGL2 常數（用數字，因為假 WebGL2 上下文沒有這些符號）
+const GLC = { VERTEX: 0x8B31, FRAG: 0x8B30, COMPILE: 0x8B81, LINK: 0x8B82, TEX2D: 0x0DE1, RGBA32F: 0x8814, RGBA: 0x1908, FLOAT: 0x1406,
+  FB: 0x8D40, COLOR0: 0x8CE0, FB_OK: 0x8CD5, UNIT0: 0x84C0, TRIANGLES: 0x0004, NEAREST: 0x2600, MIN_F: 0x2801, MAG_F: 0x2800, MAX_TEX: 0x0D33 };
+const NOTE_T3 = 'WebGL2 版尚未實作';  // 僅供舊測試參照；新版降級原因以實際狀態為準
+
+// 取得 WebGL2 上下文：opts.gl 可注入（測試用）；瀏覽器用 OffscreenCanvas；沒有就 null
+function getGl(opts) {
+  const o = opts || {};
+  if (o.gl !== undefined) return o.gl;
+  if (typeof OffscreenCanvas !== 'undefined') {
+    try { return new OffscreenCanvas(1, 1).getContext('webgl2'); } catch (e) { return null; }
+  }
+  return null;
+}
+// WebGL2 可用性：需要上下文，且需要 EXT_color_buffer_float（浮點渲染目標）。沒有編碼退路（RGBA8 打包未實作）。
+function glSupport(gl) {
+  if (!gl) return { ok: false, reason: 'WebGL2 上下文不可用' };
+  if (!gl.getExtension('EXT_color_buffer_float')) return { ok: false, reason: 'WebGL2 沒有 EXT_color_buffer_float（浮點渲染目標），無法寫入 f32 結果；RGBA8 編碼退路尚未實作' };
+  return { ok: true, reason: '' };
+}
+
+// 全螢幕三角形（用 gl_VertexID，不需要頂點緩衝區）
+const VS_FULL = '#version 300 es\nvoid main(){ vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2)); gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0); }\n';
+
+// 把長度 len 的陣列打包成 W×H 的 RGBA32F 紋理（只用 R 通道）
+function packTex(gl, arr, W, H) {
+  const px = new Float32Array(W * H * 4);
+  for (let i = 0; i < arr.length; i++) px[i * 4] = arr[i];
+  const tex = gl.createTexture();
+  gl.bindTexture(GLC.TEX2D, tex); // 呼叫端已先選好 texture unit
+  gl.texParameteri(GLC.TEX2D, GLC.MIN_F, GLC.NEAREST);
+  gl.texParameteri(GLC.TEX2D, GLC.MAG_F, GLC.NEAREST);
+  gl.texStorage2D(GLC.TEX2D, 1, GLC.RGBA32F, W, H);
+  gl.texSubImage2D(GLC.TEX2D, 0, 0, 0, W, H, GLC.RGBA, GLC.FLOAT, px);
+  return tex;
+}
+
+// 單趟繪製：ins = [Float32Array]（依序綁定 uniform sampler uIn0、uIn1…，在 shader 裡宣告）；
+// uni = { i: {名稱: 整數}, f: {名稱: 浮點} }；n = 輸出長度。shader 的 uW 由這裡自動給（所有紋理共用寬度）。
+// 回傳 Float32Array(n)：第 k 個元素在紋理的 (k % W, floor(k / W))，取 R 通道。
+function glRun(gl, fsSrc, ins, uni, n, samplerNames) {
+  const maxTex = gl.getParameter(GLC.MAX_TEX) || 4096;
+  const longest = Math.max(n, ...ins.map((a) => a.length));
+  const W = Math.max(1, Math.min(maxTex, longest));
+  const outH = Math.ceil(n / W), inH = Math.ceil(longest / W);
+  if (outH > maxTex) throw new Error('WebGL2：輸出 ' + n + ' 個元素超過紋理上限（寬 ' + W + '、高 ' + outH + '），需要分塊（尚未實作）');
+  const vs = gl.createShader(GLC.VERTEX); gl.shaderSource(vs, VS_FULL); gl.compileShader(vs);
+  const fs = gl.createShader(GLC.FRAG); gl.shaderSource(fs, fsSrc); gl.compileShader(fs);
+  if (!gl.getShaderParameter(fs, GLC.COMPILE)) throw new Error('WebGL2 片段著色器編譯失敗：' + gl.getShaderInfoLog(fs));
+  const prog = gl.createProgram(); gl.attachShader(prog, vs); gl.attachShader(prog, fs); gl.linkProgram(prog);
+  if (!gl.getProgramParameter(prog, GLC.LINK)) throw new Error('WebGL2 程式連結失敗：' + gl.getProgramInfoLog(prog));
+  gl.useProgram(prog);
+  const texs = [];
+  ins.forEach((a, k) => {
+    gl.activeTexture(GLC.UNIT0 + k);
+    texs.push(packTex(gl, a, W, inH));
+    gl.uniform1i(gl.getUniformLocation(prog, samplerNames[k]), k);
+  });
+  const uOut = ins.length;
+  const outTex = gl.createTexture();
+  gl.activeTexture(GLC.UNIT0 + uOut); gl.bindTexture(GLC.TEX2D, outTex);
+  gl.texParameteri(GLC.TEX2D, GLC.MIN_F, GLC.NEAREST); gl.texParameteri(GLC.TEX2D, GLC.MAG_F, GLC.NEAREST);
+  gl.texStorage2D(GLC.TEX2D, 1, GLC.RGBA32F, W, outH);
+  const fb = gl.createFramebuffer();
+  gl.bindFramebuffer(GLC.FB, fb);
+  gl.framebufferTexture2D(GLC.FB, GLC.COLOR0, GLC.TEX2D, outTex, 0);
+  if (gl.checkFramebufferStatus(GLC.FB) !== GLC.FB_OK) throw new Error('WebGL2 幀緩衝不完整（可能不支援浮點渲染目標）');
+  gl.uniform1i(gl.getUniformLocation(prog, 'uW'), W);
+  for (const k of Object.keys(uni.i || {})) gl.uniform1i(gl.getUniformLocation(prog, k), uni.i[k]);
+  for (const k of Object.keys(uni.f || {})) gl.uniform1f(gl.getUniformLocation(prog, k), uni.f[k]);
+  gl.viewport(0, 0, W, outH);
+  gl.drawArrays(GLC.TRIANGLES, 0, 3);
+  const px = new Float32Array(W * outH * 4);
+  gl.readPixels(0, 0, W, outH, GLC.RGBA, GLC.FLOAT, px);
+  const out = new Float32Array(n);
+  for (let i = 0; i < n; i++) out[i] = px[i * 4];
+  // 釋放（假上下文不一定有全部方法，逐一檢查）
+  [...texs, outTex].forEach((t) => { if (gl.deleteTexture) gl.deleteTexture(t); });
+  if (gl.deleteFramebuffer) gl.deleteFramebuffer(fb);
+  return out;
+}
+
+// 三層的實際狀態：供 backend_info 與測試使用。ops 只列這個檔案實作的核心。
+function nnBackendInfo(opts) {
+  const gl = getGl(opts);
+  const gs = glSupport(gl);
+  return { webgl2: { available: gs.ok, reason: gs.reason }, ops: {} };
+}
 
 // 取得 WebGPU 裝置（每個 navigator 只要一次）。沒有就回傳 dev:null 與原因。
 const devCache = new Map();
@@ -56,17 +143,30 @@ async function runWgsl(dev, code, bufs, uniform, groups) {
 }
 
 // 先試 T1；沒有 WebGPU、或執行失敗就退到 CPU 參考版，原因照實寫進 info
-async function tryLayers(name, opts, gpuFn, refFn) {
+// 三層：T1（WGSL）→ T3（WebGL2）→ cpu-js。每一層失敗都把原因接到 reason。
+async function tryLayers(name, opts, gpuFn, glFn, refFn) {
   const o = opts || {};
   const nav = o.navigator !== undefined ? o.navigator : (typeof navigator !== 'undefined' ? navigator : undefined);
+  const notes = [];
+  const glAvail = glSupport(getGl(o)).ok && !!glFn ? 'native' : 'missing';  // webgl2 欄位回報「這個核心的 WebGL2 層是否可用」
   const g = await getDevice(nav);
-  if (!g.dev) return { result: refFn(), info: { lib: 'cudaweb-nn', op: name, layer: 'cpu-js', reason: g.reason + '；' + NOTE_T3, webgl2: 'missing' } };
-  try {
-    const r = await gpuFn(g.dev);
-    return { result: r, info: { lib: 'cudaweb-nn', op: name, layer: 'T1', reason: '', webgl2: 'missing' } };
-  } catch (e) {
-    return { result: refFn(), info: { lib: 'cudaweb-nn', op: name, layer: 'cpu-js', reason: 'WGSL 執行失敗，退回 CPU：' + String((e && e.message) || e) + '；' + NOTE_T3, webgl2: 'missing' } };
-  }
+  if (g.dev) {
+    try { return { result: await gpuFn(g.dev), info: layerInfo(name, 'T1', '', glAvail) }; }
+    catch (e) { notes.push('WGSL 執行失敗：' + String((e && e.message) || e)); }
+  } else notes.push(g.reason);
+  const gl = getGl(o);
+  const gs = glSupport(gl);
+  let glState = 'missing';
+  if (gs.ok && glFn) {
+    glState = 'native';
+    try { return { result: glFn(gl), info: layerInfo(name, 'T3', notes.join('；'), 'native') }; }
+    catch (e) { glState = 'failed'; notes.push('WebGL2 執行失敗：' + String((e && e.message) || e)); }
+  } else if (!gs.ok) notes.push(gs.reason);
+  else notes.push('WebGL2 版尚未實作（此核心）');
+  return { result: refFn(), info: layerInfo(name, 'cpu-js', notes.join('；'), glState) };
+}
+function layerInfo(op, layer, reason, webgl2) {
+  return { lib: 'cudaweb-nn', op: op, layer: layer, reason: reason || '', webgl2: webgl2 };
 }
 
 // ---------- RMSNorm ----------
@@ -102,6 +202,32 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 `;
 
+// WebGL2 片段著色器：每個輸出像素算自己那一列的平方和（單趟、不用多趟縮減；列長度小時成本可接受，大列再改多趟）
+const FS_RMSNORM = `#version 300 es
+precision highp float;
+precision highp int;
+// @kernel rmsnorm
+uniform highp sampler2D uX;
+uniform highp sampler2D uG;
+uniform int uW;
+uniform int uRows;
+uniform int uD;
+uniform float uEps;
+out vec4 fragColor;
+float fetchX(int i) { return texelFetch(uX, ivec2(i % uW, i / uW), 0).r; }
+float fetchG(int i) { return texelFetch(uG, ivec2(i % uW, i / uW), 0).r; }
+void main() {
+  int idx = int(gl_FragCoord.y) * uW + int(gl_FragCoord.x);
+  if (idx >= uRows * uD) { fragColor = vec4(0.0); return; }
+  int row = idx / uD;
+  int i = idx - row * uD;
+  float s = 0.0;
+  for (int j = 0; j < uD; j++) { float v = fetchX(row * uD + j); s += v * v; }
+  float inv = 1.0 / sqrt(s / float(uD) + uEps);
+  fragColor = vec4(fetchX(idx) * inv * fetchG(i), 0.0, 0.0, 1.0);
+}
+`;
+
 async function rmsnorm(x, g, T, d, eps, opts) {
   const xf = Float32Array.from(x), gf = Float32Array.from(g);
   return tryLayers('rmsnorm', opts,
@@ -114,6 +240,7 @@ async function rmsnorm(x, g, T, d, eps, opts) {
         uni, Math.ceil(T / 64));
       return outs[0];
     },
+    (gl) => glRun(gl, FS_RMSNORM, [xf, gf], { i: { uRows: T, uD: d }, f: { uEps: eps } }, T * d, ['uX', 'uG']),
     () => rmsnormRef(xf, gf, T, d, eps));
 }
 
@@ -161,6 +288,7 @@ async function softmax(x, rows, cols, opts) {
         uni, Math.ceil(rows / 64));
       return outs[0];
     },
+    null,
     () => softmaxRef(xf, rows, cols));
 }
 
@@ -197,6 +325,7 @@ async function silu(x, opts) {
         uni, Math.ceil(xf.length / 64));
       return outs[0];
     },
+    null,
     () => siluRef(xf));
 }
 
@@ -255,6 +384,7 @@ async function rope(x, T, H, hd, dir, opts) {
         uni, Math.ceil(T * H * (hd / 2) / 64));
       return outs[0];
     },
+    null,
     () => ropeRef(xf, T, H, hd, dir));
 }
 
@@ -312,6 +442,7 @@ async function adamw(p, g, m, v, t, lr, b1, b2, eps, wd, opts) {
         uni, Math.ceil(n / 64));
       return { p: outs[0], m: outs[1], v: outs[2] };
     },
+    null,
     () => adamwRef(pf, gf, mf, vf, t, lr, b1, b2, eps, wd));
 }
 

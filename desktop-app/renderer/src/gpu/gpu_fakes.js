@@ -182,6 +182,7 @@ function fakeGl(opts) {
     useProgram(p) { gl.prog = p; },
     getUniformLocation(p, name) { return name; },
     uniform1i(loc, v) { gl.uniforms[loc] = v; },
+    uniform1f(loc, v) { gl.uniforms[loc] = Math.fround(v); },
     activeTexture(u) { gl.activeUnit = u - 0x84C0; },
     viewport() {},
     drawArrays() {
@@ -198,6 +199,17 @@ function fakeGl(opts) {
           v = e >= gl.uniforms.uN ? 0 : at(tex('uA'), x, y) + at(tex('uB'), x, y);
         } else if (k === 'matmul') {
           for (let t = 0; t < gl.uniforms.uK; t++) v = Math.fround(v + Math.fround(at(tex('uA'), t, y) * at(tex('uB'), x, t)));
+        } else if (k === 'rmsnorm') {
+          // 逐像素重現 FS_RMSNORM：fetch(i) 在紋理的 (i % W, floor(i / W))，與 GLSL 的索引一致
+          const W = gl.uniforms.uW, rows = gl.uniforms.uRows, D = gl.uniforms.uD, eps = gl.uniforms.uEps;
+          const X = tex('uX'), G = tex('uG'), idx = y * ow + x;
+          if (idx < rows * D) {
+            const row = Math.floor(idx / D), i = idx - row * D;
+            const fx = (j) => at(X, j % W, Math.floor(j / W));
+            let s = 0; for (let j = 0; j < D; j++) { const q = fx(row * D + j); s += q * q; }
+            const inv = 1 / Math.sqrt(s / D + eps);
+            v = fx(idx) * inv * at(G, i % W, Math.floor(i / W));
+          }
         } else if (k === 'sum') {
           const W = gl.uniforms.uW, N = gl.uniforms.uN, j = y * gl.uniforms.uOW + x;
           if (j * 4 < N) for (let q = 0; q < 4; q++) { const e = j * 4 + q; if (e < N) v += at(tex('uA'), e % W, Math.floor(e / W)); }
