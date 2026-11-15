@@ -41,6 +41,8 @@ __SHIM__
 <div id="main"><div class="pane" id="pL"></div><div id="split" title="拖曳調整寬度；雙擊還原"></div><div class="pane" id="pR"></div></div>
 <div id="menu"></div>
 <script>__LAYOUT__</script>
+<script>__LORA_MANAGE__</script>
+<script>__PIPELINE_VIEW__</script>
 <script>
 (function(){
 var CFG=__CFG__;function applyTheme(t){if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t)}applyTheme(CFG.theme);window.addEventListener('message',function(e){var d=e.data;if(d&&d.__fa_theme)applyTheme(d.__fa_theme);if(d&&d.__fa_modeltypes){MTYPES=d.__fa_modeltypes.list||[];GUARDS=d.__fa_modeltypes.guards||{};MT_MISSING=!!d.__fa_modeltypes.missing;if(typeof refresh==='function')refresh('train')}});
@@ -117,7 +119,9 @@ $('#bReset').onclick=async function(){var r=await api('POST','/api/prefs',{reset
  window.addEventListener('resize',applySize)})();
 // ===== 分頁內容 =====
 var T={};
-function show(id,body){body.textContent='';return (T[id]||function(b){b.appendChild(reason('尚未實作'))})(body)}
+function show(id,body){body.textContent='';var t0=Date.now(),fn=T[id]||function(b){b.appendChild(reason('尚未實作'))},p;
+ try{p=fn(body)}catch(e){p=Promise.reject(e)}
+ return Promise.resolve(p).catch(function(e){body.appendChild(reason('「'+id+'」分頁出錯：'+((e&&e.message)||e)+'（耗時 '+(Date.now()-t0)+' 毫秒）'))})}
 function refresh(id){['left','right'].forEach(function(s){if(cur[s]===id){var b=(s==='left'?$('#pL'):$('#pR')).querySelector('.body');if(b)show(id,b)}})}
 T.assets=async function(body){
  var r=await api('GET','/api/assets');if(r.ok===false){body.appendChild(reason('讀取資產失敗：'+r.error));return}
@@ -321,9 +325,11 @@ T.lora=async function(body){
  body.appendChild(h('div',{'class':'row'},[h('button',{text:'重新整理',onclick:function(){refresh('lora')}}),h('button',{text:'全部卸載',onclick:async function(){await api('POST','/api/lora/unload',{});refresh('lora')}})]));
  if(st.ok===false){body.appendChild(reason('讀取登錄狀態失敗：'+st.error))}
  else{
-  var LM=FaStudioLoraManage, model={rows:LM.rowsFromStatus(st),budget:LM.budgetOf(st),busy:LM.busyText(st)};
+  if(!window.FaStudioLoraManage){body.appendChild(reason('LoRA 管理模組沒有載入（畫面內缺 lora_manage_core，需要重新嵌入）'));return}
+  var LM=window.FaStudioLoraManage, model={rows:LM.rowsFromStatus(st),budget:LM.budgetOf(st),busy:LM.busyText(st)};
   var box=h('div',{}),cardBox=h('div',{});box.innerHTML=LM.renderLoraManageHTML(model);body.appendChild(box);body.appendChild(cardBox);
-  var bv=await api('GET','/api/builtin');var bBox=h('div',{});bBox.innerHTML=LM.builtinCardsHTML(bv);body.appendChild(bBox);
+  var tb=Date.now(),bv;try{bv=await LM.withTimeout(api('GET','/api/builtin'),20000,'讀取內建 LoRA 清單')}catch(e){bv={ok:false,available:true,master:false,entries:[],message:LM.errorText('讀取內建 LoRA 清單',e,Date.now()-tb)}}
+  var bBox=h('div',{});bBox.innerHTML=LM.builtinCardsHTML(bv);body.appendChild(bBox);
   bBox.addEventListener('click',async function(ev){var b=ev.target.closest&&ev.target.closest('[data-builtin-action]');if(!b||b.disabled)return;var act=b.getAttribute('data-builtin-action'),bid=b.getAttribute('data-id'),x=null;
    if(act==='fetch'){b.disabled=true;b.textContent='下載中…';x=await api('POST','/api/builtin/fetch',{id:bid})}
    else if(act==='delete'){if(!confirm('刪除內建 LoRA「'+bid+'」？之後用到時會重新下載（約 40 MB）。'))return;x=await api('POST','/api/builtin/delete',{id:bid})}

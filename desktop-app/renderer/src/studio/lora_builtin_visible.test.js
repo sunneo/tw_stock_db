@@ -57,6 +57,43 @@ const srv = createServer(h);
     check('cards: every id appears', IDS.every(([id]) => html.indexOf('>' + id + '<') >= 0), null);
     check('cards: plan-r4 gate warning shown', html.indexOf('被把關擋下') >= 0 && html.indexOf('self_validate 單邊退化') >= 0, null);
     check('cards: group heading shown', html.indexOf('內建 LoRA（預設使用）') >= 0, null);
+    // 4. iframe 作用域：檢視器 iframe 只有 __LAYOUT__ 與本次注入的模組，LM（FaStudioLoraManage）與 FaStudioPipelineView 必須在裡面
+    //    （先前缺這兩個全域，T.lora 在按鈕之後丟 ReferenceError，畫面只剩幾行字）。用 vm 另開一個全域，模擬 iframe 內沒有父視窗的全域。
+    const vm = require('vm');
+    const getConst = (name) => { const l = faSrc.split('\n').find((x) => x.indexOf('const ' + name + ' = ') === 0); return l ? JSON.parse(l.replace(/^const [A-Z_]+ = /, '').replace(/;\s*$/, '')) : null; };
+    const layoutSrc = getConst('FA_STUDIO_LAYOUT_SRC'), lmSrc = getConst('FA_STUDIO_LORA_MANAGE_SRC'), pvSrc = getConst('FA_STUDIO_PIPELINE_VIEW_SRC');
+    check('iframe sources: embedded constants present', typeof layoutSrc === 'string' && typeof lmSrc === 'string' && typeof pvSrc === 'string', null);
+    const frame = { setTimeout, clearTimeout }; frame.self = frame; vm.createContext(frame); // iframe 裡有計時器（與瀏覽器一樣）
+    let frameErr = null;
+    try { vm.runInContext(layoutSrc, frame); vm.runInContext(lmSrc, frame); vm.runInContext(pvSrc, frame); } catch (e) { frameErr = e; }
+    check('iframe sources: run without error', !frameErr, frameErr && String(frameErr.message));
+    check('iframe: FaStudioLoraManage is defined', frame.FaStudioLoraManage && typeof frame.FaStudioLoraManage.renderLoraManageHTML === 'function', Object.keys(frame));
+    check('iframe: FaStudioPipelineView is defined', frame.FaStudioPipelineView && typeof frame.FaStudioPipelineView.renderPipelineHTML === 'function', Object.keys(frame));
+    check('template: placeholders for LoRA and pipeline present', tpl.indexOf('__LORA_MANAGE__') >= 0 && tpl.indexOf('__PIPELINE_VIEW__') >= 0, null);
+    check('assembly: floating-assistant replaces both placeholders', faSrc.indexOf(".replace('__LORA_MANAGE__'") >= 0 && faSrc.indexOf(".replace('__PIPELINE_VIEW__'") >= 0, null);
+
+    // 5. 空登錄（status 沒有任何 LoRA，native 沒有 last）：列表要出「無資料」字樣，不能丟例外
+    const LM2 = frame.FaStudioLoraManage;
+    const emptyStatus = { ok: true, replacing: null, slotCapacity: 16, usedRank: 0, freeRank: 16, maxActive: 1, budget: 268435456, usedBytes: 0, slots: [], registered: [], native: { ok: false, available: false, error: '這個環境沒有原生推論的套用狀態（不是桌面版）' } };
+    let emptyHtml = null, emptyErr = null;
+    try { emptyHtml = LM2.renderLoraManageHTML({ rows: LM2.rowsFromStatus(emptyStatus), budget: LM2.budgetOf(emptyStatus), busy: LM2.busyText(emptyStatus) }); } catch (e) { emptyErr = e; }
+    check('status without LoRA: renders without error', !emptyErr && typeof emptyHtml === 'string', emptyErr && String(emptyErr.message));
+    check('status without LoRA: shows empty-registry text', emptyHtml && emptyHtml.indexOf('無資料（還沒有註冊的 LoRA）') >= 0, emptyHtml);
+
+    // 6. 內建清單逾時與丟例外：畫面要顯示「哪一步、錯誤、耗時」，不能空白
+    const hangSrv = createServer(Object.assign({}, h, { builtinCall: () => new Promise(() => {}) }));
+    const tb = Date.now(); let hangErr = null;
+    try { await LM2.withTimeout(hangSrv.route('GET', new URL('http://x/api/builtin'), undefined), 50, '讀取內建 LoRA 清單'); } catch (e) { hangErr = e; }
+    const hangMsg = LM2.errorText('讀取內建 LoRA 清單', hangErr, Date.now() - tb);
+    check('builtin hang: withTimeout rejects with timeout text', !!hangErr && /逾時/.test(hangErr.message), hangErr && hangErr.message);
+    check('builtin hang: error text has step, message and elapsed ms', /讀取內建 LoRA 清單失敗/.test(hangMsg) && /耗時 \d+ 毫秒/.test(hangMsg), hangMsg);
+    const hangCards = LM2.builtinCardsHTML({ ok: false, available: true, master: false, entries: [], message: hangMsg });
+    check('builtin hang: card block shows the error (not blank)', hangCards.indexOf('讀取內建 LoRA 清單失敗') >= 0 && hangCards.indexOf('重新抓清單') >= 0, hangCards);
+
+    const throwSrv = createServer(Object.assign({}, h, { builtinCall: async () => { throw new Error('IPC 斷線（測試）'); } }));
+    const tv = await throwSrv.route('GET', new URL('http://x/api/builtin'), undefined).then((x) => x.j).catch((e) => ({ ok: false, message: String(e) }));
+    const throwCards = LM2.builtinCardsHTML(tv);
+    check('builtin throws: card block not blank, shows reason', throwCards.indexOf('內建 LoRA') >= 0 && throwCards.indexOf('IPC 斷線（測試）') >= 0 || throwCards.indexOf('抓不到內建清單') >= 0, throwCards);
     console.log('lora_builtin_visible: ' + ok + ' 通過，' + bad.length + ' 失敗');
     process.exit(bad.length ? 1 : 0);
 })().catch((e) => { console.log('FAIL 例外', e && e.stack); process.exit(1); });

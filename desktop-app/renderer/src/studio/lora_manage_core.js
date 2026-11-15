@@ -244,5 +244,17 @@
             + '</div>';
     }
 
-    return { CARD_FORMAT, CARD_VERSION, METRIC_KEYS, validateModelCard, summarizeCard, budgetOf, busyText, rowsFromStatus, cardFromRegistered, renderLoraManageHTML, builtinCardsHTML, cardIntroHTML, sizeText, timeText, disclosuresOf, renderCompareHTML, evalLinesHTML, registryCardHTML };
+    // 逾時包裝：超過 ms 還沒回應就以錯誤結束（畫面要顯示錯誤，不能一直空白等）
+    function withTimeout(p, ms, what) {
+        let timer = null;
+        const limit = new Promise((_, rej) => { timer = setTimeout(() => rej(new Error(String(what || '請求') + '逾時（超過 ' + Math.round(ms / 1000) + ' 秒沒有回應）')), ms); });
+        return Promise.race([Promise.resolve(p), limit]).finally(() => clearTimeout(timer));
+    }
+    // 錯誤文字：哪一步、錯誤訊息、耗時（毫秒）
+    function errorText(step, err, elapsedMs) {
+        const msg = err && err.message ? err.message : String(err === undefined || err === null ? '未知錯誤' : err);
+        return String(step || '步驟') + '失敗：' + msg + '（耗時 ' + Math.max(0, Math.round(Number(elapsedMs) || 0)) + ' 毫秒）';
+    }
+
+    return { CARD_FORMAT, CARD_VERSION, METRIC_KEYS, validateModelCard, summarizeCard, budgetOf, busyText, rowsFromStatus, cardFromRegistered, renderLoraManageHTML, builtinCardsHTML, cardIntroHTML, sizeText, timeText, disclosuresOf, renderCompareHTML, evalLinesHTML, registryCardHTML, withTimeout, errorText };
 }));
