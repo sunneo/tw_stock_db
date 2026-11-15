@@ -604,6 +604,16 @@ def t_numba_refused_kernel_reason_printed():
         host["kernel_impl"] = None
 
 
+def t_fa_gpu_installs_without_numpy():
+    # 網頁版 Pyodide 剛載入、還沒有 numpy 時，安裝與尋找器必須成功（numpy 只在真的要執行 WGSL 時才需要）
+    import subprocess
+    code = ("import sys; sys.modules['numpy'] = None; sys.path.insert(0, %r); "
+            "import fa_gpu; fa_gpu.install(); fa_gpu.uninstall(); fa_gpu.install(); print('OK')") % os.path.abspath(PYBRIDGE)
+    env = dict(os.environ, PYTHONIOENCODING="utf-8")
+    r = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True, timeout=120)
+    assert r.returncode == 0 and "OK" in r.stdout, (r.stderr or r.stdout)[-600:]
+
+
 for name, fn in list(globals().items()):
     if name.startswith("t_") and callable(fn):
         check(name[2:], fn)

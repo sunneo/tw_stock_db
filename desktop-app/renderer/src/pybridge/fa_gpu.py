@@ -16,7 +16,8 @@ import sys
 import uuid
 from array import array
 
-import numpy as np
+# 注意：這個模組不能在模組層級 import numpy。安裝（install）與尋找器必須在沒有 numpy 時也能成功；
+# numpy 只在 run_kernel 裡需要時才 import（見下方）。網頁版的 numpy 由主機端在執行腳本前先載入。
 
 _SHIM_DIR = os.path.dirname(os.path.abspath(__file__))
 SHIM_NAMES = ("numba", "cupy", "torch", "pycuda")
@@ -136,17 +137,20 @@ def note_fallback(reason):
     sys.stderr.flush()
 
 
-_DTYPES = {"f32": np.float32, "i32": np.int32}
+def _np_dtype(name):
+    import numpy as np
+    return {"f32": np.float32, "i32": np.int32}[name]
 
 
 def run_kernel(plan, arrays):
     """把轉譯好的 WGSL（numba/wgsl.py 的 Plan）交給宿主在 WebGPU 執行。
     arrays：參數名 → numpy 陣列。回傳 (是否在 GPU 執行, 原因)；成功時，可寫入的陣列已就地更新。"""
+    import numpy as np
     items, inputs, outs = [], [], []
     try:
         for b in plan.bindings:
             flat = np.ascontiguousarray(arrays[b["param"]]).reshape(-1)
-            dt = _DTYPES[b["dtype"]]
+            dt = _np_dtype(b["dtype"])
             item = {"name": b["wname"], "dtype": b["dtype"], "n": int(flat.size), "write": bool(b["write"]),
                     "atomic": bool(b["atomic"]), "shape": list(b["shape"])}
             if not IN_BROWSER and RPC_DIR:
@@ -181,7 +185,7 @@ def run_kernel(plan, arrays):
             continue
         arr = arrays[b["param"]]
         o = (res.get("outputs") or {}).get(b["wname"]) or {}
-        dt = _DTYPES[b["dtype"]]
+        dt = _np_dtype(b["dtype"])
         if "bin" in o:
             with open(o["bin"], "rb") as f:
                 vals = np.frombuffer(f.read(), dtype=dt)
