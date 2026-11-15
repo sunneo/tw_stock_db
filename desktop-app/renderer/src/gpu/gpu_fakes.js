@@ -210,6 +210,17 @@ function fakeGl(opts) {
             const inv = 1 / Math.sqrt(s / D + eps);
             v = fx(idx) * inv * at(G, i % W, Math.floor(i / W));
           }
+        } else if (k === 'softmax') {
+          // 逐像素重現 FS_SOFTMAX（fetch 與 GLSL 同一索引）
+          const W = gl.uniforms.uW, rows = gl.uniforms.uRows, C = gl.uniforms.uCols, X = tex('uX');
+          const idx = y * ow + x;
+          if (idx < rows * C) {
+            const row = Math.floor(idx / C);
+            const fx = (j) => at(X, j % W, Math.floor(j / W));
+            let mx = fx(row * C); for (let c = 1; c < C; c++) mx = Math.max(mx, fx(row * C + c));
+            let s = 0; for (let c = 0; c < C; c++) s += Math.exp(fx(row * C + c) - mx);
+            v = Math.exp(fx(idx) - mx) / s;
+          }
         } else if (k === 'sum') {
           const W = gl.uniforms.uW, N = gl.uniforms.uN, j = y * gl.uniforms.uOW + x;
           if (j * 4 < N) for (let q = 0; q < 4; q++) { const e = j * 4 + q; if (e < N) v += at(tex('uA'), e % W, Math.floor(e / W)); }

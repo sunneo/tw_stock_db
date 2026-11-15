@@ -105,6 +105,12 @@ function maxAbs(a, b) { let m = 0; for (let i = 0; i < a.length; i++) m = Math.m
     assert.ok(r.info.reason.includes('WebGL2'));
   });
 
+  await check('softmax 沒有 WebGPU、有 WebGL2（假上下文）：層為 T3，結果與參考版一致', async () => {
+    const r = await NN.softmax(sx, SR, SC, { navigator: {}, gl: fakeGl() });
+    assert.strictEqual(r.info.layer, 'T3');
+    assert.ok(maxAbs(r.result, NN.softmaxRef(sx, SR, SC)) < 1e-6, '差 ' + maxAbs(r.result, NN.softmaxRef(sx, SR, SC)));
+  });
+
   await check('softmaxRef 形狀不符丟錯', async () => {
     assert.throws(() => NN.softmaxRef(sx.slice(1), SR, SC), /softmax：x 的長度/);
   });

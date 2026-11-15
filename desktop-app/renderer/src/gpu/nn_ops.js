@@ -277,6 +277,29 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 `;
 
+// WebGL2 片段著色器：每個輸出像素對自己那一列取最大值與指數和（單趟）
+const FS_SOFTMAX = `#version 300 es
+precision highp float;
+precision highp int;
+// @kernel softmax
+uniform highp sampler2D uX;
+uniform int uW;
+uniform int uRows;
+uniform int uCols;
+out vec4 fragColor;
+float fetchX(int i) { return texelFetch(uX, ivec2(i % uW, i / uW), 0).r; }
+void main() {
+  int idx = int(gl_FragCoord.y) * uW + int(gl_FragCoord.x);
+  if (idx >= uRows * uCols) { fragColor = vec4(0.0); return; }
+  int row = idx / uCols;
+  float mx = fetchX(row * uCols);
+  for (int c = 1; c < uCols; c++) mx = max(mx, fetchX(row * uCols + c));
+  float s = 0.0;
+  for (int c = 0; c < uCols; c++) s += exp(fetchX(row * uCols + c) - mx);
+  fragColor = vec4(exp(fetchX(idx) - mx) / s, 0.0, 0.0, 1.0);
+}
+`;
+
 async function softmax(x, rows, cols, opts) {
   const xf = Float32Array.from(x);
   return tryLayers('softmax', opts,
@@ -288,7 +311,7 @@ async function softmax(x, rows, cols, opts) {
         uni, Math.ceil(rows / 64));
       return outs[0];
     },
-    null,
+    (gl) => glRun(gl, FS_SOFTMAX, [xf], { i: { uRows: rows, uCols: cols } }, rows * cols, ['uX']),
     () => softmaxRef(xf, rows, cols));
 }
 
@@ -483,6 +506,7 @@ function createBatch(dev) {
       dispatch(WGSL_SOFTMAX, [x.buf, y], uni, Math.ceil(rows / 64));
       return { buf: y, n: rows * cols };
     },
+    // （批次內的 rmsnorm、softmax、silu、rope 都只走 T1；批次是 GPU 內連續運算，不經過 WebGL2）
     silu(x) {
       const y = storage(x.n);
       const uni = new ArrayBuffer(16); new Uint32Array(uni, 0, 1)[0] = x.n;
