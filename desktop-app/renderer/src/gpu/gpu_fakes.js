@@ -225,6 +225,16 @@ function fakeGl(opts) {
           // 逐像素重現 FS_SILU
           const W = gl.uniforms.uW, N = gl.uniforms.uN, X = tex('uX'), idx = y * ow + x;
           if (idx < N) { const q = at(X, idx % W, Math.floor(idx / W)); v = q / (1 + Math.exp(-q)); }
+        } else if (k === 'rope') {
+          // 逐像素重現 FS_ROPE（與 GLSL 同一組索引：t、rem、r2、i、o）
+          const W = gl.uniforms.uW, T = gl.uniforms.uT, H = gl.uniforms.uH, hd = gl.uniforms.uHd, dir = gl.uniforms.uDir, X = tex('uX');
+          const d = H * hd, idx = y * ow + x;
+          if (idx < T * d) {
+            const t = Math.floor(idx / d), rem = idx - t * d, r2 = rem % hd, i = Math.floor(r2 / 2), o = idx - (r2 - 2 * i);
+            const th = t * Math.pow(10000, -2 * i / hd), c = Math.cos(th), s = dir * Math.sin(th);
+            const a = at(X, o % W, Math.floor(o / W)), b = at(X, (o + 1) % W, Math.floor((o + 1) / W));
+            v = (r2 === 2 * i) ? (a * c - b * s) : (a * s + b * c);
+          }
         } else if (k === 'sum') {
           const W = gl.uniforms.uW, N = gl.uniforms.uN, j = y * gl.uniforms.uOW + x;
           if (j * 4 < N) for (let q = 0; q < 4; q++) { const e = j * 4 + q; if (e < N) v += at(tex('uA'), e % W, Math.floor(e / W)); }

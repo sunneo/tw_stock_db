@@ -412,6 +412,38 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 `;
 
+// WebGL2 片段著色器：每個輸出元素依自己在 (t, h, 對) 中的位置，取出同一對的兩個輸入做旋轉
+const FS_ROPE = `#version 300 es
+precision highp float;
+precision highp int;
+// @kernel rope
+uniform highp sampler2D uX;
+uniform int uW;
+uniform int uT;
+uniform int uH;
+uniform int uHd;
+uniform float uDir;
+out vec4 fragColor;
+float fetchX(int i) { return texelFetch(uX, ivec2(i % uW, i / uW), 0).r; }
+void main() {
+  int idx = int(gl_FragCoord.y) * uW + int(gl_FragCoord.x);
+  int d = uH * uHd;
+  if (idx >= uT * d) { fragColor = vec4(0.0); return; }
+  int t = idx / d;
+  int rem = idx - t * d;
+  int r2 = rem % uHd;
+  int i = r2 / 2;
+  int o = idx - (r2 - 2 * i);
+  float th = float(t) * pow(10000.0, -2.0 * float(i) / float(uHd));
+  float c = cos(th);
+  float s = uDir * sin(th);
+  float a = fetchX(o);
+  float b = fetchX(o + 1);
+  float v = (r2 == 2 * i) ? (a * c - b * s) : (a * s + b * c);
+  fragColor = vec4(v, 0.0, 0.0, 1.0);
+}
+`;
+
 async function rope(x, T, H, hd, dir, opts) {
   const xf = Float32Array.from(x);
   return tryLayers('rope', opts,
@@ -424,7 +456,7 @@ async function rope(x, T, H, hd, dir, opts) {
         uni, Math.ceil(T * H * (hd / 2) / 64));
       return outs[0];
     },
-    null,
+    (gl) => glRun(gl, FS_ROPE, [xf], { i: { uT: T, uH: H, uHd: hd }, f: { uDir: dir } }, xf.length, ['uX']),
     () => ropeRef(xf, T, H, hd, dir));
 }
 

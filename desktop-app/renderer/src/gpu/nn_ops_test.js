@@ -173,6 +173,14 @@ function maxAbs(a, b) { let m = 0; for (let i = 0; i < a.length; i++) m = Math.m
     assert.ok(maxAbs(r.result, NN.ropeRef(rx, RT, RH, Rhd, 1)) < 1e-5, '差 ' + maxAbs(r.result, NN.ropeRef(rx, RT, RH, Rhd, 1)));
   });
 
+  await check('rope 沒有 WebGPU、有 WebGL2（假上下文）：層為 T3，結果與參考版一致（正向與反向）', async () => {
+    for (const dir of [1, -1]) {
+      const r = await NN.rope(rx, RT, RH, Rhd, dir, { navigator: {}, gl: fakeGl() });
+      assert.strictEqual(r.info.layer, 'T3');
+      assert.ok(maxAbs(r.result, NN.ropeRef(rx, RT, RH, Rhd, dir)) < 1e-5, 'dir=' + dir + ' 差 ' + maxAbs(r.result, NN.ropeRef(rx, RT, RH, Rhd, dir)));
+    }
+  });
+
   await check('rope 沒有 WebGPU：退到 cpu-js 並寫明原因', async () => {
     const r = await NN.rope(rx, RT, RH, Rhd, -1, { navigator: {} });
     assert.strictEqual(r.info.layer, 'cpu-js');
