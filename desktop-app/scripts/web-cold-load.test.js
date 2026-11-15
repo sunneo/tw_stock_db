@@ -115,6 +115,23 @@ const runtimeSrc = fs.readFileSync(path.join(ROOT, 'renderer', 'src', 'lazy-runt
         });
     }
 
+    await check('預熱網址：core、boot.json 與 manifest 每個分塊，全部釘在同一個 SHA 的 jsDelivr 網址', () => {
+        const { warmUrls } = require('./web-warm-urls.js');
+        const sha = 'a575ce383e47b7312a84736e86eb53a3e59b3d9f';
+        const urls = warmUrls(sha, { chunks: { yk: {}, codeui: {} } }, []);
+        assert.deepStrictEqual(urls, [
+            'https://cdn.jsdelivr.net/gh/sunneo/tw_stock_db@' + sha + '/desktop-app/web-lazy/core.js',
+            'https://cdn.jsdelivr.net/gh/sunneo/tw_stock_db@' + sha + '/desktop-app/web-lazy/boot.json',
+            'https://cdn.jsdelivr.net/gh/sunneo/tw_stock_db@' + sha + '/desktop-app/web-lazy/chunks/yk.js',
+            'https://cdn.jsdelivr.net/gh/sunneo/tw_stock_db@' + sha + '/desktop-app/web-lazy/chunks/codeui.js',
+        ]);
+    });
+    await check('預熱網址：分支名或短 SHA 直接拒絕（不預熱錯誤的 commit）', () => {
+        const { warmUrls } = require('./web-warm-urls.js');
+        assert.throws(() => warmUrls('main', { chunks: {} }, []));
+        assert.throws(() => warmUrls('a575ce38', { chunks: {} }, []));
+    });
+
     console.log('web-cold-load.test：通過 ' + ok + ' 項' + (bad.length ? '，失敗 ' + bad.length + ' 項' : ''));
     for (const b of bad) console.log('  ✗ ' + b);
     process.exit(bad.length ? 1 : 0);

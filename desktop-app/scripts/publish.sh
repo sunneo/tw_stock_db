@@ -147,6 +147,16 @@ if [ "$WEB" = 1 ]; then
       CODE="$(curl -sI -o /dev/null -w '%{http_code}' "https://raw.githubusercontent.com/sunneo/tw_stock_db/$HEAD_SHA/desktop-app/renderer/floating-assistant.js" || true)"
       node scripts/web-lazy-check.js --remote "$HEAD_SHA" || echo "⚠️ 網頁版區塊檔遠端驗證沒過（CDN 可能還沒更新，稍後重跑 node scripts/web-lazy-check.js --remote $HEAD_SHA）" >&2
       echo "釘住的檔案網址回應：HTTP $CODE（Pages 約 1～2 分鐘後換上新版；要確認頁面實際載入的版本，用 fa._createProgressWidget.toString() 之類檢查）"
+      # 冷載入預熱（2026-11-15）：對新釘的 jsDelivr 網址（核心、boot.json、每個分塊）各發一次 curl，讓使用者第一次造訪就是 HIT。
+      # 網址清單由 scripts/web-warm-urls.js 產生；逾時 20 秒，失敗只警告、不擋發布。
+      WARM_FAIL=0; WARM_TOTAL=0
+      while IFS= read -r WARM_URL; do
+        [ -n "$WARM_URL" ] || continue
+        WARM_TOTAL=$((WARM_TOTAL+1))
+        WARM_CODE="$(curl -s -o /dev/null --max-time 20 -w '%{http_code}' "$WARM_URL" || true)"
+        [ "$WARM_CODE" = 200 ] || { WARM_FAIL=$((WARM_FAIL+1)); echo "⚠️ jsDelivr 預熱失敗（HTTP ${WARM_CODE:-無回應}）：$WARM_URL" >&2; }
+      done < <(node scripts/web-warm-urls.js "$HEAD_SHA" 2>/dev/null)
+      echo "jsDelivr 預熱：$WARM_TOTAL 個網址，失敗 $WARM_FAIL 個（只是警告，不影響發布）"
     fi
   fi
 fi

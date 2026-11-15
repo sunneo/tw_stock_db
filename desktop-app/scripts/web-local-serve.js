@@ -6,6 +6,8 @@
 //   node scripts/web-local-serve.js                      # 起伺服器，預設埠 18770
 //   node scripts/web-local-serve.js --port 18771         # 換埠
 //   node scripts/web-local-serve.js --dry-run            # 只印出會被改寫的清單，不起伺服器
+//   node scripts/web-local-serve.js --throttle 800       # 本機回應限速 800 kbps（模擬慢網路）
+//   node scripts/web-local-serve.js --no-cache          # 回應一律 Cache-Control: no-store（預設即如此，參數只是寫明意圖）
 //   node scripts/web-local-serve.js --web <網頁版目錄>    # 網頁版目錄；預設依序找 ../web、../../videos-嗨投資/web，或環境變數 FA_WEB_DIR
 //
 // 提供的路徑：
@@ -35,6 +37,11 @@ const path = require('path');
 
 const HOST = '127.0.0.1';
 const DESKTOP_DIR = path.resolve(__dirname, '..');
+// 2026-11-15：核心與分塊改走 jsDelivr（釘 SHA）；本機測試一併改寫成本機 desktop-app 路徑
+const JSD_RE = /https:\/\/cdn\.jsdelivr\.net\/gh\/sunneo\/tw_stock_db@[0-9a-f]{7,40}\/desktop-app\//g;
+const JSD_CONCAT_RE = /'https:\/\/cdn\.jsdelivr\.net\/gh\/sunneo\/tw_stock_db@' \+ [A-Za-z_][A-Za-z0-9_]* \+ '\/desktop-app\//g;
+// RAW + '/' + SHA 變數 + '/desktop-app/' 的形狀（aiweb 的 FA_RAWB）
+const RAW_VAR_CONCAT_RE = /RAW \+ '\/' \+ [A-Za-z_][A-Za-z0-9_]* \+ '\/desktop-app\//g;
 const RAW_RE = /https:\/\/raw\.githubusercontent\.com\/sunneo\/tw_stock_db\/((?:refs\/heads\/)?[^\/'"\s)`<>]+)\/desktop-app\//g;
 const MIME = {
     '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8',
@@ -44,14 +51,17 @@ const MIME = {
 };
 
 function parseArgs(argv) {
-    const o = { port: 18770, dryRun: false, web: null };
+    const o = { port: 18770, dryRun: false, web: null, throttleKbps: 0, noCache: false };
     for (let i = 0; i < argv.length; i++) {
         const a = argv[i];
         if (a === '--dry-run') o.dryRun = true;
         else if (a === '--port') o.port = Number(argv[++i]);
         else if (a === '--web') o.web = argv[++i];
+        else if (a === '--throttle') o.throttleKbps = Number(argv[++i]);
+        else if (a === '--no-cache') o.noCache = true;
         else { console.error('不認得的參數：' + a); process.exit(2); }
     }
+    if (!(o.throttleKbps >= 0)) { console.error('--throttle 要是 0 或正數（kbps）'); process.exit(2); }
     if (!Number.isInteger(o.port) || o.port < 1 || o.port > 65535) { console.error('埠號不合法'); process.exit(2); }
     return o;
 }
@@ -102,7 +112,10 @@ const RAW_CONCAT_RE = /RAW \+ '\/((?:refs\/heads\/)?[^\/'"\s]+)\/desktop-app\//g
 function rewriteHtml(text, port) {
     const hits = new Map();
     const bump = (k) => hits.set(k, (hits.get(k) || 0) + 1);
-    let out = text.replace(RAW_RE, (m) => { bump(m); return `http://${HOST}:${port}/desktop-app/`; });
+    let out = text.replace(JSD_RE, (m) => { bump(m); return `http://${HOST}:${port}/desktop-app/`; });
+    out = out.replace(JSD_CONCAT_RE, (m) => { bump(m); return `'http://${HOST}:${port}/desktop-app/`; });
+    out = out.replace(RAW_VAR_CONCAT_RE, (m) => { bump(m); return `'http://${HOST}:${port}/desktop-app/`; });
+    out = out.replace(RAW_RE, (m) => { bump(m); return `http://${HOST}:${port}/desktop-app/`; });
     out = out.replace(RAW_CONCAT_RE, (m) => { bump(m); return `'http://${HOST}:${port}/desktop-app/`; });
     return { text: out, hits };
 }
@@ -118,6 +131,19 @@ function resolveRequest(urlPath, webDir) {
     if (full !== base && !full.startsWith(base + path.sep)) return null; // 防止 .. 跳出目錄
     try { if (fs.statSync(full).isDirectory()) full = path.join(full, 'index.html'); } catch (_) { /* 下面會 404 */ }
     return full;
+}
+
+// 限速：每 50 毫秒送 bytesPerSec/20 位元組，模擬慢網路（只影響本機伺服器回應，不影響 jsDelivr 或 raw）
+function sendThrottled(res, buf, bytesPerSec, done) {
+    const chunk = Math.max(256, Math.floor(bytesPerSec / 20));
+    let off = 0;
+    const tick = () => {
+        if (res.destroyed) return;
+        if (off >= buf.length) { res.end(); return done(); }
+        res.write(buf.subarray(off, off + chunk)); off += chunk;
+        setTimeout(tick, 50);
+    };
+    tick();
 }
 
 function startServer(o, webDir) {
@@ -143,14 +169,16 @@ function startServer(o, webDir) {
             outBody = Buffer.from(r.text, 'utf8');
             note = r.hits.size ? ` 改寫 ${[...r.hits.values()].reduce((a, b) => a + b, 0)} 處` : '';
         }
-        res.writeHead(200, { 'Content-Type': MIME[ext] || 'application/octet-stream', 'Cache-Control': 'no-store', 'Access-Control-Allow-Origin': '*' });
+        // --no-cache：不論參數如何一律 no-store（預設也是 no-store，這個參數只是讓意圖寫明）；ETag／Last-Modified 本來就不送，瀏覽器不會條件式快取
+        res.writeHead(200, { 'Content-Type': MIME[ext] || 'application/octet-stream', 'Cache-Control': 'no-store', 'Access-Control-Allow-Origin': '*', 'Content-Length': outBody.length });
         if (req.method === 'HEAD') return res.end();
+        if (o.throttleKbps > 0) return sendThrottled(res, outBody, o.throttleKbps * 1024 / 8, () => console.log(`GET ${req.url} 200 (${Date.now() - t0}ms，限速 ${o.throttleKbps} kbps)${note}`));
         res.end(outBody);
         console.log(`GET ${req.url} 200 (${Date.now() - t0}ms)${note}`);
     });
     server.listen(o.port, HOST, () => {
         console.log(`本機網頁版測試伺服器：http://${HOST}:${o.port}/web/aiweb/   （網頁版目錄：${webDir}；desktop-app：${DESKTOP_DIR}）`);
-        console.log('Ctrl+C 結束。只綁 127.0.0.1，唯讀。');
+        console.log('Ctrl+C 結束。只綁 127.0.0.1，唯讀。' + (o.throttleKbps > 0 ? ` 限速 ${o.throttleKbps} kbps。` : '') + (o.noCache ? ' no-cache（no-store）。' : ''));
     });
     server.on('error', (e) => { console.error('啟動失敗：' + e.message + '（埠 ' + o.port + ' 可能被占用，用 --port 換一個）'); process.exit(1); });
 }
