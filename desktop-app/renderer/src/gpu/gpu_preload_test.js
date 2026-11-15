@@ -118,6 +118,19 @@ function fakePyodide(opts) {
     assert.ok(fa.indexOf("python_api_bridge: { gpu }") > 0, 'python_execute 結果沒有 python_api_bridge.gpu');
   });
 
+  await check('GPU 相容層設定區塊：AI 設定（ai 分組）與桌面版設定頁都掛載同一個建構函式；開關預設開、三種模式、開啟時不自動偵測', async () => {
+    const fa = fs.readFileSync(path.join(__dirname, '..', 'floating-assistant.js'), 'utf8').replace(/\r\n/g, '\n');
+    const boot = fs.readFileSync(path.join(__dirname, '..', '..', 'bootstrap.js'), 'utf8').replace(/\r\n/g, '\n');
+    assert.ok(fa.indexOf("this._gpuCompatRegisterPane()") > 0, 'AI 設定沒有註冊 GPU 相容層分頁');
+    assert.ok(fa.indexOf("registerAdvancedSettingsTab('ai', 'gpu-compat'") > 0, 'GPU 相容層不在 ai 分組');
+    assert.ok(boot.indexOf("fa._gpuCompatControls()") > 0, '桌面版設定頁沒有掛載 GPU 相容層區塊');
+    assert.ok(fa.indexOf("chk.checked = (this.advancedSettings.cudaCompat !== 'off')") > 0, '開關沒有依設定顯示（預設開）');
+    for (const v of ["['auto', 'auto（預設）']", "['f32', 'f32']", "['exact', 'exact']"]) assert.ok(fa.indexOf(v) > 0, '缺少模式選項 ' + v);
+    assert.ok(fa.indexOf("this.advancedSettings.cudaCompatFloat64 = sel.value") > 0, 'float64 模式沒有寫回設定');
+    assert.ok(fa.indexOf("status.textContent = '按「重新偵測」查看目前偵測到的 GPU 層。';") > 0, '開啟設定時不應自動偵測');
+    assert.ok(fa.indexOf("this._cudawebCall('backend_info', {})") > 0, '偵測沒有呼叫 backend_info');
+  });
+
   await check('桌面版 run_command 的判斷（scriptNeedsShim）與網頁版同一條規則', async () => {
     assert.strictEqual(typeof P.scriptNeedsShim, 'function');
     for (const s of ['from numba import cuda\n', 'import torch\n']) assert.strictEqual(P.scriptNeedsShim(s), true, s);

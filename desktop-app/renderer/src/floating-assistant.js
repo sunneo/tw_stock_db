@@ -95548,6 +95548,59 @@ ${fnData.code}
         halfLbl.appendChild(halfChk); halfLbl.appendChild(halfTxt); root.appendChild(halfLbl);
         this.registerAdvancedSettingsTab('ai', 'offline-training-studio', '離線訓練工作室', root);
     }
+    // GPU 相容層設定區塊（AI 助理設定的 ai 分組，以及桌面版設定頁共用這個建構函式，避免兩邊各寫一份而走樣）：
+    // 開關 cudaCompat（預設開）、cudaCompatFloat64（auto／f32／exact，各模式的精度與速度差異）、目前偵測到的 GPU 層與最近一次執行的層。
+    _gpuCompatControls() {
+        const wrap = document.createElement('div');
+        wrap.style.cssText = 'font-size:13px; line-height:1.5; display:flex; flex-direction:column; gap:8px;';
+        const lblChk = document.createElement('label');
+        lblChk.style.cssText = 'display:flex; gap:6px; align-items:flex-start; cursor:pointer;';
+        const chk = document.createElement('input');
+        chk.type = 'checkbox'; chk.checked = (this.advancedSettings.cudaCompat !== 'off'); chk.style.marginTop = '3px';
+        chk.addEventListener('change', () => { this.advancedSettings.cudaCompat = chk.checked ? 'on' : 'off'; this._saveAdvancedSettings(); });
+        const chkTxt = document.createElement('span');
+        chkTxt.textContent = '開啟 GPU 相容層（預設開）：既有的 numba.cuda、cupy、torch、pycuda 程式不必改寫，就會在 WebGPU 上執行（不是真的 CUDA）。關閉後這些套件回到原本的行為。';
+        lblChk.appendChild(chk); lblChk.appendChild(chkTxt); wrap.appendChild(lblChk);
+        const selRow = document.createElement('div');
+        selRow.style.cssText = 'display:flex; gap:8px; align-items:center; flex-wrap:wrap;';
+        const selName = document.createElement('span'); selName.textContent = 'float64 處理（Python 預設的浮點）：';
+        const sel = document.createElement('select');
+        sel.style.cssText = 'padding:4px 8px; border-radius:6px;';
+        [['auto', 'auto（預設）'], ['f32', 'f32'], ['exact', 'exact']].forEach(([v, t]) => { const o = document.createElement('option'); o.value = v; o.textContent = t; sel.appendChild(o); });
+        const cur = this.advancedSettings.cudaCompatFloat64;
+        sel.value = (cur === 'f32' || cur === 'exact') ? cur : 'auto';
+        sel.addEventListener('change', () => { this.advancedSettings.cudaCompatFloat64 = sel.value; this._saveAdvancedSettings(); });
+        selRow.appendChild(selName); selRow.appendChild(sel); wrap.appendChild(selRow);
+        const mode = document.createElement('div'); mode.className = 'ai-advanced-hint'; mode.style.margin = '0';
+        mode.textContent = 'auto：雙 float32 在 GPU 跑，有效精度約 48 位元，寫回前做抽樣檢查；比 f32 慢（每個運算約 10 至 20 倍工作量）。'
+          + ' f32：在 GPU 跑、最快，但 float64 陣列降成 float32，精度只剩約 7 位數，執行時會印出說明。'
+          + ' exact：不用 GPU，在本機逐執行緒模擬，與 CUDA 同 float64 精度，最慢。';
+        wrap.appendChild(mode);
+        const status = document.createElement('div'); status.style.cssText = 'font-size:12px; white-space:pre-wrap;';
+        const refreshBtn = document.createElement('button'); refreshBtn.type = 'button'; refreshBtn.className = 'ai-advanced-btn'; refreshBtn.textContent = '重新偵測';
+        const fill = async () => {
+          const lines = [];
+          try {
+            const info = await this._cudawebCall('backend_info', {});
+            lines.push(info && info.deviceReady ? '目前偵測到：WebGPU 可用（GPU 層 T1）' : '目前偵測到：WebGPU 不可用' + (info && info.probeReason ? '（' + info.probeReason + '）' : '') + '，會在本機 Python 模擬執行');
+          } catch (e) { lines.push('目前偵測到：偵測失敗（' + String((e && e.message) || e) + '）'); }
+          const g = this._gpuStat;
+          if (g && g.calls) lines.push('最近一次執行：層＝' + (g.layer || '未知') + (g.reason ? '，原因：' + g.reason : '') + '（呼叫 ' + g.calls + ' 次）');
+          else lines.push('最近一次執行：還沒有用到 GPU 相容層');
+          status.textContent = lines.join('\n');
+        };
+        refreshBtn.addEventListener('click', () => { fill(); });
+        const stRow = document.createElement('div'); stRow.style.cssText = 'display:flex; gap:8px; align-items:flex-start; flex-wrap:wrap;';
+        stRow.appendChild(refreshBtn); stRow.appendChild(status); wrap.appendChild(stRow);
+        // 不在開啟設定時自動偵測（會建立 WebGPU 執行期）；按「重新偵測」才偵測
+        status.textContent = '按「重新偵測」查看目前偵測到的 GPU 層。';
+        return wrap;
+    }
+    _gpuCompatRegisterPane() {
+        const root = document.createElement('div');
+        root.appendChild(this._gpuCompatControls());
+        this.registerAdvancedSettingsTab('ai', 'gpu-compat', 'GPU 相容層（numba／cupy／torch）', root);
+    }
 
     // ===== Python API 轉接（執行技能包的 Python 腳本時，部分公開 API 其實是接到助理自己的工具／領域） =====
     // 為什麼：技能包的腳本常常是為別的環境寫的（例如用 Playwright 連 Chrome 遠端除錯埠）。靠提示叫弱模型「讀懂再改寫」不保證它照做，
@@ -139031,6 +139084,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         try { this._designedRegisterPane(); } catch (e) { console.warn('設計出來的工具分頁註冊失敗', e); }
         try { this._riRegisterPane(); } catch (e) { console.warn('專案索引分頁註冊失敗', e); }
         try { this._studioRegisterPane(); } catch (e) { console.warn('離線訓練工作室分頁註冊失敗', e); }
+        try { this._gpuCompatRegisterPane(); } catch (e) { console.warn('GPU 相容層分頁註冊失敗', e); }
         try { this._mcpRegisterPane(); } catch (e) { console.warn('MCP 分頁註冊失敗', e); }
         try { if (this._i3dRegisterPane) this._i3dRegisterPane(); } catch (e) { console.warn('圖片轉 3D 設定分頁註冊失敗', e); }
         // CI/CD 連線設定頁不放進 Configure（使用者不需要）：程式設計 domain 靠內建的知識（ci_guide、提示詞）與 gh／curl／ssh 指令處理 GitHub、Jenkins、Gerrit

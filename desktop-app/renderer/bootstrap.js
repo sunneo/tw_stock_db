@@ -2239,6 +2239,13 @@ function patchCloudflareWording(root) {
         refresh();
       }
 
+      // GPU 相容層：與 AI 助理設定的 ai 分組共用同一個建構函式（fa._gpuCompatControls），桌面版設定頁也要看得到、改得到
+      const gpuStack = document.createElement("div");
+      gpuStack.className = "ai-advanced-stack";
+      gpuStack.innerHTML = '<label class="ai-advanced-label">GPU 相容層（numba／cupy／torch／pycuda）</label>';
+      if (typeof fa._gpuCompatControls === "function") gpuStack.appendChild(fa._gpuCompatControls());
+      pane.appendChild(gpuStack);
+
       fa.registerAdvancedSettingsTab("desktop", "desktop-app", "桌面版設定", pane);
     }
   }
