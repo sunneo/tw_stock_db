@@ -445,10 +445,11 @@ T.train=async function(body){
   if(kind!=='lora'){symTrain(out,kind);return}
   var bs=h('select',{});var webOk=r.backends.some(function(b){return b.id==='wasm-web'&&b.available}),hostOk=r.backends.some(function(b){return b.id!=='wasm-web'&&b.available});
   bs.appendChild(h('option',{value:'auto',text:'自動（建議）'+(r.selection&&r.selection.chosen?' → '+r.selection.chosen:(!hostOk&&webOk?' → 網頁處理器（桌面版後端不可用，自動退到頁內 WebAssembly）':(r.selection&&r.selection.reason?'：'+r.selection.reason.slice(0,60):'')))}));
-  var names={'cpu-py':'純處理器（Python，桌面版）','wasm-web':'網頁處理器（頁內 WebAssembly，慢但正確、可暫停匯出）','webgpu':'WebGPU','directml':'DirectML','vulkan':'Vulkan'};
+  var names={'cpu-py':'純處理器（Python，桌面版）','wasm-web':'網頁處理器（頁內 WebAssembly，慢但正確、可暫停匯出）','webgpu':'WebGPU','directml':'DirectML','vulkan':'Vulkan','cudaweb':'cudaweb（GPU 運算核心）'};
   r.backends.forEach(function(b){bs.appendChild(h('option',{value:b.id,disabled:!b.available,text:(names[b.id]||b.id)+(b.available?'':'（不可用）')}))});
   out.appendChild(h('label',{text:'運算後端'}));out.appendChild(bs);
-  var why=r.backends.filter(function(b){return !b.available});if(why.length){var ul=h('div',{style:'color:var(--mut);font-size:12px'});why.forEach(function(b){ul.appendChild(h('div',{text:'• '+(names[b.id]||b.id)+'：'+b.reason}))});out.appendChild(ul)}
+  /* cudaweb 可用時也要顯示 reason（實際走哪一層、降級原因），其他後端只在不可用時顯示 */
+  var why=r.backends.filter(function(b){return !b.available||(b.id==='cudaweb'&&b.reason)});if(why.length){var ul=h('div',{style:'color:var(--mut);font-size:12px'});why.forEach(function(b){ul.appendChild(h('div',{text:'• '+(names[b.id]||b.id)+'：'+(b.reason||'')}))});out.appendChild(ul)}
   if(r.hw)out.appendChild(h('div',{style:'color:var(--mut);font-size:12px;margin-top:4px',text:'電腦：'+r.hw.cpuModel+'，'+r.hw.cores+' 個核心；訓練會用 '+r.threads+' 個（Configure：'+(r.config.cpuCores==='auto'?'自動＝全部減 1':r.config.cpuCores)+'）'}));
   // 設定
   if(r.config){var cc=h('input',{type:'text',value:String(r.config.cpuCores),style:'width:80px'});out.appendChild(h('div',{'class':'row'},[h('span',{text:'核心數（auto 或整數）'}),cc,h('button',{text:'套用',onclick:async function(){var v=/^\d+$/.test(cc.value)?parseInt(cc.value,10):cc.value;var x=await api('POST','/api/config',{patch:{cpuCores:v}});alert(x.ok===false?x.error:(x.errors.concat(x.warnings).join('\n')||'已更新'));build()}})]))}
