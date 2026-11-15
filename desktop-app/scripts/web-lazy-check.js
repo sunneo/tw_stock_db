@@ -28,6 +28,14 @@ if (actual.indexOf('boot.json') >= 0) {
 for (const f of actual) if (!SIDE_FILES.has(f) && !expect[f]) errors.push('manifest 沒有列到：' + f);
 if (errors.length) { console.error('web-lazy 檢查失敗：\n' + errors.join('\n')); process.exit(1); }
 console.log('web-lazy 本機檢查通過：core.js＋' + Object.keys(man.chunks).length + ' 個區塊檔');
+// 舊版 node（16 以前）沒有內建 fetch：退回 https 模組（只做 GET，跟隨轉址）。
+const httpGet = (url, n) => new Promise((res, rej) => {
+    require('https').get(url, { headers: { 'User-Agent': 'fa-web-lazy-check' } }, (r) => {
+        if (r.statusCode >= 300 && r.statusCode < 400 && r.headers.location && (n || 0) < 5) { r.resume(); return res(httpGet(new URL(r.headers.location, url).href, (n || 0) + 1)); }
+        const c = []; r.on('data', (d) => c.push(d)); r.on('end', () => res({ ok: r.statusCode >= 200 && r.statusCode < 300, status: r.statusCode, arrayBuffer: async () => Buffer.concat(c) }));
+    }).on('error', rej);
+});
+const getUrl = (u) => (typeof fetch === 'function' ? fetch(u) : httpGet(u));
 const i = process.argv.indexOf('--remote');
 if (i > 0) {
     const sha = process.argv[i + 1];
@@ -35,7 +43,7 @@ if (i > 0) {
         const base = 'https://raw.githubusercontent.com/sunneo/tw_stock_db/' + sha + '/desktop-app/web-lazy/';
         let bad = 0;
         for (const [f, m] of Object.entries(expect)) {
-            const r = await fetch(base + f);
+            const r = await getUrl(base + f);
             const ok = r.ok && md5(Buffer.from(await r.arrayBuffer())) === m;
             if (!ok) { bad++; console.error('遠端不對：' + f + ' HTTP ' + r.status); }
         }

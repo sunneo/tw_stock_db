@@ -13,6 +13,8 @@
 #   WEB_REPO        網頁版的 repo（預設 <本 repo>/../videos-嗨投資）
 #   PUBLISH_TRAILER 附在每個提交訊息最後的一行（例如 "Co-Authored-By: ..."），預設不加
 #   REMOTE          遠端名稱（預設 origin）
+# 被 sh（dash 等）誤用時改用 bash 重跑；腳本用了 bash 專有語法
+[ -n "${BASH_VERSION:-}" ] || exec bash "$0" "$@"
 set -euo pipefail
 
 NOTES=""; DRY=0; WEB=1; VERSION=""; BUILD=1; COMMIT_MSG=""
@@ -150,12 +152,13 @@ if [ "$WEB" = 1 ]; then
       # 冷載入預熱（2026-11-15）：對新釘的 jsDelivr 網址（核心、boot.json、每個分塊）各發一次 curl，讓使用者第一次造訪就是 HIT。
       # 網址清單由 scripts/web-warm-urls.js 產生；逾時 20 秒，失敗只警告、不擋發布。
       WARM_FAIL=0; WARM_TOTAL=0
+      WARM_LIST="$(mktemp)"; node scripts/web-warm-urls.js "$HEAD_SHA" > "$WARM_LIST" 2>/dev/null || true   # 不用 process substitution，sh 也能跑
       while IFS= read -r WARM_URL; do
         [ -n "$WARM_URL" ] || continue
         WARM_TOTAL=$((WARM_TOTAL+1))
         WARM_CODE="$(curl -s -o /dev/null --max-time 20 -w '%{http_code}' "$WARM_URL" || true)"
         [ "$WARM_CODE" = 200 ] || { WARM_FAIL=$((WARM_FAIL+1)); echo "⚠️ jsDelivr 預熱失敗（HTTP ${WARM_CODE:-無回應}）：$WARM_URL" >&2; }
-      done < <(node scripts/web-warm-urls.js "$HEAD_SHA" 2>/dev/null)
+      done < "$WARM_LIST"; rm -f "$WARM_LIST"
       echo "jsDelivr 預熱：$WARM_TOTAL 個網址，失敗 $WARM_FAIL 個（只是警告，不影響發布）"
     fi
   fi
