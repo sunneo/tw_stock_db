@@ -1,635 +1,525 @@
-# PyTorch on WebGPU 與 Python CUDA on WebGPU：調查與設計
+# CUDA 相容的 GPU 運算層：cudaweb、torch on WebGPU 與離線模型資源（完整設計）
 
-> 狀態：調查與設計文件（2026-11-15）。**本輪沒有實作任何核心**，只新增本文件與唯讀盤點。
-> 標示規則：【查證】＝本輪有網路來源可引用；【推測】＝我的判斷或經驗，沒有來源；【未驗證】＝沒有在這台機器或瀏覽器實跑過。
-> 寫作守則：全文中文，英文只保留專有名詞與程式識別字。
-
----
-
-## 0. 結論摘要
-
-- **可行性**：可行，但要分開看兩件事。
-  - 「PyTorch 形式的張量與自動微分跑在瀏覽器 WebGPU」：可行。前人已有 tinygrad、ONNX Runtime Web、rullama 等路線，但它們各有缺口（見 §2）。
-  - 「CUDA 與 PTX 的完整語意跑在 WebGPU」：**不可行到完整相容**。WebGPU 缺 f64、64 位元整數、64 位元原子操作、f32 原子操作（依目前查到的規格，見 §3），也沒有 Tensor Core、動態平行、函式指標。只能做「子集＋替代做法＋明確降級記錄」。
-- **最大風險**：
-  1. 數值一致性：替代做法（雙 f32 模擬 f64、CAS 迴圈模擬 f32 原子）的結果與 CUDA 不一定逐位元相同，要靠容差測試，且容差只能用實測決定（目前沒有數字）。
-  2. 效能：替代做法與缺少 Tensor Core 會讓速度落後很多，沒有實測前不承諾速度。
-  3. 本機顯示卡與 WebGPU 能否用：見 §8，本輪沒有實跑，**未驗證**。
-  4. 法律：NVIDIA CUDA 授權條款禁止以逆向工程產出的結果去支援非 NVIDIA 平台（查證來源見 §2.6）。我們的 PTX 轉譯器只能依 NVIDIA 公開的 PTX 指令集文件實作，不得取用 NVIDIA 二進位、SDK 或 ZLUDA 類專案的程式碼。
-- **建議第一階段**：向量加＋矩陣乘＋歸約三個核心，WGSL 版、CPU 參考版、能力偵測與降級記錄、一致性測試。見 §7。
+> 版本：2026-11-15 整份重寫。本文件是可以交給別人照著實作的完整設計，取代先前所有分段的追加與更正。
+> 現況（已提交）：調查與設計（`118e8bb26`、`f871816fe`、`510086b09`）、第一階段實作（`d437fda9f`）、`cudaweb.cublas.sgemm` 最小版（`b79454138`）。各項完成狀態見第 10 節。
 
 ---
 
-## 1. 現有可重用資產（唯讀盤點）
+## 0. 一頁摘要
 
-路徑皆相對於 `desktop-app/`。
+**目標（一句話）**：盡可能讓使用者的 GPU 成為可用。舊的、弱的、沒有 WebGPU 的裝置都要盡量能跑；原生做不到的運算，由我們的替代實作補上，不是直接排除，也不是直接退到 CPU。只有「在 GPU 上做不了」的運算才退到 WASM 或純 JS，而且要寫明缺什麼、退到哪一層。
 
-| 資產 | 位置 | 可重用內容 | 對本設計的用途 |
-|---|---|---|---|
-| 訓練後端設計與 WebGPU 研究項 | `DESIGN.TODO.offline-training-studio.md` §5.2、§5.6、§5.7（階段 4） | `webgpu` 後端定義、單層梯度對拍的驗收標準（最大相對誤差 ≤ 1e-3）、全模型 20 步 loss 對拍（每步差 ≤ 2%） | 直接沿用為 WebGPU 核心的驗收條件 |
-| 運算後端登錄表 | `renderer/src/studio/backend_core.js` | `BACKEND_IDS` 已有 `webgpu`；`KIND_BACKENDS` 與 `MATURITY` 的排序；`probeResult`、`validateProbeResult`（不可用時必須有具體原因）；介面方法 `probe/benchmark/init/step/evalLoss/saveCheckpoint/loadCheckpoint/dispose` | **降級階梯接到這裡**，不另起一套（§4） |
-| WebGPU 能力偵測的既有寫法 | `renderer/src/vlm/vlm_core.js` 第 80～85 行（`shader-f16` 檢查，偵測不到時當成支援）；`renderer/src/studio/backend_planned.js`（含 `navigator.gpu`，屬規劃中） | `shader-f16` 偵測與「不支援時寫明原因再退回」的模式 | 能力偵測照這個模式寫 |
-| 純 JS 反向參考實作 | `renderer/src/studio/onnx_grad_core.js`、`renderer/src/studio/lora_ref_train.js`、`backend_cpu_js.js` | 已驗證的手寫反向（LoRA q/k/v/o）與梯度對拍測試 | **當作 CPU 參考版**與最後一層降級（§4） |
-| 純 Python 訓練後端 | `renderer/src/studio/backend_cpu_py.js`、`llm_scratch.py`、`cpu_py_integration.test.js` | 完整訓練路徑的對照基準 | 對拍的黃金標準 |
-| ONNX Runtime Web 的 WebGPU 用法 | `vlm_core.js`（已用 onnxruntime-web WebGPU，有降級） | 現成的 WebGPU 推論路徑 | 推論用，不取代訓練核心 |
-| PTX 指令表 | `DESIGN.behavior-analyzer.md` 第 88 行（PTX 174、LLVM IR 116、WASM 218）；助記符表格式見第 95 行 | 174 個 PTX 助記符的名稱與說明，可直接當第一批要支援的清單來源 | NVPTX 路線的指令清單（§5） |
-| LLVM 工具 | `renderer/floating-assistant.js` 約第 87498 行 `registerOptional('llvm_execute', …)`；`renderer/src/uml/llvm_core.js` | `llvm_execute` 與 `uml_to_wasm` 已登錄為可選工具 | 產生 PTX 的來源（§5） |
-| Python 執行環境 | `renderer/src/gui/py_worker.js`（Pyodide Worker）、`py_worker.test.js` | Pyodide 已在瀏覽器內跑 Python | Python CUDA 語法子集的入口（§6.2） |
-| 既有 GPU 相關測試 | `renderer/src/studio/backend_core.test.js`、`backend_wasm_web.test.js` | 後端介面的測試寫法 | 新測試照這個寫 |
+**產品範圍**：
 
-**沒有的東西**（需新增）：`renderer/src/gpu/` 目錄目前不存在；沒有 WGSL 核心、沒有 PTX 轉譯器、沒有 `@cuda.jit` 解析器。
-
----
-
-## 2. 前人工作調查
-
-每項寫：做到哪、授權、能不能直接用或只能參考。日期為查證日（2026-11-15）。
-
-### 2.1 歷史脈絡：BrookGPU 到 CUDA
-
-- 【查證】BrookGPU 是 Stanford 的 GPU 串流語言，論文 "Brook for GPUs: Stream Computing on Graphics Hardware"（SIGGRAPH 2004，作者含 Ian Buck）把 C 擴充成資料平行語法。來源：[Stanford 論文頁](https://graphics.stanford.edu/papers/brookgpu/)。
-- 【查證】Ian Buck 在 Stanford 研究期間開始做 GPU 運算，之後加入 NVIDIA，並以 Brook 的經驗推動 CUDA；Buck 自己說 Brook 的記憶體模型限制很大，CUDA 放寬了它。來源：[Tom's Hardware 訪談](https://www.tomshardware.com/reviews/ian-buck-nvidia,2393.html)、[NextPlatform 2015 回顧](https://www.nextplatform.com/2015/10/28/inside-the-programming-evolution-of-gpu-computing)。
-- 【查證但有衝突】來源對「CUDA 何時開始」說法不一：有的說 Buck 在 Stanford 就開始做 CUDA，有的只說 2004 年轉到 NVIDIA 後才延續。本文件不採信單一時點，只用「Brook 是 CUDA 的前身」這個不爭議的結論。
-
-### 2.2 WebGPU 與 WGSL 現況
-
-| 項目 | 狀態 | 來源與日期 | 可否直接用 |
-|---|---|---|---|
-| WebGPU 基本計算 | Chrome 已正式支援 | 【查證】[Chrome 144 更新（2026-01-07）](https://developer.chrome.com/blog/new-in-webgpu-144) | 可直接用（Chrome／Edge） |
-| subgroups（warp 類操作） | Chrome 已出貨；`subgroup_id` 擴充於 Chrome 144 提供；subgroup size control 於 2026 年 6 月的 Chrome 提案中獲 W3C GPU for the Web 工作小組批准（有 Safari、Firefox 參與） | 【查證】[Chrome 134 說明](https://developer.chrome.com/blog/new-in-webgpu-134)、[Chrome 144](https://developer.chrome.com/blog/new-in-webgpu-144)、[Intent to Ship: subgroup size control](https://groups.google.com/a/chromium.org/g/blink-dev/c/Lx06y9Rdzvs/m/7D44AVweAAAJ) | Chrome 可用；Firefox、Safari 未確認（【未驗證】） |
-| shader-f16 | Chrome 120 起支援 WGSL 的 16 位元浮點 | 【查證】[Chrome 120 說明](https://developer.chrome.com/blog/new-in-webgpu-120) | 可用（要先偵測） |
-| f32 原子操作 | 查到的 WebKit 測試檔把 `atomic<f32>` 列為錯誤；沒找到 WGSL 規格的浮點原子擴充 | 【查證】[WebKit WGSL 測試](https://sources.debian.org/src/webkit2gtk/2.48.5-1/Source/WebGPU/WGSL/tests/invalid/atomics.wgsl) | 視為**沒有**（【推測】，規格全文未核對） |
-| 64 位元原子操作 | 不可行（依 Futhark 學位論文的 WebGPU 後端報告） | 【查證】[Futhark 學位論文](https://www.futhark-lang.org/student-projects/caleb-bsc-thesis.pdf) | 沒有；8／16 位元原子可模擬 |
-| 規格預設限制 | `maxStorageBufferBindingSize` 預設 128 MiB；`maxComputeWorkgroupStorageSize` 預設 16 KiB（只有一個來源，【未驗證】） | 【查證】[w3cub 整理的 GPUSupportedLimits](https://docs.w3cub.com/dom/gpusupportedlimits)、[MDN GPUSupportedLimits](https://developer.mozilla.org/en-US/docs/Web/API/GPUSupportedLimits) | 要在建立 device 時主動請求較高值，否則只有預設值 |
-
-### 2.3 Dawn、Tint、naga、wgpu
-
-- 【查證】**Tint** 是 Google 的 WGSL 編譯器，Chromium 2021 年起以 Tint 取代 SPIRV-Cross 做著色器翻譯（SPIR-V／WGSL 與 HLSL、MSL 之間）。來源：[Chromium 郵件公告](https://lists.w3.org/Archives/Public/public-gpu/2021Jul/0000.html)、[Tint README](https://dawn.googlesource.com/tint/)。Chrome 141 起 SPIR-V 前端改為直接產生 IR 並加入 float16 支援（來源：[Chrome 141 說明](https://developer.chrome.com/blog/new-in-webgpu-141?hl=ja)）。
-- 【查證】**naga**（wgpu 專案）：WGSL 作為輸入是完整驗證的前端；SPIR-V 輸出為主要支援目標，MSL 也是；WGSL 輸出只是次要支援。來源：[docs.rs naga 30.0.x](https://docs.rs/crate/naga/latest)。
-- 授權：Tint、Dawn 為 BSD 類（【推測】，未核對條文）；naga 與 wgpu 為 MIT／Apache-2.0（【推測】，未核對）。**都可以當作參考或在 Rust 工具鏈中使用，但我們的專案目前沒有 Rust 工具鏈，直接引入成本高。**
-- 建議：第一版**不引入** Tint 或 naga，我們的核心直接以 WGSL 字串產生；只有在要做 PTX 轉 SPIR-V 之類的需求出現時才重新評估。
-
-### 2.4 tinygrad
-
-- 【查證】tinygrad 官方文件有 runtime 頁面（[docs.tinygrad.org/runtime](https://docs.tinygrad.org/runtime/)），本輪搜尋的摘要被截斷，**沒有確認 runtime 表中是否有 WebGPU**。
-- 【未驗證】我的記憶中 tinygrad 曾有 WebGPU 相關的後端與範例（例如透過 wgpu-py）；本輪沒有找到可引用的來源，**不能當作事實**，需要到 tinygrad 倉庫的 runtime 目錄或 issue 搜尋 "webgpu" 才能確定。
-- 【查證】社群有 EfficientNet 的 WebGL 移植（[efficientnet-tinygrad-webgl](https://github.com/softwiredtech/efficientnet-tinygrad-webgl)），說明 WebGL 方向有人做過，但不是 WebGPU。
-- 結論：tinygrad 只能當「小型可讀的 IR 與核心生成器」參考，**不能當現成 WebGPU 訓練路線**。
-
-### 2.5 ONNX Runtime Web、WebLLM、Triton
-
-- 【查證】ONNX Runtime 有官方 WebGPU 執行提供者教學（[onnxruntime.ai/docs/tutorials/web/ep-webgpu.html](https://onnxruntime.ai/docs/tutorials/web/ep-webgpu.html)）：切換到 `onnxruntime-web/webgpu`，session 選項指定 `webgpu`；另有 `preferredOutputLocation` 讓輸出留在 GPU buffer。
-- 【查證】[ONNX Runtime 文件](https://onnxruntime.ai/docs/execution-providers/WebGPU-ExecutionProvider.html) 說明 WebGPU 是推論路徑，訓練仍以 CPU 為主（與 `DESIGN.TODO.offline-training-studio.md` §5.6 查證結論一致）。
-- WebLLM（MLC）與 Triton：【未查證】本輪沒有搜尋到可引用的來源，只能依 TODO §5.6 既有結論，**都只做推論**，不列為訓練參考。Triton 只有 NVIDIA 與部分 AMD 後端，對 WebGPU 沒有直接價值（【推測】）。
-
-### 2.6 ZLUDA 與授權風險
-
-- 【查證】ZLUDA 仍在開發，2026 年 1 月的預覽版加入 CUDA 13.1 相容；AMD 曾簽約後終止支援；來源：[Phoronix](https://phoronix.com/news/zluda-cuda-13.1-compatibility)、[Tom's Hardware](https://www.tomshardware.com/tech-industry/artificial-intelligence/zluda-breathes-new-life-with-financial-backing-from-unknown-party-pivots-to-ai-workloads-across-multiple-gpu-vendors)。
-- 【查證】同一篇報導指出 NVIDIA 的 CUDA EULA 禁止逆向工程其輸出以支援非 NVIDIA 平台，依賴 ZLUDA 的開發者可能被迫重寫。
-- 結論：**我們不把 ZLUDA 或 NVIDIA 二進位當依賴**。PTX 轉譯器只依 NVIDIA 公開的 PTX ISA 文件與 LLVM 公開文件實作；不解析 NVIDIA 內部格式。法務意見【未取得】，本文件不是法律意見，需要使用者或法務確認。
-
-### 2.7 LLVM NVPTX 後端
-
-- 【查證】LLVM 的 NVPTX 使用者指南（`NVPTXUsage.rst`，[LLVM 21.1 版](https://releases.llvm.org/21.1.0/docs/NVPTXUsage.html)）要點：
-  - 目標三元組 `nvptx64-nvidia-cuda` 產生 64 位元 PTX。
-  - 核心函式用 `ptx_kernel` 呼叫慣例；預設產生的是 device 函式。
-  - 位址空間固定對映（generic、global、shared、constant、local），全域變數要明寫 `addrspace(N)`。
-  - 屏障 `llvm.nvvm.barrier0` 對應 PTX 的 `bar.sync 0`；特殊暫存器用 `llvm.nvvm.read.ptx.sreg.*`。
-- 【推測】NVPTX 產出的 PTX 會用到的指令集與我們的 174 個 PTX 助記符表大致重疊；實際使用量要用 `llvm_execute` 產生的 PTX 統計，**本輪沒有做**。
-
-### 2.8 Numba CUDA（`@cuda.jit`）
-
-- 【查證】Numba 內建的 CUDA 目標已**棄用**，開發移到 NVIDIA 的 `numba-cuda` 套件（來源：[numba-cuda 文件](https://nvidia.github.io/numba-cuda/user/cudapysupported.html)、[Numba 舊版文件](https://numba.readthedocs.io/en/stable/cuda/cudapysupported.html)）。
-- 【查證】支援：自遞迴裝置函式（呼叫參數型別要與第一次相同）；印出（非同步，需 `synchronize`）；`assert` 只在 `debug=True` 生效；ndarray 的 shape、strides、ndim、索引與切片；部分 ufunc（輸出要當位置參數傳入）。
-- 【查證】不支援：例外處理（try／except／finally）、`with`、推導式、`yield`、核心內配置記憶體（大部分 NumPy API 因此不能用）、陣列建立與陣列方法。
-- 【查證】有模擬器 `NUMBA_ENABLE_CUDASIM=1`，在 CPU 上跑核心，可當除錯用。
-- 授權：Numba 為 BSD 類（【推測】，未核對）。**可以當語法範圍的參考，不引入其程式碼**。
-
-### 2.9 PyTorch 後端擴充機制
-
-- 【查證】官方教學 "Facilitating New Backend Integration by PrivateUse1"（[pytorch.org](https://pytorch.org/tutorials/advanced/privateuseone.html)）：PyTorch 原本保留 PrivateUse1、2、3 三個分派鍵，社群改用 PrivateUse1 才能同時接多個後端。
-- 【查證】參考實作：PyTorch 測試目錄的 `test/cpp_extensions/open_registration_extension`；教學還提到 `torch.rename_privateuse1_backend`（只在舊版中文翻譯看到，【未驗證】）。
-- 【查證】自動載入外部後端的原型教學（`torch_<名稱>` 套件慣例）。
-- 結論：PyTorch 的後端擴充需要 **C++ 與 ATen 內部 API**，而且要編譯與部署到 PyTorch 的版本。對網頁版不現實。**我們的 PyTorch on WebGPU 應該做成「PyTorch 風格的 JS API」，而不是 PyTorch 的後端外掛。**
-- torch.compile、Inductor、ExecuTorch：【未查證】，本輪沒有搜尋，只列為後續研究項。
-
-### 2.10 其他已知專案
-
-- 【查證】Futhark 的 WebGPU 後端（學位論文）：一個子集的 Futhark 程式能編譯成 WGSL 在瀏覽器執行，是最接近「高階語言 → WGSL」的公開實例。授權與程式碼【未取得】。
-- 【查證】rullama（Rust、wgpu）：README 宣稱瀏覽器內 LoRA 微調（僅 Gemma 4 系列），已在 TODO §5.6 列為「不可直接用」。
-- 【查證】tensorgrad（npm）：只支援 f32、無 LoRA、無量化（TODO §5.6）。
-- 【查證】Tapasya（示範頁）：進化策略而非梯度法，已在 TODO §5.6 列出。
-
-### 2.11 本節小結（可否直接用）
-
-| 專案 | 能直接用？ | 只能參考？ | 不採用 |
-|---|---|---|---|
-| ONNX Runtime Web WebGPU | 推論可直接用（已在 `vlm_core`） | 訓練路徑 | — |
-| naga／Tint | 技術上可用，但需要 Rust 或 C++ 工具鏈 | 翻譯器設計 | 第一版不引入 |
-| tinygrad | 否 | 小型 IR 與核心生成 | — |
-| Futhark WebGPU | 否（授權未取得） | 子集編譯思路 | — |
-| rullama | 否（只支援單一模型家族） | LoRA 反向算子清單 | — |
-| ZLUDA | 否（法律風險） | 無 | 不採用 |
-| Numba CUDA | 否（棄用，程式碼不引入） | 語法範圍 | — |
-
----
-
-## 3. 能力落差表（核心）
-
-標記：**完整**＝WGSL 有等價功能；**部分**＝有但有限制或要看擴充；**沒有**＝WGSL 無法直接表達，要替代。替代成本為【推測】，沒有實測。
-
-| # | CUDA／PTX 原語 | WGSL 狀態 | 限制與依據 | 替代做法 | 替代成本（推測） |
-|---|---|---|---|---|---|
-| 1 | 執行緒階層 grid／block／thread | **完整**：dispatch 的 workgroup 數＋`workgroup_id`、`local_invocation_id`、`global_invocation_id` | workgroup 大小有上限（`maxComputeWorkgroupSizeX` 等）；預設值未在本輪查證中核對 | 把 CUDA 的 grid 對映到 dispatch 的 (x,y,z)；block 對映到 workgroup。超過上限就拆成多次 dispatch | 低 |
-| 2 | 共享記憶體 shared | **部分**：`var<workgroup>` | 容量受 `maxComputeWorkgroupStorageSize` 限制，預設 16 KiB（【未驗證】單一來源）；CUDA 單一 block 可用量依架構不同 | 大陣列拆成小塊，每塊用 tile 迴圈處理；容量先用偵測結果決定 tile 大小（自適應，不寫死常數） | 中 |
-| 3 | `__syncthreads()` | **完整**：`workgroupBarrier()` | WGSL 的 uniformity 分析要求屏障在一致控制流中；不一致的屏障在編譯期會被拒絕 | 轉譯時檢查 barrier 是否在分支內，若在分支內要改寫成所有執行緒都走同一路徑 | 中 |
-| 4 | warp shuffle、vote、ballot | **部分**：subgroups 擴充（`subgroupAdd`、`subgroupBroadcast`、`subgroupShuffle`、`subgroupBallot` 等）；Chrome 已出貨，其他瀏覽器【未驗證】 | subgroup size 不固定（依驅動）；需要 `enable subgroups;` 與 device 請求 `subgroups` 功能 | 偵測不到時用 workgroup 記憶體＋`workgroupBarrier` 做歸約與廣播 | 中（歸約）；高（任意 shuffle） |
-| 5 | 原子操作 i32、u32 | **完整** | `atomic<i32>`、`atomic<u32>` 支援 add、min、max、and、or、xor、exchange、compareExchange（【推測】，函式表未逐項核對） | 直接用 | 低 |
-| 6 | 原子操作 f32（`atomicAdd` on float） | **沒有** | `atomic<f32>` 被拒（【查證】WebKit 測試），沒找到浮點原子擴充 | `atomic<u32>` 的 compare-exchange 迴圈，用 `bitcast<f32>` 讀寫。迴圈在競爭高時會慢 | 中到高（競爭高時明顯慢） |
-| 7 | 原子操作 64 位元 | **沒有** | Futhark 論文：64 位元原子不可行（【查證】） | 分散累加（每個 workgroup 先歸約，再用 32 位元原子合併高低兩半並記錄進位）；或改為兩階段歸約 | 高 |
-| 8 | f32 | **完整** | 無 | 直接用 | 低 |
-| 9 | f16 | **部分**：需要 `enable f16;` 與 device 請求 `shader-f16`（Chrome 120 起） | 不支援時整個核心不能跑 | 偵測不到時整個核心降到 f32 版本，並在降級紀錄寫明原因 | 低（實作），但精度與記憶體行為要測 |
-| 10 | f64 | **沒有** | 規格無 f64 | 雙 f32 表示（double-float，`hi + lo`，用 TwoSum、TwoProd 做加乘）。有效尾數約 48 位元（【推測】，理論值，未實測） | 高（每個運算 10～20 倍） |
-| 11 | 64 位元整數 i64、u64 | **沒有** | 規格無 | 兩個 u32 加進位與借位；乘法用 16 位元分段（【推測】） | 中到高 |
-| 12 | 指標與任意位址 | **部分**：只有 `ptr<storage/workgroup/function, T>`，無指標算術 | 不能從整數轉指標 | 把所有陣列放進綁定的 storage buffer，用整數索引；超過單一 buffer 上限就分塊並帶 buffer 索引 | 中 |
-| 13 | 動態平行（kernel 內再啟動 kernel） | **沒有** | WebGPU 沒有裝置端發起 dispatch | 主機端排程；或以 indirect dispatch 讓前一個 kernel 寫入下一個的參數 | 中 |
-| 14 | Tensor Core `mma`（矩陣乘指令） | **沒有** | WebGPU 沒有矩陣乘指令 | 平鋪的 workgroup 矩陣乘（共享記憶體平鋪＋`workgroupBarrier`） | 高（速度差距未實測） |
-| 15 | 非同步複製 `cp.async` | **沒有** | — | 雙緩衝：用 queue 的 copy 與計算重疊 | 中 |
-| 16 | 全域記憶體合併存取（coalescing） | **部分**：WGSL 沒有合併存取的規格保證，依驅動 | 行為不可預期 | 以連續索引與 vec4 讀寫為設計原則，實測後再調整 | 效能風險，無法靜態保證 |
-| 17 | 遞迴 | **沒有**（【推測】WGSL 禁止遞迴，規格條文未逐條核對） | — | 改寫成迴圈或顯式堆疊 | 中 |
-| 18 | 函式指標、vtable | **沒有** | — | 用 `switch` 分派＋常數表，或展開成多個核心 | 低到中 |
-| 19 | printf | **沒有** | — | 寫入除錯用 storage buffer，主機讀回後印出 | 低 |
-
-**判讀**：可以全數替代的只有 1、3、5、8（以及 2 容量受限）。6、7、10、11、14 是**效能與精度的主要風險**；13、17、18 是**語意上的落差**，要在翻譯器層直接拒絕或改寫。
-
----
-
-### 3.1 後期原語（2026-11-15 增補；完整演進表見 §11）
-
-| # | 後期原語 | WGSL 狀態 | 替代做法 | 層級 |
-|---|---|---|---|---|
-| 20 | cooperative groups（sub-block／block／grid 分組與同步） | **部分**：workgroup 與 subgroup 可表達；**grid 級同步沒有** | 拆成多次 dispatch，dispatch 之間即 grid 同步；多裝置 group 不做 | T2 |
-| 21 | warp 矩陣指令 `wmma`／`mma.sync`（Tensor Core） | **沒有** | 平鋪 workgroup 矩陣乘（與第 14 項相同） | T2 |
-| 22 | 低精度 bf16、tf32 資料型別 | f16 部分（shader-f16）；bf16、tf32 **沒有** | bf16 以 u16 位元移位轉成 f32 計算；tf32 以 f32 計算（精度較高，**不是位元相同**，§13） | T2 |
-| 23 | 非同步複製到共享記憶體（`cp.async`） | **沒有** | 雙緩衝：queue 的複製與計算重疊 | T2 |
-| 24 | thread block cluster（Hopper，最多 16 個 CTA 協作） | **沒有** | 無等價做法；只能拆核心或改用全域記憶體中轉 | 不做（T4 或拆核心） |
-| 25 | TMA（Tensor Memory Accelerator）張量搬移 | **沒有** | 手寫的 buffer 索引搬移，效能差距未實測 | T2（效能風險高） |
-
-判讀：後期原語裡，WGSL 能用「原語拆解」替代的多半是**同步與搬移**；**Tensor Core、cluster、TMA** 這三類是效能主要落差，沒有實測前不承諾。
-
----
-
-## 4. 降級階梯設計（使用者指定的順序）
-
-使用者指定順序：WGSL 完整替代且完全支援 → 用 WGSL；WGSL 不完整 → 用我們自己的做法；沒有 WebGPU → 降級；完全沒有解法 → 才走 WASM／CPU。
-
-### 4.1 四層定義
-
-| 層 | 條件 | 實作位置 | 例子 |
-|---|---|---|---|
-| **T1 原生 WGSL** | 該原語在 WGSL 完整支援，且 device 的功能都具備 | 核心的 WGSL 版本，不需要替代 | 單精度加法、`workgroupBarrier`、`atomic<u32>` |
-| **T2 WGSL 內的替代做法（我們的做法）** | WGSL 不完整，但可以用 WGSL 本身模擬 | 同一個 WebGPU device，核心內含替代程式碼 | f64 用雙 f32、f32 原子用 CAS 迴圈、64 位元整數用兩個 u32、subgroup 歸約用 workgroup 記憶體 |
-| **T3 無 WebGPU 的 GPU 路線** | 沒有 WebGPU 或 device 建立失敗，但有其他 GPU 路線 | 現有登錄表中的 `directml`、`vulkan`（目前**都未實作**，在 TODO §5.2 標為研究項） | 本輪不實作，只保留介面 |
-| **T4 WASM／CPU** | 以上都沒有 | `backend_wasm_web.js`（處理器訓練，慢但正確）、`backend_cpu_js.js`、`backend_cpu_py.js` | 純 JS 參考實作 |
-
-**與使用者順序的對應**：「WGSL 完整替代且完全支援」＝T1；「WGSL 不完整用我們的做法」＝T2；「沒有 WebGPU 再降級」＝T3；「完全沒有解法才走 WASM、CPU」＝T4。
-
-**待決**：T3 的候選目前只有 `directml`、`vulkan`，兩者都還沒實作，**本設計不假設它們會存在**。若 T3 沒有實作，階梯直接從 T2 跳到 T4，降級紀錄要寫「跳過 T3，原因：未實作」。
-
-### 4.2 原語到層級的對映（第一批）
-
-| 原語 | T1 | T2 | T3 | T4 |
-|---|---|---|---|---|
-| 向量加 f32 | 是 | — | — | 是 |
-| 矩陣乘 f32 | 是（平鋪） | — | — | 是 |
-| 歸約 f32（workgroup 內） | 是（barrier＋記憶體） | subgroup 版本（有 subgroups 時） | — | 是 |
-| 直方圖（i32 原子） | 是 | — | — | 是 |
-| f32 原子加 | 否 | CAS 迴圈 | — | 是 |
-| f64 運算 | 否 | 雙 f32 | — | 是（原生 f64） |
-| 64 位元整數 | 否 | 兩個 u32 | — | 是 |
-| Tensor Core mma | 否 | 平鋪矩陣乘 | — | 是（不支援時回報無） |
-
-### 4.3 能力偵測
-
-偵測流程（寫在 `renderer/src/gpu/cap_probe.js`，**本輪未建立**）：
-
-1. `navigator.gpu` 存在與否；不存在則直接標記 T3 不可用，原因寫「此瀏覽器沒有 WebGPU」。
-2. `await navigator.gpu.requestAdapter()`；回傳 `null` 時原因寫「沒有可用的顯示卡介面卡」。
-3. 讀 `adapter.features` 是否含 `shader-f16`、`subgroups`、`subgroups-f16`（名稱以規格為準，【未驗證】）。
-4. 讀 `adapter.limits`：`maxStorageBufferBindingSize`、`maxComputeWorkgroupStorageSize`、`maxComputeInvocationsPerWorkgroup`、`maxComputeWorkgroupSizeX`。
-5. `requestDevice` 時明確要求要用的功能與上限；要求失敗時原因寫「要求的功能 X 不被此裝置接受」。
-6. 建立 device 後監聽 `device.lost`，原因寫進紀錄（對應 TODO §5.2 的「裝置遺失要能續跑」）。
-
-**降級紀錄格式**（給 `backend_core.js` 的 `probeResult` 用，沿用現有 `reason` 欄位）：
-
-```
-{ op: "matmul_f32", tier: "T2", missing: ["subgroups"], fallbackFrom: "T1", fallbackTo: "T2",
-  reason: "此裝置沒有 subgroups 功能，歸約改用 workgroup 記憶體" }
-```
-
-要求：每一次降級都要有具體原因（缺哪個功能、退到哪一層），不寫籠統的「不支援」。這符合使用者「要真實診斷資訊」的要求。
-
-### 4.4 接到現有後端登錄表
-
-- `backend_core.js` 的 `BACKEND_IDS` 已有 `webgpu`；本設計**不新增後端 id**，而是在 `webgpu` 下面加「層級」欄位（T1／T2），降級紀錄掛在 `probe` 結果的 `fingerprint` 或新增的 `tiers` 欄位。
-- `MATURITY` 排序不變；`KIND_BACKENDS.lora` 不變。
-- 基準測試快取的指紋（TODO §4.1）要加入「實際選到的層級」，避免同一張卡在 T1、T2 之間切換時快取誤用。
-
-### 4.5 一致性測試（證明各層結果一致）
-
-- 每個核心在 T1、T2、T4 各跑一次，同一組輸入、同一組隨機種子。
-- **容差規則（暫定，【未驗證】）**：
-  - f32 核心：相對誤差 ≤ 1e-5（逐元素，最大值），歸約另外放寬到 ≤ 1e-4（因為加法順序不同）。
-  - f64 替代（T2）：以 T4 的 f64 為基準，相對誤差 ≤ 1e-9；若實測達不到，改為記錄實際值，**不寫死**。
-  - 整數與原子直方圖：完全相等（位元一致）。
-- 容差的數值只能靠實測決定，**本輪沒有任何實測數字**。
-- 測試檔放 `renderer/src/gpu/*.test.js`，node 可跑的部分只測 CPU 參考與降級邏輯；WebGPU 的部分放在 Worker 或真桌面版評估中跑（沿用 `DESIGN.TODO.offline-training-studio.md` §5.8 的做法）。
-
----
-
-## 5. NVPTX 路線：從 LLVM 到 WGSL
-
-### 5.1 管線
-
-```
-C／C++（clang）或 Rust ──► LLVM IR ──► NVPTX 後端 ──► PTX 文字
-                                                   │
-                                                   ▼
-                              PTX 解析器（只支援子集）──► 中介表示（SSA 風格）
-                                                   │
-                                  ┌────────────────┴────────────────┐
-                                  ▼                                 ▼
-                       WGSL 產生器（T1／T2）              CPU 參考解譯器（T4）
-```
-
-- LLVM 端：`llvm_execute` 已有；需要確認它能否產生 PTX（`llvm` 工具鏈是否含 NVPTX target）。**本輪未驗證**。
-- 解析器：PTX 是文字格式，可以用手寫的 tokenizer；指令名稱比對沿用 `DESIGN.behavior-analyzer.md` 的「逐段退回」規則（`ld.global.f32` → `ld.global` → `ld`）。
-
-### 5.2 自寫 PTX→WGSL 的範圍
-
-- **第一版只支援子集**：純量與向量算術、整數與 f32 的比較與分支、global／shared 記憶體讀寫、`bar.sync 0`、`atom.*.add`、`ret`。
-- **明確拒絕**（回報具體原因）：`call` 到外部函式、間接分支、`.f64` 與 `.u64` 運算（要先經 §3 的替代）、`.f16` 指令（有 shader-f16 才能做）、`mma`、`cp.async`、`vote`、`shfl`（subgroups 不可用時）、`brx`、`cvta` 以外的位址轉換。
-
-### 5.3 第一批要支援的 PTX 指令
-
-來源：`DESIGN.behavior-analyzer.md` 的 PTX 表（174 條）。以下是依 PTX 常見用法的挑選，**【推測】**，要與 174 條表逐條核對後才定案。
-
-| 類別 | 指令 | 第一版 |
+| 產品 | 內容 | 使用者能做什麼 |
 |---|---|---|
-| 搬移 | `mov`、`cvt`（只到 i32／u32／f32） | 是 |
-| 算術 | `add`、`sub`、`mul.lo`、`mad.lo`、`fma`、`div.rn`（f32）、`rem`、`min`、`max`、`abs`、`neg` | 是 |
-| 位元 | `and`、`or`、`xor`、`shl`、`shr`、`not` | 是 |
-| 比較與選擇 | `setp`、`selp` | 是 |
-| 分支 | `bra`、`ret`、`exit` | 是（只支援結構化分支） |
-| 記憶體 | `ld.param`、`ld.global`、`st.global`、`ld.shared`、`st.shared` | 是 |
-| 同步 | `bar.sync 0` | 是（要檢查 uniformity） |
-| 原子 | `atom.global.add`、`atom.shared.add`（i32、u32） | 是 |
-| 其他 | `f64`、`u64`、`mma`、`shfl`、`vote`、`call` | 否（拒絕並回報） |
+| **cudaweb**（Python CUDA on WebGPU） | Python 模擬器（Pyodide）裡可 `import cudaweb`，提供向量加、矩陣乘、歸約、直方圖、`@cuda.jit` 風格核心 | 在瀏覽器或桌面版裡寫 GPU 程式 |
+| **torch on WebGPU** | PyTorch 風格的 JS 張量與自動微分，運算子對映到核心 | 訓練與推論用的張量運算 |
+| **函式庫相容層** | cuBLAS 常用子集、cuDNN 常用子集、ATen 運算子對映 | 既有 CUDA 程式的呼叫形式可以搬過來 |
+| **NVPTX 路線** | LLVM NVPTX 產出的 PTX 子集，轉成 WGSL 或 WebGL2 著色器 | 編譯型的 CUDA 程式碼 |
+| **離線模型資源** | 訓練工作室的運算後端、離線模型推論的 GPU 路徑、與 Python 模擬器共用裝置的排程 | 離線 LoRA 訓練與本機推論用到 GPU |
 
-### 5.4 NVPTX 路線的風險
-
-- 【推測】PTX 的隱含行為（例如 `setp` 的 NaN 語意、`div.rn` 的捨入模式）與 WGSL 不同，要逐條寫測試。
-- 【推測】LLVM 產生的 PTX 常用 `.param` 空間傳參，翻譯時要改成 uniform buffer 或 storage buffer 的綁定。
-- 授權風險見 §2.6：只依公開文件實作，不解析 NVIDIA 內部格式。
+**現有資產**：`renderer/src/gpu/gpu_core.js`（第一階段核心，WGSL＋CPU）、`renderer/src/pybridge/cudaweb.py`（Python 端）、`renderer/src/studio/backend_core.js`（運算後端登錄表）。
 
 ---
 
-## 6. 兩個產品的分層
+## 1. 設計原則
 
-### 6.1 PyTorch on WebGPU
-
-**定位**：PyTorch 風格的 JS API（張量、自動微分、模組），不是 PyTorch 的 C++ 後端外掛（見 §2.9）。
-
-**第一批運算子（訓練工作室需要的）**：
-
-| 運算子 | T1（WGSL） | 現有參考實作 | 備註 |
-|---|---|---|---|
-| matmul（f32，平鋪） | 要寫 | `onnx_grad_core.js` 的前向與反向 | 第一批核心 |
-| softmax（含 causal mask） | 要寫 | `onnx_grad_core.js` | 數值穩定（減最大值） |
-| layernorm、RMSNorm | 要寫 | `qwen3_layered_engine.js` 的 RMSNorm | 反向要對拍 |
-| attention（前向＋反向） | 要寫 | `qwen3_graph.js`、`lora_graph_model.js` | 大序列要分塊 |
-| AdamW | 要寫 | `llm_scratch.py`、`lora_ref_train.js` 的優化器 | 狀態放 storage buffer |
-| 交叉熵（含 log-softmax） | 要寫 | `onnx_grad_core.js` | 與 `cpu-py` 對拍 |
-
-**與現有資產的關係**：
-- 現有純 JS 後端（`backend_cpu_js.js`、`onnx_grad_core.js`）**同時是參考實作與 T4 降級層**，不另寫。
-- 現有 `backend_cpu_py.js` 是最終的黃金標準（TODO §5.4 的排序）。
-- 自動微分：第一版只做手寫反向（與 TODO §5.6 的 (d-1) 相同路線），不做通用 tape，避免擴大範圍。
-
-**不做（第一版）**：通用張量 API 的完整子集、動態形狀、多 GPU、混合精度訓練。
-
-### 6.2 Python CUDA on WebGPU
-
-**定位**：在 Pyodide 裡寫 `@cuda.jit` 風格的核心，由 JS 端翻譯成 WGSL。
-
-**語法子集（參考 §2.8 的 Numba 限制，只保留可映射的部分）**：
-
-- 支援：`cuda.grid(1)`、`cuda.blockIdx`、`cuda.threadIdx`、`cuda.blockDim`、`cuda.shared.array(shape, dtype)`、`cuda.syncthreads()`、`cuda.atomic.add(arr, idx, val)`（i32、u32）、for 迴圈（range）、if、基本算術、ndarray 索引。
-- 不支援（直接拒絕並給原因）：try／except、with、推導式、yield、核心內配置陣列、遞迴（同 §3 第 17 項）、印出（改用除錯 buffer）。
-
-**流程**：Python 原始碼 → 解析成 AST（在 Pyodide 或 JS 端，待決）→ 型別推斷（只允許 f32、i32、u32，其餘拒絕）→ 產生 WGSL → 主機端建立 pipeline 與 dispatch。
-
-**第一版範例**：
-
-1. 向量加（`c[i] = a[i] + b[i]`）。
-2. 矩陣乘（平鋪，共享記憶體）。
-3. 歸約（workgroup 內樹狀，含 barrier）。
-4. 直方圖（i32 原子加）。
-
-**待決**：AST 解析放在 Pyodide（用 Python 的 `ast` 模組）還是 JS 端（需要另外的 Python 解析器）。建議**放 Pyodide**，因為 Python 的 `ast` 是標準庫，不需要額外依賴，但 Pyodide 的啟動成本要量測（【未驗證】）。
+1. **替代優先於排除**。WGSL 或 WebGL2 沒有的原語，預設做法是用我們的替代實作補上（雙 f32 模擬 f64、兩個 u32 模擬 64 位元整數、compare-and-swap 迴圈模擬 f32 原子加、平鋪矩陣乘模擬 Tensor Core、共享記憶體加屏障模擬 warp 操作、分塊處理超過上限的工作、多趟排程模擬動態平行、顯式堆疊取代遞迴）。
+2. **降級要說明白**。每次降級都要回報：缺哪個功能或 limits 值、退到哪一層、原因用人看得懂的句子寫出。不寫「不支援」這類籠統字眼。
+3. **結果在容差內一致，不宣稱位元相同**。WebGPU、WebGL2、CPU 的累加順序與浮點行為不同；比對用容差，容差依內積長度與機器精度成比例，不寫死常數。
+4. **沒有 GPU 不等於沒有加速**。沒有 WebGPU 但有 WebGL2（舊顯卡、樹莓派上的 Chromium、手機）要走 WebGL2 層，不直接掉到 CPU。
+5. **能力依檔分級**。裝置歸到一個能力檔，檔決定哪些核心用原生做、哪些用替代做，比逐項硬判斷更容易維護。
+6. **單一執行期**。網頁版與桌面版走同一份核心程式；桌面版只差在可以開真的 WebGPU 視窗做驗證。
 
 ---
 
-### 6.3 ATen 對映與函式庫層（細節見 §12）
+## 2. 硬體與環境層級
 
-本節只列對映**方向**：ATen 運算子先對到 cuBLAS／cuDNN 子集（§12.1、§12.2），對不到的才自寫核心。第一批對映表與不做清單在 §12.3。
+### 2.1 降級階梯（完整版）
 
----
+| 層 | 名稱 | 條件 | 做法 | 回報的 `layer` |
+|---|---|---|---|---|
+| L1 | WGSL 原生 | WebGPU 裝置可用，需要的功能都具備 | 直接跑 WGSL 核心 | `T1` |
+| L2 | WGSL＋替代實作 | WebGPU 可用，但缺某些功能（f16、subgroups、原子 f32…） | 同一裝置，核心內用替代程式碼補上 | `T2` |
+| L3 | WebGL2 GPGPU | 沒有可用的 WebGPU，但有 WebGL2 | 資料流為浮點紋理，核心為 fragment shader，輸出寫到 framebuffer，多趟縮減，gather 用紋理取樣，scatter 用多趟或排序，矩陣乘分塊多趟 | `T3` |
+| L4 | WASM | 沒有任何 GPU 路線，但有 WebAssembly | SIMD 與 threads（若有）加速的 CPU 核心 | `T4` |
+| L5 | 純 JS | 以上都沒有 | 參考實作，速度最慢但結果最可靠 | `T5` |
 
-## 7. 分階段路線圖
+**WebGL2 層的細節**：
+- **資料流**：浮點紋理（RGBA32F 或 R32F）。若沒有 `EXT_color_buffer_float`（不能渲染到浮點紋理），退到 RGBA16F（需要 `EXT_color_buffer_half_float`），再退到 RGBA8 打包編碼（每個 f32 拆成四個位元組，精度損失要在容差記錄裡寫明）。
+- **核心**：一個 fragment shader 對應一個輸出元素；輸出寫到 framebuffer 紋理。
+- **歸約**：多趟縮減，每趟把尺寸除以一個因子（例如 4 或 2），直到剩一個值。
+- **gather**：紋理取樣（`texelFetch`）。
+- **scatter**：沒有原生寫入任意位址的能力。替代做法是多趟（每趟只寫一個位址集合）或先排序再歸約。
+- **矩陣乘**：分塊，每個分塊一趟，累加到輸出紋理。
+- **限制**：單一紋理的最大尺寸（`MAX_TEXTURE_SIZE`）、最大繪製緩衝數（`MAX_DRAW_BUFFERS`）、線性過濾浮點（`OES_texture_float_linear`，只在需要插值時才用）。
 
-每階段都有可驗證的完成標準；工時為【推測】。
+### 2.2 能力檔（相當 CUDA 算力版本的概念）
 
-**2026-11-15 路線調整（依使用者追加）**：
-- **第一階段**：向量加、矩陣乘（同時是 `cublas.sgemm` 的最小版，先接上介面）、歸約；加上能力偵測、降級紀錄、一致性測試，以及接進 Python 模擬器的最小橋接（§15）。
-- **第二階段**：cuBLAS 常用子集（§12.1）。
-- **第三階段**：cuDNN 常用子集與 ATen 對映子集（§12.2、§12.3）。
-- 下表的 P2 至 P5 順序保留作為**後續**，其中「替代做法 T2」與「PTX 子集」排在第三階段之後。
+能力檔是我們自己的分級，借用 CUDA 算力版本（compute capability）的想法：檔越高，原生能做的越多，替代越少。
 
-| 階段 | 內容 | 完成標準（可驗證） | 工時（推測） |
-|---|---|---|---|
-| **P1（第一輪可完成）** | 向量加、矩陣乘、歸約三個核心：WGSL 版（T1）、CPU 參考版（T4）、能力偵測與降級紀錄、一致性測試 | (1) 三個核心在 T1 與 T4 的輸出在容差內一致；(2) 降級紀錄能列出缺的功能與退到的層；(3) 不支援 WebGPU 的環境下測試會跳過 T1 並寫明原因，而不是失敗 | 一到兩輪 |
-| P2 | 替代做法 T2：f32 原子（CAS）、subgroup 歸約（無 subgroups 時）、f64 雙 f32 | 每個替代在 T2 與 T4 的誤差表有實測數字；容差由數字決定 | 兩到三輪 |
-| P3 | PTX 子集解析與 WGSL 產生（§5） | 用 `llvm_execute` 產生的一個小 PTX（向量加）翻譯後，結果與 T4 一致 | 三到四輪 |
-| P4 | PyTorch 風格 API 的第一批運算子（§6.1）與 `@cuda.jit` 子集（§6.2） | 訓練工作室的 LoRA 單層梯度對拍（TODO §5.7 階段 4(a)） | 四到六輪 |
-| P5 | 全模型 20 步 loss 對拍、效能實測、裝置遺失續跑 | TODO §5.7 階段 4(c)：每步 loss 差 ≤ 2% | 視結果 |
+| 檔 | 大致對應 | 條件 | 原生能做 | 需要替代 |
+|---|---|---|---|---|
+| **A** | 算力 1.0 級（老舊、弱） | WebGL2 裝置；或 WebGPU 但 `isFallbackAdapter` 為真（軟體介面卡）；或 WebGPU 的 `maxComputeWorkgroupStorageSize` 很小 | 不需要原子的核心：向量加、逐元素運算、矩陣乘（分塊）、歸約（多趟） | 原子操作（用多趟或排序取代）、f64（雙 f32）、整數 64 位元（兩個 u32）、大於記憶體上限的工作（分塊） |
+| **B** | 算力 1.x 至 2.x 級 | WebGPU 可用，有 `i32`／`u32` 原子，`maxComputeWorkgroupStorageSize` 足夠（例如 16 KiB 以上），沒有 f16／subgroups | 整數原子、共享記憶體、屏障 | f32 原子（CAS 迴圈）、f64、整數 64 位元、warp 操作（用共享記憶體加屏障模擬） |
+| **C** | 較新的 GPU | WebGPU 含 `shader-f16` 與 `subgroups` | 上述全部，加 f16、subgroup 歸約與廣播 | 矩陣乘指令（用平鋪）、f64、整數 64 位元 |
 
-**P1 的具體要做的事**（使用者要求第一階段一輪能做出來）：
+**歸檔規則**（由低到高判斷，取「最高的可用檔」的前一檔如果任一條件不成立）：
+1. 沒有 WebGPU、也沒有 WebGL2 → 不歸檔，直接走 L4 或 L5。
+2. 只有 WebGL2 → 檔 A。
+3. WebGPU 可用，但 `isFallbackAdapter` 為真 → 檔 A（軟體介面卡通常很慢，要標記）。
+4. WebGPU 可用，`maxComputeWorkgroupStorageSize` 小於 16384 位元組 → 檔 A。
+5. WebGPU 可用，有 `shader-f16` 且有 `subgroups` → 檔 C。
+6. 其他 WebGPU 可用的情況 → 檔 B。
 
-1. `renderer/src/gpu/cap_probe.js`：能力偵測（純函式，吃注入的 `navigator`，方便 node 測試）。
-2. `renderer/src/gpu/ref_cpu.js`：三個核心的 CPU 參考版。
-3. `renderer/src/gpu/kernels_wgsl.js`：三個核心的 WGSL 字串。
-4. `renderer/src/gpu/degrade_log.js`：降級紀錄的組裝與格式。
-5. `renderer/src/gpu/consistency.test.js`：CPU 版自身的測試（node 跑）；WebGPU 版的對拍放在 Worker 或真桌面版（待 §8 的實機結果決定）。
+### 2.3 能力偵測清單
 
----
+**WebGPU**：
+- `navigator.gpu` 是否存在。
+- `requestAdapter()` 回傳值是否為空；`adapter.isFallbackAdapter`（軟體介面卡）。
+- `adapter.features`（集合）：是否含 `shader-f16`、`subgroups`、`timestamp-query` 等。
+- `adapter.limits`：`maxStorageBufferBindingSize`、`maxComputeWorkgroupStorageSize`、`maxComputeInvocationsPerWorkgroup`、`maxComputeWorkgroupSizeX`。
+- `requestDevice()` 失敗的錯誤訊息，原樣記錄。
 
-## 8. 驗證現況（本機）
+**WebGL2**：
+- `canvas.getContext('webgl2')` 是否取得上下文。
+- 上下文參數：`MAX_TEXTURE_SIZE`、`MAX_DRAW_BUFFERS`、`MAX_COLOR_ATTACHMENTS`。
+- 擴充：`EXT_color_buffer_float`（能否渲染到 f32 紋理，決定是否能用 RGBA32F）、`EXT_color_buffer_half_float`、`OES_texture_float_linear`。
 
-### 8.1 本輪做了什麼
+**回報原則**：每個缺的項目都要有具體原因，例如「缺 EXT_color_buffer_float，改用 RGBA8 打包編碼，精度降低」。
 
-- **靜態檢查**（沒有啟動任何程式）：
-  - Electron 主行程 `main.js`：只設了 `enable-features=SharedArrayBuffer`，**沒有**關掉 GPU 或 WebGPU 的命令列參數（`main.js` 第 29 行）。
-  - 測試腳本（`scripts/eval/*.run.js`）大量使用 `--disable-gpu`，這是測試用的啟動參數；**真正跑 WebGPU 的評估不能帶這個參數**，要寫進後續評估的設計。
-  - `renderer/src/vlm/vlm_core.js` 已有 `shader-f16` 偵測，可以沿用。
-- **顯示卡名稱**（PowerShell `Win32_VideoController`，唯讀）：回報 **NVIDIA GeForce GT 720**（只看到這一行，沒有看到其他顯示卡）。
-  - **這與 `DESIGN.TODO.offline-training-studio.md` 第 119 行「本機沒有 NVIDIA 顯示卡」矛盾**，本輪無法判定哪一個正確（可能是舊資訊或多張卡）。需要使用者確認。
-  - 【推測】GT 720 是舊世代的入門顯示卡，Chrome 的 WebGPU 在 Windows 上需要 D3D12，**它未必能提供 WebGPU 介面卡**。這只是推測，要實測。
-- **Node 版本**：v16.15.0。`node --check` 本輪沒有對任何檔案跑（沒有改程式）。
+### 2.4 `backend_info()` 回報格式
 
-### 8.2 沒有做的（並說明原因）
+Python 端 `cudaweb.backend_info()` 與 JS 端 `runtime.backendInfo()` 回傳相同結構：
 
-- **沒有啟動真桌面版 Electron 去讀 `navigator.gpu`、adapter、features 清單**。原因：本輪是唯讀調查，啟動桌面版會搶焦點，而且 `DESIGN.TODO` 與使用者的規則是「真桌面版評估每項最多兩次、事先 `node --check`、會搶焦點先說明」；本輪沒有必要為了這一題冒險。**這是本節最主要的缺口**，建議下一輪在一個獨立的 `--user-data-dir` 與換埠的評估檔中做（沿用 `reference_real_electron_eval_verification` 的做法），而且不加 `--disable-gpu`。
-- **沒有下載任何檔案**（符合「不下載大檔」規則）。
-- **沒有掃描整台機器**。
+```json
+{
+  "hasWebGPU": true,
+  "hasAdapter": true,
+  "isFallbackAdapter": false,
+  "webgl2": { "available": false, "reason": "此瀏覽器沒有 WebGL2 上下文" },
+  "profile": "B",
+  "profileReason": "有 i32 原子與 16 KiB 共享記憶體，沒有 shader-f16 與 subgroups",
+  "features": ["timestamp-query"],
+  "limits": { "maxStorageBufferBindingSize": 134217728, "maxComputeWorkgroupStorageSize": 16384 },
+  "deviceReady": true,
+  "ops": {
+    "vector_add": { "layer": "T1", "native": true, "substitutes": [], "reason": "" },
+    "matmul": { "layer": "T1", "native": true, "substitutes": ["f32 原子不用"], "reason": "" },
+    "sum": { "layer": "T1", "native": true, "substitutes": [], "reason": "" }
+  },
+  "last": { "op": "sum", "layer": "T1", "via": "wgsl-native", "reason": "", "accumulate": "f32", "reductionOrder": "tree-wg256" },
+  "degradeLog": [
+    { "op": "matmul", "from": "T1", "to": "T5", "reason": "輸入超過裝置的儲存緩衝上限（需要 … 位元組，上限 …）" }
+  ],
+  "budget": { "limitBytes": 268435456, "usedBytes": 0 }
+}
+```
 
-### 8.3 結論
-
-- WebGPU 在這台機器上**未驗證**：不知道有沒有 adapter，不知道 features 清單。
-- 決定下一步時需要的資訊：（1）實機 adapter 與 features；（2）顯示卡型號是否為 GT 720（與 TODO 的說法衝突）。
-
----
-
-## 9. 未驗證與待核對清單（集中列出）
-
-1. WGSL 規格中 subgroups、f16、原子的完整函式表與條件（只查到 Chrome 文件與 WebKit 測試）。
-2. Firefox、Safari 的 subgroups 與 shader-f16 實際支援（【未驗證】）。
-3. `maxComputeWorkgroupStorageSize` 預設 16 KiB 只有一個來源（【未驗證】）。
-4. tinygrad 是否有 WebGPU runtime（【未驗證】）。
-5. WebLLM、Triton、torch.compile、Inductor、ExecuTorch 的細節（本輪沒有搜尋）。
-6. Tint、Dawn、naga、Numba、rullama、Futhark 的授權條文（【未核對】）。
-7. LLVM `llvm_execute` 是否真的能產生 PTX（【未驗證】）。
-8. PTX 第一批指令清單與 174 條表的逐條核對（§5.3，【推測】）。
-9. 本機顯示卡型號（GT 720 與 TODO 第 119 行的衝突）與 WebGPU adapter（§8）。
-10. 容差數字（§4.5）全部未實測。
-11. 法律意見：CUDA 授權與 PTX 轉譯器的界線（§2.6），本文件不是法律意見。
-12. **請使用者補充**：哪些原語或函式庫（例如 cuBLAS、cuDNN、warp 原語、Tensor Core）是從社群論文演進進來的，以及大致年代與出處。使用者提供後補進 §11 演進表；目前這些出處只有【使用者口述】，沒有文獻。
-
----
-
-## 10. 來源清單
-
-- Stanford BrookGPU 論文：https://graphics.stanford.edu/papers/brookgpu/
-- Tom's Hardware 訪談 Ian Buck：https://www.tomshardware.com/reviews/ian-buck-nvidia,2393.html
-- NextPlatform 2015 回顧：https://www.nextplatform.com/2015/10/28/inside-the-programming-evolution-of-gpu-computing
-- Chrome 144 WebGPU（2026-01-07）：https://developer.chrome.com/blog/new-in-webgpu-144
-- Chrome 134 WebGPU（2025-02-26）：https://developer.chrome.com/blog/new-in-webgpu-134
-- Chrome 120 WebGPU（f16）：https://developer.chrome.com/blog/new-in-webgpu-120
-- Chrome 141 WebGPU（2025-09-24）：https://developer.chrome.com/blog/new-in-webgpu-141?hl=ja
-- Intent to Ship subgroup size control：https://groups.google.com/a/chromium.org/g/blink-dev/c/Lx06y9Rdzvs/m/7D44AVweAAAJ
-- WebKit WGSL 原子測試：https://sources.debian.org/src/webkit2gtk/2.48.5-1/Source/WebGPU/WGSL/tests/invalid/atomics.wgsl
-- Futhark 學位論文（WebGPU 後端）：https://www.futhark-lang.org/student-projects/caleb-bsc-thesis.pdf
-- w3cub GPUSupportedLimits：https://docs.w3cub.com/dom/gpusupportedlimits
-- MDN GPUSupportedLimits：https://developer.mozilla.org/en-US/docs/Web/API/GPUSupportedLimits
-- Tint README：https://dawn.googlesource.com/tint/
-- Chromium 切換 Tint 公告（2021）：https://lists.w3.org/Archives/Public/public-gpu/2021Jul/0000.html
-- naga（docs.rs 30.0.x）：https://docs.rs/crate/naga/latest
-- ONNX Runtime WebGPU 教學：https://onnxruntime.ai/docs/tutorials/web/ep-webgpu.html
-- ONNX Runtime WebGPU 執行提供者：https://onnxruntime.ai/docs/execution-providers/WebGPU-ExecutionProvider.html
-- tinygrad runtime 文件：https://docs.tinygrad.org/runtime/
-- efficientnet-tinygrad-webgl：https://github.com/softwiredtech/efficientnet-tinygrad-webgl
-- ZLUDA（Phoronix 2026）：https://phoronix.com/news/zluda-cuda-13.1-compatibility
-- ZLUDA 與 EULA（Tom's Hardware）：https://www.tomshardware.com/tech-industry/artificial-intelligence/zluda-breathes-new-life-with-financial-backing-from-unknown-party-pivots-to-ai-workloads-across-multiple-gpu-vendors
-- LLVM NVPTX 使用者指南（21.1）：https://releases.llvm.org/21.1.0/docs/NVPTXUsage.html
-- numba-cuda 支援的 Python 功能：https://nvidia.github.io/numba-cuda/user/cudapysupported.html
-- Numba 舊版支援功能：https://numba.readthedocs.io/en/stable/cuda/cudapysupported.html
-- PyTorch PrivateUse1 教學：https://pytorch.org/tutorials/advanced/privateuseone.html
-- NVIDIA GTC 投稿頁（現行）：https://www.nvidia.com/en-us/gtc/present/call-for-submissions/
-- NVIDIA 部落格 CUDA 9 WMMA 與 Volta（GTC 2017 公告）：https://developer.nvidia.com/blog/?p=7874
-- NVIDIA 部落格 Cooperative Groups：https://developer.nvidia.com/blog/cooperative-groups
-- NVIDIA 部落格 WMMA 延伸到 Ampere（CUDA 11.0）：https://developer.nvidia.com/blog/?p=24627
-- Tensor Core 程式化研究（arXiv 1803.04014）：https://arxiv.org/pdf/1803.04014
-- Triton Gluon 多 CTA 教學（thread block cluster 描述）：https://triton-lang.org/main/getting-started/tutorials/gluon/multicta.html
-- CUDA 功能封存文件：https://docs.nvidia.com/cuda/cuda-features-archive/index.html
-- cuBLAS 行主序與列主序用法：https://leimao.github.io/blog/cuBLAS-Transpose-Column-Major-Relationship
-- Netlib cuBLAS 批次 BLAS 講義：https://www.netlib.org/utk/people/JackDongarra/WEB-PAGES/Batched-BLAS-2016/Day2/cublas_utk.pdf
-- PyTorch 數值精度說明：https://pytorch.org/docs/stable/notes/numerical_accuracy
-- PyTorch torch.nn.attention（SDPA 後端列舉）：https://docs.pytorch.org/docs/2.7/_modules/torch/nn/attention.html
-- MONAI 精度與加速（TF32 預設）：https://monai.readthedocs.io/en/stable/precision_accelerating.html
+- `ops` 逐項列出每個核心目前能用的層、哪些用原生、哪些用替代、哪些退層與原因。
+- `layer` 用 `T1`、`T2`、`T3`、`T4`、`T5`（對應第 2.1 節）。
+- `via` 是人看得懂的名稱：`wgsl-native`、`wgsl-substitute`、`webgl2`、`wasm`、`cpu-js`。
 
 ---
 
-## 11. 後期原語演進表（2026-11-15 增補）
+## 3. 原語對照與替代實作（核心表）
 
-### 11.1 查證說明
+本表是實作的依據。每列都有「怎麼補」，不寫「不做」。成本與階段是預估，標示「預估」。
 
-- **兩種來源分開標示**：【文獻查證】＝本文件引用的網路來源；【使用者口述】＝使用者本人經歷 CUDA 發展與研究歷程的第一手說法，**未附文獻，不是已查證事實**。使用者口述的脈絡：深度學習 → AlexNet 發現深度網路適合平行運算 → 研究社群投稿（含 GTC 徵稿）→ 被 NVIDIA 採用併入 CUDA。
-- **「CUDA 原語來自 GTC 論文徵集」這個說法：文獻未查證；使用者口述為上述脈絡。** 兩者不能互相取代，下表的出處欄會分開標示。 本輪只查到現行 GTC 的投稿頁（[NVIDIA GTC 投稿頁](https://www.nvidia.com/en-us/gtc/present/call-for-submissions/)，2027 年 3 月 GTC 的海報徵集），沒有查到任何文件說明某個 CUDA 原語是經由 GTC 論文徵集併入。WMMA 首次公開是在 GTC 2017 的 CUDA 9 公告（[NVIDIA 部落格](https://developer.nvidia.com/blog/?p=7874)），那是**發表場合**，不等於「論文徵集併入」。因此本文件不採用這個說法作為事實。
-- 下表每列寫明：引入版本與來源、查證狀態。標【推測】的年份沒有在本輪查證中核對。
+### 3.1 執行與同步
 
-### 11.2 演進表
-
-| 原語 | CUDA 引入 | 來源與狀態 | 硬體 | WGSL 對應 | 層級 | 替代做法與成本（推測） |
+| CUDA／PTX 原語 | WGSL 原生 | 替代實作（WGSL） | WebGL2 做法 | CPU 做法 | 預估成本 | 階段 |
 |---|---|---|---|---|---|---|
-| 動態平行（kernel 內啟動 kernel） | CUDA 5.0 | 【推測】未查證 | Kepler | 沒有 | T2（主機排程） | 主機端迴圈發 dispatch；indirect dispatch 部分替代 |
-| Cooperative groups | CUDA 9（2017） | 【查證】[NVIDIA 部落格](https://developer.nvidia.com/blog/cooperative-groups)：可定義 sub-warp 到 multi-GPU 的群組並做集合同步 | Volta 起 | 部分：workgroup、subgroup 可表達；grid 同步沒有 | T2 | grid 同步 = 拆 dispatch；多裝置群組不做 |
-| Warp 級 shuffle 與投票（sync 版本） | CUDA 9 起以 `_sync` 版本為主 | 【推測】未查證（以 CUDA 9 的 cooperative groups 同一批公告為脈絡） | Volta 起 | 部分：subgroups（Chrome 已出貨） | T2（無 subgroups 時） | workgroup 記憶體＋barrier 做歸約與廣播 |
-| WMMA（warp 矩陣乘） | CUDA 9（2017，預覽） | 【查證】[NVIDIA 部落格](https://developer.nvidia.com/blog/?p=7874)；2018 年 arXiv 分析說明它是預覽、無向後相容保證（[arXiv 1803.04014](https://arxiv.org/pdf/1803.04014)） | Volta | 沒有 | T2 | 平鋪 workgroup 矩陣乘，速度差距未實測 |
-| WMMA 延伸到 Ampere | CUDA 11.0 | 【查證】[NVIDIA 部落格](https://developer.nvidia.com/blog/?p=24627) | Ampere | 沒有 | T2 | 同上 |
-| `mma.sync`（PTX 低階矩陣指令） | CUDA 10.1 | 【查證，次要來源】[CUDA 範例說明](https://turing.une.edu.au/~cosc330/lectures/cuda_samples_old/samples/0_Simple/cudaTensorCoreGemm/readme.txt)、[CUTLASS 投影片](https://developer.download.nvidia.com/video/gputechconf/gtc/2019/presentation/s9593-cutensor-high-performance-tensor-operations-in-cuda-v2.pdf) | Volta 起 | 沒有 | T2 | 同上；PTX 轉譯器（§5）遇到直接拒絕並回報 |
-| 低精度資料型別（bf16、tf32）與 Tensor Core 的 tf32 模式 | CUDA 11（Ampere） | 【查證，次要來源】NVIDIA 2020 年投影片列出 CUDA 11 的 low precision 與 WMMA 項目（[OLCF 2020 投影片](https://www.olcf.ornl.gov/wp-content/uploads/2020/09/OLCF_Users_Call_Oct2020.pdf)） | Ampere | f16 部分（shader-f16）；bf16、tf32 沒有 | T2 | bf16 以位元移位轉 f32；tf32 以 f32 計算（精度較高，不是位元相同，§13） |
-| `cp.async`（非同步複製到共享記憶體） | Ampere 世代 | 【推測】未查證 | Ampere | 沒有 | T2 | 雙緩衝 |
-| 非同步 barrier（mbarrier） | Ampere 世代 | 【推測】未查證 | Ampere | 只有 `workgroupBarrier` | T2（部分） | 粗粒度 barrier，效能風險 |
-| Thread block cluster（CGA，最多 16 個 CTA） | Hopper | 【查證】[Triton Gluon 教學](https://triton-lang.org/main/getting-started/tutorials/gluon/multicta.html)：CGA 可協作讀取 HBM、並以 mbarrier 同步子集 | Hopper | 沒有（workgroup 之間無共享記憶體） | 不做 | 無等價做法；拆核心改用全域記憶體中轉 |
-| TMA（Tensor Memory Accelerator） | Hopper（【推測】，未查證） | 【推測】本輪搜尋只看到它在 cluster 廣播的脈絡 | Hopper | 沒有 | T2（效能風險高） | 手寫索引搬移 |
-| Warpgroup 矩陣指令（wgmma） | Hopper（【推測】，未查證） | 【推測】未查證 | Hopper | 沒有 | T2 | 同 WMMA 平鋪 |
-| 統一記憶體（unified memory） | CUDA 6（【推測】，未查證） | 未查證 | Kepler 起 | 沒有 | T2 | 明確的 buffer 上傳與回讀 |
-| 多裝置協作啟動 | 早期版本 | 【查證，次要來源】[CUDA 功能封存](https://docs.nvidia.com/cuda/cuda-features-archive/index.html) 的摘要提到 CUDA 13.x 移除相關參考 | — | 沒有 | 不做 | 不做 |
+| grid／block／thread 階層 | 有：dispatch 的 workgroup 數＋`workgroup_id`、`local_invocation_id` | — | 每個輸出元素一個 fragment | 迴圈 | 低 | 1 |
+| 超過 workgroup 大小上限 | — | 多趟 dispatch，每趟處理一段 | 多趟繪製 | 迴圈 | 低 | 1 |
+| 共享記憶體 | 有：`var<workgroup>`，預設上限 16 KiB（依能力檔） | 大陣列分塊，每塊一趟 | 以紋理分塊多趟 | 陣列 | 中 | 1 |
+| `__syncthreads()` | 有：`workgroupBarrier()` | 屏障位於分支內時，改寫成所有執行緒走同一路徑 | 不需要（每趟是獨立的繪製） | 不需要 | 中 | 1 |
+| grid 級同步 | 沒有 | 拆成多趟 dispatch，dispatch 之間就是同步點 | 多趟繪製 | 迴圈 | 低 | 2 |
+| warp shuffle、vote、ballot | 有（subgroups，檔 C） | 沒有 subgroups 時：共享記憶體＋屏障做歸約與廣播 | 紋理多趟 | 迴圈 | 中（歸約）；高（任意 shuffle） | 1 |
+| 動態平行（核心內啟動核心） | 沒有 | 主機端排程多趟；或 indirect dispatch，前一趟寫下一趟參數 | 主機端多趟 | 主機排程 | 中 | 3 |
+| 遞迴 | 沒有 | 顯式堆疊（陣列加索引）取代遞迴 | 同左 | 原生遞迴 | 中 | 4 |
+| 函式指標、vtable | 沒有 | `switch` 分派加常數表；或展開成多個核心 | 同左 | 原生 | 低到中 | 4 |
+| printf | 沒有 | 寫入除錯 storage buffer，主機讀回後印出 | 紋理讀回 | 直接印 | 低 | 1 |
 
-### 11.3 判讀
+### 3.2 數值型別
 
-- 後期原語能替代的主要是**同步、搬移、低精度資料型別**（T2）。
-- **矩陣指令、cluster、TMA、wgmma** 是 WGSL 完全沒有的硬體能力；只能用平鋪軟體實作，效能差距要實測。
-- 我們的 PTX 子集（§5）**不支援**這些指令，遇到時直接回報「原語未支援」，不靜默降級。
+| 原語 | WGSL 原生 | 替代實作 | WebGL2 做法 | CPU 做法 | 預估成本 | 階段 |
+|---|---|---|---|---|---|---|
+| f32 | 有 | — | 有（RGBA32F，需 EXT_color_buffer_float；否則 RGBA8 打包） | 有 | 低 | 1 |
+| f16 | 有（`shader-f16`，檔 C） | 沒有 `shader-f16`：整個核心改用 f32 版本 | RGBA16F（需 EXT_color_buffer_half_float） | f32 計算 | 低 | 1 |
+| bf16 | 沒有 | 以 u16 位元移位轉成 f32 計算 | 同左 | 同左 | 低 | 2 |
+| tf32 | 沒有 | 以 f32 計算（精度較高，結果不位元相同） | 同左 | 同左 | 低 | 2 |
+| f64 | 沒有 | 雙 f32（double-float，`hi + lo`，TwoSum、TwoProd）；有效尾數約 48 位元（預估，待實測） | 同左，每個運算約 10 至 20 倍工作量 | 原生 f64 | 高（每個運算 10 至 20 倍） | 2 |
+| 64 位元整數 i64、u64 | 沒有 | 兩個 u32 加進位與借位；乘法用 16 位元分段 | 同左 | 原生 | 中到高 | 2 |
+| 8、16 位元整數原子 | 沒有 | 用 32 位元原子加遮罩模擬 | 不需要原子 | 原生 | 中 | 3 |
+
+### 3.3 原子與記憶體
+
+| 原語 | WGSL 原生 | 替代實作 | WebGL2 做法 | CPU 做法 | 預估成本 | 階段 |
+|---|---|---|---|---|---|---|
+| i32、u32 原子（add、min、max、and、or、xor、exchange、compareExchange） | 有（檔 B 以上） | — | 沒有原子：多趟排序後歸約（直方圖用排序加段落歸約） | 原生 | 低（有原子時）；中（用排序時） | 1 |
+| f32 原子加 | 沒有 | `atomic<u32>` 的 compare-exchange 迴圈，用 `bitcast<f32>` 讀寫；競爭高時慢 | 排序後歸約 | 原生 | 中（低競爭）；高（高競爭） | 2 |
+| 64 位元原子 | 沒有 | 分散累加：每個 workgroup 先歸約，再用兩個 32 位元原子合併高低兩半並記錄進位 | 排序後歸約 | 原生 | 高 | 3 |
+| 全域記憶體合併存取 | 沒有保證（依驅動） | 以連續索引與 `vec4` 讀寫為設計原則，實測後調整 | 紋理取樣順序 | 快取友善的迴圈 | 效能風險，無法靜態保證 | 1 |
+| 指標與任意位址 | 只有 `ptr<storage/workgroup/function, T>`，沒有指標算術 | 所有陣列放進綁定的 storage buffer，用整數索引；超過單一 buffer 上限就分塊並帶 buffer 索引 | 紋理座標 | 指標 | 中 | 1 |
+| 非同步複製到共享記憶體（`cp.async`） | 沒有 | 雙緩衝：queue 的複製與計算重疊 | 紋理上傳與繪製重疊 | 預取 | 中 | 3 |
+| 非同步屏障（mbarrier） | 沒有 | `workgroupBarrier` 粗粒度替代 | 不需要 | 不需要 | 中（效能風險） | 3 |
+| 統一記憶體 | 沒有 | 明確的 buffer 上傳與回讀，由排程器管理 | 紋理上傳回讀 | 同一位址 | 低 | 2 |
+
+### 3.4 矩陣與張量指令
+
+| 原語 | WGSL 原生 | 替代實作 | WebGL2 做法 | CPU 做法 | 預估成本 | 階段 |
+|---|---|---|---|---|---|---|
+| warp 矩陣指令（`wmma`，PTX `mma.sync`） | 沒有 | 平鋪的 workgroup 矩陣乘：16×16 分塊，共享記憶體加屏障 | 分塊多趟繪製 | 分塊迴圈 | 高（速度差距待實測） | 1（矩陣乘本身）；指令層 3 |
+| warpgroup 矩陣指令（wgmma） | 沒有 | 同上，分塊更大 | 同上 | 同上 | 高 | 3 |
+| tf32、bf16 Tensor Core 模式 | 沒有 | 以 f32 或 u16 位元移位計算 | 同上 | 同上 | 中 | 2 |
+| thread block cluster（最多 16 個 CTA 協作） | 沒有跨 workgroup 共享記憶體 | 拆核心，用全域記憶體中轉；或在單一 workgroup 內模擬 | 多趟 | 迴圈 | 高 | 3 |
+| TMA（張量搬移單元） | 沒有 | 手寫的 buffer 索引搬移與分塊，效能差距待實測 | 紋理取樣 | 迴圈 | 中到高 | 3 |
 
 ---
 
-## 12. 函式庫層相容設計（第二、三階段）
+## 4. 編譯路線
 
-### 12.1 cuBLAS 常用子集（第二階段）
+### 4.1 管線
 
-- 介面：照 cuBLAS 的命名與參數順序。`cublasSgemm` 的參數為 handle、transa、transb、m、n、k、alpha、A、lda、B、ldb、beta、C、ldc（【查證，次要來源】[Netlib 講義](https://www.netlib.org/utk/people/JackDongarra/WEB-PAGES/Batched-BLAS-2016/Day2/cublas_utk.pdf)、[Leimao 說明](https://leimao.github.io/blog/cuBLAS-Transpose-Column-Major-Relationship)）。
-- **lda 規則**（參考 BLAS 的 SGEMM 文件，【查證，次要來源】）：transa 為 N 時 lda ≥ max(1, m)，否則 lda ≥ max(1, k)；ldb 同理（n 與 k 對換）。
-- **欄主序**：cuBLAS 假設欄主序；行主序的呼叫者要交換運算元與轉置旗標（【查證，次要來源】同 Leimao 說明）。
-- **Python 端形式**：`cudaweb.cublas.sgemm(transa, transb, alpha, A, B, beta, C)`，去掉 handle，lda、ldb、ldc 由陣列形狀推得。**與 cuBLAS 的差異必須寫在文件裡**（去掉 handle、陣列取代裸指標）。
+```
+Python 核心（@cuda.jit 風格子集）──┐
+                                  ├─► 中介表示（IR）─┬─► WGSL（L1／L2）
+PTX（LLVM NVPTX 產出）──► PTX 解析┘                 ├─► WebGL2 片段著色器（L3）
+                                                    └─► CPU 解譯（L5）
+```
 
-| 子程式 | 語意 | WGSL 實作 | 層級 | 複雜度（推測） |
-|---|---|---|---|---|
-| `sgemm` | C ← αop(A)op(B)+βC | 平鋪 kernel（T1），轉置用索引映射 | T1 | O(mnk)，平鋪後接近記憶體限制 |
-| `sgemv` | y ← αop(A)x+βy | 每列一個 workgroup 歸約 | T1 | O(mn) |
-| `saxpy` | y ← αx+y | 逐元素 | T1 | O(n) |
-| `sdot` | x·y | 歸約（與第 3 節第 2 項相同） | T1 | O(n) |
-| `sscal` | x ← αx | 逐元素 | T1 | O(n) |
-| `snrm2` | ‖x‖₂ | 平方和歸約後 sqrt；注意溢位與下溢，用縮放避免（與 reference BLAS 同思路，【推測】） | T1 | O(n) |
-| `sgemmStridedBatched` | 批次 gemm | 第三個 workgroup 維度為批次索引 | T1 | O(b·mnk) |
+- **中介表示**：SSA 風格，運算元有型別（f32、i32、u32、f16；f64、i64 先展開成多個 32 位元值）。
+- **能力檔決定展開**：檔 A 的 IR 不含原子，遇到原子就展開成多趟；檔 B 以上可直接用原子。
+- **拒絕而不靜默**：遇到還沒有替代實作的原語，編譯時回報「原語 X 尚未有替代實作，階段 N」，不靜默降級。
 
-**不做（第二階段）**：Tensor Core 路徑（`cublasGemmEx` 的 tensor op 模式）、複數、雙精度（`dgemm`，需 §3 第 10 項的雙 f32）、混合精度輸入輸出的 `gemmEx`。
+### 4.2 語法子集（`@cuda.jit` 風格）
 
-### 12.2 cuDNN 常用子集（第三階段）
+| 支援 | 不支援（改用替代，列於右） |
+|---|---|
+| `cuda.grid(1)`、`cuda.blockIdx`、`cuda.threadIdx`、`cuda.blockDim` | 不支援直接用 `cuda.grid` 以外的 API 時，回報清楚 |
+| `cuda.shared.array(shape, dtype)` | 超過共享記憶體上限：分塊 |
+| `cuda.syncthreads()` | 屏障在分支內：改寫為統一路徑 |
+| `cuda.atomic.add(arr, idx, val)`（i32、u32） | f32 原子：CAS 迴圈；檔 A 用多趟 |
+| `for i in range(...)`、`if`、基本算術、ndarray 索引 | `try`／`except`：改用錯誤碼 |
+| `print`：寫入除錯 buffer，主機讀回 | 直接印出：不支援 |
+| 遞迴：不支援 | 改用顯式堆疊 |
+| 推導式、`with`、`yield`、核心內配置陣列 | 改寫為迴圈與預先配置的陣列 |
 
-| 運算 | 常見 cuDNN 入口（【未查證】具體函式名稱與參數） | WGSL 做法 | 層級 | 複雜度（推測） |
-|---|---|---|---|---|
-| 卷積前向 | 前向卷積 | im2col＋sgemm（T1 組合）；或直接卷積核心 | T1 | im2col 增加記憶體 |
-| 卷積反向（資料、濾波器） | 反向卷積 | 兩個 im2col＋sgemm 的反向形式 | T1 | 同上 |
-| 池化（max、avg） | 池化前向與反向 | 逐元素窗口核心 | T1 | O(窗口·輸出) |
-| softmax | 前向與反向 | 歸約（最大值、和）＋逐元素 | T1 | O(n) |
-| 批次正規化 | 前向與反向 | 歸約（均值、變異數）＋逐元素 | T1 | O(n) |
-| 激活（relu、tanh、sigmoid、gelu） | 逐元素 | 逐元素 | T1 | O(n)；gelu 是否在 cuDNN 入口內【未查證】 |
-| 注意力 | cuDNN 的 SDPA 後端（【查證】PyTorch 列舉有 `CUDNN_ATTENTION`，見 §12.3） | 第一版用數學版（mm＋softmax＋mm），不做融合 | T1＋T2 | O(s²d)，記憶體為 O(s²) |
+型別推斷只允許 f32、i32、u32、f16；f64、i64 在解析時展開成多個 32 位元值的內部型別。
 
-**不做（第三階段）**：融合核心、混合精度訓練、量化卷積、RNN 系列。
+### 4.3 範例核心
 
-### 12.3 ATen 對映表（第三階段，子集）
+1. **向量加**：`c[i] = a[i] + b[i]`，全部層都有。
+2. **矩陣乘**：16×16 平鋪、共享記憶體、兩個屏障。
+3. **歸約**：每個 workgroup 步進取數，樹狀歸約，多趟直到一個值。
+4. **直方圖（含原子）**：檔 B 以上用 `atomic<u32>` 加；檔 A 用排序後段落歸約。
 
-來源：PyTorch 的 SDPA 後端列舉為 MATH、FLASH_ATTENTION、EFFICIENT_ATTENTION、CUDNN_ATTENTION，預設由框架依優先順序挑選（【查證】[PyTorch 文件](https://docs.pytorch.org/docs/2.7/_modules/torch/nn/attention.html)）。我們**只實作 MATH 版**，其餘後端不做。
+### 4.4 NVPTX／PTX 子集轉譯
 
-| ATen 運算子 | 對到 | 狀態 | 備註 |
+**路線**：LLVM IR → NVPTX 後端 → PTX 文字 → 本專案的 PTX 解析器 → IR → WGSL、WebGL2 或 CPU。
+
+**第一批支援的 PTX 指令**（從 `DESIGN.behavior-analyzer.md` 的 PTX 表 174 條挑選，逐條核對後定案）：
+
+| 類別 | 指令 | 說明 |
+|---|---|---|
+| 搬移 | `mov`、`cvt`（到 i32、u32、f32） | — |
+| 算術 | `add`、`sub`、`mul.lo`、`mad.lo`、`fma`、`div.rn`（f32）、`rem`、`min`、`max`、`abs`、`neg` | — |
+| 位元 | `and`、`or`、`xor`、`shl`、`shr`、`not` | — |
+| 比較與選擇 | `setp`、`selp` | — |
+| 分支 | `bra`、`ret`、`exit` | 結構化分支；非結構化分支用顯式堆疊 |
+| 記憶體 | `ld.param`、`ld.global`、`st.global`、`ld.shared`、`st.shared` | `.param` 改成 uniform 或 storage buffer |
+| 同步 | `bar.sync 0` | 屏障在分支內要檢查 |
+| 原子 | `atom.global.add`、`atom.shared.add`（i32、u32） | f32 原子用 CAS；檔 A 用多趟 |
+| 其他 | `f64`、`u64`、`mma`、`shfl`、`vote`、`call` | 用第 3 節的替代：f64 雙 f32、u64 兩個 u32、`mma` 平鋪、`shfl` 共享記憶體、`vote` 屏障加歸約、`call` 內聯 |
+
+**風險**：PTX 的隱含行為（`setp` 的 NaN 語意、`div.rn` 的捨入）與 WGSL 不同，要逐條寫測試。實作只依 NVIDIA 公開的 PTX ISA 文件，不解析 NVIDIA 內部格式，不使用 NVIDIA 二進位或 SDK 程式碼。
+
+---
+
+## 5. 函式庫層
+
+### 5.1 cuBLAS 常用子集
+
+介面照 cuBLAS 命名與參數順序，去掉 handle，陣列取代裸指標。
+
+| 子程式 | 語意 | 實作做法 | 階段 |
 |---|---|---|---|
-| `aten::mm` | cuBLAS `sgemm` | 做（第二階段） | 2D 矩陣乘 |
-| `aten::bmm` | cuBLAS 批次 gemm | 做（第二階段） | 3D |
-| `aten::addmm` | gemm＋bias 加法（β=1） | 做（第二階段） | |
-| `aten::matmul` | 依維度分派到 mm 或 bmm | 做（第二階段） | |
-| `aten::softmax` | 自寫歸約核心（或 cuDNN softmax） | 做（第三階段） | 數值穩定（減最大值） |
-| `aten::layer_norm`、RMSNorm | 自寫歸約核心 | 做（第三階段） | 反向要對拍 |
-| `aten::conv2d` | cuDNN 子集（im2col＋sgemm） | 做（第三階段） | |
-| `aten::scaled_dot_product_attention` | MATH 版（mm＋softmax＋mm） | 做 MATH 版；**不做** FLASH、EFFICIENT、CUDNN 版 | 與 PyTorch 的 MATH 後端對齊 |
-| 逐元素（add、mul、relu、gelu…） | 自寫核心 | 做（第三階段） | |
-| `aten::sum`、`aten::mean` | 自寫歸約核心 | 做（第一階段的歸約核心延伸） | |
-| `aten::cross_entropy`、`nll_loss` | 自寫核心（含 log-softmax） | 做（第三階段） | |
-| `aten::embedding` | 自寫 gather 核心 | 做（第三階段） | |
-| 優化器（AdamW，融合或 foreach） | 自寫核心 | 做（第三階段，非融合） | |
-| `aten::index_select` | 自寫 gather | 做（第三階段，後段） | |
-| `aten::scatter_add`、`index_add` | 需要 f32 原子 | **不做**（等 §3 第 6 項的 CAS 替代，P4） | |
-| `aten::batch_norm` | cuDNN 子集 | 後段，視需要 | |
-| FFT、稀疏、量化、nested tensor、c10d 分散式 | — | **不做** | 超出範圍 |
-| 自動混合精度（autocast） | — | **不做** | |
+| `sgemm` | C ← α·op(A)·op(B) + β·C | 平鋪核心；轉置用索引映射；α、β 乘在輸出 | 1（最小版：N、N、α=1、β=0），2（完整） |
+| `sgemv` | y ← α·op(A)·x + β·y | 每列一個 workgroup 歸約 | 2 |
+| `saxpy` | y ← α·x + y | 逐元素 | 2 |
+| `sdot` | x·y | 歸約（與第 3.1 節相同） | 2 |
+| `sscal` | x ← α·x | 逐元素 | 2 |
+| `snrm2` | ‖x‖₂ | 平方和歸約後開根；用縮放避免溢位與下溢（與參考 BLAS 同思路） | 2 |
+| `sgemmStridedBatched` | 批次矩陣乘 | 第三個 workgroup 維度為批次索引 | 2 |
+| `dgemm`（f64） | 同 `sgemm` 但 f64 | 雙 f32 的平鋪核心 | 2 |
+| `gemmEx`（混合精度） | 輸入 f16、累加 f32 | 輸入以 f32 讀取（檔 C 可直接用 f16） | 2 |
 
-**PyTorch 後端擴充機制**（§2.9）：我們不做 PyTorch 的 C++ 後端，只做 JS 端的 ATen 風格介面，因此上表是**介面對映**，不是 dispatch 註冊。
+**`sgemm` 參數語意**（Python 端 `cudaweb.cublas.sgemm(transa, transb, m, n, k, alpha, A, B, beta, C)`）：
+- `transa`、`transb`：`'N'` 用原樣，`'T'` 轉置。第二階段起支援。
+- `m`、`n`、`k`：op(A) 為 m×k，op(B) 為 k×n，C 為 m×n。
+- `A`、`B`、`C`：列主序扁平 list。cuBLAS 原本是欄主序，我們用列主序，行主序的呼叫者不需要交換運算元。
+- 與 cuBLAS 的差異（一律寫在回報裡）：沒有 handle；沒有 `lda` 等參數（由形狀推得）；陣列是 list 而不是裝置指標。
 
-### 12.4 降級層回報（`backend_info()`）
+### 5.2 cuDNN 常用子集
 
-每個函式庫呼叫都回報：
+| 運算 | 實作做法 | 複雜度（預估） | 階段 |
+|---|---|---|---|
+| 卷積前向 | im2col 加 sgemm（組合）；或直接卷積核心 | im2col 增加記憶體 | 3 |
+| 卷積反向（資料、濾波器） | 兩個 im2col 加 sgemm 的反向形式 | 同上 | 3 |
+| 池化（max、avg）前向與反向 | 逐元素窗口核心 | O(窗口·輸出) | 3 |
+| softmax 前向與反向 | 歸約（最大值、和）加逐元素 | O(n) | 3 |
+| 批次正規化前向與反向 | 歸約（均值、變異數）加逐元素 | O(n) | 3 |
+| 激活（relu、tanh、sigmoid、gelu） | 逐元素 | O(n) | 3 |
+| 注意力（SDPA） | 第一版：數學版（mm、softmax、mm），不融合；之後加分塊版 | O(s²d)，記憶體 O(s²)；分塊版降為 O(s) | 3（數學版）；4（分塊版） |
+
+### 5.3 ATen 運算子對映
+
+| ATen 運算子 | 對到 | 階段 |
+|---|---|---|
+| `aten::mm` | `sgemm` | 2 |
+| `aten::bmm` | 批次 `sgemm` | 2 |
+| `aten::addmm` | `sgemm` 加 bias（β=1） | 2 |
+| `aten::matmul` | 依維度分派到 mm 或 bmm | 2 |
+| `aten::mv` | `sgemv` | 2 |
+| `aten::dot` | `sdot` | 2 |
+| `aten::softmax`、`log_softmax` | 自寫歸約核心（或 cuDNN softmax） | 3 |
+| `aten::layer_norm`、RMSNorm | 自寫歸約核心 | 3 |
+| `aten::conv2d` | 卷積前向（5.2） | 3 |
+| `aten::scaled_dot_product_attention` | 數學版（5.2） | 3 |
+| 逐元素（`add`、`mul`、`relu`、`gelu`…） | 自寫核心 | 3 |
+| `aten::sum`、`mean` | 歸約核心 | 1 |
+| `aten::cross_entropy`、`nll_loss` | 自寫核心（含 log-softmax） | 3 |
+| `aten::embedding` | 自寫 gather 核心 | 3 |
+| AdamW（融合或 foreach） | 自寫核心 | 3 |
+| `aten::index_select` | 自寫 gather | 3 |
+| `aten::scatter_add`、`index_add` | f32 原子用 CAS；檔 A 用排序後歸約 | 3 |
+| `aten::batch_norm` | cuDNN 批次正規化 | 3 |
+| FFT | 自寫 FFT 核心（蝶形運算，逐階段 dispatch） | 4 |
+| 稀疏張量 | 自寫 CSR 核心（gather 加歸約） | 4 |
+| 量化（int8 等） | 反量化成 f32 後計算；再加專用核心 | 4 |
+| nested tensor | 展平成 padded 批次加遮罩 | 4 |
+| 分散式（c10d） | 單機多裝置排程；跨機網路不在本設計範圍 | 4 |
+| 自動混合精度 | 以 f16 或 f32 切換，沿用 autocast 語意 | 4 |
+
+**PyTorch 後端擴充機制**：不做 PyTorch 的 C++ 後端外掛（那需要編譯進 PyTorch），只做 JS 端的 ATen 風格介面。上表是介面對映，不是 dispatch 註冊。
+
+### 5.4 精度與容差
+
+- **預設累加**：f32。`accumulate` 欄位記錄實際累加型別。
+- **TF32**：PyTorch 預設 matmul 的 TF32 關閉、卷積的 TF32 開啟（PyTorch 1.12 之後）。我們用 f32 計算，精度比 TF32 高，結果與 CUDA 的 TF32 不位元相同。`inputPrecision` 欄位記錄。
+- **f16 累加**：PyTorch 文件說半精度 GEMM 通常以 f32 累加。我們用 f32，記錄為 `accumulate: "f32"`。
+- **容差（暫定，待實測）**：相對誤差 ≤ c·√k·ε，k 為內積長度，ε 為機器精度，c 由實測決定。比對基準用更高精度的參考（CPU 的 f64 或雙 f32）。
+- **整數與原子直方圖**：完全相等。
+- **禁止說法**：「與 CUDA 完全相容」「位元相同」。只能說「在記錄的容差內一致」，並附實測數字與容差來源。
+
+---
+
+## 6. 接進 Python 模擬器
+
+### 6.1 架構
 
 ```
-{ lib: "cublas", op: "sgemm", layer: "T1" | "T2" | "T4",
-  via: "wgsl-native" | "ours-emulated" | "cpu-fallback",
-  reason: "…", accumulate: "f32", inputPrecision: "f32", reductionOrder: "tree-wg256" }
+Python 程式（模擬器裡）
+  └─ import cudaweb          renderer/src/pybridge/cudaweb.py
+       └─ _fa_cudaweb.call(op, argsJson)     Pyodide 註冊的 JS 模組（floating-assistant.js）
+            └─ _cudawebCall(op, args)        主程式的宿主方法
+                 └─ FaGpuCore.createRuntime  renderer/src/gpu/gpu_core.js（WGSL、WebGL2、CPU 核心）
 ```
 
-- `via` 對應使用者要求的三個名稱：WGSL 原生實作（T1）、我們的替代實作（T2）、CPU 降級（T4）。
-- `reason` 必填，要具體（例如「此裝置沒有 subgroups，歸約改用 workgroup 記憶體」）。
+- 網頁版與桌面版走同一條 Pyodide 路徑（`_pyBridgeInstallPyodide` 開頭呼叫 `_cudawebInstallPyodide`）。
+- `cudaweb` 與 `fa_bridge` 分開：不受「Python API 轉接」開關影響。
+- `cudaweb.py` 在一般 Python（非 Pyodide）裡會報錯並說明，不會壞掉。
 
----
+### 6.2 API 清單
 
-## 13. 精度與語意：不得宣稱位元相同
-
-**原則**：WebGPU 結果與 CUDA **不做位元相同宣稱**。差異來源與記錄方式：
-
-| 差異來源 | 說明 | 記錄欄位 |
+| 函式 | 說明 | 回傳 |
 |---|---|---|
-| 累加順序 | 歸約用樹狀或序列，結果不同 | `reductionOrder` |
-| FMA 融合 | 是否使用融合乘加依編譯器而定；WGSL 與 CUDA 的融合規則【未驗證】 | `fma: "unknown"` |
-| tf32 | PyTorch 文件：tf32 的輸入只讀前 10 位元尾數（【查證】[PyTorch 數值精度](https://pytorch.org/docs/stable/notes/numerical_accuracy)）。PyTorch 預設 matmul 的 tf32 **關閉**，conv 的 tf32 **開啟**（【查證】[MONAI](https://monai.readthedocs.io/en/stable/precision_accelerating.html)，PyTorch 1.12 之後）。我們用 f32 計算，**精度比 tf32 高**，與 CUDA 的 tf32 結果不同 | `inputPrecision: "f32"`，並標示比對的 CUDA 設定 |
-| f16 累加 | PyTorch 文件：半精度 GEMM 通常以 f32 累加，部分 GPU 會截斷中間結果（【查證】同上） | `accumulate: "f32"` 或 `"f16"`（我們只用 f32） |
-| bf16 | 以位元移位轉成 f32 計算，結果與原生 bf16 指令不同 | `inputPrecision: "bf16-emulated"` |
+| `cudaweb.vector_add(a, b)` | 向量加 | list |
+| `cudaweb.matmul(A, B)` | 矩陣乘，二維 list | 二維 list |
+| `cudaweb.sum(a)` | 歸約（總和） | float |
+| `cudaweb.backend_info()` | 第 2.4 節的格式 | dict |
+| `cudaweb.cublas.sgemm(transa, transb, m, n, k, alpha, A, B, beta, C)` | 第 5.1 節 | list |
+| `cudaweb.kernel(src)`（第二階段起） | `@cuda.jit` 風格核心的編譯與執行 | 可呼叫物件 |
 
-**容差規則（暫定，未實測）**：
-- 容差與 `k`（內積長度）、`eps`（機器精度）成比例，**不寫死常數**（依使用者「門檻要自適應」規則）。暫定：相對誤差 ≤ c·√k·ε_f32，c 由實測決定。
-- 比對基準要用**更高精度的參考**（CPU 的 f64 或雙 f32），而不是只比 CUDA。
-- 整數與原子直方圖：完全相等。
+### 6.3 範例程式
 
-**禁止的說法**：「與 CUDA 完全相容」「位元相同」「結果一樣」。只能說「在記錄的容差內一致」，並附實測數字與容差來源。
+`renderer/src/gpu/examples/cudaweb_demo.py`：向量加、矩陣乘、歸約，最後印出 `backend_info()` 的層與原因。
+
+### 6.4 沒有 GPU 時的行為
+
+- 每個函式都會回傳正確結果（經由降級層），`backend_info()` 說明實際用的層與原因。
+- 例：「此瀏覽器沒有 WebGPU（navigator.gpu 不存在），也沒有 WebGL2，改用 WASM」。
+- 只有在參數錯誤（形狀不合、非有限數字）時才報錯，而且不會嘗試降級。
+
+### 6.5 GUI 模擬器（`py_worker`）
+
+GUI 的獨立 Worker 模擬器目前沒有註冊 `_fa_cudaweb`，不能 `import cudaweb`。接法列入第 10 節的第三階段項目。
 
 ---
 
-## 14. 路線圖調整（2026-11-15）
+## 7. 離線模型推論與訓練資源
 
-| 階段 | 內容 | 完成標準 |
+### 7.1 登錄為訓練工作室運算後端
+
+- `renderer/src/studio/backend_core.js` 的 `BACKEND_IDS` 新增 `cudaweb`，`KIND_BACKENDS.lora` 加入 `cudaweb`。
+- `webgpuTierProbe(backendInfo)` 已存在（第一階段），擴充為 `cudawebProbe(backendInfo)`：可用條件為有 WebGPU 或 WebGL2 裝置；`reason` 必填（不可用時）；`fingerprint` 含能力檔、各核心的層。
+- 訓練工作室的後端選單選得到；狀態顯示實際走哪一層（例如「cudaweb：檔 B，matmul 與 softmax 用 WGSL，AdamW 用純 JS（替代尚未完成）」）。
+- 登錄表的 `MATURITY` 排序：cudaweb 排在 webgpu 之前（它是 webgpu 的超集，但有降級回報）。實際排序以基準測試為準（既有規則）。
+
+### 7.2 熱點接法
+
+| 運算 | 原本路徑 | 改接 | 階段 |
+|---|---|---|---|
+| matmul（LoRA A、B 乘法；MLP） | `onnx_grad_core.js`、`lora_ref_train.js` 的純 JS | `cudaweb.sgemm`（T1 或 T3） | 2 |
+| softmax（注意力） | 純 JS | 歸約核心 | 3 |
+| RMSNorm、layer norm | 純 JS（`qwen3_layered_engine.js`） | 歸約核心 | 3 |
+| attention（前向） | 純 JS | 數學版（mm、softmax、mm） | 3 |
+| AdamW | 純 JS 或 `llm_scratch.py` | 逐元素核心 | 3 |
+| 交叉熵 | 純 JS | 歸約核心 | 3 |
+
+- 沒接的運算子退回原本的純 JS 或 Python 路徑。
+- **容差一致**：每個接上的運算子，都要與原路徑比對，在容差內一致才啟用。比對不過的運算子不啟用，回報原因。
+- `llm_scratch.py`（Python 路徑）：透過 `cudaweb` 模組呼叫，前提是在 Pyodide 裡執行；原生 Python 路徑維持原樣。
+
+### 7.3 Qwen3-0.6B 推論熱點概念驗證
+
+**現有執行提供者（查閱程式碼）**：
+- `nr-engine.js`（桌面版）：原生 onnxruntime-node，CPU 執行提供者。
+- `llm_web_core.js`（網頁版）：transformers.js 或 WebLLM 類路徑，視模型而定，常見為 WebGPU 或 WASM。
+
+**接法**：cudaweb 不取代 onnxruntime，而是接在「自家 WebGPU 路徑」這一層：
+- 網頁版：當 transformers.js 的 WebGPU 不可用時，或要用自家核心時，用 cudaweb 跑 lm_head 與 MLP 的 matmul。
+- 桌面版：onnxruntime-node 維持 CPU；cudaweb 跑 matmul 的部分需要把輸出搬回來，代價待實測。
+
+**概念驗證範圍**：Qwen3-0.6B 的 lm_head（151936×1024）與一層 MLP（1024×3072、3072×1024）。讀入相同的權重與輸入，與現有輸出比對，在容差內一致即算通過。**完整推論取代是後續階段**。
+
+**缺的運算子（完整推論還需要）**：RoPE、注意力（分塊版）、RMSNorm、SiLU、q8 反量化矩陣乘（現有權重格式）、KV 快取。
+
+### 7.4 與原生執行環境的關係
+
+- cudaweb 不改動 `main-ext.js` 的原生執行包流程。
+- 原生執行包（onnxruntime-node）仍是 CPU；cudaweb 只在網頁版或 Pyodide 路徑提供 GPU 加速。
+- 若未來要在原生執行包用 GPU，走 onnxruntime 的 GPU 執行提供者，不屬於本設計。
+
+---
+
+## 8. 資源調度
+
+### 8.1 GPU 緩衝區預算
+
+- 預算並入既有的記憶體預算（與「同時最多 N 顆 LoRA」用同一套機制）。
+- `backend_info().budget` 回報 `limitBytes` 與 `usedBytes`。
+- 每次分配 GPU 緩衝區前檢查預算；超過預算時：先釋放快取的暫存緩衝區，再不夠就降層（到 WASM 或純 JS），並回報原因。
+
+### 8.2 釋放策略
+
+- 暫存緩衝區（核心內的中間結果）：用完立即 `destroy()`。
+- 權重緩衝區（LoRA 或基底模型）：綁定到模型生命週期，模型卸載時釋放。
+- 快取的管線（pipeline）：保留，但有上限，超過時釋放最久沒用的。
+
+### 8.3 共用裝置的排程
+
+Python 模擬器與離線模型推論共用同一個 GPU 裝置：
+
+- **互斥鎖加優先級**：離線模型推論（訓練與推論）優先級高於模擬器使用者程式。
+- **時間片**：模擬器的單次 dispatch 限制執行時間（例如 50 毫秒），超過就讓出，給推論一個機會。
+- **餓死防護**：模擬器連續等待超過門檻時，推論暫停一個時間片讓模擬器跑。
+- **排程結果寫進 `backend_info().scheduler`**：目前排程者、等待中的工作數、最近一次讓出的原因。
+
+第一版實作互斥與時間片；餓死防護以計數器實作，門檻可設定。
+
+---
+
+## 9. 測試與驗證策略
+
+### 9.1 三層互相比對
+
+每個核心在三層（WGSL、WebGL2、CPU）各跑一次，同一組輸入與隨機種子，互相比對，容差依第 5.4 節。
+
+### 9.2 假的後端
+
+- **假 WebGPU**（`gpu_core.test.js` 已有）：依 WGSL 開頭的 `@kernel` 標記，改用 CPU 參考版算結果。驗證流程，不驗證 WGSL 本身。
+- **假 WebGL2**：假的上下文，實作 `createTexture`、`createFramebuffer`、`drawArrays` 等最小介面，依 fragment shader 的標記用 CPU 參考版算。驗證流程。
+- **假 Pyodide**（`cudaweb_py_test.py` 已有）：假的 `_fa_cudaweb` 與 `pyodide.ffi`。
+
+### 9.3 真桌面版驗證（額度：每個版本最多一次）
+
+- 目標：確認真 WebGPU 的 adapter 與功能清單；確認一個核心的結果在容差內；確認 WebGL2 層能跑一個核心。
+- 工具：`scripts/eval/cudaweb_gpu.run.js` 與 `cudaweb_gpu.eval.js`。啟動器會開視窗、搶焦點，執行前先 `node --check`。
+- 檢查結果的回傳值要正確傳回（第一次的評估檔因為缺 `return` 而丟失結果，已修正）。
+
+### 9.4 已驗證與未驗證（一句話）
+
+- **已驗證**：CPU 參考版、降級流程、Python 端參數與宿主呼叫（假後端）。
+- **未驗證**：真 WebGPU 的 adapter 與核心結果、WebGL2 層、真 Pyodide 中的 `import cudaweb`、網頁版真瀏覽器、數值容差的實測值、Qwen3 熱點比對。
+
+---
+
+## 10. 分階段路線圖
+
+| 階段 | 範圍 | 完成標準 | 依賴 | 預估工時 | 進度 |
+|---|---|---|---|---|---|
+| **第一階段** | 向量加、矩陣乘（sgemm 最小版）、歸約；WGSL 版與 CPU 版；能力檔與 `backend_info`；WebGL2 版（第 3 階段前先做三個核心）；Python 模擬器接線 | 三層互相比對通過（假後端）；Python 端測試通過；真桌面版確認 adapter 與一個核心 | 無 | 2 至 3 輪 | WGSL＋CPU＋Python 接線已完成（`d437fda9f`、`b79454138`）；能力檔、WebGL2、三層比對待做 |
+| **第二階段** | cuBLAS 常用子集（5.1）；f32 原子 CAS、f64 雙 f32、i64 雙 u32（替代層）；`backend_core` 登錄 `cudaweb` | 每個子程式與 CPU 比對通過；替代層與 CPU 比對在容差內 | 第一階段 | 3 至 4 輪 | 待做 |
+| **第三階段** | cuDNN 常用子集與 ATen 對映（5.2、5.3）；熱點接入訓練（7.2）；GUI 模擬器接線（6.5） | 卷積前向反向、softmax、layer norm、交叉熵與 CPU 比對；訓練熱點接入後 LoRA 單層梯度對拍 | 第二階段 | 4 至 6 輪 | 待做 |
+| **第四階段** | Qwen3-0.6B 推論熱點概念驗證（7.3）；資源調度（8）；PTX 子集轉譯（4.4）；分塊版注意力 | 熱點比對通過；排程不餓死；PTX 第一批指令通過 | 第三階段 | 4 至 6 輪 | 待做 |
+| **第五階段** | 完整推論取代；全模型 20 步 loss 對拍（TODO §5.7 階段 4(c)） | 每步 loss 差 ≤ 2% | 第四階段 | 視結果 | 待做 |
+
+**第二與第三階段的並行**：cuBLAS 完成後，熱點接入可與 cuDNN 並行，但兩者都會改 `backend_core.js` 與 `gpu_core.js`，需要排序。
+
+---
+
+## 11. 風險與開放問題
+
+每項寫對策。
+
+| 風險 | 對策 |
+|---|---|
+| 替代實作（CAS、雙 f32、多趟）很慢 | 先求能跑、結果在容差內；再依 `backend_info` 的 `ops` 找熱點，逐項優化；效能差距以實測記錄 |
+| 容差沒有實測數字 | 第一階段的一致性測試同時記錄實際誤差，容差以實測值的倍數定義 |
+| WebGL2 的精度（RGBA8 打包） | 打包層的誤差記錄在 `accumulate` 與 `precision` 欄位；誤差超過容差時該核心不啟用 |
+| 軟體介面卡或舊 GPU 的驅動差異 | 能力檔歸類時以 `isFallbackAdapter` 與 limits 判斷，不以型號判斷；真機驗證結果寫進回報 |
+| 桌面版與網頁版的 WebGPU 行為不同 | 同一份程式；差異由 `backend_info` 回報；真桌面版驗證額度有限，網頁版真瀏覽器待補 |
+| 離線模型與模擬器搶 GPU | 第 8.3 節的排程；互斥加時間片加餓死防護 |
+| 法律：NVIDIA 授權條款禁止逆向工程輸出以支援非 NVIDIA 平台 | PTX 轉譯只依 NVIDIA 公開的 PTX ISA 文件；不取用 NVIDIA 二進位、SDK 或第三方 ZLUDA 類程式碼；法律意見需要使用者或法務確認 |
+| 數值比對的累加順序造成假失敗 | 比對用高精度參考，不用 CUDA 原始輸出；容差依第 5.4 節 |
+| 熱點接入後結果與原路徑不一致 | 每個接上的運算子都有比對測試；不一致就不啟用並回報 |
+| 原生執行包（onnxruntime-node）沒有 GPU 加速 | 本設計不改原生路徑；需要時另走 onnxruntime 的 GPU 執行提供者 |
+
+---
+
+## 附錄 A：檔案與模組索引
+
+| 檔案 | 責任 | 狀態 |
 |---|---|---|
-| **第一階段** | 向量加、矩陣乘（同時是 `cublas.sgemm` 最小版）、歸約；能力偵測、降級紀錄、一致性測試；Python 模擬器最小橋接（§15） | 三核心 T1 與 T4 在容差內一致；`backend_info()` 能回報層與原因；假 `navigator.gpu` 測試通過 |
-| **第二階段** | cuBLAS 常用子集（§12.1） | 每個子程式與 T4 比對通過；介面與參數順序與 cuBLAS 一致（除已記錄的差異） |
-| **第三階段** | cuDNN 常用子集與 ATen 對映子集（§12.2、§12.3） | 卷積前向與反向、softmax、layer norm、交叉熵與 CPU 比對；MATH 版 SDPA 與 PyTorch 的 MATH 後端比對（同輸入的誤差表） |
-| 後續 | 替代做法 T2 的 f32 原子與 f64（§3）、PTX 子集（§5）、全模型對拍（§7 的 P5） | 依實測決定 |
+| `renderer/src/gpu/gpu_core.js` | 能力偵測、CPU 參考版、WGSL 核心（向量加、矩陣乘、歸約）、執行期（降級與回報） | 已實作（WGSL＋CPU）；WebGL2 層、能力檔待做 |
+| `renderer/src/gpu/gpu_core.test.js` | node 測試（假 WebGPU、降級路徑、登錄表對映） | 已實作，20 項 |
+| `renderer/src/gpu/cudaweb_py_test.py` | Python 端測試（假宿主） | 已實作，10 項 |
+| `renderer/src/gpu/examples/cudaweb_demo.py` | 範例程式 | 已實作 |
+| `renderer/src/gpu/cublas.js`（規劃） | cuBLAS 子集 | 待做 |
+| `renderer/src/gpu/webgl2_core.js`（規劃） | WebGL2 GPGPU 層 | 待做 |
+| `renderer/src/gpu/profile.js`（規劃） | 能力檔歸類與 `backend_info` 組裝 | 待做 |
+| `renderer/src/gpu/budget.js`（規劃） | GPU 緩衝區預算與排程 | 待做 |
+| `renderer/src/pybridge/cudaweb.py` | Python 端 API | 已實作 |
+| `renderer/src/studio/backend_core.js` | 運算後端登錄表；`webgpuTierProbe` | 已實作；`cudaweb` 登錄待做 |
+| `renderer/src/floating-assistant.js` | Pyodide 註冊 `_fa_cudaweb`（`_cudawebInstallPyodide`）；宿主方法 | 已實作 |
+| `scripts/eval/cudaweb_gpu.run.js`、`cudaweb_gpu.eval.js` | 真桌面版檢查 | 已實作；結果待重跑 |
 
-- 第二、三階段的工時為【推測】。
-- 「沒有 WebGPU 的環境」：所有層都回報 T4 與原因，**不能壞掉**。
+## 附錄 B：名詞表
 
----
-
-## 15. 第一階段實作紀錄與 Python 模擬器接線（2026-11-15）
-
-**檔案**（與 §7 的規劃有一處差異：五個檔案合併成一個）：
-- `renderer/src/gpu/gpu_core.js`：能力偵測、CPU 參考版、三個 WGSL 核心、執行期（降級與回報）。合併的原因：嵌入流程（`scripts/embed-code-ui.js` 的 `embed()`）一個區塊只吃一個檔。
-- `renderer/src/gpu/gpu_core.test.js`：20 項，node 執行。假的 `navigator.gpu` 依 WGSL 開頭的 `@kernel` 標記改用 CPU 參考版算結果，**只驗證流程**（降級、回報、邊界、錯誤），不驗證 WGSL 本身。
-- `renderer/src/studio/backend_core.js`：新增 `webgpuTierProbe(backendInfo)`，把執行期狀態轉成登錄表的 probe 結果（不可用時 reason 必填）。`KIND_BACKENDS` 沒有改，避免影響既有測試。
-- `renderer/src/pybridge/cudaweb.py`：Python 端 API（`vector_add`、`matmul`、`sum`、`backend_info`）。
-- `renderer/src/gpu/cudaweb_py_test.py`：8 項，以假的 `_fa_cudaweb` 與 `pyodide.ffi` 測試。
-- `renderer/src/gpu/examples/cudaweb_demo.py`：範例。`features/ai-features.yaml` 加了 `cudaweb` 條目（清單由 `scripts/ai-features.js build` 產生）。
-- `scripts/eval/cudaweb_gpu.eval.js`、`scripts/eval/cudaweb_gpu.run.js`：真桌面版檢查（見下）。
-
-**Python 模擬器接線**：
-- 主程式 `renderer/src/floating-assistant.js` 的 `_pyBridgeInstallPyodide` 開頭呼叫 `_cudawebInstallPyodide`，註冊 JS 模組 `_fa_cudaweb`，把 `cudaweb.py` 寫進 `/fa_cudaweb`。這條路徑是 Pyodide 模擬器（`_runPyodideScriptSync`、`_runPyodideScriptAsync`）共用的，網頁版與桌面版都走它。
-- 與 `fa_bridge`（Python API 轉接）分開：不受「Python API 轉接」開關影響。
-- `cudaweb.py` 只在 Pyodide（`sys.platform == "emscripten"`）生效；在一般 Python 呼叫會報錯並說明，不會壞掉。
-- 建置：`GPUCORE` 區塊嵌入主檔（`FA_GPU_CORE_SRC`）；`scripts/build-web-lazy.js` 的 `EXCLUDE` 加入 `GPUCORE`，核心留在主檔、不切成懶載入區塊（核心只約 15KB，且 Python 模擬器同步呼叫，不值得多一次非同步載入）。
-
-**未涵蓋**：
-- GUI 的 `py_worker`（pygame 等獨立 Worker 的模擬器）沒有註冊 `_fa_cudaweb`，那條路徑不能 `import cudaweb`。
-- 沒有 WebGPU 的環境只會走 T4，這是預期行為；T2、T3 尚未實作。
-
-**驗證現況**：
-- node：20 項全過（`node renderer/src/gpu/gpu_core.test.js`）。
-- Python：10 項全過（`python renderer/src/gpu/cudaweb_py_test.py`）。其中含 `cudaweb.cublas.sgemm` 的最小介面：只支援 transa=transb='N'、alpha=1、beta=0，其他組合直接報錯；A、B、C 是列主序扁平 list，不是 cuBLAS 的欄主序裸指標。
-- 真桌面版（真 Electron，不加 `--disable-gpu`，獨立 userData，換埠 18931）：**執行了一次，但結果遺失**。原因是評估檔最外層的 `return` 缺漏，腳本沒把結果回傳給啟動器。已修正並用假 WebGPU 離線模擬，6 項檢查全過。**沒有再開一次真桌面版**（規則：最多一次）。因此真 WebGPU 的 adapter、功能清單與核心結果目前**未驗證**。
-- 網頁版真瀏覽器：**未驗證**。
-- 數值容差仍是暫定值，**未實測**。
+| 名詞 | 意思 |
+|---|---|
+| 能力檔 | 我們自己的裝置分級（A、B、C），借用 CUDA 算力版本的概念 |
+| 降級層（L1 至 L5、T1 至 T5） | 第 2.1 節的執行層級；回報時用 `T1` 至 `T5` |
+| 替代實作 | 原生不支援的原語，用其他原語組合出來的做法 |
+| 平鋪（tiling） | 把大矩陣切成小塊，每塊放進共享記憶體或紋理後計算 |
+| 多趟（multi-pass） | 同一個運算拆成多次 dispatch 或繪製，趟與趟之間就是同步點 |
+| double-float | 用兩個 f32 的和表示一個高精度數，`hi + lo` |
+| CAS | compare-and-swap，用來實作 f32 原子加的迴圈 |
+| WGSL | WebGPU 的著色語言 |
+| fragment shader | WebGL2 中每個輸出像素執行的程式，我們用它當核心 |
+| NVPTX | LLVM 的 NVIDIA PTX 後端 |
+| ATen | PyTorch 的底層張量運算庫 |
+| 排程（scheduler） | 決定哪個工作先用 GPU 的模組 |
