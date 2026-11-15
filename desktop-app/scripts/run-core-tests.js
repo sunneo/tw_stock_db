@@ -402,6 +402,7 @@ const suites = [
     ['音樂：音訊轉 MIDI 流程（分段、可插拔分軌器與轉譜器、續跑、中斷、誠實報告）', 'scripts/music-tests/audio_pipeline.test.js'],
     ['音樂：MIDI 編輯器匯出選單（只有 MIDI、MP3；檔名去掉不合法字元）', 'scripts/music-tests/midi_editor_export.test.js'],
     ['斜線指令檔案來源：對話中的 MIDI 與附件候選、卡片回答對應', 'scripts/filesource-tests/file_source_core.test.js'],
+    ['media-transcribe 解碼退路：檔頭判斷、原生可解不轉、m4a 走 ffmpeg 退路、重試、大檔超限、同意', 'scripts/transcode-tests/transcode_fallback_core.test.js'],
     ['音樂：Basic Pitch 視窗與音符解碼（真模型輸出固定資料）', 'scripts/music-tests/basic_pitch.test.js'],
     ['音樂：樂器分類（封閉候選清單、GM 對應）', 'scripts/music-tests/instrument_classify.test.js'],
     ['merge diff patcher（unified diff 解析、策略鏈、函式邊界三方合併、合併後語法＋判題驗證與回滾；diff3 對照 git merge-file；需 python／git，沒有就略過該部分）', 'renderer/src/recipe/code_patch.test.js'],
