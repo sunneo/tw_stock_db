@@ -89,10 +89,15 @@ function glRun(gl, fsSrc, ins, uni, n, samplerNames) {
 }
 
 // 三層的實際狀態：供 backend_info 與測試使用。ops 只列這個檔案實作的核心。
-function nnBackendInfo(opts) {
-  const gl = getGl(opts);
-  const gs = glSupport(gl);
-  return { webgl2: { available: gs.ok, reason: gs.reason }, ops: {} };
+const NN_OPS = ['rmsnorm', 'softmax', 'silu', 'rope', 'adamw'];
+async function nnBackendInfo(opts) {
+  const o = opts || {};
+  const nav = o.navigator !== undefined ? o.navigator : (typeof navigator !== 'undefined' ? navigator : undefined);
+  const g = await getDevice(nav);
+  const gs = glSupport(getGl(o));
+  const ops = {};
+  for (const op of NN_OPS) ops[op] = { t1: g.dev ? 'native' : 'missing', t3: gs.ok ? 'native' : 'missing', cpu: 'native' };
+  return { webgpu: { available: !!g.dev, reason: g.reason || '' }, webgl2: { available: gs.ok, reason: gs.reason }, ops: ops };
 }
 
 // 取得 WebGPU 裝置（每個 navigator 只要一次）。沒有就回傳 dev:null 與原因。
@@ -639,4 +644,4 @@ function createBatch(dev) {
   return b;
 }
 
-module.exports = { rmsnormRef, rmsnorm, softmaxRef, softmax, siluRef, silu, ropeRef, rope, adamwCore, adamwRef, adamw, createBatch, runWgsl, getDevice, tryLayers, WGSL_RMSNORM, WGSL_SOFTMAX, WGSL_SILU, WGSL_ROPE, WGSL_ADAMW, NOTE_T3 };
+module.exports = { rmsnormRef, rmsnorm, softmaxRef, softmax, siluRef, silu, ropeRef, rope, adamwCore, adamwRef, adamw, createBatch, runWgsl, getDevice, getGl, glSupport, glRun, tryLayers, nnBackendInfo, NN_OPS, WGSL_RMSNORM, WGSL_SOFTMAX, WGSL_SILU, WGSL_ROPE, WGSL_ADAMW, NOTE_T3 };

@@ -279,6 +279,29 @@ function maxAbs(a, b) { let m = 0; for (let i = 0; i < a.length; i++) m = Math.m
     assert.throws(() => NN.rmsnormRef(x, g.slice(1), T, d, eps), /g 的長度/);
   });
 
+  // ---- 三層狀態回報 ----
+  await check('nnBackendInfo：有 WebGPU 與 WebGL2 時，五個核心的 t1、t3 都是 native；cpu 永遠 native', async () => {
+    const info = await NN.nnBackendInfo({ navigator: fakeNavigator().nav, gl: fakeGl() });
+    assert.strictEqual(info.webgpu.available, true);
+    assert.strictEqual(info.webgl2.available, true);
+    for (const op of NN.NN_OPS) assert.deepStrictEqual(info.ops[op], { t1: 'native', t3: 'native', cpu: 'native' }, op);
+  });
+
+  await check('nnBackendInfo：只有 WebGL2（沒有 WebGPU）時，t1 missing 並寫明原因', async () => {
+    const info = await NN.nnBackendInfo({ navigator: {}, gl: fakeGl() });
+    assert.strictEqual(info.webgpu.available, false);
+    assert.ok(info.webgpu.reason.includes('WebGPU 不可用'));
+    assert.strictEqual(info.ops.silu.t1, 'missing');
+    assert.strictEqual(info.ops.silu.t3, 'native');
+  });
+
+  await check('nnBackendInfo：WebGL2 沒有浮點渲染目標時，t3 missing 並寫明原因', async () => {
+    const info = await NN.nnBackendInfo({ navigator: {}, gl: fakeGl({ noFloat: true }) });
+    assert.strictEqual(info.webgl2.available, false);
+    assert.ok(info.webgl2.reason.includes('EXT_color_buffer_float'));
+    assert.strictEqual(info.ops.rope.t3, 'missing');
+  });
+
   console.log('\n' + pass + ' 通過，' + fail + ' 失敗');
   if (fail) process.exit(1);
 })();
