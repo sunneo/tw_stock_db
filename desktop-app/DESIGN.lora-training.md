@@ -1835,3 +1835,53 @@ cd .. && node scripts/native-runtime-pack.js /home/hungfu.lee/fa-work/native-run
 - 已打包的 `decompose-r4-v2.fatrain` 內仍是舊的 groups 評量（沒有 `neg`，所以列表與卡片**不會**出現「評量未過」）。要重新打包才會顯示；這需要 keen 工作樹的 `package_r4.sh`，本次沒有執行。
 - 「已有 JSON 重算後的登錄」只驗了登錄層的函式，沒有在 Electron 的實際管理畫面上點過。
 - 負例顯示只涵蓋 `ok` 布林題型。
+
+## 28. 計畫逐步切換 LoRA：成本、步驟層、預設關（2026-11-15，分支 desktop-app）
+
+### 28.1 成本（真資料；來源都是本文件既有的實測，本次沒有重新量）
+
+本次沒有啟動原生子行程或桌面視窗：真的 Electron 會搶焦點，而且下列數字已在同樣條件下量過。能在這裡量的只有 JS 端的重排開銷。
+
+| 項目 | 數字 | 來源 |
+|---|---|---|
+| 換組合後重建工作階段（槽版，rank 16，2 顆 CPU 核心，單次） | 1,897 毫秒 | §14.2 |
+| 對照：建立基底工作階段／建立槽版工作階段 | 3,898／2,157 毫秒 | §14.2 |
+| 一次 22 token 前向 | 533～548 毫秒 | §14.2 |
+| `lora_apply` 一次（寫 40 MB 到信箱） | 約 0.65 秒 | §27（產品視窗 Electron） |
+| 四顆一起套用 | 3.96 秒 | §27 |
+| 每次換組合，第一次生成多花的時間 | 1.4～3 秒 | §27 |
+| 生成中位延遲（基底／自動路由）：decompose | 8.2／10.0 秒 | §27 逐題表 |
+| 生成中位延遲（基底／自動路由）：colu | 0.6／0.65 秒 | §27 逐題表 |
+| JS 重排（30 步合成計畫，2,000 次平均） | 約 0.25 毫秒 | 本次量測 |
+
+換算：每次換組合約 2～4 秒（套用 0.65 秒加上重建 1.4～3 秒）。一個 LLM 步驟的生成只有 0.6～10 秒，所以**切換成本可能比生成本身還大**。只有步驟多、同領域連續、而且 LoRA 品質確實更好的計畫才划算。
+
+**重排的實際效果有限**：30 步合成計畫（每步依賴前一步）重排前後切換次數都是 30 次，因為相依鏈把順序鎖死了。重排只在沒有相依的步驟之間發生。
+
+### 28.2 做了什麼
+
+- `renderer/src/studio/lora_plan_core.js`（新，UMD 純函式）：`stepDomain`（步驟種類 → 領域，對不上回 null＝基底）、`dependsMap`（依 `bind.from.type==='step'` 的遞移閉包）、`orderSteps`（拓撲排序，同領域優先相鄰，最後一步固定在最後，循環依賴回原順序）、`switchCount`、`unionDomains`。
+- `renderer/src/studio/lora_route_core.js`：新增 `routeDomains(registry, domains, opts)`：每個領域各自 `resolve` 確認有可用的 LoRA，再用全部領域 `resolve` 一次拿 handles；任一領域沒有、或組合沒涵蓋到某個領域，就整批回基底（不做半套）。永不丟例外。
+- `renderer/src/floating-assistant.js`：
+  - `_planRun`：開關關閉時與原本完全相同；開啟時先經過 `_planLoraWrap`。
+  - `_planLoraWrap`：包住計畫的 `tool`、本機函式 `fns`、與填欄位 `fill`。執行前依步驟種類切換；同領域連續不重複切換；對不上的步驟切回基底；整批領域數不超過 `loraPlanUnionMax` 時一次載入整批。
+  - `_loraRouteDomains`：整批路由（先做每個領域的內建下載，失敗寫進進度、不丟例外）。
+  - `_llmGenerate`：有 `_loraStepPin` 時沿用這一步已切好的組合，不再依任務類型各自路由（否則每次生成會把組合切回去）。
+- `scripts/embed-code-ui.js`：`lora_plan_core` 加入 UMD 嵌入清單。
+- 開關：`advancedSettings.loraPerStep`（**預設未設＝關**）；`advancedSettings.loraPlanUnionMax`（預設 1＝不整批）。目前沒有設定頁的 UI，要用就手動寫進進階設定。
+
+步驟種類的對應（判斷，不是實測）：`local_uml_design`→decompose；寫程式的語言工具→codewrite；`local_summarize`、`parse_uploaded_file`、`summarize_large_text`→reading；其他 AI 工具呼叫與填欄位→toolcall；其他本機函式（`pick_urls`、`uml_to_code`）→基底。
+
+失敗處理：整批或逐步切換失敗時，寫出步驟名、領域、套用的錯誤訊息（含 `builtinEnsure` 的下載訊息）與耗時，這一步用基底繼續，計畫不中斷。**HTTP 狀態只有在下載層把它寫進訊息時才看得到**；切換層目前不另外取得 HTTP 狀態。
+
+### 28.3 預設值建議
+
+- `loraPerStep`：**維持預設關**。理由：每次切換約 2～4 秒，對 0.6～10 秒的生成來說成本太高；逐步品質還沒有量過，不能預設開。
+- `loraPlanUnionMax`：**維持預設 1（不整批）**。理由：§27.3 已實測四顆同時啟用時格式幾乎全部失敗（延遲也變長）。要試再手動設 2 或 3，而且要先量品質。
+
+### 28.4 沒有驗證的部分（不要當成已解決）
+
+- 真實桌面版（Electron）中的逐步切換沒有跑過。本次只有單元測試（`lora_plan.test.js`，40 項，含假的登錄表與假的 `this` 執行 `_planLoraWrap`、`_llmGenerate` 的真方法本體）。
+- 開啟逐步切換後，計畫的輸出品質（與關閉時比較）沒有評量。
+- 「非零 LoRA 的槽版與網頁版併權重結果不一致（首步 logits 相似度約 0.968）」仍是已知未解問題，本次沒有處理。
+- 合成計畫的重排效果只在測試資料上看過，真實計畫中有多少步可以重排還不知道。

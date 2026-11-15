@@ -5963,7 +5963,123 @@ const holder = {};
         return { task: String(task), domain, fallback: 'lora', active: r.active, handles: r.handles || [], skipped: r.skipped || [], action: decideTurn(prev, r.active), reason: '「' + domain + '」→ ' + r.active.join('、') };
     }
 
-    return { TASK_DOMAIN, taskDomain, decideTurn, routeTurn };
+    // 計畫整批一起載入（lora_plan_core 的 unionDomains）：每個領域各自 resolve 一次確認有可用的 LoRA，再用全部領域 resolve 一次拿 handles。
+    // 任一領域沒有可用的 LoRA、或最後的組合沒涵蓋到某個領域，就回基底（fallback:'base'），不做半套。永不丟例外。
+    async function routeDomains(registry, domains, opts) {
+        opts = opts || {};
+        const prev = Array.isArray(opts.prevActive) ? opts.prevActive : [];
+        const ds = []; for (const d of (Array.isArray(domains) ? domains : [])) { if (d && ds.indexOf(d) < 0) ds.push(d); }
+        const base = (reason) => ({ task: 'plan-steps', domain: null, domains: ds, fallback: 'base', active: [], handles: [], skipped: [], action: decideTurn(prev, []), reason });
+        if (!ds.length) return base('計畫沒有可以套用 LoRA 的步驟，用基底');
+        if (!registry || typeof registry.resolve !== 'function') return base('沒有登錄表，用基底');
+        const text = opts.text ? String(opts.text) : undefined;
+        const per = {}; let r;
+        try {
+            for (const d of ds) { const x = await registry.resolve({ domains: [d], text }); per[d] = (x && x.active) || []; }
+            const missing = ds.filter((d) => !per[d].length);
+            if (missing.length) return base('沒有符合「' + missing.join('、') + '」的可用 LoRA，用基底');
+            r = await registry.resolve({ domains: ds, text });
+        } catch (err) { return base('登錄表錯誤，退回基底：' + String((err && err.message) || err)); }
+        const act = (r && r.active) || [];
+        const uncovered = ds.filter((d) => !per[d].every((id) => act.indexOf(id) >= 0));
+        if (!act.length || uncovered.length) return base('整批組合沒有涵蓋「' + (uncovered.length ? uncovered : ds).join('、') + '」，用基底');
+        return { task: 'plan-steps', domain: ds.join('+'), domains: ds, fallback: 'lora', active: act, handles: (r && r.handles) || [], skipped: (r && r.skipped) || [], action: decideTurn(prev, act), reason: '計畫整批「' + ds.join('、') + '」→ ' + act.join('、') };
+    }
+
+    return { TASK_DOMAIN, taskDomain, decideTurn, routeTurn, routeDomains };
+});
+
+}).call(null, undefined, holder);
+(function (module, self) {
+/* 計畫（多步驟）的 LoRA 步驟層（UMD，純函式；不碰 DOM、網路、檔案系統）。設計見 DESIGN.lora-training.md §28。
+ *  stepDomain(step, opts) → 'decompose'｜'toolcall'｜'codewrite'｜'reading'｜null（對不上的步驟用基底）
+ *    step：{ tool, local }；opts.codeTools：各語言「寫程式」的工具名（codewrite）。
+ *  dependsMap(steps) → Map(步驟 id → Set(它直接或間接依賴的步驟 id))；依賴來自 bind[欄位].from（type:'step', ref）。
+ *  orderSteps(steps, domainOf) → 新陣列：只在沒有相依的步驟之間重排，把同領域的步驟排在一起；最後一步固定在最後（它是最終成品）。
+ *  switchCount(domains) → 依序走過的領域序列，要換幾次 LoRA 組合（null＝基底；開頭就是基底不算切換）。
+ *  unionDomains(domains, max) → 不重複、保留順序的非空領域，最多 max 個（同時啟用上限）。 */
+(function (root, factory) {
+    if (typeof module === 'object' && module.exports) module.exports = factory();
+    else root.FaLoraPlan = factory();
+})(typeof self !== 'undefined' ? self : this, function () {
+    'use strict';
+
+    const CODEWRITE_FALLBACK = [];
+    const READING_TOOLS = ['local_summarize', 'parse_uploaded_file', 'summarize_large_text'];
+
+    // 步驟 → 領域。local＝宿主的本機函式（env.fns）；非本機＝AI 工具表裡的工具（env.tool）
+    function stepDomain(step, opts) {
+        const tool = step && step.tool ? String(step.tool) : '';
+        if (!tool) return null;
+        const codeTools = (opts && Array.isArray(opts.codeTools)) ? opts.codeTools : CODEWRITE_FALLBACK;
+        if (codeTools.indexOf(tool) >= 0) return 'codewrite';
+        if (tool === 'local_uml_design') return 'decompose';
+        if (READING_TOOLS.indexOf(tool) >= 0) return 'reading';
+        if (step.local) return null;               // 其他本機函式（pick_urls、uml_to_code…）不靠 LoRA
+        return 'toolcall';                          // 一般工具呼叫（參數 JSON、填欄位）
+    }
+
+    // 直接依賴 → 遞移閉包（只算清單裡存在的步驟）
+    function dependsMap(steps) {
+        const list = Array.isArray(steps) ? steps : [];
+        const ids = new Set(list.map((s) => s.id));
+        const direct = new Map();
+        for (const s of list) {
+            const set = new Set();
+            for (const b of Object.values(s.bind || {})) {
+                const ref = b && b.from && b.from.type === 'step' ? b.from.ref : null;
+                if (ref && ids.has(ref) && ref !== s.id) set.add(ref);
+            }
+            direct.set(s.id, set);
+        }
+        const out = new Map();
+        for (const s of list) {
+            const seen = new Set(); const stack = [...direct.get(s.id)];
+            while (stack.length) { const x = stack.pop(); if (seen.has(x)) continue; seen.add(x); for (const y of direct.get(x) || []) stack.push(y); }
+            out.set(s.id, seen);
+        }
+        return out;
+    }
+
+    // 重排：拓撲排序，每次從「已經可以做」的步驟裡挑；有同領域的就先挑它（相鄰），否則挑原本順序最前的。
+    // 最後一步視為依賴所有其他步驟，所以永遠排在最後。遇到循環依賴就回傳原順序（不冒險）。
+    function orderSteps(steps, domainOf) {
+        const list = Array.isArray(steps) ? steps.slice() : [];
+        if (list.length < 2) return list;
+        const deps = dependsMap(list); const last = list[list.length - 1];
+        for (const s of list) if (s !== last) deps.get(last.id).add(s.id);
+        const done = new Set(); const out = []; let cur = null;
+        const dom = (s) => (typeof domainOf === 'function' ? domainOf(s) : null);
+        while (out.length < list.length) {
+            const ready = list.filter((s) => !done.has(s.id) && [...deps.get(s.id)].every((d) => done.has(d)));
+            if (!ready.length) return list;
+            const same = cur ? ready.find((s) => dom(s) === cur) : undefined;
+            const pick = same || ready[0];
+            out.push(pick); done.add(pick.id);
+            const d = dom(pick); if (d) cur = d;
+        }
+        return out;
+    }
+
+    // 依序經過的領域（null＝基底）：每當組合改變就算一次。開頭若已經是基底不算。
+    function switchCount(domains) {
+        let cur = null; let n = 0;
+        for (const d of (Array.isArray(domains) ? domains : [])) {
+            const next = d || null;
+            if (next !== cur) n++;
+            cur = next;
+        }
+        return n;
+    }
+
+    // 不重複、保留順序的非空領域，最多 max 個
+    function unionDomains(domains, max) {
+        const cap = Number(max) >= 1 ? Math.floor(Number(max)) : 1; const out = [];
+        for (const d of (Array.isArray(domains) ? domains : [])) { if (d && out.indexOf(d) < 0) out.push(d); }
+        return out.slice(0, cap);
+    }
+
+    return { stepDomain, dependsMap, orderSteps, switchCount, unionDomains };
 });
 
 }).call(null, undefined, holder);
@@ -94900,6 +95016,20 @@ ${fnData.code}
         if (ens && ens.ok === false && ens.message) route.reason = ens.message + '（這一輪用基底回答）' + (route.reason ? '；' + route.reason : '');
         return route;
     }
+    // 計畫整批（多個領域一起進槽）：每個領域先看內建 LoRA 要不要下載（失敗寫進 onProgress、不丟例外），再用 routeDomains 決定整批組合
+    async _loraRouteDomains(domains, text, onProgress) {
+        if (!domains || !domains.length || !this._studioDesktop() || typeof FaStudio === 'undefined' || !FaStudio.FaLoraRoute || !FaStudio.FaLoraRoute.routeDomains) return null;
+        if (!this._studioStoreSync) { try { this._studioStoreSync = await this._studioStorage(); } catch (_) { return null; } }
+        const core = this._loraCore(); if (!core) return null;
+        for (const d of domains) {
+            const ens = core.builtinEnsure ? await core.builtinEnsure(d, text || '', onProgress).catch((e) => ({ ok: false, message: String((e && e.message) || e) })) : null;
+            if (ens && ens.ok === false && ens.message && typeof onProgress === 'function') { try { onProgress('LoRA「' + d + '」準備失敗，這個領域用基底：' + ens.message); } catch (_) { /* 顯示失敗不影響路由 */ } }
+        }
+        const reg = await core.registry().catch(() => null); if (!reg) return null;
+        this._loraTurnReg = reg;
+        const prev = (this._loraTurnState && this._loraTurnState.active) || [];
+        return FaStudio.FaLoraRoute.routeDomains(reg, domains, { prevActive: prev, text: text || '' });
+    }
     // 只在組合改變時套用（keep 不動）；套用失敗就回基底並記 log；成功的 adapter 在生成期間 acquire，生成結束 release（推論中不淘汰）
     async _loraSwitch(route) {
         if (!route || route.action === 'keep') { if (route) this._loraTurnState = { active: route.active.slice() }; return route; }
@@ -94921,7 +95051,11 @@ ${fnData.code}
         // 這一輪使用者的話（最後一則 user 訊息）：給觸發字比對用
         const turnText = a && (a.text || (Array.isArray(a.messages) ? String(((a.messages.filter((m) => m && m.role === 'user').pop()) || {}).content || '') : '') || a.prompt || '');
         const onProgress = (msg) => { try { if (cb && typeof cb.log === 'function') cb.log(msg); } catch (_) { /* 顯示失敗不影響生成 */ } };
-        try { route = await this._loraRouteTurn(a && a.task, turnText, onProgress); if (route) route = await this._loraSwitch(route); }
+        try {
+            // 計畫逐步模式（_planLoraWrap）已經為這一步切好組合：沿用它，不再依任務類型各自路由（否則每次生成會把組合切回去）
+            if (this._loraStepPin) route = { task: 'plan-steps', fallback: this._loraStepPin.length ? 'lora' : 'base', active: this._loraStepPin.slice(), handles: [], skipped: [], action: 'keep', reason: '計畫逐步：沿用這一步已切好的組合' };
+            else { route = await this._loraRouteTurn(a && a.task, turnText, onProgress); if (route) route = await this._loraSwitch(route); }
+        }
         catch (e) { route = { task: String(a && a.task), fallback: 'base', active: [], handles: [], skipped: [], action: 'keep', reason: '路由錯誤，用基底：' + String((e && e.message) || e) }; }
         const held = route && route.active ? route.active.slice() : [];
         const reg = this._loraTurnReg; if (reg) held.forEach((id) => reg.acquire(id));
@@ -128314,10 +128448,68 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             return await this._planRun(run, userText, { question, M, trace, stack: rs && rs.st });
         } catch (e) { FaRecipe.decide(trace, { stage: 'error', answer: String((e && e.message) || e).slice(0, 200), by: 'program' }); this._recipeSaveTrace(trace); return { handled: false, error: String((e && e.message) || e) }; }
     }
+    // 計畫逐步切換 LoRA（設計見 DESIGN.lora-training.md §28）。預設關：advancedSettings.loraPerStep === true 才啟用；關閉時 _planRun 與原本完全相同（零呼叫）
+    _loraPlanOn() { return !!(this.advancedSettings && this.advancedSettings.loraPerStep === true) && typeof FaStudio !== 'undefined' && !!FaStudio.FaLoraPlan && this._studioDesktop(); }
     async _planRun(run, userText, ctx) {
         const calls = []; const prog = this._createProgressWidget('離線計畫：' + run.goal.label); prog.log(FaPlan.renderPlan(run));
-        const env = this._planEnv(run, userText, Object.assign({}, ctx, { calls, prog })); await FaPlan.advance(run, env);
+        let env = this._planEnv(run, userText, Object.assign({}, ctx, { calls, prog }));
+        const loraOn = this._loraPlanOn();
+        if (loraOn) env = await this._planLoraWrap(run, env, userText, prog).catch((e) => { prog.log('LoRA 逐步切換這次沒有啟用（錯誤，全部用基底）：' + String((e && e.message) || e)); return env; });
+        try { await FaPlan.advance(run, env); }
+        finally { if (loraOn) this._loraStepPin = null; }
         return this._planFinish(run, userText, ctx.trace, calls, prog);
+    }
+    // 包住計畫的每個工具／本機函式／填欄位：執行前依步驟種類（FaLoraPlan.stepDomain）切到該領域的 LoRA；
+    // 同領域連續不重複切換；對不上的步驟切回基底；整批領域都有 LoRA 且在同時啟用上限內就一次載入（advancedSettings.loraPlanUnionMax，預設 4）。
+    // 步驟內的生成沿用這一步的組合（_llmGenerate 讀 this._loraStepPin）。任何失敗都寫出步驟、領域、原因、耗時，這一步用基底繼續，不讓整個計畫失敗。
+    async _planLoraWrap(run, env, userText, prog) {
+        const LP = FaStudio.FaLoraPlan; const log = (m) => { try { if (prog) prog.log(m); } catch (_) { /* 顯示失敗不影響計畫 */ } };
+        const codeTools = FaLangColu.languages.map((lg) => FaLangColu.toolName(lg));
+        const domainOf = (name) => LP.stepDomain({ tool: name, local: !!(env.fns && env.fns[name]) }, { codeTools });
+        if (run.steps.every((s) => s.state === 'pending')) run.steps = LP.orderSteps(run.steps, (s) => domainOf(s.tool)); // 只在沒有相依的步驟之間重排（最後一步不動）
+        const st = { cur: undefined, unionOn: false, unionRoute: null, switches: 0 }; // cur：目前載入的領域（'union'＝整批、null＝基底、undefined＝還不知道）
+        const distinct = LP.unionDomains(run.steps.filter((s) => s.state === 'pending').map((s) => domainOf(s.tool)), 99);
+        const maxUnion = Number(this.advancedSettings.loraPlanUnionMax) >= 1 ? Math.floor(Number(this.advancedSettings.loraPlanUnionMax)) : 1; // 預設 1＝不整批（DESIGN §27.3：四顆同時啟用格式幾乎全失敗）
+        const fail = (ctx, why) => log('計畫第 ' + (ctx.idx + 1) + ' 步「' + ctx.step + '」' + (ctx.dom ? '（LoRA「' + ctx.dom + '」）' : '（基底）') + why + '，這一步用基底繼續');
+        // 套用（或清掉）一組組合；成功回 true。失敗寫出具體原因與耗時
+        const applyRoute = async (route, load, ctx) => {
+            const t0 = Date.now(); let sw; st.switches++;
+            try { sw = await this._loraSwitch(route); } catch (e) { sw = { fallback: 'base', applied: false, applyError: String((e && e.message) || e) }; }
+            const ms = Date.now() - t0; const ok = load ? !!(sw && sw.fallback === 'lora') : !!(sw && sw.applied !== false);
+            if (!ok) { fail(ctx, '切換失敗（' + String((sw && (sw.applyError || sw.reason)) || '未知原因') + '，耗時 ' + ms + ' 毫秒）'); return false; }
+            return true;
+        };
+        const toBase = async (ctx) => {
+            if (st.cur !== null) await applyRoute({ task: 'plan-steps', domain: null, fallback: 'base', active: [], handles: [], skipped: [], action: 'clear', reason: '計畫這一步沒有對應的 LoRA，用基底' }, false, ctx);
+            st.cur = null; this._loraStepPin = []; this._loraTurnState = { active: [] };
+        };
+        if (distinct.length >= 2 && distinct.length <= maxUnion) {
+            const route = await this._loraRouteDomains(distinct, userText, log).catch((e) => { log('計畫整批路由錯誤，改成逐步切換：' + String((e && e.message) || e)); return null; });
+            if (route && route.fallback === 'lora') { st.unionRoute = route; if (await applyRoute(route, true, { idx: 0, step: '（整批載入）', dom: distinct.join('、') })) { st.unionOn = true; st.cur = 'union'; this._loraTurnState = { active: route.active.slice() }; } }
+            else if (route) log('計畫的領域「' + distinct.join('、') + '」沒有整批可用的組合，改成逐步切換：' + route.reason);
+        }
+        const enter = async (name) => {
+            const d = domainOf(name); const idx = Math.max(0, run.steps.findIndex((s) => s.state === 'running')); const ctx = { idx, step: name, dom: d };
+            try {
+                if (!d) { await toBase(ctx); return; }
+                if (st.unionOn) {
+                    if (st.cur !== 'union') { const ok = await applyRoute(st.unionRoute, true, ctx); if (ok) { st.cur = 'union'; this._loraTurnState = { active: st.unionRoute.active.slice() }; } else await toBase(ctx); }
+                    else this._loraStepPin = st.unionRoute.active.slice();
+                    return;
+                }
+                if (st.cur === d) return; // 同領域連續：沿用目前組合，不重複切換
+                const route = await this._loraRouteDomains([d], userText, log);
+                if (!route || route.fallback !== 'lora') { await toBase(ctx); return; } // 沒有可用的 LoRA：基底（不算失敗）
+                if (await applyRoute(route, true, ctx)) { st.cur = d; this._loraStepPin = route.active.slice(); this._loraTurnState = { active: route.active.slice() }; }
+                else await toBase(ctx);
+            } catch (e) { fail(ctx, '發生錯誤（' + String((e && e.message) || e) + '）'); await toBase(ctx).catch(() => null); }
+        };
+        const wrapped = Object.assign({}, env);
+        wrapped.tool = async (name, args) => { await enter(name); return env.tool(name, args); };
+        wrapped.fns = Object.fromEntries(Object.entries(env.fns || {}).map(([k, fn]) => [k, async (a, r) => { await enter(k); return fn(a, r); }]));
+        if (env.fill) wrapped.fill = async (step, missing, sk) => { await enter(step.tool); return env.fill(step, missing, sk); }; // 填欄位的生成比工具先跑，也要先切好
+        log('LoRA 逐步切換：' + (distinct.length >= 2 && st.unionOn ? '整批載入 ' + distinct.join('、') : '每一步依步驟種類切換') + '（同領域不重複切換）');
+        return wrapped;
     }
     // 計畫停在「等使用者補資料」時，下一句話就是答案：補進去、從停下的那一步接著做
     async _planResume(text, opts) {
