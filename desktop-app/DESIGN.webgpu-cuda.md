@@ -164,6 +164,21 @@
 
 ---
 
+### 3.1 後期原語（2026-11-15 增補；完整演進表見 §11）
+
+| # | 後期原語 | WGSL 狀態 | 替代做法 | 層級 |
+|---|---|---|---|---|
+| 20 | cooperative groups（sub-block／block／grid 分組與同步） | **部分**：workgroup 與 subgroup 可表達；**grid 級同步沒有** | 拆成多次 dispatch，dispatch 之間即 grid 同步；多裝置 group 不做 | T2 |
+| 21 | warp 矩陣指令 `wmma`／`mma.sync`（Tensor Core） | **沒有** | 平鋪 workgroup 矩陣乘（與第 14 項相同） | T2 |
+| 22 | 低精度 bf16、tf32 資料型別 | f16 部分（shader-f16）；bf16、tf32 **沒有** | bf16 以 u16 位元移位轉成 f32 計算；tf32 以 f32 計算（精度較高，**不是位元相同**，§13） | T2 |
+| 23 | 非同步複製到共享記憶體（`cp.async`） | **沒有** | 雙緩衝：queue 的複製與計算重疊 | T2 |
+| 24 | thread block cluster（Hopper，最多 16 個 CTA 協作） | **沒有** | 無等價做法；只能拆核心或改用全域記憶體中轉 | 不做（T4 或拆核心） |
+| 25 | TMA（Tensor Memory Accelerator）張量搬移 | **沒有** | 手寫的 buffer 索引搬移，效能差距未實測 | T2（效能風險高） |
+
+判讀：後期原語裡，WGSL 能用「原語拆解」替代的多半是**同步與搬移**；**Tensor Core、cluster、TMA** 這三類是效能主要落差，沒有實測前不承諾。
+
+---
+
 ## 4. 降級階梯設計（使用者指定的順序）
 
 使用者指定順序：WGSL 完整替代且完全支援 → 用 WGSL；WGSL 不完整 → 用我們自己的做法；沒有 WebGPU → 降級；完全沒有解法 → 才走 WASM／CPU。
@@ -325,9 +340,21 @@ C／C++（clang）或 Rust ──► LLVM IR ──► NVPTX 後端 ──► PT
 
 ---
 
+### 6.3 ATen 對映與函式庫層（細節見 §12）
+
+本節只列對映**方向**：ATen 運算子先對到 cuBLAS／cuDNN 子集（§12.1、§12.2），對不到的才自寫核心。第一批對映表與不做清單在 §12.3。
+
+---
+
 ## 7. 分階段路線圖
 
 每階段都有可驗證的完成標準；工時為【推測】。
+
+**2026-11-15 路線調整（依使用者追加）**：
+- **第一階段**：向量加、矩陣乘（同時是 `cublas.sgemm` 的最小版，先接上介面）、歸約；加上能力偵測、降級紀錄、一致性測試，以及接進 Python 模擬器的最小橋接（§15）。
+- **第二階段**：cuBLAS 常用子集（§12.1）。
+- **第三階段**：cuDNN 常用子集與 ATen 對映子集（§12.2、§12.3）。
+- 下表的 P2 至 P5 順序保留作為**後續**，其中「替代做法 T2」與「PTX 子集」排在第三階段之後。
 
 | 階段 | 內容 | 完成標準（可驗證） | 工時（推測） |
 |---|---|---|---|
@@ -416,3 +443,161 @@ C／C++（clang）或 Rust ──► LLVM IR ──► NVPTX 後端 ──► PT
 - numba-cuda 支援的 Python 功能：https://nvidia.github.io/numba-cuda/user/cudapysupported.html
 - Numba 舊版支援功能：https://numba.readthedocs.io/en/stable/cuda/cudapysupported.html
 - PyTorch PrivateUse1 教學：https://pytorch.org/tutorials/advanced/privateuseone.html
+- NVIDIA GTC 投稿頁（現行）：https://www.nvidia.com/en-us/gtc/present/call-for-submissions/
+- NVIDIA 部落格 CUDA 9 WMMA 與 Volta（GTC 2017 公告）：https://developer.nvidia.com/blog/?p=7874
+- NVIDIA 部落格 Cooperative Groups：https://developer.nvidia.com/blog/cooperative-groups
+- NVIDIA 部落格 WMMA 延伸到 Ampere（CUDA 11.0）：https://developer.nvidia.com/blog/?p=24627
+- Tensor Core 程式化研究（arXiv 1803.04014）：https://arxiv.org/pdf/1803.04014
+- Triton Gluon 多 CTA 教學（thread block cluster 描述）：https://triton-lang.org/main/getting-started/tutorials/gluon/multicta.html
+- CUDA 功能封存文件：https://docs.nvidia.com/cuda/cuda-features-archive/index.html
+- cuBLAS 行主序與列主序用法：https://leimao.github.io/blog/cuBLAS-Transpose-Column-Major-Relationship
+- Netlib cuBLAS 批次 BLAS 講義：https://www.netlib.org/utk/people/JackDongarra/WEB-PAGES/Batched-BLAS-2016/Day2/cublas_utk.pdf
+- PyTorch 數值精度說明：https://pytorch.org/docs/stable/notes/numerical_accuracy
+- PyTorch torch.nn.attention（SDPA 後端列舉）：https://docs.pytorch.org/docs/2.7/_modules/torch/nn/attention.html
+- MONAI 精度與加速（TF32 預設）：https://monai.readthedocs.io/en/stable/precision_accelerating.html
+
+---
+
+## 11. 後期原語演進表（2026-11-15 增補）
+
+### 11.1 查證說明
+
+- **「CUDA 原語來自 GTC 論文徵集」這個說法：未查證。** 本輪只查到現行 GTC 的投稿頁（[NVIDIA GTC 投稿頁](https://www.nvidia.com/en-us/gtc/present/call-for-submissions/)，2027 年 3 月 GTC 的海報徵集），沒有查到任何文件說明某個 CUDA 原語是經由 GTC 論文徵集併入。WMMA 首次公開是在 GTC 2017 的 CUDA 9 公告（[NVIDIA 部落格](https://developer.nvidia.com/blog/?p=7874)），那是**發表場合**，不等於「論文徵集併入」。因此本文件不採用這個說法作為事實。
+- 下表每列寫明：引入版本與來源、查證狀態。標【推測】的年份沒有在本輪查證中核對。
+
+### 11.2 演進表
+
+| 原語 | CUDA 引入 | 來源與狀態 | 硬體 | WGSL 對應 | 層級 | 替代做法與成本（推測） |
+|---|---|---|---|---|---|---|
+| 動態平行（kernel 內啟動 kernel） | CUDA 5.0 | 【推測】未查證 | Kepler | 沒有 | T2（主機排程） | 主機端迴圈發 dispatch；indirect dispatch 部分替代 |
+| Cooperative groups | CUDA 9（2017） | 【查證】[NVIDIA 部落格](https://developer.nvidia.com/blog/cooperative-groups)：可定義 sub-warp 到 multi-GPU 的群組並做集合同步 | Volta 起 | 部分：workgroup、subgroup 可表達；grid 同步沒有 | T2 | grid 同步 = 拆 dispatch；多裝置群組不做 |
+| Warp 級 shuffle 與投票（sync 版本） | CUDA 9 起以 `_sync` 版本為主 | 【推測】未查證（以 CUDA 9 的 cooperative groups 同一批公告為脈絡） | Volta 起 | 部分：subgroups（Chrome 已出貨） | T2（無 subgroups 時） | workgroup 記憶體＋barrier 做歸約與廣播 |
+| WMMA（warp 矩陣乘） | CUDA 9（2017，預覽） | 【查證】[NVIDIA 部落格](https://developer.nvidia.com/blog/?p=7874)；2018 年 arXiv 分析說明它是預覽、無向後相容保證（[arXiv 1803.04014](https://arxiv.org/pdf/1803.04014)） | Volta | 沒有 | T2 | 平鋪 workgroup 矩陣乘，速度差距未實測 |
+| WMMA 延伸到 Ampere | CUDA 11.0 | 【查證】[NVIDIA 部落格](https://developer.nvidia.com/blog/?p=24627) | Ampere | 沒有 | T2 | 同上 |
+| `mma.sync`（PTX 低階矩陣指令） | CUDA 10.1 | 【查證，次要來源】[CUDA 範例說明](https://turing.une.edu.au/~cosc330/lectures/cuda_samples_old/samples/0_Simple/cudaTensorCoreGemm/readme.txt)、[CUTLASS 投影片](https://developer.download.nvidia.com/video/gputechconf/gtc/2019/presentation/s9593-cutensor-high-performance-tensor-operations-in-cuda-v2.pdf) | Volta 起 | 沒有 | T2 | 同上；PTX 轉譯器（§5）遇到直接拒絕並回報 |
+| 低精度資料型別（bf16、tf32）與 Tensor Core 的 tf32 模式 | CUDA 11（Ampere） | 【查證，次要來源】NVIDIA 2020 年投影片列出 CUDA 11 的 low precision 與 WMMA 項目（[OLCF 2020 投影片](https://www.olcf.ornl.gov/wp-content/uploads/2020/09/OLCF_Users_Call_Oct2020.pdf)） | Ampere | f16 部分（shader-f16）；bf16、tf32 沒有 | T2 | bf16 以位元移位轉 f32；tf32 以 f32 計算（精度較高，不是位元相同，§13） |
+| `cp.async`（非同步複製到共享記憶體） | Ampere 世代 | 【推測】未查證 | Ampere | 沒有 | T2 | 雙緩衝 |
+| 非同步 barrier（mbarrier） | Ampere 世代 | 【推測】未查證 | Ampere | 只有 `workgroupBarrier` | T2（部分） | 粗粒度 barrier，效能風險 |
+| Thread block cluster（CGA，最多 16 個 CTA） | Hopper | 【查證】[Triton Gluon 教學](https://triton-lang.org/main/getting-started/tutorials/gluon/multicta.html)：CGA 可協作讀取 HBM、並以 mbarrier 同步子集 | Hopper | 沒有（workgroup 之間無共享記憶體） | 不做 | 無等價做法；拆核心改用全域記憶體中轉 |
+| TMA（Tensor Memory Accelerator） | Hopper（【推測】，未查證） | 【推測】本輪搜尋只看到它在 cluster 廣播的脈絡 | Hopper | 沒有 | T2（效能風險高） | 手寫索引搬移 |
+| Warpgroup 矩陣指令（wgmma） | Hopper（【推測】，未查證） | 【推測】未查證 | Hopper | 沒有 | T2 | 同 WMMA 平鋪 |
+| 統一記憶體（unified memory） | CUDA 6（【推測】，未查證） | 未查證 | Kepler 起 | 沒有 | T2 | 明確的 buffer 上傳與回讀 |
+| 多裝置協作啟動 | 早期版本 | 【查證，次要來源】[CUDA 功能封存](https://docs.nvidia.com/cuda/cuda-features-archive/index.html) 的摘要提到 CUDA 13.x 移除相關參考 | — | 沒有 | 不做 | 不做 |
+
+### 11.3 判讀
+
+- 後期原語能替代的主要是**同步、搬移、低精度資料型別**（T2）。
+- **矩陣指令、cluster、TMA、wgmma** 是 WGSL 完全沒有的硬體能力；只能用平鋪軟體實作，效能差距要實測。
+- 我們的 PTX 子集（§5）**不支援**這些指令，遇到時直接回報「原語未支援」，不靜默降級。
+
+---
+
+## 12. 函式庫層相容設計（第二、三階段）
+
+### 12.1 cuBLAS 常用子集（第二階段）
+
+- 介面：照 cuBLAS 的命名與參數順序。`cublasSgemm` 的參數為 handle、transa、transb、m、n、k、alpha、A、lda、B、ldb、beta、C、ldc（【查證，次要來源】[Netlib 講義](https://www.netlib.org/utk/people/JackDongarra/WEB-PAGES/Batched-BLAS-2016/Day2/cublas_utk.pdf)、[Leimao 說明](https://leimao.github.io/blog/cuBLAS-Transpose-Column-Major-Relationship)）。
+- **lda 規則**（參考 BLAS 的 SGEMM 文件，【查證，次要來源】）：transa 為 N 時 lda ≥ max(1, m)，否則 lda ≥ max(1, k)；ldb 同理（n 與 k 對換）。
+- **欄主序**：cuBLAS 假設欄主序；行主序的呼叫者要交換運算元與轉置旗標（【查證，次要來源】同 Leimao 說明）。
+- **Python 端形式**：`cudaweb.cublas.sgemm(transa, transb, alpha, A, B, beta, C)`，去掉 handle，lda、ldb、ldc 由陣列形狀推得。**與 cuBLAS 的差異必須寫在文件裡**（去掉 handle、陣列取代裸指標）。
+
+| 子程式 | 語意 | WGSL 實作 | 層級 | 複雜度（推測） |
+|---|---|---|---|---|
+| `sgemm` | C ← αop(A)op(B)+βC | 平鋪 kernel（T1），轉置用索引映射 | T1 | O(mnk)，平鋪後接近記憶體限制 |
+| `sgemv` | y ← αop(A)x+βy | 每列一個 workgroup 歸約 | T1 | O(mn) |
+| `saxpy` | y ← αx+y | 逐元素 | T1 | O(n) |
+| `sdot` | x·y | 歸約（與第 3 節第 2 項相同） | T1 | O(n) |
+| `sscal` | x ← αx | 逐元素 | T1 | O(n) |
+| `snrm2` | ‖x‖₂ | 平方和歸約後 sqrt；注意溢位與下溢，用縮放避免（與 reference BLAS 同思路，【推測】） | T1 | O(n) |
+| `sgemmStridedBatched` | 批次 gemm | 第三個 workgroup 維度為批次索引 | T1 | O(b·mnk) |
+
+**不做（第二階段）**：Tensor Core 路徑（`cublasGemmEx` 的 tensor op 模式）、複數、雙精度（`dgemm`，需 §3 第 10 項的雙 f32）、混合精度輸入輸出的 `gemmEx`。
+
+### 12.2 cuDNN 常用子集（第三階段）
+
+| 運算 | 常見 cuDNN 入口（【未查證】具體函式名稱與參數） | WGSL 做法 | 層級 | 複雜度（推測） |
+|---|---|---|---|---|
+| 卷積前向 | 前向卷積 | im2col＋sgemm（T1 組合）；或直接卷積核心 | T1 | im2col 增加記憶體 |
+| 卷積反向（資料、濾波器） | 反向卷積 | 兩個 im2col＋sgemm 的反向形式 | T1 | 同上 |
+| 池化（max、avg） | 池化前向與反向 | 逐元素窗口核心 | T1 | O(窗口·輸出) |
+| softmax | 前向與反向 | 歸約（最大值、和）＋逐元素 | T1 | O(n) |
+| 批次正規化 | 前向與反向 | 歸約（均值、變異數）＋逐元素 | T1 | O(n) |
+| 激活（relu、tanh、sigmoid、gelu） | 逐元素 | 逐元素 | T1 | O(n)；gelu 是否在 cuDNN 入口內【未查證】 |
+| 注意力 | cuDNN 的 SDPA 後端（【查證】PyTorch 列舉有 `CUDNN_ATTENTION`，見 §12.3） | 第一版用數學版（mm＋softmax＋mm），不做融合 | T1＋T2 | O(s²d)，記憶體為 O(s²) |
+
+**不做（第三階段）**：融合核心、混合精度訓練、量化卷積、RNN 系列。
+
+### 12.3 ATen 對映表（第三階段，子集）
+
+來源：PyTorch 的 SDPA 後端列舉為 MATH、FLASH_ATTENTION、EFFICIENT_ATTENTION、CUDNN_ATTENTION，預設由框架依優先順序挑選（【查證】[PyTorch 文件](https://docs.pytorch.org/docs/2.7/_modules/torch/nn/attention.html)）。我們**只實作 MATH 版**，其餘後端不做。
+
+| ATen 運算子 | 對到 | 狀態 | 備註 |
+|---|---|---|---|
+| `aten::mm` | cuBLAS `sgemm` | 做（第二階段） | 2D 矩陣乘 |
+| `aten::bmm` | cuBLAS 批次 gemm | 做（第二階段） | 3D |
+| `aten::addmm` | gemm＋bias 加法（β=1） | 做（第二階段） | |
+| `aten::matmul` | 依維度分派到 mm 或 bmm | 做（第二階段） | |
+| `aten::softmax` | 自寫歸約核心（或 cuDNN softmax） | 做（第三階段） | 數值穩定（減最大值） |
+| `aten::layer_norm`、RMSNorm | 自寫歸約核心 | 做（第三階段） | 反向要對拍 |
+| `aten::conv2d` | cuDNN 子集（im2col＋sgemm） | 做（第三階段） | |
+| `aten::scaled_dot_product_attention` | MATH 版（mm＋softmax＋mm） | 做 MATH 版；**不做** FLASH、EFFICIENT、CUDNN 版 | 與 PyTorch 的 MATH 後端對齊 |
+| 逐元素（add、mul、relu、gelu…） | 自寫核心 | 做（第三階段） | |
+| `aten::sum`、`aten::mean` | 自寫歸約核心 | 做（第一階段的歸約核心延伸） | |
+| `aten::cross_entropy`、`nll_loss` | 自寫核心（含 log-softmax） | 做（第三階段） | |
+| `aten::embedding` | 自寫 gather 核心 | 做（第三階段） | |
+| 優化器（AdamW，融合或 foreach） | 自寫核心 | 做（第三階段，非融合） | |
+| `aten::index_select` | 自寫 gather | 做（第三階段，後段） | |
+| `aten::scatter_add`、`index_add` | 需要 f32 原子 | **不做**（等 §3 第 6 項的 CAS 替代，P4） | |
+| `aten::batch_norm` | cuDNN 子集 | 後段，視需要 | |
+| FFT、稀疏、量化、nested tensor、c10d 分散式 | — | **不做** | 超出範圍 |
+| 自動混合精度（autocast） | — | **不做** | |
+
+**PyTorch 後端擴充機制**（§2.9）：我們不做 PyTorch 的 C++ 後端，只做 JS 端的 ATen 風格介面，因此上表是**介面對映**，不是 dispatch 註冊。
+
+### 12.4 降級層回報（`backend_info()`）
+
+每個函式庫呼叫都回報：
+
+```
+{ lib: "cublas", op: "sgemm", layer: "T1" | "T2" | "T4",
+  via: "wgsl-native" | "ours-emulated" | "cpu-fallback",
+  reason: "…", accumulate: "f32", inputPrecision: "f32", reductionOrder: "tree-wg256" }
+```
+
+- `via` 對應使用者要求的三個名稱：WGSL 原生實作（T1）、我們的替代實作（T2）、CPU 降級（T4）。
+- `reason` 必填，要具體（例如「此裝置沒有 subgroups，歸約改用 workgroup 記憶體」）。
+
+---
+
+## 13. 精度與語意：不得宣稱位元相同
+
+**原則**：WebGPU 結果與 CUDA **不做位元相同宣稱**。差異來源與記錄方式：
+
+| 差異來源 | 說明 | 記錄欄位 |
+|---|---|---|
+| 累加順序 | 歸約用樹狀或序列，結果不同 | `reductionOrder` |
+| FMA 融合 | 是否使用融合乘加依編譯器而定；WGSL 與 CUDA 的融合規則【未驗證】 | `fma: "unknown"` |
+| tf32 | PyTorch 文件：tf32 的輸入只讀前 10 位元尾數（【查證】[PyTorch 數值精度](https://pytorch.org/docs/stable/notes/numerical_accuracy)）。PyTorch 預設 matmul 的 tf32 **關閉**，conv 的 tf32 **開啟**（【查證】[MONAI](https://monai.readthedocs.io/en/stable/precision_accelerating.html)，PyTorch 1.12 之後）。我們用 f32 計算，**精度比 tf32 高**，與 CUDA 的 tf32 結果不同 | `inputPrecision: "f32"`，並標示比對的 CUDA 設定 |
+| f16 累加 | PyTorch 文件：半精度 GEMM 通常以 f32 累加，部分 GPU 會截斷中間結果（【查證】同上） | `accumulate: "f32"` 或 `"f16"`（我們只用 f32） |
+| bf16 | 以位元移位轉成 f32 計算，結果與原生 bf16 指令不同 | `inputPrecision: "bf16-emulated"` |
+
+**容差規則（暫定，未實測）**：
+- 容差與 `k`（內積長度）、`eps`（機器精度）成比例，**不寫死常數**（依使用者「門檻要自適應」規則）。暫定：相對誤差 ≤ c·√k·ε_f32，c 由實測決定。
+- 比對基準要用**更高精度的參考**（CPU 的 f64 或雙 f32），而不是只比 CUDA。
+- 整數與原子直方圖：完全相等。
+
+**禁止的說法**：「與 CUDA 完全相容」「位元相同」「結果一樣」。只能說「在記錄的容差內一致」，並附實測數字與容差來源。
+
+---
+
+## 14. 路線圖調整（2026-11-15）
+
+| 階段 | 內容 | 完成標準 |
+|---|---|---|
+| **第一階段** | 向量加、矩陣乘（同時是 `cublas.sgemm` 最小版）、歸約；能力偵測、降級紀錄、一致性測試；Python 模擬器最小橋接（§15） | 三核心 T1 與 T4 在容差內一致；`backend_info()` 能回報層與原因；假 `navigator.gpu` 測試通過 |
+| **第二階段** | cuBLAS 常用子集（§12.1） | 每個子程式與 T4 比對通過；介面與參數順序與 cuBLAS 一致（除已記錄的差異） |
+| **第三階段** | cuDNN 常用子集與 ATen 對映子集（§12.2、§12.3） | 卷積前向與反向、softmax、layer norm、交叉熵與 CPU 比對；MATH 版 SDPA 與 PyTorch 的 MATH 後端比對（同輸入的誤差表） |
+| 後續 | 替代做法 T2 的 f32 原子與 f64（§3）、PTX 子集（§5）、全模型對拍（§7 的 P5） | 依實測決定 |
+
+- 第二、三階段的工時為【推測】。
+- 「沒有 WebGPU 的環境」：所有層都回報 T4 與原因，**不能壞掉**。
