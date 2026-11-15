@@ -103,8 +103,10 @@ Pyodide 的檔案寫入繞進 fap：`/fap/<名稱>/…`、`fap:<名稱>/…` 指
 - **大陣列不走 JSON**（桌面版）：float32 `.bin` 放在信箱資料夾，op 只傳路徑與長度；結果同樣寫成 `.bin`，讀完即刪。網頁版仍傳 list（尚未改成直接傳 TypedArray）。
 - **真套件優先、不遮蔽**：`fa_gpu.install()` 安裝一個 meta-path 尋找器。最上層名稱是 `numba`／`cupy`／`torch`／`pycuda` 時，若 `sys.path` 裡找得到真套件就回傳真套件的 spec；找不到才提供墊片。子模組交給父套件的 `__path__`。測試用 `FA_GPU_FORCE_SHIM=1` 一律用墊片。
 - **衝突規則**：只攔上面四個名稱；`cudaweb` 仍是獨立的明確 import（`renderer/src/pybridge/cudaweb.py`），不受本層影響。
-- **設定**：`advancedSettings.cudaCompat`，`'on'`（預設）／`'off'`。`pythonApiBridge` 原有設定不變。網頁版每次 Pyodide 執行前依設定安裝或拿掉尋找器；桌面版 `fa_run.py` 預設安裝（環境變數 `FA_CUDA_COMPAT=off` 可關，但主機尚未傳入這個變數，所以設定 off 在桌面版技能包執行時仍會安裝，這是待修的缺口）。
-- **回報**：宿主回傳 `layer`、`reason`，墊片記在 `fa_gpu.STATS`（`layer`、`reason`、`calls`、`ops`）。「回報欄位 `gpu: {layer, reason, calls}` 加進 `python_api_bridge` 結果」尚未接上（見下方未完成）。
+- **設定**：`advancedSettings.cudaCompat`，`'on'`（預設）／`'off'`。`pythonApiBridge` 原有設定不變。網頁版每次 Pyodide 執行前依設定安裝或拿掉尋找器。桌面版由主機把設定傳給 `fa_run.py`（`--cuda-compat on|off`、`--cuda-f64 auto|f32|exact`），`fa_run.py` 設成環境變數 `FA_CUDA_COMPAT`、`FA_CUDA_F64`；關閉設定在技能包與一般 run_command 都生效。
+- **設定介面**（2026-11-15）：`_gpuCompatControls()` 是唯一的建構函式，掛在 AI 助理設定的 `ai` 分組（分頁「GPU 相容層（numba／cupy／torch）」）與桌面版設定頁（`bootstrap.js`，「GPU 相容層（numba／cupy／torch／pycuda）」區塊）。內容：開關 `cudaCompat`（預設開）、`cudaCompatFloat64` 下拉（auto 預設／f32／exact，附精度與速度差異）、按「重新偵測」顯示 `backendInfo` 摘要（WebGPU 是否可用、原因），以及最近一次執行的層與原因。開啟設定時不會自動偵測。`index.html` 沒有 AI 助理設定分頁，所以只有上面兩處。
+- **一般 run_command 的 GPU-only 模式**（2026-11-15）：不在技能包裡時，`cudaCompat` 為 on 且腳本 import numba／cupy／torch／pycuda，指令才改寫成 `fa_run.py --gpu-only …`；這個模式只接受 `gpu.*` 操作，不開 LLM、瀏覽器等其他轉接，其他 Python 指令照原樣執行。腳本讀不到（相對路徑又沒有 cwd_abs）時交給 `fa_run.py` 判斷，不需要墊片的腳本照原樣執行。判斷規則與網頁版 `gpu_preload.js` 的 `scriptNeedsNumpy` 相同（`scriptNeedsShim` 匯出）。
+- **回報**：宿主回傳 `layer`、`reason`，墊片記在 `fa_gpu.STATS`（`layer`、`reason`、`calls`、`ops`）。`python_api_bridge.gpu = {layer, reason, calls}`：桌面版（技能包或 GPU-only 的 run_command 結果）與網頁版（`python_execute` 結果）都有；每次執行開始歸零，`layer` 是最後一次 call／kernel 實際執行的層（`T1`＝WebGPU，`CPU`＝本機 Python 模擬，其餘見 DESIGN.webgpu-cuda.md）。
 
 **支援矩陣（第一階段）**
 
@@ -133,13 +135,14 @@ Pyodide 的檔案寫入繞進 fap：`/fap/<名稱>/…`、`fap:<名稱>/…` 指
 
 **未完成（列出來，不靜默）**
 
-- 桌面版 `run_command` 在「非技能包」情況下尚未安裝墊片（目前只有技能包執行時的 `fa_run.py` 會安裝）；`python_execute`（Pyodide）在每次執行時都會安裝。
 - 網頁版陣列尚未改成直接傳 TypedArray（目前是 list）。
-- `gpu:{layer,reason,calls}` 尚未加進 `python_api_bridge` 結果欄位；設定 `cudaCompat` 尚未加進設定畫面（只在 `advancedSettings` 有預設值與讀取）。
+- GPU-only 判斷用的規則會把字串裡的 `import numba` 也判成需要（與網頁版相同的誤判方向：只多裝墊片，不改輸出）。
+- 網頁版 `python_execute` 的 `python_api_bridge.gpu` 只在非同步執行路徑回報；同步路徑（`_runPyodideScriptSync`）不回報（目前沒有呼叫端需要）。
+- 雙 float32（auto）的 WGSL 在真機上只有管理者在使用者 Chrome 的一項實測（見 DESIGN.webgpu-cuda.md §9.w），桌面路徑（真 Electron）的 GPU-only 與設定傳遞還沒有真機驗證；目前是假的宿主與子行程測試。
 
 **測試**
 
 - `renderer/src/gpu/gpu_kernel_test.js`：4 項（假 WebGPU 裝置：綁定、寫回、無 GPU 與執行失敗的原因）。
-- `renderer/src/gpu/fa_gpu_py_test.py`：42 項（float64 三種模式、抽樣檢查失敗退回、dd 的 WGSL 文字與拒絕訊息、pack／unpack 往返、dd 演算法的 Python 鏡像精度；另含安裝清單與目錄掃描比對、桌面版與網頁版過濾後的真實 import、WGSL 文字檢查、端到端傳輸），用假的宿主（照 `_pyBridgeGpu` 協定，陣列走 float32 `.bin`）證明：不 import cudaweb 就能跑 NVIDIA 教學寫法的範例（numba 向量加、矩陣乘與原子直方圖、torch MLP 訓練迴圈、cupy 陣列運算）並與 numpy 一致；`syncthreads`＋共用記憶體；子集外語法的錯誤訊息；cupy 與 torch 的 GPU 橋接路徑與失敗退回；`.bin` 清理；stderr 只印一次；真套件優先的尋找器；pycuda 記憶體搬移。
+- `renderer/src/gpu/fa_gpu_py_test.py`：48 項（一般 run_command 的 GPU-only 模式：純腳本不動、墊片腳本只裝墊片、cudaCompat off、float64 模式傳遞（子行程跑 fa_run）；float64 三種模式、抽樣檢查失敗退回、dd 的 WGSL 文字與拒絕訊息、pack／unpack 往返、dd 演算法的 Python 鏡像精度；另含安裝清單與目錄掃描比對、桌面版與網頁版過濾後的真實 import、WGSL 文字檢查、端到端傳輸），用假的宿主（照 `_pyBridgeGpu` 協定，陣列走 float32 `.bin`）證明：不 import cudaweb 就能跑 NVIDIA 教學寫法的範例（numba 向量加、矩陣乘與原子直方圖、torch MLP 訓練迴圈、cupy 陣列運算）並與 numpy 一致；`syncthreads`＋共用記憶體；子集外語法的錯誤訊息；cupy 與 torch 的 GPU 橋接路徑與失敗退回；`.bin` 清理；stderr 只印一次；真套件優先的尋找器；pycuda 記憶體搬移。
 - 範例：`renderer/src/gpu/examples/numba_vector_add.py`、`numba_matmul_hist.py`、`cupy_basic.py`、`torch_mlp_train.py`。
 - **未驗證**：宿主 JS（`_pyBridgeGpu`、`_fa_gpu`）只做了 `node --check` 與靜態閱讀，沒有在真的 Electron 或瀏覽器裡跑過；真 WebGPU 的端到端驗證留給管理者用使用者的 Chrome 做。

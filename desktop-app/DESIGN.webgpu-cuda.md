@@ -154,6 +154,8 @@ Python 端 `cudaweb.backend_info()` 與 JS 端 `runtime.backendInfo()` 回傳相
 | 64 位元整數 i64、u64 | 沒有 | 兩個 u32 加進位與借位；乘法用 16 位元分段 | 同左 | 原生 | 中到高 | 2 |
 | 8、16 位元整數原子 | 沒有 | 用 32 位元原子加遮罩模擬 | 不需要原子 | 原生 | 中 | 3 |
 
+**f64 的 auto 決定（2026-11-15，管理者接受）**：`cudaCompatFloat64=auto`（預設）採雙 float32，**不要求輸入先能無損表示成 float32**。原先的提案是「輸入無損成 float32，再用一般 float32 做加減乘」，那個前提對一般陣列通常不成立；雙 float32 的精度比單 float32 高，所以直接用它，不需要那個前提。這與原提案不同，是刻意的偏離，記錄在這裡與 DESIGN.python-api-bridge.md「GPU 相容層」。除法、次方、取餘、`math.*` 在雙 float32 模式尚未支援，會說明原因後退回本機模擬。
+
 ### 3.3 原子與記憶體
 
 | 原語 | WGSL 原生 | 替代實作 | WebGL2 做法 | CPU 做法 | 預估成本 | 階段 |
@@ -541,6 +543,12 @@ Python 模擬器與離線模型推論共用同一個 GPU 裝置：
 **真機驗證的補測**：`cudaweb_gpu.eval.js` 新增 `scal`、`dot`、`nrm2`、`gemv`、`sum_dd`、`scatter_add`，以及 `createBatch`（rmsnorm→silu→softmax，只 submit 一次、只回讀一次）。**這些新檢查還沒有在真機上跑過**：Node 中以假裝置執行評估檔可通過 27/28（唯一失敗是 Node 沒有 WebGL2，屬預期）；真機結果需要在驗證頁重跑。
 
 **仍未驗證**：（1）五個訓練核心的 WGSL 在真機 T1 的完整結果（驗證頁已跑出 T1，見上，但本文件的 Electron 執行仍未成功）；（2）整條訓練步在真 GPU 上的誤差；（3）Python 的 `import cudaweb`。
+
+### 9.w 雙 float32（double-float）WGSL 真 GPU 實測（管理者回報，2026-11-15）
+
+**來源**：管理者在使用者的 Chrome 上實測雙 float32 WGSL 的真 GPU 結果，回報 `0.1 + 0.7 = 0.7999999999999998`，相對誤差約 1e-16（與真值 0.8 比較）。**這是管理者回報的數字，本次工作階段沒有親自重現**；在本機只有 Python 鏡像與假的宿主測試（見 DESIGN.python-api-bridge.md「GPU 相容層」的測試清單）。
+
+**結論**：雙 float32 的加法在真 WebGPU 上的精度與 Python 鏡像一致（約 48 位元有效精度），支持 §3.2 的 auto 決定。尚未實測的：乘法、大量資料的累積誤差、與 CPU 參考版的逐元素比對（需要使用者在 Chrome 或桌面路徑再跑一次）。
 
 ## 10. 分階段路線圖
 
