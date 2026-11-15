@@ -110,6 +110,14 @@ function fakePyodide(opts) {
     assert.ok(boot.indexOf("gpu: info.gpu") > 0, 'python_api_bridge 結果沒有 gpu 欄位');
   });
 
+  await check('python_api_bridge.gpu 回報：網頁版每次執行歸零、_fa_gpu 呼叫會記錄、python_execute 結果帶 python_api_bridge.gpu', async () => {
+    const fa = fs.readFileSync(path.join(__dirname, '..', 'floating-assistant.js'), 'utf8').replace(/\r\n/g, '\n');
+    assert.ok(fa.indexOf("this._gpuStat = { layer: null, reason: '', calls: 0 }; // 每次執行歸零") > 0, '網頁版執行沒有歸零 GPU 記錄');
+    assert.ok(fa.indexOf("this._gpuRecord(String(op), await this._pyBridgeGpu(") > 0, '_fa_gpu 的呼叫沒有記錄');
+    assert.ok(fa.indexOf("gpu: { layer: g.layer, reason: g.reason, calls: g.calls }") >= 0, '_runPyodideScriptAsync 沒有回傳 gpu');
+    assert.ok(fa.indexOf("python_api_bridge: { gpu }") > 0, 'python_execute 結果沒有 python_api_bridge.gpu');
+  });
+
   await check('桌面版 run_command 的判斷（scriptNeedsShim）與網頁版同一條規則', async () => {
     assert.strictEqual(typeof P.scriptNeedsShim, 'function');
     for (const s of ['from numba import cuda\n', 'import torch\n']) assert.strictEqual(P.scriptNeedsShim(s), true, s);

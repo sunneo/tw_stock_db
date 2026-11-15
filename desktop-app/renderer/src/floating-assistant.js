@@ -88555,18 +88555,20 @@ ${fnData.code}
                     // subprocess橋接（python腳本裡`subprocess.run(...)`）能
                     // 正確巢狀運作的必要條件，python_execute本身的既有行為
                     // （不隔離globals、支援top-level await）完全不變。
-                    const { stdout, stderr, returncode: exitCode } = await this._runPyodideScriptAsync(pyodide, script, null);
+                    const { stdout, stderr, returncode: exitCode, gpu } = await this._runPyodideScriptAsync(pyodide, script, null);
                     const outputFiles = filterChangedOutputs.call(this, this._walkPyodideFsDir(pyodide, '/work'), inputHashes);
                     let persisted;
                     try {
                         persisted = await this._persistExecutionOutputFiles(outputFiles, parsed.output_ref);
                     } catch (err) {
-                        return JSON.stringify({ ok: false, error: `執行成功但輸出檔案儲存失敗：${String(err.message || err)}`, stdout, stderr, exit_code: exitCode });
+                        return JSON.stringify({ ok: false, error: `執行成功但輸出檔案儲存失敗：${String(err.message || err)}`, stdout, stderr, exit_code: exitCode, python_api_bridge: { gpu } });
                     }
                     const deliveredCards = await deliverOutputCards.call(this, persisted);
                     return JSON.stringify({
                         ok: true, stdout, stderr, exit_code: exitCode,
                         output_destination: persisted.destination, output_files: persisted.files, download_cards_shown: deliveredCards,
+                        // 網頁版的 GPU 相容層回報（與桌面版 run_command 的 python_api_bridge.gpu 同一格式）
+                        python_api_bridge: { gpu },
                     });
                 } finally {
                     // tw_stock_db客製: /work底下的檔案是這次呼叫累積下來的（下一次
@@ -95708,7 +95710,7 @@ ${fnData.code}
             pyodide.registerJsModule('_fa_gpu', {
                 call: async (op, argsJson) => {
                     let res;
-                    try { res = { ok: true, result: await this._pyBridgeGpu(String(op), JSON.parse(String(argsJson || '{}'))) }; }
+                    try { res = { ok: true, result: this._gpuRecord(String(op), await this._pyBridgeGpu(String(op), JSON.parse(String(argsJson || '{}')))) }; }
                     catch (e) { res = { ok: false, error: String((e && e.message) || e) }; }
                     try { return JSON.stringify(res); } catch (e) { return JSON.stringify({ ok: false, error: '結果無法序列化' }); }
                 }
@@ -117933,6 +117935,7 @@ _result
     // python_execute維持既有行為（不隔離，跟這次修改前一致，避免不必要的
     // 行為變化），只借用這裡的stack-based stdout/stderr/stdin機制。
     async _runPyodideScriptAsync(pyodide, scriptText, stdinBytes, { isolatedGlobals = false } = {}) {
+        this._gpuStat = { layer: null, reason: '', calls: 0 }; // 每次執行歸零：GPU 相容層記錄（回報給 python_execute 的 python_api_bridge.gpu）
         this._ensurePyodideIoStacksInstalled(pyodide);
         const instErr = this._pyBridgeInstallForRun(pyodide);
         this._gpuRegisterScript(pyodide, scriptText);
@@ -117963,10 +117966,12 @@ _result
             this._pyodideStderrStack.pop();
             this._pyodideStdinStack.pop();
         }
+        const g = this._gpuStat || { layer: null, reason: '', calls: 0 };
         return {
             stdout: stdoutChunks.length ? stdoutChunks.join('\n') + '\n' : '',
             stderr: stderrChunks.length ? stderrChunks.join('\n') + '\n' : '',
             returncode,
+            gpu: { layer: g.layer, reason: g.reason, calls: g.calls },
         };
     }
 
