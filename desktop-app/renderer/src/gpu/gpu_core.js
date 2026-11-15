@@ -707,6 +707,50 @@
       return a.length === 1 ? a[0] : 0;
     }
 
+    // ----- 任意核心（numba 轉譯來的 WGSL，見 renderer/src/pybridge/numba/wgsl.py）-----
+    // 只在 WebGPU（T1）執行。WebGL2 沒有任意核心的執行路徑，CPU 也沒有核心解譯器；
+    // 不能執行時回傳 ran:false 與原因，由上層在本機 Python 模擬並把原因印給使用者。
+    function readBackBytes(dev, buf, bytes) {
+      var rb = dev.createBuffer({ size: bytes, usage: USAGE.MAP_READ | USAGE.COPY_DST });
+      var enc = dev.createCommandEncoder(); enc.copyBufferToBuffer(buf, 0, rb, 0, bytes); dev.queue.submit([enc.finish()]);
+      return rb.mapAsync(USAGE.MAP_READ).then(function () {
+        var out = new Uint8Array(rb.getMappedRange().slice(0));
+        rb.unmap(); rb.destroy();
+        return out;
+      });
+    }
+    // spec: { wgsl, groups:[gx,gy], bindings:[{ name, dtype:'f32'|'i32', n, write, data:TypedArray|null }] }
+    function wgKernel(dev, spec) {
+      return withScope(dev, async function () {
+        var usage = USAGE.STORAGE | USAGE.COPY_DST | USAGE.COPY_SRC;
+        var bufs = spec.bindings.map(function (b) {
+          if (b.data) return makeBuf(dev, b.data, usage);
+          return dev.createBuffer({ size: Math.max(4, b.n * 4), usage: usage });
+        });
+        var pipe = pipeline(dev, 'kernel:' + spec.wgsl, spec.wgsl);
+        dispatch(dev, pipe, bufs, spec.groups[0], spec.groups[1]);
+        var outs = {};
+        for (var i = 0; i < spec.bindings.length; i++) {
+          var b = spec.bindings[i];
+          if (b.write) outs[b.name] = await readBackBytes(dev, bufs[i], b.n * 4);
+        }
+        return outs;
+      });
+    }
+    async function runKernel(spec) {
+      var dev = await ensure();
+      if (st.lost) return { ran: false, layer: 'CPU', reason: st.lost + '，WebGPU 不再使用' };
+      if (!dev) return { ran: false, layer: 'CPU', reason: ((st.probe && st.probe.reason) || '沒有 WebGPU 裝置') + '；WebGL2 沒有任意核心的執行路徑' };
+      try {
+        var outs = await wgKernel(dev, spec);
+        var info = { lib: 'cudaweb', op: 'kernel', layer: 'T1', via: 'wgsl-kernel', reason: '' };
+        st.last = info; st.opLast.kernel = info;
+        return { ran: true, layer: 'T1', outputs: outs, reason: '' };
+      } catch (e) {
+        return { ran: false, layer: 'CPU', reason: 'WGSL 核心執行失敗（' + msg(e) + '）' };
+      }
+    }
+
     // ----- 統一執行：預算、排程、層選擇與降級回報 -----
     function reasonOf(e) { return msg(e); }
     var RANK = { T1: 1, T3: 2, T5: 3 };
@@ -793,6 +837,7 @@
     };
 
     var api = {
+      runKernel: runKernel,
       vectorAdd: async function (a, b) {
         var A = toF32(a, 'a'), B = toF32(b, 'b');
         if (A.length !== B.length) throw new Error('cudaweb.vector_add：兩個向量長度不同（' + A.length + ' 與 ' + B.length + '）');

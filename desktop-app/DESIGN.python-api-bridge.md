@@ -117,7 +117,9 @@ Pyodide 的檔案寫入繞進 fap：`/fap/<名稱>/…`、`fap:<名稱>/…` 指
 
 **執行層（誠實說明）**
 
-- `numba.cuda` 第一階段**不經過 GPU**：核心在本機 Python 逐執行緒模擬（結果與 numpy 一致），stderr 會說明。把核心編譯成 WGSL 的路線（`DESIGN.webgpu-cuda.md` §4）尚未接上。
+- `numba.cuda` 核心先轉成 WGSL（`renderer/src/pybridge/numba/wgsl.py`，`DESIGN.webgpu-cuda.md` §4 的第一批），交給宿主的 `kernel` 操作在 WebGPU（T1）執行。支援範圍：逐元素一維與二維 `cuda.grid`、二維陣列索引、`for i in range(…)`、if／else、算術與比較、`cuda.atomic.add`（int32 陣列，WGSL `atomicAdd`）、純量參數（寫成常數）。
+- **退回本機 Python 模擬的情況**（每次都會印出具體原因）：核心含 shared 記憶體或 `cuda.syncthreads`（需要工作群組共享記憶體，下一批）、float64／int64 陣列（WebGPU 沒有 f64，不自動降精度）、float32 原子、三維 blocks／threads、每個工作群組超過 256 個執行緒、宿主沒有 WebGPU（此時 WebGL2 沒有任意核心的執行路徑）、或 WGSL 執行失敗。訊息格式：「此核心因為 <原因> 在本機 Python 模擬執行，沒有用到 GPU」。
+- WGSL 的正確性只能在真的 GPU 上驗證（測試宿主只驗證傳輸與寫回，見下方「測試」）。
 - `cupy` 的 matmul、dot、一維 sum 與 `torch` 的 cuda 裝置前向 matmul 會經過 GPU 橋接（cudaweb）；GPU 橋接失敗時退回 numpy 並說明。
 - `torch` 的反向傳播一律在 numpy 做（第一階段）。
 
@@ -129,6 +131,7 @@ Pyodide 的檔案寫入繞進 fap：`/fap/<名稱>/…`、`fap:<名稱>/…` 指
 
 **測試**
 
-- `renderer/src/gpu/fa_gpu_py_test.py`：19 項，用假的宿主（照 `_pyBridgeGpu` 協定，陣列走 float32 `.bin`）證明：不 import cudaweb 就能跑 NVIDIA 教學寫法的範例（numba 向量加、矩陣乘與原子直方圖、torch MLP 訓練迴圈、cupy 陣列運算）並與 numpy 一致；`syncthreads`＋共用記憶體；子集外語法的錯誤訊息；cupy 與 torch 的 GPU 橋接路徑與失敗退回；`.bin` 清理；stderr 只印一次；真套件優先的尋找器；pycuda 記憶體搬移。
+- `renderer/src/gpu/gpu_kernel_test.js`：4 項（假 WebGPU 裝置：綁定、寫回、無 GPU 與執行失敗的原因）。
+- `renderer/src/gpu/fa_gpu_py_test.py`：29 項（含安裝清單與目錄掃描比對、桌面版與網頁版過濾後的真實 import、WGSL 文字檢查、端到端傳輸），用假的宿主（照 `_pyBridgeGpu` 協定，陣列走 float32 `.bin`）證明：不 import cudaweb 就能跑 NVIDIA 教學寫法的範例（numba 向量加、矩陣乘與原子直方圖、torch MLP 訓練迴圈、cupy 陣列運算）並與 numpy 一致；`syncthreads`＋共用記憶體；子集外語法的錯誤訊息；cupy 與 torch 的 GPU 橋接路徑與失敗退回；`.bin` 清理；stderr 只印一次；真套件優先的尋找器；pycuda 記憶體搬移。
 - 範例：`renderer/src/gpu/examples/numba_vector_add.py`、`numba_matmul_hist.py`、`cupy_basic.py`、`torch_mlp_train.py`。
 - **未驗證**：宿主 JS（`_pyBridgeGpu`、`_fa_gpu`）只做了 `node --check` 與靜態閱讀，沒有在真的 Electron 或瀏覽器裡跑過；真 WebGPU 的端到端驗證留給管理者用使用者的 Chrome 做。

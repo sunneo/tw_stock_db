@@ -61,6 +61,11 @@ def fake_rpc(op, args):
     """模擬宿主 _pyBridgeGpu：陣列若是 {bin, n} 就讀 float32 檔，結果若要寫 bin 就寫到 out_bin。"""
     if op == "info":
         return host["info"]
+    if op == "kernel":
+        # 任意核心（WGSL）：測試宿主不能執行 WGSL，由測試提供的 kernel_impl 用 numpy 代為計算（只驗證傳輸與寫回）
+        if host.get("kernel_impl") is None:
+            return {"ran": False, "layer": "CPU", "reason": "測試宿主沒有實作 kernel", "outputs": {}}
+        return host["kernel_impl"](args)
     if op != "call":
         raise AssertionError("未知的 gpu 操作：" + op)
     if host["fail"]:
@@ -105,6 +110,7 @@ def run_example(name):
 
 # ---------------------------------------------------------------- 測試
 fa_gpu.install()
+from numba import cuda  # noqa: E402  （讓測試裡的核心原始碼能在模擬中找到 cuda）
 
 
 def t_no_cudaweb_import():
@@ -115,7 +121,7 @@ def t_no_cudaweb_import():
 def t_vector_add_example():
     out, err = run_example("numba_vector_add.py")
     assert "與 numpy 一致： True" in out, out
-    assert "不經過 GPU" in (fa_gpu.STATS["layer"] or ""), fa_gpu.STATS
+    assert "沒有用到 GPU" in (fa_gpu.STATS["layer"] or ""), fa_gpu.STATS
 
 
 def t_matmul_hist_example():
@@ -366,6 +372,236 @@ def t_pycuda_memcpy_roundtrip_and_source_refused():
         assert "@cuda.jit" in str(e), str(e)
     else:
         raise AssertionError("SourceModule 應該回報不支援")
+
+
+# ---------------------------------------------------------------- 安裝清單涵蓋所有墊片目錄（web 與桌面）
+PYBRIDGE_DIR = os.path.abspath(os.path.join(HERE, "..", "pybridge"))
+JS_SRC = os.path.abspath(os.path.join(HERE, "..", "floating-assistant.js"))
+
+
+def _embedded_map():
+    import json
+    src = io.open(JS_SRC, encoding="utf-8").read()
+    a = src.index("const FA_PYBRIDGE_FILES = ") + len("const FA_PYBRIDGE_FILES = ")
+    b = src.index(";\n/* PYBRIDGE-END */", a)
+    return json.loads(src[a:b]), src
+
+
+def _scan_py_files(base):
+    out = []
+    for dp, dns, fns in os.walk(base):
+        dns[:] = [d for d in dns if d != "__pycache__"]
+        for fn in fns:
+            if fn.endswith(".py"):
+                out.append(os.path.relpath(os.path.join(dp, fn), base).replace(os.sep, "/"))
+    return sorted(out)
+
+
+def t_shim_dirs_scan_matches_js_list_and_embed():
+    import re
+    emb, src = _embedded_map()
+    scanned = sorted(n for n in fa_gpu.SHIM_NAMES if os.path.isfile(os.path.join(PYBRIDGE_DIR, n, "__init__.py")))
+    assert scanned == sorted(fa_gpu.SHIM_NAMES), "pybridge 下缺墊片目錄：%s" % scanned
+    m = re.search(r"FA_GPU_SHIM_DIRS = \[([^\]]*)\]", src)
+    assert m, "floating-assistant.js 找不到 FA_GPU_SHIM_DIRS"
+    js_dirs = sorted(re.findall(r"'([A-Za-z_]+)'", m.group(1)))
+    assert js_dirs == scanned, "FA_GPU_SHIM_DIRS 與目錄掃描不一致：js=%s 掃描=%s" % (js_dirs, scanned)
+    for rel in _scan_py_files(PYBRIDGE_DIR):
+        top = rel.split("/")[0]
+        if rel != "fa_gpu.py" and top not in fa_gpu.SHIM_NAMES:
+            continue
+        assert rel in emb, "嵌入清單漏了 %s（重新執行 node scripts/embed-code-ui.js）" % rel
+        disk = io.open(os.path.join(PYBRIDGE_DIR, rel), encoding="utf-8").read()
+        assert emb[rel].replace("\r\n", "\n") == disk.replace("\r\n", "\n"), "嵌入內容與原始碼不同：%s（重新嵌入）" % rel
+    assert "fa_gpu.py" in emb
+
+
+def _materialize_and_import(keys_map, label):
+    import subprocess
+    import shutil
+    d = tempfile.mkdtemp(prefix="fa-gpu-pkg-")
+    try:
+        for k, v in keys_map.items():
+            p = os.path.join(d, k.replace("/", os.sep))
+            if not os.path.isdir(os.path.dirname(p)):
+                os.makedirs(os.path.dirname(p))
+            with io.open(p, "w", encoding="utf-8", newline="\n") as f:
+                f.write(v)
+        code = ("import sys; sys.path.insert(0, %r); import fa_gpu; fa_gpu.install(); "
+                "import numba.cuda, cupy, torch, torch.nn, torch.optim, pycuda.autoinit; print('OK', torch.__file__)") % d
+        env = dict(os.environ, FA_GPU_FORCE_SHIM="1", PYTHONIOENCODING="utf-8")
+        r = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True, timeout=120)
+        assert r.returncode == 0 and "OK" in r.stdout, label + "：" + (r.stderr or r.stdout)[-600:]
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def t_desktop_pkg_imports_every_shim():
+    # 桌面版：_pyBridgeInstall 把嵌入清單的所有檔案寫進 pkg 資料夾
+    emb, _ = _embedded_map()
+    _materialize_and_import(emb, "桌面版 pkg")
+
+
+def t_web_install_filter_imports_every_shim():
+    # 網頁版：_cudawebInstallPyodide 只寫 fa_gpu.py 與 FA_GPU_SHIM_DIRS 目錄（用 JS 清單同樣的過濾規則）
+    import re
+    emb, src = _embedded_map()
+    dirs = re.findall(r"'([A-Za-z_]+)'", re.search(r"FA_GPU_SHIM_DIRS = \[([^\]]*)\]", src).group(1))
+    keep = {k: v for k, v in emb.items() if k == "fa_gpu.py" or any(k.startswith(d + "/") for d in dirs)}
+    assert any(k.startswith("torch/") for k in keep) and any(k.startswith("pycuda/") for k in keep), sorted(keep)
+    _materialize_and_import(keep, "網頁版 /fa_gpu")
+
+
+# ---------------------------------------------------------------- numba → WGSL（第一批）
+KERNEL_SEEN = []
+
+
+def _kernel_host(fn):
+    """假的宿主 kernel：讀取 float32／int32 的輸入（bin 或 list），用 numpy 代為計算（不能執行 WGSL），再照協定寫回。"""
+    def impl(args):
+        KERNEL_SEEN.append(args["wgsl"])
+        arrays = {}
+        for b in args["bindings"]:
+            dt = np.float32 if b["dtype"] == "f32" else np.int32
+            arr = np.fromfile(b["bin"], dtype=dt) if "bin" in b else np.asarray(b["list"], dtype=dt)
+            arrays[b["name"]] = arr.reshape(b["shape"])
+        res = fn(args["wgsl"], arrays)
+        outs = {}
+        for b in args["bindings"]:
+            if not b["write"]:
+                continue
+            dt = np.float32 if b["dtype"] == "f32" else np.int32
+            data = np.asarray(res[b["name"]], dtype=dt).reshape(-1)
+            if "out" in b:
+                data.tofile(b["out"])
+                outs[b["name"]] = {"bin": b["out"]}
+            else:
+                outs[b["name"]] = {"list": data.tolist()}
+        return {"ran": True, "layer": "T1", "reason": "", "outputs": outs}
+    return impl
+
+
+def _fn_by_names(wgsl_text, arrays):
+    if "a_A" in arrays:  # 矩陣乘
+        return {"a_C": arrays["a_A"] @ arrays["a_B"]}
+    if "a_data" in arrays:  # 直方圖（原子加）
+        assert "atomicAdd(&a_out[" in wgsl_text, "直方圖應該用 atomicAdd"
+        return {"a_out": np.bincount(arrays["a_data"].reshape(-1), minlength=10).astype(np.int32)}
+    return {"a_out": arrays["a_x"] + arrays["a_y"]}  # 向量加
+
+
+def t_wgsl_vector_add_text():
+    from numba import wgsl
+    x = np.zeros(1000, np.float32)
+    y = np.zeros(1000, np.float32)
+    out = np.zeros(1000, np.float32)
+    src = "def add_kernel(x, y, out):\n    idx = cuda.grid(1)\n    if idx < out.size:\n        out[idx] = x[idx] + y[idx]\n"
+    plan = wgsl.compile_kernel("add_kernel", src, [x, y, out], (8, 1, 1), (128, 1, 1))
+    assert "@workgroup_size(128, 1, 1)" in plan.wgsl, plan.wgsl
+    assert "let v_idx: i32 = i32(gid.x);" in plan.wgsl, plan.wgsl
+    assert "a_out[v_idx] = (a_x[v_idx] + a_y[v_idx]);" in plan.wgsl, plan.wgsl
+    by = {b["wname"]: b for b in plan.bindings}
+    assert set(by) == {"a_x", "a_y", "a_out"}, by.keys()
+    assert by["a_out"]["write"] and not by["a_x"]["write"], by
+    assert plan.groups == (8, 1)
+
+
+def t_wgsl_histogram_atomic_text():
+    from numba import wgsl
+    data = np.zeros(100, np.int32)
+    out = np.zeros(10, np.int32)
+    src = "def histogram(data, out):\n    i = cuda.grid(1)\n    if i < data.size:\n        cuda.atomic.add(out, data[i], 1)\n"
+    plan = wgsl.compile_kernel("histogram", src, [data, out], (4, 1, 1), (32, 1, 1))
+    assert "array<atomic<i32>>" in plan.wgsl and "_ = atomicAdd(&a_out[" in plan.wgsl, plan.wgsl
+    by = {b["wname"]: b for b in plan.bindings}
+    assert by["a_out"]["atomic"] and by["a_out"]["write"] and not by["a_data"]["write"], by
+
+
+def t_wgsl_matmul_loops_text():
+    from numba import wgsl
+    A = np.zeros((5, 7), np.float32)
+    B = np.zeros((7, 4), np.float32)
+    C = np.zeros((5, 4), np.float32)
+    src = ("def matmul(A, B, C):\n    row, col = cuda.grid(2)\n    if row < C.shape[0] and col < C.shape[1]:\n"
+           "        tmp = 0.0\n        for k in range(A.shape[1]):\n            tmp += A[row, k] * B[k, col]\n        C[row, col] = tmp\n")
+    plan = wgsl.compile_kernel("matmul", src, [A, B, C], (1, 1, 1), (8, 8, 1))
+    assert "@workgroup_size(8, 8, 1)" in plan.wgsl, plan.wgsl
+    assert "for (var v_k: i32 = (0i); v_k < 7i; v_k = v_k + 1i) {" in plan.wgsl, plan.wgsl
+    assert plan.groups == (1, 1)
+
+
+def t_wgsl_refuses_unsupported_with_reason():
+    from numba import wgsl
+    a64 = np.zeros(4, np.float64)
+    try:
+        wgsl.compile_kernel("k", "def k(x):\n    i = cuda.grid(1)\n    x[i] = 1.0\n", [a64], (1, 1, 1), (4, 1, 1))
+    except wgsl.NotCompilable as e:
+        assert "float32" in str(e), str(e)
+    else:
+        raise AssertionError("float64 陣列應該拒絕")
+    try:
+        wgsl.compile_kernel("k", "def k(x):\n    try:\n        x[0] = 1.0\n    except Exception:\n        pass\n", [np.zeros(2, np.float32)], (1, 1, 1), (1, 1, 1))
+    except wgsl.NotCompilable as e:
+        assert "第 2 行" in str(e) and "Try" in str(e), str(e)
+    else:
+        raise AssertionError("try 應該拒絕")
+
+
+def t_numba_runs_on_gpu_path_end_to_end():
+    import tempfile as _t
+    tmp = _t.mkdtemp(prefix="fa-gpu-k-")
+    fa_gpu.RPC_DIR = tmp
+    host["kernel_impl"] = _kernel_host(_fn_by_names)
+    del KERNEL_SEEN[:]
+    try:
+        out, err = run_example("numba_vector_add.py")
+        assert "與 numpy 一致： True" in out, out
+        assert "此核心因為" not in err, err
+        assert "WebGPU" in (fa_gpu.STATS["layer"] or ""), fa_gpu.STATS
+        assert len(KERNEL_SEEN) == 1 and "@workgroup_size(128, 1, 1)" in KERNEL_SEEN[0], KERNEL_SEEN
+        out2, err2 = run_example("numba_matmul_hist.py")
+        assert "矩陣乘與 numpy 一致： True" in out2 and "直方圖與 bincount 一致： True" in out2, out2
+        assert len(KERNEL_SEEN) == 3, len(KERNEL_SEEN)
+        leftover = [n for n in os.listdir(tmp) if n.endswith(".bin")]
+        assert leftover == [], "輸入與輸出的 .bin 應該都清掉，剩下：%s" % leftover
+    finally:
+        host["kernel_impl"] = None
+        fa_gpu.RPC_DIR = ""
+
+
+def t_numba_fallback_prints_specific_reason():
+    host["kernel_impl"] = None
+    out, err = run_example("numba_vector_add.py")
+    assert "與 numpy 一致： True" in out, out
+    assert "此核心因為 測試宿主沒有實作 kernel 在本機 Python 模擬執行，沒有用到 GPU" in err, err
+
+
+def t_numba_refused_kernel_reason_printed():
+    import inspect as _insp
+    host["kernel_impl"] = _kernel_host(_fn_by_names)
+
+    def reverse_block(a, out):
+        tid = cuda.threadIdx.x
+        i = cuda.grid(1)
+        s = cuda.shared.array(64, dtype=np.float32)
+        s[tid] = a[i]
+        cuda.syncthreads()
+        out[i] = s[63 - tid]
+
+    from numba import cuda as _cuda
+    try:
+        a = np.arange(128, dtype=np.float32)
+        out = np.zeros_like(a)
+        buf = io.StringIO()
+        with contextlib.redirect_stderr(buf):
+            reverse_block_k = _cuda.jit(reverse_block)
+            reverse_block_k[2, 64](a, out)
+        expect = np.concatenate([a[:64][::-1], a[64:][::-1]])
+        assert np.array_equal(out, expect)
+        assert "此核心因為 核心用到 shared 記憶體或 cuda.syncthreads" in buf.getvalue(), buf.getvalue()
+        assert "沒有用到 GPU" in buf.getvalue(), buf.getvalue()
+    finally:
+        host["kernel_impl"] = None
 
 
 for name, fn in list(globals().items()):

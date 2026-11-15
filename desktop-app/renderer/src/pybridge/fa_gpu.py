@@ -16,6 +16,8 @@ import sys
 import uuid
 from array import array
 
+import numpy as np
+
 _SHIM_DIR = os.path.dirname(os.path.abspath(__file__))
 SHIM_NAMES = ("numba", "cupy", "torch", "pycuda")
 IN_BROWSER = sys.platform == "emscripten"
@@ -123,6 +125,75 @@ def call(op, args):
 def note_cpu(reason):
     """墊片在本機 Python 執行（沒有經過 GPU）時呼叫，讓使用者知道這一段不是 GPU。"""
     _note("Python 本機執行（不經過 GPU）", reason)
+
+
+def note_fallback(reason):
+    """numba 核心沒有在 GPU 執行時呼叫：每一次都印出具體原因（不只第一次），讓使用者知道這段沒有用到 GPU。"""
+    STATS["fallbacks"] = STATS.get("fallbacks", 0) + 1
+    STATS["layer"] = "Python 本機模擬（沒有用到 GPU）"
+    STATS["reason"] = reason
+    sys.stderr.write("[fa-bridge] 此核心因為 %s 在本機 Python 模擬執行，沒有用到 GPU\n" % reason)
+    sys.stderr.flush()
+
+
+_DTYPES = {"f32": np.float32, "i32": np.int32}
+
+
+def run_kernel(plan, arrays):
+    """把轉譯好的 WGSL（numba/wgsl.py 的 Plan）交給宿主在 WebGPU 執行。
+    arrays：參數名 → numpy 陣列。回傳 (是否在 GPU 執行, 原因)；成功時，可寫入的陣列已就地更新。"""
+    items, inputs, outs = [], [], []
+    try:
+        for b in plan.bindings:
+            flat = np.ascontiguousarray(arrays[b["param"]]).reshape(-1)
+            dt = _DTYPES[b["dtype"]]
+            item = {"name": b["wname"], "dtype": b["dtype"], "n": int(flat.size), "write": bool(b["write"]),
+                    "atomic": bool(b["atomic"]), "shape": list(b["shape"])}
+            if not IN_BROWSER and RPC_DIR:
+                uid = uuid.uuid4().hex[:12]
+                p = os.path.join(RPC_DIR, "gpu-k-in-%s.bin" % uid)
+                with open(p, "wb") as f:
+                    f.write(flat.astype(dt).tobytes())
+                inputs.append(p)
+                item["bin"] = p
+                if b["write"]:
+                    op = os.path.join(RPC_DIR, "gpu-k-out-%s.bin" % uid)
+                    item["out"] = op
+                    outs.append((b, op))
+            else:
+                item["list"] = flat.astype(dt).tolist()
+            items.append(item)
+        res = _rpc("kernel", {"wgsl": plan.wgsl, "groups": list(plan.groups), "bindings": items})
+    except GpuCompatError as e:
+        return False, str(e)
+    finally:
+        for p in inputs:
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+    STATS["calls"] += 1
+    STATS["ops"]["kernel"] = STATS["ops"].get("kernel", 0) + 1
+    if not res.get("ran"):
+        return False, res.get("reason") or "宿主沒有回報原因"
+    for b in plan.bindings:
+        if not b["write"]:
+            continue
+        arr = arrays[b["param"]]
+        o = (res.get("outputs") or {}).get(b["wname"]) or {}
+        dt = _DTYPES[b["dtype"]]
+        if "bin" in o:
+            with open(o["bin"], "rb") as f:
+                vals = np.frombuffer(f.read(), dtype=dt)
+            try:
+                os.remove(o["bin"])
+            except OSError:
+                pass
+        else:
+            vals = np.asarray(o.get("list", []), dtype=dt)
+        arr[...] = vals.reshape(arr.shape)
+    _note("WebGPU（T1，numba 核心已編譯成 WGSL）", "numba 核心已在 WebGPU 執行")
+    return True, ""
 
 
 # ---------------------------------------------------------------- 墊片的尋找器

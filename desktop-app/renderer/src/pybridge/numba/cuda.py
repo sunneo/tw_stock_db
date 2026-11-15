@@ -10,8 +10,8 @@ numba.cuda 墊片（GPU 相容層，第一階段）。
     cuda.to_device、cuda.device_array、cuda.device_array_like、DeviceArray.copy_to_host()
     cuda.is_available()、cuda.synchronize()、cuda.get_current_device()
 
-執行層（誠實說明）：第一階段的核心是在本機 Python 逐執行緒模擬（結果與 numpy 一致），**不經過 GPU**。
-把核心編譯成 WGSL 的路線（DESIGN.webgpu-cuda.md §4）尚未接上；執行時 stderr 會說明這一點。
+執行層（誠實說明）：核心先由 numba/wgsl.py 轉成 WGSL，在 WebGPU 執行（T1）。轉不了或 WebGPU 不可用時，
+退回本機 Python 逐執行緒模擬（結果與 numpy 一致，**沒有用到 GPU**），並在 stderr 印出具體原因。
 子集外的語法在呼叫時丟 CudaSubsetError，指出第幾行、哪個語法、建議替代寫法，不靜默錯。
 """
 import ast
@@ -22,6 +22,7 @@ import threading
 import numpy as np
 
 import fa_gpu
+from . import wgsl
 
 _tls = threading.local()
 
@@ -327,8 +328,21 @@ class _Launcher(object):
             _check_subset(k.__name__, k._source())
             k._checked = True
         real_args = [_unwrap(a) for a in args]
+        # 先試 GPU：核心轉成 WGSL，交給 WebGPU 執行（見 numba/wgsl.py 的支援範圍）
+        reason = None
+        try:
+            plan = wgsl.compile_kernel(k.__name__, k._source(), real_args, self._b, self._t)
+        except wgsl.NotCompilable as e:
+            plan, reason = None, str(e)
+        if plan is not None:
+            names = list(inspect.signature(k._fn).parameters)
+            ran, why = fa_gpu.run_kernel(plan, dict(zip(names, real_args)))
+            if ran:
+                return
+            reason = why
+        # 退回本機 Python 模擬：每次都說明原因，讓使用者知道沒有用到 GPU
         _launch(k._fn, self._b, self._t, real_args, uses_sync="syncthreads" in k._source())
-        fa_gpu.note_cpu("numba.cuda 核心在本機 Python 模擬執行（尚未編譯成 WGSL；結果與 numpy 一致，不經過 GPU）")
+        fa_gpu.note_fallback(reason or "沒有說明")
 
 
 def _launch(fn, blocks, threads, args, uses_sync):
