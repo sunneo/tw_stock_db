@@ -161,6 +161,45 @@ def t_cublas_unsupported_combinations():
     assert calls == [], '不支援的組合不應呼叫宿主'
 
 
+def t_stage2_wrappers():
+    install_host(True)
+    del calls[:]
+    reply['value'] = ok([12, 24])
+    assert cudaweb.axpy(2, [1, 2], [10, 20]) == [12, 24]
+    assert calls[-1] == ('axpy', {'alpha': 2.0, 'x': [1, 2], 'y': [10, 20]}), calls[-1]
+    reply['value'] = ok([3, 6])
+    assert cudaweb.scal(3, [1, 2]) == [3, 6]
+    reply['value'] = ok(32)
+    assert cudaweb.dot([1, 2, 3], [4, 5, 6]) == 32.0 and isinstance(cudaweb.dot([1], [1]), float)
+    reply['value'] = ok(5.0)
+    assert cudaweb.nrm2([3, 4]) == 5.0
+    reply['value'] = ok([3, 7])
+    assert cudaweb.gemv([[1, 2], [3, 4]], [1, 1]) == [3, 7]
+    assert calls[-1] == ('gemv', {'a': [1, 2, 3, 4], 'x': [1, 1], 'm': 2, 'n': 2}), calls[-1]
+
+
+def t_stage2_length_checks():
+    install_host(True)
+    del calls[:]
+    expect_error(lambda: cudaweb.axpy(1, [1, 2], [1]), '長度不同')
+    expect_error(lambda: cudaweb.dot([1], [1, 2]), '長度不同')
+    expect_error(lambda: cudaweb.gemv([[1, 2]], [1]), '欄數 2 不符')
+    assert calls == [], '長度錯誤時不應呼叫宿主'
+
+
+def t_cublas_level1_names():
+    install_host(True)
+    del calls[:]
+    reply['value'] = ok([12, 24])
+    assert cudaweb.cublas.saxpy(2, 2, [1, 2, 9], [10, 20]) == [12, 24]
+    reply['value'] = ok([3, 6])
+    assert cudaweb.cublas.sscal(2, 3, [1, 2]) == [3, 6]
+    reply['value'] = ok(5.0)
+    assert cudaweb.cublas.snrm2(2, [3, 4]) == 5.0
+    expect_error(lambda: cudaweb.cublas.sgemv('T', 1, 1, 1.0, [1], [1], 0.0, [0]), "只支援 transa='N'")
+    expect_error(lambda: cudaweb.cublas.saxpy(3, 1, [1, 2], [1, 2, 3]), '至少是 n=3')
+
+
 def main():
     check('不在模擬器裡：明確報錯、不呼叫宿主', t_not_emscripten)
     check('vector_add 來回：參數與結果正確', t_vector_add_roundtrip)
@@ -172,6 +211,9 @@ def main():
     check('backend_info 原樣回傳', t_backend_info_passthrough)
     check('cublas.sgemm（N、N、alpha=1、beta=0）對應 matmul', t_cublas_sgemm)
     check('cublas.sgemm 不支援的組合：報錯、不呼叫宿主', t_cublas_unsupported_combinations)
+    check('第二階段包裝：axpy、scal、dot、nrm2、gemv', t_stage2_wrappers)
+    check('第二階段包裝的長度檢查：不呼叫宿主', t_stage2_length_checks)
+    check('cublas 第一、二級的名稱與參數順序', t_cublas_level1_names)
     print('\n%d 通過，%d 失敗' % (passes, len(failures)))
     if failures:
         sys.exit(1)

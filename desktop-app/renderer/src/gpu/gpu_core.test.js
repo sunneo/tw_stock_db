@@ -1,7 +1,7 @@
 // node renderer/src/gpu/gpu_core.test.js
-// 第一階段核心的測試：CPU 參考版、WGSL 原始碼的關鍵字、降級路徑與回報、執行期的錯誤處理。
-// 假的 WebGPU（fake navigator.gpu）只驗證「流程」：它依 WGSL 開頭的 @kernel 標記，改用 CPU 參考版算結果。
-// 它不驗證 WGSL 本身的正確性；那要在真的 WebGPU 裝置上跑（見 DESIGN.webgpu-cuda.md §8、§9）。
+// GPU 核心的單元測試（假後端）：能力偵測與能力檔、CPU 參考版、WGSL 與 WebGL2 的流程（假裝置）、降級與回報、
+// 預算與排程、第二階段子程式、登錄表對映。假裝置只驗證「流程」與「索引計算」：它依核心原始碼的 @kernel 標記，
+// 用 CPU 參考版算出結果。WGSL 與 GLSL 本身的正確性只能在真的 GPU 上驗證（見 DESIGN.webgpu-cuda.md §9）。
 'use strict';
 const assert = require('assert');
 const core = require('./gpu_core.js');
@@ -23,7 +23,7 @@ function close(a, b, tol, label) {
 }
 
 // ---------- 假的 WebGPU ----------
-// opts: { limits, adapter: 'ok'|'null'|'throw', deviceError, kernelError, lostPromise }
+// opts: { limits, features, isFallback, adapter: 'ok'|'null'|'throw', deviceError, kernelError, noAdapterFeatures }
 function fakeNavigator(opts) {
   opts = opts || {};
   const limits = Object.assign({ maxStorageBufferBindingSize: 134217728, maxComputeWorkgroupStorageSize: 16384 }, opts.limits || {});
@@ -35,7 +35,7 @@ function fakeNavigator(opts) {
     __resolveLost: (info) => resolveLost(info),
     queue: {
       writeBuffer(buf, off, data) { new Uint8Array(buf.data).set(new Uint8Array(data.buffer, data.byteOffset, data.byteLength), off); },
-      submit() {}
+      submit(cmds) { for (const ops of cmds) for (const op of ops) runKernel(op); }
     },
     createBuffer({ size, usage }) {
       const b = { size, usage, data: new ArrayBuffer(Math.max(4, size)), destroy() {}, unmap() {} };
@@ -57,24 +57,16 @@ function fakeNavigator(opts) {
           return {
             setPipeline(p) { pipe = p; },
             setBindGroup(i, g) { bg = g; },
-            dispatchWorkgroups(x, y) {
-              ops.push({ pipe, bg, x, y });
-            },
+            dispatchWorkgroups(x, y) { ops.push({ pipe, bg, x, y }); },
             end() {}
           };
         },
-        copyBufferToBuffer(src, so, dst, dO, n) {
-          new Uint8Array(dst.data).set(new Uint8Array(src.data, so, n), dO);
-        },
+        copyBufferToBuffer(src, so, dst, dO, n) { new Uint8Array(dst.data).set(new Uint8Array(src.data, so, n), dO); },
         finish() { return ops; }
       };
     },
     pushErrorScope() {},
     popErrorScope: async () => null
-  };
-  // 在 submit 時執行 dispatch（假裝置把 pass 記下的工作照順序跑掉）
-  dev.queue.submit = (cmds) => {
-    for (const ops of cmds) for (const op of ops) runKernel(op);
   };
   function f32(buf, n) { return new Float32Array(buf.data, 0, n); }
   function u32(buf) { return new Uint32Array(buf.data); }
@@ -84,12 +76,10 @@ function fakeNavigator(opts) {
     const k = op.pipe.kernel;
     if (k === 'vector_add') {
       const n = u32(e[3])[0];
-      const out = core.vectorAddRef(f32(e[0], n), f32(e[1], n));
-      f32(e[2], n).set(out);
+      f32(e[2], n).set(core.vectorAddRef(f32(e[0], n), f32(e[1], n)));
     } else if (k === 'matmul') {
       const p = u32(e[3]); const m = p[0], kk = p[1], n = p[2];
-      const out = core.matmulRef(f32(e[0], m * kk), f32(e[1], kk * n), m, kk, n);
-      f32(e[2], m * n).set(out);
+      f32(e[2], m * n).set(core.matmulRef(f32(e[0], m * kk), f32(e[1], kk * n), m, kk, n));
     } else if (k === 'sum') {
       const n = u32(e[2])[0];
       const inp = f32(e[0], n);
@@ -101,6 +91,14 @@ function fakeNavigator(opts) {
         for (let i = g * 256; i < n; i += stride) for (let j = 0; j < 256 && i + j < n; j++) acc = Math.fround(acc + inp[i + j]);
         out[g] = acc;
       }
+    } else if (k === 'axpy' || k === 'scal') {
+      const n = u32(e[e.length - 1])[0];
+      const alpha = new Float32Array(e[e.length - 1].data, 4, 1)[0];
+      if (k === 'axpy') f32(e[1], n).set(core.axpyRef(alpha, f32(e[0], n), f32(e[1], n)));
+      else f32(e[0], n).set(core.scalRef(alpha, f32(e[0], n)));
+    } else if (k === 'mul') {
+      const n = u32(e[3])[0];
+      f32(e[2], n).set(core.mulRef(f32(e[0], n), f32(e[1], n)));
     } else {
       throw new Error('假裝置不認得核心：' + k);
     }
@@ -108,6 +106,7 @@ function fakeNavigator(opts) {
   const adapter = {
     features: new Set(opts.features || []),
     limits: limits,
+    isFallbackAdapter: !!opts.isFallback,
     info: { vendor: 'fake' },
     requestDevice: async () => {
       if (opts.deviceError) throw new Error(opts.deviceError);
@@ -124,6 +123,76 @@ function fakeNavigator(opts) {
   return { nav: { gpu: gpu }, dev: dev };
 }
 
+// ---------- 假的 WebGL2 上下文 ----------
+// 用 JS 重現片段著色器的索引語意（與 GLSL 同一套公式），只驗證host端的紋理配置、單元綁定、幀緩衝與讀回流程。
+const GLSL_KERNEL_TAG = /@kernel\s+(\w+)/;
+function fakeGl(opts) {
+  opts = opts || {};
+  const maxTex = opts.maxTex || 4096;
+  const gl = {
+    units: {}, activeUnit: 0, bound: null, fbo: null, uniforms: {}, prog: null, deleted: 0,
+    getExtension(name) { if (name === 'EXT_color_buffer_float') return opts.noFloat ? null : {}; return null; },
+    getParameter(p) { return p === 0x0D33 ? maxTex : 0; },
+    createShader(t) { return { t: t, src: '', ok: true }; },
+    shaderSource(s, src) { s.src = src; },
+    compileShader(s) { s.ok = !/#FAILCOMPILE/.test(s.src); },
+    getShaderParameter(s) { return s.ok; },
+    getShaderInfoLog() { return 'fake shader log'; },
+    createProgram() { return { shaders: [], kernel: null, ok: false }; },
+    attachShader(p, s) { p.shaders.push(s); },
+    linkProgram(p) {
+      const fs = p.shaders.find((s) => s.t === 0x8B30);
+      const m = GLSL_KERNEL_TAG.exec(fs.src);
+      p.kernel = m ? m[1] : null;
+      p.ok = !!p.kernel;
+    },
+    getProgramParameter(p) { return p.ok; },
+    getProgramInfoLog() { return 'fake program log'; },
+    createTexture() { return { w: 0, h: 0, data: null }; },
+    bindTexture(target, tex) { gl.bound = tex; gl.units[gl.activeUnit] = tex; },
+    texParameteri() {},
+    texStorage2D(t, l, f, w, h) { gl.bound.w = w; gl.bound.h = h; gl.bound.data = new Float32Array(w * h * 4); },
+    texSubImage2D(t, l, x, y, w, h, f, ty, px) { gl.bound.data.set(px.subarray(0, w * h * 4)); },
+    createFramebuffer() { return { tex: null }; },
+    bindFramebuffer(t, f) { gl.fbo = f; },
+    framebufferTexture2D(t, a, tg, tex) { gl.fbo.tex = tex; },
+    checkFramebufferStatus() { return 0x8CD5; },
+    useProgram(p) { gl.prog = p; },
+    getUniformLocation(p, name) { return name; },
+    uniform1i(loc, v) { gl.uniforms[loc] = v; },
+    activeTexture(u) { gl.activeUnit = u - 0x84C0; },
+    viewport() {},
+    drawArrays() {
+      if (opts.drawFail && gl.prog.kernel === opts.drawFail) throw new Error('假繪製錯誤');
+      const out = gl.fbo.tex;
+      const ow = out.w, oh = out.h;
+      const tex = (name) => gl.units[gl.uniforms[name]];
+      const at = (t, x, y) => t.data[(y * t.w + x) * 4];
+      out.data.fill(0);
+      const k = gl.prog.kernel;
+      for (let y = 0; y < oh; y++) for (let x = 0; x < ow; x++) {
+        let v = 0;
+        if (k === 'vector_add') {
+          const W = gl.uniforms.uW, N = gl.uniforms.uN, e = y * W + x;
+          v = e >= N ? 0 : at(tex('uA'), x, y) + at(tex('uB'), x, y);
+        } else if (k === 'matmul') {
+          const K = gl.uniforms.uK;
+          for (let t = 0; t < K; t++) v = Math.fround(v + Math.fround(at(tex('uA'), t, y) * at(tex('uB'), x, t)));
+        } else if (k === 'sum') {
+          const W = gl.uniforms.uW, N = gl.uniforms.uN, OW = gl.uniforms.uOW;
+          const j = y * OW + x;
+          if (j * 4 < N) for (let q = 0; q < 4; q++) { const e = j * 4 + q; if (e < N) v += at(tex('uA'), e % W, Math.floor(e / W)); }
+        }
+        out.data[(y * ow + x) * 4] = v;
+      }
+    },
+    readPixels(x, y, w, h, f, ty, px) { px.set(gl.fbo.tex.data.subarray(0, w * h * 4)); },
+    deleteTexture() { gl.deleteds = (gl.deleteds || 0) + 1; },
+    deleteFramebuffer() {}
+  };
+  return gl;
+}
+
 function seeded(n, seed) {
   let s = seed >>> 0 || 1; const out = [];
   for (let i = 0; i < n; i++) { s ^= s << 13; s >>>= 0; s ^= s >>> 17; s ^= s << 5; s >>>= 0; out.push(((s % 20001) - 10000) / 1000); }
@@ -133,69 +202,104 @@ function seeded(n, seed) {
 (async () => {
   // ---- 參考版與容差 ----
   await check('CPU 向量加參考版', () => {
-    const r = core.vectorAddRef(Float32Array.from([1, 2, 3]), Float32Array.from([10, 20, 30]));
-    assert.deepStrictEqual(Array.from(r), [11, 22, 33]);
+    assert.deepStrictEqual(Array.from(core.vectorAddRef(Float32Array.from([1, 2, 3]), Float32Array.from([10, 20, 30]))), [11, 22, 33]);
   });
   await check('CPU 矩陣乘參考版（2×3 乘 3×2）', () => {
-    // [[1,2,3],[4,5,6]] × [[7,8],[9,10],[11,12]] = [[58,64],[139,154]]
-    const r = core.matmulRef(Float32Array.from([1, 2, 3, 4, 5, 6]), Float32Array.from([7, 8, 9, 10, 11, 12]), 2, 3, 2);
-    assert.deepStrictEqual(Array.from(r), [58, 64, 139, 154]);
+    assert.deepStrictEqual(Array.from(core.matmulRef(Float32Array.from([1, 2, 3, 4, 5, 6]), Float32Array.from([7, 8, 9, 10, 11, 12]), 2, 3, 2)), [58, 64, 139, 154]);
   });
-  await check('CPU 歸約參考版與高精度參考', () => {
+  await check('CPU 歸約與第二階段參考版', () => {
     assert.strictEqual(core.sumRef([1, 2, 3, 4]), 10);
-    assert.strictEqual(core.sumExact([1, 2, 3, 4]), 10);
+    assert.deepStrictEqual(Array.from(core.axpyRef(2, [1, 2], [10, 20])), [12, 24]);
+    assert.deepStrictEqual(Array.from(core.scalRef(3, [1, 2])), [3, 6]);
+    assert.strictEqual(core.dotRef([1, 2, 3], [4, 5, 6]), 32);
+    assert.ok(Math.abs(core.nrm2Ref([3, 4]) - 5) < 1e-6);
+    assert.deepStrictEqual(Array.from(core.gemvRef([1, 2, 3, 4], [1, 1], 2, 2)), [3, 7]);
   });
   await check('容差隨 k 增加、且為正數（暫定規則）', () => {
     assert.ok(core.tolerance(1) > 0);
     assert.ok(core.tolerance(4096) > core.tolerance(16));
   });
 
-  // ---- WGSL 原始碼（靜態檢查） ----
+  // ---- WGSL 與 GLSL 原始碼（靜態檢查） ----
   await check('WGSL 核心含 workgroup 大小與屏障、歸約用 num_workgroups', () => {
     assert.ok(core.kernels.vector_add.includes('@workgroup_size(256)'));
     assert.ok(core.kernels.matmul.includes('@workgroup_size(16, 16, 1)'));
-    assert.ok(core.kernels.matmul.split('workgroupBarrier()').length - 1 === 2, '矩陣乘應有兩個屏障');
-    assert.ok(core.kernels.sum.includes('workgroupBarrier()'));
-    assert.ok(core.kernels.sum.includes('num_workgroups'));
-    assert.ok(core.kernels.sum.includes('// @kernel sum'));
+    assert.strictEqual(core.kernels.matmul.split('workgroupBarrier()').length - 1, 2, '矩陣乘應有兩個屏障');
+    assert.ok(core.kernels.sum.includes('workgroupBarrier()') && core.kernels.sum.includes('num_workgroups'));
+    for (const n of ['axpy', 'scal', 'mul']) assert.ok(core.kernels[n].includes('// @kernel ' + n));
+  });
+  await check('GLSL 核心都有 @kernel 標記，且使用 texelFetch 與 RGBA 輸出', () => {
+    for (const n of ['vector_add', 'matmul', 'sum']) {
+      assert.ok(core.glKernels[n].includes('// @kernel ' + n), n);
+      assert.ok(core.glKernels[n].includes('texelFetch'), n);
+      assert.ok(core.glKernels[n].includes('outColor = vec4'), n);
+    }
   });
 
-  // ---- 沒有 WebGPU 時降級 ----
-  await check('沒有 navigator.gpu：降到 T4，原因寫明，結果仍正確', async () => {
-    const rt = core.createRuntime({ navigator: {} });
+  // ---- 能力偵測與能力檔 ----
+  await check('profileOf：軟體介面卡歸為檔 A', () => {
+    const p = core.profileOf({ hasAdapter: true, isFallbackAdapter: true, limits: {}, features: [] }, null);
+    assert.strictEqual(p.profile, 'A');
+  });
+  await check('profileOf：共享記憶體小於 16 KiB 歸為檔 A', () => {
+    const p = core.profileOf({ hasAdapter: true, isFallbackAdapter: false, limits: { maxComputeWorkgroupStorageSize: 8192 }, features: [] }, null);
+    assert.strictEqual(p.profile, 'A');
+    assert.ok(p.reason.includes('8192'));
+  });
+  await check('profileOf：有 shader-f16 與 subgroups 為檔 C；其他 WebGPU 為檔 B', () => {
+    assert.strictEqual(core.profileOf({ hasAdapter: true, limits: { maxComputeWorkgroupStorageSize: 16384 }, features: ['shader-f16', 'subgroups'] }, null).profile, 'C');
+    assert.strictEqual(core.profileOf({ hasAdapter: true, limits: { maxComputeWorkgroupStorageSize: 16384 }, features: [] }, null).profile, 'B');
+  });
+  await check('profileOf：只有 WebGL2 為檔 A；都沒有為 null 並說明原因', () => {
+    assert.strictEqual(core.profileOf({ hasAdapter: false }, { available: true }).profile, 'A');
+    const none = core.profileOf({ hasAdapter: false }, { available: false });
+    assert.strictEqual(none.profile, null);
+    assert.ok(none.reason.length > 0);
+  });
+  await check('probeWebgl2：沒有上下文、缺 EXT_color_buffer_float、可用，三種結果', () => {
+    assert.strictEqual(core.probeWebgl2(null).available, false);
+    const noFloat = core.probeWebgl2(fakeGl({ noFloat: true }));
+    assert.strictEqual(noFloat.available, false);
+    assert.ok(noFloat.reason.includes('EXT_color_buffer_float'));
+    const ok = core.probeWebgl2(fakeGl({ maxTex: 2048 }));
+    assert.strictEqual(ok.available, true);
+    assert.strictEqual(ok.maxTextureSize, 2048);
+  });
+
+  // ---- 沒有任何 GPU 時降到 T5 ----
+  await check('沒有 navigator.gpu 也沒有 WebGL2：降到 T5（純 JS），原因寫明，結果仍正確', async () => {
+    const rt = core.createRuntime({ navigator: {}, webgl2: null });
     const r = await rt.vectorAdd([1, 2], [3, 4]);
     assert.deepStrictEqual(r.result, [4, 6]);
-    assert.strictEqual(r.info.layer, 'T4');
-    assert.strictEqual(r.info.via, 'cpu-fallback');
+    assert.strictEqual(r.info.layer, 'T5');
+    assert.strictEqual(r.info.via, 'cpu-js');
     assert.ok(r.info.reason.includes('沒有 WebGPU'));
+    assert.ok(r.info.reason.includes('沒有 WebGL2'));
   });
   await check('介面卡為空：原因是沒有顯示卡介面卡', async () => {
     const f = fakeNavigator({ adapter: 'null' });
-    const rt = core.createRuntime({ navigator: f.nav });
+    const rt = core.createRuntime({ navigator: f.nav, webgl2: null });
     const r = await rt.sum([1, 2, 3]);
     assert.strictEqual(r.result, 6);
-    assert.strictEqual(r.info.layer, 'T4');
+    assert.strictEqual(r.info.layer, 'T5');
     assert.ok(r.info.reason.includes('沒有可用的顯示卡介面卡'));
   });
   await check('requestAdapter 丟例外：原因帶上錯誤文字', async () => {
-    const f = fakeNavigator({ adapter: 'throw' });
-    const rt = core.createRuntime({ navigator: f.nav });
+    const rt = core.createRuntime({ navigator: fakeNavigator({ adapter: 'throw' }).nav, webgl2: null });
     const r = await rt.sum([5]);
-    assert.strictEqual(r.info.layer, 'T4');
+    assert.strictEqual(r.info.layer, 'T5');
     assert.ok(r.info.reason.includes('介面卡探測爆炸'));
   });
   await check('requestDevice 失敗：原因帶上錯誤文字', async () => {
-    const f = fakeNavigator({ deviceError: '裝置遺失於啟動' });
-    const rt = core.createRuntime({ navigator: f.nav });
+    const rt = core.createRuntime({ navigator: fakeNavigator({ deviceError: '裝置遺失於啟動' }).nav, webgl2: null });
     const r = await rt.vectorAdd([1], [2]);
-    assert.strictEqual(r.info.layer, 'T4');
+    assert.strictEqual(r.info.layer, 'T5');
     assert.ok(r.info.reason.includes('要求 WebGPU 裝置失敗：裝置遺失於啟動'));
   });
 
-  // ---- 假 WebGPU 可用：T1 ----
+  // ---- WebGPU（T1） ----
   await check('向量加在 T1 執行，結果與參考版一致', async () => {
-    const f = fakeNavigator();
-    const rt = core.createRuntime({ navigator: f.nav });
+    const rt = core.createRuntime({ navigator: fakeNavigator().nav, webgl2: null });
     const a = seeded(1000, 7), b = seeded(1000, 9);
     const r = await rt.vectorAdd(a, b);
     assert.strictEqual(r.info.layer, 'T1');
@@ -204,18 +308,15 @@ function seeded(n, seed) {
     close(r.result, Array.from(core.vectorAddRef(Float32Array.from(a), Float32Array.from(b))), 0, 'vector_add');
   });
   await check('矩陣乘在 T1 執行，形狀不是 16 的倍數（邊界檢查）', async () => {
-    const f = fakeNavigator();
-    const rt = core.createRuntime({ navigator: f.nav });
+    const rt = core.createRuntime({ navigator: fakeNavigator().nav, webgl2: null });
     const m = 17, k = 19, n = 21;
     const A = seeded(m * k, 3), B = seeded(k * n, 5);
     const r = await rt.matmul(A, B, m, k, n);
     assert.strictEqual(r.info.layer, 'T1');
-    const ref = core.matmulRef(Float32Array.from(A), Float32Array.from(B), m, k, n);
-    close(r.result, Array.from(ref), core.tolerance(k), 'matmul');
+    close(r.result, Array.from(core.matmulRef(Float32Array.from(A), Float32Array.from(B), m, k, n)), core.tolerance(k), 'matmul');
   });
   await check('歸約在 T1 執行（1000 個元素，需要兩輪），誤差在容差內', async () => {
-    const f = fakeNavigator();
-    const rt = core.createRuntime({ navigator: f.nav });
+    const rt = core.createRuntime({ navigator: fakeNavigator().nav, webgl2: null });
     const a = seeded(1000, 11);
     const r = await rt.sum(a);
     assert.strictEqual(r.info.layer, 'T1');
@@ -223,80 +324,207 @@ function seeded(n, seed) {
     assert.ok(Math.abs(r.result - exact) <= core.tolerance(a.length) * Math.max(1, Math.abs(exact)) + 1e-3, '歸約誤差：' + r.result + ' 與 ' + exact);
     assert.strictEqual(r.info.reductionOrder, 'tree-wg256');
   });
+  await check('WebGPU 與 WebGL2 都可用時優先 T1', async () => {
+    const rt = core.createRuntime({ navigator: fakeNavigator().nav, webgl2: fakeGl() });
+    const r = await rt.vectorAdd([1], [2]);
+    assert.strictEqual(r.info.layer, 'T1');
+  });
 
-  // ---- 降級路徑 ----
-  await check('儲存緩衝超過上限：降到 T4，原因列出需要與上限', async () => {
-    const f = fakeNavigator({ limits: { maxStorageBufferBindingSize: 64 } });
-    const rt = core.createRuntime({ navigator: f.nav });
+  // ---- WebGL2（T3） ----
+  await check('向量加在 T3（WebGL2）執行，結果與參考版一致', async () => {
+    const rt = core.createRuntime({ navigator: {}, webgl2: fakeGl({ maxTex: 64 }) });
+    const a = seeded(300, 21), b = seeded(300, 22);
+    const r = await rt.vectorAdd(a, b);
+    assert.strictEqual(r.info.layer, 'T3');
+    assert.strictEqual(r.info.via, 'webgl2');
+    assert.ok(r.info.reason.includes('沒有 WebGPU'), '應說明 T1 不可用的原因');
+    close(r.result, Array.from(core.vectorAddRef(Float32Array.from(a), Float32Array.from(b))), 0, 'vector_add T3');
+  });
+  await check('矩陣乘在 T3 執行（形狀不整齊），誤差在容差內', async () => {
+    const rt = core.createRuntime({ navigator: {}, webgl2: fakeGl({ maxTex: 4096 }) });
+    const m = 17, k = 19, n = 21;
+    const A = seeded(m * k, 31), B = seeded(k * n, 32);
+    const r = await rt.matmul(A, B, m, k, n);
+    assert.strictEqual(r.info.layer, 'T3');
+    close(r.result, Array.from(core.matmulRef(Float32Array.from(A), Float32Array.from(B), m, k, n)), core.tolerance(k), 'matmul T3');
+  });
+  await check('歸約在 T3 執行（多趟縮減），誤差在容差內', async () => {
+    const rt = core.createRuntime({ navigator: {}, webgl2: fakeGl({ maxTex: 64 }) });
+    const a = seeded(1000, 41);
+    const r = await rt.sum(a);
+    assert.strictEqual(r.info.layer, 'T3');
+    const exact = core.sumExact(a);
+    assert.ok(Math.abs(r.result - exact) <= core.tolerance(a.length) * Math.max(1, Math.abs(exact)) + 1e-3, '歸約誤差：' + r.result + ' 與 ' + exact);
+  });
+  await check('gemv 在 T3 走矩陣乘路徑', async () => {
+    const rt = core.createRuntime({ navigator: {}, webgl2: fakeGl() });
+    const r = await rt.gemv([1, 2, 3, 4], [1, 1], 2, 2);
+    assert.strictEqual(r.info.layer, 'T3');
+    assert.deepStrictEqual(r.result, [3, 7]);
+  });
+  await check('WebGL2 缺 EXT_color_buffer_float：降到 T5，原因寫明擴充功能', async () => {
+    const rt = core.createRuntime({ navigator: {}, webgl2: fakeGl({ noFloat: true }) });
+    const r = await rt.vectorAdd([1], [2]);
+    assert.strictEqual(r.info.layer, 'T5');
+    assert.ok(r.info.reason.includes('EXT_color_buffer_float'));
+  });
+  await check('紋理尺寸超過 MAX_TEXTURE_SIZE：WebGL2 退到 T5，原因寫明尺寸', async () => {
+    const rt = core.createRuntime({ navigator: {}, webgl2: fakeGl({ maxTex: 8 }) });
+    const r = await rt.matmul(seeded(4 * 9, 1), seeded(9 * 2, 2), 4, 9, 2);
+    assert.strictEqual(r.info.layer, 'T5');
+    assert.ok(r.info.reason.includes('MAX_TEXTURE_SIZE'));
+  });
+  await check('WebGL2 繪製失敗：退到 T5，原因帶上錯誤', async () => {
+    const rt = core.createRuntime({ navigator: {}, webgl2: fakeGl({ drawFail: 'vector_add' }) });
+    const r = await rt.vectorAdd([1, 2], [3, 4]);
+    assert.strictEqual(r.info.layer, 'T5');
+    assert.ok(r.info.reason.includes('WebGL2 核心執行失敗'));
+    assert.deepStrictEqual(r.result, [4, 6]);
+  });
+
+  // ---- 降級路徑（WebGPU） ----
+  await check('儲存緩衝超過上限：WebGPU 那一層跳過並寫明，之後退到 T5', async () => {
+    const rt = core.createRuntime({ navigator: fakeNavigator({ limits: { maxStorageBufferBindingSize: 64 } }).nav, webgl2: null });
     const a = new Array(100).fill(1);
     const r = await rt.vectorAdd(a, a);
-    assert.strictEqual(r.info.layer, 'T4');
+    assert.strictEqual(r.info.layer, 'T5');
     assert.ok(r.info.reason.includes('超過裝置的儲存緩衝上限'));
-    assert.strictEqual(r.result.length, 100);
     assert.strictEqual(r.result[0], 2);
   });
-  await check('核心執行失敗：降到 T4，原因帶上錯誤，結果仍正確', async () => {
-    const f = fakeNavigator({ kernelError: 'matmul' });
-    const rt = core.createRuntime({ navigator: f.nav });
-    const A = [1, 2, 3, 4], B = [5, 6, 7, 8];
-    const r = await rt.matmul(A, B, 2, 2, 2);
-    assert.strictEqual(r.info.layer, 'T4');
+  await check('核心執行失敗：先退 WebGL2 或 T5，原因帶上錯誤，結果仍正確', async () => {
+    const rt = core.createRuntime({ navigator: fakeNavigator({ kernelError: 'matmul' }).nav, webgl2: null });
+    const r = await rt.matmul([1, 2, 3, 4], [5, 6, 7, 8], 2, 2, 2);
+    assert.strictEqual(r.info.layer, 'T5');
     assert.ok(r.info.reason.includes('WGSL 核心執行失敗'));
     assert.ok(r.info.reason.includes('假核心錯誤'));
     assert.deepStrictEqual(r.result, [19, 22, 43, 50]);
   });
-  await check('裝置遺失：之後的呼叫改用 T4，原因寫明遺失', async () => {
+  await check('裝置遺失：之後的呼叫不再用 WebGPU，原因寫明遺失', async () => {
     const f = fakeNavigator();
-    const rt = core.createRuntime({ navigator: f.nav });
+    const rt = core.createRuntime({ navigator: f.nav, webgl2: null });
     const r1 = await rt.vectorAdd([1], [2]);
     assert.strictEqual(r1.info.layer, 'T1');
     f.dev.__resolveLost({ message: 'test loss' });
     await new Promise((r) => setImmediate(r));
     const r2 = await rt.vectorAdd([1], [2]);
-    assert.strictEqual(r2.info.layer, 'T4');
+    assert.strictEqual(r2.info.layer, 'T5');
     assert.ok(r2.info.reason.includes('裝置遺失'));
     assert.ok(r2.info.reason.includes('test loss'));
   });
 
-  // ---- 輸入檢查與回報 ----
-  await check('向量長度不同：丟出具體錯誤（不降級）', async () => {
-    const rt = core.createRuntime({ navigator: {} });
-    await assert.rejects(rt.vectorAdd([1, 2], [1]), /長度不同（2 與 1）/);
+  // ---- 第二階段：cuBLAS 子集 ----
+  await check('axpy、scal、dot、nrm2 在 T1 與參考版一致', async () => {
+    const rt = core.createRuntime({ navigator: fakeNavigator().nav, webgl2: null });
+    const x = seeded(300, 51), y = seeded(300, 52);
+    const ax = await rt.axpy(2.5, x, y);
+    assert.strictEqual(ax.info.layer, 'T1');
+    close(ax.result, Array.from(core.axpyRef(2.5, Float32Array.from(x), Float32Array.from(y))), 1e-6, 'axpy');
+    const sc = await rt.scal(-0.5, x);
+    assert.strictEqual(sc.info.layer, 'T1');
+    close(sc.result, Array.from(core.scalRef(-0.5, Float32Array.from(x))), 1e-6, 'scal');
+    const d = await rt.dot(x, y);
+    assert.strictEqual(d.info.layer, 'T1');
+    const dExact = x.reduce((s, v, i) => s + v * y[i], 0);
+    assert.ok(Math.abs(d.result - dExact) <= core.tolerance(300) * Math.max(1, Math.abs(dExact)) + 1e-3, 'dot 誤差');
+    const nr = await rt.nrm2(x);
+    assert.strictEqual(nr.info.layer, 'T1');
+    const nExact = Math.sqrt(x.reduce((s, v) => s + v * v, 0));
+    assert.ok(Math.abs(nr.result - nExact) <= core.tolerance(300) * Math.max(1, nExact) + 1e-3, 'nrm2 誤差');
   });
-  await check('矩陣元素數與形狀不符：丟出具體錯誤', async () => {
-    const rt = core.createRuntime({ navigator: {} });
-    await assert.rejects(rt.matmul([1, 2, 3], [1, 2], 2, 2, 1), /A 的元素數 3 與 m×k=4 不符/);
+  await check('gemv 在 T1 與參考版一致（m=5、n=7）', async () => {
+    const rt = core.createRuntime({ navigator: fakeNavigator().nav, webgl2: null });
+    const A = seeded(35, 61), x = seeded(7, 62);
+    const r = await rt.gemv(A, x, 5, 7);
+    assert.strictEqual(r.info.layer, 'T1');
+    close(r.result, Array.from(core.gemvRef(Float32Array.from(A), Float32Array.from(x), 5, 7)), core.tolerance(7), 'gemv');
   });
-  await check('非有限數字：丟出具體錯誤', async () => {
-    const rt = core.createRuntime({ navigator: {} });
-    await assert.rejects(rt.sum([1, NaN]), /不是有限數字/);
+  await check('第二階段子程式在沒有 WebGPU 時：axpy、scal、dot、nrm2 退 T5 並寫明 WebGL2 尚未實作', async () => {
+    const rt = core.createRuntime({ navigator: {}, webgl2: fakeGl() });
+    const r = await rt.axpy(2, [1], [1]);
+    assert.strictEqual(r.info.layer, 'T5');
+    assert.deepStrictEqual(r.result, [3]);
+    assert.ok(r.info.reason.includes('WebGL2 版尚未實作'));
   });
-  await check('backendInfo 回報降級紀錄與最後一次呼叫', async () => {
-    const f = fakeNavigator({ limits: { maxStorageBufferBindingSize: 64 } });
-    const rt = core.createRuntime({ navigator: f.nav });
+  await check('子程式的參數錯誤：長度不合、alpha 非有限數字，直接丟錯不降級', async () => {
+    const rt = core.createRuntime({ navigator: {}, webgl2: null });
+    await assert.rejects(rt.axpy(1, [1, 2], [1]), /長度不同/);
+    await assert.rejects(rt.scal(Infinity, [1]), /alpha/);
+    await assert.rejects(rt.gemv([1, 2, 3], [1], 2, 2), /元素數 3 與 m×n=4 不符/);
+  });
+
+  // ---- 預算與排程 ----
+  await check('GPU 緩衝區預算不足：跳過 GPU 並寫明預算，結束後預算回到 0', async () => {
+    const rt = core.createRuntime({ navigator: fakeNavigator().nav, webgl2: null, budgetBytes: 100 });
+    const r = await rt.vectorAdd(new Array(50).fill(1), new Array(50).fill(2));
+    assert.strictEqual(r.info.layer, 'T5');
+    assert.ok(r.info.reason.includes('GPU 緩衝區預算不足'));
+    const info = await rt.backendInfo();
+    assert.strictEqual(info.budget.usedBytes, 0);
+    assert.strictEqual(info.budget.limitBytes, 100);
+  });
+  await check('排程：推論優先，連續高優先級超過門檻時讓出一次給模擬器（防餓死）', async () => {
+    const s = core.createScheduler({ starveAfter: 2 });
+    const order = [];
+    const rel0 = await s.acquire('infer');
+    const mk = (name) => s.acquire(name.startsWith('i') ? 'infer' : 'sim').then((rel) => { order.push(name); rel(); });
+    const ps = [mk('i1'), mk('i2'), mk('i3'), mk('i4'), mk('sim')];
+    rel0();
+    await Promise.all(ps);
+    assert.deepStrictEqual(order, ['i1', 'sim', 'i2', 'i3', 'i4']);
+    assert.strictEqual(s.stats().starvedGrants, 1);
+    assert.strictEqual(s.stats().busy, false);
+  });
+  await check('排程：同一時間只有一個工作持有裝置', async () => {
+    const s = core.createScheduler({});
+    const r1 = await s.acquire('sim');
+    assert.strictEqual(s.stats().busy, true);
+    let got2 = false;
+    const p2 = s.acquire('sim').then((rel) => { got2 = true; rel(); });
+    await new Promise((r) => setImmediate(r));
+    assert.strictEqual(got2, false, '第二個工作不應在第一個釋放前拿到裝置');
+    r1();
+    await p2;
+    assert.strictEqual(got2, true);
+  });
+
+  // ---- backendInfo 與降級紀錄 ----
+  await check('backendInfo 回報能力檔、各操作的層、降級紀錄與預算', async () => {
+    const rt = core.createRuntime({ navigator: fakeNavigator({ limits: { maxStorageBufferBindingSize: 64 } }).nav, webgl2: null });
     await rt.vectorAdd(new Array(100).fill(1), new Array(100).fill(1));
     const info = await rt.backendInfo();
     assert.strictEqual(info.hasWebGPU, true);
     assert.strictEqual(info.hasAdapter, true);
-    assert.strictEqual(info.last.layer, 'T4');
+    assert.strictEqual(info.last.layer, 'T5');
     assert.strictEqual(info.degradeLog.length, 1);
     assert.strictEqual(info.degradeLog[0].op, 'vector_add');
+    assert.strictEqual(info.profile, 'B');
+    assert.strictEqual(info.ops.vector_add.layer, 'T5');
+    assert.strictEqual(info.ops.axpy.webgl2, 'missing');
+    assert.strictEqual(info.ops.vector_add.webgpu, 'native');
+    assert.ok(info.budget.limitBytes > 0);
+    assert.ok(info.scheduler && typeof info.scheduler.waiting === 'number');
+  });
+  await check('backendInfo 在沒有 GPU 時給能力檔 null 與原因', async () => {
+    const rt = core.createRuntime({ navigator: {}, webgl2: null });
+    const info = await rt.backendInfo();
+    assert.strictEqual(info.profile, null);
+    assert.ok(info.profileReason.length > 0);
   });
 
-  await check('登錄表 webgpuTierProbe：無 WebGPU 時 reason 必填、結構合法；有裝置時可用', async () => {
+  // ---- 登錄表對映 ----
+  await check('登錄表 webgpuTierProbe：無 GPU 時 reason 必填、結構合法；有裝置時可用', async () => {
     const bc = require('../studio/backend_core.js');
-    const rt = core.createRuntime({ navigator: {} });
+    const rt = core.createRuntime({ navigator: {}, webgl2: null });
     await rt.vectorAdd([1], [2]);
     const p1 = bc.webgpuTierProbe(await rt.backendInfo());
     assert.strictEqual(p1.available, false);
     assert.ok(p1.reason.includes('沒有 WebGPU'));
     assert.deepStrictEqual(bc.validateProbeResult(p1), []);
-    const f = fakeNavigator();
-    const rt2 = core.createRuntime({ navigator: f.nav });
+    const rt2 = core.createRuntime({ navigator: fakeNavigator().nav, webgl2: null });
     await rt2.vectorAdd([1], [2]);
     const p2 = bc.webgpuTierProbe(await rt2.backendInfo());
     assert.strictEqual(p2.available, true);
-    assert.ok(!p2.reason, '可用時不應有 reason（probeResult 只在有原因時才寫入）');
+    assert.ok(!p2.reason, '可用時不應有 reason');
     assert.deepStrictEqual(bc.validateProbeResult(p2), []);
   });
 

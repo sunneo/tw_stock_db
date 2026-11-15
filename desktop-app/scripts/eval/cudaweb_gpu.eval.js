@@ -18,7 +18,16 @@ return (async () => {
         const rt = window.fa._cudawebRuntime();
         const bi0 = await rt.backendInfo();
         R.navigatorGpu = !!navigator.gpu;
-        R.probe = { hasWebGPU: bi0.hasWebGPU, hasAdapter: bi0.hasAdapter, reason: bi0.probeReason, features: bi0.features, limits: bi0.limits, deviceReady: bi0.deviceReady };
+        R.probe = { hasWebGPU: bi0.hasWebGPU, hasAdapter: bi0.hasAdapter, isFallbackAdapter: bi0.isFallbackAdapter, reason: bi0.probeReason, features: bi0.features, limits: bi0.limits, deviceReady: bi0.deviceReady, profile: bi0.profile, profileReason: bi0.profileReason, webgl2: bi0.webgl2 };
+        const ax = await rt.axpy(2, [1, 2, 3, 4], [10, 20, 30, 40]);
+        ck('axpy 結果正確（WebGPU 第二階段）', JSON.stringify(ax.result) === JSON.stringify([12, 24, 36, 48]), ax.result);
+        ck('axpy 在 T1（真 WebGPU）', ax.info.layer === 'T1', ax.info);
+        // WebGL2 層：另建一個不給 WebGPU 的執行期，讓它走 WebGL2（畫布上下文）
+        const rtGl = window.FaGpuCore.createRuntime({ navigator: {} });
+        const vg = await rtGl.vectorAdd([1, 2, 3, 4], [10, 20, 30, 40]);
+        ck('vector_add 在 T3（真 WebGL2）結果正確', JSON.stringify(vg.result) === JSON.stringify([11, 22, 33, 44]), vg.result);
+        ck('vector_add 在 T3（真 WebGL2）執行', vg.info.layer === 'T3', vg.info);
+        R.webgl2Info = vg.info;
 
         const va = await rt.vectorAdd([1, 2, 3, 4], [10, 20, 30, 40]);
         ck('vector_add 結果正確', JSON.stringify(va.result) === JSON.stringify([11, 22, 33, 44]), va.result);

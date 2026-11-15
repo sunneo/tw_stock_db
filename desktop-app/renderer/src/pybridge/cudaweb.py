@@ -6,7 +6,7 @@ cudaweb — 在 Python 模擬器（Pyodide，網頁版與桌面版共用）裡�
     cudaweb.vector_add(a, b)     向量加，回傳 list
     cudaweb.matmul(A, B)         矩陣乘，A 為 m×k、B 為 k×n 的二維 list，回傳 m×n 的二維 list
     cudaweb.sum(a)               歸約（總和），回傳 float
-    cudaweb.backend_info()       回傳實際使用的層（T1 原生 WGSL、T4 CPU 降級）、原因、裝置能力與降級紀錄
+    cudaweb.backend_info()       回傳實際使用的層（T1 原生 WGSL、T3 WebGL2、T5 純 JS）、原因、裝置能力與降級紀錄
 
 降級：沒有 WebGPU、介面卡不可用、超過儲存緩衝上限、核心執行失敗時，會自動改用 CPU 參考版計算，
 結果仍正確；backend_info() 會說明原因。cudaweb 不會因為沒有 WebGPU 而壞掉。
@@ -77,6 +77,43 @@ def sum(a):
     return float(_call("sum", {"a": list(a)}))
 
 
+def axpy(alpha, x, y):
+    """y ← alpha·x + y（逐元素），回傳新的 y（list）。"""
+    x = list(x)
+    y = list(y)
+    if len(x) != len(y):
+        raise CudaWebError("cudaweb.axpy：x 與 y 長度不同（%d 與 %d）" % (len(x), len(y)))
+    return _call("axpy", {"alpha": float(alpha), "x": x, "y": y})
+
+
+def scal(alpha, x):
+    """x ← alpha·x，回傳新的 x（list）。"""
+    return _call("scal", {"alpha": float(alpha), "x": list(x)})
+
+
+def dot(x, y):
+    """內積 x·y（float）。"""
+    x = list(x)
+    y = list(y)
+    if len(x) != len(y):
+        raise CudaWebError("cudaweb.dot：x 與 y 長度不同（%d 與 %d）" % (len(x), len(y)))
+    return float(_call("dot", {"x": x, "y": y}))
+
+
+def nrm2(x):
+    """2-範數 ‖x‖₂（float）。注意：沒有做參考 BLAS 的縮放，極大或極小的值可能溢位或下溢。"""
+    return float(_call("nrm2", {"x": list(x)}))
+
+
+def gemv(A, x):
+    """矩陣乘向量：A 為 m×n 的二維 list、x 長度 n，回傳長度 m 的 list。"""
+    fa, m, n = _flat_matrix(A, "A")
+    x = list(x)
+    if len(x) != n:
+        raise CudaWebError("cudaweb.gemv：x 的長度 %d 與 A 的欄數 %d 不符" % (len(x), n))
+    return _call("gemv", {"a": fa, "x": x, "m": m, "n": n})
+
+
 def backend_info():
     """目前的能力與降級狀態：hasWebGPU、hasAdapter、deviceReady、last（最後一次呼叫的層與原因）、degradeLog 等。"""
     return _call("backend_info", {})
@@ -103,4 +140,44 @@ class _Cublas(object):
         return list(flat)
 
 
+class _CublasLevel1(object):
+    """cuBLAS 第一、二級的最小對應（第二階段）：名稱與參數順序照 cuBLAS，去掉 handle，陣列取代裸指標。"""
+
+    def saxpy(self, n, alpha, x, y):
+        if len(list(x)[:n]) != n or len(list(y)[:n]) != n:
+            raise CudaWebError("cudaweb.cublas.saxpy：x 與 y 的長度要至少是 n=%d" % n)
+        return axpy(alpha, list(x)[:n], list(y)[:n])
+
+    def sscal(self, n, alpha, x):
+        if len(list(x)[:n]) != n:
+            raise CudaWebError("cudaweb.cublas.sscal：x 的長度要至少是 n=%d" % n)
+        return scal(alpha, list(x)[:n])
+
+    def sdot(self, n, x, y):
+        if len(list(x)[:n]) != n or len(list(y)[:n]) != n:
+            raise CudaWebError("cudaweb.cublas.sdot：x 與 y 的長度要至少是 n=%d" % n)
+        return dot(list(x)[:n], list(y)[:n])
+
+    def snrm2(self, n, x):
+        if len(list(x)[:n]) != n:
+            raise CudaWebError("cudaweb.cublas.snrm2：x 的長度要至少是 n=%d" % n)
+        return nrm2(list(x)[:n])
+
+    def sgemv(self, transa, m, n, alpha, A, x, beta, y):
+        if transa != "N":
+            raise CudaWebError("cudaweb.cublas.sgemv：第二階段只支援 transa='N'（收到 %r）" % (transa,))
+        if float(alpha) != 1.0 or float(beta) != 0.0:
+            raise CudaWebError("cudaweb.cublas.sgemv：第二階段只支援 alpha=1、beta=0")
+        flat = list(A)
+        if len(flat) != m * n:
+            raise CudaWebError("cudaweb.cublas.sgemv：A 的元素數 %d 與 m×n=%d 不符" % (len(flat), m * n))
+        return _call("gemv", {"a": flat, "x": list(x), "m": int(m), "n": int(n)})
+
+
 cublas = _Cublas()
+cublas_l1 = _CublasLevel1()
+cublas.saxpy = cublas_l1.saxpy
+cublas.sscal = cublas_l1.sscal
+cublas.sdot = cublas_l1.sdot
+cublas.snrm2 = cublas_l1.snrm2
+cublas.sgemv = cublas_l1.sgemv

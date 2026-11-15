@@ -58,6 +58,8 @@ function createStudioHost(d) {
   };
   registry.register(cpuPy);
   ['wasm-web', 'webgpu', 'directml', 'vulkan'].forEach((id) => registry.register(Planned.createPlannedBackend(id, {})));
+  // cudaweb：主行程沒有 GPU 上下文，probe 會說明原因；渲染行程另由 envProbe 注入實際狀態
+  registry.register(require('./backend_cudaweb.js').createCudawebBackend({}));
   const benchCache = BC.createBenchCache({ load: () => readJson(jf('bench-cache.json'), null), save: (o) => writeJson(jf('bench-cache.json'), o) }, now);
   const ctxOf = (p) => ({ hw, modelSha256: (p && p.modelSha256) || null });
 
