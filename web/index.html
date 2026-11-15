@@ -1721,7 +1721,9 @@ select:focus { outline: 2px solid var(--acc); }
   var TIMEOUT_MS = 8000;
   var roots = [JSD, RAWB];
   window.__FA_LAZY_BASES = [JSD + 'chunks/', RAWB + 'chunks/'];
-  window.__FA_LAZY_BASE = JSD + 'chunks/';
+  // 舊核心（釘住的 SHA 還是舊版時）只認 __FA_LAZY_BASE、沒有退路，所以這裡維持 raw，行為與改版前相同；
+  // 新核心認得 __FA_LAZY_BASES（jsDelivr 優先，raw 退路）。
+  window.__FA_LAZY_BASE = RAWB + 'chunks/';
   window.__FA_PREFETCH = {};
   // 依序嘗試 jsDelivr → raw；每個來源 8 秒逾時，失敗寫 console.warn（檔名、來源、錯誤、耗時）
   window.__faFetchFirst = function (rel) {

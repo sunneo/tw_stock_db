@@ -184,7 +184,8 @@ var FA_RAWB = RAW + '/' + FA_SHA + '/desktop-app/web-lazy/';
 var FA_ROOTS = [FA_JSD, FA_RAWB];
 var FA_TIMEOUT_MS = 8000;
 window.__FA_LAZY_BASES = [FA_JSD + 'chunks/', FA_RAWB + 'chunks/'];
-window.__FA_LAZY_BASE = FA_JSD + 'chunks/';
+// 舊核心只認 __FA_LAZY_BASE、沒有退路，維持 raw（與改版前相同）；新核心認得 __FA_LAZY_BASES（jsDelivr 優先）。
+window.__FA_LAZY_BASE = FA_RAWB + 'chunks/';
 window.__FA_PREFETCH = {};
 function faFetchFirst(rel) {
   var i = 0;
