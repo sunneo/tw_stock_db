@@ -7,7 +7,8 @@
 const assert = require('assert');
 const R = require('./lora_ref_train.js');
 const core = require('../gpu/gpu_core.js');
-const { fakeNavigator } = require('../gpu/gpu_fakes.js');
+const { fakeNavigator, fakeGl } = require('../gpu/gpu_fakes.js');
+const NN = require('../gpu/nn_ops.js');
 
 const cfg = { V: 11, d: 8, L: 2, H: 2, F: 12, r: 2, alpha: 4 };
 const toks = [1, 4, 7, 2, 9, 3, 0, 5, 8];   // T = 8
@@ -80,6 +81,38 @@ function model(seed) { const m = R.makeModel(cfg, seed); for (const lo of m.lora
         }
         for (let i = 0; i < 3; i++) assert.ok(Math.abs(ls[i] - la[i]) / Math.max(1, Math.abs(ls[i])) <= TOL * 10, '第 ' + i + ' 步損失軌跡差太大');
         assert.ok(la[2] < la[0], '損失應下降：' + la.join(' → '));
+    });
+
+    // ---- 五個核心全部接上（ops 介面）----
+    await check('全部 ops 走 T1（假 WebGPU）：損失與梯度與同步版在容差內，且五個核心都確實走了 T1', async () => {
+        const m = model(5), s = R.lossAndGrads(m, toks);
+        const ops = NN.trainerOps({ navigator: fakeNavigator().nav });
+        const a = await R.lossAndGradsAsync(m, toks, { ops });
+        assert.ok(Math.abs(a.loss - s.loss) / Math.abs(s.loss) <= TOL, 'loss 相對差');
+        assert.ok(maxRelGrads(a.grads, s.grads) <= TOL, '梯度範數相對差 ' + maxRelGrads(a.grads, s.grads));
+        for (const op of ['rmsnorm', 'softmax', 'silu', 'rope']) assert.ok(ops.stats.layers[op + ':T1'] > 0, op + ' 沒有走 T1');
+    });
+
+    await check('全部 ops 走 T3（假 WebGL2，無 WebGPU）：損失與梯度與同步版在容差內', async () => {
+        const m = model(5), s = R.lossAndGrads(m, toks);
+        const ops = NN.trainerOps({ navigator: {}, gl: fakeGl() });
+        const a = await R.lossAndGradsAsync(m, toks, { ops });
+        assert.ok(Math.abs(a.loss - s.loss) / Math.abs(s.loss) <= TOL, 'loss 相對差');
+        assert.ok(maxRelGrads(a.grads, s.grads) <= TOL, '梯度範數相對差 ' + maxRelGrads(a.grads, s.grads));
+        for (const op of ['rmsnorm', 'softmax', 'silu', 'rope']) assert.ok(ops.stats.layers[op + ':T3'] > 0, op + ' 沒有走 T3');
+    });
+
+    await check('AdamW 經 ops（T1）三步：權重軌跡的損失與同步 adamStep 在容差內', async () => {
+        const ms = model(7), ma = model(7);
+        const ss = R.adamInit(ms), sa = R.adamInit(ma);
+        const ops = NN.trainerOps({ navigator: fakeNavigator().nav });
+        for (let i = 0; i < 3; i++) {
+            const rs = R.lossAndGrads(ms, toks); R.adamStep(ms, rs.grads, ss, 0.02);
+            const ra = await R.lossAndGradsAsync(ma, toks, { ops }); await R.adamStepAsync(ma, ra.grads, sa, 0.02, ops);
+            const ls = R.lossAndGrads(ms, toks, { noGrad: true }).loss, la = R.lossAndGrads(ma, toks, { noGrad: true }).loss;
+            assert.ok(Math.abs(ls - la) / Math.abs(ls) <= TOL * 10, '第 ' + i + ' 步損失軌跡差 ' + Math.abs(ls - la) / Math.abs(ls));
+        }
+        assert.ok(ops.stats.layers['adamw:T1'] > 0, 'adamw 沒有走 T1');
     });
 
     console.log('\n' + pass + ' 通過，' + fail + ' 失敗（容差 ' + TOL.toExponential(2) + '）');

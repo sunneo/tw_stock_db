@@ -167,36 +167,82 @@ async function loraLinBwdA(be, dy, x, W, lo, s, xA, T, din, dout, grads, key) {
 }
 
 // 與 lossAndGrads 同一組公式（逐行對照）；差別只在矩陣乘走 be.matmul 並以 await 等待
+// ===== 逐核心的非同步運算介面 =====
+// 預設 cpuNnOps() 是這個檔案的 CPU 版本；cudaweb 版由呼叫端注入（見 backend_cudaweb.js）。
+// 介面：rmsnorm(x,g,T,d,eps)→y；softmax(x,rows,cols)→y；silu(x)→y；rope(x,T,H,hd,dir)→y；adamw(p,g,m,v,t,lr,b1,b2,eps,wd)→{p,m,v}
+function softmaxRowsCpu(x, rows, cols) {
+    const y = new Float64Array(rows * cols);
+    for (let r = 0; r < rows; r++) {
+        let mx = -Infinity; for (let c = 0; c < cols; c++) if (x[r * cols + c] > mx) mx = x[r * cols + c];
+        let s = 0; for (let c = 0; c < cols; c++) { const e = Math.exp(x[r * cols + c] - mx); y[r * cols + c] = e; s += e; }
+        for (let c = 0; c < cols; c++) y[r * cols + c] /= s;
+    }
+    return y;
+}
+function adamwCpu(p, g, m, v, t, lr, b1, b2, eps, wd) {
+    const c1 = 1 - Math.pow(b1, t), c2 = 1 - Math.pow(b2, t), n = p.length;
+    const P2 = new Float64Array(n), M2 = new Float64Array(n), V2 = new Float64Array(n);
+    for (let i = 0; i < n; i++) {
+        M2[i] = b1 * m[i] + (1 - b1) * g[i]; V2[i] = b2 * v[i] + (1 - b2) * g[i] * g[i];
+        P2[i] = p[i] - lr * wd * p[i] - lr * (M2[i] / c1) / (Math.sqrt(V2[i] / c2) + eps);
+    }
+    return { p: P2, m: M2, v: V2 };
+}
+function cpuNnOps() {
+    return {
+        rmsnorm: async (x, g, T, d) => rmsFwd(x, g, T, d, null).y,
+        softmax: async (x, rows, cols) => softmaxRowsCpu(x, rows, cols),
+        silu: async (x) => { const y = new Float64Array(x.length); for (let i = 0; i < x.length; i++) y[i] = x[i] * sig(x[i]); return y; },
+        rope: async (x, T, H, hd, dir) => rope(x, T, H, hd, dir),
+        adamw: async (p, g, m, v, t, lr, b1, b2, eps, wd) => adamwCpu(p, g, m, v, t, lr, b1, b2, eps, wd),
+    };
+}
+// RMSNorm：y 來自 ops；inv 在 CPU 上算（反向需要，且只是每列一次平方和）
+async function rmsFwdA(ops, x, g, T, d) {
+    const y = Float64Array.from(await ops.rmsnorm(x, g, T, d, 1e-6));
+    const inv = new Float64Array(T);
+    for (let t = 0; t < T; t++) { let s = 0; for (let i = 0; i < d; i++) s += x[t * d + i] * x[t * d + i]; inv[t] = 1 / Math.sqrt(s / d + 1e-6); }
+    return { y, inv };
+}
+
 async function lossAndGradsAsync(m, tokens, opts) {
-    opts = opts || {}; const be = opts.backend || cpuMatmulBackend();
+    opts = opts || {}; const be = opts.backend || cpuMatmulBackend(); const ops = opts.ops || cpuNnOps();
     const { V, d, L, H, F, r } = m.cfg; const hd = d / H; const s = (m.cfg.alpha || r) / r;
     const T = tokens.length - 1; const inp = tokens.slice(0, T), tgt = tokens.slice(1);
     let h = new Float64Array(T * d); for (let t = 0; t < T; t++) for (let i = 0; i < d; i++) h[t * d + i] = m.emb[inp[t] * d + i];
     const C = [];
     for (let l = 0; l < L; l++) {
         const P = m.layers[l], lo = m.lora[l], c = { h0: h };
-        const n1 = rmsFwd(h, P.n1, T, d, null); c.n1 = n1; const cq = {}, ck = {}, cv = {}, co = {};
+        const n1 = await rmsFwdA(ops, h, P.n1, T, d); c.n1 = n1; const cq = {}, ck = {}, cv = {}, co = {};
         const q0 = await loraLinA(be, n1.y, P.Wq, lo.q, s, T, d, d, cq), k0 = await loraLinA(be, n1.y, P.Wk, lo.k, s, T, d, d, ck), v = await loraLinA(be, n1.y, P.Wv, lo.v, s, T, d, d, cv);
-        const q = rope(q0, T, H, hd, 1), k = rope(k0, T, H, hd, 1); Object.assign(c, { cq, ck, cv, co, q, k, v });
-        const Pm = new Float64Array(H * T * T), ao = new Float64Array(T * d), sc = 1 / Math.sqrt(hd);
+        const q = await ops.rope(q0, T, H, hd, 1), k = await ops.rope(k0, T, H, hd, 1); Object.assign(c, { cq, ck, cv, co, q, k, v });
+        // 注意力分數：未遮罩的位置算 q·k/√hd，遮罩位置填 −1e30，softmax 之後正好是 0（與只算 j≤i 的版本等價）
+        const sc = 1 / Math.sqrt(hd), S = new Float64Array(H * T * T), ao = new Float64Array(T * d);
         for (let hh = 0; hh < H; hh++) for (let i = 0; i < T; i++) {
-            let mx = -Infinity; const row = (hh * T + i) * T;
-            for (let j = 0; j <= i; j++) { let z = 0; for (let u = 0; u < hd; u++) z += q[i * d + hh * hd + u] * k[j * d + hh * hd + u]; z *= sc; Pm[row + j] = z; if (z > mx) mx = z; }
-            let sum = 0; for (let j = 0; j <= i; j++) { Pm[row + j] = Math.exp(Pm[row + j] - mx); sum += Pm[row + j]; }
-            for (let j = 0; j <= i; j++) Pm[row + j] = Pm[row + j] / sum;
+            const row = (hh * T + i) * T;
+            for (let j = 0; j < T; j++) {
+                if (j > i) { S[row + j] = -1e30; continue; }
+                let z = 0; for (let u = 0; u < hd; u++) z += q[i * d + hh * hd + u] * k[j * d + hh * hd + u];
+                S[row + j] = z * sc;
+            }
+        }
+        const Pm = Float64Array.from(await ops.softmax(S, H * T, T));
+        for (let hh = 0; hh < H; hh++) for (let i = 0; i < T; i++) {
+            const row = (hh * T + i) * T;
             for (let u = 0; u < hd; u++) { let z = 0; for (let j = 0; j <= i; j++) z += Pm[row + j] * v[j * d + hh * hd + u]; ao[i * d + hh * hd + u] = z; }
         }
         c.P = Pm; c.ao = ao;
         const o = await loraLinA(be, ao, P.Wo, lo.o, s, T, d, d, co);
         const h1 = new Float64Array(T * d); for (let i = 0; i < h1.length; i++) h1[i] = h[i] + o[i]; c.h1 = h1;
-        const n2 = rmsFwd(h1, P.n2, T, d, null); c.n2 = n2;
+        const n2 = await rmsFwdA(ops, h1, P.n2, T, d); c.n2 = n2;
         const g = await amm(be, n2.y, P.Wg, T, d, F), u = await amm(be, n2.y, P.Wu, T, d, F), a = new Float64Array(T * F);
-        for (let i = 0; i < a.length; i++) a[i] = g[i] * sig(g[i]) * u[i];
+        const sg = await ops.silu(g);
+        for (let i = 0; i < a.length; i++) a[i] = sg[i] * u[i];
         c.g = g; c.u = u; c.a = a;
         const dn = await amm(be, a, P.Wd, T, F, d); const h2 = new Float64Array(T * d); for (let i = 0; i < h2.length; i++) h2[i] = h1[i] + dn[i];
         h = h2; C.push(c);
     }
-    const nf = rmsFwd(h, m.nf, T, d, null); const logits = await ammBt(be, nf.y, m.emb, T, d, V);
+    const nf = await rmsFwdA(ops, h, m.nf, T, d); const logits = await ammBt(be, nf.y, m.emb, T, d, V);
     let loss = 0; const dl = new Float64Array(T * V);
     for (let t = 0; t < T; t++) { let mx = -Infinity; for (let j = 0; j < V; j++) if (logits[t * V + j] > mx) mx = logits[t * V + j]; let sum = 0; for (let j = 0; j < V; j++) { dl[t * V + j] = Math.exp(logits[t * V + j] - mx); sum += dl[t * V + j]; } loss += -Math.log(dl[t * V + tgt[t]] / sum); for (let j = 0; j < V; j++) dl[t * V + j] = (dl[t * V + j] / sum - (j === tgt[t] ? 1 : 0)) / T; }
     loss /= T; if (opts.noGrad) return { loss };
@@ -214,7 +260,7 @@ async function lossAndGradsAsync(m, tokens, opts) {
             for (let j = 0; j <= i; j++) { let z = 0; for (let u = 0; u < hd; u++) { z += dao[i * d + hh * hd + u] * c.v[j * d + hh * hd + u]; dv[j * d + hh * hd + u] += c.P[row + j] * dao[i * d + hh * hd + u]; } dP[j] = z; dot += z * c.P[row + j]; }
             for (let j = 0; j <= i; j++) { const dS = c.P[row + j] * (dP[j] - dot) * sc; for (let u = 0; u < hd; u++) { dq[i * d + hh * hd + u] += dS * c.k[j * d + hh * hd + u]; dk[j * d + hh * hd + u] += dS * c.q[i * d + hh * hd + u]; } }
         }
-        const dq0 = rope(dq, T, H, hd, -1), dk0 = rope(dk, T, H, hd, -1);
+        const dq0 = await ops.rope(dq, T, H, hd, -1), dk0 = await ops.rope(dk, T, H, hd, -1);
         const dx = await loraLinBwdA(be, dq0, c.n1.y, P.Wq, lo.q, s, c.cq.xA, T, d, d, G, 'q');
         const dx2 = await loraLinBwdA(be, dk0, c.n1.y, P.Wk, lo.k, s, c.ck.xA, T, d, d, G, 'k'), dx3 = await loraLinBwdA(be, dv, c.n1.y, P.Wv, lo.v, s, c.cv.xA, T, d, d, G, 'v');
         for (let i = 0; i < dx.length; i++) dx[i] += dx2[i] + dx3[i];
@@ -222,6 +268,16 @@ async function lossAndGradsAsync(m, tokens, opts) {
         dh = dh0; grads[l] = G;
     }
     return { loss, grads };
+}
+
+// 非同步版的 AdamW 一步：與 adamStep 相同的步數與公式，逐矩陣交給 ops.adamw（wd=0，與同步版一致）
+async function adamStepAsync(m, grads, st, lr, ops) {
+    const o = ops || cpuNnOps(); st.t++;
+    for (let l = 0; l < m.lora.length; l++) for (const k of ['q', 'k', 'v', 'o']) for (const w of ['A', 'B']) {
+        const p = m.lora[l][k][w], g = grads[l][k][w], s = st.z[l][k][w];
+        const r = await o.adamw(p, g, s.m, s.v, st.t, lr, 0.9, 0.999, 1e-8, 0);
+        p.set(r.p); s.m.set(r.m); s.v.set(r.v);
+    }
 }
 
 // cudaweb 執行期 → 訓練器的 matmul 後端；記錄最後一次實際使用的層與原因（給後端選單顯示）
@@ -236,4 +292,4 @@ function cudawebMatmulBackend(rt) {
 }
 
 module.exports = { makeModel, lossAndGrads, adamInit, adamStep, estimate06B, makeRng,
-    lossAndGradsAsync, cpuMatmulBackend, cudawebMatmulBackend };
+    lossAndGradsAsync, adamStepAsync, cpuMatmulBackend, cpuNnOps, cudawebMatmulBackend };

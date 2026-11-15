@@ -644,4 +644,25 @@ function createBatch(dev) {
   return b;
 }
 
-module.exports = { rmsnormRef, rmsnorm, softmaxRef, softmax, siluRef, silu, ropeRef, rope, adamwCore, adamwRef, adamw, createBatch, runWgsl, getDevice, getGl, glSupport, glRun, tryLayers, nnBackendInfo, NN_OPS, WGSL_RMSNORM, WGSL_SOFTMAX, WGSL_SILU, WGSL_ROPE, WGSL_ADAMW, NOTE_T3 };
+// 訓練器用的運算介面（lora_ref_train.js 的 lossAndGradsAsync／adamStepAsync 接受的 ops）。
+// 每次呼叫都走三層降級（T1 → T3 → cpu-js），並把實際使用的層記在 stats 裡，給後端選單與測試用。
+function trainerOps(opts) {
+  const o = opts || {};
+  const stats = { calls: 0, layers: {}, last: null };
+  const rec = (op, info) => {
+    stats.calls++;
+    const key = op + ':' + info.layer;
+    stats.layers[key] = (stats.layers[key] || 0) + 1;
+    stats.last = info;
+  };
+  return {
+    stats: stats,
+    rmsnorm: async (x, g, T, d, eps) => { const r = await rmsnorm(x, g, T, d, eps, o); rec('rmsnorm', r.info); return r.result; },
+    softmax: async (x, rows, cols) => { const r = await softmax(x, rows, cols, o); rec('softmax', r.info); return r.result; },
+    silu: async (x) => { const r = await silu(x, o); rec('silu', r.info); return r.result; },
+    rope: async (x, T, H, hd, dir) => { const r = await rope(x, T, H, hd, dir, o); rec('rope', r.info); return r.result; },
+    adamw: async (p, g, m, v, t, lr, b1, b2, eps, wd) => { const r = await adamw(p, g, m, v, t, lr, b1, b2, eps, wd, o); rec('adamw', r.info); return r.result; },
+  };
+}
+
+module.exports = { trainerOps, rmsnormRef, rmsnorm, softmaxRef, softmax, siluRef, silu, ropeRef, rope, adamwCore, adamwRef, adamw, createBatch, runWgsl, getDevice, getGl, glSupport, glRun, tryLayers, nnBackendInfo, NN_OPS, WGSL_RMSNORM, WGSL_SOFTMAX, WGSL_SILU, WGSL_ROPE, WGSL_ADAMW, NOTE_T3 };
