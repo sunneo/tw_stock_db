@@ -134,6 +134,13 @@ function maxAbs(a, b) { let m = 0; for (let i = 0; i < a.length; i++) m = Math.m
     assert.ok(maxAbs(r.result, NN.siluRef(sv)) < 1e-6);
   });
 
+  await check('silu 沒有 WebGPU、有 WebGL2（假上下文）：層為 T3，結果與參考版一致', async () => {
+    const r = await NN.silu(sv, { navigator: {}, gl: fakeGl() });
+    assert.strictEqual(r.info.layer, 'T3');
+    assert.strictEqual(r.result.length, sv.length);
+    assert.ok(maxAbs(r.result, NN.siluRef(sv)) < 1e-6);
+  });
+
   await check('silu 沒有 WebGPU：退到 cpu-js 並寫明原因', async () => {
     const r = await NN.silu(sv, { navigator: {} });
     assert.strictEqual(r.info.layer, 'cpu-js');

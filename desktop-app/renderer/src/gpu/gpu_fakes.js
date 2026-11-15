@@ -221,6 +221,10 @@ function fakeGl(opts) {
             let s = 0; for (let c = 0; c < C; c++) s += Math.exp(fx(row * C + c) - mx);
             v = Math.exp(fx(idx) - mx) / s;
           }
+        } else if (k === 'silu') {
+          // 逐像素重現 FS_SILU
+          const W = gl.uniforms.uW, N = gl.uniforms.uN, X = tex('uX'), idx = y * ow + x;
+          if (idx < N) { const q = at(X, idx % W, Math.floor(idx / W)); v = q / (1 + Math.exp(-q)); }
         } else if (k === 'sum') {
           const W = gl.uniforms.uW, N = gl.uniforms.uN, j = y * gl.uniforms.uOW + x;
           if (j * 4 < N) for (let q = 0; q < 4; q++) { const e = j * 4 + q; if (e < N) v += at(tex('uA'), e % W, Math.floor(e / W)); }

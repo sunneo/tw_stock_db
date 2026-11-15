@@ -337,6 +337,23 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 `;
 
+// WebGL2 片段著色器：逐元素 x / (1 + e^(−x))
+const FS_SILU = `#version 300 es
+precision highp float;
+precision highp int;
+// @kernel silu
+uniform highp sampler2D uX;
+uniform int uW;
+uniform int uN;
+out vec4 fragColor;
+void main() {
+  int idx = int(gl_FragCoord.y) * uW + int(gl_FragCoord.x);
+  if (idx >= uN) { fragColor = vec4(0.0); return; }
+  float v = texelFetch(uX, ivec2(idx % uW, idx / uW), 0).r;
+  fragColor = vec4(v / (1.0 + exp(-v)), 0.0, 0.0, 1.0);
+}
+`;
+
 async function silu(x, opts) {
   const xf = Float32Array.from(x);
   return tryLayers('silu', opts,
@@ -348,7 +365,7 @@ async function silu(x, opts) {
         uni, Math.ceil(xf.length / 64));
       return outs[0];
     },
-    null,
+    (gl) => glRun(gl, FS_SILU, [xf], { i: { uN: xf.length } }, xf.length, ['uX']),
     () => siluRef(xf));
 }
 
