@@ -225,6 +225,13 @@ function maxAbs(a, b) { let m = 0; for (let i = 0; i < a.length; i++) m = Math.m
     assert.ok(maxAbs(r.result.p, ref.p) < 1e-6 && maxAbs(r.result.m, ref.m) < 1e-6 && maxAbs(r.result.v, ref.v) < 1e-6);
   });
 
+  await check('adamw 沒有 WebGPU、有 WebGL2（假上下文）：層為 T3，p、m、v 三個輸出都與參考版一致', async () => {
+    const r = await NN.adamw(ap, ag, am, av, A.t, A.lr, A.b1, A.b2, A.eps, A.wd, { navigator: {}, gl: fakeGl() });
+    assert.strictEqual(r.info.layer, 'T3');
+    const ref = NN.adamwRef(ap, ag, am, av, A.t, A.lr, A.b1, A.b2, A.eps, A.wd);
+    assert.ok(maxAbs(r.result.p, ref.p) < 1e-6 && maxAbs(r.result.m, ref.m) < 1e-6 && maxAbs(r.result.v, ref.v) < 1e-6);
+  });
+
   await check('adamw 沒有 WebGPU：退到 cpu-js 並寫明原因', async () => {
     const r = await NN.adamw(ap, ag, am, av, A.t, A.lr, A.b1, A.b2, A.eps, A.wd, { navigator: {} });
     assert.strictEqual(r.info.layer, 'cpu-js');

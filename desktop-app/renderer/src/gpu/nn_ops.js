@@ -499,6 +499,44 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 `;
 
+// WebGL2：AdamW 三個輸出各一趟（不用多個 draw buffer）。每趟都從四個輸入重算 m2、v2，所以三趟互不依賴。
+function fsAdamw(tag, outExpr) {
+  return `#version 300 es
+precision highp float;
+precision highp int;
+// @kernel ${tag}
+uniform highp sampler2D uP;
+uniform highp sampler2D uG;
+uniform highp sampler2D uM;
+uniform highp sampler2D uV;
+uniform int uW;
+uniform int uN;
+uniform float uLr;
+uniform float uB1;
+uniform float uB2;
+uniform float uEps;
+uniform float uWd;
+uniform float uC1;
+uniform float uC2;
+out vec4 fragColor;
+float fetch(sampler2D t, int i) { return texelFetch(t, ivec2(i % uW, i / uW), 0).r; }
+void main() {
+  int idx = int(gl_FragCoord.y) * uW + int(gl_FragCoord.x);
+  if (idx >= uN) { fragColor = vec4(0.0); return; }
+  float p = fetch(uP, idx);
+  float g = fetch(uG, idx);
+  float m = fetch(uM, idx);
+  float v = fetch(uV, idx);
+  float m2 = uB1 * m + (1.0 - uB1) * g;
+  float v2 = uB2 * v + (1.0 - uB2) * g * g;
+  fragColor = vec4(${outExpr}, 0.0, 0.0, 1.0);
+}
+`;
+}
+const FS_ADAMW_P = fsAdamw('adamw_p', 'p - uLr * uWd * p - uLr * (m2 / uC1) / (sqrt(v2 / uC2) + uEps)');
+const FS_ADAMW_M = fsAdamw('adamw_m', 'm2');
+const FS_ADAMW_V = fsAdamw('adamw_v', 'v2');
+
 async function adamw(p, g, m, v, t, lr, b1, b2, eps, wd, opts) {
   const pf = Float32Array.from(p), gf = Float32Array.from(g), mf = Float32Array.from(m), vf = Float32Array.from(v);
   const n = pf.length;
@@ -514,7 +552,16 @@ async function adamw(p, g, m, v, t, lr, b1, b2, eps, wd, opts) {
         uni, Math.ceil(n / 64));
       return { p: outs[0], m: outs[1], v: outs[2] };
     },
-    null,
+    (gl) => {
+      const c1 = 1 - Math.pow(b1, t), c2 = 1 - Math.pow(b2, t);
+      const ins = [pf, gf, mf, vf], names = ['uP', 'uG', 'uM', 'uV'];
+      const uni = { i: { uN: n }, f: { uLr: lr, uB1: b1, uB2: b2, uEps: eps, uWd: wd, uC1: c1, uC2: c2 } };
+      return {
+        p: glRun(gl, FS_ADAMW_P, ins, uni, n, names),
+        m: glRun(gl, FS_ADAMW_M, ins, uni, n, names),
+        v: glRun(gl, FS_ADAMW_V, ins, uni, n, names),
+      };
+    },
     () => adamwRef(pf, gf, mf, vf, t, lr, b1, b2, eps, wd));
 }
 

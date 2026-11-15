@@ -235,6 +235,18 @@ function fakeGl(opts) {
             const a = at(X, o % W, Math.floor(o / W)), b = at(X, (o + 1) % W, Math.floor((o + 1) / W));
             v = (r2 === 2 * i) ? (a * c - b * s) : (a * s + b * c);
           }
+        } else if (k === 'adamw_p' || k === 'adamw_m' || k === 'adamw_v') {
+          // 逐像素重現 fsAdamw 的三個輸出（同一組公式）
+          const W = gl.uniforms.uW, N = gl.uniforms.uN, idx = y * ow + x;
+          if (idx < N) {
+            const at2 = (t) => at(t, idx % W, Math.floor(idx / W));
+            const p0 = at2(tex('uP')), g = at2(tex('uG')), m0 = at2(tex('uM')), v0 = at2(tex('uV'));
+            const m2 = gl.uniforms.uB1 * m0 + (1 - gl.uniforms.uB1) * g;
+            const v2 = gl.uniforms.uB2 * v0 + (1 - gl.uniforms.uB2) * g * g;
+            if (k === 'adamw_p') v = p0 - gl.uniforms.uLr * gl.uniforms.uWd * p0 - gl.uniforms.uLr * (m2 / gl.uniforms.uC1) / (Math.sqrt(v2 / gl.uniforms.uC2) + gl.uniforms.uEps);
+            else if (k === 'adamw_m') v = m2;
+            else v = v2;
+          }
         } else if (k === 'sum') {
           const W = gl.uniforms.uW, N = gl.uniforms.uN, j = y * gl.uniforms.uOW + x;
           if (j * 4 < N) for (let q = 0; q < 4; q++) { const e = j * 4 + q; if (e < N) v += at(tex('uA'), e % W, Math.floor(e / W)); }
