@@ -315,4 +315,77 @@ async function adamw(p, g, m, v, t, lr, b1, b2, eps, wd, opts) {
     () => adamwRef(pf, gf, mf, vf, t, lr, b1, b2, eps, wd));
 }
 
-module.exports = { rmsnormRef, rmsnorm, softmaxRef, softmax, siluRef, silu, ropeRef, rope, adamwCore, adamwRef, adamw, runWgsl, getDevice, tryLayers, WGSL_RMSNORM, WGSL_SOFTMAX, WGSL_SILU, WGSL_ROPE, WGSL_ADAMW, NOTE_T3 };
+// ---------- 批次提交：同一個 command encoder、中間結果留在 GPU 緩衝區，只在 read() 時回讀 ----------
+// 用法：const b = createBatch(dev); const x = b.upload(arr); const y = b.rmsnorm(x, g, T, d, eps); ...
+//       const [out] = await b.read([[y, n]]);   // 整批只 submit 一次、回讀只在最後
+// 目前涵蓋 RMSNorm、softmax、SiLU、RoPE（同一層內的逐元素與列運算）。matmul 仍走 gpu_core 的獨立呼叫（每次一次往返）。
+function createBatch(dev) {
+  const enc = dev.createCommandEncoder();
+  let submitted = false;
+  const stats = { dispatches: 0, readbacks: 0 };
+  function storage(n) { return dev.createBuffer({ size: Math.max(4, n * 4), usage: USAGE.STORAGE | USAGE.COPY_SRC | USAGE.COPY_DST }); }
+  function upload(arr) { const f = Float32Array.from(arr); const buf = storage(f.length); dev.queue.writeBuffer(buf, 0, f); return { buf: buf, n: f.length }; }
+  function dispatch(code, bindBufs, uniform, groups) {
+    if (submitted) throw new Error('批次已經提交，不能再加入運算');
+    const ub = dev.createBuffer({ size: Math.max(16, Math.ceil(uniform.byteLength / 16) * 16), usage: USAGE.UNIFORM | USAGE.COPY_DST });
+    dev.queue.writeBuffer(ub, 0, uniform);
+    const module = dev.createShaderModule({ code: code });
+    const pipe = dev.createComputePipeline({ layout: 'auto', compute: { module: module, entryPoint: 'main' } });
+    const entries = bindBufs.map((b, i) => ({ binding: i, resource: { buffer: b } }));
+    entries.push({ binding: bindBufs.length, resource: { buffer: ub } });
+    const bg = dev.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries: entries });
+    const pass = enc.beginComputePass();
+    pass.setPipeline(pipe); pass.setBindGroup(0, bg); pass.dispatchWorkgroups(groups); pass.end();
+    stats.dispatches++;
+  }
+  const b = {
+    upload: upload,
+    rmsnorm(x, g, T, d, eps) {
+      const y = storage(T * d);
+      const uni = new ArrayBuffer(16); new Uint32Array(uni, 0, 2).set([T, d]); new Float32Array(uni, 8, 1)[0] = eps;
+      dispatch(WGSL_RMSNORM, [x.buf, g.buf, y], uni, Math.ceil(T / 64));
+      return { buf: y, n: T * d };
+    },
+    softmax(x, rows, cols) {
+      const y = storage(rows * cols);
+      const uni = new ArrayBuffer(16); new Uint32Array(uni, 0, 2).set([rows, cols]);
+      dispatch(WGSL_SOFTMAX, [x.buf, y], uni, Math.ceil(rows / 64));
+      return { buf: y, n: rows * cols };
+    },
+    silu(x) {
+      const y = storage(x.n);
+      const uni = new ArrayBuffer(16); new Uint32Array(uni, 0, 1)[0] = x.n;
+      dispatch(WGSL_SILU, [x.buf, y], uni, Math.ceil(x.n / 64));
+      return { buf: y, n: x.n };
+    },
+    rope(x, T, H, hd, dir) {
+      const y = storage(T * H * hd);
+      const uni = new ArrayBuffer(16); new Uint32Array(uni, 0, 3).set([T, H, hd]); new Float32Array(uni, 12, 1)[0] = dir;
+      dispatch(WGSL_ROPE, [x.buf, y], uni, Math.ceil(T * H * (hd / 2) / 64));
+      return { buf: y, n: T * H * hd };
+    },
+    // 一次 submit，整批的回讀都在這裡；specs = [[handle, n], ...]，回傳 Float32Array 陣列
+    async read(specs) {
+      if (submitted) throw new Error('批次已經提交過');
+      submitted = true;
+      const rbs = specs.map(([h, n]) => {
+        const rb = dev.createBuffer({ size: Math.max(4, n * 4), usage: USAGE.MAP_READ | USAGE.COPY_DST });
+        enc.copyBufferToBuffer(h.buf, 0, rb, 0, n * 4);
+        return rb;
+      });
+      dev.queue.submit([enc.finish()]);
+      const out = [];
+      for (const rb of rbs) {
+        await rb.mapAsync(1);
+        out.push(new Float32Array(rb.getMappedRange().slice(0)));
+        rb.unmap();
+        stats.readbacks++;
+      }
+      return out;
+    },
+    stats: stats,
+  };
+  return b;
+}
+
+module.exports = { rmsnormRef, rmsnorm, softmaxRef, softmax, siluRef, silu, ropeRef, rope, adamwCore, adamwRef, adamw, createBatch, runWgsl, getDevice, tryLayers, WGSL_RMSNORM, WGSL_SOFTMAX, WGSL_SILU, WGSL_ROPE, WGSL_ADAMW, NOTE_T3 };

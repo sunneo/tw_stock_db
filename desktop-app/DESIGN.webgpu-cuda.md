@@ -461,7 +461,7 @@ Python 模擬器與離線模型推論共用同一個 GPU 裝置：
 
 - **JS 訓練器（已接入，非同步變體）**：`renderer/src/studio/lora_ref_train.js` 新增 `lossAndGradsAsync`，前向與反向的矩陣乘改為 `await be.matmul(...)`；同步原路徑一字未改，當退路與參考實作。`cudawebMatmulBackend(rt)` 把 cudaweb 執行期接上訓練器，並記錄最後一次實際的層與原因。
 - **仍在 CPU 的部分**：RMSNorm、softmax、RoPE、SiLU、AdamW 仍是 CPU（Float64）。注意力的逐元素部分同樣在 CPU。
-- **尚未做的部分**：一個訓練步的多個核心**批次提交、中間結果留在 GPU 緩衝區**。目前每次矩陣乘仍是一次往返，這是待辦，不是已完成的效能優化。
+- **批次提交（已完成，範圍有限）**：`nn_ops.js` 的 `createBatch` 可把 RMSNorm、softmax、SiLU、RoPE 串在同一個 command encoder，中間結果留在 GPU 緩衝區，整批只 submit 一次、只在 `read()` 回讀（測試以計數驗證）。**尚未涵蓋**：matmul 仍是 gpu_core 的獨立呼叫（每次一次往返）、AdamW 還沒進批次，所以訓練步整體仍不是單一 command buffer。
 - **數值一致性**（`lora_ref_train_async_test.js`，5 項）：CPU 後端與同步版損失差 < 1e-12、梯度範數相對差 < 1e-10；cudaweb（假 WebGPU 裝置）損失與梯度的範數相對差在暫定容差 3.3e-6 以內。量測採範數相對誤差，不採逐元素相對誤差（後者被接近 0 的梯度元素主導，與 f32 絕對捨入誤差不成比例）。
 - **後端狀態**：`backend_cudaweb.js` 依真實能力回報：有 WebGPU 裝置或 WebGL2 上下文、且拿得到運算執行期時 `available:true`，reason 寫明實際層；主行程沒有執行期時 `available:false` 並說明原因。方法 `init/step/evalLoss/saveCheckpoint/loadCheckpoint` 已實作（`backend_cudaweb_test.js`，7 項）。
 - **範圍外**：`llm_scratch.py` 是 Python／torch 自己的訓練，走它自己的 torch 路徑；cudaweb 的熱點接入只涵蓋 JS 訓練器。

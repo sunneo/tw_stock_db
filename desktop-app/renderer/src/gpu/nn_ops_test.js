@@ -195,6 +195,42 @@ function maxAbs(a, b) { let m = 0; for (let i = 0; i < a.length; i++) m = Math.m
     assert.ok(r.info.reason.includes(NN.NOTE_T3));
   });
 
+  // ---- 批次提交 ----
+  await check('批次：rmsnorm → silu → softmax 連續運算，只 submit 一次、只回讀一次，結果與逐一呼叫一致', async () => {
+    const nav = fakeNavigator().nav;
+    const g0 = await NN.getDevice(nav);
+    const dev = g0.dev;
+    let submits = 0, maps = 0;
+    const realSubmit = dev.queue.submit.bind(dev.queue);
+    dev.queue.submit = (cmds) => { submits++; return realSubmit(cmds); };
+    const T = 4, d = 6;
+    const x = seeded(T * d, 11), gg = seeded(d, 12);
+    const b = NN.createBatch(dev);
+    const xb = b.upload(x), gb = b.upload(gg);
+    const n1 = b.rmsnorm(xb, gb, T, d, 1e-6);
+    const s1 = b.silu(n1);
+    const s2 = b.softmax(s1, T, d);
+    const [out] = await b.read([[s2, T * d]]);
+    maps = b.stats.readbacks;
+    assert.strictEqual(submits, 1, '應只 submit 一次，實際 ' + submits);
+    assert.strictEqual(b.stats.dispatches, 3);
+    assert.strictEqual(maps, 1, '應只回讀一次');
+    // 逐一呼叫的參考（每步都在主機上）
+    const ref = NN.softmaxRef(NN.siluRef(NN.rmsnormRef(x, gg, T, d, 1e-6)), T, d);
+    assert.ok(maxAbs(out, ref) < 1e-6, '差 ' + maxAbs(out, ref));
+    dev.queue.submit = realSubmit;
+  });
+
+  await check('批次：提交後不能再加入運算或再次讀取', async () => {
+    const dev = (await NN.getDevice(fakeNavigator().nav)).dev;
+    const b = NN.createBatch(dev);
+    const xb = b.upload([1, 2, 3, 4]);
+    const y = b.silu(xb);
+    await b.read([[y, 4]]);
+    assert.throws(() => b.silu(xb), /已經提交/);
+    await assert.rejects(b.read([[y, 4]]), /已經提交過/);
+  });
+
   await check('形狀不符：直接丟錯（不降級，避免默默算錯）', async () => {
     assert.throws(() => NN.rmsnormRef(x.slice(1), g, T, d, eps), /x 的長度/);
     assert.throws(() => NN.rmsnormRef(x, g.slice(1), T, d, eps), /g 的長度/);
