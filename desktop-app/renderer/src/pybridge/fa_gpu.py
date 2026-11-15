@@ -12,6 +12,7 @@ fa_gpu — GPU 相容層（numba／cupy／torch／pycuda 墊片）的共用核�
 """
 import importlib.machinery as _mach
 import os
+import re
 import sys
 import uuid
 from array import array
@@ -169,8 +170,22 @@ def _unpack_flat(vals, dtname, shape):
     return np.asarray(vals, dtype=_np_dtype(dtname)).reshape(shape)
 
 
+_SHIM_IMPORT_RE = re.compile(r"\bimport\s+[^\n#;]*\b(?:numba|cupy|torch|pycuda)\b|\bfrom\s+(?:numba|cupy|torch|pycuda)\b")
+
+
+def script_needs_shim(text):
+    """腳本是否 import numba／cupy／torch／pycuda（與 renderer/src/gpu/gpu_preload.js 的 scriptNeedsNumpy 用同一條規則）。
+    先去掉 # 註解（寧可漏掉也不要誤判）。"""
+    code = re.sub(r"#[^\n]*", "", str(text or ""))
+    return _SHIM_IMPORT_RE.search(code) is not None
+
+
 def f64_mode():
-    """設定 cudaCompatFloat64（exact／f32／auto）。宿主在 gpu.info 回傳；沒有橋接時回 auto（之後執行會說明橋接不可用）。"""
+    """設定 cudaCompatFloat64（exact／f32／auto）。優先看環境變數 FA_CUDA_F64（桌面版由 fa_run 的 --cuda-f64 設定）；
+    否則宿主在 gpu.info 回傳；沒有橋接時回 auto（之後執行會說明橋接不可用）。"""
+    env = os.environ.get("FA_CUDA_F64")
+    if env in ("exact", "f32", "auto"):
+        return env
     try:
         m = str(info().get("f64Mode") or "auto")
     except (GpuCompatError, AttributeError):

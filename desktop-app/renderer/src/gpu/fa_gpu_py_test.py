@@ -905,6 +905,87 @@ def t_dd_algorithm_mirror_precision():
     assert worst_add < 1e-13 and worst_mul < 1e-13, (worst_add, worst_mul)
 
 
+# ---------------------------------------------------------------- 一般 run_command 的 GPU 相容層（fa_run --gpu-only）、設定傳遞
+def _fa_run(opts, script_text):
+    """用真的子行程跑 fa_run.py（不開視窗）。opts 不含腳本路徑；回傳 (returncode, stdout, stderr)。"""
+    import subprocess
+    import shutil
+    d = tempfile.mkdtemp(prefix="fa-gpu-run-")
+    try:
+        script = os.path.join(d, "s.py")
+        with io.open(script, "w", encoding="utf-8") as f:
+            f.write(script_text)
+        env = dict(os.environ, FA_GPU_FORCE_SHIM="1")
+        env.pop("PYTHONIOENCODING", None)
+        env.pop("PYTHONUTF8", None)
+        env.pop("FA_CUDA_COMPAT", None)
+        env.pop("FA_CUDA_F64", None)
+        p = subprocess.run([sys.executable, os.path.join(PYBRIDGE, "fa_run.py")] + opts + [script], env=env,
+                           capture_output=True, encoding="utf-8", errors="replace", timeout=120)
+        return p.returncode, p.stdout, p.stderr
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+_SHIM_PROBE = (
+    "import sys, os\n"
+    "print('SHIM', any(type(f).__name__ == '_ShimFinder' for f in sys.meta_path))\n"
+    "print('BRIDGE', 'fa_bridge' in sys.modules)\n"
+    "print('PYIO', os.environ.get('PYTHONIOENCODING'))\n"
+    "print('COMPAT', os.environ.get('FA_CUDA_COMPAT'))\n"
+)
+
+
+def t_script_needs_shim_rule():
+    from fa_gpu import script_needs_shim
+    yes = ["from numba import cuda\n", "import torch.nn as nn\n", "import cupy as cp\n", "from pycuda import driver\n",
+           "import numpy, numba\n", "    from torch import tensor\n"]
+    no = ["# import numba\n", "import numpy as np\n", "x = 'numba'\n", "import numba_extra\n",
+          # 已知限制：字串裡的 "import torch" 也會判成需要（與網頁版同一條規則，誤判只會多裝墊片，不會改變輸出）
+          "import os; from numba_x import y\n"]
+    for s in yes:
+        assert script_needs_shim(s), "應該判定需要墊片：" + s
+    for s in no:
+        assert not script_needs_shim(s), "不應該判定需要墊片：" + s
+
+
+def t_fa_run_gpu_only_plain_script_untouched():
+    # 一般 run_command：腳本沒有 import 墊片套件 → 照原樣執行，不裝墊片、不載入 LLM／瀏覽器轉接、不改編碼
+    code, out, err = _fa_run(["--gpu-only", "--rpc", "", "--"], _SHIM_PROBE)
+    assert code == 0, err
+    assert "SHIM False" in out and "BRIDGE False" in out and "PYIO None" in out, out + err
+
+
+def t_fa_run_gpu_only_shim_script_gets_shim():
+    # 腳本 import numba → 只安裝 GPU 相容層（不裝 LLM／瀏覽器轉接）
+    code, out, err = _fa_run(["--gpu-only", "--rpc", "", "--"], "import numba\n" + _SHIM_PROBE)
+    assert code == 0, err
+    assert "SHIM True" in out and "BRIDGE False" in out, out + err
+
+
+def t_fa_run_cuda_compat_off_skips_shim():
+    # 技能包模式＋GPU 相容層關閉：不安裝墊片，fa_bridge 照常載入（轉接不受影響）
+    code, out, err = _fa_run(["--cuda-compat", "off", "--rpc", "", "--"], _SHIM_PROBE)
+    assert code == 0, err
+    assert "SHIM False" in out and "COMPAT off" in out and "BRIDGE True" in out, out + err
+
+
+def t_fa_run_cuda_compat_off_gpu_only_no_shim():
+    # run_command 模式＋關閉：腳本 import numba 不會被墊片遮蔽（真的 numba 沒有安裝時會報 ImportError，這是預期的）
+    code, out, err = _fa_run(["--gpu-only", "--cuda-compat", "off", "--rpc", "", "--"], _SHIM_PROBE + "import numba\n")
+    assert "SHIM False" in out, out + err
+    assert code == 0 or "numba" in err, err
+
+
+def t_fa_run_passes_f64_mode_to_child():
+    code, out, err = _fa_run(["--cuda-f64", "exact", "--rpc", "", "--"],
+                             "import fa_gpu\nprint('F64', fa_gpu.f64_mode())\n")
+    assert code == 0 and "F64 exact" in out, out + err
+    code, out, err = _fa_run(["--cuda-f64", "f32", "--rpc", "", "--"],
+                             "import fa_gpu\nprint('F64', fa_gpu.f64_mode())\n")
+    assert "F64 f32" in out, out + err
+
+
 for name, fn in list(globals().items()):
     if name.startswith("t_") and callable(fn):
         check(name[2:], fn)

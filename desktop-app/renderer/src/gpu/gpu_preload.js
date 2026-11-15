@@ -38,7 +38,8 @@
     return { lines: lines, numpy: numpy };
   }
 
-  var api = { scriptNeedsNumpy: scriptNeedsNumpy, prepareRun: prepareRun };
+  // 桌面版 run_command 也用同一條規則判斷要不要裝 GPU 相容層（腳本 import 墊片套件才需要）
+  var api = { scriptNeedsNumpy: scriptNeedsNumpy, scriptNeedsShim: scriptNeedsNumpy, prepareRun: prepareRun };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.FaGpuPreload = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

@@ -96,6 +96,26 @@ function fakePyodide(opts) {
     assert.ok(src.indexOf("fa_gpu.register_script(__fa_script_src__)") > 0, '_gpuRegisterScript 沒有呼叫 fa_gpu.register_script');
   });
 
+  await check('run_command 接線：GPU-only 模式、cwd_abs 傳入、選項順序、只接受 gpu.* 操作、結果帶 gpu 欄位', async () => {
+    const fa = fs.readFileSync(path.join(__dirname, '..', 'floating-assistant.js'), 'utf8').replace(/\r\n/g, '\n');
+    const boot = fs.readFileSync(path.join(__dirname, '..', '..', 'bootstrap.js'), 'utf8').replace(/\r\n/g, '\n');
+    assert.ok(fa.indexOf("async _pyBridgeWrap(command, args, cwdAbs)") > 0, '_pyBridgeWrap 沒有 cwdAbs 參數');
+    assert.ok(fa.indexOf("const gpuOnly = !skill;") > 0, '沒有 GPU-only 模式（非技能包時只轉 GPU）');
+    assert.ok(fa.indexOf("'--cuda-f64', cudaF64") > 0, 'float64 模式沒有傳給 fa_run');
+    assert.ok(fa.indexOf("this._gpuPreloadApi().scriptNeedsShim(text)") > 0, 'GPU-only 沒有用同一條規則判斷腳本');
+    assert.ok(fa.indexOf("此執行只提供 GPU 相容層") > 0, 'GPU-only 模式沒有擋住其他操作');
+    assert.ok(fa.indexOf("_gpuRecord(op.slice(4)") > 0, 'gpu.* 操作沒有記錄 layer／reason／calls');
+    assert.ok(boot.indexOf("parsed.cwd_abs || null) : null") > 0, 'bootstrap 沒有把 cwd_abs 傳給 _pyBridgeWrap');
+    assert.ok(boot.indexOf("_pyBridgeServe(wrapped.rpc, { gpuOnly: !!wrapped.gpuOnly })") > 0, 'bootstrap 沒有傳 gpuOnly 給 serve');
+    assert.ok(boot.indexOf("gpu: info.gpu") > 0, 'python_api_bridge 結果沒有 gpu 欄位');
+  });
+
+  await check('桌面版 run_command 的判斷（scriptNeedsShim）與網頁版同一條規則', async () => {
+    assert.strictEqual(typeof P.scriptNeedsShim, 'function');
+    for (const s of ['from numba import cuda\n', 'import torch\n']) assert.strictEqual(P.scriptNeedsShim(s), true, s);
+    for (const s of ['import numpy\nprint(1)\n', '# import numba\n']) assert.strictEqual(P.scriptNeedsShim(s), false, s);
+  });
+
   console.log('\n' + pass + ' 通過，' + fail + ' 失敗');
   if (fail) process.exit(1);
 })();

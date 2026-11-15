@@ -857,8 +857,9 @@ function patchCloudflareWording(root) {
       try {
         // 執行技能包的 Python 腳本時，把腳本啟動指令改寫成經過轉接層（playwright 等公開 API 實際接到助理自己的工具），見 floating-assistant.js 的 _pyBridgeWrap
         let wrapped = null, stopBridge = null;
-        try { wrapped = fa._pyBridgeWrap ? await fa._pyBridgeWrap(command, Array.isArray(parsed.args) ? parsed.args.map(String) : []) : null; } catch (_) { wrapped = null; }
-        if (wrapped) stopBridge = fa._pyBridgeServe(wrapped.rpc);
+        // 一般 run_command（不在技能包裡）：cudaCompat 為 on 時，只有腳本 import numba／cupy／torch／pycuda 才改寫（gpuOnly，只轉 GPU 操作）
+        try { wrapped = fa._pyBridgeWrap ? await fa._pyBridgeWrap(command, Array.isArray(parsed.args) ? parsed.args.map(String) : [], parsed.cwd_abs || null) : null; } catch (_) { wrapped = null; }
+        if (wrapped) stopBridge = fa._pyBridgeServe(wrapped.rpc, { gpuOnly: !!wrapped.gpuOnly });
         let result;
         try {
           result = await window.desktopAPI.exec.run({
@@ -871,7 +872,8 @@ function patchCloudflareWording(root) {
         } finally {
           if (stopBridge) {
             const info = await stopBridge();
-            if (result && typeof result === "object") result.python_api_bridge = { used: true, calls: info.calls, ops: info.ops, simulated: info.simulated && info.simulated.length ? info.simulated : undefined, note: "這支 Python 腳本是經過 API 轉接層執行的：腳本裡的 playwright 等呼叫實際上由助理的瀏覽器控制工具完成（沒有連 Chrome 遠端除錯埠）；openai／anthropic 與直接送 HTTP 的 LLM 呼叫由助理已設定的 LLM Model 回答（embeddings、圖片、語音、工具呼叫會先從 Model 清單找有支援的，全部都不支援才回報不支援）；simulated 列出的是助理沒有對應能力、由模擬回應代替的呼叫。" };
+            if (result && typeof result === "object" && wrapped && wrapped.gpuOnly) result.python_api_bridge = { used: true, gpuOnly: true, calls: info.calls, ops: info.ops, gpu: info.gpu, note: "這支 Python 腳本的 numba／cupy／torch／pycuda 呼叫經過 GPU 相容層（不是真的 CUDA）：gpu.layer 是實際執行的層（T1＝WebGPU，CPU＝本機 Python 模擬），gpu.reason 說明原因。其他套件沒有經過轉接。" };
+            else if (result && typeof result === "object") result.python_api_bridge = { used: true, calls: info.calls, ops: info.ops, gpu: info.gpu, simulated: info.simulated && info.simulated.length ? info.simulated : undefined, note: "這支 Python 腳本是經過 API 轉接層執行的：腳本裡的 playwright 等呼叫實際上由助理的瀏覽器控制工具完成（沒有連 Chrome 遠端除錯埠）；openai／anthropic 與直接送 HTTP 的 LLM 呼叫由助理已設定的 LLM Model 回答（embeddings、圖片、語音、工具呼叫會先從 Model 清單找有支援的，全部都不支援才回報不支援）；simulated 列出的是助理沒有對應能力、由模擬回應代替的呼叫。" };
           }
         }
         return JSON.stringify(result);
