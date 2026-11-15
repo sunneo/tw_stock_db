@@ -3,6 +3,7 @@
 // 所以它驗證的是：主機端的緩衝區配置、綁定順序、分派數量、降級與回報；不驗證 WGSL 或 GLSL 本身。
 'use strict';
 const core = require('./gpu_core.js');
+const NN = require('./nn_ops.js');
 
 // opts: { limits, features, isFallback, adapter: 'ok'|'null'|'throw', deviceError, kernelError }
 function fakeNavigator(opts) {
@@ -15,8 +16,12 @@ function fakeNavigator(opts) {
     lost: lostPromise,
     __resolveLost: (info) => resolveLost(info),
     queue: {
-      writeBuffer(buf, off, data) { new Uint8Array(buf.data).set(new Uint8Array(data.buffer, data.byteOffset, data.byteLength), off); },
-      submit(cmds) { for (const ops of cmds) for (const op of ops) runKernel(op); }
+      // 真實 WebGPU 接受 ArrayBuffer 與 TypedArray 兩種來源
+      writeBuffer(buf, off, data) {
+        const src = data instanceof ArrayBuffer ? new Uint8Array(data) : new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+        new Uint8Array(buf.data).set(src, off);
+      },
+      submit(cmds) { for (const ops of cmds) for (const op of ops) { if (op.copy) new Uint8Array(op.dst.data).set(new Uint8Array(op.src.data, op.so, op.n), op.dO); else runKernel(op); } }
     },
     createBuffer({ size, usage }) {
       const b = { size, usage, data: new ArrayBuffer(Math.max(4, size)), destroy() {}, unmap() {} };
@@ -42,7 +47,8 @@ function fakeNavigator(opts) {
             end() {}
           };
         },
-        copyBufferToBuffer(src, so, dst, dO, n) { new Uint8Array(dst.data).set(new Uint8Array(src.data, so, n), dO); },
+        // 複製要排進佇列、在 submit 時依序執行（真實 WebGPU 也是這樣）；否則讀回會拿到核心執行前的舊資料
+        copyBufferToBuffer(src, so, dst, dO, n) { ops.push({ copy: true, src: src, so: so, dst: dst, dO: dO, n: n }); },
         finish() { return ops; }
       };
     },
@@ -88,6 +94,10 @@ function fakeNavigator(opts) {
       // 依序執行（CAS 迴圈在假裝置上等價於依序的 f32 加法）
       const n = u32(e[3])[0], idx = u32(e[0]), vals = f32(e[1], n), out = f32(e[2], u32(e[3])[1]);
       for (let i = 0; i < n; i++) out[idx[i]] = Math.fround(out[idx[i]] + vals[i]);
+    } else if (k === 'rmsnorm') {
+      // 綁定順序：0 x、1 g、2 y、3 uniform（rows u32、d u32、eps f32）
+      const rows = u32(e[3])[0], d = u32(e[3])[1], eps = new Float32Array(e[3].data, 8, 1)[0];
+      f32(e[2], rows * d).set(NN.rmsnormRef(f32(e[0], rows * d), f32(e[1], d), rows, d, eps));
     } else if (k === 'axpy' || k === 'scal') {
       const n = u32(e[e.length - 1])[0];
       const alpha = new Float32Array(e[e.length - 1].data, 4, 1)[0];

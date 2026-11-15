@@ -1,0 +1,120 @@
+// nn_ops.js — 訓練步用的 cudaweb 核心（DESIGN.webgpu-cuda.md §12.4，第三階段後段）。
+// 每個操作三層：T1 = WGSL（WebGPU）、T3 = WebGL2（尚未實作，會寫明）、cpu-js = CPU 參考版。
+// 目前已完成的操作：RMSNorm。之後依序加入 softmax、SiLU、RoPE、AdamW。
+// 注意：WGSL 原始碼在真 WebGPU 上尚未驗證；測試的假裝置用 CPU 參考版執行，只驗證主機端的綁定、回讀與降級流程。
+'use strict';
+const core = require('./gpu_core.js');
+
+const USAGE = { MAP_READ: 0x0001, COPY_SRC: 0x0004, COPY_DST: 0x0008, UNIFORM: 0x0040, STORAGE: 0x0080 };
+const NOTE_T3 = 'WebGL2 版尚未實作';
+
+// 取得 WebGPU 裝置（每個 navigator 只要一次）。沒有就回傳 dev:null 與原因。
+const devCache = new Map();
+function getDevice(nav) {
+  if (!nav || !nav.gpu) return Promise.resolve({ dev: null, reason: 'WebGPU 不可用（navigator.gpu 不存在）' });
+  if (!devCache.has(nav)) {
+    devCache.set(nav, (async () => {
+      try {
+        const pa = await core.probeAdapter(nav);
+        if (!pa.adapter) return { dev: null, reason: 'WebGPU 沒有可用的介面卡' + (pa.probe && pa.probe.reason ? '（' + pa.probe.reason + '）' : '') };
+        const dev = await pa.adapter.requestDevice();
+        return { dev: dev, reason: null };
+      } catch (e) { return { dev: null, reason: 'WebGPU 初始化失敗：' + String((e && e.message) || e) }; }
+    })());
+  }
+  return devCache.get(nav);
+}
+
+// 通用的單次分派：bufs = [{data: Float32Array, out: bool}]，依序綁定 0..n-1；uniform 綁在最後一個索引
+async function runWgsl(dev, code, bufs, uniform, groups) {
+  const objs = bufs.map((b) => {
+    const buf = dev.createBuffer({ size: b.data.byteLength, usage: USAGE.STORAGE | USAGE.COPY_SRC | USAGE.COPY_DST });
+    dev.queue.writeBuffer(buf, 0, b.data);
+    return buf;
+  });
+  const ub = dev.createBuffer({ size: Math.max(16, Math.ceil(uniform.byteLength / 16) * 16), usage: USAGE.UNIFORM | USAGE.COPY_DST });
+  dev.queue.writeBuffer(ub, 0, uniform);
+  const module = dev.createShaderModule({ code: code });
+  const pipe = dev.createComputePipeline({ layout: 'auto', compute: { module: module, entryPoint: 'main' } });
+  const entries = objs.map((buf, i) => ({ binding: i, resource: { buffer: buf } }));
+  entries.push({ binding: bufs.length, resource: { buffer: ub } });
+  const bg = dev.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries: entries });
+  const enc = dev.createCommandEncoder();
+  const pass = enc.beginComputePass();
+  pass.setPipeline(pipe); pass.setBindGroup(0, bg); pass.dispatchWorkgroups(groups); pass.end();
+  const rb = bufs.map((b) => (b.out ? dev.createBuffer({ size: b.data.byteLength, usage: USAGE.MAP_READ | USAGE.COPY_DST }) : null));
+  bufs.forEach((b, i) => { if (b.out) enc.copyBufferToBuffer(objs[i], 0, rb[i], 0, b.data.byteLength); });
+  dev.queue.submit([enc.finish()]);
+  const outs = [];
+  for (let i = 0; i < bufs.length; i++) {
+    if (!bufs[i].out) continue;
+    await rb[i].mapAsync(1);
+    outs.push(new Float32Array(rb[i].getMappedRange().slice(0)));
+    rb[i].unmap();
+  }
+  return outs;
+}
+
+// 先試 T1；沒有 WebGPU、或執行失敗就退到 CPU 參考版，原因照實寫進 info
+async function tryLayers(name, opts, gpuFn, refFn) {
+  const o = opts || {};
+  const nav = o.navigator !== undefined ? o.navigator : (typeof navigator !== 'undefined' ? navigator : undefined);
+  const g = await getDevice(nav);
+  if (!g.dev) return { result: refFn(), info: { lib: 'cudaweb-nn', op: name, layer: 'cpu-js', reason: g.reason + '；' + NOTE_T3, webgl2: 'missing' } };
+  try {
+    const r = await gpuFn(g.dev);
+    return { result: r, info: { lib: 'cudaweb-nn', op: name, layer: 'T1', reason: '', webgl2: 'missing' } };
+  } catch (e) {
+    return { result: refFn(), info: { lib: 'cudaweb-nn', op: name, layer: 'cpu-js', reason: 'WGSL 執行失敗，退回 CPU：' + String((e && e.message) || e) + '；' + NOTE_T3, webgl2: 'missing' } };
+  }
+}
+
+// ---------- RMSNorm ----------
+// y[t,i] = x[t,i] · g[i] / sqrt(mean_i(x[t,·]²) + eps)；x 為 T×d 列主序
+function rmsnormRef(x, g, T, d, eps) {
+  if (x.length !== T * d) throw new Error('rmsnorm：x 的長度 ' + x.length + ' 與 T×d=' + (T * d) + ' 不符');
+  if (g.length !== d) throw new Error('rmsnorm：g 的長度 ' + g.length + ' 與 d=' + d + ' 不符');
+  const y = new Float64Array(T * d);
+  for (let t = 0; t < T; t++) {
+    let s = 0;
+    for (let i = 0; i < d; i++) s += x[t * d + i] * x[t * d + i];
+    const inv = 1 / Math.sqrt(s / d + eps);
+    for (let i = 0; i < d; i++) y[t * d + i] = x[t * d + i] * inv * g[i];
+  }
+  return y;
+}
+
+const WGSL_RMSNORM = `
+struct P { rows: u32, d: u32, eps: f32, pad: u32 }
+@group(0) @binding(0) var<storage, read> x: array<f32>;
+@group(0) @binding(1) var<storage, read> g: array<f32>;
+@group(0) @binding(2) var<storage, read_write> y: array<f32>;
+@group(0) @binding(3) var<uniform> p: P;
+// @kernel rmsnorm
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let r = gid.x;
+  if (r >= p.rows) { return; }
+  var s: f32 = 0.0;
+  for (var i: u32 = 0u; i < p.d; i = i + 1u) { let v = x[r * p.d + i]; s = s + v * v; }
+  let inv = 1.0 / sqrt(s / f32(p.d) + p.eps);
+  for (var i: u32 = 0u; i < p.d; i = i + 1u) { y[r * p.d + i] = x[r * p.d + i] * inv * g[i]; }
+}
+`;
+
+async function rmsnorm(x, g, T, d, eps, opts) {
+  const xf = Float32Array.from(x), gf = Float32Array.from(g);
+  return tryLayers('rmsnorm', opts,
+    async (dev) => {
+      const uni = new ArrayBuffer(16);
+      new Uint32Array(uni, 0, 2).set([T, d]);
+      new Float32Array(uni, 8, 1)[0] = eps;
+      const outs = await runWgsl(dev, WGSL_RMSNORM,
+        [{ data: xf, out: false }, { data: gf, out: false }, { data: new Float32Array(T * d), out: true }],
+        uni, Math.ceil(T / 64));
+      return outs[0];
+    },
+    () => rmsnormRef(xf, gf, T, d, eps));
+}
+
+module.exports = { rmsnormRef, rmsnorm, runWgsl, getDevice, tryLayers, WGSL_RMSNORM, NOTE_T3 };
