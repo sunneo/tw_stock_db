@@ -466,6 +466,23 @@ function embedMusic() {
 }
 embedMusic();
 
+// 斜線指令的檔案來源純函式（FaFileSource）：renderer/src/filesource/file_source_core.js，放在 MUSICKNOW 區塊之後（標記不存在就接在它後面）
+function embedFileSource() {
+    const fp = path.join(root, 'renderer/src/filesource/file_source_core.js'); if (!fs.existsSync(fp)) return;
+    const mark = 'FILESOURCE', name = 'FaFileSource', prevEnd = '/* MUSICKNOW-END */';
+    const core = fs.readFileSync(fp, 'utf8').replace(/\r\n/g, '\n');
+    let a = src.indexOf('/* ' + mark + '-BEGIN */'), b = src.indexOf('/* ' + mark + '-END */');
+    if (a < 0 || b < 0) {
+        const at = src.indexOf(prevEnd); if (at < 0) throw new Error('找不到 ' + prevEnd + ' 標記');
+        const cut = at + prevEnd.length;
+        src = src.slice(0, cut) + '\n/* ' + mark + '-BEGIN */\n/* ' + mark + '-END */' + src.slice(cut);
+        a = src.indexOf('/* ' + mark + '-BEGIN */'); b = src.indexOf('/* ' + mark + '-END */');
+    }
+    src = src.slice(0, a) + '/* ' + mark + '-BEGIN */\nconst ' + name + ' = (function () {\nconst holder = {};\n(function (module, self) {\n' + core + '\n}).call(null, undefined, holder);\nreturn holder.' + name + ';\n})();\n' + src.slice(b);
+    console.log('已更新 ' + name + '(' + core.length + ' 字元)');
+}
+embedFileSource();
+
 // /edit-media-presentation：簡報編輯器（簡報檔的物件模型、畫面、主機轉接層），放在 GAME 區塊之後（要用 FaEditShell 與 FaEditHost）
 function embedDeckEdit() {
     const dir = path.join(root, 'renderer/src/deck'); if (!fs.existsSync(path.join(dir, 'deck_edit_core.js'))) return;

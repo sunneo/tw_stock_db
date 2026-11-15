@@ -72,6 +72,8 @@
         all.sort((a, b) => (b.createdAt || b.lastAccessedAt || 0) - (a.createdAt || a.lastAccessedAt || 0));
         if (!targets.length && nameArg) { const low = nameArg.toLowerCase(), hit = all.filter((x) => x.id === low || String(x.filename).toLowerCase() === low), part = hit.length ? hit : all.filter((x) => String(x.filename).toLowerCase().includes(low)); targets = part.slice(0, 3).map((x) => ({ id: x.id, name: x.filename })); if (!targets.length) { say(T('找不到檔案「' + nameArg + '」。先附上檔案(📎、拖進來、貼上)再下 /edit-file,或用 /edit-markdown、/edit-text 開空白的。', 'No such file: ' + nameArg)); return; } }
         if (!targets.length) { const x = all.find((y) => TEXTY.test(y.filename) || SHEETY.test(y.filename) || DOCXY.test(y.filename)); if (x) targets = [{ id: x.id, name: x.filename }]; }
+        // 沒給檔名、對話裡也找不到可編輯的檔案：跳來源選擇卡片（對話中的附件、上傳、選本機檔案）
+        if (!targets.length && r._askFileSource) { const pk = await r._askFileSource({ cmd: '/edit-file', accept: '.md,.txt,.log,.ini,.csv,.xlsx,.docx', items: FaFileSource.collect(r.messages, { attachRe: /./ }), question: '你沒輸入檔名，要用對話中的哪個檔案開編輯器？還是要上傳？或者選本機檔案？' }); if (pk && pk.kind === 'file') targets = [{ id: pk.fileId, name: pk.name }]; else if (pk && pk.kind === 'error') say(pk.error); }
         if (!targets.length) { say(T('用法:/edit-file [檔名]　先附上檔案再下 /edit-file。目前可以編輯:Markdown(.md)、純文字(.txt、.log、.ini…)、CSV(.csv)、試算表(.xlsx)與 Word(.docx)。', 'Usage: /edit-file [name] — Markdown, plain text, CSV, xlsx and docx.')); return; }
         for (const tg of targets.slice(0, 3)) {
             if (!TEXTY.test(tg.name) && !SHEETY.test(tg.name) && !DOCXY.test(tg.name)) { say(T('「' + tg.name + '」這種格式的編輯器還沒做(目前:.md、純文字、.csv、.xlsx、.docx)。用 /view 可以先看。', '"' + tg.name + '": no editor for this format yet.')); continue; }

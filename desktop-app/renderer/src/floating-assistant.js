@@ -60145,11 +60145,30 @@ const holder = {};
     const head = el('div', 'display:flex;align-items:center;gap:6px;flex-wrap:wrap;');
     head.appendChild(el('span', 'font-size:18px', '🎼')); head.appendChild(el('b', 'flex:1;min-width:80px', opts.title || hist.song.title || 'MIDI 編輯器'));
     const colB = el('button', BTN, '👥 共編'); colB.style.display = host.collab ? '' : 'none';
-    const undoB = el('button', BTN, '↶'), redoB = el('button', BTN, '↷'), pianoB = el('button', BTN, '🎹'), recB = el('button', BTN + 'display:none;', '⏺ 錄入'), playB = el('button', BTN, '▶ 試聽'), dlB = el('button', BTN, '⬇ MIDI');
+    const undoB = el('button', BTN, '↶'), redoB = el('button', BTN, '↷'), pianoB = el('button', BTN, '🎹'), recB = el('button', BTN + 'display:none;', '⏺ 錄入'), playB = el('button', BTN, '▶ 試聽'), dlB = el('button', BTN, '⬇ 匯出');
+    dlB.title = '匯出成 MIDI（.mid）或 MP3（.mp3）';
     undoB.title = '復原'; redoB.title = '重做';
     const gridSel = el('select', BTN); [['四分音符', 1], ['八分音符', 0.5], ['十六分音符', 0.25]].forEach(([n, v]) => { const o = el('option', '', n); o.value = v; if (v === grid) o.selected = true; gridSel.appendChild(o); });
     gridSel.onchange = () => { grid = Number(gridSel.value); };
     pianoB.title = '虛擬鋼琴:用電腦鍵盤或點琴鍵彈奏選取的音軌的音色,鍵位可自訂'; head.append(undoB, redoB, gridSel, playB, pianoB, recB, colB, dlB); card.appendChild(head);
+    // 匯出小選單:按「⬇ 匯出」展開,選 MIDI 或 MP3;同一列再按一次或按 ✕ 收起
+    const exBar = el('div', 'display:none;align-items:center;gap:6px;flex-wrap:wrap;margin-top:6px;');
+    exBar.appendChild(el('span', 'opacity:.8', '匯出成:'));
+    EXPORT_CHOICES.forEach((c) => { const b = el('button', BTN, c.label); b.onclick = () => { exBar.style.display = 'none'; doExport(c.id); }; exBar.appendChild(b); });
+    const exClose = el('button', BTN + 'padding:1px 6px;', '✕'); exClose.title = '收起'; exClose.onclick = () => { exBar.style.display = 'none'; }; exBar.appendChild(exClose);
+    card.appendChild(exBar);
+    dlB.onclick = () => { exBar.style.display = exBar.style.display === 'none' ? 'flex' : 'none'; };
+    // MIDI：直接用現在的曲子寫出 .mid；MP3：走宿主的 toMp3（同一條渲染路徑），渲染完才下載
+    async function doExport(kind) {
+      const title = opts.title || hist.song.title || 'song';
+      try {
+        if (kind === 'midi') { host.download(exportName(title, 'mid'), M.write(hist.song), 'audio/midi'); return; }
+        if (!host.toMp3) { say('⚠️ 這個環境不能轉 mp3'); return; }
+        dlB.disabled = true; say('渲染 mp3 中…');
+        try { const blob = await host.toMp3(hist.song, (m) => say(m)); host.download(exportName(title, 'mp3'), new Uint8Array(await blob.arrayBuffer()), 'audio/mpeg'); say('已匯出 mp3(' + Math.round(blob.size / 1024) + ' KB)'); }
+        finally { dlB.disabled = false; }
+      } catch (e) { say('⚠️ 匯出失敗:' + String((e && e.message) || e)); }
+    }
     // 傳輸列:跳到開頭／結尾、時間與小節、可點可拖的進度條、BPM
     const tp = el('div', 'display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:8px;');
     const toStartB = el('button', BTN, '⏮'), toEndB = el('button', BTN, '⏭'); toStartB.title = '跳到開頭'; toEndB.title = '跳到結尾';
@@ -60295,7 +60314,6 @@ const holder = {};
       label: (on) => { playB.textContent = on ? '■ 停止' : '▶ 試聽'; }, ended: () => setPos(0, true), say });
     function stopPlay() { pt.stop(); }
     playB.onclick = () => pt.toggle();
-    dlB.onclick = () => { try { host.download((opts.title || hist.song.title || 'song').replace(/[\\/:*?"<>|]/g, '_') + '.mid', M.write(hist.song), 'audio/midi'); } catch (e) { say('⚠️ ' + String((e && e.message) || e)); } };
     async function send() {
       const text = inp.value.trim(); if (!text) return; inp.value = '';
       const pc = E.parseCommands(text, hist.song); let n = 0, errs = [];
@@ -60316,7 +60334,10 @@ const holder = {};
     };
     drawSide(); draw(); return card;
   }
-  return { mount, GS_NAMES, gsName };
+  // 匯出選單的選項與檔名（純函式，node 可測）：MIDI 直接存 .mid；MP3 先渲染再存 .mp3
+  const EXPORT_CHOICES = [{ id: 'midi', label: 'MIDI（.mid）' }, { id: 'mp3', label: 'MP3（.mp3）' }];
+  const exportName = (title, ext) => String(title || 'song').replace(/[\\/:*?"<>|]/g, '_') + '.' + ext;
+  return { mount, GS_NAMES, gsName, EXPORT_CHOICES, exportName };
 });
 
 }).call(null, undefined, holder);
@@ -60351,6 +60372,82 @@ const holder = {};
 return holder.FaMusicKnowledge;
 })();
 /* MUSICKNOW-END */
+/* FILESOURCE-BEGIN */
+const FaFileSource = (function () {
+const holder = {};
+(function (module, self) {
+// 斜線指令的「檔案來源」純函式層 FaFileSource(只依賴傳進來的訊息陣列,不碰 DOM、不碰主程式)。
+//   FaFileSource.collect(messages, { midi, attachRe }) → [{ label, item }]   對話裡最近的候選(新的在前、同一首去重)
+//     midi: true → 認播放卡片 ```fa-midi、編輯器 ```fa-midi-edit 的曲子(item.type='midi'、item.id、item.title、item.b64)
+//     attachRe: RegExp → 認使用者附件(item.type='attachment'、item.id=file_id、item.name=檔名),只留檔名符合的
+//   FaFileSource.labels(items) → 給卡片用的「對話中的：…」選項文字（順序同 items）
+//   FaFileSource.pick(answer, items) → 卡片回答 → { kind:'item', item } | { kind:'upload' } | { kind:'local' } | null
+//   常數 FaFileSource.UPLOAD_LABEL／LOCAL_LABEL／CANCEL_LABEL 是卡片上固定的三個選項。
+(function (root, factory) { if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaFileSource = factory(); })(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+  const UPLOAD_LABEL = '上傳檔案（存進檔案庫）';
+  const LOCAL_LABEL = '選本機檔案';
+  const CANCEL_LABEL = '取消';
+  const MAX_ITEMS = 8;
+
+  // 讀出一段訊息文字裡的附件:[附件：a.mid（file_id=xxx）、b.mp3（file_id=yyy）]
+  function attachmentsIn(text) {
+    const out = []; const m = /\[附件：([^\]]*)\]/.exec(String(text || '')); if (!m) return out;
+    const re = /([^、（]+?)（file_id=([\w-]+)）/g; let x; while ((x = re.exec(m[1]))) out.push({ name: x[1].trim(), id: x[2] });
+    return out;
+  }
+
+  // 讀出一段訊息文字裡的 MIDI 區塊(播放卡片／編輯器)
+  function midiBlocksIn(text) {
+    const out = []; const re = /```fa-midi(-edit)?[ \t]*\n([\s\S]*?)```/g; let m;
+    while ((m = re.exec(String(text || '')))) {
+      let ref = null; try { ref = JSON.parse(m[2]); } catch (_) { ref = null; }
+      if (ref && ref.id) out.push({ id: String(ref.id), title: String(ref.title || 'MIDI'), b64: ref.b64 || null, editor: !!m[1] });
+    }
+    return out;
+  }
+
+  function collect(messages, o) {
+    o = o || {}; const list = Array.isArray(messages) ? messages : [];
+    const seen = new Set(); const items = [];
+    for (let i = list.length - 1; i >= 0 && items.length < MAX_ITEMS; i--) {
+      const msg = list[i]; if (!msg) continue; const text = typeof msg.content === 'string' ? msg.content : '';
+      if (o.midi) {
+        for (const b of midiBlocksIn(text)) {
+          const key = 'midi:' + b.id; if (seen.has(key)) continue; seen.add(key);
+          items.push({ label: b.title + (b.editor ? '（MIDI 編輯器）' : '（MIDI 播放卡片）'), item: { type: 'midi', id: b.id, title: b.title, b64: b.b64 } });
+        }
+      }
+      if (o.attachRe) {
+        for (const a of attachmentsIn(text)) {
+          if (!o.attachRe.test(a.name)) continue;
+          const key = 'file:' + a.id; if (seen.has(key)) continue; seen.add(key);
+          items.push({ label: a.name + '（附件）', item: { type: 'attachment', id: a.id, name: a.name } });
+        }
+      }
+    }
+    return items.slice(0, MAX_ITEMS);
+  }
+
+  function labels(items) { return (items || []).map((x) => '對話中的：' + x.label); }
+
+  // 卡片回答 → 結果。answer 是卡片上按的選項文字；不在清單內或取消 → null
+  function pick(answer, items) {
+    const list = items || []; const a = String(answer == null ? '' : answer);
+    if (a === CANCEL_LABEL) return null;
+    if (a === UPLOAD_LABEL) return { kind: 'upload' };
+    if (a === LOCAL_LABEL) return { kind: 'local' };
+    const k = labels(list).indexOf(a); if (k < 0) return null;
+    return { kind: 'item', item: list[k].item };
+  }
+
+  return { collect, labels, pick, attachmentsIn, midiBlocksIn, UPLOAD_LABEL, LOCAL_LABEL, CANCEL_LABEL };
+});
+
+}).call(null, undefined, holder);
+return holder.FaFileSource;
+})();
+/* FILESOURCE-END */
 /* MESHGEN-BEGIN */
 const FaMeshGen = (function () {
 const holder = {};
@@ -62861,6 +62958,8 @@ const FaEditHost = (function () {
         all.sort((a, b) => (b.createdAt || b.lastAccessedAt || 0) - (a.createdAt || a.lastAccessedAt || 0));
         if (!targets.length && nameArg) { const low = nameArg.toLowerCase(), hit = all.filter((x) => x.id === low || String(x.filename).toLowerCase() === low), part = hit.length ? hit : all.filter((x) => String(x.filename).toLowerCase().includes(low)); targets = part.slice(0, 3).map((x) => ({ id: x.id, name: x.filename })); if (!targets.length) { say(T('找不到檔案「' + nameArg + '」。先附上檔案(📎、拖進來、貼上)再下 /edit-file,或用 /edit-markdown、/edit-text 開空白的。', 'No such file: ' + nameArg)); return; } }
         if (!targets.length) { const x = all.find((y) => TEXTY.test(y.filename) || SHEETY.test(y.filename) || DOCXY.test(y.filename)); if (x) targets = [{ id: x.id, name: x.filename }]; }
+        // 沒給檔名、對話裡也找不到可編輯的檔案：跳來源選擇卡片（對話中的附件、上傳、選本機檔案）
+        if (!targets.length && r._askFileSource) { const pk = await r._askFileSource({ cmd: '/edit-file', accept: '.md,.txt,.log,.ini,.csv,.xlsx,.docx', items: FaFileSource.collect(r.messages, { attachRe: /./ }), question: '你沒輸入檔名，要用對話中的哪個檔案開編輯器？還是要上傳？或者選本機檔案？' }); if (pk && pk.kind === 'file') targets = [{ id: pk.fileId, name: pk.name }]; else if (pk && pk.kind === 'error') say(pk.error); }
         if (!targets.length) { say(T('用法:/edit-file [檔名]　先附上檔案再下 /edit-file。目前可以編輯:Markdown(.md)、純文字(.txt、.log、.ini…)、CSV(.csv)、試算表(.xlsx)與 Word(.docx)。', 'Usage: /edit-file [name] — Markdown, plain text, CSV, xlsx and docx.')); return; }
         for (const tg of targets.slice(0, 3)) {
             if (!TEXTY.test(tg.name) && !SHEETY.test(tg.name) && !DOCXY.test(tg.name)) { say(T('「' + tg.name + '」這種格式的編輯器還沒做(目前:.md、純文字、.csv、.xlsx、.docx)。用 /view 可以先看。', '"' + tg.name + '": no editor for this format yet.')); continue; }
@@ -82345,12 +82444,18 @@ class FloatingAssistant {
             const m = raw.match(/\bmi[0-9a-z]{6,}\b/); if (m) return await r._midiSongFromArgs({ song_id: m[0] });
             return null;
         };
+        // 指令沒給 MIDI：先看對話裡的 MIDI 資源（播放卡片、編輯器、.mid 附件）；auto 時沒給參數而且只有一個就直接用，其餘跳卡片問
+        const _midiAskSource = async (r, cmd, raw, auto) => {
+            const pk = await r._askFileSource({ cmd, auto: !!auto && !raw, accept: '.mid,.midi,audio/midi', items: FaFileSource.collect(r.messages, { midi: true, attachRe: /\.midi?$/i }), question: '你沒輸入參數，要從最近的哪個轉？還是要選擇檔案？（對話中的 MIDI 資源、上傳、選本機檔案）' });
+            if (!pk) return null; if (pk.kind === 'error') return { error: pk.error }; if (pk.kind === 'song') return { song: pk.song, title: pk.title };
+            return (await _midiFileFrom(r, '[附件：' + pk.name + '（file_id=' + pk.fileId + '）]')) || { error: '「' + pk.name + '」不是 MIDI 檔(.mid)' };
+        };
         this.register_slash_command('/media-midi', '[.mid 檔 | 範例]',
             'MIDI 播放卡片:/media-midi 附上 .mid 檔(用 📎 上傳)→ 在對話裡放播放卡片(播放、拖進度、每軌靜音／獨奏／音量、下載、轉 mp3);/media-midi 範例 → 放一首示範曲。音色是 GS 音色庫(第一次播放才下載瘦身版音色庫,大小會顯示在下載進度,存在本機)。也可以直接對 AI 說「幫我寫一段 …風格的曲子」。',
             async (argsText, run) => { const r = run || this; const raw = String(argsText || '').trim(); r.messages.push({ role: 'user', content: '/media-midi' + (raw ? ' ' + raw : '') });
                 try {
                     if (/^(範例|示範|demo)/i.test(raw)) { const a = await r._midiSongFromArgs({ song: { title: '示範曲', tempo: 100, tracks: [{ name: '鋼琴', program: 0, notes: [[0, 1, 60, 90], [1, 1, 64, 90], [2, 1, 67, 90], [3, 1, 72, 90], [4, 2, 67, 90], [6, 2, 64, 90]] }, { name: '貝斯', program: 33, notes: [[0, 2, 36, 100], [2, 2, 43, 100], [4, 4, 36, 100]] }, { name: '鼓', drum: true, notes: [[0, 0.25, 36, 110], [1, 0.25, 42, 80], [2, 0.25, 38, 100], [3, 0.25, 42, 80], [4, 0.25, 36, 110], [5, 0.25, 42, 80], [6, 0.25, 38, 100], [7, 0.25, 42, 80]] }] } }); r._midiPushCard(a.song, '示範曲'); }
-                    else { const f = await _midiFileFrom(r, raw); if (!f) r._pushAssistantMessage('用法:用 📎 上傳 .mid 檔再打 /media-midi,或打 /media-midi 範例;也可以直接說「幫我寫一段爵士風格的曲子」。'); else if (f.error) r._pushAssistantMessage('⚠️ ' + f.error); else r._midiPushCard(f.song, f.title); }
+                    else { let f = await _midiFileFrom(r, raw); if (!f) f = await _midiAskSource(r, '/media-midi', raw, false); if (!f) r._pushAssistantMessage('已取消。要放播放卡片可以用 📎 上傳 .mid 檔再打 /media-midi,或打 /media-midi 範例;也可以直接說「幫我寫一段爵士風格的曲子」。'); else if (f.error) r._pushAssistantMessage('⚠️ ' + f.error); else r._midiPushCard(f.song, f.title); }
                 } catch (e) { r._pushAssistantMessage('⚠️ /media-midi 失敗:' + String((e && e.message) || e)); }
                 try { r._persistChatHistory(); r._renderMessageHistory(); } catch (_) { /* */ }
             });
@@ -82358,8 +82463,9 @@ class FloatingAssistant {
             '把 MIDI 用 GS 音色庫離線渲染成 mp3(用 📎 上傳 .mid 檔再打這個指令;第一次要下載瘦身版音色庫(大小會顯示在下載進度))。',
             async (argsText, run) => { const r = run || this; const raw = String(argsText || '').trim(); r.messages.push({ role: 'user', content: '/media-midi-to-mp3' + (raw ? ' ' + raw : '') });
                 try {
-                    const f = await _midiFileFrom(r, raw);
-                    if (!f) r._pushAssistantMessage('用法:用 📎 上傳 .mid 檔再打 /media-midi-to-mp3。'); else if (f.error) r._pushAssistantMessage('⚠️ ' + f.error);
+                    let f = await _midiFileFrom(r, raw);
+                    if (!f) f = await _midiAskSource(r, '/media-midi-to-mp3', raw, true);
+                    if (!f) r._pushAssistantMessage('已取消。要轉 mp3 可以用 📎 上傳 .mid 檔再打 /media-midi-to-mp3,或直接說要轉哪一個 MIDI。'); else if (f.error) r._pushAssistantMessage('⚠️ ' + f.error);
                     else { r._pushAssistantMessage('🎼 渲染中…(' + Math.round(FaMidi.durationSec(f.song)) + ' 秒的曲子,第一次要下載音色庫)'); const blob = await r._midiToMp3(f.song); await r.generateAndDeliverFile(blob, String(f.title || f.song.title || 'song').replace(/[\\/:*?"<>|]/g, '_') + '.mp3', 'audio/mpeg'); }
                 } catch (e) { r._pushAssistantMessage('⚠️ 轉 mp3 失敗:' + String((e && e.message) || e)); }
                 try { r._persistChatHistory(); r._renderMessageHistory(); } catch (_) { /* */ }
@@ -82368,9 +82474,14 @@ class FloatingAssistant {
             '把 mp3／wav 轉成 MIDI 並開編輯器(用 📎 上傳音訊再打這個指令;離線小模型,第一次下載約 16 MB;加「拆軌」會再用 Demucs 分鼓／貝斯／人聲／吉他／鋼琴,多下載約 136 MB 且很慢)。結果不保證準確。',
             async (argsText, run) => { const r = run || this; const raw = String(argsText || '').trim(); r.messages.push({ role: 'user', content: '/media-audio-to-midi' + (raw ? ' ' + raw : '') });
                 try {
-                    const att = FaRecipe.parseAttachments(raw).filter((x) => /.(mp3|wav|m4a|ogg|flac|aac)$/i.test(x.filename))[0];
-                    if (!att) r._pushAssistantMessage('用法:用 📎 上傳 mp3／wav 再打 /media-audio-to-midi(想分鼓、貝斯、人聲、吉他、鋼琴就加「拆軌」)。');
-                    else { const res = await r._audioToMidi({ file_id: att.id, stems: /拆軌|stems/i.test(raw), title: att.filename }); if (!res.ok) r._pushAssistantMessage('⚠️ 轉 MIDI 失敗:' + res.error); }
+                    let att = FaRecipe.parseAttachments(raw).filter((x) => /.(mp3|wav|m4a|ogg|flac|aac)$/i.test(x.filename))[0];
+                    if (!att) {
+                        const pk = await r._askFileSource({ cmd: '/media-audio-to-midi', accept: 'audio/*,.mp3,.wav,.m4a,.ogg,.flac,.aac', items: FaFileSource.collect(r.messages, { midi: false, attachRe: /\.(mp3|wav|m4a|ogg|flac|aac)$/i }), question: '你沒輸入參數，要從對話中的哪個音訊轉成 MIDI？還是要上傳？或者選本機檔案？' });
+                        if (pk && pk.kind === 'file') att = { id: pk.fileId, filename: pk.name };
+                        else if (pk && pk.kind === 'error') r._pushAssistantMessage('⚠️ ' + pk.error);
+                        else if (!pk) r._pushAssistantMessage('已取消。要轉 MIDI 可以用 📎 上傳 mp3／wav 再打 /media-audio-to-midi(想分鼓、貝斯、人聲、吉他、鋼琴就加「拆軌」)。');
+                    }
+                    if (att) { const res = await r._audioToMidi({ file_id: att.id, stems: /拆軌|stems/i.test(raw), title: att.filename }); if (!res.ok) r._pushAssistantMessage('⚠️ 轉 MIDI 失敗:' + res.error); }
                 } catch (e) { r._pushAssistantMessage('⚠️ /media-audio-to-midi 失敗:' + String((e && e.message) || e)); }
                 try { r._persistChatHistory(); r._renderMessageHistory(); } catch (_) { /* */ }
             });
@@ -102436,6 +102547,35 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
         this._pushAssistantMessage((lead || '🎼 MIDI 編輯器:點格子新增音符、點音符刪除,左邊選音軌與 GS 音色,下面可以用說的(「第一軌升兩個半音」「速度改成 90」);每一步都能復原。') + '\n\n```fa-midi-edit\n' + JSON.stringify(ref) + '\n```', null);
         return id;
     }
+    // 斜線指令「期待檔案卻沒收到」共用的來源選擇卡片（純函式在 FaFileSource）：問「要從目前對話的哪個資源選？還是要上傳？或者選本機檔案？」
+    // o = { cmd, question, accept, items（FaFileSource.collect 的結果）, auto（只有一個候選時直接用、不問）}
+    // 回傳 { kind:'song', song, title } | { kind:'file', fileId, name } | { kind:'error', error } | null（取消）
+    async _askFileSource(o) {
+        o = o || {}; const items = o.items || [];
+        if (o.auto && items.length === 1) return this._fileSourceResolve(items[0].item);
+        const choices = FaFileSource.labels(items).concat([FaFileSource.UPLOAD_LABEL, FaFileSource.LOCAL_LABEL, FaFileSource.CANCEL_LABEL]);
+        const ans = await this.requestUserForm({ title: '📂 ' + (o.cmd || '這個指令') + ' 要用哪個檔案？', description: o.question || '你沒輸入參數，要從目前對話的哪個資源選？還是要上傳？或者選本機檔案？', choices });
+        if (!ans || !ans.confirmed) return null;
+        const p = FaFileSource.pick(ans.answer, items); if (!p) return null;
+        if (p.kind === 'item') return this._fileSourceResolve(p.item);
+        // 上傳與選本機檔案都存進檔案庫（指令要用 file_id 讀），差別只在選項文字
+        const f = await this._pickLocalFile(o.accept || ''); if (!f) return null;
+        const id = await this.fileCache.put(f.name, f.type || 'application/octet-stream', f, 'uploaded');
+        return { kind: 'file', fileId: id, name: f.name };
+    }
+    // 候選項目 → 指令可用的結果（MIDI 曲子直接拿到曲子；附件給 file_id）
+    _fileSourceResolve(item) {
+        if (!item) return { kind: 'error', error: '沒有可用的檔案' };
+        if (item.type === 'attachment') return { kind: 'file', fileId: item.id, name: item.name };
+        let song = (this._midiSongs && this._midiSongs.get(item.id)) || null;
+        if (!song && item.b64) { try { const bin = atob(item.b64), u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); song = FaMidi.parse(u); } catch (_) { song = null; } }
+        if (!song) return { kind: 'error', error: '找不到「' + item.title + '」的曲子內容,請用 📎 上傳 .mid 檔再試' };
+        return { kind: 'song', song, title: item.title };
+    }
+    // 叫出系統的檔案挑選（需要使用者手勢；卡片按下後叫出，瀏覽器若擋住就請使用者再按一次）
+    _pickLocalFile(accept) {
+        return new Promise((resolve) => { const i = document.createElement('input'); i.type = 'file'; if (accept) i.accept = accept; i.onchange = () => resolve((i.files && i.files[0]) || null); i.click(); });
+    }
     async _midiEditAsk(text, song) {
         if (this.advancedSettings && this.advancedSettings.offlineMode) throw new Error('離線模式只能用程式讀得懂的說法');
         const sys = '你是 MIDI 編輯器的動作翻譯。只回一個 JSON 陣列,每個元素是動作物件,不要任何說明。可用動作:' +
@@ -102466,7 +102606,7 @@ CREATE VIEW v_uses AS SELECT f.path AS caller_file, s.name AS symbol, d.path AS 
                 if (!song && ref.b64) { try { const bin = atob(ref.b64); const u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); song = FaMidi.parse(u); this._midiStoreSong(song, ref.id); } catch (_) { /* */ } }
                 if (!song) { const w = document.createElement('div'); w.style.cssText = 'padding:8px;opacity:.8'; w.textContent = '⚠️ 找不到這首曲子的內容,請重新開啟編輯器。'; code.parentElement.replaceWith(w); return; }
                 const base = this._midiHost(), self = this;
-                const host = { player: base.player, voice: base.voice, download: base.download, askAI: (t, sg) => self._midiEditAsk(t, sg), onChange: (sg) => { self._midiStoreSong(sg, ref.id); }, collab: self._midiCollabHost(ref.id) };
+                const host = { player: base.player, voice: base.voice, download: base.download, toMp3: base.toMp3, askAI: (t, sg) => self._midiEditAsk(t, sg), onChange: (sg) => { self._midiStoreSong(sg, ref.id); }, collab: self._midiCollabHost(ref.id) };
                 el = FaMidiEditUI.mount({ song, title: ref.title, host, M: FaMidi, E: FaMidiEdit, P: FaRemotePatch }); this._midiEditCards.set(ref.id, el);
                 if (this._midiEditCards.size > 10) { const k = this._midiEditCards.keys().next().value; try { this._midiEditCards.get(k)._midiEdit.destroy(); } catch (_) { /* */ } this._midiEditCards.delete(k); }
             }

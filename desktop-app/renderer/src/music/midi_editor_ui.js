@@ -21,11 +21,30 @@
     const head = el('div', 'display:flex;align-items:center;gap:6px;flex-wrap:wrap;');
     head.appendChild(el('span', 'font-size:18px', '🎼')); head.appendChild(el('b', 'flex:1;min-width:80px', opts.title || hist.song.title || 'MIDI 編輯器'));
     const colB = el('button', BTN, '👥 共編'); colB.style.display = host.collab ? '' : 'none';
-    const undoB = el('button', BTN, '↶'), redoB = el('button', BTN, '↷'), pianoB = el('button', BTN, '🎹'), recB = el('button', BTN + 'display:none;', '⏺ 錄入'), playB = el('button', BTN, '▶ 試聽'), dlB = el('button', BTN, '⬇ MIDI');
+    const undoB = el('button', BTN, '↶'), redoB = el('button', BTN, '↷'), pianoB = el('button', BTN, '🎹'), recB = el('button', BTN + 'display:none;', '⏺ 錄入'), playB = el('button', BTN, '▶ 試聽'), dlB = el('button', BTN, '⬇ 匯出');
+    dlB.title = '匯出成 MIDI（.mid）或 MP3（.mp3）';
     undoB.title = '復原'; redoB.title = '重做';
     const gridSel = el('select', BTN); [['四分音符', 1], ['八分音符', 0.5], ['十六分音符', 0.25]].forEach(([n, v]) => { const o = el('option', '', n); o.value = v; if (v === grid) o.selected = true; gridSel.appendChild(o); });
     gridSel.onchange = () => { grid = Number(gridSel.value); };
     pianoB.title = '虛擬鋼琴:用電腦鍵盤或點琴鍵彈奏選取的音軌的音色,鍵位可自訂'; head.append(undoB, redoB, gridSel, playB, pianoB, recB, colB, dlB); card.appendChild(head);
+    // 匯出小選單:按「⬇ 匯出」展開,選 MIDI 或 MP3;同一列再按一次或按 ✕ 收起
+    const exBar = el('div', 'display:none;align-items:center;gap:6px;flex-wrap:wrap;margin-top:6px;');
+    exBar.appendChild(el('span', 'opacity:.8', '匯出成:'));
+    EXPORT_CHOICES.forEach((c) => { const b = el('button', BTN, c.label); b.onclick = () => { exBar.style.display = 'none'; doExport(c.id); }; exBar.appendChild(b); });
+    const exClose = el('button', BTN + 'padding:1px 6px;', '✕'); exClose.title = '收起'; exClose.onclick = () => { exBar.style.display = 'none'; }; exBar.appendChild(exClose);
+    card.appendChild(exBar);
+    dlB.onclick = () => { exBar.style.display = exBar.style.display === 'none' ? 'flex' : 'none'; };
+    // MIDI：直接用現在的曲子寫出 .mid；MP3：走宿主的 toMp3（同一條渲染路徑），渲染完才下載
+    async function doExport(kind) {
+      const title = opts.title || hist.song.title || 'song';
+      try {
+        if (kind === 'midi') { host.download(exportName(title, 'mid'), M.write(hist.song), 'audio/midi'); return; }
+        if (!host.toMp3) { say('⚠️ 這個環境不能轉 mp3'); return; }
+        dlB.disabled = true; say('渲染 mp3 中…');
+        try { const blob = await host.toMp3(hist.song, (m) => say(m)); host.download(exportName(title, 'mp3'), new Uint8Array(await blob.arrayBuffer()), 'audio/mpeg'); say('已匯出 mp3(' + Math.round(blob.size / 1024) + ' KB)'); }
+        finally { dlB.disabled = false; }
+      } catch (e) { say('⚠️ 匯出失敗:' + String((e && e.message) || e)); }
+    }
     // 傳輸列:跳到開頭／結尾、時間與小節、可點可拖的進度條、BPM
     const tp = el('div', 'display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:8px;');
     const toStartB = el('button', BTN, '⏮'), toEndB = el('button', BTN, '⏭'); toStartB.title = '跳到開頭'; toEndB.title = '跳到結尾';
@@ -171,7 +190,6 @@
       label: (on) => { playB.textContent = on ? '■ 停止' : '▶ 試聽'; }, ended: () => setPos(0, true), say });
     function stopPlay() { pt.stop(); }
     playB.onclick = () => pt.toggle();
-    dlB.onclick = () => { try { host.download((opts.title || hist.song.title || 'song').replace(/[\\/:*?"<>|]/g, '_') + '.mid', M.write(hist.song), 'audio/midi'); } catch (e) { say('⚠️ ' + String((e && e.message) || e)); } };
     async function send() {
       const text = inp.value.trim(); if (!text) return; inp.value = '';
       const pc = E.parseCommands(text, hist.song); let n = 0, errs = [];
@@ -192,5 +210,8 @@
     };
     drawSide(); draw(); return card;
   }
-  return { mount, GS_NAMES, gsName };
+  // 匯出選單的選項與檔名（純函式，node 可測）：MIDI 直接存 .mid；MP3 先渲染再存 .mp3
+  const EXPORT_CHOICES = [{ id: 'midi', label: 'MIDI（.mid）' }, { id: 'mp3', label: 'MP3（.mp3）' }];
+  const exportName = (title, ext) => String(title || 'song').replace(/[\\/:*?"<>|]/g, '_') + '.' + ext;
+  return { mount, GS_NAMES, gsName, EXPORT_CHOICES, exportName };
 });

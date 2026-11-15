@@ -1727,8 +1727,8 @@
    "names": [
     "FaMidiEditUI"
    ],
-   "size": 18151,
-   "md5": "2f33566f54af706e42b108d0e361056b"
+   "size": 19166,
+   "md5": "db6fa23a39b2af2a1fe14225450b6358"
   },
   "musicknow": {
    "file": "chunks/musicknow.js",
@@ -1737,6 +1737,14 @@
    ],
    "size": 6753,
    "md5": "c7a4fb7dc985f65afdd64d56984d4b0d"
+  },
+  "filesource": {
+   "file": "chunks/filesource.js",
+   "names": [
+    "FaFileSource"
+   ],
+   "size": 1745,
+   "md5": "7887fce24b7acffa5e241e0090368576"
   },
   "explain": {
    "file": "chunks/explain.js",
@@ -1820,7 +1828,7 @@
   }
  },
  "core": {
-  "size": 5856172,
-  "md5": "1e1a5fb1a163c8e4e08d518b3a88eb34"
+  "size": 5859214,
+  "md5": "0b41554ecd1deed898b13d961b9151e2"
  }
 }
