@@ -24,6 +24,11 @@ function close(a, b, tol, label) {
 
 // ---------- 假的 WebGPU ----------
 // opts: { limits, features, isFallback, adapter: 'ok'|'null'|'throw', deviceError, kernelError, noAdapterFeatures }
+// 用途旗標檢查（與真實 WebGPU 的驗證錯誤一致）：缺旗標就丟錯，讓 COPY_SRC 之類的 bug 在單元測試就會被抓到
+const USE_NAME = { 0x1: 'MAP_READ', 0x4: 'COPY_SRC', 0x8: 'COPY_DST', 0x40: 'UNIFORM', 0x80: 'STORAGE' };
+function needUse(buf, flag, what) {
+  if (!((buf.usage || 0) & flag)) throw new Error('假裝置用途檢查失敗：' + what + ' 的緩衝區缺少 ' + USE_NAME[flag] + '（實際用途 ' + (buf.usage || 0) + '）');
+}
 function fakeNavigator(opts) {
   opts = opts || {};
   const limits = Object.assign({ maxStorageBufferBindingSize: 134217728, maxComputeWorkgroupStorageSize: 16384 }, opts.limits || {});
@@ -34,12 +39,12 @@ function fakeNavigator(opts) {
     lost: lostPromise,
     __resolveLost: (info) => resolveLost(info),
     queue: {
-      writeBuffer(buf, off, data) { new Uint8Array(buf.data).set(new Uint8Array(data.buffer, data.byteOffset, data.byteLength), off); },
-      submit(cmds) { for (const ops of cmds) for (const op of ops) runKernel(op); }
+      writeBuffer(buf, off, data) { needUse(buf, 0x8, 'writeBuffer'); new Uint8Array(buf.data).set(new Uint8Array(data.buffer, data.byteOffset, data.byteLength), off); },
+      submit(cmds) { for (const ops of cmds) for (const op of ops) { if (op.copy) new Uint8Array(op.dst.data).set(new Uint8Array(op.src.data, op.so, op.n), op.dO); else runKernel(op); } }
     },
     createBuffer({ size, usage }) {
       const b = { size, usage, data: new ArrayBuffer(Math.max(4, size)), destroy() {}, unmap() {} };
-      b.mapAsync = async () => {};
+      b.mapAsync = async () => { needUse(b, 0x1, 'mapAsync'); };
       b.getMappedRange = () => b.data;
       return b;
     },
@@ -48,7 +53,10 @@ function fakeNavigator(opts) {
       const m = /@kernel\s+(\w+)/.exec(compute.module.code);
       return { kernel: m ? m[1] : 'unknown', getBindGroupLayout() { return {}; } };
     },
-    createBindGroup({ entries }) { return { entries }; },
+    createBindGroup({ entries }) {
+      for (const e of entries) { if (!((e.resource.buffer.usage || 0) & (0x80 | 0x40))) throw new Error('假裝置用途檢查失敗：binding ' + e.binding + ' 缺少 STORAGE 或 UNIFORM'); }
+      return { entries };
+    },
     createCommandEncoder() {
       const ops = [];
       return {
@@ -61,7 +69,11 @@ function fakeNavigator(opts) {
             end() {}
           };
         },
-        copyBufferToBuffer(src, so, dst, dO, n) { new Uint8Array(dst.data).set(new Uint8Array(src.data, so, n), dO); },
+        // 複製在 submit 時依序執行（與真實 WebGPU 相同）；來源要 COPY_SRC、目的要 COPY_DST
+        copyBufferToBuffer(src, so, dst, dO, n) {
+          needUse(src, 0x4, 'copyBufferToBuffer 的來源'); needUse(dst, 0x8, 'copyBufferToBuffer 的目的');
+          ops.push({ copy: true, src: src, so: so, dst: dst, dO: dO, n: n });
+        },
         finish() { return ops; }
       };
     },

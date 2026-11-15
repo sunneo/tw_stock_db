@@ -5,6 +5,13 @@
 const core = require('./gpu_core.js');
 const NN = require('./nn_ops.js');
 
+// 用途旗標（與真實 GPUBufferUsage 相同的數值）。假裝置會檢查，缺旗標就丟錯，行為與真實 WebGPU 的驗證錯誤一致。
+const USE = { MAP_READ: 0x1, COPY_SRC: 0x4, COPY_DST: 0x8, UNIFORM: 0x40, STORAGE: 0x80 };
+const USE_NAME = { 0x1: 'MAP_READ', 0x4: 'COPY_SRC', 0x8: 'COPY_DST', 0x40: 'UNIFORM', 0x80: 'STORAGE' };
+function needUse(buf, flag, what) {
+  if (!((buf.usage || 0) & flag)) throw new Error('假裝置用途檢查失敗：' + what + ' 的緩衝區缺少 ' + USE_NAME[flag] + '（實際用途 ' + (buf.usage || 0) + '）');
+}
+
 // opts: { limits, features, isFallback, adapter: 'ok'|'null'|'throw', deviceError, kernelError }
 function fakeNavigator(opts) {
   opts = opts || {};
@@ -18,6 +25,7 @@ function fakeNavigator(opts) {
     queue: {
       // 真實 WebGPU 接受 ArrayBuffer 與 TypedArray 兩種來源
       writeBuffer(buf, off, data) {
+        needUse(buf, USE.COPY_DST, 'writeBuffer');
         const src = data instanceof ArrayBuffer ? new Uint8Array(data) : new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
         new Uint8Array(buf.data).set(src, off);
       },
@@ -25,7 +33,7 @@ function fakeNavigator(opts) {
     },
     createBuffer({ size, usage }) {
       const b = { size, usage, data: new ArrayBuffer(Math.max(4, size)), destroy() {}, unmap() {} };
-      b.mapAsync = async () => {};
+      b.mapAsync = async () => { needUse(b, USE.MAP_READ, 'mapAsync'); };
       b.getMappedRange = () => b.data;
       return b;
     },
@@ -34,7 +42,14 @@ function fakeNavigator(opts) {
       const m = /@kernel\s+(\w+)/.exec(compute.module.code);
       return { kernel: m ? m[1] : 'unknown', getBindGroupLayout() { return {}; } };
     },
-    createBindGroup({ entries }) { return { entries }; },
+    createBindGroup({ entries }) {
+      // 綁定：儲存緩衝區要 STORAGE，uniform 要 UNIFORM（兩者都不是就是驗證錯誤）
+      for (const e of entries) {
+        const b = e.resource.buffer;
+        if (!((b.usage || 0) & (USE.STORAGE | USE.UNIFORM))) throw new Error('假裝置用途檢查失敗：binding ' + e.binding + ' 的緩衝區缺少 STORAGE 或 UNIFORM（實際用途 ' + (b.usage || 0) + '）');
+      }
+      return { entries };
+    },
     createCommandEncoder() {
       const ops = [];
       return {
@@ -48,7 +63,11 @@ function fakeNavigator(opts) {
           };
         },
         // 複製要排進佇列、在 submit 時依序執行（真實 WebGPU 也是這樣）；否則讀回會拿到核心執行前的舊資料
-        copyBufferToBuffer(src, so, dst, dO, n) { ops.push({ copy: true, src: src, so: so, dst: dst, dO: dO, n: n }); },
+        copyBufferToBuffer(src, so, dst, dO, n) {
+          needUse(src, USE.COPY_SRC, 'copyBufferToBuffer 的來源');
+          needUse(dst, USE.COPY_DST, 'copyBufferToBuffer 的目的');
+          ops.push({ copy: true, src: src, so: so, dst: dst, dO: dO, n: n });
+        },
         finish() { return ops; }
       };
     },

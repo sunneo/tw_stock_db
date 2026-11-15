@@ -302,6 +302,31 @@ function maxAbs(a, b) { let m = 0; for (let i = 0; i < a.length; i++) m = Math.m
     assert.strictEqual(info.ops.rope.t3, 'missing');
   });
 
+  // ---- 用途旗標（回歸：真機發現 axpy 的來源緩衝缺 COPY_SRC）----
+  await check('假裝置拒絕從缺 COPY_SRC 的緩衝複製（回歸：axpy 的 bug 在單元測試就會抓到）', async () => {
+    const dev = (await NN.getDevice(fakeNavigator().nav)).dev;
+    const src = dev.createBuffer({ size: 16, usage: 0x80 | 0x8 }); // STORAGE|COPY_DST，缺 COPY_SRC
+    const dst = dev.createBuffer({ size: 16, usage: 0x1 | 0x8 });
+    const enc = dev.createCommandEncoder();
+    assert.throws(() => enc.copyBufferToBuffer(src, 0, dst, 0, 16), /缺少 COPY_SRC/);
+  });
+
+  await check('假裝置拒絕 mapAsync 於非 MAP_READ 緩衝、拒絕綁定沒有 STORAGE／UNIFORM 的緩衝', async () => {
+    const dev = (await NN.getDevice(fakeNavigator().nav)).dev;
+    const plain = dev.createBuffer({ size: 16, usage: 0x8 });
+    await assert.rejects(plain.mapAsync(1), /缺少 MAP_READ/);
+    const copyOnly = dev.createBuffer({ size: 16, usage: 0x4 | 0x8 });
+    assert.throws(() => dev.createBindGroup({ layout: {}, entries: [{ binding: 0, resource: { buffer: copyOnly } }] }), /缺少 STORAGE 或 UNIFORM/);
+  });
+
+  await check('axpy 經執行期在假 WebGPU 上走 T1（回歸：不再因 COPY_SRC 降到純 JS）', async () => {
+    const core = require('./gpu_core.js');
+    const rt = core.createRuntime({ navigator: fakeNavigator().nav, webgl2: null });
+    const r = await rt.axpy(2, [1, 2, 3, 4], [10, 20, 30, 40]);
+    assert.strictEqual(r.info.layer, 'T1', r.info.reason);
+    assert.deepStrictEqual(Array.from(r.result), [12, 24, 36, 48]);
+  });
+
   console.log('\n' + pass + ' 通過，' + fail + ' 失敗');
   if (fail) process.exit(1);
 })();

@@ -58,6 +58,37 @@ return (async () => {
         cmp('sum（n=1000）', [smT.r.result], [window.FaGpuCore.sumExact(xs)], 1000, smT.r.info.layer, smT.ms);
         const axT = await timed(() => rt.axpy(2, [1, 2, 3, 4], [10, 20, 30, 40]));
         ck('axpy 結果正確（T1）', JSON.stringify(axT.r.result) === JSON.stringify([12, 24, 36, 48]) && axT.r.info.layer === 'T1', axT.r.info);
+        // ---- 其餘 BLAS 一級／二級與 T2 替代（真機補測；這些以前只在假裝置上跑過）----
+        const sx = seeded(1000, 10);
+        const scT = await timed(() => rt.scal(1.5, Array.from(sx)));
+        cmp('scal（n=1000）', Float32Array.from(scT.r.result), window.FaGpuCore.scalRef(1.5, sx), 1, scT.r.info.layer, scT.ms);
+        const dtT = await timed(() => rt.dot(Array.from(va), Array.from(vb)));
+        cmp('dot（n=1000）', [dtT.r.result], [window.FaGpuCore.dotRef(Float32Array.from(va), Float32Array.from(vb))], 1000, dtT.r.info.layer, dtT.ms);
+        const nrT = await timed(() => rt.nrm2(Array.from(sx)));
+        cmp('nrm2（n=1000）', [nrT.r.result], [window.FaGpuCore.nrm2Ref(sx)], 1000, nrT.r.info.layer, nrT.ms);
+        const GA = seeded(16 * 32, 11), gx = seeded(32, 12);
+        const gvT = await timed(() => rt.gemv(Array.from(GA), Array.from(gx), 16, 32));
+        cmp('gemv（16×32）', Float32Array.from(gvT.r.result), window.FaGpuCore.gemvRef(Float32Array.from(GA), Float32Array.from(gx), 16, 32), 32, gvT.r.info.layer, gvT.ms);
+        const sdT = await timed(() => rt.sumDd(xs));
+        cmp('sum_dd（雙 f32 歸約，n=1000，對精確和）', [sdT.r.result], [window.FaGpuCore.sumExact(xs)], 1000, sdT.r.info.layer, sdT.ms);
+        const sIdx = []; for (let i = 0; i < 512; i++) sIdx.push((i * 7) % 16);
+        const sVals = Array.from(seeded(512, 13));
+        const saT = await timed(() => rt.scatterAdd(sIdx, sVals, 16));
+        cmp('scatter_add（512 筆、16 桶）', Float32Array.from(saT.r.result), window.FaGpuCore.scatterAddRef(sIdx, Float32Array.from(sVals), 16), 32, saT.r.info.layer, saT.ms);
+        // ---- createBatch：一個 command encoder 內串接 RMSNorm → SiLU → softmax，只 submit 一次、只回讀一次 ----
+        const bT = 16, bd = 64;
+        const bx = seeded(bT * bd, 14), bg = seeded(bd, 15);
+        const navDev = (await NN.getDevice(navigator)).dev;
+        if (!navDev) throw new Error('createBatch：沒有 WebGPU 裝置');
+        const bt = NN.createBatch(navDev);
+        const bxb = bt.upload(bx), bgb = bt.upload(bg);
+        const bn1 = bt.rmsnorm(bxb, bgb, bT, bd, 1e-6), bs1 = bt.silu(bn1), bs2 = bt.softmax(bs1, bT, bd);
+        const bT0 = performance.now();
+        const [bOut] = await bt.read([[bs2, bT * bd]]);
+        const bMs = performance.now() - bT0;
+        R.batchStats = bt.stats;
+        cmp('createBatch（rmsnorm→silu→softmax）', bOut, NN.softmaxRef(NN.siluRef(NN.rmsnormRef(bx, bg, bT, bd, 1e-6)), bT, bd), bd, 'T1（批次）', bMs);
+        ck('createBatch 只 submit 一次、只回讀一次', bt.stats.dispatches === 3 && bt.stats.readbacks === 1, bt.stats);
 
         // ---- WebGL2 層（T3）：矩陣乘 ----
         const rtGl = window.FaGpuCore.createRuntime({ navigator: {} });

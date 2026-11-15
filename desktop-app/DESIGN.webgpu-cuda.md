@@ -508,6 +508,31 @@ Python 模擬器與離線模型推論共用同一個 GPU 裝置：
 3. Python 的 `import cudaweb` 未執行（見上）。
 4. 容差：本次實測最大範數相對誤差 1.9e-7（adamw v，n=1000，T3，k=1），低於本節以前暫定的 3.3e-6 約 17 倍。**但真 GPU 上的訓練步整體誤差沒有量到**（因為 T1 沒跑成），所以 3.3e-6 暫時保留為上限，不把 1.9e-7 當成整條訓練路徑的實測。
 
+### 9.z 真機結果與用途旗標修正（2026-11-15）
+
+**真機來源**：使用者的 Chrome 跑本機驗證頁 `scripts/eval/cudaweb_browser.js`，結果在 `scripts/eval/cudaweb_browser.result.json`（已提交，`eval.checks` 20 項、`nn.checks` 5 項）。量測條件：vendor `nvidia`、architecture `kepler`（舊 GPU）、`isFallbackAdapter: false`、`maxStorageBufferBindingSize 2147483644`、workgroup 記憶體 32768、每 workgroup 1024 invocations、features 含 subgroups。
+
+**結果**：`eval` 20 項中 18 項通過；`nn` 5 項全部通過。
+- 通過：向量加、矩陣乘 17×19×21、歸約（T1）；矩陣乘（WebGL2，T3）；RMSNorm、softmax、SiLU、RoPE、AdamW 在 T1 與 T3 都與 CPU 在容差內。
+- 失敗 1：axpy 在真 WebGPU 上驗證失敗，降到純 JS。錯誤是 `CopyBufferToBuffer` 的來源缺 `COPY_SRC` 用途。
+- 失敗 2：`_cudawebCall 存在`。驗證頁沒有產品入口，不是 bug，忽略。
+
+**真機實測誤差**（範數相對誤差，對 CPU 參考版；條件同上）：五個訓練核心在 T1 約 1e-8 到 2e-7；在 T3 的最大值為 AdamW 的 v 輸出 1.9e-7（n=1000，k=1）。單一核心的實測最大值約 2e-7，低於本節以前暫定的 3.3e-6 約 17 倍。**3.3e-6 保留為上限**：它是針對整條訓練步的保守界線，而整條訓練步在真 GPU 上還沒有量到（見 §9.y 的未驗證項）。以上只代表單一核心，不代表整條訓練路徑。
+
+**axpy bug 與修正**：`axpy`、`scal` 等把儲存緩衝區當複製來源的路徑，缺 `COPY_SRC` 用途。修正：`gpu_core.js` 所有儲存緩衝區加上 `COPY_SRC`（並已逐項核對 `scal`、`dot`、`nrm2`、`gemv`、`sum_dd`、`scatter_add` 與 `createBatch` 的緩衝用途，見下）。
+
+**為什麼單元測試沒抓到**：假裝置原本不檢查用途旗標。現在 `gpu_fakes.js` 與 `gpu_core.test.js` 的假裝置會檢查：`copyBufferToBuffer` 的來源需要 `COPY_SRC`、目的需要 `COPY_DST`；`writeBuffer` 的目的需要 `COPY_DST`；`mapAsync` 的緩衝需要 `MAP_READ`；`createBindGroup` 的綁定需要 `STORAGE` 或 `UNIFORM`。缺旗標就丟錯，訊息與真實 WebGPU 的驗證錯誤一致。另外有三項回歸測試（`nn_ops_test.js`）。
+
+**用途核對（逐項）**：
+- 儲存緩衝區（輸入與輸出）：`STORAGE | COPY_SRC | COPY_DST`（可複製、可寫入、可讀回）。
+- uniform：`UNIFORM | COPY_DST`。
+- 回讀用緩衝：`MAP_READ | COPY_DST`，複製來源的儲存緩衝有 `COPY_SRC`。
+- `scal`、`dot`、`nrm2`、`gemv`、`sum_dd`、`scatter_add`、`createBatch` 的用途都經過上面的規則核對。
+
+**真機驗證的補測**：`cudaweb_gpu.eval.js` 新增 `scal`、`dot`、`nrm2`、`gemv`、`sum_dd`、`scatter_add`，以及 `createBatch`（rmsnorm→silu→softmax，只 submit 一次、只回讀一次）。**這些新檢查還沒有在真機上跑過**：Node 中以假裝置執行評估檔可通過 27/28（唯一失敗是 Node 沒有 WebGL2，屬預期）；真機結果需要在驗證頁重跑。
+
+**仍未驗證**：（1）五個訓練核心的 WGSL 在真機 T1 的完整結果（驗證頁已跑出 T1，見上，但本文件的 Electron 執行仍未成功）；（2）整條訓練步在真 GPU 上的誤差；（3）Python 的 `import cudaweb`。
+
 ## 10. 分階段路線圖
 
 > **實作現況（2026-11-15）**：第三階段的訓練核心已完成——五個逐元素與列運算（RMSNorm、softmax、SiLU、RoPE、AdamW）三層齊全，接進非同步訓練步，後端選單顯示實際層與原因；批次提交僅涵蓋四個逐元素運算。**未完成**：（1）一個訓練步整體在同一 command encoder 內（matmul 與 AdamW 尚未進批次）；（2）反向的 softmax 梯度與注意力 QK、AV 矩陣乘仍在 CPU；（3）RGBA8 編碼退路（沒有 `EXT_color_buffer_float` 的裝置）；（4）真桌面驗證與容差實測值，等待使用者回覆；（5）真 WebGPU 與真 WebGL2 上的數值正確性，目前只有假裝置的結果。
