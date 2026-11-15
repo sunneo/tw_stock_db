@@ -404,6 +404,15 @@ categories:
         samples: ["/run-terminal", "/run-terminal ls -la"]
         updated: 2026-09-26
 
+      - id: cudaweb
+        name: WebGPU 向量加、矩陣乘、歸約（Python 模擬器 cudaweb）
+        summary: 在 Python 模擬器（網頁版與桌面版的 Pyodide）裡呼叫瀏覽器 WebGPU 跑 cudaweb.vector_add、cudaweb.matmul、cudaweb.sum；沒有 WebGPU 時自動降到 CPU 並說明原因，backend_info() 會回報實際用的層。
+        how: { domain: coding, tools: [python_execute] }
+        platforms: [web, desktop]
+        samples: ["用 cudaweb 把兩個向量加起來", "用 cudaweb 做兩個矩陣相乘，並告訴我有沒有用到 GPU"]
+        updated: 2026-11-15
+        history:
+          - { date: 2026-11-15, note: "第一階段：向量加、矩陣乘、歸約的 WGSL 版與 CPU 參考版、能力偵測與降級回報、Python 模擬器接線（DESIGN.webgpu-cuda.md）" }
   - id: visual
     name: 圖表與視覺化
     summary: 繪圖、流程圖、3D 場景、互動元件、2D 動畫

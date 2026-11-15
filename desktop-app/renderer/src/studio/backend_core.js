@@ -59,4 +59,13 @@ class BackendRegistry {
 const isSymbolicKind = (k) => SYMBOLIC_KINDS.indexOf(k) >= 0;
 const maturityRank = (id) => { const i = MATURITY.indexOf(id); return i < 0 ? 99 : i; };
 
-module.exports = { BACKEND_IDS, SYMBOLIC_KINDS, KIND_BACKENDS, MATURITY, REQUIRED_METHODS, probeResult, validateProbeResult, validateBackend, safeProbe, BackendRegistry, isSymbolicKind, maturityRank };
+// 第一階段 WebGPU 核心（renderer/src/gpu/gpu_core.js）的層級：T1 原生 WGSL、T4 CPU 降級；T2、T3 尚未實作（DESIGN.webgpu-cuda.md §4）。
+// 把核心執行期的 backendInfo() 轉成登錄表的 probe 結果：只要有 WebGPU 裝置就算 webgpu 可用；不可用時 reason 必填（給使用者看的具體原因）。
+function webgpuTierProbe(bi) {
+  const b = bi || {};
+  const available = !!b.deviceReady;
+  const reason = available ? '' : (b.probeReason || '尚未取得 WebGPU 裝置');
+  return probeResult(available, reason, { name: 'webgpu' }, { features: b.features || [], limits: b.limits || {}, lastLayer: b.last ? b.last.layer : null, degradeCount: (b.degradeLog || []).length });
+}
+
+module.exports = { BACKEND_IDS, SYMBOLIC_KINDS, KIND_BACKENDS, MATURITY, REQUIRED_METHODS, probeResult, validateProbeResult, validateBackend, safeProbe, BackendRegistry, isSymbolicKind, maturityRank, webgpuTierProbe };

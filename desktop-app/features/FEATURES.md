@@ -558,6 +558,17 @@ clone、pull、status、log、commit、push（網頁版透過 worker 中繼）�
   - `/run-terminal`
   - `/run-terminal ls -la`
 
+### WebGPU 向量加、矩陣乘、歸約（Python 模擬器 cudaweb）（`cudaweb`）
+
+在 Python 模擬器（網頁版與桌面版的 Pyodide）裡呼叫瀏覽器 WebGPU 跑 cudaweb.vector_add、cudaweb.matmul、cudaweb.sum；沒有 WebGPU 時自動降到 CPU 並說明原因，backend_info() 會回報實際用的層。
+
+- 可用平台：網頁版、桌面版
+- 子代理人領域：`coding`
+- AI 工具：`python_execute`
+- 範例：
+  - `用 cudaweb 把兩個向量加起來`
+  - `用 cudaweb 做兩個矩陣相乘，並告訴我有沒有用到 GPU`
+
 ## 圖表與視覺化
 
 繪圖、流程圖、3D 場景、互動元件、2D 動畫
