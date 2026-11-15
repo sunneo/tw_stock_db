@@ -460,14 +460,19 @@ Python 模擬器與離線模型推論共用同一個 GPU 裝置：
 ### 9.x 訓練熱點接入與真桌面驗證的現況（2026-11-15）
 
 - **JS 訓練器（已接入，非同步變體）**：`renderer/src/studio/lora_ref_train.js` 新增 `lossAndGradsAsync`，前向與反向的矩陣乘改為 `await be.matmul(...)`；同步原路徑一字未改，當退路與參考實作。`cudawebMatmulBackend(rt)` 把 cudaweb 執行期接上訓練器，並記錄最後一次實際的層與原因。
-- **仍在 CPU 的部分**：RMSNorm、softmax、RoPE、SiLU、AdamW 仍是 CPU（Float64）。注意力的逐元素部分同樣在 CPU。
-- **批次提交（已完成，範圍有限）**：`nn_ops.js` 的 `createBatch` 可把 RMSNorm、softmax、SiLU、RoPE 串在同一個 command encoder，中間結果留在 GPU 緩衝區，整批只 submit 一次、只在 `read()` 回讀（測試以計數驗證）。**尚未涵蓋**：matmul 仍是 gpu_core 的獨立呼叫（每次一次往返）、AdamW 還沒進批次，所以訓練步整體仍不是單一 command buffer。
-- **數值一致性**（`lora_ref_train_async_test.js`，5 項）：CPU 後端與同步版損失差 < 1e-12、梯度範數相對差 < 1e-10；cudaweb（假 WebGPU 裝置）損失與梯度的範數相對差在暫定容差 3.3e-6 以內。量測採範數相對誤差，不採逐元素相對誤差（後者被接近 0 的梯度元素主導，與 f32 絕對捨入誤差不成比例）。
-- **後端狀態**：`backend_cudaweb.js` 依真實能力回報：有 WebGPU 裝置或 WebGL2 上下文、且拿得到運算執行期時 `available:true`，reason 寫明實際層；主行程沒有執行期時 `available:false` 並說明原因。方法 `init/step/evalLoss/saveCheckpoint/loadCheckpoint` 已實作（`backend_cudaweb_test.js`，7 項）。
+- **五個核心三層齊全（`gpu/nn_ops.js`）**：RMSNorm、softmax、SiLU、RoPE、AdamW 各有 T1（WGSL）、T3（WebGL2 片段著色器）、cpu-js（參考版）。降級順序 T1 → T3 → cpu-js，每一層的失敗原因都寫進 reason。WebGL2 沒有 `EXT_color_buffer_float` 時不走 T3，原因照實寫；**RGBA8 編碼退路尚未實作**，所以沒有浮點渲染目標的裝置會退到 cpu-js。
+- **WebGL2 的做法**：單趟繪製（全螢幕三角形，`gl_VertexID`），RGBA32F 紋理只用 R 通道，所有紋理共用寬度 `uW`。RMSNorm、softmax 的列歸約在片段著色器裡用迴圈做，**沒有做多趟縮減**（列長度大時再改）。AdamW 的三個輸出各一趟（不用多個 draw buffer），每趟從四個輸入重算 m、v。
+- **訓練步接線（`lora_ref_train.js`）**：`lossAndGradsAsync` 經 `opts.ops` 呼叫五個核心（預設 `cpuNnOps` 與原 CPU 版一致）；`adamStepAsync` 逐矩陣交給 `ops.adamw`。同步原路徑一字未改，當退路與參考實作。`trainerOps()` 把 nn_ops 包成這個介面，並記錄每次實際用的層。
+- **仍在 CPU 的部分**：反向的 softmax 梯度、注意力的 QK 與 AV 矩陣乘（經 cudaweb matmul 的部分除外，見下）、RMSNorm 的 inv（每列一次平方和）。
+- **批次提交（範圍有限）**：`createBatch` 可把 RMSNorm、softmax、SiLU、RoPE 串在同一個 command encoder，中間結果留在 GPU 緩衝區，整批只 submit 一次、只在 `read()` 回讀（測試以計數驗證）。**尚未做到**：一個訓練步整體在同一個 command encoder 內完成——矩陣乘（經 `be.matmul`）與 AdamW 仍各自 submit，訓練步內每個核心仍是獨立的一次往返。
+- **數值一致性**（`lora_ref_train_async_test.js`，8 項）：CPU 後端與同步版損失差 < 1e-12、梯度範數相對差 < 1e-10；cudaweb 矩陣乘的假裝置損失與梯度範數相對差在暫定容差 3.3e-6 以內；**五個核心全部經 ops 接上時**，假 WebGPU（T1）損失相對差 4.3e-9、梯度範數相對差 6.3e-7，假 WebGL2（T3）數值相同；AdamW 經 ops 三步的損失軌跡在容差內。量測採範數相對誤差，不採逐元素相對誤差（後者被接近 0 的梯度元素主導，與 f32 絕對捨入誤差不成比例）。**注意：這些數字來自假裝置（CPU 參考版在 f32 捨入下的結果），不是真 GPU 的誤差。**
+- **後端狀態**：`backend_cudaweb.js` 依真實能力回報：有 WebGPU 裝置或 WebGL2 上下文、且拿得到運算執行期時 `available:true`，reason 寫明實際層；主行程沒有執行期時 `available:false` 並說明原因。方法 `init/step/evalLoss/saveCheckpoint/loadCheckpoint` 已實作，訓練步經 ops 走五個核心（`backend_cudaweb_test.js`，8 項，含「沒有 GPU 導航器時核心退到 cpu-js」）。後端選單的顯示位置是 `studio-viewer.template.html`（`build()`），cudaweb 可用時也會列出 reason。
 - **範圍外**：`llm_scratch.py` 是 Python／torch 自己的訓練，走它自己的 torch 路徑；cudaweb 的熱點接入只涵蓋 JS 訓練器。
 - **真桌面驗證：尚未執行**。需要使用者明確同意（會搶焦點）。在那之前，WebGPU 真實介面卡、WebGL2 層、真實矩陣乘數字全部未驗證，本節的數字都來自假裝置。
 
 ## 10. 分階段路線圖
+
+> **實作現況（2026-11-15）**：第三階段的訓練核心已完成——五個逐元素與列運算（RMSNorm、softmax、SiLU、RoPE、AdamW）三層齊全，接進非同步訓練步，後端選單顯示實際層與原因；批次提交僅涵蓋四個逐元素運算。**未完成**：（1）一個訓練步整體在同一 command encoder 內（matmul 與 AdamW 尚未進批次）；（2）反向的 softmax 梯度與注意力 QK、AV 矩陣乘仍在 CPU；（3）RGBA8 編碼退路（沒有 `EXT_color_buffer_float` 的裝置）；（4）真桌面驗證與容差實測值，等待使用者回覆；（5）真 WebGPU 與真 WebGL2 上的數值正確性，目前只有假裝置的結果。
 
 | 階段 | 範圍 | 完成標準 | 依賴 | 預估工時 | 進度 |
 |---|---|---|---|---|---|
