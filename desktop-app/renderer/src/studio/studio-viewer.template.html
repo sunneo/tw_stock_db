@@ -500,7 +500,7 @@ var MT_MEM={};
 function lsGet(k,d){try{var v=localStorage.getItem(k);if(v)return v}catch(e){}return MT_MEM[k]||d}
 function lsSet(k,v){MT_MEM[k]=v;try{localStorage.setItem(k,v)}catch(e){}}
 function mtGet(){var id=lsGet(MT_KEY,'llm');return MTYPES.filter(function(t){return t.id===id})[0]||MTYPES[0]||null}
-function mtSet(id){lsSet(MT_KEY,id)}
+function mtSet(id){lsSet(MT_KEY,id);var t=MTYPES.filter(function(x){return x.id===id})[0];if(t&&!t.outputs.some(function(x){return x.id===mtOut()&&x.available})){var a=t.outputs.filter(function(x){return x.available})[0];if(a)mtOutSet(a.id)}}
 function mtOut(){return lsGet(MT_OUT_KEY,'lora')}
 function mtOutSet(o){lsSet(MT_OUT_KEY,o)}
 function mtGuard(t){var g=GUARDS[t.id]||{};var o=mtOut();var r=t.outputs.some(function(x){return x.id===o})?g[o]:null;return r||g._default||{level:'blocked',ok:false,message:'模型類型登錄表沒有接上，無法判斷這個類型能不能訓練。請重新整理工作室。'}}
@@ -515,9 +515,11 @@ var EXT_RUN={
  speech:{est:'處理器（CPU）約 2 秒／步（實測 30 步 51 秒；以你的電腦為準）。',steps:30,paths:[{k:'model',t:'dir',label:'Kokoro-82M 模型資料夾（config.json、kokoro-v1_0.pth）'},{k:'voice',t:'file',label:'基底語音包（.pt）'},{k:'data',t:'dir',label:'配對資料夾（train.jsonl、heldout.jsonl）'}]},
  audio_to_notes:{est:'處理器（CPU）300 步約 25 秒（實測 24 秒；以你的電腦為準）。只用合成資料。',steps:300,paths:[{k:'base',t:'file',label:'基底轉譜模型（nmp.onnx）'}]},
  vision:{est:'處理器（CPU）約 1 秒／步（實測 300 步 264 秒）。只用合成的顏色與形狀圖。',steps:300,paths:[{k:'base',t:'dir',label:'基底看圖模型資料夾（SmolVLM 格式）'}]},
+ context_extend:{est:'處理器（CPU）：一步約 1 段長窗＋2 段短窗的前後向（實測時間見設計文件第 16 節，以你的電腦為準）；另加合併、匯出與核對。',steps:40,paths:[{k:'base',t:'dir',label:'基底模型資料夾（Qwen3-0.6B：config.json、model.safetensors）'},{k:'q8',t:'file',label:'基底 ONNX q8 圖（model_quantized.onnx，結構要與應用程式內的相同）'}],fields:[{k:'factor',label:'加寬倍數（2 或 4）',value:'2'},{k:'longLen',label:'長窗長度（1024 到 16384）',value:'8192'},{k:'shortLen',label:'短窗長度（256 到 4096）',value:'1024'}]},
  llm_scratch:{est:'處理器（CPU）迷你模型：預訓練每 1000 個 token 約 26 秒、指令微調每步約 3 秒（實測，負載很高的機器；閒置時預期較快，未量測）。預設全流程約 1 小時，結果只是示範等級。專家混合約慢 1.1 倍；推理另加算術微調與強化學習（實驗用 tiny：強化學習每步約 12 秒）。步數欄位＝預訓練步數。',steps:300,paths:[{k:'corpus',t:'file',label:'語料（文字檔或資料夾；留空＝內建小語料，只夠示範）'}],fields:[{k:'arch',label:'架構（dense＝密集、moe＝專家混合、reasoning＝推理：思考＋答案再強化學習）',value:'dense'},{k:'preset',label:'模型大小（mini＝約 1 千 3 百萬參數、small＝約 2 千萬、tiny＝4 層實驗用）',value:'mini'},{k:'kvHeads',label:'鍵值頭數（8＝可給原生執行環境；其他值只輸出標準格式；留空＝8）',value:''},{k:'layers',label:'層數（1 到 28，留空＝依大小）',value:''},{k:'experts',label:'專家數（只對 moe）',value:'8'},{k:'topK',label:'每個詞元挑幾個專家（只對 moe）',value:'2'},{k:'vocab',label:'分詞器詞彙表大小',value:'4096'},{k:'batch',label:'預訓練批次',value:'4'},{k:'seq',label:'序列長度',value:'128'},{k:'sftSteps',label:'指令微調步數',value:'40'}]},
  image:{est:'處理器（CPU）約 1 秒／步（512 解析度，實測 40 步訓練 35 秒）；只用合成圖文配對。',steps:40,paths:[{k:'base',t:'dir',label:'SDXS 基底模型資料夾（unet、vae、text_encoder、tokenizer）'}]}
 };
+var STAGE_TXT={llm_scratch:'語料清理與切分 → 訓練分詞器 → 預訓練 → 指令微調 → 匯出 ONNX（q8）→ 重新載入核對',context_extend:'長文 LoRA 微調 → 替換旋轉表與線性層、寫 ONNX q8 → 與 HF 比對'};
 function extRunPanel(t){
  var cfg=EXT_RUN[t.id]||{est:'',steps:100,paths:[]},box=h('div',{}),st={jobId:null,timer:null},inp={};
  var nm=h('input',{type:'text',placeholder:'輸出名稱（英數、中文、底線、連字號）',style:'width:100%'});
@@ -526,6 +528,8 @@ function extRunPanel(t){
  var msg=h('div',{style:'font-size:12px;margin-top:6px'}),prog=h('div',{style:'font-size:12px;color:var(--mut);margin-top:4px;white-space:pre-line'});
  var bGo=h('button',{'class':'pri',text:'▶ 開始訓練'}),bStop=h('button',{text:'停止',disabled:true});
  box.appendChild(h('div',{style:'font-size:12px;margin-top:6px',text:'預估時間：'+cfg.est}));
+ if(STAGE_TXT[t.id])box.appendChild(h('div',{style:'font-size:12px;margin-top:4px',text:'流程：'+STAGE_TXT[t.id]}));
+ box.appendChild(h('div',{style:'margin-top:6px'},[h('button',{text:'← 改回一般訓練（語言模型）',onclick:function(){mtSet('llm');refresh('train')}})]));
  box.appendChild(h('label',{text:'輸出名稱'}));box.appendChild(nm);
  box.appendChild(h('label',{text:'訓練步數'}));box.appendChild(steps);
  cfg.paths.forEach(function(pd){var i=h('input',{type:'text',placeholder:pd.t==='dir'?'資料夾完整路徑':'檔案完整路徑',style:'width:100%'});inp[pd.k]=i;box.appendChild(h('label',{text:pd.label}));box.appendChild(i)});
@@ -543,13 +547,13 @@ function extRunPanel(t){
   else if(s.state==='stopped')msg.textContent='已停止：'+(s.message||'');
   else msg.textContent='失敗：'+(s.message||'未知原因');
  }
- bGo.onclick=async function(){
+ bGo.onclick=async function(){try{
   msg.textContent='';var gd=mtGuard(t);if(gd&&gd.ok===false){msg.textContent='目前選的輸出不能用：'+(gd.message||'請改選其他輸出。');return}
   var paths={};cfg.paths.forEach(function(pd){var v=inp[pd.k].value.trim();if(v||!pd.optional)paths[pd.k]=v;if(!v&&pd.k==='corpus')delete paths[pd.k]});
   var prm={steps:Number(steps.value)};Object.keys(fld).forEach(function(k){var v=fld[k].value.trim();if(v==='')return;prm[k]=(k==='preset'||k==='arch')?v:Number(v)});
   var body={type:t.id,output:mtOut(),name:nm.value.trim(),params:prm,paths:paths};if(py.value.trim())body.python=py.value.trim();
   var x=await api('POST','/api/ext/start',body);if(x.ok===false){msg.textContent=String(x.error||'沒有啟動');return}
-  st.jobId=x.jobId;bGo.disabled=true;bStop.disabled=false;msg.textContent='已開始。'+(x.limitsNote||'');st.timer=setInterval(poll,2000)};
+  st.jobId=x.jobId;bGo.disabled=true;bStop.disabled=false;msg.textContent='已開始。'+(x.limitsNote||'');st.timer=setInterval(poll,2000)}catch(e){msg.textContent='開始失敗（'+t.id+'）：'+((e&&e.message)||e)+'（請確認工作室的桌面版橋接可用）'}};
  bStop.onclick=async function(){await api('POST','/api/ext/stop',{jobId:st.jobId});msg.textContent='要求停止中…'};
  return box}
 function modelTypePanel(onChange){
@@ -591,11 +595,13 @@ function trainWizard(host){
  function nav(back,next,nextText){var r=h('div',{'class':'row'},[]);if(back)r.appendChild(h('button',{text:'← 上一步',onclick:back}));if(next)r.appendChild(h('button',{'class':'pri',text:nextText||'下一步 →',onclick:next}));return r}
  function go(d){W.step=Math.max(0,W.step+d);draw()}
  function stepName(){return steps()[W.step]}
- async function draw(){host.textContent='';var mcur=mtGet();if(mcur&&mcur.goal==='lora'&&W.kind!=='lora'){W.kind='lora';W.step=0}if(mcur&&EXT_RUN[mcur.id]){host.appendChild(mtWarn(mcur));host.appendChild(extRunPanel(mcur));return}
+ function draw(){var t0=Date.now();drawInner().catch(function(e){host.appendChild(reason('訓練精靈出錯（耗時 '+(Date.now()-t0)+' 毫秒）：'+((e&&e.message)||e)))})}
+ async function drawInner(){host.textContent='';var mcur=mtGet();if(mcur&&mcur.goal==='lora'&&W.kind!=='lora'){W.kind='lora';W.step=0}if(mcur&&EXT_RUN[mcur.id]){host.appendChild(mtWarn(mcur));host.appendChild(extRunPanel(mcur));return}
  if(mcur&&mcur.status!=='done'){host.appendChild(mtWarn(mcur));host.appendChild(mtStartBtn(mcur));host.appendChild(h('div',{style:'color:var(--mut);font-size:12px',text:'要改訓練哪一種模型，請在上面的「模型類型」重新選。'}));return}host.appendChild(bar());var sn=stepName();
   if(sn==='想做什麼'){host.appendChild(h('b',{text:'你想做什麼？'}));
    [['train','🏋 訓練','用資料訓練出新的成果（語言模型、積木課、矩陣層、UML、CoLU…）'],['update','🔄 更新資產','已經有一份資產：用新資料再訓練、補資料、或重新評量']].forEach(function(g){var on=W.intent===g[0];host.appendChild(h('div',{'class':'card',style:'cursor:pointer;'+(on?'border:2px solid var(--ok)':''),onclick:function(){W.intent=g[0];W.data='';W.name='';draw()}},[h('b',{text:(on?'✅ ':'')+g[1]}),h('div',{style:'color:var(--mut);font-size:12px',text:g[2]})]))});
-   host.appendChild(nav(null,W.intent?function(){go(1)}:null));if(!W.intent)host.appendChild(h('div',{style:'color:var(--mut);font-size:12px',text:'先點選一個才能下一步。'}));return}
+   [['llm_scratch','🧱 建立語言模型（從零開始）','從你的文字語料整個建一顆小模型：分詞器、預訓練、指令微調、匯出 ONNX（處理器；跑完全流程約 1 小時，結果只是示範等級）'],['context_extend','📏 加長上下文（語言模型）','把語言模型的上下文加寬為 2 或 4 倍，用長文微調後輸出新的完整模型（處理器）']].forEach(function(g){host.appendChild(h('div',{'class':'card',style:'cursor:pointer',onclick:function(){mtSet(g[0]);refresh('train')}},[h('b',{text:g[1]}),h('div',{style:'color:var(--mut);font-size:12px',text:g[2]})]))});
+  host.appendChild(nav(null,W.intent?function(){go(1)}:null));if(!W.intent)host.appendChild(h('div',{style:'color:var(--mut);font-size:12px',text:'先點選一個才能下一步。'}));return}
   if(sn==='挑資產'){host.appendChild(h('b',{text:'要更新哪一份資產？'}));var bx=h('div',{text:'載入中…'});host.appendChild(bx);var ra=await api('GET','/api/assets');bx.textContent='';var any=false;
    Object.keys((ra&&ra.groups)||{}).forEach(function(k){var g=ra.groups[k];(g.items||[]).filter(function(it){return it.origin!=='builtin'}).forEach(function(it){any=true;var on=W.data===it.kind+'/'+it.name;bx.appendChild(h('div',{'class':'card',style:'cursor:pointer;'+(on?'border:2px solid var(--ok)':''),onclick:function(){W.kind=it.kind;W.data=it.kind+'/'+it.name;W.name=it.name;draw()}},[h('b',{text:(on?'✅ ':'')+it.kind+'/'+it.name}),h('span',{'class':'badge',text:g.label||it.kind})]))})});
    if(!any)bx.appendChild(h('div',{'class':'warn',text:'你還沒有自己的資產（內建的唯讀，不能更新）。先選「訓練」做出第一份。'}));
