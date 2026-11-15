@@ -68,6 +68,15 @@ function unescapeHtml(s) {
     return s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&');
 }
 
+// 清掉這次量測啟動的 Chrome 殘留：只殺命令列含本次暫存 user-data-dir 路徑的行程（那是本腳本獨有的標記，不會碰使用者的 Chrome）。
+// 標記走環境變數傳入，不放進 powershell 的命令列（否則 powershell 自己的命令列會含標記，把自己殺掉）；另外排除自己的 $PID。
+function killByProfileMarker(profile) {
+    if (process.platform !== 'win32') return;
+    const ps = "Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -and $_.CommandLine.Contains($env:FA_KILL_MARK) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }";
+    const env = Object.assign({}, process.env, { FA_KILL_MARK: profile });
+    try { require('child_process').execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], { stdio: 'ignore', timeout: 30000, env }); } catch (_) { /* 清不掉就算了，下次腳本會再清 */ }
+}
+
 function runChrome(o, url) {
     const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'fa-cold-'));
     const args = [
@@ -76,6 +85,7 @@ function runChrome(o, url) {
     ];
     return new Promise((resolve, reject) => {
         execFile(o.chrome, args, { maxBuffer: 200 * 1024 * 1024, timeout: o.budget + 120000 }, (err, stdout) => {
+            killByProfileMarker(profile); // 主行程結束後，子行程（renderer、gpu、crashpad）可能還活著，一併清掉
             try { fs.rmSync(profile, { recursive: true, force: true }); } catch (_) { /* 暫存目錄清不掉就算了 */ }
             if (err && !stdout) return reject(err);
             resolve(stdout || '');
