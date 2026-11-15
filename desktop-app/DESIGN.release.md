@@ -167,3 +167,13 @@ node scripts/release-version.js check    # 檔案版號 ≠ 遠端 → 以 1 結
 - 建置：`node scripts/embed-code-ui.js && node build-assistant.js`，核心與桌面版產物 `node --check` 通過。
 - `scripts/web-local-serve.js --no-cache --throttle 800`：用 curl 檢查，頁面沒有剩下的 jsDelivr 網址、本機改寫保留、vendor 網址維持原樣、回應 `Cache-Control: no-store`、限速約每秒 80 KB。
 - 無頭量測（上表）：每個數字都來自 `scratchpad` 的 JSON（不在版本庫裡）；重跑方法見 `scripts/web-cold-load-headless.js` 開頭的用法。
+
+## 殘留行程的收尾規則（2026-11-16）
+
+發布與測試會啟動無頭 Chrome、本機伺服器等行程；殘留的行程會把記憶體疊高，最後讓 Claude 被系統殺掉。規則：
+
+- 自己啟動的，自己收乾淨：用獨立的暫存 `--user-data-dir`，結束或逾時就清掉；清除只針對命令列含該暫存標記的行程（`web-cold-load-headless.js` 的 `killByProfileMarker`）。
+- 不准用 `taskkill /IM chrome.exe` 這類一刀切的指令：會殺掉使用者自己的 Chrome 與 Claude in Chrome 的連線。
+- `scripts/cleanup-orphans.js` 列出（預設）或清除（`--kill`）殘留；`scripts/publish.sh` 結尾與 `scripts/run-core-tests.js` 結尾都會呼叫 `--kill`，清不掉只警告、不擋發布或測試。
+- 測試：`node scripts/cleanup-orphans.test.js`（7 項：只列出不殺、清除只殺標記行程、無關行程與 powershell 本身不受影響）。
+- 派工簡報條款（給子工作階段）：結束前自己確認沒留下行程（列出自己啟動的行程、確認已收掉）；只清自己記下的 PID 或帶標記的行程，不用一刀切。派工簡報範本本身不在版本庫裡，要由管理者的工作流程補上這條。

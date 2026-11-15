@@ -479,4 +479,6 @@ try {
     console.log('\n測試報告：test-reports/core-tests-latest.md');
 } catch (e) { console.log('（測試報告寫不出來：' + e.message + '）'); }
 console.log('\n通過 ' + (results.length - failed) + '／' + results.length + ' 組；失敗 ' + failed + '（新增 ' + failedNew + '、既有 ' + (failed - failedNew) + '）' + (failedNew ? '　← 有新增失敗' : ''));
+// 結尾清殘留（2026-11-16）：各測試若留下帶暫存標記的 Chrome 等行程，這裡一併清掉（只殺標記行程，不碰使用者的 Chrome）。
+spawnSync(process.execPath, [path.join(root, 'scripts', 'cleanup-orphans.js'), '--kill'], { encoding: 'utf8', stdio: 'inherit', timeout: 60000 });
 process.exit(failedNew ? 1 : 0);

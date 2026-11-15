@@ -164,4 +164,7 @@ if [ "$WEB" = 1 ]; then
   fi
 fi
 
+# 結尾清殘留（2026-11-16）：只清命令列含 fa-cold- 暫存標記的行程（預熱與量測留下的 Chrome），不碰使用者的 Chrome。失敗只略過，不擋發布。
+node scripts/cleanup-orphans.js --kill || true
+
 if [ "$DRY" = 1 ]; then say "完成（dry-run，什麼都沒推）：patch v$VERSION、desktop-app $HEAD_SHA"; else say "完成：patch v$VERSION、desktop-app $HEAD_SHA"; fi
