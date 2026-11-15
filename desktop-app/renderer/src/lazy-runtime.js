@@ -38,7 +38,7 @@ const FaLazy = (function () {
         const c = chunks[name];
         if (!c) throw new Error('FaLazy：沒有登記過區塊 ' + name);
         if (c.loaded) return;
-        if (typeof window !== 'undefined' && window.__FA_LAZY_TRACE) (window.__faLazyTrace = window.__faLazyTrace || []).push({ name, stack: String(new Error().stack).split(/\n/).slice(2, 7).join(' | ') });
+        if (typeof window !== 'undefined' && window.__FA_LAZY_TRACE) (window.__faLazyTrace = window.__faLazyTrace || []).push({ name, how: prefetched(name) !== null ? 'prefetch' : 'sync', stack: String(new Error().stack).split(/\n/).slice(2, 7).join(' | ') });
         if (c.running) throw new ReferenceError('FaLazy：區塊 ' + name + ' 載入執行到一半又被要求（循環相依）');
         const pre = prefetched(name);
         if (pre !== null) {

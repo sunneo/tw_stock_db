@@ -121,6 +121,10 @@ const FaRemoteHost = (function () {
         // 免費專案 7 天沒有任何請求會被暫停：App 啟動後每天對兩個專案各送一個最輕的請求（問一個不存在的房間），Cloudflare Worker 另外每 5 天也會送
         _rgKeepAlive() {
             if (this._rgKeepAliveTimer) return; const KEY = 'fa_remote_keepalive_v1';
+            // 2026-11-15 冷載入優化：沒有遠端群組設定、也沒有保存的登入工作階段時，開機不排保活（不會載入 supabase）。
+            // 沒有設定的人，免費專案的保活由 Cloudflare Worker 每 5 天送一次（既有設計）。
+            let hasRemoteConfig = false; try { hasRemoteConfig = !!(localStorage.getItem(STORE) || localStorage.getItem('fa_remote_session_v1')); } catch (_) { hasRemoteConfig = false; }
+            if (!hasRemoteConfig) return;
             this._rgKeepAliveTimer = setTimeout(async () => {
                 let last = {}; try { last = JSON.parse(localStorage.getItem(KEY) || '{}') || {}; } catch (_) { last = {}; }
                 for (let i = 0; i < BACKENDS.length; i++) {

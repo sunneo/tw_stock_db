@@ -75279,6 +75279,13 @@ function faStripDesktopOnlySettings(config) {
 /* DESKTOP-ONLY-END */
 
 const _faExportScriptCache = new Map();
+// 2026-11-15 冷載入優化：排到「助理就緒之後、瀏覽器閒置時」才執行，不搶開機時的網路。
+// requestIdleCallback 沒有就 2 秒後執行。fn 自己的錯誤在這裡吞掉（背景工作失敗不影響功能）。
+function _faRunWhenIdle(fn) {
+    const run = () => { try { fn(); } catch (_) { /* 背景工作失敗不影響功能 */ } };
+    if (typeof requestIdleCallback === 'function') requestIdleCallback(run, { timeout: 4000 });
+    else setTimeout(run, 2000);
+}
 function _faLoadScriptOnce(url) {
     const p0 = _faLoadScriptOnceRaw(url), alt = _faAssetFallback.get(url);
     return alt && alt !== url ? p0.catch(() => _faLoadScriptOnceRaw(alt)) : p0;
@@ -78148,6 +78155,10 @@ const FaRemoteHost = (function () {
         // 免費專案 7 天沒有任何請求會被暫停：App 啟動後每天對兩個專案各送一個最輕的請求（問一個不存在的房間），Cloudflare Worker 另外每 5 天也會送
         _rgKeepAlive() {
             if (this._rgKeepAliveTimer) return; const KEY = 'fa_remote_keepalive_v1';
+            // 2026-11-15 冷載入優化：沒有遠端群組設定、也沒有保存的登入工作階段時，開機不排保活（不會載入 supabase）。
+            // 沒有設定的人，免費專案的保活由 Cloudflare Worker 每 5 天送一次（既有設計）。
+            let hasRemoteConfig = false; try { hasRemoteConfig = !!(localStorage.getItem(STORE) || localStorage.getItem('fa_remote_session_v1')); } catch (_) { hasRemoteConfig = false; }
+            if (!hasRemoteConfig) return;
             this._rgKeepAliveTimer = setTimeout(async () => {
                 let last = {}; try { last = JSON.parse(localStorage.getItem(KEY) || '{}') || {}; } catch (_) { last = {}; }
                 for (let i = 0; i < BACKENDS.length; i++) {
@@ -83479,7 +83490,8 @@ class FloatingAssistant {
         this._syncCodingDomainSettings();
         this._initUI();
         this._initEventListeners();
-        this._applyFestivalTheme().catch(() => {});
+        // 2026-11-15：節慶套版要抓 calendar.json，改成助理就緒後閒置時才抓（不擋開機網路）
+        _faRunWhenIdle(() => this._applyFestivalTheme().catch(() => {}));
         this._startFestivalTimer();
         if (this._chatListEnabled) this._chatListInit().catch((err) => console.warn('對話清單初始化失敗:', err));
         this._registerBuiltinAiTools();
@@ -119301,7 +119313,7 @@ _result
         // 3D canvas時本來就需要），不等待、失敗也不影響——單純讓worker
         // 解析完成的當下，主執行緒的three.js也大機率已經就緒，掛載可以
         // 立刻開始，不用再等一次網路載入。
-        this._ensureThreeJsLoaded().catch(() => {});
+        // 2026-11-15 冷載入優化：three.js 不在開機預先載入，只有 3D 功能第一次用到才載入（_ensureThreeJsLoaded 內部會 await）。
         let parts, triangleCount;
         try {
             if (onProgress) onProgress('reading-file');
@@ -136036,7 +136048,9 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         // 小型CDN檔案的時間差不多會被那段等待「吃掉」，使用者體感上幾乎不會
         // 注意到有額外延遲。不用await，失敗也不影響其他功能（見
         // _ensureMarkdownLibsLoaded內的容錯）。
-        this._ensureMarkdownLibsLoaded();
+        // 2026-11-15 冷載入優化：改成助理就緒後、閒置時才背景載入（不搶開機網路）。
+        // 真的要渲染 markdown 時，呼叫端會 await _ensureMarkdownLibsLoaded()，沒載好就等它載完。
+        _faRunWhenIdle(() => { this._ensureMarkdownLibsLoaded().catch(() => {}); });
 
         let btn, win;
 
