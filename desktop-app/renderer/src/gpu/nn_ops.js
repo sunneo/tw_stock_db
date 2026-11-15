@@ -258,4 +258,61 @@ async function rope(x, T, H, hd, dir, opts) {
     () => ropeRef(xf, T, H, hd, dir));
 }
 
-module.exports = { rmsnormRef, rmsnorm, softmaxRef, softmax, siluRef, silu, ropeRef, rope, runWgsl, getDevice, tryLayers, WGSL_RMSNORM, WGSL_SOFTMAX, WGSL_SILU, WGSL_ROPE, NOTE_T3 };
+// ---------- AdamW（逐元素，解耦權重衰減）----------
+// m ← b1·m + (1−b1)·g；v ← b2·v + (1−b2)·g²；p ← p − lr·wd·p − lr·(m/c1)/(sqrt(v/c2)+eps)
+// c1 = 1−b1^t、c2 = 1−b2^t 由主機算好傳入。wd=0 時與 lora_ref_train.js 的 adamStep 相同公式。
+function adamwCore(p, g, m, v, lr, b1, b2, eps, wd, c1, c2) {
+  const n = p.length, P2 = new Float64Array(n), M2 = new Float64Array(n), V2 = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    M2[i] = b1 * m[i] + (1 - b1) * g[i];
+    V2[i] = b2 * v[i] + (1 - b2) * g[i] * g[i];
+    P2[i] = p[i] - lr * wd * p[i] - lr * (M2[i] / c1) / (Math.sqrt(V2[i] / c2) + eps);
+  }
+  return { p: P2, m: M2, v: V2 };
+}
+function adamwRef(p, g, m, v, t, lr, b1, b2, eps, wd) {
+  if (p.length !== g.length || p.length !== m.length || p.length !== v.length) throw new Error('adamw：p、g、m、v 長度不同');
+  return adamwCore(p, g, m, v, lr, b1, b2, eps, wd, 1 - Math.pow(b1, t), 1 - Math.pow(b2, t));
+}
+
+const WGSL_ADAMW = `
+struct P { n: u32, lr: f32, b1: f32, b2: f32, eps: f32, wd: f32, c1: f32, c2: f32 }
+@group(0) @binding(0) var<storage, read_write> pp: array<f32>;
+@group(0) @binding(1) var<storage, read> gg: array<f32>;
+@group(0) @binding(2) var<storage, read_write> mm: array<f32>;
+@group(0) @binding(3) var<storage, read_write> vv: array<f32>;
+@group(0) @binding(4) var<uniform> u: P;
+// @kernel adamw
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let i = gid.x;
+  if (i >= u.n) { return; }
+  let g = gg[i];
+  let m2 = u.b1 * mm[i] + (1.0 - u.b1) * g;
+  let v2 = u.b2 * vv[i] + (1.0 - u.b2) * g * g;
+  let p0 = pp[i];
+  mm[i] = m2;
+  vv[i] = v2;
+  pp[i] = p0 - u.lr * u.wd * p0 - u.lr * (m2 / u.c1) / (sqrt(v2 / u.c2) + u.eps);
+}
+`;
+
+async function adamw(p, g, m, v, t, lr, b1, b2, eps, wd, opts) {
+  const pf = Float32Array.from(p), gf = Float32Array.from(g), mf = Float32Array.from(m), vf = Float32Array.from(v);
+  const n = pf.length;
+  return tryLayers('adamw', opts,
+    async (dev) => {
+      const c1 = 1 - Math.pow(b1, t), c2 = 1 - Math.pow(b2, t);
+      const uni = new ArrayBuffer(32);
+      new Uint32Array(uni, 0, 1)[0] = n;
+      const fl = new Float32Array(uni, 4, 7);
+      fl.set([lr, b1, b2, eps, wd, c1, c2]);
+      const outs = await runWgsl(dev, WGSL_ADAMW,
+        [{ data: pf, out: true }, { data: gf, out: false }, { data: mf, out: true }, { data: vf, out: true }],
+        uni, Math.ceil(n / 64));
+      return { p: outs[0], m: outs[1], v: outs[2] };
+    },
+    () => adamwRef(pf, gf, mf, vf, t, lr, b1, b2, eps, wd));
+}
+
+module.exports = { rmsnormRef, rmsnorm, softmaxRef, softmax, siluRef, silu, ropeRef, rope, adamwCore, adamwRef, adamw, runWgsl, getDevice, tryLayers, WGSL_RMSNORM, WGSL_SOFTMAX, WGSL_SILU, WGSL_ROPE, WGSL_ADAMW, NOTE_T3 };

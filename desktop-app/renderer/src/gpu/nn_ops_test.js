@@ -155,6 +155,46 @@ function maxAbs(a, b) { let m = 0; for (let i = 0; i < a.length; i++) m = Math.m
     assert.throws(() => NN.ropeRef(new Float32Array(RT * RH * 7), RT, RH, 7, 1), /hd 必須是偶數/);
   });
 
+  // ---- AdamW ----
+  const AN = 19;
+  const ap = seeded(AN, 6), ag = seeded(AN, 7), am = seeded(AN, 8).map((x) => x * 0.1), av = seeded(AN, 9).map((x) => Math.abs(x) * 0.1);
+  const A = { t: 3, lr: 0.01, b1: 0.9, b2: 0.999, eps: 1e-8, wd: 0.01 };
+
+  await check('adamwRef（wd=0）與 lora_ref_train.js 的 adamStep 公式逐元素一致', async () => {
+    const L = require('../studio/lora_ref_train.js');
+    const pp = Float64Array.from(ap), mm = Float64Array.from(am), vv = Float64Array.from(av);
+    // adamStep 需要整個模型結構；這裡照它的公式（同一組常數）逐元素算一步作為獨立參考
+    const b1 = A.b1, b2 = A.b2, c1 = 1 - Math.pow(b1, A.t), c2 = 1 - Math.pow(b2, A.t);
+    for (let i = 0; i < AN; i++) {
+      const m2 = b1 * mm[i] + (1 - b1) * ag[i], v2 = b2 * vv[i] + (1 - b2) * ag[i] * ag[i];
+      mm[i] = m2; vv[i] = v2;
+      pp[i] -= A.lr * (m2 / c1) / (Math.sqrt(v2 / c2) + A.eps);
+    }
+    const r = NN.adamwRef(ap, ag, am, av, A.t, A.lr, A.b1, A.b2, A.eps, 0);
+    assert.ok(maxAbs(r.p, pp) < 1e-12 && maxAbs(r.m, mm) < 1e-12 && maxAbs(r.v, vv) < 1e-12, 'wd=0 與 adamStep 公式不一致');
+    assert.ok(L && typeof L.adamStep === 'function');
+  });
+
+  await check('adamwRef：權重衰減使參數朝 0 收縮（wd>0 與 wd=0 不同）', async () => {
+    const r0 = NN.adamwRef(ap, ag, am, av, A.t, A.lr, A.b1, A.b2, A.eps, 0);
+    const r1 = NN.adamwRef(ap, ag, am, av, A.t, A.lr, A.b1, A.b2, A.eps, 0.1);
+    assert.ok(maxAbs(r0.p, r1.p) > 0, '衰減沒有生效');
+    for (let i = 0; i < AN; i++) assert.ok(Math.abs(r1.p[i]) <= Math.abs(r0.p[i]) + 1e-12 || Math.abs(ap[i]) < 1e-9, '第 ' + i + ' 個沒有收縮');
+  });
+
+  await check('adamw 經 WGSL（假裝置）：層為 T1，p、m、v 三個輸出都與參考版一致', async () => {
+    const r = await NN.adamw(ap, ag, am, av, A.t, A.lr, A.b1, A.b2, A.eps, A.wd, { navigator: fakeNavigator().nav });
+    assert.strictEqual(r.info.layer, 'T1');
+    const ref = NN.adamwRef(ap, ag, am, av, A.t, A.lr, A.b1, A.b2, A.eps, A.wd);
+    assert.ok(maxAbs(r.result.p, ref.p) < 1e-6 && maxAbs(r.result.m, ref.m) < 1e-6 && maxAbs(r.result.v, ref.v) < 1e-6);
+  });
+
+  await check('adamw 沒有 WebGPU：退到 cpu-js 並寫明原因', async () => {
+    const r = await NN.adamw(ap, ag, am, av, A.t, A.lr, A.b1, A.b2, A.eps, A.wd, { navigator: {} });
+    assert.strictEqual(r.info.layer, 'cpu-js');
+    assert.ok(r.info.reason.includes(NN.NOTE_T3));
+  });
+
   await check('形狀不符：直接丟錯（不降級，避免默默算錯）', async () => {
     assert.throws(() => NN.rmsnormRef(x.slice(1), g, T, d, eps), /x 的長度/);
     assert.throws(() => NN.rmsnormRef(x, g.slice(1), T, d, eps), /g 的長度/);

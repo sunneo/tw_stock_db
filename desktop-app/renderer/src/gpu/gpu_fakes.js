@@ -110,6 +110,11 @@ function fakeNavigator(opts) {
       // 綁定順序：0 x、1 y、2 uniform（T、H、hd 皆為 u32，dir 為 f32 位於位元組 12）
       const T = u32(e[2])[0], H = u32(e[2])[1], hd = u32(e[2])[2], dir = new Float32Array(e[2].data, 12, 1)[0];
       f32(e[1], T * H * hd).set(NN.ropeRef(f32(e[0], T * H * hd), T, H, hd, dir));
+    } else if (k === 'adamw') {
+      // 綁定順序：0 p(寫)、1 g、2 m(寫)、3 v(寫)、4 uniform（n u32、lr、b1、b2、eps、wd、c1、c2 皆 f32，從位元組 4 起）
+      const n = u32(e[4])[0], fl = new Float32Array(e[4].data, 4, 7);
+      const r = NN.adamwCore(f32(e[0], n), f32(e[1], n), f32(e[2], n), f32(e[3], n), fl[0], fl[1], fl[2], fl[3], fl[4], fl[5], fl[6]);
+      f32(e[0], n).set(r.p); f32(e[2], n).set(r.m); f32(e[3], n).set(r.v);
     } else if (k === 'axpy' || k === 'scal') {
       const n = u32(e[e.length - 1])[0];
       const alpha = new Float32Array(e[e.length - 1].data, 4, 1)[0];
