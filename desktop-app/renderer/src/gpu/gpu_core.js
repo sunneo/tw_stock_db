@@ -111,6 +111,38 @@
   function nrm2Ref(x) { var s = 0; for (var i = 0; i < x.length; i++) s += x[i] * x[i]; return Math.fround(Math.sqrt(s)); }
   function gemvRef(A, x, m, n) { return matmulRef(A, x, m, n, 1); }
 
+  // ---------- T2 替代實作的參考版（演算法與 WGSL 版相同，全部在 f32 精度下舍入） ----------
+  function f32(x) { return Math.fround(x); }
+  function twoSumF(a, b) { var s = f32(a + b), bb = f32(s - a); return [s, f32(f32(a - f32(s - bb)) + f32(b - bb))]; }
+  function quickTwoSumF(a, b) { var s = f32(a + b); return [s, f32(b - f32(s - a))]; }
+  // double-float 加法（ieee add）：(ah, al) + (bh, bl)，結果是非重疊的 hi + lo
+  function ddAdd(ah, al, bh, bl) {
+    var s = twoSumF(ah, bh), t = twoSumF(al, bl);
+    var s1 = s[0], s2 = f32(s[1] + t[0]);
+    var q = quickTwoSumF(s1, s2); s1 = q[0]; s2 = f32(q[1] + t[1]);
+    q = quickTwoSumF(s1, s2);
+    return [q[0], q[1]];
+  }
+  // 雙 f32 歸約：回傳 hi + lo（以 JS 數字表示，精度約 48 位元尾數，預估）
+  function sumDdRef(a) {
+    var h = 0, l = 0;
+    for (var i = 0; i < a.length; i++) { var r = ddAdd(h, l, f32(a[i]), 0); h = r[0]; l = r[1]; }
+    return h + l;
+  }
+  // 64 位元整數以兩個 u32（hi、lo）表示的加法，結果模 2^64。進位用比較判斷。
+  function add64(a, b) {
+    var lo = (a[1] + b[1]) >>> 0;
+    var carry = lo < a[1] ? 1 : 0;
+    var hi = (a[0] + b[0] + carry) >>> 0;
+    return [hi, lo];
+  }
+  // f32 原子加的 CAS 迴圈參考版：out[idx[i]] ← f32(out[idx[i]] + vals[i])，依序執行（GPU 上順序不固定，結果不位元相同）
+  function scatterAddRef(idx, vals, outLen) {
+    var out = new Float32Array(outLen);
+    for (var i = 0; i < idx.length; i++) out[idx[i]] = f32(out[idx[i]] + vals[i]);
+    return out;
+  }
+
   // ---------- WGSL 核心 ----------
   // 每段第一行的 @kernel 標記給假裝置測試辨識用。
   var WGSL = {};
@@ -225,6 +257,82 @@
     'fn main(@builtin(global_invocation_id) gid: vec3<u32>) {',
     '  let i = gid.x;',
     '  if (i < p.n) { z[i] = x[i] * y[i]; }',
+    '}'
+  ].join('\n');
+
+  // T2 替代：雙 f32 歸約（與 ddAdd 相同的演算法）。輸入為 hi、lo 兩組陣列，每一級輸出兩組部分和。
+  WGSL.sum_dd = [
+    '// @kernel sum_dd',
+    'struct Params { n: u32, p1: u32, p2: u32, p3: u32 }',
+    '@group(0) @binding(0) var<storage, read> inHi: array<f32>;',
+    '@group(0) @binding(1) var<storage, read> inLo: array<f32>;',
+    '@group(0) @binding(2) var<storage, read_write> outHi: array<f32>;',
+    '@group(0) @binding(3) var<storage, read_write> outLo: array<f32>;',
+    '@group(0) @binding(4) var<uniform> p: Params;',
+    'var<workgroup> shHi: array<f32, ' + WG + '>;',
+    'var<workgroup> shLo: array<f32, ' + WG + '>;',
+    'fn two_sum(a: f32, b: f32) -> vec2<f32> {',
+    '  let s = a + b; let bb = s - a;',
+    '  return vec2<f32>(s, (a - (s - bb)) + (b - bb));',
+    '}',
+    'fn quick_two_sum(a: f32, b: f32) -> vec2<f32> {',
+    '  let s = a + b;',
+    '  return vec2<f32>(s, b - (s - a));',
+    '}',
+    'fn dd_add(ah: f32, al: f32, bh: f32, bl: f32) -> vec2<f32> {',
+    '  let s = two_sum(ah, bh);',
+    '  let t = two_sum(al, bl);',
+    '  var s1 = s.x; var s2 = s.y + t.x;',
+    '  let q1 = quick_two_sum(s1, s2); s1 = q1.x; s2 = q1.y + t.y;',
+    '  return quick_two_sum(s1, s2);',
+    '}',
+    '@compute @workgroup_size(' + WG + ')',
+    'fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>,',
+    '        @builtin(workgroup_id) wid: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {',
+    '  var h: f32 = 0.0; var l: f32 = 0.0;',
+    '  var i: u32 = gid.x;',
+    '  let stride: u32 = ' + WG + 'u * nwg.x;',
+    '  loop {',
+    '    if (i >= p.n) { break; }',
+    '    let r = dd_add(h, l, inHi[i], inLo[i]); h = r.x; l = r.y;',
+    '    i = i + stride;',
+    '  }',
+    '  shHi[lid.x] = h; shLo[lid.x] = l;',
+    '  workgroupBarrier();',
+    '  var s: u32 = ' + (WG / 2) + 'u;',
+    '  loop {',
+    '    if (s == 0u) { break; }',
+    '    if (lid.x < s) {',
+    '      let r = dd_add(shHi[lid.x], shLo[lid.x], shHi[lid.x + s], shLo[lid.x + s]);',
+    '      shHi[lid.x] = r.x; shLo[lid.x] = r.y;',
+    '    }',
+    '    workgroupBarrier();',
+    '    s = s / 2u;',
+    '  }',
+    '  if (lid.x == 0u) { outHi[wid.x] = shHi[0]; outLo[wid.x] = shLo[0]; }',
+    '}'
+  ].join('\n');
+  // T2 替代：f32 原子加。輸出以 atomic<u32> 存位元，用 compare-exchange 迴圈做浮點加法。
+  WGSL.scatter_add = [
+    '// @kernel scatter_add',
+    'struct Params { n: u32, outLen: u32, p2: u32, p3: u32 }',
+    '@group(0) @binding(0) var<storage, read> idx: array<u32>;',
+    '@group(0) @binding(1) var<storage, read> vals: array<f32>;',
+    '@group(0) @binding(2) var<storage, read_write> outBits: array<atomic<u32>>;',
+    '@group(0) @binding(3) var<uniform> p: Params;',
+    '@compute @workgroup_size(' + WG + ')',
+    'fn main(@builtin(global_invocation_id) gid: vec3<u32>) {',
+    '  let i = gid.x;',
+    '  if (i >= p.n) { return; }',
+    '  let j = idx[i];',
+    '  let v = vals[i];',
+    '  var old = atomicLoad(&outBits[j]);',
+    '  loop {',
+    '    let nw = bitcast<u32>(bitcast<f32>(old) + v);',
+    '    let r = atomicCompareExchangeWeak(&outBits[j], old, nw);',
+    '    if (r.exchanged) { break; }',
+    '    old = r.old_value;',
+    '  }',
     '}'
   ].join('\n');
 
@@ -457,6 +565,35 @@
       });
     }
     function wgGemv(dev, A, x, m, n) { return wgMatmul(dev, A, x, m, n, 1); }
+    // T2：雙 f32 歸約，每一級兩組部分和（hi、lo）
+    function wgSumDd(dev, a) {
+      return withScope(dev, async function () {
+        var len = a.length;
+        var h = makeBuf(dev, a, USAGE.STORAGE | USAGE.COPY_DST);
+        var l = makeBuf(dev, new Float32Array(len), USAGE.STORAGE | USAGE.COPY_DST);
+        var pipe = pipeline(dev, 'sum_dd', WGSL.sum_dd);
+        while (len > 1) {
+          var g = Math.min(WG, Math.ceil(len / WG));
+          var oh = dev.createBuffer({ size: g * 4, usage: USAGE.STORAGE | USAGE.COPY_SRC });
+          var ol = dev.createBuffer({ size: g * 4, usage: USAGE.STORAGE | USAGE.COPY_SRC });
+          dispatch(dev, pipe, [h, l, oh, ol, uniformU32(dev, [len, 0, 0, 0])], g);
+          h = oh; l = ol; len = g;
+        }
+        var rh = await readBack(dev, h, 1), rl = await readBack(dev, l, 1);
+        return rh[0] + rl[0];
+      });
+    }
+    // T2：f32 原子加（CAS 迴圈）。輸出緩衝區由 WebGPU 初始化為零。
+    function wgScatterAdd(dev, idx, vals, outLen) {
+      return withScope(dev, async function () {
+        var n = vals.length;
+        var bi = makeBuf(dev, idx, USAGE.STORAGE | USAGE.COPY_DST);
+        var bv = makeBuf(dev, vals, USAGE.STORAGE | USAGE.COPY_DST);
+        var bo = dev.createBuffer({ size: Math.max(4, outLen * 4), usage: USAGE.STORAGE | USAGE.COPY_SRC });
+        dispatch(dev, pipeline(dev, 'scatter_add', WGSL.scatter_add), [bi, bv, bo, uniformU32(dev, [n, outLen, 0, 0])], Math.ceil(n / WG));
+        return readBack(dev, bo, outLen);
+      });
+    }
 
     // ----- WebGL2 -----
     function getGl() {
@@ -572,6 +709,9 @@
 
     // ----- 統一執行：預算、排程、層選擇與降級回報 -----
     function reasonOf(e) { return msg(e); }
+    var RANK = { T1: 1, T3: 2, T5: 3 };
+    // 分塊時取最差的層（T5 比 T3 差，T3 比 T1 差）
+    function worseInfo(a, b) { if (!a) return b; return RANK[b.layer] > RANK[a.layer] ? b : a; }
     async function run(op, spec) {
       st.calls++;
       var release = await st.sched.acquire(spec.priority || 'sim');
@@ -585,13 +725,15 @@
             // T1：WebGPU
             if (spec.wg) {
               var dev = await ensure();
-              if (st.lost) skipped.push(st.lost + '，WebGPU 不再使用');
+              var prof0 = profileOf(st.probe, st.glProbe).profile;
+              if (spec.needAtomics && dev && prof0 === 'A') skipped.push('檔 A 沒有原子操作，這個替代需要檔 B 以上（檔 A 的排序替代尚未實作）');
+              else if (st.lost) skipped.push(st.lost + '，WebGPU 不再使用');
               else if (!dev) skipped.push((st.probe && st.probe.reason) || '沒有 WebGPU 裝置');
               else if (spec.bytes > 0 && spec.maxStorage && spec.maxStorage > maxBytes()) skipped.push('輸入超過裝置的儲存緩衝上限（需要 ' + spec.maxStorage + ' 位元組，上限 ' + maxBytes() + '）');
               else {
                 try {
                   var v1 = await spec.wg(dev);
-                  return record(op, { result: v1, layer: 'T1', via: 'wgsl-native', skipped: skipped });
+                  return record(op, { result: v1, layer: 'T1', via: spec.subst ? 'wgsl-substitute' : 'wgsl-native', skipped: skipped });
                 } catch (e) { skipped.push('WGSL 核心執行失敗（' + reasonOf(e) + '）'); }
               }
             } else skipped.push('WGSL 版尚未實作');
@@ -638,7 +780,16 @@
     var OPS_SUPPORT = {
       vector_add: { t1: true, t3: true }, matmul: { t1: true, t3: true }, sum: { t1: true, t3: true },
       axpy: { t1: true, t3: false }, scal: { t1: true, t3: false }, dot: { t1: true, t3: false },
-      nrm2: { t1: true, t3: false }, gemv: { t1: true, t3: true }
+      nrm2: { t1: true, t3: false }, gemv: { t1: true, t3: true },
+      sum_dd: { t1: true, t3: false }, scatter_add: { t1: true, t3: false }
+    };
+    // 替代實作清單（DESIGN.webgpu-cuda.md §3）：原生沒有的原語，用這些做法補上
+    var SUBST = {
+      sum_dd: { kind: 'double-float', replaces: 'f64 歸約', precisionBits: '約 48（預估，未實測）', profileNeed: 'A 以上' },
+      scatter_add: { kind: 'cas-f32-atomic', replaces: 'f32 原子加', profileNeed: 'B 以上（需要整數原子）', note: '檔 A 的排序替代尚未實作' },
+      matmul: { kind: 'chunked', replaces: '超過儲存緩衝上限的矩陣乘', note: '依 maxStorageBufferBindingSize 分塊' },
+      add64: { kind: 'two-u32', replaces: '64 位元整數', note: '只有 CPU 參考版（add64），沒有 GPU 核心' },
+      warp_shuffle: { kind: 'shared-memory-barrier', replaces: 'warp shuffle／vote（無 subgroups 時）', note: '歸約已用共享記憶體與屏障，任意 shuffle 尚未實作' }
     };
 
     var api = {
@@ -650,7 +801,7 @@
           gl: function (gl) { return Array.from(glVectorAdd(gl, A, B)); },
           cpu: function () { return Array.from(vectorAddRef(A, B)); } });
       },
-      matmul: async function (A0, B0, m, k, n) {
+      matmulOne: async function (A0, B0, m, k, n) {
         var MA = toF32(A0, 'A'), MB = toF32(B0, 'B');
         if (MA.length !== m * k) throw new Error('cudaweb.matmul：A 的元素數 ' + MA.length + ' 與 m×k=' + (m * k) + ' 不符');
         if (MB.length !== k * n) throw new Error('cudaweb.matmul：B 的元素數 ' + MB.length + ' 與 k×n=' + (k * n) + ' 不符');
@@ -665,6 +816,62 @@
           wg: function (dev) { return wgSum(dev, A); },
           gl: function (gl) { return glSum(gl, A); },
           cpu: function () { return sumRef(A); } });
+      },
+      // 矩陣乘（自動分塊）：A 的每一塊 m'×k、B 的每一塊 k×n'、C 的每一塊 m'×n' 都不超過儲存緩衝上限。
+      // 沒有超過時直接執行一次；超過時切塊各自執行（每塊都經過預算與層選擇），再拼回 m×n。
+      matmul: async function (A0, B0, m, k, n) {
+        var MA = toF32(A0, 'A'), MB = toF32(B0, 'B');
+        if (MA.length !== m * k) throw new Error('cudaweb.matmul：A 的元素數 ' + MA.length + ' 與 m×k=' + (m * k) + ' 不符');
+        if (MB.length !== k * n) throw new Error('cudaweb.matmul：B 的元素數 ' + MB.length + ' 與 k×n=' + (k * n) + ' 不符');
+        await ensure();
+        var lim = (st.device && maxBytes()) || DEFAULT_STORAGE_MAX;
+        if (m * k * 4 <= lim && k * n * 4 <= lim && m * n * 4 <= lim) return api.matmulOne(MA, MB, m, k, n);
+        var t = Math.floor(lim / (4 * Math.max(1, k)));
+        if (t < 1) throw new Error('cudaweb.matmul：單一列 k=' + k + ' 已超過儲存緩衝上限 ' + lim + ' 位元組，無法分塊');
+        var mc = Math.min(m, t);
+        var nc = Math.min(n, t, Math.floor(lim / (4 * mc)));
+        if (nc < 1) throw new Error('cudaweb.matmul：分塊後的欄寬為 0（上限 ' + lim + ' 位元組）');
+        var out = new Array(m * n), chunks = 0, worst = null, reasons = [];
+        for (var r0 = 0; r0 < m; r0 += mc) {
+          var rr = Math.min(mc, m - r0);
+          for (var c0 = 0; c0 < n; c0 += nc) {
+            var cc = Math.min(nc, n - c0);
+            var As = MA.subarray(r0 * k, (r0 + rr) * k);
+            var Bs = new Float32Array(k * cc);
+            for (var q = 0; q < k; q++) for (var c = 0; c < cc; c++) Bs[q * cc + c] = MB[q * n + c0 + c];
+            var res = await api.matmulOne(As, Bs, rr, k, cc);
+            for (var r = 0; r < rr; r++) for (c = 0; c < cc; c++) out[(r0 + r) * n + c0 + c] = res.result[r * cc + c];
+            worst = worseInfo(worst, res.info);
+            if (res.info.reason && reasons.indexOf(res.info.reason) < 0) reasons.push(res.info.reason);
+            chunks++;
+          }
+        }
+        var info = Object.assign({}, worst, { chunks: chunks, reason: reasons.join('；') });
+        st.last = info; st.opLast.matmul = info;
+        return { result: out, info: info };
+      },
+      // T2：雙 f32 歸約（f64 精度的替代）
+      sumDd: async function (a0) {
+        var A = toF32(a0, 'a');
+        return run('sum_dd', { bytes: A.length * 4 * 3, maxStorage: A.length * 4, subst: true,
+          wg: function (dev) { return wgSumDd(dev, A); },
+          cpu: function () { return sumDdRef(A); } });
+      },
+      // T2：f32 原子加（CAS 迴圈）。idx 必須是 0..outLen-1 的整數。
+      scatterAdd: async function (idx0, vals0, outLen) {
+        var I = Array.from(idx0 || []), V = toF32(vals0, 'vals');
+        if (I.length !== V.length) throw new Error('cudaweb.scatter_add：索引與數值長度不同（' + I.length + ' 與 ' + V.length + '）');
+        var ol = Math.floor(Number(outLen));
+        if (!(ol > 0)) throw new Error('cudaweb.scatter_add：outLen 必須是正整數');
+        var IU = new Uint32Array(I.length);
+        for (var i = 0; i < I.length; i++) {
+          var v = Number(I[i]);
+          if (!Number.isInteger(v) || v < 0 || v >= ol) throw new Error('cudaweb.scatter_add：索引 ' + I[i] + ' 超出 0..' + (ol - 1));
+          IU[i] = v;
+        }
+        return run('scatter_add', { bytes: I.length * 8 + ol * 4, maxStorage: Math.max(I.length * 4, ol * 4), needAtomics: true, subst: true,
+          wg: function (dev) { return wgScatterAdd(dev, IU, V, ol).then(Array.from); },
+          cpu: function () { return Array.from(scatterAddRef(IU, V, ol)); } });
       },
       // 第二階段（cuBLAS 常用子集）：saxpy、sscal、sdot、snrm2、sgemv
       axpy: async function (alpha, x0, y0) {
@@ -728,6 +935,7 @@
           deviceReady: !!st.device && !st.lost,
           webgl2: st.glProbe ? { available: st.glProbe.available, reason: st.glProbe.reason, maxTextureSize: st.glProbe.maxTextureSize, colorBufferFloat: st.glProbe.colorBufferFloat } : { available: false, reason: '尚未探測（第一次呼叫時才探測）' },
           profile: prof.profile, profileReason: prof.reason,
+          substitutes: SUBST,
           ops: ops,
           last: st.last,
           calls: st.calls,
@@ -755,6 +963,10 @@
     dotRef: dotRef,
     nrm2Ref: nrm2Ref,
     gemvRef: gemvRef,
+    ddAdd: ddAdd,
+    sumDdRef: sumDdRef,
+    add64: add64,
+    scatterAddRef: scatterAddRef,
     kernels: WGSL,
     glKernels: GLSL,
     createRuntime: createRuntime,

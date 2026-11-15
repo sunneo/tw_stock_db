@@ -1,0 +1,188 @@
+// gpu_fakes.js — 測試用的假 WebGPU 與假 WebGL2（只給 node 測試與離線 PoC 用，不進產品）。
+// 假裝置依核心原始碼的 @kernel 標記，用 gpu_core.js 的 CPU 參考版與同一套演算法算結果，
+// 所以它驗證的是：主機端的緩衝區配置、綁定順序、分派數量、降級與回報；不驗證 WGSL 或 GLSL 本身。
+'use strict';
+const core = require('./gpu_core.js');
+
+// opts: { limits, features, isFallback, adapter: 'ok'|'null'|'throw', deviceError, kernelError }
+function fakeNavigator(opts) {
+  opts = opts || {};
+  const limits = Object.assign({ maxStorageBufferBindingSize: 134217728, maxComputeWorkgroupStorageSize: 16384 }, opts.limits || {});
+  let resolveLost = null;
+  const lostPromise = new Promise((r) => { resolveLost = r; });
+  const dev = {
+    limits: limits,
+    lost: lostPromise,
+    __resolveLost: (info) => resolveLost(info),
+    queue: {
+      writeBuffer(buf, off, data) { new Uint8Array(buf.data).set(new Uint8Array(data.buffer, data.byteOffset, data.byteLength), off); },
+      submit(cmds) { for (const ops of cmds) for (const op of ops) runKernel(op); }
+    },
+    createBuffer({ size, usage }) {
+      const b = { size, usage, data: new ArrayBuffer(Math.max(4, size)), destroy() {}, unmap() {} };
+      b.mapAsync = async () => {};
+      b.getMappedRange = () => b.data;
+      return b;
+    },
+    createShaderModule({ code }) { return { code }; },
+    createComputePipeline({ compute }) {
+      const m = /@kernel\s+(\w+)/.exec(compute.module.code);
+      return { kernel: m ? m[1] : 'unknown', getBindGroupLayout() { return {}; } };
+    },
+    createBindGroup({ entries }) { return { entries }; },
+    createCommandEncoder() {
+      const ops = [];
+      return {
+        beginComputePass() {
+          let pipe = null, bg = null;
+          return {
+            setPipeline(p) { pipe = p; },
+            setBindGroup(i, g) { bg = g; },
+            dispatchWorkgroups(x, y) { ops.push({ pipe, bg, x, y }); },
+            end() {}
+          };
+        },
+        copyBufferToBuffer(src, so, dst, dO, n) { new Uint8Array(dst.data).set(new Uint8Array(src.data, so, n), dO); },
+        finish() { return ops; }
+      };
+    },
+    pushErrorScope() {},
+    popErrorScope: async () => null
+  };
+  const f32 = (buf, n) => new Float32Array(buf.data, 0, n);
+  const u32 = (buf) => new Uint32Array(buf.data);
+  function runKernel(op) {
+    if (opts.kernelError && op.pipe.kernel === opts.kernelError) throw new Error('假核心錯誤');
+    const e = op.bg.entries.map((x) => x.resource.buffer);
+    const k = op.pipe.kernel;
+    if (k === 'vector_add') {
+      const n = u32(e[3])[0];
+      f32(e[2], n).set(core.vectorAddRef(f32(e[0], n), f32(e[1], n)));
+    } else if (k === 'matmul') {
+      const p = u32(e[3]); const m = p[0], kk = p[1], n = p[2];
+      f32(e[2], m * n).set(core.matmulRef(f32(e[0], m * kk), f32(e[1], kk * n), m, kk, n));
+    } else if (k === 'sum') {
+      const n = u32(e[2])[0], inp = f32(e[0], n), groups = op.x, out = f32(e[1], groups), stride = 256 * groups;
+      for (let g = 0; g < groups; g++) {
+        let acc = 0;
+        for (let i = g * 256; i < n; i += stride) for (let j = 0; j < 256 && i + j < n; j++) acc = Math.fround(acc + inp[i + j]);
+        out[g] = acc;
+      }
+    } else if (k === 'sum_dd') {
+      // 與 WGSL 相同的結構：每個 workgroup 以步進取數（dd 累加），再做 256 寬的樹狀 dd 歸約
+      const n = u32(e[4])[0], inH = f32(e[0], n), inL = f32(e[1], n), groups = op.x;
+      const oh = f32(e[2], groups), ol = f32(e[3], groups), stride = 256 * groups;
+      for (let g = 0; g < groups; g++) {
+        const sh = new Array(256), sl = new Array(256);
+        for (let lid = 0; lid < 256; lid++) {
+          let h = 0, l = 0;
+          for (let i = g * 256 + lid; i < n; i += stride) { const r = core.ddAdd(h, l, inH[i], inL[i]); h = r[0]; l = r[1]; }
+          sh[lid] = h; sl[lid] = l;
+        }
+        for (let s = 128; s > 0; s >>= 1) {
+          for (let lid = 0; lid < s; lid++) { const r = core.ddAdd(sh[lid], sl[lid], sh[lid + s], sl[lid + s]); sh[lid] = r[0]; sl[lid] = r[1]; }
+        }
+        oh[g] = sh[0]; ol[g] = sl[0];
+      }
+    } else if (k === 'scatter_add') {
+      // 依序執行（CAS 迴圈在假裝置上等價於依序的 f32 加法）
+      const n = u32(e[3])[0], idx = u32(e[0]), vals = f32(e[1], n), out = f32(e[2], u32(e[3])[1]);
+      for (let i = 0; i < n; i++) out[idx[i]] = Math.fround(out[idx[i]] + vals[i]);
+    } else if (k === 'axpy' || k === 'scal') {
+      const n = u32(e[e.length - 1])[0];
+      const alpha = new Float32Array(e[e.length - 1].data, 4, 1)[0];
+      if (k === 'axpy') f32(e[1], n).set(core.axpyRef(alpha, f32(e[0], n), f32(e[1], n)));
+      else f32(e[0], n).set(core.scalRef(alpha, f32(e[0], n)));
+    } else if (k === 'mul') {
+      const n = u32(e[3])[0];
+      f32(e[2], n).set(core.mulRef(f32(e[0], n), f32(e[1], n)));
+    } else {
+      throw new Error('假裝置不認得核心：' + k);
+    }
+  }
+  const adapter = {
+    features: new Set(opts.features || []),
+    limits: limits,
+    isFallbackAdapter: !!opts.isFallback,
+    info: { vendor: 'fake' },
+    requestDevice: async () => {
+      if (opts.deviceError) throw new Error(opts.deviceError);
+      return dev;
+    }
+  };
+  const gpu = {
+    requestAdapter: async () => {
+      if (opts.adapter === 'throw') throw new Error('介面卡探測爆炸');
+      if (opts.adapter === 'null') return null;
+      return adapter;
+    }
+  };
+  return { nav: { gpu: gpu }, dev: dev };
+}
+
+// 假的 WebGL2：只重現 gpu_core.js 的紋理配置、單元綁定、幀緩衝與讀回流程；片段著色器語意用 JS 重現（與 GLSL 同一公式）
+function fakeGl(opts) {
+  opts = opts || {};
+  const maxTex = opts.maxTex || 4096;
+  const gl = {
+    units: {}, activeUnit: 0, bound: null, fbo: null, uniforms: {}, prog: null,
+    getExtension(name) { if (name === 'EXT_color_buffer_float') return opts.noFloat ? null : {}; return null; },
+    getParameter(p) { return p === 0x0D33 ? maxTex : 0; },
+    createShader(t) { return { t: t, src: '', ok: true }; },
+    shaderSource(s, src) { s.src = src; },
+    compileShader(s) { s.ok = !/#FAILCOMPILE/.test(s.src); },
+    getShaderParameter(s) { return s.ok; },
+    getShaderInfoLog() { return 'fake shader log'; },
+    createProgram() { return { shaders: [], kernel: null, ok: false }; },
+    attachShader(p, s) { p.shaders.push(s); },
+    linkProgram(p) {
+      const fs = p.shaders.find((s) => s.t === 0x8B30);
+      const m = /@kernel\s+(\w+)/.exec(fs.src);
+      p.kernel = m ? m[1] : null;
+      p.ok = !!p.kernel;
+    },
+    getProgramParameter(p) { return p.ok; },
+    getProgramInfoLog() { return 'fake program log'; },
+    createTexture() { return { w: 0, h: 0, data: null }; },
+    bindTexture(target, tex) { gl.bound = tex; gl.units[gl.activeUnit] = tex; },
+    texParameteri() {},
+    texStorage2D(t, l, f, w, h) { gl.bound.w = w; gl.bound.h = h; gl.bound.data = new Float32Array(w * h * 4); },
+    texSubImage2D(t, l, x, y, w, h, f, ty, px) { gl.bound.data.set(px.subarray(0, w * h * 4)); },
+    createFramebuffer() { return { tex: null }; },
+    bindFramebuffer(t, f) { gl.fbo = f; },
+    framebufferTexture2D(t, a, tg, tex) { gl.fbo.tex = tex; },
+    checkFramebufferStatus() { return 0x8CD5; },
+    useProgram(p) { gl.prog = p; },
+    getUniformLocation(p, name) { return name; },
+    uniform1i(loc, v) { gl.uniforms[loc] = v; },
+    activeTexture(u) { gl.activeUnit = u - 0x84C0; },
+    viewport() {},
+    drawArrays() {
+      if (opts.drawFail && gl.prog.kernel === opts.drawFail) throw new Error('假繪製錯誤');
+      const out = gl.fbo.tex, ow = out.w, oh = out.h;
+      const tex = (name) => gl.units[gl.uniforms[name]];
+      const at = (t, x, y) => t.data[(y * t.w + x) * 4];
+      out.data.fill(0);
+      const k = gl.prog.kernel;
+      for (let y = 0; y < oh; y++) for (let x = 0; x < ow; x++) {
+        let v = 0;
+        if (k === 'vector_add') {
+          const e = y * gl.uniforms.uW + x;
+          v = e >= gl.uniforms.uN ? 0 : at(tex('uA'), x, y) + at(tex('uB'), x, y);
+        } else if (k === 'matmul') {
+          for (let t = 0; t < gl.uniforms.uK; t++) v = Math.fround(v + Math.fround(at(tex('uA'), t, y) * at(tex('uB'), x, t)));
+        } else if (k === 'sum') {
+          const W = gl.uniforms.uW, N = gl.uniforms.uN, j = y * gl.uniforms.uOW + x;
+          if (j * 4 < N) for (let q = 0; q < 4; q++) { const e = j * 4 + q; if (e < N) v += at(tex('uA'), e % W, Math.floor(e / W)); }
+        }
+        out.data[(y * ow + x) * 4] = v;
+      }
+    },
+    readPixels(x, y, w, h, f, ty, px) { px.set(gl.fbo.tex.data.subarray(0, w * h * 4)); },
+    deleteTexture() {},
+    deleteFramebuffer() {}
+  };
+  return gl;
+}
+
+module.exports = { fakeNavigator, fakeGl };
