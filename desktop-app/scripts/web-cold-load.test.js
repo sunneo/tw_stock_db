@@ -132,6 +132,23 @@ const runtimeSrc = fs.readFileSync(path.join(ROOT, 'renderer', 'src', 'lazy-runt
         assert.throws(() => warmUrls('a575ce38', { chunks: {} }, []));
     });
 
+    await check('網頁版：boot.json 物件格式 {names, coreBytes} 也能預抓（新版建置產物）', async () => {
+        const html = fs.readFileSync(path.join(webDirs.find((d) => fs.existsSync(path.join(d, 'index.html'))) || '.', 'index.html'), 'utf8');
+        const m = html.match(/<script>\s*\(function \(\) \{\s*var SHA[\s\S]*?window\.__faLoadCore = [\s\S]*?\}\)\(\);\s*<\/script>/);
+        assert.ok(m, '找不到 __faLoadCore 的 script 區塊');
+        const box = makeSandbox({
+            fetch: async (url) => {
+                if (url.endsWith('boot.json')) return { ok: true, text: async () => '{"names":["beta"],"coreBytes":4}' };
+                if (url.endsWith('core.js')) return { ok: true, text: async () => 'CORE2' };
+                if (url.endsWith('chunks/beta.js')) return { ok: true, text: async () => 'BETA' };
+                return { ok: false, status: 404 };
+            },
+        });
+        vm.runInContext(m[0].replace(/^<script>/, '').replace(/<\/script>$/, ''), box.ctx);
+        assert.strictEqual(await vm.runInContext('window.__faLoadCore()', box.ctx), 'CORE2');
+        assert.strictEqual(box.sandbox.window.__FA_PREFETCH.beta, 'BETA');
+    });
+
     console.log('web-cold-load.test：通過 ' + ok + ' 項' + (bad.length ? '，失敗 ' + bad.length + ' 項' : ''));
     for (const b of bad) console.log('  ✗ ' + b);
     process.exit(bad.length ? 1 : 0);

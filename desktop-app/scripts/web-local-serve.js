@@ -51,7 +51,7 @@ const MIME = {
 };
 
 function parseArgs(argv) {
-    const o = { port: 18770, dryRun: false, web: null, throttleKbps: 0, noCache: false };
+    const o = { port: 18770, dryRun: false, web: null, throttleKbps: 0, noCache: false, measure: false, noRewrite: false };
     for (let i = 0; i < argv.length; i++) {
         const a = argv[i];
         if (a === '--dry-run') o.dryRun = true;
@@ -59,6 +59,8 @@ function parseArgs(argv) {
         else if (a === '--web') o.web = argv[++i];
         else if (a === '--throttle') o.throttleKbps = Number(argv[++i]);
         else if (a === '--no-cache') o.noCache = true;
+        else if (a === '--measure') o.measure = true;
+        else if (a === '--no-rewrite') o.noRewrite = true;
         else { console.error('不認得的參數：' + a); process.exit(2); }
     }
     if (!(o.throttleKbps >= 0)) { console.error('--throttle 要是 0 或正數（kbps）'); process.exit(2); }
@@ -109,15 +111,26 @@ function staleCheck() {
 // 所以另外處理 RAW + '/<ref>/desktop-app/' 這個形狀（改成字串字面值 'http://127.0.0.1:<埠>/desktop-app/'，語法仍合法）。
 // RAW 本身不改（它還給 vendor-assets 用，那些要維持原網址）。
 const RAW_CONCAT_RE = /RAW \+ '\/((?:refs\/heads\/)?[^\/'"\s]+)\/desktop-app\//g;
-function rewriteHtml(text, port) {
+// --measure（2026-11-15）：只給量測用（scripts/web-cold-load-headless.js）。在 head 開頭打開 __FA_LAZY_TRACE，
+// 在 body 結尾加一段只讀的探針：window.fa 出現時把就緒時間、資源時間、同步分塊載入順序寫進 <pre id="faprobe">。
+// 不改變頁面行為（只多一個 pre 元素與一個 interval）。
+const MEASURE_PROBE = "<script>(function(){var ready=false;var atReady=null;function snap(){var res=performance.getEntriesByType('resource').map(function(e){return {n:e.name,i:e.initiatorType,s:Math.round(e.startTime),e:Math.round(e.responseEnd),b:e.encodedBodySize||0,t:e.transferSize||0};});var nav=performance.getEntriesByType('navigation')[0]||{};if(ready&&atReady===null){atReady=res;}var out={resourcesAtReady:atReady||res,ready:ready,readyMs:Math.round(performance.now()),domContentLoadedMs:Math.round(nav.domContentLoadedEventEnd||0),loadMs:Math.round(nav.loadEventEnd||0),trace:(window.__faLazyTrace||[]).map(function(x){return {name:x.name,how:x.how,stack:x.stack};}),resources:res};var pre=document.getElementById('faprobe');if(!pre){pre=document.createElement('pre');pre.id='faprobe';document.body.appendChild(pre);}pre.textContent=JSON.stringify(out);}var iv=setInterval(function(){if(window.fa&&!ready){ready=true;fetch('/__measure?ev=ready').catch(function(){});}if(ready){snap();}},50);setTimeout(function(){if(!ready){var pre=document.createElement('pre');pre.id='faprobe';pre.textContent=JSON.stringify({timeout:true});document.body.appendChild(pre);}},800000);})();</script>";
+const MEASURE_LOG = { t0: null, events: [] };
+function injectMeasure(text, opts) {
+    if (!opts || !opts.measure) return text;
+    return text.replace(/<head>/i, '<head><script>window.__FA_LAZY_TRACE=1;</script>').replace(/<\/body>/i, MEASURE_PROBE + '</body>');
+}
+
+function rewriteHtml(text, port, opts = {}) {
     const hits = new Map();
+    if (opts.noRewrite) return { text: injectMeasure(text, opts), hits };
     const bump = (k) => hits.set(k, (hits.get(k) || 0) + 1);
     let out = text.replace(JSD_RE, (m) => { bump(m); return `http://${HOST}:${port}/desktop-app/`; });
     out = out.replace(JSD_CONCAT_RE, (m) => { bump(m); return `'http://${HOST}:${port}/desktop-app/`; });
     out = out.replace(RAW_VAR_CONCAT_RE, (m) => { bump(m); return `'http://${HOST}:${port}/desktop-app/`; });
     out = out.replace(RAW_RE, (m) => { bump(m); return `http://${HOST}:${port}/desktop-app/`; });
     out = out.replace(RAW_CONCAT_RE, (m) => { bump(m); return `'http://${HOST}:${port}/desktop-app/`; });
-    return { text: out, hits };
+    return { text: injectMeasure(out, opts), hits };
 }
 
 function resolveRequest(urlPath, webDir) {
@@ -151,6 +164,13 @@ function startServer(o, webDir) {
         const t0 = Date.now();
         if (req.method !== 'GET' && req.method !== 'HEAD') { res.writeHead(405); return res.end('method not allowed'); }
         const pure = req.url.split('?')[0];
+        // --measure：量測用的牆鐘時間點（只在 --measure 時生效）。頁面的探針打 /__measure?ev=…，伺服器記下離第一個 html 回應的毫秒數。
+        if (o.measure && pure === '/__measure/log') { res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }); return res.end(JSON.stringify(MEASURE_LOG)); }
+        if (o.measure && pure === '/__measure') {
+            const ev = (/[?&]ev=([^&]+)/.exec(req.url) || [])[1] || 'unknown';
+            MEASURE_LOG.events.push({ ev, wallMs: MEASURE_LOG.t0 ? Date.now() - MEASURE_LOG.t0 : null });
+            res.writeHead(204); return res.end();
+        }
         if (pure === '/') { res.writeHead(302, { Location: '/web/' }); return res.end(); }
         const file = resolveRequest(req.url, webDir);
         let body = null;
@@ -165,7 +185,9 @@ function startServer(o, webDir) {
         let outBody = body;
         let note = '';
         if (ext === '.html') {
-            const r = rewriteHtml(body.toString('utf8'), o.port);
+            if (o.measure && MEASURE_LOG.t0 === null) MEASURE_LOG.t0 = Date.now();
+            if (o.measure) MEASURE_LOG.htmlCount = (MEASURE_LOG.htmlCount || 0) + 1; // 頁面載入次數（coi-serviceworker 會多重新整理一次，這裡看得出來）
+            const r = rewriteHtml(body.toString('utf8'), o.port, o);
             outBody = Buffer.from(r.text, 'utf8');
             note = r.hits.size ? ` 改寫 ${[...r.hits.values()].reduce((a, b) => a + b, 0)} 處` : '';
         }
