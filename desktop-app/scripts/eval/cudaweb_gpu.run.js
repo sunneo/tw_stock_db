@@ -10,8 +10,14 @@ if (!fs.existsSync(exe)) { console.log('找不到 Electron：' + exe); process.e
 const ud = fs.mkdtempSync(path.join(os.tmpdir(), 'fa-cudaweb-ud-'));
 fs.writeFileSync(path.join(ud, 'desktop-settings.json'), '{"execEnabled":true,"execConfirmRequired":false}');
 const evalFile = path.join(ud, 'cudaweb_gpu.eval.js');
-fs.copyFileSync(path.join(__dirname, 'cudaweb_gpu.eval.js'), evalFile);
-const env = Object.assign({}, process.env, { FA_DEBUG_EVAL_FILE: evalFile, FA_DISABLE_MAIN_OVERLAY: '1', FA_BROWSER_CONTROL_PORT: port });
+// nn_ops.js 是 CJS 模組：包成函式，require('./gpu_core.js') 指向渲染程序裡已載入的 window.FaGpuCore，結果放進全域變數 NN
+const nnSrc = fs.readFileSync(path.join(app, 'renderer', 'src', 'gpu', 'nn_ops.js'), 'utf8');
+const evalSrc = fs.readFileSync(path.join(__dirname, 'cudaweb_gpu.eval.js'), 'utf8');
+const shim = 'var NN; { var __nnModule = { exports: {} }; (function (module, exports, require) {\n' + nnSrc + '\n})(__nnModule, __nnModule.exports, function (p) { if (p === "./gpu_core.js") return window.FaGpuCore; throw new Error("nn_ops 不認得的模組：" + p); }); NN = __nnModule.exports; }\n';
+if (!evalSrc.includes('/*__NN_MODULE__*/')) { console.log('評估檔缺少 NN 注入標記'); process.exit(1); }
+fs.writeFileSync(evalFile, evalSrc.replace('/*__NN_MODULE__*/', shim));
+// FA_UPDATE_BASE 指向不存在的位址：避免啟動時的自動更新對話框蓋住畫面（同 gui_shots.js 的做法）
+const env = Object.assign({}, process.env, { FA_DEBUG_EVAL_FILE: evalFile, FA_DISABLE_MAIN_OVERLAY: '1', FA_BROWSER_CONTROL_PORT: port, FA_UPDATE_BASE: 'http://127.0.0.1:9/' });
 const p = spawn(exe, [app, '--no-sandbox', '--user-data-dir=' + ud], { env, stdio: ['ignore', 'pipe', 'pipe'] });
 let out = '';
 const feed = (d) => {

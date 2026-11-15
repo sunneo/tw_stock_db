@@ -506,7 +506,7 @@
     function wgVectorAdd(dev, a, b) {
       return withScope(dev, async function () {
         var n = a.length;
-        var ba = makeBuf(dev, a, USAGE.STORAGE | USAGE.COPY_DST), bb = makeBuf(dev, b, USAGE.STORAGE | USAGE.COPY_DST);
+        var ba = makeBuf(dev, a, USAGE.STORAGE | USAGE.COPY_DST | USAGE.COPY_SRC), bb = makeBuf(dev, b, USAGE.STORAGE | USAGE.COPY_DST | USAGE.COPY_SRC);
         var bc = dev.createBuffer({ size: Math.max(4, n * 4), usage: USAGE.STORAGE | USAGE.COPY_SRC });
         dispatch(dev, pipeline(dev, 'vector_add', WGSL.vector_add), [ba, bb, bc, uniformU32(dev, [n, 0, 0, 0])], Math.ceil(n / WG));
         return readBack(dev, bc, n);
@@ -514,7 +514,7 @@
     }
     function wgMatmul(dev, A, B, m, k, n) {
       return withScope(dev, async function () {
-        var ba = makeBuf(dev, A, USAGE.STORAGE | USAGE.COPY_DST), bb = makeBuf(dev, B, USAGE.STORAGE | USAGE.COPY_DST);
+        var ba = makeBuf(dev, A, USAGE.STORAGE | USAGE.COPY_DST | USAGE.COPY_SRC), bb = makeBuf(dev, B, USAGE.STORAGE | USAGE.COPY_DST | USAGE.COPY_SRC);
         var bc = dev.createBuffer({ size: Math.max(4, m * n * 4), usage: USAGE.STORAGE | USAGE.COPY_SRC });
         dispatch(dev, pipeline(dev, 'matmul', WGSL.matmul), [ba, bb, bc, uniformU32(dev, [m, k, n, 0])], Math.ceil(n / TILE), Math.ceil(m / TILE));
         return readBack(dev, bc, m * n);
@@ -533,7 +533,7 @@
     }
     function wgSum(dev, a) {
       return withScope(dev, async function () {
-        var cur = makeBuf(dev, a, USAGE.STORAGE | USAGE.COPY_DST);
+        var cur = makeBuf(dev, a, USAGE.STORAGE | USAGE.COPY_DST | USAGE.COPY_SRC);
         var r = await readBack(dev, reduceBuffers(dev, cur, a.length), 1);
         return r[0];
       });
@@ -541,7 +541,7 @@
     function wgAxpy(dev, alpha, x, y) {
       return withScope(dev, async function () {
         var n = x.length;
-        var bx = makeBuf(dev, x, USAGE.STORAGE | USAGE.COPY_DST), by = makeBuf(dev, y, USAGE.STORAGE | USAGE.COPY_DST);
+        var bx = makeBuf(dev, x, USAGE.STORAGE | USAGE.COPY_DST | USAGE.COPY_SRC), by = makeBuf(dev, y, USAGE.STORAGE | USAGE.COPY_DST | USAGE.COPY_SRC);
         dispatch(dev, pipeline(dev, 'axpy', WGSL.axpy), [bx, by, uniformNAlpha(dev, n, alpha)], Math.ceil(n / WG));
         return readBack(dev, by, n);
       });
@@ -549,7 +549,7 @@
     function wgScal(dev, alpha, x) {
       return withScope(dev, async function () {
         var n = x.length;
-        var bx = makeBuf(dev, x, USAGE.STORAGE | USAGE.COPY_DST);
+        var bx = makeBuf(dev, x, USAGE.STORAGE | USAGE.COPY_DST | USAGE.COPY_SRC);
         dispatch(dev, pipeline(dev, 'scal', WGSL.scal), [bx, uniformNAlpha(dev, n, alpha)], Math.ceil(n / WG));
         return readBack(dev, bx, n);
       });
@@ -557,7 +557,7 @@
     function wgDot(dev, x, y) {
       return withScope(dev, async function () {
         var n = x.length;
-        var bx = makeBuf(dev, x, USAGE.STORAGE | USAGE.COPY_DST), by = makeBuf(dev, y, USAGE.STORAGE | USAGE.COPY_DST);
+        var bx = makeBuf(dev, x, USAGE.STORAGE | USAGE.COPY_DST | USAGE.COPY_SRC), by = makeBuf(dev, y, USAGE.STORAGE | USAGE.COPY_DST | USAGE.COPY_SRC);
         var bz = dev.createBuffer({ size: Math.max(4, n * 4), usage: USAGE.STORAGE | USAGE.COPY_SRC });
         dispatch(dev, pipeline(dev, 'mul', WGSL.mul), [bx, by, bz, uniformU32(dev, [n, 0, 0, 0])], Math.ceil(n / WG));
         var r = await readBack(dev, reduceBuffers(dev, bz, n), 1);
@@ -569,8 +569,8 @@
     function wgSumDd(dev, a) {
       return withScope(dev, async function () {
         var len = a.length;
-        var h = makeBuf(dev, a, USAGE.STORAGE | USAGE.COPY_DST);
-        var l = makeBuf(dev, new Float32Array(len), USAGE.STORAGE | USAGE.COPY_DST);
+        var h = makeBuf(dev, a, USAGE.STORAGE | USAGE.COPY_DST | USAGE.COPY_SRC);
+        var l = makeBuf(dev, new Float32Array(len), USAGE.STORAGE | USAGE.COPY_DST | USAGE.COPY_SRC);
         var pipe = pipeline(dev, 'sum_dd', WGSL.sum_dd);
         while (len > 1) {
           var g = Math.min(WG, Math.ceil(len / WG));
@@ -587,8 +587,8 @@
     function wgScatterAdd(dev, idx, vals, outLen) {
       return withScope(dev, async function () {
         var n = vals.length;
-        var bi = makeBuf(dev, idx, USAGE.STORAGE | USAGE.COPY_DST);
-        var bv = makeBuf(dev, vals, USAGE.STORAGE | USAGE.COPY_DST);
+        var bi = makeBuf(dev, idx, USAGE.STORAGE | USAGE.COPY_DST | USAGE.COPY_SRC);
+        var bv = makeBuf(dev, vals, USAGE.STORAGE | USAGE.COPY_DST | USAGE.COPY_SRC);
         var bo = dev.createBuffer({ size: Math.max(4, outLen * 4), usage: USAGE.STORAGE | USAGE.COPY_SRC });
         dispatch(dev, pipeline(dev, 'scatter_add', WGSL.scatter_add), [bi, bv, bo, uniformU32(dev, [n, outLen, 0, 0])], Math.ceil(n / WG));
         return readBack(dev, bo, outLen);

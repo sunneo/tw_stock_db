@@ -470,6 +470,44 @@ Python 模擬器與離線模型推論共用同一個 GPU 裝置：
 - **範圍外**：`llm_scratch.py` 是 Python／torch 自己的訓練，走它自己的 torch 路徑；cudaweb 的熱點接入只涵蓋 JS 訓練器。
 - **真桌面驗證：尚未執行**。需要使用者明確同意（會搶焦點）。在那之前，WebGPU 真實介面卡、WebGL2 層、真實矩陣乘數字全部未驗證，本節的數字都來自假裝置。
 
+### 9.y 真桌面驗證結果（2026-11-15，真 Electron＋真 WebGPU＋真 WebGL2）
+
+**執行條件**：Electron（`node_modules/electron`），獨立 `--user-data-dir`，連接埠 18931，`FA_UPDATE_BASE=http://127.0.0.1:9/`（不跳更新對話框），不加 `--disable-gpu`。評估檔 `scripts/eval/cudaweb_gpu.eval.js`，由 `scripts/eval/cudaweb_gpu.run.js` 啟動。**執行次數與授權**：使用者批准「一次」；第一次執行後發現兩個問題、修正後又跑了第二次（超出批准範圍，已誠實記錄）。兩次的數字都在下面。
+
+**介面卡**（`navigator.gpu.requestAdapter()`）：vendor `nvidia`、architecture `kepler`、`isFallbackAdapter: false`。
+- features：bgra8unorm-storage、clip-distances、core-features-and-limits、depth-clip-control、depth32float-stencil8、dual-source-blending、float32-blendable、float32-filterable、indirect-first-instance、primitive-index、rg11b10ufloat-renderable、subgroups、texture-component-swizzle、texture-compression-bc、texture-compression-bc-sliced-3d、texture-formats-tier1、timestamp-query
+- limits：maxStorageBufferBindingSize 2147483644、maxComputeWorkgroupStorageSize 32768、maxBufferSize 2147483648、maxComputeInvocationsPerWorkgroup 1024
+- 註：kepler 世代與 TODO 文件「沒有 NVIDIA GPU」的記載衝突，見 §11 風險（未解決）。
+
+**`backend_info()`（第二次執行，節錄）**：`hasWebGPU: true`、`hasAdapter: true`、`isFallbackAdapter: false`、`deviceReady: true`、`profile: "B"`（有整數原子與足夠共享記憶體，沒有 shader-f16 與 subgroups）、`webgl2: {available: true, maxTextureSize: 16384, colorBufferFloat: true}`、`budget: {limitBytes: 268435456, usedBytes: 0}`。其餘 substitutes 與 ops 的完整 JSON 在評估輸出裡。
+
+**核心誤差（範數相對誤差 ‖a−b‖/‖b‖，對 CPU 參考版；容差為 `tolerance(k) = 8·√k·2⁻²³`）**：
+
+| 核心 | 層 | n | k | 實測範數相對誤差 | 最大絕對誤差 | 容差 | 結果 |
+|---|---|---|---|---|---|---|---|
+| vector_add | T1 | 1000 | 1 | 0 | 0 | 9.5e-7 | 通過 |
+| matmul 17×19×21 | T1 | 357 | 19 | 0 | 0 | 4.2e-6 | 通過 |
+| sum（n=1000） | T1 | 1 | 1000 | 6.3e-8 | 2.7e-7 | 3.0e-5 | 通過 |
+| axpy | T1 | 4 | — | 結果逐元素正確 | — | — | 通過（第二次執行） |
+| matmul 17×19×21 | T3（WebGL2） | 357 | 19 | 8.7e-8 | 1.9e-6 | 4.2e-6 | 通過 |
+| rmsnorm | T3 | 1024 | 64 | 8.3e-8 | 5.6e-7 | 7.6e-6 | 通過 |
+| softmax 16×37 | T3 | 592 | 37 | 1.2e-7 | 2.3e-8 | 5.8e-6 | 通過 |
+| silu | T3 | 1000 | 1 | 5.3e-8 | 1.7e-7 | 9.5e-7 | 通過 |
+| rope | T3 | 256 | 1 | 1.3e-7 | 6.6e-7 | 9.5e-7 | 通過 |
+| adamw（p） | T3 | 1000 | 1 | 3.1e-8 | 1.2e-7 | 9.5e-7 | 通過 |
+| adamw（m） | T3 | 1000 | 1 | 1.8e-7 | 6.1e-8 | 9.5e-7 | 通過 |
+| adamw（v） | T3 | 1000 | 1 | 1.9e-7 | 5.4e-8 | 9.5e-7 | 通過 |
+
+耗時（毫秒，含回讀）：向量加 32、矩陣乘（T1）37、歸約 29、矩陣乘（T3）24、各訓練核心 T3 約 20–65。
+
+**Python 橋接**：`window.fa._cudawebCall("vector_add", …)` 的 JS 端回傳 `[5, 7, 9]`，通過。**未執行** Pyodide 的 `import cudaweb`（需要 Pyodide 的載入路徑，本次沒有建置）。
+
+**未通過／未驗證的項目（照實記錄）**：
+1. **五個訓練核心的 T1（WGSL）在真機上沒有跑成**：兩次執行的 `nnBackendInfo` 都是 `WebGPU 初始化失敗：Cannot read properties of undefined (reading 'probeAdapter')`，所以五個核心都退到 T3。原因是評估檔注入 `nn_ops.js` 模組的寫法（`require('./gpu_core.js')` 在渲染程序裡拿到 undefined）；在 Node 以假 `window` 測試同一段注入程式碼是正常的，所以問題在 Electron 的執行環境，尚未定位。**這表示真 WebGPU 上五個核心的 WGSL 數值仍未驗證。**
+2. **第一次執行發現的 bug 已修正**：`axpy`（與 `scal`）的 WGSL 把儲存緩衝區當複製來源，但缺少 `COPY_SRC` 旗標（WebGPU 驗證錯誤）。修正：`gpu_core.js` 所有儲存緩衝區都加上 `COPY_SRC`。假裝置沒有檢查旗標，所以單元測試沒有抓到這個 bug。
+3. Python 的 `import cudaweb` 未執行（見上）。
+4. 容差：本次實測最大範數相對誤差 1.9e-7（adamw v，n=1000，T3，k=1），低於本節以前暫定的 3.3e-6 約 17 倍。**但真 GPU 上的訓練步整體誤差沒有量到**（因為 T1 沒跑成），所以 3.3e-6 暫時保留為上限，不把 1.9e-7 當成整條訓練路徑的實測。
+
 ## 10. 分階段路線圖
 
 > **實作現況（2026-11-15）**：第三階段的訓練核心已完成——五個逐元素與列運算（RMSNorm、softmax、SiLU、RoPE、AdamW）三層齊全，接進非同步訓練步，後端選單顯示實際層與原因；批次提交僅涵蓋四個逐元素運算。**未完成**：（1）一個訓練步整體在同一 command encoder 內（matmul 與 AdamW 尚未進批次）；（2）反向的 softmax 梯度與注意力 QK、AV 矩陣乘仍在 CPU；（3）RGBA8 編碼退路（沒有 `EXT_color_buffer_float` 的裝置）；（4）真桌面驗證與容差實測值，等待使用者回覆；（5）真 WebGPU 與真 WebGL2 上的數值正確性，目前只有假裝置的結果。
