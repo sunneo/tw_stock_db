@@ -102,6 +102,10 @@ function fakeNavigator(opts) {
       // 綁定順序：0 x、1 y、2 uniform（rows u32、cols u32）
       const rows = u32(e[2])[0], cols = u32(e[2])[1];
       f32(e[1], rows * cols).set(NN.softmaxRef(f32(e[0], rows * cols), rows, cols));
+    } else if (k === 'silu') {
+      // 綁定順序：0 x、1 y、2 uniform（n u32）
+      const n = u32(e[2])[0];
+      f32(e[1], n).set(NN.siluRef(f32(e[0], n)));
     } else if (k === 'axpy' || k === 'scal') {
       const n = u32(e[e.length - 1])[0];
       const alpha = new Float32Array(e[e.length - 1].data, 4, 1)[0];

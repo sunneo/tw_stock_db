@@ -164,4 +164,40 @@ async function softmax(x, rows, cols, opts) {
     () => softmaxRef(xf, rows, cols));
 }
 
-module.exports = { rmsnormRef, rmsnorm, softmaxRef, softmax, runWgsl, getDevice, tryLayers, WGSL_RMSNORM, WGSL_SOFTMAX, NOTE_T3 };
+// ---------- SiLU（逐元素）：y = x · sigmoid(x) = x / (1 + e^(−x)) ----------
+function siluRef(x) {
+  const y = new Float64Array(x.length);
+  for (let i = 0; i < x.length; i++) y[i] = x[i] / (1 + Math.exp(-x[i]));
+  return y;
+}
+
+const WGSL_SILU = `
+struct P { n: u32, pad0: u32, pad1: u32, pad2: u32 }
+@group(0) @binding(0) var<storage, read> x: array<f32>;
+@group(0) @binding(1) var<storage, read_write> y: array<f32>;
+@group(0) @binding(2) var<uniform> p: P;
+// @kernel silu
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let i = gid.x;
+  if (i >= p.n) { return; }
+  let v = x[i];
+  y[i] = v / (1.0 + exp(-v));
+}
+`;
+
+async function silu(x, opts) {
+  const xf = Float32Array.from(x);
+  return tryLayers('silu', opts,
+    async (dev) => {
+      const uni = new ArrayBuffer(16);
+      new Uint32Array(uni, 0, 1).set([xf.length]);
+      const outs = await runWgsl(dev, WGSL_SILU,
+        [{ data: xf, out: false }, { data: new Float32Array(xf.length), out: true }],
+        uni, Math.ceil(xf.length / 64));
+      return outs[0];
+    },
+    () => siluRef(xf));
+}
+
+module.exports = { rmsnormRef, rmsnorm, softmaxRef, softmax, siluRef, silu, runWgsl, getDevice, tryLayers, WGSL_RMSNORM, WGSL_SOFTMAX, WGSL_SILU, NOTE_T3 };

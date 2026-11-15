@@ -94,6 +94,31 @@ function maxAbs(a, b) { let m = 0; for (let i = 0; i < a.length; i++) m = Math.m
     assert.throws(() => NN.softmaxRef(sx.slice(1), SR, SC), /softmax：x 的長度/);
   });
 
+  // ---- SiLU ----
+  const sv = seeded(37, 4);
+
+  await check('siluRef 與獨立公式 x·σ(x) 一致，且 silu(0)=0', async () => {
+    const y = NN.siluRef(sv);
+    for (let i = 0; i < sv.length; i++) {
+      const sig = 1 / (1 + Math.exp(-sv[i]));
+      assert.ok(Math.abs(y[i] - sv[i] * sig) < 1e-12, '第 ' + i + ' 個');
+    }
+    assert.strictEqual(NN.siluRef([0])[0], 0);
+  });
+
+  await check('silu 經 WGSL（假裝置）：層為 T1，結果與參考版一致（含非 64 的倍數長度）', async () => {
+    const r = await NN.silu(sv, { navigator: fakeNavigator().nav });
+    assert.strictEqual(r.info.layer, 'T1');
+    assert.strictEqual(r.result.length, sv.length);
+    assert.ok(maxAbs(r.result, NN.siluRef(sv)) < 1e-6);
+  });
+
+  await check('silu 沒有 WebGPU：退到 cpu-js 並寫明原因', async () => {
+    const r = await NN.silu(sv, { navigator: {} });
+    assert.strictEqual(r.info.layer, 'cpu-js');
+    assert.ok(r.info.reason.includes(NN.NOTE_T3));
+  });
+
   await check('形狀不符：直接丟錯（不降級，避免默默算錯）', async () => {
     assert.throws(() => NN.rmsnormRef(x.slice(1), g, T, d, eps), /x 的長度/);
     assert.throws(() => NN.rmsnormRef(x, g.slice(1), T, d, eps), /g 的長度/);
