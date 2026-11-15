@@ -91,3 +91,44 @@ Pyodide 的檔案寫入繞進 fap：`/fap/<名稱>/…`、`fap:<名稱>/…` 指
 ## 圖片訊息的轉接（2026-10-06）
 
 腳本用 openai／anthropic 送**圖片訊息**時，host 不再直接打線上 LLM，改走外層抽象的 vision API（`_visionDescribe`）：依設定 `visionBackendPolicy` 決定線上視覺模型或離線模型的優先順序與備援（沒有可用的視覺模型或全部失敗 → 離線模型，已下載才會用）。回傳維持 OpenAI 形狀，走離線時 `model` 是 `offline:<模型>` 並多一個 `x_vision` 診斷欄位。另提供直接呼叫：op `vision.describe`／Python `fa_llm.vision_describe(image, prompt)`（`image` 可以是 bytes、檔案路徑、data URL、網址）。提示詞格式（OCR／描述／問答、各模型自己的格式）由抽象層處理。詳見 `DESIGN.offline-vision.md` §8。
+
+## GPU 相容層（numba／cupy／torch／pycuda，2026-11-15）
+
+目標：既有的 CUDA／GPU Python 程式（`from numba import cuda`、`import cupy`、`import torch`、`import pycuda.autoinit`）**不改一行、不需要 `import cudaweb`**，就能在 Python 模擬器（桌面版真的 Python、網頁版 Pyodide）裡執行。執行的是瀏覽器的 WebGPU／WebGL2（或 CPU），**不是真 CUDA**；執行時 stderr 會印一行 `[fa-bridge] CUDA 相容層：目前使用 <層>（<原因>）`（只印一次）。
+
+**設計與實作（已完成的部分）**
+
+- 墊片放在 `renderer/src/pybridge/`：`fa_gpu.py`（共用核心）、`numba/`、`cupy/`、`torch/`、`pycuda/`。
+- **一份墊片、兩種傳輸**：桌面版經 `fa_bridge` 的檔案信箱（`gpu.call`／`gpu.info`，`python fa_run.py --rpc …`）；網頁版經 Pyodide 的 JS 模組 `_fa_gpu`（不依賴技能包的橋接開關）。主機端 `_pyBridgeGpu` 把 op 轉給 `_cudawebCall`（`renderer/src/gpu/gpu_core.js`，同一個 cudaweb 執行期）。
+- **大陣列不走 JSON**（桌面版）：float32 `.bin` 放在信箱資料夾，op 只傳路徑與長度；結果同樣寫成 `.bin`，讀完即刪。網頁版仍傳 list（尚未改成直接傳 TypedArray）。
+- **真套件優先、不遮蔽**：`fa_gpu.install()` 安裝一個 meta-path 尋找器。最上層名稱是 `numba`／`cupy`／`torch`／`pycuda` 時，若 `sys.path` 裡找得到真套件就回傳真套件的 spec；找不到才提供墊片。子模組交給父套件的 `__path__`。測試用 `FA_GPU_FORCE_SHIM=1` 一律用墊片。
+- **衝突規則**：只攔上面四個名稱；`cudaweb` 仍是獨立的明確 import（`renderer/src/pybridge/cudaweb.py`），不受本層影響。
+- **設定**：`advancedSettings.cudaCompat`，`'on'`（預設）／`'off'`。`pythonApiBridge` 原有設定不變。網頁版每次 Pyodide 執行前依設定安裝或拿掉尋找器；桌面版 `fa_run.py` 預設安裝（環境變數 `FA_CUDA_COMPAT=off` 可關，但主機尚未傳入這個變數，所以設定 off 在桌面版技能包執行時仍會安裝，這是待修的缺口）。
+- **回報**：宿主回傳 `layer`、`reason`，墊片記在 `fa_gpu.STATS`（`layer`、`reason`、`calls`、`ops`）。「回報欄位 `gpu: {layer, reason, calls}` 加進 `python_api_bridge` 結果」尚未接上（見下方未完成）。
+
+**支援矩陣（第一階段）**
+
+| 套件 | 支援 | 不支援（呼叫時丟出的錯誤會指出行號或名稱，並給建議） |
+|---|---|---|
+| `numba.cuda` | `@cuda.jit`、`@cuda.jit('簽名')`（簽名只記錄）、`kernel[blocks, threads](args)`（整數或最多三維 tuple）、`cuda.grid(1|2|3)`、`threadIdx／blockIdx／blockDim／gridDim`、`cuda.syncthreads()`（有屏障時用執行緒加屏障模擬）、`cuda.shared.array`、`cuda.atomic.add`、`to_device`、`device_array`、`device_array_like`、`copy_to_host()`、`is_available`、`synchronize`、`get_current_device()` | `device=True`、`stream`、`event`、`compile_ptx`；核心內的 `try／with／yield／lambda／推導式／遞迴／print／巢狀函式／global／raise`；未列入的 `cuda.*` 與 `print` |
+| `cupy` | `array／asarray／zeros／ones／empty／arange`、四則運算與 `@`、`matmul／dot`（二維與一維走 GPU）、`sum`（一維走 GPU）、`mean／max／min`、`exp／log／sqrt／tanh`、`asnumpy`、`cuda.Device`、`cuda.runtime.getDeviceCount`；其餘 numpy 同名項目退回 numpy | `RawKernel`、`ElementwiseKernel`、`cupyx.*`（丟 `CupyCompatError`，建議用 numpy 或 `@numba.cuda.jit`） |
+| `torch` | `tensor／zeros／ones／randn／rand／arange／from_numpy／manual_seed`；`.to('cuda')／.cuda()／.cpu()／.numpy()／.item()`；`torch.cuda.is_available／device_count`；`matmul／mm／softmax／relu／sigmoid／tanh／exp／log／sqrt`；`nn.Module／Parameter／Linear／ReLU／Sigmoid／Tanh／Softmax／LayerNorm／Sequential／MSELoss／CrossEntropyLoss`；`nn.functional` 的 softmax、relu、sigmoid、tanh、silu、gelu（tanh 近似）、layer_norm、rms_norm、mse_loss、cross_entropy；`optim.SGD（momentum、weight_decay）／AdamW`；`backward()` 用小型 numpy 自動微分 | `bmm`、`cat`、`compile`、`autograd.grad`、`nn.Conv2d` 等（丟 `TorchCompatError`，訊息格式「未支援：torch.<名稱>，建議 <替代>」）；Tensor 上未實作的方法（如 `argmax`）為一般 `AttributeError` |
+| `pycuda` | `pycuda.autoinit`、`pycuda.driver`（`init`、`Device`、`mem_alloc`、`memcpy_htod`、`memcpy_dtoh`） | `SourceModule`（CUDA C）：明確回報「尚不支援 CUDA C 原始碼，請改用 `@cuda.jit`」 |
+
+**執行層（誠實說明）**
+
+- `numba.cuda` 第一階段**不經過 GPU**：核心在本機 Python 逐執行緒模擬（結果與 numpy 一致），stderr 會說明。把核心編譯成 WGSL 的路線（`DESIGN.webgpu-cuda.md` §4）尚未接上。
+- `cupy` 的 matmul、dot、一維 sum 與 `torch` 的 cuda 裝置前向 matmul 會經過 GPU 橋接（cudaweb）；GPU 橋接失敗時退回 numpy 並說明。
+- `torch` 的反向傳播一律在 numpy 做（第一階段）。
+
+**未完成（列出來，不靜默）**
+
+- 桌面版 `run_command` 在「非技能包」情況下尚未安裝墊片（目前只有技能包執行時的 `fa_run.py` 會安裝）；`python_execute`（Pyodide）在每次執行時都會安裝。
+- 網頁版陣列尚未改成直接傳 TypedArray（目前是 list）。
+- `gpu:{layer,reason,calls}` 尚未加進 `python_api_bridge` 結果欄位；設定 `cudaCompat` 尚未加進設定畫面（只在 `advancedSettings` 有預設值與讀取）。
+
+**測試**
+
+- `renderer/src/gpu/fa_gpu_py_test.py`：19 項，用假的宿主（照 `_pyBridgeGpu` 協定，陣列走 float32 `.bin`）證明：不 import cudaweb 就能跑 NVIDIA 教學寫法的範例（numba 向量加、矩陣乘與原子直方圖、torch MLP 訓練迴圈、cupy 陣列運算）並與 numpy 一致；`syncthreads`＋共用記憶體；子集外語法的錯誤訊息；cupy 與 torch 的 GPU 橋接路徑與失敗退回；`.bin` 清理；stderr 只印一次；真套件優先的尋找器；pycuda 記憶體搬移。
+- 範例：`renderer/src/gpu/examples/numba_vector_add.py`、`numba_matmul_hist.py`、`cupy_basic.py`、`torch_mlp_train.py`。
+- **未驗證**：宿主 JS（`_pyBridgeGpu`、`_fa_gpu`）只做了 `node --check` 與靜態閱讀，沒有在真的 Electron 或瀏覽器裡跑過；真 WebGPU 的端到端驗證留給管理者用使用者的 Chrome 做。

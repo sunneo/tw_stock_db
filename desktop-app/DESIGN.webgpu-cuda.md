@@ -359,6 +359,15 @@ GUI 的獨立 Worker 模擬器目前沒有註冊 `_fa_cudaweb`，不能 `import 
 
 ---
 
+### 6.6 GPU 相容層（numba／cupy／torch／pycuda）
+
+既有的 CUDA 風格 Python 程式（`from numba import cuda`、`import cupy`、`import torch`）可以不改一行直接用：墊片透過 Python API 轉接層的 `gpu.*` 操作，呼叫本節 `cudaweb` 的執行期（`_cudawebCall`）。設計、支援矩陣與未完成項目見 [DESIGN.python-api-bridge.md「GPU 相容層」](DESIGN.python-api-bridge.md)。
+
+- 第一階段：`cupy` 與 `torch` 的熱點（matmul、dot、一維 sum）走本節的 WebGPU／WebGL2／CPU 層；`numba.cuda` 核心仍在本機 Python 模擬（尚未編譯成 WGSL，這正是本節 §4 的路線，還沒接上）。
+- `cudaweb` 的明確 `import` 介面保留不變；相容層不會改寫它。
+
+---
+
 ## 7. 離線模型推論與訓練資源
 
 ### 7.1 登錄為訓練工作室運算後端
