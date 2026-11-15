@@ -601,3 +601,33 @@ C／C++（clang）或 Rust ──► LLVM IR ──► NVPTX 後端 ──► PT
 
 - 第二、三階段的工時為【推測】。
 - 「沒有 WebGPU 的環境」：所有層都回報 T4 與原因，**不能壞掉**。
+
+---
+
+## 15. 第一階段實作紀錄與 Python 模擬器接線（2026-11-15）
+
+**檔案**（與 §7 的規劃有一處差異：五個檔案合併成一個）：
+- `renderer/src/gpu/gpu_core.js`：能力偵測、CPU 參考版、三個 WGSL 核心、執行期（降級與回報）。合併的原因：嵌入流程（`scripts/embed-code-ui.js` 的 `embed()`）一個區塊只吃一個檔。
+- `renderer/src/gpu/gpu_core.test.js`：20 項，node 執行。假的 `navigator.gpu` 依 WGSL 開頭的 `@kernel` 標記改用 CPU 參考版算結果，**只驗證流程**（降級、回報、邊界、錯誤），不驗證 WGSL 本身。
+- `renderer/src/studio/backend_core.js`：新增 `webgpuTierProbe(backendInfo)`，把執行期狀態轉成登錄表的 probe 結果（不可用時 reason 必填）。`KIND_BACKENDS` 沒有改，避免影響既有測試。
+- `renderer/src/pybridge/cudaweb.py`：Python 端 API（`vector_add`、`matmul`、`sum`、`backend_info`）。
+- `renderer/src/gpu/cudaweb_py_test.py`：8 項，以假的 `_fa_cudaweb` 與 `pyodide.ffi` 測試。
+- `renderer/src/gpu/examples/cudaweb_demo.py`：範例。`features/ai-features.yaml` 加了 `cudaweb` 條目（清單由 `scripts/ai-features.js build` 產生）。
+- `scripts/eval/cudaweb_gpu.eval.js`、`scripts/eval/cudaweb_gpu.run.js`：真桌面版檢查（見下）。
+
+**Python 模擬器接線**：
+- 主程式 `renderer/src/floating-assistant.js` 的 `_pyBridgeInstallPyodide` 開頭呼叫 `_cudawebInstallPyodide`，註冊 JS 模組 `_fa_cudaweb`，把 `cudaweb.py` 寫進 `/fa_cudaweb`。這條路徑是 Pyodide 模擬器（`_runPyodideScriptSync`、`_runPyodideScriptAsync`）共用的，網頁版與桌面版都走它。
+- 與 `fa_bridge`（Python API 轉接）分開：不受「Python API 轉接」開關影響。
+- `cudaweb.py` 只在 Pyodide（`sys.platform == "emscripten"`）生效；在一般 Python 呼叫會報錯並說明，不會壞掉。
+- 建置：`GPUCORE` 區塊嵌入主檔（`FA_GPU_CORE_SRC`）；`scripts/build-web-lazy.js` 的 `EXCLUDE` 加入 `GPUCORE`，核心留在主檔、不切成懶載入區塊（核心只約 15KB，且 Python 模擬器同步呼叫，不值得多一次非同步載入）。
+
+**未涵蓋**：
+- GUI 的 `py_worker`（pygame 等獨立 Worker 的模擬器）沒有註冊 `_fa_cudaweb`，那條路徑不能 `import cudaweb`。
+- 沒有 WebGPU 的環境只會走 T4，這是預期行為；T2、T3 尚未實作。
+
+**驗證現況**：
+- node：20 項全過（`node renderer/src/gpu/gpu_core.test.js`）。
+- Python：8 項全過（`python renderer/src/gpu/cudaweb_py_test.py`）。
+- 真桌面版（真 Electron，不加 `--disable-gpu`，獨立 userData，換埠 18931）：**執行了一次，但結果遺失**。原因是評估檔最外層的 `return` 缺漏，腳本沒把結果回傳給啟動器。已修正並用假 WebGPU 離線模擬，6 項檢查全過。**沒有再開一次真桌面版**（規則：最多一次）。因此真 WebGPU 的 adapter、功能清單與核心結果目前**未驗證**。
+- 網頁版真瀏覽器：**未驗證**。
+- 數值容差仍是暫定值，**未實測**。
