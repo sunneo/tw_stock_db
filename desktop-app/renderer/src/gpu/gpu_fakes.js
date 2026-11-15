@@ -98,6 +98,10 @@ function fakeNavigator(opts) {
       // 綁定順序：0 x、1 g、2 y、3 uniform（rows u32、d u32、eps f32）
       const rows = u32(e[3])[0], d = u32(e[3])[1], eps = new Float32Array(e[3].data, 8, 1)[0];
       f32(e[2], rows * d).set(NN.rmsnormRef(f32(e[0], rows * d), f32(e[1], d), rows, d, eps));
+    } else if (k === 'softmax') {
+      // 綁定順序：0 x、1 y、2 uniform（rows u32、cols u32）
+      const rows = u32(e[2])[0], cols = u32(e[2])[1];
+      f32(e[1], rows * cols).set(NN.softmaxRef(f32(e[0], rows * cols), rows, cols));
     } else if (k === 'axpy' || k === 'scal') {
       const n = u32(e[e.length - 1])[0];
       const alpha = new Float32Array(e[e.length - 1].data, 4, 1)[0];

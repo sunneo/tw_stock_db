@@ -58,6 +58,42 @@ function maxAbs(a, b) { let m = 0; for (let i = 0; i < a.length; i++) m = Math.m
     assert.ok(r.info.reason.includes('假核心錯誤'));
   });
 
+  // ---- softmax ----
+  const SR = 4, SC = 7;
+  const sx = seeded(SR * SC, 3);
+
+  await check('softmaxRef 每列和為 1，且與獨立公式一致', async () => {
+    const y = NN.softmaxRef(sx, SR, SC);
+    for (let r = 0; r < SR; r++) {
+      let s = 0; for (let c = 0; c < SC; c++) s += y[r * SC + c];
+      assert.ok(Math.abs(s - 1) < 1e-12, '第 ' + r + ' 列和 ' + s);
+      let z = 0; for (let c = 0; c < SC; c++) z += Math.exp(sx[r * SC + c]);
+      for (let c = 0; c < SC; c++) assert.ok(Math.abs(y[r * SC + c] - Math.exp(sx[r * SC + c]) / z) < 1e-12);
+    }
+  });
+
+  await check('softmaxRef 大數值不溢位（減最大值）', async () => {
+    const y = NN.softmaxRef([1000, 1001, 1002], 1, 3);
+    assert.ok(y.every(Number.isFinite));
+    assert.ok(Math.abs(y[0] + y[1] + y[2] - 1) < 1e-12);
+  });
+
+  await check('softmax 經 WGSL（假裝置）：層為 T1，結果與參考版一致', async () => {
+    const r = await NN.softmax(sx, SR, SC, { navigator: fakeNavigator().nav });
+    assert.strictEqual(r.info.layer, 'T1');
+    assert.ok(maxAbs(r.result, NN.softmaxRef(sx, SR, SC)) < 1e-6);
+  });
+
+  await check('softmax 沒有 WebGPU：退到 cpu-js 並寫明原因', async () => {
+    const r = await NN.softmax(sx, SR, SC, { navigator: {} });
+    assert.strictEqual(r.info.layer, 'cpu-js');
+    assert.ok(r.info.reason.includes(NN.NOTE_T3));
+  });
+
+  await check('softmaxRef 形狀不符丟錯', async () => {
+    assert.throws(() => NN.softmaxRef(sx.slice(1), SR, SC), /softmax：x 的長度/);
+  });
+
   await check('形狀不符：直接丟錯（不降級，避免默默算錯）', async () => {
     assert.throws(() => NN.rmsnormRef(x.slice(1), g, T, d, eps), /x 的長度/);
     assert.throws(() => NN.rmsnormRef(x, g.slice(1), T, d, eps), /g 的長度/);

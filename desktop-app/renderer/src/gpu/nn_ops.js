@@ -117,4 +117,51 @@ async function rmsnorm(x, g, T, d, eps, opts) {
     () => rmsnormRef(xf, gf, T, d, eps));
 }
 
-module.exports = { rmsnormRef, rmsnorm, runWgsl, getDevice, tryLayers, WGSL_RMSNORM, NOTE_T3 };
+// ---------- softmax（沿最後一維，數值穩定：先減最大值）----------
+// x 為 rows×cols 列主序；每列獨立
+function softmaxRef(x, rows, cols) {
+  if (x.length !== rows * cols) throw new Error('softmax：x 的長度 ' + x.length + ' 與 rows×cols=' + (rows * cols) + ' 不符');
+  const y = new Float64Array(rows * cols);
+  for (let r = 0; r < rows; r++) {
+    let mx = -Infinity;
+    for (let c = 0; c < cols; c++) if (x[r * cols + c] > mx) mx = x[r * cols + c];
+    let s = 0;
+    for (let c = 0; c < cols; c++) { const e = Math.exp(x[r * cols + c] - mx); y[r * cols + c] = e; s += e; }
+    for (let c = 0; c < cols; c++) y[r * cols + c] /= s;
+  }
+  return y;
+}
+
+const WGSL_SOFTMAX = `
+struct P { rows: u32, cols: u32, pad0: u32, pad1: u32 }
+@group(0) @binding(0) var<storage, read> x: array<f32>;
+@group(0) @binding(1) var<storage, read_write> y: array<f32>;
+@group(0) @binding(2) var<uniform> p: P;
+// @kernel softmax
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let r = gid.x;
+  if (r >= p.rows) { return; }
+  var mx: f32 = x[r * p.cols];
+  for (var c: u32 = 1u; c < p.cols; c = c + 1u) { mx = max(mx, x[r * p.cols + c]); }
+  var s: f32 = 0.0;
+  for (var c: u32 = 0u; c < p.cols; c = c + 1u) { let e = exp(x[r * p.cols + c] - mx); y[r * p.cols + c] = e; s = s + e; }
+  for (var c: u32 = 0u; c < p.cols; c = c + 1u) { y[r * p.cols + c] = y[r * p.cols + c] / s; }
+}
+`;
+
+async function softmax(x, rows, cols, opts) {
+  const xf = Float32Array.from(x);
+  return tryLayers('softmax', opts,
+    async (dev) => {
+      const uni = new ArrayBuffer(16);
+      new Uint32Array(uni, 0, 2).set([rows, cols]);
+      const outs = await runWgsl(dev, WGSL_SOFTMAX,
+        [{ data: xf, out: false }, { data: new Float32Array(rows * cols), out: true }],
+        uni, Math.ceil(rows / 64));
+      return outs[0];
+    },
+    () => softmaxRef(xf, rows, cols));
+}
+
+module.exports = { rmsnormRef, rmsnorm, softmaxRef, softmax, runWgsl, getDevice, tryLayers, WGSL_RMSNORM, WGSL_SOFTMAX, NOTE_T3 };
