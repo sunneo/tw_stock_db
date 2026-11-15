@@ -135,9 +135,12 @@ function create(d) {
                 if (c) { set({ phase: 'ready', detail: '使用快取', result: { sha, rank: c.layout.rank } }); return { ok: true, model: c.model, tokenizer: s.tokenizer, layout: c.layout, cached: true, sha }; }
                 set({ phase: 'build', detail: '改寫成 LoRA 槽版', done: 0, total: 1 });
                 const tmp = path.join(slotRoot, sha + '.partial');
-                fs.rmSync(tmp, { recursive: true, force: true });
-                fs.mkdirSync(slotRoot, { recursive: true });
-                const r = await runChild(s.model, tmp, STD.rank);
+                // 轉換子行程偶發失敗（例如磁碟忙碌、記憶體瞬間不足）會自動重試：每次都從乾淨的暫存資料夾開始，最多 3 次，間隔 2、4 秒
+                const r = await withRetry(async () => {
+                    fs.rmSync(tmp, { recursive: true, force: true });
+                    fs.mkdirSync(slotRoot, { recursive: true });
+                    return runChild(s.model, tmp, STD.rank);
+                }, { tries: 3, delayMs: d.retryDelayMs != null ? d.retryDelayMs : 2000, onRetry: (i, e) => log('slot build attempt ' + i + ' failed: ' + String((e && e.message) || e)) });
                 const dir = path.join(slotRoot, sha);
                 fs.rmSync(dir, { recursive: true, force: true });
                 fs.renameSync(tmp, dir);
@@ -193,6 +196,21 @@ function create(d) {
     return { ensure, download, status, findStandard, currentSlot, missingInfo, sha256Of, STD };
 }
 
+// 通用重試：fn 失敗就等 delayMs × 次數再試，全部失敗時丟出最後一次的錯誤（訊息附上已試次數）。
+async function withRetry(fn, opt) {
+    let last = null;
+    for (let i = 1; i <= opt.tries; i++) {
+        try { return await fn(i); } catch (e) {
+            last = e;
+            if (opt.onRetry) opt.onRetry(i, e);
+            if (i < opt.tries) await new Promise((r) => setTimeout(r, opt.delayMs * i));
+        }
+    }
+    const msg = String((last && last.message) || last);
+    const err = new Error(msg + '（已試 ' + opt.tries + ' 次）');
+    throw err;
+}
+
 function fetchRange(https, url, from, to) {
     return new Promise((resolve, reject) => {
         const go = (u, hops) => {
@@ -207,4 +225,4 @@ function fetchRange(https, url, from, to) {
     });
 }
 
-module.exports = { create, STD, fetchRange };
+module.exports = { create, STD, fetchRange, withRetry };

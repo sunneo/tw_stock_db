@@ -166,6 +166,19 @@ lora-train/.venv/Scripts/pip install -r lora-train/requirements.txt
 - **安全**：只下載本專案 repo 指定 branch 的檔案；只接受 sha256 吻合者；不執行任何下載內容（adapter 是純權重）；使用者可隨時停用。
 - **改到 renderer 檔案時**：`floating-assistant.js`／`bootstrap.js`／`index.html` 的變更需走 live-update patch 發佈流程。
 
+### 10.1 預設值與自動流程（2026-11-15）
+
+- **離線模型預設啟用**：原生路徑（qwen3-0.6b）的開關是 `localStorage['fa.native.enabled']`。以前沒設過＝關；現在**沒設過（null）＝開**，只有明確寫 `'0'`（使用者關掉，或移除執行包時寫入）才關，`'1'`（安裝執行包時寫入）也是開。其他原生模型（音訊、深度、SDXS、SlimSAM）仍用舊的 `_nrOptIn()`，預設仍關，互不影響。程式：`renderer/src/floating-assistant.js` 的 `_nrQwenOptIn()`。
+- **第一次生成時自動準備槽版**（`_nrAutoSlotOnce`，一個工作階段只做一次，主程序沒回應時下次再試）：
+  - 已有槽版：不做事。
+  - 有標準版 q8：直接背景轉換（`slot_prepare`），不再詢問，聊天進度寫進對話（每 2 秒讀 `slot_status`）。
+  - 沒有標準版：**一次性同意卡片**，列出檔名、來源（repo 與 URL）、大小；按「同意下載」才呼叫 `slot_download`（`confirm:true`，清單必須與主程序算出的一致）。同意的清單記在 `fa.native.slotConsent`，同一份清單之後不再問；拒絕記成 `'no'`，之後不再問也不下載。
+  - 下載失敗：自動重試（最多 3 次，間隔 3、6 秒），每次失敗都寫出 HTTP 狀態等具體原因；清單對不上不重試。
+  - 轉換失敗：主程序端 `native-slot-model.js` 的 `withRetry` 最多試 3 次（每次從乾淨暫存資料夾重來，間隔 2、4 秒），最後仍失敗回 `slot_build_failed`（訊息附「已試 3 次」與子行程的錯誤行）；渲染端再 `slot_prepare` 最多 3 次。
+- **LoRA 按需載入**：沿用既有流程，第一次被路由選到該顆 LoRA 才下載並套用，不在啟用時預先下載。
+- **沒有被驗證的部分**：`_nrAutoSlotOnce` 的呼叫順序與同意流程由 `tests/native/native_qwen_auto_slot.test.js` 用假主程序測過（21 項）；槽版轉換的重試由 `tests/native/native_slot_retry.test.js` 用假子行程測過（7 項）。**沒有**用真 Electron 與真的 617 MB 模型跑完整流程。
+- **已知未解（不得宣稱等價）**：非零 LoRA 的槽版與網頁版併權重結果不一致（首步 logits 相似度約 0.968），原因尚未查出。桌面版原生路徑**不等於**網頁版的 LoRA 結果，文件與畫面都不得寫成等價。
+
 ## 11. 標準版 q8 轉成槽版（JavaScript，免 Python）（2026-11-11，進行中）
 
 - 目的：使用者不需要 Python 也能把自己下載的標準版 Qwen3-0.6B q8 ONNX 改成 LoRA 槽版（不託管模型）。

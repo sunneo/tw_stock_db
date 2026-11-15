@@ -128444,7 +128444,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
     // 一次生成：載入（必要時）→ 在對應裝置的 Worker 生成 → 串流中偵測垃圾／逾時就中斷。cb: { update, log, onToken }
     // 原生執行器能不能用（主程序的執行包＋模型檔都就緒）。結果快取 5 秒，避免每次生成都打一次信箱；不可用時回傳白話原因。
     async _nrNativeState() {
-        if (!this._nrOptIn()) return { ok: false, reason: '原生執行包未安裝' }; // 預設不探測主程序，完全走原路徑
+        if (!this._nrQwenOptIn()) return { ok: false, reason: '原生執行包未安裝' }; // 使用者明確關掉才不探測主程序，完全走原路徑
         if (!this._nrAvailable()) return { ok: false, reason: '這個環境沒有桌面版橋接' };
         const now = Date.now();
         if (this._nrStateCache && now - this._nrStateCache.at < 5000) return this._nrStateCache.v;
@@ -128485,10 +128485,12 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         // 原生執行器（桌面版，先試）：工具折進 system 文字、預填靠輸出核對（見 FaVlm.nativeToolMessages／nativeWithPrefill）。失敗或不可用就退回 WebGPU／WASM，並把實際後端與原因寫進 log。
         const NATIVE_MODEL_ID = 'qwen3-0.6b';
         let nativeOk = false, nativeWhy = '';
+        // 離線模型啟用（預設啟用）時，第一次生成就在背景準備 LoRA 槽版（不阻塞這次生成，見 _nrAutoSlotOnce）
+        if (model.id === NATIVE_MODEL_ID && this._nrQwenOptIn()) this._nrAutoSlotOnce().catch(() => {});
         // 選 WebGPU（或 auto 且有 WebGPU）：完全不碰原生（連狀態都不問主程序），也不記 log
         // 偏好選 WebGPU 但這台沒有 WebGPU：等同 auto（FaVlm.effectiveDevicePref），原生才有機會用到（LoRA 只在原生生效）
         const devPref = FaVlm.effectiveDevicePref(this._omDevicePrefOf(model), gpu.available);
-        if (model.id !== NATIVE_MODEL_ID || !this._nrOptIn() || !FaVlm.wantsNativeBackend(devPref, gpu.available)) nativeWhy = '';
+        if (model.id !== NATIVE_MODEL_ID || !this._nrQwenOptIn() || !FaVlm.wantsNativeBackend(devPref, gpu.available)) nativeWhy = '';
         else { const st = await this._nrNativeState(); nativeOk = !!st.ok; if (!st.ok) nativeWhy = st.reason; }
         const bo = FaVlm.backendOrder(model, devPref, gpu.available, gpu.f16, nativeOk);
         if (bo.native) {
@@ -128848,7 +128850,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
               <div data-om-native-status style="color:#94a3b8;">讀取中…</div>
               <div data-om-native-progress style="display:none; color:#cbd5e1; margin-top:4px;"></div>
               <div style="margin-top:6px;"><button style="${btn}" data-om="native-install">安裝原生執行包</button> <button style="${btn}" data-om="native-remove">移除執行包</button> <button style="${btn}" data-om="native-reenable">重新啟用</button> <button style="${btn}" data-om="native-dispose">關閉子程序</button></div>
-              <div style="color:#94a3b8;">預設是未安裝，不點就完全走原本的 WebGPU／WASM 路徑。安裝前會先顯示確認對話框，按同意後才下載（npm 官方庫優先，失敗才改用 GitHub 分支，會顯示原因）。</div>
+              <div style="color:#94a3b8;">離線模型預設啟用：第一次生成時會自動準備 LoRA 槽版（沒有標準版模型時先顯示一次同意卡片）。執行包本身仍要先在這裡安裝；不安裝就走原本的 WebGPU／WASM 路徑。安裝前會先顯示確認對話框，按同意後才下載（npm 官方庫優先，失敗才改用 GitHub 分支，會顯示原因）。</div>
               <div style="color:#94a3b8;">只有離線模型的「運算裝置」選 CPU（或選自動、而且沒有 WebGPU）時才會走原生；選 WebGPU 完全不碰原生。原生失敗時退回網頁版 WASM，並顯示實際後端與原因。</div>
             </div>`;
     }
@@ -128857,7 +128859,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         if (!root || !this._nrAvailable()) return;
         const el = root.querySelector('[data-om-native-status]');
         if (!el) return;
-        if (!this._nrOptIn()) { el.textContent = '狀態：未安裝（預設，走原本的 WebGPU／WASM 路徑）'; return; }
+        if (!this._nrQwenOptIn()) { el.textContent = '狀態：已關閉（使用者關掉過，走原本的 WebGPU／WASM 路徑）'; return; }
         try {
             const r = await this._nrCall('status');
             if (!r.ok) { el.textContent = '原生執行器：' + (r.message || r.code); return; }
@@ -128868,7 +128870,78 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         } catch (e) { el.textContent = '原生執行器狀態讀取失敗：' + String((e && e.message) || e); }
     }
     _nrOptIn() { try { return localStorage.getItem('fa.native.enabled') === '1'; } catch (_) { return false; } }
-    _nrSetOptIn(v) { try { localStorage.setItem('fa.native.enabled', v ? '1' : '0'); } catch (_) { /* 寫不了就維持預設（未開啟） */ } this._nrStateCache = null; }
+    // 離線模型（qwen3-0.6b 的原生路徑）預設啟用：沒設過（null）＝開；使用者明確關掉（'0'，移除執行包時也會寫）才關。其他原生模型（音訊、深度…）仍用 _nrOptIn()，預設關。
+    _nrQwenOptIn() { try { const v = localStorage.getItem('fa.native.enabled'); return v == null ? true : v === '1'; } catch (_) { return true; } }
+    _nrSetOptIn(v) { try { localStorage.setItem('fa.native.enabled', v ? '1' : '0'); } catch (_) { /* 寫不了就維持預設 */ } this._nrStateCache = null; }
+    // 離線模型啟用時的自動準備（DESIGN.lora-training.md §10）：一個工作階段只做一次（失敗或主程序沒回應時下次再試）。
+    //  - 已有槽版：什麼都不做。
+    //  - 有標準版 q8：直接背景轉換（slot_prepare），不再詢問。
+    //  - 沒有標準版：顯示一次性同意卡片（檔名、來源、大小）；同意才下載，下載失敗自動重試；拒絕就記住不再問（LoRA 套用時仍會說明原因）。
+    _nrAutoSlotOnce() {
+        if (this._slotAuto) return this._slotAuto;
+        this._slotAuto = (async () => {
+            if (!this._nrAvailable()) { this._slotAuto = null; return 'no_bridge'; }
+            const st0 = await this._nrCall('slot_status', {}, 20000);
+            if (!st0 || !st0.ok) { this._slotAuto = null; return 'no_status'; } // 下次生成再試
+            if (st0.slot) return 'ready';
+            if (st0.standard) return await this._slotPrepareAndWait();
+            const miss = st0.missing;
+            if (!miss || !Array.isArray(miss.files) || !miss.files.length) return 'no_missing_info';
+            const files = miss.files.map((f) => ({ name: f.name, url: f.url, bytes: f.bytes }));
+            const sig = JSON.stringify(files.map((f) => [f.name, f.bytes]));
+            let decided = null; try { decided = localStorage.getItem('fa.native.slotConsent'); } catch (_) { decided = null; }
+            if (decided === 'no') return 'declined';
+            // 同一份清單已經同意過就直接下載（不再彈卡片）；清單不同（例如檔案變了）才重新問
+            if (decided !== sig) {
+                const mb = (n) => Math.round(n / 1048576);
+                const desc = '離線模型 Qwen3-0.6B 要轉成 LoRA 槽版，需要先下載標準版量化模型（只問這一次）。\n\n' +
+                    '檔名：' + files.map((f) => f.name + '（約 ' + mb(f.bytes) + ' MB）').join('、') + '\n' +
+                    '來源：' + miss.repo + '（' + files[0].url + '）\n' +
+                    '大小：合計約 ' + mb(miss.totalBytes) + ' MB\n\n' +
+                    '不同意就什麼都不會下載；聊天照常使用原本的路徑。';
+                let ans = null;
+                try { ans = await this.requestUserForm({ title: '下載離線模型', description: desc, choices: ['同意下載', '不要'] }); } catch (_) { ans = null; }
+                if (!ans || !ans.confirmed || ans.answer !== '同意下載') { try { localStorage.setItem('fa.native.slotConsent', 'no'); } catch (_) { /* */ } return 'declined'; }
+                try { localStorage.setItem('fa.native.slotConsent', sig); } catch (_) { /* 存不了就只對這一次有效 */ }
+            }
+            let dl = null;
+            for (let i = 1; i <= 3; i++) {
+                dl = await this._nrCall('slot_download', { confirm: true, files }, 3600000);
+                if (dl && dl.ok) break;
+                if (dl && (dl.code === 'mismatch' || dl.code === 'not_confirmed')) break; // 清單對不上：重試也一樣，不再重試
+                if (i < 3) { this._pushAssistantMessage('離線模型下載第 ' + i + ' 次失敗（' + ((dl && (dl.message || dl.code)) || '沒有回應') + '），' + (3 * i) + ' 秒後自動重試…', null); await new Promise((r) => setTimeout(r, 3000 * i)); }
+            }
+            if (!dl || !dl.ok) { this._pushAssistantMessage('離線模型下載失敗（已試 3 次）：' + ((dl && (dl.message || dl.code)) || '沒有回應') + '。聊天仍用原本路徑，下次開始會再試。', null); this._slotAuto = null; return 'download_failed'; }
+            this._pushAssistantMessage('離線模型下載完成，開始在背景轉成 LoRA 槽版…', null);
+            return await this._slotPrepareAndWait();
+        })().catch((e) => { this._slotAuto = null; this._pushAssistantMessage('離線模型自動準備出錯：' + String((e && e.message) || e), null); return 'error'; });
+        return this._slotAuto;
+    }
+    // 送出背景轉換，然後每 2 秒讀一次進度直到槽版就緒或失敗；轉換失敗會自動再試（最多 3 次，主程序也有一層重試）。
+    async _slotPrepareAndWait() {
+        const t0 = Date.now(); let tries = 0;
+        for (;;) {
+            tries++;
+            const pr = await this._nrCall('slot_prepare', {}, 20000);
+            if (!pr || !pr.ok) { this._slotAuto = null; this._pushAssistantMessage('轉換請求沒有被接受：' + ((pr && (pr.message || pr.code)) || '沒有回應') + '。下次開始會再試。', null); return 'prepare_failed'; }
+            let phase = '', last = '';
+            while (Date.now() - t0 < 1800000) {
+                await new Promise((r) => setTimeout(r, 2000));
+                const s = await this._nrCall('slot_status', {}, 20000);
+                if (!s || !s.ok) continue;
+                if (s.slot) { this._pushAssistantMessage('LoRA 槽版就緒（' + Math.round((Date.now() - t0) / 1000) + ' 秒）。LoRA 會在第一次被選用時才載入。', null); return 'ready'; }
+                phase = s.phase;
+                if (phase === 'need_std') { this._slotAuto = null; return 'need_std'; }
+                if (phase === 'failed') break;
+                if (phase !== last) { last = phase; this._pushAssistantMessage('轉換進度：' + ({ hash: '核對來源檔 sha256', build: '改寫成槽版' }[phase] || phase) + (s.total ? '（' + Math.round((s.done / s.total) * 100) + '%）' : '') + '…', null); }
+            }
+            if (phase !== 'failed') { this._slotAuto = null; return 'timeout'; }
+            const why = await this._nrCall('slot_status', {}, 20000).then((s) => (s && s.error) || '未知原因').catch(() => '未知原因');
+            if (tries >= 3) { this._slotAuto = null; this._pushAssistantMessage('轉換成 LoRA 槽版失敗（已試 3 次）：' + why + '。下次開始會再試。', null); return 'failed'; }
+            this._pushAssistantMessage('轉換失敗（' + why + '），3 秒後自動重試（第 ' + (tries + 1) + ' 次）…', null);
+            await new Promise((r) => setTimeout(r, 3000));
+        }
+    }
     _nrBackendLabel(d) { return d === 'native' ? '原生（onnxruntime-node 1.22.0，CPU）' : d === 'webgpu' ? 'WebGPU' : d === 'cpu' ? 'WASM（CPU）' : String(d); }
     // 安裝：先顯示確認對話框（檔名、來源、授權、大小），按同意才下載；進度每半秒從主程序的進度檔讀一次。
     async _omNativeInstall() {

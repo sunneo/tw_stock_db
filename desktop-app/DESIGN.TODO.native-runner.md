@@ -572,6 +572,8 @@
 
 ### 9.6 標準版 q8 → LoRA 槽版（JavaScript 轉換，免 Python）（2026-11-11，進行中，未通過等價驗證）
 
+- 2026-11-15 更新（預設與自動流程，細節見 `DESIGN.lora-training.md` §10.1）：離線模型（qwen3-0.6b）原生路徑**預設啟用**（`fa.native.enabled` 沒設過＝開，`'0'`＝關）；第一次生成時背景準備槽版：有標準版直接轉，沒有就先一次性同意卡片（檔名、來源、大小）；下載與轉換失敗自動重試並顯示具體原因。LoRA 仍是第一次被選用才按需載入。尚未做真 Electron 端到端驗證。
+
 - 轉換器：`lora-slot-build.js`（make_lora_onnx.py build 的 JavaScript 孿生）。逐段讀寫檔案，不把 617 MB 整個載入記憶體。
   - 實測（Qwen3-0.6B q8，617,687,575 位元組，rank 16）：找到 196 個目標、輸出 617,790,864 位元組、lora.bin 槽 40,370,176 位元組、392 個張量；轉換耗時 4.2 秒、峰值 RSS 約 37.6 MB。
 - 槽管理：`native-slot-model.js`（找標準版；來源 sha256 快取到 `<userData>/native-lora/slot-model/<sha>/`；背景子行程轉換；下載清單與使用者同意後的分段下載＋sha256 核對）。

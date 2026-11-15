@@ -40,20 +40,22 @@
     "FA_STUDIO_SEED_COUNTS",
     "FA_STUDIO_LORA_DATA",
     "FA_STUDIO_LAYOUT_SRC",
+    "FA_STUDIO_LORA_MANAGE_SRC",
+    "FA_STUDIO_PIPELINE_VIEW_SRC",
     "FA_WEBLORA_WORKER_SRC",
     "FA_WEBTRAIN_WORKER_SRC",
     "FA_STUDIO_HOST_FILES"
    ],
-   "size": 836986,
-   "md5": "1ee2a9fefb0b192bdc72e2cba24b9c31"
+   "size": 872133,
+   "md5": "5308f5cb854d0de7fcd71be8e87fdb08"
   },
   "studioview": {
    "file": "chunks/studioview.js",
    "names": [
     "FA_STUDIO_VIEWER_HTML"
    ],
-   "size": 122877,
-   "md5": "b02b2aa9195de1385403a379c776a8cc"
+   "size": 123535,
+   "md5": "7699cd346d193bf2f3d892b554f394d0"
   },
   "behavior": {
    "file": "chunks/behavior.js",
@@ -1828,7 +1830,7 @@
   }
  },
  "core": {
-  "size": 5859214,
-  "md5": "0b41554ecd1deed898b13d961b9151e2"
+  "size": 5863417,
+  "md5": "d57cf518c541bfd4a946373d539e9473"
  }
 }
