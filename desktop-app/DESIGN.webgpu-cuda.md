@@ -880,3 +880,15 @@ Python 模擬器與離線模型推論共用同一個 GPU 裝置：
 - 修正：`runWgsl` 的緩衝區可標 `cache:true`（以 typed array 物件為 WeakMap 鍵，常駐 GPU；`moss_gpu.linearWgsl` 的 W、b 與 `lnWgsl` 的 w、b 使用），暫時緩衝區在讀回後銷毀；GELU 引數夾到 ±15。沒有搬進 Worker：頁面本來就是 async，不阻塞主執行緒。
 - 驗證（真 MOSS，`你好`，seed 7，3 幀，`cudaweb_moss_pipeline_gpu_check.js`＋`cudaweb_headless_node_check.sh`）：預填 78 列＋生成，Chrome 156 軟體 WebGPU，**3 幀與 ORT 完全一致**，全 T1，生成 121 秒（未優化）；同幀 codec 音訊（CPU 解釋器）對 ORT 3.0e-6。診斷頁另量到：GPU 本地解碼 text logits 對 CPU 相對差 4.0e-7、audio0 2.1e-6，GPU 取樣與 CPU 取樣的 16 個碼本完全相同。
 - 未做：codec 整圖走 GPU（解釋器的 MatMul 仍 CPU）、經產品 worker 開關的端到端、真 GPU。
+
+### 7.23 Qwen3 q8 整段 GPU 解碼接進「一般聊天離線模型」（2026-11-16，開關 `qwenGpuDecode`／`gpuAuto`，預設關）
+- **接線位置**：`floating-assistant.js` 的 `_llmGenerateInner`，在原生執行器嘗試之後、transformers.js 工作者之前；方法 `_qwenGpuChat`。順序規則：選「CPU」（＝原生）時完全不碰這條（維持原生）；選 GPU 或 auto 時，開關開（或 `gpuAuto` 決定開）且條件齊全就先走這條；任何一步不成立或失敗，記原因（`this._qwenChatDiag`、`cb.log`、console）後接著走原路徑。
+- **條件（缺一就不走，原因寫明）**：開關開／gpuAuto 決定開；有 WebGPU；桌面版橋接可用且找得到 `<userData>/native-models/qwen3-0.6b-q8/onnx/model_quantized.onnx`＋`tokenizer.json`（網頁版沒有本機檔就不走，**不新下載 617 MB**）；沒有套用中的 LoRA（GPU 引擎沒有 LoRA 槽）；提示＋生成長度放得進引擎 KV（`maxT` 2048）。
+- **模型載入**：617 MB 無法一次 base64 經 IPC（超過字串上限）。`qwen_chat.readLargeFile` 先用 `rawfs.copyChunked` 切成 64 MB 暫存段、逐段讀、拼成 Uint8Array、最後刪暫存；同一份模型只載一次（`this._qwenChat`，以路徑＋大小為鍵），裝置遺失時清掉重建。
+- **提示與詞元化**：`FaVlm.nativeToolMessages`（工具折進 system）→ `nr-template.js` 的 `qwen3-chatml`（`enable_thinking:false`，預填接在生成提示後）→ `FaLlmWeb.createTokenizer`。對拍：在真 tokenizer.json 上，`FaLlmWeb` 與原生 `nr-tokenizer.js` 對含特殊詞元、中英混排、換行的 chatml 提示編出完全相同的 38 個詞元。
+- **生成與取樣（`renderer/src/gpu/qwen_chat.js`）**：貪婪且無懲罰時只讀回 argmax；否則讀回 logits，在主機端用與原生子程序**同一份** `nr-gen-params.js`（重複懲罰 → n-gram → 溫度 → top-p → 取樣，可重現 rng）。提示超過 `maxM` 就切塊預填。結束詞元 `<|im_end|>／<|endoftext|>`，輸出以 `<|im_end|>` 截斷；`cb.onToken` 逐步給累積文字；垃圾輸出偵測與逾時沿用工作者路徑的做法。診斷：`_qwenChatDiag = { used, why, tokens, ms, gpu:{steps,sampled,prefillMs,decodeMs}, stop }`。
+- **驗證（如實）**：
+  - 單元 `qwen_chat_test.js`：貪婪不讀 logits、取樣序列＝直接用 `pickToken` 手算的序列、貪婪＋重複懲罰要讀 logits、n-gram 真的改變結果、切塊預填（只有最後一塊要 logits）、超過上限丟出原因、取消、引擎失敗與逾時不吞掉、不支援的 gen 鍵丟錯、大檔分段讀（真檔案系統模擬 `copyChunked`）。
+  - **端到端（真 Chrome 156，軟體 WebGPU，真 q8 模型，用嵌入的 `FA_QWEN_SRC`）** `scripts/eval/cudaweb_qwen_chat_ref.js`＋`cudaweb_qwen_chat_browser.js`：3 組提示（一般、帶工具、帶預填）貪婪 10 詞元，對桌面版原生引擎（`nr-engine`＋onnxruntime-node）：**0/3 與 ORT 逐詞元相同**；GPU 輸出皆為通順文字（「您好，台北市」「1 + 1 = 2。」等）。取樣路徑同 seed 兩次序列相同。軟體 WebGPU：預填 42 詞元 24 秒、每詞元約 2.5～3.7 秒（不代表真 GPU）。
+  - **為什麼與 ORT 不同（已查）**：GPU 引擎與 JS CPU 參考引擎在 3 組裡有 2 組 10 詞元完全相同、1 組前 3 詞元相同——引擎本身算的是同一個數學。CPU 參考對真 ORT 的首步 logits 相對差：提示 4 詞元 4.9e-7（逐位等價），8 詞元 0.23、16 詞元 0.19、24 詞元 0.43、42 詞元 0.37。q8 模型的動態量化（整張量一組步長、殘差流離群值約 8000）使「提示一長、任何 f32 進位差都能翻轉量化邊界」，ORT 自己跨 CPU 也差這個量級（§7.13 已記）。所以「與 ORT 逐詞元相同」不是任何自家實作能保證的標準；這條路徑的定位是「同品質、不同取樣軌跡」，預設關。
+- **未做／限制**：真 GPU 的速度與對拍；真 Electron 內以 UI 開關實測整條（`_qwenGpuChat` 本身依賴 `desktopAPI.rawfs`、`_nrCall`，沒有 Electron 環境無法跑；其分段讀檔、取樣、生成迴圈各部件已單獨驗證）；網頁版沒有本機 q8 檔就不走；桌面版 studio 的 `llmWeb` 評估仍走既有的 `gpuDecode`（`llmWeb` 在桌面版 studio 為 undefined，維持原生）。

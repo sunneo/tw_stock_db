@@ -37,3 +37,6 @@
 - 先讀 `docs/HANDOFF.cudaweb-inference.md` §8 程式地圖，用 Grep 定位函式，不要整檔讀 `floating-assistant.js`（十幾萬行）。
 - 每個核心已有「CPU 參考 → 真 ORT 對拍 → 真 Chrome」的做法，照既有的 `scripts/eval/cudaweb_*_check.js` 複製，不要重新設計。
 - 不做獨立效能量測；一個提交只做一件事；提交訊息寫「做了什麼＋怎麼驗證」。
+
+## 接線續作（2026-11-16，使用者：「全部接上」）
+- [x] **W1. Qwen3 q8 GPU 解碼接進一般聊天離線模型**：`_llmGenerateInner`＋`_qwenGpuChat`（見 DESIGN §7.23）。選原生維持原生；網頁版沒有本機 q8 檔不走（不下載）；取樣／重複懲罰／n-gram 在主機端與原生同一份 `nr-gen-params`；單元＋真 Chrome 端到端（0/3 與 ORT 逐詞元相同，原因與數字見 §7.23）。
