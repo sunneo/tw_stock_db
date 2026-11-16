@@ -177,5 +177,16 @@ const eventOf = (line) => JSON.parse(line);
     assert.strictEqual(a.event, 'input'); assert.deepStrictEqual(b.value, { start: 2, end: 3 }); assert.strictEqual(host.poll('wc'), null); ok();
   }
 
+  // 所有視窗都套外殼並一開始就彈出（不受終端機範圍限制），重畫時沿用目前是否彈出
+  {
+    const calls = [];
+    const ctl = { popped: true, isPopped() { return this.popped; } };
+    const { host } = newHost({ decorate: (el, o) => { calls.push(o); return ctl; } });
+    host.apply(msg({ op: 'open', id: 'wp', title: 'plain' }));   // 沒有 resizable／maximizable 也要套外殼
+    assert.strictEqual(calls.length, 1); assert.strictEqual(calls[0].floating, true); ok();
+    ctl.popped = false; host.apply(msg({ op: 'add', id: 'wp', node: { id: 'l', kind: 'label', text: 'x' } }));
+    assert.strictEqual(calls[calls.length - 1].floating, false, 'the user docked it: a redraw keeps it docked'); ok();
+  }
+
   console.log('gui_host: ' + n + ' assertions passed');
 })().catch((e) => { console.error(e); process.exit(1); });

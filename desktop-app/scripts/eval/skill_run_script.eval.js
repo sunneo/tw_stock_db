@@ -56,7 +56,7 @@ app.whenReady().then(async () => {
       await new Promise((r) => setTimeout(r, 4000));
       w = document.querySelector('.gui-window[data-window]');
       const lists = w ? Array.from(w.querySelectorAll('select')).map((s) => ({ options: s.options.length, h: Math.round(s.getBoundingClientRect().height) })) : null;
-      const out = { windowShown: !!w, nodes: w ? w.querySelectorAll('[data-node]').length : 0, lists, text: w ? w.innerText.slice(0, 400) : null, runDone: window.__runDone ? String(window.__runDone).slice(0, 3000) : null };
+      const out = { parentTag: w && w.parentElement && w.parentElement.tagName, inLayer: !!(w && w.closest('.ai-gui-layer')), rect: w && (() => { const r = w.getBoundingClientRect(); return [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)]; })(), windowShown: !!w, nodes: w ? w.querySelectorAll('[data-node]').length : 0, lists, text: w ? w.innerText.slice(0, 400) : null, runDone: window.__runDone ? String(window.__runDone).slice(0, 3000) : null };
       if (w) {
         const sel = w.querySelectorAll('select')[0]; const opt = sel && Array.from(sel.options).find((o) => /NormalLog\.html/.test(o.textContent));
         out.picked = !!opt;
