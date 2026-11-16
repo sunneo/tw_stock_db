@@ -362,26 +362,40 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
     const rbLg = dev.createBuffer({ size: V * 4, usage: USAGE.MAP_READ | USAGE.COPY_DST });
     const traceB = dev.createBuffer({ size: W.L * maxM * D * 4, usage: USAGE.COPY_DST | USAGE.COPY_SRC }), rbTr = dev.createBuffer({ size: W.L * maxM * D * 4, usage: USAGE.MAP_READ | USAGE.COPY_DST });
     if (dev.queue.onSubmittedWorkDone) await dev.queue.onSubmittedWorkDone();
-    let len = 0;
+    let len = 0, dead = '', chain = Promise.resolve();
+    const chunkM = Math.max(1, Math.min(maxM, o.chunkM || 16));
+    if (dev.lost && dev.lost.then) dev.lost.then((i) => { dead = dead || ('裝置遺失：' + (i && (i.reason || '') + ' ' + (i && i.message || '')).trim()); });
     const info = { maxT, maxM, dispatches: plan.length, lmChunks: lmChunks.length, setupMs: (typeof performance !== 'undefined' ? performance : Date).now() - t0, steps: 0, lastStepMs: 0 };
 
     const eng = {
       get len() { return len; }, maxT, maxM, info,
       reset() { len = 0; },
-      async step(ids, so) {
+      async stepOnce(ids, so) {
+        if (dead) throw new Error('GPU 裝置已遺失：' + dead);
         const M = ids.length;
         if (M < 1 || M > maxM) throw new Error('qwen_gpu：一次的詞元數 ' + M + ' 超出範圍 1..' + maxM);
         if (len + M > maxT) throw new Error('qwen_gpu：序列超過上限 ' + maxT);
         const ts = (typeof performance !== 'undefined' ? performance : Date).now();
         dev.queue.writeBuffer(hA, 0, Q.embedRows(W, ids));
         dev.queue.writeBuffer(stBuf, 0, new Uint32Array([M, len, 0, 0]));
-        const enc = dev.createCommandEncoder();
         const trace = !!(so && so.trace);
+        const wantLg = !!(so && so.logits);
         if (!trace) {
-          const pass = enc.beginComputePass();
-          for (const d of plan) { const g = d.groups(M); pass.setPipeline(d.pipe); pass.setBindGroup(0, d.bg); pass.dispatchWorkgroups(g[0], g[1]); }
-          pass.end();
+          // 一層一次提交（不是整步一個 command buffer）：舊顯卡（例如 Geforce 720）單次提交跑太久會被 Windows 判定 GPU 卡死（DXGI_ERROR_DEVICE_HUNG）；
+          // 每 4 層再等一次完成，讓每段 GPU 工作都夠短，也讓頁面有機會喘氣
+          let i = 0;
+          for (let l = 0; l <= W.L; l++) {
+            const stop = l < W.L ? layerEnd[l] : plan.length;
+            const enc = dev.createCommandEncoder(); const pass = enc.beginComputePass();
+            for (; i < stop; i++) { const d = plan[i], g = d.groups(M); pass.setPipeline(d.pipe); pass.setBindGroup(0, d.bg); pass.dispatchWorkgroups(g[0], g[1]); }
+            pass.end();
+            if (l === W.L) { enc.copyBufferToBuffer(tokBuf, 0, rbTok, 0, 4); if (wantLg) enc.copyBufferToBuffer(logits, 0, rbLg, 0, V * 4); }
+            dev.queue.submit([enc.finish()]);
+            if (l % 4 === 3 && l < W.L && dev.queue.onSubmittedWorkDone) await dev.queue.onSubmittedWorkDone();
+            if (dead) throw new Error('GPU 裝置已遺失：' + dead);
+          }
         } else {
+          const enc = dev.createCommandEncoder();
           // 診斷：每層結束後把殘差流複製出來（每層一個 pass）
           let i = 0;
           for (let l = 0; l <= W.L; l++) {
@@ -392,11 +406,10 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
             if (l < W.L) enc.copyBufferToBuffer(hA, 0, traceB, l * maxM * D * 4, M * D * 4);
           }
           enc.copyBufferToBuffer(traceB, 0, rbTr, 0, W.L * maxM * D * 4);
+          enc.copyBufferToBuffer(tokBuf, 0, rbTok, 0, 4);
+          if (wantLg) enc.copyBufferToBuffer(logits, 0, rbLg, 0, V * 4);
+          dev.queue.submit([enc.finish()]);
         }
-        enc.copyBufferToBuffer(tokBuf, 0, rbTok, 0, 4);
-        const wantLg = !!(so && so.logits);
-        if (wantLg) enc.copyBufferToBuffer(logits, 0, rbLg, 0, V * 4);
-        dev.queue.submit([enc.finish()]);
         await rbTok.mapAsync(1);
         const token = new Uint32Array(rbTok.getMappedRange().slice(0, 4))[0];
         rbTok.unmap();
@@ -407,6 +420,26 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
         len += M; info.steps++; info.lastStepMs = (typeof performance !== 'undefined' ? performance : Date).now() - ts;
         const r = { token }; if (lg) r.logits = lg; if (tr) r.trace = tr; return r;
       },
+      // 對外的 step：一次一個（串行，避免上一次的 mapAsync 還沒結束又開下一次）；長提示切成 chunkM 個詞元一段（每段的 GPU 工作都短）；
+      // 任何錯誤都把引擎標成失效（之後的呼叫直接丟錯，呼叫端應丟掉這個引擎）並把還在映射的緩衝區解除映射
+      step(ids, so) {
+        const run = async () => {
+          try {
+            if (dead) throw new Error('GPU 裝置已遺失：' + dead);
+            let r = null;
+            for (let o = 0; o < ids.length; o += chunkM) r = await eng.stepOnce(ids.slice(o, o + chunkM), so);
+            return r;
+          } catch (e) {
+            dead = dead || String((e && e.message) || e);
+            for (const b of [rbTok, rbLg, rbTr]) { try { if (b.mapState === 'mapped') b.unmap(); } catch (_) { /* 已釋放 */ } }
+            throw e;
+          }
+        };
+        const p = chain.then(run, run);
+        chain = p.catch(() => {});
+        return p;
+      },
+      get dead() { return dead; },
       destroy() { for (const b of bufs) { try { b.destroy(); } catch (e) { /* 已釋放 */ } } try { rbTok.destroy(); rbLg.destroy(); traceB.destroy(); rbTr.destroy(); } catch (e) { /* 已釋放 */ } },
     };
     return eng;

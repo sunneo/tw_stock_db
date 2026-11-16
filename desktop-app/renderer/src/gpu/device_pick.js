@@ -7,7 +7,9 @@
 //   3. 真 GPU：基準的 GPU 吞吐（GFLOP/s，含上傳與讀回）必須 ≥ MIN_GFLOPS 且 ≥ CPU 基準的 CPU_FACTOR 倍，才開。
 //   4. 通過後每條路徑分別依功能需求（例如 q8 解碼要 storage buffer 上限）決定；目前八條路徑（qwenGpuDecode、mossGpu、midiGpu、llmGpuHead、whisperGpu、audioGpu、sdxsGpu、kokoroGpu）同一個結果，原因寫明。
 const MIN_GFLOPS = 20, CPU_FACTOR = 3;
-const FEATURES = ['qwenGpuDecode', 'mossGpu', 'midiGpu', 'llmGpuHead', 'whisperGpu', 'audioGpu', 'sdxsGpu', 'kokoroGpu'];
+// qwenGpuDecode 不在自動清單：聊天的第一則訊息要先讀入 589 MB 的 q8 模型、舊顯卡上還可能卡死（2026-11-17 使用者的 Geforce 實測：發 hi 等很久），
+// 只有使用者在「進階」手動勾選才用；其他路徑只在使用者用到那個功能時才載入
+const FEATURES = ['mossGpu', 'midiGpu', 'llmGpuHead', 'whisperGpu', 'audioGpu', 'sdxsGpu', 'kokoroGpu'];
 const SOFT_RE = /swiftshader|llvmpipe|software|lavapipe|softpipe|basic render/i;
 
 // info：{ hasWebGpu, adapter:{ isFallbackAdapter, vendor, architecture, device, description } | null, gpuGflops, cpuGflops }

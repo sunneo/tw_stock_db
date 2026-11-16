@@ -44,7 +44,7 @@ const PAGE = `<!doctype html><meta charset="utf-8"><title>Qwen3 GPU 解碼驗證
     dev.lost.then((i) => log('裝置遺失：' + i.reason + ' ' + i.message));
     dev.addEventListener && dev.addEventListener('uncapturederror', (e) => log('uncapturederror：' + e.error.message));
     t = performance.now();
-    const eng = await G.createGpuEngine(dev, W, { maxT: 64, maxM: 32 });
+    const eng = await G.createGpuEngine(dev, W, { maxT: 64, maxM: 32, chunkM: ${Number(process.env.QWEN_CHUNKM) || 16} });
     R.setupMs = Math.round(performance.now() - t); R.engine = eng.info; log('GPU 引擎就緒 ' + R.setupMs + ' ms，派發 ' + eng.info.dispatches + ' 個，lm_head ' + eng.info.lmChunks + ' 塊');
     const REFS = ${JSON.stringify(refs)};
     for (const r of REFS) {
