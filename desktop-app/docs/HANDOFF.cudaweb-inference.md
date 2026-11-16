@@ -112,9 +112,12 @@
 
 - `renderer/src/gpu/onnx_lite.js`：ONNX protobuf 解析（UMD，node 可 require）。入口 `parseModel(buf)` → `{buf,nodes,inits,inputs,outputs}`；`parseGraph(buf, range)`（If 子圖）；`constantValue(m,node)`（Constant 節點值）；`tensorBytes`。屬性 `attrs.x.i/f/ints/strings/tensor/graph`。注意：varint 負數以 2^64 表示（見 `onnx_interp.attrInt`）。狀態：可用，已對 codec 與 MOSS 驗證。
 - `renderer/src/gpu/onnx_interp.js`：通用 CPU 圖解釋器。入口 `run(model, feeds, dataFiles)`；張量格式 `{d,t:'f'|'i'|'b',v}`（'i' 以 Float64 儲存）。已實作算子：Identity Constant Add Sub Mul Div Mod Pow Equal Less LessOrEqual Greater GreaterOrEqual And Or Xor Not Where Sqrt Exp Sin Cos Tanh Erf Reciprocal Neg Cast Shape Gather Concat Transpose Reshape Unsqueeze Squeeze Slice ConstantOfShape Range Softmax LayerNormalization Conv（1D）MatMul Clip If。未實作的會丟錯。狀態：codec 整圖對 ORT 一致（相對誤差約 6e-6）；未優化（T=25 約 31 秒）。熱點（MatMul、Conv）尚未換成 GPU。
-- `renderer/src/gpu/nn_ops.js`：訓練步與 cudaweb 共用的小運算（CPU）。狀態：既有。
+- `renderer/src/gpu/nn_ops.js`：訓練步與 cudaweb 共用的小運算（CPU）；`runWgsl(dev,code,bufs,uniform,groups)` 現在快取 pipeline（以 WGSL 字串為鍵，存在 dev.__cudawebPipes）；`tryLayers(name,opts,gpuFn,glFn,refFn)` 為 T1→cpu-js 分層（WebGL2 層尚未實作的核心會直接退 cpu-js）。狀態：既有＋快取已提交（281314126）。
 - `renderer/src/gpu/gpu_core.js`：GPU 核心（能力偵測、`runWgsl`；一維派發，每次呼叫重建 pipeline，這是「慢」的主因）。瀏覽器端以 `window.FaGpuCore` 提供。
 - `renderer/src/gpu/gpu_preload.js`、`cudnn_subset.js`、`head_service.js`、`infer_ops.js`、`infer_poc_core.js`、`attn_ops.js`：既有的 cudaweb 推論路徑與 lm_head 接線（見 DESIGN §7.5–7.7）。狀態：既有，本棒未動。
+
+- `renderer/src/gpu/conv_ops.js`：共用卷積（MOSS codec、Basic Pitch、Whisper 共用）。入口 `conv1dRef`、`conv2dRef`（CPU，含 stride／pads／dilation／groups）、`conv1d(x,N,C,L,w,M,Cg,K,b,p,ops)`（非同步，T1 WGSL→cpu-js；ops.gpu===false 強制 CPU）。WGSL 常數 `WGSL_CONV1D`。轉置卷積：codec 圖沒有 ConvTranspose，未實作。狀態：codec 全部 17 個卷積（皆 1×1，C=8→512、512→768）在真 Chrome WebGPU T1 對 CPU 參考相對誤差約 1e-7（`cudaweb_conv_gpu_check.js` 通過）；conv2d 只有 CPU 參考，未有 GPU 版。WebGL2 退路未做（目前退純 JS）。Basic Pitch（2D）與 Whisper（1D，核 3、stride 1/2）的參數落在此模組涵蓋內，但權重未下載，未實測。
+- `renderer/src/gpu/onnx_interp.js` 的 Conv 已改走 conv_ops.conv1d；解釋器 `run` 改為非同步（需 await）。
 
 ### 8.2 MOSS-TTS-Nano
 
@@ -136,6 +139,8 @@
 
 - `renderer/src/gpu/attn_gpu.js`、`attn_ops.js`：注意力＋KV 快取（WebGPU／CPU 參考）。入口見檔頭；驗證 `cudaweb_attn_layer0*.js`。狀態：第 0 層一步 decode 對 ORT 約 3e-6。
 - Qwen 網頁版解碼迴圈：未接（待辦）。
+
+- `cudaweb_conv_dump.js <dir> <out> [T]` 與 `cudaweb_conv_gpu_check.js <cases> [埠]`：卷積真實案例轉存與 Chrome WebGPU 驗證（通過）。
 
 ### 8.5 驗證腳本（scripts/eval/，全部用 Electron 的 node 跑大模型）
 
@@ -169,4 +174,5 @@
 2. 共用卷積核心 `renderer/src/gpu/conv_ops.js`（使用者指示：卷積做成共用、MOSS codec、Basic Pitch、Whisper 共用；CPU 參考＋WGSL＋WebGL2 或純 JS 退路＋pipeline 快取）。然後 MOSS codec 接上（用真實形狀對 ORT 最小對拍，真 Chrome）。
 3. 注意力與 MatMulNBits 的 WebGL2／純 JS 退路，pipeline 快取（現在每次呼叫重建 pipeline，比 CPU 慢）。
 4. MOSS 產品接線（`moss_worker.js` runner 切換、開關、失敗退回 ORT）；Qwen 網頁版解碼迴圈；midigen 網頁與桌面接線。全部預設關。
-5. Basic Pitch 與 Whisper：只查檔名、來源、大小（HF 檔案清單，不下載權重）；卷積參數能否被 conv_ops 涵蓋，寫進最終回報與 DESIGN。
+5. 【2026-11-16 更新】卷積 GPU（T1）已通過；codec 整圖走 GPU 卷積尚未做（解釋器的 MatMul 仍是 CPU）。MOSS 整管線 GPU 結果檔尚未產生（Chrome 分頁曾卡住，見 8.5）。WebGL2 退路、attention／MatMulNBits 的 pipeline 快取以外的加速、MOSS 產品接線、Qwen、midigen 皆未做。
+6. Basic Pitch 與 Whisper：只查檔名、來源、大小（HF 檔案清單，不下載權重）；卷積參數能否被 conv_ops 涵蓋，寫進最終回報與 DESIGN。
