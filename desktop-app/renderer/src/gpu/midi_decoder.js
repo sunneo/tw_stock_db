@@ -72,9 +72,34 @@ function rope(X, T, pos, invFreq) {
   return out;
 }
 
+// 因果注意力參考：q 為 T×D，Kc/Vc 為 H×Ln×HD；查詢 t（絕對位置 past+t）只看 j ≤ past+t
+function attnRef(q, Kc, Vc, T, past, Ln, scale) {
+  const ao = new Float32Array(T * D), sc = new Float64Array(Ln);
+  for (let t = 0; t < T; t++) for (let hh = 0; hh < H; hh++) {
+    const qo = t * D + hh * HD, lim = past + t + 1;
+    let mx = -Infinity;
+    for (let j = 0; j < lim; j++) {
+      let dot = 0; const ko = (hh * Ln + j) * HD;
+      for (let d = 0; d < HD; d++) dot += q[qo + d] * Kc[ko + d];
+      sc[j] = dot * scale; if (sc[j] > mx) mx = sc[j];
+    }
+    let sum = 0; for (let j = 0; j < lim; j++) { sc[j] = Math.exp(sc[j] - mx); sum += sc[j]; }
+    for (let j = 0; j < lim; j++) {
+      const p = sc[j] / sum, vo = (hh * Ln + j) * HD;
+      for (let d = 0; d < HD; d++) ao[t * D + hh * HD + d] += p * Vc[vo + d];
+    }
+  }
+  return ao;
+}
+function siluMulRef(g, u) { const y = new Float32Array(g.length); for (let i = 0; i < y.length; i++) y[i] = (g[i] / (1 + Math.exp(-g[i]))) * u[i]; return y; }
+
 // 解一步（或多步預填）。ids：長度 T 的詞元；cache：每層 {K, V, L}（K/V 為 H×L×HD，列優先）；回傳 {logits, cache}
 // mm(p, X, T) → Float32Array(T×N)；預設用 CPU 參考。
-async function decode(model, ids, cache, mm) {
+// ops（可選）：{rms(X,w,T,eps), rope(X,T,pos,invFreq), attn(q,Kc,Vc,T,past,Ln,scale), siluMul(g,u)} 的 GPU 版，缺的用 CPU 參考。
+async function decode(model, ids, cache, mm, ops) {
+  ops = ops || {};
+  const rmsF = (X, w, T) => (ops.rms ? ops.rms(X, w, T, EPS) : rmsRows(X, w, T));
+  const ropeF = async (X, T, pos, inv) => (ops.rope ? ops.rope(X, T, pos, inv) : rope(X, T, pos, inv));
   const T = ids.length;
   const mmf = mm || (async (p, X, t) => cpuMatmul(p, X, t));
   const past = cache ? cache[0].L : 0;
@@ -84,9 +109,9 @@ async function decode(model, ids, cache, mm) {
   const nextCache = [];
   for (let li = 0; li < NL; li++) {
     const L = model.layers[li];
-    const h = rmsRows(x, L.attnNorm, T);
-    const q = rope(await mmf(L.q, h, T), T, pos, model.invFreq);
-    const k = rope(await mmf(L.k, h, T), T, pos, model.invFreq);
+    const h = await rmsF(x, L.attnNorm, T);
+    const q = await ropeF(await mmf(L.q, h, T), T, pos, model.invFreq);
+    const k = await ropeF(await mmf(L.k, h, T), T, pos, model.invFreq);
     const v = await mmf(L.v, h, T);
     // 寫入快取：新 L = past+T；K/V 布局 H×L×HD
     const Ln = past + T;
@@ -102,39 +127,22 @@ async function decode(model, ids, cache, mm) {
       }
     }
     nextCache.push({ K: Kc, V: Vc, L: Ln });
-    // 注意力：查詢 t（絕對位置 past+t）只看 j ≤ past+t
-    const ao = new Float32Array(T * D);
-    const sc = new Float64Array(Ln);
-    for (let t = 0; t < T; t++) for (let hh = 0; hh < H; hh++) {
-      const qo = t * D + hh * HD, lim = past + t + 1;
-      let mx = -Infinity;
-      for (let j = 0; j < lim; j++) {
-        let dot = 0; const ko = (hh * Ln + j) * HD;
-        for (let d = 0; d < HD; d++) dot += q[qo + d] * Kc[ko + d];
-        sc[j] = dot * SCALE; if (sc[j] > mx) mx = sc[j];
-      }
-      let sum = 0; for (let j = 0; j < lim; j++) { sc[j] = Math.exp(sc[j] - mx); sum += sc[j]; }
-      for (let j = 0; j < lim; j++) {
-        const p = sc[j] / sum, vo = (hh * Ln + j) * HD;
-        for (let d = 0; d < HD; d++) ao[t * D + hh * HD + d] += p * Vc[vo + d];
-      }
-    }
+    const ao = ops && ops.attn ? await ops.attn(q, Kc, Vc, T, past, Ln, SCALE) : attnRef(q, Kc, Vc, T, past, Ln, SCALE);
     const o = await mmf(L.o, ao, T);
     const x2 = new Float32Array(T * D); for (let i = 0; i < T * D; i++) x2[i] = x[i] + o[i];
     // FFN
-    const h2 = rmsRows(x2, L.ffnNorm, T);
+    const h2 = await rmsF(x2, L.ffnNorm, T);
     const g = await mmf(L.gate, h2, T);
     const u = await mmf(L.up, h2, T);
-    const mid = new Float32Array(T * 3072);
-    for (let i = 0; i < mid.length; i++) mid[i] = (g[i] / (1 + Math.exp(-g[i]))) * u[i];
+    const mid = ops.siluMul ? await ops.siluMul(g, u) : siluMulRef(g, u);
     const dn = await mmf(L.down, mid, T);
     x = new Float32Array(T * D); for (let i = 0; i < T * D; i++) x[i] = x2[i] + dn[i];
   }
   // 最後：取最後一個位置 → norm → lm_head
   const last = x.subarray((T - 1) * D, T * D);
-  const hf = rmsRows(Float32Array.from(last), model.norm, 1);
+  const hf = await rmsF(Float32Array.from(last), model.norm, 1);
   const logits = await mmf(model.lmHead, hf, 1);
   return { logits: Float32Array.from(logits), cache: nextCache };
 }
 
-module.exports = { loadMidiDecoder, decode, cpuMatmul, H, HD, D, NL, EPS, SCALE };
+module.exports = { loadMidiDecoder, decode, cpuMatmul, rmsRows, rope, attnRef, siluMulRef, H, HD, D, NL, EPS, SCALE };

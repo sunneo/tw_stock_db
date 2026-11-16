@@ -7,7 +7,7 @@ const fs = require('fs'), path = require('path');
 const MD = require('../../renderer/src/gpu/midi_decoder.js');
 const modelPath = process.argv[2];
 if (!modelPath) { console.error('用法：... cudaweb_midi_decoder_check.js <midigen 模型路徑>'); process.exit(2); }
-const ort = require(path.join(process.env.APPDATA, 'floating-assistant-desktop', 'native-runtime', '1.22.0-1', 'node_modules', 'onnxruntime-node'));
+const ort = require(path.join(process.env.APPDATA || path.join(require('os').homedir(), '.config'), 'floating-assistant-desktop', 'native-runtime', '1.22.0-1', 'node_modules', 'onnxruntime-node'));
 
 function cmp(a, b) { let d = 0, r = 0; for (let i = 0; i < a.length; i++) { d = Math.max(d, Math.abs(a[i] - b[i])); r = Math.max(r, Math.abs(b[i])); } return { rel: d / (r || 1), maxAbs: d }; }
 const argmax = (a) => { let k = 0; for (let i = 1; i < a.length; i++) if (a[i] > a[k]) k = i; return k; };

@@ -817,6 +817,7 @@ Python 模擬器與離線模型推論共用同一個 GPU 裝置：
 - **設定**：`_gpuCompatControls` 第五個勾選（AI 助理設定與桌面版設定頁共用），改設定會清 `_midigenOk` 重開引擎。
 - **桌面版**：渲染程序本身有 WebGPU，解碼迴圈在渲染程序，所以不需要 head_req／head_res 信箱（那是給沒有 WebGPU 的原生子程序用的；midigen 的原生路徑只在 CPU 版 q8 檔，不受影響）。
 - **驗證（如實）**：`midi_session_test.js`（假解碼函式驗證佈局轉換、新列抽取、重放重建、P=0 重置、錯誤傳遞）通過；`midi_decoder` 本身對 ORT（約 1e-6）與 WebGPU 投影（170 次 T1）先前已驗證（§7.10）。**未驗證**：用真模型在產品路徑「固定種子前 N 個 token 與原路徑相同」——這台機器沒有 midigen 的 q4 檔（HF 約 73 MB，需使用者在本對話同意下載；交接文件說管理者要求停用此檔），所以 BLOCKED。
+- **整個解碼器 GPU 化＋真模型對拍（2026-11-16，清單 J，使用者同意下載 `nicholasbien/midigenai` 的 `v5/onnx/decoder-webgpu-q4.onnx` 73,151,835 位元組，核對位元組數相符）**：新增 `gpu/midi_gpu.js`（WGSL：RMSNorm、交錯式 RoPE、因果注意力（含多詞元預填）、SiLU(gate)·up；`nn.tryLayers` 退 cpu-js、`tiers` 記層級）；`midi_decoder.decode(model, ids, cache, mm, ops)` 的第 5 參數注入，產品 `_midiGpuLoad` 已帶入（`_midiGpuStat.opTiers`）。驗證（真 ORT＝onnxruntime-node 1.22 CPU EP 同一個 q4 檔；Chrome 156 軟體 WebGPU／SwiftShader，這台沒有真 GPU）：(1) CPU 參考對 ORT：預填 3 詞元 logits 相對誤差 3.8e-6、解碼一步 3.4e-6、argmax 相同（`cudaweb_midi_decoder_check.js`）；(2) **固定種子（mulberry32，溫度 0.9、top-k 20，seed 12345，提示 5 詞元）生成 12 個詞元：ORT、CPU 參考、全 GPU（投影 1020 次 T1＋四個運算全 T1）三者序列完全相同**（449,199,321,135,208,231,325,135,218,231,70,588），GPU 每步 logits 對 ORT 最差相對誤差 1.7e-4（`cudaweb_midi_gen_ref.js`＋`cudaweb_midi_full_gpu_check.js`）；單元 `midi_gpu_test.js`（無 WebGPU 退 cpu-js、與參考位元一致）。限制：只有 12 個詞元、一組種子；未量速度（軟體 GPU 12 詞元 18 秒，未優化，不代表真 GPU）；LN／投影以外的殘差相加仍在 CPU。
 
 ### 7.16 裝置自動選擇（2026-11-16，設定 `gpuAuto`，預設關）
 

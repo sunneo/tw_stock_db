@@ -222,9 +222,9 @@ embedTtsPron();
 (function embedMidiGpu() {
     const rd = (p) => fs.readFileSync(path.join(root, p), 'utf8').replace(/\r\n/g, '\n');
     let s = 'const MODS = {};\n';
-    for (const n of ['nn_ops', 'onnx_lite', 'matmulnbits_ref', 'matmulnbits_gpu', 'midi_decoder', 'midi_session']) s += 'MODS[' + JSON.stringify(n) + '] = function (module, exports, require) {\n' + rd('renderer/src/gpu/' + n + '.js') + '\n};\n';
+    for (const n of ['nn_ops', 'onnx_lite', 'matmulnbits_ref', 'matmulnbits_gpu', 'midi_decoder', 'midi_gpu', 'midi_session']) s += 'MODS[' + JSON.stringify(n) + '] = function (module, exports, require) {\n' + rd('renderer/src/gpu/' + n + '.js') + '\n};\n';
     s += "const CACHE = {}; function req(p) { const n = String(p).replace(/^(\\.\\.?\\/)+(gpu\\/|tts\\/)?/, '').replace(/\\.js$/, ''); if (n === 'gpu_core') { if (!self.FaGpuCore) throw new Error('FaGpuCore 還沒載入'); return self.FaGpuCore; } if (CACHE[n]) return CACHE[n].exports; if (!MODS[n]) throw new Error('沒有模組 ' + p); const m = { exports: {} }; CACHE[n] = m; MODS[n].call(m.exports, m, m.exports, req); return m.exports; }\n";
-    s += "return { dec: req('midi_decoder'), gpu: req('matmulnbits_gpu'), sess: req('midi_session') };";
+    s += "return { dec: req('midi_decoder'), gpu: req('matmulnbits_gpu'), ops: req('midi_gpu'), sess: req('midi_session') };";
     const a = src.indexOf('/* MIDIGPU-BEGIN */'), b = src.indexOf('/* MIDIGPU-END */');
     if (a < 0 || b < 0) throw new Error('找不到 MIDIGPU 標記');
     src = src.slice(0, a) + '/* MIDIGPU-BEGIN */\nconst FA_MIDI_GPU_SRC = ' + lit(s) + ';\n' + src.slice(b);
