@@ -10,6 +10,7 @@ const nn = require('./nn_ops.js');
 
 const USAGE = { MAP_READ: 0x0001, COPY_SRC: 0x0004, COPY_DST: 0x0008, UNIFORM: 0x0040, STORAGE: 0x0080 };
 const MAX_GROUPS = 65535;
+const MAX_CHUNK_BYTES = 64 * 1024 * 1024;  // 預設裝置的儲存緩衝上限 128 MiB；權重照列切成 ≤ 64 MiB 的塊
 
 // ---------- 參考版（CPU，純 JS） ----------
 function roundHalfEven(v) {
@@ -222,4 +223,196 @@ async function q8lm(x, chunks, wzp, K, scale, opts) {
     });
 }
 
-module.exports = { quantizeDynamicRef, q8mmRef, q8lmRef, q8mm, q8lm, planChunks, WGSL_Q8MM, WGSL_Q8LM, MAX_GROUPS };
+// ---------- WebGL2（T3）：lm_head 的 q8 矩陣乘退路 ----------
+// 權重打包成 RGBA8 紋理：每個紋理像素是同一列的 4 個相鄰位元組（k=4j..4j+3），紋理寬度 = maxTex，
+// 紋理像素序號 t = 列×(K/4)+j。一個分塊（tile）＝一張 maxTex×maxTex 的紋理（至多 maxTex² 個像素）。
+// 片段著色器每個輸出（一個詞表列）讀 K/4 個像素做點積；x 放在寬 K、高 1 的 RGBA32F 紋理（R 通道）。
+// 輸出寫進 RGBA32F 的 FBO，readPixels 讀回。需要 EXT_color_buffer_float（nn.glSupport 會檢查）。
+const VS_GL = '#version 300 es\nvoid main(){ vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2)); gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0); }\n';
+const FS_Q8LM_GL = `#version 300 es
+precision highp float;
+precision highp int;
+uniform highp sampler2D uW;
+uniform highp sampler2D uX;
+uniform int uK4;
+uniform int uTW;
+uniform int uRows;
+uniform int uOW;
+uniform float uZp;
+uniform float uScale;
+out vec4 fragColor;
+void main() {
+  int idx = int(gl_FragCoord.y) * uOW + int(gl_FragCoord.x);
+  if (idx >= uRows) { fragColor = vec4(0.0); return; }
+  float acc = 0.0;
+  for (int j = 0; j < uK4; j++) {
+    int t = idx * uK4 + j;
+    vec4 b = floor(texelFetch(uW, ivec2(t % uTW, t / uTW), 0) * 255.0 + 0.5);
+    int k = j * 4;
+    acc += texelFetch(uX, ivec2(k, 0), 0).r * (b.r - uZp)
+         + texelFetch(uX, ivec2(k + 1, 0), 0).r * (b.g - uZp)
+         + texelFetch(uX, ivec2(k + 2, 0), 0).r * (b.b - uZp)
+         + texelFetch(uX, ivec2(k + 3, 0), 0).r * (b.a - uZp);
+  }
+  fragColor = vec4(acc * uScale, 0.0, 0.0, 1.0);
+}`;
+const glStateOf = new WeakMap();  // WebGL2 上下文 → { prog, maxTex, weights: WeakMap(權重陣列 → 分塊紋理) }
+function glStateFor(gl) {
+  let s = glStateOf.get(gl);
+  if (!s) {
+    const maxTex = gl.getParameter(gl.MAX_TEXTURE_SIZE) || 4096;
+    s = { prog: null, maxTex: maxTex, weights: new WeakMap() };
+    glStateOf.set(gl, s);
+  }
+  return s;
+}
+function glCompile(gl, type, src) {
+  const sh = gl.createShader(type);
+  gl.shaderSource(sh, src); gl.compileShader(sh);
+  if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) throw new Error('著色器編譯失敗：' + gl.getShaderInfoLog(sh));
+  return sh;
+}
+function glProgramFor(gl, st) {
+  if (st.prog) return st.prog;
+  const p = gl.createProgram();
+  gl.attachShader(p, glCompile(gl, gl.VERTEX_SHADER, VS_GL));
+  gl.attachShader(p, glCompile(gl, gl.FRAGMENT_SHADER, FS_Q8LM_GL));
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error('程式連結失敗：' + gl.getProgramInfoLog(p));
+  st.prog = p;
+  return p;
+}
+function glTex2D(gl, internal, w, h) {
+  const t = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texStorage2D(gl.TEXTURE_2D, 1, internal, w, h);
+  return t;
+}
+// 把一個分塊的權重（rows×K 位元組）打包成 maxTex 寬的 RGBA8 紋理（尾端補 0）
+function glUploadWeightTile(gl, bytes, texels, maxTex) {
+  const th = Math.max(1, Math.ceil(texels / maxTex));
+  const px = new Uint8Array(maxTex * th * 4);
+  px.set(bytes);
+  const t = glTex2D(gl, gl.RGBA8, maxTex, th);
+  gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, maxTex, th, gl.RGBA, gl.UNSIGNED_BYTE, px);
+  return { tex: t };
+}
+// WebGL2 版 lm_head：整張權重（V×K）依 maxTex² 切塊，權重紋理快取在上下文上（同一個權重陣列只上傳一次）
+function q8lmGl(gl, x, W, V, K, zp, scale) {
+  const sup = nn.glSupport(gl);
+  if (!sup.ok) throw new Error(sup.reason);
+  if (K % 4 !== 0) throw new Error('q8lm（WebGL2）：K 必須是 4 的倍數（K=' + K + '）');
+  const st = glStateFor(gl);
+  const maxTex = st.maxTex, K4 = K / 4;
+  if (K > maxTex) throw new Error('q8lm（WebGL2）：K=' + K + ' 超過紋理寬度上限 ' + maxTex);
+  const prog = glProgramFor(gl, st);
+  const tileRows = Math.floor(maxTex * maxTex / K4);
+  let tiles = st.weights.get(W);
+  if (!tiles) {
+    tiles = [];
+    for (let r0 = 0; r0 < V; r0 += tileRows) {
+      const n = Math.min(tileRows, V - r0);
+      tiles.push({ row0: r0, rows: n, tex: glUploadWeightTile(gl, W.subarray(r0 * K, (r0 + n) * K), n * K4, maxTex).tex });
+    }
+    st.weights.set(W, tiles);
+  }
+  // x：寬 K、高 1 的 RGBA32F（R 通道）
+  const xpx = new Float32Array(K * 4);
+  for (let k = 0; k < K; k++) xpx[k * 4] = x[k];
+  const xTex = glTex2D(gl, gl.RGBA32F, K, 1);
+  gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, K, 1, gl.RGBA, gl.FLOAT, xpx);
+  const out = new Float32Array(V);
+  const fb = gl.createFramebuffer();
+  const tmp = [xTex];
+  try {
+    gl.useProgram(prog);
+    const uW = gl.getUniformLocation(prog, 'uW'), uX = gl.getUniformLocation(prog, 'uX');
+    gl.uniform1i(uW, 0); gl.uniform1i(uX, 1);
+    gl.uniform1i(gl.getUniformLocation(prog, 'uK4'), K4);
+    gl.uniform1i(gl.getUniformLocation(prog, 'uTW'), maxTex);
+    gl.uniform1f(gl.getUniformLocation(prog, 'uZp'), zp);
+    gl.uniform1f(gl.getUniformLocation(prog, 'uScale'), scale);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+    for (const tile of tiles) {
+      const ow = Math.min(tile.rows, maxTex), oh = Math.ceil(tile.rows / ow);
+      const oTex = glTex2D(gl, gl.RGBA32F, ow, oh);
+      tmp.push(oTex);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, oTex, 0);
+      if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) throw new Error('WebGL2 幀緩衝區不完整');
+      gl.uniform1i(gl.getUniformLocation(prog, 'uRows'), tile.rows);
+      gl.uniform1i(gl.getUniformLocation(prog, 'uOW'), ow);
+      gl.viewport(0, 0, ow, oh);
+      gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, tile.tex);
+      gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, xTex);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      const buf = new Float32Array(ow * oh * 4);
+      gl.readPixels(0, 0, ow, oh, gl.RGBA, gl.FLOAT, buf);
+      for (let i = 0; i < tile.rows; i++) out[tile.row0 + i] = buf[i * 4];
+    }
+  } finally {
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.deleteFramebuffer(fb);
+    for (const t of tmp) gl.deleteTexture(t);
+  }
+  return out;
+}
+
+// 分塊快取：同一個權重陣列只切一次（分塊物件穩定，WGSL 端的權重緩衝區才能常駐）
+const chunkCache = new WeakMap();
+function cachedChunks(W, V, K, maxBytes) {
+  let c = chunkCache.get(W);
+  if (!c) { c = planChunks(W, V, K, maxBytes); chunkCache.set(W, c); }
+  return c;
+}
+// WebGPU 版 lm_head（分塊、常駐權重）；丟例外由呼叫端決定退路
+async function q8lmWgsl(dev, x, chunks, K, zp, scale) {
+  if (K % 4 !== 0) throw new Error('q8lm：K 必須是 4 的倍數（K=' + K + '）');
+  const xf = Float32Array.from(x);
+  const V = chunks.reduce((s, c) => s + c.rows, 0);
+  const sc = Math.fround(scale);
+  const xb = inBuf(dev, xf);
+  const out = new Float32Array(V);
+  try {
+    for (const c of chunks) {
+      const wb = weightBuf(dev, c.w);
+      const u = unif((d) => { d.setUint32(0, c.rows, true); d.setUint32(4, K, true); d.setInt32(8, zp, true); d.setFloat32(12, sc, true); });
+      const r = await dispatchRead(dev, WGSL_Q8LM, [xb, wb], c.rows, u, Math.min(c.rows, MAX_GROUPS), Math.ceil(c.rows / MAX_GROUPS));
+      out.set(r, c.row0);
+    }
+  } finally { xb.destroy && xb.destroy(); }
+  return out;
+}
+
+// 自動選層的 lm_head（網頁版與桌面版渲染行程共用）：T1 WebGPU（分塊）→ T3 WebGL2（紋理分塊）。
+// 都不可用或執行失敗就丟出「每一層各自的原因」，呼叫端退回 ONNX 路徑；不走慢的純 JS（比 ORT 還慢，沒有意義）。
+// opts：{ navigator, gl, skipT1 }（測試用：skipT1 強制走 WebGL2）。回傳 { result, info:{ layer, ms, reasons } }。
+async function q8lmAuto(x, W, V, K, zp, scale, opts) {
+  const o = opts || {};
+  const nav = o.navigator !== undefined ? o.navigator : (typeof navigator !== 'undefined' ? navigator : undefined);
+  const reasons = [];
+  const t0 = Date.now();
+  if (!o.skipT1) {
+    const g = await nn.getDevice(nav);
+    if (g.dev) {
+      try {
+        const r = await q8lmWgsl(g.dev, x, cachedChunks(W, V, K, MAX_CHUNK_BYTES), K, zp, scale);
+        return { result: r, info: { layer: 'T1', ms: Date.now() - t0, reasons: reasons } };
+      } catch (e) { reasons.push('WebGPU 執行失敗：' + String((e && e.message) || e)); }
+    } else reasons.push(g.reason || 'WebGPU 不可用');
+  } else reasons.push('已指定跳過 WebGPU');
+  const gl = o.gl !== undefined ? o.gl : nn.getGl({ navigator: nav });
+  if (gl) {
+    try {
+      const t1 = Date.now();
+      const r = q8lmGl(gl, x, W, V, K, zp, scale);
+      return { result: r, info: { layer: 'T3', ms: Date.now() - t1, reasons: reasons } };
+    } catch (e) { reasons.push('WebGL2 執行失敗：' + String((e && e.message) || e)); }
+  } else reasons.push('WebGL2 上下文不可用');
+  const err = new Error('lm_head 沒有可用的 GPU 層（' + reasons.join('；') + '）');
+  err.reasons = reasons;
+  throw err;
+}
+
+module.exports = { quantizeDynamicRef, q8mmRef, q8lmRef, q8mm, q8lm, q8lmAuto, q8lmGl, q8lmWgsl, cachedChunks, planChunks, WGSL_Q8MM, WGSL_Q8LM, FS_Q8LM_GL, MAX_GROUPS, MAX_CHUNK_BYTES };

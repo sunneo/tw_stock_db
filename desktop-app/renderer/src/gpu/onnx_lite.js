@@ -1,12 +1,19 @@
-// onnx_lite.js — 極簡 ONNX 讀取器（只讀 protobuf 的節點與權重，不需要任何套件）。
-// 用途：推論概念驗證（DESIGN.webgpu-cuda.md §7.3）從現有 q8 模型檔取出權重。純 UMD，node 可 require。
+// onnx_lite.js — 極簡 ONNX 讀取器與改寫器（只用 Uint8Array，Node 與瀏覽器都能跑，不需要 Buffer）。
+// 用途：從現有 q8 模型檔取出權重（推論概念驗證），以及產生「輸出隱藏狀態、不算 lm_head」的變體圖（DESIGN.webgpu-cuda.md §7.3）。
+// 純 UMD。桌面版的 nr-onnx-lite.js 是這份檔案的拷貝（改一邊要同步）。
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) module.exports = factory();
   else root.FaOnnxLite = factory();
 })(typeof self !== 'undefined' ? self : this, function () {
   'use strict';
 
-  // 讀 varint，回傳 [值, 新位置]；值用 Number（模型檔不會超過 2^53）
+  const td = typeof TextDecoder !== 'undefined' ? new TextDecoder('utf-8') : null;
+  const te = typeof TextEncoder !== 'undefined' ? new TextEncoder() : null;
+  const decodeUtf8 = (u8) => (td ? td.decode(u8) : Buffer.from(u8.buffer, u8.byteOffset, u8.length).toString('utf8'));
+  const encodeUtf8 = (s) => (te ? te.encode(s) : new Uint8Array(Buffer.from(s, 'utf8')));
+  const f32At = (u8, p) => new DataView(u8.buffer, u8.byteOffset, u8.byteLength).getFloat32(p, true);
+
+  // 讀 varint，回傳 [值, 新位置]；值用 Number（模型檔不會超過 2^53，所以用乘法不用位元運算）
   function varint(buf, pos) {
     let r = 0, mul = 1;
     for (;;) {
@@ -30,7 +37,7 @@
       else throw new Error('onnx_lite：不支援的線型 ' + wt);
     }
   }
-  const str = (buf, r) => buf.toString('utf8', r[0], r[1]);
+  const str = (buf, r) => decodeUtf8(buf.subarray(r[0], r[1]));
 
   function parseTensor(buf, r) {
     const t = { name: '', dims: [], dtype: 0, raw: null, ext: {} };
@@ -39,7 +46,7 @@
       else if (f === 2) t.dtype = v;
       else if (f === 8) t.name = str(buf, v);
       else if (f === 9) t.raw = v;  // [起, 迄]，不複製
-      else if (f === 4) { if (!t.floats) t.floats = []; if (wt === 2) { for (let p = v[0]; p < v[1]; p += 4) t.floats.push(buf.readFloatLE(p)); } else t.floats.push(buf.readFloatLE(v[0])); }
+      else if (f === 4) { if (!t.floats) t.floats = []; if (wt === 2) { for (let p = v[0]; p < v[1]; p += 4) t.floats.push(f32At(buf, p)); } else t.floats.push(f32At(buf, v[0])); }
       else if (f === 5) { if (!t.ints) t.ints = []; if (wt === 2) { let p = v[0]; while (p < v[1]) { let x; [x, p] = varint(buf, p); t.ints.push(x); } } else t.ints.push(v); }
       else if (f === 13) { // external_data：StringStringEntryProto
         let k = '', val = '';
@@ -54,7 +61,7 @@
     walk(buf, r[0], r[1], (f, wt, v) => {
       if (f === 1) a.name = str(buf, v);
       else if (f === 3) a.i = v;
-      else if (f === 2) a.f = buf.readFloatLE(v[0]);
+      else if (f === 2) a.f = f32At(buf, v[0]);
       else if (f === 8) { if (wt === 0) a.ints.push(v); }
       else if (f === 4) a.s = str(buf, v);
     });
@@ -83,14 +90,21 @@
     });
     return { buf: buf, nodes: nodes, inits: inits };
   }
-  // ---- 改寫：產生「輸出隱藏狀態、不算 lm_head」的變體圖（只換節點與輸出宣告，權重位元組原樣沿用）----
-  const enc = (n) => { const o = []; while (n > 127) { o.push((n % 128) | 128); n = Math.floor(n / 128); } o.push(n); return Buffer.from(o); };
-  const fVarB = (f, v) => Buffer.concat([enc(f * 8), enc(v)]);
-  const fBytesB = (f, b) => Buffer.concat([enc(f * 8 + 2), enc(b.length), b]);
-  const fStrB = (f, s) => fBytesB(f, Buffer.from(s, 'utf8'));
+
+  // ---- 位元組組裝（只用 Uint8Array）----
+  const enc = (n) => { const o = []; while (n > 127) { o.push((n % 128) | 128); n = Math.floor(n / 128); } o.push(n); return Uint8Array.from(o); };
+  const cat = (list) => {
+    let len = 0; for (const b of list) len += b.length;
+    const out = new Uint8Array(len); let p = 0;
+    for (const b of list) { out.set(b, p); p += b.length; }
+    return out;
+  };
+  const fVarB = (f, v) => cat([enc(f * 8), enc(v)]);
+  const fBytesB = (f, b) => cat([enc(f * 8 + 2), enc(b.length), b]);
+  const fStrB = (f, s) => fBytesB(f, encodeUtf8(s));
   function valueInfo(name, elem, dims) {  // dims：數字或字串（符號維度，dim_param）
     const dimMsgs = dims.map((d) => fBytesB(1, typeof d === 'number' ? fVarB(1, d) : fStrB(2, d)));
-    return Buffer.concat([fStrB(1, name), fBytesB(2, fBytesB(1, Buffer.concat([fVarB(1, elem), fBytesB(2, Buffer.concat(dimMsgs))])))]);
+    return cat([fStrB(1, name), fBytesB(2, fBytesB(1, cat([fVarB(1, elem), fBytesB(2, cat(dimMsgs))])))]);
   }
   // 依序走一段訊息，回傳每個欄位 { f, wt, start, end, vr }（start..end 是含標籤的整段位元組）
   function fieldsOf(buf, a, b) {
@@ -111,13 +125,14 @@
     return out;
   }
   // 把模型改成：移除 dropNodeName 節點與之後不再被使用的節點，並把圖輸出 replaceOutput 換成 hiddenName（float32，維度 hiddenDims）
+  // 權重位元組原樣沿用（subarray，不複製）；回傳 { removed, buf():Uint8Array }
   function buildHiddenStateModel(buf, o) {
     const top = fieldsOf(buf, 0, buf.length);
     const gf = top.find((x) => x.f === 7);
     const parts = fieldsOf(buf, gf.vr[0], gf.vr[1]);
     const nodes = [];
     parts.forEach((p, i) => { if (p.f === 1) { const n = parseNode(buf, p.vr); n._i = i; nodes.push(n); } });
-    const drop = new Set(); const dead = new Set();
+    const drop = new Set();
     const target = nodes.find((n) => n.name === o.dropNodeName);
     if (!target) throw new Error('onnx_lite：找不到節點 ' + o.dropNodeName);
     drop.add(target);
@@ -129,7 +144,7 @@
       changed = false;
       const used = new Set(outNames);
       nodes.forEach((n) => { if (!drop.has(n)) n.inputs.forEach((x) => used.add(x)); });
-      nodes.forEach((n) => { if (!drop.has(n) && n.outputs.every((x) => !used.has(x))) { drop.add(n); dead.add(n.name); changed = true; } });
+      nodes.forEach((n) => { if (!drop.has(n) && n.outputs.every((x) => !used.has(x))) { drop.add(n); changed = true; } });
     }
     const keepIdx = new Set(); drop.forEach((n) => keepIdx.add(n._i));
     const gp = [];
@@ -140,8 +155,8 @@
     });
     const gLen = gp.reduce((s, b) => s + b.length, 0);
     const out = [];
-    top.forEach((p) => { if (p === gf) { out.push(Buffer.concat([enc(7 * 8 + 2), enc(gLen)])); gp.forEach((b) => out.push(b)); } else out.push(buf.subarray(p.start, p.end)); });
-    return { parts: out, total: out.reduce((s, b) => s + b.length, 0), removed: Array.from(drop).map((n) => n.name), buf: function () { return Buffer.concat(out); } };
+    top.forEach((p) => { if (p === gf) { out.push(cat([enc(7 * 8 + 2), enc(gLen)])); gp.forEach((b) => out.push(b)); } else out.push(buf.subarray(p.start, p.end)); });
+    return { removed: Array.from(drop).map((n) => n.name), buf: function () { return cat(out); } };
   }
   // 取張量的位元組（raw_data；外部資料不支援）
   function tensorBytes(model, name) {
@@ -156,7 +171,7 @@
     if (!t) throw new Error('onnx_lite：沒有權重 ' + name);
     if (t.floats && t.floats.length) return t.floats[0];
     if (t.ints && t.ints.length) return t.ints[0];
-    if (t.raw) { const b = model.buf; return t.dtype === 1 ? b.readFloatLE(t.raw[0]) : b[t.raw[0]]; }
+    if (t.raw) { const b = model.buf; return t.dtype === 1 ? f32At(b, t.raw[0]) : b[t.raw[0]]; }
     throw new Error('onnx_lite：權重 ' + name + ' 沒有可讀的純量');
   }
   const DTYPE = { 1: 'float32', 2: 'uint8', 3: 'int8', 6: 'int32', 7: 'int64', 10: 'float16' };
