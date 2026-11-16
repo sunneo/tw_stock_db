@@ -33,10 +33,12 @@ apply({ op: 'add', id: 'w', node: { id: 'keep', kind: 'checkbox', text: 'Keep', 
 apply({ op: 'add', id: 'w', node: { id: 'bar', kind: 'progress', value: 40, max: 80 } });
 apply({ op: 'add', id: 'w', node: { id: 'pick', kind: 'list', items: ['one', 'two'], selected: 'two' } });
 apply({ op: 'add', id: 'w', node: { id: 'gone', kind: 'label', text: 'hidden', visible: false } });
+apply({ op: 'add', id: 'w', node: { id: 'tall', kind: 'list', items: ['a', 'b', 'c'], rows: 24 } });
 
 const events = [];
 let closed = 0;
 const win = R.renderWindow(doc, G.snapshot(s, 'w'), (name, node, value) => events.push([name, node, value]), () => { closed++; });
+assert.strictEqual(byNode(win, 'tall').size, 24); assert.strictEqual(byNode(win, 'pick').size, 2); assert.strictEqual(byNode(win, 'tall').style.minHeight, '432px'); ok();
 
 // 1. structure and title; the title and label text is text, not markup
 assert.strictEqual(win.className, 'gui-window'); ok();

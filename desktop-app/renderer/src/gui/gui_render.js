@@ -722,7 +722,8 @@
       case 'list':
         el = doc.createElement('select');
         el.className = 'gui-list';
-        el.size = Math.min(8, Math.max(2, (n.items || []).length));
+        el.size = listSize(n, (n.items || []).length);
+        el.style.minHeight = listMinHeight(el.size);
         el.disabled = n.enabled === false;
         (n.items || []).forEach(function (text) {
           var o = doc.createElement('option');
@@ -749,7 +750,8 @@
         el = doc.createElement('select');
         el.className = 'gui-list';
         el.multiple = true;
-        el.size = Math.min(8, Math.max(2, (n.items || []).length));
+        el.size = listSize(n, (n.items || []).length);
+        el.style.minHeight = listMinHeight(el.size);
         el.disabled = n.enabled === false;
         (n.items || []).forEach(function (text) {
           var o = doc.createElement('option');
@@ -945,7 +947,8 @@
         // new options, the selection kept when the item is still there; the list keeps its scroll position
         el.textContent = '';
         (v || []).forEach(function (text) { var o = el.ownerDocument ? el.ownerDocument.createElement('option') : null; if (!o) { return; } o.textContent = text; o.value = text; o.selected = kind === 'list' ? text === node.selected : (node.selected || []).indexOf(text) >= 0; el.appendChild(o); });
-        el.size = Math.min(8, Math.max(2, (v || []).length));
+        el.size = listSize(node, (v || []).length);
+        el.style.minHeight = listMinHeight(el.size);
       } else if (kind === 'list') {
         if (k === 'selected') { el.value = v; } else { el.disabled = v === false; }
       } else if (kind === 'multilist') {
@@ -1039,6 +1042,10 @@
   // snapshot = { id, title, width, resizable, maximizable, theme, shortcuts, root }; onEvent(name, nodeId, value) is called for user actions in the window;
   // opts (optional) = { image(nodeId, name) } for the pictures of the canvases
   var CONTROL_BUTTON_CSS = 'border:none;background:transparent;cursor:pointer;font:inherit;font-size:15px;line-height:1;padding:3px 9px;border-radius:5px;color:inherit;';
+  // lines a list shows: the node's rows when given (a program that asks for 24 gets 24), else by item count (2 to 8); never squashed below that by a column
+  function listSize(n, count) { return n.rows > 0 ? Math.min(30, n.rows) : Math.min(8, Math.max(2, count)); }
+  function listMinHeight(size) { return Math.min(440, size * 18) + 'px'; }
+
   function renderWindow(doc, snap, onEvent, onClose, opts) {
     var win = doc.createElement('div');
     ensureStyles(doc);

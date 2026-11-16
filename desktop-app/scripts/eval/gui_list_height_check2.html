@@ -1,0 +1,26 @@
+<!doctype html><meta charset="utf-8"><body style="margin:0">
+<script src="../../renderer/src/gui/gui_render.js"></script>
+<script>
+const R = window.AiChatGuiRender;
+const items = Array.from({length: 27}, (_, i) => 'item' + i);
+const L = (id) => ({ id, kind: 'list', items, selected: '' });
+const lab = (id) => ({ id, kind: 'label', text: id });
+const cases = {
+  growCol: { kind: 'column', children: [lab('a'), { id: 'g', kind: 'column', grow: 1, children: [L('t'), lab('x')] }] },
+  sidebar: { kind: 'row', children: [{ id: 's', kind: 'column', role: 'sidebar', children: [lab('s1'), L('t'), lab('s2')] }, { id: 'm', kind: 'column', grow: 1, children: [lab('m')] }] },
+  split: { kind: 'column', children: [{ id: 'sp', kind: 'split', grow: 1, children: [{ id: 'p1', kind: 'column', children: [lab('p'), L('t')] }, { id: 'p2', kind: 'column', children: [lab('q')] }] }] },
+  tabs: { kind: 'tabs', children: [{ id: 'tb1', kind: 'tab', title: 'A', children: [lab('a'), L('t')] }] },
+  grid: { kind: 'grid', columns: 2, children: [lab('a'), L('t')] },
+  scroll: { kind: 'column', children: [{ id: 'sc', kind: 'scroll', grow: 1, children: [lab('a'), L('t'), lab('z')] }] },
+  rowlist: { kind: 'row', children: [L('t'), lab('r')] },
+};
+const out = {};
+for (const k in cases) {
+  const w = R.renderWindow(document, { id: k, title: k, width: 500, root: Object.assign({ id: 'root' }, cases[k]) }, () => {}, () => {});
+  w.style.cssText += ';display:flex;flex-direction:column;margin:4px;height:260px;';
+  document.body.appendChild(w);
+  const t = w.querySelector('[data-node=t]');
+  out[k] = t ? Math.round(t.getBoundingClientRect().height) : 'none';
+}
+window.__out = out; document.title = 'done';
+</script>

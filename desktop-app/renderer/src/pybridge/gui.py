@@ -152,9 +152,9 @@ class Window(object):
         self._tables.add(nid)
         return nid
 
-    def multilist(self, items, selected=(), parent=None):
-        """A list where several items can be selected. value() is the list of selected items."""
-        nid = self._node("multilist", parent, items=[str(i) for i in items], selected=[str(s) for s in selected])
+    def multilist(self, items, selected=(), parent=None, rows=0):
+        """A list where several items can be selected. value() is the list of selected items. rows: lines shown (0 = by item count, at most 8)."""
+        nid = self._node("multilist", parent, items=[str(i) for i in items], selected=[str(s) for s in selected], **({"rows": int(rows)} if rows else {}))
         self._values[nid] = [str(s) for s in selected]
         return nid
 
@@ -174,9 +174,9 @@ class Window(object):
         """A progress bar. Change it with set(nid, value=...)."""
         return self._node("progress", parent, value=float(value), max=float(max))
 
-    def listbox(self, items, selected="", parent=None):
-        """A list where one item is selected. value() is the selected item's text ("" when none)."""
-        nid = self._node("list", parent, items=[str(i) for i in items], selected=str(selected))
+    def listbox(self, items, selected="", parent=None, rows=0):
+        """A list where one item is selected. value() is the selected item's text ("" when none). rows: lines shown (0 = by item count, at most 8)."""
+        nid = self._node("list", parent, items=[str(i) for i in items], selected=str(selected), **({"rows": int(rows)} if rows else {}))
         self._values[nid] = str(selected)
         return nid
 
