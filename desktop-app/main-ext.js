@@ -2108,6 +2108,61 @@ function startNativeMailbox(ctx) {
   const blt = BLT.create({ fs: fsSync, path: pathM, crypto: require("crypto"), userData, manifestUrl: process.env.FA_BUILTIN_MANIFEST_URL || undefined });
   const idleStatus = { alive: false, pid: null, pending: 0, consecutiveCrashes: 0, disabled: false, disabledReason: "" };
   let runQueue = Promise.resolve(); // 生成一次只跑一個（子程序一次只處理一個生成）
+  // ---- GPU 版 lm_head（執行包 FEATURES 含 'gpuhead'，1.22.0-4 起；選用，預設關）----
+  // 渲染程序（有 WebGPU）把 lm_head 的 q8 權重載進 GPU；子程序每個詞元把隱藏狀態交給主程序，主程序用信箱檔轉給渲染程序：
+  //   <信箱>/head-<runId>-<seq>.req（JSON：{hidden: base64 的 f32}）→ 渲染程序算完寫 head-<runId>-<seq>.res（JSON：{logits: base64}｜{error}）。
+  // 任何失敗（逾時、渲染程序沒回、錯誤）都讓子程序自己退回 CPU 的 lm_head，生成不中斷（見 nr-engine.js）。
+  const HEAD_WAIT_MS = 6000;
+  function makeHeadProvider(runId) {
+    let seq = 0;
+    return async (hidden) => {
+      const s = ++seq, base = pathM.join(box, "head-" + runId + "-" + s);
+      const tmp = base + ".req.tmp";
+      fsSync.writeFileSync(tmp, JSON.stringify({ hidden: Buffer.from(hidden.buffer, hidden.byteOffset, hidden.byteLength).toString("base64") }));
+      fsSync.renameSync(tmp, base + ".req");
+      const t0 = Date.now();
+      try {
+        for (;;) {
+          let txt = null;
+          try { txt = fsSync.readFileSync(base + ".res", "utf8"); } catch (_) { txt = null; }
+          if (txt) {
+            let o = null; try { o = JSON.parse(txt); } catch (_) { o = null; }   // 寫到一半就等下一輪
+            if (o) {
+              if (o.error) throw new Error(String(o.error));
+              const b = Buffer.from(String(o.logits || ""), "base64"); const ab = new ArrayBuffer(b.length); new Uint8Array(ab).set(b);
+              return new Float32Array(ab);
+            }
+          }
+          if (Date.now() - t0 > HEAD_WAIT_MS) throw new Error("渲染程序 " + HEAD_WAIT_MS + " 毫秒內沒有回 head 結果");
+          await new Promise((r) => setTimeout(r, 2));
+        }
+      } finally { for (const e of [".req", ".res", ".req.tmp"]) { try { fsSync.unlinkSync(base + e); } catch (_) { /* 沒有 */ } } }
+    };
+  }
+  // 把 lm_head 權重（embed 的 q8，詞表×隱藏）抽成獨立檔給渲染程序載入：<userData>/native-models/_lm_head/<模型大小>-<修改時間>/lm_q8.bin＋lm_q8.json；已有就直接用
+  function headPrepare() {
+    if (!runtime.ok || (runtime.features || []).indexOf("gpuhead") < 0) return { ok: false, code: "runtime_outdated", message: "執行包太舊（沒有 gpuhead 功能），請先更新執行包" };
+    const mp = baseModel();
+    if (!mp) return { ok: false, code: "no_model", message: "沒有模型檔路徑" };
+    let st; try { st = fsSync.statSync(mp); } catch (e) { return { ok: false, code: "no_model", message: "讀不到模型檔：" + mp }; }
+    const dir = pathM.join(userData, "native-models", "_lm_head", st.size + "-" + Math.floor(st.mtimeMs));
+    const bin = pathM.join(dir, "lm_q8.bin"), meta = pathM.join(dir, "lm_q8.json");
+    try { const m = JSON.parse(fsSync.readFileSync(meta, "utf8")); if (fsSync.statSync(bin).size === m.bytes) return { ok: true, cached: true, dir, bin, meta: m }; } catch (_) { /* 還沒有或不完整，重做 */ }
+    try {
+      const lite = require(pathM.join(runtime.dir, "nr-onnx-lite.js"));
+      let buf = fsSync.readFileSync(mp);
+      const model = lite.parseModel(buf);
+      const t = model.inits["model.embed_tokens.weight_quantized"];
+      if (!t || t.dims.length !== 2) throw new Error("模型裡沒有 model.embed_tokens.weight_quantized（格式不是預期的 q8）");
+      const w = lite.tensorBytes(model, "model.embed_tokens.weight_quantized");
+      const m = { V: t.dims[0], K: t.dims[1], zp: lite.scalar(model, "model.embed_tokens.weight_zero_point"), scale: lite.scalar(model, "model.embed_tokens.weight_scale"), bytes: w.length };
+      fsSync.mkdirSync(dir, { recursive: true });
+      fsSync.writeFileSync(bin + ".tmp", w); fsSync.renameSync(bin + ".tmp", bin);
+      fsSync.writeFileSync(meta + ".tmp", JSON.stringify(m)); fsSync.renameSync(meta + ".tmp", meta);
+      buf = null;
+      return { ok: true, cached: false, dir, bin, meta: m };
+    } catch (e) { return { ok: false, code: "head_prepare_failed", message: String((e && e.message) || e) }; }
+  }
   async function doRun(id, p) {
     const tokFile = pathM.join(box, "tok-" + id + ".jsonl");
     try { fsSync.unlinkSync(tokFile); } catch (_) { /* 還沒有 */ }
@@ -2120,12 +2175,15 @@ function startNativeMailbox(ctx) {
         onToken: (t) => { try { fsSync.appendFileSync(tokFile, JSON.stringify({ text: t }) + "\n"); } catch (_) { /* 寫不了就只靠最後結果 */ } },
       };
       if (lr.lora) req.lora = lr.lora;
+      // GPU 版 lm_head：渲染程序要求（p.gpuHead）且執行包支援才帶；否則請求內容與沒有此功能時完全相同
+      if (p.gpuHead && runtime.ok && (runtime.features || []).indexOf("gpuhead") >= 0) req.head = makeHeadProvider(id);
       // 預填（1.22.0-3 起）：產品端只在執行包 FEATURES 含 prefill 時才送；沒有就不帶這欄（舊子程序不認得）
       if (typeof p.prefill === "string" && p.prefill) req.prefill = p.prefill;
       const r = await getHost().run(req);
       const vd = lora.verifyDone(r);
       if (vd) return { ok: false, code: vd.code, message: vd.message, backend: "native" };
       const out = { ok: true, text: r.text, ms: r.ms, finish_reason: r.finish_reason, backend: "native" };
+      if (r.gpu_head) out.gpu_head = r.gpu_head;
       if (lr.lora) out.lora = lr.lora.id;
       return out;
     } catch (e) {
@@ -2287,6 +2345,8 @@ function startNativeMailbox(ctx) {
       return { ok: true, runtime: { ok: runtime.ok, version: null, reason: runtime.reason || "" } };
     }
     if (op.indexOf("onnx_") === 0) return handleOnnx(op, p);
+    if (op === "head_status") return { ok: true, supported: !!(runtime.ok && (runtime.features || []).indexOf("gpuhead") >= 0), runtimeVersion: runtime.version || null };
+    if (op === "head_prepare") return headPrepare();
     if (op === "run") {
       if (!runtime.ok) return { ok: false, code: "no_engine", message: "原生引擎沒有可用的執行包（" + runtime.reason + "）" };
       if (!baseModel() || !baseTokenizer()) return { ok: false, code: "no_model", message: "原生引擎沒有模型檔路徑（環境變數 FA_NATIVE_MODEL_PATH／FA_NATIVE_TOKENIZER_PATH 未設定）" };
