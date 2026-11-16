@@ -18,7 +18,7 @@
 - [x] **G. 模型檔查詢**：Whisper 產品用 onnx-community/whisper-base（q8，約 80 MB），已在使用，沒有新下載。Basic Pitch：待查檔名／來源／大小（不下載）→ 寫進 DESIGN 與最終回報。（Basic Pitch 已查，見 DESIGN §12）
 
 ## 第二階段（A 到 G 全部完成後接著做；使用者要「完整加速」）
-- [ ] **H. Qwen3 整段 GPU 解碼**：嵌入、層間串接、取樣都走 GPU，與 ORT 20 步 loss／logits 對拍。
+- [~] **H. Qwen3 整段 GPU 解碼**（2026-11-16；實作由 Q 完成：嵌入、層間串接、lm_head、argmax 取樣都在 GPU）：20 步對拍已做，結果與限制見 DESIGN §7.13 末段——教師強迫 argmax 一致 18／20、19／20，logits 相對差 3%～25%（q8 動態量化的離群通道放大，ORT 跨 CPU 也有）；GPU 引擎對 CPU 參考自由生成前綴 4／12 個詞元。**BLOCKED（逐字一致的驗收）**：原因是動態量化的數值特性，不是核心錯誤，無法靠改核心達成；真 GPU 沒有。
 - [ ] **J. midigen 整個解碼器 GPU 管線**（含注意力）。
 - [ ] **K. Whisper 編碼器走 GPU**（conv_ops 一維卷積＋注意力），對 transformers.js 輸出比對；用產品現有 whisper-base，不新下載。
 - [ ] **L. Basic Pitch、Demucs、YAMNet**：先查模型檔清單（不下載）；有同意再做圖對照。

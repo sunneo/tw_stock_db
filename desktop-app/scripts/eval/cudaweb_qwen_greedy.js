@@ -29,11 +29,11 @@ const PROMPT = (process.env.QWEN_PROMPT_IDS || '151644,872,198,3838,374,220,17,1
   };
   const argmaxLast = (t) => { const V = t.dims[t.dims.length - 1], S = t.dims[t.dims.length - 2], o = (S - 1) * V; let b = 0; for (let i = 1; i < V; i++) if (t.data[o + i] > t.data[o + b]) b = i; return b; };
   const t0 = Date.now();
-  const ortTokens = [], ortLogits0 = [];
+  const ortTokens = [], ortLogits0 = [], ortRows = [];
   let plen = 0, ids = PROMPT, pt = null;
   for (let i = 0; i < N; i++) {
     const out = await sess.run(mkFeeds(ids, pt, plen));
-    const lg = out.logits; ortTokens.push(argmaxLast(lg));
+    const lg = out.logits; ortTokens.push(argmaxLast(lg)); { const V = lg.dims[2], o = (lg.dims[1] - 1) * V; ortRows.push(Float32Array.from(lg.data.subarray(o, o + V))); }
     if (i === 0) { const V = lg.dims[2], o = (lg.dims[1] - 1) * V; ortLogits0.push(...Array.from(lg.data.subarray(o, o + 16))); }
     plen += ids.length; pt = {};
     for (const n of past) { pt[n] = out[n.replace('past_key_values', 'present')]; pt[n.replace(/\.key$/, '.value')] = out[n.replace('past_key_values', 'present').replace(/\.key$/, '.value')]; }
@@ -46,7 +46,16 @@ const PROMPT = (process.env.QWEN_PROMPT_IDS || '151644,872,198,3838,374,220,17,1
   const t1 = Date.now();
   const cpuTokens = await Q.greedy(eng, PROMPT, N);
   const tCpu = Date.now() - t1;
-  const res = { prompt: PROMPT, n: N, ortTokens, cpuTokens, same: JSON.stringify(ortTokens) === JSON.stringify(cpuTokens), tOrtMs: tOrt, tCpuMs: tCpu, ortLogits0 };
+  // 教師強迫（teacher forcing）：CPU 引擎吃 ORT 的詞元序列，逐步比 logits（最大絕對差／ORT 最大絕對值）與 argmax——避開貪婪路徑上單一詞元分歧後整段漂移，真正量出 N 步 logits 的一致程度
+  const eng2 = Q.createCpuEngine(W, { maxT: PROMPT.length + N + 4 }), tf = { argmaxMatch: 0, maxRel: [], firstMismatch: -1 };
+  let row = await eng2.step(PROMPT);
+  for (let i = 0; i < N; i++) {
+    let d = 0, m = 0, a = 0; const o = ortRows[i];
+    for (let j = 0; j < o.length; j++) { d = Math.max(d, Math.abs(row[j] - o[j])); m = Math.max(m, Math.abs(o[j])); if (row[j] > row[a]) a = j; }
+    tf.maxRel.push(+(d / m).toExponential(2)); if (a === ortTokens[i]) tf.argmaxMatch++; else if (tf.firstMismatch < 0) tf.firstMismatch = i;
+    if (i + 1 < N) row = await eng2.step([ortTokens[i]]);
+  }
+  const res = { tf, prompt: PROMPT, n: N, ortTokens, cpuTokens, same: JSON.stringify(ortTokens) === JSON.stringify(cpuTokens), tOrtMs: tOrt, tCpuMs: tCpu, ortLogits0 };
   console.log(JSON.stringify(res));
   if (process.argv[3]) fs.writeFileSync(process.argv[3], JSON.stringify(res));
   process.exitCode = res.same ? 0 : 1;

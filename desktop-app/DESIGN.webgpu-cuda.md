@@ -800,6 +800,8 @@ Python 模擬器與離線模型推論共用同一個 GPU 裝置：
 - **Basic Pitch**：檔名 `nmp.onnx`，大小 230,444 位元組，來源 `daserge/basic-pitch-onnx`（`https://huggingface.co/daserge/basic-pitch-onnx/resolve/main/nmp.onnx`），SHA-256 `2c3c1d14…59a0ec`。資訊來源：產品目錄 `renderer/src/music/audio_models.js` 的 REGISTRY 項目 `basic-pitch`。產品已有此檔的登錄，不需新下載。卷積參數（2D）由 `renderer/src/gpu/conv_ops.js` 的 `conv2dRef` 涵蓋（CPU 參考，尚無 GPU 版）。
 - **Whisper**：產品使用 `onnx-community/whisper-base`（q8，約 80 MB，見 `floating-assistant.js` 的 `WHISPER_MODEL_ID` 與模型清單）。原生路徑 ID 為 `whisper-base-encoder`。沒有新下載。Whisper 編碼器的 1D 卷積（核 3、stride 1／2）由 `conv1d` 涵蓋。
 
+- **20 步對拍（2026-11-16，清單 H）**：`cudaweb_qwen_greedy.js 20` 新增教師強迫（CPU 參考引擎吃 ORT 的詞元序列，逐步比 logits）。兩組提示 20 步：argmax 一致 18／20 與 19／20；logits 最大絕對差／ORT 最大絕對值 3%～25%（動態量化的離群通道放大，見上；不是核心算錯，但也不是 1e-6 等級）。貪婪自由生成時：CPU 參考對 ORT 前綴一致 0／6 個詞元；**GPU 引擎（Chrome 156 軟體 WebGPU）對 CPU 參考前綴一致 4／12 個詞元**（約 2.5 秒／詞元，非真 GPU）。結論：嵌入、28 層、lm_head、取樣（argmax）全在 GPU 上，行為與 CPU 參考同一演算法，但 q8 動態量化讓長序列對 ORT 不保證逐詞元相同；產品用「首詞元對拍＋退回」把風險擋住。
+
 ### 7.14 MOSS 語音的選用 WebGPU 管線（2026-11-16，開關 `mossGpu`，預設關）
 
 - **接線**：`renderer/src/tts/moss_gpu_runners.js`（`probe`／`load`／`makeRunners`）把 `moss_worker.js` 的 runners 換成 cudaweb 版：全域解碼一步（`moss_decoder`＋`moss_gpu`，預填逐列 decodeStep）與整幀取樣（`moss_sampling`＋`moss_local`）。codec 解碼仍走 ORT wasm（卷積 GPU 已驗證，但整圖仍是 CPU 解釋器，比 wasm 慢，不接）。
