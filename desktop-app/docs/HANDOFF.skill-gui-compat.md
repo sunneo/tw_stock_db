@@ -23,7 +23,7 @@
 - 真 Chrome 驗證頁範例：`scripts/eval/gui_list_height_check2.html`（用 python -m http.server 起伺服器，再用 Claude in Chrome 開；使用者要求驗證預設用 Chrome）。
 
 ## 項目（全部 [x] 才能結束；每項一個提交，提交訊息寫做了什麼＋怎麼驗證）
-- [ ] 1. gui.py：`list` 別名、`wait(also=)`、`split` 權重清單
+- [x] 1. gui.py：`list` 別名、`wait(also=)`、`split` 權重清單
 - [ ] 2. 新元件 `tree`（橋接、繪製、Python、patch、測試）
 - [ ] 3. 新元件 `doc`（八種區塊、ref 事件、測試）
 - [ ] 4. `filepick`＋`pick_files`（桌面版真檔案選擇器；網頁版沿用既有 pick_file 的退路）
