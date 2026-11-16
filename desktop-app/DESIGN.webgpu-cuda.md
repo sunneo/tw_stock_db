@@ -808,3 +808,11 @@ Python 模擬器與離線模型推論共用同一個 GPU 裝置：
 - **診斷**：`result.gpu = { requested, used, reason?, loadMs, ms:{prefill,decode,sample}, tiers, totalMs }`；host 端存 `_mossGpuStat`，複製聲音回傳的結果帶 `gpu`。關閉時 `gpu` 為 null，行為與原本相同。
 - **驗證（如實）**：單元測試 `moss_gpu_runners_test.js`（探測、退層檢查）與 `moss_worker_gpu_test.js`（假 ORT／假 GPU 模組：關、載入失敗、成功、中途失敗退回 ORT 四種情境）通過。**未驗證**：真 Chrome 裡整個 worker 開 `mossGpu` 生成並與 wasm 結果一致（清單 A 已 BLOCKED：整管線 GPU 在主執行緒驗證頁 30 分鐘無結果，且這台沒有真 GPU；SwiftShader 對 660 MB 權重＋逐列預填太慢）。因此此開關為實驗、預設關，上真 GPU 的機器要先用診斷確認 `used:true` 再依賴。
 
+### 7.15 midigenai 作曲模型的選用 cudaweb 解碼（2026-11-16，開關 `midiGpu`，預設關）
+
+- **接線點**：`vendor/midigenai/midigen-web.mjs` 的 `MidigenModel`（`engine:'cpu'` 時用 `cpuStep`：每步送時間優先的完整快取 `[1,P,H,D]`，取回最後位置 logits 與新的 `new_*` 列）。`renderer/src/gpu/midi_session.js` 的 `createSession` 提供同契約的假 session，內部呼叫 `midi_decoder.decode`（MatMulNBits 投影走 `matmulnbits_gpu` 的 WebGPU，注意力／RoPE／RMSNorm 仍在 CPU），自己留 H×L×HD 的 KV，長度對不上時才從 feeds 重建。
+- **產品**：`floating-assistant.js` 的 `_midigenEngine` → `load('webgpu')` 在 `midiGpu` 開時先試 `_midiGpuLoad`（只用 WebGPU 版 q4 檔；`FA_MIDI_GPU_SRC` 由 `embedMidiGpu` 嵌入）。沒有 adapter／載入失敗／運算掉到 cpu-js → 記 `_midiGpuNote` 並照原路徑（onnxruntime-web）；現有 `smoke` 會用這個引擎真的生一小段（失敗則 `openSession` 換下一個裝置）。生成中途出錯：標 `_midiGpuBad`、清 `_midigenOk`，下一次作曲改走 ORT。診斷：`_midiGpuStat`（載入毫秒、層別計數、步數、累計毫秒）。
+- **設定**：`_gpuCompatControls` 第五個勾選（AI 助理設定與桌面版設定頁共用），改設定會清 `_midigenOk` 重開引擎。
+- **桌面版**：渲染程序本身有 WebGPU，解碼迴圈在渲染程序，所以不需要 head_req／head_res 信箱（那是給沒有 WebGPU 的原生子程序用的；midigen 的原生路徑只在 CPU 版 q8 檔，不受影響）。
+- **驗證（如實）**：`midi_session_test.js`（假解碼函式驗證佈局轉換、新列抽取、重放重建、P=0 重置、錯誤傳遞）通過；`midi_decoder` 本身對 ORT（約 1e-6）與 WebGPU 投影（170 次 T1）先前已驗證（§7.10）。**未驗證**：用真模型在產品路徑「固定種子前 N 個 token 與原路徑相同」——這台機器沒有 midigen 的 q4 檔（HF 約 73 MB，需使用者在本對話同意下載；交接文件說管理者要求停用此檔），所以 BLOCKED。
+
