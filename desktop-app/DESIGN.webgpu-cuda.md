@@ -433,6 +433,13 @@ GUI 的獨立 Worker 模擬器目前沒有註冊 `_fa_cudaweb`，不能 `import 
 - 讀權重失敗時，服務不快取失敗狀態，每個詞元都會重試讀檔並回 error（結果仍正確，但浪費時間）。
 - WebGL2 退路對 lm_head **建議不做**：服務只收 T1，WebGL2 比 CPU 慢也沒有加速效果（待管理者確認）。
 
+### 7.7 注意力＋KV 快取（2026-11-16，進行中）
+
+- **CPU 參考版**（`renderer/src/gpu/attn_ops.js`，提交 `8be226632`）：qk-norm（每頭 RMSNorm）、rotate-half RoPE（theta 可設，Qwen3 用 1e6）、KV 快取（Float32）、GQA（查詢頭 h → KV 頭 ⌊h/(H/Hkv)⌋）、因果遮罩。測試 `attn_ops_test.js` 9 項通過：逐步解碼與一次預填逐位元一致、因果、GQA 對應、softmax 平均、錯誤輸入丟錯。
+- **對真 ORT 的第 0 層 K／V 快取**（`scripts/eval/cudaweb_attn_layer0.js`，提交 `6c2e31640`）：3 個詞元預填、無過去快取。K 相對誤差 **1.9e-7**、V **3.1e-6**，通過。已驗證：q8 投影（q_proj／k_proj／v_proj）、qk-norm、RoPE（位置 0～2）、快取寫入與版面。
+- **未驗證**：注意力輸出（softmax 之後）與 o_proj（ORT 模型沒有輸出那裡的張量，需要改寫圖才能比）；多層串接；解碼一步與完整生成的比對。
+- **未做**：WGSL 版注意力核心（還沒寫）、WebGL2／純 JS 退路的 GPU 版、真 Chrome WebGPU 驗證。
+
 ### 7.6 網頁版 lm_head（2026-11-16 調查，**未接線**）
 
 - 生成迴圈位置：`floating-assistant.js` 的 `_vlmWorkerGet`／`faVlmWorkerMain` 在 **Worker** 內跑 transformers.js；WebGPU 在 Worker 裡可用，所以 head 服務可以直接放在 Worker，不需要信箱（比桌面版簡單）。
