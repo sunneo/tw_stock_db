@@ -63,6 +63,7 @@
 ## 8. 本輪進度（2026-11-16，第二棒續）
 - **待辦 1 渲染程序接線：程式已完成，真機驗證未做。** 提交：`6a60c18da`（嵌入 FA_HEAD_SRC）、`f1cae6209`（接線：開關 `nrGpuHead` 預設關、`_nrHeadStart`、狀態列顯示實際結果）、`7432e8866`（編排測試，8 項過）。`head_service_test` 4 項、`infer_ops_test` 7 項過。
   - **違反規則的地方（要講清楚）**：交接規定「每塊做完先在 Chrome 本機驗證再提交」，這塊我先提交、驗證還沒做。之後若真機有問題，要修正或回退這三個提交。
+  - **Claude in Chrome 驗證（2026-11-16，本機 `cudaweb_infer_browser.js` 18765）**：通過。真 WebGPU（Chrome 157、NVIDIA Kepler）MLP 逐位元一致；lm_head 相對誤差 1.7e-7，argmax 一致（46009）。**這只驗到既有核心，沒有驗到 `head_service` 與渲染接線**（頁面沒有載入 `head_service`）。
   - **待做（1d 真機）**：用評估檔＋獨立 `--user-data-dir`＋換埠（`FA_BROWSER_CONTROL_PORT`）啟動真 Electron，跑設定開啟的生成。執行包要有 `gpuhead` 才會走到這條路，所以要臨時指向本機工作目錄的 `nr-*.js`（不發布）。每項最多跑兩次。
 - **待辦 2 網頁版可行性（唯讀調查，沒有下載）**：
   - `onnx_lite.js` 的 `buildHiddenStateModel` 全程用 Node 的 `Buffer`（`Buffer.concat`、`Buffer.from`、`enc` 用 Buffer），瀏覽器沒有 `Buffer`，要改寫成 Uint8Array 版。
