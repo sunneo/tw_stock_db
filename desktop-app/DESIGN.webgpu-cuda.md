@@ -411,7 +411,7 @@ GUI 的獨立 Worker 模擬器目前沒有註冊 `_fa_cudaweb`，不能 `import 
 **概念驗證結果（2026-11-16，真 WebGPU）**：權重讀自本機現有 q8 模型（`renderer/src/gpu/onnx_lite.js` 讀 protobuf，不下載）。核心 `infer_ops.js`：q8mm（MatMulInteger 路徑，int32 精確累加）與 q8lm（lm_head，一個工作群組算一列、分塊至 64 MiB 以內）。WebGL2 退路**尚未實作**（目前降級為 WGSL → 純 JS）。
 - 與 onnxruntime-node 1.22.0 對拍（`scripts/eval/cudaweb_ort_truth.js`，要用 Electron 內建 Node 跑，因為本機 node 是 32 位元）：gate_proj 參考版與 ORT 逐位元一致；lm_head 前 8192 列相對誤差 6e-7。
 - 真 WebGPU（Chrome 157、NVIDIA Kepler，`scripts/eval/cudaweb_infer_browser.js`）對參考版：第 0 層 MLP 逐位元一致；lm_head 完整 151936 列相對誤差 1.7e-7，最大值位置一致，通過。
-- 速度（如實）：lm_head 權重常駐後 99 ms，純 JS 參考版 533 ms，約 5.4 倍；首次含上傳與編譯 509 ms。MLP 只有 1 個詞元、矩陣小，GPU 首次 229 ms 反而慢於純 JS 61 ms（含管線編譯與上傳，常駐後未另量）。
+- 速度（如實）：lm_head 權重常駐後 99 ms，純 JS 參考版 533 ms，約 5.4 倍；首次含上傳與編譯 509 ms。MLP 只有 1 個詞元、矩陣小，GPU 首次 229 ms 反而慢於純 JS 61 ms（含管線編譯與上傳。**暖機後的量測見 §7.8**：M=1 時 GPU 與純 JS 只差約 13%，尺寸掃描尚未做）。
 - **未驗證**：注意力、KV 快取、整層串接、真實桌面版路徑、完整生成的對拍。MLP 之間的 RMSNorm、動態量化、SiLU 相乘仍在主機端 CPU。
 
 ### 7.5 lm_head 接線（2026-11-16，桌面版渲染端）
@@ -454,7 +454,36 @@ GUI 的獨立 Worker 模擬器目前沒有註冊 `_fa_cudaweb`，不能 `import 
   - **速度（如實）**：目前 GPU 比 CPU 慢（解碼 S=1 過去 40：GPU 36 ms、CPU 5 ms；首次含編譯 1091 ms）。原因：`runWgsl` 每次呼叫都重建 shader 與 pipeline，還沒做快取與分塊。**未優化前維持不接線、預設關。**
 - **未做**：WebGL2 退路（目前 GPU 失敗直接跳到 cpu-js；WebGL2 版未實作）、pipeline 快取與速度優化、與 Qwen3 整層（o_proj、殘差、MLP）串接、注意力輸出對真 ORT 的比對。
 
+### 7.8 MLP 暖機與派發串接量測（2026-11-16，唯讀量測，不改推論路徑）
+
+在使用者的 Chrome 上（Chrome 157、NVIDIA Kepler）用本機伺服器量測，權重是本機 q8 模型的第 0 層 MLP。**目前只有 M=1 一個點，尺寸掃描尚未做（見下方「待做」）。**
+
+**(1) 單層 MLP 暖機，M=1**（`scripts/eval/cudaweb_mlp_warm.js`）：冷啟動一次，暖機 3 次，再量 20 次取中位數。GPU 每次都含 3 次 readback 與 CPU 的量化、RMSNorm、SiLU（與目前 `mlpForward` 的做法相同）。
+- GPU（T1）：中位數 **38.4 ms**（範圍 35.1 到 57.6），冷啟動一次 128.3 ms。
+- 純 JS：中位數 **43.4 ms**（範圍 41.2 到 70.2），冷啟動一次 59.3 ms。
+- GPU 與參考版的結果逐位元一致（相對誤差 0）。
+
+**(2) 84 次矩陣乘（28 層 × gate／up／down，M=1）的派發串接**（`scripts/eval/cudaweb_mlp_chain.js`，每次 5 次取中位數）：
+- A：每次派發各自 submit 並讀回（目前的做法）：中位數 **320 ms**（每個 3.8 ms）。
+- B：84 次派發串在同一個 command buffer，只讀回最後一個輸出：中位數 **180 ms**（每個 2.1 ms）。B 比 A 快 **1.78 倍**。
+- C：純 JS 參考版（q8mmRef）：中位數 **1324 ms**（每個 15.8 ms）。B 比 C 快 **7.4 倍**。
+- B 與 C 的最後一個輸出逐位元一致（相對誤差 0）。
+- **注意（如實）**：28 層用同一組第 0 層權重與不同輸入重複計算（計時與權重數值無關），沒有 GPU 端的動態量化與 SiLU，層間沒有真實相依。所以 B 是「沒有相依」下的下限，不是完整的 28 層推論時間。
+
+**(3) 真 onnxruntime CPU 的單層 MLP**：**未量到**。嘗試用「兩個改寫的圖（MLP 前後的輸出）相減」的方法，但 ORT 沒有裁掉不需要的節點，兩個圖都在跑整個模型（1 個詞元約 370 ms），相減沒有意義（結果 −18 ms，已丟棄，`scripts/eval/cudaweb_mlp_ort.js` 保留為紀錄）。要量 ORT 的單層 MLP，需要做一個只有 MLP 節點的小模型。
+
+**結論（僅限 M=1，逐詞元 decode）**：
+- 派發串接有實際收益（A 到 B 快 1.78 倍）。但 GPU 矩陣乘本身的速度只有約 2 ms，對 Kepler 來說是樸素的 WGSL 核心（每個輸出一個執行緒、迴圈跑 K），還沒優化。
+- 要讓 GPU 的 MLP 在真實 decode 中有收益，還需要 GPU 端的動態量化、SiLU、RMSNorm（現在這些都在 CPU），否則 readback 與 CPU 步驟會吃掉收益。
+- 目前**維持不接線、預設關**。
+
+**待做（管理者與使用者要求）**：依尺寸掃描，不能用小尺寸、冷啟動的結果推論到大尺寸。
+- 輸入詞元數 M = 1（逐詞元 decode）、8、64、256、1024（預填長度）。每個 M 量暖機後中位數：GPU、純 JS、真 onnxruntime CPU。
+- 標出交叉點（GPU 開始比 CPU 快的 M）。lm_head 補 M=1 與 M=64 的對照。
+- 結論分兩種情況寫：**逐詞元 decode** 與 **預填**。可能預填時 GPU 大賺、逐詞元沒賺，這會決定接線要不要只在預填走 GPU。
+
 ### 7.6 網頁版 lm_head（2026-11-16 調查，**未接線**）
+- **更正紀錄（2026-11-16）**：先前記載「`/lm_head/MatMul` 是 MatMulNBits（q4，4 位元區塊 32）」是**錯的**。原因：把投影層的 MatMulNBits 節點誤認成 lm_head。第二次讀前 4 MB 並解析 protobuf 後更正為 fp16 MatMul（見下方）。
 
 - 生成迴圈位置：`floating-assistant.js` 的 `_vlmWorkerGet`／`faVlmWorkerMain` 在 **Worker** 內跑 transformers.js；WebGPU 在 Worker 裡可用，所以 head 服務可以直接放在 Worker，不需要信箱（比桌面版簡單）。
 - 阻礙：Qwen3 網頁版的 GPU 格式是 `q4f16`（`FaVlm` 的 dtype 表），lm_head 很可能是 q4 區塊量化（MatMulNBits 類）或 fp16。**cudaweb 目前只有 q8（uint8 單一 zero point）的 lm_head 核心**，接不上。
