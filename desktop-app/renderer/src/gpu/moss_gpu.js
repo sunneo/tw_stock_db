@@ -2,7 +2,7 @@
 // MOSS 解碼一步的 GPU 運算（WGSL）：float32 矩陣乘（單一詞元的 y = x·W + b）與單一詞元的因果注意力。
 // 退路：T1 WGSL 失敗或沒有 WebGPU → cpu-js（moss_decoder.js 的參考實作）。WebGL2 未做。
 // 介面：makeGpuOps(opts) → { linear, attention, tiers }，可直接傳給 moss_decoder.decodeStep(model, ids, caches, ops)。
-// 注意：pipeline 每次呼叫都重建（runWgsl），速度不是本版目標。
+// pipeline 由 nn.runWgsl 以 WGSL 字串為鍵快取（第二次呼叫不重建，見 gpu_cache_fallback_test.js）。
 const nn = require('./nn_ops.js');
 const M = require('./moss_decoder.js');
 

@@ -2,7 +2,7 @@
 // MatMulNBits（bits=4、block 32、無 zero_points）的 GPU 核心（WGSL），退路：WebGL2 未做 → cpu-js（matmulnbits_ref.js）。
 // 一個 invocation 算一個輸出格 (m, n)：沿 K 逐元素累加，權重是 4 位元，從 u32 打包的位元組中取出（低位元是偶數 k）。
 // 介面與 q8mm 相同風格：matmulNBits(A, M, K, B, scales, N, opts) → {result: Float32Array(M×N), info}。
-// 注意：這一版沒有快取 pipeline（runWgsl 每次重建），速度不是本版的目標。
+// pipeline 由 nn.runWgsl 以 WGSL 字串為鍵快取（第二次呼叫不重建，見 gpu_cache_fallback_test.js）；退路：WebGPU 失敗 → cpu-js（matmulnbits_ref）。
 
 const nn = require('./nn_ops.js');
 const REF = require('./matmulnbits_ref.js');
