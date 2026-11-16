@@ -108,9 +108,19 @@ function attentionCpu(q, Kc, Vc, Ln) {
   return ao;
 }
 
+// GELU（tanh 近似），逐元素，原地回傳新陣列
+function geluCpu(f) {
+  const o = new Float32Array(f.length);
+  for (let i = 0; i < f.length; i++) { const g = f[i]; o[i] = 0.5 * g * (1 + Math.tanh(0.7978846 * (g + 0.044715 * g * g * g))); }
+  return o;
+}
+
 const CPU_OPS = {
   linear: async (x, W, K, N, b) => linearCpu(x, W, K, N, b),
   attention: async (q, Kc, Vc, Ln) => attentionCpu(q, Kc, Vc, Ln),
+  layerNorm: async (x, w, b) => layerNorm(x, w, b),
+  rope: async (x, pos) => rope(x, pos),
+  gelu: async (f) => geluCpu(f),
 };
 
 // 交錯式 RoPE（單一詞元，位置 pos）：配對 (2i, 2i+1)，角度 pos·θ^(−2i/64)
@@ -128,7 +138,8 @@ function rope(x, pos) {
 // 一步解碼。ids：17 個整數（第 0 欄文字，1..16 音訊碼）；caches：每層 {K, V, L}（K/V 為 L×H×HD，時間優先）。
 // ops：可注入運算（預設 CPU）。回傳 { hidden: Float32Array(768), caches, tiers }（新快取長度 L+1）。
 async function decodeStep(model, ids, caches, ops) {
-  const O = ops || CPU_OPS;
+  // 缺的運算項目退回 CPU（讓只替換部分運算的組合也能跑）
+  const O = Object.assign({}, CPU_OPS, ops || {});
   const past = caches ? caches[0].L : 0;
   let x = new Float32Array(D);
   const tw = model.wte, to = ids[0] * D;
@@ -142,10 +153,10 @@ async function decodeStep(model, ids, caches, ops) {
   const next = [];
   for (let li = 0; li < NL; li++) {
     const L = model.layers[li];
-    const h = layerNorm(x, L.ln1w, L.ln1b);
+    const h = await O.layerNorm(x, L.ln1w, L.ln1b);
     const qkv = await O.linear(h, L.cAttnW, D, 3 * D, L.cAttnB);
-    const q = rope(qkv.subarray(0, D), past);
-    const k = rope(qkv.subarray(D, 2 * D), past);
+    const q = await O.rope(qkv.subarray(0, D), past);
+    const k = await O.rope(qkv.subarray(D, 2 * D), past);
     const v = qkv.subarray(2 * D, 3 * D);
     const Ln = past + 1;
     const Kc = new Float32Array(Ln * D), Vc = new Float32Array(Ln * D);
@@ -155,14 +166,14 @@ async function decodeStep(model, ids, caches, ops) {
     const ao = await O.attention(q, Kc, Vc, Ln);
     const pr = await O.linear(ao, L.cProjW, D, D, L.cProjB);
     for (let i = 0; i < D; i++) x[i] += pr[i];
-    const h2 = layerNorm(x, L.ln2w, L.ln2b);
+    const h2 = await O.layerNorm(x, L.ln2w, L.ln2b);
     const f1 = await O.linear(h2, L.fcInW, D, FF, L.fcInB);
-    for (let i = 0; i < FF; i++) { const g = f1[i]; f1[i] = 0.5 * g * (1 + Math.tanh(0.7978846 * (g + 0.044715 * g * g * g))); }
-    const f2 = await O.linear(f1, L.fcOutW, FF, D, L.fcOutB);
+    const g1 = await O.gelu(f1);
+    const f2 = await O.linear(g1, L.fcOutW, FF, D, L.fcOutB);
     for (let i = 0; i < D; i++) x[i] += f2[i];
   }
-  const hidden = layerNorm(x, model.lnFw, model.lnFb);
+  const hidden = await O.layerNorm(x, model.lnFw, model.lnFb);
   return { hidden, caches: next };
 }
 
-module.exports = { loadMossDecodeStep, decodeStep, readInit, layerNorm, linearCpu, attentionCpu, rope, CPU_OPS, D, H, HD, FF, NL, NCH, PAD, SCALE };
+module.exports = { loadMossDecodeStep, decodeStep, readInit, layerNorm, linearCpu, attentionCpu, rope, geluCpu, CPU_OPS, D, H, HD, FF, NL, NCH, PAD, SCALE, EPS, THETA };

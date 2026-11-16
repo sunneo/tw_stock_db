@@ -58,6 +58,67 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 `;
 
+// LayerNorm（單一詞元，D 維）：一個 invocation 逐元素計算均值與變異數（D 小，不做歸約）
+const WGSL_LN = `
+struct P { D: u32, p0: u32, p1: u32, p2: u32, eps: f32, p3: u32, p4: u32, p5: u32 }
+@group(0) @binding(0) var<storage, read> x: array<f32>;
+@group(0) @binding(1) var<storage, read> w: array<f32>;
+@group(0) @binding(2) var<storage, read> b: array<f32>;
+@group(0) @binding(3) var<storage, read_write> y: array<f32>;
+@group(0) @binding(4) var<uniform> p: P;
+// @kernel moss_ln
+@compute @workgroup_size(1)
+fn main() {
+  var mu: f32 = 0.0;
+  for (var i: u32 = 0u; i < p.D; i = i + 1u) { mu = mu + x[i]; }
+  mu = mu / f32(p.D);
+  var v: f32 = 0.0;
+  for (var i: u32 = 0u; i < p.D; i = i + 1u) { v = v + (x[i] - mu) * (x[i] - mu); }
+  v = v / f32(p.D);
+  let r = 1.0 / sqrt(v + p.eps);
+  for (var i: u32 = 0u; i < p.D; i = i + 1u) { y[i] = (x[i] - mu) * r * w[i] + b[i]; }
+}
+`;
+// 交錯式 RoPE：一個 invocation 處理一對 (2i, 2i+1)；共 H·32 對（D/2 = 384）
+const WGSL_ROPE = `
+struct P { pos: f32, theta: f32, HD: u32, npairs: u32 }
+@group(0) @binding(0) var<storage, read> x: array<f32>;
+@group(0) @binding(1) var<storage, read_write> y: array<f32>;
+@group(0) @binding(2) var<uniform> p: P;
+// @kernel moss_rope
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let q = gid.x;
+  if (q >= p.npairs) { return; }
+  let half = p.HD / 2u;
+  let h = q / half;
+  let i = q % half;
+  let b = h * p.HD + 2u * i;
+  let f = p.pos * pow(p.theta, -f32(2u * i) / f32(p.HD));
+  let c = cos(f);
+  let s = sin(f);
+  let e = x[b];
+  let od = x[b + 1u];
+  y[b] = e * c - od * s;
+  y[b + 1u] = od * c + e * s;
+}
+`;
+// GELU（tanh 近似），逐元素
+const WGSL_GELU = `
+struct P { n: u32, p0: u32, p1: u32, p2: u32 }
+@group(0) @binding(0) var<storage, read> x: array<f32>;
+@group(0) @binding(1) var<storage, read_write> y: array<f32>;
+@group(0) @binding(2) var<uniform> p: P;
+// @kernel moss_gelu
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let i = gid.x;
+  if (i >= p.n) { return; }
+  let g = x[i];
+  y[i] = 0.5 * g * (1.0 + tanh(0.7978846 * (g + 0.044715 * g * g * g)));
+}
+`;
+
 function u32Bytes(vals) { const ab = new ArrayBuffer(Math.ceil(vals.length * 4 / 16) * 16); const dv = new DataView(ab); vals.forEach((v, i) => { if (v.f !== undefined) dv.setFloat32(i * 4, v.f, true); else dv.setUint32(i * 4, v, true); }); return new Uint8Array(ab); }
 
 // 一次矩陣乘（T1）：x 長度 K、W 為 K×N（列優先）、b 長度 N；回傳 {result, info}
@@ -72,10 +133,28 @@ function attnWgsl(dev, q, Kc, Vc, Ln) {
     u32Bytes([Ln, M.H, M.HD, 0, { f: M.SCALE }, 0, 0, 0]), M.H).then((outs) => outs[0]);
 }
 
+function lnWgsl(dev, x, w, b) {
+  return nn.runWgsl(dev, WGSL_LN,
+    [{ data: Float32Array.from(x) }, { data: Float32Array.from(w) }, { data: Float32Array.from(b) }, { data: new Float32Array(M.D), out: true }],
+    u32Bytes([M.D, 0, 0, 0, { f: M.EPS }, 0, 0, 0]), 1).then((outs) => outs[0]);
+}
+function ropeWgsl(dev, x, pos) {
+  const npairs = M.D / 2;
+  return nn.runWgsl(dev, WGSL_ROPE,
+    [{ data: Float32Array.from(x) }, { data: new Float32Array(M.D), out: true }],
+    u32Bytes([{ f: pos }, { f: M.THETA }, M.HD, npairs]), Math.ceil(npairs / 64)).then((outs) => outs[0]);
+}
+function geluWgsl(dev, f) {
+  const n = f.length;
+  return nn.runWgsl(dev, WGSL_GELU,
+    [{ data: Float32Array.from(f) }, { data: new Float32Array(n), out: true }],
+    u32Bytes([n, 0, 0, 0]), Math.ceil(n / 64)).then((outs) => outs[0]);
+}
+
 // 建立 GPU 運算組：每次呼叫都記錄層級（T1／cpu-js），方便驗證頁確認真的走了 GPU。
 function makeGpuOps(opts) {
   const o = opts || {};
-  const tiers = { linear: {}, attention: {} };
+  const tiers = { linear: {}, attention: {}, layerNorm: {}, rope: {}, gelu: {} };
   const tally = (k, tier) => { tiers[k][tier] = (tiers[k][tier] || 0) + 1; };
   return {
     tiers,
@@ -93,7 +172,28 @@ function makeGpuOps(opts) {
       tally('attention', r.info.layer);
       return r.result;
     },
+    layerNorm: async (x, w, b) => {
+      const r = await nn.tryLayers('moss_ln', { navigator: o.navigator },
+        async (dev) => lnWgsl(dev, x, w, b), null,
+        () => M.layerNorm(x, w, b));
+      tally('layerNorm', r.info.layer);
+      return r.result;
+    },
+    rope: async (x, pos) => {
+      const r = await nn.tryLayers('moss_rope', { navigator: o.navigator },
+        async (dev) => ropeWgsl(dev, x, pos), null,
+        () => M.rope(x, pos));
+      tally('rope', r.info.layer);
+      return r.result;
+    },
+    gelu: async (f) => {
+      const r = await nn.tryLayers('moss_gelu', { navigator: o.navigator },
+        async (dev) => geluWgsl(dev, f), null,
+        () => M.geluCpu(f));
+      tally('gelu', r.info.layer);
+      return r.result;
+    },
   };
 }
 
-module.exports = { WGSL_LINEAR, WGSL_ATTN, makeGpuOps, linearWgsl, attnWgsl };
+module.exports = { WGSL_LINEAR, WGSL_ATTN, WGSL_LN, WGSL_ROPE, WGSL_GELU, makeGpuOps, linearWgsl, attnWgsl, lnWgsl, ropeWgsl, geluWgsl };

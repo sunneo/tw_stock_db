@@ -44,7 +44,7 @@ const PAGE = `<!doctype html><meta charset="utf-8"><title>MOSS GPU 驗證</title
     }
     R.done = true;
     const allT1 = (o) => Object.keys(o).length === 1 && !!o.T1;
-    R.pass = R.steps.every((x) => x.相對誤差 < 1e-3) && allT1(ops.tiers.linear) && allT1(ops.tiers.attention);
+    R.pass = R.steps.every((x) => x.相對誤差 < 1e-3) && ['linear', 'attention', 'layerNorm', 'rope', 'gelu'].every((k) => allT1(ops.tiers[k]));
   } catch (e) { R.error = String((e && e.stack) || e).slice(0, 1500); }
   show();
   try { await fetch('/result', { method: 'POST', body: JSON.stringify(R) }); } catch (_) {}
