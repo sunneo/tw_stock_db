@@ -83,6 +83,66 @@
     });
     return { buf: buf, nodes: nodes, inits: inits };
   }
+  // ---- 改寫：產生「輸出隱藏狀態、不算 lm_head」的變體圖（只換節點與輸出宣告，權重位元組原樣沿用）----
+  const enc = (n) => { const o = []; while (n > 127) { o.push((n % 128) | 128); n = Math.floor(n / 128); } o.push(n); return Buffer.from(o); };
+  const fVarB = (f, v) => Buffer.concat([enc(f * 8), enc(v)]);
+  const fBytesB = (f, b) => Buffer.concat([enc(f * 8 + 2), enc(b.length), b]);
+  const fStrB = (f, s) => fBytesB(f, Buffer.from(s, 'utf8'));
+  function valueInfo(name, elem, dims) {  // dims：數字或字串（符號維度，dim_param）
+    const dimMsgs = dims.map((d) => fBytesB(1, typeof d === 'number' ? fVarB(1, d) : fStrB(2, d)));
+    return Buffer.concat([fStrB(1, name), fBytesB(2, fBytesB(1, Buffer.concat([fVarB(1, elem), fBytesB(2, Buffer.concat(dimMsgs))])))]);
+  }
+  // 依序走一段訊息，回傳每個欄位 { f, wt, start, end, vr }（start..end 是含標籤的整段位元組）
+  function fieldsOf(buf, a, b) {
+    const out = [];
+    let pos = a;
+    while (pos < b) {
+      const start = pos;
+      let t; [t, pos] = varint(buf, pos);
+      const f = Math.floor(t / 8), wt = t % 8;
+      let vr;
+      if (wt === 0) { let v; [v, pos] = varint(buf, pos); vr = v; }
+      else if (wt === 2) { let len; [len, pos] = varint(buf, pos); vr = [pos, pos + len]; pos += len; }
+      else if (wt === 5) { vr = [pos, pos + 4]; pos += 4; }
+      else if (wt === 1) { vr = [pos, pos + 8]; pos += 8; }
+      else throw new Error('onnx_lite：不支援的線型 ' + wt);
+      out.push({ f: f, wt: wt, start: start, end: pos, vr: vr });
+    }
+    return out;
+  }
+  // 把模型改成：移除 dropNodeName 節點與之後不再被使用的節點，並把圖輸出 replaceOutput 換成 hiddenName（float32，維度 hiddenDims）
+  function buildHiddenStateModel(buf, o) {
+    const top = fieldsOf(buf, 0, buf.length);
+    const gf = top.find((x) => x.f === 7);
+    const parts = fieldsOf(buf, gf.vr[0], gf.vr[1]);
+    const nodes = [];
+    parts.forEach((p, i) => { if (p.f === 1) { const n = parseNode(buf, p.vr); n._i = i; nodes.push(n); } });
+    const drop = new Set(); const dead = new Set();
+    const target = nodes.find((n) => n.name === o.dropNodeName);
+    if (!target) throw new Error('onnx_lite：找不到節點 ' + o.dropNodeName);
+    drop.add(target);
+    const outNames = new Set(); // 圖輸出（扣掉要換掉的）
+    parts.forEach((p) => { if (p.f === 12) { let nm = ''; walk(buf, p.vr[0], p.vr[1], (f, wt, v) => { if (f === 1) nm = str(buf, v); }); if (nm !== o.replaceOutput) outNames.add(nm); } });
+    outNames.add(o.hiddenName);
+    // 反覆清掉沒有任何使用者、也不是圖輸出的節點
+    for (let changed = true; changed;) {
+      changed = false;
+      const used = new Set(outNames);
+      nodes.forEach((n) => { if (!drop.has(n)) n.inputs.forEach((x) => used.add(x)); });
+      nodes.forEach((n) => { if (!drop.has(n) && n.outputs.every((x) => !used.has(x))) { drop.add(n); dead.add(n.name); changed = true; } });
+    }
+    const keepIdx = new Set(); drop.forEach((n) => keepIdx.add(n._i));
+    const gp = [];
+    parts.forEach((p, i) => {
+      if (p.f === 1 && keepIdx.has(i)) return;
+      if (p.f === 12) { let nm = ''; walk(buf, p.vr[0], p.vr[1], (f, wt, v) => { if (f === 1) nm = str(buf, v); }); if (nm === o.replaceOutput) { gp.push(fBytesB(12, valueInfo(o.hiddenName, 1, o.hiddenDims))); return; } }
+      gp.push(buf.subarray(p.start, p.end));
+    });
+    const gLen = gp.reduce((s, b) => s + b.length, 0);
+    const out = [];
+    top.forEach((p) => { if (p === gf) { out.push(Buffer.concat([enc(7 * 8 + 2), enc(gLen)])); gp.forEach((b) => out.push(b)); } else out.push(buf.subarray(p.start, p.end)); });
+    return { parts: out, total: out.reduce((s, b) => s + b.length, 0), removed: Array.from(drop).map((n) => n.name), buf: function () { return Buffer.concat(out); } };
+  }
   // 取張量的位元組（raw_data；外部資料不支援）
   function tensorBytes(model, name) {
     const t = model.inits[name];
@@ -100,5 +160,5 @@
     throw new Error('onnx_lite：權重 ' + name + ' 沒有可讀的純量');
   }
   const DTYPE = { 1: 'float32', 2: 'uint8', 3: 'int8', 6: 'int32', 7: 'int64', 10: 'float16' };
-  return { parseModel, tensorBytes, scalar, DTYPE };
+  return { parseModel, tensorBytes, scalar, buildHiddenStateModel, DTYPE };
 });

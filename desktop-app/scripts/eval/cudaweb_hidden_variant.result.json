@@ -1,0 +1,22 @@
+{
+ "hiddenName": "/model/layers.28/final_norm_layernorm/output_0",
+ "removed": [
+  "/lm_head/MatMul",
+  "model.embed_tokens.weight_transposed_DequantizeLinear",
+  "Transpose_610"
+ ],
+ "origBytes": 617687575,
+ "variantBytes": 617687147,
+ "buildMs": 564,
+ "hiddenDims": [
+  1,
+  7,
+  1024
+ ],
+ "maxRel": 3.848944121046948e-7,
+ "refMax": 13.391573905944824,
+ "argmaxOrig": 1096,
+ "argmaxVariant": 1096,
+ "kvSame": true,
+ "pass": true
+}
