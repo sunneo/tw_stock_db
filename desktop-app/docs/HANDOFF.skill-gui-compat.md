@@ -29,7 +29,7 @@
 - [x] 4. `filepick`＋`pick_files`（桌面版真檔案選擇器；網頁版沿用既有 pick_file 的退路）
 - [x] 5. 工具 `skill_run_script`＋URI 解析＋更新 FA_SKILL_RUN_PROTOCOL／技能領域保留工具
 - [x] 6. 端到端（待本機驗證：真 Chrome 點選樹與 ref、真桌面版開視窗；驗證頁 scripts/eval/gui_tree_doc_check.html）：在 node 或真 Chrome 用樣本技能跑 `tcv_gui.py --open <result.tar.gz 路徑>`，確認視窗元件都建得起來、樹狀列可點、ref 可點；做不到的部分標「待本機驗證」＋寫驗證頁
-- [ ] 7. 建置：`node scripts/embed-code-ui.js`、`node build-assistant.js`、相關測試全過，`git status` 沒有未提交的來源（web-lazy 的 CRLF 差異不算，不要動）
+- [x] 7. 建置：`node scripts/embed-code-ui.js`、`node build-assistant.js`、相關測試全過，`git status` 沒有未提交的來源（web-lazy 的 CRLF 差異不算，不要動）
 
 ## 工作風格
 - 一律繁體中文，不夾英文縮寫；回報只在全部做完或標 BLOCKED 時一次。
