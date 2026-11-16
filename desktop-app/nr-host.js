@@ -62,11 +62,25 @@ function createNativeRunnerHost(opts) {
         const job = pending.get(m.id);
         if (m.type === 'progress') { if (job && job.onProgress) job.onProgress(m); return; }
         if (m.type === 'token') { if (job && job.onToken) job.onToken(m.text); return; }
+        if (m.type === 'head_req') {
+            // 子程序要 GPU 版 lm_head：交給 run 的 head 提供者（有 WebGPU 的一端）；任何失敗都回 error，子程序自己退回 CPU
+            const reply = (o) => { try { writeMsg(Object.assign({ type: 'head_res', id: m.id, seq: m.seq }, o)); } catch (_) { /* 子程序已不在 */ } };
+            if (!job || typeof job.head !== 'function') { reply({ error: '主程序沒有 head 提供者' }); return; }
+            Promise.resolve().then(() => {
+                const b = Buffer.from(m.hidden, 'base64');
+                const ab = new ArrayBuffer(b.length); new Uint8Array(ab).set(b);
+                return job.head(new Float32Array(ab));
+            }).then((lg) => {
+                if (!lg || !lg.length) throw new Error('head 提供者沒有回傳 logits');
+                reply({ logits: Buffer.from(lg.buffer, lg.byteOffset, lg.byteLength).toString('base64') });
+            }).catch((e) => reply({ error: String((e && e.message) || e) }));
+            return;
+        }
         if (m.type === 'hello_ack') return; // 由 ensureChild 內的 hello 處理
         if (!job) return;
         clearTimeout(job.timeoutTimer); clearTimeout(job.graceTimer);
         pending.delete(m.id);
-        if (m.type === 'done') { consecutiveCrashes = 0; const res = { ok: m.ok, text: m.text, ms: m.ms, finish_reason: m.finish_reason }; if (m.lora_applied) { res.lora_applied = m.lora_applied; res.lora_sha256 = m.lora_sha256 || null; } job.resolve(res); touch(); return; }
+        if (m.type === 'done') { consecutiveCrashes = 0; const res = { ok: m.ok, text: m.text, ms: m.ms, finish_reason: m.finish_reason }; if (m.gpu_head) res.gpu_head = m.gpu_head; if (m.lora_applied) { res.lora_applied = m.lora_applied; res.lora_sha256 = m.lora_sha256 || null; } job.resolve(res); touch(); return; }
         if (m.type === 'cancelled') { job.reject(makeError('cancelled', '已取消')); touch(); return; }
         if (m.type === 'error') {
             if (m.code === 'version_mismatch') { disabledReason = '協定版本不符：' + (m.message || ''); }
@@ -147,7 +161,7 @@ function createNativeRunnerHost(opts) {
         req = req || {};
         const id = 'r' + (++seq);
         return ensureChild().then(() => new Promise((resolve, reject) => {
-            const job = { resolve, reject, onToken: req.onToken, onProgress: req.onProgress, timeoutTimer: null, graceTimer: null };
+            const job = { resolve, reject, onToken: req.onToken, onProgress: req.onProgress, head: req.head, timeoutTimer: null, graceTimer: null };
             pending.set(id, job);
             if (req.onStart) req.onStart(id);
             if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
@@ -172,6 +186,7 @@ function createNativeRunnerHost(opts) {
                 if (req.modelPath) msg.model_path = req.modelPath; // 真引擎：模型檔路徑（沒有就用假引擎）
                 if (req.tokenizerPath) msg.tokenizer_path = req.tokenizerPath;
                 if (req.lora) msg.lora = { id: req.lora.id, path: req.lora.path, sha256: req.lora.sha256, size: req.lora.size }; // adapter：只傳路徑與雜湊，子程序自己讀檔核對
+                if (typeof req.head === 'function') msg.gpu_head = true; // 產品端只在 FEATURES 含 'gpuhead' 時才給 head
                 writeMsg(msg);
             } catch (e) { pending.delete(id); clearTimeout(job.timeoutTimer); reject(e); }
         }));

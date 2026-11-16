@@ -11,7 +11,8 @@ const { validateGen, pickToken, makeRng } = require('./nr-gen-params.js');
 const crypto = require('crypto');
 
 const LAYERS = 28, KV = 8, HD = 128, EOS = [151645, 151643];
-const cache = { ort: null, sessPath: '', sessKey: '', sess: null, tokPath: '', tok: null };
+const VOCAB = 151936, HIDDEN = 1024;
+const cache = { ort: null, sessPath: '', sessKey: '', sess: null, tokPath: '', tok: null, vsess: null, vKey: '', vHidden: '' };
 
 function ortModule() {
     if (!cache.ort) cache.ort = require(path.join(__dirname, 'node_modules', 'onnxruntime-node'));
@@ -36,6 +37,32 @@ function loadModel(modelPath, tokenizerPath, threads, lora) {
         });
     }
     return Promise.resolve(cache.sess);
+}
+
+// 隱藏狀態變體（選填，GPU 版 lm_head 用）：從現有模型在記憶體內改出「不算 lm_head、改輸出 final_norm 結果」的圖（nr-onnx-lite.js），
+// 其餘節點、權重、KV 輸出完全不動，所以 present.* 與原模型逐位元相同——任何時候都能換回原 session 接著生成。
+// 找不到 lm_head 節點（模型結構不同）就丟出原因，由呼叫端退回原路徑。
+async function loadVariant(modelPath, threads, lora) {
+    const sessKey = (lora && lora.bytes ? String(lora.id || 'lora') + (lora.sha256 ? ':' + lora.sha256 : '') : '') + '|' + modelPath;
+    if (cache.vsess && cache.vKey === sessKey) return cache.vsess;
+    const lite = require('./nr-onnx-lite.js');
+    let buf = fs.readFileSync(modelPath);
+    let built;
+    try {
+        const model = lite.parseModel(buf);
+        const mm = model.nodes.find((n) => n.name === '/lm_head/MatMul');
+        if (!mm) throw new Error('模型裡沒有 /lm_head/MatMul 節點，無法做隱藏狀態變體');
+        const hiddenName = mm.inputs[0];
+        built = lite.buildHiddenStateModel(buf, { dropNodeName: '/lm_head/MatMul', replaceOutput: 'logits', hiddenName, hiddenDims: ['batch_size', 'sequence_length', HIDDEN] });
+        built.hiddenName = hiddenName;
+    } catch (e) { buf = null; throw e; }
+    const so = { executionProviders: ['cpu'], intraOpNumThreads: threads || 4 };
+    if (lora && lora.bytes) so.externalData = [{ path: 'lora.bin', data: lora.bytes }];
+    let vb = built.buf(); buf = null;
+    const sess = await ortModule().InferenceSession.create(new Uint8Array(vb.buffer, vb.byteOffset, vb.length), so);
+    vb = null;
+    cache.vsess = sess; cache.vKey = sessKey; cache.vHidden = built.hiddenName;
+    return sess;
 }
 
 // 把主程序傳來的 lora 規格 {id, path, sha256, size?} 讀成 {id, bytes, sha256}：大小與 sha256 都要核對（不符就丟出具體原因，不載入）。
@@ -77,6 +104,14 @@ async function generate(opts) {
     const promptIds = tok.encode(applyTemplate(opts.template || 'qwen3-chatml', opts.messages || [], { enable_thinking: false, prefill: opts.prefill }));
     const rng = gen.do_sample ? makeRng(opts.seed != null ? opts.seed : 1) : null;
     const maxNew = Math.max(1, opts.maxTokens || 512);
+    // GPU 版 lm_head（選填）：opts.head(hidden:Float32Array) → Promise<Float32Array(VOCAB)>。任何失敗（變體建不起來、head 丟錯、長度不對）
+    // 都只退回原 session（KV 與原模型逐位元相同，接著生成），原因寫進回傳的 head.fallback；不中斷生成。
+    const headInfo = { requested: !!opts.head, used: 0, fallback: '' };
+    let vsess = null;
+    if (opts.head) {
+        try { vsess = await loadVariant(opts.modelPath, opts.threads, opts.lora); }
+        catch (e) { headInfo.fallback = '隱藏狀態變體建立失敗：' + String((e && e.message) || e); }
+    }
     let past = kvEmpty(ort), next = null, out = [], pastLen = 0, emitted = 0, finish = 'length';
     for (let s = 0; s < maxNew; s++) {
         if (opts.isCancelled && opts.isCancelled()) return { cancelled: true, text: '', ids: out, finish_reason: 'cancelled' };
@@ -86,9 +121,25 @@ async function generate(opts) {
         feed.input_ids = new ort.Tensor('int64', BigInt64Array.from(q.map(BigInt)), [1, q.length]);
         feed.attention_mask = new ort.Tensor('int64', BigInt64Array.from(Array(len).fill(1n)), [1, len]);
         feed.position_ids = new ort.Tensor('int64', BigInt64Array.from(Array.from({ length: q.length }, (_, i) => BigInt(pastLen + i))), [1, q.length]);
-        const r = await sess.run(feed);
-        const V = r.logits.dims[2], last = (q.length - 1) * V;
-        const row = Float32Array.from(r.logits.data.subarray(last, last + V));
+        let r = null, row = null;
+        if (vsess) {
+            try {
+                r = await vsess.run(feed);
+                const hd = r[cache.vHidden];
+                const H = hd.dims[2], hl = (q.length - 1) * H;
+                const got = await opts.head(Float32Array.from(hd.data.subarray(hl, hl + H)));
+                if (!got || got.length !== VOCAB) throw new Error('head 回傳的 logits 長度 ' + (got && got.length) + '，預期 ' + VOCAB);
+                row = got; headInfo.used++;
+            } catch (e) {
+                headInfo.fallback = 'GPU lm_head 失敗，改用 CPU：' + String((e && e.message) || e);
+                vsess = null; r = null; row = null;
+            }
+        }
+        if (!row) {
+            r = await sess.run(feed);
+            const V = r.logits.dims[2], last = (q.length - 1) * V;
+            row = Float32Array.from(r.logits.data.subarray(last, last + V));
+        }
         next = pickToken(row, promptIds, out, gen, rng);
         out.push(next); pastLen = len;
         if (opts.onToken) {
@@ -101,10 +152,10 @@ async function generate(opts) {
         past = {};
         for (let l = 0; l < LAYERS; l++) { past[`past_key_values.${l}.key`] = r[`present.${l}.key`]; past[`past_key_values.${l}.value`] = r[`present.${l}.value`]; }
     }
-    return { cancelled: false, text: cleanText(tok, out), ids: out, finish_reason: finish };
+    return { cancelled: false, text: cleanText(tok, out), ids: out, finish_reason: finish, head: headInfo };
 }
 
 // 測試用：注入假的 onnxruntime 模組、重設快取（不用於產品路徑）
-function _testHooks() { return { setOrt(o) { cache.ort = o; }, reset() { cache.ort = null; cache.sessPath = ''; cache.sessKey = ''; cache.sess = null; cache.tokPath = ''; cache.tok = null; } }; }
+function _testHooks() { return { setOrt(o) { cache.ort = o; }, reset() { cache.vsess = null; cache.vKey = ''; cache.ort = null; cache.sessPath = ''; cache.sessKey = ''; cache.sess = null; cache.tokPath = ''; cache.tok = null; } }; }
 
-module.exports = { generate, loadModel, cleanText, resolveLora, _testHooks };
+module.exports = { generate, loadModel, loadVariant, cleanText, resolveLora, _testHooks, VOCAB };

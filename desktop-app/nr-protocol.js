@@ -8,7 +8,9 @@ const PROTOCOL_VERSION = 1;
 // 這份執行包的子程序／主程序程式支援的選配功能。主程序（main-ext.js）載入前讀它：舊執行包的 nr-protocol.js 沒有這個匯出（＝空），
 // 所以「需要 lora 的操作」會被明確拒絕（畫面顯示需更新執行包），而不是送出一個會被舊子程序默默忽略的 lora 欄位。
 // 新增功能時只加進這裡；協定版本號 PROTOCOL_VERSION 只在不相容改動時才升。
-const FEATURES = ['lora', 'prefill'];   // prefill：run.prefill 接在生成提示之後（1.22.0-3 起；舊包沒有這個功能，產品端依 FEATURES 決定要不要送）
+// prefill：run.prefill 接在生成提示之後（1.22.0-3 起；舊包沒有這個功能，產品端依 FEATURES 決定要不要送）
+// gpuhead：lm_head 交給有 WebGPU 的一端算（run.gpu_head＋head_req／head_res；1.22.0-4 起）
+const FEATURES = ['lora', 'prefill', 'gpuhead'];
 
 // 訊息種類表：方向、必填欄位。驗證函式以此為準。
 const MESSAGES = {
@@ -23,6 +25,8 @@ const MESSAGES = {
     done: { dir: 'child->host', required: ['id', 'ok', 'text', 'ms', 'finish_reason'] },
     error: { dir: 'child->host', required: ['id', 'code'] },
     cancelled: { dir: 'child->host', required: ['id'] },
+    head_req: { dir: 'child->host', required: ['id', 'seq', 'hidden'] },   // hidden：final_norm 輸出（1024 個 f32）的 base64
+    head_res: { dir: 'host->child', required: ['id', 'seq'] },            // logits：base64 的 f32 陣列；或 error：字串（子程序改用 CPU 路徑）
 };
 
 // error.code 只能是這幾種
@@ -50,6 +54,7 @@ function validate(msg) {
     // run 的真引擎欄位（可選）：模型檔與分詞器路徑（字串）、取樣種子（數字）。有 model_path 就用真推論，沒有就用假引擎。
     if (msg.type === 'run' && msg.model_path !== undefined && (typeof msg.model_path !== 'string' || !msg.model_path)) return { ok: false, error: 'run.model_path 必須是非空字串' };
     if (msg.type === 'run' && msg.tokenizer_path !== undefined && typeof msg.tokenizer_path !== 'string') return { ok: false, error: 'run.tokenizer_path 必須是字串' };
+    if (msg.type === 'run' && msg.gpu_head !== undefined && typeof msg.gpu_head !== 'boolean') return { ok: false, error: 'run.gpu_head 必須是布林' };
     if (msg.type === 'run' && msg.seed !== undefined && typeof msg.seed !== 'number') return { ok: false, error: 'run.seed 必須是數字' };
     // run 的 lora 欄位（可選）：{ id, path, sha256, size? }。子程序自己讀檔並核對 sha256（檔案不經標準輸入傳輸，避免一行幾十 MB）。沒有這個欄位＝不用 adapter，行為與沒有此功能時完全一致。
     if (msg.type === 'run' && msg.lora !== undefined && msg.lora !== null) {

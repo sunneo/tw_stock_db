@@ -11,7 +11,7 @@ const ORT_VERSION = '1.22.0';
 const RUNTIME_VERSION = '1.22.0-2'; // 1.22.0-2：nr-*.js 轉傳並套用 lora（FEATURES 含 'lora'）；1.22.0-1 是第一版
 const FEATURES = ['lora'];
 const PLATFORMS = [['win32', 'x64'], ['linux', 'x64']];
-const NR_FILES = ['nr-child.js', 'nr-engine.js', 'nr-host.js', 'nr-protocol.js', 'nr-gen-params.js', 'nr-template.js', 'nr-tokenizer.js'];
+const NR_FILES = ['nr-child.js', 'nr-engine.js', 'nr-host.js', 'nr-protocol.js', 'nr-gen-params.js', 'nr-template.js', 'nr-tokenizer.js', 'nr-onnx-lite.js'];
 
 function md5(buf) { return crypto.createHash('md5').update(buf).digest('hex'); }
 function sha256(buf) { return crypto.createHash('sha256').update(buf).digest('hex'); }

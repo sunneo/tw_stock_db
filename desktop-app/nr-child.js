@@ -12,6 +12,29 @@ const proto = require('./nr-protocol.js');
 const progressFile = process.argv[2] || '';
 const versionOverride = process.env.NATIVE_RUNNER_FAKE_VERSION ? Number(process.env.NATIVE_RUNNER_FAKE_VERSION) : null;
 const cancelled = new Set();
+// GPU 版 lm_head 往返：把隱藏狀態（f32 的 base64）交給主程序，等 head_res（logits 的 base64）；逾時或回錯誤就丟例外，由引擎退回 CPU 路徑
+const headWait = new Map();
+let headSeq = 0;
+const HEAD_TIMEOUT_MS = 8000;
+function askHead(id, hidden) {
+    const seq = ++headSeq;
+    return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => { headWait.delete(seq); reject(new Error('head_res 逾時（' + HEAD_TIMEOUT_MS + ' 毫秒）')); }, HEAD_TIMEOUT_MS);
+        headWait.set(seq, { resolve, reject, timer });
+        send({ type: 'head_req', id, seq, hidden: Buffer.from(hidden.buffer, hidden.byteOffset, hidden.byteLength).toString('base64') });
+    });
+}
+function onHeadRes(msg) {
+    const w = headWait.get(msg.seq);
+    if (!w) return;
+    headWait.delete(msg.seq); clearTimeout(w.timer);
+    if (msg.error) { w.reject(new Error(String(msg.error))); return; }
+    try {
+        const b = Buffer.from(String(msg.logits || ''), 'base64');
+        const ab = new ArrayBuffer(b.length); new Uint8Array(ab).set(b);
+        w.resolve(new Float32Array(ab));
+    } catch (e) { w.reject(e); }
+}
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function send(obj) {
@@ -86,12 +109,14 @@ async function runReal(msg) {
         const r = await engine.generate({
             modelPath: msg.model_path, tokenizerPath, messages: msg.messages || [], template: msg.template || 'qwen3-chatml', lora, prefill: msg.prefill,
             gen: msg.gen, maxTokens: msg.max_tokens, seed: msg.seed, threads: 4,
+            head: msg.gpu_head ? (hidden) => askHead(msg.id, hidden) : undefined,
             isCancelled: () => cancelled.has(msg.id),
             onToken: (t) => { if (msg.stream) send({ type: 'token', id: msg.id, text: t }); },
             onProgress: (n) => { journal({ type: 'progress', id: msg.id, stage: 'generate', tokens: n }); send({ type: 'progress', id: msg.id, stage: 'generate', tokens: n }); },
         });
         if (r.cancelled) { send({ type: 'cancelled', id: msg.id }); return; }
         const done = { type: 'done', id: msg.id, ok: true, text: r.text, ms: Date.now() - t0, finish_reason: r.finish_reason };
+        if (r.head && r.head.requested) done.gpu_head = { used: r.head.used, fallback: r.head.fallback || '' };
         if (lora) { done.lora_applied = lora.id; done.lora_sha256 = lora.sha256; } // 回報「真的套用了哪個」，主程序據此核對（不信任自己送出的請求）
         send(done);
     } catch (e) {
@@ -133,6 +158,7 @@ function handle(msg) {
         runFake(msg).catch((e) => send({ type: 'error', id: msg.id, code: 'internal', message: String((e && e.message) || e) }));
         return;
     }
+    if (msg.type === 'head_res') { onHeadRes(msg); return; }
     if (msg.type === 'cancel') { cancelled.add(msg.id); return; }
     if (msg.type === 'dispose') { send({ type: 'done', id: msg.id, ok: true, text: '', ms: 0, finish_reason: 'disposed' }); process.exit(0); }
     send({ type: 'error', id: msg.id, code: 'internal', message: '子程序不處理的訊息：' + msg.type });
