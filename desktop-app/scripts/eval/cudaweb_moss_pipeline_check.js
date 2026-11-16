@@ -102,7 +102,7 @@ const now = () => Date.now();
   const n = rc.count;
   const framesI32 = Int32Array.from(rc.frames);
   const oOut = await cOrt.run({ audio_codes: T('int32', framesI32, [1, n, M.NQ]), audio_code_lengths: T('int32', new Int32Array([n]), [1]) });
-  const jOut = OI.run(cModel, { audio_codes: { d: [1, n, M.NQ], t: 'i', v: Float64Array.from(framesI32) }, audio_code_lengths: { d: [1], t: 'i', v: Float64Array.from([n]) } }, cFiles);
+  const jOut = await OI.run(cModel, { audio_codes: { d: [1, n, M.NQ], t: 'i', v: Float64Array.from(framesI32) }, audio_code_lengths: { d: [1], t: 'i', v: Float64Array.from([n]) } }, cFiles);
   const oa = Float32Array.from(oOut.audio.data), ja = jOut.audio.v;
   let d = 0, r = 0; for (let i = 0; i < oa.length; i++) { d = Math.max(d, Math.abs(oa[i] - ja[i])); r = Math.max(r, Math.abs(oa[i])); }
   const result = { 文字: text, 幀數: n, 幀完全一致: same, 續停ORT: ro.stopped, 續停cudaweb: rc.stopped, 音訊樣本數: oa.length, 音訊相對誤差: d / (r || 1), ORT幀: Array.from(ro.frames.slice(0, 16)), cudaweb幀: Array.from(rc.frames.slice(0, 16)) };

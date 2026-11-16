@@ -41,7 +41,7 @@ function cmp(a, b) {
   const ro = await sess.run(ortFeeds);
   const tOrt = Date.now() - t0;
   const t1 = Date.now();
-  const jo = OI.run(model, jsFeeds, dataFiles);
+  const jo = await OI.run(model, jsFeeds, dataFiles);
   const tJs = Date.now() - t1;
   const res = { T: T, 耗時ms: { ORT: tOrt, 解釋器: tJs }, 輸出: {} };
   for (const nm of sess.outputNames) {

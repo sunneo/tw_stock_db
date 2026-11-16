@@ -4,6 +4,7 @@
 // 張量格式：{ d: number[]（形狀）, t: 'f'（float32）| 'i'（整數，以 Float64 儲存）| 'b'（布林，Uint8）, v: TypedArray }。
 // 只實作目前需要的算子；遇到沒實作的算子會直接丟錯（不偷偷略過）。
 const lite = require('./onnx_lite.js');
+const CONV = require('./conv_ops.js');
 
 const TWO64 = 18446744073709551616;
 
@@ -309,7 +310,7 @@ function constantOfShape(shapeT, valueT) {
   return o;
 }
 
-function execNode(node, ins, ctx) {
+async function execNode(node, ins, ctx) {
   const A = node.attrs;
   const op = node.op;
   const a = ins[0], b = ins[1];
@@ -388,7 +389,11 @@ function execNode(node, ins, ctx) {
       const attrs = {
         strides: attrInts(A.strides), dilations: attrInts(A.dilations), pads: attrInts(A.pads), group: attrInt(A.group, 1),
       };
-      return [conv1dOp(a, b, ins[2] || null, attrs)];
+      const N = a.d[0], C = a.d[1], L = a.d[2], M = b.d[0], Cg = b.d[1], K = b.d[2];
+      const pr = { stride: attrs.strides ? attrs.strides[0] : 1, pads: attrs.pads || [0, 0], dilation: attrs.dilations ? attrs.dilations[0] : 1, groups: attrs.group };
+      const yv = await CONV.conv1d(a.v, N, C, L, b.v, M, Cg, K, ins[2] ? ins[2].v : null, pr, ctx.convOps);
+      const Lout = Math.floor((L + pr.pads[0] + pr.pads[1] - pr.dilation * (K - 1) - 1) / pr.stride) + 1;
+      return [{ d: [N, M, Lout], t: 'f', v: yv }];
     }
     case 'MatMul': return [matmulOp(a, b)];
     case 'Clip': {
@@ -400,7 +405,7 @@ function execNode(node, ins, ctx) {
       if (!branch || !branch.graph) throw new Error('onnx_interp：If 缺少分支');
       const sub = lite.parseGraph(ctx.model.buf, branch.graph);
       const env = Object.create(ctx.env);
-      runNodes(sub.nodes, env, ctx);
+      await runNodes(sub.nodes, env, ctx);
       return sub.outputs.map((name) => lookup(env, name, ctx));
     }
     default:
@@ -424,21 +429,21 @@ function lookup(env, name, ctx) {
   return ctx.inits[name];
 }
 
-function runNodes(nodes, env, ctx) {
+async function runNodes(nodes, env, ctx) {
   for (const node of nodes) {
     const ins = node.inputs.map((nm) => (nm === '' ? null : lookup(env, nm, ctx)));
-    const outs = execNode(node, ins, ctx);
+    const outs = await execNode(node, ins, ctx);
     for (let i = 0; i < node.outputs.length; i++) if (node.outputs[i] !== '') env[node.outputs[i]] = outs[i];
   }
 }
 
 // 執行整個圖。model = lite.parseModel(buf)；feeds：{輸入名: 張量}；dataFiles：{檔名: Uint8Array}
 // 回傳 { 輸出名: 張量 }（只含 model.outputs）
-function run(model, feeds, dataFiles) {
+async function run(model, feeds, dataFiles) {
   const env = Object.create(null);
   for (const k of Object.keys(feeds)) env[k] = feeds[k];
   const ctx = { model: model, inits: Object.create(null), dataFiles: dataFiles || {}, env: env };
-  runNodes(model.nodes, env, ctx);
+  await runNodes(model.nodes, env, ctx);
   const out = {};
   for (const name of model.outputs) out[name] = lookup(env, name, ctx);
   return out;

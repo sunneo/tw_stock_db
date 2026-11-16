@@ -126,8 +126,10 @@ async function runWgsl(dev, code, bufs, uniform, groups) {
   });
   const ub = dev.createBuffer({ size: Math.max(16, Math.ceil(uniform.byteLength / 16) * 16), usage: USAGE.UNIFORM | USAGE.COPY_DST });
   dev.queue.writeBuffer(ub, 0, uniform);
-  const module = dev.createShaderModule({ code: code });
-  const pipe = dev.createComputePipeline({ layout: 'auto', compute: { module: module, entryPoint: 'main' } });
+  // pipeline 快取（同一份 WGSL 只建一次；原本每次呼叫都重建，是注意力比 CPU 慢的主因之一）
+  const pc = dev.__cudawebPipes || (dev.__cudawebPipes = new Map());
+  let pipe = pc.get(code);
+  if (!pipe) { const module = dev.createShaderModule({ code: code }); pipe = dev.createComputePipeline({ layout: 'auto', compute: { module: module, entryPoint: 'main' } }); pc.set(code, pipe); }
   const entries = objs.map((buf, i) => ({ binding: i, resource: { buffer: buf } }));
   entries.push({ binding: bufs.length, resource: { buffer: ub } });
   const bg = dev.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries: entries });
