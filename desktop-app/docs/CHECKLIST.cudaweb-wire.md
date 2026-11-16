@@ -12,6 +12,17 @@
 - [ ] **F. 建置與檢查**：`node build-assistant.js`、`node scripts/build-web-lazy.js`、`node scripts/web-lazy-check.js`、動到的測試全過；`git status` 沒有未提交的來源。
 - [x] **G. 模型檔查詢**：Whisper 產品用 onnx-community/whisper-base（q8，約 80 MB），已在使用，沒有新下載。Basic Pitch：待查檔名／來源／大小（不下載）→ 寫進 DESIGN 與最終回報。（Basic Pitch 查完才勾）
 
+## 第二階段（A 到 G 全部完成後接著做；使用者要「完整加速」）
+- [ ] **H. Qwen3 整段 GPU 解碼**：嵌入、層間串接、取樣都走 GPU，與 ORT 20 步 loss／logits 對拍。
+- [ ] **I. LoRA 訓練端到端 GPU**：梯度與交叉熵等其餘運算，端到端訓練 20 步 loss 對拍。
+- [ ] **J. midigen 整個解碼器 GPU 管線**（含注意力）。
+- [ ] **K. Whisper 編碼器走 GPU**（conv_ops 一維卷積＋注意力），對 transformers.js 輸出比對；用產品現有 whisper-base，不新下載。
+- [ ] **L. Basic Pitch、Demucs、YAMNet**：先查模型檔清單（不下載）；有同意再做圖對照。
+- [ ] **M. SDXS 影像生成**：GroupNorm、交叉注意力、上採樣、VAE；只針對 CPU 版與沒有 f16 的機器。
+- [ ] **N. 裝置自動選擇**：依能力探測與簡單基準自動決定 GPU 路徑要不要開（預設開關仍可手動關）；沒有 WebGPU 的機器走 WebGL2 或純 JS。
+- [ ] **O. Python 相容層補洞**：float64 除法、次方、`math.*`。
+- [ ] **P. Kokoro**：先查 kokoro-js 圖形（唯讀），能估工作量再決定。
+
 ## 最終回報（只回報一次）
 做了什麼（每項一行）、提交編號、哪些只通過 CPU 參考／哪些真 Chrome 驗證過、哪些沒驗證、哪些 BLOCKED（原因）。
 
