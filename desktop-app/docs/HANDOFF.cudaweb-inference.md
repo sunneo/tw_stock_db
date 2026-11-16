@@ -11,7 +11,8 @@ Continue from the handoff document at `desktop-app/docs/HANDOFF.cudaweb-inferenc
 - **目標**：把 cudaweb（WebGPU 推論）接進產品，預設全部關、失敗自動退回、診斷齊全。**不推送、不發布。**
 - **環境（本棒起）**：Linux、無真 GPU；Chrome 156 有軟體 WebGPU（SwiftShader，旗標見 §8.9）；node 20 64 位元可跑大模型。Qwen q8 模型在 `~/.config/floating-assistant-desktop/native-models/qwen3-0.6b-q8/`；這台**沒有** MOSS、midigen、whisper 檔。
 - **本棒（2026-11-16，Linux）提交（新到舊）**：清單 O 勾掉（dd 除法／次方／math.*，Chrome 軟體 WebGPU 對 float64 < 1e-11；dd_mul 改 Dekker）→ N（`device_pick.js`，設定 `gpuAuto`）→ A/C/J/K/L/M/P 標 BLOCKED → H（20 步對拍結果）→ F（建置與檢查）→ E（pipeline 快取與退路測試）→ D（midigen `midiGpu`：`midi_session.js`）→ B（MOSS `mossGpu`：`moss_gpu_runners.js`，提交 `8d60a5bec`）。先前：`cbb355b66`、`c79bd2cbd`（Q）等。`git log --oneline` 看全部。
-- **清單現況**：Q、B、D、H＝部分完成（程式與單元測試做完；真模型／真 GPU 驗收 BLOCKED，原因寫在清單）；E、F、G、N、O＝[x]；A、C、J、K、L、M、P＝BLOCKED（缺模型檔需使用者同意下載，或改動過大）；I（LoRA 訓練端到端 GPU）已完成，清單全部 [x] 或 BLOCKED，只差最終回報。
+- **（2026-11-16 後續棒）清單全部 [x]（部分項目為逐節點層級，見清單與 DESIGN §7.21、§7.22）**：P（Kokoro）`93f2e0c5f`、L（Demucs、YAMNet）`a26e471f2`、M（SDXS int8）`9c3c569e6`、A（MOSS 整管線 3 幀對 ORT 一致）`decc116e8`。新工具：`conv_ops.convT2d／convInt1d`、`mm_ops`、`node_eval`、`scripts/eval/cudaweb_node_dump.js`（逐節點對真 ORT）、`cudaweb_node_gpu_check.js`＋`cudaweb_headless_node_check.sh`（無頭 Chrome 軟體 WebGPU，可用 `SERVER_CMD` 跑其他驗證頁）。`runWgsl` 支援 `cache:true` 常駐權重與二維派發。模型檔在 scratchpad（不入庫）。仍未做：LSTM／STFT／GroupNorm／Softmax 等其餘算子與各模型整管線、產品接線、經產品 worker 的 mossGpu 端到端。
+- **清單現況（較舊）**：Q、B、D、H＝部分完成（程式與單元測試做完；真模型／真 GPU 驗收 BLOCKED，原因寫在清單）；E、F、G、N、O＝[x]；A、C、J、K、L、M、P＝BLOCKED（缺模型檔需使用者同意下載，或改動過大）；I（LoRA 訓練端到端 GPU）已完成，清單全部 [x] 或 BLOCKED，只差最終回報。
 - **設定開關**（全在 `_gpuCompatControls`，AI 助理設定與桌面版設定頁共用同一處；預設關）：`llmGpuHead`、`qwenGpuDecode`、`mossGpu`、`midiGpu`、`gpuAuto`（自動決定，手動勾選仍有效）。診斷：`_gpuStat`、`_mossGpuStat`、`_midiGpuNote/_midiGpuStat`、`_gpuAutoDec`、各結果的 `gpu` 欄位。
 - **DESIGN**：`DESIGN.webgpu-cuda.md` §7.13（Qwen，含 20 步對拍）、§7.14（MOSS）、§7.15（midigen）、§7.16（自動選擇）、§7.17（dd 補洞與兩個平台問題）。
 
