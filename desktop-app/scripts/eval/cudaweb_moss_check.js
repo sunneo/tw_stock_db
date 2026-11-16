@@ -16,11 +16,12 @@ function cmp(a, b) { let d = 0, r = 0; for (let i = 0; i < a.length; i++) { d = 
   const dataFiles = { 'moss_tts_global_shared.data': new Uint8Array(dataBuf.buffer, dataBuf.byteOffset, dataBuf.length) };
   const model = MS.loadMossDecodeStep(fs.readFileSync(onnxPath), dataFiles);
   const L0 = model.layers[0];
-  const dimsInfo = { wte: model.wte.dims, audio0: model.audio[0].dims, cAttnW: L0.cAttnW.dims, cProjW: L0.cProjW.dims, fcInW: L0.fcInW.dims, fcOutW: L0.fcOutW.dims };
+  const dimsInfo = { cAttnW: L0.dims.cAttnW, cProjW: L0.dims.cProjW, fcInW: L0.dims.fcInW, fcOutW: L0.dims.fcOutW };
   const sess = await ort.InferenceSession.create(onnxPath, { executionProviders: ['cpu'] });
   // ORT 的 KV 快取（每層一對），形狀 [1, L, 12, 64]
   let ortCache = null, jsCache = null;
   const res = { 權重維度: dimsInfo, 步驟: [] };
+  const refSteps = [];
   for (let t = 0; t < 3; t++) {
     const ids = [(t * 37 + 5) % 1000];
     for (let c = 0; c < 16; c++) ids.push(c === t ? MS.PAD : (t * 13 + c * 7 + 3) % 1024);
@@ -37,12 +38,15 @@ function cmp(a, b) { let d = 0, r = 0; for (let i = 0; i < a.length; i++) { d = 
     const o = await sess.run(feeds);
     ortCache = []; for (let li = 0; li < MS.NL; li++) ortCache.push({ k: o['present_key_' + li], v: o['present_value_' + li] });
     const ortHidden = Float32Array.from(o.global_hidden.data);
-    const js = MS.decodeStep(model, ids, jsCache);
+    const js = await MS.decodeStep(model, ids, jsCache);
     jsCache = js.caches;
     const r = cmp(js.hidden, ortHidden);
     res.步驟.push({ 步: t, 過去長度: past, 相對誤差: r.rel, 最大絕對誤差: r.maxAbs, ort維度: o.global_hidden.dims });
+    refSteps.push({ ids, ortHidden: Array.from(ortHidden) });
   }
   res.pass = res.步驟.every((s) => s.相對誤差 < 1e-3);
   console.log(JSON.stringify(res, null, 1));
+  // 可選第二參數：把三步的 ids 與 ORT 隱藏狀態寫成 JSON（給瀏覽器 GPU 驗證頁當比對目標）
+  if (process.argv[3]) fs.writeFileSync(process.argv[3], JSON.stringify({ steps: refSteps }));
   process.exitCode = res.pass ? 0 : 1;
 })().catch((e) => { console.error('錯誤：', e && e.stack || e); process.exitCode = 1; });

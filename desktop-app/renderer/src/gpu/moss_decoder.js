@@ -1,12 +1,13 @@
 'use strict';
-// MOSS-TTS-Nano 全域解碼一步（moss_tts_decode_step.onnx）的手寫 CPU 參考版（已逐節點確認運算）。
+// MOSS-TTS-Nano 全域解碼一步（moss_tts_decode_step.onnx）的參考版與可注入運算（已逐節點確認）。
 // 結構（GPT-2 式，12 層，隱藏 768，12 頭，頭維 64）：
 //   輸入 ids 是一列 17 個欄位：第 0 欄是文字詞元（wte），第 1..16 欄是 16 條音訊碼本（audio_embeddings.0..15，pad=1024 時該列歸零）；各列相加。
 //   每層：LN(ln_1) → c_attn（768→2304，切成 q/k/v）→ q、k 做交錯式 RoPE（位置 = 過去有效長度，inv_freq = 10000^(−2i/64)）
 //         → 寫入 KV 快取（時間優先佈局 [L][H][D]）→ 因果注意力（縮放 0.125；單一詞元時 j ≤ 過去長度，全部可見）→ c_proj → 殘差
 //         → LN(ln_2) → fc_in → GELU（tanh 近似）→ fc_out → 殘差。
-//   最後 ln_f → global_hidden（768）。ln_f 的權重在圖中是 h.0.ln_1.weight 的 Identity 別名，這裡照圖使用。
-// 權重：float32；大檔在 *.data（外部資料），這裡依 ext.location／offset／length 從傳入的檔案切出。
+//   最後 ln_f → global_hidden（768）。LN 權重在圖中都是 h.0.ln_1.weight 的 Identity 別名，這裡照圖解析。
+// 可注入運算 ops：{ linear(x, W, K, N, b) → Promise<Float32Array>, attention(q, Kc, Vc, Ln) → Promise<Float32Array> }。
+// 預設是 CPU 參考；GPU 版（moss_gpu.js）只換這兩個。LN、RoPE、GELU、嵌入仍在 CPU（逐元素、很小）。
 const lite = require('./onnx_lite.js');
 
 const D = 768, H = 12, HD = 64, FF = 3072, NL = 12, NCH = 16, PAD = 1024, EPS = 1e-5, SCALE = 0.125, THETA = 10000;
@@ -34,7 +35,7 @@ function loadMossDecodeStep(onnxBuf, dataFiles) {
   const m = lite.parseModel(onnxBuf);
   m.aliases = {};
   for (const n of m.nodes) if (n.op === 'Identity' && n.inputs.length && n.outputs.length) m.aliases[n.outputs[0]] = n.inputs[0];
-  // 找出每個 MatMul 的權重名（節點名含層號後綴）
+  // 每個 MatMul 的權重名（節點名含層號後綴）
   const mmWeight = (base) => {
     const n = m.nodes.find((x) => x.op === 'MatMul' && x.outputs[0] === base + '/MatMul_output_0');
     if (!n) throw new Error('moss_decoder：找不到 MatMul ' + base);
@@ -47,20 +48,20 @@ function loadMossDecodeStep(onnxBuf, dataFiles) {
     layers.push({
       ln1w: readInit(m, p + 'ln_1.weight', dataFiles).data, ln1b: readInit(m, p + 'ln_1.bias', dataFiles).data,
       ln2w: readInit(m, p + 'ln_2.weight', dataFiles).data, ln2b: readInit(m, p + 'ln_2.bias', dataFiles).data,
-      cAttnW: mmWeight('/c_attn' + sfx), cAttnB: readInit(m, p + 'attn.c_attn.bias', dataFiles).data,
-      cProjW: mmWeight('/c_proj' + sfx), cProjB: readInit(m, p + 'attn.c_proj.bias', dataFiles).data,
-      fcInW: mmWeight('/mlp/fc_in' + sfx), fcInB: readInit(m, p + 'mlp.fc_in.bias', dataFiles).data,
-      fcOutW: mmWeight('/mlp/fc_out' + sfx), fcOutB: readInit(m, p + 'mlp.fc_out.bias', dataFiles).data,
+      cAttnW: mmWeight('/c_attn' + sfx).data, cAttnB: readInit(m, p + 'attn.c_attn.bias', dataFiles).data,
+      cProjW: mmWeight('/c_proj' + sfx).data, cProjB: readInit(m, p + 'attn.c_proj.bias', dataFiles).data,
+      fcInW: mmWeight('/mlp/fc_in' + sfx).data, fcInB: readInit(m, p + 'mlp.fc_in.bias', dataFiles).data,
+      fcOutW: mmWeight('/mlp/fc_out' + sfx).data, fcOutB: readInit(m, p + 'mlp.fc_out.bias', dataFiles).data,
+      dims: { cAttnW: mmWeight('/c_attn' + sfx).dims, cProjW: mmWeight('/c_proj' + sfx).dims, fcInW: mmWeight('/mlp/fc_in' + sfx).dims, fcOutW: mmWeight('/mlp/fc_out' + sfx).dims },
     });
   }
   const audio = [];
-  for (let c = 0; c < NCH; c++) audio.push(readInit(m, 'core.model.audio_embeddings.' + c + '.weight', dataFiles));
+  for (let c = 0; c < NCH; c++) audio.push(readInit(m, 'core.model.audio_embeddings.' + c + '.weight', dataFiles).data);
   return {
-    wte: readInit(m, 'core.model.transformer.wte.weight', dataFiles),
+    wte: readInit(m, 'core.model.transformer.wte.weight', dataFiles).data,
     audio,
     layers,
-    // ln_f 權重是 h.0.ln_1.weight 的別名（見檔頭）
-    lnFw: readInit(m, 'core.model.transformer.h.0.ln_1.weight', dataFiles).data,
+    lnFw: readInit(m, 'core.model.transformer.ln_f.weight', dataFiles).data,
     lnFb: readInit(m, 'core.model.transformer.ln_f.bias', dataFiles).data,
   };
 }
@@ -75,8 +76,8 @@ function layerNorm(x, w, b) {
   return o;
 }
 
-// y = x · W + b，W 形狀 [K, N]（列優先）
-function linear(x, W, K, N, b) {
+// y = x · W + b，W 形狀 [K, N]（列優先）— CPU 參考
+function linearCpu(x, W, K, N, b) {
   const y = new Float32Array(N);
   for (let n = 0; n < N; n++) y[n] = b ? b[n] : 0;
   for (let k = 0; k < K; k++) {
@@ -85,6 +86,32 @@ function linear(x, W, K, N, b) {
   }
   return y;
 }
+
+// 單一詞元的因果注意力 — CPU 參考。q 長度 D；Kc、Vc 為 Ln×D（時間優先）；回傳長度 D。
+function attentionCpu(q, Kc, Vc, Ln) {
+  const ao = new Float32Array(D);
+  for (let hh = 0; hh < H; hh++) {
+    const qo = hh * HD;
+    const sc = new Float64Array(Ln);
+    let mx = -Infinity;
+    for (let j = 0; j < Ln; j++) {
+      let dot = 0; const ko = j * D + hh * HD;
+      for (let d = 0; d < HD; d++) dot += q[qo + d] * Kc[ko + d];
+      sc[j] = dot * SCALE; if (sc[j] > mx) mx = sc[j];
+    }
+    let sum = 0; for (let j = 0; j < Ln; j++) { sc[j] = Math.exp(sc[j] - mx); sum += sc[j]; }
+    for (let j = 0; j < Ln; j++) {
+      const p = sc[j] / sum, vo = j * D + hh * HD;
+      for (let d = 0; d < HD; d++) ao[hh * HD + d] += p * Vc[vo + d];
+    }
+  }
+  return ao;
+}
+
+const CPU_OPS = {
+  linear: async (x, W, K, N, b) => linearCpu(x, W, K, N, b),
+  attention: async (q, Kc, Vc, Ln) => attentionCpu(q, Kc, Vc, Ln),
+};
 
 // 交錯式 RoPE（單一詞元，位置 pos）：配對 (2i, 2i+1)，角度 pos·θ^(−2i/64)
 function rope(x, pos) {
@@ -99,24 +126,24 @@ function rope(x, pos) {
 }
 
 // 一步解碼。ids：17 個整數（第 0 欄文字，1..16 音訊碼）；caches：每層 {K, V, L}（K/V 為 L×H×HD，時間優先）。
-// 回傳 { hidden: Float32Array(768), caches }（新快取長度 L+1）。
-function decodeStep(model, ids, caches) {
+// ops：可注入運算（預設 CPU）。回傳 { hidden: Float32Array(768), caches, tiers }（新快取長度 L+1）。
+async function decodeStep(model, ids, caches, ops) {
+  const O = ops || CPU_OPS;
   const past = caches ? caches[0].L : 0;
-  // 嵌入：文字 + 音訊（pad 歸零）
   let x = new Float32Array(D);
-  const tw = model.wte.data, to = ids[0] * D;
+  const tw = model.wte, to = ids[0] * D;
   for (let i = 0; i < D; i++) x[i] = tw[to + i];
   for (let c = 0; c < NCH; c++) {
     const id = ids[c + 1];
     if (id === PAD) continue;
-    const tab = model.audio[c].data, o = id * D;
+    const tab = model.audio[c], o = id * D;
     for (let i = 0; i < D; i++) x[i] += tab[o + i];
   }
   const next = [];
   for (let li = 0; li < NL; li++) {
     const L = model.layers[li];
     const h = layerNorm(x, L.ln1w, L.ln1b);
-    const qkv = linear(h, L.cAttnW.data || L.cAttnW, D, 3 * D, L.cAttnB);
+    const qkv = await O.linear(h, L.cAttnW, D, 3 * D, L.cAttnB);
     const q = rope(qkv.subarray(0, D), past);
     const k = rope(qkv.subarray(D, 2 * D), past);
     const v = qkv.subarray(2 * D, 3 * D);
@@ -125,33 +152,17 @@ function decodeStep(model, ids, caches) {
     if (past > 0) { Kc.set(caches[li].K.subarray(0, past * D)); Vc.set(caches[li].V.subarray(0, past * D)); }
     Kc.set(k, past * D); Vc.set(v, past * D);
     next.push({ K: Kc, V: Vc, L: Ln });
-    // 注意力：每個頭對所有 j ≤ past 計分（單一詞元，遮罩全部可見）
-    const ao = new Float32Array(D);
-    for (let hh = 0; hh < H; hh++) {
-      const qo = hh * HD;
-      const sc = new Float64Array(Ln);
-      let mx = -Infinity;
-      for (let j = 0; j < Ln; j++) {
-        let dot = 0; const ko = j * D + hh * HD;
-        for (let d = 0; d < HD; d++) dot += q[qo + d] * Kc[ko + d];
-        sc[j] = dot * SCALE; if (sc[j] > mx) mx = sc[j];
-      }
-      let sum = 0; for (let j = 0; j < Ln; j++) { sc[j] = Math.exp(sc[j] - mx); sum += sc[j]; }
-      for (let j = 0; j < Ln; j++) {
-        const p = sc[j] / sum, vo = j * D + hh * HD;
-        for (let d = 0; d < HD; d++) ao[hh * HD + d] += p * Vc[vo + d];
-      }
-    }
-    const pr = linear(ao, L.cProjW.data || L.cProjW, D, D, L.cProjB);
+    const ao = await O.attention(q, Kc, Vc, Ln);
+    const pr = await O.linear(ao, L.cProjW, D, D, L.cProjB);
     for (let i = 0; i < D; i++) x[i] += pr[i];
     const h2 = layerNorm(x, L.ln2w, L.ln2b);
-    const f1 = linear(h2, L.fcInW.data || L.fcInW, D, FF, L.fcInB);
+    const f1 = await O.linear(h2, L.fcInW, D, FF, L.fcInB);
     for (let i = 0; i < FF; i++) { const g = f1[i]; f1[i] = 0.5 * g * (1 + Math.tanh(0.7978846 * (g + 0.044715 * g * g * g))); }
-    const f2 = linear(f1, L.fcOutW.data || L.fcOutW, FF, D, L.fcOutB);
+    const f2 = await O.linear(f1, L.fcOutW, FF, D, L.fcOutB);
     for (let i = 0; i < D; i++) x[i] += f2[i];
   }
   const hidden = layerNorm(x, model.lnFw, model.lnFb);
   return { hidden, caches: next };
 }
 
-module.exports = { loadMossDecodeStep, decodeStep, readInit, layerNorm, linear, rope, D, H, HD, NL, NCH, PAD };
+module.exports = { loadMossDecodeStep, decodeStep, readInit, layerNorm, linearCpu, attentionCpu, rope, CPU_OPS, D, H, HD, FF, NL, NCH, PAD, SCALE };

@@ -558,6 +558,14 @@ GUI 的獨立 Worker 模擬器目前沒有註冊 `_fa_cudaweb`，不能 `import 
   - **速度（只記一個數字，未優化）**：預填 3 詞元 2.25 秒、解碼一步 1.40 秒。原因：`runWgsl` 每次呼叫重建 pipeline，且注意力與 RoPE 還是 CPU。不是效能結論。
 - **尚未做**：把這條路徑**接進桌面版**（`music/native_ort.js` 的接線、沿用 gpuhead 做法）。這需要在真 Electron 驗證，而管理者與使用者已停止量測；**本次只完成參考實作與網頁版 GPU 驗證，桌面接線未做**。注意力與 RoPE 尚未上 GPU；未驗證 WebGL2 退路；未驗證完整生成（多步迴圈、取樣）。
 
+### 7.11 MOSS-TTS-Nano 全域解碼一步（2026-11-16）
+- **下載（使用者 2026-11-16 直接說「同意下載 MOSS」）**：來源 `OpenMOSS-Team/MOSS-TTS-Nano-100M-ONNX`（TTS）與 `OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano-ONNX`（codec）；15 個檔、合計 762,840,113 位元組（清單與大小同桌面版 `floating-assistant.js` 的 `MOSS_FILES`）；存於 scratchpad `moss\`，不入庫，逐檔大小已核對。
+- **圖的實際運算**（`scripts/eval/cudaweb_onnx_dump.js` 傾印）：GPT-2 式 12 層，隱藏 768、12 頭、頭維 64；嵌入為 17 欄（第 0 欄文字 wte，1..16 音訊碼本，pad 1024 歸零）相加；c_attn 融合 qkv（768→2304）；交錯式 RoPE，θ=10000；注意力縮放 0.125；GELU tanh 近似；LN eps 1e-5；**所有 LN 權重在圖中都是 `h.0.ln_1.weight` 的 Identity 別名**（照圖解析，未另外判斷是否為匯出副作用）。
+- **手寫 CPU 參考版**（`renderer/src/gpu/moss_decoder.js`）對**真 ORT（CPU EP）**（`scripts/eval/cudaweb_moss_check.js`）：三步解碼（含 pad 列），相對誤差 **4.0e-6、4.0e-6、3.9e-6**，通過。
+- **GPU 矩陣乘與注意力**（`renderer/src/gpu/moss_gpu.js`：float32 WGSL 矩陣乘、單一詞元因果注意力，退路 cpu-js）：真 Chrome WebGPU（`scripts/eval/cudaweb_moss_gpu_check.js`）三步隱藏狀態相對誤差 **3.7e-6、4.5e-6、3.6e-6**；矩陣乘 144 次、注意力 36 次**全部 T1**，通過。
+  - **速度（只記一個數字，未優化）**：每步約 1.3–1.6 秒。原因：`runWgsl` 每次重建 pipeline；LN、RoPE、GELU、嵌入仍在 CPU。
+- **未做**：GPU 上的 LN、RoPE、GELU；WebGL2 退路；pipeline 快取；local 解碼器與取樣（`moss_tts_local_*`）；codec（音訊 tokenizer）解碼；完整語音生成的端到端比對。Basic Pitch 卷積與 Whisper 的新模型仍未取得同意，未做。
+
 ### 7.4 與原生執行環境的關係
 
 - cudaweb 不改動 `main-ext.js` 的原生執行包流程。
