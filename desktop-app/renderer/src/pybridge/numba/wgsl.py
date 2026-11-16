@@ -40,7 +40,8 @@ _WIDEN = {(I32, F32), (I32, DD), (F32, DD)}
 EXACT_MSG = ("參數 %s 是 float64 陣列；cudaCompatFloat64=exact，保持與 CUDA 同精度，所以在本機 Python 模擬。"
              "要用 GPU 請把設定改成 auto（雙 float32，約 48 位元）或 f32（精度降為 float32）")
 
-# 雙 float32（DESIGN.webgpu-cuda.md §3 的 f64 替代）。用 WGSL 內建 fma 做乘法的誤差項。
+# 雙 float32（DESIGN.webgpu-cuda.md §3 的 f64 替代）。乘法的誤差項用 Dekker 分割（不用 fma）：Chrome 的軟體 WebGPU（SwiftShader）的 fma 不是融合運算，
+# 用 fma 的 dd_mul 在那裡只剩 float32 精度（實測相對誤差 5.8e-8）；Dekker 分割在有／沒有融合乘加的裝置上都正確（編譯器即使把 a*b−p 收縮成 fma 結果仍精確）。
 DD_LIB = """// 雙 float32（hi + lo）的運算庫：float64 核心在 cudaCompatFloat64=auto 時用這組函式
 fn dd_of_f32(a: f32) -> vec2<f32> { return vec2<f32>(a, 0.0); }
 fn dd_to_f32(a: vec2<f32>) -> f32 { return a.x + a.y; }
@@ -63,10 +64,22 @@ fn dd_add(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
   return dd_quick_two_sum(q1.x, q1.y + t.y);
 }
 fn dd_sub(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> { return dd_add(a, dd_neg(b)); }
+fn dd_split(a: f32) -> vec2<f32> {
+  let t = 4097.0 * a;
+  let hi = t - (t - a);
+  return vec2<f32>(hi, a - hi);
+}
+fn dd_two_prod(a: f32, b: f32) -> vec2<f32> {
+  let p = a * b;
+  let sa = dd_split(a);
+  let sb = dd_split(b);
+  let e = ((sa.x * sb.x - p) + sa.x * sb.y + sa.y * sb.x) + sa.y * sb.y;
+  return vec2<f32>(p, e);
+}
 fn dd_mul(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
-  let p = a.x * b.x;
-  let e = fma(a.x, b.x, -p) + (a.x * b.y + a.y * b.x);
-  return dd_quick_two_sum(p, e);
+  let tp = dd_two_prod(a.x, b.x);
+  let e = tp.y + (a.x * b.y + a.y * b.x);
+  return dd_quick_two_sum(tp.x, e);
 }
 fn dd_lt(a: vec2<f32>, b: vec2<f32>) -> bool { return (a.x < b.x) || ((a.x == b.x) && (a.y < b.y)); }
 fn dd_eq(a: vec2<f32>, b: vec2<f32>) -> bool { return (a.x == b.x) && (a.y == b.y); }
@@ -78,6 +91,130 @@ fn dd_min(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> { if (dd_lt(b, a)) { return b
 fn dd_max(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> { if (dd_lt(a, b)) { return b; } return a; }
 fn dd_abs(a: vec2<f32>) -> vec2<f32> { if (a.x < 0.0) { return -a; } return a; }
 """
+
+
+def _ddc(x):
+    """高精度常數（Fraction 或 float）→ WGSL 的 vec2<f32>(hi, lo) 字面值。"""
+    from fractions import Fraction
+    fx = Fraction(x)
+    hi = float(np.float32(float(fx)))
+    lo = float(np.float32(float(fx - Fraction(hi))))
+    return "vec2<f32>(%sf, %sf)" % (repr(hi), repr(lo))
+
+
+def _dd_ext_lib():
+    """雙 float32 的除法、開根號、exp、log、sin／cos／tan、tanh、floor／ceil、整數次方（DESIGN.webgpu-cuda.md §3；用到 dd_add／dd_mul 之上）。
+    做法：除法用三次商修正；sqrt 用牛頓一次；exp 先用 ln2 縮到 |r|≤0.35·2⁻⁸ 再泰勒 expm1、平方 8 次還原、乘 2^k（位元構造，k∈[-126,127]）；
+    log 以 f32 的 log 起頭、牛頓一次（y += a·exp(−y) − 1）；sin／cos 用 π/2 縮減（|x| 約 1e3 以內有 1e-14 級精度）再泰勒；tanh 用 exp。"""
+    from fractions import Fraction
+    import math as _m
+    ln2 = Fraction("0.693147180559945309417232121458176568075500134360255254120680009")
+    pio2 = Fraction("1.570796326794896619231321691639751442098584699687552910487472296")
+    fact = [Fraction(1)]
+    for n in range(1, 24):
+        fact.append(fact[-1] * n)
+    sin_c = ", ".join(_ddc(Fraction((-1) ** i, fact[2 * i + 1])) for i in range(10))
+    cos_c = ", ".join(_ddc(Fraction((-1) ** i, fact[2 * i])) for i in range(10))
+    inv_f = ", ".join(_ddc(Fraction(1, fact[n])) for n in range(2, 9))
+    return """
+fn dd_mul_f(a: vec2<f32>, b: f32) -> vec2<f32> {
+  let tp = dd_two_prod(a.x, b);
+  return dd_quick_two_sum(tp.x, tp.y + a.y * b);
+}
+fn dd_div(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
+  // 四次商修正：編譯器把分子是常數的 1.0/x 換成近似倒數時（SwiftShader 實測只有約 12 位元），三次修正只到 float32 精度（5.9e-8），四次才夠 48 位元
+  let q1 = a.x / b.x;
+  let r1 = dd_sub(a, dd_mul_f(b, q1));
+  let q2 = r1.x / b.x;
+  let r2 = dd_sub(r1, dd_mul_f(b, q2));
+  let q3 = r2.x / b.x;
+  let r3 = dd_sub(r2, dd_mul_f(b, q3));
+  let q4 = r3.x / b.x;
+  return dd_add(dd_quick_two_sum(q1, q2), dd_quick_two_sum(q3, q4));
+}
+fn dd_sqrt(a: vec2<f32>) -> vec2<f32> {
+  if (a.x <= 0.0) { return vec2<f32>(sqrt(a.x), 0.0); }
+  let y = vec2<f32>(sqrt(a.x), 0.0);
+  return dd_mul_f(dd_add(y, dd_div(a, y)), 0.5);
+}
+fn dd_pow2k(k: i32) -> f32 {
+  if (k < -126) { return 0.0; }
+  return bitcast<f32>(u32(min(k, 127) + 127) << 23u);
+}
+fn dd_exp(a: vec2<f32>) -> vec2<f32> {
+  if (a.x > 88.0) { return vec2<f32>(3.4028234e38, 0.0); }
+  if (a.x < -87.0) { return vec2<f32>(0.0, 0.0); }
+  let LN2 = %(ln2)s;
+  let k = i32(round(a.x / LN2.x));
+  var s = dd_mul_f(dd_sub(a, dd_mul_f(LN2, f32(k))), 0.00390625);
+  var p = dd_mul(s, s);
+  var t = s;
+  var INVF = array<vec2<f32>, 7>(%(invf)s);
+  // expm1(s) = s + s²/2! + … + s⁸/8!（|s| ≤ 0.0014，到 s⁸ 已遠小於 1e-30）
+  var sum = s;
+  for (var i = 0; i < 7; i = i + 1) { sum = dd_add(sum, dd_mul(p, INVF[i])); p = dd_mul(p, s); }
+  for (var j = 0; j < 8; j = j + 1) { sum = dd_add(dd_mul_f(sum, 2.0), dd_mul(sum, sum)); }
+  return dd_mul_f(dd_add(sum, vec2<f32>(1.0, 0.0)), dd_pow2k(k));
+}
+fn dd_log(a: vec2<f32>) -> vec2<f32> {
+  if (a.x <= 0.0) { return vec2<f32>(log(a.x), 0.0); }
+  let y = vec2<f32>(log(a.x), 0.0);
+  return dd_sub(dd_add(y, dd_mul(a, dd_exp(dd_neg(y)))), vec2<f32>(1.0, 0.0));
+}
+fn dd_sincos_core(r: vec2<f32>) -> array<vec2<f32>, 2> {
+  var SC = array<vec2<f32>, 10>(%(sinc)s);
+  var CC = array<vec2<f32>, 10>(%(cosc)s);
+  let r2 = dd_mul(r, r);
+  var sn = SC[9];
+  var cs = CC[9];
+  for (var i = 8; i >= 0; i = i - 1) { sn = dd_add(dd_mul(sn, r2), SC[i]); cs = dd_add(dd_mul(cs, r2), CC[i]); }
+  return array<vec2<f32>, 2>(dd_mul(sn, r), cs);
+}
+fn dd_sincos(a: vec2<f32>) -> array<vec2<f32>, 2> {
+  let PIO2 = %(pio2)s;
+  let k = round(a.x / PIO2.x);
+  let r = dd_sub(a, dd_mul_f(PIO2, k));
+  let sc = dd_sincos_core(r);
+  let q = ((i32(k) %% 4) + 4) %% 4;
+  if (q == 0) { return sc; }
+  if (q == 1) { return array<vec2<f32>, 2>(sc[1], -sc[0]); }
+  if (q == 2) { return array<vec2<f32>, 2>(-sc[0], -sc[1]); }
+  return array<vec2<f32>, 2>(-sc[1], sc[0]);
+}
+fn dd_sin(a: vec2<f32>) -> vec2<f32> { return dd_sincos(a)[0]; }
+fn dd_cos(a: vec2<f32>) -> vec2<f32> { return dd_sincos(a)[1]; }
+fn dd_tan(a: vec2<f32>) -> vec2<f32> { let sc = dd_sincos(a); return dd_div(sc[0], sc[1]); }
+fn dd_tanh(a: vec2<f32>) -> vec2<f32> {
+  if (a.x > 20.0) { return vec2<f32>(1.0, 0.0); }
+  if (a.x < -20.0) { return vec2<f32>(-1.0, 0.0); }
+  let e = dd_exp(dd_mul_f(a, 2.0));
+  return dd_div(dd_sub(e, vec2<f32>(1.0, 0.0)), dd_add(e, vec2<f32>(1.0, 0.0)));
+}
+fn dd_floor(a: vec2<f32>) -> vec2<f32> {
+  let f = floor(a.x);
+  if (f == a.x) { return dd_quick_two_sum(f, floor(a.y)); }
+  return vec2<f32>(f, 0.0);
+}
+fn dd_ceil(a: vec2<f32>) -> vec2<f32> { return -dd_floor(-a); }
+fn dd_powi(a: vec2<f32>, n: i32) -> vec2<f32> {
+  var e = abs(n);
+  var base = a;
+  var r = vec2<f32>(1.0, 0.0);
+  for (var i = 0; i < 31; i = i + 1) {
+    if (e == 0) { break; }
+    if ((e & 1) == 1) { r = dd_mul(r, base); }
+    e = e >> 1u;
+    if (e != 0) { base = dd_mul(base, base); }
+  }
+  // 1/r 寫成 r/(r·r)：分子是編譯期常數 (1,0) 時，SwiftShader 會把 dd_div 內的 two_sum 化簡掉，結果只剩 float32 精度（5.9e-8）；兩個運算元都在執行期才知道就正確
+  if (n < 0) { return dd_div(r, dd_mul(r, r)); }
+  return r;
+}
+fn dd_pow(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> { return dd_exp(dd_mul(b, dd_log(a))); }
+""" % {"ln2": _ddc(ln2), "pio2": _ddc(pio2), "sinc": sin_c, "cosc": cos_c, "invf": inv_f}
+
+
+DD_LIB = DD_LIB + _dd_ext_lib()
 
 
 def _fl(x):
@@ -278,9 +415,23 @@ class _Gen(object):
             self.err(n, "布林值不能參與算術運算")
         op = type(n.op)
         if self._dd_mode_float(at, bt):
-            fn = {ast.Add: "dd_add", ast.Sub: "dd_sub", ast.Mult: "dd_mul"}.get(op)
+            if op is ast.Pow:
+                e = n.right
+                if isinstance(e, ast.UnaryOp) and isinstance(e.op, ast.USub) and isinstance(e.operand, ast.Constant):
+                    ev = -e.operand.value
+                elif isinstance(e, ast.Constant):
+                    ev = e.value
+                else:
+                    ev = None
+                if isinstance(ev, (int, float)) and not isinstance(ev, bool) and float(ev) == int(ev) and abs(int(ev)) <= 64:
+                    return "dd_powi(%s, %d)" % (self.coerce(n, a, at, DD), int(ev)), DD
+                if ev == 0.5:
+                    return "dd_sqrt(%s)" % self.coerce(n, a, at, DD), DD
+                # 一般次方：exp(b·log a)（只對 a>0 有意義；a≤0 結果未定義，與 numba 的 NaN 不同）
+                return "dd_pow(%s, %s)" % (self.coerce(n, a, at, DD), self.coerce(n, b, bt, DD)), DD
+            fn = {ast.Add: "dd_add", ast.Sub: "dd_sub", ast.Mult: "dd_mul", ast.Div: "dd_div"}.get(op)
             if fn is None:
-                self.err(n, "雙 float32 模式目前只支援 + − ×、比較、min、max、abs（除法、次方、取餘與 math 函式尚未實作，DESIGN.webgpu-cuda.md §3）；"
+                self.err(n, "雙 float32 模式目前不支援取餘（%）與整數除法（//）（DESIGN.webgpu-cuda.md §3）；"
                             "可改用 cudaCompatFloat64=f32（精度降為 float32）或 exact")
             return "%s(%s, %s)" % (fn, self.coerce(n, a, at, DD), self.coerce(n, b, bt, DD)), DD
         if op in (ast.Add, ast.Sub, ast.Mult):
@@ -346,7 +497,8 @@ class _Gen(object):
         if isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name) and f.value.id == "math" \
                 and f.attr in _MATH1 and len(n.args) == 1:
             if self.fmode == DD:
-                self.err(n, "雙 float32 模式尚未支援 math.%s（超越函數之後再做）；請改用 cudaCompatFloat64=f32 或 exact" % f.attr)
+                a, at = self.expr(n.args[0])
+                return "dd_%s(%s)" % ({"fabs": "abs"}.get(f.attr, f.attr), self.coerce(n, a, at, DD)), DD
             a, at = self.expr(n.args[0])
             return "%s(%s)" % (_MATH1[f.attr], self.coerce(n, a, at, F32)), F32
         if _is_grid_call(n) or _is_atomic_add(n):

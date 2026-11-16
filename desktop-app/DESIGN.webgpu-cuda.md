@@ -150,11 +150,11 @@ Python 端 `cudaweb.backend_info()` 與 JS 端 `runtime.backendInfo()` 回傳相
 | f16 | 有（`shader-f16`，檔 C） | 沒有 `shader-f16`：整個核心改用 f32 版本 | RGBA16F（需 EXT_color_buffer_half_float） | f32 計算 | 低 | 1 |
 | bf16 | 沒有 | 以 u16 位元移位轉成 f32 計算 | 同左 | 同左 | 低 | 2 |
 | tf32 | 沒有 | 以 f32 計算（精度較高，結果不位元相同） | 同左 | 同左 | 低 | 2 |
-| f64 | 沒有 | 雙 f32（double-float，`hi + lo`，TwoSum、TwoProd、WGSL `fma`）；有效尾數約 48 位元（Python 鏡像實測約 1e-13 相對誤差，GPU 上尚未實測）。已接上 numba 逐元素 `+ − ×`、比較、min／max；除法等尚未支援。由 `cudaCompatFloat64` 設定：`exact`（退回模擬，與 CUDA 同精度）／`f32`（精度降為 float32）／`auto`（預設，雙 f32＋抽樣檢查，見 DESIGN.python-api-bridge.md「GPU 相容層」） | 同左，每個運算約 10 至 20 倍工作量 | 原生 f64 | 高（每個運算 10 至 20 倍） | 2 |
+| f64 | 沒有 | 雙 f32（double-float，`hi + lo`，TwoSum、TwoProd、WGSL `fma`）；有效尾數約 48 位元（Python 鏡像實測約 1e-13 相對誤差，GPU 上尚未實測）。已接上 numba 逐元素 `+ − ×`、除法、整數次方（常數指數）、一般次方（exp(b·log a)）、`math.sqrt／exp／log／sin／cos／tan／tanh／floor／ceil／fabs`、比較、min／max（清單 O，§7.17）；取餘與整數除法 `//` 尚未支援。由 `cudaCompatFloat64` 設定：`exact`（退回模擬，與 CUDA 同精度）／`f32`（精度降為 float32）／`auto`（預設，雙 f32＋抽樣檢查，見 DESIGN.python-api-bridge.md「GPU 相容層」） | 同左，每個運算約 10 至 20 倍工作量 | 原生 f64 | 高（每個運算 10 至 20 倍） | 2 |
 | 64 位元整數 i64、u64 | 沒有 | 兩個 u32 加進位與借位；乘法用 16 位元分段 | 同左 | 原生 | 中到高 | 2 |
 | 8、16 位元整數原子 | 沒有 | 用 32 位元原子加遮罩模擬 | 不需要原子 | 原生 | 中 | 3 |
 
-**f64 的 auto 決定（2026-11-15，管理者接受）**：`cudaCompatFloat64=auto`（預設）採雙 float32，**不要求輸入先能無損表示成 float32**。原先的提案是「輸入無損成 float32，再用一般 float32 做加減乘」，那個前提對一般陣列通常不成立；雙 float32 的精度比單 float32 高，所以直接用它，不需要那個前提。這與原提案不同，是刻意的偏離，記錄在這裡與 DESIGN.python-api-bridge.md「GPU 相容層」。除法、次方、取餘、`math.*` 在雙 float32 模式尚未支援，會說明原因後退回本機模擬。
+**f64 的 auto 決定（2026-11-15，管理者接受）**：`cudaCompatFloat64=auto`（預設）採雙 float32，**不要求輸入先能無損表示成 float32**。原先的提案是「輸入無損成 float32，再用一般 float32 做加減乘」，那個前提對一般陣列通常不成立；雙 float32 的精度比單 float32 高，所以直接用它，不需要那個前提。這與原提案不同，是刻意的偏離，記錄在這裡與 DESIGN.python-api-bridge.md「GPU 相容層」。取餘與整數除法在雙 float32 模式尚未支援（除法、次方、`math.*` 已於 §7.17 補上），會說明原因後退回本機模擬。
 
 ### 3.3 原子與記憶體
 
@@ -823,4 +823,11 @@ Python 模擬器與離線模型推論共用同一個 GPU 裝置：
 - `renderer/src/gpu/device_pick.js`：`decide(info)` 純決策（沒有 WebGPU／沒有 adapter／軟體 adapter（`isFallbackAdapter` 或名稱含 swiftshader、llvmpipe、software、lavapipe…）一律關；真 GPU 要基準 ≥ 20 GFLOP/s 且 ≥ CPU 基準 3 倍）；`probe(navigator, nn_ops)` 量 256×256 WGSL 矩陣乘（含上傳讀回）與 96×96 JS 矩陣乘；軟體 adapter 不量直接關。各條路徑（qwenGpuDecode、mossGpu、midiGpu、llmGpuHead）目前同一結果，原因寫明（`features[f].reason`）。
 - 產品：`floating-assistant.js` 的 `_gpuAutoOn(feature)`／`_gpuAutoProbe()`（結果快取 `_gpuAutoDec`；探測完成前視為關）；各 `_xxxOn()` = 手動勾選 **或** 自動決定。手動勾選一定開；要完全不用就關 `gpuAuto` 並取消勾選。模組由 `FA_QWEN_SRC` 帶（`pick`、`nn`）。設定放 `_gpuCompatControls`（AI 助理設定與桌面版設定頁共用），狀態列多一行「自動選擇：…」。
 - 驗證（如實）：`device_pick_test.js`（決策規則全部分支、probe 不丟錯、軟體 adapter 不量基準）通過。**未驗證**：真 GPU 上基準數字與門檻是否合理（這台沒有真 GPU）；門檻是保守猜測，要用真機數字調。
+
+### 7.17 雙 float32（dd）補洞：除法、次方、math.*（2026-11-16，清單 O）
+
+- **實作**：`renderer/src/pybridge/numba/wgsl.py` 的 `DD_LIB` 加 `dd_div`（四次商修正）、`dd_sqrt`（牛頓一次）、`dd_exp`（ln2 縮減＋expm1 泰勒＋平方還原＋2^k 位元構造）、`dd_log`（牛頓一次）、`dd_sin／cos／tan`（π/2 縮減＋泰勒）、`dd_tanh`、`dd_floor／ceil`、`dd_powi`（整數指數，|n|≤64）、`dd_pow`（exp(b·log a)，只對 a>0 有意義）；編譯器 `binop`／`call` 對應 `/`、`**`、`math.*`。常數（ln2、π/2、倒階乘）由 Python 的 `Fraction` 產生，不手打。取餘 `%` 與整數除法 `//` 仍不支援（說明原因，退回本機模擬）。
+- **驗證（真 Chrome WebGPU，這台是軟體 WebGPU SwiftShader；`scripts/eval/cudaweb_dd_math_check.js`）**：410 組輸入，與 JS float64 比對，最大相對誤差：div 5e-15、sqrt 5e-15、exp 5e-14、log 6e-14（絕對）、sin 1e-13、cos 8e-14、tan 2.3e-12、tanh 6e-15、x³ 1e-14、x⁻² 1e-14、add 5e-15、mul 7e-15（全部 < 1e-11）。範圍：|x| 在 60 以內；sin／cos 的 π/2 縮減只用 dd 常數，|x| 約 1e3 以內有此精度。
+- **這次發現的兩個平台問題（已處理）**：(1) **SwiftShader 的 `fma` 不是融合運算**，原本用 `fma` 求乘法誤差項的 `dd_mul` 在那裡只剩 float32 精度（相對誤差 5.8e-8）；改用 Dekker 分割（`dd_two_prod`），有沒有融合乘加的裝置都正確。(2) **編譯器對「第一個運算元是編譯期常數」的 dd 運算會化簡掉 two_sum 的誤差項**（實測 `dd_div((1,0), r)` 只有 float32 精度 5.9e-8，改成 `r/(r·r)` 兩個運算元都在執行期才正確）。**風險**：核心裡用常數當 dd 運算元（例如 `x[i] * 2.5 + y[i]` 的 2.5）在這類編譯器上可能損失精度；本次只在 `dd_powi` 負指數處避開，**一般常數運算元尚未做對策**（`flit` 產生的常數）。真 GPU 上是否同樣化簡未驗證。
+- 單元測試：`fa_gpu_py_test.py` 48 項（含各運算編譯成 `dd_*` 的文字檢查、`%`／`//` 的拒絕、不含 `fma(`）通過。
 

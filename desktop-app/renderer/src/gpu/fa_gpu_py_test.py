@@ -799,10 +799,17 @@ def t_wgsl_dd_text_and_refusals():
     by = {b["wname"]: b for b in plan.bindings}
     assert by["a_x"]["dtype"] == "dd" and by["a_out"]["write"] and by["a_out"]["dtype"] == "dd", by
     assert plan.fmode == "dd"
-    div = "def k(x):\n    i = cuda.grid(1)\n    x[i] = x[i] / 3.0\n"
-    for bad, want in ((div, "除法"), ("def k(x):\n    i = cuda.grid(1)\n    x[i] = math.sqrt(x[i])\n", "math.sqrt")):
+    # 除法、次方、math.* 在雙 float32 模式會編成 dd_ 函式（清單 O；數值驗證見 scripts/eval/cudaweb_dd_math_check.js，真 Chrome WebGPU）
+    for src2, want in (("x[i] = x[i] / 3.0", "dd_div(a_x[v_i], vec2<f32>("), ("x[i] = x[i] ** 3", "dd_powi(a_x[v_i], 3)"), ("x[i] = x[i] ** -2", "dd_powi(a_x[v_i], -2)"),
+                       ("x[i] = x[i] ** 0.5", "dd_sqrt(a_x[v_i])"), ("x[i] = x[i] ** 1.5", "dd_pow(a_x[v_i], "), ("x[i] = math.sqrt(x[i])", "dd_sqrt(a_x[v_i])"),
+                       ("x[i] = math.exp(x[i])", "dd_exp(a_x[v_i])"), ("x[i] = math.log(x[i])", "dd_log("), ("x[i] = math.sin(x[i]) + math.cos(x[i])", "dd_cos("),
+                       ("x[i] = math.tanh(x[i])", "dd_tanh("), ("x[i] = math.floor(x[i])", "dd_floor("), ("x[i] = math.fabs(x[i])", "dd_abs(")):
+        pl = wgsl.compile_kernel("k", "def k(x):\n    i = cuda.grid(1)\n    " + src2 + "\n", [np.zeros(4)], (1, 1, 1), (4, 1, 1), mode="dd")
+        assert want in pl.wgsl, (src2, pl.wgsl[-300:])
+        assert "fn dd_div(" in pl.wgsl and "fn dd_two_prod(" in pl.wgsl and "fma(" not in pl.wgsl.split("fn main")[0].replace("fn dd_two_prod", ""), "dd_mul 不該用 fma（SwiftShader 的 fma 不是融合運算）"
+    for bad, want in (("x[i] = x[i] % 3.0", "取餘"), ("x[i] = x[i] // 3.0", "整數除法")):
         try:
-            wgsl.compile_kernel("k", bad, [np.zeros(4)], (1, 1, 1), (4, 1, 1), mode="dd")
+            wgsl.compile_kernel("k", "def k(x):\n    i = cuda.grid(1)\n    " + bad + "\n", [np.zeros(4)], (1, 1, 1), (4, 1, 1), mode="dd")
         except wgsl.NotCompilable as e:
             assert want in str(e), str(e)
         else:
