@@ -55,7 +55,8 @@
     // menubar > menu (text) > menuitem (text, keys = the shortcut hint shown beside it, e.g. Ctrl+S; click event)
     tabs: { props: ['selected'], events: ['select'] },
     tab: { props: ['text'] },
-    split: { props: ['direction', 'ratio'] },
+    // weights: one share per child (2 to 12 children, each 1-100): the children take the space in those proportions (ratio is then unused)
+    split: { props: ['direction', 'ratio', 'weights'] },
     menubar: { props: [] },
     menu: { props: ['text'] },
     menuitem: { props: ['text', 'keys', 'enabled'], events: ['click'] },
@@ -127,6 +128,10 @@
     if (kind === 'progress' && name === 'value') { return num(v, 'value', 0, 1e12); }
     if (kind === 'grid' && name === 'columns') { return num(v, name, 1, 12); }
     if (kind === 'split' && name === 'ratio') { return num(v, name, 10, 90); }
+    if (kind === 'split' && name === 'weights') {
+      if (!Array.isArray(v) || v.length < 2 || v.length > 12) { throw new Error('weights must be an array of 2 to 12 numbers'); }
+      return v.map(function (x, i) { return num(x, 'weights[' + i + ']', 1, 100); });
+    }
     if (kind === 'split' && name === 'direction') { if (v !== 'row' && v !== 'column') { throw new Error('direction must be row or column'); } return v; }
     if (kind === 'menuitem' && name === 'keys') { return text(v, name); }
     if (kind === 'scroll' && name === 'height') { return num(v, name, 40, 1200); }

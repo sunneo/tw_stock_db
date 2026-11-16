@@ -868,7 +868,11 @@
     if (n.kind === 'tabs') { buildTabs(doc, el, n, onEvent); }
     if (n.kind === 'split') {
       var pages = Array.prototype.slice.call(el.children || []);
-      pages.forEach(function (child, i) { child.style.flex = i === 0 && pages.length > 1 ? '0 0 ' + (n.ratio || 50) + '%' : '1 1 0'; child.style.minWidth = '0'; });
+      pages.forEach(function (child, i) {
+        if (n.weights) { child.style.flex = (n.weights[i] || 1) + ' 1 0%'; }
+        else { child.style.flex = i === 0 && pages.length > 1 ? '0 0 ' + (n.ratio || 50) + '%' : '1 1 0'; }
+        child.style.minWidth = '0';
+      });
     }
     return el;
   }

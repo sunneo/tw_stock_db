@@ -101,7 +101,14 @@ class Window(object):
         return nid
 
     def split(self, direction="row", ratio=50, parent=None):
-        """Two or more children side by side (direction "row") or stacked ("column"); the first one gets `ratio` percent (10-90)."""
+        """Two or more children side by side (direction "row") or stacked ("column"); the first one gets `ratio` percent (10-90).
+        Several children with their own shares: split([22, 44, 34], parent=<id>) puts them side by side in those proportions
+        (a list as the first argument is the weights; its direction is row)."""
+        if isinstance(direction, (list, tuple)):
+            weights = [int(x) for x in direction]
+            if parent is None and isinstance(ratio, str):
+                parent = ratio  # split([a, b, c], parent) passes the parent in the second place
+            return self._node("split", parent, direction="row", weights=weights)
         return self._node("split", parent, direction=str(direction), ratio=int(ratio))
 
     def menubar(self, parent=None):
@@ -176,6 +183,13 @@ class Window(object):
 
     def listbox(self, items, selected="", parent=None, rows=0):
         """A list where one item is selected. value() is the selected item's text ("" when none). rows: lines shown (0 = by item count, at most 8)."""
+        return self._list_node(items, selected, parent, rows)
+
+    def list(self, items, selected="", parent=None, rows=0):
+        """The same list as listbox() (the name the Redmine template window uses): one selected item, value() is its text."""
+        return self._list_node(items, selected, parent, rows)
+
+    def _list_node(self, items, selected="", parent=None, rows=0):
         nid = self._node("list", parent, items=[str(i) for i in items], selected=str(selected), **({"rows": int(rows)} if rows else {}))
         self._values[nid] = str(selected)
         return nid
@@ -283,10 +297,13 @@ class Window(object):
         else:
             self._values[node] = ev.get("value")
 
-    def wait(self, timeout=300):
-        """Block until a button is clicked or the window is closed. Returns the event dict, or None on timeout."""
+    def wait(self, timeout=300, also=()):
+        """Block until a button is clicked or the window is closed. Returns the event dict, or None on timeout.
+        also: names of value events ("select", "change", "input", "cell", "toggle") that end the wait too (value() is updated either way).
+        By default wait() only returns for clicks, shortcuts and the close."""
         import time
         end = time.time() + float(timeout)
+        also = tuple(also or ())
         while True:
             left = end - time.time()
             if left <= 0:
@@ -300,6 +317,8 @@ class Window(object):
                 continue
             if kind in ("input", "cell", "toggle", "select", "change"):
                 self._event_value(ev)
+                if kind in also:
+                    return ev
                 continue
             if kind == "close":
                 self.closed = True
@@ -339,7 +358,7 @@ def _styled(fn):
 
 
 for _name in ("label", "button", "entry", "row", "column", "grid", "scroll", "tabs", "tab", "split", "menubar", "menu", "menuitem", "expander",
-              "editor", "table", "multilist", "textarea", "checkbox", "progress", "listbox", "canvas", "markdown"):
+              "editor", "table", "multilist", "textarea", "checkbox", "progress", "listbox", "list", "canvas", "markdown"):
     setattr(Window, _name, _styled(getattr(Window, _name)))
 
 

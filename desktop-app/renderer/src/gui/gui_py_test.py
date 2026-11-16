@@ -243,6 +243,20 @@ check('markdown node', calls[-1][1]['node'].get('kind') == 'markdown' and calls[
 wl.theme(density="compact")
 check('theme density', calls[-1][1].get('density') == 'compact')
 
+# list (the Redmine template's name for listbox), split with weights, wait(also=)
+stub.call = wait_only  # the pick stub above answers gui.wait with None; wait_only answers with replies, then close
+lst = wl.list(['a', 'b'], selected='b', parent=col)
+check('list alias op', calls[-1][1]['node'].get('kind') == 'list' and calls[-1][1]['node'].get('selected') == 'b' and calls[-1][1]['parent'] == col)
+check('list alias value', wl.value(lst) == 'b')
+spw = wl.split([22, 44, 34], col)
+check('split weights op', calls[-1][1]['node'] == {'id': spw, 'kind': 'split', 'direction': 'row', 'weights': [22, 44, 34]} and calls[-1][1]['parent'] == col)
+replies[:] = [{'v': 1, 'event': 'select', 'id': wl.id, 'node': lst, 'value': 'a'}]
+ev = wl.wait(timeout=30, also=('select',))
+check('wait also select returns the select', ev is not None and ev['event'] == 'select' and wl.value(lst) == 'a')
+replies[:] = [{'v': 1, 'event': 'change', 'id': wl.id, 'node': 'cb', 'value': True}]
+ev2 = wl.wait(timeout=5)  # a change is not in also=, so the wait goes on to the next event (the stub's close)
+check('wait without also skips a change', ev2 is not None and ev2['event'] == 'close')
+
 if failures:
     print('%d failure(s)' % len(failures))
     sys.exit(1)

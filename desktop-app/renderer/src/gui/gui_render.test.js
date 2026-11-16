@@ -331,4 +331,19 @@ assert.strictEqual(violations.length, 0); ok();
   assert.strictEqual(violations.length, 0); ok();
 }
 
+// split with weights: three children take the space in the proportions 22 : 44 : 34
+{
+  const S3 = G.createSession();
+  const ap3 = (m) => { const r = G.apply(S3, m); assert.ok(r.ok, r.error); };
+  ap3({ op: 'open', id: 'wx', title: 'X' });
+  ap3({ op: 'add', id: 'wx', node: { id: 'sp', kind: 'split', direction: 'row', weights: [22, 44, 34] } });
+  ap3({ op: 'add', id: 'wx', parent: 'sp', node: { id: 'a', kind: 'label', text: 'a' } });
+  ap3({ op: 'add', id: 'wx', parent: 'sp', node: { id: 'b', kind: 'label', text: 'b' } });
+  ap3({ op: 'add', id: 'wx', parent: 'sp', node: { id: 'c', kind: 'label', text: 'c' } });
+  const w3 = R.renderWindow(doc, G.snapshot(S3, 'wx'), () => {}, () => {});
+  const sp = byNode(w3, 'sp');
+  assert.strictEqual(sp.children.length, 3); ok();
+  assert.deepStrictEqual(sp.children.map((c) => c.style.flex), ['22 1 0%', '44 1 0%', '34 1 0%']); ok();
+}
+
 console.log('gui_render: ' + n + ' assertions passed');
