@@ -543,7 +543,12 @@ GUI 的獨立 Worker 模擬器目前沒有註冊 `_fa_cudaweb`，不能 `import 
   - **真 Chrome WebGPU**（`scripts/eval/cudaweb_matmulnbits_browser.js`，Chrome 157、NVIDIA Kepler）：3 個形狀全部走 T1，相對誤差 **1.1e-6**（M=1、K=1024、N=3072）、**8.1e-8**（M=3、K=40、N=5，末尾 padding）、**8.4e-7**（M=8、K=1024、N=64），容差 1e-4，通過。
   - 第一次執行失敗的紀錄：`runWgsl` 的 `dispatchWorkgroups` 不接受陣列，三個案例都退回 cpu-js；頁面的判定有擋住（只算 T1 為通過），所以那次的「相對誤差 0」是參考對參考，不算數。修正後才是上面的結果。
   - **速度（只記一個數字，不是掃描）**：M=1、K=1024、N=3072 每次呼叫約 36 ms，含 `runWgsl` 每次重建 shader 與 pipeline；未優化，不代表核心速度。
-- **未驗證**：與 q8 路徑用同一組真權重的對拍（需要網頁版 q4 權重，尚未取得）；WebGL2 退路；pipeline 快取；fp16 scales（目前是 f32）。
+- **真權重（網頁版 onnx-community/Qwen3-0.6B-ONNX，`onnx/model_q4f16.onnx`，569,789,750 位元組，使用者 2026-11-16 同意下載；暫存於 scratchpad，不入庫）**：
+  - 第 0 層 gate／up／down 的 MatMulNBits 屬性：K、N、bits=4、block_size=32；權重形狀 gate／up 為 [3072, 32, 16]（K=1024），down 為 [1024, 96, 16]（K=3072）；scales 為 **fp16**（`cudaweb_q4_probe.js` 讀出）。
+  - **與本機 q8 模型的權重對照**（`cudaweb_q4_vs_q8.js`，同一輸入、q8 權重反量化為參考）：q4 對 q8 的相對差 gate **0.075**、up **0.093**、down **0.073**（量化雜訊量級）；刻意對調 nibble 順序的對照組為 **1.22／1.54／1.19**。對照組遠大於正常組，表示佈局（nibble 順序、block 分組、scale 位置）正確，比較有鑑別力。通過門檻 0.1 是本次自訂的。
+  - **真權重上的 GPU 核心（真 Chrome WebGPU，`cudaweb_matmulnbits_real.js`，T1）**：gate（M=2）相對誤差 **9.3e-7**、up（M=2）**8.3e-7**、down（M=1）**1.1e-6**，全部通過。
+  - 速度：本次只有正確性驗證，沒有另外量速度（上面的 36 ms 數字是合成形狀，未優化）。
+- **未驗證**：WebGL2 退路；pipeline 快取；fp16 scales 在 GPU 端（目前上傳前由 CPU 轉成 f32）；整個 MLP（SiLU、動態量化）接在一起；與 q8 路徑的端到端輸出比較（那需要整層串接，屬下一步）。
 
 ### 7.4 與原生執行環境的關係
 
