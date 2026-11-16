@@ -550,6 +550,14 @@ GUI 的獨立 Worker 模擬器目前沒有註冊 `_fa_cudaweb`，不能 `import 
   - 速度：本次只有正確性驗證，沒有另外量速度（上面的 36 ms 數字是合成形狀，未優化）。
 - **未驗證**：WebGL2 退路；pipeline 快取；fp16 scales 在 GPU 端（目前上傳前由 CPU 轉成 f32）；整個 MLP（SiLU、動態量化）接在一起；與 q8 路徑的端到端輸出比較（那需要整層串接，屬下一步）。
 
+### 7.10 midigenai v5 解碼器：GPU 單步 logits（2026-11-16）
+- **模型**：`nicholasbien/midigenai` 的 `v5/onnx/decoder-webgpu-q4.onnx`，73,151,835 位元組（使用者 2026-11-16 同意下載，暫存於 scratchpad，不入庫）。輸入 `ids` 加上 12 層的 `past_k*`／`past_v*`（形狀 [1, 12, T, 64]）；輸出 `logits`（[1, 598]）與 `present_*`。
+- **圖的實際運算**（逐節點確認，`scripts/eval/cudaweb_midi_consts.js` 讀出常數）：12 層 pre-norm；RMSNorm eps 1e-6；q/k/v/o/gate/up/down 與 lm_head 都是 MatMulNBits（bits 4、block 32，scales 為 **f32**，權重 [N, nBlocks, 16]）；RoPE 是**交錯式**（Slice 步長 2 取偶、奇索引，inv_freq 32 個）；注意力 scale 0.125；SiLU 寫成 `g·sigmoid(g)`；最後 norm → 取最後一個位置 → lm_head。
+- **手寫 CPU 參考版**（`renderer/src/gpu/midi_decoder.js`）對**真 ORT（CPU EP）**（`scripts/eval/cudaweb_midi_decoder_check.js`）：3 詞元預填相對誤差 **1.8e-6**，解碼一步 **1.1e-6**，argmax 一致，通過。
+- **投影走真 WebGPU**（`scripts/eval/cudaweb_midi_gpu_check.js`，真 Chrome）：85 個投影在預填與解碼一步共 **170 次全部 T1**；預填 logits 相對誤差 **3.4e-6**、解碼一步 **5.1e-6** 對 ORT，argmax 一致，通過。
+  - **速度（只記一個數字，未優化）**：預填 3 詞元 2.25 秒、解碼一步 1.40 秒。原因：`runWgsl` 每次呼叫重建 pipeline，且注意力與 RoPE 還是 CPU。不是效能結論。
+- **尚未做**：把這條路徑**接進桌面版**（`music/native_ort.js` 的接線、沿用 gpuhead 做法）。這需要在真 Electron 驗證，而管理者與使用者已停止量測；**本次只完成參考實作與網頁版 GPU 驗證，桌面接線未做**。注意力與 RoPE 尚未上 GPU；未驗證 WebGL2 退路；未驗證完整生成（多步迴圈、取樣）。
+
 ### 7.4 與原生執行環境的關係
 
 - cudaweb 不改動 `main-ext.js` 的原生執行包流程。
