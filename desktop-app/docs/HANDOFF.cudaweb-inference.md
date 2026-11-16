@@ -103,3 +103,70 @@
 - **`sed -i` 與 Edit 工具**：修改後要確認；Edit 工具要先 Read 檔案（對自己寫的檔案，Write 後可直接 Edit）。
 - **工作區有不屬於本工作的未提交檔**：`web-lazy/*`、`scripts/move-to-e.ps1`、`../wiki/`、`scripts/eval/cudaweb_mlp_sweep.js`，**不要動、不要提交**。
 - **下載的模型檔只在 scratchpad**：不要提交，不要引用到 repo 的路徑中。Qwen 與 midigen 檔的使用已被管理者要求停止（使用者要決定留或刪）；MOSS 檔可以用（有使用者同意）。
+
+## 8. 程式地圖（每棒只讀這節就能動工；隨進度維護，改了檔案就更新這裡）
+
+路徑皆相對 `desktop-app/`。「狀態」欄以提交為準，最後更新 2026-11-16（b1d329b4a）。
+
+### 8.1 通用與共用
+
+- `renderer/src/gpu/onnx_lite.js`：ONNX protobuf 解析（UMD，node 可 require）。入口 `parseModel(buf)` → `{buf,nodes,inits,inputs,outputs}`；`parseGraph(buf, range)`（If 子圖）；`constantValue(m,node)`（Constant 節點值）；`tensorBytes`。屬性 `attrs.x.i/f/ints/strings/tensor/graph`。注意：varint 負數以 2^64 表示（見 `onnx_interp.attrInt`）。狀態：可用，已對 codec 與 MOSS 驗證。
+- `renderer/src/gpu/onnx_interp.js`：通用 CPU 圖解釋器。入口 `run(model, feeds, dataFiles)`；張量格式 `{d,t:'f'|'i'|'b',v}`（'i' 以 Float64 儲存）。已實作算子：Identity Constant Add Sub Mul Div Mod Pow Equal Less LessOrEqual Greater GreaterOrEqual And Or Xor Not Where Sqrt Exp Sin Cos Tanh Erf Reciprocal Neg Cast Shape Gather Concat Transpose Reshape Unsqueeze Squeeze Slice ConstantOfShape Range Softmax LayerNormalization Conv（1D）MatMul Clip If。未實作的會丟錯。狀態：codec 整圖對 ORT 一致（相對誤差約 6e-6）；未優化（T=25 約 31 秒）。熱點（MatMul、Conv）尚未換成 GPU。
+- `renderer/src/gpu/nn_ops.js`：訓練步與 cudaweb 共用的小運算（CPU）。狀態：既有。
+- `renderer/src/gpu/gpu_core.js`：GPU 核心（能力偵測、`runWgsl`；一維派發，每次呼叫重建 pipeline，這是「慢」的主因）。瀏覽器端以 `window.FaGpuCore` 提供。
+- `renderer/src/gpu/gpu_preload.js`、`cudnn_subset.js`、`head_service.js`、`infer_ops.js`、`infer_poc_core.js`、`attn_ops.js`：既有的 cudaweb 推論路徑與 lm_head 接線（見 DESIGN §7.5–7.7）。狀態：既有，本棒未動。
+
+### 8.2 MOSS-TTS-Nano
+
+- `renderer/src/gpu/moss_decoder.js`：全域解碼一步。入口 `loadMossDecodeStep(onnxBuf, dataFiles)`、`decodeStep(model, ids17, caches, ops)` → `{hidden, caches}`（caches[層] = `{K,V,L}`，時間優先 L×D）。`ops` 可注入 `linear/attention/layerNorm/rope/gelu`，缺的退回 CPU。狀態：CPU 參考對 ORT 相對誤差約 1e-5；預填以逐列 decodeStep 代替 prefill 圖。
+- `renderer/src/gpu/moss_gpu.js`：`makeGpuOps({navigator})` 給 decodeStep 的 WebGPU 運算（linear、attention、LN、RoPE、GELU；`ops.tiers` 記錄每個運算是 T1 還是退回）。每次呼叫重建 pipeline（慢）。狀態：單元對拍（`cudaweb_moss_gpu_check.js`）通過；整管線 GPU 版待 Chrome 驗證（見 8.5）。
+- `renderer/src/gpu/moss_local.js`：本地解碼器（非快取，17 位置一次跑完）。入口 `loadMossLocal(onnxBuf, dataFiles)`、`localDecode(model, globalHidden, textId, audioPrefix15, ops)` → `{textLogits, audioLogits[16]}`。狀態：CPU 對 ORT 通過；`ops` 可接 GPU linear。快取版（`moss_tts_local_cached_step.onnx`）未做（只是加速）。
+- `renderer/src/gpu/moss_sampling.js`：整幀取樣（fixed_sampled_frame 的手寫版）。入口 `sampleFrame(model, globalHidden, seenMask Int32[16*1024], uAssistant, uAudio[16], ops)` → `{shouldContinue, frameTokenIds}`。常數：重複懲罰 1.2、溫度 0.8、top-k 25、top-p 0.95；續停 logit 取詞元 9 與 7（不是 0、1）；續停詞元 9，停止 7。狀態：3 組對 ORT 完全一致（含續停為 0）。
+- `renderer/src/tts/moss_core.js`（產品，UMD）：SentencePiece（`parseModel`、`encode`）、`buildPrompt`、`generate(runners, cfg, prompt, opts)`（runners = {prefill, decode, sample}）、`splitText`、`resample`、`fromCodecOutput`。狀態：產品既有，未改。
+- `renderer/src/tts/moss_worker.js`（產品 worker，ORT-web）：`makeRunners` 用 ORT 建 runners，`codecDecode` 用 ORT。這裡是產品接線點（尚未接 cudaweb）。
+- `renderer/src/floating-assistant.js` 內 `MOSS_FILES`（約 72822 行）、MOSS 快取下載（約 101030 行）：產品模型清單。
+
+### 8.3 MIDI（midigenai）
+
+- `renderer/src/gpu/midi_decoder.js`：midigen 解碼器（CPU 參考＋投影走 mm 注入）。入口 `loadMidiDecoder(buf)`、`decode(model, ids, cache, mm)` → `{logits, cache}`。狀態：CPU 對 ORT 約 1e-6；未接產品。
+- `renderer/src/gpu/matmulnbits_ref.js`、`matmulnbits_gpu.js`：MatMulNBits CPU 參考與 WebGPU 版（`matmulNBits`）。狀態：GPU 對真權重通過（`cudaweb_matmulnbits_real.js`）。
+- `renderer/src/music/native_ort.js`、`midigen_bridge.js`、`audio_models.js`：產品 midigen 路徑（ORT；`midigenai-v5-gpu` 與 `-cpu` 檔）。`audio_models.js` 的 REGISTRY 含 basic-pitch（230,444 位元組）與 midigen 檔的網址、大小、sha256。狀態：產品既有，未接 cudaweb。
+
+### 8.4 Qwen3 與注意力
+
+- `renderer/src/gpu/attn_gpu.js`、`attn_ops.js`：注意力＋KV 快取（WebGPU／CPU 參考）。入口見檔頭；驗證 `cudaweb_attn_layer0*.js`。狀態：第 0 層一步 decode 對 ORT 約 3e-6。
+- Qwen 網頁版解碼迴圈：未接（待辦）。
+
+### 8.5 驗證腳本（scripts/eval/，全部用 Electron 的 node 跑大模型）
+
+用法通式：`ELECTRON_RUN_AS_NODE=1 node_modules/electron/dist/electron.exe scripts/eval/<檔> <MOSS 資料夾> ...`。ORT 從 `%APPDATA%/floating-assistant-desktop/native-runtime/1.22.0-1/node_modules/onnxruntime-node` 載入。
+
+- `cudaweb_onnx_dump.js`：傾印圖的節點。
+- `cudaweb_moss_sample_check.js <dir>`：取樣 CPU 對 ORT（3 組）。通過。
+- `cudaweb_codec_interp_check.js <dir> [T]`：codec 解釋器對 ORT。通過（T=4、25）。
+- `cudaweb_moss_pipeline_check.js <dir> <文字> <幀數> [ref.json]`：整條 CPU 管線對 ORT；第 4 參數輸出 ORT 參考 json。通過（6 幀、音訊 2e-6）。耗時長（6 幀約 130 秒）。
+- `cudaweb_moss_pipeline_gpu_check.js <dir> <ref.json> [埠]`：起 HTTP 伺服器，給 Claude in Chrome 開 `http://127.0.0.1:<埠>/`，結果寫系統暫存的 `cudaweb_moss_pipeline_gpu_check.result.json`。狀態：待 Chrome 結果（Chrome 分頁曾因主執行緒忙碌而 CDP 逾時，需等結果檔）。
+- `cudaweb_moss_gpu_check.js`、`cudaweb_moss_local_gpu_check.js`、`cudaweb_moss_check.js`、`cudaweb_moss_local_check.js`：各運算單元的 CPU／GPU 對拍（較早）。
+- `cudaweb_matmulnbits_real.js`、`cudaweb_mlp_*.js`、`cudaweb_attn_*.js`、`cudaweb_midi_*.js`、`cudaweb_qwen_poc.js`、`cudaweb_infer_browser.js`、`cudaweb_head_*.js`、`cudaweb_web_head_*.js`：Qwen／midigen／lm_head 的既有驗證。
+- `cudaweb_mlp_sweep.js`：未提交（使用者工作區，不要動）。
+
+### 8.6 設定 UI 與嵌入（陷阱）
+
+- 兩處 AI 設定 UI 要同步：`index.html` 的 AI 助理設定分頁，與 `floating-assistant.js` 內部面板（memory：`feedback_duplicate_ai_settings_ui`）。桌面版設定頁的位置：未查證，下一棒先 Grep `設定` 找。
+- 嵌入：`floating-assistant.js` 內含 `FA_GPU_CORE_SRC`（約 4610 行）、`FA_HEAD_SRC`（約 4616 行）等字串，由 `scripts/embed-code-ui.js` 產生。**改 `renderer/src/...` 來源模組後必須重新產生嵌入，不可只改嵌入字串**（memory：`feedback_embedded_source_modules`）。產生後的檔案要重看一次有無蓋掉。
+- 熱更新：產品更新走 live-update patch，不在本棒範圍（不發布）。
+
+### 8.7 模型檔（scratchpad，不入庫）
+
+- MOSS：`E:\Temp\claude\1845096e089295dd\dc8081b9-67f9-4ce8-859c-6915fcfbc7b1\scratchpad\moss\`（15 檔；含 `browser_poc_manifest.json`（tts_config／prompt_templates）、`tts_browser_onnx_meta.json`、`codec_browser_onnx_meta.json`、`tokenizer.model`）。
+- Qwen q4f16、midigen：同一 scratchpad 的 `models\`。
+- 參考：同一 scratchpad 的 `moss_pipe_ref.json`（**此檔在本棒的 scratchpad `0832c1c6-…` 下**，由 `cudaweb_moss_pipeline_check.js` 第 4 參數產生；3 幀）。
+- 注意：新棒的 scratchpad 資料夾代號可能不同；先確認路徑存在再跑。
+
+### 8.8 未查證與未做（下一棒優先序）
+
+1. 看 8.5 的 Chrome 結果檔，若通過記入 §2 與 §3。
+2. 共用卷積核心 `renderer/src/gpu/conv_ops.js`（使用者指示：卷積做成共用、MOSS codec、Basic Pitch、Whisper 共用；CPU 參考＋WGSL＋WebGL2 或純 JS 退路＋pipeline 快取）。然後 MOSS codec 接上（用真實形狀對 ORT 最小對拍，真 Chrome）。
+3. 注意力與 MatMulNBits 的 WebGL2／純 JS 退路，pipeline 快取（現在每次呼叫重建 pipeline，比 CPU 慢）。
+4. MOSS 產品接線（`moss_worker.js` runner 切換、開關、失敗退回 ORT）；Qwen 網頁版解碼迴圈；midigen 網頁與桌面接線。全部預設關。
+5. Basic Pitch 與 Whisper：只查檔名、來源、大小（HF 檔案清單，不下載權重）；卷積參數能否被 conv_ops 涵蓋，寫進最終回報與 DESIGN。
