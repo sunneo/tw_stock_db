@@ -439,7 +439,12 @@ GUI 的獨立 Worker 模擬器目前沒有註冊 `_fa_cudaweb`，不能 `import 
 - **對真 ORT 的第 0 層 K／V 快取**（`scripts/eval/cudaweb_attn_layer0.js`，提交 `6c2e31640`）：3 個詞元預填、無過去快取。K 相對誤差 **1.9e-7**、V **3.1e-6**，通過。已驗證：q8 投影（q_proj／k_proj／v_proj）、qk-norm、RoPE（位置 0～2）、快取寫入與版面。
 - **注意力輸出與 o_proj 對真 ORT**（`scripts/eval/cudaweb_attn_layer0_out.js`，提交 `419ce7672`）：用 protobuf 改寫圖的輸出（只換輸出清單，不改權重），取 `GroupQueryAttention/output_0` 與 `o_proj/MatMul/output_0`。3 個詞元預填，相對誤差注意力 3.1e-6、o_proj 3.2e-6，通過。
 - **第 0 層完整一層對真 ORT**（`scripts/eval/cudaweb_layer0_full.js`，提交 `3c7c77958`）：注意力殘差後 3.2e-6、MLP down 9.4e-7、第 0 層輸出（第 1 層 input_layernorm 的殘差和）1.8e-6，通過。改寫圖輸出的共用程式在 `scripts/eval/onnx_rewrite.js`。
-- **未驗證**：28 層全部串接的一步解碼（最後的 norm 與 lm_head logits）；完整生成的比對；多 token 解碼中 KV 快取跨層的正確性（目前只有 3 詞元預填）。
+- **28 層全部串接的預填（3 詞元）對真 ORT：未通過（未解）**（`scripts/eval/cudaweb_model_step.js`，提交見下一筆文件提交）：
+  - 每層隱藏狀態的相對誤差：第 0～20 層穩定在約 **1.6e-6**；第 21 層起明顯變大（4.3e-5），第 22 層 8.3e-5，第 23 層 1.4e-4，第 24 層 1.7e-4，第 25 層 2.4e-4，第 26 層 3.4e-4。
+  - logits 相對誤差 **0.147**（最大絕對誤差 1.93，最大值 13.1）。三個詞元的 argmax 都一致（3/3），但數值差距超過門檻 1e-3。
+  - lm_head 已確認：ORT 的 `/lm_head/MatMul` 是**浮點**矩陣乘，權重來自 `DequantizeLinear(embed，scale／zp 為純量)`，數學上與 `q8lmRef` 相同，所以誤差不是來自 lm_head。
+  - **未解的假設**（沒有查證）：第 21 層附近某個張量經過動態量化時，最大值很大，一次捨入翻轉就造成明顯誤差，之後逐層放大。要確認，要在第 21 層逐個子運算（注意力、MLP 的 gate／up／down）取中間張量比對。也可能是 RMSNorm 的 f32／f64 差異。**目前不能宣稱一步 decode 對真 ORT 通過。**
+- **未驗證**：完整生成的比對；多 token 解碼中 KV 快取跨層的正確性（目前只有 3 詞元預填）；網頁版 q4 核心。
 - **GPU 核心**（`renderer/src/gpu/attn_gpu.js`，提交 `b12061413`）：WGSL 版，一個 invocation 算一個（查詢位置、查詢頭），兩段式 softmax；退路 T1 → cpu-js（WebGL2 版未做，見下）。
   - node 退路測試 4 項通過（`attn_gpu_test.js`）。
   - **真 Chrome WebGPU**（`scripts/eval/cudaweb_attn_browser.js`，Chrome 157、NVIDIA Kepler）：4 個情境（解碼 S=1 過去 0／過去 40、預填 S=4、混合 S=3 過去 20）都走 T1，相對誤差 0～2.6e-7，通過。
