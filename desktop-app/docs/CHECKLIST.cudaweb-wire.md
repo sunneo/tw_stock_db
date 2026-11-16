@@ -8,6 +8,8 @@
 
 **Q 狀態（2026-11-16）**：網頁版（studio 的 onnxruntime-web 路徑）已接線：`renderer/src/gpu/qwen_decode.js`＋`qwen_gpu.js`（WGSL 引擎）、`greedyGenerate` 的 `opts.gpuDecode`（首詞元對拍、失敗補 KV 退回）、設定 `qwenGpuDecode`（預設 off，`_gpuCompatControls` 共用）、診斷隨 `/api/llm/web/generate` 回傳；設計見 DESIGN.webgpu-cuda.md §7.13。驗證：單元 8＋18 項過；CPU 參考對真 ORT 3/4 組提示 8 詞元相同；GPU 引擎在軟體 WebGPU（SwiftShader，這台沒有真 GPU）4 組中 2 組與 CPU 參考、ORT 完全相同。**未達驗收「8 個詞元與原路徑相同」的部分**：另 2 組有詞元漂移（已追查：動態量化邊界翻轉，ORT 本身跨 CPU 也有；不是核心算錯）。**BLOCKED／未做**：(1) 真 GPU（NVIDIA 等）上的對拍與速度——這台只有軟體 WebGPU；(2) 桌面版（原生子程序沒有 WebGPU）的 head_req／head_res 信箱接線——要改主程序／執行包檔（不能熱更新，需真 Electron 驗證，沒有環境）；(3) 以 App 的 UI 開關實測整條網頁版路徑。
 
+**使用者說明（2026-11-16，逐字）**：「真gpu不用管，我們用最爛的機器(Geforce 720T)測過，比當代Intel Core I5-2620還快1.78倍」。意思：各項「真 GPU 上的速度／對拍未驗證」不再是阻礙，不必為此再標 BLOCKED 或要求真 GPU；軟體 WebGPU（SwiftShader）的驗證視為足夠的功能驗證。（這句是使用者說的，不是在這台機器量到的數字。）
+
 ## 項目
 - [ ] **BLOCKED（見下方原因：整管線驗證頁 30 分鐘無結果）** **A. MOSS WebGPU 整管線** — BLOCKED：2026-11-16 驗證頁 cudaweb_moss_pipeline_gpu_check.js（埠 18776、18779）在真 Chrome 跑了 30 分鐘以上仍無結果檔；每個運算重建 pipeline（現已快取）＋頁面 CPU 段落佔住主執行緒，未能完成。下一棒需先把 decodeStep／取樣搬到 Worker 或分批讓出主執行緒再驗。：把已驗證的 CPU 管線（預填、生成、取樣、codec）各運算換成 GPU 核心（矩陣乘、注意力、LN、RoPE、GELU、conv_ops），與 ORT 比對。驗收：真 Chrome 驗證頁結果檔 pass（音訊相對誤差 ≤ 1e-4，同 seed 同幀數）。
 - [x] **B.（BLOCKED 驗收） MOSS 產品接線**（部分完成，2026-11-16）：已做：`moss_gpu_runners.js`＋worker 的 `gpu` 選項（沒有 GPU／載入失敗／運算退層／中途失敗自動退回 ORT wasm 從頭生成）、設定 `mossGpu`（預設 off，`_gpuCompatControls` 兩處共用）、診斷 `result.gpu`、嵌入 `FA_MOSS_GPU_SRC`、單元測試 2 個（開關關時 `gpu:null`，路徑不變）、DESIGN §7.14。**BLOCKED（驗收後半）**：「開時在真 Chrome 生成音訊且與 wasm 路徑一致」——依賴 A（整管線 GPU 在驗證頁 30 分鐘無結果；這台無真 GPU，SwiftShader 太慢）。
