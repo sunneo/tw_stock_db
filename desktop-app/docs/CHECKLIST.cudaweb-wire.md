@@ -4,7 +4,9 @@
 每項都要有「驗收」：寫在項目裡的那個檢查通過才能勾。勾掉要在同一個提交裡改這份檔。
 
 ## 第一優先（使用者 2026-11-16：「Qwen3 文字推論的加速不是第一優先嗎」，先做這個，其餘排在它後面）
-- [ ] **Q. Qwen3 文字推論整段 GPU 解碼（q8，網頁版 studio 與桌面版共用）**：現在純 CPU 的兩條路徑（網頁版 studio 的 onnxruntime-web wasm q8、桌面版原生子程序 onnxruntime-node q8）是真正的受益者（transformers.js q4f16 那條本來就由 onnxruntime 走 WebGPU，好處小，排最後）。用已驗證的核心（q8 反量化矩陣乘、注意力＋KV 快取、rmsnorm、rope、silu、lm_head）組成一個完整的 Qwen3-0.6B 解碼引擎：嵌入→28 層→lm_head→取樣，接成可選開關 `qwenGpuDecode`（預設 off，兩處設定同步），失敗自動退回現有 ONNX 路徑，診斷齊全。桌面版沿用 lm_head 的 head_req／head_res 信箱做法（渲染程序算、子程序等結果）。驗收：真 Chrome 同 prompt 8 個詞元與原路徑相同（greedy）；關開關時行為不變。這項做完才做 A、B、D…。
+- [~] **Q（部分完成，見末尾「Q 狀態」）. Qwen3 文字推論整段 GPU 解碼（q8，網頁版 studio 與桌面版共用）**：現在純 CPU 的兩條路徑（網頁版 studio 的 onnxruntime-web wasm q8、桌面版原生子程序 onnxruntime-node q8）是真正的受益者（transformers.js q4f16 那條本來就由 onnxruntime 走 WebGPU，好處小，排最後）。用已驗證的核心（q8 反量化矩陣乘、注意力＋KV 快取、rmsnorm、rope、silu、lm_head）組成一個完整的 Qwen3-0.6B 解碼引擎：嵌入→28 層→lm_head→取樣，接成可選開關 `qwenGpuDecode`（預設 off，兩處設定同步），失敗自動退回現有 ONNX 路徑，診斷齊全。桌面版沿用 lm_head 的 head_req／head_res 信箱做法（渲染程序算、子程序等結果）。驗收：真 Chrome 同 prompt 8 個詞元與原路徑相同（greedy）；關開關時行為不變。這項做完才做 A、B、D…。
+
+**Q 狀態（2026-11-16）**：網頁版（studio 的 onnxruntime-web 路徑）已接線：`renderer/src/gpu/qwen_decode.js`＋`qwen_gpu.js`（WGSL 引擎）、`greedyGenerate` 的 `opts.gpuDecode`（首詞元對拍、失敗補 KV 退回）、設定 `qwenGpuDecode`（預設 off，`_gpuCompatControls` 共用）、診斷隨 `/api/llm/web/generate` 回傳；設計見 DESIGN.webgpu-cuda.md §7.13。驗證：單元 8＋18 項過；CPU 參考對真 ORT 3/4 組提示 8 詞元相同；GPU 引擎在軟體 WebGPU（SwiftShader，這台沒有真 GPU）4 組中 2 組與 CPU 參考、ORT 完全相同。**未達驗收「8 個詞元與原路徑相同」的部分**：另 2 組有詞元漂移（已追查：動態量化邊界翻轉，ORT 本身跨 CPU 也有；不是核心算錯）。**BLOCKED／未做**：(1) 真 GPU（NVIDIA 等）上的對拍與速度——這台只有軟體 WebGPU；(2) 桌面版（原生子程序沒有 WebGPU）的 head_req／head_res 信箱接線——要改主程序／執行包檔（不能熱更新，需真 Electron 驗證，沒有環境）；(3) 以 App 的 UI 開關實測整條網頁版路徑。
 
 ## 項目
 - [ ] **A. MOSS WebGPU 整管線** — BLOCKED：2026-11-16 驗證頁 cudaweb_moss_pipeline_gpu_check.js（埠 18776、18779）在真 Chrome 跑了 30 分鐘以上仍無結果檔；每個運算重建 pipeline（現已快取）＋頁面 CPU 段落佔住主執行緒，未能完成。下一棒需先把 decodeStep／取樣搬到 Worker 或分批讓出主執行緒再驗。：把已驗證的 CPU 管線（預填、生成、取樣、codec）各運算換成 GPU 核心（矩陣乘、注意力、LN、RoPE、GELU、conv_ops），與 ORT 比對。驗收：真 Chrome 驗證頁結果檔 pass（音訊相對誤差 ≤ 1e-4，同 seed 同幀數）。

@@ -572,6 +572,18 @@ GUI 的獨立 Worker 模擬器目前沒有註冊 `_fa_cudaweb`，不能 `import 
 - **GPU 線性層**（真 Chrome，`scripts/eval/cudaweb_moss_local_gpu_check.js`）：c_attn、c_proj、fc_in、fc_out、文字 head、16 個音訊 head 共 **170 次全部 T1**；兩組 logits 相對誤差與 CPU 版同量級（**1.7e-6／3.4e-6**），通過。注意力在這裡仍是 CPU（17 個位置）。
 - **未做**：本地解碼器的快取版（`moss_tts_local_cached_step`）、取樣（`moss_tts_local_fixed_sampled_frame`，4949 節點，含 TopK、CumSum、GatherElements）、codec 解碼（含卷積）、MOSS 推論路徑接線（產品端）。
 
+### 7.13 Qwen3-0.6B（q8）整段 GPU 解碼引擎（2026-11-16，開關 `qwenGpuDecode`，預設關）
+- **檔案**：`renderer/src/gpu/qwen_decode.js`（權重載入 `loadWeights`＋有 KV 快取的 CPU 參考引擎 `createCpuEngine`＋`greedy`）、`renderer/src/gpu/qwen_gpu.js`（WGSL 引擎 `createGpuEngine`）。一個詞元（或整段預填）的 509 個派發放進同一個 command buffer：RMSNorm（單執行緒依序 f32 累加，與 ORT 順序一致）→ 動態量化（單一工作群組，整個 M×K 張量一組步長）→ q8 投影（int32 精確累加）→ qk-norm＋RoPE（查表）→ KV 快取 → GQA 因果注意力 → o_proj → 殘差 → RMSNorm → gate／up → SiLU×up → down → 殘差；最後 RMSNorm → lm_head（分塊，與嵌入共用的 q8）→ argmax。只讀回一個詞元編號（除錯時可要 logits／逐層殘差流）。嵌入列在主機端反量化後寫入（嵌入表 155 MB 超過預設的單一緩衝區上限）。
+- **接線**：`greedyGenerate`（`llm_web_core.js`）新增 `opts.gpuDecode`：GPU 預填與原圖預填各跑一次，**第一個詞元不同就整段退回原路徑**；一致後每步只跑 GPU；任何一步失敗或逾時（預設 20 秒），用原圖把「已生成但原圖 KV 還沒吃進去」的詞元補進去，接著照原路徑走。診斷 `gpuDecode:{ requested, used, verify:{gpuToken,ortToken,argmaxSame}, fallbackAt, reason, gpuMs, origMs }` 隨 `/api/llm/web/generate` 回傳。設定 `qwenGpuDecode`（預設 off，白名單已加，放在 `_gpuCompatControls()`，AI 助理設定與桌面版設定頁共用同一處）。嵌入：`FA_QWEN_SRC`（`scripts/embed-code-ui.js`）。**桌面版（原生子程序沒有 WebGPU）尚未接線**，見下。
+- **驗證（如實）**：
+  - node 單元：`qwen_decode_test.js` 8 項（合成權重）、`llm_web_gpudecode.test.js` 18 項（假 ort／session／引擎：一致、首詞元不同、中途失敗補 KV、預填失敗、逾時、eos）通過。
+  - CPU 參考引擎對真 ORT 1.22（`scripts/eval/cudaweb_qwen_greedy.js`，這台 Linux i9-12900K，貪婪 8 個詞元，含 KV 解碼）：4 組提示中 **3 組完全相同**。
+  - **GPU 引擎在 Chrome 156 的軟體 WebGPU（SwiftShader，這台沒有真 GPU）**（`scripts/eval/cudaweb_qwen_gpu_browser.js`）：4 組提示中 **2 組 8 個詞元與 CPU 參考、ORT 完全相同**；另 2 組有差異（第 3 組第一個詞元就不同、第 4 組第 8 個詞元不同）。**沒有宣稱「與原路徑相同」**。
+  - **差異的性質（已追查，不是核心算錯）**：逐層殘差流對 CPU 參考，相對誤差 1e-7～6e-7（浮點誤差）直到某一層（這組是第 10 層）跳到 1e-5，之後逐層放大到 1e-3～4e-3。原因是動態量化：模型有離群通道（殘差流最大值約 8000），量化步長很大，任何一個元素的 f32 誤差（SiLU 的 exp、除法、sqrt 在 GPU 與 CPU 的進位差一個 ulp）都可能讓某個元素在量化邊界翻轉一步，之後放大。**這個敏感度在 ORT 本身就有**：同一個 q8 模型在這台 Linux 上，原本已通過的 `cudaweb_model_step.js`（Windows 上 3 個詞元對 ORT 5.3e-7）在這裡第 18 層就開始分歧、logits 相對誤差 0.16（3 個詞元的 argmax 仍 3/3 一致）；也就是說「與 ORT 逐詞元相同」依 CPU／ORT 內核而異，不是任何自家實作能保證的。
+  - 試過把平方和累加的 `a + v*v` 用 bitcast 擋掉 fma 融合：逐層誤差一模一樣，所以不是 fma。
+  - 速度（軟體 WebGPU，**不是真 GPU，不代表產品速度**）：預填 4 詞元＋解碼，每個詞元約 2.5～3.4 秒（SwiftShader 在 CPU 上模擬）。**真 GPU 的速度沒有量到**。
+- **未驗證／未做**：真 GPU（NVIDIA 等）上的 8 詞元對拍與速度；真 Chrome 以 App 的 UI 開關實測整條網頁版路徑；**桌面版**（原生子程序走 head_req／head_res 信箱做法，要主程序檔改動，不能熱更新）；WebGL2 退路（引擎沒有純 JS／WebGL2 退路：比 ORT 慢沒有意義，沒有 WebGPU 就用原路徑）；Qwen3 以外的模型形狀（hd>128 會丟錯）。
+
 ### 7.4 與原生執行環境的關係
 
 - cudaweb 不改動 `main-ext.js` 的原生執行包流程。

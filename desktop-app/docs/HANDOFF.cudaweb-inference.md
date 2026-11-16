@@ -2,9 +2,9 @@
 
 ## 1. 開場提示（啟動接手者時的提示詞）
 
-接續 `desktop-app/docs/HANDOFF.cudaweb-inference.md`（專案 `D:\Downloads\videos-嗨投資-desktop-app\desktop-app`，分支 `desktop-app`）。完整讀完本文件，特別是第 5 節使用者原話與第 4 節工作方式，並照著做。執行 low-context-long-run 技能（門檻 60%）：依第 3 節的待辦順序做，到門檻就寫下一份交接文件、提交，再啟動自己的接手者（model 用 `claude-haiku-5-5`、effort 用 `high`）；被拒就停下回報。第一則訊息用一行說明你讀過文件、從哪一項待辦開始。
+接續 `desktop-app/docs/HANDOFF.cudaweb-inference.md`（專案目錄 `desktop-app/`，分支 `desktop-app`；上一棒在 Linux 機器 `/home/hungfu.lee/下載/SRC/tw_stock_db/desktop-app`）。完整讀完本文件，特別是第 5 節使用者原話與第 4 節工作方式，並照著做；待辦以 `docs/CHECKLIST.cudaweb-wire.md` 為準（做完才回報：每項都是 [x] 或 BLOCKED 才結束一輪）。執行 low-context-long-run 技能（門檻 30%）：依清單順序做，到門檻就更新本文件、提交，再啟動自己的接手者；被拒就停下回報。第一則訊息用一行說明你讀過文件、從哪一項開始。
 
-使用者原話（必須遵守）：「我的要求『做完才回報』有什麼疑慮嗎」；「同意下載 MOSS」；「該下載的，麻煩都一起下載，別再反覆問」。這三句是在本對話中使用者直接說的。
+使用者原話（必須遵守）：「接手目前repo的任務，剛剛還在完成cudaweb」；「Qwen3 文字推論的加速不是第一優先嗎」；「訓練的是最後的最後」；「做完才回報」（清單規則）。
 
 ## 2. 總覽
 
@@ -16,6 +16,7 @@
   - `moss\`：MOSS-TTS-Nano 15 個檔，合計 762,840,113 位元組（來源 `OpenMOSS-Team/MOSS-TTS-Nano-100M-ONNX` 與 `OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano-ONNX`，清單同桌面版 `floating-assistant.js` 的 `MOSS_FILES`）。
   - 另有 `mlp0\`（從 Qwen 檔衍生的 MLP 權重）、`moss_ort_ref.json`、`moss_local_ref.json`、`midi_ort_ref.json`（ORT 參考輸出）。
 - **已提交（新到舊）**：
+  - （本棒，2026-11-16 Linux）Q：Qwen3 q8 整段 GPU 解碼引擎＋CPU 參考引擎＋`greedyGenerate` 的 `gpuDecode`＋設定 `qwenGpuDecode`＋內嵌 `FA_QWEN_SRC`＋測試與驗證腳本，見 DESIGN §7.13（提交 `c79bd2cbd` 與其後的接線提交）。
   - `a85925066` MOSS 本地解碼器線性層走真 Chrome WebGPU（170 次 T1）
   - `4f40cb970` MOSS 本地解碼器（非快取）CPU 參考版對真 ORT
   - `effcd9692` MOSS LayerNorm／RoPE／GELU 走真 Chrome WebGPU
@@ -167,6 +168,17 @@
 - Qwen q4f16、midigen：同一 scratchpad 的 `models\`。
 - 參考：同一 scratchpad 的 `moss_pipe_ref.json`（**此檔在本棒的 scratchpad `0832c1c6-…` 下**，由 `cudaweb_moss_pipeline_check.js` 第 4 參數產生；3 幀）。
 - 注意：新棒的 scratchpad 資料夾代號可能不同；先確認路徑存在再跑。
+
+### 8.9 Qwen3 整段 GPU 解碼（本棒新增，詳見 DESIGN §7.13）
+
+- `renderer/src/gpu/qwen_decode.js`：`loadWeights(onnxBytes)`（從 q8 ONNX 取全部權重，不複製）、`createCpuEngine(W,{maxT,trace})`（有 KV 的 CPU 參考，`step(ids)`→最後一列 logits）、`greedy(engine,prompt,n,stop)`、`embedRows`。
+- `renderer/src/gpu/qwen_gpu.js`：`createGpuEngine(dev,W,{maxT,maxM})`→`{step(ids,{logits,trace})→{token,...}, reset(), len, info}`。WGSL 核心：rms、quant、mm、qk（qk-norm＋RoPE＋寫 KV）、attn、silu、add、lm（分塊）、argmax；509 個派發一個 command buffer；每個核心的綁定都要全部用到（`layout:'auto'` 會丟掉沒用到的綁定）；每個 stage 的儲存緩衝區上限 8（qk 核心用 7）。
+- 接線：`renderer/src/studio/llm_web_core.js` 的 `greedyGenerate` 的 `opts.gpuDecode:{engine,timeoutMs}`；`studio_server_core.js` 的 `/api/llm/web/generate` 帶入；`floating-assistant.js` 的 `_qwenGpuDecodeOn/_qwenModule/_llmGpuDecodePrepare`、`llmWeb.gpuDecode`、設定 `qwenGpuDecode`（`_gpuCompatControls` 的第三個勾選）、內嵌殼 `QWENGPU-BEGIN/END`（`scripts/embed-code-ui.js` 的 `embedQwenGpu`）。
+- 測試：`renderer/src/gpu/qwen_decode_test.js`、`renderer/src/studio/llm_web_gpudecode.test.js`（都已登記 `scripts/run-core-tests.js`）。
+- 驗證腳本：`scripts/eval/cudaweb_qwen_greedy.js [n] [out.json]`（真 ORT 對 CPU 參考，`QWEN_PROMPT_IDS=逗號分隔` 換提示，輸出參考 json）、`scripts/eval/cudaweb_qwen_gpu_browser.js <參考資料夾> [埠]`（頁面在 Chrome 跑 GPU 引擎對參考；結果寫 `$TMP/cudaweb_qwen_gpu_browser.result.json`）。
+- 這台 Linux 的做法：模型在 `~/.config/floating-assistant-desktop/native-models/qwen3-0.6b-q8/onnx/model_quantized.onnx`；ORT 在 `~/.config/floating-assistant-desktop/native-runtime/1.22.0-1/node_modules/onnxruntime-node`；node 20（64 位元）可直接跑；無頭 Chrome 加 `--headless=new --no-sandbox --user-data-dir=<獨立資料夾> --enable-unsafe-webgpu --enable-features=Vulkan --use-angle=swiftshader --use-webgpu-adapter=swiftshader` 就有軟體 WebGPU（沒有真 GPU，慢，約 2.5～3.4 秒／詞元）。**只殺自己記下的 Chrome 行程**（用獨立 user-data-dir 比對，不要 pkill -f／killall chrome）。
+- 已知：動態量化讓詞元對 ORT 不保證逐字相同（ORT 本身跨 CPU 也會）；通過標準用「首詞元對拍＋退回」。不要再試 fma 屏障（已證明無效）。
+- **Q 尚未做**：真 GPU 對拍與速度；桌面版信箱接線（要主程序／執行包檔，不能熱更新，需真 Electron）；App UI 實測。
 
 ### 8.8 未查證與未做（下一棒優先序）
 

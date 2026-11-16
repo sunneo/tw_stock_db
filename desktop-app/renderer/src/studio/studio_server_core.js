@@ -366,9 +366,15 @@
                         try { S.llmSess[name] = await LlmWeb.loadSession(ort, mdl, { executionProviders: ['wasm'] }); } catch (e) { return bad(502, 'ONNX 模型載入失敗：' + String((e && e.message) || e)); }
                     }
                     const loadMs = Date.now() - t0;
-                    let g; try { g = await LlmWeb.greedyGenerate(ort, S.llmSess[name], tok.encode(prompt), { maxNew, eosIds, layers: 28, kvHeads: 8, headDim: 128 }); } catch (e) { return bad(502, '推論失敗：' + String((e && e.message) || e)); }
+                    // 選用：Qwen3 q8 整段 GPU 解碼（設定 qwenGpuDecode，預設關）；準備失敗只記原因，照原路徑生成
+                    let gpuDecode = null, gdWhy = '';
+                    if (h.llmWeb.gpuDecode && typeof h.llmWeb.gpuDecode.enabled === 'function' && h.llmWeb.gpuDecode.enabled()) {
+                        try { gpuDecode = await h.llmWeb.gpuDecode.prepare(mdl); } catch (e) { gdWhy = 'GPU 解碼準備失敗：' + String((e && e.message) || e).slice(0, 300); }
+                    }
+                    let g; try { g = await LlmWeb.greedyGenerate(ort, S.llmSess[name], tok.encode(prompt), { maxNew, eosIds, layers: 28, kvHeads: 8, headDim: 128, gpuDecode }); } catch (e) { return bad(502, '推論失敗：' + String((e && e.message) || e)); }
+                    if (g.gpuDecode && gdWhy) { g.gpuDecode.reason = g.gpuDecode.reason || gdWhy; }
                     log('網頁版推論 llm/' + name + '（' + g.tokens.length + ' token，' + g.stoppedBy + '）');
-                    return ok({ name, text: tok.decode(g.tokens), tokens: g.tokens, stoppedBy: g.stoppedBy, loadMs, genMs: Date.now() - t0 - loadMs });
+                    return ok({ name, text: tok.decode(g.tokens), tokens: g.tokens, stoppedBy: g.stoppedBy, loadMs, genMs: Date.now() - t0 - loadMs, gpuDecode: g.gpuDecode ? Object.assign({}, g.gpuDecode, { reason: g.gpuDecode.reason || gdWhy }) : undefined });
                 }
                 // 下載資產內的一個檔（GGUF 等大檔）：交給主程式的 download（網頁版＝瀏覽器下載；桌面版＝存檔對話框）
                 if (method === 'POST' && P === '/api/asset/download') {
