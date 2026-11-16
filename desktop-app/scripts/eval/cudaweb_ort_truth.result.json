@@ -1,0 +1,20 @@
+{
+ "ort": "onnxruntime-node 1.22.0",
+ "checks": [
+  {
+   "name": "gate_proj：q8mmRef 與 ORT",
+   "maxAbs": 0,
+   "refMax": 2.625518560409546,
+   "exactFrac": 1,
+   "pass": true
+  },
+  {
+   "name": "lm_head（前 8192 列）：q8lmRef 與 ORT",
+   "maxAbs": 0.0000022574774285466503,
+   "refMax": 3.6552517414093018,
+   "maxRel": 6.175983456822779e-7,
+   "pass": true
+  }
+ ],
+ "pass": true
+}
