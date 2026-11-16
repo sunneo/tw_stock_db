@@ -448,7 +448,12 @@ GUI 的獨立 Worker 模擬器目前沒有註冊 `_fa_cudaweb`，不能 `import 
 
 - 生成迴圈位置：`floating-assistant.js` 的 `_vlmWorkerGet`／`faVlmWorkerMain` 在 **Worker** 內跑 transformers.js；WebGPU 在 Worker 裡可用，所以 head 服務可以直接放在 Worker，不需要信箱（比桌面版簡單）。
 - 阻礙：Qwen3 網頁版的 GPU 格式是 `q4f16`（`FaVlm` 的 dtype 表），lm_head 很可能是 q4 區塊量化（MatMulNBits 類）或 fp16。**cudaweb 目前只有 q8（uint8 單一 zero point）的 lm_head 核心**，接不上。
-- 本機沒有這個格式的模型檔；要確認格式需要下載模型或讀 HF 中繼資料，依使用者規定**不下載**，所以這一點未確認。
+- **中繼資料讀取結果（2026-11-16，使用者直接同意「同意讀取中繼資料」）**：只讀 HF 的檔案清單 API（12.6 KB）與 `onnx/model_q4f16.onnx` 的前 1 MB（HTTP Range，經 302 轉址，沒有下載權重）。
+  - 網頁版 Qwen3 GPU 檔是 `onnx-community/Qwen3-0.6B-ONNX` 的 `onnx/model_q4f16.onnx`。
+  - **lm_head 確認是 q4 區塊量化**：節點 `/lm_head/MatMul` 的運算子是 `MatMulNBits`，權重與 `model.embed_tokens.weight` 共用（tied）。圖裡還有 `GroupQueryAttention`、`SkipSimplifiedLayerNormalization`。
+  - 屬性從位元組推得（不是用 ONNX 解析器讀的）：`bits` = 4、`block_size` = 32。
+  - 還沒確認：scale 與 zero point 的資料型別與打包方式、權重排列（名稱是 `weight_transposed`）。要精確確認，要用 ONNX 解析器讀節點全部屬性與 initializer 檔頭。
+  - 結論：cudaweb 目前的 q8 lm_head 核心**不能**直接用於網頁版。要寫 MatMulNBits（4 位元、區塊 32）的 lm_head 核心，網頁版才可能接上。
 - 若要接：(1) 先確認 lm_head 格式（需使用者同意下載或讀中繼資料）；(2) 寫 q4 區塊反量化的 lm_head 核心（CPU 參考版＋測試，再 WGSL）；(3) 隱藏狀態變體圖要攔截 transformers.js 的 fetch 改寫位元組（LoRA 網頁版已有這條接點）；(4) 包一層讓 transformers.js 拿到 logits。
 
 ### 7.4 與原生執行環境的關係
