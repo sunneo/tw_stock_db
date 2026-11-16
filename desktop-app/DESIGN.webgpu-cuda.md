@@ -438,7 +438,11 @@ GUI 的獨立 Worker 模擬器目前沒有註冊 `_fa_cudaweb`，不能 `import 
 - **CPU 參考版**（`renderer/src/gpu/attn_ops.js`，提交 `8be226632`）：qk-norm（每頭 RMSNorm）、rotate-half RoPE（theta 可設，Qwen3 用 1e6）、KV 快取（Float32）、GQA（查詢頭 h → KV 頭 ⌊h/(H/Hkv)⌋）、因果遮罩。測試 `attn_ops_test.js` 9 項通過：逐步解碼與一次預填逐位元一致、因果、GQA 對應、softmax 平均、錯誤輸入丟錯。
 - **對真 ORT 的第 0 層 K／V 快取**（`scripts/eval/cudaweb_attn_layer0.js`，提交 `6c2e31640`）：3 個詞元預填、無過去快取。K 相對誤差 **1.9e-7**、V **3.1e-6**，通過。已驗證：q8 投影（q_proj／k_proj／v_proj）、qk-norm、RoPE（位置 0～2）、快取寫入與版面。
 - **未驗證**：注意力輸出（softmax 之後）與 o_proj（ORT 模型沒有輸出那裡的張量，需要改寫圖才能比）；多層串接；解碼一步與完整生成的比對。
-- **未做**：WGSL 版注意力核心（還沒寫）、WebGL2／純 JS 退路的 GPU 版、真 Chrome WebGPU 驗證。
+- **GPU 核心**（`renderer/src/gpu/attn_gpu.js`，提交 `b12061413`）：WGSL 版，一個 invocation 算一個（查詢位置、查詢頭），兩段式 softmax；退路 T1 → cpu-js（WebGL2 版未做，見下）。
+  - node 退路測試 4 項通過（`attn_gpu_test.js`）。
+  - **真 Chrome WebGPU**（`scripts/eval/cudaweb_attn_browser.js`，Chrome 157、NVIDIA Kepler）：4 個情境（解碼 S=1 過去 0／過去 40、預填 S=4、混合 S=3 過去 20）都走 T1，相對誤差 0～2.6e-7，通過。
+  - **速度（如實）**：目前 GPU 比 CPU 慢（解碼 S=1 過去 40：GPU 36 ms、CPU 5 ms；首次含編譯 1091 ms）。原因：`runWgsl` 每次呼叫都重建 shader 與 pipeline，還沒做快取與分塊。**未優化前維持不接線、預設關。**
+- **未做**：WebGL2 退路（目前 GPU 失敗直接跳到 cpu-js；WebGL2 版未實作）、pipeline 快取與速度優化、與 Qwen3 整層（o_proj、殘差、MLP）串接、注意力輸出對真 ORT 的比對。
 
 ### 7.6 網頁版 lm_head（2026-11-16 調查，**未接線**）
 
