@@ -439,7 +439,10 @@ GUI 的獨立 Worker 模擬器目前沒有註冊 `_fa_cudaweb`，不能 `import 
 - **對真 ORT 的第 0 層 K／V 快取**（`scripts/eval/cudaweb_attn_layer0.js`，提交 `6c2e31640`）：3 個詞元預填、無過去快取。K 相對誤差 **1.9e-7**、V **3.1e-6**，通過。已驗證：q8 投影（q_proj／k_proj／v_proj）、qk-norm、RoPE（位置 0～2）、快取寫入與版面。
 - **注意力輸出與 o_proj 對真 ORT**（`scripts/eval/cudaweb_attn_layer0_out.js`，提交 `419ce7672`）：用 protobuf 改寫圖的輸出（只換輸出清單，不改權重），取 `GroupQueryAttention/output_0` 與 `o_proj/MatMul/output_0`。3 個詞元預填，相對誤差注意力 3.1e-6、o_proj 3.2e-6，通過。
 - **第 0 層完整一層對真 ORT**（`scripts/eval/cudaweb_layer0_full.js`，提交 `3c7c77958`）：注意力殘差後 3.2e-6、MLP down 9.4e-7、第 0 層輸出（第 1 層 input_layernorm 的殘差和）1.8e-6，通過。改寫圖輸出的共用程式在 `scripts/eval/onnx_rewrite.js`。
-- **28 層全部串接的預填（3 詞元）對真 ORT：未通過（未解）**（`scripts/eval/cudaweb_model_step.js`，提交見下一筆文件提交）：
+- **28 層全部串接的預填（3 詞元）對真 ORT：通過（已修正，2026-11-16）**（`scripts/eval/cudaweb_model_step.js`，提交見下一筆）：
+  - **修正**：原因是 RMSNorm 的平方和用 double 累加，ORT 用 f32。第 21 層的離群通道讓量化步長很大，輸入量化整數有 4／3072 個差了 1 步，之後逐層放大，logits 相對誤差 0.147。改成 f32 逐步累加（預設）後：第 21 層量化整數 **0／3072 不一致**，步長相對差 1e-7 量級，每層隱藏狀態相對誤差 **1e-9 到 8e-9**，logits 相對誤差 **5.3e-7**，三個詞元 argmax 一致，通過。
+  - 注意：f32 逐步累加是順序相同的串列累加，ORT 的實作可能用向量化順序，目前只在這個模型與這 3 個詞元上驗證。
+  - 下面保留修正前的診斷數字，作為紀錄：
   - 每層隱藏狀態的相對誤差：第 0～20 層穩定在約 **1.6e-6**；第 21 層起明顯變大（4.3e-5），第 22 層 8.3e-5，第 23 層 1.4e-4，第 24 層 1.7e-4，第 25 層 2.4e-4，第 26 層 3.4e-4。
   - logits 相對誤差 **0.147**（最大絕對誤差 1.93，最大值 13.1）。三個詞元的 argmax 都一致（3/3），但數值差距超過門檻 1e-3。
   - lm_head 已確認：ORT 的 `/lm_head/MatMul` 是**浮點**矩陣乘，權重來自 `DequantizeLinear(embed，scale／zp 為純量)`，數學上與 `q8lmRef` 相同，所以誤差不是來自 lm_head。

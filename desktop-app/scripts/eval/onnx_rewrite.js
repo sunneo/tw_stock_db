@@ -24,7 +24,11 @@ function rewriteOutputs(buf, names) {
   const gf = top.find((x) => x.f === 7);
   const gparts = fieldsOf(buf, gf.vs, gf.ve);
   const keep = gparts.filter((p) => p.f !== 12).map((p) => buf.subarray(p.start, p.end));
-  const outs = names.map((nm) => bytesField(12, Buffer.concat([bytesField(1, Buffer.from(nm, 'utf8')), bytesField(2, bytesField(1, Buffer.from([0x08, 0x01])))])));
+  // names 的元素可以是字串（FLOAT）或 {name, elem}（elem：1 FLOAT、2 UINT8、3 INT8）
+  const outs = names.map((nm) => {
+    const name = typeof nm === 'string' ? nm : nm.name, elem = typeof nm === 'string' ? 1 : nm.elem;
+    return bytesField(12, Buffer.concat([bytesField(1, Buffer.from(name, 'utf8')), bytesField(2, bytesField(1, Buffer.from([0x08, elem])))]));
+  });
   const g = Buffer.concat(keep.concat(outs));
   return Buffer.concat(top.map((p) => (p === gf ? bytesField(7, g) : buf.subarray(p.start, p.end))));
 }
