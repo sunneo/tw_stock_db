@@ -5,7 +5,7 @@
 
 ## 2. 概況
 - 專案 `D:\Downloads\videos-嗨投資-desktop-app\desktop-app`，分支 `desktop-app`。管理者（回報對象）：`local_49f6c57d-8f18-427b-a8f1-7b1d23efc5f5`。**尚未推送、尚未發布。**
-- **已提交（本輪，新到舊）**：`b84a1c107`（設計 §7.7 更新）、`b12061413`（注意力 GPU 核心 `attn_gpu.js`＋退路測試＋真 Chrome 伺服器）、`6c2e31640`（第 0 層 K／V 對真 ORT 的評估）、`2d9d6621a`（§7.7 進度）、`8be226632`（注意力＋KV 快取 CPU 參考版 `attn_ops.js`＋9 項測試）、`6a1a92c17`（網頁版 lm_head 調查 §7.6）、`e4beaafda`／`2e139db0b`（交接與設計）、`7432e8866`（渲染編排測試 8 項）、`f1cae6209`（桌面版 lm_head 接線）、`6a60c18da`（嵌入 `FA_HEAD_SRC`）。上一棒：`9a30d0573`、`4a754017d`、`0b3e2bc51`。
+- **已提交（本輪，新到舊）**：`897917816`（網頁版 lm_head 中繼資料讀取結果，§7.6）、`b84a1c107`（設計 §7.7 更新）、`b12061413`（注意力 GPU 核心 `attn_gpu.js`＋退路測試＋真 Chrome 伺服器）、`6c2e31640`（第 0 層 K／V 對真 ORT 的評估）、`2d9d6621a`（§7.7 進度）、`8be226632`（注意力＋KV 快取 CPU 參考版 `attn_ops.js`＋9 項測試）、`6a1a92c17`（網頁版 lm_head 調查 §7.6）、`e4beaafda`／`2e139db0b`（交接與設計）、`7432e8866`（渲染編排測試 8 項）、`f1cae6209`（桌面版 lm_head 接線）、`6a60c18da`（嵌入 `FA_HEAD_SRC`）。上一棒：`9a30d0573`、`4a754017d`、`0b3e2bc51`。
 - **已驗證**：
   - 注意力 CPU 參考版：`node renderer/src/gpu/attn_ops_test.js`（9 項）；GPU 退路：`node renderer/src/gpu/attn_gpu_test.js`（4 項）。
   - 第 0 層 K／V 快取對真 ORT：`ELECTRON_RUN_AS_NODE=1 node_modules/electron/dist/electron.exe scripts/eval/cudaweb_attn_layer0.js`，K 相對誤差 1.9e-7、V 3.1e-6。
@@ -16,12 +16,12 @@
 - **執行包注意**：`tests/native/native_lora.test.js` 的 2 項同步檢查會紅（nr-*.js 已改、清單未重算）。重算清單與發布 1.22.0-4 都還沒做，沒有使用者或管理者說「發布」之前不要做。
 
 ## 3. 待辦（依序，下一步在最前）
-1. **第 0 層一步 decode 對真 ORT（管理者指定）**：目標是把注意力輸出（softmax 之後、o_proj 之前）與 o_proj 後的輸出與 ORT 比。ORT 模型沒有輸出那些張量，要用 `onnx_lite.js` 改寫圖（像 `buildHiddenStateModel` 那樣把節點輸出加進 graph outputs），先找節點名（`/model/layers.0/attn/...`，用 `lite.parseModel(...).nodes` 列出）。比對腳本放在 `scripts/eval/cudaweb_attn_layer0.js` 旁邊（新檔，不要改舊的）。CPU 路徑：`A.attentionBlock` 之後接 o_proj（q8 投影，`ops.q8mmRef`）。**完成標準**：相對誤差在 1e-3 內（參照 K／V 的 1e-6 量級）。
+1. **第 0 層一步 decode 對真 ORT（管理者指定；程式尚未開始寫）**：進度：還沒有任何新程式。做法建議：參照 `renderer/src/gpu/onnx_lite.js` 的 `buildHiddenStateModel`（它會換掉圖的輸出、刪掉不用的節點），把注意力輸出（softmax 之後、o_proj 之前）與 o_proj 輸出加進 graph outputs，再讓 ORT 跑一次。目標是把注意力輸出（softmax 之後、o_proj 之前）與 o_proj 後的輸出與 ORT 比。ORT 模型沒有輸出那些張量，要用 `onnx_lite.js` 改寫圖（像 `buildHiddenStateModel` 那樣把節點輸出加進 graph outputs），先找節點名（`/model/layers.0/attn/...`，用 `lite.parseModel(...).nodes` 列出）。比對腳本放在 `scripts/eval/cudaweb_attn_layer0.js` 旁邊（新檔，不要改舊的）。CPU 路徑：`A.attentionBlock` 之後接 o_proj（q8 投影，`ops.q8mmRef`）。**完成標準**：相對誤差在 1e-3 內（參照 K／V 的 1e-6 量級）。
 2. **GPU 核心速度**：`nn_ops.runWgsl` 每次呼叫都重建 shader 與 pipeline（`createComputePipeline` 很貴），改成依 device＋程式碼快取 pipeline，再量。再考慮分塊或共享記憶體版本。每次都在 Chrome 真 WebGPU 重驗（`cudaweb_attn_browser.js`）。**沒賺就如實寫明、維持預設關。**
 3. **WebGL2 退路**：決定做或寫明不做（設計文件 §7.7 目前寫的是「未做」）。建議：注意力用 WGSL＋CPU 兩層即可，WebGL2 對注意力收益不明，寫明不做並請管理者確認。
 4. **注意力接線**：管理者說「除非接線需要」才接。第 0 層一步 decode 通過後再判斷，接線要先在 Chrome 驗證。
 5. **管理者順序（之後）**：(a) MIDI 桌面原生（midigenai，`music/native_ort.js`）：取 GPU 版單步 logits 與 CPU 版比對，再接線（沿用 gpuhead 做法）；(b) MOSS-TTS-Nano 解碼器：先量 `decode_step` 矩陣乘佔比（`tts/moss_worker.js:9` 計時欄位）再決定；(c) 卷積派發：確認 `cudnn_subset.js` 的卷積有沒有真的派發到 WebGPU，取 Basic Pitch 第一個卷積驗證；(d) Whisper base 編碼器。**每一項**：Chrome 真 WebGPU 驗證、誤差在容差內、如實量速度、提交、回報管理者。
-6. **網頁版 lm_head：擱置**（管理者決定，記在 `DESIGN.webgpu-cuda.md` §7.6 為「待確認 q4 格式」）。**在使用者同意之前不要連網讀取任何模型相關檔案**（HF 中繼資料也不行）。
+6. **網頁版 lm_head：中繼資料已讀（使用者 2026-11-16 直接同意）**：`onnx-community/Qwen3-0.6B-ONNX` 的 `onnx/model_q4f16.onnx` 前 1 MB（Range）確認 lm_head 是 `MatMulNBits`（4 位元、區塊 32，屬性由位元組推得），與 embed 共用（tied）。**下一步**：寫 MatMulNBits 的 lm_head 核心（CPU 參考版＋測試，再 WGSL），每一步都要在 Chrome 真 WebGPU 驗證。**仍然不下載權重**；要精確確認 scale／zero point 型別，用 ONNX 解析器只讀檔頭（Range）；讀之前先列網址與大小，讓使用者確認。
 7. **桌面 gpuhead 真機驗證**：管理者說之後有空檔再補（獨立 `--user-data-dir`、換埠 `FA_BROWSER_CONTROL_PORT`，每項最多跑兩次，臨時指向本機工作目錄的 `nr-*.js`，不發布）。
 8. **更新設計文件**：每塊做完更新 `DESIGN.webgpu-cuda.md` 對應的 §7.x 與 §9 進度，沒驗證的明講。
 9. **回報**：每塊做完提交後，用 SendMessage 回報管理者（`local_49f6c57d-8f18-427b-a8f1-7b1d23efc5f5`）。
@@ -41,6 +41,7 @@
 
 ## 5. 使用者與管理者原話（原文，不改寫）
 使用者（依日期，新到舊）：
+- 2026-11-16：「同意讀取中繼資料」（只讀 HF 中繼資料：檔案清單與檔頭用 Range，不下載權重）
 - 2026-11-16：「我有開著claude for chrome, 可以用本地server來驗證」
 - 2026-11-16：「照計畫接線」
 - 2026-11-16：「做，先做推論概念驗證，可以的話就接上去」
