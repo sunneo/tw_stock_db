@@ -88782,7 +88782,7 @@ ${fnData.code}
                 const relScript = /^scripts\//i.test(scriptName) ? scriptName : 'scripts/' + scriptName;
                 if (!bundle.files.some((f) => f.path === relScript)) return JSON.stringify({ ok: false, error: '技能包裡沒有 ' + relScript });
                 const rawfs = window.desktopAPI && window.desktopAPI.rawfs;
-                const desktop = !!rawfs;
+                const desktop = false; // python_execute 是瀏覽器裡的 Python（看不到 Windows 的磁碟路徑，實測會找不到 /home/pyodide/C:/…），桌面版也要把技能檔案與附件放進它的 /work
                 const safe = String(bundle.name || bundle.id).replace(/[^A-Za-z0-9._-]+/g, '_');
                 const mat = desktop ? await this._skillMaterialize(bundle) : null;
                 if (desktop && !mat) return JSON.stringify({ ok: false, error: '技能包「' + bundle.name + '」還沒有解開到這台電腦（重新匯入或檢查使用者資料夾）' });
@@ -88805,7 +88805,7 @@ ${fnData.code}
                         await rawfs.writeFile(mat.dir + '/' + inputsDir + '/' + name, { base64: btoa(bin) });
                         pyArgs.push(mat.dir + '/' + inputsDir + '/' + name);
                     } else {
-                        attach['/work/' + inputsDir + '/' + name] = key;   // python_execute 的 attachment_files：放進 /work
+                        attach[inputsDir + '/' + name] = key;   // python_execute 的 attachment_files：放進 /work
                         pyArgs.push('/work/' + inputsDir + '/' + name);
                     }
                 }
