@@ -17,10 +17,9 @@ function decide(info) {
   const a = info.adapter; if (!a) return off('沒有可用的 WebGPU adapter');
   const name = [a.vendor, a.architecture, a.device, a.description].filter(Boolean).join(' ');
   if (a.isFallbackAdapter || SOFT_RE.test(name)) return off('軟體 WebGPU（' + (name || 'fallback adapter') + '）比 wasm 慢');
-  if (!(info.gpuGflops > 0)) return off('基準沒有量到 GPU 吞吐');
-  if (info.gpuGflops < MIN_GFLOPS) return off('GPU 基準太低（' + info.gpuGflops.toFixed(1) + ' GFLOP/s < ' + MIN_GFLOPS + '）');
-  if (info.cpuGflops > 0 && info.gpuGflops < info.cpuGflops * CPU_FACTOR) return off('GPU 基準（' + info.gpuGflops.toFixed(1) + '）沒有比 CPU（' + info.cpuGflops.toFixed(1) + '）快 ' + CPU_FACTOR + ' 倍');
-  const why = '真 GPU（' + (name || 'unknown') + '）基準 ' + info.gpuGflops.toFixed(1) + ' GFLOP/s' + (info.cpuGflops > 0 ? '，CPU ' + info.cpuGflops.toFixed(1) : '');
+  // 2026-11-17 使用者：真 GPU 不用管（最爛的 Geforce 720T 也比 Core i5-2620 快 1.78 倍），而且每條路徑都有失敗退回——
+  // 所以只要是真 GPU 就開，不再用基準門檻擋（基準只當資訊顯示）。
+  const why = '真 GPU（' + (name || 'unknown') + '）' + (info.gpuGflops > 0 ? '，基準 ' + info.gpuGflops.toFixed(1) + ' GFLOP/s' : '') + (info.cpuGflops > 0 ? '，CPU ' + info.cpuGflops.toFixed(1) : '');
   return { enabled: true, reason: why, features: Object.fromEntries(FEATURES.map((f) => [f, { on: true, reason: why }])) };
 }
 

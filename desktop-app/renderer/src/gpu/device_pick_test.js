@@ -5,9 +5,8 @@ let r = P.decide({ hasWebGpu: false }); assert.strictEqual(r.enabled, false); as
 r = P.decide({ hasWebGpu: true, adapter: null }); assert.ok(/adapter/.test(r.reason));
 r = P.decide({ hasWebGpu: true, adapter: { isFallbackAdapter: true } }); assert.strictEqual(r.enabled, false); assert.ok(/軟體/.test(r.reason));
 r = P.decide({ hasWebGpu: true, adapter: { description: 'SwiftShader Vulkan' }, gpuGflops: 999, cpuGflops: 1 }); assert.strictEqual(r.enabled, false, '軟體 adapter 即使基準高也關');
-r = P.decide({ hasWebGpu: true, adapter: real, gpuGflops: 0 }); assert.ok(/沒有量到/.test(r.reason));
-r = P.decide({ hasWebGpu: true, adapter: real, gpuGflops: 5, cpuGflops: 1 }); assert.ok(/太低/.test(r.reason));
-r = P.decide({ hasWebGpu: true, adapter: real, gpuGflops: 30, cpuGflops: 15 }); assert.ok(/快 3 倍/.test(r.reason));
+// 2026-11-17：真 GPU 不再用基準門檻擋（使用者：最爛的 GPU 也比舊 CPU 快；每條路徑有失敗退回）——基準沒量到、很低、比 CPU 慢都照樣開
+for (const info of [{ gpuGflops: 0 }, { gpuGflops: 5, cpuGflops: 1 }, { gpuGflops: 30, cpuGflops: 15 }, { gpuGflops: 3, cpuGflops: 8 }]) { r = P.decide(Object.assign({ hasWebGpu: true, adapter: real }, info)); assert.strictEqual(r.enabled, true, JSON.stringify(info)); }
 r = P.decide({ hasWebGpu: true, adapter: real, gpuGflops: 400, cpuGflops: 8 }); assert.strictEqual(r.enabled, true); for (const f of P.FEATURES) assert.strictEqual(r.features[f].on, true);
 assert.ok(P.cpuBench(32) > 0);
 (async () => { // probe：沒有 WebGPU 不丟錯；軟體 adapter 不量基準直接關
