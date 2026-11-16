@@ -24,6 +24,12 @@
 - 待辦 3（接線）的關鍵發現：`nr-engine.js` 直接用 ORT 輸出的 `r.logits`（第 90 行附近）；lm_head 是模型圖內最後一個 `MatMul`（輸入 `/model/layers.28/final_norm_layernorm/output_0`、權重 `model.embed_tokens.weight_transposed`，由 DequantizeLinear＋Transpose 在圖內產生）。要讓 GPU 接手 lm_head，必須有一個「輸出隱藏狀態（final_norm 輸出）而不算 lm_head」的模型圖：做法是用 onnx_lite 擴充成可改寫的讀寫器，從現有 q8 檔本機產生變體（不下載），或在圖輸出加上 final_norm 輸出但 lm_head 照算（沒省）。這需要設計決定，且變體檔約多出 0 位元組權重（可共用），尚未開始。
 - 下一步建議順序：(1) 補 WebGL2 退路或明講不做；(2) 待辦 2 的 CPU 參考版注意力＋KV 快取；(3) 待辦 3 先在桌面版做「隱藏狀態變體圖＋cudaweb lm_head」並設可選開關預設關。
 
+## 3b. 接線前的實測與架構發現（2026-11-16）
+- 實測現有路徑：真 ORT（CPU）跑完整 lm_head（151936×1024，暖機）中位數 **169 ms**（`scripts/eval/cudaweb_ort_lmhead_time.js`，提交在 scripts/eval）；GPU 版（NVIDIA Kepler、Chrome）暖機 **99 ms**。所以相對現有路徑只有約 **1.7 倍**，不是對純 JS 的 5.4 倍。GPU 越新倍數越高（未測）。
+- 桌面版架構阻礙：生成迴圈在原生子程序（`nr-child.js`／`nr-engine.js`，ELECTRON_RUN_AS_NODE，**沒有 WebGPU**），logits 在 `generate()` 內直接取樣。要讓 GPU 算 lm_head，需要：(a) 隱藏狀態變體圖（輸出 final_norm 結果、不算 lm_head；用 onnx_lite 擴充成寫入器，從本機現有檔產生，不下載），(b) 子程序→主程序→畫面（有 WebGPU 的程序）→回傳 logits 的每詞元往返，(c) 執行包版本（FEATURES）與協定要新增並保持舊版相容（熱更新規則）。
+- 網頁版：生成走 transformers.js／ort-web 載入的 HF 模型圖，同樣要隱藏狀態變體圖，且變體檔要在瀏覽器端改寫（約 617 MB 緩衝區）；尚未調查可行性。
+- 結論：接線不是小改，且收益只有約 1.7 倍（Kepler）。已回報管理者等待是否仍要做、先做哪一邊；沒有改動任何產品程式。
+
 ## 4. 工作方式（使用者規則，照抄重點）
 - 純中文回覆，不夾英文縮寫／術語。
 - 子工作階段模型依上層：上層 Opus → 子層 Sonnet medium；上層 Sonnet medium → 子層 Haiku。派工簡報要寫明：歧義自決、不准回頭詢問、速度守則（不空等、不跑整套測試、3 分鐘內有結論）；結束前確認沒留下行程。我（上一位）是 Sonnet medium，所以派 Haiku。
