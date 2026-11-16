@@ -6,6 +6,17 @@
 ## 第一優先（使用者 2026-11-16：「Qwen3 文字推論的加速不是第一優先嗎」，先做這個，其餘排在它後面）
 - [ ] **Q. Qwen3 文字推論整段 GPU 解碼（q8，網頁版 studio 與桌面版共用）**：現在純 CPU 的兩條路徑（網頁版 studio 的 onnxruntime-web wasm q8、桌面版原生子程序 onnxruntime-node q8）是真正的受益者（transformers.js q4f16 那條本來就由 onnxruntime 走 WebGPU，好處小，排最後）。用已驗證的核心（q8 反量化矩陣乘、注意力＋KV 快取、rmsnorm、rope、silu、lm_head）組成一個完整的 Qwen3-0.6B 解碼引擎：嵌入→28 層→lm_head→取樣，接成可選開關 `qwenGpuDecode`（預設 off，兩處設定同步），失敗自動退回現有 ONNX 路徑，診斷齊全。桌面版沿用 lm_head 的 head_req／head_res 信箱做法（渲染程序算、子程序等結果）。驗收：真 Chrome 同 prompt 8 個詞元與原路徑相同（greedy）；關開關時行為不變。這項做完才做 A、B、D…。
 
+## 遠端接手說明（2026-11-16，使用者：「我打算遠端完整的接手並完成後續任務」）
+- **你是完整接手者**：照本清單從 Q 開始做到最後（I 最後）。不要等本機管理者；每完成一項就勾掉、提交、**推送到你的分支**（管理者與使用者會用這個分支核對與發布）。
+- **遠端環境可能沒有的東西**：(1) 使用者 Chrome 的真 WebGPU；(2) 本機暫存資料夾裡已下載的模型檔（Qwen q4f16、midigenai 解碼器、MOSS 共 15 個檔案；它們不在 git 裡）；(3) 本機桌面版 Electron。做法：
+  - 先用 node 測試（假裝置／CPU 參考對拍）把正確性做完，每個核心都要有 node 可跑的測試。
+  - 需要真 Chrome WebGPU 或真模型檔才能驗的，在清單項目後面標「待本機 Chrome 驗證」＋寫好驗證頁與指令（照既有 `scripts/eval/cudaweb_*_browser.js`），由使用者或管理者在本機補驗，不要因此停下、也不要宣稱已驗證。
+  - 下載模型檔要使用者在你的對話直接同意：開始前一行列出檔名／來源／大小；沒同意就走上面的「待本機驗證」做法，不要停。
+- **已驗證過的事實可以直接信**（真 Chrome、使用者的 Kepler 14 W 顯示卡）：q8 `lm_head`、注意力＋KV、`MatMulNBits`、MOSS 各運算、卷積模組的結果檔都在 `scripts/eval/*.result.json`。
+- **預設關、行為不變**：所有新開關預設 off，關閉時舊路徑一個字不改；兩處設定介面（AI 助理設定、桌面版設定頁）要同步。
+- **發布**：不要發布。做完最終回報，管理者核對後在本機驗證再發布。
+- **硬體前提**：所有速度數字都是使用者的 12 年前老機器（Kepler 14 W、舊 CPU）上量的；寫數字要標硬體，不要寫沒有前提的倍數。
+
 ## 項目
 - [ ] **A. MOSS WebGPU 整管線** — BLOCKED：2026-11-16 驗證頁 cudaweb_moss_pipeline_gpu_check.js（埠 18776、18779）在真 Chrome 跑了 30 分鐘以上仍無結果檔；每個運算重建 pipeline（現已快取）＋頁面 CPU 段落佔住主執行緒，未能完成。下一棒需先把 decodeStep／取樣搬到 Worker 或分批讓出主執行緒再驗。：把已驗證的 CPU 管線（預填、生成、取樣、codec）各運算換成 GPU 核心（矩陣乘、注意力、LN、RoPE、GELU、conv_ops），與 ORT 比對。驗收：真 Chrome 驗證頁結果檔 pass（音訊相對誤差 ≤ 1e-4，同 seed 同幀數）。
 - [ ] **B. MOSS 產品接線**：moss_worker／moss_core 的推論可選走 GPU 管線；設定開關 `mossGpu`（預設 off）；失敗自動退回現有 wasm 路徑；診斷（層別、耗時、退回原因）。設定放 AI 助理設定與桌面版設定頁兩處。驗收：開關關時行為與現在完全相同（既有測試全過）；開時在真 Chrome 生成音訊且與 wasm 路徑結果一致。
