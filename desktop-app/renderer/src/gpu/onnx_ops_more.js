@@ -233,6 +233,8 @@ async function exec(node, ins, ctx, H) {
     case 'GlobalAveragePool': { const ax = []; for (let i = 2; i < a.d.length; i++) ax.push(i); return [reduceOp(a, ax, true, 0, (s, x) => s + x, (s, n) => s / n, H)]; }
     case 'ReduceMean': { const { axes, keep } = reduceAxes(node, ins, H, a.d.length); return [reduceOp(a, axes, keep, 0, (s, x) => s + x, (s, n) => s / n, H)]; }
     case 'ReduceSum': { const { axes, keep } = reduceAxes(node, ins, H, a.d.length); return [reduceOp(a, axes, keep, 0, (s, x) => s + x, (s) => s, H)]; }
+    case 'ReduceMax': { const { axes, keep } = reduceAxes(node, ins, H, a.d.length); return [reduceOp(a, axes, keep, -Infinity, (s, x) => (x > s ? x : s), (s) => s, H)]; }
+    case 'ReduceMin': { const { axes, keep } = reduceAxes(node, ins, H, a.d.length); return [reduceOp(a, axes, keep, Infinity, (s, x) => (x < s ? x : s), (s) => s, H)]; }
     case 'ReduceProd': { const { axes, keep } = reduceAxes(node, ins, H, a.d.length); return [reduceOp(a, axes, keep, 1, (s, x) => s * x, (s) => s, H)]; }
     case 'Expand': return [expandOp(a, Array.from(b.v), H)];
     case 'Tile': return [tileOp(a, Array.from(b.v), H)];

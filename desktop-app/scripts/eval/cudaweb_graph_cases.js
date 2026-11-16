@@ -20,4 +20,6 @@ CASES.kokoro = { minMacs: 1 << 18, tolRelL2: 0.5, feeds: (ort) => {
   const fs = require('fs'), ids = [0, 50, 83, 54, 156, 57, 135, 63, 16, 156, 70, 156, 85, 123, 16, 0], st = new Float32Array(256); let s = 5; for (let i = 0; i < 256; i++) { s = (s * 1664525 + 1013904223) >>> 0; st[i] = (s / 4294967296 - 0.5) * 0.4; }
   if (process.env.KOKORO_VOICE) { const v = fs.readFileSync(process.env.KOKORO_VOICE), f = new Float32Array(v.buffer, v.byteOffset, v.length / 4), row = Math.min(ids.length, 509) - 2; st.set(f.subarray(row * 256, row * 256 + 256)); }
   return { input_ids: new ort.Tensor('int64', BigInt64Array.from(ids.map(BigInt)), [1, ids.length]), style: new ort.Tensor('float32', st, [1, 256]), speed: new ort.Tensor('float32', Float32Array.from([1]), [1]) }; } };
+// Basic Pitch（nmp.onnx）：輸入 [1,43844,1]（約 2 秒、22050 Hz），輸出三個張量；用確定性合成音。
+CASES.basic_pitch = { minMacs: 1 << 16, tolRelL2: 1e-2, feeds: (ort) => { const n = 43844, w = new Float32Array(n); for (let i = 0; i < n; i++) w[i] = 0.4 * Math.sin(2 * Math.PI * 261.6 * i / 22050) + 0.25 * Math.sin(2 * Math.PI * 329.6 * i / 22050); return { 'serving_default_input_2:0': new ort.Tensor('float32', w, [1, n, 1]) }; } };
 module.exports = { CASES };

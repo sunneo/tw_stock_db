@@ -44,3 +44,4 @@
 - [x] **W3. L（YAMNet、Demucs）接進音訊轉 MIDI**：`_audioGpuSession`＋`graph_session`（DESIGN §7.25）。YAMNet 整圖 CPU＋Chrome GPU（30 個重運算全 T1，5.9e-6，argmax 6/6）端到端驗證；Demucs 算子補齊，整圖結果見 DESIGN §7.25 待補（長時間運算）。
 - [x] **W4. M（SDXS int8）**：`_localSdGpuWrap`（DESIGN §7.26）。VAE、文字編碼器 Chrome GPU 全 T1 對 ORT 通過；UNet／整條出圖比對見 §7.26 待補。
 - [x] **W5. P（Kokoro）**：`_kokoroGpuAttach`（DESIGN §7.27）。整圖 CPU 對 ORT：長度相同、頻譜餘弦 0.942；未跑 Chrome GPU 整圖、未聽感驗證。
+- [x] **W6. Basic Pitch 接進 audioGpu**（DESIGN §7.28）：補 ReduceMax／ReduceMin；真模型 Chrome GPU 32 個 Conv 全 T1、最大相對 7.6e-4。

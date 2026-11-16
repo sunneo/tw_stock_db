@@ -902,7 +902,7 @@ Python 模擬器與離線模型推論共用同一個 GPU 裝置：
 
 ### 7.25 ORT 相容的「圖形 session」與 YAMNet／Demucs 接線（2026-11-17，設定 `audioGpu`，預設關）
 - **做法**：`renderer/src/gpu/graph_session.js`：`create(bytes,{ops,TensorCtor,maxIntWeightElems})` 用 `onnx_interp` 逐節點執行整張圖，Conv／ConvTranspose／ConvInteger／大的 MatMul／MatMulInteger 走 conv_ops／mm_ops（T1 WGSL → cpu-js），其餘算子在 CPU（`onnx_ops_more.js` 補了約 35 個算子，見檔頭）；介面貼近 InferenceSession（`inputNames`、`outputNames`、`run(feeds)`），`info.tiers` 記錄重運算實際層級，`gpuShare` 判斷「T1 為主、退層 <20%」（權重太大而刻意用精確 CPU 整數參考的 `cpu-int` 不算退層），`attachRun` 把現成 session（transformers.js／kokoro-js 內部）的 `run` 換成 GPU 版、失敗永久退回。解釋器順便加了：最後一次使用後釋放中間張量（大圖記憶體）、初始值快取、int32_data／int64_data 小整數張量、uint8／int8／fp16 初始值。
-- **接線**：`_audioGpuSession`（掛在 `_audioToMidi` 兩處 `load` 的最前面，只給 `yamnet`、`demucs-6s`；Basic Pitch 的圖有算子尚未支援）。條件：`audioGpu`／gpuAuto、有 WebGPU、選 CPU（原生）時不碰；模型位元組用呼叫端原本的下載（快取過就是快取）；執行失敗或 GPU 退層太多永久退回 wasm session（結果格式不變，原因寫進轉換結果的 notes）。
+- **接線**：`_audioGpuSession`（掛在 `_audioToMidi` 兩處 `load` 的最前面，只給 `yamnet`、`demucs-6s`；Basic Pitch 於 §7.28 補上）。條件：`audioGpu`／gpuAuto、有 WebGPU、選 CPU（原生）時不碰；模型位元組用呼叫端原本的下載（快取過就是快取）；執行失敗或 GPU 退層太多永久退回 wasm session（結果格式不變，原因寫進轉換結果的 notes）。
 - **驗證（YAMNet，真模型）**：整圖 CPU 解釋器對真 ORT 最大相對 5.8e-6、argmax 6/6；**Chrome 156 軟體 WebGPU**（`cudaweb_graph_browser.js`）30 個重運算全 T1、5.9e-6、argmax 6/6、2.4 秒。
 - **Demucs**：算子補齊（Pad、ReduceMean／Prod、InstanceNormalization、Split、Sigmoid、Expand、Tile、ScatterND、ConvTranspose、fp16 初始值）。**整圖（真 htdemucs_6s，7.8 秒合成混音 [1,2,343980]，24,819 節點）CPU 解釋器對真 ORT：6 軌輸出最大相對 2.7e-5、relL2 8.0e-6，687 秒（JS 解釋器，未優化）。** 未跑 Chrome GPU 整圖（軟體 WebGPU 預期遠超 687 秒；逐節點 GPU 已在 §7.21 通過，其中 6 個 231 MB 注意力 MatMul 超過緩衝區上限會退 CPU，`gpuShare` 容許 <20% 退層）。
 
@@ -913,3 +913,7 @@ Python 模擬器與離線模型推論共用同一個 GPU 裝置：
 ### 7.27 Kokoro TTS 走圖形 session（設定 `kokoroGpu`，預設關）
 - `_kokoroGpuAttach`（`_getTtsEngine` 之後）：換掉 kokoro-js 內部 session（`engine.model.sessions.model`）的 `run`（`attachRun`）；模型取自瀏覽器快取的 q8 檔（核對 92,361,116 位元組），不下載。新增算子：DynamicQuantizeLSTM（權重 int8、MLAS 版面 [方向,輸入,4H]、閘序 iofc，解成浮點算，**不重現 ORT 對輸入與隱藏狀態的逐步動態量化**）、STFT、CumSum、NonZero、FastGelu、SkipLayerNormalization、FusedMatMul、Resize、Trilu、ConvInteger／MatMulInteger。
 - **驗證（真 q8 模型＋真語音包 af_heart，16 個音素詞元）**：逐節點 bisect 3977 個張量，第一個分歧是第一個 LSTM（相對 4.0e-3，＝浮點對動態量化 LSTM 的量化級差），其前全部吻合。整圖 CPU 解釋器對 ORT：波形長度相同（41400 點＝時長預測一致），逐點相對 L2 0.79（相位敏感，正弦源＋CumSum，不能用逐點比），短時頻譜幅度平均餘弦 0.942、對數幅度相關 0.882。**未做**：Chrome GPU 整圖（CPU 解釋器 3 分鐘，軟體 WebGPU 預期更久，未跑）；聽感驗證；真 Electron／UI 實測。
+
+### 7.28 Basic Pitch 也走圖形 session（2026-11-17，`audioGpu` 一併涵蓋）
+- 更正先前「Basic Pitch 的圖有算子尚未支援」：當時沒有實際查；實查 nmp.onnx（248 節點）只缺 `ReduceMax`／`ReduceMin`，已補（`onnx_ops_more.js`，單元 12 項）。`_audioGpuSession` 的允許清單加入 `basic-pitch`。
+- 驗證（真 nmp.onnx，約 2 秒合成和弦，輸入 [1,43844,1]）：CPU 解釋器對真 ORT 三個輸出最大相對 3.1e-3、relL2 ≤1.0e-3；**Chrome 軟體 WebGPU 32 個 Conv 全 T1，最大相對 7.6e-4、relL2 ≤3.3e-4，1.1 秒**。
