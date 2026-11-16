@@ -848,3 +848,15 @@ Python 模擬器與離線模型推論共用同一個 GPU 裝置：
 - **驗證（如實）**：輸入是確定性合成的 log-mel 形狀特徵（沒有真音訊）。(1) 階段對拍（把 ORT 圖的中間張量加成額外輸出，`cudaweb_whisper_trace.js`）：conv1、conv2、+pos 對 ORT 相對誤差 **8e-8～1.1e-7**（CPU 與 Chrome 軟體 WebGPU T1 兩者皆是，`cudaweb_whisper_gpu_check.js`）。(2) **逐層教師強迫**（每層餵 ORT 的上一層輸出）：CPU 參考 6 層最大相對誤差 ≤ 7.7e-3、平均絕對 ≤ 4e-4；Chrome 軟體 WebGPU（所有運算 T1）最大相對 ≤ 7.7e-3、平均絕對 ≤ 1.2e-3，通過門檻（最大相對 < 2e-2、平均絕對 < 2e-3）。軟體 GPU 每層約 7 秒、conv1＋conv2 約 2 秒（未優化、非真 GPU）。
 - **整條自由跑不逐字一致，原因已量測**：整條 CPU 參考對 ORT 最後輸出平均絕對誤差 5.8e-2、最大相對 22%；**但 ORT 自己**在輸入乘上 (1+1e-7·sin i) 的擾動後對自己的輸出差異平均絕對 5.9e-2、最大相對 16%（1e-5 擾動 6.9e-2、29%）——動態量化的捨入邊界翻轉在 6 層中被放大，是模型數值特性，不是核心錯誤（同 Qwen q8 §7.13）。所以通過標準用「階段＋逐層教師強迫」，不用端到端逐字。這是合成特徵的結果；真音訊的敏感度未量。
 - **未做**：接進 `transcribe_media` 的產品路徑（產品是 transformers.js 的 Whisper 管線，要攔截編碼器 session）、真 GPU、真音訊的轉錄文字比對、解碼器。
+
+### 7.20 Basic Pitch 卷積走 GPU（2026-11-16，清單 L 的 Basic Pitch 部分）＋模型檔查詢補充
+
+- **模型檔**（使用者同意下載）：`daserge/basic-pitch-onnx` 的 `nmp.onnx`，**230,444 位元組、SHA-256 `2c3c1d144bfa61ad236e92e169c13535c880469a12a047d4e73451f2c059a0ec`，與 `audio_models.js` 的 REGISTRY 相符**。圖 248 節點：32×Conv（26 個是 CQT 的 `[·,1,1,256]` 核、步幅 1／2／…／256 的一維卷積以 2D 表示；6 個是真 2D：5×5 s(1,3)、3×39、5×5、7×7 s(1,3)、7×3、3×3，pads 非零）、24×Pad、Relu／Sigmoid 各數個。輸入 `[1,43844,1]`。
+- **新增** `conv_ops.conv2d`（async；WGSL `WGSL_CONV2D`，T1 → cpu-js；strides／pads／dilations／groups 全支援，輸出格數超過一維派發上限 65535×64 時退 CPU 並寫明原因；單元 `conv_ops_test.js`）。
+- **驗證（如實）**：`cudaweb_bp_conv_dump.js` 把 ORT 圖每個 Conv 的輸入、輸出加成額外輸出（輸入是確定性合成音訊 440＋660 Hz＋雜訊，不是真音樂），以 ORT 實際看到的輸入逐一重算：**CPU `conv2dRef` 對 ORT 32 個 Conv 最差相對誤差 8.3e-7**；`cudaweb_bp_conv_gpu_check.js`（Chrome 156 軟體 WebGPU）以 `conv_ops.conv2d` 重算，**32 個全部 T1，最差相對誤差 2.0e-6**。逐卷積（教師強迫）比對，沒有串成整條管線。
+- **未做**：Basic Pitch 其餘算子（Pad、Relu、Sigmoid、CQT 的 Log／歸一化…）的 GPU 化與整條管線端到端、接進產品 `audio_models` 的 ORT 路徑、真音樂的音符比對、真 GPU。
+- **唯讀查詢（未下載，待使用者另行同意）**：
+  - Demucs：產品目錄 `htdemucs_6s_fp16weights.onnx`，136,428,532 位元組，來源 `https://huggingface.co/adowu/htdemucs-6s-onnx/resolve/main/htdemucs_6s_fp16weights.onnx`（SHA-256 `7ce55792…ce56869`，見 REGISTRY）；同倉庫另有 `htdemucs_6s.onnx` 258,159,781（fp32）。
+  - YAMNet：`yamnet.onnx`，16,093,355 位元組，來源 `https://huggingface.co/audiomagic/yamnet-onnx/resolve/main/yamnet.onnx`（SHA-256 `d3835ffb…8f908e`）；另有 `yamnet_class_map.csv` 14,096。
+  - SDXS（產品清單，`renderer/src/floating-assistant.js` 的 sdxs 目錄）：GPU 版 `skillsafeai/sdxs-512-dreamshaper-onnx-webgpu`（fp16）：`text_encoder.onnx` 246,275,486、`unet.onnx` 631,766,742、`vae_decoder.onnx` 2,467,568（合計約 880.5 MB）＋ tokenizer（`vocab.json` 1,059,962、`merges.txt` 524,619）；CPU 版 `lequangky/tipsy-sdxs-512-int8`：`text_encoder.onnx` 237,811,651、`unet.onnx` 873,388,448、`vae_decoder.onnx` 4,912,820（合計約 1.116 GB）。清單 M「只針對 CPU 版與沒有 f16 的機器」對應 int8 版（約 1.116 GB）。
+  - Kokoro：`onnx-community/Kokoro-82M-v1.0-ONNX`，`onnx/model_quantized.onnx`（q8）92,361,116 位元組（另 `model.onnx` 325,532,232、`model_fp16.onnx` 163,234,740、`model_q4.onnx` 305,215,966、`model_q4f16.onnx` 154,586,422、`model_q8f16.onnx` 86,033,585、`model_uint8.onnx` 177,464,632、`model_uint8f16.onnx` 114,209,226）；`tokenizer.json` 3,497、`config.json` 44；`voices/` 55 個檔（每個 voice 另計）。前述產品註解提到的 v1.1-zh 版未查。

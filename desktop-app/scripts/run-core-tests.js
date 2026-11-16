@@ -108,6 +108,7 @@ const suites = [
     ['midigenai 假 session（cudaweb 解碼）：KV 佈局轉換、重放重建、錯誤傳遞', 'renderer/src/gpu/midi_session_test.js'],
     ['midigenai GPU 運算（RMSNorm／RoPE／注意力／SiLU·up）：沒有 WebGPU 退 cpu-js 且與參考一致', 'renderer/src/gpu/midi_gpu_test.js'],
     ['Whisper 編碼器（q8）參考與 GPU 運算：DQL 規格值、整數矩陣乘、無 WebGPU 退 cpu-js', 'renderer/src/gpu/whisper_enc_test.js'],
+    ['共用卷積 conv2d：沒有 WebGPU 退 cpu-js 且與 conv2dRef 一致', 'renderer/src/gpu/conv_ops_test.js'],
     ['MOSS GPU 管線：探測、退層檢查', 'renderer/src/tts/moss_gpu_runners_test.js'],
     ['MOSS worker 的 mossGpu 開關：關／載入失敗／成功／中途失敗退回 ORT', 'renderer/src/tts/moss_worker_gpu_test.js'],
     ['Qwen3 q8 解碼：CPU 參考引擎（合成權重，KV 快取、錯誤處理、貪婪確定性）', 'renderer/src/gpu/qwen_decode_test.js'],
