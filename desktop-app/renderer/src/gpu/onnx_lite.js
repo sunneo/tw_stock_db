@@ -64,8 +64,29 @@
       else if (f === 2) a.f = f32At(buf, v[0]);
       else if (f === 8) { if (wt === 0) a.ints.push(v); }
       else if (f === 4) a.s = str(buf, v);
+      else if (f === 5) a.tensor = v;  // TensorProto 範圍（Constant 節點的 value）
     });
     return a;
+  }
+  // 取得 Constant 節點的值：{ dims, dtype, values（Float32Array 或 BigInt/數字陣列） }
+  function constantValue(m, node) {
+    const a = node.attrs && node.attrs.value;
+    if (!a || !a.tensor) throw new Error('onnx_lite：節點 ' + node.name + ' 不是 tensor 常數');
+    const t = parseTensor(m.buf, a.tensor);
+    let values = null;
+    if (t.floats) values = Float32Array.from(t.floats);
+    else if (t.ints) values = t.ints.slice();
+    else if (t.raw) {
+      const bytes = m.buf.subarray(t.raw[0], t.raw[1]);
+      const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+      const n = bytes.byteLength;
+      if (t.dtype === 1) { values = new Float32Array(n / 4); for (let i = 0; i < n / 4; i++) values[i] = dv.getFloat32(i * 4, true); }
+      else if (t.dtype === 6) { values = new Int32Array(n / 4); for (let i = 0; i < n / 4; i++) values[i] = dv.getInt32(i * 4, true); }
+      else if (t.dtype === 7) { values = []; for (let i = 0; i < n / 8; i++) values.push(Number(dv.getBigInt64(i * 8, true))); }
+      else if (t.dtype === 9) { values = Array.from(bytes); }
+      else values = bytes.slice();
+    }
+    return { dims: t.dims, dtype: t.dtype, values };
   }
   function parseNode(buf, r) {
     const n = { name: '', op: '', inputs: [], outputs: [], attrs: {} };
@@ -175,5 +196,5 @@
     throw new Error('onnx_lite：權重 ' + name + ' 沒有可讀的純量');
   }
   const DTYPE = { 1: 'float32', 2: 'uint8', 3: 'int8', 6: 'int32', 7: 'int64', 10: 'float16' };
-  return { parseModel, tensorBytes, scalar, buildHiddenStateModel, DTYPE };
+  return { parseModel, tensorBytes, scalar, buildHiddenStateModel, DTYPE, constantValue };
 });
