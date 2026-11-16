@@ -19,7 +19,7 @@ A window is drawn in the terminal named in python_execute's "terminal" (the same
 Events: "click" (buttons), "close" (the user closed the window). These update value() and do not return from wait():
 "input" (entry, textarea or editor text), "cell" (a table cell), "toggle" (an expander), "select" (a multilist or
 listbox selection), "change" (a checkbox).
-Node kinds: label, button, entry, textarea, checkbox, progress, listbox, row, column, expander, editor, table, multilist,
+Node kinds: label, button, entry, textarea, checkbox, progress, listbox, row, column, expander, editor, table, multilist, tree,
 canvas, tabs (with tab pages), split, menubar (menu, menuitem). Dialogs: message(text), confirm(text) -> bool, ask(text, default) -> str or None, pick_file(title, accept) -> file dict or None.
 Rows, columns and expanders take a parent=... argument to hold other nodes. set(node, text=..., enabled=...,
 visible=..., value=...) changes a node that was already added.
@@ -44,6 +44,7 @@ class Window(object):
         self._values = {}
         self._images = 0
         self._tables = set()
+        self._trees = set()
         self._carets = {}
         self.closed = False
         self._style = {}
@@ -159,6 +160,17 @@ class Window(object):
         self._tables.add(nid)
         return nid
 
+    def tree(self, columns, rows=(), selected="", parent=None):
+        """A tree grid. columns: headings (text) or {"title", "width" (20-2000 px), "align" ("left", "right", "center")} dicts.
+        rows: dicts in drawing order: {"id", "depth" (0-20), "cells" (one text per column), "tones" (per cell: "pass", "fail", "warn",
+        "muted" or None), "bold", "expanded"}. A row with "expanded" (True or False) has children: a click on its arrow folds it (toggle
+        event, value = the row id), and its deeper rows below are hidden while it is folded. A click on a row gives select (value() is
+        the selected row id). At most 3000 rows. set(nid, rows=..., columns=..., selected=...) changes it."""
+        nid = self._node("tree", parent, columns=_tree_cols(columns), rows=[_tree_row(r) for r in rows], selected=str(selected))
+        self._values[nid] = str(selected)
+        self._trees.add(nid)
+        return nid
+
     def multilist(self, items, selected=(), parent=None, rows=0):
         """A list where several items can be selected. value() is the list of selected items. rows: lines shown (0 = by item count, at most 8)."""
         nid = self._node("multilist", parent, items=[str(i) for i in items], selected=[str(s) for s in selected], **({"rows": int(rows)} if rows else {}))
@@ -197,6 +209,13 @@ class Window(object):
     def set(self, nid, **props):
         """Change properties of a node already added: set(btn, text="Save", enabled=False), set(box, visible=False),
         set(pb, value=40), set(lbl, text="..."). value() follows value / checked / selected."""
+        if nid in self._trees:  # the same row and column shapes as tree() takes
+            if "rows" in props:
+                props["rows"] = [_tree_row(r) for r in props["rows"]]
+            if "columns" in props:
+                props["columns"] = _tree_cols(props["columns"])
+            if "selected" in props:
+                props["selected"] = str(props["selected"])
         fa_bridge.call("gui.set", {"id": self.id, "node": nid, "props": props})
         if "caret" in props:
             self._carets[nid] = (int(props["caret"]), int(props.get("caret_to", props["caret"])))
@@ -291,6 +310,8 @@ class Window(object):
         """Store a value-changing event (input, cell, toggle, select) in value()."""
         kind = ev.get("event")
         node = ev.get("node")
+        if kind == "toggle" and node in self._trees:
+            return  # folding a tree row does not change its value (the selected row is the value)
         if kind == "cell":
             cell = ev.get("value") or {}
             self._values[node][cell["row"]][cell["col"]] = cell.get("text")
@@ -358,8 +379,23 @@ def _styled(fn):
 
 
 for _name in ("label", "button", "entry", "row", "column", "grid", "scroll", "tabs", "tab", "split", "menubar", "menu", "menuitem", "expander",
-              "editor", "table", "multilist", "textarea", "checkbox", "progress", "listbox", "list", "canvas", "markdown"):
+              "editor", "table", "multilist", "textarea", "checkbox", "progress", "listbox", "list", "tree", "canvas", "markdown"):
     setattr(Window, _name, _styled(getattr(Window, _name)))
+
+
+def _tree_cols(columns):
+    return [c if isinstance(c, dict) else {"title": str(c)} for c in columns]
+
+
+def _tree_row(r):
+    out = {"id": str(r["id"]), "depth": int(r.get("depth", 0)), "cells": [str(c) for c in r.get("cells", [])]}
+    if "tones" in r:
+        out["tones"] = [None if t is None else str(t) for t in r["tones"]]
+    if r.get("bold"):
+        out["bold"] = True
+    if "expanded" in r:
+        out["expanded"] = bool(r["expanded"])
+    return out
 
 
 def pick_file(title="Choose a file", accept="", max_bytes=262144):

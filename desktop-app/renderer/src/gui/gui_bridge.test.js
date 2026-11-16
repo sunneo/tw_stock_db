@@ -224,4 +224,35 @@ assert.match(G.parseWait('wait w1 a=b').error, /shell variable name/); ok();
   assert.deepStrictEqual(kids[3].selected, ['a', 'b']); assert.strictEqual(kids[4].rows[0][0], '9'); ok();
 }
 
+// tree: shapes, cell counts, select and toggle events, and the folded state the bridge keeps
+{
+  const S = G.createSession();
+  const ap = (m) => { const r = G.apply(S, m); assert.ok(r.ok, r.error); };
+  const cols = [{ title: 'Name', width: 200 }, { title: 'Result', align: 'right' }];
+  const rows = [
+    { id: 'a', depth: 0, cells: ['suite', 'ok'], tones: [null, 'pass'], expanded: true },
+    { id: 'b', depth: 1, cells: ['case 1', 'fail'], tones: [null, 'fail'], bold: true },
+    { id: 'c', depth: 0, cells: ['other', '-'], expanded: false },
+    { id: 'd', depth: 1, cells: ['hidden', 'x'] }
+  ];
+  ap({ op: 'open', id: 'wt', title: 'T' });
+  ap({ op: 'add', id: 'wt', node: { id: 'tr', kind: 'tree', columns: cols, rows: rows, selected: 'b' } });
+  const sn = G.snapshot(S, 'wt').root.children[0];
+  assert.strictEqual(sn.kind, 'tree'); assert.strictEqual(sn.rows.length, 4); assert.strictEqual(sn.rows[1].bold, true); ok();
+  assert.strictEqual(sn.columns[1].align, 'right'); assert.strictEqual(sn.rows[2].expanded, false); ok();
+  assert.match(G.apply(S, { op: 'add', id: 'wt', node: { id: 'bad1', kind: 'tree', columns: [{ title: 'x' }], rows: [{ id: 'r', depth: 0, cells: ['1', '2'] }] } }).error, /2 cells, the tree has 1/); ok();
+  assert.match(G.apply(S, { op: 'add', id: 'wt', node: { id: 'bad2', kind: 'tree', columns: cols, rows: [{ id: 'r', cells: ['1', '2'], tones: ['loud', null] }] } }).error, /tones\[0\]/); ok();
+  assert.match(G.apply(S, { op: 'add', id: 'wt', node: { id: 'bad3', kind: 'tree', columns: cols, rows: [{ id: 'r', depth: 99, cells: ['1', '2'] }] } }).error, /depth must be/); ok();
+  assert.match(G.apply(S, { op: 'add', id: 'wt', node: { id: 'bad4', kind: 'tree', columns: [{ title: 'x', align: 'justify' }] } }).error, /align must be/); ok();
+  assert.match(G.apply(S, { op: 'set', id: 'wt', node: 'tr', props: { rows: [{ id: 'r', cells: ['only one'] }] } }).error, /1 cells, the tree has 2/); ok();
+  assert.strictEqual(G.eventLine(S, 'wt', 'tr', 'select', 'b').indexOf('"value":"b"') > 0, true); ok();
+  assert.strictEqual(G.eventLine(S, 'wt', 'tr', 'select', 'nope'), null); ok();
+  assert.strictEqual(G.eventLine(S, 'wt', 'tr', 'toggle', 'b'), null); ok();
+  assert.strictEqual(G.eventLine(S, 'wt', 'tr', 'toggle', 'c').indexOf('"value":"c"') > 0, true); ok();
+  assert.strictEqual(G.snapshot(S, 'wt').root.children[0].selected, 'b'); ok();
+  assert.strictEqual(G.snapshot(S, 'wt').root.children[0].rows[2].expanded, true); ok();
+  assert.strictEqual(G.eventLine(S, 'wt', 'tr', 'toggle', 'c').indexOf('"value":"c"') > 0, true); ok();
+  assert.strictEqual(G.snapshot(S, 'wt').root.children[0].rows[2].expanded, false); ok();
+}
+
 console.log('gui_bridge: ' + n + ' assertions passed');

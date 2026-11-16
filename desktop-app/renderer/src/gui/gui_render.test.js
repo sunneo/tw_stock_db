@@ -346,4 +346,39 @@ assert.strictEqual(violations.length, 0); ok();
   assert.deepStrictEqual(sp.children.map((c) => c.style.flex), ['22 1 0%', '44 1 0%', '34 1 0%']); ok();
 }
 
+// tree: folding hides the deeper rows below a folded row (display), a click on the arrow sends toggle and a click on a row sends select
+{
+  const S4 = G.createSession();
+  const ap4 = (m) => { const r = G.apply(S4, m); assert.ok(r.ok, r.error); };
+  ap4({ op: 'open', id: 'wtr', title: 'T' });
+  ap4({ op: 'add', id: 'wtr', node: { id: 'tr', kind: 'tree', columns: [{ title: 'Name' }, { title: 'Result', align: 'right' }], selected: 'b',
+    rows: [
+      { id: 'a', depth: 0, cells: ['suite', 'ok'], tones: [null, 'pass'], expanded: true },
+      { id: 'b', depth: 1, cells: ['case 1', 'fail'], tones: [null, 'fail'], bold: true },
+      { id: 'c', depth: 0, cells: ['other', '-'], expanded: true },
+      { id: 'd', depth: 1, cells: ['child', 'x'] }
+    ] } });
+  const got = [];
+  const w4 = R.renderWindow(doc, G.snapshot(S4, 'wtr'), (name, node, value) => got.push([name, node, value]), () => {});
+  const tree = byNode(w4, 'tr');
+  const body = find(tree, (e) => e.tagName === 'tbody');
+  const trs = body.children;
+  assert.strictEqual(trs.length, 4); ok();
+  assert.ok(trs[1].className.indexOf('gui-tree-sel') >= 0 && trs[1].className.indexOf('gui-tree-bold') >= 0); ok();
+  assert.strictEqual(trs[0].children[0].style.paddingLeft, '10px'); assert.strictEqual(trs[1].children[0].style.paddingLeft, '26px'); ok();
+  assert.strictEqual(trs[1].children[1].style.textAlign, 'right'); ok();
+  const arrowA = find(trs[0].children[0], (e) => e.className === 'gui-tree-arrow');
+  assert.strictEqual(arrowA.textContent, '▾'); ok();
+  arrowA.fire('click');
+  assert.strictEqual(arrowA.textContent, '▸'); ok();
+  // b is a child of a (hidden now); d is a child of c, which is open, so d stays shown
+  assert.strictEqual(trs[1].style.display, 'none'); assert.strictEqual(trs[3].style.display, ''); assert.strictEqual(trs[2].style.display, ''); ok();
+  assert.deepStrictEqual(got[got.length - 1], ['toggle', 'tr', 'a']); ok();
+  trs[2].fire('click');
+  assert.deepStrictEqual(got[got.length - 1], ['select', 'tr', 'c']); ok();
+  assert.ok(trs[2].className.indexOf('gui-tree-sel') >= 0 && trs[1].className.indexOf('gui-tree-sel') < 0); ok();
+  arrowA.fire('click');
+  assert.strictEqual(trs[1].style.display, ''); ok();
+}
+
 console.log('gui_render: ' + n + ' assertions passed');

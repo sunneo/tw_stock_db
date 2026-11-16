@@ -16,7 +16,7 @@
 //                     (a picture is registered once per canvas; a frame draws it by name: ["image","ship",x,y,w,h]. data null removes it.
 //                      Only the Python / JavaScript route sends pictures: the program-output route refuses them, since its lines are short.)
 //
-// Kinds: column, row, expander (containers, children added with parent), label, button, entry, textarea, editor, checkbox, progress, list, multilist, table, canvas.
+// Kinds: column, row, expander (containers, children added with parent), label, button, entry, textarea, editor, checkbox, progress, list, multilist, table, tree, canvas.
 // Values are always plain text: no HTML and no script ever reaches the page through this protocol.
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) { module.exports = factory(); } else { root.AiChatGuiBridge = factory(); }
@@ -76,6 +76,10 @@
     list: { props: ['items', 'selected', 'enabled', 'rows'], events: ['select'] },
     multilist: { props: ['items', 'selected', 'enabled', 'rows'], events: ['select'] },
     table: { props: ['columns', 'rows', 'enabled'], events: ['cell'] },
+    // tree: a grid whose first column is indented by depth; rows are {id, depth, cells, tones, bold, expanded} in drawing order (a row with
+    // expanded true or false has children; its descendants are hidden while it is false). A click sends select (value = the row id),
+    // the arrow sends toggle (value = the row id; the bridge flips the row's expanded flag itself). selected is the selected row id.
+    tree: { props: ['columns', 'rows', 'selected', 'enabled'], events: ['select', 'toggle'] },
     // a canvas is drawn by whole frames (op "draw" replaces the frame); fps > 0 makes the page send "frame" events, key presses come as "key",
     // the pointer as "mouse" ({kind: down | up | move, x, y, button} with x and y inside the canvas), the wheel as "wheel" ({x, y, dy}),
     // and "resize" ({width, height}: the canvas's new size in pixels when its window is resized or maximized)
@@ -139,6 +143,8 @@
     if (kind === 'canvas' && name === 'fps') { return num(v, name, 0, MAX_FPS); }
     if (kind === 'table' && name === 'columns') { return cellList(v, 'columns', 1, MAX_COLUMNS); }
     if (kind === 'table' && name === 'rows') { return tableRows(v); }
+    if (kind === 'tree' && name === 'columns') { return treeColumns(v); }
+    if (kind === 'tree' && name === 'rows') { return treeRows(v); }
     if (kind === 'multilist' && name === 'selected') { return cellList(v, 'selected', 0, MAX_ITEMS); }
     return prop(kind, name, v);
   }
@@ -147,6 +153,56 @@
   function cellList(v, field, min, max) {
     if (!Array.isArray(v) || v.length < min || v.length > max) { throw new Error(field + ' must be an array of ' + min + ' to ' + max + ' strings'); }
     return v.map(function (s, i) { return text(s, field + '[' + i + ']'); });
+  }
+
+  // tree columns: [{title, width (20-2000 px), align (left, right, center)}]
+  var TREE_TONES = ['pass', 'fail', 'warn', 'muted'];
+  var MAX_TREE_ROWS = 3000, MAX_TREE_DEPTH = 20;
+  function treeColumns(v) {
+    if (!Array.isArray(v) || v.length < 1 || v.length > MAX_COLUMNS) { throw new Error('columns must be an array of 1 to ' + MAX_COLUMNS + ' columns'); }
+    return v.map(function (c, i) {
+      var what = 'columns[' + i + ']';
+      if (!isObj(c)) { throw new Error(what + ' must be an object'); }
+      var col = { title: text(c.title, what + '.title') };
+      if (c.width !== undefined) { col.width = num(c.width, what + '.width', 20, 2000); }
+      if (c.align !== undefined) {
+        if (['left', 'right', 'center'].indexOf(c.align) < 0) { throw new Error(what + '.align must be left, right or center'); }
+        col.align = c.align;
+      }
+      return col;
+    });
+  }
+  // tree rows: at most 3000; depth 0-20; cells one text per column; tones (per cell, pass/fail/warn/muted or null); bold; expanded (present = has children)
+  function treeRows(v) {
+    if (!Array.isArray(v) || v.length > MAX_TREE_ROWS) { throw new Error('rows must be an array of at most ' + MAX_TREE_ROWS + ' tree rows'); }
+    return v.map(function (r, i) {
+      var what = 'rows[' + i + ']';
+      if (!isObj(r)) { throw new Error(what + ' must be an object'); }
+      var row = {
+        id: text(r.id, what + '.id'),
+        depth: num(r.depth === undefined ? 0 : r.depth, what + '.depth', 0, MAX_TREE_DEPTH),
+        cells: cellList(r.cells, what + '.cells', 0, MAX_COLUMNS)
+      };
+      if (r.tones !== undefined) {
+        if (!Array.isArray(r.tones) || r.tones.length > MAX_COLUMNS) { throw new Error(what + '.tones must be an array of at most ' + MAX_COLUMNS + ' items'); }
+        row.tones = r.tones.map(function (t, j) {
+          if (t !== null && TREE_TONES.indexOf(t) < 0) { throw new Error(what + '.tones[' + j + '] must be pass, fail, warn, muted or null'); }
+          return t;
+        });
+      }
+      if (r.bold !== undefined) { row.bold = bool(r.bold, what + '.bold'); }
+      if (r.expanded !== undefined) { row.expanded = bool(r.expanded, what + '.expanded'); }
+      return row;
+    });
+  }
+  // every row of a tree has one cell per column (checked when both are known: on add and after each set)
+  function checkTreeCells(n) {
+    if (!n.rows || !n.columns) { return; }
+    n.rows.forEach(function (r, i) { if (r.cells.length !== n.columns.length) { throw new Error('rows[' + i + '] has ' + r.cells.length + ' cells, the tree has ' + n.columns.length + ' columns'); } });
+  }
+  function treeRowOf(node, id) {
+    for (var i = 0; i < (node.rows || []).length; i++) { if (node.rows[i].id === id) { return node.rows[i]; } }
+    return null;
   }
 
   // table rows: an array of rows, each with one text value per column
@@ -210,6 +266,7 @@
       if (allowed.indexOf(k) < 0) { throw new Error('prop "' + k + '" is not allowed on ' + kind); }
       out[k] = propValue(kind, k, n[k]);
     });
+    if (kind === 'tree') { checkTreeCells(out); }
     if (kind === 'table' && out.rows) {
       if (!out.columns) { throw new Error('a table needs columns before its rows'); }
       out.rows.forEach(function (r, i) { if (r.length !== out.columns.length) { throw new Error('rows[' + i + '] has ' + r.length + ' cells, the table has ' + out.columns.length + ' columns'); } });
@@ -308,6 +365,8 @@
       if (!target || nid === 'root') { return fail('node "' + nid + '" does not exist in window "' + wid + '"'); }
       if (msg.op === 'set') {
         if (!isObj(msg.props)) { return fail('props must be an object'); }
+        // every prop is checked first and only then written, so a refused set leaves the node as it was
+        var checked = {};
         Object.keys(msg.props).forEach(function (k) {
           if (k === 'caret' || k === 'caret_to') { // a one-time move of an editor's caret: checked, not stored
             if (target.kind !== 'editor') { throw new Error('prop "' + k + '" is not allowed on ' + target.kind); }
@@ -316,8 +375,12 @@
           }
           var allowed = KINDS[target.kind].props.concat(COMMON);
           if (allowed.indexOf(k) < 0) { throw new Error('prop "' + k + '" is not allowed on ' + target.kind); }
-          target[k] = propValue(target.kind, k, msg.props[k]);
+          checked[k] = propValue(target.kind, k, msg.props[k]);
         });
+        if (target.kind === 'tree') {
+          checkTreeCells({ rows: checked.rows || target.rows, columns: checked.columns || target.columns });
+        }
+        Object.keys(checked).forEach(function (k) { target[k] = checked[k]; });
         return { ok: true };
       }
       if (msg.op === 'draw') {
@@ -355,6 +418,8 @@
   function remember(node, eventName, v) {
     if (eventName === 'input' && typeof v === 'string') { node.value = v; }
     else if (eventName === 'change') { node.checked = !!v; }
+    else if (eventName === 'toggle' && node.kind === 'tree' && typeof v === 'string') { var tr = treeRowOf(node, v); if (tr) { tr.expanded = !tr.expanded; } }
+    else if (eventName === 'select' && node.kind === 'tree' && typeof v === 'string') { node.selected = v; }
     else if (eventName === 'toggle') { node.expanded = !!v; }
     else if (eventName === 'select' && node.kind === 'list' && typeof v === 'string') { node.selected = v; }
     else if (eventName === 'select' && node.kind === 'multilist' && Array.isArray(v)) { node.selected = v; }
@@ -381,7 +446,13 @@
     if ((eventName === 'key' || eventName === 'frame' || eventName === 'mouse' || eventName === 'wheel' || eventName === 'resize' || eventName === 'caret') && value === undefined) { return null; } // these always carry a value
     var ev = { v: VERSION, event: eventName, id: winId, node: nodeId };
     if (value !== undefined) {
-      if (eventName === 'change' || eventName === 'toggle') { ev.value = !!value; }
+      if (node.kind === 'tree' && (eventName === 'select' || eventName === 'toggle')) {
+        // the row id: select on any row; toggle only on a row that has children
+        var trow = typeof value === 'string' ? treeRowOf(node, value) : null;
+        if (!trow || (eventName === 'toggle' && trow.expanded === undefined)) { return null; }
+        ev.value = trow.id;
+      }
+      else if (eventName === 'change' || eventName === 'toggle') { ev.value = !!value; }
       else if (eventName === 'key') {
         // {key, down}: a key name such as "ArrowLeft" or " " (space); anything longer than 20 characters is cut
         var key = value && value.key;

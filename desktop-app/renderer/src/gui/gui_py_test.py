@@ -257,6 +257,20 @@ replies[:] = [{'v': 1, 'event': 'change', 'id': wl.id, 'node': 'cb', 'value': Tr
 ev2 = wl.wait(timeout=5)  # a change is not in also=, so the wait goes on to the next event (the stub's close)
 check('wait without also skips a change', ev2 is not None and ev2['event'] == 'close')
 
+# tree: the node shape, row normalization in set, and a fold (toggle) that does not change value()
+tv = wl.tree(['Name', {'title': 'Result', 'align': 'right'}], rows=[
+    {'id': 'a', 'depth': 0, 'cells': ['suite', 'ok'], 'tones': [None, 'pass'], 'expanded': True},
+    {'id': 'b', 'depth': 1, 'cells': ['c1', 'fail'], 'bold': True}], selected='b', parent=col)
+check('tree op', calls[-1][1]['node'] == {'id': tv, 'kind': 'tree', 'columns': [{'title': 'Name'}, {'title': 'Result', 'align': 'right'}], 'rows': [
+    {'id': 'a', 'depth': 0, 'cells': ['suite', 'ok'], 'tones': [None, 'pass'], 'expanded': True},
+    {'id': 'b', 'depth': 1, 'cells': ['c1', 'fail'], 'bold': True}], 'selected': 'b'} and calls[-1][1]['parent'] == col)
+check('tree value is the selected id', wl.value(tv) == 'b')
+wl.set(tv, rows=[{'id': 'z', 'cells': ['x', 'y']}])
+check('tree set rows normalized', calls[-1][1]['props'] == {'rows': [{'id': 'z', 'depth': 0, 'cells': ['x', 'y']}]})
+replies[:] = [{'v': 1, 'event': 'toggle', 'id': wl.id, 'node': tv, 'value': 'a'}]
+ev3 = wl.wait(timeout=5)  # a toggle is not in also=, so the stub's close comes next
+check('tree toggle keeps the selected value', wl.value(tv) == 'b' and ev3 is not None and ev3['event'] == 'close')
+
 if failures:
     print('%d failure(s)' % len(failures))
     sys.exit(1)

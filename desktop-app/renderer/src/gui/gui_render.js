@@ -107,6 +107,10 @@
     '.gui-table{border-collapse:separate;border-spacing:0;width:100%;font-size:.95em}',
     '.gui-table th{position:sticky;top:0;text-align:left;font-weight:600;padding:6px 10px;background:var(--gui-surface2);border-bottom:1px solid var(--gui-border);color:var(--gui-muted);font-size:.9em;letter-spacing:.02em}',
     '.gui-table td{padding:0;border-bottom:1px solid var(--gui-border)}.gui-table tr:last-child td{border-bottom:none}.gui-table tbody tr:hover{background:var(--gui-hover)}',
+    '.gui-treebox{overflow:auto;border:1px solid var(--gui-border);border-radius:var(--gui-radius);min-height:0}',
+    '.gui-tree td.gui-tree-td{padding:4px 10px;white-space:nowrap}.gui-tree tr.gui-tree-sel td{background:var(--gui-hover)}',
+    '.gui-tree .gui-tree-arrow{display:inline-block;width:14px;cursor:pointer;color:var(--gui-muted);user-select:none}.gui-tree-bold td{font-weight:600}',
+    '.gui-tone-pass{color:#2e7d32}.gui-tone-fail{color:var(--gui-danger)}.gui-tone-warn{color:#b26a00}.gui-tone-muted{color:var(--gui-muted)}',
     '.gui-cell{border:none;border-radius:0;background:transparent;width:100%;padding:6px 10px}.gui-cell:focus{box-shadow:inset 0 0 0 2px var(--gui-accent)}',
     '.gui-tabs{display:flex;flex-direction:column;min-width:0;min-height:0}',
     '.gui-tabbar{display:flex;gap:2px;padding:0 var(--gui-s3);border-bottom:1px solid var(--gui-border);flex:0 0 auto;background:var(--gui-surface)}',
@@ -795,6 +799,11 @@
         tableEl.appendChild(tbody);
         el.appendChild(tableEl);
         break;
+      case 'tree':
+        el = doc.createElement('div');
+        el.className = 'gui-treebox';
+        buildTree(doc, el, n, onEvent);
+        break;
       case 'markdown':
         el = doc.createElement('div');
         el.className = 'gui-md';
@@ -879,6 +888,76 @@
 
   // tabs: a bar of buttons (one per tab page, titled by the page's text) above the pages; one page shows. The page comes from the node's
   // `selected` (a page id), else the first; a click shows that page and tells the program (select, value = the page id).
+  // tree: every row is drawn once. A row with children (expanded is set) has an arrow; a click on it (or on the row's
+  // arrow) folds it, and the rows below it that are deeper are hidden by display, so folding never rebuilds the table.
+  // A click on a row selects it (select event, value = the row id); a fold sends toggle (value = the row id).
+  function treeVisibility(entries) {
+    var hideBelow = null;
+    entries.forEach(function (e) {
+      if (hideBelow !== null && e.row.depth > hideBelow) { e.tr.style.display = 'none'; return; }
+      hideBelow = null;
+      e.tr.style.display = '';
+      if (e.expanded === false) { hideBelow = e.row.depth; }
+    });
+  }
+  function buildTree(doc, el, n, onEvent) {
+    var cols = n.columns || [], entries = [];
+    var tableEl = doc.createElement('table');
+    tableEl.className = 'gui-table gui-tree';
+    var head = doc.createElement('tr');
+    cols.forEach(function (c) {
+      var th = doc.createElement('th');
+      th.textContent = c.title;
+      if (c.width) { th.style.width = c.width + 'px'; }
+      if (c.align) { th.style.textAlign = c.align; }
+      head.appendChild(th);
+    });
+    var thead = doc.createElement('thead');
+    thead.appendChild(head);
+    tableEl.appendChild(thead);
+    var tbody = doc.createElement('tbody');
+    (n.rows || []).forEach(function (r) {
+      var tr = doc.createElement('tr'), e = { row: r, tr: tr, expanded: r.expanded };
+      tr.className = 'gui-tree-row' + (r.bold ? ' gui-tree-bold' : '') + (r.id === n.selected ? ' gui-tree-sel' : '');
+      (r.cells || []).forEach(function (text, ci) {
+        var td = doc.createElement('td');
+        td.className = 'gui-tree-td' + (r.tones && r.tones[ci] ? ' gui-tone-' + r.tones[ci] : '');
+        if (cols[ci] && cols[ci].align) { td.style.textAlign = cols[ci].align; }
+        if (ci === 0) {
+          td.style.paddingLeft = (10 + r.depth * 16) + 'px';
+          var arrow = doc.createElement('span');
+          arrow.className = 'gui-tree-arrow';
+          arrow.textContent = '';
+          td.appendChild(arrow);
+          if (r.expanded !== undefined) {
+            arrow.textContent = e.expanded ? '▾' : '▸';
+            arrow.addEventListener('click', function (ev) {
+              if (ev && ev.stopPropagation) { ev.stopPropagation(); }
+              e.expanded = !e.expanded;
+              arrow.textContent = e.expanded ? '▾' : '▸';
+              treeVisibility(entries);
+              onEvent('toggle', n.id, r.id);
+            });
+          }
+        }
+        var label = doc.createElement('span');
+        label.textContent = String(text);
+        td.appendChild(label);
+        tr.appendChild(td);
+      });
+      tr.addEventListener('click', function () {
+        entries.forEach(function (o) { o.tr.className = o.tr.className.replace(' gui-tree-sel', ''); });
+        tr.className += ' gui-tree-sel';
+        onEvent('select', n.id, r.id);
+      });
+      entries.push(e);
+      tbody.appendChild(tr);
+    });
+    tableEl.appendChild(tbody);
+    el.appendChild(tableEl);
+    treeVisibility(entries);
+  }
+
   function buildTabs(doc, el, n, onEvent) {
     var pages = Array.prototype.slice.call(el.children || []);
     var bar = doc.createElement('div');
@@ -908,6 +987,7 @@
   function patchNode(el, node, props) {
     var keys = Object.keys(props || {}).sort(function (x, y) { return rank(x) - rank(y); });
     if (!el || !keys.length) { return false; }
+    if (node.kind === 'tree') { return false; } // a tree's rows and selection are drawn once: a set rebuilds it
     var kind = node.kind;
     for (var i = 0; i < keys.length; i++) {
       var k = keys[i];

@@ -24,7 +24,7 @@
 
 ## 項目（全部 [x] 才能結束；每項一個提交，提交訊息寫做了什麼＋怎麼驗證）
 - [x] 1. gui.py：`list` 別名、`wait(also=)`、`split` 權重清單
-- [ ] 2. 新元件 `tree`（橋接、繪製、Python、patch、測試）
+- [x] 2. 新元件 `tree`（橋接、繪製、Python、patch、測試）
 - [ ] 3. 新元件 `doc`（八種區塊、ref 事件、測試）
 - [ ] 4. `filepick`＋`pick_files`（桌面版真檔案選擇器；網頁版沿用既有 pick_file 的退路）
 - [ ] 5. 工具 `skill_run_script`＋URI 解析＋更新 FA_SKILL_RUN_PROTOCOL／技能領域保留工具
