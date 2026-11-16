@@ -59,3 +59,19 @@
 - 使用者的 Chrome 在背景會留著 Claude in Chrome 的擴充功能行程，不是我們的殘留，不要殺。
 - 驗證用伺服器：`node scripts/eval/cudaweb_infer_browser.js 18765`（讀 617 MB 模型，數秒才起來）。
 - `scripts/move-to-e.ps1`（未追蹤）是使用者自己要用的，不要動、不要提交。
+
+## 8. 本輪進度（2026-11-16，第二棒續）
+- **待辦 1 渲染程序接線：程式已完成，真機驗證未做。** 提交：`6a60c18da`（嵌入 FA_HEAD_SRC）、`f1cae6209`（接線：開關 `nrGpuHead` 預設關、`_nrHeadStart`、狀態列顯示實際結果）、`7432e8866`（編排測試，8 項過）。`head_service_test` 4 項、`infer_ops_test` 7 項過。
+  - **違反規則的地方（要講清楚）**：交接規定「每塊做完先在 Chrome 本機驗證再提交」，這塊我先提交、驗證還沒做。之後若真機有問題，要修正或回退這三個提交。
+  - **待做（1d 真機）**：用評估檔＋獨立 `--user-data-dir`＋換埠（`FA_BROWSER_CONTROL_PORT`）啟動真 Electron，跑設定開啟的生成。執行包要有 `gpuhead` 才會走到這條路，所以要臨時指向本機工作目錄的 `nr-*.js`（不發布）。每項最多跑兩次。
+- **待辦 2 網頁版可行性（唯讀調查，沒有下載）**：
+  - `onnx_lite.js` 的 `buildHiddenStateModel` 全程用 Node 的 `Buffer`（`Buffer.concat`、`Buffer.from`、`enc` 用 Buffer），瀏覽器沒有 `Buffer`，要改寫成 Uint8Array 版。
+  - 記憶體：`parts` 是 `subarray` 視圖（不複製），最後 `Buffer.concat` 一次複製，峰值約 2 倍模型大小（617 MB → 約 1.2 GB）。改成先算總長、直接寫進單一 Uint8Array 可降到約 1 倍。
+  - 網頁版不需要信箱：頁面內可以直接把隱藏狀態交給 `head_service`（它已經是純 JS 模組，`b64ToBytes`／`bytesToB64` 已備）。
+  - 自訂位元組：ORT-web 的 `InferenceSession.create(ArrayBuffer)` 可行（桌面版 `FaAudioRuntime.createSession` 就是這種用法）。transformers.js 能否吃自訂位元組**未查證**，建議改走 ORT-web 直接載入改寫後的位元組。
+  - 錯誤退回：沿用網頁版原路徑（重新載入原模型）。
+  - **未驗證**：瀏覽器內的實際記憶體峰值、ORT-web 的接受度。
+- **待辦 3 WebGL2 退路**：建議不做（服務只收 T1，WebGL2 對 lm_head 沒有幫助）；已寫進 `DESIGN.webgpu-cuda.md` §7.5，等管理者確認。
+- **待辦 5 設計文件**：已更新 `DESIGN.webgpu-cuda.md` §7.5（接線結果與未驗證項）。§9 進度尚未更新。
+- **待辦 4（注意力、KV 快取）**：未開始，等管理者確認接線後再做。
+- **執行包注意**：`tests/native/native_lora.test.js` 的 2 項同步檢查仍會紅（nr-*.js 已改、清單未重算）。重算、發布 1.22.0-4 都還沒做，沒有使用者說「發布」之前不要做。

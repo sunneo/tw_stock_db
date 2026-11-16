@@ -414,6 +414,25 @@ GUI 的獨立 Worker 模擬器目前沒有註冊 `_fa_cudaweb`，不能 `import 
 - 速度（如實）：lm_head 權重常駐後 99 ms，純 JS 參考版 533 ms，約 5.4 倍；首次含上傳與編譯 509 ms。MLP 只有 1 個詞元、矩陣小，GPU 首次 229 ms 反而慢於純 JS 61 ms（含管線編譯與上傳，常駐後未另量）。
 - **未驗證**：注意力、KV 快取、整層串接、真實桌面版路徑、完整生成的對拍。MLP 之間的 RMSNorm、動態量化、SiLU 相乘仍在主機端 CPU。
 
+### 7.5 lm_head 接線（2026-11-16，桌面版渲染端）
+
+**做了什麼**（提交：`9a30d0573`、`4a754017d`、`0b3e2bc51`、`6a60c18da`、`f1cae6209`、`7432e8866`）：
+- 子程序每個詞元把隱藏狀態交給主程序，主程序用信箱檔（`head-<runId>-<seq>.req/.res`）轉給渲染程序；渲染程序用 WebGPU 的 q8lm 算 logits 寫回。**只接受 T1（WebGPU）結果**，其他情況回 error，子程序用自己的 CPU lm_head，結果相同。
+- 開關 `nrGpuHead`（預設關），放在 `_gpuCompatControls()`（AI 助理設定與桌面版設定頁共用，只維護這一處）。
+- 流程：`head_status`（執行包有沒有 gpuhead）→ `head_prepare`（主程序把 lm_head 權重抽成 `lm_q8.bin`＋`lm_q8.json`）→ `createHeadService` → 生成期間 `startPolling`；生成結束一定 `stop()`。任何一步失敗只記原因（`_nrLastHeadWhy`），生成照走原路徑。
+- 狀態列顯示真實結果：`done.gpu_head` 的 used／fallback（`_nrLastHead`）。
+- 嵌入：`FA_HEAD_SRC`（`nn_ops`＋`infer_ops`＋`head_service` 串成一段 CommonJS，`scripts/embed-code-ui.js` 登記）。
+
+**驗證（如實）**：
+- 單元：`infer_ops_test.js` 7 項、`head_service_test.js` 4 項通過。
+- 編排（`scripts/eval/cudaweb_head_renderer_mock.js`，假信箱＋假 WebGPU）8 項通過：關閉、無 WebGPU、執行包太舊、準備失敗都回傳 null 並寫原因；就緒時輪詢處理請求、沒有 GPU 時寫 error 的 `.res`、處理完移除 `.req`。
+- **未驗證**：真 Electron 桌面版端到端（視窗內真 WebGPU＋主程序信箱＋真模型）。執行包的 `gpuhead` 功能尚未發布，所以目前沒有使用者會走到這條路徑。
+
+**已知限制**：
+- `lm_q8.bin` 約 155 MB，渲染端以 base64 經 IPC 讀入（字串約 207 MB）。
+- 讀權重失敗時，服務不快取失敗狀態，每個詞元都會重試讀檔並回 error（結果仍正確，但浪費時間）。
+- WebGL2 退路對 lm_head **建議不做**：服務只收 T1，WebGL2 比 CPU 慢也沒有加速效果（待管理者確認）。
+
 ### 7.4 與原生執行環境的關係
 
 - cudaweb 不改動 `main-ext.js` 的原生執行包流程。
