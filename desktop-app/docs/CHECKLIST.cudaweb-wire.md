@@ -10,7 +10,7 @@
 
 ## 項目
 - [ ] **A. MOSS WebGPU 整管線** — BLOCKED：2026-11-16 驗證頁 cudaweb_moss_pipeline_gpu_check.js（埠 18776、18779）在真 Chrome 跑了 30 分鐘以上仍無結果檔；每個運算重建 pipeline（現已快取）＋頁面 CPU 段落佔住主執行緒，未能完成。下一棒需先把 decodeStep／取樣搬到 Worker 或分批讓出主執行緒再驗。：把已驗證的 CPU 管線（預填、生成、取樣、codec）各運算換成 GPU 核心（矩陣乘、注意力、LN、RoPE、GELU、conv_ops），與 ORT 比對。驗收：真 Chrome 驗證頁結果檔 pass（音訊相對誤差 ≤ 1e-4，同 seed 同幀數）。
-- [ ] **B. MOSS 產品接線**：moss_worker／moss_core 的推論可選走 GPU 管線；設定開關 `mossGpu`（預設 off）；失敗自動退回現有 wasm 路徑；診斷（層別、耗時、退回原因）。設定放 AI 助理設定與桌面版設定頁兩處。驗收：開關關時行為與現在完全相同（既有測試全過）；開時在真 Chrome 生成音訊且與 wasm 路徑結果一致。
+- [~] **B. MOSS 產品接線**（部分完成，2026-11-16）：已做：`moss_gpu_runners.js`＋worker 的 `gpu` 選項（沒有 GPU／載入失敗／運算退層／中途失敗自動退回 ORT wasm 從頭生成）、設定 `mossGpu`（預設 off，`_gpuCompatControls` 兩處共用）、診斷 `result.gpu`、嵌入 `FA_MOSS_GPU_SRC`、單元測試 2 個（開關關時 `gpu:null`，路徑不變）、DESIGN §7.14。**BLOCKED（驗收後半）**：「開時在真 Chrome 生成音訊且與 wasm 路徑一致」——依賴 A（整管線 GPU 在驗證頁 30 分鐘無結果；這台無真 GPU，SwiftShader 太慢）。
 - [ ] **C. （降級，排最後；被 Q 取代的大部分）Qwen3 transformers.js q4f16 路徑接線**：注意力＋KV 快取＋MatMulNBits 投影接進 transformers.js q4f16 路徑（Worker）；開關 `qwenGpuDecode`（預設 off）；失敗退回。驗收：真 Chrome 8 個詞元與原路徑相同。若這條需要的圖改寫太大，標 BLOCKED＋原因，不要硬做。
 - [ ] **D. midigen 接線**：網頁版與桌面版 MIDI 生成路徑接 midigenai 解碼器；開關 `midiGpu`（預設 off）；失敗退回。驗收：固定種子前 N 個 token 與原路徑相同。桌面版沒有 WebGPU 的子程序，沿用 lm_head 的 head_req／head_res 信箱做法。
 - [ ] **E. 退路與快取**：attn_gpu、matmulnbits_gpu、moss 各運算都要有 WebGL2 或純 JS 退路與 pipeline／shader 快取（現在注意力每次呼叫重建 pipeline，比 CPU 慢）。驗收：node 測試涵蓋退路；第二次呼叫不再重建 pipeline。

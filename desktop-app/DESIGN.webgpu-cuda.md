@@ -799,3 +799,12 @@ Python 模擬器與離線模型推論共用同一個 GPU 裝置：
 
 - **Basic Pitch**：檔名 `nmp.onnx`，大小 230,444 位元組，來源 `daserge/basic-pitch-onnx`（`https://huggingface.co/daserge/basic-pitch-onnx/resolve/main/nmp.onnx`），SHA-256 `2c3c1d14…59a0ec`。資訊來源：產品目錄 `renderer/src/music/audio_models.js` 的 REGISTRY 項目 `basic-pitch`。產品已有此檔的登錄，不需新下載。卷積參數（2D）由 `renderer/src/gpu/conv_ops.js` 的 `conv2dRef` 涵蓋（CPU 參考，尚無 GPU 版）。
 - **Whisper**：產品使用 `onnx-community/whisper-base`（q8，約 80 MB，見 `floating-assistant.js` 的 `WHISPER_MODEL_ID` 與模型清單）。原生路徑 ID 為 `whisper-base-encoder`。沒有新下載。Whisper 編碼器的 1D 卷積（核 3、stride 1／2）由 `conv1d` 涵蓋。
+
+### 7.14 MOSS 語音的選用 WebGPU 管線（2026-11-16，開關 `mossGpu`，預設關）
+
+- **接線**：`renderer/src/tts/moss_gpu_runners.js`（`probe`／`load`／`makeRunners`）把 `moss_worker.js` 的 runners 換成 cudaweb 版：全域解碼一步（`moss_decoder`＋`moss_gpu`，預填逐列 decodeStep）與整幀取樣（`moss_sampling`＋`moss_local`）。codec 解碼仍走 ORT wasm（卷積 GPU 已驗證，但整圖仍是 CPU 解釋器，比 wasm 慢，不接）。
+- **嵌入**：`scripts/embed-code-ui.js` 的 `embedMossGpu` 把 gpu/ 底下的模組（nn_ops、onnx_lite、moss_decoder、moss_gpu、moss_local、moss_sampling）加 `moss_gpu_runners.js` 串成 `FA_MOSS_GPU_SRC`（標記 `MOSSGPU-BEGIN/END`）；worker 的 `init` 帶 `gpu:{src, coreSrc: FA_GPU_CORE_SRC}`，在 worker 內 `new Function` 載入（`self.FaGpuCore`）。
+- **開關與退路**：設定 `mossGpu`（預設 off；`_gpuCompatControls` 第四個勾選，AI 助理設定與桌面版設定頁共用同一處）。換設定會 `_mossDispose()`，下次生成重開 worker。worker 在 generate 時：沒有 WebGPU adapter、載入（取 .onnx／.data 並解析）失敗、任何運算退到 cpu-js 層（`assertT1`）、生成中途丟錯 → 記下原因，**用 ORT wasm 從頭生成**。取消不退回。
+- **診斷**：`result.gpu = { requested, used, reason?, loadMs, ms:{prefill,decode,sample}, tiers, totalMs }`；host 端存 `_mossGpuStat`，複製聲音回傳的結果帶 `gpu`。關閉時 `gpu` 為 null，行為與原本相同。
+- **驗證（如實）**：單元測試 `moss_gpu_runners_test.js`（探測、退層檢查）與 `moss_worker_gpu_test.js`（假 ORT／假 GPU 模組：關、載入失敗、成功、中途失敗退回 ORT 四種情境）通過。**未驗證**：真 Chrome 裡整個 worker 開 `mossGpu` 生成並與 wasm 結果一致（清單 A 已 BLOCKED：整管線 GPU 在主執行緒驗證頁 30 分鐘無結果，且這台沒有真 GPU；SwiftShader 對 660 MB 權重＋逐列預填太慢）。因此此開關為實驗、預設關，上真 GPU 的機器要先用診斷確認 `used:true` 再依賴。
+

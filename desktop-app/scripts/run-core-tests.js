@@ -103,6 +103,8 @@ const suites = [
     ['資料集逐筆編輯核心測試：解析（jsonl／json）、不合法整份拒絕、序列化往返、分頁、增改刪與索引邊界。（補登）', 'renderer/src/studio/dataset_edit_core.test.js'],
     ['node renderer/src/studio/domain_e2e.test.js（補登）', 'renderer/src/studio/domain_e2e.test.js'],
     ['node renderer/src/studio/domain_spec_core.test.js（補登）', 'renderer/src/studio/domain_spec_core.test.js'],
+    ['MOSS GPU 管線：探測、退層檢查', 'renderer/src/tts/moss_gpu_runners_test.js'],
+    ['MOSS worker 的 mossGpu 開關：關／載入失敗／成功／中途失敗退回 ORT', 'renderer/src/tts/moss_worker_gpu_test.js'],
     ['Qwen3 q8 解碼：CPU 參考引擎（合成權重，KV 快取、錯誤處理、貪婪確定性）', 'renderer/src/gpu/qwen_decode_test.js'],
     ['網頁版生成迴圈的 GPU 整段解碼編排（假 ort／session／引擎：一致、首詞元不同、中途失敗補 KV、逾時、eos）', 'renderer/src/studio/llm_web_gpudecode.test.js'],
     ['node renderer/src/studio/dsl_expr_core.test.js（補登）', 'renderer/src/studio/dsl_expr_core.test.js'],

@@ -1,6 +1,6 @@
 // MOSS-TTS-Nano 的推論 worker（module worker；執行時會在最前面接上 moss_core.js 的內容，所以這裡直接用全域的 FaMossTts）。
 // 訊息：
-//   { type:'init', jobId, ortUrl, wasmBase, threads, files:{ 檔名: blob 網址 }, manifestText, tokenizerBytes }
+//   { type:'init', jobId, ortUrl, wasmBase, threads, files:{ 檔名: blob 網址 }, manifestText, tokenizerBytes, gpu?:{ src, coreSrc } }（gpu：選用 WebGPU 管線，設定 mossGpu；失敗退回 ORT wasm，結果的 gpu 欄位寫診斷）
 //   { type:'generate', jobId, text, codes|null, seed, maxFrames }   → progress {frames}… → result { audio: Float32Array（單聲道 48kHz）, frames, stopped }
 //   { type:'encode', jobId, mono, rate }                             → result { codes: Int32Array(T*16), frames }
 //   { type:'cancel', jobId }、{ type:'dispose', jobId }
@@ -26,6 +26,16 @@ const T = (type, data, dims) => new ort.Tensor(type, data, dims);
 async function loadMeta(d) {
   manifest = JSON.parse(d.manifestText); tokModel = M.parseModel(new Uint8Array(d.tokenizerBytes));
   ttsMeta = JSON.parse(d.ttsMetaText); codecMeta = JSON.parse(d.codecMetaText);
+}
+// ── 選用 WebGPU 管線（mossGpu，預設關；細節見 moss_gpu_runners.js）。載入或生成失敗都退回 ORT wasm，診斷寫在 result.gpu ──
+let gpuCfg = null, gpuMod = null, gpuState = null;
+async function gpuPrepare() {
+  if (gpuState) return gpuState;
+  if (!gpuMod) { if (!self.FaGpuCore) (new Function(gpuCfg.coreSrc))(); gpuMod = (new Function(gpuCfg.src))(); }
+  const fetchBytes = async (name) => { const u = files[name]; if (!u) throw new Error('缺少模型檔 ' + name); return new Uint8Array(await (await fetch(u)).arrayBuffer()); };
+  const f = ttsMeta.files;
+  gpuState = await gpuMod.load({ navigator: self.navigator, fetchBytes, tts: { global: f.decode_step, globalData: ttsExt(f.decode_step)[0], local: 'moss_tts_local_decoder.onnx', localData: 'moss_tts_local_shared.data' } });
+  return gpuState;
 }
 async function codecDecode(frames, count, jobId) {
   const s = await getSession('codecDecode', codecMeta.files.decode_full || 'moss_audio_tokenizer_decode_full.onnx', codecExt(codecMeta.files.decode_full || 'moss_audio_tokenizer_decode_full.onnx'));
@@ -71,7 +81,7 @@ self.onmessage = async (e) => {
     if (d.type === 'init') {
       if (!ort) ort = await import(d.ortUrl);
       ort.env.wasm.wasmPaths = d.wasmBase; ort.env.wasm.numThreads = d.threads || 1; ort.env.wasm.proxy = false;
-      files = d.files; await loadMeta(d); post(jobId, 'result', { ok: true }); return;
+      files = d.files; gpuCfg = d.gpu && d.gpu.src && d.gpu.coreSrc ? d.gpu : null; await loadMeta(d); post(jobId, 'result', { ok: true }); return;
     }
     if (d.type === 'encode') { post(jobId, 'progress', { message: '分析參考聲音…' }); const r = await codecEncode(d.mono, d.rate); post(jobId, 'result', { ok: true, codes: r.codes, frames: r.frames }, undefined); return; }
     if (d.type === 'generate') {
@@ -79,18 +89,31 @@ self.onmessage = async (e) => {
       if (!ids.length) { post(jobId, 'result', { ok: false, error: '這段文字切不出可以念的內容' }); return; }
       const codes = d.codes && d.codes.length ? M.trimPromptCodes(d.codes, d.maxPromptFrames || 250) : null, prompt = M.buildPrompt(cfg, tpl, codes, ids);
       post(jobId, 'progress', { message: '載入語言模型（第一次較慢）…' });
-      const prefillS = await getSession('prefill', ttsMeta.files.prefill, ttsExt(ttsMeta.files.prefill));
-      const decodeS = await getSession('decode', ttsMeta.files.decode_step, ttsExt(ttsMeta.files.decode_step));
-      const sampleS = await getSession('sample', ttsMeta.files.local_fixed_sampled_frame, ttsExt(ttsMeta.files.local_fixed_sampled_frame));
-      post(jobId, 'progress', { message: '合成中…' });
-      timing.prefill = timing.decode = timing.sample = timing.codec = 0;
-      const g = await M.generate(makeRunners(prefillS, decodeS, sampleS), cfg, prompt, { maxFrames: d.maxFrames || 375, seed: d.seed, isCancelled: () => cancelled.has(jobId), onFrame: (n) => { if (n % 4 === 0) post(jobId, 'progress', { frames: n, message: '合成中… 已生成 ' + (n / M.FRAME_RATE).toFixed(1) + ' 秒' }); } });
+      const onFrame = (n) => { if (n % 4 === 0) post(jobId, 'progress', { frames: n, message: '合成中… 已生成 ' + (n / M.FRAME_RATE).toFixed(1) + ' 秒' }); };
+      let g = null, gpuDiag = null; timing.prefill = timing.decode = timing.sample = timing.codec = 0;
+      if (gpuCfg) { // 選用 WebGPU：任何失敗（沒有 GPU、載入、運算退層、中途丟錯）都記下原因，改用 ORT 從頭生成
+        const tg = now(); gpuDiag = { requested: true, used: false };
+        try {
+          post(jobId, 'progress', { message: '載入 WebGPU 語言模型（第一次較慢）…' });
+          const st = await gpuPrepare(), gr = gpuMod.makeRunners(st, M); gpuDiag.loadMs = st.loadMs;
+          const gg = await M.generate(gr.runners, cfg, prompt, { maxFrames: d.maxFrames || 375, seed: d.seed, isCancelled: () => cancelled.has(jobId), onFrame });
+          gpuDiag.used = true; gpuDiag.ms = Object.fromEntries(Object.entries(gr.info.ms).map(([k, v]) => [k, Math.round(v)])); timing.prefill = gr.info.ms.prefill; timing.decode = gr.info.ms.decode; timing.sample = gr.info.ms.sample; gpuDiag.tiers = gr.info.tiers; gpuDiag.totalMs = Math.round(now() - tg); g = gg;
+        } catch (err) { gpuDiag.reason = String((err && err.message) || err); gpuDiag.totalMs = Math.round(now() - tg); g = null; }
+      }
+      if (!g) {
+        const prefillS = await getSession('prefill', ttsMeta.files.prefill, ttsExt(ttsMeta.files.prefill));
+        const decodeS = await getSession('decode', ttsMeta.files.decode_step, ttsExt(ttsMeta.files.decode_step));
+        const sampleS = await getSession('sample', ttsMeta.files.local_fixed_sampled_frame, ttsExt(ttsMeta.files.local_fixed_sampled_frame));
+        post(jobId, 'progress', { message: '合成中…' });
+        timing.prefill = timing.decode = timing.sample = timing.codec = 0;
+        g = await M.generate(makeRunners(prefillS, decodeS, sampleS), cfg, prompt, { maxFrames: d.maxFrames || 375, seed: d.seed, isCancelled: () => cancelled.has(jobId), onFrame });
+      }
       cancelled.delete(jobId);
       if (g.stopped === 'cancel') { post(jobId, 'result', { ok: false, error: '已取消' }); return; }
       if (!g.count) { post(jobId, 'result', { ok: false, error: '模型沒有產生任何聲音（文字可能太短或無法念出）' }); return; }
       post(jobId, 'progress', { message: '轉成聲音…' });
       const mono = await codecDecode(g.frames, g.count, jobId);
-      self.postMessage({ jobId, type: 'result', ok: true, audio: mono, frames: g.count, stopped: g.stopped, timing: { prefill: Math.round(timing.prefill), decode: Math.round(timing.decode), sample: Math.round(timing.sample), codec: Math.round(timing.codec) } }, [mono.buffer]);
+      self.postMessage({ jobId, type: 'result', ok: true, audio: mono, frames: g.count, stopped: g.stopped, timing: { prefill: Math.round(timing.prefill), decode: Math.round(timing.decode), sample: Math.round(timing.sample), codec: Math.round(timing.codec) }, gpu: gpuDiag }, [mono.buffer]);
       return;
     }
     post(jobId, 'result', { ok: false, error: '未知的 job 類型：' + d.type });

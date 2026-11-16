@@ -203,6 +203,20 @@ function embedTtsPron() {
     console.log('已更新 FaTtsPron（' + core.length + ' 字元）');
 }
 embedTtsPron();
+// MOSS 的選用 WebGPU 管線（DESIGN.webgpu-cuda.md §7.14）：gpu/ 底下的模組加 tts/moss_gpu_runners.js 串成 CommonJS 原始碼，在 MOSS worker 裡 new Function(FA_MOSS_GPU_SRC)() 取得 { load, makeRunners }；
+// 另需先 new Function(FA_GPU_CORE_SRC)()（worker 的 self.FaGpuCore）。
+(function embedMossGpu() {
+    const rd = (p) => fs.readFileSync(path.join(root, p), 'utf8').replace(/\r\n/g, '\n');
+    let s = 'const MODS = {};\n';
+    for (const n of ['nn_ops', 'onnx_lite', 'moss_decoder', 'moss_gpu', 'moss_local', 'moss_sampling']) s += 'MODS[' + JSON.stringify(n) + '] = function (module, exports, require) {\n' + rd('renderer/src/gpu/' + n + '.js') + '\n};\n';
+    s += 'MODS["moss_gpu_runners"] = function (module, exports, require) {\n' + rd('renderer/src/tts/moss_gpu_runners.js') + '\n};\n';
+    s += "const CACHE = {}; function req(p) { const n = String(p).replace(/^(\\.\\.?\\/)+(gpu\\/|tts\\/)?/, '').replace(/\\.js$/, ''); if (n === 'gpu_core') { if (!self.FaGpuCore) throw new Error('FaGpuCore 還沒載入'); return self.FaGpuCore; } if (CACHE[n]) return CACHE[n].exports; if (!MODS[n]) throw new Error('沒有模組 ' + p); const m = { exports: {} }; CACHE[n] = m; MODS[n].call(m.exports, m, m.exports, req); return m.exports; }\n";
+    s += "return req('moss_gpu_runners');";
+    const a = src.indexOf('/* MOSSGPU-BEGIN */'), b = src.indexOf('/* MOSSGPU-END */');
+    if (a < 0 || b < 0) throw new Error('找不到 MOSSGPU 標記');
+    src = src.slice(0, a) + '/* MOSSGPU-BEGIN */\nconst FA_MOSS_GPU_SRC = ' + lit(s) + ';\n' + src.slice(b);
+    console.log('已更新 FA_MOSS_GPU_SRC（' + s.length + ' 字元）');
+})();
 function embedMoss() {
     const rd = (p) => fs.readFileSync(path.join(root, p), 'utf8').replace(/\r\n/g, '\n');
     const core = rd('renderer/src/tts/moss_core.js'), worker = rd('renderer/src/tts/moss_worker.js');
