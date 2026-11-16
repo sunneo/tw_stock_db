@@ -37,6 +37,17 @@ const digestObj = new Function('_faOtWebGoal', '_faOtWebFilter', '_faSemSentence
     const plain = digestObj._otPageDigest(mk([]), '瀏覽器打開 https://tw.yahoo.com');
     ok(plain.includes('今日娛樂焦點新聞第0則'), 'B 沒目標詞時維持原本列表');
 
+    // B2 「有沒有 X」也是篩選（2026-11-17：「請看有沒有黃仁勳的新聞」原本沒抓到目標詞，只列前 15 則標題）
+    for (const [txt, kw] of [['開瀏覽器看 yahoo新聞 https://tw.news.yahoo.com/ 請看有沒有黃仁勳的新聞', '黃仁勳'], ['看看有沒有颱風消息', '颱風'], ['確認是否有輝達的報導', '輝達'], ['有無柯文哲的新聞', '柯文哲']]) {
+        const gg = lib._faOtWebGoal(txt); ok(gg && gg.keyword === kw && gg.askExist === true, 'B2 「有沒有」抓到目標詞：' + txt + ' → ' + (gg && gg.keyword));
+    }
+    ok(lib._faOtWebGoal('找美國選舉新聞').askExist === false, 'B2 一般「找」不標 askExist');
+    const qj = '請看有沒有黃仁勳的新聞';
+    const yes = digestObj._otPageDigest(mk(['不必動用傳票 黃仁勳點頭赴美國會閉門作證', '台股又跌 楊金龍：黃仁勳事件如短期亂流']), qj);
+    ok(/✅ 有，頁面上有 2 則跟「黃仁勳」有關/.test(yes) && yes.includes('點頭赴美國會') && !yes.includes('今日娛樂焦點新聞第0則'), 'B2 有：直接說有並只列相關');
+    const no = digestObj._otPageDigest(mk([]), qj);
+    ok(/❌ 沒有，頁面上沒有跟「黃仁勳」有關/.test(no) && !no.includes('今日娛樂焦點新聞第0則'), 'B2 沒有：直接說沒有、不拿無關充數');
+
     // C 續讀
     const pages = ['甲'.repeat(300), '乙'.repeat(300), '丙'.repeat(300)];
     let calls = [];

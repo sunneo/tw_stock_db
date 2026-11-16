@@ -3501,8 +3501,13 @@ const FA_OT_GATE_MAX_REFLECT = 2; // 反思換路線的上限（寫死，避免�
 function _faOtWebGoal(text, lex, groups) {
     let s = String(text || '').replace(/https?:\/\/\S+/g, ' ').replace(/\s+/g, ' ');
     const m = /(?:並且?|然後|再|且|，|,|、)?\s*(?:幫我|請)?(?:找出|找到|尋找|搜尋|搜索|查詢|查找|找|查)\s*(?:一下)?(?:有關|關於)?\s*([^，。,.!！?？]{1,30})/.exec(s);
-    if (!m) return null;
-    let kw = m[1].replace(/(?:的)?(?:相關)?(?:最新)?(?:新聞|消息|報導|資料|文章|頭條|內容|標題)\s*$/, '').replace(/^(?:有關|關於|一下)/, '').trim();
+    // 「看（看）有沒有 X（的新聞）」「有無 X」「是否有 X」：問「有沒有」也是要用 X 篩頁面（2026-11-17：原本抓不到，只列前 15 則標題）
+    let askExist = false;
+    let m2 = null;
+    if (!m) { m2 = /(?:看看?|瞧瞧?|檢查一?下?|確認一?下?|查看)?\s*(?:有沒有|有没有|有無|是否有|有木有)\s*(?:一下)?(?:有關|關於)?\s*([^，。,.!！?？]{1,30})/.exec(s); if (m2) askExist = true; }
+    const mm = m || m2;
+    if (!mm) return null;
+    let kw = mm[1].replace(/(?:的)?(?:相關)?(?:最新)?(?:新聞|消息|報導|資料|文章|頭條|內容|標題)\s*$/, '').replace(/^(?:有關|關於|一下)/, '').trim();
     kw = kw.replace(/[的]$/, '').trim();
     if (kw.length < 2) return null;
     const terms = [kw];
@@ -3512,7 +3517,7 @@ function _faOtWebGoal(text, lex, groups) {
         if (us) terms.push('選舉');
     }
     try { _faOtExpandTerms(kw, lex, groups).forEach((t) => terms.push(t)); } catch (_) { /* */ }
-    return { keyword: kw, terms: Array.from(new Set(terms)) };
+    return { keyword: kw, terms: Array.from(new Set(terms)), askExist };
 }
 function _faOtWebFilter(lines, goal) {
     const seen = new Set(); const hit = [];
@@ -93417,7 +93422,7 @@ ${fnData.code}
         if (goal) {
             const hit = _faOtWebFilter(good, goal);
             const pick = hit.slice(0, 15);
-            body = '🔎 以「' + goal.keyword + '」（及相近詞：' + goal.terms.slice(1, 6).join('、') + '）篩選頁面文字，' + (hit.length ? '篩出 ' + hit.length + ' 則' + (hit.length > pick.length ? '，列出前 ' + pick.length + ' 則' : '') + '：\n' + pick.map((l) => '- ' + l).join('\n') : '頁面上沒有找到跟「' + goal.keyword + '」有關的標題。\n可以改用該網站的站內搜尋，或換個關鍵字再試；我不會拿不相關的標題充數。');
+            body = (goal.askExist ? (hit.length ? '✅ 有，頁面上有 ' + hit.length + ' 則跟「' + goal.keyword + '」有關的標題。\n' : '❌ 沒有，頁面上沒有跟「' + goal.keyword + '」有關的標題。\n') : '') + '🔎 以「' + goal.keyword + '」（及相近詞：' + goal.terms.slice(1, 6).join('、') + '）篩選頁面文字，' + (hit.length ? '篩出 ' + hit.length + ' 則' + (hit.length > pick.length ? '，列出前 ' + pick.length + ' 則' : '') + '：\n' + pick.map((l) => '- ' + l).join('\n') : '頁面上沒有找到跟「' + goal.keyword + '」有關的標題。\n可以改用該網站的站內搜尋，或換個關鍵字再試；我不會拿不相關的標題充數。');
         } else if (good.length >= 10 && avg < 45) {
             const seen = new Set(); const pick = [];
             for (const l of good) { if (seen.has(l)) continue; seen.add(l); pick.push(l); if (pick.length >= 15) break; }
