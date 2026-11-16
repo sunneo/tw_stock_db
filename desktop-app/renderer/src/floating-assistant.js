@@ -3954,7 +3954,7 @@ const FA_SKILL_RUN_PROTOCOL = '【執行這個技能包的規範——先讀懂�
   + '1. 先讀：動手前用 read_skill_file 把 SKILL.md 提到的腳本讀過（長檔用 offset 分段讀），弄清楚每支腳本「做什麼事、輸入輸出是什麼、依賴什麼環境」。沒讀過就不要宣稱知道它怎麼運作，更不要直接叫使用者去裝環境或開 Chrome。\n'
   + '2. 分類：把腳本的行為拆成兩類——(A) 你自己已經有工具可以做到的（開網頁／分頁／截圖／讀頁面文字／點擊 → browser_* 工具；讀寫檔案、列資料夾、執行指令 → fs_* 與 run_command；跑 Python／bash → python_execute／bash_execute）；(B) 腳本真正獨特的邏輯（資料整理公式、投影片組版、解析規則、固定格式輸出…）。\n'
   + '3. 優先用自己的工具：(A) 類一律用你自己的工具完成，不要照腳本去連 CDP／開 Chromium；(B) 類才保留腳本的邏輯——可以直接執行腳本（把你用工具取得的資料以檔案或參數交給它，例如截圖存檔、數字寫進設定檔，再用腳本提供的略過選項跳過它自己抓資料的那一段），或依腳本的邏輯用自己的方式重做。腳本需要改才能配合時，改一份副本，不要動原檔，除非使用者要求。\n'
-  + '4-b. 腳本出錯時：先完整讀錯誤訊息（traceback），不要憑猜測改腳本——原腳本沒有語法錯誤就不要動它，更不要把改壞的版本寫回原檔；問題出在路徑、參數、缺少的檔案時，修正的是你下的指令，不是腳本。需要本機檔案／資料夾（桌面版）的腳本一律用 run_command 執行（工作目錄用 cwd_abs 指定）；python_execute 只是瀏覽器裡的沙盒，碰不到本機的 C:\\… 路徑，不要用它跑這類腳本。中文路徑直接放在 cwd_abs 或腳本參數即可（系統會自動處理編碼），不要改用短檔名或臨時目錄繞路。輸出裡出現 �g�� 這類亂碼只是顯示編碼的問題，不代表路徑錯誤，不要因此改路徑或判定找不到檔案；要確認檔案存不存在用 fs_list_files。\n'
+  + '4-b. 腳本出錯時：先完整讀錯誤訊息（traceback），不要憑猜測改腳本——原腳本沒有語法錯誤就不要動它，更不要把改壞的版本寫回原檔；問題出在路徑、參數、缺少的檔案時，修正的是你下的指令，不是腳本。執行技能包的腳本：有 skill_run_script 工具時一律用它（參數 skill、script 填 scripts/ 底下的檔名，args 填命令列參數；附件用 attachment://<file_id>），它會把技能檔案放進 Python 環境、腳本開的視窗會出現在視窗主機上；沒有 skill_run_script 才用 run_command 執行（需要本機檔案／資料夾的桌面版腳本用 run_command，工作目錄用 cwd_abs 指定）；python_execute 只是瀏覽器裡的沙盒，碰不到本機的 C:\\… 路徑，不要用它跑這類腳本。中文路徑直接放在 cwd_abs 或腳本參數即可（系統會自動處理編碼），不要改用短檔名或臨時目錄繞路。輸出裡出現 �g�� 這類亂碼只是顯示編碼的問題，不代表路徑錯誤，不要因此改路徑或判定找不到檔案；要確認檔案存不存在用 fs_list_files。\n'
   + '4. 不要編造：每一步都要有實際工具呼叫的結果當依據。回報「已完成」前，用 fs_list_files 或 fs_read_file 確認產出的檔案真的存在；沒做到的部分直接說沒做到與原因，不要說成完成。\n'
   + '補充：用 run_command 執行這個技能包的 Python 腳本時，系統會自動把腳本裡的 playwright 轉接到你的瀏覽器控制工具（不需要 Chrome 遠端除錯埠，也不要叫使用者開 Chrome）；腳本裡也可以 import fa_bridge，用 fa_bridge.tool("browser_…", …) 呼叫你的瀏覽器工具、或 fa_bridge.domain("browser_control", "任務") 委派給領域。轉接版沒支援的功能會丟出說明清楚的錯誤，那時改用你自己的工具做那一步。\n'
   + '5. 回報時用幾句話說明：哪些步驟用了你自己的工具、哪些執行了腳本、哪些沒做到。';
@@ -84725,6 +84725,8 @@ class FloatingAssistant {
                     const names = this.advancedSettings.customTools.filter(t => t.skillBundleId === bundle.id).map(t => t.name);
                     if (bundle.files && bundle.files.length) {
                         names.push(toolName);
+                        // 有腳本的技能包：執行腳本用 skill_run_script（它會把技能檔案放進 Python 環境、處理附件與視窗）
+                        if (bundle.files.some((f) => /^scripts\//i.test(String(f.path || '')))) names.push('skill_run_script');
                         // 有腳本的技能包：子任務也要拿得到這個AI自己的工具（瀏覽器、檔案／指令、程式執行），才能照FA_SKILL_RUN_PROTOCOL優先用自己的工具做，而不是只能照腳本的做法硬跑
                         if (bundle.files.some((f) => /\.(py|js|ts|sh|ps1|bat|cmd|rb|pl)$/i.test(String(f.path || '')) || /^scripts\//i.test(String(f.path || '')))) {
                             const isDesktop = !!(window.desktopAPI && window.desktopAPI.rawfs);
@@ -88761,6 +88763,98 @@ ${fnData.code}
                 },
                 additionalProperties: false,
             }
+        );
+        // skill_run_script：執行技能包裡 scripts/ 的腳本。桌面版：技能包已解開在這台電腦的資料夾，直接用真實路徑；
+        // 網頁版：技能檔案（文字）與附件放進 Python 執行環境的 /work。產生一段 runpy 啟動程式碼，交給 python_execute 執行
+        // （跟 guitpl.run 同一條路；腳本裡 import gui 開的視窗畫在視窗主機上）。argv 就是 args；附件用 attachment://<file_id> 或 workspace://<名稱>。
+        // 注意：timeout_seconds 目前不強制（python_execute 沒有逾時參數），只是回報用的欄位。
+        registerOptional('skill_run_script',
+            '執行技能包裡的腳本（scripts/ 底下的 .py 等）。參數：skill（技能包名稱或代號）、script（scripts/ 底下的檔名，例如 tcv_gui.py）、args（字串陣列，就是腳本的命令列參數；附件用 attachment://<file_id> 或 workspace://<名稱>，會自動放到腳本能讀到的位置）。腳本裡 import gui 開的視窗會出現在視窗主機上。有這個工具時執行技能腳本一律用它，不要自己用 run_command 去跑。',
+            async function (rawArgs) {
+                let parsed = {};
+                try { parsed = await this.repairJsonPayload(String(rawArgs || '{}')); } catch (_) {}
+                const skillKey = String(parsed.skill || '').trim();
+                const scriptName = String(parsed.script || '').trim().replace(/\\/g, '/');
+                if (!skillKey || !scriptName) return JSON.stringify({ ok: false, error: '缺少 skill 或 script 參數' });
+                if (/^\/|^[a-zA-Z]:|(^|\/)\.\.(\/|$)/.test(scriptName)) return JSON.stringify({ ok: false, error: 'script 只能是 scripts/ 底下的相對路徑' });
+                const bundle = (this.advancedSettings.skillBundles || []).find((b) => b.id === skillKey || b.name === skillKey || 'skill_' + b.id === skillKey);
+                if (!bundle || !bundle.files || !bundle.files.length) return JSON.stringify({ ok: false, error: '找不到技能包「' + skillKey + '」（或它沒有檔案）' });
+                const relScript = /^scripts\//i.test(scriptName) ? scriptName : 'scripts/' + scriptName;
+                if (!bundle.files.some((f) => f.path === relScript)) return JSON.stringify({ ok: false, error: '技能包裡沒有 ' + relScript });
+                const rawfs = window.desktopAPI && window.desktopAPI.rawfs;
+                const desktop = !!rawfs;
+                const safe = String(bundle.name || bundle.id).replace(/[^A-Za-z0-9._-]+/g, '_');
+                const mat = desktop ? await this._skillMaterialize(bundle) : null;
+                if (desktop && !mat) return JSON.stringify({ ok: false, error: '技能包「' + bundle.name + '」還沒有解開到這台電腦（重新匯入或檢查使用者資料夾）' });
+                const root = desktop ? mat.dir : '/work/skills/' + safe;
+                // URI 參數：attachment:// 與 workspace:// 指向對話附件，其他參數照原樣
+                const pyArgs = [], attach = {}, inputsDir = 'skill_inputs';
+                for (const a of (Array.isArray(parsed.args) ? parsed.args : []).map((x) => String(x))) {
+                    const m = /^(attachment|workspace):\/\/(.+)$/i.exec(a);
+                    if (!m) { pyArgs.push(a); continue; }
+                    const key = m[2].trim();
+                    let rec = null;
+                    try { rec = await this.fileCache.get(key); } catch (_) { /* 不是有效 id，退回用檔名找 */ }
+                    if (!rec) { try { rec = await this._resolveUploadedFileRecord(key, { kindFilter: null }); } catch (_) { rec = null; } }
+                    if (!rec || !rec.blob) return JSON.stringify({ ok: false, error: '找不到' + m[1] + '「' + key + '」（用 list_uploaded_files 查詢目前可用的 file_id／檔名）' });
+                    const name = String(rec.filename || key).replace(/[\\/:*?"<>|]+/g, '_');
+                    if (desktop) {
+                        const u8 = new Uint8Array(await rec.blob.arrayBuffer());
+                        let bin = ''; for (let i = 0; i < u8.length; i += 0x8000) bin += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
+                        await rawfs.mkdir(mat.dir + '/' + inputsDir).catch(() => {});
+                        await rawfs.writeFile(mat.dir + '/' + inputsDir + '/' + name, { base64: btoa(bin) });
+                        pyArgs.push(mat.dir + '/' + inputsDir + '/' + name);
+                    } else {
+                        attach['/work/' + inputsDir + '/' + name] = key;   // python_execute 的 attachment_files：放進 /work
+                        pyArgs.push('/work/' + inputsDir + '/' + name);
+                    }
+                }
+                const scriptPath = root + '/' + relScript;
+                const code = [
+                    'import sys, runpy, traceback',
+                    'sys.path.insert(0, ' + JSON.stringify(root + '/scripts') + ')',
+                    'sys.path.insert(0, ' + JSON.stringify(root) + ')',
+                    'sys.argv = ' + JSON.stringify([scriptPath].concat(pyArgs)),
+                    'code = 0',
+                    'try:',
+                    '    runpy.run_path(' + JSON.stringify(scriptPath) + ', run_name="__main__")',
+                    'except SystemExit as e:',
+                    '    code = e.code if isinstance(e.code, int) else (0 if e.code is None else 1)',
+                    'except BaseException:',
+                    '    traceback.print_exc()',
+                    '    code = 1',
+                    'print("[skill exit " + str(code) + "]")',
+                ].join('\n') + '\n';
+                const payload = { script: code };
+                if (!desktop) {
+                    // 網頁版：技能包的文字檔案放進 /work/skills/<名稱>/（二進位檔不支援）
+                    const inputFiles = {};
+                    for (const f of bundle.files) {
+                        try {
+                            const rec = await this.skillFileCache.get(bundle.id + '::' + f.path);
+                            if (rec) inputFiles['skills/' + safe + '/' + f.path] = await rec.blob.text();
+                        } catch (_) { /* 這個檔案不見了就略過 */ }
+                    }
+                    payload.input_files = inputFiles;
+                    if (Object.keys(attach).length) payload.attachment_files = attach;
+                }
+                const pyTool = this._getToolDefinition('python_execute');
+                if (!pyTool) return JSON.stringify({ ok: false, error: '目前環境沒有 python_execute，無法執行技能腳本' });
+                let res;
+                try { res = JSON.parse(await pyTool.callback.call(this, JSON.stringify(payload))); }
+                catch (err) { return JSON.stringify({ ok: false, error: '執行失敗：' + String((err && err.message) || err) }); }
+                if (!res || !res.ok) return JSON.stringify({ ok: false, error: (res && res.error) || '執行失敗', stdout: res && res.stdout, stderr: res && res.stderr });
+                const stdout = String(res.stdout || '');
+                const mark = /\[skill exit (-?\d+)\]\s*$/.exec(stdout);
+                const exitCode = mark ? Number(mark[1]) : null;
+                return JSON.stringify({ ok: exitCode === 0, exit_code: exitCode, stdout: mark ? stdout.slice(0, mark.index) : stdout, stderr: res.stderr || '', skill: bundle.name, script: relScript });
+            },
+            { type: 'object', properties: {
+                skill: { type: 'string', description: '技能包的名稱或代號' },
+                script: { type: 'string', description: 'scripts/ 底下的檔名，例如 tcv_gui.py（或 scripts/tcv_gui.py）' },
+                args: { type: 'array', items: { type: 'string' }, description: '腳本的命令列參數（字串陣列）；attachment://<file_id> 與 workspace://<名稱> 會換成附件的實際位置' },
+                timeout_seconds: { type: 'number', description: '選填（目前只回報，不強制）' },
+            }, required: ['skill', 'script'], additionalProperties: false }
         );
         registerOptional('image_parts_teach',
             '校正圖片分解的部位偵測（訓練）：使用者說「眼睛在這裡」「這才是嘴巴」時，把外框（影像座標，用最近一次 image_decompose_redraw 的 .parts.json 裡的座標）換算成相對於臉的位置與大小，存成使用者條目（同 key 覆蓋內建），下次執行直接生效；離線訓練器與 RAG 也查得到。參數: {"part":"human-eye","boxes":[[x0,y0,x1,y1],[x0,y0,x1,y1]]}（兩個框＝左右對稱）；容器外框預設用最近一次偵測到的臉，可用 container_bbox 指定。需要知識資料格式 v1（舊格式會先問使用者要不要 migration）。',
@@ -134574,7 +134668,9 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                     const bundle = (this.advancedSettings.skillBundles || []).find((b) => 'skill_' + b.id === domainKey);
                     const mat = bundle ? await this._skillMaterialize(bundle) : null;
                     if (mat) skillKeepTools = ['run_command', 'read_skill_file', 'fs_read_file'];
-                    if (mat) skillDirNote = '\n\n【技能包檔案已解開在這台電腦的資料夾：' + mat.dir + '（scripts/、references/、assets/ 都在裡面，共 ' + mat.files + ' 個檔案）。要執行腳本時直接用 run_command，例如 python "' + mat.dir + '/scripts/xxx.py" 參數…（使用者的工作資料夾用 cwd_abs 或腳本參數指定，跟腳本資料夾分開）；不要再到別處找 scripts 資料夾，也不要把腳本內容讀出來貼著重寫。run_command 不在手上時用 request_additional_tools 補，不要委派給 code_execution（那是瀏覽器沙盒，沒有這個技能的檔案，也不要在對話裡解壓使用者的附件）。讀不懂腳本怎麼用時，先 python "<腳本>" --help 或讀它的說明（read_skill_file 或 fs_read_file 都可以）。】';
+                    // 有腳本的技能包一律保留 skill_run_script（網頁版沒有解開的資料夾，也要留著）
+                    if (bundle && bundle.files && bundle.files.some((f) => /^scripts\//i.test(String(f.path || '')))) skillKeepTools = skillKeepTools.concat(['skill_run_script']);
+                    if (mat) skillDirNote = '\n\n【技能包檔案已解開在這台電腦的資料夾：' + mat.dir + '（scripts/、references/、assets/ 都在裡面，共 ' + mat.files + ' 個檔案）。要執行腳本時優先用 skill_run_script（有這個工具就不要用 run_command），例如 script="scripts/xxx.py"；沒有 skill_run_script 才用 run_command，例如 python "' + mat.dir + '/scripts/xxx.py"參數…（使用者的工作資料夾用 cwd_abs 或腳本參數指定，跟腳本資料夾分開）；不要再到別處找 scripts 資料夾，也不要把腳本內容讀出來貼著重寫。run_command 不在手上時用 request_additional_tools 補，不要委派給 code_execution（那是瀏覽器沙盒，沒有這個技能的檔案，也不要在對話裡解壓使用者的附件）。讀不懂腳本怎麼用時，先 python "<腳本>" --help 或讀它的說明（read_skill_file 或 fs_read_file 都可以）。】';
                 } catch (_) {}
             }
             const isDeck = this._deckIsDomain(domainKey);
