@@ -113,6 +113,7 @@ const suites = [
     ['MOSS GPU 管線：探測、退層檢查', 'renderer/src/tts/moss_gpu_runners_test.js'],
     ['MOSS worker 的 mossGpu 開關：關／載入失敗／成功／中途失敗退回 ORT', 'renderer/src/tts/moss_worker_gpu_test.js'],
     ['Qwen3 聊天 GPU 解碼迴圈（假引擎：貪婪只讀 argmax、取樣與 nr-gen-params 一致、切塊預填、取消、逾時、大檔分段讀）', 'renderer/src/gpu/qwen_chat_test.js'],
+    ['Whisper 編碼器 GPU 接線（假 session：成功回 ORT 風格張量、cpu-js／NaN／形狀不對／丟錯都永久退回）', 'renderer/src/gpu/whisper_attach_test.js'],
     ['Qwen3 q8 解碼：CPU 參考引擎（合成權重，KV 快取、錯誤處理、貪婪確定性）', 'renderer/src/gpu/qwen_decode_test.js'],
     ['網頁版生成迴圈的 GPU 整段解碼編排（假 ort／session／引擎：一致、首詞元不同、中途失敗補 KV、逾時、eos）', 'renderer/src/studio/llm_web_gpudecode.test.js'],
     ['node renderer/src/studio/dsl_expr_core.test.js（補登）', 'renderer/src/studio/dsl_expr_core.test.js'],

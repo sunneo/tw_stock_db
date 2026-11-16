@@ -40,3 +40,4 @@
 
 ## 接線續作（2026-11-16，使用者：「全部接上」）
 - [x] **W1. Qwen3 q8 GPU 解碼接進一般聊天離線模型**：`_llmGenerateInner`＋`_qwenGpuChat`（見 DESIGN §7.23）。選原生維持原生；網頁版沒有本機 q8 檔不走（不下載）；取樣／重複懲罰／n-gram 在主機端與原生同一份 `nr-gen-params`；單元＋真 Chrome 端到端（0/3 與 ORT 逐詞元相同，原因與數字見 §7.23）。
+- [x] **W2. Whisper 編碼器 GPU 接進 transcribe_media**：`_whisperGpuAttach`＋`whisper_attach.js`（見 DESIGN §7.24），設定 `whisperGpu`（預設關）／`gpuAuto`；失敗永久退回原編碼器。驗收：單元 6 項；真 Chrome 軟體 WebGPU＋真 Whisper q8 編碼器＋真 mel 特徵，`session.run` 端到端回傳 ORT Tensor、全 T1，對 ORT relL2 5.6e-2／cos 0.9984（與 JS CPU 參考對 ORT 同量級，動態量化混沌）。未驗：轉錄文字（沒有解碼器檔、不另外下載）。
