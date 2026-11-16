@@ -65,6 +65,8 @@
       else if (f === 8) { if (wt === 0) a.ints.push(v); }
       else if (f === 4) a.s = str(buf, v);
       else if (f === 5) a.tensor = v;  // TensorProto 範圍（Constant 節點的 value）
+      else if (f === 6) a.graph = v;   // GraphProto 範圍（If／Loop 的子圖）
+      else if (f === 9) { if (!a.strings) a.strings = []; a.strings.push(str(buf, v)); }
     });
     return a;
   }
@@ -100,16 +102,24 @@
     return n;
   }
   // 讀整個模型：回傳 { buf, nodes, inits（名稱→張量資訊）}
+  // 解析一個 GraphProto（範圍 [起, 迄]）：節點、初始值、圖輸入名、圖輸出名（不含初始值）
+  function parseGraph(buf, graph) {
+    const nodes = [], inits = {}, inputs = [], outputs = [];
+    const vname = (r) => { let s = ''; walk(buf, r[0], r[1], (f, wt, v) => { if (f === 1) s = str(buf, v); }); return s; };
+    walk(buf, graph[0], graph[1], (f, wt, v) => {
+      if (f === 1) nodes.push(parseNode(buf, v));
+      else if (f === 5) { const t = parseTensor(buf, v); inits[t.name] = t; }
+      else if (f === 11) inputs.push(vname(v));
+      else if (f === 12) outputs.push(vname(v));
+    });
+    return { nodes: nodes, inits: inits, inputs: inputs.filter((x) => !inits[x]), outputs: outputs };
+  }
   function parseModel(buf) {
     let graph = null;
     walk(buf, 0, buf.length, (f, wt, v) => { if (f === 7) graph = v; });
     if (!graph) throw new Error('onnx_lite：找不到 graph');
-    const nodes = [], inits = {};
-    walk(buf, graph[0], graph[1], (f, wt, v) => {
-      if (f === 1) nodes.push(parseNode(buf, v));
-      else if (f === 5) { const t = parseTensor(buf, v); inits[t.name] = t; }
-    });
-    return { buf: buf, nodes: nodes, inits: inits };
+    const g = parseGraph(buf, graph);
+    return { buf: buf, nodes: g.nodes, inits: g.inits, inputs: g.inputs, outputs: g.outputs };
   }
 
   // ---- 位元組組裝（只用 Uint8Array）----
@@ -196,5 +206,5 @@
     throw new Error('onnx_lite：權重 ' + name + ' 沒有可讀的純量');
   }
   const DTYPE = { 1: 'float32', 2: 'uint8', 3: 'int8', 6: 'int32', 7: 'int64', 10: 'float16' };
-  return { parseModel, tensorBytes, scalar, buildHiddenStateModel, DTYPE, constantValue };
+  return { parseModel, parseGraph, tensorBytes, scalar, buildHiddenStateModel, DTYPE, constantValue };
 });
