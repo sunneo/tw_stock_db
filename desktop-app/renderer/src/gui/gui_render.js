@@ -816,6 +816,14 @@
         el.className = 'gui-doc';
         buildDoc(doc, el, n, onEvent);
         break;
+      case 'filepick':
+        el = doc.createElement('button');
+        el.type = 'button';
+        el.className = 'gui-button gui-filepick';
+        el.textContent = n.text || '';
+        el.disabled = n.enabled === false;
+        on('click', function () { onEvent('pick', n.id); });
+        break;
       case 'markdown':
         el = doc.createElement('div');
         el.className = 'gui-md';

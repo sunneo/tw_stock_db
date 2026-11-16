@@ -82,6 +82,8 @@
     tree: { props: ['columns', 'rows', 'selected', 'enabled'], events: ['select', 'toggle'] },
     // doc: a read-only page of blocks (title, p, h, pre, list, table, kv, ref); a click on a ref block sends ref (value = its ref)
     doc: { props: ['blocks'], events: ['ref'] },
+    // filepick: a button that asks the program to pick files (a click sends pick; gui.py's pick_files() then opens the chooser)
+    filepick: { props: ['text', 'enabled'], events: ['pick'] },
     // a canvas is drawn by whole frames (op "draw" replaces the frame); fps > 0 makes the page send "frame" events, key presses come as "key",
     // the pointer as "mouse" ({kind: down | up | move, x, y, button} with x and y inside the canvas), the wheel as "wheel" ({x, y, dy}),
     // and "resize" ({width, height}: the canvas's new size in pixels when its window is resized or maximized)

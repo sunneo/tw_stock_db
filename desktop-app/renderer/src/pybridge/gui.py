@@ -47,6 +47,7 @@ class Window(object):
         self._tables = set()
         self._trees = set()
         self._docs = set()
+        self._picks = {}
         self._carets = {}
         self.closed = False
         self._style = {}
@@ -182,6 +183,36 @@ class Window(object):
         nid = self._node("doc", parent, blocks=_doc_blocks(blocks))
         self._docs.add(nid)
         return nid
+
+    def filepick(self, label, accept="", parent=None, multiple=False, directory=False):
+        """A button that picks files: a click gives a "pick" event; then pick_files(ev) opens the chooser and returns the files.
+        accept: as pick_file (".log,.txt" or "image/*"); multiple=True lets several files be chosen; directory=True picks a folder
+        (every file in it that matches accept comes back)."""
+        nid = self._node("filepick", parent, text=str(label))
+        self._picks[nid] = {"label": str(label), "accept": str(accept), "multiple": bool(multiple), "directory": bool(directory)}
+        return nid
+
+    def pick_files(self, ev):
+        """The files of a "pick" event from filepick(): (files, skipped), or None when the user cancels. files is a list of
+        {"name", "path" (the name inside the folder, or the name), "size", "mime", "ref"}; ref is a path the file can be read from:
+        the real path on the desktop app, and in the browser a temporary file written in the sandbox. skipped counts the files
+        left out (more than 300, or bigger than 8 MB)."""
+        opts = self._picks.get(ev.get("node"), {})
+        r = fa_bridge.call("gui.pickmany", {"title": opts.get("label", "Files"), "accept": opts.get("accept", ""),
+                                             "multiple": opts.get("multiple", False), "directory": opts.get("directory", False),
+                                             "max_bytes": 8 * 1024 * 1024}, timeout=330)
+        if not r:
+            return None
+        if r.get("error"):
+            raise ValueError(r["error"])
+        files = []
+        for f in r.get("files", []):
+            ref = f.get("realpath") or ""
+            if not ref:
+                ref = _write_pick(f["name"], base64.b64decode(f.get("data", "")))
+            files.append({"name": f["name"], "path": f.get("rel") or f["name"], "size": int(f.get("size", 0)),
+                          "mime": f.get("mime", ""), "ref": ref})
+        return files, int(r.get("skipped", 0))
 
     def multilist(self, items, selected=(), parent=None, rows=0):
         """A list where several items can be selected. value() is the list of selected items. rows: lines shown (0 = by item count, at most 8)."""
@@ -393,8 +424,23 @@ def _styled(fn):
 
 
 for _name in ("label", "button", "entry", "row", "column", "grid", "scroll", "tabs", "tab", "split", "menubar", "menu", "menuitem", "expander",
-              "editor", "table", "multilist", "textarea", "checkbox", "progress", "listbox", "list", "tree", "doc", "canvas", "markdown"):
+              "editor", "table", "multilist", "textarea", "checkbox", "progress", "listbox", "list", "tree", "doc", "filepick", "canvas", "markdown"):
     setattr(Window, _name, _styled(getattr(Window, _name)))
+
+
+_PICK_DIR = []
+
+
+def _write_pick(name, data):
+    """A picked file's bytes in a temporary file of this sandbox (the browser has no real path); returns its path."""
+    import tempfile
+    if not _PICK_DIR:
+        _PICK_DIR.append(tempfile.mkdtemp(prefix="fa_pick_"))
+    safe = [p for p in str(name).replace("\\", "/").split("/") if p not in ("", ".", "..")]
+    path = os.path.join(_PICK_DIR[0], "%d_%s" % (len(os.listdir(_PICK_DIR[0])), "_".join(safe) or "file"))
+    with open(path, "wb") as f:
+        f.write(data)
+    return path
 
 
 def _doc_blocks(blocks):

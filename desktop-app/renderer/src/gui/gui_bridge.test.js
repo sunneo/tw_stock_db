@@ -289,4 +289,13 @@ assert.match(G.parseWait('wait w1 a=b').error, /shell variable name/); ok();
   assert.strictEqual(G.eventLine(S, 'wd', 'dd', 'ref', 'c2').indexOf('"value":"c2"') > 0, true); ok();
 }
 
+// filepick: a button; its pick event carries no value
+{
+  const S = G.createSession();
+  G.apply(S, { op: 'open', id: 'wp', title: 'P' });
+  assert.deepStrictEqual(G.apply(S, { op: 'add', id: 'wp', node: { id: 'fp', kind: 'filepick', text: 'Open files' } }), { ok: true }); ok();
+  assert.strictEqual(G.eventLine(S, 'wp', 'fp', 'pick'), JSON.stringify({ v: 1, event: 'pick', id: 'wp', node: 'fp' })); ok();
+  assert.match(G.apply(S, { op: 'add', id: 'wp', node: { id: 'fp2', kind: 'filepick', value: 'x' } }).error, /prop "value" is not allowed on filepick/); ok();
+}
+
 console.log('gui_bridge: ' + n + ' assertions passed');

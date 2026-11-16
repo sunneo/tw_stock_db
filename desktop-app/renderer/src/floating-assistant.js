@@ -115594,6 +115594,7 @@ ${sourceTool.handlerScript}
     // poll／wait 回傳的事件是主機的 JSON 字串，這裡解析；image 要回傳圖片的寬高（gui.py 用來排版），用瀏覽器解碼取得。
     async _pyBridgeGui(op, a, session) {
         if (op === 'pickfile') return await this._guiPickFile(a);   // 選檔案：不需要視窗
+        if (op === 'pickmany') return await this._guiPickMany(a);   // 多選檔案或選資料夾（filepick）：不需要視窗
         if (op === 'usertpl') return this._guiTplUserOp(a);   // 我的範本（設計工作室存的）：不需要視窗，也不用終端機
         if (!session) throw new Error('gui 只能在終端機裡使用（這支程式沒有可以開視窗的終端機）');
         const PW = this._faGuiModule('pyworker');
@@ -134237,6 +134238,73 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                     done({ name: f.name, size: f.size, mime: f.type || 'application/octet-stream', data: i >= 0 ? url.slice(i + 1) : '', path: String(f.path || '') });
                 };
                 rd.readAsDataURL(f);
+            });
+            box.appendChild(msg); box.appendChild(pick); box.appendChild(cancel); box.appendChild(input);
+            input.style.display = 'none';
+            document.body.appendChild(box);
+        });
+    }
+
+    // 多選檔案或選資料夾（gui.py 的 filepick／pick_files）：同 _guiPickFile 的小面板。回傳 {files, skipped}，或取消時 null。
+    // 每個檔案 {name, rel（資料夾內的相對路徑，或檔名）, size, mime, realpath（桌面版的真實路徑；網頁版沒有就是 ""）}；
+    // 只有網頁版（沒有真實路徑）才帶 data（base64 內容）。accept 只篩掉不要的檔案；超過 300 個或單檔超過 max_bytes 的算 skipped。
+    async _guiPickMany(a) {
+        if (typeof this._guiPickManyHook === 'function') return await this._guiPickManyHook(a);
+        const accept = String((a && a.accept) || '');
+        const title = String((a && a.title) || '選擇檔案');
+        const multiple = !!(a && a.multiple), directory = !!(a && a.directory);
+        const maxBytes = Math.max(1024, Math.min(8 * 1024 * 1024, Number(a && a.max_bytes) || 8 * 1024 * 1024));
+        const MAX_FILES = 300;
+        const rules = accept.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+        const wanted = (f) => {
+            if (!rules.length) return true;
+            const n = String(f.name || '').toLowerCase(), t = String(f.type || '').toLowerCase();
+            return rules.some((r) => r.charAt(0) === '.' ? n.endsWith(r) : (r.slice(-2) === '/*' ? t.indexOf(r.slice(0, -1)) === 0 : t === r));
+        };
+        const readB64 = (f) => new Promise((ok, bad) => {
+            const rd = new FileReader();
+            rd.onerror = () => bad(new Error('讀不了檔案：' + f.name));
+            rd.onload = () => { const url = String(rd.result || ''); const i = url.indexOf(','); ok(i >= 0 ? url.slice(i + 1) : ''); };
+            rd.readAsDataURL(f);
+        });
+        return await new Promise((resolve) => {
+            const box = document.createElement('div');
+            box.className = 'gui-pickfile';
+            box.style.cssText = 'position:fixed;left:50%;top:30%;transform:translateX(-50%);z-index:2147483000;background:#fff;color:#222;border:1px solid #888;border-radius:8px;padding:14px 18px;box-shadow:0 6px 24px rgba(0,0,0,.3);font:14px sans-serif';
+            const msg = document.createElement('div');
+            msg.textContent = title + (accept ? '（' + accept + '）' : '');
+            msg.style.marginBottom = '10px';
+            const input = document.createElement('input');
+            input.type = 'file'; input.className = 'gui-pickfile-input';
+            input.multiple = multiple;
+            if (directory) { input.setAttribute('webkitdirectory', ''); input.setAttribute('directory', ''); }
+            else if (accept) input.accept = accept;
+            const pick = document.createElement('button');
+            pick.type = 'button'; pick.className = 'gui-pickfile-open'; pick.textContent = directory ? '選擇資料夾…' : '選擇檔案…';
+            const cancel = document.createElement('button');
+            cancel.type = 'button'; cancel.className = 'gui-pickfile-cancel'; cancel.textContent = '取消'; cancel.style.marginLeft = '8px';
+            let settled = false;
+            const done = (v) => { if (settled) return; settled = true; try { box.remove(); } catch (_) { /* 已經移掉 */ } resolve(v); };
+            pick.addEventListener('click', () => input.click());
+            cancel.addEventListener('click', () => done(null));
+            input.addEventListener('cancel', () => done(null));
+            input.addEventListener('change', async () => {
+                const all = Array.prototype.slice.call(input.files || []);
+                const chosen = all.filter(wanted);
+                if (!chosen.length) { done(null); return; }
+                const take = chosen.slice(0, MAX_FILES);
+                let skipped = chosen.length - take.length;
+                const files = [];
+                try {
+                    for (const f of take) {
+                        if (f.size > maxBytes) { skipped++; continue; }
+                        const realpath = String(f.path || '');
+                        const item = { name: f.name, rel: String(f.webkitRelativePath || f.name), size: f.size, mime: f.type || 'application/octet-stream', realpath };
+                        if (!realpath) item.data = await readB64(f);
+                        files.push(item);
+                    }
+                } catch (e) { done({ error: String((e && e.message) || e) }); return; }
+                done({ files, skipped });
             });
             box.appendChild(msg); box.appendChild(pick); box.appendChild(cancel); box.appendChild(input);
             input.style.display = 'none';

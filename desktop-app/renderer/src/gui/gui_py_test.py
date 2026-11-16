@@ -280,6 +280,32 @@ replies[:] = [{'v': 1, 'event': 'ref', 'id': wl.id, 'node': dn, 'value': 'c1'}]
 ev4 = wl.wait(timeout=5)
 check('doc ref is returned by wait', ev4 is not None and ev4['event'] == 'ref' and ev4['value'] == 'c1')
 
+# filepick + pick_files: a desktop pick gives the real path as ref; a browser pick (no path) is written to a temp file
+picks = []
+
+
+def pick_many_stub(op, args=None, timeout=240.0):
+    calls.append((op, args))
+    if op == 'gui.pickmany':
+        return picks.pop(0) if picks else None
+    return None
+
+
+stub.call = pick_many_stub
+fp = wl.filepick('Open', accept='.log', parent=col, multiple=True)
+check('filepick op', calls[-1][1]['node'] == {'id': fp, 'kind': 'filepick', 'text': 'Open'})
+picks.append({'files': [
+    {'name': 'a.log', 'rel': 'a.log', 'size': 3, 'mime': 'text/plain', 'realpath': 'C:/x/a.log'},
+    {'name': 'b.log', 'rel': 'dir/b.log', 'size': 3, 'mime': 'text/plain', 'realpath': '', 'data': base64.b64encode(b'bbb').decode()}],
+    'skipped': 2})
+got_files, got_skipped = wl.pick_files({'event': 'pick', 'node': fp})
+check('pick_files op', calls[-1] == ('gui.pickmany', {'title': 'Open', 'accept': '.log', 'multiple': True, 'directory': False, 'max_bytes': 8388608}))
+check('pick_files desktop ref is the real path', got_files[0]['ref'] == 'C:/x/a.log' and got_files[0]['path'] == 'a.log')
+check('pick_files browser ref is a temp file with the bytes', os.path.isfile(got_files[1]['ref']) and open(got_files[1]['ref'], 'rb').read() == b'bbb' and got_files[1]['path'] == 'dir/b.log')
+check('pick_files skipped count', got_skipped == 2 and got_files[1]['size'] == 3)
+picks.append(None)
+check('pick_files cancel is None', wl.pick_files({'event': 'pick', 'node': fp}) is None)
+
 if failures:
     print('%d failure(s)' % len(failures))
     sys.exit(1)

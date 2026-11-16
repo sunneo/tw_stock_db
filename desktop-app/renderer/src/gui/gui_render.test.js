@@ -410,4 +410,17 @@ assert.strictEqual(violations.length, 0); ok();
   assert.strictEqual(violations.length, 0); ok();
 }
 
+// filepick: a button that sends pick (no value) when pressed
+{
+  const S6 = G.createSession();
+  G.apply(S6, { op: 'open', id: 'wfp', title: 'P' });
+  G.apply(S6, { op: 'add', id: 'wfp', node: { id: 'fp', kind: 'filepick', text: 'Open files' } });
+  const got6 = [];
+  const w6 = R.renderWindow(doc, G.snapshot(S6, 'wfp'), (name, node, value) => got6.push([name, node, value]), () => {});
+  const btn = byNode(w6, 'fp');
+  assert.strictEqual(btn.tagName, 'button'); assert.strictEqual(btn.textContent, 'Open files'); ok();
+  btn.fire('click');
+  assert.deepStrictEqual(got6[got6.length - 1], ['pick', 'fp', undefined]); ok();
+}
+
 console.log('gui_render: ' + n + ' assertions passed');
