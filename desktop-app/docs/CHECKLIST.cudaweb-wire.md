@@ -22,7 +22,7 @@
 ## 第二階段（A 到 G 全部完成後接著做；使用者要「完整加速」）
 - [x] **H.（BLOCKED 驗收） Qwen3 整段 GPU 解碼**（2026-11-16；實作由 Q 完成：嵌入、層間串接、lm_head、argmax 取樣都在 GPU）：20 步對拍已做，結果與限制見 DESIGN §7.13 末段——教師強迫 argmax 一致 18／20、19／20，logits 相對差 3%～25%（q8 動態量化的離群通道放大，ORT 跨 CPU 也有）；GPU 引擎對 CPU 參考自由生成前綴 4／12 個詞元。**BLOCKED（逐字一致的驗收）**：原因是動態量化的數值特性，不是核心錯誤，無法靠改核心達成；真 GPU 沒有。
 - [x] **J. midigen 整個解碼器 GPU 管線**（含注意力）（2026-11-16 完成：真 midigen q4 檔、真 ORT 對拍；固定種子 12 個詞元 ORT／CPU／全 GPU 序列相同，logits 相對誤差 1.7e-4；Chrome 軟體 WebGPU；見 DESIGN §7.15）
-- [ ] **BLOCKED（產品的 whisper-base（onnx-community，q8，約 80 MB）只存在使用者的瀏覽器快取，這台機器沒有；不新下載需先有使用者同意）** **K. Whisper 編碼器走 GPU**（conv_ops 一維卷積＋注意力），對 transformers.js 輸出比對；用產品現有 whisper-base，不新下載。
+- [x] **K. Whisper 編碼器走 GPU**（conv_ops 一維卷積＋注意力）（2026-11-16 完成：使用者同意下載 q8 編碼器 23,201,314 位元組；conv1／conv2／+pos 對真 ORT 相對誤差約 1e-7，6 層逐層教師強迫最大相對 ≤ 7.7e-3，Chrome 軟體 WebGPU 全 T1；整條自由跑受動態量化混沌放大，ORT 自己擾動 1e-7 也差 5.9e-2，故不以端到端逐字為準；未接產品 transcribe_media；見 DESIGN §7.19）
 - [ ] **BLOCKED（先查清單已有（DESIGN §12），Demucs／YAMNet 清單與所有模型下載都需使用者同意）** **L. Basic Pitch、Demucs、YAMNet**：先查模型檔清單（不下載）；有同意再做圖對照。
 - [ ] **BLOCKED（缺 SDXS 模型檔，下載需使用者同意）** **M. SDXS 影像生成**：GroupNorm、交叉注意力、上採樣、VAE；只針對 CPU 版與沒有 f16 的機器。
 - [x] **N. 裝置自動選擇**（2026-11-16）：`device_pick.js`（探測＋小基準＋決策）、設定 `gpuAuto`（預設關，手動勾選仍可關／開）、各 GPU 路徑 `_xxxOn()` 接上、DESIGN §7.16、單元測試通過；真 GPU 的基準門檻未用真機數字校準（如實寫在 §7.16）。沒有 WebGPU 的機器維持原路徑（wasm／純 JS）。

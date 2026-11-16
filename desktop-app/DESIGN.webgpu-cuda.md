@@ -839,3 +839,12 @@ Python 模擬器與離線模型推論共用同一個 GPU 裝置：
 - 驗證：`scripts/eval/cudaweb_train_browser.js`（埠 18783，頁面在真 Chrome 跑）。模型 V11 d8 L2 H2 F12 r2，8 個 token，lr 0.02，AdamW 20 步；CPU 同步 f64 參考對 GPU 非同步路徑逐步比 loss。
 - 結果（Chrome 156 軟體 WebGPU／SwiftShader，無真 GPU）：全部 20 步的算子都走 T1（rmsnorm 100、rope 160、softmax 40、silu 40、adamw 320 次；矩陣乘 1560 次，T1）；兩邊 loss 都由 2.548 降到約 1.583；逐步相對差最差 1.05e-4（第 0 步 1.0e-6，隨步數累積為 f32 對 f64 的軌跡漂移，Adam 會放大），門檻 1e-3 通過。耗時 8.8 秒／20 步（**未優化**：每次呼叫各自 submit，軟體 WebGPU，不代表真 GPU）。
 - 限制：只驗證小模型；真 GPU、Qwen 規模的 LoRA 訓練、單一 command encoder 的整步批次、CPU 殘留運算搬上 GPU 都未做。
+
+### 7.19 Whisper 編碼器（q8）走 GPU（2026-11-16，清單 K；未接產品）
+
+- **模型檔**（使用者同意下載；`onnx-community/whisper-base` 只下載編碼器）：`onnx/encoder_model_quantized.onnx`（即 transformers.js 的 dtype q8；**23,201,314 位元組**，已核對）與 `config.json`（2,243）。清單先前寫的「約 80 MB」是產品清單的整體數字；fp32 編碼器 `encoder_model.onnx` 是 82,468,078 位元組，未下載。
+- **圖**：871 節點，動態量化：2×ConvInteger（k3，s1／s2，pad 1）、36×MatMulInteger、26×DynamicQuantizeLinear、12×fp32 MatMul（注意力 QKᵀ、PV）、6 Softmax、8 Erf；6 層、d=512、8 頭、1500 個位置（輸入固定 `[1,80,3000]`）。
+- **實作**：`gpu/whisper_enc.js`（CPU 參考，逐節點對照圖；DynamicQuantizeLinear 依 ONNX 規格、偶數捨入；整數乘加以「減零點的整數值」做，精確）；`gpu/whisper_gpu.js`（WGSL：i32 累加的整數矩陣乘、全注意力（線上 softmax）、LayerNorm、GELU（erf 用 1.2e-7 的擬合）；**一維卷積走共用 `conv_ops.conv1d`**（T1）；失敗退 cpu-js、`tiers` 記層級）。DQL 的最小／最大歸約與殘差相加留在 CPU。
+- **驗證（如實）**：輸入是確定性合成的 log-mel 形狀特徵（沒有真音訊）。(1) 階段對拍（把 ORT 圖的中間張量加成額外輸出，`cudaweb_whisper_trace.js`）：conv1、conv2、+pos 對 ORT 相對誤差 **8e-8～1.1e-7**（CPU 與 Chrome 軟體 WebGPU T1 兩者皆是，`cudaweb_whisper_gpu_check.js`）。(2) **逐層教師強迫**（每層餵 ORT 的上一層輸出）：CPU 參考 6 層最大相對誤差 ≤ 7.7e-3、平均絕對 ≤ 4e-4；Chrome 軟體 WebGPU（所有運算 T1）最大相對 ≤ 7.7e-3、平均絕對 ≤ 1.2e-3，通過門檻（最大相對 < 2e-2、平均絕對 < 2e-3）。軟體 GPU 每層約 7 秒、conv1＋conv2 約 2 秒（未優化、非真 GPU）。
+- **整條自由跑不逐字一致，原因已量測**：整條 CPU 參考對 ORT 最後輸出平均絕對誤差 5.8e-2、最大相對 22%；**但 ORT 自己**在輸入乘上 (1+1e-7·sin i) 的擾動後對自己的輸出差異平均絕對 5.9e-2、最大相對 16%（1e-5 擾動 6.9e-2、29%）——動態量化的捨入邊界翻轉在 6 層中被放大，是模型數值特性，不是核心錯誤（同 Qwen q8 §7.13）。所以通過標準用「階段＋逐層教師強迫」，不用端到端逐字。這是合成特徵的結果；真音訊的敏感度未量。
+- **未做**：接進 `transcribe_media` 的產品路徑（產品是 transformers.js 的 Whisper 管線，要攔截編碼器 session）、真 GPU、真音訊的轉錄文字比對、解碼器。
