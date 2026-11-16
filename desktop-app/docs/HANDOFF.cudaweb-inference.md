@@ -17,6 +17,13 @@
 4. 更新 `DESIGN.webgpu-cuda.md`（§7.3 結果、§9 進度），誠實標示沒驗證的部分（真實桌面版路徑、完整 20 步 loss 對拍）。
 5. 發布前：先本機起 server 用 Claude in Chrome 驗證，OK 才跑 `scripts/publish.sh`；使用者說「發布」才發布。
 
+## 3a. 進度更新（2026-11-16，後續工作階段）
+- 待辦 1（概念驗證）**已完成並通過**：提交 f4875cb6d、2eeed3e11、3e9e1b6b4。新增 `renderer/src/gpu/onnx_lite.js`、`infer_ops.js`（q8mm、q8lm）、`infer_poc_core.js`、`infer_ops_test.js`（7 項過）、`scripts/eval/cudaweb_ort_truth.js`（要用 `ELECTRON_RUN_AS_NODE=1 node_modules/electron/dist/electron.exe` 跑，本機 node 是 32 位元，執行包只有 x64）、`cudaweb_infer_browser.js`（結果 json 已提交）。
+- 結果：與真 ORT 對拍 gate_proj 逐位元一致；真 WebGPU（Chrome 157、NVIDIA Kepler）MLP 逐位元一致、lm_head 相對誤差 1.7e-7、argmax 一致；lm_head 常駐後 99 ms 對純 JS 533 ms（約 5.4 倍）。MLP 單詞元首次反而比純 JS 慢（229 vs 61 ms，含編譯與上傳）。DESIGN §7.3、§9 已更新（待辦 4 的這一部分已做）。
+- **WebGL2 退路尚未做**（q8mm、q8lm 目前降級為 WGSL → 純 JS）。待辦 1(d) 的這一小項還沒完成。
+- 待辦 3（接線）的關鍵發現：`nr-engine.js` 直接用 ORT 輸出的 `r.logits`（第 90 行附近）；lm_head 是模型圖內最後一個 `MatMul`（輸入 `/model/layers.28/final_norm_layernorm/output_0`、權重 `model.embed_tokens.weight_transposed`，由 DequantizeLinear＋Transpose 在圖內產生）。要讓 GPU 接手 lm_head，必須有一個「輸出隱藏狀態（final_norm 輸出）而不算 lm_head」的模型圖：做法是用 onnx_lite 擴充成可改寫的讀寫器，從現有 q8 檔本機產生變體（不下載），或在圖輸出加上 final_norm 輸出但 lm_head 照算（沒省）。這需要設計決定，且變體檔約多出 0 位元組權重（可共用），尚未開始。
+- 下一步建議順序：(1) 補 WebGL2 退路或明講不做；(2) 待辦 2 的 CPU 參考版注意力＋KV 快取；(3) 待辦 3 先在桌面版做「隱藏狀態變體圖＋cudaweb lm_head」並設可選開關預設關。
+
 ## 4. 工作方式（使用者規則，照抄重點）
 - 純中文回覆，不夾英文縮寫／術語。
 - 子工作階段模型依上層：上層 Opus → 子層 Sonnet medium；上層 Sonnet medium → 子層 Haiku。派工簡報要寫明：歧義自決、不准回頭詢問、速度守則（不空等、不跑整套測試、3 分鐘內有結論）；結束前確認沒留下行程。我（上一位）是 Sonnet medium，所以派 Haiku。
