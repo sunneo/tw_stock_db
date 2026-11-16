@@ -2,7 +2,8 @@
 // MOSS-TTS-Nano 整條 CPU 管線（cudaweb 參考版）對真 ORT 比對：
 //   預填（逐列跑全域解碼一步，取代 moss_tts_prefill.onnx）→ 生成迴圈（沿用 tts/moss_core.js 的 generate）→ 取樣（moss_sampling.js）→ codec（onnx_interp.js）。
 // 同一個 seed 下，兩邊的音訊幀必須完全一致，codec 音訊的相對誤差要夠小。
-// 用法：ELECTRON_RUN_AS_NODE=1 node_modules/electron/dist/electron.exe scripts/eval/cudaweb_moss_pipeline_check.js <MOSS 資料夾> <文字> <最多幀數>
+// 用法：ELECTRON_RUN_AS_NODE=1 node_modules/electron/dist/electron.exe scripts/eval/cudaweb_moss_pipeline_check.js <MOSS 資料夾> <文字> <最多幀數> [ref 輸出 json]
+// ref 輸出 json 會寫入 ORT 的提示列與幀，給瀏覽器的 GPU 驗證頁當比對目標（cudaweb_moss_pipeline_gpu_check.js）。
 const fs = require('fs'), path = require('path');
 const M = require('../../renderer/src/tts/moss_core.js');
 const MG = require('../../renderer/src/gpu/moss_decoder.js');
@@ -90,6 +91,7 @@ const now = () => Date.now();
   const rc = await M.generate(cwRunners, cfg, prompt, { maxFrames: maxFrames, seed: seed });
   const tCw = now() - t1;
   const same = ro.count === rc.count && ro.frames.length === rc.frames.length && ro.frames.every((v, i) => v === rc.frames[i]);
+  if (process.argv[5]) fs.writeFileSync(process.argv[5], JSON.stringify({ 文字: text, cfg: cfg, seed: seed, maxFrames: maxFrames, rows: prompt.rows, ids: Array.from(prompt.ids), ortFrames: Array.from(ro.frames), ortCount: ro.count }));
   console.log('幀數 ORT', ro.count, 'cudaweb', rc.count, '幀完全一致', same, '耗時ms ORT', tOrt, 'cudaweb', tCw);
 
   // ---- codec：同一批幀，ORT 對解釋器 ----
