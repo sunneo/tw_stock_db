@@ -134500,11 +134500,13 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         if (isSkillDomain) this._pyBridgeDepth = (this._pyBridgeDepth || 0) + 1;
         try {
             let skillDirNote = '';
+            let skillKeepTools = []; // 技能包已解開時，說明裡叫模型用的工具一定要留在聚焦後的清單裡
             if (isSkillDomain) {
                 try {
                     const bundle = (this.advancedSettings.skillBundles || []).find((b) => 'skill_' + b.id === domainKey);
                     const mat = bundle ? await this._skillMaterialize(bundle) : null;
-                    if (mat) skillDirNote = '\n\n【技能包檔案已解開在這台電腦的資料夾：' + mat.dir + '（scripts/、references/、assets/ 都在裡面，共 ' + mat.files + ' 個檔案）。要執行腳本時直接用 run_command，例如 python "' + mat.dir + '/scripts/xxx.py" 參數…（使用者的工作資料夾用 cwd_abs 或腳本參數指定，跟腳本資料夾分開）；不要再到別處找 scripts 資料夾，也不要把腳本內容讀出來貼著重寫。讀不懂腳本怎麼用時，先 python "<腳本>" --help 或讀它的說明（read_skill_file 或 fs_read_file 都可以）。】';
+                    if (mat) skillKeepTools = ['run_command', 'read_skill_file', 'fs_read_file'];
+                    if (mat) skillDirNote = '\n\n【技能包檔案已解開在這台電腦的資料夾：' + mat.dir + '（scripts/、references/、assets/ 都在裡面，共 ' + mat.files + ' 個檔案）。要執行腳本時直接用 run_command，例如 python "' + mat.dir + '/scripts/xxx.py" 參數…（使用者的工作資料夾用 cwd_abs 或腳本參數指定，跟腳本資料夾分開）；不要再到別處找 scripts 資料夾，也不要把腳本內容讀出來貼著重寫。run_command 不在手上時用 request_additional_tools 補，不要委派給 code_execution（那是瀏覽器沙盒，沒有這個技能的檔案，也不要在對話裡解壓使用者的附件）。讀不懂腳本怎麼用時，先 python "<腳本>" --help 或讀它的說明（read_skill_file 或 fs_read_file 都可以）。】';
                 } catch (_) {}
             }
             const isDeck = this._deckIsDomain(domainKey);
@@ -134540,7 +134542,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             if (taskHints.length) { skillDirNote += '\n\n' + taskHints.map((h) => h.note).join('\n\n'); const m = taskHints.map((h) => h.id).join('、'); if (progress) progress.log('🧭 任務符合專用工具：' + m + '——已補給這個子agent'); }
             // 聚焦（見 _focusTools）：只對沒切成階段、也不是簡報的大領域；專用工具提示補進來的工具一定留著
             const focus = (isDeck || domain.mixer || Array.isArray(extra.restrictTools)) ? null : this._focusTools(hintedTools, task);
-            const runTools = focus ? [...new Set(focus.keep.concat(taskHints.flatMap((h) => h.tools || []).filter((n) => hintedTools.indexOf(n) >= 0)))] : hintedTools;
+            const runTools = focus ? [...new Set(focus.keep.concat(taskHints.flatMap((h) => h.tools || []).filter((n) => hintedTools.indexOf(n) >= 0), skillKeepTools.filter((n) => hintedTools.indexOf(n) >= 0)))] : hintedTools;
             if (focus && progress) progress.log('🎯 領域工具太多（' + hintedTools.length + '個）——先只給最相關的 ' + runTools.length + ' 個，其餘需要時再補');
             const callLog = []; // 這個領域這次委派裡所有工具呼叫（名稱、參數、成敗），給「完成判準」與糾正訊息用
             const runOnce = (taskText) => this._runSubAgentTask(taskText, isDeck ? 90 : (isSkillDomain ? SUBAGENT_DELEGATE_MAX_ROUNDS * 2 : SUBAGENT_DELEGATE_MAX_ROUNDS), {
