@@ -22,16 +22,24 @@
    "names": [
     "FA_PYBRIDGE_FILES"
    ],
-   "size": 496088,
-   "md5": "0040a674058b598c869b2fe7f6c916e9"
+   "size": 503317,
+   "md5": "7f21eab462c6e1e6489d0c4e6eb7e120"
   },
   "headsvc": {
    "file": "chunks/headsvc.js",
    "names": [
     "FA_HEAD_SRC"
    ],
-   "size": 71709,
-   "md5": "db01871479dd34e0b18b4070fd075483"
+   "size": 72697,
+   "md5": "5cb40fec5dcce4f2bba5e016500a1c63"
+  },
+  "qwengpu": {
+   "file": "chunks/qwengpu.js",
+   "names": [
+    "FA_QWEN_SRC"
+   ],
+   "size": 217105,
+   "md5": "0964d5831d01ec5a3a04c243225c799d"
   },
   "aidocview": {
    "file": "chunks/aidocview.js",
@@ -54,8 +62,8 @@
     "FA_WEBTRAIN_WORKER_SRC",
     "FA_STUDIO_HOST_FILES"
    ],
-   "size": 883825,
-   "md5": "697efb3dd03b8229fbcd663900901169"
+   "size": 886280,
+   "md5": "6bfafe58ae8564c330c444148bddcec9"
   },
   "studioview": {
    "file": "chunks/studioview.js",
@@ -183,8 +191,24 @@
    "names": [
     "FA_MOSS_WORKER_SRC"
    ],
-   "size": 22892,
-   "md5": "b0a50dd92e88d423c255f57f7907c125"
+   "size": 25167,
+   "md5": "a021748869099c1648bb87e1c76c8455"
+  },
+  "mossgpu": {
+   "file": "chunks/mossgpu.js",
+   "names": [
+    "FA_MOSS_GPU_SRC"
+   ],
+   "size": 78528,
+   "md5": "64d961fd65ee547f4a749618229893f3"
+  },
+  "midigpu": {
+   "file": "chunks/midigpu.js",
+   "names": [
+    "FA_MIDI_GPU_SRC"
+   ],
+   "size": 69307,
+   "md5": "a7356c73703b85698724486d823b691c"
   },
   "guitpl": {
    "file": "chunks/guitpl.js",
@@ -1846,7 +1870,7 @@
   }
  },
  "core": {
-  "size": 5973094,
-  "md5": "bd7fc8c4cae8278dc60142d47da26c02"
+  "size": 5996441,
+  "md5": "bb2419787069b987e775c129333fe899"
  }
 }
