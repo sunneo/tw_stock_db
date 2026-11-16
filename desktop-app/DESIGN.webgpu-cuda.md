@@ -447,7 +447,9 @@ GUI 的獨立 Worker 模擬器目前沒有註冊 `_fa_cudaweb`，不能 `import 
   - logits 相對誤差 **0.147**（最大絕對誤差 1.93，最大值 13.1）。三個詞元的 argmax 都一致（3/3），但數值差距超過門檻 1e-3。
   - lm_head 已確認：ORT 的 `/lm_head/MatMul` 是**浮點**矩陣乘，權重來自 `DequantizeLinear(embed，scale／zp 為純量)`，數學上與 `q8lmRef` 相同，所以誤差不是來自 lm_head。
   - **未解的假設**（沒有查證）：第 21 層附近某個張量經過動態量化時，最大值很大，一次捨入翻轉就造成明顯誤差，之後逐層放大。要確認，要在第 21 層逐個子運算（注意力、MLP 的 gate／up／down）取中間張量比對。也可能是 RMSNorm 的 f32／f64 差異。**目前不能宣稱一步 decode 對真 ORT 通過。**
-- **未驗證**：完整生成的比對；多 token 解碼中 KV 快取跨層的正確性（目前只有 3 詞元預填）；網頁版 q4 核心。
+- **第 0 層一步 decode 對真 ORT：通過（CPU 參考版，2026-11-16）**（`scripts/eval/cudaweb_attn_layer0_decode.js`）：前 3 個詞元預填進 KV 快取，第 4 個詞元用 S=1 解碼（過去長度 3 由快取決定），與 ORT 一次跑 4 個詞元的最後一列比對。解碼列注意力相對誤差 **2.8e-6**、o_proj **3.2e-6**；預填三列也都在 3e-6 量級；快取長度 4。
+  - **誠實的限制**：解碼那一列沿用整段 4 個詞元的動態量化步長（與 ORT 整段量化一致），所以這個測試驗證的是 KV 快取路徑與注意力數學，**不是**「單一詞元單獨量化」時的行為。GPU 版的一步 decode 在這次沒有在 Chrome 驗證（GPU 注意力核心本身已在 `cudaweb_attn_browser.js` 驗過 S=1）。
+- **未驗證**：完整多步生成的比對（只做到一步）；網頁版 q4 核心。
 - **GPU 核心**（`renderer/src/gpu/attn_gpu.js`，提交 `b12061413`）：WGSL 版，一個 invocation 算一個（查詢位置、查詢頭），兩段式 softmax；退路 T1 → cpu-js（WebGL2 版未做，見下）。
   - node 退路測試 4 項通過（`attn_gpu_test.js`）。
   - **真 Chrome WebGPU**（`scripts/eval/cudaweb_attn_browser.js`，Chrome 157、NVIDIA Kepler）：4 個情境（解碼 S=1 過去 0／過去 40、預填 S=4、混合 S=3 過去 20）都走 T1，相對誤差 0～2.6e-7，通過。
