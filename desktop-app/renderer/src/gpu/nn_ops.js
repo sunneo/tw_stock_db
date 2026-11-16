@@ -110,6 +110,7 @@ function getDevice(nav) {
         const pa = await core.probeAdapter(nav);
         if (!pa.adapter) return { dev: null, reason: 'WebGPU 沒有可用的介面卡' + (pa.probe && pa.probe.reason ? '（' + pa.probe.reason + '）' : '') };
         const dev = await pa.adapter.requestDevice();
+        try { dev.lost.then((i) => console.warn('[gpu] 裝置遺失（' + i.reason + '）：' + String(i.message).slice(0, 200) + '；最近的 GPU 工作：' + (globalThis.__faGpuLast || '未知'))); } catch (_) { /* 診斷用，失敗不影響 */ }
         return { dev: dev, reason: null };
       } catch (e) { return { dev: null, reason: 'WebGPU 初始化失敗：' + String((e && e.message) || e) }; }
     })());
@@ -119,6 +120,7 @@ function getDevice(nav) {
 
 // 通用的單次分派：bufs = [{data: Float32Array, out: bool}]，依序綁定 0..n-1；uniform 綁在最後一個索引
 async function runWgsl(dev, code, bufs, uniform, groups) {
+  globalThis.__faGpuLast = 'runWgsl:' + ((/@kernel (\w+)/.exec(code) || [])[1] || (/fn (\w+)/.exec(code) || [])[1] || '?');
   // 標 cache:true 的輸入（權重）常駐在 GPU：以 typed array 物件為鍵（WeakMap），同一份權重只上傳一次
   const rc = dev.__cudawebRes || (dev.__cudawebRes = new WeakMap());
   const objs = bufs.map((b) => {

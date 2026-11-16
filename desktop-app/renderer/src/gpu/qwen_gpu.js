@@ -364,7 +364,7 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
     if (dev.queue.onSubmittedWorkDone) await dev.queue.onSubmittedWorkDone();
     let len = 0, dead = '', chain = Promise.resolve();
     const chunkM = Math.max(1, Math.min(maxM, o.chunkM || 16));
-    if (dev.lost && dev.lost.then) dev.lost.then((i) => { dead = dead || ('裝置遺失：' + (i && (i.reason || '') + ' ' + (i && i.message || '')).trim()); });
+    if (dev.lost && dev.lost.then) dev.lost.then((i) => { dead = dead || ('裝置遺失：' + (i && (i.reason || '') + ' ' + (i && i.message || '')).trim()); console.warn('[gpu] qwen 引擎裝置遺失：' + dead.slice(0, 200) + '；最近的 GPU 工作：' + (globalThis.__faGpuLast || '未知')); });
     const info = { maxT, maxM, dispatches: plan.length, lmChunks: lmChunks.length, setupMs: (typeof performance !== 'undefined' ? performance : Date).now() - t0, steps: 0, lastStepMs: 0 };
 
     const eng = {
@@ -386,6 +386,7 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
           let i = 0;
           for (let l = 0; l <= W.L; l++) {
             const stop = l < W.L ? layerEnd[l] : plan.length;
+            globalThis.__faGpuLast = 'qwen_gpu 第 ' + l + ' 層（M=' + M + '，已提交到第 ' + i + ' 個派發）';
             const enc = dev.createCommandEncoder(); const pass = enc.beginComputePass();
             for (; i < stop; i++) { const d = plan[i], g = d.groups(M); pass.setPipeline(d.pipe); pass.setBindGroup(0, d.bg); pass.dispatchWorkgroups(g[0], g[1]); }
             pass.end();

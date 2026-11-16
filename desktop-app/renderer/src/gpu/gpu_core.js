@@ -444,7 +444,7 @@
           var pa = await probeAdapter(nav);
           st.probe = pa.probe;
           if (!pa.adapter) return null;
-          try { st.device = await pa.adapter.requestDevice(); }
+          try { st.device = await pa.adapter.requestDevice(); try { st.device.lost.then(function (i) { console.warn('[gpu] 裝置遺失（' + i.reason + '）：' + String(i.message).slice(0, 200) + '；最近的 GPU 工作：' + (globalThis.__faGpuLast || '未知')); }); } catch (_) { /* 診斷用 */ } }
           catch (e) { st.probe.reason = '要求 WebGPU 裝置失敗：' + msg(e); return null; }
           var dev = st.device;
           if (dev.lost && typeof dev.lost.then === 'function') {
