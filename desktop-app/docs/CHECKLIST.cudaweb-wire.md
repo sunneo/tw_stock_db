@@ -24,7 +24,7 @@
 - [ ] **BLOCKED（先查清單已有（DESIGN §12），Demucs／YAMNet 清單與所有模型下載都需使用者同意）** **L. Basic Pitch、Demucs、YAMNet**：先查模型檔清單（不下載）；有同意再做圖對照。
 - [ ] **BLOCKED（缺 SDXS 模型檔，下載需使用者同意）** **M. SDXS 影像生成**：GroupNorm、交叉注意力、上採樣、VAE；只針對 CPU 版與沒有 f16 的機器。
 - [x] **N. 裝置自動選擇**（2026-11-16）：`device_pick.js`（探測＋小基準＋決策）、設定 `gpuAuto`（預設關，手動勾選仍可關／開）、各 GPU 路徑 `_xxxOn()` 接上、DESIGN §7.16、單元測試通過；真 GPU 的基準門檻未用真機數字校準（如實寫在 §7.16）。沒有 WebGPU 的機器維持原路徑（wasm／純 JS）。
-- [ ] **O. Python 相容層補洞**：float64 除法、次方、`math.*`。
+- [x] **O. Python 相容層補洞**（2026-11-16）：dd 模式補上除法、次方（整數／一般）、`math.sqrt/exp/log/sin/cos/tan/tanh/floor/ceil/fabs`；取餘與 `//` 仍拒絕並說明。驗收：真 Chrome WebGPU（軟體）410 組對 float64 相對誤差全部 < 1e-11（`cudaweb_dd_math_check.js`）、`fa_gpu_py_test.py` 48 項通過；順帶修 `dd_mul` 在 SwiftShader 只剩 float32 精度的問題（改 Dekker）。已知風險（常數運算元被編譯器化簡）寫在 DESIGN §7.17。
 - [ ] **BLOCKED（唯讀查圖形也需要 kokoro 模型檔（下載需使用者同意））** **P. Kokoro**：先查 kokoro-js 圖形（唯讀），能估工作量再決定。
 - [ ] **I. 【最後的最後】LoRA 訓練端到端 GPU**（使用者 2026-11-16：「訓練的是最後的最後」，其他全部做完才碰）：梯度與交叉熵等其餘運算，端到端訓練 20 步 loss 對拍。
 
