@@ -408,6 +408,12 @@ GUI 的獨立 Worker 模擬器目前沒有註冊 `_fa_cudaweb`，不能 `import 
 
 **缺的運算子（完整推論還需要）**：RoPE、注意力（分塊版）、RMSNorm、SiLU、q8 反量化矩陣乘（現有權重格式）、KV 快取。
 
+**概念驗證結果（2026-11-16，真 WebGPU）**：權重讀自本機現有 q8 模型（`renderer/src/gpu/onnx_lite.js` 讀 protobuf，不下載）。核心 `infer_ops.js`：q8mm（MatMulInteger 路徑，int32 精確累加）與 q8lm（lm_head，一個工作群組算一列、分塊至 64 MiB 以內）。WebGL2 退路**尚未實作**（目前降級為 WGSL → 純 JS）。
+- 與 onnxruntime-node 1.22.0 對拍（`scripts/eval/cudaweb_ort_truth.js`，要用 Electron 內建 Node 跑，因為本機 node 是 32 位元）：gate_proj 參考版與 ORT 逐位元一致；lm_head 前 8192 列相對誤差 6e-7。
+- 真 WebGPU（Chrome 157、NVIDIA Kepler，`scripts/eval/cudaweb_infer_browser.js`）對參考版：第 0 層 MLP 逐位元一致；lm_head 完整 151936 列相對誤差 1.7e-7，最大值位置一致，通過。
+- 速度（如實）：lm_head 權重常駐後 99 ms，純 JS 參考版 533 ms，約 5.4 倍；首次含上傳與編譯 509 ms。MLP 只有 1 個詞元、矩陣小，GPU 首次 229 ms 反而慢於純 JS 61 ms（含管線編譯與上傳，常駐後未另量）。
+- **未驗證**：注意力、KV 快取、整層串接、真實桌面版路徑、完整生成的對拍。MLP 之間的 RMSNorm、動態量化、SiLU 相乘仍在主機端 CPU。
+
 ### 7.4 與原生執行環境的關係
 
 - cudaweb 不改動 `main-ext.js` 的原生執行包流程。
@@ -559,7 +565,7 @@ Python 模擬器與離線模型推論共用同一個 GPU 裝置：
 | **第一階段** | 向量加、矩陣乘（sgemm 最小版）、歸約；WGSL 版與 CPU 版；能力檔與 `backend_info`；WebGL2 版（第 3 階段前先做三個核心）；Python 模擬器接線 | 三層互相比對通過（假後端）；Python 端測試通過；真桌面版確認 adapter 與一個核心 | 無 | 2 至 3 輪 | WGSL＋CPU＋Python 接線已完成（`d437fda9f`、`b79454138`）；能力檔、WebGL2、三層比對待做 |
 | **第二階段** | cuBLAS 常用子集（5.1）；f32 原子 CAS、f64 雙 f32、i64 雙 u32（替代層）；`backend_core` 登錄 `cudaweb` | 每個子程式與 CPU 比對通過；替代層與 CPU 比對在容差內 | 第一階段 | 3 至 4 輪 | 待做 |
 | **第三階段** | cuDNN 常用子集與 ATen 對映（5.2、5.3）；熱點接入訓練（7.2）；GUI 模擬器接線（6.5） | 卷積前向反向、softmax、layer norm、交叉熵與 CPU 比對；訓練熱點接入後 LoRA 單層梯度對拍 | 第二階段 | 4 至 6 輪 | 待做 |
-| **第四階段** | Qwen3-0.6B 推論熱點概念驗證（7.3）；資源調度（8）；PTX 子集轉譯（4.4）；分塊版注意力 | 熱點比對通過；排程不餓死；PTX 第一批指令通過 | 第三階段 | 4 至 6 輪 | 待做 |
+| **第四階段** | Qwen3-0.6B 推論熱點概念驗證（7.3）；資源調度（8）；PTX 子集轉譯（4.4）；分塊版注意力 | 熱點比對通過；排程不餓死；PTX 第一批指令通過 | 第三階段 | 4 至 6 輪 | 部分完成（7.3 熱點比對已通過；資源調度、PTX、分塊注意力待做） |
 | **第五階段** | 完整推論取代；全模型 20 步 loss 對拍（TODO §5.7 階段 4(c)） | 每步 loss 差 ≤ 2% | 第四階段 | 視結果 | 待做 |
 
 **第二與第三階段的並行**：cuBLAS 完成後，熱點接入可與 cuDNN 並行，但兩者都會改 `backend_core.js` 與 `gpu_core.js`，需要排序。
