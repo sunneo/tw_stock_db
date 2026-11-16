@@ -129326,7 +129326,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         this._nrLastHeadWhy = '';
         if (!this._nrGpuHeadOn()) return null;
         try {
-            if (typeof navigator === 'undefined' || !navigator.gpu) { this._nrLastHeadWhy = '這台沒有 WebGPU，lm_head 用 CPU'; return null; }
+            if (typeof navigator === 'undefined') { this._nrLastHeadWhy = '這個環境沒有 navigator，lm_head 用 CPU'; return null; }  // WebGPU／WebGL2 的選層在 head_service 內做（都不行時每個詞元回報原因，子程序退回 CPU）
             const st = await this._nrCall('head_status');
             if (!st || !st.ok || !st.supported) { this._nrLastHeadWhy = '執行包需更新（沒有 gpuhead 功能）'; return null; }
             const pr = await this._nrCall('head_prepare');

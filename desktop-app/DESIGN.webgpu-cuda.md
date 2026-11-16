@@ -471,6 +471,37 @@ GUI 的獨立 Worker 模擬器目前沒有註冊 `_fa_cudaweb`，不能 `import 
   - **結論（更正後）**：網頁版 lm_head 不需要 q4 核心。它是 fp16 的未量化矩陣乘（權重 [151936, 1024] fp16，約 311 MB）。cudaweb 要接上，需要 fp16 矩陣乘（WGSL 要處理 fp16：要嘛用 `shader-f16` 功能，要嘛用 u32 打包＋`unpack2x16float`）。另外，**網頁版的投影層是 q4（MatMulNBits）**，如果要讓網頁版的整段解碼都走 cudaweb，還需要 MatMulNBits（4 位元、區塊 32）的核心。這兩件事要分開規劃。
 - 若要接：(1) 先確認 lm_head 格式（需使用者同意下載或讀中繼資料）；(2) 寫 q4 區塊反量化的 lm_head 核心（CPU 參考版＋測試，再 WGSL）；(3) 隱藏狀態變體圖要攔截 transformers.js 的 fetch 改寫位元組（LoRA 網頁版已有這條接點）；(4) 包一層讓 transformers.js 拿到 logits。
 
+### 7.8 lm_head 接線：決定、資料流、死鎖與延遲分析（2026-11-16）
+
+**決定（管理者轉達使用者）**：先做網頁版，再做桌面版；兩者都是**預設關**的可選開關；任何失敗（沒有 GPU、逾時、結果不合）都退回現有 ONNX 路徑；只接 lm_head（MLP 實測單詞元時 GPU 首次比純 JS 慢，不接）；注意力與 KV 快取先不接。WebGL2 退路必須存在。
+
+**網頁版（已完成，真 Chrome 通過）**
+- 生成迴圈在**主頁面**（`llm_web_core.js` 的 `greedyGenerate`，onnxruntime-web wasm，q8 ONNX，與桌面版同一個圖）。transformers.js 那條路徑（Worker 內、q4f16、lm_head 為未量化 FLOAT16，§7.6）**不在本次範圍**，需要 f16 核心，未做。
+- 隱藏狀態變體圖（`head_service.buildVariant`，`onnx_lite` 改寫）：移除 `/lm_head/MatMul` 與它獨占的解碼節點，圖輸出改成 final_norm 的結果；KV 輸出不變。每步先跑變體（不算 lm_head），再由頭算 logits。
+- 頭：`q8lmAuto`，**T1 WebGPU（分塊、權重常駐）→ T3 WebGL2（RGBA8 紋理分塊＋片段著色器，權重紋理快取）**；兩者都不行就丟出每層的原因，**不走純 JS**（比 ORT 還慢，沒有意義）。
+- 退路（`greedyGenerate` 的 `opts.head`）：(1) 頭丟錯或逾時（預設 8 秒）→ 本步與之後全部改用原 session；(2) 開頭 1 步同時跑原圖，argmax 不同或相對誤差超過 1e-3 → 「結果不合」退回；(3) 退回時保留 KV 不變，因為原圖與變體的 present 輸出逐位元相同。
+- 診斷（回覆的 `gpuHead`）：是否要求、實際用了幾步、退回在哪一步、原因、對拍的相對誤差與 argmax、每步的頭耗時、變體耗時、原圖耗時、各層次數。
+- 驗證：(a) Node＋真 onnxruntime＋真模型 E2E 四項全過（`scripts/eval/cudaweb_web_head_e2e.js`）；(b) 真 Chrome 端到端（`scripts/eval/cudaweb_web_head_browser.js`）：8 個詞元，原路徑與 GPU 頭**相同**，8 步全部走 WebGPU，開頭對拍相對誤差 3.9e-7；沒有 GPU 時整段退回、詞元相同、原因寫明。
+- 速度（同一台 Chrome，8 個詞元）：原路徑 10.6 秒；GPU 頭 6.2 秒（含一次開頭對拍的原圖執行 1.6 秒）。WebGL2 層在這台機器上單次 lm_head 約 0.9 秒，**比 ORT 的 CPU 慢**，因此只是功能退路，不是加速。
+- 記憶體：頁面同時持有原 session 與變體 session（617 MB 模型各一份，加上變體的位元組複本）。Chrome 測試在這台機器上可以跑完，但手機或低記憶體裝置未驗證。
+- 產品接線：設定 `llmGpuHead`（預設 off，AI 助理設定，與桌面版同一個區塊）；生成路由 `/api/llm/web/generate` 帶 `head` 並回傳 `gpuHead`。**Chrome 測試走的是同一套模組，但不是經由 App 的 UI 操作**（沒有在 App 裡點開關實測）。
+
+**桌面版（接線已存在，真 Electron 未驗證，維持預設關）**
+- 生成迴圈在**原生子程序**（`nr-child.js` → `nr-engine.js`，ELECTRON_RUN_AS_NODE，沒有 WebGPU）。所以 lm_head 必須搬到**渲染行程**（有 WebGPU／WebGL2）。
+- 資料流（每個詞元一趟往返）：子程序（stdout）`head_req {hidden: base64 f32[1024]}` → 主程序 → 信箱檔 `head-<runId>-<seq>.req` → 渲染行程輪詢（3 毫秒）讀取、`q8lmAuto` 算 logits → 寫 `.res.tmp` 再改名成 `.res` → 主程序輪詢（2 毫秒）讀取 → stdin `head_res {logits: base64 f32[151936]}` → 子程序取樣。
+- **死鎖檢查**：沒有循環等待。子程序只等 `head_res`（逾時 8 秒）；主程序只等 `.res`（逾時 6 秒，比子程序短，所以先回 error）；渲染行程的輪詢不阻塞，只在生成期間啟動、結束一定 `stop()`；每個請求檔只有一個寫入者。任何一邊逾時都回 error，子程序退回自己的 ORT lm_head，生成不中斷。
+- **延遲預算（實測與估計）**：
+  - 信箱一趟（磁碟＋計時器，不含 IPC、不含 GPU，Windows、Node 16，60 次）：中位數 **9.5 毫秒**，p90 11.1 毫秒。
+  - Electron IPC（渲染行程的 `rawfs` 每次呼叫）：**未量測**。輪詢每 3 毫秒的 `readdir` 也走 IPC，可能是主要成本，需要真機量。
+  - GPU 計算：T1（WebGPU，Kepler）暖機 99 毫秒；T3（WebGL2）約 900 毫秒；原生 ORT 的 CPU lm_head 169 毫秒。
+  - 預估：只有 T1 可能快於 ORT（約 99 加上信箱與 IPC，若 IPC 合計低於約 60 毫秒就有淨收益）。**T3 比 ORT 慢，不應在桌面版當加速使用**；目前程式在沒有 WebGPU 時會用 T3，這是功能退路，需要在診斷中標示「比 CPU 慢」。
+- **不拖慢沒開開關的使用者**：關閉時 `_nrHeadStart` 直接回傳 null，不問主程序、不建立任何信箱輪詢，子程序的 `run` 不帶 `gpuHead`，走原路徑（已由模擬測試驗證）。
+- 子程序記憶體：開啟時同時持有原 session 與變體 session（約多一份 617 MB 模型大小的位元組與 session 狀態）。未量測。
+- 模擬測試（`scripts/eval/cudaweb_head_renderer_mock.js`，記憶體內假信箱）8 項全過；端到端 E2E（`scripts/eval/cudaweb_head_e2e.js`，真 ORT，子程序邏輯）四項全過；**真 Electron 視窗實機未驗證**，每個詞元的實際耗時未量。
+- 修正（2026-11-16）：`nrGpuHead` 原本沒有列入 `_normalizeAdvancedSettings` 白名單，存檔時會被洗掉，已修（`7017fb727`）；`_nrHeadStart` 原本在沒有 `navigator.gpu` 時提前放棄，已改為照常準備，WebGPU／WebGL2 的選層留給每個詞元內的 `q8lmAuto`。
+
+**結論**：網頁版接線已通過真 Chrome 驗證並能正確退回；桌面版的程式與編排已就緒但沒有真機數字。若要讓桌面版預設開啟，需要先在真 Electron 量到「每個詞元的頭耗時」低於原 lm_head 的 169 毫秒，並把 T3 排除於桌面加速之外。
+
 ### 7.4 與原生執行環境的關係
 
 - cudaweb 不改動 `main-ext.js` 的原生執行包流程。
@@ -622,7 +653,7 @@ Python 模擬器與離線模型推論共用同一個 GPU 裝置：
 | **第一階段** | 向量加、矩陣乘（sgemm 最小版）、歸約；WGSL 版與 CPU 版；能力檔與 `backend_info`；WebGL2 版（第 3 階段前先做三個核心）；Python 模擬器接線 | 三層互相比對通過（假後端）；Python 端測試通過；真桌面版確認 adapter 與一個核心 | 無 | 2 至 3 輪 | WGSL＋CPU＋Python 接線已完成（`d437fda9f`、`b79454138`）；能力檔、WebGL2、三層比對待做 |
 | **第二階段** | cuBLAS 常用子集（5.1）；f32 原子 CAS、f64 雙 f32、i64 雙 u32（替代層）；`backend_core` 登錄 `cudaweb` | 每個子程式與 CPU 比對通過；替代層與 CPU 比對在容差內 | 第一階段 | 3 至 4 輪 | 待做 |
 | **第三階段** | cuDNN 常用子集與 ATen 對映（5.2、5.3）；熱點接入訓練（7.2）；GUI 模擬器接線（6.5） | 卷積前向反向、softmax、layer norm、交叉熵與 CPU 比對；訓練熱點接入後 LoRA 單層梯度對拍 | 第二階段 | 4 至 6 輪 | 待做 |
-| **第四階段** | Qwen3-0.6B 推論熱點概念驗證（7.3）；資源調度（8）；PTX 子集轉譯（4.4）；分塊版注意力 | 熱點比對通過；排程不餓死；PTX 第一批指令通過 | 第三階段 | 4 至 6 輪 | 部分完成（7.3 熱點比對已通過；資源調度、PTX、分塊注意力待做） |
+| **第四階段** | Qwen3-0.6B 推論熱點概念驗證（7.3）；資源調度（8）；PTX 子集轉譯（4.4）；分塊版注意力 | 熱點比對通過；排程不餓死；PTX 第一批指令通過 | 第三階段 | 4 至 6 輪 | 部分完成：lm_head 網頁版接線與真 Chrome 驗證通過（7.8）；桌面 lm_head 接線與模擬測試通過、真 Electron 與速度未驗證（7.8）；注意力 GPU 核心寫好未接線（7.7）；資源調度、PTX 未做 |
 | **第五階段** | 完整推論取代；全模型 20 步 loss 對拍（TODO §5.7 階段 4(c)） | 每步 loss 差 ≤ 2% | 第四階段 | 視結果 | 待做 |
 
 **第二與第三階段的並行**：cuBLAS 完成後，熱點接入可與 cuDNN 並行，但兩者都會改 `backend_core.js` 與 `gpu_core.js`，需要排序。

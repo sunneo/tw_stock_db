@@ -66,11 +66,11 @@ function makeInstance(opts) {
     const hd = await inst._nrHeadStart();
     ok(hd === null && called === 0 && inst._nrLastHeadWhy === '', '開關關閉：回傳 null、不問主程序、沒有原因');
   }
-  // 2) 沒有 WebGPU → null＋原因
+  // 2) 沒有 WebGPU 不再提前放棄（WebGL2 退路在每個詞元內選層）：照常問主程序，後面的步驟決定原因
   {
-    const { inst } = makeInstance({ flag: 'on', navigator: {}, call: async () => ({}) });
+    const { inst } = makeInstance({ flag: 'on', navigator: {}, call: async (op) => (op === 'head_status' ? { ok: true, supported: true } : op === 'head_prepare' ? { ok: false, message: '讀不到模型檔' } : {}) });
     const hd = await inst._nrHeadStart();
-    ok(hd === null && /沒有 WebGPU/.test(inst._nrLastHeadWhy), '沒有 WebGPU：回傳 null 並寫原因：' + inst._nrLastHeadWhy);
+    ok(hd === null && /讀不到模型檔/.test(inst._nrLastHeadWhy), '沒有 WebGPU 不提前放棄，照常準備（原因取自準備步驟）：' + inst._nrLastHeadWhy);
   }
   // 3) 執行包太舊（head_status 不支援）
   {
