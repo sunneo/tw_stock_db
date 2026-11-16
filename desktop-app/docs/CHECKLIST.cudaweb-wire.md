@@ -10,7 +10,7 @@
 - [ ] **D. midigen 接線**：網頁版與桌面版 MIDI 生成路徑接 midigenai 解碼器；開關 `midiGpu`（預設 off）；失敗退回。驗收：固定種子前 N 個 token 與原路徑相同。桌面版沒有 WebGPU 的子程序，沿用 lm_head 的 head_req／head_res 信箱做法。
 - [ ] **E. 退路與快取**：attn_gpu、matmulnbits_gpu、moss 各運算都要有 WebGL2 或純 JS 退路與 pipeline／shader 快取（現在注意力每次呼叫重建 pipeline，比 CPU 慢）。驗收：node 測試涵蓋退路；第二次呼叫不再重建 pipeline。
 - [ ] **F. 建置與檢查**：`node build-assistant.js`、`node scripts/build-web-lazy.js`、`node scripts/web-lazy-check.js`、動到的測試全過；`git status` 沒有未提交的來源。
-- [x] **G. 模型檔查詢**：Whisper 產品用 onnx-community/whisper-base（q8，約 80 MB），已在使用，沒有新下載。Basic Pitch：待查檔名／來源／大小（不下載）→ 寫進 DESIGN 與最終回報。（Basic Pitch 查完才勾）
+- [x] **G. 模型檔查詢**：Whisper 產品用 onnx-community/whisper-base（q8，約 80 MB），已在使用，沒有新下載。Basic Pitch：待查檔名／來源／大小（不下載）→ 寫進 DESIGN 與最終回報。（Basic Pitch 已查，見 DESIGN §12）
 
 ## 第二階段（A 到 G 全部完成後接著做；使用者要「完整加速」）
 - [ ] **H. Qwen3 整段 GPU 解碼**：嵌入、層間串接、取樣都走 GPU，與 ORT 20 步 loss／logits 對拍。

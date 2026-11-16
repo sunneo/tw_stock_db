@@ -782,3 +782,8 @@ Python 模擬器與離線模型推論共用同一個 GPU 裝置：
 | NVPTX | LLVM 的 NVIDIA PTX 後端 |
 | ATen | PyTorch 的底層張量運算庫 |
 | 排程（scheduler） | 決定哪個工作先用 GPU 的模組 |
+
+## 12. 模型檔查詢（不下載）
+
+- **Basic Pitch**：檔名 `nmp.onnx`，大小 230,444 位元組，來源 `daserge/basic-pitch-onnx`（`https://huggingface.co/daserge/basic-pitch-onnx/resolve/main/nmp.onnx`），SHA-256 `2c3c1d14…59a0ec`。資訊來源：產品目錄 `renderer/src/music/audio_models.js` 的 REGISTRY 項目 `basic-pitch`。產品已有此檔的登錄，不需新下載。卷積參數（2D）由 `renderer/src/gpu/conv_ops.js` 的 `conv2dRef` 涵蓋（CPU 參考，尚無 GPU 版）。
+- **Whisper**：產品使用 `onnx-community/whisper-base`（q8，約 80 MB，見 `floating-assistant.js` 的 `WHISPER_MODEL_ID` 與模型清單）。原生路徑 ID 為 `whisper-base-encoder`。沒有新下載。Whisper 編碼器的 1D 卷積（核 3、stride 1／2）由 `conv1d` 涵蓋。
