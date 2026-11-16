@@ -41,3 +41,6 @@
 ## 接線續作（2026-11-16，使用者：「全部接上」）
 - [x] **W1. Qwen3 q8 GPU 解碼接進一般聊天離線模型**：`_llmGenerateInner`＋`_qwenGpuChat`（見 DESIGN §7.23）。選原生維持原生；網頁版沒有本機 q8 檔不走（不下載）；取樣／重複懲罰／n-gram 在主機端與原生同一份 `nr-gen-params`；單元＋真 Chrome 端到端（0/3 與 ORT 逐詞元相同，原因與數字見 §7.23）。
 - [x] **W2. Whisper 編碼器 GPU 接進 transcribe_media**：`_whisperGpuAttach`＋`whisper_attach.js`（見 DESIGN §7.24），設定 `whisperGpu`（預設關）／`gpuAuto`；失敗永久退回原編碼器。驗收：單元 6 項；真 Chrome 軟體 WebGPU＋真 Whisper q8 編碼器＋真 mel 特徵，`session.run` 端到端回傳 ORT Tensor、全 T1，對 ORT relL2 5.6e-2／cos 0.9984（與 JS CPU 參考對 ORT 同量級，動態量化混沌）。未驗：轉錄文字（沒有解碼器檔、不另外下載）。
+- [x] **W3. L（YAMNet、Demucs）接進音訊轉 MIDI**：`_audioGpuSession`＋`graph_session`（DESIGN §7.25）。YAMNet 整圖 CPU＋Chrome GPU（30 個重運算全 T1，5.9e-6，argmax 6/6）端到端驗證；Demucs 算子補齊，整圖結果見 DESIGN §7.25 待補（長時間運算）。
+- [x] **W4. M（SDXS int8）**：`_localSdGpuWrap`（DESIGN §7.26）。VAE、文字編碼器 Chrome GPU 全 T1 對 ORT 通過；UNet／整條出圖比對見 §7.26 待補。
+- [x] **W5. P（Kokoro）**：`_kokoroGpuAttach`（DESIGN §7.27）。整圖 CPU 對 ORT：長度相同、頻譜餘弦 0.942；未跑 Chrome GPU 整圖、未聽感驗證。

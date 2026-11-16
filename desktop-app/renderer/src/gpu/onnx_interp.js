@@ -5,6 +5,8 @@
 // 只實作目前需要的算子；遇到沒實作的算子會直接丟錯（不偷偷略過）。
 const lite = require('./onnx_lite.js');
 const CONV = require('./conv_ops.js');
+const MORE = require('./onnx_ops_more.js');
+const MM = require('./mm_ops.js');
 
 const TWO64 = 18446744073709551616;
 
@@ -92,6 +94,7 @@ function erf(x) {
   return x < 0 ? erfc - 1 : 1 - erfc;
 }
 
+function half(h) { const s = h & 0x8000 ? -1 : 1, e = (h >> 10) & 31, m = h & 1023; return e === 0 ? s * Math.pow(2, -14) * (m / 1024) : e === 31 ? (m ? NaN : s * Infinity) : s * Math.pow(2, e - 15) * (1 + m / 1024); }
 // 初始值：依 dtype 讀成張量（raw 或外部資料）
 function readInitBytes(m, t, dataFiles) {
   if (t.raw) return m.buf.subarray(t.raw[0], t.raw[1]);
@@ -106,6 +109,11 @@ function readInitBytes(m, t, dataFiles) {
   return new Uint8Array(0);
 }
 function tensorFromInit(m, t, dataFiles) {
+  // 小的整數張量（例如量化的 zero point）常以 int32_data／int64_data 欄位存（t.ints），不是 raw：直接用，不能當成 raw 位元組讀
+  if (!t.raw && !(t.ext && t.ext.location) && t.ints && [2, 3, 5, 6, 7].indexOf(t.dtype) >= 0) {
+    const arr = t.dtype === 2 ? Uint8Array.from(t.ints, (x) => x & 255) : t.dtype === 3 ? Int8Array.from(t.ints, (x) => (x << 24) >> 24) : Float64Array.from(t.ints, (x) => (x >= 9223372036854775807 ? (x === TWO64 ? -1 : x - TWO64) : x));
+    return { d: t.dims.slice(), t: 'i', v: arr };
+  }
   const bytes = readInitBytes(m, t, dataFiles);
   const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const n = numel(t.dims);
@@ -113,6 +121,9 @@ function tensorFromInit(m, t, dataFiles) {
   if (t.dtype === 6) { const v = new Float64Array(n); for (let i = 0; i < n; i++) v[i] = dv.getInt32(i * 4, true); return { d: t.dims.slice(), t: 'i', v: v }; }
   if (t.dtype === 7) { const v = new Float64Array(n); for (let i = 0; i < n; i++) v[i] = Number(dv.getBigInt64(i * 8, true)); return { d: t.dims.slice(), t: 'i', v: v }; }
   if (t.dtype === 9) { const v = new Uint8Array(n); for (let i = 0; i < n; i++) v[i] = bytes[i] ? 1 : 0; return { d: t.dims.slice(), t: 'b', v: v }; }
+  if (t.dtype === 2) return { d: t.dims.slice(), t: 'i', v: Uint8Array.from(bytes.subarray(0, n)) };   // 量化權重留成緊湊的型別陣列（不轉 Float64：幾百 MB 的權重會撐爆記憶體）
+  if (t.dtype === 3) return { d: t.dims.slice(), t: 'i', v: new Int8Array(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + n)) };
+  if (t.dtype === 10) { const v = new Float32Array(n); for (let i = 0; i < n; i++) v[i] = half(dv.getUint16(i * 2, true)); return { d: t.dims.slice(), t: 'f', v: v }; }
   throw new Error('onnx_interp：不支援的初始值 dtype ' + t.dtype + '（' + t.name + '）');
 }
 // Constant 節點的值 → 張量
@@ -122,6 +133,8 @@ function tensorFromConstant(m, node) {
   if (c.dtype === 1) return { d: c.dims.slice(), t: 'f', v: Float32Array.from(c.values || new Float32Array(n)) };
   if (c.dtype === 6 || c.dtype === 7) return { d: c.dims.slice(), t: 'i', v: Float64Array.from(c.values || []) };
   if (c.dtype === 9) return { d: c.dims.slice(), t: 'b', v: Uint8Array.from(c.values || []) };
+  if (c.dtype === 10 && c.values && c.values.length === n * 2) { const dv = new DataView(c.values.buffer, c.values.byteOffset, c.values.byteLength), v = new Float32Array(n); for (let i = 0; i < n; i++) v[i] = half(dv.getUint16(i * 2, true)); return { d: c.dims.slice(), t: 'f', v }; }
+  if (c.dtype === 11 && c.values && c.values.length === n * 8) { const dv = new DataView(c.values.buffer, c.values.byteOffset, c.values.byteLength), v = new Float32Array(n); for (let i = 0; i < n; i++) v[i] = dv.getFloat64(i * 8, true); return { d: c.dims.slice(), t: 'f', v }; }
   throw new Error('onnx_interp：不支援的常數 dtype ' + c.dtype);
 }
 
@@ -310,6 +323,18 @@ function constantOfShape(shapeT, valueT) {
   return o;
 }
 
+// MatMul：ctx.gpu（{ ops }）有給且夠大才走 mm_ops（T1 WGSL → cpu-js）；其餘用 CPU 參考
+async function matmulGpu(a, b, ctx) {
+  if (!ctx.gpu || a.t !== 'f' || b.t !== 'f' || a.d.length < 2 || b.d.length < 2) return matmulOp(a, b);
+  const M = a.d[a.d.length - 2], K = a.d[a.d.length - 1], N = b.d[b.d.length - 1];
+  const B = numel(a.d.slice(0, -2)), Bb = numel(b.d.slice(0, -2));
+  const sameLead = b.d.length === 2 || (a.d.length === b.d.length && a.d.slice(0, -2).every((x, i) => x === b.d[i]));
+  if (B * M * K * N < (ctx.gpu.minMacs || 1 << 20) || !(Bb === 1 || (Bb === B && sameLead))) return matmulOp(a, b);
+  const r = await MM.matmul(a.v, a.d, b.v, b.d, ctx.gpu.ops || {}); MORE.rec(ctx, ctx.gpu.ops || {});
+  return { d: r.dims, t: 'f', v: r.y };
+}
+const HELP = { mk, unop, binop, strides, numel, bcast, bmap, attrInt, attrF, attrInts };
+
 async function execNode(node, ins, ctx) {
   const A = node.attrs;
   const op = node.op;
@@ -386,16 +411,17 @@ async function execNode(node, ins, ctx) {
     case 'Softmax': return [softmaxOp(a, attrInt(A.axis, -1))];
     case 'LayerNormalization': return [layerNormOp(a, b, ins[2], attrInt(A.axis, -1), attrF(A.epsilon, 1e-5))];
     case 'Conv': {
+      if (a.d.length === 4) return MORE.conv2d(node, ins, ctx, HELP);
       const attrs = {
         strides: attrInts(A.strides), dilations: attrInts(A.dilations), pads: attrInts(A.pads), group: attrInt(A.group, 1),
       };
       const N = a.d[0], C = a.d[1], L = a.d[2], M = b.d[0], Cg = b.d[1], K = b.d[2];
       const pr = { stride: attrs.strides ? attrs.strides[0] : 1, pads: attrs.pads || [0, 0], dilation: attrs.dilations ? attrs.dilations[0] : 1, groups: attrs.group };
-      const yv = await CONV.conv1d(a.v, N, C, L, b.v, M, Cg, K, ins[2] ? ins[2].v : null, pr, ctx.convOps);
+      const yv = await CONV.conv1d(a.v, N, C, L, b.v, M, Cg, K, ins[2] ? ins[2].v : null, pr, ctx.gpu ? ctx.gpu.ops : ctx.convOps); if (ctx.gpu) MORE.rec(ctx, ctx.gpu.ops);
       const Lout = Math.floor((L + pr.pads[0] + pr.pads[1] - pr.dilation * (K - 1) - 1) / pr.stride) + 1;
       return [{ d: [N, M, Lout], t: 'f', v: yv }];
     }
-    case 'MatMul': return [matmulOp(a, b)];
+    case 'MatMul': return [await matmulGpu(a, b, ctx)];
     case 'Clip': {
       const lo = ins[1] ? ins[1].v[0] : -Infinity, hi = ins[2] ? ins[2].v[0] : Infinity;
       return [unop(a, (x) => Math.min(Math.max(x, lo), hi), a.t)];
@@ -408,8 +434,11 @@ async function execNode(node, ins, ctx) {
       await runNodes(sub.nodes, env, ctx);
       return sub.outputs.map((name) => lookup(env, name, ctx));
     }
-    default:
+    default: {
+      const r = await MORE.exec(node, ins, ctx, HELP);
+      if (r) return r;
       throw new Error('onnx_interp：未實作的算子 ' + op + '（' + node.name + '）');
+    }
   }
 }
 
@@ -429,24 +458,36 @@ function lookup(env, name, ctx) {
   return ctx.inits[name];
 }
 
-async function runNodes(nodes, env, ctx) {
-  for (const node of nodes) {
+async function runNodes(nodes, env, ctx, freeAfter) {
+  for (let ni = 0; ni < nodes.length; ni++) {
+    const node = nodes[ni];
     const ins = node.inputs.map((nm) => (nm === '' ? null : lookup(env, nm, ctx)));
     const outs = await execNode(node, ins, ctx);
     for (let i = 0; i < node.outputs.length; i++) if (node.outputs[i] !== '') env[node.outputs[i]] = outs[i];
+    if (ctx.capture) ctx.capture(node, outs);
+    if (freeAfter && freeAfter[ni]) for (const nm of freeAfter[ni]) delete env[nm];   // 最後一次用過的中間張量立刻釋放（大圖不然會把每個節點的輸出都留在記憶體裡）
   }
+}
+// 每個節點之後可以釋放哪些中間張量（最後一次被讀取的位置；模型輸出與初始值不釋放；圖裡有 If 子圖會引用外層名稱，就不做）
+function planFree(model) {
+  if (model.nodes.some((n) => n.op === 'If' || n.op === 'Loop' || n.op === 'Scan')) return null;
+  const last = new Map(), keep = new Set(model.outputs); model.nodes.forEach((n, i) => { for (const nm of n.inputs) if (nm !== '') last.set(nm, i); });
+  const produced = new Set(); for (const n of model.nodes) for (const o of n.outputs) if (o !== '') produced.add(o);
+  const plan = new Array(model.nodes.length).fill(null);
+  for (const [nm, i] of last) if (produced.has(nm) && !keep.has(nm)) (plan[i] = plan[i] || []).push(nm);
+  return plan;
 }
 
 // 執行整個圖。model = lite.parseModel(buf)；feeds：{輸入名: 張量}；dataFiles：{檔名: Uint8Array}
 // 回傳 { 輸出名: 張量 }（只含 model.outputs）
-async function run(model, feeds, dataFiles) {
+async function run(model, feeds, dataFiles, opts) {
   const env = Object.create(null);
   for (const k of Object.keys(feeds)) env[k] = feeds[k];
-  const ctx = { model: model, inits: Object.create(null), dataFiles: dataFiles || {}, env: env };
-  await runNodes(model.nodes, env, ctx);
+  const ctx = { model: model, inits: (opts && opts.initCache) || Object.create(null), dataFiles: dataFiles || {}, env: env, gpu: (opts && opts.gpu) || null, matmul: matmulGpu, capture: (opts && opts.capture) || null };
+  await runNodes(model.nodes, env, ctx, (opts && opts.capture) ? null : planFree(model));
   const out = {};
   for (const name of model.outputs) out[name] = lookup(env, name, ctx);
   return out;
 }
 
-module.exports = { run, numel, mapFromEff, bmap, matmulOp, erf, conv1dOp, layerNormOp, softmaxOp, tensorFromInit, lookup };
+module.exports = { HELP, run, numel, mapFromEff, bmap, matmulOp, erf, conv1dOp, layerNormOp, softmaxOp, tensorFromInit, lookup };

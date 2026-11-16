@@ -48,6 +48,7 @@
       else if (f === 9) t.raw = v;  // [起, 迄]，不複製
       else if (f === 4) { if (!t.floats) t.floats = []; if (wt === 2) { for (let p = v[0]; p < v[1]; p += 4) t.floats.push(f32At(buf, p)); } else t.floats.push(f32At(buf, v[0])); }
       else if (f === 5) { if (!t.ints) t.ints = []; if (wt === 2) { let p = v[0]; while (p < v[1]) { let x; [x, p] = varint(buf, p); t.ints.push(x); } } else t.ints.push(v); }
+      else if (f === 7) { if (!t.ints) t.ints = []; if (wt === 2) { let p = v[0]; while (p < v[1]) { let x; [x, p] = varint(buf, p); t.ints.push(x); } } else t.ints.push(v); }   // int64_data（小的 int64 常數，例如 Split 的 splits）
       else if (f === 13) { // external_data：StringStringEntryProto
         let k = '', val = '';
         walk(buf, v[0], v[1], (ff, w2, vv) => { if (ff === 1) k = str(buf, vv); else if (ff === 2) val = str(buf, vv); });

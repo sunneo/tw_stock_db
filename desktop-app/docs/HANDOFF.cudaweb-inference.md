@@ -6,6 +6,23 @@ Continue from the handoff document at `desktop-app/docs/HANDOFF.cudaweb-inferenc
 
 使用者原話（必須遵守）：「接手目前repo的任務，剛剛還在完成cudaweb」；「Qwen3 文字推論的加速不是第一優先嗎」；「訓練的是最後的最後」。
 
+## 1b. 接線續作（2026-11-16～17，使用者：「全部接上」）——最新狀態，先讀這節
+
+**任務**：把 cudaweb 已驗證的 GPU 路徑全部接進產品（桌面版渲染程序本身有 WebGPU，不需信箱；只有選原生執行器才用原生）；設定預設關或 `gpuAuto` 決定；失敗一律退回原路徑；每項端到端對真 ORT／原路徑驗證，做不到標 BLOCKED。不推送、不發布；真 GPU 不用驗；回覆只用繁體中文或英文。
+
+**已提交**（`git log` 看）：
+- `7a347e9dd` Qwen3 q8 GPU 解碼接進一般聊天（`_qwenGpuChat`，DESIGN §7.23）。真 Chrome 端到端 0/3 與 ORT 逐詞元相同——GPU＝JS CPU 參考，CPU 參考對 ORT 首步 logits 在提示 ≥8 詞元起差 0.19～0.43（動態量化敏感，非接線錯）。
+- `4226801dc` Whisper 編碼器 GPU 接進 transcribe_media（`_whisperGpuAttach`＋`whisper_attach.js`，DESIGN §7.24）。真 Chrome＋真編碼器端到端 relL2 5.6e-2／cos 0.9984（同 CPU 參考對 ORT 的量級）。
+
+**進行中（未提交，在工作區）**：L／M／P 的「整圖 ORT 相容 session」：
+- 新檔 `renderer/src/gpu/graph_session.js`（`create(bytes,{ops,TensorCtor,maxIntWeightElems})`→`{inputNames,outputNames,run,info.tiers}`、`gpuShare`）、`onnx_ops_more.js`（補充算子：Relu／Sigmoid／Log／Max／Pad／Split／規約／Expand／Tile／InstanceNorm／Resize／Trilu／量化／MatMulInteger／ConvInteger／ScatterND／LSTM（DynamicQuantizeLSTM，權重解成浮點）／STFT／CumSum／NonZero／FastGelu／SkipLayerNorm／FusedMatMul／Conv2D／ConvTranspose）、`onnx_interp.js` 改動（2D Conv、GPU MatMul、init dtype 2/3/10 與 int32_data／int64_data 小整數張量、capture 掛鉤）、`onnx_lite.js`（解析 int64_data）。
+- 產品接線（已寫進工作區的 `floating-assistant.js`，已嵌入 FA_QWEN_SRC 的 `graph`）：`_audioGpuSession`（設定 `audioGpu`，YAMNet／Demucs，掛在 `_audioToMidi` 的 `load`）、`_localSdGpuWrap`（設定 `sdxsGpu`，`_localSdLoad`）。device_pick 特徵已加 whisperGpu／audioGpu／sdxsGpu。Kokoro 產品接線尚未寫（想法：同 Whisper 的做法換 kokoro-js 的 `model.sessions.model.run`）。
+- 驗證工具：`scripts/eval/cudaweb_graph_check.js <kind> <model>`（node，CPU 解釋器對 ORT；kind＝yamnet／demucs／sdxs_te／sdxs_vae／sdxs_unet／kokoro，案例在 `cudaweb_graph_cases.js`）、`cudaweb_graph_browser.js`（真 Chrome GPU，用 `SERVER_CMD="node scripts/eval/cudaweb_graph_browser.js <kind> <model> <埠>" bash scripts/eval/cudaweb_headless_node_check.sh x cudaweb_graph_<kind> <埠> <逾時秒>`，結果 `/tmp/cudaweb_graph_<kind>.result.json`）、`cudaweb_graph_bisect.js`（找第一個分歧節點）。
+- 已得結果：YAMNet 整圖 CPU 對 ORT 5.8e-6、argmax 6/6；Chrome 軟體 WebGPU 30 個重運算全 T1、5.9e-6、argmax 6/6（2.4 秒）。SDXS 文字編碼器 CPU 對 ORT relL2 5.4e-2（第一個分歧是某層 DynamicQuantizeLinear 進位翻轉，非算子錯）。Demucs／SDXS vae／unet／Kokoro 的整圖結果：看 scratchpad 的 `*.out`／`/tmp/cudaweb_graph_*.result.json`，沒結果就重跑。
+- **還要做**：(1) 收齊上面各模型整圖結果（CPU 與 Chrome GPU），寫進 DESIGN §7.25（graph_session／YAMNet／Demucs）、§7.26（SDXS）、§7.27（Kokoro）與清單；(2) Kokoro 產品接線；(3) `node build-assistant.js`／`build-web-lazy.js`／`web-lazy-check.js` 檢查（產物不提交，見 §3 待辦 2）；(4) `node scripts/test-affected.js`（背景跑約 9 分鐘；唯一預期失敗 studio_embed 的 lora_ref_train.js）；(5) 每個子項各一個提交；(6) 最後一則訊息回報。
+- 工作區不屬於本工作的未追蹤檔不要提交：`DESIGN.edit-*.md`、`DESIGN.env-baseline.md`、`HANDOFF.edit-remote.md`、`skills/weak-model-harness/scripts/bridge/`、`web-lazy/*`。
+- 陷阱：`pkill -f` 會殺掉自己的 shell（用腳本以行程群組關）；`script` 長時間 Chrome 驗證要背景跑；模型檔在別的 scratchpad（`/tmp/claude-1001/-home-hungfu-lee----SRC-tw-stock-db/f77d545f-…/scratchpad/dl/{demucs,kokoro,sdxs,yamnet,moss}`、`d6ccb559-…/scratchpad/{whisper,wh,bp}`），暫存目錄可能被清掉，要重下載依 DESIGN §7.20／§7.21 的來源。
+
 ## 2. 總覽
 
 - **目標**：把 cudaweb（WebGPU 推論）接進產品，預設全部關、失敗自動退回、診斷齊全。**不推送、不發布。**
