@@ -27,7 +27,7 @@
 - [ ] **BLOCKED（缺 SDXS 模型檔，下載需使用者同意）** **M. SDXS 影像生成**：GroupNorm、交叉注意力、上採樣、VAE；只針對 CPU 版與沒有 f16 的機器。
 - [x] **N. 裝置自動選擇**（2026-11-16）：`device_pick.js`（探測＋小基準＋決策）、設定 `gpuAuto`（預設關，手動勾選仍可關／開）、各 GPU 路徑 `_xxxOn()` 接上、DESIGN §7.16、單元測試通過；真 GPU 的基準門檻未用真機數字校準（如實寫在 §7.16）。沒有 WebGPU 的機器維持原路徑（wasm／純 JS）。
 - [x] **O. Python 相容層補洞**（2026-11-16）：dd 模式補上除法、次方（整數／一般）、`math.sqrt/exp/log/sin/cos/tan/tanh/floor/ceil/fabs`；取餘與 `//` 仍拒絕並說明。驗收：真 Chrome WebGPU（軟體）410 組對 float64 相對誤差全部 < 1e-11（`cudaweb_dd_math_check.js`）、`fa_gpu_py_test.py` 48 項通過；順帶修 `dd_mul` 在 SwiftShader 只剩 float32 精度的問題（改 Dekker）。已知風險（常數運算元被編譯器化簡）寫在 DESIGN §7.17。
-- [ ] **BLOCKED（唯讀查圖形也需要 kokoro 模型檔（下載需使用者同意））** **P. Kokoro**：先查 kokoro-js 圖形（唯讀），能估工作量再決定。
+- [x] **P. Kokoro**（部分完成，2026-11-16）：使用者同意下載，q8 模型 92,361,116 位元組已取得並核對。圖形已查（3613 節點，重運算為 MatMulInteger／ConvInteger／ConvTranspose／MatMul）。新增 `conv_ops.convT2d`、`convInt1d`、`mm_ops`、`node_eval` 與逐節點對拍框架；268 個重運算節點對真 ORT：CPU 參考最差 1.0e-6、Chrome 軟體 WebGPU 全 T1 最差 1.07e-6、整數逐位相同（DESIGN §7.21）。**BLOCKED（整管線）**：DynamicQuantizeLSTM（雙向 LSTM，逐時間步相依）、STFT／iSTFT 與其餘算子未 GPU 化，整條管線音訊比對與產品接線未做；估計工作量大（LSTM 核心＋頻譜＋聲碼器串接），維持逐節點層級。
 - [x] **I. 【最後的最後】LoRA 訓練端到端 GPU**（2026-11-16 完成：真 Chrome 軟體 WebGPU 20 步 loss 對 CPU f64 最差相對差 1.05e-4，全 T1，見 DESIGN §7.18；softmax 梯度／交叉熵／RMSNorm inv 仍在 CPU，真 GPU 與 Qwen 規模未驗）（使用者 2026-11-16：「訓練的是最後的最後」，其他全部做完才碰）：梯度與交叉熵等其餘運算，端到端訓練 20 步 loss 對拍。
 
 ## 最終回報（只回報一次）

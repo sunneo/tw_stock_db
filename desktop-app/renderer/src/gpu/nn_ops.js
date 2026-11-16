@@ -135,7 +135,10 @@ async function runWgsl(dev, code, bufs, uniform, groups) {
   const bg = dev.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries: entries });
   const enc = dev.createCommandEncoder();
   const pass = enc.beginComputePass();
-  pass.setPipeline(pipe); pass.setBindGroup(0, bg); pass.dispatchWorkgroups(groups); pass.end();
+  pass.setPipeline(pipe); pass.setBindGroup(0, bg);
+  // 超過單維 65535 個工作群組時改二維派發；著色器以 gid.x + gid.y·4194240（=65535×64）還原扁平索引
+  if (groups > 65535) pass.dispatchWorkgroups(65535, Math.ceil(groups / 65535)); else pass.dispatchWorkgroups(groups);
+  pass.end();
   const rb = bufs.map((b) => (b.out ? dev.createBuffer({ size: b.data.byteLength, usage: USAGE.MAP_READ | USAGE.COPY_DST }) : null));
   bufs.forEach((b, i) => { if (b.out) enc.copyBufferToBuffer(objs[i], 0, rb[i], 0, b.data.byteLength); });
   dev.queue.submit([enc.finish()]);
@@ -143,7 +146,7 @@ async function runWgsl(dev, code, bufs, uniform, groups) {
   for (let i = 0; i < bufs.length; i++) {
     if (!bufs[i].out) continue;
     await rb[i].mapAsync(1);
-    outs.push(new Float32Array(rb[i].getMappedRange().slice(0)));
+    outs.push(new (bufs[i].data.constructor === Int32Array ? Int32Array : Float32Array)(rb[i].getMappedRange().slice(0)));
     rb[i].unmap();
   }
   return outs;
