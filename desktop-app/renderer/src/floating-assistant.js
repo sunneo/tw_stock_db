@@ -134654,6 +134654,8 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                     if (mat) skillDirNote = '\n\n【技能包檔案已解開在這台電腦的資料夾：' + mat.dir + '（scripts/、references/、assets/ 都在裡面，共 ' + mat.files + ' 個檔案）。要執行腳本時優先用 skill_run_script（有這個工具就不要用 run_command），例如 script="scripts/xxx.py"；沒有 skill_run_script 才用 run_command，例如 python "' + mat.dir + '/scripts/xxx.py"參數…（使用者的工作資料夾用 cwd_abs 或腳本參數指定，跟腳本資料夾分開）；不要再到別處找 scripts 資料夾，也不要把腳本內容讀出來貼著重寫。run_command 不在手上時用 request_additional_tools 補，不要委派給 code_execution（那是瀏覽器沙盒，沒有這個技能的檔案，也不要在對話裡解壓使用者的附件）。讀不懂腳本怎麼用時，先 python "<腳本>" --help 或讀它的說明（read_skill_file 或 fs_read_file 都可以）。】';
                 } catch (_) {}
             }
+            // 使用者只打了「/技能名」＋附件、沒有說要做什麼：照技能說明（SKILL.md）寫的預設行為做（例如沒指定子命令就開視窗），不要自己改成逐步文字摘要（使用者回報：又慢又笨）
+            if (isSkillDomain && !String(task || '').replace(/\[附件：[^\]]*\]/g, ' ').replace(/^\s*\/\S+\s*/, '').trim()) skillDirNote += '\n\n【這次只有技能指令與附件，沒有指定子命令：照這個技能的說明（SKILL.md）寫的「沒指定子命令」預設行為做——說明寫開視窗就用 skill_run_script 直接開視窗，並把附件以 attachment://<file_id>（訊息裡附件標記的 file_id）傳給腳本；不要自己改用文字摘要或逐個檔案呼叫文字模式。】';
             const isDeck = this._deckIsDomain(domainKey);
             const task0 = task; // 使用者原本的要求（還沒補任何說明）
             if (isDeck && !/\[附件：/.test(task)) {
