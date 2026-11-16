@@ -917,3 +917,8 @@ Python 模擬器與離線模型推論共用同一個 GPU 裝置：
 ### 7.28 Basic Pitch 也走圖形 session（2026-11-17，`audioGpu` 一併涵蓋）
 - 更正先前「Basic Pitch 的圖有算子尚未支援」：當時沒有實際查；實查 nmp.onnx（248 節點）只缺 `ReduceMax`／`ReduceMin`，已補（`onnx_ops_more.js`，單元 12 項）。`_audioGpuSession` 的允許清單加入 `basic-pitch`。
 - 驗證（真 nmp.onnx，約 2 秒合成和弦，輸入 [1,43844,1]）：CPU 解釋器對真 ORT 三個輸出最大相對 3.1e-3、relL2 ≤1.0e-3；**Chrome 軟體 WebGPU 32 個 Conv 全 T1，最大相對 7.6e-4、relL2 ≤3.3e-4，1.1 秒**。
+
+### 7.29 UNet、Kokoro 的 Chrome GPU 整圖（2026-11-17，無頭 Chrome 軟體 WebGPU）
+- **SDXS UNet（真 int8）**：136 個重運算 T1＋3 個權重過大的 MatMulInteger 刻意走精確 CPU 整數參考；輸出最大相對 0.102、relL2 2.30e-2（CPU 解釋器 2.05e-2），334 秒。驗證頁原本把 `cpu-int` 當退層而顯示未過，已修（頁面邏輯問題，非結果問題）。
+- **Kokoro（真 q8＋真語音包）**：245 個重運算全 T1，80 秒；波形 relL2 0.794（CPU 解釋器 0.791，同量級＝GPU 與 CPU 解釋器一致）；波形逐點比對對相位敏感，瀏覽器頁沒有頻譜比對，頻譜餘弦只在 CPU 端量過（0.942，§7.27）。
+- Demucs 的 Chrome GPU 整圖仍在跑，結果另補。
