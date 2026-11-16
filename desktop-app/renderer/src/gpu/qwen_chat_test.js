@@ -62,5 +62,9 @@ Promise.all(pend).then(() => console.log(ok + ' passed'));
   const out = await C.readLargeFile(raw, src, path.join(d, 'parts'), '/', 3000);
   assert.ok(Buffer.from(out).equals(data)); assert.ok(!fs.existsSync(path.join(d, 'parts')), '暫存要刪掉');
   await assert.rejects(C.readLargeFile(Object.assign({}, raw, { copyChunked: async () => ({ size: 5, parts: [{ name: 'x' }] }), readFile: async () => ({ base64: Buffer.alloc(9).toString('base64') }) }), src, path.join(d, 'p2'), '/', 3), /超過檔案大小/);
+  // 使用者按停止：載入中途就中止（丟 isStopped），暫存資料夾要刪掉，不再讀後面的段
+  let reads = 0; const stopAfter1 = () => reads >= 1;
+  const e = await C.readLargeFile(Object.assign({}, raw, { readFile: async (p) => { reads++; return { base64: fs.readFileSync(p).toString('base64') }; } }), src, path.join(d, 'p3'), '/', 3000, stopAfter1).catch((x) => x);
+  assert.ok(e && e.isStopped && /已停止/.test(e.message), '停止要丟 isStopped'); assert.strictEqual(reads, 1, '停止後不再讀'); assert.ok(!fs.existsSync(path.join(d, 'p3')), '停止也要刪暫存');
   console.log('readLargeFile ok');
 })();

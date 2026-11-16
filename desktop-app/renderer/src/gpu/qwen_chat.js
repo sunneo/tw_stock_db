@@ -59,11 +59,12 @@
   }
   // 大檔（617 MB 的 q8 模型）讀進 Uint8Array：rawfs.readFile 一次 base64 會超過字串上限，所以先 copyChunked 成每段 partBytes 的暫存檔、逐段讀、拼起來、最後刪暫存。
   // raw：{ copyChunked(src, dstPrefix, partBytes)→{size,parts:[{name}]}, readFile(path,'base64')→{base64}, remove(path,recursive) }
-  async function readLargeFile(raw, src, partsDir, sep, partBytes) {
+  async function readLargeFile(raw, src, partsDir, sep, partBytes, isCancelled) {
     const cp = await raw.copyChunked(src, partsDir + sep + 'm-', partBytes);
     const bytes = new Uint8Array(cp.size); let off = 0;
     try {
       for (const pt of cp.parts) {
+        if (isCancelled && isCancelled()) { const e = new Error('使用者已停止'); e.isStopped = true; throw e; }
         const r = await raw.readFile(partsDir + sep + pt.name, 'base64'); const bin = atob(r.base64);
         if (off + bin.length > bytes.length) throw new Error('分段總和超過檔案大小');
         for (let i = 0; i < bin.length; i++) bytes[off + i] = bin.charCodeAt(i);
