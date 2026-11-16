@@ -75,6 +75,7 @@
       var old = views[winId];
       var wasActive = !!(old && old.classList && old.classList.contains('ai-chat-wheel-on'));
       var wasPopped = !!(shells[winId] && shells[winId].isPopped());
+      var hadShell = !!shells[winId];
       // 視窗外殼（可縮放、可最大化的視窗）的位置與大小也要保留：外殼是套在同一個元素上，所以樣式還在 old.style 裡
       var prev = old && old.style ? {
         left: old.style.left, top: old.style.top, width: old.style.width, height: old.style.height, maxWidth: old.style.maxWidth,
@@ -114,12 +115,12 @@
       // the window's own style text replaced the theme's colors above: put the theme back
       if (render.applyTheme) { render.applyTheme(view, snap.theme); }
       ensureLayer().appendChild(view);
-      if (opts.decorate && (snap.resizable || snap.maximizable)) {
+      if (opts.decorate) {   // 所有視窗都套外殼：從終端機開出的視窗一開始就彈出到整個頁面上（拖曳、縮放、最大化都不受終端機範圍限制）
         var bar = view.querySelector && view.querySelector('.gui-titlebar');
         var ctl = null;
         try {
           ctl = opts.decorate(view, {
-            id: 'gui-' + snap.title, title: snap.title, bar: bar, minW: 240, minH: 160, floating: wasPopped,
+            id: 'gui-' + snap.title, title: snap.title, bar: bar, minW: 240, minH: 160, floating: hadShell ? wasPopped : true,
             // a popped window has the shell's own edge handles: the CSS corner would double them
             onChange: function (st) { if (view.style) { view.style.resize = st.popped ? 'none' : (snap.resizable ? 'both' : ''); } }
           });

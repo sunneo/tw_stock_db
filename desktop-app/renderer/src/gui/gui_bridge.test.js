@@ -175,6 +175,9 @@ assert.match(G.parseWait('wait w1 a=b').error, /shell variable name/); ok();
   assert.deepStrictEqual(add('root', { id: 'sp', kind: 'split', direction: 'column', ratio: 30 }), { ok: true }); ok();
   assert.match(add('root', { id: 'sp2', kind: 'split', ratio: 5 }).error, /ratio must/); ok();
   assert.match(add('root', { id: 'sp3', kind: 'split', direction: 'diag' }).error, /direction/); ok();
+  assert.deepStrictEqual(add('root', { id: 'sp4', kind: 'split', direction: 'row', weights: [22, 44, 34] }), { ok: true }); ok();
+  assert.match(add('root', { id: 'sp5', kind: 'split', weights: [50] }).error, /weights must/); ok();
+  assert.match(add('root', { id: 'sp6', kind: 'split', weights: [50, 0] }).error, /weights\[1\] must/); ok();
   assert.deepStrictEqual(add('root', { id: 'mb', kind: 'menubar' }), { ok: true }); ok();
   assert.match(add('mb', { id: 'mi0', kind: 'menuitem', text: 'x' }).error, /only be added to a menu/); ok();
   assert.deepStrictEqual(add('mb', { id: 'mn', kind: 'menu', text: 'File' }), { ok: true }); ok();
@@ -219,6 +222,82 @@ assert.match(G.parseWait('wait w1 a=b').error, /shell variable name/); ok();
   const kids = G.snapshot(S, 'wr').root.children;
   assert.strictEqual(kids[0].value, 'typed'); assert.strictEqual(kids[1].checked, true); assert.strictEqual(kids[2].selected, 'b'); ok();
   assert.deepStrictEqual(kids[3].selected, ['a', 'b']); assert.strictEqual(kids[4].rows[0][0], '9'); ok();
+}
+
+// tree: shapes, cell counts, select and toggle events, and the folded state the bridge keeps
+{
+  const S = G.createSession();
+  const ap = (m) => { const r = G.apply(S, m); assert.ok(r.ok, r.error); };
+  const cols = [{ title: 'Name', width: 200 }, { title: 'Result', align: 'right' }];
+  const rows = [
+    { id: 'a', depth: 0, cells: ['suite', 'ok'], tones: [null, 'pass'], expanded: true },
+    { id: 'b', depth: 1, cells: ['case 1', 'fail'], tones: [null, 'fail'], bold: true },
+    { id: 'c', depth: 0, cells: ['other', '-'], expanded: false },
+    { id: 'd', depth: 1, cells: ['hidden', 'x'] }
+  ];
+  ap({ op: 'open', id: 'wt', title: 'T' });
+  ap({ op: 'add', id: 'wt', node: { id: 'tr', kind: 'tree', columns: cols, rows: rows, selected: 'b' } });
+  const sn = G.snapshot(S, 'wt').root.children[0];
+  assert.strictEqual(sn.kind, 'tree'); assert.strictEqual(sn.rows.length, 4); assert.strictEqual(sn.rows[1].bold, true); ok();
+  assert.strictEqual(sn.columns[1].align, 'right'); assert.strictEqual(sn.rows[2].expanded, false); ok();
+  assert.match(G.apply(S, { op: 'add', id: 'wt', node: { id: 'bad1', kind: 'tree', columns: [{ title: 'x' }], rows: [{ id: 'r', depth: 0, cells: ['1', '2'] }] } }).error, /2 cells, the tree has 1/); ok();
+  // Redmine 版的程式用空字串表示沒有色調：樹的 tones 與文件區塊的 tone 都要收（回傳 null／省略）
+  assert.strictEqual(G.apply(S, { op: 'add', id: 'wt', node: { id: 'emp', kind: 'tree', columns: cols, rows: [{ id: 'r', cells: ['1', '2'], tones: ['', 'muted'] }] } }).error, undefined); ok();
+  assert.match(G.apply(S, { op: 'add', id: 'wt', node: { id: 'bad2', kind: 'tree', columns: cols, rows: [{ id: 'r', cells: ['1', '2'], tones: ['loud', null] }] } }).error, /tones\[0\]/); ok();
+  assert.match(G.apply(S, { op: 'add', id: 'wt', node: { id: 'bad3', kind: 'tree', columns: cols, rows: [{ id: 'r', depth: 99, cells: ['1', '2'] }] } }).error, /depth must be/); ok();
+  assert.match(G.apply(S, { op: 'add', id: 'wt', node: { id: 'bad4', kind: 'tree', columns: [{ title: 'x', align: 'justify' }] } }).error, /align must be/); ok();
+  assert.match(G.apply(S, { op: 'set', id: 'wt', node: 'tr', props: { rows: [{ id: 'r', cells: ['only one'] }] } }).error, /1 cells, the tree has 2/); ok();
+  assert.strictEqual(G.eventLine(S, 'wt', 'tr', 'select', 'b').indexOf('"value":"b"') > 0, true); ok();
+  assert.strictEqual(G.eventLine(S, 'wt', 'tr', 'select', 'nope'), null); ok();
+  assert.strictEqual(G.eventLine(S, 'wt', 'tr', 'toggle', 'b'), null); ok();
+  assert.strictEqual(G.eventLine(S, 'wt', 'tr', 'toggle', 'c').indexOf('"value":"c"') > 0, true); ok();
+  assert.strictEqual(G.snapshot(S, 'wt').root.children[0].selected, 'b'); ok();
+  assert.strictEqual(G.snapshot(S, 'wt').root.children[0].rows[2].expanded, true); ok();
+  assert.strictEqual(G.eventLine(S, 'wt', 'tr', 'toggle', 'c').indexOf('"value":"c"') > 0, true); ok();
+  assert.strictEqual(G.snapshot(S, 'wt').root.children[0].rows[2].expanded, false); ok();
+}
+
+// doc: block kinds and their props, table shapes, kv rows, the length limits, and ref events that must name a ref block of the doc
+{
+  const S = G.createSession();
+  const ap = (m) => G.apply(S, m);
+  ap({ op: 'open', id: 'wd', title: 'D' });
+  const blocks = [
+    { t: 'title', text: 'Run', badge: 'PASS', tone: 'pass' },
+    { t: 'p', text: 'some text', tone: 'muted' },
+    { t: 'h', text: 'Cases' },
+    { t: 'pre', text: 'a\nb', wrap: true },
+    { t: 'list', items: ['x', 'y'], tone: 'fail' },
+    { t: 'table', columns: ['#', 'Result'], rows: [['1', 'PASS']] },
+    { t: 'kv', rows: [['Key', 'Value', true, false], ['Other', 'v']] },
+    { t: 'ref', text: 'case 1', ref: 'c1' }
+  ];
+  assert.deepStrictEqual(ap({ op: 'add', id: 'wd', node: { id: 'dd', kind: 'doc', blocks: blocks } }), { ok: true }); ok();
+  const kept = G.snapshot(S, 'wd').root.children[0].blocks;
+  assert.strictEqual(kept.length, 8); assert.strictEqual(kept[4].tone, 'fail'); assert.deepStrictEqual(kept[6].rows[1], ['Other', 'v', false, false]); ok();
+  assert.match(ap({ op: 'add', id: 'wd', node: { id: 'x1', kind: 'doc', blocks: [{ t: 'nope' }] } }).error, /\.t must be one of/); ok();
+  assert.match(ap({ op: 'add', id: 'wd', node: { id: 'x2', kind: 'doc', blocks: [{ t: 'h', text: 'a', items: [] }] } }).error, /prop "items" is not allowed on h/); ok();
+  assert.match(ap({ op: 'add', id: 'wd', node: { id: 'x3', kind: 'doc', blocks: [{ t: 'table', columns: ['a', 'b'], rows: [['1']] }] } }).error, /one cell per column/); ok();
+  assert.match(ap({ op: 'add', id: 'wd', node: { id: 'x4', kind: 'doc', blocks: [{ t: 'p', text: 'a', tone: 'loud' }] } }).error, /pass, fail, warn or muted/); ok();
+  assert.match(ap({ op: 'add', id: 'wd', node: { id: 'x5', kind: 'doc', blocks: [{ t: 'kv', rows: [['only']] }] } }).error, /key, value, highlight, mono/); ok();
+  assert.match(ap({ op: 'add', id: 'wd', node: { id: 'x6', kind: 'doc', blocks: [{ t: 'pre', text: 'y'.repeat(300001) }] } }).error, /longer than 300000/); ok();
+  const big = []; for (let i = 0; i < 3; i++) { big.push({ t: 'pre', text: 'z'.repeat(200000) }); }
+  assert.match(ap({ op: 'add', id: 'wd', node: { id: 'x7', kind: 'doc', blocks: big } }).error, /the doc is longer than 400000/); ok();
+  assert.strictEqual(G.eventLine(S, 'wd', 'dd', 'ref', 'c1').indexOf('"value":"c1"') > 0, true); ok();
+  assert.strictEqual(G.eventLine(S, 'wd', 'dd', 'ref', 'nope'), null); ok();
+  assert.strictEqual(G.eventLine(S, 'wd', 'dd', 'ref', undefined), null); ok();
+  assert.match(ap({ op: 'set', id: 'wd', node: 'dd', props: { blocks: [{ t: 'ref', text: 'only', ref: 'c2' }] } }).ok ? 'yes' : 'no', /yes/); ok();
+  assert.strictEqual(G.eventLine(S, 'wd', 'dd', 'ref', 'c1'), null); ok();
+  assert.strictEqual(G.eventLine(S, 'wd', 'dd', 'ref', 'c2').indexOf('"value":"c2"') > 0, true); ok();
+}
+
+// filepick: a button; its pick event carries no value
+{
+  const S = G.createSession();
+  G.apply(S, { op: 'open', id: 'wp', title: 'P' });
+  assert.deepStrictEqual(G.apply(S, { op: 'add', id: 'wp', node: { id: 'fp', kind: 'filepick', text: 'Open files' } }), { ok: true }); ok();
+  assert.strictEqual(G.eventLine(S, 'wp', 'fp', 'pick'), JSON.stringify({ v: 1, event: 'pick', id: 'wp', node: 'fp' })); ok();
+  assert.match(G.apply(S, { op: 'add', id: 'wp', node: { id: 'fp2', kind: 'filepick', value: 'x' } }).error, /prop "value" is not allowed on filepick/); ok();
 }
 
 console.log('gui_bridge: ' + n + ' assertions passed');

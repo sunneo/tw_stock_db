@@ -1,0 +1,20 @@
+<!doctype html><meta charset="utf-8"><body style="margin:0">
+<script src="../../renderer/src/gui/gui_render.js"></script>
+<script>
+const R = window.AiChatGuiRender;
+const items = Array.from({length: 27}, (_, i) => 'item' + i);
+const mk = (id, height, extra) => ({ id, title: id, width: 420, height, root: { kind: 'column', children: [
+  { id: 'l1', kind: 'label', text: 'top' },
+  { id: 'ls', kind: 'list', items, selected: '' }, ...(extra || []),
+  { id: 'ml', kind: 'multilist', items, selected: [] },
+  { id: 'b', kind: 'button', text: 'ok' } ] } });
+const out = {};
+for (const [id, h, ex] of [['free', undefined], ['tall', 700], ['short', 300], ['many', 500, Array.from({length: 12}, (_, i) => ({ id: 'x' + i, kind: 'label', text: 'row ' + i }))]]) {
+  const w = R.renderWindow(document, mk(id, h, ex), () => {}, () => {});
+  w.style.cssText += ';display:flex;flex-direction:column;margin:4px;' + (h ? 'height:' + h + 'px;' : '');
+  document.body.appendChild(w);
+  out[id] = { win: w.getBoundingClientRect().height, list: w.querySelector('[data-node=ls]') ? w.querySelector('[data-node=ls]').getBoundingClientRect().height : null,
+    multi: w.querySelector('[data-node=ml]') ? w.querySelector('[data-node=ml]').getBoundingClientRect().height : null };
+}
+window.__out = out; document.title = 'done';
+</script>

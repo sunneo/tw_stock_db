@@ -107,6 +107,17 @@
     '.gui-table{border-collapse:separate;border-spacing:0;width:100%;font-size:.95em}',
     '.gui-table th{position:sticky;top:0;text-align:left;font-weight:600;padding:6px 10px;background:var(--gui-surface2);border-bottom:1px solid var(--gui-border);color:var(--gui-muted);font-size:.9em;letter-spacing:.02em}',
     '.gui-table td{padding:0;border-bottom:1px solid var(--gui-border)}.gui-table tr:last-child td{border-bottom:none}.gui-table tbody tr:hover{background:var(--gui-hover)}',
+    '.gui-treebox{overflow:auto;border:1px solid var(--gui-border);border-radius:var(--gui-radius);min-height:0}',
+    '.gui-tree td.gui-tree-td{padding:4px 10px;white-space:nowrap}.gui-tree tr.gui-tree-sel td{background:var(--gui-hover)}',
+    '.gui-tree .gui-tree-arrow{display:inline-block;width:14px;cursor:pointer;color:var(--gui-muted);user-select:none}.gui-tree-bold td{font-weight:600}',
+    '.gui-tone-pass{color:#2e7d32}.gui-tone-fail{color:var(--gui-danger)}.gui-tone-warn{color:#b26a00}.gui-tone-muted{color:var(--gui-muted)}',
+    '.gui-doc{display:flex;flex-direction:column;gap:6px;padding:10px 12px;overflow:auto;min-height:0;font-size:13px}',
+    '.gui-doc-title{font-size:16px;font-weight:600;display:flex;align-items:center;gap:8px;flex-wrap:wrap}.gui-doc-badge{font-size:11px;padding:1px 7px;border-radius:9px;border:1px solid currentColor}',
+    '.gui-doc-h{font-weight:600;margin-top:8px;color:var(--gui-muted);font-size:12px;letter-spacing:.02em}.gui-doc-p{white-space:pre-wrap;word-break:break-word}',
+    '.gui-doc-pre{margin:0;font-family:var(--gui-mono);font-size:12px;overflow:auto;background:var(--gui-surface2);padding:8px;border-radius:var(--gui-radius);max-height:360px}',
+    '.gui-doc-list{margin:0;padding-left:18px}.gui-doc-li{word-break:break-all}.gui-doc-td{padding:4px 8px;white-space:nowrap}',
+    '.gui-doc-kv{display:grid;grid-template-columns:max-content 1fr;gap:3px 12px}.gui-doc-k{color:var(--gui-muted)}.gui-doc-v{word-break:break-all}.gui-doc-hl{font-weight:600}.gui-doc-mono{font-family:var(--gui-mono)}',
+    '.gui-doc-ref{color:var(--gui-accent);text-decoration:underline;cursor:pointer;word-break:break-all}',
     '.gui-cell{border:none;border-radius:0;background:transparent;width:100%;padding:6px 10px}.gui-cell:focus{box-shadow:inset 0 0 0 2px var(--gui-accent)}',
     '.gui-tabs{display:flex;flex-direction:column;min-width:0;min-height:0}',
     '.gui-tabbar{display:flex;gap:2px;padding:0 var(--gui-s3);border-bottom:1px solid var(--gui-border);flex:0 0 auto;background:var(--gui-surface)}',
@@ -722,7 +733,8 @@
       case 'list':
         el = doc.createElement('select');
         el.className = 'gui-list';
-        el.size = Math.min(8, Math.max(2, (n.items || []).length));
+        el.size = listSize(n, (n.items || []).length);
+        el.style.minHeight = listMinHeight(el.size);
         el.disabled = n.enabled === false;
         (n.items || []).forEach(function (text) {
           var o = doc.createElement('option');
@@ -749,7 +761,8 @@
         el = doc.createElement('select');
         el.className = 'gui-list';
         el.multiple = true;
-        el.size = Math.min(8, Math.max(2, (n.items || []).length));
+        el.size = listSize(n, (n.items || []).length);
+        el.style.minHeight = listMinHeight(el.size);
         el.disabled = n.enabled === false;
         (n.items || []).forEach(function (text) {
           var o = doc.createElement('option');
@@ -792,6 +805,24 @@
         });
         tableEl.appendChild(tbody);
         el.appendChild(tableEl);
+        break;
+      case 'tree':
+        el = doc.createElement('div');
+        el.className = 'gui-treebox';
+        buildTree(doc, el, n, onEvent);
+        break;
+      case 'doc':
+        el = doc.createElement('div');
+        el.className = 'gui-doc';
+        buildDoc(doc, el, n, onEvent);
+        break;
+      case 'filepick':
+        el = doc.createElement('button');
+        el.type = 'button';
+        el.className = 'gui-button gui-filepick';
+        el.textContent = n.text || '';
+        el.disabled = n.enabled === false;
+        on('click', function () { onEvent('pick', n.id); });
         break;
       case 'markdown':
         el = doc.createElement('div');
@@ -866,13 +897,143 @@
     if (n.kind === 'tabs') { buildTabs(doc, el, n, onEvent); }
     if (n.kind === 'split') {
       var pages = Array.prototype.slice.call(el.children || []);
-      pages.forEach(function (child, i) { child.style.flex = i === 0 && pages.length > 1 ? '0 0 ' + (n.ratio || 50) + '%' : '1 1 0'; child.style.minWidth = '0'; });
+      pages.forEach(function (child, i) {
+        if (n.weights) { child.style.flex = (n.weights[i] || 1) + ' 1 0%'; }
+        else { child.style.flex = i === 0 && pages.length > 1 ? '0 0 ' + (n.ratio || 50) + '%' : '1 1 0'; }
+        child.style.minWidth = '0';
+      });
     }
     return el;
   }
 
   // tabs: a bar of buttons (one per tab page, titled by the page's text) above the pages; one page shows. The page comes from the node's
   // `selected` (a page id), else the first; a click shows that page and tells the program (select, value = the page id).
+  // tree: every row is drawn once. A row with children (expanded is set) has an arrow; a click on it (or on the row's
+  // arrow) folds it, and the rows below it that are deeper are hidden by display, so folding never rebuilds the table.
+  // A click on a row selects it (select event, value = the row id); a fold sends toggle (value = the row id).
+  function treeVisibility(entries) {
+    var hideBelow = null;
+    entries.forEach(function (e) {
+      if (hideBelow !== null && e.row.depth > hideBelow) { e.tr.style.display = 'none'; return; }
+      hideBelow = null;
+      e.tr.style.display = '';
+      if (e.expanded === false) { hideBelow = e.row.depth; }
+    });
+  }
+  function buildTree(doc, el, n, onEvent) {
+    var cols = n.columns || [], entries = [];
+    var tableEl = doc.createElement('table');
+    tableEl.className = 'gui-table gui-tree';
+    var head = doc.createElement('tr');
+    cols.forEach(function (c) {
+      var th = doc.createElement('th');
+      th.textContent = c.title;
+      if (c.width) { th.style.width = c.width + 'px'; }
+      if (c.align) { th.style.textAlign = c.align; }
+      head.appendChild(th);
+    });
+    var thead = doc.createElement('thead');
+    thead.appendChild(head);
+    tableEl.appendChild(thead);
+    var tbody = doc.createElement('tbody');
+    (n.rows || []).forEach(function (r) {
+      var tr = doc.createElement('tr'), e = { row: r, tr: tr, expanded: r.expanded };
+      tr.className = 'gui-tree-row' + (r.bold ? ' gui-tree-bold' : '') + (r.id === n.selected ? ' gui-tree-sel' : '');
+      (r.cells || []).forEach(function (text, ci) {
+        var td = doc.createElement('td');
+        td.className = 'gui-tree-td' + (r.tones && r.tones[ci] ? ' gui-tone-' + r.tones[ci] : '');
+        if (cols[ci] && cols[ci].align) { td.style.textAlign = cols[ci].align; }
+        if (ci === 0) {
+          td.style.paddingLeft = (10 + r.depth * 16) + 'px';
+          var arrow = doc.createElement('span');
+          arrow.className = 'gui-tree-arrow';
+          arrow.textContent = '';
+          td.appendChild(arrow);
+          if (r.expanded !== undefined) {
+            arrow.textContent = e.expanded ? '▾' : '▸';
+            arrow.addEventListener('click', function (ev) {
+              if (ev && ev.stopPropagation) { ev.stopPropagation(); }
+              e.expanded = !e.expanded;
+              arrow.textContent = e.expanded ? '▾' : '▸';
+              treeVisibility(entries);
+              onEvent('toggle', n.id, r.id);
+            });
+          }
+        }
+        var label = doc.createElement('span');
+        label.textContent = String(text);
+        td.appendChild(label);
+        tr.appendChild(td);
+      });
+      tr.addEventListener('click', function () {
+        entries.forEach(function (o) { o.tr.className = o.tr.className.replace(' gui-tree-sel', ''); });
+        tr.className += ' gui-tree-sel';
+        onEvent('select', n.id, r.id);
+      });
+      entries.push(e);
+      tbody.appendChild(tr);
+    });
+    tableEl.appendChild(tbody);
+    el.appendChild(tableEl);
+    treeVisibility(entries);
+  }
+
+  // doc: blocks drawn as text only (textContent, never markup). A ref block is a link: a click sends ref (value = the block's ref).
+  function docEl(doc, tag, cls, text) {
+    var x = doc.createElement(tag);
+    if (cls) { x.className = cls; }
+    if (text !== undefined) { x.textContent = String(text); }
+    return x;
+  }
+  function buildDoc(doc, el, n, onEvent) {
+    (n.blocks || []).forEach(function (b) {
+      var tone = b.tone ? ' gui-tone-' + b.tone : '';
+      if (b.t === 'title') {
+        var title = docEl(doc, 'div', 'gui-doc-title' + tone, b.text);
+        if (b.badge) { title.appendChild(docEl(doc, 'span', 'gui-doc-badge' + tone, b.badge)); }
+        el.appendChild(title);
+      } else if (b.t === 'p') {
+        el.appendChild(docEl(doc, 'div', 'gui-doc-p' + tone, b.text));
+      } else if (b.t === 'h') {
+        el.appendChild(docEl(doc, 'div', 'gui-doc-h', b.text));
+      } else if (b.t === 'pre') {
+        var pre = docEl(doc, 'pre', 'gui-doc-pre', b.text);
+        pre.style.whiteSpace = b.wrap ? 'pre-wrap' : 'pre';
+        el.appendChild(pre);
+      } else if (b.t === 'list') {
+        var ul = docEl(doc, 'ul', 'gui-doc-list');
+        (b.items || []).forEach(function (s) { ul.appendChild(docEl(doc, 'li', 'gui-doc-li' + tone, s)); });
+        el.appendChild(ul);
+      } else if (b.t === 'table') {
+        var wrap = docEl(doc, 'div', 'gui-tablebox'), tableEl = docEl(doc, 'table', 'gui-table'), head = docEl(doc, 'tr');
+        (b.columns || []).forEach(function (c) { head.appendChild(docEl(doc, 'th', null, c)); });
+        var thead = docEl(doc, 'thead');
+        thead.appendChild(head);
+        tableEl.appendChild(thead);
+        var tbody = docEl(doc, 'tbody');
+        (b.rows || []).forEach(function (r) {
+          var tr = docEl(doc, 'tr');
+          r.forEach(function (c) { tr.appendChild(docEl(doc, 'td', 'gui-doc-td', c)); });
+          tbody.appendChild(tr);
+        });
+        tableEl.appendChild(tbody);
+        wrap.appendChild(tableEl);
+        el.appendChild(wrap);
+      } else if (b.t === 'kv') {
+        var kv = docEl(doc, 'div', 'gui-doc-kv');
+        (b.rows || []).forEach(function (r) {
+          kv.appendChild(docEl(doc, 'div', 'gui-doc-k', r[0]));
+          kv.appendChild(docEl(doc, 'div', 'gui-doc-v' + (r[2] ? ' gui-doc-hl' : '') + (r[3] ? ' gui-doc-mono' : ''), r[1]));
+        });
+        el.appendChild(kv);
+      } else if (b.t === 'ref') {
+        var link = docEl(doc, 'div', 'gui-doc-ref', b.text);
+        link.addEventListener('click', function () { onEvent('ref', n.id, b.ref); });
+        el.appendChild(link);
+      }
+    });
+  }
+
   function buildTabs(doc, el, n, onEvent) {
     var pages = Array.prototype.slice.call(el.children || []);
     var bar = doc.createElement('div');
@@ -902,6 +1063,7 @@
   function patchNode(el, node, props) {
     var keys = Object.keys(props || {}).sort(function (x, y) { return rank(x) - rank(y); });
     if (!el || !keys.length) { return false; }
+    if (node.kind === 'tree') { return false; } // a tree's rows and selection are drawn once: a set rebuilds it
     var kind = node.kind;
     for (var i = 0; i < keys.length; i++) {
       var k = keys[i];
@@ -945,7 +1107,8 @@
         // new options, the selection kept when the item is still there; the list keeps its scroll position
         el.textContent = '';
         (v || []).forEach(function (text) { var o = el.ownerDocument ? el.ownerDocument.createElement('option') : null; if (!o) { return; } o.textContent = text; o.value = text; o.selected = kind === 'list' ? text === node.selected : (node.selected || []).indexOf(text) >= 0; el.appendChild(o); });
-        el.size = Math.min(8, Math.max(2, (v || []).length));
+        el.size = listSize(node, (v || []).length);
+        el.style.minHeight = listMinHeight(el.size);
       } else if (kind === 'list') {
         if (k === 'selected') { el.value = v; } else { el.disabled = v === false; }
       } else if (kind === 'multilist') {
@@ -1039,6 +1202,10 @@
   // snapshot = { id, title, width, resizable, maximizable, theme, shortcuts, root }; onEvent(name, nodeId, value) is called for user actions in the window;
   // opts (optional) = { image(nodeId, name) } for the pictures of the canvases
   var CONTROL_BUTTON_CSS = 'border:none;background:transparent;cursor:pointer;font:inherit;font-size:15px;line-height:1;padding:3px 9px;border-radius:5px;color:inherit;';
+  // lines a list shows: the node's rows when given (a program that asks for 24 gets 24), else by item count (2 to 8); never squashed below that by a column
+  function listSize(n, count) { return n.rows > 0 ? Math.min(30, n.rows) : Math.min(8, Math.max(2, count)); }
+  function listMinHeight(size) { return Math.min(440, size * 18) + 'px'; }
+
   function renderWindow(doc, snap, onEvent, onClose, opts) {
     var win = doc.createElement('div');
     ensureStyles(doc);

@@ -243,6 +243,69 @@ check('markdown node', calls[-1][1]['node'].get('kind') == 'markdown' and calls[
 wl.theme(density="compact")
 check('theme density', calls[-1][1].get('density') == 'compact')
 
+# list (the Redmine template's name for listbox), split with weights, wait(also=)
+stub.call = wait_only  # the pick stub above answers gui.wait with None; wait_only answers with replies, then close
+lst = wl.list(['a', 'b'], selected='b', parent=col)
+check('list alias op', calls[-1][1]['node'].get('kind') == 'list' and calls[-1][1]['node'].get('selected') == 'b' and calls[-1][1]['parent'] == col)
+check('list alias value', wl.value(lst) == 'b')
+spw = wl.split([22, 44, 34], col)
+check('split weights op', calls[-1][1]['node'] == {'id': spw, 'kind': 'split', 'direction': 'row', 'weights': [22, 44, 34]} and calls[-1][1]['parent'] == col)
+replies[:] = [{'v': 1, 'event': 'select', 'id': wl.id, 'node': lst, 'value': 'a'}]
+ev = wl.wait(timeout=30, also=('select',))
+check('wait also select returns the select', ev is not None and ev['event'] == 'select' and wl.value(lst) == 'a')
+replies[:] = [{'v': 1, 'event': 'change', 'id': wl.id, 'node': 'cb', 'value': True}]
+ev2 = wl.wait(timeout=5)  # a change is not in also=, so the wait goes on to the next event (the stub's close)
+check('wait without also skips a change', ev2 is not None and ev2['event'] == 'close')
+
+# tree: the node shape, row normalization in set, and a fold (toggle) that does not change value()
+tv = wl.tree(['Name', {'title': 'Result', 'align': 'right'}], rows=[
+    {'id': 'a', 'depth': 0, 'cells': ['suite', 'ok'], 'tones': [None, 'pass'], 'expanded': True},
+    {'id': 'b', 'depth': 1, 'cells': ['c1', 'fail'], 'bold': True}], selected='b', parent=col)
+check('tree op', calls[-1][1]['node'] == {'id': tv, 'kind': 'tree', 'columns': [{'title': 'Name'}, {'title': 'Result', 'align': 'right'}], 'rows': [
+    {'id': 'a', 'depth': 0, 'cells': ['suite', 'ok'], 'tones': [None, 'pass'], 'expanded': True},
+    {'id': 'b', 'depth': 1, 'cells': ['c1', 'fail'], 'bold': True}], 'selected': 'b'} and calls[-1][1]['parent'] == col)
+check('tree value is the selected id', wl.value(tv) == 'b')
+wl.set(tv, rows=[{'id': 'z', 'cells': ['x', 'y']}])
+check('tree set rows normalized', calls[-1][1]['props'] == {'rows': [{'id': 'z', 'depth': 0, 'cells': ['x', 'y']}]})
+replies[:] = [{'v': 1, 'event': 'toggle', 'id': wl.id, 'node': tv, 'value': 'a'}]
+ev3 = wl.wait(timeout=5)  # a toggle is not in also=, so the stub's close comes next
+check('tree toggle keeps the selected value', wl.value(tv) == 'b' and ev3 is not None and ev3['event'] == 'close')
+
+# doc: tuples become lists, set replaces the blocks, and a ref event does not change value()
+dn = wl.doc([{'t': 'kv', 'rows': [('k', 'v', True, False)]}, {'t': 'ref', 'text': 'go', 'ref': 'c1'}], parent=col)
+check('doc op', calls[-1][1]['node'] == {'id': dn, 'kind': 'doc', 'blocks': [{'t': 'kv', 'rows': [['k', 'v', True, False]]}, {'t': 'ref', 'text': 'go', 'ref': 'c1'}]})
+wl.set(dn, blocks=[{'t': 'h', 'text': 'x'}])
+check('doc set blocks', calls[-1][1]['props'] == {'blocks': [{'t': 'h', 'text': 'x'}]})
+replies[:] = [{'v': 1, 'event': 'ref', 'id': wl.id, 'node': dn, 'value': 'c1'}]
+ev4 = wl.wait(timeout=5)
+check('doc ref is returned by wait', ev4 is not None and ev4['event'] == 'ref' and ev4['value'] == 'c1')
+
+# filepick + pick_files: a desktop pick gives the real path as ref; a browser pick (no path) is written to a temp file
+picks = []
+
+
+def pick_many_stub(op, args=None, timeout=240.0):
+    calls.append((op, args))
+    if op == 'gui.pickmany':
+        return picks.pop(0) if picks else None
+    return None
+
+
+stub.call = pick_many_stub
+fp = wl.filepick('Open', accept='.log', parent=col, multiple=True)
+check('filepick op', calls[-1][1]['node'] == {'id': fp, 'kind': 'filepick', 'text': 'Open'})
+picks.append({'files': [
+    {'name': 'a.log', 'rel': 'a.log', 'size': 3, 'mime': 'text/plain', 'realpath': 'C:/x/a.log'},
+    {'name': 'b.log', 'rel': 'dir/b.log', 'size': 3, 'mime': 'text/plain', 'realpath': '', 'data': base64.b64encode(b'bbb').decode()}],
+    'skipped': 2})
+got_files, got_skipped = wl.pick_files({'event': 'pick', 'node': fp})
+check('pick_files op', calls[-1] == ('gui.pickmany', {'title': 'Open', 'accept': '.log', 'multiple': True, 'directory': False, 'max_bytes': 8388608}))
+check('pick_files desktop ref is the real path', got_files[0]['ref'] == 'C:/x/a.log' and got_files[0]['path'] == 'a.log')
+check('pick_files browser ref is a temp file with the bytes', os.path.isfile(got_files[1]['ref']) and open(got_files[1]['ref'], 'rb').read() == b'bbb' and got_files[1]['path'] == 'dir/b.log')
+check('pick_files skipped count', got_skipped == 2 and got_files[1]['size'] == 3)
+picks.append(None)
+check('pick_files cancel is None', wl.pick_files({'event': 'pick', 'node': fp}) is None)
+
 if failures:
     print('%d failure(s)' % len(failures))
     sys.exit(1)

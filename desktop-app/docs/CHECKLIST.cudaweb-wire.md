@@ -10,6 +10,17 @@
 
 **使用者說明（2026-11-16，逐字）**：「真gpu不用管，我們用最爛的機器(Geforce 720T)測過，比當代Intel Core I5-2620還快1.78倍」。意思：各項「真 GPU 上的速度／對拍未驗證」不再是阻礙，不必為此再標 BLOCKED 或要求真 GPU；軟體 WebGPU（SwiftShader）的驗證視為足夠的功能驗證。（這句是使用者說的，不是在這台機器量到的數字。）
 
+## 遠端接手說明（2026-11-16，使用者：「我打算遠端完整的接手並完成後續任務」）
+- **你是完整接手者**：照本清單從 Q 開始做到最後（I 最後）。不要等本機管理者；每完成一項就勾掉、提交、**推送到你的分支**（管理者與使用者會用這個分支核對與發布）。
+- **遠端環境可能沒有的東西**：(1) 使用者 Chrome 的真 WebGPU；(2) 本機暫存資料夾裡已下載的模型檔（Qwen q4f16、midigenai 解碼器、MOSS 共 15 個檔案；它們不在 git 裡）；(3) 本機桌面版 Electron。做法：
+  - 先用 node 測試（假裝置／CPU 參考對拍）把正確性做完，每個核心都要有 node 可跑的測試。
+  - 需要真 Chrome WebGPU 或真模型檔才能驗的，在清單項目後面標「待本機 Chrome 驗證」＋寫好驗證頁與指令（照既有 `scripts/eval/cudaweb_*_browser.js`），由使用者或管理者在本機補驗，不要因此停下、也不要宣稱已驗證。
+  - 下載模型檔要使用者在你的對話直接同意：開始前一行列出檔名／來源／大小；沒同意就走上面的「待本機驗證」做法，不要停。
+- **已驗證過的事實可以直接信**（真 Chrome、使用者的 Kepler 14 W 顯示卡）：q8 `lm_head`、注意力＋KV、`MatMulNBits`、MOSS 各運算、卷積模組的結果檔都在 `scripts/eval/*.result.json`。
+- **預設關、行為不變**：所有新開關預設 off，關閉時舊路徑一個字不改；兩處設定介面（AI 助理設定、桌面版設定頁）要同步。
+- **發布**：不要發布。做完最終回報，管理者核對後在本機驗證再發布。
+- **硬體前提**：所有速度數字都是使用者的 12 年前老機器（Kepler 14 W、舊 CPU）上量的；寫數字要標硬體，不要寫沒有前提的倍數。
+
 ## 項目
 - [x] **A. MOSS WebGPU 整管線**（2026-11-16 完成：真 Chrome 軟體 WebGPU，真 MOSS 模型）：真因不是主執行緒被佔住，而是 (1) `runWgsl` 每次呼叫都把整份權重重新上傳並洩漏緩衝區，(2) GPU 的 GELU 在 SwiftShader 對大引數 tanh 回 NaN（x³ 溢位），使整條 GPU 預填的 hidden 全是 NaN、第一幀即停。修正：`runWgsl` 支援 `cache:true` 的常駐權重緩衝區（WeakMap，同一份權重只上傳一次）並銷毀暫時緩衝區；GELU 的 tanh 引數夾到 ±15。不需要搬進 Worker（頁面全程 async，沒有阻塞）。驗證：真 MOSS（使用者先前同意下載，檔案核對大小相符），文字「你好」、seed 7、3 幀：Chrome 軟體 WebGPU 整管線 **3 幀與 ORT 完全一致**，所有運算全 T1（linear 8175／attention 960／LN 2000／RoPE 1920／GELU 960），生成 121 秒（未優化、軟體 WebGPU）；同幀的 codec 音訊（CPU 解釋器，onnx_interp）對 ORT 相對誤差 3.0e-6（23040 樣本）。codec 的 GPU 卷積另有 17 個卷積的單項驗證（先前提交）；整條 codec 本身仍在 CPU 解釋器上跑。
 - [x] **B.（BLOCKED 驗收） MOSS 產品接線**（部分完成，2026-11-16）：已做：`moss_gpu_runners.js`＋worker 的 `gpu` 選項（沒有 GPU／載入失敗／運算退層／中途失敗自動退回 ORT wasm 從頭生成）、設定 `mossGpu`（預設 off，`_gpuCompatControls` 兩處共用）、診斷 `result.gpu`、嵌入 `FA_MOSS_GPU_SRC`、單元測試 2 個（開關關時 `gpu:null`，路徑不變）、DESIGN §7.14。**（驗收後半，2026-11-16 更新）**：A 已完成（整管線 3 幀對 ORT 完全一致，見 A）；但「經產品 worker 的 `mossGpu` 開關在真 Chrome 生成音訊並與 wasm 路徑一致」尚未實際跑過（驗證用獨立頁面，不是產品 worker），維持未驗。

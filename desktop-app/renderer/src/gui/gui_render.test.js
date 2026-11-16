@@ -33,10 +33,12 @@ apply({ op: 'add', id: 'w', node: { id: 'keep', kind: 'checkbox', text: 'Keep', 
 apply({ op: 'add', id: 'w', node: { id: 'bar', kind: 'progress', value: 40, max: 80 } });
 apply({ op: 'add', id: 'w', node: { id: 'pick', kind: 'list', items: ['one', 'two'], selected: 'two' } });
 apply({ op: 'add', id: 'w', node: { id: 'gone', kind: 'label', text: 'hidden', visible: false } });
+apply({ op: 'add', id: 'w', node: { id: 'tall', kind: 'list', items: ['a', 'b', 'c'], rows: 24 } });
 
 const events = [];
 let closed = 0;
 const win = R.renderWindow(doc, G.snapshot(s, 'w'), (name, node, value) => events.push([name, node, value]), () => { closed++; });
+assert.strictEqual(byNode(win, 'tall').size, 24); assert.strictEqual(byNode(win, 'pick').size, 2); assert.strictEqual(byNode(win, 'tall').style.minHeight, '432px'); ok();
 
 // 1. structure and title; the title and label text is text, not markup
 assert.strictEqual(win.className, 'gui-window'); ok();
@@ -327,6 +329,98 @@ assert.strictEqual(violations.length, 0); ok();
   assert.ok(/gui-editor-wrap/.test(byNode(w, 'ed').className)); ok();
   assert.strictEqual(find(byNode(w, 'ed'), (e) => e.className === 'gui-ed-gutter'), null); ok();
   assert.strictEqual(violations.length, 0); ok();
+}
+
+// split with weights: three children take the space in the proportions 22 : 44 : 34
+{
+  const S3 = G.createSession();
+  const ap3 = (m) => { const r = G.apply(S3, m); assert.ok(r.ok, r.error); };
+  ap3({ op: 'open', id: 'wx', title: 'X' });
+  ap3({ op: 'add', id: 'wx', node: { id: 'sp', kind: 'split', direction: 'row', weights: [22, 44, 34] } });
+  ap3({ op: 'add', id: 'wx', parent: 'sp', node: { id: 'a', kind: 'label', text: 'a' } });
+  ap3({ op: 'add', id: 'wx', parent: 'sp', node: { id: 'b', kind: 'label', text: 'b' } });
+  ap3({ op: 'add', id: 'wx', parent: 'sp', node: { id: 'c', kind: 'label', text: 'c' } });
+  const w3 = R.renderWindow(doc, G.snapshot(S3, 'wx'), () => {}, () => {});
+  const sp = byNode(w3, 'sp');
+  assert.strictEqual(sp.children.length, 3); ok();
+  assert.deepStrictEqual(sp.children.map((c) => c.style.flex), ['22 1 0%', '44 1 0%', '34 1 0%']); ok();
+}
+
+// tree: folding hides the deeper rows below a folded row (display), a click on the arrow sends toggle and a click on a row sends select
+{
+  const S4 = G.createSession();
+  const ap4 = (m) => { const r = G.apply(S4, m); assert.ok(r.ok, r.error); };
+  ap4({ op: 'open', id: 'wtr', title: 'T' });
+  ap4({ op: 'add', id: 'wtr', node: { id: 'tr', kind: 'tree', columns: [{ title: 'Name' }, { title: 'Result', align: 'right' }], selected: 'b',
+    rows: [
+      { id: 'a', depth: 0, cells: ['suite', 'ok'], tones: [null, 'pass'], expanded: true },
+      { id: 'b', depth: 1, cells: ['case 1', 'fail'], tones: [null, 'fail'], bold: true },
+      { id: 'c', depth: 0, cells: ['other', '-'], expanded: true },
+      { id: 'd', depth: 1, cells: ['child', 'x'] }
+    ] } });
+  const got = [];
+  const w4 = R.renderWindow(doc, G.snapshot(S4, 'wtr'), (name, node, value) => got.push([name, node, value]), () => {});
+  const tree = byNode(w4, 'tr');
+  const body = find(tree, (e) => e.tagName === 'tbody');
+  const trs = body.children;
+  assert.strictEqual(trs.length, 4); ok();
+  assert.ok(trs[1].className.indexOf('gui-tree-sel') >= 0 && trs[1].className.indexOf('gui-tree-bold') >= 0); ok();
+  assert.strictEqual(trs[0].children[0].style.paddingLeft, '10px'); assert.strictEqual(trs[1].children[0].style.paddingLeft, '26px'); ok();
+  assert.strictEqual(trs[1].children[1].style.textAlign, 'right'); ok();
+  const arrowA = find(trs[0].children[0], (e) => e.className === 'gui-tree-arrow');
+  assert.strictEqual(arrowA.textContent, '▾'); ok();
+  arrowA.fire('click');
+  assert.strictEqual(arrowA.textContent, '▸'); ok();
+  // b is a child of a (hidden now); d is a child of c, which is open, so d stays shown
+  assert.strictEqual(trs[1].style.display, 'none'); assert.strictEqual(trs[3].style.display, ''); assert.strictEqual(trs[2].style.display, ''); ok();
+  assert.deepStrictEqual(got[got.length - 1], ['toggle', 'tr', 'a']); ok();
+  trs[2].fire('click');
+  assert.deepStrictEqual(got[got.length - 1], ['select', 'tr', 'c']); ok();
+  assert.ok(trs[2].className.indexOf('gui-tree-sel') >= 0 && trs[1].className.indexOf('gui-tree-sel') < 0); ok();
+  arrowA.fire('click');
+  assert.strictEqual(trs[1].style.display, ''); ok();
+}
+
+// doc: blocks become elements with their text (never markup), badges and tones, tables, kv highlight, and a ref block click sends ref
+{
+  const S5 = G.createSession();
+  const ap5 = (m) => { const r = G.apply(S5, m); assert.ok(r.ok, r.error); };
+  ap5({ op: 'open', id: 'wdr', title: 'D' });
+  ap5({ op: 'add', id: 'wdr', node: { id: 'dd', kind: 'doc', blocks: [
+    { t: 'title', text: '<b>Run</b>', badge: 'FAIL', tone: 'fail' },
+    { t: 'list', items: ['cause'], tone: 'warn' },
+    { t: 'table', columns: ['#', 'Result'], rows: [['1', 'PASS']] },
+    { t: 'kv', rows: [['Key', 'Value', true, true]] },
+    { t: 'ref', text: 'case 1', ref: 'c1' }
+  ] } });
+  const got5 = [];
+  const w5 = R.renderWindow(doc, G.snapshot(S5, 'wdr'), (name, node, value) => got5.push([name, node, value]), () => {});
+  const d = byNode(w5, 'dd');
+  assert.ok(d.className.indexOf('gui-doc') >= 0); ok();
+  const title = d.children[0];
+  assert.strictEqual(title.textContent, '<b>Run</b>'); assert.ok(title.className.indexOf('gui-tone-fail') >= 0); ok();
+  assert.strictEqual(find(title, (e) => e.className && e.className.indexOf('gui-doc-badge') >= 0).textContent, 'FAIL'); ok();
+  assert.strictEqual(find(d.children[1], (e) => e.tagName === 'li').textContent, 'cause'); ok();
+  assert.strictEqual(find(d.children[2], (e) => e.tagName === 'td').textContent, '1'); ok();
+  const kvv = find(d.children[3], (e) => e.className && e.className.indexOf('gui-doc-v') >= 0);
+  assert.ok(kvv.className.indexOf('gui-doc-hl') >= 0 && kvv.className.indexOf('gui-doc-mono') >= 0); ok();
+  const link = d.children[4];
+  link.fire('click');
+  assert.deepStrictEqual(got5[got5.length - 1], ['ref', 'dd', 'c1']); ok();
+  assert.strictEqual(violations.length, 0); ok();
+}
+
+// filepick: a button that sends pick (no value) when pressed
+{
+  const S6 = G.createSession();
+  G.apply(S6, { op: 'open', id: 'wfp', title: 'P' });
+  G.apply(S6, { op: 'add', id: 'wfp', node: { id: 'fp', kind: 'filepick', text: 'Open files' } });
+  const got6 = [];
+  const w6 = R.renderWindow(doc, G.snapshot(S6, 'wfp'), (name, node, value) => got6.push([name, node, value]), () => {});
+  const btn = byNode(w6, 'fp');
+  assert.strictEqual(btn.tagName, 'button'); assert.strictEqual(btn.textContent, 'Open files'); ok();
+  btn.fire('click');
+  assert.deepStrictEqual(got6[got6.length - 1], ['pick', 'fp', undefined]); ok();
 }
 
 console.log('gui_render: ' + n + ' assertions passed');

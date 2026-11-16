@@ -1,0 +1,59 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>GUI tree / doc / filepick check</title>
+<!-- Real-Chrome check for the tree, doc and filepick kinds (交接項目 2、3、4). Open it through a local server:
+     cd desktop-app && python -m http.server 8123   then open http://localhost:8123/scripts/eval/gui_tree_doc_check.html
+     Click the tree arrows and rows, the doc's ref links and the filepick button; the log at the bottom must show each event.
+     The "build ms" line is the time to draw the 3000-row tree (speed is measured on the machine that runs this page). -->
+<body style="margin:0;font:14px sans-serif;background:#fff;color:#222">
+<div id="host" style="display:flex;gap:12px;padding:12px;flex-wrap:wrap"></div>
+<pre id="log" style="margin:12px;padding:8px;border:1px solid #ccc;height:160px;overflow:auto"></pre>
+<script src="../../renderer/src/gui/gui_render.js"></script>
+<script>
+const R = window.AiChatGuiRender;
+const log = (s) => { const el = document.getElementById('log'); el.textContent += s + '\n'; el.scrollTop = el.scrollHeight; };
+const onEvent = (name, node, value) => log('event ' + name + ' node=' + node + ' value=' + JSON.stringify(value === undefined ? null : value));
+
+// a small tree: two folders (one folded), leaves below them
+const small = [
+  { id: 'suite', depth: 0, cells: ['Suite A', 'PASS'], tones: [null, 'pass'], expanded: true },
+  { id: 'c1', depth: 1, cells: ['case 1', 'PASS'], tones: [null, 'pass'] },
+  { id: 'c2', depth: 1, cells: ['case 2', 'FAIL'], tones: [null, 'fail'], bold: true },
+  { id: 'suite2', depth: 0, cells: ['Suite B', 'WARN'], tones: [null, 'warn'], expanded: false },
+  { id: 'c3', depth: 1, cells: ['hidden case', '-'], tones: [null, 'muted'] },
+];
+// a big tree: 3000 rows, 300 folders
+const big = [];
+for (let f = 0; f < 300; f++) {
+  big.push({ id: 'f' + f, depth: 0, cells: ['folder ' + f, String(f % 7)], expanded: f % 2 === 0 });
+  for (let k = 0; k < 9; k++) big.push({ id: 'f' + f + 'r' + k, depth: 1, cells: ['row ' + k, 'ok'], tones: [null, 'pass'] });
+}
+const cols = [{ title: 'Name', width: 260 }, { title: 'Result', width: 90, align: 'right' }];
+const docBlocks = [
+  { t: 'title', text: 'TestCaseViewer sample', badge: 'FAIL', tone: 'fail' },
+  { t: 'p', text: 'A paragraph with a tone.', tone: 'muted' },
+  { t: 'h', text: 'Steps' },
+  { t: 'pre', text: 'line one\nline two  (wrap: false)', wrap: false },
+  { t: 'list', items: ['cause one', 'cause two'], tone: 'fail' },
+  { t: 'table', columns: ['#', 'ID', 'Result'], rows: [['1', 'TC-1', 'PASS'], ['2', 'TC-2', 'FAIL']] },
+  { t: 'kv', rows: [['Platform', 'Win', false, false], ['Duration', '12 s', true, true]] },
+  { t: 'ref', text: 'Open case TC-2', ref: 'c2' },
+];
+
+const sn = (id, root) => ({ id, title: id, width: 560, root: { id: 'root', kind: 'column', children: root } });
+const host = document.getElementById('host');
+const mk = (snap) => { const w = R.renderWindow(document, snap, onEvent, () => {}); w.style.cssText += ';border:1px solid #bbb;padding:6px;width:560px'; host.appendChild(w); return w; };
+
+mk(sn('small', [
+  { id: 't1', kind: 'tree', columns: cols, rows: small, selected: 'c1' },
+  { id: 'fp', kind: 'filepick', text: 'Open files…' },
+]));
+const t0 = performance.now();
+mk(sn('big', [{ id: 't2', kind: 'tree', columns: cols, rows: big, selected: '' }]));
+const ms = Math.round(performance.now() - t0);
+mk(sn('doc', [{ id: 'd1', kind: 'doc', blocks: docBlocks }]));
+log('build ms (3000-row tree, this machine): ' + ms + '   rows: ' + big.length);
+log('check: click a tree arrow (▾/▸) to fold or open; click a row to select; click "Open case TC-2" for a ref event.');
+</script>
+</body>
