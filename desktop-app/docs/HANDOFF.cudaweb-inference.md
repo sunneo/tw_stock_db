@@ -1,7 +1,7 @@
 # 交接：cudaweb 推論（2026-11-16，第三棒）
 
 ## 1. 開場提示（接手者收到的原文）
-請接續 `desktop-app/docs/HANDOFF.cudaweb-inference.md`（專案 `D:\Downloads\videos-嗨投資-desktop-app\desktop-app`，分支 `desktop-app`）：完整讀完（含使用者原話、管理者指示與工作方式）並照著做，執行 low-context-long-run 技能（門檻 30%）：做下一個待辦，到門檻就寫下一份交接並自己啟動接手者（model 用 `claude-haiku-5-5`、effort 用 `high`，與上層的指示一致）。第一則訊息用一行說明你讀過文件、從哪個待辦開始。使用者原話：「我有開著claude for chrome, 可以用本地server來驗證」（2026-11-16）；管理者指示：「先做注意力＋KV 快取（第 1 項），先 CPU 參考版＋測試，再 GPU 核心，先接 Qwen3 0.6B，取第 0 層做一步 decode 與現有輸出比對」。
+（門檻已改為 60%，見第 6 節。）請接續 `desktop-app/docs/HANDOFF.cudaweb-inference.md`（專案 `D:\Downloads\videos-嗨投資-desktop-app\desktop-app`，分支 `desktop-app`）：完整讀完（含使用者原話、管理者指示與工作方式）並照著做，執行 low-context-long-run 技能（門檻 30%）：做下一個待辦，到門檻就寫下一份交接並自己啟動接手者（model 用 `claude-haiku-5-5`、effort 用 `high`，與上層的指示一致）。第一則訊息用一行說明你讀過文件、從哪個待辦開始。使用者原話：「我有開著claude for chrome, 可以用本地server來驗證」（2026-11-16）；管理者指示：「先做注意力＋KV 快取（第 1 項），先 CPU 參考版＋測試，再 GPU 核心，先接 Qwen3 0.6B，取第 0 層做一步 decode 與現有輸出比對」。
 
 ## 2. 概況
 - 專案 `D:\Downloads\videos-嗨投資-desktop-app\desktop-app`，分支 `desktop-app`。管理者（回報對象）：`local_49f6c57d-8f18-427b-a8f1-7b1d23efc5f5`。**尚未推送、尚未發布。**
@@ -58,7 +58,7 @@
 - 2026-11-16（desktop-app 工作階段轉述）：「先做網頁版…（已擱置）；2. 再做桌面版…；3. 注意力與 KV 快取先不做，除非接線需要。不要推送、不要發布。」
 
 ## 6. 交接流程（自我遞迴）
-執行 low-context-long-run 技能，門檻 30%：每個批次結束（已提交）讀 `mcp__ccd_session_mgmt__get_usage` 的 `context.percentUsed`，到 30% 就改寫本文件、提交、用 `mcp__ccd_session__start_session`（`initiation: "user_asked"`、`context: "fresh"`、同一個資料夾、同一個分支，model `claude-haiku-5-5`、effort `high`）啟動接手者，等它確認讀過文件並開始第一個待辦，才把自己標完成並封存（不刪除、不 clear）。管理層最上層工作階段不封存。待辦清空且驗證完就不再交接，改為回報完成。
+執行 low-context-long-run 技能，**門檻 60%**（管理者轉達使用者 2026-11-16 原話：「haiku應該可以到 60%再交接」，取代原本的 30%）：每個批次結束（已提交）讀 `mcp__ccd_session_mgmt__get_usage` 的 `context.percentUsed`，到 60% 就改寫本文件、提交、用 `mcp__ccd_session__start_session`（`initiation: "user_asked"`、`context: "fresh"`、同一個資料夾、同一個分支，model `claude-haiku-5-5`、effort `high`）啟動接手者，等它確認讀過文件並開始第一個待辦，才把自己標完成並封存（不刪除、不 clear）。管理層最上層工作階段不封存。待辦清空且驗證完就不再交接，改為回報完成。
 
 ## 7. 陷阱
 - 讀 Chrome 頁面的輸出時，`javascript_tool` 的文字曾被擋（`[BLOCKED: Cookie/query string data]`）。改從伺服器寫出的結果檔讀（`cudaweb_attn_browser.result.json` 在系統暫存資料夾，`cudaweb_infer_browser.result.json` 在 `scripts/eval/`）。
