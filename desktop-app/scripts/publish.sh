@@ -136,7 +136,7 @@ fi
 if [ "$WEB" = 1 ]; then
   say "網頁版（$WEB_REPO）釘到 ${HEAD_SHA:0:8}"
   [ -d "$WEB_REPO/web" ] || { echo "找不到網頁版 repo：$WEB_REPO（用 WEB_REPO 指定，或 --no-web）" >&2; exit 1; }
-  OLD="$(grep -o 'tw_stock_db/[0-9a-f]\{40\}' "$WEB_REPO/web/index.html" | head -1 | cut -d/ -f2)"
+  OLD="$(grep -o "var SHA = '[0-9a-f]\{40\}'" "$WEB_REPO/web/index.html" | head -1 | grep -o '[0-9a-f]\{40\}')"   # v417 起釘在 var SHA（jsDelivr 網址與 aiweb 的 FA_SHA 是同一個值）"
   [ -n "$OLD" ] || { echo "web/index.html 裡找不到釘住的 SHA" >&2; exit 1; }
   if [ "$OLD" = "$HEAD_SHA" ]; then echo "網頁版已經釘在這個 SHA"; else
     if [ "$DRY" = 1 ]; then echo "[dry-run] 把 web/index.html、web/aiweb/index.html 的 ${OLD:0:8} 換成 ${HEAD_SHA:0:8}，提交並推到 main"; else
