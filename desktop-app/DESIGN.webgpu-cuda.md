@@ -529,6 +529,8 @@ GUI 的獨立 Worker 模擬器目前沒有註冊 `_fa_cudaweb`，不能 `import 
 - 模擬測試（`scripts/eval/cudaweb_head_renderer_mock.js`，記憶體內假信箱）8 項全過；端到端 E2E（`scripts/eval/cudaweb_head_e2e.js`，真 ORT，子程序邏輯）四項全過；**真 Electron 視窗實機未驗證**，每個詞元的實際耗時未量。
 - 修正（2026-11-16）：`nrGpuHead` 原本沒有列入 `_normalizeAdvancedSettings` 白名單，存檔時會被洗掉，已修（`7017fb727`）；`_nrHeadStart` 原本在沒有 `navigator.gpu` 時提前放棄，已改為照常準備，WebGPU／WebGL2 的選層留給每個詞元內的 `q8lmAuto`。
 
+**實機量測嘗試（2026-11-16，未完成，沒有數字）**：真 Electron 執行共兩次（已達上限），兩次都在載入階段失敗。執行包的 `onnxruntime-node` 缺 `onnxruntime-common` 依賴（`Cannot find module 'onnxruntime-common'`），子程序回報 `load_failed`；暖機與正式的四段（開與關）都沒有產生任何詞元。因此沒有每詞元的中位數與 p90，也沒有頭服務被使用的證據。`head_desktop_result.json` 裡的 `sameText: true` 是兩邊都空字串的假陽性，不能當成結果。失敗發生在模型載入，早於任何 lm_head 呼叫；這是量測用暫存執行包（`scratchpad\rt-src`，不進 repo）的組裝問題，不是 lm_head 接線本身的結論（推定，尚未逐行確認）。`nrGpuHead` 維持預設關。要再量，需要先把 `onnxruntime-common` 放進執行包，並由使用者同意開新一次量測額度。
+
 **結論**：網頁版接線已通過真 Chrome 驗證並能正確退回；桌面版的程式與編排已就緒但沒有真機數字。若要讓桌面版預設開啟，需要先在真 Electron 量到「每個詞元的頭耗時」低於原 lm_head 的 169 毫秒，並把 T3 排除於桌面加速之外。
 
 ### 7.4 與原生執行環境的關係
