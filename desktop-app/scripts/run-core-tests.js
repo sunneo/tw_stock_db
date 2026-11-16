@@ -103,6 +103,8 @@ const suites = [
     ['資料集逐筆編輯核心測試：解析（jsonl／json）、不合法整份拒絕、序列化往返、分頁、增改刪與索引邊界。（補登）', 'renderer/src/studio/dataset_edit_core.test.js'],
     ['node renderer/src/studio/domain_e2e.test.js（補登）', 'renderer/src/studio/domain_e2e.test.js'],
     ['node renderer/src/studio/domain_spec_core.test.js（補登）', 'renderer/src/studio/domain_spec_core.test.js'],
+    ['Qwen3 q8 解碼：CPU 參考引擎（合成權重，KV 快取、錯誤處理、貪婪確定性）', 'renderer/src/gpu/qwen_decode_test.js'],
+    ['網頁版生成迴圈的 GPU 整段解碼編排（假 ort／session／引擎：一致、首詞元不同、中途失敗補 KV、逾時、eos）', 'renderer/src/studio/llm_web_gpudecode.test.js'],
     ['node renderer/src/studio/dsl_expr_core.test.js（補登）', 'renderer/src/studio/dsl_expr_core.test.js'],
     ['node renderer/src/studio/llm_export_core.test.js（補登）', 'renderer/src/studio/llm_export_core.test.js'],
     ['node renderer/src/studio/lora_manage_core.test.js（假資料；註冊表介面到位後改接真資料）（補登）', 'renderer/src/studio/lora_manage_core.test.js'],

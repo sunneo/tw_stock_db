@@ -122,6 +122,9 @@
 
     // ---- 貪婪解碼＋KV cache ----
     // 形狀由模型決定：層數、KV 頭數、head_dim 從 opts 來（預設 Qwen3-0.6B：28 / 8 / 128）
+    // opts.gpuDecode（可選，Qwen3 q8 整段 GPU 解碼，DESIGN.webgpu-cuda.md §7.13）：{ engine（qwen_gpu 的 createGpuEngine 結果：step(ids)→{token}、reset()）,
+    //   verifyTol 不用（動態量化讓數值有百分之幾的雜訊，只比 argmax）, timeoutMs（每步，預設 20000） }
+    //   開頭：GPU 預填與原圖預填各跑一次，第一個詞元不同就整段退回原路徑；之後每步只跑 GPU。任何一步失敗：用原圖把「已生成但原圖還沒吃進 KV」的詞元補進去，接著照原路徑走。
     // opts.head（可選）：{ variant（隱藏狀態變體的 session）, hiddenName（變體圖的隱藏狀態輸出名）, run(hidden:Float32Array)→Promise<Float32Array(V)>,
     //   timeoutMs（預設 8000）, verifySteps（預設 1：開頭幾步同時跑原圖，argmax 與相對誤差對拍）, verifyTol（預設 1e-3） }
     function greedyGenerate(ort, session, promptIds, opts) {
@@ -135,12 +138,69 @@
         const verifySteps = H ? (H.verifySteps === undefined ? 1 : H.verifySteps) : 0;
         const verifyTol = H ? (H.verifyTol === undefined ? 1e-3 : H.verifyTol) : 0;
         const diag = { requested: !!H, used: 0, steps: 0, verify: [], fallbackAt: -1, reason: '', headMs: 0, variantMs: 0, origMs: 0 };
+        const GD = o.gpuDecode && o.gpuDecode.engine && typeof o.gpuDecode.engine.step === 'function' ? o.gpuDecode : null;
+        const gdiag = { requested: !!GD, used: 0, verify: null, fallbackAt: -1, reason: '', gpuMs: 0, origMs: 0 };
         return (async () => {
             let past = {};
             for (let l = 0; l < L; l++) for (const k of ['key', 'value']) past[`past_key_values.${l}.${k}`] = new ort.Tensor('float32', new Float32Array(0), [1, KV, 0, HD]);
             let pastLen = 0, q = promptIds.slice(), out = [], stoppedBy = 'max';
             let headOn = !!H;
-            for (let s = 0; s < maxNew; s++) {
+            let s0 = 0;
+            if (GD) {
+                // ---- GPU 整段解碼階段 ----
+                const gTimeout = GD.timeoutMs === undefined ? 20000 : GD.timeoutMs;
+                let gpuTok = null, ortTok = null, r0 = null, ortLen = 0;
+                try {
+                    const feed0 = Object.assign({}, past);
+                    feed0.input_ids = new ort.Tensor('int64', BigInt64Array.from(q.map(BigInt)), [1, q.length]);
+                    feed0.attention_mask = new ort.Tensor('int64', BigInt64Array.from(new Array(q.length).fill(1n)), [1, q.length]);
+                    feed0.position_ids = new ort.Tensor('int64', BigInt64Array.from(Array.from({ length: q.length }, (_, i) => BigInt(i))), [1, q.length]);
+                    GD.engine.reset();
+                    const t0 = Date.now();
+                    gpuTok = (await withTimeout(Promise.resolve().then(() => GD.engine.step(q)), gTimeout, 'GPU 解碼預填 ')).token;
+                    gdiag.gpuMs += Date.now() - t0;
+                    const t1 = Date.now();
+                    r0 = await session.run(feed0);
+                    gdiag.origMs += Date.now() - t1;
+                    const V0 = r0.logits.dims[2], last = (q.length - 1) * V0;
+                    ortTok = argmaxOf(r0.logits.data.subarray(last, last + V0));
+                    ortLen = q.length;
+                    gdiag.verify = { gpuToken: gpuTok, ortToken: ortTok, argmaxSame: gpuTok === ortTok };
+                } catch (e) {
+                    gdiag.reason = 'GPU 解碼失敗，改用原路徑：' + String((e && e.message) || e); gdiag.fallbackAt = 0; gpuTok = null;
+                }
+                if (r0) {
+                    // 原圖的第一步已經有了：不論 GPU 是否一致，這一步都以原圖為準
+                    out.push(ortTok); diag.steps++; s0 = 1;
+                    past = {}; for (let l = 0; l < L; l++) for (const k of ['key', 'value']) past[`past_key_values.${l}.${k}`] = r0[`present.${l}.${k}`];
+                    pastLen = ortLen;
+                    if (typeof o.onToken === 'function') o.onToken(ortTok, out.length);
+                    if (eos.has(ortTok)) return { tokens: out, stoppedBy: 'eos', head: diag, gpuDecode: gdiag };
+                    if (gpuTok !== null && gpuTok !== ortTok) { gdiag.fallbackAt = 0; gdiag.reason = '第一個詞元與原圖不同（GPU ' + gpuTok + '、原圖 ' + ortTok + '），改用原路徑'; gpuTok = null; }
+                    let pending = [ortTok];   // 已生成、但原圖的 KV 還沒吃進去的詞元
+                    if (gpuTok !== null) {
+                        let cur = ortTok;
+                        for (let s = 1; s < maxNew; s++) {
+                            if (stopCheck()) { stoppedBy = 'stop'; return { tokens: out, stoppedBy, head: diag, gpuDecode: gdiag }; }
+                            let t;
+                            try {
+                                const t2 = Date.now();
+                                t = (await withTimeout(Promise.resolve().then(() => GD.engine.step([cur])), gTimeout, 'GPU 解碼 ')).token;
+                                gdiag.gpuMs += Date.now() - t2;
+                            } catch (e) { gdiag.fallbackAt = s; gdiag.reason = 'GPU 解碼第 ' + s + ' 步失敗，改用原路徑：' + String((e && e.message) || e); break; }
+                            out.push(t); diag.steps++; gdiag.used++; pending.push(t); cur = t;
+                            if (typeof o.onToken === 'function') o.onToken(t, out.length);
+                            if (eos.has(t)) return { tokens: out, stoppedBy: 'eos', head: diag, gpuDecode: gdiag };
+                            s0 = out.length;
+                        }
+                        if (gdiag.fallbackAt < 0) return { tokens: out, stoppedBy: 'max', head: diag, gpuDecode: gdiag };
+                    }
+                    q = pending.slice();
+                    // 之後走原路徑迴圈；out 已有 s0 個詞元
+                    s0 = out.length;
+                }
+            }
+            for (let s = s0; s < maxNew; s++) {
                 if (stopCheck()) { stoppedBy = 'stop'; break; }
                 const len = pastLen + q.length;
                 const feed = Object.assign({}, past);
@@ -203,7 +263,7 @@
                 pastLen = len; q = [best];
                 if (typeof o.onToken === 'function') o.onToken(best, out.length);
             }
-            return { tokens: out, stoppedBy, head: diag };
+            return { tokens: out, stoppedBy, head: diag, gpuDecode: gdiag };
         })();
     }
 
