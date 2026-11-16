@@ -537,6 +537,14 @@ GUI 的獨立 Worker 模擬器目前沒有註冊 `_fa_cudaweb`，不能 `import 
 
 **結論**：網頁版接線已通過真 Chrome 驗證並能正確退回；桌面版的程式與編排已就緒但沒有真機數字。若要讓桌面版預設開啟，需要先在真 Electron 量到「每個詞元的頭耗時」低於原 lm_head 的 169 毫秒，並把 T3 排除於桌面加速之外。
 
+### 7.9 MatMulNBits 投影核心（2026-11-16）
+- **CPU 參考版**（`renderer/src/gpu/matmulnbits_ref.js`，提交 `807e0f325`，後續補 `packQ4`）：bits 4、block 32、無 zero_points，零點固定 8；佈局 B 為 [N, nBlocks, 16]，低 4 位元是偶數 k。合成權重的期望值直接由 q 與 scales 算（不經過反量化），三個形狀相對誤差約 4e-8，通過（`matmulnbits_ref_test.js`）。
+- **GPU 核心**（`renderer/src/gpu/matmulnbits_gpu.js`）：WGSL，一個 invocation 算一個輸出格 (m, n)，沿 K 逐元素累加；派發為一維（`runWgsl` 只接受一個數字），由扁平索引還原 (m, n)。退路：WebGL2 未做，直接 cpu-js。
+  - **真 Chrome WebGPU**（`scripts/eval/cudaweb_matmulnbits_browser.js`，Chrome 157、NVIDIA Kepler）：3 個形狀全部走 T1，相對誤差 **1.1e-6**（M=1、K=1024、N=3072）、**8.1e-8**（M=3、K=40、N=5，末尾 padding）、**8.4e-7**（M=8、K=1024、N=64），容差 1e-4，通過。
+  - 第一次執行失敗的紀錄：`runWgsl` 的 `dispatchWorkgroups` 不接受陣列，三個案例都退回 cpu-js；頁面的判定有擋住（只算 T1 為通過），所以那次的「相對誤差 0」是參考對參考，不算數。修正後才是上面的結果。
+  - **速度（只記一個數字，不是掃描）**：M=1、K=1024、N=3072 每次呼叫約 36 ms，含 `runWgsl` 每次重建 shader 與 pipeline；未優化，不代表核心速度。
+- **未驗證**：與 q8 路徑用同一組真權重的對拍（需要網頁版 q4 權重，尚未取得）；WebGL2 退路；pipeline 快取；fp16 scales（目前是 f32）。
+
 ### 7.4 與原生執行環境的關係
 
 - cudaweb 不改動 `main-ext.js` 的原生執行包流程。

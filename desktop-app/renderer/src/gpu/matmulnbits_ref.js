@@ -56,4 +56,16 @@ function matmulNBitsRef(A, M, K, B, scales, N, zp = ZP) {
   return Y;
 }
 
-module.exports = { BLOCK, BYTES, ZP, nBlocksOf, unpackQ4, dequantQ4, matmulNBitsRef };
+// 反向打包（測試與頁面用）：q 是 N×K（每格 0..15），回傳 B（N×nBlocks×16）
+function packQ4(q, N, K) {
+  const nb = nBlocksOf(K);
+  const B = new Uint8Array(N * nb * BYTES);
+  for (let n = 0; n < N; n++) for (let b = 0; b < nb; b++) for (let j = 0; j < BYTES; j++) {
+    const k0 = b * BLOCK + 2 * j, k1 = k0 + 1;
+    const lo = k0 < K ? q[n * K + k0] : 0, hi = k1 < K ? q[n * K + k1] : 0;
+    B[(n * nb + b) * BYTES + j] = (hi << 4) | lo;
+  }
+  return B;
+}
+
+module.exports = { BLOCK, BYTES, ZP, nBlocksOf, unpackQ4, dequantQ4, matmulNBitsRef, packQ4 };
