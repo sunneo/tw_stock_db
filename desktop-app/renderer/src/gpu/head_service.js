@@ -65,7 +65,8 @@
   // runId 限定只處理這次生成的請求；回傳 { stop() }。請求檔寫到一半（JSON 壞掉）時等下一輪，不回錯誤。
   function startPolling(service, io, runId, intervalMs) {
     let stopped = false, busy = false;
-    const re = new RegExp('^head-' + String(runId).replace(/[^\w-]/g, '') + '-(\\d+)\\.req$');
+    // runId 為 null：不限定這次生成（渲染程序看不到主程序的請求 id；一次只跑一個生成，所以只會有一組請求）
+    const re = runId == null ? /^head-[\w-]+-(\d+)\.req$/ : new RegExp('^head-' + String(runId).replace(/[^\w-]/g, '') + '-(\\d+)\\.req$');
     const tick = async () => {
       if (stopped || busy) return;
       busy = true;
@@ -77,8 +78,9 @@
           try { JSON.parse(text); } catch (_) { continue; }
           const out = await service.handleReq(text);
           const base = n.slice(0, -4);
-          await io.write(base + '.res.tmp', out);
-          if (io.rename) await io.rename(base + '.res.tmp', base + '.res'); else await io.write(base + '.res', out);
+          // 有改名（rename）就先寫 .res.tmp 再改名（原子）；沒有就直接寫 .res（主程序讀到寫一半的 JSON 會等下一輪）
+          if (io.rename) { await io.write(base + '.res.tmp', out); await io.rename(base + '.res.tmp', base + '.res'); }
+          else await io.write(base + '.res', out);
           await io.remove(n);
         }
       } catch (_) { /* 下一輪再試 */ }
