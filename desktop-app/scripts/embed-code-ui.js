@@ -61,6 +61,19 @@ embed('renderer/src/gui/zenity.js', 'GUIZENITY-BEGIN', 'GUIZENITY-END', 'FA_GUI_
 embed('renderer/src/gpu/gpu_core.js', 'GPUCORE-BEGIN', 'GPUCORE-END', 'FA_GPU_CORE_SRC');
 // GPU 相容層的執行前準備（renderer/src/gpu/gpu_preload.js）：掃描腳本的墊片 import、先載入 numpy、安裝失敗的可見訊息。UMD，用 new Function 載入。
 embed('renderer/src/gpu/gpu_preload.js', 'GPUPRE-BEGIN', 'GPUPRE-END', 'FA_GPU_PRELOAD_SRC');
+// GPU 版 lm_head 服務（離線模型推論接線，DESIGN.webgpu-cuda.md §7.3）：gpu_core（已有 window.FaGpuCore）＋nn_ops＋infer_ops＋head_service 串成一段 CommonJS 原始碼，
+// 用最小 require 墊片執行，new Function(FA_HEAD_SRC)() 回傳 FaHeadService（./gpu_core.js 對應到呼叫端先載入好的 window.FaGpuCore）。
+(function embedHeadSvc() {
+    const rd = (p) => fs.readFileSync(path.join(root, p), 'utf8').replace(/\r\n/g, '\n');
+    let s = 'const MODS = {};\n';
+    for (const n of ['nn_ops', 'infer_ops', 'head_service']) s += 'MODS[' + JSON.stringify(n) + '] = function (module, exports, require) {\n' + rd('renderer/src/gpu/' + n + '.js') + '\n};\n';
+    s += "const CACHE = {}; function req(p) { const n = String(p).replace(/^\\.\\//, '').replace(/\\.js$/, ''); if (n === 'gpu_core') { if (!self.FaGpuCore) throw new Error('FaGpuCore 還沒載入'); return self.FaGpuCore; } if (CACHE[n]) return CACHE[n].exports; if (!MODS[n]) throw new Error('沒有模組 ' + p); const m = { exports: {} }; CACHE[n] = m; MODS[n].call(m.exports, m, m.exports, req); return m.exports; }\n";
+    s += "return req('head_service');";
+    const a = src.indexOf('/* HEADSVC-BEGIN */'), b = src.indexOf('/* HEADSVC-END */');
+    if (a < 0 || b < 0) throw new Error('找不到 HEADSVC 標記');
+    src = src.slice(0, a) + '/* HEADSVC-BEGIN */\nconst FA_HEAD_SRC = ' + lit(s) + ';\n' + src.slice(b);
+    console.log('已更新 FA_HEAD_SRC（' + s.length + ' 字元）');
+})();
 // 視窗主機（renderer/src/gui/gui_host.js，不直接碰 DOM 細節，render 與 bridge 由呼叫端傳入）：同上。
 embed('renderer/src/gui/gui_host.js', 'GUIHOST-BEGIN', 'GUIHOST-END', 'FA_GUI_HOST_SRC');
 // GUI 的 Python 工作者（renderer/src/gui/py_worker.js）與非同步判斷（py_async.js）：同上，嵌入後執行時載入。
