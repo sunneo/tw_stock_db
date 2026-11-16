@@ -831,3 +831,10 @@ Python 模擬器與離線模型推論共用同一個 GPU 裝置：
 - **這次發現的兩個平台問題（已處理）**：(1) **SwiftShader 的 `fma` 不是融合運算**，原本用 `fma` 求乘法誤差項的 `dd_mul` 在那裡只剩 float32 精度（相對誤差 5.8e-8）；改用 Dekker 分割（`dd_two_prod`），有沒有融合乘加的裝置都正確。(2) **編譯器對「第一個運算元是編譯期常數」的 dd 運算會化簡掉 two_sum 的誤差項**（實測 `dd_div((1,0), r)` 只有 float32 精度 5.9e-8，改成 `r/(r·r)` 兩個運算元都在執行期才正確）。**風險**：核心裡用常數當 dd 運算元（例如 `x[i] * 2.5 + y[i]` 的 2.5）在這類編譯器上可能損失精度；本次只在 `dd_powi` 負指數處避開，**一般常數運算元尚未做對策**（`flit` 產生的常數）。真 GPU 上是否同樣化簡未驗證。
 - 單元測試：`fa_gpu_py_test.py` 48 項（含各運算編譯成 `dd_*` 的文字檢查、`%`／`//` 的拒絕、不含 `fma(`）通過。
 
+
+### 7.18 LoRA 訓練端到端 GPU 20 步對拍（2026-11-16，清單 I）
+
+- 現況：JS 訓練器（`studio/lora_ref_train.js` 的 `lossAndGradsAsync`／`adamStepAsync`）的矩陣乘走 cudaweb 執行期、rmsnorm／softmax／silu／rope／adamw 走 `nn_ops.trainerOps`（T1 WGSL），已是端到端 GPU 路徑（§9.x）；反向的 softmax 梯度、交叉熵與 RMSNorm 的 inv 仍在 CPU（每列／每 token 的小運算，未搬）。
+- 驗證：`scripts/eval/cudaweb_train_browser.js`（埠 18783，頁面在真 Chrome 跑）。模型 V11 d8 L2 H2 F12 r2，8 個 token，lr 0.02，AdamW 20 步；CPU 同步 f64 參考對 GPU 非同步路徑逐步比 loss。
+- 結果（Chrome 156 軟體 WebGPU／SwiftShader，無真 GPU）：全部 20 步的算子都走 T1（rmsnorm 100、rope 160、softmax 40、silu 40、adamw 320 次；矩陣乘 1560 次，T1）；兩邊 loss 都由 2.548 降到約 1.583；逐步相對差最差 1.05e-4（第 0 步 1.0e-6，隨步數累積為 f32 對 f64 的軌跡漂移，Adam 會放大），門檻 1e-3 通過。耗時 8.8 秒／20 步（**未優化**：每次呼叫各自 submit，軟體 WebGPU，不代表真 GPU）。
+- 限制：只驗證小模型；真 GPU、Qwen 規模的 LoRA 訓練、單一 command encoder 的整步批次、CPU 殘留運算搬上 GPU 都未做。

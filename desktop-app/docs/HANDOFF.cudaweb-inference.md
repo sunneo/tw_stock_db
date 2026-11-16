@@ -11,13 +11,13 @@ Continue from the handoff document at `desktop-app/docs/HANDOFF.cudaweb-inferenc
 - **目標**：把 cudaweb（WebGPU 推論）接進產品，預設全部關、失敗自動退回、診斷齊全。**不推送、不發布。**
 - **環境（本棒起）**：Linux、無真 GPU；Chrome 156 有軟體 WebGPU（SwiftShader，旗標見 §8.9）；node 20 64 位元可跑大模型。Qwen q8 模型在 `~/.config/floating-assistant-desktop/native-models/qwen3-0.6b-q8/`；這台**沒有** MOSS、midigen、whisper 檔。
 - **本棒（2026-11-16，Linux）提交（新到舊）**：清單 O 勾掉（dd 除法／次方／math.*，Chrome 軟體 WebGPU 對 float64 < 1e-11；dd_mul 改 Dekker）→ N（`device_pick.js`，設定 `gpuAuto`）→ A/C/J/K/L/M/P 標 BLOCKED → H（20 步對拍結果）→ F（建置與檢查）→ E（pipeline 快取與退路測試）→ D（midigen `midiGpu`：`midi_session.js`）→ B（MOSS `mossGpu`：`moss_gpu_runners.js`，提交 `8d60a5bec`）。先前：`cbb355b66`、`c79bd2cbd`（Q）等。`git log --oneline` 看全部。
-- **清單現況**：Q、B、D、H＝部分完成（程式與單元測試做完；真模型／真 GPU 驗收 BLOCKED，原因寫在清單）；E、F、G、N、O＝[x]；A、C、J、K、L、M、P＝BLOCKED（缺模型檔需使用者同意下載，或改動過大）；**I（LoRA 訓練端到端 GPU，使用者說「訓練的是最後的最後」）是唯一還沒動的項目**。
+- **清單現況**：Q、B、D、H＝部分完成（程式與單元測試做完；真模型／真 GPU 驗收 BLOCKED，原因寫在清單）；E、F、G、N、O＝[x]；A、C、J、K、L、M、P＝BLOCKED（缺模型檔需使用者同意下載，或改動過大）；I（LoRA 訓練端到端 GPU）已完成，清單全部 [x] 或 BLOCKED，只差最終回報。
 - **設定開關**（全在 `_gpuCompatControls`，AI 助理設定與桌面版設定頁共用同一處；預設關）：`llmGpuHead`、`qwenGpuDecode`、`mossGpu`、`midiGpu`、`gpuAuto`（自動決定，手動勾選仍有效）。診斷：`_gpuStat`、`_mossGpuStat`、`_midiGpuNote/_midiGpuStat`、`_gpuAutoDec`、各結果的 `gpu` 欄位。
 - **DESIGN**：`DESIGN.webgpu-cuda.md` §7.13（Qwen，含 20 步對拍）、§7.14（MOSS）、§7.15（midigen）、§7.16（自動選擇）、§7.17（dd 補洞與兩個平台問題）。
 
 ## 3. 待辦（依序，下一步在最前）
 
-1. **I（唯一未做）LoRA 訓練端到端 GPU**：梯度與交叉熵等其餘運算，端到端訓練 20 步 loss 對拍（見清單 I；現有訓練核心在 `renderer/src/gpu/nn_ops.js` 的 `trainerOps`、adamw 等；先 Grep `lora`、`trainerOps` 找現況，照「CPU 參考 → 對拍 → Chrome 軟體 WebGPU」做；沒有真 GPU，速度數字標「未優化／軟體 WebGPU」）。做不下去就標 BLOCKED＋原因（例如需要真 GPU、或需要使用者同意的資料／模型）。
+1. **I 已完成**（2026-11-16，Chrome 軟體 WebGPU 20 步 loss 對拍，DESIGN §7.18；清單全部是 [x] 或 BLOCKED）。
 2. 做完 I 後再檢查清單是否每項都是 [x] 或 BLOCKED（B、D、H、Q 的 [~] 已把 BLOCKED 部分寫在項目裡；若要嚴格一致可把 [~] 改成 [x]＋「BLOCKED 驗收」字樣），F 再跑一次（`node build-assistant.js`、`node scripts/build-web-lazy.js`、`node scripts/web-lazy-check.js`，**產物不提交**，跑完 `git checkout -- renderer/floating-assistant.js renderer/floating-assistant.min.js renderer/update-manifest.json web-lazy` 並刪掉 build 新增的未追蹤 `web-lazy/chunks/{headsvc,midigpu,mossgpu,qwengpu}.js`）。
 3. **最終回報（只回報一次，由最後一棒做）**：做了什麼（每項一行）、提交編號、哪些只過 CPU 參考／哪些真 Chrome（軟體 WebGPU）驗證過、哪些沒驗證、哪些 BLOCKED（原因）、需要使用者決定的（Basic Pitch／Whisper／SDXS／Kokoro／Demucs／YAMNet 的模型檔下載同意；midigen q4 約 73 MB 與 MOSS 約 760 MB 的真模型對拍；真 GPU 與真 Electron 驗證；桌面版 Qwen 信箱接線要主程序檔）。
 
