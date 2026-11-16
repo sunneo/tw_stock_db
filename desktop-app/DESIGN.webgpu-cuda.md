@@ -566,6 +566,12 @@ GUI 的獨立 Worker 模擬器目前沒有註冊 `_fa_cudaweb`，不能 `import 
   - **速度（只記一個數字，未優化）**：每步約 1.3–1.6 秒。原因：`runWgsl` 每次重建 pipeline；LN、RoPE、GELU、嵌入仍在 CPU。
 - **未做**：GPU 上的 LN、RoPE、GELU；WebGL2 退路；pipeline 快取；local 解碼器與取樣（`moss_tts_local_*`）；codec（音訊 tokenizer）解碼；完整語音生成的端到端比對。Basic Pitch 卷積與 Whisper 的新模型仍未取得同意，未做。
 
+### 7.12 MOSS 本地解碼器（非快取）與 GPU 線性層（2026-11-16）
+- **圖**（`scripts/eval/cudaweb_onnx_dump.js`）：17 個位置＝global_hidden、文字嵌入（`model.transformer.wte`，本地表與全域表名稱不同）、15 條音訊前綴嵌入（`model.audio_embeddings.c`，pad 歸零）；單層因果 Transformer；`ln_f` 後文字 head 讀位置 0，音訊 head c 讀位置 c+1。
+- **CPU 參考版**（`renderer/src/gpu/moss_local.js`）對真 ORT（`scripts/eval/cudaweb_moss_local_check.js`）：兩組輸入，文字 logits 相對誤差 **1.7e-6、1.2e-6**，音訊最差 **5.0e-6、3.4e-6**，argmax 16/16 一致，通過。
+- **GPU 線性層**（真 Chrome，`scripts/eval/cudaweb_moss_local_gpu_check.js`）：c_attn、c_proj、fc_in、fc_out、文字 head、16 個音訊 head 共 **170 次全部 T1**；兩組 logits 相對誤差與 CPU 版同量級（**1.7e-6／3.4e-6**），通過。注意力在這裡仍是 CPU（17 個位置）。
+- **未做**：本地解碼器的快取版（`moss_tts_local_cached_step`）、取樣（`moss_tts_local_fixed_sampled_frame`，4949 節點，含 TopK、CumSum、GatherElements）、codec 解碼（含卷積）、MOSS 推論路徑接線（產品端）。
+
 ### 7.4 與原生執行環境的關係
 
 - cudaweb 不改動 `main-ext.js` 的原生執行包流程。

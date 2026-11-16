@@ -18,6 +18,7 @@ const argmax = (a) => { let k = 0; for (let i = 1; i < a.length; i++) if (a[i] >
   const model = ML.loadMossLocal(fs.readFileSync(onnxPath), dataFiles);
   const sess = await ort.InferenceSession.create(onnxPath, { executionProviders: ['cpu'] });
   const res = { 步驟: [] };
+  const refs = [];
   for (let s = 0; s < 2; s++) {
     const gh = Float32Array.from({ length: 768 }, (_, i) => Math.sin(i * 0.013 + s) * 0.7);
     const textId = (s * 911 + 17) % 16000;
@@ -28,7 +29,8 @@ const argmax = (a) => { let k = 0; for (let i = 1; i < a.length; i++) if (a[i] >
       audio_prefix_token_ids: new ort.Tensor('int32', Int32Array.from(audio), [1, 15]),
     });
     const ortText = Float32Array.from(o.text_logits.data), ortAudio = Float32Array.from(o.audio_logits.data);
-    const js = ML.localDecode(model, gh, textId, audio);
+    const js = await ML.localDecode(model, gh, textId, audio);
+    refs.push({ gh: Array.from(gh), textId, audio, ortText: Array.from(ortText), ortAudio: Array.from(ortAudio), audioDims: o.audio_logits.dims });
     const rt = cmp(js.textLogits, ortText);
     const audioDims = o.audio_logits.dims;
     const A = audioDims[audioDims.length - 1], C = ortAudio.length / A;
@@ -43,5 +45,7 @@ const argmax = (a) => { let k = 0; for (let i = 1; i < a.length; i++) if (a[i] >
   }
   res.pass = res.步驟.every((x) => x.文字logits相對誤差 < 1e-3 && x.音訊logits最差相對誤差 < 1e-3 && x.文字argmax一致);
   console.log(JSON.stringify(res, null, 1));
+  // 可選第二參數：把兩組輸入與 ORT 參考 logits 寫成 JSON（給瀏覽器 GPU 驗證頁當比對目標）
+  if (process.argv[3]) fs.writeFileSync(process.argv[3], JSON.stringify({ refs }));
   process.exitCode = res.pass ? 0 : 1;
 })().catch((e) => { console.error('錯誤：', e && e.stack || e); process.exitCode = 1; });

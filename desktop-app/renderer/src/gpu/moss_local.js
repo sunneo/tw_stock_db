@@ -50,11 +50,12 @@ function ropeRows(X, T) {
 }
 
 // 單層前向（非快取）：x 為 T×D。回傳 T×D。
-function layerForward(x, T, L) {
+async function layerForward(x, T, L, ops) {
+  const O = ops || MS.CPU_OPS;
   const h = new Float32Array(T * D);
   for (let t = 0; t < T; t++) h.set(MS.layerNorm(x.subarray(t * D, (t + 1) * D), L.ln1w, L.ln1b), t * D);
   const qkv = new Float32Array(T * 3 * D);
-  for (let t = 0; t < T; t++) qkv.set(MS.linearCpu(h.subarray(t * D, (t + 1) * D), L.cAttn.data, D, 3 * D, L.cAttnB), t * 3 * D);
+  for (let t = 0; t < T; t++) qkv.set(await O.linear(h.subarray(t * D, (t + 1) * D), L.cAttn.data, D, 3 * D, L.cAttnB), t * 3 * D);
   const q = new Float32Array(T * D), k = new Float32Array(T * D), v = new Float32Array(T * D);
   for (let t = 0; t < T; t++) { q.set(qkv.subarray(t * 3 * D, t * 3 * D + D), t * D); k.set(qkv.subarray(t * 3 * D + D, t * 3 * D + 2 * D), t * D); v.set(qkv.subarray(t * 3 * D + 2 * D, t * 3 * D + 3 * D), t * D); }
   const qr = ropeRows(q, T), kr = ropeRows(k, T);
@@ -72,15 +73,15 @@ function layerForward(x, T, L) {
   }
   const out = new Float32Array(T * D);
   for (let t = 0; t < T; t++) {
-    const pr = MS.linearCpu(ao.subarray(t * D, (t + 1) * D), L.cProj.data, D, D, L.cProjB);
+    const pr = await O.linear(ao.subarray(t * D, (t + 1) * D), L.cProj.data, D, D, L.cProjB);
     for (let i = 0; i < D; i++) out[t * D + i] = x[t * D + i] + pr[i];
   }
   const out2 = new Float32Array(T * D);
   for (let t = 0; t < T; t++) {
     const h2 = MS.layerNorm(out.subarray(t * D, (t + 1) * D), L.ln2w, L.ln2b);
-    const f1 = MS.linearCpu(h2, L.fcIn.data, D, FF, L.fcInB);
+    const f1 = await O.linear(h2, L.fcIn.data, D, FF, L.fcInB);
     const g = MS.geluCpu(f1);
-    const f2 = MS.linearCpu(g, L.fcOut.data, FF, D, L.fcOutB);
+    const f2 = await O.linear(g, L.fcOut.data, FF, D, L.fcOutB);
     for (let i = 0; i < D; i++) out2[t * D + i] = out[t * D + i] + f2[i];
   }
   return out2;
@@ -88,7 +89,8 @@ function layerForward(x, T, L) {
 
 // 一次本地前向。globalHidden：768；textId：整數；audioPrefix：15 個整數（pad=1024）。
 // 回傳 { textLogits: Float32Array, audioLogits: Float32Array[16] }
-function localDecode(model, globalHidden, textId, audioPrefix) {
+async function localDecode(model, globalHidden, textId, audioPrefix, ops) {
+  const O = ops || MS.CPU_OPS;
   const T = 2 + NCH_PREFIX;
   const x = new Float32Array(T * D);
   x.set(globalHidden, 0);
@@ -98,11 +100,12 @@ function localDecode(model, globalHidden, textId, audioPrefix) {
     if (id === PAD) continue;
     x.set(model.audioEmb[c].data.subarray(id * D, (id + 1) * D), (2 + c) * D);
   }
-  const out = layerForward(x, T, model.layer);
+  const out = await layerForward(x, T, model.layer, O);
   const hf = new Float32Array(T * D);
   for (let t = 0; t < T; t++) hf.set(MS.layerNorm(out.subarray(t * D, (t + 1) * D), model.lnFw, model.lnFb), t * D);
-  const textLogits = MS.linearCpu(hf.subarray(0, D), model.textHead.data, D, model.textHead.dims[1], null);
-  const audioLogits = model.audioHeads.map((hd, c) => MS.linearCpu(hf.subarray((c + 1) * D, (c + 2) * D), hd.data, D, hd.dims[1], null));
+  const textLogits = await O.linear(hf.subarray(0, D), model.textHead.data, D, model.textHead.dims[1], new Float32Array(model.textHead.dims[1]));
+  const audioLogits = [];
+  for (let c = 0; c < model.audioHeads.length; c++) { const hd = model.audioHeads[c]; audioLogits.push(await O.linear(hf.subarray((c + 1) * D, (c + 2) * D), hd.data, D, hd.dims[1], new Float32Array(hd.dims[1]))); }
   return { textLogits, audioLogits };
 }
 
