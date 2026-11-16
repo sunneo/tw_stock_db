@@ -16,8 +16,9 @@
 //   Top-P 0.95：softmax 後累積機率，排除「前面累積 ≥ 0.95」的候選（第一名必留）。
 //   取樣：逆 CDF。過濾後 softmax 的累積和 cum2；計數 n = #{k : cum2[k] < clip(u, 0, 0.9999999404)}；
 //         索引 = clip(n, 0, K−1)；輸出 TopK 索引表中該位置的詞元。
-//   續停：文字頭兩個 logit（詞元 0、1）的 softmax 第 0 項 p0；shouldContinue = (clip(u) ≤ p0)；
+//   續停：文字頭在詞元 9（續停）與 7（停止）兩個 logit 的 softmax 第 0 項 p0；shouldContinue = (clip(u) ≤ p0)；
 //         下一幀的文字詞元 = shouldContinue ? 9 : 7（本地解碼器的位置 1）。
+//         （圖中 Constant_64 = 9、Constant_65 = 7 是 Gather 的索引，不是 0、1；先前誤判成 0、1 已修正。）
 const ML = require('./moss_local.js');
 
 const NAUDIO = 16, V = 1024, PAD = 1024;
@@ -79,7 +80,7 @@ async function sampleFrame(model, globalHidden, seenMask, uAssistant, uAudio, op
   // 1) 文字頭：位置 0 的隱藏狀態只看得到自己（因果遮罩），故其餘位置用 pad 即可
   const pads = new Array(NAUDIO - 1).fill(PAD);
   const probe = await ML.localDecode(model, globalHidden, TEXT_STOP, pads, ops);
-  const p0 = softmaxF64(Float64Array.from([probe.textLogits[0], probe.textLogits[1]]))[0];
+  const p0 = softmaxF64(Float64Array.from([probe.textLogits[TEXT_CONT], probe.textLogits[TEXT_STOP]]))[0];
   const shouldContinue = clip(uAssistant, 0, U_MAX) <= p0 ? 1 : 0;
   const textTok = shouldContinue ? TEXT_CONT : TEXT_STOP;
   // 2) 16 條音訊碼本依序：第 c 條用位置 c+1 的隱藏狀態，前綴為已取樣的前 c 條
