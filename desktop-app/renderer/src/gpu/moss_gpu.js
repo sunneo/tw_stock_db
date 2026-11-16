@@ -115,7 +115,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let i = gid.x;
   if (i >= p.n) { return; }
   let g = x[i];
-  y[i] = 0.5 * g * (1.0 + tanh(0.7978846 * (g + 0.044715 * g * g * g)));
+  // 軟體 WebGPU（SwiftShader）的 tanh 在引數很大時會回 NaN（x³ 溢位 → inf/inf），先夾到 ±15（tanh 在此已飽和為 ±1）
+  let u = clamp(0.7978846 * (g + 0.044715 * g * g * g), -15.0, 15.0);
+  y[i] = 0.5 * g * (1.0 + tanh(u));
 }
 `;
 
@@ -124,7 +126,7 @@ function u32Bytes(vals) { const ab = new ArrayBuffer(Math.ceil(vals.length * 4 /
 // 一次矩陣乘（T1）：x 長度 K、W 為 K×N（列優先）、b 長度 N；回傳 {result, info}
 function linearWgsl(dev, x, W, K, N, b) {
   return nn.runWgsl(dev, WGSL_LINEAR,
-    [{ data: Float32Array.from(x) }, { data: W }, { data: Float32Array.from(b) }, { data: new Float32Array(N), out: true }],
+    [{ data: Float32Array.from(x) }, { data: W, cache: true }, { data: b, cache: true }, { data: new Float32Array(N), out: true }],
     u32Bytes([K, N, 0, 0]), Math.ceil(N / 64)).then((outs) => outs[0]);
 }
 function attnWgsl(dev, q, Kc, Vc, Ln) {
@@ -135,7 +137,7 @@ function attnWgsl(dev, q, Kc, Vc, Ln) {
 
 function lnWgsl(dev, x, w, b) {
   return nn.runWgsl(dev, WGSL_LN,
-    [{ data: Float32Array.from(x) }, { data: Float32Array.from(w) }, { data: Float32Array.from(b) }, { data: new Float32Array(M.D), out: true }],
+    [{ data: Float32Array.from(x) }, { data: w, cache: true }, { data: b, cache: true }, { data: new Float32Array(M.D), out: true }],
     u32Bytes([M.D, 0, 0, 0, { f: M.EPS }, 0, 0, 0]), 1).then((outs) => outs[0]);
 }
 function ropeWgsl(dev, x, pos) {

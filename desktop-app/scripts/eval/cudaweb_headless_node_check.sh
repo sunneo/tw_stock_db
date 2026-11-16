@@ -4,7 +4,9 @@
 DIR="$1"; NAME="$2"; PORT="${3:-18786}"; TMO="${4:-3000}"
 HERE="$(cd "$(dirname "$0")/../.." && pwd)"; RES="${TMPDIR:-/tmp}/cudaweb_node_gpu_${NAME}.result.json"; UD="$(mktemp -d /tmp/cudaweb_chrome_XXXXXX)"
 rm -f "$RES"
-setsid node "$HERE/scripts/eval/cudaweb_node_gpu_check.js" "$DIR" "$NAME" "$PORT" > "$UD/server.log" 2>&1 &
+if [ -n "$SERVER_CMD" ]; then RES="${TMPDIR:-/tmp}/$NAME.result.json"; rm -f "$RES"; setsid bash -c "$SERVER_CMD" > "$UD/server.log" 2>&1 &   # 例：SERVER_CMD="node scripts/eval/cudaweb_moss_pipeline_gpu_check.js <資料夾> <ref> <埠>"，NAME＝結果檔名（不含 .result.json）
+else setsid node "$HERE/scripts/eval/cudaweb_node_gpu_check.js" "$DIR" "$NAME" "$PORT" > "$UD/server.log" 2>&1 &
+fi
 SP=$!
 sleep 1
 setsid google-chrome --headless=new --no-sandbox --user-data-dir="$UD/profile" --enable-unsafe-webgpu --enable-features=Vulkan --use-angle=swiftshader --use-webgpu-adapter=swiftshader --disable-gpu-watchdog "http://127.0.0.1:$PORT/" > "$UD/chrome.log" 2>&1 &

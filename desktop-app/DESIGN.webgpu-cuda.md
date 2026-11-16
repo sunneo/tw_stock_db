@@ -873,3 +873,10 @@ Python 模擬器與離線模型推論共用同一個 GPU 裝置：
   - text_encoder：72 MatMulInteger＋24 MatMul（合成 token）：CPU 5.6e-7、整數逐位相同；Chrome 全 T1，浮點最差 2.8e-7，整數 0 不符。
   - unet：44 Conv＋71 MatMulInteger＋24 MatMul（合成潛變量、timestep=500、合成文字嵌入）共 139 節點，無略過：CPU 8.6e-7；Chrome 全 T1，最差 7.7e-6，整數 0 不符。
   - 未做：GroupNorm（InstanceNormalization）、交叉注意力的 Softmax／縮放、上採樣（Resize）、時間嵌入、整條擴散迴圈與影像比對、產品接線。
+
+### 7.22 MOSS 整管線 GPU 對 ORT 通過（清單 A，2026-11-16）
+
+- 先前「驗證頁 30 分鐘無結果」的真因：(1) `nn.runWgsl` 每次呼叫都重新上傳整份權重（全域 440 MB、本地 230 MB）且不銷毀緩衝區；(2) `moss_gpu` 的 GELU 以 `tanh(0.7978846·(g+0.0447·g³))`，在軟體 WebGPU（SwiftShader）引數大時 x³ 溢位、tanh 回 NaN，GPU 預填 hidden 全為 NaN → 取樣第一幀即停（0 幀）。用診斷頁逐運算檢查 NaN 找到（GELU 輸入長度 3072，第 690 格輸出 NaN）。
+- 修正：`runWgsl` 的緩衝區可標 `cache:true`（以 typed array 物件為 WeakMap 鍵，常駐 GPU；`moss_gpu.linearWgsl` 的 W、b 與 `lnWgsl` 的 w、b 使用），暫時緩衝區在讀回後銷毀；GELU 引數夾到 ±15。沒有搬進 Worker：頁面本來就是 async，不阻塞主執行緒。
+- 驗證（真 MOSS，`你好`，seed 7，3 幀，`cudaweb_moss_pipeline_gpu_check.js`＋`cudaweb_headless_node_check.sh`）：預填 78 列＋生成，Chrome 156 軟體 WebGPU，**3 幀與 ORT 完全一致**，全 T1，生成 121 秒（未優化）；同幀 codec 音訊（CPU 解釋器）對 ORT 3.0e-6。診斷頁另量到：GPU 本地解碼 text logits 對 CPU 相對差 4.0e-7、audio0 2.1e-6，GPU 取樣與 CPU 取樣的 16 個碼本完全相同。
+- 未做：codec 整圖走 GPU（解釋器的 MatMul 仍 CPU）、經產品 worker 開關的端到端、真 GPU。

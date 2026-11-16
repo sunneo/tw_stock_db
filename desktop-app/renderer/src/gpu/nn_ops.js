@@ -119,9 +119,13 @@ function getDevice(nav) {
 
 // 通用的單次分派：bufs = [{data: Float32Array, out: bool}]，依序綁定 0..n-1；uniform 綁在最後一個索引
 async function runWgsl(dev, code, bufs, uniform, groups) {
+  // 標 cache:true 的輸入（權重）常駐在 GPU：以 typed array 物件為鍵（WeakMap），同一份權重只上傳一次
+  const rc = dev.__cudawebRes || (dev.__cudawebRes = new WeakMap());
   const objs = bufs.map((b) => {
+    if (b.cache) { const hit = rc.get(b.data); if (hit) return hit; }
     const buf = dev.createBuffer({ size: b.data.byteLength, usage: USAGE.STORAGE | USAGE.COPY_SRC | USAGE.COPY_DST });
     dev.queue.writeBuffer(buf, 0, b.data);
+    if (b.cache) rc.set(b.data, buf);
     return buf;
   });
   const ub = dev.createBuffer({ size: Math.max(16, Math.ceil(uniform.byteLength / 16) * 16), usage: USAGE.UNIFORM | USAGE.COPY_DST });
@@ -147,8 +151,10 @@ async function runWgsl(dev, code, bufs, uniform, groups) {
     if (!bufs[i].out) continue;
     await rb[i].mapAsync(1);
     outs.push(new (bufs[i].data.constructor === Int32Array ? Int32Array : Float32Array)(rb[i].getMappedRange().slice(0)));
-    rb[i].unmap();
+    rb[i].unmap(); if (rb[i].destroy) rb[i].destroy();
   }
+  objs.forEach((buf, i) => { if (!bufs[i].cache && buf.destroy) buf.destroy(); });
+  if (ub.destroy) ub.destroy();
   return outs;
 }
 
