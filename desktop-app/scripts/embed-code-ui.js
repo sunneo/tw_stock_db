@@ -79,9 +79,9 @@ embed('renderer/src/gpu/gpu_preload.js', 'GPUPRE-BEGIN', 'GPUPRE-END', 'FA_GPU_P
 (function embedQwenGpu() {
     const rd = (p) => fs.readFileSync(path.join(root, p), 'utf8').replace(/\r\n/g, '\n');
     let s = 'const MODS = {};\n';
-    for (const n of ['nn_ops', 'infer_ops', 'onnx_lite', 'attn_ops', 'qwen_decode', 'qwen_gpu']) s += 'MODS[' + JSON.stringify(n) + '] = function (module, exports, require) {\n' + rd('renderer/src/gpu/' + n + '.js') + '\n};\n';
+    for (const n of ['nn_ops', 'infer_ops', 'onnx_lite', 'attn_ops', 'qwen_decode', 'qwen_gpu', 'device_pick']) s += 'MODS[' + JSON.stringify(n) + '] = function (module, exports, require) {\n' + rd('renderer/src/gpu/' + n + '.js') + '\n};\n';
     s += "const CACHE = {}; function req(p) { const n = String(p).replace(/^\\.\\//, '').replace(/\\.js$/, ''); if (n === 'gpu_core') { if (!self.FaGpuCore) throw new Error('FaGpuCore 還沒載入'); return self.FaGpuCore; } if (CACHE[n]) return CACHE[n].exports; if (!MODS[n]) throw new Error('沒有模組 ' + p); const m = { exports: {} }; CACHE[n] = m; MODS[n].call(m.exports, m, m.exports, req); return m.exports; }\n";
-    s += "return { decode: req('qwen_decode'), gpu: req('qwen_gpu') };";
+    s += "return { decode: req('qwen_decode'), gpu: req('qwen_gpu'), pick: req('device_pick'), nn: req('nn_ops') };";
     const a = src.indexOf('/* QWENGPU-BEGIN */'), b = src.indexOf('/* QWENGPU-END */');
     if (a < 0 || b < 0) throw new Error('找不到 QWENGPU 標記');
     src = src.slice(0, a) + '/* QWENGPU-BEGIN */\nconst FA_QWEN_SRC = ' + lit(s) + ';\n' + src.slice(b);

@@ -103,6 +103,7 @@ const suites = [
     ['資料集逐筆編輯核心測試：解析（jsonl／json）、不合法整份拒絕、序列化往返、分頁、增改刪與索引邊界。（補登）', 'renderer/src/studio/dataset_edit_core.test.js'],
     ['node renderer/src/studio/domain_e2e.test.js（補登）', 'renderer/src/studio/domain_e2e.test.js'],
     ['node renderer/src/studio/domain_spec_core.test.js（補登）', 'renderer/src/studio/domain_spec_core.test.js'],
+    ['裝置自動選擇：決策規則（軟體 adapter 關、基準門檻）、探測不丟錯', 'renderer/src/gpu/device_pick_test.js'],
     ['cudaweb pipeline 快取與退路（假 WebGPU 裝置：第二次不重建、沒有 GPU／裝置遺失退 cpu-js）', 'renderer/src/gpu/gpu_cache_fallback_test.js'],
     ['midigenai 假 session（cudaweb 解碼）：KV 佈局轉換、重放重建、錯誤傳遞', 'renderer/src/gpu/midi_session_test.js'],
     ['MOSS GPU 管線：探測、退層檢查', 'renderer/src/tts/moss_gpu_runners_test.js'],

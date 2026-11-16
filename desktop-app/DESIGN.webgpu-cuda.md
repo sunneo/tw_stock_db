@@ -818,3 +818,9 @@ Python 模擬器與離線模型推論共用同一個 GPU 裝置：
 - **桌面版**：渲染程序本身有 WebGPU，解碼迴圈在渲染程序，所以不需要 head_req／head_res 信箱（那是給沒有 WebGPU 的原生子程序用的；midigen 的原生路徑只在 CPU 版 q8 檔，不受影響）。
 - **驗證（如實）**：`midi_session_test.js`（假解碼函式驗證佈局轉換、新列抽取、重放重建、P=0 重置、錯誤傳遞）通過；`midi_decoder` 本身對 ORT（約 1e-6）與 WebGPU 投影（170 次 T1）先前已驗證（§7.10）。**未驗證**：用真模型在產品路徑「固定種子前 N 個 token 與原路徑相同」——這台機器沒有 midigen 的 q4 檔（HF 約 73 MB，需使用者在本對話同意下載；交接文件說管理者要求停用此檔），所以 BLOCKED。
 
+### 7.16 裝置自動選擇（2026-11-16，設定 `gpuAuto`，預設關）
+
+- `renderer/src/gpu/device_pick.js`：`decide(info)` 純決策（沒有 WebGPU／沒有 adapter／軟體 adapter（`isFallbackAdapter` 或名稱含 swiftshader、llvmpipe、software、lavapipe…）一律關；真 GPU 要基準 ≥ 20 GFLOP/s 且 ≥ CPU 基準 3 倍）；`probe(navigator, nn_ops)` 量 256×256 WGSL 矩陣乘（含上傳讀回）與 96×96 JS 矩陣乘；軟體 adapter 不量直接關。各條路徑（qwenGpuDecode、mossGpu、midiGpu、llmGpuHead）目前同一結果，原因寫明（`features[f].reason`）。
+- 產品：`floating-assistant.js` 的 `_gpuAutoOn(feature)`／`_gpuAutoProbe()`（結果快取 `_gpuAutoDec`；探測完成前視為關）；各 `_xxxOn()` = 手動勾選 **或** 自動決定。手動勾選一定開；要完全不用就關 `gpuAuto` 並取消勾選。模組由 `FA_QWEN_SRC` 帶（`pick`、`nn`）。設定放 `_gpuCompatControls`（AI 助理設定與桌面版設定頁共用），狀態列多一行「自動選擇：…」。
+- 驗證（如實）：`device_pick_test.js`（決策規則全部分支、probe 不丟錯、軟體 adapter 不量基準）通過。**未驗證**：真 GPU 上基準數字與門檻是否合理（這台沒有真 GPU）；門檻是保守猜測，要用真機數字調。
+

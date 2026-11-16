@@ -23,7 +23,7 @@
 - [ ] **BLOCKED（產品的 whisper-base（onnx-community，q8，約 80 MB）只存在使用者的瀏覽器快取，這台機器沒有；不新下載需先有使用者同意）** **K. Whisper 編碼器走 GPU**（conv_ops 一維卷積＋注意力），對 transformers.js 輸出比對；用產品現有 whisper-base，不新下載。
 - [ ] **BLOCKED（先查清單已有（DESIGN §12），Demucs／YAMNet 清單與所有模型下載都需使用者同意）** **L. Basic Pitch、Demucs、YAMNet**：先查模型檔清單（不下載）；有同意再做圖對照。
 - [ ] **BLOCKED（缺 SDXS 模型檔，下載需使用者同意）** **M. SDXS 影像生成**：GroupNorm、交叉注意力、上採樣、VAE；只針對 CPU 版與沒有 f16 的機器。
-- [ ] **N. 裝置自動選擇**：依能力探測與簡單基準自動決定 GPU 路徑要不要開（預設開關仍可手動關）；沒有 WebGPU 的機器走 WebGL2 或純 JS。
+- [x] **N. 裝置自動選擇**（2026-11-16）：`device_pick.js`（探測＋小基準＋決策）、設定 `gpuAuto`（預設關，手動勾選仍可關／開）、各 GPU 路徑 `_xxxOn()` 接上、DESIGN §7.16、單元測試通過；真 GPU 的基準門檻未用真機數字校準（如實寫在 §7.16）。沒有 WebGPU 的機器維持原路徑（wasm／純 JS）。
 - [ ] **O. Python 相容層補洞**：float64 除法、次方、`math.*`。
 - [ ] **BLOCKED（唯讀查圖形也需要 kokoro 模型檔（下載需使用者同意））** **P. Kokoro**：先查 kokoro-js 圖形（唯讀），能估工作量再決定。
 - [ ] **I. 【最後的最後】LoRA 訓練端到端 GPU**（使用者 2026-11-16：「訓練的是最後的最後」，其他全部做完才碰）：梯度與交叉熵等其餘運算，端到端訓練 20 步 loss 對拍。
