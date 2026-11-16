@@ -241,6 +241,8 @@ assert.match(G.parseWait('wait w1 a=b').error, /shell variable name/); ok();
   assert.strictEqual(sn.kind, 'tree'); assert.strictEqual(sn.rows.length, 4); assert.strictEqual(sn.rows[1].bold, true); ok();
   assert.strictEqual(sn.columns[1].align, 'right'); assert.strictEqual(sn.rows[2].expanded, false); ok();
   assert.match(G.apply(S, { op: 'add', id: 'wt', node: { id: 'bad1', kind: 'tree', columns: [{ title: 'x' }], rows: [{ id: 'r', depth: 0, cells: ['1', '2'] }] } }).error, /2 cells, the tree has 1/); ok();
+  // Redmine 版的程式用空字串表示沒有色調：樹的 tones 與文件區塊的 tone 都要收（回傳 null／省略）
+  assert.strictEqual(G.apply(S, { op: 'add', id: 'wt', node: { id: 'emp', kind: 'tree', columns: cols, rows: [{ id: 'r', cells: ['1', '2'], tones: ['', 'muted'] }] } }).error, undefined); ok();
   assert.match(G.apply(S, { op: 'add', id: 'wt', node: { id: 'bad2', kind: 'tree', columns: cols, rows: [{ id: 'r', cells: ['1', '2'], tones: ['loud', null] }] } }).error, /tones\[0\]/); ok();
   assert.match(G.apply(S, { op: 'add', id: 'wt', node: { id: 'bad3', kind: 'tree', columns: cols, rows: [{ id: 'r', depth: 99, cells: ['1', '2'] }] } }).error, /depth must be/); ok();
   assert.match(G.apply(S, { op: 'add', id: 'wt', node: { id: 'bad4', kind: 'tree', columns: [{ title: 'x', align: 'justify' }] } }).error, /align must be/); ok();

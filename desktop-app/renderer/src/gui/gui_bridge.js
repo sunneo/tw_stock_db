@@ -191,6 +191,7 @@
       if (r.tones !== undefined) {
         if (!Array.isArray(r.tones) || r.tones.length > MAX_COLUMNS) { throw new Error(what + '.tones must be an array of at most ' + MAX_COLUMNS + ' items'); }
         row.tones = r.tones.map(function (t, j) {
+          if (t === '') { return null; } // Redmine 版的程式用空字串表示「沒有色調」
           if (t !== null && TREE_TONES.indexOf(t) < 0) { throw new Error(what + '.tones[' + j + '] must be pass, fail, warn, muted or null'); }
           return t;
         });
@@ -227,7 +228,7 @@
       if (total > MAX_DOC_TOTAL) { throw new Error('the doc is longer than ' + MAX_DOC_TOTAL + ' characters'); }
       return s;
     }
-    function tone(t, field) { if (t !== undefined && TREE_TONES.indexOf(t) < 0) { throw new Error(field + ' must be pass, fail, warn or muted'); } return t; }
+    function tone(t, field) { if (t === '') { return undefined; } if (t !== undefined && TREE_TONES.indexOf(t) < 0) { throw new Error(field + ' must be pass, fail, warn or muted'); } return t; }
     return v.map(function (b, i) {
       var what = 'blocks[' + i + ']', out = {};
       if (!isObj(b)) { throw new Error(what + ' must be an object'); }
