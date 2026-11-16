@@ -80,6 +80,8 @@
     // expanded true or false has children; its descendants are hidden while it is false). A click sends select (value = the row id),
     // the arrow sends toggle (value = the row id; the bridge flips the row's expanded flag itself). selected is the selected row id.
     tree: { props: ['columns', 'rows', 'selected', 'enabled'], events: ['select', 'toggle'] },
+    // doc: a read-only page of blocks (title, p, h, pre, list, table, kv, ref); a click on a ref block sends ref (value = its ref)
+    doc: { props: ['blocks'], events: ['ref'] },
     // a canvas is drawn by whole frames (op "draw" replaces the frame); fps > 0 makes the page send "frame" events, key presses come as "key",
     // the pointer as "mouse" ({kind: down | up | move, x, y, button} with x and y inside the canvas), the wheel as "wheel" ({x, y, dy}),
     // and "resize" ({width, height}: the canvas's new size in pixels when its window is resized or maximized)
@@ -145,6 +147,7 @@
     if (kind === 'table' && name === 'rows') { return tableRows(v); }
     if (kind === 'tree' && name === 'columns') { return treeColumns(v); }
     if (kind === 'tree' && name === 'rows') { return treeRows(v); }
+    if (kind === 'doc' && name === 'blocks') { return docBlocks(v); }
     if (kind === 'multilist' && name === 'selected') { return cellList(v, 'selected', 0, MAX_ITEMS); }
     return prop(kind, name, v);
   }
@@ -203,6 +206,63 @@
   function treeRowOf(node, id) {
     for (var i = 0; i < (node.rows || []).length; i++) { if (node.rows[i].id === id) { return node.rows[i]; } }
     return null;
+  }
+
+  // doc: a read-only page of blocks (see gui.py's doc). One block text up to 300000 characters, the whole doc 400000 (the skill's
+  // detail pages are that big); a block keeps only the props its kind takes.
+  var DOC_KINDS = {
+    title: ['text', 'badge', 'tone'], p: ['text', 'tone'], h: ['text'], pre: ['text', 'wrap'],
+    list: ['items', 'tone'], table: ['columns', 'rows'], kv: ['rows'], ref: ['text', 'ref']
+  };
+  var MAX_DOC_BLOCKS = 2000, MAX_DOC_TEXT = 300000, MAX_DOC_TOTAL = 400000, MAX_DOC_ROWS = 3000;
+  function docBlocks(v) {
+    if (!Array.isArray(v) || v.length > MAX_DOC_BLOCKS) { throw new Error('blocks must be an array of at most ' + MAX_DOC_BLOCKS + ' blocks'); }
+    var total = 0;
+    function str(s, field) {
+      if (typeof s !== 'string') { throw new Error(field + ' must be a string'); }
+      if (s.length > MAX_DOC_TEXT) { throw new Error(field + ' is longer than ' + MAX_DOC_TEXT + ' characters'); }
+      total += s.length;
+      if (total > MAX_DOC_TOTAL) { throw new Error('the doc is longer than ' + MAX_DOC_TOTAL + ' characters'); }
+      return s;
+    }
+    function tone(t, field) { if (t !== undefined && TREE_TONES.indexOf(t) < 0) { throw new Error(field + ' must be pass, fail, warn or muted'); } return t; }
+    return v.map(function (b, i) {
+      var what = 'blocks[' + i + ']', out = {};
+      if (!isObj(b)) { throw new Error(what + ' must be an object'); }
+      if (!Object.prototype.hasOwnProperty.call(DOC_KINDS, b.t)) { throw new Error(what + '.t must be one of ' + Object.keys(DOC_KINDS).join(', ')); }
+      Object.keys(b).forEach(function (k) {
+        if (k === 't') { return; }
+        if (DOC_KINDS[b.t].indexOf(k) < 0) { throw new Error(what + ' prop "' + k + '" is not allowed on ' + b.t + ' blocks'); }
+        var f = what + '.' + k;
+        if (k === 'text' || k === 'badge' || k === 'ref') { out[k] = str(b[k], f); }
+        else if (k === 'tone') { out[k] = tone(b[k], f); }
+        else if (k === 'wrap') { out[k] = bool(b[k], f); }
+        else if (k === 'items') {
+          if (!Array.isArray(b[k]) || b[k].length > MAX_ITEMS) { throw new Error(f + ' must be an array of at most ' + MAX_ITEMS + ' strings'); }
+          out[k] = b[k].map(function (s, j) { return str(s, f + '[' + j + ']'); });
+        }
+        else if (k === 'columns') { out[k] = cellList(b[k], f, 1, MAX_COLUMNS).map(function (s, j) { return str(s, f + '[' + j + ']'); }); }
+        else if (k === 'rows' && b.t === 'table') {
+          if (!Array.isArray(b[k]) || b[k].length > MAX_DOC_ROWS) { throw new Error(f + ' must be an array of at most ' + MAX_DOC_ROWS + ' rows'); }
+          out[k] = b[k].map(function (r, j) {
+            if (!Array.isArray(r) || r.length !== (b.columns || []).length) { throw new Error(f + '[' + j + '] must have one cell per column'); }
+            return r.map(function (c, ci) { return str(c, f + '[' + j + '][' + ci + ']'); });
+          });
+        }
+        else if (k === 'rows') { // kv: [key, value, highlight, mono]
+          if (!Array.isArray(b[k]) || b[k].length > MAX_DOC_ROWS) { throw new Error(f + ' must be an array of at most ' + MAX_DOC_ROWS + ' rows'); }
+          out[k] = b[k].map(function (r, j) {
+            if (!Array.isArray(r) || r.length < 2 || r.length > 4) { throw new Error(f + '[' + j + '] must be [key, value, highlight, mono]'); }
+            return [str(r[0], f + '[' + j + '][0]'), str(r[1], f + '[' + j + '][1]'), r[2] === undefined ? false : bool(r[2], f + '[' + j + '][2]'), r[3] === undefined ? false : bool(r[3], f + '[' + j + '][3]')];
+          });
+        }
+      });
+      out.t = b.t;
+      return out;
+    });
+  }
+  function docHasRef(node, ref) {
+    return (node.blocks || []).some(function (b) { return b.t === 'ref' && b.ref === ref; });
   }
 
   // table rows: an array of rows, each with one text value per column
@@ -443,7 +503,7 @@
       if (typeof value !== 'string' || node.children.indexOf(value) < 0) { return null; }
       node.selected = value;
     }
-    if ((eventName === 'key' || eventName === 'frame' || eventName === 'mouse' || eventName === 'wheel' || eventName === 'resize' || eventName === 'caret') && value === undefined) { return null; } // these always carry a value
+    if ((eventName === 'key' || eventName === 'frame' || eventName === 'mouse' || eventName === 'wheel' || eventName === 'resize' || eventName === 'caret' || eventName === 'ref') && value === undefined) { return null; } // these always carry a value
     var ev = { v: VERSION, event: eventName, id: winId, node: nodeId };
     if (value !== undefined) {
       if (node.kind === 'tree' && (eventName === 'select' || eventName === 'toggle')) {
@@ -451,6 +511,11 @@
         var trow = typeof value === 'string' ? treeRowOf(node, value) : null;
         if (!trow || (eventName === 'toggle' && trow.expanded === undefined)) { return null; }
         ev.value = trow.id;
+      }
+      else if (node.kind === 'doc' && eventName === 'ref') {
+        // the ref of a ref block in this doc
+        if (typeof value !== 'string' || !docHasRef(node, value)) { return null; }
+        ev.value = value;
       }
       else if (eventName === 'change' || eventName === 'toggle') { ev.value = !!value; }
       else if (eventName === 'key') {

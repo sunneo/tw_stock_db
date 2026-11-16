@@ -111,6 +111,13 @@
     '.gui-tree td.gui-tree-td{padding:4px 10px;white-space:nowrap}.gui-tree tr.gui-tree-sel td{background:var(--gui-hover)}',
     '.gui-tree .gui-tree-arrow{display:inline-block;width:14px;cursor:pointer;color:var(--gui-muted);user-select:none}.gui-tree-bold td{font-weight:600}',
     '.gui-tone-pass{color:#2e7d32}.gui-tone-fail{color:var(--gui-danger)}.gui-tone-warn{color:#b26a00}.gui-tone-muted{color:var(--gui-muted)}',
+    '.gui-doc{display:flex;flex-direction:column;gap:6px;padding:10px 12px;overflow:auto;min-height:0;font-size:13px}',
+    '.gui-doc-title{font-size:16px;font-weight:600;display:flex;align-items:center;gap:8px;flex-wrap:wrap}.gui-doc-badge{font-size:11px;padding:1px 7px;border-radius:9px;border:1px solid currentColor}',
+    '.gui-doc-h{font-weight:600;margin-top:8px;color:var(--gui-muted);font-size:12px;letter-spacing:.02em}.gui-doc-p{white-space:pre-wrap;word-break:break-word}',
+    '.gui-doc-pre{margin:0;font-family:var(--gui-mono);font-size:12px;overflow:auto;background:var(--gui-surface2);padding:8px;border-radius:var(--gui-radius);max-height:360px}',
+    '.gui-doc-list{margin:0;padding-left:18px}.gui-doc-li{word-break:break-all}.gui-doc-td{padding:4px 8px;white-space:nowrap}',
+    '.gui-doc-kv{display:grid;grid-template-columns:max-content 1fr;gap:3px 12px}.gui-doc-k{color:var(--gui-muted)}.gui-doc-v{word-break:break-all}.gui-doc-hl{font-weight:600}.gui-doc-mono{font-family:var(--gui-mono)}',
+    '.gui-doc-ref{color:var(--gui-accent);text-decoration:underline;cursor:pointer;word-break:break-all}',
     '.gui-cell{border:none;border-radius:0;background:transparent;width:100%;padding:6px 10px}.gui-cell:focus{box-shadow:inset 0 0 0 2px var(--gui-accent)}',
     '.gui-tabs{display:flex;flex-direction:column;min-width:0;min-height:0}',
     '.gui-tabbar{display:flex;gap:2px;padding:0 var(--gui-s3);border-bottom:1px solid var(--gui-border);flex:0 0 auto;background:var(--gui-surface)}',
@@ -804,6 +811,11 @@
         el.className = 'gui-treebox';
         buildTree(doc, el, n, onEvent);
         break;
+      case 'doc':
+        el = doc.createElement('div');
+        el.className = 'gui-doc';
+        buildDoc(doc, el, n, onEvent);
+        break;
       case 'markdown':
         el = doc.createElement('div');
         el.className = 'gui-md';
@@ -956,6 +968,62 @@
     tableEl.appendChild(tbody);
     el.appendChild(tableEl);
     treeVisibility(entries);
+  }
+
+  // doc: blocks drawn as text only (textContent, never markup). A ref block is a link: a click sends ref (value = the block's ref).
+  function docEl(doc, tag, cls, text) {
+    var x = doc.createElement(tag);
+    if (cls) { x.className = cls; }
+    if (text !== undefined) { x.textContent = String(text); }
+    return x;
+  }
+  function buildDoc(doc, el, n, onEvent) {
+    (n.blocks || []).forEach(function (b) {
+      var tone = b.tone ? ' gui-tone-' + b.tone : '';
+      if (b.t === 'title') {
+        var title = docEl(doc, 'div', 'gui-doc-title' + tone, b.text);
+        if (b.badge) { title.appendChild(docEl(doc, 'span', 'gui-doc-badge' + tone, b.badge)); }
+        el.appendChild(title);
+      } else if (b.t === 'p') {
+        el.appendChild(docEl(doc, 'div', 'gui-doc-p' + tone, b.text));
+      } else if (b.t === 'h') {
+        el.appendChild(docEl(doc, 'div', 'gui-doc-h', b.text));
+      } else if (b.t === 'pre') {
+        var pre = docEl(doc, 'pre', 'gui-doc-pre', b.text);
+        pre.style.whiteSpace = b.wrap ? 'pre-wrap' : 'pre';
+        el.appendChild(pre);
+      } else if (b.t === 'list') {
+        var ul = docEl(doc, 'ul', 'gui-doc-list');
+        (b.items || []).forEach(function (s) { ul.appendChild(docEl(doc, 'li', 'gui-doc-li' + tone, s)); });
+        el.appendChild(ul);
+      } else if (b.t === 'table') {
+        var wrap = docEl(doc, 'div', 'gui-tablebox'), tableEl = docEl(doc, 'table', 'gui-table'), head = docEl(doc, 'tr');
+        (b.columns || []).forEach(function (c) { head.appendChild(docEl(doc, 'th', null, c)); });
+        var thead = docEl(doc, 'thead');
+        thead.appendChild(head);
+        tableEl.appendChild(thead);
+        var tbody = docEl(doc, 'tbody');
+        (b.rows || []).forEach(function (r) {
+          var tr = docEl(doc, 'tr');
+          r.forEach(function (c) { tr.appendChild(docEl(doc, 'td', 'gui-doc-td', c)); });
+          tbody.appendChild(tr);
+        });
+        tableEl.appendChild(tbody);
+        wrap.appendChild(tableEl);
+        el.appendChild(wrap);
+      } else if (b.t === 'kv') {
+        var kv = docEl(doc, 'div', 'gui-doc-kv');
+        (b.rows || []).forEach(function (r) {
+          kv.appendChild(docEl(doc, 'div', 'gui-doc-k', r[0]));
+          kv.appendChild(docEl(doc, 'div', 'gui-doc-v' + (r[2] ? ' gui-doc-hl' : '') + (r[3] ? ' gui-doc-mono' : ''), r[1]));
+        });
+        el.appendChild(kv);
+      } else if (b.t === 'ref') {
+        var link = docEl(doc, 'div', 'gui-doc-ref', b.text);
+        link.addEventListener('click', function () { onEvent('ref', n.id, b.ref); });
+        el.appendChild(link);
+      }
+    });
   }
 
   function buildTabs(doc, el, n, onEvent) {

@@ -381,4 +381,33 @@ assert.strictEqual(violations.length, 0); ok();
   assert.strictEqual(trs[1].style.display, ''); ok();
 }
 
+// doc: blocks become elements with their text (never markup), badges and tones, tables, kv highlight, and a ref block click sends ref
+{
+  const S5 = G.createSession();
+  const ap5 = (m) => { const r = G.apply(S5, m); assert.ok(r.ok, r.error); };
+  ap5({ op: 'open', id: 'wdr', title: 'D' });
+  ap5({ op: 'add', id: 'wdr', node: { id: 'dd', kind: 'doc', blocks: [
+    { t: 'title', text: '<b>Run</b>', badge: 'FAIL', tone: 'fail' },
+    { t: 'list', items: ['cause'], tone: 'warn' },
+    { t: 'table', columns: ['#', 'Result'], rows: [['1', 'PASS']] },
+    { t: 'kv', rows: [['Key', 'Value', true, true]] },
+    { t: 'ref', text: 'case 1', ref: 'c1' }
+  ] } });
+  const got5 = [];
+  const w5 = R.renderWindow(doc, G.snapshot(S5, 'wdr'), (name, node, value) => got5.push([name, node, value]), () => {});
+  const d = byNode(w5, 'dd');
+  assert.ok(d.className.indexOf('gui-doc') >= 0); ok();
+  const title = d.children[0];
+  assert.strictEqual(title.textContent, '<b>Run</b>'); assert.ok(title.className.indexOf('gui-tone-fail') >= 0); ok();
+  assert.strictEqual(find(title, (e) => e.className && e.className.indexOf('gui-doc-badge') >= 0).textContent, 'FAIL'); ok();
+  assert.strictEqual(find(d.children[1], (e) => e.tagName === 'li').textContent, 'cause'); ok();
+  assert.strictEqual(find(d.children[2], (e) => e.tagName === 'td').textContent, '1'); ok();
+  const kvv = find(d.children[3], (e) => e.className && e.className.indexOf('gui-doc-v') >= 0);
+  assert.ok(kvv.className.indexOf('gui-doc-hl') >= 0 && kvv.className.indexOf('gui-doc-mono') >= 0); ok();
+  const link = d.children[4];
+  link.fire('click');
+  assert.deepStrictEqual(got5[got5.length - 1], ['ref', 'dd', 'c1']); ok();
+  assert.strictEqual(violations.length, 0); ok();
+}
+
 console.log('gui_render: ' + n + ' assertions passed');

@@ -30,6 +30,7 @@ Look and keys: theme(palette={...}, font=..., size=..., radius=...) colors and s
 makes wait() and poll() return {"event": "shortcut", "value": "save"} when the key is pressed; tone(freq, ms, wave) beeps.
 """
 import base64
+import json
 import os
 
 import fa_bridge
@@ -45,6 +46,7 @@ class Window(object):
         self._images = 0
         self._tables = set()
         self._trees = set()
+        self._docs = set()
         self._carets = {}
         self.closed = False
         self._style = {}
@@ -171,6 +173,16 @@ class Window(object):
         self._trees.add(nid)
         return nid
 
+    def doc(self, blocks=(), parent=None):
+        """A read-only page drawn as text. Blocks (dicts, in order):
+        {"t": "title", "text", "badge", "tone"}, {"t": "p", "text", "tone"}, {"t": "h", "text"}, {"t": "pre", "text", "wrap"},
+        {"t": "list", "items", "tone"}, {"t": "table", "columns", "rows"}, {"t": "kv", "rows": [[key, value, highlight, mono], ...]},
+        {"t": "ref", "text", "ref"}. tone is "pass", "fail", "warn" or "muted". A click on a ref block gives a "ref" event (value = its ref).
+        set(nid, blocks=...) replaces the page. One block up to 300000 characters, the whole page 400000."""
+        nid = self._node("doc", parent, blocks=_doc_blocks(blocks))
+        self._docs.add(nid)
+        return nid
+
     def multilist(self, items, selected=(), parent=None, rows=0):
         """A list where several items can be selected. value() is the list of selected items. rows: lines shown (0 = by item count, at most 8)."""
         nid = self._node("multilist", parent, items=[str(i) for i in items], selected=[str(s) for s in selected], **({"rows": int(rows)} if rows else {}))
@@ -209,6 +221,8 @@ class Window(object):
     def set(self, nid, **props):
         """Change properties of a node already added: set(btn, text="Save", enabled=False), set(box, visible=False),
         set(pb, value=40), set(lbl, text="..."). value() follows value / checked / selected."""
+        if nid in self._docs and "blocks" in props:
+            props["blocks"] = _doc_blocks(props["blocks"])
         if nid in self._trees:  # the same row and column shapes as tree() takes
             if "rows" in props:
                 props["rows"] = [_tree_row(r) for r in props["rows"]]
@@ -379,8 +393,13 @@ def _styled(fn):
 
 
 for _name in ("label", "button", "entry", "row", "column", "grid", "scroll", "tabs", "tab", "split", "menubar", "menu", "menuitem", "expander",
-              "editor", "table", "multilist", "textarea", "checkbox", "progress", "listbox", "list", "tree", "canvas", "markdown"):
+              "editor", "table", "multilist", "textarea", "checkbox", "progress", "listbox", "list", "tree", "doc", "canvas", "markdown"):
     setattr(Window, _name, _styled(getattr(Window, _name)))
+
+
+def _doc_blocks(blocks):
+    # plain JSON data (tuples become lists), so the page gets exactly what it would from a JSON message
+    return json.loads(json.dumps(list(blocks)))
 
 
 def _tree_cols(columns):

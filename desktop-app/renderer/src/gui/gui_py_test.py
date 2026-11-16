@@ -271,6 +271,15 @@ replies[:] = [{'v': 1, 'event': 'toggle', 'id': wl.id, 'node': tv, 'value': 'a'}
 ev3 = wl.wait(timeout=5)  # a toggle is not in also=, so the stub's close comes next
 check('tree toggle keeps the selected value', wl.value(tv) == 'b' and ev3 is not None and ev3['event'] == 'close')
 
+# doc: tuples become lists, set replaces the blocks, and a ref event does not change value()
+dn = wl.doc([{'t': 'kv', 'rows': [('k', 'v', True, False)]}, {'t': 'ref', 'text': 'go', 'ref': 'c1'}], parent=col)
+check('doc op', calls[-1][1]['node'] == {'id': dn, 'kind': 'doc', 'blocks': [{'t': 'kv', 'rows': [['k', 'v', True, False]]}, {'t': 'ref', 'text': 'go', 'ref': 'c1'}]})
+wl.set(dn, blocks=[{'t': 'h', 'text': 'x'}])
+check('doc set blocks', calls[-1][1]['props'] == {'blocks': [{'t': 'h', 'text': 'x'}]})
+replies[:] = [{'v': 1, 'event': 'ref', 'id': wl.id, 'node': dn, 'value': 'c1'}]
+ev4 = wl.wait(timeout=5)
+check('doc ref is returned by wait', ev4 is not None and ev4['event'] == 'ref' and ev4['value'] == 'c1')
+
 if failures:
     print('%d failure(s)' % len(failures))
     sys.exit(1)

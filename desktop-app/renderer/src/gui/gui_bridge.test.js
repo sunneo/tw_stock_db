@@ -255,4 +255,38 @@ assert.match(G.parseWait('wait w1 a=b').error, /shell variable name/); ok();
   assert.strictEqual(G.snapshot(S, 'wt').root.children[0].rows[2].expanded, false); ok();
 }
 
+// doc: block kinds and their props, table shapes, kv rows, the length limits, and ref events that must name a ref block of the doc
+{
+  const S = G.createSession();
+  const ap = (m) => G.apply(S, m);
+  ap({ op: 'open', id: 'wd', title: 'D' });
+  const blocks = [
+    { t: 'title', text: 'Run', badge: 'PASS', tone: 'pass' },
+    { t: 'p', text: 'some text', tone: 'muted' },
+    { t: 'h', text: 'Cases' },
+    { t: 'pre', text: 'a\nb', wrap: true },
+    { t: 'list', items: ['x', 'y'], tone: 'fail' },
+    { t: 'table', columns: ['#', 'Result'], rows: [['1', 'PASS']] },
+    { t: 'kv', rows: [['Key', 'Value', true, false], ['Other', 'v']] },
+    { t: 'ref', text: 'case 1', ref: 'c1' }
+  ];
+  assert.deepStrictEqual(ap({ op: 'add', id: 'wd', node: { id: 'dd', kind: 'doc', blocks: blocks } }), { ok: true }); ok();
+  const kept = G.snapshot(S, 'wd').root.children[0].blocks;
+  assert.strictEqual(kept.length, 8); assert.strictEqual(kept[4].tone, 'fail'); assert.deepStrictEqual(kept[6].rows[1], ['Other', 'v', false, false]); ok();
+  assert.match(ap({ op: 'add', id: 'wd', node: { id: 'x1', kind: 'doc', blocks: [{ t: 'nope' }] } }).error, /\.t must be one of/); ok();
+  assert.match(ap({ op: 'add', id: 'wd', node: { id: 'x2', kind: 'doc', blocks: [{ t: 'h', text: 'a', items: [] }] } }).error, /prop "items" is not allowed on h/); ok();
+  assert.match(ap({ op: 'add', id: 'wd', node: { id: 'x3', kind: 'doc', blocks: [{ t: 'table', columns: ['a', 'b'], rows: [['1']] }] } }).error, /one cell per column/); ok();
+  assert.match(ap({ op: 'add', id: 'wd', node: { id: 'x4', kind: 'doc', blocks: [{ t: 'p', text: 'a', tone: 'loud' }] } }).error, /pass, fail, warn or muted/); ok();
+  assert.match(ap({ op: 'add', id: 'wd', node: { id: 'x5', kind: 'doc', blocks: [{ t: 'kv', rows: [['only']] }] } }).error, /key, value, highlight, mono/); ok();
+  assert.match(ap({ op: 'add', id: 'wd', node: { id: 'x6', kind: 'doc', blocks: [{ t: 'pre', text: 'y'.repeat(300001) }] } }).error, /longer than 300000/); ok();
+  const big = []; for (let i = 0; i < 3; i++) { big.push({ t: 'pre', text: 'z'.repeat(200000) }); }
+  assert.match(ap({ op: 'add', id: 'wd', node: { id: 'x7', kind: 'doc', blocks: big } }).error, /the doc is longer than 400000/); ok();
+  assert.strictEqual(G.eventLine(S, 'wd', 'dd', 'ref', 'c1').indexOf('"value":"c1"') > 0, true); ok();
+  assert.strictEqual(G.eventLine(S, 'wd', 'dd', 'ref', 'nope'), null); ok();
+  assert.strictEqual(G.eventLine(S, 'wd', 'dd', 'ref', undefined), null); ok();
+  assert.match(ap({ op: 'set', id: 'wd', node: 'dd', props: { blocks: [{ t: 'ref', text: 'only', ref: 'c2' }] } }).ok ? 'yes' : 'no', /yes/); ok();
+  assert.strictEqual(G.eventLine(S, 'wd', 'dd', 'ref', 'c1'), null); ok();
+  assert.strictEqual(G.eventLine(S, 'wd', 'dd', 'ref', 'c2').indexOf('"value":"c2"') > 0, true); ok();
+}
+
 console.log('gui_bridge: ' + n + ' assertions passed');
