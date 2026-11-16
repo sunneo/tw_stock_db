@@ -1,0 +1,169 @@
+{
+ "buildMs": 466,
+ "variantRemovedNodes": [
+  "/lm_head/MatMul",
+  "model.embed_tokens.weight_transposed_DequantizeLinear",
+  "Transpose_610"
+ ],
+ "maxNew": 8,
+ "refText": "  用中文。  用",
+ "cases": [
+  {
+   "name": "原路徑",
+   "tokens": [
+    220,
+    220,
+    11622,
+    104811,
+    1773,
+    220,
+    220,
+    11622
+   ],
+   "head": {
+    "requested": false,
+    "used": 0,
+    "steps": 8,
+    "verify": [],
+    "fallbackAt": -1,
+    "reason": "",
+    "headMs": 0,
+    "variantMs": 0,
+    "origMs": 3108
+   }
+  },
+  {
+   "name": "頭正常",
+   "tokens": [
+    220,
+    220,
+    11622,
+    104811,
+    1773,
+    220,
+    220,
+    11622
+   ],
+   "head": {
+    "requested": true,
+    "used": 8,
+    "steps": 8,
+    "verify": [
+     {
+      "step": 0,
+      "maxRel": 3.3367896160327994e-7,
+      "argmaxSame": true
+     }
+    ],
+    "fallbackAt": -1,
+    "reason": "",
+    "headMs": 7305,
+    "variantMs": 2730,
+    "origMs": 583
+   }
+  },
+  {
+   "name": "第 3 步起失敗",
+   "tokens": [
+    220,
+    220,
+    11622,
+    104811,
+    1773,
+    220,
+    220,
+    11622
+   ],
+   "head": {
+    "requested": true,
+    "used": 3,
+    "steps": 8,
+    "verify": [
+     {
+      "step": 0,
+      "maxRel": 3.3367896160327994e-7,
+      "argmaxSame": true
+     }
+    ],
+    "fallbackAt": 3,
+    "reason": "GPU lm_head 失敗，改用原路徑：模擬 GPU 失效",
+    "headMs": 2418,
+    "variantMs": 1208,
+    "origMs": 3058
+   }
+  },
+  {
+   "name": "結果不合",
+   "tokens": [
+    220,
+    220,
+    11622,
+    104811,
+    1773,
+    220,
+    220,
+    11622
+   ],
+   "head": {
+    "requested": true,
+    "used": 0,
+    "steps": 8,
+    "verify": [
+     {
+      "step": 0,
+      "maxRel": 0.9999998646478274,
+      "argmaxSame": true
+     }
+    ],
+    "fallbackAt": 0,
+    "reason": "結果不合（第 0 步：相對誤差 1.00e+0，argmax 一致），改用原路徑",
+    "headMs": 757,
+    "variantMs": 411,
+    "origMs": 3242
+   }
+  },
+  {
+   "name": "逾時",
+   "tokens": [
+    220,
+    220,
+    11622,
+    104811,
+    1773,
+    220,
+    220,
+    11622
+   ],
+   "head": {
+    "requested": true,
+    "used": 0,
+    "steps": 8,
+    "verify": [],
+    "fallbackAt": 0,
+    "reason": "GPU lm_head 失敗，改用原路徑：GPU lm_head 逾時（300 毫秒）",
+    "headMs": 0,
+    "variantMs": 512,
+    "origMs": 3992
+   }
+  }
+ ],
+ "checks": [
+  {
+   "name": "頭正常：詞元與原路徑相同，全部步驟走頭",
+   "pass": true
+  },
+  {
+   "name": "第 3 步起失敗：詞元相同，退回位置為第 3 步",
+   "pass": true
+  },
+  {
+   "name": "結果不合：對拍失敗、詞元相同、退回位置為第 0 步",
+   "pass": true
+  },
+  {
+   "name": "逾時：詞元相同、原因寫明逾時",
+   "pass": true
+  }
+ ],
+ "pass": true
+}

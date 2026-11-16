@@ -1,13 +1,15 @@
-/* llm_web_core.js — 網頁版 LLM 推論核心（純函式，UMD）。DESIGN.lora-training.md §25。
+/* llm_web_core.js — 網頁版 LLM 推論核心（純函式，UMD）。DESIGN.lora-training.md §25；lm_head 的 GPU 接線見 DESIGN.webgpu-cuda.md §7.3。
  *
  * 不依賴 Node：
  *   - 分詞器：BPE（tokenizer.json，與 nr-tokenizer.js 同一套規則，改用 TextEncoder／TextDecoder）
  *   - 推論：onnxruntime-web 由呼叫端注入（ort 物件），session 用 executionProviders:['wasm']
  *   - 貪婪解碼（temperature 0）＋ KV cache：past_key_values.{l}.{key|value}，28 層、8 KV 頭、head_dim 128（Qwen3-0.6B）
+ *   - 可選的隱藏狀態頭（opts.head）：變體圖輸出 final_norm 的隱藏狀態，lm_head 由呼叫端的 run() 算（GPU）。
+ *     任何失敗（沒有 GPU、逾時、長度不對、開頭幾步的對拍不合）都退回原本的 session，生成不中斷；原因與層別寫進診斷。
  *
  * 匯出：
  *   createTokenizer(tokenizerJson) → { encode(text), decode(ids), specials }
- *   greedyGenerate(ort, session, promptIds, opts) → { tokens, text?, stoppedBy }
+ *   greedyGenerate(ort, session, promptIds, opts) → { tokens, stoppedBy, head:{診斷} }
  *   loadSession(ort, bytes, opts) → Promise<InferenceSession>
  */
 (function (root, factory) {
@@ -104,18 +106,40 @@
         return ort.InferenceSession.create(bytes, { executionProviders: o.executionProviders || ['wasm'], graphOptimizationLevel: o.graphOptimizationLevel || 'disabled' });
     }
 
+    function withTimeout(p, ms, what) {
+        if (!(ms > 0)) return p;
+        let tm = null;
+        return Promise.race([p, new Promise((_, rej) => { tm = setTimeout(() => rej(new Error(what + '逾時（' + ms + ' 毫秒）')), ms); })])
+            .finally(() => clearTimeout(tm));
+    }
+    function argmaxOf(row) { let best = 0, bv = -Infinity; for (let v = 0; v < row.length; v++) { const x = row[v]; if (x > bv) { bv = x; best = v; } } return best; }
+    // 兩組 logits 的相對差（以參考組的最大絕對值為尺度）與 argmax 是否相同
+    function compareRows(got, ref) {
+        let maxAbs = 0, refMax = 0;
+        for (let v = 0; v < ref.length; v++) { const d = Math.abs(got[v] - ref[v]); if (d > maxAbs) maxAbs = d; const a = Math.abs(ref[v]); if (a > refMax) refMax = a; }
+        return { maxRel: refMax > 0 ? maxAbs / refMax : 0, argmaxSame: argmaxOf(got) === argmaxOf(ref) };
+    }
+
     // ---- 貪婪解碼＋KV cache ----
     // 形狀由模型決定：層數、KV 頭數、head_dim 從 opts 來（預設 Qwen3-0.6B：28 / 8 / 128）
+    // opts.head（可選）：{ variant（隱藏狀態變體的 session）, hiddenName（變體圖的隱藏狀態輸出名）, run(hidden:Float32Array)→Promise<Float32Array(V)>,
+    //   timeoutMs（預設 8000）, verifySteps（預設 1：開頭幾步同時跑原圖，argmax 與相對誤差對拍）, verifyTol（預設 1e-3） }
     function greedyGenerate(ort, session, promptIds, opts) {
         const o = opts || {};
         const L = o.layers || 28, KV = o.kvHeads || 8, HD = o.headDim || 128;
         const maxNew = o.maxNew || 16, eos = new Set(o.eosIds || []);
         const stopCheck = typeof o.isStopRequested === 'function' ? o.isStopRequested : () => false;
         if (!promptIds || !promptIds.length) throw new Error('prompt 是空的');
+        const H = o.head && o.head.variant && typeof o.head.run === 'function' ? o.head : null;
+        const timeoutMs = H ? (H.timeoutMs === undefined ? 8000 : H.timeoutMs) : 0;
+        const verifySteps = H ? (H.verifySteps === undefined ? 1 : H.verifySteps) : 0;
+        const verifyTol = H ? (H.verifyTol === undefined ? 1e-3 : H.verifyTol) : 0;
+        const diag = { requested: !!H, used: 0, steps: 0, verify: [], fallbackAt: -1, reason: '', headMs: 0, variantMs: 0, origMs: 0 };
         return (async () => {
             let past = {};
             for (let l = 0; l < L; l++) for (const k of ['key', 'value']) past[`past_key_values.${l}.${k}`] = new ort.Tensor('float32', new Float32Array(0), [1, KV, 0, HD]);
             let pastLen = 0, q = promptIds.slice(), out = [], stoppedBy = 'max';
+            let headOn = !!H;
             for (let s = 0; s < maxNew; s++) {
                 if (stopCheck()) { stoppedBy = 'stop'; break; }
                 const len = pastLen + q.length;
@@ -123,18 +147,63 @@
                 feed.input_ids = new ort.Tensor('int64', BigInt64Array.from(q.map(BigInt)), [1, q.length]);
                 feed.attention_mask = new ort.Tensor('int64', BigInt64Array.from(new Array(len).fill(1n)), [1, len]);
                 feed.position_ids = new ort.Tensor('int64', BigInt64Array.from(Array.from({ length: q.length }, (_, i) => BigInt(pastLen + i))), [1, q.length]);
-                const r = await session.run(feed);
-                const lg = r.logits.data, V = r.logits.dims[2], off = (q.length - 1) * V;
-                let best = 0, bv = -Infinity;
-                for (let v = 0; v < V; v++) { const x = lg[off + v]; if (x > bv) { bv = x; best = v; } }
+                diag.steps++;
+                let row = null, presentSrc = null;
+                if (headOn) {
+                    try {
+                        const t0 = Date.now();
+                        const rv = await H.variant.run(feed);
+                        diag.variantMs += Date.now() - t0;
+                        const hd = rv[H.hiddenName];
+                        if (!hd) throw new Error('變體圖沒有輸出 ' + H.hiddenName);
+                        const Hd = hd.dims[2], hl = (q.length - 1) * Hd;
+                        const hidden = Float32Array.from(hd.data.subarray(hl, hl + Hd));
+                        const t1 = Date.now();
+                        const lg = await withTimeout(Promise.resolve().then(() => H.run(hidden)), timeoutMs, 'GPU lm_head ');
+                        diag.headMs += Date.now() - t1;
+                        if (!lg || (H.vocab && lg.length !== H.vocab)) throw new Error('GPU lm_head 回傳長度 ' + (lg && lg.length) + '，預期 ' + H.vocab);
+                        row = lg; presentSrc = rv;
+                        if (diag.verify.length < verifySteps) {
+                            // 開頭幾步：原圖也跑一次，比對 argmax 與相對誤差；不合就退回原路徑（本步用原圖的結果）
+                            const t2 = Date.now();
+                            const r0 = await session.run(feed);
+                            diag.origMs += Date.now() - t2;
+                            const V0 = r0.logits.dims[2], last = (q.length - 1) * V0;
+                            const ref = r0.logits.data.subarray(last, last + V0);
+                            const cmp = compareRows(lg, ref);
+                            diag.verify.push({ step: s, maxRel: cmp.maxRel, argmaxSame: cmp.argmaxSame });
+                            if (!cmp.argmaxSame || !(cmp.maxRel <= verifyTol)) {
+                                headOn = false; diag.fallbackAt = s;
+                                diag.reason = '結果不合（第 ' + s + ' 步：相對誤差 ' + cmp.maxRel.toExponential(2) + '，argmax ' + (cmp.argmaxSame ? '一致' : '不一致') + '），改用原路徑';
+                                row = null; presentSrc = r0;
+                                const V1 = r0.logits.dims[2], l1 = (q.length - 1) * V1;
+                                row = Float32Array.from(r0.logits.data.subarray(l1, l1 + V1));
+                            }
+                        }
+                        if (headOn) diag.used++;
+                    } catch (e) {
+                        headOn = false; diag.fallbackAt = s;
+                        diag.reason = 'GPU lm_head 失敗，改用原路徑：' + String((e && e.message) || e);
+                        row = null; presentSrc = null;
+                    }
+                }
+                if (!row) {
+                    const t3 = Date.now();
+                    const r = await session.run(feed);
+                    diag.origMs += Date.now() - t3;
+                    const V = r.logits.dims[2], last = (q.length - 1) * V;
+                    row = Float32Array.from(r.logits.data.subarray(last, last + V));
+                    presentSrc = r;
+                }
+                const best = argmaxOf(row);
                 out.push(best);
                 if (eos.has(best)) { stoppedBy = 'eos'; break; }
                 past = {};
-                for (let l = 0; l < L; l++) for (const k of ['key', 'value']) past[`past_key_values.${l}.${k}`] = r[`present.${l}.${k}`];
+                for (let l = 0; l < L; l++) for (const k of ['key', 'value']) past[`past_key_values.${l}.${k}`] = presentSrc[`present.${l}.${k}`];
                 pastLen = len; q = [best];
                 if (typeof o.onToken === 'function') o.onToken(best, out.length);
             }
-            return { tokens: out, stoppedBy };
+            return { tokens: out, stoppedBy, head: diag };
         })();
     }
 

@@ -1,13 +1,32 @@
-// head_service.js — 渲染程序端的 GPU 版 lm_head 服務（DESIGN.webgpu-cuda.md §7.3 接線）。純 UMD，node 可 require。
-// 主程序用信箱檔轉來每個詞元的隱藏狀態（head-<runId>-<seq>.req）；這裡用 cudaweb 的 q8lm 算 logits，寫回 head-<runId>-<seq>.res。
-// 原則：只接受 GPU（T1）的結果。沒有 WebGPU、或掉到 WebGL2／純 JS（比原生 ORT 的 CPU 還慢）時一律回 error，
-// 由子程序自己退回 CPU 的 lm_head（結果與原路徑相同，只是沒有加速），並把原因帶回「done.gpu_head.fallback」。
+// head_service.js — GPU 版 lm_head 服務（DESIGN.webgpu-cuda.md §7.3）。純 UMD，node 可 require。
+// 桌面版：主程序用信箱檔轉來每個詞元的隱藏狀態（head-<runId>-<seq>.req），這裡用 q8lmAuto 算 logits，寫回 head-<runId>-<seq>.res。
+// 網頁版：同一份程式在頁面裡直接用（extractLmHead、buildVariant、createHeadService）。
+// 原則：只接受 GPU 的結果（T1 WebGPU 或 T3 WebGL2）。兩者都不可用或失敗就丟錯／回 error，由呼叫端退回 ONNX 路徑，
+// 原因照實帶回。純 JS 不列入（比 ORT 慢，沒有意義）。
 (function (root, factory) {
-  if (typeof module === 'object' && module.exports) module.exports = factory(require('./infer_ops.js'));
-  else root.FaHeadService = factory(root.FaInferOps);
-})(typeof self !== 'undefined' ? self : this, function (inferOps) {
+  if (typeof module === 'object' && module.exports) module.exports = factory(require('./infer_ops.js'), require('./onnx_lite.js'));
+  else root.FaHeadService = factory(root.FaInferOps, root.FaOnnxLite);
+})(typeof self !== 'undefined' ? self : this, function (inferOps, lite) {
   'use strict';
-  const CHUNK_BYTES = 64 * 1024 * 1024;  // 預設裝置的儲存緩衝上限 128 MiB，照詞表列切塊
+  const HIDDEN_NODE = '/lm_head/MatMul';
+
+  // 從模型位元組抽出 lm_head：embed_tokens 的 q8 權重（詞表×隱藏，列主序）與參數
+  function extractLmHead(modelBytes) {
+    const m = lite.parseModel(modelBytes);
+    const t = m.inits['model.embed_tokens.weight_quantized'];
+    if (!t || t.dims.length !== 2) throw new Error('模型裡沒有 model.embed_tokens.weight_quantized（不是預期的 q8 格式）');
+    const W = lite.tensorBytes(m, 'model.embed_tokens.weight_quantized');
+    return { W: W, meta: { V: t.dims[0], K: t.dims[1], zp: lite.scalar(m, 'model.embed_tokens.weight_zero_point'), scale: lite.scalar(m, 'model.embed_tokens.weight_scale') } };
+  }
+  // 隱藏狀態變體圖：移除 /lm_head/MatMul（與它獨占的解碼節點），圖輸出改成 final_norm 的結果；KV 輸出與原圖相同
+  function buildVariant(modelBytes, hiddenDim) {
+    const m = lite.parseModel(modelBytes);
+    const mm = m.nodes.find((n) => n.name === HIDDEN_NODE);
+    if (!mm) throw new Error('模型裡沒有 ' + HIDDEN_NODE + ' 節點，無法做隱藏狀態變體');
+    const hiddenName = mm.inputs[0];
+    const built = lite.buildHiddenStateModel(modelBytes, { dropNodeName: HIDDEN_NODE, replaceOutput: 'logits', hiddenName: hiddenName, hiddenDims: ['batch_size', 'sequence_length', hiddenDim || 1024] });
+    return { bytes: built.buf(), hiddenName: hiddenName, removed: built.removed };
+  }
 
   const b64ToBytes = (s) => {
     if (typeof Buffer !== 'undefined') { const b = Buffer.from(s, 'base64'); return new Uint8Array(b.buffer, b.byteOffset, b.length); }
@@ -19,34 +38,36 @@
   };
   const toF32 = (u8) => { const ab = new ArrayBuffer(u8.length); new Uint8Array(ab).set(u8); return new Float32Array(ab); };
 
-  // opts：{ meta:{V,K,zp,scale}, loadWeights:()=>Promise<Uint8Array>, navigator, ops（測試可注入） }
+  // opts：{ meta:{V,K,zp,scale}, loadWeights:()=>Promise<Uint8Array>（或 weights：直接給位元組）, navigator, gl, ops（測試可注入） }
+  // compute(hidden:Float32Array) → Promise<{ logits: Float32Array, layer:'T1'|'T3', ms, reasons }>；失敗丟例外（reasons 帶每層原因）
   function createHeadService(opts) {
     const ops = opts.ops || inferOps;
-    let chunks = null, loading = null;
-    const stats = { served: 0, errors: 0, lastMs: 0, lastLayer: '', lastError: '' };
+    let W = null, loading = null;
+    const stats = { served: 0, errors: 0, lastMs: 0, lastLayer: '', lastError: '', layers: { T1: 0, T3: 0 } };
     async function load() {
-      if (chunks) return;
+      if (W) return;
       if (!loading) loading = (async () => {
-        const w = await opts.loadWeights();
+        const w = opts.weights || await opts.loadWeights();
         const m = opts.meta;
         if (w.length !== m.V * m.K) throw new Error('lm_head 權重大小 ' + w.length + ' 與 V×K=' + (m.V * m.K) + ' 不符');
-        chunks = ops.planChunks(w, m.V, m.K, CHUNK_BYTES);
+        W = w;
       })();
       try { await loading; } catch (e) { loading = null; throw e; }
     }
-    // 回傳 logits 的 base64；失敗丟例外（呼叫端寫成 error 回應）
-    async function compute(hiddenB64) {
+    async function computeF32(hidden) {
       const t0 = Date.now();
       await load();
       const m = opts.meta;
-      const hidden = toF32(b64ToBytes(hiddenB64));
       if (hidden.length !== m.K) throw new Error('隱藏狀態長度 ' + hidden.length + '，預期 ' + m.K);
-      const r = await ops.q8lm(hidden, chunks, m.zp, m.K, m.scale, { navigator: opts.navigator });
-      stats.lastLayer = r.info.layer;
-      if (r.info.layer !== 'T1') throw new Error('沒有用到 WebGPU（實際層：' + r.info.layer + '；' + (r.info.reason || '無原因') + '）');
+      const r = await ops.q8lmAuto(hidden, W, m.V, m.K, m.zp, m.scale, { navigator: opts.navigator, gl: opts.gl });
+      stats.lastLayer = r.info.layer; stats.layers[r.info.layer] = (stats.layers[r.info.layer] || 0) + 1;
       stats.served++; stats.lastMs = Date.now() - t0;
-      const lg = r.result;
-      return bytesToB64(new Uint8Array(lg.buffer, lg.byteOffset, lg.byteLength));
+      return { logits: r.result, layer: r.info.layer, ms: stats.lastMs, reasons: r.info.reasons || [] };
+    }
+    // 桌面版信箱用：hiddenB64 → logits 的 base64；失敗丟例外
+    async function compute(hiddenB64) {
+      const out = await computeF32(toF32(b64ToBytes(hiddenB64)));
+      return bytesToB64(new Uint8Array(out.logits.buffer, out.logits.byteOffset, out.logits.byteLength));
     }
     // 處理一個請求檔的內容（JSON 字串），回傳回應檔的內容（JSON 字串）；永不丟例外
     async function handleReq(text) {
@@ -58,7 +79,7 @@
         return JSON.stringify({ error: stats.lastError });
       }
     }
-    return { load, compute, handleReq, stats };
+    return { load, compute, computeF32, handleReq, stats };
   }
 
   // 輪詢信箱：io = { list():Promise<string[]>（檔名）, read(name):Promise<string|null>, write(name,text):Promise<void>, remove(name):Promise<void> }
@@ -90,5 +111,5 @@
     return { stop() { stopped = true; clearInterval(timer); } };
   }
 
-  return { createHeadService, startPolling, b64ToBytes, bytesToB64, CHUNK_BYTES };
+  return { createHeadService, startPolling, extractLmHead, buildVariant, b64ToBytes, bytesToB64 };
 });
