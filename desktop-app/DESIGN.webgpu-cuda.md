@@ -460,10 +460,15 @@ GUI 的獨立 Worker 模擬器目前沒有註冊 `_fa_cudaweb`，不能 `import 
 - 阻礙：Qwen3 網頁版的 GPU 格式是 `q4f16`（`FaVlm` 的 dtype 表），lm_head 很可能是 q4 區塊量化（MatMulNBits 類）或 fp16。**cudaweb 目前只有 q8（uint8 單一 zero point）的 lm_head 核心**，接不上。
 - **中繼資料讀取結果（2026-11-16，使用者直接同意「同意讀取中繼資料」）**：只讀 HF 的檔案清單 API（12.6 KB）與 `onnx/model_q4f16.onnx` 的前 1 MB（HTTP Range，經 302 轉址，沒有下載權重）。
   - 網頁版 Qwen3 GPU 檔是 `onnx-community/Qwen3-0.6B-ONNX` 的 `onnx/model_q4f16.onnx`。
-  - **lm_head 確認是 q4 區塊量化**：節點 `/lm_head/MatMul` 的運算子是 `MatMulNBits`，權重與 `model.embed_tokens.weight` 共用（tied）。圖裡還有 `GroupQueryAttention`、`SkipSimplifiedLayerNormalization`。
-  - 屬性從位元組推得（不是用 ONNX 解析器讀的）：`bits` = 4、`block_size` = 32。
+  - **【更正，2026-11-16 第二次讀取】先前寫「lm_head 是 q4」是錯的。** 第二次讀前 4 MB 並解析 protobuf 後確認：
+    - `/lm_head/MatMul` 是**普通的 MatMul**（不是 MatMulNBits），輸入是 `model.embed_tokens.weight_transposed` 與最後的 norm 輸出，輸出 `logits_fp16`。
+    - `weight_transposed` 是 `Transpose_610`（輸入 `model.embed_tokens.weight`）的輸出，所以 lm_head 的權重就是嵌入表的轉置。
+    - `model.embed_tokens.weight` 的 initializer：**dtype 10 = FLOAT16，形狀 [151936, 1024]**（約 311 MB，未量化）。
+    - 所以**網頁版 lm_head 是 fp16 未量化矩陣乘，不是 q4**。先前 1 MB 讀取看到 `MatMulNBits` 字樣，是把投影層的節點誤認成 lm_head。
+    - 投影層（q／k／v／o／gate／up／down）才是 `MatMulNBits`，`K`、`N` 與 `bits=4`、`block_size=32` 都解析得到（例：`/model/layers.0/attn/q_proj/MatMul_Q4` K=1024 N=2048）；它們的輸入是 A、`..._Q4`、`..._scales`，沒有 zero_points 輸入。
+  - （上面 bits／block_size 的數值，第二次讀取已用 protobuf 解析確認，見上方更正。）
   - 還沒確認：scale 與 zero point 的資料型別與打包方式、權重排列（名稱是 `weight_transposed`）。要精確確認，要用 ONNX 解析器讀節點全部屬性與 initializer 檔頭。
-  - 結論：cudaweb 目前的 q8 lm_head 核心**不能**直接用於網頁版。要寫 MatMulNBits（4 位元、區塊 32）的 lm_head 核心，網頁版才可能接上。
+  - **結論（更正後）**：網頁版 lm_head 不需要 q4 核心。它是 fp16 的未量化矩陣乘（權重 [151936, 1024] fp16，約 311 MB）。cudaweb 要接上，需要 fp16 矩陣乘（WGSL 要處理 fp16：要嘛用 `shader-f16` 功能，要嘛用 u32 打包＋`unpack2x16float`）。另外，**網頁版的投影層是 q4（MatMulNBits）**，如果要讓網頁版的整段解碼都走 cudaweb，還需要 MatMulNBits（4 位元、區塊 32）的核心。這兩件事要分開規劃。
 - 若要接：(1) 先確認 lm_head 格式（需使用者同意下載或讀中繼資料）；(2) 寫 q4 區塊反量化的 lm_head 核心（CPU 參考版＋測試，再 WGSL）；(3) 隱藏狀態變體圖要攔截 transformers.js 的 fetch 改寫位元組（LoRA 網頁版已有這條接點）；(4) 包一層讓 transformers.js 拿到 logits。
 
 ### 7.4 與原生執行環境的關係
