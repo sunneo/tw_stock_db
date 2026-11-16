@@ -438,7 +438,8 @@ GUI 的獨立 Worker 模擬器目前沒有註冊 `_fa_cudaweb`，不能 `import 
 - **CPU 參考版**（`renderer/src/gpu/attn_ops.js`，提交 `8be226632`）：qk-norm（每頭 RMSNorm）、rotate-half RoPE（theta 可設，Qwen3 用 1e6）、KV 快取（Float32）、GQA（查詢頭 h → KV 頭 ⌊h/(H/Hkv)⌋）、因果遮罩。測試 `attn_ops_test.js` 9 項通過：逐步解碼與一次預填逐位元一致、因果、GQA 對應、softmax 平均、錯誤輸入丟錯。
 - **對真 ORT 的第 0 層 K／V 快取**（`scripts/eval/cudaweb_attn_layer0.js`，提交 `6c2e31640`）：3 個詞元預填、無過去快取。K 相對誤差 **1.9e-7**、V **3.1e-6**，通過。已驗證：q8 投影（q_proj／k_proj／v_proj）、qk-norm、RoPE（位置 0～2）、快取寫入與版面。
 - **注意力輸出與 o_proj 對真 ORT**（`scripts/eval/cudaweb_attn_layer0_out.js`，提交 `419ce7672`）：用 protobuf 改寫圖的輸出（只換輸出清單，不改權重），取 `GroupQueryAttention/output_0` 與 `o_proj/MatMul/output_0`。3 個詞元預填，相對誤差注意力 3.1e-6、o_proj 3.2e-6，通過。
-- **未驗證**：多層串接；殘差與 MLP 之後的單層輸出；一步解碼含 lm_head 的 logits；完整生成的比對。
+- **第 0 層完整一層對真 ORT**（`scripts/eval/cudaweb_layer0_full.js`，提交 `3c7c77958`）：注意力殘差後 3.2e-6、MLP down 9.4e-7、第 0 層輸出（第 1 層 input_layernorm 的殘差和）1.8e-6，通過。改寫圖輸出的共用程式在 `scripts/eval/onnx_rewrite.js`。
+- **未驗證**：28 層全部串接的一步解碼（最後的 norm 與 lm_head logits）；完整生成的比對；多 token 解碼中 KV 快取跨層的正確性（目前只有 3 詞元預填）。
 - **GPU 核心**（`renderer/src/gpu/attn_gpu.js`，提交 `b12061413`）：WGSL 版，一個 invocation 算一個（查詢位置、查詢頭），兩段式 softmax；退路 T1 → cpu-js（WebGL2 版未做，見下）。
   - node 退路測試 4 項通過（`attn_gpu_test.js`）。
   - **真 Chrome WebGPU**（`scripts/eval/cudaweb_attn_browser.js`，Chrome 157、NVIDIA Kepler）：4 個情境（解碼 S=1 過去 0／過去 40、預填 S=4、混合 S=3 過去 20）都走 T1，相對誤差 0～2.6e-7，通過。
