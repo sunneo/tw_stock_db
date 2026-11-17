@@ -58,6 +58,13 @@
 - 驗證頁都在 `scripts/eval/`：`mm_tile_check.html`（需先 `git show 1515d6598:desktop-app/renderer/src/gpu/gpu_core.js > scripts/eval/_tmp_before_gpu_core.js`，量完刪）、`batch_layer_check.html`。結果寫進 `cudaweb_optimize.result.json`。
 - 本棒沒做：O6 真 Qwen 接入、O7、O8、O9、O10、O11、持續迴圈。
 
+## 2026-11-18 第五段（交棒，管理者指示：context 到 60% 才交棒）
+- 本段沒有完成新提交；G1 收尾**未開始寫程式**。原因：要讓 `gpu_core.js`（UMD，以 `new Function(FA_GPU_CORE_SRC)` 嵌入）引用 `kernel_gen.js`，需要改嵌入與載入順序（`scripts/embed-code-ui.js` 與 `renderer/src/floating-assistant.js` 的載入點），這會動到發布流程，應由管理者確認方案後再做。
+- **待管理者決定的方案**：(A) 在 `embed-code-ui.js` 加 `kernel_gen.js` 的嵌入，並在 `gpu_core` 載入前先執行它（`root.FaKernelGen`）；或 (B) 把 `kernel_gen` 的產生函式直接併進 `gpu_core.js`，`kernel_gen.js` 只留給 node 測試使用。兩者都能做到「不另寫一份」，但 (A) 需要改載入順序。
+- 分支上另有提交 `16a968d4f`（作者 IceCold Sunneo，Co-Authored-By Sonnet 5.5，訊息寫「平鋪核心、8×8、kernel_gen、各運算優化」）。實際內容只改了 `PATCH_VERSION`、`renderer/floating-assistant*.js`、`renderer/src/floating-assistant.js`、`update-manifest.json` 與 `web-lazy/`，沒有改 `renderer/src/gpu/`。與本段無關，但訊息與內容不符，請管理者核對。
+- 清單 O5（已完成）、O6（部分）、G1（測試通過、未接入）、G2–G5、O7–O10 皆未做。R1 的 8×8 與 8×4 已量、不採用。
+- 下一棒第一步：先解決上面的方案 A/B，再做 G1 收尾（實例化＋真 Chrome 驗），然後 G2 → G4 → G3 → G5。
+
 ## 2026-11-18 第四段（變體階梯 G1–G5，見 docs/TARGET.cudaweb-cublas.md 末尾與清單「變體階梯」節）
 - 提交 `cc62bc95a`：G1 產生器 `renderer/src/gpu/kernel_gen.js`（8 項 node 測試通過）。
 - **下一棒第一步**：(a) 讓 `gpu_core.js` 的 `mmR8Wgsl`、`mmTileWgslVec4` 改成 `kernel_gen` 的實例（不要另寫一份），node 測試與 fake 路徑保持；(b) 用單形狀頁（`r8_time2.html` 的做法，一次一形狀、最多 3 個 submit、監聽 device.lost）真 Chrome 驗 kernel_gen 產出的著色器的正確性與速度；(c) 再做 G2 階梯與編譯毫秒。
