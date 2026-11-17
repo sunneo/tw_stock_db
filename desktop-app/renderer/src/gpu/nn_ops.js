@@ -589,7 +589,10 @@ async function adamw(p, g, m, v, t, lr, b1, b2, eps, wd, opts) {
 // ---------- 批次提交：同一個 command encoder、中間結果留在 GPU 緩衝區，只在 read() 時回讀 ----------
 // 用法：const b = createBatch(dev); const x = b.upload(arr); const y = b.rmsnorm(x, g, T, d, eps); ...
 //       const [out] = await b.read([[y, n]]);   // 整批只 submit 一次、回讀只在最後
-// 目前涵蓋 RMSNorm、softmax、SiLU、RoPE（同一層內的逐元素與列運算）。matmul 仍走 gpu_core 的獨立呼叫（每次一次往返）。
+// 目前涵蓋 RMSNorm、softmax、SiLU、RoPE（同一層內的逐元素與列運算）與 matmul（2026-11-18 加入，與 gpu_core 共用核心）。
+// 注意力、q8mm、MatMulNBits 還沒進批次（見 docs/CHECKLIST.cudaweb-optimize.md 的 O6）。
+const MM_TILED_CODE = core.mmTileWgsl({ marker: 'matmul', dtype: 'f32' });
+const MM_VEC4_CODE = core.mmTileWgslVec4({ marker: 'matmul_vec4' });
 function createBatch(dev) {
   const enc = dev.createCommandEncoder();
   let submitted = false;
@@ -615,7 +618,9 @@ function createBatch(dev) {
     entries.push({ binding: bindBufs.length, resource: { buffer: ub } });
     const bg = dev.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries: entries });
     const pass = enc.beginComputePass();
-    pass.setPipeline(pipe); pass.setBindGroup(0, bg); pass.dispatchWorkgroups(groups); pass.end();
+    pass.setPipeline(pipe); pass.setBindGroup(0, bg);
+    if (Array.isArray(groups)) pass.dispatchWorkgroups(groups[0], groups[1], groups[2]); else pass.dispatchWorkgroups(groups);
+    pass.end();
     stats.dispatches++;
   }
   const b = {
@@ -644,6 +649,14 @@ function createBatch(dev) {
       const uni = new ArrayBuffer(16); new Uint32Array(uni, 0, 3).set([T, H, hd]); new Float32Array(uni, 12, 1)[0] = dir;
       dispatch(WGSL_ROPE, [x.buf, y], uni, Math.ceil(T * H * (hd / 2) / 64));
       return { buf: y, n: T * H * hd };
+    },
+    // 矩陣乘（與 gpu_core 的 wgMatmul 同一組核心：K、N 為 4 的倍數時用 vec4 版）。A 是 M×K 的句柄，B 是 K×N 的句柄（常駐權重也可以）
+    matmul(A, B, M, K, N) {
+      const y = storage(M * N);
+      const v4 = core.mmTileVec4Ok(M, K, N, 0);
+      const uni = new ArrayBuffer(32); new Uint32Array(uni).set(core.mmTileWords(M, K, N, 0, 1));
+      dispatch(v4 ? MM_VEC4_CODE : MM_TILED_CODE, [A.buf, B.buf, y], uni, core.mmTileDispatch(M, N, 1));
+      return { buf: y, n: M * N };
     },
     // 一次 submit，整批的回讀都在這裡；specs = [[handle, n], ...]，回傳 Float32Array 陣列
     async read(specs) {

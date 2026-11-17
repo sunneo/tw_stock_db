@@ -264,6 +264,24 @@ function maxAbs(a, b) { let m = 0; for (let i = 0; i < a.length; i++) m = Math.m
     dev.queue.submit = realSubmit;
   });
 
+  await check('批次含矩陣乘（純量與 vec4 兩路）：一次 submit、結果與參考版一致', async () => {
+    const dev = (await NN.getDevice(fakeNavigator().nav)).dev;
+    const realSubmit = dev.queue.submit.bind(dev.queue); let submits = 0;
+    dev.queue.submit = (cmds) => { submits++; return realSubmit(cmds); };
+    for (const [M, K, N] of [[5, 8, 12], [3, 7, 5]]) {   // 第一組 K、N 為 4 的倍數走 vec4，第二組走純量
+      submits = 0;
+      const A = seeded(M * K, 31), B = seeded(K * N, 37);
+      const b = NN.createBatch(dev);
+      const ab = b.upload(A), bb = b.upload(B);
+      const y = b.matmul(ab, bb, M, K, N);
+      const [out] = await b.read([[y, M * N]]);
+      assert.strictEqual(submits, 1, '應只 submit 一次，實際 ' + submits);
+      const ref = require('./gpu_core.js').matmulRef(Float32Array.from(A), Float32Array.from(B), M, K, N);
+      assert.ok(maxAbs(out, ref) < 1e-5, '矩陣乘差 ' + maxAbs(out, ref));
+    }
+    dev.queue.submit = realSubmit;
+  });
+
   await check('批次：提交後不能再加入運算或再次讀取', async () => {
     const dev = (await NN.getDevice(fakeNavigator().nav)).dev;
     const b = NN.createBatch(dev);
