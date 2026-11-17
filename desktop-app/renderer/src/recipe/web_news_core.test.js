@@ -46,6 +46,33 @@ let ok = 0, bad = 0; const check = (n, c, x) => { if (c) ok++; else { bad++; con
     check('近義展開：黃仁勳 → Jensen Huang、輝達、NVIDIA', terms[0] === '黃仁勳' && terms.includes('Jensen Huang') && terms.includes('NVIDIA'), terms);
 }
 
+// ---- 拆字：動作詞與輸出要求詞要去掉；沒有實質詞就是空字串 ----
+{
+    const a = W.goalOf('開瀏覽器看今日有沒有黃仁勳的新聞，總結給我');
+    check('開瀏覽器看今日有沒有黃仁勳的新聞，總結給我 → 目標詞只剩 黃仁勳', a.keyword === '黃仁勳' && a.askExist === true, a);
+    const b = W.goalOf('開瀏覽器看今日有的新聞，總結給我');
+    check('開瀏覽器看今日有的新聞，總結給我 → 沒有目標詞（空字串）', b.keyword === '' && b.keywords.length === 0, b);
+    const c = W.goalOf('開瀏覽器看今日新聞，總結給我');
+    check('開瀏覽器看今日新聞，總結給我 → 沒有目標詞', c.keyword === '', c);
+    const d = W.goalOf('今天有什麼新聞');
+    check('今天有什麼新聞 → 沒有目標詞', d.keyword === '', d);
+    const e = W.goalOf('看 黃仁勳 颱風 新聞');
+    check('多個目標詞（空白分開）：拆成陣列 ["黃仁勳","颱風"]', JSON.stringify(e.keywords) === JSON.stringify(['黃仁勳', '颱風']), e);
+}
+
+// ---- 多個目標詞：攤平成詞表（任一命中），黃仁勳連到輝達／NVIDIA／Jensen Huang ----
+{
+    const terms = W.expandTerms('黃仁勳 颱風');
+    check('多詞攤平：黃仁勳、颱風都在詞表（各自排前面）', terms.includes('黃仁勳') && terms.includes('颱風'), terms);
+    check('多詞攤平：黃仁勳的近義也在', terms.includes('輝達') && terms.includes('NVIDIA') && terms.includes('Jensen Huang'), terms);
+    const arr = W.expandTerms(['黃仁勳', '颱風']);
+    check('expandTerms 接受陣列', JSON.stringify(arr) === JSON.stringify(terms), arr);
+    const units = ['NVIDIA 股價盤中創高', '颱風逼近東部'];
+    const hits = W.matchUnits(units, terms);
+    check('任一核心詞命中：兩則都命中（不要求整串）', hits.length === 2, hits);
+    check('輝達 → 也連到黃仁勳', W.expandTerms('輝達').includes('黃仁勳'), W.expandTerms('輝達'));
+}
+
 // ---- 頁面切單位（去導覽列、時間戳、重複）----
 const PAGE = [
     '首頁',

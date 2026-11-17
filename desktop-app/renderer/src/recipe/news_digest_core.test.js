@@ -49,7 +49,8 @@ function fakeDeps(opts) {
         const f = fakeDeps();
         const r = await D.run('看今天有哪些黃仁勳新聞', f.deps);
         check('A 成功', r.ok === true && r.handled === true, r);
-        check('A 讀的是相關的 2 篇（不讀天氣）', JSON.stringify(f.calls.readArticle) === JSON.stringify([A1, A2]), f.calls.readArticle);
+        // 命中詞數多的排前面：A2 同時含「黃仁勳」與「輝達」（2 個詞），A1 只含「黃仁勳」
+    check('A 讀的是相關的 2 篇（不讀天氣），命中詞數多的排前', JSON.stringify(f.calls.readArticle) === JSON.stringify([A2, A1]), f.calls.readArticle);
         check('A 每篇都經過模型（summarize 收到內文）', f.calls.summarize.length === 2 && f.calls.summarize.every((c) => /黃仁勳|輝達/.test(c.body)), f.calls.summarize);
         check('A 摘要問題帶目標詞', f.calls.summarize.every((c) => c.q.includes('黃仁勳')), f.calls.summarize);
         check('A 合併標題為「N 則」', r.text.startsWith('今天有哪些黃仁勳新聞：2 則'), r.text);
@@ -127,6 +128,57 @@ function fakeDeps(opts) {
         check('I 步驟行含退回原因', !!row && row.includes('退回：有 40% 的詞來源裡沒有'), row);
         check('I 步驟行含模型原文開頭', !!row && row.includes('模型原文「模型這樣寫的一段話」'), row);
         check('I 退回時最終回答標示沒有經過 AI', r.text.includes('沒有經過 AI'), r.text);
+    }
+
+    // J. 模型斷路器：第一次載入失敗後，本輪後面的文章不再叫模型（不每篇白等）
+    {
+        const f = fakeDeps(); let calls = 0;
+        f.deps.summarize = async () => { calls++; return { ok: false, failed: true, reason: '模型載入失敗：webgpu：std::bad_alloc；wasm：Aborted()' }; };
+        const r = await D.run('看今天有哪些黃仁勳新聞', f.deps);
+        check('J 模型載入失敗後只叫一次模型（斷路器）', calls === 1, calls);
+        check('J 其餘文章都改用程式摘要並照常回答', r.ok === true && r.articles.length === 2 && r.articles.every((a) => a.method === 'extractive'), r.articles);
+        check('J 步驟行含真實原因', f.steps.some((s) => s.includes('原因：模型載入失敗：webgpu：std::bad_alloc')), f.steps);
+        check('J 後續文章的步驟行說明不再重試', f.steps.some((s) => s.includes('本輪模型已失敗') && s.includes('不再重試')), f.steps);
+    }
+    // K. 單篇逾時：走程式摘要，本輪之後不再叫模型；整體不會卡住
+    {
+        const f = fakeDeps(); let calls = 0;
+        f.deps.summarize = () => { calls++; return new Promise(() => {}); }; // 永遠不回
+        const t0 = Date.now();
+        const r = await D.run('看今天有哪些黃仁勳新聞', f.deps, { summarizeTimeoutMs: 20 });
+        check('K 逾時後照常完成', r.ok === true && r.articles.length === 2, r);
+        check('K 逾時只叫一次模型', calls === 1, calls);
+        check('K 步驟行含逾時原因', f.steps.some((s) => s.includes('逾時 20 ms')), f.steps);
+        check('K 整體在幾秒內結束', Date.now() - t0 < 5000, Date.now() - t0);
+    }
+    // L. 程式摘要（退路）：去掉 ▲ 圖說與署名，取完整句，不從中間截斷
+    {
+        const S1 = '輝達（NVIDIA）於17日正式宣布，已在董事會通過新一代 AI 晶片量產計畫。';
+        const S2 = '市場預期這將帶動供應鏈在明年上半年出現明顯的訂單成長。';
+        const body = '▲黃仁勳在台北出席活動（資料照）\n【文／王小明】記者李四台北報導。\n' + S1 + S2 + '第三句不應該出現在摘要裡，因為已經超過兩句的上限。';
+        const out = D.leadSummary(body);
+        check('L 去掉 ▲ 圖說與【文／…】署名', !out.includes('▲') && !out.includes('文／') && !out.includes('資料照'), out);
+        check('L 取前兩個完整句（60～120 字，句子不截斷）', out === S1 + S2, out);
+        check('L 不含第三句', !out.includes('第三句'), out);
+        const one = D.leadSummary('短句但夠長可以當摘要用的第一句話。第二句。');
+        check('L 只有一句夠長：取那一句完整（第二句太短被略過）', one === '短句但夠長可以當摘要用的第一句話。', one);
+        check('L 空內文回空字串', D.leadSummary('   ') === '', D.leadSummary('   '));
+    }
+    // J2. 頁首狀態：每篇都要更新「第 i／n 篇」，不能停在「準備中」
+    {
+        const f = fakeDeps(); const statuses = [];
+        f.deps.status = (s) => statuses.push(s);
+        f.deps.summarize = async (body) => ({ ok: true, text: '重點：' + body.slice(0, 10), method: 'model' });
+        await D.run('看今天有哪些黃仁勳新聞', f.deps);
+        check('J2 頁首狀態含「第 1／2 篇」與「第 2／2 篇」', statuses.some((s) => s.includes('第 1／2 篇')) && statuses.some((s) => s.includes('第 2／2 篇')), statuses);
+        check('J2 每篇完成後頁首顯示完成與耗時', statuses.some((s) => s.includes('模型摘要完成') && s.includes('ms')), statuses);
+    }
+    // M. 沒有實質目標詞（只有功能詞）：不比對，取前幾則
+    {
+        const f = fakeDeps();
+        const r = await D.run('開瀏覽器看今日新聞，總結給我', f.deps);
+        check('M 沒有目標詞時取前幾則（不拿功能詞比對）', r.ok === true && r.articles.length > 0, r);
+        check('M 步驟行說明取前幾則', f.steps.some((s) => s.includes('沒有實質目標詞') && s.includes('取前幾則')), f.steps);
     }
 
     console.log(ok + ' passed, ' + bad + ' failed');

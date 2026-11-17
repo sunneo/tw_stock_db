@@ -37,11 +37,21 @@
     // 近義展開（目標詞 → 相關詞）。資料層，可擴充；比對時不分大小寫。
     const SYNONYMS = {
         '黃仁勳': ['Jensen Huang', 'Jensen', '黃仁勳', '輝達', 'NVIDIA'],
-        '輝達': ['NVIDIA', 'Nvidia', '輝達'],
+        '輝達': ['NVIDIA', 'Nvidia', '輝達', '黃仁勳', 'Jensen Huang'],
     };
 
     // 功能詞：拆字時去掉（只用來找目標詞，不影響站名與關鍵字本身）。較長的先去。
-    const FUNCTION_WORDS = ['有沒有', '有哪些', '有什麼', '今天的', '今天', '今日', '最新的', '最新', '最近', '幫我', '請幫我', '一下', '新聞', '看看', '看', '去', '進', '開', '查', '找', '要', '的', '嗎', '呢', '請', '我', '在', '哪些', '有'];
+    // 分三類：問法（有沒有、今天）、動作（看、開瀏覽器、查）、輸出要求（總結給我、摘要、整理、告訴我）。
+    const FUNCTION_WORDS = [
+        // 問法與時間
+        '有沒有', '有哪些', '有什麼', '今天的', '今天有', '今天', '今日的', '今日', '最新的', '最新', '最近', '一下', '哪些', '有無', '新聞', '文章', '消息',
+        // 動作（含工具名：瀏覽器、網站）
+        '幫我看', '請幫我', '幫我', '幫忙', '看看', '打開', '瀏覽器', '網站', '網頁', '頁面', '上網', '開', '看', '去', '進', '查', '找', '要',
+        // 輸出要求
+        '總結給我', '總結給', '總結', '摘要給我', '摘要', '整理給我', '整理', '告訴我', '告訴', '給我', '給', '重點',
+        // 單字虛詞（最後才去，避免先吃掉詞中的字）
+        '的', '嗎', '呢', '請', '我', '在', '有',
+    ];
     const ASK_EXIST = /有沒有|有無/;
 
     const norm = (s) => String(s == null ? '' : s).normalize('NFKC').toLowerCase().trim();
@@ -81,7 +91,8 @@
         return source.entry;
     }
 
-    // 拆字：去掉站名、功能詞，剩下的就是目標詞。askExist 表示使用者問「有沒有」。
+    // 拆字：去掉站名、功能詞，剩下的就是目標詞（可能有好幾個，用空白隔開；keywords 是陣列）。askExist 表示使用者問「有沒有」。
+    // 去完功能詞沒有實質詞 → keyword 為空字串，呼叫端改成「取前幾則」，不拿功能詞去比對。
     function goalOf(text) {
         const raw = String(text == null ? '' : text);
         let t = norm(raw);
@@ -92,18 +103,23 @@
         if (site && site.unsupported) kill.push(site.unsupported);
         for (const k of kill) t = t.replace(aliasRe(k), ' ');
         for (const w of FUNCTION_WORDS.slice().sort((a, b) => b.length - a.length)) t = t.split(norm(w)).join(' ');
-        const keyword = t.replace(/[\s，,。.！!？?、:：;；"'「」『』()（）\[\]【】]+/g, ' ').trim();
-        return { keyword, askExist, site: site && site.source ? site.source.id : null };
+        const keywords = t.replace(/[\s，,。.！!？?、:：;；"'「」『』()（）\[\]【】]+/g, ' ').trim().split(' ').filter((w) => w.length > 0);
+        return { keyword: keywords.join(' '), keywords, askExist, site: site && site.source ? site.source.id : null };
     }
 
-    // 近義展開：目標詞本身排第一，再加登錄的近義（不分大小寫去重）
+    // 近義展開：每個目標詞本身排前面，再加登錄的近義（不分大小寫去重）。keyword 可以是字串（空白分開）或陣列。
+    // 多個目標詞之間是「任一命中」，所以這裡只是把它們攤平成一張詞表，不做整串比對。
     function expandTerms(keyword, synonyms) {
         const table = synonyms || SYNONYMS;
+        const tokens = Array.isArray(keyword) ? keyword : String(keyword == null ? '' : keyword).split(/\s+/);
         const out = []; const seen = new Set();
         const add = (x) => { const k = norm(x); if (k && !seen.has(k)) { seen.add(k); out.push(String(x).trim()); } };
-        add(keyword);
-        const key = Object.keys(table).find((k) => norm(k) === norm(keyword));
-        if (key) table[key].forEach(add);
+        for (const tok of tokens) {
+            if (!norm(tok)) continue;
+            add(tok);
+            const key = Object.keys(table).find((k) => norm(k) === norm(tok));
+            if (key) table[key].forEach(add);
+        }
         return out;
     }
 
