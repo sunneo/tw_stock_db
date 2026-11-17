@@ -133,3 +133,14 @@
 - **新聞路徑**（`news_digest_core.js`）原本就每步一行（選來源、拆字、取清單、篩選、讀第 N 篇、逐篇摘要、合併）；本輪加上退回原因與模型原文開頭。
 - **測試**：`recipe/plan_round_log.test.js` 16 passed（事件形狀照 advanceCore 的 emit 欄位造，驗行序、輪數、退路、截斷、寫入丟錯不影響計畫）；`recipe/news_digest_core.test.js` 27 passed（含步驟順序與輪次、案例 I 退回）。
 - **沒有驗證的**：沒有用真的 `advance` 跑一個完整的多步計畫（建計畫的參數太多，這次沒做）；本地函式（`local_*`）的步驟只有完成／失敗行，沒有工具參數與回傳大小。使用者實際開的 transcribe 畫面沒有在桌面版裡看過，所以「是不是這張卡片」仍是推論。
+
+## 6. 擴到其他平日任務（handoff 3 的 todo 5，2026-11-17，只寫查得到的）
+
+| 任務 | 目前狀態 | 這一輪做了什麼 | 還沒做 |
+|---|---|---|---|
+| 網頁查資料（非新聞） | 已有計畫目標 `web_research`（需要 query 事實；正式路徑由 `_planAnswer` 用 `cleanQuery` 給） | `recipe/plan_goal_routing.test.js` 5 passed：非新聞查詢（台積電股利、Rust）走 `web_research`；沒有 query 不走；有網址走 `web_summary` | 沒有真的跑完一次（搜尋工具＋模型＋讀取）；搜尋結果沒實跑 |
+| 文件摘要 | 已有 `doc_summary`（需要附件）；讀＋總結已接模型（§4、`_planFinish`） | 路由測試：沒有附件的「摘要這份文件」不誤判 | 沒有用真附件＋真模型實跑 |
+| log 分析 | 不是計畫目標；走既有的 log 挖掘路線（`DESIGN.log-mining.md`、logmine） | 沒有動 | 這一輪沒有驗證 |
+| 檔案／資料夾整理 | **沒有計畫目標**（`plan_core` 的 `GOALS` 裡沒有） | 沒有動 | 還沒做：需要新目標、需要檔案工具的步驟、需要 `offlineRecipe` 下的 Python 範本或工具步驟，範圍大，留給下一棒 |
+
+**結論（如實）**：handoff 3 的 todo 5 要求「每個都要實跑驗證」。這一輪只把已有目標的路由用測試鎖住，**沒有完成任何一項的真實跑**，檔案整理則完全沒做。這一項未完成，留給下一棒。
