@@ -255,6 +255,8 @@ async function startMatmulRace(shapes, o) {
   const raceOne = opts.raceOne || raceMatmul;
   const calibrate = opts.calibrate || calibrateSimple;
   if (!n) return out;
+  // 競賽勝者要寫進表格讀的那個儲存（TUNE.store）：沒有就建一個，表格之後也讀同一個，否則表格看不到這次的結果
+  if (!TUNE.store) TUNE.store = require('./variant_race.js').createStore({});
   // 校正在最小的形狀上做（派發量最少，也是現行保護過的那個形狀）
   let calib = null, calibErr = null;
   try { calib = await calibrate(list.slice().sort((x, y) => flopsOf(x) - flopsOf(y))[0], opts); } catch (e) { calibErr = String((e && e.message) || e).slice(0, 200); }

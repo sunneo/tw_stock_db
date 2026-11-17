@@ -1142,14 +1142,17 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>, @builtin(workgroup_id) wid
           gl: function (gl) { return Array.from(glVectorAdd(gl, A, B)); },
           cpu: function () { return Array.from(vectorAddRef(A, B)); } });
       },
-      matmulOne: async function (A0, B0, m, k, n) {
+      // flags：{ transA, transB }（可省）。轉置旗標送進同一份 WGSL 核心（索引換掉），不在宿主端轉置。
+      // 轉置時 GL 退路不支援（那條路沒有轉置版），所以只給 WGSL 與 CPU 參考兩條路。
+      matmulOne: async function (A0, B0, m, k, n, flags) {
         var MA = toF32(A0, 'A'), MB = toF32(B0, 'B');
         if (MA.length !== m * k) throw new Error('cudaweb.matmul：A 的元素數 ' + MA.length + ' 與 m×k=' + (m * k) + ' 不符');
         if (MB.length !== k * n) throw new Error('cudaweb.matmul：B 的元素數 ' + MB.length + ' 與 k×n=' + (k * n) + ' 不符');
+        var fl = mmTileFlags(flags);
         return run('matmul', { bytes: (MA.length + MB.length + m * n) * 4, maxStorage: MA.length * 4,
-          wg: function (dev) { return wgMatmul(dev, MA, MB, m, k, n).then(Array.from); },
-          gl: function (gl) { return Array.from(glMatmul(gl, MA, MB, m, k, n)); },
-          cpu: function () { return Array.from(matmulRef(MA, MB, m, k, n)); } });
+          wg: function (dev) { return wgMatmul(dev, MA, MB, m, k, n, fl ? flags : undefined).then(Array.from); },
+          gl: fl ? undefined : function (gl) { return Array.from(glMatmul(gl, MA, MB, m, k, n)); },
+          cpu: function () { return Array.from(fl ? matmulTRef(MA, MB, m, k, n, fl) : matmulRef(MA, MB, m, k, n)); } });
       },
       sum: async function (a0) {
         var A = toF32(a0, 'a');
@@ -1160,13 +1163,15 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>, @builtin(workgroup_id) wid
       },
       // 矩陣乘（自動分塊）：A 的每一塊 m'×k、B 的每一塊 k×n'、C 的每一塊 m'×n' 都不超過儲存緩衝上限。
       // 沒有超過時直接執行一次；超過時切塊各自執行（每塊都經過預算與層選擇），再拼回 m×n。
-      matmul: async function (A0, B0, m, k, n) {
+      matmul: async function (A0, B0, m, k, n, flags) {
         var MA = toF32(A0, 'A'), MB = toF32(B0, 'B');
         if (MA.length !== m * k) throw new Error('cudaweb.matmul：A 的元素數 ' + MA.length + ' 與 m×k=' + (m * k) + ' 不符');
         if (MB.length !== k * n) throw new Error('cudaweb.matmul：B 的元素數 ' + MB.length + ' 與 k×n=' + (k * n) + ' 不符');
         await ensure();
         var lim = (st.device && maxBytes()) || DEFAULT_STORAGE_MAX;
-        if (m * k * 4 <= lim && k * n * 4 <= lim && m * n * 4 <= lim) return api.matmulOne(MA, MB, m, k, n);
+        if (m * k * 4 <= lim && k * n * 4 <= lim && m * n * 4 <= lim) return api.matmulOne(MA, MB, m, k, n, flags);
+        // 轉置版不分塊（分塊是依列切，轉置後的列不同）：超過上限就如實報錯，不算錯
+        if (mmTileFlags(flags)) throw new Error('cudaweb.matmul：轉置版超過單一儲存緩衝上限（' + lim + ' 位元組），目前不分塊');
         var t = Math.floor(lim / (4 * Math.max(1, k)));
         if (t < 1) throw new Error('cudaweb.matmul：單一列 k=' + k + ' 已超過儲存緩衝上限 ' + lim + ' 位元組，無法分塊');
         var mc = Math.min(m, t);

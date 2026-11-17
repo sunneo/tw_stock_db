@@ -507,6 +507,25 @@ function seeded(n, seed) {
     assert.strictEqual(r.info.layer, 'T1');
     close(r.result, Array.from(core.gemvRef(Float32Array.from(A), Float32Array.from(x), 5, 7)), core.tolerance(7), 'gemv');
   });
+  await check('矩陣乘轉置旗標（transA／transB／兩者）在 T1 與普通形式的參考一致（同一份核心，不在宿主轉置）', async () => {
+    const rt = core.createRuntime({ navigator: fakeNavigator().nav, webgl2: null });
+    const M = 5, K = 7, N = 6;
+    const An = seeded(M * K, 31), Bn = seeded(K * N, 32);           // 普通形式：A 為 M×K、B 為 K×N
+    const ref = []; for (let i = 0; i < M; i++) for (let j = 0; j < N; j++) { let acc = 0; for (let k = 0; k < K; k++) acc += An[i * K + k] * Bn[k * N + j]; ref.push(acc); }
+    const As = new Array(M * K), Bs = new Array(K * N);             // 轉置儲存：A 存成 K×M，B 存成 N×K
+    for (let i = 0; i < M; i++) for (let k = 0; k < K; k++) As[k * M + i] = An[i * K + k];
+    for (let k = 0; k < K; k++) for (let j = 0; j < N; j++) Bs[j * K + k] = Bn[k * N + j];
+    const cases = [
+      { name: 'transA', A: As, B: Bn, flags: { transA: true } },
+      { name: 'transB', A: An, B: Bs, flags: { transB: true } },
+      { name: 'transA+transB', A: As, B: Bs, flags: { transA: true, transB: true } },
+    ];
+    for (const c of cases) {
+      const r = await rt.matmul(c.A, c.B, M, K, N, c.flags);
+      assert.strictEqual(r.info.layer, 'T1', c.name);
+      close(r.result, ref, core.tolerance(K), 'matmul ' + c.name);
+    }
+  });
   await check('前綴和在 T1 與參考版一致（單區塊、多區塊、需要遞迴的 70000 個元素）', async () => {
     const rt = core.createRuntime({ navigator: fakeNavigator().nav, webgl2: null });
     for (const n of [5, 300, 70000]) {

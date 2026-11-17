@@ -112,5 +112,9 @@ const M = require('./mm_ops.js');
   ran.length = 0;
   outs = await M.startMatmulRace(shapesAll, { calibrate: async () => ({ noGpu: true, reason: 'no adapter' }), raceOne: async (Mm) => { ran.push(Mm); return {}; } });
   assert.deepStrictEqual(ran, []); assert.ok(outs.every((x) => x.noGpu === true));
+  // 競賽一定有共用儲存（表格讀的是同一個），沒有就建一個
+  M.TUNE.store = null;
+  await M.startMatmulRace([{ M: 64, K: 1024, N: 1024 }], { calibrate: calibOk, raceOne: async () => ({ winner: null, bad: [], gated: [] }) });
+  assert.ok(M.TUNE.store && typeof M.TUNE.store.entries === 'function');
   console.log('mm_ops_test: 全部通過');
 })().catch((e) => { console.error(e); process.exit(1); });
