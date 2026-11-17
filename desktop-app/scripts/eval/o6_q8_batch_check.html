@@ -1,0 +1,67 @@
+<!doctype html><meta charset="utf-8"><title>o6 q8 batch check</title>
+<body style="font:13px monospace;white-space:pre">
+<script>
+// O6 驗證（真 Chrome、真 WebGPU）：批次內的「動態量化＋q8mm」整段不回讀（infer_ops.q8mmBatched，輸入 quantizeDyn 的 GPU 句柄）。
+// 對照：infer_ops.quantizeDynamicRef＋q8mmRef（CPU 參考，scale＝fround(sx·sw)）。
+// 判準：(1) 每個案例整批只 submit 一次；(2) 輸出與參考版的相對誤差 ≤1e-5（GPU 的 f32 乘法與參考版差 1 ulp 左右）；
+// (3) 四種形狀：dec（M=1、M=8）、pf（M=64）、simple（N 不是 4 的倍數）。
+// 每個案例單次派發很小（M·K·N ≤ 64·256·128），不會逾時。結果在 window.__out。
+// 用法：desktop-app 資料夾 python -X utf8 -m http.server <埠> --bind 127.0.0.1，開 http://127.0.0.1:<埠>/scripts/eval/o6_q8_batch_check.html
+const mods = {};
+const loadMod = async (key, url) => {
+  const src = await (await fetch(url, { cache: 'no-store' })).text();
+  const m = { exports: {} }; mods[key] = m;
+  new Function('module', 'exports', 'require', src)(m, m.exports, (p) => { const k = p.replace(/^\.\//, '').replace(/\.js$/, ''); if (!mods[k]) throw new Error('missing ' + k); return mods[k].exports; });
+};
+let seed = 23;
+const rnd = () => { seed = (Math.imul(seed, 1664525) + 1013904223) | 0; return (seed >>> 0) / 4294967296 - 0.5; };
+(async () => {
+  const out = { hardware: 'Kepler 14 W（同一台、同一瀏覽器）', cases: [], error: null };
+  window.__out = out;
+  try {
+    await loadMod('gpu_core', '../../renderer/src/gpu/gpu_core.js');
+    await loadMod('gpu_pool', '../../renderer/src/gpu/gpu_pool.js');
+    await loadMod('nn_ops', '../../renderer/src/gpu/nn_ops.js');
+    await loadMod('infer_ops', '../../renderer/src/gpu/infer_ops.js');
+    const nn = mods.nn_ops.exports, IO = mods.infer_ops.exports;
+    const { dev } = await nn.getDevice(navigator);
+    let submits = 0;
+    const realSubmit = dev.queue.submit.bind(dev.queue);
+    dev.queue.submit = (cmds) => { submits++; return realSubmit(cmds); };
+    const WZP = 128, WSCALE = 0.01;
+    const cases = [
+      { name: 'dec M1 K1024 N256', M: 1, K: 1024, N: 256 },
+      { name: 'dec M8 K256 N128', M: 8, K: 256, N: 128 },
+      { name: 'pf M64 K256 N128', M: 64, K: 256, N: 128 },
+      { name: 'simple M5 K64 N6（N 非 4 的倍數）', M: 5, K: 64, N: 6 },
+    ];
+    for (const c of cases) {
+      const { M, K, N } = c;
+      const x = Float32Array.from({ length: M * K }, () => rnd() * 4);
+      const W = Uint8Array.from({ length: K * N }, () => Math.floor((rnd() + 0.5) * 256));
+      // 參考
+      const qr = IO.quantizeDynamicRef(x);
+      const xi = new Int32Array(M * K); for (let i = 0; i < xi.length; i++) xi[i] = qr.q[i] - qr.zp;
+      const ref = IO.q8mmRef(xi, W, WZP, M, K, N, Math.fround(qr.scale * WSCALE));
+      // GPU：權重緩衝區（位元組補到 4 的倍數）
+      const padLen = Math.ceil(W.length / 4) * 4;
+      const wbuf = dev.createBuffer({ size: padLen, usage: 0x0080 | 0x0008 });
+      const wpad = new Uint8Array(padLen); wpad.set(W);
+      dev.queue.writeBuffer(wbuf, 0, wpad);
+      submits = 0;
+      const b = nn.createBatch(dev);
+      const xh = b.upload(x);
+      const xq = b.quantizeDyn(xh);
+      const y = IO.q8mmBatched(b, xq, wbuf, WZP, M, K, N, WSCALE, {});
+      const [gy] = await b.read([[y, M * N]]);
+      let maxAbs = 0, maxRef = 0;
+      for (let i = 0; i < ref.length; i++) { maxAbs = Math.max(maxAbs, Math.abs(gy[i] - ref[i])); maxRef = Math.max(maxRef, Math.abs(ref[i])); }
+      const rel = maxAbs / Math.max(maxRef, 1e-30);
+      wbuf.destroy && wbuf.destroy();
+      out.cases.push({ name: c.name, submits: submits, relErr: rel, maxRef: maxRef, variant: IO.q8mmVariant(N, {}, M), pass: rel <= 1e-5 && submits === 1 });
+    }
+    out.allPass = out.cases.every((r) => r.pass);
+  } catch (e) { out.error = String((e && e.stack) || e); }
+  out.done = true;
+})();
+</script>

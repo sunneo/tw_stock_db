@@ -325,6 +325,31 @@ async function q8mm(xq, W, wzp, M, K, N, scale, opts) {
     () => q8mmRef(xq, W, wzp, M, K, N, sc));
 }
 
+// ---------- 批次版 q8mm（O6）：輸入 xq 與 sx 都在 GPU 上（來自 nn_ops 批次的 quantizeDyn），整段不回讀 ----------
+// 做法：把三個核心的 binding(3) uniform 換成 binding(4)，新增 binding(3) 的 sx（[輸入 scale]），輸出乘上 sx[0]·wscale。
+// 權重 wbuf 是 GPU 緩衝區（K×N/4 個 u32，布局與 q8mm 的權重相同：每列 N 個 uint8，小端 4 個一字）；wscale、wzp 是主機端常數。
+// 注意：GPU 的 f32 乘法與參考版（f64 算 scale 再 fround）會差 1 ulp 左右，判準用相對誤差，不要求逐位相同（q 本身仍逐位相同）。
+function dynKernel(src) {
+  return src.replace('@group(0) @binding(3) var<uniform> p: P;', '@group(0) @binding(3) var<storage, read> sx: array<f32>;\n@group(0) @binding(4) var<uniform> p: P;')
+    .replace('* p.scale;', '* (sx[2] * p.scale);');   // sx＝quantizeDyn 的 st：[mn, mx, scale, zp]，輸入 scale 在 sx[2]
+}
+const WGSL_Q8MM_DYN = dynKernel(WGSL_Q8MM);
+const WGSL_Q8MM_DEC_DYN = dynKernel(WGSL_Q8MM_DEC);
+const WGSL_Q8MM_PF_DYN = dynKernel(WGSL_Q8MM_PF);
+// b：nn_ops.createBatch；xq：quantizeDyn 的回傳（{buf, n, st}）；wbuf：GPUBuffer；回傳 { buf, n }（M×N 的 f32 句柄）
+function q8mmBatched(b, xq, wbuf, wzp, M, K, N, wscale, opts) {
+  const variant = q8mmVariant(N, opts, M);
+  if (variant !== 'simple' && N % 4 !== 0) throw new Error('q8mm ' + variant + '：N 必須是 4 的倍數（N=' + N + '）');
+  const y = b.alloc(M * N);
+  const u = new ArrayBuffer(32), d = new DataView(u);
+  d.setUint32(0, M, true); d.setUint32(4, K, true); d.setUint32(8, N, true); d.setInt32(12, wzp, true); d.setFloat32(16, Math.fround(wscale), true); d.setUint32(20, N >>> 2, true);
+  const sx = xq.st.buf;
+  if (variant === 'dec') b.dispatchRaw(WGSL_Q8MM_DEC_DYN, [xq.buf, wbuf, y.buf, sx], new Uint8Array(u), [Math.ceil(N / 64), M, 1]);
+  else if (variant === 'pf') b.dispatchRaw(WGSL_Q8MM_PF_DYN, [xq.buf, wbuf, y.buf, sx], new Uint8Array(u), [Math.ceil(N / 64), Math.ceil(M / 64), 1]);
+  else b.dispatchRaw(WGSL_Q8MM_DYN, [xq.buf, wbuf, y.buf, sx], new Uint8Array(u), [Math.ceil(N / 64), M, 1]);
+  return y;
+}
+
 // q8lm：x（Float32Array K）、W（Uint8Array V×K，不論多大；超過儲存緩衝上限時照列分塊）、回傳 logits
 // chunks 可選：事先切好的 Uint8Array 陣列（同一個陣列物件重複使用才能常駐），沒給就用 W.subarray 切（每次新物件，不常駐）
 function planChunks(W, V, K, maxBytes) {
@@ -551,4 +576,4 @@ async function q8lmAuto(x, W, V, K, zp, scale, opts) {
   throw err;
 }
 
-module.exports = { quantizeDynamicRef, q8mmRef, q8lmRef, q8mm, q8mmVariant, q8lm, q8lmAuto, q8lmGl, q8lmWgsl, cachedChunks, planChunks, WGSL_Q8MM, WGSL_Q8MM_DEC, WGSL_Q8MM_PF, WGSL_Q8LM, FS_Q8LM_GL, MAX_GROUPS, MAX_CHUNK_BYTES };
+module.exports = { quantizeDynamicRef, q8mmRef, q8lmRef, q8mm, q8mmVariant, q8lm, q8lmAuto, q8lmGl, q8lmWgsl, cachedChunks, planChunks, WGSL_Q8MM, WGSL_Q8MM_DEC, WGSL_Q8MM_PF, WGSL_Q8LM, FS_Q8LM_GL, MAX_GROUPS, MAX_CHUNK_BYTES, q8mmBatched, WGSL_Q8MM_DYN, WGSL_Q8MM_DEC_DYN, WGSL_Q8MM_PF_DYN };

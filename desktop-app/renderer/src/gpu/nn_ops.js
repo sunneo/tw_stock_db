@@ -757,6 +757,9 @@ function createBatch(dev) {
       }
       return out;
     },
+    // 給其他模組（infer_ops 的批次 q8mm）用的底層介面：配置輸出、以指定的儲存緩衝區與 uniform 派發一個核心
+    alloc(n) { return { buf: storage(n), n: n }; },
+    dispatchRaw(code, bindBufs, uniform, groups) { dispatch(code, bindBufs, uniform, groups); },
     stats: stats,
   };
   return b;
