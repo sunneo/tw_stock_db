@@ -380,6 +380,47 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>, @builtin(workgroup_id) wid
   }
   if (t == 0u && row < p.m) { Y[row] = sh[0]; }
 }`;
+  // 包含式前綴和（O14c）：每個工作群組（256 個元素）用 Hillis–Steele 掃描做區塊前綴和，並寫出區塊總和；
+  // 區塊總和再遞迴掃描；最後 add_offsets 把前一區塊的掃描結果加到每個元素上。
+  WGSL.scan_block = `
+struct P { n: u32, a: u32, b: u32, c: u32 }
+@group(0) @binding(0) var<storage, read> IN: array<f32>;
+@group(0) @binding(1) var<storage, read_write> OUT: array<f32>;
+@group(0) @binding(2) var<storage, read_write> BSUM: array<f32>;
+@group(0) @binding(3) var<uniform> p: P;
+var<workgroup> s: array<f32, 256>;
+@compute @workgroup_size(256)
+fn main(@builtin(local_invocation_id) lid: vec3<u32>, @builtin(workgroup_id) wid: vec3<u32>) {
+  // @kernel scan_block
+  let t = lid.x;
+  let i = wid.x * 256u + t;
+  var v: f32 = 0.0;
+  if (i < p.n) { v = IN[i]; }
+  s[t] = v;
+  workgroupBarrier();
+  for (var k: u32 = 0u; k < 8u; k = k + 1u) {
+    let off = 1u << k;
+    var add: f32 = 0.0;
+    if (t >= off) { add = s[t - off]; }
+    workgroupBarrier();
+    s[t] = s[t] + add;
+    workgroupBarrier();
+  }
+  if (i < p.n) { OUT[i] = s[t]; }
+  if (t == 255u) { BSUM[wid.x] = s[255]; }
+}`;
+  WGSL.add_offsets = `
+struct P { n: u32, a: u32, b: u32, c: u32 }
+@group(0) @binding(0) var<storage, read_write> OUT: array<f32>;
+@group(0) @binding(1) var<storage, read> SCAN: array<f32>;
+@group(0) @binding(2) var<uniform> p: P;
+@compute @workgroup_size(256)
+fn main(@builtin(local_invocation_id) lid: vec3<u32>, @builtin(workgroup_id) wid: vec3<u32>) {
+  // @kernel add_offsets
+  let i = wid.x * 256u + lid.x;
+  if (wid.x == 0u) { return; }
+  if (i < p.n) { OUT[i] = OUT[i] + SCAN[wid.x - 1u]; }
+}`;
   // 轉置樣板（O14c）：A 為 m×n（列主序），輸出 n×m。16×16 的共用記憶體分塊，列寬加 1 避開記憶體組衝突。
   WGSL.transpose = `
 struct P { m: u32, n: u32, a: u32, b: u32 }
@@ -777,6 +818,26 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>, @builtin(workgroup_id) wid
         dispatch(dev, pipeline(dev, 'mul', WGSL.mul), [bx, by, bz, uniformU32(dev, [n, 0, 0, 0])], Math.ceil(n / WG));
         var r = await readBack(dev, reduceBuffers(dev, bz, n), 1);
         return r[0];
+      });
+    }
+    // 前綴和：區塊掃描 → 區塊總和遞迴掃描 → 加上前區塊的偏移。全部留在裝置上。
+    function scanBuf(dev, inBuf, n) {
+      var nb = Math.ceil(n / 256);
+      var out = dev.createBuffer({ size: Math.max(4, n * 4), usage: USAGE.STORAGE | USAGE.COPY_SRC | USAGE.COPY_DST });
+      var bsum = dev.createBuffer({ size: Math.max(4, nb * 4), usage: USAGE.STORAGE | USAGE.COPY_SRC | USAGE.COPY_DST });
+      dispatch(dev, pipeline(dev, 'scan_block', WGSL.scan_block), [inBuf, out, bsum, uniformU32(dev, [n, 0, 0, 0])], nb, 1);
+      if (nb > 1) {
+        var scanned = scanBuf(dev, bsum, nb);
+        dispatch(dev, pipeline(dev, 'add_offsets', WGSL.add_offsets), [out, scanned, uniformU32(dev, [n, 0, 0, 0])], nb, 1);
+      }
+      return out;
+    }
+    function wgScan(dev, a) {
+      return withScope(dev, async function () {
+        var n = a.length;
+        if (n === 0) return [];
+        var inb = makeBuf(dev, a, USAGE.STORAGE | USAGE.COPY_DST | USAGE.COPY_SRC);
+        return readBack(dev, scanBuf(dev, inb, n), n);
       });
     }
     function wgTranspose(dev, A, m, n) {
@@ -1179,6 +1240,13 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>, @builtin(workgroup_id) wid
         return run('nrm2', { bytes: X.length * 4 * 3,
           wg: async function (dev) { var s = await wgDot(dev, X, X); return Math.fround(Math.sqrt(s)); },
           cpu: function () { return nrm2Ref(X); } });
+      },
+      // 包含式前綴和（O14c 樣板）：out[i] = Σ_{j≤i} a[j]。CPU 參考是逐步 f32 累加（與 GPU 的樹狀順序不同，比對用容差）。
+      scan: async function (a0) {
+        var A = toF32(a0, 'a');
+        return run('scan', { bytes: A.length * 4 * 2, maxStorage: A.length * 4,
+          wg: function (dev) { return wgScan(dev, A); },
+          cpu: function () { var o = new Array(A.length), acc = 0; for (var i = 0; i < A.length; i++) { acc = Math.fround(acc + A[i]); o[i] = acc; } return o; } });
       },
       // 轉置（O14c 樣板）：A 為 m×n（列主序）→ 回傳 n×m（列主序）。
       transpose: async function (A0, m, n) {
