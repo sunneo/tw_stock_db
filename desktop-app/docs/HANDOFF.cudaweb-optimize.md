@@ -50,6 +50,29 @@
 - `q8mm_check.html`、`attn_flash_check.html`、`matmulnbits_dec_check.html`、`mem_space_check.html`、`mm_tiled_check.html`（既有）。
 - 讀 `window.__out`；判準寫在每頁開頭註解。
 
+## 2026-11-18 第十二段（本棒：Intel 缺口、核心計時、O14b 轉置旗標）
+
+提交（皆為本地提交，未推送、未發布）：
+- `131f6be68`：競賽計時改核心時間（一次提交多次派發、等 GPU 完成）；勝者記編譯 ms；屋頂 R0 量測（R0 存 `ROOF|adapter|sig`）；表格編譯欄與實測峰值優先；內嵌同步。
+- `2b84c1945`：R0 改 16 條獨立依賴鏈；量測不穩（單次超過線性預估 3 倍以上）就不採用。
+- `3fa2443c7`：`rt.matmul` 與橋接傳遞 transA／transB（mm_ops 轉置核心）。
+- `42304af2d`：`cublas.sgemm` 的小運算元（≤ 2^23 元素）改送旗標，大的仍在宿主轉置。
+
+桌面實測（真 Electron、真 WebGPU；adapter 回報 nvidia／kepler，能力簽名 `wg32768-inv1024-f160-sg1`，與內建峰值表的 GT720 簽名 `wg16384-inv256-f160-sg0` 不同，所以內建 127.5 GFLOP/s 不一定適用這台）：
+- 計時判定可信：同一個 FMA 核心，派發 1／4／16 次，`onSubmittedWorkDone` 與 `mapAsync` 回讀一致（n=16：12.5 ms vs 12.4 ms）。（`mm_timing_check.eval.js`）
+- 小形狀吞吐被傳輸主導：64×1024×1024 完整路徑 87.2 ms（1.54 GFLOP/s），同形狀核心約 1.4 ms（第一次競賽的 mm_vec4_f32 勝者）。這就是 Intel 缺口「7.10 GFLOP/s」的主因：不是計算慢。
+- **未解決**：屋頂 R0 數字不可信。第一次（4 條鏈）1.37 GFLOP/s；第二次（16 條鏈）0.93 GFLOP/s，單次 786 ms，但線性預估約 40 ms。診斷核心在同一台機器上同樣的每次迭代成本是遠低於這個數字的，所以 R0 的量測方法還有問題，不是核心太慢。
+- **未解決**：第二次競賽 64×1024×1024 沒有勝者（第一次有 mm_vec4_f32）。沒有記錄逐候選的失敗原因，原因不明。
+- 「占峰值」目前在這台機器上會顯示實測值（0.93 GFLOP/s），這是**錯的**，應改用「不採用」。穩定性檢查（`2b84c1945`）已加，但還沒在桌面版驗證。
+- 驗證預算：`mm_roofline_compile` 已跑兩次（4 條鏈一次、16 條鏈一次），不要再跑；要驗證穩定性檢查，需要管理者同意再開一次，或改用新的評估檔。
+
+本段沒做：批次矩陣乘、gemv 小 M 路徑、GPU 上實測轉置路徑、O14c、O14d（DESIGN 文件段落）、O12／O13／O15。
+
+下一步建議（依優先序）：
+1. 查 R0 量測為什麼單次時間遠高於預估（懷疑：量測之間 GPU 時脈降頻，或 `measureRoofline` 的 `runIters` 與診斷核心的提交方式不同；先比對兩者的提交內容）。
+2. 查第二次 64×1024×1024 沒有勝者的逐候選原因（在 `startMatmulRace` 的回傳裡有 `bad`，評估檔目前沒有印出來）。
+3. 轉置路徑在 GPU 上實測（一個形狀、小、可控）。
+
 ## 2026-11-18 進度（本棒）
 - 介面卡：Chrome 真 WebGPU 可用（nvidia／kepler）。實測 `features` 含 `subgroups`、不含 `shader-f16`；先前記為無 subgroups，已更正（待確認能否用於核心）。
 - **O5 完成**（提交 `2d4a066b1`、`ea70490e5`）：`gpu_core.js` 的 `mmTileWgsl`（平鋪 64×64、4×4 暫存器、8 KiB 共用）同時供 `WGSL.matmul` 與 `mm_ops` 平鋪版；轉置用 p0 旗標（真 Chrome 23 項逐位相同）；vec4 變體（K、N 為 4 倍數、不轉置自動選用）大形狀快約 25–30%。f16 版 BLOCKED（無 shader-f16）。
