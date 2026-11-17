@@ -92,7 +92,8 @@
     // opts：{ defaultCount: 2, maxArticles: 5, summarizeTimeoutMs: 30000 }
     // 模型斷路器：本輪第一次摘要失敗（模型載入失敗、呼叫失敗或單篇逾時）後，後面的文章不再叫模型，直接用程式摘要，不每篇白等。
     async function run(userText, deps, opts) {
-        const o = Object.assign({ defaultCount: 2, maxArticles: 5, summarizeTimeoutMs: 30000 }, opts || {});
+        const o = Object.assign({ defaultCount: 2, maxArticles: 5, summarizeTimeoutMs: 30000, roundTimeoutMs: 180000 }, opts || {});
+        const roundDeadline = Date.now() + o.roundTimeoutMs; // 整輪耗時上限：超過就不再讀下一篇，已摘要的照常回答
         const say = (s) => { try { if (deps.trace) deps.trace(s); } catch (_) { /* 顯示失敗不影響流程 */ } };
     // 頁首狀態（進度卡片的 status）：第 i／n 篇、目前在做什麼；deps.status 可省略
     const status = (s) => { try { if (deps.status) deps.status(s); } catch (_) { /* 顯示失敗不影響流程 */ } };
@@ -139,6 +140,7 @@
         let modelDown = ''; // 斷路器：第一次模型失敗的真實原因；有值之後本輪不再叫模型
         for (let i = 0; i < picked.length; i++) {
             const c = picked[i];
+            if (Date.now() > roundDeadline) { step('整輪上限', '程式', '已超過整輪耗時上限 ' + o.roundTimeoutMs + ' ms，之後的 ' + (picked.length - i) + ' 篇不再處理'); break; }
             status('第 ' + (i + 1) + '／' + picked.length + ' 篇：讀內文中');
             const art = await deps.readArticle(c.url).catch((e) => ({ ok: false, error: String((e && e.message) || e) }));
             if (!art || !art.ok || !String(art.text || '').trim()) { step('讀第 ' + (i + 1) + ' 篇', '程式', '讀不到內文：' + c.title.slice(0, 30) + '（' + ((art && art.error) || '沒有內文') + '）'); continue; }

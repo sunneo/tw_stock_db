@@ -173,6 +173,13 @@ function fakeDeps(opts) {
         check('J2 頁首狀態含「第 1／2 篇」與「第 2／2 篇」', statuses.some((s) => s.includes('第 1／2 篇')) && statuses.some((s) => s.includes('第 2／2 篇')), statuses);
         check('J2 每篇完成後頁首顯示完成與耗時', statuses.some((s) => s.includes('模型摘要完成') && s.includes('ms')), statuses);
     }
+    // N. 整輪耗時上限：超過就不再讀下一篇，步驟行說明
+    {
+        const f = fakeDeps(); let calls = 0;
+        f.deps.summarize = async () => { calls++; return { ok: true, text: 'x', method: 'model' }; };
+        await D.run('看今天有哪些黃仁勳新聞', f.deps, { roundTimeoutMs: -1 });
+        check('N 整輪超時後不再讀／摘要', calls === 0 && f.steps.some((s) => s.includes('整輪上限')), f.steps);
+    }
     // M. 沒有實質目標詞（只有功能詞）：不比對，取前幾則
     {
         const f = fakeDeps();
