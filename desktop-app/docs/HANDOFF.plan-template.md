@@ -22,6 +22,16 @@ Continue from the handoff document at desktop-app/docs/HANDOFF.plan-template.md.
 
 ## 3. Todo（依序）
 
+**2026-11-17 追加需求（轉達自使用者，逐字見 §5；全部要做，做完再回報一次）**：
+- (a) 讀 log 的範式是**逐層歸約（map-reduce）**：大量內容切段、每段各自讀與摘要、往上一層合併，層層縮到放得進上下文。網頁多篇摘要要用同一範式：第 0 層＝程式取回的原始內容（清單→各篇內文），第 1 層＝逐篇／逐段摘要，第 2 層＝合併總結；每層的單位、模型被問的封閉題、層間傳遞、停止條件、哪一步用 thinking 都要寫清楚。（log 的現成結構見 `DESIGN.log-mining.md`、`DESIGN.TODO.md` 117～147 行、`jsonl_pager`／`read_ledger`。）
+- (b) **來源登錄表**（資料層）：依任務類型列可用網站與進入點（新聞台灣：Yahoo 新聞 https://tw.news.yahoo.com/、中央社、聯合新聞網、自由時報、公視、Google News 搜尋 RSS `https://news.google.com/rss/search?q=<關鍵字>&hl=zh-TW&gl=TW&ceid=TW:zh-Hant`；查資料：搜尋結果頁或其 RSS）。每筆：名稱、進入點 URL 樣板（關鍵字槽）、取清單方式（RSS／列表頁／搜尋頁）、內文擷取方式、語言、可靠度、預設順序。使用者指定了網站（含 URL）就用使用者的；沒指定用登錄表預設（1～3 個），並顯示每次實際用了哪些來源。放成可擴充的純資料模組（`renderer/src/` 下）加測試；設定的「進階」區可編輯。
+- (c) **站名別名表**：「去 yahoo」「看 yahoo 新聞」「google 新聞」「中央社」→ 進入點（yahoo→tw.news.yahoo.com 新聞首頁，不是 yahoo 首頁；yahoo 股市／奇摩要分得清）。字串比對抽取站名，不叫模型猜網址；沒抓到站名才退回預設來源或問封閉題（從登錄表選一個字母）。
+- (d) **拆字**：使用者的話去掉功能詞（今天、有哪些、幫我、請、新聞、看…），抽目標詞（黃仁勳），展開別名／近義（Jensen Huang、輝達、NVIDIA，沿用 `_faOtWebGoal`／`_faOtExpandTerms`／`FA_SEM_LEX`，含繁簡／全半形）；頁面文字切成「標題＋連結」單位（沿用 `_otPageDigest` 的雜訊規則：導覽列、廣告、時間戳），再逐單位比對目標詞。純函式、有單元測試；模型只在比對有歧義或要摘要時被問封閉題。
+- (e) **驗收用例**：「看今天有哪些黃仁勳新聞」（也要測「去 yahoo 看黃仁勳的新聞」「看 yahoo 新聞有沒有颱風」，含沒說站名、說了站名兩種）：開新聞首頁→取清單→篩出相關標題→逐篇讀內文→逐篇摘要→合併成「今天有哪些黃仁勳新聞：N 則，各一句重點」；沒有相關新聞就明說沒有，不拿無關標題充數。用真模型（原生 q8）＋假網頁（固定 HTML，含相關與無關標題與內文）做可重現實跑。
+- (f) **診斷（todo 2 必答）**：使用者昨晚的觀察是「完全沒經過AI，AI只產生plan, recipe就結束了」。請回答：(1) 走的是「離線模式（Offline Trainer，規則路徑 `_otPageDigest`）」還是「離線模型 Qwen3 的 `_llmGenerateInner`＋工具迴圈／CoLU／recipe」，逐步列實際呼叫鏈與每步誰決定、輸出是什麼；(2) 結束點在哪（`jsonStep` 成功就收尾？工具結果沒再餵回模型？`maxTurns`／停止條件？）；(3) 修正：範本每層取回內容後**一定**交給模型讀＋摘要（可開 thinking），最終回答是模型根據取回內容寫的總結；沒經過模型時畫面誠實標示「這次沒有經過 AI」。測試：假模型＋假工具，斷言「取回內容有送進模型」「最終回答含模型摘要」「plan 後迴圈不提前結束」。
+- (g) **可觀測性**：離線模型（含範本／recipe／工具迴圈）每一輪做了什麼，要在使用者開著的 transcribe（Grep `transcribe`、`cb.log`、`_rgTrace`、`trail`、`_faOtTrailText`）看得到，而且看得出是多輪：每步一行，含輪次編號、階段（plan／選來源／取清單／篩選／讀第幾篇／逐篇摘要／合併）、誰做的（程式／模型）、工具與主要參數（網址、關鍵字）、取回內容大小與前幾字、送模型的封閉題與模型回答（thinking 長度或摘要）、耗時、失敗與退回原因。預設精簡每步一行，點開看詳細。先查為什麼現有管道沒顯示（離線模型路徑沒寫進 transcribe？只在離線模式 trail 才有？）。測試：假模型＋假工具跑完整範本，斷言 transcribe 步驟序列完整、順序正確、含輪次與誰做的。
+- 以上全部寫進 `desktop-app/DESIGN.plan-template.md`。
+
 1. ✅ 開關（`8f6cd4687`，v432）。剩下的只有網頁版釘 SHA（見 §2，已被拒，不重試）。
 2. **查證與實測重現症狀（下一步，從這裡開始）**：用離線模型（原生或 WebGPU 路徑；這台 Linux 有 `~/.config/floating-assistant-desktop/native-models/qwen3-0.6b-q8`，ORT 可用）重現「請開網頁看今日新聞總結給我」：
    - 先用 codebase-memory 或 Grep 查 `browser_create_tab`、`fetch_web_page`、`_llmGenerateInner`（約 `floating-assistant.js` 129968 行附近，這裡的 LoRA 註解也在這）、`FaVlm` 的 tool calling（`hermes`）與工具呼叫迴圈。
@@ -51,6 +61,7 @@ Continue from the handoff document at desktop-app/docs/HANDOFF.plan-template.md.
 - 2026-11-17：「如果沒有接上去，就代表你沒有照著我的要求達成」
 - 2026-11-17：「為什麼要一直中斷?! fucking hate it!」「我並不是ALL DAY LONG都在陪你這專案」「我的要求就是把它做完!!!!!!!!!!!!!!!!!!!!!!!!!!!!!」
 - 2026-11-17：「可以先commit , push, publish」
+- 2026-11-17（經 floating-ai-assistant.js 轉達，逐字）：「讀log不可能一次塞進上下文 不可能整份」「他是逐層reduction」「它不知道要去哪些網站」「它不知道去yahoo可以進去yahoo新聞，它就算進去yahoo新聞也不知道去拆字」「看今天有哪些黃仁勳新聞」「我昨晚測試的結果就像是完全沒經過AI，AI只產生plan, recipe就結束了」「而且我沒看到離線做了什麼，我有開transcribe，但好像看不到多輪迴圈呼叫什麼，做了什麼」
 - 2026-11-16：「真gpu不用管，我們用最爛的機器(Geforce 720T)測過，比當代Intel Core I5-2620還快1.78倍」
 
 ## 6. Handoff procedure（自我遞迴）
