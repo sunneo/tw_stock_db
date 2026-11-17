@@ -142,6 +142,13 @@ function fakeNavigator(opts) {
     } else if (k === 'mul') {
       const n = u32(e[3])[0];
       f32(e[2], n).set(core.mulRef(f32(e[0], n), f32(e[1], n)));
+    } else if (k === 'matmulnbits_dec' || k === 'matmulnbits') {
+      // 與 matmulnbits_gpu.js 的 WGSL 相同的介面（A、B 的位元組、scales、y、P）；數值用參考版，只驗主機端流程
+      const REF = require('./matmulnbits_ref.js');
+      const pu = u32(e[4]); const M = pu[0], K = pu[1], N = pu[2];
+      const nb = REF.nBlocksOf(K);
+      const B = new Uint8Array(e[1].data, 0, N * nb * REF.BYTES);
+      f32(e[3], M * N).set(REF.matmulNBitsRef(f32(e[0], M * K), M, K, B, f32(e[2], N * nb), N));
     } else if (k === 'attn_flash') {
       // 與 attn_gpu.js 的 WGSL_ATTN_FLASH 同一演算法（分塊線上 softmax）；只驗證主機端的綁定與 P 結構，數值另在真 Chrome 驗
       const AG = require('./attn_gpu.js');
