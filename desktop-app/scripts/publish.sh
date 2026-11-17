@@ -85,8 +85,10 @@ if git diff --cached --quiet; then echo "沒有新的建置產物要提交"; els
   MSG_FILE="$(mktemp)"; with_trailer "$COMMIT_MSG" > "$MSG_FILE"
   run git commit -q -F "$MSG_FILE"; rm -f "$MSG_FILE"
 fi
-run git push -q "$REMOTE" desktop-app
-HEAD_SHA="$(git rev-parse HEAD)"; echo "desktop-app HEAD = $HEAD_SHA"
+# 先固定要推的 commit，再推「這個 SHA」：別的工作階段可能在同一分支上同時提交，推完才讀 HEAD 會讀到沒推上去的新 commit（網頁版就會釘到遠端沒有的 SHA）
+HEAD_SHA="$(git rev-parse HEAD)"
+run git push -q "$REMOTE" "$HEAD_SHA:refs/heads/desktop-app"
+echo "desktop-app HEAD = $HEAD_SHA"
 if [ -n "$(git status --porcelain -- renderer scripts)" ]; then echo "注意：renderer／scripts 還有沒提交的變更（dry-run 時正常）" >&2; fi
 
 # ---- 3. 組 patch ----

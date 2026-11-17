@@ -53,7 +53,9 @@ const PAGES = {
     const self = {
         tools, fileCache: { get: async () => null },
         _planModel: async () => M,
-        _createProgressWidget: () => ({ log: (l) => progLines.push(l), finish: (s) => progDone.push(s), fail: () => {} }),
+        _createProgressWidget: () => ({ log: (l) => progLines.push(l), update: () => {}, finish: (s) => progDone.push(s), fail: () => {} }),
+        _gpuDecodeCapOn: () => false, // 這個測試的模型是假的，沒有開 GPU 解碼，切段大小不受 GPU 上限影響
+        _gpuChunkCap: () => 1024,
         _isNewsAsk: C._isNewsAsk, _newsFetchText: C._newsFetchText, _planLocalSummarize: C._planLocalSummarize, _planReadText: C._planReadText,
     };
     self._newsDigestAnswer = C._newsDigestAnswer;

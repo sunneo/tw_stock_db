@@ -21,7 +21,7 @@ const C = vm.runInContext('({' + ['_planLocalSummarize', '_planReadText'].map(me
 const LONG = Array.from({ length: 60 }, (_, i) => '第' + (i + 1) + '則：黃仁勳在會議中說明新一代晶片的量產時程與供應計畫，並回答記者提問。').join('\n');
 
 function makeSelf() {
-    const self = { fileCache: { get: async () => null } };
+    const self = { fileCache: { get: async () => null }, _gpuDecodeCapOn: () => false, _gpuChunkCap: () => 1024 }; // 假模型不走 GPU 解碼，切段不受 GPU 上限影響
     self._planReadText = C._planReadText.bind(self);
     self._planLocalSummarize = C._planLocalSummarize.bind(self);
     return self;
