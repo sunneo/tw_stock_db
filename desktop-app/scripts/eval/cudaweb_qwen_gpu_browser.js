@@ -44,10 +44,11 @@ const PAGE = `<!doctype html><meta charset="utf-8"><title>Qwen3 GPU 解碼驗證
     dev.lost.then((i) => log('裝置遺失：' + i.reason + ' ' + i.message));
     dev.addEventListener && dev.addEventListener('uncapturederror', (e) => log('uncapturederror：' + e.error.message));
     t = performance.now();
-    const eng = await G.createGpuEngine(dev, W, { maxT: 64, maxM: 32, chunkM: ${Number(process.env.QWEN_CHUNKM) || 16} });
+    const BUDGET = ${Number(process.env.QWEN_BUDGETMB) || 0} * 1048576; R.budgetBytes = BUDGET;
+    const eng = await G.createGpuEngine(dev, W, { maxT: 64, maxM: 32, chunkM: ${Number(process.env.QWEN_CHUNKM) || 16}, trace: !BUDGET, budgetBytes: BUDGET || undefined });
     R.setupMs = Math.round(performance.now() - t); R.engine = eng.info; log('GPU 引擎就緒 ' + R.setupMs + ' ms，派發 ' + eng.info.dispatches + ' 個，lm_head ' + eng.info.lmChunks + ' 塊');
     // GPU 記憶體上限：估算要與實際配置逐位元組相符；超過 budgetBytes 要在配置前丟 GPU_BUDGET；探測在軟體 WebGPU 上不量
-    R.estimate = G.estimateEngineBytes(W, { maxT: 64, maxM: 32 }); R.actualBytes = eng.info.gpuBytes;
+    R.estimate = G.estimateEngineBytes(W, { maxT: 64, maxM: 32, trace: !BUDGET, residentLayers: eng.info.residentLayers }); R.actualBytes = eng.info.gpuBytes;
     try { await G.createGpuEngine(dev, W, { maxT: 64, maxM: 32, budgetBytes: 1 << 20 }); R.budgetErr = { code: 'none' }; } catch (e) { R.budgetErr = { code: e.code, msg: e.message }; }
     R.probe = await window.__Q.mem.probe(navigator, {});
     const REFS = ${JSON.stringify(refs)};
@@ -60,7 +61,7 @@ const PAGE = `<!doctype html><meta charset="utf-8"><title>Qwen3 GPU 解碼驗證
       R.cases.push(item); log(JSON.stringify(item));
     }
     // 診斷：第 3 組（第一個詞元就和 CPU 參考不同的那組）逐層殘差流對 CPU 參考引擎
-    {
+    if (!BUDGET) {
       const dp = REFS.find((r) => r.prompt[0] === 9707) || REFS[0];
       eng.reset(); const g = await eng.step(dp.prompt, { trace: true, logits: true });
       const ce = Q.createCpuEngine(W, { maxT: 16, trace: true }); const cl = ce.step(dp.prompt);
@@ -74,7 +75,7 @@ const PAGE = `<!doctype html><meta charset="utf-8"><title>Qwen3 GPU 解碼驗證
     let ma = 0, mr = 0; for (let i = 0; i < 16; i++) { ma = Math.max(ma, Math.abs(R.firstLogits16[i] - R.ortLogits16[i])); mr = Math.max(mr, Math.abs(R.ortLogits16[i])); }
     R.firstLogitsRel16 = ma / (mr || 1);
     // 通過：GPU 與 CPU 參考引擎在所有組都相同（同樣數學）；與 ORT 相同的組數另外回報
-    R.pass = R.cases.length > 0 && R.cases.every((x) => x.eqCpu);
+    R.pass = R.cases.length > 0 && R.cases.every((x) => (BUDGET ? x.eqOrt : x.eqCpu));
     R.ortAgree = R.cases.filter((x) => x.eqOrt).length + '/' + R.cases.length;
   } catch (e) { R.error = String((e && e.stack) || e); }
   out.textContent = (R.pass ? '驗證通過' : '驗證未通過') + '\\n' + JSON.stringify(R, null, 1);

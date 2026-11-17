@@ -269,39 +269,64 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
   // dev：GPUDevice；W：Q.loadWeights 的結果。opts：{ maxT=512, maxM=64, chunkBytes=64MiB }
   // 配置前估算 GPU 緩衝區總量（位元組；與 createGpuEngine 的 createBuffer 逐項對應，每個緩衝區湊成 4 的倍數、最少 16）。
   // 回傳 { total, weights, kv, scratch, lmHead }。opts：maxT（預設 512）、maxM（預設 64）。
+  const MATS = ['q', 'k', 'v', 'o', 'g', 'u', 'd'];
   function estimateEngineBytes(W, opts) {
     const o = opts || {}, maxT = o.maxT || 512, maxM = o.maxM || 64;
     const D = W.D, H = W.H, Hkv = W.Hkv, hd = W.hd, Nq = H * hd, Nk = Hkv * hd, I = W.I, V = W.V;
     const sz = (n) => Math.max(16, (n + 3) & ~3);
-    let weights = 0, kv = 0, scratch = 0;
+    const R = o.residentLayers == null ? W.L : Math.max(0, Math.min(W.L, o.residentLayers));   // 常駐層數；其餘層每步串流（共用一組層緩衝區）
+    let weights = 0, kv = 0, scratch = 0; const slotMax = {};
     for (let l = 0; l < W.L; l++) {
       const Ly = W.layers[l];
-      for (const k of ['q', 'k', 'v', 'o', 'g', 'u', 'd']) weights += sz(Ly[k].W.length);
+      for (const k of MATS) { const n = sz(Ly[k].W.length); if (l < R) weights += n; slotMax[k] = Math.max(slotMax[k] || 0, n); }
       weights += sz(Ly.inNorm.byteLength) + sz(Ly.postNorm.byteLength) + sz(2 * hd * 4) + 18 * 32;
       kv += sz(2 * maxT * Nk * 4);
     }
-    const lmHead = sz(W.emb.W.length) + 5 * 32;   // lm_head 分塊後總和等於整張嵌入表（每塊再湊 4 的倍數，差距可忽略）
+    if (R < W.L) for (const k of MATS) weights += slotMax[k];                          // 串流用的共用層緩衝區（一層份）
+    // lm_head 分塊（與 createGpuEngine 同一公式，單塊上限預設 64 MiB、列數對齊 64）：每塊一個 uniform；另有最後 RMSNorm、argmax 各一個 uniform
+    const rowsPer = Math.max(64, Math.floor(Math.min(o.chunkBytes || (64 << 20), o.maxStorageBytes || (128 << 20)) / D / 64) * 64), nChunks = Math.ceil(V / rowsPer);
+    let lmHead = 0; for (let r = 0; r < V; r += rowsPer) lmHead += sz(Math.min(rowsPer, V - r) * D);
+    lmHead += (nChunks + 2) * 32;
     const m = maxM;
     for (const n of [m * D * 4, m * D * 4, m * D * 4, m * Math.max(Nq, D, I) * 4, 16, m * Nq * 4, m * Nk * 4, m * Nk * 4, m * Nq * 4, m * Nq * 4,
       m * D * 4, m * I * 4, m * I * 4, m * I * 4, m * D * 4, m * H * maxT * 4, D * 4, V * 4, 16, 2 * maxT * (hd / 2) * 4, W.finalNorm.byteLength]) scratch += sz(n);
     scratch += 16 + 16;                                                  // step 緩衝區、讀回 token
-    scratch += sz(V * 4) + 2 * sz(W.L * m * D * 4);                      // 讀回 logits、逐層追蹤（除錯用）與其讀回緩衝區
+    scratch += sz(V * 4);                                                // 讀回 logits
+    if (o.trace) scratch += 2 * sz(W.L * m * D * 4);                     // 逐層追蹤（除錯用，opts.trace:true 才配置）與其讀回緩衝區
     return { total: weights + kv + scratch + lmHead, weights, kv, scratch, lmHead };
   }
 
+  // 依 GPU 記憶體上限決定常駐層數：先算固定成本（KV＋暫存＋lm_head＋全部層的 norm／uniform＋一層份串流緩衝區），剩下的給常駐層。
+  // 回傳 { ok, resident, streamed, need（該配置的估算）, full（全常駐的估算）, minNeed（0 層常駐的估算）, why }。budget<=0 或放得下＝全常駐。
+  function planLayers(W, opts) {
+    const o = opts || {}, base = { maxT: o.maxT, maxM: o.maxM, trace: o.trace };
+    const full = estimateEngineBytes(W, base);
+    if (!(o.budgetBytes > 0) || full.total <= o.budgetBytes) return { ok: true, resident: W.L, streamed: 0, need: full, full, minNeed: null, why: '全常駐' };
+    const none = estimateEngineBytes(W, Object.assign({ residentLayers: 0 }, base));
+    if (o.allowStream === false || none.total > o.budgetBytes) return { ok: false, resident: 0, streamed: W.L, need: none, full, minNeed: none, why: o.allowStream === false ? '放不下且不允許分層' : '連 0 層常駐（只留 KV、暫存、lm_head 與一層串流緩衝區）都放不下' };
+    let lo = 0, hi = W.L - 1;                                                   // 最大的 R 使 total(R) <= budget（單調遞增）
+    while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (estimateEngineBytes(W, Object.assign({ residentLayers: mid }, base)).total <= o.budgetBytes) lo = mid; else hi = mid - 1; }
+    return { ok: true, resident: lo, streamed: W.L - lo, need: estimateEngineBytes(W, Object.assign({ residentLayers: lo }, base)), full, minNeed: none, why: '分層（常駐 ' + lo + '／' + W.L + ' 層）' };
+  }
+
   // 回傳 { step(ids, {logits}) → {token, logits?}, reset(), len, maxT, maxM, info, destroy() }；任何 GPU 錯誤由 step 的 Promise 丟出，呼叫端退回。
-  // opts.budgetBytes（>0）：GPU 記憶體上限。配置前先估算，超過就丟 Error（code='GPU_BUDGET'，帶 need／budget），什麼都還沒配置，呼叫端退回原路徑；
-  //   沒有「每層串流權重」的實作（見 DESIGN §7.30），所以超過上限＝不用這條路徑。
+  // opts.budgetBytes（>0）：GPU 記憶體上限。放不下全部權重時用 planLayers 決定常駐層數，其餘層每步用 writeBuffer 寫進共用的層緩衝區再算（分層，慢一些）；
+  //   連最小分層配置都放不下（或 allowStream:false）就在配置前丟 Error（code='GPU_BUDGET'，帶 need／budget／plan），呼叫端退回原路徑。
+  // opts.residentLayers：直接指定常駐層數（測試用）。opts.trace:true 才配置逐層追蹤緩衝區（診斷用；分層模式不支援 trace）。
   async function createGpuEngine(dev, W, opts) {
     const o = opts || {}, maxT = o.maxT || 512, maxM = o.maxM || 64;
     const D = W.D, H = W.H, Hkv = W.Hkv, hd = W.hd, Nq = H * hd, Nk = Hkv * hd, I = W.I, V = W.V;
     if (hd > 128 || hd % 2) throw new Error('qwen_gpu：head 維度 ' + hd + ' 不支援（需為 ≤128 的偶數）');
     if (D % 4) throw new Error('qwen_gpu：隱藏維度必須是 4 的倍數');
-    const need = estimateEngineBytes(W, { maxT, maxM });
-    if (o.budgetBytes > 0 && need.total > o.budgetBytes) {
-      const e = new Error('qwen_gpu：需要約 ' + Math.ceil(need.total / 1048576) + ' MB GPU 記憶體（權重 ' + Math.ceil((need.weights + need.lmHead) / 1048576) + '＋KV ' + Math.ceil(need.kv / 1048576) + '＋暫存 ' + Math.ceil(need.scratch / 1048576) + '），超過上限 ' + Math.ceil(o.budgetBytes / 1048576) + ' MB');
-      e.code = 'GPU_BUDGET'; e.need = need; e.budget = o.budgetBytes; throw e;
+    const plan0 = o.residentLayers != null ? { ok: true, resident: Math.max(0, Math.min(W.L, o.residentLayers)), need: null } : planLayers(W, { maxT, maxM, trace: !!o.trace, budgetBytes: o.budgetBytes, allowStream: o.allowStream });
+    const R = plan0.resident;
+    const need = plan0.need || estimateEngineBytes(W, { maxT, maxM, trace: !!o.trace, residentLayers: R });
+    if (!plan0.ok) {
+      const n = plan0.need, e = new Error('qwen_gpu：全部放進 GPU 約需 ' + Math.ceil(plan0.full.total / 1048576) + ' MB（權重＋KV＋暫存），最小分層配置也要 ' + Math.ceil(n.total / 1048576) + ' MB（KV ' + Math.ceil(n.kv / 1048576) + '＋暫存 ' + Math.ceil(n.scratch / 1048576) + '＋lm_head ' + Math.ceil(n.lmHead / 1048576) + '＋一層串流緩衝區），超過上限 ' + Math.ceil(o.budgetBytes / 1048576) + ' MB（' + plan0.why + '）');
+      e.code = 'GPU_BUDGET'; e.need = n; e.budget = o.budgetBytes; e.plan = plan0; throw e;
     }
+    const streaming = R < W.L;
+    if (streaming) for (const k of MATS) for (let l = 1; l < W.L; l++) if (W.layers[l][k].W.length !== W.layers[0][k].W.length) throw new Error('qwen_gpu：各層權重大小不同，不能分層');
     const lim = dev.limits || {};
     const chunkBytes = Math.min(o.chunkBytes || (64 << 20), lim.maxStorageBufferBindingSize || (128 << 20));
     const t0 = (typeof performance !== 'undefined' ? performance : Date).now();
@@ -310,7 +335,8 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
     const ST = USAGE.STORAGE | USAGE.COPY_DST | USAGE.COPY_SRC;
     const bufs = [];
     const sbuf = (size) => { const b = mk(size, ST); bufs.push(b); return b; };
-    const wbuf = (u8) => { const b = mk(u8.length, ST); dev.queue.writeBuffer(b, 0, u8, 0, u8.length & ~3); if (u8.length & 3) { const t = new Uint8Array(4); t.set(u8.subarray(u8.length & ~3)); dev.queue.writeBuffer(b, u8.length & ~3, t); } bufs.push(b); return b; };
+    const writeU8 = (b, u8) => { dev.queue.writeBuffer(b, 0, u8, 0, u8.length & ~3); if (u8.length & 3) { const t = new Uint8Array(4); t.set(u8.subarray(u8.length & ~3)); dev.queue.writeBuffer(b, u8.length & ~3, t); } };
+    const wbuf = (u8) => { const b = mk(u8.length, ST); writeU8(b, u8); bufs.push(b); return b; };
     const fbuf = (f32) => { const b = mk(f32.byteLength, ST); dev.queue.writeBuffer(b, 0, f32); bufs.push(b); return b; };
     const ubuf = (fn) => { const ab = new ArrayBuffer(32); fn(new DataView(ab)); const b = mk(32, USAGE.UNIFORM | USAGE.COPY_DST); dev.queue.writeBuffer(b, 0, new Uint8Array(ab)); bufs.push(b); return b; };
 
@@ -348,8 +374,10 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
     const g1 = (n) => (M) => [Math.ceil(n(M) / 64), 1];
     const rowsG = (M) => [Math.ceil(M / 64), 1];
     const mmG = (N) => (M) => [Math.ceil(N / 64), M];
-    const mmAdd = (src, w, out) => {
-      const wb = wbuf(w.W);
+    const slots = {}, streamPairs = []; let curStream = false;
+    if (streaming) for (const k of MATS) slots[k] = sbuf(W.layers[0][k].W.length);
+    const mmAdd = (src, w, out, name) => {
+      const wb = curStream ? slots[name] : wbuf(w.W);
       const u = ubuf((d) => { d.setUint32(0, w.K, true); d.setUint32(4, w.N, true); d.setInt32(8, w.zp, true); d.setFloat32(12, Math.fround(w.scale), true); });
       add('mm', [src, wb, qs, out, u, stBuf], mmG(w.N));
     };
@@ -359,18 +387,19 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
     for (let l = 0; l < W.L; l++) {
       const Ly = W.layers[l];
       const kv = sbuf(2 * maxT * Nk * 4); kvBufs.push(kv);
+      curStream = l >= R; if (curStream) streamPairs[l] = MATS.map((k) => [slots[k], Ly[k].W]);
       const inN = fbuf(Ly.inNorm), postN = fbuf(Ly.postNorm);
       const nw = new Float32Array(2 * hd); nw.set(Ly.qNorm, 0); nw.set(Ly.kNorm, hd); const nwB = fbuf(nw);
       rmsAdd(hA, inN, xn, false); quantAdd(xn, D);
-      mmAdd(qi, Ly.q, qb); mmAdd(qi, Ly.k, kb); mmAdd(qi, Ly.v, vb);
+      mmAdd(qi, Ly.q, qb, 'q'); mmAdd(qi, Ly.k, kb, 'k'); mmAdd(qi, Ly.v, vb, 'v');
       add('qk', [qb, kb, vb, nwB, trigB, qr, kv, ubuf((d) => { d.setUint32(0, H, true); d.setUint32(4, Hkv, true); d.setUint32(8, hd, true); d.setUint32(12, maxT, true); d.setFloat32(16, W.eps, true); }), stBuf], (M) => [Math.ceil(M * (H + Hkv) / 64), 1]);
       add('attn', [qr, kv, scr, ao, ubuf((d) => { d.setUint32(0, H, true); d.setUint32(4, Hkv, true); d.setUint32(8, hd, true); d.setUint32(12, maxT, true); d.setFloat32(16, 1 / Math.sqrt(hd), true); }), stBuf], (M) => [Math.ceil(M * H / 64), 1]);
-      quantAdd(ao, Nq); mmAdd(qi, Ly.o, ob);
+      quantAdd(ao, Nq); mmAdd(qi, Ly.o, ob, 'o');
       add('add', [hA, ob, hB, ubuf((d) => d.setUint32(0, D, true)), stBuf], (M) => [Math.ceil(M * D / 64), 1]);
       rmsAdd(hB, postN, xn, false); quantAdd(xn, D);
-      mmAdd(qi, Ly.g, gb); mmAdd(qi, Ly.u, ub);
+      mmAdd(qi, Ly.g, gb, 'g'); mmAdd(qi, Ly.u, ub, 'u');
       add('silu', [gb, ub, act, ubuf((d) => d.setUint32(0, I, true)), stBuf], (M) => [Math.ceil(M * I / 64), 1]);
-      quantAdd(act, I); mmAdd(qi, Ly.d, db);
+      quantAdd(act, I); mmAdd(qi, Ly.d, db, 'd');
       add('add', [hB, db, hA, ubuf((d) => d.setUint32(0, D, true)), stBuf], (M) => [Math.ceil(M * D / 64), 1]);
       layerEnd.push(plan.length);
     }
@@ -390,13 +419,13 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
     add('argmax', [logits, tokBuf, ubuf((d) => d.setUint32(0, V, true))], () => [1, 1]);
     const rbTok = dev.createBuffer({ size: 16, usage: USAGE.MAP_READ | USAGE.COPY_DST });
     const rbLg = dev.createBuffer({ size: V * 4, usage: USAGE.MAP_READ | USAGE.COPY_DST });
-    const traceB = dev.createBuffer({ size: W.L * maxM * D * 4, usage: USAGE.COPY_DST | USAGE.COPY_SRC }), rbTr = dev.createBuffer({ size: W.L * maxM * D * 4, usage: USAGE.MAP_READ | USAGE.COPY_DST });
-    gpuBytes += 16 + V * 4 + 2 * W.L * maxM * D * 4;
+    const traceB = o.trace ? dev.createBuffer({ size: W.L * maxM * D * 4, usage: USAGE.COPY_DST | USAGE.COPY_SRC }) : null, rbTr = o.trace ? dev.createBuffer({ size: W.L * maxM * D * 4, usage: USAGE.MAP_READ | USAGE.COPY_DST }) : null;
+    gpuBytes += 16 + V * 4 + (o.trace ? 2 * W.L * maxM * D * 4 : 0);
     if (dev.queue.onSubmittedWorkDone) await dev.queue.onSubmittedWorkDone();
     let len = 0, dead = '', chain = Promise.resolve();
-    const chunkM = Math.max(1, Math.min(maxM, o.chunkM || 16));
+    const chunkM = Math.max(1, Math.min(maxM, o.chunkM || (streaming ? 64 : 16)));   // 分層時每塊都要把串流層重寫一遍，塊大一點才划算
     if (dev.lost && dev.lost.then) dev.lost.then((i) => { dead = dead || ('裝置遺失：' + (i && (i.reason || '') + ' ' + (i && i.message || '')).trim()); console.warn('[gpu] qwen 引擎裝置遺失：' + dead.slice(0, 200) + '；最近的 GPU 工作：' + (globalThis.__faGpuLast || '未知')); });
-    const info = { maxT, maxM, dispatches: plan.length, lmChunks: lmChunks.length, setupMs: (typeof performance !== 'undefined' ? performance : Date).now() - t0, steps: 0, lastStepMs: 0, gpuBytes, estimateBytes: need.total };
+    const info = { maxT, maxM, dispatches: plan.length, lmChunks: lmChunks.length, setupMs: (typeof performance !== 'undefined' ? performance : Date).now() - t0, steps: 0, lastStepMs: 0, gpuBytes, estimateBytes: need.total, residentLayers: R, streamedLayers: W.L - R, streamedBytes: 0 };
 
     const eng = {
       get len() { return len; }, maxT, maxM, info,
@@ -410,6 +439,8 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
         dev.queue.writeBuffer(hA, 0, Q.embedRows(W, ids));
         dev.queue.writeBuffer(stBuf, 0, new Uint32Array([M, len, 0, 0]));
         const trace = !!(so && so.trace);
+        if (trace && !traceB) throw new Error('qwen_gpu：要 trace 請在建立引擎時傳 trace:true');
+        if (trace && streaming) throw new Error('qwen_gpu：分層模式不支援 trace');
         const wantLg = !!(so && so.logits);
         if (!trace) {
           // 一層一次提交（不是整步一個 command buffer）：舊顯卡（例如 Geforce 720）單次提交跑太久會被 Windows 判定 GPU 卡死（DXGI_ERROR_DEVICE_HUNG）；
@@ -417,7 +448,8 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
           let i = 0;
           for (let l = 0; l <= W.L; l++) {
             const stop = l < W.L ? layerEnd[l] : plan.length;
-            globalThis.__faGpuLast = 'qwen_gpu 第 ' + l + ' 層（M=' + M + '，已提交到第 ' + i + ' 個派發）';
+            globalThis.__faGpuLast = 'qwen_gpu 第 ' + l + ' 層（M=' + M + '，已提交到第 ' + i + ' 個派發' + (l >= R && l < W.L ? '，串流層' : '') + '）';
+            if (l >= R && l < W.L) { for (const [b, u8] of streamPairs[l]) { writeU8(b, u8); info.streamedBytes += u8.length; } }   // 佇列依序執行：上一層的提交算完後才會覆寫共用緩衝區
             const enc = dev.createCommandEncoder(); const pass = enc.beginComputePass();
             for (; i < stop; i++) { const d = plan[i], g = d.groups(M); pass.setPipeline(d.pipe); pass.setBindGroup(0, d.bg); pass.dispatchWorkgroups(g[0], g[1]); }
             pass.end();
@@ -463,7 +495,7 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
             return r;
           } catch (e) {
             dead = dead || String((e && e.message) || e);
-            for (const b of [rbTok, rbLg, rbTr]) { try { if (b.mapState === 'mapped') b.unmap(); } catch (_) { /* 已釋放 */ } }
+            for (const b of [rbTok, rbLg, rbTr]) { if (!b) continue; try { if (b.mapState === 'mapped') b.unmap(); } catch (_) { /* 已釋放 */ } }
             throw e;
           }
         };
@@ -472,10 +504,10 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
         return p;
       },
       get dead() { return dead; },
-      destroy() { for (const b of bufs) { try { b.destroy(); } catch (e) { /* 已釋放 */ } } try { rbTok.destroy(); rbLg.destroy(); traceB.destroy(); rbTr.destroy(); } catch (e) { /* 已釋放 */ } },
+      destroy() { for (const b of bufs) { try { b.destroy(); } catch (e) { /* 已釋放 */ } } try { rbTok.destroy(); rbLg.destroy(); if (traceB) { traceB.destroy(); rbTr.destroy(); } } catch (e) { /* 已釋放 */ } },
     };
     return eng;
   }
 
-  return { createGpuEngine, estimateEngineBytes, WGSL: WGSL_ALL };
+  return { createGpuEngine, estimateEngineBytes, planLayers, WGSL: WGSL_ALL };
 });

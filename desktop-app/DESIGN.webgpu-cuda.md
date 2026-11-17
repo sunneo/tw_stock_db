@@ -960,3 +960,9 @@ Python 模擬器與離線模型推論共用同一個 GPU 裝置：
 - **引擎怎麼挑**：`_qwenGpuChat` 依上限由大到小挑第一個放得下的序列上限（2048/256 → 1024/128 → 512/64）；都放不下就以 `GPU_BUDGET` 退回原路徑（log 寫明數字，**不標記 GPU 壞掉**）。自動值（0）＝探測快取，沒探測過就保守 1 GiB（0.6B 會自動縮到 1024/128＝843 MB；1.7B 在 1 GiB 下放不下，需先偵測或手動調高）。**沒有「每層串流權重」的實作**：超過上限＝不用這條路徑。
 - **偵測／基準**（按鈕，`gpu_mem.js` 的 `probe`）：先量矩陣乘（沿用 `device_pick.gpuBench`），再用 256 MiB 起倍增的測試緩衝區（每塊 ≤256 MiB、總量上限 4 GiB、逾時 20 秒）逐步配置，每步以 `out-of-memory`／`validation` 錯誤範圍接住失敗並寫入觸碰、量寫入頻寬；失敗後在成功／失敗之間二分三次；**寫入頻寬掉到起始值的 40% 以下視為已溢出到系統記憶體**（Windows 會讓配置成功但變很慢），建議值停在溢出前；遇到 device lost 立刻停止、標記並把 `qwenGpuDecode` 記為壞掉；結束釋放所有緩衝區與裝置；軟體 WebGPU 不量。建議值＝可用量×0.75（64 MiB 對齊，至少 256 MiB），結果存 localStorage `fa_gpu_mem_probe`，介面顯示依據（可用量、寫入 MB/s、GFLOP/s、時間）。
 - **驗證**：`gpu_mem.test.js`（假 WebGPU：容量上限、溢出、一路成功、裝置遺失、逾時、軟體 adapter 不配置、釋放，16 項）、`gpu-mem-settings.test.js`（接線 10 項）、Chrome 軟體 WebGPU 上估算＝實際、`GPU_BUDGET`、探測跳過軟體 adapter。**沒量到**：真 GPU 上的探測結果（這台沒有）——探測的溢出判斷與 40% 門檻是依 WDDM 行為設計的假設，需要在使用者的 Windows 機器上實跑確認。
+
+**分層（layer streaming，2026-11-17，已實作於 `qwen_gpu.js`）**
+- **做法**：`planLayers(W, {maxT,maxM,budgetBytes})` 先算固定成本（KV＋暫存＋lm_head＋全部層的 norm／uniform＋一層份串流緩衝區），剩下的給常駐層（二分找最大常駐層數）；其餘層每步在該層的 command buffer 提交前用 `writeBuffer` 寫進共用的 7 個層緩衝區（q／k／v／o／gate／up／down）。佇列依序執行，所以上一層算完才會覆寫；沿用既有「一層一次提交」結構。分層時單塊 `chunkM` 預設 64（每塊都要重寫串流層，塊大才划算）。常駐層取最前面的層。逐層追蹤（trace）改成 `trace:true` 才配置，分層模式不支援 trace。放不下最小分層配置（0 層常駐）才丟 `GPU_BUDGET`；`allowStream:false` 可關掉分層。
+- **估算＝實際（逐位元組）**：`estimateEngineBytes` 加 `residentLayers`，lm_head 分塊數依實際公式算。Chrome 軟體 WebGPU：0.6B 上限 300 MB → 常駐 7／串流 21 層，301,030,368＝301,030,368；1.7B 上限 600 MB → 常駐 4／串流 24 層，584,907,808＝584,907,808。
+- **正確性（軟體 WebGPU）**：0.6B 分層（300 MB）與全常駐的 GPU 詞元逐字相同；1.7B 分層（600 MB）兩組提示 GPU 詞元對真 ORT 逐字相同（8/8、16/16，與 1.7B 全常駐相同）。
+- **耗時（軟體 WebGPU，不代表真 GPU）**：1.7B 分層每詞元約 4.5～5.4 秒，與全常駐（4.4～5.2 秒）幾乎相同——軟體實作的「顯存」就是主記憶體，搬權重幾乎免費，**這個數字沒有量到真實 PCIe 成本**。真 GPU 的下限仍是（串流層位元組）÷（PCIe 頻寬）；1.7B 全部串流每詞元約 30.2 GB／8 步＝3.78 GB（含 lm_head 以外的 24 層）→ 在 8 GB/s 下約 0.47 秒／詞元（估算，未實測）。
