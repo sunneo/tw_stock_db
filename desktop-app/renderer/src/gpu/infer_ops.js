@@ -147,7 +147,7 @@ struct P { M: u32, K: u32, N: u32, wzp: i32, scale: f32, nq: u32, p1: u32, p2: u
 @group(0) @binding(1) var<storage, read> w: array<u32>;
 @group(0) @binding(2) var<storage, read_write> y: array<f32>;
 @group(0) @binding(3) var<uniform> p: P;
-var<workgroup> xs: array<i32, 1024>;
+var<workgroup> xs: array<f32, 1024>;
 var<workgroup> ws: array<u32, 256>;
 // @kernel q8mm_pf
 @compute @workgroup_size(256)
@@ -159,12 +159,15 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>, @builtin(workgroup_id) wid
   let q0 = wid.x * 16u;
   var acc: array<i32, 16>;
   for (var i: u32 = 0u; i < 16u; i = i + 1u) { acc[i] = 0; }
+  // 每個 K 區塊（16 個 k）的部分和用 f32 乘加：|x|,|b| ≤ 255，一個區塊的和 ≤ 16·255·255 ≈ 1.04e6 < 2^24，每一步都是精確整數，
+  // 所以與 i32 累加逐位相同；區塊結束再轉成 i32 加到 acc。Kepler 上 f32 乘加比 i32 乘法快得多。
   for (var kt: u32 = 0u; kt < p.K; kt = kt + 16u) {
+    var pa: array<f32, 16>;
     for (var i: u32 = 0u; i < 4u; i = i + 1u) {
       let idx = t + i * 256u;
       let gm = m0 + (idx >> 4u);
       let kk = idx & 15u;
-      if (gm < p.M && kt + kk < p.K) { xs[idx] = x[gm * p.K + kt + kk]; } else { xs[idx] = 0; }
+      if (gm < p.M && kt + kk < p.K) { xs[idx] = f32(x[gm * p.K + kt + kk]); } else { xs[idx] = 0.0; }
     }
     let wk = t >> 4u;
     let wq = q0 + (t & 15u);
@@ -172,18 +175,19 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>, @builtin(workgroup_id) wid
     workgroupBarrier();
     for (var kk: u32 = 0u; kk < 16u; kk = kk + 1u) {
       let word = ws[kk * 16u + cq];
-      let b0 = i32(word & 255u) - p.wzp;
-      let b1 = i32((word >> 8u) & 255u) - p.wzp;
-      let b2 = i32((word >> 16u) & 255u) - p.wzp;
-      let b3 = i32((word >> 24u) & 255u) - p.wzp;
+      let b0 = f32(i32(word & 255u) - p.wzp);
+      let b1 = f32(i32((word >> 8u) & 255u) - p.wzp);
+      let b2 = f32(i32((word >> 16u) & 255u) - p.wzp);
+      let b3 = f32(i32((word >> 24u) & 255u) - p.wzp);
       for (var r: u32 = 0u; r < 4u; r = r + 1u) {
         let xv = xs[(rg * 4u + r) * 16u + kk];
-        acc[r * 4u] = acc[r * 4u] + xv * b0;
-        acc[r * 4u + 1u] = acc[r * 4u + 1u] + xv * b1;
-        acc[r * 4u + 2u] = acc[r * 4u + 2u] + xv * b2;
-        acc[r * 4u + 3u] = acc[r * 4u + 3u] + xv * b3;
+        pa[r * 4u] = pa[r * 4u] + xv * b0;
+        pa[r * 4u + 1u] = pa[r * 4u + 1u] + xv * b1;
+        pa[r * 4u + 2u] = pa[r * 4u + 2u] + xv * b2;
+        pa[r * 4u + 3u] = pa[r * 4u + 3u] + xv * b3;
       }
     }
+    for (var i: u32 = 0u; i < 16u; i = i + 1u) { acc[i] = acc[i] + i32(pa[i]); }
     workgroupBarrier();
   }
   for (var r: u32 = 0u; r < 4u; r = r + 1u) {
