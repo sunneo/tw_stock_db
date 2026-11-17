@@ -1,0 +1,54 @@
+# 交接：cudaweb 推論與訓練核心優化（接力用）
+
+工作目錄：`D:\Downloads\videos-嗨投資-desktop-app\desktop-app`，分支 `desktop-app`。清單：`docs/CHECKLIST.cudaweb-optimize.md`（每項的狀態與證據都在那裡，先讀它）。結果檔：`scripts/eval/cudaweb_optimize.result.json`。
+
+## 使用者原話（逐字，2026-11-17）
+- 「我希望推論、訓練的cudaweb是經過高度優化的，必須可以適應各種等級的gpu」
+- 「像是早期的nvidia的gpu要優化過 要自己選擇把記憶體放到constant memory或texture」
+- 「gpu kernel還要用shared memory快取跟加速運算」
+- 「讓他持續優化下去」
+
+## 目標
+這張 Kepler 14 W（真 WebGPU、無 f16、無 subgroups）上，每種運算都不比 ort-webgpu 慢；訓練每步時間也要持續降。依能力分級（低／中／高），每一級都能跑。
+
+## 已完成（提交可查 `git log --oneline`）
+- O2 q8mm：`q8mm_dec`、`q8mm_pf`（M≥64）。真 Chrome 逐位相同。
+- O1 變體選擇器：`kernel_select.js`（probeCaps／tierOf／pickVariant／強制覆蓋）。
+- O3 MatMulNBits：`matmulnbits_dec`（M≤8）、`matmulnbits_pf`（M>8）。真 Chrome T1、相對誤差 ≤1.3e-6。
+- O4 注意力：`attn_flash`（分塊線上 softmax）。真 Chrome 6 個形狀相對誤差 ≤1.1e-6；解碼 20.3 ms 對 158.5 ms。
+- O6 node 部分：`gpu_pool.js`（緩衝區池與管線快取），接進 `nn_ops.createBatch`。
+- O9 node 部分：快取鍵、失效、強制覆蓋、競賽中位數（`kernel_select.js`）。
+- O1m：x 放 uniform 量過，**沒有好處，不採用**（K1024N3072 storage 0.465 ms 對 uniform 3.89 ms）。
+- O11 部分：`embed-code-ui.js` 補 `gpu_pool`；三個建置腳本已跑（`embed-code-ui`、`build-assistant`、`build-web-lazy`）通過。建置產物（`renderer/floating-assistant*.js`、`update-manifest.json`、`web-lazy/`）未提交，待發布流程。
+
+## 未完成（依優先序）
+1. **O5**：`gpu_core.js` 的 `WGSL.matmul` 與 `mm_ops` 的平鋪核心共用一份（抽成模組；注意嵌入清單 `scripts/embed-code-ui.js` 第 82 與約 215 行要同步加新模組名）；轉置版（AᵀB、ABᵀ）用同一份核心的索引參數；f16 變體在這張卡沒有 f16，寫好標「待驗證（原因）」。真 Chrome 逐元素對 CPU 參考，計時標硬體。
+2. **O6 真機計次**：一層 Qwen 區塊的 submit 次數從每運算一次降到每層一次，結果逐位相同。matmul 還沒進批次。
+3. **O7 融合與其他核心**：rmsnorm＋矩陣乘輸入縮放、silu×乘法、rope 併進 QKV 後處理、卷積平鋪。
+4. **O8 訓練路徑**：LoRA／AdamW／交叉熵用 O5 核心；AdamW 與梯度累加融合；訓練步內不做逐運算讀回。
+5. **O9 UI 與競賽**：瀏覽器端競賽（背景、≤2 秒、可取消、各變體 3 次取中位數）、localStorage 包裝（失敗就退規則）、設定頁兩處（AI 助理設定與桌面版設定）同步顯示與強制指定。
+6. **O10 完整結果**：每個變體「通過」或「待驗證（原因）」，寫進 `cudaweb_optimize.result.json`。
+7. **O11 收尾**：`git status` 沒有未提交來源（CRLF 差異不算）；`bench_run.js` 設定頁基準顯示優化後的 cudaweb 數字。
+
+## 持續優化迴圈（管理者規則，2026-11-17）
+每一輪：
+1. **量瓶頸**（同機、標硬體）：設定頁基準的三個形狀 64×1024×1024、512×1024×1024、512×1024×3072；Qwen 解碼單步；注意力；4 位元矩陣乘的代表形狀。寫下每個運算相對 ort-webgpu 落後多少、占解碼單步時間多少。
+2. **挑下一步**：先找「相對 ort-webgpu 最落後」或「占 Qwen 解碼單步時間最多」的運算。候選方向：更大的暫存器分塊、vec4 載入、K 方向切分、非同步預載下一塊、減少屏障、融合更多運算、權重改貼圖或 uniform。
+3. **先寫變體**，再用選擇器（`kernel_select.js`）與自動調校決定。**有量到好處才換；沒有好處就如實記「沒有好處」，換下一個方向。** 不宣稱沒驗證的好處。
+4. **每輪一個提交**、一次真 Chrome 驗證（逐元素對拍＋計時，標硬體）、清單更新（清單末尾的「持續優化迴圈」節逐輪追加：瓶頸、改了什麼、改後數字）。
+5. 不問問題、不發布、不推送。管理者定期核對提交，每輪不用回報。
+
+## 硬規則（不變）
+- 不在真 GPU 上跑會逾時或卡死的測試（例如 simple 核心 M=256 會讓 GPU 逾時、裝置丟失；上次之後 Chrome 的 WebGPU 介面卡消失，要使用者重啟才回來）。大形狀只在 node 假裝置測。
+- 測試伺服器與分頁用完就關，並用 PowerShell 查 `Win32_Process` 確認無殘留。驗證頁用 `python -X utf8 -m http.server <埠> --bind 127.0.0.1` 起在 desktop-app 資料夾。
+- 不對 AppData 或整個家目錄做遞迴搜尋。
+- 改程式用 Edit／Write 工具，不用 shell 內嵌 heredoc 寫含反斜線的程式。
+- 提交只含自己改的來源；建置產物不跟著提交。
+- **context 到 60% 時**：更新本文件與清單，寫 side-session-notes 交接，並開下一棒（Haiku，effort high）。
+
+## 驗證頁（都在 `scripts/eval/`）
+- `q8mm_check.html`、`attn_flash_check.html`、`matmulnbits_dec_check.html`、`mem_space_check.html`、`mm_tiled_check.html`（既有）。
+- 讀 `window.__out`；判準寫在每頁開頭註解。
+
+## 下一棒第一步
+讀 `docs/CHECKLIST.cudaweb-optimize.md` 的 O5 到 O11，依上面的順序做。先確認 WebGPU 介面卡可用（頁面 `navigator.gpu.requestAdapter()` 有回傳），不可用就只做 node 部分並標「待真 Chrome 驗證」。
