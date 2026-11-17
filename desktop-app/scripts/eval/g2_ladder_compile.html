@@ -1,0 +1,43 @@
+<!doctype html><meta charset="utf-8"><title>g2 ladder compile</title>
+<body style="font:13px monospace;white-space:pre">
+<script>
+// G2 階梯編譯毫秒表（2026-11-18）：只編譯、不派發（不跑 GPU 計算，沒有逾時風險）。
+// 每個變體以 createComputePipelineAsync 編譯，記錄毫秒；編譯慢不淘汰，只有 30 秒防卡死上限（逾時標壞）。
+// 結果在 window.__out：{ adapter, lost, rungs: [{ name, compileMs, codeChars, ok, error }] }。
+const log = (s) => { (window.__log = window.__log || []).push(s); document.body.textContent = window.__log.join('\n'); };
+(async () => {
+  const out = { adapter: null, lost: null, rungs: [] };
+  window.__out = out;
+  try {
+    const kgSrc = await (await fetch('../../renderer/src/gpu/kernel_gen.js', { cache: 'no-store' })).text();
+    const kgm = { exports: {} };
+    new Function('module', 'exports', kgSrc)(kgm, kgm.exports);
+    const KG = kgm.exports;
+    const adapter = await navigator.gpu.requestAdapter();
+    const device = await adapter.requestDevice();
+    out.adapter = adapter.info ? [adapter.info.vendor, adapter.info.architecture, adapter.info.device].join(' ') : 'unknown';
+    device.lost.then((info) => { out.lost = info.reason + ' ' + info.message; log('DEVICE LOST: ' + out.lost); });
+    const L = KG.ladder();
+    for (const x of L) {
+      if (out.lost) break;
+      const r = { name: x.name, sharedBytes: x.v.sharedBytes, threads: x.v.threads, regsEstimate: x.v.regsEstimate };
+      try {
+        const code = KG.generate(x.spec, { marker: x.name });
+        r.codeChars = code.length;
+        const t0 = performance.now();
+        const compile = (async () => {
+          const mod = device.createShaderModule({ code });
+          return device.createComputePipelineAsync({ layout: 'auto', compute: { module: mod, entryPoint: 'main' } });
+        })();
+        await Promise.race([compile, new Promise((_, rej) => setTimeout(() => rej(new Error('30 秒防卡死上限')), 30000))]);
+        r.compileMs = Math.round(performance.now() - t0);
+        r.ok = true;
+      } catch (e) { r.ok = false; r.error = String(e && e.message || e); }
+      out.rungs.push(r);
+      log(x.name + ' ' + (r.ok ? r.compileMs + ' ms' : 'FAIL ' + r.error));
+    }
+  } catch (e) { out.error = String(e && e.stack || e); log('ERROR ' + out.error); }
+  window.__out = out;
+  log('done');
+})();
+</script>

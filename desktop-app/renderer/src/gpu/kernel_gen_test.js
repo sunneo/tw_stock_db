@@ -135,4 +135,27 @@ check('dispatchFor：分派數由 BM、BN 決定', () => {
   assert.deepStrictEqual(KG.dispatchFor({ WG: 16, TM: 4, TN: 4, BK: 8, vec: 4 }, 70, 90, 2), [2, 2, 2]);
 });
 
+check('ladder（G2 階梯）：18 個變體（2×2 塊不能 vec4，故 20 − 2）、名稱唯一、共用記憶體 ≤ 16 KiB', () => {
+  const L = KG.ladder();
+  assert.strictEqual(L.length, 18, '階梯數 ' + L.length);
+  const names = new Set(L.map((x) => x.name));
+  assert.strictEqual(names.size, L.length, '名稱重複');
+  for (const x of L) {
+    assert.ok(KG.describe(x.spec).ok, x.name + ' describe 失敗');
+    assert.ok(x.v.sharedBytes <= 16384, x.name + ' 共用記憶體超過 16 KiB：' + x.v.sharedBytes);
+  }
+  // 最大塊 128×128（TM8 TN8）的共用記憶體 = (128·8 + 8·128)·4 = 8 KiB（BK 8）
+  const big = L.find((x) => x.name === 'g_128x128_k8_t8x8_v4');
+  assert.ok(big && big.v.sharedBytes === 8192, '128×128 BK8 應為 8 KiB');
+});
+
+check('ladder 的每個變體都能產生 WGSL（vec4 與純量的綁定與屏障數）', () => {
+  for (const x of KG.ladder()) {
+    const src = KG.generate(x.spec, { marker: x.name });
+    assert.ok(src.startsWith('// @kernel ' + x.name + '\n'), x.name + ' 標記');
+    assert.strictEqual(src.split('workgroupBarrier()').length - 1, 2, x.name + ' 屏障數');
+    assert.ok(x.spec.vec === 4 ? /array<vec4<f32>>/.test(src) : /array<f32>/.test(src), x.name + ' 綁定型別');
+  }
+});
+
 console.log(passed + ' 項通過');

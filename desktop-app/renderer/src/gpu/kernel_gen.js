@@ -159,5 +159,19 @@
     return [Math.ceil(N / d.BN), Math.ceil(M / d.BM), B || 1];
   }
 
-  return { describe: describe, enumerate: enumerate, generate: generate, dispatchFor: dispatchFor, POW2: POW2 };
+  // G2 階梯：代表性的 scalar-tile 變體（WG 16），依輸出塊由小到大；vec4 與純量各一份（BK 8 與 16）。
+  // split-K 尚未由產生器支援（標為待做）。名稱供快取鍵與設定頁顯示用。
+  function ladder() {
+    var rungs = [[2, 2], [4, 4], [4, 8], [8, 4], [8, 8]];   // (TM, TN) → 輸出塊 32×32、64×64、64×128、128×64、128×128
+    var out = [];
+    rungs.forEach(function (r) { [8, 16].forEach(function (BK) { [1, 4].forEach(function (vec) {
+      var spec = { WG: 16, TM: r[0], TN: r[1], BK: BK, vec: vec };
+      var d = describe(spec);
+      if (!d.ok) return;
+      out.push({ name: 'g_' + d.v.BM + 'x' + d.v.BN + '_k' + BK + '_t' + r[0] + 'x' + r[1] + (vec === 4 ? '_v4' : '_s'), spec: spec, v: d.v });
+    }); }); });
+    return out;
+  }
+
+  return { describe: describe, enumerate: enumerate, generate: generate, dispatchFor: dispatchFor, ladder: ladder, POW2: POW2 };
 }));
