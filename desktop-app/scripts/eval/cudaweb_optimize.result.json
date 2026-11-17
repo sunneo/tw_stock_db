@@ -9,7 +9,7 @@
     "batch_attn_O6_2026_11_18": { "status": "通過", "evidence": "o6_attn_batch_check.html（真 Chrome）：decode S1 past512 H16 Hkv8 hd128（attn_flash）、prefill S16 hd64（attn_flash）、小形狀 S3 hd32（保底 attn）；每案 1 次 submit；相對誤差 1e-7～1e-6。" },
     "batch_matmulnbits_O6_2026_11_18": { "status": "通過", "evidence": "o6_nbits_batch_check.html（真 Chrome）：dec M1、dec M8、pf M32、simple（強制）M5；每案 1 次 submit；相對誤差 1e-7～5e-7。" },
     "qwen_layer_submit_count_O6": { "status": "待驗證（原因：要在真 Chrome 載入 Qwen3-0.6B 權重才能計次；程式證據：qwen_gpu.stepOnce 每層一次 submit，每步 L+1 次）" },
-    "g5_variant_table_desktop_panel": { "status": "待驗證（原因：純函式 node 7 項通過；桌面版設定頁面板未做實機讀 DOM；AI 助理設定 index.html 沒有 GPU 基準區塊，兩處同步待決定）" },
+    "g5_variant_table_desktop_panel": { "status": "通過（真 Electron，獨立使用者資料夾與埠 18641：scripts/eval/g5_variant_panel.eval.js；表 10 列含表頭、六個按鈕齊全、套用最佳／匯出／匯入不合法 JSON（拒絕）／匯入 heuristic（拒絕）／恢復預設都有正確狀態文字）。注意：這台的能力簽名算成 sg0（wg16384-inv256-f160-sg0），與 priors 的實測項 sg1 不符，所以實測剖析在這台沒有命中；sg 的真值待確認。AI 助理設定 index.html 沒有 GPU 基準區塊，未加第二處（待管理者決定）。" },
     "fusion_O7_rms_quant_add": { "status": "待驗證（原因：尚未實作；生產引擎的 quant 與 rms 仍是獨立派發，融合前要先量單獨派發的成本是否值得）" },
     "training_O8_adamw_fused": { "status": "待驗證（原因：尚未實作；訓練路徑要接 O5 核心與融合的 AdamW）" },
     "kernel_only_2026_11_18": { "status":"量測（r8_time2.html，一次一形狀，最多 3 個 submit，kernel-only：不含上傳與回讀，每 submit 放 R 次派發取平均；峰值 128.4 GFLOP/s）", "rows": [
