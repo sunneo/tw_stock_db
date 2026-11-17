@@ -17,6 +17,104 @@
   var DEFAULT_WG_STORAGE = 16384;       // 規格預設 maxComputeWorkgroupStorageSize（16 KiB）
   var DEFAULT_BUDGET = 268435456;       // GPU 緩衝區預算預設 256 MiB（§8.1）
   var EPS32 = Math.pow(2, -23);
+
+  // ===== 共用平鋪矩陣乘核心（gpu_core.js 的 WGSL.matmul 與 mm_ops.js 的平鋪版都用這一份）=====
+  // 幾何：工作群組 16×16 執行緒，算一塊 64×64 輸出；每個執行緒在暫存器累加 4×4；A、B 各以 16 層一塊搬進共用記憶體。
+  // 共用記憶體 2×64×16×4 B = 8 KiB（低階卡上限 16 KiB 以內）。批次在 workgroup_id.z；邊界逐元素檢查。
+  // 參數 uniform（8 個 u32）：{ B, M, K, N, Bb, azp, bzp, p0 }；p0 bit0 = A 以 K×M 儲存（Aᵀ），bit1 = B 以 N×K 儲存（Bᵀ）。
+  // 轉置只改搬入共用記憶體時的索引，計算迴圈不變。Bb = 1 表示所有批次共用同一份 B。
+  // 分派：[ceil(N/64), ceil(M/64), B]。f16 版（dtype 'f16'）輸入為 f16、累加 f32，需要 shader-f16；本機 Kepler 無此功能，標「待驗證」。
+  var MMT_OUT = 64, MMT_K = 16, MMT_WG = 16, MMT_REG = 4;
+  function mmTileSharedBytes() { return 2 * MMT_OUT * MMT_K * 4; }
+  function mmTileDispatch(M, N, B) { return [Math.ceil(N / MMT_OUT), Math.ceil(M / MMT_OUT), B || 1]; }
+  function mmTileFlags(o) { o = o || {}; return (o.transA ? 1 : 0) | (o.transB ? 2 : 0); }
+  function mmTileWords(M, K, N, flags, B) { return [B || 1, M, K, N, 1, 0, 0, flags || 0]; }
+  function mmTileWgsl(opts) {
+    opts = opts || {};
+    var marker = opts.marker || 'matmul_tiled';
+    var f16 = opts.dtype === 'f16';
+    var T = f16 ? 'f16' : 'f32';
+    var enable = f16 ? 'enable f16;\n' : '';
+    return enable + '// @kernel ' + marker + '\n' + [
+      'struct P { B: u32, M: u32, K: u32, N: u32, Bb: u32, azp: i32, bzp: i32, p0: u32 }',
+      '@group(0) @binding(0) var<storage, read> a: array<' + T + '>;',
+      '@group(0) @binding(1) var<storage, read> b: array<' + T + '>;',
+      '@group(0) @binding(2) var<storage, read_write> y: array<f32>;',
+      '@group(0) @binding(3) var<uniform> p: P;',
+      'var<workgroup> As: array<f32, ' + (MMT_OUT * MMT_K) + '>;',
+      'var<workgroup> Bs: array<f32, ' + (MMT_K * MMT_OUT) + '>;',
+      '@compute @workgroup_size(' + MMT_WG + ', ' + MMT_WG + ', 1)',
+      'fn main(@builtin(local_invocation_id) lid: vec3<u32>, @builtin(workgroup_id) wid: vec3<u32>) {',
+      '  let n = wid.z;',
+      '  let row0 = wid.y * ' + MMT_OUT + 'u;',
+      '  let col0 = wid.x * ' + MMT_OUT + 'u;',
+      '  let ao = n * p.M * p.K;',
+      '  var bo = 0u;',
+      '  if (p.Bb != 1u) { bo = n * p.K * p.N; }',
+      '  let tA = (p.p0 & 1u) != 0u;',
+      '  let tB = (p.p0 & 2u) != 0u;',
+      '  let tid = lid.y * ' + MMT_WG + 'u + lid.x;',
+      '  var acc: array<f32, ' + (MMT_REG * MMT_REG) + '>;',
+      '  for (var i: u32 = 0u; i < ' + (MMT_REG * MMT_REG) + 'u; i = i + 1u) { acc[i] = 0.0; }',
+      '  let tiles = (p.K + ' + (MMT_K - 1) + 'u) / ' + MMT_K + 'u;',
+      '  for (var t: u32 = 0u; t < tiles; t = t + 1u) {',
+      '    let k0 = t * ' + MMT_K + 'u;',
+      '    for (var s: u32 = 0u; s < ' + (MMT_OUT * MMT_K / (MMT_WG * MMT_WG)) + 'u; s = s + 1u) {',
+      '      let idx = tid + s * ' + (MMT_WG * MMT_WG) + 'u;',
+      '      let ar = idx / ' + MMT_K + 'u;',
+      '      let ak = idx % ' + MMT_K + 'u;',
+      '      let gr = row0 + ar;',
+      '      let gk = k0 + ak;',
+      '      var av: f32 = 0.0;',
+      '      if (gr < p.M && gk < p.K) {',
+      '        if (tA) { av = f32(a[ao + gk * p.M + gr]); } else { av = f32(a[ao + gr * p.K + gk]); }',
+      '      }',
+      '      As[idx] = av;',
+      '      let bk = idx / ' + MMT_OUT + 'u;',
+      '      let bc = idx % ' + MMT_OUT + 'u;',
+      '      let gk2 = k0 + bk;',
+      '      let gc = col0 + bc;',
+      '      var bv: f32 = 0.0;',
+      '      if (gk2 < p.K && gc < p.N) {',
+      '        if (tB) { bv = f32(b[bo + gc * p.K + gk2]); } else { bv = f32(b[bo + gk2 * p.N + gc]); }',
+      '      }',
+      '      Bs[idx] = bv;',
+      '    }',
+      '    workgroupBarrier();',
+      '    for (var kk: u32 = 0u; kk < ' + MMT_K + 'u; kk = kk + 1u) {',
+      '      var ra: array<f32, ' + MMT_REG + '>;',
+      '      var rb: array<f32, ' + MMT_REG + '>;',
+      '      for (var i: u32 = 0u; i < ' + MMT_REG + 'u; i = i + 1u) {',
+      '        ra[i] = As[(lid.y * ' + MMT_REG + 'u + i) * ' + MMT_K + 'u + kk];',
+      '        rb[i] = Bs[kk * ' + MMT_OUT + 'u + lid.x * ' + MMT_REG + 'u + i];',
+      '      }',
+      '      for (var i: u32 = 0u; i < ' + MMT_REG + 'u; i = i + 1u) {',
+      '        for (var j: u32 = 0u; j < ' + MMT_REG + 'u; j = j + 1u) { acc[i * ' + MMT_REG + 'u + j] = acc[i * ' + MMT_REG + 'u + j] + ra[i] * rb[j]; }',
+      '      }',
+      '    }',
+      '    workgroupBarrier();',
+      '  }',
+      '  for (var i: u32 = 0u; i < ' + MMT_REG + 'u; i = i + 1u) {',
+      '    let gr = row0 + lid.y * ' + MMT_REG + 'u + i;',
+      '    if (gr >= p.M) { continue; }',
+      '    for (var j: u32 = 0u; j < ' + MMT_REG + 'u; j = j + 1u) {',
+      '      let gc = col0 + lid.x * ' + MMT_REG + 'u + j;',
+      '      if (gc < p.N) { y[(n * p.M + gr) * p.N + gc] = acc[i * ' + MMT_REG + 'u + j]; }',
+      '    }',
+      '  }',
+      '}'
+    ].join('\n');
+  }
+  // CPU 參考（單一批次）：與 matmulRef 相同，每一步 f32 捨入（k 由小到大）。A 是 M×K（transA 時為 K×M），B 是 K×N（transB 時為 N×K）。
+  function matmulTRef(A, B, M, K, N, flags) {
+    var tA = !!(flags & 1), tB = !!(flags & 2), y = new Float32Array(M * N);
+    for (var i = 0; i < M; i++) for (var j = 0; j < N; j++) {
+      var acc = 0;
+      for (var k = 0; k < K; k++) acc = Math.fround(acc + Math.fround((tA ? A[k * M + i] : A[i * K + k]) * (tB ? B[j * K + k] : B[k * N + j])));
+      y[i * N + j] = acc;
+    }
+    return y;
+  }
   var USAGE = { MAP_READ: 0x1, COPY_SRC: 0x4, COPY_DST: 0x8, UNIFORM: 0x40, STORAGE: 0x80 };
   var GL = { TEXTURE_2D: 0x0DE1, RGBA32F: 0x8814, RGBA: 0x1908, FLOAT: 0x1406, NEAREST: 0x2600, CLAMP: 0x812F,
     TEXTURE_MIN_FILTER: 0x2801, TEXTURE_MAG_FILTER: 0x2800, TEXTURE_WRAP_S: 0x2802, TEXTURE_WRAP_T: 0x2803,
@@ -159,39 +257,8 @@
     '  if (i < p.n) { c[i] = a[i] + b[i]; }',
     '}'
   ].join('\n');
-  WGSL.matmul = [
-    '// @kernel matmul',
-    'struct Params { m: u32, k: u32, n: u32, p1: u32 }',
-    '@group(0) @binding(0) var<storage, read> A: array<f32>;',
-    '@group(0) @binding(1) var<storage, read> B: array<f32>;',
-    '@group(0) @binding(2) var<storage, read_write> C: array<f32>;',
-    '@group(0) @binding(3) var<uniform> p: Params;',
-    'var<workgroup> ta: array<f32, ' + (TILE * TILE) + '>;',
-    'var<workgroup> tb: array<f32, ' + (TILE * TILE) + '>;',
-    '@compute @workgroup_size(' + TILE + ', ' + TILE + ', 1)',
-    'fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {',
-    '  let row = gid.y;',
-    '  let col = gid.x;',
-    '  var acc: f32 = 0.0;',
-    '  let tiles = (p.k + ' + (TILE - 1) + 'u) / ' + TILE + 'u;',
-    '  for (var t: u32 = 0u; t < tiles; t = t + 1u) {',
-    '    let ac = t * ' + TILE + 'u + lid.x;',
-    '    let br = t * ' + TILE + 'u + lid.y;',
-    '    var av: f32 = 0.0;',
-    '    if (row < p.m && ac < p.k) { av = A[row * p.k + ac]; }',
-    '    var bv: f32 = 0.0;',
-    '    if (br < p.k && col < p.n) { bv = B[br * p.n + col]; }',
-    '    ta[lid.y * ' + TILE + 'u + lid.x] = av;',
-    '    tb[lid.y * ' + TILE + 'u + lid.x] = bv;',
-    '    workgroupBarrier();',
-    '    for (var kk: u32 = 0u; kk < ' + TILE + 'u; kk = kk + 1u) {',
-    '      acc = acc + ta[lid.y * ' + TILE + 'u + kk] * tb[kk * ' + TILE + 'u + lid.x];',
-    '    }',
-    '    workgroupBarrier();',
-    '  }',
-    '  if (row < p.m && col < p.n) { C[row * p.n + col] = acc; }',
-    '}'
-  ].join('\n');
+  // 矩陣乘：共用的平鋪核心（見上方 mmTileWgsl）。參數 8 個 u32（B, M, K, N, Bb, azp, bzp, p0），分派 mmTileDispatch(M, N, B)。
+  WGSL.matmul = mmTileWgsl({ marker: 'matmul', dtype: 'f32' });
   WGSL.sum = [
     '// @kernel sum',
     'struct Params { n: u32, p1: u32, p2: u32, p3: u32 }',
@@ -512,11 +579,13 @@
         return readBack(dev, bc, n);
       });
     }
-    function wgMatmul(dev, A, B, m, k, n) {
+    // flags：{ transA, transB }（可省）；A 以 K×M 儲存（transA）或 B 以 N×K 儲存（transB）時，索引在核心裡換掉，不另寫核心
+    function wgMatmul(dev, A, B, m, k, n, flags) {
       return withScope(dev, async function () {
         var ba = makeBuf(dev, A, USAGE.STORAGE | USAGE.COPY_DST | USAGE.COPY_SRC), bb = makeBuf(dev, B, USAGE.STORAGE | USAGE.COPY_DST | USAGE.COPY_SRC);
         var bc = dev.createBuffer({ size: Math.max(4, m * n * 4), usage: USAGE.STORAGE | USAGE.COPY_SRC });
-        dispatch(dev, pipeline(dev, 'matmul', WGSL.matmul), [ba, bb, bc, uniformU32(dev, [m, k, n, 0])], Math.ceil(n / TILE), Math.ceil(m / TILE));
+        var d = mmTileDispatch(m, n, 1);
+        dispatch(dev, pipeline(dev, 'matmul', WGSL.matmul), [ba, bb, bc, uniformU32(dev, mmTileWords(m, k, n, mmTileFlags(flags), 1))], d[0], d[1]);
         return readBack(dev, bc, m * n);
       });
     }
@@ -1000,6 +1069,8 @@
     tolerance: tolerance,
     vectorAddRef: vectorAddRef,
     matmulRef: matmulRef,
+    mmTileWgsl: mmTileWgsl, mmTileDispatch: mmTileDispatch, mmTileWords: mmTileWords, mmTileFlags: mmTileFlags,
+    mmTileSharedBytes: mmTileSharedBytes, matmulTRef: matmulTRef,
     sumRef: sumRef,
     sumExact: sumExact,
     axpyRef: axpyRef,

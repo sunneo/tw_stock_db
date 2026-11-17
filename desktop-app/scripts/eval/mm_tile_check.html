@@ -1,0 +1,97 @@
+<!doctype html><meta charset="utf-8"><title>mm tile check</title>
+<body style="font:13px monospace;white-space:pre">
+<script>
+// O5 驗證（真 Chrome、真 WebGPU）：gpu_core.js 的共用平鋪核心（mmTileWgsl）。
+// 1) 正確性：f32 的 4 種轉置（none／transA／transB／both）× 幾個形狀（含非 64 倍數、K 非 16 倍數、窄）與批次（共用 B、逐批 B），
+//    對 CPU 參考 matmulTRef 的相對誤差（max|差| / max|參考|），判準 ≤ 1e-6。
+// 2) 執行路徑：gpu_core 的 createRuntime().matmul（非轉置）形狀與 T1 層。
+// 3) 計時（同一台、標硬體）：舊的 16×16 逐格核心（scripts/eval/_tmp_before_gpu_core.js，即 HEAD 版）對新平鋪核心，中位數 5 次（第 1 次暖機不算）。
+//    舊核心只量 64×1024×1024（512×1024×3072 會超過 Windows 的 GPU 逾時，不量）。
+// 4) f16 變體：只在有 shader-f16 時才量；沒有就標「待驗證（無 shader-f16）」，不量、不宣稱。
+// 用法：desktop-app 資料夾 python -X utf8 -m http.server <埠> --bind 127.0.0.1，開 http://127.0.0.1:<埠>/scripts/eval/mm_tile_check.html ；結果在 window.__out。
+const mods = {};
+const loadMod = async (key, url) => {
+  const src = await (await fetch(url, { cache: 'no-store' })).text();
+  const m = { exports: {} }; mods[key] = m;
+  new Function('module', 'exports', 'require', src)(m, m.exports, (p) => { const k = p.replace(/^\.\//, '').replace(/\.js$/, ''); if (!mods[k]) throw new Error('missing ' + k); return mods[k].exports; });
+};
+const RND_SEED = { s: 7 };
+const rnd = () => { RND_SEED.s = (Math.imul(RND_SEED.s, 1664525) + 1013904223) | 0; return (RND_SEED.s >>> 0) / 4294967296 - 0.5; };
+const mk = (n) => Float32Array.from({ length: n }, rnd);
+const relErr = (x, y) => { let mx = 0, sc = 1e-9; for (let i = 0; i < x.length; i++) { mx = Math.max(mx, Math.abs(x[i] - y[i])); sc = Math.max(sc, Math.abs(y[i])); } return mx / sc; };
+(async () => {
+  const out = { hardware: 'Kepler 14 W（同一台、同一瀏覽器）', adapter: null, correct: [], runtime: [], time: [], f16: null, error: null };
+  try {
+    await loadMod('gpu_core', '../../renderer/src/gpu/gpu_core.js');
+    await loadMod('gpu_pool', '../../renderer/src/gpu/gpu_pool.js');
+    await loadMod('nn_ops', '../../renderer/src/gpu/nn_ops.js');
+    await loadMod('mm_ops', '../../renderer/src/gpu/mm_ops.js');
+    await loadMod('before_core', '_tmp_before_gpu_core.js');
+    const core = mods.gpu_core.exports, nn = mods.nn_ops.exports, before = mods.before_core.exports;
+    const adapter = navigator.gpu && await navigator.gpu.requestAdapter();
+    if (!adapter) throw new Error('沒有 WebGPU 介面卡');
+    const info = adapter.info || {};
+    out.adapter = { vendor: info.vendor, arch: info.architecture, f16: adapter.features.has('shader-f16'), subgroups: adapter.features.has('subgroups'), maxWgStorage: adapter.limits.maxComputeWorkgroupStorageSize, sharedBytesTile: core.mmTileSharedBytes() };
+    const uniformOf = (words) => new Uint8Array(new Uint32Array(words).buffer);
+    const runTile = async (code, A, B, M, K, N, B3, Bb, flags, dispatch) => {
+      const words = [B3, M, K, N, Bb, 0, 0, flags];
+      const r = await nn.tryLayers('matmul', {}, async (dev) => (await nn.runWgsl(dev, code, [{ data: A }, { data: B }, { data: new Float32Array(B3 * M * N), out: true }], uniformOf(words), dispatch))[0], null, () => new Float32Array(B3 * M * N));
+      lastLayer = r.info && r.info.layer;
+      return r.result;
+    };
+    let lastLayer = null;
+    // 1) 正確性：四種轉置 × 形狀；批次（共用 B、逐批 B）
+    const code = core.mmTileWgsl({ marker: 'matmul', dtype: 'f32' });
+    const shapes = [[70, 50, 90], [17, 33, 16], [130, 7, 129], [64, 1024, 1024], [5, 9, 3]];
+    for (const [M, K, N] of shapes) for (const flags of [0, 1, 2, 3]) {
+      const A = mk(M * K), B = mk(K * N);
+      const ref = core.matmulTRef(A, B, M, K, N, flags);
+      const got = await runTile(code, A, B, M, K, N, 1, 1, flags, core.mmTileDispatch(M, N, 1));
+      out.correct.push({ M, K, N, flags, layer: lastLayer, relErr: relErr(got, ref), pass: lastLayer === 'T1' && relErr(got, ref) <= 1e-6 });
+    }
+    for (const [M, K, N, Bn, perBatch] of [[40, 30, 50, 2, false], [40, 30, 50, 2, true], [33, 17, 20, 3, true]]) {
+      const A = mk(Bn * M * K), B = mk((perBatch ? Bn : 1) * K * N);
+      const ref = new Float32Array(Bn * M * N);
+      for (let n = 0; n < Bn; n++) {
+        const Bs = perBatch ? B.subarray(n * K * N, (n + 1) * K * N) : B;
+        ref.set(core.matmulTRef(A.subarray(n * M * K, (n + 1) * M * K), Bs, M, K, N, 0), n * M * N);
+      }
+      const got = await runTile(code, A, B, M, K, N, Bn, perBatch ? 0 : 1, 0, core.mmTileDispatch(M, N, Bn));
+      out.correct.push({ batch: Bn, perBatch, M, K, N, layer: lastLayer, relErr: relErr(got, ref), pass: lastLayer === 'T1' && relErr(got, ref) <= 1e-6 });
+    }
+    // 2) 執行路徑：gpu_core 的 createRuntime().matmul（非轉置）
+    const rt = core.createRuntime({ navigator: navigator, webgl2: null });
+    for (const [M, K, N] of [[70, 50, 90], [64, 1024, 1024]]) {
+      const A = mk(M * K), B = mk(K * N);
+      const r = await rt.matmul(Array.from(A), Array.from(B), M, K, N);
+      const ref = core.matmulRef(A, B, M, K, N);
+      out.runtime.push({ M, K, N, layer: r.info && r.info.layer, relErr: relErr(Float32Array.from(r.result), ref), pass: r.info && r.info.layer === 'T1' && relErr(Float32Array.from(r.result), ref) <= 1e-6 });
+    }
+    // 3) 計時：舊核心對新核心（中位數 5 次，第 1 次暖機）
+    const timeIt = async (fn) => { await fn(); const ts = []; for (let i = 0; i < 5; i++) { const t0 = performance.now(); await fn(); ts.push(performance.now() - t0); } ts.sort((x, y) => x - y); return Math.round(ts[2] * 10) / 10; };
+    const oldCode = before.kernels.matmul;
+    // 對照組（負對照）：同一份 GPU 結果拿「錯的轉置旗標」的參考去比，必須不符，證明比對有鑑別力
+    {
+      const M = 70, K = 50, N = 90, A = mk(M * K), B = mk(K * N);
+      const got = await runTile(code, A, B, M, K, N, 1, 1, 1, core.mmTileDispatch(M, N, 1));
+      out.control = { wrongFlagRelErr: relErr(got, core.matmulTRef(A, B, M, K, N, 0)), mustBeLargerThan: 1e-3 };
+    }
+    const timeShape = async (M, K, N, withOld) => {
+      const A = mk(M * K), B = mk(K * N);
+      const row = { shape: M + 'x' + K + 'x' + N };
+      row.newMs = await timeIt(() => runTile(code, A, B, M, K, N, 1, 1, 0, core.mmTileDispatch(M, N, 1)));
+      if (withOld) {
+        row.oldMs = await timeIt(() => nn.tryLayers('matmul', {}, async (dev) => (await nn.runWgsl(dev, oldCode, [{ data: A }, { data: B }, { data: new Float32Array(M * N), out: true }], uniformOf([M, K, N, 0]), [Math.ceil(N / 16), Math.ceil(M / 16), 1]))[0], null, () => new Float32Array(M * N)));
+      }
+      return row;
+    };
+    out.time.push(await timeShape(64, 1024, 1024, true));
+    out.time.push(await timeShape(512, 1024, 1024, false));
+    out.time.push(await timeShape(512, 1024, 3072, false));
+    // 4) f16：只在有 shader-f16 時才能量；沒有就標待驗證
+    out.f16 = out.adapter.f16 ? { status: '可量（本頁未量）' } : { status: '待驗證（無 shader-f16：這台介面卡沒有此功能，核心只寫好、未執行）' };
+  } catch (e) { out.error = String(e && e.stack || e); }
+  out.allPass = !out.error && out.correct.every((c) => c.pass) && out.runtime.every((c) => c.pass);
+  window.__out = out; document.body.textContent = JSON.stringify(out, null, 1); document.title = 'done';
+})();
+</script>

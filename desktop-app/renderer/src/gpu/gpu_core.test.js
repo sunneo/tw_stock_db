@@ -90,8 +90,9 @@ function fakeNavigator(opts) {
       const n = u32(e[3])[0];
       f32(e[2], n).set(core.vectorAddRef(f32(e[0], n), f32(e[1], n)));
     } else if (k === 'matmul') {
-      const p = u32(e[3]); const m = p[0], kk = p[1], n = p[2];
-      f32(e[2], m * n).set(core.matmulRef(f32(e[0], m * kk), f32(e[1], kk * n), m, kk, n));
+      // 參數：B, M, K, N, Bb, azp, bzp, p0（與 gpu_core.js 的 mmTileWords 相同）
+      const p = u32(e[3]); const m = p[1], kk = p[2], n = p[3], fl = p[7];
+      f32(e[2], m * n).set(core.matmulTRef(f32(e[0], m * kk), f32(e[1], kk * n), m, kk, n, fl));
     } else if (k === 'sum') {
       const n = u32(e[2])[0];
       const inp = f32(e[0], n);
@@ -318,6 +319,26 @@ function seeded(n, seed) {
     assert.strictEqual(r.info.via, 'wgsl-native');
     assert.strictEqual(r.info.reason, '');
     close(r.result, Array.from(core.vectorAddRef(Float32Array.from(a), Float32Array.from(b))), 0, 'vector_add');
+  });
+  await check('共用平鋪核心：轉置旗標與明確轉置的矩陣乘一致；共用記憶體 8 KiB；f16 版有 enable 行', () => {
+    const m = 7, k = 5, n = 4;
+    const A = seeded(m * k, 11), B = seeded(k * n, 13);
+    const At = []; for (let i = 0; i < m; i++) for (let t = 0; t < k; t++) At[t * m + i] = A[i * k + t];   // A 的儲存為 K×M（transA）
+    const Bt = []; for (let t = 0; t < k; t++) for (let j = 0; j < n; j++) Bt[j * k + t] = B[t * n + j];   // B 的儲存為 N×K（transB）
+    const plain = core.matmulTRef(A, B, m, k, n, 0);
+    assert.deepStrictEqual(Array.from(core.matmulTRef(At, B, m, k, n, 1)), Array.from(plain), 'transA');
+    assert.deepStrictEqual(Array.from(core.matmulTRef(A, Bt, m, k, n, 2)), Array.from(plain), 'transB');
+    assert.deepStrictEqual(Array.from(core.matmulTRef(At, Bt, m, k, n, 3)), Array.from(plain), 'transA+transB');
+    assert.strictEqual(core.mmTileSharedBytes(), 8192);
+    assert.ok(core.mmTileSharedBytes() <= 16384, '低階卡的共用記憶體上限');
+    const src = core.mmTileWgsl({ marker: 'matmul', dtype: 'f32' });
+    assert.ok(src.startsWith('// @kernel matmul\n'), '@kernel 標記');
+    assert.strictEqual(src.split('workgroupBarrier()').length - 1, 2, '兩個屏障');
+    assert.ok(!/enable f16/.test(src), 'f32 版不該有 enable f16');
+    const h = core.mmTileWgsl({ marker: 'matmul_f16', dtype: 'f16' });
+    assert.ok(h.startsWith('enable f16;\n// @kernel matmul_f16'), 'f16 版要有 enable 行');
+    assert.ok(/array<f16>/.test(h), 'f16 版的輸入是 f16');
+    assert.deepStrictEqual(core.mmTileDispatch(70, 90, 3), [2, 2, 3]);
   });
   await check('矩陣乘在 T1 執行，形狀不是 16 的倍數（邊界檢查）', async () => {
     const rt = core.createRuntime({ navigator: fakeNavigator().nav, webgl2: null });
