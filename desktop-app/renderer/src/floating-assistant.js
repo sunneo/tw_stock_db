@@ -128650,7 +128650,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
     }
     _vlmTerminateModel(id) { for (const s of ['gpu', 'cpu']) { const l = this._vlmLoadedBy && this._vlmLoadedBy[s]; if (l && l.modelId === id) this._vlmTerminate(s); } }
     _vlmCancelIdle(slot) { this._vlmIdleTimers = this._vlmIdleTimers || {}; for (const s of (slot ? [slot] : ['gpu', 'cpu'])) { if (this._vlmIdleTimers[s]) { clearTimeout(this._vlmIdleTimers[s]); this._vlmIdleTimers[s] = null; } } }
-    _vlmScheduleIdle(slot) { this._vlmIdleTimers = this._vlmIdleTimers || {}; let ms = 5 * 60 * 1000; try { const p = this._envPolicy(); ms = p.unloadAfterTask ? p.graceMs : p.idleMs; } catch (_) { /* 沒有環境政策就用 5 分鐘 */ } for (const s of (slot ? [slot] : ['gpu', 'cpu'])) { if (this._vlmIdleTimers[s]) clearTimeout(this._vlmIdleTimers[s]); if (Number.isFinite(ms)) this._vlmIdleTimers[s] = setTimeout(() => { this._vlmTerminate(s); }, ms); } } // 依環境檔位卸載：低檔跑完（幾秒後）就卸載、中檔閒置 2 分鐘、高檔 10 分鐘（釋放記憶體與顯示記憶體；寧可慢、不要被瀏覽器因記憶體不足殺掉）
+    _vlmScheduleIdle(slot) { this._vlmIdleTimers = this._vlmIdleTimers || {}; let ms = 60 * 1000; try { const p = this._envPolicy(); ms = Math.min(60 * 1000, p.unloadAfterTask ? p.graceMs : p.idleMs); } catch (_) { /* 沒有環境政策就用 60 秒 */ } for (const s of (slot ? [slot] : ['gpu', 'cpu'])) { if (this._vlmIdleTimers[s]) clearTimeout(this._vlmIdleTimers[s]); if (Number.isFinite(ms)) this._vlmIdleTimers[s] = setTimeout(() => { this._vlmTerminate(s); }, ms); } } // 依環境檔位卸載：低檔跑完（幾秒後）就卸載、中檔閒置 2 分鐘、高檔 10 分鐘（釋放記憶體與顯示記憶體；寧可慢、不要被瀏覽器因記憶體不足殺掉）
     _vlmProgressAgg(label, update) {
         const files = new Map(); let last = 0;
         return (p) => {
@@ -130244,7 +130244,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
     }
     // 模型位元組→權重→WebGPU 引擎（同一份模型位元組只建一次，之後重用；沒有 WebGPU 或建立失敗就丟錯，由呼叫端記原因並用原路徑）
     async _llmGpuDecodePrepare(mdl) {
-        if (!this._qwenEng) this._qwenEng = new WeakMap();
+        if (!this._qwenEng) this._qwenEng = new Map();   // Map（不是 WeakMap）：卸載時要逐一 destroy
         const hit = this._qwenEng.get(mdl);
         if (hit) return hit;
         if (typeof navigator === 'undefined' || !navigator.gpu) throw new Error('WebGPU 不可用（navigator.gpu 不存在）');
@@ -130254,8 +130254,9 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         const W = M.decode.loadWeights(mdl);
         const dev = await ad.requestDevice();
         const engine = await M.gpu.createGpuEngine(dev, W, { maxT: 1024, maxM: 256 });
-        const r = { engine, timeoutMs: 20000 };
+        const r = { engine, timeoutMs: 20000, dev };
         this._qwenEng.set(mdl, r);
+        this._qwenGpuIdleArm();
         return r;
     }
     // ---- 網頁版 lm_head（實驗，設定 llmGpuHead 開啟，預設關）----
@@ -130364,6 +130365,22 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
     // 條件：這個渲染程序有 WebGPU、用的是 qwen3-0.6b、桌面版找得到 native-models/qwen3-0.6b-q8 的標準 q8 檔（網頁版沒有本機檔就不走，不新下載 617 MB）、沒有套用中的 LoRA（GPU 引擎沒有 LoRA 槽）。
     // 生成參數都支援（貪婪只讀 argmax；取樣／重複懲罰／n-gram 在主機端用與原生子程序同一份 nr-gen-params 處理 logits）。
     // 回傳 { ok:true, text } 或 { ok:false, why }（why 寫進 log 與 this._qwenChatDiag；呼叫端接著走原路徑）。
+    // GPU 引擎的生命週期：卸載一律經過這裡（閒置、換模型、出錯、放不下）。destroy 引擎與 GPUDevice、清兩個快取、清閒置計時。
+    _qwenGpuRelease(reason) {
+        if (this._qwenIdleTimer) { clearTimeout(this._qwenIdleTimer); this._qwenIdleTimer = null; }
+        const drop = (r) => { if (!r) return; try { if (r.engine && r.engine.destroy) r.engine.destroy(); } catch (_) { /* 已釋放 */ } try { if (r.dev && r.dev.destroy) r.dev.destroy(); } catch (_) { /* 已釋放 */ } };
+        if (this._qwenChat) { const c = this._qwenChat; this._qwenChat = null; drop(c); }
+        if (this._qwenEng && typeof this._qwenEng.forEach === 'function') { const all = []; this._qwenEng.forEach((r) => all.push(r)); this._qwenEng = new Map(); all.forEach(drop); }
+        this._qwenReleaseLast = { reason: String(reason || ''), at: Date.now() };
+        return true;
+    }
+    // 閒置卸載的時間：60 秒，但政策（FaEnv.policyOf）的 idleMs 比較短就用較短的（使用者只能調小）
+    _qwenGpuIdleMs() { let ms = 60000; try { const p = this._envPolicy(); if (p && Number.isFinite(p.idleMs)) ms = Math.min(ms, p.idleMs); } catch (_) { /* 沒有環境政策就用 60 秒 */ } return ms; }
+    _qwenGpuIdleArm() {
+        if (this._qwenIdleTimer) clearTimeout(this._qwenIdleTimer);
+        const ms = this._qwenGpuIdleMs();
+        this._qwenIdleTimer = setTimeout(() => { this._qwenIdleTimer = null; this._qwenGpuRelease('閒置 ' + Math.round(ms / 1000) + ' 秒'); }, ms);
+    }
     async _qwenGpuChat(model, a, cb, gen, fmt) {
         const q4 = fmt === 'q4', feat = q4 ? 'qwenGpuQ4' : 'qwenGpuDecode';
         const diag = this._qwenChatDiag = { used: false, why: '', at: Date.now() };
@@ -130406,8 +130423,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             }
             const msz = src.bytes, key = src.key;
             if (!this._qwenChat || this._qwenChat.key !== key) {
-                if (this._qwenChat && this._qwenChat.engine && this._qwenChat.engine.destroy) { try { this._qwenChat.engine.destroy(); } catch (_) {} }
-                this._qwenChat = null;
+                this._qwenGpuRelease('換模型或重新載入');   // 換了模型：舊的引擎與 GPUDevice 先全部卸載再載新的
                 const ad = await navigator.gpu.requestAdapter(); if (!ad) return no('WebGPU 沒有可用的介面卡');
                 if (cb.log) cb.log('GPU 解碼：第一次載入 ' + src.label + '（' + (msz / 1048576).toFixed(0) + ' MB）…');
                 const t0 = Date.now();
@@ -130421,7 +130437,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                 const bud = this._gpuMemBudget(), ch = M.models.choosePlan(M.gpu, W, bud.bytes), cfg = ch.cfg;   // 先找全常駐的最大序列上限，找不到才分層；都放不下 createGpuEngine 丟 GPU_BUDGET（catch 退回原路徑，不算 GPU 壞掉）
                 if (cb.log) cb.log('GPU 解碼：記憶體上限 ' + (bud.bytes / 1048576).toFixed(0) + ' MB（' + bud.why + '）→ ' + (ch.mode === 'full' ? '全常駐' : ch.mode === 'streamed' ? '分層（常駐 ' + ch.plan.resident + '／' + W.L + ' 層）' : '放不下') + '，序列上限 ' + cfg.maxT);
                 const engine = await M.gpu.createGpuEngine(dev, W, { maxT: cfg.maxT, maxM: cfg.maxM, budgetBytes: bud.bytes });
-                this._qwenChat = { key, engine, tok, loadMs: Date.now() - t0 };
+                this._qwenChat = { key, engine, tok, loadMs: Date.now() - t0, dev };
                 if (cb.log && engine.info.streamedLayers) cb.log('GPU 解碼：分層串流中（常駐 ' + engine.info.residentLayers + ' 層，每詞元要重寫 ' + engine.info.streamedLayers + ' 層權重，會比較慢）');
                 if (cb.log) cb.log('GPU 解碼：載入完成（' + ((Date.now() - t0) / 1000).toFixed(1) + ' 秒）');
             }
@@ -130438,14 +130454,14 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             const text = r.cancelled ? acc : r.text;
             diag.used = true; diag.why = ''; diag.tokens = r.ids.length; diag.ms = Date.now() - t1; diag.gpu = r.gpu; diag.stop = garbage ? '垃圾輸出：' + garbage : (r.cancelled ? '逾時' : r.finish_reason);
             this._nrLastBackend = q4 ? 'gpu-decode-q4' : 'gpu-decode'; this._omLastDevice = this._omLastDevice || {}; this._omLastDevice[model.id] = 'webgpu';
+            this._qwenGpuIdleArm();   // 每次成功使用後重設閒置計時（60 秒，或政策較短的 idleMs）
             return { ok: true, text: (a.prefill || '') + text };
         } catch (e) {
             if (e && e.isStopped) { diag.why = '使用者已停止'; throw e; }   // 停止不是失敗：不要退回原路徑再重跑一遍
-            if (e && e.code === 'GPU_BUDGET') { this._qwenChat = null; return no(String(e.message) + '（到設定的「GPU 記憶體上限」調高，或按「偵測／基準」；這不算 GPU 壞掉，沒有停用這條路徑）'); }
+            if (e && e.code === 'GPU_BUDGET') { this._qwenGpuRelease('放不下（GPU 記憶體上限）'); return no(String(e.message) + '（到設定的「GPU 記憶體上限」調高，或按「偵測／基準」；這不算 GPU 壞掉，沒有停用這條路徑）'); }
             const why = 'GPU 解碼失敗：' + String((e && e.message) || e).slice(0, 300);
             // 引擎一旦出錯（GPU 卡死、裝置遺失、映射衝突…）就丟掉，不留著重試；並記下來，之後自動不再用這條路徑（切換「GPU 加速」可重來）
-            if (this._qwenChat && this._qwenChat.engine && this._qwenChat.engine.destroy) { try { this._qwenChat.engine.destroy(); } catch (_) { /* */ } }
-            this._qwenChat = null;
+            this._qwenGpuRelease('出錯');   // 引擎、GPUDevice、快取全部清掉，之後重建不殘留舊的
             this._gpuBrokenSet(feat, why);
             return no(why + '（已自動停用這條 GPU 路徑；到設定切換「GPU 加速」可重新啟用）');
         }
@@ -130481,7 +130497,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         if (this._qwenGpuModelOk(model) && devPref !== 'cpu' && this._qwenGpuDecodeOn()) {
             const gg = Object.assign(FaVlm.textGenParams(model, { deterministic: !!(a.strict || a.deterministic) }), a.strict ? { repetition_penalty: 1.2, no_repeat_ngram_size: 5 } : {});
             const gr = await this._qwenGpuChat(model, a, cb, gg);
-            if (gr.ok) { if (cb.log) cb.log('後端：WebGPU 整段解碼（Qwen3 q8，' + this._qwenChatDiag.tokens + ' 詞元，' + (this._qwenChatDiag.ms / 1000).toFixed(1) + ' 秒）'); console.log('[llm] 後端：GPU 整段解碼'); return gr.text; }
+            if (gr.ok) { this._vlmTerminate(); if (cb.log) cb.log('後端：WebGPU 整段解碼（Qwen3 q8，' + this._qwenChatDiag.tokens + ' 詞元，' + (this._qwenChatDiag.ms / 1000).toFixed(1) + ' 秒）'); console.log('[llm] 後端：GPU 整段解碼'); return gr.text; }
             const msg = 'GPU 整段解碼未使用：' + gr.why + '；改用原路徑'; if (cb.log) cb.log(msg); console.log('[llm] ' + msg);
         }
         // Qwen3 q4f16 整段 GPU 解碼（有真 GPU 時 gpuAccel 自動開；手動 qwenGpuQ4）：用 transformers.js 路徑存進瀏覽器快取的 q4f16 檔，我們自己的 WebGPU 核心（MatMulNBits＋fp16 lm_head＋分層／記憶體上限）生成；
@@ -130489,9 +130505,10 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         if (this._qwenGpuModelOk(model) && devPref !== 'cpu' && this._qwenGpuQ4On()) {
             const g4 = Object.assign(FaVlm.textGenParams(model, { deterministic: !!(a.strict || a.deterministic) }), a.strict ? { repetition_penalty: 1.2, no_repeat_ngram_size: 5 } : {});
             const gr4 = await this._qwenGpuChat(model, a, cb, g4, 'q4');
-            if (gr4.ok) { if (cb.log) cb.log('後端：WebGPU 整段解碼（Qwen3 q4f16，' + this._qwenChatDiag.tokens + ' 詞元，' + (this._qwenChatDiag.ms / 1000).toFixed(1) + ' 秒）'); console.log('[llm] 後端：GPU 整段解碼 q4f16'); return gr4.text; }
+            if (gr4.ok) { this._vlmTerminate(); if (cb.log) cb.log('後端：WebGPU 整段解碼（Qwen3 q4f16，' + this._qwenChatDiag.tokens + ' 詞元，' + (this._qwenChatDiag.ms / 1000).toFixed(1) + ' 秒）'); console.log('[llm] 後端：GPU 整段解碼 q4f16'); return gr4.text; }
             const msg4 = 'GPU q4f16 整段解碼未使用：' + gr4.why + '；改用 transformers.js 原路徑'; if (cb.log) cb.log(msg4); console.log('[llm] ' + msg4);
         }
+        this._qwenGpuRelease('改用 transformers.js（ORT）');   // 同一時間只留一種引擎：GPU 路線沒用上才會走到這裡，載入 ORT 前先釋放 GPU 引擎
         const order = bo.order.filter((x) => x !== 'native');
         if (!order.length) throw new Error(bo.reason);
         if (nativeWhy) { const msg = '原生未使用：' + nativeWhy + '；改用 ' + order.join('→'); if (cb.log) cb.log(msg); console.log('[llm] ' + msg); }

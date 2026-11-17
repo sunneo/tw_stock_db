@@ -998,3 +998,16 @@ Python 模擬器與離線模型推論共用同一個 GPU 裝置：
 - **Electron 視窗讀得到 transformers.js 快取（未驗證，這台無法確認）**：`_qwenCacheGet` 讀的是 `caches.keys()` 裡名稱符合 `/transformers/i` 的快取（transformers.js 的預設快取名稱含 `transformers`，`webtrain_worker_core.js` 等處也用同樣的名稱）。在這台只能讀程式碼確認查詢邏輯，沒有啟動 Electron 視窗去讀真的快取，所以不能宣稱讀得到。要驗證需在桌面版裡：先用 transformers.js 路徑生成一次（下載 q4f16 檔），再在主頁面開主控台執行 `caches.keys()` 與 `caches.open(名稱).then(c=>c.keys())`，確認名稱與 URL 相符。
 - **（本輪新增）gate 失敗記錄的 bug 已修**：`_qwenGpuQ4On`／`_qwenGpuDecodeOn` 原本在「手動設成 on」時直接回 true，**繞過**了 `fa_gpu_broken:<feature>` 失敗記錄，失敗後每次回答都會再撞一次。現在失敗記錄優先（測試 `renderer/src/gpu/qwen_gpu_gate.test.js` 12 passed）。切換「GPU 加速」仍會清除記錄重新啟用。
 - **（本輪新增）讀檔前可停止**：q4 路徑在載入模型位元組前檢查使用者停止（與 q8 的 `readBytes` 一致）；停止不算失敗，不會停用路徑。
+
+### 7.32 GPU 引擎的生命週期：閒置卸載、換模型先卸載、ORT 與 GPU 不同時佔用（2026-11-17）
+
+- **問題**：`_llmGpuDecodePrepare` 的引擎存在 `_qwenEng`（原本是 WeakMap，無法逐一 destroy），從不 destroy、沒有閒置卸載；`_qwenGpuChat` 的 `_qwenChat` 只在換 key 與出錯時 destroy 引擎，沒有 destroy GPUDevice，GPU_BUDGET 只設 null。另外 ORT Worker（`_vlmScheduleIdle`）的閒置時間沿用政策，中檔 2 分鐘、高檔 10 分鐘。
+- **做法**（`floating-assistant.js`）：
+  - `_qwenGpuRelease(reason)`：清閒置計時；destroy 引擎與 GPUDevice（`_qwenChat` 與 `_qwenEng` 的每一筆）；兩個快取清空；記下原因（`_qwenReleaseLast`）。換模型、出錯、放不下、閒置到時、改用 ORT 都經過這裡。
+  - 閒置：`_qwenGpuIdleMs()` ＝ min(60 秒, 政策 `idleMs`)，使用者只能調小；每次成功使用後 `_qwenGpuIdleArm()` 重設計時。
+  - ORT Worker：`_vlmScheduleIdle` 的上限也改成 min(60 秒, 政策)，到時 `_vlmTerminate` 終止 Worker。
+  - ORT 與 GPU 不同時佔用：GPU 整段解碼**成功**後才 `_vlmTerminate()`（不是先砍 ORT：GPU 用不上時每次都重載 ORT 會變慢）；GPU 路線沒有回答、要改走 ORT 之前，先 `_qwenGpuRelease('改用 transformers.js（ORT）')`。
+  - `_qwenEng` 由 WeakMap 改成 Map（卸載要逐一 destroy）；`_llmGpuDecodePrepare` 的記錄多存 `dev`。
+- **測試**：`renderer/src/gpu/qwen_gpu_lifecycle.test.js` 26 passed（假 GPUDevice、假引擎、假 Worker、真計時器）：換模型先卸載舊的（引擎與 device 各一次）；閒置到時卸載、原因寫「閒置」；閒置上限 60 秒，政策較短就用較短；重新排計時不會在中途卸載；手動卸載取消舊計時；出錯後重建不殘留；沒有引擎也能呼叫；ORT Worker 閒置上限與到時終止。既有 `llm_web_gpudecode` 18、`qwen_gpu_gate` 12、`qwen_decode_q4` 5、`qwen_gpu_plan` 18、`qwen_models` 22、`qwen_chat`／`qwen_decode` 17 全部通過。
+- **只在假裝置上驗過的**：destroy 是否真的釋放了 GPU 記憶體、閒置到時瀏覽器的顯示記憶體是否下降、真 GPU 上的時序。這些沒有在真瀏覽器或真 GPU 上量（使用者說真 GPU 不用管）。`_llmGpuDecodePrepare` 本身（需要真的 `navigator.gpu` 與權重）沒有單元測試，只有其中的 Map／dev 記錄透過卸載測試間接驗到。
+- **還沒做的**：「同一模型在 ORT 與 GPU 之間切換」只做到 GPU 成功時釋放 ORT、GPU 失敗時釋放 GPU；ORT 的模型切換（`_vlmLoadedBy` 換模型）沿用既有的 `_vlmTerminateModel`，沒有額外改。
