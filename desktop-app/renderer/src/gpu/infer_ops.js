@@ -400,6 +400,71 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>, @builtin(workgroup_id) wid
   }
 }
 `;
+// q8mm 2 列解碼 f32 版（@kernel q8mm_decr2f）：2 列 × 64 欄，權重只讀一次（WGSL_Q8MM_DEC 每列一個工作群組，M=2 時權重讀兩次）。
+// 精確條件同 decr4f（K ≤ 4096）。主機端只在 M=2 且 K ≤ 4096 時路由到這裡。共用記憶體：xs f32 2 KiB ＋ red i32 4 KiB。
+const WGSL_Q8MM_DECR2F = `
+struct P { M: u32, K: u32, N: u32, wzp: i32, scale: f32, nq: u32, p1: u32, p2: u32 }
+@group(0) @binding(0) var<storage, read> x: array<i32>;
+@group(0) @binding(1) var<storage, read> w: array<u32>;
+@group(0) @binding(2) var<storage, read_write> y: array<f32>;
+@group(0) @binding(3) var<uniform> p: P;
+var<workgroup> xs: array<f32, 512>;
+var<workgroup> red: array<i32, 1024>;
+// @kernel q8mm_decr2f
+@compute @workgroup_size(256)
+fn main(@builtin(local_invocation_id) lid: vec3<u32>, @builtin(workgroup_id) wid: vec3<u32>) {
+  let t = lid.x;
+  let cq = t & 15u;
+  let ks = t >> 4u;
+  let m0 = wid.y * 2u;
+  let quad = wid.x * 16u + cq;
+  let qok = quad < p.nq;
+  var a: array<f32, 8>;
+  for (var kt: u32 = 0u; kt < p.K; kt = kt + 256u) {
+    let kk = kt + t;
+    for (var r: u32 = 0u; r < 2u; r = r + 1u) {
+      let m = m0 + r;
+      if (m < p.M && kk < p.K) { xs[r * 256u + t] = f32(x[m * p.K + kk]); } else { xs[r * 256u + t] = 0.0; }
+    }
+    workgroupBarrier();
+    for (var j: u32 = 0u; j < 16u; j = j + 1u) {
+      let tl = j * 16u + ks;
+      let k = kt + tl;
+      if (qok && k < p.K) {
+        let word = w[k * p.nq + quad];
+        let b0 = f32(i32(word & 255u) - p.wzp);
+        let b1 = f32(i32((word >> 8u) & 255u) - p.wzp);
+        let b2 = f32(i32((word >> 16u) & 255u) - p.wzp);
+        let b3 = f32(i32((word >> 24u) & 255u) - p.wzp);
+        for (var r: u32 = 0u; r < 2u; r = r + 1u) {
+          let xv = xs[r * 256u + tl];
+          a[r * 4u] = a[r * 4u] + xv * b0;
+          a[r * 4u + 1u] = a[r * 4u + 1u] + xv * b1;
+          a[r * 4u + 2u] = a[r * 4u + 2u] + xv * b2;
+          a[r * 4u + 3u] = a[r * 4u + 3u] + xv * b3;
+        }
+      }
+    }
+    workgroupBarrier();
+  }
+  for (var r: u32 = 0u; r < 2u; r = r + 1u) {
+    let b = ks * 64u + cq * 4u;
+    red[b] = i32(a[r * 4u]);
+    red[b + 1u] = i32(a[r * 4u + 1u]);
+    red[b + 2u] = i32(a[r * 4u + 2u]);
+    red[b + 3u] = i32(a[r * 4u + 3u]);
+    workgroupBarrier();
+    if (t < 64u) {
+      var s: i32 = 0;
+      for (var q: u32 = 0u; q < 16u; q = q + 1u) { s = s + red[q * 64u + t]; }
+      let m = m0 + r;
+      let n = wid.x * 64u + t;
+      if (m < p.M && n < p.N) { y[m * p.N + n] = f32(s) * p.scale; }
+    }
+    workgroupBarrier();
+  }
+}
+`;
 // q8mm 預填 4×8 暫存器分塊（@kernel q8mm_pf8x4）：一個工作群組 64 列 × 128 欄（256 執行緒，每執行緒 4 列 × 8 欄 ＝ 32 個 f32 累加器）。
 // 每個權重字的位元組只拆一次，共用記憶體讀取由 4×4 版的每 16 次乘加 5 次降到 6 次／32 次乘加。
 // 精確條件：|輸入| ≤ 255、|權重−zp| ≤ 255；每個累加器跨整個 K 累加，K ≤ 4096 時 ≤ 16.6M < 2^24，每一步精確。主機端只在 K ≤ 4096 路由到這裡，其餘仍用 WGSL_Q8MM_PF。
@@ -635,11 +700,12 @@ const Q8_PF_MIN_M = 64;
 // K 參數只用來判斷 f32 版是否精確（K ≤ 4096）；沒給 K 時走 i32 的 decr8，一定精確。
 function q8mmVariant(N, opts, M, K) {
   const forced = opts && opts.q8variant;
-  if (forced === 'simple' || forced === 'dec' || forced === 'pf' || forced === 'decr' || forced === 'decr8' || forced === 'decr8f' || forced === 'pf8x4' || forced === 'decr4f') return forced;
+  if (forced === 'simple' || forced === 'dec' || forced === 'pf' || forced === 'decr' || forced === 'decr8' || forced === 'decr8f' || forced === 'pf8x4' || forced === 'decr4f' || forced === 'decr2f') return forced;
   if (N % 4 !== 0) return 'simple';
   if (M !== undefined && M >= Q8_PF_MIN_M) return (K !== undefined && K <= 4096) ? 'pf8x4' : 'pf';   // f32 4×8 分塊（K ≤ 4096 精確）；其餘用 pf
   if (M !== undefined && M >= 8) return (K !== undefined && K <= 4096) ? 'decr8f' : 'decr8';   // f32 8 列版：M=8 0.60→0.44 ms、M=16 1.07→0.79 ms（K ≤ 4096 精確）
   if (M !== undefined && M >= 4) return (K !== undefined && K <= 4096) ? 'decr4f' : 'decr';
+  if (M === 2 && K !== undefined && K <= 4096) return 'decr2f';
   return 'dec';
 }
 async function q8mm(xq, W, wzp, M, K, N, scale, opts) {
@@ -658,6 +724,9 @@ async function q8mm(xq, W, wzp, M, K, N, scale, opts) {
       } else if (variant === 'pf8x4') {
         const u = unif((d) => { d.setUint32(0, M, true); d.setUint32(4, K, true); d.setUint32(8, N, true); d.setInt32(12, wzp, true); d.setFloat32(16, sc, true); d.setUint32(20, N >>> 2, true); });
         r = await dispatchRead(dev, WGSL_Q8MM_PF8X4, [xb, wb], M * N, u, Math.ceil(N / 128), Math.ceil(M / 64));
+      } else if (variant === 'decr2f') {
+        const u = unif((d) => { d.setUint32(0, M, true); d.setUint32(4, K, true); d.setUint32(8, N, true); d.setInt32(12, wzp, true); d.setFloat32(16, sc, true); d.setUint32(20, N >>> 2, true); });
+        r = await dispatchRead(dev, WGSL_Q8MM_DECR2F, [xb, wb], M * N, u, Math.ceil(N / 64), Math.ceil(M / 2));
       } else if (variant === 'decr4f') {
         const u = unif((d) => { d.setUint32(0, M, true); d.setUint32(4, K, true); d.setUint32(8, N, true); d.setInt32(12, wzp, true); d.setFloat32(16, sc, true); d.setUint32(20, N >>> 2, true); });
         r = await dispatchRead(dev, WGSL_Q8MM_DECR4F, [xb, wb], M * N, u, Math.ceil(N / 64), Math.ceil(M / 4));
@@ -697,6 +766,7 @@ const WGSL_Q8MM_DECR8_DYN = dynKernel(WGSL_Q8MM_DECR8);
 const WGSL_Q8MM_DECR8F_DYN = dynKernel(WGSL_Q8MM_DECR8F);
 const WGSL_Q8MM_PF8X4_DYN = dynKernel(WGSL_Q8MM_PF8X4);
 const WGSL_Q8MM_DECR4F_DYN = dynKernel(WGSL_Q8MM_DECR4F);
+const WGSL_Q8MM_DECR2F_DYN = dynKernel(WGSL_Q8MM_DECR2F);
 // b：nn_ops.createBatch；xq：quantizeDyn 的回傳（{buf, n, st}）；wbuf：GPUBuffer；回傳 { buf, n }（M×N 的 f32 句柄）
 function q8mmBatched(b, xq, wbuf, wzp, M, K, N, wscale, opts) {
   const variant = q8mmVariant(N, opts, M, K);
@@ -708,6 +778,7 @@ function q8mmBatched(b, xq, wbuf, wzp, M, K, N, wscale, opts) {
   if (variant === 'dec') b.dispatchRaw(WGSL_Q8MM_DEC_DYN, [xq.buf, wbuf, y.buf, sx], new Uint8Array(u), [Math.ceil(N / 64), M, 1]);
   else if (variant === 'pf') b.dispatchRaw(WGSL_Q8MM_PF_DYN, [xq.buf, wbuf, y.buf, sx], new Uint8Array(u), [Math.ceil(N / 64), Math.ceil(M / 64), 1]);
   else if (variant === 'pf8x4') b.dispatchRaw(WGSL_Q8MM_PF8X4_DYN, [xq.buf, wbuf, y.buf, sx], new Uint8Array(u), [Math.ceil(N / 128), Math.ceil(M / 64), 1]);
+  else if (variant === 'decr2f') b.dispatchRaw(WGSL_Q8MM_DECR2F_DYN, [xq.buf, wbuf, y.buf, sx], new Uint8Array(u), [Math.ceil(N / 64), Math.ceil(M / 2), 1]);
   else if (variant === 'decr4f') b.dispatchRaw(WGSL_Q8MM_DECR4F_DYN, [xq.buf, wbuf, y.buf, sx], new Uint8Array(u), [Math.ceil(N / 64), Math.ceil(M / 4), 1]);
   else if (variant === 'decr8f') b.dispatchRaw(WGSL_Q8MM_DECR8F_DYN, [xq.buf, wbuf, y.buf, sx], new Uint8Array(u), [Math.ceil(N / 64), Math.ceil(M / 8), 1]);
   else if (variant === 'decr8') b.dispatchRaw(WGSL_Q8MM_DECR8_DYN, [xq.buf, wbuf, y.buf, sx], new Uint8Array(u), [Math.ceil(N / 64), Math.ceil(M / 8), 1]);
@@ -942,4 +1013,4 @@ async function q8lmAuto(x, W, V, K, zp, scale, opts) {
   throw err;
 }
 
-module.exports = { quantizeDynamicRef, q8mmRef, q8lmRef, q8mm, q8mmVariant, q8lm, q8lmAuto, q8lmGl, q8lmWgsl, cachedChunks, planChunks, WGSL_Q8MM, WGSL_Q8MM_DEC, WGSL_Q8MM_DECR, WGSL_Q8MM_DECR8, WGSL_Q8MM_PF, WGSL_Q8LM, FS_Q8LM_GL, MAX_GROUPS, MAX_CHUNK_BYTES, q8mmBatched, WGSL_Q8MM_DYN, WGSL_Q8MM_DEC_DYN, WGSL_Q8MM_PF_DYN, WGSL_Q8MM_DECR_DYN, WGSL_Q8MM_DECR8_DYN, WGSL_Q8MM_DECR8F_DYN, WGSL_Q8MM_DECR8F, WGSL_Q8MM_DECR4F, WGSL_Q8MM_PF8X4 };
+module.exports = { quantizeDynamicRef, q8mmRef, q8lmRef, q8mm, q8mmVariant, q8lm, q8lmAuto, q8lmGl, q8lmWgsl, cachedChunks, planChunks, WGSL_Q8MM, WGSL_Q8MM_DEC, WGSL_Q8MM_DECR, WGSL_Q8MM_DECR8, WGSL_Q8MM_PF, WGSL_Q8LM, FS_Q8LM_GL, MAX_GROUPS, MAX_CHUNK_BYTES, q8mmBatched, WGSL_Q8MM_DYN, WGSL_Q8MM_DEC_DYN, WGSL_Q8MM_PF_DYN, WGSL_Q8MM_DECR_DYN, WGSL_Q8MM_DECR8_DYN, WGSL_Q8MM_DECR8F_DYN, WGSL_Q8MM_DECR8F, WGSL_Q8MM_DECR4F, WGSL_Q8MM_DECR2F, WGSL_Q8MM_PF8X4 };

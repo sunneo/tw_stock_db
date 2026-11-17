@@ -95,6 +95,13 @@ async function t(name, fn) { try { await fn(); pass++; console.log('ok  ' + name
     assert.strictEqual(ops.q8mmVariant(1024, {}, 7, 4096), 'decr4f');
     assert.strictEqual(ops.q8mmVariant(1024, {}, 7, 8192), 'decr');
     assert.strictEqual(ops.q8mmVariant(1024, {}, 4), 'decr');
+    // 2 列 f32 版：只在 M=2 且 K ≤ 4096 時路由
+    assert(/@kernel q8mm_decr2f/.test(ops.WGSL_Q8MM_DECR2F)); assert(/@workgroup_size\(256\)/.test(ops.WGSL_Q8MM_DECR2F));
+    assert.strictEqual(ops.q8mmVariant(1024, {}, 2, 1024), 'decr2f');
+    assert.strictEqual(ops.q8mmVariant(1024, {}, 2, 8192), 'dec');
+    assert.strictEqual(ops.q8mmVariant(1024, {}, 2), 'dec');
+    assert.strictEqual(ops.q8mmVariant(1024, {}, 1, 1024), 'dec');
+    assert.strictEqual(ops.q8mmVariant(1024, {}, 3, 1024), 'dec');
     assert.strictEqual(ops.q8mmVariant(1024, {}, 64), 'pf');
     assert.strictEqual(ops.q8mmVariant(1024, { q8variant: 'decr' }, 1), 'decr');
     assert.strictEqual(ops.q8mmVariant(6, {}, 64), 'simple');
