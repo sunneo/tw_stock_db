@@ -26,6 +26,13 @@ function pickMatmulKernel(M, K, N, o) {
   return KS.pickWithCache('matmul', { M: M, K: K, N: N }, CAPS, overrides, WINNER_STORE, ADAPTER);
 }
 
+// 接到 runtime 矩陣乘（O14b）：只有真的有競賽勝者（pickWithCache 的 source 為 'tuned'）才回傳變體 id；否則 null，gpu_core 走規則預設。
+function runtimeWinnerFor(M, K, N) {
+  const r = KS.pickWithCache('matmul', { M: M, K: K, N: N }, CAPS, null, WINNER_STORE, ADAPTER);
+  return r && r.source === 'tuned' ? r.id : null;
+}
+MM_TILE.setMatmulWinnerSource(runtimeWinnerFor);
+
 function plan(aDims, bDims) {
   const ra = aDims.length, rb = bDims.length;
   if (ra < 2 || rb < 2) throw new Error('matmul：只支援 2 維以上');

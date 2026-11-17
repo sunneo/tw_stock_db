@@ -29,6 +29,31 @@
   function mmTileDispatch(M, N, B) { return [Math.ceil(N / MMT_OUT), Math.ceil(M / MMT_OUT), B || 1]; }
   function mmTileFlags(o) { o = o || {}; return (o.transA ? 1 : 0) | (o.transB ? 2 : 0); }
   function mmTileWords(M, K, N, flags, B) { return [B || 1, M, K, N, 1, 0, 0, flags || 0]; }
+
+  // ===== 矩陣乘選核政策（O14b）=====
+  // force：'auto'（預設：有競賽勝者才換）｜'off'（關閉＝舊核心，即規則預設）｜'mm_vec4_f32'｜'mm_tiled_f32'（強制，覆蓋勝者）。
+  // winnerSource：fn(M, K, N) → 競賽勝者的變體 id 或 null。mm_ops 載入時設定；沒有設定或沒有勝者就是 null，行為與未接線前完全相同。
+  // 變體 id 對應到本檔的核心名：mm_simple_f32 在這裡沒有對應核心，視為無勝者（退回規則預設）。
+  var MM_FORCE_VALUES = { auto: true, off: true, mm_vec4_f32: true, mm_tiled_f32: true };
+  var MM_VARIANT_TO_KERNEL = { mm_vec4_f32: 'matmul_vec4', mm_tiled_f32: 'matmul' };
+  var MM_POLICY = { force: 'auto', winnerSource: null };
+  function setMatmulForce(v) {
+    var f = v == null ? 'auto' : String(v);
+    if (!MM_FORCE_VALUES[f]) throw new Error('cudaweb 矩陣乘核心：不認得的強制值 ' + f + '（只接受 auto、off、mm_vec4_f32、mm_tiled_f32）');
+    MM_POLICY.force = f;
+    return f;
+  }
+  function setMatmulWinnerSource(fn) { MM_POLICY.winnerSource = typeof fn === 'function' ? fn : null; }
+  // 回傳 'matmul_vec4' | 'matmul' | null（null＝不覆寫，走規則預設）。強制值優先於勝者。
+  function globalKernelPick(M, K, N) {
+    var f = MM_POLICY.force;
+    if (f === 'off') return null;
+    if (f !== 'auto') return MM_VARIANT_TO_KERNEL[f] || null;
+    if (!MM_POLICY.winnerSource) return null;
+    var id = null;
+    try { id = MM_POLICY.winnerSource(M, K, N); } catch (_) { id = null; }
+    return (id && MM_VARIANT_TO_KERNEL[id]) || null;
+  }
   function mmTileWgsl(opts) {
     opts = opts || {};
     var marker = opts.marker || 'matmul_tiled';
@@ -769,7 +794,7 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>, @builtin(workgroup_id) wid
         var d = mmTileDispatch(m, n, 1), fl = mmTileFlags(flags);
         var v4 = mmTileVec4Ok(m, k, n, fl);   // K、N 為 4 的倍數、不轉置：用 vec4 版
         // 可選的選核注入點（預設 null＝維持原本行為）。回傳 'matmul_vec4' 或 'matmul'；vec4 不合條件時仍退回平鋪版。
-        var pick = matmulKernelChooser ? matmulKernelChooser(m, k, n, fl) : null;
+        var pick = matmulKernelChooser ? matmulKernelChooser(m, k, n, fl) : globalKernelPick(m, k, n);
         if (pick === 'matmul_vec4') v4 = mmTileVec4Ok(m, k, n, fl);
         else if (pick === 'matmul') v4 = false;
         dispatch(dev, v4 ? pipeline(dev, 'matmul_vec4', WGSL.matmul_vec4) : pipeline(dev, 'matmul', WGSL.matmul), [ba, bb, bc, uniformU32(dev, mmTileWords(m, k, n, fl, 1))], d[0], d[1]);
@@ -788,7 +813,7 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>, @builtin(workgroup_id) wid
           var bc = dev.createBuffer({ size: Math.max(4, j.m * j.n * 4), usage: USAGE.STORAGE | USAGE.COPY_SRC });
           var uni = uniformU32(dev, mmTileWords(j.m, j.k, j.n, j.fl, 1));
           var v4 = mmTileVec4Ok(j.m, j.k, j.n, j.fl);
-          var pick = matmulKernelChooser ? matmulKernelChooser(j.m, j.k, j.n, j.fl) : null;
+          var pick = matmulKernelChooser ? matmulKernelChooser(j.m, j.k, j.n, j.fl) : globalKernelPick(j.m, j.k, j.n);
           if (pick === 'matmul_vec4') v4 = mmTileVec4Ok(j.m, j.k, j.n, j.fl);
           else if (pick === 'matmul') v4 = false;
           var pipe = v4 ? pipeline(dev, 'matmul_vec4', WGSL.matmul_vec4) : pipeline(dev, 'matmul', WGSL.matmul);
@@ -1408,6 +1433,10 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>, @builtin(workgroup_id) wid
     glKernels: GLSL,
     createRuntime: createRuntime,
     createScheduler: createScheduler,
+    setMatmulForce: setMatmulForce,
+    setMatmulWinnerSource: setMatmulWinnerSource,
+    globalKernelPick: globalKernelPick,
+    getMatmulPolicy: function () { return { force: MM_POLICY.force, hasWinnerSource: !!MM_POLICY.winnerSource }; },
     WG: WG,
     TILE: TILE,
     DEFAULT_BUDGET: DEFAULT_BUDGET
