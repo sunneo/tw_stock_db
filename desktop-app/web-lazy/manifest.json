@@ -233,8 +233,8 @@
    "names": [
     "FaPlan"
    ],
-   "size": 21961,
-   "md5": "3492c2c2ed33852d016ea71619ce5595"
+   "size": 25409,
+   "md5": "fc485ab37da838b7ff8847c65e533917"
   },
   "newsdigest": {
    "file": "chunks/newsdigest.js",
@@ -1879,7 +1879,7 @@
   }
  },
  "core": {
-  "size": 6017316,
-  "md5": "18957cfed565eeba460386935e90f4b6"
+  "size": 6020527,
+  "md5": "23588489f6b64c91cac2b690f4a16172"
  }
 }
