@@ -96085,6 +96085,12 @@ ${fnData.code}
     }
     // 包住一次生成：路由 → 必要時切換 → 生成（acquire/release 之間推論中不可淘汰）→ 釋放
     async _llmGenerate(model, a, cb) {
+        // 生成中計數：GPU 量測前要知道有沒有生成在進行（有就不量，請使用者等生成結束）
+        this._llmBusy = (this._llmBusy || 0) + 1;
+        try { return await this._llmGenerateCore(model, a, cb); }
+        finally { this._llmBusy = Math.max(0, (this._llmBusy || 1) - 1); }
+    }
+    async _llmGenerateCore(model, a, cb) {
         let route = null;
         // 這一輪使用者的話（最後一則 user 訊息）：給觸發字比對用
         const turnText = a && (a.text || (Array.isArray(a.messages) ? String(((a.messages.filter((m) => m && m.role === 'user').pop()) || {}).content || '') : '') || a.prompt || '');
@@ -96651,16 +96657,33 @@ ${fnData.code}
         const rt = this._cudawebRuntime();
         const a = args || {};
         if (op === 'vector_add') return (await rt.vectorAdd(a.a, a.b)).result;
-        if (op === 'matmul') return (await rt.matmul(a.a, a.b, a.m, a.k, a.n, { transA: !!a.transA, transB: !!a.transB })).result;
-        // 批次矩陣乘（O14）：一次提交；批次路徑失敗（例如沒有 GPU）就逐組走 rt.matmul（有 CPU 退路）。結果轉成一般陣列才能經過 JSON 橋接
+        // 小 M 路徑（O14）：M=1 且 B 以 N×K 儲存（transB，線性層的常見排法）時，y = B·a 就是 gemv，走既有的 gemv 核心（有 GPU→GL→CPU 退路）
+        if (op === 'matmul') {
+            if (a.m === 1 && a.transB && !a.transA) {
+                this._cudawebLastPath = 'gemv（M=1，B 以 N×K 儲存）';
+                return (await rt.gemv(a.b, a.a, a.n, a.k)).result;
+            }
+            this._cudawebLastPath = 'matmul' + (a.transA || a.transB ? '（轉置旗標）' : '');
+            return (await rt.matmul(a.a, a.b, a.m, a.k, a.n, { transA: !!a.transA, transB: !!a.transB })).result;
+        }
+        // 批次矩陣乘（O14）：只有 rt.matmulMany 存在時才是批次；這個核心（gpu_core）沒有 matmulMany，所以目前是逐組執行。
+        // 記錄實際走了哪一條（lastPath），讓驗證能分辨。結果轉成一般陣列才能經過 JSON 橋接。
         if (op === 'matmul_many') {
             const items = a.items || [];
-            try { return (await rt.matmulMany(items)).results.map((x) => Array.from(x)); }
-            catch (_) {
-                const outs = [];
-                for (const it of items) outs.push(Array.from((await rt.matmul(it[0], it[1], it[2], it[3], it[4])).result));
-                return outs;
+            if (typeof rt.matmulMany === 'function') {
+                try {
+                    const r = (await rt.matmulMany(items)).results.map((x) => Array.from(x));
+                    this._cudawebLastPath = 'matmul_many（批次提交）';
+                    return r;
+                } catch (e) {
+                    this._cudawebLastPath = 'per-item（matmul_many 失敗：' + String((e && e.message) || e).slice(0, 120) + '）';
+                }
+            } else {
+                this._cudawebLastPath = 'per-item（這個核心沒有 matmulMany，逐組執行）';
             }
+            const outs = [];
+            for (const it of items) outs.push(Array.from((await rt.matmul(it[0], it[1], it[2], it[3], it[4])).result));
+            return outs;
         }
         if (op === 'sum') return (await rt.sum(a.a)).result;
         if (op === 'axpy') return (await rt.axpy(a.alpha, a.x, a.y)).result;
@@ -130479,11 +130502,21 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
     _gpuMemProbeGet() { try { const v = localStorage.getItem('fa_gpu_mem_probe'); return v ? JSON.parse(v) : null; } catch (_) { return null; } }
     _gpuMemBudget() { return this._qwenModule().mem.resolveBudget({ settingMB: this.advancedSettings.gpuMemMB, probe: this._gpuMemProbeGet() }); }
     // 偵測／基準：實際配置測試緩衝區往上加碼（先小後大、有總量上限與逾時、接住 OOM 與 device lost、結束釋放），再量寫入頻寬與矩陣乘；軟體 WebGPU 不量。結果存快取並回傳
+    // GPU 量測前的閘門：有生成在進行就不量（回傳原因，請使用者等生成結束）；沒有就先釋放閒置的 GPU 引擎與 ORT 的 GPU 工作者
+    // （量測要獨佔 GPU；摘要留著的引擎會佔記憶體、干擾量測）。釋放順序：先 Qwen 引擎與裝置，再 ORT 的 GPU 工作者。
+    _gpuBenchGate(label) {
+        if ((this._llmBusy || 0) > 0 || (this._qwenBusy || 0) > 0) return { ok: false, reason: '請等目前的生成結束再做「' + label + '」（生成中量測會得到無效結果）' };
+        this._qwenGpuRelease('量測前釋放（' + label + '）');
+        this._vlmTerminate('gpu');
+        return { ok: true, reason: '' };
+    }
     async _gpuMemProbeRun(log) {
         if (typeof FA_QWEN_SRC !== 'string' || typeof FA_GPU_CORE_SRC !== 'string') throw new Error('沒有嵌入模組');
         if (!window.FaGpuCore) (new Function(FA_GPU_CORE_SRC))();
+        const gate = this._gpuBenchGate('偵測／基準'); if (!gate.ok) throw new Error(gate.reason);
         const M = this._qwenModule();
-        const r = await M.mem.probe(navigator, { log, bench: (dev) => M.pick.gpuBench(dev, M.nn) });
+        // 用共用的量測鎖（nn_ops.withMeasureLock）：屋頂、競賽、基準一次只跑一個
+        const r = await M.nn.withMeasureLock(() => M.mem.probe(navigator, { log, bench: (dev) => M.pick.gpuBench(dev, M.nn) }));
         if (r.lost) this._gpuBrokenSet('qwenGpuDecode', '偵測 GPU 記憶體時裝置遺失：' + r.lost);
         try { if (r.ok) localStorage.setItem('fa_gpu_mem_probe', JSON.stringify(r)); } catch (_) { /* 沒有 localStorage：只是下次要重測 */ }
         return r;
@@ -130834,7 +130867,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             await render();
         });
         raceBtn.addEventListener('click', async () => {
-            if (busy) return; busy = true; cancelFlag = false; raceBtn.disabled = true; cancelBtn.disabled = false; status.textContent = '變體競賽中…（背景、每形狀 2 秒預算、可取消）';
+            if (busy) return; const gate0 = this._gpuBenchGate('變體競賽'); if (!gate0.ok) { status.textContent = gate0.reason; return; } busy = true; cancelFlag = false; raceBtn.disabled = true; cancelBtn.disabled = false; status.textContent = '變體競賽中…（背景、每形狀 2 秒預算、可取消）';
             try {
                 const env = await this._gpuVariantCaps(); QM.mm.setMatmulCaps(env.caps, env.desc);
                 // 與表格同一份形狀清單（設定裡的 gpuBenchShapes）：全部形狀都參賽，單一形狀是否安全由競賽依這台機器判斷
