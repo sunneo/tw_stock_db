@@ -683,6 +683,10 @@
         var bc = dev.createBuffer({ size: Math.max(4, m * n * 4), usage: USAGE.STORAGE | USAGE.COPY_SRC });
         var d = mmTileDispatch(m, n, 1), fl = mmTileFlags(flags);
         var v4 = mmTileVec4Ok(m, k, n, fl);   // K、N 為 4 的倍數、不轉置：用 vec4 版
+        // 可選的選核注入點（預設 null＝維持原本行為）。回傳 'matmul_vec4' 或 'matmul'；vec4 不合條件時仍退回平鋪版。
+        var pick = matmulKernelChooser ? matmulKernelChooser(m, k, n, fl) : null;
+        if (pick === 'matmul_vec4') v4 = mmTileVec4Ok(m, k, n, fl);
+        else if (pick === 'matmul') v4 = false;
         dispatch(dev, v4 ? pipeline(dev, 'matmul_vec4', WGSL.matmul_vec4) : pipeline(dev, 'matmul', WGSL.matmul), [ba, bb, bc, uniformU32(dev, mmTileWords(m, k, n, fl, 1))], d[0], d[1]);
         return readBack(dev, bc, m * n);
       });
@@ -1003,8 +1007,12 @@
       warp_shuffle: { kind: 'shared-memory-barrier', replaces: 'warp shuffle／vote（無 subgroups 時）', note: '歸約已用共享記憶體與屏障，任意 shuffle 尚未實作' }
     };
 
+    // 選核注入點（O14b）：宿主可設定 fn(m, k, n, flags) → 'matmul_vec4' | 'matmul' | null。預設 null，行為與原本相同。
+    var matmulKernelChooser = null;
+    function setMatmulKernelChooser(fn) { matmulKernelChooser = typeof fn === 'function' ? fn : null; }
     var api = {
       runKernel: runKernel,
+      setMatmulKernelChooser: setMatmulKernelChooser,
       vectorAdd: async function (a, b) {
         var A = toF32(a, 'a'), B = toF32(b, 'b');
         if (A.length !== B.length) throw new Error('cudaweb.vector_add：兩個向量長度不同（' + A.length + ' 與 ' + B.length + '）');
