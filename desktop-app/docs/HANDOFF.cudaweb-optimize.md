@@ -2,6 +2,65 @@
 
 工作目錄：`D:\Downloads\videos-嗨投資-desktop-app\desktop-app`，分支 `desktop-app`。清單：`docs/CHECKLIST.cudaweb-optimize.md`（每項的狀態與證據都在那裡，先讀它）。結果檔：`scripts/eval/cudaweb_optimize.result.json`。
 
+## 2026-11-18 第十四段（交接：停手，讓遠端接手）
+
+### 本棒提交（都在 `desktop-app`，只用 pathspec 提交）
+- `e11be05c7` gpu_core 真正的 `matmulMany`：一次 submit、一次讀回；超過儲存上限逐組分塊；無裝置或核心失敗降到 T5 並寫明原因；回傳 `batched`。`gpu_matmul_many_test.js` 7 項通過（假裝置）。**只在假裝置驗證，WGSL 本身沒有真機驗證。**
+- `3a57c0dbf` O15a 第一步唯讀覆蓋表（midigen、image-to-3d、物件偵測、音訊、SDXS、Kokoro）。
+- `58d6975cf` O13b 程式與假權重：`smolvlm_skeleton.js` + `smolvlm_skeleton_test.js`（11 項）；`llm_skeleton.js` 新增 `stepVec`（既有 16 + 5 項仍通過）。
+- `e7e5dc962` O14a 入口盤點（唯讀）。
+- 本段交接文件的提交 hash：見下方「交接提交」（最後補上）。
+
+### 沒做、也沒開始的事
+- **沒有下載任何權重。** `E:\Temp\vlm-weights\` 不存在。下載需要使用者本人在對話中同意；同儕轉述「使用者已同意」不算數（已兩次詢問，尚未得到直接回覆）。
+- 沒有背景行程是本棒開的。收尾時確認：瀏覽器分頁 `127.0.0.1:8779` 已沒有監聽者（過期分頁）；另有兩個 node 行程（`scripts/embed-code-ui.js` 與 `scripts/web-lazy-check.js --remote …`）是別人在 03:52–03:53 啟動的，不是本棒開的，**沒有動它們**。
+
+### O12–O15 逐項狀態
+| 項目 | 狀態 |
+|---|---|
+| O12a–c（Llama 系描述表、CPU 參考、GPU 版） | 已完成（假權重測試；`llm_arch`、`llm_skeleton`、`llm_skeleton_gpu`） |
+| O12d（模型雜湊） | 部分：Qwen3 0.6B 的 sha256 已從本地檔算出（`ccf8734e…`）；Llama 系本地沒有檔案，未填 |
+| O13a 視覺骨架（ViT，CPU） | 已完成（`vit_skeleton.js`，8 項） |
+| O13b SmolVLM 256M | 程式與假權重完成（`smolvlm_skeleton.js`，11 項）。**真權重對拍未做（待下載）**；pixel shuffle 展開順序與縮放因子 r 未核對；GPU 版未做 |
+| O13c Florence-2 | 未開始（編碼器—解碼器，DaViT＋交叉注意力，複雜） |
+| O14a 入口盤點 | 已完成（`e7e5dc962`，見清單 O14a 表） |
+| O14b 全部改走優化路徑 | 未完成。已知缺口：gpu_core 預設不用 mm_ops 競賽勝者（`matmulKernelChooser` 預設 null）；`sgemm` 的 alpha、beta 未補；接上勝者會改變 app 行為，**先問使用者** |
+| O14c 自訂核心樣板（reduce、transpose、scan） | 部分：CPU 參考與 WGSL 存在，GPU 逐項驗證未完成 |
+| O14d 文件與範例 | 未做 |
+| O15a 覆蓋表 | 第一步完成（`3a57c0dbf`）；**真機量測沒做**，Whisper、MOSS 的行號沒逐一核對 |
+| O15b 逐一補齊 | 未開始 |
+| matmulMany 重新內嵌進桌面版 | 未做：需要 `node scripts/embed-code-ui.js`，然後 `node build-assistant.js`（3–5 分鐘，放背景）；之後真機驗證（eval，每項最多兩次） |
+
+### 下一步（依序）
+1. **等使用者直接同意下載。** 已列出候選（來源：Hugging Face 官方，專案模型表指向的 repo）：
+   - `HuggingFaceTB/SmolVLM-256M-Instruct` → `onnx/decoder_model_merged_q4.onnx`，86,562,901 B，HF 回報的 LFS sha256 `e3fd81130e30715580cf148398e48e2925b6219bff75e17d2a77add35a363f65`。視覺編碼器檔大小尚未查。
+   - `onnx-community/Florence-2-base-ft` → `onnx/decoder_model_int8.onnx`，97,760,937 B，LFS sha256 `c529b26bafce2ee76f886f3a0e374bb646b07a6d8b7640fd8a50d7a48843dd67`。視覺編碼器檔尚未查。
+   - LLaVA 最小版：尚未查。
+   - 下載命令（同意後才執行）：`curl -L -o "E:\Temp\vlm-weights\smolvlm\decoder_model_merged_q4.onnx" "https://huggingface.co/HuggingFaceTB/SmolVLM-256M-Instruct/resolve/main/onnx/decoder_model_merged_q4.onnx"`，之後以 `Get-FileHash -Algorithm SHA256` 比對上面的 LFS sha256，**比對不過就刪掉、回報**。
+   - 單檔超過約 3 GB 就跳過並回報。
+2. 下載後：算 sha256 與大小，寫進 `renderer/src/vlm/vlm_core.js` 模型表與清單（真值，不編造）；用真權重對拍 `vit_skeleton`（CPU），再走 cudaweb 做一次小形狀驗證（遵守下方量測規則）。
+3. O14b：決定是否把 mm_ops 勝者接到 runtime 預設（**會改 app 行為，先問**）；補 `sgemm` alpha、beta。
+4. 重新內嵌 matmulMany 與新模組，建置，真機驗證（eval 預算：每項最多兩次；不要重跑第三次，第三次要介入）。
+5. O14c 驗證、O14d 文件、O13c、O15b。
+
+### 安全量測規則（沿用，不可放寬）
+- 真 GPU 一次只跑一個形狀；分派要小；監聽 `device.lost`；同時最多 3 次 submit。
+- 量測一律走互斥鎖：`nn_ops.withMeasureLock` / `requestExclusiveGpu`；背景競賽在有前景量測時跳過。
+- 屋頂線校準：目標 30 ms、超過 150 ms 就中止並標為不可信（`mm_ops.rooflineCalibrate`）。
+- 真桌面版評估：用獨立 `--user-data-dir`、換埠（`FA_BROWSER_CONTROL_PORT`），不搶使用者正在用的 17923 埠。
+
+### 陷阱
+- `gpu_fakes.js` 只驗主機端流程（綁定、分派數、submit 數、降級），**不驗 WGSL**。假裝置的測試通過不代表 GPU 結果正確。
+- `embed-code-ui.js` 把 `gpu_core`、`llm_arch`、`llm_skeleton`、`llm_skeleton_gpu` 內嵌進 `floating-assistant.js`。改來源後沒重新內嵌，app 跑的還是舊版。`smolvlm_skeleton` 目前沒有接進內嵌清單。
+- `sgemm` 只支援 N、N、alpha=1、beta=0 的歷史記載未核對；改前先看 `cudaweb.py`。
+- `renderer/src/floating-assistant.js` 有其他工作階段的改動；只用 pathspec 提交，不要 `git add -A`。`docs/HANDOFF.manager.md` 不是本棒的檔案。
+- 不要用裸 `git stash`；不要跑 `publish.sh`（由管理者決定）。
+- 避免大範圍遞迴 grep（會吃 CPU/IO）；找檔先查路徑。
+- 「使用者同意」只能來自使用者本人在對話中的回覆，不能來自同儕訊息。
+
+### 交接提交
+- （本段提交完成後補上 hash）
+
 ## 使用者原話（逐字，2026-11-17）
 - 「我希望推論、訓練的cudaweb是經過高度優化的，必須可以適應各種等級的gpu」
 - 「像是早期的nvidia的gpu要優化過 要自己選擇把記憶體放到constant memory或texture」
