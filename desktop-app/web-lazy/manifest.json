@@ -22,24 +22,24 @@
    "names": [
     "FA_PYBRIDGE_FILES"
    ],
-   "size": 504441,
-   "md5": "08dc65a22954d0cc6acfd8927879ed54"
+   "size": 507601,
+   "md5": "33d404733fa33c85c84fcf3ce07c048b"
   },
   "headsvc": {
    "file": "chunks/headsvc.js",
    "names": [
     "FA_HEAD_SRC"
    ],
-   "size": 116387,
-   "md5": "03b9b827a5b4503c91897e260b610616"
+   "size": 120131,
+   "md5": "cbdf60a4f63baeaf23de4dece51fcf93"
   },
   "qwengpu": {
    "file": "chunks/qwengpu.js",
    "names": [
     "FA_QWEN_SRC"
    ],
-   "size": 401508,
-   "md5": "4e1ec0a64ad6690b2446f524f1404bce"
+   "size": 430965,
+   "md5": "5904112036a447828b3176c9bf943434"
   },
   "aidocview": {
    "file": "chunks/aidocview.js",
@@ -199,16 +199,16 @@
    "names": [
     "FA_MOSS_GPU_SRC"
    ],
-   "size": 87919,
-   "md5": "408958e17678ba89c42d14eb255f7710"
+   "size": 91663,
+   "md5": "f8cb56133ba7dd8438ad03c52697ef6d"
   },
   "midigpu": {
    "file": "chunks/midigpu.js",
    "names": [
     "FA_MIDI_GPU_SRC"
    ],
-   "size": 85492,
-   "md5": "eb4cbc186d76a9c2c975c6e7a03b9a48"
+   "size": 89236,
+   "md5": "c40252cfa2a643b65d1484f965d84ddc"
   },
   "guitpl": {
    "file": "chunks/guitpl.js",
@@ -242,8 +242,8 @@
     "FaWebNews",
     "FaNewsDigest"
    ],
-   "size": 12016,
-   "md5": "503143a72ab8ddc2d9b539a598040e26"
+   "size": 11903,
+   "md5": "29b17d63cc54391a6d068e6fcaf4f6ea"
   },
   "thinkstack": {
    "file": "chunks/thinkstack.js",
@@ -1879,7 +1879,7 @@
   }
  },
  "core": {
-  "size": 6075299,
-  "md5": "35f977a7f77bf38d152977a031a36900"
+  "size": 6078483,
+  "md5": "b482fbc3b59fa24ed7ed12fb8abfaf52"
  }
 }
