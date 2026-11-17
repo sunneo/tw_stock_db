@@ -54,6 +54,7 @@
    *   o.priorsRank [id, ...]（預先剖析的首選順序；只用來標示來源是 heuristic 或 measured，不當量測）
    *   o.priorsSource  'measured' | 'heuristic' | null
    *   o.peak       peakFor(sig) 的結果或 null
+   *   o.compile    勝者的編譯 ms（winner 快取的 compile），沒有就 null
    * 回傳列陣列：{ shape, variant, samples, medianMs, gflops, pctPeak, compileMs, correct, source, winner }
    */
   function rowsFor(o) {
@@ -84,7 +85,8 @@
         medianMs: med,
         gflops: g,
         pctPeak: pct,
-        compileMs: null,                       // 競賽不記錄編譯時間；G2 真機量過的數字在 result.json
+        // 編譯 ms：只有勝者記錄（競賽時它的管線編譯過一次）；其餘列沒有就 null
+        compileMs: (o.compile != null && !!o.winnerId && o.winnerId === v.id) ? o.compile : null,
         correct: correct,
         correctNote: bad[v.id] || (correct === true ? '驗證通過（相對誤差 ≤1e-5）' : (correct === false ? '' : '未驗證')),
         source: source,

@@ -72,10 +72,9 @@ const M = require('./mm_ops.js');
   const allGated = await M.raceMatmul(512, 1024, 1024, { navigator: undefined, gSimple: g720, safeMs: M.SAFE_DISPATCH_MS });
   assert.strictEqual(allGated.winner, null); assert.strictEqual(allGated.noGpu, false); assert.strictEqual(allGated.gated.length, 3);
   assert.deepStrictEqual(Object.keys(allGated.timings), []);
-  // GPU 失敗不能當成通過：沒有 GPU 的強機器校正下，候選全部退 CPU → 驗證丟錯（不得得到勝者）
+  // GPU 失敗不能當成通過：沒有 GPU 時不得得到勝者；現在在取得裝置時就回報 noGpu，候選一個都不跑（不再由 CPU 退路產生失敗列）
   const cpuRace = await M.raceMatmul(32, 16, 32, { navigator: undefined, gSimple: 500 });
-  assert.strictEqual(cpuRace.winner, null);
-  assert.ok(cpuRace.bad.length > 0 && cpuRace.bad.every((b) => /GPU 派發失敗/.test(b.reason)), JSON.stringify(cpuRace.bad));
+  assert.strictEqual(cpuRace.winner, null); assert.strictEqual(cpuRace.noGpu, true);
   // 校正：沒有 GPU 就回報 noGpu（不拿 CPU 時間當校正）
   const calNo = await M.calibrateSimple({ M: 32, K: 16, N: 32 }, { navigator: undefined });
   assert.strictEqual(calNo.noGpu, true);
@@ -137,5 +136,29 @@ const M = require('./mm_ops.js');
     // 轉置版只支援單一批次：批次 2 要明確拒絕（不得默默算錯）
     await assert.rejects(M.matmul(new Float32Array(2 * Mm * Kk), [2, Mm, Kk], Bs, [Kk, Nn], { gpu: false, transA: true }), /只支援單一批次/);
   }
+  // 核心計時與屋頂（R0）：純函式（數字都選二進位可精確表示的值，避免浮點誤差）
+  assert.strictEqual(M.pickBatch(0.5, 100), 64);                 // 很快的派發 → 批次上限 64
+  assert.strictEqual(M.pickBatch(65, 100), 1);                   // 慢的派發不批次（至少 1 次）
+  assert.strictEqual(M.pickBatch(10, 100), 10);
+  assert.strictEqual(M.compileFromSamples(120, [60, 62, 61]), 59);   // 首次總時間 − 穩定中位數 61
+  assert.strictEqual(M.compileFromSamples(50, [80, 90, 85]), 0);     // 不為負
+  assert.strictEqual(M.compileFromSamples(50, []), null);            // 沒有樣本就不報
+  assert.strictEqual(M.gflopsFrom(2e9, 1000), 2);                    // 2 GFLOP 花 1 s → 2 GFLOP/s
+  assert.strictEqual(M.gflopsFrom(1e6, 0), null);
+  // 迭代數：單次 ＝ a + b·iters，a=8、b=0.5 ms；目標 108 ms → (108−8)/0.5 = 200
+  assert.strictEqual(M.pickRooflineIters(40, 64, 520, 1024, 108), 200);
+  assert.strictEqual(M.pickRooflineIters(40, 64, 40, 1024, 40), 1024);  // 兩次時間一樣（斜率 0）→ 退回第二個迭代數
+  assert.strictEqual(M.pickRooflineIters(40, 64, 520, 1024, 1), 64);  // 目標小於固定開銷 → 下限 64
+  // 峰值：只認同一能力簽名的 ROOF 鍵，且 gflops 要 > 0
+  const ents = [{ key: 'ROOF|devA|wg16384-inv256-f160-sg0', value: { gflops: 90.5, iters: 4096, batch: 8 } }, { key: 'devA|matmul|b|wg16384-inv256-f160-sg0', value: {} }];
+  const pk = M.peakFromEntries(ents, 'wg16384-inv256-f160-sg0');
+  assert.strictEqual(pk.gflops, 90.5); assert.strictEqual(pk.measured, true); assert.ok(/4096 次迭代、8 次一批/.test(pk.basis), pk.basis);
+  assert.strictEqual(M.peakFromEntries(ents, 'other-sig'), null);
+  assert.strictEqual(M.peakFromEntries([{ key: 'ROOF|devA|sig', value: { gflops: 0 } }], 'sig'), null);
+  // 沒有 GPU：屋頂量不到，回傳原因（不拋例外、不影響競賽）；競賽不記編譯 ms
+  const rr = await M.measureRoofline({ navigator: undefined });
+  assert.strictEqual(rr.ok, false); assert.ok(typeof rr.reason === 'string' && rr.reason.length > 0, JSON.stringify(rr));
+  const rc = await M.raceMatmul(64, 1024, 1024, { navigator: undefined });
+  assert.strictEqual(rc.noGpu, true);
   console.log('mm_ops_test: 全部通過');
 })().catch((e) => { console.error(e); process.exit(1); });

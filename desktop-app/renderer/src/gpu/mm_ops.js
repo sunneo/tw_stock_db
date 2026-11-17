@@ -147,6 +147,125 @@ function dispatchOk(info) {
   if (/cpu-js/.test((info || {}).layer || '')) throw new Error('GPU 派發失敗，退回 CPU：' + String((info || {}).reason || '原因不明').slice(0, 200));
 }
 function isLostText(t) { return /lost|遺失/i.test(String(t || '')); }
+
+// ---------- 核心時間、編譯時間、屋頂（R0）：不含上傳與回讀；一次提交多次派發，等 GPU 完成才停表 ----------
+const BUF = { STORAGE: 0x80, UNIFORM: 0x40, COPY_DST: 0x8, COPY_SRC: 0x4 };
+const CORE_SAMPLE_MS = 100;      // 每個樣本的目標時間：夠多次派發，讓提交延遲不主導計時
+const CORE_MAX_BATCH = 64;
+const ROOF_BATCH_MS = 100, ROOF_TARGET_MS = 40, ROOF_MAX_TOTAL_MS = 300;   // 屋頂：單次派發目標 40 ms、一批約 100 ms，整體不超過 300 ms
+function nowMsCore() { return (typeof performance !== 'undefined' ? performance : Date).now(); }
+// 一個樣本要派發幾次：單次約 estMs，一批目標 budgetMs；至少 1、至多 CORE_MAX_BATCH
+function pickBatch(estMs, budgetMs) { return Math.max(1, Math.min(CORE_MAX_BATCH, Math.floor(budgetMs / Math.max(estMs, 0.01)))); }
+// 編譯時間 ＝ 第一次（含編譯與第一次派發）的總時間 － 穩定時間的中位數；不小於 0；沒有樣本就 null
+function compileFromSamples(firstTotalMs, samples) {
+  const xs = (samples || []).filter((x) => isFinite(x) && x >= 0).slice().sort((p, q) => p - q);
+  if (!xs.length || !isFinite(firstTotalMs)) return null;
+  return Math.max(0, Math.round((firstTotalMs - xs[xs.length >> 1]) * 100) / 100);
+}
+// 用兩個迭代數的單次時間線性估出固定開銷 a 與每次迭代 b，再挑單次派發約 targetMs 的迭代數（限 64 ～ 65536）
+function pickRooflineIters(t1, iters1, t2, iters2, targetMs) {
+  const b = (t2 - t1) / (iters2 - iters1);
+  if (!(b > 0)) return Math.max(64, Math.min(1 << 16, iters2));
+  const a = t1 - b * iters1;
+  return Math.max(64, Math.min(1 << 16, Math.floor((targetMs - a) / b)));
+}
+// GFLOP/s ＝ flops ÷ (ms × 1e6)
+function gflopsFrom(flops, ms) { return ms > 0 ? flops / (ms * 1e6) : null; }
+// 峰值：從快取找這張卡（同 adapter、同能力簽名）的實測屋頂；沒有就 null，呼叫端改用內建表或顯示原因
+function peakFromEntries(entries, sig, adapterDesc) {
+  const hit = (entries || []).find((e) => { const p = String(e.key).split('|'); return p[0] === 'ROOF' && p[2] === sig && (!adapterDesc || p[1] === adapterDesc) && e.value && e.value.gflops > 0; });
+  return hit ? { gflops: hit.value.gflops, basis: '本機實測（純 FMA 核心，' + hit.value.iters + ' 次迭代、' + hit.value.batch + ' 次一批）', measured: true } : null;
+}
+function gpuBuf(dev, src, bytes) {
+  const b = dev.createBuffer({ size: Math.max(4, bytes), usage: BUF.STORAGE | BUF.COPY_DST | BUF.COPY_SRC });
+  if (src) dev.queue.writeBuffer(b, 0, src);
+  return b;
+}
+// 核心工作：編譯（含第一次派發）只做一次；reps(n) 把 n 次派發塞進同一次提交，等 GPU 完成才返回
+async function coreJob(dev, code, bufs, uniform, groups) {
+  const t0 = nowMsCore();
+  const pipe = dev.createComputePipeline({ layout: 'auto', compute: { module: dev.createShaderModule({ code: code }), entryPoint: 'main' } });
+  const ub = dev.createBuffer({ size: 32, usage: BUF.UNIFORM | BUF.COPY_DST });
+  dev.queue.writeBuffer(ub, 0, uniform);
+  const ents = bufs.map((b, i) => ({ binding: i, resource: { buffer: b } }));
+  ents.push({ binding: bufs.length, resource: { buffer: ub } });
+  const bg = dev.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries: ents });
+  const reps = async (n) => {
+    const enc = dev.createCommandEncoder();
+    for (let r = 0; r < n; r++) { const pass = enc.beginComputePass(); pass.setPipeline(pipe); pass.setBindGroup(0, bg); pass.dispatchWorkgroups(groups[0], groups[1] || 1, groups[2] || 1); pass.end(); }
+    dev.queue.submit([enc.finish()]);
+    await dev.queue.onSubmittedWorkDone();
+  };
+  await reps(1);
+  return { reps: reps, compileTotal: nowMsCore() - t0, destroy: () => ub.destroy() };
+}
+// 屋頂（R0）用的純 FMA 核心：每執行緒 4 條獨立的 fma 依賴鏈，迭代數由 P.x 決定
+const ROOF_WGSL = `
+@group(0) @binding(0) var<storage, read_write> OUT: array<f32>;
+@group(0) @binding(1) var<uniform> P: vec4<u32>;
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  var a: f32 = f32(gid.x & 1023u) * 0.000001 + 0.5;
+  var b: f32 = a + 0.25; var c: f32 = a + 0.125; var d: f32 = a + 0.0625;
+  for (var i: u32 = 0u; i < P.x; i = i + 1u) {
+    a = fma(a, 0.9999, 0.0001); b = fma(b, 0.9999, 0.0001); c = fma(c, 0.9999, 0.0001); d = fma(d, 0.9999, 0.0001);
+  }
+  if (a + b + c + d == -1.0) { OUT[gid.x] = a; }
+}`;
+// 屋頂（R0）：先暖機，再用兩個迭代數估單次時間、挑出單次約 40 ms 的迭代數，一批約 100 ms，量兩批取中位數；整體不超過 300 ms；
+// 監聽裝置遺失。結果存進同一份快取，鍵為 ROOF|adapter|能力簽名。量不到回傳原因（不影響競賽）。
+async function measureRoofline(o) {
+  const opts = o || {};
+  const VR = require('./variant_race.js');
+  const t00 = nowMsCore();
+  const gd = await nn.getDevice(opts.navigator);
+  if (!gd.dev) return { ok: false, reason: '沒有 WebGPU（' + (gd.reason || '原因不明') + '）' };
+  const dev = gd.dev;
+  let lost = null; try { dev.lost.then((i) => { lost = (i && i.message) || 'lost'; }); } catch (_) { /* 監聽失敗不影響量測 */ }
+  const caps = CAPS || KS.probeCaps(null, dev);
+  const sig = require('./profile_priors.js').capSig(caps), adapter = opts.adapterDesc || ADAPTER;
+  const threads = 256 * 256, flopsPerIter = threads * 4 * 2;   // 每次迭代每執行緒 4 個 fma ＝ 8 flop
+  const out = gpuBuf(dev, null, threads * 4);
+  const pipe = dev.createComputePipeline({ layout: 'auto', compute: { module: dev.createShaderModule({ code: ROOF_WGSL }), entryPoint: 'main' } });
+  const ub = dev.createBuffer({ size: 16, usage: BUF.UNIFORM | BUF.COPY_DST });
+  const runIters = async (iters, n) => {
+    dev.queue.writeBuffer(ub, 0, new Uint32Array([iters, 0, 0, 0]));
+    const bg = dev.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: out } }, { binding: 1, resource: { buffer: ub } }] });
+    const enc = dev.createCommandEncoder();
+    for (let r = 0; r < n; r++) { const pass = enc.beginComputePass(); pass.setPipeline(pipe); pass.setBindGroup(0, bg); pass.dispatchWorkgroups(256); pass.end(); }
+    dev.queue.submit([enc.finish()]);
+    await dev.queue.onSubmittedWorkDone();
+  };
+  const finish = (r) => { try { out.destroy(); ub.destroy(); } catch (_) { /* */ } return r; };
+  const lostNow = () => (lost ? finish({ ok: false, reason: '裝置遺失：' + lost }) : null);
+  try {
+    await runIters(64, 1);                                   // 暖機（編譯）
+    const t1 = nowMsCore(); await runIters(64, 1); const e1 = nowMsCore() - t1;
+    if (lostNow()) return lostNow();
+    const t2 = nowMsCore(); await runIters(1024, 1); const e2 = nowMsCore() - t2;
+    if (lostNow()) return lostNow();
+    if (e2 > ROOF_MAX_TOTAL_MS) return finish({ ok: false, reason: '單次派發超過 ' + ROOF_MAX_TOTAL_MS + ' ms（這台太慢或被其他程式佔用），不量屋頂' });
+    const iters = pickRooflineIters(e1, 64, e2, 1024, ROOF_TARGET_MS);
+    const tS = nowMsCore(); await runIters(iters, 1); const single = Math.max(nowMsCore() - tS, 0.01);
+    if (nowMsCore() - t00 > ROOF_MAX_TOTAL_MS) return finish({ ok: false, reason: '超過時間上限（' + ROOF_MAX_TOTAL_MS + ' ms），不量屋頂' });
+    const batch = pickBatch(single, ROOF_BATCH_MS);
+    const per = [];
+    for (let s = 0; s < 2; s++) {
+      if (lostNow()) return lostNow();
+      if (nowMsCore() - t00 > ROOF_MAX_TOTAL_MS) break;
+      const t = nowMsCore(); await runIters(iters, batch); per.push((nowMsCore() - t) / batch);
+    }
+    if (!per.length) return finish({ ok: false, reason: '時間上限內沒有完成任何樣本' });
+    const ms = VR.medianOf(per);
+    const gflops = gflopsFrom(flopsPerIter * iters, ms);
+    const value = { gflops: Math.round(gflops * 100) / 100, iters: iters, batch: batch, perDispatchMs: Math.round(ms * 1000) / 1000, adapter: adapter, sig: sig, at: Date.now() };
+    const store = opts.store || TUNE.store || (TUNE.store = VR.createStore({}));
+    try { await store.set('ROOF|' + adapter + '|' + sig, value); } catch (_) { /* 退記憶體 */ }
+    return finish({ ok: true, gflops: value.gflops, value: value, totalMs: Math.round(nowMsCore() - t00) });
+  } catch (e) {
+    return finish({ ok: false, reason: '量測失敗：' + String((e && e.message) || e).slice(0, 160) });
+  }
+}
 // 校正：在最小的形狀上量一次 mm_simple_f32（先暖機＝編譯，再計時），得到這台機器的實測 GFLOP/s。
 async function calibrateSimple(sh, o) {
   const opts = o || {};
@@ -196,6 +315,25 @@ async function raceMatmul(M, K, N, opts) {
   const a = Float32Array.from({ length: M * K }, rnd), b = Float32Array.from({ length: K * N }, rnd);
   const ref = matmulRef(a, [M, K], b, [K, N]).y;
   let scale = 0; for (let i = 0; i < ref.length; i++) scale = Math.max(scale, Math.abs(ref[i]));
+  // 計時改成「核心時間」：不含上傳與回讀。每個候選各編譯一次管線（編譯 ms 另記）；
+  // 一批派發放進同一次提交，等 GPU 完成才停表，除以批次數。驗證仍走完整路徑（對 CPU 參考）。
+  const gd = await nn.getDevice(o.navigator);
+  const dev = gd && gd.dev;
+  if (!dev) return { noGpu: true, winner: null, timings: {}, bad: [], skipped: [], cancelled: false, gated: gated, key: key, reason: (gd && gd.reason) || '' };
+  const bufA = gpuBuf(dev, a, M * K * 4), bufB = gpuBuf(dev, b, K * N * 4), bufY = gpuBuf(dev, null, M * N * 4);
+  const uni = new Int32Array([1, M, K, N, 1, 0, 0, 0]);   // 與 run() 的 u 相同欄位：B, M, K, N, Bb, azp, bzp, fl
+  const jobs = {};
+  const jobFor = async (id) => {
+    if (!jobs[id]) {
+      const simple = id === 'mm_simple_f32';
+      const code = id === 'mm_vec4_f32' ? WGSL_MM_F32_VEC4 : (simple ? WGSL_MM_F32 : WGSL_MM_F32_TILED);
+      const groups = simple ? [Math.ceil(M * N / 64), 1, 1] : [Math.ceil(N / 64), Math.ceil(M / 64), 1];
+      const job = await coreJob(dev, code, [bufA, bufB, bufY], uni, groups);
+      job.samples = [];
+      jobs[id] = job;
+    }
+    return jobs[id];
+  };
   const cands = ids.map((id) => ({
     id: id,
     verify: async () => {
@@ -206,18 +344,28 @@ async function raceMatmul(M, K, N, opts) {
       return d / Math.max(scale, 1e-30);
     },
     run: async () => {
-      const t0 = clock();
-      const ops = Object.assign({}, o, { kernel: id });
-      await matmul(a, [M, K], b, [K, N], ops);
-      dispatchOk(ops.lastInfo);
-      return clock() - t0;
+      const job = await jobFor(id);
+      if (!job.est) { const t = clock(); await job.reps(1); job.est = Math.max(clock() - t, 0.01); }
+      const n = pickBatch(job.est, CORE_SAMPLE_MS);
+      const t = clock(); await job.reps(n);
+      const per = (clock() - t) / n;
+      job.samples.push(per);
+      return per;
     },
   }));
-  const res = await VR.race(cands, { tol: 1e-5, budgetMs: o.budgetMs || VR.DEFAULT_BUDGET_MS, runs: o.runs || 3, K: o.K || 3, cancel: o.cancel, now: o.now || (() => clock()) });
+  let res;
+  try {
+    res = await VR.race(cands, { tol: 1e-5, budgetMs: o.budgetMs || VR.DEFAULT_BUDGET_MS, runs: o.runs || 3, K: o.K || 3, cancel: o.cancel, now: o.now || (() => clock()) });
+  } finally {
+    for (const k of Object.keys(jobs)) { try { jobs[k].destroy(); } catch (_) { /* */ } }
+    for (const x of [bufA, bufB, bufY]) { try { x.destroy(); } catch (_) { /* */ } }
+  }
   res.gated = gated;
   if (res.winner) {
     const key = KS.cacheKey(ADAPTER, 'matmul', sh, CAPS);
-    const value = { id: res.winner.id, median: res.winner.median, timings: res.timings };
+    const wj = jobs[res.winner.id];
+    const compile = wj ? compileFromSamples(wj.compileTotal, wj.samples) : null;
+    const value = { id: res.winner.id, median: res.winner.median, timings: res.timings, basis: 'kernel-only', compile: compile };
     WINNERS.set(key, value);
     if (o.store) { try { await o.store.set(key, value); } catch (_) { /* 退記憶體（已在 WINNERS） */ } }
   }
@@ -271,6 +419,11 @@ async function startMatmulRace(shapes, o) {
     for (const sh of list) out.push({ shape: sh, key: null, winner: null, noGpu: !calibErr, bad: [], skipped: [], cancelled: false, error: why });
     return out;
   }
+  // 占峰值（屋頂 R0）：只在真的競賽時量一次，結果放 TUNE.roofline；量不到只記原因，不影響競賽
+  if (!opts.raceOne && opts.roofline !== false) {
+    try { TUNE.roofline = await measureRoofline({ navigator: opts.navigator, store: TUNE.store }); }
+    catch (e) { TUNE.roofline = { ok: false, reason: '量測失敗：' + String((e && e.message) || e).slice(0, 160) }; }
+  }
   let stop = null;
   for (let i = 0; i < n; i++) {
     const sh = list[i];
@@ -291,4 +444,4 @@ async function startMatmulRace(shapes, o) {
   return out;
 }
 
-module.exports = { matmulRef, matmul, matmulIntRef, matmulInt, WGSL_MM_F32, WGSL_MM_F32_TILED, WGSL_MM_F32_VEC4, WGSL_MM_I32, plan, pickMatmulKernel, setMatmulCaps, getMatmulCaps: () => CAPS, setMatmulWinners, raceMatmul, initMatmulTuning, startMatmulRace, calibrateSimple, gateCandidates, estimateMs, flopsOf, SAFE_DISPATCH_MS, REL_SPEED, AUTO_SHAPES, TUNE };
+module.exports = { matmulRef, matmul, matmulIntRef, matmulInt, WGSL_MM_F32, WGSL_MM_F32_TILED, WGSL_MM_F32_VEC4, WGSL_MM_I32, plan, pickMatmulKernel, setMatmulCaps, getMatmulCaps: () => CAPS, setMatmulWinners, raceMatmul, initMatmulTuning, startMatmulRace, calibrateSimple, gateCandidates, estimateMs, flopsOf, SAFE_DISPATCH_MS, REL_SPEED, AUTO_SHAPES, TUNE, measureRoofline, pickBatch, compileFromSamples, pickRooflineIters, gflopsFrom, peakFromEntries, CORE_SAMPLE_MS, ROOF_TARGET_MS };
