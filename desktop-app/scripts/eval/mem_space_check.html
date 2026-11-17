@@ -1,0 +1,138 @@
+<!doctype html><meta charset="utf-8"><title>mem space check</title>
+<body style="font:13px monospace;white-space:pre">
+<script>
+// 真 Chrome（真 WebGPU）驗證清單 O1m 的記憶體空間變體：matmulnbits 解碼（M=1）把輸入向量 x 放在
+//   (a) storage（現行 matmulnbits_dec）或 (b) uniform 緩衝區（matmulnbits_dec_ux，本頁的實驗核心）。
+// 判準：兩者結果與參考的相對誤差 ≤1e-5；「有好處」的標準是 (b) 的純核心時間明顯低於 (a)（以 5 次中位數、同機、同一張卡判斷）。
+// 計時是純核心：同一個 pass 連續派發 20 次、onSubmittedWorkDone 後量牆鐘、除以 20，中位數取 5 次。只標這台機器（Kepler 14 W）。
+// 用法：在 desktop-app 資料夾 python -m http.server <埠> 後開 http://127.0.0.1:<埠>/scripts/eval/mem_space_check.html ；結果在 window.__out。
+const mods = {};
+const load = async (name) => {
+  const src = await (await fetch('../../renderer/src/gpu/' + name + '.js', { cache: 'no-store' })).text();
+  const m = { exports: {} }; mods[name] = m;
+  new Function('module', 'exports', 'require', src)(m, m.exports, (p) => { const k = p.replace(/^\.\//, '').replace(/\.js$/, ''); if (!mods[k]) throw new Error('missing ' + k); return mods[k].exports; });
+};
+// 實驗核心：x 放在 uniform（一個 struct：P 的四個 u32，接著 1024 個 vec4<f32>＝4096 個 f32；K ≤ 4096）。只做 M=1。
+const WGSL_DEC_UX = `
+struct U { M: u32, K: u32, N: u32, nb: u32, xv: array<vec4<f32>, 1024> }
+@group(0) @binding(0) var<storage, read> bq: array<u32>;
+@group(0) @binding(1) var<storage, read> sc: array<f32>;
+@group(0) @binding(2) var<storage, read_write> y: array<f32>;
+@group(0) @binding(3) var<uniform> p: U;
+var<workgroup> red: array<f32, 256>;
+// @kernel matmulnbits_dec_ux
+@compute @workgroup_size(256)
+fn main(@builtin(local_invocation_id) lid: vec3<u32>, @builtin(workgroup_id) wid: vec3<u32>) {
+  let t = lid.x;
+  let col = wid.x * 16u + t / 16u;
+  let lane = t % 16u;
+  let nw = p.nb * 4u;
+  var acc: f32 = 0.0;
+  if (col < p.N) {
+    for (var gw: u32 = lane; gw < nw; gw = gw + 16u) {
+      let word = bq[col * nw + gw];
+      let s = sc[col * p.nb + gw / 4u];
+      for (var i: u32 = 0u; i < 8u; i = i + 1u) {
+        let k = gw * 8u + i;
+        if (k < p.K) {
+          let xv = p.xv[k >> 2u][k & 3u];
+          let byte = (word >> ((i / 2u) * 8u)) & 255u;
+          let nib = (byte >> ((i & 1u) * 4u)) & 15u;
+          acc = acc + xv * ((f32(nib) - 8.0) * s);
+        }
+      }
+    }
+  }
+  red[t] = acc;
+  workgroupBarrier();
+  if (lane == 0u && col < p.N) {
+    var sum: f32 = 0.0;
+    for (var l: u32 = 0u; l < 16u; l = l + 1u) { sum = sum + red[t + l]; }
+    y[col] = sum;
+  }
+}
+`;
+(async () => {
+  const out = { adapter: null, cases: [], time: [], error: null };
+  try {
+    await load('gpu_core'); await load('gpu_pool'); await load('nn_ops'); await load('matmulnbits_ref'); await load('matmulnbits_gpu');
+    const R = mods.matmulnbits_ref.exports, G = mods.matmulnbits_gpu.exports, NN = mods.nn_ops.exports;
+    const dev = (await NN.getDevice(navigator)).dev;
+    if (!dev) throw new Error('沒有 WebGPU 裝置');
+    const a = await navigator.gpu.requestAdapter(); out.adapter = { vendor: a.info && a.info.vendor, arch: a.info && a.info.architecture };
+    const USAGE = { MAP_READ: 1, COPY_SRC: 4, COPY_DST: 8, UNIFORM: 0x40, STORAGE: 0x80 };
+    let s = 41; const rnd = () => { s = (Math.imul(s, 1664525) + 1013904223) | 0; return (s >>> 0) / 4294967296 - 0.5; };
+    const relErr = (x, y) => { let mx = 0, sc = 1e-12; for (let i = 0; i < y.length; i++) { mx = Math.max(mx, Math.abs(x[i] - y[i])); sc = Math.max(sc, Math.abs(y[i])); } return mx / sc; };
+    const mkW = (N, K) => {
+      const nb = R.nBlocksOf(K);
+      const q = Uint8Array.from({ length: N * K }, () => Math.floor((rnd() + 0.5) * 16) & 15);
+      return { B: R.packQ4(q, N, K), sc: Float32Array.from({ length: N * nb }, () => Math.abs(rnd()) * 0.1 + 0.01) };
+    };
+    const mkBuf = (bytes, usage) => dev.createBuffer({ size: Math.max(16, bytes), usage });
+    // 一次性執行（回傳 y）：依 kind 綁定
+    const runOnce = async (kind, code, W, x, K, N) => {
+      const nb = R.nBlocksOf(K);
+      const bq = mkBuf(W.B.length, USAGE.STORAGE | USAGE.COPY_DST); dev.queue.writeBuffer(bq, 0, W.B);
+      const scb = mkBuf(W.sc.byteLength, USAGE.STORAGE | USAGE.COPY_DST); dev.queue.writeBuffer(scb, 0, W.sc);
+      const yb = mkBuf(N * 4, USAGE.STORAGE | USAGE.COPY_SRC | USAGE.COPY_DST);
+      const ub = kind === 'ux' ? uxUniform(x, K, N, nb) : pUniform(K, N, nb, x);
+      const ubuf = mkBuf(ub.byteLength, USAGE.UNIFORM | USAGE.COPY_DST); dev.queue.writeBuffer(ubuf, 0, ub);
+      const pipe = dev.createComputePipeline({ layout: 'auto', compute: { module: dev.createShaderModule({ code }), entryPoint: 'main' } });
+      const bindBufs = kind === 'ux' ? [bq, scb, yb, ubuf] : [mkStorageX(x), bq, scb, yb, ubuf];
+      const xbuf = kind === 'ux' ? null : bindBufs[0];
+      const entries = bindBufs.map((b, i) => ({ binding: i, resource: { buffer: b } }));
+      const bg = dev.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries });
+      const rb = mkBuf(N * 4, USAGE.MAP_READ | USAGE.COPY_DST);
+      const enc = dev.createCommandEncoder(); const pass = enc.beginComputePass();
+      pass.setPipeline(pipe); pass.setBindGroup(0, bg); pass.dispatchWorkgroups(Math.ceil(N / 16), 1, 1); pass.end();
+      enc.copyBufferToBuffer(yb, 0, rb, 0, N * 4);
+      dev.queue.submit([enc.finish()]);
+      await rb.mapAsync(1);
+      const res = new Float32Array(rb.getMappedRange().slice(0, N * 4)); rb.unmap();
+      return res;
+      function mkStorageX(xx) { const b = mkBuf(xx.byteLength, USAGE.STORAGE | USAGE.COPY_DST); dev.queue.writeBuffer(b, 0, xx); return b; }
+    };
+    // storage 版的 P（M,K,N,nb 四個 u32 ＋ 16 位元組）與 x 放 storage：matmulnbits_dec 的綁定順序是 a, bq, sc, y, P
+    const pUniform = (K, N, nb) => { const ab = new ArrayBuffer(16); const d = new DataView(ab); d.setUint32(0, 1, true); d.setUint32(4, K, true); d.setUint32(8, N, true); d.setUint32(12, nb, true); return new Uint8Array(ab); };
+    // ux 版：16 位元組 P ＋ 4096 位元組 x（不足 1024 個就補零）＝ 16400 位元組
+    const uxUniform = (x, K, N, nb) => { const ab = new ArrayBuffer(16 + 4096 * 4); const d = new DataView(ab); d.setUint32(0, 1, true); d.setUint32(4, K, true); d.setUint32(8, N, true); d.setUint32(12, nb, true); const f = new Float32Array(ab, 16, 4096); f.set(x); return new Uint8Array(ab); };
+    // 純核心計時：同一個 pass 派發 20 次，取 5 次中位數除以 20
+    const kernelMs = async (kind, code, W, x, K, N) => {
+      const nb = R.nBlocksOf(K);
+      const bq = mkBuf(W.B.length, USAGE.STORAGE | USAGE.COPY_DST); dev.queue.writeBuffer(bq, 0, W.B);
+      const scb = mkBuf(W.sc.byteLength, USAGE.STORAGE | USAGE.COPY_DST); dev.queue.writeBuffer(scb, 0, W.sc);
+      const yb = mkBuf(N * 4, USAGE.STORAGE | USAGE.COPY_DST);
+      const xb = mkBuf(x.byteLength, USAGE.STORAGE | USAGE.COPY_DST); dev.queue.writeBuffer(xb, 0, x);
+      const ub = kind === 'ux' ? uxUniform(x, K, N, nb) : pUniform(K, N, nb);
+      const ubuf = mkBuf(ub.byteLength, USAGE.UNIFORM | USAGE.COPY_DST); dev.queue.writeBuffer(ubuf, 0, ub);
+      const pipe = dev.createComputePipeline({ layout: 'auto', compute: { module: dev.createShaderModule({ code: code }), entryPoint: 'main' } });
+      const bindBufs = kind === 'ux' ? [bq, scb, yb, ubuf] : [xb, bq, scb, yb, ubuf];
+      const bg = dev.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries: bindBufs.map((b, i) => ({ binding: i, resource: { buffer: b } })) });
+      const once = async () => {
+        const enc = dev.createCommandEncoder(); const pass = enc.beginComputePass();
+        pass.setPipeline(pipe); pass.setBindGroup(0, bg);
+        for (let i = 0; i < 20; i++) pass.dispatchWorkgroups(Math.ceil(N / 16), 1, 1);
+        pass.end(); dev.queue.submit([enc.finish()]); await dev.queue.onSubmittedWorkDone();
+      };
+      await once(); const ts = [];
+      for (let i = 0; i < 5; i++) { const t0 = performance.now(); await once(); ts.push((performance.now() - t0) / 20); }
+      ts.sort((p, q) => p - q); return Math.round(ts[2] * 1000) / 1000;
+    };
+    const decCode = G.WGSL_MATMULNBITS_DEC;
+    // 正確性（與參考比）
+    for (const [K, N] of [[1024, 48], [1024, 3072], [2048, 512]]) {
+      const x = Float32Array.from({ length: K }, rnd); const W = mkW(N, K);
+      const ref = R.matmulNBitsRef(x, 1, K, W.B, W.sc, N);
+      const yd = await runOnce('dec', decCode, W, x, K, N);
+      const yu = await runOnce('ux', WGSL_DEC_UX, W, x, K, N);
+      out.cases.push({ K, N, dec_relErr: relErr(yd, ref), ux_relErr: relErr(yu, ref), pass: relErr(yd, ref) <= 1e-5 && relErr(yu, ref) <= 1e-5 });
+    }
+    // 純核心計時
+    for (const [K, N] of [[1024, 3072], [2048, 3072], [1024, 1024]]) {
+      const x = Float32Array.from({ length: K }, rnd); const W = mkW(N, K);
+      out.time.push({ shape: 'M1xK' + K + 'xN' + N, storage_x_dec_ms: await kernelMs('dec', decCode, W, x, K, N), uniform_x_ux_ms: await kernelMs('ux', WGSL_DEC_UX, W, x, K, N) });
+    }
+  } catch (e) { out.error = String(e && e.stack || e); }
+  window.__out = out; document.body.textContent = JSON.stringify(out, null, 1); document.title = 'done';
+})();
+</script>
