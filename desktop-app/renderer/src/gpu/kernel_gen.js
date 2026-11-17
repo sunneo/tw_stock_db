@@ -133,7 +133,10 @@
     for (var j = 0; j < TN; j++) L.push('      let b' + j + ' = Bs[kk * ' + BN + 'u + tx * ' + TN + 'u + ' + j + 'u];');
     for (var i = 0; i < TM; i++) L.push('      let a' + i + ' = As[(ty * ' + TM + 'u + ' + i + 'u) * ' + BK + 'u + kk];');
     for (var i2 = 0; i2 < TM; i2++) for (var j2 = 0; j2 < TN; j2++) {
-      L.push('      acc[' + (i2 * TN + j2) + '] = fma(a' + i2 + ', b' + j2 + ', acc[' + (i2 * TN + j2) + ']);');
+      var ix = '' + (i2 * TN + j2);
+      // opts.noFma：改寫成 acc + a*b（讓驅動自己融合）；用來量 fma() 內建在這張卡上會不會比較慢
+      L.push(opts.noFma ? '      acc[' + ix + '] = acc[' + ix + '] + a' + i2 + ' * b' + j2 + ';'
+                        : '      acc[' + ix + '] = fma(a' + i2 + ', b' + j2 + ', acc[' + ix + ']);');
     }
     L.push('    }');
     L.push('    workgroupBarrier();');

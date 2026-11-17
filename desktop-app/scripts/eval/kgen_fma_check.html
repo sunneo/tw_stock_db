@@ -1,0 +1,83 @@
+<!doctype html><meta charset="utf-8"><title>kgen fma check</title>
+<body style="font:13px monospace;white-space:pre">
+<script>
+// kernel_gen 的 vec4 實例：fma() 寫法 對 acc+a*b 寫法，同一張卡、同一形狀、同一計時法（只計核心：提交到 onSubmittedWorkDone）。
+// 一頁一形狀一寫法；共 3 次 submit（1 次驗證＋2 次計時）；監聽 device.lost；估時超過 300 ms 不跑。
+// 用法：python -X utf8 -m http.server <埠> --bind 127.0.0.1（在 desktop-app 資料夾），開
+//   scripts/eval/kgen_fma_check.html?M=512&K=1024&N=1024&fma=1   （或 fma=0）
+// 結果在 window.__out。
+const q = new URLSearchParams(location.search);
+const M = +(q.get('M') || 512), K = +(q.get('K') || 1024), N = +(q.get('N') || 1024);
+const useFma = q.get('fma') !== '0';
+const TM = +(q.get('tm') || 4), TN = +(q.get('tn') || 4), BK = +(q.get('bk') || 16);
+const out = { M, K, N, fma: useFma, tile: 'WG16 TM' + TM + ' TN' + TN + ' BK' + BK + ' vec4', submits: 0, correct: null, ms: [], gflopsAvg: null, pctPeak: null, lost: null, error: null, done: false };
+window.__out = out;
+(async () => {
+  try {
+    const flops = 2 * M * K * N, est = flops / 20e9 * 1000;
+    out.estimateMs = Math.round(est);
+    if (est > 300) throw new Error('估時 ' + Math.round(est) + ' ms > 300 ms，不跑');
+    const src = await (await fetch('../../renderer/src/gpu/kernel_gen.js', { cache: 'no-store' })).text();
+    const m = { exports: {} };
+    new Function('module', 'exports', src)(m, m.exports);
+    const G = m.exports;
+    const spec = { WG: 16, TM: TM, TN: TN, BK: BK, vec: 4 };
+    let code, groups;
+    if (q.get('src') === 'hand') {
+      // 對照：gpu_core 的手寫 vec4 平鋪核心（同一份計時法）
+      const cs = await (await fetch('../../renderer/src/gpu/gpu_core.js', { cache: 'no-store' })).text();
+      const cm = { exports: {} };
+      new Function('module', 'exports', 'require', cs)(cm, cm.exports, (p) => { if (/kernel_gen/.test(p)) return G; throw new Error('no module ' + p); });
+      code = cm.exports.mmTileWgslVec4({ marker: 'hand_vec4' });
+      groups = cm.exports.mmTileDispatch(M, N, 1);
+      out.tile = 'hand 手寫 vec4（gpu_core mmTileWgslVec4，64×64 塊、4×4 暫存器、BK16）';
+      out.fma = 'hand（a*b+c 由驅動判斷）';
+    } else {
+      code = G.generate(spec, { marker: 'kgen_fma_' + useFma, noFma: !useFma });
+      groups = G.dispatchFor(spec, M, N, 1);
+    }
+    if (!navigator.gpu) throw new Error('沒有 navigator.gpu');
+    const adapter = await navigator.gpu.requestAdapter();
+    if (!adapter) throw new Error('requestAdapter 回傳 null');
+    const device = await adapter.requestDevice();
+    device.lost.then((info) => { out.lost = info.reason + ' ' + info.message; });
+    const pipe = await device.createComputePipelineAsync({ layout: 'auto', compute: { module: device.createShaderModule({ code }), entryPoint: 'main' } });
+    let seed = 17; const rr = () => { seed = (Math.imul(seed, 1664525) + 1013904223) | 0; return (seed >>> 0) / 4294967296 - 0.5; };
+    const A = Float32Array.from({ length: M * K }, rr), B = Float32Array.from({ length: K * N }, rr);
+    const S = GPUBufferUsage.STORAGE, CD = GPUBufferUsage.COPY_DST, CS = GPUBufferUsage.COPY_SRC;
+    const ab = device.createBuffer({ size: M * K * 4, usage: S | CD });
+    const bb = device.createBuffer({ size: K * N * 4, usage: S | CD });
+    const cb = device.createBuffer({ size: M * N * 4, usage: S | CS });
+    const ub = device.createBuffer({ size: 32, usage: GPUBufferUsage.UNIFORM | CD });
+    const rb = device.createBuffer({ size: M * N * 4, usage: GPUBufferUsage.MAP_READ | CD });
+    device.queue.writeBuffer(ab, 0, A); device.queue.writeBuffer(bb, 0, B);
+    device.queue.writeBuffer(ub, 0, new Uint32Array([1, M, K, N, 1, 0, 0, 0]));
+    const bg = device.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: ab } }, { binding: 1, resource: { buffer: bb } }, { binding: 2, resource: { buffer: cb } }, { binding: 3, resource: { buffer: ub } }] });
+    const once = () => { const e = device.createCommandEncoder(); const p = e.beginComputePass(); p.setPipeline(pipe); p.setBindGroup(0, bg); p.dispatchWorkgroups(...groups); p.end(); return e; };
+    // 1) 驗證（同時暖機）
+    const e1 = once(); e1.copyBufferToBuffer(cb, 0, rb, 0, M * N * 4);
+    device.queue.submit([e1.finish()]); await device.queue.onSubmittedWorkDone(); out.submits++;
+    if (out.lost) throw new Error('裝置遺失：' + out.lost);
+    await rb.mapAsync(GPUMapMode.READ);
+    const got = new Float32Array(rb.getMappedRange().slice(0)); rb.unmap();
+    let mx = 0, sc = 1e-9;
+    for (let s = 0; s < 64; s++) {
+      const i = (s * 37 + 5) % M, j = (s * 101 + 3) % N;
+      let acc = 0; for (let k = 0; k < K; k++) acc = Math.fround(acc + Math.fround(A[i * K + k] * B[k * N + j]));
+      mx = Math.max(mx, Math.abs(got[i * N + j] - acc)); sc = Math.max(sc, Math.abs(acc));
+    }
+    out.correct = { sampledRelErr: mx / sc, pass: mx / sc <= 1e-5 };
+    if (!out.correct.pass) throw new Error('驗證不過');
+    // 2) 計時：2 次核心（submit 2、3）
+    for (let i = 0; i < 2; i++) {
+      const t = performance.now(); device.queue.submit([once().finish()]); await device.queue.onSubmittedWorkDone(); out.ms.push(performance.now() - t); out.submits++;
+    }
+    const avg = (out.ms[0] + out.ms[1]) / 2;
+    out.gflopsAvg = flops / (avg * 1e6);
+    out.pctPeak = out.gflopsAvg / 127.5 * 100;
+    out.done = true;
+  } catch (e) { out.error = String((e && e.message) || e); }
+  document.title = 'kgen fma done';
+  console.log('KGEN_FMA ' + JSON.stringify(out));
+})();
+</script>

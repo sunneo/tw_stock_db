@@ -1,0 +1,12 @@
+{
+  "hardware": "NVIDIA GeForce GT 720 (Kepler GK208), Chrome WebGPU, driver 475.14",
+  "page": "scripts/eval/kgen_fma_check.html（一頁一寫法；1 次驗證＋2 次計時＝3 次 submit；計時只計核心：提交到 onSubmittedWorkDone，不含上傳與回讀）",
+  "shape": "M512 K1024 N1024",
+  "peak_gflops_ref": 127.5,
+  "results": [
+    { "variant": "kernel_gen vec4 WG16 TM4 TN4 BK16，acc = fma(a,b,acc)", "relErr": 3.0e-7, "ms": [11.5, 13.4], "gflops_avg": 86.2, "pct_peak": 67.6 },
+    { "variant": "kernel_gen vec4 同幾何，acc = acc + a*b（noFma）", "relErr": 0, "ms": [40.0, 38.1], "gflops_avg": 27.5, "pct_peak": 21.6 },
+    { "variant": "手寫 gpu_core mmTileWgslVec4（production 同型）", "relErr": 0, "ms": [11.8, 12.0], "gflops_avg": 90.2, "pct_peak": 70.8 }
+  ],
+  "conclusion": "kernel_gen vec4 慢約 5 倍的說法（G1 記錄 51.6 ms）在同一計時法下重現不了。真正的差別是 fma()：寫成 a*b+c 會慢約 3 倍（39 ms 對 12 ms）。改用 fma() 後 kernel_gen 與手寫版持平（12.5 ms 對 11.9 ms，差約 5%，各 2 次計時，屬雜訊內）。結論：不換 production（持平，沒有好處）。G1 那次 51.6 ms 的量法（含回讀）與本次不同，不能比。"
+}
