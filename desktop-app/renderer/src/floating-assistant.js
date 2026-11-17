@@ -18342,7 +18342,7 @@ holder.FaWebNews = FaWebNews;
         return out;
     }
 
-    // 程式摘要（退路：沒有模型、模型失敗或逾時）：取前 1～2 個完整句，約 60～120 字，絕不從句子中間截斷。
+    // 程式摘要（退路：沒有模型或模型失敗）：取前 1～2 個完整句，約 60～120 字，絕不從句子中間截斷。
     // 先去掉：▲ 圖說（有正文時整行不用）、開頭的【文／某某】「記者某某報導」這類署名句。
     const SIG_RE = /記者|報導|撰文|編譯|攝影|文\s*[／\/]/;
     function leadSummary(body) {
@@ -18377,19 +18377,7 @@ holder.FaWebNews = FaWebNews;
         const nt = String(title || '').normalize('NFKC').toLowerCase();
         return terms.filter((t) => nt.includes(String(t).normalize('NFKC').toLowerCase())).length;
     }
-    // 活動逾時：只有「整段時間內都沒有任何進度」才算逾時；每次 touch()（載入進度、新詞元）就重新計時。
-    // 逾時的錯誤帶 timeout=true 與 idleMs，呼叫端據此記錄，不把它當成模型壞掉。
-    function withActivityTimeout(start, ms) {
-        return new Promise((resolve, reject) => {
-            let timer = null; let done = false;
-            const arm = () => { if (timer) clearTimeout(timer); timer = setTimeout(() => { if (done) return; done = true; const e = new Error('逾時：' + ms + ' ms 內沒有任何進度'); e.timeout = true; e.idleMs = ms; reject(e); }, ms); };
-            const finish = (fn, v) => { if (done) return; done = true; if (timer) clearTimeout(timer); fn(v); };
-            arm();
-            let p; try { p = start(arm); } catch (e) { finish(reject, e); return; }
-            Promise.resolve(p).then((v) => finish(resolve, v), (e) => finish(reject, e));
-        });
-    }
-    // 斷路器只在「明確失敗」才觸發（載入錯誤、記憶體不足）；單純慢或逾時不算。
+    // 斷路器只在「明確失敗」才觸發（載入錯誤、記憶體不足、超出長度上限）；單純慢不算。
     const HARD_FAIL_RE = /載入|bad_alloc|記憶體|memory|out of|Aborted|create a session|OOM|KV|上下文太長|超過.*上限|超出長度/i;
     const isHardFail = (reason) => HARD_FAIL_RE.test(String(reason || ''));
 
@@ -18398,12 +18386,10 @@ holder.FaWebNews = FaWebNews;
     //   readArticle(url) → { ok, text, error? }         讀一篇內文（全文）
     //   summarize(body, question) → { ok, text, method } method：'model'｜'mixed'｜'extractive'（沒經過模型）
     //   trace(line) → void                               每一步一行（輪次、階段、誰做、參數、結果）
-    // opts：{ defaultCount: 2, maxArticles: 5, summarizeTimeoutMs: 30000 }
-    // 模型斷路器：本輪第一次摘要失敗（模型載入失敗、呼叫失敗或單篇逾時）後，後面的文章不再叫模型，直接用程式摘要，不每篇白等。
+    // opts：{ defaultCount: 2, maxArticles: 5 }
+    // 模型斷路器：本輪第一次明確失敗（模型載入失敗、記憶體不足）後，後面的文章不再叫模型，直接用程式摘要，不每篇白等。
     async function run(userText, deps, opts) {
-        // summarizeTimeoutMs：沒有任何進度（新詞元、載入進度）的卡死門檻，很寬；有進度就一直等。沒有總時間上限。
-        const o = Object.assign({ defaultCount: 2, maxArticles: 5, summarizeTimeoutMs: 240000, roundTimeoutMs: 0 }, opts || {});
-        const roundDeadline = Date.now() + o.roundTimeoutMs; // 整輪耗時上限：超過就不再讀下一篇，已摘要的照常回答
+        const o = Object.assign({ defaultCount: 2, maxArticles: 5 }, opts || {}); // 沒有固定耗時上限：離線模型慢是使用者接受的，只靠明確失敗與退化文字中斷
         const say = (s) => { try { if (deps.trace) deps.trace(s); } catch (_) { /* 顯示失敗不影響流程 */ } };
     // 頁首狀態（進度卡片的 status）：第 i／n 篇、目前在做什麼；deps.status 可省略
     const status = (s) => { try { if (deps.status) deps.status(s); } catch (_) { /* 顯示失敗不影響流程 */ } };
@@ -18451,7 +18437,6 @@ holder.FaWebNews = FaWebNews;
         for (let i = 0; i < picked.length; i++) {
             const c = picked[i];
             if (deps.isCancelled && deps.isCancelled()) { step('使用者取消', '程式', '已取消，之後的 ' + (picked.length - i) + ' 篇不再處理'); break; }
-            if (o.roundTimeoutMs > 0 && Date.now() > roundDeadline) { step('整輪上限', '程式', '已超過整輪耗時上限 ' + o.roundTimeoutMs + ' ms，之後的 ' + (picked.length - i) + ' 篇不再處理'); break; }
             status('第 ' + (i + 1) + '／' + picked.length + ' 篇：讀內文中');
             const art = await deps.readArticle(c.url).catch((e) => ({ ok: false, error: String((e && e.message) || e) }));
             if (!art || !art.ok || !String(art.text || '').trim()) { step('讀第 ' + (i + 1) + ' 篇', '程式', '讀不到內文：' + c.title.slice(0, 30) + '（' + ((art && art.error) || '沒有內文') + '）'); continue; }
@@ -18462,17 +18447,11 @@ holder.FaWebNews = FaWebNews;
             status('第 ' + (i + 1) + '／' + picked.length + ' 篇：摘要中' + (modelDown ? '（程式摘要）' : '（模型）'));
             if (modelDown) s = { ok: false, skipped: true };
             else {
-                const ms = o.summarizeTimeoutMs;
-                const stageAtStart = deps.stage ? deps.stage() : '';
-                try { s = await withActivityTimeout((touch) => deps.summarize(body, question, { touch }), ms); }
-                catch (e) {
-                    const st = deps.stage ? deps.stage() : '';
-                    if (e && e.timeout) { s = { ok: false, failed: true, timedOut: true, reason: '卡住（' + Math.round(e.idleMs / 1000) + ' 秒內沒有任何進度；停在「' + (st || stageAtStart || '未知') + '」）', stage: st || stageAtStart }; }
-                    else s = { ok: false, failed: true, reason: 'summarize 失敗：' + String((e && e.message) || e) };
-                }
+                try { s = await deps.summarize(body, question, {}); }
+                catch (e) { s = { ok: false, failed: true, reason: 'summarize 失敗：' + String((e && e.message) || e) }; }
             }
             const modelErr = s && !s.skipped && (s.failed ? s.reason : ((s.rejects || []).find((r) => /模型呼叫失敗/.test(String(r.reason))) || {}).reason);
-            // 斷路器：只有明確失敗（載入錯誤、記憶體不足）才停用模型；逾時或單純慢，只讓這一篇走退路
+            // 斷路器：只有明確失敗（載入錯誤、記憶體不足、超出長度）才停用模型；單純慢不算
             if (modelErr && !modelDown && isHardFail(modelErr)) modelDown = String(modelErr);
             const usedModel = !!(s && s.ok && !s.skipped && s.method && s.method !== 'extractive');
             // 退路：沒有模型或模型失敗 → 程式取前 1～2 句（完整句，不硬切）
@@ -18503,7 +18482,7 @@ holder.FaWebNews = FaWebNews;
         return { handled: true, ok: true, text: head + '\n\n' + lines.join('\n'), rounds: round, articles };
     }
 
-    return { parseRss, extractLinks, leadSummary, withActivityTimeout, isHardFail, run };
+    return { parseRss, extractLinks, leadSummary, isHardFail, run };
 });
 
 }).call(null, undefined, holder);
@@ -130125,7 +130104,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                 log: (line) => prog.log(line),
                 isStopped: () => !!this.stopRequested,
             };
-            try { const out = await gen0(Object.assign({}, a, { stallMs: 180000 }), cb); this._newsStage = '生成結束'; touchNow(); showSt(true); return out; }
+            try { const out = await gen0(a, cb); this._newsStage = '生成結束'; touchNow(); showSt(true); return out; }
             catch (e) { const msg = String((e && e.message) || e); if (/模型載入失敗|bad_alloc|Can.t create a session|Aborted/.test(msg)) genDown = msg; throw e; }
         };
         const res = await FaNewsDigest.run(question, {
@@ -131072,21 +131051,20 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         let acc = '', since = 0, stopped = null; const rec = this._vlmWorkerGet(slot);
         const stop = (why) => { if (stopped) return; stopped = why; try { rec.worker.postMessage({ type: 'interrupt' }); } catch (_) {} };
         // 有給 timeoutMs：它是硬性上限（之後再加 5 秒寬限）。寬限內工作者沒停下就終止它，之後才到的舊結果一律丟棄。沒給就維持原本的軟性上限（只請工作者中斷）。
-        const hard = a.timeoutMs > 0; const stallMode = !hard && a.stallMs > 0; const limitMs = hard ? a.timeoutMs : (ld.device === 'webgpu' ? 90 : 300) * 1000;
-        // 卡死偵測（stallMs）：不設總時間上限；只在連續 stallMs 沒有新詞元時中斷，慢但持續出詞元就一直等（藏書閣／AIDoc 的做法）
-        let timer = null; const armStall = () => { if (!stallMode) return; if (timer) clearTimeout(timer); timer = setTimeout(() => stop('卡住：' + Math.round(a.stallMs / 1000) + ' 秒沒有新詞元'), a.stallMs); };
-        if (stallMode) armStall(); else timer = setTimeout(() => stop('逾時'), limitMs);
-        const cancelPoll = stallMode ? setInterval(() => { if (cb.isStopped && cb.isStopped()) stop('使用者取消'); }, 500) : null;
+        // 離線生成沒有耗時上限：慢是使用者接受的。只靠明確失敗（工作者錯誤、記憶體不足）、退化文字（looksLikeGarbage）與使用者取消中斷。
+        // 呼叫端若明確給了硬性上限（a.timeoutMs，非離線用途），才套用它。
+        const hard = a.timeoutMs > 0;
+        const cancelPoll = setInterval(() => { if (cb.isStopped && cb.isStopped()) stop('使用者取消'); }, 500);
         // 上一次呼叫完成後排的閒置卸載計時器，不能在這次呼叫中途觸發（實測會在 120 秒整把正在算的呼叫以「已卸載」殺掉）。只對有 timeoutMs 的呼叫這樣做，其他呼叫維持原樣。
         if (hard) this._vlmCancelIdle(slot);
         try {
             const res = await FaRecipe.guardedCall(() => this._vlmRpc('chat',{ messages: msgs, tools: a.tools && a.tools.length ? a.tools : undefined, maxTokens: a.maxTokens || 512, gen, prefill: a.prefill || undefined, enableThinking: a.enableThinking === true }, null, (chunk) => {
-                acc += chunk; since += chunk.length; if (cb.onToken) cb.onToken(acc); if (stallMode) armStall();
+                acc += chunk; since += chunk.length; if (cb.onToken) cb.onToken(acc);
                 if (since >= 64 && acc.length > 120) { since = 0; const g = FaVlm.looksLikeGarbage(acc.slice(-1500)); if (g.garbage && g.reason !== 'empty' && g.reason !== 'no_content') { if (cb.log) cb.log('⚠️ 退化輸出（' + g.reason + '），已中斷；樣子：「' + acc.slice(-60).replace(/\s+/g, ' ') + '」'); stop('垃圾輸出：' + g.reason); } }
-            }, slot), { timeoutMs: hard ? a.timeoutMs : 0, graceMs: 5000, interrupt: () => stop('逾時'), abandon: () => rec.die('逾時：工作者沒有在寬限時間內停下，已終止（下次呼叫會重新載入模型）') });
+            }, slot), { timeoutMs: hard ? a.timeoutMs : 0, graceMs: 5000, interrupt: () => stop('呼叫端的硬性上限'), abandon: () => rec.die('逾時：工作者沒有在寬限時間內停下，已終止（下次呼叫會重新載入模型）') });
             this._vlmScheduleIdle(slot);
             return res.raw;
-        } finally { if (timer) clearTimeout(timer); if (cancelPoll) clearInterval(cancelPoll); }
+        } finally { clearInterval(cancelPoll); }
     }
     // 離線文字模型可以呼叫的工具：離線訓練器找到的相近做法裡的工具＋幾個唯讀的常用工具；有副作用的工具在執行前一定會問使用者
     _offlineLlmToolList(plan) {

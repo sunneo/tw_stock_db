@@ -140,17 +140,6 @@ function fakeDeps(opts) {
         check('J 步驟行含真實原因', f.steps.some((s) => s.includes('原因：模型載入失敗：webgpu：std::bad_alloc')), f.steps);
         check('J 後續文章的步驟行說明不再重試', f.steps.some((s) => s.includes('本輪模型已失敗') && s.includes('不再重試')), f.steps);
     }
-    // K. 單篇逾時：走程式摘要，本輪之後不再叫模型；整體不會卡住
-    {
-        const f = fakeDeps(); let calls = 0;
-        f.deps.summarize = () => { calls++; return new Promise(() => {}); }; // 永遠不回
-        const t0 = Date.now();
-        const r = await D.run('看今天有哪些黃仁勳新聞', f.deps, { summarizeTimeoutMs: 20 });
-        check('K 逾時後照常完成', r.ok === true && r.articles.length === 2, r);
-        check('K 逾時不觸發斷路器：每篇各自試一次（逾時只讓那一篇走退路）', calls === 2, calls);
-        check('K 步驟行含卡住原因（沒有任何進度）', f.steps.some((s) => s.includes('卡住') && s.includes('沒有任何進度')), f.steps);
-        check('K 整體在幾秒內結束', Date.now() - t0 < 5000, Date.now() - t0);
-    }
     // L. 程式摘要（退路）：去掉 ▲ 圖說與署名，取完整句，不從中間截斷
     {
         const S1 = '輝達（NVIDIA）於17日正式宣布，已在董事會通過新一代 AI 晶片量產計畫。';
@@ -173,35 +162,6 @@ function fakeDeps(opts) {
         check('J2 頁首狀態含「第 1／2 篇」與「第 2／2 篇」', statuses.some((s) => s.includes('第 1／2 篇')) && statuses.some((s) => s.includes('第 2／2 篇')), statuses);
         check('J2 每篇完成後頁首顯示完成與耗時', statuses.some((s) => s.includes('模型摘要完成') && s.includes('ms')), statuses);
     }
-    // P. 逾時計算、活動逾時、斷路器只看明確失敗
-    {
-        // 活動逾時：有進度就不逾時
-        let resolvedAfter = null;
-        const slowButActive = (touch) => new Promise((resolve) => {
-            let n = 0; const iv = setInterval(() => { touch(); n++; if (n === 5) { clearInterval(iv); resolve('ok'); } }, 30);
-        });
-        D.withActivityTimeout(slowButActive, 60).then((v) => { resolvedAfter = v; });
-        // 完全沒有進度才逾時
-        const silent = D.withActivityTimeout(() => new Promise(() => {}), 40).then(() => 'resolved', (e) => ({ timeout: e.timeout, idleMs: e.idleMs }));
-        const sres = await silent;
-        check('P 完全沒有進度 → 逾時（timeout=true，附 idleMs）', sres && sres.timeout === true && sres.idleMs === 40, sres);
-        await new Promise((r) => setTimeout(r, 250));
-        check('P 有進度（每 30 毫秒 touch）就不逾時，正常完成', resolvedAfter === 'ok', resolvedAfter);
-        // 斷路器只看明確失敗
-        check('P isHardFail：載入錯誤與記憶體不足', D.isHardFail('模型載入失敗：webgpu：std::bad_alloc') && D.isHardFail('out of memory'), null);
-        check('P isHardFail：逾時與單純慢不算', !D.isHardFail('逾時（30 秒內沒有進度）') && !D.isHardFail('生成很慢'), null);
-    }
-    // R. 沒有總時間上限：慢但每 30 毫秒都有新進度，就一直等到完成（不因為總時間長而中斷）
-    {
-        const slowProgress = (touch) => new Promise((resolve) => { let n = 0; const iv = setInterval(() => { touch(); n++; if (n === 15) { clearInterval(iv); resolve('done'); } }, 30); });
-        const v = await D.withActivityTimeout(slowProgress, 120).then((x) => x, (e) => 'ERR:' + e.message);
-        check('R 慢但持續出詞元（總長 450 毫秒 > 門檻 120）不會被中斷', v === 'done', v);
-    }
-    // S. 真的卡死（完全沒有新進度）才中斷，並附上無進度的秒數
-    {
-        const stuck = await D.withActivityTimeout(() => new Promise(() => {}), 50).then(() => 'resolved', (e) => ({ timeout: e.timeout, idleMs: e.idleMs }));
-        check('S 完全沒有進度才中斷（timeout=true）', stuck && stuck.timeout === true && stuck.idleMs === 50, stuck);
-    }
     // T. 明確失敗才觸發斷路器；慢與逾時不算
     {
         check('T 明確失敗：載入錯誤、記憶體不足、KV 超限', D.isHardFail('模型載入失敗：std::bad_alloc') && D.isHardFail('out of memory') && D.isHardFail('KV 上限 1024：上下文太長'), null);
@@ -215,12 +175,12 @@ function fakeDeps(opts) {
         const r = await D.run('看今天有哪些黃仁勳新聞', f.deps);
         check('U 取消後只做完目前這一篇，不再處理下一篇', calls === 1 && f.steps.some((s) => s.includes('使用者取消')), { calls, steps: f.steps.slice(-2) });
     }
-    // Q. 逾時不觸發斷路器：第一篇逾時後，第二篇仍會叫模型（若成功就用模型摘要）
+    // V. 沒有固定耗時上限：第一篇慢（200 毫秒才回）也照樣完成，不會被當成失敗或卡住
     {
-        const f = fakeDeps(); let calls = 0;
-        f.deps.summarize = async (body) => { calls++; if (calls === 1) return new Promise(() => {}); return { ok: true, text: '重點：' + body.slice(0, 8), method: 'model' }; };
-        const r = await D.run('看今天有哪些黃仁勳新聞', f.deps, { summarizeTimeoutMs: 30 });
-        check('Q 第一篇逾時後第二篇仍用模型（斷路器未觸發）', calls === 2 && r.articles[1].method === 'model', { calls, m: r.articles.map((a) => a.method) });
+        const f = fakeDeps();
+        f.deps.summarize = (body) => new Promise((resolve) => setTimeout(() => resolve({ ok: true, text: '重點：' + body.slice(0, 8), method: 'model' }), 200));
+        const r = await D.run('看今天有哪些黃仁勳新聞', f.deps);
+        check('V 慢但完成：兩篇都用模型完成，步驟行沒有「卡住」或「逾時」字樣', r.ok === true && r.articles.every((a) => a.method === 'model') && !f.steps.some((s) => /卡住|逾時/.test(s)), { m: r.articles.map((a) => a.method), steps: f.steps.filter((s) => /卡住|逾時/.test(s)) });
     }
     // N. 整輪耗時上限：超過就不再讀下一篇，步驟行說明
     {

@@ -44,7 +44,7 @@
         return out;
     }
 
-    // 程式摘要（退路：沒有模型、模型失敗或逾時）：取前 1～2 個完整句，約 60～120 字，絕不從句子中間截斷。
+    // 程式摘要（退路：沒有模型或模型失敗）：取前 1～2 個完整句，約 60～120 字，絕不從句子中間截斷。
     // 先去掉：▲ 圖說（有正文時整行不用）、開頭的【文／某某】「記者某某報導」這類署名句。
     const SIG_RE = /記者|報導|撰文|編譯|攝影|文\s*[／\/]/;
     function leadSummary(body) {
@@ -79,19 +79,7 @@
         const nt = String(title || '').normalize('NFKC').toLowerCase();
         return terms.filter((t) => nt.includes(String(t).normalize('NFKC').toLowerCase())).length;
     }
-    // 活動逾時：只有「整段時間內都沒有任何進度」才算逾時；每次 touch()（載入進度、新詞元）就重新計時。
-    // 逾時的錯誤帶 timeout=true 與 idleMs，呼叫端據此記錄，不把它當成模型壞掉。
-    function withActivityTimeout(start, ms) {
-        return new Promise((resolve, reject) => {
-            let timer = null; let done = false;
-            const arm = () => { if (timer) clearTimeout(timer); timer = setTimeout(() => { if (done) return; done = true; const e = new Error('逾時：' + ms + ' ms 內沒有任何進度'); e.timeout = true; e.idleMs = ms; reject(e); }, ms); };
-            const finish = (fn, v) => { if (done) return; done = true; if (timer) clearTimeout(timer); fn(v); };
-            arm();
-            let p; try { p = start(arm); } catch (e) { finish(reject, e); return; }
-            Promise.resolve(p).then((v) => finish(resolve, v), (e) => finish(reject, e));
-        });
-    }
-    // 斷路器只在「明確失敗」才觸發（載入錯誤、記憶體不足）；單純慢或逾時不算。
+    // 斷路器只在「明確失敗」才觸發（載入錯誤、記憶體不足、超出長度上限）；單純慢不算。
     const HARD_FAIL_RE = /載入|bad_alloc|記憶體|memory|out of|Aborted|create a session|OOM|KV|上下文太長|超過.*上限|超出長度/i;
     const isHardFail = (reason) => HARD_FAIL_RE.test(String(reason || ''));
 
@@ -100,12 +88,10 @@
     //   readArticle(url) → { ok, text, error? }         讀一篇內文（全文）
     //   summarize(body, question) → { ok, text, method } method：'model'｜'mixed'｜'extractive'（沒經過模型）
     //   trace(line) → void                               每一步一行（輪次、階段、誰做、參數、結果）
-    // opts：{ defaultCount: 2, maxArticles: 5, summarizeTimeoutMs: 30000 }
-    // 模型斷路器：本輪第一次摘要失敗（模型載入失敗、呼叫失敗或單篇逾時）後，後面的文章不再叫模型，直接用程式摘要，不每篇白等。
+    // opts：{ defaultCount: 2, maxArticles: 5 }
+    // 模型斷路器：本輪第一次明確失敗（模型載入失敗、記憶體不足）後，後面的文章不再叫模型，直接用程式摘要，不每篇白等。
     async function run(userText, deps, opts) {
-        // summarizeTimeoutMs：沒有任何進度（新詞元、載入進度）的卡死門檻，很寬；有進度就一直等。沒有總時間上限。
-        const o = Object.assign({ defaultCount: 2, maxArticles: 5, summarizeTimeoutMs: 240000, roundTimeoutMs: 0 }, opts || {});
-        const roundDeadline = Date.now() + o.roundTimeoutMs; // 整輪耗時上限：超過就不再讀下一篇，已摘要的照常回答
+        const o = Object.assign({ defaultCount: 2, maxArticles: 5 }, opts || {}); // 沒有固定耗時上限：離線模型慢是使用者接受的，只靠明確失敗與退化文字中斷
         const say = (s) => { try { if (deps.trace) deps.trace(s); } catch (_) { /* 顯示失敗不影響流程 */ } };
     // 頁首狀態（進度卡片的 status）：第 i／n 篇、目前在做什麼；deps.status 可省略
     const status = (s) => { try { if (deps.status) deps.status(s); } catch (_) { /* 顯示失敗不影響流程 */ } };
@@ -153,7 +139,6 @@
         for (let i = 0; i < picked.length; i++) {
             const c = picked[i];
             if (deps.isCancelled && deps.isCancelled()) { step('使用者取消', '程式', '已取消，之後的 ' + (picked.length - i) + ' 篇不再處理'); break; }
-            if (o.roundTimeoutMs > 0 && Date.now() > roundDeadline) { step('整輪上限', '程式', '已超過整輪耗時上限 ' + o.roundTimeoutMs + ' ms，之後的 ' + (picked.length - i) + ' 篇不再處理'); break; }
             status('第 ' + (i + 1) + '／' + picked.length + ' 篇：讀內文中');
             const art = await deps.readArticle(c.url).catch((e) => ({ ok: false, error: String((e && e.message) || e) }));
             if (!art || !art.ok || !String(art.text || '').trim()) { step('讀第 ' + (i + 1) + ' 篇', '程式', '讀不到內文：' + c.title.slice(0, 30) + '（' + ((art && art.error) || '沒有內文') + '）'); continue; }
@@ -164,17 +149,11 @@
             status('第 ' + (i + 1) + '／' + picked.length + ' 篇：摘要中' + (modelDown ? '（程式摘要）' : '（模型）'));
             if (modelDown) s = { ok: false, skipped: true };
             else {
-                const ms = o.summarizeTimeoutMs;
-                const stageAtStart = deps.stage ? deps.stage() : '';
-                try { s = await withActivityTimeout((touch) => deps.summarize(body, question, { touch }), ms); }
-                catch (e) {
-                    const st = deps.stage ? deps.stage() : '';
-                    if (e && e.timeout) { s = { ok: false, failed: true, timedOut: true, reason: '卡住（' + Math.round(e.idleMs / 1000) + ' 秒內沒有任何進度；停在「' + (st || stageAtStart || '未知') + '」）', stage: st || stageAtStart }; }
-                    else s = { ok: false, failed: true, reason: 'summarize 失敗：' + String((e && e.message) || e) };
-                }
+                try { s = await deps.summarize(body, question, {}); }
+                catch (e) { s = { ok: false, failed: true, reason: 'summarize 失敗：' + String((e && e.message) || e) }; }
             }
             const modelErr = s && !s.skipped && (s.failed ? s.reason : ((s.rejects || []).find((r) => /模型呼叫失敗/.test(String(r.reason))) || {}).reason);
-            // 斷路器：只有明確失敗（載入錯誤、記憶體不足）才停用模型；逾時或單純慢，只讓這一篇走退路
+            // 斷路器：只有明確失敗（載入錯誤、記憶體不足、超出長度）才停用模型；單純慢不算
             if (modelErr && !modelDown && isHardFail(modelErr)) modelDown = String(modelErr);
             const usedModel = !!(s && s.ok && !s.skipped && s.method && s.method !== 'extractive');
             // 退路：沒有模型或模型失敗 → 程式取前 1～2 句（完整句，不硬切）
@@ -205,5 +184,5 @@
         return { handled: true, ok: true, text: head + '\n\n' + lines.join('\n'), rounds: round, articles };
     }
 
-    return { parseRss, extractLinks, leadSummary, withActivityTimeout, isHardFail, run };
+    return { parseRss, extractLinks, leadSummary, isHardFail, run };
 });
