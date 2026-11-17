@@ -644,11 +644,11 @@ const FaKnowledgeHost = (function () {
                 if (kind === 'offline') step('🔌 ' + (i === 0 ? '離線模式：' : '線上試了兩次都沒成功，') + '改用離線文字模型…（第一次要載入模型，會比較慢；小模型的品質有限，寫出來的一樣會逐句核對）');
                 try {
                     const lim0 = kind === 'offline' ? Math.max(tm, 180000) : (i > 0 ? Math.round(tm * 1.5) : tm), lim = kind === 'offline' ? lim0 : lim0 * 4; // 線上：最多輪過 4 個模型，每個各自有 lim0 的耐心 // 線上重試時多給一點耐心：一次慢回應不代表離線
-                    let lastActive = Date.now(); const touch = () => { lastActive = Date.now(); }; // 離線模型：有在吐字（或載入進度有在動）就不算沒回應，只有「安靜」超過上限才放棄；整體另有 20 分鐘的絕對上限
+                    let lastActive = Date.now(); const touch = () => { lastActive = Date.now(); }; // 離線模型：有在吐字（或載入進度有在動）就不算沒回應，只有「安靜」超過上限才放棄；沒有 20 分鐘的絕對上限（離線慢是使用者接受的，只要還在吐字或載入有進度就一直等）
                     const call = kind === 'offline' ? this._kiOfflineComplete(o.offlinePrompt ? o.offlinePrompt() : prompt, Object.assign({}, opts, { onActive: touch })) : this._kiOnlineAcrossRows(prompt, opts, step, lim);
                     const reply = await Promise.race([
                         call,
-                        new Promise((_, rej) => { const t00 = Date.now(), quiet = () => rej(new Error('等了 ' + Math.round(lim / 1000) + ' 秒沒有回應' + (kind === 'online' ? '（AI 節點可能斷線了）' : '（離線模型安靜太久，可能卡住了）'))); if (kind !== 'offline') { timer = setTimeout(quiet, lim); return; } const tick = () => { if (Date.now() - lastActive > lim || Date.now() - t00 > 20 * 60 * 1000) quiet(); else timer = setTimeout(tick, 4000); }; timer = setTimeout(tick, 4000); }),
+                        new Promise((_, rej) => { const t00 = Date.now(), quiet = () => rej(new Error('等了 ' + Math.round(lim / 1000) + ' 秒沒有回應' + (kind === 'online' ? '（AI 節點可能斷線了）' : '（離線模型安靜太久，可能卡住了）'))); if (kind !== 'offline') { timer = setTimeout(quiet, lim); return; } const tick = () => { if (Date.now() - lastActive > lim) quiet(); else timer = setTimeout(tick, 4000); }; timer = setTimeout(tick, 4000); }),
                         new Promise((_, rej) => { if (o.ctl) o.ctl.cancel = () => rej(new Error('已略過等待')); }),
                     ]);
                     clearTimeout(timer);
