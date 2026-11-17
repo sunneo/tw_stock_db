@@ -1,0 +1,59 @@
+<!doctype html><meta charset="utf-8"><title>o7 engine check</title>
+<body style="font:13px monospace;white-space:pre">
+<script>
+// O7 正式引擎（真 Chrome、真 WebGPU）：qwen_gpu 的層內「RMSNorm＋動態量化」融合（解碼 M=1 用一次派發的 rmsq1）。
+// 對照：同一個小型合成模型（真實亂數權重，不是 Qwen3 權重）、fuseRmsQuant:false 的引擎。
+// 判準：(1) 預填（M=3）與解碼（M=1，連續 4 步）的 logits 逐位相同（Object.is 逐元素）；(2) token 相同；(3) 兩個引擎的派發數（info.dispatches）記錄。
+// 真 Qwen3-0.6B 權重載入太重，本頁不用，結果註明「未用真模型驗證」。結果在 window.__out。
+// 用法：desktop-app 資料夾 python -X utf8 -m http.server <埠> --bind 127.0.0.1，開 .../scripts/eval/o7_engine_check.html
+const mods = {};
+const loadMod = async (key, url) => {
+  const src = await (await fetch(url, { cache: 'no-store' })).text();
+  const m = { exports: {} }; mods[key] = m;
+  new Function('module', 'exports', 'require', src)(m, m.exports, (p) => { const k = p.replace(/^\.\//, '').replace(/\.js$/, ''); if (!mods[k]) throw new Error('missing ' + k); return mods[k].exports; });
+};
+let seed = 91;
+const rnd = () => { seed = (Math.imul(seed, 1664525) + 1013904223) | 0; return (seed >>> 0) / 4294967296 - 0.5; };
+function synthModel(L) {
+  const D = 64, H = 2, Hkv = 2, hd = 16, I = 96, V = 64;
+  const u8 = (n) => Uint8Array.from({ length: n }, () => Math.floor((rnd() + 0.5) * 256));
+  const f32 = (n, base) => Float32Array.from({ length: n }, () => base + rnd() * 0.2);
+  const mat = (K, N) => ({ W: u8(K * N), zp: 128, scale: 0.02 + Math.abs(rnd()) * 0.01, K, N });
+  const layers = [];
+  for (let l = 0; l < L; l++) layers.push({ inNorm: f32(D, 1), postNorm: f32(D, 1), qNorm: f32(hd, 1), kNorm: f32(hd, 1), q: mat(D, H * hd), k: mat(D, Hkv * hd), v: mat(D, Hkv * hd), o: mat(H * hd, D), g: mat(D, I), u: mat(D, I), d: mat(I, D) });
+  const emb = f32(V * D, 0);
+  return { D, H, Hkv, hd, I, V, L, eps: 1e-6, finalNorm: f32(D, 1), emb: { W: u8(V * D), zp: 128, scale: 0.02 }, embedRows(ids) { const out = new Float32Array(ids.length * D); for (let i = 0; i < ids.length; i++) for (let j = 0; j < D; j++) out[i * D + j] = emb[ids[i] * D + j]; return out; }, layers };
+}
+(async () => {
+  const out = { hardware: 'Kepler 14 W（同一台、同一瀏覽器）', model: 'synthetic L=2 D64 H2 hd16 I96 V64（不是 Qwen3 權重）', steps: [], error: null };
+  window.__out = out;
+  try {
+    await loadMod('gpu_core', '../../renderer/src/gpu/gpu_core.js');
+    await loadMod('gpu_pool', '../../renderer/src/gpu/gpu_pool.js');
+    await loadMod('nn_ops', '../../renderer/src/gpu/nn_ops.js');
+    await loadMod('infer_ops', '../../renderer/src/gpu/infer_ops.js');
+    await loadMod('attn_ops', '../../renderer/src/gpu/attn_ops.js');
+    await loadMod('onnx_lite', '../../renderer/src/gpu/onnx_lite.js');
+    await loadMod('qwen_decode', '../../renderer/src/gpu/qwen_decode.js');
+    await loadMod('qwen_gpu', '../../renderer/src/gpu/qwen_gpu.js');
+    const nn = mods.nn_ops.exports, QG = mods.qwen_gpu.exports;
+    const { dev } = await nn.getDevice(navigator);
+    const W = synthModel(2);
+    const FUSE = new URLSearchParams(location.search).get('fuse') !== '0';   // ?fuse=0：兩個引擎都不融合（對照：排除跳過邏輯的影響）
+    const engF = await QG.createGpuEngine(dev, W, { maxT: 32, maxM: 8, fuseRmsQuant: FUSE, logits: true });
+    const engU = await QG.createGpuEngine(dev, W, { maxT: 32, maxM: 8, fuseRmsQuant: false, logits: true });
+    out.dispatchesFused = engF.info.dispatches; out.dispatchesUnfused = engU.info.dispatches;
+    const same = (a, b) => { if (a.length !== b.length) return -1; let bad = 0; for (let i = 0; i < a.length; i++) if (!Object.is(a[i], b[i])) bad++; return bad; };
+    const plan = [[1, 2, 3], [4], [5], [6], [7]];   // 第一步 M=3（預填），之後 M=1（解碼）
+    for (let s = 0; s < plan.length; s++) {
+      const rf = await engF.step(plan[s], { logits: true });
+      const ru = await engU.step(plan[s], { logits: true });
+      const lf = rf.logits, lu = ru.logits;
+      out.steps.push({ step: s, M: plan[s].length, tokenFused: rf.token, tokenUnfused: ru.token, logitsLen: lf ? lf.length : 0, mismatchedLogits: lf && lu ? same(lf, lu) : 'no-logits', pass: rf.token === ru.token && lf && lu && same(lf, lu) === 0 });
+    }
+    out.allPass = out.steps.every((r) => r.pass);
+    out.realModelVerified = false;
+  } catch (e) { out.error = String((e && e.stack) || e); }
+  out.done = true;
+})();
+</script>

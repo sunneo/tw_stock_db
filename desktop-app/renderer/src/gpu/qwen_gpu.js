@@ -70,6 +70,53 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
   }
 }`;
 
+  // O7 融合（只給解碼 M=1）：RMSNorm＋動態量化一次派發，位元與「rms＋quant」兩段相同：
+  // 平方和仍由單一執行緒依序累加（nf 防 fma，與 WGSL.rms 同一順序）；y＝(x·inv)·g 與 rms 的寫法相同；min／max 與 quant 同起點 0；
+  // 步長與零點的公式、量化式與 WGSL.quant 相同。只寫 qi（扣過零點的 i32）與 qs[0]；不寫 y（解碼時 y 只給量化用）。
+  WGSL.rmsq1 = NF + STEP + `
+struct P { D: u32, last: u32, eps: f32, p1: u32 }
+@group(0) @binding(0) var<storage, read> x: array<f32>;
+@group(0) @binding(1) var<storage, read> g: array<f32>;
+@group(0) @binding(2) var<storage, read_write> q: array<i32>;
+@group(0) @binding(3) var<storage, read_write> qs: array<f32>;
+@group(0) @binding(4) var<uniform> p: P;
+@group(0) @binding(5) var<uniform> st: Step;
+var<workgroup> smn: array<f32, 256>;
+var<workgroup> smx: array<f32, 256>;
+var<workgroup> sinv: array<f32, 1>;
+var<workgroup> sh: array<f32, 2>;
+@compute @workgroup_size(256)
+fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
+  // 只給解碼（M=1）；同時讓 st 被引用，否則 layout:'auto' 會丟掉綁定 5，整個融合派發的綁定群組無效（結果全 0）。st 是 uniform，早退對整個工作群組一致，不影響後面的 barrier。
+  if (st.M != 1u) { return; }
+  if (lid.x == 0u) {
+    var ss: f32 = 0.0;
+    for (var i: u32 = 0u; i < p.D; i = i + 1u) { let v = x[i]; ss = ss + nf(v * v); }
+    sinv[0] = 1.0 / sqrt(ss / f32(p.D) + p.eps);
+  }
+  workgroupBarrier();
+  let inv = sinv[0];
+  var mn: f32 = 0.0; var mx: f32 = 0.0;
+  for (var i: u32 = lid.x; i < p.D; i = i + 256u) { let y = (x[i] * inv) * g[i]; mn = min(mn, y); mx = max(mx, y); }
+  smn[lid.x] = mn; smx[lid.x] = mx;
+  workgroupBarrier();
+  for (var s: u32 = 128u; s > 0u; s = s >> 1u) {
+    if (lid.x < s) { smn[lid.x] = min(smn[lid.x], smn[lid.x + s]); smx[lid.x] = max(smx[lid.x], smx[lid.x + s]); }
+    workgroupBarrier();
+  }
+  if (lid.x == 0u) {
+    let sc = (smx[0] - smn[0]) / 255.0;
+    if (sc == 0.0) { sh[0] = 1.0; sh[1] = 0.0; qs[0] = 1.0; }
+    else { sh[0] = sc; sh[1] = clamp(round(-smn[0] / sc), 0.0, 255.0); qs[0] = sc; }
+  }
+  workgroupBarrier();
+  let sc = sh[0]; let zp = sh[1];
+  for (var i: u32 = lid.x; i < p.D; i = i + 256u) {
+    let y = (x[i] * inv) * g[i];
+    q[i] = i32(clamp(round(y / sc) + zp, 0.0, 255.0) - zp);
+  }
+}`;
+
   // q8 矩陣乘（M 列）：整數精確累加，輸出 = f32(acc) × (輸入步長 × 權重步長)。權重 K×N（列主序，N 連續）。
   WGSL.mm = STEP + `
 struct P { K: u32, N: u32, wzp: i32, wscale: f32 }
@@ -436,7 +483,8 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
     // 每層：權重、norm、KV 快取；並預先建好整條派發計畫（bind group 重複使用，每步只改 step 緩衝區與派發數）
     const plan = [];
     const bg = (k, list) => dev.createBindGroup({ layout: pipes[k].getBindGroupLayout(0), entries: list.map((b, i) => ({ binding: i, resource: { buffer: b } })) });
-    const add = (k, list, groups) => plan.push({ pipe: pipes[k], bg: bg(k, list), groups });
+    // mode：'m1' 只在解碼（M=1）執行、'mgt1' 只在 M>1 執行、其餘每步都執行（步驟迴圈依 mode 跳過）
+    const add = (k, list, groups, mode) => plan.push({ pipe: pipes[k], bg: bg(k, list), groups, mode: mode || null });
     const g1 = (n) => (M) => [Math.ceil(n(M) / 64), 1];
     const rowsG = (M) => [Math.ceil(M / 64), 1];
     const mmG = (N) => (M) => [Math.ceil(N / 64), M];
@@ -453,8 +501,15 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
       const u = ubuf((d) => { d.setUint32(0, w.K, true); d.setUint32(4, w.N, true); d.setInt32(8, w.zp, true); d.setFloat32(12, Math.fround(w.scale), true); });
       add('mm', [src, wb, qs, out, u, stBuf], mmG(w.N));
     };
-    const quantAdd = (src, K) => q4 ? 0 : add('quant', [src, qi, qs, ubuf((d) => d.setUint32(0, K, true)), stBuf], () => [1, 1]);
-    const rmsAdd = (src, g, dst, last) => add('rms', [src, g, dst, ubuf((d) => { d.setUint32(0, D, true); d.setUint32(4, last ? 1 : 0, true); d.setFloat32(8, W.eps, true); }), stBuf], last ? () => [1, 1] : rowsG);
+    const quantAdd = (src, K, mode) => q4 ? 0 : add('quant', [src, qi, qs, ubuf((d) => d.setUint32(0, K, true)), stBuf], () => [1, 1], mode);
+    const rmsAdd = (src, g, dst, last, mode) => add('rms', [src, g, dst, ubuf((d) => { d.setUint32(0, D, true); d.setUint32(4, last ? 1 : 0, true); d.setFloat32(8, W.eps, true); }), stBuf], last ? () => [1, 1] : rowsG, mode);
+    // 層內的「RMSNorm＋動態量化」：fuse 時解碼用一次派發的融合核心，prefill 維持兩段；q4 不量化，維持原樣
+    const fuse = !q4 && o.fuseRmsQuant !== false;
+    const rmsQuantAdd = (src, g) => {
+      if (!fuse) { rmsAdd(src, g, xn, false); quantAdd(xn, D); return; }
+      add('rmsq1', [src, g, qi, qs, ubuf((d) => { d.setUint32(0, D, true); d.setUint32(4, 0, true); d.setFloat32(8, W.eps, true); }), stBuf], () => [1, 1], 'm1');
+      rmsAdd(src, g, xn, false, 'mgt1'); quantAdd(xn, D, 'mgt1');
+    };
     const kvBufs = [], layerEnd = [];
     for (let l = 0; l < W.L; l++) {
       const Ly = W.layers[l];
@@ -462,13 +517,13 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
       curStream = l >= R; if (curStream) streamPairs[l] = MATS.flatMap((k) => (q4 ? [[slots[k], Ly[k].W], [slotsS[k], Ly[k].S]] : [[slots[k], Ly[k].W]]));
       const inN = fbuf(Ly.inNorm), postN = fbuf(Ly.postNorm);
       const nw = new Float32Array(2 * hd); nw.set(Ly.qNorm, 0); nw.set(Ly.kNorm, hd); const nwB = fbuf(nw);
-      rmsAdd(hA, inN, xn, false); quantAdd(xn, D);
+      rmsQuantAdd(hA, inN);
       mmAdd(q4 ? xn : qi, Ly.q, qb, 'q'); mmAdd(q4 ? xn : qi, Ly.k, kb, 'k'); mmAdd(q4 ? xn : qi, Ly.v, vb, 'v');
       add('qk', [qb, kb, vb, nwB, trigB, qr, kv, ubuf((d) => { d.setUint32(0, H, true); d.setUint32(4, Hkv, true); d.setUint32(8, hd, true); d.setUint32(12, maxT, true); d.setFloat32(16, W.eps, true); }), stBuf], (M) => [Math.ceil(M * (H + Hkv) / 64), 1]);
       add('attn', [qr, kv, scr, ao, ubuf((d) => { d.setUint32(0, H, true); d.setUint32(4, Hkv, true); d.setUint32(8, hd, true); d.setUint32(12, maxT, true); d.setFloat32(16, 1 / Math.sqrt(hd), true); }), stBuf], (M) => [Math.ceil(M * H / 64), 1]);
       quantAdd(ao, Nq); mmAdd(q4 ? ao : qi, Ly.o, ob, 'o');
       add('add', [hA, ob, hB, ubuf((d) => d.setUint32(0, D, true)), stBuf], (M) => [Math.ceil(M * D / 64), 1]);
-      rmsAdd(hB, postN, xn, false); quantAdd(xn, D);
+      rmsQuantAdd(hB, postN);
       mmAdd(q4 ? xn : qi, Ly.g, gb, 'g'); mmAdd(q4 ? xn : qi, Ly.u, ub, 'u');
       add('silu', [gb, ub, act, ubuf((d) => d.setUint32(0, I, true)), stBuf], (M) => [Math.ceil(M * I / 64), 1]);
       quantAdd(act, I); mmAdd(q4 ? act : qi, Ly.d, db, 'd');
@@ -523,7 +578,7 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
             globalThis.__faGpuLast = 'qwen_gpu 第 ' + l + ' 層（M=' + M + '，已提交到第 ' + i + ' 個派發' + (l >= R && l < W.L ? '，串流層' : '') + '）';
             if (l >= R && l < W.L) { for (const [b, u8] of streamPairs[l]) { writeU8(b, u8); info.streamedBytes += u8.length; } }   // 佇列依序執行：上一層的提交算完後才會覆寫共用緩衝區
             const enc = dev.createCommandEncoder(); const pass = enc.beginComputePass();
-            for (; i < stop; i++) { const d = plan[i], g = d.groups(M); pass.setPipeline(d.pipe); pass.setBindGroup(0, d.bg); pass.dispatchWorkgroups(g[0], g[1]); }
+            for (; i < stop; i++) { const d = plan[i]; if ((d.mode === 'm1' && M !== 1) || (d.mode === 'mgt1' && M === 1)) continue; const g = d.groups(M); pass.setPipeline(d.pipe); pass.setBindGroup(0, d.bg); pass.dispatchWorkgroups(g[0], g[1]); }
             pass.end();
             if (l === W.L) { enc.copyBufferToBuffer(tokBuf, 0, rbTok, 0, 4); if (wantLg) enc.copyBufferToBuffer(logits, 0, rbLg, 0, V * 4); }
             dev.queue.submit([enc.finish()]);
@@ -537,7 +592,7 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
           for (let l = 0; l <= W.L; l++) {
             const stop = l < W.L ? layerEnd[l] : plan.length;
             const pass = enc.beginComputePass();
-            for (; i < stop; i++) { const d = plan[i], g = d.groups(M); pass.setPipeline(d.pipe); pass.setBindGroup(0, d.bg); pass.dispatchWorkgroups(g[0], g[1]); }
+            for (; i < stop; i++) { const d = plan[i]; if ((d.mode === 'm1' && M !== 1) || (d.mode === 'mgt1' && M === 1)) continue; const g = d.groups(M); pass.setPipeline(d.pipe); pass.setBindGroup(0, d.bg); pass.dispatchWorkgroups(g[0], g[1]); }
             pass.end();
             if (l < W.L) enc.copyBufferToBuffer(hA, 0, traceB, l * maxM * D * 4, M * D * 4);
           }

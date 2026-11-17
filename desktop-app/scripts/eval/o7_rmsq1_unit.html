@@ -1,0 +1,82 @@
+<!doctype html><meta charset="utf-8"><title>o7 rmsq1 unit</title>
+<body style="font:13px monospace;white-space:pre">
+<script>
+// O7 單元（真 Chrome）：qwen_gpu 的融合核心 WGSL.rmsq1 對「WGSL.rms ＋ WGSL.quant」兩段（同一輸入、同一批次），逐位比對 q（i32）與 qs[0]。
+// 結果在 window.__out。用法同其他 o7 頁。
+const mods = {};
+const loadMod = async (key, url) => {
+  const src = await (await fetch(url, { cache: 'no-store' })).text();
+  const m = { exports: {} }; mods[key] = m;
+  new Function('module', 'exports', 'require', src)(m, m.exports, (p) => { const k = p.replace(/^\.\//, '').replace(/\.js$/, ''); if (!mods[k]) throw new Error('missing ' + k); return mods[k].exports; });
+};
+let seed = 103;
+const rnd = () => { seed = (Math.imul(seed, 1664525) + 1013904223) | 0; return (seed >>> 0) / 4294967296 - 0.5; };
+(async () => {
+  const out = { cases: [], error: null };
+  window.__out = out;
+  try {
+    await loadMod('gpu_core', '../../renderer/src/gpu/gpu_core.js');
+    await loadMod('gpu_pool', '../../renderer/src/gpu/gpu_pool.js');
+    await loadMod('nn_ops', '../../renderer/src/gpu/nn_ops.js');
+    await loadMod('infer_ops', '../../renderer/src/gpu/infer_ops.js');
+    await loadMod('attn_ops', '../../renderer/src/gpu/attn_ops.js');
+    await loadMod('onnx_lite', '../../renderer/src/gpu/onnx_lite.js');
+    await loadMod('qwen_decode', '../../renderer/src/gpu/qwen_decode.js');
+    await loadMod('qwen_gpu', '../../renderer/src/gpu/qwen_gpu.js');
+    const nn = mods.nn_ops.exports, QG = mods.qwen_gpu.exports, WG = QG.WGSL;
+    const { dev } = await nn.getDevice(navigator);
+    const S = GPUBufferUsage.STORAGE, CD = GPUBufferUsage.COPY_DST, CS = GPUBufferUsage.COPY_SRC, UN = GPUBufferUsage.UNIFORM, MR = GPUBufferUsage.MAP_READ;
+    const mkbuf = (size, usage) => dev.createBuffer({ size: Math.max(16, (size + 3) & ~3), usage: usage });
+    const ub = (bytes) => { const b = mkbuf(32, UN | CD); dev.queue.writeBuffer(b, 0, bytes); return b; };
+    const pipe = (code) => dev.createComputePipeline({ layout: 'auto', compute: { module: dev.createShaderModule({ code: code }), entryPoint: 'main' } });
+    const pRms = pipe(WG.rms), pQ = pipe(WG.quant), pF = pipe(WG.rmsq1);
+    for (const D of [64, 96, 128]) {
+      for (const kind of ['rand', 'pos', 'zero']) {
+        const x = Float32Array.from({ length: D }, () => (kind === 'pos' ? Math.abs(rnd()) * 3 : kind === 'zero' ? 0 : rnd() * 4));
+        const g = Float32Array.from({ length: D }, () => 0.5 + Math.abs(rnd()));
+        const xb = mkbuf(D * 4, S | CD | CS), gb = mkbuf(D * 4, S | CD | CS);
+        dev.queue.writeBuffer(xb, 0, x); dev.queue.writeBuffer(gb, 0, g);
+        const st = new Uint32Array([1, 0, 0, 0]); const sb = mkbuf(16, UN | CD); dev.queue.writeBuffer(sb, 0, st);
+        // 兩段
+        const y = mkbuf(D * 4, S | CS), qA = mkbuf(D * 4, S | CS), qsA = mkbuf(16, S | CS | CD);
+        const uRms = new ArrayBuffer(32); new Uint32Array(uRms, 0, 2).set([D, 0]); new Float32Array(uRms, 8, 1)[0] = 1e-6;
+        const uQ = new ArrayBuffer(32); new Uint32Array(uQ, 0, 1)[0] = D;
+        // 融合
+        const qB = mkbuf(D * 4, S | CS), qsB = mkbuf(16, S | CS | CD);
+        const uF = new ArrayBuffer(32); new Uint32Array(uF, 0, 2).set([D, 0]); new Float32Array(uF, 8, 1)[0] = 1e-6;
+        const bgRms = dev.createBindGroup({ layout: pRms.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: xb } }, { binding: 1, resource: { buffer: gb } }, { binding: 2, resource: { buffer: y } }, { binding: 3, resource: { buffer: ub(uRms) } }, { binding: 4, resource: { buffer: sb } }] });
+        const bgQ = dev.createBindGroup({ layout: pQ.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: y } }, { binding: 1, resource: { buffer: qA } }, { binding: 2, resource: { buffer: qsA } }, { binding: 3, resource: { buffer: ub(uQ) } }, { binding: 4, resource: { buffer: sb } }] });
+        const bgF = dev.createBindGroup({ layout: pF.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: xb } }, { binding: 1, resource: { buffer: gb } }, { binding: 2, resource: { buffer: qB } }, { binding: 3, resource: { buffer: qsB } }, { binding: 4, resource: { buffer: ub(uF) } }, { binding: 5, resource: { buffer: sb } }] });
+        const enc = dev.createCommandEncoder();
+        let p = enc.beginComputePass(); p.setPipeline(pRms); p.setBindGroup(0, bgRms); p.dispatchWorkgroups(1); p.end();
+        p = enc.beginComputePass(); p.setPipeline(pQ); p.setBindGroup(0, bgQ); p.dispatchWorkgroups(1); p.end();
+        p = enc.beginComputePass(); p.setPipeline(pF); p.setBindGroup(0, bgF); p.dispatchWorkgroups(1); p.end();
+        const rq = mkbuf(D * 4, MR | CD), rsq = mkbuf(16, MR | CD), rqb = mkbuf(D * 4, MR | CD), rsqb = mkbuf(16, MR | CD);
+        enc.copyBufferToBuffer(qA, 0, rq, 0, D * 4); enc.copyBufferToBuffer(qsA, 0, rsq, 0, 16);
+        enc.copyBufferToBuffer(qB, 0, rqb, 0, D * 4); enc.copyBufferToBuffer(qsB, 0, rsqb, 0, 16);
+        dev.queue.submit([enc.finish()]); await dev.queue.onSubmittedWorkDone();
+        await rq.mapAsync(1); const qa = new Int32Array(rq.getMappedRange().slice(0)); rq.unmap();
+        await rsq.mapAsync(1); const sa = new Float32Array(rsq.getMappedRange().slice(0)); rsq.unmap();
+        await rqb.mapAsync(1); const qb = new Int32Array(rqb.getMappedRange().slice(0)); rqb.unmap();
+        await rsqb.mapAsync(1); const sbv = new Float32Array(rsqb.getMappedRange().slice(0)); rsqb.unmap();
+        const ry = mkbuf(D * 4, MR | CD); const e2 = dev.createCommandEncoder(); e2.copyBufferToBuffer(y, 0, ry, 0, D * 4); dev.queue.submit([e2.finish()]); await ry.mapAsync(1); const yv = new Float32Array(ry.getMappedRange().slice(0)); ry.unmap();
+        // CPU 參考（與 WGSL.rms＋WGSL.quant 同順序的 f32 運算）
+        const f = Math.fround; let ss = 0; for (let i = 0; i < D; i++) ss = f(ss + f(x[i] * x[i]));
+        const inv = f(1 / Math.sqrt(f(f(ss / D) + 1e-6)));
+        const yr = new Float32Array(D); for (let i = 0; i < D; i++) yr[i] = f(f(x[i] * inv) * g[i]);
+        let mn = 0, mx = 0; for (let i = 0; i < D; i++) { mn = Math.min(mn, yr[i]); mx = Math.max(mx, yr[i]); }
+        const scR = f(f(mx - mn) / 255); const zpR = scR === 0 ? 0 : Math.min(255, Math.max(0, Math.round(f(-mn / scR))));
+        const qr = new Int32Array(D); for (let i = 0; i < D; i++) qr[i] = scR === 0 ? 0 : Math.min(255, Math.max(0, Math.round(f(yr[i] / scR)) + zpR)) - zpR;
+        let qBad = 0; for (let i = 0; i < D; i++) if (qb[i] !== qr[i]) qBad++;
+        const scaleRef = scR === 0 ? 1 : scR;
+        out.cases.push({ D: D, kind: kind, fusedVsCpuQMismatch: qBad, fusedScale: sbv[0], cpuScale: scaleRef, scaleEq: Object.is(sbv[0], scaleRef), pass: qBad === 0 && Object.is(sbv[0], scaleRef) });
+        continue;
+        out.debug = out.debug || { xHead: Array.from(x.slice(0, 3)), yHead: Array.from(yv.slice(0, 3)), gHead: Array.from(g.slice(0, 3)) };
+        out.cases.push({ D: D, kind: kind, qMismatch: qBad, scaleTwoStage: sa[0], scaleFused: sbv[0], scaleSame: Object.is(sa[0], sbv[0]), qSample: [qa[0], qb[0]], pass: qBad === 0 && Object.is(sa[0], sbv[0]) });
+      }
+    }
+    out.allPass = out.cases.every((c) => c.pass);
+  } catch (e) { out.error = String((e && e.stack) || e); }
+  out.done = true;
+})();
+</script>
