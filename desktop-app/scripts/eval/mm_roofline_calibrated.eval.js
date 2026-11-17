@@ -32,5 +32,37 @@ R.winners = rows.filter((c) => /勝者/.test(c[9])).map((c) => ({ shape: c[0], v
 R.rowSources = rows.map((c) => c[0] + ' ' + c[1] + ' → ' + c[8]);
 const info = panel && panel.children[1] ? panel.children[1].textContent : null;
 R.infoAfter = info;
+// (3) GPU 驗證（同一次 eval，不另外開）：轉置路徑、批次路徑（宿主 matmul_many）、gemv（既有核心）；都對 CPU 參考比對。
+// gemv 的小 M 路徑還沒實作，這裡只驗既有的 gemv。
+const MMm = mm;
+const rnd = (n, s) => { let x = s; return Float32Array.from({ length: n }, () => { x = (Math.imul(x, 1664525) + 1013904223) | 0; return ((x >>> 0) / 4294967296) - 0.5; }); };
+const maxErr = (got, want) => { let d = 0; for (let i = 0; i < want.length; i++) d = Math.max(d, Math.abs(Number(got[i]) - Number(want[i]))); return d; };
+R.gpuChecks = {};
+try {
+  const M = 64, K = 64, N = 64;
+  const An = rnd(M * K, 5), Bn = rnd(K * N, 7);
+  const want = MMm.matmulRef(An, [M, K], Bn, [K, N]).y;
+  // 轉置：A 以 K×M 儲存（transA）、B 以 N×K 儲存（transB），邏輯維度仍是 M、K、N
+  const As = new Float32Array(M * K); for (let i = 0; i < M; i++) for (let k = 0; k < K; k++) As[k * M + i] = An[i * K + k];
+  const Bs = new Float32Array(K * N); for (let k = 0; k < K; k++) for (let j = 0; j < N; j++) Bs[j * K + k] = Bn[k * N + j];
+  const o1 = { navigator: navigator, transA: true, transB: true };
+  const r1 = await MMm.matmul(As, [M, K], Bs, [K, N], o1);
+  R.gpuChecks.transpose = { layer: o1.lastInfo && o1.lastInfo.layer, maxErr: maxErr(r1.y, want) };
+} catch (e) { R.gpuChecks.transposeError = String((e && e.message) || e).slice(0, 200); }
+try {
+  const M = 64, K = 64, N = 64;
+  const An = rnd(M * K, 5), Bn = rnd(K * N, 7);
+  const want = MMm.matmulRef(An, [M, K], Bn, [K, N]).y;
+  const items = [[Array.from(An), Array.from(Bn), M, K, N], [Array.from(An), Array.from(Bn), M, K, N]];
+  const bo = await fa._cudawebCall('matmul_many', { items: items });
+  R.gpuChecks.batch = { groups: bo.length, maxErr: Math.max(maxErr(bo[0], want), maxErr(bo[1], want)) };
+} catch (e) { R.gpuChecks.batchError = String((e && e.message) || e).slice(0, 200); }
+try {
+  const M = 64, N = 64;
+  const A = rnd(M * N, 11), xv = rnd(N, 13);
+  const gw = new Float64Array(M); for (let i = 0; i < M; i++) { let s = 0; for (let j = 0; j < N; j++) s += A[i * N + j] * xv[j]; gw[i] = s; }
+  const gy = await fa._cudawebCall('gemv', { a: Array.from(A), x: Array.from(xv), m: M, n: N });
+  R.gpuChecks.gemv = { len: gy.length, maxErr: maxErr(gy, gw) };
+} catch (e) { R.gpuChecks.gemvError = String((e && e.message) || e).slice(0, 200); }
 if (panel) panel.remove();
 return R;
