@@ -18045,6 +18045,283 @@ const holder = {};
 return holder.FaPlan;
 })();
 /* PLAN-END */
+/* NEWSDIGEST-BEGIN */
+const FaWebNews = (function () {
+const holder = {};
+(function (module, self) {
+// 網頁新聞的確定性核心（純函式、無 DOM、無 I/O；UMD，Node 與瀏覽器都能載入）。
+// 三件事都是程式做，不叫模型猜：
+//   1) 來源登錄表（SOURCES，純資料）＋站名別名（resolveSite）：「去 yahoo」「看中央社」→ 進入點
+//   2) 拆字：使用者的話去掉功能詞，抽出目標詞（goalOf），展開近義（expandTerms）
+//   3) 頁面文字切成單位（splitPage），再逐單位比對目標詞（matchUnits）
+// 設計見 desktop-app/DESIGN.plan-template.md §2.2、§2.3。
+(function (root, factory) {
+    if (typeof module === 'object' && module.exports) module.exports = factory();
+    else root.FaWebNews = factory();
+})(typeof self !== 'undefined' ? self : this, function () {
+    'use strict';
+
+    // 來源登錄表。欄位：id、名稱、語言、進入點（列表頁）或 RSS 樣板（{q} 是關鍵字槽）、可靠度（0～1）、預設順序（越小越先）、別名（小寫比對）。
+    // 別名只放「明確指到這一家」的字；歧義字（如只有「奇摩」）放在 UNSUPPORTED，讓程式回報「不確定」而不是猜。
+    const SOURCES = [
+        { id: 'yahoo_tw_news', name: 'Yahoo 新聞（台灣）', lang: 'zh-TW', kind: 'list', entry: 'https://tw.news.yahoo.com/', reliability: 0.8, order: 1,
+            aliases: ['yahoo新聞', 'yahoo 新聞', 'yahoo奇摩新聞', '奇摩新聞', '雅虎新聞', 'yahoo'] },
+        { id: 'cna', name: '中央社', lang: 'zh-TW', kind: 'list', entry: 'https://www.cna.com.tw/', reliability: 0.9, order: 2,
+            aliases: ['中央社', 'cna'] },
+        { id: 'udn', name: '聯合新聞網', lang: 'zh-TW', kind: 'list', entry: 'https://udn.com/', reliability: 0.8, order: 3,
+            aliases: ['聯合新聞網', '聯合報', 'udn'] },
+        { id: 'ltn', name: '自由時報', lang: 'zh-TW', kind: 'list', entry: 'https://news.ltn.com.tw/', reliability: 0.8, order: 4,
+            aliases: ['自由時報', 'ltn'] },
+        { id: 'pts', name: '公視新聞網', lang: 'zh-TW', kind: 'list', entry: 'https://news.pts.org.tw/', reliability: 0.85, order: 5,
+            aliases: ['公視新聞', '公視'] },
+        { id: 'google_news_tw', name: 'Google 新聞（搜尋 RSS）', lang: 'zh-TW', kind: 'rss', entry: 'https://news.google.com/rss/search?q={q}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant', reliability: 0.75, order: 6,
+            aliases: ['google新聞', 'google 新聞', '谷歌新聞', 'google news'] },
+    ];
+
+    // 明確不支援的說法：程式回報「不確定是哪一個」，不自動換成別的站（例：yahoo 股市不是新聞）。
+    const UNSUPPORTED = [
+        { alias: 'yahoo股市', why: 'yahoo 股市不在來源登錄表內' },
+        { alias: '奇摩股市', why: '奇摩股市不在來源登錄表內' },
+        { alias: '奇摩', why: '「奇摩」單獨出現不確定是哪一個 Yahoo 服務' },
+    ];
+
+    // 近義展開（目標詞 → 相關詞）。資料層，可擴充；比對時不分大小寫。
+    const SYNONYMS = {
+        '黃仁勳': ['Jensen Huang', 'Jensen', '黃仁勳', '輝達', 'NVIDIA'],
+        '輝達': ['NVIDIA', 'Nvidia', '輝達'],
+    };
+
+    // 功能詞：拆字時去掉（只用來找目標詞，不影響站名與關鍵字本身）。較長的先去。
+    const FUNCTION_WORDS = ['有沒有', '有哪些', '有什麼', '今天的', '今天', '今日', '最新的', '最新', '最近', '幫我', '請幫我', '一下', '新聞', '看看', '看', '去', '進', '開', '查', '找', '要', '的', '嗎', '呢', '請', '我', '在', '哪些', '有'];
+    const ASK_EXIST = /有沒有|有無/;
+
+    const norm = (s) => String(s == null ? '' : s).normalize('NFKC').toLowerCase().trim();
+    // 比對用：忽略所有空白（「yahoo 股市」「yahoo股市」視為同一個說法）
+    const squash = (s) => norm(s).replace(/\s+/g, '');
+    const escRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    // 別名的正規表示式：字與字之間允許任意空白
+    const aliasRe = (a) => new RegExp(squash(a).split('').map(escRe).join('\\s*'), 'g');
+
+    // 站名：先比對不支援的說法（較長的先），再比對登錄表別名（較長的先）。回傳 { source, alias } | { unsupported, why } | null。
+    function resolveSite(text) {
+        const t = squash(text);
+        const hits = [];
+        for (const u of UNSUPPORTED) { const i = t.indexOf(squash(u.alias)); if (i >= 0) hits.push({ at: i, len: squash(u.alias).length, unsupported: u.alias, why: u.why }); }
+        for (const s of SOURCES) for (const a of s.aliases) { const i = t.indexOf(squash(a)); if (i >= 0) hits.push({ at: i, len: squash(a).length, source: s, alias: a }); }
+        if (!hits.length) return null;
+        // 同一段文字裡，較長的別名優先（yahoo股市 > yahoo）；長度相同取出現較早的
+        hits.sort((x, y) => (y.len - x.len) || (x.at - y.at));
+        const best = hits[0];
+        if (best.unsupported) return { unsupported: best.unsupported, why: best.why };
+        return { source: best.source, alias: best.alias };
+    }
+
+    // 決定要用哪些來源：說了站名就只用那一個；說了不支援的 → ask（問使用者）；沒說 → 登錄表預設（依 order，取前 n 個）
+    function pickSources(text, opts) {
+        const n = (opts && opts.defaultCount) || 2;
+        const site = resolveSite(text);
+        if (site && site.unsupported) return { mode: 'ask', why: site.why, sources: [] };
+        if (site && site.source) return { mode: 'named', sources: [site.source], alias: site.alias };
+        const sorted = SOURCES.filter((s) => s.kind === 'list').slice().sort((a, b) => a.order - b.order);
+        return { mode: 'default', sources: sorted.slice(0, n) };
+    }
+
+    // 進入點：列表型用 entry；RSS 型把關鍵字放進 {q}（encodeURIComponent）
+    function entryFor(source, keyword) {
+        if (source.kind === 'rss') return source.entry.replace('{q}', encodeURIComponent(keyword || ''));
+        return source.entry;
+    }
+
+    // 拆字：去掉站名、功能詞，剩下的就是目標詞。askExist 表示使用者問「有沒有」。
+    function goalOf(text) {
+        const raw = String(text == null ? '' : text);
+        let t = norm(raw);
+        const askExist = ASK_EXIST.test(t);
+        const site = resolveSite(raw);
+        const kill = [];
+        if (site && site.alias) kill.push(site.alias);
+        if (site && site.unsupported) kill.push(site.unsupported);
+        for (const k of kill) t = t.replace(aliasRe(k), ' ');
+        for (const w of FUNCTION_WORDS.slice().sort((a, b) => b.length - a.length)) t = t.split(norm(w)).join(' ');
+        const keyword = t.replace(/[\s，,。.！!？?、:：;；"'「」『』()（）\[\]【】]+/g, ' ').trim();
+        return { keyword, askExist, site: site && site.source ? site.source.id : null };
+    }
+
+    // 近義展開：目標詞本身排第一，再加登錄的近義（不分大小寫去重）
+    function expandTerms(keyword, synonyms) {
+        const table = synonyms || SYNONYMS;
+        const out = []; const seen = new Set();
+        const add = (x) => { const k = norm(x); if (k && !seen.has(k)) { seen.add(k); out.push(String(x).trim()); } };
+        add(keyword);
+        const key = Object.keys(table).find((k) => norm(k) === norm(keyword));
+        if (key) table[key].forEach(add);
+        return out;
+    }
+
+    // 頁面文字切成單位：一行一則；去掉太短、太長、導覽列、時間戳、純數字、重複的行
+    const NOISE = [/^\S{0,16}[•·]\s*\d+\s*(?:秒|分鐘|分|小時|天|週|周|月)前$/, /^[\d\s:：\-\/.,]+$/, /^(?:登入|註冊|首頁|更多|搜尋|選單|廣告|分享|訂閱|回到頂端|關於|隱私|服務條款|新聞熱搜)/, /^\d+\s*(?:秒|分鐘|小時|天)前(?:更新)?$/];
+    function splitPage(text) {
+        const lines = String(text == null ? '' : text).split(/\n+/).map((x) => x.trim()).filter(Boolean);
+        const seen = new Set(); const units = [];
+        for (const l of lines) {
+            if (l.length < 6 || l.length > 140) continue;
+            if (NOISE.some((re) => re.test(l))) continue;
+            if (seen.has(l)) continue; seen.add(l); units.push(l);
+        }
+        return units;
+    }
+
+    // 逐單位比對：任一近義詞出現在單位裡就算命中（不分大小寫）；回傳命中的單位與命中的詞，依頁面順序
+    function matchUnits(units, terms) {
+        const ts = (terms || []).map(norm).filter(Boolean);
+        const hits = [];
+        for (const u of units || []) {
+            const nu = norm(u);
+            const term = ts.find((x) => nu.includes(x));
+            if (term) hits.push({ unit: u, term });
+        }
+        return hits;
+    }
+
+    return { SOURCES, UNSUPPORTED, SYNONYMS, resolveSite, pickSources, entryFor, goalOf, expandTerms, splitPage, matchUnits };
+});
+
+}).call(null, undefined, holder);
+return holder.FaWebNews;
+})();
+const FaNewsDigest = (function () {
+const holder = {};
+holder.FaWebNews = FaWebNews;
+(function (module, self) {
+// 新聞摘要的執行器（純函式；抓網頁與摘要都由呼叫端注入，所以 Node 測試可以用假網頁＋假模型跑完整流程）。
+// 流程（逐層歸約：第 0 層取回、第 1 層逐篇讀與摘要、第 2 層合併）：
+//   選來源（pickSources：說了站名用那個；說了不支援的站名就問；沒說用登錄表預設）
+//   → 取清單（RSS 解析 <item>；列表頁只在文字裡有文章網址時才用）
+//   → 篩選（有目標詞：goalOf＋expandTerms＋matchUnits；沒有目標詞：取前幾則）
+//   → 逐篇讀內文 → 逐篇摘要（呼叫端的 summarize 一定是經過模型的路徑，或明確標示程式摘錄）
+//   → 合併成「N 則」；沒有相關就明說沒有，不拿無關標題充數。
+// 每一步都會呼叫 trace(line)，讓使用者看得到多輪在做什麼（輪次、階段、誰做的、參數、結果）。
+(function (root, factory) {
+    if (typeof module === 'object' && module.exports) module.exports = factory(require('./web_news_core.js'));
+    else root.FaNewsDigest = factory(root.FaWebNews);
+})(typeof self !== 'undefined' ? self : this, function (W) {
+    'use strict';
+
+    const decode = (s) => String(s || '')
+        .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')
+        .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;|&apos;/g, "'").replace(/&amp;/g, '&')
+        .trim();
+
+    // Google News 等 RSS：每個 <item> 取 <title> 與 <link>。回傳 [{title, url}]
+    function parseRss(xml) {
+        const out = []; const re = /<item\b[^>]*>([\s\S]*?)<\/item>/gi; let m;
+        while ((m = re.exec(String(xml || '')))) {
+            const body = m[1];
+            const t = /<title\b[^>]*>([\s\S]*?)<\/title>/i.exec(body); const l = /<link\b[^>]*>([\s\S]*?)<\/link>/i.exec(body);
+            const title = t ? decode(t[1]) : ''; const url = l ? decode(l[1]) : '';
+            if (title && /^https?:\/\//.test(url)) out.push({ title, url });
+        }
+        return out;
+    }
+
+    // 列表頁的文字裡若含絕對網址：每個網址的標題取它前面最近的一行非網址文字。沒有網址就回傳空陣列（不猜）。
+    function extractLinks(text) {
+        const lines = String(text || '').split(/\n+/).map((x) => x.trim()).filter(Boolean);
+        const out = []; const seen = new Set();
+        lines.forEach((line, i) => {
+            const u = (line.match(/https?:\/\/[^\s)\]"'<>]+/) || [])[0];
+            if (!u || seen.has(u)) return;
+            seen.add(u);
+            let title = line.replace(u, '').replace(/[\s|｜·•-]+$/, '').trim();
+            if (title.length < 6) { for (let j = i - 1; j >= 0; j--) { const p = lines[j]; if (!/https?:\/\//.test(p) && p.length >= 6) { title = p; break; } } }
+            if (title.length >= 6) out.push({ title, url: u });
+        });
+        return out;
+    }
+
+    // 主流程。deps：
+    //   fetchList(url) → { ok, text, error? }           取清單頁（RSS 或列表頁的全文）
+    //   readArticle(url) → { ok, text, error? }         讀一篇內文（全文）
+    //   summarize(body, question) → { ok, text, method } method：'model'｜'mixed'｜'extractive'（沒經過模型）
+    //   trace(line) → void                               每一步一行（輪次、階段、誰做、參數、結果）
+    // opts：{ defaultCount: 2, maxArticles: 5 }
+    async function run(userText, deps, opts) {
+        const o = Object.assign({ defaultCount: 2, maxArticles: 5 }, opts || {});
+        const say = (s) => { try { if (deps.trace) deps.trace(s); } catch (_) { /* 顯示失敗不影響流程 */ } };
+        let round = 0; const step = (stage, by, detail) => say(`第 ${++round} 輪｜${stage}｜${by}｜${detail}`);
+
+        const pick = W.pickSources(userText, { defaultCount: o.defaultCount });
+        if (pick.mode === 'ask') {
+            step('選來源', '程式', '說的網站不確定：' + pick.why);
+            return { handled: true, ok: false, text: '我不確定你說的是哪個網站（' + pick.why + '）。請說明，例如「yahoo 新聞」「中央社」「google 新聞」。', rounds: round, articles: [] };
+        }
+        step('選來源', '程式', (pick.mode === 'named' ? '站名：' + pick.alias : '沒說站名，用登錄表預設') + ' → ' + pick.sources.map((s) => s.name).join('、'));
+
+        const goal = W.goalOf(userText);
+        const terms = goal.keyword ? W.expandTerms(goal.keyword) : [];
+        const topic = goal.keyword || '今天';
+        step('拆字', '程式', '目標詞「' + (goal.keyword || '（無）') + '」' + (terms.length > 1 ? '，近義：' + terms.slice(1).join('、') : ''));
+
+        const candidates = []; const seenUrl = new Set(); const checked = []; const noLinks = [];
+        for (const src of pick.sources) {
+            const url = W.entryFor(src, goal.keyword);
+            step('取清單', '程式', src.name + ' ' + url);
+            const page = await deps.fetchList(url).catch((e) => ({ ok: false, error: String((e && e.message) || e) }));
+            checked.push(src.name);
+            if (!page || !page.ok) { step('取清單', '程式', src.name + ' 失敗：' + ((page && page.error) || '未知')); continue; }
+            const items = src.kind === 'rss' ? parseRss(page.text) : extractLinks(page.text);
+            if (!items.length) { noLinks.push(src.name); step('取清單', '程式', src.name + '：頁面文字裡沒有文章連結，無法進入內文'); continue; }
+            step('取清單', '程式', src.name + '：' + items.length + ' 則有連結');
+            for (const it of items) if (!seenUrl.has(it.url)) { seenUrl.add(it.url); candidates.push(Object.assign({ source: src.name }, it)); }
+        }
+
+        let picked = candidates;
+        if (terms.length) {
+            const hits = W.matchUnits(candidates.map((c) => c.title), terms).map((h) => h.unit);
+            picked = candidates.filter((c) => hits.includes(c.title));
+            step('篩選', '程式', '用「' + terms.join('、') + '」比對 ' + candidates.length + ' 則 → 相關 ' + picked.length + ' 則');
+        }
+        picked = picked.slice(0, o.maxArticles);
+
+        const articles = [];
+        const question = terms.length ? '這篇跟「' + goal.keyword + '」有關的重點，繁體中文 1～2 句。' : '這篇的重點，繁體中文 1～2 句。';
+        for (let i = 0; i < picked.length; i++) {
+            const c = picked[i];
+            const art = await deps.readArticle(c.url).catch((e) => ({ ok: false, error: String((e && e.message) || e) }));
+            if (!art || !art.ok || !String(art.text || '').trim()) { step('讀第 ' + (i + 1) + ' 篇', '程式', '讀不到內文：' + c.title.slice(0, 30)); continue; }
+            const body = String(art.text);
+            step('讀第 ' + (i + 1) + ' 篇', '程式', c.url + '（' + body.length + ' 字，開頭「' + body.slice(0, 20).replace(/\s+/g, ' ') + '」）');
+            const t0 = Date.now();
+            const s = await deps.summarize(body, question).catch((e) => ({ ok: false, text: String((e && e.message) || e), method: 'extractive' }));
+            const method = (s && s.method) || 'extractive'; const ms = Date.now() - t0;
+            step('逐篇摘要', method === 'extractive' ? '程式（沒經過 AI）' : '模型', (s && s.ok ? '完成' : '失敗') + '，' + method + '，' + ms + ' ms，問「' + question.slice(0, 18) + '」，答「' + String((s && s.text) || '').replace(/\s+/g, ' ').slice(0, 24) + '」');
+            articles.push({ title: c.title, source: c.source, url: c.url, summary: s && s.ok ? s.text : '（摘要失敗）', method });
+        }
+
+        step('合併', '程式', articles.length + ' 則');
+        if (!articles.length && picked.length) {
+            return { handled: true, ok: false, text: '找到 ' + picked.length + ' 則跟「' + goal.keyword + '」有關的標題，但都讀不到內文，我沒有摘要它們。', rounds: round, articles: [] };
+        }
+        if (!articles.length) {
+            const why = noLinks.length && !candidates.length ? '（' + noLinks.join('、') + ' 的頁面沒有可讀的文章連結，我沒有進去看內文）' : '';
+            const text = terms.length
+                ? '查了' + checked.join('、') + '，沒有找到跟「' + goal.keyword + '」有關的新聞。我不拿不相關的標題充數。' + why
+                : '查了' + checked.join('、') + '，沒有可以讀的文章。' + why;
+            return { handled: true, ok: false, text, rounds: round, articles: [] };
+        }
+        const allExtractive = articles.every((a) => a.method === 'extractive');
+        const head = (terms.length ? '今天有哪些' + goal.keyword + '新聞：' : '今天的新聞摘要：') + articles.length + ' 則（來源：' + checked.join('、') + '）' + (allExtractive ? '\n⚠️ 這次沒有經過 AI（程式摘錄）' : '');
+        const lines = articles.map((a, i) => (i + 1) + '. ' + a.title + '（' + a.source + '）\n   ' + a.summary.replace(/\s+/g, ' ').trim());
+        return { handled: true, ok: true, text: head + '\n\n' + lines.join('\n'), rounds: round, articles };
+    }
+
+    return { parseRss, extractLinks, run };
+});
+
+}).call(null, undefined, holder);
+return holder.FaNewsDigest;
+})();
+/* NEWSDIGEST-END */
 /* UML-BEGIN */
 const FaUml = (function () {
 const holder = {};
@@ -129492,6 +129769,37 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             save: (r) => { this._activePlanRun = r.state === 'waiting' ? { run: r, userText } : null; },
         };
     }
+    // 新聞摘要：問題是新聞類（「看今天有哪些黃仁勳新聞」「去 yahoo 看…」「看 yahoo 新聞有沒有颱風」）才接手；其他問題回 handled:false
+    _isNewsAsk(text) { return /新聞|新闻/.test(String(text)) && /有哪些|有沒有|有什麼|看|找|查|摘要|總結|重點|整理/.test(String(text)); }
+    // 抓網頁全文：fetch_web_page 回的是檔案（file_id），用 parse_uploaded_file 分頁讀完；直接有 text 就用 text
+    async _newsFetchText(url) {
+        const tool = this.tools && this.tools.fetch_web_page; if (!tool) return { ok: false, error: '沒有 fetch_web_page 工具' };
+        let j; try { j = JSON.parse(await tool.callback.call(this, JSON.stringify({ url }))); } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+        if (!j || typeof j !== 'object' || j.ok === false || j.error) return { ok: false, error: String((j && (j.error || j.message)) || '抓取失敗') };
+        let text = typeof j.text === 'string' ? j.text : '';
+        if (!text && j.file_id && this.tools.parse_uploaded_file) {
+            let off = 0; for (let p = 0; p < 40; p++) {
+                let r; try { r = JSON.parse(await this.tools.parse_uploaded_file.callback.call(this, JSON.stringify({ file_id: j.file_id, offset: off }))); } catch (_) { break; }
+                if (!r || typeof r.content !== 'string') break;
+                text += r.content; off += r.content.length; if (!r.has_more) break;
+            }
+        }
+        return text ? { ok: true, text } : { ok: false, error: '沒有內文' };
+    }
+    async _newsDigestAnswer(userText, opts) {
+        const question = FaRecipe.stripAttachments(userText) || String(userText);
+        if (typeof FaNewsDigest === 'undefined' || !this._isNewsAsk(question)) return { handled: false };
+        const M = await this._planModel({ fallback: !!(opts && opts.fallback), task: 'summary' });
+        const prog = this._createProgressWidget('新聞摘要');
+        const res = await FaNewsDigest.run(question, {
+            fetchList: (url) => this._newsFetchText(url),
+            readArticle: (url) => this._newsFetchText(url),
+            summarize: async (body, q) => { const r = await this._planLocalSummarize(body, q, M); return r && r.ok && r.json ? { ok: true, text: r.text, method: r.json.method } : { ok: false, text: (r && r.text) || '', method: 'extractive' }; },
+            trace: (line) => prog.log(line),
+        });
+        prog.finish(res.ok ? '完成' : '結束');
+        return { handled: true, ok: res.ok, header: '📰 新聞摘要｜' + res.rounds + ' 輪', text: res.text };
+    }
     async _planFinish(run, userText, trace, calls, prog, M) {
         const sm = FaPlan.summarizeRun(run); const planText = FaPlan.renderPlan(run); let body = '';
         if (run.state === 'waiting') { const w = run.waiting || {}; body = '⏸️ 計畫停在 ' + w.step + '：' + ((w.missing && w.missing.length) ? '缺 ' + w.missing.join('、') : (w.reason || '需要你補資料')) + '。請補上（附檔、貼網址，或直接說清楚），我會從這一步接著做，已完成的不會重做。'; }
@@ -129628,6 +129936,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
     async _recipeAnswer(userText, plan, opts) {
         opts = opts || {}; const S = this._omSettings(); if (!S.recipes) return { handled: false };
         const question = FaRecipe.stripAttachments(userText) || String(userText);
+        if (!opts.forceTool && !opts.planOnly) { const nd = await this._newsDigestAnswer(userText, opts); if (nd && nd.handled) return nd; } // 新聞類問題：選來源→取清單→篩選→逐篇讀與摘要→合併（每一步一行進進度卡片）
         if (S.plans && !opts.forceTool && !opts.planOnly) { const pr = await this._planAnswer(userText, plan, opts); if (pr && pr.handled) return pr; } // 多步驟：有明確的目標（影片做摘要、網頁摘要、上網查資料…）就先走計畫
         const trace = FaRecipe.newTrace(userText, { recipe: 'tool_auto' }); const rs = this._routeStack(question);
         const cands = this._recipeCandidates(plan, opts.forceTool, opts.extraTools, opts.onlyTools, opts.extraScores); if (!cands.length) return { handled: false };
