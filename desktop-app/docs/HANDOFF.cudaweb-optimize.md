@@ -102,6 +102,19 @@
 - **殘留**：`python -m http.server 8741` 行程 PID 3280 仍在執行（停止行程的指令被權限擋下，請使用者或下一棒用 Win32_Process 停掉）。
 - 下一棒順序：(a) 停掉 8741 伺服器；(b) 接啟動初始化；(c) vec4 慢 5 倍的 kernel_gen 原因（G1）；(d) G5 設定頁表格（兩處同步）；(e) O5–O10。
 
+## 2026-11-18 第十段（管理者更正後接續；交接點：get_usage 30%，仍低於 60%，停在需要真模型的項目前）
+管理者規則（2026-11-18）：交接門檻是 get_usage 的 percentUsed 達 60%；未達不停、不寫交接。本段因剩下的項目都需要真模型或大幅重寫，才在 30% 停下，並如實回報。
+- **G5 完成**（提交 `88ac0aaf2`）：真 Electron 實機驗證通過，`scripts/eval/g5_variant_panel.eval.js`（獨立使用者資料夾、埠 18641）。發現：這台能力簽名是 `sg0`，priors 實測項是 `sg1`，實測剖析在這台沒命中。
+- **O6 完成到批次層**：`quantizeDyn`（`27751abdd`）、`q8mmBatched`（`95247794e`）、`attnCoreBatched`（`9b0476984`）、`matmulNBitsBatched`（`e4c3ce05e`）都真 Chrome 全過，每案 1 次 submit。O6 最後一步（真 Qwen 每層計次）BLOCKED：程式證據是 `qwen_gpu.stepOnce` 本來就每層一次 submit（L+1 次 每步），用真模型計次需要載入權重。
+- **O7 部分**：`rmsQuantFused`（`be2c50ebb`）正確性通過；計時 0.82 → 0.13 ms／鏈，但混了 rmsnorm 並行化的效果，還沒分開量；還沒接進生產引擎。
+- **O8 未做（下一步的起點）**：`lora_ref_train.js` 的 matmul 每次都是一次往返（`be.matmul` 經 `Array.from` 轉 Float64，每次讀回）；rmsnorm、softmax、silu 也逐運算讀回。要做「訓練步內不逐運算讀回」，需要重寫前向與反向的批次順序，並用真 Chrome 跑 20 步比對 CPU loss。這是大改動，沒有在這段做。
+- **O9 部分**：競賽本身已有（`startMatmulRace` 中位數、2 秒預算、可取消）；面板的「重跑變體競賽」真機執行沒做，因為 race 每個變體會 5 次 submit，超過「每頁最多 3 次 submit」的安全規則字面要求，要先決定是否放寬或拆頁。
+- **O10**：結果檔已補批次項與待驗證項（`b6c4a62d5`、`6be709fc3`）。
+- **O11**：三個建置腳本都跑過（`embed-code-ui`、`build-assistant`、`build-web-lazy`）；所有 `renderer/src/gpu/*_test.js` 通過；建置產物未提交（依規則待發布流程）。
+- **持續優化迴圈**：未開始。第一輪要先決定要量的瓶頸與變體（候選：q8mm 的 dec 核心、rmsnorm 並行化）。
+- **殘留**：本段所有 http.server（8761、8762、8763、8764、8765）與 g5 的 Electron 都已停止，並用 Win32_Process 確認。
+- **下一步順序**：(a) 決定 O9 的 race 真機執行要不要拆頁；(b) O8 批次訓練步（大改動，需要管理者確認範圍）；(c) 持續迴圈第一輪；(d) 真模型 O6 計次與 O7 接進生產引擎。
+
 ## 2026-11-18 第九段（本棒：G5 變體競賽表；提交 `5c03d8c9f`）
 - 完成（node 通過）：`renderer/src/gpu/variant_table.js` 純函式＋`variant_table_test.js` 7 項；`floating-assistant.js` 的 `_gpuVariantPanel()` 接在 GPU 基準面板下方（套用最佳、重跑變體競賽、取消、匯出剖析、匯入剖析、恢復預設）；嵌入清單與 `FA_QWEN_SRC` 加入 `profile_priors`、`variant_table`，`node scripts/embed-code-ui.js` 已跑通。
 - **未做（下一棒第一步）**：
