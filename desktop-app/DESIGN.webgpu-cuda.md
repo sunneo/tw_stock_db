@@ -1011,3 +1011,14 @@ Python 模擬器與離線模型推論共用同一個 GPU 裝置：
 - **測試**：`renderer/src/gpu/qwen_gpu_lifecycle.test.js` 26 passed（假 GPUDevice、假引擎、假 Worker、真計時器）：換模型先卸載舊的（引擎與 device 各一次）；閒置到時卸載、原因寫「閒置」；閒置上限 60 秒，政策較短就用較短；重新排計時不會在中途卸載；手動卸載取消舊計時；出錯後重建不殘留；沒有引擎也能呼叫；ORT Worker 閒置上限與到時終止。既有 `llm_web_gpudecode` 18、`qwen_gpu_gate` 12、`qwen_decode_q4` 5、`qwen_gpu_plan` 18、`qwen_models` 22、`qwen_chat`／`qwen_decode` 17 全部通過。
 - **只在假裝置上驗過的**：destroy 是否真的釋放了 GPU 記憶體、閒置到時瀏覽器的顯示記憶體是否下降、真 GPU 上的時序。這些沒有在真瀏覽器或真 GPU 上量（使用者說真 GPU 不用管）。`_llmGpuDecodePrepare` 本身（需要真的 `navigator.gpu` 與權重）沒有單元測試，只有其中的 Map／dev 記錄透過卸載測試間接驗到。
 - **還沒做的**：「同一模型在 ORT 與 GPU 之間切換」只做到 GPU 成功時釋放 ORT、GPU 失敗時釋放 GPU；ORT 的模型切換（`_vlmLoadedBy` 換模型）沿用既有的 `_vlmTerminateModel`，沒有額外改。
+
+### 7.33 GPU 運算後端基準（矩陣乘）：cudaweb／ORT-WebGPU／ORT-WASM（2026-11-17）
+
+- **規則**（`renderer/src/gpu/bench_core.js`，純函式）：統計用 nearest-rank 的 median、p10、p90，cv＝樣本標準差／平均。有效＝valid、n ≥ 20、cv < 0.30、錯誤數 0、median > 0。遲滯：新後端 median 至少快 15% 才取代；有候選明顯更快但太吵時不把選擇交給較慢的有效候選，維持現況並說明要重跑。釘選優先於量測；量測只看有效結果；沒有就是保守預設 cudaweb（現行行為）。快取 key＝瀏覽器版本＋介面卡＋相關設定。誤差用整體尺度 max|out−ref|／max|ref|。
+- **沒有 TTL**（使用者指示）：有效結果一直有效，只有「重跑」（覆蓋）或「恢復預設」（清掉結果與釘選）會改。換機器、換介面卡、換瀏覽器版本是不同的 key，讀不到，那是正確性，不是過期。
+- **執行**（`renderer/src/gpu/bench_run.js`）：每個候選暖機 3 次不計、量測 20 次。計時包含上傳＋運算＋讀回（run 回傳才算）。每個樣本之前讓出主執行緒（`setTimeout 0`），所以頁面不凍結；可以取消，取消只在樣本之間檢查，取消時不存任何結果。候選的第一次輸出要與 CPU 參考相符（整體相對誤差 ≤ 1e-3），否則錯誤、無效。ORT 失敗逐次記錯誤（`errors`、`errorMsgs`），該列無效，不靜默。ORT 會話快取 key 含運算種類（matmul）、後端與形狀。ORT 的後端 id 是 `ort-webgpu`／`ort-wasm`，EP 名稱是 `webgpu`／`wasm`，兩者分開對應。ONNX 的 MatMul 圖由程式以最小的 protobuf 編碼產生（`onnxMatMulBytes`）。
+- **介面**（`floating-assistant.js`，GPU 區的進階區塊）：表格列出每個形狀、每個後端的 median、p10／p90、CV、有效、錯誤、建議與理由，每個形狀一個「釘選」下拉（自動／三個後端）；按鈕：重跑、取消、恢復預設。設定白名單 `gpuBenchPins`（只收 `matmul|MxKxN` 與三個後端 id）；預設 `{}`。GPU 加速主開關（`gpuAccel`）關閉時路由一律預設。
+- **形狀**：目前量測 `1x1024x1024`（解碼用的向量乘）與 `128x512x512`。
+- **測試**：`bench_core.test.js` 32 passed（統計、有效、遲滯、釘選、key、誤差）；`bench_run.test.js` 26 passed（暖機與樣本數、讓出次數、取消、輸出不符、ORT 逐次失敗、會話 key、getData promise、ONNX 圖結構用小 protobuf 讀回檢查）；`bench_wiring.test.js` 25 passed（抽出的真方法，假 localStorage、假 mm、假 ORT、假計時：無 TTL、釘選優先、gpuAccel 主開關、量測、ORT 載入失敗的註記、取消不存、恢復預設、不能同時跑兩次）。既有 `llm_web_gpudecode` 18、`qwen_gpu_gate` 12、`qwen_gpu_lifecycle` 26、`qwen_decode_q4` 5、`qwen_gpu_plan` 18、`qwen_models` 22、`qwen_chat` 9、`qwen_decode` 8 全部通過。另外 embed 之後的 QWEN 內嵌模組已確認可以 eval，`benchCore`、`bench`、`mm` 都有。
+- **只在假裝置上驗過的**：計時數字（假計時，每次 2 ms）、ORT 會話（假 ORT）、取消與讓出的時序。**沒有驗過的**：真的 cudaweb matmul（`mm_ops.matmul` 在有 GPU 時走 WGSL，這台只有軟體 WebGPU，這次沒有跑）、真的 ORT-WebGPU 與 ORT-WASM 載入（需要網路下載 onnxruntime-web 1.22.0 與真的 WebGPU）、真 GPU 上的選擇結果。使用者說真 GPU 實量不用驗。
+- **沒接上的（寫明）**：(1) 路由還沒有接進生成路徑的 matmul 派發：目前只在表格裡顯示「建議」與「釘選」，`_gpuBenchPick` 可用但沒有任何派發點呼叫它；因此量測結果目前不會改變實際運算用的後端。(2) 執行期 ORT 失敗時「退回 cudaweb 並記錄」的派發端還沒有做；基準本身的 ORT 失敗已逐次記錄。(3) softmax、rmsnorm、silu、rope、adamw 沒有量測：它們沒有可用的 cudaweb 入口與 ONNX 建圖，需要各自的 runner，這次沒有做。(4) 背景執行用的是分片讓出主執行緒，不是 worker；比 worker 慢，但實作簡單，且沒有 worker 的程式碼要維護。
