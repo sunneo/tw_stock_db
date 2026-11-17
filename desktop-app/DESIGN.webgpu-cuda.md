@@ -922,3 +922,22 @@ Python 模擬器與離線模型推論共用同一個 GPU 裝置：
 - **SDXS UNet（真 int8）**：136 個重運算 T1＋3 個權重過大的 MatMulInteger 刻意走精確 CPU 整數參考；輸出最大相對 0.102、relL2 2.30e-2（CPU 解釋器 2.05e-2），334 秒。驗證頁原本把 `cpu-int` 當退層而顯示未過，已修（頁面邏輯問題，非結果問題）。
 - **Kokoro（真 q8＋真語音包）**：245 個重運算全 T1，80 秒；波形 relL2 0.794（CPU 解釋器 0.791，同量級＝GPU 與 CPU 解釋器一致）；波形逐點比對對相位敏感，瀏覽器頁沒有頻譜比對，頻譜餘弦只在 CPU 端量過（0.942，§7.27）。
 - Demucs 的 Chrome GPU 整圖仍在跑，結果另補。
+
+### 7.30 更大的離線模型（0.6B → Qwen3-1.7B q8）可行性（2026-11-17，實測）
+**結論：可行，而且 GPU 解碼引擎不用改程式。** Qwen3 沒有 1B，0.6B 上面是 1.7B（再上去 4B）。「IndexedDB 當 swap」與「CUDA 相容層」兩者都**不是**讓大模型跑得動的機制，見最後「兩個前提的澄清」。
+- **模型**：`onnx-community/Qwen3-1.7B-ONNX` 的 `onnx/model_quantized.onnx`（動態 q8），**1,742,387,852 位元組（1.62 GiB）**，單檔無外部資料（核對大小相符）。形狀：L=28、D=2048、H=16、Hkv=8、hd=128、I=6144、V=151936、詞嵌入與 lm_head 共用（0.6B：D=1024、H=16、I=3072）。
+- **實測 1：CPU 參考引擎對真 ORT 1.22.0**（`cudaweb_qwen_greedy.js`，`QWEN_Q8` 換模型）：`loadWeights`／`createCpuEngine` 不丟錯，形狀全從權重讀。8 詞元貪婪：CPU 參考與 ORT 首詞元不同（481 vs 220），教師強迫 argmax 6/8，logits 相對差 0.05～0.145；**同一台機器上 0.6B 是 6/8、0.05～0.18**——同一類已知的動態量化雜訊（§7 之前的離群通道分析），不是形狀問題。第二組 16 詞元：CPU 參考＝ORT 16/16（argmax 16/16）。
+- **實測 2：GPU 引擎（無頭 Chrome 156、軟體 WebGPU/SwiftShader，`cudaweb_qwen_gpu_browser.js`）**：模型整檔 `fetch` 成 1.74 GB 的 `Uint8Array` 1.6 秒、解析權重 16 毫秒、`createGpuEngine` 983 毫秒（511 個派發、lm_head 5 塊，`maxBufferSize` 要求 1 GiB 通過）。**兩組提示 GPU 詞元對真 ORT 逐字相同：8/8 與 16/16**（第一組 GPU 與 CPU 參考不同、與 ORT 相同——和 §7 先前 0.6B 觀察一致）。逐層對 CPU 參考：第 0～4 層 2e-7，之後隨動態量化放大，最後一層 0.247（0.6B 同一量級，見 §7.2x）。軟體 WebGPU 每詞元 4.4～5.2 秒（只是這台沒有 GPU 的軟體實作，**不代表真 GPU 速度**）。
+- **實測 3：CPU 原生（ORT）速度**：1.7B 16 詞元＋12 詞元提示共 2.4 秒（約 0.15 秒／詞元，這台 CPU 很快），0.6B 8 詞元 0.67 秒（約 0.08 秒）→ 約慢 2～3 倍。Node 行程峰值記憶體 6.4 GB（ORT 圖＋CPU 參考引擎同時載，產品原生路徑不會雙份）。
+- **沒量到（誠實）**：真 GPU 的速度與顯存（使用者機器 Geforce 720 等級）、Electron 渲染程序載入 1.74 GB 的實際峰值、品質（只比對詞元一致，沒有做任務評測：1.7B 是否在工具呼叫與中文上明顯優於 0.6B 沒測）。
+- **顯存估計（推論，未量）**：權重全放 GPU 約 1.7 GB 量級（詞嵌入／lm_head 311 MB＋28 層）。顯存 1 GB 的卡裝不下；2 GB 的卡很勉強（還要 KV 與工作緩衝）。這種卡要「分層串流權重」（每層用到才寫入、之後釋放）：每詞元要過一遍約 1.4 GB 的層權重，PCIe 約 8 GB/s → **下限約 0.18 秒／詞元**，這才是真正的 swap 位置，**目前沒有實作**。
+- **兩個前提的澄清**：(1) IndexedDB 只能當**權重快取**（避免每次啟動重下／重讀 1.74 GB），不是運算 swap——運算時資料必須在顯存或記憶體；從 IndexedDB 讀回的頻寬遠低於 PCIe，拿來逐詞元換入換出只會更慢。(2) cudaweb 的 CUDA 相容層服務的是 Python（numba／cupy）程式，與這條 JS／WGSL 引擎無關，不能拿來加速模型。
+- **要改什麼（產品整合）見下面待辦。**
+
+**待辦（若要把 1.7B 當第二個離線模型；尚未實作，等使用者要求）**
+1. **模型登錄**：`renderer/src/vlm/vlm_core.js` 的 `MODELS` 加 `qwen3-1.7b`（repo `onnx-community/Qwen3-1.7B-ONNX`、q8 檔 1,742,387,852 位元組、contextTokens、預設不啟用；`offlineTextModel` 設定可選它）。`FaVlm` 表、`THINK_MODELS`、`_offlineThinkingOn`、`_webLoraFor` 目前都寫死 `qwen3-0.6b`，要改成「Qwen3 家族」判斷。
+2. **下載流程**：仿 `native-slot-model.js` 的 `STD`（`files`／`base`／`localDirName: 'qwen3-1.7b-q8'`），必須使用者同意後才下載（現有規則：`confirm:true`＋畫面顯示過 url／bytes）、分段可續傳、核對大小與 sha256（先量 sha256 填入）。1.74 GB 比 0.6B 大三倍，要有進度與磁碟空間檢查。
+3. **GPU 解碼路徑**（`_qwenGpuChat`、`qwen_chat.js`）：路徑與快取鍵目前綁 `qwen3-0.6b-q8` 目錄與 589 MB 模型；`readLargeFile` 分段讀入已可處理大檔，但要把模型路徑改成依 `model.id`，並確認 `createGpuEngine` 在真 GPU 的 `maxBufferSize`／顯存不足時能乾淨失敗（`device.lost`／`requestDevice` 拒絕）→ 退回 CPU；顯存小於約 2.5 GB 時**不要**預設啟用（先做分層串流再說）。
+4. **原生路徑**（`nr-engine.js`、`nr-child.js`，主程序檔案，**不能熱更新**，要發新的執行包）：`HIDDEN = 1024` 寫死（GPU lm_head 的隱藏狀態維度，1.7B 要 2048），`LAYERS／KV／HD` 與 1.7B 相同（28／8／128）可以沿用；LoRA 槽版轉換（`lora-slot-build.js`）與訓練相容檢查（`base: 'qwen3-0.6b-q8'`）是 0.6B 專用，1.7B 先不支援 LoRA，UI 要明講。
+5. **設定與 UI**：模型選擇（離線文字模型）加入 1.7B、顯示下載大小與「較慢（約 2～3 倍）」；`offlineThinking` 對 1.7B 同樣適用。
+6. **驗證**：真 GPU 上實測速度與顯存（本輪沒量）、工具呼叫／中文任務評測（`scripts/eval/native_vs_wasm_t1.eval.js` 一類）比 0.6B，確認值得再做。
