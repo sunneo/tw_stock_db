@@ -65,11 +65,16 @@ async function t(name, fn) { try { await fn(); pass++; console.log('ok  ' + name
     // 多列解碼 q8mm_decr：共用記憶體 xs（1024 個 i32）＋ red（1024 個 i32）＝ 8 KiB，低階卡上限 16 KiB 內
     assert(/@kernel q8mm_decr/.test(ops.WGSL_Q8MM_DECR)); assert(/@workgroup_size\(256\)/.test(ops.WGSL_Q8MM_DECR));
     assert((1024 + 1024) * 4 <= 16 * 1024);
+    // 8 列版 q8mm_decr8：xs 2048 個 i32＝8 KiB（歸約時同一段當 red），低階卡上限 16 KiB 內
+    assert(/@kernel q8mm_decr8/.test(ops.WGSL_Q8MM_DECR8)); assert(/@workgroup_size\(256\)/.test(ops.WGSL_Q8MM_DECR8));
+    assert(2048 * 4 <= 16 * 1024);
     assert.strictEqual(ops.q8mmVariant(1024, {}, 2), 'dec');
     assert.strictEqual(ops.q8mmVariant(1024, {}, 4), 'decr');
-    assert.strictEqual(ops.q8mmVariant(1024, {}, 8), 'decr');
-    assert.strictEqual(ops.q8mmVariant(1024, {}, 16), 'decr');
-    assert.strictEqual(ops.q8mmVariant(1024, {}, 63), 'decr');
+    assert.strictEqual(ops.q8mmVariant(1024, {}, 7), 'decr');
+    assert.strictEqual(ops.q8mmVariant(1024, {}, 8), 'decr8');
+    assert.strictEqual(ops.q8mmVariant(1024, {}, 16), 'decr8');
+    assert.strictEqual(ops.q8mmVariant(1024, {}, 63), 'decr8');
+    assert.strictEqual(ops.q8mmVariant(1024, { q8variant: 'decr8' }, 1), 'decr8');
     assert.strictEqual(ops.q8mmVariant(1024, {}, 64), 'pf');
     assert.strictEqual(ops.q8mmVariant(1024, { q8variant: 'decr' }, 1), 'decr');
     assert.strictEqual(ops.q8mmVariant(6, {}, 64), 'simple');

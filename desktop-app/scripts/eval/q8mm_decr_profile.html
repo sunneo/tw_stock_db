@@ -1,0 +1,56 @@
+<!doctype html><meta charset="utf-8"><title>q8mm decr profile</title>
+<body style="font:13px monospace;white-space:pre">
+<script>
+// 真 Chrome（真 WebGPU）：decr 的成本拆解（只量時間，結果不用）。把 WGSL_Q8MM_DECR 的一段換掉，比較純核心時間：
+// V0 原版；V1 去掉歸約的加總（保留屏障）；V2 MAC 迴圈的 xs 讀取換成常數（保留乘加與權重讀取）。
+// 結果在 window.__out。只標這台機器。
+const mods = {};
+const load = async (name) => {
+  const src = await (await fetch('../../renderer/src/gpu/' + name + '.js', { cache: 'no-store' })).text();
+  const m = { exports: {} }; mods[name] = m;
+  new Function('module', 'exports', 'require', src)(m, m.exports, (p) => { const k = p.replace(/^\.\//, '').replace(/\.js$/, ''); if (!mods[k]) throw new Error('missing ' + k); return mods[k].exports; });
+};
+(async () => {
+  const out = { rows: [], error: null };
+  window.__out = out;
+  try {
+    await load('gpu_core'); await load('gpu_pool'); await load('nn_ops'); await load('infer_ops');
+    const Q = mods.infer_ops.exports, nn = mods.nn_ops.exports;
+    const { dev } = await nn.getDevice(navigator);
+    const USAGE = { MAP_READ: 1, COPY_SRC: 4, COPY_DST: 8, UNIFORM: 0x40, STORAGE: 0x80 };
+    const base = Q.WGSL_Q8MM_DECR;
+    const must = (src, a) => { if (src.indexOf(a) < 0) throw new Error('ablation anchor missing: ' + a.slice(0, 60)); return src; };
+    const V1 = must(base, 'for (var q: u32 = 0u; q < 16u; q = q + 1u) { s = s + red[q * 64u + t]; }').replace('for (var q: u32 = 0u; q < 16u; q = q + 1u) { s = s + red[q * 64u + t]; }', 's = a[r * 4u] + s;');
+    const V2 = must(base, 'let xv = xs[r * 256u + tl];').replace('let xv = xs[r * 256u + tl];', 'let xv = i32(r) + 1;');
+    const variants = [['V0_orig', base], ['V1_no_reduce_sum', V1], ['V2_no_xs_read', V2]];
+    const mkUni = (M, K, N, nq) => { const ab = new DataView(new ArrayBuffer(32)); ab.setUint32(0, M, true); ab.setUint32(4, K, true); ab.setUint32(8, N, true); ab.setInt32(12, 131, true); ab.setFloat32(16, 0.0123, true); ab.setUint32(20, nq, true); return new Uint8Array(ab.buffer); };
+    const M = 8, K = 1024, N = 1024;
+    const xq = Int32Array.from({ length: M * K }, (_, i) => (i * 7919) % 511 - 255);
+    const Wb = Uint8Array.from({ length: K * N }, (_, i) => (i * 104729) & 255);
+    const xb = dev.createBuffer({ size: M * K * 4, usage: USAGE.STORAGE | USAGE.COPY_DST }); dev.queue.writeBuffer(xb, 0, xq);
+    const wb = dev.createBuffer({ size: K * N, usage: USAGE.STORAGE | USAGE.COPY_DST }); dev.queue.writeBuffer(wb, 0, Wb);
+    const yb = dev.createBuffer({ size: M * N * 4, usage: USAGE.STORAGE | USAGE.COPY_DST });
+    const ub = dev.createBuffer({ size: 32, usage: USAGE.UNIFORM | USAGE.COPY_DST }); dev.queue.writeBuffer(ub, 0, mkUni(M, K, N, N >>> 2));
+    const timeOf = async (code) => {
+      const pipe = dev.createComputePipeline({ layout: 'auto', compute: { module: dev.createShaderModule({ code }), entryPoint: 'main' } });
+      const bg = dev.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: xb } }, { binding: 1, resource: { buffer: wb } }, { binding: 2, resource: { buffer: yb } }, { binding: 3, resource: { buffer: ub } }] });
+      const once = async () => {
+        const enc = dev.createCommandEncoder(); const pass = enc.beginComputePass();
+        pass.setPipeline(pipe); pass.setBindGroup(0, bg);
+        for (let i = 0; i < 20; i++) pass.dispatchWorkgroups(Math.ceil(N / 64), Math.ceil(M / 4));
+        pass.end(); dev.queue.submit([enc.finish()]); await dev.queue.onSubmittedWorkDone();
+      };
+      await once(); const ts = [];
+      for (let i = 0; i < 7; i++) { const t0 = performance.now(); await once(); ts.push((performance.now() - t0) / 20); }
+      ts.sort((a, b) => a - b);
+      return Math.round(ts[3] * 1000) / 1000;
+    };
+    // 交錯量測兩輪，避免時間漂移偏向後量的變體
+    const acc = {};
+    for (let rep = 0; rep < 2; rep++) for (const [name, code] of variants) { const t = await timeOf(code); (acc[name] = acc[name] || []).push(t); }
+    for (const [name] of variants) out.rows.push({ variant: name, msPerDispatch: acc[name] });
+  } catch (e) { out.error = String(e && e.stack || e); }
+  out.done = true;
+  document.body.textContent = JSON.stringify(out, null, 1); document.title = 'done';
+})();
+</script>
