@@ -716,6 +716,28 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
     i = i + 256u;
   }
 }`;
+// 對照用（O7 拆開量）：單列 RMSNorm，同樣的並行歸約，但只輸出 f32（不量化）。用來分開「rmsnorm 並行化」與「融合」的貢獻。
+const WGSL_RMS_PAR = `
+struct P { d: u32, eps: f32 }
+@group(0) @binding(0) var<storage, read> x: array<f32>;
+@group(0) @binding(1) var<storage, read> g: array<f32>;
+@group(0) @binding(2) var<storage, read_write> y: array<f32>;
+@group(0) @binding(3) var<uniform> p: P;
+var<workgroup> sh: array<f32, 256>;
+@compute @workgroup_size(256)
+fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
+  let t = lid.x;
+  var s: f32 = 0.0;
+  var i: u32 = t;
+  loop { if (i >= p.d) { break; } let v = x[i]; s = s + v * v; i = i + 256u; }
+  sh[t] = s;
+  workgroupBarrier();
+  var r: u32 = 128u;
+  loop { if (r == 0u) { break; } if (t < r) { sh[t] = sh[t] + sh[t + r]; } workgroupBarrier(); r = r >> 1u; }
+  let inv = 1.0 / sqrt(sh[0] / f32(p.d) + p.eps);
+  i = t;
+  loop { if (i >= p.d) { break; } y[i] = x[i] * inv * g[i]; i = i + 256u; }
+}`;
 const MM_TILED_CODE = core.mmTileWgsl({ marker: 'matmul', dtype: 'f32' });
 const MM_VEC4_CODE = core.mmTileWgslVec4({ marker: 'matmul_vec4' });
 function createBatch(dev) {
@@ -789,6 +811,13 @@ function createBatch(dev) {
       const uni = new ArrayBuffer(16); new Uint32Array(uni, 0, 1)[0] = d; new Float32Array(uni, 4, 1)[0] = eps;
       dispatch(WGSL_RMSQ_FUSED, [x.buf, g.buf, y, q, st], uni, 1);
       return { y: { buf: y, n: d }, q: { buf: q, n: d, st: { buf: st, n: 4 } } };
+    },
+    // 對照用（O7）：單列 RMSNorm 並行版（一次派發，只輸出 f32）
+    rmsParallel(x, g, d, eps) {
+      const y = storage(d);
+      const uni = new ArrayBuffer(16); new Uint32Array(uni, 0, 1)[0] = d; new Float32Array(uni, 4, 1)[0] = eps;
+      dispatch(WGSL_RMS_PAR, [x.buf, g.buf, y], uni, 1);
+      return { buf: y, n: d };
     },
     // 動態量化：回傳 { buf, n }（i32 的 xq，已扣 zero point）與 st（[mn, mx, scale, zp] 的句柄，讀回用 read([[st, 4]])）
     quantizeDyn(x) {

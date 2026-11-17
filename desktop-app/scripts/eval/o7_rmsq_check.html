@@ -64,11 +64,20 @@ const rnd = () => { seed = (Math.imul(seed, 1664525) + 1013904223) | 0; return (
       await b.read([[last.q, D]]);
     };
     const median = (a) => { const v = a.slice().sort((p, q) => p - q); return v[v.length >> 1]; };
-    for (const [name, fn] of [['separate_rmsnorm_plus_quantizeDyn', runSeparate], ['fused_rmsQuant_1dispatch', runFused]]) {
+    // 對照：並行 rmsnorm（只輸出 f32）＋quantizeDyn，3 次派發。與 separate（串列 rmsnorm）比＝並行化的貢獻；與 fused 比＝融合的貢獻。
+    const runSepPar = async () => {
+      const b = nn.createBatch(dev);
+      const xh = b.upload(x), gh = b.upload(g);
+      let last = null;
+      for (let k = 0; k < REP; k++) { const yn = b.rmsParallel(xh, gh, D, EPS); last = b.quantizeDyn(yn); }
+      await b.read([[last, D]]);
+    };
+    for (const [name, fn] of [['separate_rmsnorm_serial_plus_quantizeDyn', runSeparate], ['separate_rmsnorm_parallel_plus_quantizeDyn', runSepPar], ['fused_rmsQuant_1dispatch', runFused]]) {
       await fn();   // 暖機
       const ts = [];
       for (let k = 0; k < 5; k++) { const t0 = performance.now(); await fn(); ts.push(performance.now() - t0); }
       out.timing[name] = { totalMsMedian: median(ts), perChainMsMedian: median(ts) / REP, runs: ts.map((v) => +v.toFixed(3)), dispatchesPerChain: name.startsWith('separate') ? 3 : 1 };
+      // 同一批次裡量三種組合；只做重複計時，不混入正確性（正確性見 correctness）
     }
     out.timing.note = '牆鐘含上傳與讀回；同一輸入重複 64 次；只標這台（Kepler 14 W）。';
     out.done = true;
