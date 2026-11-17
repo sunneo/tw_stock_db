@@ -934,7 +934,7 @@ Python 模擬器與離線模型推論共用同一個 GPU 裝置：
 - **兩個前提的澄清**：(1) IndexedDB 只能當**權重快取**（避免每次啟動重下／重讀 1.74 GB），不是運算 swap——運算時資料必須在顯存或記憶體；從 IndexedDB 讀回的頻寬遠低於 PCIe，拿來逐詞元換入換出只會更慢。(2) cudaweb 的 CUDA 相容層服務的是 Python（numba／cupy）程式，與這條 JS／WGSL 引擎無關，不能拿來加速模型。
 - **要改什麼（產品整合）見下面待辦。**
 
-**待辦（若要把 1.7B 當第二個離線模型；尚未實作，等使用者要求）**
+**整合 1.7B（2026-11-17 已實作；下面 1～6 逐項狀態見最後一段「整合狀態」）——原待辦：**
 1. **模型登錄**：`renderer/src/vlm/vlm_core.js` 的 `MODELS` 加 `qwen3-1.7b`（repo `onnx-community/Qwen3-1.7B-ONNX`、q8 檔 1,742,387,852 位元組、contextTokens、預設不啟用；`offlineTextModel` 設定可選它）。`FaVlm` 表、`THINK_MODELS`、`_offlineThinkingOn`、`_webLoraFor` 目前都寫死 `qwen3-0.6b`，要改成「Qwen3 家族」判斷。
 2. **下載流程**：仿 `native-slot-model.js` 的 `STD`（`files`／`base`／`localDirName: 'qwen3-1.7b-q8'`），必須使用者同意後才下載（現有規則：`confirm:true`＋畫面顯示過 url／bytes）、分段可續傳、核對大小與 sha256（先量 sha256 填入）。1.74 GB 比 0.6B 大三倍，要有進度與磁碟空間檢查。
 3. **GPU 解碼路徑**（`_qwenGpuChat`、`qwen_chat.js`）：路徑與快取鍵目前綁 `qwen3-0.6b-q8` 目錄與 589 MB 模型；`readLargeFile` 分段讀入已可處理大檔，但要把模型路徑改成依 `model.id`，並確認 `createGpuEngine` 在真 GPU 的 `maxBufferSize`／顯存不足時能乾淨失敗（`device.lost`／`requestDevice` 拒絕）→ 退回 CPU；顯存小於約 2.5 GB 時**不要**預設啟用（先做分層串流再說）。
@@ -965,4 +965,13 @@ Python 模擬器與離線模型推論共用同一個 GPU 裝置：
 - **做法**：`planLayers(W, {maxT,maxM,budgetBytes})` 先算固定成本（KV＋暫存＋lm_head＋全部層的 norm／uniform＋一層份串流緩衝區），剩下的給常駐層（二分找最大常駐層數）；其餘層每步在該層的 command buffer 提交前用 `writeBuffer` 寫進共用的 7 個層緩衝區（q／k／v／o／gate／up／down）。佇列依序執行，所以上一層算完才會覆寫；沿用既有「一層一次提交」結構。分層時單塊 `chunkM` 預設 64（每塊都要重寫串流層，塊大才划算）。常駐層取最前面的層。逐層追蹤（trace）改成 `trace:true` 才配置，分層模式不支援 trace。放不下最小分層配置（0 層常駐）才丟 `GPU_BUDGET`；`allowStream:false` 可關掉分層。
 - **估算＝實際（逐位元組）**：`estimateEngineBytes` 加 `residentLayers`，lm_head 分塊數依實際公式算。Chrome 軟體 WebGPU：0.6B 上限 300 MB → 常駐 7／串流 21 層，301,030,368＝301,030,368；1.7B 上限 600 MB → 常駐 4／串流 24 層，584,907,808＝584,907,808。
 - **正確性（軟體 WebGPU）**：0.6B 分層（300 MB）與全常駐的 GPU 詞元逐字相同；1.7B 分層（600 MB）兩組提示 GPU 詞元對真 ORT 逐字相同（8/8、16/16，與 1.7B 全常駐相同）。
-- **耗時（軟體 WebGPU，不代表真 GPU）**：1.7B 分層每詞元約 4.5～5.4 秒，與全常駐（4.4～5.2 秒）幾乎相同——軟體實作的「顯存」就是主記憶體，搬權重幾乎免費，**這個數字沒有量到真實 PCIe 成本**。真 GPU 的下限仍是（串流層位元組）÷（PCIe 頻寬）；1.7B 全部串流每詞元約 30.2 GB／8 步＝3.78 GB（含 lm_head 以外的 24 層）→ 在 8 GB/s 下約 0.47 秒／詞元（估算，未實測）。
+- **耗時（軟體 WebGPU，不代表真 GPU）**：1.7B 分層每詞元約 4.5～5.4 秒，與全常駐（4.4～5.2 秒）幾乎相同——軟體實作的「顯存」就是主記憶體，搬權重幾乎免費，**這個數字沒有量到真實 PCIe 成本**。真 GPU 的下限仍是（串流層位元組）÷（PCIe 頻寬）：實測串流量 30.2 GB／25 步＝每步 1.21 GB（常駐 4 層、串流 24 層）→ 在 8 GB/s 下約 0.15 秒／詞元；全部 28 層串流約 1.41 GB／步＝約 0.18 秒（估算，未實測）。
+
+**整合狀態（2026-11-17）**
+1. **模型登錄 ✅**：`vlm_core.js` 早就有 `qwen3-1.7b`（contextTokens 8192），這次改了標示（約 1.62 GiB、速度約 0.6B 的 1/2.5～1/3、尚不支援 LoRA）與說明；選單由 `FaVlm.textModels()` 自動列出。`_offlineThinkingOn` 改為 Qwen3 家族；`_webLoraFor`、LoRA 相關維持 0.6B（本來就該如此）；CoLU 的 `THINK_MODELS` 維持 0.6B（CoLU 計畫思考的驗證只在 0.6B 做過）。
+2. **下載 ✅（renderer 端，因為 `native-slot-model.js` 是主程序檔不能熱更新）**：`gpu/qwen_models.js`——Range 分段（16 MiB 一段、104 段）、每段存成獨立檔，續傳＝略過大小相符的段、單段失敗重試 3 次、寫入後核對大小、完成後讀回核對整檔大小與 sha256（`202ed819…feb427`，已用 HF 的 LFS 雜湊核對）、manifest。按「下載」會先 `confirm` 顯示來源與大小；有停止與刪除。**用真 HF 驗證**：Range＋重新導向＋CORS 預檢（`Origin: null`）可用，3 段小規模下載 sha256 核對通過。**沒做的：磁碟空間預檢**（renderer 沒有取得磁碟剩餘空間的 API；寫入後大小不符會報「磁碟空間不足？」並停止，已下載的段保留可續傳）。整檔核對時記憶體約需 1.74 GB＋digest 的暫存；digest 失敗時只驗大小並在 manifest 註明。
+3. **GPU 路徑 ✅**：`_qwenGpuChat` 依 `model.id` 查 `qwen_models`，路徑、位元組數、快取鍵都不再寫死 0.6B；整檔（0.6B）走原本的 `readLargeFile`，分段檔（1.7B）逐段讀。
+4. **分層 ✅**：見上一段（`planLayers`；估算＝實際逐位元組；1.7B 600 MB 上限對真 ORT 逐字相同）。`choosePlan` 先找全常駐的最大序列上限，找不到才分層（序列上限由 1024 起），都放不下以 `GPU_BUDGET` 退回。
+5. **設定 UI ✅**：「GPU 記憶體上限」旁每個模型一行「全部約需 X MB、上限 Y MB → 全常駐／分層（常駐 N／28 層）／放不下」＋狀態（已下載／下載到一半／尚未下載）＋下載、停止、刪除按鈕；改上限或偵測後即時更新。**沒有在真的桌面版視窗裡點過這些按鈕**（這台是無頭驗證，沒有 Electron 橋接）：邏輯由 `qwen_models.test.js`（22 項）與 `gpu-mem-settings.test.js` 的接線檢查涵蓋。
+6. **原生路徑 ✅（不動主程序檔）**：`nr-engine.js`／`nr-child.js` 只認 `native-models/qwen3-0.6b-q8`，`HIDDEN=1024` 寫死；`NATIVE_MODEL_ID` 維持 `qwen3-0.6b`，所以選 1.7B 時自動不走原生，改走 GPU 整段解碼（設定 `qwenGpuDecode` 開、已下載、放得下或可分層）→ 否則 transformers.js 的 WebGPU／WASM（由 HF 自動下載 q4f16／q8，與其他離線模型相同）。設定畫面與模型標示都寫明。若要讓原生路徑支援 1.7B：改 `HIDDEN`、模型目錄與 LoRA 槽版轉換，要發新的執行包（主程序檔不能熱更新），**沒有做**。
+- **仍然沒量到**：真 GPU 的速度、顯存與串流成本；1.7B 的任務品質（工具呼叫、中文）；引擎 `maxT` 最多 2048，而 1.7B 登錄的 contextTokens 是 8192——提示超過引擎序列上限時 `canRun` 會讓這一輪退回 WebGPU／WASM 路徑（log 有原因）。

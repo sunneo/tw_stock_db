@@ -20,5 +20,5 @@ ok(o._offlineThinkingArgs(M, { messages: [], prefill: '{' }).enableThinking === 
 ok(/offlineThinking: raw\.offlineThinking === 'on' \? 'on' : 'off'/.test(src), '_normalizeAdvancedSettings 白名單有 offlineThinking');
 ok(/offlineThinking: 'off',/.test(src), '預設值 off');
 ok(/bo\.native && a\.enableThinking === true/.test(src), '思考時原生路徑被略過');
-ok(/id="ai-offline-think-chk"/.test(src) && /ai-offline-think-chk'\);\n\s+if \(offThinkChkBx\)/.test(src), '設定介面有勾選框與監聽');
+ok(/advancedSettings\.offlineThinking = (on|e\.target\.checked === true) \? 'on' : 'off'/.test(src), '設定介面有開關並寫入 offlineThinking（勾選框或「離線模型開關」面板）');
 console.log(pass + ' 通過 ' + fail + ' 失敗'); process.exit(fail ? 1 : 0);

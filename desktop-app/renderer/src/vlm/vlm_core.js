@@ -45,9 +45,9 @@
         { id: 'qwen2.5-1.5b', label: 'Qwen2.5 1.5B（較大，建議用 GPU）', task: 'text-generation', arch: 'causal-lm', repo: 'onnx-community/Qwen2.5-1.5B-Instruct',
             tasks: ['chat', 'rag', 'tools'], toolCalling: 'hermes', contextTokens: 8192, lang: '中英文', license: 'Apache-2.0',
             dtype: { gpu: 'q4f16', cpu: 'q8' }, bytes: { gpu: 1165 * MB, cpu: 1506 * MB }, gpuNeedsF16: true, verified: false, notes: '約 1.5B 參數；答得明顯比 0.5B 好，工具呼叫也更穩；CPU 上很慢。' },
-        { id: 'qwen3-1.7b', label: 'Qwen3 1.7B（最大，要 GPU 才實用）', task: 'text-generation', arch: 'causal-lm', repo: 'onnx-community/Qwen3-1.7B-ONNX',
+        { id: 'qwen3-1.7b', label: 'Qwen3 1.7B（最大：約 1.62 GiB、速度約 0.6B 的 1/2.5～1/3、尚不支援 LoRA）', task: 'text-generation', arch: 'causal-lm', repo: 'onnx-community/Qwen3-1.7B-ONNX',
             tasks: ['chat', 'rag', 'tools'], toolCalling: 'hermes', contextTokens: 8192, lang: '中英文', license: 'Apache-2.0',
-            dtype: { gpu: 'q4f16', cpu: 'q8' }, bytes: { gpu: 1360 * MB, cpu: 1662 * MB }, gpuNeedsF16: true, verified: false, notes: '約 1.7B 參數；這份清單裡品質最好，下載與記憶體需求也最大。' },
+            dtype: { gpu: 'q4f16', cpu: 'q8' }, bytes: { gpu: 1360 * MB, cpu: 1662 * MB }, gpuNeedsF16: true, verified: false, noLora: true, notes: '約 1.7B 參數；這份清單裡品質最好，下載與記憶體需求也最大。桌面版：原生執行器（CPU，含 LoRA）只支援 0.6B，選這個會走 WebGPU 整段解碼（需先在設定的「GPU 記憶體上限」旁下載 q8 檔；受上限約束，放不下會分層串流）或 transformers.js 的 WebGPU／WASM；尚不支援 LoRA。' },
         // 深度估計（圖片轉 3D 用，不能拿來做圖像轉文字）：每個像素一個相對深度（大＝近）。檔案大小 2026-10-29 讀自 HuggingFace 檔案清單（fp16 49.6MB、int8 27.3MB）。
         { id: 'depth-anything-v2-small', gpuNeedsF16: true, label: 'Depth Anything V2 Small（深度估計，/image-to-3d 用）', task: 'depth-estimation', arch: 'depth', repo: 'onnx-community/depth-anything-v2-small', tasks: [], lang: '無（輸出深度圖）', license: 'Apache-2.0',
             dtype: { gpu: 'fp16', cpu: 'fp32' }, bytes: { gpu: 50 * MB, cpu: 99 * MB }, verified: false, notes: '單張圖估計相對深度（越亮越近），約 25M 參數。給 /image-to-3d 當基礎層。CPU 用 fp32（約 99MB）：2026-10-30 在瀏覽器實測 int8 版在 CPU（WebAssembly）跑不起來（缺 ConvInteger），fp32 在 CPU 實測成功（512×384 約 8～10 秒）；GPU 的 fp16 版還沒驗證。' },

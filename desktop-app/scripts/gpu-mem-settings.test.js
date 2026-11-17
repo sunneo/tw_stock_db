@@ -13,7 +13,12 @@ ok(/id|createElement\('button'\)/.test(src) && /偵測／基準/.test(src) && /G
 ok(/_gpuMemProbeRun\(/.test(src) && /fa_gpu_mem_probe/.test(src), '探測結果存 localStorage 快取');
 ok(/budgetBytes: bud\.bytes/.test(src) && /e\.code === 'GPU_BUDGET'/.test(src), 'Qwen3 GPU 解碼帶預算，GPU_BUDGET 不標記為壞掉');
 ok(/maxT: 1024, maxM: 128/.test(src) && /maxT: 512, maxM: 64/.test(src), '放不下先縮小序列上限');
-ok(/code = 'GPU_BUDGET'/.test(gpu) && /estimateEngineBytes\(W, \{ maxT, maxM \}\)/.test(gpu), 'createGpuEngine 配置前先估算並丟 GPU_BUDGET');
+ok(/code = 'GPU_BUDGET'/.test(gpu) && /planLayers\(W, \{ maxT, maxM/.test(gpu), 'createGpuEngine 配置前先估算並丟 GPU_BUDGET');
 ok(/mem: req\('gpu_mem'\)/.test(src) && /MODS\[\\"gpu_mem\\"\]/.test(src), 'gpu_mem 已嵌入 FA_QWEN_SRC');
 ok(/budgetBytes: this\.advancedSettings\.gpuMemMB > 0/.test(src), '手動上限也傳給 cudaweb 執行期的緩衝區預算');
+ok(/_qwenGpuModelOk\(model\)/.test(src) && /models: req\('qwen_models'\)/.test(src), 'GPU 解碼依模型表（0.6B／1.7B），qwen_models 已嵌入');
+ok(/M\.models\.paths\(mm, userData, sep\)/.test(src) && !/'qwen3-0\.6b-q8';\s*\n\s*const mpath/.test(src), '_qwenGpuChat 路徑依 model.id，不再寫死 0.6B 目錄');
+ok(/_qwenModelDownload\(id/.test(src) && /window\.confirm\('下載 '/.test(src) && /huggingface\.co\/' \+ mm\.repo/.test(src), '下載需使用者確認，畫面顯示來源與大小');
+ok(/\/\^qwen3-\/\.test\(String\(model\.id\)\)/.test(src), 'Thinking 開關改為 Qwen3 家族判斷');
+ok(/const NATIVE_MODEL_ID = 'qwen3-0\.6b'/.test(src), '原生路徑仍只給 0.6B（1.7B 走 GPU 解碼／WebGPU／WASM）');
 console.log(pass + ' 通過 ' + fail + ' 失敗'); process.exit(fail ? 1 : 0);

@@ -79,11 +79,11 @@ embed('renderer/src/gpu/gpu_preload.js', 'GPUPRE-BEGIN', 'GPUPRE-END', 'FA_GPU_P
 (function embedQwenGpu() {
     const rd = (p) => fs.readFileSync(path.join(root, p), 'utf8').replace(/\r\n/g, '\n');
     let s = 'const MODS = {};\n';
-    for (const n of ['nn_ops', 'infer_ops', 'onnx_lite', 'attn_ops', 'qwen_decode', 'qwen_gpu', 'qwen_chat', 'device_pick', 'gpu_mem', 'conv_ops', 'whisper_enc', 'whisper_gpu', 'whisper_attach', 'mm_ops', 'onnx_ops_more', 'onnx_interp', 'graph_session']) s += 'MODS[' + JSON.stringify(n) + '] = function (module, exports, require) {\n' + rd('renderer/src/gpu/' + n + '.js') + '\n};\n';
+    for (const n of ['nn_ops', 'infer_ops', 'onnx_lite', 'attn_ops', 'qwen_decode', 'qwen_gpu', 'qwen_chat', 'device_pick', 'gpu_mem', 'qwen_models', 'conv_ops', 'whisper_enc', 'whisper_gpu', 'whisper_attach', 'mm_ops', 'onnx_ops_more', 'onnx_interp', 'graph_session']) s += 'MODS[' + JSON.stringify(n) + '] = function (module, exports, require) {\n' + rd('renderer/src/gpu/' + n + '.js') + '\n};\n';
     // 原生子程序共用的生成參數與提示樣板（唯一實作在根目錄；renderer/src/gpu/nr_gen_params.js 只是 node 測試的轉接，不嵌入）
     for (const [n, f] of [['nr_gen_params', 'nr-gen-params.js'], ['nr_template', 'nr-template.js'], ['llm_web_core', 'renderer/src/studio/llm_web_core.js']]) s += 'MODS[' + JSON.stringify(n) + '] = function (module, exports, require) {\n' + rd(f) + '\n};\n';
     s += "const CACHE = {}; function req(p) { const n = String(p).replace(/^\\.\\//, '').replace(/\\.js$/, ''); if (n === 'gpu_core') { if (!self.FaGpuCore) throw new Error('FaGpuCore 還沒載入'); return self.FaGpuCore; } if (CACHE[n]) return CACHE[n].exports; if (!MODS[n]) throw new Error('沒有模組 ' + p); const m = { exports: {} }; CACHE[n] = m; MODS[n].call(m.exports, m, m.exports, req); return m.exports; }\n";
-    s += "return { decode: req('qwen_decode'), gpu: req('qwen_gpu'), chat: req('qwen_chat'), llmweb: req('llm_web_core'), whisper: { enc: req('whisper_enc'), gpu: req('whisper_gpu'), attach: req('whisper_attach') }, graph: req('graph_session'), tpl: req('nr_template'), pick: req('device_pick'), mem: req('gpu_mem'), nn: req('nn_ops') };";
+    s += "return { decode: req('qwen_decode'), gpu: req('qwen_gpu'), chat: req('qwen_chat'), llmweb: req('llm_web_core'), whisper: { enc: req('whisper_enc'), gpu: req('whisper_gpu'), attach: req('whisper_attach') }, graph: req('graph_session'), tpl: req('nr_template'), pick: req('device_pick'), mem: req('gpu_mem'), models: req('qwen_models'), nn: req('nn_ops') };";
     const a = src.indexOf('/* QWENGPU-BEGIN */'), b = src.indexOf('/* QWENGPU-END */');
     if (a < 0 || b < 0) throw new Error('找不到 QWENGPU 標記');
     src = src.slice(0, a) + '/* QWENGPU-BEGIN */\nconst FA_QWEN_SRC = ' + lit(s) + ';\n' + src.slice(b);
