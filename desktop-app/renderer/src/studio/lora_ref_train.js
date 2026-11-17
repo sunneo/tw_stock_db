@@ -175,6 +175,32 @@ async function loraLinA(be, x, W, lo, s, T, din, dout, cache) {
     const y = new Float64Array(T * dout); for (let i = 0; i < y.length; i++) y[i] = base[i] + s * br[i];
     cache.xA = xA; return y;
 }
+// 反向批次版（O8）：與 loraLinBwdA 的算式逐項相同（ammAt／ammBt 的轉置在這裡先轉好），矩陣乘分兩階段各一次提交。
+const mkAt = (A, B, m, k, n) => [tr2(A, k, m), B, m, k, n];   // 同 ammAt：C = Aᵀ·B
+const mkBt = (A, B, m, k, n) => [A, tr2(B, n, k), m, k, n];   // 同 ammBt：C = A·Bᵀ
+// specs：[{ dy, x, W, lo, xA, key }]，回傳與 specs 同序的 dx 陣列，並把 grads[key] = { A, B } 寫入。
+async function loraLinBwdManyA(be, specs, s, T, din, dout, grads) {
+    const rs = specs.map((sp) => sp.lo.A.length / din);
+    const P1 = [];
+    specs.forEach((sp, i) => { P1.push(mkAt(sp.xA, sp.dy, rs[i], T, dout), mkBt(sp.dy, sp.lo.B, T, dout, rs[i]), mkBt(sp.dy, sp.W, T, dout, din)); });
+    const r1 = await ammMany(be, P1);
+    const dBs = [], dxAs = [];
+    specs.forEach((sp, i) => {
+        const dB = r1[3 * i], dxA = r1[3 * i + 1];
+        for (let j = 0; j < dB.length; j++) dB[j] *= s;
+        for (let j = 0; j < dxA.length; j++) dxA[j] *= s;
+        dBs.push(dB); dxAs.push(dxA);
+    });
+    const P2 = [];
+    specs.forEach((sp, i) => { P2.push(mkAt(sp.x, dxAs[i], din, T, rs[i]), mkBt(dxAs[i], sp.lo.A, T, rs[i], din)); });
+    const r2 = await ammMany(be, P2);
+    return specs.map((sp, i) => {
+        const dA = r2[2 * i], dx = r1[3 * i + 2], dx2 = r2[2 * i + 1];
+        for (let j = 0; j < dx.length; j++) dx[j] += dx2[j];
+        grads[sp.key] = { A: dA, B: dBs[i] };
+        return dx;
+    });
+}
 async function loraLinBwdA(be, dy, x, W, lo, s, xA, T, din, dout, grads, key) {
     const r = lo.A.length / din;
     const dB = await ammAt(be, xA, dy, r, T, dout); for (let i = 0; i < dB.length; i++) dB[i] *= s;
@@ -272,9 +298,9 @@ async function lossAndGradsAsync(m, tokens, opts) {
         const P = m.layers[l], lo = m.lora[l], c = C[l]; const G = {};
         const da = await ammBt(be, dh, P.Wd, T, d, F); const dg = new Float64Array(T * F), du = new Float64Array(T * F);
         for (let i = 0; i < da.length; i++) { const sg = sig(c.g[i]); du[i] = da[i] * c.g[i] * sg; dg[i] = da[i] * c.u[i] * sg * (1 + c.g[i] * (1 - sg)); }
-        const dn2 = await ammBt(be, dg, P.Wg, T, F, d), dn2b = await ammBt(be, du, P.Wu, T, F, d); for (let i = 0; i < dn2.length; i++) dn2[i] += dn2b[i];
+        const dn2mm = await ammMany(be, [mkBt(dg, P.Wg, T, F, d), mkBt(du, P.Wu, T, F, d)]); const dn2 = dn2mm[0], dn2b = dn2mm[1]; for (let i = 0; i < dn2.length; i++) dn2[i] += dn2b[i];
         const dh1 = rmsBwd(dn2, c.h1, P.n2, c.n2.inv, T, d); for (let i = 0; i < dh1.length; i++) dh1[i] += dh[i];
-        const dao = await loraLinBwdA(be, dh1, c.ao, P.Wo, lo.o, s, c.co.xA, T, d, d, G, 'o');
+        const dao = (await loraLinBwdManyA(be, [{ dy: dh1, x: c.ao, W: P.Wo, lo: lo.o, xA: c.co.xA, key: 'o' }], s, T, d, d, G))[0];
         const dq = new Float64Array(T * d), dk = new Float64Array(T * d), dv = new Float64Array(T * d), sc = 1 / Math.sqrt(hd);
         for (let hh = 0; hh < H; hh++) for (let i = 0; i < T; i++) {
             const row = (hh * T + i) * T; const dP = new Float64Array(i + 1); let dot = 0;
@@ -282,8 +308,8 @@ async function lossAndGradsAsync(m, tokens, opts) {
             for (let j = 0; j <= i; j++) { const dS = c.P[row + j] * (dP[j] - dot) * sc; for (let u = 0; u < hd; u++) { dq[i * d + hh * hd + u] += dS * c.k[j * d + hh * hd + u]; dk[j * d + hh * hd + u] += dS * c.q[i * d + hh * hd + u]; } }
         }
         const dq0 = await ops.rope(dq, T, H, hd, -1), dk0 = await ops.rope(dk, T, H, hd, -1);
-        const dx = await loraLinBwdA(be, dq0, c.n1.y, P.Wq, lo.q, s, c.cq.xA, T, d, d, G, 'q');
-        const dx2 = await loraLinBwdA(be, dk0, c.n1.y, P.Wk, lo.k, s, c.ck.xA, T, d, d, G, 'k'), dx3 = await loraLinBwdA(be, dv, c.n1.y, P.Wv, lo.v, s, c.cv.xA, T, d, d, G, 'v');
+        const qkvB = await loraLinBwdManyA(be, [{ dy: dq0, x: c.n1.y, W: P.Wq, lo: lo.q, xA: c.cq.xA, key: 'q' }, { dy: dk0, x: c.n1.y, W: P.Wk, lo: lo.k, xA: c.ck.xA, key: 'k' }, { dy: dv, x: c.n1.y, W: P.Wv, lo: lo.v, xA: c.cv.xA, key: 'v' }], s, T, d, d, G);
+        const dx = qkvB[0], dx2 = qkvB[1], dx3 = qkvB[2];
         for (let i = 0; i < dx.length; i++) dx[i] += dx2[i] + dx3[i];
         const dh0 = rmsBwd(dx, c.h0, P.n1, c.n1.inv, T, d); for (let i = 0; i < dh0.length; i++) dh0[i] += dh1[i];
         dh = dh0; grads[l] = G;
