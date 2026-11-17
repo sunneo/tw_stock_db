@@ -147,8 +147,8 @@ function fakeDeps(opts) {
         const t0 = Date.now();
         const r = await D.run('看今天有哪些黃仁勳新聞', f.deps, { summarizeTimeoutMs: 20 });
         check('K 逾時後照常完成', r.ok === true && r.articles.length === 2, r);
-        check('K 逾時只叫一次模型', calls === 1, calls);
-        check('K 步驟行含逾時原因', f.steps.some((s) => s.includes('逾時 20 ms')), f.steps);
+        check('K 逾時不觸發斷路器：每篇各自試一次（逾時只讓那一篇走退路）', calls === 2, calls);
+        check('K 步驟行含逾時原因（沒有進度）', f.steps.some((s) => s.includes('逾時') && s.includes('沒有進度')), f.steps);
         check('K 整體在幾秒內結束', Date.now() - t0 < 5000, Date.now() - t0);
     }
     // L. 程式摘要（退路）：去掉 ▲ 圖說與署名，取完整句，不從中間截斷
@@ -172,6 +172,38 @@ function fakeDeps(opts) {
         await D.run('看今天有哪些黃仁勳新聞', f.deps);
         check('J2 頁首狀態含「第 1／2 篇」與「第 2／2 篇」', statuses.some((s) => s.includes('第 1／2 篇')) && statuses.some((s) => s.includes('第 2／2 篇')), statuses);
         check('J2 每篇完成後頁首顯示完成與耗時', statuses.some((s) => s.includes('模型摘要完成') && s.includes('ms')), statuses);
+    }
+    // P. 逾時計算、活動逾時、斷路器只看明確失敗
+    {
+        // 冷啟動（未載入）：至少數分鐘
+        check('P 冷啟動預算至少 5 分鐘', D.budgetMs({ loaded: false }) >= 300000, D.budgetMs({ loaded: false }));
+        // 已載入：依提示長度與速度估，至少 60 秒、估計值的 3 倍
+        const short = D.budgetMs({ loaded: true, promptTokens: 100, maxNew: 200, prefillTps: 100, genTps: 10 });
+        check('P 已載入、短提示＝估計 21 秒的 3 倍（63 秒，高於 60 秒下限）', short === 63000, short);
+        const longB = D.budgetMs({ loaded: true, promptTokens: 1000, maxNew: 200, prefillTps: 50, genTps: 4 });
+        check('P 已載入、長提示＝估計 70 秒的 3 倍（210 秒）', longB === 210000, longB);
+        // 活動逾時：有進度就不逾時
+        let resolvedAfter = null;
+        const slowButActive = (touch) => new Promise((resolve) => {
+            let n = 0; const iv = setInterval(() => { touch(); n++; if (n === 5) { clearInterval(iv); resolve('ok'); } }, 30);
+        });
+        D.withActivityTimeout(slowButActive, 60).then((v) => { resolvedAfter = v; });
+        // 完全沒有進度才逾時
+        const silent = D.withActivityTimeout(() => new Promise(() => {}), 40).then(() => 'resolved', (e) => ({ timeout: e.timeout, idleMs: e.idleMs }));
+        const sres = await silent;
+        check('P 完全沒有進度 → 逾時（timeout=true，附 idleMs）', sres && sres.timeout === true && sres.idleMs === 40, sres);
+        await new Promise((r) => setTimeout(r, 250));
+        check('P 有進度（每 30 毫秒 touch）就不逾時，正常完成', resolvedAfter === 'ok', resolvedAfter);
+        // 斷路器只看明確失敗
+        check('P isHardFail：載入錯誤與記憶體不足', D.isHardFail('模型載入失敗：webgpu：std::bad_alloc') && D.isHardFail('out of memory'), null);
+        check('P isHardFail：逾時與單純慢不算', !D.isHardFail('逾時（30 秒內沒有進度）') && !D.isHardFail('生成很慢'), null);
+    }
+    // Q. 逾時不觸發斷路器：第一篇逾時後，第二篇仍會叫模型（若成功就用模型摘要）
+    {
+        const f = fakeDeps(); let calls = 0;
+        f.deps.summarize = async (body) => { calls++; if (calls === 1) return new Promise(() => {}); return { ok: true, text: '重點：' + body.slice(0, 8), method: 'model' }; };
+        const r = await D.run('看今天有哪些黃仁勳新聞', f.deps, { summarizeTimeoutMs: 30 });
+        check('Q 第一篇逾時後第二篇仍用模型（斷路器未觸發）', calls === 2 && r.articles[1].method === 'model', { calls, m: r.articles.map((a) => a.method) });
     }
     // N. 整輪耗時上限：超過就不再讀下一篇，步驟行說明
     {

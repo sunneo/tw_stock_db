@@ -79,10 +79,30 @@
         const nt = String(title || '').normalize('NFKC').toLowerCase();
         return terms.filter((t) => nt.includes(String(t).normalize('NFKC').toLowerCase())).length;
     }
-    const withTimeout = (p, ms) => new Promise((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error('逾時 ' + ms + ' ms')), ms);
-        Promise.resolve(p).then((v) => { clearTimeout(timer); resolve(v); }, (e) => { clearTimeout(timer); reject(e); });
-    });
+    // 預算（毫秒）：模型尚未載入＝冷啟動，給數分鐘；已載入＝依提示長度與測得速度估，至少 60 秒、估計的 3 倍。
+    // 估算只用已知的速度（預填每秒詞元 prefillTps、生成每秒詞元 genTps）；沒有測過就用保守值。
+    function budgetMs(p) {
+        const o = p || {};
+        if (!o.loaded) return Math.max(60000, o.coldMs || 300000);
+        const pre = (o.promptTokens || 0) / Math.max(1, o.prefillTps || 40);
+        const gen = (o.maxNew || 200) / Math.max(0.5, o.genTps || 4);
+        return Math.max(60000, Math.ceil((pre + gen) * 3 * 1000));
+    }
+    // 活動逾時：只有「整段時間內都沒有任何進度」才算逾時；每次 touch()（載入進度、新詞元）就重新計時。
+    // 逾時的錯誤帶 timeout=true 與 idleMs，呼叫端據此記錄，不把它當成模型壞掉。
+    function withActivityTimeout(start, ms) {
+        return new Promise((resolve, reject) => {
+            let timer = null; let done = false;
+            const arm = () => { if (timer) clearTimeout(timer); timer = setTimeout(() => { if (done) return; done = true; const e = new Error('逾時：' + ms + ' ms 內沒有任何進度'); e.timeout = true; e.idleMs = ms; reject(e); }, ms); };
+            const finish = (fn, v) => { if (done) return; done = true; if (timer) clearTimeout(timer); fn(v); };
+            arm();
+            let p; try { p = start(arm); } catch (e) { finish(reject, e); return; }
+            Promise.resolve(p).then((v) => finish(resolve, v), (e) => finish(reject, e));
+        });
+    }
+    // 斷路器只在「明確失敗」才觸發（載入錯誤、記憶體不足）；單純慢或逾時不算。
+    const HARD_FAIL_RE = /載入|bad_alloc|記憶體|memory|out of|Aborted|create a session|OOM/i;
+    const isHardFail = (reason) => HARD_FAIL_RE.test(String(reason || ''));
 
     // 主流程。deps：
     //   fetchList(url) → { ok, text, error? }           取清單頁（RSS 或列表頁的全文）
@@ -92,7 +112,7 @@
     // opts：{ defaultCount: 2, maxArticles: 5, summarizeTimeoutMs: 30000 }
     // 模型斷路器：本輪第一次摘要失敗（模型載入失敗、呼叫失敗或單篇逾時）後，後面的文章不再叫模型，直接用程式摘要，不每篇白等。
     async function run(userText, deps, opts) {
-        const o = Object.assign({ defaultCount: 2, maxArticles: 5, summarizeTimeoutMs: 30000, roundTimeoutMs: 180000 }, opts || {});
+        const o = Object.assign({ defaultCount: 2, maxArticles: 5, summarizeTimeoutMs: 300000, roundTimeoutMs: 600000 }, opts || {});
         const roundDeadline = Date.now() + o.roundTimeoutMs; // 整輪耗時上限：超過就不再讀下一篇，已摘要的照常回答
         const say = (s) => { try { if (deps.trace) deps.trace(s); } catch (_) { /* 顯示失敗不影響流程 */ } };
     // 頁首狀態（進度卡片的 status）：第 i／n 篇、目前在做什麼；deps.status 可省略
@@ -151,11 +171,18 @@
             status('第 ' + (i + 1) + '／' + picked.length + ' 篇：摘要中' + (modelDown ? '（程式摘要）' : '（模型）'));
             if (modelDown) s = { ok: false, skipped: true };
             else {
-                try { s = await withTimeout(deps.summarize(body, question), o.summarizeTimeoutMs); }
-                catch (e) { s = { ok: false, failed: true, reason: 'summarize 失敗：' + String((e && e.message) || e) }; }
+                const ms = deps.budgetMs ? deps.budgetMs(body, question) : o.summarizeTimeoutMs;
+                const stageAtStart = deps.stage ? deps.stage() : '';
+                try { s = await withActivityTimeout((touch) => deps.summarize(body, question, { touch }), ms); }
+                catch (e) {
+                    const st = deps.stage ? deps.stage() : '';
+                    if (e && e.timeout) { s = { ok: false, failed: true, timedOut: true, reason: '逾時（' + Math.round(e.idleMs / 1000) + ' 秒內沒有進度；卡在「' + (st || stageAtStart || '未知') + '」）', stage: st || stageAtStart }; }
+                    else s = { ok: false, failed: true, reason: 'summarize 失敗：' + String((e && e.message) || e) };
+                }
             }
             const modelErr = s && !s.skipped && (s.failed ? s.reason : ((s.rejects || []).find((r) => /模型呼叫失敗/.test(String(r.reason))) || {}).reason);
-            if (modelErr && !modelDown) modelDown = String(modelErr);
+            // 斷路器：只有明確失敗（載入錯誤、記憶體不足）才停用模型；逾時或單純慢，只讓這一篇走退路
+            if (modelErr && !modelDown && isHardFail(modelErr)) modelDown = String(modelErr);
             const usedModel = !!(s && s.ok && !s.skipped && s.method && s.method !== 'extractive');
             // 退路：沒有模型或模型失敗 → 程式取前 1～2 句（完整句，不硬切）
             const summary = usedModel ? String(s.text || '') : (leadSummary(body) || '（沒有可讀的句子）');
@@ -185,5 +212,5 @@
         return { handled: true, ok: true, text: head + '\n\n' + lines.join('\n'), rounds: round, articles };
     }
 
-    return { parseRss, extractLinks, leadSummary, run };
+    return { parseRss, extractLinks, leadSummary, budgetMs, withActivityTimeout, isHardFail, run };
 });
