@@ -33,6 +33,16 @@ const relMax = (a, b) => { const x = flat(a), y = flat(b); let mx = 0, rm = 0; c
     dev.queue.submit = (cmds) => { submits++; return realSubmit(cmds); };
     // 執行期：矩陣乘走 mm_ops.matmul（GPU），回報實際層
     const rt = { matmul: async (A, B, m, k, n) => { const o = { navigator: navigator }; const r = await MM.matmul(Float32Array.from(A), [m, k], Float32Array.from(B), [k, n], o); return { result: r.y, info: { layer: o.lastInfo ? o.lastInfo.layer : 'T1', reason: null } }; } };
+    // 批次版（?batched=1）：互不相依的矩陣乘放進同一個批次、一次 submit（前向的 q/k/v 與 gate/up）
+    if (new URLSearchParams(location.search).get('batched') === '1') {
+      rt.matmulMany = async (items) => {
+        const b = nn.createBatch(dev);
+        const hs = items.map(([A, B, m, k, n]) => ({ h: b.matmul(b.upload(Float32Array.from(A)), b.upload(Float32Array.from(B)), m, k, n), n: m * n }));
+        const outs = await b.read(hs.map((x) => [x.h, x.n]));
+        return { results: outs, info: { layer: 'T1', reason: null } };
+      };
+    }
+    out.mode = new URLSearchParams(location.search).get('batched') === '1' ? 'batched' : 'unbatched';
     const cfg = { V: 64, d: 64, L: 1, H: 4, F: 128, r: 4, alpha: 8 };
     const T = 16;
     const tokens = Array.from({ length: T + 1 }, (_, i) => (i * 37 + 11) % cfg.V);

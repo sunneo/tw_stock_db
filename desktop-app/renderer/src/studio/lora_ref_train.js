@@ -148,6 +148,26 @@ async function amm(be, A, B, m, k, n) { return be.matmul(A, B, m, k, n); }      
 async function ammBt(be, A, B, m, k, n) { return be.matmul(A, tr2(B, n, k), m, k, n); }          // C = A·Bᵀ，B 存成 n×k
 async function ammAt(be, A, B, m, k, n) { return be.matmul(tr2(A, k, m), B, m, k, n); }          // C = Aᵀ·B，A 存成 k×m
 
+// 批次版（O8 前向）：be 有 matmulMany 就把互不相依的矩陣乘放進一次提交；沒有就逐個 be.matmul（CPU 路徑不變）。
+// items：[[A, B, m, k, n], ...]，回傳與 items 同序的結果陣列。
+async function ammMany(be, items) {
+    if (be.matmulMany) return be.matmulMany(items);
+    const out = []; for (const it of items) out.push(await be.matmul(it[0], it[1], it[2], it[3], it[4])); return out;
+}
+// 與 loraLinA 的算式完全相同（xA＝x·A；base＝x·W；br＝xA·B；y＝base＋s·br），但同一階段的矩陣乘一起送出：
+// 第一階段（只依賴 x）：每個投影的 xA 與 base；第二階段：每個投影的 br。specs：[{ W, lo, cache, dout }]
+async function loraLinManyA(be, x, specs, s, T, din) {
+    const items1 = [];
+    for (const sp of specs) { const r = sp.lo.A.length / din; items1.push([x, sp.lo.A, T, din, r], [x, sp.W, T, din, sp.dout]); }
+    const r1 = await ammMany(be, items1);
+    const items2 = specs.map((sp, i) => { const r = sp.lo.A.length / din; return [r1[2 * i], sp.lo.B, T, r, sp.dout]; });
+    const r2 = await ammMany(be, items2);
+    return specs.map((sp, i) => {
+        const xA = r1[2 * i], base = r1[2 * i + 1], br = r2[i], dout = sp.dout;
+        const y = new Float64Array(T * dout); for (let j = 0; j < y.length; j++) y[j] = base[j] + s * br[j];
+        sp.cache.xA = xA; return y;
+    });
+}
 async function loraLinA(be, x, W, lo, s, T, din, dout, cache) {
     const r = lo.A.length / din;
     const xA = await amm(be, x, lo.A, T, din, r);
@@ -214,7 +234,8 @@ async function lossAndGradsAsync(m, tokens, opts) {
     for (let l = 0; l < L; l++) {
         const P = m.layers[l], lo = m.lora[l], c = { h0: h };
         const n1 = await rmsFwdA(ops, h, P.n1, T, d); c.n1 = n1; const cq = {}, ck = {}, cv = {}, co = {};
-        const q0 = await loraLinA(be, n1.y, P.Wq, lo.q, s, T, d, d, cq), k0 = await loraLinA(be, n1.y, P.Wk, lo.k, s, T, d, d, ck), v = await loraLinA(be, n1.y, P.Wv, lo.v, s, T, d, d, cv);
+        const qkv = await loraLinManyA(be, n1.y, [{ W: P.Wq, lo: lo.q, cache: cq, dout: d }, { W: P.Wk, lo: lo.k, cache: ck, dout: d }, { W: P.Wv, lo: lo.v, cache: cv, dout: d }], s, T, d);
+        const q0 = qkv[0], k0 = qkv[1], v = qkv[2];
         const q = await ops.rope(q0, T, H, hd, 1), k = await ops.rope(k0, T, H, hd, 1); Object.assign(c, { cq, ck, cv, co, q, k, v });
         // 注意力分數：未遮罩的位置算 q·k/√hd，遮罩位置填 −1e30，softmax 之後正好是 0（與只算 j≤i 的版本等價）
         const sc = 1 / Math.sqrt(hd), S = new Float64Array(H * T * T), ao = new Float64Array(T * d);
@@ -235,7 +256,7 @@ async function lossAndGradsAsync(m, tokens, opts) {
         const o = await loraLinA(be, ao, P.Wo, lo.o, s, T, d, d, co);
         const h1 = new Float64Array(T * d); for (let i = 0; i < h1.length; i++) h1[i] = h[i] + o[i]; c.h1 = h1;
         const n2 = await rmsFwdA(ops, h1, P.n2, T, d); c.n2 = n2;
-        const g = await amm(be, n2.y, P.Wg, T, d, F), u = await amm(be, n2.y, P.Wu, T, d, F), a = new Float64Array(T * F);
+        const gu = await ammMany(be, [[n2.y, P.Wg, T, d, F], [n2.y, P.Wu, T, d, F]]); const g = gu[0], u = gu[1], a = new Float64Array(T * F);
         const sg = await ops.silu(g);
         for (let i = 0; i < a.length; i++) a[i] = sg[i] * u[i];
         c.g = g; c.u = u; c.a = a;
@@ -288,6 +309,14 @@ function cudawebMatmulBackend(rt) {
         be.calls++; be.layer = r.info.layer; be.reason = r.info.reason || null;
         return Float64Array.from(r.result);
     };
+    // 批次（O8 前向）：執行期有 matmulMany 才提供；一次提交多個互不相依的矩陣乘
+    if (typeof rt.matmulMany === 'function') {
+        be.matmulMany = async (items) => {
+            const r = await rt.matmulMany(items.map((it) => [Array.from(it[0]), Array.from(it[1]), it[2], it[3], it[4]]));
+            be.calls += items.length; be.layer = r.info.layer; be.reason = r.info.reason || null;
+            return r.results.map((x) => Float64Array.from(x));
+        };
+    }
     return be;
 }
 
