@@ -19,7 +19,8 @@
     ], "note": "512 的 simple 沒量（估時 54 ms 不超限，但這一輪沒排進來）。這些數字含上傳與讀回，比 kernel-only 的數字低，只標這台；與 mm_race_gt720_2026_11_18.json 的數字不同是因為量法（那份是 3 次 submit 的平均，離群大）。" },
     "fusion_O7_split_2026_11_18": { "status": "通過（正確性：q 不一致 0、y 相對誤差 7e-8；拆開量：同一批次 64 次重複，牆鐘含讀回，只標這台）", "perChainMs": { "separate_rmsnorm_serial_3dispatch": 0.780, "separate_rmsnorm_parallel_3dispatch": 0.220, "fused_1dispatch": 0.109 }, "contribution": { "rmsnorm_parallelization": "0.780 → 0.220 ms（約 3.5 倍；與融合無關）", "fusion_of_rms_and_quant": "0.220 → 0.109 ms（約 2.0 倍；兩者都是並行版）", "total": "0.780 → 0.109 ms（約 7.1 倍）" }, "pages": "scripts/eval/o7_rmsq_check.html" },
     "fusion_O7_rms_quant_add": { "status": "部分通過：單列 rmsQuantFused 正確性與拆開量已完成（見 fusion_O7_split_2026_11_18）；還沒接進生產引擎（需真模型驗證）；卷積融合與 softmax 線上版未做" },
-    "training_O8_adamw_fused": { "status": "待驗證（原因：尚未實作；訓練路徑要接 O5 核心與融合的 AdamW）" },
+    "training_O8_step1_qkv_batch": { "status": "通過（真 Chrome scripts/eval/o8_qkv_batch_check.html）：單層前向的 q、k、v 三個投影放進一個批次，1 次 submit（逐次版 3 次）；相對誤差 2.8e-7～4.1e-7（判準 1e-5）；牆鐘中位數 5.3 ms 對 11.2 ms（只標這台）。尚未做：loss 層級對 CPU 比對、反向、20 步。" },
+    "training_O8_adamw_fused": { "status": "待驗證（原因：尚未實作；訓練路徑要接 O5 核心與融合的 AdamW；第一小步已完成，見 training_O8_step1_qkv_batch）" },
     "kernel_only_2026_11_18": { "status":"量測（r8_time2.html，一次一形狀，最多 3 個 submit，kernel-only：不含上傳與回讀，每 submit 放 R 次派發取平均；峰值 128.4 GFLOP/s）", "rows": [
       { "shape": "64x256x256", "v4_64x64_reg4x4": { "msPerDispatch": 0.58, "GFLOPs": 14.4, "pctPeak": 11.2, "compileMsCold": 4 }, "r8_8x8": { "msPerDispatch": 1.95, "GFLOPs": 4.3, "pctPeak": 3.3, "note": "只有 2 個工作群組，佔用率低" } },
       { "shape": "512x1024x1024", "v4_64x64_reg4x4": { "msPerDispatch": 10.68, "GFLOPs": 100.5, "pctPeak": 78.3, "compileMsCold": 19 }, "r8_8x8": { "msPerDispatch": 17.7, "GFLOPs": 60.7, "pctPeak": 47.3, "compileMsCold": 403, "codeChars": 11401 }, "r8_8x4": { "msPerDispatch": 16.63, "GFLOPs": 64.6, "pctPeak": 50.3, "compileMsCold": 265, "codeChars": 7063 } },

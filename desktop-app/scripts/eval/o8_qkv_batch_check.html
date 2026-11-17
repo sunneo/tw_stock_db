@@ -1,0 +1,65 @@
+<!doctype html><meta charset="utf-8"><title>o8 qkv batch check</title>
+<body style="font:13px monospace;white-space:pre">
+<script>
+// O8 第一小步（真 Chrome、真 WebGPU）：單層前向的 q、k、v 三個投影（同一個輸入 n1，形狀 T×d 乘 d×d）放進同一個批次，一次 submit。
+// 對照：三次各自的批次（逐個 submit，與目前 lora_ref_train 的逐次往返相同）。
+// 判準：(1) 批次版 1 次 submit、逐次版 3 次；(2) 兩者與 CPU 參考（逐元素）相對誤差 ≤1e-5；(3) 計時中位數（標這台，含讀回）。
+// 形狀小（T=32、d=128），單次派發微小，不會逾時。結果在 window.__out。
+// 用法：desktop-app 資料夾 python -X utf8 -m http.server <埠> --bind 127.0.0.1，開 .../scripts/eval/o8_qkv_batch_check.html
+const mods = {};
+const loadMod = async (key, url) => {
+  const src = await (await fetch(url, { cache: 'no-store' })).text();
+  const m = { exports: {} }; mods[key] = m;
+  new Function('module', 'exports', 'require', src)(m, m.exports, (p) => { const k = p.replace(/^\.\//, '').replace(/\.js$/, ''); if (!mods[k]) throw new Error('missing ' + k); return mods[k].exports; });
+};
+let seed = 67;
+const rnd = () => { seed = (Math.imul(seed, 1664525) + 1013904223) | 0; return (seed >>> 0) / 4294967296 - 0.5; };
+const cpuMm = (A, B, M, K, N) => { const C = new Float64Array(M * N); for (let i = 0; i < M; i++) for (let k = 0; k < K; k++) { const a = A[i * K + k]; for (let j = 0; j < N; j++) C[i * N + j] += a * B[k * N + j]; } return C; };
+const median = (a) => { const v = a.slice().sort((p, q) => p - q); return v[v.length >> 1]; };
+(async () => {
+  const out = { hardware: 'Kepler 14 W（同一台、同一瀏覽器）', error: null };
+  window.__out = out;
+  try {
+    await loadMod('gpu_core', '../../renderer/src/gpu/gpu_core.js');
+    await loadMod('gpu_pool', '../../renderer/src/gpu/gpu_pool.js');
+    await loadMod('nn_ops', '../../renderer/src/gpu/nn_ops.js');
+    const nn = mods.nn_ops.exports;
+    const { dev } = await nn.getDevice(navigator);
+    let submits = 0;
+    const realSubmit = dev.queue.submit.bind(dev.queue);
+    dev.queue.submit = (cmds) => { submits++; return realSubmit(cmds); };
+    const T = 32, d = 128;
+    const n1 = Float32Array.from({ length: T * d }, () => rnd());
+    const Wq = Float32Array.from({ length: d * d }, () => rnd() * 0.2), Wk = Float32Array.from({ length: d * d }, () => rnd() * 0.2), Wv = Float32Array.from({ length: d * d }, () => rnd() * 0.2);
+    const ref = [cpuMm(n1, Wq, T, d, d), cpuMm(n1, Wk, T, d, d), cpuMm(n1, Wv, T, d, d)];
+    const relErr = (g, r) => { let mx = 0, rm = 0; for (let i = 0; i < r.length; i++) { mx = Math.max(mx, Math.abs(g[i] - r[i])); rm = Math.max(rm, Math.abs(r[i])); } return mx / Math.max(rm, 1e-30); };
+    // 批次版：一次 submit，三個投影
+    const runBatched = async () => {
+      const b = nn.createBatch(dev);
+      const x = b.upload(n1), wq = b.upload(Wq), wk = b.upload(Wk), wv = b.upload(Wv);
+      const yq = b.matmul(x, wq, T, d, d), yk = b.matmul(x, wk, T, d, d), yv = b.matmul(x, wv, T, d, d);
+      return b.read([[yq, T * d], [yk, T * d], [yv, T * d]]);
+    };
+    // 逐次版：三個各自的批次（每個一次 submit、一次讀回）
+    const runSeparate = async () => {
+      const res = [];
+      for (const W of [Wq, Wk, Wv]) {
+        const b = nn.createBatch(dev);
+        const x = b.upload(n1), w = b.upload(W);
+        const y = b.matmul(x, w, T, d, d);
+        const [o] = await b.read([[y, T * d]]);
+        res.push(o);
+      }
+      return res;
+    };
+    submits = 0; const gB = await runBatched(); const subB = submits;
+    submits = 0; const gS = await runSeparate(); const subS = submits;
+    const errB = [0, 1, 2].map((i) => relErr(gB[i], ref[i])), errS = [0, 1, 2].map((i) => relErr(gS[i], ref[i]));
+    out.correctness = { batchedSubmits: subB, separateSubmits: subS, batchedRelErr: errB, separateRelErr: errS, pass: subB === 1 && subS === 3 && Math.max(...errB, ...errS) <= 1e-5 };
+    // 計時（各 7 次取中位數，先暖機）
+    const timeIt = async (fn) => { await fn(); const ts = []; for (let k = 0; k < 7; k++) { const t0 = performance.now(); await fn(); ts.push(performance.now() - t0); } return median(ts); };
+    out.timing = { batchedMsMedian: await timeIt(runBatched), separateMsMedian: await timeIt(runSeparate), note: '牆鐘含上傳與讀回；只標這台' };
+  } catch (e) { out.error = String((e && e.stack) || e); }
+  out.done = true;
+})();
+</script>
