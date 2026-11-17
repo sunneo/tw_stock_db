@@ -41,7 +41,7 @@ function makeSelf(script) {
         const { self, calls } = makeSelf(() => {});
         let err = null; const t0 = Date.now();
         try { await self._llmGenerate({}, { stallMs: 60 }, {}); } catch (e) { err = e; }
-        check('A 完全沒有進度：門檻到了就終止工作者', calls.terminate === 1 && err && /worker/.test(err.message), { calls, err: err && err.message });
+        check('A 完全沒有進度：門檻到了就終止工作者，並以「安靜太久」的錯誤結束', calls.terminate === 1 && err && /安靜太久/.test(err.message), { calls, err: err && err.message });
         check('A 中斷時間接近門檻（不是無限等）', Date.now() - t0 < 1000, Date.now() - t0);
         check('A 結束後忙碌計數歸零', self._llmBusy === 0, self._llmBusy);
     }
@@ -66,6 +66,23 @@ function makeSelf(script) {
         const { self, calls } = makeSelf((cb, resolve) => { setTimeout(() => resolve('慢完成'), 150); });
         const out = await self._llmGenerate({}, {}, {});
         check('D 沒有設 stallMs：不套用卡死偵測', out === '慢完成' && calls.terminate === 0, { out, calls });
+    }
+
+    // E. 卡住後核心才晚回來：呼叫端已經以錯誤結束，晚到的結果一律丟棄（不會把舊結果當成這次的回答）
+    {
+        const { self, calls } = makeSelf((cb, resolve) => { setTimeout(() => resolve('晚到的結果'), 200); });
+        let err = null, out = null;
+        try { out = await self._llmGenerate({}, { stallMs: 60 }, {}); } catch (e) { err = e; }
+        check('E 卡住後晚到的結果被丟棄', err && /安靜太久/.test(err.message) && out === null && calls.terminate === 1, { out, err: err && err.message });
+        await sleep(250);
+        check('E 晚到之後忙碌計數仍歸零', self._llmBusy === 0, self._llmBusy);
+    }
+    // F. 有 GPU 引擎的卡住情況：會呼叫釋放 GPU 引擎（沒有引擎時不出錯）
+    {
+        let released = 0; const { self } = makeSelf(() => {});
+        self._qwenGpuRelease = (why) => { released++; if (!why) throw new Error('缺少原因'); };
+        let err = null; try { await self._llmGenerate({}, { stallMs: 60 }, {}); } catch (e) { err = e; }
+        check('F 卡住時釋放 GPU 引擎（附原因）', released === 1 && err && /安靜太久/.test(err.message), { released, err: err && err.message });
     }
 
     console.log(ok + ' passed, ' + bad + ' failed');

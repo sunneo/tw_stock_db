@@ -319,6 +319,28 @@ check('pose model is registered (full fp32, not int8), not an image model, never
   check('nativeFullText：prepend 時＝預填＋續寫（不做開頭檢查）', V.nativeFullText('"name"', '{', { send: true, prepend: true }) === '{"name"' && V.nativeFullText(null, '{', { send: true, prepend: true }) === '{');
   check('nativeFullText：不 prepend 時走舊檢查（不符回 null）', V.nativeFullText('<tool_call>', '{', { send: false, prepend: false }) === null && V.nativeFullText('{"a":1}', '{', { send: false, prepend: false }) === '{"a":1}');
 }
+// makeStreamWatch：串流退化偵測（一般聊天、新聞摘要、知識庫共用）
+{
+  const w1 = V.makeStreamWatch(); let acc1 = ''; let r1 = null;
+  for (let i = 0; i < 40; i++) { const d = '這是一段正常的繁體中文回答，內容每次都不一樣，第' + i + '句。'; acc1 += d; r1 = w1.feed(acc1, d) || r1; }
+  check('watch：正常的長回答不中斷', r1 === null && w1.reason === null, r1);
+  const w2 = V.makeStreamWatch(); let acc2 = ''; let r2 = null;
+  for (let i = 0; i < 30 && !r2; i++) { const d = '好的我來處理。'; acc2 += d; r2 = w2.feed(acc2, d); }
+  check('watch：同一句重複吐出會被抓到並回報原因', typeof r2 === 'string' && r2.length > 0, r2);
+  check('watch：原因粘住（之後再 feed 仍回同一個）', w2.feed(acc2 + '好的', '好的') === r2 && w2.reason === r2);
+  const w3 = V.makeStreamWatch(); const acc3 = 'A'.repeat(120);
+  check('watch：太短（不超過 120 字）不檢查', w3.feed(acc3, acc3) === null && w3.reason === null);
+  const w4 = V.makeStreamWatch(); const acc4 = '好'.repeat(200); let r4 = null;
+  check('watch：字數沒到 64 不檢查', w4.feed(acc4, '好'.repeat(10)) === null && w4.feed(acc4, '好'.repeat(10)) === null);
+  for (let i = 0; i < 5 && !r4; i++) r4 = w4.feed(acc4, '好'.repeat(10));
+  check('watch：累積到 64 字以上才檢查，重複的字會被抓到', typeof r4 === 'string' && r4.length > 0, r4);
+  const w5 = V.makeStreamWatch(); const acc5 = '。'.repeat(200); let r5 = null;
+  for (let i = 0; i < 10; i++) r5 = w5.feed(acc5, '。'.repeat(10)) || r5;
+  check('watch：只有標點（no_content）不中斷', r5 === null, r5);
+  check('watch：空字串不算', V.makeStreamWatch().feed('', '') === null);
+  const w6 = V.makeStreamWatch({ every: 4, minLen: 10 }); const acc6 = '好'.repeat(200);
+  check('watch：可以自訂門檻', typeof w6.feed(acc6, '好好好好') === 'string');
+}
 console.log(ok + ' passed, ' + bad.length + ' failed', bad);
 process.exit(bad.length ? 1 : 0);
 })();

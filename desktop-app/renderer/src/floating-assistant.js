@@ -14533,6 +14533,27 @@ const holder = {};
         if (lines.length >= 6 && new Set(lines).size / lines.length < 0.4) return { garbage: true, reason: 'repeat_lines' };
         return { garbage: false };
     }
+    // 串流的退化偵測（離線生成的唯一一套）：一般聊天、新聞摘要、知識庫都走 _llmGenerate → _llmGenerateInner，每條串流都用這一個。
+    // 每吐出 every 個字元看一次尾端 tail 字；只有 looksLikeGarbage 認定是垃圾才回報原因（empty／no_content 不算：還沒寫出東西、或只有標點時不中斷，留給呼叫端的空白檢查）。
+    // 純函式：feed(acc, delta) 回傳原因（字串）或 null；原因一旦出現就一直回傳同一個（粘住）。acc＝目前全部輸出，delta＝這次新增的字。
+    function makeStreamWatch(o) {
+        o = o || {}; const every = o.every > 0 ? o.every : 64, minLen = o.minLen > 0 ? o.minLen : 120, tail = o.tail > 0 ? o.tail : 1500;
+        let since = 0, reason = null;
+        return {
+            feed(acc, delta) {
+                if (reason) return reason;
+                since += String(delta == null ? '' : delta).length;
+                const full = String(acc == null ? '' : acc);
+                if (since >= every && full.length > minLen) {
+                    since = 0;
+                    const g = looksLikeGarbage(full.slice(-tail));
+                    if (g.garbage && g.reason !== 'empty' && g.reason !== 'no_content') reason = g.reason;
+                }
+                return reason;
+            },
+            get reason() { return reason; },
+        };
+    }
     // 把舊的工具結果換成 placeholder：只留名稱與前面一小段，其他省略
     function placeholderOf(msg, keep) { const body = String(msg.content || '').replace(/\s+/g, ' ').trim(); return { role: 'tool', name: msg.name, content: '[' + (msg.name || '工具') + ' 的結果已省略；摘要：' + body.slice(0, keep == null ? 60 : keep) + (body.length > (keep == null ? 60 : keep) ? '…' : '') + ']', _placeholder: true }; }
     function messagesTokens(messages, tools) { let n = 0; for (const m of messages) n += estimateTokens(m.content) + 6; if (tools && tools.length) n += estimateTokens(JSON.stringify(tools)); return n; }
@@ -14666,7 +14687,7 @@ const holder = {};
     // 估算這次下載量（依裝置組合）；已經在快取裡的部分不用再下載
     function estimateDownload(model, device, cachedBytes) { const total = (model.bytes && model.bytes[device === 'webgpu' ? 'gpu' : 'cpu']) || 0; return Math.max(0, total - (Number(cachedBytes) || 0)); }
 
-    return { nativePrefillPlan, nativeFullText, MODELS, byId, imageModels, textModels, depthModels, DEFAULT_DEPTH_MODEL, segmentModels, DEFAULT_SEGMENT_MODEL, poseModels, DEFAULT_POSE_MODEL, DEFAULT_MODEL, DEFAULT_TEXT_MODEL, THRESHOLD_MIN, THRESHOLD_MAX, clampThreshold, shouldUseOfflineLlm, estimateTokens, trimToTokens, textBudget, composeMessages, textGenParams, compactToolSpecs, parseToolCalls, TOOL_STAGE_SYSTEM, roleConfig, toolsTrust, routeStages, toolResultsAsReferences, looksLikeGarbage, fitMessages, runAgentLoop, placeholderOf, BENCH_TOOLS, BENCH_CASES, scoreToolCase, summarizeToolBench, TASKS, generationParams, defaultMaxTokens, inferTask, pickModel, VISION_POLICIES, visionOrder, combineVision, structuredPrompt, parseStructured, resolveDevice, backendOrder, wantsNativeBackend, effectiveDevicePref, nativeToolMessages, nativeWithPrefill, resolveThreads, buildTask, formatResult, repoOfUrl, usageByModel, urlsOfModel, fmtBytes, estimateDownload };
+    return { nativePrefillPlan, nativeFullText, MODELS, byId, imageModels, textModels, depthModels, DEFAULT_DEPTH_MODEL, segmentModels, DEFAULT_SEGMENT_MODEL, poseModels, DEFAULT_POSE_MODEL, DEFAULT_MODEL, DEFAULT_TEXT_MODEL, THRESHOLD_MIN, THRESHOLD_MAX, clampThreshold, shouldUseOfflineLlm, estimateTokens, trimToTokens, textBudget, composeMessages, textGenParams, compactToolSpecs, parseToolCalls, TOOL_STAGE_SYSTEM, roleConfig, toolsTrust, routeStages, toolResultsAsReferences, looksLikeGarbage, makeStreamWatch, fitMessages, runAgentLoop, placeholderOf, BENCH_TOOLS, BENCH_CASES, scoreToolCase, summarizeToolBench, TASKS, generationParams, defaultMaxTokens, inferTask, pickModel, VISION_POLICIES, visionOrder, combineVision, structuredPrompt, parseStructured, resolveDevice, backendOrder, wantsNativeBackend, effectiveDevicePref, nativeToolMessages, nativeWithPrefill, resolveThreads, buildTask, formatResult, repoOfUrl, usageByModel, urlsOfModel, fmtBytes, estimateDownload };
 });
 
 }).call(null, undefined, holder);
@@ -82563,11 +82584,11 @@ const FaKnowledgeHost = (function () {
                 if (kind === 'offline') step('🔌 ' + (i === 0 ? '離線模式：' : '線上試了兩次都沒成功，') + '改用離線文字模型…（第一次要載入模型，會比較慢；小模型的品質有限，寫出來的一樣會逐句核對）');
                 try {
                     const lim0 = kind === 'offline' ? Math.max(tm, 180000) : (i > 0 ? Math.round(tm * 1.5) : tm), lim = kind === 'offline' ? lim0 : lim0 * 4; // 線上：最多輪過 4 個模型，每個各自有 lim0 的耐心 // 線上重試時多給一點耐心：一次慢回應不代表離線
-                    let lastActive = Date.now(); const touch = () => { lastActive = Date.now(); }; // 離線模型：有在吐字（或載入進度有在動）就不算沒回應，只有「安靜」超過上限才放棄；沒有 20 分鐘的絕對上限（離線慢是使用者接受的，只要還在吐字或載入有進度就一直等）
-                    const call = kind === 'offline' ? this._kiOfflineComplete(o.offlinePrompt ? o.offlinePrompt() : prompt, Object.assign({}, opts, { onActive: touch })) : this._kiOnlineAcrossRows(prompt, opts, step, lim);
+                    // 離線的「安靜」偵測只有一套：交給 _llmGenerate 的 stallMs（完全沒有新詞元、也沒有載入進度超過 lim 就終止工作者）。這裡不另外計時，也沒有 20 分鐘的絕對上限。
+                    const call = kind === 'offline' ? this._kiOfflineComplete(o.offlinePrompt ? o.offlinePrompt() : prompt, Object.assign({}, opts, { stallMs: lim })) : this._kiOnlineAcrossRows(prompt, opts, step, lim);
                     const reply = await Promise.race([
                         call,
-                        new Promise((_, rej) => { const t00 = Date.now(), quiet = () => rej(new Error('等了 ' + Math.round(lim / 1000) + ' 秒沒有回應' + (kind === 'online' ? '（AI 節點可能斷線了）' : '（離線模型安靜太久，可能卡住了）'))); if (kind !== 'offline') { timer = setTimeout(quiet, lim); return; } const tick = () => { if (Date.now() - lastActive > lim) quiet(); else timer = setTimeout(tick, 4000); }; timer = setTimeout(tick, 4000); }),
+                        new Promise((_, rej) => { if (kind === 'online') timer = setTimeout(() => rej(new Error('等了 ' + Math.round(lim / 1000) + ' 秒沒有回應（AI 節點可能斷線了）')), lim); }), // 離線不在這裡計時（見 stallMs）
                         new Promise((_, rej) => { if (o.ctl) o.ctl.cancel = () => rej(new Error('已略過等待')); }),
                     ]);
                     clearTimeout(timer);
@@ -82644,7 +82665,7 @@ const FaKnowledgeHost = (function () {
             return out;
         },
         async _kiOfflineGenerate(model, msgs, maxTokens, opts) {
-            const r = await this._llmGenerate(model, { messages: msgs, maxTokens, deterministic: true }, { update() { if (opts.onActive) opts.onActive(); }, log() { if (opts.onActive) opts.onActive(); }, onToken() { if (opts.onActive) opts.onActive(); } });
+            const r = await this._llmGenerate(model, { messages: msgs, maxTokens, deterministic: true, stallMs: opts.stallMs }, {});
             return String(r == null ? '' : r).trim();
         },
         // 模型想的「可能出現在文件裡的詞」：只拿來多找一輪，不當答案。沒有模型可用就回空的（維持原本的檢索結果）。
@@ -96059,14 +96080,21 @@ ${fnData.code}
     async _llmGenerate(model, a, cb) {
         // 生成中計數：GPU 量測前要知道有沒有生成在進行（有就不量，請使用者等生成結束）
         this._llmBusy = (this._llmBusy || 0) + 1;
-        const c0 = cb || {}; const stallMs = a && a.stallMs > 0 ? a.stallMs : 0; let stallT = null;
-        const arm = () => { if (!stallMs) return; if (stallT) clearTimeout(stallT); stallT = setTimeout(() => { try { this._vlmTerminate(); } catch (_) { /* 已經沒了 */ } }, stallMs); };
+        const c0 = cb || {}; const stallMs = a && a.stallMs > 0 ? a.stallMs : 0; let stallT = null, stallRej = null;
+        // 卡死偵測（離線生成唯一的一套；知識庫、新聞摘要都用 a.stallMs 交給這裡）：完全沒有新詞元、也沒有載入進度超過 stallMs 才觸發。
+        // 觸發：終止工作者、釋放 GPU 引擎，這一次呼叫以錯誤結束（不是明確失敗，斷路器不因此停用模型）；核心之後才回來的結果一律丟棄。
+        const stallP = new Promise((_, rej) => { stallRej = rej; }); stallP.catch(() => {});
+        const arm = () => { if (!stallMs) return; if (stallT) clearTimeout(stallT); stallT = setTimeout(() => {
+            try { this._vlmTerminate(); } catch (_) { /* 已經沒了 */ }
+            try { this._qwenGpuRelease('離線生成安靜太久'); } catch (_) { /* 沒有 GPU 引擎 */ }
+            stallRej(new Error('等了 ' + Math.round(stallMs / 1000) + ' 秒沒有回應（離線模型安靜太久，可能卡住了）'));
+        }, stallMs); };
         const cb2 = Object.assign({}, c0, {
             update: (p) => { arm(); return c0.update ? c0.update(p) : undefined; },
             onToken: (acc) => { arm(); return c0.onToken ? c0.onToken(acc) : undefined; },
         });
         arm();
-        try { return await this._llmGenerateCore(model, a, cb2); }
+        try { return await Promise.race([this._llmGenerateCore(model, a, cb2), stallP]); }
         finally { if (stallT) clearTimeout(stallT); this._llmBusy = Math.max(0, (this._llmBusy || 1) - 1); }
     }
     async _llmGenerateCore(model, a, cb) {
@@ -130552,9 +130580,11 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         // GPU 版 lm_head（選用）：接上了才帶 gpuHead；不論成功失敗，生成結束一定停掉信箱輪詢
         const hd = await this._nrHeadStart();
         if (hd) payload.gpuHead = true;
+        const watch = FaVlm.makeStreamWatch(); // 退化偵測（同一套）：原生執行器在主程序裡跑、這裡不能中途停，跑完才看結果
         let r = null;
-        try { r = await this._nrCall('run', payload, timeoutMs + 10000, (t) => { acc += t; if (cb.onToken) cb.onToken(acc); }); }
+        try { r = await this._nrCall('run', payload, timeoutMs + 10000, (t) => { acc += t; if (cb.onToken) cb.onToken(acc); watch.feed(acc, t); }); }
         finally { if (hd) hd.stop(); }
+        if (watch.reason) return { ok: false, why: '退化輸出（' + watch.reason + '）：原生執行器不能中途停，跑完才發現，改用下一個後端重新生成' };
         this._nrLastHead = (r && r.gpu_head) ? (r.gpu_head.used ? 'WebGPU 生效' : '退回 CPU（' + (r.gpu_head.fallback || '原因未知') + '）') : '';
         this._nrLastHeadWhy = hd ? '' : this._nrLastHeadWhy;
         if (r && r.ok) {
@@ -130983,11 +131013,10 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             const prompt = M2.tpl.applyTemplate('qwen3-chatml', tm.messages, { enable_thinking: a.enableThinking === true ? undefined : false, prefill: a.prefill || undefined });
             const promptIds = C.tok.encode(prompt);
             const chk = M2.chat.canRun(C.engine, promptIds.length, a.maxTokens || 512); if (!chk.ok) return no(chk.why);
-            let acc = '', since = 0, garbage = null; const t1 = Date.now(), limit = a.timeoutMs > 0 ? a.timeoutMs : Infinity; // 離線 GPU 生成不設總時限（只靠明確失敗、退化文字與取消中斷）
+            let acc = '', garbage = null; const watch = FaVlm.makeStreamWatch(); const t1 = Date.now(), limit = a.timeoutMs > 0 ? a.timeoutMs : Infinity; // 離線 GPU 生成不設總時限（只靠明確失敗、退化文字與取消中斷）
             const r = await M2.chat.generate({ engine: C.engine, tok: C.tok, promptIds, maxNew: a.maxTokens || 512, gen, seed: (Date.now() >>> 0) || 1, stepTimeoutMs: 20000,
                 isCancelled: () => !!garbage || stopped() || Date.now() - t1 > limit,
-                onText: (d, full) => { acc = full; since += d.length; if (cb.onToken) cb.onToken((a.prefill || '') + acc);
-                    if (since >= 64 && acc.length > 120) { since = 0; const g = FaVlm.looksLikeGarbage(acc.slice(-1500)); if (g.garbage && g.reason !== 'empty' && g.reason !== 'no_content') garbage = g.reason; } } });
+                onText: (d, full) => { acc = full; if (cb.onToken) cb.onToken((a.prefill || '') + acc); garbage = watch.feed(acc, d) || garbage; } });
             const text = r.cancelled ? acc : r.text;
             diag.used = true; diag.why = ''; diag.tokens = r.ids.length; diag.ms = Date.now() - t1; diag.gpu = r.gpu; diag.stop = garbage ? '垃圾輸出：' + garbage : (r.cancelled ? '逾時' : r.finish_reason);
             this._nrLastBackend = q4 ? 'gpu-decode-q4' : 'gpu-decode'; this._omLastDevice = this._omLastDevice || {}; this._omLastDevice[model.id] = 'webgpu';
@@ -131055,7 +131084,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         const slot = this._vlmSlotOf(ld.device); this._omLastDevice = this._omLastDevice || {}; this._omLastDevice[model.id] = ld.device; this._nrLastBackend = ld.device;
         const msgs = a.messages.map((m) => ({ role: m.role, content: String(m.content == null ? '' : m.content) }));
         const gen = Object.assign(FaVlm.textGenParams(model, { deterministic: !!(a.strict || a.deterministic) }), a.strict ? { repetition_penalty: 1.2, no_repeat_ngram_size: 5 } : {});
-        let acc = '', since = 0, stopped = null; const rec = this._vlmWorkerGet(slot);
+        let acc = '', stopped = null; const watch = FaVlm.makeStreamWatch(); const rec = this._vlmWorkerGet(slot);
         const stop = (why) => { if (stopped) return; stopped = why; try { rec.worker.postMessage({ type: 'interrupt' }); } catch (_) {} };
         // 有給 timeoutMs：它是硬性上限（之後再加 5 秒寬限）。寬限內工作者沒停下就終止它，之後才到的舊結果一律丟棄。沒給就維持原本的軟性上限（只請工作者中斷）。
         // 離線生成沒有耗時上限：慢是使用者接受的。只靠明確失敗（工作者錯誤、記憶體不足）、退化文字（looksLikeGarbage）與使用者取消中斷。
@@ -131066,8 +131095,8 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         if (hard) this._vlmCancelIdle(slot);
         try {
             const res = await FaRecipe.guardedCall(() => this._vlmRpc('chat',{ messages: msgs, tools: a.tools && a.tools.length ? a.tools : undefined, maxTokens: a.maxTokens || 512, gen, prefill: a.prefill || undefined, enableThinking: a.enableThinking === true }, null, (chunk) => {
-                acc += chunk; since += chunk.length; if (cb.onToken) cb.onToken(acc);
-                if (since >= 64 && acc.length > 120) { since = 0; const g = FaVlm.looksLikeGarbage(acc.slice(-1500)); if (g.garbage && g.reason !== 'empty' && g.reason !== 'no_content') { if (cb.log) cb.log('⚠️ 退化輸出（' + g.reason + '），已中斷；樣子：「' + acc.slice(-60).replace(/\s+/g, ' ') + '」'); stop('垃圾輸出：' + g.reason); } }
+                acc += chunk; if (cb.onToken) cb.onToken(acc);
+                const why = watch.feed(acc, chunk); if (why && !stopped) { if (cb.log) cb.log('⚠️ 退化輸出（' + why + '），已中斷；樣子：「' + acc.slice(-60).replace(/\s+/g, ' ') + '」'); stop('垃圾輸出：' + why); }
             }, slot), { timeoutMs: hard ? a.timeoutMs : 0, graceMs: 5000, interrupt: () => stop('呼叫端的硬性上限'), abandon: () => rec.die('逾時：工作者沒有在寬限時間內停下，已終止（下次呼叫會重新載入模型）') });
             this._vlmScheduleIdle(slot);
             return res.raw;

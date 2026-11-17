@@ -369,6 +369,27 @@
         if (lines.length >= 6 && new Set(lines).size / lines.length < 0.4) return { garbage: true, reason: 'repeat_lines' };
         return { garbage: false };
     }
+    // 串流的退化偵測（離線生成的唯一一套）：一般聊天、新聞摘要、知識庫都走 _llmGenerate → _llmGenerateInner，每條串流都用這一個。
+    // 每吐出 every 個字元看一次尾端 tail 字；只有 looksLikeGarbage 認定是垃圾才回報原因（empty／no_content 不算：還沒寫出東西、或只有標點時不中斷，留給呼叫端的空白檢查）。
+    // 純函式：feed(acc, delta) 回傳原因（字串）或 null；原因一旦出現就一直回傳同一個（粘住）。acc＝目前全部輸出，delta＝這次新增的字。
+    function makeStreamWatch(o) {
+        o = o || {}; const every = o.every > 0 ? o.every : 64, minLen = o.minLen > 0 ? o.minLen : 120, tail = o.tail > 0 ? o.tail : 1500;
+        let since = 0, reason = null;
+        return {
+            feed(acc, delta) {
+                if (reason) return reason;
+                since += String(delta == null ? '' : delta).length;
+                const full = String(acc == null ? '' : acc);
+                if (since >= every && full.length > minLen) {
+                    since = 0;
+                    const g = looksLikeGarbage(full.slice(-tail));
+                    if (g.garbage && g.reason !== 'empty' && g.reason !== 'no_content') reason = g.reason;
+                }
+                return reason;
+            },
+            get reason() { return reason; },
+        };
+    }
     // 把舊的工具結果換成 placeholder：只留名稱與前面一小段，其他省略
     function placeholderOf(msg, keep) { const body = String(msg.content || '').replace(/\s+/g, ' ').trim(); return { role: 'tool', name: msg.name, content: '[' + (msg.name || '工具') + ' 的結果已省略；摘要：' + body.slice(0, keep == null ? 60 : keep) + (body.length > (keep == null ? 60 : keep) ? '…' : '') + ']', _placeholder: true }; }
     function messagesTokens(messages, tools) { let n = 0; for (const m of messages) n += estimateTokens(m.content) + 6; if (tools && tools.length) n += estimateTokens(JSON.stringify(tools)); return n; }
@@ -502,5 +523,5 @@
     // 估算這次下載量（依裝置組合）；已經在快取裡的部分不用再下載
     function estimateDownload(model, device, cachedBytes) { const total = (model.bytes && model.bytes[device === 'webgpu' ? 'gpu' : 'cpu']) || 0; return Math.max(0, total - (Number(cachedBytes) || 0)); }
 
-    return { nativePrefillPlan, nativeFullText, MODELS, byId, imageModels, textModels, depthModels, DEFAULT_DEPTH_MODEL, segmentModels, DEFAULT_SEGMENT_MODEL, poseModels, DEFAULT_POSE_MODEL, DEFAULT_MODEL, DEFAULT_TEXT_MODEL, THRESHOLD_MIN, THRESHOLD_MAX, clampThreshold, shouldUseOfflineLlm, estimateTokens, trimToTokens, textBudget, composeMessages, textGenParams, compactToolSpecs, parseToolCalls, TOOL_STAGE_SYSTEM, roleConfig, toolsTrust, routeStages, toolResultsAsReferences, looksLikeGarbage, fitMessages, runAgentLoop, placeholderOf, BENCH_TOOLS, BENCH_CASES, scoreToolCase, summarizeToolBench, TASKS, generationParams, defaultMaxTokens, inferTask, pickModel, VISION_POLICIES, visionOrder, combineVision, structuredPrompt, parseStructured, resolveDevice, backendOrder, wantsNativeBackend, effectiveDevicePref, nativeToolMessages, nativeWithPrefill, resolveThreads, buildTask, formatResult, repoOfUrl, usageByModel, urlsOfModel, fmtBytes, estimateDownload };
+    return { nativePrefillPlan, nativeFullText, MODELS, byId, imageModels, textModels, depthModels, DEFAULT_DEPTH_MODEL, segmentModels, DEFAULT_SEGMENT_MODEL, poseModels, DEFAULT_POSE_MODEL, DEFAULT_MODEL, DEFAULT_TEXT_MODEL, THRESHOLD_MIN, THRESHOLD_MAX, clampThreshold, shouldUseOfflineLlm, estimateTokens, trimToTokens, textBudget, composeMessages, textGenParams, compactToolSpecs, parseToolCalls, TOOL_STAGE_SYSTEM, roleConfig, toolsTrust, routeStages, toolResultsAsReferences, looksLikeGarbage, makeStreamWatch, fitMessages, runAgentLoop, placeholderOf, BENCH_TOOLS, BENCH_CASES, scoreToolCase, summarizeToolBench, TASKS, generationParams, defaultMaxTokens, inferTask, pickModel, VISION_POLICIES, visionOrder, combineVision, structuredPrompt, parseStructured, resolveDevice, backendOrder, wantsNativeBackend, effectiveDevicePref, nativeToolMessages, nativeWithPrefill, resolveThreads, buildTask, formatResult, repoOfUrl, usageByModel, urlsOfModel, fmtBytes, estimateDownload };
 });
