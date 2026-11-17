@@ -1,0 +1,52 @@
+<!doctype html><meta charset="utf-8"><title>r8 time</title>
+<body style="font:13px monospace;white-space:pre">
+<script>
+// 單一形狀的計時（沿用 r8_probe.html 已驗證可用的流程：編譯、派發、onSubmittedWorkDone 停表）。
+// 用法：?M=512&K=1024&N=1024&kernel=r8|v4&reps=6 ；每次派發一個 submit，第 1 次暖機不算，取中位數。
+// 結果在 window.__out。一次只跑一個形狀，避免主執行緒與 GPU 被長時間佔住。
+const log = (s) => { (window.__log = window.__log || []).push(s); document.body.textContent = window.__log.join('\n'); };
+(async () => {
+  const out = {};
+  try {
+    const qp = new URLSearchParams(location.search);
+    const M = +qp.get('M'), K = +qp.get('K'), N = +qp.get('N'), kind = qp.get('kernel') || 'r8', reps = +(qp.get('reps') || 6);
+    const src = await (await fetch('../../renderer/src/gpu/gpu_core.js', { cache: 'no-store' })).text();
+    const m = { exports: {} };
+    new Function('module', 'exports', 'require', src)(m, m.exports, () => { throw new Error('no require'); });
+    const code = kind === 'v4' ? m.exports.mmTileWgslVec4({ marker: 'matmul_vec4' }) : m.exports.mmR8Wgsl({ marker: 'matmul_r8' });
+    const groups = kind === 'v4' ? m.exports.mmTileDispatch(M, N, 1) : m.exports.mmR8Dispatch(M, N, 1);
+    const adapter = await navigator.gpu.requestAdapter();
+    const device = await adapter.requestDevice();
+    const pipe = await device.createComputePipelineAsync({ layout: 'auto', compute: { module: device.createShaderModule({ code }), entryPoint: 'main' } });
+    let seed = 3; const rr = () => { seed = (Math.imul(seed, 1664525) + 1013904223) | 0; return (seed >>> 0) / 4294967296 - 0.5; };
+    const S = GPUBufferUsage.STORAGE, CD = GPUBufferUsage.COPY_DST;
+    const ab = device.createBuffer({ size: M * K * 4, usage: S | CD });
+    const bb = device.createBuffer({ size: K * N * 4, usage: S | CD });
+    const cb = device.createBuffer({ size: M * N * 4, usage: S | CD });
+    const ub = device.createBuffer({ size: 32, usage: GPUBufferUsage.UNIFORM | CD });
+    device.queue.writeBuffer(ab, 0, Float32Array.from({ length: M * K }, rr));
+    device.queue.writeBuffer(bb, 0, Float32Array.from({ length: K * N }, rr));
+    device.queue.writeBuffer(ub, 0, new Uint32Array([1, M, K, N, 1, 0, 0, 0]));
+    const bg = device.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: ab } }, { binding: 1, resource: { buffer: bb } }, { binding: 2, resource: { buffer: cb } }, { binding: 3, resource: { buffer: ub } }] });
+    const ts = [];
+    for (let rep = 0; rep < reps; rep++) {
+      const enc = device.createCommandEncoder();
+      const p = enc.beginComputePass(); p.setPipeline(pipe); p.setBindGroup(0, bg); p.dispatchWorkgroups(...groups); p.end();
+      const t0 = performance.now();
+      device.queue.submit([enc.finish()]);
+      await device.queue.onSubmittedWorkDone();
+      const ms = performance.now() - t0;
+      log('rep ' + rep + ' ' + ms.toFixed(2) + ' ms');
+      if (rep > 0) ts.push(ms);
+    }
+    ts.sort((a, b) => a - b);
+    const med = ts[Math.floor(ts.length / 2)];
+    const flops = 2 * M * K * N;
+    out.kernel = kind; out.shape = [M, K, N]; out.groups = groups; out.msMedian = Math.round(med * 100) / 100;
+    out.GFLOPs = Math.round(flops / (med * 1e-3) / 1e9 * 10) / 10;
+    out.percentOfPeak127 = Math.round(out.GFLOPs / 127.4 * 1000) / 10;
+    out.allMs = ts.map((x) => Math.round(x * 100) / 100);
+  } catch (e) { out.error = String(e && e.stack || e); log('ERROR ' + out.error); }
+  window.__out = out;
+})();
+</script>

@@ -58,7 +58,13 @@
 - 驗證頁都在 `scripts/eval/`：`mm_tile_check.html`（需先 `git show 1515d6598:desktop-app/renderer/src/gpu/gpu_core.js > scripts/eval/_tmp_before_gpu_core.js`，量完刪）、`batch_layer_check.html`。結果寫進 `cudaweb_optimize.result.json`。
 - 本棒沒做：O6 真 Qwen 接入、O7、O8、O9、O10、O11、持續迴圈。
 
-## 下一棒第一步
+## 2026-11-18 第二段（新目標：趨近 cuBLAS，見 docs/TARGET.cudaweb-cublas.md）
+- R0 屋頂已量：peakFlops ≈ 127–128 GFLOP/s、peakBW ≈ 11.4 GB/s（`roofline_check.html`，寫進 result.json）。
+- R1 8×8 核心 `mmR8Wgsl` 已寫，node 測試過；真 Chrome 單次派發正確（`r8_probe.html`）。**計時還沒完成**：整頁 `mm_r8_check.html` 多次讓 Chrome 分頁凍結，WebGPU 一度無回應（之後分頁群組重建），已停手。
+- **下一棒第一步**：先確認 Chrome 的 WebGPU 正常（跑 `r8_probe.html?M=5&K=8&N=4`，應該 log 到 `y[0]=1`）。之後用 `r8_time.html?M=512&K=1024&N=1024&kernel=r8`（與 `kernel=v4`）逐一量，每次只跑一個形狀，量完關分頁、停伺服器、用 Win32_Process 確認無殘留。找出凍結原因（疑似整頁循環或大形狀的單一封包時間）後才回頭跑 `mm_r8_check.html`。
+- 不要在這台重跑會凍結的整頁；先把凍結原因查清楚再說。
+
+## 下一棒第一步（第一段留下的，仍有效）
 讀 `docs/CHECKLIST.cudaweb-optimize.md` 的 O6 的「未完成」，把 qwen_gpu 的一層接進 createBatch（至少讓 q8mm 或 MatMulNBits 進批次），再量一層 submit 次數；之後依序 O7、O8、O9、O10、O11，最後進入持續優化迴圈。先確認 WebGPU 介面卡可用（頁面 `navigator.gpu.requestAdapter()` 有回傳），不可用就只做 node 部分並標「待真 Chrome 驗證」。
 - 驗證伺服器用完就關；本棒已確認 8731 的 http.server 已停止。
 - 其他 Python 行程（pip install torch cupy）不是本棒的，不要動。

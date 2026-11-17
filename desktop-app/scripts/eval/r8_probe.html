@@ -1,0 +1,62 @@
+<!doctype html><meta charset="utf-8"><title>r8 probe</title>
+<body style="font:13px monospace;white-space:pre">
+<script>
+// 探測 8×8 核心（mmR8Wgsl）的每個階段：編譯、單次派發、讀回。每階段都記時間，超過 8 秒的等待用 race 放棄，不會卡住頁面。
+// 結果在 window.__log（陣列）與 window.__out。
+const log = (s) => { (window.__log = window.__log || []).push(s); document.body.textContent = window.__log.join('\n'); };
+const withTimeout = (p, ms, name) => Promise.race([p.then((v) => ({ ok: true, v })), new Promise((r) => setTimeout(() => r({ ok: false, why: name + ' 超時 ' + ms + 'ms' }), ms))]);
+(async () => {
+  const out = {};
+  try {
+    const src = await (await fetch('../../renderer/src/gpu/gpu_core.js', { cache: 'no-store' })).text();
+    const m = { exports: {} };
+    new Function('module', 'exports', 'require', src)(m, m.exports, () => { throw new Error('no require'); });
+    const code = m.exports.mmR8Wgsl({ marker: 'matmul_r8' });
+    log('程式長度 ' + code.length + ' 字元');
+    const adapter = await navigator.gpu.requestAdapter();
+    const device = await adapter.requestDevice();
+    device.lost.then((info) => log('DEVICE LOST: ' + info.reason + ' ' + info.message));
+    device.addEventListener && device.addEventListener('uncapturederror', (e) => log('UNCAPTURED: ' + e.error.message));
+    const t0 = performance.now();
+    const mod = device.createShaderModule({ code });
+    const info = await withTimeout(mod.getCompilationInfo(), 8000, 'getCompilationInfo');
+    log('compilationInfo: ' + (info.ok ? info.v.messages.map((x) => x.type + ' ' + x.message).join('; ') || '無訊息' : info.why) + ' (' + Math.round(performance.now() - t0) + 'ms)');
+    const t1 = performance.now();
+    const pr = await withTimeout(device.createComputePipelineAsync({ layout: 'auto', compute: { module: mod, entryPoint: 'main' } }), 8000, 'createComputePipelineAsync');
+    log('pipeline: ' + (pr.ok ? 'OK' : pr.why) + ' (' + Math.round(performance.now() - t1) + 'ms)');
+    if (!pr.ok) { out.stage = 'pipeline'; window.__out = out; return; }
+    const pipe = pr.v;
+    const qp = new URLSearchParams(location.search);
+    const M = +(qp.get('M') || 128), K = +(qp.get('K') || 64), N = +(qp.get('N') || 128), Bn = 1;
+    log('shape M=' + M + ' K=' + K + ' N=' + N);
+    const ab = device.createBuffer({ size: M * K * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+    const bb = device.createBuffer({ size: K * N * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+    const cb = device.createBuffer({ size: M * N * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
+    const ub = device.createBuffer({ size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    const useRnd = qp.get('rnd') === '1';
+    let sd = 9; const rr = () => { sd = (Math.imul(sd, 1664525) + 1013904223) | 0; return (sd >>> 0) / 4294967296 - 0.5; };
+    device.queue.writeBuffer(ab, 0, useRnd ? Float32Array.from({ length: M * K }, rr) : new Float32Array(M * K).fill(0.5));
+    device.queue.writeBuffer(bb, 0, useRnd ? Float32Array.from({ length: K * N }, rr) : new Float32Array(K * N).fill(0.25));
+    device.queue.writeBuffer(ub, 0, new Uint32Array([Bn, M, K, N, 1, 0, 0, 0]));
+    const bg = device.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: ab } }, { binding: 1, resource: { buffer: bb } }, { binding: 2, resource: { buffer: cb } }, { binding: 3, resource: { buffer: ub } }] });
+    const enc = device.createCommandEncoder();
+    const p = enc.beginComputePass(); p.setPipeline(pipe); p.setBindGroup(0, bg); p.dispatchWorkgroups(...m.exports.mmR8Dispatch(M, N, Bn)); p.end();
+    const rb = device.createBuffer({ size: M * N * 4, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+    enc.copyBufferToBuffer(cb, 0, rb, 0, M * N * 4);
+    const t2 = performance.now();
+    device.queue.submit([enc.finish()]);
+    const done = await withTimeout(device.queue.onSubmittedWorkDone(), 8000, 'onSubmittedWorkDone');
+    log('single dispatch done: ' + (done.ok ? 'OK' : done.why) + ' (' + Math.round(performance.now() - t2) + 'ms)');
+    if (!done.ok) { out.stage = 'dispatch'; window.__out = out; return; }
+    const mp = await withTimeout(rb.mapAsync(GPUMapMode.READ), 8000, 'mapAsync');
+    if (!mp.ok) { out.stage = 'map'; log(mp.why); window.__out = out; return; }
+    const y = new Float32Array(rb.getMappedRange().slice(0));
+    // 期望：每個元素 = K × 0.5 × 0.25 = 8
+    const want = K * 0.125;
+    let bad = 0; for (let i = 0; i < y.length; i++) if (Math.abs(y[i] - want) > 1e-4) bad++;
+    log('y[0]=' + y[0] + ' 期望 ' + want + '；錯誤元素 ' + bad + ' / ' + y.length);
+    out.stage = 'done'; out.bad = bad; out.y0 = y[0];
+  } catch (e) { out.error = String(e && e.stack || e); log('ERROR ' + out.error); }
+  window.__out = out;
+})();
+</script>

@@ -1,0 +1,96 @@
+<!doctype html><meta charset="utf-8"><title>roofline check</title>
+<body style="font:13px monospace;white-space:pre">
+<script>
+// 屋頂模型的兩條線（真 Chrome、真 WebGPU，只標這台機器）：
+//  peakFlops：純 FMA 連鎖核心（8 條獨立鏈，每個 fma 算 2 個浮點運算）。取兩組設定的最大值。
+//  peakBW：純複製核心（vec4 讀、vec4 寫），每次派發移動 2 × 緩衝區大小的位元組。
+// 每個 submit 內連續 8 次派發，submit 後 onSubmittedWorkDone 才停表；取 5 次的中位數（第 1 次暖機不算）。
+// 單次派發都短（FMA 約 10–30 ms、複製約 15 ms），不會碰到 Windows 的 GPU 逾時。
+// 結果在 window.__out。用完即關（頁面本身沒有伺服器以外的資源）。
+(async () => {
+  const out = { hardware: 'NVIDIA GeForce GT 720（GK208，192 核）；Chrome WebGPU', flopsRuns: [], bwRuns: [], peakFlopsGFLOPs: null, peakBWGBs: null, error: null };
+  try {
+    const adapter = await navigator.gpu.requestAdapter();
+    if (!adapter) throw new Error('沒有 WebGPU 介面卡');
+    const info = adapter.info || {};
+    out.adapterInfo = { vendor: info.vendor, arch: info.architecture, maxWgStorage: adapter.limits.maxComputeWorkgroupStorageSize, maxInvocations: adapter.limits.maxComputeInvocationsPerWorkgroup };
+    const device = await adapter.requestDevice();
+    const STORAGE = GPUBufferUsage.STORAGE, COPY_DST = GPUBufferUsage.COPY_DST, COPY_SRC = GPUBufferUsage.COPY_SRC, UNIFORM = GPUBufferUsage.UNIFORM;
+    const median = (xs) => { const s = xs.slice().sort((a, b) => a - b); return s[Math.floor(s.length / 2)]; };
+    const timeSubmit = async (enc) => { const t0 = performance.now(); device.queue.submit([enc.finish()]); await device.queue.onSubmittedWorkDone(); return performance.now() - t0; };
+
+    // ---- FMA 峰值 ----
+    // N 條獨立鏈的 FMA 核心（N = 8 或 16）：每條鏈每次迴圈一個 fma（2 個浮點運算）
+    const fmaCodeN = (N) => {
+      let decl = '', body = '', sum = '';
+      for (let c = 0; c < N; c++) { decl += `  var x${c} = s + ${(c * 0.05).toFixed(2)};\n`; body += `    x${c} = fma(x${c}, u.a, u.b);\n`; sum += (c ? ' + ' : '') + 'x' + c; }
+      return `
+struct U { a: f32, b: f32, iters: u32, pad: u32 }
+@group(0) @binding(0) var<storage, read_write> outp: array<f32>;
+@group(0) @binding(1) var<uniform> u: U;
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let s = f32(gid.x & 1023u) * 0.0000001;
+${decl}  for (var i: u32 = 0u; i < u.iters; i = i + 1u) {
+${body}  }
+  outp[gid.x] = ${sum};
+}`;
+    };
+    const fmaConfigs = [{ chains: 8, groups: 4096, iters: 256 }, { chains: 8, groups: 1024, iters: 1024 }, { chains: 16, groups: 4096, iters: 256 }, { chains: 16, groups: 1024, iters: 1024 }];
+    const fmaPipes = {};
+    for (const N of [8, 16]) fmaPipes[N] = await device.createComputePipelineAsync({ layout: 'auto', compute: { module: device.createShaderModule({ code: fmaCodeN(N) }), entryPoint: 'main' } });
+    for (const cfg of fmaConfigs) {
+      const fmaPipe = fmaPipes[cfg.chains];
+      const threads = cfg.groups * 256;
+      const outBuf = device.createBuffer({ size: threads * 4, usage: STORAGE });
+      const ub = new ArrayBuffer(16); new Float32Array(ub, 0, 2).set([0.9999995, 0.0000005]); new Uint32Array(ub, 8, 1)[0] = cfg.iters;
+      const uBuf = device.createBuffer({ size: 16, usage: UNIFORM | COPY_DST });
+      device.queue.writeBuffer(uBuf, 0, ub);
+      const bg = device.createBindGroup({ layout: fmaPipe.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: outBuf } }, { binding: 1, resource: { buffer: uBuf } }] });
+      const flopsPerDispatch = threads * cfg.iters * 16;
+      const times = [];
+      for (let rep = 0; rep < 6; rep++) {
+        const enc = device.createCommandEncoder();
+        for (let k = 0; k < 8; k++) { const p = enc.beginComputePass(); p.setPipeline(fmaPipe); p.setBindGroup(0, bg); p.dispatchWorkgroups(cfg.groups); p.end(); }
+        const ms = await timeSubmit(enc);
+        if (rep > 0) times.push(ms / 8);   // 每次派發的毫秒數
+      }
+      const msPer = median(times);
+      const gflops = flopsPerDispatch / (msPer * 1e-3) / 1e9;
+      out.flopsRuns.push({ chains: cfg.chains, groups: cfg.groups, iters: cfg.iters, msPerDispatch: Math.round(msPer * 100) / 100, GFLOPs: Math.round(gflops * 10) / 10, allMs: times.map((x) => Math.round(x * 100) / 100) });
+      outBuf.destroy(); uBuf.destroy();
+    }
+    out.peakFlopsGFLOPs = Math.max(...out.flopsRuns.map((r) => r.GFLOPs));
+
+    // ---- 複製頻寬峰值 ----
+    const copyCode = `
+@group(0) @binding(0) var<storage, read> src: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> dst: array<vec4<f32>>;
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  dst[gid.x] = src[gid.x];
+}`;
+    const copyPipe = await device.createComputePipelineAsync({ layout: 'auto', compute: { module: device.createShaderModule({ code: copyCode }), entryPoint: 'main' } });
+    for (const bytes of [64 * 1024 * 1024, 16 * 1024 * 1024]) {
+      const n4 = bytes / 16;
+      const src = device.createBuffer({ size: bytes, usage: STORAGE | COPY_DST });
+      const dst = device.createBuffer({ size: bytes, usage: STORAGE | COPY_SRC });
+      const bg = device.createBindGroup({ layout: copyPipe.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: src } }, { binding: 1, resource: { buffer: dst } }] });
+      const groups = Math.ceil(n4 / 256);
+      const times = [];
+      for (let rep = 0; rep < 6; rep++) {
+        const enc = device.createCommandEncoder();
+        for (let k = 0; k < 8; k++) { const p = enc.beginComputePass(); p.setPipeline(copyPipe); p.setBindGroup(0, bg); p.dispatchWorkgroups(groups); p.end(); }
+        const ms = await timeSubmit(enc);
+        if (rep > 0) times.push(ms / 8);
+      }
+      const msPer = median(times);
+      const gbs = (2 * bytes) / (msPer * 1e-3) / 1e9;
+      out.bwRuns.push({ bufferMiB: bytes / (1024 * 1024), msPerDispatch: Math.round(msPer * 100) / 100, GBs: Math.round(gbs * 100) / 100, allMs: times.map((x) => Math.round(x * 100) / 100) });
+      src.destroy(); dst.destroy();
+    }
+    out.peakBWGBs = Math.max(...out.bwRuns.map((r) => r.GBs));
+  } catch (e) { out.error = String(e && e.stack || e); }
+  window.__out = out; document.body.textContent = JSON.stringify(out, null, 1); document.title = 'done';
+})();
+</script>

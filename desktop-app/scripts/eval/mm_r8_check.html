@@ -1,0 +1,121 @@
+<!doctype html><meta charset="utf-8"><title>mm r8 check</title>
+<body style="font:13px monospace;white-space:pre">
+<script>
+// 8×8 暫存器分塊矩陣乘（gpu_core.js 的 mmR8Wgsl）對拍與計時（真 Chrome、真 WebGPU，只標這台 GT 720）。
+// ⚠ 2026-11-18：這一頁在多次執行中讓 Chrome 分頁凍結、WebGPU 介面卡一度無回應（之後 Chrome 分頁群組重建）。
+//    未查明原因前，不要整頁重跑；請改用 r8_time.html（一次一個形狀）與 r8_probe.html（單次派發、正確性）逐一量。
+// 1) 正確性：f32，對 matmulTRef 的相對誤差 ≤ 1e-6（K 為 8 的倍數、N 為 4 的倍數；M 任意；含批次）。
+// 2) 計時：純核心時間（不含上傳與讀回）；每個 submit 連續 8 次派發，onSubmittedWorkDone 停表，取 5 次中位數（第 1 次暖機不算）。
+//    對照：vec4 平鋪（matmul_vec4，目前的最佳）。換算 GFLOP/s 與對 roofline 的 peakFlops（127.4 GFLOP/s，見 roofline_check.html）的百分比。
+// 結果在 window.__out。
+const mods = {};
+const loadMod = async (key, url) => {
+  const src = await (await fetch(url, { cache: 'no-store' })).text();
+  const m = { exports: {} }; mods[key] = m;
+  new Function('module', 'exports', 'require', src)(m, m.exports, (p) => { throw new Error('unexpected require ' + p); });
+};
+let seed = 9;
+const rnd = () => { seed = (Math.imul(seed, 1664525) + 1013904223) | 0; return (seed >>> 0) / 4294967296 - 0.5; };
+const mk = (n) => Float32Array.from({ length: n }, rnd);
+const relErr = (x, y) => { let mx = 0, sc = 1e-9; for (let i = 0; i < x.length; i++) { mx = Math.max(mx, Math.abs(x[i] - y[i])); sc = Math.max(sc, Math.abs(y[i])); } return mx / sc; };
+const PEAK_GFLOPS = 127.4;
+(async () => {
+  const out = { hardware: 'NVIDIA GeForce GT 720（GK208）；Chrome WebGPU', peakFlopsRef: PEAK_GFLOPS, correct: [], timing: [], error: null };
+  try {
+    await loadMod('gpu_core', '../../renderer/src/gpu/gpu_core.js');
+    const core = mods.gpu_core.exports;
+    const adapter = await navigator.gpu.requestAdapter();
+    if (!adapter) throw new Error('沒有 WebGPU 介面卡');
+    const device = await adapter.requestDevice();
+    const S = GPUBufferUsage.STORAGE, CD = GPUBufferUsage.COPY_DST, CS = GPUBufferUsage.COPY_SRC, U = GPUBufferUsage.UNIFORM, MR = GPUBufferUsage.MAP_READ;
+    const pipeCache = new Map();
+    const pipeFor = async (code) => {
+      if (!pipeCache.has(code)) pipeCache.set(code, await device.createComputePipelineAsync({ layout: 'auto', compute: { module: device.createShaderModule({ code }), entryPoint: 'main' } }));
+      return pipeCache.get(code);
+    };
+    // 準備一次派發的資源（A、B、C、uniform、bind group）
+    const prep = async (code, A, B, M, K, N, Bn, Bb, groups) => {
+      const pipe = await pipeFor(code);
+      const ab = device.createBuffer({ size: A.byteLength, usage: S | CD });
+      const bb = device.createBuffer({ size: B.byteLength, usage: S | CD });
+      const cb = device.createBuffer({ size: Bn * M * N * 4, usage: S | CS });
+      const ub = device.createBuffer({ size: 32, usage: U | CD });
+      device.queue.writeBuffer(ab, 0, A); device.queue.writeBuffer(bb, 0, B);
+      device.queue.writeBuffer(ub, 0, new Uint32Array([Bn, M, K, N, Bb, 0, 0, 0]));
+      const bg = device.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: ab } }, { binding: 1, resource: { buffer: bb } }, { binding: 2, resource: { buffer: cb } }, { binding: 3, resource: { buffer: ub } }] });
+      return { pipe, bg, cb, groups, bytes: Bn * M * N * 4, free: () => { ab.destroy(); bb.destroy(); ub.destroy(); } };
+    };
+    // 派發與回讀放在同一個 command encoder（與 r8_probe.html 相同的流程），submit 後等 onSubmittedWorkDone 再 mapAsync
+    const readback = async (r) => {
+      const rb = device.createBuffer({ size: r.bytes, usage: MR | CD });
+      const enc = device.createCommandEncoder();
+      const p = enc.beginComputePass(); p.setPipeline(r.pipe); p.setBindGroup(0, r.bg); p.dispatchWorkgroups(...r.groups); p.end();
+      enc.copyBufferToBuffer(r.cb, 0, rb, 0, r.bytes);
+      device.queue.submit([enc.finish()]);
+      window.__stage = 'submitted ' + r.bytes;
+      await device.queue.onSubmittedWorkDone();
+      window.__stage = 'work done ' + r.bytes;
+      await rb.mapAsync(GPUMapMode.READ);
+      window.__stage = 'mapped ' + r.bytes;
+      const y = new Float32Array(rb.getMappedRange().slice(0)); rb.unmap(); rb.destroy();
+      return y;
+    };
+    // 每個 submit 只放一次派發（避免單一 GPU 封包太長被 Windows 逾時機制重置）；第 1 次暖機不算，取 5 次中位數
+    const timeKernel = async (r) => {
+      const ts = [];
+      for (let rep = 0; rep < 6; rep++) {
+        const enc = device.createCommandEncoder();
+        const p = enc.beginComputePass(); p.setPipeline(r.pipe); p.setBindGroup(0, r.bg); p.dispatchWorkgroups(r.groups[0], r.groups[1], r.groups[2]); p.end();
+        const t0 = performance.now(); device.queue.submit([enc.finish()]); await device.queue.onSubmittedWorkDone();
+        if (rep > 0) ts.push(performance.now() - t0);
+      }
+      ts.sort((a, b) => a - b); return ts[Math.floor(ts.length / 2)];
+    };
+    // 抽樣對照：只算隨機抽出的輸出元素（每個 K 長的內積），避免在主執行緒上算整個大矩陣
+    const sampleRef = (A, B, M, K, N, Bn, Bsh, got, count) => {
+      let mx = 0, sc = 1e-9;
+      for (let s = 0; s < count; s++) {
+        const n = (s * 7) % Bn, i = (s * 131) % M, j = (s * 37) % N;
+        let acc = 0;
+        for (let k = 0; k < K; k++) acc = Math.fround(acc + Math.fround(A[n * M * K + i * K + k] * B[(Bsh ? 0 : n) * K * N + k * N + j]));
+        mx = Math.max(mx, Math.abs(got[(n * M + i) * N + j] - acc)); sc = Math.max(sc, Math.abs(acc));
+      }
+      return mx / sc;
+    };
+    const R8 = core.mmR8Wgsl({ marker: 'matmul_r8' });
+    const V4 = core.mmTileWgslVec4({ marker: 'matmul_vec4' });
+    // 1) 正確性
+    const cases = [[5, 8, 4, 1, 1], [17, 16, 12, 1, 1], [130, 24, 132, 1, 1], [200, 64, 260, 1, 1], [128, 256, 128, 1, 1], [40, 32, 48, 2, 0], [40, 32, 48, 2, 1]];
+    for (const [M, K, N, Bn, Bsh] of cases) {
+      const A = mk(Bn * M * K), B = mk((Bsh ? 1 : Bn) * K * N);
+      window.__stage = 'correct ' + [M, K, N, Bn].join('x') + ' prep';
+      const r = await prep(R8, A, B, M, K, N, Bn, Bsh ? 1 : 0, core.mmR8Dispatch(M, N, Bn));
+      window.__stage = 'correct ' + [M, K, N, Bn].join('x') + ' readback';
+      const got = await readback(r);
+      window.__stage = 'correct ' + [M, K, N, Bn].join('x') + ' done';
+      const err = sampleRef(A, B, M, K, N, Bn, !!Bsh, got, 300);
+      out.correct.push({ M, K, N, batch: Bn, sharedB: !!Bsh, relErr: err, pass: err <= 1e-6 });
+      r.free();
+    }
+    // 2) 計時：8×8 對 vec4 平鋪
+    for (const [M, K, N] of [[64, 1024, 1024], [512, 1024, 1024], [512, 1024, 3072], [1024, 1024, 1024]]) {
+      const A = mk(M * K), B = mk(K * N);
+      const flops = 2 * M * K * N;
+      const row = { shape: M + 'x' + K + 'x' + N };
+      const rv = await prep(V4, A, B, M, K, N, 1, 1, core.mmTileDispatch(M, N, 1));
+      const tv = await timeKernel(rv); rv.free();
+      const rr = await prep(R8, A, B, M, K, N, 1, 1, core.mmR8Dispatch(M, N, 1));
+      const tr = await timeKernel(rr);
+      // 同時檢查這個形狀的正確性（用 readback 一次）
+      const got = await readback(rr);
+      row.vec4 = { ms: Math.round(tv * 100) / 100, GFLOPs: Math.round(flops / (tv * 1e-3) / 1e9 * 10) / 10 };
+      row.r8 = { ms: Math.round(tr * 100) / 100, GFLOPs: Math.round(flops / (tr * 1e-3) / 1e9 * 10) / 10, percentOfPeak: Math.round(flops / (tr * 1e-3) / 1e9 / PEAK_GFLOPS * 1000) / 10, sampledRelErr: sampleRef(A, B, M, K, N, 1, true, got, 300) };
+      out.progress = row.shape;
+      rr.free();
+      out.timing.push(row);
+    }
+  } catch (e) { out.error = String(e && e.stack || e); }
+  out.allCorrect = !out.error && out.correct.every((c) => c.pass);
+  window.__out = out; document.body.textContent = JSON.stringify(out, null, 1); document.title = 'done';
+})();
+</script>

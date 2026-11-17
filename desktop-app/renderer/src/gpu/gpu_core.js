@@ -182,6 +182,93 @@
       '}'
     ].join('\n');
   }
+  // 8×8 暫存器分塊版（R8，O5 之後的目標核心）：工作群組 16×16 個執行緒，算 128×128 的輸出塊；每個執行緒 8×8 = 64 個累加器，
+  // 全部用 fma()。K 方向每次搬 8 層：A 的塊以 vec4 讀進共用記憶體（列主序，列寬 8），B 的塊以 vec4 讀（列寬 128）；共用記憶體 8 KiB。
+  // 計算迴圈全部展開（程式產生），所有陣列索引都是編譯期常數，避免驅動把陣列放進區域記憶體。
+  // 條件（呼叫端用 mmR8Ok 檢查）：不轉置、K 是 8 的倍數、N 是 4 的倍數；M 任意（列邊界逐元素檢查）。
+  var R8_BM = 128, R8_BK = 8, R8_TM = 8, R8_TN = 8;
+  function mmR8Ok(M, K, N, flags) { return !flags && K % 8 === 0 && N % 4 === 0 && M > 0 && N > 0; }
+  function mmR8Dispatch(M, N, B) { return [Math.ceil(N / R8_BM), Math.ceil(M / R8_BM), B || 1]; }
+  function mmR8Wgsl(opts) {
+    opts = opts || {};
+    var marker = opts.marker || 'matmul_r8';
+    var L = [];
+    L.push('struct P { B: u32, M: u32, K: u32, N: u32, Bb: u32, azp: i32, bzp: i32, p0: u32 }');
+    L.push('@group(0) @binding(0) var<storage, read> a4: array<vec4<f32>>;');
+    L.push('@group(0) @binding(1) var<storage, read> b4: array<vec4<f32>>;');
+    L.push('@group(0) @binding(2) var<storage, read_write> y: array<f32>;');
+    L.push('@group(0) @binding(3) var<uniform> p: P;');
+    L.push('var<workgroup> As: array<vec4<f32>, 256>;');   // 128 列 × 8 k（列主序，每列 2 個 vec4）
+    L.push('var<workgroup> Bs: array<vec4<f32>, 256>;');   // 8 列（k）× 128 欄（每列 32 個 vec4）
+    L.push('@compute @workgroup_size(16, 16, 1)');
+    L.push('fn main(@builtin(local_invocation_id) lid: vec3<u32>, @builtin(workgroup_id) wid: vec3<u32>) {');
+    L.push('  let n = wid.z;');
+    L.push('  let row0 = wid.y * 128u;');
+    L.push('  let col0 = wid.x * 128u;');
+    L.push('  let ao4 = (n * p.M * p.K) / 4u;');
+    L.push('  var bo4 = 0u;');
+    L.push('  if (p.Bb != 1u) { bo4 = (n * p.K * p.N) / 4u; }');
+    L.push('  let tx = lid.x;');
+    L.push('  let ty = lid.y;');
+    L.push('  let tid = ty * 16u + tx;');
+    for (var c = 0; c < 64; c++) L.push('  var c' + c + ': f32 = 0.0;');
+    L.push('  let tiles = p.K / 8u;');
+    L.push('  for (var t: u32 = 0u; t < tiles; t = t + 1u) {');
+    L.push('    let k0 = t * 8u;');
+    // A 載入：tid 負責列 tid/2、半列 tid%2（4 個 k）
+    L.push('    {');
+    L.push('      let ar = tid / 2u;');
+    L.push('      let ah = tid % 2u;');
+    L.push('      let gr = row0 + ar;');
+    L.push('      var av: vec4<f32> = vec4<f32>(0.0, 0.0, 0.0, 0.0);');
+    L.push('      if (gr < p.M) { av = a4[ao4 + (gr * p.K + k0 + ah * 4u) / 4u]; }');
+    L.push('      As[ar * 2u + ah] = av;');
+    L.push('    }');
+    // B 載入：tid 負責 k 列 tid/32、欄段 tid%32（4 個欄）
+    L.push('    {');
+    L.push('      let kr = tid / 32u;');
+    L.push('      let cs = tid % 32u;');
+    L.push('      let gc = col0 + cs * 4u;');
+    L.push('      var bv: vec4<f32> = vec4<f32>(0.0, 0.0, 0.0, 0.0);');
+    L.push('      if (gc < p.N) { bv = b4[bo4 + ((k0 + kr) * p.N + gc) / 4u]; }');
+    L.push('      Bs[kr * 32u + cs] = bv;');
+    L.push('    }');
+    L.push('    workgroupBarrier();');
+    // 計算：兩半（每半 4 個 k），每半先讀 8 列的 A、再對 4 個 k 各讀 B，全部展開
+    for (var h = 0; h < 2; h++) {
+      for (var i = 0; i < 8; i++) L.push('    let ar' + h + '_' + i + ' = As[(ty * 8u + ' + i + 'u) * 2u + ' + h + 'u];');
+      for (var kk = 0; kk < 4; kk++) {
+        var k = h * 4 + kk;
+        L.push('    {');
+        L.push('      let bb0 = Bs[' + k + 'u * 32u + tx * 2u];');
+        L.push('      let bb1 = Bs[' + k + 'u * 32u + tx * 2u + 1u];');
+        var comp = ['x', 'y', 'z', 'w'][kk];
+        for (var i2 = 0; i2 < 8; i2++) {
+          var aval = 'ar' + h + '_' + i2 + '.' + comp;
+          for (var j = 0; j < 8; j++) {
+            var bval = (j < 4 ? 'bb0.' : 'bb1.') + ['x', 'y', 'z', 'w'][j % 4];
+            L.push('      c' + (i2 * 8 + j) + ' = fma(' + aval + ', ' + bval + ', c' + (i2 * 8 + j) + ');');
+          }
+        }
+        L.push('    }');
+      }
+    }
+    L.push('    workgroupBarrier();');
+    L.push('  }');
+    // 寫回：每個累加器一個元素，列與欄都逐元素檢查
+    for (var i3 = 0; i3 < 8; i3++) {
+      L.push('  {');
+      L.push('    let gr = row0 + ty * 8u + ' + i3 + 'u;');
+      L.push('    if (gr < p.M) {');
+      for (var j3 = 0; j3 < 8; j3++) {
+        L.push('      { let gc = col0 + tx * 8u + ' + j3 + 'u; if (gc < p.N) { y[(n * p.M + gr) * p.N + gc] = c' + (i3 * 8 + j3) + '; } }');
+      }
+      L.push('    }');
+      L.push('  }');
+    }
+    L.push('}');
+    return '// @kernel ' + marker + '\n' + L.join('\n');
+  }
   // CPU 參考（單一批次）：與 matmulRef 相同，每一步 f32 捨入（k 由小到大）。A 是 M×K（transA 時為 K×M），B 是 K×N（transB 時為 N×K）。
   function matmulTRef(A, B, M, K, N, flags) {
     var tA = !!(flags & 1), tB = !!(flags & 2), y = new Float32Array(M * N);
@@ -1152,6 +1239,7 @@
     mmTileWgsl: mmTileWgsl, mmTileDispatch: mmTileDispatch, mmTileWords: mmTileWords, mmTileFlags: mmTileFlags,
     mmTileSharedBytes: mmTileSharedBytes, matmulTRef: matmulTRef,
     mmTileWgslVec4: mmTileWgslVec4, mmTileVec4Ok: mmTileVec4Ok,
+    mmR8Wgsl: mmR8Wgsl, mmR8Ok: mmR8Ok, mmR8Dispatch: mmR8Dispatch,
     sumRef: sumRef,
     sumExact: sumExact,
     axpyRef: axpyRef,

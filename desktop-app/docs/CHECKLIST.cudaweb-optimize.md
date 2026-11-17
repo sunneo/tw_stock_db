@@ -65,6 +65,17 @@
 - 一個提交只做一件事；提交訊息寫做了什麼＋怎麼驗證。改程式用 Edit／Write 工具，不用 shell 內嵌 heredoc 寫含反斜線的程式；中文內容的 Python 腳本要用 Write 工具寫成檔再用 `python -X utf8` 執行。
 - context 到 60% 才交接（Haiku 子工作階段）。
 
+## 新目標（2026-11-18 管理者轉達使用者：「要讓 webgpu 趨近官方的 cublas 一樣效能」）
+完整說明與規則：`docs/TARGET.cudaweb-cublas.md`。這台沒有可用的 cuBLAS，用屋頂模型：峰值 ＝ WebGPU 實測；大矩陣乘目標 ≥60%（第一階段 40%）、記憶體受限運算 ≥80% 頻寬。優先於 O6 以後的項目（O5 已完成，這是 O5 之後的矩陣乘效能線）。
+- [x] **R0. 屋頂**（2026-11-18）：`scripts/eval/roofline_check.html`。peakFlops ≈ 127–128 GFLOP/s（純 FMA 8 條鏈；16 條鏈反而 80），peakBW ≈ 11.4 GB/s（vec4 複製 64 MiB）。結果在 result.json 的 `roofline_2026_11_18`。
+- [ ] **R1. 8×8 暫存器分塊核心**：`gpu_core.js` 的 `mmR8Wgsl`（16×16 執行緒、128×128 輸出塊、64 個 fma 累加器、K 每次 8 層、A 與 B 以 vec4 搬進 8 KiB 共用記憶體、計算迴圈全展開）。條件：不轉置、K%8==0、N%4==0。**狀態：程式已寫、node 測試通過（fake 路徑）；真 Chrome 單次派發正確（r8_probe.html：128×64×128、130×24×132、512×1024×1024 全部正確）；計時尚未完成**——`mm_r8_check.html` 整頁多次讓 Chrome 分頁凍結、WebGPU 一度無回應，已停手；之後請用 `r8_time.html`（一次一個形狀）逐一量，再回填下表。
+  - 目前的比較基準（同機，含讀回，見 result.json）：512×1024×1024 vec4 約 32 ms ≈ 33 GFLOP/s ≈ 26% of 127；512×1024×3072 vec4 約 78–87 ms ≈ 37–41 GFLOP/s ≈ 30–32%。
+- [ ] R2. 向量載入與合併存取（已用於 vec4 版與 R1）、明確 fma（R1 已用）、軟體預取（待做）
+- [ ] R3. split-K（解碼與 LoRA 的小 M、N 大 K 形狀）
+- [ ] R4. 工作群組大小搜尋（128／192／256 執行緒）與自動調校（併入 O9）
+- [ ] R5. 套用到 q8mm、MatMulNBits、注意力、卷積、訓練轉置版（各自量前後）
+- 每個變體：GFLOP/s、峰值百分比、優化前後、真 Chrome 對拍（相對誤差 ≤1e-6）。沒好處的如實記「沒有好處」。
+
 ## 持續優化迴圈（2026-11-17 管理者轉達使用者：「讓他持續優化下去」）
 O1m 到 O11 做完後不結束，進入迴圈。完整規則與交接見 `docs/HANDOFF.cudaweb-optimize.md`。每一輪在這裡追加一筆：
 
