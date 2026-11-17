@@ -158,18 +158,30 @@ def t_cublas_transpose_alpha_beta():
     reply['value'] = ok([89, 98, 116, 128])
     r = cudaweb.cublas.sgemm('T', 'N', 2, 2, 3, 1.0, [1, 2, 3, 4, 5, 6], [7, 8, 9, 10, 11, 12], 0.0, None)
     assert r == [89, 98, 116, 128], r
-    assert calls[-1] == ('matmul', {'a': [1, 3, 5, 2, 4, 6], 'b': [7, 8, 9, 10, 11, 12], 'm': 2, 'k': 3, 'n': 2}), calls[-1]
+    # 小的運算元：旗標交給宿主（O14b），A 送原始儲存（k×m），不在 Python 端轉置
+    assert calls[-1] == ('matmul', {'a': [1, 2, 3, 4, 5, 6], 'b': [7, 8, 9, 10, 11, 12], 'm': 2, 'k': 3, 'n': 2, 'transA': True}), calls[-1]
     # transb='T'：B 儲存為 n×k = 2×3，op(B)=[[7,10],[8,11],[9,12]]；A 為 2×3 → C = [[50,68],[122,167]]
     del calls[:]
     reply['value'] = ok([50, 68, 122, 167])
     r = cudaweb.cublas.sgemm('N', 'T', 2, 2, 3, 1.0, [1, 2, 3, 4, 5, 6], [7, 8, 9, 10, 11, 12], 0.0, None)
     assert r == [50, 68, 122, 167], r
-    assert calls[-1] == ('matmul', {'a': [1, 2, 3, 4, 5, 6], 'b': [7, 10, 8, 11, 9, 12], 'm': 2, 'k': 3, 'n': 2}), calls[-1]
+    assert calls[-1] == ('matmul', {'a': [1, 2, 3, 4, 5, 6], 'b': [7, 8, 9, 10, 11, 12], 'm': 2, 'k': 3, 'n': 2, 'transB': True}), calls[-1]
     # alpha=2、beta=1、C=[1,1,1,1]：2·[58,64,139,154] + [1,1,1,1] = [117,129,279,309]
     del calls[:]
     reply['value'] = ok([58, 64, 139, 154])
     r = cudaweb.cublas.sgemm('N', 'N', 2, 2, 3, 2.0, [1, 2, 3, 4, 5, 6], [7, 8, 9, 10, 11, 12], 1.0, [1, 1, 1, 1])
     assert r == [117, 129, 279, 309], r
+    # 超過門檻的轉置：仍在 Python 端轉置（宿主不收到旗標）；用縮小的門檻模擬大運算元
+    saved = cudaweb.FLAG_MAX_ELEMS
+    cudaweb.FLAG_MAX_ELEMS = 4
+    try:
+        del calls[:]
+        reply['value'] = ok([89, 98, 116, 128])
+        r = cudaweb.cublas.sgemm('T', 'N', 2, 2, 3, 1.0, [1, 2, 3, 4, 5, 6], [7, 8, 9, 10, 11, 12], 0.0, None)
+        assert r == [89, 98, 116, 128], r
+        assert calls[-1] == ('matmul', {'a': [1, 3, 5, 2, 4, 6], 'b': [7, 8, 9, 10, 11, 12], 'm': 2, 'k': 3, 'n': 2}), calls[-1]
+    finally:
+        cudaweb.FLAG_MAX_ELEMS = saved
 
 
 def t_cublas_bad_inputs():

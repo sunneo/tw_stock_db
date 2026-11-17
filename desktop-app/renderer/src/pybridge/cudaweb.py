@@ -18,6 +18,8 @@ cudaweb — 在 Python 模擬器（Pyodide，網頁版與桌面版共用）裡�
 import sys
 
 _ON_EMSCRIPTEN = sys.platform == "emscripten"
+# 轉置運算元元素數上限：以下把轉置旗標送進宿主（GPU 核心轉置），以上仍在宿主端轉置（見 _Cublas.sgemm）
+FLAG_MAX_ELEMS = 1 << 23
 
 
 class CudaWebError(RuntimeError):
@@ -123,8 +125,8 @@ class _Cublas(object):
     """cuBLAS 風格的最小介面（DESIGN.webgpu-cuda.md §12.1，第一階段）。
     支援 transa／transb 為 'N' 或 'T'（'C' 對實數等同 'T'）、任意 alpha、beta（beta=0 時不讀 C）。
     op(A) 為 m×k、op(B) 為 k×n、C 為 m×n，都是列主序的扁平 list（cuBLAS 原本是欄主序與裸指標，這裡用 list 代替，已記錄於設計文件）。
-    注意：轉置與 alpha／beta 的後處理目前在宿主（Python）端做，是 O(mk + kn + mn) 的額外工作；矩陣乘本身仍走同一個 matmul 核心。
-    把轉置旗標送進 GPU 核心（gpu_core.js 的 wgMatmul 已有 flags）是後續項目，尚未接上宿主橋接。
+    轉置：元素數不超過 FLAG_MAX_ELEMS 的運算元，轉置旗標（transA／transB）交給宿主，由 mm_ops 的轉置核心處理；
+    超過的仍在 Python 端轉置（額外 O(mk + kn) 工作）。alpha／beta 的後處理仍在 Python 端做（O(mn)）。
     """
 
     def sgemm(self, transa, transb, m, n, k, alpha, A, B, beta, C=None):
@@ -149,11 +151,22 @@ class _Cublas(object):
             Cl = list(C)
             if len(Cl) != m * n:
                 raise CudaWebError("cudaweb.cublas.sgemm：C 的元素數 %d 與 m×n=%d 不符" % (len(Cl), m * n))
+        # 轉置：小的運算元把旗標（transA／transB）送進宿主，由 mm_ops 的轉置核心處理（O14b）；
+        # 大的（超過 FLAG_MAX_ELEMS）仍在宿主端轉置，因為 GPU 轉置版不分塊、超大時會退回 CPU。
+        args = {"a": A, "b": B, "m": m, "k": k, "n": n}
         if ta in ("T", "C"):
-            A = [A[q * m + i] for i in range(m) for q in range(k)]   # 把 k×m 的 A 轉成 m×k
+            if len(A) <= FLAG_MAX_ELEMS:
+                args["transA"] = True
+            else:
+                A = [A[q * m + i] for i in range(m) for q in range(k)]   # 把 k×m 的 A 轉成 m×k
+                args["a"] = A
         if tb in ("T", "C"):
-            B = [B[j * k + q] for q in range(k) for j in range(n)]   # 把 n×k 的 B 轉成 k×n
-        flat = list(_call("matmul", {"a": A, "b": B, "m": m, "k": k, "n": n}))
+            if len(B) <= FLAG_MAX_ELEMS:
+                args["transB"] = True
+            else:
+                B = [B[j * k + q] for q in range(k) for j in range(n)]   # 把 n×k 的 B 轉成 k×n
+                args["b"] = B
+        flat = list(_call("matmul", args))
         if al != 1.0:
             flat = [al * v for v in flat]
         if Cl is not None:
