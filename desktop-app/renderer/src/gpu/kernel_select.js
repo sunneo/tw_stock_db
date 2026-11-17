@@ -61,6 +61,8 @@ function tierOf(caps) {
 // applies(shape) 決定形狀是否適用（沒有 applies 表示任何形狀都適用）。最後一個一定是無需求的簡單版（保底）。
 const VARIANTS = {
   matmul: [
+    // vec4 載入版（O5）：K、N 為 4 的倍數、不轉置時才用；同一份平鋪幾何，只把全域讀取改成 vec4
+    { id: 'mm_vec4_f32', shared: 8 * KIB, threads: 256, needs: {}, applies: (s) => s.M >= 16 && s.N >= 16 && s.K % 4 === 0 && s.N % 4 === 0 },
     { id: 'mm_tiled_f32', shared: 8 * KIB, threads: 256, needs: {}, applies: (s) => s.M >= 16 && s.N >= 16 },
     { id: 'mm_simple_f32', shared: 0, threads: 1, needs: {} },
   ],

@@ -1,0 +1,62 @@
+<!doctype html><meta charset="utf-8"><title>mm race check</title>
+<body style="font:13px monospace;white-space:pre">
+<script>
+// 真 Chrome 驗證 G4 接線：(A) variant_race 的 IndexedDB 真機存取（不碰 GPU）；(B) mm_ops 的 vec4／平鋪／簡單三個變體各派發一次（共 3 次 submit，形狀 64×256×256 很小），
+// 逐元素對 CPU 參考；(C) 存進 IndexedDB 的勝者重新讀出後，派發選擇會用它（source: tuned）。
+// 安全規則：一頁一形狀、3 次 submit 以內、監聽 device.lost。整段競賽計時（raceMatmul 的 timing）不在本頁跑（會超過 3 次 submit），見交接。
+// 用法：desktop-app 資料夾 python -X utf8 -m http.server <埠> --bind 127.0.0.1，開 http://127.0.0.1:<埠>/scripts/eval/mm_race_check.html；結果在 window.__out。
+const mods = {};
+const load = async (name) => {
+  const src = await (await fetch('../../renderer/src/gpu/' + name + '.js', { cache: 'no-store' })).text();
+  const m = { exports: {} }; mods[name] = m;
+  new Function('module', 'exports', 'require', src)(m, m.exports, (p) => { const k = p.replace(/^\.\//, '').replace(/\.js$/, ''); if (!mods[k]) throw new Error('missing ' + k); return mods[k].exports; });
+};
+(async () => {
+  const out = { idb: null, store: null, dispatch: [], tuned: null, lost: null, error: null, adapter: null };
+  window.__out = out;
+  try {
+    await load('kernel_select'); await load('variant_race'); await load('gpu_core'); await load('gpu_pool'); await load('nn_ops'); await load('mm_ops');
+    const KS = mods.kernel_select.exports, VR = mods.variant_race.exports, MM = mods.mm_ops.exports;
+    // (A) IndexedDB 真機：寫入、關掉再開（新的 store 物件）、讀回
+    const dbName = 'cudaweb_variants_check';
+    const s1 = VR.createStore({ dbName: dbName });
+    out.store = s1.kind;
+    const testKey = 'check|matmul|M64K256N256|sig';
+    const wrote = await s1.set(testKey, { id: 'mm_tiled_f32', median: 1.5 });
+    out.idb = { wrote: wrote };
+    const s2 = VR.createStore({ dbName: dbName });
+    const ents = await s2.entries();
+    out.idb.readBack = ents.filter((e) => e.key === testKey).map((e) => e.value);
+    out.idb.count = ents.length;
+    // (B) 派發：一個 adapter、一個 device；三個變體各一次 submit，對 CPU 參考
+    if (!navigator.gpu) throw new Error('沒有 navigator.gpu');
+    const adapter = await navigator.gpu.requestAdapter();
+    if (!adapter) throw new Error('requestAdapter 回傳 null');
+    const device = await adapter.requestDevice();
+    out.adapter = { isFallback: !!adapter.isFallbackAdapter, features: Array.from(adapter.features || []).length };
+    device.lost.then((info) => { out.lost = info && info.message; });
+    const caps = KS.probeCaps(adapter, device);
+    MM.setMatmulCaps(caps, 'check-adapter|driver-unknown|chrome');
+    const M = 64, K = 256, N = 256;
+    let s = 11; const rnd = () => { s = (Math.imul(s, 1664525) + 1013904223) | 0; return (s >>> 0) / 4294967296 - 0.5; };
+    const a = Float32Array.from({ length: M * K }, rnd), b = Float32Array.from({ length: K * N }, rnd);
+    const ref = MM.matmulRef(a, [M, K], b, [K, N]).y;
+    let scale = 0; for (const v of ref) scale = Math.max(scale, Math.abs(v));
+    for (const kernel of ['mm_vec4_f32', 'mm_tiled_f32', 'mm_simple_f32']) {
+      const o = { kernel: kernel };
+      const r = await MM.matmul(a, [M, K], b, [K, N], o);
+      let d = 0; for (let i = 0; i < ref.length; i++) d = Math.max(d, Math.abs(r.y[i] - ref[i]));
+      out.dispatch.push({ kernel: kernel, lastKernel: o.lastKernel, layer: o.lastInfo && o.lastInfo.layer, relErr: d / scale, pass: d / scale <= 1e-5 });
+    }
+    // (C) 勝者從 IndexedDB 讀回後，派發選擇走 tuned（不用再跑競賽）
+    MM.setMatmulWinners(ents);
+    const picked = MM.pickMatmulKernel(M, K, N, {});
+    out.tuned = { id: picked.id, source: picked.source, reason: picked.reason };
+    // 清掉檢查用的資料
+    await s1.clear();
+    out.done = true;
+  } catch (e) { out.error = String((e && e.stack) || e); }
+  document.title = 'mm race check done';
+  console.log('MM_RACE_CHECK ' + JSON.stringify(out));
+})();
+</script>

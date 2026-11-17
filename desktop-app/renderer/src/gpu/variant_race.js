@@ -108,6 +108,19 @@
         try { await tx('readwrite', function (s) { return s.put(value, key); }); return 'idb'; }
         catch (_) { return 'memory'; }
       },
+      // 啟動時整批載入（派發路徑是同步查表，見 mm_ops.setMatmulWinners）；失敗就給記憶體內容
+      entries: async function () {
+        try {
+          const db = await open();
+          return await new Promise(function (resolve, reject) {
+            const t = db.transaction(storeName, 'readonly'), s = t.objectStore(storeName), out = [];
+            const req = s.openCursor();
+            req.onsuccess = function () { const c = req.result; if (c) { out.push({ key: c.key, value: c.value }); c.continue(); } };
+            t.oncomplete = function () { resolve(out); };
+            t.onerror = function () { reject(t.error); };
+          });
+        } catch (_) { return Array.from(mem.entries()).map(function (kv) { return { key: kv[0], value: kv[1] }; }); }
+      },
       // 測試與設定頁「恢復預設」用
       clear: async function () { mem.clear(); try { await tx('readwrite', function (s) { return s.clear(); }); } catch (_) { /* 記憶體已清 */ } }
     };
