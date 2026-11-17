@@ -129492,10 +129492,22 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             save: (r) => { this._activePlanRun = r.state === 'waiting' ? { run: r, userText } : null; },
         };
     }
-    async _planFinish(run, userText, trace, calls, prog) {
+    async _planFinish(run, userText, trace, calls, prog, M) {
         const sm = FaPlan.summarizeRun(run); const planText = FaPlan.renderPlan(run); let body = '';
         if (run.state === 'waiting') { const w = run.waiting || {}; body = '⏸️ 計畫停在 ' + w.step + '：' + ((w.missing && w.missing.length) ? '缺 ' + w.missing.join('、') : (w.reason || '需要你補資料')) + '。請補上（附檔、貼網址，或直接說清楚），我會從這一步接著做，已完成的不會重做。'; }
-        else if (run.state === 'done') { const f = sm.final; body = f ? (f.value != null ? String(f.value) : '成品：' + (f.filename || f.id) + '（已產生下載附件）') : '完成。'; }
+        else if (run.state === 'done') {
+            const f = sm.final; body = f ? (f.value != null ? String(f.value) : '成品：' + (f.filename || f.id) + '（已產生下載附件）') : '完成。';
+            // 讀＋總結（逐層歸約的最後一層）：摘要類目標的取回內容一定交給模型（_planLocalSummarize 逐段摘要、合併）；沒有模型就誠實標示「沒有經過 AI」
+            if (run.goal.target === 'summary' && M && f && f.value != null) {
+                const question = FaRecipe.stripAttachments(userText) || String(userText);
+                const r = await this._planLocalSummarize(String(f.value), question, M).catch((e) => ({ ok: false, text: String((e && e.message) || e) }));
+                const how = r && r.ok && r.json ? r.json.method : null;
+                if (how) {
+                    body = (how === 'extractive' ? '⚠️ 這次沒有經過 AI（程式摘錄）' : how === 'mixed' ? '（部分段落由程式摘錄，其餘經 AI 摘要）' : '（經 AI 逐段摘要並合併）') + '\n' + r.text;
+                    FaRecipe.decide(trace, { stage: 'read_back', answer: how, by: how === 'extractive' ? 'program' : 'model', chunks: r.json.chunks });
+                }
+            }
+        }
         else body = '⚠️ 計畫沒有完成：' + (run.error || '失敗') + (sm.doneSteps.length ? '\n已完成的步驟：' + sm.doneSteps.join('、') + '（它們的成品還在）' : '');
         if (prog) { if (run.state === 'done') prog.finish('完成'); else if (run.state === 'waiting') prog.finish('等你補資料'); else prog.fail(run.error || '失敗'); }
         FaRecipe.decide(trace, { stage: 'plan_end', answer: run.state, by: 'program', steps: run.steps.map((s) => s.tool + ':' + s.state) }); this._recipeSaveTrace(trace);
@@ -129532,7 +129544,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         if (loraOn) env = await this._planLoraWrap(run, env, userText, prog).catch((e) => { prog.log('LoRA 逐步切換這次沒有啟用（錯誤，全部用基底）：' + String((e && e.message) || e)); return env; });
         try { await FaPlan.advance(run, env); }
         finally { if (loraOn) this._loraStepPin = null; }
-        return this._planFinish(run, userText, ctx.trace, calls, prog);
+        return this._planFinish(run, userText, ctx.trace, calls, prog, ctx.M);
     }
     // 包住計畫的每個工具／本機函式／填欄位：執行前依步驟種類（FaLoraPlan.stepDomain）切到該領域的 LoRA；
     // 同領域連續不重複切換；對不上的步驟切回基底；整批領域都有 LoRA 且在同時啟用上限內就一次載入（advancedSettings.loraPlanUnionMax，預設 4）。
