@@ -118,12 +118,19 @@ function fakePyodide(opts) {
     assert.ok(fa.indexOf("python_api_bridge: { gpu }") > 0, 'python_execute 結果沒有 python_api_bridge.gpu');
   });
 
-  await check('GPU 相容層設定區塊：AI 設定（ai 分組）與桌面版設定頁都掛載同一個建構函式；開關預設開、三種模式、開啟時不自動偵測', async () => {
+  await check('GPU 相容層只在 ai 分組的 gpu-compat 窗格出現：桌面版設定頁不掛載；窗格內含開關、float64、偵測、基準、變體競賽各一份', async () => {
     const fa = fs.readFileSync(path.join(__dirname, '..', 'floating-assistant.js'), 'utf8').replace(/\r\n/g, '\n');
     const boot = fs.readFileSync(path.join(__dirname, '..', '..', 'bootstrap.js'), 'utf8').replace(/\r\n/g, '\n');
     assert.ok(fa.indexOf("this._gpuCompatRegisterPane()") > 0, 'AI 設定沒有註冊 GPU 相容層分頁');
     assert.ok(fa.indexOf("registerAdvancedSettingsTab('ai', 'gpu-compat'") > 0, 'GPU 相容層不在 ai 分組');
-    assert.ok(boot.indexOf("fa._gpuCompatControls()") > 0, '桌面版設定頁沒有掛載 GPU 相容層區塊');
+    // 桌面版設定頁不得再掛這個窗格（使用者要的是一個功能只出現在一處）
+    assert.strictEqual(boot.indexOf("fa._gpuCompatControls()"), -1, '桌面版設定頁還掛著 GPU 相容層（應只在 ai 分組的 gpu-compat 窗格）');
+    assert.strictEqual(boot.indexOf("_gpuBenchPanel"), -1, '桌面版設定頁不應掛基準表');
+    assert.strictEqual(boot.indexOf("_gpuVariantPanel"), -1, '桌面版設定頁不應掛變體競賽表');
+    // 窗格內容：基準與變體競賽表各只建一次，都在 _gpuCompatControls 裡（窗格的根）
+    assert.strictEqual(fa.split('this._gpuBenchPanel()').length - 1, 1, '基準表應只建一次');
+    assert.strictEqual(fa.split('this._gpuVariantPanel()').length - 1, 1, '變體競賽表應只建一次');
+    assert.ok(fa.indexOf("root.appendChild(this._gpuCompatControls());") > 0, 'gpu-compat 窗格沒有包含 GPU 相容層控制區');
     assert.ok(fa.indexOf("chk.checked = (this.advancedSettings.cudaCompat !== 'off')") > 0, '開關沒有依設定顯示（預設開）');
     for (const v of ["['auto', 'auto（預設）']", "['f32', 'f32']", "['exact', 'exact']"]) assert.ok(fa.indexOf(v) > 0, '缺少模式選項 ' + v);
     assert.ok(fa.indexOf("this.advancedSettings.cudaCompatFloat64 = sel.value") > 0, 'float64 模式沒有寫回設定');

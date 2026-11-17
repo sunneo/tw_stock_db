@@ -8,7 +8,7 @@ const ud = fs.mkdtempSync(path.join(os.tmpdir(), 'fa-mm-race-cfg-'));
 const rev = /const REV = "([^"]+)"/.exec(fs.readFileSync(path.join(app, 'main-ext.js'), 'utf8'))[1];
 fs.writeFileSync(path.join(ud, 'main-ext-rev.txt'), rev);
 const env = Object.assign({}, process.env, {
-  FA_DEBUG_EVAL_FILE: path.join(__dirname, 'mm_race_configure.eval.js'),
+  FA_DEBUG_EVAL_FILE: path.join(__dirname, (process.argv[2] || 'mm_race_configure') + '.eval.js'),
   FA_DISABLE_MAIN_OVERLAY: '1', FA_BROWSER_CONTROL_PORT: '17990', ELECTRON_ENABLE_LOGGING: '1',
 });
 const proc = spawn(ELECTRON, [app, '--no-sandbox', '--user-data-dir=' + ud], { env, stdio: ['ignore', 'pipe', 'pipe'], shell: process.platform === 'win32' });

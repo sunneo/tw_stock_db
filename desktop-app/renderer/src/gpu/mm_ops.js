@@ -234,9 +234,11 @@ const AUTO_SHAPES = [{ M: 64, K: 1024, N: 1024 }];
 async function initMatmulTuning(o) {
   const opts = o || {};
   const VR = require('./variant_race.js');
-  const caps = KS.probeCaps(null, opts.device || null);
+  // 已經設定過的能力（例如設定頁用 adapter 探測的結果）就沿用，不被裝置探測蓋掉：
+  // 兩種探測的欄位來源不同（adapter 的功能 vs 請求過的裝置功能），會讓同一張卡的競賽鍵飄移，設定頁的表格就查不到勝者。
+  const caps = CAPS || KS.probeCaps(null, opts.device || null);
   const desc = opts.adapterDesc || 'unknown';
-  setMatmulCaps(caps, desc);
+  if (!CAPS) setMatmulCaps(caps, desc);
   const store = opts.store || VR.createStore({});
   let entries = [];
   try { entries = await store.entries(); } catch (_) { entries = []; }
@@ -289,4 +291,4 @@ async function startMatmulRace(shapes, o) {
   return out;
 }
 
-module.exports = { matmulRef, matmul, matmulIntRef, matmulInt, WGSL_MM_F32, WGSL_MM_F32_TILED, WGSL_MM_F32_VEC4, WGSL_MM_I32, plan, pickMatmulKernel, setMatmulCaps, setMatmulWinners, raceMatmul, initMatmulTuning, startMatmulRace, calibrateSimple, gateCandidates, estimateMs, flopsOf, SAFE_DISPATCH_MS, REL_SPEED, AUTO_SHAPES, TUNE };
+module.exports = { matmulRef, matmul, matmulIntRef, matmulInt, WGSL_MM_F32, WGSL_MM_F32_TILED, WGSL_MM_F32_VEC4, WGSL_MM_I32, plan, pickMatmulKernel, setMatmulCaps, getMatmulCaps: () => CAPS, setMatmulWinners, raceMatmul, initMatmulTuning, startMatmulRace, calibrateSimple, gateCandidates, estimateMs, flopsOf, SAFE_DISPATCH_MS, REL_SPEED, AUTO_SHAPES, TUNE };

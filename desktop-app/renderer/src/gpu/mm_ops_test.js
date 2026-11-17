@@ -112,6 +112,11 @@ const M = require('./mm_ops.js');
   ran.length = 0;
   outs = await M.startMatmulRace(shapesAll, { calibrate: async () => ({ noGpu: true, reason: 'no adapter' }), raceOne: async (Mm) => { ran.push(Mm); return {}; } });
   assert.deepStrictEqual(ran, []); assert.ok(outs.every((x) => x.noGpu === true));
+  // 能力探測：UI 已設定的（adapter 來源）不被裝置探測蓋掉，競賽鍵與表格查詢才會一致
+  const capsUi = Object.assign({}, KS.probeCaps(null, null), { maxWorkgroupStorage: 12345 });
+  M.setMatmulCaps(capsUi, 'adapter-ui');
+  await M.initMatmulTuning({ device: fakeDev, adapterDesc: 'device-side', store: st2, shapes: [] });
+  assert.strictEqual(M.getMatmulCaps(), capsUi);
   // 競賽一定有共用儲存（表格讀的是同一個），沒有就建一個
   M.TUNE.store = null;
   await M.startMatmulRace([{ M: 64, K: 1024, N: 1024 }], { calibrate: calibOk, raceOne: async () => ({ winner: null, bad: [], gated: [] }) });
