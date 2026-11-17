@@ -22,6 +22,16 @@ Continue from the handoff document at desktop-app/docs/HANDOFF.plan-template.md.
 
 ## 3. Todo（依序）
 
+**進度（最新，2026-11-17）**：
+- ✅ todo 2 診斷：`DESIGN.plan-template.md` §1.3–1.5。原因已確認：`_planFinish` 直接把取回的原文當答案，沒有任何模型讀取（缺讀＋總結層）。
+- ✅ 讀＋總結修正：`6b93b201f`（`_planFinish` 摘要類目標改走 `_planLocalSummarize`；沒模型標示「這次沒有經過 AI」）；測試 `renderer/src/recipe/plan_readback.test.js` 8 passed。
+- ✅ 網頁新聞確定性核心：`989435b1f`（`renderer/src/recipe/web_news_core.js`：來源登錄表、站名別名、拆字、頁面切單位、比對；測試 `web_news_core.test.js` 21 passed）。
+- ⏳ 下一步（照順序）：
+  1. 把 `web_news_core` 接進計畫：`web_research`／`web_summary` 的新聞路徑 = 選來源（`pickSources`）→ 取清單（`fetch_web_page`／RSS）→ `splitPage` ＋ `matchUnits`（目標詞用 `goalOf`＋`expandTerms`）→ 逐篇取內文 → 逐篇 `_planLocalSummarize` → 合併「N 則，各一句重點」；沒有相關就明說沒有。
+  2. 可觀測性（§3(g)）：每步一行進使用者開著的 transcribe；先確認讀的是哪個管道（`_createProgressWidget` 的「離線計畫」卡片 vs `_rgTrace`），再補齊；測試用假模型＋假工具斷言步驟序列。
+  3. 垂直切片實跑（§3(e)）：真模型（原生 q8）＋假網頁（固定 HTML），三個說法：「看今天有哪些黃仁勳新聞」「去 yahoo 看黃仁勳的新聞」「看 yahoo 新聞有沒有颱風」。結果寫進 `DESIGN.plan-template.md`。
+  4. 全部通過後：`node scripts/test-affected.js`（全量約 500 秒，背景跑）、commit、`publish.sh --no-web`（先 `mv` 出未追蹤的 `skills/weak-model-harness/scripts/bridge/`，之後移回）、回報一次。網頁 SHA repin 仍被分類器擋住，不重試。
+
 **2026-11-17 追加需求（轉達自使用者，逐字見 §5；全部要做，做完再回報一次）**：
 - (a) 讀 log 的範式是**逐層歸約（map-reduce）**：大量內容切段、每段各自讀與摘要、往上一層合併，層層縮到放得進上下文。網頁多篇摘要要用同一範式：第 0 層＝程式取回的原始內容（清單→各篇內文），第 1 層＝逐篇／逐段摘要，第 2 層＝合併總結；每層的單位、模型被問的封閉題、層間傳遞、停止條件、哪一步用 thinking 都要寫清楚。（log 的現成結構見 `DESIGN.log-mining.md`、`DESIGN.TODO.md` 117～147 行、`jsonl_pager`／`read_ledger`。）
 - (b) **來源登錄表**（資料層）：依任務類型列可用網站與進入點（新聞台灣：Yahoo 新聞 https://tw.news.yahoo.com/、中央社、聯合新聞網、自由時報、公視、Google News 搜尋 RSS `https://news.google.com/rss/search?q=<關鍵字>&hl=zh-TW&gl=TW&ceid=TW:zh-Hant`；查資料：搜尋結果頁或其 RSS）。每筆：名稱、進入點 URL 樣板（關鍵字槽）、取清單方式（RSS／列表頁／搜尋頁）、內文擷取方式、語言、可靠度、預設順序。使用者指定了網站（含 URL）就用使用者的；沒指定用登錄表預設（1～3 個），並顯示每次實際用了哪些來源。放成可擴充的純資料模組（`renderer/src/` 下）加測試；設定的「進階」區可編輯。
