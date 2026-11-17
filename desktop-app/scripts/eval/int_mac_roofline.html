@@ -1,0 +1,62 @@
+<!doctype html><meta charset="utf-8"><title>int mac roofline</title>
+<body style="font:13px monospace;white-space:pre">
+<script>
+// 真 Chrome（真 WebGPU）：i32 與 f32 乘加的吞吐上限（8 條獨立鏈，不靠記憶體）。量的是這台的整數乘加屋頂，用來判斷 q8mm 離屋頂多遠。
+// 每個執行緒：ITER 次 c_j = c_j + x·b_j（j=0..7），結果寫進輸出避免被刪掉。同一 pass 派發 R 次，onSubmittedWorkDone 後量牆鐘，取 5 次中位數。
+// 結果在 window.__out。只標這台機器。
+(async () => {
+  const out = { i32_GMACs: null, f32_GMACs: null, error: null };
+  window.__out = out;
+  try {
+    const adapter = await navigator.gpu.requestAdapter();
+    const dev = await adapter.requestDevice();
+    const USAGE = { STORAGE: 0x80, COPY_SRC: 4, COPY_DST: 8, MAP_READ: 1 };
+    const WG = 128, ITER = 1024, R = 10;
+    const mk = (type) => `
+@group(0) @binding(0) var<storage, read> a: array<${type}>;
+@group(0) @binding(1) var<storage, read_write> o: array<${type}>;
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) g: vec3<u32>) {
+  let i = g.x & 1023u;
+  let x = a[i];
+  let b0 = a[1024u]; let b1 = a[1025u]; let b2 = a[1026u]; let b3 = a[1027u];
+  let b4 = a[1028u]; let b5 = a[1029u]; let b6 = a[1030u]; let b7 = a[1031u];
+  var c0: ${type} = a[1032u]; var c1: ${type} = c0; var c2: ${type} = c0; var c3: ${type} = c0;
+  var c4: ${type} = c0; var c5: ${type} = c0; var c6: ${type} = c0; var c7: ${type} = c0;
+  for (var k: u32 = 0u; k < ${ITER}u; k = k + 1u) {
+    c0 = c0 * b0 + x; c1 = c1 * b1 + x; c2 = c2 * b2 + x; c3 = c3 * b3 + x;
+    c4 = c4 * b4 + x; c5 = c5 * b5 + x; c6 = c6 * b6 + x; c7 = c7 * b7 + x;
+  }
+  o[g.x] = c0 + c1 + c2 + c3 + c4 + c5 + c6 + c7;
+}`;
+    const bench = async (type, arr) => {
+      const ab = dev.createBuffer({ size: 1040 * 4, usage: USAGE.STORAGE | USAGE.COPY_DST });
+      dev.queue.writeBuffer(ab, 0, arr);
+      const nthreads = WG * 256;
+      const ob = dev.createBuffer({ size: nthreads * 4, usage: USAGE.STORAGE | USAGE.COPY_SRC });
+      const pipe = dev.createComputePipeline({ layout: 'auto', compute: { module: dev.createShaderModule({ code: mk(type) }), entryPoint: 'main' } });
+      const bg = dev.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: ab } }, { binding: 1, resource: { buffer: ob } }] });
+      const once = async () => {
+        const enc = dev.createCommandEncoder(); const pass = enc.beginComputePass();
+        pass.setPipeline(pipe); pass.setBindGroup(0, bg);
+        for (let r = 0; r < R; r++) pass.dispatchWorkgroups(WG);
+        pass.end(); dev.queue.submit([enc.finish()]); await dev.queue.onSubmittedWorkDone();
+      };
+      await once();
+      const ts = []; for (let i = 0; i < 5; i++) { const t0 = performance.now(); await once(); ts.push(performance.now() - t0); }
+      ts.sort((p, q) => p - q);
+      const sec = ts[2] / 1000;
+      const macs = nthreads * ITER * 8 * R;   // 每次 MAC（乘加算一次）
+      ab.destroy(); ob.destroy();
+      return Math.round((macs / sec) / 1e7) / 100;   // GMAC/s
+    };
+    const iArr = new Int32Array(1040); for (let i = 0; i < 1040; i++) iArr[i] = (i * 37) % 201 - 100;
+    const fArr = new Float32Array(1040); for (let i = 0; i < 1040; i++) fArr[i] = ((i * 37) % 201 - 100) * 0.001;
+    out.i32_GMACs = await bench('i32', iArr);
+    out.f32_GMACs = await bench('f32', fArr);
+    out.note = 'GMAC/s = 乘加次數／牆鐘時間；單位 1e9。';
+  } catch (e) { out.error = String(e && e.stack || e); }
+  out.done = true;
+  document.body.textContent = JSON.stringify(out, null, 1); document.title = 'done';
+})();
+</script>
