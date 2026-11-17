@@ -17761,6 +17761,8 @@ const holder = {};
         { tool: 'transcribe_media', stage: 'analyze', cost: 3, slow: true, in: [{ slot: 'file', kinds: ['video', 'audio'] }], out: [{ kind: 'transcript', inline: true, keys: ['transcript_file_id'] }, { kind: 'text', inline: true }], label: '語音轉逐字稿' },
         { tool: 'summarize_large_text', stage: 'analyze', cost: 2, online: true, in: [{ slot: 'file_id', kinds: ['text', 'transcript'] }], out: [{ kind: 'summary', inline: true }], label: '摘要（線上模型）' },
         { tool: 'local_summarize', local: true, stage: 'analyze', cost: 3, in: [{ slot: 'text', kinds: ['text', 'transcript'], many: true }], out: [{ kind: 'summary', inline: true }], label: '摘要（離線：分段摘要＋檢查）' },
+        { tool: 'log_filter', local: true, stage: 'prepare', cost: 1, in: [{ slot: 'text', kinds: ['text'], many: true }], out: [{ kind: 'log_text', inline: true }], label: '篩出錯誤與警告行（程式，第 0 層）' },
+        { tool: 'log_summarize', local: true, stage: 'analyze', cost: 3, in: [{ slot: 'text', kinds: ['log_text'], many: true }], out: [{ kind: 'summary', inline: true }], label: '逐段讀日誌並合併（離線，第 1、2 層）' },
         { tool: 'interpret_image', stage: 'analyze', cost: 2, online: true, in: [{ slot: 'file_id', kinds: ['image'] }], out: [{ kind: 'description', inline: true }], label: '看圖說明' },
         { tool: 'burn_subtitles', stage: 'produce', cost: 4, slow: true, in: [{ slot: 'video', kinds: ['video'] }, { slot: 'subtitle', kinds: ['subtitle'], optional: true }], out: [{ kind: 'subvideo', keys: ['video_file_id', 'file_id'] }], label: '把字幕燒進影片' },
         { tool: 'convert_to_animated_gif', stage: 'produce', cost: 2, in: [{ slot: 'video', kinds: ['video'] }], out: [{ kind: 'gif', keys: ['gif_file_id'] }], label: '影片轉 GIF' },
@@ -17785,6 +17787,7 @@ const holder = {};
         { id: 'video_gif', label: '影片轉 GIF', target: 'gif', needs: ['video'], triggers: [/\bgif\b|動圖|動態圖/i] },
         { id: 'web_summary', label: '網頁做摘要', target: 'summary', needs: ['url'], triggers: [/(摘要|重點|總結|整理|在講什麼|在說什麼|內容|summar)/i] },
         { id: 'web_research', label: '上網查資料並整理', target: 'summary', needs: ['query'], triggers: [/(上網|搜尋|查)[^]{0,40}(整理|摘要|重點|總結|研究|彙整)|(整理|摘要|研究|彙整)[^]{0,40}(上網|搜尋|網路上)|research/i] },
+        { id: 'log_summary', label: '分析日誌（篩選→逐段→合併）', target: 'summary', needs: ['text'], triggers: [/(日誌|log|紀錄檔|記錄檔)[^]*(錯誤|警告|異常|摘要|分析|重點|問題|找)|(錯誤|異常|警告)[^]*(日誌|log)/i], tools: ['log_filter', 'log_summarize'] }, // 只能走這兩步：先程式篩選（第 0 層），再逐段讀（第 1、2 層）
         { id: 'doc_summary', label: '文件做摘要', target: 'summary', needs: ['doc', 'pdf', 'text', 'file'], triggers: [/(摘要|重點|總結|整理|summar)/i] },
         { id: 'images_pdf', label: '圖片轉 PDF', target: 'pdf', needs: ['image'], triggers: [/pdf/i] },
         { id: 'pdf_merge', label: '合併 PDF', target: 'pdf', needs: ['pdf'], minCount: 2, triggers: [/合併|併成|合成|merge/i] },
@@ -17817,7 +17820,7 @@ const holder = {};
             out.push(g);
         }
         // 有影音附件時，「摘要」類不要被文件摘要搶走：影音目標優先於一般文件目標；有網址時網頁優先
-        const rank = (g) => ({ video_subtitled: 0, video_gif: 0, media_transcript: 1, video_summary: 1, web_summary: 2, web_research: 3, pdf_merge: 2, pdf_pages: 2, images_pdf: 2, speak_summary: 2, uml_code: 1, uml_only: 2, code_program: 3, doc_summary: 5 }[g.id] ?? 4);
+        const rank = (g) => ({ video_subtitled: 0, video_gif: 0, media_transcript: 1, video_summary: 1, web_summary: 2, web_research: 3, pdf_merge: 2, pdf_pages: 2, images_pdf: 2, speak_summary: 2, uml_code: 1, uml_only: 2, code_program: 3, log_summary: 1, doc_summary: 5 }[g.id] ?? 4);
         out.sort((a, b) => rank(a) - rank(b));
         // 同一目標種類更特定的留下（例如有影片就不要同時留 doc_summary）
         const keepRank = out.length ? rank(out[0]) : 0; const specific = out.filter((g) => rank(g) <= Math.max(keepRank, 2));
@@ -17831,7 +17834,7 @@ const holder = {};
         opts = opts || {}; const lang = opts.lang || (facts && facts.lang) || null; // 語言決定哪些能力看得到：沒有 langs 欄位的是通用的；有的只屬於那個語言
         // 規劃只從這個目標「要的輸入」出發（goal.needs＋使用者的話）：使用者說的是網址，就不能因為對話裡剛好有別的文字檔就跳過抓網頁
         if (goal && Array.isArray(goal.needs) && goal.needs.length) { const keep = new Set(goal.needs.concat(['usertext'])); const kinds = {}; for (const k of Object.keys(facts.kinds)) if (keep.has(k)) kinds[k] = facts.kinds[k]; facts = Object.assign({}, facts, { kinds }); }
-        const caps = (opts.caps || CAPS).filter((c) => !c.langs || (lang && c.langs.includes(lang))); const excluded = new Set(opts.excluded || []); const online = facts.online === true; const kindsFor = (c, inp) => (opts.inputKinds && opts.inputKinds[c.tool + '.' + inp.slot]) || inp.kinds;
+        const caps = (opts.caps || CAPS).filter((c) => (!c.langs || (lang && c.langs.includes(lang))) && (!goal || !Array.isArray(goal.tools) || goal.tools.includes(c.tool))); const excluded = new Set(opts.excluded || []); const online = facts.online === true; const kindsFor = (c, inp) => (opts.inputKinds && opts.inputKinds[c.tool + '.' + inp.slot]) || inp.kinds;
         const capCost = (c) => c.cost + (c.online && !online ? 50 : 0) + (c.slow ? 0.5 : 0);
         let counter = 0; const memo = new Map();
         // 需要一個種類 kind（many 則需要 min 個）：回傳 { steps, cost, from }
@@ -18067,7 +18070,38 @@ const holder = {};
             },
         };
     }
-    return { CAPS, GOALS, STAGES, FAILURE_RULES, roundLog, kindOfFile, capOf, factsFrom, matchGoals, goalMenu, buildPlan, expand, createRun, stepOf, renderPlan, decideFailure, collectArtifacts, bindInputs, advance, provide, summarizeRun };
+    // 日誌的第 0 層（純程式，不呼叫模型）：只留錯誤與警告行，加上它們的堆疊續行，前面附上行數統計。
+    // 模型只看留下來的行（逐段讀、再合併，見 floating-assistant.js 的 _planLocalSummarize）。
+    const CONT = /^(\s+\S|at\s|Caused by|File "|\.\.\. \d+ more)/;
+    // 一行 → 等級（給統計用）：ERROR／FATAL／…→ error；WARN… → warn；其餘（續行）不計
+    function levelOf(line) {
+        const m = /\b(FATAL|CRITICAL|CRIT|SEVERE|ERROR|ERR)\b|錯誤|失敗|例外|當機|Exception|Traceback/i.exec(line);
+        if (m) return 'error';
+        if (/\b(WARN|WARNING)\b|警告/i.test(line)) return 'warn';
+        return null;
+    }
+    // 回傳 { header, kept, total, errors, warns }：kept 是留下來的行（含續行），header 是統計那一行
+    function filterLog(text) {
+        const lines = String(text == null ? '' : text).split(/\r?\n/);
+        const kept = []; let errors = 0, warns = 0, keepCont = false;
+        for (const line of lines) {
+            if (!line.trim()) { keepCont = false; continue; }
+            const lv = levelOf(line);
+            if (lv) { keepCont = true; if (lv === 'error') errors++; else warns++; kept.push(line); continue; }
+            if (keepCont && CONT.test(line)) { kept.push(line); continue; }
+            keepCont = false;
+        }
+        const total = lines.filter((l) => l.trim()).length;
+        const header = '日誌共 ' + total + ' 行；錯誤 ' + errors + ' 行、警告 ' + warns + ' 行（以下只列錯誤與警告，含堆疊續行）';
+        return { header, kept, total, errors, warns };
+    }
+    // 要餵給模型的文字：統計行＋留下的行；沒有錯誤與警告就只說這件事（不讓模型編）
+    function digestText(text) {
+        const f = filterLog(text);
+        if (!f.kept.length) return f.header + '\n（沒有錯誤或警告行）';
+        return f.header + '\n' + f.kept.join('\n');
+    }
+    return { CAPS, GOALS, STAGES, FAILURE_RULES, roundLog, filterLog, digestText, levelOf, kindOfFile, capOf, factsFrom, matchGoals, goalMenu, buildPlan, expand, createRun, stepOf, renderPlan, decideFailure, collectArtifacts, bindInputs, advance, provide, summarizeRun };
 });
 
 }).call(null, undefined, holder);
@@ -129767,15 +129801,21 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         return { model, ensure, gen };
     }
     // 離線摘要（pseudo 工具 local_summarize）：依模型上下文切段（自適應）→ 每段讓模型摘要並檢查（有編造就換程式摘要）→ 合併；沒有模型就全部用程式摘要
-    async _planLocalSummarize(inputs, question, M) {
+    // 計畫的輸入（文字或附件的 file id）→ 全文；file id 用 fileCache 讀回（和產品裡附件、抓回的網頁一樣）
+    async _planReadText(inputs) {
         const list = [].concat(inputs || []); let full = '';
         for (const it of list) { const s = String(it == null ? '' : it); if (/^[\w-]{8,}$/.test(s)) { try { const rec = await this.fileCache.get(s); if (rec && rec.blob) { full += '\n' + await rec.blob.text(); continue; } } catch (_) {} } full += '\n' + s; }
-        full = full.trim(); if (!full) return { ok: false, text: '沒有可以摘要的文字' };
+        return full.trim();
+    }
+    // hooks（可省略）：step(階段, 誰做, 內容) 每一層每一段一行（進度卡片）；noPrepass：不先用程式挑重點句（log 這類要逐行讀的內容）；noMerge：不做第 2 層合併
+    async _planLocalSummarize(inputs, question, M, hooks) {
+        const H = hooks || {}; const say = (st, who, text) => { try { if (H.step) H.step(st, who, text); } catch (_) { /* 顯示失敗不影響摘要 */ } };
+        const full = await this._planReadText(inputs); if (!full) return { ok: false, text: '沒有可以摘要的文字' };
         const chunkTok = Math.max(300, Math.floor(FaVlm.textBudget(M.model, 220).prompt * 0.55)); let chunks = FaRecipe.chunkText(full, chunkTok);
-        if (chunks.length > 4) chunks = FaRecipe.chunkText(FaRecipe.extractiveSummary(full, 40), chunkTok); // 太長：先用程式挑重點句，再讓模型摘要（離線 CPU 上每段要幾十秒）
+        if (chunks.length > 4 && !H.noPrepass) chunks = FaRecipe.chunkText(FaRecipe.extractiveSummary(full, 40), chunkTok); // 太長：先用程式挑重點句，再讓模型摘要（離線 CPU 上每段要幾十秒）
         const parts = []; let usedModel = 0, usedProgram = 0; const noModel = await M.ensure(); const rejects = [];
-        for (const c of chunks) {
-            let out = null;
+        for (let ci = 0; ci < chunks.length; ci++) {
+            const c = chunks[ci]; let out = null; const nr = rejects.length;
             if (!noModel) {
                 try {
                     const g = await M.gen({ messages: FaRecipe.phraseMessages(question || '請摘要', c, '請用繁體中文列出 2～4 個重點。'), maxTokens: 200 });
@@ -129784,8 +129824,18 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                 } catch (e) { rejects.push({ reason: '模型呼叫失敗：' + ((e && e.message) || e), raw: '' }); }
             }
             if (out) { parts.push(out); usedModel++; } else { parts.push(FaRecipe.extractiveSummary(c, 3)); usedProgram++; }
+            const why = !out && rejects.length > nr ? '，退回：' + rejects[rejects.length - 1].reason : '';
+            say('摘要（第 1 層）', out ? '模型' : '程式（沒經過 AI）', '第 ' + (ci + 1) + '/' + chunks.length + ' 段，輸入 ' + c.length + ' 字' + why + '｜答「' + String(out || parts[parts.length - 1]).replace(/\s+/g, ' ').slice(0, 40) + '」');
         }
-        const summary = parts.filter(Boolean).join('\n'); return { ok: true, text: summary, json: { summary, method: usedModel && usedProgram ? 'mixed' : (usedModel ? 'model' : 'extractive'), chunks: chunks.length, rejects } };
+        let summary = parts.filter(Boolean).join('\n'); let merge = 'none';
+        // 第 2 層：多段時，模型把各段的重點再合併一次（只用各段的內容）；退回就維持串接，並說明原因
+        if (parts.length > 1 && !noModel && !H.noMerge) {
+            let g = null, why = '';
+            try { g = await M.gen({ messages: FaRecipe.phraseMessages(question || '請摘要', summary, '把上面各段的重點合併成 2～4 個重點，只用上面的內容，不要新增。'), maxTokens: 200 }); } catch (e) { why = '模型呼叫失敗：' + ((e && e.message) || e); }
+            if (g != null) { const chk = FaRecipe.checkExtractive(g, [summary], { cjkMin: 0.5, maxChars: 600 }); if (chk.ok) { summary = String(g).trim(); merge = 'model'; } else { merge = 'concat'; why = '退回：' + chk.reason; rejects.push({ reason: '合併' + chk.reason, raw: String(g) }); } } else { merge = 'concat'; }
+            say('合併（第 2 層）', merge === 'model' ? '模型' : '程式（串接）', parts.length + ' 段' + (merge === 'model' ? '' : '，' + why) + '｜答「' + summary.replace(/\s+/g, ' ').slice(0, 40) + '」');
+        }
+        return { ok: true, text: summary, json: { summary, method: usedModel && usedProgram ? 'mixed' : (usedModel ? 'model' : 'extractive'), chunks: chunks.length, chars: full.length, rejects, merge } };
     }
     // 思考堆疊（DESIGN.think-stack.md）：路由用同一個堆疊——先選目標／工具、再補欄位、再跑計畫，後面的步驟看得到「前面選了什麼」；thinkStack:false 關閉
     _routeStack(question) { if (this.advancedSettings.thinkStack === false || typeof FaThinkStack === 'undefined' || !FaThinkStack) return null; const st = FaThinkStack.create(String(question || '').slice(0, 200), { maxDecisions: 8 }); FaThinkStack.push(st, { path: '路由', question: '判斷這句話要用哪個工具或計畫，並完成它' }); return { T: FaThinkStack, st }; }
@@ -129800,11 +129850,14 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                 let raw; try { raw = await tool.callback.call(this, JSON.stringify(args)); } catch (e) { if (RL) RL.tool(name, args, false, (e && e.message) || e); return { ok: false, text: String((e && e.message) || e) }; }
                 let j = null; try { j = JSON.parse(raw); } catch (_) {} const ok = !(j && (j.ok === false || j.error));
                 if (ok) calls.push({ name, args });
-                if (RL) RL.tool(name, args, ok, ok ? (j && typeof j.text === 'string' ? j.text : (typeof raw === 'string' ? raw : JSON.stringify(raw))) : String((j && (j.error || j.message)) || raw));
+                if (RL) RL.tool(name, args, ok, ok ? (j && typeof j.text === 'string' ? j.text : (j && j.file_id ? 'file_id ' + j.file_id : (typeof raw === 'string' ? raw : JSON.stringify(raw)))) : String((j && (j.error || j.message)) || raw));
                 return { ok, text: ok ? (typeof raw === 'string' ? raw : JSON.stringify(raw)) : String((j && (j.error || j.message)) || raw).slice(0, 300), json: j };
             },
             fns: {
-                local_summarize: async (args) => { const r = await this._planLocalSummarize(args.text, question, M); if (RL) { const j = (r && r.json) || {}; const n = [].concat(args.text == null ? [] : args.text).join('').length; RL.note('摘要', j.method === 'model' ? '模型' : (j.method === 'mixed' ? '模型＋程式' : '程式（沒經過 AI）'), '輸入 ' + n + ' 字，' + (j.chunks || 0) + ' 段' + (j.rejects && j.rejects.length ? '，退回：' + j.rejects[0].reason + '，模型原文「' + String(j.rejects[0].raw || '').replace(/\s+/g, ' ').slice(0, 60) + '」' : '') + '｜答「' + String((r && r.text) || '').replace(/\s+/g, ' ').slice(0, 40) + '」'); } return r; },
+                // 日誌（log_summary）：第 0 層程式篩出錯誤與警告行（含堆疊續行）→ 第 1 層逐段讀（模型）→ 第 2 層合併（模型）；每一層都進進度卡片
+                log_filter: async (args) => { const text = await this._planReadText(args.text); const d = FaPlan.digestText(text); if (RL) RL.note('篩選（第 0 層）', '程式', d.split('\n')[0] + '｜留下 ' + Math.max(0, d.split('\n').length - 1) + ' 行'); return { ok: true, text: d }; },
+                log_summarize: async (args) => { const r = await this._planLocalSummarize(args.text, question, M, { noPrepass: true, step: (st, who, text) => { if (RL) RL.note(st, who, text); } }); if (RL) { const j = (r && r.json) || {}; RL.note('摘要', j.method === 'model' || j.merge === 'model' ? '模型' : (j.method === 'mixed' ? '模型＋程式' : '程式（沒經過 AI）'), '逐段讀完，合併：' + (j.merge === 'model' ? '模型' : (j.merge === 'concat' ? '程式串接' : '不需要'))); } return r; },
+                local_summarize: async (args) => { const r = await this._planLocalSummarize(args.text, question, M, { step: (st, who, text) => { if (RL) RL.note(st, who, text); } }); if (RL) { const j = (r && r.json) || {}; const n = [].concat(args.text == null ? [] : args.text).join('').length; RL.note('摘要', j.method === 'model' ? '模型' : (j.method === 'mixed' ? '模型＋程式' : '程式（沒經過 AI）'), '輸入 ' + (j.chars != null ? j.chars : n) + ' 字，' + (j.chunks || 0) + ' 段' + (j.rejects && j.rejects.length ? '，退回：' + j.rejects[0].reason + '，模型原文「' + String(j.rejects[0].raw || '').replace(/\s+/g, ' ').slice(0, 60) + '」' : '') + '｜答「' + String((r && r.text) || '').replace(/\s+/g, ' ').slice(0, 40) + '」'); } return r; },
                 local_uml_design: async (args) => { const sc = [].concat(args.scenario || question).join('\n'); const lang = /typescript|\bts\b/i.test(sc) ? 'typescript' : (/java(?!script)/i.test(sc) ? 'java' : 'python'); const r = await FaDesign.designProject(sc, { generate: M.gen, language: lang, prefs: this.advancedSettings.designPrefs || {}, glossary: this.advancedSettings.umlGlossary || {}, rework: true }); if (!r.ok) return { ok: false, text: r.error || '設計失敗' }; this._umlPlanDesign = { dsl: r.dsl, design: r.design, warnings: r.warnings, scenario: sc }; return { ok: true, text: r.dsl, json: { text: r.dsl, warnings: r.warnings } }; },
                 // 寫程式（第一階段）：本機函式。失敗一律回 ok:false（交給 CoLU 決策樹處理），不假裝成功；成功才把程式碼當成品
                 // 每種語言各自一個本機函式（FaLangColu 的資料；CoLU 的計畫只會選到這個語言自己的那一個）；寫程式本體都走 write_code 的同一個入口，

@@ -17,7 +17,7 @@ function methodSource(name) {
 }
 const ctx = { console, Promise, JSON, FaRecipe: R, FaPlan: P, FaVlm: { textBudget: () => ({ prompt: 700 }) }, FA_OT_RISKY_TOOL: /(?!)/, FaLangColu: { languages: [], toolName: () => '' }, FaDesign: {} };
 vm.createContext(ctx);
-const C = vm.runInContext('({' + ['_planEnv', '_planLocalSummarize'].map(methodSource).join(',\n') + '})', ctx);
+const C = vm.runInContext('({' + ['_planEnv', '_planLocalSummarize', '_planReadText'].map(methodSource).join(',\n') + '})', ctx);
 
 const PAGE = '黃仁勳宣布新一代 AI 晶片 Blackwell 量產，首批供應雲端業者。';
 // 計畫的步驟：先取網頁（工具），再用本機摘要（模型）；形狀照 plan_core.buildPlan 的輸出
@@ -34,6 +34,7 @@ function makeSelf() {
         advancedSettings: {}, requestUserForm: async () => null, fileCache: { get: async () => null },
     };
     self._planLocalSummarize = C._planLocalSummarize.bind(self);
+    self._planReadText = C._planReadText.bind(self);
     self._planEnv = C._planEnv.bind(self);
     return self;
 }
@@ -62,11 +63,12 @@ async function runPlan(M) {
         const M = fakeM(PAGE, '{}');
         const { run, lines } = await runPlan(M);
         check('A 計畫跑完', run.state === 'done', run.state);
-        check('A 共 4 行（工具、完成、摘要、完成）', lines.length === 4, lines);
+        check('A 共 5 行（工具、完成、第 1 層摘要、摘要結果、完成）', lines.length === 5, lines);
         check('A 第 1 行是第 1 輪工具（程式，帶參數與回傳大小）', /^第 1 輪｜工具｜程式｜fetch_web_page \{"url":"https:\/\/example\.com\/a"\}｜回 \d+ 字/.test(lines[0] || ''), lines[0]);
         check('A 第 2 行是第 1 輪完成', (lines[1] || '').startsWith('第 1 輪｜完成｜程式｜fetch_web_page｜成品：'), lines[1]);
-        check('A 第 3 行是第 2 輪摘要（模型，有輸入字數與答案）', (lines[2] || '').startsWith('第 2 輪｜摘要｜模型｜輸入 ') && (lines[2] || '').includes('｜答「黃仁勳宣布'), lines[2]);
-        check('A 第 4 行是第 2 輪完成', (lines[3] || '').startsWith('第 2 輪｜完成｜程式｜local_summarize｜成品：summary'), lines[3]);
+        check('A 第 3 行是第 2 輪第 1 層摘要（模型，第 1/1 段）', (lines[2] || '').startsWith('第 2 輪｜摘要（第 1 層）｜模型｜第 1/1 段，輸入 ') && (lines[2] || '').includes('｜答「黃仁勳宣布'), lines[2]);
+        check('A 第 4 行是第 2 輪摘要結果（模型，有輸入字數與答案）', (lines[3] || '').startsWith('第 2 輪｜摘要｜模型｜輸入 ') && (lines[3] || '').includes('｜答「黃仁勳宣布'), lines[3]);
+        check('A 第 5 行是第 2 輪完成', (lines[4] || '').startsWith('第 2 輪｜完成｜程式｜local_summarize｜成品：summary'), lines[4]);
         check('A 步驟順序：工具在摘要之前', lines.findIndex((l) => l.includes('｜工具｜')) < lines.findIndex((l) => l.includes('｜摘要｜')), lines);
         check('A 模型確實被呼叫來摘要（不是程式直接吐原文）', M.calls.some((c) => !c.isFill), M.calls);
     }

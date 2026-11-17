@@ -22,5 +22,15 @@ check('3 沒有 query 不走 web_research', !P.matchGoals('上網查 台積電 �
 // 4. 網址＋摘要 → web_summary（有網址時網頁優先）
 check('4 有網址走 web_summary', goalsFor('https://example.com/a 摘要重點', { url: 'https://example.com/a' }).includes('web_summary'), goalsFor('https://example.com/a 摘要重點', { url: 'https://example.com/a' }));
 
+// 5. 日誌附件＋「看有什麼錯誤」→ log_summary，而且計畫只能是 log_filter → log_summarize（程式篩選在前）
+{
+    const q = '看這個 log 有什麼錯誤並分析';
+    const f = P.factsFrom({ attachments: [{ id: 'logfile1234567', filename: 'app.log' }], query: '', text: q });
+    const ids = P.matchGoals(q, f).map((g) => g.id);
+    check('5 log 附件走 log_summary', ids[0] === 'log_summary', ids);
+    const plan = P.buildPlan(P.GOALS.find((g) => g.id === 'log_summary'), f, {});
+    check('5 計畫是 log_filter → log_summarize', plan.ok && JSON.stringify(plan.steps.map((x) => x.tool)) === JSON.stringify(['log_filter', 'log_summarize']), plan.ok ? plan.steps.map((x) => x.tool) : plan.reason);
+}
+
 console.log('plan_goal_routing.test.js: ' + ok + ' passed, ' + bad + ' failed');
 if (bad) process.exit(1);

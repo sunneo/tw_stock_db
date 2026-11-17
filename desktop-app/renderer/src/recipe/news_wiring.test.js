@@ -49,12 +49,12 @@ const PAGES = {
         gen: async (a) => { modelCalls.push(a); const body = String(a.messages[a.messages.length - 1].content || ''); const line = body.split('\n').find((l) => /[。，]/.test(l) && !/使用者的問題|工具結果|請用|你根據/.test(l)); return '- ' + (line ? line.slice(0, 14) : '（無）'); },
     };
     const globals = { FaRecipe, FaNewsDigest, FaVlm: { textBudget: () => ({ prompt: 4000 }) }, FaPlan: null };
-    const C = loadMethods(['_newsDigestAnswer', '_newsFetchText', '_isNewsAsk', '_planLocalSummarize'], globals);
+    const C = loadMethods(['_newsDigestAnswer', '_newsFetchText', '_isNewsAsk', '_planLocalSummarize', '_planReadText'], globals);
     const self = {
         tools, fileCache: { get: async () => null },
         _planModel: async () => M,
         _createProgressWidget: () => ({ log: (l) => progLines.push(l), finish: (s) => progDone.push(s), fail: () => {} }),
-        _isNewsAsk: C._isNewsAsk, _newsFetchText: C._newsFetchText, _planLocalSummarize: C._planLocalSummarize,
+        _isNewsAsk: C._isNewsAsk, _newsFetchText: C._newsFetchText, _planLocalSummarize: C._planLocalSummarize, _planReadText: C._planReadText,
     };
     self._newsDigestAnswer = C._newsDigestAnswer;
 

@@ -62,9 +62,10 @@ function makeSelf(gen, modelErr) {
         gen: async (a) => { modelCalls.push(a); return '- ' + HEADLINES[0]; },
     };
     const globals = { FaRecipe, FaPlan, FaVlm: { textBudget: () => ({ prompt: 4000 }) } };
-    const M2 = loadMethods(['_planFinish', '_planLocalSummarize'], globals);
+    const M2 = loadMethods(['_planFinish', '_planLocalSummarize', '_planReadText'], globals);
     const self = makeSelf();
     self._planLocalSummarize = M2._planLocalSummarize;
+    self._planReadText = M2._planReadText;
     self._planFinish = M2._planFinish;
     const trace = FaRecipe.newTrace('看今天有哪些黃仁勳新聞', { recipe: 'plan' });
     const userText = '看今天有哪些黃仁勳新聞';

@@ -106,7 +106,7 @@ function makeTokenizer(json) {
         }
         throw new Error('方法 ' + name + ' 大括號不成對');
     }
-    const names = ['_newsDigestAnswer', '_newsFetchText', '_isNewsAsk', '_planLocalSummarize'];
+    const names = ['_newsDigestAnswer', '_newsFetchText', '_isNewsAsk', '_planLocalSummarize', '_planReadText'];
     const ctx = { console, Promise, JSON, FaRecipe, FaNewsDigest, FaVlm: { textBudget: () => ({ prompt: 700 }) } }; vm.createContext(ctx);
     const C = vm.runInContext('({' + names.map(methodSource).join(',\n') + '})', ctx);
 
@@ -121,7 +121,7 @@ function makeTokenizer(json) {
     for (const q of cases) {
         const trace = []; fetchCalls.length = 0;
         const self = Object.assign({ tools, fileCache: { get: async () => null }, _planModel: async () => M, _createProgressWidget: () => ({ log: (l) => { trace.push(l); log('  ' + l); }, finish: () => {}, fail: () => {} }) },
-            { _isNewsAsk: C._isNewsAsk, _newsFetchText: C._newsFetchText, _planLocalSummarize: C._planLocalSummarize, _newsDigestAnswer: C._newsDigestAnswer });
+            { _isNewsAsk: C._isNewsAsk, _newsFetchText: C._newsFetchText, _planLocalSummarize: C._planLocalSummarize, _planReadText: C._planReadText, _newsDigestAnswer: C._newsDigestAnswer });
         log('問：' + q);
         const r = await self._newsDigestAnswer(q, {});
         log('答：\n' + r.text);
