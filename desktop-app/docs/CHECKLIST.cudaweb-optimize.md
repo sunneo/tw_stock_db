@@ -110,3 +110,16 @@ O1m 到 O11 做完後不結束，進入迴圈。完整規則與交接見 `docs/H
 - [ ] **O13b SmolVLM 256M**：同上（語言模型是 SmolLM 類 Llama 結構，視覺是 SigLIP）。
 - [ ] **O13c Florence-2**：編碼器—解碼器結構（DaViT 視覺編碼器加語言編碼器與帶交叉注意力的解碼器），較複雜，排在 a、b 之後；只做到能對拍的子圖就如實標範圍。
 - [ ] 共通：先用既有的「逐節點對拍」做法（`scripts/eval/cudaweb_node_*`）把這些 ONNX 圖在 cudaweb 上逐節點對 ORT 驗證，再決定整圖接線或骨架重寫；預設關、行為不變、失敗永久退回原路徑；兩處設定介面（AI 助理設定、桌面版設定頁）同步開關；速度數字標硬體（Kepler 14 W）。沒有真權重或載入太重就標「未用真模型驗證」。每小步提交。
+
+## O14. 使用者寫的 CUDA（Python／JavaScript）也吃到優化（使用者 2026-11-18：「我要這個 cudaweb 獲得完整核心優化的結果，可以將來 python/js 寫 cuda 的時候，都可以獲得好處」）
+原則：優化放在 cudaweb 的**函式庫層**（`mm_ops`、`infer_ops`、`kernel_gen`、`kernel_select`、`variant_race`、`gpu_pool`），所有入口（內部模型引擎、`cudaweb.py`、`cublas`／`cudnn` 相容層、torch／cupy／numba／pycuda 墊片、使用者自己寫的 JS）都走同一組，不各自留一份舊核心。
+- [ ] **O14a 入口盤點**：列出使用者可碰到的全部入口與它們現在用哪個核心（`pybridge/cudaweb.py` 的 matmul／sgemm／gemv／dot／axpy、`pybridge/torch`、`cupy`、`numba`、`pycuda`；JS 端 `gpu_core.js` 的 `WGSL.*`、`cudnn_subset.js`、`nn_ops`）。逐一標：已走優化核心／仍走舊樸素核心／純 JS。寫進 `scripts/eval/cudaweb_optimize.result.json` 或獨立表。
+- [ ] **O14b 全部改走優化路徑**：舊樸素核心的入口改成呼叫 `mm_ops`（含變體競賽勝者）等；轉置版 `AᵀB`／`ABᵀ`、`alpha`／`beta`（`sgemm` 目前只支援 N、N、alpha=1、beta=0，補齊並用同一份核心）、批次 gemm、`gemv`（走 q8／解碼式的 M 小路徑）、`dot`／`nrm2`／`sum`（分層歸約，不是單執行緒）。每個入口對 CPU 參考逐元素對拍，並量優化前後。
+- [ ] **O14c 使用者自寫核心的路徑**：使用者用 numba／pycuda／cupy 風格寫自訂核心時，編出來的 WGSL 要有基本的好處：自動工作群組大小（依能力表）、需要時自動用共用記憶體分塊的樣板（常見的 reduce、scan、矩陣轉置、逐元素）、管線快取與批次送出（`gpu_pool`）。先做可驗證的：reduce、transpose、scan 三個樣板。
+- [ ] **O14d 文件與範例**：`DESIGN.webgpu-cuda.md` 加一節「哪些入口享有哪些優化」與使用者可用的開關（強制變體、恢復預設、匯出剖析）；給一個 Python 範例與一個 JS 範例，量優化前後。
+
+## O15. 全部離線模型在 WebGPU 上都要獲得好處（使用者 2026-11-18：「離線模型也是全都要在使用 webgpu 時獲得好處」「除了 vlm、midigen、image to 3d、切割或物件偵測呢」）
+現況（`docs/INVESTIGATE.cudaweb-models.md` 與 `docs/CHECKLIST.cudaweb-wire.md` 查證；調查表是接線前的狀態，會過時，**先逐項重新驗證再動手**）：已接 cudaweb：Qwen3 q8 聊天、midigen 整個解碼器（桌面是否也走要查）、MOSS、Whisper 編碼器、YAMNet／Demucs／Basic Pitch、SDXS、Kokoro（部分）。未接：VLM（O13）、其他 LLM（O12）、深度（Depth Anything V2 Small）、分割（SlimSAM 77）、姿態（MoveNet Thunder）、聲紋 ECAPA、文字嵌入 e5、image-to-3d（先查它用哪個模型與執行環境）、物件偵測（先查有沒有；調查表寫「人臉沒查到」，物件偵測要另查）。
+- [ ] **O15a 全模型清單與覆蓋表**：一張表列出每個離線模型：執行環境（transformers.js／ORT-web／原生 ORT）、現在跑在哪（WebGPU／wasm／CPU）、是否經過 cudaweb 優化核心、這台（無 f16）能否走 GPU、缺哪些算子。附證據（檔案行號、真機量測）。含 midigen（網頁與桌面兩邊）、image-to-3d、分割、物件偵測。
+- [ ] **O15b 逐一補齊**，依「使用頻率 × 在這台的收益」排序；每個模型走既有做法：逐節點對 ORT 驗證 → 接線（預設關、失敗永久退回原路徑、兩處設定開關同步）→ 量前後（標硬體）。**無 f16 的卡不得因 f16 要求而退 CPU**，改用 f32／q8 路徑。
+- [ ] 範圍外要如實標：沒有真權重、載入太重、或遇到 cudaweb 缺的算子（例如特殊卷積、非常規操作）的，記「未完成：原因」，不要宣稱全部完成。
