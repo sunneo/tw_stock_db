@@ -116,5 +116,21 @@ const M = require('./mm_ops.js');
   M.TUNE.store = null;
   await M.startMatmulRace([{ M: 64, K: 1024, N: 1024 }], { calibrate: calibOk, raceOne: async () => ({ winner: null, bad: [], gated: [] }) });
   assert.ok(M.TUNE.store && typeof M.TUNE.store.entries === 'function');
+  // 矩陣乘轉置旗標（同一份平鋪核心）：沒有 GPU 時走參考，轉置儲存的輸入要與普通形式的結果一致
+  {
+    const Mm = 5, Kk = 7, Nn = 6;
+    let q = 21; const rr = () => { q = (Math.imul(q, 1664525) + 1013904223) | 0; return (q >>> 0) / 4294967296 - 0.5; };
+    const An = Float32Array.from({ length: Mm * Kk }, rr), Bn = Float32Array.from({ length: Kk * Nn }, rr);
+    const As = new Float32Array(Mm * Kk), Bs = new Float32Array(Kk * Nn);
+    for (let i = 0; i < Mm; i++) for (let k = 0; k < Kk; k++) As[k * Mm + i] = An[i * Kk + k];
+    for (let k = 0; k < Kk; k++) for (let j = 0; j < Nn; j++) Bs[j * Kk + k] = Bn[k * Nn + j];
+    const want = M.matmulRef(An, [Mm, Kk], Bn, [Kk, Nn]).y;
+    const close = (got) => { for (let i = 0; i < want.length; i++) assert.ok(Math.abs(got[i] - want[i]) < 1e-5, 'i=' + i); };
+    close((await M.matmul(As, [Mm, Kk], Bn, [Kk, Nn], { gpu: false, transA: true })).y);
+    close((await M.matmul(An, [Mm, Kk], Bs, [Kk, Nn], { gpu: false, transB: true })).y);
+    close((await M.matmul(As, [Mm, Kk], Bs, [Kk, Nn], { gpu: false, transA: true, transB: true })).y);
+    // 轉置版只支援單一批次：批次 2 要明確拒絕（不得默默算錯）
+    await assert.rejects(M.matmul(new Float32Array(2 * Mm * Kk), [2, Mm, Kk], Bs, [Kk, Nn], { gpu: false, transA: true }), /只支援單一批次/);
+  }
   console.log('mm_ops_test: 全部通過');
 })().catch((e) => { console.error(e); process.exit(1); });

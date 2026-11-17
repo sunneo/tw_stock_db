@@ -85,9 +85,13 @@ const WGSL_MM_I32 = HEAD('i32') + `
 
 async function run(kind, a, aDims, b, bDims, azp, bzp, ops) {
   const o = ops || {}, pl = plan(aDims, bDims), total = pl.B * pl.M * pl.N, isInt = kind === 'int';
-  const ref = () => (isInt ? matmulIntRef(a, aDims, b, bDims, azp, bzp) : matmulRef(a, aDims, b, bDims)).y;
+  // 轉置旗標（transA：a 以 K×M 儲存；transB：b 以 N×K 儲存）：送進同一份平鋪核心的 p0；只支援單一批次
+  const fl = isInt ? 0 : MM_TILE.mmTileFlags(o);
+  if (fl && pl.B !== 1) throw new Error('mm_ops：轉置版目前只支援單一批次（收到 B=' + pl.B + '）');
+  const ref = () => (isInt ? matmulIntRef(a, aDims, b, bDims, azp, bzp) : (fl ? { y: MM_TILE.matmulTRef(a, b, pl.M, pl.K, pl.N, fl) } : matmulRef(a, aDims, b, bDims))).y;
   if (o.gpu === false) return { y: ref(), dims: pl.dims };
-  const kernelId = isInt ? 'mm_simple_f32' : pickMatmulKernel(pl.M, pl.K, pl.N, o).id;
+  // 轉置時只有平鋪版讀 p0（簡單版與 vec4 版不讀），所以強制用平鋪版
+  const kernelId = isInt ? 'mm_simple_f32' : (fl ? 'mm_tiled_f32' : pickMatmulKernel(pl.M, pl.K, pl.N, o).id);
   const r = await nn.tryLayers(isInt ? 'matmulInt' : 'matmul', { navigator: o.navigator }, async (dev) => {
     // 啟動接線：第一次拿到 GPU 裝置時，背景載入勝者；缺勝者的形狀再背景競賽（本次派發仍用規則，下次才換）
     if (!TUNE.started) {
@@ -97,7 +101,7 @@ async function run(kind, a, aDims, b, bDims, azp, bzp, ops) {
       }).catch(() => {});
     }
     for (const n of [total, a.length, b.length]) if (n * 4 > MAX_BUF) throw new Error('張量 ' + n + ' 個元素超過單一儲存緩衝區上限（128 MB），退 CPU');
-    const u = new Int32Array([pl.B, pl.M, pl.K, pl.N, pl.Bb, azp || 0, bzp || 0, 0]);
+    const u = new Int32Array([pl.B, pl.M, pl.K, pl.N, pl.Bb, azp || 0, bzp || 0, fl]);
     // 已經是對的型別就不再複製一份（大矩陣的複製本身就是可觀的時間）；o.cacheB：B 是常駐權重時，同一個陣列物件只上傳一次
     const mk = (src) => (isInt ? (src instanceof Int32Array ? src : Int32Array.from(src)) : (src instanceof Float32Array ? src : Float32Array.from(src)));
     // 變體：f32 才有平鋪／vec4 可選（kernel_select 的 applies 會排除太窄的形狀）；整數與太窄的維持簡單版
