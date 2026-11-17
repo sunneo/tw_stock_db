@@ -50,5 +50,15 @@
 - `q8mm_check.html`、`attn_flash_check.html`、`matmulnbits_dec_check.html`、`mem_space_check.html`、`mm_tiled_check.html`（既有）。
 - 讀 `window.__out`；判準寫在每頁開頭註解。
 
+## 2026-11-18 進度（本棒）
+- 介面卡：Chrome 真 WebGPU 可用（nvidia／kepler）。實測 `features` 含 `subgroups`、不含 `shader-f16`；先前記為無 subgroups，已更正（待確認能否用於核心）。
+- **O5 完成**（提交 `2d4a066b1`、`ea70490e5`）：`gpu_core.js` 的 `mmTileWgsl`（平鋪 64×64、4×4 暫存器、8 KiB 共用）同時供 `WGSL.matmul` 與 `mm_ops` 平鋪版；轉置用 p0 旗標（真 Chrome 23 項逐位相同）；vec4 變體（K、N 為 4 倍數、不轉置自動選用）大形狀快約 25–30%。f16 版 BLOCKED（無 shader-f16）。
+  - 注意：清單原先說「抽成模組」，實際放在 `gpu_core.js`，因為 gpu_core 是 UMD、以 `new Function` 嵌入，不能 require 新模組。
+- **O6 部分**（提交 `9e8d647f0`）：`createBatch` 加入 matmul；真 Chrome `batch_layer_check.html` 層形序列 1 次 submit 對 6 次、逐位相同、4.0 ms 對 24.5 ms。**真 Qwen 區塊還沒接入批次**（注意力、q8mm、MatMulNBits）。
+- 驗證頁都在 `scripts/eval/`：`mm_tile_check.html`（需先 `git show 1515d6598:desktop-app/renderer/src/gpu/gpu_core.js > scripts/eval/_tmp_before_gpu_core.js`，量完刪）、`batch_layer_check.html`。結果寫進 `cudaweb_optimize.result.json`。
+- 本棒沒做：O6 真 Qwen 接入、O7、O8、O9、O10、O11、持續迴圈。
+
 ## 下一棒第一步
-讀 `docs/CHECKLIST.cudaweb-optimize.md` 的 O5 到 O11，依上面的順序做。先確認 WebGPU 介面卡可用（頁面 `navigator.gpu.requestAdapter()` 有回傳），不可用就只做 node 部分並標「待真 Chrome 驗證」。
+讀 `docs/CHECKLIST.cudaweb-optimize.md` 的 O6 的「未完成」，把 qwen_gpu 的一層接進 createBatch（至少讓 q8mm 或 MatMulNBits 進批次），再量一層 submit 次數；之後依序 O7、O8、O9、O10、O11，最後進入持續優化迴圈。先確認 WebGPU 介面卡可用（頁面 `navigator.gpu.requestAdapter()` 有回傳），不可用就只做 node 部分並標「待真 Chrome 驗證」。
+- 驗證伺服器用完就關；本棒已確認 8731 的 http.server 已停止。
+- 其他 Python 行程（pip install torch cupy）不是本棒的，不要動。
