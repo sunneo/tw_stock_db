@@ -101,3 +101,17 @@
 - **沒做／未驗證**：(1) 真 GPU 上的整段 `raceMatmul` 計時（會超過「3 次 submit」規則，留給下一棒，建議分拆成每次只派一個變體的頁面）；(2) 啟動時 `initMatmulTuning`（probeCaps＋載入勝者）尚未接進 nn_ops／gpu 初始化；(3) 嵌入後的建置產物未重建（`embed-code-ui.js` 未執行）；(4) 頁面中「已存勝者命中」用的是假鍵，未用真實 cacheKey 驗證（node 測試有覆蓋）。
 - **殘留**：`python -m http.server 8741` 行程 PID 3280 仍在執行（停止行程的指令被權限擋下，請使用者或下一棒用 Win32_Process 停掉）。
 - 下一棒順序：(a) 停掉 8741 伺服器；(b) 接啟動初始化；(c) vec4 慢 5 倍的 kernel_gen 原因（G1）；(d) G5 設定頁表格（兩處同步）；(e) O5–O10。
+
+## 2026-11-18 第八段（本棒：啟動接線、真 GPU 逐變體計時、vec4 原因；G5 與 O5 以後未做）
+提交（依序）：`ee62b6283` 啟動接線；`0f65c7b8c` 真 GPU 計時頁＋GT 720 結果；`e0cd4b67c` vec4 原因。
+- **殘留伺服器**：第七段的 PID 3280 已不在（Win32_Process 確認）。本棒用的伺服器都已停、分頁已關，最後確認無 `http.server` 殘留。
+- **啟動接線（已做、node 通過）**：`mm_ops.js` 新增 `initMatmulTuning({device, adapterDesc, store, shapes})`（探測能力、IndexedDB 整批載入勝者、回報缺勝者的形狀；換簽名或換 adapter 就缺）、`startMatmulRace(shapes, {navigator, budgetMs, cancel})`。`run()` 第一次拿到 GPU 裝置時懶載入一次，缺勝者的 `AUTO_SHAPES`（只有 64×1024×1024，因為大形狀的 CPU 參考會卡主執行緒）背景重跑（預算 2 秒）。本次派發仍用規則，下次才換。`mm_ops_test` 新增三項，通過。**未在真機驗證啟動流程**（沒有在桌面版看到競賽結束後勝者被使用）。
+- **真 GPU 逐變體計時（GT 720，Chrome，`scripts/eval/mm_race_one.html`，結果 `scripts/eval/mm_race_gt720_2026_11_18.json`）**：一頁一形狀一變體，1 次驗證＋2 次計時（3 次 submit）。計時含上傳與回讀。
+  - 64×1024×1024：simple 77.1／60.7 ms，tiled 49.3／72.5 ms，vec4 38.2／17.2 ms。
+  - 512×1024×1024：tiled 242.1／52.3 ms（第一次離群）、vec4 52.5／32.1 ms。vec4 平均 25.4 GFLOP/s（19.9%）。
+  - simple 512 沒量（估時太長，怕逾時）。**限制**：3 次 submit 上限下只能取兩次計時的平均，不是中位數；離群很大，數字只可當方向。
+- **vec4 慢 5 倍的原因（已查明）**：`kernel_gen` 的 vec4 實例若寫成 `acc = acc + a*b`，核心慢約 3 倍（39 ms 對 12 ms）；寫成 `fma(a,b,acc)` 就與手寫版持平（12.5 ms 對 11.9 ms，只計核心、各 2 次、約 68–71% 峰值）。G1 記的 51.6 ms 量法含回讀，不能與本次比。**結論：kernel_gen 不換 production（持平，沒有好處）**；生成器內一律用 `fma()`。`kernel_gen.generate` 新增 `opts.noFma` 供量測。
+- **G5 未做**：設定頁已有 GPU 基準面板 `_gpuBenchPanel`（`renderer/src/floating-assistant.js` 約 130503 行起，呼叫處約 96434 行，已有表格、釘選、取消、恢復預設）。要加「變體競賽」表（GFLOP/s、峰值百分比、編譯毫秒、正確性、來源、勝者；套用最佳、重跑、匯出剖析、匯入剖析、恢復預設）要改來源模組、嵌入、再到真桌面版或真 Chrome 讀 DOM 驗證。AI 助理設定（`renderer/index.html`）沒有 GPU 基準區塊（grep「基準」「bench」無結果），因此 G5 的「兩處同步」要先確認另一處是不是該加；依記憶「AI 設定 UI 有兩份」，改一處要查另一處。
+- **O5～O10、持續迴圈**：未做。O9 的「瀏覽器端競賽、localStorage 包裝」仍未做（G4 已改用 IndexedDB，清單 O9 的 localStorage 描述已過時，以 G4 為準）。
+- **下一棒第一步**：(1) 決定 G5 的「另一處」是否要加（先 grep `renderer/index.html` 與 `renderer/src/` 的 AI 助理設定分頁）；(2) 在 `_gpuBenchPanel` 加變體競賽表，資料來源用 `mm_ops` 的 `WINNERS`／`startMatmulRace` 結果與 `scripts/eval/mm_race_gt720_2026_11_18.json` 的量測；(3) 真 Chrome 讀 DOM 驗證；(4) O5 以後的清單項。
+- 驗證頁新增：`scripts/eval/mm_race_one.html`（逐變體真 GPU 計時）、`scripts/eval/kgen_fma_check.html`（fma 對照，`?src=hand` 為手寫版對照）。
