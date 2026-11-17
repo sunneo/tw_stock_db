@@ -175,7 +175,8 @@ class _Cublas(object):
 
     def sgemm_batched(self, transa, transb, m, n, k, alpha, As, Bs, beta, Cs=None):
         """批次版 sgemm（cuBLAS sgemmBatched 的列表版）：As、Bs、Cs 是等長的矩陣列表，每一組各算一次 sgemm。
-        一次送進宿主（matmul_many），各組互不相依，宿主可以一次提交。轉置在 Python 端做（批次路徑不帶旗標）。
+        送進宿主的 matmul_many。注意：目前的 GPU 核心（gpu_core）沒有批次提交，宿主會逐組執行（見 lastPath）；
+        「一次提交」要等核心補上 matmulMany。轉置在 Python 端做（批次路徑不帶旗標）。
         """
         ta = str(transa).upper()
         tb = str(transb).upper()
