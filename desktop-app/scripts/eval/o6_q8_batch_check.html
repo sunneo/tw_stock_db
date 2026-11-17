@@ -58,7 +58,7 @@ const rnd = () => { seed = (Math.imul(seed, 1664525) + 1013904223) | 0; return (
       for (let i = 0; i < ref.length; i++) { maxAbs = Math.max(maxAbs, Math.abs(gy[i] - ref[i])); maxRef = Math.max(maxRef, Math.abs(ref[i])); }
       const rel = maxAbs / Math.max(maxRef, 1e-30);
       wbuf.destroy && wbuf.destroy();
-      out.cases.push({ name: c.name, submits: submits, relErr: rel, maxRef: maxRef, variant: IO.q8mmVariant(N, {}, M), pass: rel <= 1e-5 && submits === 1 });
+      out.cases.push({ name: c.name, submits: submits, relErr: rel, maxRef: maxRef, variant: IO.q8mmVariant(N, {}, M, K), pass: rel <= 1e-5 && submits === 1 });
     }
     out.allPass = out.cases.every((r) => r.pass);
   } catch (e) { out.error = String((e && e.stack) || e); }
