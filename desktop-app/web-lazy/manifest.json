@@ -242,8 +242,8 @@
     "FaWebNews",
     "FaNewsDigest"
    ],
-   "size": 9158,
-   "md5": "02c56d8bedd938763974cdc253306e43"
+   "size": 9301,
+   "md5": "bcb83f7dbea702bbfba2e10374ed9dcd"
   },
   "thinkstack": {
    "file": "chunks/thinkstack.js",
@@ -1879,7 +1879,7 @@
   }
  },
  "core": {
-  "size": 6016805,
-  "md5": "94fb57b600528c4d71c14333e9bb160d"
+  "size": 6017106,
+  "md5": "f2aba02bb8f9d456ac2914bbcc03d380"
  }
 }
