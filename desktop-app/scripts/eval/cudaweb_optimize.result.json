@@ -4,7 +4,13 @@
   "recorded": "2026-11-17",
   "variants": {
     "matmul_tiled_shared_f32": { "status": "通過", "evidence": "O5：gpu_core.js 的 mmTileWgsl（WGSL.matmul 與 mm_ops 平鋪版共用一份）。mm_tile_check.html：4 種轉置（none／transA／transB／both）× 5 個形狀、3 個批次案例共 23 項，對 matmulTRef 相對誤差全部 0（逐位相同），層皆 T1；負對照（用錯的轉置旗標）相對誤差 1.50，證明比對有鑑別力。shared 8 KiB（上限 16 KiB）。", "kernelMsPerDispatch_incl_readback": { "M64_K1024_N1024": { "new_tile64_reg4x4": 19.0, "old_16x16_per_thread_one": 20.2 }, "M512_K1024_N1024": { "new_tile64_reg4x4": 40.9 }, "M512_K1024_N3072": { "new_tile64_reg4x4": 128.7 } }, "note": "O5 的速度改善很小（64×1024×1024 約 6%，持平）：舊的 gpu_core 核心其實已是 16×16 平鋪，這次主要是統一與轉置。舊核心未量 512 形狀（會超過 Windows GPU 逾時）。時間含上傳與讀回，只標這台。" },
-    "kernel_only_2026_11_18": { "status": "量測（r8_time2.html，一次一形狀，最多 3 個 submit，kernel-only：不含上傳與回讀，每 submit 放 R 次派發取平均；峰值 128.4 GFLOP/s）", "rows": [
+    "batch_quantize_dyn_O6_2026_11_18": { "status": "通過", "evidence": "o6_quant_check.html（真 Chrome）：5 個案例，整批 1 次 submit，xq 逐元素與 quantizeDynamicRef 相同（0 個不一致），scale 相對誤差 ≤1e-6。" },
+    "batch_q8mm_O6_2026_11_18": { "status": "通過", "evidence": "o6_q8_batch_check.html（真 Chrome）：dec M1 K1024 N256、dec M8、pf M64、simple N6；每案 1 次 submit；相對誤差 0～1.3e-7。scale 從 GPU 讀（sx[2]）。" },
+    "batch_attn_O6_2026_11_18": { "status": "通過", "evidence": "o6_attn_batch_check.html（真 Chrome）：decode S1 past512 H16 Hkv8 hd128（attn_flash）、prefill S16 hd64（attn_flash）、小形狀 S3 hd32（保底 attn）；每案 1 次 submit；相對誤差 1e-7～1e-6。" },
+    "batch_matmulnbits_O6_2026_11_18": { "status": "通過", "evidence": "o6_nbits_batch_check.html（真 Chrome）：dec M1、dec M8、pf M32、simple（強制）M5；每案 1 次 submit；相對誤差 1e-7～5e-7。" },
+    "qwen_layer_submit_count_O6": { "status": "待驗證（原因：要在真 Chrome 載入 Qwen3-0.6B 權重才能計次；程式證據：qwen_gpu.stepOnce 每層一次 submit，每步 L+1 次）" },
+    "g5_variant_table_desktop_panel": { "status": "待驗證（原因：純函式 node 7 項通過；桌面版設定頁面板未做實機讀 DOM；AI 助理設定 index.html 沒有 GPU 基準區塊，兩處同步待決定）" },
+    "kernel_only_2026_11_18": { "status":"量測（r8_time2.html，一次一形狀，最多 3 個 submit，kernel-only：不含上傳與回讀，每 submit 放 R 次派發取平均；峰值 128.4 GFLOP/s）", "rows": [
       { "shape": "64x256x256", "v4_64x64_reg4x4": { "msPerDispatch": 0.58, "GFLOPs": 14.4, "pctPeak": 11.2, "compileMsCold": 4 }, "r8_8x8": { "msPerDispatch": 1.95, "GFLOPs": 4.3, "pctPeak": 3.3, "note": "只有 2 個工作群組，佔用率低" } },
       { "shape": "512x1024x1024", "v4_64x64_reg4x4": { "msPerDispatch": 10.68, "GFLOPs": 100.5, "pctPeak": 78.3, "compileMsCold": 19 }, "r8_8x8": { "msPerDispatch": 17.7, "GFLOPs": 60.7, "pctPeak": 47.3, "compileMsCold": 403, "codeChars": 11401 }, "r8_8x4": { "msPerDispatch": 16.63, "GFLOPs": 64.6, "pctPeak": 50.3, "compileMsCold": 265, "codeChars": 7063 } },
       { "shape": "512x1024x3072", "v4_64x64_reg4x4": { "msPerDispatch": 38.55, "GFLOPs": 83.6, "pctPeak": 65.1 }, "r8_8x8": { "msPerDispatch": 51.5, "GFLOPs": 62.5, "pctPeak": 48.7 } },
