@@ -931,7 +931,7 @@ Python 模擬器與離線模型推論共用同一個 GPU 裝置：
 - **實測 3：CPU 原生（ORT）速度**：1.7B 16 詞元＋12 詞元提示共 2.4 秒（約 0.15 秒／詞元，這台 CPU 很快），0.6B 8 詞元 0.67 秒（約 0.08 秒）→ 約慢 2～3 倍。Node 行程峰值記憶體 6.4 GB（ORT 圖＋CPU 參考引擎同時載，產品原生路徑不會雙份）。
 - **沒量到（誠實）**：真 GPU 的速度與顯存（使用者機器 Geforce 720 等級）、Electron 渲染程序載入 1.74 GB 的實際峰值、品質（只比對詞元一致，沒有做任務評測：1.7B 是否在工具呼叫與中文上明顯優於 0.6B 沒測）。
 - **顯存估計（推論，未量）**：權重全放 GPU 約 1.7 GB 量級（詞嵌入／lm_head 311 MB＋28 層）。顯存 1 GB 的卡裝不下；2 GB 的卡很勉強（還要 KV 與工作緩衝）。這種卡要「分層串流權重」（每層用到才寫入、之後釋放）：每詞元要過一遍約 1.4 GB 的層權重，PCIe 約 8 GB/s → **下限約 0.18 秒／詞元**，這才是真正的 swap 位置，**目前沒有實作**。
-- **兩個前提的澄清**：(1) IndexedDB 只能當**權重快取**（避免每次啟動重下／重讀 1.74 GB），不是運算 swap——運算時資料必須在顯存或記憶體；從 IndexedDB 讀回的頻寬遠低於 PCIe，拿來逐詞元換入換出只會更慢。(2) cudaweb 的 CUDA 相容層服務的是 Python（numba／cupy）程式，與這條 JS／WGSL 引擎無關，不能拿來加速模型。
+- **兩個前提的澄清**：(1) IndexedDB 只能當**權重快取**（避免每次啟動重下／重讀 1.74 GB），不是運算 swap——運算時資料必須在顯存或記憶體；從 IndexedDB 讀回的頻寬遠低於 PCIe，拿來逐詞元換入換出只會更慢。(2) 「CUDA 相容層」要分開講：Python（numba／cupy／torch）相容層只服務 Python 程式，不會加速離線模型；但 cudaweb 的 WebGPU 核心（WGSL：`nn_ops`、`attn_ops`、`matmulnbits_gpu` 等）是同一批可重用的零件，我們自己的 Qwen3 q8 整段 GPU 解碼引擎（`qwen_gpu.js`）就是用它們組的。**尚未接上的是產品預設的離線 GPU 路徑＝transformers.js（Worker 內 ORT-web 的 WebGPU，q4f16）**：清單 C 當初標 BLOCKED，現在已改為待辦 C'（見 `docs/HANDOFF.offline-model.md`）。transformers.js 路徑的 GPU 記憶體由 ORT-web 自己配置，「GPU 記憶體上限」與分層目前只對我們自己的整段解碼引擎有效。另：`qwen3-1.7b` 早就在 FaVlm 模型登錄中（dtype gpu q4f16／cpu q8、verified:false），所以 transformers.js 路徑本來就能選到 1.7B；它在 ORT-web 上能不能載入與生成還沒實測。
 - **要改什麼（產品整合）見下面待辦。**
 
 **整合 1.7B（2026-11-17 已實作；下面 1～6 逐項狀態見最後一段「整合狀態」）——原待辦：**
