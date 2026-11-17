@@ -88,12 +88,72 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>, @builtin(workgroup_id) wid
 }
 `;
 
-// 解碼變體的條件：M ≤ 8 用 matmulnbits_dec；其餘（預填）仍用逐格版，預填的平鋪變體尚未實作（見清單 O3）。
+// 預填（M 大）變體（清單 O3，@kernel matmulnbits_pf）：一個工作群組 256 執行緒負責 16 列 × 16 欄的一塊輸出。
+// 執行緒 (row = t/16, cq = t%16) 算一個輸出格。每次沿 K 取 128 個 k（16 個字、4 個區塊）：
+// 輸入 xs 16×128 f32（8 KiB）、權重字 ws 16×16 u32（1 KiB）、縮放值 ss 16×4 f32（256 B），都搬進共用記憶體，共用 9.25 KiB。
+// 同一組權重字被 16 列重複使用（共用記憶體），縮放值每區塊讀一次。派發：[ceil(N/16), ceil(M/16), 1]。
+const WGSL_MATMULNBITS_PF = `
+struct P { M: u32, K: u32, N: u32, nb: u32 }
+@group(0) @binding(0) var<storage, read> a: array<f32>;
+@group(0) @binding(1) var<storage, read> bq: array<u32>;
+@group(0) @binding(2) var<storage, read> sc: array<f32>;
+@group(0) @binding(3) var<storage, read_write> y: array<f32>;
+@group(0) @binding(4) var<uniform> p: P;
+var<workgroup> xs: array<f32, 2048>;
+var<workgroup> ws: array<u32, 256>;
+var<workgroup> ss: array<f32, 64>;
+// @kernel matmulnbits_pf
+@compute @workgroup_size(256)
+fn main(@builtin(local_invocation_id) lid: vec3<u32>, @builtin(workgroup_id) wid: vec3<u32>) {
+  let t = lid.x;
+  let row = t / 16u;
+  let cq = t % 16u;
+  let m0 = wid.y * 16u;
+  let n0 = wid.x * 16u;
+  let nw = p.nb * 4u;
+  var acc: f32 = 0.0;
+  for (var kt: u32 = 0u; kt < p.K; kt = kt + 128u) {
+    for (var i: u32 = 0u; i < 8u; i = i + 1u) {
+      let idx = t + i * 256u;
+      let gm = m0 + idx / 128u;
+      let gk = kt + idx % 128u;
+      if (gm < p.M && gk < p.K) { xs[idx] = a[gm * p.K + gk]; } else { xs[idx] = 0.0; }
+    }
+    let c = t / 16u;
+    let w = t % 16u;
+    let gc = n0 + c;
+    let gw = kt / 8u + w;
+    if (gc < p.N && gw < nw) { ws[t] = bq[gc * nw + gw]; } else { ws[t] = 0u; }
+    if (t < 64u) {
+      let cc = t / 4u;
+      let b = t % 4u;
+      let gcc = n0 + cc;
+      let gb = kt / 32u + b;
+      if (gcc < p.N && gb < p.nb) { ss[t] = sc[gcc * p.nb + gb]; } else { ss[t] = 0.0; }
+    }
+    workgroupBarrier();
+    for (var q: u32 = 0u; q < 16u; q = q + 1u) {
+      let word = ws[cq * 16u + q];
+      let s = ss[cq * 4u + q / 4u];
+      for (var i: u32 = 0u; i < 8u; i = i + 1u) {
+        let byte = (word >> ((i / 2u) * 8u)) & 255u;
+        let nib = (byte >> ((i & 1u) * 4u)) & 15u;
+        acc = acc + xs[row * 128u + q * 8u + i] * ((f32(nib) - 8.0) * s);
+      }
+    }
+    workgroupBarrier();
+  }
+  if (m0 + row < p.M && n0 + cq < p.N) { y[(m0 + row) * p.N + n0 + cq] = acc; }
+}
+`;
+
+// 變體條件（閾值以下面的實測為準，見 matmulnbits_dec_check.html 的計時）：
+// M ≤ NB_DEC_MAX_M 用 matmulnbits_dec；更大的 M 用 matmulnbits_pf；matmulnbits（逐格）只作保底與對拍。
 const NB_DEC_MAX_M = 8;
 function matmulNBitsVariant(M, opts) {
   const forced = opts && opts.nbVariant;
-  if (forced === 'matmulnbits' || forced === 'matmulnbits_dec') return forced;
-  return M <= NB_DEC_MAX_M ? 'matmulnbits_dec' : 'matmulnbits';
+  if (forced === 'matmulnbits' || forced === 'matmulnbits_dec' || forced === 'matmulnbits_pf') return forced;
+  return M <= NB_DEC_MAX_M ? 'matmulnbits_dec' : 'matmulnbits_pf';
 }
 
 // A：Float32Array（M×K），B：Uint8Array（N×nBlocks×16），scales：Float32Array（N×nBlocks）
@@ -107,13 +167,14 @@ async function matmulNBits(A, M, K, B, scales, N, opts) {
       new Uint8Array(bq.buffer).set(B); // 小端序（WebGPU 所在平台皆為小端序）
       const u = new Uint32Array([M, K, N, nb]);
       const bufs = [{ data: Float32Array.from(A) }, { data: bq }, { data: Float32Array.from(scales) }, { data: new Float32Array(M * N), out: true }];
-      const outs = variant === 'matmulnbits_dec'
-        ? await nn.runWgsl(dev, WGSL_MATMULNBITS_DEC, bufs, new Uint8Array(u.buffer), [Math.ceil(N / 16), M, 1])
-        : await nn.runWgsl(dev, WGSL_MATMULNBITS, bufs, new Uint8Array(u.buffer), M * Math.ceil(N / 64));
+      let outs;
+      if (variant === 'matmulnbits_dec') outs = await nn.runWgsl(dev, WGSL_MATMULNBITS_DEC, bufs, new Uint8Array(u.buffer), [Math.ceil(N / 16), M, 1]);
+      else if (variant === 'matmulnbits_pf') outs = await nn.runWgsl(dev, WGSL_MATMULNBITS_PF, bufs, new Uint8Array(u.buffer), [Math.ceil(N / 16), Math.ceil(M / 16), 1]);
+      else outs = await nn.runWgsl(dev, WGSL_MATMULNBITS, bufs, new Uint8Array(u.buffer), M * Math.ceil(N / 64));
       return outs[0];
     },
     null,
     () => REF.matmulNBitsRef(A, M, K, B, scales, N));
 }
 
-module.exports = { WGSL_MATMULNBITS, WGSL_MATMULNBITS_DEC, matmulNBits, matmulNBitsVariant };
+module.exports = { WGSL_MATMULNBITS, WGSL_MATMULNBITS_DEC, WGSL_MATMULNBITS_PF, matmulNBits, matmulNBitsVariant };

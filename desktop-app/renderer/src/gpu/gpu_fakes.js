@@ -142,7 +142,7 @@ function fakeNavigator(opts) {
     } else if (k === 'mul') {
       const n = u32(e[3])[0];
       f32(e[2], n).set(core.mulRef(f32(e[0], n), f32(e[1], n)));
-    } else if (k === 'matmulnbits_dec' || k === 'matmulnbits') {
+    } else if (k === 'matmulnbits_dec' || k === 'matmulnbits' || k === 'matmulnbits_pf') {
       // 與 matmulnbits_gpu.js 的 WGSL 相同的介面（A、B 的位元組、scales、y、P）；數值用參考版，只驗主機端流程
       const REF = require('./matmulnbits_ref.js');
       const pu = u32(e[4]); const M = pu[0], K = pu[1], N = pu[2];

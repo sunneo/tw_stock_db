@@ -1,8 +1,9 @@
-<!doctype html><meta charset="utf-8"><title>matmulnbits dec check</title>
+<!doctype html><meta charset="utf-8"><title>matmulnbits check</title>
 <body style="font:13px monospace;white-space:pre">
 <script>
-// 真 Chrome（真 WebGPU）驗證 matmulnbits_gpu 的解碼變體 matmulnbits_dec 與逐格版，對 matmulnbits_ref 參考。
-// 判準（清單 O3）：相對誤差 ≤1e-5（f32 累加）；layer 必須是 T1。時間只是參考（牆鐘，含上傳讀回），只標這台機器。
+// 真 Chrome（真 WebGPU）驗證 matmulnbits_gpu 的三個變體：matmulnbits（逐格，保底）、matmulnbits_dec（解碼）、matmulnbits_pf（預填），對 matmulnbits_ref 參考。
+// 判準（清單 O3）：相對誤差 ≤1e-5（f32 累加）；layer 必須是 T1。
+// 計時：每次 matmulNBits 呼叫的牆鐘（含上傳權重與讀回），中位數，只標這台機器（Kepler 14 W）。這是端到端時間，不是純核心時間。
 // 用法：在 desktop-app 資料夾 python -m http.server <埠> 後開 http://127.0.0.1:<埠>/scripts/eval/matmulnbits_dec_check.html ；結果在 window.__out。
 const mods = {};
 const load = async (name) => {
@@ -23,26 +24,34 @@ const load = async (name) => {
       const q = Uint8Array.from({ length: N * K }, () => Math.floor((rnd() + 0.5) * 16) & 15);
       return { A: Float32Array.from({ length: M * K }, rnd), B: R.packQ4(q, N, K), sc: Float32Array.from({ length: N * nb }, () => Math.abs(rnd()) * 0.1 + 0.01) };
     };
-    // 形狀：K 不是 32 的倍數、N 不是 16 的倍數、M 小（解碼）；最後一個 M=16 只量逐格版（應走 matmulnbits）
-    for (const [M, K, N] of [[1, 32, 16], [1, 96, 20], [2, 40, 33], [3, 300, 17], [1, 1024, 48], [8, 1024, 256]]) {
+    // 正確性：K 不是 32 或 128 的倍數、N 不是 16 的倍數、M 小與大都有
+    const VARS = ['matmulnbits', 'matmulnbits_dec', 'matmulnbits_pf'];
+    for (const [M, K, N] of [[1, 32, 16], [1, 96, 20], [2, 40, 33], [3, 300, 17], [1, 1024, 48], [8, 1024, 256], [17, 300, 33], [40, 1024, 48], [64, 1024, 1024]]) {
       const c = mkCase(M, K, N);
       const ref = R.matmulNBitsRef(c.A, M, K, c.B, c.sc, N);
       const row = { M, K, N };
-      for (const v of ['matmulnbits_dec', 'matmulnbits']) {
+      for (const v of VARS) {
+        if (v === 'matmulnbits' && M > 8) { row[v] = 'skipped（逐格版只對拍小 M）'; continue; }
         const r = await G.matmulNBits(c.A, M, K, c.B, c.sc, N, { navigator: navigator, nbVariant: v });
-        row[v] = { layer: r.info.layer, reason: r.info.reason, relErr: relErr(r.result, ref), pass: r.info.layer === 'T1' && relErr(r.result, ref) <= 1e-5 };
+        row[v] = { layer: r.info.layer, relErr: relErr(r.result, ref), pass: r.info.layer === 'T1' && relErr(r.result, ref) <= 1e-5 };
       }
       out.cases.push(row);
     }
-    // 計時（只標這台機器）：解碼形狀 M=1、K=1024、N=3072，5 次取中位數
-    const c = mkCase(1, 1024, 3072);
-    const timeIt = async (v) => {
-      const run = () => G.matmulNBits(c.A, 1, 1024, c.B, c.sc, 3072, { navigator: navigator, nbVariant: v });
+    // 計時：K=1024、N=3072。解碼形狀（M=1、8）三個變體都量；預填形狀（M=16、32、64、128）量 dec 與 pf。每個 5 次取中位數（暖機不算）。
+    const timeIt = async (M, v) => {
+      const c = mkCase(M, 1024, 3072);
+      const run = () => G.matmulNBits(c.A, M, 1024, c.B, c.sc, 3072, { navigator: navigator, nbVariant: v });
       await run(); const ts = [];
       for (let i = 0; i < 5; i++) { const t0 = performance.now(); await run(); ts.push(performance.now() - t0); }
       ts.sort((a, b) => a - b); return Math.round(ts[2] * 10) / 10;
     };
-    out.time.push({ shape: 'M1xK1024xN3072', matmulnbits_decMs: await timeIt('matmulnbits_dec'), matmulnbitsMs: await timeIt('matmulnbits') });
+    for (const M of [1, 8, 16, 32, 64, 128]) {
+      const row = { shape: 'M' + M + 'xK1024xN3072' };
+      if (M <= 8) row.matmulnbitsMs = await timeIt(M, 'matmulnbits');
+      row.matmulnbits_decMs = await timeIt(M, 'matmulnbits_dec');
+      row.matmulnbits_pfMs = await timeIt(M, 'matmulnbits_pf');
+      out.time.push(row);
+    }
   } catch (e) { out.error = String(e && e.stack || e); }
   window.__out = out; document.body.textContent = JSON.stringify(out, null, 1); document.title = 'done';
 })();

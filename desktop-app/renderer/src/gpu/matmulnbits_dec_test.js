@@ -72,8 +72,51 @@ function emulateDec(A, M, K, B, scales, N) {
   await t('變體選擇：M ≤ 8 → matmulnbits_dec；較大 M 仍用逐格版（預填平鋪未實作）；可強制', () => {
     assert.strictEqual(G.matmulNBitsVariant(1, {}), 'matmulnbits_dec');
     assert.strictEqual(G.matmulNBitsVariant(8, {}), 'matmulnbits_dec');
-    assert.strictEqual(G.matmulNBitsVariant(9, {}), 'matmulnbits');
+    assert.strictEqual(G.matmulNBitsVariant(9, {}), 'matmulnbits_pf');
+    assert.strictEqual(G.matmulNBitsVariant(64, {}), 'matmulnbits_pf');
+    assert.strictEqual(G.matmulNBitsVariant(64, { nbVariant: 'matmulnbits' }), 'matmulnbits');
     assert.strictEqual(G.matmulNBitsVariant(64, { nbVariant: 'matmulnbits_dec' }), 'matmulnbits_dec');
+  });
+
+  // 預填變體的索引數學（16×16 塊、128 k 的分塊、字與區塊對應）：JS 模擬與參考版
+  function emulatePf(A, M, K, B, scales, N) {
+    const nb = REF.nBlocksOf(K), nw = nb * 4;
+    const B32 = new Uint32Array(B.buffer, B.byteOffset, B.length / 4);
+    const Y = new Float32Array(M * N);
+    for (let m = 0; m < M; m++) for (let n = 0; n < N; n++) {
+      let acc = 0;
+      for (let kt = 0; kt < K; kt += 128) for (let w = 0; w < 16; w++) {
+        const gw = kt / 8 + w, gb = kt / 32 + Math.floor(w / 4);
+        const word = gw < nw ? B32[n * nw + gw] : 0;
+        const sc = gb < nb ? scales[n * nb + gb] : 0;
+        for (let i = 0; i < 8; i++) {
+          const k = kt + w * 8 + i;
+          const x = k < K ? A[m * K + k] : 0;
+          const byte = (word >>> (Math.floor(i / 2) * 8)) & 255;
+          const nib = (byte >>> ((i & 1) * 4)) & 15;
+          acc = Math.fround(acc + Math.fround(x * Math.fround((nib - 8) * sc)));
+        }
+      }
+      Y[m * N + n] = acc;
+    }
+    return Y;
+  }
+  for (const c of [{ M: 16, K: 96, N: 20 }, { M: 17, K: 300, N: 33 }, { M: 40, K: 1024, N: 48 }]) {
+    await t('預填變體索引數學（JS 模擬）與參考版相對誤差 ≤1e-5：M=' + c.M + ' K=' + c.K + ' N=' + c.N, () => {
+      const nb = REF.nBlocksOf(c.K);
+      const A = Float32Array.from({ length: c.M * c.K }, rnd);
+      const B = REF.packQ4(randQ(c.N * c.K), c.N, c.K);
+      const sc = randScale(c.N * nb);
+      const ref = REF.matmulNBitsRef(A, c.M, c.K, B, sc, c.N);
+      assert.ok(relErr(emulatePf(A, c.M, c.K, B, sc, c.N), ref) <= 1e-5);
+    });
+  }
+  await t('WGSL：@kernel matmulnbits_pf、256 執行緒、共用記憶體 9.25 KiB 內', () => {
+    const src = G.WGSL_MATMULNBITS_PF;
+    assert.ok(/@kernel matmulnbits_pf/.test(src));
+    assert.ok(/@workgroup_size\(256\)/.test(src));
+    assert.ok(8192 + 1024 + 256 <= 16 * 1024);
+    assert.ok(/var<workgroup> xs: array<f32, 2048>;/.test(src));
   });
 
   await t('WGSL：@kernel matmulnbits_dec、256 執行緒、共用記憶體 2 KiB、派發為二維（欄 × 列）', () => {
