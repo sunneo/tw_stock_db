@@ -129834,6 +129834,8 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
     // hooks（可省略）：step(階段, 誰做, 內容) 每一層每一段一行（進度卡片）；noPrepass：不先用程式挑重點句（log 這類要逐行讀的內容）；noMerge：不做第 2 層合併
     async _planLocalSummarize(inputs, question, M, hooks) {
         const H = hooks || {}; const say = (st, who, text) => { try { if (H.step) H.step(st, who, text); } catch (_) { /* 顯示失敗不影響摘要 */ } };
+        // 模型回覆行首的編號／項目符號（1. 2. 3、- •）：只是排版，不是事實，核對前拿掉（原文仍留給診斷）
+        const stripListMarks = (text) => String(text == null ? '' : text).replace(/^[ \t]*(?:\d{1,2}[.、)]|[-•*])[ \t]+/gm, '');
         const full = await this._planReadText(inputs); if (!full) return { ok: false, text: '沒有可以摘要的文字' };
         const chunkTok = Math.max(300, Math.floor(FaVlm.textBudget(M.model, 220).prompt * 0.55)); let chunks = FaRecipe.chunkText(full, chunkTok);
         if (chunks.length > 4 && !H.noPrepass) chunks = FaRecipe.chunkText(FaRecipe.extractiveSummary(full, 40), chunkTok); // 太長：先用程式挑重點句，再讓模型摘要（離線 CPU 上每段要幾十秒）
@@ -129843,8 +129845,9 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             if (!noModel) {
                 try {
                     const g = await M.gen({ messages: FaRecipe.phraseMessages(question || '請摘要', c, '請用繁體中文列出 2～4 個重點。'), maxTokens: 200 });
-                    const chk = FaRecipe.checkExtractive(g, [c], { cjkMin: 0.5, maxChars: 600 });
-                    if (chk.ok) out = String(g).trim(); else rejects.push({ reason: chk.reason, raw: String(g) }); // 退回原因與模型原始輸出一併保留（診斷用，見 news_real_run.js）
+                    const gs = stripListMarks(g); // 行首的編號（1. 2.）與項目符號不是事實主張，先拿掉再核對（原文仍留在 raw 供診斷）
+                    const chk = FaRecipe.checkExtractive(gs, [c], { cjkMin: 0.5, maxChars: 600 });
+                    if (chk.ok) out = gs.trim(); else rejects.push({ reason: chk.reason, raw: String(g) }); // 退回原因與模型原始輸出一併保留（診斷用，見 news_real_run.js）
                 } catch (e) { rejects.push({ reason: '模型呼叫失敗：' + ((e && e.message) || e), raw: '' }); }
             }
             if (out) { parts.push(out); usedModel++; } else { parts.push(FaRecipe.extractiveSummary(c, 3)); usedProgram++; }
@@ -129856,7 +129859,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         if (parts.length > 1 && !noModel && !H.noMerge) {
             let g = null, why = '';
             try { g = await M.gen({ messages: FaRecipe.phraseMessages(question || '請摘要', summary, '把上面各段的重點合併成 2～4 個重點，只用上面的內容，不要新增。'), maxTokens: 200 }); } catch (e) { why = '模型呼叫失敗：' + ((e && e.message) || e); }
-            if (g != null) { const chk = FaRecipe.checkExtractive(g, [summary], { cjkMin: 0.5, maxChars: 600 }); if (chk.ok) { summary = String(g).trim(); merge = 'model'; } else { merge = 'concat'; why = '退回：' + chk.reason; rejects.push({ reason: '合併' + chk.reason, raw: String(g) }); } } else { merge = 'concat'; }
+            if (g != null) { const gs = stripListMarks(g); const chk = FaRecipe.checkExtractive(gs, [summary], { cjkMin: 0.5, maxChars: 600 }); if (chk.ok) { summary = gs.trim(); merge = 'model'; } else { merge = 'concat'; why = '退回：' + chk.reason; rejects.push({ reason: '合併' + chk.reason, raw: String(g) }); } } else { merge = 'concat'; }
             say('合併（第 2 層）', merge === 'model' ? '模型' : '程式（串接）', parts.length + ' 段' + (merge === 'model' ? '' : '，' + why) + '｜答「' + summary.replace(/\s+/g, ' ').slice(0, 40) + '」');
         }
         return { ok: true, text: summary, json: { summary, method: usedModel && usedProgram ? 'mixed' : (usedModel ? 'model' : 'extractive'), chunks: chunks.length, chars: full.length, rejects, merge } };

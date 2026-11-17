@@ -73,7 +73,7 @@ function makeSelf(gen, modelErr) {
     // ① 有模型：取回內容送進模型，最終回答含模型摘要，而且標示經過 AI
     const r1 = await self._planFinish(makeRun('summary'), userText, trace, [], null, M);
     check('① 取回內容有被送進模型', modelCalls.length >= 1 && String(modelCalls[0].messages.map((m) => m.content).join('\n')).includes(HEADLINES[0]), modelCalls.length);
-    check('① 最終回答含模型摘要', r1.text.includes('- ' + HEADLINES[0]), r1.text);
+    check('① 最終回答含模型摘要（項目符號「- 」不算內容，已去掉）', r1.text.includes(HEADLINES[0]) && !r1.text.includes('- ' + HEADLINES[0]), r1.text);
     check('① 標示經過 AI（不是程式摘錄）', r1.text.includes('經 AI') && !r1.text.includes('沒有經過 AI'), r1.text);
     check('① 計畫仍 handled、ok', r1.handled === true && r1.ok === true, r1);
 
