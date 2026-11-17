@@ -93,6 +93,11 @@ function fakeNavigator(opts) {
       // 參數：B, M, K, N, Bb, azp, bzp, p0（與 gpu_core.js 的 mmTileWords 相同）
       const p = u32(e[3]); const m = p[1], kk = p[2], n = p[3], fl = p[7];
       f32(e[2], m * n).set(core.matmulTRef(f32(e[0], m * kk), f32(e[1], kk * n), m, kk, n, fl));
+    } else if (k === 'gemv_row') {
+      // 參數：A(m×n)、X(n)、Y(m)、P{n, m}；與 gpu_core.js 的 gemv_row 相同的列式定義（順序不同，容差比對）
+      const p = u32(e[3]); const n = p[0], m = p[1];
+      const A = f32(e[0], m * n), X = f32(e[1], n), Y = f32(e[2], m);
+      for (let r = 0; r < m; r++) { let acc = 0; for (let j = 0; j < n; j++) acc = Math.fround(acc + Math.fround(A[r * n + j] * X[j])); Y[r] = acc; }
     } else if (k === 'sum') {
       const n = u32(e[2])[0];
       const inp = f32(e[0], n);

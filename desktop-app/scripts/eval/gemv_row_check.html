@@ -1,0 +1,45 @@
+<!doctype html><meta charset="utf-8"><title>gemv row check</title>
+<body style="font:13px monospace;white-space:pre">
+<script>
+// 真 Chrome（真 WebGPU）：gemv 專用核心 gemv_row（每列一個工作群組、樹狀歸約）對 CPU 參考版的相對誤差；
+// 並與舊路徑（把 x 當成 N=1 的平鋪矩陣乘，即 api.matmul(A, x, m, n, 1)）同一頁交錯量牆鐘時間。
+// 時間包含上傳與讀回（兩邊相同），只比較核心差異。只標這台機器。結果在 window.__out。
+const mods = {};
+const loadMod = async (key, url) => {
+  const src = await (await fetch(url, { cache: 'no-store' })).text();
+  const m = { exports: {} }; mods[key] = m;
+  new Function('module', 'exports', 'require', src)(m, m.exports, (p) => { const k = p.replace(/^\.\//, '').replace(/\.js$/, ''); if (!mods[k]) throw new Error('missing ' + k); return mods[k].exports; });
+};
+(async () => {
+  const out = { correctness: [], timing: [], error: null };
+  window.__out = out;
+  try {
+    await loadMod('gpu_core', '../../renderer/src/gpu/gpu_core.js');
+    const core = mods.gpu_core.exports;
+    const rt = core.createRuntime({ navigator: navigator, webgl2: null });
+    let s = 9; const rnd = () => { s = (Math.imul(s, 1664525) + 1013904223) | 0; return ((s >>> 0) / 4294967296) - 0.5; };
+    const relMax = (a, b) => { let mx = 0, rm = 0; for (let i = 0; i < b.length; i++) { mx = Math.max(mx, Math.abs(a[i] - b[i])); rm = Math.max(rm, Math.abs(b[i])); } return mx / Math.max(rm, 1e-30); };
+    for (const [m, n] of [[5, 7], [64, 300], [1024, 1024], [3072, 1024], [1024, 3072]]) {
+      const A = Array.from({ length: m * n }, rnd), x = Array.from({ length: n }, rnd);
+      const ref = Array.from(core.gemvRef(Float32Array.from(A), Float32Array.from(x), m, n));
+      const r = await rt.gemv(A, x, m, n);
+      out.correctness.push({ m, n, layer: r.info.layer, relErr: relMax(r.result, ref), pass: r.info.layer === 'T1' && relMax(r.result, ref) <= 1e-5 });
+    }
+    // 交錯量測：新路徑 gemv 對舊路徑 matmul(n=1)，各 7 次取中位數
+    const med = (a) => { const b = a.slice().sort((p, q) => p - q); return Math.round(b[b.length >> 1] * 100) / 100; };
+    for (const [m, n] of [[1024, 1024], [3072, 1024], [1024, 3072], [4096, 4096]]) {
+      const A = Array.from({ length: m * n }, rnd), x = Array.from({ length: n }, rnd);
+      await rt.gemv(A, x, m, n); await rt.matmul(A, x, m, n, 1);
+      const tNew = [], tOld = [];
+      for (let i = 0; i < 7; i++) {
+        let t0 = performance.now(); await rt.gemv(A, x, m, n); tNew.push(performance.now() - t0);
+        t0 = performance.now(); await rt.matmul(A, x, m, n, 1); tOld.push(performance.now() - t0);
+      }
+      out.timing.push({ m, n, gemvRowMs: med(tNew), oldMatmulN1Ms: med(tOld) });
+    }
+  } catch (e) { out.error = String((e && e.stack) || e); }
+  out.allPass = out.correctness.every((c) => c.pass);
+  out.done = true;
+  document.body.textContent = JSON.stringify(out, null, 1); document.title = 'done';
+})();
+</script>

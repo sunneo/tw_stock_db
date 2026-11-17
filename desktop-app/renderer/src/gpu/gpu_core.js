@@ -354,6 +354,32 @@
   ].join('\n');
   // 矩陣乘：共用的平鋪核心（見上方 mmTileWgsl）。參數 8 個 u32（B, M, K, N, Bb, azp, bzp, p0），分派 mmTileDispatch(M, N, B)。
   WGSL.matmul = mmTileWgsl({ marker: 'matmul', dtype: 'f32' });
+  // gemv 專用核心（O14b）：每個工作群組算一列 y[row] = Σ A[row,j]·x[j]；256 個執行緒各跨步累加，再用共用記憶體樹狀歸約。
+  // 取代原本把 x 當成 N=1 的平鋪矩陣乘（那條路徑對向量浪費了整個平鋪）。m > 65535 時退回舊路徑。
+  WGSL.gemv_row = `
+struct P { n: u32, m: u32, a: u32, b: u32 }
+@group(0) @binding(0) var<storage, read> A: array<f32>;
+@group(0) @binding(1) var<storage, read> X: array<f32>;
+@group(0) @binding(2) var<storage, read_write> Y: array<f32>;
+@group(0) @binding(3) var<uniform> p: P;
+var<workgroup> sh: array<f32, 256>;
+@compute @workgroup_size(256)
+fn main(@builtin(local_invocation_id) lid: vec3<u32>, @builtin(workgroup_id) wid: vec3<u32>) {
+  // @kernel gemv_row
+  let row = wid.x;
+  let t = lid.x;
+  var acc: f32 = 0.0;
+  if (row < p.m) {
+    for (var j: u32 = t; j < p.n; j = j + 256u) { acc = acc + A[row * p.n + j] * X[j]; }
+  }
+  sh[t] = acc;
+  workgroupBarrier();
+  for (var s: u32 = 128u; s > 0u; s = s >> 1u) {
+    if (t < s) { sh[t] = sh[t] + sh[t + s]; }
+    workgroupBarrier();
+  }
+  if (t == 0u && row < p.m) { Y[row] = sh[0]; }
+}`;
   // vec4 載入版：K、N 是 4 的倍數且不轉置時 wgMatmul 改用它（同一幾何，全域讀取一次 4 個元素；大形狀快 20–30%，見 mm_tile_check.html）
   WGSL.matmul_vec4 = mmTileWgslVec4({ marker: 'matmul_vec4' });
   WGSL.sum = [
@@ -735,7 +761,15 @@
         return r[0];
       });
     }
-    function wgGemv(dev, A, x, m, n) { return wgMatmul(dev, A, x, m, n, 1); }
+    function wgGemv(dev, A, x, m, n) {
+      if (m > 65535) return wgMatmul(dev, A, x, m, n, 1);   // 超過單維工作群組上限：退回舊路徑
+      return withScope(dev, async function () {
+        var ba = makeBuf(dev, A, USAGE.STORAGE | USAGE.COPY_DST | USAGE.COPY_SRC), bx = makeBuf(dev, x, USAGE.STORAGE | USAGE.COPY_DST | USAGE.COPY_SRC);
+        var by = dev.createBuffer({ size: Math.max(4, m * 4), usage: USAGE.STORAGE | USAGE.COPY_SRC });
+        dispatch(dev, pipeline(dev, 'gemv_row', WGSL.gemv_row), [ba, bx, by, uniformU32(dev, [n, m, 0, 0])], m, 1);
+        return readBack(dev, by, m);
+      });
+    }
     // T2：雙 f32 歸約，每一級兩組部分和（hi、lo）
     function wgSumDd(dev, a) {
       return withScope(dev, async function () {
