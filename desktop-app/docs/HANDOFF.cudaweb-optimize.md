@@ -58,6 +58,12 @@
 - 驗證頁都在 `scripts/eval/`：`mm_tile_check.html`（需先 `git show 1515d6598:desktop-app/renderer/src/gpu/gpu_core.js > scripts/eval/_tmp_before_gpu_core.js`，量完刪）、`batch_layer_check.html`。結果寫進 `cudaweb_optimize.result.json`。
 - 本棒沒做：O6 真 Qwen 接入、O7、O8、O9、O10、O11、持續迴圈。
 
+## 2026-11-18 第四段（變體階梯 G1–G5，見 docs/TARGET.cudaweb-cublas.md 末尾與清單「變體階梯」節）
+- 提交 `cc62bc95a`：G1 產生器 `renderer/src/gpu/kernel_gen.js`（8 項 node 測試通過）。
+- **下一棒第一步**：(a) 讓 `gpu_core.js` 的 `mmR8Wgsl`、`mmTileWgslVec4` 改成 `kernel_gen` 的實例（不要另寫一份），node 測試與 fake 路徑保持；(b) 用單形狀頁（`r8_time2.html` 的做法，一次一形狀、最多 3 個 submit、監聽 device.lost）真 Chrome 驗 kernel_gen 產出的著色器的正確性與速度；(c) 再做 G2 階梯與編譯毫秒。
+- 編譯慢不淘汰（管理者修正）；只留約 30 秒防卡死上限。快取存勝者參數到 IndexedDB。
+- 安全量測規則不變：一頁一形狀一核心、先估時間（flops ÷ 20 GFLOP/s，超過 300 ms 不跑）、最多 3 個 submit、device.lost 即停、用完關伺服器與分頁。
+
 ## 2026-11-18 第二段（新目標：趨近 cuBLAS，見 docs/TARGET.cudaweb-cublas.md）
 - R0 屋頂已量：peakFlops ≈ 127–128 GFLOP/s、peakBW ≈ 11.4 GB/s（`roofline_check.html`，寫進 result.json）。
 - R1 8×8 核心 `mmR8Wgsl` 已寫，node 測試過；真 Chrome 單次派發正確（`r8_probe.html`）。**計時還沒完成**：整頁 `mm_r8_check.html` 多次讓 Chrome 分頁凍結，WebGPU 一度無回應（之後分頁群組重建），已停手。
