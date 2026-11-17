@@ -101,27 +101,68 @@ async function nnBackendInfo(opts) {
   return { webgpu: { available: !!g.dev, reason: g.reason || '' }, webgl2: { available: gs.ok, reason: gs.reason }, ops: ops };
 }
 
-// ---------- GPU 量測互斥鎖：同一程序內，屋頂量測、變體競賽、基準一次只能有一個在跑 ----------
-// 前景（opts.background 為假）排隊依序執行；背景（opts.background 為真）在有量測在跑或排隊時直接跳過（回傳 skipped），
-// 這樣量測期間背景自動競賽會暫停，之後再由下一次派發觸發。fn 丟錯也會釋放鎖。
-let measureChain = Promise.resolve();
-let measurePending = 0;
-let measureRunning = false;
+// ---------- GPU 獨占：同一程序內，基準、變體競賽、屋頂量測都要乾淨的 GPU，一次只能有一個在跑 ----------
+// requestExclusiveGpu(reason, { signal }) → Promise<release>：排隊依序取得；signal（AbortSignal）可在排隊中取消（reject，不佔鎖）。
+// 授予前依註冊順序呼叫所有「閒置 GPU 持有者」的 release()（模型引擎用 registerIdleGpuHolder 註冊）。
+//   某個 release 丟錯：記在 release.failures（{ name, error }），仍然授予（後續持有者照常釋放）；呼叫端自己決定這次量測能不能信。
+// release() 可重複呼叫，只釋放一次。持有者被釋放後不必恢復，下次使用時自行重載。
+const idleGpuHolders = [];   // { name, release }
+function registerIdleGpuHolder(name, release) {
+  const h = { name: String(name || 'unnamed'), release: release };
+  idleGpuHolders.push(h);
+  return function unregister() { const i = idleGpuHolders.indexOf(h); if (i >= 0) idleGpuHolders.splice(i, 1); };
+}
+let exclChain = Promise.resolve();
+let exclPending = 0;      // 排隊中（尚未授予）
+let exclHeld = false;     // 目前有人持有
+let exclHolderReason = '';
+function requestExclusiveGpu(reason, opts) {
+  const o = opts || {};
+  const sig = o.signal || null;
+  const why = String(reason || 'gpu');
+  if (sig && sig.aborted) { const e = new Error('已取消排隊中的 GPU 獨占（' + why + '）'); e.name = 'AbortError'; return Promise.reject(e); }
+  exclPending++;
+  return new Promise((resolve, reject) => {
+    let done = false;   // true＝已取消或已授予（之後的事件不再處理）
+    if (sig && typeof sig.addEventListener === 'function') {
+      sig.addEventListener('abort', () => {
+        if (done) return;
+        done = true; exclPending--;
+        const e = new Error('已取消排隊中的 GPU 獨占（' + why + '）'); e.name = 'AbortError'; reject(e);
+      }, { once: true });
+    }
+    exclChain = exclChain.then(() => {
+      if (done) return;            // 已取消：不佔鎖，鏈照常往下走
+      done = true; exclPending--;
+      return grantExclusive(why, resolve);   // 鏈等到 release() 被呼叫才往下
+    });
+  });
+}
+// 授予：先釋放閒置持有者，再把 release 交給呼叫端；鏈上的這一格要等 release() 被呼叫後才結束
+async function grantExclusive(why, resolve) {
+  exclHeld = true; exclHolderReason = why;
+  const failures = [];
+  for (const h of idleGpuHolders.slice()) {
+    try { await h.release(); } catch (e) { failures.push({ name: h.name, error: String((e && e.message) || e).slice(0, 160) }); }
+  }
+  let releasedOnce = false, resolveGate = null;
+  const gate = new Promise((r) => { resolveGate = r; });
+  const release = () => { if (releasedOnce) return; releasedOnce = true; exclHeld = false; exclHolderReason = ''; resolveGate(); };
+  release.failures = failures;
+  resolve(release);
+  return gate;
+}
+// 量測的包裝：拿獨占後執行 fn({ releaseFailures })；opts.background：有獨占在跑或排隊就跳過（回傳 skipped），不排隊
 function withMeasureLock(fn, opts) {
   const o = opts || {};
-  if (o.background && (measureRunning || measurePending > 0)) {
-    return Promise.resolve({ skipped: true, reason: '有 GPU 量測在跑或排隊，背景競賽暫停' });
+  if (o.background && (exclHeld || exclPending > 0)) {
+    return Promise.resolve({ skipped: true, reason: '有 GPU 獨占在跑或排隊，背景競賽暫停' });
   }
-  measurePending++;
-  const run = measureChain.then(async () => {
-    measurePending--;
-    measureRunning = true;
-    try { return await fn(); } finally { measureRunning = false; }
+  return requestExclusiveGpu(o.reason || 'measure').then(async (release) => {
+    try { return await fn({ releaseFailures: release.failures }); } finally { release(); }
   });
-  measureChain = run.catch(() => { /* 錯誤由呼叫端收到，鎖鏈不中斷 */ });
-  return run;
 }
-function measureLockState() { return { running: measureRunning, pending: measurePending }; }
+function measureLockState() { return { running: exclHeld, pending: exclPending, holder: exclHolderReason }; }
 
 // 取得 WebGPU 裝置（每個 navigator 只要一次）。沒有就回傳 dev:null 與原因。
 const devCache = new Map();
@@ -905,4 +946,4 @@ function trainerOps(opts) {
   };
 }
 
-module.exports = { trainerOps, rmsnormRef, rmsnorm, softmaxRef, softmax, siluRef, silu, ropeRef, rope, adamwCore, adamwRef, adamw, createBatch, runWgsl, getDevice, getGl, glSupport, glRun, tryLayers, nnBackendInfo, withMeasureLock, measureLockState, NN_OPS, WGSL_RMSNORM, WGSL_SOFTMAX, WGSL_SILU, WGSL_ROPE, WGSL_ADAMW, NOTE_T3 };
+module.exports = { trainerOps, rmsnormRef, rmsnorm, softmaxRef, softmax, siluRef, silu, ropeRef, rope, adamwCore, adamwRef, adamw, createBatch, runWgsl, getDevice, getGl, glSupport, glRun, tryLayers, nnBackendInfo, withMeasureLock, measureLockState, requestExclusiveGpu, registerIdleGpuHolder, NN_OPS, WGSL_RMSNORM, WGSL_SOFTMAX, WGSL_SILU, WGSL_ROPE, WGSL_ADAMW, NOTE_T3 };

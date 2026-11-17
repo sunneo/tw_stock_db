@@ -57,5 +57,56 @@ async function check(name, fn) { await fn(); passes++; console.log('ok   ' + nam
     assert.strictEqual(end.running, false); assert.strictEqual(end.pending, 0);
   });
 
+  await check('requestExclusiveGpu：排隊中可取消（reject，不佔鎖），之後的請求照常取得', async () => {
+    const hold = await NN.requestExclusiveGpu('持有');
+    const ac = new AbortController();
+    const waiting = NN.requestExclusiveGpu('排隊', { signal: ac.signal });
+    assert.strictEqual(NN.measureLockState().pending, 1);
+    ac.abort();
+    await assert.rejects(waiting, (e) => e.name === 'AbortError');
+    assert.strictEqual(NN.measureLockState().pending, 0);
+    hold();
+    const next = await NN.requestExclusiveGpu('之後');
+    next();
+    assert.strictEqual(NN.measureLockState().running, false);
+  });
+
+  await check('閒置持有者：授予前依註冊順序呼叫 release（A、B），之後才授予；測完不恢復', async () => {
+    const order = [];
+    const uA = NN.registerIdleGpuHolder('A', () => { order.push('A'); });
+    const uB = NN.registerIdleGpuHolder('B', async () => { await sleep(5); order.push('B'); });
+    const rel = await NN.requestExclusiveGpu('測');
+    order.push('granted');
+    rel();
+    uA(); uB();
+    assert.deepStrictEqual(order, ['A', 'B', 'granted']);
+    assert.strictEqual(rel.failures.length, 0);
+  });
+
+  await check('閒置持有者釋放失敗：仍然授予，失敗記在 release.failures，後面的持有者照常釋放', async () => {
+    const order = [];
+    const uC = NN.registerIdleGpuHolder('C', () => { throw new Error('引擎卡住'); });
+    const uD = NN.registerIdleGpuHolder('D', () => { order.push('D'); });
+    const rel = await NN.requestExclusiveGpu('測');
+    rel();
+    uC(); uD();
+    assert.deepStrictEqual(order, ['D']);
+    assert.strictEqual(rel.failures.length, 1);
+    assert.strictEqual(rel.failures[0].name, 'C');
+    assert.ok(/引擎卡住/.test(rel.failures[0].error), rel.failures[0].error);
+  });
+
+  await check('release 重複呼叫只釋放一次：不會提早授予下一個請求', async () => {
+    const r2 = await NN.requestExclusiveGpu('a');
+    let granted3 = false;
+    const p3 = NN.requestExclusiveGpu('b').then((r) => { granted3 = true; return r; });
+    await sleep(10);
+    assert.strictEqual(granted3, false);
+    r2(); r2();
+    const r3 = await p3;
+    assert.strictEqual(granted3, true);
+    r3();
+  });
+
   console.log('measure_lock_test: ' + passes + ' 項通過');
 })().catch((e) => { console.error(e); process.exit(1); });

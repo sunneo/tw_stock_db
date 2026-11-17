@@ -11,7 +11,7 @@
   const TOK = { rel: 'tokenizer.json', bytes: 9117040, sha256: 'e7a95fce95bf5b0946d0ddb3f9d7caa030b7e850bbe92b0edb26bcf563e9f3d5' };   // Qwen3 全系列共用同一份
   const MODELS = {
     'qwen3-0.6b': { id: 'qwen3-0.6b', dir: 'qwen3-0.6b-q8', repo: 'onnx-community/Qwen3-0.6B-ONNX', label: 'Qwen3 0.6B', family: 'qwen3', downloadHere: false,
-      file: { rel: 'onnx/model_quantized.onnx', bytes: 617687575, sha256: null }, tokenizer: TOK, slowdown: 1, lora: true, q4: { rel: 'onnx/model_q4f16.onnx', bytes: 569789750 }, shape: { D: 1024, H: 16, Hkv: 8, I: 3072, L: 28, V: 151936 } },
+      file: { rel: 'onnx/model_quantized.onnx', bytes: 617687575, sha256: 'ccf8734e59fdf7475b2dc0c117005e267a3a08342c1d951e0a79f0bce57bf62a' }, tokenizer: TOK, slowdown: 1, lora: true, q4: { rel: 'onnx/model_q4f16.onnx', bytes: 569789750 }, shape: { D: 1024, H: 16, Hkv: 8, I: 3072, L: 28, V: 151936 } },
     'qwen3-1.7b': { id: 'qwen3-1.7b', dir: 'qwen3-1.7b-q8', repo: 'onnx-community/Qwen3-1.7B-ONNX', label: 'Qwen3 1.7B', family: 'qwen3', downloadHere: true, partBytes: 16 * MiB,
       file: { rel: 'onnx/model_quantized.onnx', bytes: 1742387852, sha256: '202ed81928b7f34c31505b46479c310e131fec307a045eab2537e7c494feb427' }, tokenizer: TOK, slowdown: 2.5, lora: false, q4: { rel: 'onnx/model_q4f16.onnx', bytes: 1426069098 }, shape: { D: 2048, H: 16, Hkv: 8, I: 6144, L: 28, V: 151936 } },
   };
