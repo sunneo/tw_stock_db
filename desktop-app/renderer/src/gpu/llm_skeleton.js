@@ -108,10 +108,16 @@
 
   // 餵一個詞元，回傳這個位置的 logits（長度 vocab）。狀態會前進一格。
   function step(state, token) {
+    const H = state.arch.hidden;
+    if (!(token >= 0 && token < state.arch.vocab) || token !== Math.floor(token)) throw new Error('llm_skeleton：詞元超出詞表（' + token + '）');
+    return stepVec(state, state.w.embed.subarray(token * H, token * H + H));
+  }
+  // 餵一個已經是隱藏向量的輸入（例如影像嵌入），回傳這個位置的 logits。狀態會前進一格。
+  function stepVec(state, x0) {
     const a = state.arch, w = state.w, hd = state.hd, H = a.hidden, nh = a.heads, nkv = a.kvHeads, ops = state.ops;
-    if (!(token >= 0 && token < a.vocab) || token !== Math.floor(token)) throw new Error('llm_skeleton：詞元超出詞表（' + token + '）');
+    if (!x0 || x0.length !== H) throw new Error('llm_skeleton：輸入向量長度應為 hidden=' + H + '（實際 ' + (x0 ? x0.length : '缺少') + '）');
     const pos = state.pos;
-    let x = Float32Array.from(w.embed.subarray(token * H, token * H + H));
+    let x = Float32Array.from(x0);
     for (let li = 0; li < a.layers; li++) {
       const L = w.layers[li];
       const h = ops.rmsnorm(x, L.attnNorm, a.eps);
@@ -172,5 +178,5 @@
 
   return { rmsnorm: rmsnorm, matvec: matvec, silu: silu, softmax: softmax, rope: rope, kvHeadOf: kvHeadOf,
     SLOTS: SLOTS, registerOverride: registerOverride, clearOverrides: clearOverrides, resolveOps: resolveOps,
-    createState: createState, step: step, run: run };
+    createState: createState, step: step, stepVec: stepVec, run: run };
 }));

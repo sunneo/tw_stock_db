@@ -108,6 +108,8 @@ O1m 到 O11 做完後不結束，進入迴圈。完整規則與交接見 `docs/H
 現況（查證 2026-11-18）：看圖模型有 Florence-2、SmolVLM 256M、LLaVA-Interleave Qwen 0.5B（模型表在 `renderer/src/vlm/vlm_core.js`，`arch` 為 `florence`／`vision2seq`／`llava`），全部走 transformers.js（Worker、onnxruntime-web），**沒有走 cudaweb 的核心**（`docs/INVESTIGATE.cudaweb-models.md` §2.2；`docs/CHECKLIST.cudaweb-wire.md` 的接線只到 Qwen3 聊天、Whisper 編碼器、YAMNet／Demucs、SDXS、Kokoro、Basic Pitch、MOSS）。且 `gpuNeedsF16` 的模型在無 f16 的卡上（這台 GT 720）直接退 CPU，LLaVA 在 CPU 上要 140 到 150 秒。
 - [ ] **O13a LLaVA-Interleave Qwen 0.5B**：語言模型部分是 Qwen2 結構（用 O12 的描述表表示，通用骨架加 Qwen 覆寫）；視覺部分是 SigLIP 類的 ViT 編碼器加投影層，另寫「視覺編碼器骨架」（patch 嵌入、LayerNorm、多頭注意力、MLP、投影，全用現有通用核心：變體競賽的矩陣乘、`attn_flash`）。圖像特徵以嵌入形式插進文字嵌入序列（影像詞元位置）後送進解碼骨架。**無 f16 的卡要用 f32 或 q8 路徑**，不能再因 `gpuNeedsF16` 退 CPU（這正是這台最大的收益）。
 - [ ] **O13b SmolVLM 256M**：同上（語言模型是 SmolLM 類 Llama 結構，視覺是 SigLIP）。
+  - 進度（2026-11-18）：程式與假權重測試完成。`renderer/src/gpu/smolvlm_skeleton.js` 加上 `smolvlm_skeleton_test.js`（11 項）：pixel shuffle、連接器、影像佔位詞元插入、`llm_skeleton.stepVec` 與 `step` 逐位一致、整段前向對獨立算的結果。`llm_skeleton.js` 為此新增 `stepVec`（原本的 `step` 行為不變，16 項與 GPU 版 5 項仍通過）。
+  - **未完成（需要真實檔案，標「待下載」，不編造數值）**：真實權重的逐層對拍；pixel shuffle 的展開順序與縮放因子 r（要 config.json 與 modeling 程式）；隱藏維度與 LM 規格（目前用的是小假尺寸，`verified:false`）；GPU 版（尚未做）。
 - [ ] **O13c Florence-2**：編碼器—解碼器結構（DaViT 視覺編碼器加語言編碼器與帶交叉注意力的解碼器），較複雜，排在 a、b 之後；只做到能對拍的子圖就如實標範圍。
 - [ ] 共通：先用既有的「逐節點對拍」做法（`scripts/eval/cudaweb_node_*`）把這些 ONNX 圖在 cudaweb 上逐節點對 ORT 驗證，再決定整圖接線或骨架重寫；預設關、行為不變、失敗永久退回原路徑；兩處設定介面（AI 助理設定、桌面版設定頁）同步開關；速度數字標硬體（Kepler 14 W）。沒有真權重或載入太重就標「未用真模型驗證」。每小步提交。
 
