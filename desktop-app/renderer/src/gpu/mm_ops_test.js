@@ -202,5 +202,26 @@ const M = require('./mm_ops.js');
     r = await M.rooflineCalibrate({ dispatch: async (iters, n) => { clock += 2000; return f.dispatch(iters, n); }, now: () => clock });
     assert.strictEqual(r.ok, false); assert.ok(/時間上限/.test(r.reason), r.reason);
   }
+  // 提交拆分（估計超過上限就拆）：純函式
+  assert.deepStrictEqual(M.splitRuns(10, 30, 100), [3, 3, 3, 1]);   // 每個提交估計 ≤ 100 ms
+  assert.deepStrictEqual(M.splitRuns(5, 1, 100), [5]);             // 很快，不拆
+  assert.deepStrictEqual(M.splitRuns(4, 200, 100), [1, 1, 1, 1]);   // 單次就超過上限：每次一個提交
+  assert.deepStrictEqual(M.splitRuns(0, 5, 100), []);
+  // 量測互斥鎖與競賽入口：背景競賽在有量測時跳過；前景競賽排隊等鎖
+  {
+    const NNm = require('./nn_ops.js');
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const fakeRaceOne = async () => ({ winner: null, timings: {}, bad: [], skipped: [], cancelled: false, key: 'k' });
+    const fakeCal = async () => ({ noGpu: false, ms: 1, gSimple: 1000 });
+    const hold = NNm.withMeasureLock(async () => { await sleep(40); });
+    await sleep(5);
+    const bgRes = await M.startMatmulRace([{ M: 4, K: 4, N: 4 }], { background: true, raceOne: fakeRaceOne, calibrate: fakeCal });
+    assert.strictEqual(bgRes.skipped, true, JSON.stringify(bgRes));
+    const t0 = Date.now();
+    const fgRes = await M.startMatmulRace([{ M: 4, K: 4, N: 4 }], { raceOne: fakeRaceOne, calibrate: fakeCal });
+    assert.ok(Array.isArray(fgRes) && fgRes.length === 1, JSON.stringify(fgRes));
+    assert.ok(Date.now() - t0 >= 20, '前景競賽應該排在量測後面等待');
+    await hold;
+  }
   console.log('mm_ops_test: 全部通過');
 })().catch((e) => { console.error(e); process.exit(1); });

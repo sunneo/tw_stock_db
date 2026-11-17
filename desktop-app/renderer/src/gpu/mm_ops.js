@@ -97,7 +97,7 @@ async function run(kind, a, aDims, b, bDims, azp, bzp, ops) {
     if (!TUNE.started) {
       TUNE.started = true;
       initMatmulTuning({ device: dev, shapes: AUTO_SHAPES }).then((info) => {
-        if (info.missing.length && o.navigator) startMatmulRace(info.missing, { navigator: o.navigator, budgetMs: 2000 }).catch(() => {});
+        if (info.missing.length && o.navigator) startMatmulRace(info.missing, { navigator: o.navigator, budgetMs: 2000, background: true }).catch(() => {});
       }).catch(() => {});
     }
     for (const n of [total, a.length, b.length]) if (n * 4 > MAX_BUF) throw new Error('張量 ' + n + ' 個元素超過單一儲存緩衝區上限（128 MB），退 CPU');
@@ -154,6 +154,14 @@ const CORE_SAMPLE_MS = 100;      // 每個樣本的目標時間：夠多次派�
 const CORE_MAX_BATCH = 64;
 function nowMsCore() { return (typeof performance !== 'undefined' ? performance : Date).now(); }
 // 一個樣本要派發幾次：單次約 estMs，一批目標 budgetMs；至少 1、至多 CORE_MAX_BATCH
+// 把 n 次派發拆成多個提交：每個提交依校準時間估的總時間不超過 limitMs（估計超過就拆）。回傳每個提交的派發數。
+const CORE_SPLIT_MS = 100, ROOF_SPLIT_MS = 100;
+function splitRuns(n, estMs, limitMs) {
+  const per = Math.max(estMs, 1e-6), cap = Math.max(1, Math.floor(limitMs / per));
+  const out = []; let left = Math.max(0, Math.floor(n));
+  while (left > 0) { const c = Math.min(cap, left); out.push(c); left -= c; }
+  return out;
+}
 function pickBatch(estMs, budgetMs) { return Math.max(1, Math.min(CORE_MAX_BATCH, Math.floor(budgetMs / Math.max(estMs, 0.01)))); }
 // 編譯時間 ＝ 第一次（含編譯與第一次派發）的總時間 － 穩定時間的中位數；不小於 0；沒有樣本就 null
 function compileFromSamples(firstTotalMs, samples) {
@@ -245,17 +253,28 @@ async function rooflineCalibrate(opts) {
   const single = Math.max(tS, 0.01);
   const batch = Math.max(1, Math.min(64, Math.floor(ROOF_TARGET_MS / single)));
   const per = [];
+  const chunks = splitRuns(batch, single, ROOF_SPLIT_MS);   // 估計總時間 >100 ms 就拆成多個提交（每個提交都檢查中止條件）
   for (let s = 0; s < ROOF_SAMPLES; s++) {
     if (now() - t0 > ROOF_MAX_TOTAL_MS) break;
-    const tt = await dispatch(iters, batch);
-    if (!(tt <= ROOF_ABORT_MS)) return untrusted('一次提交 ' + batch + ' 次派發共 ' + tt + ' ms');
-    per.push(tt / batch);
+    let tot = 0;
+    for (const c of chunks) {
+      const tt = await dispatch(iters, c);
+      if (!(tt <= ROOF_ABORT_MS)) return untrusted('一次提交 ' + c + ' 次派發共 ' + tt + ' ms');
+      tot += tt;
+    }
+    per.push(tot / batch);
   }
   if (!per.length) return { ok: false, reason: '時間上限內沒有完成任何樣本' };
   return { ok: true, iters: iters, batch: batch, perDispatchMs: VR.medianOf(per), predicted: predicted, samples: per.length, totalMs: now() - t0 };
 }
 // 真裝置版：只包一層（建 pipeline 與 buffer，派發時計時並等 GPU 完成）。結果存進同一份快取，鍵為 ROOF|adapter|能力簽名。量不到回傳原因（不影響競賽）。
-async function measureRoofline(o) {
+// 對外入口：要拿 GPU 量測互斥鎖（前景排隊）。競賽內部呼叫時傳 locked:true，避免同一把鎖重入造成死結。
+function measureRoofline(o) {
+  const opts = o || {};
+  if (opts.locked) return measureRooflineInner(opts);
+  return nn.withMeasureLock(() => measureRooflineInner(opts));
+}
+async function measureRooflineInner(o) {
   const opts = o || {};
   const VR = require('./variant_race.js');
   const gd = await nn.getDevice(opts.navigator);
@@ -374,8 +393,9 @@ async function raceMatmul(M, K, N, opts) {
       const job = await jobFor(id);
       if (!job.est) { const t = clock(); await job.reps(1); job.est = Math.max(clock() - t, 0.01); }
       const n = pickBatch(job.est, CORE_SAMPLE_MS);
-      const t = clock(); await job.reps(n);
-      const per = (clock() - t) / n;
+      let tot = 0;
+      for (const c of splitRuns(n, job.est, CORE_SPLIT_MS)) { const t = clock(); await job.reps(c); tot += clock() - t; }   // 估計超過 100 ms 就拆成多個提交
+      const per = tot / n;
       job.samples.push(per);
       return per;
     },
@@ -428,7 +448,12 @@ async function initMatmulTuning(o) {
 // 回傳每個形狀一筆：{ shape, key, winner, noGpu, bad, skipped（依預估略過的候選）, cancelled, error }。
 // 逐形狀獨立：某形狀丟例外只記在它自己那筆，後面照跑；裝置遺失就標原因並停止（其餘形狀標「未執行」）；取消在形狀之間與候選之間生效。
 // opts.onProgress({ i, n, shape, msg })：狀態列用。opts.raceOne／opts.calibrate 可注入（測試用）。
-async function startMatmulRace(shapes, o) {
+// 競賽入口：整個競賽在 GPU 量測互斥鎖之內（前景排隊；opts.background 為真時，有量測在跑就跳過，不重疊）
+function startMatmulRace(shapes, o) {
+  const opts = o || {};
+  return nn.withMeasureLock(() => startMatmulRaceInner(shapes, opts), { background: !!opts.background });
+}
+async function startMatmulRaceInner(shapes, o) {
   const opts = o || {};
   const list = (shapes || []).filter((sh) => sh && sh.M > 0 && sh.K > 0 && sh.N > 0);
   const n = list.length, out = [];
@@ -448,7 +473,7 @@ async function startMatmulRace(shapes, o) {
   }
   // 占峰值（屋頂 R0）：只在真的競賽時量一次，結果放 TUNE.roofline；量不到只記原因，不影響競賽
   if (!opts.raceOne && opts.roofline !== false) {
-    try { TUNE.roofline = await measureRoofline({ navigator: opts.navigator, store: TUNE.store }); }
+    try { TUNE.roofline = await measureRoofline({ navigator: opts.navigator, store: TUNE.store, locked: true }); }
     catch (e) { TUNE.roofline = { ok: false, reason: '量測失敗：' + String((e && e.message) || e).slice(0, 160) }; }
   }
   let stop = null;
@@ -471,4 +496,4 @@ async function startMatmulRace(shapes, o) {
   return out;
 }
 
-module.exports = { matmulRef, matmul, matmulIntRef, matmulInt, WGSL_MM_F32, WGSL_MM_F32_TILED, WGSL_MM_F32_VEC4, WGSL_MM_I32, plan, pickMatmulKernel, setMatmulCaps, getMatmulCaps: () => CAPS, setMatmulWinners, raceMatmul, initMatmulTuning, startMatmulRace, calibrateSimple, gateCandidates, estimateMs, flopsOf, SAFE_DISPATCH_MS, REL_SPEED, AUTO_SHAPES, TUNE, measureRoofline, pickBatch, compileFromSamples, pickRooflineIters, gflopsFrom, peakFromEntries, CORE_SAMPLE_MS, ROOF_TARGET_MS, ROOF_ABORT_MS, ROOF_MAX_ITERS, rooflineCalibrate };
+module.exports = { matmulRef, matmul, matmulIntRef, matmulInt, WGSL_MM_F32, WGSL_MM_F32_TILED, WGSL_MM_F32_VEC4, WGSL_MM_I32, plan, pickMatmulKernel, setMatmulCaps, getMatmulCaps: () => CAPS, setMatmulWinners, raceMatmul, initMatmulTuning, startMatmulRace, calibrateSimple, gateCandidates, estimateMs, flopsOf, SAFE_DISPATCH_MS, REL_SPEED, AUTO_SHAPES, TUNE, measureRoofline, pickBatch, compileFromSamples, pickRooflineIters, gflopsFrom, peakFromEntries, CORE_SAMPLE_MS, ROOF_TARGET_MS, ROOF_ABORT_MS, ROOF_MAX_ITERS, rooflineCalibrate, splitRuns, CORE_SPLIT_MS };

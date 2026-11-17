@@ -101,6 +101,28 @@ async function nnBackendInfo(opts) {
   return { webgpu: { available: !!g.dev, reason: g.reason || '' }, webgl2: { available: gs.ok, reason: gs.reason }, ops: ops };
 }
 
+// ---------- GPU 量測互斥鎖：同一程序內，屋頂量測、變體競賽、基準一次只能有一個在跑 ----------
+// 前景（opts.background 為假）排隊依序執行；背景（opts.background 為真）在有量測在跑或排隊時直接跳過（回傳 skipped），
+// 這樣量測期間背景自動競賽會暫停，之後再由下一次派發觸發。fn 丟錯也會釋放鎖。
+let measureChain = Promise.resolve();
+let measurePending = 0;
+let measureRunning = false;
+function withMeasureLock(fn, opts) {
+  const o = opts || {};
+  if (o.background && (measureRunning || measurePending > 0)) {
+    return Promise.resolve({ skipped: true, reason: '有 GPU 量測在跑或排隊，背景競賽暫停' });
+  }
+  measurePending++;
+  const run = measureChain.then(async () => {
+    measurePending--;
+    measureRunning = true;
+    try { return await fn(); } finally { measureRunning = false; }
+  });
+  measureChain = run.catch(() => { /* 錯誤由呼叫端收到，鎖鏈不中斷 */ });
+  return run;
+}
+function measureLockState() { return { running: measureRunning, pending: measurePending }; }
+
 // 取得 WebGPU 裝置（每個 navigator 只要一次）。沒有就回傳 dev:null 與原因。
 const devCache = new Map();
 function getDevice(nav) {
@@ -883,4 +905,4 @@ function trainerOps(opts) {
   };
 }
 
-module.exports = { trainerOps, rmsnormRef, rmsnorm, softmaxRef, softmax, siluRef, silu, ropeRef, rope, adamwCore, adamwRef, adamw, createBatch, runWgsl, getDevice, getGl, glSupport, glRun, tryLayers, nnBackendInfo, NN_OPS, WGSL_RMSNORM, WGSL_SOFTMAX, WGSL_SILU, WGSL_ROPE, WGSL_ADAMW, NOTE_T3 };
+module.exports = { trainerOps, rmsnormRef, rmsnorm, softmaxRef, softmax, siluRef, silu, ropeRef, rope, adamwCore, adamwRef, adamw, createBatch, runWgsl, getDevice, getGl, glSupport, glRun, tryLayers, nnBackendInfo, withMeasureLock, measureLockState, NN_OPS, WGSL_RMSNORM, WGSL_SOFTMAX, WGSL_SILU, WGSL_ROPE, WGSL_ADAMW, NOTE_T3 };

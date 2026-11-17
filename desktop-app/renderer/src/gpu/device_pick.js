@@ -64,7 +64,7 @@ async function probe(nav, nn) {
     }
     const soft = info.adapter && (info.adapter.isFallbackAdapter || SOFT_RE.test([info.adapter.vendor, info.adapter.architecture, info.adapter.device, info.adapter.description].join(' ')));
     if (info.adapter && !soft) { // 軟體 adapter 不必量（一定關），省時間
-      const g = await nn.getDevice(nav); if (g && g.dev) { info.cpuGflops = cpuBench(); info.gpuGflops = await gpuBench(g.dev, nn); }
+      const g = await nn.getDevice(nav); if (g && g.dev) { info.cpuGflops = cpuBench(); info.gpuGflops = await (nn.withMeasureLock ? nn.withMeasureLock(() => gpuBench(g.dev, nn)) : gpuBench(g.dev, nn)); }
     }
   } catch (e) { info.error = String((e && e.message) || e); }
   return { decision: decide(info), info };
