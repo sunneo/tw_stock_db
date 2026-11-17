@@ -173,5 +173,23 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>, @builtin(workgroup_id) wid
     }, null, () => A.attnCore(q, S, past, cache, H, scale));
   }
 
-  return { attnCoreGpu, WGSL_ATTN, WGSL_ATTN_FLASH, flashRef, attnVariantFor };
+  // 批次版（O6）：q、kc、vc 都是批次的 GPU 句柄（kc、vc 至少 (past+S)·Hkv·hd 個 f32）；回傳 GPU 句柄 y（S·H·hd），整段不回讀。
+  // 與 attnCoreGpu 同一組核心與 uniform；綁定順序 q、kc、vc、y、uniform（dispatchRaw 會把 uniform 接在最後）。
+  function attnCoreBatched(b, q, kc, vc, S, past, H, Hkv, hd, scale, opts) {
+    if (H % Hkv !== 0) throw new Error('attnCoreBatched：H=' + H + ' 必須是 Hkv=' + Hkv + ' 的整數倍');
+    const variant = attnVariantFor(hd, opts);
+    if (variant === 'attn_flash' && !(hd % 64 === 0 && hd <= 512)) throw new Error('attn_flash：hd=' + hd + ' 必須是 64 的倍數且 ≤ 512');
+    const total = S * H;
+    const groups = variant === 'attn_flash' ? total : Math.ceil(total / 64);
+    if (groups > 65535) throw new Error('attnCoreBatched：工作群組數 ' + groups + ' 超過 65535（請分批）');
+    const y = b.alloc(total * hd);
+    const uniform = unif((d) => {
+      d.setUint32(0, S, true); d.setUint32(4, past, true); d.setUint32(8, H, true); d.setUint32(12, Hkv, true);
+      d.setUint32(16, hd, true); d.setFloat32(20, Math.fround(scale), true);
+    });
+    b.dispatchRaw(variant === 'attn_flash' ? WGSL_ATTN_FLASH : WGSL_ATTN, [q.buf, kc.buf, vc.buf, y.buf], uniform, groups);
+    return y;
+  }
+
+  return { attnCoreGpu, attnCoreBatched, WGSL_ATTN, WGSL_ATTN_FLASH, flashRef, attnVariantFor };
 });
