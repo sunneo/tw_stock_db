@@ -38,8 +38,8 @@
    "names": [
     "FA_QWEN_SRC"
    ],
-   "size": 267011,
-   "md5": "6a946b26e290ba4a1c05a6b5bc90c914"
+   "size": 277556,
+   "md5": "a0da56f42c9f5894971094ce3f424098"
   },
   "aidocview": {
    "file": "chunks/aidocview.js",
@@ -235,6 +235,15 @@
    ],
    "size": 20446,
    "md5": "ec320b70b1772508813dc977fdbec19f"
+  },
+  "newsdigest": {
+   "file": "chunks/newsdigest.js",
+   "names": [
+    "FaWebNews",
+    "FaNewsDigest"
+   ],
+   "size": 9158,
+   "md5": "02c56d8bedd938763974cdc253306e43"
   },
   "thinkstack": {
    "file": "chunks/thinkstack.js",
@@ -1870,7 +1879,7 @@
   }
  },
  "core": {
-  "size": 6010634,
-  "md5": "e16547b2795e682bc2662c896622e6c1"
+  "size": 6016805,
+  "md5": "94fb57b600528c4d71c14333e9bb160d"
  }
 }
