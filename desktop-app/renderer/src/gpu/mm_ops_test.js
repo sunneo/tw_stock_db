@@ -160,5 +160,47 @@ const M = require('./mm_ops.js');
   assert.strictEqual(rr.ok, false); assert.ok(typeof rr.reason === 'string' && rr.reason.length > 0, JSON.stringify(rr));
   const rc = await M.raceMatmul(64, 1024, 1024, { navigator: undefined });
   assert.strictEqual(rc.noGpu, true);
+  // 屋頂安全校準（假裝置，不碰 GPU）：外推到約 30 ms、迭代數上限、不可信時中止且不再放大、總時間上限
+  {
+    const fake = (perIter, overhead, slowAbove) => {
+      const calls = [], times = [];
+      const dispatch = async (iters, n) => {
+        calls.push({ iters: iters, n: n });
+        let t = n * (overhead + perIter * iters);
+        if (slowAbove && iters > slowAbove) t = 1e4;   // 模擬降頻：超過某個迭代數就變很慢
+        times.push(t);
+        return t;
+      };
+      return { dispatch: dispatch, calls: calls, times: times };
+    };
+    // 1) 外推：每次迭代 0.05 ms、固定開銷 0.5 ms → 單次約 30 ms 約 590 次迭代；所有派發都在 ROOF_ABORT_MS 以下
+    let f = fake(0.05, 0.5);
+    let r = await M.rooflineCalibrate({ dispatch: f.dispatch });
+    assert.strictEqual(r.ok, true, JSON.stringify(r));
+    assert.ok(r.iters >= 580 && r.iters <= 600, 'iters=' + r.iters);
+    assert.ok(Math.abs(r.perDispatchMs - 30) < 1.5, 'per=' + r.perDispatchMs);
+    assert.ok(Math.max(...f.times) <= M.ROOF_ABORT_MS, 'max=' + Math.max(...f.times));
+    // 2) 上限：每次迭代極快 → 迭代數壓在 ROOF_MAX_ITERS，不會無限放大
+    f = fake(0.00001, 0.5);
+    r = await M.rooflineCalibrate({ dispatch: f.dispatch });
+    assert.strictEqual(r.ok, true, JSON.stringify(r));
+    assert.strictEqual(r.iters, M.ROOF_MAX_ITERS);
+    // 3) 校準階段就慢：每次迭代 10 ms → 32 次迭代的派發 320 ms > 150 → 中止；只派發了暖機與兩次校準（沒有放大）
+    f = fake(10, 0.5);
+    r = await M.rooflineCalibrate({ dispatch: f.dispatch });
+    assert.strictEqual(r.ok, false); assert.strictEqual(r.untrusted, true); assert.ok(/不可信/.test(r.reason), r.reason);
+    assert.strictEqual(f.calls.length, 3, JSON.stringify(f.calls));
+    // 4) 確認階段才慢（超過 300 次迭代就變 1e4 ms）：外推的那次派發超時 → 中止；中止後沒有更大的派發
+    f = fake(0.05, 0.5, 300);
+    r = await M.rooflineCalibrate({ dispatch: f.dispatch });
+    assert.strictEqual(r.ok, false); assert.strictEqual(r.untrusted, true); assert.ok(/外推的/.test(r.reason), r.reason);
+    const last = f.calls[f.calls.length - 1];
+    assert.ok(f.calls.every((c) => c.iters <= last.iters), JSON.stringify(f.calls));
+    // 5) 總時間上限：每次派發假裝花 2 秒 → 採樣前就超過上限，回傳明確原因（不是不可信）
+    let clock = 0;
+    f = fake(0.05, 0.5);
+    r = await M.rooflineCalibrate({ dispatch: async (iters, n) => { clock += 2000; return f.dispatch(iters, n); }, now: () => clock });
+    assert.strictEqual(r.ok, false); assert.ok(/時間上限/.test(r.reason), r.reason);
+  }
   console.log('mm_ops_test: 全部通過');
 })().catch((e) => { console.error(e); process.exit(1); });

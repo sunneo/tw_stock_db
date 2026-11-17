@@ -152,7 +152,6 @@ function isLostText(t) { return /lost|遺失/i.test(String(t || '')); }
 const BUF = { STORAGE: 0x80, UNIFORM: 0x40, COPY_DST: 0x8, COPY_SRC: 0x4 };
 const CORE_SAMPLE_MS = 100;      // 每個樣本的目標時間：夠多次派發，讓提交延遲不主導計時
 const CORE_MAX_BATCH = 64;
-const ROOF_BATCH_MS = 100, ROOF_TARGET_MS = 40, ROOF_MAX_TOTAL_MS = 300;   // 屋頂：單次派發目標 40 ms、一批約 100 ms，整體不超過 300 ms
 function nowMsCore() { return (typeof performance !== 'undefined' ? performance : Date).now(); }
 // 一個樣本要派發幾次：單次約 estMs，一批目標 budgetMs；至少 1、至多 CORE_MAX_BATCH
 function pickBatch(estMs, budgetMs) { return Math.max(1, Math.min(CORE_MAX_BATCH, Math.floor(budgetMs / Math.max(estMs, 0.01)))); }
@@ -219,12 +218,46 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let t: vec4<f32> = x0 + x1 + x2 + x3;
   if (t.x + t.y + t.z + t.w == -1.0) { OUT[gid.x] = t.x; }
 }`;
-// 屋頂（R0）：先暖機，再用兩個迭代數估單次時間、挑出單次約 40 ms 的迭代數，一批約 100 ms，量兩批取中位數；整體不超過 300 ms；
-// 監聽裝置遺失。結果存進同一份快取，鍵為 ROOF|adapter|能力簽名。量不到回傳原因（不影響競賽）。
+// 屋頂（R0）：安全校準（管理者指示，2026-11-18）。大迭代數的量測已移除（第二次實測單次 786 ms，會逼近 GPU 逾時）。
+// 流程：1) 暖機（編譯）；2) 兩個極小派發（8、32 次迭代）計時，線性外推出「單次約 ROOF_TARGET_MS」的迭代數，硬上限 ROOF_MAX_ITERS；
+// 3) 用外推的迭代數派發一次確認；4) 每次提交的總時間約 ROOF_TARGET_MS，取 ROOF_SAMPLES 個樣本的中位數。
+// 任何一次派發或提交超過 ROOF_ABORT_MS 就中止，標「屋頂量測不可信」，之後不再派發更大的（絕不放大重試）。整體也有時間上限。
+// rooflineCalibrate 是純函式：派發由呼叫端注入（真裝置或測試用的假裝置），所以外推、上限、中止都能用 node 測。
+const ROOF_TARGET_MS = 30, ROOF_ABORT_MS = 150, ROOF_MAX_ITERS = 4096, ROOF_MAX_TOTAL_MS = 1500, ROOF_SAMPLES = 3;
+const ROOF_CAL_LO = 8, ROOF_CAL_HI = 32;
+// dispatch(iters, n)：提交 n 次派發（每次 iters 次迭代），回傳這次提交的耗時（毫秒，Promise）。now()：取時間（測試可注入）。
+async function rooflineCalibrate(opts) {
+  const dispatch = opts.dispatch, now = opts.now || nowMsCore;
+  const VR = require('./variant_race.js');
+  const t0 = now();
+  const untrusted = (why) => ({ ok: false, untrusted: true, reason: '屋頂量測不可信：' + why + '（已中止，不再放大迭代數）' });
+  await dispatch(ROOF_CAL_LO, 1);                           // 暖機（編譯），不計時
+  const tA = await dispatch(ROOF_CAL_LO, 1);
+  if (!(tA <= ROOF_ABORT_MS)) return untrusted('極小派發 ' + tA + ' ms');
+  const tB = await dispatch(ROOF_CAL_HI, 1);
+  if (!(tB <= ROOF_ABORT_MS)) return untrusted('32 次迭代的派發 ' + tB + ' ms');
+  const b = Math.max((tB - tA) / (ROOF_CAL_HI - ROOF_CAL_LO), 1e-6);   // 每次迭代的時間
+  const a = Math.max(tA - ROOF_CAL_LO * b, 0);                         // 固定開銷
+  const iters = Math.max(1, Math.min(ROOF_MAX_ITERS, Math.floor((ROOF_TARGET_MS - a) / b)));
+  const predicted = a + b * iters;
+  const tS = await dispatch(iters, 1);                                 // 確認：外推的迭代數只派發一次
+  if (!(tS <= ROOF_ABORT_MS)) return untrusted('外推的 ' + iters + ' 次迭代派發 ' + tS + ' ms，預估 ' + predicted.toFixed(1) + ' ms');
+  const single = Math.max(tS, 0.01);
+  const batch = Math.max(1, Math.min(64, Math.floor(ROOF_TARGET_MS / single)));
+  const per = [];
+  for (let s = 0; s < ROOF_SAMPLES; s++) {
+    if (now() - t0 > ROOF_MAX_TOTAL_MS) break;
+    const tt = await dispatch(iters, batch);
+    if (!(tt <= ROOF_ABORT_MS)) return untrusted('一次提交 ' + batch + ' 次派發共 ' + tt + ' ms');
+    per.push(tt / batch);
+  }
+  if (!per.length) return { ok: false, reason: '時間上限內沒有完成任何樣本' };
+  return { ok: true, iters: iters, batch: batch, perDispatchMs: VR.medianOf(per), predicted: predicted, samples: per.length, totalMs: now() - t0 };
+}
+// 真裝置版：只包一層（建 pipeline 與 buffer，派發時計時並等 GPU 完成）。結果存進同一份快取，鍵為 ROOF|adapter|能力簽名。量不到回傳原因（不影響競賽）。
 async function measureRoofline(o) {
   const opts = o || {};
   const VR = require('./variant_race.js');
-  const t00 = nowMsCore();
   const gd = await nn.getDevice(opts.navigator);
   if (!gd.dev) return { ok: false, reason: '沒有 WebGPU（' + (gd.reason || '原因不明') + '）' };
   const dev = gd.dev;
@@ -235,43 +268,27 @@ async function measureRoofline(o) {
   const out = gpuBuf(dev, null, threads * 4);
   const pipe = dev.createComputePipeline({ layout: 'auto', compute: { module: dev.createShaderModule({ code: ROOF_WGSL }), entryPoint: 'main' } });
   const ub = dev.createBuffer({ size: 16, usage: BUF.UNIFORM | BUF.COPY_DST });
-  const runIters = async (iters, n) => {
+  const finish = (r) => { try { out.destroy(); ub.destroy(); } catch (_) { /* */ } return r; };
+  const dispatch = async (iters, n) => {
+    if (lost) throw new Error('裝置遺失：' + lost);
     dev.queue.writeBuffer(ub, 0, new Uint32Array([iters, 0, 0, 0]));
     const bg = dev.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: out } }, { binding: 1, resource: { buffer: ub } }] });
     const enc = dev.createCommandEncoder();
     for (let r = 0; r < n; r++) { const pass = enc.beginComputePass(); pass.setPipeline(pipe); pass.setBindGroup(0, bg); pass.dispatchWorkgroups(256); pass.end(); }
+    const t = nowMsCore();
     dev.queue.submit([enc.finish()]);
     await dev.queue.onSubmittedWorkDone();
+    return nowMsCore() - t;
   };
-  const finish = (r) => { try { out.destroy(); ub.destroy(); } catch (_) { /* */ } return r; };
-  const lostNow = () => (lost ? finish({ ok: false, reason: '裝置遺失：' + lost }) : null);
   try {
-    await runIters(64, 1);                                   // 暖機（編譯）
-    const t1 = nowMsCore(); await runIters(64, 1); const e1 = nowMsCore() - t1;
-    if (lostNow()) return lostNow();
-    const t2 = nowMsCore(); await runIters(1024, 1); const e2 = nowMsCore() - t2;
-    if (lostNow()) return lostNow();
-    if (e2 > ROOF_MAX_TOTAL_MS) return finish({ ok: false, reason: '單次派發超過 ' + ROOF_MAX_TOTAL_MS + ' ms（這台太慢或被其他程式佔用），不量屋頂' });
-    const iters = pickRooflineIters(e1, 64, e2, 1024, ROOF_TARGET_MS);
-    const tS = nowMsCore(); await runIters(iters, 1); const single = Math.max(nowMsCore() - tS, 0.01);
-    // 穩定性檢查：單次時間若遠高於兩點線性擬合的預估，代表量測不穩（驅動降頻、其他工作搶 GPU），這次不採用，免得把不穩的數字當峰值
-    const predicted = Math.max(e1 + (iters - 64) * ((e2 - e1) / 960), 0.01);
-    if (single > 3 * predicted + 5) return finish({ ok: false, reason: '量測不穩定：單次 ' + single.toFixed(1) + ' ms，預估約 ' + predicted.toFixed(1) + ' ms（不採用）' });
-    if (nowMsCore() - t00 > ROOF_MAX_TOTAL_MS) return finish({ ok: false, reason: '超過時間上限（' + ROOF_MAX_TOTAL_MS + ' ms），不量屋頂' });
-    const batch = pickBatch(single, ROOF_BATCH_MS);
-    const per = [];
-    for (let s = 0; s < 3; s++) {
-      if (lostNow()) return lostNow();
-      if (nowMsCore() - t00 > ROOF_MAX_TOTAL_MS) break;
-      const t = nowMsCore(); await runIters(iters, batch); per.push((nowMsCore() - t) / batch);
-    }
-    if (!per.length) return finish({ ok: false, reason: '時間上限內沒有完成任何樣本' });
-    const ms = VR.medianOf(per);
-    const gflops = gflopsFrom(flopsPerIter * iters, ms);
-    const value = { gflops: Math.round(gflops * 100) / 100, iters: iters, batch: batch, perDispatchMs: Math.round(ms * 1000) / 1000, adapter: adapter, sig: sig, at: Date.now() };
+    const cal = await rooflineCalibrate({ dispatch: dispatch, now: nowMsCore });
+    if (lost) return finish({ ok: false, reason: '裝置遺失：' + lost });
+    if (!cal.ok) return finish(cal);
+    const gflops = gflopsFrom(flopsPerIter * cal.iters, cal.perDispatchMs);
+    const value = { gflops: Math.round(gflops * 100) / 100, iters: cal.iters, batch: cal.batch, perDispatchMs: Math.round(cal.perDispatchMs * 1000) / 1000, adapter: adapter, sig: sig, at: Date.now() };
     const store = opts.store || TUNE.store || (TUNE.store = VR.createStore({}));
     try { await store.set('ROOF|' + adapter + '|' + sig, value); } catch (_) { /* 退記憶體 */ }
-    return finish({ ok: true, gflops: value.gflops, value: value, totalMs: Math.round(nowMsCore() - t00) });
+    return finish({ ok: true, gflops: value.gflops, value: value, totalMs: Math.round(cal.totalMs) });
   } catch (e) {
     return finish({ ok: false, reason: '量測失敗：' + String((e && e.message) || e).slice(0, 160) });
   }
@@ -454,4 +471,4 @@ async function startMatmulRace(shapes, o) {
   return out;
 }
 
-module.exports = { matmulRef, matmul, matmulIntRef, matmulInt, WGSL_MM_F32, WGSL_MM_F32_TILED, WGSL_MM_F32_VEC4, WGSL_MM_I32, plan, pickMatmulKernel, setMatmulCaps, getMatmulCaps: () => CAPS, setMatmulWinners, raceMatmul, initMatmulTuning, startMatmulRace, calibrateSimple, gateCandidates, estimateMs, flopsOf, SAFE_DISPATCH_MS, REL_SPEED, AUTO_SHAPES, TUNE, measureRoofline, pickBatch, compileFromSamples, pickRooflineIters, gflopsFrom, peakFromEntries, CORE_SAMPLE_MS, ROOF_TARGET_MS };
+module.exports = { matmulRef, matmul, matmulIntRef, matmulInt, WGSL_MM_F32, WGSL_MM_F32_TILED, WGSL_MM_F32_VEC4, WGSL_MM_I32, plan, pickMatmulKernel, setMatmulCaps, getMatmulCaps: () => CAPS, setMatmulWinners, raceMatmul, initMatmulTuning, startMatmulRace, calibrateSimple, gateCandidates, estimateMs, flopsOf, SAFE_DISPATCH_MS, REL_SPEED, AUTO_SHAPES, TUNE, measureRoofline, pickBatch, compileFromSamples, pickRooflineIters, gflopsFrom, peakFromEntries, CORE_SAMPLE_MS, ROOF_TARGET_MS, ROOF_ABORT_MS, ROOF_MAX_ITERS, rooflineCalibrate };
