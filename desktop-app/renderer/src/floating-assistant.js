@@ -14479,7 +14479,7 @@ const holder = {};
         while ((m = re.exec(src))) { const c = norm(parseJson(m[1])); if (c) { calls.push(c); format = 'tag'; } if (m[0] === '') re.lastIndex++; }
         if (format === 'tag') rest = src.replace(/<tool_call>[\s\S]*?(?:<\/tool_call>|(?=<tool_call>)|$)/g, '');
         else { const trimmed = src.trim(); if (/^(?:```(?:json)?\s*)?\{[\s\S]*"name"[\s\S]*\}(?:\s*```)?$/.test(trimmed)) { const c = norm(parseJson(trimmed)); if (c) { calls.push(c); format = 'json'; rest = ''; } } }
-        return { calls, text: rest.replace(/<think>[\s\S]*?<\/think>/g, '').trim(), format };
+        return { calls, text: rest.replace(/<think>[\s\S]*?<\/think>/g, '').replace(/<think>[\s\S]*$/, '').trim(), format };   // 思考到一半被詞元上限切掉（沒有結尾標籤）也整段拿掉
     }
     // 工具呼叫基準測試：用三個假工具與固定題目，量「選對工具＋參數對」的比例；也量輸出格式合不合（能不能被解析）。
     // 題目刻意包含：中文、英文、該用工具、不該用工具（要能克制）。每題 1 分。
@@ -84154,6 +84154,7 @@ class FloatingAssistant {
             image3dMaxFaces: 60000, // 圖片轉 3D：「最細」用到的最大面數（1,000～2,000,000）
             // CoLU+Thinking：只對離線 qwen3-0.6b 生效（計畫與反思會先思考，較慢；關閉則維持原本的快速流程）。預設打開（未設定也視為開）。
             coluThinking: true,
+            offlineThinking: 'off',   // 離線模型（Qwen3-0.6B）聊天回答先思考：off（預設，維持快速）／on。三條路徑：原生不支援（會改走 GPU 整段解碼／WebGPU／WASM）
             topicShiftCheck: false, // 話題更動檢查：每則訊息會多等一次模型判斷；預設關閉（關閉時不判斷、不產生話題摘要）
             repoExplainModel: 'on', // 離線更新說明（語法樹＋函式語意）：'on'＝再用離線文字模型潤飾沒有註解的說明，'off'＝只用程式組出來的
             repoIndexDisk: {}, // 專案索引：每個專案「要不要把索引寫進專案資料夾的 .floating-assistant/index/」的決定 { <root>: 'yes'|'no' }（第一次建索引時問，見 _repoIndexAskDisk；沒有這個專案的鍵＝還沒問過）；'no'＝退回記憶體索引並套用保護上限
@@ -85607,6 +85608,7 @@ class FloatingAssistant {
             repoIndexMaxFiles: (() => { const n = Math.floor(Number(raw.repoIndexMaxFiles)); return Number.isFinite(n) && n >= 1 && n !== 50000 ? n : 0; })(),
             image3dMaxFaces: (() => { const n = Math.floor(Number(raw.image3dMaxFaces)); return Number.isFinite(n) && n >= 1000 ? Math.min(2000000, n) : 60000; })(),
             coluThinking: FaRecipe.coluThinkingSetting(raw.coluThinking),
+            offlineThinking: raw.offlineThinking === 'on' ? 'on' : 'off',
             topicShiftCheck: raw.topicShiftCheck === true,
             repoExplainModel: raw.repoExplainModel === 'off' ? 'off' : 'on',
             repoIndexDisk: (() => { const o = {}; if (raw.repoIndexDisk && typeof raw.repoIndexDisk === 'object') for (const [k, v] of Object.entries(raw.repoIndexDisk)) if (k && (v === 'yes' || v === 'no')) o[k] = v; return o; })(),
@@ -110417,6 +110419,8 @@ ${sourceTool.handlerScript}
         if (dragDropSkipConfirmChk) dragDropSkipConfirmChk.checked = this.advancedSettings.dragDropAttachSkipConfirm !== false;
         const topicShiftChk = document.getElementById('ai-topic-shift-chk');
         if (topicShiftChk) topicShiftChk.checked = this.advancedSettings.topicShiftCheck === true;
+        const offThinkChk = document.getElementById('ai-offline-think-chk');
+        if (offThinkChk) offThinkChk.checked = this.advancedSettings.offlineThinking === 'on';
         const coluThinkChk = document.getElementById('ai-colu-think-chk');
         if (coluThinkChk) coluThinkChk.checked = FaRecipe.coluThinkingSetting(this.advancedSettings.coluThinking);
         const festivalChk = document.getElementById('ai-festival-chk');
@@ -129849,6 +129853,12 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             return no(why + '（已自動停用這條 GPU 路徑；到設定切換「GPU 加速」可重新啟用）');
         }
     }
+    // 離線模型聊天回答的 Thinking 開關（設定 offlineThinking，預設 off）：只對 qwen3-0.6b 的一般回答（沒帶工具）；呼叫端已明確指定 enableThinking 就尊重它
+    _offlineThinkingOn(model) { return !!model && model.id === 'qwen3-0.6b' && this.advancedSettings.offlineThinking === 'on'; }
+    _offlineThinkingArgs(model, a) {
+        if (!this._offlineThinkingOn(model) || !a || a.enableThinking !== undefined || a.prefill) return a;
+        return Object.assign({}, a, { enableThinking: true, maxTokens: (a.maxTokens || 512) + 1536 });
+    }
     async _llmGenerateInner(model, a, cb) {
         cb = cb || {}; const gpu = await this._omGpuInfo();
         // 原生執行器（桌面版，先試）：工具折進 system 文字、預填靠輸出核對（見 FaVlm.nativeToolMessages／nativeWithPrefill）。失敗或不可用就退回 WebGPU／WASM，並把實際後端與原因寫進 log。
@@ -129862,6 +129872,8 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         if (model.id !== NATIVE_MODEL_ID || !this._nrQwenOptIn() || !FaVlm.wantsNativeBackend(devPref, gpu.available)) nativeWhy = '';
         else { const st = await this._nrNativeState(); nativeOk = !!st.ok; if (!st.ok) nativeWhy = st.reason; }
         const bo = FaVlm.backendOrder(model, devPref, gpu.available, gpu.f16, nativeOk);
+        // 思考模式：原生執行器寫死 enable_thinking:false（主程序檔案不能熱更新），有別的後端可用就跳過原生
+        if (bo.native && a.enableThinking === true && bo.order.some((x) => x !== 'native')) { bo.native = false; nativeWhy = '思考模式（原生執行器不支援）'; }
         if (bo.native) {
             const gen0 = Object.assign(FaVlm.textGenParams(model, { deterministic: !!(a.strict || a.deterministic) }), a.strict ? { repetition_penalty: 1.2, no_repeat_ngram_size: 5 } : {});
             const r = await this._nrRunNative(a, cb, gen0);
@@ -129948,7 +129960,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             const refPack = FaRecipe.buildReferencePack(await this._offlineReferences(userText, plan), FaVlm.textBudget(route.answer, S.llmMax).rag);
             let rag = refPack.lines; if (refPack.lines.length) log('參考資料 ' + refPack.lines.length + ' 筆（訓練器／RAG）');
             const cbs = { update, log, onToken: (acc) => { if (prog && acc.length % 40 < 3) prog.log('…' + acc.slice(-60).replace(/\s+/g, ' ')); } };
-            const gen = (model) => (a) => this._llmGenerate(model, (a.tools && a.tools.length) ? Object.assign({}, a, { deterministic: true }) : a, cbs); // 選工具用確定性生成（貪婪）：選工具與填參數要穩，不要隨機
+            const gen = (model) => (a) => this._llmGenerate(model, (a.tools && a.tools.length) ? Object.assign({}, a, { deterministic: true }) : this._offlineThinkingArgs(model, a), cbs); // 選工具用確定性生成（貪婪）：選工具與填參數要穩，不要隨機
             const summarizerFor = (model, b) => (route.summarize && route.summarize.id === model.id) ? async (body, maxTok) => this._llmGenerate(model, { messages: [{ role: 'system', content: '你是摘要工具。用繁體中文摘要，保留數字、名稱與結論，不要加入原文沒有的資訊。' }, { role: 'user', content: FaVlm.trimToTokens(body, Math.max(200, b.prompt - 300)) }], tools: [], deterministic: true, maxTokens: maxTok }, cbs) : null;
             const onEvent = (e) => { if (e.type === 'tool_start') log('呼叫工具：' + e.name + ' ' + JSON.stringify(e.args).slice(0, 120)); else if (e.type === 'garbage') log('⚠️ 輸出是垃圾（' + e.reason + '），重試'); else if (e.type === 'duplicate_call') log('⚠️ 重複的工具呼叫，已略過'); };
             let result = null; const used = []; const notes = []; let calls = [];
@@ -136891,6 +136903,11 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                                         <input type="checkbox" id="ai-colu-think-chk" ${FaRecipe.coluThinkingSetting(this.advancedSettings.coluThinking) ? 'checked' : ''} style="cursor:pointer;">
                                         <label for="ai-colu-think-chk" class="ai-advanced-label" style="margin:0; cursor:pointer;">CoLU+Thinking（離線 qwen3-0.6b 的計畫與反思先思考，預設打開）</label>
                                     </div>
+                                    <div style="margin-top:6px; display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+                                        <input type="checkbox" id="ai-offline-think-chk" ${this.advancedSettings.offlineThinking === 'on' ? 'checked' : ''} style="cursor:pointer;">
+                                        <label for="ai-offline-think-chk" class="ai-advanced-label" style="margin:0; cursor:pointer;">離線模型回答時開啟 Thinking（預設關閉）</label>
+                                    </div>
+                                    <p class="ai-advanced-hint">只影響離線模型 qwen3-0.6b 的一般聊天回答（工具選擇、填參數等需要固定格式的步驟不受影響）。開啟後模型會先思考再回答，回答品質可能較好但明顯較慢（思考也會用掉詞元，程式會自動多給 1536 個）；推理文字不會顯示在對話裡。原生執行器不支援思考，開啟時這類呼叫會改走 WebGPU／WASM（LoRA 只在原生生效，所以當下不會套用 LoRA）。</p>
                                     <p class="ai-advanced-hint">只對離線模型 qwen3-0.6b 生效，其他模型與線上模型不受影響。開啟時，UML 設計的計畫與反思會先思考再回答，比較慢（計畫在 GPU 最多約 30 秒、在 CPU 最多約 5 分鐘，逾時會退回原本的做法（CPU 的時限只是防卡死的保險，正常思考不會被切掉））；推理過程可在進度卡片裡展開查看，不會進入對話紀錄。關閉則維持原本的快速流程。</p>
                                     <div style="margin-top:6px; display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
                                         <input type="checkbox" id="ai-festival-chk" ${this.advancedSettings.festivalThemeEnabled !== false ? 'checked' : ''} style="cursor:pointer;">
@@ -139880,6 +139897,13 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         if (topicShiftChkBx) {
             topicShiftChkBx.addEventListener('change', (e) => {
                 this.advancedSettings.topicShiftCheck = e.target.checked === true;
+                this._saveAdvancedSettings();
+            });
+        }
+        const offThinkChkBx = document.getElementById('ai-offline-think-chk');
+        if (offThinkChkBx) {
+            offThinkChkBx.addEventListener('change', (e) => {
+                this.advancedSettings.offlineThinking = e.target.checked === true ? 'on' : 'off';
                 this._saveAdvancedSettings();
             });
         }

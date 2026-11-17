@@ -315,7 +315,7 @@
         while ((m = re.exec(src))) { const c = norm(parseJson(m[1])); if (c) { calls.push(c); format = 'tag'; } if (m[0] === '') re.lastIndex++; }
         if (format === 'tag') rest = src.replace(/<tool_call>[\s\S]*?(?:<\/tool_call>|(?=<tool_call>)|$)/g, '');
         else { const trimmed = src.trim(); if (/^(?:```(?:json)?\s*)?\{[\s\S]*"name"[\s\S]*\}(?:\s*```)?$/.test(trimmed)) { const c = norm(parseJson(trimmed)); if (c) { calls.push(c); format = 'json'; rest = ''; } } }
-        return { calls, text: rest.replace(/<think>[\s\S]*?<\/think>/g, '').trim(), format };
+        return { calls, text: rest.replace(/<think>[\s\S]*?<\/think>/g, '').replace(/<think>[\s\S]*$/, '').trim(), format };   // 思考到一半被詞元上限切掉（沒有結尾標籤）也整段拿掉
     }
     // 工具呼叫基準測試：用三個假工具與固定題目，量「選對工具＋參數對」的比例；也量輸出格式合不合（能不能被解析）。
     // 題目刻意包含：中文、英文、該用工具、不該用工具（要能克制）。每題 1 分。

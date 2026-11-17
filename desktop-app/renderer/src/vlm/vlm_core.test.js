@@ -121,6 +121,8 @@ pc = V.parseToolCalls('你好！很高興見到你。{"name" 不是工具}');
 check('parse: plain chat has no calls', pc.calls.length === 0 && pc.format === 'none', pc);
 pc = V.parseToolCalls('<think>想一下</think>答案是 42');
 check('parse: strips think block', pc.text === '答案是 42' && pc.calls.length === 0, pc);
+pc = V.parseToolCalls('<think>想到一半被切掉');
+check('parse: strips unclosed think', pc.text === '' && pc.calls.length === 0, pc);
 pc = V.parseToolCalls('<tool_call>壞掉的 json</tool_call>');
 check('parse: garbage inside the tag gives no call (no crash)', pc.calls.length === 0, pc);
 // 基準測試評分
