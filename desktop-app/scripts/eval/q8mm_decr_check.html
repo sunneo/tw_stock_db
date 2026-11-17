@@ -1,0 +1,81 @@
+<!doctype html><meta charset="utf-8"><title>q8mm decr check</title>
+<body style="font:13px monospace;white-space:pre">
+<script>
+// 真 Chrome（真 WebGPU）：q8mm 多列解碼 WGSL_Q8MM_DECR（每工作群組 4 列）對 WGSL_Q8MM_DEC（每列一個工作群組）。
+// (1) 正確性：decr 對 q8mmRef 逐位相同（maxAbsDiff === 0），形狀含 M 不是 4 的倍數、K 不是 256 的倍數、N 不是 64 的倍數。
+// (2) 純核心時間：同一 pass 內連續派發 20 次、onSubmittedWorkDone 後量牆鐘，取 5 次中位數除以 20（與 q8mm_check.html 相同做法）。
+// 結果在 window.__out。只標這台機器。用法同 q8mm_check.html。
+const mods = {};
+const load = async (name) => {
+  const src = await (await fetch('../../renderer/src/gpu/' + name + '.js', { cache: 'no-store' })).text();
+  const m = { exports: {} }; mods[name] = m;
+  new Function('module', 'exports', 'require', src)(m, m.exports, (p) => { const k = p.replace(/^\.\//, '').replace(/\.js$/, ''); if (!mods[k]) throw new Error('missing ' + k); return mods[k].exports; });
+};
+(async () => {
+  const out = { correctness: [], time: [], error: null };
+  window.__out = out;
+  try {
+    await load('gpu_core'); await load('gpu_pool'); await load('nn_ops'); await load('infer_ops');
+    const Q = mods.infer_ops.exports, nn = mods.nn_ops.exports;
+    const { dev } = await nn.getDevice(navigator);
+    const USAGE = { MAP_READ: 1, COPY_SRC: 4, COPY_DST: 8, UNIFORM: 0x40, STORAGE: 0x80 };
+    let s = 11; const rndInt = (lo, hi) => { s = (Math.imul(s, 1664525) + 1013904223) | 0; return lo + ((s >>> 0) % (hi - lo + 1)); };
+    const mkX = (n) => Int32Array.from({ length: n }, () => rndInt(-255, 255));
+    const mkW = (n) => Uint8Array.from({ length: n }, () => rndInt(0, 255));
+    const maxDiff = (x, y) => { let mx = 0; for (let i = 0; i < x.length; i++) mx = Math.max(mx, Math.abs(x[i] - y[i])); return mx; };
+    const scale = Math.fround(0.0123), wzp = 131;
+    const mkUni = (M, K, N, nq) => { const ab = new DataView(new ArrayBuffer(32)); ab.setUint32(0, M, true); ab.setUint32(4, K, true); ab.setUint32(8, N, true); ab.setInt32(12, wzp, true); ab.setFloat32(16, scale, true); ab.setUint32(20, nq, true); return new Uint8Array(ab.buffer); };
+    const setup = (code, M, K, N, xq, Wb) => {
+      const xb = dev.createBuffer({ size: Math.max(16, M * K * 4), usage: USAGE.STORAGE | USAGE.COPY_DST });
+      dev.queue.writeBuffer(xb, 0, xq);
+      const wb = dev.createBuffer({ size: (Wb.length + 3) & ~3, usage: USAGE.STORAGE | USAGE.COPY_DST });
+      dev.queue.writeBuffer(wb, 0, Wb);
+      const yb = dev.createBuffer({ size: Math.max(16, M * N * 4), usage: USAGE.STORAGE | USAGE.COPY_SRC | USAGE.COPY_DST });
+      const ub = dev.createBuffer({ size: 32, usage: USAGE.UNIFORM | USAGE.COPY_DST });
+      dev.queue.writeBuffer(ub, 0, mkUni(M, K, N, N >>> 2));
+      const pipe = dev.createComputePipeline({ layout: 'auto', compute: { module: dev.createShaderModule({ code }), entryPoint: 'main' } });
+      const bg = dev.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: xb } }, { binding: 1, resource: { buffer: wb } }, { binding: 2, resource: { buffer: yb } }, { binding: 3, resource: { buffer: ub } }] });
+      return { xb, wb, yb, ub, pipe, bg };
+    };
+    // (1) 正確性
+    for (const [M, K, N] of [[1, 1024, 1024], [2, 1024, 1024], [3, 300, 68], [4, 1024, 1024], [5, 257, 132], [8, 1024, 1024], [9, 1024, 3072], [16, 1024, 1024], [17, 33, 36], [33, 1024, 1024], [70, 300, 132]]) {
+      const xq = mkX(M * K), W = mkW(K * N);
+      const ref = Q.q8mmRef(xq, W, wzp, M, K, N, scale);
+      const S = setup(Q.WGSL_Q8MM_DECR, M, K, N, xq, W);
+      const enc = dev.createCommandEncoder(); const pass = enc.beginComputePass();
+      pass.setPipeline(S.pipe); pass.setBindGroup(0, S.bg); pass.dispatchWorkgroups(Math.ceil(N / 64), Math.ceil(M / 4)); pass.end();
+      const rb = dev.createBuffer({ size: M * N * 4, usage: USAGE.MAP_READ | USAGE.COPY_DST });
+      enc.copyBufferToBuffer(S.yb, 0, rb, 0, M * N * 4);
+      dev.queue.submit([enc.finish()]); await rb.mapAsync(1);
+      const got = new Float32Array(rb.getMappedRange().slice(0)); rb.unmap();
+      const d = maxDiff(got, ref);
+      out.correctness.push({ M, K, N, maxAbsDiff: d, exact: d === 0 });
+      S.xb.destroy(); S.wb.destroy(); S.yb.destroy(); S.ub.destroy(); rb.destroy();
+    }
+    // (2) 純核心時間（20 次派發／submit，取中位數）
+    const kernelMs = async (code, M, K, N, gy) => {
+      const xq = mkX(M * K), W = mkW(K * N);
+      const S = setup(code, M, K, N, xq, W);
+      const once = async () => {
+        const enc = dev.createCommandEncoder(); const pass = enc.beginComputePass();
+        pass.setPipeline(S.pipe); pass.setBindGroup(0, S.bg);
+        for (let i = 0; i < 20; i++) pass.dispatchWorkgroups(Math.ceil(N / 64), gy);
+        pass.end(); dev.queue.submit([enc.finish()]); await dev.queue.onSubmittedWorkDone();
+      };
+      await once(); const ts = [];
+      for (let i = 0; i < 5; i++) { const t0 = performance.now(); await once(); ts.push((performance.now() - t0) / 20); }
+      ts.sort((a, b) => a - b);
+      S.xb.destroy(); S.wb.destroy(); S.yb.destroy(); S.ub.destroy();
+      return Math.round(ts[2] * 1000) / 1000;
+    };
+    for (const [M, K, N] of [[1, 1024, 1024], [2, 1024, 1024], [4, 1024, 1024], [8, 1024, 1024], [16, 1024, 1024], [32, 1024, 1024]]) {
+      const dec = await kernelMs(Q.WGSL_Q8MM_DEC, M, K, N, M);
+      const decr = await kernelMs(Q.WGSL_Q8MM_DECR, M, K, N, Math.ceil(M / 4));
+      out.time.push({ shape: 'M' + M + 'xK' + K + 'xN' + N, decMsPerDispatch: dec, decrMsPerDispatch: decr });
+    }
+  } catch (e) { out.error = String(e && e.stack || e); }
+  out.allExact = out.correctness.every((c) => c.exact);
+  document.body.textContent = JSON.stringify(out, null, 1); document.title = 'done';
+  out.done = true;
+})();
+</script>
