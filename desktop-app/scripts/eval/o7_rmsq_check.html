@@ -1,0 +1,77 @@
+<!doctype html><meta charset="utf-8"><title>o7 rmsq check</title>
+<body style="font:13px monospace;white-space:pre">
+<script>
+// O7 驗證與計時（真 Chrome、真 WebGPU）：單列 RMSNorm＋動態量化的融合核心（nn_ops 的 rmsQuantFused，1 次派發）對照
+// 「既有 rmsnorm（每列一個執行緒）＋quantizeDyn（兩段）」，3 次派發。
+// 正確性：對 CPU 參考（y = x·inv·g，inv = 1/√(mean(x²)+eps)，再 quantizeDynamicRef）；q 的不一致數、y 的相對誤差。
+// 計時：每種方法在一個批次裡重複 64 次（同一輸入），一次 submit，中位數 5 次，標這台硬體；牆鐘含讀回。
+// 結果在 window.__out。用法同其他 o6 頁（埠 <埠>，開 scripts/eval/o7_rmsq_check.html）。
+const mods = {};
+const loadMod = async (key, url) => {
+  const src = await (await fetch(url, { cache: 'no-store' })).text();
+  const m = { exports: {} }; mods[key] = m;
+  new Function('module', 'exports', 'require', src)(m, m.exports, (p) => { const k = p.replace(/^\.\//, '').replace(/\.js$/, ''); if (!mods[k]) throw new Error('missing ' + k); return mods[k].exports; });
+};
+let seed = 53;
+const rnd = () => { seed = (Math.imul(seed, 1664525) + 1013904223) | 0; return (seed >>> 0) / 4294967296 - 0.5; };
+(async () => {
+  const out = { hardware: 'Kepler 14 W（同一台、同一瀏覽器）', correctness: {}, timing: {}, error: null };
+  window.__out = out;
+  try {
+    await loadMod('gpu_core', '../../renderer/src/gpu/gpu_core.js');
+    await loadMod('gpu_pool', '../../renderer/src/gpu/gpu_pool.js');
+    await loadMod('nn_ops', '../../renderer/src/gpu/nn_ops.js');
+    await loadMod('infer_ops', '../../renderer/src/gpu/infer_ops.js');
+    const nn = mods.nn_ops.exports, IO = mods.infer_ops.exports;
+    const { dev } = await nn.getDevice(navigator);
+    let submits = 0;
+    const realSubmit = dev.queue.submit.bind(dev.queue);
+    dev.queue.submit = (cmds) => { submits++; return realSubmit(cmds); };
+    const D = 1024, EPS = 1e-6;
+    const x = Float32Array.from({ length: D }, () => rnd() * 4);
+    const g = Float32Array.from({ length: D }, () => 0.5 + Math.abs(rnd()));
+    // CPU 參考
+    let s = 0; for (let i = 0; i < D; i++) s += x[i] * x[i];
+    const inv = 1 / Math.sqrt(s / D + EPS);
+    const yRef = Float32Array.from({ length: D }, (_, i) => x[i] * inv * g[i]);
+    const qr = IO.quantizeDynamicRef(yRef);
+    // 正確性（融合）
+    {
+      const b = nn.createBatch(dev);
+      const xh = b.upload(x), gh = b.upload(g);
+      submits = 0;
+      const r = b.rmsQuantFused(xh, gh, D, EPS);
+      const [yG, qRaw, stv] = await b.read([[r.y, D], [r.q, D], [r.q.st, 4]]);
+      const qG = new Int32Array(qRaw.buffer, qRaw.byteOffset, D);
+      let qBad = 0; for (let i = 0; i < D; i++) if (qG[i] !== qr.q[i] - qr.zp) qBad++;
+      let yMax = 0, yRefMax = 0; for (let i = 0; i < D; i++) { yMax = Math.max(yMax, Math.abs(yG[i] - yRef[i])); yRefMax = Math.max(yRefMax, Math.abs(yRef[i])); }
+      out.correctness.fused = { submits: submits, qMismatch: qBad, yRelErr: yMax / yRefMax, scaleGpu: stv[2], scaleRef: qr.scale, zpGpu: stv[3], zpRef: qr.zp, pass: qBad === 0 && yMax / yRefMax <= 1e-5 && submits === 1 };
+    }
+    // 計時：兩種方法各重複 64 次，一次 submit
+    const REP = 64;
+    const runSeparate = async () => {
+      const b = nn.createBatch(dev);
+      const xh = b.upload(x), gh = b.upload(g);
+      let last = null;
+      for (let k = 0; k < REP; k++) { const yn = b.rmsnorm(xh, gh, 1, D, EPS); last = b.quantizeDyn(yn); }
+      await b.read([[last, D]]);
+    };
+    const runFused = async () => {
+      const b = nn.createBatch(dev);
+      const xh = b.upload(x), gh = b.upload(g);
+      let last = null;
+      for (let k = 0; k < REP; k++) last = b.rmsQuantFused(xh, gh, D, EPS);
+      await b.read([[last.q, D]]);
+    };
+    const median = (a) => { const v = a.slice().sort((p, q) => p - q); return v[v.length >> 1]; };
+    for (const [name, fn] of [['separate_rmsnorm_plus_quantizeDyn', runSeparate], ['fused_rmsQuant_1dispatch', runFused]]) {
+      await fn();   // 暖機
+      const ts = [];
+      for (let k = 0; k < 5; k++) { const t0 = performance.now(); await fn(); ts.push(performance.now() - t0); }
+      out.timing[name] = { totalMsMedian: median(ts), perChainMsMedian: median(ts) / REP, runs: ts.map((v) => +v.toFixed(3)), dispatchesPerChain: name.startsWith('separate') ? 3 : 1 };
+    }
+    out.timing.note = '牆鐘含上傳與讀回；同一輸入重複 64 次；只標這台（Kepler 14 W）。';
+    out.done = true;
+  } catch (e) { out.error = String((e && e.stack) || e); out.done = true; }
+})();
+</script>

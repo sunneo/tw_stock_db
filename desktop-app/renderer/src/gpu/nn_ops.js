@@ -655,6 +655,67 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let qf = clamp(round(x[i] / sc) + zp, 0.0, 255.0);
   q[i] = i32(qf) - i32(zp);
 }`;
+// O7 融合：單列（解碼 T=1）的 RMSNorm＋動態量化，一個工作群組（256 執行緒）一次派發完成。
+// 步驟：平方和（並行歸約）→ inv → 每個元素 v = x·inv·g（寫進 y，給殘差或需要時用）→ min／max 歸約 → scale、zp 寫進 st → 逐元素量化（重算 v，不讀 y，避免儲存緩衝的跨執行緒可見性問題）。
+// 與「rmsnorm（每列一個執行緒、逐元素串列）＋quantizeDyn（兩段）」比，派發數 1 對 3。
+const WGSL_RMSQ_FUSED = `
+struct P { d: u32, eps: f32 }
+@group(0) @binding(0) var<storage, read> x: array<f32>;
+@group(0) @binding(1) var<storage, read> g: array<f32>;
+@group(0) @binding(2) var<storage, read_write> y: array<f32>;
+@group(0) @binding(3) var<storage, read_write> q: array<i32>;
+@group(0) @binding(4) var<storage, read_write> st: array<f32>;
+@group(0) @binding(5) var<uniform> p: P;
+var<workgroup> sh: array<f32, 256>;
+var<workgroup> smn: array<f32, 256>;
+var<workgroup> smx: array<f32, 256>;
+@compute @workgroup_size(256)
+fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
+  let t = lid.x;
+  var s: f32 = 0.0;
+  var i: u32 = t;
+  loop { if (i >= p.d) { break; } let v = x[i]; s = s + v * v; i = i + 256u; }
+  sh[t] = s;
+  workgroupBarrier();
+  var r: u32 = 128u;
+  loop { if (r == 0u) { break; } if (t < r) { sh[t] = sh[t] + sh[t + r]; } workgroupBarrier(); r = r >> 1u; }
+  let inv = 1.0 / sqrt(sh[0] / f32(p.d) + p.eps);
+  var mn: f32 = 0.0;
+  var mx: f32 = 0.0;
+  i = t;
+  loop {
+    if (i >= p.d) { break; }
+    let v = x[i] * inv * g[i];
+    y[i] = v;
+    mn = min(mn, v);
+    mx = max(mx, v);
+    i = i + 256u;
+  }
+  smn[t] = mn;
+  smx[t] = mx;
+  workgroupBarrier();
+  var c: u32 = 128u;
+  loop {
+    if (c == 0u) { break; }
+    if (t < c) { smn[t] = min(smn[t], smn[t + c]); smx[t] = max(smx[t], smx[t + c]); }
+    workgroupBarrier();
+    c = c >> 1u;
+  }
+  let mnv = smn[0];
+  let mxv = smx[0];
+  let scale = (mxv - mnv) / 255.0;
+  var sc: f32 = scale;
+  var zp: f32 = 0.0;
+  if (scale == 0.0) { sc = 1.0; } else { zp = clamp(round(-mnv / scale), 0.0, 255.0); }
+  if (t == 0u) { st[0] = mnv; st[1] = mxv; st[2] = sc; st[3] = zp; }
+  i = t;
+  loop {
+    if (i >= p.d) { break; }
+    let v = x[i] * inv * g[i];
+    q[i] = i32(clamp(round(v / sc) + zp, 0.0, 255.0)) - i32(zp);
+    i = i + 256u;
+  }
+}`;
 const MM_TILED_CODE = core.mmTileWgsl({ marker: 'matmul', dtype: 'f32' });
 const MM_VEC4_CODE = core.mmTileWgslVec4({ marker: 'matmul_vec4' });
 function createBatch(dev) {
@@ -721,6 +782,13 @@ function createBatch(dev) {
       const uni = new ArrayBuffer(32); new Uint32Array(uni).set(core.mmTileWords(M, K, N, 0, 1));
       dispatch(v4 ? MM_VEC4_CODE : MM_TILED_CODE, [A.buf, B.buf, y], uni, core.mmTileDispatch(M, N, 1));
       return { buf: y, n: M * N };
+    },
+    // O7 融合：單列 RMSNorm＋動態量化，一次派發。回傳 { y: {buf,n}（正規化後的 f32）, q: {buf,n,st}（i32 xq；st＝[mn,mx,scale,zp]） }
+    rmsQuantFused(x, g, d, eps) {
+      const y = storage(d), q = storage(d), st = storage(4);
+      const uni = new ArrayBuffer(16); new Uint32Array(uni, 0, 1)[0] = d; new Float32Array(uni, 4, 1)[0] = eps;
+      dispatch(WGSL_RMSQ_FUSED, [x.buf, g.buf, y, q, st], uni, 1);
+      return { y: { buf: y, n: d }, q: { buf: q, n: d, st: { buf: st, n: 4 } } };
     },
     // 動態量化：回傳 { buf, n }（i32 的 xq，已扣 zero point）與 st（[mn, mx, scale, zp] 的句柄，讀回用 read([[st, 4]])）
     quantizeDyn(x) {
