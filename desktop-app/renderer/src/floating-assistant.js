@@ -96060,8 +96060,15 @@ ${fnData.code}
     async _llmGenerate(model, a, cb) {
         // 生成中計數：GPU 量測前要知道有沒有生成在進行（有就不量，請使用者等生成結束）
         this._llmBusy = (this._llmBusy || 0) + 1;
-        try { return await this._llmGenerateCore(model, a, cb); }
-        finally { this._llmBusy = Math.max(0, (this._llmBusy || 1) - 1); }
+        const c0 = cb || {}; const stallMs = a && a.stallMs > 0 ? a.stallMs : 0; let stallT = null;
+        const arm = () => { if (!stallMs) return; if (stallT) clearTimeout(stallT); stallT = setTimeout(() => { try { this._vlmTerminate(); } catch (_) { /* 已經沒了 */ } }, stallMs); };
+        const cb2 = Object.assign({}, c0, {
+            update: (p) => { arm(); return c0.update ? c0.update(p) : undefined; },
+            onToken: (acc) => { arm(); return c0.onToken ? c0.onToken(acc) : undefined; },
+        });
+        arm();
+        try { return await this._llmGenerateCore(model, a, cb2); }
+        finally { if (stallT) clearTimeout(stallT); this._llmBusy = Math.max(0, (this._llmBusy || 1) - 1); }
     }
     async _llmGenerateCore(model, a, cb) {
         let route = null;
@@ -130105,7 +130112,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                 log: (line) => prog.log(line),
                 isStopped: () => !!this.stopRequested,
             };
-            try { const out = await gen0(a, cb); this._newsStage = '生成結束'; touchNow(); showSt(true); return out; }
+            try { const out = await gen0(Object.assign({}, a, { stallMs: 600000 }), cb); this._newsStage = '生成結束'; touchNow(); showSt(true); return out; }
             catch (e) { const msg = String((e && e.message) || e); if (/模型載入失敗|bad_alloc|Can.t create a session|Aborted/.test(msg)) genDown = msg; throw e; }
         };
         const res = await FaNewsDigest.run(question, {
