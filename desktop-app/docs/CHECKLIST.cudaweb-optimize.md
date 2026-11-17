@@ -121,5 +121,18 @@ O1m 到 O11 做完後不結束，進入迴圈。完整規則與交接見 `docs/H
 ## O15. 全部離線模型在 WebGPU 上都要獲得好處（使用者 2026-11-18：「離線模型也是全都要在使用 webgpu 時獲得好處」「除了 vlm、midigen、image to 3d、切割或物件偵測呢」）
 現況（`docs/INVESTIGATE.cudaweb-models.md` 與 `docs/CHECKLIST.cudaweb-wire.md` 查證；調查表是接線前的狀態，會過時，**先逐項重新驗證再動手**）：已接 cudaweb：Qwen3 q8 聊天、midigen 整個解碼器（桌面是否也走要查）、MOSS、Whisper 編碼器、YAMNet／Demucs／Basic Pitch、SDXS、Kokoro（部分）。未接：VLM（O13）、其他 LLM（O12）、深度（Depth Anything V2 Small）、分割（SlimSAM 77）、姿態（MoveNet Thunder）、聲紋 ECAPA、文字嵌入 e5、image-to-3d（先查它用哪個模型與執行環境）、物件偵測（先查有沒有；調查表寫「人臉沒查到」，物件偵測要另查）。
 - [ ] **O15a 全模型清單與覆蓋表**：一張表列出每個離線模型：執行環境（transformers.js／ORT-web／原生 ORT）、現在跑在哪（WebGPU／wasm／CPU）、是否經過 cudaweb 優化核心、這台（無 f16）能否走 GPU、缺哪些算子。附證據（檔案行號、真機量測）。含 midigen（網頁與桌面兩邊）、image-to-3d、分割、物件偵測。
+  - **O15a 第一步（唯讀覆蓋表，2026-11-18 查證；仍未完成：沒有真機量測，也沒有逐一核對 Whisper 與 MOSS 的行號）**：
+    | 模型／功能 | 執行環境 | 現在跑在哪 | 是否經過 cudaweb | 證據（檔案與行號） | 缺口 |
+    |---|---|---|---|---|---|
+    | midigenai v5 作曲（桌面） | onnxruntime-web；WebGPU 版為 q4 檔 | 原路徑 onnxruntime-web；cudaweb 解碼只在開關 midiGpu 打開時用 | 部分：只有 12 層投影（MatMulNBits）走 GPU，注意力與 RoPE 仍在 CPU | `renderer/src/floating-assistant.js` 96506–96513、103909–103941；預設值 86048 為 `midiGpu:'off'` | 預設關；注意力與 RoPE 未上 GPU |
+    | midigenai v5 作曲（網頁） | 同上 | 網頁版 chunk | 是（chunk 內有 cudaweb 引用） | `web-lazy/chunks/midigpu.js`（字串計數 8 處；未逐行核對） | 同上；網頁與桌面兩邊的開關要同步 |
+    | image-to-3d 深度（Depth Anything V2 Small） | transformers.js（網頁）；原生 ORT 路徑 `_nrDepthSess` | 原生路徑有但僅在非 WebGPU 時；網頁版 transformers.js | 否（這段路徑沒有 cudaweb 呼叫） | 註冊表 `floating-assistant.js` 14216；原生路徑約 129000–129031 | 未接；註冊表標 `gpuNeedsF16: true`，無 f16 的卡不能因此退到 CPU |
+    | image-to-3d 分割（SlimSAM 77） | transformers.js（Worker）；原生 ORT 編碼器 `_samNativeEnc` | 編碼器可走原生 ORT（非 WebGPU 時），解碼器在 Worker | 否 | 註冊表 14218–14219；`_samNativeReady`／`_samNativeEnc` 129034–129057；`_segmentObjects` 129059 | 未接；`gpuNeedsF16: true`；編碼器是 ViT 類，可參考 O13a 骨架但要先核對 SAM 結構 |
+    | image-to-3d 姿態（MoveNet Thunder，找手臂） | transformers.js | 網頁版 | 否（未找到 cudaweb 呼叫） | 註冊表 14224 | 未接；執行路徑未查到，待查 |
+    | 物件偵測 | 未知 | 未知 | 未知 | 桌面註冊表未找到 DETR／YOLO／OWL 類模型；`/image-to-3d` 的物件分割是用 SlimSAM 代替 | 「有沒有物件偵測模型」本次未定案；`renderer/src/vlm/vlm_core.js` 有偵測相關字樣，尚未核實 |
+    | 音訊 YAMNet／Demucs／Basic Pitch | cudaweb 圖形 session（WebGPU） | 預設關（`audioGpu`） | 是（開關打開時） | `floating-assistant.js` 131348–131378；預設 86050 | 預設關 |
+    | SDXS 生圖（CPU int8 版） | cudaweb 圖形 session | 預設關（`sdxsGpu`） | 是（開關打開時） | 105476–105495；預設 86051 | 預設關 |
+    | Kokoro TTS | cudaweb 圖形 session | 預設關（`kokoroGpu`） | 是（開關打開時） | 90801–90820；預設 86052 | 預設關 |
+    - 結論（第一步）：已接 cudaweb 的只有 midigen（部分）、音訊三個、SDXS、Kokoro，且全部預設關；深度、分割、姿態、物件偵測都沒有接。物件偵測的模型還沒定案。
 - [ ] **O15b 逐一補齊**，依「使用頻率 × 在這台的收益」排序；每個模型走既有做法：逐節點對 ORT 驗證 → 接線（預設關、失敗永久退回原路徑、兩處設定開關同步）→ 量前後（標硬體）。**無 f16 的卡不得因 f16 要求而退 CPU**，改用 f32／q8 路徑。
 - [ ] 範圍外要如實標：沒有真權重、載入太重、或遇到 cudaweb 缺的算子（例如特殊卷積、非常規操作）的，記「未完成：原因」，不要宣稱全部完成。
