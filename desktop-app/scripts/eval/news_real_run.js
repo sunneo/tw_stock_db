@@ -54,7 +54,9 @@ function makeTokenizer(json) {
         const bytes = Buffer.from(Array.from(s, (c) => (u2b[c] !== undefined ? u2b[c] : 63)));
         return bytes.toString('utf8');
     }
-    return { encode, decode, vocab };
+    // 特殊詞元（<|im_end|> 等）在 added_tokens 裡，不在 model.vocab
+    const special = (c) => { const t = added.find((x) => x.content === c); if (!t) throw new Error('找不到特殊詞元 ' + c); return t.id; };
+    return { encode, decode, vocab, special };
 }
 
 (async () => {
@@ -64,7 +66,7 @@ function makeTokenizer(json) {
     const W = Q.loadWeights(new Uint8Array(bin.buffer, bin.byteOffset, bin.length));
     const engine = Q.createCpuEngine(W, { maxT: 1024 });
     log('模型載入完成');
-    const IM_END = tok.vocab['<|im_end|>'];
+    const IM_END = tok.special('<|im_end|>');
     // Qwen3 不思考的對話格式
     const chat = (messages) => messages.map((m) => '<|im_start|>' + m.role + '\n' + m.content + '<|im_end|>\n').join('') + '<|im_start|>assistant\n<think>\n\n</think>\n\n';
     const M = {
@@ -108,6 +110,12 @@ function makeTokenizer(json) {
     const ctx = { console, Promise, JSON, FaRecipe, FaNewsDigest, FaVlm: { textBudget: () => ({ prompt: 700 }) } }; vm.createContext(ctx);
     const C = vm.runInContext('({' + names.map(methodSource).join(',\n') + '})', ctx);
 
+    if (process.env.NEWS_RAW_PROBE) { // 探針：只跑一次短摘要，印出模型原始輸出與檢查結果（用來查為什麼被退回）
+        const body = PAGES[A1]; const msgs = FaRecipe.phraseMessages('這篇跟「黃仁勳」有關的重點，繁體中文 1～2 句。', body, '請用繁體中文列出 2～4 個重點。');
+        const g = await M.gen({ messages: msgs, maxTokens: Number(process.env.NEWS_RAW_PROBE) || 60 });
+        console.log('RAW:', JSON.stringify(g)); console.log('CHECK:', JSON.stringify(FaRecipe.checkExtractive(g, [body], { cjkMin: 0.5, maxChars: 600 })));
+        return;
+    }
     const cases = ['看今天有哪些黃仁勳新聞', '去 yahoo 看黃仁勳的新聞', '看 yahoo 新聞有沒有颱風'];
     const results = [];
     for (const q of cases) {

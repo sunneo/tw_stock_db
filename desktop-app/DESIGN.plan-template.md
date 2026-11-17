@@ -98,3 +98,15 @@
 **可觀測性（§2.4）的現況：** 每一步一行 `第 N 輪｜階段｜誰做｜細節`，寫進「新聞摘要」進度卡片（`_createProgressWidget`，會顯示在對話裡）；逐篇摘要那行含「問什麼、答什麼、耗時」。**尚未確認**使用者開著的 transcribe 是不是這張卡片；它是否就是 `transcribe`，還沒有查證。
 
 **程式與測試（已提交）：** `renderer/src/recipe/web_news_core.js`（989435b1f）、`news_digest_core.js`（494591aa4）、`read-back`（6b93b201f）、接線（494591aa4，`_recipeAnswer` 先接手新聞類問題，`scripts/embed-news-digest.js` 只更新 NEWSDIGEST 區段）；測試 21＋23＋12＋8 全過（都是假模型＋假網頁）。
+
+### 4.1 修正後的實跑（同一支腳本，兩個修正）
+
+原因（已查證）：(1) 模型輸出被 `checkExtractive` 退回，是因為**停止詞元沒生效**：`<|im_end|>` 在 tokenizer.json 的 `added_tokens` 裡，不在 `model.vocab`，我的腳本查不到，於是模型一路生成到詞數上限，多出「Human:」等英文，英文覆蓋率不夠被退回。模型本身的摘要是忠實的（探針輸出與來源一致，覆蓋率 0.87）。(2) 修好停止詞元後，每篇只生成到句末，約 2 分鐘（CPU 參考路徑）。
+
+| 說法 | 結果 | 摘要方式 |
+|---|---|---|
+| 看今天有哪些黃仁勳新聞 | 2 則（Yahoo 首頁），標題與模型摘要 | model（經 AI） |
+| 去 yahoo 看黃仁勳的新聞 | 2 則（只用 Yahoo） | model（經 AI） |
+| 看 yahoo 新聞有沒有颱風 | 沒有相關新聞（明說，不充數），沒有讀內文 | — |
+
+進度卡片每步一行，逐篇摘要那行含「模型、完成、耗時、問什麼、答什麼」。驗證命令：`node scripts/eval/news_real_run.js`（探針：`NEWS_RAW_PROBE=60 node scripts/eval/news_real_run.js`）。
