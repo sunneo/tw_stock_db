@@ -184,6 +184,25 @@ def t_cublas_transpose_alpha_beta():
         cudaweb.FLAG_MAX_ELEMS = saved
 
 
+def t_cublas_batched():
+    install_host(True)
+    # 兩組，B 轉置（儲存為 n×k）：轉置在 Python 端做，送進宿主的是 matmul_many 的 items
+    del calls[:]
+    reply['value'] = ok([[58, 64, 139, 154], [1, 2, 3, 4]])
+    r = cudaweb.cublas.sgemm_batched('N', 'T', 2, 2, 3, 1.0, [[1, 2, 3, 4, 5, 6], [1, 2, 3, 4, 5, 6]], [[7, 8, 9, 10, 11, 12], [7, 8, 9, 10, 11, 12]], 0.0, None)
+    assert calls[-1] == ('matmul_many', {'items': [[[1, 2, 3, 4, 5, 6], [7, 10, 8, 11, 9, 12], 2, 3, 2], [[1, 2, 3, 4, 5, 6], [7, 10, 8, 11, 9, 12], 2, 3, 2]]}), calls[-1]
+    assert r == [[58, 64, 139, 154], [1, 2, 3, 4]], r
+    # alpha=2、beta=1、C=[1,1,1,1]：2·[58,64,139,154] + 1 = [117,129,279,309]
+    del calls[:]
+    reply['value'] = ok([[58, 64, 139, 154]])
+    r = cudaweb.cublas.sgemm_batched('N', 'N', 2, 2, 3, 2.0, [[1, 2, 3, 4, 5, 6]], [[7, 8, 9, 10, 11, 12]], 1.0, [[1, 1, 1, 1]])
+    assert r == [[117, 129, 279, 309]], r
+    # 組數不同：報錯、不呼叫宿主
+    n_before = len(calls)
+    expect_error(lambda: cudaweb.cublas.sgemm_batched('N', 'N', 2, 2, 3, 1.0, [[0] * 6], [[0] * 6, [0] * 6], 0.0, None), '組數不同')
+    assert len(calls) == n_before
+
+
 def t_cublas_bad_inputs():
     install_host(True)
     del calls[:]
@@ -244,6 +263,7 @@ def main():
     check('backend_info 原樣回傳', t_backend_info_passthrough)
     check('cublas.sgemm（N、N、alpha=1、beta=0）對應 matmul', t_cublas_sgemm)
     check('cublas.sgemm 轉置（T）與 alpha、beta：數值正確、送進 matmul 的順序正確', t_cublas_transpose_alpha_beta)
+    check('cublas.sgemm_batched：items 送進 matmul_many、轉置與 alpha／beta 正確、組數不同報錯', t_cublas_batched)
     check('cublas.sgemm 不合法的輸入：報錯、不呼叫宿主', t_cublas_bad_inputs)
     check('第二階段包裝：axpy、scal、dot、nrm2、gemv', t_stage2_wrappers)
     check('第二階段包裝的長度檢查：不呼叫宿主', t_stage2_length_checks)

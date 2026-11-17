@@ -173,6 +173,48 @@ class _Cublas(object):
             flat = [flat[i] + be * Cl[i] for i in range(m * n)]
         return flat
 
+    def sgemm_batched(self, transa, transb, m, n, k, alpha, As, Bs, beta, Cs=None):
+        """批次版 sgemm（cuBLAS sgemmBatched 的列表版）：As、Bs、Cs 是等長的矩陣列表，每一組各算一次 sgemm。
+        一次送進宿主（matmul_many），各組互不相依，宿主可以一次提交。轉置在 Python 端做（批次路徑不帶旗標）。
+        """
+        ta = str(transa).upper()
+        tb = str(transb).upper()
+        if ta not in ("N", "T", "C") or tb not in ("N", "T", "C"):
+            raise CudaWebError("cudaweb.cublas.sgemm_batched：transa、transb 只能是 'N'、'T' 或 'C'（收到 %r、%r）" % (transa, transb))
+        m, n, k = int(m), int(n), int(k)
+        As = [list(x) for x in As]
+        Bs = [list(x) for x in Bs]
+        if len(As) != len(Bs):
+            raise CudaWebError("cudaweb.cublas.sgemm_batched：As 與 Bs 的組數不同（%d 與 %d）" % (len(As), len(Bs)))
+        be = float(beta)
+        al = float(alpha)
+        if be != 0.0:
+            if Cs is None:
+                raise CudaWebError("cudaweb.cublas.sgemm_batched：beta≠0 時必須給 Cs")
+            Cs = [list(x) for x in Cs]
+            if len(Cs) != len(As):
+                raise CudaWebError("cudaweb.cublas.sgemm_batched：Cs 的組數與 As 不同")
+        items = []
+        for i in range(len(As)):
+            A, B = As[i], Bs[i]
+            if len(A) != m * k:
+                raise CudaWebError("cudaweb.cublas.sgemm_batched：第 %d 組 A 的元素數 %d 與 m×k=%d 不符" % (i, len(A), m * k))
+            if len(B) != k * n:
+                raise CudaWebError("cudaweb.cublas.sgemm_batched：第 %d 組 B 的元素數 %d 與 k×n=%d 不符" % (i, len(B), k * n))
+            if ta in ("T", "C"):
+                A = [A[q * m + j] for j in range(m) for q in range(k)]
+            if tb in ("T", "C"):
+                B = [B[jj * k + q] for q in range(k) for jj in range(n)]
+            items.append([A, B, m, k, n])
+        results = _call("matmul_many", {"items": items})
+        out = []
+        for i, flat in enumerate(results):
+            flat = [al * v for v in flat] if al != 1.0 else list(flat)
+            if be != 0.0:
+                flat = [flat[q] + be * Cs[i][q] for q in range(m * n)]
+            out.append(flat)
+        return out
+
 
 class _CublasLevel1(object):
     """cuBLAS 第一、二級的最小對應（第二階段）：名稱與參數順序照 cuBLAS，去掉 handle，陣列取代裸指標。"""
