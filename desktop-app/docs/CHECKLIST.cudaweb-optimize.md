@@ -1,0 +1,56 @@
+# 清單：cudaweb 推論與訓練核心優化（適應各級 GPU）
+
+使用者 2026-11-17：「我希望推論、訓練的cudaweb是經過高度優化的，必須可以適應各種等級的gpu」。
+起因：設定頁 GPU 基準（`bench_run.js`）顯示 cudaweb 矩陣乘比 ort-webgpu、ort-wasm 慢一個數量級（這台 Kepler 14 W：64x1024x1024 cudaweb 178 ms、ort-webgpu 21.9 ms、ort-wasm 9.4 ms）。查原因：`mm_ops.js` 是一個執行緒算一格、每格迴圈 K 次讀全域記憶體。已修（提交 `b8d681672`，平鋪核心，真 Chrome 同機 69.8→16.4 ms、398→33 ms、1192→78 ms，驗證頁自己的計時）。
+
+**規則：一輪只在每一項都是 [x] 或 BLOCKED（附原因）時結束。** 做完一項就提交、勾掉；每項都要有「驗收」。回報只在全部做完時一次。語言：繁體中文，不夾英文縮寫。
+
+## 現況盤點（2026-11-17，讀程式確認；「核心」＝WGSL 著色器）
+| 核心 | 檔案 | 現況 |
+|---|---|---|
+| f32 矩陣乘（ONNX MatMul、基準的 cudaweb） | `mm_ops.js` | 已改平鋪（64×64、暫存器 4×4）。還沒有 f16／向量載入／依 GPU 分級的變體 |
+| 矩陣乘（numba／cupy／torch 相容層、訓練步） | `gpu_core.js` `WGSL.matmul` | 16×16 平鋪、一個執行緒一格；還沒用暫存器分塊 |
+| q8 反量化矩陣乘（Qwen 解碼的主力） | `infer_ops.js` `q8mm` | 一個執行緒一格，內層每個元素都在位元組裡取值、沒有平鋪、沒有 4 位元組點積 |
+| q8 詞表頭 | `infer_ops.js` `q8lm` | 一個工作群組一列、逐 u32 讀 4 位元組、樹狀歸約，尚可 |
+| 4 位元（MatMulNBits） | `matmulnbits_gpu.js` | 一個執行緒一格，內層每個元素都做除法、取模、取位元組；最慢的一種 |
+| 注意力＋KV | `attn_gpu.js` | 一個執行緒算一個（詞元, 頭）：分數算三遍、解碼（S=1）只有 H 個執行緒（約 16）在工作，GPU 幾乎閒著 |
+| 卷積 | `conv_ops.js` | 一個執行緒一個輸出元素 |
+| 正規化、softmax、silu、rope、AdamW | `nn_ops.js` | 一個執行緒一個元素或一列（記憶體受限的運算，影響較小，但沒有融合） |
+| 執行模型 | `nn_ops.js` `runWgsl` | 每個運算各自上傳、各自 submit、各自 mapAsync 讀回；沒有指令批次、沒有緩衝區池（只有 pipeline 快取與權重 WeakMap 常駐） |
+
+## 分級的定義（不看廠牌名，看能力；每級都要能跑，高級只是更快）
+探測來源：`adapter.limits`（`maxComputeWorkgroupStorageSize`、`maxComputeInvocationsPerWorkgroup`、`maxStorageBufferBindingSize`、`maxComputeWorkgroupSizeX`）、`adapter.features`（`shader-f16`、`subgroups`、`timestamp-query`）、`wgslLanguageFeatures`（`packed_4x8_integer_dot_product` 等）、adapter.info（只用來記錄與快取鍵，不用來做決定）。
+- **低階**（像這台 Kepler 14 W）：沒有 f16、沒有 subgroups、共用記憶體 16 KiB、每群組 ≤256 執行緒。要求：平鋪＋小暫存器分塊（4×4 以內）、f32、不用 subgroup。這是「必須比 ORT 好或相當」的基準線。
+- **中階**：有 `shader-f16` 或點積語言功能；共用記憶體 ≥32 KiB。多一個 f16 儲存／計算變體、較大平鋪（64×128）、向量（vec4）載入。
+- **高階**：有 `subgroups`（或將來的矩陣指令）、共用記憶體 ≥48 KiB。多一個子群組歸約變體與 8×8 暫存器分塊、雙緩衝。
+- **最低階／軟體 adapter**：維持現有「簡單核心」（逐格），確保一定能跑。
+選擇器要純函式（輸入能力表、形狀、運算 → 變體編號），node 可測；結果與基準勝負寫進快取（鍵＝adapter 描述＋形狀區間），使用者可在設定頁看到並可強制指定變體。
+
+## 記憶體空間的選擇（使用者 2026-11-17：「早期的 nvidia 的 gpu 要優化過，要自己選擇把記憶體放到 constant memory 或 texture」）
+早期 NVIDIA（Kepler 這一代）的快取結構和新卡不同：唯讀資料走專用的唯讀／貼圖快取、所有執行緒讀同一個位址時走常數快取（廣播），一般全域讀取反而不一定快。WebGPU 沒有直接的「constant memory」或 `__ldg`，最接近的對應：
+- **uniform 緩衝區**（`var<uniform>`，預設上限 `maxUniformBufferBindingSize` 64 KiB，要 16 位元組對齊，用 `array<vec4<f32>>`）：所有執行緒讀同一個值的小資料（解碼時的輸入向量 x、縮放值、偏置、rope 表、LoRA 小矩陣），驅動程式可以放進常數快取做廣播。超過上限就分段綁定。
+- **取樣貼圖**（`texture_2d<f32>` ＋ `textureLoad`，`r32float` 或 `rgba32float`，不需要過濾功能；每邊上限 `maxTextureDimension2D`，超過就切成多張）：唯讀的權重矩陣、有二維局部性的存取（卷積的輸入、矩陣乘的 B），走貼圖快取；`rgba32float` 一次讀 4 個值等於向量載入。
+- **唯讀 storage 緩衝區**（`var<storage, read>`，現況）與**共用記憶體**（工作群組內重用，現況的平鋪就是）。
+這些都是「變體」，由 O1 的選擇器與 O9 的自動調校依「能力＋實測」決定，不是寫死：新卡的統一快取讓它們差不多，舊 NVIDIA 才可能有明顯差別；沒有量到好處的運算就不要換（保持簡單）。每個用到的變體都要有能力檢查（貼圖尺寸、uniform 上限不夠就不選）與退回路徑。
+
+## 項目
+- [ ] **O1m. 記憶體空間變體**：在 `kernel_select.js` 的變體裡加「資料放哪裡」這個維度（storage／uniform／貼圖／共用記憶體暫存），並先做三個具體的：(a) 解碼用 q8mm／MatMulNBits／lm_head 的輸入向量 x 與縮放值放 uniform（分段綁定，x 是 K 個值，Qwen3-0.6B 的 K=1024 約 4 KiB，放得下）；(b) 矩陣乘的 B（權重）放 `rgba32float` 貼圖（平鋪核心用 `textureLoad` 讀 4 個值）；(c) rope 表、偏置放 uniform。每個變體：能力不足不選、node 假裝置測試、真 Chrome 對拍、同機計時（標硬體）。驗收：真 Chrome 同一張卡上每個變體逐元素一致；計時結果寫進 `cudaweb_optimize.result.json`，並寫明這台（Kepler 14 W）上哪個放法勝出、勝多少（沒有勝出就如實寫「沒有好處」，不要硬選）。
+- [ ] **O1. 能力探測與變體選擇器**：`renderer/src/gpu/kernel_select.js`（新）：`probeCaps(adapter, device)` → 能力表（上面列的 limits／features／語言功能，探不到的給保守預設）；`pickVariant(op, shape, caps, overrides)` → `{ id, tile, regBlock, useF16, useSubgroup, ... }`；覆蓋表可強制變體（測試與使用者用）。所有核心變體必須宣告「需要的能力」，能力不足的變體不會被選到。驗收：node 測試涵蓋三種假能力表（低／中／高）與強制覆蓋；低階一定回傳簡單或平鋪 f32 變體。
+- [ ] **O2. q8mm 優化（Qwen 解碼主力）**：兩個變體：(a) 解碼用（M ≤ 8）：一個工作群組負責一小段輸出欄、沿 K 切給多個執行緒、一次讀整個 u32（4 個權重）、有 `packed_4x8_integer_dot_product` 時用 `dot4I8Packed`／`dot4U8Packed`、否則手動展開；工作群組內歸約。(b) 預填用（M 大）：平鋪＋暫存器分塊。驗收：真 Chrome 對現有 `q8mmRef` 逐元素一致（整數累加，必須逐位相同）；同機計時 8 個詞元解碼的 q8mm 部分，標硬體；低階路徑不需要點積功能也能跑。
+- [ ] **O3. MatMulNBits 優化**：反量化搬到區塊層級（每 32 個權重一個縮放值，讀一次）、一個工作群組處理多個輸出欄、每個執行緒一次處理 8 個 nibble（一個 u32）；解碼（M 小）與預填（M 大）兩個變體。驗收：真 Chrome 對 `matmulnbits_ref` 相對誤差 ≤1e-5（f32 累加）；同機計時比現況快（標硬體）。
+- [ ] **O4. 注意力優化**：解碼（S=1）：一個工作群組負責一個（頭），群組內執行緒分攤「鍵」維度做線上 softmax（一遍：最大值與分母一起更新）、再分攤 hd 做加權和，工作群組歸約；預填（S 大）：每個（詞元, 頭）一個群組、鍵維度平鋪、線上 softmax。分數只算一遍。驗收：真 Chrome 對 `attn_ops` 參考相對誤差 ≤1e-5，涵蓋 GQA（Hkv<H）、past>0、S=1 與 S>1；同機計時（標硬體）。
+- [ ] **O5. 矩陣乘再優化＋共用**：`gpu_core.js` 的 `WGSL.matmul`（numba／cupy／torch 相容層與訓練步用）改用 `mm_ops` 的平鋪核心（抽成共用模組，兩邊 import 同一份）；加 f16 變體（需要 `shader-f16`，儲存 f16、累加 f32）與 vec4 載入變體；依 O1 的選擇器選。轉置版（訓練的反向：`AᵀB`、`ABᵀ`）用同一份核心的索引參數，不另寫一份。驗收：真 Chrome 各形狀（含非平鋪倍數、批次、窄、轉置）對 CPU 參考相對誤差 ≤1e-6（f32）／≤1e-3（f16）；強制每個變體都跑一遍（同一張卡上用覆蓋表模擬各級）。
+- [ ] **O6. 執行模型：指令批次與緩衝區池**：`nn_ops.runWgsl` 之上加「一個 submit 跑一串運算」的批次介面（一層 Transformer 的運算編進同一個 command encoder，中間結果留在 GPU，最後才讀回）；暫存緩衝區池（依大小分桶、用完歸還，不每次 createBuffer／destroy）；讀回改用環狀暫存（不每次建立 MAP_READ 緩衝區）；`Float32Array.from` 不必要的複製全部去掉。驗收：node 假裝置測試涵蓋批次與池（歸還、重用、上限）；真 Chrome 跑一層 Qwen 區塊，submit 次數從每運算一次降到每層一次（計次證據），結果與原本逐位相同。
+- [ ] **O7. 融合與其他核心**：rmsnorm＋後續矩陣乘的輸入縮放、silu×乘法（gate×up）、rope 併進 QKV 後處理；卷積改「im2col＋平鋪矩陣乘」或直接平鋪卷積（依 O1 選）；softmax 線上版。驗收：每個融合核心對未融合版本逐元素一致（相對誤差 ≤1e-6）；真 Chrome 同機計時（標硬體）。
+- [ ] **O8. 訓練路徑**：LoRA／AdamW／交叉熵等用 O5 的平鋪與轉置核心；AdamW 與梯度累加融合成一次派發；前向可用 f16（有 `shader-f16` 時）、主權重與累加維持 f32；訓練步內不做逐運算讀回。驗收：真 Chrome 20 步訓練 loss 對 CPU f64 最差相對差不比現在（見 `docs` 內 I 項結果）差；同機每步時間（標硬體）。
+- [ ] **O9. 自動調校與快取**：`bench_core.js` 已有基準；加「變體競賽」：第一次遇到（adapter、運算、形狀區間）時，在合理時間內（≤2 秒、背景、可取消）各變體各跑 3 次取中位數，勝者寫進快取（localStorage，鍵含 adapter 描述與能力表雜湊，能力變了就失效）；使用者可在設定頁（兩處：AI 助理設定與桌面版設定頁，同步）看到每個運算目前用哪個變體、可強制指定、可重跑、可恢復預設。預設只用選擇器的規則；調校預設開但絕不擋住第一次使用（先用規則的變體，調校完下次才換）。驗收：node 測試涵蓋快取鍵、失效、強制覆蓋；真 Chrome 在這台上跑一次，結果顯示在設定頁。
+- [ ] **O10. 各級模擬驗證**：因為只有一張真卡（低階），用 O1 的覆蓋表在同一張卡上強制每個變體（含需要 f16 或 subgroups 的，若這張卡不支援就用軟體 adapter 或標「待有該能力的機器驗證」並寫好驗證頁與指令），每個變體都要過各自的對拍；結果寫進 `scripts/eval/cudaweb_optimize.result.json`（含硬體、能力表、每個變體的誤差與時間）。驗收：結果檔每個變體有「通過」或「待驗證（原因）」。
+- [ ] **O11. 建置與整合**：`node scripts/embed-code-ui.js`、`node build-assistant.js`、`node scripts/build-web-lazy.js`、動到的 node 測試全過；設定頁基準（`bench_run.js`）顯示優化後的 cudaweb 數字；`git status` 沒有未提交來源（web-lazy 的 CRLF 差異不算）。不發布，管理者核對後發布。
+
+## 怎麼做才不浪費
+- 先讀 `docs/HANDOFF.cudaweb-inference.md` §8 的程式地圖，用 Grep 定位，不要整檔讀 `floating-assistant.js`。
+- 每個核心的做法：CPU 參考（已有）→ node 假裝置測試（核心名稱辨識）→ 真 Chrome 驗證頁（照 `scripts/eval/mm_tiled_check.html`：起 `python -m http.server <埠>`、用 Claude in Chrome 開、讀 `window.__out`）。**用完一定關掉伺服器與分頁，用 PowerShell 查 `Win32_Process` 確認沒有殘留**（使用者的機器老舊，殘留行程會吃 CPU 與磁碟）。
+- 不要對 AppData 或整個家目錄做遞迴搜尋。
+- 速度數字都標硬體（這台：Kepler 14 W、舊 CPU）；驗證頁自己的計時與設定頁基準的數字不同（基準含轉換與讀回），不要混著比。
+- 一個提交只做一件事；提交訊息寫做了什麼＋怎麼驗證。改程式用 Edit／Write 工具，不用 shell 內嵌 heredoc 寫含反斜線的程式；中文內容的 Python 腳本要用 Write 工具寫成檔再用 `python -X utf8` 執行。
+- context 到 60% 才交接（Haiku 子工作階段）。
