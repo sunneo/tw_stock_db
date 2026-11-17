@@ -116,6 +116,21 @@ O1m 到 O11 做完後不結束，進入迴圈。完整規則與交接見 `docs/H
 ## O14. 使用者寫的 CUDA（Python／JavaScript）也吃到優化（使用者 2026-11-18：「我要這個 cudaweb 獲得完整核心優化的結果，可以將來 python/js 寫 cuda 的時候，都可以獲得好處」）
 原則：優化放在 cudaweb 的**函式庫層**（`mm_ops`、`infer_ops`、`kernel_gen`、`kernel_select`、`variant_race`、`gpu_pool`），所有入口（內部模型引擎、`cudaweb.py`、`cublas`／`cudnn` 相容層、torch／cupy／numba／pycuda 墊片、使用者自己寫的 JS）都走同一組，不各自留一份舊核心。
 - [ ] **O14a 入口盤點**：列出使用者可碰到的全部入口與它們現在用哪個核心（`pybridge/cudaweb.py` 的 matmul／sgemm／gemv／dot／axpy、`pybridge/torch`、`cupy`、`numba`、`pycuda`；JS 端 `gpu_core.js` 的 `WGSL.*`、`cudnn_subset.js`、`nn_ops`）。逐一標：已走優化核心／仍走舊樸素核心／純 JS。寫進 `scripts/eval/cudaweb_optimize.result.json` 或獨立表。
+  - **O14a 盤點（2026-11-18，唯讀，行號為本次查證）**：
+    | 入口 | 位置 | 現在用哪個核心 | 狀態 |
+    |---|---|---|---|
+    | `pybridge/cudaweb.py` `sgemm` | `cudaweb.py` 132 | 送 `matmul` 並帶 transA／transB；小運算元有轉置旗標 | 轉置已通；alpha、beta 是否補齊未核對 |
+    | `pybridge/cudaweb.py` `sgemm_batched` | 176 | `matmul_many` → gpu_core `matmulMany`（e11be05c7：一次 submit） | 批次已有；尚未內嵌進桌面版（需重新產生 floating-assistant 內嵌） |
+    | `saxpy`／`sscal`／`sdot`／`sgemv` | 223–243 | `axpy`／`scal`／`dot`／`gemv` | 已接 gpu_core |
+    | 模組層 `vector_add`、`matmul`、`sum`、`axpy`、`scal`、`dot`、`nrm2`、`gemv` | 58–119 | 對應的 runtime 操作 | 已接 |
+    | gpu_core runtime 操作 | `gpu_core.js` 1170–1346 | `vectorAdd`、`matmulOne`、`matmul`（超過上限分塊）、`matmulMany`、`sum`（樹狀歸約）、`sumDd`、`scatterAdd`、`axpy`、`scal`、`dot`、`nrm2`、`scan`、`transpose`、`gemv`、`backendInfo` | 全部有 WGSL→WebGL2→CPU 三層 |
+    | 矩陣乘的核心選擇 | `gpu_core.js` `matmulKernelChooser`（預設 null）、`wgMatmul` | 預設走樸素 `matmul`，K、N 為 4 的倍數且不轉置時走 `matmul_vec4` | **缺口**：變體競賽的勝者（平鋪版 `WGSL_MM_F32_TILED`）只在 `mm_ops` 路徑；預設的 runtime 沒有接上勝者 |
+    | 桌面橋接 `_cudawebCall` | `floating-assistant.js` 96635–96676 | matmul（M=1 走 gemv）、matmul_many、gemv、backend_info；其他操作丟「沒有這個操作」 | 小 M gemv 已接；其餘操作不經此橋 |
+    | torch 墊片 `matmul` | `pybridge/torch/__init__.py` 348 | cuda 裝置上的二維 matmul 走 GPU 橋接，失敗退 numpy | 已接（只有二維前向） |
+    | cupy 墊片 `matmul`、`dot`、一維 `sum` | `pybridge/cupy/__init__.py` 65、80、92 | 同上橋接 | 已接（熱點三個） |
+    | numba、pycuda | `pybridge/numba/`、`pybridge/pycuda/` | numba 的 `wgsl.py` 有 3 處相關字樣（未逐一核對）；pycuda 沒有 cudaweb 字樣 | **未接或未核對**（使用者自寫核心的路徑屬 O14c） |
+    | `nn_ops.js`、`cudnn_subset.js` | `renderer/src/gpu/` | 經由 gpu_core 的 runtime；`mm_ops` 的競賽也在這裡 | 內部模組，未逐一核對 |
+  - 這次沒做的：逐一真機量測、alpha／beta、numba／pycuda 的內容核對。
 - [ ] **O14b 全部改走優化路徑**：舊樸素核心的入口改成呼叫 `mm_ops`（含變體競賽勝者）等；轉置版 `AᵀB`／`ABᵀ`、`alpha`／`beta`（`sgemm` 目前只支援 N、N、alpha=1、beta=0，補齊並用同一份核心）、批次 gemm、`gemv`（走 q8／解碼式的 M 小路徑）、`dot`／`nrm2`／`sum`（分層歸約，不是單執行緒）。每個入口對 CPU 參考逐元素對拍，並量優化前後。
 - [ ] **O14c 使用者自寫核心的路徑**：使用者用 numba／pycuda／cupy 風格寫自訂核心時，編出來的 WGSL 要有基本的好處：自動工作群組大小（依能力表）、需要時自動用共用記憶體分塊的樣板（常見的 reduce、scan、矩陣轉置、逐元素）、管線快取與批次送出（`gpu_pool`）。先做可驗證的：reduce、transpose、scan 三個樣板。
 - [ ] **O14d 文件與範例**：`DESIGN.webgpu-cuda.md` 加一節「哪些入口享有哪些優化」與使用者可用的開關（強制變體、恢復預設、匯出剖析）；給一個 Python 範例與一個 JS 範例，量優化前後。
