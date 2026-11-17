@@ -1,12 +1,12 @@
 <!doctype html><meta charset="utf-8"><title>o8 loss check</title>
 <body style="font:13px monospace;white-space:pre">
 <script>
-// O8 第二、三小步（真 Chrome、真 WebGPU）：LoRA 訓練器（studio/lora_ref_train.js）的矩陣乘改走 GPU（cudawebMatmulBackend ＋ mm_ops.matmul），
+// O8（真 Chrome、真 WebGPU）：LoRA 訓練器（studio/lora_ref_train.js）的矩陣乘改走 GPU。執行期用 renderer/src/gpu/cudaweb_runtime.js 的 createRuntime（與應用程式同一份程式）。
 // 其餘逐元素運算仍在 CPU。對照：全部 CPU 的同一個訓練器。
-// (1) 單層（L=1）前向 loss、反向梯度：GPU 版對 CPU 版的相對誤差；(2) 20 步 AdamW 訓練的 loss 軌跡逐步比對；(3) 每步 GPU 矩陣乘的次數（每次一個 submit）。
-// 判準：loss 與梯度相對誤差 ≤1e-4（GPU 是 f32、CPU 是 f64），20 步每一步的 loss 相對誤差 ≤1e-4。
-// 模型很小（V=64、d=64、F=128、r=4、T=16），每次派發微小。結果在 window.__out（逐步寫入）。
-// 用法：desktop-app 資料夾 python -X utf8 -m http.server <埠> --bind 127.0.0.1，開 .../scripts/eval/o8_loss_check.html
+// (1) 單層（L=1）前向 loss、反向梯度：GPU 版對 CPU 版的相對誤差；(2) 20 步 AdamW 的 loss 軌跡逐步比對；(3) 每步 GPU 矩陣乘提交次數。
+// 模式：?batched=1 → rt.matmulMany 開啟（前向與反向的互不相依矩陣乘分批送出）；沒有參數 → 逐次送出（基準）。
+// 判準：loss 與梯度相對誤差 ≤1e-4，20 步每一步 loss 相對誤差 ≤1e-4。結果在 window.__out。
+// 用法：desktop-app 資料夾 python -X utf8 -m http.server <埠> --bind 127.0.0.1，開 .../scripts/eval/o8_loss_check.html[?batched=1]
 const mods = {};
 const loadMod = async (key, url) => {
   const src = await (await fetch(url, { cache: 'no-store' })).text();
@@ -16,7 +16,8 @@ const loadMod = async (key, url) => {
 const flat = (g, acc) => { acc = acc || []; if (g == null) return acc; if (typeof g === 'number') { acc.push(g); return acc; } if (ArrayBuffer.isView(g) || Array.isArray(g)) { for (const v of g) flat(v, acc); return acc; } if (typeof g === 'object') { for (const k of Object.keys(g).sort()) flat(g[k], acc); } return acc; };
 const relMax = (a, b) => { const x = flat(a), y = flat(b); let mx = 0, rm = 0; const n = Math.min(x.length, y.length); for (let i = 0; i < n; i++) { mx = Math.max(mx, Math.abs(x[i] - y[i])); rm = Math.max(rm, Math.abs(y[i])); } return mx / Math.max(rm, 1e-30); };
 (async () => {
-  const out = { hardware: 'Kepler 14 W（同一台、同一瀏覽器）', steps: [], error: null };
+  const batched = new URLSearchParams(location.search).get('batched') === '1';
+  const out = { hardware: 'Kepler 14 W（同一台、同一瀏覽器）', mode: batched ? 'batched' : 'unbatched', steps: [], error: null };
   window.__out = out;
   try {
     await loadMod('gpu_core', '../../renderer/src/gpu/gpu_core.js');
@@ -25,28 +26,20 @@ const relMax = (a, b) => { const x = flat(a), y = flat(b); let mx = 0, rm = 0; c
     await loadMod('gpu_pool', '../../renderer/src/gpu/gpu_pool.js');
     await loadMod('nn_ops', '../../renderer/src/gpu/nn_ops.js');
     await loadMod('mm_ops', '../../renderer/src/gpu/mm_ops.js');
+    await loadMod('cudaweb_runtime', '../../renderer/src/gpu/cudaweb_runtime.js');
     await loadMod('lora_ref_train', '../../renderer/src/studio/lora_ref_train.js');
     const nn = mods.nn_ops.exports, MM = mods.mm_ops.exports, LT = mods.lora_ref_train.exports;
     const { dev } = await nn.getDevice(navigator);
     let submits = 0;
     const realSubmit = dev.queue.submit.bind(dev.queue);
     dev.queue.submit = (cmds) => { submits++; return realSubmit(cmds); };
-    // 執行期：矩陣乘走 mm_ops.matmul（GPU），回報實際層
-    const rt = { matmul: async (A, B, m, k, n) => { const o = { navigator: navigator }; const r = await MM.matmul(Float32Array.from(A), [m, k], Float32Array.from(B), [k, n], o); return { result: r.y, info: { layer: o.lastInfo ? o.lastInfo.layer : 'T1', reason: null } }; } };
-    // 批次版（?batched=1）：互不相依的矩陣乘放進同一個批次、一次 submit（前向的 q/k/v 與 gate/up）
-    if (new URLSearchParams(location.search).get('batched') === '1') {
-      rt.matmulMany = async (items) => {
-        const b = nn.createBatch(dev);
-        const hs = items.map(([A, B, m, k, n]) => ({ h: b.matmul(b.upload(Float32Array.from(A)), b.upload(Float32Array.from(B)), m, k, n), n: m * n }));
-        const outs = await b.read(hs.map((x) => [x.h, x.n]));
-        return { results: outs, info: { layer: 'T1', reason: null } };
-      };
-    }
-    out.mode = new URLSearchParams(location.search).get('batched') === '1' ? 'batched' : 'unbatched';
+    // 應用程式的執行期（同一份模組）；unbatched 模式不提供 matmulMany
+    const rt = mods.cudaweb_runtime.exports.createRuntime({ nn: nn, mm: MM, navigator: navigator, device: dev });
+    if (!batched) delete rt.matmulMany;
     const cfg = { V: 64, d: 64, L: 1, H: 4, F: 128, r: 4, alpha: 8 };
     const T = 16;
     const tokens = Array.from({ length: T + 1 }, (_, i) => (i * 37 + 11) % cfg.V);
-    // (1) 單層 loss 與梯度
+    // (1) 單層 loss 與梯度（第一次用 GPU 會觸發一次性的背景競賽，提交數含這次）
     const mC = LT.makeModel(cfg, 7), mG = LT.makeModel(cfg, 7);
     const cpuRes = await LT.lossAndGradsAsync(mC, tokens, { backend: LT.cpuMatmulBackend(), ops: LT.cpuNnOps() });
     const be = LT.cudawebMatmulBackend(rt);
