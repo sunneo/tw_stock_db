@@ -132,6 +132,7 @@ O1m 到 O11 做完後不結束，進入迴圈。完整規則與交接見 `docs/H
     | `nn_ops.js`、`cudnn_subset.js` | `renderer/src/gpu/` | 經由 gpu_core 的 runtime；`mm_ops` 的競賽也在這裡 | 內部模組，未逐一核對 |
   - 這次沒做的：逐一真機量測、alpha／beta、numba／pycuda 的內容核對。
 - [ ] **O14b 全部改走優化路徑**：舊樸素核心的入口改成呼叫 `mm_ops`（含變體競賽勝者）等；轉置版 `AᵀB`／`ABᵀ`、`alpha`／`beta`（`sgemm` 目前只支援 N、N、alpha=1、beta=0，補齊並用同一份核心）、批次 gemm、`gemv`（走 q8／解碼式的 M 小路徑）、`dot`／`nrm2`／`sum`（分層歸約，不是單執行緒）。每個入口對 CPU 參考逐元素對拍，並量優化前後。
+  - **O14b 進度（2026-11-18，子工作階段，提交 e0f82b77d 起）**：① 選核接線已完成：`gpu_core.js` 加全域選核政策（`setMatmulForce`：`auto`／`off`／`mm_vec4_f32`／`mm_tiled_f32`，強制優先於勝者；`setMatmulWinnerSource`），`mm_ops.js` 載入時把競賽勝者接上（只有 `pickWithCache` 的 `source` 為 `tuned` 才換；`mm_simple_f32` 在 gpu_core 沒有對應核心，視為無勝者）。無勝者時行為與接線前相同（規則預設）。GPU 相容層設定頁新增「矩陣乘核心」下拉（`cudaMatmulKernel`，預設 `auto`），啟動時套用。驗證：`mm_winner_wiring_test.js` 6 項（無勝者＝舊核心、有勝者用勝者、強制覆蓋勝者、關閉＝舊核心、simple 勝者退回預設、非法強制值報錯），全部是假裝置（`gpu_fakes.js`）只驗主機端流程與選到的核心名。② `sgemm` 的 alpha、beta、轉置早已補齊：轉置旗標走同一份平鋪核心的 `p0`（小運算元）；alpha、beta 在 Python 端後處理（O(mn)），**沒有**進 WGSL；`cudaweb_py_test.py` 15 項通過。③ **未驗證／未完成**：WGSL 在真 GPU 上**未驗證**（本機沒有 NVIDIA）；設定頁「強制」已接；winner 來源是否與網頁 `FaGpuCore` 同一實例，我沒查；`gemv`、`dot`、`nrm2`、`sum` 的逐元素對拍與分層歸約、優化前後的量測，本段沒有重做，仍待辦，所以本項維持未勾。
 - [ ] **O14c 使用者自寫核心的路徑**：使用者用 numba／pycuda／cupy 風格寫自訂核心時，編出來的 WGSL 要有基本的好處：自動工作群組大小（依能力表）、需要時自動用共用記憶體分塊的樣板（常見的 reduce、scan、矩陣轉置、逐元素）、管線快取與批次送出（`gpu_pool`）。先做可驗證的：reduce、transpose、scan 三個樣板。
 - [ ] **O14d 文件與範例**：`DESIGN.webgpu-cuda.md` 加一節「哪些入口享有哪些優化」與使用者可用的開關（強制變體、恢復預設、匯出剖析）；給一個 Python 範例與一個 JS 範例，量優化前後。
 
