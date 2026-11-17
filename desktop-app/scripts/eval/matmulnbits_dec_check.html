@@ -13,7 +13,7 @@ const load = async (name) => {
 (async () => {
   const out = { adapter: null, cases: [], time: [], error: null };
   try {
-    await load('gpu_core'); await load('nn_ops'); await load('matmulnbits_ref'); await load('matmulnbits_gpu');
+    await load('gpu_core'); await load('gpu_pool'); await load('nn_ops'); await load('matmulnbits_ref'); await load('matmulnbits_gpu');
     const R = mods.matmulnbits_ref.exports, G = mods.matmulnbits_gpu.exports;
     if (navigator.gpu) { const a = await navigator.gpu.requestAdapter(); if (a) out.adapter = { vendor: a.info && a.info.vendor, arch: a.info && a.info.architecture }; }
     let s = 31; const rnd = () => { s = (Math.imul(s, 1664525) + 1013904223) | 0; return (s >>> 0) / 4294967296 - 0.5; };

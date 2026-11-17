@@ -1,0 +1,18 @@
+{
+  "_說明": "cudaweb 優化清單的真機結果（清單 O10 的雛形）。每個變體：通過／待驗證（原因）。時間是牆鐘或每次派發，只標這台機器。",
+  "hardware": { "vendor": "nvidia", "arch": "kepler", "note": "使用者的 Kepler 14 W 低階卡；Chrome 真 WebGPU；無 shader-f16、無 subgroups" },
+  "recorded": "2026-11-17",
+  "variants": {
+    "q8mm_dec": { "status": "通過", "evidence": "q8mm_check.html：M=1、2、3、4、8、17、64、70、130 等形狀逐位相同（maxAbsDiff 0）；M=16、32、128、256 只量時間，正確性未在對拍形狀中列出", "kernelMsPerDispatch": { "M1_K1024_N1024": 0.15, "M8_K1024_N1024": 0.83, "M64_K1024_N1024": 5.805, "M256_K1024_N1024": 22.69 } },
+    "q8mm_pf": { "status": "通過", "evidence": "q8mm_check.html：M=64、70、130 等形狀逐位相同（maxAbsDiff 0）", "kernelMsPerDispatch": { "M32_K1024_N1024": 4.13, "M64_K1024_N1024": 4.165, "M128_K1024_N1024": 8.295, "M256_K1024_N1024": 16.135 }, "note": "M=32 時 dec 較快（2.985 ms），M=64 起 pf 勝出；門檻 64" },
+    "q8mm_simple": { "status": "通過（保底）", "evidence": "逐位相同；大 M 很慢（M=64 約 44 ms），M=256 會觸發 GPU 逾時，因此只量 M≤8", "kernelMsPerDispatch": { "M1_K1024_N3072": 2.23, "M8_K1024_N1024": 5.655 } },
+    "attn_flash": { "status": "通過", "evidence": "attn_flash_check.html：6 個形狀相對誤差 ≤1.1e-6（判準 1e-5）", "timeWallMs": { "S1_past512_H16_Hkv8_hd128": 20.3, "S16_past0_H16_Hkv8_hd128": 12.8 } },
+    "attn": { "status": "通過（保底）", "evidence": "attn_flash_check.html：同 6 個形狀相對誤差 ≤1.1e-6", "timeWallMs": { "S1_past512_H16_Hkv8_hd128": 158.5, "S16_past0_H16_Hkv8_hd128": 18.0 } },
+    "matmulnbits_dec": { "status": "通過", "evidence": "matmulnbits_dec_check.html：6 個形狀相對誤差 ≤3.2e-7（判準 1e-5）", "timeWallMs": { "M1_K1024_N3072": 15.4 } },
+    "matmulnbits": { "status": "通過（保底）", "evidence": "matmulnbits_dec_check.html：同 6 個形狀相對誤差 ≤8.3e-7", "timeWallMs": { "M1_K1024_N3072": 23.6 } },
+    "matmul_f16": { "status": "待驗證（原因）", "evidence": "這台沒有 shader-f16，無法驗證；清單 O5 的 f16 變體尚未實作" },
+    "matmul_tiled_shared": { "status": "待驗證（原因）", "evidence": "清單 O5 的共用矩陣乘模組尚未做" },
+    "memory_space_variants": { "status": "待驗證（原因）", "evidence": "清單 O1m 尚未做" },
+    "subgroup_variants": { "status": "待驗證（原因）", "evidence": "這台沒有 subgroups，要在高階卡上驗" }
+  }
+}
