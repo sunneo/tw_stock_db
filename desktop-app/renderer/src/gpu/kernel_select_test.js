@@ -79,5 +79,51 @@ const SOFT = KS.probeCaps({ isFallbackAdapter: true, features: new Set() }, { li
       assert.strictEqual(KS.pickVariant('q8mm', { M, N }, LOW, {}).id.replace('q8mm_', ''), ops.q8mmVariant(N, {}, M));
     }
   });
+  // ---- O9：快取鍵、失效、強制覆蓋、競賽挑選 ----
+  const mem = () => { const m = new Map(); return { get: (k) => m.get(k), set: (k, v) => m.set(k, v), m }; };
+  await t('快取鍵：同 adapter、運算、形狀區間、能力表 → 同一鍵；形狀跨區間或能力變了 → 不同鍵', () => {
+    const k1 = KS.cacheKey('nvidia kepler', 'q8mm', { M: 1, N: 1000 }, LOW);
+    assert.strictEqual(k1, KS.cacheKey('nvidia kepler', 'q8mm', { M: 1, N: 1024 }, LOW));  // 1000 與 1024 同一個 2 的冪次區間
+    assert.notStrictEqual(k1, KS.cacheKey('nvidia kepler', 'q8mm', { M: 2, N: 1024 }, LOW));
+    assert.notStrictEqual(k1, KS.cacheKey('nvidia kepler', 'q8mm', { M: 1, N: 1024 }, MID));
+    assert.notStrictEqual(k1, KS.cacheKey('amd x', 'q8mm', { M: 1, N: 1024 }, LOW));
+  });
+  await t('快取：有效的競賽結果優先於規則；能力表變了就失效（回到規則）', () => {
+    const store = mem();
+    const shape = { M: 1, N: 1024 };
+    store.set(KS.cacheKey('kep', 'q8mm', shape, LOW), { id: 'q8mm_simple', ms: 1.2 });
+    const hit = KS.pickWithCache('q8mm', shape, LOW, {}, store, 'kep');
+    assert.strictEqual(hit.id, 'q8mm_simple'); assert.strictEqual(hit.source, 'tuned');
+    const miss = KS.pickWithCache('q8mm', shape, MID, {}, store, 'kep');
+    assert.strictEqual(miss.source, 'rule');
+  });
+  await t('快取：指向能力不足或不適用的變體時忽略，走規則', () => {
+    const store = mem();
+    store.set(KS.cacheKey('kep', 'q8mm', { M: 1, N: 6 }, LOW), { id: 'q8mm_dec' });  // N 不是 4 的倍數，dec 不適用
+    assert.strictEqual(KS.pickWithCache('q8mm', { M: 1, N: 6 }, LOW, {}, store, 'kep').source, 'rule');
+    const tiny = Object.assign({}, LOW, { maxWorkgroupStorage: 4096 });
+    store.set(KS.cacheKey('kep', 'q8mm', { M: 1, N: 1024 }, tiny), { id: 'q8mm_dec' });
+    assert.strictEqual(KS.pickWithCache('q8mm', { M: 1, N: 1024 }, tiny, {}, store, 'kep').id, 'q8mm_simple');
+  });
+  await t('快取：壞掉的儲存（get 丟錯）不影響選擇，退回規則', () => {
+    const bad = { get() { throw new Error('storage blocked'); }, set() {} };
+    const r = KS.pickWithCache('q8mm', { M: 1, N: 1024 }, LOW, {}, bad, 'kep');
+    assert.strictEqual(r.source, 'rule');
+    assert.strictEqual(KS.pickWithCache('q8mm', { M: 1, N: 1024 }, LOW, {}, null, 'kep').source, 'rule');
+  });
+  await t('強制覆蓋優先於快取', () => {
+    const store = mem();
+    store.set(KS.cacheKey('kep', 'q8mm', { M: 1, N: 1024 }, LOW), { id: 'q8mm_dec' });
+    const r = KS.pickWithCache('q8mm', { M: 1, N: 1024 }, LOW, { q8mm: 'q8mm_simple' }, store, 'kep');
+    assert.strictEqual(r.id, 'q8mm_simple'); assert.strictEqual(r.source, 'forced');
+  });
+  await t('競賽挑選：取中位數最小者（不受單次離群值影響）；沒有有效量測回傳 null', () => {
+    const w = KS.chooseWinner({ q8mm_dec: [1, 9, 1.1], q8mm_simple: [2, 2.1, 2.2], q8mm_pf: [] });
+    assert.strictEqual(w.id, 'q8mm_dec');
+    assert.strictEqual(w.median, 1.1);
+    assert.strictEqual(KS.chooseWinner({ a: [NaN] }), null);
+    assert.strictEqual(KS.medianOf([4, 1, 3, 2]), 2.5);
+  });
+
   console.log(pass + ' 項通過');
 })();

@@ -142,6 +142,14 @@ function fakeNavigator(opts) {
     } else if (k === 'mul') {
       const n = u32(e[3])[0];
       f32(e[2], n).set(core.mulRef(f32(e[0], n), f32(e[1], n)));
+    } else if (k === 'attn_flash') {
+      // 與 attn_gpu.js 的 WGSL_ATTN_FLASH 同一演算法（分塊線上 softmax）；只驗證主機端的綁定與 P 結構，數值另在真 Chrome 驗
+      const AG = require('./attn_gpu.js');
+      const pu = u32(e[4]); const S = pu[0], past = pu[1], H = pu[2], Hkv = pu[3], hd = pu[4];
+      const scale = new Float32Array(e[4].data, 20, 1)[0];
+      const n = (past + S) * Hkv * hd;
+      const cache = { hd: hd, Hkv: Hkv, len: past + S, k: f32(e[1], n), v: f32(e[2], n) };
+      f32(e[3], S * H * hd).set(AG.flashRef(f32(e[0], S * H * hd), S, past, cache, H, scale));
     } else {
       throw new Error('假裝置不認得核心：' + k);
     }

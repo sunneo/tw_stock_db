@@ -1,0 +1,58 @@
+<!doctype html><meta charset="utf-8"><title>attn flash check</title>
+<body style="font:13px monospace;white-space:pre">
+<script>
+// 真 Chrome（真 WebGPU）驗證 attn_gpu 的 attn_flash（分塊線上 softmax）與保底版 attn，對 attn_ops.attnCore 參考。
+// 判準（清單 O4）：相對誤差 ≤1e-5；涵蓋 GQA、past>0、S=1 與 S>1、跨 256 的分塊邊界。
+// 計時只是參考：每次 attnCoreGpu 呼叫的牆鐘（含上傳與讀回），中位數，只標這台機器。
+// 注意：這台是 Kepler 14 W。形狀刻意保持小，避免超過 Windows 的 GPU 逾時（不要在這裡放大形狀）。
+// 用法：在 desktop-app 資料夾 python -m http.server <埠> 後開 http://127.0.0.1:<埠>/scripts/eval/attn_flash_check.html ；結果在 window.__out。
+const mods = {};
+const load = async (name) => {
+  const src = await (await fetch('../../renderer/src/gpu/' + name + '.js', { cache: 'no-store' })).text();
+  const m = { exports: {} }; mods[name] = m;
+  new Function('module', 'exports', 'require', src)(m, m.exports, (p) => { const k = p.replace(/^\.\//, '').replace(/\.js$/, ''); if (!mods[k]) throw new Error('missing ' + k); return mods[k].exports; });
+};
+(async () => {
+  const out = { adapter: null, cases: [], time: [], error: null };
+  try {
+    await load('gpu_core'); await load('nn_ops'); await load('attn_ops'); await load('attn_gpu');
+    const A = mods.attn_ops.exports, G = mods.attn_gpu.exports;
+    if (navigator.gpu) { const a = await navigator.gpu.requestAdapter(); if (a) out.adapter = { vendor: a.info && a.info.vendor, arch: a.info && a.info.architecture }; }
+    let s = 21; const rnd = () => { s = (Math.imul(s, 1664525) + 1013904223) | 0; return (s >>> 0) / 4294967296 - 0.5; };
+    const mk = (n) => Float32Array.from({ length: n }, rnd);
+    const relErr = (x, y) => { let mx = 0, sc = 1e-12; for (let i = 0; i < y.length; i++) { mx = Math.max(mx, Math.abs(x[i] - y[i])); sc = Math.max(sc, Math.abs(y[i])); } return mx / sc; };
+    const setup = (S, past, H, Hkv, hd) => {
+      const cache = A.createKvCache(Hkv, hd, past + S + 4);
+      A.kvAppend(cache, mk((past + S) * Hkv * hd), mk((past + S) * Hkv * hd), past + S);
+      return { cache, q: mk(S * H * hd), scale: 1 / Math.sqrt(hd) };
+    };
+    const cases = [
+      { S: 1, past: 0, H: 4, Hkv: 4, hd: 64 }, { S: 1, past: 300, H: 8, Hkv: 2, hd: 128 },
+      { S: 5, past: 3, H: 8, Hkv: 2, hd: 64 }, { S: 3, past: 0, H: 4, Hkv: 4, hd: 128 },
+      { S: 2, past: 260, H: 2, Hkv: 1, hd: 256 }, { S: 16, past: 40, H: 16, Hkv: 8, hd: 128 },
+    ];
+    for (const c of cases) {
+      const { cache, q, scale } = setup(c.S, c.past, c.H, c.Hkv, c.hd);
+      const ref = A.attnCore(q, c.S, c.past, cache, c.H, scale);
+      const row = Object.assign({}, c);
+      for (const v of ['attn_flash', 'attn']) {
+        const r = await G.attnCoreGpu(q, c.S, c.past, cache, c.H, scale, { navigator: navigator, attnVariant: v });
+        row[v] = { layer: r.info.layer, reason: r.info.reason, relErr: relErr(r.result, ref), pass: r.info.layer === 'T1' && relErr(r.result, ref) <= 1e-5 };
+      }
+      out.cases.push(row);
+    }
+    // 計時（只標這台機器）：解碼形狀，每個變體 5 次取中位數（暖機不算）
+    const timeIt = async (c, v) => {
+      const { cache, q, scale } = setup(c.S, c.past, c.H, c.Hkv, c.hd);
+      const run = () => G.attnCoreGpu(q, c.S, c.past, cache, c.H, scale, { navigator: navigator, attnVariant: v });
+      await run(); const ts = [];
+      for (let i = 0; i < 5; i++) { const t0 = performance.now(); await run(); ts.push(performance.now() - t0); }
+      ts.sort((a, b) => a - b); return Math.round(ts[2] * 10) / 10;
+    };
+    for (const c of [{ S: 1, past: 512, H: 16, Hkv: 8, hd: 128 }, { S: 16, past: 0, H: 16, Hkv: 8, hd: 128 }]) {
+      out.time.push({ shape: 'S' + c.S + ' past' + c.past + ' H' + c.H + ' Hkv' + c.Hkv + ' hd' + c.hd, attn_flashMs: await timeIt(c, 'attn_flash'), attnMs: await timeIt(c, 'attn') });
+    }
+  } catch (e) { out.error = String(e && e.stack || e); }
+  window.__out = out; document.body.textContent = JSON.stringify(out, null, 1); document.title = 'done';
+})();
+</script>

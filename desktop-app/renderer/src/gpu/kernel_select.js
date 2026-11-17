@@ -107,4 +107,61 @@ function pickVariant(op, shape, caps, overrides) {
   throw new Error('kernel_select：' + op + ' 沒有可用變體（保底變體也不符合，這不應發生）');
 }
 
-module.exports = { DEFAULT_CAPS, probeCaps, tierOf, pickVariant, VARIANTS, meets };
+// ---------- 變體競賽的快取（清單 O9）：只處理鍵、失效與挑選；實際計時在瀏覽器端做 ----------
+// 快取鍵 = adapter 描述 | 運算 | 形狀區間 | 能力表雜湊。能力表一變（換卡、換驅動、旗標變了），雜湊就變，舊結果自動失效。
+function fnv1a(str) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
+  return ('00000000' + h.toString(16)).slice(-8);
+}
+function capsHash(caps) {
+  const c = caps || DEFAULT_CAPS;
+  return fnv1a(JSON.stringify([c.maxWorkgroupStorage, c.maxInvocations, c.maxWorkgroupSizeX, c.maxStorageBinding, c.maxUniformBinding, c.maxTextureDim, c.hasF16, c.hasSubgroups, c.hasTimestamp, c.hasPackedDot, c.software]));
+}
+// 形狀區間：每一維取不小於它的 2 的冪次（同一區間共用一個競賽結果）
+function ceilPow2(v) { let b = 1; while (b < v) b *= 2; return b; }
+function shapeBucket(shape) {
+  const s = shape || {};
+  return Object.keys(s).sort().map((k) => k + ceilPow2(Math.max(1, s[k] | 0))).join(',');
+}
+function cacheKey(adapterDesc, op, shape, caps) {
+  return [String(adapterDesc || 'unknown'), op, shapeBucket(shape), capsHash(caps)].join('|');
+}
+// store：任何有 get(key)／set(key, value) 的物件（瀏覽器端用 localStorage 包一層）。
+// 回傳 { id, source: 'forced'|'tuned'|'rule', reason }。已強制的永遠優先；快取裡的變體若能力不足就忽略。
+function pickWithCache(op, shape, caps, overrides, store, adapterDesc) {
+  const forcedId = overrides && overrides[op];
+  if (forcedId) {
+    const r = pickVariant(op, shape, caps, overrides);
+    return { id: r.id, source: r.forced ? 'forced' : 'rule', reason: r.reason };
+  }
+  const key = cacheKey(adapterDesc, op, shape, caps);
+  let entry = null;
+  try { entry = store && store.get ? store.get(key) : null; } catch (_) { entry = null; }
+  if (entry && entry.id) {
+    const v = (VARIANTS[op] || []).find((x) => x.id === entry.id);
+    if (v && !(v.applies && !v.applies(shape || {})) && !meets(caps || DEFAULT_CAPS, v)) {
+      return { id: v.id, source: 'tuned', reason: '快取的競賽結果（' + key + '）' };
+    }
+  }
+  const r = pickVariant(op, shape, caps, overrides);
+  return { id: r.id, source: 'rule', reason: r.reason };
+}
+// 競賽結果：timings = { 變體 id: [毫秒, 毫秒, ...] }，取中位數最小者；沒有有效量測回傳 null
+function medianOf(xs) {
+  const a = xs.filter((x) => typeof x === 'number' && isFinite(x)).sort((p, q) => p - q);
+  if (!a.length) return null;
+  const m = a.length >> 1;
+  return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2;
+}
+function chooseWinner(timings) {
+  let best = null;
+  for (const id of Object.keys(timings || {})) {
+    const med = medianOf(timings[id]);
+    if (med === null) continue;
+    if (!best || med < best.median) best = { id: id, median: med };
+  }
+  return best;
+}
+
+module.exports = { DEFAULT_CAPS, probeCaps, tierOf, pickVariant, VARIANTS, meets, capsHash, shapeBucket, cacheKey, pickWithCache, medianOf, chooseWinner };
