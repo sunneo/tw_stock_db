@@ -1,0 +1,90 @@
+<!doctype html><meta charset="utf-8"><title>g1 gen check</title>
+<body style="font:13px monospace;white-space:pre">
+<script>
+// G1 收尾真機驗證（2026-11-18）：gpu_core.js 的 mmR8Wgsl／mmTileWgslVec4 已改成 kernel_gen 的實例。
+// 安全量測規則：一頁只跑一個形狀、一個核心；最多 3 個 submit（暖機 1＋計時 2）；預估 > 300 ms 不跑；device.lost 即停；不重試。
+// 用法：?M=..&K=..&N=..&kernel=r8|v4 ；結果在 window.__out。
+// 載入順序與嵌入時相同：先 kernel_gen（掛在 module.exports），gpu_core 的 kg() 經 require 取用。
+const log = (s) => { (window.__log = window.__log || []).push(s); document.body.textContent = window.__log.join('\n'); };
+(async () => {
+  const out = { lost: null, skipped: null, correct: null, compileMs: null, codeChars: null, submits: 0 };
+  window.__out = out;
+  try {
+    const qp = new URLSearchParams(location.search);
+    const M = +qp.get('M'), K = +qp.get('K'), N = +qp.get('N'), kind = qp.get('kernel') || 'r8';
+    out.shape = [M, K, N]; out.kernel = kind;
+    const kgSrc = await (await fetch('../../renderer/src/gpu/kernel_gen.js', { cache: 'no-store' })).text();
+    const kgm = { exports: {} };
+    new Function('module', 'exports', kgSrc)(kgm, kgm.exports);
+    // before=1：改載入 G1 之前的 gpu_core（HEAD 版，手寫 v4／R8），同一頁同一計時法比較
+    const coreUrl = qp.get('before') ? '_tmp_before_gpu_core.js' : '../../renderer/src/gpu/gpu_core.js';
+    const src = await (await fetch(coreUrl, { cache: 'no-store' })).text();
+    const m = { exports: {} };
+    new Function('module', 'exports', 'require', src)(m, m.exports, (p) => { if (/kernel_gen/.test(p)) return kgm.exports; throw new Error('no module ' + p); });
+    const C = m.exports;
+    const tm = +(qp.get('tm') || 8), tn = +(qp.get('tn') || 8);
+    out.tile = kind === 'v4' ? '64x64 reg4x4 (kernel_gen WG16 TM4 TN4 BK16 vec4)' : (tm + 'x' + tn + ' (kernel_gen WG16 BK8 vec4)');
+    const code = kind === 'v4' ? C.mmTileWgslVec4({ marker: 'matmul_vec4' }) : C.mmR8Wgsl({ marker: 'matmul_r8', tm, tn });
+    const groups = kind === 'v4' ? C.mmTileDispatch(M, N, 1) : C.mmR8Dispatch(M, N, 1, tm, tn);
+    out.codeChars = code.length;
+    out.groups = groups;
+    const flops = 2 * M * K * N;
+    out.estimateMs = Math.round(flops / 20e9 * 1000);
+    if (out.estimateMs > 300) { out.skipped = '預估 ' + out.estimateMs + ' ms > 300 ms，未派發（需分批）'; window.__out = out; log(out.skipped); return; }
+    const adapter = await navigator.gpu.requestAdapter();
+    const device = await adapter.requestDevice();
+    out.adapter = adapter.info ? [adapter.info.vendor, adapter.info.architecture, adapter.info.device].join(' ') : 'unknown';
+    device.lost.then((info) => { out.lost = info.reason + ' ' + info.message; window.__out = out; log('DEVICE LOST: ' + out.lost); });
+    const t0 = performance.now();
+    const mod = device.createShaderModule({ code });
+    const pipe = await device.createComputePipelineAsync({ layout: 'auto', compute: { module: mod, entryPoint: 'main' } });
+    out.compileMs = Math.round(performance.now() - t0);
+    let seed = 17; const rr = () => { seed = (Math.imul(seed, 1664525) + 1013904223) | 0; return (seed >>> 0) / 4294967296 - 0.5; };
+    const A = Float32Array.from({ length: M * K }, rr), B = Float32Array.from({ length: K * N }, rr);
+    const S = GPUBufferUsage.STORAGE, CD = GPUBufferUsage.COPY_DST, CS = GPUBufferUsage.COPY_SRC;
+    const ab = device.createBuffer({ size: M * K * 4, usage: S | CD });
+    const bb = device.createBuffer({ size: K * N * 4, usage: S | CD });
+    const cb = device.createBuffer({ size: M * N * 4, usage: S | CS });
+    const ub = device.createBuffer({ size: 32, usage: GPUBufferUsage.UNIFORM | CD });
+    const rb = device.createBuffer({ size: M * N * 4, usage: GPUBufferUsage.MAP_READ | CD });
+    device.queue.writeBuffer(ab, 0, A); device.queue.writeBuffer(bb, 0, B);
+    device.queue.writeBuffer(ub, 0, new Uint32Array([1, M, K, N, 1, 0, 0, 0]));
+    const bg = device.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: ab } }, { binding: 1, resource: { buffer: bb } }, { binding: 2, resource: { buffer: cb } }, { binding: 3, resource: { buffer: ub } }] });
+    const dispatchOnce = (enc) => { const p = enc.beginComputePass(); p.setPipeline(pipe); p.setBindGroup(0, bg); p.dispatchWorkgroups(...groups); p.end(); };
+    // submit1：暖機＋回讀＋CPU 抽樣核對
+    const e1 = device.createCommandEncoder(); dispatchOnce(e1); e1.copyBufferToBuffer(cb, 0, rb, 0, M * N * 4);
+    const ts1 = performance.now(); device.queue.submit([e1.finish()]); await device.queue.onSubmittedWorkDone(); const t1 = performance.now() - ts1;
+    out.submits++;
+    if (out.lost) return;
+    await rb.mapAsync(GPUMapMode.READ);
+    const got = new Float32Array(rb.getMappedRange().slice(0)); rb.unmap();
+    let mx = 0, sc = 1e-9;
+    for (let s = 0; s < 64; s++) {
+      const i = (s * 37 + 5) % M, j = (s * 101 + 3) % N;
+      let acc = 0; for (let k = 0; k < K; k++) acc = Math.fround(acc + Math.fround(A[i * K + k] * B[k * N + j]));
+      mx = Math.max(mx, Math.abs(got[i * N + j] - acc)); sc = Math.max(sc, Math.abs(acc));
+    }
+    out.correct = { sampledRelErr: mx / sc, pass: mx / sc <= 1e-5 };
+    out.warmMs = Math.round(t1 * 100) / 100;
+    if (t1 > 300) { out.skipped = '單次實測 ' + Math.round(t1) + ' ms > 300 ms，不再派發'; window.__out = out; log(out.skipped); return; }
+    const R = Math.max(1, Math.min(8, Math.floor(250 / t1)));
+    out.dispatchesPerSubmit = R;
+    const timed = [];
+    for (let rep = 0; rep < 2; rep++) {
+      if (out.lost) break;
+      const e = device.createCommandEncoder(); for (let q = 0; q < R; q++) dispatchOnce(e);
+      const t = performance.now(); device.queue.submit([e.finish()]); await device.queue.onSubmittedWorkDone();
+      timed.push((performance.now() - t) / R); out.submits++;
+    }
+    if (timed.length) {
+      const per = timed.reduce((a, b) => a + b, 0) / timed.length;
+      out.msPerDispatch = Math.round(per * 100) / 100;
+      out.timedPerDispatch = timed.map((x) => Math.round(x * 100) / 100);
+      out.GFLOPs = Math.round(flops / (per * 1e-3) / 1e9 * 10) / 10;
+      out.percentOfPeak = Math.round(out.GFLOPs / 128.4 * 1000) / 10;
+    }
+  } catch (e) { out.error = String(e && e.stack || e); log('ERROR ' + out.error); }
+  window.__out = out;
+  log('done ' + JSON.stringify(out));
+})();
+</script>

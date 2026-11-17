@@ -12,8 +12,10 @@ let src = fs.readFileSync(file, 'utf8');
 const crlf = src.includes('\r\n');
 if (crlf) src = src.replace(/\r\n/g, '\n');
 const lit = (t) => JSON.stringify(t).split(String.fromCharCode(0x2028)).join('\u2028').split(String.fromCharCode(0x2029)).join('\u2029');
-function embed(tplFile, begin, end, constName) {
-    const tpl = fs.readFileSync(path.join(root, tplFile), 'utf8').replace(/\r\n/g, '\n');
+function embed(tplFile, begin, end, constName, prependFile) {
+    // prependFile（可省）：先於本檔執行的來源（例如 gpu_core 需要的 kernel_gen，它掛在 self.FaKernelGen）
+    const pre = prependFile ? fs.readFileSync(path.join(root, prependFile), 'utf8').replace(/\r\n/g, '\n') + '\n' : '';
+    const tpl = pre + fs.readFileSync(path.join(root, tplFile), 'utf8').replace(/\r\n/g, '\n');
     const a = src.indexOf('/* ' + begin + ' */'), b = src.indexOf('/* ' + end + ' */');
     if (a < 0 || b < 0) throw new Error('找不到 ' + begin + '／' + end + ' 標記');
     src = src.slice(0, a) + '/* ' + begin + ' */\nconst ' + constName + ' = ' + lit(tpl) + ';\n' + src.slice(b);
@@ -58,7 +60,8 @@ embed('renderer/src/gui/gui_render.js', 'GUIRENDER-BEGIN', 'GUIRENDER-END', 'FA_
 // zenity 參數解析與對話框建構（renderer/src/gui/zenity.js，純函式，winetricks 相容）：同上，嵌入後執行時載入。
 embed('renderer/src/gui/zenity.js', 'GUIZENITY-BEGIN', 'GUIZENITY-END', 'FA_GUI_ZENITY_SRC');
 // WebGPU 核心 cudaweb（renderer/src/gpu/gpu_core.js，DESIGN.webgpu-cuda.md 第一階段）：UMD 原始碼字串，執行時用 new Function 載入（window.FaGpuCore）。
-embed('renderer/src/gpu/gpu_core.js', 'GPUCORE-BEGIN', 'GPUCORE-END', 'FA_GPU_CORE_SRC');
+// G1：kernel_gen.js 先嵌入同一段字串（UMD，瀏覽器掛在 self.FaKernelGen），gpu_core 的 kg() 再取用，不另寫一份。
+embed('renderer/src/gpu/gpu_core.js', 'GPUCORE-BEGIN', 'GPUCORE-END', 'FA_GPU_CORE_SRC', 'renderer/src/gpu/kernel_gen.js');
 // GPU 相容層的執行前準備（renderer/src/gpu/gpu_preload.js）：掃描腳本的墊片 import、先載入 numpy、安裝失敗的可見訊息。UMD，用 new Function 載入。
 embed('renderer/src/gpu/gpu_preload.js', 'GPUPRE-BEGIN', 'GPUPRE-END', 'FA_GPU_PRELOAD_SRC');
 // GPU 版 lm_head 服務（離線模型推論接線，DESIGN.webgpu-cuda.md §7.3）：gpu_core（已有 window.FaGpuCore）＋nn_ops＋infer_ops＋head_service 串成一段 CommonJS 原始碼，

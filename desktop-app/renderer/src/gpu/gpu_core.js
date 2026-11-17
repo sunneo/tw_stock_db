@@ -110,6 +110,12 @@
   // 所以 vec4 的位址對齊由 K%4、N%4 保證；批次偏移 n*M*K、n*K*N 也都是 4 的倍數。
   // 共用記憶體仍是 8 KiB；每個執行緒搬入 1 個 vec4 給 A、1 個給 B（256 個執行緒剛好）。
   function mmTileVec4Ok(M, K, N, flags) { return !flags && K % 4 === 0 && N % 4 === 0 && M > 0 && N > 0; }
+  // kernel_gen（G1）：node 用 require；瀏覽器嵌入時 kernel_gen 的原始碼先於本檔執行（scripts/embed-code-ui.js），掛在 self.FaKernelGen。
+  function kg() {
+    if (typeof module === 'object' && module.exports && typeof require === 'function') return require('./kernel_gen.js');
+    return (typeof self !== 'undefined' ? self : this).FaKernelGen;
+  }
+  // vec4 載入版（O5 的 vec4 變體）：手寫版保留（G1 實測：kernel_gen 的同幾何實例 WG16 TM4 TN4 BK16 vec4 在 Kepler 上慢約 5 倍，見 scripts/eval/g1_gen_check.html）。
   function mmTileWgslVec4(opts) {
     opts = opts || {};
     var marker = opts.marker || 'matmul_vec4';
@@ -189,94 +195,10 @@
   // 順序：每個輸出元素的 k 仍由小到大累加（與 CPU 參考相同的順序，只差 fma 的單次捨入）。
   function mmR8Ok(M, K, N, flags) { return !flags && K % 8 === 0 && N % 4 === 0 && M > 0 && N > 0; }
   function mmR8Dispatch(M, N, B, tm, tn) { tm = tm || 8; tn = tn || 8; return [Math.ceil(N / (16 * tn)), Math.ceil(M / (16 * tm)), B || 1]; }
+  // 暫存器分塊版（R8）：G1 起由 kernel_gen 產生（WG 16、TM 8、TN 8、BK 8、vec 4）；128×128 輸出塊、8 KiB 共用記憶體。
   function mmR8Wgsl(opts) {
     opts = opts || {};
-    var marker = opts.marker || 'matmul_r8';
-    var TM = opts.tm || 8, TN = opts.tn || 8;
-    var BM = 16 * TM, BN = 16 * TN, BNV = BN / 4, TNV = TN / 4;
-    var NA = BM * 2, NB = 8 * BNV;                 // vec4 個數：A 塊 = BM 列 × 2；B 塊 = 8 列 × BNV
-    var perA = Math.ceil(NA / 256), perB = Math.ceil(NB / 256);
-    var L = [];
-    L.push('struct P { B: u32, M: u32, K: u32, N: u32, Bb: u32, azp: i32, bzp: i32, p0: u32 }');
-    L.push('@group(0) @binding(0) var<storage, read> a4: array<vec4<f32>>;');
-    L.push('@group(0) @binding(1) var<storage, read> b4: array<vec4<f32>>;');
-    L.push('@group(0) @binding(2) var<storage, read_write> y: array<f32>;');
-    L.push('@group(0) @binding(3) var<uniform> p: P;');
-    L.push('var<workgroup> As: array<f32, ' + (BM * 8) + '>;');      // BM 列 × 8 k，列主序
-    L.push('var<workgroup> Bs: array<vec4<f32>, ' + NB + '>;');       // 8 列（k）× BNV 個 vec4
-    L.push('@compute @workgroup_size(16, 16, 1)');
-    L.push('fn main(@builtin(local_invocation_id) lid: vec3<u32>, @builtin(workgroup_id) wid: vec3<u32>) {');
-    L.push('  let n = wid.z;');
-    L.push('  let row0 = wid.y * ' + BM + 'u;');
-    L.push('  let col0 = wid.x * ' + BN + 'u;');
-    L.push('  let ao4 = (n * p.M * p.K) / 4u;');
-    L.push('  var bo4 = 0u;');
-    L.push('  if (p.Bb != 1u) { bo4 = (n * p.K * p.N) / 4u; }');
-    L.push('  let tx = lid.x;');
-    L.push('  let ty = lid.y;');
-    L.push('  let tid = ty * 16u + tx;');
-    L.push('  var acc: array<f32, ' + (TM * TN) + '>;');
-    L.push('  for (var t: u32 = 0u; t < p.K / 8u; t = t + 1u) {');
-    L.push('    let k0 = t * 8u;');
-    // A 載入：第 q 個 vec4 = 列 q/2、半列 q%2（4 個 k）
-    for (var s = 0; s < perA; s++) {
-      L.push('    {');
-      L.push('      let q = tid + ' + (s * 256) + 'u;');
-      L.push('      if (q < ' + NA + 'u) {');
-      L.push('        let ar = q / 2u;');
-      L.push('        let ah = q % 2u;');
-      L.push('        let gr = row0 + ar;');
-      L.push('        var av: vec4<f32> = vec4<f32>(0.0, 0.0, 0.0, 0.0);');
-      L.push('        if (gr < p.M) { av = a4[ao4 + (gr * p.K + k0 + ah * 4u) / 4u]; }');
-      L.push('        As[ar * 8u + ah * 4u] = av.x;');
-      L.push('        As[ar * 8u + ah * 4u + 1u] = av.y;');
-      L.push('        As[ar * 8u + ah * 4u + 2u] = av.z;');
-      L.push('        As[ar * 8u + ah * 4u + 3u] = av.w;');
-      L.push('      }');
-      L.push('    }');
-    }
-    // B 載入：第 q 個 vec4 = k 列 q/BNV、欄段 q%BNV
-    for (var s2 = 0; s2 < perB; s2++) {
-      L.push('    {');
-      L.push('      let q = tid + ' + (s2 * 256) + 'u;');
-      L.push('      if (q < ' + NB + 'u) {');
-      L.push('        let kr = q / ' + BNV + 'u;');
-      L.push('        let cs = q % ' + BNV + 'u;');
-      L.push('        let gc = col0 + cs * 4u;');
-      L.push('        var bv: vec4<f32> = vec4<f32>(0.0, 0.0, 0.0, 0.0);');
-      L.push('        if (gc < p.N) { bv = b4[bo4 + ((k0 + kr) * p.N + gc) / 4u]; }');
-      L.push('        Bs[q] = bv;');
-      L.push('      }');
-      L.push('    }');
-    }
-    L.push('    workgroupBarrier();');
-    // 計算：k 用 for 迴圈；每個 k 只展開 TM×TN 的 fma（索引皆為常數）
-    L.push('    for (var kk: u32 = 0u; kk < 8u; kk = kk + 1u) {');
-    for (var v = 0; v < TNV; v++) L.push('      let b' + v + ' = Bs[kk * ' + BNV + 'u + tx * ' + TNV + 'u + ' + v + 'u];');
-    for (var i = 0; i < TM; i++) L.push('      let a' + i + ' = As[(ty * ' + TM + 'u + ' + i + 'u) * 8u + kk];');
-    var cmp = ['x', 'y', 'z', 'w'];
-    for (var i2 = 0; i2 < TM; i2++) {
-      for (var j = 0; j < TN; j++) {
-        var bv2 = 'b' + Math.floor(j / 4) + '.' + cmp[j % 4];
-        L.push('      acc[' + (i2 * TN + j) + '] = fma(a' + i2 + ', ' + bv2 + ', acc[' + (i2 * TN + j) + ']);');
-      }
-    }
-    L.push('    }');
-    L.push('    workgroupBarrier();');
-    L.push('  }');
-    // 寫回：列與欄都逐元素檢查
-    for (var i3 = 0; i3 < TM; i3++) {
-      L.push('  {');
-      L.push('    let gr = row0 + ty * ' + TM + 'u + ' + i3 + 'u;');
-      L.push('    if (gr < p.M) {');
-      for (var j3 = 0; j3 < TN; j3++) {
-        L.push('      { let gc = col0 + tx * ' + TN + 'u + ' + j3 + 'u; if (gc < p.N) { y[(n * p.M + gr) * p.N + gc] = acc[' + (i3 * TN + j3) + ']; } }');
-      }
-      L.push('    }');
-      L.push('  }');
-    }
-    L.push('}');
-    return '// @kernel ' + marker + '\n' + L.join('\n');
+    return kg().generate({ WG: 16, TM: opts.tm || 8, TN: opts.tn || 8, BK: 8, vec: 4 }, { marker: opts.marker || 'matmul_r8' });
   }
   // CPU 參考（單一批次）：與 matmulRef 相同，每一步 f32 捨入（k 由小到大）。A 是 M×K（transA 時為 K×M），B 是 K×N（transB 時為 N×K）。
   function matmulTRef(A, B, M, K, N, flags) {
