@@ -52,6 +52,24 @@ async function t(name, fn) { try { await fn(); pass++; console.log('ok  ' + name
   await t('WGSL 原始碼含必要的綁定與 kernel 標記', () => {
     for (const s of [ops.WGSL_Q8MM, ops.WGSL_Q8LM]) { assert(/@kernel q8/.test(s)); assert(/@binding\(3\)/.test(s)); assert(/@workgroup_size\(64\)/.test(s)); }
   });
+  await t('q8mm_dec：核心標記、256 執行緒、共用記憶體 5 KiB 內；變體選擇（N%4、強制覆蓋）', () => {
+    const s = ops.WGSL_Q8MM_DEC;
+    assert(/@kernel q8mm_dec/.test(s)); assert(/@workgroup_size\(256\)/.test(s)); assert(/@binding\(3\)/.test(s));
+    // 共用記憶體：xs（256 個 i32）＋ red（1024 個 i32）＝ 5120 位元組，低階卡上限 16 KiB
+    assert((256 + 1024) * 4 <= 16 * 1024);
+    const pf = ops.WGSL_Q8MM_PF;
+    assert(/@kernel q8mm_pf/.test(pf)); assert(/@workgroup_size\(256\)/.test(pf));
+    // 共用記憶體：xs（1024 個 i32）＋ ws（256 個 u32）＝ 5120 位元組
+    assert((1024 + 256) * 4 <= 16 * 1024);
+    assert.strictEqual(ops.q8mmVariant(1024, {}, 1), 'dec');
+    assert.strictEqual(ops.q8mmVariant(1024, {}, 8), 'dec');
+    assert.strictEqual(ops.q8mmVariant(1024, {}, 64), 'pf');
+    assert.strictEqual(ops.q8mmVariant(1024, {}, 16), 'dec');
+    assert.strictEqual(ops.q8mmVariant(6, {}, 64), 'simple');
+    assert.strictEqual(ops.q8mmVariant(1024, { q8variant: 'simple' }, 64), 'simple');
+    assert.strictEqual(ops.q8mmVariant(6, { q8variant: 'dec' }, 1), 'dec');
+    assert.strictEqual(ops.q8mmVariant(1024, { q8variant: 'pf' }, 1), 'pf');
+  });
   await t('onnx_lite：讀自製的最小 protobuf（權重與純量）', () => {
     const vi = (n) => Buffer.from([n]);
     const fv = (f, v) => Buffer.concat([vi(f * 8), vi(v)]);

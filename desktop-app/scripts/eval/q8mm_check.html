@@ -1,0 +1,89 @@
+<!doctype html><meta charset="utf-8"><title>q8mm check</title>
+<body style="font:13px monospace;white-space:pre">
+<script>
+// 真 Chrome（真 WebGPU）驗證 infer_ops 的 q8mm 兩個變體：simple（逐格）與 dec（共用記憶體平鋪）。
+// 判準：整數累加必須與 q8mmRef 逐位相同（maxAbsDiff === 0）。
+// 計時分兩種：(a) 端到端 q8mm()（含上傳與讀回，只是參考）；(b) GPU 純核心時間：同一個 pass 內連續派發 20 次、
+// onSubmittedWorkDone 之後量牆鐘，取 5 次中位數除以 20。只標這台機器。
+// 用法：在 desktop-app 資料夾 python -m http.server <埠> 後開 http://127.0.0.1:<埠>/scripts/eval/q8mm_check.html ；結果在 window.__out。
+const mods = {};
+const load = async (name) => {
+  const src = await (await fetch('../../renderer/src/gpu/' + name + '.js', { cache: 'no-store' })).text();
+  const m = { exports: {} }; mods[name] = m;
+  new Function('module', 'exports', 'require', src)(m, m.exports, (p) => { const k = p.replace(/^\.\//, '').replace(/\.js$/, ''); if (!mods[k]) throw new Error('missing ' + k); return mods[k].exports; });
+};
+(async () => {
+  const out = { adapter: null, shapes: [], time: [], kernelTime: [], error: null };
+  try {
+    await load('gpu_core'); await load('nn_ops'); await load('infer_ops');
+    const Q = mods.infer_ops.exports, nn = mods.nn_ops.exports;
+    if (navigator.gpu) { const a = await navigator.gpu.requestAdapter(); if (a) out.adapter = { vendor: a.info && a.info.vendor, arch: a.info && a.info.architecture, desc: a.info && a.info.description }; }
+    let s = 7; const rndInt = (lo, hi) => { s = (Math.imul(s, 1664525) + 1013904223) | 0; return lo + ((s >>> 0) % (hi - lo + 1)); };
+    const mkX = (n) => Int32Array.from({ length: n }, () => rndInt(-255, 255));
+    const mkW = (n) => Uint8Array.from({ length: n }, () => rndInt(0, 255));
+    const maxDiff = (x, y) => { let mx = 0; for (let i = 0; i < x.length; i++) mx = Math.max(mx, Math.abs(x[i] - y[i])); return mx; };
+    const scale = Math.fround(0.0123);
+    // 形狀：Qwen 解碼常見（M=1）、批次（M=8）、K 不是 256 的倍數、N 不是 64 的倍數、N 不是 4 的倍數（只能走 simple）
+    for (const [M, K, N] of [[1, 1024, 1024], [1, 1024, 3072], [1, 3072, 1024], [8, 1024, 1024], [4, 300, 20], [2, 257, 68], [3, 1024, 6], [1, 5, 4], [64, 1024, 1024], [70, 300, 132], [17, 33, 36], [130, 257, 68]]) {
+      const xq = mkX(M * K), W = mkW(K * N), wzp = 131;
+      const ref = Q.q8mmRef(xq, W, wzp, M, K, N, scale);
+      const row = { M, K, N };
+      for (const v of ['simple', 'dec', 'pf']) {
+        if (v !== 'simple' && N % 4 !== 0) { row[v] = 'skipped（N 不是 4 的倍數）'; continue; }
+        const r = await Q.q8mm(xq, W, wzp, M, K, N, scale, { q8variant: v });
+        row[v] = { layer: r.info.layer, reason: r.info.reason, maxAbsDiff: maxDiff(r.result, ref), exact: maxDiff(r.result, ref) === 0 };
+      }
+      out.shapes.push(row);
+    }
+    // (a) 端到端（含上傳讀回）
+    const timeIt = async (M, K, N, v) => {
+      const xq = mkX(M * K), W = mkW(K * N);
+      const run = () => Q.q8mm(xq, W, 131, M, K, N, scale, { q8variant: v });
+      await run(); const ts = [];
+      for (let i = 0; i < 5; i++) { const t0 = performance.now(); await run(); ts.push(performance.now() - t0); }
+      ts.sort((a, b) => a - b); return Math.round(ts[2] * 10) / 10;
+    };
+    for (const [M, K, N] of [[1, 1024, 3072], [8, 1024, 1024], [1, 1024, 1024]]) {
+      out.time.push({ shape: 'M' + M + 'xK' + K + 'xN' + N, simpleMsEndToEnd: await timeIt(M, K, N, 'simple'), decMsEndToEnd: await timeIt(M, K, N, 'dec') });
+    }
+    // (b) 純核心：同一個 pass 派發 20 次
+    const dev = (await nn.getDevice(navigator)).dev;
+    const USAGE = { MAP_READ: 1, COPY_SRC: 4, COPY_DST: 8, UNIFORM: 0x40, STORAGE: 0x80 };
+    const kernelMs = async (M, K, N, v) => {
+      const code = v === 'dec' ? Q.WGSL_Q8MM_DEC : (v === 'pf' ? Q.WGSL_Q8MM_PF : Q.WGSL_Q8MM);
+      const xb = dev.createBuffer({ size: M * K * 4, usage: USAGE.STORAGE | USAGE.COPY_DST });
+      dev.queue.writeBuffer(xb, 0, mkX(M * K));
+      const wbytes = mkW(K * N); const wb = dev.createBuffer({ size: wbytes.length, usage: USAGE.STORAGE | USAGE.COPY_DST });
+      dev.queue.writeBuffer(wb, 0, wbytes);
+      const yb = dev.createBuffer({ size: M * N * 4, usage: USAGE.STORAGE | USAGE.COPY_DST });
+      const ub = dev.createBuffer({ size: 32, usage: USAGE.UNIFORM | USAGE.COPY_DST });
+      const ab = new DataView(new ArrayBuffer(32));
+      ab.setUint32(0, M, true); ab.setUint32(4, K, true); ab.setUint32(8, N, true); ab.setInt32(12, 131, true); ab.setFloat32(16, scale, true); ab.setUint32(20, N >>> 2, true);
+      dev.queue.writeBuffer(ub, 0, ab);
+      const pipe = dev.createComputePipeline({ layout: 'auto', compute: { module: dev.createShaderModule({ code }), entryPoint: 'main' } });
+      const bg = dev.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: xb } }, { binding: 1, resource: { buffer: wb } }, { binding: 2, resource: { buffer: yb } }, { binding: 3, resource: { buffer: ub } }] });
+      const gx = Math.ceil(N / 64), gy = v === 'pf' ? Math.ceil(M / 64) : M;
+      const once = async () => {
+        const enc = dev.createCommandEncoder(); const pass = enc.beginComputePass();
+        pass.setPipeline(pipe); pass.setBindGroup(0, bg);
+        for (let i = 0; i < 20; i++) pass.dispatchWorkgroups(gx, gy);
+        pass.end(); dev.queue.submit([enc.finish()]); await dev.queue.onSubmittedWorkDone();
+      };
+      await once(); const ts = [];
+      for (let i = 0; i < 5; i++) { const t0 = performance.now(); await once(); ts.push((performance.now() - t0) / 20); }
+      ts.sort((a, b) => a - b);
+      xb.destroy(); wb.destroy(); yb.destroy(); ub.destroy();
+      return Math.round(ts[2] * 1000) / 1000;
+    };
+    // 注意：simple 在大 M 很慢（M=256 時 20 次派發超過 Windows 的 GPU 逾時，裝置會被丟失），所以 simple 只量 M≤8。
+    for (const [M, K, N] of [[1, 1024, 3072], [8, 1024, 1024], [1, 1024, 1024], [16, 1024, 1024], [32, 1024, 1024], [64, 1024, 1024], [128, 1024, 1024], [256, 1024, 1024]]) {
+      const row = { shape: 'M' + M + 'xK' + K + 'xN' + N };
+      if (M <= 8) row.simpleMsPerDispatch = await kernelMs(M, K, N, 'simple');
+      row.decMsPerDispatch = await kernelMs(M, K, N, 'dec');
+      row.pfMsPerDispatch = await kernelMs(M, K, N, 'pf');
+      out.kernelTime.push(row);
+    }
+  } catch (e) { out.error = String(e && e.stack || e); }
+  window.__out = out; document.body.textContent = JSON.stringify(out, null, 1); document.title = 'done';
+})();
+</script>

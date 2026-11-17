@@ -78,6 +78,123 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   y[m * p.N + n] = f32(acc) * p.scale;
 }
 `;
+// q8mm 解碼／通用變體（@kernel q8mm_dec）：一個工作群組（256 執行緒）負責「一列輸入 m」的「64 個輸出欄」。
+// 執行緒 t：cq = t&15 管 4 個相鄰欄（一個 u32 權重字＝同一列 k 的 4 個位元組），ks = t>>4 管 K 的第 ks 條切片（每 16 個 k 取一個）。
+// 輸入 x 的一段（256 個 k）先搬進共用記憶體 xs（所有執行緒重複讀，走共用記憶體），每個執行緒的 4 個整數累加器各自累加，
+// 最後 16 條切片的部分和經共用記憶體 red（16×64，4 KiB）樹外歸約（64 個執行緒各加 16 個值）。
+// 整數累加（i32）精確，所以與 q8mmRef 逐位相同。N 必須是 4 的倍數（由主機端檢查）。
+// 共用記憶體用量：xs 1 KiB + red 4 KiB＝5 KiB（低階卡的上限 16 KiB 內）。
+const WGSL_Q8MM_DEC = `
+struct P { M: u32, K: u32, N: u32, wzp: i32, scale: f32, nq: u32, p1: u32, p2: u32 }
+@group(0) @binding(0) var<storage, read> x: array<i32>;
+@group(0) @binding(1) var<storage, read> w: array<u32>;
+@group(0) @binding(2) var<storage, read_write> y: array<f32>;
+@group(0) @binding(3) var<uniform> p: P;
+var<workgroup> xs: array<i32, 256>;
+var<workgroup> red: array<i32, 1024>;
+// @kernel q8mm_dec
+@compute @workgroup_size(256)
+fn main(@builtin(local_invocation_id) lid: vec3<u32>, @builtin(workgroup_id) wid: vec3<u32>) {
+  let t = lid.x;
+  let cq = t & 15u;
+  let ks = t >> 4u;
+  let m = wid.y;
+  let quad = wid.x * 16u + cq;
+  let qok = quad < p.nq;
+  var a0: i32 = 0;
+  var a1: i32 = 0;
+  var a2: i32 = 0;
+  var a3: i32 = 0;
+  for (var kt: u32 = 0u; kt < p.K; kt = kt + 256u) {
+    let kk = kt + t;
+    if (kk < p.K) { xs[t] = x[m * p.K + kk]; } else { xs[t] = 0; }
+    workgroupBarrier();
+    for (var j: u32 = 0u; j < 16u; j = j + 1u) {
+      let tl = j * 16u + ks;
+      let k = kt + tl;
+      if (qok && k < p.K) {
+        let word = w[k * p.nq + quad];
+        let xv = xs[tl];
+        a0 = a0 + xv * (i32(word & 255u) - p.wzp);
+        a1 = a1 + xv * (i32((word >> 8u) & 255u) - p.wzp);
+        a2 = a2 + xv * (i32((word >> 16u) & 255u) - p.wzp);
+        a3 = a3 + xv * (i32((word >> 24u) & 255u) - p.wzp);
+      }
+    }
+    workgroupBarrier();
+  }
+  let b = ks * 64u + cq * 4u;
+  red[b] = a0;
+  red[b + 1u] = a1;
+  red[b + 2u] = a2;
+  red[b + 3u] = a3;
+  workgroupBarrier();
+  if (t < 64u) {
+    var s: i32 = 0;
+    for (var q: u32 = 0u; q < 16u; q = q + 1u) { s = s + red[q * 64u + t]; }
+    let n = wid.x * 64u + t;
+    if (n < p.N) { y[m * p.N + n] = f32(s) * p.scale; }
+  }
+}
+`;
+// q8mm 預填／大 M 變體（@kernel q8mm_pf）：一個工作群組（16×16＝256 執行緒）負責 64 列輸入 × 64 個輸出欄的一塊。
+// 執行緒 (rg, cq)：cq = t&15 管 4 欄（一個權重字），rg = t>>4 管 4 列（暫存器分塊 4×4＝16 個整數累加器）。
+// 每次沿 K 取 16 個 k：輸入塊 64×16 i32（4 KiB）與權重塊 16×16 個 u32（1 KiB）先搬進共用記憶體，再由 16 個 k 做累加。
+// 共用記憶體用量 5 KiB。整數累加精確，與 q8mmRef 逐位相同。N 必須是 4 的倍數（主機端檢查）。
+const WGSL_Q8MM_PF = `
+struct P { M: u32, K: u32, N: u32, wzp: i32, scale: f32, nq: u32, p1: u32, p2: u32 }
+@group(0) @binding(0) var<storage, read> x: array<i32>;
+@group(0) @binding(1) var<storage, read> w: array<u32>;
+@group(0) @binding(2) var<storage, read_write> y: array<f32>;
+@group(0) @binding(3) var<uniform> p: P;
+var<workgroup> xs: array<i32, 1024>;
+var<workgroup> ws: array<u32, 256>;
+// @kernel q8mm_pf
+@compute @workgroup_size(256)
+fn main(@builtin(local_invocation_id) lid: vec3<u32>, @builtin(workgroup_id) wid: vec3<u32>) {
+  let t = lid.x;
+  let cq = t & 15u;
+  let rg = t >> 4u;
+  let m0 = wid.y * 64u;
+  let q0 = wid.x * 16u;
+  var acc: array<i32, 16>;
+  for (var i: u32 = 0u; i < 16u; i = i + 1u) { acc[i] = 0; }
+  for (var kt: u32 = 0u; kt < p.K; kt = kt + 16u) {
+    for (var i: u32 = 0u; i < 4u; i = i + 1u) {
+      let idx = t + i * 256u;
+      let gm = m0 + (idx >> 4u);
+      let kk = idx & 15u;
+      if (gm < p.M && kt + kk < p.K) { xs[idx] = x[gm * p.K + kt + kk]; } else { xs[idx] = 0; }
+    }
+    let wk = t >> 4u;
+    let wq = q0 + (t & 15u);
+    if (kt + wk < p.K && wq < p.nq) { ws[t] = w[(kt + wk) * p.nq + wq]; } else { ws[t] = 0u; }
+    workgroupBarrier();
+    for (var kk: u32 = 0u; kk < 16u; kk = kk + 1u) {
+      let word = ws[kk * 16u + cq];
+      let b0 = i32(word & 255u) - p.wzp;
+      let b1 = i32((word >> 8u) & 255u) - p.wzp;
+      let b2 = i32((word >> 16u) & 255u) - p.wzp;
+      let b3 = i32((word >> 24u) & 255u) - p.wzp;
+      for (var r: u32 = 0u; r < 4u; r = r + 1u) {
+        let xv = xs[(rg * 4u + r) * 16u + kk];
+        acc[r * 4u] = acc[r * 4u] + xv * b0;
+        acc[r * 4u + 1u] = acc[r * 4u + 1u] + xv * b1;
+        acc[r * 4u + 2u] = acc[r * 4u + 2u] + xv * b2;
+        acc[r * 4u + 3u] = acc[r * 4u + 3u] + xv * b3;
+      }
+    }
+    workgroupBarrier();
+  }
+  for (var r: u32 = 0u; r < 4u; r = r + 1u) {
+    let gm = m0 + rg * 4u + r;
+    for (var c: u32 = 0u; c < 4u; c = c + 1u) {
+      let gn = q0 * 4u + cq * 4u + c;
+      if (gm < p.M && gn < p.N) { y[gm * p.N + gn] = f32(acc[r * 4u + c]) * p.scale; }
+    }
+  }
+}
+`;
 // 一個工作群組（64 執行緒）算一個詞表列；每個執行緒讀整個 u32（4 個位元組）。K 必須是 4 的倍數。
 const WGSL_Q8LM = `
 struct P { rows: u32, K: u32, wzp: i32, scale: f32 }
@@ -174,14 +291,33 @@ function unif(fn) { const ab = new ArrayBuffer(32); fn(new DataView(ab)); return
 
 // ---------- 對外 API ----------
 // q8mm：xq（Int32Array，M×K，已扣輸入 zero point）、W（Uint8Array，K×N）、wzp、scale = 輸入scale × 權重scale
+// opts.q8variant：'simple'（逐格，低階保底）、'dec'（解碼，共用記憶體 GEMV 式）或 'pf'（預填，64×64 平鋪＋4×4 暫存器分塊）；
+// 沒給時：N 不是 4 的倍數 → simple；M ≥ 16 → pf；否則 dec。測試與對拍用 opts.q8variant 強制。
+// 門檻以實測為準：這台 Kepler 上 M=8 時 pf 比 dec 慢（4.2 ms 對 0.8 ms），M=64 才勝出（4.1 ms 對 5.8 ms）；M=16、32 尚未量，先取已量到的 64。
+const Q8_PF_MIN_M = 64;
+function q8mmVariant(N, opts, M) {
+  const forced = opts && opts.q8variant;
+  if (forced === 'simple' || forced === 'dec' || forced === 'pf') return forced;
+  if (N % 4 !== 0) return 'simple';
+  return (M !== undefined && M >= Q8_PF_MIN_M) ? 'pf' : 'dec';
+}
 async function q8mm(xq, W, wzp, M, K, N, scale, opts) {
   const sc = Math.fround(scale);
+  const variant = q8mmVariant(N, opts, M);
   return nn.tryLayers('q8mm', opts,
     async (dev) => {
+      if (variant !== 'simple' && N % 4 !== 0) throw new Error('q8mm ' + variant + '：N 必須是 4 的倍數（N=' + N + '）');
       const xb = inBuf(dev, Int32Array.from(xq));
       const wb = weightBuf(dev, W);
-      const u = unif((d) => { d.setUint32(0, M, true); d.setUint32(4, K, true); d.setUint32(8, N, true); d.setInt32(12, wzp, true); d.setFloat32(16, sc, true); });
-      const r = await dispatchRead(dev, WGSL_Q8MM, [xb, wb], M * N, u, Math.ceil(N / 64), M);
+      let r;
+      if (variant === 'dec' || variant === 'pf') {
+        const u = unif((d) => { d.setUint32(0, M, true); d.setUint32(4, K, true); d.setUint32(8, N, true); d.setInt32(12, wzp, true); d.setFloat32(16, sc, true); d.setUint32(20, N >>> 2, true); });
+        if (variant === 'dec') r = await dispatchRead(dev, WGSL_Q8MM_DEC, [xb, wb], M * N, u, Math.ceil(N / 64), M);
+        else r = await dispatchRead(dev, WGSL_Q8MM_PF, [xb, wb], M * N, u, Math.ceil(N / 64), Math.ceil(M / 64));
+      } else {
+        const u = unif((d) => { d.setUint32(0, M, true); d.setUint32(4, K, true); d.setUint32(8, N, true); d.setInt32(12, wzp, true); d.setFloat32(16, sc, true); });
+        r = await dispatchRead(dev, WGSL_Q8MM, [xb, wb], M * N, u, Math.ceil(N / 64), M);
+      }
       xb.destroy && xb.destroy();
       return r;
     },
@@ -415,4 +551,4 @@ async function q8lmAuto(x, W, V, K, zp, scale, opts) {
   throw err;
 }
 
-module.exports = { quantizeDynamicRef, q8mmRef, q8lmRef, q8mm, q8lm, q8lmAuto, q8lmGl, q8lmWgsl, cachedChunks, planChunks, WGSL_Q8MM, WGSL_Q8LM, FS_Q8LM_GL, MAX_GROUPS, MAX_CHUNK_BYTES };
+module.exports = { quantizeDynamicRef, q8mmRef, q8lmRef, q8mm, q8mmVariant, q8lm, q8lmAuto, q8lmGl, q8lmWgsl, cachedChunks, planChunks, WGSL_Q8MM, WGSL_Q8MM_DEC, WGSL_Q8MM_PF, WGSL_Q8LM, FS_Q8LM_GL, MAX_GROUPS, MAX_CHUNK_BYTES };
