@@ -14,11 +14,11 @@ const modelPath = process.env.QWEN_Q8 || path.join(base, 'native-models', 'qwen3
 const rd = (p) => fs.readFileSync(path.join(ROOT, 'renderer', 'src', 'gpu', p), 'utf8');
 const refs = fs.readdirSync(REFDIR).filter((f) => /^ref.*\.json$/.test(f)).sort().map((f) => JSON.parse(fs.readFileSync(path.join(REFDIR, f), 'utf8')));
 
-const MODS = ['onnx_lite', 'nn_ops', 'infer_ops', 'attn_ops', 'qwen_decode', 'qwen_gpu'];
+const MODS = ['onnx_lite', 'nn_ops', 'infer_ops', 'attn_ops', 'qwen_decode', 'qwen_gpu', 'gpu_mem'];
 let bundle = 'window.__Q = (function () {\nvar MODS = {}, CACHE = {};\n';
 bundle += 'function req(p) { var n = String(p).replace(/^\\.\\//, "").replace(/\\.js$/, ""); if (n === "gpu_core") return window.FaGpuCore; if (CACHE[n]) return CACHE[n].exports; if (!MODS[n]) throw new Error("沒有模組 " + p); var m = { exports: {} }; CACHE[n] = m; MODS[n].call(m.exports, m, m.exports, req); return m.exports; }\n';
 for (const n of MODS) bundle += 'MODS[' + JSON.stringify(n) + '] = function (module, exports, require) {\n' + rd(n + '.js') + '\n};\n';
-bundle += 'return { decode: req("qwen_decode"), gpu: req("qwen_gpu") };\n})();\n';
+bundle += 'return { decode: req("qwen_decode"), gpu: req("qwen_gpu"), mem: req("gpu_mem") };\n})();\n';
 
 const PAGE = `<!doctype html><meta charset="utf-8"><title>Qwen3 GPU 解碼驗證</title>
 <body style="font:14px/1.5 system-ui;margin:16px"><h3>Qwen3-0.6B q8 整段 GPU 解碼（WGSL）對 CPU 參考與 ORT</h3><pre id="out">執行中…</pre>
@@ -46,6 +46,10 @@ const PAGE = `<!doctype html><meta charset="utf-8"><title>Qwen3 GPU 解碼驗證
     t = performance.now();
     const eng = await G.createGpuEngine(dev, W, { maxT: 64, maxM: 32, chunkM: ${Number(process.env.QWEN_CHUNKM) || 16} });
     R.setupMs = Math.round(performance.now() - t); R.engine = eng.info; log('GPU 引擎就緒 ' + R.setupMs + ' ms，派發 ' + eng.info.dispatches + ' 個，lm_head ' + eng.info.lmChunks + ' 塊');
+    // GPU 記憶體上限：估算要與實際配置逐位元組相符；超過 budgetBytes 要在配置前丟 GPU_BUDGET；探測在軟體 WebGPU 上不量
+    R.estimate = G.estimateEngineBytes(W, { maxT: 64, maxM: 32 }); R.actualBytes = eng.info.gpuBytes;
+    try { await G.createGpuEngine(dev, W, { maxT: 64, maxM: 32, budgetBytes: 1 << 20 }); R.budgetErr = { code: 'none' }; } catch (e) { R.budgetErr = { code: e.code, msg: e.message }; }
+    R.probe = await window.__Q.mem.probe(navigator, {});
     const REFS = ${JSON.stringify(refs)};
     for (const r of REFS) {
       eng.reset();

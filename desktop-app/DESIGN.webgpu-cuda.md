@@ -941,3 +941,22 @@ Python 模擬器與離線模型推論共用同一個 GPU 裝置：
 4. **原生路徑**（`nr-engine.js`、`nr-child.js`，主程序檔案，**不能熱更新**，要發新的執行包）：`HIDDEN = 1024` 寫死（GPU lm_head 的隱藏狀態維度，1.7B 要 2048），`LAYERS／KV／HD` 與 1.7B 相同（28／8／128）可以沿用；LoRA 槽版轉換（`lora-slot-build.js`）與訓練相容檢查（`base: 'qwen3-0.6b-q8'`）是 0.6B 專用，1.7B 先不支援 LoRA，UI 要明講。
 5. **設定與 UI**：模型選擇（離線文字模型）加入 1.7B、顯示下載大小與「較慢（約 2～3 倍）」；`offlineThinking` 對 1.7B 同樣適用。
 6. **驗證**：真 GPU 上實測速度與顯存（本輪沒量）、工具呼叫／中文任務評測（`scripts/eval/native_vs_wasm_t1.eval.js` 一類）比 0.6B，確認值得再做。
+
+**GPU 記憶體上限（設定 `gpuMemMB`，2026-11-17）**
+- **現況（查證）**：`gpu_core.js` 的 `DEFAULT_BUDGET`（256 MiB）只管 cudaweb 執行期（Python 相容層）的緩衝區，且原本沒有設定入口；`qwen_gpu.js` 自己 `createBuffer`，完全不經預算。現在：設定「GPU 記憶體上限（MB，0＝自動）」放在 `_gpuCompatControls` 的「進階」區（白名單、預設 0 已加）；手動填的數字同時當 cudaweb 執行期預算；Qwen3 GPU 解碼配置前用它判斷。
+- **配置前估算**：`FaQwenGpu.estimateEngineBytes(W, {maxT, maxM})` 與 `createGpuEngine` 的 `createBuffer` 逐項對應。**實測（軟體 WebGPU，0.6B，maxT 64／maxM 32）估算 622,943,200 位元組＝實際配置 622,943,200 位元組，完全相符**（`info.gpuBytes`／`info.estimateBytes`）。超過 `budgetBytes` 在配置前丟 `GPU_BUDGET`（帶 need／budget），實測 1 MB 上限立刻拒絕、什麼都沒配置。
+- **數字（MB，估算；0.6B 為產品實際的 2048/256 設定）**：
+
+| 模型 | maxT／maxM | 合計 | 權重 | KV | 暫存 | lm_head |
+|---|---|---|---|---|---|---|
+| 0.6B | 2048／256 | 1132 | 420 | 448 | 115 | 148 |
+| 0.6B | 1024／128 | 843 | 420 | 224 | 50 | 148 |
+| 0.6B | 512／64 | 704 | 420 | 112 | 24 | 148 |
+| 1.7B | 2048／256 | 2277 | 1344 | 448 | 188 | 297 |
+| 1.7B | 1024／128 | 1952 | 1344 | 224 | 87 | 297 |
+| 1.7B | 512／64 | 1795 | 1344 | 112 | 42 | 297 |
+
+  （1.7B 列用 config.json 的形狀代入估算函式，沒有載入實際權重。）**觀察**：現行 0.6B 的 GPU 解碼就要約 1.1 GB（KV 448 MB＋暫存 115 MB 佔三分之一以上），而 Geforce 720 等級顯卡只有 1～2 GB——這只是一個值得注意的事實，**不能據此斷定先前的 `DXGI_ERROR_DEVICE_HUNG` 原因**（未確認）。
+- **引擎怎麼挑**：`_qwenGpuChat` 依上限由大到小挑第一個放得下的序列上限（2048/256 → 1024/128 → 512/64）；都放不下就以 `GPU_BUDGET` 退回原路徑（log 寫明數字，**不標記 GPU 壞掉**）。自動值（0）＝探測快取，沒探測過就保守 1 GiB（0.6B 會自動縮到 1024/128＝843 MB；1.7B 在 1 GiB 下放不下，需先偵測或手動調高）。**沒有「每層串流權重」的實作**：超過上限＝不用這條路徑。
+- **偵測／基準**（按鈕，`gpu_mem.js` 的 `probe`）：先量矩陣乘（沿用 `device_pick.gpuBench`），再用 256 MiB 起倍增的測試緩衝區（每塊 ≤256 MiB、總量上限 4 GiB、逾時 20 秒）逐步配置，每步以 `out-of-memory`／`validation` 錯誤範圍接住失敗並寫入觸碰、量寫入頻寬；失敗後在成功／失敗之間二分三次；**寫入頻寬掉到起始值的 40% 以下視為已溢出到系統記憶體**（Windows 會讓配置成功但變很慢），建議值停在溢出前；遇到 device lost 立刻停止、標記並把 `qwenGpuDecode` 記為壞掉；結束釋放所有緩衝區與裝置；軟體 WebGPU 不量。建議值＝可用量×0.75（64 MiB 對齊，至少 256 MiB），結果存 localStorage `fa_gpu_mem_probe`，介面顯示依據（可用量、寫入 MB/s、GFLOP/s、時間）。
+- **驗證**：`gpu_mem.test.js`（假 WebGPU：容量上限、溢出、一路成功、裝置遺失、逾時、軟體 adapter 不配置、釋放，16 項）、`gpu-mem-settings.test.js`（接線 10 項）、Chrome 軟體 WebGPU 上估算＝實際、`GPU_BUDGET`、探測跳過軟體 adapter。**沒量到**：真 GPU 上的探測結果（這台沒有）——探測的溢出判斷與 40% 門檻是依 WDDM 行為設計的假設，需要在使用者的 Windows 機器上實跑確認。

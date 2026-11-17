@@ -267,16 +267,46 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
   const WGSL_ALL = WGSL;
 
   // dev：GPUDevice；W：Q.loadWeights 的結果。opts：{ maxT=512, maxM=64, chunkBytes=64MiB }
+  // 配置前估算 GPU 緩衝區總量（位元組；與 createGpuEngine 的 createBuffer 逐項對應，每個緩衝區湊成 4 的倍數、最少 16）。
+  // 回傳 { total, weights, kv, scratch, lmHead }。opts：maxT（預設 512）、maxM（預設 64）。
+  function estimateEngineBytes(W, opts) {
+    const o = opts || {}, maxT = o.maxT || 512, maxM = o.maxM || 64;
+    const D = W.D, H = W.H, Hkv = W.Hkv, hd = W.hd, Nq = H * hd, Nk = Hkv * hd, I = W.I, V = W.V;
+    const sz = (n) => Math.max(16, (n + 3) & ~3);
+    let weights = 0, kv = 0, scratch = 0;
+    for (let l = 0; l < W.L; l++) {
+      const Ly = W.layers[l];
+      for (const k of ['q', 'k', 'v', 'o', 'g', 'u', 'd']) weights += sz(Ly[k].W.length);
+      weights += sz(Ly.inNorm.byteLength) + sz(Ly.postNorm.byteLength) + sz(2 * hd * 4) + 18 * 32;
+      kv += sz(2 * maxT * Nk * 4);
+    }
+    const lmHead = sz(W.emb.W.length) + 5 * 32;   // lm_head 分塊後總和等於整張嵌入表（每塊再湊 4 的倍數，差距可忽略）
+    const m = maxM;
+    for (const n of [m * D * 4, m * D * 4, m * D * 4, m * Math.max(Nq, D, I) * 4, 16, m * Nq * 4, m * Nk * 4, m * Nk * 4, m * Nq * 4, m * Nq * 4,
+      m * D * 4, m * I * 4, m * I * 4, m * I * 4, m * D * 4, m * H * maxT * 4, D * 4, V * 4, 16, 2 * maxT * (hd / 2) * 4, W.finalNorm.byteLength]) scratch += sz(n);
+    scratch += 16 + 16;                                                  // step 緩衝區、讀回 token
+    scratch += sz(V * 4) + 2 * sz(W.L * m * D * 4);                      // 讀回 logits、逐層追蹤（除錯用）與其讀回緩衝區
+    return { total: weights + kv + scratch + lmHead, weights, kv, scratch, lmHead };
+  }
+
   // 回傳 { step(ids, {logits}) → {token, logits?}, reset(), len, maxT, maxM, info, destroy() }；任何 GPU 錯誤由 step 的 Promise 丟出，呼叫端退回。
+  // opts.budgetBytes（>0）：GPU 記憶體上限。配置前先估算，超過就丟 Error（code='GPU_BUDGET'，帶 need／budget），什麼都還沒配置，呼叫端退回原路徑；
+  //   沒有「每層串流權重」的實作（見 DESIGN §7.30），所以超過上限＝不用這條路徑。
   async function createGpuEngine(dev, W, opts) {
     const o = opts || {}, maxT = o.maxT || 512, maxM = o.maxM || 64;
     const D = W.D, H = W.H, Hkv = W.Hkv, hd = W.hd, Nq = H * hd, Nk = Hkv * hd, I = W.I, V = W.V;
     if (hd > 128 || hd % 2) throw new Error('qwen_gpu：head 維度 ' + hd + ' 不支援（需為 ≤128 的偶數）');
     if (D % 4) throw new Error('qwen_gpu：隱藏維度必須是 4 的倍數');
+    const need = estimateEngineBytes(W, { maxT, maxM });
+    if (o.budgetBytes > 0 && need.total > o.budgetBytes) {
+      const e = new Error('qwen_gpu：需要約 ' + Math.ceil(need.total / 1048576) + ' MB GPU 記憶體（權重 ' + Math.ceil((need.weights + need.lmHead) / 1048576) + '＋KV ' + Math.ceil(need.kv / 1048576) + '＋暫存 ' + Math.ceil(need.scratch / 1048576) + '），超過上限 ' + Math.ceil(o.budgetBytes / 1048576) + ' MB');
+      e.code = 'GPU_BUDGET'; e.need = need; e.budget = o.budgetBytes; throw e;
+    }
     const lim = dev.limits || {};
     const chunkBytes = Math.min(o.chunkBytes || (64 << 20), lim.maxStorageBufferBindingSize || (128 << 20));
     const t0 = (typeof performance !== 'undefined' ? performance : Date).now();
-    const mk = (size, usage) => dev.createBuffer({ size: Math.max(16, (size + 3) & ~3), usage });
+    let gpuBytes = 0;
+    const mk = (size, usage) => { const n = Math.max(16, (size + 3) & ~3); gpuBytes += n; return dev.createBuffer({ size: n, usage }); };
     const ST = USAGE.STORAGE | USAGE.COPY_DST | USAGE.COPY_SRC;
     const bufs = [];
     const sbuf = (size) => { const b = mk(size, ST); bufs.push(b); return b; };
@@ -361,11 +391,12 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
     const rbTok = dev.createBuffer({ size: 16, usage: USAGE.MAP_READ | USAGE.COPY_DST });
     const rbLg = dev.createBuffer({ size: V * 4, usage: USAGE.MAP_READ | USAGE.COPY_DST });
     const traceB = dev.createBuffer({ size: W.L * maxM * D * 4, usage: USAGE.COPY_DST | USAGE.COPY_SRC }), rbTr = dev.createBuffer({ size: W.L * maxM * D * 4, usage: USAGE.MAP_READ | USAGE.COPY_DST });
+    gpuBytes += 16 + V * 4 + 2 * W.L * maxM * D * 4;
     if (dev.queue.onSubmittedWorkDone) await dev.queue.onSubmittedWorkDone();
     let len = 0, dead = '', chain = Promise.resolve();
     const chunkM = Math.max(1, Math.min(maxM, o.chunkM || 16));
     if (dev.lost && dev.lost.then) dev.lost.then((i) => { dead = dead || ('裝置遺失：' + (i && (i.reason || '') + ' ' + (i && i.message || '')).trim()); console.warn('[gpu] qwen 引擎裝置遺失：' + dead.slice(0, 200) + '；最近的 GPU 工作：' + (globalThis.__faGpuLast || '未知')); });
-    const info = { maxT, maxM, dispatches: plan.length, lmChunks: lmChunks.length, setupMs: (typeof performance !== 'undefined' ? performance : Date).now() - t0, steps: 0, lastStepMs: 0 };
+    const info = { maxT, maxM, dispatches: plan.length, lmChunks: lmChunks.length, setupMs: (typeof performance !== 'undefined' ? performance : Date).now() - t0, steps: 0, lastStepMs: 0, gpuBytes, estimateBytes: need.total };
 
     const eng = {
       get len() { return len; }, maxT, maxM, info,
@@ -446,5 +477,5 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
     return eng;
   }
 
-  return { createGpuEngine, WGSL: WGSL_ALL };
+  return { createGpuEngine, estimateEngineBytes, WGSL: WGSL_ALL };
 });
