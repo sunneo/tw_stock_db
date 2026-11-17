@@ -103,3 +103,10 @@ O1m 到 O11 做完後不結束，進入迴圈。完整規則與交接見 `docs/H
 - [ ] **O12c 覆寫機制**：骨架的每個運算位置是可覆寫的「槽」；預設用通用核心；模型族可註冊覆寫（例如 Qwen3 的融合 RMSNorm＋動態量化、qk-norm＋RoPE 合併核心、`qwen_gpu` 現有的手調路徑）。`qwen_gpu.js` 改成「Qwen3 的覆寫集合＋描述表」，行為與現有結果逐位相同（`qwen_gpu_*.test.js` 全部維持通過，不得退步）。覆寫要可關掉，用來量「覆寫有沒有真的比通用快」，沒有好處就如實記並移除。
 - [ ] **O12d 模型表與載入**：`qwen_models.js` 的模型表泛化成模型族＋模型清單（Qwen3 兩個照舊，加 Llama 系列一到兩個小模型的 repo、大小、sha256 待下載後核對）；`isFamily` 改為依描述表判斷；沒有 WebGPU 或不支援的結構一律退回既有 ONNX 路徑，不得悄悄算錯。
 - 驗收：node 測試涵蓋描述表驗證（缺欄位、不合法組合要報錯）、通用骨架對 CPU 參考逐位相同（用小型假權重的 Llama 形狀與 Qwen 形狀各一）、覆寫開關前後結果相同、現有 qwen 測試全過。真 Chrome：Qwen3 0.6B 走新骨架結果與舊引擎逐詞元相同；Llama 系列有真權重才驗，沒有就標「未用真模型驗證」。每小步提交。
+
+## O13. VLM（看圖模型）接進 cudaweb（使用者 2026-11-18：「排成 O13，VLM 也要，我們應該也有用 llava 那個」）
+現況（查證 2026-11-18）：看圖模型有 Florence-2、SmolVLM 256M、LLaVA-Interleave Qwen 0.5B（模型表在 `renderer/src/vlm/vlm_core.js`，`arch` 為 `florence`／`vision2seq`／`llava`），全部走 transformers.js（Worker、onnxruntime-web），**沒有走 cudaweb 的核心**（`docs/INVESTIGATE.cudaweb-models.md` §2.2；`docs/CHECKLIST.cudaweb-wire.md` 的接線只到 Qwen3 聊天、Whisper 編碼器、YAMNet／Demucs、SDXS、Kokoro、Basic Pitch、MOSS）。且 `gpuNeedsF16` 的模型在無 f16 的卡上（這台 GT 720）直接退 CPU，LLaVA 在 CPU 上要 140 到 150 秒。
+- [ ] **O13a LLaVA-Interleave Qwen 0.5B**：語言模型部分是 Qwen2 結構（用 O12 的描述表表示，通用骨架加 Qwen 覆寫）；視覺部分是 SigLIP 類的 ViT 編碼器加投影層，另寫「視覺編碼器骨架」（patch 嵌入、LayerNorm、多頭注意力、MLP、投影，全用現有通用核心：變體競賽的矩陣乘、`attn_flash`）。圖像特徵以嵌入形式插進文字嵌入序列（影像詞元位置）後送進解碼骨架。**無 f16 的卡要用 f32 或 q8 路徑**，不能再因 `gpuNeedsF16` 退 CPU（這正是這台最大的收益）。
+- [ ] **O13b SmolVLM 256M**：同上（語言模型是 SmolLM 類 Llama 結構，視覺是 SigLIP）。
+- [ ] **O13c Florence-2**：編碼器—解碼器結構（DaViT 視覺編碼器加語言編碼器與帶交叉注意力的解碼器），較複雜，排在 a、b 之後；只做到能對拍的子圖就如實標範圍。
+- [ ] 共通：先用既有的「逐節點對拍」做法（`scripts/eval/cudaweb_node_*`）把這些 ONNX 圖在 cudaweb 上逐節點對 ORT 驗證，再決定整圖接線或骨架重寫；預設關、行為不變、失敗永久退回原路徑；兩處設定介面（AI 助理設定、桌面版設定頁）同步開關；速度數字標硬體（Kepler 14 W）。沒有真權重或載入太重就標「未用真模型驗證」。每小步提交。
