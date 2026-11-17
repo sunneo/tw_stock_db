@@ -89,6 +89,13 @@ async function run(kind, a, aDims, b, bDims, azp, bzp, ops) {
   if (o.gpu === false) return { y: ref(), dims: pl.dims };
   const kernelId = isInt ? 'mm_simple_f32' : pickMatmulKernel(pl.M, pl.K, pl.N, o).id;
   const r = await nn.tryLayers(isInt ? 'matmulInt' : 'matmul', { navigator: o.navigator }, async (dev) => {
+    // 啟動接線：第一次拿到 GPU 裝置時，背景載入勝者；缺勝者的形狀再背景競賽（本次派發仍用規則，下次才換）
+    if (!TUNE.started) {
+      TUNE.started = true;
+      initMatmulTuning({ device: dev, shapes: AUTO_SHAPES }).then((info) => {
+        if (info.missing.length && o.navigator) startMatmulRace(info.missing, { navigator: o.navigator, budgetMs: 2000 }).catch(() => {});
+      }).catch(() => {});
+    }
     for (const n of [total, a.length, b.length]) if (n * 4 > MAX_BUF) throw new Error('張量 ' + n + ' 個元素超過單一儲存緩衝區上限（128 MB），退 CPU');
     const u = new Int32Array([pl.B, pl.M, pl.K, pl.N, pl.Bb, azp || 0, bzp || 0, 0]);
     // 已經是對的型別就不再複製一份（大矩陣的複製本身就是可觀的時間）；o.cacheB：B 是常駐權重時，同一個陣列物件只上傳一次
@@ -151,4 +158,38 @@ async function raceMatmul(M, K, N, opts) {
   return res;
 }
 
-module.exports = { matmulRef, matmul, matmulIntRef, matmulInt, WGSL_MM_F32, WGSL_MM_F32_TILED, WGSL_MM_F32_VEC4, WGSL_MM_I32, plan, pickMatmulKernel, setMatmulCaps, setMatmulWinners, raceMatmul };
+// ---------- 啟動接線（G4）：載入勝者；簽名變了（或從未量過）的形狀才背景重跑 ----------
+// 自動重跑只用小形狀（64×1024×1024）：CPU 參考在主執行緒算，大形狀會卡住頁面；大形狀由設定頁「重跑」手動做。
+const TUNE = { started: false, store: null };
+const AUTO_SHAPES = [{ M: 64, K: 1024, N: 1024 }];
+// initMatmulTuning({ device, adapterDesc, store, shapes })：探測能力、從 store 整批載入勝者，回報缺勝者的形狀（簽名變了就會缺）。
+// 只讀，不量；量測由 startMatmulRace 做。store 沒給就用 variant_race 的預設（IndexedDB，失敗退記憶體）。
+async function initMatmulTuning(o) {
+  const opts = o || {};
+  const VR = require('./variant_race.js');
+  const caps = KS.probeCaps(null, opts.device || null);
+  const desc = opts.adapterDesc || 'unknown';
+  setMatmulCaps(caps, desc);
+  const store = opts.store || VR.createStore({});
+  let entries = [];
+  try { entries = await store.entries(); } catch (_) { entries = []; }
+  setMatmulWinners(entries);
+  TUNE.store = store;
+  const sig = KS.capsHash(caps);
+  const missing = (opts.shapes || []).filter((sh) => !WINNERS.has(KS.cacheKey(desc, 'matmul', sh, caps)));
+  const stale = entries.filter((e) => String(e.key).split('|').pop() !== sig).length;
+  return { tier: KS.tierOf(caps), capsSig: sig, loaded: entries.length, stale: stale, missing: missing };
+}
+// startMatmulRace(shapes, o)：逐形狀跑 raceMatmul（每形狀預算 2 秒，可取消）。o.navigator 必須給瀏覽器的 navigator 才會用 GPU。
+async function startMatmulRace(shapes, o) {
+  const opts = o || {};
+  const out = [];
+  for (const sh of shapes || []) {
+    if (opts.cancel && opts.cancel()) break;
+    const r = await raceMatmul(sh.M, sh.K, sh.N, { navigator: opts.navigator, store: TUNE.store, budgetMs: opts.budgetMs, cancel: opts.cancel });
+    out.push({ shape: sh, key: r.key, winner: r.winner, noGpu: !!r.noGpu, bad: r.bad || [], cancelled: !!r.cancelled });
+  }
+  return out;
+}
+
+module.exports = { matmulRef, matmul, matmulIntRef, matmulInt, WGSL_MM_F32, WGSL_MM_F32_TILED, WGSL_MM_F32_VEC4, WGSL_MM_I32, plan, pickMatmulKernel, setMatmulCaps, setMatmulWinners, raceMatmul, initMatmulTuning, startMatmulRace, AUTO_SHAPES, TUNE };

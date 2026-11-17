@@ -42,5 +42,19 @@ const M = require('./mm_ops.js');
   const st = VR.createStore({});
   await st.set('k1', { id: 'x' });
   assert.deepStrictEqual((await st.entries()).map((e) => e.key), ['k1']);
+  // 啟動接線：載入勝者；簽名相同的命中、簽名不同的（舊）不命中且算成 stale；缺的形狀回報 missing（簽名變了才會缺）
+  const fakeDev = { limits: { maxComputeWorkgroupStorageSize: 16384, maxComputeInvocationsPerWorkgroup: 256, maxComputeWorkgroupSizeX: 256 }, features: new Set() };
+  const capsNow = KS.probeCaps(null, fakeDev);
+  const curKey = KS.cacheKey('fake-adapter', 'matmul', { M: 64, K: 1024, N: 1024 }, capsNow);
+  const oldKey = KS.cacheKey('fake-adapter', 'matmul', { M: 64, K: 1024, N: 1024 }, Object.assign({}, capsNow, { maxWorkgroupStorage: 32768 }));
+  const st2 = VR.createStore({});
+  await st2.set(curKey, { id: 'mm_tiled_f32', median: 2 });
+  await st2.set(oldKey, { id: 'mm_vec4_f32', median: 1 });
+  const info = await M.initMatmulTuning({ device: fakeDev, adapterDesc: 'fake-adapter', store: st2, shapes: [{ M: 64, K: 1024, N: 1024 }] });
+  assert.strictEqual(info.tier, 'low'); assert.strictEqual(info.loaded, 2); assert.strictEqual(info.stale, 1); assert.deepStrictEqual(info.missing, []);
+  assert.strictEqual(M.pickMatmulKernel(64, 1024, 1024, {}).id, 'mm_tiled_f32');  // 命中的勝者（不是舊簽名的 vec4）
+  const info2 = await M.initMatmulTuning({ device: fakeDev, adapterDesc: 'other-adapter', store: st2, shapes: [{ M: 64, K: 1024, N: 1024 }] });
+  assert.strictEqual(info2.missing.length, 1);  // 換了 adapter → 缺勝者 → 會背景重跑
+  assert.ok(Array.isArray(M.AUTO_SHAPES) && M.AUTO_SHAPES.length === 1);
   console.log('mm_ops_test: 全部通過');
 })().catch((e) => { console.error(e); process.exit(1); });
