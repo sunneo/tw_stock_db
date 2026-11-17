@@ -77,6 +77,13 @@
 - [ ] R5. 套用到 q8mm、MatMulNBits、注意力、卷積、訓練轉置版（各自量前後）
 - 每個變體：GFLOP/s、峰值百分比、優化前後、真 Chrome 對拍（相對誤差 ≤1e-6）。沒好處的如實記「沒有好處」。
 
+### 變體階梯（G1–G5，依管理者 2026-11-18 排序：G1 → G2 → G4 → G3 → G5；編譯慢不淘汰變體，只留約 30 秒的防卡死上限；快取存 IndexedDB，存「勝者參數」）
+- [~] **G1. 產生器** `renderer/src/gpu/kernel_gen.js`（2026-11-18 第四段）：`describe`、`enumerate(caps)`、`generate(spec)`、`dispatchFor`。內層 k 用迴圈、只展開 TM·TN 的 fma。node 測試 `kernel_gen_test.js` 8 項通過（含 JS 索引模擬 scalar 與 vec4 對 CPU 參考）。**未完成**：①還沒讓 `gpu_core.js` 的 `mmR8Wgsl`（R1）與 `mmTileWgslVec4`（v4）改成 kernel_gen 的實例（現在仍是各自一份）；②真 Chrome 還沒跑 kernel_gen 產出的著色器（需要 r8_time2 類的單形狀頁）；③q8mm、MatMulNBits 的內層還沒接上。
+- [ ] **G2. 階梯與編譯預算**：約 8–12 個代表階梯（32x32/t2x2、64x64/t4x4、64x128/t4x8、128x64/t8x4、128x128/t8x8，各加 vec4 與 split-K），逐一 `createComputePipelineAsync` 並記錄編譯毫秒；**編譯慢不淘汰**，只留約 30 秒防卡死上限。
+- [ ] **G4. 選擇與驗證**：首次使用前小形狀對 CPU 參考驗證，不過就標壞退下一名；priors 第一名先用；背景對前 3 名實測（≤2 秒、可取消）；勝者參數存 IndexedDB（失敗退記憶體），鍵含 adapter 描述、驅動／瀏覽器版本、能力簽名；變了就重跑完整 benchmark。
+- [ ] **G3. priors**（`profile_priors.json`）：能力簽名 × 運算 × 形狀區間 → 候選順序；`measured`（目前只有這張 GT 720）與 `heuristic`（屋頂模型估算，明確標示，不當成已量測）分開；匯出／匯入 JSON。
+- [ ] **G5. 設定頁「變體競賽」表**：形狀 × 變體，GFLOP/s、峰值百分比、編譯毫秒、正確性、來源（measured／heuristic／本機實測）、勝者標示；按鈕：套用最佳、重跑、匯出、匯入、恢復預設。AI 助理設定與桌面版設定兩處同步。
+
 ## 持續優化迴圈（2026-11-17 管理者轉達使用者：「讓他持續優化下去」）
 O1m 到 O11 做完後不結束，進入迴圈。完整規則與交接見 `docs/HANDOFF.cudaweb-optimize.md`。每一輪在這裡追加一筆：
 
