@@ -177,4 +177,19 @@ async function matmulNBits(A, M, K, B, scales, N, opts) {
     () => REF.matmulNBitsRef(A, M, K, B, scales, N));
 }
 
-module.exports = { WGSL_MATMULNBITS, WGSL_MATMULNBITS_DEC, WGSL_MATMULNBITS_PF, matmulNBits, matmulNBitsVariant };
+// 批次版（O6）：A（M×K f32 句柄）、bqH（權重句柄，u32 布局，與 matmulNBits 的 B 相同位元組）、scH（scales 句柄，f32）都在批次裡；
+// 回傳 y（M×N）句柄，整段不回讀。綁定順序 a、bq、sc、y、uniform（dispatchRaw 接在最後）。
+function matmulNBitsBatched(b, A, bqH, scH, M, K, N, opts) {
+  const nb = REF.nBlocksOf(K);
+  const variant = matmulNBitsVariant(M, opts);
+  const y = b.alloc(M * N);
+  const u = new Uint32Array([M, K, N, nb]);
+  const uni = new Uint8Array(u.buffer);
+  const binds = [A.buf, bqH.buf, scH.buf, y.buf];
+  if (variant === 'matmulnbits_dec') b.dispatchRaw(WGSL_MATMULNBITS_DEC, binds, uni, [Math.ceil(N / 16), M, 1]);
+  else if (variant === 'matmulnbits_pf') b.dispatchRaw(WGSL_MATMULNBITS_PF, binds, uni, [Math.ceil(N / 16), Math.ceil(M / 16), 1]);
+  else b.dispatchRaw(WGSL_MATMULNBITS, binds, uni, M * Math.ceil(N / 64));
+  return y;
+}
+
+module.exports = { WGSL_MATMULNBITS, WGSL_MATMULNBITS_DEC, WGSL_MATMULNBITS_PF, matmulNBits, matmulNBitsVariant, matmulNBitsBatched };

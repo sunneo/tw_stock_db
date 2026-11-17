@@ -1,0 +1,59 @@
+<!doctype html><meta charset="utf-8"><title>o6 nbits batch check</title>
+<body style="font:13px monospace;white-space:pre">
+<script>
+// O6 驗證（真 Chrome、真 WebGPU）：批次版 MatMulNBits（matmulnbits_gpu.matmulNBitsBatched）。A、權重、scales 都是批次句柄，整段一次 submit。
+// 對照：matmulnbits_ref.matmulNBitsRef（CPU 參考）。判準：(1) 每案 1 次 submit；(2) 相對誤差 ≤1e-5。
+// 案例：dec M1 K1024 N256、dec M8 K256 N128、pf M32 K256 N128、simple（強制 nbVariant）M5 K64 N40。結果在 window.__out。
+// 用法：desktop-app 資料夾 python -X utf8 -m http.server <埠> --bind 127.0.0.1，開 .../scripts/eval/o6_nbits_batch_check.html
+const mods = {};
+const loadMod = async (key, url) => {
+  const src = await (await fetch(url, { cache: 'no-store' })).text();
+  const m = { exports: {} }; mods[key] = m;
+  new Function('module', 'exports', 'require', src)(m, m.exports, (p) => { const k = p.replace(/^\.\//, '').replace(/\.js$/, ''); if (!mods[k]) throw new Error('missing ' + k); return mods[k].exports; });
+};
+let seed = 41;
+const rnd = () => { seed = (Math.imul(seed, 1664525) + 1013904223) | 0; return (seed >>> 0) / 4294967296 - 0.5; };
+(async () => {
+  const out = { hardware: 'Kepler 14 W（同一台、同一瀏覽器）', cases: [], error: null };
+  window.__out = out;
+  try {
+    await loadMod('gpu_core', '../../renderer/src/gpu/gpu_core.js');
+    await loadMod('gpu_pool', '../../renderer/src/gpu/gpu_pool.js');
+    await loadMod('nn_ops', '../../renderer/src/gpu/nn_ops.js');
+    await loadMod('matmulnbits_ref', '../../renderer/src/gpu/matmulnbits_ref.js');
+    await loadMod('matmulnbits_gpu', '../../renderer/src/gpu/matmulnbits_gpu.js');
+    const nn = mods.nn_ops.exports, NB = mods.matmulnbits_gpu.exports, REF = mods.matmulnbits_ref.exports;
+    const { dev } = await nn.getDevice(navigator);
+    let submits = 0;
+    const realSubmit = dev.queue.submit.bind(dev.queue);
+    dev.queue.submit = (cmds) => { submits++; return realSubmit(cmds); };
+    const cases = [
+      { name: 'dec M1 K1024 N256', M: 1, K: 1024, N: 256, opts: {} },
+      { name: 'dec M8 K256 N128', M: 8, K: 256, N: 128, opts: {} },
+      { name: 'pf M32 K256 N128', M: 32, K: 256, N: 128, opts: {} },
+      { name: 'simple（強制）M5 K64 N40', M: 5, K: 64, N: 40, opts: { nbVariant: 'matmulnbits' } },
+    ];
+    for (const c of cases) {
+      const { M, K, N } = c;
+      const nb = REF.nBlocksOf(K);
+      const A = Float32Array.from({ length: M * K }, () => rnd() * 2);
+      const Bu = Uint8Array.from({ length: N * nb * 16 }, () => Math.floor((rnd() + 0.5) * 256));
+      const scales = Float32Array.from({ length: N * nb }, () => 0.02 + Math.abs(rnd()) * 0.05);
+      const ref = REF.matmulNBitsRef(A, M, K, Bu, scales, N);
+      submits = 0;
+      const b = nn.createBatch(dev);
+      const ah = b.upload(A);
+      const bh = b.upload(new Float32Array(Bu.buffer));   // 位元組原樣上傳（u32 布局）
+      const sh = b.upload(scales);
+      const y = NB.matmulNBitsBatched(b, ah, bh, sh, M, K, N, c.opts);
+      const [gy] = await b.read([[y, M * N]]);
+      let maxAbs = 0, maxRef = 0;
+      for (let i = 0; i < ref.length; i++) { maxAbs = Math.max(maxAbs, Math.abs(gy[i] - ref[i])); maxRef = Math.max(maxRef, Math.abs(ref[i])); }
+      const rel = maxAbs / Math.max(maxRef, 1e-30);
+      out.cases.push({ name: c.name, submits: submits, variant: NB.matmulNBitsVariant(M, c.opts), relErr: rel, pass: rel <= 1e-5 && submits === 1 });
+    }
+    out.allPass = out.cases.every((r) => r.pass);
+  } catch (e) { out.error = String((e && e.stack) || e); }
+  out.done = true;
+})();
+</script>
