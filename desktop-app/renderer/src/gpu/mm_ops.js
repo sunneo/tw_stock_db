@@ -205,12 +205,19 @@ const ROOF_WGSL = `
 @group(0) @binding(1) var<uniform> P: vec4<u32>;
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-  var a: f32 = f32(gid.x & 1023u) * 0.000001 + 0.5;
-  var b: f32 = a + 0.25; var c: f32 = a + 0.125; var d: f32 = a + 0.0625;
+  // 16 條獨立的依賴鏈（4 個 vec4）：單條鏈受延遲限制，鏈不夠多時量到的不是峰值
+  let s: f32 = f32(gid.x & 1023u) * 0.000001 + 0.5;
+  var x0: vec4<f32> = vec4<f32>(s, s + 0.25, s + 0.125, s + 0.0625);
+  var x1: vec4<f32> = x0 + vec4<f32>(0.03125);
+  var x2: vec4<f32> = x0 + vec4<f32>(0.015625);
+  var x3: vec4<f32> = x0 + vec4<f32>(0.0078125);
+  let m: vec4<f32> = vec4<f32>(0.9999);
+  let c: vec4<f32> = vec4<f32>(0.0001);
   for (var i: u32 = 0u; i < P.x; i = i + 1u) {
-    a = fma(a, 0.9999, 0.0001); b = fma(b, 0.9999, 0.0001); c = fma(c, 0.9999, 0.0001); d = fma(d, 0.9999, 0.0001);
+    x0 = fma(x0, m, c); x1 = fma(x1, m, c); x2 = fma(x2, m, c); x3 = fma(x3, m, c);
   }
-  if (a + b + c + d == -1.0) { OUT[gid.x] = a; }
+  let t: vec4<f32> = x0 + x1 + x2 + x3;
+  if (t.x + t.y + t.z + t.w == -1.0) { OUT[gid.x] = t.x; }
 }`;
 // 屋頂（R0）：先暖機，再用兩個迭代數估單次時間、挑出單次約 40 ms 的迭代數，一批約 100 ms，量兩批取中位數；整體不超過 300 ms；
 // 監聽裝置遺失。結果存進同一份快取，鍵為 ROOF|adapter|能力簽名。量不到回傳原因（不影響競賽）。
@@ -224,7 +231,7 @@ async function measureRoofline(o) {
   let lost = null; try { dev.lost.then((i) => { lost = (i && i.message) || 'lost'; }); } catch (_) { /* 監聽失敗不影響量測 */ }
   const caps = CAPS || KS.probeCaps(null, dev);
   const sig = require('./profile_priors.js').capSig(caps), adapter = opts.adapterDesc || ADAPTER;
-  const threads = 256 * 256, flopsPerIter = threads * 4 * 2;   // 每次迭代每執行緒 4 個 fma ＝ 8 flop
+  const threads = 256 * 256, flopsPerIter = threads * 16 * 2;   // 每次迭代每執行緒 16 個 fma（每個 2 flop）
   const out = gpuBuf(dev, null, threads * 4);
   const pipe = dev.createComputePipeline({ layout: 'auto', compute: { module: dev.createShaderModule({ code: ROOF_WGSL }), entryPoint: 'main' } });
   const ub = dev.createBuffer({ size: 16, usage: BUF.UNIFORM | BUF.COPY_DST });
@@ -247,10 +254,13 @@ async function measureRoofline(o) {
     if (e2 > ROOF_MAX_TOTAL_MS) return finish({ ok: false, reason: '單次派發超過 ' + ROOF_MAX_TOTAL_MS + ' ms（這台太慢或被其他程式佔用），不量屋頂' });
     const iters = pickRooflineIters(e1, 64, e2, 1024, ROOF_TARGET_MS);
     const tS = nowMsCore(); await runIters(iters, 1); const single = Math.max(nowMsCore() - tS, 0.01);
+    // 穩定性檢查：單次時間若遠高於兩點線性擬合的預估，代表量測不穩（驅動降頻、其他工作搶 GPU），這次不採用，免得把不穩的數字當峰值
+    const predicted = Math.max(e1 + (iters - 64) * ((e2 - e1) / 960), 0.01);
+    if (single > 3 * predicted + 5) return finish({ ok: false, reason: '量測不穩定：單次 ' + single.toFixed(1) + ' ms，預估約 ' + predicted.toFixed(1) + ' ms（不採用）' });
     if (nowMsCore() - t00 > ROOF_MAX_TOTAL_MS) return finish({ ok: false, reason: '超過時間上限（' + ROOF_MAX_TOTAL_MS + ' ms），不量屋頂' });
     const batch = pickBatch(single, ROOF_BATCH_MS);
     const per = [];
-    for (let s = 0; s < 2; s++) {
+    for (let s = 0; s < 3; s++) {
       if (lostNow()) return lostNow();
       if (nowMsCore() - t00 > ROOF_MAX_TOTAL_MS) break;
       const t = nowMsCore(); await runIters(iters, batch); per.push((nowMsCore() - t) / batch);
