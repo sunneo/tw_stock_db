@@ -1,0 +1,55 @@
+<!doctype html><meta charset="utf-8"><title>o6 quant check</title>
+<body style="font:13px monospace;white-space:pre">
+<script>
+// O6 驗證（真 Chrome、真 WebGPU）：批次內的動態量化 createBatch().quantizeDyn 對 infer_ops.quantizeDynamicRef（CPU 參考）。
+// 判準：(1) 每個案例整批只 submit 一次；(2) xq（int32）逐元素相等；(3) st＝[mn, mx, scale, zp] 逐一相等（scale 用 fround 比對）。
+// 案例小（n ≤ 1024），單次派發極小，不會逾時。結果在 window.__out。
+// 用法：desktop-app 資料夾 python -X utf8 -m http.server <埠> --bind 127.0.0.1，開 http://127.0.0.1:<埠>/scripts/eval/o6_quant_check.html
+const mods = {};
+const loadMod = async (key, url) => {
+  const src = await (await fetch(url, { cache: 'no-store' })).text();
+  const m = { exports: {} }; mods[key] = m;
+  new Function('module', 'exports', 'require', src)(m, m.exports, (p) => { const k = p.replace(/^\.\//, '').replace(/\.js$/, ''); if (!mods[k]) throw new Error('missing ' + k); return mods[k].exports; });
+};
+let seed = 11;
+const rnd = () => { seed = (Math.imul(seed, 1664525) + 1013904223) | 0; return (seed >>> 0) / 4294967296 - 0.5; };
+(async () => {
+  const out = { hardware: 'Kepler 14 W（同一台、同一瀏覽器）', cases: [], error: null };
+  window.__out = out;
+  try {
+    await loadMod('gpu_core', '../../renderer/src/gpu/gpu_core.js');
+    await loadMod('gpu_pool', '../../renderer/src/gpu/gpu_pool.js');
+    await loadMod('nn_ops', '../../renderer/src/gpu/nn_ops.js');
+    await loadMod('infer_ops', '../../renderer/src/gpu/infer_ops.js');
+    const nn = mods.nn_ops.exports, IO = mods.infer_ops.exports;
+    const { dev } = await nn.getDevice(navigator);
+    let submits = 0;
+    const realSubmit = dev.queue.submit.bind(dev.queue);
+    dev.queue.submit = (cmds) => { submits++; return realSubmit(cmds); };
+    const cases = [
+      { name: 'n64 有正有負', x: Float32Array.from({ length: 64 }, rnd).map((v) => v * 3) },
+      { name: 'n1024 有正有負', x: Float32Array.from({ length: 1024 }, rnd).map((v) => v * 7) },
+      { name: 'n1000 全正（mn 由 0 起算）', x: Float32Array.from({ length: 1000 }, () => 1 + Math.abs(rnd())) },
+      { name: 'n37 全零（scale 0）', x: new Float32Array(37) },
+      { name: 'n5 全負', x: Float32Array.from([-1, -2, -0.5, -3, -2.5]) },
+    ];
+    for (const c of cases) {
+      const ref = IO.quantizeDynamicRef(c.x);
+      submits = 0;
+      const b = nn.createBatch(dev);
+      const x = b.upload(c.x);
+      const h = b.quantizeDyn(x);
+      const [qRaw, stv] = await b.read([[h, h.n], [h.st, 4]]);
+      const q = new Int32Array(qRaw.buffer, qRaw.byteOffset, h.n);
+      let bad = 0; for (let i = 0; i < c.x.length; i++) if (q[i] !== ref.q[i] - ref.zp) bad++;
+      const mn = Math.min(0, ...c.x), mx = Math.max(0, ...c.x);
+      const refScale = c.x.length && (mx - mn) === 0 ? 1 : Math.fround((mx - mn) / 255);
+      // scale 的判準：相對誤差 ≤1e-6（GPU 的 f32 除法與參考版的 f64 再 fround 相差最多 1 ulp；逐元素 q 仍須逐位相同）
+      const stOk = Math.abs(stv[2] - ref.scale) <= 1e-6 * Math.abs(ref.scale) && stv[3] === ref.zp;
+      out.cases.push({ name: c.name, n: c.x.length, submits: submits, mismatches: bad, scaleGpu: stv[2], scaleRef: ref.scale, zpGpu: stv[3], zpRef: ref.zp, statsOk: stOk, pass: bad === 0 && stOk && submits === 1, refScaleCheck: refScale });
+    }
+    out.allPass = out.cases.every((r) => r.pass);
+  } catch (e) { out.error = String((e && e.stack) || e); }
+  out.done = true;
+})();
+</script>

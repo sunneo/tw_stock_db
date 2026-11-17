@@ -591,6 +591,70 @@ async function adamw(p, g, m, v, t, lr, b1, b2, eps, wd, opts) {
 //       const [out] = await b.read([[y, n]]);   // 整批只 submit 一次、回讀只在最後
 // 目前涵蓋 RMSNorm、softmax、SiLU、RoPE（同一層內的逐元素與列運算）與 matmul（2026-11-18 加入，與 gpu_core 共用核心）。
 // 注意力、q8mm、MatMulNBits 還沒進批次（見 docs/CHECKLIST.cudaweb-optimize.md 的 O6）。
+// 動態量化（O6，與 infer_ops.quantizeDynamicRef 同一套規則）：兩段。
+// 第一段：單一工作群組求全域最小／最大（先含 0，與參考版一致），算出 scale、zp，寫進 st[0..3] = [mn, mx, scale, zp]。
+// 第二段：逐元素 q = clamp(round(x/scale)+zp, 0, 255) − zp（int32）。scale 為 0 時 scale 記 1、zp 記 0（與參考版一致）。
+const WGSL_QDYN_STATS = `
+@group(0) @binding(0) var<storage, read> x: array<f32>;
+@group(0) @binding(1) var<storage, read_write> st: array<f32>;
+struct U { n: u32 };
+@group(0) @binding(2) var<uniform> u: U;
+var<workgroup> smn: array<f32, 256>;
+var<workgroup> smx: array<f32, 256>;
+@compute @workgroup_size(256)
+fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
+  let t = lid.x;
+  var mn: f32 = 0.0;
+  var mx: f32 = 0.0;
+  var i: u32 = t;
+  loop {
+    if (i >= u.n) { break; }
+    let v = x[i];
+    mn = min(mn, v);
+    mx = max(mx, v);
+    i = i + 256u;
+  }
+  smn[t] = mn;
+  smx[t] = mx;
+  workgroupBarrier();
+  var s: u32 = 128u;
+  loop {
+    if (s == 0u) { break; }
+    if (t < s) {
+      smn[t] = min(smn[t], smn[t + s]);
+      smx[t] = max(smx[t], smx[t + s]);
+    }
+    workgroupBarrier();
+    s = s >> 1u;
+  }
+  if (t == 0u) {
+    let mnv = smn[0];
+    let mxv = smx[0];
+    let scale = (mxv - mnv) / 255.0;
+    var sc: f32 = scale;
+    var zp: f32 = 0.0;
+    if (scale == 0.0) { sc = 1.0; } else { zp = clamp(round(-mnv / scale), 0.0, 255.0); }
+    st[0] = mnv;
+    st[1] = mxv;
+    st[2] = sc;
+    st[3] = zp;
+  }
+}`;
+const WGSL_QDYN = `
+@group(0) @binding(0) var<storage, read> x: array<f32>;
+@group(0) @binding(1) var<storage, read> st: array<f32>;
+@group(0) @binding(2) var<storage, read_write> q: array<i32>;
+struct U { n: u32 };
+@group(0) @binding(3) var<uniform> u: U;
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let i = gid.x;
+  if (i >= u.n) { return; }
+  let sc = st[2];
+  let zp = st[3];
+  let qf = clamp(round(x[i] / sc) + zp, 0.0, 255.0);
+  q[i] = i32(qf) - i32(zp);
+}`;
 const MM_TILED_CODE = core.mmTileWgsl({ marker: 'matmul', dtype: 'f32' });
 const MM_VEC4_CODE = core.mmTileWgslVec4({ marker: 'matmul_vec4' });
 function createBatch(dev) {
@@ -657,6 +721,15 @@ function createBatch(dev) {
       const uni = new ArrayBuffer(32); new Uint32Array(uni).set(core.mmTileWords(M, K, N, 0, 1));
       dispatch(v4 ? MM_VEC4_CODE : MM_TILED_CODE, [A.buf, B.buf, y], uni, core.mmTileDispatch(M, N, 1));
       return { buf: y, n: M * N };
+    },
+    // 動態量化：回傳 { buf, n }（i32 的 xq，已扣 zero point）與 st（[mn, mx, scale, zp] 的句柄，讀回用 read([[st, 4]])）
+    quantizeDyn(x) {
+      const n = x.n;
+      const st = storage(4), q = storage(n);
+      const u1 = new ArrayBuffer(16); new Uint32Array(u1, 0, 1)[0] = n;
+      dispatch(WGSL_QDYN_STATS, [x.buf, st], u1, 1);
+      dispatch(WGSL_QDYN, [x.buf, st, q], u1, Math.ceil(n / 64));
+      return { buf: q, n: n, st: { buf: st, n: 4 } };
     },
     // 一次 submit，整批的回讀都在這裡；specs = [[handle, n], ...]，回傳 Float32Array 陣列
     async read(specs) {
