@@ -102,6 +102,16 @@
 - **殘留**：`python -m http.server 8741` 行程 PID 3280 仍在執行（停止行程的指令被權限擋下，請使用者或下一棒用 Win32_Process 停掉）。
 - 下一棒順序：(a) 停掉 8741 伺服器；(b) 接啟動初始化；(c) vec4 慢 5 倍的 kernel_gen 原因（G1）；(d) G5 設定頁表格（兩處同步）；(e) O5–O10。
 
+## 2026-11-18 第九段（本棒：G5 變體競賽表；提交 `5c03d8c9f`）
+- 完成（node 通過）：`renderer/src/gpu/variant_table.js` 純函式＋`variant_table_test.js` 7 項；`floating-assistant.js` 的 `_gpuVariantPanel()` 接在 GPU 基準面板下方（套用最佳、重跑變體競賽、取消、匯出剖析、匯入剖析、恢復預設）；嵌入清單與 `FA_QWEN_SRC` 加入 `profile_priors`、`variant_table`，`node scripts/embed-code-ui.js` 已跑通。
+- **未做（下一棒第一步）**：
+  1. 桌面版實機確認面板（獨立 `--user-data-dir`、換埠、開設定頁讀 DOM）。沒有實機證據前，G5 的畫面與按鈕不算驗證。
+  2. 「兩處同步」：`renderer/index.html` 的 AI 助理設定沒有 GPU 基準區塊（grep「gpu／GPU」零結果）。目前只有 floating-assistant 內部一處。是否要在 index.html 加一份，先問管理者。
+  3. 編譯毫秒欄一律「未記錄」；競賽不量編譯時間。
+  4. 預先剖析的 local 項目依能力簽名查表、不分形狀，排序只當參考。
+- 重要判斷：「重跑變體競賽」只量 `AUTO_SHAPES`（64×1024×1024），沒有自動量大形狀，因為 simple 核心在大形狀上有逾時風險。
+- 接著順序：(a) 桌面版實機 G5；(b) O5 之後的清單：O6 真 Qwen 區塊接入批次、O7、O8、O9 剩餘（瀏覽器端競賽的 UI 已由 G5 部分完成）、O10、O11；(c) 持續優化迴圈。
+
 ## 2026-11-18 第八段（本棒：啟動接線、真 GPU 逐變體計時、vec4 原因；G5 與 O5 以後未做）
 提交（依序）：`ee62b6283` 啟動接線；`0f65c7b8c` 真 GPU 計時頁＋GT 720 結果；`e0cd4b67c` vec4 原因。
 - **殘留伺服器**：第七段的 PID 3280 已不在（Win32_Process 確認）。本棒用的伺服器都已停、分頁已關，最後確認無 `http.server` 殘留。
