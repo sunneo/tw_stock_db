@@ -93,3 +93,11 @@
 讀 `docs/CHECKLIST.cudaweb-optimize.md` 的 O6 的「未完成」，把 qwen_gpu 的一層接進 createBatch（至少讓 q8mm 或 MatMulNBits 進批次），再量一層 submit 次數；之後依序 O7、O8、O9、O10、O11，最後進入持續優化迴圈。先確認 WebGPU 介面卡可用（頁面 `navigator.gpu.requestAdapter()` 有回傳），不可用就只做 node 部分並標「待真 Chrome 驗證」。
 - 驗證伺服器用完就關；本棒已確認 8731 的 http.server 已停止。
 - 其他 Python 行程（pip install torch cupy）不是本棒的，不要動。
+
+## 2026-11-18 第七段（G4 接線；提交 `0d60655a4`）
+- 完成：`kernel_select` 新增 `mm_vec4_f32`（K、N 為 4 的倍數、M、N ≥16）；`mm_ops.js` 的 f32 派發改由 `pickMatmulKernel` 決定（規則＋已存勝者，`setMatmulWinners` 同步查表）；`raceMatmul(M,K,N,opts)` 做驗證→計時→勝者寫入（沒有 GPU 回傳 `noGpu`，不競賽）；`variant_race.createStore` 加 `entries()`（整批載入 IndexedDB）；`embed-code-ui.js` 的 MODS 加入 `kernel_select`、`variant_race`。
+- node：mm_ops_test、kernel_select_test（15）、variant_race_test（9）、gpu_core.test（41）通過。
+- 真 Chrome（`scripts/eval/mm_race_check.html`，已關分頁）：IndexedDB 寫入、關閉後讀回正確（store=idb）；64×256×256 三變體真 GPU 派發，相對誤差各 5.3e-7（T1）。
+- **沒做／未驗證**：(1) 真 GPU 上的整段 `raceMatmul` 計時（會超過「3 次 submit」規則，留給下一棒，建議分拆成每次只派一個變體的頁面）；(2) 啟動時 `initMatmulTuning`（probeCaps＋載入勝者）尚未接進 nn_ops／gpu 初始化；(3) 嵌入後的建置產物未重建（`embed-code-ui.js` 未執行）；(4) 頁面中「已存勝者命中」用的是假鍵，未用真實 cacheKey 驗證（node 測試有覆蓋）。
+- **殘留**：`python -m http.server 8741` 行程 PID 3280 仍在執行（停止行程的指令被權限擋下，請使用者或下一棒用 Win32_Process 停掉）。
+- 下一棒順序：(a) 停掉 8741 伺服器；(b) 接啟動初始化；(c) vec4 慢 5 倍的 kernel_gen 原因（G1）；(d) G5 設定頁表格（兩處同步）；(e) O5–O10。
