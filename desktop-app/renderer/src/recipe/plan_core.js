@@ -317,5 +317,32 @@
         return { target: run.goal.target, final: last || null, doneSteps: run.steps.filter((s) => s.state === 'done').map((s) => s.tool), failedSteps: run.steps.filter((s) => s.state === 'failed').map((s) => ({ tool: s.tool, error: s.error })), artifacts: run.artifacts.map((a) => ({ kind: a.kind, id: a.id, filename: a.filename, value: a.value != null ? String(a.value).slice(0, 200) : undefined })) };
     }
 
-    return { CAPS, GOALS, STAGES, FAILURE_RULES, kindOfFile, capOf, factsFrom, matchGoals, goalMenu, buildPlan, expand, createRun, stepOf, renderPlan, decideFailure, collectArtifacts, bindInputs, advance, provide, summarizeRun };
+    // 進度卡片的「每一輪一行」（沒有模型也一樣）：輪數＝開始一個步驟的次數；每行 第 N 輪｜階段｜誰做｜內容。
+    // 工具（env.tool）那行帶工具名、關鍵參數（截斷）、回傳字數與前幾字，或失敗原因；步驟結束／失敗、填欄位（模型）、退路、重新規劃、停止各一行。
+    function roundLog(write) {
+        let round = 0, t0 = 0; const tools = {}; const emit = (x) => { try { write(x); } catch (_) { /* 顯示失敗不影響計畫 */ } };
+        const head = (stage, who) => '第 ' + Math.max(1, round) + ' 輪｜' + stage + '｜' + who;
+        const argText = (args) => { let x; try { x = JSON.stringify(args || {}); } catch (_) { x = String(args); } return x.length > 120 ? x.slice(0, 120) + '…' : x; };
+        return {
+            event(e) {
+                if (!e) return;
+                if (e.type === 'step_start') { round++; t0 = Date.now(); tools[e.step] = e.tool; return; }
+                if (e.type === 'fill') { emit(head('填欄位', '模型') + '｜缺：' + (e.missing || []).join('、') + '｜填入：' + (e.filled || []).join('、')); return; }
+                if (e.type === 'step_done') { emit(head('完成', '程式') + '｜' + (tools[e.step] || e.step) + '｜成品：' + ((e.artifacts || []).join('、') || '（無）') + '｜' + (Date.now() - t0) + ' ms'); return; }
+                if (e.type === 'step_failed') { emit(head('失敗', '程式') + '｜' + (tools[e.step] || e.step) + '｜' + e.error + '｜' + (Date.now() - t0) + ' ms'); return; }
+                if (e.type === 'verify_failed') { emit(head('驗證', '程式') + '｜' + (tools[e.step] || e.step) + '｜呼叫成功但沒有預期的成品'); return; }
+                if (e.type === 'decision') { emit(head('退路', '程式') + '｜' + e.action + '（' + e.why + '）'); return; }
+                if (e.type === 'replan') { emit(head('重新規劃', '程式') + '｜' + (e.steps || []).join(' → ')); return; }
+                if (e.type === 'ask') { emit(head('問使用者', '程式') + '｜缺：' + (e.missing || []).join('、')); return; }
+                if (e.type === 'limit') { emit(head('停止', '程式') + '｜呼叫次數已達上限'); return; }
+                if (e.type === 'replan_failed') { emit(head('停止', '程式') + '｜沒有別條路：' + (e.reason || '')); return; }
+                if (e.type === 'abort') { emit(head('停止', '程式') + '｜中止於 ' + (tools[e.step] || e.step)); }
+            },
+            tool(name, args, ok, text) {
+                const t = String(text == null ? '' : text);
+                emit(head('工具', '程式') + '｜' + name + ' ' + argText(args) + '｜' + (ok ? '回 ' + t.length + ' 字，開頭「' + t.slice(0, 20).replace(/\s+/g, ' ') + '」' : '失敗：' + t.slice(0, 80)));
+            },
+        };
+    }
+    return { CAPS, GOALS, STAGES, FAILURE_RULES, roundLog, kindOfFile, capOf, factsFrom, matchGoals, goalMenu, buildPlan, expand, createRun, stepOf, renderPlan, decideFailure, collectArtifacts, bindInputs, advance, provide, summarizeRun };
 });
