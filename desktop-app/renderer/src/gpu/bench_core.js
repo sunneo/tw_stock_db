@@ -18,7 +18,7 @@
     const DEFAULTS = { matmul: 'cudaweb', softmax: 'cudaweb', rmsnorm: 'cudaweb', silu: 'cudaweb', rope: 'cudaweb', adamw: 'cudaweb' };
     const BACKENDS = ['cudaweb', 'ort-webgpu', 'ort-wasm'];
     // 預設的矩陣乘形狀（M×K×N）：Redmine 外掛實測過的兩個；使用者可以在設定裡改成別的清單
-    const DEFAULT_SHAPES = ['512x1024x1024', '512x1024x3072'];
+    const DEFAULT_SHAPES = ['64x1024x1024', '512x1024x1024', '512x1024x3072'];   // 64×1024×1024 是小形狀：看 GPU 從哪個規模開始贏
     const MAX_SHAPES = 8;
     // 形狀字串 'MxKxN'（正整數）→ { M, K, N }；不合法回傳 null
     function parseShape(s) {
@@ -30,6 +30,15 @@
     function normalizeShapes(list) {
         const out = []; for (const x of [].concat(list || [])) { const p = parseShape(x); if (!p) continue; const k = p.M + 'x' + p.K + 'x' + p.N; if (out.indexOf(k) < 0) out.push(k); if (out.length >= MAX_SHAPES) break; }
         return out.length ? out : DEFAULT_SHAPES.slice();
+    }
+    // 某個形狀的「誰贏」：有效列裡 median 最小的；差距＝相對 cudaweb（沒有有效的 cudaweb 就沒有差距數字）
+    function winner(rows, shape) {
+        const ok = (rows || []).filter((r) => r && r.shape === shape && validResult(r)).sort((x, y) => x.stats.median - y.stats.median);
+        const cw = ok.filter((r) => r.id === 'cudaweb')[0] || null, best = ok[0] || null;
+        if (!best) return { shape, fastest: null, gapPct: null, text: shape + '：沒有有效量測，用預設 cudaweb' };
+        const gapPct = cw ? Math.round((1 - best.stats.median / cw.stats.median) * 100) : null;
+        const gap = gapPct === null ? '' : (gapPct >= 0 ? '，比 cudaweb 快 ' + gapPct + '%' : '，比 cudaweb 慢 ' + (-gapPct) + '%');
+        return { shape, fastest: best.id, gapPct, text: shape + '：最快 ' + best.id + '（median ' + best.stats.median.toFixed(2) + ' ms）' + gap };
     }
 
     function stats(samples) {
@@ -105,5 +114,5 @@
         return maxDiff / maxRef;
     }
 
-    return { stats, validResult, decide, pickBackend, pinKey, envKey, relErr, parseShape, normalizeShapes, DEFAULT_SHAPES, MAX_SHAPES, DEFAULTS, BACKENDS, MIN_RUNS, MAX_CV, SWITCH_GAIN, WARMUP, MEASURE };
+    return { stats, validResult, decide, pickBackend, pinKey, envKey, relErr, parseShape, normalizeShapes, winner, DEFAULT_SHAPES, MAX_SHAPES, DEFAULTS, BACKENDS, MIN_RUNS, MAX_CV, SWITCH_GAIN, WARMUP, MEASURE };
 }));

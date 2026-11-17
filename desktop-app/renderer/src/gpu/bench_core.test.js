@@ -20,6 +20,19 @@ const seq = (n, f) => Array.from({ length: n }, (_, i) => f(i));
 {
     const good = { valid: true, errors: 0, stats: B.stats(seq(20, () => 10)) };
     check('2 n=20 常數：有效', B.validResult(good));
+    // 誰贏與差距（表格的摘要）
+    {
+        const rw = (id, median, shape) => ({ op: 'matmul', shape: shape || '64x1024x1024', id, valid: true, errors: 0, stats: { n: 20, median, cv: 0.01, p10: median, p90: median, mean: median } });
+        const w = B.winner([rw('cudaweb', 10), rw('ort-wasm', 8)], '64x1024x1024');
+        check('2W 最快 ort-wasm、比 cudaweb 快 20%', w.fastest === 'ort-wasm' && w.gapPct === 20 && w.text.includes('比 cudaweb 快 20%'), w);
+        const slow = B.winner([rw('cudaweb', 10), rw('ort-wasm', 12)], '64x1024x1024');
+        check('2W 最快仍是 cudaweb、ORT 慢 20%', slow.fastest === 'cudaweb' && slow.gapPct === 0, slow);
+        const noCw = B.winner([rw('ort-wasm', 5)], '64x1024x1024');
+        check('2W 沒有有效 cudaweb：沒有差距數字', noCw.fastest === 'ort-wasm' && noCw.gapPct === null, noCw);
+        const none = B.winner([], '64x1024x1024');
+        check('2W 沒有量測：說明用預設', none.fastest === null && none.text.includes('預設'), none);
+        check('2W 只看指定形狀', B.winner([rw('cudaweb', 10, '512x1024x1024')], '64x1024x1024').fastest === null);
+    }
     check('2 n=19：無效', !B.validResult({ stats: B.stats(seq(19, () => 10)) }));
     check('2 cv≥0.30：無效（太吵）', !B.validResult({ stats: B.stats(seq(20, (i) => (i % 2 ? 1 : 100))) }));
     check('2 有錯誤：無效', !B.validResult(Object.assign({}, good, { errors: 1 })));

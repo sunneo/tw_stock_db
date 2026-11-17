@@ -207,9 +207,9 @@ const fakeMm = { matmul: async (a, ad, b, bd) => { clockT += 2; return { y: BR.m
     }
     {
         const s = assistant({ mm: fakeMm });
-        check('9d 預設形狀是兩個指定的', JSON.stringify(s._gpuBenchShapesList()) === JSON.stringify(['512x1024x1024', '512x1024x3072']), s._gpuBenchShapesList());
+        check('9d 預設形狀：小形狀 64×1024×1024 加兩個大形狀', JSON.stringify(s._gpuBenchShapesList()) === JSON.stringify(['64x1024x1024', '512x1024x1024', '512x1024x3072']), s._gpuBenchShapesList());
         check('9d 清單正規化：去掉不合法與重複', JSON.stringify(s._gpuBenchNormalizeShapes(['512x1024x3072', 'bad', '512x1024x3072', '0x1x1'])) === JSON.stringify(['512x1024x3072']));
-        check('9d 全部不合法：用預設', JSON.stringify(s._gpuBenchNormalizeShapes(['x', ''])) === JSON.stringify(['512x1024x1024', '512x1024x3072']));
+        check('9d 全部不合法：用預設', JSON.stringify(s._gpuBenchNormalizeShapes(['x', ''])) === JSON.stringify(['64x1024x1024', '512x1024x1024', '512x1024x3072']));
         const many = Array.from({ length: 12 }, (_, i) => (i + 1) + 'x2x2');
         check('9d 最多 8 個', s._gpuBenchNormalizeShapes(many).length === 8);
     }
