@@ -45,6 +45,7 @@
 - 2026-11-18：「繼續」
 - 2026-11-18（使用者本人在對話中說的，由上一棒領導轉記）：「同意下載，每個階段修改都請commit, push, publish」「做完才可以停止」
 - 2026-11-18（使用者本人在對話中說的）：「請不要再提問」
+- 2026-11-18（使用者本人在對話中說的）：「我要的就是不用跟我確認，請直接commit push publish」
 - 2026-11-17（延續自 `docs/HANDOFF.cudaweb-optimize.md`，仍有效）：「我希望推論、訓練的cudaweb是經過高度優化的，必須可以適應各種等級的gpu」「像是早期的nvidia的gpu要優化過 要自己選擇把記憶體放到constant memory或texture」「gpu kernel還要用shared memory快取跟加速運算」「讓他持續優化下去」
 - 2026-11-18（延續自 `docs/HANDOFF.manager.md`，仍有效）：「這台有kepler的cuda核心 要讓webgpu趨近官方的cublas一樣效能」「編譯慢沒關係，這通常是一次功，設備換了就再benchmark, 再編一次，可以存在indexdb」「把 Llama 系列的通用解碼骨架排進去，qwen_gpu優化則是一種override」「排成 O13，VLM 也要，我們應該也有用llava那個」「我要這個cudaweb獲得完整核心優化的結果，可以將來python/js 寫cuda的時候，都可以獲得好處。離線模型也是全都要在使用webgpu時獲得好處」「放在gpu相容層 (numba/cupy/torch) 比較合理」「他不應該暫停的，他應該全部做完!」「叫他別等!」「我受不了那邊無窮等待」「我在knowledge, aidoc使用存離線ai請他用cpu慢慢生字，都不會這樣叫他閉嘴的」「有載入，持續出詞元，就等，這邊做法要跟 streaming 一樣，如果詞元是退化文字才中斷」「這不是線上的，這是離線，使用者的電腦 gpu，當使用者決定用離線模型，就有要等很久的準備了」「aidoc ask 必須就是聊天核心，背後不管接 tool／recipe，他的目的就是以這包 code 為範圍」
 
