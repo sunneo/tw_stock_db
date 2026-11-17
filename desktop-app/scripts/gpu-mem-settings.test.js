@@ -21,4 +21,8 @@ ok(/M\.models\.paths\(mm, userData, sep\)/.test(src) && !/'qwen3-0\.6b-q8';\s*\n
 ok(/_qwenModelDownload\(id/.test(src) && /window\.confirm\('下載 '/.test(src) && /huggingface\.co\/' \+ mm\.repo/.test(src), '下載需使用者確認，畫面顯示來源與大小');
 ok(/\/\^qwen3-\/\.test\(String\(model\.id\)\)/.test(src), 'Thinking 開關改為 Qwen3 家族判斷');
 ok(/const NATIVE_MODEL_ID = 'qwen3-0\.6b'/.test(src), '原生路徑仍只給 0.6B（1.7B 走 GPU 解碼／WebGPU／WASM）');
+ok(/qwenGpuQ4: raw\.qwenGpuQ4 === 'on' \? 'on' : 'off'/.test(src) && /qwenGpuQ4: 'off'/.test(src), 'qwenGpuQ4 設定有預設與白名單');
+ok(/_qwenGpuChat\(model, a, cb, g4, 'q4'\)/.test(src) && /_qwenCacheGet\(ur\)/.test(src), 'transformers.js 路徑前先試 q4f16 整段解碼（讀 transformers.js 的快取檔，失敗退回）');
+ok(/FEATURES = \['qwenGpuQ4'/.test(fs.readFileSync(path.join(__dirname, '..', 'renderer/src/gpu/device_pick.js'), 'utf8')), '真 GPU 時 qwenGpuQ4 由 gpuAccel 自動開');
+ok(/decode: req\('qwen_decode'\), q4: req\('qwen_decode_q4'\)/.test(src), 'qwen_decode_q4 已嵌入');
 console.log(pass + ' 通過 ' + fail + ' 失敗'); process.exit(fail ? 1 : 0);

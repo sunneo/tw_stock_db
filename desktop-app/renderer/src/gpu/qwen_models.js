@@ -11,11 +11,12 @@
   const TOK = { rel: 'tokenizer.json', bytes: 9117040, sha256: 'e7a95fce95bf5b0946d0ddb3f9d7caa030b7e850bbe92b0edb26bcf563e9f3d5' };   // Qwen3 全系列共用同一份
   const MODELS = {
     'qwen3-0.6b': { id: 'qwen3-0.6b', dir: 'qwen3-0.6b-q8', repo: 'onnx-community/Qwen3-0.6B-ONNX', label: 'Qwen3 0.6B', family: 'qwen3', downloadHere: false,
-      file: { rel: 'onnx/model_quantized.onnx', bytes: 617687575, sha256: null }, tokenizer: TOK, slowdown: 1, lora: true, shape: { D: 1024, H: 16, Hkv: 8, I: 3072, L: 28, V: 151936 } },
+      file: { rel: 'onnx/model_quantized.onnx', bytes: 617687575, sha256: null }, tokenizer: TOK, slowdown: 1, lora: true, q4: { rel: 'onnx/model_q4f16.onnx', bytes: 569789750 }, shape: { D: 1024, H: 16, Hkv: 8, I: 3072, L: 28, V: 151936 } },
     'qwen3-1.7b': { id: 'qwen3-1.7b', dir: 'qwen3-1.7b-q8', repo: 'onnx-community/Qwen3-1.7B-ONNX', label: 'Qwen3 1.7B', family: 'qwen3', downloadHere: true, partBytes: 16 * MiB,
-      file: { rel: 'onnx/model_quantized.onnx', bytes: 1742387852, sha256: '202ed81928b7f34c31505b46479c310e131fec307a045eab2537e7c494feb427' }, tokenizer: TOK, slowdown: 2.5, lora: false, shape: { D: 2048, H: 16, Hkv: 8, I: 6144, L: 28, V: 151936 } },
+      file: { rel: 'onnx/model_quantized.onnx', bytes: 1742387852, sha256: '202ed81928b7f34c31505b46479c310e131fec307a045eab2537e7c494feb427' }, tokenizer: TOK, slowdown: 2.5, lora: false, q4: { rel: 'onnx/model_q4f16.onnx', bytes: 1426069098 }, shape: { D: 2048, H: 16, Hkv: 8, I: 6144, L: 28, V: 151936 } },
   };
   const get = (id) => MODELS[id] || null;
+  const getQ4 = (id) => (MODELS[id] && MODELS[id].q4 ? MODELS[id] : null);   // 有 q4f16 檔（transformers.js 預設的 GPU 格式）的模型
   const isFamily = (id) => !!MODELS[id] || /^qwen3-/.test(String(id || ''));
   const urlOf = (m, rel) => 'https://huggingface.co/' + m.repo + '/resolve/main/' + rel;
   const pad = (i) => String(i).padStart(5, '0');
@@ -97,9 +98,9 @@
   async function remove(m, userData, sep, raw) { const P = paths(m, userData, sep); await raw.remove(P.dir, true); }
 
   // 只有形狀、沒有權重內容的 W（長度正確），給 estimateEngineBytes／planLayers 在不載入模型時估算用（介面顯示「需要多少、放不放得下」）
-  function shapeW(shape) {
-    const hd = 128, mk = (K, N) => ({ W: { length: K * N } }), { D, H, Hkv, I, L, V } = shape;
-    return { D, H, Hkv, hd, I, V, L, finalNorm: { byteLength: D * 4 }, emb: { W: { length: V * D } }, layers: Array.from({ length: L }, () => ({ q: mk(D, H * hd), k: mk(D, Hkv * hd), v: mk(D, Hkv * hd), o: mk(H * hd, D), g: mk(D, I), u: mk(D, I), d: mk(I, D), inNorm: { byteLength: D * 4 }, postNorm: { byteLength: D * 4 } })) };
+  function shapeW(shape, fmt) {
+    const q4 = fmt === 'q4', hd = 128, mk = (K, N) => (q4 ? { W: { length: N * (K / 32) * 16 }, S: { length: N * (K / 32) * 2 }, K, N } : { W: { length: K * N } }), { D, H, Hkv, I, L, V } = shape;
+    return { fmt: q4 ? 'q4' : undefined, D, H, Hkv, hd, I, V, L, finalNorm: { byteLength: D * 4 }, emb: { W: { length: V * D * (q4 ? 2 : 1) } }, layers: Array.from({ length: L }, () => ({ q: mk(D, H * hd), k: mk(D, Hkv * hd), v: mk(D, Hkv * hd), o: mk(H * hd, D), g: mk(D, I), u: mk(D, I), d: mk(I, D), inNorm: { byteLength: D * 4 }, postNorm: { byteLength: D * 4 } })) };
   }
   const CFGS = [{ maxT: 2048, maxM: 256 }, { maxT: 1024, maxM: 128 }, { maxT: 512, maxM: 64 }];
   // 依 GPU 記憶體上限挑配置（G＝FaQwenGpu）：先找「全常駐」的最大序列上限（快），找不到再允許分層（序列上限由大到小、1024 起，常駐層盡量多）；都放不下回 ok:false（minNeed＝最小分層配置的需求）
@@ -110,11 +111,11 @@
     return { ok: false, cfg: c, plan: p, mode: 'none' };
   }
   // 一行說明（介面用）：「需要約 X MB、上限 Y MB → 全常駐／分層（常駐 N／L 層）／放不下」
-  function describe(G, m, budgetBytes) {
-    const W = shapeW(m.shape), r = choosePlan(G, W, budgetBytes), mb = (b) => Math.round(b / MiB) + ' MB', fullNeed = G.estimateEngineBytes(W, { maxT: 2048, maxM: 256 }).total;
-    if (r.mode === 'full') return { mode: 'full', text: m.label + '：全部放進 GPU 約需 ' + mb(r.plan.need.total) + '（序列上限 ' + r.cfg.maxT + '），上限 ' + mb(budgetBytes) + ' → 全常駐' };
-    if (r.mode === 'streamed') return { mode: 'streamed', resident: r.plan.resident, text: m.label + '：全部放進 GPU 約需 ' + mb(fullNeed) + '，上限 ' + mb(budgetBytes) + ' → 分層（常駐 ' + r.plan.resident + '／' + W.L + ' 層，其餘每步串流，較慢；序列上限 ' + r.cfg.maxT + '）' };
-    return { mode: 'none', text: m.label + '：全部約需 ' + mb(fullNeed) + '，最小分層配置也要 ' + mb(r.plan.need.total) + '，上限 ' + mb(budgetBytes) + ' → 放不下（GPU 解碼不用，改走其他路徑）' };
+  function describe(G, m, budgetBytes, fmt) {
+    const q4 = fmt === 'q4', W = shapeW(m.shape, fmt), tag = q4 ? ' q4f16' : ' q8', r = choosePlan(G, W, budgetBytes), mb = (b) => Math.round(b / MiB) + ' MB', fullNeed = G.estimateEngineBytes(W, { maxT: 2048, maxM: 256 }).total;
+    if (r.mode === 'full') return { mode: 'full', text: m.label + tag + '：全部放進 GPU 約需 ' + mb(r.plan.need.total) + '（序列上限 ' + r.cfg.maxT + '），上限 ' + mb(budgetBytes) + ' → 全常駐' };
+    if (r.mode === 'streamed') return { mode: 'streamed', resident: r.plan.resident, text: m.label + tag + '：全部放進 GPU 約需 ' + mb(fullNeed) + '，上限 ' + mb(budgetBytes) + ' → 分層（常駐 ' + r.plan.resident + '／' + W.L + ' 層，其餘每步串流，較慢；序列上限 ' + r.cfg.maxT + '）' };
+    return { mode: 'none', text: m.label + tag + '：全部約需 ' + mb(fullNeed) + '，最小分層配置也要 ' + mb(r.plan.need.total) + '，上限 ' + mb(budgetBytes) + ' → 放不下（GPU 解碼不用，改走其他路徑）' };
   }
-  return { shapeW, choosePlan, describe, MODELS, get, isFamily, paths, status, download, readBytes, remove, urlOf, nParts, partLen, fmt, TOK };
+  return { shapeW, choosePlan, describe, MODELS, get, getQ4, isFamily, paths, status, download, readBytes, remove, urlOf, nParts, partLen, fmt, TOK };
 });

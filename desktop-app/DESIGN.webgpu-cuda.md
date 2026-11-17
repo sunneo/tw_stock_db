@@ -975,3 +975,20 @@ Python 模擬器與離線模型推論共用同一個 GPU 裝置：
 5. **設定 UI ✅**：「GPU 記憶體上限」旁每個模型一行「全部約需 X MB、上限 Y MB → 全常駐／分層（常駐 N／28 層）／放不下」＋狀態（已下載／下載到一半／尚未下載）＋下載、停止、刪除按鈕；改上限或偵測後即時更新。**沒有在真的桌面版視窗裡點過這些按鈕**（這台是無頭驗證，沒有 Electron 橋接）：邏輯由 `qwen_models.test.js`（22 項）與 `gpu-mem-settings.test.js` 的接線檢查涵蓋。
 6. **原生路徑 ✅（不動主程序檔）**：`nr-engine.js`／`nr-child.js` 只認 `native-models/qwen3-0.6b-q8`，`HIDDEN=1024` 寫死；`NATIVE_MODEL_ID` 維持 `qwen3-0.6b`，所以選 1.7B 時自動不走原生，改走 GPU 整段解碼（設定 `qwenGpuDecode` 開、已下載、放得下或可分層）→ 否則 transformers.js 的 WebGPU／WASM（由 HF 自動下載 q4f16／q8，與其他離線模型相同）。設定畫面與模型標示都寫明。若要讓原生路徑支援 1.7B：改 `HIDDEN`、模型目錄與 LoRA 槽版轉換，要發新的執行包（主程序檔不能熱更新），**沒有做**。
 - **仍然沒量到**：真 GPU 的速度、顯存與串流成本；1.7B 的任務品質（工具呼叫、中文）；引擎 `maxT` 最多 2048，而 1.7B 登錄的 contextTokens 是 8192——提示超過引擎序列上限時 `canRun` 會讓這一輪退回 WebGPU／WASM 路徑（log 有原因）。
+
+### 7.31 Qwen3 q4f16 整段 GPU 解碼（transformers.js 預設格式；2026-11-17，清單 C'）
+**接上了。** 之前清單 C 標 BLOCKED 是錯判：q4f16 的圖與 q8 同構，差別只在投影（MatMulNBits）、lm_head（fp16）與沒有激活動態量化。
+- **圖（用 `onnx_lite` 對真檔逐節點確認，0.6B `onnx/model_q4f16.onnx` 569,789,750；1.7B 1,426,069,098，單檔）**：嵌入 `Gather`（fp16 [V,D]）→ 每層 `SimplifiedLayerNormalization`／`SkipSimplifiedLayerNormalization`（殘差加法融合進 RMSNorm，數學同我們的 add＋rms）→ 7 個 `MatMulNBits`（bits 4、block 32、無 zero_points、零點 8、權重 [N,K/32,16]、scales fp16）→ q／k 逐頭 RMSNorm → `RotaryEmbedding`（rotate-half，`cos_cache`／`sin_cache` 是 **fp16** 常數 [40960,64]）→ `GroupQueryAttention` → … → `lm_head/MatMul`（x · `embed_tokens.weight` 轉置，**未量化 fp16**，與嵌入共用同一份）→ Cast f32。節點統計：MatMulNBits 196、SkipSimplifiedLayerNormalization 56、SimplifiedLayerNormalization 57、GroupQueryAttention 28、RotaryEmbedding 56。
+- **實作**：`gpu/qwen_decode_q4.js`（載入：fp16→f32 norm 權重、Q4＋fp16 scales 位元組、fp16 嵌入表與 `embedRows`、取檔內 fp16 cos／sin 快取；只接受 bits 4／block 32）；`qwen_gpu.js` 加 `fmt:'q4'` 分支（`WGSL.mm4`：f32 輸入、逐塊累加再乘 fp16 scale；`WGSL.lm16`：fp16 lm_head，`unpack2x16float`；q4 沒有 quant 步驟；分層串流的共用層緩衝區同時有 W 與 S；`estimateEngineBytes`／`planLayers` 同步支援）。與 q8 引擎共用：每層一次提交、停止、失效處理、記憶體上限與分層。
+- **驗證（軟體 WebGPU 的無頭 Chrome，對真 ORT 1.22 CPU 的 q4f16 圖；貪婪 16 詞元 × 2 組提示）**：
+
+| 模型／配置 | 詞元對 ORT | 估算＝實際 | 首步 logits 相對差（對 ORT 前 4096 個） |
+|---|---|---|---|
+| 0.6B 全常駐 | 16/16、16/16 | 578,113,072＝578,113,072 | 2.1e-3 |
+| 1.7B 全常駐 | 16/16、16/16 | 1,436,348,112＝1,436,348,112 | 1.5e-3 |
+| 1.7B 上限 900 MB（常駐 9／串流 19） | 16/16、16/16 | 926,740,176＝926,740,176 | — |
+
+  **如實回報**：使用者轉述的期望「接近到 1e-5～1e-6」**沒有達到**，實測是 1.5e-3～2e-3：ORT 的 q4f16 圖用 fp16 激活（每個運算都捨入成 fp16），我們用 f32 激活，所以數值不會逐位相同。對照 q8 路徑的 logits 差 3%～25%（動態量化離群通道），q4f16 好很多，**64 個比對詞元（4 條序列）全部相同**，但樣本很小，平手附近的詞元仍可能翻轉，不能宣稱必然逐字相同。參考是 ORT **CPU** 執行 fp16 圖，沒有對 ORT-web 的 WebGPU 版比（這台沒有真 GPU，軟體 WebGPU 上 ORT-web 不一定支援 fp16）。軟體 WebGPU 每詞元 1.5～2.8 秒，**不代表真 GPU**。
+- **接線（`floating-assistant.js`）**：`_llmGenerateInner` 在 transformers.js 原路徑**之前**先試 `_qwenGpuChat(…, 'q4')`（設定 `qwenGpuQ4`，預設 off；`gpuAccel` 開且有真 GPU 時由 `device_pick` 的 `qwenGpuQ4` 自動開；進階區有手動勾選）。權重來源是 transformers.js（Worker 內，`env.useBrowserCache`）存進瀏覽器 Cache API 的 q4f16 檔與 tokenizer.json（`_qwenCacheGet`，同 origin，網頁版也能用，不另外下載）；**第一次回答由 transformers.js 路徑下載並快取，之後的回答才用我們的引擎**。沒有快取檔、大小不符、有網頁版 LoRA、放不下（`GPU_BUDGET`）或任何錯誤都退回 transformers.js，原因寫進 log 與 `_qwenChatDiag`；引擎出錯會記 `fa_gpu_broken:qwenGpuQ4` 之後自動停用（切換「GPU 加速」可重來）。提示樣板與 tokenizer 沿用 q8 路徑的做法（`nr_template` 的 qwen3-chatml、tokenizer.json），支援停止、串流輸出、thinking 開關（同 `enableThinking`）。
+- **畫面**：每個模型一行列出可用後端與各自大小（transformers.js q4f16 約 1360 MB 不受上限與分層管；我們的整段解碼 q4f16／q8 受上限、放不下時分層；原生 CPU 只支援 0.6B），並分別顯示 q4f16 與 q8 的「需要多少／上限／全常駐或分層」。
+- **沒驗證**：(1) 真 GPU 的速度與穩定性（`device_pick` 讓真 GPU 自動開這條，之前 q8 路徑在使用者的舊顯卡曾 `DXGI_ERROR_DEVICE_HUNG`，原因未確認；這條有記憶體上限、失敗自動停用與停止可用，但沒在那台機器上跑過）。(2) **transformers.js 路徑本身載入 1.7B q4f16 並生成**（原本要求的 verified:false 實測）：沒做——需要 ORT-web 的 WebGPU fp16，這台軟體 WebGPU 不能代表；我只驗了同一份權重在我們的引擎與 ORT CPU 上一致。(3) Electron 視窗內實際走 `caches` 讀取（`_qwenCacheGet`）：邏輯由接線檢查涵蓋，沒有在真的桌面版視窗跑過。(4) 與 q8 引擎同樣：序列上限最多 2048（1.7B 登錄的 contextTokens 是 8192，超過時 `canRun` 讓該輪退回）。

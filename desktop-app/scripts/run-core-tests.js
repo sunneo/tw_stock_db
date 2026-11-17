@@ -105,6 +105,7 @@ const suites = [
     ['node renderer/src/studio/domain_spec_core.test.js（補登）', 'renderer/src/studio/domain_spec_core.test.js'],
     ['裝置自動選擇：決策規則（軟體 adapter 關、基準門檻）、探測不丟錯', 'renderer/src/gpu/device_pick_test.js'],
     ['Qwen3 模型表：分段下載（續傳、重試、sha 核對、停止）、讀入、依上限挑配置與說明', 'renderer/src/gpu/qwen_models.test.js'],
+    ['Qwen3 q4f16 載入：fp16 解碼表', 'renderer/src/gpu/qwen_decode_q4.test.js'],
     ['Qwen3 GPU 引擎：記憶體估算與分層規劃（常駐層數、放不下、不允許分層）', 'renderer/src/gpu/qwen_gpu_plan.test.js'],
     ['GPU 記憶體上限：設定解析、建議值、探測（容量／溢出／裝置遺失／逾時／軟體 adapter／釋放）', 'renderer/src/gpu/gpu_mem.test.js'],
     ['GPU 記憶體上限接線：設定白名單、引擎配置前預算檢查、介面', 'scripts/gpu-mem-settings.test.js'],

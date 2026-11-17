@@ -14,11 +14,11 @@ const modelPath = process.env.QWEN_Q8 || path.join(base, 'native-models', 'qwen3
 const rd = (p) => fs.readFileSync(path.join(ROOT, 'renderer', 'src', 'gpu', p), 'utf8');
 const refs = fs.readdirSync(REFDIR).filter((f) => /^ref.*\.json$/.test(f)).sort().map((f) => JSON.parse(fs.readFileSync(path.join(REFDIR, f), 'utf8')));
 
-const MODS = ['onnx_lite', 'nn_ops', 'infer_ops', 'attn_ops', 'qwen_decode', 'qwen_gpu', 'gpu_mem'];
+const MODS = ['onnx_lite', 'nn_ops', 'infer_ops', 'attn_ops', 'qwen_decode', 'qwen_gpu', 'gpu_mem', 'qwen_decode_q4'];
 let bundle = 'window.__Q = (function () {\nvar MODS = {}, CACHE = {};\n';
 bundle += 'function req(p) { var n = String(p).replace(/^\\.\\//, "").replace(/\\.js$/, ""); if (n === "gpu_core") return window.FaGpuCore; if (CACHE[n]) return CACHE[n].exports; if (!MODS[n]) throw new Error("沒有模組 " + p); var m = { exports: {} }; CACHE[n] = m; MODS[n].call(m.exports, m, m.exports, req); return m.exports; }\n';
 for (const n of MODS) bundle += 'MODS[' + JSON.stringify(n) + '] = function (module, exports, require) {\n' + rd(n + '.js') + '\n};\n';
-bundle += 'return { decode: req("qwen_decode"), gpu: req("qwen_gpu"), mem: req("gpu_mem") };\n})();\n';
+bundle += 'return { decode: req("qwen_decode"), gpu: req("qwen_gpu"), mem: req("gpu_mem"), q4: req("qwen_decode_q4") };\n})();\n';
 
 const PAGE = `<!doctype html><meta charset="utf-8"><title>Qwen3 GPU 解碼驗證</title>
 <body style="font:14px/1.5 system-ui;margin:16px"><h3>Qwen3-0.6B q8 整段 GPU 解碼（WGSL）對 CPU 參考與 ORT</h3><pre id="out">執行中…</pre>
@@ -34,7 +34,8 @@ const PAGE = `<!doctype html><meta charset="utf-8"><title>Qwen3 GPU 解碼驗證
     const buf = new Uint8Array(await (await fetch('/model')).arrayBuffer());
     R.loadMs = Math.round(performance.now() - t); log('模型 ' + buf.length + ' 位元組，下載 ' + R.loadMs + ' ms');
     t = performance.now();
-    const W = Q.loadWeights(buf);
+    const Q4 = ${process.env.QWEN_FMT === 'q4' ? 'true' : 'false'}; R.fmt = Q4 ? 'q4' : 'q8';
+    const W = Q4 ? window.__Q.q4.loadWeights(buf, { maxPos: 64 }) : Q.loadWeights(buf);
     R.parseMs = Math.round(performance.now() - t); log('解析權重 ' + R.parseMs + ' ms');
     const ad = await navigator.gpu.requestAdapter();
     if (!ad) throw new Error('沒有 WebGPU 介面卡');
@@ -45,10 +46,10 @@ const PAGE = `<!doctype html><meta charset="utf-8"><title>Qwen3 GPU 解碼驗證
     dev.addEventListener && dev.addEventListener('uncapturederror', (e) => log('uncapturederror：' + e.error.message));
     t = performance.now();
     const BUDGET = ${Number(process.env.QWEN_BUDGETMB) || 0} * 1048576; R.budgetBytes = BUDGET;
-    const eng = await G.createGpuEngine(dev, W, { maxT: 64, maxM: 32, chunkM: ${Number(process.env.QWEN_CHUNKM) || 16}, trace: !BUDGET, budgetBytes: BUDGET || undefined });
+    const eng = await G.createGpuEngine(dev, W, { maxT: 64, maxM: 32, chunkM: ${Number(process.env.QWEN_CHUNKM) || 16}, trace: !BUDGET && !Q4, budgetBytes: BUDGET || undefined });
     R.setupMs = Math.round(performance.now() - t); R.engine = eng.info; log('GPU 引擎就緒 ' + R.setupMs + ' ms，派發 ' + eng.info.dispatches + ' 個，lm_head ' + eng.info.lmChunks + ' 塊');
     // GPU 記憶體上限：估算要與實際配置逐位元組相符；超過 budgetBytes 要在配置前丟 GPU_BUDGET；探測在軟體 WebGPU 上不量
-    R.estimate = G.estimateEngineBytes(W, { maxT: 64, maxM: 32, trace: !BUDGET, residentLayers: eng.info.residentLayers }); R.actualBytes = eng.info.gpuBytes;
+    R.estimate = G.estimateEngineBytes(W, { maxT: 64, maxM: 32, trace: !BUDGET && !Q4, residentLayers: eng.info.residentLayers }); R.actualBytes = eng.info.gpuBytes;
     try { await G.createGpuEngine(dev, W, { maxT: 64, maxM: 32, budgetBytes: 1 << 20 }); R.budgetErr = { code: 'none' }; } catch (e) { R.budgetErr = { code: e.code, msg: e.message }; }
     R.probe = await window.__Q.mem.probe(navigator, {});
     const REFS = ${JSON.stringify(refs)};
@@ -61,7 +62,7 @@ const PAGE = `<!doctype html><meta charset="utf-8"><title>Qwen3 GPU 解碼驗證
       R.cases.push(item); log(JSON.stringify(item));
     }
     // 診斷：第 3 組（第一個詞元就和 CPU 參考不同的那組）逐層殘差流對 CPU 參考引擎
-    if (!BUDGET) {
+    if (!BUDGET && !Q4) {
       const dp = REFS.find((r) => r.prompt[0] === 9707) || REFS[0];
       eng.reset(); const g = await eng.step(dp.prompt, { trace: true, logits: true });
       const ce = Q.createCpuEngine(W, { maxT: 16, trace: true }); const cl = ce.step(dp.prompt);
@@ -74,8 +75,9 @@ const PAGE = `<!doctype html><meta charset="utf-8"><title>Qwen3 GPU 解碼驗證
     R.firstLogits16 = Array.from(f.logits.subarray(0, 16)); R.ortLogits16 = REFS[REFS.length - 1].ortLogits0;
     let ma = 0, mr = 0; for (let i = 0; i < 16; i++) { ma = Math.max(ma, Math.abs(R.firstLogits16[i] - R.ortLogits16[i])); mr = Math.max(mr, Math.abs(R.ortLogits16[i])); }
     R.firstLogitsRel16 = ma / (mr || 1);
+    { const rr = REFS[REFS.length - 1]; if (rr.rows4k) { let m2 = 0, M2 = 0; for (let i = 0; i < 4096; i++) { m2 = Math.max(m2, Math.abs(f.logits[i] - rr.rows4k[0][i])); M2 = Math.max(M2, Math.abs(rr.rows4k[0][i])); } R.firstLogitsRel4k = m2 / (M2 || 1); } }
     // 通過：GPU 與 CPU 參考引擎在所有組都相同（同樣數學）；與 ORT 相同的組數另外回報
-    R.pass = R.cases.length > 0 && R.cases.every((x) => (BUDGET ? x.eqOrt : x.eqCpu));
+    R.pass = R.cases.length > 0 && R.cases.every((x) => (BUDGET || Q4 ? x.eqOrt : x.eqCpu));
     R.ortAgree = R.cases.filter((x) => x.eqOrt).length + '/' + R.cases.length;
   } catch (e) { R.error = String((e && e.stack) || e); }
   out.textContent = (R.pass ? '驗證通過' : '驗證未通過') + '\\n' + JSON.stringify(R, null, 1);

@@ -240,6 +240,69 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>, @builtin(workgroup_id) wid
   if (lid.x == 0u && row < p.rows) { y[row] = sh[0] * p.scale; }
 }`;
 
+  // q4（MatMulNBits，bits 4、block 32、無 zero_points、零點固定 8）矩陣乘：輸入是 f32（q4f16 圖沒有激活動態量化），權重 [N,nBlocks,16]（每塊 16 位元組＝4 個 u32，
+  // 低 4 位元是偶數 k），scales 是 fp16（兩個一組塞進 u32，用 unpack2x16float 取）。一個執行緒一個輸出格 (m, n)，逐塊累加（塊內先加再乘 scale）。
+  WGSL.mm4 = STEP + `
+struct P { K: u32, N: u32, nb: u32, a: u32 }
+@group(0) @binding(0) var<storage, read> x: array<f32>;
+@group(0) @binding(1) var<storage, read> w: array<u32>;
+@group(0) @binding(2) var<storage, read> sc: array<u32>;
+@group(0) @binding(3) var<storage, read_write> y: array<f32>;
+@group(0) @binding(4) var<uniform> p: P;
+@group(0) @binding(5) var<uniform> st: Step;
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let n = gid.x; let m = gid.y;
+  if (n >= p.N || m >= st.M) { return; }
+  var acc: f32 = 0.0;
+  let xb = m * p.K;
+  for (var b: u32 = 0u; b < p.nb; b = b + 1u) {
+    let bi = n * p.nb + b;
+    let s2 = unpack2x16float(sc[bi >> 1u]);
+    let s = select(s2.x, s2.y, (bi & 1u) == 1u);
+    var part: f32 = 0.0;
+    for (var j: u32 = 0u; j < 4u; j = j + 1u) {
+      let wd = w[bi * 4u + j];
+      let k0 = b * 32u + j * 8u;
+      for (var t: u32 = 0u; t < 4u; t = t + 1u) {
+        let by = (wd >> (t * 8u)) & 255u;
+        part = part + (f32(by & 15u) - 8.0) * x[xb + k0 + t * 2u] + (f32(by >> 4u) - 8.0) * x[xb + k0 + t * 2u + 1u];
+      }
+    }
+    acc = acc + part * s;
+  }
+  y[m * p.N + n] = acc;
+}`;
+
+  // fp16 lm_head（q4f16 圖的 lm_head 是未量化的 fp16 矩陣乘）：一個工作群組算一列（vocab 一列），fp16 兩個一組塞進 u32。
+  WGSL.lm16 = `
+struct P { rows: u32, K: u32, a: u32, b: u32 }
+@group(0) @binding(0) var<storage, read> x: array<f32>;
+@group(0) @binding(1) var<storage, read> w: array<u32>;
+@group(0) @binding(2) var<storage, read_write> y: array<f32>;
+@group(0) @binding(3) var<uniform> p: P;
+var<workgroup> sh: array<f32, 64>;
+@compute @workgroup_size(64)
+fn main(@builtin(local_invocation_id) lid: vec3<u32>, @builtin(workgroup_id) wid: vec3<u32>) {
+  let row = wid.y * 65535u + wid.x;
+  let kw = p.K >> 1u;
+  var acc: f32 = 0.0;
+  if (row < p.rows) {
+    let base = row * kw;
+    for (var j: u32 = lid.x; j < kw; j = j + 64u) {
+      let v = unpack2x16float(w[base + j]);
+      acc = acc + x[2u * j] * v.x + x[2u * j + 1u] * v.y;
+    }
+  }
+  sh[lid.x] = acc;
+  workgroupBarrier();
+  for (var s: u32 = 32u; s > 0u; s = s >> 1u) {
+    if (lid.x < s) { sh[lid.x] = sh[lid.x] + sh[lid.x + s]; }
+    workgroupBarrier();
+  }
+  if (lid.x == 0u && row < p.rows) { y[row] = sh[0]; }
+}`;
+
   // argmax：嚴格大於、索引小者優先（與 JS 版相同的平手規則）
   WGSL.argmax = `
 struct P { V: u32, a: u32, b: u32, c: u32 }
@@ -274,21 +337,22 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
     const o = opts || {}, maxT = o.maxT || 512, maxM = o.maxM || 64;
     const D = W.D, H = W.H, Hkv = W.Hkv, hd = W.hd, Nq = H * hd, Nk = Hkv * hd, I = W.I, V = W.V;
     const sz = (n) => Math.max(16, (n + 3) & ~3);
+    const q4 = W.fmt === 'q4', eb = q4 ? 2 : 1;   // q4：lm_head 是 fp16（每元素 2 位元組）
     const R = o.residentLayers == null ? W.L : Math.max(0, Math.min(W.L, o.residentLayers));   // 常駐層數；其餘層每步串流（共用一組層緩衝區）
     let weights = 0, kv = 0, scratch = 0; const slotMax = {};
     for (let l = 0; l < W.L; l++) {
       const Ly = W.layers[l];
-      for (const k of MATS) { const n = sz(Ly[k].W.length); if (l < R) weights += n; slotMax[k] = Math.max(slotMax[k] || 0, n); }
-      weights += sz(Ly.inNorm.byteLength) + sz(Ly.postNorm.byteLength) + sz(2 * hd * 4) + 18 * 32;
+      for (const k of MATS) { const n = sz(Ly[k].W.length) + (Ly[k].S ? sz(Ly[k].S.length) : 0); if (l < R) weights += n; slotMax[k] = Math.max(slotMax[k] || 0, n); }
+      weights += sz(Ly.inNorm.byteLength) + sz(Ly.postNorm.byteLength) + sz(2 * hd * 4) + (q4 ? 14 : 18) * 32;   // q4 沒有動態量化，少 4 個 uniform
       kv += sz(2 * maxT * Nk * 4);
     }
     if (R < W.L) for (const k of MATS) weights += slotMax[k];                          // 串流用的共用層緩衝區（一層份）
     // lm_head 分塊（與 createGpuEngine 同一公式，單塊上限預設 64 MiB、列數對齊 64）：每塊一個 uniform；另有最後 RMSNorm、argmax 各一個 uniform
-    const rowsPer = Math.max(64, Math.floor(Math.min(o.chunkBytes || (64 << 20), o.maxStorageBytes || (128 << 20)) / D / 64) * 64), nChunks = Math.ceil(V / rowsPer);
-    let lmHead = 0; for (let r = 0; r < V; r += rowsPer) lmHead += sz(Math.min(rowsPer, V - r) * D);
+    const rowsPer = Math.max(64, Math.floor(Math.min(o.chunkBytes || (64 << 20), o.maxStorageBytes || (128 << 20)) / (D * eb) / 64) * 64), nChunks = Math.ceil(V / rowsPer);
+    let lmHead = 0; for (let r = 0; r < V; r += rowsPer) lmHead += sz(Math.min(rowsPer, V - r) * D * eb);
     lmHead += (nChunks + 2) * 32;
     const m = maxM;
-    for (const n of [m * D * 4, m * D * 4, m * D * 4, m * Math.max(Nq, D, I) * 4, 16, m * Nq * 4, m * Nk * 4, m * Nk * 4, m * Nq * 4, m * Nq * 4,
+    for (const n of [m * D * 4, m * D * 4, m * D * 4, q4 ? 16 : m * Math.max(Nq, D, I) * 4, 16, m * Nq * 4, m * Nk * 4, m * Nk * 4, m * Nq * 4, m * Nq * 4,
       m * D * 4, m * I * 4, m * I * 4, m * I * 4, m * D * 4, m * H * maxT * 4, D * 4, V * 4, 16, 2 * maxT * (hd / 2) * 4, W.finalNorm.byteLength]) scratch += sz(n);
     scratch += 16 + 16;                                                  // step 緩衝區、讀回 token
     scratch += sz(V * 4);                                                // 讀回 logits
@@ -357,13 +421,15 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
     // 活動緩衝區（以 maxM 列配置）
     const stBuf = mk(16, USAGE.UNIFORM | USAGE.COPY_DST); bufs.push(stBuf);
     const hA = sbuf(maxM * D * 4), hB = sbuf(maxM * D * 4), xn = sbuf(maxM * D * 4);
-    const qi = sbuf(maxM * Math.max(Nq, D, I) * 4), qs = sbuf(16);
+    const q4 = W.fmt === 'q4', eb = q4 ? 2 : 1;
+    const qi = sbuf(q4 ? 16 : maxM * Math.max(Nq, D, I) * 4), qs = sbuf(16);
     const qb = sbuf(maxM * Nq * 4), kb = sbuf(maxM * Nk * 4), vb = sbuf(maxM * Nk * 4), qr = sbuf(maxM * Nq * 4), ao = sbuf(maxM * Nq * 4);
     const ob = sbuf(maxM * D * 4), gb = sbuf(maxM * I * 4), ub = sbuf(maxM * I * 4), act = sbuf(maxM * I * 4), db = sbuf(maxM * D * 4);
     const scr = sbuf(maxM * H * maxT * 4);
     const xlast = sbuf(D * 4), logits = sbuf(V * 4), tokBuf = sbuf(16);
     const half = hd / 2, trig = new Float32Array(2 * maxT * half);
-    for (let p = 0; p < maxT; p++) for (let i = 0; i < half; i++) { const ang = p * Math.pow(W.theta, -2 * i / hd); trig[p * half + i] = Math.cos(ang); trig[maxT * half + p * half + i] = Math.sin(ang); }
+    if (W.cosSin) { if (W.cosSin.rows < maxT) throw new Error('qwen_gpu：RoPE 快取只有 ' + W.cosSin.rows + ' 列，小於序列上限 ' + maxT); trig.set(W.cosSin.cos.subarray(0, maxT * half), 0); trig.set(W.cosSin.sin.subarray(0, maxT * half), maxT * half); }   // q4f16：用圖內的 fp16 快取（ORT 用的同一份）
+    else for (let p = 0; p < maxT; p++) for (let i = 0; i < half; i++) { const ang = p * Math.pow(W.theta, -2 * i / hd); trig[p * half + i] = Math.cos(ang); trig[maxT * half + p * half + i] = Math.sin(ang); }
     const trigB = fbuf(trig);
     const finalN = fbuf(W.finalNorm);
 
@@ -375,45 +441,51 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
     const rowsG = (M) => [Math.ceil(M / 64), 1];
     const mmG = (N) => (M) => [Math.ceil(N / 64), M];
     const slots = {}, streamPairs = []; let curStream = false;
-    if (streaming) for (const k of MATS) slots[k] = sbuf(W.layers[0][k].W.length);
+    const slotsS = {};
+    if (streaming) for (const k of MATS) { slots[k] = sbuf(W.layers[0][k].W.length); if (q4) slotsS[k] = sbuf(W.layers[0][k].S.length); }
     const mmAdd = (src, w, out, name) => {
       const wb = curStream ? slots[name] : wbuf(w.W);
+      if (q4) {
+        const sb = curStream ? slotsS[name] : wbuf(w.S);
+        const u4 = ubuf((d) => { d.setUint32(0, w.K, true); d.setUint32(4, w.N, true); d.setUint32(8, w.K / 32, true); });
+        add('mm4', [src, wb, sb, out, u4, stBuf], mmG(w.N)); return;
+      }
       const u = ubuf((d) => { d.setUint32(0, w.K, true); d.setUint32(4, w.N, true); d.setInt32(8, w.zp, true); d.setFloat32(12, Math.fround(w.scale), true); });
       add('mm', [src, wb, qs, out, u, stBuf], mmG(w.N));
     };
-    const quantAdd = (src, K) => add('quant', [src, qi, qs, ubuf((d) => d.setUint32(0, K, true)), stBuf], () => [1, 1]);
+    const quantAdd = (src, K) => q4 ? 0 : add('quant', [src, qi, qs, ubuf((d) => d.setUint32(0, K, true)), stBuf], () => [1, 1]);
     const rmsAdd = (src, g, dst, last) => add('rms', [src, g, dst, ubuf((d) => { d.setUint32(0, D, true); d.setUint32(4, last ? 1 : 0, true); d.setFloat32(8, W.eps, true); }), stBuf], last ? () => [1, 1] : rowsG);
     const kvBufs = [], layerEnd = [];
     for (let l = 0; l < W.L; l++) {
       const Ly = W.layers[l];
       const kv = sbuf(2 * maxT * Nk * 4); kvBufs.push(kv);
-      curStream = l >= R; if (curStream) streamPairs[l] = MATS.map((k) => [slots[k], Ly[k].W]);
+      curStream = l >= R; if (curStream) streamPairs[l] = MATS.flatMap((k) => (q4 ? [[slots[k], Ly[k].W], [slotsS[k], Ly[k].S]] : [[slots[k], Ly[k].W]]));
       const inN = fbuf(Ly.inNorm), postN = fbuf(Ly.postNorm);
       const nw = new Float32Array(2 * hd); nw.set(Ly.qNorm, 0); nw.set(Ly.kNorm, hd); const nwB = fbuf(nw);
       rmsAdd(hA, inN, xn, false); quantAdd(xn, D);
-      mmAdd(qi, Ly.q, qb, 'q'); mmAdd(qi, Ly.k, kb, 'k'); mmAdd(qi, Ly.v, vb, 'v');
+      mmAdd(q4 ? xn : qi, Ly.q, qb, 'q'); mmAdd(q4 ? xn : qi, Ly.k, kb, 'k'); mmAdd(q4 ? xn : qi, Ly.v, vb, 'v');
       add('qk', [qb, kb, vb, nwB, trigB, qr, kv, ubuf((d) => { d.setUint32(0, H, true); d.setUint32(4, Hkv, true); d.setUint32(8, hd, true); d.setUint32(12, maxT, true); d.setFloat32(16, W.eps, true); }), stBuf], (M) => [Math.ceil(M * (H + Hkv) / 64), 1]);
       add('attn', [qr, kv, scr, ao, ubuf((d) => { d.setUint32(0, H, true); d.setUint32(4, Hkv, true); d.setUint32(8, hd, true); d.setUint32(12, maxT, true); d.setFloat32(16, 1 / Math.sqrt(hd), true); }), stBuf], (M) => [Math.ceil(M * H / 64), 1]);
-      quantAdd(ao, Nq); mmAdd(qi, Ly.o, ob, 'o');
+      quantAdd(ao, Nq); mmAdd(q4 ? ao : qi, Ly.o, ob, 'o');
       add('add', [hA, ob, hB, ubuf((d) => d.setUint32(0, D, true)), stBuf], (M) => [Math.ceil(M * D / 64), 1]);
       rmsAdd(hB, postN, xn, false); quantAdd(xn, D);
-      mmAdd(qi, Ly.g, gb, 'g'); mmAdd(qi, Ly.u, ub, 'u');
+      mmAdd(q4 ? xn : qi, Ly.g, gb, 'g'); mmAdd(q4 ? xn : qi, Ly.u, ub, 'u');
       add('silu', [gb, ub, act, ubuf((d) => d.setUint32(0, I, true)), stBuf], (M) => [Math.ceil(M * I / 64), 1]);
-      quantAdd(act, I); mmAdd(qi, Ly.d, db, 'd');
+      quantAdd(act, I); mmAdd(q4 ? act : qi, Ly.d, db, 'd');
       add('add', [hB, db, hA, ubuf((d) => d.setUint32(0, D, true)), stBuf], (M) => [Math.ceil(M * D / 64), 1]);
       layerEnd.push(plan.length);
     }
     rmsAdd(hA, finalN, xlast, true);
     // lm_head 分塊（列數取 64 的倍數，logits 的綁定位移要符合 256 位元組對齊）
     const align = (lim.minStorageBufferOffsetAlignment || 256) / 4;
-    const rowsPer = Math.max(align, Math.floor(chunkBytes / D / align) * align);
+    const rowsPer = Math.max(align, Math.floor(chunkBytes / (D * eb) / align) * align);
     const lmChunks = [];
     for (let r = 0; r < V; r += rowsPer) {
       const n = Math.min(rowsPer, V - r);
-      const wb = wbuf(W.emb.W.subarray(r * D, (r + n) * D));
-      const u = ubuf((d) => { d.setUint32(0, n, true); d.setUint32(4, D, true); d.setInt32(8, W.emb.zp, true); d.setFloat32(12, Math.fround(W.emb.scale), true); });
+      const wb = wbuf(W.emb.W.subarray(r * D * eb, (r + n) * D * eb));
+      const u = ubuf((d) => { d.setUint32(0, n, true); d.setUint32(4, D, true); if (!q4) { d.setInt32(8, W.emb.zp, true); d.setFloat32(12, Math.fround(W.emb.scale), true); } });
       const entries = [{ binding: 0, resource: { buffer: xlast } }, { binding: 1, resource: { buffer: wb } }, { binding: 2, resource: { buffer: logits, offset: r * 4, size: n * 4 } }, { binding: 3, resource: { buffer: u } }];
-      plan.push({ pipe: pipes.lm, bg: dev.createBindGroup({ layout: pipes.lm.getBindGroupLayout(0), entries }), groups: () => [Math.min(n, 65535), Math.ceil(n / 65535)] });
+      plan.push({ pipe: q4 ? pipes.lm16 : pipes.lm, bg: dev.createBindGroup({ layout: (q4 ? pipes.lm16 : pipes.lm).getBindGroupLayout(0), entries }), groups: () => [Math.min(n, 65535), Math.ceil(n / 65535)] });
       lmChunks.push(n);
     }
     add('argmax', [logits, tokBuf, ubuf((d) => d.setUint32(0, V, true))], () => [1, 1]);
@@ -436,7 +508,7 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
         if (M < 1 || M > maxM) throw new Error('qwen_gpu：一次的詞元數 ' + M + ' 超出範圍 1..' + maxM);
         if (len + M > maxT) throw new Error('qwen_gpu：序列超過上限 ' + maxT);
         const ts = (typeof performance !== 'undefined' ? performance : Date).now();
-        dev.queue.writeBuffer(hA, 0, Q.embedRows(W, ids));
+        dev.queue.writeBuffer(hA, 0, W.embedRows ? W.embedRows(ids) : Q.embedRows(W, ids));
         dev.queue.writeBuffer(stBuf, 0, new Uint32Array([M, len, 0, 0]));
         const trace = !!(so && so.trace);
         if (trace && !traceB) throw new Error('qwen_gpu：要 trace 請在建立引擎時傳 trace:true');

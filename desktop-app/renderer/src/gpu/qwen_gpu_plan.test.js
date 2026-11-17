@@ -26,4 +26,14 @@ for (const [W, b] of [[W17, 1200], [W17, 1500], [W06, 450], [W06, 600]]) {
 pl = G.planLayers(W17, { maxT: 512, maxM: 64, budgetBytes: 1500 * MB, allowStream: false }); ok(!pl.ok && /不允許分層/.test(pl.why), 'allowStream:false 放不下就不分層');
 // 無上限（0／未給）＝全常駐
 ok(G.planLayers(W17, { maxT: 512, maxM: 64 }).resident === 28, '沒給上限＝全常駐');
+// ---- q4f16（fmt:'q4'）：每個投影有 W（Q4）與 S（fp16 scales），lm_head 是 fp16 ----
+function W4(D, H, Hkv, I, L, V) { const hd = 128, mk = (K, N) => ({ W: { length: N * (K / 32) * 16 }, S: { length: N * (K / 32) * 2 }, K, N }); return { fmt: 'q4', D, H, Hkv, hd, I, V, L, finalNorm: { byteLength: D * 4 }, emb: { W: { length: V * D * 2 } }, layers: Array.from({ length: L }, () => ({ q: mk(D, H * hd), k: mk(D, Hkv * hd), v: mk(D, Hkv * hd), o: mk(H * hd, D), g: mk(D, I), u: mk(D, I), d: mk(I, D), inNorm: { byteLength: D * 4 }, postNorm: { byteLength: D * 4 } })) }; }
+const Q06 = W4(1024, 16, 8, 3072, 28, 151936), Q17 = W4(2048, 16, 8, 6144, 28, 151936);
+const e4 = (W, o) => G.estimateEngineBytes(W, o).total;
+ok(e4(Q06, { maxT: 64, maxM: 32 }) === 578113072, 'q4 0.6B 估算＝軟體 WebGPU 實測配置 578,113,072（maxT 64／maxM 32）');
+ok(e4(Q17, { maxT: 64, maxM: 32 }) === 1436348112, 'q4 1.7B 估算＝實測配置 1,436,348,112');
+ok(e4(Q17, { maxT: 64, maxM: 32, residentLayers: 9 }) === 926740176, 'q4 1.7B 常駐 9 層估算＝實測 926,740,176');
+let p4 = G.planLayers(Q17, { maxT: 64, maxM: 32, budgetBytes: 900 * MB }); ok(p4.ok && p4.resident === 9 && p4.streamed === 19, 'q4 1.7B 上限 900 MB：常駐 9／串流 19（與實測相同）');
+p4 = G.planLayers(Q17, { maxT: 64, maxM: 32, budgetBytes: 500 * MB }); ok(!p4.ok, 'q4 1.7B 上限 500 MB：lm_head（fp16 約 593 MB）就放不下');
+ok(e4(Q17, { maxT: 512, maxM: 64 }) > e4(Q06, { maxT: 512, maxM: 64 }), 'q4 1.7B 比 0.6B 大');
 console.log(pass + ' 通過 ' + fail + ' 失敗'); process.exit(fail ? 1 : 0);
