@@ -49,7 +49,7 @@ t('rowsFor：本機實測列有 GFLOP/s、勝者標示、驗證狀態', () => {
 });
 
 t('rowsFor：有峰值才算占峰值百分比', () => {
-  const peak = VT.peakFor('wg16384-inv256-f160-sg1');
+  const peak = VT.peakFor('wg16384-inv256-f160-sg0');
   assert.ok(peak && peak.gflops > 0);
   const rows = VT.rowsFor({ shape: '512x1024x1024', variants: [{ id: 'a' }], timings: { a: [10] }, winnerId: 'a', peak: peak });
   const g = VT.gflopsOf({ M: 512, K: 1024, N: 1024 }, 10);

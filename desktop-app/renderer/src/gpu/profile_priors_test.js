@@ -8,13 +8,14 @@ const PP = require('./profile_priors.js');
 let passed = 0;
 function check(name, fn) { fn(); passed++; console.log('ok   ' + name); }
 
-const GT720 = { maxWorkgroupStorage: 16384, maxInvocations: 256, hasF16: false, hasSubgroups: true };
+// GT720：這台應用程式探測到的能力（2026-11-18 真 Electron 實測 subgroups 不可用，簽名 sg0）
+const GT720 = { maxWorkgroupStorage: 16384, maxInvocations: 256, hasF16: false, hasSubgroups: false };
 const LOW = { maxWorkgroupStorage: 16384, maxInvocations: 256, hasF16: false, hasSubgroups: false };
 const MID = { maxWorkgroupStorage: 32768, maxInvocations: 256, hasF16: true, hasSubgroups: false };
 const HIGH = { maxWorkgroupStorage: 49152, maxInvocations: 1024, hasF16: true, hasSubgroups: true };
 
 check('capSig：只看會影響選擇的四個欄位，且固定格式', () => {
-  assert.strictEqual(PP.capSig(GT720), 'wg16384-inv256-f160-sg1');
+  assert.strictEqual(PP.capSig(GT720), 'wg16384-inv256-f160-sg0');
   assert.strictEqual(PP.capSig(LOW), 'wg16384-inv256-f160-sg0');
   assert.strictEqual(PP.capSig(null), 'wg0-inv0-f160-sg0');
 });
@@ -33,9 +34,11 @@ check('查表：GT 720 的簽名命中 measured，首選為手寫 v4', () => {
 });
 
 check('查表：沒有同簽名時退到等級的 heuristic，且 source 標 heuristic（不冒充量測）', () => {
-  const r = PP.lookup(null, LOW, 'matmul');   // 同為低階但 subgroups 不同 → 無 measured
+  const LOW_SG = { maxWorkgroupStorage: 16384, maxInvocations: 256, hasF16: false, hasSubgroups: true };   // 同為低階但 subgroups 可用 → 簽名 sg1，無 measured
+  const r = PP.lookup(null, LOW_SG, 'matmul');
   assert.strictEqual(r.source, 'heuristic');
   assert.strictEqual(r.tier, 'low');
+  assert.strictEqual(PP.lookup(null, LOW, 'matmul').source, 'measured');   // 這台的探測結果（sg0）命中實測
   assert.strictEqual(PP.lookup(null, HIGH, 'matmul').source, 'heuristic');
   assert.strictEqual(PP.lookup(null, MID, 'matmul').tier, 'mid');
 });

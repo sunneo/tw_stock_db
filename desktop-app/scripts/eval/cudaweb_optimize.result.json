@@ -10,7 +10,14 @@
     "batch_matmulnbits_O6_2026_11_18": { "status": "通過", "evidence": "o6_nbits_batch_check.html（真 Chrome）：dec M1、dec M8、pf M32、simple（強制）M5；每案 1 次 submit；相對誤差 1e-7～5e-7。" },
     "qwen_layer_submit_count_O6": { "status": "待驗證（原因：要在真 Chrome 載入 Qwen3-0.6B 權重才能計次；程式證據：qwen_gpu.stepOnce 每層一次 submit，每步 L+1 次）" },
     "g5_variant_table_desktop_panel": { "status": "通過（真 Electron，獨立使用者資料夾與埠 18641：scripts/eval/g5_variant_panel.eval.js；表 10 列含表頭、六個按鈕齊全、套用最佳／匯出／匯入不合法 JSON（拒絕）／匯入 heuristic（拒絕）／恢復預設都有正確狀態文字）。注意：這台的能力簽名算成 sg0（wg16384-inv256-f160-sg0），與 priors 的實測項 sg1 不符，所以實測剖析在這台沒有命中；sg 的真值待確認。AI 助理設定 index.html 沒有 GPU 基準區塊，未加第二處（待管理者決定）。" },
-    "fusion_O7_rms_quant_add": { "status": "待驗證（原因：尚未實作；生產引擎的 quant 與 rms 仍是獨立派發，融合前要先量單獨派發的成本是否值得）" },
+    "race_one_per_variant_2026_11_18": { "status": "通過（每頁一個變體，網址參數指定；每頁 3 次 submit：1 次驗證＋2 次計時，計時含上傳與讀回，牆鐘；相對誤差 1.3e-6～1.4e-6，判準 1e-5）", "pages": "scripts/eval/mm_race_one.html?M=&K=&N=&kernel=", "rows": [
+      { "shape": "64x1024x1024", "kernel": "mm_simple_f32", "msPerRun": [70.5, 60.0], "gflops": 2.06, "pctPeak": 1.6 },
+      { "shape": "64x1024x1024", "kernel": "mm_tiled_f32", "msPerRun": [35.5, 18.3], "gflops": 4.99, "pctPeak": 3.9 },
+      { "shape": "64x1024x1024", "kernel": "mm_vec4_f32", "msPerRun": [23.9, 19.9], "gflops": 6.13, "pctPeak": 4.8 },
+      { "shape": "512x1024x1024", "kernel": "mm_tiled_f32", "msPerRun": [52.2, 43.6], "gflops": 22.4, "pctPeak": 17.6 },
+      { "shape": "512x1024x1024", "kernel": "mm_vec4_f32", "msPerRun": [44.2, 32.0], "gflops": 28.2, "pctPeak": 22.1 }
+    ], "note": "512 的 simple 沒量（估時 54 ms 不超限，但這一輪沒排進來）。這些數字含上傳與讀回，比 kernel-only 的數字低，只標這台；與 mm_race_gt720_2026_11_18.json 的數字不同是因為量法（那份是 3 次 submit 的平均，離群大）。" },
+    "fusion_O7_rms_quant_add":{ "status": "待驗證（原因：尚未實作；生產引擎的 quant 與 rms 仍是獨立派發，融合前要先量單獨派發的成本是否值得）" },
     "training_O8_adamw_fused": { "status": "待驗證（原因：尚未實作；訓練路徑要接 O5 核心與融合的 AdamW）" },
     "kernel_only_2026_11_18": { "status":"量測（r8_time2.html，一次一形狀，最多 3 個 submit，kernel-only：不含上傳與回讀，每 submit 放 R 次派發取平均；峰值 128.4 GFLOP/s）", "rows": [
       { "shape": "64x256x256", "v4_64x64_reg4x4": { "msPerDispatch": 0.58, "GFLOPs": 14.4, "pctPeak": 11.2, "compileMsCold": 4 }, "r8_8x8": { "msPerDispatch": 1.95, "GFLOPs": 4.3, "pctPeak": 3.3, "note": "只有 2 個工作群組，佔用率低" } },

@@ -14,7 +14,7 @@
 
   // 已量過峰值的能力簽名（R0 屋頂，GT 720，peakFlops ≈ 127.5 GFLOP/s）。其他卡沒有量過就顯示「—」，不套用這個數字。
   var PEAKS = {
-    'wg16384-inv256-f160-sg1': { gflops: 127.5, basis: 'R0 屋頂實測（NVIDIA GT 720，WebGPU 純 FMA）' }
+    'wg16384-inv256-f160-sg0':{ gflops: 127.5, basis: 'R0 屋頂實測（NVIDIA GT 720，WebGPU 純 FMA）' }
   };
 
   function peakFor(sig) {

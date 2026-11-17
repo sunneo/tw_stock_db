@@ -31,10 +31,10 @@
   var BUILTIN = {
     schema: 1,
     entries: [
-      { sig: 'wg16384-inv256-f160-sg1', op: 'matmul', shape: '*', source: 'measured',
+      { sig: 'wg16384-inv256-f160-sg0', op: 'matmul', shape: '*', source: 'measured',
         hardware: 'NVIDIA GeForce GT 720（Kepler GK208，14 W）', evidence: 'scripts/eval/g1_gen_check.html、g2_ladder_compile.html；cudaweb_optimize.result.json',
         ranking: ['hand_v4', 'g_128x128_k8_t8x8_v4', 'g_64x64_k8_t4x4_v4', 'g_128x64_k8_t8x4_v4', 'g_64x128_k8_t4x8_v4'],
-        note: '手寫 v4 同機 80.5% 峰值（512×1024×1024）；kernel_gen R8 46.6%。sg 欄位以 Chrome 回報為準，待 G5 頁確認。' },
+        note: '手寫 v4 同機 80.5% 峰值（512×1024×1024）；kernel_gen R8 46.6%。簽名的 sg 欄位改為 sg0：2026-11-18 真 Electron（G5 評估檔）實測這台 adapter 的 subgroups 不可用，簽名為 sg0；先前的 sg1 是 Chrome 獨立頁面的特徵回報，與應用程式的探測不同。' },
       { sig: '*', op: 'matmul', shape: '*', source: 'heuristic', tier: 'low',
         ranking: ['hand_v4', 'g_64x64_k8_t4x4_v4', 'g_64x64_k8_t4x4_s', 'g_32x32_k8_t2x2_s'],
         basis: '屋頂模型：低階 16 KiB 共用記憶體，64×64 塊（4×4 暫存器）是唯一能填滿群組又不超限的大塊；未實測其他低階卡' },
