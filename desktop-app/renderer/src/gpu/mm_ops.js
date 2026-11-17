@@ -52,6 +52,71 @@ const WGSL_MM_F32 = HEAD('f32') + `
   for (var k: u32 = 0u; k < p.K; k = k + 1u) { acc = acc + a[ao + k] * b[bo + k * p.N + j]; }
   y[idx] = acc;
 }`;
+// 平鋪版（f32）：一個工作群組 16×16 個執行緒算 64×64 的輸出，每個執行緒在暫存器裡累加 4×4；A、B 各分 16 層一塊塊搬進共用記憶體再算。
+// 原本的版本一個執行緒算一格、每格迴圈 K 次、每次都讀全域記憶體（沒有任何重用），在 14 W 的舊顯示卡上比 ORT 慢一個數量級。
+// 共用記憶體 2×64×16×4 B = 8 KiB（規格預設上限 16 KiB 以內）。批次在 z 方向；邊界逐元素檢查，任意形狀都對。
+const WGSL_MM_F32_TILED = `// @kernel matmul_tiled
+struct P { B: u32, M: u32, K: u32, N: u32, Bb: u32, azp: i32, bzp: i32, p0: u32 }
+@group(0) @binding(0) var<storage, read> a: array<f32>;
+@group(0) @binding(1) var<storage, read> b: array<f32>;
+@group(0) @binding(2) var<storage, read_write> y: array<f32>;
+@group(0) @binding(3) var<uniform> p: P;
+var<workgroup> As: array<f32, 1024>;
+var<workgroup> Bs: array<f32, 1024>;
+@compute @workgroup_size(16, 16, 1)
+fn main(@builtin(local_invocation_id) lid: vec3<u32>, @builtin(workgroup_id) wid: vec3<u32>) {
+  let n = wid.z;
+  let row0 = wid.y * 64u;
+  let col0 = wid.x * 64u;
+  let ao = n * p.M * p.K;
+  var bo = 0u;
+  if (p.Bb != 1u) { bo = n * p.K * p.N; }
+  let tid = lid.y * 16u + lid.x;
+  var acc: array<f32, 16>;
+  for (var i: u32 = 0u; i < 16u; i = i + 1u) { acc[i] = 0.0; }
+  let tiles = (p.K + 15u) / 16u;
+  for (var t: u32 = 0u; t < tiles; t = t + 1u) {
+    let k0 = t * 16u;
+    for (var s: u32 = 0u; s < 4u; s = s + 1u) {
+      let idx = tid + s * 256u;
+      let ar = idx / 16u;
+      let ak = idx % 16u;
+      let gr = row0 + ar;
+      let gk = k0 + ak;
+      var av: f32 = 0.0;
+      if (gr < p.M && gk < p.K) { av = a[ao + gr * p.K + gk]; }
+      As[idx] = av;
+      let bk = idx / 64u;
+      let bc = idx % 64u;
+      let gk2 = k0 + bk;
+      let gc = col0 + bc;
+      var bv: f32 = 0.0;
+      if (gk2 < p.K && gc < p.N) { bv = b[bo + gk2 * p.N + gc]; }
+      Bs[idx] = bv;
+    }
+    workgroupBarrier();
+    for (var kk: u32 = 0u; kk < 16u; kk = kk + 1u) {
+      var ra: array<f32, 4>;
+      var rb: array<f32, 4>;
+      for (var i: u32 = 0u; i < 4u; i = i + 1u) {
+        ra[i] = As[(lid.y * 4u + i) * 16u + kk];
+        rb[i] = Bs[kk * 64u + lid.x * 4u + i];
+      }
+      for (var i: u32 = 0u; i < 4u; i = i + 1u) {
+        for (var j: u32 = 0u; j < 4u; j = j + 1u) { acc[i * 4u + j] = acc[i * 4u + j] + ra[i] * rb[j]; }
+      }
+    }
+    workgroupBarrier();
+  }
+  for (var i: u32 = 0u; i < 4u; i = i + 1u) {
+    let gr = row0 + lid.y * 4u + i;
+    if (gr >= p.M) { continue; }
+    for (var j: u32 = 0u; j < 4u; j = j + 1u) {
+      let gc = col0 + lid.x * 4u + j;
+      if (gc < p.N) { y[(n * p.M + gr) * p.N + gc] = acc[i * 4u + j]; }
+    }
+  }
+}`;
 const WGSL_MM_I32 = HEAD('i32') + `
   var acc: i32 = 0;
   for (var k: u32 = 0u; k < p.K; k = k + 1u) { acc = acc + (a[ao + k] - p.azp) * (b[bo + k * p.N + j] - p.bzp); }
@@ -65,10 +130,13 @@ async function run(kind, a, aDims, b, bDims, azp, bzp, ops) {
   const r = await nn.tryLayers(isInt ? 'matmulInt' : 'matmul', { navigator: o.navigator }, async (dev) => {
     for (const n of [total, a.length, b.length]) if (n * 4 > MAX_BUF) throw new Error('張量 ' + n + ' 個元素超過單一儲存緩衝區上限（128 MB），退 CPU');
     const u = new Int32Array([pl.B, pl.M, pl.K, pl.N, pl.Bb, azp || 0, bzp || 0, 0]);
-    const mk = (src) => (isInt ? Int32Array.from(src) : Float32Array.from(src));
-    const outs = await nn.runWgsl(dev, isInt ? WGSL_MM_I32 : WGSL_MM_F32,
-      [{ data: mk(a) }, { data: mk(b) }, { data: isInt ? new Int32Array(total) : new Float32Array(total), out: true }],
-      new Uint8Array(u.buffer), Math.ceil(total / 64));
+    // 已經是對的型別就不再複製一份（大矩陣的複製本身就是可觀的時間）；o.cacheB：B 是常駐權重時，同一個陣列物件只上傳一次
+    const mk = (src) => (isInt ? (src instanceof Int32Array ? src : Int32Array.from(src)) : (src instanceof Float32Array ? src : Float32Array.from(src)));
+    const tiled = !isInt && pl.M >= 16 && pl.N >= 16;   // 太窄的（逐詞元解碼、向量）工作群組裡大半執行緒沒事做，維持原本的簡單版
+    o.lastKernel = tiled ? 'tiled' : 'simple';
+    const outs = await nn.runWgsl(dev, isInt ? WGSL_MM_I32 : (tiled ? WGSL_MM_F32_TILED : WGSL_MM_F32),
+      [{ data: mk(a) }, { data: mk(b), cache: !!o.cacheB }, { data: isInt ? new Int32Array(total) : new Float32Array(total), out: true }],
+      new Uint8Array(u.buffer), tiled ? [Math.ceil(pl.N / 64), Math.ceil(pl.M / 64), pl.B] : Math.ceil(total / 64));
     return outs[0];
   }, null, ref);
   o.lastInfo = r.info;
@@ -77,4 +145,4 @@ async function run(kind, a, aDims, b, bDims, azp, bzp, ops) {
 const matmul = (a, aD, b, bD, ops) => run('f32', a, aD, b, bD, 0, 0, ops);
 const matmulInt = (a, aD, b, bD, azp, bzp, ops) => run('int', a, aD, b, bD, azp, bzp, ops);
 
-module.exports = { matmulRef, matmul, matmulIntRef, matmulInt, WGSL_MM_F32, WGSL_MM_I32, plan };
+module.exports = { matmulRef, matmul, matmulIntRef, matmulInt, WGSL_MM_F32, WGSL_MM_F32_TILED, WGSL_MM_I32, plan };

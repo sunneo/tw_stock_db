@@ -1,0 +1,43 @@
+<!doctype html><meta charset="utf-8"><title>mm tiled check</title>
+<body style="font:13px monospace;white-space:pre">
+<script>
+// 真 Chrome（真 WebGPU）驗證 mm_ops 的平鋪矩陣乘：形狀對 CPU 參考、與原本的簡單版逐元素比、再各量一次時間（只標這台機器）。
+// 用法：在 desktop-app 資料夾 python -m http.server <埠> 後開 http://127.0.0.1:<埠>/scripts/eval/mm_tiled_check.html；結果在 window.__out。
+const mods = {};
+const load = async (name) => {
+  const src = await (await fetch('../../renderer/src/gpu/' + name + '.js', { cache: 'no-store' })).text();
+  const m = { exports: {} }; mods[name] = m;
+  new Function('module', 'exports', 'require', src)(m, m.exports, (p) => { const k = p.replace(/^\.\//, '').replace(/\.js$/, ''); if (!mods[k]) throw new Error('missing ' + k); return mods[k].exports; });
+};
+(async () => {
+  const out = { shapes: [], time: [], layer: null, error: null };
+  try {
+    await load('gpu_core'); await load('nn_ops'); await load('mm_ops');
+    const MM = mods.mm_ops.exports;
+    let s = 11; const rnd = () => { s = (Math.imul(s, 1664525) + 1013904223) | 0; return (s >>> 0) / 4294967296 - 0.5; };
+    const mk = (n) => Float32Array.from({ length: n }, rnd);
+    const cmp = (x, y) => { let mx = 0, sc = 1e-9; for (let i = 0; i < x.length; i++) { mx = Math.max(mx, Math.abs(x[i] - y[i])); sc = Math.max(sc, Math.abs(y[i])); } return mx / sc; };
+    // 形狀：含不是 64 的倍數、K 不是 16 的倍數、批次（共用／逐批 B）、窄（走簡單版）
+    for (const [ad, bd] of [[[64, 1024], [1024, 1024]], [[70, 50], [50, 90]], [[17, 33], [33, 16]], [[3, 40, 20], [20, 30]], [[2, 65, 31], [2, 31, 66]], [[1, 128], [128, 200]], [[130, 7], [7, 129]]]) {
+      const a = mk(ad.reduce((p, v) => p * v, 1)), b = mk(bd.reduce((p, v) => p * v, 1));
+      const ref = MM.matmulRef(a, ad, b, bd), o = {}; const r = await MM.matmul(a, ad, b, bd, o);
+      out.layer = o.lastInfo && o.lastInfo.layer;
+      out.shapes.push({ ad, bd, kernel: o.lastKernel, layer: o.lastInfo && o.lastInfo.layer, relErr: cmp(r.y, ref.y), dimsOk: JSON.stringify(r.dims) === JSON.stringify(ref.dims) });
+    }
+    // 時間：同一形狀的簡單版與平鋪版各 5 次取中位數（第一次是暖機，不算）。簡單版透過 M<16 以外的路徑拿不到，所以直接用匯出的 WGSL 跑
+    const nn = mods.nn_ops.exports;
+    const timeIt = async (code, ad, bd, tiled) => {
+      const a = mk(ad[0] * ad[1]), b = mk(bd[0] * bd[1]), M = ad[0], K = ad[1], N = bd[1];
+      const u = new Int32Array([1, M, K, N, 1, 0, 0, 0]);
+      const run = () => nn.tryLayers('matmul', {}, async (dev) => (await nn.runWgsl(dev, code, [{ data: a }, { data: b }, { data: new Float32Array(M * N), out: true }], new Uint8Array(u.buffer), tiled ? [Math.ceil(N / 64), Math.ceil(M / 64), 1] : Math.ceil(M * N / 64)))[0], null, () => new Float32Array(M * N));
+      await run(); const ts = [];
+      for (let i = 0; i < 5; i++) { const t0 = performance.now(); await run(); ts.push(performance.now() - t0); }
+      ts.sort((x, y) => x - y); return Math.round(ts[2] * 10) / 10;
+    };
+    for (const [m, k, n] of [[64, 1024, 1024], [512, 1024, 1024], [512, 1024, 3072]]) {
+      out.time.push({ shape: m + 'x' + k + 'x' + n, simpleMs: await timeIt(MM.WGSL_MM_F32, [m, k], [k, n], false), tiledMs: await timeIt(MM.WGSL_MM_F32_TILED, [m, k], [k, n], true) });
+    }
+  } catch (e) { out.error = String(e && e.stack || e); }
+  window.__out = out; document.body.textContent = JSON.stringify(out, null, 1); document.title = 'done';
+})();
+</script>

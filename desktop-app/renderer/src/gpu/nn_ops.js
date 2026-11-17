@@ -143,7 +143,9 @@ async function runWgsl(dev, code, bufs, uniform, groups) {
   const pass = enc.beginComputePass();
   pass.setPipeline(pipe); pass.setBindGroup(0, bg);
   // 超過單維 65535 個工作群組時改二維派發；著色器以 gid.x + gid.y·4194240（=65535×64）還原扁平索引
-  if (groups > 65535) pass.dispatchWorkgroups(65535, Math.ceil(groups / 65535)); else pass.dispatchWorkgroups(groups);
+  // groups 給陣列 [x, y, z] 時照三維派發（平鋪矩陣乘用：x 是欄方向的平鋪、y 是列方向、z 是批次）
+  if (Array.isArray(groups)) pass.dispatchWorkgroups(groups[0], groups[1] || 1, groups[2] || 1);
+  else if (groups > 65535) pass.dispatchWorkgroups(65535, Math.ceil(groups / 65535)); else pass.dispatchWorkgroups(groups);
   pass.end();
   const rb = bufs.map((b) => (b.out ? dev.createBuffer({ size: b.data.byteLength, usage: USAGE.MAP_READ | USAGE.COPY_DST }) : null));
   bufs.forEach((b, i) => { if (b.out) enc.copyBufferToBuffer(objs[i], 0, rb[i], 0, b.data.byteLength); });
