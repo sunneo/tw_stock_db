@@ -151,14 +151,35 @@ def t_cublas_sgemm():
     assert calls[-1] == ('matmul', {'a': [1, 2, 3, 4, 5, 6], 'b': [7, 8, 9, 10, 11, 12], 'm': 2, 'k': 3, 'n': 2}), calls[-1]
 
 
-def t_cublas_unsupported_combinations():
+def t_cublas_transpose_alpha_beta():
+    install_host(True)
+    # transa='T'：A 儲存為 k×m = 3×2，op(A)=[[1,3,5],[2,4,6]]；B 為 3×2 → C = [[89,98],[116,128]]
+    del calls[:]
+    reply['value'] = ok([89, 98, 116, 128])
+    r = cudaweb.cublas.sgemm('T', 'N', 2, 2, 3, 1.0, [1, 2, 3, 4, 5, 6], [7, 8, 9, 10, 11, 12], 0.0, None)
+    assert r == [89, 98, 116, 128], r
+    assert calls[-1] == ('matmul', {'a': [1, 3, 5, 2, 4, 6], 'b': [7, 8, 9, 10, 11, 12], 'm': 2, 'k': 3, 'n': 2}), calls[-1]
+    # transb='T'：B 儲存為 n×k = 2×3，op(B)=[[7,10],[8,11],[9,12]]；A 為 2×3 → C = [[50,68],[122,167]]
+    del calls[:]
+    reply['value'] = ok([50, 68, 122, 167])
+    r = cudaweb.cublas.sgemm('N', 'T', 2, 2, 3, 1.0, [1, 2, 3, 4, 5, 6], [7, 8, 9, 10, 11, 12], 0.0, None)
+    assert r == [50, 68, 122, 167], r
+    assert calls[-1] == ('matmul', {'a': [1, 2, 3, 4, 5, 6], 'b': [7, 10, 8, 11, 9, 12], 'm': 2, 'k': 3, 'n': 2}), calls[-1]
+    # alpha=2、beta=1、C=[1,1,1,1]：2·[58,64,139,154] + [1,1,1,1] = [117,129,279,309]
+    del calls[:]
+    reply['value'] = ok([58, 64, 139, 154])
+    r = cudaweb.cublas.sgemm('N', 'N', 2, 2, 3, 2.0, [1, 2, 3, 4, 5, 6], [7, 8, 9, 10, 11, 12], 1.0, [1, 1, 1, 1])
+    assert r == [117, 129, 279, 309], r
+
+
+def t_cublas_bad_inputs():
     install_host(True)
     del calls[:]
-    expect_error(lambda: cudaweb.cublas.sgemm('T', 'N', 2, 2, 3, 1.0, [0] * 6, [0] * 6, 0.0, None), "只支援 transa='N'")
-    expect_error(lambda: cudaweb.cublas.sgemm('N', 'N', 2, 2, 3, 2.0, [0] * 6, [0] * 6, 0.0, None), '只支援 alpha=1')
-    expect_error(lambda: cudaweb.cublas.sgemm('N', 'N', 2, 2, 3, 1.0, [0] * 6, [0] * 6, 0.5, None), '只支援 alpha=1、beta=0')
+    expect_error(lambda: cudaweb.cublas.sgemm('X', 'N', 2, 2, 3, 1.0, [0] * 6, [0] * 6, 0.0, None), "transa、transb 只能是")
+    expect_error(lambda: cudaweb.cublas.sgemm('N', 'N', 2, 2, 3, 1.0, [0] * 6, [0] * 6, 0.5, None), 'beta≠0 時必須給 C')
+    expect_error(lambda: cudaweb.cublas.sgemm('N', 'N', 2, 2, 3, 1.0, [0] * 6, [0] * 6, 0.5, [0] * 3), 'C 的元素數 3')
     expect_error(lambda: cudaweb.cublas.sgemm('N', 'N', 2, 2, 3, 1.0, [0] * 5, [0] * 6, 0.0, None), 'A 的元素數 5')
-    assert calls == [], '不支援的組合不應呼叫宿主'
+    assert calls == [], '不合法的輸入不應呼叫宿主'
 
 
 def t_stage2_wrappers():
@@ -210,7 +231,8 @@ def main():
     check('宿主錯誤會變成 CudaWebError', t_host_error_is_raised)
     check('backend_info 原樣回傳', t_backend_info_passthrough)
     check('cublas.sgemm（N、N、alpha=1、beta=0）對應 matmul', t_cublas_sgemm)
-    check('cublas.sgemm 不支援的組合：報錯、不呼叫宿主', t_cublas_unsupported_combinations)
+    check('cublas.sgemm 轉置（T）與 alpha、beta：數值正確、送進 matmul 的順序正確', t_cublas_transpose_alpha_beta)
+    check('cublas.sgemm 不合法的輸入：報錯、不呼叫宿主', t_cublas_bad_inputs)
     check('第二階段包裝：axpy、scal、dot、nrm2、gemv', t_stage2_wrappers)
     check('第二階段包裝的長度檢查：不呼叫宿主', t_stage2_length_checks)
     check('cublas 第一、二級的名稱與參數順序', t_cublas_level1_names)

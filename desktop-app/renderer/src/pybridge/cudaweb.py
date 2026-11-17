@@ -121,23 +121,44 @@ def backend_info():
 
 class _Cublas(object):
     """cuBLAS 風格的最小介面（DESIGN.webgpu-cuda.md §12.1，第一階段）。
-    只支援 sgemm 的 transa='N'、transb='N'、alpha=1、beta=0；其他組合直接報錯，不默默算錯。
-    A 為 m×k、B 為 k×n、C 為 m×n，都是列主序的扁平 list（cuBLAS 原本是欄主序與裸指標，這裡用 list 代替，已記錄於設計文件）。
+    支援 transa／transb 為 'N' 或 'T'（'C' 對實數等同 'T'）、任意 alpha、beta（beta=0 時不讀 C）。
+    op(A) 為 m×k、op(B) 為 k×n、C 為 m×n，都是列主序的扁平 list（cuBLAS 原本是欄主序與裸指標，這裡用 list 代替，已記錄於設計文件）。
+    注意：轉置與 alpha／beta 的後處理目前在宿主（Python）端做，是 O(mk + kn + mn) 的額外工作；矩陣乘本身仍走同一個 matmul 核心。
+    把轉置旗標送進 GPU 核心（gpu_core.js 的 wgMatmul 已有 flags）是後續項目，尚未接上宿主橋接。
     """
 
     def sgemm(self, transa, transb, m, n, k, alpha, A, B, beta, C=None):
-        if transa != "N" or transb != "N":
-            raise CudaWebError("cudaweb.cublas.sgemm：第一階段只支援 transa='N'、transb='N'（收到 %r、%r）" % (transa, transb))
-        if float(alpha) != 1.0 or float(beta) != 0.0:
-            raise CudaWebError("cudaweb.cublas.sgemm：第一階段只支援 alpha=1、beta=0（收到 alpha=%r、beta=%r）" % (alpha, beta))
+        ta = str(transa).upper()
+        tb = str(transb).upper()
+        if ta not in ("N", "T", "C") or tb not in ("N", "T", "C"):
+            raise CudaWebError("cudaweb.cublas.sgemm：transa、transb 只能是 'N'、'T' 或 'C'（收到 %r、%r）" % (transa, transb))
+        m, n, k = int(m), int(n), int(k)
         A = list(A)
         B = list(B)
+        # 儲存形狀：op(A)=m×k；不轉置時 A 為 m×k，轉置時 A 為 k×m
         if len(A) != m * k:
             raise CudaWebError("cudaweb.cublas.sgemm：A 的元素數 %d 與 m×k=%d 不符" % (len(A), m * k))
         if len(B) != k * n:
             raise CudaWebError("cudaweb.cublas.sgemm：B 的元素數 %d 與 k×n=%d 不符" % (len(B), k * n))
-        flat = _call("matmul", {"a": A, "b": B, "m": int(m), "k": int(k), "n": int(n)})
-        return list(flat)
+        al = float(alpha)
+        be = float(beta)
+        Cl = None
+        if be != 0.0:
+            if C is None:
+                raise CudaWebError("cudaweb.cublas.sgemm：beta≠0 時必須給 C")
+            Cl = list(C)
+            if len(Cl) != m * n:
+                raise CudaWebError("cudaweb.cublas.sgemm：C 的元素數 %d 與 m×n=%d 不符" % (len(Cl), m * n))
+        if ta in ("T", "C"):
+            A = [A[q * m + i] for i in range(m) for q in range(k)]   # 把 k×m 的 A 轉成 m×k
+        if tb in ("T", "C"):
+            B = [B[j * k + q] for q in range(k) for j in range(n)]   # 把 n×k 的 B 轉成 k×n
+        flat = list(_call("matmul", {"a": A, "b": B, "m": m, "k": k, "n": n}))
+        if al != 1.0:
+            flat = [al * v for v in flat]
+        if Cl is not None:
+            flat = [flat[i] + be * Cl[i] for i in range(m * n)]
+        return flat
 
 
 class _CublasLevel1(object):
