@@ -58,6 +58,18 @@
 - 驗證頁都在 `scripts/eval/`：`mm_tile_check.html`（需先 `git show 1515d6598:desktop-app/renderer/src/gpu/gpu_core.js > scripts/eval/_tmp_before_gpu_core.js`，量完刪）、`batch_layer_check.html`。結果寫進 `cudaweb_optimize.result.json`。
 - 本棒沒做：O6 真 Qwen 接入、O7、O8、O9、O10、O11、持續迴圈。
 
+## 2026-11-18 第六段（本棒：G1 收尾、G2、G4 模組、G3；G5 與 O5 以後未做）
+提交（依序）：`e28658ea0` G1 收尾；`99ac66fc3` G2 階梯；`a1a138726` G4 variant_race；`15c09eb0b` G3 priors。
+- **方案 A 已實作**：`scripts/embed-code-ui.js` 的 `embed()` 新增可選參數 `prependFile`；`FA_GPU_CORE_SRC` 先放 `kernel_gen.js`（UMD，瀏覽器掛在 `self.FaKernelGen`），`gpu_core.js` 的 `kg()` 取用（node 用 require）。
+- **G1 結論（重要）**：`mmR8Wgsl` 已改成 kernel_gen 實例（WG16 TM8 TN8 BK8 vec4）：真 Chrome 512×1024×1024 相對誤差 3.0e-7、46.6% 峰值（R1 手寫 47–50%，持平）。**`mmTileWgslVec4` 還原手寫版**：kernel_gen 同幾何實例（WG16 TM4 TN4 BK16 vec4）慢約 5 倍（51.6 ms 對 10.4 ms，16.2% 對 80.5%）。production（`nn_ops` 的 `MM_VEC4_CODE`）不能換。kernel_gen v4 慢的原因**未查**（候選：As 列主序寫入的 bank 衝突、k 迴圈未展開、As 未轉置）；下一棒第一步可先比對手寫版的 As 布局再修 kernel_gen，修好才換。
+- **G2**：`kernel_gen.ladder()` 18 個變體（5 塊 × BK 8／16 × 純量／vec4；2×2 不能 vec4）。真 Chrome 只編譯（`scripts/eval/g2_ladder_compile.html`）：全部成功、編譯 85–400 ms、共用記憶體最大 16 KiB。split-K 未做。
+- **G4**：`renderer/src/gpu/variant_race.js`（`race`、`makeKey`、`createStore`）node 9 項通過。**未做**：IndexedDB 真機、接進派發呼叫端。
+- **G3**：`profile_priors.js` ＋ `profile_priors.json`：一筆 measured（GT 720，簽名 `wg16384-inv256-f160-sg1`，sg1 以 Chrome 回報為準待確認），三筆 heuristic（低／中／高，明確標 basis）。node 9 項通過。
+- **G5 未做**：設定頁「變體競賽」表。來源：`renderer/src/floating-assistant.js` 的 `_gpuBenchPanel`（約 96434 行呼叫處，`_gpuBench*` 約 130389 行起）。`bench_run.js` 是執行器、不含 UI。AI 助理設定（`index.html`）未找到 GPU 基準區塊（grep 無「基準」），需確認兩處是否都要加；依記憶「AI設定UI有兩份」，改一處要查另一處。
+- **O5～O10、持續迴圈**：未做（見清單）。
+- 驗證頁：`scripts/eval/g1_gen_check.html`（`?M&K&N&kernel=r8|v4&before=1`）、`scripts/eval/g2_ladder_compile.html`。兩次真 Chrome 用完已關分頁、伺服器已停（Win32_Process 確認無 `http.server` 殘留）。
+- 注意：kernel_select.js 的快取（localStorage 版）與 variant_race（IndexedDB）是兩套，G4 接線時要決定是否統一（建議統一用 variant_race 的 store，kernel_select 只保留純函式）。
+
 ## 2026-11-18 第五段（交棒，管理者指示：context 到 60% 才交棒）
 - 本段沒有完成新提交；G1 收尾**未開始寫程式**。原因：要讓 `gpu_core.js`（UMD，以 `new Function(FA_GPU_CORE_SRC)` 嵌入）引用 `kernel_gen.js`，需要改嵌入與載入順序（`scripts/embed-code-ui.js` 與 `renderer/src/floating-assistant.js` 的載入點），這會動到發布流程，應由管理者確認方案後再做。
 - **待管理者決定的方案**：(A) 在 `embed-code-ui.js` 加 `kernel_gen.js` 的嵌入，並在 `gpu_core` 載入前先執行它（`root.FaKernelGen`）；或 (B) 把 `kernel_gen` 的產生函式直接併進 `gpu_core.js`，`kernel_gen.js` 只留給 node 測試使用。兩者都能做到「不另寫一份」，但 (A) 需要改載入順序。
