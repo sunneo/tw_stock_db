@@ -62,10 +62,13 @@
         const pin = st.pins && st.pins[pinKey(op, shape)];
         if (pin && BACKENDS.indexOf(pin) >= 0) return { backend: pin, source: 'pinned', reason: '使用者釘選：' + pin };
         const rows = (st.results || []).filter((r) => r && r.op === op && r.shape === shape);
+        const def = DEFAULTS[op] || 'cudaweb';
         if (rows.length) {
-            const d = decide(null, rows.map((r) => ({ id: r.id, stats: r.stats, valid: r.valid, errors: r.errors })), { defaultBackend: DEFAULTS[op] || 'cudaweb' });
-            if (d.backend && rows.some(validResult)) return { backend: d.backend, source: 'measured', reason: d.reason };
-            return { backend: DEFAULTS[op] || 'cudaweb', source: 'default', reason: d.reason };
+            // 比較的基準是預設後端：它沒有有效量測就無法談「快 15%」，維持預設（不會因為另一個後端有結果就換掉）
+            const defRow = rows.filter((r) => r.id === def)[0];
+            if (!defRow || !validResult(defRow)) return { backend: def, source: 'default', reason: '預設 ' + def + ' 在這個形狀沒有有效量測，無法比較；維持預設' };
+            const d = decide(def, rows.map((r) => ({ id: r.id, stats: r.stats, valid: r.valid, errors: r.errors })), { defaultBackend: def });
+            return { backend: d.backend, source: 'measured', reason: d.reason };
         }
         return { backend: DEFAULTS[op] || 'cudaweb', source: 'default', reason: '這個形狀還沒有量測結果；用預設' };
     }

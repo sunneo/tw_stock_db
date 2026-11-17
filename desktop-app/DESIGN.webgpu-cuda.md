@@ -1021,4 +1021,14 @@ Python 模擬器與離線模型推論共用同一個 GPU 裝置：
 - **形狀**：目前量測 `1x1024x1024`（解碼用的向量乘）與 `128x512x512`。
 - **測試**：`bench_core.test.js` 32 passed（統計、有效、遲滯、釘選、key、誤差）；`bench_run.test.js` 26 passed（暖機與樣本數、讓出次數、取消、輸出不符、ORT 逐次失敗、會話 key、getData promise、ONNX 圖結構用小 protobuf 讀回檢查）；`bench_wiring.test.js` 25 passed（抽出的真方法，假 localStorage、假 mm、假 ORT、假計時：無 TTL、釘選優先、gpuAccel 主開關、量測、ORT 載入失敗的註記、取消不存、恢復預設、不能同時跑兩次）。既有 `llm_web_gpudecode` 18、`qwen_gpu_gate` 12、`qwen_gpu_lifecycle` 26、`qwen_decode_q4` 5、`qwen_gpu_plan` 18、`qwen_models` 22、`qwen_chat` 9、`qwen_decode` 8 全部通過。另外 embed 之後的 QWEN 內嵌模組已確認可以 eval，`benchCore`、`bench`、`mm` 都有。
 - **只在假裝置上驗過的**：計時數字（假計時，每次 2 ms）、ORT 會話（假 ORT）、取消與讓出的時序。**沒有驗過的**：真的 cudaweb matmul（`mm_ops.matmul` 在有 GPU 時走 WGSL，這台只有軟體 WebGPU，這次沒有跑）、真的 ORT-WebGPU 與 ORT-WASM 載入（需要網路下載 onnxruntime-web 1.22.0 與真的 WebGPU）、真 GPU 上的選擇結果。使用者說真 GPU 實量不用驗。
-- **沒接上的（寫明）**：(1) 路由還沒有接進生成路徑的 matmul 派發：目前只在表格裡顯示「建議」與「釘選」，`_gpuBenchPick` 可用但沒有任何派發點呼叫它；因此量測結果目前不會改變實際運算用的後端。(2) 執行期 ORT 失敗時「退回 cudaweb 並記錄」的派發端還沒有做；基準本身的 ORT 失敗已逐次記錄。(3) softmax、rmsnorm、silu、rope、adamw 沒有量測：它們沒有可用的 cudaweb 入口與 ONNX 建圖，需要各自的 runner，這次沒有做。(4) 背景執行用的是分片讓出主執行緒，不是 worker；比 worker 慢，但實作簡單，且沒有 worker 的程式碼要維護。
+- **已接上（2026-11-17 後段，v441）**：
+  - **派發點**：`gpu/onnx_interp.js` 的 `matmulGpu`（ONNX MatMul 節點，2 維、夠大才走）每次呼叫都問 `ops.route('matmul', 'MxKxN')`。釘選＞量測（有效、遲滯 15%）＞預設 cudaweb。選了 ORT 後端就用 `ops.ortMatmul`；丟錯就**這一次**退回 cudaweb，並 `ops.onRecord` 記錄（後端、形狀、原因、退回）。`ops` 由 `_gpuRouteOps()` 提供，用在三個圖形 session（TTS、SDXS、另一個 ONNX 模型）。
+  - **路由**：`_gpuRoutePick` 只讀儲存的基準（`_gpuBenchRefresh` 不跑基準、不阻塞）；gpuAccel 關閉時不查路由；後端連續失敗 3 次就用 `fa_gpu_broken`（`gpuBench-<後端>`）停用，切換「GPU 加速」才會重來。
+  - **比較的基準**：預設 cudaweb 在該形狀沒有有效量測時，維持預設（無法談「快 15%」）。只量到 ORT 不會換掉 cudaweb。
+  - **診斷**：`_gpuRouteLog`（最近 50 筆）與基準面板的「最近的派發」；ORT 失敗同時 `console.warn`。
+  - **測試**（假裝置）：`bench_wiring.test.js` 38 passed，其中 8a–8g 用真的 `onnx_interp.matmulGpu` 與真的 `_gpuRouteOps`：釘選 ORT 真的走 ORT；量測快 20% 走 ORT；快 5% 維持 cudaweb；ORT 丟錯退回 cudaweb 並有記錄；連續 3 次失敗停用且之後不再試；gpuAccel 關閉不查路由；沒量過預設且派發時不啟動基準。`bench_core.test.js` 33 passed（含「只量到 ORT 不換」）。既有 ONNX／graph／mm_ops 測試（`graph_session_test`、`mm_ops_test`、`onnx_ops_more_test`）通過。
+- **仍未接（寫明）**：
+  1. softmax、rmsnorm、silu、rope、adamw：沒有 cudaweb 入口與 ONNX 建圖（runner），一律預設 cudaweb，這次沒有做。
+  2. **真的 cudaweb 矩陣乘與真的 ORT-WebGPU／ORT-WASM 載入沒有在真硬體上驗過**（這台只有軟體 WebGPU；使用者說真 GPU 不用驗）。測試用的是假 ORT 與假計時。
+  3. 派發的 matmul 只有 ONNX 圖（`matmulGpu`）這一條；Qwen 的 WGSL 整段解碼、transformers.js 路徑、原生執行器裡的矩陣乘不經過這個派發點（那些是各自的引擎，沒有逐個 matmul 的入口）。
+  4. 基準的量測用主執行緒分片讓出，不是 worker。

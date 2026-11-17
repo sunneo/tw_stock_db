@@ -330,6 +330,16 @@ async function matmulGpu(a, b, ctx) {
   const B = numel(a.d.slice(0, -2)), Bb = numel(b.d.slice(0, -2));
   const sameLead = b.d.length === 2 || (a.d.length === b.d.length && a.d.slice(0, -2).every((x, i) => x === b.d[i]));
   if (B * M * K * N < (ctx.gpu.minMacs || 1 << 20) || !(Bb === 1 || (Bb === B && sameLead))) return matmulOp(a, b);
+  // 派發：2 維的矩陣乘先問路由器（ops.route：釘選＞量測＞預設，見 floating-assistant.js 的 _gpuRouteOps）；選了 ORT 後端就用 ops.ortMatmul；
+  // 失敗就這一次退回 cudaweb，並回報（ops.onRecord），不靜默。
+  const ops0 = ctx.gpu.ops || {};
+  if (typeof ops0.route === 'function' && a.d.length === 2 && b.d.length === 2) {
+    const shape = M + 'x' + K + 'x' + N; let rt = null; try { rt = ops0.route('matmul', shape); } catch (_) { rt = null; }
+    if (rt && rt.backend && rt.backend !== 'cudaweb' && typeof ops0.ortMatmul === 'function') {
+      try { const y = await ops0.ortMatmul(rt.backend, M, K, N, a.v, b.v); if (ops0.onRecord) ops0.onRecord({ op: 'matmul', shape, backend: rt.backend, used: true, reason: rt.reason }); return { d: [M, N], t: 'f', v: y }; }
+      catch (e) { if (ops0.onRecord) ops0.onRecord({ op: 'matmul', shape, backend: rt.backend, error: String((e && e.message) || e), fallback: 'cudaweb' }); }
+    }
+  }
   const r = await MM.matmul(a.v, a.d, b.v, b.d, ctx.gpu.ops || {}); MORE.rec(ctx, ctx.gpu.ops || {});
   return { d: r.dims, t: 'f', v: r.y };
 }
@@ -490,4 +500,4 @@ async function run(model, feeds, dataFiles, opts) {
   return out;
 }
 
-module.exports = { HELP, run, numel, mapFromEff, bmap, matmulOp, erf, conv1dOp, layerNormOp, softmaxOp, tensorFromInit, lookup };
+module.exports = { HELP, run, numel, mapFromEff, bmap, matmulOp, matmulGpu, erf, conv1dOp, layerNormOp, softmaxOp, tensorFromInit, lookup };

@@ -55,6 +55,8 @@ const seq = (n, f) => Array.from({ length: n }, (_, i) => f(i));
     const onlyNoisy = B.pickBackend('matmul', '128x512x512', { results: [Object.assign(row('ort-wasm', 5), { stats: { n: 20, median: 5, cv: 0.9 } })], pins: {} });
     check('4 只有太吵的結果：仍是預設', onlyNoisy.source === 'default' && onlyNoisy.backend === 'cudaweb', onlyNoisy);
     check('4 其他運算沒量過：預設', B.pickBackend('softmax', '512x1024', { results: [], pins: {} }).backend === 'cudaweb');
+    const onlyOrt = B.pickBackend('matmul', '128x512x512', { results: [row('ort-wasm', 1)], pins: {} });
+    check('4 只量到 ORT、預設 cudaweb 沒有有效量測：維持預設（無法比較）', onlyOrt.backend === 'cudaweb' && onlyOrt.source === 'default', onlyOrt);
 }
 // 5. 快取 key：換介面卡、換瀏覽器版本、換設定都不同；同一台機器的同一組設定相同
 {
