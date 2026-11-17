@@ -56,5 +56,61 @@ const M = require('./mm_ops.js');
   const info2 = await M.initMatmulTuning({ device: fakeDev, adapterDesc: 'other-adapter', store: st2, shapes: [{ M: 64, K: 1024, N: 1024 }] });
   assert.strictEqual(info2.missing.length, 1);  // 換了 adapter → 缺勝者 → 會背景重跑
   assert.ok(Array.isArray(M.AUTO_SHAPES) && M.AUTO_SHAPES.length === 1);
+  // 逐形狀安全閘門（依這台機器的校正）：GT 720 實測 simple 2.06 GFLOP/s、tiled 約 2.42 倍
+  const ids3 = ['mm_vec4_f32', 'mm_tiled_f32', 'mm_simple_f32'];
+  const g720 = 2.06;
+  let gg = M.gateCandidates({ M: 64, K: 1024, N: 1024 }, ids3, g720, M.SAFE_DISPATCH_MS);
+  assert.deepStrictEqual(gg.run, ids3); assert.strictEqual(gg.skipped.length, 0);  // 64×1024×1024 全部照跑（與現行保護一致）
+  gg = M.gateCandidates({ M: 512, K: 1024, N: 1024 }, ids3, g720, M.SAFE_DISPATCH_MS);
+  assert.deepStrictEqual(gg.run, []); assert.strictEqual(gg.skipped.length, 3);  // 512×1024×1024 全部略過（tiled 約 215 ms）
+  assert.ok(gg.skipped.every((s) => /預估逾時/.test(s.reason)));
+  gg = M.gateCandidates({ M: 512, K: 1024, N: 3072 }, ids3, g720, M.SAFE_DISPATCH_MS);
+  assert.deepStrictEqual(gg.run, []);
+  gg = M.gateCandidates({ M: 512, K: 1024, N: 3072 }, ids3, 500, M.SAFE_DISPATCH_MS);  // 強機器：每個候選都在上限內
+  assert.deepStrictEqual(gg.run, ids3); assert.strictEqual(gg.skipped.length, 0);
+  // 有校正時 raceMatmul 對全部超過上限的形狀：不派發任何一次（沒有 GPU 也不會退 CPU 去跑）
+  const allGated = await M.raceMatmul(512, 1024, 1024, { navigator: undefined, gSimple: g720, safeMs: M.SAFE_DISPATCH_MS });
+  assert.strictEqual(allGated.winner, null); assert.strictEqual(allGated.noGpu, false); assert.strictEqual(allGated.gated.length, 3);
+  assert.deepStrictEqual(Object.keys(allGated.timings), []);
+  // GPU 失敗不能當成通過：沒有 GPU 的強機器校正下，候選全部退 CPU → 驗證丟錯（不得得到勝者）
+  const cpuRace = await M.raceMatmul(32, 16, 32, { navigator: undefined, gSimple: 500 });
+  assert.strictEqual(cpuRace.winner, null);
+  assert.ok(cpuRace.bad.length > 0 && cpuRace.bad.every((b) => /GPU 派發失敗/.test(b.reason)), JSON.stringify(cpuRace.bad));
+  // 校正：沒有 GPU 就回報 noGpu（不拿 CPU 時間當校正）
+  const calNo = await M.calibrateSimple({ M: 32, K: 16, N: 32 }, { navigator: undefined });
+  assert.strictEqual(calNo.noGpu, true);
+  // 多形狀：逐一跑、進度 i／n、結果順序與輸入相同
+  const shapesAll = [{ M: 64, K: 1024, N: 1024 }, { M: 512, K: 1024, N: 1024 }, { M: 512, K: 1024, N: 3072 }];
+  const calibOk = async () => ({ noGpu: false, gSimple: g720, ms: 65 });
+  const ran = []; const prog = [];
+  const okRace = async (Mm, Kk, Nn) => { ran.push(Mm + 'x' + Kk + 'x' + Nn); return { winner: { id: 'mm_tiled_f32' }, bad: [], gated: [], key: 'k' }; };
+  let outs = await M.startMatmulRace(shapesAll, { calibrate: calibOk, raceOne: okRace, onProgress: (p) => prog.push(p.i + '/' + p.n) });
+  assert.deepStrictEqual(ran, ['64x1024x1024', '512x1024x1024', '512x1024x3072']);
+  assert.deepStrictEqual(prog, ['1/3', '2/3', '3/3']);
+  assert.strictEqual(outs.length, 3); assert.ok(outs.every((x) => x.winner && x.error === null));
+  // 中間一個形狀丟例外：只記在它自己那筆，後面照跑
+  ran.length = 0;
+  const boomMid = async (Mm, Kk, Nn) => { ran.push(Mm); if (Mm === 512 && Nn === 1024) throw new Error('boom'); return { winner: { id: 'x' }, bad: [], gated: [] }; };
+  outs = await M.startMatmulRace(shapesAll, { calibrate: calibOk, raceOne: boomMid });
+  assert.deepStrictEqual(ran, [64, 512, 512]);
+  assert.strictEqual(outs[1].error, 'boom'); assert.ok(outs[2].winner && outs[2].error === null);
+  // 裝置遺失（丟例外）：標原因並停止，之後的形狀標未執行
+  ran.length = 0;
+  const lostThrow = async (Mm) => { ran.push(Mm); throw new Error('device lost: destroyed'); };
+  outs = await M.startMatmulRace(shapesAll, { calibrate: calibOk, raceOne: lostThrow });
+  assert.deepStrictEqual(ran, [64]); assert.ok(/未執行/.test(outs[1].error) && /未執行/.test(outs[2].error));
+  // 裝置遺失（以 bad 的原因回報）：同樣停止
+  ran.length = 0;
+  const lostBad = async (Mm) => { ran.push(Mm); return { winner: null, bad: [{ id: 'mm_simple_f32', reason: '執行丟錯：GPU 派發失敗，退回 CPU：WGSL 執行失敗：device lost' }], gated: [] }; };
+  outs = await M.startMatmulRace(shapesAll, { calibrate: calibOk, raceOne: lostBad });
+  assert.deepStrictEqual(ran, [64]); assert.ok(/未執行/.test(outs[2].error));
+  // 取消：第一個形狀後取消，後面不再跑
+  ran.length = 0; let cancelled = false;
+  outs = await M.startMatmulRace(shapesAll, { calibrate: calibOk, cancel: () => cancelled, raceOne: async (Mm) => { ran.push(Mm); cancelled = true; return { winner: null, bad: [], gated: [] }; } });
+  assert.deepStrictEqual(ran, [64]); assert.strictEqual(outs[1].cancelled, true);
+  // 校正發現沒有 GPU：每個形狀都標 noGpu，不呼叫競賽
+  ran.length = 0;
+  outs = await M.startMatmulRace(shapesAll, { calibrate: async () => ({ noGpu: true, reason: 'no adapter' }), raceOne: async (Mm) => { ran.push(Mm); return {}; } });
+  assert.deepStrictEqual(ran, []); assert.ok(outs.every((x) => x.noGpu === true));
   console.log('mm_ops_test: 全部通過');
 })().catch((e) => { console.error(e); process.exit(1); });

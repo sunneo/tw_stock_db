@@ -120,34 +120,97 @@ const matmulInt = (a, aD, b, bD, azp, bzp, ops) => run('int', a, aD, b, bD, azp,
 // opts：{ navigator, store（variant_race.createStore，勝者寫入）, budgetMs, runs, K, cancel, now }
 // 沒有真 GPU（退 cpu-js）就不競賽、回傳 { noGpu: true }，免得拿 CPU 的時間當結果。
 // 計時包含上傳與回讀（與派發路徑的實際成本一致），同一組輸入、先暖機一次。
+// 單次派發超過這個預估時間（毫秒）的候選，在該形狀不參賽。這台 GT 720 的數字：64×1024×1024 的 simple 約 65 ms（會跑），
+// 512×1024×1024 的 tiled 約 215 ms（不跑，維持現行保護）。更強的機器算出來的時間短，會跑全部形狀。
+const SAFE_DISPATCH_MS = 150;
+// 相對 simple 的速度（本機實測：tiled 4.99 ÷ simple 2.06 GFLOP/s ≈ 2.42）；沒量過的候選一律當 1（最保守）。
+const REL_SPEED = { mm_simple_f32: 1, mm_tiled_f32: 2.42 };
+const flopsOf = (sh) => 2 * sh.M * sh.K * sh.N;
+// GFLOP/s = flops ÷ (ms × 1e6)；所以 ms = flops ÷ (GFLOP/s × 1e6)
+function estimateMs(sh, id, gSimple) { return flopsOf(sh) / (gSimple * (REL_SPEED[id] || 1) * 1e6); }
+// 逐候選判斷：預估單次派發超過 safeMs 的不參賽。回傳 { run: [id], skipped: [{ id, estMs, reason }] }
+function gateCandidates(sh, ids, gSimple, safeMs) {
+  const run = [], skipped = [];
+  for (const id of ids) {
+    const est = estimateMs(sh, id, gSimple);
+    if (est > safeMs) skipped.push({ id: id, estMs: est, reason: '略過：預估逾時（約 ' + Math.round(est) + ' ms，上限 ' + safeMs + ' ms）' });
+    else run.push(id);
+  }
+  return { run: run, skipped: skipped };
+}
+// 單次派發的 GPU 失敗：run() 會退回 CPU（layer cpu-js）。競賽要把它當失敗，不能拿 CPU 的結果當成該變體通過。
+function dispatchOk(info) {
+  if (/cpu-js/.test((info || {}).layer || '')) throw new Error('GPU 派發失敗，退回 CPU：' + String((info || {}).reason || '原因不明').slice(0, 200));
+}
+function isLostText(t) { return /lost|遺失/i.test(String(t || '')); }
+// 校正：在最小的形狀上量一次 mm_simple_f32（先暖機＝編譯，再計時），得到這台機器的實測 GFLOP/s。
+async function calibrateSimple(sh, o) {
+  const opts = o || {};
+  const clock = () => (typeof performance !== 'undefined' ? performance : Date).now();
+  const M = sh.M, K = sh.K, N = sh.N;
+  let s = 11; const rnd = () => { s = (Math.imul(s, 1664525) + 1013904223) | 0; return (s >>> 0) / 4294967296 - 0.5; };
+  const a = Float32Array.from({ length: M * K }, rnd), b = Float32Array.from({ length: K * N }, rnd);
+  const warm = { navigator: opts.navigator, kernel: 'mm_simple_f32' };
+  await matmul(a, [M, K], b, [K, N], warm);
+  if (/cpu-js/.test((warm.lastInfo || {}).layer || '')) return { noGpu: true, reason: (warm.lastInfo || {}).reason || '' };
+  // 計時 3 次取中位數（單次量測會受首次提交等雜訊影響，偏慢或偏快都不可靠）
+  const xs = [];
+  for (let i = 0; i < 3; i++) {
+    const t = { navigator: opts.navigator, kernel: 'mm_simple_f32' };
+    const t0 = clock();
+    await matmul(a, [M, K], b, [K, N], t);
+    dispatchOk(t.lastInfo);
+    xs.push(Math.max(clock() - t0, 0.01));
+  }
+  xs.sort((p, q) => p - q);
+  const ms = xs[1];
+  return { noGpu: false, ms: ms, gSimple: flopsOf(sh) / (ms * 1e6) };
+}
+
 async function raceMatmul(M, K, N, opts) {
   const VR = require('./variant_race.js');
   const o = opts || {};
   const sh = { M: M, K: K, N: N };
+  const key = KS.cacheKey(ADAPTER, 'matmul', sh, CAPS);
   const clock = () => (typeof performance !== 'undefined' ? performance : Date).now();
   let s = 7; const rnd = () => { s = (Math.imul(s, 1664525) + 1013904223) | 0; return (s >>> 0) / 4294967296 - 0.5; };
+  let ids = KS.VARIANTS.matmul.filter((v) => !v.applies || v.applies(sh)).map((v) => v.id);
+  let gated = [];
+  if (o.gSimple) {
+    // 有校正：逐候選依預估時間判斷；全部超過上限就一次都不派發
+    const g = gateCandidates(sh, ids, o.gSimple, o.safeMs || SAFE_DISPATCH_MS);
+    ids = g.run; gated = g.skipped;
+    if (!ids.length) return { noGpu: false, winner: null, timings: {}, bad: [], skipped: [], cancelled: false, gated: gated, key: key };
+  } else {
+    // 沒有校正：暖機兼偵測，退 cpu-js 就不競賽
+    const wa = Float32Array.from({ length: M * K }, rnd), wb = Float32Array.from({ length: K * N }, rnd);
+    const warm = { navigator: o.navigator, kernel: 'mm_simple_f32' };
+    await matmul(wa, [M, K], wb, [K, N], warm);
+    if (/cpu-js/.test((warm.lastInfo || {}).layer || '')) return { noGpu: true, winner: null, timings: {}, bad: [], skipped: [], cancelled: false, gated: [], key: key };
+  }
+  // 只有真的要跑的形狀才產生輸入與 CPU 參考（參考在主執行緒算，大形狀會卡住頁面，所以被略過的形狀不做）
   const a = Float32Array.from({ length: M * K }, rnd), b = Float32Array.from({ length: K * N }, rnd);
   const ref = matmulRef(a, [M, K], b, [K, N]).y;
   let scale = 0; for (let i = 0; i < ref.length; i++) scale = Math.max(scale, Math.abs(ref[i]));
-  // 暖機兼偵測：退 cpu-js 就不競賽
-  const warm = { navigator: o.navigator, kernel: 'mm_simple_f32' };
-  await matmul(a, [M, K], b, [K, N], warm);
-  if (/cpu-js/.test((warm.lastInfo || {}).layer || '')) return { noGpu: true, winner: null, timings: {}, bad: [], skipped: [] };
-  const ids = KS.VARIANTS.matmul.filter((v) => !v.applies || v.applies(sh)).map((v) => v.id);
   const cands = ids.map((id) => ({
     id: id,
     verify: async () => {
-      const r = await matmul(a, [M, K], b, [K, N], Object.assign({}, o, { kernel: id }));
+      const ops = Object.assign({}, o, { kernel: id });
+      const r = await matmul(a, [M, K], b, [K, N], ops);
+      dispatchOk(ops.lastInfo);
       let d = 0; for (let i = 0; i < ref.length; i++) d = Math.max(d, Math.abs(r.y[i] - ref[i]));
       return d / Math.max(scale, 1e-30);
     },
     run: async () => {
       const t0 = clock();
-      await matmul(a, [M, K], b, [K, N], Object.assign({}, o, { kernel: id }));
+      const ops = Object.assign({}, o, { kernel: id });
+      await matmul(a, [M, K], b, [K, N], ops);
+      dispatchOk(ops.lastInfo);
       return clock() - t0;
     },
   }));
   const res = await VR.race(cands, { tol: 1e-5, budgetMs: o.budgetMs || VR.DEFAULT_BUDGET_MS, runs: o.runs || 3, K: o.K || 3, cancel: o.cancel, now: o.now || (() => clock()) });
+  res.gated = gated;
   if (res.winner) {
     const key = KS.cacheKey(ADAPTER, 'matmul', sh, CAPS);
     const value = { id: res.winner.id, median: res.winner.median, timings: res.timings };
@@ -181,15 +244,43 @@ async function initMatmulTuning(o) {
   return { tier: KS.tierOf(caps), capsSig: sig, loaded: entries.length, stale: stale, missing: missing };
 }
 // startMatmulRace(shapes, o)：逐形狀跑 raceMatmul（每形狀預算 2 秒，可取消）。o.navigator 必須給瀏覽器的 navigator 才會用 GPU。
+// 回傳每個形狀一筆：{ shape, key, winner, noGpu, bad, skipped（依預估略過的候選）, cancelled, error }。
+// 逐形狀獨立：某形狀丟例外只記在它自己那筆，後面照跑；裝置遺失就標原因並停止（其餘形狀標「未執行」）；取消在形狀之間與候選之間生效。
+// opts.onProgress({ i, n, shape, msg })：狀態列用。opts.raceOne／opts.calibrate 可注入（測試用）。
 async function startMatmulRace(shapes, o) {
   const opts = o || {};
-  const out = [];
-  for (const sh of shapes || []) {
-    if (opts.cancel && opts.cancel()) break;
-    const r = await raceMatmul(sh.M, sh.K, sh.N, { navigator: opts.navigator, store: TUNE.store, budgetMs: opts.budgetMs, cancel: opts.cancel });
-    out.push({ shape: sh, key: r.key, winner: r.winner, noGpu: !!r.noGpu, bad: r.bad || [], cancelled: !!r.cancelled });
+  const list = (shapes || []).filter((sh) => sh && sh.M > 0 && sh.K > 0 && sh.N > 0);
+  const n = list.length, out = [];
+  const say = (i, sh, msg) => { try { if (opts.onProgress) opts.onProgress({ i: i + 1, n: n, shape: sh, msg: msg }); } catch (_) { /* 顯示失敗不影響競賽 */ } };
+  const raceOne = opts.raceOne || raceMatmul;
+  const calibrate = opts.calibrate || calibrateSimple;
+  if (!n) return out;
+  // 校正在最小的形狀上做（派發量最少，也是現行保護過的那個形狀）
+  let calib = null, calibErr = null;
+  try { calib = await calibrate(list.slice().sort((x, y) => flopsOf(x) - flopsOf(y))[0], opts); } catch (e) { calibErr = String((e && e.message) || e).slice(0, 200); }
+  if (calibErr || (calib && calib.noGpu)) {
+    const why = calibErr || ('沒有 GPU（' + String((calib && calib.reason) || '退回 CPU').slice(0, 160) + '）');
+    for (const sh of list) out.push({ shape: sh, key: null, winner: null, noGpu: !calibErr, bad: [], skipped: [], cancelled: false, error: why });
+    return out;
+  }
+  let stop = null;
+  for (let i = 0; i < n; i++) {
+    const sh = list[i];
+    if (stop) { out.push({ shape: sh, key: null, winner: null, noGpu: false, bad: [], skipped: [], cancelled: stop === '已取消', error: '未執行：' + stop }); continue; }
+    if (opts.cancel && opts.cancel()) { stop = '已取消'; out.push({ shape: sh, key: null, winner: null, noGpu: false, bad: [], skipped: [], cancelled: true, error: '未執行：已取消' }); continue; }
+    say(i, sh, '驗證與計時中');
+    try {
+      const r = await raceOne(sh.M, sh.K, sh.N, { navigator: opts.navigator, store: TUNE.store, budgetMs: opts.budgetMs, cancel: opts.cancel, gSimple: calib.gSimple, safeMs: opts.safeMs, runs: opts.runs, K: opts.K, now: opts.now });
+      out.push({ shape: sh, key: r.key || null, winner: r.winner || null, noGpu: !!r.noGpu, bad: r.bad || [], skipped: r.gated || [], cancelled: !!r.cancelled, error: null });
+      if ((r.bad || []).some((b) => isLostText(b.reason))) stop = '裝置遺失（之後的形狀不再執行）';
+    } catch (e) {
+      const msg = String((e && e.message) || e).slice(0, 200);
+      out.push({ shape: sh, key: null, winner: null, noGpu: false, bad: [], skipped: [], cancelled: false, error: msg });
+      if (isLostText(msg)) stop = '裝置遺失（之後的形狀不再執行）';
+    }
+    if (out[out.length - 1].cancelled) stop = '已取消';
   }
   return out;
 }
 
-module.exports = { matmulRef, matmul, matmulIntRef, matmulInt, WGSL_MM_F32, WGSL_MM_F32_TILED, WGSL_MM_F32_VEC4, WGSL_MM_I32, plan, pickMatmulKernel, setMatmulCaps, setMatmulWinners, raceMatmul, initMatmulTuning, startMatmulRace, AUTO_SHAPES, TUNE };
+module.exports = { matmulRef, matmul, matmulIntRef, matmulInt, WGSL_MM_F32, WGSL_MM_F32_TILED, WGSL_MM_F32_VEC4, WGSL_MM_I32, plan, pickMatmulKernel, setMatmulCaps, setMatmulWinners, raceMatmul, initMatmulTuning, startMatmulRace, calibrateSimple, gateCandidates, estimateMs, flopsOf, SAFE_DISPATCH_MS, REL_SPEED, AUTO_SHAPES, TUNE };

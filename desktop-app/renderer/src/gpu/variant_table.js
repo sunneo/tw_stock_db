@@ -61,6 +61,9 @@
     var timings = o.timings || {};
     var bad = {};
     (o.bad || []).forEach(function (b) { bad[b.id] = b.reason || '驗證不過'; });
+    // 依預估逾時而略過的候選（不是驗證失敗）：正確性欄留空，來源欄寫出略過原因
+    var skip = {};
+    (o.skipped || []).forEach(function (s) { skip[s.id] = s.reason || '略過'; });
     var rank = o.priorsRank || [];
     var rows = [];
     (o.variants || []).forEach(function (v) {
@@ -71,6 +74,7 @@
       var correct = bad[v.id] ? false : (xs.length ? true : null);
       var source;
       if (xs.length) source = '本機實測';
+      else if (skip[v.id]) source = skip[v.id];
       else if (rank.indexOf(v.id) >= 0 && o.priorsSource) source = o.priorsSource === 'measured' ? '預先剖析（實測）' : '預先剖析（推估）';
       else source = '未量測';
       rows.push({

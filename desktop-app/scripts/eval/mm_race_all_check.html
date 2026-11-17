@@ -1,0 +1,43 @@
+<!doctype html><meta charset="utf-8"><title>mm race all check</title>
+<body style="font:13px monospace;white-space:pre">
+<script>
+// 真 GPU（真 Chrome）：「重跑變體競賽」的新路徑 startMatmulRace 對整張基準表的形狀清單逐一處理。
+// 預期（這台 GT 720）：校正在最小形狀 64×1024×1024 量一次 mm_simple_f32（先暖機再計時）；
+// 64×1024×1024 的候選照跑；512×1024×1024、512×1024×3072 因預估單次派發超過上限（SAFE_DISPATCH_MS）而略過，不派發。
+// 每個形狀都要有結果或明確的略過原因。監聽 device.lost。結果在 window.__out（也 console.log 一行 MM_RACE_ALL）。
+// 用法：desktop-app 資料夾 python -X utf8 -m http.server <埠> --bind 127.0.0.1，開 http://127.0.0.1:<埠>/scripts/eval/mm_race_all_check.html
+const mods = {};
+const load = async (name) => {
+  const src = await (await fetch('../../renderer/src/gpu/' + name + '.js', { cache: 'no-store' })).text();
+  const m = { exports: {} }; mods[name] = m;
+  new Function('module', 'exports', 'require', src)(m, m.exports, (p) => { const k = p.replace(/^\.\//, '').replace(/\.js$/, ''); if (!mods[k]) throw new Error('missing ' + k); return mods[k].exports; });
+};
+const SHAPES = [{ M: 64, K: 1024, N: 1024 }, { M: 512, K: 1024, N: 1024 }, { M: 512, K: 1024, N: 3072 }];
+(async () => {
+  const out = { calib: null, progress: [], shapes: [], lost: null, error: null, done: false };
+  window.__out = out;
+  try {
+    await load('kernel_select'); await load('variant_race'); await load('gpu_core'); await load('gpu_pool'); await load('nn_ops'); await load('mm_ops');
+    const KS = mods.kernel_select.exports, MM = mods.mm_ops.exports;
+    if (!navigator.gpu) throw new Error('沒有 navigator.gpu');
+    const adapter = await navigator.gpu.requestAdapter();
+    if (!adapter) throw new Error('requestAdapter 回傳 null');
+    const device = await adapter.requestDevice();
+    device.lost.then((info) => { out.lost = (info && info.message) || 'lost'; });
+    MM.setMatmulCaps(KS.probeCaps(adapter, device), 'local-gt720');
+    const res = await MM.startMatmulRace(SHAPES, {
+      navigator: navigator, budgetMs: 2000,
+      onProgress: (p) => out.progress.push(p.i + '/' + p.n + ' ' + p.shape.M + 'x' + p.shape.K + 'x' + p.shape.N + ' ' + p.msg),
+    });
+    out.shapes = res.map((r) => ({
+      shape: r.shape, winner: r.winner ? r.winner.id : null, noGpu: r.noGpu, error: r.error,
+      skipped: (r.skipped || []).map((s) => ({ id: s.id, estMs: Math.round(s.estMs), reason: s.reason })),
+      bad: (r.bad || []).map((b) => ({ id: b.id, reason: String(b.reason).slice(0, 200) })),
+      cancelled: !!r.cancelled,
+    }));
+    out.done = true;
+  } catch (e) { out.error = String((e && e.message) || e); }
+  document.title = 'mm race all done';
+  console.log('MM_RACE_ALL ' + JSON.stringify(out));
+})();
+</script>
