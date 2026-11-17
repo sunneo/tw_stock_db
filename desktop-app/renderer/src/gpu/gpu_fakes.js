@@ -83,7 +83,7 @@ function fakeNavigator(opts) {
     if (k === 'vector_add') {
       const n = u32(e[3])[0];
       f32(e[2], n).set(core.vectorAddRef(f32(e[0], n), f32(e[1], n)));
-    } else if (k === 'matmul') {
+    } else if (k === 'matmul' || k === 'matmul_vec4') {
       // 參數：B, M, K, N, Bb, azp, bzp, p0（p0 的位元是轉置旗標）；單一批次，與核心的索引一致
       const p = u32(e[3]); const m = p[1], kk = p[2], n = p[3], fl = p[7];
       f32(e[2], m * n).set(core.matmulTRef(f32(e[0], m * kk), f32(e[1], kk * n), m, kk, n, fl));

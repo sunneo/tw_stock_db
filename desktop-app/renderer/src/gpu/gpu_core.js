@@ -105,6 +105,83 @@
       '}'
     ].join('\n');
   }
+  // vec4 載入版（O5 的 vec4 變體）：與 mmTileWgsl 相同的幾何與計算迴圈，只把全域記憶體讀取改成 vec4（一次 4 個元素）。
+  // 條件：不轉置（flags = 0）、K 是 4 的倍數、N 是 4 的倍數（呼叫端用 mmTileVec4Ok 檢查）。A 的 k 方向與 B 的 n 方向都是連續的，
+  // 所以 vec4 的位址對齊由 K%4、N%4 保證；批次偏移 n*M*K、n*K*N 也都是 4 的倍數。
+  // 共用記憶體仍是 8 KiB；每個執行緒搬入 1 個 vec4 給 A、1 個給 B（256 個執行緒剛好）。
+  function mmTileVec4Ok(M, K, N, flags) { return !flags && K % 4 === 0 && N % 4 === 0 && M > 0 && N > 0; }
+  function mmTileWgslVec4(opts) {
+    opts = opts || {};
+    var marker = opts.marker || 'matmul_vec4';
+    return '// @kernel ' + marker + '\n' + [
+      'struct P { B: u32, M: u32, K: u32, N: u32, Bb: u32, azp: i32, bzp: i32, p0: u32 }',
+      '@group(0) @binding(0) var<storage, read> a4: array<vec4<f32>>;',
+      '@group(0) @binding(1) var<storage, read> b4: array<vec4<f32>>;',
+      '@group(0) @binding(2) var<storage, read_write> y: array<f32>;',
+      '@group(0) @binding(3) var<uniform> p: P;',
+      'var<workgroup> As: array<f32, ' + (MMT_OUT * MMT_K) + '>;',
+      'var<workgroup> Bs: array<f32, ' + (MMT_K * MMT_OUT) + '>;',
+      '@compute @workgroup_size(' + MMT_WG + ', ' + MMT_WG + ', 1)',
+      'fn main(@builtin(local_invocation_id) lid: vec3<u32>, @builtin(workgroup_id) wid: vec3<u32>) {',
+      '  let n = wid.z;',
+      '  let row0 = wid.y * ' + MMT_OUT + 'u;',
+      '  let col0 = wid.x * ' + MMT_OUT + 'u;',
+      '  let ao4 = (n * p.M * p.K) / 4u;',
+      '  var bo4 = 0u;',
+      '  if (p.Bb != 1u) { bo4 = (n * p.K * p.N) / 4u; }',
+      '  let tid = lid.y * ' + MMT_WG + 'u + lid.x;',
+      '  var acc: array<f32, ' + (MMT_REG * MMT_REG) + '>;',
+      '  for (var i: u32 = 0u; i < ' + (MMT_REG * MMT_REG) + 'u; i = i + 1u) { acc[i] = 0.0; }',
+      '  let tiles = (p.K + ' + (MMT_K - 1) + 'u) / ' + MMT_K + 'u;',
+      '  for (var t: u32 = 0u; t < tiles; t = t + 1u) {',
+      '    let k0 = t * ' + MMT_K + 'u;',
+      // A：256 個 vec4 = 64 列 × 4 段（每段 4 個 k）。tid 負責列 tid/4、段 tid%4。
+      '    let ar = tid / 4u;',
+      '    let ak = (tid % 4u) * 4u;',
+      '    let gr = row0 + ar;',
+      '    let gk = k0 + ak;',
+      '    var av: vec4<f32> = vec4<f32>(0.0, 0.0, 0.0, 0.0);',
+      '    if (gr < p.M && gk < p.K) { av = a4[ao4 + (gr * p.K + gk) / 4u]; }',
+      '    As[ar * ' + MMT_K + 'u + ak] = av.x;',
+      '    As[ar * ' + MMT_K + 'u + ak + 1u] = av.y;',
+      '    As[ar * ' + MMT_K + 'u + ak + 2u] = av.z;',
+      '    As[ar * ' + MMT_K + 'u + ak + 3u] = av.w;',
+      // B：256 個 vec4 = 16 列（k）× 16 段（每段 4 個 n）。tid 負責列 tid/16、段 tid%16。
+      '    let bk = tid / 16u;',
+      '    let bc = (tid % 16u) * 4u;',
+      '    let gk2 = k0 + bk;',
+      '    let gc = col0 + bc;',
+      '    var bv: vec4<f32> = vec4<f32>(0.0, 0.0, 0.0, 0.0);',
+      '    if (gk2 < p.K && gc < p.N) { bv = b4[bo4 + (gk2 * p.N + gc) / 4u]; }',
+      '    Bs[bk * ' + MMT_OUT + 'u + bc] = bv.x;',
+      '    Bs[bk * ' + MMT_OUT + 'u + bc + 1u] = bv.y;',
+      '    Bs[bk * ' + MMT_OUT + 'u + bc + 2u] = bv.z;',
+      '    Bs[bk * ' + MMT_OUT + 'u + bc + 3u] = bv.w;',
+      '    workgroupBarrier();',
+      '    for (var kk: u32 = 0u; kk < ' + MMT_K + 'u; kk = kk + 1u) {',
+      '      var ra: array<f32, ' + MMT_REG + '>;',
+      '      var rb: array<f32, ' + MMT_REG + '>;',
+      '      for (var i: u32 = 0u; i < ' + MMT_REG + 'u; i = i + 1u) {',
+      '        ra[i] = As[(lid.y * ' + MMT_REG + 'u + i) * ' + MMT_K + 'u + kk];',
+      '        rb[i] = Bs[kk * ' + MMT_OUT + 'u + lid.x * ' + MMT_REG + 'u + i];',
+      '      }',
+      '      for (var i: u32 = 0u; i < ' + MMT_REG + 'u; i = i + 1u) {',
+      '        for (var j: u32 = 0u; j < ' + MMT_REG + 'u; j = j + 1u) { acc[i * ' + MMT_REG + 'u + j] = acc[i * ' + MMT_REG + 'u + j] + ra[i] * rb[j]; }',
+      '      }',
+      '    }',
+      '    workgroupBarrier();',
+      '  }',
+      '  for (var i: u32 = 0u; i < ' + MMT_REG + 'u; i = i + 1u) {',
+      '    let gr = row0 + lid.y * ' + MMT_REG + 'u + i;',
+      '    if (gr >= p.M) { continue; }',
+      '    for (var j: u32 = 0u; j < ' + MMT_REG + 'u; j = j + 1u) {',
+      '      let gc = col0 + lid.x * ' + MMT_REG + 'u + j;',
+      '      if (gc < p.N) { y[(n * p.M + gr) * p.N + gc] = acc[i * ' + MMT_REG + 'u + j]; }',
+      '    }',
+      '  }',
+      '}'
+    ].join('\n');
+  }
   // CPU 參考（單一批次）：與 matmulRef 相同，每一步 f32 捨入（k 由小到大）。A 是 M×K（transA 時為 K×M），B 是 K×N（transB 時為 N×K）。
   function matmulTRef(A, B, M, K, N, flags) {
     var tA = !!(flags & 1), tB = !!(flags & 2), y = new Float32Array(M * N);
@@ -259,6 +336,8 @@
   ].join('\n');
   // 矩陣乘：共用的平鋪核心（見上方 mmTileWgsl）。參數 8 個 u32（B, M, K, N, Bb, azp, bzp, p0），分派 mmTileDispatch(M, N, B)。
   WGSL.matmul = mmTileWgsl({ marker: 'matmul', dtype: 'f32' });
+  // vec4 載入版：K、N 是 4 的倍數且不轉置時 wgMatmul 改用它（同一幾何，全域讀取一次 4 個元素；大形狀快 20–30%，見 mm_tile_check.html）
+  WGSL.matmul_vec4 = mmTileWgslVec4({ marker: 'matmul_vec4' });
   WGSL.sum = [
     '// @kernel sum',
     'struct Params { n: u32, p1: u32, p2: u32, p3: u32 }',
@@ -584,8 +663,9 @@
       return withScope(dev, async function () {
         var ba = makeBuf(dev, A, USAGE.STORAGE | USAGE.COPY_DST | USAGE.COPY_SRC), bb = makeBuf(dev, B, USAGE.STORAGE | USAGE.COPY_DST | USAGE.COPY_SRC);
         var bc = dev.createBuffer({ size: Math.max(4, m * n * 4), usage: USAGE.STORAGE | USAGE.COPY_SRC });
-        var d = mmTileDispatch(m, n, 1);
-        dispatch(dev, pipeline(dev, 'matmul', WGSL.matmul), [ba, bb, bc, uniformU32(dev, mmTileWords(m, k, n, mmTileFlags(flags), 1))], d[0], d[1]);
+        var d = mmTileDispatch(m, n, 1), fl = mmTileFlags(flags);
+        var v4 = mmTileVec4Ok(m, k, n, fl);   // K、N 為 4 的倍數、不轉置：用 vec4 版
+        dispatch(dev, v4 ? pipeline(dev, 'matmul_vec4', WGSL.matmul_vec4) : pipeline(dev, 'matmul', WGSL.matmul), [ba, bb, bc, uniformU32(dev, mmTileWords(m, k, n, fl, 1))], d[0], d[1]);
         return readBack(dev, bc, m * n);
       });
     }
@@ -1071,6 +1151,7 @@
     matmulRef: matmulRef,
     mmTileWgsl: mmTileWgsl, mmTileDispatch: mmTileDispatch, mmTileWords: mmTileWords, mmTileFlags: mmTileFlags,
     mmTileSharedBytes: mmTileSharedBytes, matmulTRef: matmulTRef,
+    mmTileWgslVec4: mmTileWgslVec4, mmTileVec4Ok: mmTileVec4Ok,
     sumRef: sumRef,
     sumExact: sumExact,
     axpyRef: axpyRef,

@@ -8,7 +8,8 @@
 // 3) 計時（同一台、標硬體）：舊的 16×16 逐格核心（scripts/eval/_tmp_before_gpu_core.js，即 HEAD 版）對新平鋪核心，中位數 5 次（第 1 次暖機不算）。
 //    舊核心只量 64×1024×1024（512×1024×3072 會超過 Windows 的 GPU 逾時，不量）。
 // 4) f16 變體：只在有 shader-f16 時才量；沒有就標「待驗證（無 shader-f16）」，不量、不宣稱。
-// 用法：desktop-app 資料夾 python -X utf8 -m http.server <埠> --bind 127.0.0.1，開 http://127.0.0.1:<埠>/scripts/eval/mm_tile_check.html ；結果在 window.__out。
+// 用法：先在 desktop-app 資料夾執行 git show 1515d6598:desktop-app/renderer/src/gpu/gpu_core.js > scripts/eval/_tmp_before_gpu_core.js（舊核心，只給計時用；量完刪掉，不提交）。
+//       再 python -X utf8 -m http.server <埠> --bind 127.0.0.1，開 http://127.0.0.1:<埠>/scripts/eval/mm_tile_check.html ；結果在 window.__out。
 const mods = {};
 const loadMod = async (key, url) => {
   const src = await (await fetch(url, { cache: 'no-store' })).text();
@@ -59,6 +60,14 @@ const relErr = (x, y) => { let mx = 0, sc = 1e-9; for (let i = 0; i < x.length; 
       const got = await runTile(code, A, B, M, K, N, Bn, perBatch ? 0 : 1, 0, core.mmTileDispatch(M, N, Bn));
       out.correct.push({ batch: Bn, perBatch, M, K, N, layer: lastLayer, relErr: relErr(got, ref), pass: lastLayer === 'T1' && relErr(got, ref) <= 1e-6 });
     }
+    // 1b) vec4 載入版（只在 K、N 是 4 的倍數、不轉置時用）：對 matmulTRef 逐元素比
+    const v4code = core.mmTileWgslVec4({ marker: 'matmul_vec4' });
+    for (const [M, K, N] of [[70, 52, 92], [64, 1024, 1024], [5, 8, 4], [130, 20, 132], [17, 36, 8]]) {
+      const A = mk(M * K), B = mk(K * N);
+      const ref = core.matmulTRef(A, B, M, K, N, 0);
+      const got = await runTile(v4code, A, B, M, K, N, 1, 1, 0, core.mmTileDispatch(M, N, 1));
+      out.correct.push({ vec4: true, M, K, N, layer: lastLayer, relErr: relErr(got, ref), pass: lastLayer === 'T1' && relErr(got, ref) <= 1e-6 });
+    }
     // 2) 執行路徑：gpu_core 的 createRuntime().matmul（非轉置）
     const rt = core.createRuntime({ navigator: navigator, webgl2: null });
     for (const [M, K, N] of [[70, 50, 90], [64, 1024, 1024]]) {
@@ -80,6 +89,8 @@ const relErr = (x, y) => { let mx = 0, sc = 1e-9; for (let i = 0; i < x.length; 
       const A = mk(M * K), B = mk(K * N);
       const row = { shape: M + 'x' + K + 'x' + N };
       row.newMs = await timeIt(() => runTile(code, A, B, M, K, N, 1, 1, 0, core.mmTileDispatch(M, N, 1)));
+      row.newLayer = lastLayer;
+      row.vec4Ms = await timeIt(() => runTile(v4code, A, B, M, K, N, 1, 1, 0, core.mmTileDispatch(M, N, 1)));
       if (withOld) {
         row.oldMs = await timeIt(() => nn.tryLayers('matmul', {}, async (dev) => (await nn.runWgsl(dev, oldCode, [{ data: A }, { data: B }, { data: new Float32Array(M * N), out: true }], uniformOf([M, K, N, 0]), [Math.ceil(N / 16), Math.ceil(M / 16), 1]))[0], null, () => new Float32Array(M * N)));
       }

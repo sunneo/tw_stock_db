@@ -89,7 +89,7 @@ function fakeNavigator(opts) {
     if (k === 'vector_add') {
       const n = u32(e[3])[0];
       f32(e[2], n).set(core.vectorAddRef(f32(e[0], n), f32(e[1], n)));
-    } else if (k === 'matmul') {
+    } else if (k === 'matmul' || k === 'matmul_vec4') {
       // 參數：B, M, K, N, Bb, azp, bzp, p0（與 gpu_core.js 的 mmTileWords 相同）
       const p = u32(e[3]); const m = p[1], kk = p[2], n = p[3], fl = p[7];
       f32(e[2], m * n).set(core.matmulTRef(f32(e[0], m * kk), f32(e[1], kk * n), m, kk, n, fl));
@@ -339,6 +339,12 @@ function seeded(n, seed) {
     assert.ok(h.startsWith('enable f16;\n// @kernel matmul_f16'), 'f16 版要有 enable 行');
     assert.ok(/array<f16>/.test(h), 'f16 版的輸入是 f16');
     assert.deepStrictEqual(core.mmTileDispatch(70, 90, 3), [2, 2, 3]);
+    const v4 = core.mmTileWgslVec4({ marker: 'matmul_vec4' });
+    assert.ok(v4.startsWith('// @kernel matmul_vec4\n'), 'vec4 版的 @kernel 標記');
+    assert.ok(/array<vec4<f32>>/.test(v4) && v4.split('workgroupBarrier()').length - 1 === 2, 'vec4 版：vec4 綁定與兩個屏障');
+    assert.ok(core.mmTileVec4Ok(70, 52, 92, 0) === true, 'K、N 為 4 的倍數、不轉置：可用 vec4');
+    assert.ok(core.mmTileVec4Ok(70, 50, 92, 0) === false, 'K 不是 4 的倍數：不可用 vec4');
+    assert.ok(core.mmTileVec4Ok(70, 52, 92, 1) === false, '轉置：不可用 vec4（呼叫端退回純量版）');
   });
   await check('矩陣乘在 T1 執行，形狀不是 16 的倍數（邊界檢查）', async () => {
     const rt = core.createRuntime({ navigator: fakeNavigator().nav, webgl2: null });
@@ -347,6 +353,14 @@ function seeded(n, seed) {
     const r = await rt.matmul(A, B, m, k, n);
     assert.strictEqual(r.info.layer, 'T1');
     close(r.result, Array.from(core.matmulRef(Float32Array.from(A), Float32Array.from(B), m, k, n)), core.tolerance(k), 'matmul');
+  });
+  await check('矩陣乘 K、N 為 4 的倍數時走 vec4 版，結果與參考版一致（假裝置）', async () => {
+    const rt = core.createRuntime({ navigator: fakeNavigator().nav, webgl2: null });
+    const m = 9, k = 8, n = 12;
+    const A = seeded(m * k, 21), B = seeded(k * n, 23);
+    const r = await rt.matmul(A, B, m, k, n);
+    assert.strictEqual(r.info.layer, 'T1');
+    close(r.result, Array.from(core.matmulRef(Float32Array.from(A), Float32Array.from(B), m, k, n)), core.tolerance(k), 'matmul vec4');
   });
   await check('歸約在 T1 執行（1000 個元素，需要兩輪），誤差在容差內', async () => {
     const rt = core.createRuntime({ navigator: fakeNavigator().nav, webgl2: null });
