@@ -27,6 +27,10 @@ Continue from the handoff document at desktop-app/docs/HANDOFF.plan-template.md.
 - ✅ 讀＋總結修正：`6b93b201f`（`_planFinish` 摘要類目標改走 `_planLocalSummarize`；沒模型標示「這次沒有經過 AI」）；測試 `renderer/src/recipe/plan_readback.test.js` 8 passed。
 - ✅ 網頁新聞確定性核心：`989435b1f`（`renderer/src/recipe/web_news_core.js`：來源登錄表、站名別名、拆字、頁面切單位、比對；測試 `web_news_core.test.js` 21 passed）。
 - ✅（2026-11-17，後段）新聞接進離線模型 `494591aa4`（FaNewsDigest＋`_newsDigestAnswer`，`_recipeAnswer` 先接手新聞類問題，`scripts/embed-news-digest.js` 只改 NEWSDIGEST 區段）；測試 news_digest_core 23／news_wiring 12 全過；真模型＋假網頁實跑 `scripts/eval/news_real_run.js`，結果與揭露的問題寫在 DESIGN §4（`80f4ed15e`）。
+- ✅（後段）模型停止詞元修正 `06df984cf`（`<|im_end|>` 在 added_tokens）：兩篇摘要都經模型（method=model），實跑結果寫在 DESIGN §4.1。
+- ✅ 發布 v434：desktop-app `a7e5d63ee242`，patch `2c33ef3edc6b`，v2 manifest 434，fa md5 `e4fed643…` 與本機一致。
+- ⏳ 待代釘的網頁 SHA：`a7e5d63ee2423baf5e330a971edcff2cae0d482a`（`web/index.html`、`web/aiweb/index.html` 目前仍釘 337fe7b30）；push main 被分類器擋過一次，沒有重試。
+- 下面是舊的未完成清單（已處理的略過）：
 - ❗ 未完成（下一棒的第一件事）：(a) 模型逐篇摘要被 `checkExtractive` 退回、全部落到程式摘錄，要抓 `_planLocalSummarize` 裡 `M.gen` 的原始輸出找原因；(b) 發布（publish）被擋：工作目錄的 `floating-assistant.js` 有另一個 session 未提交的 hunk，且 `skills/weak-model-harness/scripts/bridge/` 未追蹤；需要先由那個 session 提交（或使用者決定），之後才能 publish；(c) 網頁版 SHA 仍釘 337fe7b30，待 publish 後的 HEAD 由頂層代釘（分類器擋過一次）；(d) transcribe 是否顯示「新聞摘要」進度卡片尚未查證。
 - ⏳ 下一步（照順序，舊清單保留）：
   1. 把 `web_news_core` 接進計畫：`web_research`／`web_summary` 的新聞路徑 = 選來源（`pickSources`）→ 取清單（`fetch_web_page`／RSS）→ `splitPage` ＋ `matchUnits`（目標詞用 `goalOf`＋`expandTerms`）→ 逐篇取內文 → 逐篇 `_planLocalSummarize` → 合併「N 則，各一句重點」；沒有相關就明說沒有。
