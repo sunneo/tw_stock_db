@@ -30,16 +30,16 @@
    "names": [
     "FA_HEAD_SRC"
    ],
-   "size": 85126,
-   "md5": "9f97f620977e1e8d4d1c9633a28f7b33"
+   "size": 98686,
+   "md5": "70368b819126be2475a0478f19235df3"
   },
   "qwengpu": {
    "file": "chunks/qwengpu.js",
    "names": [
     "FA_QWEN_SRC"
    ],
-   "size": 311172,
-   "md5": "04ba479cbe1a74a95aafc48ea4e9999a"
+   "size": 364094,
+   "md5": "0df2616511ee0f9a6c0a4071d46bc85d"
   },
   "aidocview": {
    "file": "chunks/aidocview.js",
@@ -199,16 +199,16 @@
    "names": [
     "FA_MOSS_GPU_SRC"
    ],
-   "size": 80723,
-   "md5": "92f9a0e2bcebc289752f4564b41482f7"
+   "size": 87919,
+   "md5": "408958e17678ba89c42d14eb255f7710"
   },
   "midigpu": {
    "file": "chunks/midigpu.js",
    "names": [
     "FA_MIDI_GPU_SRC"
    ],
-   "size": 77333,
-   "md5": "bb1f87d05da1e8083d11613b9efa3e18"
+   "size": 85492,
+   "md5": "eb4cbc186d76a9c2c975c6e7a03b9a48"
   },
   "guitpl": {
    "file": "chunks/guitpl.js",
@@ -1879,7 +1879,7 @@
   }
  },
  "core": {
-  "size": 6049370,
-  "md5": "2d9f65fde4c0e4ecd9c43d423d33ad98"
+  "size": 6063612,
+  "md5": "2c9d23be705d0cc78072e0f2f4968b2c"
  }
 }
