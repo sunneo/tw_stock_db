@@ -50,6 +50,26 @@
 - `q8mm_check.html`、`attn_flash_check.html`、`matmulnbits_dec_check.html`、`mem_space_check.html`、`mm_tiled_check.html`（既有）。
 - 讀 `window.__out`；判準寫在每頁開頭註解。
 
+## 2026-11-18 第十三段（本棒：安全校準、量測互斥、O12a–c、批次誠實記錄；提交已列在下）
+
+提交（本地，未推送；發布由管理者跑）：`a56dac179` 安全校準；`d460b2d8e`、`175410a1e` 評估檔；`2b84c1945` R0 16 條鏈；`3fa2443c7`、`42304af2d` 轉置旗標；`9279e80d0` sgemm_batched；`935917eed` 第十二段交接；`6c6421c86` O12a 描述表；`87caad159` O12b CPU 參考骨架；`869043756` O12c 覆寫槽；`f7b7adc08` 量測互斥鎖＋提交拆分；`6696b7122` O12b GPU 版（投影走 gemv）＋小 M 路徑＋批次路徑誠實記錄；`346768e8e` requestExclusiveGpu＋閒置持有者＋qwen sha256。
+
+屋頂量測（已取代舊的 1024 次迭代探測）：兩個極小派發（8、32 次）線性外推到單次約 30 ms，迭代數上限 4096；任何派發或提交超過 150 ms 就中止並標「屋頂量測不可信」，不再放大。提交估計超過 100 ms 就拆開（`splitRuns`）。
+
+GPU 獨占：`nn_ops.requestExclusiveGpu(reason, {signal})` 排隊、可取消；授予前依註冊順序呼叫閒置持有者（`registerIdleGpuHolder`）的 release，某個丟錯記在 `release.failures` 仍授予。基準、變體競賽、屋頂量測都走它；背景自動競賽在有獨占時跳過。
+
+桌面實測（真 Electron、真 WebGPU，`mm_roofline_calibrated`，唯一一次）：
+- 屋頂：`ok`，119.42 GFLOP/s（317 次迭代、3 次一批、單次約 5.6 ms，總共 95 ms）。這個數字在峰值 127.5 之下，但還沒跟獨立量測對照。
+- 競賽：64×1024×1024 勝者 `mm_vec4_f32`（kernel-only 中位數 1.32 ms，101 GFLOP/s，編譯 3.28 ms）。512 兩個形狀全部依預估逾時略過，每個候選都有原因（estMs 與 150 ms 上限）。沒有候選因驗證失敗。
+- 轉置路徑：GPU 上 layer T1，最大誤差 7e-7。
+- 批次路徑：`lastPath = per-item（這個核心沒有 matmulMany，逐組執行）`。**批次不是真的批次**，只是逐組正確。要真的一次提交，需要在 gpu_core 補 matmulMany。
+- 小 M 路徑（gemv）：M=1、B 以 N×K 儲存，走 gemv，layer T1，最大誤差 1.2e-7。只處理 transB 排法。
+- O12b GPU 版：2 層小模型的 GPU 解碼（投影走 gemv）對 CPU 參考，最大誤差 1.2e-7，argmax 相同。
+
+O12d：Qwen3 0.6B onnx 的 sha256 由本機已下載檔計算為 `ccf8734e…`（大小 617687575 與表一致）；1.7B 分段串流實算為 `202ed819…`，與表一致；tokenizer 為 `e7a95fce…`，與表一致。Llama 系列（TinyLlama、Llama 3.2、SmolLM2）本機沒有檔案，所以沒有 sha256，描述表 `verified: false`，標待核對。
+
+本段沒做、需要決定：O13（LLaVA-Interleave、SmolVLM、Florence-2）與 O15（全部離線模型上 WebGPU）需要模型檔，本機沒有；下載要使用者同意。另外，閒置持有者的註冊要由模型引擎在呼叫端接線（另一個工作階段負責新聞摘要）。
+
 ## 2026-11-18 第十二段（本棒：Intel 缺口、核心計時、O14b 轉置旗標）
 
 提交（皆為本地提交，未推送、未發布）：
