@@ -1,0 +1,55 @@
+<!doctype html><meta charset="utf-8"><title>mm race one</title>
+<body style="font:13px monospace;white-space:pre">
+<script>
+// 真 GPU 變體競賽：一頁一形狀、一個變體（安全量測規則）。
+// 每頁最多 3 次 submit：1 次驗證（同時當暖機）＋ 2 次計時；計時含上傳與回讀（與派發路徑的成本一致）。
+// 監聽 device.lost；先估時間（flops ÷ 20 GFLOP/s，超過 300 ms 的單次估計不跑）。
+// 用法：desktop-app 資料夾 python -X utf8 -m http.server <埠> --bind 127.0.0.1，開
+//   http://127.0.0.1:<埠>/scripts/eval/mm_race_one.html?M=64&K=1024&N=1024&kernel=mm_tiled_f32
+// 結果在 window.__out（也 console.log 一行 MM_RACE_ONE）。峰值 127.5 GFLOP/s 取自 roofline_check（R0）。
+const PEAK = 127.5;
+const q = new URLSearchParams(location.search);
+const M = +q.get('M'), K = +q.get('K'), N = +q.get('N'), kernel = q.get('kernel');
+const mods = {};
+const load = async (name) => {
+  const src = await (await fetch('../../renderer/src/gpu/' + name + '.js', { cache: 'no-store' })).text();
+  const m = { exports: {} }; mods[name] = m;
+  new Function('module', 'exports', 'require', src)(m, m.exports, (p) => { const k = p.replace(/^\.\//, '').replace(/\.js$/, ''); if (!mods[k]) throw new Error('missing ' + k); return mods[k].exports; });
+};
+(async () => {
+  const out = { M, K, N, kernel, flops: 2 * M * K * N, est_ms_at_20gflops: 2 * M * K * N / 20e9 * 1e3, submits: 0, relErr: null, ms: [], gflops: null, pctPeak: null, lost: null, error: null, layer: null, done: false };
+  window.__out = out;
+  try {
+    if (!(out.est_ms_at_20gflops <= 300)) throw new Error('估時超過 300 ms，不跑');
+    await load('kernel_select'); await load('variant_race'); await load('gpu_core'); await load('gpu_pool'); await load('nn_ops'); await load('mm_ops');
+    const KS = mods.kernel_select.exports, MM = mods.mm_ops.exports;
+    if (!navigator.gpu) throw new Error('沒有 navigator.gpu');
+    const adapter = await navigator.gpu.requestAdapter();
+    if (!adapter) throw new Error('requestAdapter 回傳 null');
+    const device = await adapter.requestDevice();
+    device.lost.then((info) => { out.lost = info && info.message; });
+    MM.setMatmulCaps(KS.probeCaps(adapter, device), 'local-gt720');
+    let s = 7; const rnd = () => { s = (Math.imul(s, 1664525) + 1013904223) | 0; return (s >>> 0) / 4294967296 - 0.5; };
+    const a = Float32Array.from({ length: M * K }, rnd), b = Float32Array.from({ length: K * N }, rnd);
+    const ref = MM.matmulRef(a, [M, K], b, [K, N]).y;
+    let scale = 0; for (const v of ref) scale = Math.max(scale, Math.abs(v));
+    const run = async () => { out.submits++; const o = { kernel: kernel }; const r = await MM.matmul(a, [M, K], b, [K, N], o); out.layer = o.lastInfo && o.lastInfo.layer; return r; };
+    // 1) 驗證（第一次 submit，同時暖機）
+    const t0 = performance.now();
+    const r = await run();
+    if (/cpu-js/.test(out.layer || '')) throw new Error('退到 cpu-js，沒有 GPU 派發，不計時');
+    let d = 0; for (let i = 0; i < ref.length; i++) d = Math.max(d, Math.abs(r.y[i] - ref[i]));
+    out.relErr = d / Math.max(scale, 1e-30);
+    if (!(out.relErr <= 1e-5)) throw new Error('驗證不過（相對誤差 ' + out.relErr + '）');
+    // 2) 計時：2 次（submit 2、3）
+    for (let i = 0; i < 2; i++) { const t = performance.now(); await run(); out.ms.push(performance.now() - t); }
+    const med = (out.ms[0] + out.ms[1]) / 2; // 2 次取平均（3 次 submit 上限下，中位數只能取兩次的平均）
+    out.gflops = out.flops / (med * 1e6);
+    out.pctPeak = out.gflops / PEAK * 100;
+    out.totalMs = performance.now() - t0;
+    out.done = true;
+  } catch (e) { out.error = String((e && e.message) || e); }
+  document.title = 'mm race one done';
+  console.log('MM_RACE_ONE ' + JSON.stringify(out));
+})();
+</script>

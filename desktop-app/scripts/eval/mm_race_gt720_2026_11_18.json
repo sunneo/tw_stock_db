@@ -1,0 +1,16 @@
+{
+  "hardware": "NVIDIA GeForce GT 720 (Kepler GK208), Chrome WebGPU, driver 475.14",
+  "page": "scripts/eval/mm_race_one.html（一頁一形狀一變體；1 次驗證＋2 次計時，共 3 次 submit）",
+  "timing_includes": "上傳＋派發＋回讀（與派發路徑成本一致）",
+  "peak_gflops_ref": 127.5,
+  "note": "每個變體只有 2 次計時，取平均（3 次 submit 上限下無法取中位數）。第一次計時常有離群值（512 tiled 第一次 242 ms、第二次 52 ms），數字只可當方向，不可當精確值。simple 只跑 64×1024×1024（512 估時太長，不冒 Windows GPU 逾時的險）。",
+  "results": [
+    { "M": 64, "K": 1024, "N": 1024, "kernel": "mm_simple_f32", "relErr": 1.30e-6, "ms": [77.1, 60.7], "gflops_avg": 1.95, "pct_peak": 1.53, "layer": "T1" },
+    { "M": 64, "K": 1024, "N": 1024, "kernel": "mm_tiled_f32", "relErr": 1.30e-6, "ms": [49.3, 72.5], "gflops_avg": 2.20, "pct_peak": 1.73, "layer": "T1" },
+    { "M": 64, "K": 1024, "N": 1024, "kernel": "mm_vec4_f32", "relErr": 1.30e-6, "ms": [38.2, 17.2], "gflops_avg": 4.85, "pct_peak": 3.80, "layer": "T1" },
+    { "M": 512, "K": 1024, "N": 1024, "kernel": "mm_tiled_f32", "relErr": 1.39e-6, "ms": [242.1, 52.3], "gflops_avg": 7.29, "pct_peak": 5.72, "layer": "T1" },
+    { "M": 512, "K": 1024, "N": 1024, "kernel": "mm_vec4_f32", "relErr": 1.39e-6, "ms": [52.5, 32.1], "gflops_avg": 25.38, "pct_peak": 19.91, "layer": "T1" }
+  ],
+  "winner_by_shape": { "64x1024x1024": "mm_vec4_f32（平均最快，但兩次計時差很大，未穩）", "512x1024x1024": "mm_vec4_f32" },
+  "lost": null
+}
