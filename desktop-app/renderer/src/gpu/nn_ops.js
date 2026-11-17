@@ -4,6 +4,7 @@
 // 注意：WGSL 原始碼在真 WebGPU 上尚未驗證；測試的假裝置用 CPU 參考版執行，只驗證主機端的綁定、回讀與降級流程。
 'use strict';
 const core = require('./gpu_core.js');
+const GP = require('./gpu_pool.js');
 
 const USAGE = { MAP_READ: 0x0001, COPY_SRC: 0x0004, COPY_DST: 0x0008, UNIFORM: 0x0040, STORAGE: 0x0080 };
 // WebGL2 常數（用數字，因為假 WebGL2 上下文沒有這些符號）
@@ -592,15 +593,24 @@ async function adamw(p, g, m, v, t, lr, b1, b2, eps, wd, opts) {
 function createBatch(dev) {
   const enc = dev.createCommandEncoder();
   let submitted = false;
-  const stats = { dispatches: 0, readbacks: 0 };
-  function storage(n) { return dev.createBuffer({ size: Math.max(4, n * 4), usage: USAGE.STORAGE | USAGE.COPY_SRC | USAGE.COPY_DST }); }
-  function upload(arr) { const f = Float32Array.from(arr); const buf = storage(f.length); dev.queue.writeBuffer(buf, 0, f); return { buf: buf, n: f.length }; }
+  const pool = GP.poolFor(dev);
+  // 這個批次借來的緩衝區；submit 之後整批歸還池（佇列依序執行，之後的寫入排在這次讀取之後，安全）
+  const temps = [];
+  const stats = { dispatches: 0, readbacks: 0, submits: 0, pipelineHits: 0, pipelineMisses: 0, pool: pool.stats };
+  function storage(n) {
+    const buf = pool.acquire(Math.max(4, n * 4), USAGE.STORAGE | USAGE.COPY_SRC | USAGE.COPY_DST);
+    temps.push(buf);
+    return buf;
+  }
+  function upload(arr) { const f = arr instanceof Float32Array ? arr : Float32Array.from(arr); const buf = storage(f.length); dev.queue.writeBuffer(buf, 0, f); return { buf: buf, n: f.length }; }
   function dispatch(code, bindBufs, uniform, groups) {
     if (submitted) throw new Error('批次已經提交，不能再加入運算');
-    const ub = dev.createBuffer({ size: Math.max(16, Math.ceil(uniform.byteLength / 16) * 16), usage: USAGE.UNIFORM | USAGE.COPY_DST });
+    const ub = pool.acquire(Math.max(16, Math.ceil(uniform.byteLength / 16) * 16), USAGE.UNIFORM | USAGE.COPY_DST);
+    temps.push(ub);
     dev.queue.writeBuffer(ub, 0, uniform);
-    const module = dev.createShaderModule({ code: code });
-    const pipe = dev.createComputePipeline({ layout: 'auto', compute: { module: module, entryPoint: 'main' } });
+    const got = GP.pipelineFor(dev, code);
+    if (got.hit) stats.pipelineHits++; else stats.pipelineMisses++;
+    const pipe = got.pipe;
     const entries = bindBufs.map((b, i) => ({ binding: i, resource: { buffer: b } }));
     entries.push({ binding: bindBufs.length, resource: { buffer: ub } });
     const bg = dev.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries: entries });
@@ -640,16 +650,23 @@ function createBatch(dev) {
       if (submitted) throw new Error('批次已經提交過');
       submitted = true;
       const rbs = specs.map(([h, n]) => {
-        const rb = dev.createBuffer({ size: Math.max(4, n * 4), usage: USAGE.MAP_READ | USAGE.COPY_DST });
+        const rb = pool.acquire(Math.max(4, n * 4), USAGE.MAP_READ | USAGE.COPY_DST);
         enc.copyBufferToBuffer(h.buf, 0, rb, 0, n * 4);
         return rb;
       });
       dev.queue.submit([enc.finish()]);
+      stats.submits++;
+      // 命令已排進佇列，中間緩衝區可以歸還（之後的重用排在這次提交之後）
+      for (const t of temps) pool.release(t);
+      temps.length = 0;
       const out = [];
-      for (const rb of rbs) {
+      for (let i = 0; i < rbs.length; i++) {
+        const rb = rbs[i], n = specs[i][1];
         await rb.mapAsync(1);
-        out.push(new Float32Array(rb.getMappedRange().slice(0)));
+        // 池裡的緩衝區可能比要求的大（分桶），只取前 n 個值
+        out.push(new Float32Array(rb.getMappedRange().slice(0, n * 4)));
         rb.unmap();
+        pool.release(rb);
         stats.readbacks++;
       }
       return out;
