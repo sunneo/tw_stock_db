@@ -98,6 +98,15 @@ function fakeClock() { const c = { t: 0, step: 0 }; c.now = () => c.t; return c;
         check('8 cudaweb 與參考一致，有效前的正確性通過', rows[0].errors === 0 && rows[0].relErr < 1e-6, rows[0]);
     }
 
+    // 9. 分片參考值：和同步的結果完全一樣，而且中途有讓出（大形狀不凍結頁面）
+    {
+        const x = R.makeMatmulInputs(10, 7, 9, 2); let yields = 0;
+        const yy = await R.matmulRefYield(x.a, x.ad, x.b, x.bd, async () => { yields++; }, 3);
+        const ss = R.matmulRef(x.a, x.ad, x.b, x.bd);
+        check('9 分片參考值與同步相同', Array.from(yy).join() === Array.from(ss).join());
+        check('9 分片有讓出（10 列、每 3 列讓一次＝4 次）', yields === 4, yields);
+    }
+
     console.log('bench_run.test.js: ' + ok + ' passed, ' + bad + ' failed');
     process.exit(bad ? 1 : 0);
 })().catch((e) => { console.error(e); process.exit(1); });

@@ -81,12 +81,21 @@
         return rows;
     }
 
-    // 矩陣乘的候選：cudaweb（呼叫 mm.matmul）與 ORT 的 WebGPU／WASM 後端。
+    // CPU 參考，分片讓出主執行緒（大形狀，例如 512×1024×3072，同步算會凍結頁面）
+    async function matmulRefYield(a, ad, b, bd, yieldTo, rowsPerChunk) {
+        const M = ad[0], K = ad[1], N = bd[1]; const y = new Float32Array(M * N); const step = Math.max(1, rowsPerChunk || 4);
+        for (let i0 = 0; i0 < M; i0 += step) {
+            for (let i = i0; i < Math.min(M, i0 + step); i++) for (let j = 0; j < N; j++) { let acc = 0; for (let k = 0; k < K; k++) acc += a[i * K + k] * b[k * N + j]; y[i * N + j] = acc; }
+            if (yieldTo) await yieldTo();
+        }
+        return y;
+    }
+    // 矩陣乘的候選：cudaweb（呼叫 mm.matmul）與 ORT 的 WebGPU／WASM 後端。env.ref 有就用它（分片算好的參考）。
     // mm: { matmul(a, ad, b, bd) → Promise<{ y }> }   ort: 注入的 ORT 模組（InferenceSession、Tensor）
     function matmulCandidates(spec, env) {
         const { M, K, N } = spec; const cache = (env && env.cache) || {};
         const data = makeMatmulInputs(M, K, N, (env && env.seed) || 7);
-        const ref = matmulRef(data.a, data.ad, data.b, data.bd);
+        const ref = env && env.ref ? env.ref : matmulRef(data.a, data.ad, data.b, data.bd);
         const cands = [{ id: 'cudaweb', run: async () => { const r = await env.mm.matmul(data.a, data.ad, data.b, data.bd, {}); return Float32Array.from(r.y); } }];
         for (const id of ['ort-webgpu', 'ort-wasm']) {
             cands.push({ id, run: async () => ortMatmul((env.orts && env.orts[id]) || env.ort, id, M, K, N, cache)(data.a, data.b) });   // 每個後端用自己的 ORT 組建（webgpu 組建 ≠ wasm 組建）
@@ -108,5 +117,5 @@
         };
     }
 
-    return { runCase, matmulCandidates, ortMatmul, makeMatmulInputs, matmulRef, onnxMatMulBytes, TOL };
+    return { runCase, matmulCandidates, ortMatmul, makeMatmulInputs, matmulRef, matmulRefYield, onnxMatMulBytes, TOL };
 }));

@@ -17,6 +17,20 @@
     // 沒量過時每個運算都用 cudaweb（現行行為）。只有有效的量測結果才會改變選擇；沒有任何猜測。
     const DEFAULTS = { matmul: 'cudaweb', softmax: 'cudaweb', rmsnorm: 'cudaweb', silu: 'cudaweb', rope: 'cudaweb', adamw: 'cudaweb' };
     const BACKENDS = ['cudaweb', 'ort-webgpu', 'ort-wasm'];
+    // 預設的矩陣乘形狀（M×K×N）：Redmine 外掛實測過的兩個；使用者可以在設定裡改成別的清單
+    const DEFAULT_SHAPES = ['512x1024x1024', '512x1024x3072'];
+    const MAX_SHAPES = 8;
+    // 形狀字串 'MxKxN'（正整數）→ { M, K, N }；不合法回傳 null
+    function parseShape(s) {
+        const m = /^(\d{1,6})x(\d{1,6})x(\d{1,6})$/.exec(String(s || '').trim()); if (!m) return null;
+        const M = +m[1], K = +m[2], N = +m[3]; if (!(M > 0 && K > 0 && N > 0)) return null;
+        return { M, K, N };
+    }
+    // 設定用的形狀清單：去掉不合法與重複的，最多 MAX_SHAPES 個；全部不合法就用預設
+    function normalizeShapes(list) {
+        const out = []; for (const x of [].concat(list || [])) { const p = parseShape(x); if (!p) continue; const k = p.M + 'x' + p.K + 'x' + p.N; if (out.indexOf(k) < 0) out.push(k); if (out.length >= MAX_SHAPES) break; }
+        return out.length ? out : DEFAULT_SHAPES.slice();
+    }
 
     function stats(samples) {
         const a = (samples || []).filter((x) => typeof x === 'number' && isFinite(x) && x >= 0).slice().sort((x, y) => x - y);
@@ -91,5 +105,5 @@
         return maxDiff / maxRef;
     }
 
-    return { stats, validResult, decide, pickBackend, pinKey, envKey, relErr, DEFAULTS, BACKENDS, MIN_RUNS, MAX_CV, SWITCH_GAIN, WARMUP, MEASURE };
+    return { stats, validResult, decide, pickBackend, pinKey, envKey, relErr, parseShape, normalizeShapes, DEFAULT_SHAPES, MAX_SHAPES, DEFAULTS, BACKENDS, MIN_RUNS, MAX_CV, SWITCH_GAIN, WARMUP, MEASURE };
 }));

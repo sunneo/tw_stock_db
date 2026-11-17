@@ -13,7 +13,7 @@ function methodSource(name) {
     const chunk = SRC.slice(m.index + 1, n ? n.index : SRC.length); const close = chunk.lastIndexOf('}');
     return chunk.slice(0, close + 1);
 }
-const NAMES = ['_gpuBenchLoad', '_gpuBenchSave', '_gpuBenchClear', '_gpuBenchRefresh', '_gpuBenchPick', '_gpuBenchPin', '_gpuBenchCancelRun', '_gpuBenchRestore', '_gpuBenchRun', '_gpuBenchEnvKey', '_gpuRouteOps', '_gpuRoutePick', '_gpuOrtRun', '_gpuRouteRecord', '_gpuBrokenGet', '_gpuBrokenSet'];
+const NAMES = ['_gpuBenchLoad', '_gpuBenchSave', '_gpuBenchClear', '_gpuBenchRefresh', '_gpuBenchPick', '_gpuBenchPin', '_gpuBenchCancelRun', '_gpuBenchRestore', '_gpuBenchRun', '_gpuBenchEnvKey', '_gpuRouteOps', '_gpuRoutePick', '_gpuOrtRun', '_gpuRouteRecord', '_gpuBrokenGet', '_gpuBrokenSet', '_gpuBenchNormalizeShapes', '_gpuBenchShapesList'];
 // 假的 localStorage（同一份記憶體，模擬跨呼叫的保存）
 const store = new Map();
 const fakeLS = { getItem: (k) => (store.has(k) ? store.get(k) : null), setItem: (k, v) => store.set(k, String(v)), removeItem: (k) => store.delete(k) };
@@ -67,7 +67,7 @@ const fakeMm = { matmul: async (a, ad, b, bd) => { clockT += 2; return { y: BR.m
     // 3. 量測：假 mm、假 ORT（webgpu 與 wasm 各一個）、假計時；存下 2 個形狀 × 3 個後端；每個 ORT 都有 ORT 會話（不靜默）
     {
         const ortMod = (name) => ({ env: { wasm: {} }, Tensor: function (t, d, dims) { this.data = d; this.dims = dims; }, InferenceSession: { create: async (bytes, o) => ({ run: async (f) => { clockT += 2; return { Y: { getData: async () => BR.matmulRef(f.A.data, f.A.dims, f.B.data, f.B.dims) } }; }, ep: o.executionProviders[0], name }) } });
-        const s = assistant({ mm: fakeMm });
+        const s = assistant({ mm: fakeMm }); s.advancedSettings.gpuBenchShapes = ['8x16x8', '4x8x16'];
         s._gpuBenchOrt = async (kind) => ortMod(kind);
         const stored = [];
         s._gpuBenchSave = (env, rec) => stored.push({ env, rec });
@@ -77,15 +77,15 @@ const fakeMm = { matmul: async (a, ad, b, bd) => { clockT += 2; return { y: BR.m
         check('3 存了一次', stored.length === 1, stored.length);
         const res = stored[0].rec.results;
         check('3 2 個形狀 × 3 個後端＝6 列', res.length === 6, res.length);
-        check('3 形狀與後端都對', ['1x1024x1024', '128x512x512'].every((sh) => ['cudaweb', 'ort-webgpu', 'ort-wasm'].every((id) => res.some((x) => x.shape === sh && x.id === id))));
+        check('3 形狀與後端都對', ['8x16x8', '4x8x16'].every((sh) => ['cudaweb', 'ort-webgpu', 'ort-wasm'].every((id) => res.some((x) => x.shape === sh && x.id === id))));
         check('3 每列有 20 個樣本（暖機不計）', res.every((x) => x.stats.n === 20), res.map((x) => x.stats.n));
-        check('3 進度有回報', progress.some((x) => x.includes('1x1024x1024')) && progress.some((x) => x.includes('128x512x512')), progress);
+        check('3 進度有回報', progress.some((x) => x.includes('8x16x8')) && progress.some((x) => x.includes('4x8x16')), progress);
         check('3 正確性：全部有效（假後端輸出與參考一致）', res.every((x) => x.errors === 0), res.filter((x) => x.errors));
         check('3 沒有載入失敗的註記', (stored[0].rec.notes || []).length === 0, stored[0].rec.notes);
     }
     // 4. ORT 載入失敗：那個後端不參加，並且在註記中寫出原因（不靜默）；另外兩個照常量測
     {
-        const s = assistant({ mm: fakeMm });
+        const s = assistant({ mm: fakeMm }); s.advancedSettings.gpuBenchShapes = ['8x16x8', '4x8x16'];
         s._gpuBenchOrt = async (kind) => { if (kind === 'webgpu') throw new Error('WebGPU 不可用'); return { env: { wasm: {} }, Tensor: function (t, d, dims) { this.data = d; this.dims = dims; }, InferenceSession: { create: async () => ({ run: async (f) => { clockT += 2; return { Y: { getData: async () => BR.matmulRef(f.A.data, f.A.dims, f.B.data, f.B.dims) } }; } }) } }; };
         const stored = []; s._gpuBenchSave = (env, rec) => stored.push(rec);
         await s._gpuBenchRun(() => {});
@@ -97,7 +97,7 @@ const fakeMm = { matmul: async (a, ad, b, bd) => { clockT += 2; return { y: BR.m
     // 5. 取消：在樣本之間停下，不存任何結果；狀態回到可以再跑
     {
         let calls = 0; const slow = { matmul: async (a, ad, b, bd) => { calls++; if (calls === 30) s._gpuBenchCancelRun(); return { y: BR.matmulRef(a, ad, b, bd) }; } };
-        const s = assistant({ mm: slow });
+        const s = assistant({ mm: slow }); s.advancedSettings.gpuBenchShapes = ['8x16x8', '4x8x16'];
         s._gpuBenchOrt = async () => { throw new Error('略過 ORT'); };
         const stored = []; s._gpuBenchSave = (env, rec) => stored.push(rec);
         const r = await s._gpuBenchRun(() => {});
@@ -179,6 +179,39 @@ const fakeMm = { matmul: async (a, ad, b, bd) => { clockT += 2; return { y: BR.m
         await runMM(s, 8, 16, 8);
         check('8g 沒量過：預設 cudaweb，不走 ORT', pk.backend === 'cudaweb' && pk.source === 'default' && c.n === 0, pk);
         check('8g 派發時沒有啟動基準', benchRuns === 0, benchRuns);
+    }
+
+    // 9. 多形狀：每個形狀各自量測、各自釘選互不影響；未列形狀走預設；重跑只替換指定的形狀；形狀清單正規化
+    store.clear();   // 前面的測試留下的停用記錄與結果不帶進來（同一個假的 localStorage）
+    {
+        const s = assistant({ mm: fakeMm }); s.advancedSettings.gpuBenchShapes = ['8x16x8', '4x8x16'];
+        const c = { n: 0 }; s._gpuBenchOrt = async () => ortWith(c, null);
+        const env = await s._gpuBenchEnvKey(); s._gpuBenchMem = { env, rec: null };
+        const r1 = await s._gpuBenchRun(() => {});
+        check('9a 兩個形狀都量測完成', r1.ok === true && s._gpuBenchLoad(env).results.length === 6, r1);
+        s._gpuBenchPin('8x16x8', 'ort-wasm');
+        const a = s._gpuRoutePick('matmul', '8x16x8'), b = s._gpuRoutePick('matmul', '4x8x16');
+        check('9a 釘選只影響它的形狀：8x16x8 釘選 ORT', a.backend === 'ort-wasm' && a.source === 'pinned', a);
+        check('9a 另一個形狀不受影響（量測，cudaweb 不輸）', b.backend === 'cudaweb' && b.source === 'measured', b);
+        const before = JSON.stringify(s._gpuBenchLoad(env).results.filter((x) => x.shape === '4x8x16'));
+        const r2 = await s._gpuBenchRun(() => {}, ['8x16x8']);
+        const after = JSON.stringify(s._gpuBenchLoad(env).results.filter((x) => x.shape === '4x8x16'));
+        check('9b 重跑只量 8x16x8：另一個形狀的結果原封不動', r2.ok === true && before === after, { r2 });
+        check('9b 重跑後總列數仍是 6（沒有重複或遺失）', s._gpuBenchLoad(env).results.length === 6, s._gpuBenchLoad(env).results.length);
+        const un = s._gpuRoutePick('matmul', '2x2x2');
+        check('9c 未列形狀：預設 cudaweb，不量、不阻塞', un.backend === 'cudaweb' && un.source === 'default', un);
+        let benchRuns = 0; const origRun = s._gpuBenchRun; s._gpuBenchRun = async (...x) => { benchRuns++; return origRun.apply(s, x); };
+        await runMM(s, 2, 2, 2);
+        check('9c 派發未列形狀時沒有啟動基準', benchRuns === 0, benchRuns);
+        s._gpuBenchRun = origRun;
+    }
+    {
+        const s = assistant({ mm: fakeMm });
+        check('9d 預設形狀是兩個指定的', JSON.stringify(s._gpuBenchShapesList()) === JSON.stringify(['512x1024x1024', '512x1024x3072']), s._gpuBenchShapesList());
+        check('9d 清單正規化：去掉不合法與重複', JSON.stringify(s._gpuBenchNormalizeShapes(['512x1024x3072', 'bad', '512x1024x3072', '0x1x1'])) === JSON.stringify(['512x1024x3072']));
+        check('9d 全部不合法：用預設', JSON.stringify(s._gpuBenchNormalizeShapes(['x', ''])) === JSON.stringify(['512x1024x1024', '512x1024x3072']));
+        const many = Array.from({ length: 12 }, (_, i) => (i + 1) + 'x2x2');
+        check('9d 最多 8 個', s._gpuBenchNormalizeShapes(many).length === 8);
     }
 
     console.log('bench_wiring.test.js: ' + ok + ' passed, ' + bad + ' failed');
