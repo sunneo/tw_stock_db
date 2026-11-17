@@ -110,3 +110,18 @@
 | 看 yahoo 新聞有沒有颱風 | 沒有相關新聞（明說，不充數），沒有讀內文 | — |
 
 進度卡片每步一行，逐篇摘要那行含「模型、完成、耗時、問什麼、答什麼」。驗證命令：`node scripts/eval/news_real_run.js`（探針：`NEWS_RAW_PROBE=60 node scripts/eval/news_real_run.js`）。
+
+### 4.2 handoff 3 的 todo 1：模型逐篇摘要為什麼被退回（2026-11-17，實跑）
+
+- **先前的退回原因（已查證）**：不是摘要內容的問題，是評測腳本的停止詞元查不到（見 §4.1）。修好後，產品程式（`_planLocalSummarize`）本身沒有改動就能拿到模型摘要。
+- **本輪新增的診斷**：`_planLocalSummarize` 在 `checkExtractive` 退回或模型呼叫失敗時，把「退回原因＋模型原文」留在 `json.rejects`；`_newsDigestAnswer` 把第一筆退回原因與原文開頭放進「逐篇摘要」那一行。退回時標「程式（沒經過 AI）」、最終回答標「這次沒有經過 AI」（測試 `news_digest_core.test.js` 案例 I）。
+- **實跑結果**（`node scripts/eval/news_real_run.js`，真模型 qwen3-0.6b q8，CPU 參考引擎，假網頁）：
+
+| 說法 | 結果 | 摘要方式 |
+|---|---|---|
+| 看今天有哪些黃仁勳新聞 | 2 則：Yahoo 新聞首頁兩篇，各一句模型摘要（「黃仁勳在 GTC 大會宣布 Blackwell 晶片進入量產…」、「黃仁勳強調AI需求仍強勁…」） | model（逐篇各一次） |
+| 去 yahoo 看黃仁勳的新聞 | 2 則（只用 Yahoo），模型摘要同上 | model |
+| 看 yahoo 新聞有沒有颱風 | 0 則：「沒有找到跟「颱風」有關的新聞。我不拿不相關的標題充數。」沒有讀任何內文 | — |
+
+- **速度**：CPU 參考路徑每篇 123～143 秒（貪婪解碼，最多 200 詞元）。這不是產品速度；真 GPU 會快很多，沒有在真 GPU 上量過。
+- **未驗證**：真網站的列表頁（非假頁）與真 `fetch_web_page` 回傳格式沒有實跑。

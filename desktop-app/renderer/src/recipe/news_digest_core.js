@@ -99,7 +99,8 @@
             const t0 = Date.now();
             const s = await deps.summarize(body, question).catch((e) => ({ ok: false, text: String((e && e.message) || e), method: 'extractive' }));
             const method = (s && s.method) || 'extractive'; const ms = Date.now() - t0;
-            step('逐篇摘要', method === 'extractive' ? '程式（沒經過 AI）' : '模型', (s && s.ok ? '完成' : '失敗') + '，' + method + '，' + ms + ' ms，問「' + question.slice(0, 18) + '」，答「' + String((s && s.text) || '').replace(/\s+/g, ' ').slice(0, 24) + '」');
+            const rj = (s && s.rejects && s.rejects[0]) || null; // 模型的摘要被退回時，把第一個退回原因與原始輸出開頭放進步驟行（診斷用）
+            step('逐篇摘要', method === 'extractive' ? '程式（沒經過 AI）' : '模型', (s && s.ok ? '完成' : '失敗') + '，' + method + '，' + ms + ' ms，問「' + question.slice(0, 18) + '」，答「' + String((s && s.text) || '').replace(/\s+/g, ' ').slice(0, 24) + '」' + (rj ? '，退回：' + rj.reason + '，模型原文「' + String(rj.raw || '').replace(/\s+/g, ' ').slice(0, 60) + '」' : ''));
             articles.push({ title: c.title, source: c.source, url: c.url, summary: s && s.ok ? s.text : '（摘要失敗）', method });
         }
 

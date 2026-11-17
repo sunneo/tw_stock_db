@@ -18294,7 +18294,8 @@ holder.FaWebNews = FaWebNews;
             const t0 = Date.now();
             const s = await deps.summarize(body, question).catch((e) => ({ ok: false, text: String((e && e.message) || e), method: 'extractive' }));
             const method = (s && s.method) || 'extractive'; const ms = Date.now() - t0;
-            step('逐篇摘要', method === 'extractive' ? '程式（沒經過 AI）' : '模型', (s && s.ok ? '完成' : '失敗') + '，' + method + '，' + ms + ' ms，問「' + question.slice(0, 18) + '」，答「' + String((s && s.text) || '').replace(/\s+/g, ' ').slice(0, 24) + '」');
+            const rj = (s && s.rejects && s.rejects[0]) || null; // 模型的摘要被退回時，把第一個退回原因與原始輸出開頭放進步驟行（診斷用）
+            step('逐篇摘要', method === 'extractive' ? '程式（沒經過 AI）' : '模型', (s && s.ok ? '完成' : '失敗') + '，' + method + '，' + ms + ' ms，問「' + question.slice(0, 18) + '」，答「' + String((s && s.text) || '').replace(/\s+/g, ' ').slice(0, 24) + '」' + (rj ? '，退回：' + rj.reason + '，模型原文「' + String(rj.raw || '').replace(/\s+/g, ' ').slice(0, 60) + '」' : ''));
             articles.push({ title: c.title, source: c.source, url: c.url, summary: s && s.ok ? s.text : '（摘要失敗）', method });
         }
 
@@ -129743,13 +129744,19 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         full = full.trim(); if (!full) return { ok: false, text: '沒有可以摘要的文字' };
         const chunkTok = Math.max(300, Math.floor(FaVlm.textBudget(M.model, 220).prompt * 0.55)); let chunks = FaRecipe.chunkText(full, chunkTok);
         if (chunks.length > 4) chunks = FaRecipe.chunkText(FaRecipe.extractiveSummary(full, 40), chunkTok); // 太長：先用程式挑重點句，再讓模型摘要（離線 CPU 上每段要幾十秒）
-        const parts = []; let usedModel = 0, usedProgram = 0; const noModel = await M.ensure();
+        const parts = []; let usedModel = 0, usedProgram = 0; const noModel = await M.ensure(); const rejects = [];
         for (const c of chunks) {
             let out = null;
-            if (!noModel) { try { const g = await M.gen({ messages: FaRecipe.phraseMessages(question || '請摘要', c, '請用繁體中文列出 2～4 個重點。'), maxTokens: 200 }); const chk = FaRecipe.checkExtractive(g, [c], { cjkMin: 0.5, maxChars: 600 }); if (chk.ok) out = String(g).trim(); } catch (_) {} }
+            if (!noModel) {
+                try {
+                    const g = await M.gen({ messages: FaRecipe.phraseMessages(question || '請摘要', c, '請用繁體中文列出 2～4 個重點。'), maxTokens: 200 });
+                    const chk = FaRecipe.checkExtractive(g, [c], { cjkMin: 0.5, maxChars: 600 });
+                    if (chk.ok) out = String(g).trim(); else rejects.push({ reason: chk.reason, raw: String(g) }); // 退回原因與模型原始輸出一併保留（診斷用，見 news_real_run.js）
+                } catch (e) { rejects.push({ reason: '模型呼叫失敗：' + ((e && e.message) || e), raw: '' }); }
+            }
             if (out) { parts.push(out); usedModel++; } else { parts.push(FaRecipe.extractiveSummary(c, 3)); usedProgram++; }
         }
-        const summary = parts.filter(Boolean).join('\n'); return { ok: true, text: summary, json: { summary, method: usedModel && usedProgram ? 'mixed' : (usedModel ? 'model' : 'extractive'), chunks: chunks.length } };
+        const summary = parts.filter(Boolean).join('\n'); return { ok: true, text: summary, json: { summary, method: usedModel && usedProgram ? 'mixed' : (usedModel ? 'model' : 'extractive'), chunks: chunks.length, rejects } };
     }
     // 思考堆疊（DESIGN.think-stack.md）：路由用同一個堆疊——先選目標／工具、再補欄位、再跑計畫，後面的步驟看得到「前面選了什麼」；thinkStack:false 關閉
     _routeStack(question) { if (this.advancedSettings.thinkStack === false || typeof FaThinkStack === 'undefined' || !FaThinkStack) return null; const st = FaThinkStack.create(String(question || '').slice(0, 200), { maxDecisions: 8 }); FaThinkStack.push(st, { path: '路由', question: '判斷這句話要用哪個工具或計畫，並完成它' }); return { T: FaThinkStack, st }; }
@@ -129806,7 +129813,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         const res = await FaNewsDigest.run(question, {
             fetchList: (url) => this._newsFetchText(url),
             readArticle: (url) => this._newsFetchText(url),
-            summarize: async (body, q) => { const r = await this._planLocalSummarize(body, q, M); return r && r.ok && r.json ? { ok: true, text: r.text, method: r.json.method } : { ok: false, text: (r && r.text) || '', method: 'extractive' }; },
+            summarize: async (body, q) => { const r = await this._planLocalSummarize(body, q, M); return r && r.ok && r.json ? { ok: true, text: r.text, method: r.json.method, rejects: r.json.rejects || [] } : { ok: false, text: (r && r.text) || '', method: 'extractive' }; },
             trace: (line) => prog.log(line),
         });
         prog.finish(res.ok ? '完成' : '結束');
@@ -130110,8 +130117,9 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
     // ---- Qwen3 q8 整段 GPU 解碼（網頁版離線模型；設定 qwenGpuDecode，預設關；DESIGN.webgpu-cuda.md §7.13）----
     // MOSS 語音選用 WebGPU 管線（設定 mossGpu，預設關；DESIGN.webgpu-cuda.md §7.14）。換設定要重開 worker 才生效（init 時帶入）
     _mossGpuOn() { return !!(this.advancedSettings && this.advancedSettings.mossGpu === 'on') || this._gpuAutoOn('mossGpu'); }
-    _qwenGpuQ4On() { return this.advancedSettings.qwenGpuQ4 === 'on' || this._gpuAutoOn('qwenGpuQ4'); }
-    _qwenGpuDecodeOn() { return this.advancedSettings.qwenGpuDecode === 'on' || this._gpuAutoOn('qwenGpuDecode'); }
+    // 先看「曾失敗、已自動停用」的記錄：手動設成 on 也不能繞過（否則失敗後每次回答都會再撞一次）；要重來就切換「GPU 加速」（_gpuBrokenClear）
+    _qwenGpuQ4On() { if (this._gpuBrokenGet('qwenGpuQ4')) return false; return this.advancedSettings.qwenGpuQ4 === 'on' || this._gpuAutoOn('qwenGpuQ4'); }
+    _qwenGpuDecodeOn() { if (this._gpuBrokenGet('qwenGpuDecode')) return false; return this.advancedSettings.qwenGpuDecode === 'on' || this._gpuAutoOn('qwenGpuDecode'); }
     _qwenModule() {
         if (this._qwenMod) return this._qwenMod;
         if (typeof FA_QWEN_SRC !== 'string') throw new Error('GPU 整段解碼模組沒有嵌入（FA_QWEN_SRC）');
@@ -130288,6 +130296,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                 const ad = await navigator.gpu.requestAdapter(); if (!ad) return no('WebGPU 沒有可用的介面卡');
                 if (cb.log) cb.log('GPU 解碼：第一次載入 ' + src.label + '（' + (msz / 1048576).toFixed(0) + ' MB）…');
                 const t0 = Date.now();
+                if (stopped()) { const e = new Error('使用者已停止'); e.isStopped = true; throw e; }   // 讀檔前也要能停（停止不算失敗，不會停用這條路徑）
                 const ld = await src.load(); if (ld.why) return no(ld.why);
                 if (ld.bytes.length !== msz) return no('讀入的模型大小不符（' + ld.bytes.length + '／' + msz + '）');
                 const tok = M.llmweb.createTokenizer(ld.tj);

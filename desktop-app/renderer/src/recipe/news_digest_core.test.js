@@ -116,6 +116,19 @@ function fakeDeps(opts) {
         check('H 列表頁網址取前面的標題', links.length === 2 && links[0].url === A1 && links[0].title.includes('標題文字'), links);
     }
 
+    // I. 模型摘要被退回（checkExtractive）：步驟行要帶退回原因與模型原文開頭，讓 transcribe 看得出為什麼落到程式摘錄
+    {
+        const f = fakeDeps();
+        const base = f.deps.summarize;
+        f.deps.summarize = async (body, q) => Object.assign(await base(body, q), { ok: true, text: '程式摘錄：' + body.slice(0, 16), method: 'extractive', rejects: [{ reason: '有 40% 的詞來源裡沒有', raw: '模型這樣寫的一段話' }] });
+        const r = await D.run('看今天有哪些黃仁勳新聞', f.deps);
+        const row = f.steps.find((s) => s.includes('逐篇摘要'));
+        check('I 退回時步驟行標示程式（沒經過 AI）', !!row && row.includes('程式（沒經過 AI）'), row);
+        check('I 步驟行含退回原因', !!row && row.includes('退回：有 40% 的詞來源裡沒有'), row);
+        check('I 步驟行含模型原文開頭', !!row && row.includes('模型原文「模型這樣寫的一段話」'), row);
+        check('I 退回時最終回答標示沒有經過 AI', r.text.includes('沒有經過 AI'), r.text);
+    }
+
     console.log(ok + ' passed, ' + bad + ' failed');
     process.exit(bad ? 1 : 0);
 })().catch((e) => { console.error(e); process.exit(1); });
