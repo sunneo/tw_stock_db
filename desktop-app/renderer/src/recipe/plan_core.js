@@ -338,6 +338,8 @@
                 if (e.type === 'replan_failed') { emit(head('停止', '程式') + '｜沒有別條路：' + (e.reason || '')); return; }
                 if (e.type === 'abort') { emit(head('停止', '程式') + '｜中止於 ' + (tools[e.step] || e.step)); }
             },
+            // 一般的一行：階段、誰做、內容（給模型的封閉題與回答、摘要方式與退回原因等，由呼叫端組好）
+            note(stage, who, text) { emit(head(stage, who) + '｜' + text); },
             tool(name, args, ok, text) {
                 const t = String(text == null ? '' : text);
                 emit(head('工具', '程式') + '｜' + name + ' ' + argText(args) + '｜' + (ok ? '回 ' + t.length + ' 字，開頭「' + t.slice(0, 20).replace(/\s+/g, ' ') + '」' : '失敗：' + t.slice(0, 80)));

@@ -18059,6 +18059,8 @@ const holder = {};
                 if (e.type === 'replan_failed') { emit(head('停止', '程式') + '｜沒有別條路：' + (e.reason || '')); return; }
                 if (e.type === 'abort') { emit(head('停止', '程式') + '｜中止於 ' + (tools[e.step] || e.step)); }
             },
+            // 一般的一行：階段、誰做、內容（給模型的封閉題與回答、摘要方式與退回原因等，由呼叫端組好）
+            note(stage, who, text) { emit(head(stage, who) + '｜' + text); },
             tool(name, args, ok, text) {
                 const t = String(text == null ? '' : text);
                 emit(head('工具', '程式') + '｜' + name + ' ' + argText(args) + '｜' + (ok ? '回 ' + t.length + ' 字，開頭「' + t.slice(0, 20).replace(/\s+/g, ' ') + '」' : '失敗：' + t.slice(0, 80)));
@@ -129792,18 +129794,17 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         const RL = prog && FaPlan.roundLog ? FaPlan.roundLog((line) => prog.log(line)) : null; // 進度卡片每一輪一行（第 N 輪｜階段｜誰做｜內容）
         return {
             calls: [], limits: { maxCalls: 14, maxReplans: 2 },
-            onEvent: (e) => { if (RL) RL.event(e); },
             tool: async (name, args) => {
                 const tool = this.tools[name]; if (!tool) return { ok: false, text: '沒有這個工具：' + name };
                 if (FA_OT_RISKY_TOOL.test(name)) { const ans = await this.requestUserForm({ title: '🗺️ 離線計畫要執行有副作用的工具', description: '工具：' + name + '\n參數：' + JSON.stringify(args).slice(0, 400) + '\n\n要執行嗎？', choices: ['執行', '取消'] }); if (!ans || !ans.confirmed || ans.answer !== '執行') return { ok: false, text: '使用者取消了這個步驟' }; }
                 let raw; try { raw = await tool.callback.call(this, JSON.stringify(args)); } catch (e) { if (RL) RL.tool(name, args, false, (e && e.message) || e); return { ok: false, text: String((e && e.message) || e) }; }
                 let j = null; try { j = JSON.parse(raw); } catch (_) {} const ok = !(j && (j.ok === false || j.error));
                 if (ok) calls.push({ name, args });
-                if (RL) RL.tool(name, args, ok, ok ? (typeof raw === 'string' ? raw : JSON.stringify(raw)) : String((j && (j.error || j.message)) || raw));
+                if (RL) RL.tool(name, args, ok, ok ? (j && typeof j.text === 'string' ? j.text : (typeof raw === 'string' ? raw : JSON.stringify(raw))) : String((j && (j.error || j.message)) || raw));
                 return { ok, text: ok ? (typeof raw === 'string' ? raw : JSON.stringify(raw)) : String((j && (j.error || j.message)) || raw).slice(0, 300), json: j };
             },
             fns: {
-                local_summarize: async (args) => this._planLocalSummarize(args.text, question, M),
+                local_summarize: async (args) => { const r = await this._planLocalSummarize(args.text, question, M); if (RL) { const j = (r && r.json) || {}; const n = [].concat(args.text == null ? [] : args.text).join('').length; RL.note('摘要', j.method === 'model' ? '模型' : (j.method === 'mixed' ? '模型＋程式' : '程式（沒經過 AI）'), '輸入 ' + n + ' 字，' + (j.chunks || 0) + ' 段' + (j.rejects && j.rejects.length ? '，退回：' + j.rejects[0].reason + '，模型原文「' + String(j.rejects[0].raw || '').replace(/\s+/g, ' ').slice(0, 60) + '」' : '') + '｜答「' + String((r && r.text) || '').replace(/\s+/g, ' ').slice(0, 40) + '」'); } return r; },
                 local_uml_design: async (args) => { const sc = [].concat(args.scenario || question).join('\n'); const lang = /typescript|\bts\b/i.test(sc) ? 'typescript' : (/java(?!script)/i.test(sc) ? 'java' : 'python'); const r = await FaDesign.designProject(sc, { generate: M.gen, language: lang, prefs: this.advancedSettings.designPrefs || {}, glossary: this.advancedSettings.umlGlossary || {}, rework: true }); if (!r.ok) return { ok: false, text: r.error || '設計失敗' }; this._umlPlanDesign = { dsl: r.dsl, design: r.design, warnings: r.warnings, scenario: sc }; return { ok: true, text: r.dsl, json: { text: r.dsl, warnings: r.warnings } }; },
                 // 寫程式（第一階段）：本機函式。失敗一律回 ok:false（交給 CoLU 決策樹處理），不假裝成功；成功才把程式碼當成品
                 // 每種語言各自一個本機函式（FaLangColu 的資料；CoLU 的計畫只會選到這個語言自己的那一個）；寫程式本體都走 write_code 的同一個入口，
@@ -129814,8 +129815,8 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             stackMod: this.advancedSettings.thinkStack === false ? null : (typeof FaThinkStack !== 'undefined' ? FaThinkStack : null),
             stack: ctx.stack || undefined,
             defsOf: (name) => FaRecipe.slotsFromSchema((this.tools[name] && this.tools[name].parametersSchema) || {}),
-            fill: async (step, missing, sk) => { const mf = await FaRecipe.modelFill({ missing, question, toolName: step.tool, generate: M.gen, numbers: (run.slots && run.slots.numbers) || [], stack: sk && sk.stack, stackMod: sk && sk.stackMod }); FaRecipe.decide(trace, { stage: 'plan_fill', step: step.id, tool: step.tool, answer: Object.keys(mf.values), by: 'model', tries: mf.tries, rejected: mf.rejected }); return { values: mf.values, missing: mf.missing }; },
-            onEvent: (e) => { if (e.type === 'decision' || e.type === 'replan' || e.type === 'ask') FaRecipe.decide(trace, Object.assign({ stage: 'plan_' + e.type, by: 'program' }, e)); if (prog) { if (e.type === 'step_start') prog.log('▶ ' + e.step + ' ' + e.tool); else if (e.type === 'step_done') prog.log('✅ ' + e.step); else if (e.type === 'step_failed') prog.log('❌ ' + e.step + '：' + e.error); else if (e.type === 'decision') prog.log('決策：' + e.rule + ' → ' + e.action + '（' + e.why + '）'); else if (e.type === 'replan') prog.log('🔁 重新規劃（排除 ' + e.excluded.join('、') + '）：' + e.steps.join(' → ')); } },
+            fill: async (step, missing, sk) => { let seen = null; const gen = async (req) => { const g = await M.gen(req); const u = (req.messages || []).filter((m) => m.role === 'user').pop(); seen = { q: String((u && u.content) || '').slice(0, 120), a: String(g || '').slice(0, 120) }; return g; }; const mf = await FaRecipe.modelFill({ missing, question, toolName: step.tool, generate: gen, numbers: (run.slots && run.slots.numbers) || [], stack: sk && sk.stack, stackMod: sk && sk.stackMod }); FaRecipe.decide(trace, { stage: 'plan_fill', step: step.id, tool: step.tool, answer: Object.keys(mf.values), by: 'model', tries: mf.tries, rejected: mf.rejected }); if (RL) RL.note('填欄位', '模型', (seen ? '封閉題「' + seen.q.replace(/\s+/g, ' ') + '」，模型答「' + seen.a.replace(/\s+/g, ' ') + '」' : '沒有問模型') + '｜填入：' + Object.keys(mf.values).join('、') + (mf.rejected && mf.rejected.length ? '｜退回 ' + mf.rejected.length + ' 次：' + mf.rejected[0].errors.join('；') : '')); return { values: mf.values, missing: mf.missing }; },
+            onEvent: (e) => { if (e.type === 'decision' || e.type === 'replan' || e.type === 'ask') FaRecipe.decide(trace, Object.assign({ stage: 'plan_' + e.type, by: 'program' }, e)); if (RL) RL.event(e); }, // 進度卡片：每一輪一行（取代原本的 ▶／✅／❌ 行）
             save: (r) => { this._activePlanRun = r.state === 'waiting' ? { run: r, userText } : null; },
         };
     }
