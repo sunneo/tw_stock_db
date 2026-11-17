@@ -84204,6 +84204,7 @@ class FloatingAssistant {
             offlineLlmMixRewrite: true, // 混用時工具模型沒用到工具，也交給「寫回答」的模型重寫
             offlineLlmMaxTokens: 512,
             offlineRecipes: true, // 離線小模型用「食譜」做工具型的服務：程式路由／填欄位、模型只做選擇題與填空題
+            offlineLora: true, // 離線文字模型套用已啟用的 LoRA（依任務自動切換）；關閉＝一律用基底模型
             umlViewerAutoOpen: true, // 產生專案後自動開啟設計檢視器（UML 子圖 ↔ 原始碼，逐層深入）
             userGlue: [], // AI／使用者登記的膠水（glue_define）；跟內建膠水依經驗競爭同一個位置
             mixLearned: {}, // 混合內容高亮學到的詞 { 語言: [識別字…] }（mix_highlight／mix_understand）
@@ -85647,6 +85648,7 @@ class FloatingAssistant {
             offlineLlmTools: raw.offlineLlmTools !== false,
             offlineLlmMixRewrite: raw.offlineLlmMixRewrite !== false,
             offlineRecipes: raw.offlineRecipes !== false,
+            offlineLora: raw.offlineLora !== false,
             offlineRecipePhrase: raw.offlineRecipePhrase !== false,
             offlineRecipePlans: raw.offlineRecipePlans !== false,
             umlViewerAutoOpen: raw.umlViewerAutoOpen !== false,
@@ -95599,6 +95601,11 @@ ${fnData.code}
         this._loraTurnState = { active: [] };
         return Object.assign(route, { applied: false, applyError: (a && a.error) || '套用失敗', active: [], fallback: 'base' });
     }
+    // LoRA 開關關閉時：若上一輪還掛著 adapter 就清掉，沒有就不動（回 null＝這一輪用基底）
+    async _loraOff(task) {
+        if (!(this._loraTurnState && this._loraTurnState.active && this._loraTurnState.active.length)) return null;
+        return this._loraSwitch({ task: String(task), fallback: 'base', active: [], handles: [], skipped: [], action: 'clear', reason: 'LoRA 已關閉（離線模型設定），用基底回答' });
+    }
     // 包住一次生成：路由 → 必要時切換 → 生成（acquire/release 之間推論中不可淘汰）→ 釋放
     async _llmGenerate(model, a, cb) {
         let route = null;
@@ -95607,7 +95614,8 @@ ${fnData.code}
         const onProgress = (msg) => { try { if (cb && typeof cb.log === 'function') cb.log(msg); } catch (_) { /* 顯示失敗不影響生成 */ } };
         try {
             // 計畫逐步模式（_planLoraWrap）已經為這一步切好組合：沿用它，不再依任務類型各自路由（否則每次生成會把組合切回去）
-            if (this._loraStepPin) route = { task: 'plan-steps', fallback: this._loraStepPin.length ? 'lora' : 'base', active: this._loraStepPin.slice(), handles: [], skipped: [], action: 'keep', reason: '計畫逐步：沿用這一步已切好的組合' };
+            if ((this.advancedSettings || {}).offlineLora === false) route = await this._loraOff(a && a.task); // LoRA 關閉：這一輪一律用基底（上一輪掛著的 adapter 只清一次）
+            else if (this._loraStepPin) route = { task: 'plan-steps', fallback: this._loraStepPin.length ? 'lora' : 'base', active: this._loraStepPin.slice(), handles: [], skipped: [], action: 'keep', reason: '計畫逐步：沿用這一步已切好的組合' };
             else { route = await this._loraRouteTurn(a && a.task, turnText, onProgress); if (route) route = await this._loraSwitch(route); }
         }
         catch (e) { route = { task: String(a && a.task), fallback: 'base', active: [], handles: [], skipped: [], action: 'keep', reason: '路由錯誤，用基底：' + String((e && e.message) || e) }; }
@@ -110487,8 +110495,6 @@ ${sourceTool.handlerScript}
         if (dragDropSkipConfirmChk) dragDropSkipConfirmChk.checked = this.advancedSettings.dragDropAttachSkipConfirm !== false;
         const topicShiftChk = document.getElementById('ai-topic-shift-chk');
         if (topicShiftChk) topicShiftChk.checked = this.advancedSettings.topicShiftCheck === true;
-        const offThinkChk = document.getElementById('ai-offline-think-chk');
-        if (offThinkChk) offThinkChk.checked = this.advancedSettings.offlineThinking === 'on';
         const coluThinkChk = document.getElementById('ai-colu-think-chk');
         if (coluThinkChk) coluThinkChk.checked = FaRecipe.coluThinkingSetting(this.advancedSettings.coluThinking);
         const festivalChk = document.getElementById('ai-festival-chk');
@@ -128200,7 +128206,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         const s = this.advancedSettings || {}; const m = FaVlm.byId(s.imageToTextModel);
         const tm = FaVlm.byId(s.offlineTextModel);
         return { device: s.offlineDevicePreference === 'cpu' ? 'cpu' : 'gpu', maxCores: Math.max(0, Math.floor(Number(s.offlineMaxCpuCores) || 0)), model: m && !m.managedOnly && m.task === 'image-to-text' ? m.id : FaVlm.DEFAULT_MODEL, fallback: s.offlineVisionFallback !== false,
-            textModel: tm && tm.task === 'text-generation' ? tm.id : FaVlm.DEFAULT_TEXT_MODEL, roles: s.offlineTextRoles || {}, bench: s.offlineToolBench || {}, llmFallback: s.offlineLlmFallback !== false, recipes: s.offlineRecipes !== false, plans: s.offlineRecipePlans !== false, recipePhrase: s.offlineRecipePhrase !== false, llmTools: s.offlineLlmTools !== false, mixRewrite: s.offlineLlmMixRewrite !== false, llmMax: Math.max(64, Math.min(2048, Math.floor(Number(s.offlineLlmMaxTokens) || 512))) };
+            textModel: tm && tm.task === 'text-generation' ? tm.id : FaVlm.DEFAULT_TEXT_MODEL, roles: s.offlineTextRoles || {}, bench: s.offlineToolBench || {}, llmFallback: s.offlineLlmFallback !== false, recipes: s.offlineRecipes !== false, lora: s.offlineLora !== false, thinking: s.offlineThinking === 'on', plans: s.offlineRecipePlans !== false, recipePhrase: s.offlineRecipePhrase !== false, llmTools: s.offlineLlmTools !== false, mixRewrite: s.offlineLlmMixRewrite !== false, llmMax: Math.max(64, Math.min(2048, Math.floor(Number(s.offlineLlmMaxTokens) || 512))) };
     }
     _offlineCpuOnly() { return this._omSettings().device === 'cpu'; }
     // 能不能 WASM 多執行緒：跟 onnxruntime-web 自己檢查的同三件事（SharedArrayBuffer 存在、能傳給 Worker、執行緒指令可驗證）。不是非要 crossOriginIsolated：
@@ -130212,10 +130218,15 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             </div>
             ${this._omNativeBoxHtml()}
             <div style="border:1px solid #334155; border-radius:8px; padding:8px; margin-bottom:10px;">
+              <div style="font-weight:600; margin-bottom:4px;">離線模型開關</div>
+              <div><label><input type="checkbox" data-om-switch="lora" ${S.lora ? 'checked' : ''}> 啟用 LoRA：套用已啟用的 adapter，依任務自動切換（只在原生執行器生效；WebGPU／WASM 路徑不套用）；關閉＝一律用基底模型</label></div>
+              <div><label><input type="checkbox" data-om-switch="thinking" ${S.thinking ? 'checked' : ''}> 啟用 Thinking：回答前先思考（預設關，較慢）；只影響 qwen3 的一般聊天回答，工具選擇與填參數不受影響</label></div>
+              <div><label><input type="checkbox" data-om-switch="recipes" ${S.recipes ? 'checked' : ''}> 啟用食譜（recipe）：程式路由、填欄位，模型只做選擇題與填空題；關閉＝模型自由發揮，不走食譜範本</label></div>
+            </div>
+            <div style="border:1px solid #334155; border-radius:8px; padding:8px; margin-bottom:10px;">
               <div style="font-weight:600; margin-bottom:4px;">文字生成（離線聊天）設定</div>
               <div><label><input type="checkbox" data-om-set="llmFallback" ${S.llmFallback ? 'checked' : ''}> 離線訓練器信心不足時，交給離線文字模型回答</label></div>
               <div><label><input type="checkbox" data-om-set="llmTools" ${S.llmTools ? 'checked' : ''}> 允許離線文字模型呼叫工具（沒通過基準測試、評為不可靠的模型不會被選去呼叫工具；有副作用的工具一律先問你）</label></div>
-              <div><label><input type="checkbox" data-om-set="recipes" ${S.recipes ? 'checked' : ''}> 食譜模式：離線小模型用「路由→填欄位→執行→措辭」一步一步做工具型的服務（程式能決定的就程式決定，模型只做選擇題與填空題；開著時不跑自由工具迴圈）</label></div>
               <div><label><input type="checkbox" data-om-set="plans" ${S.plans ? 'checked' : ''}> 多步驟計畫：有明確目標（影片做摘要、網頁摘要、上網查資料並整理、文件念出來…）時，程式把目標展開成 phase → step → substep 的計畫，用狀態機＋決策樹執行與維護（失敗會重試、換路、問你，不會無窮迴圈）</label></div>
               <div style="color:#94a3b8; margin:4px 0;">離線訓練器（Configure → AI →「離線訓練器」）就是線上 AI 養成離線 AI 的地方；離線文字模型、食譜與多步驟計畫都直接用它養出來的規則、做法、問答記憶與 RAG 當參考，離線做成功的也會養回去。</div>
               <div><label><input type="checkbox" data-om-set="recipePhrase" ${S.recipePhrase ? 'checked' : ''}> 食譜：資訊類結果讓模型用 1～2 句話說明（會被檢查，有編造的數字就丟掉）</label>　<button style="${btn}" data-om="exporttrace">匯出決策記錄</button> <button style="${btn} color:#fca5a5;" data-om="cleartrace">清除</button> <span style="color:#94a3b8;">（最近 ${this._recipeTraces().length} 筆）</span></div>
@@ -130535,6 +130546,14 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             if (!hit) return; roles[id] = c; this.advancedSettings.offlineTextRoles = roles; this._saveAdvancedSettings(); this._omRenderPane();
         });
         root.addEventListener('change', (e) => {
+            // 離線模型開關（LoRA／Thinking／食譜）：只存設定、重畫面板，不卸載已載入的模型
+            const sw = e.target.getAttribute && e.target.getAttribute('data-om-switch'); if (sw) {
+                const on = !!e.target.checked;
+                if (sw === 'lora') this.advancedSettings.offlineLora = on;
+                else if (sw === 'thinking') this.advancedSettings.offlineThinking = on ? 'on' : 'off';
+                else if (sw === 'recipes') this.advancedSettings.offlineRecipes = on;
+                this._saveAdvancedSettings(); this._omRenderPane(); return;
+            }
             const k = e.target.getAttribute && e.target.getAttribute('data-om-set'); if (!k) return;
             if (k === 'device') this.advancedSettings.offlineDevicePreference = e.target.value === 'cpu' ? 'cpu' : 'gpu';
             else if (k === 'cores') { const n = Math.floor(Number(e.target.value)); this.advancedSettings.offlineMaxCpuCores = Number.isFinite(n) && n > 0 ? Math.min(256, n) : 0; }
@@ -130542,7 +130561,6 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             else if (k === 'silentDl') this.advancedSettings.offlineSilentDownload = !!e.target.checked;
             else if (k === 'fallback') this.advancedSettings.offlineVisionFallback = !!e.target.checked;
             else if (k === 'llmFallback') this.advancedSettings.offlineLlmFallback = !!e.target.checked;
-            else if (k === 'recipes') this.advancedSettings.offlineRecipes = !!e.target.checked;
             else if (k === 'recipePhrase') this.advancedSettings.offlineRecipePhrase = !!e.target.checked;
             else if (k === 'plans') this.advancedSettings.offlineRecipePlans = !!e.target.checked;
             else if (k === 'llmTools') this.advancedSettings.offlineLlmTools = !!e.target.checked;
@@ -137009,11 +137027,6 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                                         <input type="checkbox" id="ai-colu-think-chk" ${FaRecipe.coluThinkingSetting(this.advancedSettings.coluThinking) ? 'checked' : ''} style="cursor:pointer;">
                                         <label for="ai-colu-think-chk" class="ai-advanced-label" style="margin:0; cursor:pointer;">CoLU+Thinking（離線 qwen3-0.6b 的計畫與反思先思考，預設打開）</label>
                                     </div>
-                                    <div style="margin-top:6px; display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
-                                        <input type="checkbox" id="ai-offline-think-chk" ${this.advancedSettings.offlineThinking === 'on' ? 'checked' : ''} style="cursor:pointer;">
-                                        <label for="ai-offline-think-chk" class="ai-advanced-label" style="margin:0; cursor:pointer;">離線模型回答時開啟 Thinking（預設關閉）</label>
-                                    </div>
-                                    <p class="ai-advanced-hint">只影響離線模型 qwen3-0.6b 的一般聊天回答（工具選擇、填參數等需要固定格式的步驟不受影響）。開啟後模型會先思考再回答，回答品質可能較好但明顯較慢（思考也會用掉詞元，程式會自動多給 1536 個）；推理文字不會顯示在對話裡。原生執行器不支援思考，開啟時這類呼叫會改走 WebGPU／WASM（LoRA 只在原生生效，所以當下不會套用 LoRA）。</p>
                                     <p class="ai-advanced-hint">只對離線模型 qwen3-0.6b 生效，其他模型與線上模型不受影響。開啟時，UML 設計的計畫與反思會先思考再回答，比較慢（計畫在 GPU 最多約 30 秒、在 CPU 最多約 5 分鐘，逾時會退回原本的做法（CPU 的時限只是防卡死的保險，正常思考不會被切掉））；推理過程可在進度卡片裡展開查看，不會進入對話紀錄。關閉則維持原本的快速流程。</p>
                                     <div style="margin-top:6px; display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
                                         <input type="checkbox" id="ai-festival-chk" ${this.advancedSettings.festivalThemeEnabled !== false ? 'checked' : ''} style="cursor:pointer;">
@@ -140003,13 +140016,6 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         if (topicShiftChkBx) {
             topicShiftChkBx.addEventListener('change', (e) => {
                 this.advancedSettings.topicShiftCheck = e.target.checked === true;
-                this._saveAdvancedSettings();
-            });
-        }
-        const offThinkChkBx = document.getElementById('ai-offline-think-chk');
-        if (offThinkChkBx) {
-            offThinkChkBx.addEventListener('change', (e) => {
-                this.advancedSettings.offlineThinking = e.target.checked === true ? 'on' : 'off';
                 this._saveAdvancedSettings();
             });
         }
