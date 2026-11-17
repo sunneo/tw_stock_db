@@ -22,11 +22,28 @@
 - `FaRecipe.decide(trace, {stage:'run', tool, answer…})`（約 129690 行）在工具執行後寫 trace；`rtrail` 經 `_faOtTrailText` 轉成「📋 做了這些步驟」的文字。
 - `_rgTrace(job, line)`（約 79775 行）：每個 job 的 trace 行最多 300 行，每秒批次送 `_rgAct({kind:'trace'})`，每批最多 15 行。這是 research job 的活動紀錄，**是否就是使用者開的 transcribe 畫面，未驗證**。
 
-### 1.3 未驗證（todo 2 還要答的）
+### 1.3 已驗證：「AI 只產生 plan／recipe 就結束」的真正原因（2026-11-17）
 
-1. 使用者昨晚走哪條路徑：離線模式規則路徑 `_otPageDigest`，還是 Qwen3 `_llmGenerateInner`＋工具迴圈／CoLU／recipe。需要用假網頁＋離線模型實跑，逐步記錄呼叫鏈。
-2. 結束點：哪個條件讓迴圈在 plan／recipe 後收尾（`jsonStep` 成功就結束？工具結果沒餵回模型？`maxTurns`？）。
-3. transcribe 為什麼看不到多輪：離線模型路徑是否寫進 `_rgTrace`／`transcribe`，還是只在離線模式的 trail 才有顯示。
+使用者的症狀（「AI只產生plan, recipe就結束了」）對應到的路徑是**離線模型（Qwen3）＋食譜開啟**，不是離線模式規則路徑。呼叫鏈：
+
+1. `_offlineRoute`（約 93974 行）：規則路徑沒命中、`FaVlm.shouldUseOfflineLlm` 為真、`offlineRecipes` 開 → 先呼叫 `_recipeAnswer`。
+2. `_recipeAnswer`（約 129617 行）：`offlineRecipePlans` 開且沒有 `forceTool` → 先呼叫 `_planAnswer`（多步計畫）；計畫沒命中才走單一工具食譜（程式以證據縮小候選、`autoPick`，不行才問模型選編號，再補欄位、執行一個工具、必要時 `recipePhrase` 讓模型說 1～2 句）。
+3. `_planAnswer`（約 129505 行）：`FaPlan.matchGoals` 命中目標（例如 `web_summary`、`web_research`）→ `buildPlan` → `_planRun`。
+4. `_planRun`（約 129474 行附近）：`FaPlan.advance(run, env)` 執行所有步驟；每步的進度寫進「離線計畫：…」進度卡片（`_createProgressWidget`，不是 `_rgTrace`）。
+5. **結束點**：`_planFinish`（約 129495 行）。修正前，它把 `run.artifacts` 裡最後一個 `kind === target` 的 `value` 直接當答案（`body = f.value`），回傳 `planText + body`。**沒有任何模型呼叫讀取取回的內容**。所以輸出是「計畫列表＋程式取回的原文」，看起來就像「只產生 plan、recipe 就結束」。
+
+→ 原因已確認：缺的是「讀＋總結」這一層，不是迴圈提前結束。`_planLocalSummarize`（約 129450 行）其實已經是逐段摘要＋檢查＋合併的逐層歸約實作，只是 `_planFinish` 沒有呼叫它。
+
+### 1.4 已修（commit `6b93b201f`）
+
+- `_planFinish` 增加第 6 個參數 `M`（`_planRun` 傳入 `ctx.M`）。摘要類目標（`target === 'summary'`：`web_summary`、`web_research`、`doc_summary`、`video_summary`）跑完、有取回內容時，改用 `_planLocalSummarize(finalValue, question, M)`。
+- 結果標示：`method === 'model'` → 「（經 AI 逐段摘要並合併）」；`mixed` → 「部分段落由程式摘錄，其餘經 AI 摘要」；`extractive`（沒模型）→「⚠️ 這次沒有經過 AI（程式摘錄）」。
+- 測試：`renderer/src/recipe/plan_readback.test.js` 8 passed（假模型收到取回內容；最終回答含模型摘要；沒模型時標示且不呼叫模型；非摘要目標輸出不變）。**注意：這是假模型＋假取回內容的單元測試，還不是真模型＋真網頁的實跑**。
+
+### 1.5 未驗證（仍待做）
+
+1. transcribe 為什麼看不到多輪：「離線計畫」進度卡片與 `_rgTrace`（研究工作的活動紀錄）是不同的顯示管道。使用者開著的 transcribe 讀的是哪一個，尚未確認。單一工具食譜路徑（`_recipeAnswer` 的 trace）是否有顯示，也未確認。
+2. 「看今天有哪些黃仁勳新聞」尚未在真模型＋假網頁上實跑；目前 `web_research`／`web_summary` 的取清單與篩選（`_otPageDigest` 的 goal 篩選）還沒有接上來源登錄表與拆字。
 
 ## 2. 設計（尚未實作）
 
