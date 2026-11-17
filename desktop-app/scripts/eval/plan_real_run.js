@@ -36,7 +36,7 @@ const PAGE = '台積電董事會通過每股現金股利新台幣 4 元，較上
     '分析師認為在 AI 晶片需求仍強的背景下，股利政策短期內不會有大幅變動；另有研究指出，高殖利率股的股價波動通常較小。';
 
 // 假日誌（確定性產生）：每 5 行一則 ERROR、每 7 行一則 WARN、每 11 行一則帶堆疊續行的 ERROR，其餘 INFO
-const LOGTEXT = Array.from({ length: 120 }, (_, i) => {
+const LOGTEXT = Array.from({ length: Number(process.env.LOG_LINES) || 120 }, (_, i) => {
     const t = '2026-11-17 10:' + String(Math.floor(i / 4)).padStart(2, '0') + ':' + String((i * 7) % 60).padStart(2, '0');
     if (i % 11 === 0) return t + ' ERROR db-pool 連線池耗盡\n  at pool.acquire(pool.js:88)\n  at handler(api.js:12)';
     if (i % 5 === 0) return t + ' ERROR payment-api 呼叫銀行閘道逾時（第 ' + ((i % 3) + 1) + ' 次重試）';
@@ -92,9 +92,13 @@ async function runPlan(M, name, o) {
         // F：檔案整理（第 0 層程式排計畫、不動檔案；模型逐段說明）；假的檔名清單
         F: () => runPlan(M, '檔案整理', { goal: 'file_organize', text: '把這些檔案整理到資料夾', attachments: FILES.map((n, i) => ({ id: 'file' + String(i).padStart(8, '0'), filename: n })), tools: {} }),
     };
+    // 每一次模型呼叫的完整輸入長度與原始輸出都記下來（診斷用：哪一層、模型原本答了什麼）
+    const rawCalls = []; const gen0 = M.gen;
+    M.gen = async (req) => { const out = await gen0(req); const u = (req.messages || []).filter((m) => m.role === 'user').pop(); rawCalls.push({ userHead: String((u && u.content) || '').slice(0, 60), inputChars: (req.messages || []).map((m) => m.content).join(' ').length, raw: String(out) }); return out; };
     const results = [];
     for (const k of want) { if (!cases[k]) throw new Error('沒有案例 ' + k); results.push(await cases[k]()); }
     fs.writeFileSync(OUT, JSON.stringify(results, null, 2));
+    fs.writeFileSync(OUT.replace(/\.json$/, '') + '.rawcalls.json', JSON.stringify(rawCalls, null, 2));
     for (const r of results) log(r.name + ' → ' + r.state + (r.error ? '（' + r.error + '）' : '') + '\n摘要：' + r.summary);
     log('結果寫入 ' + OUT);
 })().catch((e) => { console.error(e); process.exit(1); });

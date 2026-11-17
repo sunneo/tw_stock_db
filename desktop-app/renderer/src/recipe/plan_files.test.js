@@ -53,11 +53,11 @@ const C = vm.runInContext('({' + ['_planEnv', '_planLocalSummarize', '_planReadT
     const rounds = lines.filter((l) => /^第 \d+ 輪/.test(l));
     check('3 計畫跑完', run.state === 'done', run.state);
     check('3 第 0 層程式行（不動檔案）', rounds.some((l) => l.startsWith('第 1 輪｜整理計畫（第 0 層）｜程式（不動檔案）｜整理計畫：3 個檔案')), rounds);
-    check('3 第 1 層模型行', rounds.some((l) => l.includes('｜摘要（第 1 層）｜模型｜')), rounds);
-    check('3 說明結果行標示模型', rounds.some((l) => l.includes('｜說明｜模型｜')), rounds);
-    check('3 模型確實被呼叫', calls.length >= 1 && calls.includes('chunk'), calls);
+    check('3 說明行標示程式（沒經過 AI；模型的對應寫錯，不採用）', rounds.some((l) => l.includes('｜說明｜程式（沒經過 AI）｜')), rounds);
+    check('3 說明不呼叫模型（對應由程式決定）', calls.length === 0, calls);
     check('3 沒有任何工具呼叫（不動檔案）', !rounds.some((l) => l.includes('｜工具｜')), rounds);
     check('3 行序：第 0 層在說明之前', rounds.findIndex((l) => l.includes('整理計畫（第 0 層）')) < rounds.findIndex((l) => l.includes('｜說明｜')), rounds);
+    check('3 最終結果是程式計畫原文', (run.artifacts.find((x) => x.kind === 'summary') || {}).value && String(run.artifacts.find((x) => x.kind === 'summary').value).startsWith('整理計畫：3 個檔案'), run.artifacts);
 
     console.log('plan_files.test.js: ' + ok + ' passed, ' + bad + ' failed');
     process.exit(bad ? 1 : 0);
