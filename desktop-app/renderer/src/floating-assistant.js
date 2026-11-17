@@ -96624,7 +96624,7 @@ ${fnData.code}
         const rt = this._cudawebRuntime();
         const a = args || {};
         if (op === 'vector_add') return (await rt.vectorAdd(a.a, a.b)).result;
-        if (op === 'matmul') return (await rt.matmul(a.a, a.b, a.m, a.k, a.n)).result;
+        if (op === 'matmul') return (await rt.matmul(a.a, a.b, a.m, a.k, a.n, { transA: !!a.transA, transB: !!a.transB })).result;
         if (op === 'sum') return (await rt.sum(a.a)).result;
         if (op === 'axpy') return (await rt.axpy(a.alpha, a.x, a.y)).result;
         if (op === 'scal') return (await rt.scal(a.alpha, a.x)).result;

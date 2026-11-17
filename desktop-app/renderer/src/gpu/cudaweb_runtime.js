@@ -20,8 +20,10 @@
     };
     const rt = { id: 'cudaweb-runtime' };
     // 逐個矩陣乘（經 mm_ops，會走選擇器與退路）
-    rt.matmul = async (A, B, m, k, n) => {
-      const mo = { navigator: opts.navigator };
+    // fl（選用）：{ transA, transB }。A 以 k×m 儲存（transA）、B 以 n×k 儲存（transB）；m、k、n 仍是邏輯維度。
+    // 沒給就是原本的行為（不轉置）。
+    rt.matmul = async (A, B, m, k, n, fl) => {
+      const mo = { navigator: opts.navigator, transA: !!(fl && fl.transA), transB: !!(fl && fl.transB) };
       const r = await opts.mm.matmul(Float32Array.from(A), [m, k], Float32Array.from(B), [k, n], mo);
       return { result: r.y, info: { layer: mo.lastInfo && mo.lastInfo.layer ? mo.lastInfo.layer : 'T1', reason: null } };
     };
