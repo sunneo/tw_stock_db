@@ -118,6 +118,28 @@ function fakePyodide(opts) {
     assert.ok(fa.indexOf("python_api_bridge: { gpu }") > 0, 'python_execute 結果沒有 python_api_bridge.gpu');
   });
 
+  await check('GPU 設定只在 gpu-compat 窗格：運算裝置兩個下拉在窗格內；離線模型、Whisper、生圖頁不再有裝置下拉；儲存鍵不改名', async () => {
+    const fa = fs.readFileSync(path.join(__dirname, '..', 'floating-assistant.js'), 'utf8').replace(/\r\n/g, '\n');
+    const boot = fs.readFileSync(path.join(__dirname, '..', '..', 'bootstrap.js'), 'utf8').replace(/\r\n/g, '\n');
+    // 窗格（_gpuCompatControls）內兩個運算裝置下拉
+    const start = fa.indexOf('_gpuCompatControls() {'), end = fa.indexOf('_gpuCompatRegisterPane() {');
+    assert.ok(start > 0 && end > start, '找不到 _gpuCompatControls 區段');
+    const pane = fa.slice(start, end);
+    assert.ok(pane.indexOf('離線模型與 Whisper 用什麼算') > 0, '窗格缺「離線模型與 Whisper 用什麼算」');
+    assert.ok(pane.indexOf('本機小模型（生圖）用什麼算') > 0, '窗格缺「本機小模型（生圖）用什麼算」');
+    assert.ok(pane.indexOf("this.advancedSettings.offlineDevicePreference = cpu ? 'cpu' : 'gpu'") > 0, '運算裝置沒寫 offlineDevicePreference');
+    assert.ok(pane.indexOf("this.advancedSettings.whisperDevicePreference = cpu ? 'cpu' : 'auto'") > 0, '窗格沒同步 whisperDevicePreference（舊行為）');
+    assert.ok(pane.indexOf("localDevice: v") > 0, '生圖裝置沒寫 imageGen.localDevice');
+    // 其他地方不再有裝置下拉
+    assert.strictEqual(fa.indexOf('<select data-om-set="device"'), -1, '離線模型頁還有裝置下拉');
+    assert.strictEqual(fa.indexOf('<select id="ai-whisper-device"'), -1, 'Whisper 頁還有裝置下拉');
+    assert.strictEqual(fa.indexOf('<select id="ai-imgcfg-device"'), -1, '生圖頁還有裝置下拉');
+    assert.strictEqual(fa.indexOf("$('ai-imgcfg-device')"), -1, '生圖頁還在讀寫裝置下拉');
+    assert.strictEqual(fa.indexOf("k === 'device'"), -1, '離線模型頁還有 device 寫入分支');
+    assert.strictEqual(boot.indexOf('gpuStack'), -1, '桌面版設定頁還有 GPU 區塊');
+    // 模型頁只顯示狀態
+    assert.ok(fa.indexOf('ai-whisper-device-status') > 0 && fa.indexOf('ai-imgcfg-device-status') > 0, '模型頁沒有狀態文字');
+  });
   await check('GPU 相容層只在 ai 分組的 gpu-compat 窗格出現：桌面版設定頁不掛載；窗格內含開關、float64、偵測、基準、變體競賽各一份', async () => {
     const fa = fs.readFileSync(path.join(__dirname, '..', 'floating-assistant.js'), 'utf8').replace(/\r\n/g, '\n');
     const boot = fs.readFileSync(path.join(__dirname, '..', '..', 'bootstrap.js'), 'utf8').replace(/\r\n/g, '\n');
