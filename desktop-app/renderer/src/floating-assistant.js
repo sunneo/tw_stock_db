@@ -16368,8 +16368,8 @@ const holder = {};
     const THINK_MODELS = new Set(['qwen3-0.6b']);
     const THINK_STAGES = {
         // timeoutMs：GPU（webgpu，預設）；cpuTimeoutMs：CPU 版。CPU 放寬只是防卡死的保險，不切掉正常的思考（使用者離線時會放著跑）。預算（maxTokens）兩種裝置相同。
-        plan: { ratio: 0.4, min: 1500, max: 3000, timeoutMs: 30000, cpuTimeoutMs: 300000 },
-        reflect: { ratio: 0.075, min: 300, max: 600, timeoutMs: 15000, cpuTimeoutMs: 120000 },
+        plan: { ratio: 0.4, min: 1500, max: 3000, timeoutMs: 0, cpuTimeoutMs: 0 }, // 0＝不設時限：離線模型慢是使用者接受的
+        reflect: { ratio: 0.075, min: 300, max: 600, timeoutMs: 0, cpuTimeoutMs: 0 },
     };
     function thinkingPlan(opts) {
         opts = opts || {}; const off = { enabled: false, maxTokens: null, timeoutMs: null };
@@ -16399,7 +16399,8 @@ const holder = {};
             validate: (o) => { if (typeof o.gap !== 'boolean') return ['「gap」必須是 true 或 false']; if (o.gap && (typeof o.note !== 'string' || !o.note.trim())) return ['有缺口時「note」不能是空的']; return []; } })
             .then((r) => r, (e) => ({ ok: false, error: String((e && e.message) || e), reasoning: '' }));
         let timer = null;
-        const cut = new Promise((resolve) => { timer = setTimeout(() => resolve({ ok: false, error: '逾時', reasoning: '' }), timeoutMs); });
+        // 有給正數時限才設定（0＝不設時限，只等推理本身）
+        const cut = timeoutMs > 0 ? new Promise((resolve) => { timer = setTimeout(() => resolve({ ok: false, error: '逾時', reasoning: '' }), timeoutMs); }) : new Promise(() => {});
         return Promise.race([work, cut]).then((r) => {
             clearTimeout(timer); const reasoning = String(r.reasoning || '');
             if (!r.ok) return { gap: false, note: '', reasoning, ok: false, error: r.error || '沒有合格的回覆' };
