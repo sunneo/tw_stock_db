@@ -79,15 +79,6 @@
         const nt = String(title || '').normalize('NFKC').toLowerCase();
         return terms.filter((t) => nt.includes(String(t).normalize('NFKC').toLowerCase())).length;
     }
-    // 預算（毫秒）：模型尚未載入＝冷啟動，給數分鐘；已載入＝依提示長度與測得速度估，至少 60 秒、估計的 3 倍。
-    // 估算只用已知的速度（預填每秒詞元 prefillTps、生成每秒詞元 genTps）；沒有測過就用保守值。
-    function budgetMs(p) {
-        const o = p || {};
-        if (!o.loaded) return Math.max(60000, o.coldMs || 300000);
-        const pre = (o.promptTokens || 0) / Math.max(1, o.prefillTps || 40);
-        const gen = (o.maxNew || 200) / Math.max(0.5, o.genTps || 4);
-        return Math.max(60000, Math.ceil((pre + gen) * 3 * 1000));
-    }
     // 活動逾時：只有「整段時間內都沒有任何進度」才算逾時；每次 touch()（載入進度、新詞元）就重新計時。
     // 逾時的錯誤帶 timeout=true 與 idleMs，呼叫端據此記錄，不把它當成模型壞掉。
     function withActivityTimeout(start, ms) {
@@ -101,7 +92,7 @@
         });
     }
     // 斷路器只在「明確失敗」才觸發（載入錯誤、記憶體不足）；單純慢或逾時不算。
-    const HARD_FAIL_RE = /載入|bad_alloc|記憶體|memory|out of|Aborted|create a session|OOM/i;
+    const HARD_FAIL_RE = /載入|bad_alloc|記憶體|memory|out of|Aborted|create a session|OOM|KV|上下文太長|超過.*上限|超出長度/i;
     const isHardFail = (reason) => HARD_FAIL_RE.test(String(reason || ''));
 
     // 主流程。deps：
@@ -112,7 +103,8 @@
     // opts：{ defaultCount: 2, maxArticles: 5, summarizeTimeoutMs: 30000 }
     // 模型斷路器：本輪第一次摘要失敗（模型載入失敗、呼叫失敗或單篇逾時）後，後面的文章不再叫模型，直接用程式摘要，不每篇白等。
     async function run(userText, deps, opts) {
-        const o = Object.assign({ defaultCount: 2, maxArticles: 5, summarizeTimeoutMs: 300000, roundTimeoutMs: 600000 }, opts || {});
+        // summarizeTimeoutMs：沒有任何進度（新詞元、載入進度）的卡死門檻，很寬；有進度就一直等。沒有總時間上限。
+        const o = Object.assign({ defaultCount: 2, maxArticles: 5, summarizeTimeoutMs: 240000, roundTimeoutMs: 0 }, opts || {});
         const roundDeadline = Date.now() + o.roundTimeoutMs; // 整輪耗時上限：超過就不再讀下一篇，已摘要的照常回答
         const say = (s) => { try { if (deps.trace) deps.trace(s); } catch (_) { /* 顯示失敗不影響流程 */ } };
     // 頁首狀態（進度卡片的 status）：第 i／n 篇、目前在做什麼；deps.status 可省略
@@ -160,7 +152,8 @@
         let modelDown = ''; // 斷路器：第一次模型失敗的真實原因；有值之後本輪不再叫模型
         for (let i = 0; i < picked.length; i++) {
             const c = picked[i];
-            if (Date.now() > roundDeadline) { step('整輪上限', '程式', '已超過整輪耗時上限 ' + o.roundTimeoutMs + ' ms，之後的 ' + (picked.length - i) + ' 篇不再處理'); break; }
+            if (deps.isCancelled && deps.isCancelled()) { step('使用者取消', '程式', '已取消，之後的 ' + (picked.length - i) + ' 篇不再處理'); break; }
+            if (o.roundTimeoutMs > 0 && Date.now() > roundDeadline) { step('整輪上限', '程式', '已超過整輪耗時上限 ' + o.roundTimeoutMs + ' ms，之後的 ' + (picked.length - i) + ' 篇不再處理'); break; }
             status('第 ' + (i + 1) + '／' + picked.length + ' 篇：讀內文中');
             const art = await deps.readArticle(c.url).catch((e) => ({ ok: false, error: String((e && e.message) || e) }));
             if (!art || !art.ok || !String(art.text || '').trim()) { step('讀第 ' + (i + 1) + ' 篇', '程式', '讀不到內文：' + c.title.slice(0, 30) + '（' + ((art && art.error) || '沒有內文') + '）'); continue; }
@@ -171,12 +164,12 @@
             status('第 ' + (i + 1) + '／' + picked.length + ' 篇：摘要中' + (modelDown ? '（程式摘要）' : '（模型）'));
             if (modelDown) s = { ok: false, skipped: true };
             else {
-                const ms = deps.budgetMs ? deps.budgetMs(body, question) : o.summarizeTimeoutMs;
+                const ms = o.summarizeTimeoutMs;
                 const stageAtStart = deps.stage ? deps.stage() : '';
                 try { s = await withActivityTimeout((touch) => deps.summarize(body, question, { touch }), ms); }
                 catch (e) {
                     const st = deps.stage ? deps.stage() : '';
-                    if (e && e.timeout) { s = { ok: false, failed: true, timedOut: true, reason: '逾時（' + Math.round(e.idleMs / 1000) + ' 秒內沒有進度；卡在「' + (st || stageAtStart || '未知') + '」）', stage: st || stageAtStart }; }
+                    if (e && e.timeout) { s = { ok: false, failed: true, timedOut: true, reason: '卡住（' + Math.round(e.idleMs / 1000) + ' 秒內沒有任何進度；停在「' + (st || stageAtStart || '未知') + '」）', stage: st || stageAtStart }; }
                     else s = { ok: false, failed: true, reason: 'summarize 失敗：' + String((e && e.message) || e) };
                 }
             }
@@ -212,5 +205,5 @@
         return { handled: true, ok: true, text: head + '\n\n' + lines.join('\n'), rounds: round, articles };
     }
 
-    return { parseRss, extractLinks, leadSummary, budgetMs, withActivityTimeout, isHardFail, run };
+    return { parseRss, extractLinks, leadSummary, withActivityTimeout, isHardFail, run };
 });

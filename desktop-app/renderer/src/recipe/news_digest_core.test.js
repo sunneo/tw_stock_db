@@ -148,7 +148,7 @@ function fakeDeps(opts) {
         const r = await D.run('看今天有哪些黃仁勳新聞', f.deps, { summarizeTimeoutMs: 20 });
         check('K 逾時後照常完成', r.ok === true && r.articles.length === 2, r);
         check('K 逾時不觸發斷路器：每篇各自試一次（逾時只讓那一篇走退路）', calls === 2, calls);
-        check('K 步驟行含逾時原因（沒有進度）', f.steps.some((s) => s.includes('逾時') && s.includes('沒有進度')), f.steps);
+        check('K 步驟行含卡住原因（沒有任何進度）', f.steps.some((s) => s.includes('卡住') && s.includes('沒有任何進度')), f.steps);
         check('K 整體在幾秒內結束', Date.now() - t0 < 5000, Date.now() - t0);
     }
     // L. 程式摘要（退路）：去掉 ▲ 圖說與署名，取完整句，不從中間截斷
@@ -175,13 +175,6 @@ function fakeDeps(opts) {
     }
     // P. 逾時計算、活動逾時、斷路器只看明確失敗
     {
-        // 冷啟動（未載入）：至少數分鐘
-        check('P 冷啟動預算至少 5 分鐘', D.budgetMs({ loaded: false }) >= 300000, D.budgetMs({ loaded: false }));
-        // 已載入：依提示長度與速度估，至少 60 秒、估計值的 3 倍
-        const short = D.budgetMs({ loaded: true, promptTokens: 100, maxNew: 200, prefillTps: 100, genTps: 10 });
-        check('P 已載入、短提示＝估計 21 秒的 3 倍（63 秒，高於 60 秒下限）', short === 63000, short);
-        const longB = D.budgetMs({ loaded: true, promptTokens: 1000, maxNew: 200, prefillTps: 50, genTps: 4 });
-        check('P 已載入、長提示＝估計 70 秒的 3 倍（210 秒）', longB === 210000, longB);
         // 活動逾時：有進度就不逾時
         let resolvedAfter = null;
         const slowButActive = (touch) => new Promise((resolve) => {
@@ -198,6 +191,30 @@ function fakeDeps(opts) {
         check('P isHardFail：載入錯誤與記憶體不足', D.isHardFail('模型載入失敗：webgpu：std::bad_alloc') && D.isHardFail('out of memory'), null);
         check('P isHardFail：逾時與單純慢不算', !D.isHardFail('逾時（30 秒內沒有進度）') && !D.isHardFail('生成很慢'), null);
     }
+    // R. 沒有總時間上限：慢但每 30 毫秒都有新進度，就一直等到完成（不因為總時間長而中斷）
+    {
+        const slowProgress = (touch) => new Promise((resolve) => { let n = 0; const iv = setInterval(() => { touch(); n++; if (n === 15) { clearInterval(iv); resolve('done'); } }, 30); });
+        const v = await D.withActivityTimeout(slowProgress, 120).then((x) => x, (e) => 'ERR:' + e.message);
+        check('R 慢但持續出詞元（總長 450 毫秒 > 門檻 120）不會被中斷', v === 'done', v);
+    }
+    // S. 真的卡死（完全沒有新進度）才中斷，並附上無進度的秒數
+    {
+        const stuck = await D.withActivityTimeout(() => new Promise(() => {}), 50).then(() => 'resolved', (e) => ({ timeout: e.timeout, idleMs: e.idleMs }));
+        check('S 完全沒有進度才中斷（timeout=true）', stuck && stuck.timeout === true && stuck.idleMs === 50, stuck);
+    }
+    // T. 明確失敗才觸發斷路器；慢與逾時不算
+    {
+        check('T 明確失敗：載入錯誤、記憶體不足、KV 超限', D.isHardFail('模型載入失敗：std::bad_alloc') && D.isHardFail('out of memory') && D.isHardFail('KV 上限 1024：上下文太長'), null);
+        check('T 慢與卡死不算明確失敗', !D.isHardFail('卡住（180 秒內沒有任何進度）') && !D.isHardFail('生成很慢，約 1 字／秒'), null);
+    }
+    // U. 使用者取消：取消後不再處理下一篇
+    {
+        const f = fakeDeps(); let calls = 0; let cancelled = false;
+        f.deps.isCancelled = () => cancelled;
+        f.deps.summarize = async () => { calls++; cancelled = true; return { ok: true, text: 'x', method: 'model' }; };
+        const r = await D.run('看今天有哪些黃仁勳新聞', f.deps);
+        check('U 取消後只做完目前這一篇，不再處理下一篇', calls === 1 && f.steps.some((s) => s.includes('使用者取消')), { calls, steps: f.steps.slice(-2) });
+    }
     // Q. 逾時不觸發斷路器：第一篇逾時後，第二篇仍會叫模型（若成功就用模型摘要）
     {
         const f = fakeDeps(); let calls = 0;
@@ -209,8 +226,8 @@ function fakeDeps(opts) {
     {
         const f = fakeDeps(); let calls = 0;
         f.deps.summarize = async () => { calls++; return { ok: true, text: 'x', method: 'model' }; };
-        await D.run('看今天有哪些黃仁勳新聞', f.deps, { roundTimeoutMs: -1 });
-        check('N 整輪超時後不再讀／摘要', calls === 0 && f.steps.some((s) => s.includes('整輪上限')), f.steps);
+        await D.run('看今天有哪些黃仁勳新聞', f.deps, { roundTimeoutMs: 0 });
+        check('N 沒有整輪總時間上限：兩篇都照做，步驟行沒有整輪上限', calls === 2 && !f.steps.some((s) => s.includes('整輪上限')), f.steps);
     }
     // M. 沒有實質目標詞（只有功能詞）：不比對，取前幾則
     {
