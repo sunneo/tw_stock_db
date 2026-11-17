@@ -9462,10 +9462,10 @@ const holder = {};
     // ---- 貪婪解碼＋KV cache ----
     // 形狀由模型決定：層數、KV 頭數、head_dim 從 opts 來（預設 Qwen3-0.6B：28 / 8 / 128）
     // opts.gpuDecode（可選，Qwen3 q8 整段 GPU 解碼，DESIGN.webgpu-cuda.md §7.13）：{ engine（qwen_gpu 的 createGpuEngine 結果：step(ids)→{token}、reset()）,
-    //   verifyTol 不用（動態量化讓數值有百分之幾的雜訊，只比 argmax）, timeoutMs（每步，預設 20000） }
+    //   verifyTol 不用（動態量化讓數值有百分之幾的雜訊，只比 argmax）, timeoutMs（每步，預設 0＝不設） }
     //   開頭：GPU 預填與原圖預填各跑一次，第一個詞元不同就整段退回原路徑；之後每步只跑 GPU。任何一步失敗：用原圖把「已生成但原圖還沒吃進 KV」的詞元補進去，接著照原路徑走。
     // opts.head（可選）：{ variant（隱藏狀態變體的 session）, hiddenName（變體圖的隱藏狀態輸出名）, run(hidden:Float32Array)→Promise<Float32Array(V)>,
-    //   timeoutMs（預設 8000）, verifySteps（預設 1：開頭幾步同時跑原圖，argmax 與相對誤差對拍）, verifyTol（預設 1e-3） }
+    //   timeoutMs（預設 0＝不設）, verifySteps（預設 1：開頭幾步同時跑原圖，argmax 與相對誤差對拍）, verifyTol（預設 1e-3） }
     function greedyGenerate(ort, session, promptIds, opts) {
         const o = opts || {};
         const L = o.layers || 28, KV = o.kvHeads || 8, HD = o.headDim || 128;
@@ -9473,7 +9473,7 @@ const holder = {};
         const stopCheck = typeof o.isStopRequested === 'function' ? o.isStopRequested : () => false;
         if (!promptIds || !promptIds.length) throw new Error('prompt 是空的');
         const H = o.head && o.head.variant && typeof o.head.run === 'function' ? o.head : null;
-        const timeoutMs = H ? (H.timeoutMs === undefined ? 8000 : H.timeoutMs) : 0;
+        const timeoutMs = H ? (H.timeoutMs === undefined ? 0 : H.timeoutMs) : 0; // 0＝不設每步時限（離線慢是使用者接受的）
         const verifySteps = H ? (H.verifySteps === undefined ? 1 : H.verifySteps) : 0;
         const verifyTol = H ? (H.verifyTol === undefined ? 1e-3 : H.verifyTol) : 0;
         const diag = { requested: !!H, used: 0, steps: 0, verify: [], fallbackAt: -1, reason: '', headMs: 0, variantMs: 0, origMs: 0 };
@@ -9487,7 +9487,7 @@ const holder = {};
             let s0 = 0;
             if (GD) {
                 // ---- GPU 整段解碼階段 ----
-                const gTimeout = GD.timeoutMs === undefined ? 20000 : GD.timeoutMs;
+                const gTimeout = GD.timeoutMs === undefined ? 0 : GD.timeoutMs; // 0＝不設每步時限
                 let gpuTok = null, ortTok = null, r0 = null, ortLen = 0;
                 try {
                     const feed0 = Object.assign({}, past);
@@ -130976,7 +130976,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             const prompt = M2.tpl.applyTemplate('qwen3-chatml', tm.messages, { enable_thinking: a.enableThinking === true ? undefined : false, prefill: a.prefill || undefined });
             const promptIds = C.tok.encode(prompt);
             const chk = M2.chat.canRun(C.engine, promptIds.length, a.maxTokens || 512); if (!chk.ok) return no(chk.why);
-            let acc = '', since = 0, garbage = null; const t1 = Date.now(), limit = a.timeoutMs > 0 ? a.timeoutMs : 300000;
+            let acc = '', since = 0, garbage = null; const t1 = Date.now(), limit = a.timeoutMs > 0 ? a.timeoutMs : Infinity; // 離線 GPU 生成不設總時限（只靠明確失敗、退化文字與取消中斷）
             const r = await M2.chat.generate({ engine: C.engine, tok: C.tok, promptIds, maxNew: a.maxTokens || 512, gen, seed: (Date.now() >>> 0) || 1, stepTimeoutMs: 20000,
                 isCancelled: () => !!garbage || stopped() || Date.now() - t1 > limit,
                 onText: (d, full) => { acc = full; since += d.length; if (cb.onToken) cb.onToken((a.prefill || '') + acc);
