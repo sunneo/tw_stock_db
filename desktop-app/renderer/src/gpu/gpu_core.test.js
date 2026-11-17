@@ -93,6 +93,11 @@ function fakeNavigator(opts) {
       // 參數：B, M, K, N, Bb, azp, bzp, p0（與 gpu_core.js 的 mmTileWords 相同）
       const p = u32(e[3]); const m = p[1], kk = p[2], n = p[3], fl = p[7];
       f32(e[2], m * n).set(core.matmulTRef(f32(e[0], m * kk), f32(e[1], kk * n), m, kk, n, fl));
+    } else if (k === 'transpose') {
+      // 參數：A(m×n)、O(n×m)、P{m, n}；與 gpu_core.js 的 transpose 相同的索引
+      const p = u32(e[2]); const m = p[0], n = p[1];
+      const A = f32(e[0], m * n), O = f32(e[1], m * n);
+      for (let i = 0; i < m; i++) for (let j = 0; j < n; j++) O[j * m + i] = A[i * n + j];
     } else if (k === 'gemv_row') {
       // 參數：A(m×n)、X(n)、Y(m)、P{n, m}；與 gpu_core.js 的 gemv_row 相同的列式定義（順序不同，容差比對）
       const p = u32(e[3]); const n = p[0], m = p[1];
@@ -489,6 +494,16 @@ function seeded(n, seed) {
     const r = await rt.gemv(A, x, 5, 7);
     assert.strictEqual(r.info.layer, 'T1');
     close(r.result, Array.from(core.gemvRef(Float32Array.from(A), Float32Array.from(x), 5, 7)), core.tolerance(7), 'gemv');
+  });
+  await check('轉置樣板在 T1 與參考版一致（m=5、n=7 與 m=33、n=17，跨越 16×16 分塊邊界）', async () => {
+    const rt = core.createRuntime({ navigator: fakeNavigator().nav, webgl2: null });
+    for (const [m, n] of [[5, 7], [33, 17]]) {
+      const A = seeded(m * n, 70 + m);
+      const r = await rt.transpose(A, m, n);
+      assert.strictEqual(r.info.layer, 'T1');
+      const ref = []; for (let j = 0; j < n; j++) for (let i = 0; i < m; i++) ref.push(Math.fround(A[i * n + j]));   // 核心輸出是 f32，參考也要先 fround
+      assert.deepStrictEqual(r.result, ref, 'transpose ' + m + '×' + n);
+    }
   });
   await check('第二階段子程式在沒有 WebGPU 時：axpy、scal、dot、nrm2 退 T5 並寫明 WebGL2 尚未實作', async () => {
     const rt = core.createRuntime({ navigator: {}, webgl2: fakeGl() });

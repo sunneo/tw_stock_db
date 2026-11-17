@@ -380,6 +380,24 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>, @builtin(workgroup_id) wid
   }
   if (t == 0u && row < p.m) { Y[row] = sh[0]; }
 }`;
+  // 轉置樣板（O14c）：A 為 m×n（列主序），輸出 n×m。16×16 的共用記憶體分塊，列寬加 1 避開記憶體組衝突。
+  WGSL.transpose = `
+struct P { m: u32, n: u32, a: u32, b: u32 }
+@group(0) @binding(0) var<storage, read> A: array<f32>;
+@group(0) @binding(1) var<storage, read_write> O: array<f32>;
+@group(0) @binding(2) var<uniform> p: P;
+var<workgroup> tile: array<f32, 272>;
+@compute @workgroup_size(16, 16)
+fn main(@builtin(local_invocation_id) lid: vec3<u32>, @builtin(workgroup_id) wid: vec3<u32>) {
+  // @kernel transpose
+  let x = wid.x * 16u + lid.x;
+  let y = wid.y * 16u + lid.y;
+  if (x < p.n && y < p.m) { tile[lid.y * 17u + lid.x] = A[y * p.n + x]; }
+  workgroupBarrier();
+  let ox = wid.y * 16u + lid.x;
+  let oy = wid.x * 16u + lid.y;
+  if (ox < p.m && oy < p.n) { O[oy * p.m + ox] = tile[lid.x * 17u + lid.y]; }
+}`;
   // vec4 載入版：K、N 是 4 的倍數且不轉置時 wgMatmul 改用它（同一幾何，全域讀取一次 4 個元素；大形狀快 20–30%，見 mm_tile_check.html）
   WGSL.matmul_vec4 = mmTileWgslVec4({ marker: 'matmul_vec4' });
   WGSL.sum = [
@@ -759,6 +777,14 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>, @builtin(workgroup_id) wid
         dispatch(dev, pipeline(dev, 'mul', WGSL.mul), [bx, by, bz, uniformU32(dev, [n, 0, 0, 0])], Math.ceil(n / WG));
         var r = await readBack(dev, reduceBuffers(dev, bz, n), 1);
         return r[0];
+      });
+    }
+    function wgTranspose(dev, A, m, n) {
+      return withScope(dev, async function () {
+        var ba = makeBuf(dev, A, USAGE.STORAGE | USAGE.COPY_DST | USAGE.COPY_SRC);
+        var bo = dev.createBuffer({ size: Math.max(4, m * n * 4), usage: USAGE.STORAGE | USAGE.COPY_SRC });
+        dispatch(dev, pipeline(dev, 'transpose', WGSL.transpose), [ba, bo, uniformU32(dev, [m, n, 0, 0])], Math.ceil(n / 16), Math.ceil(m / 16));
+        return readBack(dev, bo, m * n);
       });
     }
     function wgGemv(dev, A, x, m, n) {
@@ -1153,6 +1179,14 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>, @builtin(workgroup_id) wid
         return run('nrm2', { bytes: X.length * 4 * 3,
           wg: async function (dev) { var s = await wgDot(dev, X, X); return Math.fround(Math.sqrt(s)); },
           cpu: function () { return nrm2Ref(X); } });
+      },
+      // 轉置（O14c 樣板）：A 為 m×n（列主序）→ 回傳 n×m（列主序）。
+      transpose: async function (A0, m, n) {
+        var MA = toF32(A0, 'A');
+        if (MA.length !== m * n) throw new Error('cudaweb.transpose：A 的元素數 ' + MA.length + ' 與 m×n=' + (m * n) + ' 不符');
+        return run('transpose', { bytes: MA.length * 4 * 2, maxStorage: MA.length * 4,
+          wg: function (dev) { return wgTranspose(dev, MA, m, n).then(Array.from); },
+          cpu: function () { var o = new Array(m * n); for (var i = 0; i < m; i++) for (var j = 0; j < n; j++) o[j * m + i] = MA[i * n + j]; return o; } });
       },
       gemv: async function (A0, x0, m, n) {
         var MA = toF32(A0, 'A'), X = toF32(x0, 'x');
