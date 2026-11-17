@@ -776,6 +776,39 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>, @builtin(workgroup_id) wid
         return readBack(dev, bc, m * n);
       });
     }
+    // 批次矩陣乘（matmulMany）：每組一個核心分派，全部記在同一個 command encoder、一次 submit、一次讀回。
+    // jobs：[{MA, MB, m, k, n, fl}]，MA/MB 已是 Float32Array，fl 為轉置旗標位元；呼叫端已確認每組都在儲存上限內（這裡不分塊）。
+    // 回傳每組結果的陣列（一般陣列）。選核規則與 wgMatmul 相同。
+    function wgMatmulMany(dev, jobs) {
+      return withScope(dev, async function () {
+        var enc = dev.createCommandEncoder();
+        var temps = [], outs = [], offs = [], total = 0;
+        jobs.forEach(function (j) {
+          var ba = makeBuf(dev, j.MA, USAGE.STORAGE | USAGE.COPY_DST | USAGE.COPY_SRC), bb = makeBuf(dev, j.MB, USAGE.STORAGE | USAGE.COPY_DST | USAGE.COPY_SRC);
+          var bc = dev.createBuffer({ size: Math.max(4, j.m * j.n * 4), usage: USAGE.STORAGE | USAGE.COPY_SRC });
+          var uni = uniformU32(dev, mmTileWords(j.m, j.k, j.n, j.fl, 1));
+          var v4 = mmTileVec4Ok(j.m, j.k, j.n, j.fl);
+          var pick = matmulKernelChooser ? matmulKernelChooser(j.m, j.k, j.n, j.fl) : null;
+          if (pick === 'matmul_vec4') v4 = mmTileVec4Ok(j.m, j.k, j.n, j.fl);
+          else if (pick === 'matmul') v4 = false;
+          var pipe = v4 ? pipeline(dev, 'matmul_vec4', WGSL.matmul_vec4) : pipeline(dev, 'matmul', WGSL.matmul);
+          var bg = dev.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries: [
+            { binding: 0, resource: { buffer: ba } }, { binding: 1, resource: { buffer: bb } },
+            { binding: 2, resource: { buffer: bc } }, { binding: 3, resource: { buffer: uni } }] });
+          var d = mmTileDispatch(j.m, j.n, 1);
+          var pass = enc.beginComputePass(); pass.setPipeline(pipe); pass.setBindGroup(0, bg); pass.dispatchWorkgroups(d[0], d[1], 1); pass.end();
+          temps.push(ba, bb, uni); outs.push(bc); offs.push(total); total += j.m * j.n;
+        });
+        var rb = dev.createBuffer({ size: Math.max(4, total * 4), usage: USAGE.MAP_READ | USAGE.COPY_DST });
+        jobs.forEach(function (j, i) { enc.copyBufferToBuffer(outs[i], 0, rb, offs[i] * 4, j.m * j.n * 4); });
+        dev.queue.submit([enc.finish()]);
+        await rb.mapAsync(USAGE.MAP_READ);
+        var all = new Float32Array(rb.getMappedRange().slice(0));
+        rb.unmap(); rb.destroy();
+        temps.concat(outs).forEach(function (b) { b.destroy(); });
+        return jobs.map(function (j, i) { return Array.from(all.subarray(offs[i], offs[i] + j.m * j.n)); });
+      });
+    }
     // 歸約的核心部分：從一個已在裝置上的 buffer 開始，回傳最後的 buffer 與長度
     function reduceBuffers(dev, cur, len) {
       var pipe = pipeline(dev, 'sum', WGSL.sum);
@@ -1195,6 +1228,45 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>, @builtin(workgroup_id) wid
         var info = Object.assign({}, worst, { chunks: chunks, reason: reasons.join('；') });
         st.last = info; st.opLast.matmul = info;
         return { result: out, info: info };
+      },
+      // 批次矩陣乘（O14）：items 每組是 [A, B, m, k, n]（可再加第 6 個元素為 flags）或 {A, B, m, k, n, flags}。
+      // 全部在儲存上限內：走 wgMatmulMany（一次 submit、一次讀回）；有組超過上限：逐組走 matmul（含分塊）。
+      // 回傳 { results: [每組的陣列], info }；info.batched 只有真的走 WebGPU 批次才是 true。
+      matmulMany: async function (items) {
+        if (!Array.isArray(items)) throw new Error('cudaweb.matmul_many：items 必須是陣列');
+        var jobs = items.map(function (it, i) {
+          var o = Array.isArray(it) ? { A: it[0], B: it[1], m: it[2], k: it[3], n: it[4], flags: it[5] } : (it || {});
+          var m = Number(o.m), k = Number(o.k), n = Number(o.n);
+          if (!(m >= 1 && k >= 1 && n >= 1) || m % 1 || k % 1 || n % 1) throw new Error('cudaweb.matmul_many：第 ' + i + ' 組的 m、k、n 必須是正整數');
+          var MA = toF32(o.A, 'items[' + i + '].A'), MB = toF32(o.B, 'items[' + i + '].B');
+          if (MA.length !== m * k) throw new Error('cudaweb.matmul_many：第 ' + i + ' 組 A 的元素數 ' + MA.length + ' 與 m×k=' + (m * k) + ' 不符');
+          if (MB.length !== k * n) throw new Error('cudaweb.matmul_many：第 ' + i + ' 組 B 的元素數 ' + MB.length + ' 與 k×n=' + (k * n) + ' 不符');
+          return { MA: MA, MB: MB, m: m, k: k, n: n, flags: o.flags, fl: mmTileFlags(o.flags) };
+        });
+        if (!jobs.length) return { results: [], info: { lib: 'cudaweb', op: 'matmul_many', layer: null, via: 'empty', reason: '', items: 0, batched: false } };
+        await ensure();
+        var lim = (st.device && maxBytes()) || DEFAULT_STORAGE_MAX;
+        var fits = jobs.every(function (j) { return j.m * j.k * 4 <= lim && j.k * j.n * 4 <= lim && j.m * j.n * 4 <= lim; });
+        if (!fits) {
+          var outs = [], worst = null, reasons = [];
+          for (var q = 0; q < jobs.length; q++) {
+            var r = await api.matmul(jobs[q].MA, jobs[q].MB, jobs[q].m, jobs[q].k, jobs[q].n, jobs[q].flags);
+            outs.push(r.result); worst = worseInfo(worst, r.info);
+            if (r.info.reason && reasons.indexOf(r.info.reason) < 0) reasons.push(r.info.reason);
+          }
+          var pinfo = Object.assign({}, worst, { op: 'matmul_many', via: 'per-item', items: jobs.length, batched: false,
+            reason: '有組超過單一儲存緩衝上限，逐組執行' + (reasons.length ? '；' + reasons.join('；') : '') });
+          st.last = pinfo; st.opLast.matmul_many = pinfo;
+          return { results: outs, info: pinfo };
+        }
+        var bytes = 0, maxStore = 0;
+        jobs.forEach(function (j) { bytes += (j.MA.length + j.MB.length + j.m * j.n) * 4; maxStore = Math.max(maxStore, j.MA.length * 4, j.MB.length * 4, j.m * j.n * 4); });
+        var anyFl = jobs.some(function (j) { return j.fl; });
+        var res = await run('matmul_many', { bytes: bytes, maxStorage: maxStore,
+          wg: function (dev) { return wgMatmulMany(dev, jobs); },
+          gl: anyFl ? undefined : function (gl) { return jobs.map(function (j) { return Array.from(glMatmul(gl, j.MA, j.MB, j.m, j.k, j.n)); }); },
+          cpu: function () { return jobs.map(function (j) { return Array.from(j.fl ? matmulTRef(j.MA, j.MB, j.m, j.k, j.n, j.fl) : matmulRef(j.MA, j.MB, j.m, j.k, j.n)); }); } });
+        return { results: res.result, info: Object.assign({}, res.info, { items: jobs.length, batched: res.info.layer === 'T1' }) };
       },
       // T2：雙 f32 歸約（f64 精度的替代）
       sumDd: async function (a0) {
