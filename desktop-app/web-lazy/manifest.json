@@ -22,24 +22,24 @@
    "names": [
     "FA_PYBRIDGE_FILES"
    ],
-   "size": 503317,
-   "md5": "7f21eab462c6e1e6489d0c4e6eb7e120"
+   "size": 504441,
+   "md5": "08dc65a22954d0cc6acfd8927879ed54"
   },
   "headsvc": {
    "file": "chunks/headsvc.js",
    "names": [
     "FA_HEAD_SRC"
    ],
-   "size": 98686,
-   "md5": "70368b819126be2475a0478f19235df3"
+   "size": 116387,
+   "md5": "03b9b827a5b4503c91897e260b610616"
   },
   "qwengpu": {
    "file": "chunks/qwengpu.js",
    "names": [
     "FA_QWEN_SRC"
    ],
-   "size": 364094,
-   "md5": "0df2616511ee0f9a6c0a4071d46bc85d"
+   "size": 401508,
+   "md5": "4e1ec0a64ad6690b2446f524f1404bce"
   },
   "aidocview": {
    "file": "chunks/aidocview.js",
@@ -242,8 +242,8 @@
     "FaWebNews",
     "FaNewsDigest"
    ],
-   "size": 9301,
-   "md5": "bcb83f7dbea702bbfba2e10374ed9dcd"
+   "size": 12016,
+   "md5": "503143a72ab8ddc2d9b539a598040e26"
   },
   "thinkstack": {
    "file": "chunks/thinkstack.js",
@@ -1879,7 +1879,7 @@
   }
  },
  "core": {
-  "size": 6063612,
-  "md5": "2c9d23be705d0cc78072e0f2f4968b2c"
+  "size": 6075299,
+  "md5": "35f977a7f77bf38d152977a031a36900"
  }
 }
