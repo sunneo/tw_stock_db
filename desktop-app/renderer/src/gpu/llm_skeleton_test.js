@@ -124,4 +124,46 @@ check('權重長度不對：開頭就丟錯並指出是哪個權重（不讓 NaN
   assert.throws(() => S.run(tinyArch(), w2, [0]), /權重 embed 長度應為 12/);
 });
 
+// 覆寫槽（O12c）
+check('覆寫槽：正確的覆寫會被呼叫（計數 > 0），logits 與通用實作相同', () => {
+  const arch = tinyArch(), w = tinyWeights();
+  const base = S.run(arch, w, [1, 2]).logits;
+  let calls = 0;
+  S.registerOverride(arch.family, 'matvec', (W, r, c, x) => {
+    calls++; const y = new Float32Array(r);
+    for (let i = 0; i < r; i++) { let s = 0; for (let j = 0; j < c; j++) s += W[i * c + j] * x[j]; y[i] = s; }
+    return y;
+  });
+  try {
+    const got = S.run(arch, w, [1, 2]).logits;
+    assert.ok(calls > 0, '覆寫沒有被用到');
+    close(got, base, 1e-6, 'override');
+  } finally { S.clearOverrides(arch.family); }
+});
+
+check('覆寫槽：有錯的覆寫確實改變結果（證明覆寫真的有被用）', () => {
+  const arch = tinyArch(), w = tinyWeights();
+  const base = S.run(arch, w, [1, 2]).logits;
+  S.registerOverride(arch.family, 'rmsnorm', (x, wn, eps) => S.rmsnorm(x, wn, eps).map((v) => v * 1.5));
+  try {
+    const got = S.run(arch, w, [1, 2]).logits;
+    assert.ok(Math.max(...Array.from(got).map((v, i) => Math.abs(v - base[i]))) > 1e-3, '錯的覆寫沒有改變結果');
+  } finally { S.clearOverrides(arch.family); }
+});
+
+check('useOverrides=false：即使註冊了錯的覆寫，也走通用實作（與沒有覆寫時相同）', () => {
+  const arch = tinyArch(), w = tinyWeights();
+  const base = S.run(arch, w, [1, 2]).logits;
+  S.registerOverride(arch.family, 'rmsnorm', (x, wn, eps) => S.rmsnorm(x, wn, eps).map((v) => v * 1.5));
+  try {
+    const got = S.run(arch, w, [1, 2], { useOverrides: false }).logits;
+    close(got, base, 0, 'useOverrides=false');
+  } finally { S.clearOverrides(arch.family); }
+});
+
+check('覆寫槽：沒有這個槽名就丟錯（不會默默註冊到沒人用的地方）', () => {
+  assert.throws(() => S.registerOverride('llama', 'attention', () => {}), /沒有這個覆寫槽/);
+  assert.throws(() => S.registerOverride('llama', 'rope', 'not a function'), /必須是函式/);
+});
+
 console.log('llm_skeleton_test: ' + passes + ' 項通過');
