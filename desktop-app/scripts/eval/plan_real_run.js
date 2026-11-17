@@ -44,6 +44,9 @@ const LOGTEXT = Array.from({ length: 120 }, (_, i) => {
     return t + ' INFO 請求處理完成 200';
 }).join('\n');
 
+// 假的檔案清單（檔案整理用）：有可以認的副檔名，也有看不出類別的
+const FILES = ['2026Q4 產品規劃.pdf', '會議照片.JPG', '展示影片.mp4', '報價單.xlsx', 'config.yaml', '備份.zip', '無副檔名的檔案', '未知格式.dat'];
+
 // ---- 跑一個計畫 ----
 async function runPlan(M, name, o) {
     const self = {
@@ -70,26 +73,27 @@ async function runPlan(M, name, o) {
 (async () => {
     // PLAN_FAKE_MODEL=1：不載入真模型，只回傳來源的開頭（用來先驗證接線，不耗 CPU）
     const M = process.env.PLAN_FAKE_MODEL ? { model: { id: 'fake' }, ensure: async () => null, gen: async (a) => { const u = a.messages.filter((m) => m.role === 'user').pop(); return String(u.content).slice(-60).replace(/\s+/g, ' ').slice(0, 40); } } : await loadModel({ log });
+    // 案例：PLAN_CASES=D,W,L,F 只跑指定的（預設全部）
+    const want = (process.env.PLAN_CASES || 'D,W,L,F').split(',').map((x) => x.trim());
+    const cases = {
+        // D：文件摘要（假的會議紀錄）
+        D: () => runPlan(M, 'D 文件摘要', { goal: 'doc_summary', text: '幫我摘要這份文件的重點', attachments: [{ id: 'doc1234567', filename: 'meeting.txt' }], files: { doc1234567: DOC }, tools: {} }),
+        // W：非新聞的網頁查資料（假搜尋結果＋假網頁）
+        W: () => runPlan(M, 'W 網頁查資料（非新聞）', {
+            goal: 'web_research', query: '台積電 股利政策', text: '上網查 台積電 股利政策 並整理重點',
+            tools: {
+                browser_search: { callback: async () => JSON.stringify({ ok: true, results: [PAGE_URL], text: PAGE_URL }) },
+                fetch_web_page: { callback: async (args) => { const a = JSON.parse(args); return JSON.stringify(a.url === PAGE_URL ? { ok: true, url: a.url, file_id: 'webpage1234567' } : { ok: false, error: '404' }); } },
+            },
+            files: { webpage1234567: PAGE },
+        }),
+        // L：日誌分析（篩選→逐段讀→合併）；假日誌
+        L: () => runPlan(M, 'L 日誌分析', { goal: 'log_summary', text: '看這個 log 有什麼錯誤並分析', attachments: [{ id: 'logfile1234567', filename: 'app.log' }], files: { logfile1234567: LOGTEXT }, tools: {} }),
+        // F：檔案整理（第 0 層程式排計畫、不動檔案；模型逐段說明）；假的檔名清單
+        F: () => runPlan(M, '檔案整理', { goal: 'file_organize', text: '把這些檔案整理到資料夾', attachments: FILES.map((n, i) => ({ id: 'file' + String(i).padStart(8, '0'), filename: n })), tools: {} }),
+    };
     const results = [];
-    // D：文件摘要（假的會議紀錄）
-    results.push(await runPlan(M, 'D 文件摘要', {
-        goal: 'doc_summary', text: '幫我摘要這份文件的重點', attachments: [{ id: 'doc1234567', filename: 'meeting.txt' }], files: { doc1234567: DOC },
-        tools: {},
-    }));
-    // W：非新聞的網頁查資料（假搜尋結果＋假網頁）
-    results.push(await runPlan(M, 'W 網頁查資料（非新聞）', {
-        goal: 'web_research', query: '台積電 股利政策', text: '上網查 台積電 股利政策 並整理重點',
-        tools: {
-            browser_search: { callback: async () => JSON.stringify({ ok: true, results: [PAGE_URL], text: PAGE_URL }) },
-            fetch_web_page: { callback: async (args) => { const a = JSON.parse(args); return JSON.stringify(a.url === PAGE_URL ? { ok: true, url: a.url, file_id: 'webpage1234567' } : { ok: false, error: '404' }); } },
-        },
-        files: { webpage1234567: PAGE },
-    }));
-    // L：日誌分析（篩選→逐段讀→合併）；假日誌，真模型
-    results.push(await runPlan(M, 'L 日誌分析', {
-        goal: 'log_summary', text: '看這個 log 有什麼錯誤並分析', attachments: [{ id: 'logfile1234567', filename: 'app.log' }], files: { logfile1234567: LOGTEXT },
-        tools: {},
-    }));
+    for (const k of want) { if (!cases[k]) throw new Error('沒有案例 ' + k); results.push(await cases[k]()); }
     fs.writeFileSync(OUT, JSON.stringify(results, null, 2));
     for (const r of results) log(r.name + ' → ' + r.state + (r.error ? '（' + r.error + '）' : '') + '\n摘要：' + r.summary);
     log('結果寫入 ' + OUT);

@@ -17762,6 +17762,8 @@ const holder = {};
         { tool: 'summarize_large_text', stage: 'analyze', cost: 2, online: true, in: [{ slot: 'file_id', kinds: ['text', 'transcript'] }], out: [{ kind: 'summary', inline: true }], label: '摘要（線上模型）' },
         { tool: 'local_summarize', local: true, stage: 'analyze', cost: 3, in: [{ slot: 'text', kinds: ['text', 'transcript'], many: true }], out: [{ kind: 'summary', inline: true }], label: '摘要（離線：分段摘要＋檢查）' },
         { tool: 'log_filter', local: true, stage: 'prepare', cost: 1, in: [{ slot: 'text', kinds: ['text'], many: true }], out: [{ kind: 'log_text', inline: true }], label: '篩出錯誤與警告行（程式，第 0 層）' },
+        { tool: 'files_plan', local: true, stage: 'prepare', cost: 1, in: [{ slot: 'file', kinds: ['text', 'doc', 'pdf', 'image', 'video', 'audio', 'file', 'subtitle', 'transcript'], many: true }], out: [{ kind: 'plan_text', inline: true }], label: '依副檔名產生整理計畫（程式，不動檔案）' },
+        { tool: 'files_explain', local: true, stage: 'analyze', cost: 3, in: [{ slot: 'text', kinds: ['plan_text'], many: true }], out: [{ kind: 'summary', inline: true }], label: '逐段讀整理計畫並說明（離線，第 1、2 層）' },
         { tool: 'log_summarize', local: true, stage: 'analyze', cost: 3, in: [{ slot: 'text', kinds: ['log_text'], many: true }], out: [{ kind: 'summary', inline: true }], label: '逐段讀日誌並合併（離線，第 1、2 層）' },
         { tool: 'interpret_image', stage: 'analyze', cost: 2, online: true, in: [{ slot: 'file_id', kinds: ['image'] }], out: [{ kind: 'description', inline: true }], label: '看圖說明' },
         { tool: 'burn_subtitles', stage: 'produce', cost: 4, slow: true, in: [{ slot: 'video', kinds: ['video'] }, { slot: 'subtitle', kinds: ['subtitle'], optional: true }], out: [{ kind: 'subvideo', keys: ['video_file_id', 'file_id'] }], label: '把字幕燒進影片' },
@@ -17787,6 +17789,7 @@ const holder = {};
         { id: 'video_gif', label: '影片轉 GIF', target: 'gif', needs: ['video'], triggers: [/\bgif\b|動圖|動態圖/i] },
         { id: 'web_summary', label: '網頁做摘要', target: 'summary', needs: ['url'], triggers: [/(摘要|重點|總結|整理|在講什麼|在說什麼|內容|summar)/i] },
         { id: 'web_research', label: '上網查資料並整理', target: 'summary', needs: ['query'], triggers: [/(上網|搜尋|查)[^]{0,40}(整理|摘要|重點|總結|研究|彙整)|(整理|摘要|研究|彙整)[^]{0,40}(上網|搜尋|網路上)|research/i] },
+        { id: 'file_organize', label: '整理檔案（依類型分資料夾，先不動檔案）', target: 'summary', needs: ['text', 'doc', 'pdf', 'image', 'video', 'audio', 'file', 'subtitle'], triggers: [/(整理|分類|歸檔|分資料夾|歸類)[^]*(檔案|檔|資料夾|附件)|(檔案|附件)[^]*(整理|分類|歸類|歸檔)/], tools: ['files_plan', 'files_explain'] },
         { id: 'log_summary', label: '分析日誌（篩選→逐段→合併）', target: 'summary', needs: ['text'], triggers: [/(日誌|log|紀錄檔|記錄檔)[^]*(錯誤|警告|異常|摘要|分析|重點|問題|找)|(錯誤|異常|警告)[^]*(日誌|log)/i], tools: ['log_filter', 'log_summarize'] }, // 只能走這兩步：先程式篩選（第 0 層），再逐段讀（第 1、2 層）
         { id: 'doc_summary', label: '文件做摘要', target: 'summary', needs: ['doc', 'pdf', 'text', 'file'], triggers: [/(摘要|重點|總結|整理|summar)/i] },
         { id: 'images_pdf', label: '圖片轉 PDF', target: 'pdf', needs: ['image'], triggers: [/pdf/i] },
@@ -17820,7 +17823,7 @@ const holder = {};
             out.push(g);
         }
         // 有影音附件時，「摘要」類不要被文件摘要搶走：影音目標優先於一般文件目標；有網址時網頁優先
-        const rank = (g) => ({ video_subtitled: 0, video_gif: 0, media_transcript: 1, video_summary: 1, web_summary: 2, web_research: 3, pdf_merge: 2, pdf_pages: 2, images_pdf: 2, speak_summary: 2, uml_code: 1, uml_only: 2, code_program: 3, log_summary: 1, doc_summary: 5 }[g.id] ?? 4);
+        const rank = (g) => ({ video_subtitled: 0, video_gif: 0, media_transcript: 1, video_summary: 1, web_summary: 2, web_research: 3, pdf_merge: 2, pdf_pages: 2, images_pdf: 2, speak_summary: 2, uml_code: 1, uml_only: 2, code_program: 3, log_summary: 1, file_organize: 1, doc_summary: 5 }[g.id] ?? 4);
         out.sort((a, b) => rank(a) - rank(b));
         // 同一目標種類更特定的留下（例如有影片就不要同時留 doc_summary）
         const keepRank = out.length ? rank(out[0]) : 0; const specific = out.filter((g) => rank(g) <= Math.max(keepRank, 2));
@@ -18101,7 +18104,28 @@ const holder = {};
         if (!f.kept.length) return f.header + '\n（沒有錯誤或警告行）';
         return f.header + '\n' + f.kept.join('\n');
     }
-    return { CAPS, GOALS, STAGES, FAILURE_RULES, roundLog, filterLog, digestText, levelOf, kindOfFile, capOf, factsFrom, matchGoals, goalMenu, buildPlan, expand, createRun, stepOf, renderPlan, decideFailure, collectArtifacts, bindInputs, advance, provide, summarizeRun };
+    // 檔案整理的第 0 層（純程式，不動檔案）：依副檔名分到資料夾；看不出類別的放「其他」，並列出來讓人確認
+    const FILE_FOLDERS = [
+        ['圖片', ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'svg', 'heic']],
+        ['影片', ['mp4', 'mkv', 'mov', 'avi', 'webm']],
+        ['音訊', ['mp3', 'wav', 'm4a', 'flac', 'ogg']],
+        ['文件', ['pdf', 'doc', 'docx', 'odt', 'txt', 'md', 'rtf']],
+        ['簡報與試算表', ['ppt', 'pptx', 'xls', 'xlsx', 'csv']],
+        ['程式與設定', ['js', 'ts', 'py', 'java', 'c', 'cpp', 'h', 'go', 'rs', 'json', 'yaml', 'yml', 'xml', 'html']],
+        ['壓縮檔', ['zip', 'rar', '7z', 'tar', 'gz']],
+    ];
+    function organizePlan(names) {
+        const folderOf = (name) => { const m = /\.([a-z0-9]+)$/i.exec(String(name || '')); const ext = m ? m[1].toLowerCase() : ''; const hit = FILE_FOLDERS.find((f) => f[1].includes(ext)); return hit ? hit[0] : '其他'; };
+        const moves = []; const groups = {}; const unknown = [];
+        for (const raw of [].concat(names || [])) {
+            const name = String(raw == null ? '' : raw).trim(); if (!name) continue;
+            const folder = folderOf(name); if (folder === '其他') unknown.push(name);
+            moves.push({ from: name, to: folder + '/' + name }); (groups[folder] = groups[folder] || []).push(name);
+        }
+        const lines = Object.keys(groups).map((f) => f + '（' + groups[f].length + ' 個）：' + groups[f].join('、'));
+        return { moves, groups, unknown, text: '整理計畫：' + moves.length + ' 個檔案，分到 ' + Object.keys(groups).length + ' 個資料夾\n' + lines.join('\n') + (unknown.length ? '\n看不出類別、請你確認：' + unknown.join('、') : '') };
+    }
+    return { CAPS, GOALS, STAGES, FAILURE_RULES, roundLog, filterLog, digestText, levelOf, organizePlan, kindOfFile, capOf, factsFrom, matchGoals, goalMenu, buildPlan, expand, createRun, stepOf, renderPlan, decideFailure, collectArtifacts, bindInputs, advance, provide, summarizeRun };
 });
 
 }).call(null, undefined, holder);
@@ -129857,6 +129881,9 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                 // 日誌（log_summary）：第 0 層程式篩出錯誤與警告行（含堆疊續行）→ 第 1 層逐段讀（模型）→ 第 2 層合併（模型）；每一層都進進度卡片
                 log_filter: async (args) => { const text = await this._planReadText(args.text); const d = FaPlan.digestText(text); if (RL) RL.note('篩選（第 0 層）', '程式', d.split('\n')[0] + '｜留下 ' + Math.max(0, d.split('\n').length - 1) + ' 行'); return { ok: true, text: d }; },
                 log_summarize: async (args) => { const r = await this._planLocalSummarize(args.text, question, M, { noPrepass: true, step: (st, who, text) => { if (RL) RL.note(st, who, text); } }); if (RL) { const j = (r && r.json) || {}; RL.note('摘要', j.method === 'model' || j.merge === 'model' ? '模型' : (j.method === 'mixed' ? '模型＋程式' : '程式（沒經過 AI）'), '逐段讀完，合併：' + (j.merge === 'model' ? '模型' : (j.merge === 'concat' ? '程式串接' : '不需要'))); } return r; },
+                // 檔案整理（file_organize）：第 0 層程式依副檔名排出計畫（不動檔案）→ 第 1、2 層模型逐段說明計畫、標出看不出類別的檔案；真正移動檔案要使用者確認，這裡不做
+                files_plan: async (args, run) => { const names = ((run && run.facts && run.facts.items) || []).filter((i) => i.from === 'attachment').map((i) => i.filename); const p = FaPlan.organizePlan(names); if (RL) RL.note('整理計畫（第 0 層）', '程式（不動檔案）', p.text.split('\n')[0] + '｜看不出類別 ' + p.unknown.length + ' 個'); return { ok: true, text: p.text }; },
+                files_explain: async (args) => { const r = await this._planLocalSummarize(args.text, question, M, { noPrepass: true, step: (st, who, text) => { if (RL) RL.note(st, who, text); } }); if (RL) { const j = (r && r.json) || {}; RL.note('說明', j.method === 'model' || j.merge === 'model' ? '模型' : '程式（沒經過 AI）', '逐段說明完成，合併：' + (j.merge === 'model' ? '模型' : (j.merge === 'concat' ? '程式串接' : '不需要'))); } return r; },
                 local_summarize: async (args) => { const r = await this._planLocalSummarize(args.text, question, M, { step: (st, who, text) => { if (RL) RL.note(st, who, text); } }); if (RL) { const j = (r && r.json) || {}; const n = [].concat(args.text == null ? [] : args.text).join('').length; RL.note('摘要', j.method === 'model' ? '模型' : (j.method === 'mixed' ? '模型＋程式' : '程式（沒經過 AI）'), '輸入 ' + (j.chars != null ? j.chars : n) + ' 字，' + (j.chunks || 0) + ' 段' + (j.rejects && j.rejects.length ? '，退回：' + j.rejects[0].reason + '，模型原文「' + String(j.rejects[0].raw || '').replace(/\s+/g, ' ').slice(0, 60) + '」' : '') + '｜答「' + String((r && r.text) || '').replace(/\s+/g, ' ').slice(0, 40) + '」'); } return r; },
                 local_uml_design: async (args) => { const sc = [].concat(args.scenario || question).join('\n'); const lang = /typescript|\bts\b/i.test(sc) ? 'typescript' : (/java(?!script)/i.test(sc) ? 'java' : 'python'); const r = await FaDesign.designProject(sc, { generate: M.gen, language: lang, prefs: this.advancedSettings.designPrefs || {}, glossary: this.advancedSettings.umlGlossary || {}, rework: true }); if (!r.ok) return { ok: false, text: r.error || '設計失敗' }; this._umlPlanDesign = { dsl: r.dsl, design: r.design, warnings: r.warnings, scenario: sc }; return { ok: true, text: r.dsl, json: { text: r.dsl, warnings: r.warnings } }; },
                 // 寫程式（第一階段）：本機函式。失敗一律回 ok:false（交給 CoLU 決策樹處理），不假裝成功；成功才把程式碼當成品
