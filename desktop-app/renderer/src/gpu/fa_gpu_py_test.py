@@ -1217,6 +1217,14 @@ def t_stream_event_timing_and_sync():
     _async_reset()
 
 
+def t_example_async_overlap_runs_and_matches():
+    _async_reset()
+    out, err = run_example("async_overlap.py")
+    assert "結果一致：True" in out, out + err
+    assert "CPU 結果一致：True" in out, out + err
+    _async_reset()
+
+
 def t_synchronize_without_outstanding_does_not_touch_host():
     _async_reset()
 
