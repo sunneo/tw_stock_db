@@ -1,0 +1,92 @@
+<!doctype html><meta charset="utf-8"><title>O8 train check</title>
+<body style="font:13px monospace;white-space:pre-wrap;max-width:980px;margin:12px">
+<div style="background:#fff3cd;padding:8px;border:1px solid #d6b656">
+狀態：<b>待驗證（真 Chrome 尚未跑）</b>。node 假裝置已通過（renderer/src/gpu/train_step_test.js）。
+這一頁要在真 WebGPU 上確認：整步一次提交的數值與 CPU f64 的差、每步時間（標硬體）。
+用法（在 desktop-app 資料夾）：
+  python -X utf8 -m http.server 8765 --bind 127.0.0.1
+  開 http://127.0.0.1:8765/scripts/eval/o8_train_check.html
+  按「跑 1 步」（先跑這個）；確認沒問題再按「跑 20 步」（每步之間會讓出主執行緒，避免凍結）。
+結果在 window.__out；把整段文字貼回即可。沒有 WebGPU 或裝置失敗時，頁面會照實寫原因。
+</div>
+<p><button id="b1">跑 1 步</button> <button id="b20">跑 20 步</button> <span id="st"></span></p>
+<pre id="log"></pre>
+<script>
+// O8 真 Chrome 驗證頁：整步一次提交（train_step_device.js）對 CPU f64（lora_ref_train.js 的同步路徑）。
+// 以 fetch 載入模組（與 mm_tile_check.html 相同的做法）；不在頁面上碰 floating-assistant 或 kernel 選擇器。
+const mods = {};
+const loadMod = async (key, url) => {
+  const src = await (await fetch(url, { cache: 'no-store' })).text();
+  const m = { exports: {} }; mods[key] = m;
+  const req = (p) => { const k = p.replace(/^\.\//, '').replace(/\.js$/, ''); if (!mods[k]) throw new Error('模組未載入：' + p); return mods[k].exports; };
+  new Function('module', 'exports', 'require', src)(m, m.exports, req);
+};
+const logEl = document.getElementById('log'), stEl = document.getElementById('st');
+const say = (s) => { logEl.textContent += s + '\n'; };
+const yieldNow = () => new Promise((r) => setTimeout(r, 0));
+const maxAbsDiff = (a, b) => { let d = 0; for (let i = 0; i < a.length; i++) d = Math.max(d, Math.abs(a[i] - b[i])); return d; };
+const maxAbs = (a) => { let d = 0; for (let i = 0; i < a.length; i++) d = Math.max(d, Math.abs(a[i])); return d; };
+const cfg = { V: 16, d: 8, L: 2, H: 2, F: 12, r: 2, alpha: 4 };
+const seqs = [[1, 4, 9, 2, 7, 3, 12, 5, 8, 14], [6, 0, 11, 14, 2, 9, 4, 13, 10, 3]];
+const LRATE = 1e-2;
+const out = { status: 'unverified-pending-real-chrome', steps: [], error: null, adapter: null };
+window.__out = out;
+
+function seeded(n, seed, scale) {
+  let s = seed >>> 0 || 1; const o = new Float64Array(n);
+  for (let i = 0; i < n; i++) { s ^= s << 13; s >>>= 0; s ^= s >>> 17; s ^= s << 5; s >>>= 0; o[i] = (((s % 2001) - 1000) / 1000) * scale; }
+  return o;
+}
+function paramsOf(m) { const o = []; for (const lo of m.lora) for (const k of ['q', 'k', 'v', 'o']) for (const w of ['A', 'B']) o.push(lo[k][w]); return o; }
+
+async function cpuStep(LR, m, st) {
+  const rs = [];
+  for (const tk of seqs) { rs.push(await LR.lossAndGradsAsync(m, tk, { backend: LR.cpuMatmulBackend(), ops: LR.cpuNnOps() })); await yieldNow(); }
+  const loss = (rs[0].loss + rs[1].loss) / 2;
+  const avg = rs[0].grads.map((_, l) => { const o = {}; for (const k of ['q', 'k', 'v', 'o']) { o[k] = {}; for (const w of ['A', 'B']) { const n = rs[0].grads[l][k][w].length, a = new Float64Array(n); for (const r of rs) for (let i = 0; i < n; i++) a[i] += r.grads[l][k][w][i] / rs.length; o[k][w] = a; } } return o; });
+  await mods.lora_ref_train.exports.adamStepAsync(m, avg, st, LRATE, LR.cpuNnOps());
+  return loss;
+}
+
+async function run(nSteps) {
+  const NN = mods.nn_ops.exports, TS = mods.train_step_device.exports, LR = mods.lora_ref_train.exports;
+  const g = await NN.getDevice(navigator);
+  if (!g.dev) { out.error = '沒有 WebGPU 裝置：' + g.reason; say(out.error); return; }
+  const dev = g.dev;
+  out.adapter = { features: Array.from(dev.features || []) };
+  say('裝置功能：' + JSON.stringify(out.adapter.features));
+  const subsBox = { n: 0 }; const orig = dev.queue.submit.bind(dev.queue);
+  dev.queue.submit = (c) => { subsBox.n++; return orig(c); };
+  const mC = LR.makeModel(cfg, 9), stC = LR.adamInit(mC);
+  const mD = LR.makeModel(cfg, 9), stD = LR.adamInit(mD);
+  for (let step = 0; step < nSteps; step++) {
+    const lc = await cpuStep(LR, mC, stC);
+    subsBox.n = 0;
+    const t0 = performance.now();
+    const R = await TS.trainStepDevice({ nn: NN, device: dev, model: mD, seqs, st: stD, lr: LRATE });
+    const dt = performance.now() - t0;
+    const pc = paramsOf(mC), pd = paramsOf(mD); let dp = 0, sp = 0;
+    for (let i = 0; i < pc.length; i++) { dp = Math.max(dp, maxAbsDiff(pc[i], pd[i])); sp = Math.max(sp, maxAbs(pc[i])); }
+    const rec = { step: step + 1, lossF64: lc, lossDevice: R.loss, lossRelDiff: Math.abs(R.loss - lc) / Math.abs(lc), paramMaxAbsDiff: dp, paramScale: sp, submits: subsBox.n, deviceMs: dt };
+    out.steps.push(rec);
+    say('第 ' + rec.step + ' 步：loss f64 ' + lc.toFixed(6) + '，裝置 ' + R.loss.toFixed(6) + '，相對差 ' + rec.lossRelDiff.toExponential(2) + '，參數最大絕對差 ' + dp.toExponential(2) + '，提交次數 ' + subsBox.n + '（應為 1），整步 ' + dt.toFixed(1) + ' ms');
+    stEl.textContent = '完成第 ' + rec.step + ' 步';
+    await yieldNow();
+  }
+  dev.queue.submit = orig;
+  out.worstLossRelDiff = Math.max(...out.steps.map((s) => s.lossRelDiff));
+  out.allSingleSubmit = out.steps.every((s) => s.submits === 1);
+  say('完成。最差 loss 相對差 ' + out.worstLossRelDiff.toExponential(3) + '；每步單次提交：' + out.allSingleSubmit + '。硬體請另外標註（本機 Kepler 14 W Intel iGPU）。');
+}
+
+(async () => {
+  try {
+    for (const [k, u] of [['gpu_pool', '../../renderer/src/gpu/gpu_pool.js'], ['kernel_gen', '../../renderer/src/gpu/kernel_gen.js'], ['gpu_core', '../../renderer/src/gpu/gpu_core.js'], ['nn_ops', '../../renderer/src/gpu/nn_ops.js'], ['train_fused', '../../renderer/src/gpu/train_fused.js'], ['train_step_device', '../../renderer/src/gpu/train_step_device.js'], ['lora_ref_train', '../../renderer/src/studio/lora_ref_train.js']]) await loadMod(k, u);
+    out.loaded = true;
+    const runBtn = async (n) => { document.getElementById('b1').disabled = true; document.getElementById('b20').disabled = true; try { await run(n); } catch (e) { out.error = String((e && e.message) || e); say('錯誤：' + out.error); } finally { document.getElementById('b1').disabled = false; document.getElementById('b20').disabled = false; } };
+    document.getElementById('b1').onclick = () => runBtn(1);
+    document.getElementById('b20').onclick = () => runBtn(20);
+    say('模組已載入。按按鈕開始。');
+  } catch (e) { out.error = String((e && e.message) || e); say('載入失敗：' + out.error); }
+})();
+</script>

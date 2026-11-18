@@ -134,6 +134,33 @@ function fakeNavigator(opts) {
       // 綁定順序：0 x、1 y、2 uniform（T、H、hd 皆為 u32，dir 為 f32 位於位元組 12）
       const T = u32(e[2])[0], H = u32(e[2])[1], hd = u32(e[2])[2], dir = new Float32Array(e[2].data, 12, 1)[0];
       f32(e[1], T * H * hd).set(NN.ropeRef(f32(e[0], T * H * hd), T, H, hd, dir));
+    } else if (k === 'attn_fwd') {
+      // O8 整步：綁定 0 q、1 k、2 v、3 ao(寫)、4 pm(寫，H·T·T)、5 uniform（T、H、hd 為 u32，sc 為 f32 位於位元組 12）
+      const TS = require('./train_step_device.js');
+      const T = u32(e[5])[0], H = u32(e[5])[1], hd = u32(e[5])[2], n = T * H * hd;
+      const r = TS.attnFwdRef(f32(e[0], n), f32(e[1], n), f32(e[2], n), T, H, hd);
+      f32(e[3], n).set(r.ao); f32(e[4], H * T * T).set(r.pm);
+    } else if (k === 'attn_bwd_kv' || k === 'attn_bwd_q') {
+      // 綁定 kv：0 q、1 k、2 v、3 dao、4 pm、5 ao、6 dk(寫)、7 dv(寫)、8 uniform；q：0 k、1 v、2 dao、3 pm、4 ao、5 dq(寫)、6 uniform
+      const TS = require('./train_step_device.js');
+      const ui = k === 'attn_bwd_kv' ? 8 : 6, T = u32(e[ui])[0], H = u32(e[ui])[1], hd = u32(e[ui])[2], n = T * H * hd;
+      if (k === 'attn_bwd_kv') {
+        const r = TS.attnBwdRef(f32(e[3], n), f32(e[0], n), f32(e[1], n), f32(e[2], n), f32(e[4], H * T * T), T, H, hd);
+        f32(e[6], n).set(r.dk); f32(e[7], n).set(r.dv);
+      } else {
+        const r = TS.attnBwdRef(f32(e[2], n), f32(e[0], n), f32(e[0], n), f32(e[1], n), f32(e[3], H * T * T), T, H, hd);
+        f32(e[5], n).set(r.dq);
+      }
+    } else if (k === 'rms_bwd') {
+      // 綁定 0 dy、1 x、2 g、3 dx(寫)、4 uniform（T、d 為 u32，eps 為 f32 位於位元組 8）
+      const TS = require('./train_step_device.js');
+      const T = u32(e[4])[0], dd = u32(e[4])[1], eps = new Float32Array(e[4].data, 8, 1)[0];
+      f32(e[3], T * dd).set(TS.rmsBwdRef(f32(e[0], T * dd), f32(e[1], T * dd), f32(e[2], dd), T, dd, eps));
+    } else if (k === 'mlp_bwd') {
+      // 綁定 0 da、1 g、2 u、3 dg(寫)、4 du(寫)、5 uniform（n 為 u32）
+      const TS = require('./train_step_device.js');
+      const n = u32(e[5])[0], r = TS.mlpBwdRef(f32(e[0], n), f32(e[1], n), f32(e[2], n));
+      f32(e[3], n).set(r.dg); f32(e[4], n).set(r.du);
     } else if (k === 'axpy_batch' || k === 'mul_batch' || k === 'scal_batch') {
       // O8 批次逐元素：axpy 綁定 (xa, xb, yo, uniform{n,s})；mul 同；scal 綁定 (xa, yo, uniform)。全部 f32、與 WGSL 同一運算順序（一次乘、一次加）
       const n = u32(k === 'scal_batch' ? e[2] : e[3])[0];
