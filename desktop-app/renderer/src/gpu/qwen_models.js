@@ -15,9 +15,33 @@
     'qwen3-1.7b': { id: 'qwen3-1.7b', dir: 'qwen3-1.7b-q8', repo: 'onnx-community/Qwen3-1.7B-ONNX', label: 'Qwen3 1.7B', family: 'qwen3', downloadHere: true, partBytes: 16 * MiB,
       file: { rel: 'onnx/model_quantized.onnx', bytes: 1742387852, sha256: '202ed81928b7f34c31505b46479c310e131fec307a045eab2537e7c494feb427' }, tokenizer: TOK, slowdown: 2.5, lora: false, q4: { rel: 'onnx/model_q4f16.onnx', bytes: 1426069098 }, shape: { D: 2048, H: 16, Hkv: 8, I: 6144, L: 28, V: 151936 } },
   };
+  // 模型族＋模型清單（O12d）。MODELS 仍只放 Qwen3（它是 GPU 解碼的既有路徑，get／getQ4 的行為不變）；
+  // 其他族的模型放在 EXTRA_MODELS：可以列出、判斷族、算大小，但 get() 不回它們，所以既有的 Qwen GPU 判斷（_qwenGpuModelOk 等）不會誤認。
+  const LLAMA_TOK = { rel: 'tokenizer.json', bytes: 11574638, sha256: '3a223ade375cc1d13b04e897ce1d36a04f50140e1ba3d107021ea68d4b5e614c' };
+  const EXTRA_MODELS = {
+    'llama-3.2-1b': { id: 'llama-3.2-1b', dir: 'llama-3.2-1b-q8', repo: 'onnx-community/Llama-3.2-1B-Instruct-ONNX', label: 'Llama 3.2 1B', family: 'llama', downloadHere: true, partBytes: 16 * MiB,
+      file: { rel: 'onnx/model_quantized.onnx', bytes: 1236653951, sha256: 'ad53ed44994c27ab60e8024e83fcd83ce38db4d4ad3a28549b432480eb84d180' }, tokenizer: LLAMA_TOK,
+      verifiedSha: false,   // 大小與 sha256 來自 Hugging Face 的 LFS 標頭（2026-11-18），尚未下載核對；下載完成時 download() 會核對並寫進 manifest
+      shape: { D: 2048, H: 32, Hkv: 8, I: 8192, L: 16, V: 128256, hd: 64 },
+      note: '只在模型清單：Qwen GPU 路徑不認得它（get() 不回它）；通用骨架的 GPU 路徑尚未接上 app，所以 app 目前仍走 ONNX' },
+  };
+  const FAMILY_MODELS = { qwen3: ['qwen3-0.6b', 'qwen3-1.7b'], llama: ['llama-3.2-1b'] };
   const get = (id) => MODELS[id] || null;
+  const modelOf = (id) => MODELS[id] || EXTRA_MODELS[id] || null;   // 所有族的模型（不含只給 GPU 判斷用的資訊）
+  const familyModels = (fam) => (FAMILY_MODELS[fam] || []).map((id) => modelOf(id)).filter(Boolean);
   const getQ4 = (id) => (MODELS[id] && MODELS[id].q4 ? MODELS[id] : null);   // 有 q4f16 檔（transformers.js 預設的 GPU 格式）的模型
-  const isFamily = (id) => !!MODELS[id] || /^qwen3-/.test(String(id || ''));
+  // 載入描述表（llm_arch.js）：node 用 require；瀏覽器用 self.FaLlmArch。找不到就回 null，改用舊的 qwen3 判斷（不讓載入失敗）。
+  function archMod() {
+    try { if (typeof require === 'function') return require('./llm_arch.js'); } catch (_) { /* 嵌入的模組載入器可能沒有這個檔 */ }
+    try { return (typeof self !== 'undefined' && self.FaLlmArch) || null; } catch (_) { return null; }
+  }
+  // 依描述表判斷：模型表有的，或描述表（supported）認得的族。
+  const isFamily = (id) => {
+    if (MODELS[id] || EXTRA_MODELS[id]) return true;
+    const A = archMod();
+    if (A && typeof A.familyFor === 'function') return !!A.familyFor(id);
+    return /^qwen3-/.test(String(id || ''));
+  };
   const urlOf = (m, rel) => 'https://huggingface.co/' + m.repo + '/resolve/main/' + rel;
   const pad = (i) => String(i).padStart(5, '0');
   const nParts = (m) => Math.ceil(m.file.bytes / m.partBytes);
@@ -99,7 +123,7 @@
 
   // 只有形狀、沒有權重內容的 W（長度正確），給 estimateEngineBytes／planLayers 在不載入模型時估算用（介面顯示「需要多少、放不放得下」）
   function shapeW(shape, fmt) {
-    const q4 = fmt === 'q4', hd = 128, mk = (K, N) => (q4 ? { W: { length: N * (K / 32) * 16 }, S: { length: N * (K / 32) * 2 }, K, N } : { W: { length: K * N } }), { D, H, Hkv, I, L, V } = shape;
+    const q4 = fmt === 'q4', hd = shape.hd || 128, mk = (K, N) => (q4 ? { W: { length: N * (K / 32) * 16 }, S: { length: N * (K / 32) * 2 }, K, N } : { W: { length: K * N } }), { D, H, Hkv, I, L, V } = shape;
     return { fmt: q4 ? 'q4' : undefined, D, H, Hkv, hd, I, V, L, finalNorm: { byteLength: D * 4 }, emb: { W: { length: V * D * (q4 ? 2 : 1) } }, layers: Array.from({ length: L }, () => ({ q: mk(D, H * hd), k: mk(D, Hkv * hd), v: mk(D, Hkv * hd), o: mk(H * hd, D), g: mk(D, I), u: mk(D, I), d: mk(I, D), inNorm: { byteLength: D * 4 }, postNorm: { byteLength: D * 4 } })) };
   }
   const CFGS = [{ maxT: 2048, maxM: 256 }, { maxT: 1024, maxM: 128 }, { maxT: 512, maxM: 64 }];
@@ -117,5 +141,5 @@
     if (r.mode === 'streamed') return { mode: 'streamed', resident: r.plan.resident, text: m.label + tag + '：全部放進 GPU 約需 ' + mb(fullNeed) + '，上限 ' + mb(budgetBytes) + ' → 分層（常駐 ' + r.plan.resident + '／' + W.L + ' 層，其餘每步串流，較慢；序列上限 ' + r.cfg.maxT + '）' };
     return { mode: 'none', text: m.label + tag + '：全部約需 ' + mb(fullNeed) + '，最小分層配置也要 ' + mb(r.plan.need.total) + '，上限 ' + mb(budgetBytes) + ' → 放不下（GPU 解碼不用，改走其他路徑）' };
   }
-  return { shapeW, choosePlan, describe, MODELS, get, getQ4, isFamily, paths, status, download, readBytes, remove, urlOf, nParts, partLen, fmt, TOK };
+  return { shapeW, choosePlan, describe, MODELS, EXTRA_MODELS, FAMILY_MODELS, get, modelOf, familyModels, getQ4, isFamily, paths, status, download, readBytes, remove, urlOf, nParts, partLen, fmt, TOK };
 });
