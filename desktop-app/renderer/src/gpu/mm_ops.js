@@ -162,8 +162,39 @@ async function run(kind, a, aDims, b, bDims, azp, bzp, ops) {
 // 只在單一批次、不轉置 A、f32、Float32Array 輸入時分工；任何一邊出錯也退回原路徑（整個運算重算一次，結果仍正確）。
 let CPU_SHARE = null;
 try { CPU_SHARE = require('./cpu_share.js'); } catch (_) { CPU_SHARE = null; }
+// 整個運算卸載給 CPU（小形狀）：卸載交界點來自 Profile 的實測（faProfilePlan 的 crossoverFlops，存在 localStorage fa_gpu_profile）。
+// 沒有實測值（null）就不卸載，維持原本的 GPU 路徑；不寫死任何門檻。
+let OFFLOAD = null;
+try { OFFLOAD = require('./cpu_gemm_offload.js'); } catch (_) { OFFLOAD = null; }
+let OFFLOAD_CROSSOVER = undefined;   // undefined＝還沒讀；null＝沒有實測；數字＝實測交界點（flops）
+function setOffloadCrossover(v) { OFFLOAD_CROSSOVER = (v === null || v === undefined || !Number.isFinite(Number(v))) ? (v === Infinity ? Infinity : null) : Number(v); }
+function crossoverNow() {
+  if (OFFLOAD_CROSSOVER !== undefined) return OFFLOAD_CROSSOVER;
+  try {
+    if (typeof localStorage !== 'undefined') {
+      const rec = JSON.parse(localStorage.getItem('fa_gpu_profile') || 'null');
+      const x = rec && rec.crossoverFlops;
+      OFFLOAD_CROSSOVER = rec && rec.crossoverAllCpu ? Infinity : (x === null || x === undefined ? null : Number(x));
+      return OFFLOAD_CROSSOVER;
+    }
+  } catch (_) { /* 讀不到就當沒有實測 */ }
+  OFFLOAD_CROSSOVER = null;
+  return null;
+}
 const matmul = async (a, aD, b, bD, ops) => {
   const o = ops || {};
+  if (OFFLOAD && CPU_SHARE && o.gpu !== false && !o.transA && a instanceof Float32Array && b instanceof Float32Array) {
+    const p0 = plan(aD, bD);
+    if (p0.B === 1 && p0.Bb === 1) {
+      const dec = OFFLOAD.offloadDecision({ m: p0.M, k: p0.K, n: p0.N, gpuReady: true, crossoverFlops: crossoverNow() });
+      if (dec.route === 'cpu') {
+        const rr = await CPU_SHARE.getShared().runCpuOnly(a, b, p0.M, p0.K, p0.N, { transB: !!o.transB, bKey: o.cacheB ? b : null });
+        o.lastInfo = { layer: 'cpu-simd', reason: dec.reason, share: rr.info };
+        o.lastKernel = 'offload-cpu';
+        return { y: rr.y, dims: p0.dims };
+      }
+    }
+  }
   const sh = CPU_SHARE && !o._noShare && o.gpu !== false && !o.transA ? CPU_SHARE.getShared() : null;
   if (sh && sh.cores() > 0 && a instanceof Float32Array && b instanceof Float32Array) {
     const pl = plan(aD, bD);
@@ -173,7 +204,7 @@ const matmul = async (a, aD, b, bD, ops) => {
         const io = Object.assign({}, o, { _noShare: true });
         const g = await run('f32', aRows, [mG, pl.K], b, bD, 0, 0, io);
         gpuInfo = io.lastInfo; return g.y;
-      }, a, b, pl.M, pl.K, pl.N, { transB: !!o.transB, bKey: o.cacheB ? b : null });
+      }, a, b, pl.M, pl.K, pl.N, { transB: !!o.transB, bKey: o.cacheB ? b : null, cpuSegment: o.cpuSegment });
       if (r.shared) { o.lastInfo = { layer: ((gpuInfo && gpuInfo.layer) || 'T1') + '+cpu', reason: null, share: r.info }; o.lastKernel = 'hetero'; return { y: r.y, dims: pl.dims }; }
     }
   }
@@ -573,4 +604,4 @@ async function startMatmulRaceInner(shapes, o) {
   return out;
 }
 
-module.exports = { rerunMatmul, getMatmulTuneContext, matmulRef, matmul, matmulIntRef, matmulInt, WGSL_MM_F32, WGSL_MM_F32_TILED, WGSL_MM_F32_VEC4, WGSL_MM_I32, plan, pickMatmulKernel, setMatmulCaps, getMatmulCaps: () => CAPS, setMatmulWinners, raceMatmul, initMatmulTuning, startMatmulRace, calibrateSimple, gateCandidates, estimateMs, flopsOf, SAFE_DISPATCH_MS, REL_SPEED, AUTO_SHAPES, TUNE, measureRoofline, pickBatch, compileFromSamples, pickRooflineIters, gflopsFrom, peakFromEntries, CORE_SAMPLE_MS, ROOF_TARGET_MS, ROOF_ABORT_MS, ROOF_MAX_ITERS, rooflineCalibrate, splitRuns, CORE_SPLIT_MS };
+module.exports = { setOffloadCrossover, rerunMatmul, getMatmulTuneContext, matmulRef, matmul, matmulIntRef, matmulInt, WGSL_MM_F32, WGSL_MM_F32_TILED, WGSL_MM_F32_VEC4, WGSL_MM_I32, plan, pickMatmulKernel, setMatmulCaps, getMatmulCaps: () => CAPS, setMatmulWinners, raceMatmul, initMatmulTuning, startMatmulRace, calibrateSimple, gateCandidates, estimateMs, flopsOf, SAFE_DISPATCH_MS, REL_SPEED, AUTO_SHAPES, TUNE, measureRoofline, pickBatch, compileFromSamples, pickRooflineIters, gflopsFrom, peakFromEntries, CORE_SAMPLE_MS, ROOF_TARGET_MS, ROOF_ABORT_MS, ROOF_MAX_ITERS, rooflineCalibrate, splitRuns, CORE_SPLIT_MS };

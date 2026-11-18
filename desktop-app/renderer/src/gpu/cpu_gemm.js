@@ -4,7 +4,8 @@
 // 介面：gemmPacked(A, B, m, k, n, opts)；opts 可以是布林（視為 transB）或 {transA, transB, MC, KC, NC}。
 // 邏輯 shape：A 是 m×k、B 是 k×n、C 是 m×n。transA：A 以 k×m 儲存；transB：B 以 n×k 儲存。
 const MR = 4, NR = 8;
-const DEF_MC = 96, DEF_KC = 256, DEF_NC = 512;
+// KC=64：f32 微核心在每個 KC 區塊內累加，區塊越長誤差越大（K=512 時 KC=256 誤差 1.26e-5，超過 1e-5；KC=64 為 6.5e-6）。
+const DEF_MC = 96, DEF_KC = 64, DEF_NC = 512;
 
 function gemmPacked(A, B, m, k, n, opts) {
   const o = typeof opts === 'boolean' ? { transB: opts } : (opts || {});
@@ -116,8 +117,8 @@ function gemmPackedSimd(A, B, m, k, n, opts) {
   const o = typeof opts === 'boolean' ? { transB: opts } : (opts || {});
   const transA = !!o.transA, transB = !!o.transB;
   const MC = o.MC || DEF_MC, KC = o.KC || DEF_KC, NC = o.NC || DEF_NC;
-  const C = new Float32Array(m * n);
-  if (m === 0 || n === 0 || k === 0) return C;
+  const Cacc = new Float64Array(m * n);   // 跨區塊累加用 f64（每個 KC 區塊的部分和只在 f32 內算一次，不逐區塊捨入到 f32）
+  if (m === 0 || n === 0 || k === 0) return new Float32Array(m * n);
   const apBytes = Math.ceil(MC / MR) * MR * KC * 4;
   const bpBytes = Math.ceil(NC / NR) * NR * KC * 4;
   const outOff = apBytes + bpBytes;
@@ -160,7 +161,7 @@ function gemmPackedSimd(A, B, m, k, n, opts) {
             const aOff = (ir / MR) * MR * kc * 4;
             mk(kc, aOff, bOff, outOff);
             const cBase = (ic + ir) * n + (jc + jr);
-            for (let i = 0; i < mr; i++) for (let j = 0; j < nr; j++) C[cBase + i * n + j] += out[i * NR + j];
+            for (let i = 0; i < mr; i++) for (let j = 0; j < nr; j++) Cacc[cBase + i * n + j] += out[i * NR + j];
           }
         }
         if (T) T.computeMs = (T.computeMs || 0) + (now() - tc);
@@ -168,7 +169,7 @@ function gemmPackedSimd(A, B, m, k, n, opts) {
     }
   }
   if (T) T.calls = (T.calls || 0) + 1;
-  return C;
+  return Float32Array.from(Cacc);
 }
 
 // 每個 B 物件一份打包快取（WeakMap，B 被回收就一起回收）；鍵含轉置與尺寸與分塊參數，任一不同就是另一份。

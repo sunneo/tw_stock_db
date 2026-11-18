@@ -4,13 +4,13 @@
 // 微核心大小目前固定為 4×8（SIMD 微核心只組了這一種），所以競賽不含微核心大小——這點在文件中如實標註。
 // 所有函式都是純函式或注入依賴，方便測試；實際的計時由呼叫端傳入 timeFn。
 
-const DEFAULT_ID = 'simd-96-256-512';
+const DEFAULT_ID = 'simd-96-64-512';
 const MIN_GAIN = 0.05;     // 相對預設快不到 5% 視為沒有好處（量測雜訊範圍）
 const STORE_NAME = 'gemm-variants';
 
 // 候選變體：SIMD 四種分塊 + 純 JS 預設（共 5 個）
 function candidateVariants() {
-  const simd = [[48, 128, 256], [96, 256, 512], [192, 256, 512], [96, 384, 512]]
+  const simd = [[48, 64, 256], [96, 64, 512], [192, 64, 512], [96, 64, 256]]
     .map(([MC, KC, NC]) => ({ id: `simd-${MC}-${KC}-${NC}`, kernel: 'simd', MC, KC, NC }));
   const js = [{ id: 'js-96-256-512', kernel: 'js', MC: 96, KC: 256, NC: 512 }];
   return simd.concat(js);

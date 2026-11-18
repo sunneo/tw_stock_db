@@ -93,7 +93,7 @@ function gemmParallelNode(A, B, m, k, n, opts, workerCount) {
   const { Worker } = require('worker_threads');
   const W = require('./cpu_gemm_wasm.js');
   const o = opts || {};
-  const MC = o.MC || 96, KC = o.KC || 256, NC = o.NC || 512;
+  const MC = o.MC || 96, KC = o.KC || 64, NC = o.NC || 512;
   const transA = !!o.transA, transB = !!o.transB;
   const wasmBytes = W.buildModule();
   const useSab = typeof SharedArrayBuffer === 'function';
@@ -154,7 +154,7 @@ parentPort.on('message', (d) => {
     shared: useSab,
     run(A, B, m, k, n, opts) {
       const o = opts || {};
-      const MC = o.MC || 96, KC = o.KC || 256, NC = o.NC || 512;
+      const MC = o.MC || 96, KC = o.KC || 64, NC = o.NC || 512;
       const transA = !!o.transA, transB = !!o.transB;
       const wasmBytes = require('./cpu_gemm_wasm.js').buildModule();
       const parts = splitRowsAligned(m, ws.length);

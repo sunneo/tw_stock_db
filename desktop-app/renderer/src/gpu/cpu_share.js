@@ -84,7 +84,7 @@ self.onmessage = (ev) => {
     if (d.bKey != null) { if (B) { CACHE.set(d.bKey, B); if (CACHE.size > 4) CACHE.delete(CACHE.keys().next().value); } else B = CACHE.get(d.bKey); }
     if (!B) { self.postMessage({ id: d.id, miss: true }); return; }
     const C = d.wasm
-      ? gemmRowsSimdKernel(d.A, B, d.m, d.k, d.n, false, !!d.transB, 0, d.m, d.wasm, 96, 256, 512, null)
+      ? gemmRowsSimdKernel(d.A, B, d.m, d.k, d.n, false, !!d.transB, 0, d.m, d.wasm, 96, 64, 512, null)
       : cpuRowsRef(d.A, B, d.m, d.k, d.n, d.transB);
     self.postMessage({ id: d.id, C }, [C.buffer]);
   } catch (e) { self.postMessage({ id: d.id, error: String((e && e.message) || e) }); }
@@ -142,7 +142,7 @@ function createCpuShare(o) {
   });
   async function cpuExec(a) {
     const rows = a.m - a.mG;
-    if (rows > 0 && cpuPathFor({ m: rows, k: a.k, n: a.n, workers: a.nW, minFlops: minWorkerFlops }).path === 'main') {
+    if (rows > 0 && !a.forceWorker && cpuPathFor({ m: rows, k: a.k, n: a.n, workers: a.nW, minFlops: minWorkerFlops }).path === 'main') {
       return [timedKernel(a.A.slice(a.mG * a.k, a.m * a.k), a.B, rows, a.k, a.n, !!a.transB, { cacheB: a.bId != null })];
     }
     const parts = [];
@@ -233,7 +233,8 @@ function createCpuShare(o) {
     let gpuSyncMs = 0;
     const timedGpu = (Asub, mGv) => { const s1 = now(); const rr = gpuFn(Asub, mGv); gpuSyncMs = now() - s1; return rr; };
     const hG = queue.submit({ device: 'gpu', name: 'matmul' }, { fn: timedGpu, A: A.subarray(0, mG * k), mG }, sG);
-    const hC = queue.submit({ device: 'cpu', name: 'rows' }, { A, B, m, k, n, transB: !!r.transB, bId, mG, nW, per }, sC);
+    // cpuSegment: 'worker' 強制 CPU 段走工作者（不占主執行緒）；預設 'auto' 依門檻決定
+    const hC = queue.submit({ device: 'cpu', name: 'rows' }, { A, B, m, k, n, transB: !!r.transB, bId, mG, nW, per, forceWorker: r.cpuSegment === 'worker' }, sC);
     const pG = queue.wait(hG).then((v) => { gpuMs = now() - t0; return v; });
     const pC = queue.wait(hC).then((v) => { cpuMs = now() - t0; return v; });
     const settled = await Promise.all([pG, pC].map((p) => p.then((v) => ({ ok: true, v }), (e) => ({ ok: false, e }))));

@@ -13,30 +13,30 @@ console.log('ok 候選變體 5 個，含預設');
 
 // 2. 勝者需快於預設超過 5%
 {
-  const times = { [RACE.DEFAULT_ID]: 100, 'simd-48-128-256': 80, 'simd-192-256-512': 99, 'simd-96-384-512': 99, 'js-96-256-512': 4000 };
+  const times = { [RACE.DEFAULT_ID]: 100, 'simd-48-64-256': 80, 'simd-192-64-512': 99, 'simd-96-64-256': 99, 'js-96-256-512': 4000 };
   const r = RACE.raceVariants(V, (v) => times[v.id], 1e9, 2);
-  assert.strictEqual(r.winnerId, 'simd-48-128-256');
-  assert.strictEqual(r.rows.find((x) => x.id === 'simd-48-128-256').verdict, '勝者');
-  assert.strictEqual(r.rows.find((x) => x.id === 'simd-192-256-512').verdict, '沒有好處');
+  assert.strictEqual(r.winnerId, 'simd-48-64-256');
+  assert.strictEqual(r.rows.find((x) => x.id === 'simd-48-64-256').verdict, '勝者');
+  assert.strictEqual(r.rows.find((x) => x.id === 'simd-192-64-512').verdict, '沒有好處');
   assert.strictEqual(r.rows.find((x) => x.id === 'js-96-256-512').verdict, '沒有好處');
   console.log('ok 勝者需快於預設 5% 以上（80 vs 100 勝；99 vs 100 不算好處）');
 }
 
 // 3. 差距在 5% 以內：維持預設，即使有變體略快（不換）
 {
-  const times = { [RACE.DEFAULT_ID]: 100, 'simd-48-128-256': 98, 'simd-192-256-512': 99, 'simd-96-384-512': 99, 'js-96-256-512': 4000 };
+  const times = { [RACE.DEFAULT_ID]: 100, 'simd-48-64-256': 98, 'simd-192-64-512': 99, 'simd-96-64-256': 99, 'js-96-256-512': 4000 };
   const r = RACE.raceVariants(V, (v) => times[v.id], 1e9, 2);
   assert.strictEqual(r.winnerId, RACE.DEFAULT_ID);
   assert.ok(r.reason.includes('維持預設'));
-  assert.strictEqual(r.rows.find((x) => x.id === 'simd-48-128-256').verdict, '沒有好處');
+  assert.strictEqual(r.rows.find((x) => x.id === 'simd-48-64-256').verdict, '沒有好處');
   console.log('ok 差距低於 5% 維持預設，並標示沒有好處');
 }
 
 // 4. 有好處的非勝者標「有好處」（比預設快 5% 以上，但不是最快）
 {
-  const times = { [RACE.DEFAULT_ID]: 100, 'simd-48-128-256': 70, 'simd-192-256-512': 90, 'simd-96-384-512': 99, 'js-96-256-512': 4000 };
+  const times = { [RACE.DEFAULT_ID]: 100, 'simd-48-64-256': 70, 'simd-192-64-512': 90, 'simd-96-64-256': 99, 'js-96-256-512': 4000 };
   const r = RACE.raceVariants(V, (v) => times[v.id], 1e9, 2);
-  assert.strictEqual(r.rows.find((x) => x.id === 'simd-192-256-512').verdict, '有好處');
+  assert.strictEqual(r.rows.find((x) => x.id === 'simd-192-64-512').verdict, '有好處');
   console.log('ok 非勝者但比預設快 5% 以上標「有好處」');
 }
 
@@ -63,11 +63,11 @@ console.log('ok 瀏覽器版本解析與鍵（核心數與版本都在鍵裡）'
   const m = new Map();
   const store = { get: async (k) => m.get(k), set: async (k, v) => { m.set(k, v); } };
   const key = RACE.raceKey(4, 'x Chrome/118.0');
-  const times = { [RACE.DEFAULT_ID]: 100, 'simd-48-128-256': 70, 'simd-192-256-512': 99, 'simd-96-384-512': 99, 'js-96-256-512': 4000 };
+  const times = { [RACE.DEFAULT_ID]: 100, 'simd-48-64-256': 70, 'simd-192-64-512': 99, 'simd-96-64-256': 99, 'js-96-256-512': 4000 };
   const r = RACE.raceVariants(V, (v) => times[v.id], 1e9, 2);
   assert.strictEqual(await RACE.saveWinner(store, key, r), true);
   const picked = await RACE.chooseVariant(store, key, V);
-  assert.strictEqual(picked.id, 'simd-48-128-256');
+  assert.strictEqual(picked.id, 'simd-48-64-256');
   // 不同鍵（核心數不同）沒有紀錄 → 預設
   const other = await RACE.chooseVariant(store, RACE.raceKey(2, 'x Chrome/118.0'), V);
   assert.strictEqual(other.id, RACE.DEFAULT_ID);
