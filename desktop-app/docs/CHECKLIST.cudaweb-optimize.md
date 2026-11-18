@@ -79,6 +79,7 @@ python -m http.server 8792
 E. 桌面版設定頁：結案，不另掛。刻意只放一處（AI 助理設定的 `kernel-tune` 窗格）；`renderer/bootstrap.js` 的註解已說明 GPU 相容層不在桌面版設定重複掛載，同一政策套用於運算變體窗格。E. 既有失敗已修（commit 8f2a8f9d3）：q8mm 選擇表補齊 infer_ops 的自動規則變體（decr8、decr4f、decr2f、pf8x4 等），M×N×K 共 525 組合與 infer_ops.q8mmVariant 一致；kernel_select_test 全過（16 項，exit 0）。原本的失敗在目前樹上可重現（exit 1），不是環境差異。各 *_test.js 的 runner 在有失敗時仍印出「N 項通過」，因此「14 項通過」不代表全過，要看 exit code。：`bench_core.js` 已有基準；加「變體競賽」：第一次遇到（adapter、運算、形狀區間）時，在合理時間內（≤2 秒、背景、可取消）各變體各跑 3 次取中位數，勝者寫進快取（localStorage，鍵含 adapter 描述與能力表雜湊，能力變了就失效）；使用者可在設定頁（兩處：AI 助理設定與桌面版設定頁，同步）看到每個運算目前用哪個變體、可強制指定、可重跑、可恢復預設。預設只用選擇器的規則；調校預設開但絕不擋住第一次使用（先用規則的變體，調校完下次才換）。驗收：node 測試涵蓋快取鍵、失效、強制覆蓋；真 Chrome 在這台上跑一次，結果顯示在設定頁。
 - [x] **O10. 各級模擬驗證**（2026-11-18 完成「結果列」：`scripts/eval/cudaweb_optimize.result.json` 的 `o10.rows` 共 15 列，每列狀態只有「通過（有證據檔案）」或「待驗證（原因）」：覆蓋表 6 個變體（mm_simple／tiled／vec4、q8mm simple／dec／pf）全部通過並附頁面；infer_ops 實際在用、但不在覆蓋表的 q8 變體 6 個，4 個通過、2 個（decr4f、decr2f）待驗證；mm_ops 整數矩陣乘、f16、子群組共 3 個待驗證。時間與誤差只取自已入庫頁面或清單已記錄條目，不重新編造，硬體都標 Kepler GT 720。另加 node 假裝置 `scripts/eval/cudaweb_o10_fake_check.js`：6 個覆蓋表變體 × 4 組假能力表，強制指定 24／24、自動選擇 8／8 正常（只驗選擇邏輯，無時間無誤差）。**如實的缺口**：（1）覆蓋表與 infer_ops 不同步，`kernel_select_test.js` 的一致性測試在 HEAD 即失敗（O9 的 E 項，未處理）；（2）f16、子群組的實機驗證頁尚未寫（mm_tile_check.html 第 4 段只記錄狀態）；（3）本輪在 Intel iGPU 機器沒有 GPU 量測，所有真機數字來自清單既有記錄。）驗收：結果檔每個變體有「通過」或「待驗證（原因）」。因為只有一張真卡（低階），用 O1 的覆蓋表在同一張卡上強制每個變體（含需要 f16 或 subgroups 的，若這張卡不支援就用軟體 adapter 或標「待有該能力的機器驗證」並寫好驗證頁與指令），每個變體都要過各自的對拍；結果寫進 `scripts/eval/cudaweb_optimize.result.json`（含硬體、能力表、每個變體的誤差與時間）。驗收：結果檔每個變體有「通過」或「待驗證（原因）」。
 - [ ] **O11. 建置與整合**：`node scripts/embed-code-ui.js`、`node build-assistant.js`、`node scripts/build-web-lazy.js`、動到的 node 測試全過；設定頁基準（`bench_run.js`）顯示優化後的 cudaweb 數字；`git status` 沒有未提交來源（web-lazy 的 CRLF 差異不算）。不發布，管理者核對後發布。
+  - **O11 進度（2026-11-18）**：`embed-code-ui`、`build-assistant`、`build-web-lazy` 全部 exit 0；嵌入清單加入 `mm_subgroup`、`mm_splitk`（`scripts/embed-code-ui.js`）。gpu 與 vlm 的 node 測試共 72 個檔案，71 個通過；`llava_skeleton_test` 原本失敗（Qwen2-0.5B 的舊數字），已依 config.json 修正（896／14／2／4864／151936）後通過。`scripts/gpu-mem-settings.test.js` 有 1 項既有失敗（floating-assistant.js 的文字檢查，本輪沒有改它）。**本項不勾**：bench_run 的真 Chrome 設定頁數字仍未在設定頁驗證。
 
 ## 怎麼做才不浪費
 - 先讀 `docs/HANDOFF.cudaweb-inference.md` §8 的程式地圖，用 Grep 定位，不要整檔讀 `floating-assistant.js`。
@@ -96,8 +97,11 @@ E. 桌面版設定頁：結案，不另掛。刻意只放一處（AI 助理設�
   - 目前的比較基準（同機，含讀回，見 result.json）：512×1024×1024 vec4 約 32 ms ≈ 33 GFLOP/s ≈ 26% of 127；512×1024×3072 vec4 約 78–87 ms ≈ 37–41 GFLOP/s ≈ 30–32%。
 - [ ] R2. 向量載入與合併存取（已用於 vec4 版與 R1）、明確 fma（R1 已用）、軟體預取（待做）
 - [ ] R3. split-K（解碼與 LoRA 的小 M、N 大 K 形狀）
+  - **R3 收尾（2026-11-18，intel xe-lpg，結果檔 `R3_lora_shapes`）**：LoRA 小 N（秩 r）的形狀：8×4096×16 split-K（S16）0.195 ms，vec4 0.725、simple 0.875；1×4096×16 S16 0.155，子群組 0.245；64×1024×16 S8 0.145，vec4 0.235；16×4096×64 S8／S16 0.205，vec4 0.74。N=256 的 64×1024×256 vec4 較快（0.255 對 split-K 0.46），規則排除。規則（`kernel_select.js`、`mm_splitk.js`）：K≥1024 且（M=1，或 N≤64 且 M≤64）；S=16 當 K≥4096，否則 8。接進 `mm_ops.js`，測試通過。**本項仍不勾**：大 N、大 K 的 LoRA B 形狀（K＝秩）沒有量，訓練中的 LoRA 形狀也沒有在真 Chrome 跑。
 - [ ] R4. 工作群組大小搜尋（128／192／256 執行緒）與自動調校（併入 O9）
+  - **R4 收尾（2026-11-18，intel xe-lpg，結果檔 `R4_tiled_workgroup`）**：平鋪矩陣乘的工作群組大小，同一個 48×64 塊、KB=16（`mm_tile_wg.js`），WG＝128／192／256：512×1024×1024 為 5.10／4.20／3.65 ms（production 64×64、256 執行緒為 2.56）；64×4096×1024 為 102.96（異常，未查明）／9.47／4.49（production 2.04）。**256 在這三者中最好，而 production 的 64×64 比三者都快：沒有勝出，規則維持。** 本項不勾：只量了 48×64 塊與 production，沒有量其他塊大小與自動調校。
 - [ ] R5. 套用到 q8mm、MatMulNBits、注意力、卷積、訓練轉置版（各自量前後）
+  - **R5 未完成（2026-11-18）**：本輪沒有做。要把勝出變體套到 q8mm、MatMulNBits、注意力、卷積與訓練轉置版並量前後，每一個都要改核心或接線（`infer_ops.js`、`matmulnbits_gpu.js`、`attn_gpu.js`、`conv_ops.js`、訓練轉置路徑），本輪時間不夠。目前唯一的勝出變體是 matmul 的 split-K（M=1 與小 N 的 LoRA 形狀），沒有證據能套到 q8mm（解碼 M=1 的 q8mm_dec 已經約 0.15 ms）、注意力或卷積。
 - 每個變體：GFLOP/s、峰值百分比、優化前後、真 Chrome 對拍（相對誤差 ≤1e-6）。沒好處的如實記「沒有好處」。
 
 ### 變體階梯（G1–G5，依管理者 2026-11-18 排序：G1 → G2 → G4 → G3 → G5；編譯慢不淘汰變體，只留約 30 秒的防卡死上限；快取存 IndexedDB，存「勝者參數」）
