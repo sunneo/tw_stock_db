@@ -158,6 +158,11 @@ async function ammMany(be, items) {
 // 與 loraLinA 的算式完全相同（xA＝x·A；base＝x·W；br＝xA·B；y＝base＋s·br），但同一階段的矩陣乘一起送出：
 // 第一階段（只依賴 x）：每個投影的 xA 與 base；第二階段：每個投影的 br。specs：[{ W, lo, cache, dout }]
 async function loraLinManyA(be, x, specs, s, T, din) {
+    // 後端有 loraFwdMany（O8 每群組一次提交）：整組投影在裝置上完成，回讀 y 與 xA
+    if (be.loraFwdMany) {
+        const R = await be.loraFwdMany(specs.map((sp) => ({ x: x, W: sp.W, A: sp.lo.A, B: sp.lo.B, s: s, T: T, din: din, dout: sp.dout })));
+        return specs.map((sp, i) => { sp.cache.xA = R[i].xA; return R[i].y; });
+    }
     const items1 = [];
     for (const sp of specs) { const r = sp.lo.A.length / din; items1.push([x, sp.lo.A, T, din, r], [x, sp.W, T, din, sp.dout]); }
     const r1 = await ammMany(be, items1);
@@ -182,6 +187,11 @@ const mkAt = (be, A, B, m, k, n) => be.transFlags ? [A, B, m, k, n, { transA: tr
 const mkBt = (be, A, B, m, k, n) => be.transFlags ? [A, B, m, k, n, { transB: true }] : [A, tr2(B, n, k), m, k, n];   // C = A·Bᵀ
 // specs：[{ dy, x, W, lo, xA, key }]，回傳與 specs 同序的 dx 陣列，並把 grads[key] = { A, B } 寫入。
 async function loraLinBwdManyA(be, specs, s, T, din, dout, grads) {
+    // 後端有 loraBwdMany（O8 每群組一次提交）：dA、dB、dx 一次回讀
+    if (be.loraBwdMany) {
+        const R = await be.loraBwdMany(specs.map((sp) => ({ dy: sp.dy, x: sp.x, W: sp.W, A: sp.lo.A, B: sp.lo.B, xA: sp.xA, s: s, T: T, din: din, dout: dout })));
+        return specs.map((sp, i) => { grads[sp.key] = { A: R[i].dA, B: R[i].dB }; return R[i].dx; });
+    }
     const rs = specs.map((sp) => sp.lo.A.length / din);
     const P1 = [];
     specs.forEach((sp, i) => { P1.push(mkAt(be, sp.xA, sp.dy, rs[i], T, dout), mkBt(be, sp.dy, sp.lo.B, T, dout, rs[i]), mkBt(be, sp.dy, sp.W, T, dout, din)); });
@@ -284,11 +294,17 @@ async function lossAndGradsAsync(m, tokens, opts) {
         const o = await loraLinA(be, ao, P.Wo, lo.o, s, T, d, d, co);
         const h1 = new Float64Array(T * d); for (let i = 0; i < h1.length; i++) h1[i] = h[i] + o[i]; c.h1 = h1;
         const n2 = await rmsFwdA(ops, h1, P.n2, T, d); c.n2 = n2;
-        const gu = await ammMany(be, [[n2.y, P.Wg, T, d, F], [n2.y, P.Wu, T, d, F]]); const g = gu[0], u = gu[1], a = new Float64Array(T * F);
-        const sg = await ops.silu(g);
-        for (let i = 0; i < a.length; i++) a[i] = sg[i] * u[i];
-        c.g = g; c.u = u; c.a = a;
-        const dn = await amm(be, a, P.Wd, T, F, d); const h2 = new Float64Array(T * d); for (let i = 0; i < h2.length; i++) h2[i] = h1[i] + dn[i];
+        let g, u, a, dn;
+        if (be.mlpFwd) {
+            // 後端有 mlpFwd（O8）：閘門、上投影、silu、相乘、下投影在裝置上一次完成
+            const R = await be.mlpFwd({ x: n2.y, Wg: P.Wg, Wu: P.Wu, Wd: P.Wd, T: T, d: d, F: F }); g = R.g; u = R.u; a = R.a; dn = R.dn;
+        } else {
+            const gu = await ammMany(be, [[n2.y, P.Wg, T, d, F], [n2.y, P.Wu, T, d, F]]); g = gu[0]; u = gu[1]; a = new Float64Array(T * F);
+            const sg = await ops.silu(g);
+            for (let i = 0; i < a.length; i++) a[i] = sg[i] * u[i];
+            dn = await amm(be, a, P.Wd, T, F, d);
+        }
+        c.g = g; c.u = u; c.a = a; const h2 = new Float64Array(T * d); for (let i = 0; i < h2.length; i++) h2[i] = h1[i] + dn[i];
         h = h2; C.push(c);
     }
     const nf = await rmsFwdA(ops, h, m.nf, T, d);
@@ -353,6 +369,29 @@ function cudawebMatmulBackend(rt) {
             const r = await rt.matmulMany(items.map((it) => [Array.from(it[0]), Array.from(it[1]), it[2], it[3], it[4], it[5]]));
             be.calls += items.length; be.layer = r.info.layer; be.reason = r.info.reason || null;
             return r.results.map((x) => Float64Array.from(x));
+        };
+    }
+    // O8 每群組一次提交：LoRA 投影群組（前向、反向）與前饋區塊（前向）；執行期有才提供
+    const F64 = (v) => Float64Array.from(v);
+    if (typeof rt.loraFwdMany === 'function') {
+        be.loraFwdMany = async (specs) => {
+            const r = await rt.loraFwdMany(specs);
+            be.calls += specs.length; be.layer = 'T1'; be.reason = null;
+            return r.results.map((x) => ({ y: F64(x.y), xA: F64(x.xA) }));
+        };
+    }
+    if (typeof rt.loraBwdMany === 'function') {
+        be.loraBwdMany = async (specs) => {
+            const r = await rt.loraBwdMany(specs);
+            be.calls += specs.length; be.layer = 'T1'; be.reason = null;
+            return r.results.map((x) => ({ dA: F64(x.dA), dB: F64(x.dB), dx: F64(x.dx) }));
+        };
+    }
+    if (typeof rt.mlpFwd === 'function') {
+        be.mlpFwd = async (a) => {
+            const r = await rt.mlpFwd(a);
+            be.calls++; be.layer = 'T1'; be.reason = null;
+            return { g: F64(r.g), u: F64(r.u), a: F64(r.a), dn: F64(r.dn) };
         };
     }
     // 訓練頭（O8）：logits→交叉熵→dh 一次提交；執行期有 headStep 才提供

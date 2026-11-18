@@ -22,6 +22,8 @@ function fakeNavigator(opts) {
   const lostPromise = new Promise((r) => { resolveLost = r; });
   const dev = {
     limits: limits,
+    // 真實的 GPUDevice.features 是已開啟的功能；假裝置把 opts.features 當成「已開啟」（與 requestDevice 要求的 shader-f16 一致時才算有）
+    features: new Set(opts.features || []),
     lost: lostPromise,
     __resolveLost: (info) => resolveLost(info),
     queue: {
@@ -132,6 +134,22 @@ function fakeNavigator(opts) {
       // 綁定順序：0 x、1 y、2 uniform（T、H、hd 皆為 u32，dir 為 f32 位於位元組 12）
       const T = u32(e[2])[0], H = u32(e[2])[1], hd = u32(e[2])[2], dir = new Float32Array(e[2].data, 12, 1)[0];
       f32(e[1], T * H * hd).set(NN.ropeRef(f32(e[0], T * H * hd), T, H, hd, dir));
+    } else if (k === 'axpy_batch' || k === 'mul_batch' || k === 'scal_batch') {
+      // O8 批次逐元素：axpy 綁定 (xa, xb, yo, uniform{n,s})；mul 同；scal 綁定 (xa, yo, uniform)。全部 f32、與 WGSL 同一運算順序（一次乘、一次加）
+      const n = u32(k === 'scal_batch' ? e[2] : e[3])[0];
+      const s = new Float32Array((k === 'scal_batch' ? e[2] : e[3]).data, 4, 1)[0];
+      if (k === 'axpy_batch') { const xa = f32(e[0], n), xb = f32(e[1], n), yo = f32(e[2], n); for (let i = 0; i < n; i++) yo[i] = Math.fround(xa[i] + Math.fround(s * xb[i])); }
+      else if (k === 'mul_batch') { const xa = f32(e[0], n), xb = f32(e[1], n), yo = f32(e[2], n); for (let i = 0; i < n; i++) yo[i] = Math.fround(xa[i] * xb[i]); }
+      else { const xa = f32(e[0], n), yo = f32(e[1], n); for (let i = 0; i < n; i++) yo[i] = Math.fround(s * xa[i]); }
+    } else if (k === 'matmul_f16') {
+      // O8 f16 矩陣乘：A、B 的儲存是 f16 位元（Uint16），解碼成 f32 後與 f32 參考版相同的累加（與真核心「f16 儲存、f32 累加」一致）
+      const NN2 = require('./nn_ops.js');
+      const p = u32(e[3]); const m = p[1], kk = p[2], n = p[3], fl = p[7];
+      const ha = new Uint16Array(e[0].data), hb = new Uint16Array(e[1].data);
+      const A = new Float32Array(m * kk), B = new Float32Array(kk * n);
+      for (let i = 0; i < m * kk; i++) A[i] = NN2.f16ToF32(ha[i]);
+      for (let i = 0; i < kk * n; i++) B[i] = NN2.f16ToF32(hb[i]);
+      f32(e[2], m * n).set(core.matmulTRef(A, B, m, kk, n, fl));
     } else if (k === 'cross_entropy') {
       // O8：綁定 0 lg(讀)、1 tg(讀，u32)、2 dl(寫)、3 rows(寫)、4 uniform（T、V 為 u32，invT 為 f32 位於位元組 8）
       // 數值用 f64 參考版再捨入成 f32（不是逐運算模擬）：這裡驗證的是綁定、列數與回寫，不驗證 WGSL 的歸約順序

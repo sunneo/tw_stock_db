@@ -173,7 +173,10 @@ function getDevice(nav) {
       try {
         const pa = await core.probeAdapter(nav);
         if (!pa.adapter) return { dev: null, reason: 'WebGPU 沒有可用的介面卡' + (pa.probe && pa.probe.reason ? '（' + pa.probe.reason + '）' : '') };
-        const dev = await pa.adapter.requestDevice();
+        // 只有介面卡真的有 shader-f16 才要求這個功能（沒有就不要求，f16 核心不會被選到）
+        const feats = pa.adapter.features;
+        const wantF16 = !!(feats && (typeof feats.has === 'function' ? feats.has('shader-f16') : false));
+        const dev = await pa.adapter.requestDevice(wantF16 ? { requiredFeatures: ['shader-f16'] } : undefined);
         try { dev.lost.then((i) => console.warn('[gpu] 裝置遺失（' + i.reason + '）：' + String(i.message).slice(0, 200) + '；最近的 GPU 工作：' + (globalThis.__faGpuLast || '未知'))); } catch (_) { /* 診斷用，失敗不影響 */ }
         return { dev: dev, reason: null };
       } catch (e) { return { dev: null, reason: 'WebGPU 初始化失敗：' + String((e && e.message) || e) }; }
@@ -718,6 +721,72 @@ async function crossEntropy(lg, tg, T, V, opts) {
     () => { const r = crossEntropyRef(lg, tg, T, V, invT); let s = 0; for (let t = 0; t < T; t++) s += r.rows[t]; return { loss: s / T, dl: r.dl }; });
 }
 
+// ---------- 逐元素批次運算（O8 每層一次提交用）：axpy、mul、scal ----------
+const WGSL_AXPY_B = `
+struct P { n: u32, s: f32 }
+@group(0) @binding(0) var<storage, read> xa: array<f32>;
+@group(0) @binding(1) var<storage, read> xb: array<f32>;
+@group(0) @binding(2) var<storage, read_write> yo: array<f32>;
+@group(0) @binding(3) var<uniform> u: P;
+// @kernel axpy_batch
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let i = gid.x; if (i >= u.n) { return; }
+  yo[i] = xa[i] + u.s * xb[i];
+}
+`;
+const WGSL_MUL_B = `
+struct P { n: u32, s: f32 }
+@group(0) @binding(0) var<storage, read> xa: array<f32>;
+@group(0) @binding(1) var<storage, read> xb: array<f32>;
+@group(0) @binding(2) var<storage, read_write> yo: array<f32>;
+@group(0) @binding(3) var<uniform> u: P;
+// @kernel mul_batch
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let i = gid.x; if (i >= u.n) { return; }
+  yo[i] = xa[i] * xb[i];
+}
+`;
+const WGSL_SCAL_B = `
+struct P { n: u32, s: f32 }
+@group(0) @binding(0) var<storage, read> xa: array<f32>;
+@group(0) @binding(1) var<storage, read_write> yo: array<f32>;
+@group(0) @binding(2) var<uniform> u: P;
+// @kernel scal_batch
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let i = gid.x; if (i >= u.n) { return; }
+  yo[i] = u.s * xa[i];
+}
+`;
+// IEEE 半精度：f32 → f16 位元（就近偶數捨入；溢位成 ±Inf、極小值成次正規數或 0）與反向解碼。
+const _f32buf = new Float32Array(1), _u32buf = new Uint32Array(_f32buf.buffer);
+function f32ToF16Bits(x) {
+  _f32buf[0] = x; const b = _u32buf[0];
+  const sign = (b >>> 16) & 0x8000, exp = (b >>> 23) & 0xff; let mant = b & 0x7fffff;
+  if (exp === 0xff) return sign | 0x7c00 | (mant ? 0x200 : 0);
+  const e = exp - 127 + 15;
+  if (e >= 31) return sign | 0x7c00;
+  if (e <= 0) {
+    if (e < -10) return sign;
+    mant |= 0x800000; const shift = 14 - e; let half = mant >>> shift;
+    const rem = mant & ((1 << shift) - 1), halfway = 1 << (shift - 1);
+    if (rem > halfway || (rem === halfway && (half & 1))) half++;
+    return sign | half;
+  }
+  let half = (e << 10) | (mant >>> 13); const rem = mant & 0x1fff;
+  if (rem > 0x1000 || (rem === 0x1000 && (half & 1))) half++;
+  return sign | half;
+}
+function f16ToF32(h) {
+  const s = (h & 0x8000) ? -1 : 1, e = (h >>> 10) & 0x1f, m = h & 0x3ff;
+  if (e === 0) return s * m * Math.pow(2, -24);
+  if (e === 0x1f) return m ? NaN : s * Infinity;
+  return s * (1024 + m) * Math.pow(2, e - 25);
+}
+const MM_F16_CODE = core.mmTileWgsl({ marker: 'matmul_f16', dtype: 'f16' });
+
 // ---------- 批次提交：同一個 command encoder、中間結果留在 GPU 緩衝區，只在 read() 時回讀 ----------
 // 用法：const b = createBatch(dev); const x = b.upload(arr); const y = b.rmsnorm(x, g, T, d, eps); ...
 //       const [out] = await b.read([[y, n]]);   // 整批只 submit 一次、回讀只在最後
@@ -888,6 +957,13 @@ function createBatch(dev) {
     return buf;
   }
   function upload(arr) { const f = arr instanceof Float32Array ? arr : Float32Array.from(arr); const buf = storage(f.length); dev.queue.writeBuffer(buf, 0, f); return { buf: buf, n: f.length }; }
+  // f16 上傳：每個值存成半精度位元（2 位元組），長度為奇數時補一個 0 讓 writeBuffer 的長度是 4 的倍數
+  function uploadF16(arr) {
+    const n = arr.length, bits = new Uint16Array(n + (n & 1));
+    for (let i = 0; i < n; i++) bits[i] = f32ToF16Bits(arr[i]);
+    const buf = storage(bits.length / 2); dev.queue.writeBuffer(buf, 0, bits);
+    return { buf: buf, n: n, f16: true };
+  }
   function uploadU32(arr) { const u = arr instanceof Uint32Array ? arr : Uint32Array.from(arr); const buf = storage(u.length); dev.queue.writeBuffer(buf, 0, u); return { buf: buf, n: u.length }; }
   function dispatch(code, bindBufs, uniform, groups) {
     if (submitted) throw new Error('批次已經提交，不能再加入運算');
@@ -909,6 +985,7 @@ function createBatch(dev) {
   const b = {
     upload: upload,
     uploadU32: uploadU32,
+    uploadF16: uploadF16,
     rmsnorm(x, g, T, d, eps) {
       const y = storage(T * d);
       const uni = new ArrayBuffer(16); new Uint32Array(uni, 0, 2).set([T, d]); new Float32Array(uni, 8, 1)[0] = eps;
@@ -936,14 +1013,22 @@ function createBatch(dev) {
     },
     // 矩陣乘（與 gpu_core 的 wgMatmul 同一組核心：K、N 為 4 的倍數時用 vec4 版）。A 是 M×K 的句柄，B 是 K×N 的句柄（常駐權重也可以）
     // fl（選用）：{ transA, transB }（O5 的轉置版，走同一份平鋪核心的 p0 旗標；轉置時不用 vec4 版）
+    // fl.f16 = true：輸入必須是 uploadF16 的句柄（儲存 f16、累加 f32），走 f16 平鋪核心（需要 shader-f16）。
     matmul(A, B, M, K, N, fl) {
       const y = storage(M * N);
       const flags = core.mmTileFlags(fl);
-      const v4 = core.mmTileVec4Ok(M, K, N, flags);
+      const f16 = !!(fl && fl.f16);
+      if (f16 && !(A.f16 && B.f16)) throw new Error('matmul f16：輸入必須用 uploadF16 上傳');
+      if (!f16 && (A.f16 || B.f16)) throw new Error('matmul：f16 句柄必須帶 fl.f16');
+      const v4 = !f16 && core.mmTileVec4Ok(M, K, N, flags);
       const uni = new ArrayBuffer(32); new Uint32Array(uni).set(core.mmTileWords(M, K, N, flags, 1));
-      dispatch(v4 ? MM_VEC4_CODE : MM_TILED_CODE, [A.buf, B.buf, y], uni, core.mmTileDispatch(M, N, 1));
+      dispatch(f16 ? MM_F16_CODE : (v4 ? MM_VEC4_CODE : MM_TILED_CODE), [A.buf, B.buf, y], uni, core.mmTileDispatch(M, N, 1));
       return { buf: y, n: M * N };
     },
+    // 逐元素（同一命令編碼器內，不回讀）：axpy＝x + s·y、mul＝x·y、scal＝s·x
+    axpy(x, y, s) { const o = storage(x.n); const uni = new ArrayBuffer(16); new Uint32Array(uni, 0, 1)[0] = x.n; new Float32Array(uni, 4, 1)[0] = s; dispatch(WGSL_AXPY_B, [x.buf, y.buf, o], uni, Math.ceil(x.n / 64)); return { buf: o, n: x.n }; },
+    mul(x, y) { const o = storage(x.n); const uni = new ArrayBuffer(16); new Uint32Array(uni, 0, 1)[0] = x.n; dispatch(WGSL_MUL_B, [x.buf, y.buf, o], uni, Math.ceil(x.n / 64)); return { buf: o, n: x.n }; },
+    scal(x, s) { const o = storage(x.n); const uni = new ArrayBuffer(16); new Uint32Array(uni, 0, 1)[0] = x.n; new Float32Array(uni, 4, 1)[0] = s; dispatch(WGSL_SCAL_B, [x.buf, o], uni, Math.ceil(x.n / 64)); return { buf: o, n: x.n }; },
     // 交叉熵（O8）：logits 是 T×V 的句柄，tgt 是 uploadU32 的句柄；回傳 dl（T×V，已乘 invT）與 rows（T，未除 T）
     crossEntropy(logits, tgt, T, V, invT) {
       const dl = storage(T * V), rows = storage(T);
@@ -1029,4 +1114,4 @@ function trainerOps(opts) {
   };
 }
 
-module.exports = { trainerOps, crossEntropy, crossEntropyRef, WGSL_CE, rmsnormRef, rmsnorm, softmaxRef, softmax, siluRef, silu, ropeRef, rope, adamwCore, adamwRef, adamw, createBatch, runWgsl, getDevice, getGl, glSupport, glRun, tryLayers, nnBackendInfo, withMeasureLock, measureLockState, requestExclusiveGpu, registerIdleGpuHolder, NN_OPS, WGSL_RMSNORM, WGSL_SOFTMAX, WGSL_SILU, WGSL_ROPE, WGSL_ADAMW, WGSL_RMSQ_FUSED, NOTE_T3 };
+module.exports = { trainerOps, crossEntropy, crossEntropyRef, WGSL_CE, f32ToF16Bits, f16ToF32, WGSL_AXPY_B, WGSL_MUL_B, WGSL_SCAL_B, MM_F16_CODE, rmsnormRef, rmsnorm, softmaxRef, softmax, siluRef, silu, ropeRef, rope, adamwCore, adamwRef, adamw, createBatch, runWgsl, getDevice, getGl, glSupport, glRun, tryLayers, nnBackendInfo, withMeasureLock, measureLockState, requestExclusiveGpu, registerIdleGpuHolder, NN_OPS, WGSL_RMSNORM, WGSL_SOFTMAX, WGSL_SILU, WGSL_ROPE, WGSL_ADAMW, WGSL_RMSQ_FUSED, NOTE_T3 };

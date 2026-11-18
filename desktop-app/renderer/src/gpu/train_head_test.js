@@ -98,13 +98,14 @@ function countSubmits(dev) {
     assert.ok(dd < 1e-5, 'dh 差 ' + dd);
   });
 
-  await check('rt.precision：有 shader-f16 也只回報 f32（f16 矩陣乘尚未接進 mm_ops）', async () => {
+  await check('rt.precision：裝置有 shader-f16 → f16；沒有 → f32（能力分支，與是否要求 f16 無關）', async () => {
     const nav = fakeNavigator({ features: ['shader-f16'] }).nav;
     const dev = (await NN.getDevice(nav)).dev;
     const rt = RT.createRuntime({ nn: NN, mm: MM, navigator: nav, device: dev });
-    const p = await rt.precision();
-    assert.strictEqual(p.precision, 'f32');
-    assert.ok(/f16/.test(p.reason), '原因應說明 f16 未接線');
+    assert.strictEqual((await rt.precision()).precision, 'f16');
+    const nav2 = fakeNavigator().nav;
+    const rt2 = RT.createRuntime({ nn: NN, mm: MM, navigator: nav2, device: (await NN.getDevice(nav2)).dev });
+    assert.strictEqual((await rt2.precision()).precision, 'f32');
   });
 
   await check('完整前向反向（cudaweb 假後端＋融合頭）對 CPU f64：loss 與各 LoRA 梯度在界線內', async () => {

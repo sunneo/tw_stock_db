@@ -55,9 +55,67 @@
     rt.precision = async () => {
       const dev = await device();
       const pickFn = opts.pickForwardPrecision || (typeof require === 'function' ? require('./train_fused.js').pickForwardPrecision : null);
-      const pick = pickFn ? pickFn(dev.features) : { precision: 'f32', reason: '無精度選擇函式' };
-      if (pick.precision === 'f16' && !opts.mmF16) return { precision: 'f32', accum: 'f32', reason: pick.reason + '；f16 矩陣乘尚未接進 mm_ops，維持 f32' };
-      return pick;
+      return pickFn ? pickFn(dev.features) : { precision: 'f32', accum: 'f32', reason: '無精度選擇函式' };
+    };
+    // 前向用 f16 的條件：呼叫端要求（opts.f16Forward）且裝置真的有 shader-f16；否則一律 f32。
+    const f16On = async () => opts.f16Forward === true && (await rt.precision()).precision === 'f16';
+    const a32 = (x) => (x instanceof Float32Array ? x : Float32Array.from(x));
+
+    // LoRA 投影群組（前向）：每個投影的 X·A、X·W、(X·A)·B、y＝base＋s·br 全部在同一次提交；回傳 y 與 xA。
+    // specs：[{ x, W, A, B, s, T, din, dout }]；W 是 din×dout，A 是 din×r，B 是 r×dout。
+    // f16 模式（opts.f16Forward 且有 shader-f16）：只有 X·W（基底）用 f16 矩陣乘；X·A 與 (X·A)·B 仍 f32（XA 是中間值，不轉 f16）。
+    rt.loraFwdMany = async (specs) => {
+      const dev = await device(); const b = opts.nn.createBatch(dev); const f16 = await f16On();
+      const hs = specs.map((sp) => {
+        const r = sp.A.length / sp.din;
+        const X = b.upload(a32(sp.x));
+        const XA = b.matmul(X, b.upload(a32(sp.A)), sp.T, sp.din, r);
+        const base = f16 ? b.matmul(b.uploadF16(a32(sp.x)), b.uploadF16(a32(sp.W)), sp.T, sp.din, sp.dout, { f16: true })
+          : b.matmul(X, b.upload(a32(sp.W)), sp.T, sp.din, sp.dout);
+        const br = b.matmul(XA, b.upload(a32(sp.B)), sp.T, r, sp.dout);
+        const y = b.axpy(base, br, sp.s);
+        return { y: y, xA: XA, T: sp.T, dout: sp.dout, r: r };
+      });
+      const flat = []; hs.forEach((h) => { flat.push([h.y, h.T * h.dout], [h.xA, h.T * h.r]); });
+      const outs = await b.read(flat);
+      return { results: hs.map((h, i) => ({ y: outs[2 * i], xA: outs[2 * i + 1] })), f16: f16 };
+    };
+
+    // LoRA 投影群組（反向）：一次提交。與 lossAndGradsAsync 的 loraLinBwd 公式逐項相同（s 用 scal，dx 用 axpy 相加）。
+    // specs：[{ dy, x, W, A, B, xA, s, T, din, dout }]；回傳 dA（din×r）、dB（r×dout）、dx（T×din）。
+    rt.loraBwdMany = async (specs) => {
+      const dev = await device(); const b = opts.nn.createBatch(dev);
+      const hs = specs.map((sp) => {
+        const r = sp.A.length / sp.din;
+        const DY = b.upload(a32(sp.dy)), X = b.upload(a32(sp.x)), XA = b.upload(a32(sp.xA));
+        const W = b.upload(a32(sp.W)), A = b.upload(a32(sp.A)), B = b.upload(a32(sp.B));
+        const dB = b.scal(b.matmul(XA, DY, r, sp.T, sp.dout, { transA: true }), sp.s);          // s·XAᵀ·dy
+        const dxA = b.scal(b.matmul(DY, B, sp.T, sp.dout, r, { transB: true }), sp.s);          // s·dy·Bᵀ
+        const dA = b.matmul(X, dxA, sp.din, sp.T, r, { transA: true });                          // Xᵀ·dxA
+        const dx = b.matmul(DY, W, sp.T, sp.dout, sp.din, { transB: true });                     // dy·Wᵀ
+        const dx2 = b.matmul(dxA, A, sp.T, r, sp.din, { transB: true });                         // dxA·Aᵀ
+        const dxs = b.axpy(dx, dx2, 1);
+        return { dA: dA, dB: dB, dx: dxs, din: sp.din, r: r, dout: sp.dout, T: sp.T };
+      });
+      const flat = []; hs.forEach((h) => { flat.push([h.dA, h.din * h.r], [h.dB, h.r * h.dout], [h.dx, h.T * h.din]); });
+      const outs = await b.read(flat);
+      return { results: hs.map((h, i) => ({ dA: outs[3 * i], dB: outs[3 * i + 1], dx: outs[3 * i + 2] })) };
+    };
+
+    // 前饋區塊（前向）：g＝x·Wg、u＝x·Wu、a＝silu(g)·u、dn＝a·Wd，一次提交；回傳 g、u、a、dn。
+    // f16 模式：g、u 用 f16 矩陣乘（X 與權重直接上傳成 f16）；a 與 dn 仍 f32。
+    rt.mlpFwd = async (a) => {
+      const { x, Wg, Wu, Wd, T, d, F } = a;
+      const dev = await device(); const b = opts.nn.createBatch(dev); const f16 = await f16On();
+      const G = f16 ? b.matmul(b.uploadF16(a32(x)), b.uploadF16(a32(Wg)), T, d, F, { f16: true })
+        : b.matmul(b.upload(a32(x)), b.upload(a32(Wg)), T, d, F);
+      const U = f16 ? b.matmul(b.uploadF16(a32(x)), b.uploadF16(a32(Wu)), T, d, F, { f16: true })
+        : b.matmul(b.upload(a32(x)), b.upload(a32(Wu)), T, d, F);
+      const SG = b.silu(G);
+      const A = b.mul(SG, U);
+      const DN = b.matmul(A, b.upload(a32(Wd)), T, F, d);
+      const [g, u, av, dn] = await b.read([[G, T * F], [U, T * F], [A, T * F], [DN, T * d]]);
+      return { g: g, u: u, a: av, dn: dn, f16: f16 };
     };
     return rt;
   }
