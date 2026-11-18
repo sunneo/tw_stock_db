@@ -14734,7 +14734,29 @@ const holder = {};
         if (model.gpuNeedsF16 || !model.dtype || model.dtype.gpu !== 'fp32') return cpu('這個姿態模型的 GPU 版需要 f16 或不是 fp32，不走 GPU');
         return { order: ['webgpu', 'wasm'], reason: '姿態 GPU 開關開：先試 WebGPU（fp32），失敗退回 CPU（這台未量測）', gpu: true };
     }
-    return { nativePrefillPlan, nativeFullText, MODELS, byId, imageModels, textModels, depthModels, DEFAULT_DEPTH_MODEL, segmentModels, DEFAULT_SEGMENT_MODEL, poseModels, DEFAULT_POSE_MODEL, DEFAULT_MODEL, DEFAULT_TEXT_MODEL, THRESHOLD_MIN, THRESHOLD_MAX, clampThreshold, shouldUseOfflineLlm, estimateTokens, trimToTokens, textBudget, composeMessages, textGenParams, compactToolSpecs, parseToolCalls, TOOL_STAGE_SYSTEM, roleConfig, toolsTrust, routeStages, toolResultsAsReferences, looksLikeGarbage, makeStreamWatch, fitMessages, runAgentLoop, placeholderOf, BENCH_TOOLS, BENCH_CASES, scoreToolCase, summarizeToolBench, TASKS, generationParams, defaultMaxTokens, inferTask, pickModel, VISION_POLICIES, visionOrder, combineVision, structuredPrompt, parseStructured, resolveDevice, poseDevicePlan, backendOrder, wantsNativeBackend, effectiveDevicePref, nativeToolMessages, nativeWithPrefill, resolveThreads, buildTask, formatResult, repoOfUrl, usageByModel, urlsOfModel, fmtBytes, estimateDownload };
+    // 有 fp32 權重的 gpuNeedsF16 模型（O15b 第二步）：這台沒有 shader-f16 時，原本會退 CPU。預設關（f32Gpu 'off'）。
+    // 只有同時成立才放行 GPU 的 fp32 路徑：開關開、有 WebGPU、模型 gpuNeedsF16、登記的 CPU 權重就是 fp32（代表 fp32 檔存在，且已在 CPU 實測過）、
+    // 任務在白名單（目前只有 depth-estimation）、沒有永久停用旗標。放行時回傳一個「GPU 用 fp32」的模型副本（dtype.gpu＝fp32、bytes.gpu＝CPU 大小、gpuNeedsF16 拿掉），
+    // 讓後面的裝置順序、權重選擇、下載估算都用同一份；原模型不動。沒放行就回傳原模型（閘門照舊）。
+    // opts：{enabled, gpuAvailable, brokenPermanently}；回傳 {model, on, reason}。
+    const F32_GPU_TASKS = ['depth-estimation'];
+    function f32GpuVariant(model, opts) {
+        opts = opts || {};
+        const keep = (why) => ({ model: model, on: false, reason: why });
+        if (!model || !model.gpuNeedsF16 || !model.dtype || model.dtype.cpu !== 'fp32') return keep('這個模型不需要 fp32 替代（沒有 f16 閘門，或沒有 fp32 權重）');
+        if (opts.enabled !== true) return keep('fp32 GPU 開關關閉（預設），維持 f16 閘門');
+        if (opts.brokenPermanently) return keep('fp32 GPU 路徑先前失敗，之後一律用 CPU');
+        if (!opts.gpuAvailable) return keep('這台沒有 WebGPU，用 CPU');
+        if (F32_GPU_TASKS.indexOf(model.task) < 0) return keep('這個任務還沒有量過 fp32 GPU 路徑，不放行');
+        const v = Object.assign({}, model, {
+            dtype: Object.assign({}, model.dtype, { gpu: 'fp32' }),
+            bytes: Object.assign({}, model.bytes, { gpu: model.bytes ? model.bytes.cpu : undefined }),
+            gpuNeedsF16: false,
+            f32Variant: true
+        });
+        return { model: v, on: true, reason: 'fp32 GPU 開關開：這張顯示卡沒有 shader-f16，改用 fp32 權重走 WebGPU（這台未量測），失敗退回 CPU' };
+    }
+    return { nativePrefillPlan, nativeFullText, MODELS, byId, imageModels, textModels, depthModels, DEFAULT_DEPTH_MODEL, segmentModels, DEFAULT_SEGMENT_MODEL, poseModels, DEFAULT_POSE_MODEL, DEFAULT_MODEL, DEFAULT_TEXT_MODEL, THRESHOLD_MIN, THRESHOLD_MAX, clampThreshold, shouldUseOfflineLlm, estimateTokens, trimToTokens, textBudget, composeMessages, textGenParams, compactToolSpecs, parseToolCalls, TOOL_STAGE_SYSTEM, roleConfig, toolsTrust, routeStages, toolResultsAsReferences, looksLikeGarbage, makeStreamWatch, fitMessages, runAgentLoop, placeholderOf, BENCH_TOOLS, BENCH_CASES, scoreToolCase, summarizeToolBench, TASKS, generationParams, defaultMaxTokens, inferTask, pickModel, VISION_POLICIES, visionOrder, combineVision, structuredPrompt, parseStructured, resolveDevice, poseDevicePlan, f32GpuVariant, backendOrder, wantsNativeBackend, effectiveDevicePref, nativeToolMessages, nativeWithPrefill, resolveThreads, buildTask, formatResult, repoOfUrl, usageByModel, urlsOfModel, fmtBytes, estimateDownload };
 });
 
 }).call(null, undefined, holder);
@@ -84656,7 +84678,7 @@ class FloatingAssistant {
             offlineMode: false, // 離線模式：不經過LLM，用離線訓練器處理對話
             offlineLearn: true, // （舊）線上AI成功的做法自動學進離線訓練器；現在改由offlineAutoTrain控制
             pythonApiBridge: 'skill', // 執行技能包的Python腳本時，部分公開API（playwright等）轉接到助理自己的工具；'off'＝關閉
-            nrGpuHead: 'off', llmGpuHead: 'off', qwenGpuDecode: 'off', qwenGpuQ4: 'off', mossGpu: 'off', midiGpu: 'off', whisperGpu: 'off', poseGpu: 'off', audioGpu: 'off', sdxsGpu: 'off', kokoroGpu: 'off', gpuAccel: 'on', // gpuAuto：依能力探測與基準自動決定各 GPU 路徑要不要開（實驗，預設關）； midiGpu：midigenai 作曲模型 cudaweb 解碼（實驗，預設關）； mossGpu：MOSS 語音 WebGPU 管線（實驗，預設關）； qwenGpuDecode：Qwen3 q8 整段 GPU 解碼（實驗，預設關）； GPU 版 lm_head（實驗，預設關）：桌面版／網頁版各一個開關
+            nrGpuHead: 'off', llmGpuHead: 'off', qwenGpuDecode: 'off', qwenGpuQ4: 'off', mossGpu: 'off', midiGpu: 'off', whisperGpu: 'off', poseGpu: 'off', f32Gpu: 'off', audioGpu: 'off', sdxsGpu: 'off', kokoroGpu: 'off', gpuAccel: 'on', // gpuAuto：依能力探測與基準自動決定各 GPU 路徑要不要開（實驗，預設關）； midiGpu：midigenai 作曲模型 cudaweb 解碼（實驗，預設關）； mossGpu：MOSS 語音 WebGPU 管線（實驗，預設關）； qwenGpuDecode：Qwen3 q8 整段 GPU 解碼（實驗，預設關）； GPU 版 lm_head（實驗，預設關）：桌面版／網頁版各一個開關
             cudaMatmulKernel: 'auto', // 矩陣乘核心（O14b）：'auto'＝有競賽勝者才換；'off'＝關閉（舊核心）；'mm_vec4_f32'／'mm_tiled_f32'＝強制覆蓋勝者
             cudaCompatFloat64: 'auto', // float64（Python 預設）陣列在 GPU 相容層的處理：'auto'＝雙 float32（約 48 位元）在 GPU 跑，寫回前抽樣檢查；'f32'＝轉成 float32 在 GPU 跑（精度降為 float32，會印說明）；'exact'＝不用 GPU，與 CUDA 同精度
             cudaCompat: 'on', // GPU 相容層：既有的 numba／cupy／torch／pycuda 程式不改一行，就用瀏覽器的 WebGPU／WebGL2 跑（非真 CUDA）；'off'＝關閉（DESIGN.python-api-bridge.md「GPU 相容層」）
@@ -86118,6 +86140,7 @@ class FloatingAssistant {
              // GPU 加速總開關（預設開；device_pick.js：有真 GPU 就開各條路徑，軟體模擬或沒有 WebGPU 就不開；每條路徑失敗都退回原路徑）
             midiGpu: raw.midiGpu === 'on' ? 'on' : 'off', // midigenai 作曲模型改用 cudaweb 的 WebGPU 解碼（實驗，預設關；失敗退回 ORT）
             whisperGpu: raw.whisperGpu === 'on' ? 'on' : 'off', // Whisper 編碼器改用 WebGPU（transcribe_media 的 CPU wasm 路徑；實驗，預設關；失敗退回原編碼器）
+            f32Gpu: raw.f32Gpu === 'on' ? 'on' : 'off', // 有 fp32 權重的 gpuNeedsF16 模型（目前：深度估計 Depth Anything）在沒有 shader-f16 的顯示卡上改走 fp32 WebGPU（實驗，預設關，這台未量測；失敗永久退回 CPU）
             poseGpu: raw.poseGpu === 'on' ? 'on' : 'off', // 姿態模型（MoveNet，/image-to-3d 找手臂）改用 WebGPU（實驗，預設關；未在這台量測；失敗永久退回 CPU）
             audioGpu: raw.audioGpu === 'on' ? 'on' : 'off', // 音訊轉 MIDI 的 YAMNet／Demucs 改用 cudaweb 圖形 session（重運算 WebGPU；實驗，預設關；失敗退回 wasm）
             sdxsGpu: raw.sdxsGpu === 'on' ? 'on' : 'off', // 本機生圖（SDXS CPU int8 版）改用 cudaweb 圖形 session（實驗，預設關；失敗退回 wasm）
@@ -96643,6 +96666,15 @@ ${fnData.code}
         const chkPTxt = document.createElement('span');
         chkPTxt.textContent = '姿態模型（MoveNet Thunder，/image-to-3d 找手臂）改用 WebGPU（實驗，預設關，這台未量測）：fp32 權重、不需要 f16。沒有 WebGPU、載入或推論失敗都會永久退回 CPU。';
         lblP.appendChild(chkP); lblP.appendChild(chkPTxt); adv.appendChild(lblP);
+        // 有 fp32 權重的 gpuNeedsF16 模型（深度估計）在沒有 shader-f16 的顯示卡上改走 fp32 WebGPU：預設關；這台未量測（O15b 第二步）
+        const lblF = document.createElement('label');
+        lblF.style.cssText = 'display:flex; gap:6px; align-items:flex-start; cursor:pointer;';
+        const chkF = document.createElement('input');
+        chkF.type = 'checkbox'; chkF.checked = (this.advancedSettings.f32Gpu === 'on'); chkF.style.marginTop = '3px';
+        chkF.addEventListener('change', () => { this.advancedSettings.f32Gpu = chkF.checked ? 'on' : 'off'; this._f32GpuBroken = false; this._saveAdvancedSettings(); });
+        const chkFTxt = document.createElement('span');
+        chkFTxt.textContent = '深度估計（Depth Anything V2 Small，/image-to-3d）在沒有 shader-f16 的顯示卡上改用 fp32 權重走 WebGPU（實驗，預設關，這台未量測）。沒有 WebGPU、載入或推論失敗都會永久退回 CPU。';
+        lblF.appendChild(chkF); lblF.appendChild(chkFTxt); adv.appendChild(lblF);
         // 音訊轉 MIDI 的 Basic Pitch（轉譜）、YAMNet（樂器分類）、Demucs（分軌）WebGPU：預設關；圖形逐節點執行，卷積與大矩陣乘走 WGSL，其餘在 CPU；任何失敗（沒有 WebGPU、算子不支援、運算退到 CPU、中途錯誤）退回 wasm
         const lblU = document.createElement('label');
         lblU.style.cssText = 'display:flex; gap:6px; align-items:flex-start; cursor:pointer;';
@@ -129146,9 +129178,11 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
     // 離線深度估計（圖片轉 3D 的基礎層）。p：{image?, blob?, model?, device?, confirmed?, silent?}。回傳 { ok, depth:{w,h,data(Float32Array),srcW,srcH}, model, device, ms }；深度大＝近，尺寸是模型輸出的大小。
     async _depthEstimate(p) {
         p = p || {}; const set = this._omSettings();
-        const model = FaVlm.byId(p.model) || FaVlm.byId(FaVlm.DEFAULT_DEPTH_MODEL);
+        let model = FaVlm.byId(p.model) || FaVlm.byId(FaVlm.DEFAULT_DEPTH_MODEL);
         if (!model || model.task !== 'depth-estimation') return { ok: false, error: '不是深度估計的模型：' + (p.model || '') + '。可用：' + FaVlm.depthModels().map((m) => m.id).join('、') };
-        const gpu = await this._omGpuInfo(); const dev = FaVlm.resolveDevice(model, p.device || set.device, gpu.available, gpu.f16);
+        const gpu = await this._omGpuInfo(); const pref = p.device || set.device; const f32 = (model && model.task === 'depth-estimation') ? FaVlm.f32GpuVariant(model, { enabled: this._f32GpuOn(), gpuAvailable: !!gpu.available, brokenPermanently: !!this._f32GpuBroken }) : { model: model, on: false };
+        const f32Use = f32.on && pref !== 'cpu'; if (f32Use) model = f32.model;   // 開關開且沒有指定 CPU：用 fp32 GPU 版（沒有 shader-f16 的顯示卡才會走到這裡）
+        const dev = FaVlm.resolveDevice(model, f32Use ? 'gpu' : pref, gpu.available, gpu.f16);
         if (!dev.order.length) return { ok: false, error: dev.reason };
         const img = await this._vlmResolveImage(p); if (!img.blob) return { ok: false, cancelled: img.cancelled, error: img.error };
         // 原生優先（只有選 CPU，或 auto 且沒有 WebGPU；選 WebGPU 完全不碰原生）：不可用或失敗就繼續走下面原本的網頁版路徑，並在進度卡寫出真實原因
@@ -129164,10 +129198,10 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             log('裝置：' + dev.reason); update({ status: '準備中…' }); if (nativeWhy) log('⚠️ 原生路徑沒用上（' + nativeWhy + '），改用網頁版');
             let order = dev.order.slice(), res = null, lastErr = null, used = null;
             for (let attempt = 0; attempt < 2 && !res; attempt++) {
-                const ld = await this._vlmEnsureLoaded(model, order, update, log); used = ld;
+                const ld = await this._vlmEnsureLoaded(model, order, update, log); used = ld; if (f32Use && ld.device !== 'webgpu') { this._f32GpuBroken = true; log('fp32 GPU 載入失敗，之後深度一律用 CPU'); }
                 update({ pct: 99, status: '估計深度中（' + (ld.device === 'webgpu' ? 'GPU' : 'CPU') + '）…' });
                 try { res = await this._vlmRpc('run', { image: img.blob }, null, null, this._vlmSlotOf(ld.device)); }
-                catch (e) { lastErr = e; log('⚠️ ' + (ld.device === 'webgpu' ? 'GPU' : 'CPU') + ' 推論失敗：' + String((e && e.message) || e)); this._vlmTerminate(this._vlmSlotOf(ld.device)); if (ld.device === 'webgpu') { order = ['wasm']; log('降級成 CPU 重試'); } else break; }
+                catch (e) { lastErr = e; log('⚠️ ' + (ld.device === 'webgpu' ? 'GPU' : 'CPU') + ' 推論失敗：' + String((e && e.message) || e)); this._vlmTerminate(this._vlmSlotOf(ld.device)); if (ld.device === 'webgpu') { if (f32Use) this._f32GpuBroken = true; order = ['wasm']; log('降級成 CPU 重試'); } else break; }
             }
             if (!res || !res.depth) throw lastErr || new Error('深度模型沒有輸出');
             this._vlmScheduleIdle(this._vlmSlotOf(used.device));
@@ -129262,6 +129296,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         } catch (e) { if (prog) prog.fail(String((e && e.message) || e)); return { ok: false, error: String((e && e.message) || e), model: model.id, tried: e && e.tried }; }
     }
     // 姿態的裝置決策（poseGpu 預設關，見 FaVlm.poseDevicePlan）。_poseGpuBroken：WebGPU 路徑失敗過 → 之後一律 CPU（只在這次執行期間有效）。
+    _f32GpuOn() { return !!(this.advancedSettings && this.advancedSettings.f32Gpu === 'on'); }
     _poseGpuOn() { return !!(this.advancedSettings && this.advancedSettings.poseGpu === 'on'); }
     _poseDevicePick(model, gpu) {
         const plan = FaVlm.poseDevicePlan(model, { enabled: this._poseGpuOn(), gpuAvailable: !!(gpu && gpu.available), brokenPermanently: !!this._poseGpuBroken });

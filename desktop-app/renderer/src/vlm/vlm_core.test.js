@@ -373,6 +373,37 @@ check('pose model is registered (full fp32, not int8), not an image model, never
   check('pose gpu：沒有模型 → CPU', p.order.join() === 'wasm' && p.gpu === false, p);
   check('movenet：resolveDevice 行為不變（cpu 偏好 → wasm）', V.resolveDevice(mn, 'cpu', true, false).order.join() === 'wasm');
 }
+// 有 fp32 版本的 gpuNeedsF16 模型（O15b 第二步）：預設關；只有 Depth Anything 這類白名單模型、CPU 權重就是 fp32 的才放行，其餘一律維持原本的 f16 閘門
+{
+  const dep = V.byId('depth-anything-v2-small');
+  const on = { enabled: true, gpuAvailable: true, brokenPermanently: false };
+  let v = V.f32GpuVariant(dep, {});
+  check('f32：沒給選項 → 不放行（預設關）', v.on === false && v.model === dep, v.reason);
+  v = V.f32GpuVariant(dep, { enabled: false, gpuAvailable: true });
+  check('f32：開關關閉 → 不放行', v.on === false, v.reason);
+  v = V.f32GpuVariant(dep, { enabled: true, gpuAvailable: false });
+  check('f32：沒有 WebGPU → 不放行', v.on === false, v.reason);
+  v = V.f32GpuVariant(dep, Object.assign({}, on, { brokenPermanently: true }));
+  check('f32：先前失敗過 → 之後不放行', v.on === false, v.reason);
+  v = V.f32GpuVariant(dep, on);
+  check('f32：開關開 + WebGPU + 有 fp32 權重 → 放行', v.on === true && v.model.dtype.gpu === 'fp32' && v.model.gpuNeedsF16 === false, v.reason);
+  check('f32：原模型沒有被改動（仍是 fp16 閘門）', dep.dtype.gpu === 'fp16' && dep.gpuNeedsF16 === true);
+  check('f32：GPU 版下載量改用 fp32 的大小', v.model.bytes.gpu === dep.bytes.cpu, v.model.bytes);
+  check('f32：有放行時 resolveDevice 才會排 webgpu', V.resolveDevice(v.model, 'gpu', true, false).order.join() === 'webgpu,wasm');
+  check('f32：沒放行時 resolveDevice 仍退 CPU（原閘門不變）', V.resolveDevice(dep, 'gpu', true, false).order.join() === 'wasm');
+  const sam = V.byId('slimsam-77-uniform');
+  v = V.f32GpuVariant(sam, on);
+  check('f32：SlimSAM 的 CPU 權重是 q8，沒有 fp32 證據 → 不放行', v.on === false, v.reason);
+  v = V.f32GpuVariant(V.byId('florence-2-base-ft'), on);
+  check('f32：Florence-2 不在白名單 → 不放行', v.on === false, v.reason);
+  const synth = { id: 'synthetic-img-f32', task: 'image-to-text', gpuNeedsF16: true, dtype: { gpu: 'fp16', cpu: 'fp32' }, bytes: { gpu: 1, cpu: 2 } };
+  v = V.f32GpuVariant(synth, on);
+  check('f32：白名單以外的任務即使有 fp32 也不放行', v.on === false, v.reason);
+  v = V.f32GpuVariant(V.byId('movenet-thunder'), on);
+  check('f32：本來就沒有 f16 閘門的模型不需要替代', v.on === false, v.reason);
+  v = V.f32GpuVariant(undefined, on);
+  check('f32：沒有模型 → 不放行、不丟錯', v.on === false && v.model === undefined);
+}
 console.log(ok + ' passed, ' + bad.length + ' failed', bad);
 process.exit(bad.length ? 1 : 0);
 })();

@@ -549,5 +549,27 @@
         if (model.gpuNeedsF16 || !model.dtype || model.dtype.gpu !== 'fp32') return cpu('這個姿態模型的 GPU 版需要 f16 或不是 fp32，不走 GPU');
         return { order: ['webgpu', 'wasm'], reason: '姿態 GPU 開關開：先試 WebGPU（fp32），失敗退回 CPU（這台未量測）', gpu: true };
     }
-    return { nativePrefillPlan, nativeFullText, MODELS, byId, imageModels, textModels, depthModels, DEFAULT_DEPTH_MODEL, segmentModels, DEFAULT_SEGMENT_MODEL, poseModels, DEFAULT_POSE_MODEL, DEFAULT_MODEL, DEFAULT_TEXT_MODEL, THRESHOLD_MIN, THRESHOLD_MAX, clampThreshold, shouldUseOfflineLlm, estimateTokens, trimToTokens, textBudget, composeMessages, textGenParams, compactToolSpecs, parseToolCalls, TOOL_STAGE_SYSTEM, roleConfig, toolsTrust, routeStages, toolResultsAsReferences, looksLikeGarbage, makeStreamWatch, fitMessages, runAgentLoop, placeholderOf, BENCH_TOOLS, BENCH_CASES, scoreToolCase, summarizeToolBench, TASKS, generationParams, defaultMaxTokens, inferTask, pickModel, VISION_POLICIES, visionOrder, combineVision, structuredPrompt, parseStructured, resolveDevice, poseDevicePlan, backendOrder, wantsNativeBackend, effectiveDevicePref, nativeToolMessages, nativeWithPrefill, resolveThreads, buildTask, formatResult, repoOfUrl, usageByModel, urlsOfModel, fmtBytes, estimateDownload };
+    // 有 fp32 權重的 gpuNeedsF16 模型（O15b 第二步）：這台沒有 shader-f16 時，原本會退 CPU。預設關（f32Gpu 'off'）。
+    // 只有同時成立才放行 GPU 的 fp32 路徑：開關開、有 WebGPU、模型 gpuNeedsF16、登記的 CPU 權重就是 fp32（代表 fp32 檔存在，且已在 CPU 實測過）、
+    // 任務在白名單（目前只有 depth-estimation）、沒有永久停用旗標。放行時回傳一個「GPU 用 fp32」的模型副本（dtype.gpu＝fp32、bytes.gpu＝CPU 大小、gpuNeedsF16 拿掉），
+    // 讓後面的裝置順序、權重選擇、下載估算都用同一份；原模型不動。沒放行就回傳原模型（閘門照舊）。
+    // opts：{enabled, gpuAvailable, brokenPermanently}；回傳 {model, on, reason}。
+    const F32_GPU_TASKS = ['depth-estimation'];
+    function f32GpuVariant(model, opts) {
+        opts = opts || {};
+        const keep = (why) => ({ model: model, on: false, reason: why });
+        if (!model || !model.gpuNeedsF16 || !model.dtype || model.dtype.cpu !== 'fp32') return keep('這個模型不需要 fp32 替代（沒有 f16 閘門，或沒有 fp32 權重）');
+        if (opts.enabled !== true) return keep('fp32 GPU 開關關閉（預設），維持 f16 閘門');
+        if (opts.brokenPermanently) return keep('fp32 GPU 路徑先前失敗，之後一律用 CPU');
+        if (!opts.gpuAvailable) return keep('這台沒有 WebGPU，用 CPU');
+        if (F32_GPU_TASKS.indexOf(model.task) < 0) return keep('這個任務還沒有量過 fp32 GPU 路徑，不放行');
+        const v = Object.assign({}, model, {
+            dtype: Object.assign({}, model.dtype, { gpu: 'fp32' }),
+            bytes: Object.assign({}, model.bytes, { gpu: model.bytes ? model.bytes.cpu : undefined }),
+            gpuNeedsF16: false,
+            f32Variant: true
+        });
+        return { model: v, on: true, reason: 'fp32 GPU 開關開：這張顯示卡沒有 shader-f16，改用 fp32 權重走 WebGPU（這台未量測），失敗退回 CPU' };
+    }
+    return { nativePrefillPlan, nativeFullText, MODELS, byId, imageModels, textModels, depthModels, DEFAULT_DEPTH_MODEL, segmentModels, DEFAULT_SEGMENT_MODEL, poseModels, DEFAULT_POSE_MODEL, DEFAULT_MODEL, DEFAULT_TEXT_MODEL, THRESHOLD_MIN, THRESHOLD_MAX, clampThreshold, shouldUseOfflineLlm, estimateTokens, trimToTokens, textBudget, composeMessages, textGenParams, compactToolSpecs, parseToolCalls, TOOL_STAGE_SYSTEM, roleConfig, toolsTrust, routeStages, toolResultsAsReferences, looksLikeGarbage, makeStreamWatch, fitMessages, runAgentLoop, placeholderOf, BENCH_TOOLS, BENCH_CASES, scoreToolCase, summarizeToolBench, TASKS, generationParams, defaultMaxTokens, inferTask, pickModel, VISION_POLICIES, visionOrder, combineVision, structuredPrompt, parseStructured, resolveDevice, poseDevicePlan, f32GpuVariant, backendOrder, wantsNativeBackend, effectiveDevicePref, nativeToolMessages, nativeWithPrefill, resolveThreads, buildTask, formatResult, repoOfUrl, usageByModel, urlsOfModel, fmtBytes, estimateDownload };
 });

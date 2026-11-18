@@ -179,4 +179,11 @@ O1m 到 O11 做完後不結束，進入迴圈。完整規則與交接見 `docs/H
     - **O15a 完成範圍（2026-11-18 第二步，唯讀）**：`docs/COVERAGE.cudaweb-models.md` 涵蓋 21 列：VLM 三個（Florence-2、SmolVLM、LLaVA）、Qwen3 網頁與桌面、studio LLM、深度、分割、姿態、物件偵測（查無模型）、midigen 桌面與網頁、Whisper、Kokoro、SDXS、音訊三個、MOSS、e5 嵌入、離線翻譯、ECAPA、原生 NRT。每列有執行環境、預設裝置、cudaweb 狀態、這台能否走 GPU、證據行號。第一步表中的 Whisper 與 MOSS 行號已在第二步核對。
     - **O15a 未完成（不要當成已完成）**：① 沒有任何真機量測（這台沒有 CUDA，WebGPU fp32 路徑也沒量過）；② 「缺哪些算子」只能給已知項（depth int8 在 WASM 缺 `ConvInteger`），完整清單要讀每個 ONNX 的節點，需要下載或讀瀏覽器快取，本次不做；③ 未完整追蹤的預設裝置：Whisper 的 `order`、SDXS 的 `pick.ep`、layered 引擎的 `ep`；④ `web-lazy/chunks/midigpu.js` 的 cudaweb 引用只有字串計數，沒有逐行核對；⑤ 桌面 Qwen 原生路徑只追到 lm_head；⑥ 物件偵測只搜了 `renderer/src`、`main-ext.js`、`nr-*.js`、`native-slot-model.js`，沒搜 `renderer/vendor` 與 `web-lazy`。
 - [ ] **O15b 逐一補齊**，依「使用頻率 × 在這台的收益」排序；每個模型走既有做法：逐節點對 ORT 驗證 → 接線（預設關、失敗永久退回原路徑、兩處設定開關同步）→ 量前後（標硬體）。**無 f16 的卡不得因 f16 要求而退 CPU**，改用 f32／q8 路徑。
+  - **進度（2026-11-18，node，仍不勾）**：
+    - ①MoveNet（姿態）：`poseGpu` 設定（預設關），`FaVlm.poseDevicePlan`；只有 fp32、無 f16 閘門的權重才試 WebGPU，失敗永久退回 CPU（commit 39dd8fe42）。設定開關在 AI 助理設定的 gpu-compat 窗格。
+    - ②Depth Anything V2 Small（深度）：`f32Gpu` 設定（預設關），`FaVlm.f32GpuVariant`：只有 CPU 權重是 fp32（已在 CPU 實測）、任務在白名單（depth-estimation）、有 WebGPU 時，才放行 GPU 的 fp32 版（回傳模型副本，原模型不動）；失敗永久退回 CPU。`vlm_core.test.js` 192 項通過（含 f32 閘門 14 項）。
+    - **未驗證**：這台沒有真 GPU，兩條 WebGPU 路徑都沒有量測，也沒有對拍 WebGPU 與 CPU 的輸出；預設關。
+    - **沒選 SlimSAM**：它的 CPU 權重是 q8，沒有 fp32 證據，所以不放行。
+    - **桌面版設定頁**：`bootstrap.js` 的 `desktop` 分組沒有掛這兩個開關。該處註解記載 GPU 相容層刻意只放一處，所以只接在 AI 助理設定，這點與 O9 一致。
+    - **未完成**：web-lazy 與 renderer bundle 還沒用 `build-assistant.js` 重建（另一個 session 正在重寫 web-lazy 產物，本次未碰）；發布前要先建置。
 - [ ] 範圍外要如實標：沒有真權重、載入太重、或遇到 cudaweb 缺的算子（例如特殊卷積、非常規操作）的，記「未完成：原因」，不要宣稱全部完成。
