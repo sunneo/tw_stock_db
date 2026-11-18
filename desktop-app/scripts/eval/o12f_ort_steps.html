@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>O12f ORT 逐步參考</title>
+</head>
+<body>
+<h1>O12f：ORT（WASM）逐步解碼參考，帶 KV 快取</h1>
+<p>與骨架相同的步進方式：一次一個詞元，past_key_values 由上一步的 present 接回。結果存進 IndexedDB（o12f／ref），給對拍頁讀取。</p>
+<pre id="out">執行中…</pre>
+<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/ort.min.js"></script>
+<script>
+(async function () {
+  const out = document.getElementById('out');
+  const log = [];
+  const say = (s) => { log.push(s); out.textContent = log.join('\n'); };
+  const TOKENS = [128000, 9906, 1917, 374, 264, 2874];
+  try {
+    const ort = self.ort;
+    ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/';
+    ort.env.wasm.numThreads = 1;
+    const url = '/ai-temp/llama32-1b/model_quantized.onnx';
+    const t0 = performance.now();
+    const sess = await ort.InferenceSession.create(url, { executionProviders: ['wasm'], graphOptimizationLevel: 'all' });
+    say('session ' + Math.round(performance.now() - t0) + ' ms');
+    const L = 16, Hkv = 8, hd = 64;
+    let past = {};
+    for (let l = 0; l < L; l++) { past['past_key_values.' + l + '.key'] = new ort.Tensor('float32', new Float32Array(0), [1, Hkv, 0, hd]); past['past_key_values.' + l + '.value'] = new ort.Tensor('float32', new Float32Array(0), [1, Hkv, 0, hd]); }
+    const steps = [], times = [];
+    for (let s = 0; s < TOKENS.length; s++) {
+      const feeds = Object.assign({}, past);
+      feeds.input_ids = new ort.Tensor('int64', BigInt64Array.from([BigInt(TOKENS[s])]), [1, 1]);
+      feeds.attention_mask = new ort.Tensor('int64', BigInt64Array.from(new Array(s + 1).fill(1n)), [1, s + 1]);
+      feeds.position_ids = new ort.Tensor('int64', BigInt64Array.from([BigInt(s)]), [1, 1]);
+      const t1 = performance.now();
+      const res = await sess.run(feeds);
+      times.push(performance.now() - t1);
+      const lg = res.logits.data;   // [1,1,V]
+      steps.push(Float32Array.from(lg));
+      const np = {};
+      for (let l = 0; l < L; l++) {
+        np['past_key_values.' + l + '.key'] = res['present.' + l + '.key'];
+        np['past_key_values.' + l + '.value'] = res['present.' + l + '.value'];
+      }
+      past = np;
+      let best = 0; for (let i = 1; i < lg.length; i++) if (lg[i] > lg[best]) best = i;
+      say('step ' + s + ' tok ' + TOKENS[s] + ' ms ' + Math.round(times[s]) + ' argmax ' + best + ' logit ' + lg[best].toFixed(4));
+    }
+    // 存進 IndexedDB
+    await new Promise((resolve, reject) => {
+      const req = indexedDB.open('o12f', 1);
+      req.onupgradeneeded = () => req.result.createObjectStore('ref');
+      req.onsuccess = () => {
+        const tx = req.result.transaction('ref', 'readwrite');
+        tx.objectStore('ref').put({ tokens: TOKENS, logits: steps, timesMs: times }, 'llama32-1b');
+        tx.oncomplete = () => { req.result.close(); resolve(); };
+        tx.onerror = () => reject(tx.error);
+      };
+      req.onerror = () => reject(req.error);
+    });
+    window.__o12f = { ok: true, timesMs: times, tokens: TOKENS };
+    say('saved IndexedDB o12f/ref/llama32-1b');
+  } catch (e) {
+    window.__o12f = { ok: false, error: String((e && e.stack) || e) };
+    say('ERROR ' + String((e && e.stack) || e));
+  }
+})();
+</script>
+</body>
+</html>

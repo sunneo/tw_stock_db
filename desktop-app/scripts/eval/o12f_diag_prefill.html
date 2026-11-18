@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>O12f 診斷：ORT 兩詞元一次 prefill</title>
+</head>
+<body>
+<h1>O12f 診斷：ORT 一次 prefill（2 個詞元）的位置 1 logits</h1>
+<pre id="out">執行中…</pre>
+<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/ort.min.js"></script>
+<script>
+(async function () {
+  const out = document.getElementById('out');
+  const log = [];
+  const say = (s) => { log.push(s); out.textContent = log.join('\n'); };
+  try {
+    const ort = self.ort;
+    ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/';
+    ort.env.wasm.numThreads = 1;
+    const sess = await ort.InferenceSession.create('/ai-temp/llama32-1b/model_quantized.onnx', { executionProviders: ['wasm'], graphOptimizationLevel: 'all' });
+    const ids = [128000, 9906], T = ids.length;
+    const feeds = {};
+    feeds.input_ids = new ort.Tensor('int64', BigInt64Array.from(ids.map(BigInt)), [1, T]);
+    feeds.attention_mask = new ort.Tensor('int64', BigInt64Array.from(ids.map(() => 1n)), [1, T]);
+    feeds.position_ids = new ort.Tensor('int64', BigInt64Array.from(ids.map((_, i) => BigInt(i))), [1, T]);
+    for (let l = 0; l < 16; l++) { feeds['past_key_values.' + l + '.key'] = new ort.Tensor('float32', new Float32Array(0), [1, 8, 0, 64]); feeds['past_key_values.' + l + '.value'] = new ort.Tensor('float32', new Float32Array(0), [1, 8, 0, 64]); }
+    const res = await sess.run(feeds);
+    const V = res.logits.dims[2], lg = res.logits.data;
+    const at = (pos, idx) => lg[pos * V + idx];
+    const idx = [0, 11, 323, 2268];
+    say('prefill pos0: ' + idx.map((i) => i + '=' + at(0, i).toFixed(4)).join('  '));
+    say('prefill pos1: ' + idx.map((i) => i + '=' + at(1, i).toFixed(4)).join('  '));
+    window.__o12f_diag = { ok: true, pos1: idx.map((i) => [i, at(1, i)]), pos0: idx.map((i) => [i, at(0, i)]) };
+  } catch (e) {
+    window.__o12f_diag = { ok: false, error: String((e && e.stack) || e) };
+    say('ERROR ' + String((e && e.stack) || e));
+  }
+})();
+</script>
+</body>
+</html>

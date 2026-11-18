@@ -1,211 +1,137 @@
-// onnx_lite.js — 極簡 ONNX 讀取器與改寫器（只用 Uint8Array，Node 與瀏覽器都能跑，不需要 Buffer）。
-// 用途：從現有 q8 模型檔取出權重（推論概念驗證），以及產生「輸出隱藏狀態、不算 lm_head」的變體圖（DESIGN.webgpu-cuda.md §7.3）。
-// 純 UMD。桌面版的 nr-onnx-lite.js 是這份檔案的拷貝（改一邊要同步）。
+/* onnx_lite.js — 讀 ONNX 檔的最小 protobuf 解析（O12e）：只取圖的節點、屬性與 initializer 的位置，不複製大權重。
+ * 只支援本專案需要的欄位；遇到不認得的欄位直接略過。權重以 [off, len] 指向原始位元組（raw_data），需要時再取 typed array。
+ * UMD：node 用 module.exports；瀏覽器掛在 self.FaOnnxLite。
+ */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) module.exports = factory();
   else root.FaOnnxLite = factory();
-})(typeof self !== 'undefined' ? self : this, function () {
+}(typeof self !== 'undefined' ? self : this, function () {
   'use strict';
 
-  const td = typeof TextDecoder !== 'undefined' ? new TextDecoder('utf-8') : null;
-  const te = typeof TextEncoder !== 'undefined' ? new TextEncoder() : null;
-  const decodeUtf8 = (u8) => (td ? td.decode(u8) : Buffer.from(u8.buffer, u8.byteOffset, u8.length).toString('utf8'));
-  const encodeUtf8 = (s) => (te ? te.encode(s) : new Uint8Array(Buffer.from(s, 'utf8')));
-  const f32At = (u8, p) => new DataView(u8.buffer, u8.byteOffset, u8.byteLength).getFloat32(p, true);
+  // ONNX TensorProto.DataType
+  const DTYPE = { 1: 'float32', 2: 'uint8', 3: 'int8', 5: 'int16', 6: 'int32', 7: 'int64', 9: 'bool', 10: 'float16', 11: 'float64', 16: 'bfloat16' };
+  const BYTES = { float32: 4, uint8: 1, int8: 1, int16: 2, int32: 4, int64: 8, bool: 1, float16: 2, float64: 8, bfloat16: 2 };
 
-  // 讀 varint，回傳 [值, 新位置]；值用 Number（模型檔不會超過 2^53，所以用乘法不用位元運算）
-  function varint(buf, pos) {
-    let r = 0, mul = 1;
-    for (;;) {
-      const b = buf[pos++];
-      r += (b & 0x7f) * mul;
-      if (!(b & 0x80)) break;
-      mul *= 128;
-    }
-    return [r, pos];
+  // 讀一個 varint；回傳 [值, 新位置]（值超過 2^53 時精度會丟，本檔案只用於長度與小數值）
+  // varint 用 BigInt 累加再以 64 位元有號解讀：protobuf 的負數 int32／int64 會編成 10 個位元組（sign-extended），不能用浮點數直接算。
+  function varint(u8, p) {
+    let v = 0n, sh = 0n, b;
+    do { b = u8[p++]; v |= BigInt(b & 0x7f) << sh; sh += 7n; } while (b & 0x80);
+    return [Number(BigInt.asIntN(64, v)), p];
   }
-  // 走一段訊息，對每個欄位呼叫 fn(欄位號, 線型, 值或[起,迄])；線型 2 的值是 [起, 迄]
-  function walk(buf, start, end, fn) {
-    let pos = start;
-    while (pos < end) {
-      let t; [t, pos] = varint(buf, pos);
-      const field = Math.floor(t / 8), wt = t % 8;
-      if (wt === 0) { let v; [v, pos] = varint(buf, pos); fn(field, 0, v); }
-      else if (wt === 2) { let len; [len, pos] = varint(buf, pos); fn(field, 2, [pos, pos + len]); pos += len; }
-      else if (wt === 5) { fn(field, 5, [pos, pos + 4]); pos += 4; }
-      else if (wt === 1) { fn(field, 1, [pos, pos + 8]); pos += 8; }
-      else throw new Error('onnx_lite：不支援的線型 ' + wt);
+  // 讀一個訊息範圍 [s, e) 的所有欄位：回傳 [{ num, wt, v, off, len }]（wt 2 的 off／len 指向原位元組；wt 0 的 v 是數值）
+  function fields(u8, s, e) {
+    const out = [];
+    let p = s;
+    while (p < e) {
+      let key; [key, p] = varint(u8, p);
+      const num = Math.floor(key / 8), wt = key % 8;
+      if (wt === 0) { let v; [v, p] = varint(u8, p); out.push({ num, wt, v }); }
+      else if (wt === 2) { let len; [len, p] = varint(u8, p); out.push({ num, wt, off: p, len }); p += len; }
+      else if (wt === 5) { out.push({ num, wt, off: p, len: 4 }); p += 4; }
+      else if (wt === 1) { out.push({ num, wt, off: p, len: 8 }); p += 8; }
+      else throw new Error('onnx_lite：不支援的 wire type ' + wt + '（位置 ' + p + '）');
     }
+    return out;
   }
-  const str = (buf, r) => decodeUtf8(buf.subarray(r[0], r[1]));
+  const str = (u8, f) => decodeUtf8(u8, f.off, f.len);
+  function decodeUtf8(u8, off, len) {
+    if (typeof TextDecoder !== 'undefined') return new TextDecoder('utf-8').decode(u8.subarray(off, off + len));
+    return Buffer.from(u8.buffer, u8.byteOffset + off, len).toString('utf8');
+  }
+  // 陣列型欄位（repeated varint，可能是 packed）
+  function ints(u8, f) {
+    if (f.wt === 0) return [f.v];
+    const r = []; let p = f.off; const e = f.off + f.len;
+    while (p < e) { let v; [v, p] = varint(u8, p); r.push(v); }
+    return r;
+  }
 
-  function parseTensor(buf, r) {
-    const t = { name: '', dims: [], dtype: 0, raw: null, ext: {} };
-    walk(buf, r[0], r[1], (f, wt, v) => {
-      if (f === 1) { if (wt === 0) t.dims.push(v); else { let p = v[0]; while (p < v[1]) { let x; [x, p] = varint(buf, p); t.dims.push(x); } } }
-      else if (f === 2) t.dtype = v;
-      else if (f === 8) t.name = str(buf, v);
-      else if (f === 9) t.raw = v;  // [起, 迄]，不複製
-      else if (f === 4) { if (!t.floats) t.floats = []; if (wt === 2) { for (let p = v[0]; p < v[1]; p += 4) t.floats.push(f32At(buf, p)); } else t.floats.push(f32At(buf, v[0])); }
-      else if (f === 5) { if (!t.ints) t.ints = []; if (wt === 2) { let p = v[0]; while (p < v[1]) { let x; [x, p] = varint(buf, p); t.ints.push(x); } } else t.ints.push(v); }
-      else if (f === 7) { if (!t.ints) t.ints = []; if (wt === 2) { let p = v[0]; while (p < v[1]) { let x; [x, p] = varint(buf, p); t.ints.push(x); } } else t.ints.push(v); }   // int64_data（小的 int64 常數，例如 Split 的 splits）
-      else if (f === 13) { // external_data：StringStringEntryProto
-        let k = '', val = '';
-        walk(buf, v[0], v[1], (ff, w2, vv) => { if (ff === 1) k = str(buf, vv); else if (ff === 2) val = str(buf, vv); });
-        t.ext[k] = val;
+  function parseTensor(u8, s, e) {
+    const fs = fields(u8, s, e);
+    const t = { name: '', dims: [], dtype: null, rawOff: -1, rawLen: 0, ints: null, floats: null };
+    for (const f of fs) {
+      if (f.num === 1) t.dims.push(...ints(u8, f));
+      else if (f.num === 2) t.dtype = DTYPE[f.v] || ('dtype' + f.v);
+      else if (f.num === 8) t.name = str(u8, f);
+      else if (f.num === 9) { t.rawOff = f.off; t.rawLen = f.len; }
+      else if (f.num === 4) {   // float_data：單一 fixed32（wt 5）或 packed（wt 2）
+        t.floatVals = t.floatVals || [];
+        if (f.wt === 5) t.floatVals.push(new DataView(u8.buffer, u8.byteOffset + f.off, 4).getFloat32(0, true));
+        else for (let q = f.off; q < f.off + f.len; q += 4) t.floatVals.push(new DataView(u8.buffer, u8.byteOffset + q, 4).getFloat32(0, true));
       }
-    });
+      else if (f.num === 5 || f.num === 7) { t.intVals = t.intVals || []; t.intVals.push(...ints(u8, f)); }   // int32_data／int64_data（小的 zero point 與 scale 常用）
+    }
+    t.elems = t.dims.reduce((a, b) => a * b, 1);
     return t;
   }
-  function parseAttr(buf, r) {
-    const a = { name: '', i: null, f: null, ints: [], s: null };
-    walk(buf, r[0], r[1], (f, wt, v) => {
-      if (f === 1) a.name = str(buf, v);
-      else if (f === 3) a.i = v;
-      else if (f === 2) a.f = f32At(buf, v[0]);
-      else if (f === 8) { if (wt === 0) a.ints.push(v); }
-      else if (f === 4) a.s = str(buf, v);
-      else if (f === 5) a.tensor = v;  // TensorProto 範圍（Constant 節點的 value）
-      else if (f === 6) a.graph = v;   // GraphProto 範圍（If／Loop 的子圖）
-      else if (f === 9) { if (!a.strings) a.strings = []; a.strings.push(str(buf, v)); }
-    });
+  function parseAttr(u8, s, e) {
+    const a = { name: '', type: 0 };
+    for (const f of fields(u8, s, e)) {
+      if (f.num === 1) a.name = str(u8, f);
+      else if (f.num === 20) a.type = f.v;
+      else if (f.num === 2) { const dv = new DataView(u8.buffer, u8.byteOffset + f.off, 4); a.f = dv.getFloat32(0, true); }
+      else if (f.num === 3) a.i = f.v;
+      else if (f.num === 4) a.s = str(u8, f);
+      else if (f.num === 8) { a.ints = a.ints || []; a.ints.push(...ints(u8, f)); }
+      else if (f.num === 5) a.t = parseTensor(u8, f.off, f.off + f.len);
+    }
     return a;
   }
-  // 取得 Constant 節點的值：{ dims, dtype, values（Float32Array 或 BigInt/數字陣列） }
-  function constantValue(m, node) {
-    const a = node.attrs && node.attrs.value;
-    if (!a || !a.tensor) throw new Error('onnx_lite：節點 ' + node.name + ' 不是 tensor 常數');
-    const t = parseTensor(m.buf, a.tensor);
-    let values = null;
-    if (t.floats) values = Float32Array.from(t.floats);
-    else if (t.ints) values = t.ints.slice();
-    else if (t.raw) {
-      const bytes = m.buf.subarray(t.raw[0], t.raw[1]);
-      const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-      const n = bytes.byteLength;
-      if (t.dtype === 1) { values = new Float32Array(n / 4); for (let i = 0; i < n / 4; i++) values[i] = dv.getFloat32(i * 4, true); }
-      else if (t.dtype === 6) { values = new Int32Array(n / 4); for (let i = 0; i < n / 4; i++) values[i] = dv.getInt32(i * 4, true); }
-      else if (t.dtype === 7) { values = []; for (let i = 0; i < n / 8; i++) values.push(Number(dv.getBigInt64(i * 8, true))); }
-      else if (t.dtype === 9) { values = Array.from(bytes); }
-      else values = bytes.slice();
+  function parseNode(u8, s, e) {
+    const n = { name: '', op: '', inputs: [], outputs: [], attrs: {}, domain: '' };
+    for (const f of fields(u8, s, e)) {
+      if (f.num === 1) n.inputs.push(str(u8, f));
+      else if (f.num === 2) n.outputs.push(str(u8, f));
+      else if (f.num === 3) n.name = str(u8, f);
+      else if (f.num === 4) n.op = str(u8, f);
+      else if (f.num === 5) { const a = parseAttr(u8, f.off, f.off + f.len); n.attrs[a.name] = a; }
+      else if (f.num === 7) n.domain = str(u8, f);
     }
-    return { dims: t.dims, dtype: t.dtype, values };
-  }
-  function parseNode(buf, r) {
-    const n = { name: '', op: '', inputs: [], outputs: [], attrs: {} };
-    walk(buf, r[0], r[1], (f, wt, v) => {
-      if (f === 1) n.inputs.push(str(buf, v));
-      else if (f === 2) n.outputs.push(str(buf, v));
-      else if (f === 3) n.name = str(buf, v);
-      else if (f === 4) n.op = str(buf, v);
-      else if (f === 5) { const a = parseAttr(buf, v); n.attrs[a.name] = a; }
-    });
     return n;
   }
-  // 讀整個模型：回傳 { buf, nodes, inits（名稱→張量資訊）}
-  // 解析一個 GraphProto（範圍 [起, 迄]）：節點、初始值、圖輸入名、圖輸出名（不含初始值）
-  function parseGraph(buf, graph) {
-    const nodes = [], inits = {}, inputs = [], outputs = [];
-    const vname = (r) => { let s = ''; walk(buf, r[0], r[1], (f, wt, v) => { if (f === 1) s = str(buf, v); }); return s; };
-    walk(buf, graph[0], graph[1], (f, wt, v) => {
-      if (f === 1) nodes.push(parseNode(buf, v));
-      else if (f === 5) { const t = parseTensor(buf, v); inits[t.name] = t; }
-      else if (f === 11) inputs.push(vname(v));
-      else if (f === 12) outputs.push(vname(v));
-    });
-    return { nodes: nodes, inits: inits, inputs: inputs.filter((x) => !inits[x]), outputs: outputs };
-  }
-  function parseModel(buf) {
-    let graph = null;
-    walk(buf, 0, buf.length, (f, wt, v) => { if (f === 7) graph = v; });
-    if (!graph) throw new Error('onnx_lite：找不到 graph');
-    const g = parseGraph(buf, graph);
-    return { buf: buf, nodes: g.nodes, inits: g.inits, inputs: g.inputs, outputs: g.outputs };
+  function parseValueInfo(u8, s, e) {
+    const v = { name: '' };
+    for (const f of fields(u8, s, e)) if (f.num === 1) v.name = str(u8, f);
+    return v;
   }
 
-  // ---- 位元組組裝（只用 Uint8Array）----
-  const enc = (n) => { const o = []; while (n > 127) { o.push((n % 128) | 128); n = Math.floor(n / 128); } o.push(n); return Uint8Array.from(o); };
-  const cat = (list) => {
-    let len = 0; for (const b of list) len += b.length;
-    const out = new Uint8Array(len); let p = 0;
-    for (const b of list) { out.set(b, p); p += b.length; }
-    return out;
-  };
-  const fVarB = (f, v) => cat([enc(f * 8), enc(v)]);
-  const fBytesB = (f, b) => cat([enc(f * 8 + 2), enc(b.length), b]);
-  const fStrB = (f, s) => fBytesB(f, encodeUtf8(s));
-  function valueInfo(name, elem, dims) {  // dims：數字或字串（符號維度，dim_param）
-    const dimMsgs = dims.map((d) => fBytesB(1, typeof d === 'number' ? fVarB(1, d) : fStrB(2, d)));
-    return cat([fStrB(1, name), fBytesB(2, fBytesB(1, cat([fVarB(1, elem), fBytesB(2, cat(dimMsgs))])))]);
-  }
-  // 依序走一段訊息，回傳每個欄位 { f, wt, start, end, vr }（start..end 是含標籤的整段位元組）
-  function fieldsOf(buf, a, b) {
-    const out = [];
-    let pos = a;
-    while (pos < b) {
-      const start = pos;
-      let t; [t, pos] = varint(buf, pos);
-      const f = Math.floor(t / 8), wt = t % 8;
-      let vr;
-      if (wt === 0) { let v; [v, pos] = varint(buf, pos); vr = v; }
-      else if (wt === 2) { let len; [len, pos] = varint(buf, pos); vr = [pos, pos + len]; pos += len; }
-      else if (wt === 5) { vr = [pos, pos + 4]; pos += 4; }
-      else if (wt === 1) { vr = [pos, pos + 8]; pos += 8; }
-      else throw new Error('onnx_lite：不支援的線型 ' + wt);
-      out.push({ f: f, wt: wt, start: start, end: pos, vr: vr });
+  // u8：整個 .onnx 檔案的 Uint8Array。回傳 { producer, graph: { name, nodes, inits: Map(name→tensor), inputs, outputs } }
+  function parseModel(u8) {
+    const top = fields(u8, 0, u8.length);
+    const g = top.find((f) => f.num === 7);
+    if (!g) throw new Error('onnx_lite：找不到 graph（ModelProto.graph）');
+    const graph = { name: '', nodes: [], inits: new Map(), inputs: [], outputs: [] };
+    for (const f of fields(u8, g.off, g.off + g.len)) {
+      if (f.num === 1) graph.nodes.push(parseNode(u8, f.off, f.off + f.len));
+      else if (f.num === 2) graph.name = str(u8, f);
+      else if (f.num === 5) { const t = parseTensor(u8, f.off, f.off + f.len); graph.inits.set(t.name, t); }
+      else if (f.num === 11) graph.inputs.push(parseValueInfo(u8, f.off, f.off + f.len));
+      else if (f.num === 12) graph.outputs.push(parseValueInfo(u8, f.off, f.off + f.len));
     }
-    return out;
+    return { graph: graph };
   }
-  // 把模型改成：移除 dropNodeName 節點與之後不再被使用的節點，並把圖輸出 replaceOutput 換成 hiddenName（float32，維度 hiddenDims）
-  // 權重位元組原樣沿用（subarray，不複製）；回傳 { removed, buf():Uint8Array }
-  function buildHiddenStateModel(buf, o) {
-    const top = fieldsOf(buf, 0, buf.length);
-    const gf = top.find((x) => x.f === 7);
-    const parts = fieldsOf(buf, gf.vr[0], gf.vr[1]);
-    const nodes = [];
-    parts.forEach((p, i) => { if (p.f === 1) { const n = parseNode(buf, p.vr); n._i = i; nodes.push(n); } });
-    const drop = new Set();
-    const target = nodes.find((n) => n.name === o.dropNodeName);
-    if (!target) throw new Error('onnx_lite：找不到節點 ' + o.dropNodeName);
-    drop.add(target);
-    const outNames = new Set(); // 圖輸出（扣掉要換掉的）
-    parts.forEach((p) => { if (p.f === 12) { let nm = ''; walk(buf, p.vr[0], p.vr[1], (f, wt, v) => { if (f === 1) nm = str(buf, v); }); if (nm !== o.replaceOutput) outNames.add(nm); } });
-    outNames.add(o.hiddenName);
-    // 反覆清掉沒有任何使用者、也不是圖輸出的節點
-    for (let changed = true; changed;) {
-      changed = false;
-      const used = new Set(outNames);
-      nodes.forEach((n) => { if (!drop.has(n)) n.inputs.forEach((x) => used.add(x)); });
-      nodes.forEach((n) => { if (!drop.has(n) && n.outputs.every((x) => !used.has(x))) { drop.add(n); changed = true; } });
+
+  // 取得 initializer 的 typed array（指向原檔案，不複製；不對齊時複製一份）。int8／uint8 直接回傳 view。
+  function tensorArray(u8, t) {
+    if (t.rawOff < 0) {   // 小張量：值放在 float_data／int32_data
+      if (t.floatVals && t.dtype === 'float32') return Float32Array.from(t.floatVals.slice(0, t.elems || t.floatVals.length));
+      if (t.intVals && (t.dtype === 'int8' || t.dtype === 'uint8' || t.dtype === 'int32')) {
+        const Ctor = { int8: Int8Array, uint8: Uint8Array, int32: Int32Array }[t.dtype];
+        return Ctor.from(t.intVals.slice(0, t.elems || t.intVals.length));
+      }
+      throw new Error('onnx_lite：' + t.name + ' 沒有 raw_data，也不是可讀的 float_data／int32_data（' + t.dtype + '）');
     }
-    const keepIdx = new Set(); drop.forEach((n) => keepIdx.add(n._i));
-    const gp = [];
-    parts.forEach((p, i) => {
-      if (p.f === 1 && keepIdx.has(i)) return;
-      if (p.f === 12) { let nm = ''; walk(buf, p.vr[0], p.vr[1], (f, wt, v) => { if (f === 1) nm = str(buf, v); }); if (nm === o.replaceOutput) { gp.push(fBytesB(12, valueInfo(o.hiddenName, 1, o.hiddenDims))); return; } }
-      gp.push(buf.subarray(p.start, p.end));
-    });
-    const gLen = gp.reduce((s, b) => s + b.length, 0);
-    const out = [];
-    top.forEach((p) => { if (p === gf) { out.push(cat([enc(7 * 8 + 2), enc(gLen)])); gp.forEach((b) => out.push(b)); } else out.push(buf.subarray(p.start, p.end)); });
-    return { removed: Array.from(drop).map((n) => n.name), buf: function () { return cat(out); } };
+    const bytes = BYTES[t.dtype];
+    if (!bytes) throw new Error('onnx_lite：不支援的 dtype ' + t.dtype + '（' + t.name + '）');
+    const need = t.elems * bytes;
+    if (t.rawLen !== need) throw new Error('onnx_lite：' + t.name + ' 的 raw_data 長度 ' + t.rawLen + ' 與形狀需要的 ' + need + ' 不符');
+    const buf = u8.buffer, base = u8.byteOffset + t.rawOff;
+    const make = { float32: Float32Array, int8: Int8Array, uint8: Uint8Array, int32: Int32Array, int64: BigInt64Array, float16: Uint16Array, bfloat16: Uint16Array }[t.dtype];
+    if (!make) throw new Error('onnx_lite：' + t.dtype + ' 暫不取陣列（' + t.name + '）');
+    if (base % BYTES[t.dtype] === 0) return new make(buf, base, t.elems);
+    return new make(buf.slice(base, base + need), 0, t.elems);   // 未對齊：複製一份
   }
-  // 取張量的位元組（raw_data；外部資料不支援）
-  function tensorBytes(model, name) {
-    const t = model.inits[name];
-    if (!t) throw new Error('onnx_lite：沒有權重 ' + name);
-    if (!t.raw) throw new Error('onnx_lite：權重 ' + name + ' 沒有 raw_data（可能是外部資料或欄位型）');
-    return model.buf.subarray(t.raw[0], t.raw[1]);
-  }
-  // 取純量（scale 為 float、zero_point 為整數）：raw 或 floats／ints 欄位都接受
-  function scalar(model, name) {
-    const t = model.inits[name];
-    if (!t) throw new Error('onnx_lite：沒有權重 ' + name);
-    if (t.floats && t.floats.length) return t.floats[0];
-    if (t.ints && t.ints.length) return t.ints[0];
-    if (t.raw) { const b = model.buf; return t.dtype === 1 ? f32At(b, t.raw[0]) : b[t.raw[0]]; }
-    throw new Error('onnx_lite：權重 ' + name + ' 沒有可讀的純量');
-  }
-  const DTYPE = { 1: 'float32', 2: 'uint8', 3: 'int8', 6: 'int32', 7: 'int64', 10: 'float16' };
-  return { parseModel, parseGraph, tensorBytes, scalar, buildHiddenStateModel, DTYPE, constantValue };
-});
+
+  return { parseModel: parseModel, tensorArray: tensorArray, DTYPE: DTYPE, BYTES: BYTES };
+}));

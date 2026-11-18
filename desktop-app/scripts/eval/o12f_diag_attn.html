@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>O12f 診斷：ORT 第 0 層注意力輸出</title>
+</head>
+<body>
+<h1>O12f 診斷：ORT 第 0 層 o_proj 前的注意力輸出（步 1）</h1>
+<pre id="out">執行中…</pre>
+<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/ort.min.js"></script>
+<script>
+(async function () {
+  const out = document.getElementById('out');
+  const log = [];
+  const say = (s) => { log.push(s); out.textContent = log.join('\n'); };
+  const NAME = '/model/layers.0/self_attn/Reshape_7_output_0';
+  try {
+    const ort = self.ort;
+    ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/';
+    ort.env.wasm.numThreads = 1;
+    const sess = await ort.InferenceSession.create('/ai-temp/llama32-1b/model_quantized.onnx', { executionProviders: ['wasm'], graphOptimizationLevel: 'disabled' });
+    const TOK = [128000, 9906];
+    let past = {};
+    for (let l = 0; l < 16; l++) { past['past_key_values.' + l + '.key'] = new ort.Tensor('float32', new Float32Array(0), [1, 8, 0, 64]); past['past_key_values.' + l + '.value'] = new ort.Tensor('float32', new Float32Array(0), [1, 8, 0, 64]); }
+    let attn1 = null;
+    for (let s = 0; s < TOK.length; s++) {
+      const feeds = Object.assign({}, past);
+      feeds.input_ids = new ort.Tensor('int64', BigInt64Array.from([BigInt(TOK[s])]), [1, 1]);
+      feeds.attention_mask = new ort.Tensor('int64', BigInt64Array.from(new Array(s + 1).fill(1n)), [1, s + 1]);
+      feeds.position_ids = new ort.Tensor('int64', BigInt64Array.from([BigInt(s)]), [1, 1]);
+      const res = await sess.run(feeds, [NAME].concat(sess.outputNames));
+      if (s === 1) attn1 = { dims: res[NAME].dims, data: Array.from(res[NAME].data) };
+      const np = {};
+      for (let l = 0; l < 16; l++) { np['past_key_values.' + l + '.key'] = res['present.' + l + '.key']; np['past_key_values.' + l + '.value'] = res['present.' + l + '.value']; }
+      past = np;
+    }
+    window.__o12f_attn = { ok: true, dims: attn1.dims, head0: attn1.data.slice(0, 8), head1: attn1.data.slice(64, 72), n: attn1.data.length };
+    say('dims ' + JSON.stringify(attn1.dims));
+  } catch (e) {
+    window.__o12f_attn = { ok: false, error: String((e && e.stack) || e) };
+    say('ERROR ' + String((e && e.stack) || e));
+  }
+})();
+</script>
+</body>
+</html>

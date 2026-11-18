@@ -181,8 +181,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   if (r < qRows) {
     let m = r / p.H; let h = r % p.H; let src = m * Nq + h * p.hd;
     for (var d: u32 = 0u; d < p.hd; d = d + 1u) { let v = qin[src + d]; t[d] = v; ss = ss + nf(v * v); }
-    let inv = 1.0 / sqrt(ss / f32(p.hd) + p.eps);
-    for (var d: u32 = 0u; d < p.hd; d = d + 1u) { t[d] = (t[d] * inv) * nw[d]; }
+    let inv = select(1.0, 1.0 / sqrt(ss / f32(p.hd) + p.eps), p.a == 0u);
+    for (var d: u32 = 0u; d < p.hd; d = d + 1u) { t[d] = (t[d] * inv) * select(1.0, nw[d], p.a == 0u); }
     let pos = st.past + m;
     for (var i: u32 = 0u; i < half; i = i + 1u) {
       let c = trig[pos * half + i]; let s = trig[p.maxT * half + pos * half + i];
@@ -193,8 +193,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   } else {
     let r2 = r - qRows; let m = r2 / p.Hkv; let hk = r2 % p.Hkv; let src = m * Nk + hk * p.hd;
     for (var d: u32 = 0u; d < p.hd; d = d + 1u) { let v = kin[src + d]; t[d] = v; ss = ss + nf(v * v); }
-    let inv = 1.0 / sqrt(ss / f32(p.hd) + p.eps);
-    for (var d: u32 = 0u; d < p.hd; d = d + 1u) { t[d] = (t[d] * inv) * nw[p.hd + d]; }
+    let inv = select(1.0, 1.0 / sqrt(ss / f32(p.hd) + p.eps), p.a == 0u);
+    for (var d: u32 = 0u; d < p.hd; d = d + 1u) { t[d] = (t[d] * inv) * select(1.0, nw[p.hd + d], p.a == 0u); }
     let pos = st.past + m;
     let dst = pos * Nk + hk * p.hd;
     for (var i: u32 = 0u; i < half; i = i + 1u) {
@@ -535,10 +535,10 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
       const kv = sbuf(2 * maxT * Nk * 4); kvBufs.push(kv);
       curStream = l >= R; if (curStream) streamPairs[l] = MATS.flatMap((k) => (q4 ? [[slots[k], Ly[k].W], [slotsS[k], Ly[k].S]] : [[slots[k], Ly[k].W]]));
       const inN = fbuf(Ly.inNorm), postN = fbuf(Ly.postNorm);
-      const nw = new Float32Array(2 * hd); nw.set(Ly.qNorm, 0); nw.set(Ly.kNorm, hd); const nwB = fbuf(nw);
+      const nw = new Float32Array(2 * hd); if (Ly.qNorm) nw.set(Ly.qNorm, 0); if (Ly.kNorm) nw.set(Ly.kNorm, hd); const nwB = fbuf(nw);   // 沒有 qk-norm 的架構（Llama）：權重留 0，下面的 noNorm 旗標不讀它們
       rmsQuantAdd(hA, inN);
       mmAdd(q4 ? xn : qi, Ly.q, qb, 'q'); mmAdd(q4 ? xn : qi, Ly.k, kb, 'k'); mmAdd(q4 ? xn : qi, Ly.v, vb, 'v');
-      add('qk', [qb, kb, vb, nwB, trigB, qr, kv, ubuf((d) => { d.setUint32(0, H, true); d.setUint32(4, Hkv, true); d.setUint32(8, hd, true); d.setUint32(12, maxT, true); d.setFloat32(16, W.eps, true); }), stBuf], (M) => [Math.ceil(M * (H + Hkv) / 64), 1]);
+      add('qk', [qb, kb, vb, nwB, trigB, qr, kv, ubuf((d) => { d.setUint32(0, H, true); d.setUint32(4, Hkv, true); d.setUint32(8, hd, true); d.setUint32(12, maxT, true); d.setFloat32(16, W.eps, true); d.setUint32(20, W.qkNorm === false ? 1 : 0, true); }), stBuf], (M) => [Math.ceil(M * (H + Hkv) / 64), 1]);
       add('attn', [qr, kv, scr, ao, ubuf((d) => { d.setUint32(0, H, true); d.setUint32(4, Hkv, true); d.setUint32(8, hd, true); d.setUint32(12, maxT, true); d.setFloat32(16, 1 / Math.sqrt(hd), true); }), stBuf], (M) => [Math.ceil(M * H / 64), 1]);
       quantAdd(ao, Nq); mmAdd(q4 ? ao : qi, Ly.o, ob, 'o');
       add('add', [hA, ob, hB, ubuf((d) => d.setUint32(0, D, true)), stBuf], (M) => [Math.ceil(M * D / 64), 1]);
