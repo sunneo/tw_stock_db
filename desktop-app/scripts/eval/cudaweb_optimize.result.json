@@ -1,73 +1,639 @@
 {
   "_說明": "cudaweb 優化清單的真機結果（清單 O10 的雛形）。每個變體：通過／待驗證（原因）。時間是牆鐘或每次派發，只標這台機器。",
-  "hardware": { "vendor": "nvidia", "arch": "kepler", "note": "使用者的 Kepler 14 W 低階卡；Chrome 真 WebGPU；無 shader-f16。2026-11-18 實測 adapter.features 回報 subgroups = true（先前記為無，已更正，待確認 subgroups 是否真能用於核心）" },
+  "hardware": {
+    "vendor": "nvidia",
+    "arch": "kepler",
+    "note": "使用者的 Kepler 14 W 低階卡；Chrome 真 WebGPU；無 shader-f16。2026-11-18 實測 adapter.features 回報 subgroups = true（先前記為無，已更正，待確認 subgroups 是否真能用於核心）"
+  },
   "recorded": "2026-11-17",
   "variants": {
-    "matmul_tiled_shared_f32": { "status": "通過", "evidence": "O5：gpu_core.js 的 mmTileWgsl（WGSL.matmul 與 mm_ops 平鋪版共用一份）。mm_tile_check.html：4 種轉置（none／transA／transB／both）× 5 個形狀、3 個批次案例共 23 項，對 matmulTRef 相對誤差全部 0（逐位相同），層皆 T1；負對照（用錯的轉置旗標）相對誤差 1.50，證明比對有鑑別力。shared 8 KiB（上限 16 KiB）。", "kernelMsPerDispatch_incl_readback": { "M64_K1024_N1024": { "new_tile64_reg4x4": 19.0, "old_16x16_per_thread_one": 20.2 }, "M512_K1024_N1024": { "new_tile64_reg4x4": 40.9 }, "M512_K1024_N3072": { "new_tile64_reg4x4": 128.7 } }, "note": "O5 的速度改善很小（64×1024×1024 約 6%，持平）：舊的 gpu_core 核心其實已是 16×16 平鋪，這次主要是統一與轉置。舊核心未量 512 形狀（會超過 Windows GPU 逾時）。時間含上傳與讀回，只標這台。" },
-    "batch_quantize_dyn_O6_2026_11_18": { "status": "通過", "evidence": "o6_quant_check.html（真 Chrome）：5 個案例，整批 1 次 submit，xq 逐元素與 quantizeDynamicRef 相同（0 個不一致），scale 相對誤差 ≤1e-6。" },
-    "batch_q8mm_O6_2026_11_18": { "status": "通過", "evidence": "o6_q8_batch_check.html（真 Chrome）：dec M1 K1024 N256、dec M8、pf M64、simple N6；每案 1 次 submit；相對誤差 0～1.3e-7。scale 從 GPU 讀（sx[2]）。" },
-    "batch_attn_O6_2026_11_18": { "status": "通過", "evidence": "o6_attn_batch_check.html（真 Chrome）：decode S1 past512 H16 Hkv8 hd128（attn_flash）、prefill S16 hd64（attn_flash）、小形狀 S3 hd32（保底 attn）；每案 1 次 submit；相對誤差 1e-7～1e-6。" },
-    "batch_matmulnbits_O6_2026_11_18": { "status": "通過", "evidence": "o6_nbits_batch_check.html（真 Chrome）：dec M1、dec M8、pf M32、simple（強制）M5；每案 1 次 submit；相對誤差 1e-7～5e-7。" },
-    "qwen_layer_submit_count_O6": { "status": "通過（假裝置計次，未用真模型驗證）：qwen_gpu_submit_count.test.js 3 項通過；一步解碼 submit＝L+1（L=1、3）、兩步＝2×(L+1)。真 Qwen3-0.6B 計次未做（載入權重太重，如實標示）。" },
-    "g5_variant_table_desktop_panel": { "status": "通過（真 Electron，獨立使用者資料夾與埠 18641：scripts/eval/g5_variant_panel.eval.js；表 10 列含表頭、六個按鈕齊全、套用最佳／匯出／匯入不合法 JSON（拒絕）／匯入 heuristic（拒絕）／恢復預設都有正確狀態文字）。注意：這台的能力簽名算成 sg0（wg16384-inv256-f160-sg0），與 priors 的實測項 sg1 不符，所以實測剖析在這台沒有命中；sg 的真值待確認。AI 助理設定 index.html 沒有 GPU 基準區塊，未加第二處（待管理者決定）。" },
-    "race_one_per_variant_2026_11_18": { "status": "通過（每頁一個變體，網址參數指定；每頁 3 次 submit：1 次驗證＋2 次計時，計時含上傳與讀回，牆鐘；相對誤差 1.3e-6～1.4e-6，判準 1e-5）", "pages": "scripts/eval/mm_race_one.html?M=&K=&N=&kernel=", "rows": [
-      { "shape": "64x1024x1024", "kernel": "mm_simple_f32", "msPerRun": [70.5, 60.0], "gflops": 2.06, "pctPeak": 1.6 },
-      { "shape": "64x1024x1024", "kernel": "mm_tiled_f32", "msPerRun": [35.5, 18.3], "gflops": 4.99, "pctPeak": 3.9 },
-      { "shape": "64x1024x1024", "kernel": "mm_vec4_f32", "msPerRun": [23.9, 19.9], "gflops": 6.13, "pctPeak": 4.8 },
-      { "shape": "512x1024x1024", "kernel": "mm_tiled_f32", "msPerRun": [52.2, 43.6], "gflops": 22.4, "pctPeak": 17.6 },
-      { "shape": "512x1024x1024", "kernel": "mm_vec4_f32", "msPerRun": [44.2, 32.0], "gflops": 28.2, "pctPeak": 22.1 }
-    ], "note": "512 的 simple 沒量（估時 54 ms 不超限，但這一輪沒排進來）。這些數字含上傳與讀回，比 kernel-only 的數字低，只標這台；與 mm_race_gt720_2026_11_18.json 的數字不同是因為量法（那份是 3 次 submit 的平均，離群大）。" },
-    "fusion_O7_split_2026_11_18": { "status": "通過（正確性：q 不一致 0、y 相對誤差 7e-8；拆開量：同一批次 64 次重複，牆鐘含讀回，只標這台）", "perChainMs": { "separate_rmsnorm_serial_3dispatch": 0.780, "separate_rmsnorm_parallel_3dispatch": 0.220, "fused_1dispatch": 0.109 }, "contribution": { "rmsnorm_parallelization": "0.780 → 0.220 ms（約 3.5 倍；與融合無關）", "fusion_of_rms_and_quant": "0.220 → 0.109 ms（約 2.0 倍；兩者都是並行版）", "total": "0.780 → 0.109 ms（約 7.1 倍）" }, "pages": "scripts/eval/o7_rmsq_check.html" },
-    "fusion_O7_rms_quant_add": { "status": "通過（合成模型，真 Chrome scripts/eval/o7_engine_check.html）：解碼融合 rmsq1 已接進正式引擎（fuseRmsQuant 預設開，只在 M=1 派發）。第一次跑時解碼 4 步全部不一致（每步 64 個 logits 不同）；原因：rmsq1 沒有引用 Step uniform，layout auto 丟掉綁定 5，融合派發的綁定群組無效，結果全為 0。修正：shader 在 M≠1 時早退（st 是 uniform，早退對整個工作群組一致，不影響後面的 barrier）。修正後預填（M=3）加解碼 4 步：logits 逐位相同，不同個數 0，token 全部相同。單元頁 o7_rmsq1_unit.html：量化整數 9 組全部逐位相同；9 組中 3 組的 scale 與 JS 參考差 1 ulp（JS 參考用的 sqrt 與 GPU 不同，不是融合錯誤）。未用真 Qwen3 模型驗證（標記未驗證）。派發數：靜態計數 43 對 39，兩種版本都列在清單裡，所以每步實際派發數還沒量。卷積融合與 softmax 線上版未做。" },
-    "training_O8_step1_qkv_batch": { "status": "通過（真 Chrome scripts/eval/o8_qkv_batch_check.html）：單層前向的 q、k、v 三個投影放進一個批次，1 次 submit（逐次版 3 次）；相對誤差 2.8e-7～4.1e-7（判準 1e-5）；牆鐘中位數 5.3 ms 對 11.2 ms（只標這台）。尚未做：loss 層級對 CPU 比對、反向、20 步。" },
-    "training_O8_loss_and_20_steps": { "status": "通過（真 Chrome scripts/eval/o8_loss_check.html，L=1 小模型 V64 d64 F128 r4 T16）：訓練器矩陣乘走 GPU（mm_ops），其餘在 CPU。單層 loss 相對誤差 1.7e-8、梯度相對誤差 4.0e-7；20 步 AdamW 每步 loss 最大相對誤差 3.3e-7（判準 1e-4）。每步 GPU 矩陣乘 53 次（每次一個 submit）。尚未做：前向批次化（目前是逐次往返）。" },
-    "training_O8_forward_batch": { "status": "通過（真 Chrome o8_loss_check.html?batched=1）：前向的 q/k/v 與 gate/up 矩陣乘分階段放進批次（studio/lora_ref_train.js 的 loraLinManyA、ammMany；算式與逐次版相同）。loss 與梯度與逐次版逐位相同（單層 loss 相對誤差 1.7e-8、梯度 4.0e-7；20 步最大 3.3e-7）；單層前向＋反向 GPU 矩陣乘提交次數 53 → 45（含一次性的競賽提交）。CPU 路徑的 lora_ref_train.test.js 與 async 測試通過。尚未做：反向的批次化、app 執行期（cudaweb runtime）提供 matmulMany。" },
-    "training_O8_runtime_module": { "status": "通過（真 Chrome，o8_loss_check.html?batched=1 改用 renderer/src/gpu/cudaweb_runtime.js 的 createRuntime，與逐次版的數字相同）。未完成：應用程式的主行程訓練器沒有 GPU 執行期；studio 的訓練器跑在主行程（studio_host.js 註冊 createCudawebBackend({}) 時沒有 getRuntime），GPU 只在渲染行程。接上需要主行程與渲染行程之間的橋接（main.js／preload 的 IPC），這會改動出貨的主行程程式，需要管理者確認方案後再做。" },
-    "training_O8_backward_batch":{ "status": "通過（真 Chrome o8_loss_check.html?batched=1）：反向的 q/k/v 與 o、gate/up 之後的矩陣乘分階段批次（lora_ref_train.js 的 loraLinBwdManyA、ammMany，算式與逐次版相同）。單層 loss 相對誤差 1.7e-8、梯度 4.0e-7（與逐次版相同）；20 步每步 loss 最大相對誤差 3.3e-7。單層前向＋反向 GPU 矩陣乘提交 53（逐次）→ 45（前向批次）→ 27（前向＋反向批次），穩定狀態每步 16 次。" },
-    "loop_round1_small_shape_64x256x256":{ "status": "沒有明顯好處（真 Chrome g1_gen_check.html，每次 8 派發、取 2 次計時）。瓶頸：v4 64×64 塊在 N=256 只派發 4 個工作群組（這台只有 1 個 SMX），0.47 ms／派發、17.7 GFLOP/s、13.8% 峰值。候選：kernel_gen R8 1×4 塊（16×64，16 個群組）0.43 ms、19.5 GFLOP/s、15.2%，正確性相對誤差 2.1e-7（判準 1e-5）。差距約 9%，在兩次計時的雜訊內（v4 0.57／0.38 ms，1×4 0.51／0.35 ms），不換 production。注意：2×2 塊不能用 vec4（TN 需為 4 的倍數）。" },
-    "loop_round2_q8mm_pf_f32_2026_11_18": { "status": "有好處（真 Chrome q8mm_check.html，純核心：同一 pass 派發 20 次取中位數）。挑選依據：q8mm 預填 M=64 的 FLOP 屋頂約 1.05 ms，原本 4.165 ms（約 25% 峰值），是非延遲類裡離屋頂最遠的。改法：內層乘法從 i32 改成 f32 乘加。每個 K 區塊 16 個 k 的部分和最大 16·255·255 ≈ 1.04e6，在 2^24 之內，每一步都精確；區塊結束才轉 i32 加進累加器，所以與 q8mmRef 逐位相同。正確性：pf 在 11 個 N 是 4 的倍數的形狀全部 maxAbsDiff 0（含 M=1、8、17、64、70、130；K 含 33、257、300、1024）；N=6 的形狀 pf 不能跑（與原本相同）。時間（每次派發，單位 ms）：M32 4.13→2.69、M64 4.165→2.685、M128 8.295→5.275、M256 16.135→10.34（約 −36%）。同頁對照：dec 的 M64 5.825 對先前 5.805、M256 22.605 對 22.69，在雜訊內，所以 pf 的前後比較可信。M=32 時 pf 已比 dec 快（2.69 對 2.95），門檻 Q8_PF_MIN_M 還是 64；改門檻另案，本輪不動。node infer_ops_test 8 項通過。" },
-    "loop_round3_q8mm_decr_2026_11_18": { "status": "有好處（真 Chrome q8mm_decr_check.html 純核心；o6_q8_batch_check.html 批次路徑）。挑選依據：q8mm 解碼 M=8 的 FLOP 屋頂約 0.13 ms，實測 0.81 ms（約 16%），是非延遲類裡離屋頂最遠的。原因：dec 每列一個工作群組，M 列就把整個權重讀 M 次。改法：新增 WGSL_Q8MM_DECR，一個工作群組負責 4 列 × 64 欄，權重字只讀一次、同時乘 4 列；整數累加與 dec 相同，所以逐位相同。正確性：decr 對 q8mmRef 在 11 個形狀 maxAbsDiff 0（M=1、2、3、4、5、8、9、16、17、33、70）。時間（每次派發，ms；decr 的工作群組數為 ceil(M/4)）：M1 0.17 對 0.35、M2 0.25 對 0.36（decr 較慢，所以 M<4 不改）、M4 0.455→0.40、M8 0.81→0.65、M16 1.58→1.135、M32 2.93→2.115。路由：q8mmVariant 在 4 ≤ M < 64 預設 decr，q8mm 與批次 q8mmBatched 都接上；infer_ops_test 的期望值依新路由更新，8 項通過；o6_q8_batch_check 的批次 decr（M8）relErr 0、通過。未達：M=8 離屋頂還差約 5 倍。剩下的瓶頸是 i32 乘法與每列的歸約屏障（4 列各一輪屏障）；下一輪可試 round 2 同樣精確的 f32 乘加。" },
-    "loop_round4_decr_f32_NULL_2026_11_18": { "status": "沒有好處，已還原（如實記）。試了 round 2 的 f32 乘加套用到 decr（每 256 段的部分和 ≤ 16·255·255 精確，段尾轉 i32）。正確性仍逐位相同（11 個形狀 maxAbsDiff 0），但純核心變慢：M8 0.65→0.75、M16 1.135→1.215、M32 2.115→2.32 ms（同頁 dec 對照 M8 0.81→0.855，雜訊約 5%，decr 的退步超過雜訊）。結論：decr 的瓶頸不是整數乘法，而是共用記憶體讀取與每列的歸約屏障；f32 只增加轉換。已 git checkout 還原 infer_ops.js 到第三輪的提交版（0f0484ec5），沒有提交程式變更。下一輪應改歸約（例如 4 列一起歸約，減少屏障）或縮小 xs 的讀取次數。" },
-    "loop_round5_decr_tiled_NULL_2026_11_18": { "status": "沒有好處，已還原（如實記）。假設：decr 的權重全域讀取在使用前才發出，延遲沒被 8 個 warp 隱藏。做法：K 分成 64 的區塊，權重（64 k × 16 字）與輸入（4 列 × 64 k）一起搬進共用記憶體後再累加（共用 9 KiB）。正確性：11 個形狀全部逐位相同。時間（ms，decr 對 decrT）：M4 0.40 對 0.405、M8 0.635 對 0.65、M16 1.10 對 1.08、M32 2.075 對 2.075，都在雜訊內。結論：全域延遲不是瓶頸。已 git checkout 還原 infer_ops.js 到 HEAD，刪除 q8mm_decrT_check.html，程式沒有提交。decr 剩下的成本可能在共用記憶體讀取（每個 MAC 讀一次 xs）與每列 4 輪歸約屏障；下一輪可先量歸約佔比（把歸約拿掉的假時間）再決定。" },
-    "loop_round6_decr_zp_hoist_NULL_2026_11_18": { "status": "沒有好處，已還原（如實記）。做法：把 zp 修正外提，acc 用原始位元組相乘，最後減 zp×Σx（整數精確）。第一次寫錯：修正套在 16 個切片各一次，結果全部錯（maxAbsDiff 4e4 到 2.5e5）；改成歸約後套一次，之後 11 個形狀逐位相同。時間（同頁，ms，decr 對 dec）：M4 0.425、M8 0.75、M16 1.315、M32 2.415；dec 對照 M8 0.82、M16 1.61。比值 decr/dec：M8 0.92、M16 0.82，而第三輪提交版是 0.80、0.72，所以沒有加速，反而變慢。已 git checkout 還原 infer_ops.js 到 HEAD，沒有提交程式變更。教訓：Node 單元測試沒有跑 GPU 核心，抓不到這種錯誤，GPU 逐位比對才是關卡。" },
-    "loop_round7_decr8_profile_2026_11_18": { "status": "有好處（小，已採用）。先量成本拆解（q8mm_decr_profile.html，M8 K1024 N1024，每次派發，20 次，交錯兩輪）：原版 0.645／0.645 ms；去掉歸約加總 0.645／0.66（沒有差）；xs 讀取換成常數 0.55／0.55（約 15%）。所以大部分時間在權重拆解加 i32 乘加，歸約幾乎不花時間。整數路徑的屋頂不是 f32 的 128 GFLOP/s：Kepler 的 i32 乘法比 f32 慢很多（架構估計，未實測），M8 的 decr 約 13 GMAC/s；pf M256 約 26 GMAC/s，已接近這個估計上限，所以 M8 才是離屋頂最遠的。改法：8 列版 WGSL_Q8MM_DECR8，一個工作群組 8 列 × 64 欄，權重拆解由 8 列分攤；歸約時 xs 同一段當 red，共用記憶體 8 KiB（同時仍能駐留 2 個工作群組）。正確性：8 個形狀（含 M=1、5、9、17、33、70，N 非 64 倍數）全部逐位相同；預設路由（q8mm 無強制）在 M=8、16、33 經 GPU（layer T1）逐位相同；批次 o6_q8_batch_check 的 decr8（M8）relErr 0。時間（交錯兩輪，ms）：M8 decr4 0.62／0.655 對 decr8 0.59／0.57（約 −9%，區間不重疊）；M16 1.115／1.085 對 1.08／1.065；M32 2.12／2.12 對 1.975／2.015（M16、32 在雜訊內）。路由：8 ≤ M < 64 → decr8；4–7 維持 decr；1–3 維持 dec；≥64 維持 pf。infer_ops_test 8 項通過、qwen submit 3 項通過。" },
-    "int_mac_roofline_2026_11_18": { "status": "量測完成（真 Chrome int_mac_roofline.html，8 條獨立鏈，每次派發 1024 步、128 工作群組，取 5 次中位數）。第一版寫錯：c += x·b 是迴圈不變量，編譯器化成只剩加法，得到 i32 895、f32 119 GMAC/s 的假數字，已捨棄。第二版 c = c·b + x（依賴前一步，不能外提）：i32 乘加屋頂 24.65 GMAC/s；f32 乘加 62.14 GMAC/s（約 124 GFLOP/s，與先前 f32 屋頂 128 GFLOP/s 一致）。對照 q8mm：pf M256 268M MAC／10.34 ms ≈ 26 GMAC/s（【更正】pf 自第二輪起就是 f32 乘加，應對 f32 屋頂 62 GMAC/s，約 42%，不是 i32 屋頂）；decr8 M8 8.4M MAC／0.58 ms ≈ 14.5 GMAC/s（約 59%）；dec M1 約 7 GMAC/s（記憶體受限，約 7 GB/s 對 11.4）。結論（【更正】）：pf 約 42% 的 f32 屋頂，是目前離屋頂最遠的預填運算；M8 解碼原本約 59% 的 i32 屋頂，第十輪已改用 f32 版。f32 屋頂是整數的 2.5 倍，但 round 4 的 f32 解碼變慢，原因是 f32 轉換的成本，不是精確性。下一步可試：位元組直接用 u32→f32 轉換，並把 zp 修正外提，並且只做一次 f32 轉換。" },
-    "O14a_entry_inventory_2026_11_18": { "status": "完成（唯讀盤點）。表在 docs/INVENTORY.cudaweb-entries.md。重點：cudaweb.matmul 仍未接 mm_ops 變體競賽勝者（gpu_core.js 沒有引用 mm_ops／variant_race／kernel_select）；cudaweb.gemv 是退化的 N=1 平鋪矩陣乘，沒有 M 小路徑；sum／dot／nrm2 已是分層歸約；cupy.sum 等與 torch 墊片多數仍是 numpy（CPU）；pycuda 未支援；numba 墊片走 WebGPU 但沒有 reduce／transpose 樣板。" },
-    "O14b_sgemm_transpose_alpha_beta_partial_2026_11_18": { "status": "部分完成（正確性，未量速度）。cudaweb.cublas.sgemm 原本只支援 transa=transb=N、alpha=1、beta=0。現在支援 transa／transb 為 N、T、C，任意 alpha、beta（beta≠0 必須給 C）。轉置與 alpha／beta 的後處理在宿主（Python）端做，額外 O(mk+kn+mn)；矩陣乘本身仍送同一個 matmul 操作。驗證：cudaweb_py_test.py 14 項全部通過（含 T 與 alpha=2、beta=1 的手算數值，以及不合法輸入不呼叫宿主）。未完成：把轉置旗標送進 GPU 核心（gpu_core.js 的 wgMatmul 已有 flags，需要改宿主橋接的 matmul 操作）、web-lazy 內嵌的 pybridge.js 尚未重建（embed-code-ui.js 會產生）、matmul 接競賽、gemv 的 M 小路徑、批次 gemm、dot／nrm2 的歸約已是樹狀但未量。" },
-    "O14c_transpose_template_2026_11_18": { "status": "正確性通過，速度沒有好處（如實記）。新增 WGSL.transpose（16×16 共用記憶體分塊，列寬 17 避開組衝突）與 api.transpose（有 CPU 參考）。真 Chrome（scripts/eval/transpose_check.html）：5×7、33×17、64×300、1000×1000、4096×512 全部 T1、逐位相同（maxAbsDiff 0）。時間（牆鐘，含陣列上傳與讀回，中位數）：1000×1000 GPU 65.5 對 JS 迴圈 21.6 ms；4096×512 144.8 對 46.4；2048×2048 301.4 對 102.2。結論：這個陣列進、陣列出的 API 上，傳輸成本蓋過核心，GPU 轉置反而慢約 3 倍，不能當成加速。樣板的用處在資料已經留在裝置上、接在其他核心之後的批次管線（nn_ops.createBatch）；那裡要另外量。node gpu_core.test.js 42 項通過（含轉置 T1 與參考一致）。Python 端 cudaweb.transpose 尚未加。" },
-    "O14c_scan_template_2026_11_18": { "status": "正確性通過（node 43 項，含 n=5、300、70000）；真 GPU 尚未驗證，未量速度。新增 WGSL scan_block（256 元素 Hillis–Steele 區塊掃描並寫出區塊總和）與 add_offsets（加上前區塊偏移），區塊總和遞迴掃描，全部留在裝置上。實測（同樣的 f32 區塊運算，對精確雙精度前綴和）最大絕對誤差：n=5 約 1.5e-8、n=300 約 1.5e-6、n=70000 約 1.3e-4；逐步 f32 累加在 n=70000 約 1.0e-3，所以測試參考改為雙精度，容差 5e-4。未完成：真 GPU 的正確性與牆鐘、Python 包裝、與 JS 迴圈的同頁比較。" },
-    "O14b_gemv_row_kernel_2026_11_18": { "status": "通過，有好處（真 Chrome scripts/eval/gemv_row_check.html，同頁交錯）。改法：cudaweb.gemv 原本把 x 當成 N=1 的平鋪矩陣乘（wgGemv → wgMatmul），現在改用 WGSL.gemv_row：每列一個工作群組、256 個執行緒跨步累加後做共用記憶體樹狀歸約；m > 65535 仍退回舊路徑。正確性（f32，順序不同，與 gemvRef 比相對誤差）：5×7 6.5e-8、64×300 2.8e-7、1024×1024 8.8e-7、3072×1024 1.1e-6、1024×3072 1.5e-6；全部 T1，判準 1e-5。時間（wall，含上傳與讀回，中位數 7 次，ms）：1024×1024 舊 27.3 對新 16.1；3072×1024 82.5 對 46.2；1024×3072 93.4 對 52.2；4096×4096 419.3 對 214.8（約快 1.7–2.0 倍）。限制：量的是牆鐘，不是純核心時間；上傳佔大部分時間，所以核心的差距被低估。node gpu_core.test.js 41 項通過（測試的假裝置補上 gemv_row 分支，只驗流程）。" },
-    "O14b_matmul_chooser_hook_2026_11_18": { "status": "注入點完成，未接線、未在 GPU 驗證。gpu_core.js 新增 setMatmulKernelChooser(fn)（預設 null，行為與原本相同）：wgMatmul 會問 fn(m,k,n,flags)，回 matmul_vec4 或 matmul；vec4 不合條件仍退回平鋪版。接線的阻礙：mm_ops.js 會 require gpu_core.js，所以 gpu_core 不能反過來 require mm_ops；接線要由宿主（或 mm_ops 載入時）呼叫 setMatmulKernelChooser，並把 pickMatmulKernel 的勝者對映到 matmul／matmul_vec4（mm_ops 還有 simple 版，gpu_core 沒有對應 WGSL）。驗證：node gpu_core.test.js 41 項通過；選核路徑需要真 WebGPU，尚未驗證。" },
-    "loop_round17_m1_splitk_NULL_2026_11_18": { "status": "沒有採用（如實記，頁內量測，程式未改）。M=1 沿 K 切成 4 段，每段一個工作群組（第三維），各寫 i32 部分和，再用第二個小核心相加（整數精確，逐位相同）。K1024N1024 0.25 對 0.25 ms；K1024N3072 0.46 對 0.435（較慢）；K3072N1024 0.41 對 0.405。結論：工作群組數不是 M=1 的瓶頸，增加平行度沒有幫助。M=1 的 61% 頻寬利用率，本輪試過的 32 欄、寬載入、載入先發、split-K 都沒有可採用的改善。" },
-    "loop_round15_16_null_2026_11_18": { "status": "沒有採用（如實記，只在頁內量，程式未改）。第十五輪：M=1 的 dec 改成 4 次載入先發（夾住索引、無分支，靠 xs 補零）；逐位相同；K1024N1024 0.15 對 0.15、K1024N3072 0.395 對 0.405、K3072N1024 0.40 對 0.405，都在雜訊內。結論：M=1 不是載入延遲受限。第十六輪：M=3 的 dec 對 decr2f 對 decr4f：0.405／0.35、0.355／0.385、0.35／0.35，在雜訊內，不改路由。M=1 的 61% 頻寬利用率目前找不到簡單改法；下一步若要做，需要重新設計切分（例如沿 K 切給多個工作群組，再做第二段歸約）。" },
-    "loop_round14_m1_variants_NULL_2026_11_18": { "status": "沒有採用（如實記）。M=1 解碼是頻寬受限，目前約 61% 的 11.4 GB/s。兩個實驗都在頁內測試、沒有改程式。(a) 32 欄版（每工作群組 32 欄、32 個切片）：逐位相同；K1024N1024 0.155 對 dec 0.145（較慢）；K1024N3072 0.60 對 0.35（慢很多）；K3072N1024 0.355 對 0.445（快約 20%）。結果時好時壞，不能用固定門檻採用。(b) 16 位元組寬載入（vec4<u32>，每執行緒 16 欄，共用記憶體 atomicAdd 歸約）：逐位相同；K1024N1024 0.615 對 0.245；K1024N3072 1.05 對 0.455；K3072N1024 0.675 對 0.355，全部慢 2–3 倍，原因是 64 個共用位址的 atomic 競爭。注意：同一機器上 dec 的數字這一輪比前一輪高（0.145 對 0.245），表示機器負載有漂移，比較只在同一頁、交錯量測時才可信。" },
-    "loop_round13_decr2f_2026_11_18": { "status": "小幅有好處（已採用）。依據：M=2 的 dec 每列一個工作群組，權重讀兩次；但 1 MB 權重在 11.4 GB/s 只需約 0.09 ms，實測 0.30 ms，離屋頂仍遠，所以瓶頸是延遲與佔用，不是頻寬。改法：WGSL_Q8MM_DECR2F，2 列 × 64 欄 f32 版，權重只讀一次（精確條件同 decr4f，K ≤ 4096）。正確性：M2 K1024 N1024、M2 K300 N132 經 GPU（T1）逐位相同；M2 K8192 走 dec，逐位相同。時間（同頁，ms）：dec 0.295／0.305 對 decr2f 0.28／0.25（約 −13%，區間不重疊）。這個改動幅度小，M=2 還有大空間，但需要不同的做法（例如拉高佔用），本輪不做。路由：M=2 且 K ≤ 4096 → decr2f。node infer_ops_test 8 項、qwen submit 3 項通過。" },
-    "loop_round12_decr4f_2026_11_18": { "status": "小幅有好處（已採用，M4 結果混合）。依據：M4–7 的 decr 約 10.5 GMAC/s，約 f32 屋頂的 17%，是目前離屋頂最遠的解碼路徑。改法：WGSL_Q8MM_DECR4F，4 列 × 64 欄的 f32 版（與 decr8f 相同的精確條件，K ≤ 4096；歸約前轉 i32）。正確性：預設路由 M4 K1024、M7 K300 N132、M5 K4096（上限）經 GPU（T1）逐位相同；M6 K8192 走 i32 decr，逐位相同。時間（真 Chrome，K1024 N1024，同頁，ms）：M7 decr 0.615／0.645 對 decr4f 0.55／0.55（約 −11%，區間不重疊）；M4 decr 0.345／0.365 對 decr4f 0.35／0.295（混合，大致持平）。路由：4 ≤ M < 8 且 K ≤ 4096 → decr4f。node infer_ops_test 8 項、qwen submit 3 項通過。" },
-    "loop_round11_pf8x4_2026_11_18": { "status": "有好處（已採用）。依據：更正後，預填 pf 在 M256 約 42% 的 f32 屋頂，是離屋頂最遠的預填運算。改法：WGSL_Q8MM_PF8X4，一個工作群組 64 列 × 128 欄，每執行緒 4 列 × 8 欄（32 個 f32 累加器）。權重字拆一次，每 32 次乘加只讀 6 次共用記憶體（4×4 版 10 次）。精確條件同 decr8f：K ≤ 4096。實測（真 Chrome，K1024 N1024，交錯，ms）：M64 2.70→1.94（−28%）、M128 5.24→3.83（−27%）、M256 10.41→7.12（−32%）；M70 N132 1.245→1.16（−7%）。逐位相同（maxAbsDiff 0，四個形狀）。路由：M ≥ 64 且 K ≤ 4096 → pf8x4；K > 4096 → 原本的 pf（仍是精確的 flush 版）。驗證：預設路由 M64 K1024、M70 K300 N132、M130 K4096 N256 經 GPU（T1）逐位相同；M100 K8192 走 pf 逐位相同；批次 o6_q8_batch_check 的 M64 K256 為 pf8x4，relErr 1.3e-7，1 次 submit，通過。node infer_ops_test 8 項、qwen submit 3 項通過。M256 的 f32 屋頂比例：約 60%（37.6／62）。" },
-    "loop_round10_decr8f_2026_11_18": { "status": "有好處（已採用）。依據：int_mac_roofline 量到的屋頂是 i32 24.65 GMAC/s、f32 62.14 GMAC/s，decr8 在 M8 約 59%，而 f32 屋頂高很多，所以改用 f32 乘加。改法：WGSL_Q8MM_DECR8F，8 列 × 64 欄，乘加用 f32，權重位元組在使用前做 f32(i32(byte)−zp)（精確）。精確條件：|輸入| ≤ 255、|權重−zp| ≤ 255，每個執行緒的部分和最多 K/16 個乘積；K ≤ 4096 時最大 16.6M < 2^24，每一步都精確。歸約前把部分和轉成 i32（不用 bitcast，因為小整數的位元可能是次正規數或 NaN，GPU 可能會清零）。主機端只在 8 ≤ M < 64 且 K ≤ 4096 時路由到 f32 版，其餘仍用 i32 decr8。實測（真 Chrome，K1024 N1024，交錯三輪，ms）：M8 decr8 0.60／0.66／0.60 對 f32 0.41／0.45／0.43（約 −30%）；M16 decr8 1.07／1.09／1.10 對 f32 0.73／0.78／0.78（約 −30%）。正確性（逐位相同，maxAbsDiff 0）：預設 q8mm 路由 M8 K1024、M16 K300 N132、M33 K1024 N256、M9 K4096（上限）皆經 GPU（layer T1）；M8 K8192 改走 i32 decr8（maxAbsDiff 0）；批次 o6_q8_batch_check 的 M8 K256 為 decr8f，relErr 0、1 次 submit、通過。註：q8mmVariant 的標籤原本少傳 K，o6 頁已修正。node infer_ops_test 8 項、qwen submit 3 項通過。" },
-    "loop_round9_decr8_contiguous_NULL_2026_11_18": { "status": "沒有好處，已還原（如實記）。做法：decr8 每個執行緒改取 16 個連續的 k（tl = ks·16 + j，原本是 j·16 + ks），讓共用記憶體讀取連續。正確性：8 個形狀全部逐位相同。時間（交錯兩輪，ms）：decr8 0.575／0.625（M8），decr4 0.62／0.605；M16、M32 在雜訊內。與第七輪的 decr8（M8 約 0.58）相同，沒有加速。已 git checkout 還原 infer_ops.js 到 HEAD，沒有提交程式變更。" },
-    "training_O8_adamw_fused": { "status": "待驗證（原因：尚未實作；AdamW 融合與梯度累加融合未做；O8 的其他步驟見 training_O8_step1_qkv_batch、training_O8_loss_and_20_steps）" },
-    "kernel_only_2026_11_18": { "status":"量測（r8_time2.html，一次一形狀，最多 3 個 submit，kernel-only：不含上傳與回讀，每 submit 放 R 次派發取平均；峰值 128.4 GFLOP/s）", "rows": [
-      { "shape": "64x256x256", "v4_64x64_reg4x4": { "msPerDispatch": 0.58, "GFLOPs": 14.4, "pctPeak": 11.2, "compileMsCold": 4 }, "r8_8x8": { "msPerDispatch": 1.95, "GFLOPs": 4.3, "pctPeak": 3.3, "note": "只有 2 個工作群組，佔用率低" } },
-      { "shape": "512x1024x1024", "v4_64x64_reg4x4": { "msPerDispatch": 10.68, "GFLOPs": 100.5, "pctPeak": 78.3, "compileMsCold": 19 }, "r8_8x8": { "msPerDispatch": 17.7, "GFLOPs": 60.7, "pctPeak": 47.3, "compileMsCold": 403, "codeChars": 11401 }, "r8_8x4": { "msPerDispatch": 16.63, "GFLOPs": 64.6, "pctPeak": 50.3, "compileMsCold": 265, "codeChars": 7063 } },
-      { "shape": "512x1024x3072", "v4_64x64_reg4x4": { "msPerDispatch": 38.55, "GFLOPs": 83.6, "pctPeak": 65.1 }, "r8_8x8": { "msPerDispatch": 51.5, "GFLOPs": 62.5, "pctPeak": 48.7 } },
-      { "shape": "1024x1024x1024", "v4_64x64_reg4x4": { "msPerDispatch": 24.91, "GFLOPs": 86.2, "pctPeak": 67.1 } }
-    ], "conclusion": "R1 的 8×8（與 8×4）在三個形狀都比現有 v4 慢，這台沒有好處，不採用為預設；v4 是目前最好的核心（大形狀 65–78% 峰值，已達第一階段 50%，接近 60%）。先前『33–41 GFLOP/s』的數字含上傳與回讀，不是核心本身的速度。" },
-    "roofline_2026_11_18": { "status": "通過（屋頂已量）", "evidence": "roofline_check.html（真 Chrome、真 WebGPU，GT 720）：純 FMA 連鎖核心 8 條鏈取得 127.4 與 128.4 GFLOP/s（多次 113–128；16 條鏈反而降到 80，不採用）；純複製核心（vec4）64 MiB 取得 11.4 GB/s（16 MiB 為 10.7）。peakFlops 以 127.4–128.4 為參考、peakBW 以 11.4 為參考。理論規格約 300 GFLOP/s（僅供參考）。", "peakFlopsGFLOPs": 128.4, "peakBWGBs": 11.42 },
-    "batch_layer_O6": { "status": "通過（層形序列；真 Qwen 區塊尚未接入）", "evidence": "batch_layer_check.html：rmsnorm→matmul→rope→matmul→silu→matmul，批次 submit 1 次、逐運算 6 次；d=64（vec4）與 d=50（純量）兩案例與逐運算逐位相同。牆鐘中位數：批次 4.0 / 3.9 ms、逐運算 24.5 / 24.1 ms（只標這台，含讀回）。" },
-    "matmul_tiled_f16": { "status": "待驗證（無 shader-f16：這台介面卡 features 沒有此功能；核心只寫好，未執行）", "evidence": "mmTileWgsl({dtype:'f16'}) 產生 enable f16 與 array<f16> 輸入，node 測試檢查文字；沒有實機數字" },
-    "matmul_tiled_vec4": { "status": "通過", "evidence": "O5：mmTileWgslVec4（不轉置、K 與 N 為 4 的倍數才選；wgMatmul 自動選用）。mm_tile_check.html 5 個 vec4 形狀（含 M 非 64 倍數）對 matmulTRef 全部逐位相同，層 T1；rt.matmul 的 64×1024×1024 走 vec4 路徑、逐位相同。計時 4 次取各次中位數（同一台，數字有波動）：512×1024×3072 vec4 77.8–87.3 ms 對純量平鋪 110–129 ms（約快 25–30%）；512×1024×1024 vec4 32.0–32.4 對純量 40.9–53.5；64×1024×1024 兩者約 16 ms（持平）。", "kernelMsPerDispatch_incl_readback_runs": { "M512_K1024_N3072": { "scalarTile": [128.7, 110.1, 112.4, 122.4], "vec4": [86, 78.1, 77.8, 87.3] }, "M512_K1024_N1024": { "scalarTile": [40.9, 53.5, 43.9, 50.8], "vec4": [32.1, 32.4, 32.0, 32.1] }, "M64_K1024_N1024": { "oldHead16x16": [20.2, 19.7, 20.1, 41.2], "scalarTile": [19.0, 16.2, 16.0, 26.3], "vec4": [24.1, 15.8, 16.1, 23.7] } } },
-    "q8mm_dec": { "status": "通過", "evidence": "q8mm_check.html：M=1、2、3、4、8、17、64、70、130 等形狀逐位相同（maxAbsDiff 0）；M=16、32、128、256 只量時間，正確性未在對拍形狀中列出", "kernelMsPerDispatch": { "M1_K1024_N1024": 0.15, "M8_K1024_N1024": 0.83, "M64_K1024_N1024": 5.805, "M256_K1024_N1024": 22.69 } },
-    "q8mm_pf": { "status": "通過", "evidence": "q8mm_check.html：M=64、70、130 等形狀逐位相同（maxAbsDiff 0）", "kernelMsPerDispatch": { "M32_K1024_N1024": 4.13, "M64_K1024_N1024": 4.165, "M128_K1024_N1024": 8.295, "M256_K1024_N1024": 16.135 }, "note": "M=32 時 dec 較快（2.985 ms），M=64 起 pf 勝出；門檻 64" },
-    "q8mm_simple": { "status": "通過（保底）", "evidence": "逐位相同；大 M 很慢（M=64 約 44 ms），M=256 會觸發 GPU 逾時，因此只量 M≤8", "kernelMsPerDispatch": { "M1_K1024_N3072": 2.23, "M8_K1024_N1024": 5.655 } },
-    "attn_flash": { "status": "通過", "evidence": "attn_flash_check.html：6 個形狀相對誤差 ≤1.1e-6（判準 1e-5）", "timeWallMs": { "S1_past512_H16_Hkv8_hd128": 20.3, "S16_past0_H16_Hkv8_hd128": 12.8 } },
-    "attn": { "status": "通過（保底）", "evidence": "attn_flash_check.html：同 6 個形狀相對誤差 ≤1.1e-6", "timeWallMs": { "S1_past512_H16_Hkv8_hd128": 158.5, "S16_past0_H16_Hkv8_hd128": 18.0 } },
-    "matmulnbits_dec": { "status": "通過", "evidence": "matmulnbits_dec_check.html：6 個形狀相對誤差 ≤3.2e-7（判準 1e-5）", "timeWallMs": { "M1_K1024_N3072": 15.4 } },
-    "matmulnbits": { "status": "通過（保底）", "evidence": "matmulnbits_dec_check.html：小 M 形狀相對誤差 ≤1.3e-6", "timeWallMs": { "M1_K1024_N3072": 24.6, "M8_K1024_N3072": 87.2 }, "shared": "無" },
-    "matmulnbits_pf": { "status": "通過", "evidence": "matmulnbits_dec_check.html：M=17、40、64 等形狀相對誤差 ≤1.3e-6（判準 1e-5）；M=16 起比解碼快", "timeWallMs_端到端含上傳": { "M16_K1024_N3072": 17.9, "M32_K1024_N3072": 23.9, "M64_K1024_N3072": 34.0, "M128_K1024_N3072": 66.0 }, "dec對照": { "M16": 20.2, "M32": 27.1, "M64": 40.8, "M128": 72.7 }, "shared": "xs 8 KiB ＋ ws 1 KiB ＋ ss 256 B ＝ 9.25 KiB", "note": "端到端時間含權重上傳與讀回（約 15 ms），會蓋過核心差異；純核心時間尚未量" },
-    "matmul_f16": { "status": "待驗證（原因）", "evidence": "這台沒有 shader-f16，無法驗證；清單 O5 的 f16 變體尚未實作" },
-    "matmul_tiled_shared": { "status": "待驗證（原因）", "evidence": "清單 O5 的共用矩陣乘模組尚未做" },
-    "memory_space_variants": { "status": "待驗證（原因）", "evidence": "清單 O1m 尚未做" },
-    "subgroup_variants": { "status": "待驗證（原因）", "evidence": "這台沒有 subgroups，要在高階卡上驗" }
+    "matmul_tiled_shared_f32": {
+      "status": "通過",
+      "evidence": "O5：gpu_core.js 的 mmTileWgsl（WGSL.matmul 與 mm_ops 平鋪版共用一份）。mm_tile_check.html：4 種轉置（none／transA／transB／both）× 5 個形狀、3 個批次案例共 23 項，對 matmulTRef 相對誤差全部 0（逐位相同），層皆 T1；負對照（用錯的轉置旗標）相對誤差 1.50，證明比對有鑑別力。shared 8 KiB（上限 16 KiB）。",
+      "kernelMsPerDispatch_incl_readback": {
+        "M64_K1024_N1024": {
+          "new_tile64_reg4x4": 19,
+          "old_16x16_per_thread_one": 20.2
+        },
+        "M512_K1024_N1024": {
+          "new_tile64_reg4x4": 40.9
+        },
+        "M512_K1024_N3072": {
+          "new_tile64_reg4x4": 128.7
+        }
+      },
+      "note": "O5 的速度改善很小（64×1024×1024 約 6%，持平）：舊的 gpu_core 核心其實已是 16×16 平鋪，這次主要是統一與轉置。舊核心未量 512 形狀（會超過 Windows GPU 逾時）。時間含上傳與讀回，只標這台。"
+    },
+    "batch_quantize_dyn_O6_2026_11_18": {
+      "status": "通過",
+      "evidence": "o6_quant_check.html（真 Chrome）：5 個案例，整批 1 次 submit，xq 逐元素與 quantizeDynamicRef 相同（0 個不一致），scale 相對誤差 ≤1e-6。"
+    },
+    "batch_q8mm_O6_2026_11_18": {
+      "status": "通過",
+      "evidence": "o6_q8_batch_check.html（真 Chrome）：dec M1 K1024 N256、dec M8、pf M64、simple N6；每案 1 次 submit；相對誤差 0～1.3e-7。scale 從 GPU 讀（sx[2]）。"
+    },
+    "batch_attn_O6_2026_11_18": {
+      "status": "通過",
+      "evidence": "o6_attn_batch_check.html（真 Chrome）：decode S1 past512 H16 Hkv8 hd128（attn_flash）、prefill S16 hd64（attn_flash）、小形狀 S3 hd32（保底 attn）；每案 1 次 submit；相對誤差 1e-7～1e-6。"
+    },
+    "batch_matmulnbits_O6_2026_11_18": {
+      "status": "通過",
+      "evidence": "o6_nbits_batch_check.html（真 Chrome）：dec M1、dec M8、pf M32、simple（強制）M5；每案 1 次 submit；相對誤差 1e-7～5e-7。"
+    },
+    "qwen_layer_submit_count_O6": {
+      "status": "通過（假裝置計次，未用真模型驗證）：qwen_gpu_submit_count.test.js 3 項通過；一步解碼 submit＝L+1（L=1、3）、兩步＝2×(L+1)。真 Qwen3-0.6B 計次未做（載入權重太重，如實標示）。"
+    },
+    "g5_variant_table_desktop_panel": {
+      "status": "通過（真 Electron，獨立使用者資料夾與埠 18641：scripts/eval/g5_variant_panel.eval.js；表 10 列含表頭、六個按鈕齊全、套用最佳／匯出／匯入不合法 JSON（拒絕）／匯入 heuristic（拒絕）／恢復預設都有正確狀態文字）。注意：這台的能力簽名算成 sg0（wg16384-inv256-f160-sg0），與 priors 的實測項 sg1 不符，所以實測剖析在這台沒有命中；sg 的真值待確認。AI 助理設定 index.html 沒有 GPU 基準區塊，未加第二處（待管理者決定）。"
+    },
+    "race_one_per_variant_2026_11_18": {
+      "status": "通過（每頁一個變體，網址參數指定；每頁 3 次 submit：1 次驗證＋2 次計時，計時含上傳與讀回，牆鐘；相對誤差 1.3e-6～1.4e-6，判準 1e-5）",
+      "pages": "scripts/eval/mm_race_one.html?M=&K=&N=&kernel=",
+      "rows": [
+        {
+          "shape": "64x1024x1024",
+          "kernel": "mm_simple_f32",
+          "msPerRun": [
+            70.5,
+            60
+          ],
+          "gflops": 2.06,
+          "pctPeak": 1.6
+        },
+        {
+          "shape": "64x1024x1024",
+          "kernel": "mm_tiled_f32",
+          "msPerRun": [
+            35.5,
+            18.3
+          ],
+          "gflops": 4.99,
+          "pctPeak": 3.9
+        },
+        {
+          "shape": "64x1024x1024",
+          "kernel": "mm_vec4_f32",
+          "msPerRun": [
+            23.9,
+            19.9
+          ],
+          "gflops": 6.13,
+          "pctPeak": 4.8
+        },
+        {
+          "shape": "512x1024x1024",
+          "kernel": "mm_tiled_f32",
+          "msPerRun": [
+            52.2,
+            43.6
+          ],
+          "gflops": 22.4,
+          "pctPeak": 17.6
+        },
+        {
+          "shape": "512x1024x1024",
+          "kernel": "mm_vec4_f32",
+          "msPerRun": [
+            44.2,
+            32
+          ],
+          "gflops": 28.2,
+          "pctPeak": 22.1
+        }
+      ],
+      "note": "512 的 simple 沒量（估時 54 ms 不超限，但這一輪沒排進來）。這些數字含上傳與讀回，比 kernel-only 的數字低，只標這台；與 mm_race_gt720_2026_11_18.json 的數字不同是因為量法（那份是 3 次 submit 的平均，離群大）。"
+    },
+    "fusion_O7_split_2026_11_18": {
+      "status": "通過（正確性：q 不一致 0、y 相對誤差 7e-8；拆開量：同一批次 64 次重複，牆鐘含讀回，只標這台）",
+      "perChainMs": {
+        "separate_rmsnorm_serial_3dispatch": 0.78,
+        "separate_rmsnorm_parallel_3dispatch": 0.22,
+        "fused_1dispatch": 0.109
+      },
+      "contribution": {
+        "rmsnorm_parallelization": "0.780 → 0.220 ms（約 3.5 倍；與融合無關）",
+        "fusion_of_rms_and_quant": "0.220 → 0.109 ms（約 2.0 倍；兩者都是並行版）",
+        "total": "0.780 → 0.109 ms（約 7.1 倍）"
+      },
+      "pages": "scripts/eval/o7_rmsq_check.html"
+    },
+    "fusion_O7_rms_quant_add": {
+      "status": "通過（合成模型，真 Chrome scripts/eval/o7_engine_check.html）：解碼融合 rmsq1 已接進正式引擎（fuseRmsQuant 預設開，只在 M=1 派發）。第一次跑時解碼 4 步全部不一致（每步 64 個 logits 不同）；原因：rmsq1 沒有引用 Step uniform，layout auto 丟掉綁定 5，融合派發的綁定群組無效，結果全為 0。修正：shader 在 M≠1 時早退（st 是 uniform，早退對整個工作群組一致，不影響後面的 barrier）。修正後預填（M=3）加解碼 4 步：logits 逐位相同，不同個數 0，token 全部相同。單元頁 o7_rmsq1_unit.html：量化整數 9 組全部逐位相同；9 組中 3 組的 scale 與 JS 參考差 1 ulp（JS 參考用的 sqrt 與 GPU 不同，不是融合錯誤）。未用真 Qwen3 模型驗證（標記未驗證）。派發數：靜態計數 43 對 39，兩種版本都列在清單裡，所以每步實際派發數還沒量。卷積融合與 softmax 線上版未做。"
+    },
+    "training_O8_step1_qkv_batch": {
+      "status": "通過（真 Chrome scripts/eval/o8_qkv_batch_check.html）：單層前向的 q、k、v 三個投影放進一個批次，1 次 submit（逐次版 3 次）；相對誤差 2.8e-7～4.1e-7（判準 1e-5）；牆鐘中位數 5.3 ms 對 11.2 ms（只標這台）。尚未做：loss 層級對 CPU 比對、反向、20 步。"
+    },
+    "training_O8_loss_and_20_steps": {
+      "status": "通過（真 Chrome scripts/eval/o8_loss_check.html，L=1 小模型 V64 d64 F128 r4 T16）：訓練器矩陣乘走 GPU（mm_ops），其餘在 CPU。單層 loss 相對誤差 1.7e-8、梯度相對誤差 4.0e-7；20 步 AdamW 每步 loss 最大相對誤差 3.3e-7（判準 1e-4）。每步 GPU 矩陣乘 53 次（每次一個 submit）。尚未做：前向批次化（目前是逐次往返）。"
+    },
+    "training_O8_forward_batch": {
+      "status": "通過（真 Chrome o8_loss_check.html?batched=1）：前向的 q/k/v 與 gate/up 矩陣乘分階段放進批次（studio/lora_ref_train.js 的 loraLinManyA、ammMany；算式與逐次版相同）。loss 與梯度與逐次版逐位相同（單層 loss 相對誤差 1.7e-8、梯度 4.0e-7；20 步最大 3.3e-7）；單層前向＋反向 GPU 矩陣乘提交次數 53 → 45（含一次性的競賽提交）。CPU 路徑的 lora_ref_train.test.js 與 async 測試通過。尚未做：反向的批次化、app 執行期（cudaweb runtime）提供 matmulMany。"
+    },
+    "training_O8_runtime_module": {
+      "status": "通過（真 Chrome，o8_loss_check.html?batched=1 改用 renderer/src/gpu/cudaweb_runtime.js 的 createRuntime，與逐次版的數字相同）。未完成：應用程式的主行程訓練器沒有 GPU 執行期；studio 的訓練器跑在主行程（studio_host.js 註冊 createCudawebBackend({}) 時沒有 getRuntime），GPU 只在渲染行程。接上需要主行程與渲染行程之間的橋接（main.js／preload 的 IPC），這會改動出貨的主行程程式，需要管理者確認方案後再做。"
+    },
+    "training_O8_backward_batch": {
+      "status": "通過（真 Chrome o8_loss_check.html?batched=1）：反向的 q/k/v 與 o、gate/up 之後的矩陣乘分階段批次（lora_ref_train.js 的 loraLinBwdManyA、ammMany，算式與逐次版相同）。單層 loss 相對誤差 1.7e-8、梯度 4.0e-7（與逐次版相同）；20 步每步 loss 最大相對誤差 3.3e-7。單層前向＋反向 GPU 矩陣乘提交 53（逐次）→ 45（前向批次）→ 27（前向＋反向批次），穩定狀態每步 16 次。"
+    },
+    "loop_round1_small_shape_64x256x256": {
+      "status": "沒有明顯好處（真 Chrome g1_gen_check.html，每次 8 派發、取 2 次計時）。瓶頸：v4 64×64 塊在 N=256 只派發 4 個工作群組（這台只有 1 個 SMX），0.47 ms／派發、17.7 GFLOP/s、13.8% 峰值。候選：kernel_gen R8 1×4 塊（16×64，16 個群組）0.43 ms、19.5 GFLOP/s、15.2%，正確性相對誤差 2.1e-7（判準 1e-5）。差距約 9%，在兩次計時的雜訊內（v4 0.57／0.38 ms，1×4 0.51／0.35 ms），不換 production。注意：2×2 塊不能用 vec4（TN 需為 4 的倍數）。"
+    },
+    "loop_round2_q8mm_pf_f32_2026_11_18": {
+      "status": "有好處（真 Chrome q8mm_check.html，純核心：同一 pass 派發 20 次取中位數）。挑選依據：q8mm 預填 M=64 的 FLOP 屋頂約 1.05 ms，原本 4.165 ms（約 25% 峰值），是非延遲類裡離屋頂最遠的。改法：內層乘法從 i32 改成 f32 乘加。每個 K 區塊 16 個 k 的部分和最大 16·255·255 ≈ 1.04e6，在 2^24 之內，每一步都精確；區塊結束才轉 i32 加進累加器，所以與 q8mmRef 逐位相同。正確性：pf 在 11 個 N 是 4 的倍數的形狀全部 maxAbsDiff 0（含 M=1、8、17、64、70、130；K 含 33、257、300、1024）；N=6 的形狀 pf 不能跑（與原本相同）。時間（每次派發，單位 ms）：M32 4.13→2.69、M64 4.165→2.685、M128 8.295→5.275、M256 16.135→10.34（約 −36%）。同頁對照：dec 的 M64 5.825 對先前 5.805、M256 22.605 對 22.69，在雜訊內，所以 pf 的前後比較可信。M=32 時 pf 已比 dec 快（2.69 對 2.95），門檻 Q8_PF_MIN_M 還是 64；改門檻另案，本輪不動。node infer_ops_test 8 項通過。"
+    },
+    "loop_round3_q8mm_decr_2026_11_18": {
+      "status": "有好處（真 Chrome q8mm_decr_check.html 純核心；o6_q8_batch_check.html 批次路徑）。挑選依據：q8mm 解碼 M=8 的 FLOP 屋頂約 0.13 ms，實測 0.81 ms（約 16%），是非延遲類裡離屋頂最遠的。原因：dec 每列一個工作群組，M 列就把整個權重讀 M 次。改法：新增 WGSL_Q8MM_DECR，一個工作群組負責 4 列 × 64 欄，權重字只讀一次、同時乘 4 列；整數累加與 dec 相同，所以逐位相同。正確性：decr 對 q8mmRef 在 11 個形狀 maxAbsDiff 0（M=1、2、3、4、5、8、9、16、17、33、70）。時間（每次派發，ms；decr 的工作群組數為 ceil(M/4)）：M1 0.17 對 0.35、M2 0.25 對 0.36（decr 較慢，所以 M<4 不改）、M4 0.455→0.40、M8 0.81→0.65、M16 1.58→1.135、M32 2.93→2.115。路由：q8mmVariant 在 4 ≤ M < 64 預設 decr，q8mm 與批次 q8mmBatched 都接上；infer_ops_test 的期望值依新路由更新，8 項通過；o6_q8_batch_check 的批次 decr（M8）relErr 0、通過。未達：M=8 離屋頂還差約 5 倍。剩下的瓶頸是 i32 乘法與每列的歸約屏障（4 列各一輪屏障）；下一輪可試 round 2 同樣精確的 f32 乘加。"
+    },
+    "loop_round4_decr_f32_NULL_2026_11_18": {
+      "status": "沒有好處，已還原（如實記）。試了 round 2 的 f32 乘加套用到 decr（每 256 段的部分和 ≤ 16·255·255 精確，段尾轉 i32）。正確性仍逐位相同（11 個形狀 maxAbsDiff 0），但純核心變慢：M8 0.65→0.75、M16 1.135→1.215、M32 2.115→2.32 ms（同頁 dec 對照 M8 0.81→0.855，雜訊約 5%，decr 的退步超過雜訊）。結論：decr 的瓶頸不是整數乘法，而是共用記憶體讀取與每列的歸約屏障；f32 只增加轉換。已 git checkout 還原 infer_ops.js 到第三輪的提交版（0f0484ec5），沒有提交程式變更。下一輪應改歸約（例如 4 列一起歸約，減少屏障）或縮小 xs 的讀取次數。"
+    },
+    "loop_round5_decr_tiled_NULL_2026_11_18": {
+      "status": "沒有好處，已還原（如實記）。假設：decr 的權重全域讀取在使用前才發出，延遲沒被 8 個 warp 隱藏。做法：K 分成 64 的區塊，權重（64 k × 16 字）與輸入（4 列 × 64 k）一起搬進共用記憶體後再累加（共用 9 KiB）。正確性：11 個形狀全部逐位相同。時間（ms，decr 對 decrT）：M4 0.40 對 0.405、M8 0.635 對 0.65、M16 1.10 對 1.08、M32 2.075 對 2.075，都在雜訊內。結論：全域延遲不是瓶頸。已 git checkout 還原 infer_ops.js 到 HEAD，刪除 q8mm_decrT_check.html，程式沒有提交。decr 剩下的成本可能在共用記憶體讀取（每個 MAC 讀一次 xs）與每列 4 輪歸約屏障；下一輪可先量歸約佔比（把歸約拿掉的假時間）再決定。"
+    },
+    "loop_round6_decr_zp_hoist_NULL_2026_11_18": {
+      "status": "沒有好處，已還原（如實記）。做法：把 zp 修正外提，acc 用原始位元組相乘，最後減 zp×Σx（整數精確）。第一次寫錯：修正套在 16 個切片各一次，結果全部錯（maxAbsDiff 4e4 到 2.5e5）；改成歸約後套一次，之後 11 個形狀逐位相同。時間（同頁，ms，decr 對 dec）：M4 0.425、M8 0.75、M16 1.315、M32 2.415；dec 對照 M8 0.82、M16 1.61。比值 decr/dec：M8 0.92、M16 0.82，而第三輪提交版是 0.80、0.72，所以沒有加速，反而變慢。已 git checkout 還原 infer_ops.js 到 HEAD，沒有提交程式變更。教訓：Node 單元測試沒有跑 GPU 核心，抓不到這種錯誤，GPU 逐位比對才是關卡。"
+    },
+    "loop_round7_decr8_profile_2026_11_18": {
+      "status": "有好處（小，已採用）。先量成本拆解（q8mm_decr_profile.html，M8 K1024 N1024，每次派發，20 次，交錯兩輪）：原版 0.645／0.645 ms；去掉歸約加總 0.645／0.66（沒有差）；xs 讀取換成常數 0.55／0.55（約 15%）。所以大部分時間在權重拆解加 i32 乘加，歸約幾乎不花時間。整數路徑的屋頂不是 f32 的 128 GFLOP/s：Kepler 的 i32 乘法比 f32 慢很多（架構估計，未實測），M8 的 decr 約 13 GMAC/s；pf M256 約 26 GMAC/s，已接近這個估計上限，所以 M8 才是離屋頂最遠的。改法：8 列版 WGSL_Q8MM_DECR8，一個工作群組 8 列 × 64 欄，權重拆解由 8 列分攤；歸約時 xs 同一段當 red，共用記憶體 8 KiB（同時仍能駐留 2 個工作群組）。正確性：8 個形狀（含 M=1、5、9、17、33、70，N 非 64 倍數）全部逐位相同；預設路由（q8mm 無強制）在 M=8、16、33 經 GPU（layer T1）逐位相同；批次 o6_q8_batch_check 的 decr8（M8）relErr 0。時間（交錯兩輪，ms）：M8 decr4 0.62／0.655 對 decr8 0.59／0.57（約 −9%，區間不重疊）；M16 1.115／1.085 對 1.08／1.065；M32 2.12／2.12 對 1.975／2.015（M16、32 在雜訊內）。路由：8 ≤ M < 64 → decr8；4–7 維持 decr；1–3 維持 dec；≥64 維持 pf。infer_ops_test 8 項通過、qwen submit 3 項通過。"
+    },
+    "int_mac_roofline_2026_11_18": {
+      "status": "量測完成（真 Chrome int_mac_roofline.html，8 條獨立鏈，每次派發 1024 步、128 工作群組，取 5 次中位數）。第一版寫錯：c += x·b 是迴圈不變量，編譯器化成只剩加法，得到 i32 895、f32 119 GMAC/s 的假數字，已捨棄。第二版 c = c·b + x（依賴前一步，不能外提）：i32 乘加屋頂 24.65 GMAC/s；f32 乘加 62.14 GMAC/s（約 124 GFLOP/s，與先前 f32 屋頂 128 GFLOP/s 一致）。對照 q8mm：pf M256 268M MAC／10.34 ms ≈ 26 GMAC/s（【更正】pf 自第二輪起就是 f32 乘加，應對 f32 屋頂 62 GMAC/s，約 42%，不是 i32 屋頂）；decr8 M8 8.4M MAC／0.58 ms ≈ 14.5 GMAC/s（約 59%）；dec M1 約 7 GMAC/s（記憶體受限，約 7 GB/s 對 11.4）。結論（【更正】）：pf 約 42% 的 f32 屋頂，是目前離屋頂最遠的預填運算；M8 解碼原本約 59% 的 i32 屋頂，第十輪已改用 f32 版。f32 屋頂是整數的 2.5 倍，但 round 4 的 f32 解碼變慢，原因是 f32 轉換的成本，不是精確性。下一步可試：位元組直接用 u32→f32 轉換，並把 zp 修正外提，並且只做一次 f32 轉換。"
+    },
+    "O14a_entry_inventory_2026_11_18": {
+      "status": "完成（唯讀盤點）。表在 docs/INVENTORY.cudaweb-entries.md。重點：cudaweb.matmul 仍未接 mm_ops 變體競賽勝者（gpu_core.js 沒有引用 mm_ops／variant_race／kernel_select）；cudaweb.gemv 是退化的 N=1 平鋪矩陣乘，沒有 M 小路徑；sum／dot／nrm2 已是分層歸約；cupy.sum 等與 torch 墊片多數仍是 numpy（CPU）；pycuda 未支援；numba 墊片走 WebGPU 但沒有 reduce／transpose 樣板。"
+    },
+    "O14b_sgemm_transpose_alpha_beta_partial_2026_11_18": {
+      "status": "部分完成（正確性，未量速度）。cudaweb.cublas.sgemm 原本只支援 transa=transb=N、alpha=1、beta=0。現在支援 transa／transb 為 N、T、C，任意 alpha、beta（beta≠0 必須給 C）。轉置與 alpha／beta 的後處理在宿主（Python）端做，額外 O(mk+kn+mn)；矩陣乘本身仍送同一個 matmul 操作。驗證：cudaweb_py_test.py 14 項全部通過（含 T 與 alpha=2、beta=1 的手算數值，以及不合法輸入不呼叫宿主）。未完成：把轉置旗標送進 GPU 核心（gpu_core.js 的 wgMatmul 已有 flags，需要改宿主橋接的 matmul 操作）、web-lazy 內嵌的 pybridge.js 尚未重建（embed-code-ui.js 會產生）、matmul 接競賽、gemv 的 M 小路徑、批次 gemm、dot／nrm2 的歸約已是樹狀但未量。"
+    },
+    "O14c_transpose_template_2026_11_18": {
+      "status": "正確性通過，速度沒有好處（如實記）。新增 WGSL.transpose（16×16 共用記憶體分塊，列寬 17 避開組衝突）與 api.transpose（有 CPU 參考）。真 Chrome（scripts/eval/transpose_check.html）：5×7、33×17、64×300、1000×1000、4096×512 全部 T1、逐位相同（maxAbsDiff 0）。時間（牆鐘，含陣列上傳與讀回，中位數）：1000×1000 GPU 65.5 對 JS 迴圈 21.6 ms；4096×512 144.8 對 46.4；2048×2048 301.4 對 102.2。結論：這個陣列進、陣列出的 API 上，傳輸成本蓋過核心，GPU 轉置反而慢約 3 倍，不能當成加速。樣板的用處在資料已經留在裝置上、接在其他核心之後的批次管線（nn_ops.createBatch）；那裡要另外量。node gpu_core.test.js 42 項通過（含轉置 T1 與參考一致）。Python 端 cudaweb.transpose 尚未加。"
+    },
+    "O14c_scan_template_2026_11_18": {
+      "status": "正確性通過（node 43 項，含 n=5、300、70000）；真 GPU 尚未驗證，未量速度。新增 WGSL scan_block（256 元素 Hillis–Steele 區塊掃描並寫出區塊總和）與 add_offsets（加上前區塊偏移），區塊總和遞迴掃描，全部留在裝置上。實測（同樣的 f32 區塊運算，對精確雙精度前綴和）最大絕對誤差：n=5 約 1.5e-8、n=300 約 1.5e-6、n=70000 約 1.3e-4；逐步 f32 累加在 n=70000 約 1.0e-3，所以測試參考改為雙精度，容差 5e-4。未完成：真 GPU 的正確性與牆鐘、Python 包裝、與 JS 迴圈的同頁比較。"
+    },
+    "O14b_gemv_row_kernel_2026_11_18": {
+      "status": "通過，有好處（真 Chrome scripts/eval/gemv_row_check.html，同頁交錯）。改法：cudaweb.gemv 原本把 x 當成 N=1 的平鋪矩陣乘（wgGemv → wgMatmul），現在改用 WGSL.gemv_row：每列一個工作群組、256 個執行緒跨步累加後做共用記憶體樹狀歸約；m > 65535 仍退回舊路徑。正確性（f32，順序不同，與 gemvRef 比相對誤差）：5×7 6.5e-8、64×300 2.8e-7、1024×1024 8.8e-7、3072×1024 1.1e-6、1024×3072 1.5e-6；全部 T1，判準 1e-5。時間（wall，含上傳與讀回，中位數 7 次，ms）：1024×1024 舊 27.3 對新 16.1；3072×1024 82.5 對 46.2；1024×3072 93.4 對 52.2；4096×4096 419.3 對 214.8（約快 1.7–2.0 倍）。限制：量的是牆鐘，不是純核心時間；上傳佔大部分時間，所以核心的差距被低估。node gpu_core.test.js 41 項通過（測試的假裝置補上 gemv_row 分支，只驗流程）。"
+    },
+    "O14b_matmul_chooser_hook_2026_11_18": {
+      "status": "注入點完成，未接線、未在 GPU 驗證。gpu_core.js 新增 setMatmulKernelChooser(fn)（預設 null，行為與原本相同）：wgMatmul 會問 fn(m,k,n,flags)，回 matmul_vec4 或 matmul；vec4 不合條件仍退回平鋪版。接線的阻礙：mm_ops.js 會 require gpu_core.js，所以 gpu_core 不能反過來 require mm_ops；接線要由宿主（或 mm_ops 載入時）呼叫 setMatmulKernelChooser，並把 pickMatmulKernel 的勝者對映到 matmul／matmul_vec4（mm_ops 還有 simple 版，gpu_core 沒有對應 WGSL）。驗證：node gpu_core.test.js 41 項通過；選核路徑需要真 WebGPU，尚未驗證。"
+    },
+    "loop_round17_m1_splitk_NULL_2026_11_18": {
+      "status": "沒有採用（如實記，頁內量測，程式未改）。M=1 沿 K 切成 4 段，每段一個工作群組（第三維），各寫 i32 部分和，再用第二個小核心相加（整數精確，逐位相同）。K1024N1024 0.25 對 0.25 ms；K1024N3072 0.46 對 0.435（較慢）；K3072N1024 0.41 對 0.405。結論：工作群組數不是 M=1 的瓶頸，增加平行度沒有幫助。M=1 的 61% 頻寬利用率，本輪試過的 32 欄、寬載入、載入先發、split-K 都沒有可採用的改善。"
+    },
+    "loop_round15_16_null_2026_11_18": {
+      "status": "沒有採用（如實記，只在頁內量，程式未改）。第十五輪：M=1 的 dec 改成 4 次載入先發（夾住索引、無分支，靠 xs 補零）；逐位相同；K1024N1024 0.15 對 0.15、K1024N3072 0.395 對 0.405、K3072N1024 0.40 對 0.405，都在雜訊內。結論：M=1 不是載入延遲受限。第十六輪：M=3 的 dec 對 decr2f 對 decr4f：0.405／0.35、0.355／0.385、0.35／0.35，在雜訊內，不改路由。M=1 的 61% 頻寬利用率目前找不到簡單改法；下一步若要做，需要重新設計切分（例如沿 K 切給多個工作群組，再做第二段歸約）。"
+    },
+    "loop_round14_m1_variants_NULL_2026_11_18": {
+      "status": "沒有採用（如實記）。M=1 解碼是頻寬受限，目前約 61% 的 11.4 GB/s。兩個實驗都在頁內測試、沒有改程式。(a) 32 欄版（每工作群組 32 欄、32 個切片）：逐位相同；K1024N1024 0.155 對 dec 0.145（較慢）；K1024N3072 0.60 對 0.35（慢很多）；K3072N1024 0.355 對 0.445（快約 20%）。結果時好時壞，不能用固定門檻採用。(b) 16 位元組寬載入（vec4<u32>，每執行緒 16 欄，共用記憶體 atomicAdd 歸約）：逐位相同；K1024N1024 0.615 對 0.245；K1024N3072 1.05 對 0.455；K3072N1024 0.675 對 0.355，全部慢 2–3 倍，原因是 64 個共用位址的 atomic 競爭。注意：同一機器上 dec 的數字這一輪比前一輪高（0.145 對 0.245），表示機器負載有漂移，比較只在同一頁、交錯量測時才可信。"
+    },
+    "loop_round13_decr2f_2026_11_18": {
+      "status": "小幅有好處（已採用）。依據：M=2 的 dec 每列一個工作群組，權重讀兩次；但 1 MB 權重在 11.4 GB/s 只需約 0.09 ms，實測 0.30 ms，離屋頂仍遠，所以瓶頸是延遲與佔用，不是頻寬。改法：WGSL_Q8MM_DECR2F，2 列 × 64 欄 f32 版，權重只讀一次（精確條件同 decr4f，K ≤ 4096）。正確性：M2 K1024 N1024、M2 K300 N132 經 GPU（T1）逐位相同；M2 K8192 走 dec，逐位相同。時間（同頁，ms）：dec 0.295／0.305 對 decr2f 0.28／0.25（約 −13%，區間不重疊）。這個改動幅度小，M=2 還有大空間，但需要不同的做法（例如拉高佔用），本輪不做。路由：M=2 且 K ≤ 4096 → decr2f。node infer_ops_test 8 項、qwen submit 3 項通過。"
+    },
+    "loop_round12_decr4f_2026_11_18": {
+      "status": "小幅有好處（已採用，M4 結果混合）。依據：M4–7 的 decr 約 10.5 GMAC/s，約 f32 屋頂的 17%，是目前離屋頂最遠的解碼路徑。改法：WGSL_Q8MM_DECR4F，4 列 × 64 欄的 f32 版（與 decr8f 相同的精確條件，K ≤ 4096；歸約前轉 i32）。正確性：預設路由 M4 K1024、M7 K300 N132、M5 K4096（上限）經 GPU（T1）逐位相同；M6 K8192 走 i32 decr，逐位相同。時間（真 Chrome，K1024 N1024，同頁，ms）：M7 decr 0.615／0.645 對 decr4f 0.55／0.55（約 −11%，區間不重疊）；M4 decr 0.345／0.365 對 decr4f 0.35／0.295（混合，大致持平）。路由：4 ≤ M < 8 且 K ≤ 4096 → decr4f。node infer_ops_test 8 項、qwen submit 3 項通過。"
+    },
+    "loop_round11_pf8x4_2026_11_18": {
+      "status": "有好處（已採用）。依據：更正後，預填 pf 在 M256 約 42% 的 f32 屋頂，是離屋頂最遠的預填運算。改法：WGSL_Q8MM_PF8X4，一個工作群組 64 列 × 128 欄，每執行緒 4 列 × 8 欄（32 個 f32 累加器）。權重字拆一次，每 32 次乘加只讀 6 次共用記憶體（4×4 版 10 次）。精確條件同 decr8f：K ≤ 4096。實測（真 Chrome，K1024 N1024，交錯，ms）：M64 2.70→1.94（−28%）、M128 5.24→3.83（−27%）、M256 10.41→7.12（−32%）；M70 N132 1.245→1.16（−7%）。逐位相同（maxAbsDiff 0，四個形狀）。路由：M ≥ 64 且 K ≤ 4096 → pf8x4；K > 4096 → 原本的 pf（仍是精確的 flush 版）。驗證：預設路由 M64 K1024、M70 K300 N132、M130 K4096 N256 經 GPU（T1）逐位相同；M100 K8192 走 pf 逐位相同；批次 o6_q8_batch_check 的 M64 K256 為 pf8x4，relErr 1.3e-7，1 次 submit，通過。node infer_ops_test 8 項、qwen submit 3 項通過。M256 的 f32 屋頂比例：約 60%（37.6／62）。"
+    },
+    "loop_round10_decr8f_2026_11_18": {
+      "status": "有好處（已採用）。依據：int_mac_roofline 量到的屋頂是 i32 24.65 GMAC/s、f32 62.14 GMAC/s，decr8 在 M8 約 59%，而 f32 屋頂高很多，所以改用 f32 乘加。改法：WGSL_Q8MM_DECR8F，8 列 × 64 欄，乘加用 f32，權重位元組在使用前做 f32(i32(byte)−zp)（精確）。精確條件：|輸入| ≤ 255、|權重−zp| ≤ 255，每個執行緒的部分和最多 K/16 個乘積；K ≤ 4096 時最大 16.6M < 2^24，每一步都精確。歸約前把部分和轉成 i32（不用 bitcast，因為小整數的位元可能是次正規數或 NaN，GPU 可能會清零）。主機端只在 8 ≤ M < 64 且 K ≤ 4096 時路由到 f32 版，其餘仍用 i32 decr8。實測（真 Chrome，K1024 N1024，交錯三輪，ms）：M8 decr8 0.60／0.66／0.60 對 f32 0.41／0.45／0.43（約 −30%）；M16 decr8 1.07／1.09／1.10 對 f32 0.73／0.78／0.78（約 −30%）。正確性（逐位相同，maxAbsDiff 0）：預設 q8mm 路由 M8 K1024、M16 K300 N132、M33 K1024 N256、M9 K4096（上限）皆經 GPU（layer T1）；M8 K8192 改走 i32 decr8（maxAbsDiff 0）；批次 o6_q8_batch_check 的 M8 K256 為 decr8f，relErr 0、1 次 submit、通過。註：q8mmVariant 的標籤原本少傳 K，o6 頁已修正。node infer_ops_test 8 項、qwen submit 3 項通過。"
+    },
+    "loop_round9_decr8_contiguous_NULL_2026_11_18": {
+      "status": "沒有好處，已還原（如實記）。做法：decr8 每個執行緒改取 16 個連續的 k（tl = ks·16 + j，原本是 j·16 + ks），讓共用記憶體讀取連續。正確性：8 個形狀全部逐位相同。時間（交錯兩輪，ms）：decr8 0.575／0.625（M8），decr4 0.62／0.605；M16、M32 在雜訊內。與第七輪的 decr8（M8 約 0.58）相同，沒有加速。已 git checkout 還原 infer_ops.js 到 HEAD，沒有提交程式變更。"
+    },
+    "training_O8_adamw_fused": {
+      "status": "待驗證（原因：尚未實作；AdamW 融合與梯度累加融合未做；O8 的其他步驟見 training_O8_step1_qkv_batch、training_O8_loss_and_20_steps）"
+    },
+    "kernel_only_2026_11_18": {
+      "status": "量測（r8_time2.html，一次一形狀，最多 3 個 submit，kernel-only：不含上傳與回讀，每 submit 放 R 次派發取平均；峰值 128.4 GFLOP/s）",
+      "rows": [
+        {
+          "shape": "64x256x256",
+          "v4_64x64_reg4x4": {
+            "msPerDispatch": 0.58,
+            "GFLOPs": 14.4,
+            "pctPeak": 11.2,
+            "compileMsCold": 4
+          },
+          "r8_8x8": {
+            "msPerDispatch": 1.95,
+            "GFLOPs": 4.3,
+            "pctPeak": 3.3,
+            "note": "只有 2 個工作群組，佔用率低"
+          }
+        },
+        {
+          "shape": "512x1024x1024",
+          "v4_64x64_reg4x4": {
+            "msPerDispatch": 10.68,
+            "GFLOPs": 100.5,
+            "pctPeak": 78.3,
+            "compileMsCold": 19
+          },
+          "r8_8x8": {
+            "msPerDispatch": 17.7,
+            "GFLOPs": 60.7,
+            "pctPeak": 47.3,
+            "compileMsCold": 403,
+            "codeChars": 11401
+          },
+          "r8_8x4": {
+            "msPerDispatch": 16.63,
+            "GFLOPs": 64.6,
+            "pctPeak": 50.3,
+            "compileMsCold": 265,
+            "codeChars": 7063
+          }
+        },
+        {
+          "shape": "512x1024x3072",
+          "v4_64x64_reg4x4": {
+            "msPerDispatch": 38.55,
+            "GFLOPs": 83.6,
+            "pctPeak": 65.1
+          },
+          "r8_8x8": {
+            "msPerDispatch": 51.5,
+            "GFLOPs": 62.5,
+            "pctPeak": 48.7
+          }
+        },
+        {
+          "shape": "1024x1024x1024",
+          "v4_64x64_reg4x4": {
+            "msPerDispatch": 24.91,
+            "GFLOPs": 86.2,
+            "pctPeak": 67.1
+          }
+        }
+      ],
+      "conclusion": "R1 的 8×8（與 8×4）在三個形狀都比現有 v4 慢，這台沒有好處，不採用為預設；v4 是目前最好的核心（大形狀 65–78% 峰值，已達第一階段 50%，接近 60%）。先前『33–41 GFLOP/s』的數字含上傳與回讀，不是核心本身的速度。"
+    },
+    "roofline_2026_11_18": {
+      "status": "通過（屋頂已量）",
+      "evidence": "roofline_check.html（真 Chrome、真 WebGPU，GT 720）：純 FMA 連鎖核心 8 條鏈取得 127.4 與 128.4 GFLOP/s（多次 113–128；16 條鏈反而降到 80，不採用）；純複製核心（vec4）64 MiB 取得 11.4 GB/s（16 MiB 為 10.7）。peakFlops 以 127.4–128.4 為參考、peakBW 以 11.4 為參考。理論規格約 300 GFLOP/s（僅供參考）。",
+      "peakFlopsGFLOPs": 128.4,
+      "peakBWGBs": 11.42
+    },
+    "batch_layer_O6": {
+      "status": "通過（層形序列；真 Qwen 區塊尚未接入）",
+      "evidence": "batch_layer_check.html：rmsnorm→matmul→rope→matmul→silu→matmul，批次 submit 1 次、逐運算 6 次；d=64（vec4）與 d=50（純量）兩案例與逐運算逐位相同。牆鐘中位數：批次 4.0 / 3.9 ms、逐運算 24.5 / 24.1 ms（只標這台，含讀回）。"
+    },
+    "matmul_tiled_f16": {
+      "status": "待驗證（無 shader-f16：這台介面卡 features 沒有此功能；核心只寫好，未執行）",
+      "evidence": "mmTileWgsl({dtype:'f16'}) 產生 enable f16 與 array<f16> 輸入，node 測試檢查文字；沒有實機數字"
+    },
+    "matmul_tiled_vec4": {
+      "status": "通過",
+      "evidence": "O5：mmTileWgslVec4（不轉置、K 與 N 為 4 的倍數才選；wgMatmul 自動選用）。mm_tile_check.html 5 個 vec4 形狀（含 M 非 64 倍數）對 matmulTRef 全部逐位相同，層 T1；rt.matmul 的 64×1024×1024 走 vec4 路徑、逐位相同。計時 4 次取各次中位數（同一台，數字有波動）：512×1024×3072 vec4 77.8–87.3 ms 對純量平鋪 110–129 ms（約快 25–30%）；512×1024×1024 vec4 32.0–32.4 對純量 40.9–53.5；64×1024×1024 兩者約 16 ms（持平）。",
+      "kernelMsPerDispatch_incl_readback_runs": {
+        "M512_K1024_N3072": {
+          "scalarTile": [
+            128.7,
+            110.1,
+            112.4,
+            122.4
+          ],
+          "vec4": [
+            86,
+            78.1,
+            77.8,
+            87.3
+          ]
+        },
+        "M512_K1024_N1024": {
+          "scalarTile": [
+            40.9,
+            53.5,
+            43.9,
+            50.8
+          ],
+          "vec4": [
+            32.1,
+            32.4,
+            32,
+            32.1
+          ]
+        },
+        "M64_K1024_N1024": {
+          "oldHead16x16": [
+            20.2,
+            19.7,
+            20.1,
+            41.2
+          ],
+          "scalarTile": [
+            19,
+            16.2,
+            16,
+            26.3
+          ],
+          "vec4": [
+            24.1,
+            15.8,
+            16.1,
+            23.7
+          ]
+        }
+      }
+    },
+    "q8mm_dec": {
+      "status": "通過",
+      "evidence": "q8mm_check.html：M=1、2、3、4、8、17、64、70、130 等形狀逐位相同（maxAbsDiff 0）；M=16、32、128、256 只量時間，正確性未在對拍形狀中列出",
+      "kernelMsPerDispatch": {
+        "M1_K1024_N1024": 0.15,
+        "M8_K1024_N1024": 0.83,
+        "M64_K1024_N1024": 5.805,
+        "M256_K1024_N1024": 22.69
+      }
+    },
+    "q8mm_pf": {
+      "status": "通過",
+      "evidence": "q8mm_check.html：M=64、70、130 等形狀逐位相同（maxAbsDiff 0）",
+      "kernelMsPerDispatch": {
+        "M32_K1024_N1024": 4.13,
+        "M64_K1024_N1024": 4.165,
+        "M128_K1024_N1024": 8.295,
+        "M256_K1024_N1024": 16.135
+      },
+      "note": "M=32 時 dec 較快（2.985 ms），M=64 起 pf 勝出；門檻 64"
+    },
+    "q8mm_simple": {
+      "status": "通過（保底）",
+      "evidence": "逐位相同；大 M 很慢（M=64 約 44 ms），M=256 會觸發 GPU 逾時，因此只量 M≤8",
+      "kernelMsPerDispatch": {
+        "M1_K1024_N3072": 2.23,
+        "M8_K1024_N1024": 5.655
+      }
+    },
+    "attn_flash": {
+      "status": "通過",
+      "evidence": "attn_flash_check.html：6 個形狀相對誤差 ≤1.1e-6（判準 1e-5）",
+      "timeWallMs": {
+        "S1_past512_H16_Hkv8_hd128": 20.3,
+        "S16_past0_H16_Hkv8_hd128": 12.8
+      }
+    },
+    "attn": {
+      "status": "通過（保底）",
+      "evidence": "attn_flash_check.html：同 6 個形狀相對誤差 ≤1.1e-6",
+      "timeWallMs": {
+        "S1_past512_H16_Hkv8_hd128": 158.5,
+        "S16_past0_H16_Hkv8_hd128": 18
+      }
+    },
+    "matmulnbits_dec": {
+      "status": "通過",
+      "evidence": "matmulnbits_dec_check.html：6 個形狀相對誤差 ≤3.2e-7（判準 1e-5）",
+      "timeWallMs": {
+        "M1_K1024_N3072": 15.4
+      }
+    },
+    "matmulnbits": {
+      "status": "通過（保底）",
+      "evidence": "matmulnbits_dec_check.html：小 M 形狀相對誤差 ≤1.3e-6",
+      "timeWallMs": {
+        "M1_K1024_N3072": 24.6,
+        "M8_K1024_N3072": 87.2
+      },
+      "shared": "無"
+    },
+    "matmulnbits_pf": {
+      "status": "通過",
+      "evidence": "matmulnbits_dec_check.html：M=17、40、64 等形狀相對誤差 ≤1.3e-6（判準 1e-5）；M=16 起比解碼快",
+      "timeWallMs_端到端含上傳": {
+        "M16_K1024_N3072": 17.9,
+        "M32_K1024_N3072": 23.9,
+        "M64_K1024_N3072": 34,
+        "M128_K1024_N3072": 66
+      },
+      "dec對照": {
+        "M16": 20.2,
+        "M32": 27.1,
+        "M64": 40.8,
+        "M128": 72.7
+      },
+      "shared": "xs 8 KiB ＋ ws 1 KiB ＋ ss 256 B ＝ 9.25 KiB",
+      "note": "端到端時間含權重上傳與讀回（約 15 ms），會蓋過核心差異；純核心時間尚未量"
+    },
+    "matmul_f16": {
+      "status": "待驗證（原因）",
+      "evidence": "這台沒有 shader-f16，無法驗證；清單 O5 的 f16 變體尚未實作"
+    },
+    "matmul_tiled_shared": {
+      "status": "待驗證（原因）",
+      "evidence": "清單 O5 的共用矩陣乘模組尚未做"
+    },
+    "memory_space_variants": {
+      "status": "待驗證（原因）",
+      "evidence": "清單 O1m 尚未做"
+    },
+    "subgroup_variants": {
+      "status": "待驗證（原因）",
+      "evidence": "這台沒有 subgroups，要在高階卡上驗"
+    }
+  },
+  "o10": {
+    "說明": "O10 結果列：每個變體一列，狀態只能是「通過（有證據檔案）」或「待驗證（原因）」。時間與誤差只取自已入庫的頁面或清單的已記錄條目，未在本輪重新量測。硬體都是 Kepler GT 720（清單記錄的那台），不是本次工作的機器。",
+    "rows": [
+      {
+        "id": "mm_simple_f32",
+        "op": "matmul",
+        "source": "kernel_select 覆蓋表 ＋ mm_ops（逐格保底）",
+        "status": "通過（有證據檔案）",
+        "hardware": "Kepler GT 720（14 W），真 Chrome WebGPU，無 shader-f16；能力：共用記憶體 16 KiB、每群組 256 執行緒",
+        "error": "同頁驗證：相對誤差 1.3e-6～1.4e-6（判準 1e-5）",
+        "time": "64×1024×1024：70.5／60.0 ms（牆鐘，含上傳與讀回）",
+        "evidence": [
+          "scripts/eval/mm_race_one.html?kernel=mm_simple_f32（2026-11-18 真 Chrome，見 variants.race_one_per_variant_2026_11_18）",
+          "scripts/eval/mm_race_gt720_2026_11_18.json"
+        ],
+        "note": "512×1024×1024 未量（清單記錄「這一輪沒排進來」）"
+      },
+      {
+        "id": "mm_tiled_f32",
+        "op": "matmul",
+        "source": "kernel_select 覆蓋表 ＋ mm_ops（gpu_core 共用平鋪）",
+        "status": "通過（有證據檔案）",
+        "hardware": "Kepler GT 720（14 W），真 Chrome WebGPU，無 shader-f16；能力：共用記憶體 16 KiB、每群組 256 執行緒",
+        "error": "mm_tile_check.html：4 種轉置×5 形狀×3 批次共 23 項，相對誤差 0（逐位相同）；負對照 1.50",
+        "time": "64×1024×1024：35.5／18.3 ms；512×1024×1024：52.2／43.6 ms（牆鐘，含讀回）",
+        "evidence": [
+          "scripts/eval/mm_tile_check.html",
+          "scripts/eval/mm_race_one.html?kernel=mm_tiled_f32"
+        ],
+        "note": ""
+      },
+      {
+        "id": "mm_vec4_f32",
+        "op": "matmul",
+        "source": "kernel_select 覆蓋表 ＋ mm_ops（O5 vec4 載入）",
+        "status": "通過（有證據檔案）",
+        "hardware": "Kepler GT 720（14 W），真 Chrome WebGPU，無 shader-f16；能力：共用記憶體 16 KiB、每群組 256 執行緒",
+        "error": "mm_tile_check.html：5 個 vec4 形狀（K、N 為 4 的倍數）逐位相同；race_one 同頁相對誤差 1.3e-6～1.4e-6",
+        "time": "64×1024×1024：23.9／19.9 ms；512×1024×1024：44.2／32.0 ms（牆鐘）；512×1024×3072 約快 25–30%（清單 O5 記錄）",
+        "evidence": [
+          "scripts/eval/mm_tile_check.html",
+          "scripts/eval/mm_race_one.html?kernel=mm_vec4_f32"
+        ],
+        "note": ""
+      },
+      {
+        "id": "q8mm_simple",
+        "op": "q8mm",
+        "source": "kernel_select 覆蓋表 ＋ infer_ops（保底）",
+        "status": "通過（有證據檔案）",
+        "hardware": "Kepler GT 720（14 W），真 Chrome WebGPU，無 shader-f16；能力：共用記憶體 16 KiB、每群組 256 執行緒",
+        "error": "q8mm_check.html：與 q8mmRef 逐位相同（maxAbsDiff 0）",
+        "time": "每次派發（純核心）：M1 K1024 N3072 2.23 ms；M8 K1024 N1024 5.655 ms；M256 會逾時，不量",
+        "evidence": [
+          "scripts/eval/q8mm_check.html"
+        ],
+        "note": ""
+      },
+      {
+        "id": "q8mm_dec",
+        "op": "q8mm",
+        "source": "kernel_select 覆蓋表 ＋ infer_ops",
+        "status": "通過（有證據檔案）",
+        "hardware": "Kepler GT 720（14 W），真 Chrome WebGPU，無 shader-f16；能力：共用記憶體 16 KiB、每群組 256 執行緒",
+        "error": "q8mm_check.html：M=1、2、3、4、8、17、64、70、130 逐位相同（maxAbsDiff 0）",
+        "time": "每次派發（純核心）：M1 0.15；M8 0.83；M64 5.805；M256 22.69 ms",
+        "evidence": [
+          "scripts/eval/q8mm_check.html"
+        ],
+        "note": ""
+      },
+      {
+        "id": "q8mm_pf",
+        "op": "q8mm",
+        "source": "kernel_select 覆蓋表 ＋ infer_ops",
+        "status": "通過（有證據檔案）",
+        "hardware": "Kepler GT 720（14 W），真 Chrome WebGPU，無 shader-f16；能力：共用記憶體 16 KiB、每群組 256 執行緒",
+        "error": "q8mm_check.html：M=64、70、130 逐位相同（maxAbsDiff 0）",
+        "time": "每次派發（純核心）：M32 4.13；M64 4.165；M128 8.295；M256 16.135 ms",
+        "evidence": [
+          "scripts/eval/q8mm_check.html"
+        ],
+        "note": ""
+      },
+      {
+        "id": "q8mm_decr",
+        "op": "q8mm",
+        "source": "infer_ops 路由（4≤M<8 以外的 M 不走它；不在 kernel_select 覆蓋表）",
+        "status": "通過（有證據檔案）",
+        "hardware": "Kepler GT 720（14 W），真 Chrome WebGPU，無 shader-f16；能力：共用記憶體 16 KiB、每群組 256 執行緒",
+        "error": "q8mm_decr_check.html：11 個形狀 maxAbsDiff 0（M=1、2、3、4、5、8、9、16、17、33、70）",
+        "time": "每次派發：M4 0.40；M8 0.65；M16 1.135；M32 2.115 ms（清單 round 3）",
+        "evidence": [
+          "scripts/eval/q8mm_decr_check.html"
+        ],
+        "note": ""
+      },
+      {
+        "id": "q8mm_decr8",
+        "op": "q8mm",
+        "source": "infer_ops 路由（不在 kernel_select 覆蓋表）",
+        "status": "通過（有證據檔案）",
+        "hardware": "Kepler GT 720（14 W），真 Chrome WebGPU，無 shader-f16；能力：共用記憶體 16 KiB、每群組 256 執行緒",
+        "error": "q8mm_decr8_check.html：8 個形狀逐位相同",
+        "time": "每次派發：M8 0.59／0.57；M16 1.08／1.065；M32 1.975／2.015 ms（清單 round 7）",
+        "evidence": [
+          "scripts/eval/q8mm_decr8_check.html"
+        ],
+        "note": ""
+      },
+      {
+        "id": "q8mm_decr8f",
+        "op": "q8mm",
+        "source": "infer_ops 路由（f32 8 列版，不在 kernel_select 覆蓋表）",
+        "status": "通過（有證據檔案）",
+        "hardware": "Kepler GT 720（14 W），真 Chrome WebGPU，無 shader-f16；能力：共用記憶體 16 KiB、每群組 256 執行緒",
+        "error": "o6_q8_batch_check.html：M8 K256 批次路徑相對誤差 0；純核心逐位相同的記錄見清單 round 10（文字記錄，無入庫頁）",
+        "time": "每次派發：M8 0.41–0.45 ms；M16 0.73–0.78 ms（清單 round 10 文字記錄，無入庫頁，只標 Kepler）",
+        "evidence": [
+          "scripts/eval/o6_q8_batch_check.html"
+        ],
+        "note": "時間只有清單文字，未入庫"
+      },
+      {
+        "id": "q8mm_pf8x4",
+        "op": "q8mm",
+        "source": "infer_ops 路由（不在 kernel_select 覆蓋表）",
+        "status": "通過（有證據檔案）",
+        "hardware": "Kepler GT 720（14 W），真 Chrome WebGPU，無 shader-f16；能力：共用記憶體 16 KiB、每群組 256 執行緒",
+        "error": "o6_q8_batch_check.html：M64 K256 批次路徑相對誤差 1.3e-7；純核心四形狀逐位相同的記錄見清單 round 11（文字）",
+        "time": "每次派發（清單 round 11 文字記錄）：M64 1.94；M128 3.83；M256 7.12 ms（較 pf 快 28–32%）",
+        "evidence": [
+          "scripts/eval/o6_q8_batch_check.html"
+        ],
+        "note": "時間只有清單文字，未入庫"
+      },
+      {
+        "id": "q8mm_decr4f",
+        "op": "q8mm",
+        "source": "infer_ops 路由（不在 kernel_select 覆蓋表）",
+        "status": "待驗證（原因：正確性與時間只存在清單文字；repo 內沒有會跑它的頁面：q8mm_check.html 與 o6 頁只列 simple／dec／pf／decr8f／pf8x4）。執行指令：待寫頁，見 note",
+        "hardware": "Kepler GT 720（14 W），真 Chrome WebGPU，無 shader-f16；能力：共用記憶體 16 KiB、每群組 256 執行緒",
+        "error": "未有入庫證據",
+        "time": "未有入庫證據（清單 round 12 文字：M7 K1024 N1024 0.55 ms，只標 Kepler）",
+        "evidence": [],
+        "note": "補法：在 q8mm_check.html 的變體清單加入 decr4f（呼叫 Q.q8mm(..., {q8variant:'decr4f'})），並對 M=4、5、7 與 q8mmRef 比對"
+      },
+      {
+        "id": "q8mm_decr2f",
+        "op": "q8mm",
+        "source": "infer_ops 路由（不在 kernel_select 覆蓋表）",
+        "status": "待驗證（原因：同 q8mm_decr4f，正確性與時間只存在清單文字，無入庫頁）",
+        "hardware": "Kepler GT 720（14 W），真 Chrome WebGPU，無 shader-f16；能力：共用記憶體 16 KiB、每群組 256 執行緒",
+        "error": "未有入庫證據",
+        "time": "未有入庫證據（清單 round 13 文字：M2 K1024 N1024 0.25–0.28 ms，只標 Kepler）",
+        "evidence": [],
+        "note": "補法：同上，q8variant:'decr2f'，對 M=2 與 q8mmRef 比對"
+      },
+      {
+        "id": "matmul_int_simple",
+        "op": "matmul（整數）",
+        "source": "mm_ops（matmulInt：isInt 時固定 mm_simple_f32）",
+        "status": "待驗證（原因：沒有整數矩陣乘的 GPU 對拍頁；node 只有 matmulIntRef 參考，覆蓋表也未列）",
+        "hardware": "Kepler GT 720（14 W），真 Chrome WebGPU，無 shader-f16；能力：共用記憶體 16 KiB、每群組 256 執行緒",
+        "error": "未有入庫證據",
+        "time": "未有入庫證據",
+        "evidence": [],
+        "note": "補法：對拍頁呼叫 mm_ops.matmulInt 與 matmulIntRef 逐位比較"
+      },
+      {
+        "id": "matmul_tiled_f16",
+        "op": "matmul",
+        "source": "gpu_core mmTileWgsl（dtype f16）",
+        "status": "待驗證（原因：這台沒有 shader-f16，核心只寫好、未執行；mm_tile_check.html 第 4 段只記錄狀態、不量）",
+        "hardware": "Kepler GT 720（14 W），真 Chrome WebGPU，無 shader-f16；能力：共用記憶體 16 KiB、每群組 256 執行緒",
+        "error": "未有實機證據（node 只檢查產生的 WGSL 文字）",
+        "time": "未有實機證據",
+        "evidence": [
+          "scripts/eval/mm_tile_check.html（只記狀態）"
+        ],
+        "note": "待有 shader-f16 的機器上補 f16 對拍（指令待寫）"
+      },
+      {
+        "id": "matmul_subgroup",
+        "op": "matmul",
+        "source": "（未實作；覆蓋表沒有子群組變體）",
+        "status": "待驗證（原因：核心尚未實作；這台 adapter 回報 subgroups=true 但未確認能用於核心，見 hardware.note）",
+        "hardware": "Kepler GT 720（14 W），真 Chrome WebGPU，無 shader-f16；能力：共用記憶體 16 KiB、每群組 256 執行緒",
+        "error": "未有證據",
+        "time": "未有證據",
+        "evidence": [],
+        "note": "需先實作，再在有子群組的機器上驗證"
+      }
+    ],
+    "node_fake_device": {
+      "script": "scripts/eval/cudaweb_o10_fake_check.js",
+      "scope": "假裝置（node）：只驗證覆蓋表的強制指定與自動選擇（6 個變體 × 4 組假能力表），不跑 WGSL、無時間、無誤差。結果：24／24 強制指定成功、8／8 自動選擇正常。假能力表是假設值，不是量測。"
+    },
+    "known_gaps": [
+      "infer_ops 的 q8 變體（decr、decr8、decr8f、decr4f、decr2f、pf8x4）不在 kernel_select 覆蓋表；kernel_select_test.js 的「與 infer_ops.q8mmVariant 一致」測試在 HEAD 即失敗（dec ≠ decr8），屬 O9 已記錄的 E 項，未處理。",
+      "子群組與 f16 的實機驗證需要有該能力的機器，本台都標待驗證。"
+    ]
   }
 }
