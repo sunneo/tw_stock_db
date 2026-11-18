@@ -317,5 +317,23 @@ const instantYield = async function () {};
     assert.deepStrictEqual(Object.keys(saved.entries), ['c']);
   });
 
+  await t('設定頁資料 snapshot：每個運算一列、可 JSON 序列化；強制與快取會反映在列上', () => {
+    const storage = { data: {}, getItem(k) { return this.data[k] || null; }, setItem(k, v) { this.data[k] = v; } };
+    const kr = KR.createKernelRace({ caps: LOW, adapter: 'kep', storage: storage, clock: { now: () => 0 }, yieldFn: instantYield });
+    let rows = kr.snapshot({ matmul: MM });
+    const mm = rows.find((r) => r.op === 'matmul');
+    assert.strictEqual(mm.choice, 'mm_vec4_f32');
+    assert.strictEqual(mm.source, 'rule');
+    assert.strictEqual(mm.forced, null);
+    assert.strictEqual(mm.cached, null);
+    kr.force('matmul', 'mm_simple_f32');
+    rows = kr.snapshot({ matmul: MM });
+    assert.strictEqual(rows.find((r) => r.op === 'matmul').choice, 'mm_simple_f32');
+    assert.strictEqual(rows.find((r) => r.op === 'matmul').source, 'forced');
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(rows)), rows);
+    kr.reset();
+    assert.strictEqual(kr.snapshot({ matmul: MM }).find((r) => r.op === 'matmul').forced, null);
+  });
+
   console.log(pass + ' 項通過');
 })();

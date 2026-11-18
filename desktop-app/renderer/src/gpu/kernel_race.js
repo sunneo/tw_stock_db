@@ -152,6 +152,25 @@
     }
     // 恢復預設：取消競賽、清掉所有結果與強制覆蓋
     function reset() { cancelAll(); st = emptyState(); save(); }
+    // 設定頁資料（純資料、可 JSON 序列化）：每個運算一列。shapesByOp：{ [op]: shape }，沒給的運算用空形狀。
+    function snapshot(shapesByOp) {
+      const shapes = shapesByOp || {};
+      return Object.keys(KS.VARIANTS).map(function (op) {
+        const d = describe(op, shapes[op] || {});
+        return {
+          op: op,
+          choice: d.choice.id,
+          source: d.choice.source,          // 'forced' | 'tuned' | 'rule'
+          reason: d.choice.reason,
+          forced: d.forced,                 // 強制的變體 id 或 null
+          cached: d.cached ? d.cached.id : null,
+          cachedMedian: d.cached ? d.cached.median : null,
+          running: d.running,
+          eligible: d.eligible,
+          key: d.key
+        };
+      });
+    }
     // 設定頁用：每個運算目前用哪個變體、來源、是否強制、快取內容、是否正在競賽
     function describe(op, shape) {
       const key = keyFor(op, shape);
@@ -176,6 +195,7 @@
       cancelAll: cancelAll,
       reset: reset,
       describe: describe,
+      snapshot: snapshot,
       overrides: function () { return Object.assign({}, st.overrides); },
       persisted: function () { return lastSaveOk; }
     };
