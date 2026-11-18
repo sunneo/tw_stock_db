@@ -119163,7 +119163,16 @@ _result
         catch (e) { if (rec.urls.length > 1 && /pyodide|import|fetch|load/i.test(String(e.message))) { rec.indexURL = rec.urls[1]; return await attempt(rec.indexURL); } throw e; }
     }
 
-    _mpWorkerCap() { return Math.max(1, Math.min(this._envPol ? this._envPol('maxWorkers', 8) : 8, Math.max(2, Math.min(8, (typeof navigator !== 'undefined' && navigator.hardwareConcurrency) || 4)))); }
+    // 排程純邏輯在 renderer/src/gpu/mp_core.js（嵌入後以 mpCore 取得）；取不到時退回原本的公式。
+    _mpCoreMod() { try { return this._qwenModule().mpCore || null; } catch (_) { return null; } }
+    _mpWorkerCap() {
+        const core = this._mpCoreMod();
+        const nav = (typeof navigator !== 'undefined') ? navigator : {};
+        const base = core
+            ? core.mpWorkerCap({ maxWorkers: this._envPol ? this._envPol('maxWorkers', 8) : 8, hardwareConcurrency: nav.hardwareConcurrency, deviceMemory: nav.deviceMemory })
+            : Math.max(1, Math.min(this._envPol ? this._envPol('maxWorkers', 8) : 8, Math.max(2, Math.min(8, nav.hardwareConcurrency || 4))));
+        return this._mpCapOverride != null ? Math.min(base, this._mpCapOverride) : base;
+    }
 
     async _mpCreateWorker() {
         if (!this._pyodideIndexURL) throw new Error('Pyodide尚未載入，無法建立worker');
@@ -119199,6 +119208,15 @@ _result
                 return rec;
             } catch (err) {
                 this._mpWorkers.splice(this._mpWorkers.indexOf(placeholder), 1);
+                // 建立失敗（常見原因：記憶體不足）：已有工作者就改等它們並降低上限，一個都沒有才丟錯
+                const live = this._mpWorkers.filter((w) => !w.dead && !w.creating).length;
+                const core = this._mpCoreMod();
+                const pol = core ? core.afterCreateFailure(live) : { action: live > 0 ? 'wait' : 'throw', cap: live || 1, reason: '建立工作者失敗' };
+                this._mpCapOverride = pol.cap;
+                if (pol.action === 'wait') {
+                    this._mpLastFallback = pol.reason + '（原因：' + String((err && err.message) || err) + '）';
+                    return new Promise((resolve) => this._mpWaiters.push(resolve));
+                }
                 throw err;
             }
         }
@@ -119224,6 +119242,9 @@ _result
 
     async _mpSubmit(script, filesJson, cwd, payloads, n) {
         const scriptKey = `${script.length}:${this._fnv1a(new TextEncoder().encode(script))}:${filesJson.length}:${this._fnv1a(new TextEncoder().encode(filesJson))}`;
+        // 有 mpCore 就用它的 runMap：出錯或取消後不再開始新任務，結果順序與輸入相同
+        const core = this._mpCoreMod();
+        if (core) return await core.runMap({ items: payloads, concurrency: n, runTask: (payload) => this._mpRunTask({ scriptKey, script, files: filesJson, cwd, payload }) });
         const results = new Array(payloads.length);
         let next = 0;
         const runner = async () => {
