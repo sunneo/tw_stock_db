@@ -87,10 +87,11 @@
 - [x] 3c. `fa_gpu.py`：`call_async`、`AsyncHandle.wait`、`synchronize`、事件；`call` 不變。提交 92f307117
 - [x] 3d. `cupy.cuda.Stream／Event`、`numba.cuda.stream()／event()`、`cupy.matmul_async`；`synchronize` 沒有未完成操作時不碰宿主。提交 3d3984493
 - [x] 3e. 桌面版：沿用既有信箱，`gpu.a.*` 路由已加在 `floating-assistant.js`，`fa_bridge.py` 不需要改
-- [ ] 3f. 嵌入（**待管理者通知後才執行**）：`node scripts/embed-code-ui.js` 與 `node build-assistant.js`。清單已加 `gpu_async_queue`（提交 01a18c9b8）
+- [x] 3f. 嵌入與建置已完成（提交 1c8c2de83）：`node scripts/embed-code-ui.js`、`node build-assistant.js`。Python GPU 測試 59 項全過（含嵌入一致性），node 佇列測試全過
 - [x] 4a. node 假裝置測試：保序、重疊、延遲錯誤、synchronize（`gpu_async_queue_test.js`，9 項全過）
 - [x] 4b. Python 範例 `gpu/examples/async_overlap.py`（串列與重疊計時比較＋結果一致性），測試通過（提交 e7d078633）。範例放在 `renderer/src/gpu/examples/`，不是 pybridge 底下
-- [ ] 4c. 真機只做一次（**待 3f 嵌入完成後才能做**，否則真機跑的是舊嵌入、沒有新 API）：一頁一形狀、先估時間、單次派發小、監聽 `device.lost`、不跑會逾時的測試、用 `requestExclusiveGpu` 做量測互斥
+- [ ] 4c. 真機只做一次（3f 已完成）：一頁一形狀（64×64 矩陣乘）、先估時間、單次派發小、監聽 `deviceReady`、用 `requestExclusiveGpu` 做量測互斥。評估檔 `scripts/eval/async-gpu.eval.js`；結果見第六節
+- [x] 4d（新增）. 假裝置耗時比較 `gpu/async_overlap_fake_bench.py`（提交 cef20115b）：串列 3.648 秒、重疊 1.924 秒，省下約 47%。CPU 迴圈校正為約等於一筆 GPU 延遲；不然重疊效果會被雜訊淹沒
 
 ## 四、評估（第 5 項，只寫設計，不實作）
 
@@ -117,4 +118,25 @@
 
 - 第 1 項：唯讀盤點完成，以上行號與檔名都是我自己用 Read／grep 讀出來的。
 - JSPI 在這個 Pyodide 版本的行為、`mapAsync` 在 WebGPU 的實際重疊情況：**我沒有驗證**，要在第 4c 項真機測試時確認。
-- 沒有跑任何測試，也沒有改任何來源檔。
+- 已跑的測試：node 佇列測試（9 項）、Python GPU 測試（59 項）、假裝置耗時比較、真機一次（第六節）。
+- 本次改動來源：`renderer/src/gpu/`、`renderer/src/pybridge/`、`renderer/src/floating-assistant.js`、`scripts/embed-code-ui.js`、`scripts/eval/async-gpu.eval.js`、`docs/`；建置產物（嵌入與 build 的結果）在提交 1c8c2de83。
+
+## 六、真機一次（第 4c 項）
+
+- 評估檔：`scripts/eval/async-gpu.eval.js`。啟動：真的 Electron、獨立的暫存資料夾（寫了 `main-ext-rev.txt`）、`FA_DISABLE_MAIN_OVERLAY=1`、`FA_BROWSER_CONTROL_PORT=17990`、不加 `--disable-gpu`。只跑一次（符合「每項最多兩次」）。程序結束後沒有殘留的 Electron。
+- 形狀：64×64 矩陣乘，每個量測前都先暖機一次。量測用互斥鎖 `requestExclusiveGpu`。
+- 結果（一次量測）：
+  - WebGPU 可用，`deviceReady` 在執行前後都是 true（沒有 device lost）。層：T1。
+  - 同步 call：3.5 毫秒；結果與 CPU 參考的最大誤差 6.1e-6（float32 精度）。
+  - 非同步 `submit` 立刻回傳：0.9 毫秒（比同步 call 快，符合「不等 GPU」）。
+  - 串列（同步 call 後做 CPU）：6.3 毫秒。
+  - 重疊（submit、做 CPU、wait）：7.4 毫秒。非同步結果誤差同上，正確。
+- **重疊沒有省時間，這次的量測不能證明重疊。** 原因推測：評估的 CPU 工作是在頁面主執行緒上的忙迴圈，會擋住 GPU 回讀的回呼（`mapAsync`），所以 GPU 的完成要等 CPU 迴圈結束才處理。另外這次的形狀很小（3.5 毫秒），雜訊相對大。這是評估的設計問題，不是佇列的問題；我沒有驗證推測是否正確。
+- 因為規定只跑一次，我沒有重跑。要證明真機重疊，需要：(a) CPU 工作放在另一個執行緒（網頁版的 Pyodide Worker 本來就是這樣，所以真實的 Python 重疊比這次評估更接近實際情況），或 (b) 更大的形狀、並且量測前先確認 GPU 的工作確實已派發。這兩點要另外派工並取得同意後才做。
+- 沒有驗證：真的 Python 沙盒到 JS 的非同步路徑（這次評估直接呼叫 JS 的 `_gpuAsync`，沒有經過 Python）。
+
+## 七、待辦（目前）
+
+- 真機重疊證明（見第六節 a、b），需要使用者同意再做一次。
+- numba 核心非同步提交（見第四之一節偏離 2）。
+- 多工作者分攤 CPU（第五項，只有設計）。
