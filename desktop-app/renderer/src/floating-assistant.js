@@ -96542,6 +96542,7 @@ ${fnData.code}
     _gpuCompatControls() {
         const wrap = document.createElement('div');
         wrap.style.cssText = 'font-size:13px; line-height:1.5; display:flex; flex-direction:column; gap:8px;';
+        const tag = (id, from) => { for (let i = (from === undefined ? wrap.children.length - 1 : from); i < wrap.children.length; i++) wrap.children[i].setAttribute('data-gpu-block', id); };   // 區塊編號見 faGpuCompatView
         const lblChk = document.createElement('label');
         lblChk.style.cssText = 'display:flex; gap:6px; align-items:flex-start; cursor:pointer;';
         const chk = document.createElement('input');
@@ -96549,7 +96550,7 @@ ${fnData.code}
         chk.addEventListener('change', () => { this.advancedSettings.cudaCompat = chk.checked ? 'on' : 'off'; this._saveAdvancedSettings(); });
         const chkTxt = document.createElement('span');
         chkTxt.textContent = '開啟 GPU 相容層（預設開）：既有的 numba.cuda、cupy、torch、pycuda 程式不必改寫，就會在 WebGPU 上執行（不是真的 CUDA）。關閉後這些套件回到原本的行為。';
-        lblChk.appendChild(chk); lblChk.appendChild(chkTxt); wrap.appendChild(lblChk);
+        lblChk.appendChild(chk); lblChk.appendChild(chkTxt); wrap.appendChild(lblChk); tag('switches');
         const selRow = document.createElement('div');
         selRow.style.cssText = 'display:flex; gap:8px; align-items:center; flex-wrap:wrap;';
         const selName = document.createElement('span'); selName.textContent = 'float64 處理（Python 預設的浮點）：';
@@ -96559,7 +96560,7 @@ ${fnData.code}
         const cur = this.advancedSettings.cudaCompatFloat64;
         sel.value = (cur === 'f32' || cur === 'exact') ? cur : 'auto';
         sel.addEventListener('change', () => { this.advancedSettings.cudaCompatFloat64 = sel.value; this._saveAdvancedSettings(); });
-        selRow.appendChild(selName); selRow.appendChild(sel); wrap.appendChild(selRow);
+        selRow.appendChild(selName); selRow.appendChild(sel); wrap.appendChild(selRow); tag('float64');
         // 矩陣乘核心（O14b）：auto＝有競賽勝者才換；off＝舊核心；強制值覆蓋勝者
         const mkRow = document.createElement('div');
         mkRow.style.cssText = 'display:flex; gap:8px; align-items:center; flex-wrap:wrap;';
@@ -96569,9 +96570,10 @@ ${fnData.code}
         [['auto', 'auto（預設：有勝者才換）'], ['off', 'off（關閉＝舊核心）'], ['mm_vec4_f32', '強制 mm_vec4_f32'], ['mm_tiled_f32', '強制 mm_tiled_f32']].forEach(([v, t]) => { const o = document.createElement('option'); o.value = v; o.textContent = t; mkSel.appendChild(o); });
         mkSel.value = ['off', 'mm_vec4_f32', 'mm_tiled_f32'].indexOf(this.advancedSettings.cudaMatmulKernel) >= 0 ? this.advancedSettings.cudaMatmulKernel : 'auto';
         mkSel.addEventListener('change', () => { this.advancedSettings.cudaMatmulKernel = mkSel.value; this._saveAdvancedSettings(); this._applyMatmulKernelSetting(); });
-        mkRow.appendChild(mkName); mkRow.appendChild(mkSel); wrap.appendChild(mkRow);
+        mkRow.appendChild(mkName); mkRow.appendChild(mkSel); wrap.appendChild(mkRow); tag('matmulKernel');
         // 異質運算：GPU 滿載、CPU 閒置時，讓 CPU 的 Worker 分擔一部分矩陣乘。0＝不分擔，與原本的 GPU 路徑完全相同。
         {
+            const cpuFrom = wrap.children.length;
             const cpuRow = document.createElement('div');
             cpuRow.style.cssText = 'display:flex; gap:8px; align-items:center; flex-wrap:wrap;';
             const hw = Math.max(1, Math.floor((typeof navigator !== 'undefined' && navigator.hardwareConcurrency) || 1));
@@ -96589,13 +96591,13 @@ ${fnData.code}
             cpuRow.appendChild(nm); cpuRow.appendChild(inp); cpuRow.appendChild(rf); wrap.appendChild(cpuRow); wrap.appendChild(info);
             const hint = document.createElement('div'); hint.className = 'ai-advanced-hint'; hint.style.margin = '0';
             hint.textContent = '內顯（Intel Xe 等）與 CPU 共用記憶體，GPU 滿載時 CPU 通常閒置；設成大於 0，矩陣乘會按列切開，GPU 與 CPU 的 Worker 同時算再接起來，CPU 的份額依兩邊實測速度自動調整。建議從實體核心數的一半開始；CPU 與內顯共用功耗與記憶體頻寬，設太多可能反而變慢，也會讓風扇變吵。只影響 f32、單一批次的矩陣乘，其餘運算不變。';
-            wrap.appendChild(hint); show();
+            wrap.appendChild(hint); show(); tag('cpuShare', cpuFrom);
         }
         const mode = document.createElement('div'); mode.className = 'ai-advanced-hint'; mode.style.margin = '0';
         mode.textContent = 'auto：雙 float32 在 GPU 跑，有效精度約 48 位元，寫回前做抽樣檢查；比 f32 慢（每個運算約 10 至 20 倍工作量）。'
           + ' f32：在 GPU 跑、最快，但 float64 陣列降成 float32，精度只剩約 7 位數，執行時會印出說明。'
           + ' exact：不用 GPU，在本機逐執行緒模擬，與 CUDA 同 float64 精度，最慢。';
-        wrap.appendChild(mode);
+        wrap.appendChild(mode); tag('float64');
         const lblA = document.createElement('label');
         lblA.style.cssText = 'display:flex; gap:6px; align-items:flex-start; cursor:pointer;';
         const chkA = document.createElement('input');
@@ -96603,8 +96605,9 @@ ${fnData.code}
         chkA.addEventListener('change', () => { this.advancedSettings.gpuAccel = chkA.checked ? 'on' : 'off'; this._gpuBrokenClear(); this._gpuAutoDec = null; this._saveAdvancedSettings(); if (this._mossDispose) this._mossDispose(); });
         const chkATxt = document.createElement('span');
         chkATxt.textContent = 'GPU 加速（預設開）：這台電腦有真 GPU（WebGPU）時，自動用 GPU 跑 Whisper、MOSS 語音、MIDI 作曲、音訊分析、本機生圖、Kokoro 語音合成與 lm_head（Qwen3 聊天解碼要先讀入 589 MB 模型，只有在下方「進階」手動勾選才用）；任何一步失敗都自動退回原本的 wasm／CPU 路徑，並在診斷寫明原因。沒有 WebGPU 或只有軟體模擬的機器維持原路徑。';
-        lblA.appendChild(chkA); lblA.appendChild(chkATxt); wrap.appendChild(lblA);
+        lblA.appendChild(chkA); lblA.appendChild(chkATxt); wrap.appendChild(lblA); tag('switches');
         // 運算裝置：原本散在「離線模型管理」「Whisper」「本機生圖」三頁，現在只在這裡改；儲存鍵不變，行為與原本各頁的下拉一致
+        const devFrom = wrap.children.length;
         const devSel = (label, options, value, onChange) => {
             const row = document.createElement('div'); row.style.cssText = 'display:flex; gap:8px; align-items:center; flex-wrap:wrap;';
             const name = document.createElement('span'); name.textContent = label;
@@ -96630,6 +96633,7 @@ ${fnData.code}
                 this._saveAdvancedSettings();
                 if (this._localSdRefreshStatusUI) { try { this._localSdRefreshStatusUI(); } catch (_) { /* 狀態列失敗不影響設定 */ } }
             }));
+        tag('switches', devFrom);
         const adv = document.createElement('details'); adv.style.cssText = 'margin-top:4px;';
         const advSum = document.createElement('summary'); advSum.style.cssText = 'cursor:pointer; font-size:12px; opacity:.8;'; advSum.textContent = '進階：個別路徑強制開啟（一般不需要；沒有 GPU 時也會嘗試，失敗退回原路徑）'; adv.appendChild(advSum);
         // GPU 記憶體上限（MB，0＝自動）＋偵測／基準：Qwen3 GPU 解碼配置前用它判斷放不放得下（見 gpu_mem.js、DESIGN §7.30）
@@ -96820,13 +96824,14 @@ ${fnData.code}
         // 裝置自動選擇：預設關；開了以後，上面沒勾的 GPU 路徑由「能力探測＋小基準」決定要不要自動開（軟體 WebGPU、沒有 WebGPU、基準不夠快就不開）；手動勾的照舊一定開
         adv.appendChild(this._gpuBenchPanel());   // GPU 運算後端基準（矩陣乘）：表格、重跑、取消、釘選、恢復預設
         adv.appendChild(this._gpuVariantPanel()); // G5：變體競賽表（同一組基準資料的變體層級）：套用最佳、重跑競賽、匯出／匯入剖析、恢復預設
-        wrap.appendChild(adv);
+        wrap.appendChild(adv); tag('advanced');
         const status = document.createElement('div'); status.style.cssText = 'font-size:12px; white-space:pre-wrap;';
         const refreshBtn = document.createElement('button'); refreshBtn.type = 'button'; refreshBtn.className = 'ai-advanced-btn'; refreshBtn.textContent = '重新偵測';
         const fill = async () => {
           const lines = [];
           try {
             const info = await this._cudawebCall('backend_info', {});
+            this._gpuCompatInfo = { deviceReady: !!(info && info.deviceReady), probeReason: (info && info.probeReason) || '' };
             lines.push(info && info.deviceReady ? '目前偵測到：WebGPU 可用（GPU 層 T1）' : '目前偵測到：WebGPU 不可用' + (info && info.probeReason ? '（' + info.probeReason + '）' : '') + '，會在本機 Python 模擬執行');
           } catch (e) { lines.push('目前偵測到：偵測失敗（' + String((e && e.message) || e) + '）'); }
           if (this.advancedSettings.gpuAccel === 'on') { const d = this._gpuAutoDec; lines.push('自動選擇：' + (d ? (d.decision.enabled ? '開（' : '關（') + d.decision.reason + '）' : '探測中…（開啟任一 GPU 路徑時會自動探測）')); }
@@ -96838,7 +96843,23 @@ ${fnData.code}
         };
         refreshBtn.addEventListener('click', () => { fill(); });
         const stRow = document.createElement('div'); stRow.style.cssText = 'display:flex; gap:8px; align-items:flex-start; flex-wrap:wrap;';
-        stRow.appendChild(refreshBtn); stRow.appendChild(status); wrap.appendChild(stRow);
+        stRow.appendChild(refreshBtn); stRow.appendChild(status);
+        // 簡易檢視的主角：跑基準＋白話結論（放最上面，後面接後端狀態）
+        const quick = document.createElement('div'); quick.style.cssText = 'display:flex; gap:8px; align-items:center; flex-wrap:wrap;';
+        const quickBtn = document.createElement('button'); quickBtn.type = 'button'; quickBtn.className = 'ai-advanced-btn'; quickBtn.textContent = '跑基準';
+        const quickTxt = document.createElement('div'); quickTxt.id = 'ai-gpu-compat-summary'; quickTxt.style.cssText = 'font-size:13px; font-weight:600; white-space:pre-wrap;';
+        const quickInfo = { v: this._gpuCompatInfo || null };
+        const quickPaint = async () => { let rows = []; try { const mem = this._gpuBenchMem || (await this._gpuBenchRefresh()); rows = mem && mem.rec ? mem.rec.results : []; } catch (_) { rows = []; } quickTxt.textContent = faGpuCompatSummary(quickInfo.v, rows); };
+        quickBtn.addEventListener('click', async () => {
+            quickBtn.disabled = true; quickTxt.textContent = '檢查並量測中…（背景進行，約數十秒到數分鐘）';
+            try { await fill(); quickInfo.v = this._gpuCompatInfo || null; const r = await this._gpuBenchRun((x) => { quickTxt.textContent = x; }); if (!r.ok) { quickTxt.textContent = r.reason; quickBtn.disabled = false; return; } await quickPaint(); }
+            catch (e) { quickTxt.textContent = '量測失敗：' + String((e && e.message) || e); }
+            quickBtn.disabled = false;
+        });
+        quick.appendChild(quickBtn); quick.appendChild(quickTxt);
+        wrap.insertBefore(stRow, wrap.firstChild); wrap.insertBefore(quick, wrap.firstChild);
+        quick.setAttribute('data-gpu-block', 'quick'); stRow.setAttribute('data-gpu-block', 'summary');
+        quickPaint();
         // 不在開啟設定時自動偵測（會建立 WebGPU 執行期）；按「重新偵測」才偵測
         status.textContent = '按「重新偵測」查看目前偵測到的 GPU 層。';
         return wrap;
@@ -96894,10 +96915,30 @@ ${fnData.code}
     }
     _gpuCompatRegisterPane() {
         const root = document.createElement('div');
+        // 檢視切換（簡易／專業）：只有工程模式打勾才出現；偏好存在 advancedSettings.gpuCompatView，沒打勾一律簡易
+        const viewBar = document.createElement('div'); viewBar.id = 'ai-gpu-compat-viewbar'; viewBar.style.cssText = 'display:flex; gap:6px; align-items:center; margin-bottom:10px;';
+        const viewBtns = {};
+        [['simple', '簡易檢視'], ['pro', '專業檢視']].forEach(([v, t]) => {
+            const b = document.createElement('button'); b.type = 'button'; b.textContent = t; b.dataset.view = v; b.style.cssText = 'padding:4px 12px; border-radius:6px; cursor:pointer;';
+            b.addEventListener('click', () => { this.advancedSettings.gpuCompatView = v; this._saveAdvancedSettings(); this._gpuCompatApplyView(); });
+            viewBtns[v] = b; viewBar.appendChild(b);
+        });
+        root.appendChild(viewBar);
         root.appendChild(this._gpuCompatControls());
         // 運算變體（自動調校，O9）是 GPU 相容層的一個區塊，放在同一個 gpu-compat 窗格（不另開分頁）
         const kHead = document.createElement('div'); kHead.textContent = '運算變體（自動調校，O9）'; kHead.style.cssText = 'font-weight:600; margin-top:14px;';
         root.appendChild(kHead); root.appendChild(this._kernelTuneControls());
+        kHead.setAttribute('data-gpu-block', 'kernelTune'); root.lastElementChild.setAttribute('data-gpu-block', 'kernelTune');
+        this._gpuCompatApplyView = () => {
+            let eng = false, pref = 'simple';
+            try { eng = !!(this.advancedSettings && this.advancedSettings.engineeringMode); pref = this.advancedSettings && this.advancedSettings.gpuCompatView; } catch (_) { eng = false; }
+            const v = faGpuCompatView(eng, pref);
+            root.dataset.gpuView = v.view;
+            viewBar.style.display = v.canSwitch ? 'flex' : 'none';
+            Object.keys(viewBtns).forEach((k) => { viewBtns[k].disabled = (k === v.view); viewBtns[k].style.fontWeight = k === v.view ? '700' : '400'; });
+            root.querySelectorAll('[data-gpu-block]').forEach((el) => { el.style.display = v.blocks.indexOf(el.getAttribute('data-gpu-block')) >= 0 ? '' : 'none'; });
+        };
+        this._gpuCompatApplyView();
         this.registerAdvancedSettingsTab('ai', 'gpu-compat', 'GPU 相容層（numba／cupy／torch）', root);
     }
 
@@ -111370,6 +111411,7 @@ ${sourceTool.handlerScript}
             document.querySelectorAll('#ai-advanced-modal .ai-advanced-pane').forEach((p) => p.classList.toggle('hidden', p.dataset.pane !== (this._advancedSettingsActiveCat || 'llm-basic')));
             const engChk = document.getElementById('ai-engineering-mode-chk'); if (engChk) engChk.checked = !!this.advancedSettings.engineeringMode;
         }
+        if (this._gpuCompatApplyView) { try { this._gpuCompatApplyView(); } catch (_) { /* 檢視切換失敗不影響其他頁 */ } }   // 工程模式勾選變動時，GPU 相容層窗格跟著切換簡易／專業
         // tw_stock_db客製: 2026-09-14——API KEY/URL/MODEL NAME單一組欄位已經
         // 改成_renderModelRowsList()渲染的多筆model row，這裡只需要觸發
         // 那份渲染，不用再手動同步三個input.value。
