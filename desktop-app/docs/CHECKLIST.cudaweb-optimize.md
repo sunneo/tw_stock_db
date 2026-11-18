@@ -190,6 +190,16 @@ O1m 到 O11 做完後不結束，進入迴圈。完整規則與交接見 `docs/H
   - **未完成的其他項目**：有影像位置的 GPU 對拍、常駐權重、f16 路徑、LLaVA 的 GPU 版。
   - **vlm_core 的 verified**：維持 false。語言解碼器的 GPU 對拍通過，但整個 SmolVLM 還沒有在 GPU 上端到端跑過，所以不改模型表。預設仍關閉。
 
+- O13 GPU 第二段（2026-11-18，本機真 Chrome，WebGPU；執行器 `scripts/eval/vlm_gpu_resident.js`，頁面 `scripts/eval/vlm_gpu_check.html?mode=f32|f16|q8`，結果 `scripts/eval/smolvlm_gpu_vlm.result.json`）：
+  - **權重常駐 GPU**：權重上傳一次，跨分派重用（不再每次上傳整個權重）。語言解碼的 68 個詞元一次預填：GPU 約 0.95 秒（f32）對 CPU 約 18 秒（同頁面、同輸入）。**GPU 不慢於 CPU（語言部分）**。單一詞元的解碼時間還沒有另外量。
+  - **視覺編碼器 GPU 版：通過（f32、f16）**。1024 個 patch、12 層，對 ORT 的 `image_features`（64×576）：f32 相對 RMS 3.2e-6，f16 相對 RMS 3.2e-6。GPU 約 24 秒（f32）、38 秒（f16）；node 上的 CPU 參考（vit_skeleton）同一台機器約 150 至 210 秒。GPU 是樸素核心，時間不代表核心最佳化後的結果。
+  - **影像位置的 GPU 對拍（視覺 GPU 輸出接進語言模型）：通過（f32、f16）**。68 個詞元中 64 個是影像位置，對 ORT 的 logits：top-5 與 argmax 68/68 全同，最大相對誤差 6.3e-5（f32）、6.5e-5（f16）；對同頁面 CPU 參考：6.6e-5、6.7e-5。
+  - **f16 路徑**：權重以 f16 位元打包、著色器用 unpack2x16float（乘加為 f32），**沒有依賴 shader-f16 功能**（這張卡有 shader-f16，但這條路徑不需要）。沒有因 gpuNeedsF16 退到 CPU。
+  - **q8 路徑：未通過**。視覺相對 RMS 2.8%，語言 top-5 只有 18/68（argmax 仍是 68/68）。不宣稱通過。
+  - **時間（同機）**：上傳權重 f32 0.8 秒、f16 4.3 秒（CPU 打包）、q8 5.4 秒。f16 的視覺比 f32 慢（解包成本）；語言預填 f16 0.68 秒、f32 0.95 秒。
+  - **已知限制**：像素重排在 CPU 上做（讀回視覺輸出再上傳）；GELU 的 tanh 引數夾在 ±15（WGSL 的 tanh 大引數會給 NaN，這是實測到的問題，已修）；測試只用合成影像與 68 個詞元；沒有桌面版實際執行。
+  - **vlm_core**：新增 `gpuVerified`（f32、f16 為 true，q8 為 false，範圍寫在 scope）。頂層 `verified` 維持 false，因為桌面版沒有跑過；這是保守的選擇。
+
 ## O14. 使用者寫的 CUDA（Python／JavaScript）也吃到優化（使用者 2026-11-18：「我要這個 cudaweb 獲得完整核心優化的結果，可以將來 python/js 寫 cuda 的時候，都可以獲得好處」）
 原則：優化放在 cudaweb 的**函式庫層**（`mm_ops`、`infer_ops`、`kernel_gen`、`kernel_select`、`variant_race`、`gpu_pool`），所有入口（內部模型引擎、`cudaweb.py`、`cublas`／`cudnn` 相容層、torch／cupy／numba／pycuda 墊片、使用者自己寫的 JS）都走同一組，不各自留一份舊核心。
 - [ ] **O14a 入口盤點**：列出使用者可碰到的全部入口與它們現在用哪個核心（`pybridge/cudaweb.py` 的 matmul／sgemm／gemv／dot／axpy、`pybridge/torch`、`cupy`、`numba`、`pycuda`；JS 端 `gpu_core.js` 的 `WGSL.*`、`cudnn_subset.js`、`nn_ops`）。逐一標：已走優化核心／仍走舊樸素核心／純 JS。寫進 `scripts/eval/cudaweb_optimize.result.json` 或獨立表。

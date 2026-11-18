@@ -17,6 +17,8 @@
             tasks: ['caption', 'detailed', 'ocr', 'objects', 'ask'], lang: '英文為主', license: 'Apache-2.0',
             dtype: { gpu: { embed_tokens: 'fp16', vision_encoder: 'q4', decoder_model_merged: 'q4' }, cpu: { embed_tokens: 'q8', vision_encoder: 'q8', decoder_model_merged: 'q4' } },
             bytes: { gpu: 200 * MB, cpu: 203 * MB }, verified: false,
+            // GPU 對拍（2026-11-18，本機真 Chrome、WebGPU）：只記實測範圍。f32、f16 對 ORT 全過（視覺相對 RMS 約 3e-6，語言模型 68 個位置 top-5 與 argmax 全同）；q8 未過（視覺相對 RMS 2.8%，top-5 只有 18/68）。不代表桌面版實際執行，所以上面的 verified 維持 false。
+            gpuVerified: { f32: true, f16: true, q8: false, scope: '合成影像、68 個詞元，Chrome WebGPU；scripts/eval/smolvlm_gpu_vlm.result.json' },
             // 真實檔案（2026-11-18 從 HuggingFace 官方 repo 下載，LFS sha256 核對相符）。cpu／gpu 只列該組合會用到的檔；refFp32 是 CPU 參考對拍用的 fp32 原檔（不在下載組合內）。
             files: {
                 cpu: { embed_tokens: { file: 'embed_tokens_quantized.onnx', bytes: 28385824, sha256: '4b919b829fe2bf225e42431230c56891116f0149e5170e36c99bcc0cfae0d2ef' },

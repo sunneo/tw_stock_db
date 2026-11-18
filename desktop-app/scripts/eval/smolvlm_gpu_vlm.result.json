@@ -1,0 +1,48 @@
+{
+ "date": "2026-11-18",
+ "page": "scripts/eval/vlm_gpu_check.html?mode=f32|f16|q8（本機靜態伺服器 127.0.0.1:8765；權重與 ORT 參考由 127.0.0.1:8766/gpu-test 提供，來自 scripts/eval/smolvlm_gpu_dump.js）",
+ "runtime": "scripts/eval/vlm_gpu_resident.js（權重上傳一次常駐 GPU；每個分派各自送出）",
+ "browser": "本機真 Chrome，WebGPU，Intel Xe-LPG（adapter 回報 unknown；shader-f16 可用）",
+ "model": "SmolVLM 256M：視覺編碼器（12 層，1024 個 patch，像素重排＋連接器到 64 個影像詞元）＋語言解碼器（30 層，f32 參考）",
+ "input": "合成 512×512 影像（與 smolvlm_vision_real_check.js 相同公式），文字序列 68 個詞元，其中 64 個為影像位置",
+ "reference": "ORT（fp32 vision_encoder.onnx、decoder_model_merged.onnx）；CPU 語言解碼參考為 llm_skeleton.stepVec（同一頁面、同一組輸入）",
+ "f32": {
+  "vision": { "maxAbs": 2.75e-4, "relRms": 3.23e-6, "ms": 24209.5 },
+  "lm": { "top5Same": "68/68", "argmaxSame": "68/68", "maxRelVsOrt": 6.34e-5 },
+  "lmGpuVsCpuMaxRel": 6.63e-5,
+  "uploadMs": 829.9,
+  "lmGpuMs": 947.8,
+  "lmCpuMs": 17977.5,
+  "pass": true
+ },
+ "f16": {
+  "note": "權重以 f16 位元打包，著色器用 unpack2x16float 解開，乘加為 f32；不依賴 shader-f16 功能",
+  "vision": { "maxAbs": 2.75e-4, "relRms": 3.21e-6, "ms": 37900.6 },
+  "lm": { "top5Same": "68/68", "argmaxSame": "68/68", "maxRelVsOrt": 6.50e-5 },
+  "lmGpuVsCpuMaxRel": 6.68e-5,
+  "uploadMs": 4259.2,
+  "lmGpuMs": 678.2,
+  "lmCpuMs": 15899.7,
+  "pass": true
+ },
+ "q8": {
+  "note": "每列一個 f32 縮放值，8 位元整數四個一組打包",
+  "vision": { "maxAbs": 1.133, "relRms": 2.77e-2, "ms": 23233.9 },
+  "lm": { "top5Same": "18/68", "argmaxSame": "68/68", "maxRelVsOrt": 0.114 },
+  "lmGpuVsCpuMaxRel": 0.0712,
+  "uploadMs": 5394.7,
+  "lmGpuMs": 644.5,
+  "lmCpuMs": 18573.0,
+  "pass": false,
+  "reason": "視覺相對 RMS 2.8%，語言模型 top-5 只有 18/68 相同；不能宣稱通過（argmax 全同，但不足以當成通過的條件）"
+ },
+ "cpuVisionReference": "node（同一台機器）：vit_skeleton.encode 1024 個 patch，149,282 ms 與 212,552 ms（smolvlm_vision_real_check.js 兩次執行）",
+ "notes": [
+  "GPU 視覺編碼與 CPU 相比快（約 24 秒對約 150 至 210 秒），這是樸素核心（沒有共享記憶體分塊）的結果，不是核心已經最佳化的結果。",
+  "語言解碼是一次 68 個詞元的預填（prefill），權重常駐 GPU，GPU 約 0.6 至 1 秒，CPU 約 16 至 19 秒；單一詞元的解碼時間沒有另外量。",
+  "像素重排在 CPU 上做（讀回 1024×768 的視覺輸出，重排成 64×12288，再上傳到連接器的矩陣乘），這一步不在 GPU 上。",
+  "GPU 上的 GELU 把 tanh 的引數夾在 ±15 之內：WGSL 的 tanh 在大引數時會變成 NaN（實測：第 5 層某些位置的 fc1 預激活約 30，原本造成 NaN）。",
+  "f16 模式的視覺與 f32 只差約 0.2%（相對 RMS 3.21e-6 對 3.23e-6），確認 f16 路徑確實在計算。",
+  "f32 與 f16 的語言模型逐位置 top-5 與 argmax 全部相同。"
+ ]
+}

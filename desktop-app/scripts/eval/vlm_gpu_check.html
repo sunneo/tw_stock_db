@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>SmolVLM GPU 對拍（視覺＋語言）</title>
+</head>
+<body>
+<h1>SmolVLM 256M：GPU 視覺編碼＋影像位置＋語言解碼，對 ORT</h1>
+<p>網址參數 <code>?mode=f32|f16|q8</code>（每次載入只跑一種精度，避免 GPU 記憶體過大）。權重與 ORT 參考來自 <code>127.0.0.1:8766/gpu-test/</code>（scripts/eval/smolvlm_gpu_dump.js）。結果寫在 <code>window.__res</code>。</p>
+<pre id="out">執行中…</pre>
+<script src="/scripts/eval/vlm_gpu_resident.js"></script>
+<script src="/renderer/src/gpu/llm_arch.js"></script>
+<script src="/renderer/src/gpu/llm_skeleton.js"></script>
+<script>
+(async function () {
+  const BASE = 'http://127.0.0.1:8766/gpu-test/';
+  const MODE = new URLSearchParams(location.search).get('mode') || 'f32';
+  const IMG_TOKEN = 49190;   // config.json 的 image_token_id
+  const log = (s) => { document.getElementById('out').textContent = s; window.__status = s; };
+  const res = { mode: MODE };
+  window.__res = null;
+  try {
+    log('讀取權重…');
+    const vj = await (await fetch(BASE + 'vis.json')).json();
+    const vb = new Float32Array(await (await fetch(BASE + 'vis.bin')).arrayBuffer());
+    const vt = {}; for (const t of vj.tensors) vt[t.name] = vb.subarray(t.off, t.off + t.len);
+    const lj = await (await fetch(BASE + 'lm.json')).json();
+    const lb = new Float32Array(await (await fetch(BASE + 'lm.bin')).arrayBuffer());
+    const lt = {}; for (const t of lj.tensors) lt[t.name] = lb.subarray(t.off, t.off + t.len);
+    const ids = await (await fetch(BASE + 'img_ids.json')).json();
+    const ortLog = new Float32Array(await (await fetch(BASE + 'img_ort.bin')).arrayBuffer());
+    const ortFeat = new Float32Array(await (await fetch(BASE + 'vis_ort.bin')).arrayBuffer());
+
+    log('GPU 初始化…');
+    const R = await VlmGpuR.create();
+    res.adapter = R.info.adapterName; res.hasShaderF16 = R.info.hasF16; res.maxStorage = R.info.maxStorage;
+
+    // 權重上傳一次，常駐 GPU
+    const tU0 = performance.now();
+    const VW = {
+      patch: R.weight(vt.patchW, 768, 768, MODE), patchB: R.vec(vt.patchB), pos: R.vec(vt.pos),
+      postG: R.vec(vt.postG), postB: R.vec(vt.postB), connW: R.weight(vt.connW, 576, 12288, MODE), layers: [],
+    };
+    for (let i = 0; i < vj.LAY; i++) {
+      const p = 'v' + i + '.';
+      VW.layers.push({
+        ln1g: R.vec(vt[p + 'ln1g']), ln1b: R.vec(vt[p + 'ln1b']), ln2g: R.vec(vt[p + 'ln2g']), ln2b: R.vec(vt[p + 'ln2b']),
+        wq: R.weight(vt[p + 'wq'], 768, 768, MODE), bq: R.vec(vt[p + 'bq']),
+        wk: R.weight(vt[p + 'wk'], 768, 768, MODE), bk: R.vec(vt[p + 'bk']),
+        wv: R.weight(vt[p + 'wv'], 768, 768, MODE), bv: R.vec(vt[p + 'bv']),
+        wo: R.weight(vt[p + 'wo'], 768, 768, MODE), bo: R.vec(vt[p + 'bo']),
+        w1: R.weight(vt[p + 'w1'], 3072, 768, MODE), b1: R.vec(vt[p + 'b1']),
+        w2: R.weight(vt[p + 'w2'], 768, 3072, MODE), b2: R.vec(vt[p + 'b2']),
+      });
+    }
+    const LM = { layers: [], finalNorm: R.vec(lt['finalNorm']), lmHead: R.weight(lt['lmHead'], 49280, 576, MODE) };
+    for (let i = 0; i < lj.layers; i++) {
+      const p = 'l' + i + '.';
+      LM.layers.push({
+        attnNorm: R.vec(lt[p + 'attnNorm']), ffnNorm: R.vec(lt[p + 'ffnNorm']),
+        wq: R.weight(lt[p + 'wq'], 576, 576, MODE), wk: R.weight(lt[p + 'wk'], 192, 576, MODE),
+        wv: R.weight(lt[p + 'wv'], 192, 576, MODE), wo: R.weight(lt[p + 'wo'], 576, 576, MODE),
+        wGate: R.weight(lt[p + 'wGate'], 1536, 576, MODE), wUp: R.weight(lt[p + 'wUp'], 1536, 576, MODE),
+        wDown: R.weight(lt[p + 'wDown'], 576, 1536, MODE),
+      });
+    }
+    await R.flush();
+    res.uploadMs = performance.now() - tU0;
+
+    // ---- 視覺編碼（GPU） ----
+    log('GPU 視覺編碼…');
+    const NP = 1024, G = 32, PS = 16, S = 512, H = 768;
+    const hwc = new Float32Array(S * S * 3);
+    for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) for (let c = 0; c < 3; c++)
+      hwc[(y * S + x) * 3 + c] = Math.sin(0.013 * x + 0.021 * y + c) * 0.8 + Math.cos(0.007 * x * y / S + c);
+    const Xp = new Float32Array(NP * H);
+    for (let gy = 0; gy < G; gy++) for (let gx = 0; gx < G; gx++) for (let py = 0; py < PS; py++) for (let px = 0; px < PS; px++) for (let c = 0; c < 3; c++)
+      Xp[(gy * G + gx) * H + (py * PS + px) * 3 + c] = hwc[((gy * PS + py) * S + (gx * PS + px)) * 3 + c];
+    const tV0 = performance.now();
+    let x = R.matmul(R.vec(Xp), VW.patch, NP, { bias: VW.patchB });
+    x = R.add(x, VW.pos, NP * H);
+    for (const L of VW.layers) {
+      const h = R.layernorm(x, NP, H, L.ln1g, L.ln1b, 1e-6, false);
+      const q = R.matmul(h, L.wq, NP, { bias: L.bq });
+      const k = R.matmul(h, L.wk, NP, { bias: L.bk });
+      const v = R.matmul(h, L.wv, NP, { bias: L.bv });
+      const a = R.attn(q, k, v, NP, 12, 12, 64, false);
+      x = R.matmul(a, L.wo, NP, { bias: L.bo, resid: x });
+      const h2 = R.layernorm(x, NP, H, L.ln2g, L.ln2b, 1e-6, false);
+      let m = R.matmul(h2, L.w1, NP, { bias: L.b1 });
+      m = R.gelu(m, NP * 3072);
+      x = R.matmul(m, L.w2, NP, { bias: L.b2, resid: x });
+    }
+    x = R.layernorm(x, NP, H, VW.postG, VW.postB, 1e-6, false);
+    await R.flush();
+    const xr = await R.read(x, NP * H);
+    // 像素重排（與骨架的 pixelShuffle 相同順序 A：dy、dx、c），在 CPU 上做，只是版面重排
+    const Xs = new Float32Array(64 * 12288);
+    for (let oy = 0; oy < 8; oy++) for (let ox = 0; ox < 8; ox++) for (let dy = 0; dy < 4; dy++) for (let dx = 0; dx < 4; dx++) {
+      const src = (oy * 4 + dy) * 32 + (ox * 4 + dx);
+      Xs.set(xr.subarray(src * H, src * H + H), (oy * 8 + ox) * 12288 + (dy * 4 + dx) * H);
+    }
+    const feat = R.matmul(R.vec(Xs), VW.connW, 64);
+    const visMs = await R.flush() + 0;
+    const featR = await R.read(feat, 64 * 576);
+    res.visionMs = performance.now() - tV0;
+    res.visionVsOrt = (() => {
+      let mx = 0, ss = 0, sr = 0, mxRel = 0;
+      for (let i = 0; i < featR.length; i++) { const d = Math.abs(featR[i] - ortFeat[i]); if (d > mx) mx = d; ss += d * d; sr += ortFeat[i] * ortFeat[i]; }
+      return { maxAbs: mx, relRms: Math.sqrt(ss / (sr || 1)), n: featR.length };
+    })();
+    void visMs;
+
+    // ---- 語言解碼（GPU，常駐權重） ----
+    log('GPU 語言解碼…');
+    const T = ids.length, HL = 576, V = 49280, NH = 9, NKV = 3, HD = 64, base = 100000;
+    const Xe = new Float32Array(T * HL);
+    let k2 = 0;
+    for (let p = 0; p < T; p++) {
+      if (ids[p] === IMG_TOKEN) { Xe.set(featR.subarray(k2 * HL, k2 * HL + HL), p * HL); k2++; }
+      else Xe.set(lt['embed'].subarray(ids[p] * HL, ids[p] * HL + HL), p * HL);
+    }
+    const tL0 = performance.now();
+    let xl = R.vec(Xe);
+    for (const L of LM.layers) {
+      const h = R.layernorm(xl, T, HL, L.attnNorm, null, 1e-5, true);
+      const q = R.matmul(h, L.wq, T), kk = R.matmul(h, L.wk, T), vv = R.matmul(h, L.wv, T);
+      R.rope(q, T, NH, HD, base); R.rope(kk, T, NKV, HD, base);
+      const a = R.attn(q, kk, vv, T, NH, NKV, HD, true);
+      xl = R.matmul(a, L.wo, T, { resid: xl });
+      const h2 = R.layernorm(xl, T, HL, L.ffnNorm, null, 1e-5, true);
+      const g = R.matmul(h2, L.wGate, T), u = R.matmul(h2, L.wUp, T);
+      const mm = R.siluMul(g, u, T * 1536);
+      xl = R.matmul(mm, L.wDown, T, { resid: xl });
+    }
+    const hF = R.layernorm(xl, T, HL, LM.finalNorm, null, 1e-5, true);
+    const logits = R.matmul(hF, LM.lmHead, T);
+    await R.flush();
+    res.lmMs = performance.now() - tL0;
+    const lg = await R.read(logits, T * V);
+    let worstRel = 0, top5 = 0, arg = 0;
+    for (let p = 0; p < T; p++) {
+      const a = lg.subarray(p * V, (p + 1) * V), b = ortLog.subarray(p * V, (p + 1) * V);
+      let mx = 0, mref = 0;
+      for (let i = 0; i < V; i++) { const d = Math.abs(a[i] - b[i]); if (d > mx) mx = d; if (Math.abs(b[i]) > mref) mref = Math.abs(b[i]); }
+      if (mx / mref > worstRel) worstRel = mx / mref;
+      const top = (v) => Array.from(v.keys()).sort((i, j) => v[j] - v[i]).slice(0, 5);
+      const ta = top(a), tb = top(b);
+      if (ta.join(',') === tb.join(',')) top5++;
+      if (ta[0] === tb[0]) arg++;
+    }
+    res.lmVsOrt = { T: T, maxRel: worstRel, top5Same: top5 + '/' + T, argmaxSame: arg + '/' + T };
+
+    // ---- CPU 參考的語言解碼時間（同一組輸入，llm_skeleton.stepVec） ----
+    log('CPU 語言解碼（計時）…');
+    const arch = { family: 'llama', status: 'supported', verified: false, layers: lj.layers, hidden: HL, heads: NH, kvHeads: NKV,
+      headDim: HD, ffn: 1536, norm: 'rmsnorm', eps: 1e-5, qkNorm: false, rope: { base: base, scaling: null, style: 'half' },
+      act: 'silu_mul', bias: false, tiedEmbeddings: false, vocab: V, quant: ['f32'] };
+    const cpuW = { embed: lt['embed'], finalNorm: lt['finalNorm'], lmHead: lt['lmHead'], layers: [] };
+    for (let i = 0; i < lj.layers; i++) { const p = 'l' + i + '.'; cpuW.layers.push({ attnNorm: lt[p + 'attnNorm'], wq: lt[p + 'wq'], wk: lt[p + 'wk'], wv: lt[p + 'wv'], wo: lt[p + 'wo'], ffnNorm: lt[p + 'ffnNorm'], wGate: lt[p + 'wGate'], wUp: lt[p + 'wUp'], wDown: lt[p + 'wDown'] }); }
+    const stC = FaLlmSkeleton.createState(arch, cpuW);
+    const tC0 = performance.now();
+    const cpuRows = [];
+    for (let p = 0; p < T; p++) cpuRows.push(FaLlmSkeleton.stepVec(stC, Xe.subarray(p * HL, p * HL + HL)));
+    res.lmCpuMs = performance.now() - tC0;
+    res.lmGpuVsCpu = (() => { let worst = 0; for (let p = 0; p < T; p++) { let mx = 0, mref = 0; for (let i = 0; i < V; i++) { const d = Math.abs(lg[p * V + i] - cpuRows[p][i]); if (d > mx) mx = d; if (Math.abs(cpuRows[p][i]) > mref) mref = Math.abs(cpuRows[p][i]); } if (mx / mref > worst) worst = mx / mref; } return { maxRel: worst }; })();
+
+    res.ok = true;
+    R.destroy();
+  } catch (e) {
+    res.ok = false; res.error = String(e && e.stack || e);
+  }
+  window.__res = JSON.stringify(res, null, 1);
+  log(window.__res);
+})();
+</script>
+</body>
+</html>
