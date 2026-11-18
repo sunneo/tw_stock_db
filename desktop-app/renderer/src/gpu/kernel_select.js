@@ -66,8 +66,16 @@ const VARIANTS = {
     { id: 'mm_tiled_f32', shared: 8 * KIB, threads: 256, needs: {}, applies: (s) => s.M >= 16 && s.N >= 16 },
     { id: 'mm_simple_f32', shared: 0, threads: 1, needs: {} },
   ],
+  // q8mm 的順序與 infer_ops.q8mmVariant 的自動規則一致（K 未給時只有 i32 版；f32 版只在 K ≤ 4096 時適用）。
+  // shared 來自各 WGSL 的 var<workgroup> 位元組數（見 infer_ops.js 的 WGSL_Q8MM_*）。
   q8mm: [
+    { id: 'q8mm_pf8x4', shared: 6 * KIB, threads: 256, needs: {}, applies: (s) => s.N % 4 === 0 && s.M >= 64 && s.K !== undefined && s.K <= 4096 },
     { id: 'q8mm_pf', shared: 5 * KIB, threads: 256, needs: {}, applies: (s) => s.N % 4 === 0 && s.M >= 64 },
+    { id: 'q8mm_decr8f', shared: 8 * KIB, threads: 256, needs: {}, applies: (s) => s.N % 4 === 0 && s.M >= 8 && s.K !== undefined && s.K <= 4096 },
+    { id: 'q8mm_decr8', shared: 8 * KIB, threads: 256, needs: {}, applies: (s) => s.N % 4 === 0 && s.M >= 8 },
+    { id: 'q8mm_decr4f', shared: 8 * KIB, threads: 256, needs: {}, applies: (s) => s.N % 4 === 0 && s.M >= 4 && s.K !== undefined && s.K <= 4096 },
+    { id: 'q8mm_decr', shared: 8 * KIB, threads: 256, needs: {}, applies: (s) => s.N % 4 === 0 && s.M >= 4 },
+    { id: 'q8mm_decr2f', shared: 6 * KIB, threads: 256, needs: {}, applies: (s) => s.N % 4 === 0 && s.M === 2 && s.K !== undefined && s.K <= 4096 },
     { id: 'q8mm_dec', shared: 5 * KIB, threads: 256, needs: {}, applies: (s) => s.N % 4 === 0 },
     { id: 'q8mm_simple', shared: 0, threads: 64, needs: {} },
   ],
