@@ -137,6 +137,13 @@ function fakeNavigator(opts) {
       const n = u32(e[4])[0], fl = new Float32Array(e[4].data, 4, 7);
       const r = NN.adamwCore(f32(e[0], n), f32(e[1], n), f32(e[2], n), f32(e[3], n), fl[0], fl[1], fl[2], fl[3], fl[4], fl[5], fl[6]);
       f32(e[0], n).set(r.p); f32(e[2], n).set(r.m); f32(e[3], n).set(r.v);
+    } else if (k === 'adamw_accum') {
+      // O8：綁定 0 p(寫)、1 G(讀，K·n)、2 m(寫)、3 v(寫)、4 uniform（n、K 為 u32；lr,b1,omb1,b2,omb2,eps,wd,c1,c2,scale 為 f32，從位元組 8 起）
+      // 逐運算 f32 模擬，與 WGSL 同一順序（見 train_fused.js 的 adamwAccumF32）
+      const TF = require('./train_fused.js');
+      const n = u32(e[4])[0], K = u32(e[4])[1], fl = new Float32Array(e[4].data, 8, 10);
+      const r = TF.adamwAccumF32(f32(e[0], n), f32(e[1], K * n), K, f32(e[2], n), f32(e[3], n), Array.from(fl));
+      f32(e[0], n).set(r.p); f32(e[2], n).set(r.m); f32(e[3], n).set(r.v);
     } else if (k === 'axpy' || k === 'scal') {
       const n = u32(e[e.length - 1])[0];
       const alpha = new Float32Array(e[e.length - 1].data, 4, 1)[0];
