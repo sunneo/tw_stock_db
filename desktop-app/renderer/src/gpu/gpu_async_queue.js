@@ -33,7 +33,8 @@ function createGpuQueue(opts) {
     const sid = streamId == null ? 0 : streamId;
     if (pendingTotal >= maxPending) throw new QueueFullError(maxPending);
     const s = getStream(sid);
-    const rec = { id: ++seq, stream: sid, op: String(op), state: 'pending', result: undefined, error: null, doneAt: null, done: null };
+    // op 可以是字串，也可以是物件（例如 { device: 'cpu', name: 'matmul' }，給多裝置排程用）；原樣交給 execute
+    const rec = { id: ++seq, stream: sid, op, state: 'pending', result: undefined, error: null, doneAt: null, done: null };
     recs.set(rec.id, rec);
     s.pending.add(rec);
     pendingTotal++;
@@ -41,6 +42,7 @@ function createGpuQueue(opts) {
     rec.done = prev.then(() => {
       if (s.poison) throw s.poison; // 同一個 stream 已出錯：這一筆直接以同一個錯誤失敗
       return execute(rec.op, args);
+      // （rec.op 維持原樣：字串或裝置物件）
     }).then((v) => {
       rec.state = 'done'; rec.result = v;
     }, (e) => {

@@ -173,5 +173,25 @@ const flush = () => new Promise((r) => setImmediate(r));
     console.log('ok 9 synchronize 指定 stream');
   }
 
+  // 10. 多裝置：op 為物件（裝置標記）時原樣傳給 execute；同一 stream 內 CPU 與 GPU 交替仍保序
+  {
+    const seen = [];
+    let running = 0, maxRunning = 0;
+    const execute = (op, args) => new Promise((resolve) => {
+      seen.push(op.device + ':' + op.name);
+      running++; maxRunning = Math.max(maxRunning, running);
+      setTimeout(() => { running--; resolve(args.v); }, 2);
+    });
+    const q = createGpuQueue({ execute });
+    const h1 = q.submit({ device: 'cpu', name: 'a' }, { v: 1 }, 5);
+    const h2 = q.submit({ device: 'gpu', name: 'b' }, { v: 2 }, 5);
+    const h3 = q.submit({ device: 'cpu', name: 'c' }, { v: 3 }, 5);
+    const h4 = q.submit({ device: 'gpu', name: 'd' }, { v: 4 }, 6);  // 不同 stream：可以和上面重疊
+    assert.deepStrictEqual([await q.wait(h1), await q.wait(h2), await q.wait(h3), await q.wait(h4)], [1, 2, 3, 4]);
+    assert.deepStrictEqual(seen.filter((s) => s.endsWith(':a') || s.endsWith(':b') || s.endsWith(':c')), ['cpu:a', 'gpu:b', 'cpu:c'], '同一 stream 內保序（跨裝置）');
+    assert.ok(maxRunning >= 2, '不同 stream 應可重疊');
+    console.log('ok 10 多裝置 op 物件與同 stream 保序');
+  }
+
   console.log('gpu_async_queue：全部通過');
 })().catch((e) => { console.error('失敗：', e && e.stack || e); process.exit(1); });
