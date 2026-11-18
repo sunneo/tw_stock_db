@@ -64,4 +64,29 @@ function withExtraOutputs(file, names) {
   return Buffer.concat([b.subarray(0, tagPos), Buffer.from([0x3a]), varint(newGraph.length), newGraph, b.subarray(ge)]);
 }
 
-module.exports = { readNodes, withExtraOutputs };
+
+// 與 readNodes 相同，但會走進子圖（If／Loop 的 then_branch、else_branch 等 GRAPH 屬性）。merged 解碼器的實際運算在子圖裡。
+function readNodesDeep(file) {
+  const b = fs.readFileSync(file);
+  const top = readFields(b, 0, b.length);
+  const g = top.find(([fn]) => fn === 7);
+  const out = [];
+  (function walk(s0, e0) {
+    for (const [fn, wt, v] of readFields(b, s0, e0)) {
+      if (fn !== 1 || wt !== 2) continue;
+      const n = { op: "", name: "", inputs: [], outputs: [], attrs: {} }; const subs = [];
+      for (const [f2, w2, v2] of readFields(b, v[0], v[1])) {
+        if (f2 === 1) n.inputs.push(b.subarray(v2[0], v2[1]).toString("utf8"));
+        else if (f2 === 2) n.outputs.push(b.subarray(v2[0], v2[1]).toString("utf8"));
+        else if (f2 === 3) n.name = b.subarray(v2[0], v2[1]).toString("utf8");
+        else if (f2 === 4) n.op = b.subarray(v2[0], v2[1]).toString("utf8");
+        else if (f2 === 5 && w2 === 2) { for (const [f3, w3, v3] of readFields(b, v2[0], v2[1])) if (f3 === 6 && w3 === 2) subs.push(v3); }
+      }
+      out.push(n);
+      for (const [gs, ge] of subs) walk(gs, ge);
+    }
+  })(g[2][0], g[2][1]);
+  return out;
+}
+
+module.exports = { readNodes, readNodesDeep, withExtraOutputs };
