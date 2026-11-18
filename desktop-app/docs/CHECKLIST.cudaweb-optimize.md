@@ -122,10 +122,13 @@ O1m 到 O11 做完後不結束，進入迴圈。完整規則與交接見 `docs/H
   - **真實形狀（ORT CPU 實跑，`onnxruntime-node` 1.22.0）**：`vision_encoder` 輸入 `pixel_values`＋`pixel_attention_mask`、輸出 `image_features`；512×512 影像 → `[1, 64, 576]`（64 個影像詞元、LM 隱藏維度 576）。`embed_tokens` 輸入 `input_ids`、輸出 `inputs_embeds`，形狀 `[1, 3, 576]`。`decoder_model_merged_q4` 有 30 層 KV（`past_key_values.0..29`）。
   - **真權重對拍（視覺路徑，CPU，fp32 原檔）：通過**。`scripts/eval/smolvlm_vision_real_check.js`（需要 `SMOLVLM_DIR`，可選 `ORT_NODE_DIR`）：從 `vision_encoder.onnx` 的 initializer 與節點（最小 protobuf 讀取，`smolvlm_onnx_initializers.js`）抽出 12 層 ViT、patch 嵌入、位置嵌入、後 LayerNorm、連接器權重，用 `smolvlm_skeleton.js` 的 `pixelShuffle`＋`connector` 跑同一張 512×512 合成影像，與 ORT 的 `image_features` 比。**順序 A（骨架現行：dy、dx、c）**：最大絕對差 5.3e-5，相對 RMS 1.46e-6 → 通過（relRms 門檻 1e-4）。**順序 B（c、dy、dx）**：相對 RMS 1.05 → 不符，確認骨架的順序是對的。連接器輸入 12288 = 768×4×4，所以 **r = 4 已由真權重證實**。
   - **pixel shuffle 展開順序：已核對（順序 A）**，方法見上。
-  - **沒做的**：(1) LM 部分（`decoder_model_merged_q4` 是 q4，要先解 MatMulNBits 才能跟 `llm_skeleton` 對拍）；(2) 逐層中間輸出的對拍（ORT 只給最終 `image_features`，中間值要改圖才拿得到）；(3) 隱藏維度 768／576、heads 12、ffn 3072、層數 12、eps 1e-6 是從 ONNX 形狀與 `vit_skeleton` 參數推得，config.json 沒有讀；(4) GPU 版；(5) 這次的 CPU 參考執行耗時約 150 到 210 秒（純 JS，未優化）。
+  - **語言解碼器真權重對拍（CPU，fp32）：通過**。`scripts/eval/smolvlm_lm_real_check.js`：權重從 `decoder_model_merged.onnx`（fp32 原檔，sha256 `5ae6a66f…89`，540,640,302 B，LFS 核對相符）與 `embed_tokens.onnx` 抽出，描述表欄位與 `config.json` 的 `text_config` 對照（30 層、隱藏 576、9 個 query head、3 個 kv head、head 維 64、FFN 1536、RoPE θ 100000 half 風格、eps 1e-5、嵌入與 lm_head 不共用）。序列 73 個詞元，其中 64 個是影像佔位（id 49190＝`image_token_id`），影像嵌入來自視覺路徑的 ORT 輸出，依序取代佔位位置。結果：每個位置的 logits 最大絕對差 8.2e-5，最大相對誤差 4.5e-6，top-5 與 argmax 在 73 個位置全部相同。
+  - **視覺嵌入接進文字序列的位置：沒有發現問題**。規則是「影像佔位 id 的位置，依序換成影像嵌入」，與 HuggingFace 的 inputs_merger 相同（`smolvlm_skeleton.assemble`）。沒有需要修正的地方。這個結論依賴 `config.json` 的 `image_token_id`；沒有下載 tokenizer，所以「提示詞模板會展開成 64 個 `<image>`」沒有查證。
+  - **沒做的**：(1) 量化的解碼器（`decoder_model_merged_q4`，清單裡 CPU 與 GPU 組合實際用的檔）沒有對拍，這次只用 fp32 原檔；(2) 逐層中間輸出的對拍（ORT 只給最終輸出）；(3) GPU 版（這台沒有 CUDA）；(4) 桌面版實際執行（沒有在 app 裡跑一次看圖問答）；(5) 提示詞模板與 tokenizer（詞元 id 是任意的，只要在詞表內就能對拍數值）。
+  - **CPU 參考耗時**：視覺路徑約 150 到 210 秒，語言解碼器 73 個詞元約 16 秒（純 JS，未優化）。
   - **`verified:false` 維持不變**：視覺路徑對真權重通過，但整個 SmolVLM（含 LM）還沒有端到端的對拍，所以模型表不能標 verified。
   - **GPU 版：未做**。這台沒有 CUDA，也沒有真 GPU 量測；`vlm_core.js` 的 gpu 組合檔案只確認 sha256，沒有執行。
-  - **下一步**：(a) LM 部分對拍：先把 `decoder_model_merged_q4` 的 MatMulNBits 解量化，對 `llm_skeleton` 的 `stepVec`，用視覺路徑輸出的影像嵌入組一段序列；(b) 用 `embed_tokens.onnx`（fp32）餵 `inputs_embeds`，確認端到端的 logits；(c) 通過後才把 `verified` 改為 true，並補 GPU 版（需要真 GPU，這台沒有 CUDA，不跑）。
+  - **下一步**：(a) 量化解碼器（`decoder_model_merged_q4`，CPU 組合實際用的檔）解量化後對拍，確認量化本身的誤差範圍；(b) 用提示詞模板與 tokenizer 跑一次完整的看圖問答，對拍真實的 `<image>` 展開；(c) 在桌面版實際執行一次（獨立使用者資料目錄，不搶使用者正在用的埠），才可以把模型表 `verified` 改為 true；(d) GPU 版需要真 GPU，這台沒有 CUDA，不跑。
 - [ ] **O13c Florence-2**：編碼器—解碼器結構（DaViT 視覺編碼器加語言編碼器與帶交叉注意力的解碼器），較複雜，排在 a、b 之後；只做到能對拍的子圖就如實標範圍。
 - [ ] 共通：先用既有的「逐節點對拍」做法（`scripts/eval/cudaweb_node_*`）把這些 ONNX 圖在 cudaweb 上逐節點對 ORT 驗證，再決定整圖接線或骨架重寫；預設關、行為不變、失敗永久退回原路徑；兩處設定介面（AI 助理設定、桌面版設定頁）同步開關；速度數字標硬體（Kepler 14 W）。沒有真權重或載入太重就標「未用真模型驗證」。每小步提交。
 
