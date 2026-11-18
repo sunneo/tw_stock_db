@@ -2,10 +2,12 @@
  * 這是參考實作（給 GPU 版對拍用），不是最佳化路徑。
  * 覆寫槽（O12c）：骨架的運算經過具名的槽（rmsnorm、matvec、rope）。模型族可以註冊覆寫（registerOverride），
  *   createState 的 opts.useOverrides 為 false 時一律走通用實作，用來量「覆寫有沒有真的比較好」，沒有好處就移除。
- * 目前不支援（遇到就丟錯，不悄悄算錯）：RoPE 的 llama3 縮放、偏置（bias=true）、GELU 啟動。
+ * 目前不支援（遇到就丟錯，不悄悄算錯）：RoPE 的 llama3 縮放、GELU 啟動。
+ * 偏置（bias=true）：只指 q、k、v 三個投影的偏置（Qwen2 的寫法，o 投影沒有偏置）；bias=false 時行為與之前相同。
  * 權重格式（row-major，y = W·x，W 為 [out][in]）：
  *   { embed: Float32Array(vocab*hidden), finalNorm: Float32Array(hidden), lmHead?: Float32Array(vocab*hidden)（tiedEmbeddings 時可省）,
  *     layers: [{ attnNorm, wq(heads*hd*hidden), wk(kvHeads*hd*hidden), wv(kvHeads*hd*hidden), wo(hidden*heads*hd),
+ *                bq?(heads*hd), bk?(kvHeads*hd), bv?(kvHeads*hd)（bias 時必填）,
  *                qNorm?(hd), kNorm?(hd)（qkNorm 時必填）, ffnNorm, wGate(ffn*hidden), wUp(ffn*hidden), wDown(hidden*ffn) }] }
  * UMD：node 用 module.exports；瀏覽器掛在 self.FaLlmSkeleton。
  */
@@ -78,7 +80,6 @@
     if (!v.ok) throw new Error('llm_skeleton：描述表不合法：' + v.errors.join('；'));
     if (arch.status !== 'supported') throw new Error('llm_skeleton：' + arch.family + ' 還是 pending，不支援');
     if (arch.rope.scaling) throw new Error('llm_skeleton：RoPE 縮放（' + arch.rope.scaling.type + '）尚未實作');
-    if (arch.bias) throw new Error('llm_skeleton：偏置（bias）尚未實作');
     if (arch.act !== 'silu_mul') throw new Error('llm_skeleton：啟動 ' + arch.act + ' 尚未實作');
   }
   // 權重長度必須與描述表一致；長度不對會讓運算悄悄變成 NaN，所以開頭就檢查
@@ -95,6 +96,7 @@
       need(p + 'wv', L.wv, nkv * hd * H); need(p + 'wo', L.wo, H * nh * hd); need(p + 'ffnNorm', L.ffnNorm, H);
       need(p + 'wGate', L.wGate, F * H); need(p + 'wUp', L.wUp, F * H); need(p + 'wDown', L.wDown, H * F);
       if (arch.qkNorm) { need(p + 'qNorm', L.qNorm, hd); need(p + 'kNorm', L.kNorm, hd); }
+      if (arch.bias) { need(p + 'bq', L.bq, nh * hd); need(p + 'bk', L.bk, nkv * hd); need(p + 'bv', L.bv, nkv * hd); }
     });
   }
 
@@ -124,6 +126,10 @@
       let q = ops.matvec(L.wq, nh * hd, H, h);
       let k = ops.matvec(L.wk, nkv * hd, H, h);
       const v = ops.matvec(L.wv, nkv * hd, H, h);
+      if (a.bias) {
+        for (let i = 0; i < nh * hd; i++) q[i] += L.bq[i];
+        for (let i = 0; i < nkv * hd; i++) { k[i] += L.bk[i]; v[i] += L.bv[i]; }
+      }
       if (a.qkNorm) {
         // qk-norm：每個 head 各自做 RMSNorm（權重長度 hd）
         const perHead = (vec, n, wn) => { const o = new Float32Array(vec.length); for (let hh = 0; hh < n; hh++) o.set(ops.rmsnorm(vec.subarray(hh * hd, hh * hd + hd), wn, a.eps), hh * hd); return o; };

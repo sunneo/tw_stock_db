@@ -12,6 +12,8 @@
   // mv(W, rows, cols, x) → Promise<Float32Array>（y = W·x，W 為 [rows][cols] row-major）
   async function stepGpu(state, token, mv) {
     const a = state.arch, w = state.w, hd = state.hd, H = a.hidden, nh = a.heads, nkv = a.kvHeads;
+    // GPU 版還沒有偏置的路徑；有偏置就直接丟錯，不能悄悄少加偏置算出錯的結果
+    if (a.bias) throw new Error('llm_skeleton_gpu：偏置（bias）尚未在 GPU 版實作');
     if (!(token >= 0 && token < a.vocab) || token !== Math.floor(token)) throw new Error('llm_skeleton_gpu：詞元超出詞表（' + token + '）');
     const pos = state.pos;
     let x = Float32Array.from(w.embed.subarray(token * H, token * H + H));
@@ -65,6 +67,7 @@
 
   // 整段 prefix；狀態與權重檢查沿用 llm_skeleton（createState 會驗證描述表與權重長度）。useOverrides:false：GPU 版不吃 CPU 的覆寫槽。
   async function runGpu(arch, weights, tokens, mv) {
+    if (arch.bias) throw new Error('llm_skeleton_gpu：偏置（bias）尚未在 GPU 版實作');
     const st = S.createState(arch, weights, { useOverrides: false });
     let logits = null;
     for (const t of tokens) logits = await stepGpu(st, t, mv);

@@ -102,11 +102,11 @@ check('詞表外的詞元：丟錯，不悄悄取值', () => {
   assert.throws(() => S.run(tinyArch(), tinyWeights(), [-1]), /超出詞表/);
 });
 
-check('不支援的功能：RoPE 縮放、偏置、GELU、pending 族，都丟明確錯誤（不算錯）', () => {
+check('不支援的功能：RoPE 縮放、GELU、pending 族，都丟明確錯誤；bias 缺 q/k/v 偏置時丟錯（不算錯）', () => {
   const a1 = tinyArch(); a1.rope.scaling = { type: 'llama3', factor: 32 };
   assert.throws(() => S.run(a1, tinyWeights(), [0]), /RoPE 縮放/);
   const a2 = tinyArch(); a2.bias = true;
-  assert.throws(() => S.run(a2, tinyWeights(), [0]), /偏置/);
+  assert.throws(() => S.run(a2, tinyWeights(), [0]), /權重 layers\[0\]\.bq 長度應為 4/);
   const a3 = tinyArch(); a3.act = 'gelu';
   assert.throws(() => S.run(a3, tinyWeights(), [0]), /gelu/);
   assert.throws(() => S.run(A.archFor('gemma') || Object.assign(tinyArch(), { status: 'pending' }), tinyWeights(), [0]), /pending|不合法/);

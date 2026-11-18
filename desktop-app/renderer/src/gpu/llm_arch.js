@@ -59,6 +59,16 @@
       specialTokens: { bos: null, eos: 151645 },
       note: 'Qwen3 以描述表表示（qk-norm 開）；現有 qwen_gpu 的覆寫集合在 O12c 才接上'
     },
+    'qwen2-0.5b': {
+      family: 'qwen2', status: 'supported', verified: false,
+      layers: 24, hidden: 1024, heads: 16, kvHeads: 16, headDim: 64, ffn: 2816,
+      norm: 'rmsnorm', eps: 1e-6, qkNorm: false,
+      rope: { base: 1000000, scaling: null, style: 'half' },
+      act: 'silu_mul', bias: true, tiedEmbeddings: true,
+      vocab: 152000, quant: ['q8', 'f16', 'f32'],
+      specialTokens: { bos: 151643, eos: 151645 },
+      note: 'Qwen2（LLaVA-Interleave 0.5B 的語言模型）：q、k、v 有偏置（o 沒有）；config.json 沒寫 rms_norm_eps，eps 取 Qwen2 預設 1e-6（待對 modeling 程式）；kvHeads＝heads（沒有 GQA）'
+    },
     'gemma': {
       family: 'gemma', status: 'pending', verified: false,
       layers: null, hidden: null, heads: null, kvHeads: null, headDim: null, ffn: null,

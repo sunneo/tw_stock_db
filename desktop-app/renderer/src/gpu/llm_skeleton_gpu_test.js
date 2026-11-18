@@ -76,5 +76,11 @@ const cpuMv = async (W, rows, cols, x) => {
     await assert.rejects(G.runGpu(m.arch, m.w, [0], cpuMv), /權重 layers\[0\]\.wq/);
   });
 
+  await check('偏置（bias）：GPU 版尚未實作，開頭就丟錯，不悄悄少加偏置', async () => {
+    const m = model();
+    m.arch.bias = true;
+    await assert.rejects(G.runGpu(m.arch, m.w, [0], cpuMv), /偏置（bias）尚未在 GPU 版實作/);
+  });
+
   console.log('llm_skeleton_gpu_test: ' + passes + ' 項通過');
 })().catch((e) => { console.error(e); process.exit(1); });

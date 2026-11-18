@@ -81,9 +81,13 @@
     }
     return outs.map((o) => linear(L.wo, L.bo, H, H, o));
   }
-  // 編碼一張影像：回傳 [nPatch][hidden]（後 LayerNorm 之後）
-  function encode(a, w, img, H0, W0) {
+  // 編碼一張影像：回傳 [nPatch][hidden]（預設在後 LayerNorm 之後）。
+  // opts（可省，省略時與舊行為相同）：layers＝只跑前幾層（LLaVA 取倒數第二層等）；postNorm:false＝不做後 LayerNorm。
+  function encode(a, w, img, H0, W0, opts) {
     assertArch(a);
+    const o = opts || {};
+    const nL = o.layers === undefined ? a.layers : o.layers;
+    if (!(nL >= 0 && nL <= a.layers && nL === Math.floor(nL))) throw new Error('vit_skeleton：layers 必須是 0 到 ' + a.layers + ' 的整數');
     const patches = patchify(img, H0, W0, a.channels, a.patch);
     const nPatch = patches.length;
     checkWeights(a, w, nPatch);
@@ -92,7 +96,7 @@
       for (let d = 0; d < a.hidden; d++) e[d] += w.pos[i * a.hidden + d];
       return e;
     });
-    for (const L of w.layers) {
+    for (const L of w.layers.slice(0, nL)) {
       const hn = xs.map((x) => layernorm(x, L.ln1g, L.ln1b, a.eps));
       const att = attention(L, a, hn);
       xs = xs.map((x, i) => x.map((v, d) => v + att[i][d]));
@@ -103,6 +107,7 @@
         return x.map((v, d) => v + dn[d]);
       });
     }
+    if (o.postNorm === false) return xs;
     return xs.map((x) => layernorm(x, w.postG, w.postB, a.eps));
   }
 
