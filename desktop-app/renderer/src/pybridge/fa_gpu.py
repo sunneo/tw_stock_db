@@ -134,6 +134,179 @@ def call(op, args):
     return value
 
 
+# ---------------------------------------------------------------- 非同步提交（stream／event）
+# call_async 立刻回傳句柄（AsyncHandle）：GPU 工作在宿主背景執行，Python 可以繼續做 CPU 工作；
+# 要結果時才 h.wait()，或 synchronize(stream)。宿主協定見 renderer/src/gpu/gpu_async_queue.js。
+# 語意與 CUDA 相同：同一個 stream 保序、不同 stream 可重疊、錯誤延遲到等待點丟出（同 stream sticky）。
+# 沒有用 call_async 的程式完全不受影響（call 仍是同步）。
+
+_OUTSTANDING = []  # 已提交、尚未 wait 的句柄（提交順序）；佇列滿時拿來等最舊的一筆
+
+
+def _arpc(name, args):
+    """非同步協定的一次往返（submit／wait／query／forget／sync／reset／event_*）。
+    網頁版：run_sync(_fa_gpu.aop(...))；這個往返本身很短（submit 不等 GPU），真正的等待只發生在 wait／sync。"""
+    if IN_BROWSER:
+        import json
+        from pyodide.ffi import run_sync
+        try:
+            import _fa_gpu
+        except ImportError:
+            _fa_gpu = None
+        if _fa_gpu is None:
+            import fa_bridge
+            try:
+                return fa_bridge.call("gpu.a." + name, args)
+            except fa_bridge.BridgeError as e:
+                raise GpuCompatError(str(e))
+        data = json.loads(str(run_sync(_fa_gpu.aop(name, json.dumps(args)))))
+        if not data.get("ok", False):
+            raise GpuCompatError(data.get("error") or ("GPU 非同步操作失敗：" + name))
+        return data.get("result")
+    if not RPC_DIR:
+        raise GpuCompatError("GPU 相容層在這個環境不可用：沒有 AI 助理的橋接信箱（請在助理的桌面版或網頁版模擬器裡執行）。")
+    import fa_bridge
+    try:
+        return fa_bridge.call("gpu.a." + name, args)
+    except fa_bridge.BridgeError as e:
+        raise GpuCompatError(str(e))
+
+
+def _remove_files(paths):
+    for p in paths:
+        try:
+            os.remove(p)
+        except OSError:
+            pass
+
+
+def _finish_value(res, op, out):
+    """和 call() 結尾相同：記錄層與統計，並把寫成 bin 的陣列讀回來。"""
+    STATS["calls"] += 1
+    STATS["ops"][op] = STATS["ops"].get(op, 0) + 1
+    _note(res.get("layer", "未知"), res.get("reason", ""))
+    value = res.get("result")
+    if isinstance(value, dict) and "bin" in value:
+        path = value["bin"]
+        value = _read_bin(path)
+        _remove_files([path])
+    return value
+
+
+class AsyncHandle(object):
+    """call_async 回傳的句柄。不持有結果；wait() 才取得結果（或丟出它的錯誤）。可以多次 wait。"""
+    __slots__ = ("id", "stream", "_op", "_inputs", "_out", "_state", "_value", "_error")
+
+    def __init__(self, hid, stream, op, inputs, out):
+        self.id = hid
+        self.stream = stream
+        self._op = op
+        self._inputs = inputs
+        self._out = out
+        self._state = "pending"
+        self._value = None
+        self._error = None
+
+    def done(self):
+        """非阻塞查詢：這筆是否已在宿主完成（完成或失敗都算）。"""
+        if self._state != "pending":
+            return True
+        return _arpc("query", {"handle": self.id}) != "pending"
+
+    def wait(self):
+        if self._state == "pending":
+            try:
+                res = _arpc("wait", {"handle": self.id})
+                self._value = _finish_value(res, self._op, self._out)
+                self._state = "done"
+            except Exception as e:  # 宿主回報的錯誤、或讀回失敗：都記在句柄上，之後每次 wait 都丟同一個
+                self._error = e
+                self._state = "error"
+            _remove_files(self._inputs)
+            self._inputs = []
+            try:
+                _OUTSTANDING.remove(self)
+            except ValueError:
+                pass
+            try:
+                _arpc("forget", {"handle": self.id})
+            except GpuCompatError:
+                pass
+        if self._state == "error":
+            raise self._error
+        return self._value
+
+
+def call_async(op, args, stream=0):
+    """call 的非同步版：立刻回傳 AsyncHandle，不等 GPU。取結果用 h.wait()，或 synchronize(stream) 等整條 stream。
+    宿主的未完成句柄達上限（64 筆）時，先等最舊的一筆再重試（不會丟錯給使用者）。"""
+    payload = {}
+    inputs = []
+    for k, v in args.items():
+        if isinstance(v, (list, tuple)):
+            payload[k] = _pack(v)
+            if isinstance(payload[k], dict):
+                inputs.append(payload[k]["bin"])
+        else:
+            payload[k] = v
+    out = None
+    if not IN_BROWSER and RPC_DIR:
+        out = os.path.join(RPC_DIR, "gpu-out-%s.bin" % uuid.uuid4().hex[:12])
+    body = {"op": op, "args": payload, "out_bin": out}
+    while True:
+        try:
+            r = _arpc("submit", {"name": "call", "body": body, "stream": int(stream)})
+            break
+        except GpuCompatError as e:
+            if "佇列已滿" in str(e) and _OUTSTANDING:
+                try:
+                    _OUTSTANDING[0].wait()  # 最舊的那筆的錯誤會留在它自己的句柄上，不在這裡丟
+                except Exception:
+                    pass
+                continue
+            _remove_files(inputs)
+            raise
+    h = AsyncHandle(r["handle"], r.get("stream", stream), op, inputs, out)
+    _OUTSTANDING.append(h)
+    return h
+
+
+def synchronize(stream=None):
+    """等指定 stream（None＝全部 stream）的所有已提交操作；宿主的 sticky 錯誤在這裡丟出（GpuCompatError）。"""
+    _arpc("sync", {"stream": None if stream is None else int(stream)})
+
+
+def reset(stream=0):
+    """清掉指定 stream 的 sticky 錯誤（出錯後要重新開始時用）。"""
+    _arpc("reset", {"stream": int(stream)})
+
+
+class AsyncEvent(object):
+    __slots__ = ("id",)
+
+    def __init__(self, eid):
+        self.id = eid
+
+
+def event_record(stream=0):
+    """在 stream 目前的位置記一個事件：事件完成 = 此刻之前已提交的操作全部完成。"""
+    return AsyncEvent(_arpc("event_record", {"stream": int(stream)})["event"])
+
+
+def event_synchronize(ev):
+    _arpc("event_sync", {"event": ev.id})
+
+
+def event_query(ev):
+    return bool(_arpc("event_query", {"event": ev.id}))
+
+
+def elapsed_ms(start, end):
+    """兩個已完成事件之間的毫秒數。這是主機牆鐘時間，不是 GPU 時間戳（我沒有實作 GPU 時間戳）。未完成時回傳 NaN。"""
+    ms = _arpc("event_elapsed", {"start": start.id, "end": end.id}).get("ms")
+    return float("nan") if ms is None else float(ms)
+
+
 def note_cpu(reason):
     """墊片在本機 Python 執行（沒有經過 GPU）時呼叫，讓使用者知道這一段不是 GPU。"""
     _note("Python 本機執行（不經過 GPU）", reason)

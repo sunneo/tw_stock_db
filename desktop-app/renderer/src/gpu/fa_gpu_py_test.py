@@ -993,6 +993,192 @@ def t_fa_run_passes_f64_mode_to_child():
     assert "F64 f32" in out, out + err
 
 
+# ---------------------------------------------------------------- 非同步提交（call_async／stream／event）
+# 假的非同步宿主：submit 只登記、不執行（模擬 GPU 在背景）；wait／sync 才依序執行 fake_rpc；
+# 同一個 stream 出錯後 sticky（之後的操作與 sync 都丟同一個錯誤，直到 reset），與 gpu_async_queue.js 相同。
+_async = {"pending": {}, "next": 0, "limit": 0, "poison": {}, "events": {}, "evnext": 0}
+
+
+def _run_async(hid):
+    """執行一筆（若還沒執行）並把結果留在 results，之後 wait 可再取；與 JS 宿主相同，結果保留到 forget。"""
+    if hid not in _async.setdefault("results", {}):
+        body, stream = _async["pending"].pop(hid)
+        if stream in _async["poison"]:
+            _async["results"][hid] = ("err", _async["poison"][stream])
+        else:
+            try:
+                _async["results"][hid] = ("ok", fake_rpc("call", body))
+            except fa_gpu.GpuCompatError as e:
+                _async["poison"][stream] = e
+                _async["results"][hid] = ("err", e)
+    kind, val = _async["results"][hid]
+    if kind == "err":
+        raise val
+    return val
+
+
+def fake_arpc(name, args):
+    if name == "submit":
+        if _async["limit"] and len(_async["pending"]) >= _async["limit"]:
+            raise fa_gpu.GpuCompatError("GPU 佇列已滿（未完成的操作達上限 %d），請先等待較早的句柄" % _async["limit"])
+        hid = _async["next"]
+        _async["next"] += 1
+        _async["pending"][hid] = (args["body"], args["stream"])
+        return {"handle": hid, "stream": args["stream"]}
+    if name == "query":
+        return "pending" if args["handle"] in _async["pending"] else "done"
+    if name == "wait":
+        return _run_async(args["handle"])
+    if name == "forget":
+        return {"ok": True}
+    if name == "reset":
+        _async["poison"].pop(args["stream"], None)
+        return {"ok": True}
+    if name == "sync":
+        targets = [args["stream"]] if args["stream"] is not None else None
+        for hid in sorted(list(_async["pending"])):
+            body, stream = _async["pending"][hid]
+            if targets is None or stream in targets:
+                try:
+                    _run_async(hid)
+                except fa_gpu.GpuCompatError:
+                    pass  # 錯誤留在 sticky 狀態，下面統一丟
+        for s, e in _async["poison"].items():
+            if targets is None or s in targets:
+                raise e
+        return {"ok": True}
+    if name == "event_record":
+        _async["evnext"] += 1
+        _async["events"][_async["evnext"]] = args["stream"]
+        return {"event": _async["evnext"]}
+    if name == "event_sync":
+        stream = _async["events"][args["event"]]
+        return fake_arpc("sync", {"stream": stream})
+    if name == "event_query":
+        return True
+    if name == "event_elapsed":
+        return {"ms": 0.25}
+    raise AssertionError("未知的非同步操作：" + name)
+
+
+fa_gpu._arpc = fake_arpc
+
+
+def _async_reset():
+    _async["pending"].clear()
+    _async["limit"] = 0
+    _async["poison"].clear()
+    _async.setdefault("results", {}).clear()
+
+
+def t_async_submit_defers_gpu_until_wait():
+    _async_reset()
+    del host_calls[:]
+    h = fa_gpu.call_async("vector_add", {"a": [1.0, 2.0], "b": [10.0, 20.0]}, stream=1)
+    assert host_calls == [], "submit 之後 GPU 操作不應已執行（應該在 wait 才跑）"
+    assert h.done() is False, "未完成時 done() 應為 False"
+    assert h.wait() == [11.0, 22.0], "wait 結果錯誤"
+    assert host_calls == ["vector_add"]
+    assert h.done() is True
+    assert h.wait() == [11.0, 22.0], "同一句柄可以多次 wait"
+
+
+def t_async_overlap_cpu_work_between_submit_and_wait():
+    _async_reset()
+    del host_calls[:]
+    h1 = fa_gpu.call_async("matmul", {"a": [1.0, 2.0, 3.0, 4.0], "b": [5.0, 6.0, 7.0, 8.0], "m": 2, "k": 2, "n": 2}, stream=1)
+    h2 = fa_gpu.call_async("sum", {"a": [1.0, 2.0, 3.0]}, stream=2)
+    cpu = sum(i * i for i in range(20000))  # 這段 CPU 工作發生在提交之後、等待之前
+    assert cpu == sum(i * i for i in range(20000))
+    assert host_calls == [], "CPU 工作期間 GPU 不應被阻塞式執行"
+    assert h2.wait() == 6.0
+    assert h1.wait() == [19.0, 22.0, 43.0, 50.0]
+
+
+def t_async_same_stream_keeps_order():
+    _async_reset()
+    del host_calls[:]
+    hs = [fa_gpu.call_async("sum", {"a": [float(i)]}, stream=3) for i in range(4)]
+    fa_gpu.synchronize(3)
+    assert host_calls == ["sum"] * 4
+    assert [h.wait() for h in hs] == [0.0, 1.0, 2.0, 3.0]
+
+
+def t_async_error_is_delayed_and_sticky():
+    _async_reset()
+    host["fail"] = True
+    try:
+        h1 = fa_gpu.call_async("sum", {"a": [1.0]}, stream=4)  # 提交不丟
+        h2 = fa_gpu.call_async("sum", {"a": [2.0]}, stream=4)
+        h3 = fa_gpu.call_async("sum", {"a": [3.0]}, stream=5)   # 其他 stream 不受影響
+        raised = False
+        try:
+            h1.wait()  # 這一筆在宿主失敗
+        except fa_gpu.GpuCompatError:
+            raised = True
+        assert raised, "錯誤應在 wait 時丟出"
+        host["fail"] = False  # 之後的 fake_rpc 會成功，但 stream 4 應該仍是 sticky
+        raised = False
+        try:
+            h2.wait()  # 同 stream：不執行，直接以同一錯誤失敗
+        except fa_gpu.GpuCompatError:
+            raised = True
+        assert raised, "同 stream 之後的操作應 sticky 失敗"
+        assert h3.wait() == 3.0, "其他 stream 應正常完成"
+        raised = False
+        try:
+            fa_gpu.synchronize(4)
+        except fa_gpu.GpuCompatError:
+            raised = True
+        assert raised, "synchronize(stream) 應丟出 sticky 錯誤"
+        fa_gpu.reset(4)
+        h4 = fa_gpu.call_async("sum", {"a": [4.0]}, stream=4)
+        assert h4.wait() == 4.0, "reset 後應可再用"
+    finally:
+        host["fail"] = False
+        _async_reset()
+
+
+def t_async_queue_full_waits_oldest_then_retries():
+    _async_reset()
+    _async["limit"] = 2
+    try:
+        hs = [fa_gpu.call_async("sum", {"a": [float(i)]}, stream=6) for i in range(5)]
+        assert [h.wait() for h in hs] == [0.0, 1.0, 2.0, 3.0, 4.0], "佇列滿時應先等最舊的再重試，結果不能錯"
+    finally:
+        _async_reset()
+
+
+def t_async_bin_files_live_until_wait():
+    _async_reset()
+    d = tempfile.mkdtemp(prefix="fa-gpu-async-")
+    old_dir = fa_gpu.RPC_DIR
+    fa_gpu.RPC_DIR = d
+    try:
+        h = fa_gpu.call_async("dot", {"x": [1.0, 2.0, 3.0], "y": [4.0, 5.0, 6.0]}, stream=7)
+        bins = [p for p in os.listdir(d) if p.startswith("gpu-in-")]
+        assert bins, "submit 後輸入的 bin 檔應保留到 wait 之後（宿主還要讀）"
+        assert h.wait() == 32.0
+        left = [p for p in os.listdir(d) if p.startswith("gpu-in-")]
+        assert not left, "wait 完成後輸入的 bin 檔應被清掉：" + str(left)
+    finally:
+        fa_gpu.RPC_DIR = old_dir
+        _async_reset()
+
+
+def t_async_events_and_elapsed():
+    _async_reset()
+    ev0 = fa_gpu.event_record(8)
+    h = fa_gpu.call_async("sum", {"a": [1.0, 2.0]}, stream=8)
+    ev1 = fa_gpu.event_record(8)
+    fa_gpu.event_synchronize(ev1)
+    assert fa_gpu.event_query(ev1) is True
+    assert h.done() is True or h.wait() == 3.0
+    ms = fa_gpu.elapsed_ms(ev0, ev1)
+    assert ms == 0.25, "elapsed_ms 應來自宿主（假的宿主回 0.25）"
+    _async_reset()
+
+
 for name, fn in list(globals().items()):
     if name.startswith("t_") and callable(fn):
         check(name[2:], fn)
