@@ -623,11 +623,13 @@
         "id": "matmul_subgroup",
         "op": "matmul",
         "source": "（未實作；覆蓋表沒有子群組變體）",
-        "status": "待驗證（原因：核心尚未實作；這台 adapter 回報 subgroups=true 但未確認能用於核心，見 hardware.note）",
+        "status": "待驗證（原因：matmul 的 subgroup 核心尚未實作；子群組歸約已在 subgroup_reduce_check.html 通過，見 intel_xe_lpg_2026_11_18.subgroup_reduce）",
         "hardware": "Kepler GT 720（14 W），真 Chrome WebGPU，無 shader-f16；能力：共用記憶體 16 KiB、每群組 256 執行緒",
         "error": "未有證據",
         "time": "未有證據",
-        "evidence": [],
+        "evidence": [
+          "scripts/eval/subgroup_reduce_check.html?v=2"
+        ],
         "note": "需先實作，再在有子群組的機器上驗證"
       }
     ],
@@ -943,14 +945,10 @@
         "mem_space_check",
         "mm_tile_check?v=2",
         "mm_f16_check?v=4（新增）",
-        "mm_race_one（simple／tiled／vec4 於 64 與 512）"
+        "mm_race_one（simple／tiled／vec4 於 64 與 512）",
+        "o7_rmsq1_unit（判準修訂後重跑，2026-11-18）"
       ],
-      "failed": [
-        {
-          "page": "o7_rmsq1_unit",
-          "result": "9 案中 3 案不過：D96 rand、D128 rand、D128 pos。q 逐位相同（全部 0 個不一致），失敗的是 scale 逐位相同的判準：fused 與 CPU 參考的 scale 相差約 1e-7（1 ulp 級）。根因：GPU 以 f32 算 inv 與 scale，CPU 參考以 f64 再 fround，舍入不同；量化整數不受影響，但頁面判準要求 scale 逐位相同，所以判失敗。"
-        }
-      ],
+      "failed": [],
       "notes": [
         "o7_engine_check：allPass true，但 dispatchesFused 43 > dispatchesUnfused 39，與「融合應減少派發」的預期相反。頁面的派發計數定義未逐行核對，未解釋，如實記錄。",
         "o8_train_check 的頁面 status 欄位仍寫 unverified-pending-real-chrome（頁面沒有更新狀態）；20 步的最大 loss 相對差 1.85e-6，判準 1e-4 是本輪依清單 O8 套用的。",
@@ -962,6 +960,69 @@
         "matmul_int_simple（沒有頁）",
         "f16 版訓練（o8_train 只跑 f32）"
       ]
+    },
+    "o7_rmsq1_analysis": {
+      "result": "9 案全部通過（判準：q 逐位一致；scale 相對誤差 ≤ 1e-6）。q 不一致 0 個（9 案）。scale 差：3 案為 1 ulp（相對誤差 7.4e-8 至 7.9e-8），其餘 6 案逐位相同。",
+      "root_cause": "不是 bug。GPU 的 f32 除法與 sqrt 不保證正確舍入（WGSL 規範允許數 ulp 誤差），CPU 參考以 f64 計算後 fround。兩者在 inv 上差 1 ulp，scale 因此差 1 ulp；量化值逐位相同。",
+      "action": "驗收改為「q 逐位一致 + scale 相對誤差 ≤ 1e-6」，o7_rmsq1_unit.html 已更新（同時記錄 scaleUlpDiff）。"
+    },
+    "subgroup_reduce": {
+      "kernel": "subgroupAdd 歸約（每群組 256 執行緒，子群組加總後由共用記憶體彙總），page: scripts/eval/subgroup_reduce_check.html?v=2",
+      "correctness": "6 個長度（1、37、256、300、5000、65536）全部通過；相對誤差 ≤ 3.5e-7（判準 1e-5）；與樹狀共用記憶體歸約同樣通過",
+      "timing_ms_end_to_end_median5": {
+        "n": 4194304,
+        "subgroup": 9.9,
+        "tree_shared_memory": 10.8,
+        "note": "端到端含 16 MB 上傳，差異在雜訊內，不能說是快；只標這台"
+      },
+      "scope": "測試用獨立核心，未接入 production（kernel_select／mm_ops 未改）。matmul 的 subgroup 變體仍未實作。"
+    },
+    "o7_engine": {
+      "correctness": "5 步（M=3 預填＋4 步解碼）logits 逐位相同、token 相同（page: o7_engine_check.html?v=3）",
+      "dispatch_counts_real_chrome": {
+        "prefill_M3_fused": 39,
+        "prefill_M3_unfused": 39,
+        "decode_M1_fused": 35,
+        "decode_M1_unfused": 39,
+        "decode_saved_per_step": 4,
+        "expected_2L": 4
+      },
+      "note_previous_43_vs_39": "先前記的 43 對 39 是建立引擎時讀 info.dispatches 的數字，不是派發計次，已作廢。",
+      "decode_time_ms_same_machine": {
+        "fused": {
+          "median": 3.9,
+          "mean": 4.187
+        },
+        "unfused": {
+          "median": 3.9,
+          "mean": 3.866
+        },
+        "n": 38,
+        "note": "合成小模型（D64、L=2），每步含 token 讀回，交替執行；融合省下的派發在這個規模下量不到差異（每步時間主要是 submit＋讀回的固定成本）"
+      },
+      "real_model_verified": false
+    },
+    "batch_layer_rerun": {
+      "page": "scripts/eval/batch_layer_check.html?v=2",
+      "cases": [
+        {
+          "name": "A d64 vec4",
+          "batch_ms": 3.5,
+          "separate_ms": 20.9,
+          "batch_submits": 1,
+          "separate_submits": 6,
+          "bitExact": true
+        },
+        {
+          "name": "B d50 scalar",
+          "batch_ms": 3.7,
+          "separate_ms": 21.3,
+          "batch_submits": 1,
+          "separate_submits": 6,
+          "bitExact": true
+        }
+      ],
+      "note": "這頁比較的是「批次 vs 逐運算」，不是融合前後。層的運算序列（rmsnorm→matmul→rope→matmul→silu→matmul）不含 rmsq1 融合，所以融合前後在這頁沒有量；融合前後的同機時間見 o7_engine。頁面的 hardware 欄仍寫 Kepler（只是標籤）。"
     }
   }
 }

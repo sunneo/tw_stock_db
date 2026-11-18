@@ -69,7 +69,13 @@ const rnd = () => { seed = (Math.imul(seed, 1664525) + 1013904223) | 0; return (
         const qr = new Int32Array(D); for (let i = 0; i < D; i++) qr[i] = scR === 0 ? 0 : Math.min(255, Math.max(0, Math.round(f(yr[i] / scR)) + zpR)) - zpR;
         let qBad = 0; for (let i = 0; i < D; i++) if (qb[i] !== qr[i]) qBad++;
         const scaleRef = scR === 0 ? 1 : scR;
-        out.cases.push({ D: D, kind: kind, fusedVsCpuQMismatch: qBad, fusedScale: sbv[0], cpuScale: scaleRef, scaleEq: Object.is(sbv[0], scaleRef), pass: qBad === 0 && Object.is(sbv[0], scaleRef) });
+        // 判準（2026-11-18 修訂）：量化值 q 逐位相同（必要）；scale 相對誤差 ≤ 1e-6（允許 f32 的 sqrt／除法 ulp 級差異）。
+        // 舊判準要求 scale 逐位相同，但 WGSL 的 sqrt 與除法不保證正確舍入，CPU 參考是 f64 後再 fround，差 1 ulp 是預期內。
+        // 同時記下 scale 差的 ulp 數（f32）：同號時兩者位元表示之差。
+        const relS = Math.abs(sbv[0] - scaleRef) / Math.abs(scaleRef);
+        const u32 = new Uint32Array(new Float32Array([sbv[0], scaleRef]).buffer);
+        const ulps = Math.abs(u32[0] - u32[1]);
+        out.cases.push({ D: D, kind: kind, fusedVsCpuQMismatch: qBad, fusedScale: sbv[0], cpuScale: scaleRef, scaleEqBits: Object.is(sbv[0], scaleRef), scaleUlpDiff: ulps, scaleRelErr: relS, pass: qBad === 0 && relS <= 1e-6 });
         continue;
         out.debug = out.debug || { xHead: Array.from(x.slice(0, 3)), yHead: Array.from(yv.slice(0, 3)), gHead: Array.from(g.slice(0, 3)) };
         out.cases.push({ D: D, kind: kind, qMismatch: qBad, scaleTwoStage: sa[0], scaleFused: sbv[0], scaleSame: Object.is(sa[0], sbv[0]), qSample: [qa[0], qb[0]], pass: qBad === 0 && Object.is(sa[0], sbv[0]) });

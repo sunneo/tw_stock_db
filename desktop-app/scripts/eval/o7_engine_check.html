@@ -25,7 +25,7 @@ function synthModel(L) {
   return { D, H, Hkv, hd, I, V, L, eps: 1e-6, finalNorm: f32(D, 1), emb: { W: u8(V * D), zp: 128, scale: 0.02 }, embedRows(ids) { const out = new Float32Array(ids.length * D); for (let i = 0; i < ids.length; i++) for (let j = 0; j < D; j++) out[i * D + j] = emb[ids[i] * D + j]; return out; }, layers };
 }
 (async () => {
-  const out = { hardware: 'Kepler 14 W（同一台、同一瀏覽器）', model: 'synthetic L=2 D64 H2 hd16 I96 V64（不是 Qwen3 權重）', steps: [], error: null };
+  const out = { hardware: null, adapter: null, model: 'synthetic L=2 D64 H2 hd16 I96 V64（不是 Qwen3 權重）', steps: [], error: null };
   window.__out = out;
   try {
     await loadMod('gpu_core', '../../renderer/src/gpu/gpu_core.js');
@@ -38,6 +38,7 @@ function synthModel(L) {
     await loadMod('qwen_gpu', '../../renderer/src/gpu/qwen_gpu.js');
     const nn = mods.nn_ops.exports, QG = mods.qwen_gpu.exports;
     const { dev } = await nn.getDevice(navigator);
+    { const a = await navigator.gpu.requestAdapter(); out.adapter = { vendor: a.info && a.info.vendor, arch: a.info && a.info.architecture, f16: a.features.has('shader-f16'), subgroups: a.features.has('subgroups') }; out.hardware = 'Intel xe-lpg（本機真 Chrome）'; }
     const W = synthModel(2);
     const FUSE = new URLSearchParams(location.search).get('fuse') !== '0';   // ?fuse=0：兩個引擎都不融合（對照：排除跳過邏輯的影響）
     const engF = await QG.createGpuEngine(dev, W, { maxT: 32, maxM: 8, fuseRmsQuant: FUSE, logits: true });
@@ -53,6 +54,39 @@ function synthModel(L) {
     }
     out.allPass = out.steps.every((r) => r.pass);
     out.realModelVerified = false;
+    // 派發數：每步的派發數增量（不是建立引擎時的數字）。融合應讓解碼（M=1）每步少 2L 次。
+    {
+      // 計次：包住 dev.createCommandEncoder → beginComputePass → dispatchWorkgroups，數真正送出的派發數（info.dispatches 不是即時計數）
+      let cnt = 0;
+      const origCE = dev.createCommandEncoder.bind(dev);
+      dev.createCommandEncoder = (...a) => { const enc = origCE(...a); const obp = enc.beginComputePass.bind(enc); enc.beginComputePass = (...b) => { const p = obp(...b); const od = p.dispatchWorkgroups.bind(p); p.dispatchWorkgroups = (...c) => { cnt++; return od(...c); }; return p; }; return enc; };
+      const eA = await QG.createGpuEngine(dev, W, { maxT: 32, maxM: 8, fuseRmsQuant: true });
+      const eB = await QG.createGpuEngine(dev, W, { maxT: 32, maxM: 8, fuseRmsQuant: false });
+      const cnt0 = cnt;
+      await eA.step([1, 2, 3], {}); const pre1 = cnt; await eB.step([1, 2, 3], {}); const pre2 = cnt;
+      await eA.step([4], {}); const dec1 = cnt; await eB.step([4], {}); const dec2 = cnt;
+      out.dispatchPerStep = { prefillM3_fused: pre1 - cnt0, prefillM3_unfused: pre2 - pre1, decodeM1_fused: dec1 - pre2, decodeM1_unfused: dec2 - dec1, decodeSavedPerStep: (dec2 - dec1) - (dec1 - pre2), expectedSaved: 2 * W.L, note: '真 Chrome 派發計次（包住 dispatchWorkgroups）；預填（M=3）融合不適用，兩者應相同' };
+      dev.createCommandEncoder = origCE;
+    }
+    // 同機時間（融合 vs 不融合）：解碼 M=1，交替執行兩個引擎（順序每步對調），中位數與平均；每步含 token 讀回（logits:false）。
+    {
+      const TN = 40;
+      const eA = await QG.createGpuEngine(dev, W, { maxT: 64, maxM: 8, fuseRmsQuant: true });
+      const eB = await QG.createGpuEngine(dev, W, { maxT: 64, maxM: 8, fuseRmsQuant: false });
+      await eA.step([1, 2, 3], {}); await eB.step([1, 2, 3], {});
+      const tA = [], tB = [];
+      for (let i = 0; i < TN; i++) {
+        const tok = [(i * 7 + 3) % W.V];
+        const order = i % 2 === 0 ? ['A', 'B'] : ['B', 'A'];
+        for (const k of order) {
+          const eng = k === 'A' ? eA : eB;
+          const t0 = performance.now(); await eng.step(tok, {}); const dt = performance.now() - t0;
+          (k === 'A' ? tA : tB).push(dt);
+        }
+      }
+      const stat = (a) => { const s = a.slice(2).sort((x, y) => x - y); const mean = s.reduce((p, q) => p + q, 0) / s.length; return { medianMs: Math.round(s[Math.floor(s.length / 2)] * 1000) / 1000, meanMs: Math.round(mean * 1000) / 1000, n: s.length }; };
+      out.decodeTiming = { fused: stat(tA), unfused: stat(tB), note: '同機交替、decode M=1、L=2 合成模型、每步含 token 讀回；兩引擎的 step 都會 submit，時間含 JS 與 GPU；只標這台', steps: TN };
+    }
   } catch (e) { out.error = String((e && e.stack) || e); }
   out.done = true;
 })();
