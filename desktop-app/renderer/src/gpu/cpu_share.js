@@ -16,6 +16,7 @@
 // 沒有 Worker（makeWorker 回傳 null／丟錯）或 cores=0 → 一律回報 shared:false，由呼叫端走原路徑。
 
 const HS = require('./hetero_split.js');  // 分攤決策公式（見 docs/DESIGN.cudaweb-hetero.md 第 2 節）
+const GQ = require('./gpu_async_queue.js'); // 統一句柄：CPU 段與 GPU 段都是佇列上的提交（見設計文件第 4 節）
 const MIN_FLOPS = 2e7;      // M*K*N 小於這個不分工（派發與搬運的固定成本大於收益）
 const MIN_ROWS = 16;
 const MAX_CPU_RATIO = 0.5;  // CPU 最多分擔一半的列；GPU 慢到比 CPU 還慢時，使用者應直接選 CPU 模式
@@ -90,6 +91,31 @@ function createCpuShare(o) {
     rateStore.load(rateKeyStr).then((v) => { if (v && !(rate.gpu > 0)) { rate.gpu = v.gpu; rate.cpu = v.cpu; } }).catch(() => {});
   }
   const saveRates = () => { if (rateStore && rateKeyStr && rate.gpu > 0 && rate.cpu > 0) rateStore.save(rateKeyStr, { gpu: rate.gpu, cpu: rate.cpu, updatedAt: Date.now() }).catch(() => {}); };
+
+  // 統一句柄的執行器：op.device 為 'cpu' 時把列區塊送給 Worker；為 'gpu' 時呼叫呼叫端的 gpuFn
+  let streamSeq = 0;
+  const queue = GQ.createGpuQueue({
+    maxPending: 64,
+    execute: (op, a) => (op.device === 'cpu' ? cpuExec(a) : Promise.resolve(a.fn(a.A, a.mG))),
+  });
+  async function cpuExec(a) {
+    const parts = [];
+    for (let w = 0; w < a.nW; w++) {
+      const r0 = a.mG + w * a.per, r1 = Math.min(a.m, r0 + a.per); if (r1 <= r0) break;
+      const slot = pool[w];
+      const msg = { id: ++seq, A: a.A.slice(r0 * a.k, r1 * a.k), m: r1 - r0, k: a.k, n: a.n, transB: !!a.transB };
+      if (a.bId != null) {
+        msg.bKey = a.bId;
+        if (!slot.bKeys.has(a.bId)) { msg.B = a.B; slot.bKeys.add(a.bId); if (slot.bKeys.size > 4) slot.bKeys.delete(slot.bKeys.values().next().value); }
+      } else msg.B = a.B;
+      parts.push(post(slot, msg).catch(async (e) => {
+        if (!e || !e.miss) throw e;
+        slot.bKeys.delete(a.bId);
+        return post(slot, Object.assign({}, msg, { id: ++seq, B: a.B }));   // Worker 端快取被擠掉：補送一次
+      }));
+    }
+    return Promise.all(parts);
+  }
   const bIds = new WeakMap(); let bSeq = 0;
 
   function ensurePool() {
@@ -156,30 +182,17 @@ function createCpuShare(o) {
     if (r.bKey && typeof r.bKey === 'object') { bId = bIds.get(r.bKey); if (bId == null) { bId = ++bSeq; bIds.set(r.bKey, bId); } }
     const t0 = now();
     let cpuMs = 0, gpuMs = 0;
-    const cpuP = (async () => {
-      const parts = [];
-      for (let w = 0; w < nW; w++) {
-        const r0 = mG + w * per, r1 = Math.min(m, r0 + per); if (r1 <= r0) break;
-        const slot = pool[w];
-        const msg = { id: ++seq, A: A.slice(r0 * k, r1 * k), m: r1 - r0, k, n, transB: !!r.transB };
-        if (bId != null) {
-          msg.bKey = bId;
-          if (!slot.bKeys.has(bId)) { msg.B = B; slot.bKeys.add(bId); if (slot.bKeys.size > 4) slot.bKeys.delete(slot.bKeys.values().next().value); }
-        } else msg.B = B;
-        parts.push(post(slot, msg).catch(async (e) => {
-          if (!e || !e.miss) throw e;
-          slot.bKeys.delete(bId);
-          return post(slot, Object.assign({}, msg, { id: ++seq, B }));   // Worker 端快取被擠掉：補送一次
-        }));
-      }
-      const out = await Promise.all(parts);
-      cpuMs = now() - t0;
-      return out;
-    })();
-    const gpuP = (async () => { const y = await gpuFn(A.subarray(0, mG * k), mG); gpuMs = now() - t0; return y; })();
-    let cpuParts, yG;
-    try { [yG, cpuParts] = await Promise.all([gpuP, cpuP]); }
-    catch (e) { return { shared: false, why: 'error', error: String((e && e.message) || e) }; }
+    // 統一句柄：CPU 段與 GPU 段都是佇列上的一次提交，各自一條 stream（每次分工用新的 stream 編號，失敗不會影響下一次）
+    const sG = ++streamSeq * 2, sC = sG + 1;
+    const hG = queue.submit({ device: 'gpu', name: 'matmul' }, { fn: gpuFn, A: A.subarray(0, mG * k), mG }, sG);
+    const hC = queue.submit({ device: 'cpu', name: 'rows' }, { A, B, m, k, n, transB: !!r.transB, bId, mG, nW, per }, sC);
+    const pG = queue.wait(hG).then((v) => { gpuMs = now() - t0; return v; });
+    const pC = queue.wait(hC).then((v) => { cpuMs = now() - t0; return v; });
+    const settled = await Promise.all([pG, pC].map((p) => p.then((v) => ({ ok: true, v }), (e) => ({ ok: false, e }))));
+    try { queue.forget(hG); queue.forget(hC); } catch (_) { /* 句柄已在上面等完，forget 不會失敗；保險起見忽略 */ }
+    const bad = settled.find((s) => !s.ok);
+    if (bad) return { shared: false, why: 'error', error: String((bad.e && bad.e.message) || bad.e) };
+    const yG = settled[0].v, cpuParts = settled[1].v;
     const y = new Float32Array(m * n);
     y.set(yG.length === mG * n ? yG : yG.subarray(0, mG * n), 0);
     let off = mG * n; cpuParts.forEach((c) => { y.set(c, off); off += c.length; });
@@ -193,10 +206,35 @@ function createCpuShare(o) {
     return { shared: true, y, info: last };
   }
 
+  // 純 CPU 池（沒有 WebGPU 時用；設計文件第 5 節）：全部列交給 Worker；沒有 Worker 就在主執行緒算；Worker 出錯也退回主執行緒。
+  // 回傳一定是 shared:true 且結果正確，info.mode 說明實際走的路徑（cpu-workers／cpu-main）。
+  async function runCpuOnly(A, B, m, k, n, ro) {
+    const r = ro || {};
+    const transB = !!r.transB;
+    const mainRun = (why, fallback) => ({ shared: true, y: cpuRowsRef(A, B, m, k, n, transB), info: { mode: 'cpu-main', workers: 0, why, fallback } });
+    if (want <= 0) return mainRun('off');
+    ensurePool();
+    if (broken || !pool.length) return mainRun(broken || 'no-worker');
+    const nW = Math.min(pool.length, m);
+    if (nW < 1) return mainRun('empty');
+    const per = Math.ceil(m / nW);
+    let bId = null;
+    if (r.bKey && typeof r.bKey === 'object') { bId = bIds.get(r.bKey); if (bId == null) { bId = ++bSeq; bIds.set(r.bKey, bId); } }
+    const t0 = now();
+    try {
+      const parts = await cpuExec({ A, B, m, k, n, transB, bId, mG: 0, nW, per });
+      const y = new Float32Array(m * n);
+      let off = 0; parts.forEach((c) => { y.set(c, off); off += c.length; });
+      return { shared: true, y, info: { mode: 'cpu-workers', workers: nW, rows: m, totalMs: Math.round((now() - t0) * 10) / 10 } };
+    } catch (e) {
+      return mainRun(null, 'worker-error: ' + String((e && e.message) || e));
+    }
+  }
+
   function stats() { return { cores: want, workers: pool.length, broken, rate: { gpu: rate.gpu, cpu: rate.cpu }, feedback: fbFrac, last }; }
   function dispose() { want = 0; ensurePool(); }
   // _setRates／_ratioNow 只給測試用（底線開頭）：直接設定兩邊速率，讓決策可以確定地走到切分或不切
-  return { setCores, cores: () => want, run, stats, dispose, _ratioNow: ratioNow, _setRates: (g, c) => { rate.gpu = Number(g) || 0; rate.cpu = Number(c) || 0; fbFrac = null; } };
+  return { setCores, cores: () => want, run, runCpuOnly, stats, dispose, _ratioNow: ratioNow, _setRates: (g, c) => { rate.gpu = Number(g) || 0; rate.cpu = Number(c) || 0; fbFrac = null; } };
 }
 
 // 全域單例：mm_ops 與設定頁共用
