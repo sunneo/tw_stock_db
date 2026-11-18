@@ -1,0 +1,20 @@
+{
+ "ts": "2026-11-18（run=3）",
+ "machine": "Windows 11；瀏覽器：Claude 內建 Chromium（Chrome 156）；WebGPU adapter：Intel Xe-LPG（xe-lpg），shader-f16 可用",
+ "model": "Xenova/slimsam-77-uniform（SlimSAM 77）。權重：ai-temp/slimsam/onnx（不進 git），sha256 與 HF LFS oid 相同：vision_encoder_fp16.onnx 11aaeb49…（12,170,657 bytes）、prompt_encoder_mask_decoder_fp16.onnx df24d49a…（8,550,118）、vision_encoder_quantized.onnx cce23c7b…（8,882,165）、prompt_encoder_mask_decoder_quantized.onnx cb90b279…（4,903,810）。harness 在瀏覽器內從同一 HF 路徑載入（瀏覽器快取），未逐一核對瀏覽器內的 hash。",
+ "image": "ai-temp/pose-test/person.jpg（有人，960×966）",
+ "prompt": "單點 (480, 483)，label 1",
+ "cases": {
+  "cpu_q8 (transformers 3.7.5, wasm) — 參考": { "load_ms": 1355, "first_ms": 10647, "warm_median_ms": 9535, "iou_scores": [0.8154, 0.8555, 0.6597], "best": 1, "mask_area_px": 13464 },
+  "webgpu_fp16 (app 的 transformers 4.2.0)": { "result": "失敗", "error": "OrtRun: MatMul node /mask_decoder/transformer/layers.0/mlp/lin2/MatMul：Failed to create a WebGPU compute pipeline: [Invalid ShaderModule \"MatMul\"] is invalid due to a previous error" },
+  "webgpu_fp32 診斷 (4.2.0)": { "result": "失敗", "error": "同一個 MatMul 節點、同一個 shader 錯誤" },
+  "webgpu_fp16 診斷 (transformers 3.7.5)": { "result": "成功", "load_ms": 1185, "first_ms": 11774, "warm_median_ms": 4047, "iou_scores": [0.7998, 0.8135, 0.6426], "best": 1, "mask_area_px": 13255 }
+ },
+ "compare_vs_cpu_q8": {
+   "webgpu_fp16 on 3.7.5": { "mask_iou": 0.98095, "same_best_index": true, "max_iou_score_diff": 0.042, "area_cpu": 13464, "area_gpu": 13255 }
+ },
+ "root_cause": "4.2.0 的 WebGPU 建置在這個遮罩解碼器的 MatMul（layers.0/mlp/lin2）產生的 shader 無法建立，與 dtype 無關（fp16 與 fp32 都失敗）；同一版本的 3.7.5 WebGPU 可以跑。app 的 WebGPU 路徑使用 4.2.0，所以 SlimSAM 的 GPU 路徑在目前版本組合下會失敗，然後退回 CPU。",
+ "app_default_for_comparison": "floating-assistant.js _segmentObjects 預設 device 為 cpu（見註解：GPU fp16 版在遮罩解碼器的著色器會失敗，2026-10-30 使用者實測）。這次的診斷與該註解一致。",
+ "not_changed": "未改任何預設；未改 app 的 transformers 版本。",
+ "errors": []
+}

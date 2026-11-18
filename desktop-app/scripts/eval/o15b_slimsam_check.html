@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>O15b SlimSAM WebGPU fp16 對 CPU q8</title>
+<style>body{font:13px/1.5 system-ui,sans-serif;margin:16px}pre{white-space:pre-wrap}</style>
+</head><body>
+<h3>O15b：SlimSAM 77（分割）WebGPU fp16 對 CPU q8</h3>
+<p>與 <code>floating-assistant.js</code> 的實際路徑一致：CPU 用 <code>dtype:'q8'</code>（transformers 3.7.5，wasm）；WebGPU 用 <code>dtype:'fp16'</code>（transformers 4.2.0）。同一張圖（<code>/ai-temp/pose-test/person.jpg</code>，有人）、同一個點提示（單點，約在人物中心）。比較：最佳遮罩的 IoU、三個候選分數的差、速度。權重驗過 sha256（見清單）。</p>
+<pre id="out">執行中…</pre>
+<script type="module">
+const LIB = {
+  cpu: 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.5/+esm',
+  webgpu: 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.2.0/+esm',   // app 的 transformersJsWebGpu
+  webgpu3: 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.5/+esm',  // 診斷：同一版本的 3.7.5 WebGPU
+};
+const REPO = 'Xenova/slimsam-77-uniform';
+const POINT = [[[480, 483]]], LABEL = [[1]];
+const ITER = 3;
+const out = document.getElementById('out'); const logs = [];
+const log = (m) => { logs.push(m); out.textContent = logs.join('\n'); };
+const med = (a) => { const s = [...a].sort((x, y) => x - y); return s[s.length >> 1]; };
+const res = { ts: new Date().toISOString(), image: 'ai-temp/pose-test/person.jpg（有人）', point: POINT[0][0], cases: {}, compare: null, errors: [] };
+
+async function runCase(key, dtype, dev) {
+  const L = await import(LIB[key]); const r = { lib: key === 'webgpu' ? '4.2.0' : '3.7.5', dtype, device: dev };
+  try {
+    const blob = await (await fetch('/ai-temp/pose-test/person.jpg')).blob();
+    const img = await L.RawImage.fromBlob(blob);
+    let t = performance.now();
+    const processor = await L.AutoProcessor.from_pretrained(REPO);
+    const model = await L.SamModel.from_pretrained(REPO, { dtype, device: dev });
+    r.load_ms = Math.round(performance.now() - t);
+    const times = []; let outp = null, inputs = null;
+    for (let i = 0; i <= ITER; i++) {
+      t = performance.now();
+      inputs = await processor(img, { input_points: POINT, input_labels: LABEL });
+      outp = await model(inputs);
+      times.push(performance.now() - t);
+    }
+    r.first_ms = Math.round(times[0]); r.warm_median_ms = Math.round(med(times.slice(1)));
+    const iou = Array.from(outp.iou_scores.data);
+    const masks = await processor.post_process_masks(outp.pred_masks, inputs.original_sizes, inputs.reshaped_input_sizes);
+    const m0 = masks[0];                       // [1, 3, H, W]，bool
+    const H = m0.dims[2], W = m0.dims[3], per = H * W;
+    const best = iou.indexOf(Math.max(...iou));
+    r.iou_scores = iou.map((v) => +v.toFixed(4)); r.best = best; r.mask_dims = m0.dims;
+    r.best_mask = Uint8Array.from(m0.data.slice(best * per, (best + 1) * per), (v) => (v ? 1 : 0));
+    r.mask_area = r.best_mask.reduce((a, b) => a + b, 0);
+  } catch (e) { r.error = String((e && e.message) || e).slice(0, 300); }
+  return r;
+}
+
+(async () => {
+  try {
+    log('CPU q8（wasm）…'); const c = await runCase('cpu', 'q8', 'wasm');
+    log(JSON.stringify({ ...c, best_mask: undefined }));
+    log('WebGPU fp16…'); const g = await runCase('webgpu', 'fp16', 'webgpu');
+    log(JSON.stringify({ ...g, best_mask: undefined }));
+    // 診斷：同一個 WebGPU 路徑換 fp32 權重，分辨是 fp16 專屬的問題還是 WebGPU 的 MatMul 整體問題
+    log('WebGPU fp32（診斷）…'); const f = await runCase('webgpu', 'fp32', 'webgpu');
+    log(JSON.stringify({ ...f, best_mask: undefined }));
+    // 診斷：同樣的 fp16 權重，換成 3.7.5 的 WebGPU（看是不是 4.2.0 的 WebGPU 建置有問題）
+    log('WebGPU fp16 on transformers 3.7.5（診斷）…'); const h = await runCase('webgpu3', 'fp16', 'webgpu');
+    log(JSON.stringify({ ...h, best_mask: undefined }));
+    res.cases = { cpu_q8: { ...c, best_mask: undefined }, webgpu_fp16: { ...g, best_mask: undefined }, webgpu_fp32_diag: { ...f, best_mask: undefined }, webgpu_fp16_lib3_diag: { ...h, best_mask: undefined } };
+    if (!c.error && !h.error) {
+      let inter = 0, uni = 0; const A = c.best_mask, B = h.best_mask;
+      for (let i = 0; i < A.length; i++) { if (A[i] && B[i]) inter++; if (A[i] || B[i]) uni++; }
+      const dIou = Math.max(...c.iou_scores.map((v, i) => Math.abs(v - h.iou_scores[i])));
+      res.compare_fp16_lib3_diag = { mask_iou: +(inter / uni).toFixed(5), max_iou_score_diff: +dIou.toFixed(4), same_best_index: c.best === h.best, area_cpu: c.mask_area, area_gpu: h.mask_area };
+    }
+    const gg = f.error ? null : f;
+    if (!c.error && !g.error) {
+      let inter = 0, uni = 0; const A = c.best_mask, B = g.best_mask;
+      for (let i = 0; i < A.length; i++) { if (A[i] && B[i]) inter++; if (A[i] || B[i]) uni++; }
+      const dIou = Math.max(...c.iou_scores.map((v, i) => Math.abs(v - g.iou_scores[i])));
+      res.compare = { mask_iou: +(inter / uni).toFixed(5), max_iou_score_diff: +dIou.toFixed(4), same_best_index: c.best === g.best, area_cpu: c.mask_area, area_gpu: g.mask_area };
+    }
+    if (!c.error && !f.error) {
+      let inter = 0, uni = 0; const A = c.best_mask, B = f.best_mask;
+      for (let i = 0; i < A.length; i++) { if (A[i] && B[i]) inter++; if (A[i] || B[i]) uni++; }
+      const dIou = Math.max(...c.iou_scores.map((v, i) => Math.abs(v - f.iou_scores[i])));
+      res.compare_fp32_diag = { mask_iou: +(inter / uni).toFixed(5), max_iou_score_diff: +dIou.toFixed(4), same_best_index: c.best === f.best, area_cpu: c.mask_area, area_gpu: f.mask_area };
+    }
+  } catch (e) { res.errors.push(String((e && e.message) || e)); }
+  window.__SAM = res;
+  log('DONE\n' + JSON.stringify(res, null, 1));
+})();
+</script>
+</body></html>

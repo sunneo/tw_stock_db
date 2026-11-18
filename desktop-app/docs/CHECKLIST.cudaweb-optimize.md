@@ -251,6 +251,12 @@ O1m 到 O11 做完後不結束，進入迴圈。完整規則與交接見 `docs/H
     - **沒選 SlimSAM**：它的 CPU 權重是 q8，沒有 fp32 證據，所以不放行。
     - **桌面版設定頁**：`bootstrap.js` 的 `desktop` 分組沒有掛這兩個開關。該處註解記載 GPU 相容層刻意只放一處，所以只接在 AI 助理設定，這點與 O9 一致。
     - **未完成**：web-lazy 與 renderer bundle 還沒用 `build-assistant.js` 重建（另一個 session 正在重寫 web-lazy 產物，本次未碰）；發布前要先建置。
+    - **O15b 實測（2026-11-18，內建 Chromium，Intel Xe-LPG，有 shader-f16；數值：`scripts/eval/o15b_webgpu_check.result.json`、`scripts/eval/o15b_slimsam_check.result.json`）**：
+      - MoveNet（fp32，有人照片：`ai-temp/pose-test/person.jpg`，NASA Apollo 11，公有領域；ai-temp 不進 git）：WebGPU 成功；17 個關鍵點 >0.3，兩邊可見集合相同；座標差 6e-8（正規化）、分數差 1.3e-6；暖機 60 ms（CPU 175 ms）。建議（未改預設）：`poseGpu` 可考慮預設開，需使用者確認。
+      - Depth Anything（同一人像）：fp16 WebGPU（預設路徑）對 CPU fp32 相對 L2 0.57%、相關 0.99998，暖機 443 ms（CPU 4,458 ms）；fp32 WebGPU（`f32Gpu`）max|Δ| 5e-5，暖機 1,352 ms。
+      - SlimSAM 77（權重經使用者同意下載，sha256 與 HF LFS oid 相同）：app 的 transformers 4.2.0 WebGPU 在遮罩解碼器 `layers.0/mlp/lin2/MatMul` 建 shader 失敗，fp16 與 fp32 都失敗；同一 fp16 權重在 3.7.5 WebGPU 可跑：遮罩 IoU 0.981 對 CPU q8，分數差 0.042，暖機 4,047 ms（CPU 9,623 ms）。SlimSAM 的 GPU 路徑在目前版本組合不可用。若要用，需使用者決定改用 3.7.5 WebGPU 建置，或等 4.2.0 修正。預設仍為 CPU。
+      - 未做：Whisper 編碼器、SDXS、Kokoro 整圖在真 Chrome 的實測（權重需另外同意下載）。
+      - 注意：這段是補回的。這份清單在多個提交之間被覆寫過（例如 5642271e2、04cb372d0），以後改動前請先從 HEAD 重新讀取。
 - [ ] 範圍外要如實標：沒有真權重、載入太重、或遇到 cudaweb 缺的算子（例如特殊卷積、非常規操作）的，記「未完成：原因」，不要宣稱全部完成。
 
 
