@@ -149,7 +149,7 @@ O1m 到 O11 做完後不結束，進入迴圈。完整規則與交接見 `docs/H
 
 ## O15. 全部離線模型在 WebGPU 上都要獲得好處（使用者 2026-11-18：「離線模型也是全都要在使用 webgpu 時獲得好處」「除了 vlm、midigen、image to 3d、切割或物件偵測呢」）
 現況（`docs/INVESTIGATE.cudaweb-models.md` 與 `docs/CHECKLIST.cudaweb-wire.md` 查證；調查表是接線前的狀態，會過時，**先逐項重新驗證再動手**）：已接 cudaweb：Qwen3 q8 聊天、midigen 整個解碼器（桌面是否也走要查）、MOSS、Whisper 編碼器、YAMNet／Demucs／Basic Pitch、SDXS、Kokoro（部分）。未接：VLM（O13）、其他 LLM（O12）、深度（Depth Anything V2 Small）、分割（SlimSAM 77）、姿態（MoveNet Thunder）、聲紋 ECAPA、文字嵌入 e5、image-to-3d（先查它用哪個模型與執行環境）、物件偵測（先查有沒有；調查表寫「人臉沒查到」，物件偵測要另查）。
-- [ ] **O15a 全模型清單與覆蓋表**：一張表列出每個離線模型：執行環境（transformers.js／ORT-web／原生 ORT）、現在跑在哪（WebGPU／wasm／CPU）、是否經過 cudaweb 優化核心、這台（無 f16）能否走 GPU、缺哪些算子。附證據（檔案行號、真機量測）。含 midigen（網頁與桌面兩邊）、image-to-3d、分割、物件偵測。
+- [~] **O15a 全模型清單與覆蓋表**（2026-11-18：覆蓋表已完成，見 `docs/COVERAGE.cudaweb-models.md`；**未勾**的部分：真機量測、各模型的算子清單，以及下列未查的項目）：一張表列出每個離線模型：執行環境（transformers.js／ORT-web／原生 ORT）、現在跑在哪（WebGPU／wasm／CPU）、是否經過 cudaweb 優化核心、這台（無 f16）能否走 GPU、缺哪些算子。附證據（檔案行號、真機量測）。含 midigen（網頁與桌面兩邊）、image-to-3d、分割、物件偵測。
   - **O15a 第一步（唯讀覆蓋表，2026-11-18 查證；仍未完成：沒有真機量測，也沒有逐一核對 Whisper 與 MOSS 的行號）**：
     | 模型／功能 | 執行環境 | 現在跑在哪 | 是否經過 cudaweb | 證據（檔案與行號） | 缺口 |
     |---|---|---|---|---|---|
@@ -163,5 +163,7 @@ O1m 到 O11 做完後不結束，進入迴圈。完整規則與交接見 `docs/H
     | SDXS 生圖（CPU int8 版） | cudaweb 圖形 session | 預設關（`sdxsGpu`） | 是（開關打開時） | 105476–105495；預設 86051 | 預設關 |
     | Kokoro TTS | cudaweb 圖形 session | 預設關（`kokoroGpu`） | 是（開關打開時） | 90801–90820；預設 86052 | 預設關 |
     - 結論（第一步）：已接 cudaweb 的只有 midigen（部分）、音訊三個、SDXS、Kokoro，且全部預設關；深度、分割、姿態、物件偵測都沒有接。物件偵測的模型還沒定案。
+    - **O15a 完成範圍（2026-11-18 第二步，唯讀）**：`docs/COVERAGE.cudaweb-models.md` 涵蓋 21 列：VLM 三個（Florence-2、SmolVLM、LLaVA）、Qwen3 網頁與桌面、studio LLM、深度、分割、姿態、物件偵測（查無模型）、midigen 桌面與網頁、Whisper、Kokoro、SDXS、音訊三個、MOSS、e5 嵌入、離線翻譯、ECAPA、原生 NRT。每列有執行環境、預設裝置、cudaweb 狀態、這台能否走 GPU、證據行號。第一步表中的 Whisper 與 MOSS 行號已在第二步核對。
+    - **O15a 未完成（不要當成已完成）**：① 沒有任何真機量測（這台沒有 CUDA，WebGPU fp32 路徑也沒量過）；② 「缺哪些算子」只能給已知項（depth int8 在 WASM 缺 `ConvInteger`），完整清單要讀每個 ONNX 的節點，需要下載或讀瀏覽器快取，本次不做；③ 未完整追蹤的預設裝置：Whisper 的 `order`、SDXS 的 `pick.ep`、layered 引擎的 `ep`；④ `web-lazy/chunks/midigpu.js` 的 cudaweb 引用只有字串計數，沒有逐行核對；⑤ 桌面 Qwen 原生路徑只追到 lm_head；⑥ 物件偵測只搜了 `renderer/src`、`main-ext.js`、`nr-*.js`、`native-slot-model.js`，沒搜 `renderer/vendor` 與 `web-lazy`。
 - [ ] **O15b 逐一補齊**，依「使用頻率 × 在這台的收益」排序；每個模型走既有做法：逐節點對 ORT 驗證 → 接線（預設關、失敗永久退回原路徑、兩處設定開關同步）→ 量前後（標硬體）。**無 f16 的卡不得因 f16 要求而退 CPU**，改用 f32／q8 路徑。
 - [ ] 範圍外要如實標：沒有真權重、載入太重、或遇到 cudaweb 缺的算子（例如特殊卷積、非常規操作）的，記「未完成：原因」，不要宣稱全部完成。
