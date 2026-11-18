@@ -1319,6 +1319,80 @@
       "build_web_lazy": "通過（exit 0）；core 5955K，234 區塊 8315K；web-lazy/chunks/ktune.js、qwengpu.js、manifest.json 更新",
       "node_tests": "renderer/src/gpu 與 renderer/src/vlm 的 *test*.js 共 72 個檔案：71 個通過，1 個（llava_skeleton_test）原本失敗，原因是 Qwen2-0.5B 的舊數字（1024／16／16／2816／152000），已依 config.json 修正（896／14／2／4864／151936），修正後通過（10 項）。",
       "known_failure": "scripts/gpu-mem-settings.test.js 有 1 項失敗：「transformers.js 路徑前先試 q4f16 整段解碼」，是 floating-assistant.js 的文字檢查，本輪沒有改它，屬於既有問題。"
-    }
+    },
+    "R1_register_tiling_r8": {
+      "kernel": "gpu_core.mmR8Wgsl（kernel_gen 產生，16×16 執行緒、8×8 每執行緒、128×128 塊）對 v4（mmTileWgslVec4）；純核心，每次派發（r8_check.html）",
+      "correctness": "r8 對 matmulRef 相對誤差 2.9e-7～4.3e-7（判準 1e-6）",
+      "ms_per_dispatch": [
+        {
+          "shape": "512x1024x1024",
+          "r8": 1.725,
+          "v4": 2.08
+        },
+        {
+          "shape": "1024x1024x1024",
+          "r8": 3.36,
+          "v4": 3.48,
+          "note": "差在雜訊內"
+        },
+        {
+          "shape": "128x1024x1024",
+          "r8": 0.63,
+          "v4": 0.525
+        },
+        {
+          "shape": "512x1024x3072",
+          "r8": 5.715,
+          "v4": 4.87
+        }
+      ],
+      "result": "R8 只在 512×1024×1024 快 17%，其他形狀持平或較慢。窄、不穩，不採用為規則；保留程式供後續分析。"
+    },
+    "R5_q8mm_splitk": {
+      "kernel": "q8mm_splitk.js（部分和＋歸約，整數累加，與 q8mmRef 逐位相同）；對照 infer_ops 的 WGSL_Q8MM_DEC（q8mm_splitk_check.html，純核心）",
+      "exact": "splitK 與 dec 兩者對 q8mmRef 逐元素相同（3 個形狀）",
+      "kernel_ms_per_dispatch_before_after": [
+        {
+          "shape": "1x1024x1024",
+          "dec": 0.175,
+          "splitK": 0.18,
+          "note": "持平"
+        },
+        {
+          "shape": "1x4096x1024",
+          "dec": 0.245,
+          "splitK": 0.185,
+          "note": "split-K 快 25%"
+        },
+        {
+          "shape": "1x1024x3072",
+          "dec": 0.195,
+          "splitK": 0.155,
+          "note": "split-K 快 21%"
+        }
+      ],
+      "end_to_end_ms_q8mm_integ": [
+        {
+          "shape": "1x4096x1024",
+          "dec": 8.4,
+          "splitK": 10.1
+        },
+        {
+          "shape": "1x1024x3072",
+          "dec": 9.1,
+          "splitK": 9
+        }
+      ],
+      "result": "純核心快 21–25%，但端到端（含 x 上傳與兩段的讀回）沒有好處（持平或變慢）。自動規則不選 split-K，只在 q8variant:\"splitk\" 強制時使用。"
+    },
+    "R5_status": {
+      "q8mm": "量了（split-K）：純核心快、端到端沒有好處，不採用自動規則。",
+      "f16_matmul_on_q8": "不適用：q8mm 是整數累加（逐位相同的要求），f16 會改變結果。",
+      "MatMulNBits": "未量。沒有 4 位元的 split-K 核心；f16 會改變結果（反量化後的數值不同）。",
+      "attention": "未量。注意力的 decode 是 per (token, head) 的小歸約；子群組歸約的變體沒有寫，f16 會改變數值。",
+      "conv": "未量。卷積沒有納入 split-K／子群組的實作。",
+      "training_transpose": "未量。轉置旗標走平鋪核心（mm_ops 強制 tiled）；split-K 與子群組都沒有轉置版；訓練要求 f32 精確度，不用 f16。"
+    },
+    "O1m_closed": "(a) x 放 uniform：沒有好處；(b) B 放貼圖：比 storage 快 19–39%，但輸給已接的 split-K 與子群組，未接規則；(c) rope 與偏置放 uniform：沒有好處。三項都有對拍與同機計時。"
   }
 }

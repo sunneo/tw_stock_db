@@ -12,7 +12,11 @@ const log = (s) => { (window.__log = window.__log || []).push(s); document.body.
     const M = +qp.get('M'), K = +qp.get('K'), N = +qp.get('N'), kind = qp.get('kernel') || 'r8', reps = +(qp.get('reps') || 6);
     const src = await (await fetch('../../renderer/src/gpu/gpu_core.js', { cache: 'no-store' })).text();
     const m = { exports: {} };
-    new Function('module', 'exports', 'require', src)(m, m.exports, () => { throw new Error('no require'); });
+    // gpu_core 的 mmR8Wgsl 會 require('./kernel_gen.js')：先載入 kernel_gen 並提供給 require
+    const kgSrc = await (await fetch('../../renderer/src/gpu/kernel_gen.js', { cache: 'no-store' })).text();
+    const kg = { exports: {} };
+    new Function('module', 'exports', 'require', kgSrc)(kg, kg.exports, () => { throw new Error('kernel_gen 不應再 require'); });
+    new Function('module', 'exports', 'require', src)(m, m.exports, (p) => { if (/kernel_gen/.test(p)) return kg.exports; throw new Error('no require: ' + p); });
     const code = kind === 'v4' ? m.exports.mmTileWgslVec4({ marker: 'matmul_vec4' }) : m.exports.mmR8Wgsl({ marker: 'matmul_r8' });
     const groups = kind === 'v4' ? m.exports.mmTileDispatch(M, N, 1) : m.exports.mmR8Dispatch(M, N, 1);
     const adapter = await navigator.gpu.requestAdapter();
