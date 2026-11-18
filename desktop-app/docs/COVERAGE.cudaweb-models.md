@@ -7,6 +7,7 @@
 
 - Intel 內顯（真 Chrome 實測 adapter：intel／xe-lpg，有 `shader-f16` 與 `subgroups`）。沒有 CUDA。
   更正：早先寫的「沒有 `shader-f16`」是錯的，已更正。
+  2026-11-18 追加（本機真 Chrome 實測）：f16 與 subgroups 都是 true；`mm_f16_check.html` 的 f16 矩陣乘通過（整數輸入逐位相同、隨機輸入相對誤差 0），見 `scripts/eval/cudaweb_optimize.result.json` 的 `intel_xe_lpg_2026_11_18`。因此在這台，`resolveDevice` 的 f16 閘門（`f16 === false` 才擋）不會擋；下表「`否（f16 閘門）`」的判斷在這台已不成立，要重新評估（本次沒有改程式）。
 - `renderer/src/floating-assistant.js:14257-14262`（`resolveDevice`）：模型登記 `gpuNeedsF16: true`，且偵測到 WebGPU 但 `f16 === false` 時，**不走 GPU**，改 `wasm`（CPU）；標 `gpuOnly` 的模型直接報錯。所以下表所有 `gpuNeedsF16` 的模型，在這台的實際執行裝置是 **CPU（wasm）**，這是程式寫死的規則，不是猜的。
 - 「GPU 可否在這台跑」一欄的寫法：`否（f16 閘門）`＝程式擋住；`可能（未量測）`＝沒有 f16 需求，但沒有真機資料；`未知`＝查不到。
 
@@ -58,7 +59,7 @@
 
 上面的表是 O15a 當時（改程式之前）的盤點。之後的狀態如下；沒有真 GPU 的路徑一律標「未量測」，預設都是關的。
 
-| 模型 | 這台（無 f16、無 CUDA）現在的裝置 | WebGPU 路徑 | 狀態（2026-11-18） |
+| 模型 | 這台（Intel xe-lpg，有 f16，無 CUDA）現在的裝置 | WebGPU 路徑 | 狀態（2026-11-18） |
 |---|---|---|---|
 | **MoveNet Thunder**（姿態） | CPU（預設） | `poseGpu` 開關（預設關）：fp32、無 f16 閘門，WebGPU 失敗永久退回 CPU（`FaVlm.poseDevicePlan`，commit 39dd8fe42） | 有 opt-in 路徑，**未量測**，沒有對拍 |
 | **Depth Anything V2 Small**（深度） | CPU fp32 | `f32Gpu` 開關（預設關）：CPU 權重是 fp32 且任務在白名單時，GPU 改用 fp32（`FaVlm.f32GpuVariant`，commit 123237790） | 有 opt-in 路徑，**未量測**，沒有對拍 |
