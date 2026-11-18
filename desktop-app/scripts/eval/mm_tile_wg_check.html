@@ -1,0 +1,67 @@
+<!doctype html><meta charset="utf-8"><title>mm tile wg check</title>
+<body style="font:13px monospace;white-space:pre">
+<script>
+// R4 平鋪矩陣乘的工作群組大小（真 Chrome、真 WebGPU）：同一個 48×64 輸出塊、KB=16，WG ∈ {128, 192, 256}（mm_tile_wg.js）。
+// 參考：production 的平鋪核心（mm_ops.WGSL_MM_F32_TILED，64×64、256 執行緒）。一次一個形狀：?M=&K=&N=&v=
+// 正確性：每個候選對 matmulRef 相對誤差 ≤ 1e-5。
+// 計時：純核心，同一 pass 內連續 20 次，onSubmittedWorkDone 後量牆鐘，5 次中位數除以 20。只標 intel xe-lpg。
+const mods = {};
+const loadMod = async (key, url) => {
+  const src = await (await fetch(url, { cache: 'no-store' })).text();
+  const m = { exports: {} }; mods[key] = m;
+  new Function('module', 'exports', 'require', src)(m, m.exports, (p) => { const k = p.replace(/^\.\//, '').replace(/\.js$/, ''); if (!mods[k]) throw new Error('missing ' + k); return mods[k].exports; });
+};
+const relErr = (x, y) => { let mx = 0, sc = 1e-9; for (let i = 0; i < x.length; i++) { mx = Math.max(mx, Math.abs(x[i] - y[i])); sc = Math.max(sc, Math.abs(y[i])); } return mx / sc; };
+(async () => {
+  const q = new URLSearchParams(location.search);
+  const M = +q.get('M'), K = +q.get('K'), N = +q.get('N');
+  const out = { shape: M + 'x' + K + 'x' + N, tile: '48x64 KB16', correct: {}, kernel_ms: {}, error: null, done: false };
+  try {
+    await loadMod('gpu_core', '../../renderer/src/gpu/gpu_core.js');
+    await loadMod('gpu_pool', '../../renderer/src/gpu/gpu_pool.js');
+    await loadMod('nn_ops', '../../renderer/src/gpu/nn_ops.js');
+    await loadMod('kernel_select', '../../renderer/src/gpu/kernel_select.js');
+    await loadMod('mm_ops', '../../renderer/src/gpu/mm_ops.js');
+    await loadMod('mm_tile_wg', '../../renderer/src/gpu/mm_tile_wg.js');
+    const MM = mods.mm_ops.exports, TW = mods.mm_tile_wg.exports;
+    const adapter = navigator.gpu && await navigator.gpu.requestAdapter();
+    if (!adapter) throw new Error('沒有 WebGPU 介面卡');
+    out.adapter = adapter.info && adapter.info.architecture;
+    const dev = await adapter.requestDevice({ requiredLimits: { maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize, maxBufferSize: adapter.limits.maxBufferSize } });
+    const U = { STORAGE: 0x0080, COPY_SRC: 0x0004, COPY_DST: 0x0008, UNIFORM: 0x0040, MAP_READ: 0x0001 };
+    const buf = (size, u) => dev.createBuffer({ size: Math.max(16, size), usage: u });
+    const mkStep = async (code, bufs, dispatch) => {
+      const pipe = await dev.createComputePipelineAsync({ layout: 'auto', compute: { module: dev.createShaderModule({ code }), entryPoint: 'main' } });
+      const bg = dev.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries: bufs.map((b, i) => ({ binding: i, resource: { buffer: b } })) });
+      return { pipe, bg, dispatch: typeof dispatch === 'number' ? [dispatch] : dispatch };
+    };
+    const timeSteps = async (steps) => {
+      const once = async () => { const t0 = performance.now(); const enc = dev.createCommandEncoder(); const pass = enc.beginComputePass();
+        for (let r = 0; r < 20; r++) for (const st of steps) { pass.setPipeline(st.pipe); pass.setBindGroup(0, st.bg); pass.dispatchWorkgroups(st.dispatch[0], st.dispatch[1] || 1, st.dispatch[2] || 1); }
+        pass.end(); dev.queue.submit([enc.finish()]); await dev.queue.onSubmittedWorkDone(); return (performance.now() - t0) / 20; };
+      await once(); const ts = []; for (let i = 0; i < 5; i++) ts.push(await once()); ts.sort((p, q) => p - q); return Math.round(ts[2] * 1000) / 1000;
+    };
+    let seed = 71; const rnd = () => { seed = (Math.imul(seed, 1664525) + 1013904223) | 0; return (seed >>> 0) / 4294967296 - 0.5; };
+    const A = Float32Array.from({ length: M * K }, rnd), B = Float32Array.from({ length: K * N }, rnd);
+    const ref = MM.matmulRef(A, [M, K], B, [K, N]).y;
+    const aB = buf(A.byteLength, U.STORAGE | U.COPY_DST); dev.queue.writeBuffer(aB, 0, A);
+    const bB = buf(B.byteLength, U.STORAGE | U.COPY_DST); dev.queue.writeBuffer(bB, 0, B);
+    const yB = buf(M * N * 4, U.STORAGE | U.COPY_SRC);
+    const uP = buf(32, U.UNIFORM | U.COPY_DST); dev.queue.writeBuffer(uP, 0, new Int32Array([1, M, K, N, 0, 0, 0, 0]));
+    const rB = buf(M * N * 4, U.MAP_READ | U.COPY_DST);
+    const cands = {};
+    for (const WG of [128, 192, 256]) cands['wg' + WG] = [TW.wgsl(48, 64, 16, WG), TW.dispatch(M, N, 48, 64)];
+    cands.production_tiled64_wg256 = [MM.WGSL_MM_F32_TILED, [Math.ceil(N / 64), Math.ceil(M / 64), 1]];
+    for (const [name, [code, disp]] of Object.entries(cands)) {
+      const st = await mkStep(code, [aB, bB, yB, uP], disp);
+      const enc = dev.createCommandEncoder(); const pass = enc.beginComputePass(); pass.setPipeline(st.pipe); pass.setBindGroup(0, st.bg); pass.dispatchWorkgroups(...st.dispatch); pass.end();
+      enc.copyBufferToBuffer(yB, 0, rB, 0, M * N * 4); dev.queue.submit([enc.finish()]);
+      await rB.mapAsync(1); const y = new Float32Array(rB.getMappedRange().slice(0)); rB.unmap();
+      out.correct[name] = relErr(y, ref);
+      out.kernel_ms[name] = await timeSteps([st]);
+    }
+    out.best_correct_ok = Object.values(out.correct).every((v) => v <= 1e-5);
+  } catch (e) { out.error = String((e && e.stack) || e).slice(0, 800); }
+  out.done = true; window.__out = out; document.body.textContent = JSON.stringify(out, null, 1); document.title = 'done';
+})();
+</script>

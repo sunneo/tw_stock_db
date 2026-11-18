@@ -121,8 +121,8 @@ async function run(kind, a, aDims, b, bDims, azp, bzp, ops) {
     // 子群組版（mm_subgroup.js）：只在單一批次、不轉置、有載入模組時用；否則退回簡單版
     const kid0 = isInt ? 'mm_simple_f32' : kernelId;
     const sub = kid0 === 'mm_subgroup_f32' && !!SG && pl.B === 1 && !fl;
-    // split-K（R3）：M=1、單一批次、不轉置、有載入模組；兩段核心（部分和＋歸約）在同一個批次、一次 submit 送出
-    const sk = kid0 === 'mm_splitk_f32' && !!SK && pl.B === 1 && !fl && pl.M === 1 && !isInt;
+    // split-K（R3）：單一批次、不轉置、有載入模組、形狀在規則的適用範圍內；兩段核心（部分和＋歸約）在同一個批次、一次 submit 送出
+    const sk = kid0 === 'mm_splitk_f32' && !!SK && pl.B === 1 && !fl && !isInt && SK.splitkApplies(pl.M, pl.K, pl.N);
     const kid = sk ? 'mm_splitk_f32' : (sub ? 'mm_subgroup_f32' : ((kid0 === 'mm_subgroup_f32' || kid0 === 'mm_splitk_f32') ? 'mm_simple_f32' : kid0));
     const tiled = kid !== 'mm_simple_f32' && kid !== 'mm_subgroup_f32' && kid !== 'mm_splitk_f32';
     o.lastKernel = kid;
@@ -130,11 +130,11 @@ async function run(kind, a, aDims, b, bDims, azp, bzp, ops) {
       const S = SK.pickSplits(pl.K);
       const bt = nn.createBatch(dev);
       const hA = bt.upload(mk(a)), hB = bt.upload(mk(b));
-      const hP = bt.alloc(S * pl.N), hY = bt.alloc(pl.N);
-      const uni = new Uint32Array([1, pl.K, pl.N, S]);
-      bt.dispatchRaw(SK.WGSL_SPLITK_PARTIAL, [hA.buf, hB.buf, hP.buf], uni, SK.dispatchPartial(1, pl.N, S));
-      bt.dispatchRaw(SK.WGSL_SPLITK_REDUCE, [hP.buf, hY.buf], uni, SK.dispatchReduce(1, pl.N));
-      const got = await bt.read([[hY, pl.N]]);
+      const hP = bt.alloc(S * pl.M * pl.N), hY = bt.alloc(pl.M * pl.N);
+      const uni = new Uint32Array([pl.M, pl.K, pl.N, S]);
+      bt.dispatchRaw(SK.WGSL_SPLITK_PARTIAL, [hA.buf, hB.buf, hP.buf], uni, SK.dispatchPartial(pl.M, pl.N, S));
+      bt.dispatchRaw(SK.WGSL_SPLITK_REDUCE, [hP.buf, hY.buf], uni, SK.dispatchReduce(pl.M, pl.N));
+      const got = await bt.read([[hY, pl.M * pl.N]]);
       return got[0];
     }
     const code = isInt ? WGSL_MM_I32 : (sub ? SG.WGSL_MM_SUBGROUP : (kid === 'mm_vec4_f32' ? WGSL_MM_F32_VEC4 : (tiled ? WGSL_MM_F32_TILED : WGSL_MM_F32)));

@@ -13,8 +13,19 @@ function check(name, fn) { fn(); passed++; console.log('ok   ' + name); }
 
 check('切片數規則：K ≥ 1024 切 8 片；K 小於 1024 不切（與量測結果一致）', () => {
   assert.strictEqual(SK.pickSplits(1024), 8);
-  assert.strictEqual(SK.pickSplits(8192), 8);
+  assert.strictEqual(SK.pickSplits(2048), 8);
+  assert.strictEqual(SK.pickSplits(4096), 16);
+  assert.strictEqual(SK.pickSplits(8192), 16);
   assert.strictEqual(SK.pickSplits(300), 1);
+});
+check('適用形狀：M=1（K≥1024）、或 N≤64 且 M≤64（LoRA）；N 大而 M>1 不適用；K<1024 不適用', () => {
+  assert.ok(SK.splitkApplies(1, 1024, 1024));
+  assert.ok(SK.splitkApplies(8, 4096, 16));
+  assert.ok(SK.splitkApplies(64, 1024, 16));
+  assert.ok(SK.splitkApplies(16, 4096, 64));
+  assert.ok(!SK.splitkApplies(8, 4096, 1024));
+  assert.ok(!SK.splitkApplies(64, 1024, 256));
+  assert.ok(!SK.splitkApplies(1, 300, 132));
 });
 
 check('切分：各切片連續、不重疊、涵蓋 [0,K)；S 大於 K 時多出來的切片為空', () => {

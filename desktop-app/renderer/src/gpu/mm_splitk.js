@@ -55,9 +55,11 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>, @builtin(workgroup_id) wid
   // 派發數
   function dispatchPartial(M, N, S) { return [Math.ceil(N / 256), S, M]; }
   function dispatchReduce(M, N) { return [Math.ceil(N / 256), M, 1]; }
-  // 切片數（同機 intel xe-lpg 量測，M=1、K ≥ 1024）：S=8 在 1×1024×1024、1×1024×3072、1×4096×1024、1×8192×1024 都接近最好（S=4 或 S=16 差在雜訊內）。
-  // K < 1024 不切（小 K 的切片太短，歸約的額外派發划不來，沒有量測）。
-  function pickSplits(K) { return K >= 1024 ? 8 : 1; }
+  // 切片數（同機 intel xe-lpg 量測）：K ≥ 4096 切 16 片；1024 ≤ K < 4096 切 8 片；K < 1024 不切（沒有量測）。
+  //   K=4096 的小 N（LoRA）：S16 0.195 對 S8 0.215（8×4096×16）、S16 0.155 對 S8 0.27（1×4096×16）；K=1024 時 S8 與 S16 差在雜訊內。
+  function pickSplits(K) { return K >= 4096 ? 16 : (K >= 1024 ? 8 : 1); }
+  // 適用的形狀（量測結果）：M=1（解碼），或 N ≤ 64（LoRA 的秩）且 M ≤ 64。N 大而 M>1 時 split-K 輸給 vec4／tiled（例 64×1024×256、8×4096×1024）。
+  function splitkApplies(M, K, N) { return K >= 1024 && (M === 1 || (N <= 64 && M <= 64)); }
 
   // CPU 模擬（與兩段核心的 f32 順序相同），供測試與參考
   function simulate(a, b, M, K, N, S) {
@@ -85,6 +87,6 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>, @builtin(workgroup_id) wid
   function dispatchPartialWG(M, N, S, WG) { return [Math.ceil(N / (WG || 256)), S, M]; }
   function dispatchReduceWG(M, N, WG) { return [Math.ceil(N / (WG || 256)), M, 1]; }
 
-  return { WGSL_SPLITK_PARTIAL, WGSL_SPLITK_REDUCE, sliceRanges, dispatchPartial, dispatchReduce, pickSplits, simulate,
+  return { WGSL_SPLITK_PARTIAL, WGSL_SPLITK_REDUCE, sliceRanges, dispatchPartial, dispatchReduce, pickSplits, splitkApplies, simulate,
     withWorkgroup, partialWgsl, reduceWgsl, dispatchPartialWG, dispatchReduceWG };
 }));
