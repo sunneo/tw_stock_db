@@ -90,7 +90,7 @@
 - [x] 3f. 嵌入與建置已完成（提交 1c8c2de83）：`node scripts/embed-code-ui.js`、`node build-assistant.js`。Python GPU 測試 59 項全過（含嵌入一致性），node 佇列測試全過
 - [x] 4a. node 假裝置測試：保序、重疊、延遲錯誤、synchronize（`gpu_async_queue_test.js`，9 項全過）
 - [x] 4b. Python 範例 `gpu/examples/async_overlap.py`（串列與重疊計時比較＋結果一致性），測試通過（提交 e7d078633）。範例放在 `renderer/src/gpu/examples/`，不是 pybridge 底下
-- [ ] 4c. 真機只做一次（3f 已完成）：一頁一形狀（64×64 矩陣乘）、先估時間、單次派發小、監聽 `deviceReady`、用 `requestExclusiveGpu` 做量測互斥。評估檔 `scripts/eval/async-gpu.eval.js`；結果見第六節
+- [x] 4c. 真機（已跑兩次，依規定不再跑）：第一次見第六節；第二次（修正版，CPU 分塊讓出、GPU 拆成 6 次 256×256 矩陣乘）顯示重疊有省時間，見第六之二節。評估檔 `scripts/eval/async-gpu.eval.js`（第一次）、`scripts/eval/async-gpu-overlap.eval.js`（第二次）
 - [x] 4d（新增）. 假裝置耗時比較 `gpu/async_overlap_fake_bench.py`（提交 cef20115b）：串列 3.648 秒、重疊 1.924 秒，省下約 47%。CPU 迴圈校正為約等於一筆 GPU 延遲；不然重疊效果會被雜訊淹沒
 
 ## 四、評估（第 5 項，只寫設計，不實作）
@@ -102,6 +102,14 @@
 - 風險：每個 Worker 載入 Pyodide 與 numpy 的記憶體成本；WebGPU 裝置是否可被多個 Worker 同時使用，需要實測（目前沒有資料，我沒查）。
 
 本項未實作。前面四項做完才評估是否值得做。
+
+### 第 5 項的設計與下一步（管理者要求，2026-11-18 補寫）
+
+- 現況可以借鏡：`renderer/src/gpu/cpu_share.js` 已經有 JS 端的 CPU／GPU 分工（用 Worker 算一部分矩陣列，其餘交給 GPU），是同一類問題的既有解法，只是它是 JS 矩陣乘，不是 Python 沙盒。
+- 設計草案：Python 端的 `concurrent.futures.ThreadPoolExecutor`／`multiprocessing.Pool` 墊片，底層每個工作者是一個獨立 Pyodide Worker（各自載入 Pyodide 與 numpy）。GPU 呼叫仍經由頁面的 `_fa_gpu`／`gpu.a.*`（工作者本身沒有 WebGPU 裝置，這一點要保留）。工作者之間用 transferable `ArrayBuffer` 傳 numpy 資料，不共用記憶體。
+- 已知的風險與需要實測的地方（我沒有資料）：(1) 每個 Pyodide 實例的記憶體與啟動成本（應該是數十 MB 與數秒，要量）；(2) 多個工作者同時對同一個頁面的 GPU 橋接送請求，會不會在頁面端排隊或相互阻塞；(3) 工作者數量與 CPU 核心數的關係，需要先看 `navigator.hardwareConcurrency`。
+- 下一步（依序）：(a) 先做一個 2 工作者的 CPU 純計算 PoC，只量吞吐量與啟動成本，不接 GPU；(b) 若 PoC 有明顯加速，再接上 `_fa_gpu.aop` 的請求路徑；(c) 每一步都要有真機結果才往下做，而且真機依規定最多兩次。
+- 目前狀態：只有設計，沒有實作。
 
 ## 四之一、實作結果與偏離設計的地方（第 3、4 項）
 
@@ -135,8 +143,25 @@
 - 因為規定只跑一次，我沒有重跑。要證明真機重疊，需要：(a) CPU 工作放在另一個執行緒（網頁版的 Pyodide Worker 本來就是這樣，所以真實的 Python 重疊比這次評估更接近實際情況），或 (b) 更大的形狀、並且量測前先確認 GPU 的工作確實已派發。這兩點要另外派工並取得同意後才做。
 - 沒有驗證：真的 Python 沙盒到 JS 的非同步路徑（這次評估直接呼叫 JS 的 `_gpuAsync`，沒有經過 Python）。
 
+## 六之二、第二次真機（修正版，最後一次）
+
+- 評估檔：`scripts/eval/async-gpu-overlap.eval.js`。啟動方式同第一次（獨立暫存資料夾、換埠、`FA_DISABLE_MAIN_OVERLAY=1`、不加 `--disable-gpu`）。建置已先跑 `node build-assistant.js`（exit 0）。只跑一次，依規定沒有第三次。
+- 修正了什麼：(1) CPU 工作分塊，每塊約 2 毫秒，塊與塊之間讓出一個 macrotask，GPU 的提交與讀回回呼才能在 CPU 工作期間處理；(2) GPU 工作拆成 6 次 256×256 矩陣乘，每次單次 sync 量測 20 毫秒（≤ 50 毫秒的要求），整體目標約 120 毫秒；(3) 每種量測跑 3 次、取中位數，順序交錯。
+- GPU 型號：WebGPU 回報 vendor `nvidia`、architecture `kepler`，device 與 description 是空字串。`kepler` 是很舊的架構代號，我沒有查它是哪一張卡，只照實記。
+- 實測（中位數，3 次）：
+  - GPU 單獨（6 次 submit 後全部等待）：72.5 毫秒
+  - CPU 單獨（分塊）：124.5 毫秒
+  - 串列（6 次同步 matmul，接 CPU）：196.2 毫秒
+  - 重疊（6 次 submit，做 CPU，最後等待）：126.3 毫秒
+  - 省下：69.9 毫秒（約 36%）。重疊的時間接近 max(GPU, CPU)，也就是 CPU 那段幾乎完全被 GPU 蓋住。
+- 正確性：第一塊的結果與 CPU 參考的最大相對誤差 9.0e-7。
+- device 狀態：`deviceReady` 執行前後都是 true；`device.lost` 沒有觸發（`lost: null`）。`lostHook: false`：我沒有取得 WebGPU 裝置物件，所以 device.lost 監聽實際上沒有掛上，只能說「沒有觀察到 device lost」，不能說有監聽。
+- 與第一次的差別：第一次 CPU 忙迴圈擋住主執行緒，重疊沒有省時間；這次分塊讓出後省了 69.9 毫秒。這與「忙迴圈擋住 GPU 回呼」的推測一致，但這只是一次量測的觀察，不是證明。
+- 沒有驗證：CPU 工作仍是頁面主執行緒上的 JS，不是 Python 工作者（真實沙盒的 CPU 工作在 Python 工作者裡）；真的 Python 沙盒到 JS 的路徑沒有在真機上跑過。
+- 視窗與程序：Electron 已正常結束（exit 0），`tasklist` 沒有殘留的 electron；沒有我自己啟動的伺服器。
+
 ## 七、待辦（目前）
 
-- 真機重疊證明（見第六節 a、b），需要使用者同意再做一次。
+- 真機：Python 工作者版的重疊（需要使用者另外同意；依規定要算第三次，所以目前不做）。
 - numba 核心非同步提交（見第四之一節偏離 2）。
 - 多工作者分攤 CPU（第五項，只有設計）。
