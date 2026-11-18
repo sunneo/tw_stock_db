@@ -125,5 +125,21 @@ const SOFT = KS.probeCaps({ isFallbackAdapter: true, features: new Set() }, { li
     assert.strictEqual(KS.medianOf([4, 1, 3, 2]), 2.5);
   });
 
+  await t('勝者快取合一：兩個持有者共用同一個鍵；清勝者不動強制覆蓋；舊格式與壞資料當空的', () => {
+    const mem = { data: {}, getItem(k) { return Object.prototype.hasOwnProperty.call(this.data, k) ? this.data[k] : null; }, setItem(k, v) { this.data[k] = v; } };
+    const a = KS.createWinnerCache({ storage: mem, adapter: 'kep', caps: LOW });
+    a.put('k1', { id: 'mm_tiled_f32', median: 2 });
+    a.setOverride('matmul', 'mm_simple_f32');
+    const b = KS.createWinnerCache({ storage: mem, adapter: 'kep', caps: LOW });   // 另一個持有者讀同一份資料
+    assert.deepStrictEqual(b.get('k1'), { id: 'mm_tiled_f32', median: 2 });
+    assert.strictEqual(b.overrides().matmul, 'mm_simple_f32');
+    a.clearEntries();
+    assert.strictEqual(a.get('k1'), null);
+    assert.strictEqual(a.overrides().matmul, 'mm_simple_f32', '清勝者不應清掉強制覆蓋');
+    assert.strictEqual(KS.WINNER_KEY, 'cudaweb.kernel_race.v1', '沿用既有鍵，已存的結果不遺失');
+    mem.data[KS.WINNER_KEY] = '{"not":"ours"}';
+    assert.deepStrictEqual(KS.createWinnerCache({ storage: mem }).entries(), []);
+    assert.strictEqual(KS.createWinnerCache({ storage: null }).kind, 'memory');
+  });
   console.log(pass + ' 項通過');
 })();

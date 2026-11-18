@@ -11,8 +11,8 @@ const KS = require('./kernel_select.js');
 const MAX_BUF = 134217728;
 
 // ---------- 變體選擇（G4 接線）：規則＋已存的競賽勝者（kernel_select.pickWithCache）----------
-// WINNERS：key（KS.cacheKey）→ { id, median, timings }，由 variant_race 的 IndexedDB 存儲在啟動時整批載入（setMatmulWinners）。
-// 同步查表：派發路徑不能等 IndexedDB；載入前或失敗時就是規則結果。
+// WINNERS：key（KS.cacheKey）→ { id, median, timings }，由 variant_race 的勝者快取（kernel_select.createWinnerCache，localStorage）在啟動時整批載入（setMatmulWinners）。
+// 同步查表：派發路徑是同步查表（啟動時已把快取載入記憶體）；載入前就是規則結果。
 const WINNERS = new Map();
 let CAPS = null;                 // KS.probeCaps 的結果（瀏覽器端啟動時設定；沒設就用保守預設）
 let ADAPTER = 'unknown';         // adapter 描述＋驅動／瀏覽器版本（快取鍵的一部分）
@@ -432,7 +432,7 @@ async function raceMatmul(M, K, N, opts) {
 const TUNE = { started: false, store: null };
 const AUTO_SHAPES = [{ M: 64, K: 1024, N: 1024 }];
 // initMatmulTuning({ device, adapterDesc, store, shapes })：探測能力、從 store 整批載入勝者，回報缺勝者的形狀（簽名變了就會缺）。
-// 只讀，不量；量測由 startMatmulRace 做。store 沒給就用 variant_race 的預設（IndexedDB，失敗退記憶體）。
+// 只讀，不量；量測由 startMatmulRace 做。store 沒給就用 variant_race 的預設（與 kernel_race 共用的 localStorage 快取，node 退記憶體）。
 async function initMatmulTuning(o) {
   const opts = o || {};
   const VR = require('./variant_race.js');

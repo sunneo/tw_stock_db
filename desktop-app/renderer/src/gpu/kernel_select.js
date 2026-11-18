@@ -248,4 +248,68 @@ async function raceVariants(opts) {
 }
 function msgOf(e) { return String((e && e.message) || e); }
 
-module.exports = { DEFAULT_CAPS, probeCaps, tierOf, pickVariant, VARIANTS, meets, capsHash, shapeBucket, cacheKey, pickWithCache, medianOf, chooseWinner, raceVariants };
+// ---------- 勝者快取（O9 合一）：唯一的持久化層，kernel_race 與 variant_race 都用這裡 ----------
+// 單一 localStorage 鍵 { v, entries, overrides }；entries 以 cacheKey 為鍵，值是勝者記錄（至少有 id）。
+// 失效：同一 adapter 的筆數若 caps 雜湊不同就刪掉；格式壞掉的也刪。所有讀寫都 try/catch，失敗就只在記憶體。
+const WINNER_KEY = 'cudaweb.kernel_race.v1';   // 沿用 O9 既有鍵，已存的結果不會遺失
+const WINNER_SCHEMA = 1;
+function defaultStorage() {
+  // Node 25 會有一個壞掉的 localStorage 全域（沒有 getItem）：只接受真的有讀寫方法的物件
+  if (typeof window === 'undefined') return null;   // node 不碰 localStorage 全域（會有警告）；node 測試一律走記憶體
+  try {
+    const ls = typeof localStorage !== 'undefined' ? localStorage : null;
+    return ls && typeof ls.getItem === 'function' && typeof ls.setItem === 'function' ? ls : null;
+  } catch (_) { return null; }
+}
+function isObj(x) { return !!x && typeof x === 'object' && !Array.isArray(x); }
+function hasOwn(o, k) { return Object.prototype.hasOwnProperty.call(o, k); }
+// opts：storage（省略＝localStorage；null＝純記憶體）、storageKey、adapter（字串，給失效用；省略就不依 adapter 刪）、caps（給雜湊）
+function createWinnerCache(opts) {
+  opts = opts || {};
+  const storage = opts.storage === undefined ? defaultStorage() : opts.storage;
+  const key = opts.storageKey || WINNER_KEY;
+  const adapter = opts.adapter == null ? null : String(opts.adapter);
+  const chash = opts.caps ? capsHash(opts.caps) : null;
+  let lastSaveOk = false;
+  function emptyState() { return { v: WINNER_SCHEMA, entries: {}, overrides: {} }; }
+  function load() {
+    let raw = null;
+    try { raw = storage ? storage.getItem(key) : null; } catch (_) { raw = null; }
+    let s = null;
+    try { s = raw ? JSON.parse(raw) : null; } catch (_) { s = null; }
+    if (!isObj(s) || s.v !== WINNER_SCHEMA || !isObj(s.entries) || !isObj(s.overrides)) return emptyState();
+    return s;
+  }
+  function save() {
+    lastSaveOk = false;
+    try { if (storage) { storage.setItem(key, JSON.stringify(st)); lastSaveOk = true; } } catch (_) { lastSaveOk = false; }
+    return lastSaveOk;
+  }
+  function prune() {
+    let changed = false;
+    Object.keys(st.entries).forEach(function (k) {
+      const e = st.entries[k];
+      if (!isObj(e) || typeof e.id !== 'string' || (adapter !== null && e.adapter === adapter && e.caps !== chash)) { delete st.entries[k]; changed = true; }
+    });
+    return changed;
+  }
+  let st = load();
+  if (prune()) save();
+  return {
+    kind: storage ? 'localStorage' : 'memory',
+    adapter: adapter,
+    capsHash: chash,
+    get: function (k) { return hasOwn(st.entries, k) ? st.entries[k] : null; },
+    put: function (k, v) { st.entries[k] = v; return save(); },
+    remove: function (k) { if (hasOwn(st.entries, k)) { delete st.entries[k]; return save(); } return true; },
+    entries: function () { return Object.keys(st.entries).map(function (k) { return { key: k, value: st.entries[k] }; }); },
+    setOverride: function (op, id) { st.overrides[op] = id; return save(); },
+    clearOverride: function (op) { if (hasOwn(st.overrides, op)) { delete st.overrides[op]; return save(); } return true; },
+    overrides: function () { return Object.assign({}, st.overrides); },
+    reset: function () { st = emptyState(); return save(); },
+    clearEntries: function () { st.entries = {}; return save(); },   // 只清勝者，保留強制覆蓋
+    persisted: function () { return lastSaveOk; }
+  };
+}
+
+module.exports = { DEFAULT_CAPS, probeCaps, tierOf, pickVariant, VARIANTS, meets, capsHash, shapeBucket, cacheKey, pickWithCache, medianOf, chooseWinner, raceVariants, createWinnerCache, defaultStorage, WINNER_KEY };

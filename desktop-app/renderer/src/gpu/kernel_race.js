@@ -1,8 +1,7 @@
 // kernel_race.js — 變體競賽的執行器與本機快取包裝（清單 O9）。純邏輯：時間、裝置、儲存都由呼叫端注入，node 用假時鐘與假裝置測試。
 // 競賽：只跑「能力足夠、適用此形狀」的變體；每個變體跑 3 次取中位數；整段預算 2 秒（一次量測若會超過預算就不開始）；
-//       每個停止點先讓出執行緒（背景），再檢查取消與預算；取消或預算不足時，不完整的變體不參與勝負。
-// 快取：單一 localStorage 鍵 { v, entries, overrides }。每筆記錄 adapter 描述與能力表雜湊；同一 adapter 的能力雜湊變了，舊筆一律刪掉。
-//       所有讀寫都 try/catch；讀不到、JSON 壞掉、寫不進去，都退成只在記憶體裡運作。
+//       每個停止點先讓出執行緒（背景），再檢查取消與預算；取消或預算不足時，不完整的變體不參與勝負。引擎在 kernel_select.raceVariants。
+// 快取：唯一的持久化層在 kernel_select.createWinnerCache（單一 localStorage 鍵，與 variant_race 共用）。本檔只負責競賽、強制覆蓋與設定頁資料。
 // 預設只用選擇器的規則（kernel_select.pickWithCache）；競賽結果寫進快取後，下一次才會換用，第一次使用不會被擋住。
 // UMD：node 用 module.exports（依賴 ./kernel_select.js）；瀏覽器用 self.FaKernelRace（需要先有 self.FaKernelSelect，接線時處理）。
 (function (root, factory) {
@@ -11,15 +10,13 @@
 }(typeof self !== 'undefined' ? self : this, function (KS) {
   'use strict';
 
-  const STORE_KEY = 'cudaweb.kernel_race.v1';
+  const STORE_KEY = KS.WINNER_KEY;
   const SCHEMA = 1;
   const BUDGET_MS = 2000;
   const RUNS = 3;
   const TOL = 1e-5;
 
-  function isObj(x) { return !!x && typeof x === 'object' && !Array.isArray(x); }
   function has(o, k) { return Object.prototype.hasOwnProperty.call(o, k); }
-  function msg(e) { return String((e && e.message) || e); }
   function defaultClock() {
     return { now: function () { return typeof performance !== 'undefined' ? performance.now() : Date.now(); } };
   }
@@ -28,9 +25,7 @@
     let c = false;
     return { cancel: function () { c = true; }, cancelled: function () { return c; } };
   }
-  function defaultStorage() {
-    try { return typeof localStorage !== 'undefined' ? localStorage : null; } catch (_) { return null; }
-  }
+  function defaultStorage() { return KS.defaultStorage(); }
 
   // 此運算在這組能力與形狀下可用的變體 id（依表中順序）
   function eligibleVariants(op, shape, caps) {
@@ -54,7 +49,7 @@
     return KS.raceVariants(Object.assign({}, opts, { ids: ids }));  // 競賽引擎在 kernel_select.raceVariants（與 variant_race 共用）
   }
 
-  // 本機快取 ＋ 強制覆蓋 ＋ 競賽入口。opts：
+  // 競賽入口 ＋ 強制覆蓋 ＋ 設定頁資料。opts：
   //   caps：能力表（鍵與失效都看它的雜湊）；adapter：adapter 描述字串
   //   storage：{ getItem(k), setItem(k, v) }；省略時用 localStorage（取不到就 null）
   //   clock、yieldFn、now（寫入時間戳，預設 Date.now）、budgetMs、runs：傳給 race
@@ -64,45 +59,14 @@
     const adapter = String(opts.adapter || 'unknown');
     const clock = opts.clock || defaultClock();
     const now = opts.now || function () { return Date.now(); };
-    const storage = opts.storage === undefined ? defaultStorage() : opts.storage;
-    const chash = KS.capsHash(caps);
-    let lastSaveOk = false;
+    const cache = KS.createWinnerCache({ storage: opts.storage === undefined ? defaultStorage() : opts.storage, adapter: adapter, caps: caps });
+    const chash = cache.capsHash;
     const inflight = {};
 
-    function emptyState() { return { v: SCHEMA, entries: {}, overrides: {} }; }
-    function load() {
-      let raw = null;
-      try { raw = storage ? storage.getItem(STORE_KEY) : null; } catch (_) { raw = null; }
-      let s = null;
-      try { s = raw ? JSON.parse(raw) : null; } catch (_) { s = null; }
-      if (!isObj(s) || s.v !== SCHEMA || !isObj(s.entries) || !isObj(s.overrides)) return emptyState();
-      return s;
-    }
-    function save() {
-      lastSaveOk = false;
-      try { if (storage) { storage.setItem(STORE_KEY, JSON.stringify(st)); lastSaveOk = true; } } catch (_) { lastSaveOk = false; }
-      return lastSaveOk;
-    }
-    // 失效：同一 adapter 的筆數若能力雜湊不同（換卡、換驅動、旗標變了）就刪掉；格式壞掉的也刪
-    function prune() {
-      let changed = false;
-      Object.keys(st.entries).forEach(function (k) {
-        const e = st.entries[k];
-        if (!isObj(e) || typeof e.id !== 'string' || (e.adapter === adapter && e.caps !== chash)) { delete st.entries[k]; changed = true; }
-      });
-      return changed;
-    }
-
-    let st = load();
-    if (prune()) save();
-
     // 同步的 store（給 kernel_select.pickWithCache 用）
-    const store = {
-      get: function (key) { return has(st.entries, key) ? st.entries[key] : null; },
-      set: function (key, v) { st.entries[key] = v; save(); }
-    };
+    const store = { get: cache.get, set: function (key, v) { cache.put(key, v); } };
     function keyFor(op, shape) { return KS.cacheKey(adapter, op, shape, caps); }
-    function choose(op, shape) { return KS.pickWithCache(op, shape, caps, st.overrides, store, adapter); }
+    function choose(op, shape) { return KS.pickWithCache(op, shape, caps, cache.overrides(), store, adapter); }
 
     // 競賽：立即回傳 handle（不阻塞）；同一把鍵在進行中時回傳同一個 handle
     function tune(op, shape, device) {
@@ -120,8 +84,7 @@
       handle.promise = race({ op: op, shape: shape, caps: caps, device: device, clock: clock, yieldFn: opts.yieldFn, budgetMs: opts.budgetMs, runs: opts.runs, cancel: c }).then(function (res) {
         if (inflight[key] === handle) delete inflight[key];
         if (res.winner && !res.cancelled) {
-          st.entries[key] = { id: res.winner.id, median: res.winner.median, at: now(), adapter: adapter, caps: chash, op: op, bucket: KS.shapeBucket(shape) };
-          save();
+          cache.put(key, { id: res.winner.id, median: res.winner.median, at: now(), adapter: adapter, caps: chash, op: op, bucket: KS.shapeBucket(shape) });
         }
         return res;
       }, function (e) {
@@ -134,7 +97,7 @@
     function rerun(op, shape, device) {
       const key = keyFor(op, shape);
       if (inflight[key]) { inflight[key].cancel(); delete inflight[key]; }
-      if (has(st.entries, key)) { delete st.entries[key]; save(); }
+      cache.remove(key);
       return tune(op, shape, device);
     }
     // 強制覆蓋：只接受表裡存在的變體；能力不足或形狀不適用時，choose 會退回規則並在 reason 寫明
@@ -142,16 +105,27 @@
       const list = KS.VARIANTS[op];
       if (!list) throw new Error('kernel_race：未知運算 ' + op);
       if (!list.some(function (v) { return v.id === id; })) throw new Error('kernel_race：' + op + ' 沒有變體 ' + id);
-      st.overrides[op] = id;
-      save();
+      cache.setOverride(op, id);
       return id;
     }
-    function unforce(op) { if (has(st.overrides, op)) { delete st.overrides[op]; save(); } }
+    function unforce(op) { cache.clearOverride(op); }
     function cancelAll() {
       Object.keys(inflight).forEach(function (k) { inflight[k].cancel(); delete inflight[k]; });
     }
     // 恢復預設：取消競賽、清掉所有結果與強制覆蓋
-    function reset() { cancelAll(); st = emptyState(); save(); }
+    function reset() { cancelAll(); cache.reset(); }
+    // 設定頁用：每個運算目前用哪個變體、來源、是否強制、快取內容、是否正在競賽
+    function describe(op, shape) {
+      const key = keyFor(op, shape);
+      const ov = cache.overrides();
+      return {
+        op: op, key: key, choice: choose(op, shape),
+        cached: cache.get(key),
+        forced: has(ov, op) ? ov[op] : null,
+        running: !!inflight[key],
+        eligible: eligibleVariants(op, shape, caps)
+      };
+    }
     // 設定頁資料（純資料、可 JSON 序列化）：每個運算一列。shapesByOp：{ [op]: shape }，沒給的運算用空形狀。
     function snapshot(shapesByOp) {
       const shapes = shapesByOp || {};
@@ -171,21 +145,11 @@
         };
       });
     }
-    // 設定頁用：每個運算目前用哪個變體、來源、是否強制、快取內容、是否正在競賽
-    function describe(op, shape) {
-      const key = keyFor(op, shape);
-      return {
-        op: op, key: key, choice: choose(op, shape),
-        cached: has(st.entries, key) ? st.entries[key] : null,
-        forced: has(st.overrides, op) ? st.overrides[op] : null,
-        running: !!inflight[key],
-        eligible: eligibleVariants(op, shape, caps)
-      };
-    }
 
     return {
       adapter: adapter,
       capsHash: chash,
+      cacheKind: cache.kind,
       key: keyFor,
       choose: choose,
       tune: tune,
@@ -196,8 +160,8 @@
       reset: reset,
       describe: describe,
       snapshot: snapshot,
-      overrides: function () { return Object.assign({}, st.overrides); },
-      persisted: function () { return lastSaveOk; }
+      overrides: function () { return cache.overrides(); },
+      persisted: function () { return cache.persisted(); }
     };
   }
 

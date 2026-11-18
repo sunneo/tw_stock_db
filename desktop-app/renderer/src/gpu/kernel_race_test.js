@@ -45,7 +45,8 @@ const instantYield = async function () {};
     assert.deepStrictEqual(KR.eligibleVariants('matmul', MM, LOW), MM_IDS);
     assert.deepStrictEqual(KR.eligibleVariants('matmul', { M: 1, N: 1, K: 3 }, LOW), ['mm_simple_f32']);
     assert.deepStrictEqual(KR.eligibleVariants('q8mm', { M: 1, N: 1024 }, LOW), ['q8mm_dec', 'q8mm_simple']);
-    assert.deepStrictEqual(KR.eligibleVariants('q8mm', { M: 128, N: 1024 }, LOW), ['q8mm_pf', 'q8mm_dec', 'q8mm_simple']);
+    // q8mm 表已與 infer_ops 同步（K 未給：f32 版不適用，decr8／decr 是 pf 之後的可用後備）
+    assert.deepStrictEqual(KR.eligibleVariants('q8mm', { M: 128, N: 1024 }, LOW), ['q8mm_pf', 'q8mm_decr8', 'q8mm_decr', 'q8mm_dec', 'q8mm_simple']);
     assert.throws(() => KR.eligibleVariants('nope', MM, LOW), /未知運算/);
   });
 

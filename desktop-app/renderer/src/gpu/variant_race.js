@@ -1,7 +1,7 @@
 /* variant_race.js — 變體選擇的執行時期（G4，docs/TARGET.cudaweb-cublas.md「選擇與驗證」）。
  * 流程：優先名（priors 第一名）先用 → 對 CPU 參考驗證（不過就標壞、退下一名）→ 背景對前 K 名各跑數次取中位數（時間預算 2 秒、可取消）→ 勝者存快取。
  * 快取存「勝者變體」（WebGPU 管線無法序列化，下次只需編譯勝者）。鍵＝adapter 描述＋驅動／瀏覽器版本＋能力簽名；簽名或版本變了就是另一把鍵，自動失效。
- * 儲存：IndexedDB（失敗或不存在時退記憶體 Map）。純邏輯，node 可直接 require 測試（node 沒有 indexedDB，走記憶體）。
+ * 儲存：與 kernel_race 共用的勝者快取（kernel_select.createWinnerCache，localStorage；node 無 localStorage，走記憶體）。純邏輯，node 可直接 require 測試。
  * UMD：node 用 module.exports；瀏覽器用 self.FaVariantRace。
  */
 (function (root, factory) {
@@ -53,61 +53,17 @@
     });
   }
 
-  // 儲存：get(key) → 值或 null；set(key, value)。IndexedDB 失敗或不存在就退記憶體。
+  // 儲存（O9 合一）：勝者快取就是 kernel_select.createWinnerCache（單一 localStorage 鍵，與 kernel_race 共用）。
+  // 舊的 IndexedDB 勝者不再讀寫（只是快取，缺了會重新競賽）；opts.indexedDB 已忽略。介面維持 async，set 回傳 'local' 或 'memory'。
   function createStore(opts) {
     opts = opts || {};
-    var mem = new Map();
-    var idb = opts.indexedDB || (typeof indexedDB !== 'undefined' ? indexedDB : null);
-    var dbName = opts.dbName || 'cudaweb_variants', storeName = 'winners';
-    var dbP = null;
-    function open() {
-      if (dbP) return dbP;
-      dbP = new Promise(function (resolve, reject) {
-        if (!idb) { reject(new Error('沒有 indexedDB')); return; }
-        var req = idb.open(dbName, 1);
-        req.onupgradeneeded = function () { req.result.createObjectStore(storeName); };
-        req.onsuccess = function () { resolve(req.result); };
-        req.onerror = function () { reject(req.error || new Error('indexedDB 開啟失敗')); };
-      });
-      dbP.catch(function () { /* 退記憶體，見 get／set */ });
-      return dbP;
-    }
-    function tx(mode, fn) {
-      return open().then(function (db) {
-        return new Promise(function (resolve, reject) {
-          var t = db.transaction(storeName, mode), s = t.objectStore(storeName);
-          var r = fn(s);
-          t.oncomplete = function () { resolve(r && r.result !== undefined ? r.result : undefined); };
-          t.onerror = function () { reject(t.error); };
-        });
-      });
-    }
+    const cache = KS.createWinnerCache({ storage: opts.storage, storageKey: opts.storageKey });
     return {
-      kind: idb ? 'idb-or-memory' : 'memory',
-      get: async function (key) {
-        try { var v = await tx('readonly', function (s) { return s.get(key); }); return v === undefined ? null : v; }
-        catch (_) { return mem.has(key) ? mem.get(key) : null; }
-      },
-      set: async function (key, value) {
-        mem.set(key, value);
-        try { await tx('readwrite', function (s) { return s.put(value, key); }); return 'idb'; }
-        catch (_) { return 'memory'; }
-      },
-      // 啟動時整批載入（派發路徑是同步查表，見 mm_ops.setMatmulWinners）；失敗就給記憶體內容
-      entries: async function () {
-        try {
-          const db = await open();
-          return await new Promise(function (resolve, reject) {
-            const t = db.transaction(storeName, 'readonly'), s = t.objectStore(storeName), out = [];
-            const req = s.openCursor();
-            req.onsuccess = function () { const c = req.result; if (c) { out.push({ key: c.key, value: c.value }); c.continue(); } };
-            t.oncomplete = function () { resolve(out); };
-            t.onerror = function () { reject(t.error); };
-          });
-        } catch (_) { return Array.from(mem.entries()).map(function (kv) { return { key: kv[0], value: kv[1] }; }); }
-      },
-      // 測試與設定頁「恢復預設」用
-      clear: async function () { mem.clear(); try { await tx('readwrite', function (s) { return s.clear(); }); } catch (_) { /* 記憶體已清 */ } }
+      kind: cache.kind,
+      get: async function (key) { return cache.get(key); },
+      set: async function (key, value) { cache.put(key, value); return cache.persisted() ? 'local' : 'memory'; },
+      entries: async function () { return cache.entries(); },
+      clear: async function () { cache.clearEntries(); }
     };
   }
 
