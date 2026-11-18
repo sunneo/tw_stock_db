@@ -1,8 +1,8 @@
 {
-  "generated_at": "2026-11-18T05:46:27.124617+00:00",
+  "generated_at": "2026-11-18T10:12:25.469372+00:00",
   "core": {
     "path": "db/core.db",
-    "sha256": "918f002f8619a6918eda1c2c6db2a7f12076addb909d0fb6cb0915834477201a",
+    "sha256": "da2297aed4abf3659dcb07c9684d6b23a3cc2fc1c0e230c20a190f188b0138f6",
     "size_bytes": 147456
   },
   "months": [
@@ -177,7 +177,7 @@
     {
       "label": "2026-11",
       "path": "db/monthly/2026/11.db",
-      "sha256": "f56db4ac0a87133768f05b164e69b5ba778a08d2807bbe9682901ee2f4ca1f99",
+      "sha256": "9a115f506b5ac78220b0330ba7cc1652d35b82abf58791c66a26827f8829fd37",
       "size_bytes": 7540736
     }
   ],
