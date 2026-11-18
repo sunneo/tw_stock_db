@@ -16,7 +16,20 @@
         { id: 'smolvlm-256m', gpuNeedsF16: true, label: 'SmolVLM 256M（可以問問題）', task: 'image-to-text', arch: 'vision2seq', repo: 'HuggingFaceTB/SmolVLM-256M-Instruct',
             tasks: ['caption', 'detailed', 'ocr', 'objects', 'ask'], lang: '英文為主', license: 'Apache-2.0',
             dtype: { gpu: { embed_tokens: 'fp16', vision_encoder: 'q4', decoder_model_merged: 'q4' }, cpu: { embed_tokens: 'q8', vision_encoder: 'q8', decoder_model_merged: 'q4' } },
-            bytes: { gpu: 200 * MB, cpu: 203 * MB }, verified: false, measured: 'CPU 約 16～38 秒、Intel GPU 約 10 秒；已加重複懲罰，不再卡在迴圈，但細節仍會幻覺（把頭盔笑容讀成數字 3、編出不存在的文字）。只適合快速粗略描述，不要拿來讀字或數東西', notes: '小型對話式視覺模型，可以用提示詞問圖片裡的事；OCR 與細節不如 Florence-2。' },
+            bytes: { gpu: 200 * MB, cpu: 203 * MB }, verified: false,
+            // 真實檔案（2026-11-18 從 HuggingFace 官方 repo 下載，LFS sha256 核對相符）。cpu／gpu 只列該組合會用到的檔；refFp32 是 CPU 參考對拍用的 fp32 原檔（不在下載組合內）。
+            files: {
+                cpu: { embed_tokens: { file: 'embed_tokens_quantized.onnx', bytes: 28385824, sha256: '4b919b829fe2bf225e42431230c56891116f0149e5170e36c99bcc0cfae0d2ef' },
+                       vision_encoder: { file: 'vision_encoder_quantized.onnx', bytes: 94247969, sha256: 'f82adc84246fbfe8651038470166385452682cc889538f5106544e622e5f1595' },
+                       decoder_model_merged: { file: 'decoder_model_merged_q4.onnx', bytes: 86562901, sha256: 'e3fd81130e30715580cf148398e48e2925b6219bff75e17d2a77add35a363f65' } },
+                gpu: { embed_tokens: { file: 'embed_tokens_fp16.onnx', bytes: 56770946, sha256: '019af59078b8e4775216dd278c66574c39bfefa36cab68573db64d7ac7a11691' },
+                       vision_encoder: { file: 'vision_encoder_q4.onnx', bytes: 63784987, sha256: '95814e6629ec465e7cf98a44edcee67abc06d41faa0d1acc410cf8a956cab488' },
+                       decoder_model_merged: { file: 'decoder_model_merged_q4.onnx', bytes: 86562901, sha256: 'e3fd81130e30715580cf148398e48e2925b6219bff75e17d2a77add35a363f65' } },
+                refFp32: { vision_encoder: { file: 'vision_encoder.onnx', bytes: 374316497, sha256: 'e27ad810eabfa7c881b409e1ca357e7a951541019add228ff73c72718fcf6218' },
+                           embed_tokens: { file: 'embed_tokens.onnx', bytes: 113541419, sha256: 'a68ea4058524059ed0e2873fdbc4f33b93e13ae3d3204938d32d0566d390ae00' } },
+                // 真實形狀（ORT CPU 實跑）：512×512 影像 → image_features [1,64,576]（64 個影像詞元、LM 隱藏維度 576）；embed_tokens 輸出 [1,3,576]。
+                shapes: { imageTokens: 64, lmHidden: 576, imageSize: 512 } },
+            measured: 'CPU 約 16～38 秒、Intel GPU 約 10 秒；已加重複懲罰，不再卡在迴圈，但細節仍會幻覺（把頭盔笑容讀成數字 3、編出不存在的文字）。只適合快速粗略描述，不要拿來讀字或數東西', notes: '小型對話式視覺模型，可以用提示詞問圖片裡的事；OCR 與細節不如 Florence-2。' },
         { id: 'vit-gpt2', label: 'ViT-GPT2（最簡單的一句話描述）', task: 'image-to-text', arch: 'vit-gpt2', repo: 'Xenova/vit-gpt2-image-captioning',
             tasks: ['caption'], lang: '英文', license: 'Apache-2.0',
             dtype: { gpu: 'q8', cpu: 'q8' }, bytes: { gpu: 238 * MB, cpu: 238 * MB }, verified: true, verifiedOn: 'cpu', measured: 'CPU 4 執行緒：約 2 秒（首次含下載與載入約 16 秒）', notes: '只能產生一句短描述，沒有 OCR、不能問問題；最舊也最簡單，準確度最低（實測把機器人說成「時鐘上的卡通人物」）。' },
