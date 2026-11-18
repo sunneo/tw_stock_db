@@ -109,7 +109,12 @@ O1m 到 O11 做完後不結束，進入迴圈。完整規則與交接見 `docs/H
 - [ ] **O13a LLaVA-Interleave Qwen 0.5B**：語言模型部分是 Qwen2 結構（用 O12 的描述表表示，通用骨架加 Qwen 覆寫）；視覺部分是 SigLIP 類的 ViT 編碼器加投影層，另寫「視覺編碼器骨架」（patch 嵌入、LayerNorm、多頭注意力、MLP、投影，全用現有通用核心：變體競賽的矩陣乘、`attn_flash`）。圖像特徵以嵌入形式插進文字嵌入序列（影像詞元位置）後送進解碼骨架。**無 f16 的卡要用 f32 或 q8 路徑**，不能再因 `gpuNeedsF16` 退 CPU（這正是這台最大的收益）。
 - [ ] **O13b SmolVLM 256M**：同上（語言模型是 SmolLM 類 Llama 結構，視覺是 SigLIP）。
   - 進度（2026-11-18）：程式與假權重測試完成。`renderer/src/gpu/smolvlm_skeleton.js` 加上 `smolvlm_skeleton_test.js`（11 項）：pixel shuffle、連接器、影像佔位詞元插入、`llm_skeleton.stepVec` 與 `step` 逐位一致、整段前向對獨立算的結果。`llm_skeleton.js` 為此新增 `stepVec`（原本的 `step` 行為不變，16 項與 GPU 版 5 項仍通過）。
-  - **未完成（需要真實檔案，標「待下載」，不編造數值）**：真實權重的逐層對拍；pixel shuffle 的展開順序與縮放因子 r（要 config.json 與 modeling 程式）；隱藏維度與 LM 規格（目前用的是小假尺寸，`verified:false`）；GPU 版（尚未做）。
+  - **2026-11-18 真權重進度（使用者本人同意下載）**：位置 `ai-temp/vlm-weights/smolvlm/`（不進 git）。從 HuggingFace 官方 `HuggingFaceTB/SmolVLM-256M-Instruct` 的 `onnx/` 下載並核對 LFS sha256 相符：`vision_encoder.onnx`（374,316,497 B，`e27ad810…18`，fp32 參考）、`vision_encoder_quantized.onnx`（94,247,969 B，`f82adc84…95`，cpu 組合）、`vision_encoder_q4.onnx`（63,784,987 B，`95814e66…88`，gpu 組合）、`embed_tokens.onnx`（113,541,419 B，`a68ea405…0a`，fp32 參考）、`embed_tokens_quantized.onnx`（28,385,824 B，`4b919b82…ef`）、`embed_tokens_fp16.onnx`（56,770,946 B，`019af590…91`）、`decoder_model_merged_q4.onnx`（86,562,901 B，`e3fd8113…5f`，原本就有、核對相符）。全部寫進 `renderer/src/vlm/vlm_core.js` 的 `files` 欄（commit `fa309c1c9`，`vlm_core.test.js` 165 項通過）。
+  - **真實形狀（ORT CPU 實跑，`onnxruntime-node` 1.22.0）**：`vision_encoder` 輸入 `pixel_values`＋`pixel_attention_mask`、輸出 `image_features`；512×512 影像 → `[1, 64, 576]`（64 個影像詞元、LM 隱藏維度 576）。`embed_tokens` 輸入 `input_ids`、輸出 `inputs_embeds`，形狀 `[1, 3, 576]`。`decoder_model_merged_q4` 有 30 層 KV（`past_key_values.0..29`）。
+  - **驗證層級**：真權重的檔案完整性與 ORT 形狀實跑 ✔；**CPU 參考（`smolvlm_skeleton.js`）對真權重的逐層對拍：未做**（原因：要從 ONNX 的 initializer 抽出權重，並對應到 `vit_skeleton`／`llm_skeleton` 的權重格式；本機沒有 Python 的 `onnx` 套件，JS 端也沒有 protobuf 解析器，這一步沒有在這個工作階段完成）。
+  - **pixel shuffle 展開順序：未核對**。影像詞元數 64 與 `1024÷16÷16 = 64`（r = 4）一致，但這只證明數量，不證明展開順序；順序要對照 modeling 程式或逐層中間輸出才能定案（ONNX 內部的 pixel shuffle 與連接器已包在 `vision_encoder` 裡，只能看到最終輸出）。`verified:false` 維持不變。
+  - **GPU 版：未做**。這台沒有 CUDA，也沒有真 GPU 量測；`vlm_core.js` 的 gpu 組合檔案只確認 sha256，沒有執行。
+  - **下一步**：要定案順序與逐層對拍，需要先用 protobuf 解析 ONNX（或裝一個獨立的 Python 虛擬環境裝 `onnx`，不裝全域），抽出 `vision_encoder.onnx` 的權重與 `image_features` 中間值，再用 `smolvlm_skeleton.forward` 同輸入比對。
 - [ ] **O13c Florence-2**：編碼器—解碼器結構（DaViT 視覺編碼器加語言編碼器與帶交叉注意力的解碼器），較複雜，排在 a、b 之後；只做到能對拍的子圖就如實標範圍。
 - [ ] 共通：先用既有的「逐節點對拍」做法（`scripts/eval/cudaweb_node_*`）把這些 ONNX 圖在 cudaweb 上逐節點對 ORT 驗證，再決定整圖接線或骨架重寫；預設關、行為不變、失敗永久退回原路徑；兩處設定介面（AI 助理設定、桌面版設定頁）同步開關；速度數字標硬體（Kepler 14 W）。沒有真權重或載入太重就標「未用真模型驗證」。每小步提交。
 
