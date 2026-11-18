@@ -9,9 +9,9 @@
   // Paints one canvas frame (the draw commands the bridge stored, already checked) with a 2d context. Only fill, stroke and image
   // calls, so the program's text goes through fillText and never through markup. lookup(name) gives a decoded picture (an Image the
   // host has loaded) or null; a picture that is not decoded yet is skipped.
-  function paintFrame(ctx, ops, w, h, lookup) {
-    ctx.fillStyle = '#000';
-    ctx.fillRect(0, 0, w, h);
+  function paintFrame(ctx, ops, w, h, lookup, transparent) {
+    // a transparent canvas (a HUD drawn over something else) starts every frame empty; the others start black
+    if (transparent) { ctx.clearRect(0, 0, w, h); } else { ctx.fillStyle = '#000'; ctx.fillRect(0, 0, w, h); }
     ops.forEach(function (op) {
       var name = op[0], color = op[op.length - 1];
       if (name === 'clear') { ctx.fillStyle = color; ctx.fillRect(0, 0, w, h); }
@@ -171,6 +171,9 @@
     '.gui-body:has(>.gui-role-page){padding:0;gap:0;overflow:hidden}',
     '.gui-column,.gui-tab,.gui-scroll{display:flex;flex-direction:column;gap:var(--gui-s2);min-width:0}',
     '.gui-column>*,.gui-tab>*,.gui-scroll>*{flex-shrink:0}',
+    // stack: all children share one grid cell; the later one is on top. A canvas child fills the cell (its size follows the window)
+    '.gui-stack{display:grid;grid-template:minmax(0,1fr)/minmax(0,1fr);min-width:0;min-height:0}',
+    '.gui-stack>*{grid-area:1/1;min-width:0;min-height:0}.gui-stack>canvas{width:100%!important;height:100%!important;align-self:stretch;justify-self:stretch}',
     '.gui-column>.gui-button,.gui-column>.gui-checkbox,.gui-column>.gui-label{align-self:flex-start}',
     '.gui-row{display:flex;flex-direction:row;align-items:stretch;gap:var(--gui-s2);min-width:0}',
     '.gui-row>.gui-label,.gui-row>.gui-progress,.gui-row>.gui-checkbox{align-self:center}',
@@ -245,7 +248,7 @@
     '.gui-menuitem{font:inherit;display:flex;align-items:center;gap:var(--gui-s4);width:100%;text-align:left;border:none;background:transparent;color:var(--gui-fg);padding:5px 10px;border-radius:calc(var(--gui-radius) - 1px);cursor:pointer}',
     '.gui-menuitem:hover:not(:disabled){background:var(--gui-accent);color:var(--gui-on-accent)}.gui-menuitem:disabled{opacity:.45}',
     '.gui-keys{margin-left:auto;opacity:.6;font-size:.88em}',
-    '.gui-canvas{background:#000;border-radius:calc(var(--gui-radius) - 1px)}.gui-canvas-fit{background:var(--gui-surface2)}',
+    '.gui-canvas{background:#000;border-radius:calc(var(--gui-radius) - 1px)}.gui-canvas-fit{background:var(--gui-surface2)}.gui-canvas-clear{background:transparent}',
     // the editor: a line number gutter, a highlight layer under a transparent textarea (so it keeps native editing, undo and scrollbars)
     '.gui-editor{position:relative;display:flex;flex-direction:row;min-height:0;min-width:0;border:1px solid var(--gui-border);border-radius:var(--gui-radius);overflow:hidden;background:var(--gui-bg);',
     'font-family:var(--gui-mono);font-size:13px;line-height:var(--gui-ed-lh,20px)}',
@@ -745,6 +748,10 @@
         el = doc.createElement('div');
         el.className = 'gui-' + n.kind;
         break;
+      case 'stack':
+        el = doc.createElement('div');
+        el.className = 'gui-stack';
+        break;
       case 'grid':
         el = doc.createElement('div');
         el.className = 'gui-grid';
@@ -943,7 +950,7 @@
         break;
       case 'canvas':
         el = doc.createElement('canvas');
-        el.className = 'gui-canvas';
+        el.className = 'gui-canvas' + (n.transparent ? ' gui-canvas-clear' : '');
         el.width = n.width || 320;
         el.height = n.height || 240;
         el.tabIndex = 0; // focusable, so key presses reach it
@@ -964,7 +971,7 @@
           if (typeof ResizeObserver !== 'undefined') { new ResizeObserver(fit).observe(el); }
         }
         if (n.gl) { paintGl(el, n, function (msg) { onEvent('glerror', n.id, msg); }); }
-        else { paintFrame(el.getContext('2d'), n.frame || [], el.width, el.height, function (name) { return opts && opts.image ? opts.image(n.id, name) : null; }); }
+        else { paintFrame(el.getContext('2d'), n.frame || [], el.width, el.height, function (name) { return opts && opts.image ? opts.image(n.id, name) : null; }, !!n.transparent); }
         on('keydown', function (e) {
           if (GAME_KEYS.indexOf(e.key) >= 0) { e.preventDefault(); }
           onEvent('key', n.id, { key: e.key, down: true });

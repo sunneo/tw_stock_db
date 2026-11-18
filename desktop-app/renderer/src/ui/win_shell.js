@@ -13,7 +13,9 @@
   if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaWin = factory();
 })(typeof self !== 'undefined' ? self : this, function () {
   'use strict';
-  var Z0 = 100000, zTop = Z0;
+  // popped windows must sit above the assistant's own panel and button (z-index 999999) or the panel covers them, and below the app's dialogs
+  // (1000002 and up). So they live in a small band right above Z0: front() renumbers them densely (Z0 + 1, Z0 + 2, ...) instead of counting up forever.
+  var Z0 = 1000000;
   var CSS = '.fwin-tools{position:absolute;top:3px;right:6px;z-index:6;display:flex;gap:3px;opacity:.25;transition:opacity .15s}.fwin-host:hover>.fwin-tools,.fwin-tools:focus-within{opacity:.95}.fwin-tools button,.fwin-title button,.fwin-btn{background:rgba(127,127,127,.18);color:inherit;border:1px solid rgba(127,127,127,.45);border-radius:5px;padding:0 6px;cursor:pointer;font:12px/20px system-ui,"Microsoft JhengHei",sans-serif;height:22px}.fwin-tools button:hover,.fwin-title button:hover,.fwin-btn:hover{border-color:#58a6ff}'
     + '.fwin-host{position:relative}.fwin-ph{border:1px dashed rgba(127,127,127,.6);border-radius:8px;padding:14px;color:#8b949e;font:13px system-ui,"Microsoft JhengHei",sans-serif;display:flex;align-items:center;gap:10px}'
     + '.fwin-host.fwin-pop{position:fixed!important;margin:0!important;box-shadow:0 10px 44px rgba(0,0,0,.5);border-radius:10px!important;overflow:hidden;max-width:none!important;max-height:none!important;box-sizing:border-box}.fwin-host.fwin-pop.fwin-max{border-radius:0!important;box-shadow:none}'
@@ -41,7 +43,12 @@
     var tools = null;
     if (bar) { bar.appendChild(bMax); bar.appendChild(bPop); bar.appendChild(bFs); } else { tools = h('div', 'fwin-tools'); tools.appendChild(bMax); tools.appendChild(bPop); tools.appendChild(bFs); el.insertBefore(tools, el.firstChild); }
     function notify() { if (typeof opts.onChange === 'function') { try { opts.onChange({ popped: popped, maximized: maxed }); } catch (e) { /* */ } } }
-    function front() { if (el.style.zIndex === String(zTop)) { return; } zTop += 1; el.style.zIndex = String(zTop); }
+    function front() {
+      var others = registry.map(function (c) { return c._el; }).filter(function (e) { return e && e !== el && e.classList && e.classList.contains('fwin-pop'); });
+      others.sort(function (a, b) { return (+a.style.zIndex || 0) - (+b.style.zIndex || 0); });
+      others.push(el);   // this one last = on top
+      others.forEach(function (e, i) { e.style.zIndex = String(Z0 + 1 + i); });
+    }
     function persist() { if (popped && rect) save(id, { rect: rect, maxed: maxed }); }
     function apply(r) { rect = r; el.style.left = r.left + 'px'; el.style.top = r.top + 'px'; el.style.width = r.width + 'px'; el.style.height = r.height + 'px'; }
     function clamp(r) { var W = window.innerWidth, H = window.innerHeight; var w = Math.max(Math.min(MINW, W), Math.min(r.width, W)), hh = Math.max(Math.min(MINH, H), Math.min(r.height, H)); return { left: Math.max(0, Math.min(W - w, r.left)), top: Math.max(0, Math.min(H - hh, r.top)), width: w, height: hh }; }
@@ -97,7 +104,7 @@
     bFs.onclick = function () { setFs(); };
     bPop.onclick = function () { if (popped) dock(); else pop(); }; bMax.onclick = function () { setMax(!maxed); };
     var ctl = { pop: pop, dock: dock, maximize: function (on) { setMax(on === undefined ? !maxed : !!on); return ctl; }, toggleMax: function () { setMax(!maxed); return ctl; }, fullscreen: setFs, isFullscreen: isFs, isPopped: function () { return popped; }, isMaximized: function () { return maxed; }, setTitle: function (t) { titleText = t; if (titleEl && titleEl.firstChild) titleEl.firstChild.textContent = t; }, destroy: function () { if (popped) dock(); if (tools) tools.remove(); try { bMax.remove(); bPop.remove(); bFs.remove(); } catch (e) { /* */ } el.classList.remove('fwin-host'); delete el._fwin; var i = registry.indexOf(ctl); if (i >= 0) registry.splice(i, 1); }, el: el };
-    el._fwin = ctl; registry.push(ctl); if (opts.floating) pop(); return ctl;
+    ctl._el = el; el._fwin = ctl; registry.push(ctl); if (opts.floating) pop(); return ctl;
   }
   return { decorate: decorate, registry: registry };
 });

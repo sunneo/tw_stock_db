@@ -87,16 +87,18 @@ def forces_cpu(px, py, pz, vx, vy, vz, block=256):
 
 
 # ------------------------------------------------------------------ GPU (numba kernels -> WGSL)
+# Positions, velocities and accelerations are packed as (N, 3) arrays: every array is one storage buffer binding, and WebGPU allows only 8
+# per shader stage by default, so a kernel with ten separate arrays (x, y, z, vx, ...) cannot run on many adapters.
 if cuda is not None:
     @cuda.jit
-    def density_kernel(px, py, pz, rho, n, h2, coef):
+    def density_kernel(pos, rho, n, h2, coef):
         i = cuda.grid(1)
         if i < n:
             s = 0.0
             for j in range(n):
-                dx = px[i] - px[j]
-                dy = py[i] - py[j]
-                dz = pz[i] - pz[j]
+                dx = pos[i, 0] - pos[j, 0]
+                dy = pos[i, 1] - pos[j, 1]
+                dz = pos[i, 2] - pos[j, 2]
                 r2 = dx * dx + dy * dy + dz * dz
                 if r2 < h2:
                     t = h2 - r2
@@ -104,7 +106,7 @@ if cuda is not None:
             rho[i] = coef * s
 
     @cuda.jit
-    def force_kernel(px, py, pz, vx, vy, vz, rho, ax, ay, az, n, h, mass, spiky, visc, k, rho0, mu, grav):
+    def force_kernel(pos, vel, rho, acc, n, h, mass, spiky, visc, k, rho0, mu, grav):
         i = cuda.grid(1)
         if i < n:
             h2 = h * h
@@ -115,9 +117,9 @@ if cuda is not None:
             fy = 0.0
             fz = 0.0
             for j in range(n):
-                dx = px[i] - px[j]
-                dy = py[i] - py[j]
-                dz = pz[i] - pz[j]
+                dx = pos[i, 0] - pos[j, 0]
+                dy = pos[i, 1] - pos[j, 1]
+                dz = pos[i, 2] - pos[j, 2]
                 r2 = dx * dx + dy * dy + dz * dz
                 if r2 < h2 and r2 > 1e-12:
                     r = math.sqrt(r2)
@@ -127,24 +129,26 @@ if cuda is not None:
                         pj = 0.0
                     c = -mass * (pi_ + pj) / (2.0 * rho[j]) * (spiky * t * t) / r
                     lap = visc * t * mass / rho[j] * mu
-                    fx += c * dx + lap * (vx[j] - vx[i])
-                    fy += c * dy + lap * (vy[j] - vy[i])
-                    fz += c * dz + lap * (vz[j] - vz[i])
-            ax[i] = fx / rho[i]
-            ay[i] = fy / rho[i] + grav
-            az[i] = fz / rho[i]
+                    fx += c * dx + lap * (vel[j, 0] - vel[i, 0])
+                    fy += c * dy + lap * (vel[j, 1] - vel[i, 1])
+                    fz += c * dz + lap * (vel[j, 2] - vel[i, 2])
+            acc[i, 0] = fx / rho[i]
+            acc[i, 1] = fy / rho[i] + grav
+            acc[i, 2] = fz / rho[i]
 
 
 def forces_gpu(px, py, pz, vx, vy, vz):
     n = px.shape[0]
+    pos = np.ascontiguousarray(np.stack([px, py, pz], axis=1), dtype=np.float32)
+    vel = np.ascontiguousarray(np.stack([vx, vy, vz], axis=1), dtype=np.float32)
     rho = np.zeros(n, np.float32)
-    ax = np.zeros(n, np.float32); ay = np.zeros(n, np.float32); az = np.zeros(n, np.float32)
+    acc = np.zeros((n, 3), np.float32)
     threads = 64
     blocks = (n + threads - 1) // threads
-    density_kernel[blocks, threads](px, py, pz, rho, n, float(H * H), float(MASS * POLY6))
-    force_kernel[blocks, threads](px, py, pz, vx, vy, vz, rho, ax, ay, az, n, float(H), float(MASS), float(SPIKY), float(VISC),
+    density_kernel[blocks, threads](pos, rho, n, float(H * H), float(MASS * POLY6))
+    force_kernel[blocks, threads](pos, vel, rho, acc, n, float(H), float(MASS), float(SPIKY), float(VISC),
                                   float(K_GAS), float(RHO0), float(MU), float(GRAVITY))
-    return ax, ay, az, rho
+    return acc[:, 0].copy(), acc[:, 1].copy(), acc[:, 2].copy(), rho
 
 
 def gpu_fallbacks():
@@ -154,6 +158,35 @@ def gpu_fallbacks():
         return int(fa_gpu.STATS.get("fallbacks", 0))
     except Exception:
         return 0
+
+
+_PROBE = {}
+
+
+def probe_gpu():
+    """Try the GPU kernels once on a tiny problem. Returns (ok, reason). If the compatibility layer would emulate them one thread at a time
+    in Python (no WebGPU, a limit the adapter does not meet...), say so up front instead of crawling through the first real frames."""
+    if "r" in _PROBE:
+        return _PROBE["r"]
+    if cuda is None:
+        _PROBE["r"] = (False, "the GPU compatibility layer is off")
+        return _PROBE["r"]
+    before = gpu_fallbacks()
+    try:
+        b = make_fluid(4)
+        forces_gpu(*b)
+        if gpu_fallbacks() > before:
+            try:
+                import fa_gpu
+                why = str(fa_gpu.STATS.get("reason") or "")
+            except Exception:
+                why = ""
+            _PROBE["r"] = (False, why[:240] or "the kernels could not run on the GPU")
+        else:
+            _PROBE["r"] = (True, "")
+    except Exception as e:
+        _PROBE["r"] = (False, str(e)[:240])
+    return _PROBE["r"]
 
 
 class Sim(object):
@@ -168,9 +201,11 @@ class Sim(object):
         self.rho = np.full(self.n, RHO0, np.float32)
 
     def set_device(self, device):
-        if device == "gpu" and cuda is None:
-            self.note = "GPU source not available (the GPU compatibility layer is off); staying on CPU"
-            device = "cpu"
+        if device == "gpu":
+            ok, why = probe_gpu()
+            if not ok:
+                self.note = "GPU source not available here: " + why + " (staying on CPU)"
+                device = "cpu"
         self.device = device
 
     def step(self, dt=DT):
@@ -180,7 +215,7 @@ class Sim(object):
             before = gpu_fallbacks()
             ax, ay, az, rho = forces_gpu(px, py, pz, vx, vy, vz)
             if gpu_fallbacks() > before:
-                self.note = "the GPU kernels could not run here (they were emulated, very slowly): back to CPU"
+                self.note = "the GPU kernels stopped running on the GPU (they were emulated, very slowly): back to CPU"
                 self.device = "cpu"
                 ax, ay, az, rho = forces_cpu(px, py, pz, vx, vy, vz)
         else:
@@ -220,8 +255,10 @@ def bench(side, steps):
     print("SPH fluid: %d particles, %d steps per source" % (side ** 3, steps))
     results = {}
     for dev in ("cpu", "gpu"):
-        if dev == "gpu" and cuda is None:
-            print("gpu: skipped (the GPU compatibility layer is off)"); continue
+        if dev == "gpu":
+            ok, why = probe_gpu()
+            if not ok:
+                print("gpu: skipped (" + why + ")"); continue
         s = Sim(side, dev)
         times = []
         for _ in range(steps):
@@ -299,7 +336,15 @@ def main(argv=None):
     side = max(6, min(14, a.side))
     if a.bench:
         bench(side, max(1, a.steps)); return 0
-    run_window(side, "gpu" if a.device in ("gpu", "auto") and cuda is not None else "cpu")
+    device = "cpu"
+    note = ""
+    if a.device in ("gpu", "auto"):
+        ok, why = probe_gpu()
+        device = "gpu" if ok else "cpu"
+        if not ok and a.device == "gpu":
+            note = "GPU source not available here: " + why + " (using CPU)"
+            print(note)
+    run_window(side, device)
     return 0
 
 

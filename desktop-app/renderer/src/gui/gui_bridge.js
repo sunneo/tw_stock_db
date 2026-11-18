@@ -33,7 +33,7 @@
   var WAVES = ['sine', 'square', 'triangle', 'sawtooth'];
   var SHORTCUT_RE = /^(Ctrl\+)?(Shift\+)?(Alt\+)?([A-Z0-9]|F([1-9]|1[0-2])|Enter|Esc|Space|Up|Down|Left|Right|Delete|Backspace|Tab)$/;
   var MAX_SHORTCUTS = 40;
-  var CONTAINERS = ['column', 'row', 'expander', 'grid', 'scroll', 'tabs', 'tab', 'split', 'menubar', 'menu'];
+  var CONTAINERS = ['column', 'row', 'expander', 'grid', 'stack', 'scroll', 'tabs', 'tab', 'split', 'menubar', 'menu'];
   // where a kind may be added: tab pages only inside tabs (and tabs hold only tab pages); menus only in a menubar, menu items only in a menu
   var PARENT_OF = { tab: 'tabs', menu: 'menubar', menuitem: 'menu' };
   var ONLY_CHILDREN = { tabs: ['tab'], menubar: ['menu'], menu: ['menuitem'] };
@@ -49,6 +49,8 @@
     expander: { props: ['text', 'expanded'], events: ['toggle'] },
     // grid: children fill a table of `columns` equal columns, row by row; scroll: a column at most `height` pixels high that scrolls
     grid: { props: ['columns'] },
+    // stack: its children are drawn on top of each other in the same area (the later child on top), each filling it: a HUD canvas over a gl canvas
+    stack: { props: [] },
     scroll: { props: ['height'] },
     // tabs: its children are tab pages (kind tab, text = the title); selected is the page's node id (the first page when empty); the user's click comes
     // back as select with the page id. split: two or more children side by side (direction row) or stacked (column), the first one ratio percent wide.
@@ -88,7 +90,7 @@
     // the pointer as "mouse" ({kind: down | up | move, x, y, button} with x and y inside the canvas), the wheel as "wheel" ({x, y, dy}),
     // and "resize" ({width, height}: the canvas's new size in pixels when its window is resized or maximized)
     // fit: the canvas keeps its width x height as the drawing space and is scaled (centered, whole picture visible) to fill the area it is given (grow)
-    canvas: { props: ['width', 'height', 'fps', 'fit', 'gl'], events: ['key', 'frame', 'mouse', 'wheel', 'resize', 'glerror'] }
+    canvas: { props: ['width', 'height', 'fps', 'fit', 'gl', 'transparent'], events: ['key', 'frame', 'mouse', 'wheel', 'resize', 'glerror'] }
   };
   // layout and look hints every node may carry: grow = share of the free space in its parent (0 none, 1-10 weight; a row grows sideways,
   // a column downwards), gap = space between its children and pad = inner space (pixels), role = a named look from the design system
@@ -117,7 +119,7 @@
     switch (name) {
       case 'text': case 'value': case 'placeholder': case 'lang': case 'keys': return text(v, name);
       case 'icon': if (typeof v !== 'string' || v.length > 8) { throw new Error('icon must be a short text (a symbol or emoji, at most 8 characters)'); } return v;
-      case 'enabled': case 'checked': case 'visible': case 'secret': case 'expanded': case 'numbers': case 'fit': case 'gl': case 'prose': case 'wrap': return bool(v, name);
+      case 'enabled': case 'checked': case 'visible': case 'secret': case 'expanded': case 'numbers': case 'fit': case 'gl': case 'transparent': case 'prose': case 'wrap': return bool(v, name);
       case 'rows': return num(v, name, 1, 30);
       case 'grow': return num(v, name, 0, 10);
       case 'gap': case 'pad': return num(v, name, 0, 32);

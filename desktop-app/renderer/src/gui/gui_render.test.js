@@ -463,4 +463,28 @@ assert.strictEqual(violations.length, 0); ok();
   assert.deepStrictEqual(errs2, ['WebGL2 is not available']); ok();
 }
 
+// a transparent canvas starts each frame with clearRect; an ordinary one starts black
+{
+  const log = [];
+  const ctx = new Proxy({}, { get: (t, k) => (k === 'fillStyle' || k === 'strokeStyle' ? '' : (...a) => log.push([k, ...a])), set: () => true });
+  R.paintFrame(ctx, [], 10, 10, null, true);
+  assert.deepStrictEqual(log.map((l) => l[0]), ['clearRect']); ok();
+  log.length = 0; R.paintFrame(ctx, [], 10, 10, null, false);
+  assert.deepStrictEqual(log.map((l) => l[0]), ['fillRect']); ok();
+  // a stack renders its children in order inside one element with the stack class
+  const S2 = G.createSession();
+  G.apply(S2, { op: 'open', id: 'wz', title: 'Z' });
+  G.apply(S2, { op: 'add', id: 'wz', node: { id: 'st', kind: 'stack' } });
+  G.apply(S2, { op: 'add', id: 'wz', parent: 'st', node: { id: 'a', kind: 'canvas', width: 20, height: 20 } });
+  G.apply(S2, { op: 'add', id: 'wz', parent: 'st', node: { id: 'b', kind: 'canvas', width: 20, height: 20, transparent: true } });
+  const ctx2 = new Proxy({}, { get: (t, k) => (k === 'fillStyle' || k === 'strokeStyle' ? '' : () => {}), set: () => true });
+  El.prototype.getContext = () => ctx2;     // the fake elements need a 2D context to paint a canvas
+  const view = R.renderWindow(doc, G.snapshot(S2, 'wz'), () => {}, () => {});
+  delete El.prototype.getContext;
+  const st = byNode(view, 'st');
+  assert.ok(st && /gui-stack/.test(st.className)); ok();
+  assert.deepStrictEqual(st.children.map((c) => c.attrs['data-node']), ['a', 'b']); ok();
+  assert.ok(/gui-canvas-clear/.test(byNode(view, 'b').className) && !/gui-canvas-clear/.test(byNode(view, 'a').className)); ok();
+}
+
 console.log('gui_render: ' + n + ' assertions passed');

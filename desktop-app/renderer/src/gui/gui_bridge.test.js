@@ -348,4 +348,16 @@ assert.match(G.parseWait('wait w1 a=b').error, /shell variable name/); ok();
   assert.ok(G.apply(S, { op: 'draw', id: 'wg', node: 'c2', ops: [['image', 'p', 1, 2, 30, 40, 1]] }).error); ok();
 }
 
+// stack (children drawn on top of each other) and a transparent 2D canvas
+{
+  const S = G.createSession();
+  G.apply(S, { op: 'open', id: 'ws', title: 'S' });
+  assert.deepStrictEqual(G.apply(S, { op: 'add', id: 'ws', node: { id: 'st', kind: 'stack', grow: 1 } }), { ok: true }); ok();
+  assert.deepStrictEqual(G.apply(S, { op: 'add', id: 'ws', parent: 'st', node: { id: 'g', kind: 'canvas', width: 300, height: 200, gl: true, fps: 30 } }), { ok: true }); ok();
+  assert.deepStrictEqual(G.apply(S, { op: 'add', id: 'ws', parent: 'st', node: { id: 'h', kind: 'canvas', width: 300, height: 200, transparent: true } }), { ok: true }); ok();
+  assert.deepStrictEqual(G.snapshot(S, 'ws').root.children[0].children.map((c) => c.id), ['g', 'h']); ok();   // order = stacking order, the last is on top
+  assert.strictEqual(G.snapshot(S, 'ws').root.children[0].children[1].transparent, true); ok();
+  assert.match(G.apply(S, { op: 'add', id: 'ws', parent: 'st', node: { id: 'x', kind: 'label', text: 'a', transparent: true } }).error, /not allowed on label/); ok();
+}
+
 console.log('gui_bridge: ' + n + ' assertions passed');

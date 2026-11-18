@@ -154,7 +154,7 @@
       if (node.gl) { render.paintGl(el, node, function (msg) { var line = bridge.eventLine(session, winId, nodeId, 'glerror', msg); if (line) { enqueue(winId, 'glerror', line); } }); return; }
       var ctx = el.getContext ? el.getContext('2d') : null;
       if (!ctx) { return; }
-      render.paintFrame(ctx, node.frame || [], el.width, el.height, function (name) { return picture(winId, nodeId, name); });
+      render.paintFrame(ctx, node.frame || [], el.width, el.height, function (name) { return picture(winId, nodeId, name); }, !!node.transparent);
     }
 
     function paint(winId) {

@@ -300,12 +300,20 @@ class Window(object):
         It returns at once and stays silent if the page cannot play sound (nothing is raised)."""
         fa_bridge.call("gui.tone", {"id": self.id, "freq": float(freq), "ms": int(ms), "wave": str(wave)})
 
-    def canvas(self, width=320, height=240, fps=0, parent=None, fit=False, gl=False):
+    def stack(self, parent=None):
+        """A container whose children are drawn on top of each other in the same area (the later child on top), each filling it. Put a gl
+        canvas and then a canvas(transparent=True) in it to draw a HUD (text, sliders) over a 3D view instead of beside it. The stack takes
+        grow=1 like any other child to fill the window; clicks and keys go to the top canvas, so the program passes what the one below needs."""
+        return self._node("stack", parent)
+
+    def canvas(self, width=320, height=240, fps=0, parent=None, fit=False, gl=False, transparent=False):
         """A drawing area for frames (pygame uses this). draw(nid, ops) paints one whole frame. fps > 0 queues "frame" events for poll().
         fit=True keeps width x height as the drawing space and scales it (whole picture visible, centered) to fill the area the canvas is given
         (with grow=1): draw once in fixed coordinates and it fills any window size. Without fit, a canvas in a resizable window is resized to
         the window and reports "resize"."""
         extra = {}
+        if transparent:
+            extra["transparent"] = True   # a 2D canvas that starts every frame empty (not black), to draw over what is under it
         if fit:
             extra["fit"] = True
         if gl:
@@ -478,7 +486,7 @@ def _styled(fn):
 
 
 for _name in ("label", "button", "entry", "row", "column", "grid", "scroll", "tabs", "tab", "split", "menubar", "menu", "menuitem", "expander",
-              "editor", "table", "multilist", "textarea", "checkbox", "progress", "listbox", "list", "tree", "doc", "filepick", "canvas", "markdown"):
+              "editor", "table", "multilist", "textarea", "checkbox", "progress", "listbox", "list", "tree", "doc", "filepick", "canvas", "markdown", "stack"):
     setattr(Window, _name, _styled(getattr(Window, _name)))
 
 

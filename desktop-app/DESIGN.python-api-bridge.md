@@ -176,3 +176,8 @@ Pyodide 的檔案寫入繞進 fap：`/fap/<名稱>/…`、`fap:<名稱>/…` 指
 - **真 Electron（Chromium，SwiftShader 軟體 WebGL2，無頭＋xvfb）**：`paintGl` 畫出索引三角形（像素值與預期相符）、換 uniform 的第二幀、壞著色器的編譯錯誤回報；`gl_scene.py`、`nbody3d.py`、`fluid3d.py` 實際送出的訊息經**真的 bridge＋host＋render** 畫出，截圖肉眼確認（立方體、球、格線、點雲、水塊與箱框）。這只證明鏈路正確，**不是真 GPU**：這台沒有可用的獨立 GPU 驗證，WebGPU 路徑（numba 核心實際在 GPU 執行）**沒有驗證**。
 - numba 核心：三個核心（`accel_kernel`、`density_kernel`、`force_kernel`）都能由 `wgsl.compile_kernel` 轉成 WGSL；用 Python 模擬執行與 numpy 版比對，相對誤差約 1e-7（N-body）與 8e-6（流體）。
 - 未在完整桌面版（含 Pyodide Worker、真終端機）跑過範例；Worker 內 `loadPackagesFromImports` 與 `fa_gpu` 的 `fa_bridge` 後備路徑只做了單元層級檢查。
+
+### 追加（2026-11-18，使用者實跑回報後）
+- **疊放容器 `stack`**：子節點畫在同一個區域、後面的在上層，各自撐滿（CSS grid 單一儲存格）。搭配 `canvas(transparent=True)`（2D 畫布每幀從透明開始，不是黑底）可以在 3D 畫面**上面**畫 HUD，而不是把視窗切成上下兩塊。最上層的畫布接收所有滑鼠與鍵盤事件，所以程式要把下層需要的（例如相機拖曳）自己轉過去。`nbody3d.py` 用這個做出和 C 版一樣的覆蓋層：文字、兩個滑桿、CPU／GPU 按鈕都畫在 HUD 上，按在滑桿或按鈕以外的地方拖曳就是旋轉相機（對應 C 版的 `mousefnc`／`mousemotion`）。
+- **彈出視窗的疊放順序**：`FaWin`（`renderer/src/ui/win_shell.js`）彈出的視窗原本從 z-index 100000 起算，低於助理主面板與浮動按鈕（999999），所以 GUI 視窗會被蓋在主面板下面。改成基準 1000000（高於主面板、低於應用程式自己的對話框 1000002 以上），並且每次拉到最前面時把所有彈出視窗重新緊湊編號（1000001、1000002…），不再無限往上加而蓋過對話框。實測（Electron）：蓋滿畫面的 999999 面板下，兩個視窗可以互相切換上下層，連點 30 次仍在 1000001–1000002。
+- **WebGPU 儲存緩衝區上限**：預設每個階段只有 8 個儲存緩衝區，numba 核心用到更多參數會在建立管線時失敗（使用者實跑 `fluid3d.py` 的力核心有 10 個陣列，退回 Python 逐執行緒模擬，慢到要 Ctrl+C）。`gpu_core.js` 要求裝置時，若介面卡支援超過 8 個，就要求 `maxStorageBuffersPerShaderStage`（最多 16）；要求失敗就退回不帶限制的要求。範例端也改成不依賴這個：`fluid3d.py` 把座標、速度、加速度各打包成一個 N×3 陣列（力核心 4 個綁定），而且兩個 gpgpu 範例啟動前都先用很小的問題試跑一次核心（`probe_gpu()`），跑不起來就直接留在 CPU 並把相容層回報的原因顯示在畫面上。

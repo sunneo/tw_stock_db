@@ -718,7 +718,11 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>, @builtin(workgroup_id) wid
           var pa = await probeAdapter(nav);
           st.probe = pa.probe;
           if (!pa.adapter) return null;
-          try { st.device = await pa.adapter.requestDevice(); try { st.device.lost.then(function (i) { console.warn('[gpu] 裝置遺失（' + i.reason + '）：' + String(i.message).slice(0, 200) + '；最近的 GPU 工作：' + (globalThis.__faGpuLast || '未知')); }); } catch (_) { /* 診斷用 */ } }
+          // WebGPU 預設每個階段只有 8 個儲存緩衝區；任意 numba 核心（cudaweb 的 kernel 操作）可能用到更多參數。介面卡支援更多時就要求到 16（上限），
+          // 要求失敗就退回預設（不能因為這個讓 GPU 整個不能用）。
+          var reqLim = null;
+          try { var mb = Number(pa.adapter.limits && pa.adapter.limits.maxStorageBuffersPerShaderStage); if (mb > 8) reqLim = { maxStorageBuffersPerShaderStage: Math.min(mb, 16) }; } catch (_) { reqLim = null; }
+          try { st.device = await (reqLim ? pa.adapter.requestDevice({ requiredLimits: reqLim }).catch(function () { return pa.adapter.requestDevice(); }) : pa.adapter.requestDevice()); try { st.device.lost.then(function (i) { console.warn('[gpu] 裝置遺失（' + i.reason + '）：' + String(i.message).slice(0, 200) + '；最近的 GPU 工作：' + (globalThis.__faGpuLast || '未知')); }); } catch (_) { /* 診斷用 */ } }
           catch (e) { st.probe.reason = '要求 WebGPU 裝置失敗：' + msg(e); return null; }
           var dev = st.device;
           if (dev.lost && typeof dev.lost.then === 'function') {

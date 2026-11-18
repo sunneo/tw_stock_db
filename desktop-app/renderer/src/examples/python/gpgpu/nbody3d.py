@@ -127,6 +127,36 @@ def gpu_fallbacks():
         return 0
 
 
+_PROBE = {}
+
+
+def probe_gpu():
+    """Try the GPU kernel once on a tiny problem. Returns (ok, reason). If the compatibility layer would emulate it one thread at a time in
+    Python (no WebGPU, a limit the adapter does not meet...), say so up front instead of crawling through the first real frames."""
+    if "r" in _PROBE:
+        return _PROBE["r"]
+    if cuda is None:
+        _PROBE["r"] = (False, "the GPU compatibility layer is off")
+        return _PROBE["r"]
+    before = gpu_fallbacks()
+    try:
+        r = np.random.RandomState(0)
+        f = lambda: r.uniform(0, 10, 16).astype(np.float32)
+        pairwise_gpu(f(), f(), f(), np.full(16, 250, np.float32), 100.0, 30.0)
+        if gpu_fallbacks() > before:
+            try:
+                import fa_gpu
+                why = str(fa_gpu.STATS.get("reason") or "")
+            except Exception:
+                why = ""
+            _PROBE["r"] = (False, why[:240] or "the kernel could not run on the GPU")
+        else:
+            _PROBE["r"] = (True, "")
+    except Exception as e:
+        _PROBE["r"] = (False, str(e)[:240])
+    return _PROBE["r"]
+
+
 # ------------------------------------------------------------------ the simulation
 class Sim(object):
     def __init__(self, n, device, seed=1, loops=LOOP):
@@ -164,9 +194,11 @@ class Sim(object):
         self.cycle_start = time.time()
 
     def set_device(self, device):
-        if device == "gpu" and cuda is None:
-            self.note = "GPU source not available (the GPU compatibility layer is off); staying on CPU"
-            device = "cpu"
+        if device == "gpu":
+            ok, why = probe_gpu()
+            if not ok:
+                self.note = "GPU source not available here: " + why + " (staying on CPU)"
+                device = "cpu"
         self.device = device
 
     def step(self):
@@ -177,7 +209,7 @@ class Sim(object):
             before = gpu_fallbacks()
             sx, sy, sz, pot = pairwise_gpu(*args)
             if gpu_fallbacks() > before:
-                self.note = "the GPU kernel could not run here (it was emulated, very slowly): back to CPU"
+                self.note = "the GPU kernel stopped running on the GPU (it was emulated, very slowly): back to CPU"
                 self.device = "cpu"
                 sx, sy, sz, pot = pairwise_cpu(*args)
         else:
@@ -226,8 +258,10 @@ def bench(n, steps, seed):
     print("N-body %d bodies, %d steps per source" % (n, steps))
     results = {}
     for dev in ("cpu", "gpu"):
-        if dev == "gpu" and cuda is None:
-            print("gpu: skipped (the GPU compatibility layer is off)"); continue
+        if dev == "gpu":
+            ok, why = probe_gpu()
+            if not ok:
+                print("gpu: skipped (" + why + ")"); continue
         s = Sim(n, dev, seed=seed)
         times = []
         for _ in range(steps):
@@ -305,24 +339,37 @@ class Cam(object):
 
 
 # ------------------------------------------------------------------ window
+BTN_Y, BTN_H = 122, 20
+BTN_CPU = (140, BTN_Y, 50, BTN_H)          # x, y, w, h of the two compute source buttons in the overlay
+BTN_GPU = (200, BTN_Y, 50, BTN_H)
+
+
+def inside(x, y, r):
+    return r[0] <= x <= r[0] + r[2] and r[1] <= y <= r[1] + r[3]
+
+
 def hud_ops(sim, cam, size, ms):
-    """The overlay of draw3D(): text lines and the two sliders, as 2D canvas commands (y of text is the baseline, so +14)."""
+    """The overlay of draw3D(), drawn over the 3D view on a transparent canvas: text lines, the two sliders and the compute source buttons.
+    (The y of a text op is its baseline, so +14 puts the line where the C program's top-left text position would be.)"""
     W = "#ffffff"; G = "#aaaaaa"
     t = lambda y, s, c=W: ["text", 5, y + 14, s, c]
-    src = "GPU (WebGPU)" if sim.device == "gpu" else "CPU (numpy)"
-    ops = [["clear", "#000000"],
-           t(5, "[%-3d/%-3d] tm:%-3.3f bodies:%d" % (sim.loop, sim.loops, ms / 1000.0, sim.n)),
+    ops = [t(5, "[%-3d/%-3d] tm:%-3.3f bodies:%d" % (sim.loop, sim.loops, ms / 1000.0, sim.n)),
            t(25, "simulate factor: %-3.5f" % sim.dt),
            t(45, "random factor: %s[r]" % ("on" if sim.random_factor else "off")),
            t(65, "particle size: %-3.1f" % size),
            t(85, "cam dist:%.1f angle:(%.2f,%.2f)" % (cam.dist, cam.ax, cam.ay)),
            t(105, "camera tracking: %s[C]" % ("on" if cam.tracking else "off")),
-           t(125, "compute source: %s" % src),
+           t(125, "compute source:"),
            t(165, "MAX_X:%.1f MAX_Y:%.1f MAX_Z:%.1f" % (sim.max_x, sim.max_y, sim.max_z), G),
            t(185, "MAX_Vel:%.1f Grav:%.1f Soft:%.1f" % (sim.max_v, sim.gravity, sim.softening), G),
            t(205, "[h]help [+/-]zoom [arrows/mouse]rotate [C]track", G)]
     if sim.note:
         ops.append(t(145, sim.note, "#ffcc66"))
+    for r, label, on in ((BTN_CPU, "CPU", sim.device == "cpu"), (BTN_GPU, "GPU", sim.device == "gpu")):
+        ops += [["rect", r[0], r[1], r[2], r[3], "#1f7a1f" if on else "#303030"],
+                ["line", r[0], r[1], r[0] + r[2], r[1], W], ["line", r[0], r[1] + r[3], r[0] + r[2], r[1] + r[3], W],
+                ["line", r[0], r[1], r[0], r[1] + r[3], W], ["line", r[0] + r[2], r[1], r[0] + r[2], r[1] + r[3], W],
+                ["text", r[0] + 12, r[1] + 15, label, W]]
     x0, x1 = SLIDER_X_START, SLIDER_X_START + SLIDER_WIDTH
     for y, frac, color in ((SLIDER_SIM_Y, sim.dt / 2.0, "#fdfd00"), (SLIDER_PARTICLE_Y, (size - PARTICLE_SIZE_MIN) / (PARTICLE_SIZE_MAX - PARTICLE_SIZE_MIN), "#00ff00")):
         y1 = y + SLIDER_HEIGHT
@@ -341,6 +388,11 @@ def slider_hit(x, y, sim, size):
     return dt, size
 
 
+def in_slider(x, y):
+    return (SLIDER_X_START <= x <= SLIDER_X_START + SLIDER_WIDTH and
+            (SLIDER_SIM_Y <= y < SLIDER_SIM_Y + SLIDER_HEIGHT or SLIDER_PARTICLE_Y <= y < SLIDER_PARTICLE_Y + SLIDER_HEIGHT))
+
+
 def run_window(n, device, seed, loops):
     import gui
     import gl3d
@@ -348,22 +400,21 @@ def run_window(n, device, seed, loops):
     cam = Cam()
     cam.snapshot = (sim.max_x / 2.0, sim.max_y / 2.0, sim.max_z / 2.0)   # centered from the first frame (see "Differences")
     size = PARTICLE_SIZE_DEFAULT
-    w = gui.Window("[3D] NBody-Simulation", width=800, height=700, resizable=True)
-    bar = w.row(role="toolbar")
-    w.label("Compute source:", parent=bar)
-    b_cpu = w.button("CPU", parent=bar)
-    b_gpu = w.button("GPU", parent=bar)
-    hud = w.canvas(760, 225, fps=0, fit=True)         # keeps its 760 x 225 drawing space (and the slider coordinates) whatever the window size
-    view = gl3d.View(w, 780, 440, fps=60, grow=1)
+    w = gui.Window("[3D] NBody-Simulation", width=800, height=620, resizable=True)
+    # one area, two layers: the 3D view fills it, and the overlay (a transparent 2D canvas on top) draws the text, sliders and buttons over it
+    # like the C program does. The overlay is the top layer, so it also receives the mouse: it passes drags that are not on a slider or button
+    # to the camera.
+    layers = w.stack(grow=1)
+    view = gl3d.View(w, 780, 560, fps=60, parent=layers)
+    hud = w.canvas(780, 560, fps=0, parent=layers, transparent=True)
     view.camera.fovy, view.camera.near, view.camera.far = 0.78, 0.1, 5000.0
     view.buffer("col", glow_colors(n))
-    pressed = False
+    pressed = None            # what the mouse button went down on: "sim", "size", "cam" or "button"
     show_help = True
     ms = 0.0
 
     def draw_hud():
-        if show_help:
-            w.draw(hud, hud_ops(sim, cam, size, ms))
+        w.draw(hud, hud_ops(sim, cam, size, ms) if show_help else [])
 
     def render():
         cam.update()
@@ -386,33 +437,44 @@ def run_window(n, device, seed, loops):
         kind, node = ev.get("event"), ev.get("node")
         if kind == "close":
             break
-        if kind == "click":
-            if node == b_cpu: sim.set_device("cpu"); sim.note = ""
-            elif node == b_gpu: sim.set_device("gpu"); sim.note = "" if sim.device == "gpu" else sim.note
-            draw_hud()
-        elif kind == "key" and (ev.get("value") or {}).get("down"):
+        if kind == "key" and (ev.get("value") or {}).get("down"):
             k = ev["value"]["key"]
             if k in ("r", "R"): sim.random_factor = not sim.random_factor
-            elif k in ("h", "H"):
-                show_help = not show_help
-                w.set(hud, visible=show_help)
+            elif k in ("h", "H"): show_help = not show_help
             else: cam.key(k, sim.center)
             draw_hud()
-        elif kind == "mouse" and node == hud:
-            v = ev.get("value") or {}
-            if v.get("kind") == "down": pressed = True
-            elif v.get("kind") == "up": pressed = False
-            if pressed and v.get("kind") in ("down", "move"):
-                sim.dt, size = slider_hit(v["x"], v["y"], sim, size)
-                draw_hud()
         elif kind == "mouse":
-            cam.mouse(ev)
+            v = ev.get("value") or {}
+            mk, x, y = v.get("kind"), v.get("x", 0), v.get("y", 0)
+            if mk == "down":
+                if show_help and in_slider(x, y):
+                    pressed = "sim" if y < SLIDER_PARTICLE_Y else "size"
+                elif show_help and (inside(x, y, BTN_CPU) or inside(x, y, BTN_GPU)):
+                    pressed = "button"
+                    sim.note = ""
+                    sim.set_device("cpu" if inside(x, y, BTN_CPU) else "gpu")      # sets a note when the GPU source is not available
+                else:
+                    pressed = "cam"
+                    cam.mouse(ev)
+            elif mk == "up":
+                if pressed == "cam": cam.mouse(ev)
+                pressed = None
+            elif mk == "move":
+                if pressed in ("sim", "size"):
+                    sim.dt, size = slider_hit(x, y, sim, size)
+                elif pressed == "cam":
+                    cam.mouse(ev)
+            if mk == "down" and pressed in ("sim", "size"):
+                sim.dt, size = slider_hit(x, y, sim, size)
+            draw_hud()
         elif kind == "frame" and node == view.nid:
             if sim.step() and cam.tracking:                       # a new cycle: a new random box, so center on it
                 cam.snapshot = (sim.max_x / 2.0, sim.max_y / 2.0, sim.max_z / 2.0)
             ms = sim.last_ms
             render()
             draw_hud()
+        elif kind == "resize":
+            view.handle(ev)
         elif kind == "glerror":
             sim.note = "WebGL error: " + str(ev.get("value"))
 
@@ -429,7 +491,13 @@ def main(argv=None):
     n = max(16, min(8192, a.n))
     if a.bench:
         bench(min(n, 1024) if a.n == NUM_BODY else n, max(1, a.steps), a.seed); return 0
-    run_window(n, "gpu" if a.device in ("gpu", "auto") and cuda is not None else "cpu", a.seed, max(1, a.loops))
+    device = "cpu"
+    if a.device in ("gpu", "auto"):
+        ok, why = probe_gpu()
+        device = "gpu" if ok else "cpu"
+        if not ok and a.device == "gpu":
+            print("GPU source not available here: " + why + " (using CPU)")
+    run_window(n, device, a.seed, max(1, a.loops))
     return 0
 
 
