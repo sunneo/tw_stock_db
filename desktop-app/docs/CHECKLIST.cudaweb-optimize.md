@@ -137,7 +137,12 @@ O1m 到 O11 做完後不結束，進入迴圈。完整規則與交接見 `docs/H
     - **patch 嵌入的權重排列轉換**（`scripts/eval/llava_patch_embed_check.js`）：HF conv 權重 `[1152][3][14][14]` 轉成骨架的 `(py, px, c)` 順序後，用 `vit_skeleton` 的 `patchify`＋`linear` 算出的 patch 嵌入，與 ORT 的 conv 輸出相對 RMS 1.8e-7。**對照（不做排列轉換）相對 RMS 0.28，所以排列轉換是必要的，而且做對了**。384 不是 14 的倍數，骨架裁成左上角 378×378，與 `llava_skeleton.cropToPatch` 相同，27×27 格。
     - **位置嵌入**：ORT 的 `embeddings/Add` 輸出＝patch＋位置嵌入（常數 `[1][729][1152]`），骨架結果相對 RMS 1.4e-7。**通過**。
     - **rms_norm_eps**：從 `decoder_model_merged_q4.onnx` 的 48 個 RMSNorm 常數讀出，全部是 1e-6（9.99999997e-7）。與 `llava_skeleton` 使用的 1e-6 **一致**。config 本身沒有寫這個值，所以這是從圖讀出的，不是從 config。
-    - **沒做的**：SigLIP 26 層 ViT 的逐層對拍、投影層（1152→1024→1024，GELU）、影像嵌入插入語言序列、語言模型（Qwen2，24 層）的逐層對拍、q4 或 fp16 組合、GPU 版、桌面版實際執行。`llava_skeleton*.js` 沒有改動。
+    - **第二段（2026-11-18，真權重，CPU fp32）**：
+      - **SigLIP 逐層**（`scripts/eval/llava_siglip_check.js`，第 0、13、25 層；每層用 ORT 給的該層輸入獨立計算，層內是 LN1→16 頭注意力（head 維 72，縮放 1/√72，無遮罩，有偏置）→殘差→LN2→fc1→GELU（tanh）→fc2→殘差）：相對 RMS 分別為 2.5e-7、1.4e-7、3.1e-7。**通過**。LN eps 1e-6 讀自 initializer；縮放 0.11785 讀自 `Constant_8`。**沒做的**：第 1 到 12、14 到 24 層（結構相同，未逐一實測）。
+      - **投影層**（linear_1 1152→1024、精確 GELU、linear_2 1024→1024，兩個都有偏置）：相對 RMS 2.8e-7，**通過**。
+      - **語言模型整體 logits**（`scripts/eval/llava_lm_check.js`，Qwen2 24 層、q／k／v 偏置、tied 嵌入，描述表依 config 的 text_config，eps 1e-6）：ORT 跑 fp32 `decoder_model_merged.onnx`（LFS sha256 `2cabb6ab…`，1,873,661,100 B，核對相符），嵌入表來自 `embed_tokens.onnx`（622,592,239 B，`460a64e8…`，核對相符）。序列 39 個詞元，其中 **32 個影像位置**用 ORT 視覺輸出的前 32 個影像嵌入（不是全部 729 個，為了讓 JS 的計算量可控；這是語言模型的對拍，不是完整的看圖對拍）。每個位置 logits：最大絕對差 2.5e-5，最大相對誤差 3.1e-6，top-5 與 argmax 在 39 個位置全部相同。**通過**。
+      - **語言模型逐層：未完成**。原因：fp32 合併解碼器（`decoder_model_merged.onnx`）的運算在 If 子圖裡，ORT 不能取出子圖的中間結果，只能對整體 logits 比對；`decoder_model_merged_q4.onnx` 是量化版，逐層對 fp32 數值沒有意義。要做逐層就要把 If 子圖抽成獨立模型，這次沒有做。
+      - **沒做的**：SigLIP 其餘層的逐層對拍、影像嵌入的 729 個全部、語言模型逐層、量化組合（q4、fp16）、GPU 版、桌面版實際執行。`llava_skeleton*.js` 沒有改動。
 - [ ] **O13b SmolVLM 256M**：同上（語言模型是 SmolLM 類 Llama 結構，視覺是 SigLIP）。
   - 進度（2026-11-18）：程式與假權重測試完成。`renderer/src/gpu/smolvlm_skeleton.js` 加上 `smolvlm_skeleton_test.js`（11 項）：pixel shuffle、連接器、影像佔位詞元插入、`llm_skeleton.stepVec` 與 `step` 逐位一致、整段前向對獨立算的結果。`llm_skeleton.js` 為此新增 `stepVec`（原本的 `step` 行為不變，16 項與 GPU 版 5 項仍通過）。
   - **2026-11-18 真權重進度（使用者本人同意下載）**：位置 `ai-temp/vlm-weights/smolvlm/`（不進 git）。從 HuggingFace 官方 `HuggingFaceTB/SmolVLM-256M-Instruct` 的 `onnx/` 下載並核對 LFS sha256 相符：`vision_encoder.onnx`（374,316,497 B，`e27ad810…18`，fp32 參考）、`vision_encoder_quantized.onnx`（94,247,969 B，`f82adc84…95`，cpu 組合）、`vision_encoder_q4.onnx`（63,784,987 B，`95814e66…88`，gpu 組合）、`embed_tokens.onnx`（113,541,419 B，`a68ea405…0a`，fp32 參考）、`embed_tokens_quantized.onnx`（28,385,824 B，`4b919b82…ef`）、`embed_tokens_fp16.onnx`（56,770,946 B，`019af590…91`）、`decoder_model_merged_q4.onnx`（86,562,901 B，`e3fd8113…5f`，原本就有、核對相符）。全部寫進 `renderer/src/vlm/vlm_core.js` 的 `files` 欄（commit `fa309c1c9`，`vlm_core.test.js` 165 項通過）。
@@ -161,7 +166,7 @@ O1m 到 O11 做完後不結束，進入迴圈。完整規則與交接見 `docs/H
   - **未完成（原因如下，不宣稱支援）**：(a) DaViT 第一個 stage（blocks：spatial 深度卷積、window attention、channel attention、FFN；節點多，還沒拆成參考實作）；(b) 解碼器的交叉注意力（需要 `decoder_model_merged.onnx` fp32，388MB，本次沒有下載；清單裡的 `decoder_model_int8.onnx` 是量化版，不能直接對拍 fp32 數值）；(c) 量化權重的對拍（清單的 CPU、GPU 組合用的是 q4／int8 檔）；(d) GPU 版（這台沒有 CUDA，不跑）；(e) 桌面版實際執行看圖（Florence-2 的 `verified` 標示沿用既有的 CPU 實測，這次的對拍沒有改它）。
   - **第二段（2026-11-18，真權重，CPU fp32）**：下載 `decoder_model.onnx`（388,077,195 B，`16b40ea7…06`，無 If 分支的解碼器，中間結果在頂層圖，可以取出；`decoder_model_merged.onnx` 的運算在 If 子圖裡，ORT 不能取出子圖的中間值，所以沒用它）。
     - **解碼器第 0 層交叉注意力**（`scripts/eval/florence2_decoder_cross_attn_check.js`）：q 來自 self_attn_layer_norm；k、v 來自 encoder_hidden_states；12 頭、head 維 64、縮放 1/√64、交叉遮罩（ORT 確認全零）、out_proj＋殘差、encoder_attn_layer_norm（eps 1e-5 讀自 initializer）。殘差輸出相對 RMS 4.5e-8，LayerNorm 輸出 7.9e-8。**通過**。權重與偏置是從節點追出來的（MatMul 的第二輸入、後面接的 Add 的偏置），沒有用名稱猜。
-    - **DaViT stage 1（blocks.0）：未完成**。原因：這個 stage 的節點很多（spatial 深度卷積、窗口注意力含 Pad 與 window 重排、channel 注意力、FFN），還沒有拆成參考實作，這次沒有做，不宣稱通過。
+    - **DaViT stage 1（blocks.0）：未完成**。原因：這個 stage 的節點很多（spatial 深度卷積、窗口注意力含 Pad 與 window 重排、channel 注意力、FFN），還沒有拆成參考實作；這次的工作量用在 O13a 的 SigLIP、投影層與語言模型對拍，DaViT stage 1 沒有做，不宣稱通過。
     - **交叉注意力的「逐位」**：對拍是數值相近（相對 RMS 約 1e-7），不是位元完全相同；清單的用詞以數值為準。
     - **沒做的**：DaViT stage 1 與其他 stage、解碼器的 FFN 與後續層、量化權重、GPU 版、桌面版實際執行。
   - **下一步**：拆 DaViT blocks.0 的 spatial block（一個子塊一個對拍：深度卷積殘差 → 窗口注意力 → 通道注意力 → FFN），每一塊都與 ORT 的頂層中間結果比對。
