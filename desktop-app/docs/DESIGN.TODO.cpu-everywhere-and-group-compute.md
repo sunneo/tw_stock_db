@@ -129,3 +129,13 @@
 - Profile（GPU 相容層簡易檢視）與 `docs/DESIGN.cudaweb-hetero.md`、`docs/DESIGN.cpu-gemm.md`。
 - `renderer/src/gpu/llm_skeleton*.js`（通用解碼骨架，逐層結構可作為切分基礎）、`llm_arch.js`（描述表）。
 - 另一端領導的交接：`docs/HANDOFF.cudaweb-leader-2.md`、`docs/HANDOFF.cudaweb-leader.md`。
+
+## 補記（2026-11-19，使用者更正「mix」的概念，逐字）
+「那個distributed-llama的概念是把 distributed-llama可以用8個raspberry pi加速的概念+airllm的概念 / airllm可以在有限的硬體用很慢的速度跑起超大參數」
+「或者這個專案的knowledge inventory」（指專案知識地圖可放進藏書閣）
+
+整理（待驗證，我只讀過說明文件、沒讀 mix 的程式碼）：
+- distributed-llama：多台小機器分攤同一個模型的計算，求「更快」；每層要同步，對網路延遲敏感，適合區域網路。
+- AirLLM：一次只把一層載入記憶體、其餘留在磁碟，求「能跑超大模型」，代價是很慢。
+- mix＝兩者合併：每個節點只負責一部分，並按需從磁碟載入，總容量是各節點記憶體加磁碟的總和，速度靠節點並行補回來。
+- 對本專案：遠端群組走網際網路中繼，逐詞元同步延遲太高，故先做「容量」方向（層串接加磁碟串流，T1），「加速」方向只在區域網路或點對點直連時才有意義（T3）。
