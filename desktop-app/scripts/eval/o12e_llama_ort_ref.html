@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>O12e Llama 3.2 1B ORT 參考</title>
+</head>
+<body>
+<h1>O12e：Llama 3.2 1B（q8 動態量化 ONNX）的 ORT（WASM）參考 logits 與時間</h1>
+<p>模型：ai-temp/llama32-1b/model_quantized.onnx（由 tw_stock_db 根目錄的靜態伺服器 8766 提供）。只跑 ORT，不含骨架對拍。</p>
+<pre id="out">執行中…</pre>
+<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/ort.min.js"></script>
+<script>
+(async function () {
+  const out = document.getElementById('out');
+  const log = [];
+  const say = (s) => { log.push(s); out.textContent = log.join('\n'); };
+  try {
+    const ort = self.ort;
+    ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/';
+    ort.env.wasm.numThreads = 1;
+    const url = 'http://127.0.0.1:8766/ai-temp/llama32-1b/model_quantized.onnx';
+    const t0 = performance.now();
+    const sess = await ort.InferenceSession.create(url, { executionProviders: ['wasm'], graphOptimizationLevel: 'all' });
+    const loadMs = performance.now() - t0;
+    say('session 建立 ' + loadMs.toFixed(0) + ' ms；inputs=' + JSON.stringify(sess.inputNames) + ' outputs=' + JSON.stringify(sess.outputNames));
+    const T = 4, ids = [128000, 9906, 1917, 374];   // <|begin_of_text|> Hello … 的任意 id（只為了量時間與看輸出形狀）
+    const feeds = {};
+    for (const n of sess.inputNames) {
+      if (n === 'input_ids') feeds[n] = new ort.Tensor('int64', BigInt64Array.from(ids.map(BigInt)), [1, T]);
+      else if (n === 'attention_mask') feeds[n] = new ort.Tensor('int64', BigInt64Array.from(ids.map(() => 1n)), [1, T]);
+      else if (n === 'position_ids') feeds[n] = new ort.Tensor('int64', BigInt64Array.from(ids.map((_, i) => BigInt(i))), [1, T]);
+      else if (n.startsWith('past_key_values')) feeds[n] = new ort.Tensor('float32', new Float32Array(0), [1, 8, 0, 64]);
+      else throw new Error('未知輸入 ' + n);
+    }
+    const times = [];
+    let res = null;
+    for (let r = 0; r < 3; r++) {
+      const t1 = performance.now();
+      res = await sess.run(feeds);
+      times.push(performance.now() - t1);
+      say('run ' + r + ' ' + (performance.now() - t1).toFixed(0) + ' ms');
+    }
+    const lg = res.logits;
+    const V = lg.dims[lg.dims.length - 1];
+    const last = lg.data.slice((T - 1) * V, T * V);
+    let best = 0; for (let i = 1; i < V; i++) if (last[i] > last[best]) best = i;
+    const top5 = Array.from(last.keys()).sort((a, b) => last[b] - last[a]).slice(0, 5).map((i) => [i, last[i]]);
+    window.__o12e = { ok: true, loadMs, runMs: times, dims: lg.dims, argmaxLast: best, top5, inputs: sess.inputNames,
+      lastLogits: Array.from(last.slice(0, 16)) };
+    say('DONE ' + JSON.stringify({ dims: lg.dims, argmaxLast: best, top5, runMs: times.map((x) => Math.round(x)) }));
+  } catch (e) {
+    window.__o12e = { ok: false, error: String((e && e.stack) || e) };
+    say('ERROR ' + String((e && e.stack) || e));
+  }
+})();
+</script>
+</body>
+</html>
