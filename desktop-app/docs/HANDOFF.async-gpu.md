@@ -164,4 +164,20 @@
 
 - 真機：Python 工作者版的重疊（需要使用者另外同意；依規定要算第三次，所以目前不做）。
 - numba 核心非同步提交（見第四之一節偏離 2）。
-- 多工作者分攤 CPU（第五項，只有設計）。
+- 多工作者分攤 CPU（第五項）：已有實作的部分見第八節；還缺的部分也列在第八節。
+
+## 八、多工作者墊片（第 5 項）的實作狀態
+
+- 先查證的結果：`floating-assistant.js` 裡早就有 Web Worker 版的 multiprocessing 墊片（`FA_MP_SHIM_PY`、`FA_MP_WORKER_PY`、`faMpWorkerMain`、`_mpBridge`、`_mpSubmit`、`_mpAcquire`、`_mpWorkerCap`）。它已提供 `Pool`（map、starmap、apply_async、imap）、`Process`、`ProcessPoolExecutor`（submit、map、shutdown）、`ThreadPoolExecutor`。所以這一項是補齊、不是重寫。
+- 原本的 `_mpWorkerCap` 是 `max(2, min(8, 核心數))` 再受 `maxWorkers` 限制，沒有記憶體考量，建立工作者失敗時整個提交會失敗。
+- 這次新增：
+  - `renderer/src/gpu/mp_core.js`（純函式，node 可測）：`mpWorkerCap`（記憶體 2 GB 以下 1 個、核心 2 以下最多 2 個）、`afterCreateFailure`（已有工作者就改等並降上限，一個都沒有才丟錯）、`runMap`（依序分派、結果順序與輸入相同、出錯或取消後不再開始新任務、在飛中的任務會結束）。
+  - `floating-assistant.js` 接上：`_mpWorkerCap` 用 `mpCore`，`_mpAcquire` 在建立失敗時退回，`_mpSubmit` 用 `runMap`。沒有 `mpCore`（還沒嵌入）時退回原本的公式與迴圈，行為不變。
+  - 測試：`mp_core_test.js` 9 項全過（上限與降級、退回、順序、同時執行數、錯誤、取消、取消前已取消、上限為 1、空輸入）；`mp_shim_py_test.py` 9 項全過（從原始碼讀出 `FA_MP_SHIM_PY`，假的 js／pyodide，依序退路，測 Pool、apply_async、starmap、錯誤傳回、ProcessPoolExecutor、Process、cpu_count）。
+  - 提交：`b7b2374c2`（mp_core 與接線）、`ebd066539`（Python API 測試）。embed 清單已加 `mp_core`，但**還沒有執行 embed**，所以嵌入副本還沒有 `mpCore`，目前退回原本的行為。
+- 還沒做、也沒有假裝做的：
+  - **(3) 工作者內使用非同步 GPU 提交：沒有做。** 現況：工作者的 Python 是用 `mod.fa_mp_run`（同步呼叫，不在 callPromising 裡），而且工作者沒有註冊 `_fa_gpu`，所以工作者內的 `fa_gpu` 會退回 numpy。要做的話需要：(a) 工作者註冊 `_fa_gpu.aop`，把請求用 postMessage 送回主執行緒，由主執行緒呼叫 `_gpuAsync` 再回傳；(b) 工作者的 Python 呼叫要包在 JSPI 的 callPromising 裡，`run_sync` 才能等回覆。(b) 我沒有驗證，需要真機或至少在 Pyodide 裡確認。
+  - **共用記憶體（SharedArrayBuffer）：沒有做。** 規格說「沒有就退回複製」，目前只有複製（pickle 經 postMessage、transferable）。
+  - **取消從 Python 端觸發：沒有做。** `runMap` 支援 `AbortSignal`，但 Python 的 `Pool` 沒有把取消傳到 JS。
+  - **真機加速比（2 到 4 個工作者的純 CPU）：還沒跑。** 要等發布結束、embed 與 build 之後；另外要想辦法從評估檔觸發 Python 工作（`_mpSubmit` 需要 pickle 的 payload，JS 端不好產生，要透過 Python 端）。
+- 結論：排程與退回的邏輯已經用 node 測試覆蓋；Python API 的基本用法已經在墊片的單一執行緒退路下測過；真正的平行與工作者內的 GPU 還沒有驗證。
