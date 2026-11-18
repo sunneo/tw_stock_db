@@ -38,16 +38,16 @@
    "names": [
     "FA_KERNEL_TUNE_SRC"
    ],
-   "size": 29290,
-   "md5": "a0bdde570a8348ad26fb763e8f2d4e30"
+   "size": 29580,
+   "md5": "3de5f91909e1440e15051506a9f4218f"
   },
   "qwengpu": {
    "file": "chunks/qwengpu.js",
    "names": [
     "FA_QWEN_SRC"
    ],
-   "size": 475255,
-   "md5": "2bd2c9e63782901e95f137c305800a30"
+   "size": 484666,
+   "md5": "a9ad574fca8f699e55f5af8fbd969ed5"
   },
   "aidocview": {
    "file": "chunks/aidocview.js",
