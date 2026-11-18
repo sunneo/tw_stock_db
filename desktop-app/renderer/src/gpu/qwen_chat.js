@@ -31,7 +31,8 @@
     if (!promptIds || !promptIds.length) throw new Error('提示是空的');
     const chk = canRun(eng, promptIds.length, maxNew); if (!chk.ok) throw new Error(chk.why);
     const pure = isPureGreedy(gen), rng = gen.do_sample === false ? null : GP.makeRng(o.seed != null ? o.seed : 1);
-    const chunk = Math.max(1, eng.maxM || 64), to = o.stepTimeoutMs === undefined ? 20000 : o.stepTimeoutMs;
+    // 每步的時限：預設 0＝不設（離線模型慢是使用者接受的，只靠取消與退化文字中斷）；只有正數才啟用
+    const chunk = Math.max(1, eng.maxM || 64), to = o.stepTimeoutMs > 0 ? o.stepTimeoutMs : 0;
     const diag = { steps: 0, sampled: !pure, prefillMs: 0, decodeMs: 0 };
     const now = () => Date.now();
     eng.reset();

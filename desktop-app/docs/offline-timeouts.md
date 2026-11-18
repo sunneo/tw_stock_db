@@ -13,19 +13,19 @@
 | 6 | GPU 整段解碼 `_qwenGpuChat` 的總時限 `limit` | 300 秒 | 離線 | **改了**：`Infinity`（只靠取消與退化文字中斷） | 本批提交 |
 | 7 | GPU 解碼 lm_head 每步 `gTimeout` 預設 | 20 秒 | 離線 | **改了**：預設 0（不設） | 本批提交 |
 | 8 | GPU 頭部（head）每步 `timeoutMs` 預設 | 8 秒 | 離線 | **改了**：預設 0（不設） | 本批提交 |
-| 9 | `renderer/src/gpu/qwen_chat.js` 的 `stepTimeoutMs` 預設 20000，呼叫端 `floating-assistant.js` 傳 `stepTimeoutMs: 20000` | 每步 20 秒 | 離線 | **未處理（阻擋）**：`qwen_chat.js` 屬於另一個工作階段（`renderer/src/gpu/`）。`0` 會讓計時器立刻觸發，需要該檔支援「0＝不設」後，呼叫端再改成 0 | 待 cudaweb 工作階段處理 |
+| 9 | `renderer/src/gpu/qwen_chat.js` 的 `stepTimeoutMs` 預設 20000，呼叫端 `floating-assistant.js` 傳 `stepTimeoutMs: 20000` | 每步 20 秒 | 離線 | **改了**：預設改為 0（只有正數才啟用）；呼叫端改傳 0。`withTimeout` 本來就把 0 當不設；`qwen_chat_test.js` 9 項通過 | 本批提交 |
 | 10 | 知識庫 `knowledge_host.js` `_kiLlm` 離線：安靜偵測門檻 `lim`（至少 180 秒） | 連續這麼久沒有吐字或載入進度就放棄 | 離線 | **保留**：這是「完全無進度」的卡死偵測，門檻寬，符合要求 | — |
 | 11 | 知識庫 `knowledge_host.js` 離線的 20 分鐘絕對上限 | 20 分鐘 | 離線 | **已移除**：另一個工作階段先提交（`8fd54f80a`），本工作階段確認一致 | `8fd54f80a` |
 | 12 | 知識庫 `_kiSummarize` 線上 `timeoutMs: 120000`、`_kiLlm` 線上的 `tm`（60 秒起算）與 `lim` | 線上回應時限 | 線上 | **線上不動** | — |
-| 13 | `floating-assistant.js` `withTimeout`（GPU 量測與探測路徑，約 8896 行的通用包裝） | 呼叫端指定 | 量測 | **未處理，待查**：需要逐一確認呼叫端是否會包住離線生成 | — |
-| 14 | 音樂、AI 生成的 `withTimeout(o.ask(...), tmo)`、`withTimeout(o.engine.accompany(...))`（約 59373、59721、59760、59982 行） | 依 `tmo` | 待確認 | **未處理，待查**：尚未確認這些是否離線模型呼叫 | — |
+| 13 | `floating-assistant.js` `withTimeout` 的兩個定義（約 8897 與 9448 行） | 呼叫端指定 | 離線（GPU 解碼） | **已查**：8897 行的定義之後沒有任何呼叫端（死碼，不動）。9448 行的定義只被 GPU 解碼的 9499、9527、9561 行呼叫，它們的 ms 已在 #6～#8 改為 0（不設） | — |
+| 14 | 音樂的 `withTimeout(o.ask(...), tmo)`（約 59394、59742、59781 行）與 `withTimeout(o.engine.accompany(...), Math.min(timeoutMs, remain))`（約 60003 行） | `timeoutMs` 預設 20000，帶網路重試 | `o.ask` 疑似線上；`accompany` 引擎疑似離線（midigen，103981 行附近） | **部分查證，未改**：`o.ask` 的提供者還沒找到，依原則線上不動。`accompany` 的上限 `Math.min(timeoutMs, remain)` 需要先確認 `remain` 是整首作曲的剩餘預算，還沒確認 midigen 是否真的是本機模型，本批不動，列為待辦 | — |
 | 15 | GPU 量測與容量探測（`_gpuMemProbeRun`、`M.mem.probe`）的逾時與 OOM 接住 | 量測用 | 量測（不是模型生成） | **不動**：量測需要界線，否則無法判斷裝置是否已失效；已加上量測前閘門（有生成中就不量） | `d9d2063c3` |
 | 16 | 原始碼工具執行（120 秒整理、60 秒執行） | 工具本身 | 非模型 | **不動**：不是模型呼叫 | — |
 | 17 | 使用者確認的逾時（`confirmTimeout`） | 等使用者回答 | 非模型 | **不動**：等的是人，不是模型 | — |
 
 ## 尚未處理的項目
 
-- **#9**：`qwen_chat.js` 的每步 20 秒需要該模組（cudaweb 工作階段負責）加上「0＝不設」，之後呼叫端才能改。
-- **#13、#14**：還沒確認是否會包住離線模型呼叫，需要逐一查看呼叫端。
+- **#14（音樂 `accompany` 的 `Math.min(timeoutMs, remain)`）**：待確認 `remain` 的意義與 midigen 是否為本機模型；確認是離線後，把它改成不設上限，並保留整首作曲的取消。`o.ask` 的提供者（線上或離線）也還沒找到。
+- **#13** 已查完（見表）。
 - 一般的 `_vlmRpc`、`_vlmEnsureLoaded` 經 `grep` 確認沒有耗時上限。
 - 串流路徑的卡死偵測（只看「完全沒有新詞元」）目前已移除，只保留取消與退化文字中斷；若要加回「完全無進度」的寬門檻，要在這份表裡另列一項。
