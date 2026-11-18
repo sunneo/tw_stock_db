@@ -1,0 +1,83 @@
+<!doctype html><meta charset="utf-8"><title>o9 race check</title>
+<body style="font:13px monospace;white-space:pre">
+<script>
+// O9 真 Chrome 驗收：用產品本身的路徑（mm_ops.startMatmulRace → raceMatmul）對「一個」矩陣乘形狀做一次變體競賽。
+// 用法：o9_race_check.html?M=64&K=1024&N=1024（預設就是這個；一次只跑一個形狀，避免主執行緒與 GPU 被長時間佔住）。
+// 做法：直接 fetch renderer/src/gpu 的原始檔，在頁內解析 require（不用 web-lazy 的建置產物，那可能落後原始碼）。
+// 結果寫進 window.__out，也印在頁面上。競賽本身有 2 秒預算（mm_ops 的 budgetMs）。
+const log = (s) => { (window.__log = window.__log || []).push(s); document.body.textContent = window.__log.join('\n'); };
+const GPU = '../../renderer/src/gpu/';
+// 1. 收集依賴（只追 ./ 形式的 require；其餘路徑在頁內會丟錯，見 error）
+async function fetchModules(entry) {
+  const src = {}, queue = [entry];
+  while (queue.length) {
+    const n = queue.shift();
+    if (src[n] !== undefined) continue;
+    const r = await fetch(GPU + n + '.js', { cache: 'no-store' });
+    if (!r.ok) throw new Error('取不到模組 ' + n + '（HTTP ' + r.status + '）');
+    const text = await r.text();
+    src[n] = text;
+    for (const m of text.matchAll(/require\(\s*['"]\.\/([\w.]+?)(?:\.js)?['"]\s*\)/g)) queue.push(m[1]);
+  }
+  return src;
+}
+// 2. 同步的 CJS 載入（與 node 的 module／exports／require 同形）
+function makeRequire(src) {
+  const cache = {};
+  const req = (p) => {
+    const n = String(p).replace(/^\.\//, '').replace(/\.js$/, '');
+    if (cache[n]) return cache[n].exports;
+    if (src[n] === undefined) throw new Error('沒有模組 ' + p);
+    const m = { exports: {} };
+    cache[n] = m;
+    new Function('module', 'exports', 'require', src[n])(m, m.exports, req);
+    return m.exports;
+  };
+  return req;
+}
+(async () => {
+  const out = { shape: null, adapter: null, caps: null, winner: null, timings: null, bad: [], skipped: [], noGpu: false, error: null, pickAfter: null, ms: null };
+  try {
+    const qp = new URLSearchParams(location.search);
+    const M = +(qp.get('M') || 64), K = +(qp.get('K') || 1024), N = +(qp.get('N') || 1024);
+    out.shape = [M, K, N];
+    if (!navigator.gpu) throw new Error('這個瀏覽器沒有 WebGPU（navigator.gpu 不存在）');
+    const ad = await navigator.gpu.requestAdapter();
+    if (!ad) throw new Error('requestAdapter 回傳 null（沒有可用的 GPU adapter）');
+    const info = ad.info || (ad.requestAdapterInfo ? await ad.requestAdapterInfo() : {}) || {};
+    out.adapter = { vendor: info.vendor || '', architecture: info.architecture || '', device: info.device || '', description: info.description || '', isFallback: !!ad.isFallbackAdapter };
+    const req = makeRequire(await fetchModules('mm_ops'));
+    const KS = req('kernel_select');
+    const mm = req('mm_ops');
+    // 能力表與 adapter 描述：與窗格相同的來源（mm_ops.setMatmulCaps），讓快取鍵一致
+    const caps = KS.probeCaps(ad, null);
+    const desc = [info.vendor, info.architecture, info.device, info.description].filter(Boolean).join(' ') || 'unknown';
+    mm.setMatmulCaps(caps, desc);
+    out.caps = { tier: KS.tierOf(caps), probed: caps.probed, maxWorkgroupStorage: caps.maxWorkgroupStorage, hasF16: caps.hasF16, adapterDesc: desc };
+    log('競賽中：' + M + '×' + K + '×' + N + '（最多約 2 秒的計時，另加校正與驗證）');
+    // 3. 產品路徑：startMatmulRace（含校正、驗證、預算、勝者寫入）。raceOne 只用來把完整結果留下來給這頁顯示。
+    let captured = null;
+    const t0 = performance.now();
+    const res = await mm.startMatmulRace([{ M, K, N }], {
+      navigator: navigator, budgetMs: 2000, roofline: false,
+      raceOne: async (a, b, c, o) => { captured = await mm.raceMatmul(a, b, c, o); return captured; }
+    });
+    out.ms = Math.round(performance.now() - t0);
+    const r = res[0] || {};
+    out.noGpu = !!r.noGpu;
+    out.error = r.error || null;
+    out.winner = r.winner || null;
+    if (captured) {
+      out.timings = {};
+      Object.keys(captured.timings || {}).forEach((id) => { const xs = captured.timings[id] || []; out.timings[id] = xs.map((x) => +x.toFixed(4)); });
+      out.bad = captured.bad || [];
+      out.skipped = captured.gated || captured.skipped || [];
+    }
+    const pick = mm.pickMatmulKernel(M, K, N, {});
+    out.pickAfter = { id: pick.id, source: pick.source, reason: pick.reason };
+    log('完成：' + JSON.stringify(out.winner) + '（' + out.ms + ' ms）');
+  } catch (e) { out.error = String((e && e.stack) || e).slice(0, 1200); log('ERROR ' + out.error); }
+  window.__out = out;
+  log('結果 window.__out 已寫入（' + JSON.stringify(out).length + ' 字元）');
+})();
+</script>
