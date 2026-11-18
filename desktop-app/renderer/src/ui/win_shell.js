@@ -27,6 +27,21 @@
   CSS += '.fwin-pop.fa-3d-card,.fa-3d-card:fullscreen{display:flex!important;flex-direction:column}.fwin-pop .fa-3d-holder,.fa-3d-card:fullscreen .fa-3d-holder{flex:1;min-height:0}.fwin-pop .fa-3d-holder>div,.fa-3d-card:fullscreen .fa-3d-holder>div{height:100%}.fwin-pop .fa-3d-holder canvas,.fa-3d-card:fullscreen .fa-3d-holder canvas{height:100%!important}';
   CSS += '.fwin-host:fullscreen{border-radius:0!important;max-width:none!important;max-height:none!important;margin:0!important}.fwin-host:fullscreen .fwin-rz{display:none}';
   var registry = [];
+  // 終端機帶的疊放計數（視窗化的終端機、終端機開出的 GUI 視窗共用）：高於一般浮動視窗，低於全域對話框（2147483000）。
+  // 計數接近上限時，把帶上有 data-fa-tz 標記的元素依目前高低順序重新編號，不會無限往上長到蓋過對話框。
+  var TERM_Z0 = 2147482000, TERM_ZMAX = 2147482900;
+  function nextTermZ(el) {
+    var g = (typeof window !== 'undefined') ? window : (typeof globalThis !== 'undefined' ? globalThis : {});
+    if (!g._faTermZ || g._faTermZ < TERM_Z0) g._faTermZ = TERM_Z0;
+    if (g._faTermZ >= TERM_ZMAX && g.document && g.document.querySelectorAll) {
+      var els = Array.prototype.slice.call(g.document.querySelectorAll('[data-fa-tz]')).filter(function (e) { return e !== el; });
+      els.sort(function (a, b) { return (+a.style.zIndex || 0) - (+b.style.zIndex || 0); });
+      g._faTermZ = TERM_Z0;
+      els.forEach(function (e) { e.style.zIndex = String(++g._faTermZ); });
+    }
+    if (el && el.setAttribute) el.setAttribute('data-fa-tz', '1');
+    return ++g._faTermZ;
+  }
   function injectCss() { if (document.getElementById('fwin-css')) return; var s = document.createElement('style'); s.id = 'fwin-css'; s.textContent = CSS; (document.head || document.documentElement).appendChild(s); }
   function h(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
   var isBtn = function (t) { return /^(BUTTON|INPUT|SELECT|TEXTAREA|A|LABEL)$/.test(t.tagName); };
@@ -44,7 +59,9 @@
     if (bar) { bar.appendChild(bMax); bar.appendChild(bPop); bar.appendChild(bFs); } else { tools = h('div', 'fwin-tools'); tools.appendChild(bMax); tools.appendChild(bPop); tools.appendChild(bFs); el.insertBefore(tools, el.firstChild); }
     function notify() { if (typeof opts.onChange === 'function') { try { opts.onChange({ popped: popped, maximized: maxed }); } catch (e) { /* */ } } }
     function front() {
-      var others = registry.map(function (c) { return c._el; }).filter(function (e) { return e && e !== el && e.classList && e.classList.contains('fwin-pop'); });
+      // 終端機開出來的視窗（opts.band === 'term'）跟視窗化的終端機共用同一個計數：點到誰，誰就最高（終端機一律在 2147482000 以上，不能留在 Z0 帶）
+      if (opts.band === 'term') { el.style.zIndex = String(nextTermZ(el)); return; }
+      var others = registry.map(function (c) { return c._el; }).filter(function (e) { return e && e !== el && e.classList && e.classList.contains('fwin-pop') && !(e.hasAttribute && e.hasAttribute('data-fa-tz')); });
       others.sort(function (a, b) { return (+a.style.zIndex || 0) - (+b.style.zIndex || 0); });
       others.push(el);   // this one last = on top
       others.forEach(function (e, i) { e.style.zIndex = String(Z0 + 1 + i); });
@@ -106,5 +123,5 @@
     var ctl = { pop: pop, dock: dock, maximize: function (on) { setMax(on === undefined ? !maxed : !!on); return ctl; }, toggleMax: function () { setMax(!maxed); return ctl; }, fullscreen: setFs, isFullscreen: isFs, isPopped: function () { return popped; }, isMaximized: function () { return maxed; }, setTitle: function (t) { titleText = t; if (titleEl && titleEl.firstChild) titleEl.firstChild.textContent = t; }, destroy: function () { if (popped) dock(); if (tools) tools.remove(); try { bMax.remove(); bPop.remove(); bFs.remove(); } catch (e) { /* */ } el.classList.remove('fwin-host'); delete el._fwin; var i = registry.indexOf(ctl); if (i >= 0) registry.splice(i, 1); }, el: el };
     ctl._el = el; el._fwin = ctl; registry.push(ctl); if (opts.floating) pop(); return ctl;
   }
-  return { decorate: decorate, registry: registry };
+  return { decorate: decorate, registry: registry, nextTermZ: nextTermZ };
 });
