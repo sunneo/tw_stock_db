@@ -129054,7 +129054,8 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         if (wl) { order = order.filter((d) => d !== 'webgpu'); if (!order.length) order = ['wasm']; if (log) log('已套用 LoRA「' + wl.id + '」：改用 CPU（WASM）的 q8 模型（GPU 版不支援併入 LoRA）'); }
         // 這個裝置用哪一版 transformers：WebGPU 通常是 4.2.0；SlimSAM 開了 samGpuLib 時用 3.7.5；CPU 一律 3.7.5（見 FaVlm.webgpuLibFor）
         const libOf = (d) => d === 'webgpu' ? FaVlm.webgpuLibFor(model, { enabled: this._samGpuLibOn(), brokenPermanently: !!this._samGpuBroken }).lib : 'cpu';
-        for (const d0 of order) { const s0 = this._vlmSlotOf(d0); const loaded = this._vlmLoadedBy[s0]; if (loaded && loaded.modelId === model.id && loaded.device === d0 && this._vlmWks[s0] && (loaded.loraSha || '') === (wl ? wl.sha256 : '') && (loaded.lib || '') === libOf(d0)) return Object.assign({ tried: [] }, loaded); }
+        // 只看偏好的第一個裝置：若已載入的是後備裝置（例如先跑過 CPU），不能因此跳過 WebGPU，否則 GPU 偏好會在先跑過 CPU 後永遠拿到 CPU（真 Chrome 重現，O15b）
+        for (const d0 of order.slice(0, 1)) { const s0 = this._vlmSlotOf(d0); const loaded = this._vlmLoadedBy[s0]; if (loaded && loaded.modelId === model.id && loaded.device === d0 && this._vlmWks[s0] && (loaded.loraSha || '') === (wl ? wl.sha256 : '') && (loaded.lib || '') === libOf(d0)) return Object.assign({ tried: [] }, loaded); }
         const cores = this._omCores(); const th = FaVlm.resolveThreads(this._omSettings().maxCores, cores.hardware, cores.isolated, cores.reason); const tried = [];
         for (const dev of order) {
             const dt = model.dtype[dev === 'webgpu' ? 'gpu' : 'cpu'];

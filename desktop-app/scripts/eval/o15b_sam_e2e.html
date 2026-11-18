@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh-Hant"><head><meta charset="utf-8"><title>O15b SlimSAM 端到端（app 的 _segmentObjects）</title>
+<style>body{font:13px/1.5 system-ui,sans-serif;margin:16px}pre{white-space:pre-wrap}</style>
+</head><body>
+<h3>O15b：SlimSAM 分割端到端（app 的 FloatingAssistant._segmentObjects，不是 harness 的直接呼叫）</h3>
+<pre id="out">載入中…</pre>
+<div id="app"></div>
+<!-- 版本號讓瀏覽器不用快取舊的 bundle -->
+<script src="../../renderer/floating-assistant.js?v=e2e-2"></script>
+<script>
+(async () => {
+  const out = document.getElementById('out'); const logs = []; const log = (m) => { logs.push(m); out.textContent = logs.join('\n'); };
+  const res = { ts: new Date().toISOString(), image: 'ai-temp/pose-test/person.jpg（有人，960×966）', bundle: 'renderer/floating-assistant.js?v=e2e-2', cpu: null, gpu: null, gpu_repeat: null, compare: null, errors: [] };
+  try {
+    const fa = new FloatingAssistant({ mountSelector: '#app', buttonStyle: 'display:none;' });
+    window.__fa = fa;
+    const blob = await (await fetch('/ai-temp/pose-test/person.jpg')).blob();
+    const run = async (label, device, lib) => {
+      fa.advancedSettings.samGpuLib = lib; fa._samGpuBroken = false;
+      const t0 = performance.now();
+      const r = await fa._segmentObjects({ blob, device, silent: true, confirmed: true, grid: 4 });
+      const row = { ok: r.ok, device: r.device, requested: device, samGpuLib: lib, error: r.error || null, ms: r.ms, wall_ms: Math.round(performance.now() - t0), broken_after: !!fa._samGpuBroken, n: r.segments ? r.segments.length : null,
+        best_area: null, segments: r.segments || null };
+      log(label + ': ' + JSON.stringify({ ...row, segments: undefined }));
+      return row;
+    };
+    res.cpu = await run('CPU（預設路徑，samGpuLib off）', 'cpu', 'off');
+    res.gpu = await run('GPU（samGpuLib on，先前已跑過 CPU）', 'gpu', 'on');
+    res.gpu_repeat = await run('GPU 第二次（同一頁）', 'gpu', 'on');
+    // 遮罩 IoU：取 CPU 與 GPU 各自分數最高的候選比較（不假設 index 相同）
+    if (res.cpu.ok && res.gpu.ok && res.cpu.segments && res.gpu.segments) {
+      const best = (segs) => segs.reduce((b, s, i) => (s.score > segs[b].score ? i : b), 0);
+      const a = res.cpu.segments[best(res.cpu.segments)], b = res.gpu.segments[best(res.gpu.segments)];
+      let inter = 0, uni = 0; for (let i = 0; i < a.data.length; i++) { const x = a.data[i], y = b.data[i]; if (x && y) inter++; if (x || y) uni++; }
+      res.compare = { best_cpu_score: +a.score.toFixed(4), best_gpu_score: +b.score.toFixed(4), best_mask_iou: +(inter / uni).toFixed(5), best_cpu_area: a.data.reduce((s, v) => s + v, 0), best_gpu_area: b.data.reduce((s, v) => s + v, 0), n_cpu: res.cpu.n, n_gpu: res.gpu.n };
+    }
+    // 不把整張遮罩寫進結果，只留摘要
+    for (const k of ['cpu', 'gpu', 'gpu_repeat']) if (res[k]) delete res[k].segments;
+  } catch (e) { res.errors.push(String((e && e.message) || e).slice(0, 400)); }
+  window.__E2E = res;
+  log('DONE\n' + JSON.stringify(res, null, 1));
+})();
+</script>
+</body></html>

@@ -1,0 +1,11 @@
+{
+ "ts": "2026-11-18（真 Chrome，Intel Xe-LPG，shader-f16 可用）",
+ "what": "端到端：FloatingAssistant._segmentObjects（app 本身的程式），不是 harness 直接呼叫；網頁載入 renderer/floating-assistant.js?v=e2e-2（新 bundle，已包含快取修正）",
+ "image": "ai-temp/pose-test/person.jpg（有人，960×966）",
+ "cpu_default": { "device": "cpu", "samGpuLib": "off", "ok": true, "candidates": 16, "ms": 20796 },
+ "gpu_samGpuLib_on": { "device": "gpu", "samGpuLib": "on", "ok": true, "candidates": 16, "ms": 23588, "note": "第一次含 3.7.5 WebGPU 模型載入；broken 旗標未設定（沒有退回 CPU）" },
+ "gpu_repeat": { "device": "gpu", "samGpuLib": "on", "ok": true, "candidates": 16, "ms": 14004 },
+ "compare_best_candidate": { "best_cpu_score": 0.9748, "best_gpu_score": 0.9795, "mask_iou": 0.96832, "area_cpu_px": 10356, "area_gpu_px": 10085 },
+ "bug_found_and_fixed": "同一頁先跑過 CPU 後，device:'gpu' 會退回 CPU（broken 旗標被設成 true）。根因：_vlmEnsureLoaded 的快取檢查對整個裝置順序（['webgpu','wasm']）迴圈，已載入的 CPU 模型先命中，於是直接回傳 CPU，從不嘗試 WebGPU。修正：快取檢查只看偏好的第一個裝置（order.slice(0,1)）。這影響所有 GPU 偏好的離線模型（不只 SlimSAM）。",
+ "not_done": "沒有改任何預設（samGpuLib 仍預設 off）；沒有在其他顯示卡上測；沒有比較其他模型的端到端。"
+}
