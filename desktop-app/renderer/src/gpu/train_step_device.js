@@ -51,15 +51,16 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 `;
 const WGSL_ATTN_BWD_KV = `
 struct P { T: u32, H: u32, hd: u32, sc: f32 }
+// 注意：不可宣告本體沒用到的綁定。pipeline 用 layout 'auto'，未使用的綁定不會進 bind group layout，
+// 綁了它就是驗證錯誤（整個提交被拒，讀回全是 0）。所以 k 不在這裡（dK 只用 q，dV 用 dao、P、v）。
 @group(0) @binding(0) var<storage, read> q: array<f32>;
-@group(0) @binding(1) var<storage, read> k: array<f32>;
-@group(0) @binding(2) var<storage, read> v: array<f32>;
-@group(0) @binding(3) var<storage, read> dao: array<f32>;
-@group(0) @binding(4) var<storage, read> pm: array<f32>;
-@group(0) @binding(5) var<storage, read> ao: array<f32>;
-@group(0) @binding(6) var<storage, read_write> dk: array<f32>;
-@group(0) @binding(7) var<storage, read_write> dv: array<f32>;
-@group(0) @binding(8) var<uniform> u: P;
+@group(0) @binding(1) var<storage, read> v: array<f32>;
+@group(0) @binding(2) var<storage, read> dao: array<f32>;
+@group(0) @binding(3) var<storage, read> pm: array<f32>;
+@group(0) @binding(4) var<storage, read> ao: array<f32>;
+@group(0) @binding(5) var<storage, read_write> dk: array<f32>;
+@group(0) @binding(6) var<storage, read_write> dv: array<f32>;
+@group(0) @binding(7) var<uniform> u: P;
 // @kernel attn_bwd_kv
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -229,7 +230,7 @@ function extend(b) {
   r.attnBwd = (dao, q, k, v, ao, pm, T, H, hd) => {
     const uni = new ArrayBuffer(16); new Uint32Array(uni, 0, 3).set([T, H, hd]); new Float32Array(uni, 12, 1)[0] = 1 / Math.sqrt(hd);
     const dk = b.alloc(T * H * hd), dv = b.alloc(T * H * hd), dq = b.alloc(T * H * hd);
-    b.dispatchRaw(WGSL_ATTN_BWD_KV, [q.buf, k.buf, v.buf, dao.buf, pm.buf, ao.buf, dk.buf, dv.buf], uni, Math.ceil(T * H / 64));
+    b.dispatchRaw(WGSL_ATTN_BWD_KV, [q.buf, v.buf, dao.buf, pm.buf, ao.buf, dk.buf, dv.buf], uni, Math.ceil(T * H / 64));
     b.dispatchRaw(WGSL_ATTN_BWD_Q, [k.buf, v.buf, dao.buf, pm.buf, ao.buf, dq.buf], uni, Math.ceil(T * H / 64));
     return { dq: dq, dk: dk, dv: dv };
   };
@@ -376,5 +377,5 @@ async function trainStepDevice(o) {
   return { loss: loss, t: t, precision: f16 ? 'f16' : 'f32' };
 }
 
-module.exports = { trainStepDevice, WGSL_ATTN_FWD, WGSL_ATTN_BWD_KV, WGSL_ATTN_BWD_Q, WGSL_RMS_BWD, WGSL_MLP_BWD,
+module.exports = { trainStepDevice, WGSL_CAST16, WGSL_ATTN_FWD, WGSL_ATTN_BWD_KV, WGSL_ATTN_BWD_Q, WGSL_RMS_BWD, WGSL_MLP_BWD,
   attnFwdRef, attnBwdRef, rmsBwdRef, mlpBwdRef };

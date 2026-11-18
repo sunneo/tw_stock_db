@@ -29,6 +29,8 @@ const maxAbs = (a) => { let d = 0; for (let i = 0; i < a.length; i++) d = Math.m
 const cfg = { V: 16, d: 8, L: 2, H: 2, F: 12, r: 2, alpha: 4 };
 const seqs = [[1, 4, 9, 2, 7, 3, 12, 5, 8, 14], [6, 0, 11, 14, 2, 9, 4, 13, 10, 3]];
 const LRATE = 1e-2;
+// ?f16=1：整步路徑的前向用 f16（需要 shader-f16；沒有就如實回報 f32）。預設 f32。
+const F16 = new URLSearchParams(location.search).get('f16') === '1';
 const out = { status: 'unverified-pending-real-chrome', steps: [], error: null, adapter: null };
 window.__out = out;
 
@@ -63,11 +65,11 @@ async function run(nSteps) {
     const lc = await cpuStep(LR, mC, stC);
     subsBox.n = 0;
     const t0 = performance.now();
-    const R = await TS.trainStepDevice({ nn: NN, device: dev, model: mD, seqs, st: stD, lr: LRATE });
+    const R = await TS.trainStepDevice({ nn: NN, device: dev, model: mD, seqs, st: stD, lr: LRATE, f16: F16 });
     const dt = performance.now() - t0;
     const pc = paramsOf(mC), pd = paramsOf(mD); let dp = 0, sp = 0;
     for (let i = 0; i < pc.length; i++) { dp = Math.max(dp, maxAbsDiff(pc[i], pd[i])); sp = Math.max(sp, maxAbs(pc[i])); }
-    const rec = { step: step + 1, lossF64: lc, lossDevice: R.loss, lossRelDiff: Math.abs(R.loss - lc) / Math.abs(lc), paramMaxAbsDiff: dp, paramScale: sp, submits: subsBox.n, deviceMs: dt };
+    const rec = { step: step + 1, precision: R.precision, lossF64: lc, lossDevice: R.loss, lossRelDiff: Math.abs(R.loss - lc) / Math.abs(lc), paramMaxAbsDiff: dp, paramScale: sp, submits: subsBox.n, deviceMs: dt };
     out.steps.push(rec);
     say('第 ' + rec.step + ' 步：loss f64 ' + lc.toFixed(6) + '，裝置 ' + R.loss.toFixed(6) + '，相對差 ' + rec.lossRelDiff.toExponential(2) + '，參數最大絕對差 ' + dp.toExponential(2) + '，提交次數 ' + subsBox.n + '（應為 1），整步 ' + dt.toFixed(1) + ' ms');
     stEl.textContent = '完成第 ' + rec.step + ' 步';
