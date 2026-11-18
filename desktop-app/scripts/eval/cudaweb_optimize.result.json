@@ -1212,6 +1212,113 @@
       ],
       "result": "沒有好處：差異在雜訊內，或 uniform 較慢（rope 與 4096 偏置）。不採用，維持 storage。"
     },
-    "O1m_status": "(a) x 放 uniform：沒有好處（前次）；(b) B 放 rgba32float 貼圖：量到比 storage 快，但輸給已接的 split-K／子群組，未接規則表；(c) rope 表與偏置放 uniform：沒有好處，不採用。"
+    "O1m_status": "(a) x 放 uniform：沒有好處（前次）；(b) B 放 rgba32float 貼圖：量到比 storage 快，但輸給已接的 split-K／子群組，未接規則表；(c) rope 表與偏置放 uniform：沒有好處，不採用。",
+    "R3_lora_shapes": {
+      "kernel": "mm_shape_check.html（一次一個形狀；純核心，每次派發，20 次中位數；split-K 為部分和＋歸約一組）",
+      "rows": [
+        {
+          "shape": "8x4096x16",
+          "splitK": {
+            "S1": 0.84,
+            "S2": 0.505,
+            "S4": 0.32,
+            "S8": 0.215,
+            "S16": 0.195
+          },
+          "simple": 0.875,
+          "tiled": 1.05,
+          "vec4": 0.725,
+          "best_correct": true
+        },
+        {
+          "shape": "1x4096x16",
+          "splitK": {
+            "S1": 1.395,
+            "S2": 1.06,
+            "S4": 0.71,
+            "S8": 0.27,
+            "S16": 0.155
+          },
+          "simple": 0.895,
+          "tiled": 1.07,
+          "vec4": 0.905,
+          "subgroup": 0.245,
+          "best_correct": true
+        },
+        {
+          "shape": "64x1024x16",
+          "splitK": {
+            "S1": 0.35,
+            "S2": 0.185,
+            "S4": 0.155,
+            "S8": 0.145,
+            "S16": 0.15
+          },
+          "simple": 0.32,
+          "tiled": 0.35,
+          "vec4": 0.235,
+          "best_correct": true
+        },
+        {
+          "shape": "16x4096x64",
+          "splitK": {
+            "S1": 1.03,
+            "S2": 0.53,
+            "S4": 0.37,
+            "S8": 0.205,
+            "S16": 0.205
+          },
+          "simple": 0.935,
+          "tiled": 1.035,
+          "vec4": 0.74,
+          "best_correct": true
+        },
+        {
+          "shape": "64x1024x256 (not applicable: N>64)",
+          "splitK": {
+            "S8": 0.46
+          },
+          "simple": 0.845,
+          "tiled": 0.4,
+          "vec4": 0.255,
+          "note": "vec4 wins; rule excludes"
+        }
+      ],
+      "rule": "split-K 適用：K≥1024 且（M=1，或 N≤64 且 M≤64）；S=16 當 K≥4096，否則 8（kernel_select.js applies、mm_splitk.js pickSplits／splitkApplies）。",
+      "status": "R3 的 LoRA 形狀（小 N、大 K）已量：split-K 勝出。"
+    },
+    "R4_tiled_workgroup": {
+      "kernel": "mm_tile_wg_check.html：同一個 48×64 輸出塊、KB=16（mm_tile_wg.js），WG ∈ {128,192,256}；參考為 production 平鋪核心（64×64、256 執行緒）",
+      "rows": [
+        {
+          "shape": "512x1024x1024",
+          "wg128": 5.095,
+          "wg192": 4.195,
+          "wg256": 3.65,
+          "production_64x64_wg256": 2.56
+        },
+        {
+          "shape": "64x4096x1024",
+          "wg128": 102.96,
+          "wg192": 9.47,
+          "wg256": 4.49,
+          "production_64x64_wg256": 2.04,
+          "note": "wg128 的 103 ms 異常大，未查明原因（疑似編譯或暫存器溢出），如實記錄"
+        }
+      ],
+      "result": "在同一個塊的三種工作群組大小中，256 最好；production 的 64×64 平鋪比這三者都快。R4 沒有勝出者，規則表維持現狀（256 執行緒）。",
+      "status": "R4 完成：沒有勝出，如實記錄。"
+    },
+    "R5": {
+      "status": "未完成（本輪沒有做）。R5 要求把勝出變體套到 q8mm、MatMulNBits、注意力、卷積、訓練轉置版並量前後；這些核心分別在 infer_ops.js、matmulnbits_gpu.js、attn_gpu.js、conv_ops.js 與訓練轉置路徑，每一個都要寫新核心或改接線、再對拍與計時，本輪沒有時間做完。目前唯一的勝出變體是 matmul 的 split-K（M=1 與小 N 的 LoRA 形狀），還沒有證據說明它能套到 q8mm（解碼 M=1 的 q8mm_dec 已經 0.15 ms）或注意力、卷積。"
+    },
+    "O11_build": {
+      "date": "2026-11-18",
+      "embed_code_ui": "通過（exit 0）；把 mm_subgroup、mm_splitk 加入嵌入清單（scripts/embed-code-ui.js），floating-assistant 的嵌入副本因此更新（KERNEL_TUNE 與 QWEN 的字串）",
+      "build_assistant": "通過（exit 0）；update-manifest.json 時間戳更新",
+      "build_web_lazy": "通過（exit 0）；core 5955K，234 區塊 8315K；web-lazy/chunks/ktune.js、qwengpu.js、manifest.json 更新",
+      "node_tests": "renderer/src/gpu 與 renderer/src/vlm 的 *test*.js 共 72 個檔案：71 個通過，1 個（llava_skeleton_test）原本失敗，原因是 Qwen2-0.5B 的舊數字（1024／16／16／2816／152000），已依 config.json 修正（896／14／2／4864／151936），修正後通過（10 項）。",
+      "known_failure": "scripts/gpu-mem-settings.test.js 有 1 項失敗：「transformers.js 路徑前先試 q4f16 整段解碼」，是 floating-assistant.js 的文字檢查，本輪沒有改它，屬於既有問題。"
+    }
   }
 }
