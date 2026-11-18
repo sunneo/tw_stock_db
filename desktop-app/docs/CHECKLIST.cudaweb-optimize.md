@@ -232,6 +232,10 @@ O1m 到 O11 做完後不結束，進入迴圈。完整規則與交接見 `docs/H
     - **實測（2026-11-18，內建 Chromium，Intel Xe-LPG，有 shader-f16，`scripts/eval/o15b_webgpu_check.html`，數值見 `scripts/eval/o15b_webgpu_check.result.json`）**：
       - Depth Anything 的 fp16 WebGPU（預設路徑）：成功；對 CPU fp32 相對 L2 0.72%、相關 0.99998；暖機 758 ms（CPU 10,495 ms）。fp32 WebGPU（`f32Gpu` 路徑）：成功；max|Δ| 5e-5；暖機 2,285 ms。
       - MoveNet（fp32）：WebGPU 成功，暖機 62 ms（CPU 150 ms）；**對拍不成立**：測試圖沒有人，兩邊都沒有 >0.3 的關鍵點。需要有人的照片重測。
+    - **第四步（2026-11-18，阻塞，待使用者同意下載）**：
+      - (1) MoveNet 對拍：repo 內沒有含人的照片（`idphoto_*.png` 是證件照工具的截圖，背景是黑色占位，沒有人；`test-reports/` 是 UI 截圖）。需要一張含人的小圖。兩個選項：(a) 使用者把自己有權使用的照片放進 `ai-temp/`（不進 git）；(b) 同意從某個來源下載（請先指定來源與授權；網頁版維基媒體的縮圖連結在此環境回 400，無法直接讀取）。
+      - (2) 其餘候選在真 Chrome 的實測，目前瀏覽器快取只有 MoveNet 與 Depth 的模型（`transformers-cache`）。要測下列模型，需要先同意下載（大小依登記表，未逐一查證）：SlimSAM 77 fp16／q8（登記約 12.2 MB＋8.6 MB；q8 約 8.9 MB＋4.9 MB）、Whisper base（登記約 80 MB）、Kokoro q8（先前取得過 92,361,116 位元組，但目前這台機器上沒有檔案）、SDXS（大小未登記）。
+      - 在這些完成之前，沒有任何新的預設開關建議。
       - 預設仍關（`poseGpu`、`f32Gpu`）：姿態沒有人像對拍；深度只在一張照片上比過。
       - 注意：這台的 WebGPU 有 shader-f16，所以深度預設路徑本來就會走 GPU（fp16），不需要 `f32Gpu`；`f32Gpu` 只對沒有 shader-f16 的卡有用，本次沒有在那種卡上測。
     - **沒選 SlimSAM**：它的 CPU 權重是 q8，沒有 fp32 證據，所以不放行。
