@@ -623,12 +623,13 @@
         "id": "matmul_subgroup",
         "op": "matmul",
         "source": "（未實作；覆蓋表沒有子群組變體）",
-        "status": "待驗證（原因：matmul 的 subgroup 核心尚未實作；子群組歸約已在 subgroup_reduce_check.html 通過，見 intel_xe_lpg_2026_11_18.subgroup_reduce）",
+        "status": "通過（有證據檔案：mm_subgroup_check.html?v=2、mm_subgroup_integ_check.html?v=4；接進規則表，M=1 且 K<1024）",
         "hardware": "Kepler GT 720（14 W），真 Chrome WebGPU，無 shader-f16；能力：共用記憶體 16 KiB、每群組 256 執行緒",
         "error": "未有證據",
         "time": "未有證據",
         "evidence": [
-          "scripts/eval/subgroup_reduce_check.html?v=2"
+          "scripts/eval/mm_subgroup_check.html?v=2",
+          "scripts/eval/mm_subgroup_integ_check.html?v=4"
         ],
         "note": "需先實作，再在有子群組的機器上驗證"
       }
@@ -1023,6 +1024,194 @@
         }
       ],
       "note": "這頁比較的是「批次 vs 逐運算」，不是融合前後。層的運算序列（rmsnorm→matmul→rope→matmul→silu→matmul）不含 rmsq1 融合，所以融合前後在這頁沒有量；融合前後的同機時間見 o7_engine。頁面的 hardware 欄仍寫 Kepler（只是標籤）。"
-    }
+    },
+    "subgroup_matmul": {
+      "kernel": "mm_subgroup_f32（每個輸出元素一個子群組，lane 跨 K、subgroupAdd 歸約；網格跨步）",
+      "correctness": "mm_subgroup_check（7 形狀）相對誤差 ≤ 2e-7；mm_subgroup_integ_check（規則選到時的整合）全部 T1、相對誤差 ≤ 1.1e-7（M=1 K<1024）",
+      "kernel_ms_per_dispatch_median20": [
+        {
+          "shape": "1x1024x1024",
+          "subgroup": 0.255,
+          "vec4": 0.425,
+          "simple": 0.515
+        },
+        {
+          "shape": "1x4096x1024",
+          "subgroup": 0.785,
+          "vec4": 1.215,
+          "simple": 2.045
+        },
+        {
+          "shape": "1x1024x3072",
+          "subgroup": 0.65,
+          "vec4": 0.695,
+          "simple": 0.58,
+          "note": "這個形狀 simple 最快，但規則表走 split-K（K≥1024）"
+        },
+        {
+          "shape": "8x1024x1024",
+          "subgroup": 0.98,
+          "vec4": 0.375,
+          "simple": 0.685,
+          "note": "M>1 子群組比較慢，所以只給 M=1"
+        },
+        {
+          "shape": "16x1024x1024",
+          "subgroup": 1.895,
+          "vec4": 0.41,
+          "simple": 0.915
+        }
+      ],
+      "rule": "M=1 且 K<1024、有 subgroups 時選（kernel_select.js）。K<1024 的 M=1 與 simple 的效能比較沒有量測，只驗正確性與接線。"
+    },
+    "splitk_R3": {
+      "kernel": "mm_splitk（部分和核心＋歸約核心，同一批次一次 submit；S 片，c=⌈K/S⌉）",
+      "correctness": "S ∈ {1,2,4,8,16}，4 個形狀，相對誤差 ≤ 2e-6（判準 1e-5）；整合檢查 1x1024x1024／1x4096x1024／1x1024x3072 經規則選到 mm_splitk_f32，T1，相對誤差 ≤ 4.8e-7",
+      "kernel_ms_per_dispatch_pair_median20": [
+        {
+          "shape": "1x1024x1024",
+          "S1": 0.605,
+          "S2": 0.31,
+          "S4": 0.22,
+          "S8": 0.15,
+          "S16": 0.145,
+          "simple": 0.465,
+          "vec4": 0.4,
+          "subgroup": 0.255
+        },
+        {
+          "shape": "1x4096x1024",
+          "S1": 2.02,
+          "S2": 1.09,
+          "S4": 0.645,
+          "S8": 0.73,
+          "S16": 0.715,
+          "simple": 2.355,
+          "vec4": 1.51,
+          "subgroup": 1.255,
+          "note": "第二次量測 S16 最好（0.565，對 subgroup 0.935、vec4 1.105）；雜訊約 ±15%，排名一致"
+        },
+        {
+          "shape": "1x1024x3072",
+          "S1": 0.77,
+          "S2": 0.505,
+          "S4": 0.53,
+          "S8": 0.49,
+          "S16": 0.565,
+          "simple": 0.615,
+          "vec4": 0.71,
+          "subgroup": 0.65
+        },
+        {
+          "shape": "1x8192x1024",
+          "S1": 3.895,
+          "S2": 2.175,
+          "S4": 1.33,
+          "S8": 1.18,
+          "S16": 1.165,
+          "simple": 4.23,
+          "vec4": 2.095,
+          "subgroup": 1.92
+        },
+        {
+          "shape": "8x4096x1024",
+          "S1": 3.16,
+          "S2": 1.885,
+          "S4": 2.83,
+          "S8": 3.185,
+          "S16": 4.02,
+          "simple": 3.55,
+          "vec4": 1.125,
+          "note": "M=8 時 vec4 最快，所以 split-K 只給 M=1"
+        }
+      ],
+      "rule": "M=1 且 K≥1024 時 S=8（pickSplits）；其他形狀不走 split-K。LoRA 的小 N（秩 r）形狀尚未量測，所以 R3 的 LoRA 部分未完成。"
+    },
+    "wg_R4": {
+      "kernel": "split-K 的部分和＋歸約核心，工作群組大小 WG ∈ {128,192,256}，S=8（mm_wg_check.html?v=1）",
+      "correctness": "3 個 WG × 3 形狀，相對誤差 ≤ 4.4e-7",
+      "kernel_ms_per_dispatch_pair_median20": [
+        {
+          "shape": "1x1024x1024",
+          "WG128": 0.235,
+          "WG192": 0.16,
+          "WG256": 0.15
+        },
+        {
+          "shape": "1x4096x1024",
+          "WG128": 0.58,
+          "WG192": 0.645,
+          "WG256": 0.565
+        },
+        {
+          "shape": "1x1024x3072",
+          "WG128": 0.455,
+          "WG192": 0.535,
+          "WG256": 0.52
+        },
+        {
+          "shape": "1x8192x1024",
+          "WG128": 1.135,
+          "WG192": 1.11,
+          "WG256": 1.105
+        }
+      ],
+      "result": "256 最好或在雜訊內，128／192 沒有好處；規則維持 256。沒有量測 tiled matmul 的工作群組大小（只量了 split-K 的核心）。"
+    },
+    "O1m_b_texture_B": {
+      "kernel": "M=1 simple 矩陣乘，B 放 rgba32float 貼圖（textureLoad，unfilterable-float，寬 N/4、高 K）（mm_tex_check.html?v=2）",
+      "correctness": "與 storage 版逐位相同（3 形狀）；對 CPU 參考相對誤差 ≤ 2.1e-6",
+      "kernel_ms_per_dispatch_median20": [
+        {
+          "shape": "1x1024x1024",
+          "storage": 0.48,
+          "texture": 0.39
+        },
+        {
+          "shape": "1x1024x3072",
+          "storage": 0.605,
+          "texture": 0.465
+        },
+        {
+          "shape": "1x4096x1024",
+          "storage": 2.005,
+          "texture": 1.23
+        }
+      ],
+      "result": "貼圖版比 storage 版快 19–39%（同一個 simple 核心的比較）。但規則表的 M=1 候選（split-K、子群組）在同樣的形狀上比貼圖版還快（例：1x1024x1024 split-K 0.15 對 貼圖 0.39），所以沒有接進規則表。貼圖版沒有針對 M>1 量測。"
+    },
+    "O1m_c_uniform": {
+      "kernel": "偏置（M=1 矩陣乘＋偏置）與 rope 表（T×hd/2 的 cos／sin）放 uniform 對照 storage（o1m_uniform_check.html?v=1）",
+      "correctness": "兩版逐位相同（5 個案例）；相對誤差 ≤ 2e-6",
+      "kernel_ms_per_dispatch_median20": [
+        {
+          "shape": "bias 1x1024x1024",
+          "storage": 0.455,
+          "uniform": 0.43
+        },
+        {
+          "shape": "bias 1x1024x3072",
+          "storage": 0.605,
+          "uniform": 0.595
+        },
+        {
+          "shape": "bias 1x4096x1024",
+          "storage": 2.015,
+          "uniform": 2.16
+        },
+        {
+          "shape": "rope T32 H16 hd64",
+          "storage": 0.155,
+          "uniform": 0.175
+        },
+        {
+          "shape": "rope T8 H4 hd128",
+          "storage": 0.185,
+          "uniform": 0.195
+        }
+      ],
+      "result": "沒有好處：差異在雜訊內，或 uniform 較慢（rope 與 4096 偏置）。不採用，維持 storage。"
+    },
+    "O1m_status": "(a) x 放 uniform：沒有好處（前次）；(b) B 放 rgba32float 貼圖：量到比 storage 快，但輸給已接的 split-K／子群組，未接規則表；(c) rope 表與偏置放 uniform：沒有好處，不採用。"
   }
 }
