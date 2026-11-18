@@ -14,7 +14,7 @@ check('syncCount: chunks with raw size appends it', K.syncCount({ unit: 'chunks'
 check('syncCount: no 8-digit numbers for big bytes', !/\d{7,}/.test(K.syncCount({ unit: 'bytes', done: 123456789, total: 987654321 })));
 
 // ---- 2. _callSimpleCompletion(strictLength)
-const fa = fs.readFileSync(path.join(root, 'renderer/src/floating-assistant.js'), 'utf8');
+const fa = fs.readFileSync(path.join(root, 'renderer/src/floating-assistant.js'), 'utf8').replace(/\r\n/g, '\n'); // 檔案是 CRLF；不正規化的話 '\n    }\n' 找不到方法結尾，methodSrc 變空
 const i0 = fa.indexOf('    async _callSimpleCompletion('), i1 = fa.indexOf('\n    }\n', i0);
 const methodSrc = fa.slice(i0, i1 + 6);
 function makeCompletion(replies, calls) {

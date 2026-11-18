@@ -95645,6 +95645,16 @@ ${fnData.code}
         return '';
     }
     _aidocRememberRoot(root) { this._repoLastRoot = root; try { localStorage.setItem('fa_aidoc_root', root); } catch (_) {} }
+    // /aidoc ask 的聊天核心：把索引查到的程式碼（索引整理＋片段）當參考資料，交給 _offlineLlmAnswer。範圍限定專案程式碼：不給工具、不混入訓練器的規則與問答。
+    // 沒有可用的參考資料時回傳 null（呼叫端只顯示索引查詢結果）。
+    async _aidocAskChat(q, r, root) {
+        const refs = [];
+        if (r.answer && String(r.answer).trim()) refs.push({ kind: 'rag', title: '專案索引查詢（' + root + '）', text: String(r.answer), score: 1 });
+        for (const x of r.snippets || []) refs.push({ kind: 'rag', title: '程式碼 ' + x.path + ':' + x.from_line, text: String(x.text), score: 0.9 });
+        if (!refs.length) return null;
+        const plan = { decision: { status: 'unresolved' }, alternatives: [] };
+        return this._offlineLlmAnswer(q, plan, { force: true, history: [], noTools: true, codeRefs: refs });
+    }
     async _aidocCommand(raw) {
         const say = (m) => { this._pushAssistantMessage(m, null); this._persistChatHistory(); this._renderMessageHistory(); };
         const arg = String(raw || '').trim();
@@ -95721,7 +95731,13 @@ ${fnData.code}
             const r = await this._repoAskRun({ root, question: q });
             if (!r.ok) { say('⚠️ ' + r.error); return; }
             const fence = String.fromCharCode(96, 96, 96);
-            say((r.warning ? '⚠️ ' + r.warning + '\n\n' : '') + r.answer + (r.snippets && r.snippets.length ? '\n\n' + r.snippets.map((x) => x.path + ':' + x.from_line + '\n' + fence + '\n' + x.text + '\n' + fence).join('\n') : ''));
+            const evidence = r.snippets && r.snippets.length ? '\n\n' + r.snippets.map((x) => x.path + ':' + x.from_line + '\n' + fence + '\n' + x.text + '\n' + fence).join('\n') : '';
+            // 聊天核心：索引查到的程式碼當作唯一參考資料，交給離線文字模型回答（範圍限定專案程式碼）；沒有模型或沒有索引結果，就只顯示索引查詢結果
+            const chat = await this._aidocAskChat(q, r, root);
+            if (chat && chat.cancelled) { say('已取消。'); return; }
+            if (chat && chat.ok) { say((r.warning ? '⚠️ ' + r.warning + '\n\n' : '') + chat.header + '\n\n' + chat.text + (chat.verified ? '\n' + chat.verified : '') + evidence); return; }
+            const why = chat ? '（離線文字模型沒有回答：' + chat.error + '；以下是索引查詢結果）\n\n' : '';
+            say(why + (r.warning ? '⚠️ ' + r.warning + '\n\n' : '') + r.answer + evidence);
             return;
         }
         if (sub === 'dive') { const r = await this._aidocDive(root, { limit: opt('limit') ? Number(opt('limit')) : 100 }); say(r.ok ? (r.nothing ? '🔎 ' + r.note : '🔎 已開始深入探討：' + r.total + ' 個檔案（依重要程度），進度在上方卡片。/aidoc stop 停止；之後再 /aidoc dive 會從還沒說明的檔案接續。') : '⚠️ ' + r.error); return; }
@@ -131166,12 +131182,14 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         const update = (x) => { if (prog) prog.update(x); }; const log = (s) => { if (prog) prog.log(s); };
         route.reasons.forEach(log);
         try {
-            const system = '你是一個友善、簡潔的助理，在使用者的電腦上離線執行。請用繁體中文回答（使用者用別種語言就用那種語言）。直接回答問題；問候與閒聊就自然地回應。如果有【參考資料】，優先根據它回答。一律使用繁體中文，不要用簡體字。你知道的就直接說；只有遇到你真的不知道的具體細節（人名、數字、網址）時，才說明你不確定，並提供你知道的相關內容。';
+            const system = '你是一個友善、簡潔的助理，在使用者的電腦上離線執行。請用繁體中文回答（使用者用別種語言就用那種語言）。直接回答問題；問候與閒聊就自然地回應。如果有【參考資料】，優先根據它回答。一律使用繁體中文，不要用簡體字。你知道的就直接說；只有遇到你真的不知道的具體細節（人名、數字、網址）時，才說明你不確定，並提供你知道的相關內容。' + (opts.codeRefs ? '\n\n本次的範圍只限下面【參考資料】裡的專案程式碼：只根據參考資料回答；參考資料沒有的，就直接說「專案程式碼裡沒有找到」，不要猜測，也不要補充外部知識。' : '');
             let history = opts.history; if (!history) { history = this.messages.filter((m) => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string' && !m._suggestionChips && !m._card); if (history.length && history[history.length - 1].role === 'user' && history[history.length - 1].content === userText) history = history.slice(0, -1); }
             // 參考資料＝離線訓練器（線上 AI 養出來的規則、學到的做法、相似問法、過去問答）＋RAG，整理成帶出處與年齡的清單，份量依模型上下文按比例給
-            const refPack = FaRecipe.buildReferencePack(await this._offlineReferences(userText, plan), FaVlm.textBudget(route.answer, S.llmMax).rag);
+            // opts.codeRefs（/aidoc ask）：範圍只限專案程式碼，不混入線上學到的規則與問答
+            const refItems = opts.codeRefs ? opts.codeRefs : await this._offlineReferences(userText, plan);
+            const refPack = FaRecipe.buildReferencePack(refItems, FaVlm.textBudget(route.answer, S.llmMax).rag);
             let rag = refPack.lines; if (refPack.lines.length) log('參考資料 ' + refPack.lines.length + ' 筆（訓練器／RAG）');
-            const cbs = { update, log, onToken: (acc) => { if (prog && acc.length % 40 < 3) prog.log('…' + acc.slice(-60).replace(/\s+/g, ' ')); } };
+            const cbs = { update, log, isStopped: opts.isStopped, onToken: (acc) => { if (prog && acc.length % 40 < 3) prog.log('…' + acc.slice(-60).replace(/\s+/g, ' ')); } };
             const gen = (model) => (a) => this._llmGenerate(model, (a.tools && a.tools.length) ? Object.assign({}, a, { deterministic: true }) : this._offlineThinkingArgs(model, a), cbs); // 選工具用確定性生成（貪婪）：選工具與填參數要穩，不要隨機
             const summarizerFor = (model, b) => (route.summarize && route.summarize.id === model.id) ? async (body, maxTok) => this._llmGenerate(model, { messages: [{ role: 'system', content: '你是摘要工具。用繁體中文摘要，保留數字、名稱與結論，不要加入原文沒有的資訊。' }, { role: 'user', content: FaVlm.trimToTokens(body, Math.max(200, b.prompt - 300)) }], tools: [], deterministic: true, maxTokens: maxTok }, cbs) : null;
             const onEvent = (e) => { if (e.type === 'tool_start') log('呼叫工具：' + e.name + ' ' + JSON.stringify(e.args).slice(0, 120)); else if (e.type === 'garbage') log('⚠️ 輸出是垃圾（' + e.reason + '），重試'); else if (e.type === 'duplicate_call') log('⚠️ 重複的工具呼叫，已略過'); };
