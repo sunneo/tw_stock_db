@@ -31,13 +31,30 @@
     for (let r = 0; r < rows; r++) { let s = 0; const o = r * cols; for (let c = 0; c < cols; c++) s += W[o + c] * x[c]; y[r] = s; }
     return y;
   }
-  // half 風格的 RoPE：第 i 組是 (x[i], x[i+d/2])，角度 pos·base^(−2i/d)。pos=0 時是恆等。
-  function rope(vec, nHeads, hd, pos, base) {
+  // 每組的基礎頻率。無縮放：base^(−2i/d)。llama3 縮放（O12a 的 rope.scaling）：高頻不變、低頻除以 factor、中間段線性內插（與 Llama 3.x 的 rope 實作相同公式）。
+  // 不支援的縮放型別丟錯，不悄悄當作無縮放。
+  function invFreq(hd, base, scaling) {
+    const half = hd / 2, out = new Array(half);
+    for (let i = 0; i < half; i++) {
+      const f = Math.pow(base, -2 * i / hd);
+      if (!scaling) { out[i] = f; continue; }
+      if (scaling.type !== 'llama3') throw new Error('llm_skeleton：RoPE 縮放（' + scaling.type + '）尚未實作');
+      const orig = scaling.originalMaxPos, lo = scaling.lowFreqFactor, hi = scaling.highFreqFactor;
+      const wl = 2 * Math.PI / f;
+      if (wl < orig / hi) out[i] = f;                          // 高頻：不動
+      else if (wl > orig / lo) out[i] = f / scaling.factor;    // 低頻：除以 factor
+      else { const sm = (orig / wl - lo) / (hi - lo); out[i] = (1 - sm) * f / scaling.factor + sm * f; }
+    }
+    return out;
+  }
+  // half 風格的 RoPE：第 i 組是 (x[i], x[i+d/2])，角度 pos·f_i（f_i 見 invFreq）。pos=0 時是恆等。
+  function rope(vec, nHeads, hd, pos, base, scaling) {
     const out = Float32Array.from(vec); const half = hd / 2;
+    const fr = scaling ? invFreq(hd, base, scaling) : null;
     for (let h = 0; h < nHeads; h++) {
       const o = h * hd;
       for (let i = 0; i < half; i++) {
-        const theta = pos * Math.pow(base, -2 * i / hd);
+        const theta = pos * (fr ? fr[i] : Math.pow(base, -2 * i / hd));
         const c = Math.cos(theta), s = Math.sin(theta);
         const a = out[o + i], b = out[o + i + half];
         out[o + i] = a * c - b * s;
@@ -79,7 +96,7 @@
     const v = ARCH.validateArch(arch);
     if (!v.ok) throw new Error('llm_skeleton：描述表不合法：' + v.errors.join('；'));
     if (arch.status !== 'supported') throw new Error('llm_skeleton：' + arch.family + ' 還是 pending，不支援');
-    if (arch.rope.scaling) throw new Error('llm_skeleton：RoPE 縮放（' + arch.rope.scaling.type + '）尚未實作');
+    if (arch.rope.scaling && ARCH.SKELETON_ROPE.indexOf(arch.rope.scaling.type) < 0) throw new Error('llm_skeleton：RoPE 縮放（' + arch.rope.scaling.type + '）尚未實作');
     if (arch.act !== 'silu_mul') throw new Error('llm_skeleton：啟動 ' + arch.act + ' 尚未實作');
   }
   // 權重長度必須與描述表一致；長度不對會讓運算悄悄變成 NaN，所以開頭就檢查
@@ -135,8 +152,8 @@
         const perHead = (vec, n, wn) => { const o = new Float32Array(vec.length); for (let hh = 0; hh < n; hh++) o.set(ops.rmsnorm(vec.subarray(hh * hd, hh * hd + hd), wn, a.eps), hh * hd); return o; };
         q = perHead(q, nh, L.qNorm); k = perHead(k, nkv, L.kNorm);
       }
-      q = ops.rope(q, nh, hd, pos, a.rope.base);
-      k = ops.rope(k, nkv, hd, pos, a.rope.base);
+      q = ops.rope(q, nh, hd, pos, a.rope.base, a.rope.scaling);
+      k = ops.rope(k, nkv, hd, pos, a.rope.base, a.rope.scaling);
       state.cacheK[li].push(k); state.cacheV[li].push(v);
       const T = state.cacheK[li].length;
       const attnOut = new Float32Array(nh * hd);
@@ -182,7 +199,7 @@
     return { logits: logits, argmax: best, state: st };
   }
 
-  return { rmsnorm: rmsnorm, matvec: matvec, silu: silu, softmax: softmax, rope: rope, kvHeadOf: kvHeadOf,
+  return { rmsnorm: rmsnorm, matvec: matvec, silu: silu, softmax: softmax, rope: rope, invFreq: invFreq, kvHeadOf: kvHeadOf,
     SLOTS: SLOTS, registerOverride: registerOverride, clearOverrides: clearOverrides, resolveOps: resolveOps,
     createState: createState, step: step, stepVec: stepVec, run: run };
 }));

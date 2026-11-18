@@ -27,8 +27,8 @@
         const perHead = (vec, n, wn) => { const o = new Float32Array(vec.length); for (let hh = 0; hh < n; hh++) o.set(S.rmsnorm(vec.subarray(hh * hd, hh * hd + hd), wn, a.eps), hh * hd); return o; };
         q = perHead(q, nh, L.qNorm); k = perHead(k, nkv, L.kNorm);
       }
-      q = S.rope(q, nh, hd, pos, a.rope.base);
-      k = S.rope(k, nkv, hd, pos, a.rope.base);
+      q = S.rope(q, nh, hd, pos, a.rope.base, a.rope.scaling);
+      k = S.rope(k, nkv, hd, pos, a.rope.base, a.rope.scaling);
       state.cacheK[li].push(k); state.cacheV[li].push(v);
       const T = state.cacheK[li].length;
       const attnOut = new Float32Array(nh * hd);
