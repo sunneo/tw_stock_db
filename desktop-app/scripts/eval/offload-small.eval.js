@@ -3,7 +3,7 @@
 // 用法同其他真機評估：獨立暫存資料夾、換埠、FA_DISABLE_MAIN_OVERLAY=1、不加 --disable-gpu。
 const fa = window.fa;
 const MM = fa._qwenModule().mm;
-const R = { cpuCores: navigator.hardwareConcurrency, sizes: {} };
+const R = { cpuCores: navigator.hardwareConcurrency, sizes: {}, offloadStatus: MM.getOffloadStatus ? MM.getOffloadStatus() : "no getOffloadStatus" };
 const sleep0 = () => new Promise((r) => setTimeout(r, 0));
 const med = (xs) => { const s = xs.slice().sort((a, b) => a - b); return s[Math.floor(s.length / 2)]; };
 const rnd = (n, seed) => Float32Array.from({ length: n }, (_, i) => ((i * 9301 + 49297 + seed * 1237) % 233280) / 233280 - 0.5);

@@ -2,6 +2,8 @@
 // 整個運算卸載給 CPU（mm_ops 的決策接線）測試（node，沒有 WebGPU）。交界點來自 setOffloadCrossover（Profile 實測值）。
 const assert = require('assert');
 const MM = require('./mm_ops.js');
+assert.strictEqual(MM.getOffloadStatus().loaded, true, '卸載模組應載入：' + JSON.stringify(MM.getOffloadStatus()));
+assert.strictEqual(MM.getOffloadStatus().cpuShareLoaded, true, 'cpu_share 應載入');
 
 const fill = (n, s) => { const x = new Float32Array(n); for (let i = 0; i < n; i++) x[i] = (((i * 1103515245 + s * 12345) >>> 0) % 2001) / 1000 - 1; return x; };
 const naive = (a, b, m, k, n) => { const C = new Float64Array(m * n); for (let i = 0; i < m; i++) for (let j = 0; j < n; j++) { let s = 0; for (let p = 0; p < k; p++) s += a[i * k + p] * b[p * n + j]; C[i * n + j] = s; } return C; };

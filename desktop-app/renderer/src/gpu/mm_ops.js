@@ -160,12 +160,13 @@ async function run(kind, a, aDims, b, bDims, azp, bzp, ops) {
 }
 // 異質運算（plus）：CPU 核心數為 0（預設）時 CPU_SHARE.run 立刻回 shared:false，完全走原本的 GPU 路徑，行為與沒有這段時相同。
 // 只在單一批次、不轉置 A、f32、Float32Array 輸入時分工；任何一邊出錯也退回原路徑（整個運算重算一次，結果仍正確）。
-let CPU_SHARE = null;
-try { CPU_SHARE = require('./cpu_share.js'); } catch (_) { CPU_SHARE = null; }
+let CPU_SHARE = null, CPU_SHARE_LOAD_ERROR = null;
+try { CPU_SHARE = require('./cpu_share.js'); } catch (e) { CPU_SHARE = null; CPU_SHARE_LOAD_ERROR = String((e && e.message) || e); }
 // 整個運算卸載給 CPU（小形狀）：卸載交界點來自 Profile 的實測（faProfilePlan 的 crossoverFlops，存在 localStorage fa_gpu_profile）。
 // 沒有實測值（null）就不卸載，維持原本的 GPU 路徑；不寫死任何門檻。
-let OFFLOAD = null;
-try { OFFLOAD = require('./cpu_gemm_offload.js'); } catch (_) { OFFLOAD = null; }
+let OFFLOAD = null, OFFLOAD_LOAD_ERROR = null;
+try { OFFLOAD = require('./cpu_gemm_offload.js'); } catch (e) { OFFLOAD = null; OFFLOAD_LOAD_ERROR = String((e && e.message) || e); }   // 載入失敗要看得到（getOffloadStatus），不能靜默
+function getOffloadStatus() { return { loaded: !!OFFLOAD, error: OFFLOAD_LOAD_ERROR, crossover: crossoverNow(), cpuShareLoaded: !!CPU_SHARE, cpuShareError: CPU_SHARE_LOAD_ERROR }; }
 let OFFLOAD_CROSSOVER = undefined;   // undefined＝還沒讀；null＝沒有實測；數字＝實測交界點（flops）
 function setOffloadCrossover(v) { OFFLOAD_CROSSOVER = (v === null || v === undefined || !Number.isFinite(Number(v))) ? (v === Infinity ? Infinity : null) : Number(v); }
 function crossoverNow() {
@@ -604,4 +605,4 @@ async function startMatmulRaceInner(shapes, o) {
   return out;
 }
 
-module.exports = { setOffloadCrossover, rerunMatmul, getMatmulTuneContext, matmulRef, matmul, matmulIntRef, matmulInt, WGSL_MM_F32, WGSL_MM_F32_TILED, WGSL_MM_F32_VEC4, WGSL_MM_I32, plan, pickMatmulKernel, setMatmulCaps, getMatmulCaps: () => CAPS, setMatmulWinners, raceMatmul, initMatmulTuning, startMatmulRace, calibrateSimple, gateCandidates, estimateMs, flopsOf, SAFE_DISPATCH_MS, REL_SPEED, AUTO_SHAPES, TUNE, measureRoofline, pickBatch, compileFromSamples, pickRooflineIters, gflopsFrom, peakFromEntries, CORE_SAMPLE_MS, ROOF_TARGET_MS, ROOF_ABORT_MS, ROOF_MAX_ITERS, rooflineCalibrate, splitRuns, CORE_SPLIT_MS };
+module.exports = { setOffloadCrossover, getOffloadStatus, rerunMatmul, getMatmulTuneContext, matmulRef, matmul, matmulIntRef, matmulInt, WGSL_MM_F32, WGSL_MM_F32_TILED, WGSL_MM_F32_VEC4, WGSL_MM_I32, plan, pickMatmulKernel, setMatmulCaps, getMatmulCaps: () => CAPS, setMatmulWinners, raceMatmul, initMatmulTuning, startMatmulRace, calibrateSimple, gateCandidates, estimateMs, flopsOf, SAFE_DISPATCH_MS, REL_SPEED, AUTO_SHAPES, TUNE, measureRoofline, pickBatch, compileFromSamples, pickRooflineIters, gflopsFrom, peakFromEntries, CORE_SAMPLE_MS, ROOF_TARGET_MS, ROOF_ABORT_MS, ROOF_MAX_ITERS, rooflineCalibrate, splitRuns, CORE_SPLIT_MS };
