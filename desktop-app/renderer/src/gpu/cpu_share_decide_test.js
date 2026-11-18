@@ -62,7 +62,8 @@ let t = 0; const now = () => (t += 1);
     const H2 = require('./hetero_split.js');
     const s = on.stats();
     assert.ok(s.last && s.last.shared, '前面的分工應該留下 last');
-    const expect = H2.feedbackFraction(s.last.mCpu / s.last.m, s.last.gpuMs, s.last.cpuMs, CS.MAX_CPU_RATIO);
+    // 回饋用 CPU 段自己的執行時間（cpuOwnMs），不含排在 GPU 提交後面的同步成本（見 cpu_share_breakdown_test）
+    const expect = H2.feedbackFraction(s.last.mCpu / s.last.m, s.last.gpuMs, s.last.cpuOwnMs, CS.MAX_CPU_RATIO);
     assert.ok(Math.abs(s.feedback - expect) < 1e-9, '回饋比例應等於依實測段耗時算出的值（' + s.feedback + ' vs ' + expect + '）');
     const nxt = on._ratioNow(M, K, N);
     assert.ok(nxt <= s.feedback + 1e-9 || nxt === 0, '下一次比例不應超過回饋比例（' + nxt + ' > ' + s.feedback + '）');

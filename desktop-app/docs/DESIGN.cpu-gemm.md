@@ -182,3 +182,40 @@
 
 - 第一次真機（修正後的程式，有效）：提交 5a32a74d2 的建置與 HEAD 相同。512³，只用 GPU 中位數 17.8 ms，分攤 17.9 ms，加速 0.99。分攤時 CPU 40 列（比例 0.08），CPU 段 15.3 ms（約 1.4 GFLOP/s）。速率 CPU 1.07e6、GPU 7.76e6 flops/ms。（以上數字為同一台機器的另一個 session 所量，這裡照記，不是本 session 的量測。）
 - 落差：純核心在主執行緒量到 12.6 GFLOP/s，40 列應約 1.7 ms，實測 CPU 段 15.3 ms，多出約 9 倍。多出來的是傳遞、排程或等待成本，速率 EMA 把它吃進去，所以決策只給 CPU 8%。來源待查（見下一節）。
+
+---
+
+## 第四批：CPU 段比核心多出的落差（來源查證與修正）
+
+### 機制（假裝置重現）
+`cpu_share.run()` 原本用「提交 CPU 段的時刻 → CPU 段完成」當 CPU 段耗時。GPU 段的 `gpuFn` 是**同步**在主執行緒上執行的：它的提交工作（上傳、編碼、送出）會先占住主執行緒，CPU 段排在它後面才開始，這段同步時間就被算進 CPU 段。
+
+重現（`cpu_share_breakdown_test.js`，假 Worker 跑真的 Worker 原始碼，GPU 段同步占用 12 ms）：
+- 量到的 GPU 同步成本 `gpuSyncMs` = 11.4 ms（與設定的 12 ms 相符）。
+- CPU 段自己的執行時間 `cpuOwnMs`：無占用 20.7 ms、占用 22.6 ms，差 1.9 ms。也就是 GPU 同步**沒有**算進 CPU 段自己的時間。
+- 牆鐘時間 `cpuMs`（修正前的量法）則會隨同步成本一起增加。
+
+### 為什麼比例會被壓到 8%
+三個因素疊在一起：
+1. `ratioNow` 的決策用 `gpuOverheadMs: 0`，GPU 的固定同步成本完全沒進模型。
+2. 回饋（`feedbackFraction`）用的是牆鐘 CPU 段時間。被同步成本撐大的 CPU 段會讓回饋把比例往下修。
+3. 回饋只會往下修（`min(d.fraction, fbFrac)`），不會往上補。
+
+所以即使核心本身夠快，只要 GPU 同步成本大，CPU 的比例就會一路往下掉到 8%。
+
+### 修正
+- `run()`：量 GPU 提交的同步成本（`gpuSyncMs`，包住 `gpuFn` 的回傳時間），量 CPU 段自己的執行時間（`cpuOwnMs`，佇列執行器內）。
+- 回饋與 CPU 速率改用 `cpuOwnMs`；GPU 速率仍用 GPU 段的牆鐘時間（它本來就包含提交成本）。
+- `goMs`：`gpuSyncMs` 的 EMA，放進 `decideSplit` 的 `gpuOverheadMs`（GPU 有固定成本時，CPU 應該多分擔，而不是少分擔）。
+- `stats()` 新增 `goMs`；`last` 新增 `gpuSyncMs`、`cpuOwnMs`。
+- 評估模式（`createCpuShare({profile: true})`）：`stats().cpuBreak` 累加主執行緒 CPU 核心的分段計時（打包 B、打包 A、計算、呼叫次數、重用的 B 區塊數、牆鐘）。
+
+### 40 列呼叫的固定成本（節點量測）
+- 40 列（512×512 的 B）完整呼叫約 4.8 ms，其中打包整個 B 約 2.5 ms。這是每次呼叫都要付的固定成本，所以 40 列遠高於「核心計算 1.7 ms」的理想值。
+- 修正：`gemmPackedSimd` 加上 **opt-in** 的 B 打包快取（`cacheB: true`，以 B 物件為鍵；呼叫端承諾呼叫之間不改動 B）。同樣 40 列降到約 3.8 ms；第二次呼叫重用 4 個區塊。
+- `cpu_share` 在有 `bKey` 時才開啟快取（與既有的 Worker B 快取同一份契約）。
+
+### 還沒證實的
+- 真機上 CPU 段 15.3 ms 與 1.7 ms 之間的差距，有多少來自 GPU 同步（已有機制與重現）、有多少來自每次呼叫的打包與拼接（節點量到約 1–2 ms）。需要真機的 `cpuBreak` 與 `gpuSyncMs` 才能分開。
+- 回饋仍然只會往下修（沒有對稱的往上補）。這一點如果真機仍然偏低，要再改。
+- `cpu_share_breakdown_test.js` 的第三項（CPU 列數）兩次都撞到上限 0.5，所以它只證明「不會變少」，沒有證明會變多。

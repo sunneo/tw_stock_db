@@ -126,14 +126,32 @@ function gemmPackedSimd(A, B, m, k, n, opts) {
   const Ap = f32.subarray(0, apBytes / 4);
   const Bp = f32.subarray(apBytes / 4, (apBytes + bpBytes) / 4);
   const out = f32.subarray(outOff / 4, outOff / 4 + 32);
+  // 可選的計時（評估用）：timing 物件會累加 packBMs、packAMs、computeMs、blocksReused、calls。預設不計時。
+  const T = o.timing || null;
+  const now = () => (typeof performance !== 'undefined' ? performance : Date).now();
+  // 可選的 B 打包快取（opt-in：cacheB === true）：同一個 B 物件的打包區塊只打包一次。呼叫端承諾呼叫之間不改動 B。
+  const bc = o.cacheB === true ? packedBCacheFor(B, transB, k, n, KC, NC) : null;
   for (let jc = 0; jc < n; jc += NC) {
     const nc = Math.min(NC, n - jc);
     for (let pc = 0; pc < k; pc += KC) {
       const kc = Math.min(KC, k - pc);
-      packB(B, transB, n, k, pc, kc, jc, nc, Bp);
+      const key = jc + ',' + pc;
+      const len = Math.ceil(nc / NR) * NR * kc;
+      if (bc && bc.blocks.has(key)) {
+        Bp.set(bc.blocks.get(key));
+        if (T) T.blocksReused = (T.blocksReused || 0) + 1;
+      } else {
+        const t0 = T ? now() : 0;
+        packB(B, transB, n, k, pc, kc, jc, nc, Bp);
+        if (T) T.packBMs = (T.packBMs || 0) + (now() - t0);
+        if (bc) bc.blocks.set(key, Bp.slice(0, len));
+      }
       for (let ic = 0; ic < m; ic += MC) {
         const mc = Math.min(MC, m - ic);
+        const ta = T ? now() : 0;
         packA(A, transA, m, k, ic, mc, pc, kc, Ap);
+        if (T) T.packAMs = (T.packAMs || 0) + (now() - ta);
+        const tc = T ? now() : 0;
         for (let jr = 0; jr < nc; jr += NR) {
           const nr = Math.min(NR, nc - jr);
           const bOff = apBytes + (jr / NR) * NR * kc * 4;
@@ -145,10 +163,21 @@ function gemmPackedSimd(A, B, m, k, n, opts) {
             for (let i = 0; i < mr; i++) for (let j = 0; j < nr; j++) C[cBase + i * n + j] += out[i * NR + j];
           }
         }
+        if (T) T.computeMs = (T.computeMs || 0) + (now() - tc);
       }
     }
   }
+  if (T) T.calls = (T.calls || 0) + 1;
   return C;
+}
+
+// 每個 B 物件一份打包快取（WeakMap，B 被回收就一起回收）；鍵含轉置與尺寸與分塊參數，任一不同就是另一份。
+const PACKED_B = new WeakMap();
+function packedBCacheFor(B, transB, k, n, KC, NC) {
+  const sig = [transB ? 1 : 0, k, n, KC, NC].join('|');
+  let byB = PACKED_B.get(B);
+  if (!byB || byB.sig !== sig) { byB = { sig, blocks: new Map() }; PACKED_B.set(B, byB); }
+  return byB;
 }
 
 // 原地轉置（只在 opts.inplace === true 時使用；預設絕不改動呼叫端輸入）。

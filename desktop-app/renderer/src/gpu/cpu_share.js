@@ -56,8 +56,8 @@ function cpuRowsRef(A, B, m, k, n, transB) {
 // Worker 原始碼（Blob 用）：從 cpuRowsRef 的原始碼組出，所以測試與實際執行是同一份邏輯
 // 主執行緒的 CPU 核心：支援 SIMD 就用分塊＋WASM SIMD（實測約為舊核心 15 倍），否則退回 cpuRowsRef。結果等價（相對誤差 ≤ 1e-5）。
 const SIMD_BYTES = (() => { try { return CW.simdSupported() ? CW.buildModule() : null; } catch (_) { return null; } })();
-function cpuKernel(A, B, m, k, n, transB) {
-  if (SIMD_BYTES) { try { return CG.gemmPackedSimd(A, B, m, k, n, { transB: !!transB }); } catch (_) { /* 退回參考實作 */ } }
+function cpuKernel(A, B, m, k, n, transB, ko) {
+  if (SIMD_BYTES) { try { return CG.gemmPackedSimd(A, B, m, k, n, Object.assign({ transB: !!transB }, ko || {})); } catch (_) { /* 退回參考實作 */ } }
   return cpuRowsRef(A, B, m, k, n, transB);
 }
 
@@ -111,6 +111,17 @@ function createCpuShare(o) {
   // 兩邊的實測速率（flops/ms，指數平均）；沒有資料前用保守的初始比例
   const rate = { gpu: 0, cpu: 0 };
   let last = null;
+  const profileOn = !!opts.profile;
+  // 主執行緒 CPU 核心的呼叫（含計時，評估模式才累加）
+  function timedKernel(A, B, m, k, n, transB, ko) {
+    const T = profileOn ? {} : null; const w0 = profileOn ? now() : 0;
+    const y = cpuKernel(A, B, m, k, n, transB, Object.assign({}, ko || {}, { timing: T }));
+    if (T) { cpuBreak.calls++; cpuBreak.wallMs += now() - w0; cpuBreak.packBMs += T.packBMs || 0; cpuBreak.packAMs += T.packAMs || 0; cpuBreak.computeMs += T.computeMs || 0; cpuBreak.blocksReused += T.blocksReused || 0; }
+    return y;
+  }   // 評估模式：累加主執行緒 CPU 核心的分段計時（打包 B、打包 A、計算、呼叫次數）
+  const cpuBreak = { calls: 0, packBMs: 0, packAMs: 0, computeMs: 0, blocksReused: 0, wallMs: 0 };
+  let goMs = 0;                    // GPU 段提交時在主執行緒的同步成本（EMA，毫秒）：不隨列數變，當作固定成本放進決策
+  let lastCpuOwnMs = 0;            // 最近一次 CPU 段自己執行的時間（不含排在 GPU 提交後面的等待）
   // 速率持久化（可選）：opts.rateStore（hetero_rates.createRateStore）＋ opts.rateKey。建立時載入；每次分工後存回（不等待、失敗不影響執行）。
   const rateStore = opts.rateStore || null, rateKeyStr = opts.rateKey || null;
   if (rateStore && rateKeyStr) {
@@ -122,12 +133,17 @@ function createCpuShare(o) {
   let streamSeq = 0;
   const queue = GQ.createGpuQueue({
     maxPending: 64,
-    execute: (op, a) => (op.device === 'cpu' ? cpuExec(a) : Promise.resolve(a.fn(a.A, a.mG))),
+    execute: (op, a) => {
+      if (op.device !== 'cpu') return Promise.resolve(a.fn(a.A, a.mG));
+      const s0 = now(); const p = cpuExec(a);
+      p.then(() => { lastCpuOwnMs = now() - s0; }, () => { lastCpuOwnMs = now() - s0; });
+      return p;
+    },
   });
   async function cpuExec(a) {
     const rows = a.m - a.mG;
     if (rows > 0 && cpuPathFor({ m: rows, k: a.k, n: a.n, workers: a.nW, minFlops: minWorkerFlops }).path === 'main') {
-      return [cpuKernel(a.A.slice(a.mG * a.k, a.m * a.k), a.B, rows, a.k, a.n, !!a.transB)];
+      return [timedKernel(a.A.slice(a.mG * a.k, a.m * a.k), a.B, rows, a.k, a.n, !!a.transB, { cacheB: a.bId != null })];
     }
     const parts = [];
     for (let w = 0; w < a.nW; w++) {
@@ -182,7 +198,7 @@ function createCpuShare(o) {
     const probe = Math.min(MAX_CPU_RATIO, want * FIRST_RATIO_PER_CORE);
     if (!(rate.gpu > 0 && rate.cpu > 0)) return probe;
     const work = (m && k && n) ? 2 * m * k * n : 1e9;
-    const d = HS.decideSplit({ work, gpuAvailable: true, cpuAvailable: want > 0, gpuRate: rate.gpu, cpuRate: rate.cpu, gpuOverheadMs: 0, cpuOverheadMs: CPU_OVERHEAD_MS });
+    const d = HS.decideSplit({ work, gpuAvailable: true, cpuAvailable: want > 0, gpuRate: rate.gpu, cpuRate: rate.cpu, gpuOverheadMs: goMs, cpuOverheadMs: CPU_OVERHEAD_MS });
     if (d.mode === 'split') {
       sinceProbe = 0;
       const f = fbFrac == null ? d.fraction : Math.min(d.fraction, fbFrac);   // 實測段耗時的回饋只會往下修
@@ -214,7 +230,9 @@ function createCpuShare(o) {
     let cpuMs = 0, gpuMs = 0;
     // 統一句柄：CPU 段與 GPU 段都是佇列上的一次提交，各自一條 stream（每次分工用新的 stream 編號，失敗不會影響下一次）
     const sG = ++streamSeq * 2, sC = sG + 1;
-    const hG = queue.submit({ device: 'gpu', name: 'matmul' }, { fn: gpuFn, A: A.subarray(0, mG * k), mG }, sG);
+    let gpuSyncMs = 0;
+    const timedGpu = (Asub, mGv) => { const s1 = now(); const rr = gpuFn(Asub, mGv); gpuSyncMs = now() - s1; return rr; };
+    const hG = queue.submit({ device: 'gpu', name: 'matmul' }, { fn: timedGpu, A: A.subarray(0, mG * k), mG }, sG);
     const hC = queue.submit({ device: 'cpu', name: 'rows' }, { A, B, m, k, n, transB: !!r.transB, bId, mG, nW, per }, sC);
     const pG = queue.wait(hG).then((v) => { gpuMs = now() - t0; return v; });
     const pC = queue.wait(hC).then((v) => { cpuMs = now() - t0; return v; });
@@ -227,12 +245,14 @@ function createCpuShare(o) {
     y.set(yG.length === mG * n ? yG : yG.subarray(0, mG * n), 0);
     let off = mG * n; cpuParts.forEach((c) => { y.set(c, off); off += c.length; });
     // 段耗時回饋：這次實測的 GPU 段與 CPU 段耗時，算出讓兩段相等的比例；下一次的比例不會超過它（CPU 段慢 → 往下修）
-    fbFrac = HS.feedbackFraction(mC / m, gpuMs, cpuMs, MAX_CPU_RATIO);
+    const cpuOwn = lastCpuOwnMs > 0 ? lastCpuOwnMs : cpuMs;
+    fbFrac = HS.feedbackFraction(mC / m, gpuMs, cpuOwn, MAX_CPU_RATIO);
+    goMs = ema(goMs, gpuSyncMs);
     // 回饋：兩邊各自的速率（用各自完成的時間，不是總時間），下一次的比例據此調整
     if (gpuMs > 0) rate.gpu = ema(rate.gpu, (2 * mG * k * n) / gpuMs);
-    if (cpuMs > 0) rate.cpu = ema(rate.cpu, (2 * mC * k * n) / cpuMs);
+    if (cpuOwn > 0) rate.cpu = ema(rate.cpu, (2 * mC * k * n) / cpuOwn);
     saveRates();
-    last = { shared: true, m, mGpu: mG, mCpu: mC, workers: nW, ratio: Math.round(ratio * 1000) / 1000, gpuMs: Math.round(gpuMs * 10) / 10, cpuMs: Math.round(cpuMs * 10) / 10, totalMs: Math.round((now() - t0) * 10) / 10, flops };
+    last = { shared: true, gpuSyncMs: Math.round(gpuSyncMs * 10) / 10, cpuOwnMs: Math.round(cpuOwn * 10) / 10, m, mGpu: mG, mCpu: mC, workers: nW, ratio: Math.round(ratio * 1000) / 1000, gpuMs: Math.round(gpuMs * 10) / 10, cpuMs: Math.round(cpuMs * 10) / 10, totalMs: Math.round((now() - t0) * 10) / 10, flops };
     return { shared: true, y, info: last };
   }
 
@@ -241,7 +261,7 @@ function createCpuShare(o) {
   async function runCpuOnly(A, B, m, k, n, ro) {
     const r = ro || {};
     const transB = !!r.transB;
-    const mainRun = (why, fallback) => ({ shared: true, y: cpuKernel(A, B, m, k, n, transB), info: { mode: 'cpu-main', workers: 0, why, fallback } });
+    const mainRun = (why, fallback) => ({ shared: true, y: timedKernel(A, B, m, k, n, transB, { cacheB: !!r.bKey }), info: { mode: 'cpu-main', workers: 0, why, fallback } });
     if (want <= 0) return mainRun('off');
     const pick = cpuPathFor({ m, k, n, workers: want, minFlops: minWorkerFlops });
     if (pick.path === 'main') return { shared: true, y: cpuKernel(A, B, m, k, n, transB), info: { mode: 'cpu-main', workers: 0, why: pick.reason, threshold: true } };
@@ -263,7 +283,7 @@ function createCpuShare(o) {
     }
   }
 
-  function stats() { return { cores: want, workers: pool.length, broken, rate: { gpu: rate.gpu, cpu: rate.cpu }, feedback: fbFrac, last }; }
+  function stats() { return { cores: want, workers: pool.length, broken, rate: { gpu: rate.gpu, cpu: rate.cpu }, feedback: fbFrac, goMs, cpuBreak: profileOn ? Object.assign({}, cpuBreak) : null, last }; }
   function dispose() { want = 0; ensurePool(); }
   // _setRates／_ratioNow 只給測試用（底線開頭）：直接設定兩邊速率，讓決策可以確定地走到切分或不切
   return { setCores, cores: () => want, run, runCpuOnly, stats, dispose, _ratioNow: ratioNow, _setRates: (g, c) => { rate.gpu = Number(g) || 0; rate.cpu = Number(c) || 0; fbFrac = null; } };
