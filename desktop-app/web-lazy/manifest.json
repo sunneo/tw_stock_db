@@ -22,8 +22,16 @@
    "names": [
     "FA_PYBRIDGE_FILES"
    ],
-   "size": 507601,
-   "md5": "33d404733fa33c85c84fcf3ce07c048b"
+   "size": 529642,
+   "md5": "99ae6a4d8422e853210e9ec871a153e2"
+  },
+  "pyexamples": {
+   "file": "chunks/pyexamples.js",
+   "names": [
+    "FA_PY_EXAMPLES"
+   ],
+   "size": 214163,
+   "md5": "09b5a795fd38573197cc8e3573de93fc"
   },
   "headsvc": {
    "file": "chunks/headsvc.js",
@@ -46,8 +54,8 @@
    "names": [
     "FA_QWEN_SRC"
    ],
-   "size": 500322,
-   "md5": "bc42c8e6959a4bc06f910009fa9dc290"
+   "size": 510998,
+   "md5": "3da234bd000bf2bf52e45f049cc2f8c9"
   },
   "aidocview": {
    "file": "chunks/aidocview.js",
@@ -70,8 +78,8 @@
     "FA_WEBTRAIN_WORKER_SRC",
     "FA_STUDIO_HOST_FILES"
    ],
-   "size": 889309,
-   "md5": "a764a37bf1e116c0c306764349e2685c"
+   "size": 888261,
+   "md5": "77ace6ed81c1bdf2b2de733227176d7c"
   },
   "studioview": {
    "file": "chunks/studioview.js",
@@ -1887,7 +1895,7 @@
   }
  },
  "core": {
-  "size": 6099709,
-  "md5": "20d3cd95e7a459ffe0b65b69987b20cb"
+  "size": 6118787,
+  "md5": "8641cf603ee2892ec07138a98b17bc4a"
  }
 }
