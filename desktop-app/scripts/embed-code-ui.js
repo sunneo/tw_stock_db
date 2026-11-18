@@ -40,6 +40,17 @@ function embedPyBridge() {
     console.log('已更新 FA_PYBRIDGE_FILES（' + Object.keys(out).join('、') + '）');
 }
 embedPyBridge();
+// run terminal 預設資料夾的 Python 範例（renderer/src/examples/python/**；不含測試台 _harness.py）→ FA_PY_EXAMPLES（相對路徑 → 內容）
+function embedPyExamples() {
+    const dir = path.join(root, 'renderer/src/examples/python');
+    const out = {};
+    (function walk(d, rel) { for (const n of fs.readdirSync(d).sort()) { const p = path.join(d, n), r = rel ? rel + '/' + n : n; if (fs.statSync(p).isDirectory()) { if (n !== '__pycache__') walk(p, r); } else if ((n.endsWith('.py') || n === 'README.md') && !n.startsWith('_')) out[r] = fs.readFileSync(p, 'utf8').replace(/\r\n/g, '\n'); } })(dir, '');
+    const a = src.indexOf('/* PYEXAMPLES-BEGIN */'), b = src.indexOf('/* PYEXAMPLES-END */');
+    if (a < 0 || b < 0) throw new Error('找不到 PYEXAMPLES 標記');
+    src = src.slice(0, a) + '/* PYEXAMPLES-BEGIN */\nconst FA_PY_EXAMPLES = ' + lit(out) + ';\n' + src.slice(b);
+    console.log('已更新 FA_PY_EXAMPLES（' + Object.keys(out).length + ' 個檔案）');
+}
+embedPyExamples();
 function embedIdrSkill() {
     // 內建技能 image-decompose-redraw：SKILL.md＋scripts/**/*.py（不含 tests）
     const dir = path.join(root, 'skills/image-decompose-redraw');
@@ -82,11 +93,11 @@ embed('renderer/src/gpu/gpu_preload.js', 'GPUPRE-BEGIN', 'GPUPRE-END', 'FA_GPU_P
 (function embedQwenGpu() {
     const rd = (p) => fs.readFileSync(path.join(root, p), 'utf8').replace(/\r\n/g, '\n');
     let s = 'const MODS = {};\n';
-    for (const n of ['gpu_pool', 'nn_ops', 'infer_ops', 'onnx_lite', 'attn_ops', 'qwen_decode', 'qwen_decode_q4', 'qwen_gpu', 'qwen_chat', 'device_pick', 'gpu_mem', 'qwen_models', 'conv_ops', 'whisper_enc', 'whisper_gpu', 'whisper_attach', 'mm_ops', 'kernel_select', 'mm_subgroup', 'mm_splitk', 'q8mm_splitk', 'conv_im2col', 'attn_splitkv', 'variant_race', 'profile_priors', 'variant_table', 'onnx_ops_more', 'onnx_interp', 'graph_session', 'bench_core', 'bench_run', 'llm_arch', 'llm_skeleton', 'llm_skeleton_gpu']) s += 'MODS[' + JSON.stringify(n) + '] = function (module, exports, require) {\n' + rd('renderer/src/gpu/' + n + '.js') + '\n};\n';
+    for (const n of ['gpu_pool', 'nn_ops', 'infer_ops', 'onnx_lite', 'attn_ops', 'qwen_decode', 'qwen_decode_q4', 'qwen_gpu', 'qwen_chat', 'device_pick', 'gpu_mem', 'qwen_models', 'conv_ops', 'whisper_enc', 'whisper_gpu', 'whisper_attach', 'mm_ops', 'cpu_share', 'kernel_select', 'mm_subgroup', 'mm_splitk', 'q8mm_splitk', 'conv_im2col', 'attn_splitkv', 'variant_race', 'profile_priors', 'variant_table', 'onnx_ops_more', 'onnx_interp', 'graph_session', 'bench_core', 'bench_run', 'llm_arch', 'llm_skeleton', 'llm_skeleton_gpu']) s += 'MODS[' + JSON.stringify(n) + '] = function (module, exports, require) {\n' + rd('renderer/src/gpu/' + n + '.js') + '\n};\n';
     // 原生子程序共用的生成參數與提示樣板（唯一實作在根目錄；renderer/src/gpu/nr_gen_params.js 只是 node 測試的轉接，不嵌入）
     for (const [n, f] of [['nr_gen_params', 'nr-gen-params.js'], ['nr_template', 'nr-template.js'], ['llm_web_core', 'renderer/src/studio/llm_web_core.js']]) s += 'MODS[' + JSON.stringify(n) + '] = function (module, exports, require) {\n' + rd(f) + '\n};\n';
     s += "const CACHE = {}; function req(p) { const n = String(p).replace(/^\\.\\//, '').replace(/\\.js$/, ''); if (n === 'gpu_core') { if (!self.FaGpuCore) throw new Error('FaGpuCore 還沒載入'); return self.FaGpuCore; } if (CACHE[n]) return CACHE[n].exports; if (!MODS[n]) throw new Error('沒有模組 ' + p); const m = { exports: {} }; CACHE[n] = m; MODS[n].call(m.exports, m, m.exports, req); return m.exports; }\n";
-    s += "return { decode: req('qwen_decode'), q4: req('qwen_decode_q4'), gpu: req('qwen_gpu'), chat: req('qwen_chat'), llmweb: req('llm_web_core'), whisper: { enc: req('whisper_enc'), gpu: req('whisper_gpu'), attach: req('whisper_attach') }, graph: req('graph_session'), tpl: req('nr_template'), pick: req('device_pick'), mem: req('gpu_mem'), models: req('qwen_models'), nn: req('nn_ops'), mm: req('mm_ops'), benchCore: req('bench_core'), bench: req('bench_run'), kernel: req('kernel_select'), race: req('variant_race'), priors: req('profile_priors'), vt: req('variant_table'), llmArch: req('llm_arch'), llmSkel: req('llm_skeleton'), llmSkelGpu: req('llm_skeleton_gpu') };";
+    s += "return { decode: req('qwen_decode'), q4: req('qwen_decode_q4'), gpu: req('qwen_gpu'), chat: req('qwen_chat'), llmweb: req('llm_web_core'), whisper: { enc: req('whisper_enc'), gpu: req('whisper_gpu'), attach: req('whisper_attach') }, graph: req('graph_session'), tpl: req('nr_template'), pick: req('device_pick'), mem: req('gpu_mem'), models: req('qwen_models'), nn: req('nn_ops'), mm: req('mm_ops'), cpuShare: req('cpu_share'), benchCore: req('bench_core'), bench: req('bench_run'), kernel: req('kernel_select'), race: req('variant_race'), priors: req('profile_priors'), vt: req('variant_table'), llmArch: req('llm_arch'), llmSkel: req('llm_skeleton'), llmSkelGpu: req('llm_skeleton_gpu') };";
     const a = src.indexOf('/* QWENGPU-BEGIN */'), b = src.indexOf('/* QWENGPU-END */');
     if (a < 0 || b < 0) throw new Error('找不到 QWENGPU 標記');
     src = src.slice(0, a) + '/* QWENGPU-BEGIN */\nconst FA_QWEN_SRC = ' + lit(s) + ';\n' + src.slice(b);

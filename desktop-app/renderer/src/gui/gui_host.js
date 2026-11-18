@@ -14,7 +14,7 @@
   function createHost(opts) {
     var doc = opts.doc, container = opts.container, bridge = opts.bridge, render = opts.render;
     var session = bridge.createSession();
-    var layer = null, views = {}, queues = {}, waiters = {}, pictures = {}, shells = {};
+    var layer = null, views = {}, queues = {}, waiters = {}, pictures = {}, prevPictures = {}, shells = {};
 
     function ensureLayer() {
       if (!layer) {
@@ -44,6 +44,9 @@
       return function (name, nodeId, value) {
         var line = bridge.eventLine(session, winId, nodeId, name, value);
         if (line) { enqueue(winId, name, line); }
+        // resizing a canvas clears it (2D and WebGL alike): draw the last frame again, so a program that only draws when something changes
+        // does not show an empty canvas
+        if (name === 'resize') { repaintCanvas(winId, nodeId); }
       };
     }
 
@@ -55,11 +58,14 @@
       var key = winId + '/' + nodeId + '/' + name;
       if (!pictures[key] || pictures[key].src !== data) {
         var img = new (doc.defaultView || root).Image();
+        // a picture registered again under the same name (a program that redraws a rendered frame): keep showing the last decoded one
+        // until the new one has loaded, so the canvas does not flash empty
+        if (pictures[key] && pictures[key].complete) { prevPictures[key] = pictures[key]; }
         img.src = data;
-        img.onload = function () { repaintCanvas(winId, nodeId); };
+        img.onload = function () { delete prevPictures[key]; repaintCanvas(winId, nodeId); };
         pictures[key] = img;
       }
-      return pictures[key].complete ? pictures[key] : null;
+      return pictures[key].complete ? pictures[key] : (prevPictures[key] || null);
     }
 
     function removeView(winId) {
@@ -145,6 +151,7 @@
       var el = view && view.querySelector ? view.querySelector('[data-node="' + nodeId + '"]') : null;
       var win = session.windows[winId], node = win && win.nodes[nodeId];
       if (!el || !node || node.kind !== 'canvas') { return; }
+      if (node.gl) { render.paintGl(el, node, function (msg) { var line = bridge.eventLine(session, winId, nodeId, 'glerror', msg); if (line) { enqueue(winId, 'glerror', line); } }); return; }
       var ctx = el.getContext ? el.getContext('2d') : null;
       if (!ctx) { return; }
       render.paintFrame(ctx, node.frame || [], el.width, el.height, function (name) { return picture(winId, nodeId, name); });
@@ -221,6 +228,8 @@
       else if (msg.op === 'add' || msg.op === 'remove' || msg.op === 'theme' || msg.op === 'shortcut') { show(msg.id); }
       else if (msg.op === 'tone') { playTone(msg.freq, msg.ms, msg.wave || 'sine'); }
       else if (msg.op === 'draw') { paint(msg.id); }
+      else if (msg.op === 'glbuf' || msg.op === 'glprog') { /* painted with the next glframe */ }
+      else if (msg.op === 'glframe') { repaintCanvas(msg.id, msg.node); }
       else if (msg.op === 'image') { repaintCanvas(msg.id, msg.node); }
       return { ok: true };
     }

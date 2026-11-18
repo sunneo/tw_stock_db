@@ -22,9 +22,121 @@
       else if (name === 'image') {
         var pic = lookup ? lookup(op[1]) : null;
         if (!pic) { return; }
-        if (op.length === 6) { ctx.drawImage(pic, op[2], op[3], op[4], op[5]); } else { ctx.drawImage(pic, op[2], op[3]); }
+        if (op.length === 8 && (op[6] || op[7])) {
+          // flipped: mirror inside the w x h box (translate to the box, scale -1 on the flipped axis, draw at the origin)
+          ctx.save();
+          ctx.translate(op[2] + (op[6] ? op[4] : 0), op[3] + (op[7] ? op[5] : 0));
+          ctx.scale(op[6] ? -1 : 1, op[7] ? -1 : 1);
+          ctx.drawImage(pic, 0, 0, op[4], op[5]);
+          ctx.restore();
+        } else if (op.length >= 6) { ctx.drawImage(pic, op[2], op[3], op[4], op[5]); } else { ctx.drawImage(pic, op[2], op[3]); }
       }
     });
+  }
+
+  // Paints one WebGL2 canvas frame: node = { glbufs, glprogs, glframe } as the bridge keeps them (checked data). Buffers and programs are
+  // uploaded and compiled once per version and cached on the canvas element (el.__fa_gl). onError(text) reports compile or link failures.
+  function b64Bytes(b64) {
+    var bin = (typeof atob === 'function') ? atob(b64) : Buffer.from(b64, 'base64').toString('binary');
+    var out = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) { out[i] = bin.charCodeAt(i); }
+    return out;
+  }
+  function paintGl(el, node, onError) {
+    var st = el.__fa_gl;
+    if (!st) {
+      var gl = el.getContext && el.getContext('webgl2', { antialias: true, alpha: false, preserveDrawingBuffer: true });
+      if (!gl) { if (!el.__fa_glwarned) { el.__fa_glwarned = true; if (onError) { onError('WebGL2 is not available'); } } return; }
+      st = el.__fa_gl = { gl: gl, bufs: {}, progs: {}, vao: gl.createVertexArray(), failed: {} };
+    }
+    var gl2 = st.gl, key;
+    var bufs = node.glbufs || {}, progs = node.glprogs || {};
+    // buffers: upload when new or changed (version), drop the ones the program removed
+    Object.keys(bufs).forEach(function (name) {
+      var b = bufs[name], have = st.bufs[name];
+      if (have && have.v === b.v) { return; }
+      if (!have) { have = st.bufs[name] = { buf: gl2.createBuffer() }; }
+      var bytes = b64Bytes(b.data);
+      var target = b.type === 'f32' ? gl2.ARRAY_BUFFER : gl2.ELEMENT_ARRAY_BUFFER;
+      gl2.bindVertexArray(st.vao);
+      gl2.bindBuffer(target, have.buf);
+      gl2.bufferData(target, bytes, gl2.DYNAMIC_DRAW);
+      have.v = b.v; have.type = b.type;
+    });
+    for (key in st.bufs) { if (!bufs[key]) { gl2.deleteBuffer(st.bufs[key].buf); delete st.bufs[key]; } }
+    // programs: compile when new or changed; a failure is reported once per version
+    Object.keys(progs).forEach(function (name) {
+      var p = progs[name], have = st.progs[name];
+      if (have && have.v === p.v) { return; }
+      if (have && have.prog) { gl2.deleteProgram(have.prog); }
+      var made = { v: p.v, prog: null, locs: {} };
+      st.progs[name] = made;
+      function shader(type, src) {
+        var sh = gl2.createShader(type);
+        gl2.shaderSource(sh, src); gl2.compileShader(sh);
+        if (!gl2.getShaderParameter(sh, gl2.COMPILE_STATUS)) { var log = gl2.getShaderInfoLog(sh) || ''; gl2.deleteShader(sh); throw new Error(log); }
+        return sh;
+      }
+      try {
+        var vs = shader(gl2.VERTEX_SHADER, p.vs), fs = shader(gl2.FRAGMENT_SHADER, p.fs), pr = gl2.createProgram();
+        gl2.attachShader(pr, vs); gl2.attachShader(pr, fs); gl2.linkProgram(pr);
+        gl2.deleteShader(vs); gl2.deleteShader(fs);
+        if (!gl2.getProgramParameter(pr, gl2.LINK_STATUS)) { var l2 = gl2.getProgramInfoLog(pr) || ''; gl2.deleteProgram(pr); throw new Error(l2); }
+        made.prog = pr;
+      } catch (e) { if (onError) { onError('program "' + name + '": ' + String((e && e.message) || e).slice(0, 300)); } }
+    });
+    for (key in st.progs) { if (!progs[key]) { if (st.progs[key].prog) { gl2.deleteProgram(st.progs[key].prog); } delete st.progs[key]; } }
+
+    var W = el.width, H = el.height, cur = null, indexBuf = null, indexType = 0, attrOn = {};
+    gl2.viewport(0, 0, W, H);
+    gl2.bindVertexArray(st.vao);
+    var MODE = { points: gl2.POINTS, lines: gl2.LINES, line_strip: gl2.LINE_STRIP, triangles: gl2.TRIANGLES, triangle_strip: gl2.TRIANGLE_STRIP };
+    var cmds = node.glframe || [];
+    function loc(name) {
+      if (!(name in cur.locs)) { cur.locs[name] = gl2.getUniformLocation(cur.prog, name); }
+      return cur.locs[name];
+    }
+    cmds.forEach(function (c) {
+      var op = c[0];
+      if (op === 'clear') { gl2.clearColor(c[1], c[2], c[3], c[4]); gl2.clearDepth(1); gl2.clear(gl2.COLOR_BUFFER_BIT | gl2.DEPTH_BUFFER_BIT); }
+      else if (op === 'state') {
+        // blend: alpha blending (src alpha, one minus src alpha); additive: glow (src alpha, one): overlapping sprites add up. Both use GL's one BLEND switch.
+        var cap = c[1] === 'depth' ? gl2.DEPTH_TEST : (c[1] === 'blend' || c[1] === 'additive') ? gl2.BLEND : gl2.CULL_FACE;
+        if (c[2]) { gl2.enable(cap); if (c[1] === 'blend') { gl2.blendFunc(gl2.SRC_ALPHA, gl2.ONE_MINUS_SRC_ALPHA); } else if (c[1] === 'additive') { gl2.blendFunc(gl2.SRC_ALPHA, gl2.ONE); } } else { gl2.disable(cap); }
+      }
+      else if (op === 'use') { cur = st.progs[c[1]]; if (cur && cur.prog) { gl2.useProgram(cur.prog); } else { cur = null; } }
+      else if (!cur) { return; }   // the commands below need a working program; a failed one was reported at compile time
+      else if (op === 'uf') {
+        var l = loc(c[1]); if (l === null) { return; }
+        var v = c.slice(2), n = v.length;
+        if (n === 1) { gl2.uniform1f(l, v[0]); } else if (n === 2) { gl2.uniform2fv(l, v); } else if (n === 3) { gl2.uniform3fv(l, v); }
+        else if (n === 4) { gl2.uniform4fv(l, v); } else if (n === 9) { gl2.uniformMatrix3fv(l, false, v); } else { gl2.uniformMatrix4fv(l, false, v); }
+      }
+      else if (op === 'ui') { var li = loc(c[1]); if (li !== null) { gl2.uniform1i(li, c[2]); } }
+      else if (op === 'attr') {
+        var a = gl2.getAttribLocation(cur.prog, c[1]), b = st.bufs[c[2]];
+        if (a < 0 || !b) { return; }
+        gl2.bindBuffer(gl2.ARRAY_BUFFER, b.buf);
+        gl2.enableVertexAttribArray(a);
+        gl2.vertexAttribPointer(a, c[3], gl2.FLOAT, false, c[4], c[5]);
+        gl2.vertexAttribDivisor(a, c[6] ? 1 : 0);
+        attrOn[a] = true;
+      }
+      else if (op === 'index') {
+        var ib = st.bufs[c[1]]; if (!ib) { return; }
+        gl2.bindBuffer(gl2.ELEMENT_ARRAY_BUFFER, ib.buf); indexBuf = ib; indexType = ib.type === 'u16' ? gl2.UNSIGNED_SHORT : gl2.UNSIGNED_INT;
+      }
+      else if (op === 'draw') {
+        var mode = MODE[c[1]];
+        if (indexBuf) { gl2.drawElementsInstanced(mode, c[3], indexType, c[2] * (indexType === gl2.UNSIGNED_SHORT ? 2 : 4), c[4]); }
+        else { gl2.drawArraysInstanced(mode, c[2], c[3], c[4]); }
+        // an index buffer applies to the next draw only: a later draw without a new "index" command is a plain array draw
+        indexBuf = null; gl2.bindBuffer(gl2.ELEMENT_ARRAY_BUFFER, null);
+      }
+    });
+    // leave no attribute array enabled: the next frame (or program) starts clean
+    Object.keys(attrOn).forEach(function (a) { gl2.disableVertexAttribArray(Number(a)); gl2.vertexAttribDivisor(Number(a), 0); });
+    gl2.bindBuffer(gl2.ELEMENT_ARRAY_BUFFER, null);
   }
 
   // keys the game uses for movement: the page must not scroll while the canvas has focus
@@ -851,7 +963,8 @@
           };
           if (typeof ResizeObserver !== 'undefined') { new ResizeObserver(fit).observe(el); }
         }
-        paintFrame(el.getContext('2d'), n.frame || [], el.width, el.height, function (name) { return opts && opts.image ? opts.image(n.id, name) : null; });
+        if (n.gl) { paintGl(el, n, function (msg) { onEvent('glerror', n.id, msg); }); }
+        else { paintFrame(el.getContext('2d'), n.frame || [], el.width, el.height, function (name) { return opts && opts.image ? opts.image(n.id, name) : null; }); }
         on('keydown', function (e) {
           if (GAME_KEYS.indexOf(e.key) >= 0) { e.preventDefault(); }
           onEvent('key', n.id, { key: e.key, down: true });
@@ -1248,5 +1361,5 @@
     return win;
   }
 
-  return { patchNode: patchNode, GUI_CSS: GUI_CSS, tokenizeLine: tokenizeLine, isDark: isDark, CONTROL_BUTTON_CSS: CONTROL_BUTTON_CSS, renderWindow: renderWindow, paintFrame: paintFrame, applyTheme: applyTheme, shortcutKey: shortcutKey, textOn: textOn };
+  return { paintGl: paintGl, patchNode: patchNode, GUI_CSS: GUI_CSS, tokenizeLine: tokenizeLine, isDark: isDark, CONTROL_BUTTON_CSS: CONTROL_BUTTON_CSS, renderWindow: renderWindow, paintFrame: paintFrame, applyTheme: applyTheme, shortcutKey: shortcutKey, textOn: textOn };
 }));

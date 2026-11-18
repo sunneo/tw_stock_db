@@ -146,3 +146,33 @@ Pyodide 的檔案寫入繞進 fap：`/fap/<名稱>/…`、`fap:<名稱>/…` 指
 - `renderer/src/gpu/fa_gpu_py_test.py`：48 項（一般 run_command 的 GPU-only 模式：純腳本不動、墊片腳本只裝墊片、cudaCompat off、float64 模式傳遞（子行程跑 fa_run）；float64 三種模式、抽樣檢查失敗退回、dd 的 WGSL 文字與拒絕訊息、pack／unpack 往返、dd 演算法的 Python 鏡像精度；另含安裝清單與目錄掃描比對、桌面版與網頁版過濾後的真實 import、WGSL 文字檢查、端到端傳輸），用假的宿主（照 `_pyBridgeGpu` 協定，陣列走 float32 `.bin`）證明：不 import cudaweb 就能跑 NVIDIA 教學寫法的範例（numba 向量加、矩陣乘與原子直方圖、torch MLP 訓練迴圈、cupy 陣列運算）並與 numpy 一致；`syncthreads`＋共用記憶體；子集外語法的錯誤訊息；cupy 與 torch 的 GPU 橋接路徑與失敗退回；`.bin` 清理；stderr 只印一次；真套件優先的尋找器；pycuda 記憶體搬移。
 - 範例：`renderer/src/gpu/examples/numba_vector_add.py`、`numba_matmul_hist.py`、`cupy_basic.py`、`torch_mlp_train.py`。
 - **未驗證**：宿主 JS（`_pyBridgeGpu`、`_fa_gpu`）只做了 `node --check` 與靜態閱讀，沒有在真的 Electron 或瀏覽器裡跑過；真 WebGPU 的端到端驗證留給管理者用使用者的 Chrome 做。
+
+## WebGL2 畫布、`gl3d` 與 run terminal 範例（2026-11-18）
+
+目標（使用者要求）：run terminal 的預設資料夾 `/work/examples/python/{gui,game,gpgpu}/` 要有可直接執行的範例；圖形層要有 3D／OpenGL 整合；gpgpu 範例要能切換計算來源（純 CPU／GPU）。
+
+### 協定（`renderer/src/gui/gui_bridge.js`、`gui_render.js`、`gui_host.js`）
+- `canvas` 節點多一個屬性 `gl: true`，就是 WebGL2 畫布；鍵盤、滑鼠、滾輪、`fps` 的 frame、`resize`、`fit` 全部沿用 2D 畫布。
+- 三個新操作（只能對 `gl` 畫布）：`glbuf`（具名緩衝區，base64 位元組，型別 `f32`／`u16`／`u32`，每個 ≤4 MB、每畫布 ≤24 個；`data: null` 移除）、`glprog`（具名 GLSL ES 3.00 程式，頂點與片段各 ≤16000 字元，必須以 `#version 300 es` 開頭，每畫布 ≤12 個）、`glframe`（一幀的指令串，≤256 條）。2D 的 `draw`／`image` 對 `gl` 畫布會被拒絕，反之亦然。
+- 幀指令：`clear`、`state`（depth／blend／additive／cull；additive＝加成混合 `SRC_ALPHA, ONE`，重疊的光點會相加）、`use`、`uf`（1／2／3／4／9／16 個浮點＝float／vec2／vec3／vec4／mat3／mat4）、`ui`、`attr`（屬性名、f32 緩衝區、size、stride、offset、divisor）、`index`（**只作用於下一個 `draw`**）、`draw`（points／lines／line_strip／triangles／triangle_strip、first、count、instances）。橋接層檢查形狀與上限、檢查 `use`／`attr`／`index` 指到的程式與緩衝區確實存在；繪製端（`paintGl`）才編譯與上傳（依版本號只做一次），失敗以 `glerror` 事件回報給程式（≤400 字）。
+- 著色器是在使用者 GPU 上執行的程式，橋接層只能限制大小與格式，**無法**防止無窮迴圈的著色器卡住 GPU；文件與 `gl3d.py` 檔頭都寫明。
+- 單行上限：一般訊息仍是 8192 位元組；`image` 與 `glbuf`（承載資料的操作）放寬到 6 MB（操作名必須在行首 120 字元內）。這同時修了既有問題：圖片走終端機的 Worker 路徑時，超過約 6 KB 就被 8192 位元組上限擋掉，與「圖片 ≤256 KB」不一致。
+- `resize` 事件到達時主機用最新資料重畫該畫布（改畫布尺寸會清空 2D 與 WebGL 的緩衝區；只在狀態改變時才畫的程式原本會變空白）。
+- 圖片：`Window.image(..., name=)` 同名重註冊取代舊圖、不佔 16 張上限（連續更新畫面用）；主機在新圖解碼完成前繼續顯示舊圖（不閃爍）；`["image", name, x, y, w, h, flip_x, flip_y]` 翻轉。
+
+### Python 端
+- `gui.py`：`canvas(..., gl=True)`、`glbuf`、`glprog`、`glframe`。
+- `gl3d.py`（`renderer/src/pybridge/`，隨 `FA_PYBRIDGE_FILES` 嵌入）：mat4 數學（column-major 16 浮點）、軌道相機 `Camera`、幾何（`cube`、`sphere`、`grid_lines`、`axes_lines`）、內建程式 `flat`／`lit`／`points`／`dots`、`FrameBuilder`（`mesh`、`lines`、`points` 與原始指令）、`View`（畫布＋相機＋程式＋事件轉送）。**不是 PyOpenGL**：沒有全域 GL 環境與 `glXxx` 函式。
+- 圖形 Worker：`py.loadPackagesFromImports(src)` 先載入 numpy 等內建套件；`fa_gpu._rpc` 在 Worker 內沒有 `_fa_gpu` 時改走 `fa_bridge.call("gpu."+op)`（頁面端 `_pyBridgeDispatch` 已分派 `gpu.*`）。所以 `from numba import cuda` 的核心在圖形程式裡也能上 GPU。
+
+### 範例與預設資料夾
+- 原始碼 `renderer/src/examples/python/{game,gui,gpgpu}/*.py` 與 `README.md`，`scripts/embed-code-ui.js` 嵌成 `FA_PY_EXAMPLES`（`/* PYEXAMPLES-BEGIN */`），新終端機 session 建檔案系統時播種到 `/work/examples/python/…`（`_ensureTerminalFsStore` 的 `seedFiles`）。`_` 開頭的檔案（測試台 `_harness.py`）不嵌入。
+- gpgpu：`nbody3d.py`（照 `/home/hungfu.lee/下載/SRC/sdlmm/exams/nbody3d.c` 移植，見下）、`fluid3d.py`（SPH 流體，兩個核心：密度、力）。計算來源：視窗上的 CPU／GPU 按鈕、`--device cpu|gpu|auto`、`--bench`（不開視窗，兩邊計時並比對結果）。GPU 來源用 numba `@cuda.jit`；若相容層退回 Python 逐執行緒模擬（比 numpy 慢很多），程式偵測 `fa_gpu.STATS["fallbacks"]` 增加就自動退回 CPU 並在畫面說明。
+- `nbody3d.py` 對齊 C 版：NVIDIA nbody 的軟化重力（`F = G·m_j·r / (r²+ε²)^1.5`）、質量 200–299、盒內均勻隨機初始與零初速、`clampf` 軟夾制（超過上限往回移一半，不是截斷）、每 2000 幀印出「N 秒」並在同樣範圍內重新隨機化 MAX_X/Y/Z、MAX_Velocity、Gravity_Coef、SOFTENING 後重來、預設 3072 個、重力位能最高者附近（半徑 100、權重 質量/(距離+1)）的星團中心追蹤、相機位置公式與平滑過渡、青色系 `glowColors`、座標縮 0.1、粒子大小與模擬係數兩個滑桿、`C`／`R`／`H`／`+-`／方向鍵／滑鼠拖曳。繪圖用 `gl3d` 的 `glow`（高斯點精靈＋additive）。刻意的差異（檔頭也寫了）：① C 版以 OpenMP 就地更新位置（資料競爭），這裡同一幀所有天體看到同樣位置（確定性）；② 相機是右手座標（C 版是左手），畫面左右鏡像；③ C 版一開始「追蹤開、快照中心 0」，雲團大半在畫面外，要按兩次 `C` 才置中；這裡每個週期開始時把快照設成新盒子中心，第一幀就置中（按 `C` 仍照 C 版快照星團中心）。計算來源：`pairwise_cpu`（numpy）與 numba 核心 `nbody_kernel`（每個天體一個執行緒、迴圈全部天體，輸出三軸加速度總和與位能）；積分與 `clampf` 在主機端 numpy。核心已用 `wgsl.compile_kernel` 轉成 WGSL，模擬執行與 numpy 版相對誤差約 1e-7。
+- 無頭測試台 `examples/python/_harness.py`（close 只送一次，pygame 的 `event.get()` 會一直 poll 到 None；先前每次都回 close 會無限迴圈，由 game 範例的子代理發現並修正）：假的 `fa_bridge`，照橋接層上限檢查（2D 每幀 ≤200 指令、圖片、GL 緩衝區／程式／幀指令、`use`／`attr` 指到已註冊的物件）。
+
+### 驗證現況（誠實）
+- 單元測試：`gui_bridge.test.js`（200）、`gui_render.test.js`（143，含假 GL 的指令順序、版本快取、索引只作用一次、無 WebGL2 的單次回報）、`gui_host.test.js`（44）、`gl3d_test.py`（數學、幾何、指令、並把送出的訊息交給真的 JS 橋接層驗證）。
+- **真 Electron（Chromium，SwiftShader 軟體 WebGL2，無頭＋xvfb）**：`paintGl` 畫出索引三角形（像素值與預期相符）、換 uniform 的第二幀、壞著色器的編譯錯誤回報；`gl_scene.py`、`nbody3d.py`、`fluid3d.py` 實際送出的訊息經**真的 bridge＋host＋render** 畫出，截圖肉眼確認（立方體、球、格線、點雲、水塊與箱框）。這只證明鏈路正確，**不是真 GPU**：這台沒有可用的獨立 GPU 驗證，WebGPU 路徑（numba 核心實際在 GPU 執行）**沒有驗證**。
+- numba 核心：三個核心（`accel_kernel`、`density_kernel`、`force_kernel`）都能由 `wgsl.compile_kernel` 轉成 WGSL；用 Python 模擬執行與 numpy 版比對，相對誤差約 1e-7（N-body）與 8e-6（流體）。
+- 未在完整桌面版（含 Pyodide Worker、真終端機）跑過範例；Worker 內 `loadPackagesFromImports` 與 `fa_gpu` 的 `fa_bridge` 後備路徑只做了單元層級檢查。

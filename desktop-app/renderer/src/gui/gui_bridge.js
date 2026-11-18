@@ -23,9 +23,9 @@
 }(typeof self !== 'undefined' ? self : this, function () {
   'use strict';
   var VERSION = 1, PREFIX = '@gui ';
-  var MAX_LINE = 8192, MAX_WINDOWS = 4, MAX_NODES = 200, MAX_TEXT = 2000, MAX_ITEMS = 500, MAX_DEPTH = 8;
+  var MAX_LINE = 8192, MAX_BULK_LINE = 6 * 1024 * 1024, BULK_OP_RE = /"op"\s*:\s*"(image|glbuf)"/, MAX_WINDOWS = 4, MAX_NODES = 200, MAX_TEXT = 2000, MAX_ITEMS = 500, MAX_DEPTH = 8;
   var ID_RE = /^[A-Za-z0-9_-]{1,40}$/;
-  var OPS = ['open', 'add', 'set', 'remove', 'close', 'draw', 'image', 'theme', 'shortcut', 'tone'];
+  var OPS = ['open', 'add', 'set', 'remove', 'close', 'draw', 'image', 'theme', 'shortcut', 'tone', 'glbuf', 'glprog', 'glframe'];
   // window-level look: palette (five named colors), font family, size, corner radius; shortcuts: "Ctrl+Shift+Alt+<key>" -> a name the
   // program gets back as a "shortcut" event; tone: a short beep played by the page (nothing is stored)
   var PALETTE_KEYS = ['bg', 'fg', 'accent', 'danger', 'muted'];
@@ -88,7 +88,7 @@
     // the pointer as "mouse" ({kind: down | up | move, x, y, button} with x and y inside the canvas), the wheel as "wheel" ({x, y, dy}),
     // and "resize" ({width, height}: the canvas's new size in pixels when its window is resized or maximized)
     // fit: the canvas keeps its width x height as the drawing space and is scaled (centered, whole picture visible) to fill the area it is given (grow)
-    canvas: { props: ['width', 'height', 'fps', 'fit'], events: ['key', 'frame', 'mouse', 'wheel', 'resize'] }
+    canvas: { props: ['width', 'height', 'fps', 'fit', 'gl'], events: ['key', 'frame', 'mouse', 'wheel', 'resize', 'glerror'] }
   };
   // layout and look hints every node may carry: grow = share of the free space in its parent (0 none, 1-10 weight; a row grows sideways,
   // a column downwards), gap = space between its children and pad = inner space (pixels), role = a named look from the design system
@@ -117,7 +117,7 @@
     switch (name) {
       case 'text': case 'value': case 'placeholder': case 'lang': case 'keys': return text(v, name);
       case 'icon': if (typeof v !== 'string' || v.length > 8) { throw new Error('icon must be a short text (a symbol or emoji, at most 8 characters)'); } return v;
-      case 'enabled': case 'checked': case 'visible': case 'secret': case 'expanded': case 'numbers': case 'fit': case 'prose': case 'wrap': return bool(v, name);
+      case 'enabled': case 'checked': case 'visible': case 'secret': case 'expanded': case 'numbers': case 'fit': case 'gl': case 'prose': case 'wrap': return bool(v, name);
       case 'rows': return num(v, name, 1, 30);
       case 'grow': return num(v, name, 0, 10);
       case 'gap': case 'pad': return num(v, name, 0, 32);
@@ -288,11 +288,13 @@
 
   // draw ["image", name, x, y] or ["image", name, x, y, w, h]: the name must be a picture of this canvas
   function imageCommand(op, what, images) {
-    if (op.length !== 4 && op.length !== 6) { throw new Error(what + ' image needs a name, x, y and optionally w, h'); }
+    if (op.length !== 4 && op.length !== 6 && op.length !== 8) { throw new Error(what + ' image needs a name, x, y and optionally w, h and flip_x, flip_y'); }
     var name = id(op[1], what + '[1]');
     if (!Object.prototype.hasOwnProperty.call(images, name)) { throw new Error(what + ' image "' + name + '" is not loaded on this canvas'); }
     var out = ['image', name, num(op[2], what + '[2]', -1e5, 1e5), num(op[3], what + '[3]', -1e5, 1e5)];
-    if (op.length === 6) { out.push(num(op[4], what + '[4]', 0, 1e5), num(op[5], what + '[5]', 0, 1e5)); }
+    if (op.length >= 6) { out.push(num(op[4], what + '[4]', 0, 1e5), num(op[5], what + '[5]', 0, 1e5)); }
+    // flip_x, flip_y (0 or 1): mirror the picture across its vertical / horizontal axis inside its w x h box
+    if (op.length === 8) { out.push(num(op[6], what + '[6]', 0, 1) ? 1 : 0, num(op[7], what + '[7]', 0, 1) ? 1 : 0); }
     return out;
   }
 
@@ -310,6 +312,80 @@
     if (name === 'circle') { return [name, c(1), c(2), num(op[3], what + '[3]', 0, 1e4), color]; }
     if (name === 'line') { return [name, c(1), c(2), c(3), c(4), color]; }
     return [name, c(1), c(2), text(op[3], what + '[3]'), color];
+  }
+
+  // ---- WebGL2 canvas (a canvas created with gl: true) ----
+  // The program sends three kinds of messages: glbuf (a named vertex or index buffer as base64 bytes), glprog (a named GLSL ES 3.00 vertex +
+  // fragment shader pair) and glframe (one whole frame of commands, like draw does for 2D). The bridge checks shapes and limits and keeps the
+  // data; the page compiles and draws it with its own WebGL2 context. Nothing here is ever evaluated as script.
+  var MAX_GL_BUFS = 24, MAX_GL_BUF_BYTES = 4 * 1024 * 1024, MAX_GL_PROGS = 12, MAX_GL_SRC = 16000, MAX_GL_CMDS = 256, MAX_GL_COUNT = 4000000;
+  var GL_MODES = ['points', 'lines', 'line_strip', 'triangles', 'triangle_strip'];
+  var GL_STATES = ['depth', 'blend', 'additive', 'cull'];
+  var GL_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]{0,40}$/;
+  var GL_B64_RE = /^[A-Za-z0-9+/]*={0,2}$/;
+  function glBuffer(msg, target) {
+    var name = id(msg.name, 'name');
+    target.glbufs = target.glbufs || {};
+    if (msg.data === null) { delete target.glbufs[name]; return; }
+    var type = msg.type;
+    if (type !== 'f32' && type !== 'u16' && type !== 'u32') { throw new Error('type must be f32, u16 or u32'); }
+    var b64 = msg.data;
+    if (typeof b64 !== 'string' || !GL_B64_RE.test(b64) || b64.length % 4 !== 0) { throw new Error('data must be base64'); }
+    var pad = (b64.match(/=+$/) || [''])[0].length, bytes = b64.length / 4 * 3 - pad, unit = type === 'u16' ? 2 : 4;
+    if (bytes > MAX_GL_BUF_BYTES) { throw new Error('buffer is larger than ' + (MAX_GL_BUF_BYTES / 1048576) + ' MB'); }
+    if (bytes === 0 || bytes % unit !== 0) { throw new Error('buffer size must be a non-zero multiple of ' + unit + ' bytes'); }
+    if (!Object.prototype.hasOwnProperty.call(target.glbufs, name) && Object.keys(target.glbufs).length >= MAX_GL_BUFS) { throw new Error('at most ' + MAX_GL_BUFS + ' buffers per canvas'); }
+    var prev = target.glbufs[name];
+    target.glbufs[name] = { type: type, data: b64, bytes: bytes, v: prev ? prev.v + 1 : 1 };
+  }
+  function glProgram(msg, target) {
+    var name = id(msg.name, 'name');
+    target.glprogs = target.glprogs || {};
+    if (msg.vs === null) { delete target.glprogs[name]; return; }
+    ['vs', 'fs'].forEach(function (k) {
+      if (typeof msg[k] !== 'string' || msg[k].length < 20 || msg[k].length > MAX_GL_SRC) { throw new Error(k + ' must be shader source of 20 to ' + MAX_GL_SRC + ' characters'); }
+      if (msg[k].indexOf('#version 300 es') !== 0 && msg[k].replace(/^\s+/, '').indexOf('#version 300 es') !== 0) { throw new Error(k + ' must start with #version 300 es'); }
+    });
+    if (!Object.prototype.hasOwnProperty.call(target.glprogs, name) && Object.keys(target.glprogs).length >= MAX_GL_PROGS) { throw new Error('at most ' + MAX_GL_PROGS + ' programs per canvas'); }
+    var prev = target.glprogs[name];
+    target.glprogs[name] = { vs: msg.vs, fs: msg.fs, v: prev ? prev.v + 1 : 1 };
+  }
+  // ["clear", r, g, b, a] | ["state", "depth"|"blend"|"cull", 0|1] | ["use", prog] | ["uf", name, v...] (1, 2, 3, 4, 9 or 16 floats) | ["ui", name, int]
+  // | ["attr", name, buffer, size 1-4, strideBytes, offsetBytes, divisor 0|1] | ["index", buffer] (for the next draw only) | ["draw", mode, first, count, instances]
+  function glCommand(c, what, target) {
+    if (!Array.isArray(c) || typeof c[0] !== 'string') { throw new Error(what + ' must be [name, ...]'); }
+    var progs = target.glprogs || {}, bufs = target.glbufs || {}, f = function (i, lo, hi) { return num(c[i], what + '[' + i + ']', lo, hi); };
+    switch (c[0]) {
+      case 'clear': if (c.length !== 5) { throw new Error(what + ' clear needs r, g, b, a'); } return ['clear', f(1, 0, 1), f(2, 0, 1), f(3, 0, 1), f(4, 0, 1)];
+      case 'state':
+        if (c.length !== 3 || GL_STATES.indexOf(c[1]) < 0) { throw new Error(what + ' state needs ' + GL_STATES.join(', ') + ' and 0 or 1'); }
+        return ['state', c[1], f(2, 0, 1) ? 1 : 0];
+      case 'use':
+        if (c.length !== 2 || !Object.prototype.hasOwnProperty.call(progs, c[1])) { throw new Error(what + ' use needs a program that was sent with glprog'); }
+        return ['use', c[1]];
+      case 'uf': {
+        var n = c.length - 2;
+        if ([1, 2, 3, 4, 9, 16].indexOf(n) < 0 || !GL_NAME_RE.test(c[1])) { throw new Error(what + ' uf needs a uniform name and 1, 2, 3, 4, 9 or 16 numbers'); }
+        var out = ['uf', c[1]]; for (var i = 2; i < c.length; i++) { out.push(f(i, -1e9, 1e9)); } return out;
+      }
+      case 'ui':
+        if (c.length !== 3 || !GL_NAME_RE.test(c[1])) { throw new Error(what + ' ui needs a uniform name and an integer'); }
+        return ['ui', c[1], Math.floor(f(2, -2147483648, 2147483647))];
+      case 'attr':
+        if (c.length < 6 || c.length > 7 || !GL_NAME_RE.test(c[1]) || !Object.prototype.hasOwnProperty.call(bufs, c[2]) || bufs[c[2]].type !== 'f32') { throw new Error(what + ' attr needs an attribute name, an f32 buffer, size, stride and offset'); }
+        return ['attr', c[1], c[2], Math.floor(f(3, 1, 4)), Math.floor(f(4, 0, 255)), Math.floor(f(5, 0, 1e7)), c.length === 7 && f(6, 0, 1) ? 1 : 0];
+      case 'index':
+        if (c.length !== 2 || !Object.prototype.hasOwnProperty.call(bufs, c[1]) || bufs[c[1]].type === 'f32') { throw new Error(what + ' index needs a u16 or u32 buffer'); }
+        return ['index', c[1]];
+      case 'draw':
+        if (c.length < 4 || c.length > 5 || GL_MODES.indexOf(c[1]) < 0) { throw new Error(what + ' draw needs a mode (' + GL_MODES.join(', ') + '), first and count'); }
+        return ['draw', c[1], Math.floor(f(2, 0, MAX_GL_COUNT)), Math.floor(f(3, 0, MAX_GL_COUNT)), c.length === 5 ? Math.floor(f(4, 1, 1e6)) : 1];
+      default: throw new Error(what + ' command "' + c[0] + '" is not supported');
+    }
+  }
+  function glFrame(v, target) {
+    if (!Array.isArray(v) || v.length > MAX_GL_CMDS) { throw new Error('cmds must be an array of at most ' + MAX_GL_CMDS + ' commands'); }
+    return v.map(function (c, i) { return glCommand(c, 'cmds[' + i + ']', target); });
   }
 
   function drawOps(v, images) {
@@ -345,7 +421,9 @@
   // {error} for a broken GUI line, {msg} for a GUI message.
   function parseLine(line) {
     if (typeof line !== 'string' || line.indexOf(PREFIX) !== 0) { return null; }
-    if (line.length > MAX_LINE) { return { error: 'GUI message longer than ' + MAX_LINE + ' bytes' }; }
+    // ordinary messages are at most MAX_LINE; the ones that carry data (a picture, a gl buffer) may be as long as the data limits allow
+    // (a 4 MB buffer is about 5.6 MB of base64). The op is read from the start of the line so a long line is not parsed just to be refused.
+    if (line.length > MAX_LINE && (line.length > MAX_BULK_LINE || !BULK_OP_RE.test(line.slice(0, 120)))) { return { error: 'GUI message longer than ' + MAX_LINE + ' bytes' }; }
     var msg;
     try { msg = JSON.parse(line.slice(PREFIX.length)); } catch (e) { return { error: 'GUI message is not valid JSON' }; }
     if (!isObj(msg) || msg.v !== VERSION) { return { error: 'GUI message needs "v":' + VERSION }; }
@@ -446,13 +524,21 @@
         Object.keys(checked).forEach(function (k) { target[k] = checked[k]; });
         return { ok: true };
       }
+      if (msg.op === 'glbuf' || msg.op === 'glprog' || msg.op === 'glframe') {
+        if (target.kind !== 'canvas' || !target.gl) { return fail('node "' + nid + '" is not a gl canvas (create it with gl: true)'); }
+        if (msg.op === 'glbuf') { glBuffer(msg, target); }
+        else if (msg.op === 'glprog') { glProgram(msg, target); }
+        else { target.glframe = glFrame(msg.cmds, target); target.glframeSeq = (target.glframeSeq || 0) + 1; }
+        return { ok: true };
+      }
       if (msg.op === 'draw') {
         if (target.kind !== 'canvas') { return fail('node "' + nid + '" is a ' + target.kind + ', not a canvas'); }
+        if (target.gl) { return fail('node "' + nid + '" is a gl canvas: send glframe, not draw'); }
         target.frame = drawOps(msg.ops, target.images || {});
         return { ok: true };
       }
       if (msg.op === 'image') {
-        if (target.kind !== 'canvas') { return fail('node "' + nid + '" is a ' + target.kind + ', not a canvas'); }
+        if (target.kind !== 'canvas' || target.gl) { return fail('node "' + nid + '" is a ' + target.kind + ', not a canvas'); }
         var name = id(msg.name, 'name');
         target.images = target.images || {};
         if (msg.data === null) { delete target.images[name]; return { ok: true }; }
@@ -506,7 +592,7 @@
       if (typeof value !== 'string' || node.children.indexOf(value) < 0) { return null; }
       node.selected = value;
     }
-    if ((eventName === 'key' || eventName === 'frame' || eventName === 'mouse' || eventName === 'wheel' || eventName === 'resize' || eventName === 'caret' || eventName === 'ref') && value === undefined) { return null; } // these always carry a value
+    if ((eventName === 'key' || eventName === 'frame' || eventName === 'mouse' || eventName === 'wheel' || eventName === 'resize' || eventName === 'glerror' || eventName === 'caret' || eventName === 'ref') && value === undefined) { return null; } // these always carry a value
     var ev = { v: VERSION, event: eventName, id: winId, node: nodeId };
     if (value !== undefined) {
       if (node.kind === 'tree' && (eventName === 'select' || eventName === 'toggle')) {
@@ -544,6 +630,10 @@
         var wx = Math.round(Number(value.x)), wy = Math.round(Number(value.y)), dy = Number(value.dy);
         if (!isFinite(wx) || !isFinite(wy) || !isFinite(dy) || dy === 0) { return null; }
         ev.value = { x: Math.min(node.width, Math.max(0, wx)), y: Math.min(node.height, Math.max(0, wy)), dy: Math.max(-1000, Math.min(1000, Math.round(dy))) };
+      } else if (eventName === 'glerror') {
+        // a shader compile or link error, or a WebGL problem, as short text (the program shows it to the author)
+        if (typeof value !== 'string') { return null; }
+        ev.value = value.slice(0, 400);
       } else if (eventName === 'caret') {
         // {start, end}: the editor's caret or selection as character offsets (start <= end)
         var cs = Math.round(Number(value && value.start)), ce = Math.round(Number(value && value.end));

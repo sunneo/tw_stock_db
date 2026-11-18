@@ -423,4 +423,44 @@ assert.strictEqual(violations.length, 0); ok();
   assert.deepStrictEqual(got6[got6.length - 1], ['pick', 'fp', undefined]); ok();
 }
 
+// paintFrame: a flipped picture mirrors inside its box; paintGl: buffers and programs are made once per version, commands run in order
+{
+  const log = [];
+  const ctx = new Proxy({}, { get: (t, k) => (k === 'fillStyle' || k === 'strokeStyle' ? '' : (...a) => log.push([k, ...a])), set: () => true });
+  R.paintFrame(ctx, [['image', 'p', 10, 20, 30, 40, 1, 0]], 100, 100, () => ({}));
+  assert.deepStrictEqual(log.filter((l) => ['translate', 'scale', 'drawImage'].includes(l[0])).map((l) => l[0] + ':' + l.slice(1).filter((x) => typeof x === 'number').join(',')), ['translate:40,20', 'scale:-1,1', 'drawImage:0,0,30,40']); ok();
+  const calls = [];
+  const gl = new Proxy({ COMPILE_STATUS: 1, LINK_STATUS: 2, ARRAY_BUFFER: 3, ELEMENT_ARRAY_BUFFER: 4, TRIANGLES: 5, POINTS: 6, LINES: 7, LINE_STRIP: 8, TRIANGLE_STRIP: 9, FLOAT: 10,
+    UNSIGNED_SHORT: 11, UNSIGNED_INT: 12, DEPTH_TEST: 13, BLEND: 14, CULL_FACE: 15, DYNAMIC_DRAW: 16, VERTEX_SHADER: 17, FRAGMENT_SHADER: 18, COLOR_BUFFER_BIT: 1, DEPTH_BUFFER_BIT: 2 }, {
+    get: (t, k) => (k in t ? t[k] : (...a) => { calls.push(String(k)); return /^get(Shader|Program)Parameter$/.test(k) ? true : /^(getUniformLocation)$/.test(k) ? { u: a[1] } : k === 'getAttribLocation' ? 0 : {}; }) });
+  const el = { width: 64, height: 48, getContext: (t) => (t === 'webgl2' ? gl : null) };
+  const b64 = Buffer.from(new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]).buffer).toString('base64');
+  const node = { glbufs: { tri: { type: 'f32', data: b64, v: 1 } }, glprogs: { flat: { vs: '#version 300 es\nx', fs: '#version 300 es\ny', v: 1 } },
+    glframe: [['clear', 0, 0, 0, 1], ['use', 'flat'], ['uf', 'mvp', 1, 2, 3, 4], ['attr', 'pos', 'tri', 3, 12, 0], ['draw', 'triangles', 0, 3, 1]] };
+  const errs = [];
+  R.paintGl(el, node, (m) => errs.push(m));
+  assert.deepStrictEqual(errs, []); ok();
+  const first = calls.slice();
+  assert.ok(first.indexOf('bufferData') >= 0 && first.indexOf('linkProgram') >= 0 && first.indexOf('drawArraysInstanced') > first.indexOf('vertexAttribPointer')); ok();
+  calls.length = 0; R.paintGl(el, node, (m) => errs.push(m));   // same versions: no new upload, no recompile
+  assert.ok(calls.indexOf('bufferData') < 0 && calls.indexOf('linkProgram') < 0 && calls.indexOf('drawArraysInstanced') >= 0); ok();
+  calls.length = 0; node.glbufs.tri.v = 2; R.paintGl(el, node, (m) => errs.push(m));   // a changed version uploads again
+  assert.ok(calls.indexOf('bufferData') >= 0 && calls.indexOf('linkProgram') < 0); ok();
+  // additive blending: enable BLEND with (SRC_ALPHA, ONE); switching it off disables BLEND
+  calls.length = 0; const nodeA = { glbufs: {}, glprogs: node.glprogs, glframe: [['state', 'additive', 1], ['state', 'additive', 0]] };
+  R.paintGl(el, nodeA, (m) => errs.push(m));
+  assert.ok(calls.indexOf('enable') >= 0 && calls.indexOf('blendFunc') > calls.indexOf('enable') && calls.indexOf('disable') > calls.indexOf('blendFunc')); ok();
+  // an index buffer is used by the next draw only: a mesh followed by plain lines draws indexed first, then arrays
+  calls.length = 0;
+  const node2 = { glbufs: { tri: { type: 'f32', data: b64, v: 2 }, ix: { type: 'u16', data: Buffer.from(new Uint16Array([0, 1, 2]).buffer).toString('base64'), v: 1 } }, glprogs: node.glprogs,
+    glframe: [['use', 'flat'], ['attr', 'pos', 'tri', 3, 12, 0], ['index', 'ix'], ['draw', 'triangles', 0, 3, 1], ['draw', 'lines', 0, 2, 1]] };
+  R.paintGl(el, node2, (m) => errs.push(m));
+  const di = calls.indexOf('drawElementsInstanced'), da = calls.indexOf('drawArraysInstanced');
+  assert.ok(di >= 0 && da > di); ok();
+  // no WebGL2: one report, no throw
+  const e2 = { width: 8, height: 8, getContext: () => null }, errs2 = [];
+  R.paintGl(e2, node, (m) => errs2.push(m)); R.paintGl(e2, node, (m) => errs2.push(m));
+  assert.deepStrictEqual(errs2, ['WebGL2 is not available']); ok();
+}
+
 console.log('gui_render: ' + n + ' assertions passed');

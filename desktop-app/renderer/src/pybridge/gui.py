@@ -29,6 +29,7 @@ builds and runs one (customize by passing params, or write a new .jsonl/.py pair
 Look and keys: theme(palette={...}, font=..., size=..., radius=...) colors and styles the window; shortcut("Ctrl+S", "save")
 makes wait() and poll() return {"event": "shortcut", "value": "save"} when the key is pressed; tone(freq, ms, wave) beeps.
 """
+import array as array_mod
 import base64
 import json
 import os
@@ -299,23 +300,55 @@ class Window(object):
         It returns at once and stays silent if the page cannot play sound (nothing is raised)."""
         fa_bridge.call("gui.tone", {"id": self.id, "freq": float(freq), "ms": int(ms), "wave": str(wave)})
 
-    def canvas(self, width=320, height=240, fps=0, parent=None, fit=False):
+    def canvas(self, width=320, height=240, fps=0, parent=None, fit=False, gl=False):
         """A drawing area for frames (pygame uses this). draw(nid, ops) paints one whole frame. fps > 0 queues "frame" events for poll().
         fit=True keeps width x height as the drawing space and scales it (whole picture visible, centered) to fill the area the canvas is given
         (with grow=1): draw once in fixed coordinates and it fills any window size. Without fit, a canvas in a resizable window is resized to
         the window and reports "resize"."""
-        return self._node("canvas", parent, width=int(width), height=int(height), fps=int(fps), **({"fit": True} if fit else {}))
+        extra = {}
+        if fit:
+            extra["fit"] = True
+        if gl:
+            # gl=True: a WebGL2 canvas. It is drawn with glbuf / glprog / glframe (see gl3d.py, which wraps them), not with draw().
+            extra["gl"] = True
+        return self._node("canvas", parent, width=int(width), height=int(height), fps=int(fps), **extra)
+
+    def glbuf(self, nid, name, data, kind="f32"):
+        """Upload (or replace) a named buffer on a gl canvas. data: bytes, array.array, a numpy array or a list of numbers; kind "f32"
+        (vertex data), "u16" or "u32" (indices). At most 4 MB per buffer and 24 buffers per canvas. data=None removes the buffer."""
+        if data is None:
+            fa_bridge.call("gui.glbuf", {"id": self.id, "node": nid, "name": name, "data": None})
+            return
+        raw = _gl_bytes(data, kind)
+        fa_bridge.call("gui.glbuf", {"id": self.id, "node": nid, "name": name, "type": kind, "data": base64.b64encode(raw).decode("ascii")})
+
+    def glprog(self, nid, name, vs, fs):
+        """Register a named GLSL ES 3.00 program (vertex and fragment source, each starting with "#version 300 es"; at most 12 per canvas).
+        A compile or link error comes back later as a "glerror" event on the canvas (the page compiles it when it draws)."""
+        fa_bridge.call("gui.glprog", {"id": self.id, "node": nid, "name": name, "vs": vs, "fs": fs})
+
+    def glframe(self, nid, cmds):
+        """Draw one frame on a gl canvas: a list of at most 256 commands, in order. ["clear", r, g, b, a] (0..1, clears color and depth),
+        ["state", "depth"|"blend"|"additive"|"cull", 0|1] (blend: alpha blending; additive: glow, overlapping sprites add up), ["use", program], ["uf", uniform, v...] (1, 2, 3, 4, 9 or 16 floats: float, vec2, vec3,
+        vec4, mat3, mat4), ["ui", uniform, int], ["attr", attribute, buffer, size, strideBytes, offsetBytes, divisor], ["index", buffer] (used by the next draw only),
+        ["draw", "points"|"lines"|"line_strip"|"triangles"|"triangle_strip", first, count, instances]."""
+        fa_bridge.call("gui.glframe", {"id": self.id, "node": nid, "cmds": cmds})
 
     def draw(self, nid, ops):
         """Paint one frame on a canvas. ops: lists such as ["rect", x, y, w, h, "#rrggbb"], ["circle", x, y, r, color],
         ["line", x1, y1, x2, y2, color], ["text", x, y, text, color], ["clear", color], ["image", name, x, y, w, h]. At most 200 ops."""
         fa_bridge.call("gui.draw", {"id": self.id, "node": nid, "ops": ops})
 
-    def image(self, nid, data, mime):
+    def image(self, nid, data, mime, name=None):
         """Register a picture (PNG, JPEG, GIF or WebP bytes, at most 256 KB) on a canvas. Returns (name, w, h): draw it with
-        ["image", name, x, y] or ["image", name, x, y, w, h]. The page decodes it; a picture it cannot decode raises an error."""
-        self._images += 1
-        name = "i%d" % self._images
+        ["image", name, x, y] or ["image", name, x, y, w, h] or ["image", name, x, y, w, h, flip_x, flip_y] (flip flags 0 or 1).
+        name (optional, letters, digits, _ and -, at most 40): registering the same name again replaces the picture and does not count
+        against the 16 pictures of a canvas, so a program can redraw a rendered picture every frame. The page decodes it; a picture it
+        cannot decode raises an error."""
+        if name is None:
+            self._images += 1
+            name = "i%d" % self._images
+        name = str(name)
         url = "data:%s;base64,%s" % (mime, base64.b64encode(data).decode("ascii"))
         size = fa_bridge.call("gui.image", {"id": self.id, "node": nid, "name": name, "data": url})
         return name, int(size["w"]), int(size["h"])
@@ -401,6 +434,27 @@ class Window(object):
 # (the design system's look: toolbar, sidebar, statusbar, card, panel, heading, title, muted, primary, danger, surface, group, divider, outline, page).
 # Example: w.editor(parent=col, grow=1); bar = w.row(role="toolbar").
 _STYLE_KEYS = ("grow", "gap", "pad", "role")
+
+
+def _gl_bytes(data, kind):
+    """Bytes for a gl buffer from bytes, array.array, a numpy array or a list (float32 for f32, uint16 for u16, uint32 for u32)."""
+    if isinstance(data, (bytes, bytearray)):
+        return bytes(data)
+    code = {"f32": "f", "u16": "H", "u32": "I"}.get(kind)
+    if code is None:
+        raise ValueError("kind must be f32, u16 or u32")
+    tobytes = getattr(data, "tobytes", None)
+    if tobytes is not None and not isinstance(data, array_mod.array):
+        # numpy: make sure the dtype is the one the buffer wants
+        want = {"f32": "float32", "u16": "uint16", "u32": "uint32"}[kind]
+        if getattr(data, "dtype", None) is not None and str(data.dtype) != want:
+            data = data.astype(want)
+        return data.tobytes()
+    if isinstance(data, array_mod.array):
+        if data.typecode == code:
+            return data.tobytes()
+        return array_mod.array(code, list(data)).tobytes()
+    return array_mod.array(code, [float(v) if code == "f" else int(v) for v in data]).tobytes()
 
 
 def _styled(fn):

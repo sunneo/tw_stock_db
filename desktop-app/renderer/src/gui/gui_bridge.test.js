@@ -14,6 +14,14 @@ assert.ok(G.parseLine(G.PREFIX + '{not json}').error); ok();
 assert.ok(G.parseLine(G.PREFIX + JSON.stringify({ v: 2, op: 'open', id: 'w' })).error); ok();
 assert.ok(G.parseLine(G.PREFIX + JSON.stringify({ v: 1, op: 'exec', id: 'w' })).error); ok();
 assert.ok(G.parseLine(G.PREFIX + 'x'.repeat(G.LIMITS.MAX_LINE)).error); ok();
+// data-carrying ops (image, glbuf) may exceed the ordinary line limit; any other op may not; nothing may exceed 6 MB
+{
+  const big = (op, n) => G.PREFIX + JSON.stringify({ v: 1, op, id: 'w1', node: 'c', name: 'a', data: 'A'.repeat(n) });
+  assert.ok(G.parseLine(big('image', 20000)).msg); ok();
+  assert.ok(G.parseLine(big('glbuf', 20000)).msg); ok();
+  assert.match(G.parseLine(big('set', 20000)).error, /longer than 8192/); ok();
+  assert.match(G.parseLine(big('glbuf', 6 * 1024 * 1024)).error, /longer than 8192/); ok();
+}
 
 // 3. open / add / set / remove / close happy path, and the snapshot a renderer reads
 const s = G.createSession();
@@ -298,6 +306,46 @@ assert.match(G.parseWait('wait w1 a=b').error, /shell variable name/); ok();
   assert.deepStrictEqual(G.apply(S, { op: 'add', id: 'wp', node: { id: 'fp', kind: 'filepick', text: 'Open files' } }), { ok: true }); ok();
   assert.strictEqual(G.eventLine(S, 'wp', 'fp', 'pick'), JSON.stringify({ v: 1, event: 'pick', id: 'wp', node: 'fp' })); ok();
   assert.match(G.apply(S, { op: 'add', id: 'wp', node: { id: 'fp2', kind: 'filepick', value: 'x' } }).error, /prop "value" is not allowed on filepick/); ok();
+}
+
+// WebGL2 canvas (gl: true): glbuf / glprog / glframe, their limits, and that 2D ops are refused on it
+{
+  const S = G.createSession();
+  G.apply(S, { op: 'open', id: 'wg', title: 'GL' });
+  assert.deepStrictEqual(G.apply(S, { op: 'add', id: 'wg', node: { id: 'cv', kind: 'canvas', width: 320, height: 240, gl: true } }), { ok: true }); ok();
+  G.apply(S, { op: 'add', id: 'wg', node: { id: 'c2', kind: 'canvas', width: 320, height: 240 } });
+  const tri = Buffer.from(new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]).buffer).toString('base64');
+  const vs = '#version 300 es\nin vec3 pos; uniform mat4 mvp; void main(){ gl_Position = mvp * vec4(pos,1.0); }';
+  const fs = '#version 300 es\nprecision mediump float; out vec4 o; void main(){ o = vec4(1.0); }';
+  assert.deepStrictEqual(G.apply(S, { op: 'glbuf', id: 'wg', node: 'cv', name: 'tri', type: 'f32', data: tri }), { ok: true }); ok();
+  assert.deepStrictEqual(G.apply(S, { op: 'glprog', id: 'wg', node: 'cv', name: 'flat', vs, fs }), { ok: true }); ok();
+  const cmds = [['clear', 0, 0, 0, 1], ['state', 'depth', 1], ['use', 'flat'], ['uf', 'mvp', 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1], ['attr', 'pos', 'tri', 3, 12, 0], ['draw', 'triangles', 0, 3]];
+  assert.deepStrictEqual(G.apply(S, { op: 'glframe', id: 'wg', node: 'cv', cmds }), { ok: true }); ok();
+  const snapGl = G.snapshot(S, 'wg').root.children[0];
+  assert.strictEqual(snapGl.glframe.length, 6); assert.strictEqual(snapGl.glbufs.tri.v, 1); ok();
+  G.apply(S, { op: 'glbuf', id: 'wg', node: 'cv', name: 'tri', type: 'f32', data: tri });
+  assert.strictEqual(G.snapshot(S, 'wg').root.children[0].glbufs.tri.v, 2); ok();   // same name again: replaced, version counts up
+  // refusals
+  assert.match(G.apply(S, { op: 'glframe', id: 'wg', node: 'c2', cmds: [] }).error, /not a gl canvas/); ok();
+  assert.match(G.apply(S, { op: 'draw', id: 'wg', node: 'cv', ops: [] }).error, /gl canvas: send glframe/); ok();
+  assert.match(G.apply(S, { op: 'glframe', id: 'wg', node: 'cv', cmds: [['use', 'nope']] }).error, /use needs a program/); ok();
+  assert.match(G.apply(S, { op: 'glframe', id: 'wg', node: 'cv', cmds: [['draw', 'quads', 0, 3]] }).error, /draw needs a mode/); ok();
+  assert.match(G.apply(S, { op: 'glframe', id: 'wg', node: 'cv', cmds: [['bogus']] }).error, /not supported/); ok();
+  assert.deepStrictEqual(G.apply(S, { op: 'glframe', id: 'wg', node: 'cv', cmds: [['state', 'additive', 1], ['state', 'additive', 0]] }), { ok: true }); ok();
+  assert.match(G.apply(S, { op: 'glframe', id: 'wg', node: 'cv', cmds: new Array(257).fill(['clear', 0, 0, 0, 1]) }).error, /at most 256/); ok();
+  assert.match(G.apply(S, { op: 'glbuf', id: 'wg', node: 'cv', name: 'bad', type: 'f32', data: Buffer.from([1, 2, 3]).toString('base64') }).error, /multiple of 4/); ok();
+  assert.match(G.apply(S, { op: 'glbuf', id: 'wg', node: 'cv', name: 'big', type: 'f32', data: Buffer.alloc(4 * 1024 * 1024 + 4).toString('base64') }).error, /larger than 4 MB/); ok();
+  assert.match(G.apply(S, { op: 'glprog', id: 'wg', node: 'cv', name: 'x', vs: 'void main(){}  // no version line', fs }).error, /#version 300 es/); ok();
+  assert.match(G.apply(S, { op: 'glframe', id: 'wg', node: 'cv', cmds: [['attr', 'pos', 'missing', 3, 12, 0]] }).error, /attr needs/); ok();
+  assert.match(G.apply(S, { op: 'glframe', id: 'wg', node: 'cv', cmds: [['uf', 'u', 1, 2, 3, 4, 5]] }).error, /uf needs/); ok();
+  // 2D canvas has no gl ops, and the glerror event carries short text
+  assert.strictEqual(G.eventLine(S, 'wg', 'cv', 'glerror', 'program "x": bad'), JSON.stringify({ v: 1, event: 'glerror', id: 'wg', node: 'cv', value: 'program "x": bad' })); ok();
+  assert.strictEqual(G.eventLine(S, 'wg', 'cv', 'glerror', 5), null); ok();
+  // image flip flags
+  G.apply(S, { op: 'image', id: 'wg', node: 'c2', name: 'p', data: 'data:image/png;base64,iVBORw0KGgo=' });
+  assert.deepStrictEqual(G.apply(S, { op: 'draw', id: 'wg', node: 'c2', ops: [['image', 'p', 1, 2, 30, 40, 1, 0]] }), { ok: true }); ok();
+  assert.deepStrictEqual(G.snapshot(S, 'wg').root.children[1].frame[0], ['image', 'p', 1, 2, 30, 40, 1, 0]); ok();
+  assert.ok(G.apply(S, { op: 'draw', id: 'wg', node: 'c2', ops: [['image', 'p', 1, 2, 30, 40, 1]] }).error); ok();
 }
 
 console.log('gui_bridge: ' + n + ' assertions passed');

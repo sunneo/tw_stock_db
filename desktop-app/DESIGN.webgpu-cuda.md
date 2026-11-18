@@ -592,6 +592,17 @@ GUI 的獨立 Worker 模擬器目前沒有註冊 `_fa_cudaweb`，不能 `import 
 
 ---
 
+### 7.34 異質運算：GPU＋CPU 分工的矩陣乘（2026-11-18，預設關）
+
+動機：內顯（Intel Xe 等）跑矩陣乘時 GPU 滿載、CPU 閒置；內顯與 CPU 共用記憶體，所以沒有 PCIe 搬運成本。做法（`renderer/src/gpu/cpu_share.js`，掛在 `mm_ops.matmul`）：把 f32 矩陣乘按「列」切成兩段，GPU 算前段、CPU 的 Web Worker 同時算後段，再接起來。
+
+- **設定**：GPU 相容層窗格（AI 助理設定）的「CPU 分擔矩陣乘的核心數」，`advancedSettings.cudaCpuCores`，**預設 0**。0 時 `CPU_SHARE.run` 立刻回 `shared:false`，`mm_ops` 走原本的 GPU 路徑；從未開過時連模組都不載入（`_applyCpuShareSetting`）。窗格顯示本機執行緒數與最近一次的分工結果（GPU／CPU 各幾列、各耗時、CPU 占比）。
+- **比例**：第一次保守（每核心 2%，上限一半的列），之後依兩邊實測速率（指數平均）調整。太小的運算（M×K×N <2×10⁷ 或 M<16）不分工。
+- **退路**：沒有 Worker、任一邊出錯，都回 `shared:false`，由呼叫端重算原路徑，結果不會錯。B 是常駐權重（`cacheB`）時 Worker 端快取、只送一次。
+- **範圍**：只接 `mm_ops.matmul`（單一批次、f32、A 不轉置）。`matmulMany`、Qwen／Whisper 專用 GPU 引擎、Python `sgemm` 未接。
+- **CPU 端**是純 JS 迴圈（i-k-j），不是 WASM SIMD；若量測有收益，下一步換 WASM SIMD。
+- **驗證**：`cpu_share_test.js` 8 項（假 Worker：關閉＝不分工、小運算、分工結果與單路徑逐值相同、transB 與快取、GPU 出錯、無 Worker、關閉收掉 Worker）；`mm_ops` 接線用假 Worker 端到端比對（最大差 3×10⁻⁶）。**未量測**：沒有在 Intel Xe 內顯上量過真的加速；CPU 與內顯共用功耗與記憶體頻寬，頻寬受限的工作可能收益很小甚至變慢。gpgpu 範例的 CPU／GPU 來源切換是另一回事（見 DESIGN.python-api-bridge.md「WebGL2 畫布、`gl3d` 與 run terminal 範例」）：Python Worker 是單執行緒，GPU 核心呼叫期間不能同時跑 numpy，所以範例沒有提供「分工」選項。
+
 ## 8. 資源調度
 
 ### 8.1 GPU 緩衝區預算

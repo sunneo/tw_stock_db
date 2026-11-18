@@ -49,7 +49,17 @@ def _rpc(op, args):
     if IN_BROWSER:
         import json
         from pyodide.ffi import run_sync
-        import _fa_gpu
+        try:
+            import _fa_gpu
+        except ImportError:
+            _fa_gpu = None
+        if _fa_gpu is None:
+            # 圖形工作者（import gui／pygame 的程式在 Worker 裡跑）沒有 _fa_gpu：改走 fa_bridge，頁面端的 gpu.* 分派會接手（同一個 _pyBridgeGpu）
+            import fa_bridge
+            try:
+                return fa_bridge.call("gpu." + op, args)
+            except fa_bridge.BridgeError as e:
+                raise GpuCompatError(str(e))
         data = json.loads(str(run_sync(_fa_gpu.call(op, json.dumps(args)))))
         if not data.get("ok", False):
             raise GpuCompatError(data.get("error") or ("GPU 相容層呼叫失敗：" + op))

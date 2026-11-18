@@ -149,7 +149,27 @@ async function run(kind, a, aDims, b, bDims, azp, bzp, ops) {
   o.lastInfo = r.info;
   return { y: r.result, dims: pl.dims };
 }
-const matmul = (a, aD, b, bD, ops) => run('f32', a, aD, b, bD, 0, 0, ops);
+// 異質運算（plus）：CPU 核心數為 0（預設）時 CPU_SHARE.run 立刻回 shared:false，完全走原本的 GPU 路徑，行為與沒有這段時相同。
+// 只在單一批次、不轉置 A、f32、Float32Array 輸入時分工；任何一邊出錯也退回原路徑（整個運算重算一次，結果仍正確）。
+let CPU_SHARE = null;
+try { CPU_SHARE = require('./cpu_share.js'); } catch (_) { CPU_SHARE = null; }
+const matmul = async (a, aD, b, bD, ops) => {
+  const o = ops || {};
+  const sh = CPU_SHARE && !o._noShare && o.gpu !== false && !o.transA ? CPU_SHARE.getShared() : null;
+  if (sh && sh.cores() > 0 && a instanceof Float32Array && b instanceof Float32Array) {
+    const pl = plan(aD, bD);
+    if (pl.B === 1 && pl.Bb === 1) {
+      let gpuInfo = null;
+      const r = await sh.run(async (aRows, mG) => {
+        const io = Object.assign({}, o, { _noShare: true });
+        const g = await run('f32', aRows, [mG, pl.K], b, bD, 0, 0, io);
+        gpuInfo = io.lastInfo; return g.y;
+      }, a, b, pl.M, pl.K, pl.N, { transB: !!o.transB, bKey: o.cacheB ? b : null });
+      if (r.shared) { o.lastInfo = { layer: ((gpuInfo && gpuInfo.layer) || 'T1') + '+cpu', reason: null, share: r.info }; o.lastKernel = 'hetero'; return { y: r.y, dims: pl.dims }; }
+    }
+  }
+  return run('f32', a, aD, b, bD, 0, 0, ops);
+};
 const matmulInt = (a, aD, b, bD, azp, bzp, ops) => run('int', a, aD, b, bD, azp, bzp, ops);
 
 // ---------- 競賽（G4）：對一個形狀，所有適用的 f32 變體先驗證（對 CPU 參考）再計時 ----------

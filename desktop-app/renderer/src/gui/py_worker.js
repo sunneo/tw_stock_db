@@ -42,6 +42,8 @@
           py.FS.writeFile(full, f.bytes);
         });
         py.FS.chdir('/work');
+        // 程式 import 了 numpy 等 Pyodide 內建套件就先載入（失敗不擋：程式自己 import 時會得到原本的錯誤訊息）
+        try { await py.loadPackagesFromImports(m.src); } catch (e) { self.postMessage({ type: 'err', text: '[提示] 載入內建套件失敗：' + String((e && e.message) || e).slice(0, 200) + '\n' }); }
         py.runPython(m.prelude);
         py.globals.set('__fa_src__', m.src);
         py.globals.set('__fa_path__', '/work/' + m.scriptName);
@@ -137,7 +139,7 @@
   ].join('\n');
 
   // gui.* 橋接操作（gui.py 呼叫的名字，去掉 gui. 前綴）。與 gui_bridge.js 的 OPS 對應，另外 poll／wait／image 由頁面處理。
-  var GUI_OPS = ['open', 'add', 'set', 'remove', 'close', 'draw', 'image', 'theme', 'shortcut', 'tone', 'usertpl', 'pickfile', 'pickmany', 'poll', 'wait'];
+  var GUI_OPS = ['open', 'add', 'set', 'remove', 'close', 'draw', 'image', 'theme', 'shortcut', 'tone', 'usertpl', 'pickfile', 'pickmany', 'poll', 'wait', 'glbuf', 'glprog', 'glframe'];
 
   // 把 gui.py 送來的參數轉成 "@gui" 協定訊息（v:1 + op + 其餘欄位，欄位名與 gui.py 一致）
   function guiMessage(op, args) {
