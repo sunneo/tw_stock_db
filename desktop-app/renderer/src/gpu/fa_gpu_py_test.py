@@ -1069,6 +1069,7 @@ def _async_reset():
     _async["limit"] = 0
     _async["poison"].clear()
     _async.setdefault("results", {}).clear()
+    del fa_gpu._OUTSTANDING[:]
 
 
 def t_async_submit_defers_gpu_until_wait():
@@ -1177,6 +1178,61 @@ def t_async_events_and_elapsed():
     ms = fa_gpu.elapsed_ms(ev0, ev1)
     assert ms == 0.25, "elapsed_ms 應來自宿主（假的宿主回 0.25）"
     _async_reset()
+
+
+def t_cupy_matmul_async_defers_until_get():
+    _async_reset()
+    del host_calls[:]
+    import cupy
+    a = np.array([[1.0, 2.0], [3.0, 4.0]])
+    b = np.array([[5.0, 6.0], [7.0, 8.0]])
+    s = fa_gpu.Stream()
+    with s:
+        r = cupy.matmul_async(a, b)  # 沒給 stream：用目前 with 區塊的 stream
+    assert host_calls == [], "matmul_async 提交後 GPU 不應已執行"
+    assert r.done() is False, "未 get 前 done() 應為 False"
+    assert np.allclose(r.get(), a @ b), "get 結果錯誤"
+    assert host_calls == ["matmul"]
+    assert np.allclose(r.get(), a @ b), "get 可以重複呼叫"
+    _async_reset()
+
+
+def t_stream_event_timing_and_sync():
+    _async_reset()
+    del host_calls[:]
+    from numba import cuda as ncuda
+    s = ncuda.stream()
+    e0 = ncuda.event()
+    e1 = ncuda.event()
+    e0.record(s)
+    h = fa_gpu.call_async("sum", {"a": [1.0, 2.0]}, stream=s._sid)
+    e1.record(s)
+    assert host_calls == [], "record 與 submit 都不應阻塞執行"
+    e1.synchronize()
+    assert host_calls == ["sum"], "事件同步應等到之前提交的操作"
+    assert e1.query() is True
+    assert e0.elapsed_time(e1) == 0.25, "elapsed_time 應來自宿主計時"
+    assert h.wait() == 3.0
+    s.synchronize()
+    _async_reset()
+
+
+def t_synchronize_without_outstanding_does_not_touch_host():
+    _async_reset()
+
+    def boom(name, args):
+        raise AssertionError("沒有未完成的操作時不應呼叫宿主：" + name)
+
+    old = fa_gpu._arpc
+    fa_gpu._arpc = boom
+    try:
+        from numba import cuda as ncuda
+        import cupy
+        ncuda.synchronize()
+        cupy.cuda.Device(0).synchronize()
+    finally:
+        fa_gpu._arpc = old
+        _async_reset()
 
 
 for name, fn in list(globals().items()):

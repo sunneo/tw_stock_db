@@ -25,11 +25,16 @@ class Device(object):
         return self
 
     def synchronize(self):
-        return None
+        fa_gpu.synchronize_all()
 
     @property
     def compute_capability(self):
         return "webgpu"
+
+
+# stream／event：與 CUDA 相同的介面，實作在 fa_gpu（見 fa_gpu.Stream、fa_gpu.Event）
+Stream = fa_gpu.Stream
+Event = fa_gpu.Event
 
 
 class _Runtime(object):

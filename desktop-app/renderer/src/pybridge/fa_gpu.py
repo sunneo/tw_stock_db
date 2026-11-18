@@ -307,6 +307,89 @@ def elapsed_ms(start, end):
     return float("nan") if ms is None else float(ms)
 
 
+_stream_seq = [0]
+_stack = [0]  # with stream 的堆疊；棧頂是目前的 stream（0＝預設 stream）
+
+
+def current_stream():
+    return _stack[-1]
+
+
+class Stream(object):
+    """cupy.cuda.Stream／numba.cuda.stream() 的墊片。null=True 是預設 stream（id 0）。
+    with 區塊內，matmul_async 等沒指定 stream 的非同步提交會掛到這條 stream。"""
+
+    def __init__(self, null=False, non_blocking=False, ptds=False):
+        if null:
+            self._sid = 0
+        else:
+            _stream_seq[0] += 1
+            self._sid = _stream_seq[0]
+        self.ptr = self._sid
+
+    def __enter__(self):
+        _stack.append(self._sid)
+        return self
+
+    def __exit__(self, *a):
+        if len(_stack) > 1 and _stack[-1] == self._sid:
+            _stack.pop()
+        return False
+
+    def use(self):
+        return self
+
+    def synchronize(self):
+        synchronize(self._sid)
+
+    def record(self, event=None):
+        ev = event if event is not None else Event()
+        ev.record(self)
+        return ev
+
+    def wait_event(self, event):
+        """CUDA 的 wait_event 讓 stream 等事件而不阻塞主機；這裡保守地在主機上等事件（結果正確，但會阻塞）。"""
+        event.synchronize()
+
+
+class Event(object):
+    """cupy.cuda.Event／numba.cuda.event() 的墊片。record 之後才有意義；未 record 的事件 query 為 True、synchronize 不動作。"""
+
+    def __init__(self, block=False, disable_timing=False, interprocess=False):
+        self._ev = None
+        self._timing = not disable_timing
+
+    def record(self, stream=None):
+        if isinstance(stream, Stream):
+            sid = stream._sid
+        elif stream is None:
+            sid = current_stream()
+        else:
+            sid = int(stream)
+        self._ev = event_record(sid)
+        return self
+
+    def synchronize(self):
+        if self._ev is not None:
+            event_synchronize(self._ev)
+
+    def query(self):
+        return True if self._ev is None else event_query(self._ev)
+
+    def elapsed_time(self, end):
+        """兩個事件之間的毫秒數（主機牆鐘，不是 GPU 時間戳；見 elapsed_ms）。未 record 回傳 NaN。"""
+        if self._ev is None or end._ev is None:
+            return float("nan")
+        return elapsed_ms(self._ev, end._ev)
+
+
+def synchronize_all():
+    """cupy.cuda.Device.synchronize／numba.cuda.synchronize／torch.cuda.synchronize 共用：
+    沒有未完成的非同步操作時什麼都不做（不碰宿主，和以前的行為一樣）；有的話等所有 stream。"""
+    if _OUTSTANDING:
+        synchronize(None)
+
+
 def note_cpu(reason):
     """墊片在本機 Python 執行（沒有經過 GPU）時呼叫，讓使用者知道這一段不是 GPU。"""
     _note("Python 本機執行（不經過 GPU）", reason)

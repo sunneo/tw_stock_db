@@ -24,7 +24,7 @@ def get_device_name(device=None):
 
 
 def synchronize(device=None):
-    return None
+    fa_gpu.synchronize_all()
 
 
 def empty_cache():

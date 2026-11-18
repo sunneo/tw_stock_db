@@ -77,6 +77,46 @@ def matmul(a, b, out=None):
     return np.matmul(a, b, out=out)
 
 
+class AsyncResult(object):
+    """matmul_async 的結果：提交後立刻回傳；get() 才等 GPU 並回傳 numpy 陣列（可以多次呼叫）。"""
+
+    def __init__(self, handle=None, value=None, shape=None):
+        self._h = handle
+        self._v = value
+        self._shape = shape
+
+    def done(self):
+        return True if self._h is None else self._h.done()
+
+    def get(self):
+        if self._v is None:
+            r = self._h.wait()
+            self._v = np.asarray(r, dtype=np.float64).reshape(self._shape)
+        return self._v
+
+
+def matmul_async(a, b, stream=None):
+    """matmul 的非同步版：立刻回傳 AsyncResult，不等 GPU；在 get() 之前做的 CPU 工作會和 GPU 重疊。
+    stream 省略時用目前 with 區塊的 stream（預設 stream）。不能送 GPU 的輸入就同步用 numpy 算好再包起來。
+    一般的 matmul 維持同步（不改回傳型別），要重疊請明確用 matmul_async。"""
+    a = np.asarray(a)
+    b = np.asarray(b)
+    if stream is None:
+        sid = fa_gpu.current_stream()
+    elif isinstance(stream, fa_gpu.Stream):
+        sid = stream._sid
+    else:
+        sid = int(stream)
+    if a.ndim == 2 and b.ndim == 2 and a.shape[1] == b.shape[0] and _gpu_ok(a) and _gpu_ok(b):
+        try:
+            h = fa_gpu.call_async("matmul", {"a": a.reshape(-1).tolist(), "b": b.reshape(-1).tolist(),
+                                             "m": int(a.shape[0]), "k": int(a.shape[1]), "n": int(b.shape[1])}, stream=sid)
+            return AsyncResult(handle=h, shape=(a.shape[0], b.shape[1]))
+        except fa_gpu.GpuCompatError as e:
+            fa_gpu.note_cpu("GPU 橋接不可用，改用 numpy：%s" % e)
+    return AsyncResult(value=np.matmul(a, b))
+
+
 def dot(a, b):
     a = np.asarray(a)
     b = np.asarray(b)

@@ -178,7 +178,17 @@ def is_available():
 
 
 def synchronize():
-    return None
+    fa_gpu.synchronize_all()
+
+
+def stream():
+    """numba.cuda.stream()：非同步提交用的 stream（見 fa_gpu.Stream）。"""
+    return fa_gpu.Stream()
+
+
+def event(timing=True):
+    """numba.cuda.event()：見 fa_gpu.Event。"""
+    return fa_gpu.Event(disable_timing=not timing)
 
 
 class _Device(object):
@@ -477,7 +487,7 @@ def jit(signature_or_fn=None, **kwargs):
 
 
 # numba.cuda 的其他常用名稱，第一階段只提供最少，其餘呼叫時丟出說明（見 __getattr__）
-_UNSUPPORTED = {"compile_ptx", "jit_compile", "external_stream", "stream", "event", "pinned"}
+_UNSUPPORTED = {"compile_ptx", "jit_compile", "external_stream", "pinned"}
 
 
 def __getattr__(name):
