@@ -1393,6 +1393,155 @@
       "conv": "未量。卷積沒有納入 split-K／子群組的實作。",
       "training_transpose": "未量。轉置旗標走平鋪核心（mm_ops 強制 tiled）；split-K 與子群組都沒有轉置版；訓練要求 f32 精確度，不用 f16。"
     },
-    "O1m_closed": "(a) x 放 uniform：沒有好處；(b) B 放貼圖：比 storage 快 19–39%，但輸給已接的 split-K 與子群組，未接規則；(c) rope 與偏置放 uniform：沒有好處。三項都有對拍與同機計時。"
+    "O1m_closed": "(a) x 放 uniform：沒有好處；(b) B 放貼圖：比 storage 快 19–39%，但輸給已接的 split-K 與子群組，未接規則；(c) rope 與偏置放 uniform：沒有好處。三項都有對拍與同機計時。",
+    "R2_prefetch": {
+      "kernel": "mm_tile_wg.wgslPrefetch（雙緩衝，下一塊的全域讀取放進暫存器）對 wgsl（不預取），同一個 48×64 塊、WG 256（mm_prefetch_check.html）",
+      "bit_equal": "三個形狀全部逐位相同",
+      "ms_per_dispatch": [
+        {
+          "shape": "512x1024x1024",
+          "plain": 4.29,
+          "prefetch": 5.375,
+          "note": "預取慢 25%"
+        },
+        {
+          "shape": "64x4096x1024",
+          "plain": 5.03,
+          "prefetch": 3.625,
+          "note": "預取快 28%"
+        },
+        {
+          "shape": "512x1024x3072",
+          "plain": 12.695,
+          "prefetch": 16.795,
+          "note": "預取慢 32%"
+        }
+      ],
+      "result": "結果不一致（一個形狀快 28%，兩個形狀慢 25–32%），沒有淨好處，不採用。",
+      "status": "R2 的軟體預取已量：沒有淨好處。"
+    },
+    "R5_conv_im2col": {
+      "kernel": "conv_im2col.js：im2col（WGSL）＋ mm_ops 的平鋪矩陣乘；對照 conv_ops 的直接卷積核心（conv_im2col_check.html，純核心；conv_e2e_check.html，端到端）",
+      "correctness": "兩者對 conv2dRef 相對誤差 ≤1.3e-6",
+      "kernel_ms_direct_vs_im2col": [
+        {
+          "shape": "C64 H32 W32 M64 k3",
+          "direct": 1.935,
+          "im2col": 0.365
+        },
+        {
+          "shape": "C128 H16 W16 M128 k3",
+          "direct": 2.88,
+          "im2col": 0.61
+        },
+        {
+          "shape": "C16 H64 W64 M32 k3",
+          "direct": 1.035,
+          "im2col": 0.38
+        }
+      ],
+      "e2e_ms_auto_vs_direct": [
+        {
+          "shape": "C64 H32 W32 M64",
+          "auto_im2col": 11.7,
+          "direct": 11.1,
+          "note": "慢 5%"
+        },
+        {
+          "shape": "C128 H16 W16 M128",
+          "auto_im2col": 12.8,
+          "direct": 14.6,
+          "note": "快 12%"
+        }
+      ],
+      "adopted": "conv_ops.conv2d 在 groups=1、N=1 時預設走 im2col（ops.conv===\"direct\" 強制直接卷積）。端到端結果混合（−5% 到 +12%），但純核心快 2.7–5.3 倍，所以採用。"
+    },
+    "R5_attention_splitkv": {
+      "kernel": "attn_splitkv.js：decode（S=1）的 split-KV（每 64 個 key 一塊，部分核心＋合併核心）；對照 attn_flash（attn_splitkv_check.html、attn_e2e_check.html）",
+      "correctness": "兩者對 attnCore 的相對誤差 ≤1.6e-6",
+      "kernel_ms": [
+        {
+          "shape": "H16 Hkv8 hd128 past512",
+          "flash": 1.005,
+          "splitkv": 0.44
+        },
+        {
+          "shape": "H16 Hkv8 hd128 past2047",
+          "flash": 3.325,
+          "splitkv": 1.295
+        },
+        {
+          "shape": "H4 Hkv2 hd64 past40",
+          "flash": 0.15,
+          "splitkv": 0.175,
+          "note": "一塊，split-KV 慢；規則要求 past≥256"
+        }
+      ],
+      "e2e_ms_auto_vs_flash": [
+        {
+          "shape": "H16 Hkv8 hd128 past512",
+          "auto_splitkv": 13.6,
+          "flash": 16
+        },
+        {
+          "shape": "H16 Hkv8 hd128 past2047",
+          "auto_splitkv": 16.4,
+          "flash": 23
+        }
+      ],
+      "adopted": "attn_gpu.attnCoreGpu：S=1、past≥256、未強制 attn_flash 時走 split-KV（兩段同一批次）。端到端快 15–29%。"
+    },
+    "R5_matmulnbits_splitk": {
+      "kernel": "matmulnbits_splitk.js（decode M=1，部分核心＋歸約）對 現行 WGSL_MATMULNBITS_DEC（nbits_splitk_check.html）",
+      "correctness": "兩者對 matmulNBitsRef 相對誤差 ≤4e-7",
+      "ms_per_dispatch": [
+        {
+          "shape": "M1 K1024 N3072 S4",
+          "dec": 0.215,
+          "splitK": 0.38
+        },
+        {
+          "shape": "M1 K1024 N3072 S2",
+          "dec": 0.155,
+          "splitK": 0.155
+        },
+        {
+          "shape": "M1 K4096 N1024 S8",
+          "dec": 0.145,
+          "splitK": 0.155
+        }
+      ],
+      "result": "沒有好處（持平或變慢）。現行 dec 核心已有 192 個工作群組，不缺平行度。不採用。"
+    },
+    "R5_training_transpose_splitk": {
+      "kernel": "mm_splitk 支援 transA／transB 旗標（與 matmulTRef 相同）；對照 mm_ops 強制的轉置平鋪核心（mm_splitk_flags_check.html、mm_transposed_integ_check.html）",
+      "correctness": "兩者對 matmulTRef 相對誤差 ≤2e-6；整合（mm_ops.matmul 實際派發）M=1、K≥1024 為 mm_splitk_f32，M=8 為 mm_tiled_f32",
+      "ms_per_dispatch": [
+        {
+          "shape": "M1 K1024 N1024 fl1(transA)",
+          "tiled": 0.49,
+          "splitK": 0.38
+        },
+        {
+          "shape": "M1 K4096 N1024 fl2(transB)",
+          "tiled": 1.9,
+          "splitK": 1.415
+        },
+        {
+          "shape": "M1 K1024 N3072 fl3(both)",
+          "tiled": 3.34,
+          "splitK": 1.34
+        }
+      ],
+      "adopted": "mm_ops：轉置旗標且 M=1、K≥1024、單一批次時改走 split-K（其餘仍用平鋪）。純核心快 22–60%。"
+    },
+    "R5_status_final": {
+      "q8mm": "量了：split-K 純核心快 21–25%，端到端沒有好處，只在強制時使用。",
+      "MatMulNBits": "量了：split-K 沒有好處，不採用。",
+      "attention": "量了：split-KV 端到端快 15–29%（past≥256），採用。",
+      "conv": "量了：im2col＋GEMM 純核心快 2.7–5.3 倍，端到端混合，採用（groups=1、N=1）。",
+      "training_transpose": "量了：轉置 split-K 純核心快 22–60%（M=1、K≥1024），採用。",
+      "f16_matmul": "不適用於這些核心（整數累加或訓練要求 f32 精確度）；已在 mm_f16_check 量過 f16 矩陣乘本身。"
+    }
   }
 }
