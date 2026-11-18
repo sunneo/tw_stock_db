@@ -5,7 +5,8 @@
 
 ## 這台機器的前提
 
-- Intel 內顯，WebGPU adapter 沒有 `shader-f16`，沒有 CUDA。
+- Intel 內顯（真 Chrome 實測 adapter：intel／xe-lpg，有 `shader-f16` 與 `subgroups`）。沒有 CUDA。
+  更正：早先寫的「沒有 `shader-f16`」是錯的，已更正。
 - `renderer/src/floating-assistant.js:14257-14262`（`resolveDevice`）：模型登記 `gpuNeedsF16: true`，且偵測到 WebGPU 但 `f16 === false` 時，**不走 GPU**，改 `wasm`（CPU）；標 `gpuOnly` 的模型直接報錯。所以下表所有 `gpuNeedsF16` 的模型，在這台的實際執行裝置是 **CPU（wasm）**，這是程式寫死的規則，不是猜的。
 - 「GPU 可否在這台跑」一欄的寫法：`否（f16 閘門）`＝程式擋住；`可能（未量測）`＝沒有 f16 需求，但沒有真機資料；`未知`＝查不到。
 
@@ -61,7 +62,7 @@
 |---|---|---|---|
 | **MoveNet Thunder**（姿態） | CPU（預設） | `poseGpu` 開關（預設關）：fp32、無 f16 閘門，WebGPU 失敗永久退回 CPU（`FaVlm.poseDevicePlan`，commit 39dd8fe42） | 有 opt-in 路徑，**未量測**，沒有對拍 |
 | **Depth Anything V2 Small**（深度） | CPU fp32 | `f32Gpu` 開關（預設關）：CPU 權重是 fp32 且任務在白名單時，GPU 改用 fp32（`FaVlm.f32GpuVariant`，commit 123237790） | 有 opt-in 路徑，**未量測**，沒有對拍 |
-| Florence-2 base、SmolVLM 256M、LLaVA-Interleave 0.5B | CPU（WASM q8） | 未接 | **未完成：原因**：登記的 GPU 權重是 fp16／q4f16，這台沒有 shader-f16；沒有查證有沒有對應的 fp32 權重檔，所以不能照 Depth 的做法放行 |
+| Florence-2 base、SmolVLM 256M、LLaVA-Interleave 0.5B | CPU（WASM q8） | 未接 | **未完成：原因**：登記的 GPU 權重是 fp16／q4f16，（更正：真 Chrome 的 xe-lpg 有 shader-f16，所以這不再是阻礙；剩下的阻礙是）沒有查證有沒有對應的 fp32 權重檔，所以不能照 Depth 的做法放行 |
 | Qwen3 網頁版（0.6B～1.7B） | CPU（WASM q8） | q4f16 需要 f16；q8 整段 GPU 解碼是 `qwenGpuDecode`（預設關） | **未完成：原因**：q4f16 這台不能用；q8 GPU 解碼在真卡上沒有量測 |
 | SlimSAM 77（分割） | CPU（q8） | 登記的 GPU 權重是 fp16 | **未完成：原因**：CPU 權重是 q8，沒有 fp32 證據，不放行 |
 | multilingual-e5-small（語意向量） | WASM（寫死） | 未接 | **未完成：原因**：沒有 WebGPU 的對拍紀錄；`transformers.js` 的 q8 在 WebGPU 上是否正確沒有查證 |
