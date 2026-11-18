@@ -1,0 +1,37 @@
+<!doctype html><meta charset="utf-8"><title>q8mm integ check</title>
+<body style="font:13px monospace;white-space:pre">
+<script>
+// R5 整合檢查（真 Chrome）：infer_ops.q8mm 經規則表實際選到 splitk（M=1 且 K≥4096 或 N≥3072）時，輸出與 q8mmRef 逐位相同；
+// 同時與強制 dec 的結果比較（應逐位相同）。端到端時間（含上傳與讀回，只是參考；純核心時間見 q8mm_splitk_check）。
+const mods = {};
+const loadMod = async (key, url) => {
+  const src = await (await fetch(url, { cache: 'no-store' })).text();
+  const m = { exports: {} }; mods[key] = m;
+  new Function('module', 'exports', 'require', src)(m, m.exports, (p) => { const k = p.replace(/^\.\//, '').replace(/\.js$/, ''); if (!mods[k]) throw new Error('missing ' + k); return mods[k].exports; });
+};
+(async () => {
+  const out = { rows: [], error: null, done: false };
+  try {
+    await loadMod('gpu_core', '../../renderer/src/gpu/gpu_core.js');
+    await loadMod('gpu_pool', '../../renderer/src/gpu/gpu_pool.js');
+    await loadMod('nn_ops', '../../renderer/src/gpu/nn_ops.js');
+    await loadMod('q8mm_splitk', '../../renderer/src/gpu/q8mm_splitk.js');
+    await loadMod('infer_ops', '../../renderer/src/gpu/infer_ops.js');
+    const IO = mods.infer_ops.exports;
+    let s = 91; const rnd = () => { s = (Math.imul(s, 1664525) + 1013904223) | 0; return s; };
+    for (const [M, K, N] of [[1, 4096, 1024], [1, 1024, 3072], [1, 1024, 1024]]) {
+      const xq = Int32Array.from({ length: M * K }, () => ((rnd() >>> 8) % 511) - 255);
+      const W = Uint8Array.from({ length: K * N }, () => (rnd() >>> 13) & 255);
+      const ref = IO.q8mmRef(xq, W, 131, M, K, N, 0.0123);
+      const ops = { navigator: navigator };
+      const auto = await IO.q8mm(xq, W, 131, M, K, N, 0.0123, ops);
+      const dec = await IO.q8mm(xq, W, 131, M, K, N, 0.0123, { navigator: navigator, q8variant: 'dec' });
+      const exactAuto = Array.from(auto.result).every((v, i) => Object.is(v, ref[i]));
+      const exactDec = Array.from(dec.result).every((v, i) => Object.is(v, ref[i]));
+      const tm = async (opt) => { await IO.q8mm(xq, W, 131, M, K, N, 0.0123, opt); const ts = []; for (let i = 0; i < 5; i++) { const t0 = performance.now(); await IO.q8mm(xq, W, 131, M, K, N, 0.0123, opt); ts.push(performance.now() - t0); } ts.sort((a, b) => a - b); return Math.round(ts[2] * 10) / 10; };
+      out.rows.push({ M, K, N, auto_variant: IO.q8mmVariant(N, {}, M, K), auto_layer: auto.info ? auto.info.layer : null, autoExactToRef: exactAuto, decExactToRef: exactDec, endToEnd_ms_auto: await tm({ navigator: navigator }), endToEnd_ms_dec: await tm({ navigator: navigator, q8variant: 'dec' }) });
+    }
+  } catch (e) { out.error = String((e && e.stack) || e).replace(/https?:\S+/g, 'URL').slice(0, 600); }
+  out.done = true; window.__out = out; document.body.textContent = JSON.stringify(out, null, 1); document.title = 'done';
+})();
+</script>

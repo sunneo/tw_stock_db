@@ -7,6 +7,9 @@
 // 注意：node 內的測試用假裝置只驗證主機端流程；WGSL 的數值要在真 WebGPU（scripts/eval/cudaweb_infer_browser.js）驗證。
 'use strict';
 const nn = require('./nn_ops.js');
+// R5：解碼 M=1 的 split-K（q8mm_splitk.js）；載入失敗（嵌入器沒有這個檔）就不提供，規則不會選到它
+let SQ = null;
+try { SQ = require('./q8mm_splitk.js'); } catch (_) { SQ = null; }
 
 const USAGE = { MAP_READ: 0x0001, COPY_SRC: 0x0004, COPY_DST: 0x0008, UNIFORM: 0x0040, STORAGE: 0x0080 };
 const MAX_GROUPS = 65535;
@@ -700,8 +703,10 @@ const Q8_PF_MIN_M = 64;
 // K 參數只用來判斷 f32 版是否精確（K ≤ 4096）；沒給 K 時走 i32 的 decr8，一定精確。
 function q8mmVariant(N, opts, M, K) {
   const forced = opts && opts.q8variant;
-  if (forced === 'simple' || forced === 'dec' || forced === 'pf' || forced === 'decr' || forced === 'decr8' || forced === 'decr8f' || forced === 'pf8x4' || forced === 'decr4f' || forced === 'decr2f') return forced;
+  if (forced === 'simple' || forced === 'dec' || forced === 'pf' || forced === 'decr' || forced === 'decr8' || forced === 'decr8f' || forced === 'pf8x4' || forced === 'decr4f' || forced === 'decr2f' || forced === 'splitk') return forced;
   if (N % 4 !== 0) return 'simple';
+  // R5：split-K（'splitk'）只在強制指定時使用。純核心時間快 21–25%（1×4096×1024 0.245→0.185 ms；1×1024×3072 0.195→0.155），
+  // 但端到端（含 x 上傳與兩段的讀回）變慢或持平（10.1 對 8.4 ms；9.0 對 9.1 ms），所以自動規則不選它。
   if (M !== undefined && M >= Q8_PF_MIN_M) return (K !== undefined && K <= 4096) ? 'pf8x4' : 'pf';   // f32 4×8 分塊（K ≤ 4096 精確）；其餘用 pf
   if (M !== undefined && M >= 8) return (K !== undefined && K <= 4096) ? 'decr8f' : 'decr8';   // f32 8 列版：M=8 0.60→0.44 ms、M=16 1.07→0.79 ms（K ≤ 4096 精確）
   if (M !== undefined && M >= 4) return (K !== undefined && K <= 4096) ? 'decr4f' : 'decr';
@@ -714,6 +719,24 @@ async function q8mm(xq, W, wzp, M, K, N, scale, opts) {
   return nn.tryLayers('q8mm', opts,
     async (dev) => {
       if (variant !== 'simple' && N % 4 !== 0) throw new Error('q8mm ' + variant + '：N 必須是 4 的倍數（N=' + N + '）');
+      if (variant === 'splitk') {
+        // R5 split-K：部分和＋歸約，兩段在同一個批次裡一次 submit；整數累加，結果與 q8mmRef 逐位相同
+        // 權重用既有的快取緩衝區（weightBuf：同一份 W 只上傳一次），位元組與核心的 u32 讀法一致（小端、每字 4 個 n），不需要 JS 重排
+        const S = SQ.pickSplits(K), nq = N >>> 2;
+        const xbuf = inBuf(dev, Int32Array.from(xq));
+        const wbuf = weightBuf(dev, W);
+        const bt = nn.createBatch(dev);
+        const hP = bt.alloc(S * M * N), hY = bt.alloc(M * N);
+        const pv = new DataView(new ArrayBuffer(32));
+        pv.setUint32(0, M, true); pv.setUint32(4, K, true); pv.setUint32(8, N, true); pv.setUint32(12, nq, true); pv.setInt32(16, wzp, true); pv.setUint32(20, S, true);
+        const rv = new DataView(new ArrayBuffer(32));
+        rv.setUint32(0, M, true); rv.setUint32(4, K, true); rv.setUint32(8, N, true); rv.setUint32(12, nq, true); rv.setInt32(16, wzp, true); rv.setUint32(20, S, true); rv.setFloat32(24, sc, true);
+        bt.dispatchRaw(SQ.WGSL_Q8_SPLITK_PARTIAL, [xbuf, wbuf, hP.buf], new Uint8Array(pv.buffer), SQ.dispatchPartial(M, N, S));
+        bt.dispatchRaw(SQ.WGSL_Q8_SPLITK_REDUCE, [hP.buf, hY.buf], new Uint8Array(rv.buffer), SQ.dispatchReduce(M, N));
+        const got = await bt.read([[hY, M * N]]);
+        xbuf.destroy && xbuf.destroy();
+        return got[0];
+      }
       const xb = inBuf(dev, Int32Array.from(xq));
       const wb = weightBuf(dev, W);
       let r;
@@ -769,7 +792,8 @@ const WGSL_Q8MM_DECR4F_DYN = dynKernel(WGSL_Q8MM_DECR4F);
 const WGSL_Q8MM_DECR2F_DYN = dynKernel(WGSL_Q8MM_DECR2F);
 // b：nn_ops.createBatch；xq：quantizeDyn 的回傳（{buf, n, st}）；wbuf：GPUBuffer；回傳 { buf, n }（M×N 的 f32 句柄）
 function q8mmBatched(b, xq, wbuf, wzp, M, K, N, wscale, opts) {
-  const variant = q8mmVariant(N, opts, M, K);
+  // R5：split-K 目前只有獨立（非批次）的 q8mm 路徑；批次版在這種形狀退回解碼核心（同樣是整數累加，逐位相同）
+  const variant = (q8mmVariant(N, opts, M, K) === 'splitk') ? 'dec' : q8mmVariant(N, opts, M, K);
   if (variant !== 'simple' && N % 4 !== 0) throw new Error('q8mm ' + variant + '：N 必須是 4 的倍數（N=' + N + '）');
   const y = b.alloc(M * N);
   const u = new ArrayBuffer(32), d = new DataView(u);
