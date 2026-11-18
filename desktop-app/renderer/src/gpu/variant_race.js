@@ -63,6 +63,7 @@
       get: async function (key) { return cache.get(key); },
       set: async function (key, value) { cache.put(key, value); return cache.persisted() ? 'local' : 'memory'; },
       entries: async function () { return cache.entries(); },
+      remove: async function (key) { cache.remove(key); },
       clear: async function () { cache.clearEntries(); }
     };
   }

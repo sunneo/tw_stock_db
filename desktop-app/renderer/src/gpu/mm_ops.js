@@ -431,6 +431,22 @@ async function raceMatmul(M, K, N, opts) {
 // 自動重跑只用小形狀（64×1024×1024）：CPU 參考在主執行緒算，大形狀會卡住頁面；大形狀由設定頁「重跑」手動做。
 const TUNE = { started: false, store: null };
 const AUTO_SHAPES = [{ M: 64, K: 1024, N: 1024 }];
+// 重跑（設定頁「重跑」用）：先清掉這些形狀的勝者（記憶體與儲存），再競賽一次；派發在競賽期間用規則，不會被擋住。
+// 注意：舊勝者在競賽前就清掉了；取消、沒有 GPU、或競賽失敗時，這些形狀就退回規則（下次競賽會再補上）。
+async function rerunMatmul(shapes, o) {
+  const opts = o || {};
+  const list = (shapes || []).filter((sh) => sh && sh.M > 0 && sh.K > 0 && sh.N > 0);
+  const store = opts.store || TUNE.store;
+  for (const sh of list) {
+    const key = KS.cacheKey(ADAPTER, 'matmul', sh, CAPS);
+    WINNERS.delete(key);
+    if (store && typeof store.remove === 'function') { try { await store.remove(key); } catch (_) { /* 記憶體已清 */ } }
+  }
+  return startMatmulRace(list, opts);
+}
+// 窗格（設定頁）建立快取時要用的同一組鍵條件：adapter 描述與能力表。窗格若用別的值，就查不到這裡的勝者。
+function getMatmulTuneContext() { return { adapter: ADAPTER, caps: CAPS }; }
+
 // initMatmulTuning({ device, adapterDesc, store, shapes })：探測能力、從 store 整批載入勝者，回報缺勝者的形狀（簽名變了就會缺）。
 // 只讀，不量；量測由 startMatmulRace 做。store 沒給就用 variant_race 的預設（與 kernel_race 共用的 localStorage 快取，node 退記憶體）。
 async function initMatmulTuning(o) {
@@ -503,4 +519,4 @@ async function startMatmulRaceInner(shapes, o) {
   return out;
 }
 
-module.exports = { matmulRef, matmul, matmulIntRef, matmulInt, WGSL_MM_F32, WGSL_MM_F32_TILED, WGSL_MM_F32_VEC4, WGSL_MM_I32, plan, pickMatmulKernel, setMatmulCaps, getMatmulCaps: () => CAPS, setMatmulWinners, raceMatmul, initMatmulTuning, startMatmulRace, calibrateSimple, gateCandidates, estimateMs, flopsOf, SAFE_DISPATCH_MS, REL_SPEED, AUTO_SHAPES, TUNE, measureRoofline, pickBatch, compileFromSamples, pickRooflineIters, gflopsFrom, peakFromEntries, CORE_SAMPLE_MS, ROOF_TARGET_MS, ROOF_ABORT_MS, ROOF_MAX_ITERS, rooflineCalibrate, splitRuns, CORE_SPLIT_MS };
+module.exports = { rerunMatmul, getMatmulTuneContext, matmulRef, matmul, matmulIntRef, matmulInt, WGSL_MM_F32, WGSL_MM_F32_TILED, WGSL_MM_F32_VEC4, WGSL_MM_I32, plan, pickMatmulKernel, setMatmulCaps, getMatmulCaps: () => CAPS, setMatmulWinners, raceMatmul, initMatmulTuning, startMatmulRace, calibrateSimple, gateCandidates, estimateMs, flopsOf, SAFE_DISPATCH_MS, REL_SPEED, AUTO_SHAPES, TUNE, measureRoofline, pickBatch, compileFromSamples, pickRooflineIters, gflopsFrom, peakFromEntries, CORE_SAMPLE_MS, ROOF_TARGET_MS, ROOF_ABORT_MS, ROOF_MAX_ITERS, rooflineCalibrate, splitRuns, CORE_SPLIT_MS };

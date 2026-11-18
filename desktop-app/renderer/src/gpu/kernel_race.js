@@ -62,6 +62,9 @@
     const cache = KS.createWinnerCache({ storage: opts.storage === undefined ? defaultStorage() : opts.storage, adapter: adapter, caps: caps });
     const chash = cache.capsHash;
     const inflight = {};
+    // 這個運算有沒有可用的量測裝置（例如 mm_ops 的真 GPU）。沒給就一律不能重跑（窗格沒有裝置時的預設）。
+    const rerunnable = typeof opts.rerunnable === 'function' ? opts.rerunnable : function () { return false; };
+    function canRerun(op) { return !caps.software && !!rerunnable(op); }
 
     // 同步的 store（給 kernel_select.pickWithCache 用）
     const store = { get: cache.get, set: function (key, v) { cache.put(key, v); } };
@@ -141,7 +144,9 @@
           cachedMedian: d.cached ? d.cached.median : null,
           running: d.running,
           eligible: d.eligible,
-          key: d.key
+          key: d.key,
+          canRerun: canRerun(op),          // 有裝置才能重跑；沒有時 rerunHint 說明原因
+          rerunHint: canRerun(op) ? '清掉這個運算的結果後重新競賽' : '重跑需要可量測的真 GPU 裝置（這裡沒有）'
         };
       });
     }
@@ -160,6 +165,7 @@
       reset: reset,
       describe: describe,
       snapshot: snapshot,
+      canRerun: canRerun,
       overrides: function () { return cache.overrides(); },
       persisted: function () { return cache.persisted(); }
     };
