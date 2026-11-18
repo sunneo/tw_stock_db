@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>O12b 通用解碼骨架 GPU 對拍</title>
+</head>
+<body>
+<h1>O12b：llm_skeleton_gpu 完整 GPU 解碼 對 CPU 參考</h1>
+<p>用小隨機權重（描述表的維度縮小）。CPU＝llm_skeleton.step（f64 累加）；GPU＝createGpuDecoder（f32）。對拍是界內，不是逐位相同。</p>
+<pre id="out">執行中…</pre>
+<script src="/renderer/src/gpu/llm_arch.js"></script>
+<script src="/renderer/src/gpu/llm_skeleton.js"></script>
+<script src="/renderer/src/gpu/llm_skeleton_gpu.js"></script>
+<script>
+(async function () {
+  const out = document.getElementById('out');
+  const log = [];
+  const say = (s) => { log.push(s); out.textContent = log.join('\n'); };
+  try {
+    const ARCH = self.FaLlmArch, S = self.FaLlmSkeleton, G = self.FaLlmSkeletonGpu;
+    if (!navigator.gpu) throw new Error('沒有 WebGPU（navigator.gpu）');
+    const adapter = await navigator.gpu.requestAdapter();
+    if (!adapter) throw new Error('requestAdapter 回傳空值');
+    const device = await adapter.requestDevice();
+    const info = adapter.info || {};
+    say('adapter: ' + (info.vendor || '?') + ' / ' + (info.architecture || info.device || '?') + ' / ' + (info.description || ''));
+
+    // 確定性的隨機數（LCG）
+    function rng(seed) { let s = seed >>> 0; return () => { s = (Math.imul(s, 1664525) + 1013904223) >>> 0; return s / 4294967296 * 2 - 1; }; }
+    function fill(n, r, sc) { const a = new Float32Array(n); for (let i = 0; i < n; i++) a[i] = r() * sc; return a; }
+    function ones(n, r) { const a = new Float32Array(n); for (let i = 0; i < n; i++) a[i] = 1 + 0.1 * r(); return a; }
+    function weightsFor(arch, seed) {
+      const r = rng(seed), H = arch.hidden, hd = ARCH.headDimOf(arch), nh = arch.heads, nkv = arch.kvHeads, F = arch.ffn, V = arch.vocab;
+      const sc = 1 / Math.sqrt(H);
+      const w = { embed: fill(V * H, r, 0.5), finalNorm: ones(H, r), layers: [] };
+      if (!arch.tiedEmbeddings) w.lmHead = fill(V * H, r, sc);
+      for (let l = 0; l < arch.layers; l++) {
+        const L = { attnNorm: ones(H, r), wq: fill(nh * hd * H, r, sc), wk: fill(nkv * hd * H, r, sc), wv: fill(nkv * hd * H, r, sc),
+          wo: fill(H * nh * hd, r, 1 / Math.sqrt(nh * hd)), ffnNorm: ones(H, r), wGate: fill(F * H, r, sc), wUp: fill(F * H, r, sc), wDown: fill(H * F, r, 1 / Math.sqrt(F)) };
+        if (arch.qkNorm) { L.qNorm = ones(hd, r); L.kNorm = ones(hd, r); }
+        w.layers.push(L);
+      }
+      return w;
+    }
+    // 各種形狀：llama3 縮放（無 qk-norm）、qwen3（qk-norm、無縮放）、tied 嵌入
+    const cases = [
+      { name: 'llama3-rope-small', base: ARCH.FAMILIES['llama-3.2-1b'], over: { layers: 2, hidden: 64, heads: 4, kvHeads: 2, headDim: 16, ffn: 96, vocab: 200, tiedEmbeddings: false } },
+      { name: 'qwen3-qknorm-small', base: ARCH.FAMILIES['qwen3-0.6b'], over: { layers: 2, hidden: 64, heads: 4, kvHeads: 2, headDim: 16, ffn: 96, vocab: 200, tiedEmbeddings: false, rope: { base: 1000000, scaling: null } } },
+      { name: 'tied-small', base: ARCH.FAMILIES['smollm2-135m'], over: { layers: 2, hidden: 64, heads: 4, kvHeads: 2, headDim: 16, ffn: 96, vocab: 200, tiedEmbeddings: true } },
+    ];
+    const tokens = [3, 17, 42, 9, 150, 7, 88, 1];
+    const results = [];
+    for (let ci = 0; ci < cases.length; ci++) {
+      const c = cases[ci];
+      const arch = Object.assign({}, c.base, c.over);
+      arch.rope = Object.assign({}, c.base.rope, c.over.rope || {});
+      const w = weightsFor(arch, 1234 + ci);
+      const st = S.createState(arch, w, { useOverrides: false });
+      const dec = G.createGpuDecoder(device, arch, w, { maxT: 32 });
+      let maxAbs = 0, maxRel = 0, argOk = true, steps = 0;
+      for (const t of tokens) {
+        const cpu = S.step(st, t);
+        const gpu = await dec.step(t);
+        let scale = 0; for (let i = 0; i < cpu.length; i++) scale = Math.max(scale, Math.abs(cpu[i]));
+        for (let i = 0; i < cpu.length; i++) {
+          const d = Math.abs(cpu[i] - gpu[i]);
+          if (d > maxAbs) maxAbs = d;
+        }
+        maxRel = Math.max(maxRel, maxAbs / Math.max(scale, 1e-9));
+        let ba = 0, bg = 0; for (let i = 1; i < cpu.length; i++) { if (cpu[i] > cpu[ba]) ba = i; if (gpu[i] > gpu[bg]) bg = i; }
+        if (ba !== bg) argOk = false;
+        steps++;
+      }
+      dec.destroy();
+      const r = { name: c.name, steps, maxAbsDiff: maxAbs, maxRelToLogitScale: maxRel, argmaxSameEveryStep: argOk };
+      results.push(r);
+      say(JSON.stringify(r));
+    }
+    window.__o12b = { ok: true, results, adapter: info };
+    say('DONE ' + JSON.stringify({ ok: results.every((r) => r.argmaxSameEveryStep && r.maxRelToLogitScale < 1e-3) }));
+  } catch (e) {
+    window.__o12b = { ok: false, error: String((e && e.stack) || e) };
+    say('ERROR ' + String((e && e.stack) || e));
+  }
+})();
+</script>
+</body>
+</html>

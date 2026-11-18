@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>O12c Qwen3 覆寫開／關 計時</title>
+</head>
+<body>
+<h1>O12c：qwen_gpu 覆寫（rmsq1 融合）開／關 同機計時</h1>
+<p>隨機 q8 權重、Qwen3-0.6B 的寬度（D1024、16 頭、8 KV 頭、hd128、I3072），只取 4 層、詞表縮成 8192（省記憶體）。
+解碼 M=1，每組量 40 步的中位數，開與關交替兩輪。計時只標這台機器。</p>
+<pre id="out">執行中…</pre>
+<script src="/renderer/src/gpu/qwen_decode.js"></script>
+<script src="/renderer/src/gpu/qwen_gpu.js"></script>
+<script>
+(async function () {
+  const out = document.getElementById('out');
+  const log = [];
+  const say = (s) => { log.push(s); out.textContent = log.join('\n'); };
+  try {
+    const G = self.FaQwenGpu;
+    if (!navigator.gpu) throw new Error('沒有 WebGPU');
+    const adapter = await navigator.gpu.requestAdapter();
+    if (!adapter) throw new Error('requestAdapter 回傳空值');
+    const device = await adapter.requestDevice();
+    const info0 = adapter.info || {};
+    say('adapter: ' + (info0.vendor || '?') + ' / ' + (info0.architecture || '?'));
+
+    let seed = 99;
+    const rnd = () => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed / 4294967296; };
+    const u8 = (n) => { const a = new Uint8Array(n); for (let i = 0; i < n; i++) a[i] = (rnd() * 256) | 0; return a; };
+    const f32 = (n, base) => { const a = new Float32Array(n); for (let i = 0; i < n; i++) a[i] = base + 0.05 * (rnd() - 0.5); return a; };
+    const D = 1024, H = 16, Hkv = 8, hd = 128, I = 3072, V = 8192, L = 4;
+    const mat = (K, N) => ({ W: u8(K * N), zp: 128, scale: 0.002, K, N });
+    const layers = [];
+    for (let l = 0; l < L; l++) {
+      layers.push({ inNorm: f32(D, 1), postNorm: f32(D, 1), qNorm: f32(hd, 1), kNorm: f32(hd, 1),
+        q: mat(D, H * hd), k: mat(D, Hkv * hd), v: mat(D, Hkv * hd), o: mat(H * hd, D), g: mat(D, I), u: mat(D, I), d: mat(I, D) });
+    }
+    const W = { D, H, Hkv, hd, I, V, L, eps: 1e-6, theta: 1000000, finalNorm: f32(D, 1),
+      emb: { W: u8(V * D), zp: 128, scale: 0.002 }, layers,
+      embedRows(ids) { const o = new Float32Array(ids.length * D); for (let i = 0; i < ids.length; i++) for (let j = 0; j < D; j++) o[i * D + j] = ((ids[i] * 31 + j) % 17 - 8) * 0.01; return o; } };
+
+    const MAXT = 256, MAXM = 16, STEPS = 40;
+    async function measure(fuse) {
+      const eng = await G.createGpuEngine(device, W, { maxT: MAXT, maxM: MAXM, fuseRmsQuant: fuse });
+      let tok = 5;
+      for (let i = 0; i < 4; i++) { const r = await eng.step([tok], {}); tok = r.token; }   // 暖機
+      const ts = [];
+      for (let i = 0; i < STEPS; i++) { const t0 = performance.now(); const r = await eng.step([tok], {}); ts.push(performance.now() - t0); tok = r.token; }
+      const dispatches = eng.info.dispatches;
+      eng.destroy();
+      ts.sort((a, b) => a - b);
+      return { fuse, medianMs: ts[ts.length >> 1], minMs: ts[0], dispatchesPlanned: dispatches };
+    }
+    const rounds = [];
+    for (const fuse of [true, false, true, false]) { const m = await measure(fuse); rounds.push(m); say(JSON.stringify(m)); }
+    const med = (f) => { const a = rounds.filter((r) => r.fuse === f).map((r) => r.medianMs).sort((x, y) => x - y); return (a[0] + a[1]) / 2; };
+    const summary = { onMedianMs: med(true), offMedianMs: med(false) };
+    summary.speedup = summary.offMedianMs / summary.onMedianMs;
+    window.__o12c = { ok: true, rounds, summary, adapter: info0 };
+    say('SUMMARY ' + JSON.stringify(summary));
+  } catch (e) {
+    window.__o12c = { ok: false, error: String((e && e.stack) || e) };
+    say('ERROR ' + String((e && e.stack) || e));
+  }
+})();
+</script>
+</body>
+</html>
