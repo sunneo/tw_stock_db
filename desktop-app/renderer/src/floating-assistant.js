@@ -96777,14 +96777,12 @@ ${fnData.code}
         paint();
         return wrap;
     }
-    _kernelTuneRegisterPane() {
-        const root = document.createElement('div');
-        root.appendChild(this._kernelTuneControls());
-        this.registerAdvancedSettingsTab('ai', 'kernel-tune', '運算變體（自動調校）', root);
-    }
     _gpuCompatRegisterPane() {
         const root = document.createElement('div');
         root.appendChild(this._gpuCompatControls());
+        // 運算變體（自動調校，O9）是 GPU 相容層的一個區塊，放在同一個 gpu-compat 窗格（不另開分頁）
+        const kHead = document.createElement('div'); kHead.textContent = '運算變體（自動調校，O9）'; kHead.style.cssText = 'font-weight:600; margin-top:14px;';
+        root.appendChild(kHead); root.appendChild(this._kernelTuneControls());
         this.registerAdvancedSettingsTab('ai', 'gpu-compat', 'GPU 相容層（numba／cupy／torch）', root);
     }
 
@@ -141228,7 +141226,6 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         try { this._riRegisterPane(); } catch (e) { console.warn('專案索引分頁註冊失敗', e); }
         try { this._studioRegisterPane(); } catch (e) { console.warn('離線訓練工作室分頁註冊失敗', e); }
         try { this._gpuCompatRegisterPane(); } catch (e) { console.warn('GPU 相容層分頁註冊失敗', e); }
-        try { this._kernelTuneRegisterPane(); } catch (e) { console.warn('運算變體調校分頁註冊失敗', e); }
         try { this._mcpRegisterPane(); } catch (e) { console.warn('MCP 分頁註冊失敗', e); }
         try { if (this._i3dRegisterPane) this._i3dRegisterPane(); } catch (e) { console.warn('圖片轉 3D 設定分頁註冊失敗', e); }
         // CI/CD 連線設定頁不放進 Configure（使用者不需要）：程式設計 domain 靠內建的知識（ci_guide、提示詞）與 gh／curl／ssh 指令處理 GitHub、Jenkins、Gerrit

@@ -57,5 +57,16 @@ ok(rows.every((r) => r.canRerun === false && /O9 B/.test(r.rerunHint)), '沒有�
 ok(rows[2].running === true && rows[0].eligibleIds.join() === 'v1,v2', '競賽中狀態與可選變體清單');
 ok(Array.isArray(faKernelTuneRows(null)) && faKernelTuneRows(null).length === 0, '沒有快照時回傳空陣列（不丟錯）');
 
+
+// 4. 位置：運算變體是 GPU 相容層（gpu-compat 窗格）的一個區塊，不是 ai 分組裡獨立的一頁
+{
+    const a = src.indexOf("    _gpuCompatRegisterPane() {");
+    const b = src.indexOf("\n    }\n", a);
+    const body = a >= 0 && b > a ? src.slice(a, b) : "";
+    ok(body.indexOf("this._kernelTuneControls()") > 0, "運算變體區塊掛在 _gpuCompatRegisterPane（gpu-compat 窗格）內", body.length);
+    ok(body.indexOf("registerAdvancedSettingsTab('ai', 'gpu-compat'") > body.indexOf("this._kernelTuneControls()"), "區塊在 gpu-compat 窗格註冊之前加入同一個 root");
+    ok(src.indexOf("'kernel-tune'") < 0, "不再有獨立的 kernel-tune 分頁（ai 分組）");
+    ok(src.indexOf("_kernelTuneRegisterPane") < 0, "不再有 _kernelTuneRegisterPane");
+}
 console.log('kernel_tune_ui: ' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);
