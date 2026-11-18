@@ -21,7 +21,7 @@
   const EXTRA_MODELS = {
     'llama-3.2-1b': { id: 'llama-3.2-1b', dir: 'llama-3.2-1b-q8', repo: 'onnx-community/Llama-3.2-1B-Instruct-ONNX', label: 'Llama 3.2 1B', family: 'llama', downloadHere: true, partBytes: 16 * MiB,
       file: { rel: 'onnx/model_quantized.onnx', bytes: 1236653951, sha256: 'ad53ed44994c27ab60e8024e83fcd83ce38db4d4ad3a28549b432480eb84d180' }, tokenizer: LLAMA_TOK,
-      verifiedSha: false,   // 大小與 sha256 來自 Hugging Face 的 LFS 標頭（2026-11-18），尚未下載核對；下載完成時 download() 會核對並寫進 manifest
+      verifiedSha: false,   // 2026-11-18 只讀 HF 標頭（X-Linked-Size／X-Linked-ETag）：model_quantized.onnx 的大小與 sha256、tokenizer.json 的大小與 sha256 都與表一致；但位元組還沒下載，所以 verifiedSha 仍為 false。下載完成時 download() 會核對並寫進 manifest
       shape: { D: 2048, H: 32, Hkv: 8, I: 8192, L: 16, V: 128256, hd: 64 },
       note: '只在模型清單：Qwen GPU 路徑不認得它（get() 不回它）；通用骨架的 GPU 路徑尚未接上 app，所以 app 目前仍走 ONNX' },
   };
