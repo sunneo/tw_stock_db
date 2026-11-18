@@ -341,6 +341,38 @@ check('pose model is registered (full fp32, not int8), not an image model, never
   const w6 = V.makeStreamWatch({ every: 4, minLen: 10 }); const acc6 = '好'.repeat(200);
   check('watch：可以自訂門檻', typeof w6.feed(acc6, '好好好好') === 'string');
 }
+// 姿態 GPU 路徑（O15b 第一小步）：預設關；只有 fp32、無 f16 需求的姿態權重才放行；其餘一律回到原本的 CPU
+{
+  const mn = V.byId('movenet-thunder');
+  check('movenet：fp32 權重、沒有 f16 閘門', mn.dtype.gpu === 'fp32' && mn.dtype.cpu === 'fp32' && !mn.gpuNeedsF16);
+  const on = { enabled: true, gpuAvailable: true, f16: false };
+  let p = V.poseDevicePlan(mn, {});
+  check('pose gpu：沒給選項 → 只用 CPU（預設關）', p.order.join() === 'wasm' && p.gpu === false, p);
+  p = V.poseDevicePlan(mn, { enabled: false, gpuAvailable: true, f16: true });
+  check('pose gpu：開關關閉 → 只用 CPU，即使有 WebGPU', p.order.join() === 'wasm' && p.gpu === false, p);
+  p = V.poseDevicePlan(mn, on);
+  check('pose gpu：開關開 + WebGPU + 不需 f16 → webgpu 再退 wasm', p.order.join() === 'webgpu,wasm' && p.gpu === true, p);
+  p = V.poseDevicePlan(mn, { enabled: true, gpuAvailable: false });
+  check('pose gpu：開關開但沒有 WebGPU → CPU', p.order.join() === 'wasm' && p.gpu === false, p);
+  p = V.poseDevicePlan(mn, Object.assign({ brokenPermanently: true }, on));
+  check('pose gpu：先前失敗過 → 之後一律 CPU', p.order.join() === 'wasm' && p.gpu === false, p);
+  p = V.poseDevicePlan(mn, Object.assign({}, on, { f16: false }));
+  check('pose gpu：顯示卡沒有 shader-f16 不影響（姿態模型不需要 f16）', p.order.join() === 'webgpu,wasm', p);
+  p = V.poseDevicePlan(V.byId('florence-2-base-ft'), on);
+  check('pose gpu：非姿態模型不走這條路', p.order.join() === 'wasm' && p.gpu === false, p);
+  const f16pose = { id: 'synthetic-pose-f16', task: 'pose-estimation', gpuNeedsF16: true, dtype: { gpu: 'fp16', cpu: 'fp32' } };
+  p = V.poseDevicePlan(f16pose, on);
+  check('pose gpu：需要 f16 的姿態模型仍走 CPU', p.order.join() === 'wasm' && p.gpu === false, p);
+  const q8pose = { id: 'synthetic-pose-q8', task: 'pose-estimation', dtype: { gpu: 'q8', cpu: 'q8' } };
+  p = V.poseDevicePlan(q8pose, on);
+  check('pose gpu：非 fp32 的姿態權重仍走 CPU（沒有量測過）', p.order.join() === 'wasm' && p.gpu === false, p);
+  const nodt = { id: 'synthetic-pose-nodtype', task: 'pose-estimation' };
+  p = V.poseDevicePlan(nodt, on);
+  check('pose gpu：沒有 dtype 資訊 → CPU（不猜）', p.order.join() === 'wasm' && p.gpu === false, p);
+  p = V.poseDevicePlan(undefined, on);
+  check('pose gpu：沒有模型 → CPU', p.order.join() === 'wasm' && p.gpu === false, p);
+  check('movenet：resolveDevice 行為不變（cpu 偏好 → wasm）', V.resolveDevice(mn, 'cpu', true, false).order.join() === 'wasm');
+}
 console.log(ok + ' passed, ' + bad.length + ' failed', bad);
 process.exit(bad.length ? 1 : 0);
 })();

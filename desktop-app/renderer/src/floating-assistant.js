@@ -14700,7 +14700,20 @@ const holder = {};
     // 估算這次下載量（依裝置組合）；已經在快取裡的部分不用再下載
     function estimateDownload(model, device, cachedBytes) { const total = (model.bytes && model.bytes[device === 'webgpu' ? 'gpu' : 'cpu']) || 0; return Math.max(0, total - (Number(cachedBytes) || 0)); }
 
-    return { nativePrefillPlan, nativeFullText, MODELS, byId, imageModels, textModels, depthModels, DEFAULT_DEPTH_MODEL, segmentModels, DEFAULT_SEGMENT_MODEL, poseModels, DEFAULT_POSE_MODEL, DEFAULT_MODEL, DEFAULT_TEXT_MODEL, THRESHOLD_MIN, THRESHOLD_MAX, clampThreshold, shouldUseOfflineLlm, estimateTokens, trimToTokens, textBudget, composeMessages, textGenParams, compactToolSpecs, parseToolCalls, TOOL_STAGE_SYSTEM, roleConfig, toolsTrust, routeStages, toolResultsAsReferences, looksLikeGarbage, makeStreamWatch, fitMessages, runAgentLoop, placeholderOf, BENCH_TOOLS, BENCH_CASES, scoreToolCase, summarizeToolBench, TASKS, generationParams, defaultMaxTokens, inferTask, pickModel, VISION_POLICIES, visionOrder, combineVision, structuredPrompt, parseStructured, resolveDevice, backendOrder, wantsNativeBackend, effectiveDevicePref, nativeToolMessages, nativeWithPrefill, resolveThreads, buildTask, formatResult, repoOfUrl, usageByModel, urlsOfModel, fmtBytes, estimateDownload };
+    // 姿態（MoveNet Thunder）的 WebGPU 路徑（O15b 第一小步）。預設關（poseGpu 'off'）：這台沒有真 GPU 量測，不預設開。
+    // 只有同時成立才把 webgpu 排在 wasm 前面：開關開、這台有 WebGPU、模型不需要 f16（gpuNeedsF16 為假）、登記的 GPU 權重是 fp32、沒有永久停用旗標。
+    // 其餘情況一律回到原本的 CPU（wasm），與改動前相同。opts：{enabled, gpuAvailable, brokenPermanently}；回傳 {order, reason, gpu}。
+    function poseDevicePlan(model, opts) {
+        opts = opts || {};
+        const cpu = (why) => ({ order: ['wasm'], reason: why, gpu: false });
+        if (!model || model.task !== 'pose-estimation') return cpu('不是姿態模型，用 CPU');
+        if (opts.enabled !== true) return cpu('姿態 GPU 開關關閉（預設），用 CPU');
+        if (opts.brokenPermanently) return cpu('姿態 GPU 路徑先前失敗，之後一律用 CPU');
+        if (!opts.gpuAvailable) return cpu('這台沒有 WebGPU，姿態用 CPU');
+        if (model.gpuNeedsF16 || !model.dtype || model.dtype.gpu !== 'fp32') return cpu('這個姿態模型的 GPU 版需要 f16 或不是 fp32，不走 GPU');
+        return { order: ['webgpu', 'wasm'], reason: '姿態 GPU 開關開：先試 WebGPU（fp32），失敗退回 CPU（這台未量測）', gpu: true };
+    }
+    return { nativePrefillPlan, nativeFullText, MODELS, byId, imageModels, textModels, depthModels, DEFAULT_DEPTH_MODEL, segmentModels, DEFAULT_SEGMENT_MODEL, poseModels, DEFAULT_POSE_MODEL, DEFAULT_MODEL, DEFAULT_TEXT_MODEL, THRESHOLD_MIN, THRESHOLD_MAX, clampThreshold, shouldUseOfflineLlm, estimateTokens, trimToTokens, textBudget, composeMessages, textGenParams, compactToolSpecs, parseToolCalls, TOOL_STAGE_SYSTEM, roleConfig, toolsTrust, routeStages, toolResultsAsReferences, looksLikeGarbage, makeStreamWatch, fitMessages, runAgentLoop, placeholderOf, BENCH_TOOLS, BENCH_CASES, scoreToolCase, summarizeToolBench, TASKS, generationParams, defaultMaxTokens, inferTask, pickModel, VISION_POLICIES, visionOrder, combineVision, structuredPrompt, parseStructured, resolveDevice, poseDevicePlan, backendOrder, wantsNativeBackend, effectiveDevicePref, nativeToolMessages, nativeWithPrefill, resolveThreads, buildTask, formatResult, repoOfUrl, usageByModel, urlsOfModel, fmtBytes, estimateDownload };
 });
 
 }).call(null, undefined, holder);
@@ -84622,7 +84635,7 @@ class FloatingAssistant {
             offlineMode: false, // 離線模式：不經過LLM，用離線訓練器處理對話
             offlineLearn: true, // （舊）線上AI成功的做法自動學進離線訓練器；現在改由offlineAutoTrain控制
             pythonApiBridge: 'skill', // 執行技能包的Python腳本時，部分公開API（playwright等）轉接到助理自己的工具；'off'＝關閉
-            nrGpuHead: 'off', llmGpuHead: 'off', qwenGpuDecode: 'off', qwenGpuQ4: 'off', mossGpu: 'off', midiGpu: 'off', whisperGpu: 'off', audioGpu: 'off', sdxsGpu: 'off', kokoroGpu: 'off', gpuAccel: 'on', // gpuAuto：依能力探測與基準自動決定各 GPU 路徑要不要開（實驗，預設關）； midiGpu：midigenai 作曲模型 cudaweb 解碼（實驗，預設關）； mossGpu：MOSS 語音 WebGPU 管線（實驗，預設關）； qwenGpuDecode：Qwen3 q8 整段 GPU 解碼（實驗，預設關）； GPU 版 lm_head（實驗，預設關）：桌面版／網頁版各一個開關
+            nrGpuHead: 'off', llmGpuHead: 'off', qwenGpuDecode: 'off', qwenGpuQ4: 'off', mossGpu: 'off', midiGpu: 'off', whisperGpu: 'off', poseGpu: 'off', audioGpu: 'off', sdxsGpu: 'off', kokoroGpu: 'off', gpuAccel: 'on', // gpuAuto：依能力探測與基準自動決定各 GPU 路徑要不要開（實驗，預設關）； midiGpu：midigenai 作曲模型 cudaweb 解碼（實驗，預設關）； mossGpu：MOSS 語音 WebGPU 管線（實驗，預設關）； qwenGpuDecode：Qwen3 q8 整段 GPU 解碼（實驗，預設關）； GPU 版 lm_head（實驗，預設關）：桌面版／網頁版各一個開關
             cudaMatmulKernel: 'auto', // 矩陣乘核心（O14b）：'auto'＝有競賽勝者才換；'off'＝關閉（舊核心）；'mm_vec4_f32'／'mm_tiled_f32'＝強制覆蓋勝者
             cudaCompatFloat64: 'auto', // float64（Python 預設）陣列在 GPU 相容層的處理：'auto'＝雙 float32（約 48 位元）在 GPU 跑，寫回前抽樣檢查；'f32'＝轉成 float32 在 GPU 跑（精度降為 float32，會印說明）；'exact'＝不用 GPU，與 CUDA 同精度
             cudaCompat: 'on', // GPU 相容層：既有的 numba／cupy／torch／pycuda 程式不改一行，就用瀏覽器的 WebGPU／WebGL2 跑（非真 CUDA）；'off'＝關閉（DESIGN.python-api-bridge.md「GPU 相容層」）
@@ -86084,6 +86097,7 @@ class FloatingAssistant {
              // GPU 加速總開關（預設開；device_pick.js：有真 GPU 就開各條路徑，軟體模擬或沒有 WebGPU 就不開；每條路徑失敗都退回原路徑）
             midiGpu: raw.midiGpu === 'on' ? 'on' : 'off', // midigenai 作曲模型改用 cudaweb 的 WebGPU 解碼（實驗，預設關；失敗退回 ORT）
             whisperGpu: raw.whisperGpu === 'on' ? 'on' : 'off', // Whisper 編碼器改用 WebGPU（transcribe_media 的 CPU wasm 路徑；實驗，預設關；失敗退回原編碼器）
+            poseGpu: raw.poseGpu === 'on' ? 'on' : 'off', // 姿態模型（MoveNet，/image-to-3d 找手臂）改用 WebGPU（實驗，預設關；未在這台量測；失敗永久退回 CPU）
             audioGpu: raw.audioGpu === 'on' ? 'on' : 'off', // 音訊轉 MIDI 的 YAMNet／Demucs 改用 cudaweb 圖形 session（重運算 WebGPU；實驗，預設關；失敗退回 wasm）
             sdxsGpu: raw.sdxsGpu === 'on' ? 'on' : 'off', // 本機生圖（SDXS CPU int8 版）改用 cudaweb 圖形 session（實驗，預設關；失敗退回 wasm）
             kokoroGpu: raw.kokoroGpu === 'on' ? 'on' : 'off', // Kokoro 語音合成改用 cudaweb 圖形 session（實驗，預設關；失敗退回原 session）
@@ -96599,6 +96613,15 @@ ${fnData.code}
         const chkWTxt = document.createElement('span');
         chkWTxt.textContent = '語音轉文字（Whisper base，transcribe_media）的編碼器改用 WebGPU（實驗，預設關）：卷積、注意力、前饋都在 GPU 上算，解碼器維持原樣。只在 CPU（wasm）管線時生效；沒有 WebGPU、選原生執行器、載入或執行失敗都退回原編碼器，原因寫在轉錄進度裡。動態量化讓編碼器輸出有微小雜訊，文字結果可能與原路徑略有不同。';
         lblW.appendChild(chkW); lblW.appendChild(chkWTxt); adv.appendChild(lblW);
+        // 姿態（MoveNet Thunder，/image-to-3d 找手臂）WebGPU：預設關；這台沒有真 GPU 量測，不預設開（O15b 第一小步）
+        const lblP = document.createElement('label');
+        lblP.style.cssText = 'display:flex; gap:6px; align-items:flex-start; cursor:pointer;';
+        const chkP = document.createElement('input');
+        chkP.type = 'checkbox'; chkP.checked = (this.advancedSettings.poseGpu === 'on'); chkP.style.marginTop = '3px';
+        chkP.addEventListener('change', () => { this.advancedSettings.poseGpu = chkP.checked ? 'on' : 'off'; this._poseGpuBroken = false; this._saveAdvancedSettings(); });
+        const chkPTxt = document.createElement('span');
+        chkPTxt.textContent = '姿態模型（MoveNet Thunder，/image-to-3d 找手臂）改用 WebGPU（實驗，預設關，這台未量測）：fp32 權重、不需要 f16。沒有 WebGPU、載入或推論失敗都會永久退回 CPU。';
+        lblP.appendChild(chkP); lblP.appendChild(chkPTxt); adv.appendChild(lblP);
         // 音訊轉 MIDI 的 Basic Pitch（轉譜）、YAMNet（樂器分類）、Demucs（分軌）WebGPU：預設關；圖形逐節點執行，卷積與大矩陣乘走 WGSL，其餘在 CPU；任何失敗（沒有 WebGPU、算子不支援、運算退到 CPU、中途錯誤）退回 wasm
         const lblU = document.createElement('label');
         lblU.style.cssText = 'display:flex; gap:6px; align-items:flex-start; cursor:pointer;';
@@ -129163,12 +129186,18 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             return { ok: true, segments: res.segments, model: model.id, device: used.device === 'webgpu' ? 'gpu' : 'cpu', ms: res.ms };
         } catch (e) { if (prog) prog.fail(String((e && e.message) || e)); return { ok: false, error: String((e && e.message) || e), model: model.id, tried: e && e.tried }; }
     }
+    // 姿態的裝置決策（poseGpu 預設關，見 FaVlm.poseDevicePlan）。_poseGpuBroken：WebGPU 路徑失敗過 → 之後一律 CPU（只在這次執行期間有效）。
+    _poseGpuOn() { return !!(this.advancedSettings && this.advancedSettings.poseGpu === 'on'); }
+    _poseDevicePick(model, gpu) {
+        const plan = FaVlm.poseDevicePlan(model, { enabled: this._poseGpuOn(), gpuAvailable: !!(gpu && gpu.available), brokenPermanently: !!this._poseGpuBroken });
+        return { order: plan.order, reason: plan.reason };
+    }
     // 離線姿態估計（/image-to-3d 把手臂分出來用）。p：{image?, blob?, model?, device?, askDownload?, confirmed?, silent?}。回傳 { ok, pose:{ kp:[[x,y,信心值]×17]（0..1，y 向下）, srcW, srcH }, model, device, ms }。
     // 模型還沒下載：askDownload 為真（使用者明講要用骨架）才問要不要下載，否則回 { ok:false, notInstalled:true }（不打擾、不偷偷下載）。
     async _poseEstimate(p) {
         p = p || {}; const model = FaVlm.byId(p.model) || FaVlm.byId(FaVlm.DEFAULT_POSE_MODEL);
         if (!model || model.task !== 'pose-estimation') return { ok: false, error: '不是姿態估計的模型：' + (p.model || '') + '。可用：' + FaVlm.poseModels().map((m) => m.id).join('、') };
-        const gpu = await this._omGpuInfo(); const dev = FaVlm.resolveDevice(model, p.device || 'cpu', gpu.available, gpu.f16);   // 預設 CPU：模型小、CPU 只要零點幾秒
+        const gpu = await this._omGpuInfo(); const dev = p.device ? FaVlm.resolveDevice(model, p.device, gpu.available, gpu.f16) : this._poseDevicePick(model, gpu);   // 沒指定裝置：預設 CPU；poseGpu 開時先試 WebGPU（失敗永久退回 CPU）
         if (!dev.order.length) return { ok: false, error: dev.reason };
         const usage = await this._omUsage(); const cached = (usage.byModel[model.id] || { bytes: 0 }).bytes, need = FaVlm.estimateDownload(model, dev.order[0], cached);
         if (need > 20 * 1048576 && !p.confirmed) {
@@ -129183,10 +129212,10 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             log('裝置：' + dev.reason); update({ status: '準備中…' });
             let order = dev.order.slice(), res = null, lastErr = null, used = null;
             for (let attempt = 0; attempt < 2 && !res; attempt++) {
-                const ld = await this._vlmEnsureLoaded(model, order, update, log); used = ld;
+                let ld; try { ld = await this._vlmEnsureLoaded(model, order, update, log); } catch (e) { if (order[0] !== 'webgpu') throw e; this._poseGpuBroken = true; log('⚠️ GPU 載入失敗，之後姿態一律用 CPU：' + String((e && e.message) || e)); order = ['wasm']; ld = await this._vlmEnsureLoaded(model, order, update, log); } used = ld;
                 update({ pct: 99, status: '找關節中（' + (ld.device === 'webgpu' ? 'GPU' : 'CPU') + '）…' });
                 try { res = await this._vlmRpc('run', { image: img.blob }, null, null, this._vlmSlotOf(ld.device)); }
-                catch (e) { lastErr = e; log('⚠️ ' + (ld.device === 'webgpu' ? 'GPU' : 'CPU') + ' 推論失敗：' + String((e && e.message) || e)); this._vlmTerminate(this._vlmSlotOf(ld.device)); if (ld.device === 'webgpu') { order = ['wasm']; log('降級成 CPU 重試'); } else break; }
+                catch (e) { lastErr = e; log('⚠️ ' + (ld.device === 'webgpu' ? 'GPU' : 'CPU') + ' 推論失敗：' + String((e && e.message) || e)); this._vlmTerminate(this._vlmSlotOf(ld.device)); if (ld.device === 'webgpu') { this._poseGpuBroken = true; order = ['wasm']; log('降級成 CPU 重試（之後姿態一律用 CPU）'); } else break; }
             }
             if (!res || !res.pose) throw lastErr || new Error('姿態模型沒有輸出');
             this._vlmScheduleIdle(this._vlmSlotOf(used.device));

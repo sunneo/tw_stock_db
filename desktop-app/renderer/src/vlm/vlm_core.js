@@ -536,5 +536,18 @@
     // 估算這次下載量（依裝置組合）；已經在快取裡的部分不用再下載
     function estimateDownload(model, device, cachedBytes) { const total = (model.bytes && model.bytes[device === 'webgpu' ? 'gpu' : 'cpu']) || 0; return Math.max(0, total - (Number(cachedBytes) || 0)); }
 
-    return { nativePrefillPlan, nativeFullText, MODELS, byId, imageModels, textModels, depthModels, DEFAULT_DEPTH_MODEL, segmentModels, DEFAULT_SEGMENT_MODEL, poseModels, DEFAULT_POSE_MODEL, DEFAULT_MODEL, DEFAULT_TEXT_MODEL, THRESHOLD_MIN, THRESHOLD_MAX, clampThreshold, shouldUseOfflineLlm, estimateTokens, trimToTokens, textBudget, composeMessages, textGenParams, compactToolSpecs, parseToolCalls, TOOL_STAGE_SYSTEM, roleConfig, toolsTrust, routeStages, toolResultsAsReferences, looksLikeGarbage, makeStreamWatch, fitMessages, runAgentLoop, placeholderOf, BENCH_TOOLS, BENCH_CASES, scoreToolCase, summarizeToolBench, TASKS, generationParams, defaultMaxTokens, inferTask, pickModel, VISION_POLICIES, visionOrder, combineVision, structuredPrompt, parseStructured, resolveDevice, backendOrder, wantsNativeBackend, effectiveDevicePref, nativeToolMessages, nativeWithPrefill, resolveThreads, buildTask, formatResult, repoOfUrl, usageByModel, urlsOfModel, fmtBytes, estimateDownload };
+    // 姿態（MoveNet Thunder）的 WebGPU 路徑（O15b 第一小步）。預設關（poseGpu 'off'）：這台沒有真 GPU 量測，不預設開。
+    // 只有同時成立才把 webgpu 排在 wasm 前面：開關開、這台有 WebGPU、模型不需要 f16（gpuNeedsF16 為假）、登記的 GPU 權重是 fp32、沒有永久停用旗標。
+    // 其餘情況一律回到原本的 CPU（wasm），與改動前相同。opts：{enabled, gpuAvailable, brokenPermanently}；回傳 {order, reason, gpu}。
+    function poseDevicePlan(model, opts) {
+        opts = opts || {};
+        const cpu = (why) => ({ order: ['wasm'], reason: why, gpu: false });
+        if (!model || model.task !== 'pose-estimation') return cpu('不是姿態模型，用 CPU');
+        if (opts.enabled !== true) return cpu('姿態 GPU 開關關閉（預設），用 CPU');
+        if (opts.brokenPermanently) return cpu('姿態 GPU 路徑先前失敗，之後一律用 CPU');
+        if (!opts.gpuAvailable) return cpu('這台沒有 WebGPU，姿態用 CPU');
+        if (model.gpuNeedsF16 || !model.dtype || model.dtype.gpu !== 'fp32') return cpu('這個姿態模型的 GPU 版需要 f16 或不是 fp32，不走 GPU');
+        return { order: ['webgpu', 'wasm'], reason: '姿態 GPU 開關開：先試 WebGPU（fp32），失敗退回 CPU（這台未量測）', gpu: true };
+    }
+    return { nativePrefillPlan, nativeFullText, MODELS, byId, imageModels, textModels, depthModels, DEFAULT_DEPTH_MODEL, segmentModels, DEFAULT_SEGMENT_MODEL, poseModels, DEFAULT_POSE_MODEL, DEFAULT_MODEL, DEFAULT_TEXT_MODEL, THRESHOLD_MIN, THRESHOLD_MAX, clampThreshold, shouldUseOfflineLlm, estimateTokens, trimToTokens, textBudget, composeMessages, textGenParams, compactToolSpecs, parseToolCalls, TOOL_STAGE_SYSTEM, roleConfig, toolsTrust, routeStages, toolResultsAsReferences, looksLikeGarbage, makeStreamWatch, fitMessages, runAgentLoop, placeholderOf, BENCH_TOOLS, BENCH_CASES, scoreToolCase, summarizeToolBench, TASKS, generationParams, defaultMaxTokens, inferTask, pickModel, VISION_POLICIES, visionOrder, combineVision, structuredPrompt, parseStructured, resolveDevice, poseDevicePlan, backendOrder, wantsNativeBackend, effectiveDevicePref, nativeToolMessages, nativeWithPrefill, resolveThreads, buildTask, formatResult, repoOfUrl, usageByModel, urlsOfModel, fmtBytes, estimateDownload };
 });
