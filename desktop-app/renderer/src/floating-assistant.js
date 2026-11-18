@@ -4711,6 +4711,25 @@ function faProfileFit(points) {
     if (a < 0) { const t = through0(); return { overheadMs: 0, rate: t.rate, n: n }; }
     return { overheadMs: a, rate: 1 / b, n: n };
 }
+// 卸載交界點（直接用實測點，不靠線性擬合）：gpuPts／cpuPts 是同一組形狀的端到端耗時 [{W, ms}]（ms＝GPU 含上傳與讀回、CPU 自己的耗時）。
+// 依 W 由小到大，找第一個 CPU 耗時 ≥ GPU 耗時的區間，在區間內線性內插出 CPU 較快的上限。
+// 回傳：正數＝交界運算量；0＝最小的量測點 GPU 就較快（永不卸載）；Infinity＝量測範圍內 CPU 都較快；null＝量測點不足。
+function faCrossoverFromPoints(gpuPts, cpuPts) {
+    const byW = new Map();
+    (Array.isArray(gpuPts) ? gpuPts : []).forEach((x) => { if (x && x.W > 0 && x.ms > 0) byW.set(x.W, { g: x.ms, c: null }); });
+    (Array.isArray(cpuPts) ? cpuPts : []).forEach((x) => { if (x && x.W > 0 && x.ms > 0 && byW.has(x.W)) byW.get(x.W).c = x.ms; });
+    const pts = Array.from(byW.entries()).filter(([, v]) => v.c != null).map(([W, v]) => ({ W, d: v.c - v.g })).sort((a, b) => a.W - b.W);
+    if (pts.length < 2) return null;
+    if (pts[0].d >= 0) return 0;                       // 最小的量測點 CPU 就較慢：GPU 永遠較快
+    for (let i = 1; i < pts.length; i++) {
+        const a = pts[i - 1], b = pts[i];
+        if (b.d >= 0) {                                 // 在 a（CPU 快）與 b（CPU 慢）之間內插
+            const t = (0 - a.d) / (b.d - a.d);
+            return a.W + t * (b.W - a.W);
+        }
+    }
+    return Infinity;                                    // 量測範圍內 CPU 都較快
+}
 // o: { gpuPts, cpuPts, gpuVariant, cpuCores, decideSplit（hetero_split.decideSplit）, shapes: [{ label, W }]（由小到大） }
 // 回傳 { gpu, cpu, ratio, crossoverFlops, perShape, lines }；lines 是給人看的白話（每句的數字都來自實測）
 function faProfilePlan(o) {
@@ -4728,7 +4747,10 @@ function faProfilePlan(o) {
         + '（GPU ' + f1(gf(gpu.rate)) + '、CPU ' + f1(gf(cpu.rate)) + ' GFLOP/s' + (o.gpuVariant ? '，GPU 最快的核心是 ' + o.gpuVariant : '') + '）。');
     // 卸載交界點：GPU 時間 ga + W/g，CPU 時間 ca + W/c；CPU 較快的運算量範圍
     const ga = gpu.overheadMs, ca = cpu.overheadMs, inv = 1 / cpu.rate - 1 / gpu.rate;   // inv > 0＝CPU 每單位工作較慢
-    if (inv > 0 && ga > ca) out.crossoverFlops = (ga - ca) / inv;
+    // 交界點優先用實測點（同一組形狀的端到端耗時）；點不足才退回線性擬合的公式
+    const fromPts = faCrossoverFromPoints(o.gpuPts, o.cpuPts);
+    if (fromPts !== null) out.crossoverFlops = fromPts;
+    else if (inv > 0 && ga > ca) out.crossoverFlops = (ga - ca) / inv;
     else if (!(inv > 0) && !(ga < ca)) out.crossoverFlops = Infinity;   // CPU 各種大小都不輸（GPU 速率較低且固定成本也不低）
     const ds = typeof o.decideSplit === 'function' ? o.decideSplit : null;
     (o.shapes || []).forEach((s) => {
@@ -131199,7 +131221,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         const yieldTo = () => new Promise((r) => setTimeout(r, 0));
         const now = () => (typeof performance !== 'undefined' ? performance : Date).now();
         const med = (a) => { const t = a.slice().sort((x, y) => x - y); return t[Math.floor(t.length / 2)]; };
-        const shapes = [[16, 256, 256], [64, 1024, 1024], [128, 1024, 1024]].map(([M, K, N]) => ({ M, K, N, W: 2 * M * K * N, label: M + '×' + K + '×' + N }));
+        const shapes = [32, 64, 128, 256, 384, 512].map((N) => ({ M: N, K: N, N, W: 2 * N * N * N, label: N + '×' + N + '×' + N }));   // 方形，涵蓋交界點（舊的三個大形狀讓線性擬合失真）
         const notes = [];
         try {
             const QM = this._qwenModule(); const BR = QM.bench;

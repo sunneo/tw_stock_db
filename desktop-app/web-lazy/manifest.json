@@ -57,10 +57,11 @@
     "faGpuCompatView",
     "faGpuCompatSummary",
     "faProfileFit",
+    "faCrossoverFromPoints",
     "faProfilePlan"
    ],
-   "size": 4753,
-   "md5": "2147b83bd4d62520f17b734822808b4d"
+   "size": 5328,
+   "md5": "361b5c4d11076afd69f243ca0069977a"
   },
   "qwengpu": {
    "file": "chunks/qwengpu.js",
@@ -1908,7 +1909,7 @@
   }
  },
  "core": {
-  "size": 6132102,
-  "md5": "dc488d2f96fd8e513bab3cbea5458605"
+  "size": 6132096,
+  "md5": "b5348a2c43b6cdb4761443b283639b11"
  }
 }
