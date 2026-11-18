@@ -1,0 +1,20 @@
+{
+ "ts": "2026-11-18T04:15:10.495Z",
+ "machine": "Windows 11；瀏覽器：Claude 內建 Chromium（Chrome 156）；WebGPU adapter：Intel Xe-LPG（xe-lpg），features 含 shader-f16",
+ "image": "Narsil/image_dummy/parrots.png（真照片；HF 資料集）。注意：這張圖沒有人，MoveNet 沒有任何可信關鍵點",
+ "libs": { "cpu": "@huggingface/transformers@3.7.5（與 app 的 transformersJs 相同）", "webgpu": "@huggingface/transformers@4.2.0（與 app 的 transformersJsWebGpu 相同）" },
+ "method": "同一張圖、同一組輸入給 CPU（wasm）與 WebGPU；WebGPU 的 first 為含 shader 編譯的第一次執行；warm 為 3 次的中位數；差異為 WebGPU 減 CPU",
+ "movenet_thunder_fp32": {
+  "cpu_wasm": { "load_ms": 187, "first_ms": 129, "warm_median_ms": 150, "kp_max_score": 0.1449 },
+  "webgpu": { "load_ms": 616, "first_ms": 5577, "warm_median_ms": 62, "kp_max_score": 0.1449 },
+  "compare": { "max_coord_diff_norm": 0, "max_score_diff": 0, "keypoints_over_0_3": 0, "note": "兩邊都沒有 >0.3 的關鍵點，對拍不成立，只能說『WebGPU 能跑、數值與 CPU 在此圖上一致』" }
+ },
+ "depth_anything_v2_small": {
+  "cpu_wasm_fp32": { "load_ms": 560, "first_ms": 11000, "warm_median_ms": 10495, "dims": [512, 768] },
+  "webgpu_fp32 (f32Gpu 路徑)": { "load_ms": 484, "first_ms": 6593, "warm_median_ms": 2285, "dims": [512, 768],
+    "compare_vs_cpu_fp32": { "max_abs_diff": 0.00005, "mean_abs_diff": 0, "rel_l2": 0, "pearson": 1, "range_cpu": [0, 4.53], "range_gpu": [0, 4.53] } },
+  "webgpu_fp16 (登記的 GPU 權重，預設路徑)": { "load_ms": 7219, "first_ms": 7110, "warm_median_ms": 758, "dims": [512, 768],
+    "compare_vs_cpu_fp32": { "max_abs_diff": 0.39751, "mean_abs_diff": 0.01387, "rel_l2": 0.00717, "pearson": 0.99998, "range_cpu": [0, 4.53], "range_gpu": [0, 4.524] } }
+ },
+ "errors": []
+}

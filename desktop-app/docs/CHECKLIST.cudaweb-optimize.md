@@ -229,7 +229,11 @@ O1m 到 O11 做完後不結束，進入迴圈。完整規則與交接見 `docs/H
   - **進度（2026-11-18，node，仍不勾）**：
     - ①MoveNet（姿態）：`poseGpu` 設定（預設關），`FaVlm.poseDevicePlan`；只有 fp32、無 f16 閘門的權重才試 WebGPU，失敗永久退回 CPU（commit 39dd8fe42）。設定開關在 AI 助理設定的 gpu-compat 窗格。
     - ②Depth Anything V2 Small（深度）：`f32Gpu` 設定（預設關），`FaVlm.f32GpuVariant`：只有 CPU 權重是 fp32（已在 CPU 實測）、任務在白名單（depth-estimation）、有 WebGPU 時，才放行 GPU 的 fp32 版（回傳模型副本，原模型不動）；失敗永久退回 CPU。`vlm_core.test.js` 192 項通過（含 f32 閘門 14 項）。
-    - **未驗證**：這台沒有真 GPU，兩條 WebGPU 路徑都沒有量測，也沒有對拍 WebGPU 與 CPU 的輸出；預設關。
+    - **實測（2026-11-18，內建 Chromium，Intel Xe-LPG，有 shader-f16，`scripts/eval/o15b_webgpu_check.html`，數值見 `scripts/eval/o15b_webgpu_check.result.json`）**：
+      - Depth Anything 的 fp16 WebGPU（預設路徑）：成功；對 CPU fp32 相對 L2 0.72%、相關 0.99998；暖機 758 ms（CPU 10,495 ms）。fp32 WebGPU（`f32Gpu` 路徑）：成功；max|Δ| 5e-5；暖機 2,285 ms。
+      - MoveNet（fp32）：WebGPU 成功，暖機 62 ms（CPU 150 ms）；**對拍不成立**：測試圖沒有人，兩邊都沒有 >0.3 的關鍵點。需要有人的照片重測。
+      - 預設仍關（`poseGpu`、`f32Gpu`）：姿態沒有人像對拍；深度只在一張照片上比過。
+      - 注意：這台的 WebGPU 有 shader-f16，所以深度預設路徑本來就會走 GPU（fp16），不需要 `f32Gpu`；`f32Gpu` 只對沒有 shader-f16 的卡有用，本次沒有在那種卡上測。
     - **沒選 SlimSAM**：它的 CPU 權重是 q8，沒有 fp32 證據，所以不放行。
     - **桌面版設定頁**：`bootstrap.js` 的 `desktop` 分組沒有掛這兩個開關。該處註解記載 GPU 相容層刻意只放一處，所以只接在 AI 助理設定，這點與 O9 一致。
     - **未完成**：web-lazy 與 renderer bundle 還沒用 `build-assistant.js` 重建（另一個 session 正在重寫 web-lazy 產物，本次未碰）；發布前要先建置。

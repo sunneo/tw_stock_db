@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>O15b WebGPU 實測（MoveNet／Depth）</title>
+<style>body{font:13px/1.5 system-ui,sans-serif;margin:16px}pre{white-space:pre-wrap}</style>
+</head><body>
+<h3>O15b：MoveNet 與 Depth Anything 的 WebGPU 路徑 對 CPU（wasm）</h3>
+<p>與 <code>floating-assistant.js</code> 的實際呼叫方式一致：WebGPU 用 <code>@huggingface/transformers@4.2.0</code>（<code>transformersJsWebGpu</code>），CPU 用 <code>3.7.5</code>（<code>transformersJs</code>）；姿態的輸入是 <code>int32 [1,256,256,3]</code>，輸出 <code>output_0</code>；深度用 pipeline 的 <code>predicted_depth</code>。同一張合成圖（見下）給兩個裝置。</p>
+<pre id="out">執行中…</pre>
+<script type="module">
+const LIB = {
+  cpu: 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.5/+esm',
+  webgpu: 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.2.0/+esm',
+};
+const ITER = 3;
+const out = document.getElementById('out');
+const logs = [];
+const log = (m) => { logs.push(m); out.textContent = logs.join('\n'); };
+const med = (a) => { const s = [...a].sort((x, y) => x - y); return s[s.length >> 1]; };
+const res = { ts: new Date().toISOString(), adapter: null, movenet: {}, depth: {}, errors: [] };
+
+async function adapter() {
+  if (!navigator.gpu) return { gpu: false };
+  const a = await navigator.gpu.requestAdapter(); if (!a) return { gpu: true, adapter: null };
+  return { gpu: true, arch: a.info && a.info.architecture, vendor: a.info && a.info.vendor, shader_f16: a.features.has('shader-f16'), max_storage_binding: a.limits.maxStorageBufferBindingSize };
+}
+
+// 合成圖：640×480，左右漸層、中央白色圓（不是照片；只用來比兩個裝置的數值）
+async function makeImage() {
+  // 先試一張真照片（HF 資料集，可跨來源讀取）；拿不到就用合成圖
+  try { const r = await fetch('https://huggingface.co/datasets/Narsil/image_dummy/resolve/main/parrots.png'); if (r.ok) { res.image = 'Narsil/image_dummy/parrots.png（真照片）'; return await r.blob(); } } catch (_) {}
+  res.image = '640x480 漸層＋白色圓（合成，非照片）';
+  return makeSynthetic();
+}
+function makeSynthetic() {
+  const W = 640, H = 480, cv = new OffscreenCanvas(W, H), cx = cv.getContext('2d');
+  const g = cx.createLinearGradient(0, 0, W, H); g.addColorStop(0, '#203a70'); g.addColorStop(1, '#d08040');
+  cx.fillStyle = g; cx.fillRect(0, 0, W, H);
+  cx.fillStyle = '#fff'; cx.beginPath(); cx.arc(W / 2, H / 2, 110, 0, Math.PI * 2); cx.fill();
+  cx.fillStyle = '#102030'; cx.beginPath(); cx.arc(W / 2 - 40, H / 2 - 30, 12, 0, Math.PI * 2); cx.arc(W / 2 + 40, H / 2 - 30, 12, 0, Math.PI * 2); cx.fill();
+  return cv.convertToBlob({ type: 'image/png' });
+}
+
+// 姿態：與 worker 同一段前處理（方形黑邊、縮到 256、整數 NHWC）
+async function poseInput(blob) {
+  const bmp = await createImageBitmap(blob); const W = bmp.width, H = bmp.height, SZ = 256;
+  const sq = Math.max(W, H), ox = (sq - W) / 2, oy = (sq - H) / 2;
+  const cv = new OffscreenCanvas(SZ, SZ), cx = cv.getContext('2d', { willReadFrequently: true });
+  cx.fillStyle = '#000'; cx.fillRect(0, 0, SZ, SZ); cx.drawImage(bmp, ox * SZ / sq, oy * SZ / sq, W * SZ / sq, H * SZ / sq);
+  const px = cx.getImageData(0, 0, SZ, SZ).data, arr = new Int32Array(SZ * SZ * 3);
+  for (let i = 0; i < SZ * SZ; i++) { arr[i * 3] = px[i * 4]; arr[i * 3 + 1] = px[i * 4 + 1]; arr[i * 3 + 2] = px[i * 4 + 2]; }
+  return arr;
+}
+
+async function runMovenet(key, blob, arr) {
+  const L = await import(LIB[key]); const dev = key === 'webgpu' ? 'webgpu' : 'wasm';
+  const r = { device: dev, lib: key === 'webgpu' ? '4.2.0' : '3.7.5' };
+  try {
+    let t = performance.now();
+    const model = await L.AutoModel.from_pretrained('Xenova/movenet-singlepose-thunder', { dtype: 'fp32', device: dev });
+    r.load_ms = Math.round(performance.now() - t);
+    const times = []; let o = null;
+    for (let i = 0; i <= ITER; i++) {
+      t = performance.now();
+      o = await model({ input: new L.Tensor('int32', arr, [1, 256, 256, 3]) });
+      times.push(performance.now() - t);
+    }
+    r.first_ms = Math.round(times[0]); r.warm_median_ms = Math.round(med(times.slice(1)));
+    r.kp = Array.from(o.output_0.data); r.kp_dims = o.output_0.dims;
+    r.kp_max_score = +Math.max(...r.kp.filter((_, i) => i % 3 === 2)).toFixed(4);
+  } catch (e) { r.error = String((e && e.message) || e).slice(0, 300); }
+  return r;
+}
+
+async function runDepth(key, blob, dtype = 'fp32') {
+  const L = await import(LIB[key]); const dev = key === 'webgpu' ? 'webgpu' : 'wasm';
+  const r = { device: dev, dtype, lib: key === 'webgpu' ? '4.2.0' : '3.7.5' };
+  try {
+    let t = performance.now();
+    const pipe = await L.pipeline('depth-estimation', 'onnx-community/depth-anything-v2-small', { dtype, device: dev });
+    r.load_ms = Math.round(performance.now() - t);
+    const times = []; let o = null;
+    for (let i = 0; i <= ITER; i++) {
+      t = performance.now(); o = await pipe(blob); times.push(performance.now() - t);
+    }
+    r.first_ms = Math.round(times[0]); r.warm_median_ms = Math.round(med(times.slice(1)));
+    r.depth = Array.from(o.predicted_depth.data); r.depth_dims = o.predicted_depth.dims;
+  } catch (e) { r.error = String((e && e.message) || e).slice(0, 300); }
+  return r;
+}
+
+function cmpPose(a, b) {
+  const kA = [], kB = [];
+  for (let k = 0; k < 17; k++) { kA.push(a.kp.slice(k * 3, k * 3 + 3)); kB.push(b.kp.slice(k * 3, k * 3 + 3)); }
+  let maxCoord = 0, maxScore = 0; for (let k = 0; k < 17; k++) { maxCoord = Math.max(maxCoord, Math.abs(kA[k][0] - kB[k][0]), Math.abs(kA[k][1] - kB[k][1])); maxScore = Math.max(maxScore, Math.abs(kA[k][2] - kB[k][2])); }
+  const hi = (K) => K.map((p, i) => (p[2] >= 0.3 ? i : -1)).filter((i) => i >= 0);
+  const hA = hi(kA), hB = hi(kB);
+  return { max_coord_diff_norm: +maxCoord.toFixed(5), max_score_diff: +maxScore.toFixed(5), kp_over_0_3_cpu: hB.length, kp_over_0_3_gpu: hA.length, same_visible_set: JSON.stringify(hA) === JSON.stringify(hB) };
+}
+function cmpDepth(a, b) {
+  if (a.length !== b.length) return { same_length: false };
+  let maxd = 0, sumd = 0, num = 0, den = 0, ma = 0, mb = 0;
+  for (let i = 0; i < a.length; i++) { ma += a[i]; mb += b[i]; }
+  ma /= a.length; mb /= b.length;
+  let va = 0, vb = 0, cov = 0;
+  for (let i = 0; i < a.length; i++) {
+    const d = Math.abs(a[i] - b[i]); maxd = Math.max(maxd, d); sumd += d; num += (a[i] - b[i]) ** 2; den += b[i] ** 2;
+    cov += (a[i] - ma) * (b[i] - mb); va += (a[i] - ma) ** 2; vb += (b[i] - mb) ** 2;
+  }
+  const rng = (X) => { let lo = Infinity, hi = -Infinity; for (const v of X) { if (v < lo) lo = v; if (v > hi) hi = v; } return [+lo.toFixed(3), +hi.toFixed(3)]; };
+  return { same_length: true, max_abs_diff: +maxd.toFixed(5), mean_abs_diff: +(sumd / a.length).toFixed(5), rel_l2: +Math.sqrt(num / den).toFixed(5), pearson: +(cov / Math.sqrt(va * vb)).toFixed(5), range_cpu: rng(b), range_gpu: rng(a) };
+}
+
+(async () => {
+  try {
+    res.adapter = await adapter(); log('adapter: ' + JSON.stringify(res.adapter));
+    const blob = await makeImage(); const arr = await poseInput(blob);
+    log('MoveNet CPU…'); const mc = await runMovenet('cpu', blob, arr); log(JSON.stringify({ ...mc, kp: undefined }));
+    log('MoveNet WebGPU…'); const mg = await runMovenet('webgpu', blob, arr); log(JSON.stringify({ ...mg, kp: undefined }));
+    res.movenet = { cpu: { ...mc, kp: undefined }, webgpu: { ...mg, kp: undefined } };
+    if (!mc.error && !mg.error) res.movenet.compare = cmpPose(mg, mc);
+    log('Depth CPU…'); const dc = await runDepth('cpu', blob); log(JSON.stringify({ ...dc, depth: undefined }));
+    log('Depth WebGPU…'); const dg = await runDepth('webgpu', blob); log(JSON.stringify({ ...dg, depth: undefined }));
+    res.depth = { cpu: { ...dc, depth: undefined }, webgpu: { ...dg, depth: undefined } };
+    if (!dc.error && !dg.error) res.depth.compare = cmpDepth(dg.depth, dc.depth);
+    // 這張卡有 shader-f16：登記的 GPU 權重是 fp16，這條路徑也要量（與同一份 CPU fp32 參考比）
+    log('Depth WebGPU fp16…'); const dh = await runDepth('webgpu', blob, 'fp16'); log(JSON.stringify({ ...dh, depth: undefined }));
+    res.depth.webgpu_fp16 = { ...dh, depth: undefined };
+    if (!dc.error && !dh.error) res.depth.compare_fp16 = cmpDepth(dh.depth, dc.depth);
+  } catch (e) { res.errors.push(String((e && e.message) || e)); }
+  window.__O15B = res;
+  log('DONE\n' + JSON.stringify(res, null, 1));
+})();
+</script>
+</body></html>
