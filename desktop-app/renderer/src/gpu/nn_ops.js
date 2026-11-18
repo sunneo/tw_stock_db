@@ -253,7 +253,8 @@ async function tryLayers(name, opts, gpuFn, glFn, refFn) {
     catch (e) { glState = 'failed'; notes.push('WebGL2 執行失敗：' + String((e && e.message) || e)); }
   } else if (!gs.ok) notes.push(gs.reason);
   else notes.push('WebGL2 版尚未實作（此核心）');
-  return { result: refFn(), info: layerInfo(name, 'cpu-js', notes.join('；'), glState) };
+  // refFn 可以是非同步的（例如純 CPU 池）：這裡一律 await，同步的參考實作照常
+  return { result: await refFn(), info: layerInfo(name, 'cpu-js', notes.join('；'), glState) };
 }
 function layerInfo(op, layer, reason, webgl2) {
   return { lib: 'cudaweb-nn', op: op, layer: layer, reason: reason || '', webgl2: webgl2 };

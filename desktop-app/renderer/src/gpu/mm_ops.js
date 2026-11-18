@@ -103,6 +103,15 @@ async function run(kind, a, aDims, b, bDims, azp, bzp, ops) {
   if (fl && pl.B !== 1) throw new Error('mm_ops：轉置版目前只支援單一批次（收到 B=' + pl.B + '）');
   const ref = () => (isInt ? matmulIntRef(a, aDims, b, bDims, azp, bzp) : (fl ? { y: MM_TILE.matmulTRef(a, b, pl.M, pl.K, pl.N, fl) } : matmulRef(a, aDims, b, bDims))).y;
   if (o.gpu === false) return { y: ref(), dims: pl.dims };
+  // 純 CPU 池（沒有 WebGPU、裝置遺失、GPU 各層都失敗時的退路）：f32、單一批次、不轉置 A 才走 cpu_share.runCpuOnly；
+  // 其餘（整數、轉置 A、多批次）與無法取得池時，仍用同步的參考實作。cores=0（預設）時 runCpuOnly 在主執行緒算，結果相同。
+  const cpuPoolRef = async () => {
+    if (isInt || o.transA || pl.B !== 1 || !CPU_SHARE) return ref();
+    const sh = CPU_SHARE.getShared();
+    const af = a instanceof Float32Array ? a : Float32Array.from(a), bf = b instanceof Float32Array ? b : Float32Array.from(b);
+    const rr = await sh.runCpuOnly(af, bf, pl.M, pl.K, pl.N, { transB: !!o.transB, bKey: o.cacheB ? b : null });
+    return rr.y;
+  };
   // 轉置時只有平鋪版讀 p0（簡單版與 vec4 版不讀），所以強制用平鋪版
   // 轉置版（訓練）：M=1、K≥1024、單一批次時改走 split-K（支援 transA／transB 旗標；同機 intel xe-lpg 快 22–60%），其餘仍用平鋪
   const flSplitK = !!fl && !!SK && pl.B === 1 && pl.M === 1 && pl.K >= 1024 && !isInt;
@@ -145,7 +154,7 @@ async function run(kind, a, aDims, b, bDims, azp, bzp, ops) {
       [{ data: mk(a) }, { data: mk(b), cache: !!o.cacheB }, { data: isInt ? new Int32Array(total) : new Float32Array(total), out: true }],
       new Uint8Array(u.buffer), groups);
     return outs[0];
-  }, null, ref);
+  }, null, cpuPoolRef);
   o.lastInfo = r.info;
   return { y: r.result, dims: pl.dims };
 }
