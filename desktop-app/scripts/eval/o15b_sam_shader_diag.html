@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="zh-Hant"><head><meta charset="utf-8"><title>O15b SlimSAM 4.2.0 shader 失敗根因</title>
+<style>body{font:13px/1.5 system-ui,sans-serif;margin:16px}pre{white-space:pre-wrap;word-break:break-all}</style></head><body>
+<h3>O15b：SlimSAM 遮罩解碼器在 transformers 4.2.0 WebGPU 的 shader 失敗根因</h3>
+<pre id="out">執行中…</pre>
+<script type="module">
+// 攔截 GPUDevice.createShaderModule，記下每個 shader 的程式碼與 getCompilationInfo() 的錯誤訊息。
+const out = document.getElementById('out'); const logs = []; const log = (m) => { logs.push(m); out.textContent = logs.join('\n'); };
+const res = { shaders: [], errors: [], run: null };
+const orig = GPUDevice.prototype.createShaderModule;
+GPUDevice.prototype.createShaderModule = function (desc) {
+  const mod = orig.call(this, desc);
+  const code = desc && desc.code ? String(desc.code) : '';
+  const label = (desc && desc.label) || '';
+  mod.getCompilationInfo().then((info) => {
+    const errs = info.messages.filter((m) => m.type === 'error');
+    if (errs.length) {
+      res.shaders.push({ label, codeLen: code.length, errors: errs.map((m) => ({ msg: m.message, line: m.lineNum, col: m.linePos, offset: m.offset, length: m.length })), snippet: errs.map((m) => {
+        const lines = code.split('\n'); const i = Math.max(0, (m.lineNum || 1) - 1);
+        return lines.slice(Math.max(0, i - 3), i + 3).join('\n');
+      }).join('\n---\n'), head: code.slice(0, 1200) });
+    }
+  }).catch(() => {});
+  return mod;
+};
+(async () => {
+  try {
+    const L = await import('https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.2.0/+esm');
+    const blob = await (await fetch('/ai-temp/pose-test/person.jpg')).blob();
+    const img = await L.RawImage.fromBlob(blob);
+    log('載入 SlimSAM fp16（4.2.0 WebGPU）…');
+    const p = await L.AutoProcessor.from_pretrained('Xenova/slimsam-77-uniform');
+    const m = await L.SamModel.from_pretrained('Xenova/slimsam-77-uniform', { dtype: 'fp16', device: 'webgpu' });
+    const inp = await p(img, { input_points: [[[480, 483]]], input_labels: [[1]] });
+    try { await m(inp); res.run = 'ok'; } catch (e) { res.run = 'error: ' + String((e && e.message) || e).slice(0, 400); }
+  } catch (e) { res.run = 'fatal: ' + String((e && e.message) || e).slice(0, 400); }
+  // 等 getCompilationInfo 的 promise 收完
+  await new Promise((r) => setTimeout(r, 1500));
+  window.__SHADER = res;
+  log('DONE run=' + res.run + ' failing shaders=' + res.shaders.length);
+})();
+</script></body></html>

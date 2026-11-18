@@ -14758,7 +14758,20 @@ const holder = {};
         });
         return { model: v, on: true, reason: 'fp32 GPU 開關開：這張顯示卡沒有 shader-f16，改用 fp32 權重走 WebGPU（這台未量測），失敗退回 CPU' };
     }
-    return { nativePrefillPlan, nativeFullText, MODELS, byId, imageModels, textModels, depthModels, DEFAULT_DEPTH_MODEL, segmentModels, DEFAULT_SEGMENT_MODEL, poseModels, DEFAULT_POSE_MODEL, DEFAULT_MODEL, DEFAULT_TEXT_MODEL, THRESHOLD_MIN, THRESHOLD_MAX, clampThreshold, shouldUseOfflineLlm, estimateTokens, trimToTokens, textBudget, composeMessages, textGenParams, compactToolSpecs, parseToolCalls, TOOL_STAGE_SYSTEM, roleConfig, toolsTrust, routeStages, toolResultsAsReferences, looksLikeGarbage, makeStreamWatch, fitMessages, runAgentLoop, placeholderOf, BENCH_TOOLS, BENCH_CASES, scoreToolCase, summarizeToolBench, TASKS, generationParams, defaultMaxTokens, inferTask, pickModel, VISION_POLICIES, visionOrder, combineVision, structuredPrompt, parseStructured, resolveDevice, poseDevicePlan, f32GpuVariant, backendOrder, wantsNativeBackend, effectiveDevicePref, nativeToolMessages, nativeWithPrefill, resolveThreads, buildTask, formatResult, repoOfUrl, usageByModel, urlsOfModel, fmtBytes, estimateDownload };
+    // SlimSAM 的 WebGPU 建置（O15b）。app 的 WebGPU 用 transformers 4.2.0；它的遮罩解碼器 MatMul（layers.0/mlp/lin2）產生的 shader 有型別錯誤
+    // （WGSL：type mismatch for argument 4 in call to 'mm_readA', expected 'vec2<u32>', got 'u32'），建 pipeline 失敗，fp16 與 fp32 都一樣。
+    // 同一組權重在 3.7.5 的 WebGPU 可跑（真 Chrome：遮罩 IoU 0.981 對 CPU q8）。預設關（samGpuLib 'off'）：關時沿用 4.2.0（舊行為，會失敗後退回 CPU）。
+    // 開且是 SAM 模型時改用 3.7.5；先前失敗過（brokenPermanently）時回 lib null＝不用 WebGPU。其他模型一律不變。
+    // 回傳 { lib: '4.2.0' | '3.7.5' | null, reason }。
+    function webgpuLibFor(model, opts) {
+        opts = opts || {};
+        const keep = { lib: '4.2.0', reason: '沿用 app 的 WebGPU 建置（transformers 4.2.0）' };
+        if (!model || model.arch !== 'sam') return keep;
+        if (opts.enabled !== true) return keep;
+        if (opts.brokenPermanently) return { lib: null, reason: 'SlimSAM 的 WebGPU 路徑先前失敗，之後一律用 CPU' };
+        return { lib: '3.7.5', reason: 'SlimSAM 的 WebGPU 改用 transformers 3.7.5 建置（4.2.0 的遮罩解碼器 MatMul shader 會失敗）' };
+    }
+    return { nativePrefillPlan, nativeFullText, MODELS, byId, imageModels, textModels, depthModels, DEFAULT_DEPTH_MODEL, segmentModels, DEFAULT_SEGMENT_MODEL, poseModels, DEFAULT_POSE_MODEL, DEFAULT_MODEL, DEFAULT_TEXT_MODEL, THRESHOLD_MIN, THRESHOLD_MAX, clampThreshold, shouldUseOfflineLlm, estimateTokens, trimToTokens, textBudget, composeMessages, textGenParams, compactToolSpecs, parseToolCalls, TOOL_STAGE_SYSTEM, roleConfig, toolsTrust, routeStages, toolResultsAsReferences, looksLikeGarbage, makeStreamWatch, fitMessages, runAgentLoop, placeholderOf, BENCH_TOOLS, BENCH_CASES, scoreToolCase, summarizeToolBench, TASKS, generationParams, defaultMaxTokens, inferTask, pickModel, VISION_POLICIES, visionOrder, combineVision, structuredPrompt, parseStructured, resolveDevice, poseDevicePlan, f32GpuVariant, webgpuLibFor, backendOrder, wantsNativeBackend, effectiveDevicePref, nativeToolMessages, nativeWithPrefill, resolveThreads, buildTask, formatResult, repoOfUrl, usageByModel, urlsOfModel, fmtBytes, estimateDownload };
 });
 
 }).call(null, undefined, holder);
@@ -84680,7 +84693,7 @@ class FloatingAssistant {
             offlineMode: false, // 離線模式：不經過LLM，用離線訓練器處理對話
             offlineLearn: true, // （舊）線上AI成功的做法自動學進離線訓練器；現在改由offlineAutoTrain控制
             pythonApiBridge: 'skill', // 執行技能包的Python腳本時，部分公開API（playwright等）轉接到助理自己的工具；'off'＝關閉
-            nrGpuHead: 'off', llmGpuHead: 'off', qwenGpuDecode: 'off', qwenGpuQ4: 'off', mossGpu: 'off', midiGpu: 'off', whisperGpu: 'off', poseGpu: 'off', f32Gpu: 'off', audioGpu: 'off', sdxsGpu: 'off', kokoroGpu: 'off', gpuAccel: 'on', // gpuAuto：依能力探測與基準自動決定各 GPU 路徑要不要開（實驗，預設關）； midiGpu：midigenai 作曲模型 cudaweb 解碼（實驗，預設關）； mossGpu：MOSS 語音 WebGPU 管線（實驗，預設關）； qwenGpuDecode：Qwen3 q8 整段 GPU 解碼（實驗，預設關）； GPU 版 lm_head（實驗，預設關）：桌面版／網頁版各一個開關
+            nrGpuHead: 'off', llmGpuHead: 'off', qwenGpuDecode: 'off', qwenGpuQ4: 'off', mossGpu: 'off', midiGpu: 'off', whisperGpu: 'off', poseGpu: 'off', f32Gpu: 'off', samGpuLib: 'off', audioGpu: 'off', sdxsGpu: 'off', kokoroGpu: 'off', gpuAccel: 'on', // gpuAuto：依能力探測與基準自動決定各 GPU 路徑要不要開（實驗，預設關）； midiGpu：midigenai 作曲模型 cudaweb 解碼（實驗，預設關）； mossGpu：MOSS 語音 WebGPU 管線（實驗，預設關）； qwenGpuDecode：Qwen3 q8 整段 GPU 解碼（實驗，預設關）； GPU 版 lm_head（實驗，預設關）：桌面版／網頁版各一個開關
             cudaMatmulKernel: 'auto', // 矩陣乘核心（O14b）：'auto'＝有競賽勝者才換；'off'＝關閉（舊核心）；'mm_vec4_f32'／'mm_tiled_f32'＝強制覆蓋勝者
             cudaCompatFloat64: 'auto', // float64（Python 預設）陣列在 GPU 相容層的處理：'auto'＝雙 float32（約 48 位元）在 GPU 跑，寫回前抽樣檢查；'f32'＝轉成 float32 在 GPU 跑（精度降為 float32，會印說明）；'exact'＝不用 GPU，與 CUDA 同精度
             cudaCompat: 'on', // GPU 相容層：既有的 numba／cupy／torch／pycuda 程式不改一行，就用瀏覽器的 WebGPU／WebGL2 跑（非真 CUDA）；'off'＝關閉（DESIGN.python-api-bridge.md「GPU 相容層」）
@@ -86142,6 +86155,7 @@ class FloatingAssistant {
              // GPU 加速總開關（預設開；device_pick.js：有真 GPU 就開各條路徑，軟體模擬或沒有 WebGPU 就不開；每條路徑失敗都退回原路徑）
             midiGpu: raw.midiGpu === 'on' ? 'on' : 'off', // midigenai 作曲模型改用 cudaweb 的 WebGPU 解碼（實驗，預設關；失敗退回 ORT）
             whisperGpu: raw.whisperGpu === 'on' ? 'on' : 'off', // Whisper 編碼器改用 WebGPU（transcribe_media 的 CPU wasm 路徑；實驗，預設關；失敗退回原編碼器）
+            samGpuLib: raw.samGpuLib === 'on' ? 'on' : 'off', // SlimSAM 的 WebGPU 改用 transformers 3.7.5 建置（4.2.0 的遮罩解碼器 MatMul shader 會失敗；實驗，預設關；失敗永久退回 CPU）
             f32Gpu: raw.f32Gpu === 'on' ? 'on' : 'off', // 有 fp32 權重的 gpuNeedsF16 模型（目前：深度估計 Depth Anything）在沒有 shader-f16 的顯示卡上改走 fp32 WebGPU（實驗，預設關，這台未量測；失敗永久退回 CPU）
             poseGpu: raw.poseGpu === 'on' ? 'on' : 'off', // 姿態模型（MoveNet，/image-to-3d 找手臂）改用 WebGPU（實驗，預設關；未在這台量測；失敗永久退回 CPU）
             audioGpu: raw.audioGpu === 'on' ? 'on' : 'off', // 音訊轉 MIDI 的 YAMNet／Demucs 改用 cudaweb 圖形 session（重運算 WebGPU；實驗，預設關；失敗退回 wasm）
@@ -96677,6 +96691,15 @@ ${fnData.code}
         const chkFTxt = document.createElement('span');
         chkFTxt.textContent = '深度估計（Depth Anything V2 Small，/image-to-3d）在沒有 shader-f16 的顯示卡上改用 fp32 權重走 WebGPU（實驗，預設關，這台未量測）。沒有 WebGPU、載入或推論失敗都會永久退回 CPU。';
         lblF.appendChild(chkF); lblF.appendChild(chkFTxt); adv.appendChild(lblF);
+        // SlimSAM（分割）的 WebGPU 改用 transformers 3.7.5：4.2.0 的遮罩解碼器 MatMul shader 會失敗（O15b 真 Chrome 診斷）。預設關；這台 3.7.5 的遮罩 IoU 0.981 對 CPU
+        const lblS = document.createElement('label');
+        lblS.style.cssText = 'display:flex; gap:6px; align-items:flex-start; cursor:pointer;';
+        const chkS = document.createElement('input');
+        chkS.type = 'checkbox'; chkS.checked = (this.advancedSettings.samGpuLib === 'on'); chkS.style.marginTop = '3px';
+        chkS.addEventListener('change', () => { this.advancedSettings.samGpuLib = chkS.checked ? 'on' : 'off'; this._samGpuBroken = false; this._saveAdvancedSettings(); });
+        const chkSTxt = document.createElement('span');
+        chkSTxt.textContent = '分割模型（SlimSAM，/image-to-3d --segment）的 WebGPU 改用 transformers 3.7.5 建置（實驗，預設關）：app 的 4.2.0 在遮罩解碼器的 MatMul 建 shader 會失敗。沒有 WebGPU、載入或推論失敗都會永久退回 CPU。';
+        lblS.appendChild(chkS); lblS.appendChild(chkSTxt); adv.appendChild(lblS);
         // 音訊轉 MIDI 的 Basic Pitch（轉譜）、YAMNet（樂器分類）、Demucs（分軌）WebGPU：預設關；圖形逐節點執行，卷積與大矩陣乘走 WGSL，其餘在 CPU；任何失敗（沒有 WebGPU、算子不支援、運算退到 CPU、中途錯誤）退回 wasm
         const lblU = document.createElement('label');
         lblU.style.cssText = 'display:flex; gap:6px; align-items:flex-start; cursor:pointer;';
@@ -129029,13 +129052,16 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         this._vlmLoadedBy = this._vlmLoadedBy || {}; this._vlmWks = this._vlmWks || {};
         const wl = this._webLoraFor(model);
         if (wl) { order = order.filter((d) => d !== 'webgpu'); if (!order.length) order = ['wasm']; if (log) log('已套用 LoRA「' + wl.id + '」：改用 CPU（WASM）的 q8 模型（GPU 版不支援併入 LoRA）'); }
-        for (const d0 of order) { const s0 = this._vlmSlotOf(d0); const loaded = this._vlmLoadedBy[s0]; if (loaded && loaded.modelId === model.id && loaded.device === d0 && this._vlmWks[s0] && (loaded.loraSha || '') === (wl ? wl.sha256 : '')) return Object.assign({ tried: [] }, loaded); }
+        // 這個裝置用哪一版 transformers：WebGPU 通常是 4.2.0；SlimSAM 開了 samGpuLib 時用 3.7.5；CPU 一律 3.7.5（見 FaVlm.webgpuLibFor）
+        const libOf = (d) => d === 'webgpu' ? FaVlm.webgpuLibFor(model, { enabled: this._samGpuLibOn(), brokenPermanently: !!this._samGpuBroken }).lib : 'cpu';
+        for (const d0 of order) { const s0 = this._vlmSlotOf(d0); const loaded = this._vlmLoadedBy[s0]; if (loaded && loaded.modelId === model.id && loaded.device === d0 && this._vlmWks[s0] && (loaded.loraSha || '') === (wl ? wl.sha256 : '') && (loaded.lib || '') === libOf(d0)) return Object.assign({ tried: [] }, loaded); }
         const cores = this._omCores(); const th = FaVlm.resolveThreads(this._omSettings().maxCores, cores.hardware, cores.isolated, cores.reason); const tried = [];
         for (const dev of order) {
             const dt = model.dtype[dev === 'webgpu' ? 'gpu' : 'cpu'];
+            if (dev === 'webgpu' && libOf(dev) === null) { tried.push({ device: dev, error: 'SlimSAM 的 WebGPU 已永久停用' }); continue; }
             if (!dt) { tried.push({ device: dev, error: '這個模型沒有 ' + (dev === 'webgpu' ? 'GPU' : 'CPU') + ' 的設定' }); continue; }
             try {
-                const baseUrl = dev === 'webgpu' ? FA_ASSET_URLS.transformersJsWebGpu : FA_ASSET_URLS.transformersJs;
+                const baseUrl = dev === 'webgpu' ? (libOf(dev) === '3.7.5' ? FA_ASSET_URLS.transformersJs : FA_ASSET_URLS.transformersJsWebGpu) : FA_ASSET_URLS.transformersJs;
                 // 先直接連 CDN（跟 Whisper 一樣）。Worker 沒辦法動態載入 fa-local://（桌面版的 proxy 協定），所以經過 proxy 的網址只當第二選擇
                 const libUrls = [baseUrl]; try { const px = new URL(this._viaAssetProxy(baseUrl), location.href).href; if (px !== baseUrl) libUrls.push(px); } catch (_) {}
                 if (log) log('載入模型到 ' + (dev === 'webgpu' ? 'GPU（WebGPU）' : 'CPU（WASM，' + th.effective + ' 個執行緒）') + '…');
@@ -129047,7 +129073,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                 if (lastLibErr) throw lastLibErr;
                 const lr = loadRes && loadRes.loraReport || null;
                 if (wl && !lr) throw new Error('載入完成但沒有回報 LoRA 合併結果（Worker 版本不符？），LoRA 沒有套用');
-                this._vlmLoadedBy[this._vlmSlotOf(dev)] = { modelId: model.id, device: dev, threads: th, loraSha: wl ? wl.sha256 : '', loraReport: lr }; return { device: dev, tried, threads: th, loraReport: lr };
+                this._vlmLoadedBy[this._vlmSlotOf(dev)] = { modelId: model.id, device: dev, threads: th, loraSha: wl ? wl.sha256 : '', loraReport: lr, lib: libOf(dev) }; return { device: dev, tried, threads: th, loraReport: lr };
             } catch (e) { const rel = this._qwenReleaseLast; const relTxt = (dev === 'webgpu' && rel) ? '（GPU 引擎 ' + (Date.now() - rel.at) + ' ms 前釋放，原因：' + rel.reason + '）' : ''; tried.push({ device: dev, error: String((e && e.message) || e) + relTxt }); if (log) log('⚠️ ' + (dev === 'webgpu' ? 'GPU' : 'CPU') + ' 載入失敗：' + tried[tried.length - 1].error + (order.indexOf(dev) < order.length - 1 ? '；降級成 CPU 重試' : '')); this._vlmTerminate(this._vlmSlotOf(dev)); }
         }
         const err = new Error('模型載入失敗：' + tried.map((x) => x.device + '：' + x.error).join('；')); err.tried = tried; throw err;
@@ -129284,10 +129310,10 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             log('裝置：' + dev.reason); update({ status: '準備中…' });
             let order = dev.order.slice(), res = null, lastErr = null, used = null;
             for (let attempt = 0; attempt < 2 && !res; attempt++) {
-                const ld = await this._vlmEnsureLoaded(model, order, update, log); used = ld;
+                const ld = await this._vlmEnsureLoaded(model, order, update, log); used = ld; if (this._samGpuLibOn() && order[0] === 'webgpu' && ld.device !== 'webgpu') this._samGpuBroken = true;
                 update({ pct: 99, status: '找物件中（' + (ld.device === 'webgpu' ? 'GPU' : 'CPU') + '）…' });
                 try { res = await this._vlmRpc('run', { image: img.blob, grid: p.grid || 4, nativeEnc: await this._samNativeReady(model, ld.device) }, null, null, this._vlmSlotOf(ld.device)); if (res.nativeNote) log('⚠️ 編碼器原生沒用上，改用網頁版：' + res.nativeNote); else if (res.encBackend === 'native') log('編碼器：原生 CPU'); }
-                catch (e) { lastErr = e; log('⚠️ ' + (ld.device === 'webgpu' ? 'GPU' : 'CPU') + ' 推論失敗：' + String((e && e.message) || e)); this._vlmTerminate(this._vlmSlotOf(ld.device)); if (ld.device === 'webgpu') { order = ['wasm']; log('降級成 CPU 重試'); } else break; }
+                catch (e) { lastErr = e; log('⚠️ ' + (ld.device === 'webgpu' ? 'GPU' : 'CPU') + ' 推論失敗：' + String((e && e.message) || e)); this._vlmTerminate(this._vlmSlotOf(ld.device)); if (ld.device === 'webgpu') { if (this._samGpuLibOn()) this._samGpuBroken = true; order = ['wasm']; log('降級成 CPU 重試（SlimSAM 之後一律用 CPU）'); } else break; }
             }
             if (!res || !res.segments) throw lastErr || new Error('分割模型沒有輸出');
             this._vlmScheduleIdle(this._vlmSlotOf(used.device));
@@ -129296,6 +129322,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         } catch (e) { if (prog) prog.fail(String((e && e.message) || e)); return { ok: false, error: String((e && e.message) || e), model: model.id, tried: e && e.tried }; }
     }
     // 姿態的裝置決策（poseGpu 預設關，見 FaVlm.poseDevicePlan）。_poseGpuBroken：WebGPU 路徑失敗過 → 之後一律 CPU（只在這次執行期間有效）。
+    _samGpuLibOn() { return !!(this.advancedSettings && this.advancedSettings.samGpuLib === 'on'); }
     _f32GpuOn() { return !!(this.advancedSettings && this.advancedSettings.f32Gpu === 'on'); }
     _poseGpuOn() { return !!(this.advancedSettings && this.advancedSettings.poseGpu === 'on'); }
     _poseDevicePick(model, gpu) {

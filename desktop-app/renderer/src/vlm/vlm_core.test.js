@@ -404,6 +404,19 @@ check('pose model is registered (full fp32, not int8), not an image model, never
   v = V.f32GpuVariant(undefined, on);
   check('f32：沒有模型 → 不放行、不丟錯', v.on === false && v.model === undefined);
 }
+// SlimSAM 的 WebGPU 建置（O15b）：4.2.0 的遮罩解碼器 MatMul shader 有型別錯誤（mm_readA 第 4 個參數 expected vec2<u32>, got u32），3.7.5 可跑。
+// 預設關：關時沿用 app 的 4.2.0；開且是 SAM 模型時改用 3.7.5；其餘模型與永久停用一律不變
+{
+  const sam = V.byId('slimsam-77-uniform');
+  const on = { enabled: true };
+  check('sam lib：沒給選項 → 4.2.0（預設關）', V.webgpuLibFor(sam, {}).lib === '4.2.0');
+  check('sam lib：開關關閉 → 4.2.0', V.webgpuLibFor(sam, { enabled: false }).lib === '4.2.0');
+  check('sam lib：開關開 → 3.7.5', V.webgpuLibFor(sam, on).lib === '3.7.5', V.webgpuLibFor(sam, on));
+  check('sam lib：開關開但先前失敗過 → 沒有 WebGPU（lib null）', V.webgpuLibFor(sam, { enabled: true, brokenPermanently: true }).lib === null);
+  check('sam lib：非 SAM 模型（深度）不受影響 → 4.2.0', V.webgpuLibFor(V.byId('depth-anything-v2-small'), on).lib === '4.2.0');
+  check('sam lib：沒有模型 → 4.2.0，不丟錯', V.webgpuLibFor(undefined, on).lib === '4.2.0');
+  check('sam lib：理由有說明', typeof V.webgpuLibFor(sam, on).reason === 'string' && V.webgpuLibFor(sam, on).reason.length > 0);
+}
 console.log(ok + ' passed, ' + bad.length + ' failed', bad);
 process.exit(bad.length ? 1 : 0);
 })();

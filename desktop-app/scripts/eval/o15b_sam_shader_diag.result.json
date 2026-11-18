@@ -1,0 +1,27 @@
+{
+ "ts": "2026-11-18（真 Chrome，Intel Xe-LPG，shader-f16 可用）",
+ "harness": "scripts/eval/o15b_sam_shader_diag.html：攔截 GPUDevice.createShaderModule，對每個 shader 呼叫 getCompilationInfo()，記錄錯誤訊息與行號",
+ "model": "Xenova/slimsam-77-uniform，dtype fp16，transformers@4.2.0 WebGPU（app 的 transformersJsWebGpu）",
+ "run": "失敗：OrtRun MatMul 節點 /mask_decoder/transformer/layers.0/mlp/lin2/MatMul：Failed to create a WebGPU compute pipeline",
+ "failing_shaders": [
+  {
+   "label": "MatMul",
+   "codeLen": 7169,
+   "compilation_error": {
+     "message": "type mismatch for argument 4 in call to 'mm_readA', expected 'vec2<u32>', got 'u32'",
+     "line": 155, "col": 113, "offset": 6039, "length": 12
+   },
+   "source_snippet_around_line_155": [
+     "    for (var innerRow = 0; innerRow < rowPerThread; innerRow = innerRow + 1) {",
+     "      let inputRow = tileRow + innerRow;",
+     "      let inputCol = tileCol;",
+     "      mm_Asub[inputRow][inputCol] = mm_readA(batch, globalRow + innerRow, kStart / innerElementSize + inputCol, batchIndices);",
+     "    }",
+     "    for (var innerRow = 0; innerRow < 4; innerRow = innerRow + 1) {"
+   ],
+   "reading": "ORT-web 4.2.0 為這個 MatMul 產生的 WGSL 中，batchIndices 被宣告成 u32，但 mm_readA 的第 4 個參數要 vec2<u32>。這是 4.2.0 的 codegen 在這個批次形狀上的型別錯誤，與 dtype 無關（fp32 也失敗）。"
+  }
+ ],
+ "same_graph_fp32": "同一節點的 fp32 權重也失敗（scripts/eval/o15b_slimsam_check.result.json）",
+ "same_weights_on_3.7.5_webgpu": "成功（同一檔案，3.7.5 的 MatMul codegen 沒有這個錯誤）：遮罩 IoU 0.981 對 CPU q8"
+}

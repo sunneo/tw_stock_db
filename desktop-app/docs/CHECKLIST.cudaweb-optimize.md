@@ -257,6 +257,10 @@ O1m 到 O11 做完後不結束，進入迴圈。完整規則與交接見 `docs/H
       - SlimSAM 77（權重經使用者同意下載，sha256 與 HF LFS oid 相同）：app 的 transformers 4.2.0 WebGPU 在遮罩解碼器 `layers.0/mlp/lin2/MatMul` 建 shader 失敗，fp16 與 fp32 都失敗；同一 fp16 權重在 3.7.5 WebGPU 可跑：遮罩 IoU 0.981 對 CPU q8，分數差 0.042，暖機 4,047 ms（CPU 9,623 ms）。SlimSAM 的 GPU 路徑在目前版本組合不可用。若要用，需使用者決定改用 3.7.5 WebGPU 建置，或等 4.2.0 修正。預設仍為 CPU。
       - 未做：Whisper 編碼器、SDXS、Kokoro 整圖在真 Chrome 的實測（權重需另外同意下載）。
       - 注意：這段是補回的。這份清單在多個提交之間被覆寫過（例如 5642271e2、04cb372d0），以後改動前請先從 HEAD 重新讀取。
+    - **SlimSAM 根因與選項（2026-11-18，真 Chrome）**：攔截 `GPUDevice.createShaderModule` 的 `getCompilationInfo()`，4.2.0 遮罩解碼器的 MatMul（`layers.0/mlp/lin2`）shader 的真正錯誤是 `type mismatch for argument 4 in call to 'mm_readA', expected 'vec2<u32>', got 'u32'`（第 155 行）：4.2.0 的 codegen 在這個批次形狀上把 batchIndices 生成成 u32。fp16 與 fp32 都失敗。結果：`scripts/eval/o15b_sam_shader_diag.result.json`。
+      - 選項 (a)：SlimSAM 的 WebGPU 改用 transformers 3.7.5（同一版本的 WebGPU 可跑，IoU 0.981）。已實作為 `samGpuLib` 開關，預設關；關時沿用 4.2.0；開時用 3.7.5；失敗永久退回 CPU。node：`vlm_core.test.js` 199 項通過（含 7 項 `webgpuLibFor`）。只在 gpu-compat 窗格放一處（與其他 GPU 開關一致）。真 Chrome 的 IoU 0.981 是用 harness 跑 3.7.5 WebGPU 得到，**沒有**從 app 的 UI 路徑端到端跑過。
+      - 選項 (b)：用 cudaweb 的 matmul 取代這個節點。未做：需要為這個批次形狀寫 kernel，工作量大，而 (a) 已經可用。
+      - 建議（未改預設）：`samGpuLib` 可以考慮預設開，需要使用者確認；在 app 內端到端跑一次 SlimSAM 分割（開關打開）還沒做。
 - [ ] 範圍外要如實標：沒有真權重、載入太重、或遇到 cudaweb 缺的算子（例如特殊卷積、非常規操作）的，記「未完成：原因」，不要宣稱全部完成。
 
 

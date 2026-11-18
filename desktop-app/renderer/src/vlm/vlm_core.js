@@ -573,5 +573,18 @@
         });
         return { model: v, on: true, reason: 'fp32 GPU 開關開：這張顯示卡沒有 shader-f16，改用 fp32 權重走 WebGPU（這台未量測），失敗退回 CPU' };
     }
-    return { nativePrefillPlan, nativeFullText, MODELS, byId, imageModels, textModels, depthModels, DEFAULT_DEPTH_MODEL, segmentModels, DEFAULT_SEGMENT_MODEL, poseModels, DEFAULT_POSE_MODEL, DEFAULT_MODEL, DEFAULT_TEXT_MODEL, THRESHOLD_MIN, THRESHOLD_MAX, clampThreshold, shouldUseOfflineLlm, estimateTokens, trimToTokens, textBudget, composeMessages, textGenParams, compactToolSpecs, parseToolCalls, TOOL_STAGE_SYSTEM, roleConfig, toolsTrust, routeStages, toolResultsAsReferences, looksLikeGarbage, makeStreamWatch, fitMessages, runAgentLoop, placeholderOf, BENCH_TOOLS, BENCH_CASES, scoreToolCase, summarizeToolBench, TASKS, generationParams, defaultMaxTokens, inferTask, pickModel, VISION_POLICIES, visionOrder, combineVision, structuredPrompt, parseStructured, resolveDevice, poseDevicePlan, f32GpuVariant, backendOrder, wantsNativeBackend, effectiveDevicePref, nativeToolMessages, nativeWithPrefill, resolveThreads, buildTask, formatResult, repoOfUrl, usageByModel, urlsOfModel, fmtBytes, estimateDownload };
+    // SlimSAM 的 WebGPU 建置（O15b）。app 的 WebGPU 用 transformers 4.2.0；它的遮罩解碼器 MatMul（layers.0/mlp/lin2）產生的 shader 有型別錯誤
+    // （WGSL：type mismatch for argument 4 in call to 'mm_readA', expected 'vec2<u32>', got 'u32'），建 pipeline 失敗，fp16 與 fp32 都一樣。
+    // 同一組權重在 3.7.5 的 WebGPU 可跑（真 Chrome：遮罩 IoU 0.981 對 CPU q8）。預設關（samGpuLib 'off'）：關時沿用 4.2.0（舊行為，會失敗後退回 CPU）。
+    // 開且是 SAM 模型時改用 3.7.5；先前失敗過（brokenPermanently）時回 lib null＝不用 WebGPU。其他模型一律不變。
+    // 回傳 { lib: '4.2.0' | '3.7.5' | null, reason }。
+    function webgpuLibFor(model, opts) {
+        opts = opts || {};
+        const keep = { lib: '4.2.0', reason: '沿用 app 的 WebGPU 建置（transformers 4.2.0）' };
+        if (!model || model.arch !== 'sam') return keep;
+        if (opts.enabled !== true) return keep;
+        if (opts.brokenPermanently) return { lib: null, reason: 'SlimSAM 的 WebGPU 路徑先前失敗，之後一律用 CPU' };
+        return { lib: '3.7.5', reason: 'SlimSAM 的 WebGPU 改用 transformers 3.7.5 建置（4.2.0 的遮罩解碼器 MatMul shader 會失敗）' };
+    }
+    return { nativePrefillPlan, nativeFullText, MODELS, byId, imageModels, textModels, depthModels, DEFAULT_DEPTH_MODEL, segmentModels, DEFAULT_SEGMENT_MODEL, poseModels, DEFAULT_POSE_MODEL, DEFAULT_MODEL, DEFAULT_TEXT_MODEL, THRESHOLD_MIN, THRESHOLD_MAX, clampThreshold, shouldUseOfflineLlm, estimateTokens, trimToTokens, textBudget, composeMessages, textGenParams, compactToolSpecs, parseToolCalls, TOOL_STAGE_SYSTEM, roleConfig, toolsTrust, routeStages, toolResultsAsReferences, looksLikeGarbage, makeStreamWatch, fitMessages, runAgentLoop, placeholderOf, BENCH_TOOLS, BENCH_CASES, scoreToolCase, summarizeToolBench, TASKS, generationParams, defaultMaxTokens, inferTask, pickModel, VISION_POLICIES, visionOrder, combineVision, structuredPrompt, parseStructured, resolveDevice, poseDevicePlan, f32GpuVariant, webgpuLibFor, backendOrder, wantsNativeBackend, effectiveDevicePref, nativeToolMessages, nativeWithPrefill, resolveThreads, buildTask, formatResult, repoOfUrl, usageByModel, urlsOfModel, fmtBytes, estimateDownload };
 });
