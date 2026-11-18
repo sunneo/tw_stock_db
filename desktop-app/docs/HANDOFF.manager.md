@@ -1,6 +1,8 @@
 # 管理者交接（2026-11-18，第二棒起點頁）
 
 > **最新狀態（使用者指示「寫好交接、停手，讓其他遠端接手」）**：已發布 v447（遠端三處核對過）；v448 發布中（核對遠端 manifest.v2、`git ls-remote origin refs/heads/desktop-app`、網頁 `var SHA`）。兩個工作階段的交接文件：`docs/HANDOFF.offline-nolimit.md`（離線不設耗時上限、/aidoc ask 要走聊天核心）、`docs/HANDOFF.cudaweb-optimize.md`（O12 到 O15；O14b、O14c、O14d、O13c、O15b、真權重下載與驗證未做，下載須使用者本人在接手的工作階段同意：SmolVLM-256M 的 `onnx/decoder_model_merged_q4.onnx` 86.6 MB、Florence-2-base-ft 的 `onnx/decoder_model_int8.onnx` 97.8 MB，視覺編碼器與 LLaVA 尚未查）。使用者規則：發布每階段都做（commit、push、publish），發布由管理者跑。下面的內容較舊，只當背景。
+>
+> **之後補充（2026-11-18）**：v448 已發布並核對（遠端三處一致）。視窗疊放修正已提交 `6e14bfc79`（終端機與它開出的 GUI 視窗共用 `FaWin.nextTermZ` 計數），**尚未發布**（發布指令被安全檢查擋下，且該輪使用者沒提發布；要使用者當輪說「發布」才跑 `scripts/publish.sh`）。`nbody3d.py` 視窗關掉後仍送 `glbuf` 的錯誤（`window ... is not open`）沒處理。待使用者決定：CPU／GPU 分攤（建議先做 cupy／numba stream 與 event 的非同步提交，讓 GPU 呼叫不用 `run_sync` 阻塞；其次才是多 Pyodide 工作者墊片；`SharedArrayBuffer` 桌面版已能用、網頁版需服務工作者注入標頭）。
 
 專案 `D:\Downloads\videos-嗨投資-desktop-app\desktop-app`，分支 `desktop-app`；網頁版倉庫 `D:\Downloads\videos-嗨投資`。這份比 `docs/HANDOFF.md` 更新，舊的只當背景。
 
