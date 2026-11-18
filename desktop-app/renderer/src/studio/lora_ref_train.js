@@ -145,14 +145,15 @@ function cpuMatmulBackend() {
 }
 function tr2(X, rows, cols) { const Y = new Float64Array(rows * cols); for (let i = 0; i < rows; i++) for (let j = 0; j < cols; j++) Y[j * rows + i] = X[i * cols + j]; return Y; }
 async function amm(be, A, B, m, k, n) { return be.matmul(A, B, m, k, n); }                       // C = A·B
-async function ammBt(be, A, B, m, k, n) { return be.matmul(A, tr2(B, n, k), m, k, n); }          // C = A·Bᵀ，B 存成 n×k
-async function ammAt(be, A, B, m, k, n) { return be.matmul(tr2(A, k, m), B, m, k, n); }          // C = Aᵀ·B，A 存成 k×m
+// 後端有 transFlags（cudaweb）就直接用 O5 平鋪核心的轉置旗標，不做 CPU 轉置複製；否則照舊複製（CPU 路徑不變）。
+async function ammBt(be, A, B, m, k, n) { return be.transFlags ? be.matmul(A, B, m, k, n, { transB: true }) : be.matmul(A, tr2(B, n, k), m, k, n); }  // C = A·Bᵀ，B 存成 n×k
+async function ammAt(be, A, B, m, k, n) { return be.transFlags ? be.matmul(A, B, m, k, n, { transA: true }) : be.matmul(tr2(A, k, m), B, m, k, n); }  // C = Aᵀ·B，A 存成 k×m
 
 // 批次版（O8 前向）：be 有 matmulMany 就把互不相依的矩陣乘放進一次提交；沒有就逐個 be.matmul（CPU 路徑不變）。
 // items：[[A, B, m, k, n], ...]，回傳與 items 同序的結果陣列。
 async function ammMany(be, items) {
     if (be.matmulMany) return be.matmulMany(items);
-    const out = []; for (const it of items) out.push(await be.matmul(it[0], it[1], it[2], it[3], it[4])); return out;
+    const out = []; for (const it of items) out.push(await be.matmul(it[0], it[1], it[2], it[3], it[4], it[5])); return out;
 }
 // 與 loraLinA 的算式完全相同（xA＝x·A；base＝x·W；br＝xA·B；y＝base＋s·br），但同一階段的矩陣乘一起送出：
 // 第一階段（只依賴 x）：每個投影的 xA 與 base；第二階段：每個投影的 br。specs：[{ W, lo, cache, dout }]
@@ -176,13 +177,14 @@ async function loraLinA(be, x, W, lo, s, T, din, dout, cache) {
     cache.xA = xA; return y;
 }
 // 反向批次版（O8）：與 loraLinBwdA 的算式逐項相同（ammAt／ammBt 的轉置在這裡先轉好），矩陣乘分兩階段各一次提交。
-const mkAt = (A, B, m, k, n) => [tr2(A, k, m), B, m, k, n];   // 同 ammAt：C = Aᵀ·B
-const mkBt = (A, B, m, k, n) => [A, tr2(B, n, k), m, k, n];   // 同 ammBt：C = A·Bᵀ
+// 批次項目（與 ammAt／ammBt 同一算式）：後端有 transFlags 就帶旗標，否則照舊在 CPU 轉置。
+const mkAt = (be, A, B, m, k, n) => be.transFlags ? [A, B, m, k, n, { transA: true }] : [tr2(A, k, m), B, m, k, n];   // C = Aᵀ·B
+const mkBt = (be, A, B, m, k, n) => be.transFlags ? [A, B, m, k, n, { transB: true }] : [A, tr2(B, n, k), m, k, n];   // C = A·Bᵀ
 // specs：[{ dy, x, W, lo, xA, key }]，回傳與 specs 同序的 dx 陣列，並把 grads[key] = { A, B } 寫入。
 async function loraLinBwdManyA(be, specs, s, T, din, dout, grads) {
     const rs = specs.map((sp) => sp.lo.A.length / din);
     const P1 = [];
-    specs.forEach((sp, i) => { P1.push(mkAt(sp.xA, sp.dy, rs[i], T, dout), mkBt(sp.dy, sp.lo.B, T, dout, rs[i]), mkBt(sp.dy, sp.W, T, dout, din)); });
+    specs.forEach((sp, i) => { P1.push(mkAt(be, sp.xA, sp.dy, rs[i], T, dout), mkBt(be, sp.dy, sp.lo.B, T, dout, rs[i]), mkBt(be, sp.dy, sp.W, T, dout, din)); });
     const r1 = await ammMany(be, P1);
     const dBs = [], dxAs = [];
     specs.forEach((sp, i) => {
@@ -192,7 +194,7 @@ async function loraLinBwdManyA(be, specs, s, T, din, dout, grads) {
         dBs.push(dB); dxAs.push(dxA);
     });
     const P2 = [];
-    specs.forEach((sp, i) => { P2.push(mkAt(sp.x, dxAs[i], din, T, rs[i]), mkBt(dxAs[i], sp.lo.A, T, rs[i], din)); });
+    specs.forEach((sp, i) => { P2.push(mkAt(be, sp.x, dxAs[i], din, T, rs[i]), mkBt(be, dxAs[i], sp.lo.A, T, rs[i], din)); });
     const r2 = await ammMany(be, P2);
     return specs.map((sp, i) => {
         const dA = r2[2 * i], dx = r1[3 * i + 2], dx2 = r2[2 * i + 1];
@@ -289,16 +291,25 @@ async function lossAndGradsAsync(m, tokens, opts) {
         const dn = await amm(be, a, P.Wd, T, F, d); const h2 = new Float64Array(T * d); for (let i = 0; i < h2.length; i++) h2[i] = h1[i] + dn[i];
         h = h2; C.push(c);
     }
-    const nf = await rmsFwdA(ops, h, m.nf, T, d); const logits = await ammBt(be, nf.y, m.emb, T, d, V);
-    let loss = 0; const dl = new Float64Array(T * V);
+    const nf = await rmsFwdA(ops, h, m.nf, T, d);
+    let loss = 0, dhHead = null;
+    if (be.headStep) {
+      // 訓練頭整段在裝置上（logits→交叉熵→dh），一次提交、兩次回讀（O8）
+      const H = await be.headStep({ nf: nf.y, emb: m.emb, tgt, T, d, V }); loss = H.loss; dhHead = H.dh;
+    } else {
+    const logits = await ammBt(be, nf.y, m.emb, T, d, V);
+    const dl = new Float64Array(T * V);
     for (let t = 0; t < T; t++) { let mx = -Infinity; for (let j = 0; j < V; j++) if (logits[t * V + j] > mx) mx = logits[t * V + j]; let sum = 0; for (let j = 0; j < V; j++) { dl[t * V + j] = Math.exp(logits[t * V + j] - mx); sum += dl[t * V + j]; } loss += -Math.log(dl[t * V + tgt[t]] / sum); for (let j = 0; j < V; j++) dl[t * V + j] = (dl[t * V + j] / sum - (j === tgt[t] ? 1 : 0)) / T; }
-    loss /= T; if (opts.noGrad) return { loss };
-    let dh = rmsBwd(await amm(be, dl, m.emb, T, V, d), h, m.nf, nf.inv, T, d); const grads = new Array(L);
+    loss /= T;
+    dhHead = await amm(be, dl, m.emb, T, V, d);
+    }
+    if (opts.noGrad) return { loss };
+    let dh = rmsBwd(dhHead, h, m.nf, nf.inv, T, d); const grads = new Array(L);
     for (let l = L - 1; l >= 0; l--) {
         const P = m.layers[l], lo = m.lora[l], c = C[l]; const G = {};
         const da = await ammBt(be, dh, P.Wd, T, d, F); const dg = new Float64Array(T * F), du = new Float64Array(T * F);
         for (let i = 0; i < da.length; i++) { const sg = sig(c.g[i]); du[i] = da[i] * c.g[i] * sg; dg[i] = da[i] * c.u[i] * sg * (1 + c.g[i] * (1 - sg)); }
-        const dn2mm = await ammMany(be, [mkBt(dg, P.Wg, T, F, d), mkBt(du, P.Wu, T, F, d)]); const dn2 = dn2mm[0], dn2b = dn2mm[1]; for (let i = 0; i < dn2.length; i++) dn2[i] += dn2b[i];
+        const dn2mm = await ammMany(be, [mkBt(be, dg, P.Wg, T, F, d), mkBt(be, du, P.Wu, T, F, d)]); const dn2 = dn2mm[0], dn2b = dn2mm[1]; for (let i = 0; i < dn2.length; i++) dn2[i] += dn2b[i];
         const dh1 = rmsBwd(dn2, c.h1, P.n2, c.n2.inv, T, d); for (let i = 0; i < dh1.length; i++) dh1[i] += dh[i];
         const dao = (await loraLinBwdManyA(be, [{ dy: dh1, x: c.ao, W: P.Wo, lo: lo.o, xA: c.co.xA, key: 'o' }], s, T, d, d, G))[0];
         const dq = new Float64Array(T * d), dk = new Float64Array(T * d), dv = new Float64Array(T * d), sc = 1 / Math.sqrt(hd);
@@ -329,18 +340,27 @@ async function adamStepAsync(m, grads, st, lr, ops) {
 
 // cudaweb 執行期 → 訓練器的 matmul 後端；記錄最後一次實際使用的層與原因（給後端選單顯示）
 function cudawebMatmulBackend(rt) {
-    const be = { id: 'cudaweb', layer: null, reason: null, calls: 0 };
-    be.matmul = async (A, B, m, k, n) => {
-        const r = await rt.matmul(Array.from(A), Array.from(B), m, k, n);
+    const be = { id: 'cudaweb', layer: null, reason: null, calls: 0, transFlags: true };
+    // fl（選用）：{ transA, transB }，走 O5 平鋪核心的轉置旗標（不在 CPU 複製轉置）
+    be.matmul = async (A, B, m, k, n, fl) => {
+        const r = await rt.matmul(Array.from(A), Array.from(B), m, k, n, fl);
         be.calls++; be.layer = r.info.layer; be.reason = r.info.reason || null;
         return Float64Array.from(r.result);
     };
     // 批次（O8 前向）：執行期有 matmulMany 才提供；一次提交多個互不相依的矩陣乘
     if (typeof rt.matmulMany === 'function') {
         be.matmulMany = async (items) => {
-            const r = await rt.matmulMany(items.map((it) => [Array.from(it[0]), Array.from(it[1]), it[2], it[3], it[4]]));
+            const r = await rt.matmulMany(items.map((it) => [Array.from(it[0]), Array.from(it[1]), it[2], it[3], it[4], it[5]]));
             be.calls += items.length; be.layer = r.info.layer; be.reason = r.info.reason || null;
             return r.results.map((x) => Float64Array.from(x));
+        };
+    }
+    // 訓練頭（O8）：logits→交叉熵→dh 一次提交；執行期有 headStep 才提供
+    if (typeof rt.headStep === 'function') {
+        be.headStep = async (a) => {
+            const r = await rt.headStep({ nf: Array.from(a.nf), emb: Array.from(a.emb), tgt: a.tgt, T: a.T, d: a.d, V: a.V });
+            be.calls++; be.layer = r.info.layer; be.reason = r.info.reason || null;
+            return { loss: r.loss, dh: Float64Array.from(r.dh) };
         };
     }
     return be;

@@ -132,6 +132,12 @@ function fakeNavigator(opts) {
       // 綁定順序：0 x、1 y、2 uniform（T、H、hd 皆為 u32，dir 為 f32 位於位元組 12）
       const T = u32(e[2])[0], H = u32(e[2])[1], hd = u32(e[2])[2], dir = new Float32Array(e[2].data, 12, 1)[0];
       f32(e[1], T * H * hd).set(NN.ropeRef(f32(e[0], T * H * hd), T, H, hd, dir));
+    } else if (k === 'cross_entropy') {
+      // O8：綁定 0 lg(讀)、1 tg(讀，u32)、2 dl(寫)、3 rows(寫)、4 uniform（T、V 為 u32，invT 為 f32 位於位元組 8）
+      // 數值用 f64 參考版再捨入成 f32（不是逐運算模擬）：這裡驗證的是綁定、列數與回寫，不驗證 WGSL 的歸約順序
+      const T = u32(e[4])[0], V = u32(e[4])[1], invT = new Float32Array(e[4].data, 8, 1)[0];
+      const r = NN.crossEntropyRef(Float64Array.from(f32(e[0], T * V)), Array.from(u32(e[1]).subarray(0, T)), T, V, invT);
+      f32(e[2], T * V).set(r.dl); f32(e[3], T).set(r.rows);
     } else if (k === 'adamw') {
       // 綁定順序：0 p(寫)、1 g、2 m(寫)、3 v(寫)、4 uniform（n u32、lr、b1、b2、eps、wd、c1、c2 皆 f32，從位元組 4 起）
       const n = u32(e[4])[0], fl = new Float32Array(e[4].data, 4, 7);

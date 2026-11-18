@@ -649,6 +649,75 @@ async function adamw(p, g, m, v, t, lr, b1, b2, eps, wd, opts) {
     () => adamwRef(pf, gf, mf, vf, t, lr, b1, b2, eps, wd));
 }
 
+// ---------- 交叉熵（O8）：前向 loss 與反向 dl 一次派發，一個工作群組算一列 ----------
+// 輸入 lg（T×V f32）、tg（T 個 u32 目標）、invT（=1/T）。輸出 dl（T×V）＝(softmax − onehot)·invT，rows（T）＝每列 −log p_t（未除 T）。
+// 主機把 rows 加總再除以 T 得到平均 loss。數值：列內先取最大值（數值穩定），再 exp 求和。
+const WGSL_CE = `
+struct P { T: u32, V: u32, invT: f32 }
+@group(0) @binding(0) var<storage, read> lg: array<f32>;
+@group(0) @binding(1) var<storage, read> tg: array<u32>;
+@group(0) @binding(2) var<storage, read_write> dl: array<f32>;
+@group(0) @binding(3) var<storage, read_write> rows: array<f32>;
+@group(0) @binding(4) var<uniform> u: P;
+var<workgroup> red: array<f32, 64>;
+// @kernel cross_entropy
+@compute @workgroup_size(64)
+fn main(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {
+  let row = wid.x;
+  let t = lid.x;
+  let base = row * u.V;
+  var mx: f32 = -3.0e38;
+  for (var j: u32 = t; j < u.V; j = j + 64u) { mx = max(mx, lg[base + j]); }
+  red[t] = mx;
+  workgroupBarrier();
+  for (var s: u32 = 32u; s > 0u; s = s >> 1u) { if (t < s) { red[t] = max(red[t], red[t + s]); } workgroupBarrier(); }
+  let rmax = red[0];
+  workgroupBarrier();
+  var sm: f32 = 0.0;
+  for (var j: u32 = t; j < u.V; j = j + 64u) { sm = sm + exp(lg[base + j] - rmax); }
+  red[t] = sm;
+  workgroupBarrier();
+  for (var s: u32 = 32u; s > 0u; s = s >> 1u) { if (t < s) { red[t] = red[t] + red[t + s]; } workgroupBarrier(); }
+  let total = red[0];
+  let tgt = tg[row];
+  for (var j: u32 = t; j < u.V; j = j + 64u) {
+    let p = exp(lg[base + j] - rmax) / total;
+    var one: f32 = 0.0;
+    if (j == tgt) { one = 1.0; }
+    dl[base + j] = (p - one) * u.invT;
+  }
+  if (t == 0u) { rows[row] = log(total) - (lg[base + tgt] - rmax); }
+}
+`;
+// f64 參考：rows[t] = −log p_t；dl = (p − onehot)·invT。
+function crossEntropyRef(lg, tg, T, V, invT) {
+  const rows = new Float64Array(T), dl = new Float64Array(T * V);
+  for (let t = 0; t < T; t++) {
+    let mx = -Infinity; for (let j = 0; j < V; j++) if (lg[t * V + j] > mx) mx = lg[t * V + j];
+    let s = 0; for (let j = 0; j < V; j++) s += Math.exp(lg[t * V + j] - mx);
+    rows[t] = Math.log(s) - (lg[t * V + tg[t]] - mx);
+    for (let j = 0; j < V; j++) dl[t * V + j] = (Math.exp(lg[t * V + j] - mx) / s - (j === tg[t] ? 1 : 0)) * invT;
+  }
+  return { rows, dl };
+}
+// 獨立呼叫（與其他運算一樣走三層降級）。回傳 { result: { loss（平均）, dl }, info }。
+async function crossEntropy(lg, tg, T, V, opts) {
+  if (T > 65535) throw new Error('cross_entropy：T 超過 65535（一列一個工作群組，單維派發上限）');
+  const invT = 1 / T;
+  return tryLayers('cross_entropy', opts,
+    async (dev) => {
+      const uni = new ArrayBuffer(16); new Uint32Array(uni, 0, 2).set([T, V]); new Float32Array(uni, 8, 1)[0] = invT;
+      const outs = await runWgsl(dev, WGSL_CE,
+        [{ data: Float32Array.from(lg), out: false }, { data: Uint32Array.from(tg), out: false },
+          { data: new Float32Array(T * V), out: true }, { data: new Float32Array(T), out: true }],
+        uni, T);
+      const rows = outs[1]; let s = 0; for (let t = 0; t < T; t++) s += rows[t];
+      return { loss: s / T, dl: outs[0] };
+    },
+    null,
+    () => { const r = crossEntropyRef(lg, tg, T, V, invT); let s = 0; for (let t = 0; t < T; t++) s += r.rows[t]; return { loss: s / T, dl: r.dl }; });
+}
+
 // ---------- 批次提交：同一個 command encoder、中間結果留在 GPU 緩衝區，只在 read() 時回讀 ----------
 // 用法：const b = createBatch(dev); const x = b.upload(arr); const y = b.rmsnorm(x, g, T, d, eps); ...
 //       const [out] = await b.read([[y, n]]);   // 整批只 submit 一次、回讀只在最後
@@ -819,6 +888,7 @@ function createBatch(dev) {
     return buf;
   }
   function upload(arr) { const f = arr instanceof Float32Array ? arr : Float32Array.from(arr); const buf = storage(f.length); dev.queue.writeBuffer(buf, 0, f); return { buf: buf, n: f.length }; }
+  function uploadU32(arr) { const u = arr instanceof Uint32Array ? arr : Uint32Array.from(arr); const buf = storage(u.length); dev.queue.writeBuffer(buf, 0, u); return { buf: buf, n: u.length }; }
   function dispatch(code, bindBufs, uniform, groups) {
     if (submitted) throw new Error('批次已經提交，不能再加入運算');
     const ub = pool.acquire(Math.max(16, Math.ceil(uniform.byteLength / 16) * 16), USAGE.UNIFORM | USAGE.COPY_DST);
@@ -838,6 +908,7 @@ function createBatch(dev) {
   }
   const b = {
     upload: upload,
+    uploadU32: uploadU32,
     rmsnorm(x, g, T, d, eps) {
       const y = storage(T * d);
       const uni = new ArrayBuffer(16); new Uint32Array(uni, 0, 2).set([T, d]); new Float32Array(uni, 8, 1)[0] = eps;
@@ -864,12 +935,21 @@ function createBatch(dev) {
       return { buf: y, n: T * H * hd };
     },
     // 矩陣乘（與 gpu_core 的 wgMatmul 同一組核心：K、N 為 4 的倍數時用 vec4 版）。A 是 M×K 的句柄，B 是 K×N 的句柄（常駐權重也可以）
-    matmul(A, B, M, K, N) {
+    // fl（選用）：{ transA, transB }（O5 的轉置版，走同一份平鋪核心的 p0 旗標；轉置時不用 vec4 版）
+    matmul(A, B, M, K, N, fl) {
       const y = storage(M * N);
-      const v4 = core.mmTileVec4Ok(M, K, N, 0);
-      const uni = new ArrayBuffer(32); new Uint32Array(uni).set(core.mmTileWords(M, K, N, 0, 1));
+      const flags = core.mmTileFlags(fl);
+      const v4 = core.mmTileVec4Ok(M, K, N, flags);
+      const uni = new ArrayBuffer(32); new Uint32Array(uni).set(core.mmTileWords(M, K, N, flags, 1));
       dispatch(v4 ? MM_VEC4_CODE : MM_TILED_CODE, [A.buf, B.buf, y], uni, core.mmTileDispatch(M, N, 1));
       return { buf: y, n: M * N };
+    },
+    // 交叉熵（O8）：logits 是 T×V 的句柄，tgt 是 uploadU32 的句柄；回傳 dl（T×V，已乘 invT）與 rows（T，未除 T）
+    crossEntropy(logits, tgt, T, V, invT) {
+      const dl = storage(T * V), rows = storage(T);
+      const uni = new ArrayBuffer(16); new Uint32Array(uni, 0, 2).set([T, V]); new Float32Array(uni, 8, 1)[0] = invT;
+      dispatch(WGSL_CE, [logits.buf, tgt.buf, dl, rows], uni, T);
+      return { dl: { buf: dl, n: T * V }, rows: { buf: rows, n: T } };
     },
     // O7 融合：單列 RMSNorm＋動態量化，一次派發。回傳 { y: {buf,n}（正規化後的 f32）, q: {buf,n,st}（i32 xq；st＝[mn,mx,scale,zp]） }
     rmsQuantFused(x, g, d, eps) {
@@ -949,4 +1029,4 @@ function trainerOps(opts) {
   };
 }
 
-module.exports = { trainerOps, rmsnormRef, rmsnorm, softmaxRef, softmax, siluRef, silu, ropeRef, rope, adamwCore, adamwRef, adamw, createBatch, runWgsl, getDevice, getGl, glSupport, glRun, tryLayers, nnBackendInfo, withMeasureLock, measureLockState, requestExclusiveGpu, registerIdleGpuHolder, NN_OPS, WGSL_RMSNORM, WGSL_SOFTMAX, WGSL_SILU, WGSL_ROPE, WGSL_ADAMW, WGSL_RMSQ_FUSED, NOTE_T3 };
+module.exports = { trainerOps, crossEntropy, crossEntropyRef, WGSL_CE, rmsnormRef, rmsnorm, softmaxRef, softmax, siluRef, silu, ropeRef, rope, adamwCore, adamwRef, adamw, createBatch, runWgsl, getDevice, getGl, glSupport, glRun, tryLayers, nnBackendInfo, withMeasureLock, measureLockState, requestExclusiveGpu, registerIdleGpuHolder, NN_OPS, WGSL_RMSNORM, WGSL_SOFTMAX, WGSL_SILU, WGSL_ROPE, WGSL_ADAMW, WGSL_RMSQ_FUSED, NOTE_T3 };
