@@ -235,4 +235,10 @@ O1m 到 O11 做完後不結束，進入迴圈。完整規則與交接見 `docs/H
     - **沒選 SlimSAM**：它的 CPU 權重是 q8，沒有 fp32 證據，所以不放行。
     - **桌面版設定頁**：`bootstrap.js` 的 `desktop` 分組沒有掛這兩個開關。該處註解記載 GPU 相容層刻意只放一處，所以只接在 AI 助理設定，這點與 O9 一致。
     - **未完成**：web-lazy 與 renderer bundle 還沒用 `build-assistant.js` 重建（另一個 session 正在重寫 web-lazy 產物，本次未碰）；發布前要先建置。
+    - **實測（2026-11-18，內建 Chromium，Intel Xe-LPG，有 shader-f16，`scripts/eval/o15b_webgpu_check.html`；數值見 `scripts/eval/o15b_webgpu_check.result.json`）**：
+      - Depth Anything 的 fp16 WebGPU（預設路徑）：成功；對 CPU fp32 相對 L2 0.57–0.72%、相關 0.99998；暖機 443–758 ms（CPU 4,458–10,495 ms）。fp32 WebGPU（`f32Gpu` 路徑）：成功；max|Δ| 5e-5；暖機 1,352–2,285 ms。
+      - MoveNet（fp32）：有人照片（`ai-temp/pose-test/person.jpg`，NASA Apollo 11，公有領域，來源見同資料夾 url.txt；ai-temp 不進 git）：17 個關鍵點全部 >0.3，兩邊可見集合相同；座標差 6e-8（正規化，約 0.0001 px）、分數差 1.3e-6；暖機 60 ms（CPU 175 ms）。
+      - 建議（不擅自改預設）：MoveNet 的 WebGPU 路徑在有 shader-f16 的卡上數值一致、比 CPU 快，可以考慮把 `poseGpu` 預設改開；但目前只有一張人像、一張卡，請使用者確認後再改。Depth 的 fp16 路徑是 app 的預設行為（有 shader-f16 的卡），不需要改。
+      - 下一個模型（SlimSAM fp16、Whisper 編碼器、SDXS、Kokoro 整圖）：需要下載權重；使用者尚未在對話裡同意，所以目前沒有做。
+      - 注意：這一段是補回的。提交 5642271e2（O12d）以較舊的清單版本覆寫，把先前的實測與阻塞記錄洗掉了；本次還原。
 - [ ] 範圍外要如實標：沒有真權重、載入太重、或遇到 cudaweb 缺的算子（例如特殊卷積、非常規操作）的，記「未完成：原因」，不要宣稱全部完成。

@@ -1,20 +1,23 @@
 {
- "ts": "2026-11-18T04:15:10.495Z",
+ "ts": "2026-11-18T04:40Z（person 照片那一輪）",
  "machine": "Windows 11；瀏覽器：Claude 內建 Chromium（Chrome 156）；WebGPU adapter：Intel Xe-LPG（xe-lpg），features 含 shader-f16",
- "image": "Narsil/image_dummy/parrots.png（真照片；HF 資料集）。注意：這張圖沒有人，MoveNet 沒有任何可信關鍵點",
+ "image": {
+   "main": "ai-temp/pose-test/person.jpg（有人）：NASA 阿波羅 11 號 Buzz Aldrin 站立全身照，960×966，公有領域；來源 URL 記在 ai-temp/pose-test/url.txt（Wikimedia Commons：Aldrin_Apollo_11_original.jpg）。檔案不進 git（ai-temp 在 .git/info/exclude）。",
+   "other": "Narsil/image_dummy/parrots.png（真照片，無人）：僅供深度比對的第二張圖"
+ },
  "libs": { "cpu": "@huggingface/transformers@3.7.5（與 app 的 transformersJs 相同）", "webgpu": "@huggingface/transformers@4.2.0（與 app 的 transformersJsWebGpu 相同）" },
- "method": "同一張圖、同一組輸入給 CPU（wasm）與 WebGPU；WebGPU 的 first 為含 shader 編譯的第一次執行；warm 為 3 次的中位數；差異為 WebGPU 減 CPU",
- "movenet_thunder_fp32": {
-  "cpu_wasm": { "load_ms": 187, "first_ms": 129, "warm_median_ms": 150, "kp_max_score": 0.1449 },
-  "webgpu": { "load_ms": 616, "first_ms": 5577, "warm_median_ms": 62, "kp_max_score": 0.1449 },
-  "compare": { "max_coord_diff_norm": 0, "max_score_diff": 0, "keypoints_over_0_3": 0, "note": "兩邊都沒有 >0.3 的關鍵點，對拍不成立，只能說『WebGPU 能跑、數值與 CPU 在此圖上一致』" }
+ "method": "同一張圖、同一組輸入給 CPU（wasm）與 WebGPU；first 含 shader 編譯；warm 為 3 次中位數。harness 的 compare 會把差值四捨五入到 5 位小數，所以零值只代表 <5e-6，精確差值另外用全精度計算（見 movenet_person.precise）。",
+ "movenet_thunder_fp32_person": {
+  "cpu_wasm": { "load_ms": 737, "first_ms": 186, "warm_median_ms": 175, "kp_max_score": 0.7101, "keypoints_over_0_3": 17 },
+  "webgpu": { "load_ms": 1538, "first_ms": 3867, "warm_median_ms": 60, "kp_max_score": 0.7101, "keypoints_over_0_3": 17 },
+  "same_visible_set": true,
+  "movenet_person.precise": { "max_coord_diff_norm_y": 5.96e-8, "max_coord_diff_norm_x": 5.96e-8, "max_coord_diff_px_on_960x966": 0.0001, "max_score_diff": 1.34e-6, "note": "全精度，17 個關鍵點、51 個輸出值的最大差；座標是 0..1 的正規化值" }
  },
- "depth_anything_v2_small": {
-  "cpu_wasm_fp32": { "load_ms": 560, "first_ms": 11000, "warm_median_ms": 10495, "dims": [512, 768] },
-  "webgpu_fp32 (f32Gpu 路徑)": { "load_ms": 484, "first_ms": 6593, "warm_median_ms": 2285, "dims": [512, 768],
-    "compare_vs_cpu_fp32": { "max_abs_diff": 0.00005, "mean_abs_diff": 0, "rel_l2": 0, "pearson": 1, "range_cpu": [0, 4.53], "range_gpu": [0, 4.53] } },
-  "webgpu_fp16 (登記的 GPU 權重，預設路徑)": { "load_ms": 7219, "first_ms": 7110, "warm_median_ms": 758, "dims": [512, 768],
-    "compare_vs_cpu_fp32": { "max_abs_diff": 0.39751, "mean_abs_diff": 0.01387, "rel_l2": 0.00717, "pearson": 0.99998, "range_cpu": [0, 4.53], "range_gpu": [0, 4.524] } }
+ "depth_anything_v2_small_person": {
+  "cpu_wasm_fp32": { "load_ms": 1150, "first_ms": 5697, "warm_median_ms": 4458, "dims": [966, 960] },
+  "webgpu_fp32 (f32Gpu 路徑)": { "load_ms": 548, "first_ms": 6873, "warm_median_ms": 1352, "compare_vs_cpu_fp32": { "max_abs_diff": 0.00005, "rel_l2": 0, "pearson": 1, "range_cpu": [0, 7.739], "range_gpu": [0, 7.739] } },
+  "webgpu_fp16 (登記的 GPU 權重，預設路徑)": { "load_ms": 1023, "first_ms": 5223, "warm_median_ms": 443, "compare_vs_cpu_fp32": { "max_abs_diff": 0.28062, "mean_abs_diff": 0.01712, "rel_l2": 0.00574, "pearson": 0.99998, "range_cpu": [0, 7.739], "range_gpu": [0, 7.757] } }
  },
+ "earlier_run_parrots": "2026-11-18 早先一輪（無人照片）：MoveNet 無 >0.3 的關鍵點，不能當對拍；Depth 數值見 COVERAGE 實測節",
  "errors": []
 }

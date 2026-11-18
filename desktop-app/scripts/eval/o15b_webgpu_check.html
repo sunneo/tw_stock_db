@@ -27,6 +27,8 @@ async function adapter() {
 // 合成圖：640×480，左右漸層、中央白色圓（不是照片；只用來比兩個裝置的數值）
 async function makeImage() {
   // 先試一張真照片（HF 資料集，可跨來源讀取）；拿不到就用合成圖
+  // 含人的照片（本機檔，不進 git；見 ai-temp/pose-test/url.txt：NASA 阿波羅 11 號，公有領域，Wikimedia Commons）
+  try { const r = await fetch('/ai-temp/pose-test/person.jpg'); if (r.ok) { res.image = 'ai-temp/pose-test/person.jpg（NASA Apollo 11，公有領域，960×966，有人）'; return await r.blob(); } } catch (_) {}
   try { const r = await fetch('https://huggingface.co/datasets/Narsil/image_dummy/resolve/main/parrots.png'); if (r.ok) { res.image = 'Narsil/image_dummy/parrots.png（真照片）'; return await r.blob(); } } catch (_) {}
   res.image = '640x480 漸層＋白色圓（合成，非照片）';
   return makeSynthetic();
