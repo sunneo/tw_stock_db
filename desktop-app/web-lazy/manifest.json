@@ -49,13 +49,26 @@
    "size": 29580,
    "md5": "3de5f91909e1440e15051506a9f4218f"
   },
+  "gpuview": {
+   "file": "chunks/gpuview.js",
+   "names": [
+    "FA_GPU_VIEW_SIMPLE",
+    "FA_GPU_VIEW_PRO",
+    "faGpuCompatView",
+    "faGpuCompatSummary",
+    "faProfileFit",
+    "faProfilePlan"
+   ],
+   "size": 4753,
+   "md5": "2147b83bd4d62520f17b734822808b4d"
+  },
   "qwengpu": {
    "file": "chunks/qwengpu.js",
    "names": [
     "FA_QWEN_SRC"
    ],
-   "size": 535778,
-   "md5": "a259ab9ccda13efa9c1debd6f76bec0a"
+   "size": 564526,
+   "md5": "863a8bccfd48f7d0dba34a7fe648c39b"
   },
   "aidocview": {
    "file": "chunks/aidocview.js",
@@ -1895,7 +1908,7 @@
   }
  },
  "core": {
-  "size": 6128568,
-  "md5": "c96d393c0c10ddf1cedd859a7845516a"
+  "size": 6131933,
+  "md5": "9d56c9d006e827d3cbab6358be2da041"
  }
 }

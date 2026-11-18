@@ -17,6 +17,9 @@
 
 const HS = require('./hetero_split.js');  // 分攤決策公式（見 docs/DESIGN.cudaweb-hetero.md 第 2 節）
 const GQ = require('./gpu_async_queue.js'); // 統一句柄：CPU 段與 GPU 段都是佇列上的提交（見設計文件第 4 節）
+const CG = require('./cpu_gemm.js');        // 分塊＋WASM SIMD 主執行緒核心（docs/DESIGN.cpu-gemm.md）
+const CW = require('./cpu_gemm_wasm.js');   // WASM 位元組（送給 Worker；不支援 SIMD 時退回 cpuRowsRef）
+const CR = require('./cpu_gemm_rows.js');   // Worker 內的列區塊核心（自給自足，可 toString 進 Blob）
 const MIN_FLOPS = 2e7;      // M*K*N 小於這個不分工（派發與搬運的固定成本大於收益）
 const MIN_ROWS = 16;
 const MAX_CPU_RATIO = 0.5;  // CPU 最多分擔一半的列；GPU 慢到比 CPU 還慢時，使用者應直接選 CPU 模式
@@ -51,8 +54,15 @@ function cpuRowsRef(A, B, m, k, n, transB) {
 }
 
 // Worker 原始碼（Blob 用）：從 cpuRowsRef 的原始碼組出，所以測試與實際執行是同一份邏輯
+// 主執行緒的 CPU 核心：支援 SIMD 就用分塊＋WASM SIMD（實測約為舊核心 15 倍），否則退回 cpuRowsRef。結果等價（相對誤差 ≤ 1e-5）。
+const SIMD_BYTES = (() => { try { return CW.simdSupported() ? CW.buildModule() : null; } catch (_) { return null; } })();
+function cpuKernel(A, B, m, k, n, transB) {
+  if (SIMD_BYTES) { try { return CG.gemmPackedSimd(A, B, m, k, n, { transB: !!transB }); } catch (_) { /* 退回參考實作 */ } }
+  return cpuRowsRef(A, B, m, k, n, transB);
+}
+
 function workerSource() {
-  return cpuRowsRef.toString() + `
+  return cpuRowsRef.toString() + CR.gemmRowsSimdKernel.toString() + `
 const CACHE = new Map();
 self.onmessage = (ev) => {
   const d = ev.data;
@@ -60,7 +70,9 @@ self.onmessage = (ev) => {
     let B = d.B;
     if (d.bKey != null) { if (B) { CACHE.set(d.bKey, B); if (CACHE.size > 4) CACHE.delete(CACHE.keys().next().value); } else B = CACHE.get(d.bKey); }
     if (!B) { self.postMessage({ id: d.id, miss: true }); return; }
-    const C = cpuRowsRef(d.A, B, d.m, d.k, d.n, d.transB);
+    const C = d.wasm
+      ? gemmRowsSimdKernel(d.A, B, d.m, d.k, d.n, false, !!d.transB, 0, d.m, d.wasm, 96, 256, 512, null)
+      : cpuRowsRef(d.A, B, d.m, d.k, d.n, d.transB);
     self.postMessage({ id: d.id, C }, [C.buffer]);
   } catch (e) { self.postMessage({ id: d.id, error: String((e && e.message) || e) }); }
 };`;
@@ -103,7 +115,7 @@ function createCpuShare(o) {
     for (let w = 0; w < a.nW; w++) {
       const r0 = a.mG + w * a.per, r1 = Math.min(a.m, r0 + a.per); if (r1 <= r0) break;
       const slot = pool[w];
-      const msg = { id: ++seq, A: a.A.slice(r0 * a.k, r1 * a.k), m: r1 - r0, k: a.k, n: a.n, transB: !!a.transB };
+      const msg = { id: ++seq, A: a.A.slice(r0 * a.k, r1 * a.k), m: r1 - r0, k: a.k, n: a.n, transB: !!a.transB, wasm: SIMD_BYTES };
       if (a.bId != null) {
         msg.bKey = a.bId;
         if (!slot.bKeys.has(a.bId)) { msg.B = a.B; slot.bKeys.add(a.bId); if (slot.bKeys.size > 4) slot.bKeys.delete(slot.bKeys.values().next().value); }
@@ -211,7 +223,7 @@ function createCpuShare(o) {
   async function runCpuOnly(A, B, m, k, n, ro) {
     const r = ro || {};
     const transB = !!r.transB;
-    const mainRun = (why, fallback) => ({ shared: true, y: cpuRowsRef(A, B, m, k, n, transB), info: { mode: 'cpu-main', workers: 0, why, fallback } });
+    const mainRun = (why, fallback) => ({ shared: true, y: cpuKernel(A, B, m, k, n, transB), info: { mode: 'cpu-main', workers: 0, why, fallback } });
     if (want <= 0) return mainRun('off');
     ensurePool();
     if (broken || !pool.length) return mainRun(broken || 'no-worker');

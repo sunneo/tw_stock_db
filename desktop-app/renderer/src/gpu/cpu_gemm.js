@@ -151,4 +151,48 @@ function gemmPackedSimd(A, B, m, k, n, opts) {
   return C;
 }
 
-module.exports = { gemmPacked, gemmPackedSimd, simdSupported, gemmNaive, packA, packB, MR, NR, DEF_MC, DEF_KC, DEF_NC };
+// 原地轉置（只在 opts.inplace === true 時使用；預設絕不改動呼叫端輸入）。
+// X 是 rows×cols 的行主序陣列；轉置後 X 變成 cols×rows 的行主序（同一塊記憶體）。
+// 方陣：兩兩交換（對稱位置），不需額外記憶體。非方陣：循環跟隨（元素 i 去 i·rows mod (N−1)），
+// 用位元組陣列記錄已搬過的位置，額外記憶體約 N/8 位元組（N = rows·cols），時間 O(N)。
+function transposeInPlace(X, rows, cols) {
+  if (X.length < rows * cols) throw new Error('transposeInPlace：陣列長度不足');
+  if (rows === cols) {
+    for (let i = 0; i < rows; i++) for (let j = i + 1; j < cols; j++) {
+      const t = X[i * cols + j]; X[i * cols + j] = X[j * cols + i]; X[j * cols + i] = t;
+    }
+    return X;
+  }
+  const N = rows * cols;
+  if (N <= 1) return X;
+  const seen = new Uint8Array(Math.ceil(N / 8));
+  const mark = (p) => { seen[p >> 3] |= (1 << (p & 7)); };
+  const isMarked = (p) => (seen[p >> 3] & (1 << (p & 7))) !== 0;
+  for (let start = 1; start < N - 1; start++) {
+    if (isMarked(start)) continue;
+    let cur = start, carry = X[start];
+    do {
+      const next = (cur * rows) % (N - 1);
+      const tmp = X[next]; X[next] = carry; carry = tmp;
+      mark(cur);
+      cur = next;
+    } while (cur !== start);
+    mark(start);
+  }
+  return X;
+}
+
+// 含 inplace 選項的 GEMM：inplace 為 true 且 transA／transB 時，先在呼叫端的陣列上原地轉置，再用不轉置的核心算。
+// 注意：這會「改動」呼叫端的 A／B（轉置後的內容），呼叫端必須接受這點；預設（沒給 inplace）完全不改動輸入，走打包時轉置。
+function gemmWithOptions(A, B, m, k, n, opts) {
+  const o = opts || {};
+  if (o.inplace === true) {
+    let Aw = A, Bw = B, tA = !!o.transA, tB = !!o.transB;
+    if (tA) { transposeInPlace(A, k, m); tA = false; }   // A 以 k×m 儲存 → 轉成 m×k
+    if (tB) { transposeInPlace(B, n, k); tB = false; }   // B 以 n×k 儲存 → 轉成 k×n
+    return gemmPacked(Aw, Bw, m, k, n, Object.assign({}, o, { transA: tA, transB: tB, inplace: false }));
+  }
+  return gemmPacked(A, B, m, k, n, o);
+}
+
+module.exports = { gemmPacked, gemmPackedSimd, simdSupported, gemmNaive, packA, packB, transposeInPlace, gemmWithOptions, MR, NR, DEF_MC, DEF_KC, DEF_NC };

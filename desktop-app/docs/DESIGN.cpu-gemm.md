@@ -52,3 +52,57 @@
 - `renderer/src/gpu/cpu_gemm_wasm.js`：wasm 二進位組裝、simdSupported、getKernel
 - `renderer/src/gpu/cpu_gemm_test.js`：81 項交叉驗證
 - `renderer/src/gpu/cpu_gemm_bench.js`：單執行緒基準
+
+---
+
+## 第二批（多核、變體競賽、接線、原地轉置、卸載交界點）
+
+### 多核（cpu_gemm_rows.js）
+- 沿 M 方向切成列區塊（每段列數為 MR 的倍數），每個工作者算自己的列區塊。
+- 工作者內的核心 `gemmRowsSimdKernel` 自給自足（沒有外部參照），所以 `toString()` 可以放進 Blob Worker，與 cpu_share 的做法一致。
+- 零複製：`SharedArrayBuffer` 可用時，A、B 複製一次進 SAB（這是唯一的複製），C 直接寫進共享的 SAB，不用回傳。SAB 不可用（瀏覽器未跨來源隔離）時退回 postMessage 拷貝。
+- 工作者池是持久的，只建立一次；量測的是計算時間，不含啟動。
+
+實測（node，1024³，4 邏輯核心 i5-2320，計算時間）：
+
+| 工作者 | GFLOP/s | 加速比 |
+|---|---|---|
+| 1 | 6.56 | 1.00× |
+| 2 | 11.5 | 1.75× |
+| 4（第一次） | 17.7 | 2.7× |
+| 4（第二次、第三次） | 8.1–8.6 | 1.25× |
+
+4 工作者的結果不穩定（兩種模式），原因未查明。懷疑是背景負載使部分工作者拿不到實體核心，但沒有證實。這點必須在真機上再看，不能拿這個數字當穩定的加速比。
+
+### 變體競賽（cpu_gemm_race.js）
+- 候選 5 個：SIMD 四種分塊（MC/KC/NC）與純 JS 預設。微核心大小**未納入**，因為 SIMD 微核心只組了 4×8 一種。
+- 每個變體取兩次最小值。勝者需比預設快 **5% 以上**（低於此視為量測雜訊），否則維持預設。非勝者標「有好處」（快 5% 以上但不是最快）或「沒有好處」。
+- 鍵：`gemm-race|cores=<核心數>|browser=<瀏覽器名稱＋主版本>`，版本變了就重新競賽。
+- 保存與讀回走注入的後端（`{get,set}`，可接 hetero_rates_idb 的後端）。失敗不拋錯，退回預設。
+- 實測（node，1024³）：最快的 simd-96-384-512 只快 2.2%，低於門檻，所以維持預設 simd-96-256-512。SIMD 四種分塊之間**沒有可量測的好處**。純 JS 比 SIMD 慢約 14 倍，標「沒有好處」。
+
+### 接線（cpu_share.js、mm_ops.js）
+- `cpu_share` 的主執行緒路徑（`runCpuOnly`，cores=0）改用 `cpuKernel`：支援 SIMD 就用 `gemmPackedSimd`，否則退回 `cpuRowsRef`。
+- Worker 原始碼改為包含 `gemmRowsSimdKernel`；每則訊息帶 wasm 位元組，Worker 有位元組就跑 SIMD，沒有就跑舊的 `cpuRowsRef`。
+- `mm_ops` 的純 CPU 池路徑呼叫 `runCpuOnly`，所以自動使用新核心，`mm_ops.js` 不需要改。
+- **Profile 的 CPU 量測**：`floating-assistant.js` 的 `_gpuProfileRun` 第 3 步呼叫 `sh.runCpuOnly`，所以 Profile 現在量的是**新核心**。舊核心的 0.46 GFLOP/s 結論已經失效，要重新量。
+- 嵌入：`scripts/embed-code-ui.js` 加入 `cpu_gemm`、`cpu_gemm_wasm`、`cpu_gemm_rows`。
+- 測試 `cpu_share_simd_test.js`：真的執行 `workerSource()` 產生的 Worker 原始碼（vm 沙箱），SIMD 與轉置 B 都與參考一致；沒有 wasm 時退回舊核心也正確。
+
+### 原地轉置與轉置旗標（cpu_gemm.js）
+- 預設：完全不改輸入。轉置旗標（transA、transB）在打包時處理，不整個矩陣轉置。
+- `inplace: true`：才原地轉置呼叫端的陣列，然後用不轉置的核心算。這是**有記錄的副作用**，呼叫端的 A 或 B 會變成轉置後的內容。
+- `transposeInPlace`：方陣兩兩交換（不需額外記憶體）；非方陣用循環跟隨，已搬位置以位元組陣列（約 N/8 位元組）記錄，時間 O(N)。
+
+### 卸載交界點（cpu_gemm_offload.js，純函式）
+- `offloadDecision({m,k,n,gpuReady,crossoverFlops})`：運算量 2·m·k·n 小於交界點走 CPU，否則走 GPU。
+- 交界點來自 Profile 的實測（`faProfilePlan` 的 `crossoverFlops`）。沒有實測值時回到**維持 GPU**，不自己編門檻。
+- 特殊值：`Infinity` 全走 CPU；0 或負數永遠走 GPU。
+
+### 尚未做
+1. 真機純 CPU 量測（只一次）：還沒跑。要在 Profile 或真實應用程式中跑，不能只靠 node。
+2. 真機 GPU＋CPU 分攤量測（只一次）：還沒跑。
+3. 變體競賽的勝者目前**沒有接進 cpu_share 的執行**：`cpu_share` 固定用預設分塊（96/256/512）。讀取保存的勝者並套用，還沒做。
+4. 微核心大小的變體：需要組第二個 wasm 微核心（例如 8×8），還沒做。
+5. 瀏覽器內的 IndexedDB 保存與讀回：只在 node 用記憶體後端測過，沒有在瀏覽器驗證。
+6. SAB 在瀏覽器是否可用（跨來源隔離）：未驗證。目前應用程式大概率走拷貝路徑。

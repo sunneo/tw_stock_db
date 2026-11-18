@@ -10,7 +10,7 @@ function sleb(n) {
   while (more) { let b = n & 0x7f; n >>= 7; if ((n === 0 && !(b & 0x40)) || (n === -1 && (b & 0x40))) more = false; else b |= 0x80; out.push(b); }
   return out;
 }
-function str(s) { const b = Array.from(Buffer.from(s, 'utf8')); return uleb(b.length).concat(b); }
+function str(s) { const b = Array.from(new TextEncoder().encode(s)); return uleb(b.length).concat(b); }   // 瀏覽器沒有 Buffer，用 TextEncoder
 function section(id, bytes) { return [id].concat(uleb(bytes.length), bytes); }
 const memarg = (off) => [0x00].concat(uleb(off)); // align 提示 0（一定合法），offset
 
