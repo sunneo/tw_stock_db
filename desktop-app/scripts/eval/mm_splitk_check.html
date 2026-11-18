@@ -1,0 +1,115 @@
+<!doctype html><meta charset="utf-8"><title>mm splitk check</title>
+<body style="font:13px monospace;white-space:pre">
+<script>
+// R3 split-K（mm_splitk.js）對拍與同機純核心計時（真 Chrome、真 WebGPU）。
+// 正確性：每個 S 對 mm_ops.matmulRef 相對誤差 ≤ 1e-5。
+// 計時：純核心，同一 pass 內連續 20 次（部分和＋歸約為一組），onSubmittedWorkDone 後量牆鐘，5 次中位數除以 20（不含上傳與讀回）。
+// 對照：mm_ops 的 simple、vec4（K、N 為 4 的倍數）、subgroup（M=1 時）。只標這台（intel xe-lpg）。
+// 用法：desktop-app 資料夾 python -X utf8 -m http.server 8765 --bind 127.0.0.1，開 http://127.0.0.1:8765/scripts/eval/mm_splitk_check.html?v=1 ；結果在 window.__out。
+const mods = {};
+const loadMod = async (key, url) => {
+  const src = await (await fetch(url, { cache: 'no-store' })).text();
+  const m = { exports: {} }; mods[key] = m;
+  new Function('module', 'exports', 'require', src)(m, m.exports, (p) => { const k = p.replace(/^\.\//, '').replace(/\.js$/, ''); if (!mods[k]) throw new Error('missing ' + k); return mods[k].exports; });
+};
+const relErr = (x, y) => { let mx = 0, sc = 1e-9; for (let i = 0; i < x.length; i++) { mx = Math.max(mx, Math.abs(x[i] - y[i])); sc = Math.max(sc, Math.abs(y[i])); } return mx / sc; };
+(async () => {
+  const out = { adapter: null, correct: [], kernel: [], allPass: false, error: null, done: false };
+  try {
+    await loadMod('gpu_core', '../../renderer/src/gpu/gpu_core.js');
+    await loadMod('gpu_pool', '../../renderer/src/gpu/gpu_pool.js');
+    await loadMod('nn_ops', '../../renderer/src/gpu/nn_ops.js');
+    await loadMod('kernel_select', '../../renderer/src/gpu/kernel_select.js');
+    await loadMod('mm_ops', '../../renderer/src/gpu/mm_ops.js');
+    await loadMod('mm_subgroup', '../../renderer/src/gpu/mm_subgroup.js');
+    await loadMod('mm_splitk', '../../renderer/src/gpu/mm_splitk.js');
+    const MM = mods.mm_ops.exports, SG = mods.mm_subgroup.exports, SK = mods.mm_splitk.exports;
+    const adapter = navigator.gpu && await navigator.gpu.requestAdapter();
+    if (!adapter) throw new Error('沒有 WebGPU 介面卡');
+    out.adapter = { arch: adapter.info && adapter.info.architecture, subgroups: adapter.features.has('subgroups'), f16: adapter.features.has('shader-f16') };
+    const reqF = adapter.features.has('subgroups') ? ['subgroups'] : [];
+    const dev = await adapter.requestDevice({ requiredFeatures: reqF, requiredLimits: { maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize, maxBufferSize: adapter.limits.maxBufferSize } });
+    const U = { STORAGE: 0x0080, COPY_SRC: 0x0004, COPY_DST: 0x0008, UNIFORM: 0x0040, MAP_READ: 0x0001 };
+    const buf = (size, u) => dev.createBuffer({ size: Math.max(16, size), usage: u });
+    // 一個「組」：[{ code, dispatch, binds }]。binds 對應 @binding 的 buffer 清單；這裡為每個組建立 pipeline 與 bind group
+    const makeStep = async (code, bufsForBinding, dispatch) => {
+      const pipe = await dev.createComputePipelineAsync({ layout: 'auto', compute: { module: dev.createShaderModule({ code }), entryPoint: 'main' } });
+      const bg = dev.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries: bufsForBinding.map((b, i) => ({ binding: i, resource: { buffer: b } })) });
+      return { pipe, bg, dispatch: typeof dispatch === 'number' ? [dispatch] : dispatch };   // 1D 派發可能是數字
+    };
+    const encodeSteps = (steps, reps) => {
+      const enc = dev.createCommandEncoder(); const pass = enc.beginComputePass();
+      for (let r = 0; r < reps; r++) for (const st of steps) { pass.setPipeline(st.pipe); pass.setBindGroup(0, st.bg); pass.dispatchWorkgroups(st.dispatch[0], st.dispatch[1] || 1, st.dispatch[2] || 1); }
+      pass.end(); dev.queue.submit([enc.finish()]);
+    };
+    const timeSteps = async (steps) => {
+      const once = async () => { const t0 = performance.now(); encodeSteps(steps, 20); await dev.queue.onSubmittedWorkDone(); return (performance.now() - t0) / 20; };
+      await once(); const ts = []; for (let i = 0; i < 5; i++) ts.push(await once()); ts.sort((p, q) => p - q); return Math.round(ts[2] * 1000) / 1000;
+    };
+    // 實際計算（正確性）：回傳 Float32Array
+    const runSplitK = async (A, B, M, K, N, S) => {
+      const aB = buf(A.byteLength, U.STORAGE | U.COPY_DST); dev.queue.writeBuffer(aB, 0, A);
+      const bB = buf(B.byteLength, U.STORAGE | U.COPY_DST); dev.queue.writeBuffer(bB, 0, B);
+      const pB = buf(S * M * N * 4, U.STORAGE);
+      const yB = buf(M * N * 4, U.STORAGE | U.COPY_SRC);
+      const uP = buf(16, U.UNIFORM | U.COPY_DST); dev.queue.writeBuffer(uP, 0, new Uint32Array([M, K, N, S]));
+      const rB = buf(M * N * 4, U.MAP_READ | U.COPY_DST);
+      const s1 = await makeStep(SK.WGSL_SPLITK_PARTIAL, [aB, bB, pB, uP], SK.dispatchPartial(M, N, S));
+      const s2 = await makeStep(SK.WGSL_SPLITK_REDUCE, [pB, yB, uP], SK.dispatchReduce(M, N));
+      const enc = dev.createCommandEncoder(); let pass = enc.beginComputePass();
+      pass.setPipeline(s1.pipe); pass.setBindGroup(0, s1.bg); pass.dispatchWorkgroups(...s1.dispatch); pass.end();
+      pass = enc.beginComputePass(); pass.setPipeline(s2.pipe); pass.setBindGroup(0, s2.bg); pass.dispatchWorkgroups(...s2.dispatch); pass.end();
+      enc.copyBufferToBuffer(yB, 0, rB, 0, M * N * 4); dev.queue.submit([enc.finish()]);
+      await rB.mapAsync(1); const y = new Float32Array(rB.getMappedRange().slice(0)); rB.unmap();
+      [aB, bB, pB, yB, uP, rB].forEach((b) => b.destroy());
+      return y;
+    };
+    // 純核心計時（buffers 與 pipeline 先建好）
+    const kernelSplitK = async (A, B, M, K, N, S) => {
+      const aB = buf(A.byteLength, U.STORAGE | U.COPY_DST); dev.queue.writeBuffer(aB, 0, A);
+      const bB = buf(B.byteLength, U.STORAGE | U.COPY_DST); dev.queue.writeBuffer(bB, 0, B);
+      const pB = buf(S * M * N * 4, U.STORAGE); const yB = buf(M * N * 4, U.STORAGE);
+      const uP = buf(16, U.UNIFORM | U.COPY_DST); dev.queue.writeBuffer(uP, 0, new Uint32Array([M, K, N, S]));
+      const s1 = await makeStep(SK.WGSL_SPLITK_PARTIAL, [aB, bB, pB, uP], SK.dispatchPartial(M, N, S));
+      const s2 = await makeStep(SK.WGSL_SPLITK_REDUCE, [pB, yB, uP], SK.dispatchReduce(M, N));
+      const t = await timeSteps([s1, s2]);
+      [aB, bB, pB, yB, uP].forEach((b) => b.destroy());
+      return t;
+    };
+    const kernelOther = async (code, dispatch, A, B, M, K, N) => {
+      const aB = buf(A.byteLength, U.STORAGE | U.COPY_DST); dev.queue.writeBuffer(aB, 0, A);
+      const bB = buf(B.byteLength, U.STORAGE | U.COPY_DST); dev.queue.writeBuffer(bB, 0, B);
+      const yB = buf(M * N * 4, U.STORAGE);
+      const uP = buf(32, U.UNIFORM | U.COPY_DST); dev.queue.writeBuffer(uP, 0, new Int32Array([1, M, K, N, 0, 0, 0, 0]));
+      const st = await makeStep(code, [aB, bB, yB, uP], dispatch);
+      const t = await timeSteps([st]);
+      [aB, bB, yB, uP].forEach((b) => b.destroy());
+      return t;
+    };
+    let seed = 23; const rnd = () => { seed = (Math.imul(seed, 1664525) + 1013904223) | 0; return (seed >>> 0) / 4294967296 - 0.5; };
+    // 正確性
+    for (const [M, K, N] of [[1, 4096, 1024], [1, 1024, 3072], [8, 4096, 1024], [4, 1000, 132]]) {
+      const A = Float32Array.from({ length: M * K }, rnd), B = Float32Array.from({ length: K * N }, rnd);
+      const ref = MM.matmulRef(A, [M, K], B, [K, N]).y;
+      for (const S of [1, 2, 4, 8, 16]) {
+        const y = await runSplitK(A, B, M, K, N, S);
+        out.correct.push({ shape: M + 'x' + K + 'x' + N, S, relErr: relErr(y, ref), pass: relErr(y, ref) <= 1e-5 });
+      }
+    }
+    // 計時（純核心，每次派發，20 次中位數）
+    out.kernel = [];
+    for (const [M, K, N] of [[1, 1024, 1024], [1, 4096, 1024], [1, 1024, 3072], [1, 8192, 1024], [8, 4096, 1024]]) {
+      const A = Float32Array.from({ length: M * K }, rnd), B = Float32Array.from({ length: K * N }, rnd);
+      const row = { shape: M + 'x' + K + 'x' + N };
+      row.splitK_ms = {};
+      for (const S of [1, 2, 4, 8, 16]) row.splitK_ms['S' + S] = await kernelSplitK(A, B, M, K, N, S);
+      row.simple_ms = await kernelOther(MM.WGSL_MM_F32, [Math.ceil(M * N / 64)], A, B, M, K, N);
+      if (N % 4 === 0 && K % 4 === 0) row.vec4_ms = await kernelOther(MM.WGSL_MM_F32_VEC4, [Math.ceil(N / 64), Math.ceil(M / 64), 1], A, B, M, K, N);
+      if (M === 1 && adapter.features.has('subgroups')) row.subgroup_ms = await kernelOther(SG.WGSL_MM_SUBGROUP, SG.dispatchFor(M, N, 4096), A, B, M, K, N);
+      out.kernel.push(row);
+    }
+    out.allPass = out.correct.every((c) => c.pass);
+  } catch (e) { out.error = String((e && e.stack) || e).slice(0, 800); }
+  out.done = true; window.__out = out; document.body.textContent = JSON.stringify(out, null, 1); document.title = 'done';
+})();
+</script>

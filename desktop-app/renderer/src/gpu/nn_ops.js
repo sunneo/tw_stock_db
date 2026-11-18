@@ -176,7 +176,10 @@ function getDevice(nav) {
         // 只有介面卡真的有 shader-f16 才要求這個功能（沒有就不要求，f16 核心不會被選到）
         const feats = pa.adapter.features;
         const wantF16 = !!(feats && (typeof feats.has === 'function' ? feats.has('shader-f16') : false));
-        const dev = await pa.adapter.requestDevice(wantF16 ? { requiredFeatures: ['shader-f16'] } : undefined);
+        // subgroups 同理：有才要求（子群組核心 mm_subgroup 需要；沒有時 kernel_select 不會選它）
+        const wantSg = !!(feats && typeof feats.has === 'function' && feats.has('subgroups'));
+        const reqF = [].concat(wantF16 ? ['shader-f16'] : [], wantSg ? ['subgroups'] : []);
+        const dev = await pa.adapter.requestDevice(reqF.length ? { requiredFeatures: reqF } : undefined);
         try { dev.lost.then((i) => console.warn('[gpu] 裝置遺失（' + i.reason + '）：' + String(i.message).slice(0, 200) + '；最近的 GPU 工作：' + (globalThis.__faGpuLast || '未知'))); } catch (_) { /* 診斷用，失敗不影響 */ }
         return { dev: dev, reason: null };
       } catch (e) { return { dev: null, reason: 'WebGPU 初始化失敗：' + String((e && e.message) || e) }; }

@@ -1,0 +1,108 @@
+<!doctype html><meta charset="utf-8"><title>mm tex check</title>
+<body style="font:13px monospace;white-space:pre">
+<script>
+// O1m (b)：B 放 rgba32float 貼圖（對照 storage）。M=1 矩陣乘（y[n] = Σ_k a[k]·B[k][n]），真 Chrome、真 WebGPU。
+// 貼圖讀取用 textureLoad（不取樣），綁定為 unfilterable-float；storage 版本是同一個算式、B 放 storage。
+// 判準：兩版輸出逐位相同；對 CPU 參考相對誤差 ≤ 1e-5。
+// 計時：純核心，同一 pass 內連續 20 次，onSubmittedWorkDone 後量牆鐘，5 次中位數除以 20。只標 intel xe-lpg。
+// 用法：desktop-app 資料夾 python -X utf8 -m http.server 8765 --bind 127.0.0.1，開 http://127.0.0.1:8765/scripts/eval/mm_tex_check.html?v=1 ；結果在 window.__out。
+const mods = {};
+const loadMod = async (key, url) => {
+  const src = await (await fetch(url, { cache: 'no-store' })).text();
+  const m = { exports: {} }; mods[key] = m;
+  new Function('module', 'exports', 'require', src)(m, m.exports, (p) => { const k = p.replace(/^\.\//, '').replace(/\.js$/, ''); if (!mods[k]) throw new Error('missing ' + k); return mods[k].exports; });
+};
+const relErr = (x, y) => { let mx = 0, sc = 1e-9; for (let i = 0; i < x.length; i++) { mx = Math.max(mx, Math.abs(x[i] - y[i])); sc = Math.max(sc, Math.abs(y[i])); } return mx / sc; };
+const same = (x, y) => { if (x.length !== y.length) return false; for (let i = 0; i < x.length; i++) if (!Object.is(x[i], y[i])) return false; return true; };
+(async () => {
+  const out = { adapter: null, shapes: {}, allPass: false, error: null, done: false };
+  try {
+    await loadMod('o1m_tex', '../../renderer/src/gpu/o1m_tex.js');
+    const TX = mods.o1m_tex.exports;
+    const adapter = navigator.gpu && await navigator.gpu.requestAdapter();
+    if (!adapter) throw new Error('沒有 WebGPU 介面卡');
+    out.adapter = { arch: adapter.info && adapter.info.architecture, f16: adapter.features.has('shader-f16') };
+    const dev = await adapter.requestDevice({ requiredLimits: { maxBufferSize: adapter.limits.maxBufferSize, maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize } });
+    const U = { STORAGE: 0x0080, COPY_SRC: 0x0004, COPY_DST: 0x0008, UNIFORM: 0x0040, MAP_READ: 0x0001, TEXTURE_BINDING: 0x0004 | 0x0010 };
+    const buf = (size, u) => dev.createBuffer({ size: Math.max(16, size), usage: u });
+    // 儲存版（B 在 storage）
+    const codeStorage = `
+struct P { K: u32, N: u32 }
+@group(0) @binding(0) var<storage, read> a: array<f32>;
+@group(0) @binding(1) var<storage, read> b: array<f32>;
+@group(0) @binding(2) var<storage, read_write> y: array<f32>;
+@group(0) @binding(3) var<uniform> p: P;
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let n = gid.x; if (n >= p.N) { return; }
+  var acc: f32 = 0.0;
+  for (var k: u32 = 0u; k < p.K; k = k + 1u) { acc = acc + a[k] * b[k * p.N + n]; }
+  y[n] = acc;
+}`;
+    // 貼圖版（B 在 rgba32float 貼圖，textureLoad）
+    const codeTex = `
+struct P { K: u32, N: u32 }
+@group(0) @binding(0) var<storage, read> a: array<f32>;
+@group(0) @binding(1) var bt: texture_2d<f32>;
+@group(0) @binding(2) var<storage, read_write> y: array<f32>;
+@group(0) @binding(3) var<uniform> p: P;
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let n = gid.x; if (n >= p.N) { return; }
+  var acc: f32 = 0.0;
+  let xq = i32(n / 4u); let c = n % 4u;
+  for (var k: u32 = 0u; k < p.K; k = k + 1u) { acc = acc + a[k] * textureLoad(bt, vec2<i32>(xq, i32(k)), 0)[c]; }
+  y[n] = acc;
+}`;
+    const pipeStorage = await dev.createComputePipelineAsync({ layout: 'auto', compute: { module: dev.createShaderModule({ code: codeStorage }), entryPoint: 'main' } });
+    // 貼圖版需要明確的綁定佈局（rgba32float 不可濾波：sampleType unfilterable-float）
+    const bgl = dev.createBindGroupLayout({ entries: [
+      { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+      { binding: 1, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float', viewDimension: '2d' } },
+      { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+      { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
+    ] });
+    const pipeTex = await dev.createComputePipelineAsync({ layout: dev.createPipelineLayout({ bindGroupLayouts: [bgl] }), compute: { module: dev.createShaderModule({ code: codeTex }), entryPoint: 'main' } });
+    const runOnce = async (kind, A, B, K, N, timed) => {
+      const aB = buf(A.byteLength, U.STORAGE | U.COPY_DST); dev.queue.writeBuffer(aB, 0, A);
+      const yB = buf(N * 4, U.STORAGE | U.COPY_SRC);
+      const pB = buf(8, U.UNIFORM | U.COPY_DST); dev.queue.writeBuffer(pB, 0, new Uint32Array([K, N]));
+      let bg, pipe, extra = [];
+      if (kind === 'storage') {
+        const bB = buf(B.byteLength, U.STORAGE | U.COPY_DST); dev.queue.writeBuffer(bB, 0, B); extra.push(bB);
+        pipe = pipeStorage;
+        bg = dev.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries: [aB, bB, yB, pB].map((b, i) => ({ binding: i, resource: { buffer: b } })) });
+      } else {
+        const packed = TX.packRgba(B, K, N);
+        const tex = dev.createTexture({ size: [packed.width, packed.height, 1], format: 'rgba32float', usage: 0x02 | 0x04 /* COPY_DST | TEXTURE_BINDING（貼圖用量旗標，與緩衝區不同） */ });
+        dev.queue.writeTexture({ texture: tex }, packed.data, { bytesPerRow: packed.width * 16, rowsPerImage: packed.height }, { width: packed.width, height: packed.height, depthOrArrayLayers: 1 });
+        extra.push(tex);
+        pipe = pipeTex;
+        bg = dev.createBindGroup({ layout: bgl, entries: [{ binding: 0, resource: { buffer: aB } }, { binding: 1, resource: tex.createView() }, { binding: 2, resource: { buffer: yB } }, { binding: 3, resource: { buffer: pB } }] });
+      }
+      const dispatch = Math.ceil(N / 64);
+      if (timed) {
+        const once = async () => { const t0 = performance.now(); const enc = dev.createCommandEncoder(); const pass = enc.beginComputePass(); pass.setPipeline(pipe); pass.setBindGroup(0, bg); for (let r = 0; r < 20; r++) pass.dispatchWorkgroups(dispatch); pass.end(); dev.queue.submit([enc.finish()]); await dev.queue.onSubmittedWorkDone(); return (performance.now() - t0) / 20; };
+        await once(); const ts = []; for (let i = 0; i < 5; i++) ts.push(await once()); ts.sort((p, q) => p - q);
+        [aB, yB, pB, ...extra].forEach((b) => b.destroy());
+        return Math.round(ts[2] * 1000) / 1000;
+      }
+      const rB = buf(N * 4, U.MAP_READ | U.COPY_DST);
+      const enc = dev.createCommandEncoder(); const pass = enc.beginComputePass(); pass.setPipeline(pipe); pass.setBindGroup(0, bg); pass.dispatchWorkgroups(dispatch); pass.end();
+      enc.copyBufferToBuffer(yB, 0, rB, 0, N * 4); dev.queue.submit([enc.finish()]);
+      await rB.mapAsync(1); const y = new Float32Array(rB.getMappedRange().slice(0)); rB.unmap();
+      [aB, yB, pB, rB, ...extra].forEach((b) => b.destroy());
+      return y;
+    };
+    let seed = 53; const rnd = () => { seed = (Math.imul(seed, 1664525) + 1013904223) | 0; return (seed >>> 0) / 4294967296 - 0.5; };
+    for (const [K, N] of [[1024, 1024], [1024, 3072], [4096, 1024]]) {
+      const A = Float32Array.from({ length: K }, rnd), B = Float32Array.from({ length: K * N }, rnd);
+      const ref = new Float32Array(N); for (let n = 0; n < N; n++) { let s = 0; for (let k = 0; k < K; k++) s += A[k] * B[k * N + n]; ref[n] = s; }
+      const ys = await runOnce('storage', A, B, K, N, false), yt = await runOnce('tex', A, B, K, N, false);
+      out.shapes['1x' + K + 'x' + N] = { texVsStorageBitEqual: same(ys, yt), relErrStorage: relErr(ys, ref), relErrTex: relErr(yt, ref), storage_ms: await runOnce('storage', A, B, K, N, true), tex_ms: await runOnce('tex', A, B, K, N, true) };
+    }
+    out.allPass = Object.values(out.shapes).every((r) => r.relErrTex <= 1e-5);
+  } catch (e) { out.error = String((e && e.stack) || e).slice(0, 800); }
+  out.done = true; window.__out = out; document.body.textContent = JSON.stringify(out, null, 1); document.title = 'done';
+})();
+</script>

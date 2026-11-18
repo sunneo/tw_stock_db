@@ -1,0 +1,143 @@
+<!doctype html><meta charset="utf-8"><title>o1m uniform check</title>
+<body style="font:13px monospace;white-space:pre">
+<script>
+// O1m (c)：rope 表與偏置放 uniform（對照 storage）。真 Chrome、真 WebGPU。
+// (1) 偏置：M=1 矩陣乘＋偏置（逐元素相加）。偏置在 storage 或 uniform（vec4 陣列）。
+// (2) rope：T 個位置、每列 hd 維、H 個頭的 half 型 RoPE。cos／sin 表在 storage 或 uniform。
+// 判準：storage 與 uniform 兩個版本的輸出逐位相同（同樣的算式）；對 CPU 參考相對誤差 ≤ 1e-5。
+// 計時：純核心，同一 pass 內連續 20 次，onSubmittedWorkDone 後量牆鐘，5 次中位數除以 20。只標 intel xe-lpg。
+// 用法：desktop-app 資料夾 python -X utf8 -m http.server 8765 --bind 127.0.0.1，開 http://127.0.0.1:8765/scripts/eval/o1m_uniform_check.html?v=1 ；結果在 window.__out。
+const mods = {};
+const loadMod = async (key, url) => {
+  const src = await (await fetch(url, { cache: 'no-store' })).text();
+  const m = { exports: {} }; mods[key] = m;
+  new Function('module', 'exports', 'require', src)(m, m.exports, (p) => { const k = p.replace(/^\.\//, '').replace(/\.js$/, ''); if (!mods[k]) throw new Error('missing ' + k); return mods[k].exports; });
+};
+const relErr = (x, y) => { let mx = 0, sc = 1e-9; for (let i = 0; i < x.length; i++) { mx = Math.max(mx, Math.abs(x[i] - y[i])); sc = Math.max(sc, Math.abs(y[i])); } return mx / sc; };
+const same = (x, y) => { if (x.length !== y.length) return false; for (let i = 0; i < x.length; i++) if (!Object.is(x[i], y[i])) return false; return true; };
+(async () => {
+  const out = { adapter: null, bias: {}, rope: {}, allPass: false, error: null, done: false };
+  try {
+    await loadMod('o1m_uniform', '../../renderer/src/gpu/o1m_uniform.js');
+    const UN = mods.o1m_uniform.exports;
+    const adapter = navigator.gpu && await navigator.gpu.requestAdapter();
+    if (!adapter) throw new Error('沒有 WebGPU 介面卡');
+    out.adapter = { arch: adapter.info && adapter.info.architecture, maxUniform: adapter.limits.maxUniformBufferBindingSize };
+    const dev = await adapter.requestDevice({ requiredLimits: { maxUniformBufferBindingSize: adapter.limits.maxUniformBufferBindingSize, maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize, maxBufferSize: adapter.limits.maxBufferSize } });
+    const U = { STORAGE: 0x0080, COPY_SRC: 0x0004, COPY_DST: 0x0008, UNIFORM: 0x0040, MAP_READ: 0x0001 };
+    const buf = (size, u) => dev.createBuffer({ size: Math.max(16, size), usage: u });
+    const mkPipe = async (code) => dev.createComputePipelineAsync({ layout: 'auto', compute: { module: dev.createShaderModule({ code }), entryPoint: 'main' } });
+    // ---- (1) 偏置 ----
+    const biasCode = (uniformBias, N) => `
+struct P { K: u32, N: u32 }
+@group(0) @binding(0) var<storage, read> a: array<f32>;
+@group(0) @binding(1) var<storage, read> b: array<f32>;
+@group(0) @binding(2) var<storage, read_write> y: array<f32>;
+${uniformBias ? `@group(0) @binding(3) var<uniform> bias: array<vec4<f32>, ${N / 4}>;` : `@group(0) @binding(3) var<storage, read> bias: array<f32>;`}
+@group(0) @binding(4) var<uniform> p: P;
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let n = gid.x;
+  if (n >= p.N) { return; }
+  var acc: f32 = 0.0;
+  for (var k: u32 = 0u; k < p.K; k = k + 1u) { acc = acc + a[k] * b[k * p.N + n]; }
+  ${uniformBias ? 'y[n] = acc + bias[n / 4u][n % 4u];' : 'y[n] = acc + bias[n];'}
+}`;
+    const runBias = async (uniformBias, A, B, bias, K, N, timed) => {
+      const pipe = await mkPipe(biasCode(uniformBias, N));
+      const aB = buf(A.byteLength, U.STORAGE | U.COPY_DST); dev.queue.writeBuffer(aB, 0, A);
+      const bB = buf(B.byteLength, U.STORAGE | U.COPY_DST); dev.queue.writeBuffer(bB, 0, B);
+      const yB = buf(N * 4, U.STORAGE | U.COPY_SRC);
+      const biasB = uniformBias ? buf(UN.packVec4(bias).byteLength, U.UNIFORM | U.COPY_DST) : buf(bias.byteLength, U.STORAGE | U.COPY_DST);
+      dev.queue.writeBuffer(biasB, 0, uniformBias ? UN.packVec4(bias) : bias);
+      const pB = buf(8, U.UNIFORM | U.COPY_DST); dev.queue.writeBuffer(pB, 0, new Uint32Array([K, N]));
+      const bg = dev.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries: [aB, bB, yB, biasB, pB].map((b, i) => ({ binding: i, resource: { buffer: b } })) });
+      const dispatch = Math.ceil(N / 64);
+      if (timed) {
+        const once = async () => { const t0 = performance.now(); const enc = dev.createCommandEncoder(); const pass = enc.beginComputePass(); pass.setPipeline(pipe); pass.setBindGroup(0, bg); for (let r = 0; r < 20; r++) pass.dispatchWorkgroups(dispatch); pass.end(); dev.queue.submit([enc.finish()]); await dev.queue.onSubmittedWorkDone(); return (performance.now() - t0) / 20; };
+        await once(); const ts = []; for (let i = 0; i < 5; i++) ts.push(await once()); ts.sort((p, q) => p - q);
+        [aB, bB, yB, biasB, pB].forEach((b) => b.destroy());
+        return Math.round(ts[2] * 1000) / 1000;
+      }
+      const rB = buf(N * 4, U.MAP_READ | U.COPY_DST);
+      const enc = dev.createCommandEncoder(); const pass = enc.beginComputePass(); pass.setPipeline(pipe); pass.setBindGroup(0, bg); pass.dispatchWorkgroups(dispatch); pass.end();
+      enc.copyBufferToBuffer(yB, 0, rB, 0, N * 4); dev.queue.submit([enc.finish()]);
+      await rB.mapAsync(1); const y = new Float32Array(rB.getMappedRange().slice(0)); rB.unmap();
+      [aB, bB, yB, biasB, pB, rB].forEach((b) => b.destroy());
+      return y;
+    };
+    let seed = 41; const rnd = () => { seed = (Math.imul(seed, 1664525) + 1013904223) | 0; return (seed >>> 0) / 4294967296 - 0.5; };
+    for (const [K, N] of [[1024, 1024], [1024, 3072], [4096, 1024]]) {
+      const A = Float32Array.from({ length: K }, rnd), B = Float32Array.from({ length: K * N }, rnd), bias = Float32Array.from({ length: N }, rnd);
+      const ref = new Float32Array(N); for (let n = 0; n < N; n++) { let s = 0; for (let k = 0; k < K; k++) s += A[k] * B[k * N + n]; ref[n] = s + bias[n]; }
+      const ys = await runBias(false, A, B, bias, K, N, false), yu = await runBias(true, A, B, bias, K, N, false);
+      const key = '1x' + K + 'x' + N;
+      out.bias[key] = { storageVsUniformBitEqual: same(ys, yu), relErrStorage: relErr(ys, ref), relErrUniform: relErr(yu, ref), storage_ms: await runBias(false, A, B, bias, K, N, true), uniform_ms: await runBias(true, A, B, bias, K, N, true) };
+    }
+    // ---- (2) rope ----
+    const ropeCode = (uniformTab, T, half) => `
+struct P { H: u32, hd: u32 }
+@group(0) @binding(0) var<storage, read_write> x: array<f32>;
+${uniformTab ? `@group(0) @binding(1) var<uniform> cs: array<vec4<f32>, ${T * half / 4}>;\n@group(0) @binding(2) var<uniform> sn: array<vec4<f32>, ${T * half / 4}>;` : `@group(0) @binding(1) var<storage, read> cs: array<f32>;\n@group(0) @binding(2) var<storage, read> sn: array<f32>;`}
+@group(0) @binding(3) var<uniform> p: P;
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  // 一個執行緒處理一組 (t, h, i)：位置 t 由 gid.y 給，頭 h 與組 i 由 gid.x 拆開
+  let half = p.hd / 2u;
+  let idx = gid.x;
+  let t = gid.y;
+  let total = p.H * half;
+  if (idx >= total) { return; }
+  let h = idx / half;
+  let i = idx % half;
+  let c = ${uniformTab ? `cs[(t * half + i) / 4u][(t * half + i) % 4u]` : `cs[t * half + i]`};
+  let s = ${uniformTab ? `sn[(t * half + i) / 4u][(t * half + i) % 4u]` : `sn[t * half + i]`};
+  let o = (t * p.H + h) * p.hd;
+  let a = x[o + i]; let b = x[o + i + half];
+  x[o + i] = a * c - b * s;
+  x[o + i + half] = a * s + b * c;
+}`;
+    const runRope = async (uniformTab, X, T, H, hd, tab, timed) => {
+      const half = hd / 2;
+      const pipe = await mkPipe(ropeCode(uniformTab, T, half));
+      const xB = buf(X.byteLength, U.STORAGE | U.COPY_DST | U.COPY_SRC); dev.queue.writeBuffer(xB, 0, X);
+      const tabPacked = (f) => UN.packVec4(f);
+      const cB = buf(uniformTab ? tabPacked(tab.cos).byteLength : tab.cos.byteLength, (uniformTab ? U.UNIFORM : U.STORAGE) | U.COPY_DST);
+      const sB = buf(uniformTab ? tabPacked(tab.sin).byteLength : tab.sin.byteLength, (uniformTab ? U.UNIFORM : U.STORAGE) | U.COPY_DST);
+      dev.queue.writeBuffer(cB, 0, uniformTab ? tabPacked(tab.cos) : tab.cos);
+      dev.queue.writeBuffer(sB, 0, uniformTab ? tabPacked(tab.sin) : tab.sin);
+      const pB = buf(8, U.UNIFORM | U.COPY_DST); dev.queue.writeBuffer(pB, 0, new Uint32Array([H, hd]));
+      const bg = dev.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries: [xB, cB, sB, pB].map((b, i) => ({ binding: i, resource: { buffer: b } })) });
+      const groups = [Math.ceil(H * half / 64), T, 1];
+      if (timed) {
+        const once = async () => { const t0 = performance.now(); const enc = dev.createCommandEncoder(); const pass = enc.beginComputePass(); pass.setPipeline(pipe); pass.setBindGroup(0, bg); for (let r = 0; r < 20; r++) pass.dispatchWorkgroups(groups[0], groups[1], 1); pass.end(); dev.queue.submit([enc.finish()]); await dev.queue.onSubmittedWorkDone(); return (performance.now() - t0) / 20; };
+        await once(); const ts = []; for (let i = 0; i < 5; i++) ts.push(await once()); ts.sort((p, q) => p - q);
+        [xB, cB, sB, pB].forEach((b) => b.destroy());
+        return Math.round(ts[2] * 1000) / 1000;
+      }
+      const rB = buf(X.byteLength, U.MAP_READ | U.COPY_DST);
+      const enc = dev.createCommandEncoder(); const pass = enc.beginComputePass(); pass.setPipeline(pipe); pass.setBindGroup(0, bg); pass.dispatchWorkgroups(groups[0], groups[1], 1); pass.end();
+      enc.copyBufferToBuffer(xB, 0, rB, 0, X.byteLength); dev.queue.submit([enc.finish()]);
+      await rB.mapAsync(1); const y = new Float32Array(rB.getMappedRange().slice(0)); rB.unmap();
+      [xB, cB, sB, pB, rB].forEach((b) => b.destroy());
+      return y;
+    };
+    for (const [T, H, hd] of [[32, 16, 64], [8, 4, 128]]) {
+      const X = Float32Array.from({ length: T * H * hd }, rnd);
+      const tab = UN.ropeTable(T, hd, 1000000);
+      // 參考（CPU）
+      const ref = Float32Array.from(X); const half = hd / 2;
+      for (let t = 0; t < T; t++) for (let h = 0; h < H; h++) for (let i = 0; i < half; i++) {
+        const o = (t * H + h) * hd, c = tab.cos[t * half + i], s = tab.sin[t * half + i];
+        const a = X[o + i], b = X[o + i + half];
+        ref[o + i] = a * c - b * s; ref[o + i + half] = a * s + b * c;
+      }
+      const ys = await runRope(false, X, T, H, hd, tab, false), yu = await runRope(true, X, T, H, hd, tab, false);
+      const key = 'T' + T + 'H' + H + 'hd' + hd;
+      out.rope[key] = { storageVsUniformBitEqual: same(ys, yu), relErrStorage: relErr(ys, ref), relErrUniform: relErr(yu, ref), table_bytes: tab.bytes, storage_ms: await runRope(false, X, T, H, hd, tab, true), uniform_ms: await runRope(true, X, T, H, hd, tab, true) };
+    }
+    out.allPass = Object.values(out.bias).concat(Object.values(out.rope)).every((r) => r.storageVsUniformBitEqual && r.relErrUniform <= 1e-5);
+  } catch (e) { out.error = String((e && e.stack) || e).slice(0, 800); }
+  out.done = true; window.__out = out; document.body.textContent = JSON.stringify(out, null, 1); document.title = 'done';
+})();
+</script>

@@ -1,0 +1,106 @@
+<!doctype html><meta charset="utf-8"><title>mm subgroup check</title>
+<body style="font:13px monospace;white-space:pre">
+<script>
+// 子群組矩陣乘（mm_subgroup.js）對拍與同機計時（真 Chrome、真 WebGPU，需要 subgroups）。
+// 正確性：對 mm_ops.matmulRef（CPU，f64 累加後 fround 的參考）相對誤差 ≤ 1e-5（加法順序不同，不要求逐位相同）。
+// 計時：端到端（上傳、派發、讀回）中位數 5 次，第 1 次暖機；同一台，對照 mm_ops 的 simple、vec4（K、N 為 4 的倍數）。只標這台。
+// 用法：desktop-app 資料夾 python -X utf8 -m http.server 8765 --bind 127.0.0.1，開 http://127.0.0.1:8765/scripts/eval/mm_subgroup_check.html?v=1 ；結果在 window.__out。
+const mods = {};
+const loadMod = async (key, url) => {
+  const src = await (await fetch(url, { cache: 'no-store' })).text();
+  const m = { exports: {} }; mods[key] = m;
+  new Function('module', 'exports', 'require', src)(m, m.exports, (p) => { const k = p.replace(/^\.\//, '').replace(/\.js$/, ''); if (!mods[k]) throw new Error('missing ' + k); return mods[k].exports; });
+};
+const relErr = (x, y) => { let mx = 0, sc = 1e-9; for (let i = 0; i < x.length; i++) { mx = Math.max(mx, Math.abs(x[i] - y[i])); sc = Math.max(sc, Math.abs(y[i])); } return mx / sc; };
+(async () => {
+  const out = { adapter: null, correct: [], timing: [], allPass: false, error: null, done: false };
+  try {
+    await loadMod('gpu_core', '../../renderer/src/gpu/gpu_core.js');
+    await loadMod('gpu_pool', '../../renderer/src/gpu/gpu_pool.js');
+    await loadMod('nn_ops', '../../renderer/src/gpu/nn_ops.js');
+    await loadMod('kernel_select', '../../renderer/src/gpu/kernel_select.js');
+    await loadMod('mm_ops', '../../renderer/src/gpu/mm_ops.js');
+    await loadMod('mm_subgroup', '../../renderer/src/gpu/mm_subgroup.js');
+    const MM = mods.mm_ops.exports, SG = mods.mm_subgroup.exports;
+    const adapter = navigator.gpu && await navigator.gpu.requestAdapter();
+    if (!adapter) throw new Error('沒有 WebGPU 介面卡');
+    if (!adapter.features.has('subgroups')) throw new Error('介面卡沒有 subgroups');
+    out.adapter = { vendor: adapter.info && adapter.info.vendor, arch: adapter.info && adapter.info.architecture, subgroups: true, f16: adapter.features.has('shader-f16'), maxWgStorage: adapter.limits.maxComputeWorkgroupStorageSize, maxInvocations: adapter.limits.maxComputeInvocationsPerWorkgroup, maxStorageBinding: adapter.limits.maxStorageBufferBindingSize };
+    const dev = await adapter.requestDevice({ requiredFeatures: ['subgroups'], requiredLimits: { maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize, maxBufferSize: adapter.limits.maxBufferSize } });
+    const U = { STORAGE: 0x0080, COPY_SRC: 0x0004, COPY_DST: 0x0008, UNIFORM: 0x0040, MAP_READ: 0x0001 };
+    // 通用的執行：code（WGSL）、A、B（Float32Array）、M、K、N、派發（[x,y,z]），回傳 { y, ms }
+    const runK = async (code, A, B, M, K, N, dispatch) => {
+      const t0 = performance.now();
+      const pipe = await dev.createComputePipelineAsync({ layout: 'auto', compute: { module: dev.createShaderModule({ code }), entryPoint: 'main' } });
+      const ab = dev.createBuffer({ size: A.byteLength, usage: U.STORAGE | U.COPY_DST }); dev.queue.writeBuffer(ab, 0, A);
+      const bb = dev.createBuffer({ size: B.byteLength, usage: U.STORAGE | U.COPY_DST }); dev.queue.writeBuffer(bb, 0, B);
+      const yb = dev.createBuffer({ size: M * N * 4, usage: U.STORAGE | U.COPY_SRC });
+      const ub = dev.createBuffer({ size: 32, usage: U.UNIFORM | U.COPY_DST });
+      dev.queue.writeBuffer(ub, 0, new Int32Array([1, M, K, N, 0, 0, 0, 0]));
+      const rb = dev.createBuffer({ size: M * N * 4, usage: U.MAP_READ | U.COPY_DST });
+      const bg = dev.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: ab } }, { binding: 1, resource: { buffer: bb } }, { binding: 2, resource: { buffer: yb } }, { binding: 3, resource: { buffer: ub } }] });
+      const enc = dev.createCommandEncoder(); const pass = enc.beginComputePass(); pass.setPipeline(pipe); pass.setBindGroup(0, bg); pass.dispatchWorkgroups(dispatch[0], dispatch[1] || 1, dispatch[2] || 1); pass.end();
+      enc.copyBufferToBuffer(yb, 0, rb, 0, M * N * 4); dev.queue.submit([enc.finish()]);
+      await rb.mapAsync(1); const y = new Float32Array(rb.getMappedRange().slice(0)); rb.unmap();
+      [ab, bb, yb, ub, rb].forEach((b) => b.destroy());
+      return { y, ms: performance.now() - t0 };
+    };
+    const disp = {
+      simple: (M, N) => [Math.ceil(M * N / 64)],
+      vec4: (M, N) => [Math.ceil(N / 64), Math.ceil(M / 64), 1],
+      sub: (M, N) => [SG.dispatchFor(M, N, 4096)],
+    };
+    const code = { simple: MM.WGSL_MM_F32, vec4: MM.WGSL_MM_F32_VEC4, sub: SG.WGSL_MM_SUBGROUP };
+    let s = 5; const rnd = () => { s = (Math.imul(s, 1664525) + 1013904223) | 0; return (s >>> 0) / 4294967296 - 0.5; };
+    // 正確性
+    for (const [M, K, N] of [[1, 1024, 1024], [1, 1024, 3072], [8, 1024, 1024], [4, 300, 132], [2, 257, 68], [1, 5, 4], [16, 2048, 512]]) {
+      const A = Float32Array.from({ length: M * K }, rnd), B = Float32Array.from({ length: K * N }, rnd);
+      const ref = MM.matmulRef(A, [M, K], B, [K, N]).y;
+      const row = { M, K, N };
+      const r = await runK(code.sub, A, B, M, K, N, disp.sub(M, N));
+      row.subRelErr = relErr(r.y, ref); row.pass = row.subRelErr <= 1e-5;
+      out.correct.push(row);
+    }
+    // 計時：5 次中位數（第 1 次暖機）
+    const med = async (fn) => { await fn(); const ts = []; for (let i = 0; i < 5; i++) ts.push((await fn()).ms); ts.sort((p, q) => p - q); return Math.round(ts[2] * 100) / 100; };
+    for (const [M, K, N] of [[1, 1024, 1024], [1, 1024, 3072], [8, 1024, 1024], [1, 4096, 1024], [16, 1024, 1024]]) {
+      const A = Float32Array.from({ length: M * K }, rnd), B = Float32Array.from({ length: K * N }, rnd);
+      const row = { shape: M + 'x' + K + 'x' + N };
+      row.simple_ms = await med(() => runK(code.simple, A, B, M, K, N, disp.simple(M, N)));
+      row.vec4_ms = await med(() => runK(code.vec4, A, B, M, K, N, disp.vec4(M, N)));
+      row.sub_ms = await med(() => runK(code.sub, A, B, M, K, N, disp.sub(M, N)));
+      out.timing.push(row);
+    }
+    // 純核心時間：緩衝區與管線先建好，同一個 pass 內連續派發 20 次，onSubmittedWorkDone 後量牆鐘，5 次中位數除以 20（不含上傳與讀回）
+    const kernelMs = async (code, dispatch, A, B, M, K, N) => {
+      const pipe = await dev.createComputePipelineAsync({ layout: 'auto', compute: { module: dev.createShaderModule({ code }), entryPoint: 'main' } });
+      const ab = dev.createBuffer({ size: A.byteLength, usage: U.STORAGE | U.COPY_DST }); dev.queue.writeBuffer(ab, 0, A);
+      const bb = dev.createBuffer({ size: B.byteLength, usage: U.STORAGE | U.COPY_DST }); dev.queue.writeBuffer(bb, 0, B);
+      const yb = dev.createBuffer({ size: M * N * 4, usage: U.STORAGE });
+      const ub = dev.createBuffer({ size: 32, usage: U.UNIFORM | U.COPY_DST });
+      dev.queue.writeBuffer(ub, 0, new Int32Array([1, M, K, N, 0, 0, 0, 0]));
+      const bg = dev.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: ab } }, { binding: 1, resource: { buffer: bb } }, { binding: 2, resource: { buffer: yb } }, { binding: 3, resource: { buffer: ub } }] });
+      const once = async () => {
+        const t0 = performance.now();
+        const enc = dev.createCommandEncoder(); const pass = enc.beginComputePass(); pass.setPipeline(pipe); pass.setBindGroup(0, bg);
+        for (let r = 0; r < 20; r++) pass.dispatchWorkgroups(dispatch[0], dispatch[1] || 1, dispatch[2] || 1);
+        pass.end(); dev.queue.submit([enc.finish()]); await dev.queue.onSubmittedWorkDone();
+        return (performance.now() - t0) / 20;
+      };
+      await once(); const ts = []; for (let i = 0; i < 5; i++) ts.push(await once()); ts.sort((p, q) => p - q);
+      [ab, bb, yb, ub].forEach((b) => b.destroy());
+      return Math.round(ts[2] * 1000) / 1000;
+    };
+    out.kernel = [];
+    for (const [M, K, N] of [[1, 1024, 1024], [1, 1024, 3072], [8, 1024, 1024], [1, 4096, 1024], [16, 1024, 1024]]) {
+      const A = Float32Array.from({ length: M * K }, rnd), B = Float32Array.from({ length: K * N }, rnd);
+      out.kernel.push({ shape: M + 'x' + K + 'x' + N, simple_ms_per_dispatch: await kernelMs(code.simple, disp.simple(M, N), A, B, M, K, N), vec4_ms_per_dispatch: await kernelMs(code.vec4, disp.vec4(M, N), A, B, M, K, N), sub_ms_per_dispatch: await kernelMs(code.sub, disp.sub(M, N), A, B, M, K, N) });
+    }
+    out.allPass = out.correct.every((c) => c.pass);
+  } catch (e) { out.error = String((e && e.stack) || e).slice(0, 800); }
+  out.done = true;
+  window.__out = out;
+  document.body.textContent = JSON.stringify(out, null, 1);
+  document.title = 'done';
+})();
+</script>

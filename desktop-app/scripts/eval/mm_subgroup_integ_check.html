@@ -1,0 +1,48 @@
+<!doctype html><meta charset="utf-8"><title>mm subgroup integ check</title>
+<body style="font:13px monospace;white-space:pre">
+<script>
+// 整合檢查（真 Chrome）：mm_ops.matmul 經 kernel_select 規則表實際選到 mm_subgroup_f32（M=1），並且 T1 層、對 matmulRef 相對誤差 ≤1e-5；
+// M=8 不選子群組（應為 vec4／tiled）。裝置由 nn_ops.getDevice 取得（會要求 subgroups）。結果在 window.__out。
+const mods = {};
+const loadMod = async (key, url) => {
+  const src = await (await fetch(url, { cache: 'no-store' })).text();
+  const m = { exports: {} }; mods[key] = m;
+  new Function('module', 'exports', 'require', src)(m, m.exports, (p) => { const k = p.replace(/^\.\//, '').replace(/\.js$/, ''); if (!mods[k]) throw new Error('missing ' + k); return mods[k].exports; });
+};
+const relErr = (x, y) => { let mx = 0, sc = 1e-9; for (let i = 0; i < x.length; i++) { mx = Math.max(mx, Math.abs(x[i] - y[i])); sc = Math.max(sc, Math.abs(y[i])); } return mx / sc; };
+(async () => {
+  const out = { adapter: null, rows: [], allPass: false, error: null, done: false };
+  try {
+    await loadMod('gpu_core', '../../renderer/src/gpu/gpu_core.js');
+    await loadMod('gpu_pool', '../../renderer/src/gpu/gpu_pool.js');
+    await loadMod('nn_ops', '../../renderer/src/gpu/nn_ops.js');
+    await loadMod('kernel_select', '../../renderer/src/gpu/kernel_select.js');
+    await loadMod('mm_subgroup', '../../renderer/src/gpu/mm_subgroup.js');
+    await loadMod('mm_splitk', '../../renderer/src/gpu/mm_splitk.js');   // 先載入，mm_ops 才能 require 到（缺了就退回 simple）
+    await loadMod('mm_ops', '../../renderer/src/gpu/mm_ops.js');
+    const MM = mods.mm_ops.exports, nn = mods.nn_ops.exports, KS = mods.kernel_select.exports;
+    const adapter = await navigator.gpu.requestAdapter();
+    out.adapter = { arch: adapter.info && adapter.info.architecture, subgroups: adapter.features.has('subgroups') };
+    const g = await nn.getDevice(navigator);
+    if (!g.dev) throw new Error('沒有 GPU 裝置：' + g.reason);
+    out.deviceSubgroups = g.dev.features.has('subgroups');
+    MM.setMatmulCaps(KS.probeCaps(adapter, g.dev), (adapter.info && adapter.info.architecture) || 'intel');
+    let s = 17; const rnd = () => { s = (Math.imul(s, 1664525) + 1013904223) | 0; return (s >>> 0) / 4294967296 - 0.5; };
+    for (const [M, K, N] of [[1, 1024, 1024], [1, 4096, 1024], [1, 1024, 3072], [8, 1024, 1024], [16, 1024, 1024], [1, 300, 132], [4, 1000, 132]]) {
+      const A = Float32Array.from({ length: M * K }, rnd), B = Float32Array.from({ length: K * N }, rnd);
+      const ref = MM.matmulRef(A, [M, K], B, [K, N]).y;
+      const o = {};
+      const ops = { navigator: navigator, cacheB: false };
+      const r = await MM.matmul(A, [M, K], B, [K, N], ops);
+      o.shape = M + 'x' + K + 'x' + N;
+      o.lastKernel = ops.lastKernel;   // 實際派發的核心（mm_ops.run 寫回 ops 物件）
+      o.layer = ops.lastInfo ? ops.lastInfo.layer : null;   // mm_ops.run 寫回 ops.lastInfo
+      o.relErr = relErr(r.y, ref);
+      o.pass = o.layer === 'T1' && o.relErr <= 1e-5;
+      out.rows.push(o);
+    }
+    out.allPass = out.rows.every((x) => x.pass);
+  } catch (e) { out.error = String((e && e.stack) || e).slice(0, 800); }
+  out.done = true; window.__out = out; document.body.textContent = JSON.stringify(out, null, 1); document.title = 'done';
+})();
+</script>

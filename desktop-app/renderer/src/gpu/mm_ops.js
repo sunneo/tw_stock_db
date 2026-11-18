@@ -8,6 +8,12 @@
 const nn = require('./nn_ops.js');
 const MM_TILE = require('./gpu_core.js');
 const KS = require('./kernel_select.js');
+// 子群組核心（mm_subgroup.js）：載入失敗（例如嵌入的模組載入器沒有這個檔）就不提供，規則表不會選到它
+let SG = null;
+try { SG = require('./mm_subgroup.js'); } catch (_) { SG = null; }
+// split-K（mm_splitk.js，R3）：同樣是可選的載入；沒有就規則不會走到它（mm_ops 退回 simple）
+let SK = null;
+try { SK = require('./mm_splitk.js'); } catch (_) { SK = null; }
 const MAX_BUF = 134217728;
 
 // ---------- 變體選擇（G4 接線）：規則＋已存的競賽勝者（kernel_select.pickWithCache）----------
@@ -112,13 +118,30 @@ async function run(kind, a, aDims, b, bDims, azp, bzp, ops) {
     // 已經是對的型別就不再複製一份（大矩陣的複製本身就是可觀的時間）；o.cacheB：B 是常駐權重時，同一個陣列物件只上傳一次
     const mk = (src) => (isInt ? (src instanceof Int32Array ? src : Int32Array.from(src)) : (src instanceof Float32Array ? src : Float32Array.from(src)));
     // 變體：f32 才有平鋪／vec4 可選（kernel_select 的 applies 會排除太窄的形狀）；整數與太窄的維持簡單版
-    const kid = isInt ? 'mm_simple_f32' : kernelId;
-    const tiled = kid !== 'mm_simple_f32';
+    // 子群組版（mm_subgroup.js）：只在單一批次、不轉置、有載入模組時用；否則退回簡單版
+    const kid0 = isInt ? 'mm_simple_f32' : kernelId;
+    const sub = kid0 === 'mm_subgroup_f32' && !!SG && pl.B === 1 && !fl;
+    // split-K（R3）：M=1、單一批次、不轉置、有載入模組；兩段核心（部分和＋歸約）在同一個批次、一次 submit 送出
+    const sk = kid0 === 'mm_splitk_f32' && !!SK && pl.B === 1 && !fl && pl.M === 1 && !isInt;
+    const kid = sk ? 'mm_splitk_f32' : (sub ? 'mm_subgroup_f32' : ((kid0 === 'mm_subgroup_f32' || kid0 === 'mm_splitk_f32') ? 'mm_simple_f32' : kid0));
+    const tiled = kid !== 'mm_simple_f32' && kid !== 'mm_subgroup_f32' && kid !== 'mm_splitk_f32';
     o.lastKernel = kid;
-    const code = isInt ? WGSL_MM_I32 : (kid === 'mm_vec4_f32' ? WGSL_MM_F32_VEC4 : (tiled ? WGSL_MM_F32_TILED : WGSL_MM_F32));
+    if (sk) {
+      const S = SK.pickSplits(pl.K);
+      const bt = nn.createBatch(dev);
+      const hA = bt.upload(mk(a)), hB = bt.upload(mk(b));
+      const hP = bt.alloc(S * pl.N), hY = bt.alloc(pl.N);
+      const uni = new Uint32Array([1, pl.K, pl.N, S]);
+      bt.dispatchRaw(SK.WGSL_SPLITK_PARTIAL, [hA.buf, hB.buf, hP.buf], uni, SK.dispatchPartial(1, pl.N, S));
+      bt.dispatchRaw(SK.WGSL_SPLITK_REDUCE, [hP.buf, hY.buf], uni, SK.dispatchReduce(1, pl.N));
+      const got = await bt.read([[hY, pl.N]]);
+      return got[0];
+    }
+    const code = isInt ? WGSL_MM_I32 : (sub ? SG.WGSL_MM_SUBGROUP : (kid === 'mm_vec4_f32' ? WGSL_MM_F32_VEC4 : (tiled ? WGSL_MM_F32_TILED : WGSL_MM_F32)));
+    const groups = sub ? SG.dispatchFor(pl.M, pl.N, 4096) : (tiled ? [Math.ceil(pl.N / 64), Math.ceil(pl.M / 64), pl.B] : Math.ceil(total / 64));
     const outs = await nn.runWgsl(dev, code,
       [{ data: mk(a) }, { data: mk(b), cache: !!o.cacheB }, { data: isInt ? new Int32Array(total) : new Float32Array(total), out: true }],
-      new Uint8Array(u.buffer), tiled ? [Math.ceil(pl.N / 64), Math.ceil(pl.M / 64), pl.B] : Math.ceil(total / 64));
+      new Uint8Array(u.buffer), groups);
     return outs[0];
   }, null, ref);
   o.lastInfo = r.info;

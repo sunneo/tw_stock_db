@@ -61,6 +61,13 @@ function tierOf(caps) {
 // applies(shape) 決定形狀是否適用（沒有 applies 表示任何形狀都適用）。最後一個一定是無需求的簡單版（保底）。
 const VARIANTS = {
   matmul: [
+    // split-K（mm_splitk.js，R3）：M=1、K ≥ 1024 時把 K 切 8 片，兩段派發（部分和＋歸約），在同一個批次裡送出。
+    //   同機 intel xe-lpg 純核心（每次派發，20 次中位數，兩次量測的雜訊約 ±15%）：1×1024×1024 0.15 ms（simple 0.47、vec4 0.40、子群組 0.26）；
+    //   1×1024×3072 0.49（子群組 0.65、vec4 0.71）；1×8192×1024 1.18（子群組 1.92、vec4 2.10）；M=8 時 split-K 比 vec4 慢（1.89 對 1.13），所以只給 M=1。
+    { id: 'mm_splitk_f32', shared: 0, threads: 256, needs: {}, applies: (s) => s.M === 1 && s.K >= 1024 },
+    // 子群組版（mm_subgroup.js）：M=1 且 K < 1024 時（split-K 不適用）且有 subgroups 才選。K < 1024 的 M=1 與 simple 比較沒有量測（見 mm_subgroup_integ_check 只驗正確性）。
+    //   同機 intel xe-lpg：1×1024×1024 0.255 ms（vec4 0.425、simple 0.515）；M=8、16 比 vec4 慢，所以只給 M=1。
+    { id: 'mm_subgroup_f32', shared: 0, threads: 256, needs: { subgroups: true }, applies: (s) => s.M === 1 && s.K < 1024 },
     // vec4 載入版（O5）：K、N 為 4 的倍數、不轉置時才用；同一份平鋪幾何，只把全域讀取改成 vec4
     { id: 'mm_vec4_f32', shared: 8 * KIB, threads: 256, needs: {}, applies: (s) => s.M >= 16 && s.N >= 16 && s.K % 4 === 0 && s.N % 4 === 0 },
     { id: 'mm_tiled_f32', shared: 8 * KIB, threads: 256, needs: {}, applies: (s) => s.M >= 16 && s.N >= 16 },
