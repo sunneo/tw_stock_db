@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>SmolVLM 語言解碼器 GPU 對拍</title>
+</head>
+<body>
+<h1>SmolVLM 語言解碼器：GPU（cudaweb gemv）對 CPU 與 ORT</h1>
+<p>權重來自 <code>http://127.0.0.1:8766/gpu-test/</code>（由 scripts/eval/smolvlm_lm_gpu_dump.js 產生）。結果寫在 <code>window.__res</code>。</p>
+<pre id="out">執行中…</pre>
+<script src="/renderer/src/gpu/kernel_gen.js"></script>
+<script src="/renderer/src/gpu/gpu_core.js"></script>
+<script src="/renderer/src/gpu/llm_arch.js"></script>
+<script src="/renderer/src/gpu/llm_skeleton.js"></script>
+<script src="/renderer/src/gpu/llm_skeleton_gpu.js"></script>
+<script>
+(async function () {
+  const BASE = 'http://127.0.0.1:8766/gpu-test/';
+  const log = (s) => { document.getElementById('out').textContent = s; window.__status = s; };
+  const res = { ok: false, steps: [] };
+  window.__res = null;
+  try {
+    log('讀取權重與 ORT 參考…');
+    const meta = await (await fetch(BASE + 'lm.json')).json();
+    const ids = await (await fetch(BASE + 'ids.json')).json();
+    const buf = await (await fetch(BASE + 'lm.bin')).arrayBuffer();
+    const f = new Float32Array(buf);
+    const idx = {};
+    for (const t of meta.tensors) idx[t.name] = t;
+    const get = (n) => { const t = idx[n]; if (!t) throw new Error('缺少張量 ' + n); return f.subarray(t.off, t.off + t.len); };
+    const layers = [];
+    for (let i = 0; i < meta.layers; i++) {
+      const p = 'l' + i + '.';
+      layers.push({ attnNorm: get(p + 'attnNorm'), wq: get(p + 'wq'), wk: get(p + 'wk'), wv: get(p + 'wv'), wo: get(p + 'wo'),
+        ffnNorm: get(p + 'ffnNorm'), wGate: get(p + 'wGate'), wUp: get(p + 'wUp'), wDown: get(p + 'wDown') });
+    }
+    const weights = { embed: get('embed'), finalNorm: get('finalNorm'), lmHead: get('lmHead'), layers: layers };
+    const arch = { family: 'llama', status: 'supported', verified: false, layers: meta.layers, hidden: meta.hidden,
+      heads: 9, kvHeads: meta.kvHeads, headDim: meta.headDim, ffn: meta.ffn, norm: 'rmsnorm', eps: meta.eps, qkNorm: false,
+      rope: { base: meta.ropeBase, scaling: null, style: 'half' }, act: 'silu_mul', bias: false, tiedEmbeddings: meta.tied,
+      vocab: meta.vocab, quant: ['f32'] };
+    const ortAll = new Float32Array(await (await fetch(BASE + 'ort.bin')).arrayBuffer());
+    const T = ids.length, V = meta.vocab;
+    res.T = T; res.V = V;
+
+    function cmpRows(sk, ref) {
+      let worstAbs = 0, worstRel = 0, top5 = 0, arg = 0;
+      for (let p = 0; p < T; p++) {
+        const a = sk[p], b = ref.subarray(p * V, (p + 1) * V);
+        let mx = 0, mref = 0;
+        for (let i = 0; i < V; i++) { const d = Math.abs(a[i] - b[i]); if (d > mx) mx = d; if (Math.abs(b[i]) > mref) mref = Math.abs(b[i]); }
+        if (mx > worstAbs) worstAbs = mx;
+        if (mx / mref > worstRel) worstRel = mx / mref;
+        const top = (v) => Array.from(v.keys()).sort((i, j) => v[j] - v[i]).slice(0, 5);
+        const ta = top(a), tb = top(b);
+        if (ta.join(',') === tb.join(',')) top5++;
+        if (ta[0] === tb[0]) arg++;
+      }
+      return { maxAbs: worstAbs, maxRel: worstRel, top5Same: top5 + '/' + T, argmaxSame: arg + '/' + T };
+    }
+
+    // CPU 參考（llm_skeleton.js，與 ORT 已對拍過）
+    log('CPU 參考…');
+    const stC = FaLlmSkeleton.createState(arch, weights);
+    const cpuRows = [];
+    const t0 = performance.now();
+    for (const t of ids) cpuRows.push(FaLlmSkeleton.step(stC, t));
+    res.cpuMs = performance.now() - t0;
+
+    // GPU：cudaweb 的 gemv（f32；沒有 f16 路徑時的保底）
+    log('GPU（cudaweb gemv）…');
+    const rt = FaGpuCore.createRuntime({ navigator: navigator });
+    const layerCount = {};
+    let calls = 0;
+    const mv = async (W, rows, cols, x) => {
+      const r = await rt.gemv(W, x, rows, cols);
+      calls++;
+      const lay = (r.info && (r.info.layer || r.info.via)) || 'unknown';
+      layerCount[lay] = (layerCount[lay] || 0) + 1;
+      return Float32Array.from(r.result);
+    };
+    const stG = FaLlmSkeleton.createState(arch, weights, { useOverrides: false });
+    const gpuRows = [];
+    const t1 = performance.now();
+    for (const t of ids) gpuRows.push(await FaLlmSkeletonGpu.stepGpu(stG, t, mv));
+    res.gpuMs = performance.now() - t1;
+    res.gpuCalls = calls;
+    res.gpuPathCounts = layerCount;
+
+    res.cpuVsOrt = cmpRows(cpuRows, ortAll);
+    res.gpuVsOrt = cmpRows(gpuRows, ortAll);
+    const flat = (rows) => { const o = new Float32Array(T * V); rows.forEach((r, p) => o.set(r, p * V)); return o; };
+    res.gpuVsCpu = cmpRows(gpuRows, flat(cpuRows));
+    res.ok = true;
+  } catch (e) {
+    res.error = String(e && e.stack || e);
+  }
+  window.__res = JSON.stringify(res, null, 1);
+  log(window.__res);
+})();
+</script>
+</body>
+</html>

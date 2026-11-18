@@ -177,6 +177,14 @@ O1m 到 O11 做完後不結束，進入迴圈。完整規則與交接見 `docs/H
   - **下一步**：拆 DaViT blocks.0 的 spatial block（一個子塊一個對拍：深度卷積殘差 → 窗口注意力 → 通道注意力 → FFN），每一塊都與 ORT 的頂層中間結果比對。
 - [ ] 共通：先用既有的「逐節點對拍」做法（`scripts/eval/cudaweb_node_*`）把這些 ONNX 圖在 cudaweb 上逐節點對 ORT 驗證，再決定整圖接線或骨架重寫；預設關、行為不變、失敗永久退回原路徑；兩處設定介面（AI 助理設定、桌面版設定頁）同步開關；速度數字標硬體（Kepler 14 W）。沒有真權重或載入太重就標「未用真模型驗證」。每小步提交。
 
+- O13 GPU 進度（2026-11-18，本機真 Chrome，WebGPU，Intel Xe-LPG；`scripts/eval/gpu_lm_check.html`，結果見 `scripts/eval/smolvlm_lm_gpu.result.json`）：
+  - **語言解碼器 GPU 版：通過（f32，純文字 4 個詞元）**。`llm_skeleton_gpu.stepGpu` 的投影經 cudaweb `gemv`（WebGPU 原生核心，844 次呼叫全部是 T1，沒有退回 CPU）。對 ORT：最大相對誤差 3.8e-6，top-5 與 argmax 全部相同；對 CPU 參考：最大相對誤差 8.8e-7。
+  - **時間（同一台機器）**：CPU 1,080 ms、GPU 7,546 ms。GPU 較慢，原因是每次 gemv 都上傳整個權重矩陣（沒有常駐權重緩衝），這是目前 API 的成本，不代表核心本身的速度。
+  - **有 f16 時走 f16 或 q8**：沒有做。目前只跑 f32（保底），沒有因 gpuNeedsF16 退 CPU。
+  - **視覺編碼器（vit_skeleton）GPU 版：未完成**。原因：vit_skeleton 的 GPU 路徑還沒有寫（需要把 729 個 token 的線性層改成批次矩陣乘、再加注意力），這次沒有做。
+  - **未完成的其他項目**：有影像位置的 GPU 對拍、常駐權重、f16 路徑、LLaVA 的 GPU 版。
+  - **vlm_core 的 verified**：維持 false。語言解碼器的 GPU 對拍通過，但整個 SmolVLM 還沒有在 GPU 上端到端跑過，所以不改模型表。預設仍關閉。
+
 ## O14. 使用者寫的 CUDA（Python／JavaScript）也吃到優化（使用者 2026-11-18：「我要這個 cudaweb 獲得完整核心優化的結果，可以將來 python/js 寫 cuda 的時候，都可以獲得好處」）
 原則：優化放在 cudaweb 的**函式庫層**（`mm_ops`、`infer_ops`、`kernel_gen`、`kernel_select`、`variant_race`、`gpu_pool`），所有入口（內部模型引擎、`cudaweb.py`、`cublas`／`cudnn` 相容層、torch／cupy／numba／pycuda 墊片、使用者自己寫的 JS）都走同一組，不各自留一份舊核心。
 - [ ] **O14a 入口盤點**：列出使用者可碰到的全部入口與它們現在用哪個核心（`pybridge/cudaweb.py` 的 matmul／sgemm／gemv／dot／axpy、`pybridge/torch`、`cupy`、`numba`、`pycuda`；JS 端 `gpu_core.js` 的 `WGSL.*`、`cudnn_subset.js`、`nn_ops`）。逐一標：已走優化核心／仍走舊樸素核心／純 JS。寫進 `scripts/eval/cudaweb_optimize.result.json` 或獨立表。

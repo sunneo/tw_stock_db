@@ -1,0 +1,21 @@
+{
+ "date": "2026-11-18",
+ "page": "scripts/eval/gpu_lm_check.html（本機靜態伺服器 127.0.0.1:8765；權重由 127.0.0.1:8766 提供）",
+ "browser": "本機真 Chrome（WebGPU，Intel Xe-LPG）",
+ "model": "SmolVLM 256M 語言解碼器，30 層，f32（fp32 權重，無 f16 路徑；未使用 q8）",
+ "tokens": 4,
+ "vocab": 49280,
+ "ok": true,
+ "cpuMs": 1080.2,
+ "gpuMs": 7546.1,
+ "gpuCalls": 844,
+ "gpuPathCounts": { "T1 (WebGPU 原生核心)": 844 },
+ "cpuVsOrt": { "maxAbs": 6.29e-5, "maxRel": 3.26e-6, "top5Same": "4/4", "argmaxSame": "4/4" },
+ "gpuVsOrt": { "maxAbs": 7.25e-5, "maxRel": 3.75e-6, "top5Same": "4/4", "argmaxSame": "4/4" },
+ "gpuVsCpu": { "maxAbs": 1.33e-5, "maxRel": 8.77e-7, "top5Same": "4/4", "argmaxSame": "4/4" },
+ "notes": [
+  "GPU 比 CPU 慢：每次 gemv 都把整個權重矩陣上傳，沒有常駐權重緩衝；這是目前 API 的成本，不是核心的速度。",
+  "只跑純文字 4 個詞元，沒有影像位置；SmolVLM 視覺編碼器（vit_skeleton）沒有 GPU 路徑，未做。",
+  "f16 路徑未實作，全部是 f32；預設關閉，vlm_core 的 verified 不因這次實測而改。"
+ ]
+}
