@@ -82,15 +82,15 @@
 
 ## 三、實作待辦（第 3 到 5 項，等管理者通知後開始）
 
-- [ ] 3a. `gpu/gpu_async_queue.js`：純邏輯佇列，含保序、重疊、延遲錯誤、句柄狀態，附 node 測試（假裝置）
-- [ ] 3b. `floating-assistant.js` `_pyBridgeGpu` 加 `submit`／`wait`／`sync` 三個 op，沿用現有 `call` 的參數格式
-- [ ] 3c. `fa_gpu.py`：`call_async`、`wait`；`call` 改為包裝，預設行為保持不變
-- [ ] 3d. `cupy/cuda.py`：`Stream`、`Event`；`numba/cuda.py`：`stream()`、`event()`、`synchronize()` 接上佇列
-- [ ] 3e. `fa_bridge.py`：桌面版非同步提交（寫請求後回傳句柄，等待時才讀回應）
-- [ ] 3f. 嵌入：改 `renderer/src` 來源後跑 `node scripts/embed-code-ui.js` 與 `node build-assistant.js`
-- [ ] 4a. node 假裝置測試：保序、重疊、延遲錯誤、synchronize
-- [ ] 4b. Python 範例：CPU 迴圈加 GPU matmul 同時跑，計時比較串列與重疊（範例檔放 `renderer/src/pybridge/examples/`）
-- [ ] 4c. 真機只做一次：一頁一形狀、先估時間、單次派發小、監聽 `device.lost`、不跑會逾時的測試、用 `requestExclusiveGpu` 做量測互斥
+- [x] 3a. `gpu/gpu_async_queue.js`：純邏輯佇列，含保序、重疊、延遲錯誤、句柄狀態，附 node 測試（假裝置）。提交 d0e38766b
+- [x] 3b. `floating-assistant.js` 來源：`_gpuAsync`（submit／wait／query／forget／sync／reset／event_*／stats），網頁版 `_fa_gpu.aop`、桌面版 `gpu.a.<name>`。提交 01a18c9b8
+- [x] 3c. `fa_gpu.py`：`call_async`、`AsyncHandle.wait`、`synchronize`、事件；`call` 不變。提交 92f307117
+- [x] 3d. `cupy.cuda.Stream／Event`、`numba.cuda.stream()／event()`、`cupy.matmul_async`；`synchronize` 沒有未完成操作時不碰宿主。提交 3d3984493
+- [x] 3e. 桌面版：沿用既有信箱，`gpu.a.*` 路由已加在 `floating-assistant.js`，`fa_bridge.py` 不需要改
+- [ ] 3f. 嵌入（**待管理者通知後才執行**）：`node scripts/embed-code-ui.js` 與 `node build-assistant.js`。清單已加 `gpu_async_queue`（提交 01a18c9b8）
+- [x] 4a. node 假裝置測試：保序、重疊、延遲錯誤、synchronize（`gpu_async_queue_test.js`，9 項全過）
+- [x] 4b. Python 範例 `gpu/examples/async_overlap.py`（串列與重疊計時比較＋結果一致性），測試通過（提交 e7d078633）。範例放在 `renderer/src/gpu/examples/`，不是 pybridge 底下
+- [ ] 4c. 真機只做一次（**待 3f 嵌入完成後才能做**，否則真機跑的是舊嵌入、沒有新 API）：一頁一形狀、先估時間、單次派發小、監聽 `device.lost`、不跑會逾時的測試、用 `requestExclusiveGpu` 做量測互斥
 
 ## 四、評估（第 5 項，只寫設計，不實作）
 
@@ -101,6 +101,17 @@
 - 風險：每個 Worker 載入 Pyodide 與 numpy 的記憶體成本；WebGPU 裝置是否可被多個 Worker 同時使用，需要實測（目前沒有資料，我沒查）。
 
 本項未實作。前面四項做完才評估是否值得做。
+
+## 四之一、實作結果與偏離設計的地方（第 3、4 項）
+
+- 已做：純邏輯佇列（保序、不同 stream 重疊、錯誤延遲且同 stream sticky、`reset`、事件、上限 64）、JS 橋接、Python `call_async`／`AsyncHandle`、`Stream`／`Event`、`cupy.matmul_async`、`numba.cuda.stream()／event()`、`synchronize` 接上、範例與測試。
+- 測試結果：node 佇列測試 9 項全過；Python `fa_gpu_py_test.py` 58 項通過、1 項失敗。失敗的是「嵌入副本與原始碼一致」檢查，因為 `floating-assistant.js` 裡的嵌入副本還是舊的，要等 3f 嵌入後才會一致（預期中的失敗）。
+- 偏離設計 1：**`cupy.matmul`（一般同步版）不會自動變成非同步**。只有明確呼叫 `matmul_async` 才會重疊，因為一般 `matmul` 要回傳真正的陣列，不能改回傳型別。
+- 偏離設計 2：**numba 核心（`@cuda.jit`）還沒有非同步提交**。核心仍是同步的（`run_kernel` 會等）。要做的話，要把 `_try_gpu` 改成可以提交、失敗退路延後到 `synchronize`，這一步沒有做。
+- 偏離設計 3：**`Stream.wait_event` 在主機上阻塞**（保守做法）。CUDA 的做法是讓 stream 等事件而不阻塞主機，我沒有實作那種依賴關係。
+- 偏離設計 4：**`elapsed_time` 是主機牆鐘時間**，不是 GPU 時間戳。沒有實作 GPU 時間戳，所以目前不知道它與 GPU 實際執行時間的差距。
+- 偏離設計 5：Python 端的 `done()` 與 `synchronize()` 都會往返宿主一次（短），`wait()` 才真的等 GPU。
+- 沒有做：第 5 項（多 Pyodide 工作者分攤 CPU），按要求只寫在第四節設計。
 
 ## 五、驗證狀態
 
