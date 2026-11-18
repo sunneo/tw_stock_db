@@ -69,5 +69,23 @@ let t = 0; const now = () => (t += 1);
     console.log('ok 6 段耗時回饋（回饋 ' + s.feedback.toFixed(3) + '，下一次 ' + nxt.toFixed(3) + '）');
   }
 
+  // 7. 速率持久化：分工後會存進後端；新實例用同一個鍵建立時會載入（不覆蓋已有的速率）
+  {
+    const HR = require('./hetero_rates.js');
+    const be = HR.memoryBackend();
+    const store = HR.createRateStore(be);
+    const key = HR.rateKey({ op: 'matmul', browser: 'test', adapter: 'fake', cores: 4 });
+    const p1 = CS.createCpuShare({ makeWorker: fakeWorker, cores: 4, now, rateStore: store, rateKey: key });
+    await p1.run(gpuFn, A, B, M, K, N, {});
+    await new Promise((r) => setTimeout(r, 5));  // 讓存檔的 promise 結束
+    const saved = be._map.get(key);
+    assert.ok(saved && saved.gpu > 0 && saved.cpu > 0, '分工後速率應已存進後端');
+    const p2 = CS.createCpuShare({ makeWorker: fakeWorker, cores: 4, now, rateStore: store, rateKey: key });
+    await new Promise((r) => setTimeout(r, 5));  // 讓載入的 promise 結束
+    const st2 = p2.stats().rate;
+    assert.ok(Math.abs(st2.gpu - saved.gpu) < 1e-6 && Math.abs(st2.cpu - saved.cpu) < 1e-6, '新實例應載入已保存的速率');
+    console.log('ok 7 速率存進後端並在新實例載入');
+  }
+
   console.log('cpu_share_decide_test：全部通過');
 })().catch((e) => { console.error('失敗：', (e && e.stack) || e); process.exit(1); });

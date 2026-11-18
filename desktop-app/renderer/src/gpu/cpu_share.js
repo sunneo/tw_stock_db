@@ -84,6 +84,12 @@ function createCpuShare(o) {
   // 兩邊的實測速率（flops/ms，指數平均）；沒有資料前用保守的初始比例
   const rate = { gpu: 0, cpu: 0 };
   let last = null;
+  // 速率持久化（可選）：opts.rateStore（hetero_rates.createRateStore）＋ opts.rateKey。建立時載入；每次分工後存回（不等待、失敗不影響執行）。
+  const rateStore = opts.rateStore || null, rateKeyStr = opts.rateKey || null;
+  if (rateStore && rateKeyStr) {
+    rateStore.load(rateKeyStr).then((v) => { if (v && !(rate.gpu > 0)) { rate.gpu = v.gpu; rate.cpu = v.cpu; } }).catch(() => {});
+  }
+  const saveRates = () => { if (rateStore && rateKeyStr && rate.gpu > 0 && rate.cpu > 0) rateStore.save(rateKeyStr, { gpu: rate.gpu, cpu: rate.cpu, updatedAt: Date.now() }).catch(() => {}); };
   const bIds = new WeakMap(); let bSeq = 0;
 
   function ensurePool() {
@@ -182,6 +188,7 @@ function createCpuShare(o) {
     // 回饋：兩邊各自的速率（用各自完成的時間，不是總時間），下一次的比例據此調整
     if (gpuMs > 0) rate.gpu = ema(rate.gpu, (2 * mG * k * n) / gpuMs);
     if (cpuMs > 0) rate.cpu = ema(rate.cpu, (2 * mC * k * n) / cpuMs);
+    saveRates();
     last = { shared: true, m, mGpu: mG, mCpu: mC, workers: nW, ratio: Math.round(ratio * 1000) / 1000, gpuMs: Math.round(gpuMs * 10) / 10, cpuMs: Math.round(cpuMs * 10) / 10, totalMs: Math.round((now() - t0) * 10) / 10, flops };
     return { shared: true, y, info: last };
   }
