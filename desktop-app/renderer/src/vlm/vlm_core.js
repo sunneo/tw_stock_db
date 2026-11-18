@@ -575,7 +575,7 @@
     }
     // SlimSAM 的 WebGPU 建置（O15b）。app 的 WebGPU 用 transformers 4.2.0；它的遮罩解碼器 MatMul（layers.0/mlp/lin2）產生的 shader 有型別錯誤
     // （WGSL：type mismatch for argument 4 in call to 'mm_readA', expected 'vec2<u32>', got 'u32'），建 pipeline 失敗，fp16 與 fp32 都一樣。
-    // 同一組權重在 3.7.5 的 WebGPU 可跑（真 Chrome：遮罩 IoU 0.981 對 CPU q8）。預設關（samGpuLib 'off'）：關時沿用 4.2.0（舊行為，會失敗後退回 CPU）。
+    // 同一組權重在 3.7.5 的 WebGPU 可跑（真 Chrome：遮罩 IoU 0.981 對 CPU q8）。app 預設開（samGpuLib2 'on'，見 floating-assistant.js）；這個函式本身沒給選項時仍是 4.2.0（關），關時沿用 4.2.0（舊行為，會失敗後退回 CPU）。
     // 開且是 SAM 模型時改用 3.7.5；先前失敗過（brokenPermanently）時回 lib null＝不用 WebGPU。其他模型一律不變。
     // 回傳 { lib: '4.2.0' | '3.7.5' | null, reason }。
     function webgpuLibFor(model, opts) {

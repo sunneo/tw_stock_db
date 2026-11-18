@@ -6,27 +6,27 @@
 <pre id="out">載入中…</pre>
 <div id="app"></div>
 <!-- 版本號讓瀏覽器不用快取舊的 bundle -->
-<script src="../../renderer/floating-assistant.js?v=e2e-2"></script>
+<script src="../../renderer/floating-assistant.js?v=rename-2"></script>
 <script>
 (async () => {
   const out = document.getElementById('out'); const logs = []; const log = (m) => { logs.push(m); out.textContent = logs.join('\n'); };
-  const res = { ts: new Date().toISOString(), image: 'ai-temp/pose-test/person.jpg（有人，960×966）', bundle: 'renderer/floating-assistant.js?v=e2e-2', cpu: null, gpu: null, gpu_repeat: null, compare: null, errors: [] };
+  const res = { ts: new Date().toISOString(), image: 'ai-temp/pose-test/person.jpg（有人，960×966）', bundle: 'renderer/floating-assistant.js?v=rename-2', cpu: null, gpu: null, gpu_repeat: null, compare: null, errors: [] };
   try {
     const fa = new FloatingAssistant({ mountSelector: '#app', buttonStyle: 'display:none;' });
-    window.__fa = fa;
+    window.__fa = fa; res.default_samGpuLib = fa.advancedSettings.samGpuLib2;
     const blob = await (await fetch('/ai-temp/pose-test/person.jpg')).blob();
     const run = async (label, device, lib) => {
-      fa.advancedSettings.samGpuLib = lib; fa._samGpuBroken = false;
+      if (lib !== null) fa.advancedSettings.samGpuLib2 = lib; fa._samGpuBroken = false;
       const t0 = performance.now();
       const r = await fa._segmentObjects({ blob, device, silent: true, confirmed: true, grid: 4 });
-      const row = { ok: r.ok, device: r.device, requested: device, samGpuLib: lib, error: r.error || null, ms: r.ms, wall_ms: Math.round(performance.now() - t0), broken_after: !!fa._samGpuBroken, n: r.segments ? r.segments.length : null,
+      const row = { ok: r.ok, device: r.device, requested: device, samGpuLib2_effective: fa.advancedSettings.samGpuLib2, error: r.error || null, ms: r.ms, wall_ms: Math.round(performance.now() - t0), broken_after: !!fa._samGpuBroken, n: r.segments ? r.segments.length : null,
         best_area: null, segments: r.segments || null };
       log(label + ': ' + JSON.stringify({ ...row, segments: undefined }));
       return row;
     };
-    res.cpu = await run('CPU（預設路徑，samGpuLib off）', 'cpu', 'off');
-    res.gpu = await run('GPU（samGpuLib on，先前已跑過 CPU）', 'gpu', 'on');
-    res.gpu_repeat = await run('GPU 第二次（同一頁）', 'gpu', 'on');
+    res.cpu = await run('CPU（預設路徑）', 'cpu', null);
+    res.gpu = await run("GPU（未設定 samGpuLib2，用預設值，先前已跑過 CPU）", "gpu", null);
+    res.gpu_repeat = await run("GPU 第二次（同一頁，用預設值）", "gpu", null);
     // 遮罩 IoU：取 CPU 與 GPU 各自分數最高的候選比較（不假設 index 相同）
     if (res.cpu.ok && res.gpu.ok && res.cpu.segments && res.gpu.segments) {
       const best = (segs) => segs.reduce((b, s, i) => (s.score > segs[b].score ? i : b), 0);

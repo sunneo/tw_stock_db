@@ -256,7 +256,7 @@ O1m 到 O11 做完後不結束，進入迴圈。完整規則與交接見 `docs/H
     - **未完成**：web-lazy 與 renderer bundle 還沒用 `build-assistant.js` 重建（另一個 session 正在重寫 web-lazy 產物，本次未碰）；發布前要先建置。
     - **SlimSAM 端到端（2026-11-18，真 Chrome，app 的 `_segmentObjects`，新 bundle）**：CPU（預設）16 個候選、20.8 秒；`samGpuLib` 開＋`device: gpu`（先前跑過 CPU）：device 為 gpu，沒有退回 CPU，第一次 23.6 秒（含 3.7.5 WebGPU 模型載入），第二次 14.0 秒；最佳候選遮罩 IoU 0.968（CPU 分數 0.975、GPU 分數 0.980）。結果：`scripts/eval/o15b_sam_e2e.result.json`。
       - **發現並修正的 bug（影響所有 GPU 偏好的離線模型）**：先跑過 CPU 後，GPU 偏好會被靜默退回 CPU。根因：`_vlmEnsureLoaded` 的快取檢查迴圈掃整個裝置順序，已載入的 CPU 模型先命中，於是從不嘗試 WebGPU。修正：快取檢查只看偏好的第一個裝置。
-      - 仍然預設關：`samGpuLib` 建議預設開需要使用者確認。速度注意：端到端含 16 次解碼，加速約 1.5 倍；單點的 encoder＋decoder 測試是 2.4 倍。
+      - 已改為預設開（2026-11-18，使用者確認）：設定鍵改名為 `samGpuLib2`（舊鍵 `samGpuLib` 在這個 origin 的已儲存設定裡存著預設 'off'，會蓋掉新預設，所以改名；同 `gpuAccel` 的做法）。驗證：全新載入的頁面 `samGpuLib2` 預設 'on'；`device: gpu` 不設定任何開關也拿到 gpu、沒有退回 CPU（第二次 11.6 秒）。速度注意：端到端含 16 次解碼，加速約 1.5 倍；單點的 encoder＋decoder 測試是 2.4 倍。
 - [ ] 範圍外要如實標：沒有真權重、載入太重、或遇到 cudaweb 缺的算子（例如特殊卷積、非常規操作）的，記「未完成：原因」，不要宣稱全部完成。
 
 ## 剩餘項目（2026-11-18 重讀整份清單後列出；每項的原因）
