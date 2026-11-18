@@ -96898,17 +96898,22 @@ ${fnData.code}
         stRow.appendChild(refreshBtn); stRow.appendChild(status);
         // 簡易檢視的主角：跑基準＋白話結論（放最上面，後面接後端狀態）
         const quick = document.createElement('div'); quick.style.cssText = 'display:flex; gap:8px; align-items:center; flex-wrap:wrap;';
-        const quickBtn = document.createElement('button'); quickBtn.type = 'button'; quickBtn.className = 'ai-advanced-btn'; quickBtn.textContent = '跑基準';
+        const quickBtn = document.createElement('button'); quickBtn.type = 'button'; quickBtn.className = 'ai-advanced-btn'; quickBtn.textContent = 'Profile';quickBtn.title = '一鍵量出這台 GPU 與 CPU 的最佳合作組合（約數十秒，可取消）';
+        const quickCancel = document.createElement('button'); quickCancel.type = 'button'; quickCancel.className = 'ai-advanced-btn'; quickCancel.textContent = '取消'; quickCancel.disabled = true;
         const quickTxt = document.createElement('div'); quickTxt.id = 'ai-gpu-compat-summary'; quickTxt.style.cssText = 'font-size:13px; font-weight:600; white-space:pre-wrap;';
         const quickInfo = { v: this._gpuCompatInfo || null };
-        const quickPaint = async () => { let rows = []; try { const mem = this._gpuBenchMem || (await this._gpuBenchRefresh()); rows = mem && mem.rec ? mem.rec.results : []; } catch (_) { rows = []; } quickTxt.textContent = faGpuCompatSummary(quickInfo.v, rows); };
+        const quickPaint = async () => { const pf = this._gpuProfileLoad(); if (pf && Array.isArray(pf.lines)) { quickTxt.textContent = pf.lines.join('\n') + (pf.notes && pf.notes.length ? '\n（' + pf.notes.join('；') + '）' : '') + '\n上次 Profile：' + new Date(pf.at).toLocaleString() + (pf.saved ? '；' + pf.saved : ''); return; } let rows = []; try { const mem = this._gpuBenchMem || (await this._gpuBenchRefresh()); rows = mem && mem.rec ? mem.rec.results : []; } catch (_) { rows = []; } quickTxt.textContent = faGpuCompatSummary(quickInfo.v, rows); };
         quickBtn.addEventListener('click', async () => {
-            quickBtn.disabled = true; quickTxt.textContent = '檢查並量測中…（背景進行，約數十秒到數分鐘）';
-            try { await fill(); quickInfo.v = this._gpuCompatInfo || null; const r = await this._gpuBenchRun((x) => { quickTxt.textContent = x; }); if (!r.ok) { quickTxt.textContent = r.reason; quickBtn.disabled = false; return; } await quickPaint(); }
-            catch (e) { quickTxt.textContent = '量測失敗：' + String((e && e.message) || e); }
-            quickBtn.disabled = false;
+            quickBtn.disabled = true; quickCancel.disabled = false; quickTxt.textContent = 'Profile 開始…';
+            try {
+                await fill(); quickInfo.v = this._gpuCompatInfo || null;
+                const r = await this._gpuProfileRun((x) => { quickTxt.textContent = x; });
+                if (!r.ok) quickTxt.textContent = r.reason; else await quickPaint();
+            } catch (e) { quickTxt.textContent = 'Profile 失敗：' + String((e && e.message) || e).slice(0, 200); }
+            quickBtn.disabled = false; quickCancel.disabled = true;
         });
-        quick.appendChild(quickBtn); quick.appendChild(quickTxt);
+        quickCancel.addEventListener('click', () => { this._gpuProfileCancel = true; quickTxt.textContent = '取消中…（在下一個樣本之間停下）'; });
+        quick.appendChild(quickBtn); quick.appendChild(quickCancel); quick.appendChild(quickTxt);
         wrap.insertBefore(stRow, wrap.firstChild); wrap.insertBefore(quick, wrap.firstChild);
         quick.setAttribute('data-gpu-block', 'quick'); stRow.setAttribute('data-gpu-block', 'summary');
         quickPaint();
@@ -131180,6 +131185,93 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             if (this._gpuRouteFails[b] >= 3) this._gpuBrokenSet('gpuBench-' + b, '連續 3 次失敗：' + rec.error);
         } else if (rec.used) this._gpuRouteFails[b] = 0;
     }
+    // ---- Profile：一鍵量出 CPU 與 GPU 的最佳合作組合（簡易檢視的核心）----
+    // 依序：1 變體競賽（沿用 mm_ops.startMatmulRace：自帶量測互斥鎖、校正、預估逾時就略過、裝置遺失即停，勝者存進變體快取）；
+    // 2 GPU 端對端計時（含上傳與讀回，量測互斥鎖內，每形狀先暖機）；3 CPU 池計時（cpu_share.runCpuOnly）；
+    // 4 faProfilePlan 算出合作組合（固定成本與速率擬合、卸載交界點、hetero_split.decideSplit 的分攤決策）；5 速率存進 hetero_rates（IndexedDB），結論存 localStorage fa_gpu_profile。
+    // 沒有 WebGPU：只量 CPU。可取消（_gpuProfileCancel）。數字全來自實測，量不到的不寫。
+    async _gpuProfileRun(say) {
+        if (this._gpuProfileBusy) return { ok: false, reason: 'Profile 已經在跑' };
+        const gate = this._gpuBenchGate('Profile'); if (!gate.ok) return { ok: false, reason: gate.reason };
+        this._gpuProfileBusy = true; this._gpuProfileCancel = false;
+        const cancelled = () => !!this._gpuProfileCancel;
+        const log = (x) => { try { if (say) say(x); } catch (_) { /* 顯示失敗不影響量測 */ } };
+        const yieldTo = () => new Promise((r) => setTimeout(r, 0));
+        const now = () => (typeof performance !== 'undefined' ? performance : Date).now();
+        const med = (a) => { const t = a.slice().sort((x, y) => x - y); return t[Math.floor(t.length / 2)]; };
+        const shapes = [[16, 256, 256], [64, 1024, 1024], [128, 1024, 1024]].map(([M, K, N]) => ({ M, K, N, W: 2 * M * K * N, label: M + '×' + K + '×' + N }));
+        const notes = [];
+        try {
+            const QM = this._qwenModule(); const BR = QM.bench;
+            const env = await this._gpuVariantCaps();
+            let hasGpu = typeof navigator !== 'undefined' && !!navigator.gpu; let variant = ''; const gpuPts = [];
+            if (hasGpu) {
+                QM.mm.setMatmulCaps(env.caps, env.desc);
+                log('1／3 量 GPU：變體競賽（一次一個形狀、先估時間、可取消）…');
+                const race = await QM.mm.startMatmulRace(shapes.map((s) => ({ M: s.M, K: s.K, N: s.N })), { navigator: navigator, budgetMs: 2000, cancel: cancelled, onProgress: (p) => log('1／3 量 GPU：變體競賽，第 ' + p.i + '／' + p.n + ' 個形狀') });
+                if (race.length && race.every((o) => o.noGpu)) { hasGpu = false; notes.push('沒有可用的 GPU（' + String((race[0].error || '退回 CPU')).slice(0, 120) + '）'); }
+                else {
+                    const wins = race.filter((o) => o.winner); if (wins.length) variant = wins[wins.length - 1].winner.id;
+                    race.forEach((o) => { if (o.error) notes.push('競賽 ' + o.shape.M + '×' + o.shape.K + '×' + o.shape.N + '：' + String(o.error).slice(0, 120)); });
+                }
+            }
+            if (hasGpu && !cancelled()) {
+                await QM.nn.withMeasureLock(async () => {
+                    for (const s of shapes) {
+                        if (cancelled()) break;
+                        log('2／3 量 GPU 端對端（含上傳與讀回）：' + s.label);
+                        const d = BR.makeMatmulInputs(s.M, s.K, s.N, 7); const o = { navigator: navigator, _noShare: true }; const t = []; let bad = false;
+                        for (let i = 0; i < 4; i++) {
+                            const t0 = now(); await QM.mm.matmul(d.a, d.ad, d.b, d.bd, o); const dt = now() - t0;
+                            if (!/^T1/.test(String((o.lastInfo && o.lastInfo.layer) || ''))) { bad = true; notes.push('GPU 在 ' + s.label + ' 退到 ' + String((o.lastInfo && o.lastInfo.layer) || '未知層') + '，這個形狀不採用'); break; }
+                            if (i > 0) t.push(dt);
+                            if (dt > 3000) { notes.push('GPU 在 ' + s.label + ' 單次超過 3 秒，停止量更大的形狀'); break; }
+                            await yieldTo(); if (cancelled()) break;
+                        }
+                        if (!bad && t.length) gpuPts.push({ W: s.W, ms: med(t) });
+                        if (bad || (t.length && med(t) > 3000)) break;
+                    }
+                });
+            }
+            const cpuPts = []; let cores = 0;
+            if (!cancelled()) {
+                const sh = QM.cpuShare.getShared(); const hw = Math.max(1, Math.floor((typeof navigator !== 'undefined' && navigator.hardwareConcurrency) || 1));
+                const prior = sh.cores(); cores = prior > 0 ? prior : Math.max(1, Math.floor(hw / 2)); sh.setCores(cores);
+                try {
+                    for (const s of shapes) {
+                        if (cancelled()) break;
+                        log('3／3 量 CPU（' + cores + ' 個執行緒）：' + s.label);
+                        const d = BR.makeMatmulInputs(s.M, s.K, s.N, 7); const t = []; let slow = false;
+                        for (let i = 0; i < 4; i++) {
+                            const t0 = now(); const r = await sh.runCpuOnly(d.a, d.b, s.M, s.K, s.N, {}); const dt = now() - t0;
+                            if (i === 0 && r && r.info && r.info.mode === 'cpu-main') { cores = 1; notes.push('CPU 池建不起來（' + String(r.info.why || r.info.fallback || '') + '），改量主執行緒單核'); }
+                            if (i > 0) t.push(dt);
+                            if (dt > 5000) { slow = true; break; }
+                            await yieldTo(); if (cancelled()) break;
+                        }
+                        if (t.length) cpuPts.push({ W: s.W, ms: med(t) });
+                        if (slow) { notes.push('CPU 在 ' + s.label + ' 單次超過 5 秒，停止量更大的形狀'); break; }
+                    }
+                } finally { if (prior === 0) sh.setCores(0); }
+            }
+            if (cancelled()) return { ok: false, cancelled: true, reason: '已取消（沒有存任何結果）' };
+            const plan = faProfilePlan({ gpuPts: gpuPts, cpuPts: cpuPts, gpuVariant: variant, cpuCores: cores, decideSplit: QM.hetero.decideSplit, shapes: shapes.map((s) => ({ label: s.label, W: s.W })) });
+            // 存：速率（hetero_rates，IndexedDB）＋結論（localStorage）。變體勝者已由競賽存進變體快取。
+            let saved = '';
+            try {
+                if (plan.gpu && plan.cpu) {
+                    const store = QM.heteroRates.createRateStore(QM.heteroIdb.createIdbBackend({}));
+                    const key = QM.heteroRates.rateKey({ op: 'matmul', browser: typeof navigator !== 'undefined' ? navigator.userAgent : '', adapter: env.desc, cores: cores });
+                    saved = (await store.save(key, { gpu: plan.gpu.rate, cpu: plan.cpu.rate, updatedAt: Date.now() })) ? '速率已存進快取。' : '速率沒有存成（IndexedDB 不可用）。';
+                }
+            } catch (e) { saved = '速率沒有存成：' + String((e && e.message) || e).slice(0, 100); }
+            const rec = { at: Date.now(), lines: plan.lines, notes: notes, saved: saved, variant: variant, ratio: plan.ratio, crossoverFlops: Number.isFinite(plan.crossoverFlops) ? plan.crossoverFlops : null, perShape: plan.perShape.map((x) => ({ label: x.label, mode: x.mode, fraction: x.fraction })) };
+            try { localStorage.setItem('fa_gpu_profile', JSON.stringify(rec)); } catch (_) { /* 沒有 localStorage：只是不會在重開後顯示 */ }
+            this._gpuProfileLast = rec;
+            return { ok: true, rec: rec, plan: plan };
+        } finally { this._gpuProfileBusy = false; this._gpuProfileCancel = false; }
+    }
+    _gpuProfileLoad() { if (this._gpuProfileLast) return this._gpuProfileLast; try { const v = localStorage.getItem('fa_gpu_profile'); return v ? JSON.parse(v) : null; } catch (_) { return null; } }
     async _gpuBenchRestore() {
         this._gpuBenchCancelRun(); const env = await this._gpuBenchEnvKey(); this._gpuBenchClear(env);
         this.advancedSettings.gpuBenchPins = {}; this._saveAdvancedSettings(); this._gpuBenchMem = { env, rec: null };
