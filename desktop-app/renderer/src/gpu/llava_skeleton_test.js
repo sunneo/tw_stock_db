@@ -172,10 +172,11 @@ function deep(o) {
 }
 
 // ---------- 測試 ----------
-check('模型表與 config.json 一致：文字 Qwen2（24 層、1024、16 頭＝16 kv、2816、vocab 152000、qkv 偏置、tied）；視覺 SigLIP（26 層、1152、16 頭、4304、patch 14）', () => {
+check('模型表與 config.json 一致：文字 Qwen2（24 層、896、14 頭、2 kv、4864、vocab 151936、qkv 偏置、tied）；視覺 SigLIP（26 層、1152、16 頭、4304、patch 14）', () => {
   const M = L.LLAVA_INTERLEAVE_05B, t = ARCH.archFor(M.text);
   assert.strictEqual(M.text, 'qwen2-0.5b');
-  assert.deepStrictEqual([t.layers, t.hidden, t.heads, t.kvHeads, t.ffn, t.vocab], [24, 1024, 16, 16, 2816, 152000]);
+  // Qwen2-0.5B 的數字對照公開 config.json（O12a 修正：先前寫成 1024／16／16／2816／152000，與 config 不符）
+  assert.deepStrictEqual([t.layers, t.hidden, t.heads, t.kvHeads, t.ffn, t.vocab], [24, 896, 14, 2, 4864, 151936]);
   assert.strictEqual(t.bias, true); assert.strictEqual(t.tiedEmbeddings, true); assert.strictEqual(t.rope.base, 1000000);
   assert.strictEqual(ARCH.isSupported('qwen2-0.5b'), true);
   assert.deepStrictEqual([M.vision.layers, M.vision.hidden, M.vision.heads, M.vision.ffn, M.vision.patch, M.vision.channels], [26, 1152, 16, 4304, 14, 3]);
