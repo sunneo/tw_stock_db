@@ -15,6 +15,13 @@
 - `docs/offline-timeouts.md`：離線耗時上限盤點表（逐項標改了／線上不動／待改）。
 - 快照 `1e50ec2d1`：共用入口進行中的改動（語法與 offline_stall 9 項、vlm_core 165 項通過）。後續一批（offline_stall 11 項）工作階段被使用者中斷，內容若有留在工作目錄請先看 `git status` 再決定。
 
+## 本批結果（2026-11-18，接手工作階段）
+- 待辦 1（查證）：聊天核心與新聞摘要都走同一個入口：`_llmGenerate` → `_llmGenerateInner`（floating-assistant.js，約 131062 行）。串流退化偵測已經在這裡：`FaVlm.makeStreamWatch` 每 64 字看尾端、`looksLikeGarbage` 判定，命中就中斷（logs「退化輸出」）。取消：`cb.isStopped` 每 500 毫秒輪詢。卡死偵測：`stallMs`（只看「完全沒有新詞元、也沒有載入進度」）。文件原先說「聊天核心沒有退化偵測」是誤判；約 38934 行的 `degenerate(call)` 是基準測試用的，不在聊天路徑上。
+- 待辦 2（新聞摘要）：`_newsDigestAnswer` → `M.gen`（`_planModel`）→ `_llmGenerate`，已經是同一入口；沒有需要抽出的重複偵測，所以沒有新增純函式。
+- 待辦 3（/aidoc ask）：已接上聊天核心（提交 `226c97d7b`）。`/aidoc ask` 先用索引查出程式碼，把索引說明與程式片段當唯一參考資料交給 `_offlineLlmAnswer`（`opts.codeRefs`），不給工具、不混入訓練器的規則與問答；沒有參考資料或沒有模型時仍只顯示索引結果。**還沒做**：tool 與 recipe 還沒接上（為了保證範圍只限程式碼，本次先關掉工具）；沒有在真的離線模型上端到端驗證；`_offlineLlmAnswer` 的 codeRefs 分支沒有單元測試（只測了 `_aidocAskChat`，11 項）。
+- 待辦 4（逐項上限）：見 `docs/offline-timeouts.md`。本批提交 `fe4bad255`：#9（qwen_chat 每步 20 秒改為不設）。#13 查完。#14 未改，列為待辦。
+- 待辦 5（knowledge_truncation）：檔名是 `scripts/knowledge-tests/knowledge_truncation.test.js`，確實存在。它原本就壞了：檔案是 CRLF，抽方法時找不到結尾，`_callSimpleCompletion` 變空，測試一啟動就出錯（既有問題，不是新的回歸）。已修（正規化換行），17 項通過。
+
 ## 待辦（依序）
 1. 查證聊天核心（藏書閣對話、終端機 ask AI）呼叫離線模型的共用入口，確認 streaming、取消、退化偵測。我 grep 只找到基準用的 `degenerate(call)`（`floating-assistant.js` 約 38913 行）；聊天核心有沒有同類偵測沒查證。
 2. 新聞摘要改走同一個入口；聊天核心沒有退化偵測就把 `degenerate()` 抽成純函式共用，並接到聊天核心 streaming，讓所有離線對話受益；與卡死偵測重複的併掉。
