@@ -130,3 +130,14 @@
 - Python 墊片接上（薄層）。
 - 真機一次（需要發布結束後 embed／build）。
 - 沒有 WebGPU 時的純 CPU 池退路（第 5 節）：目前只有 `cpu_share` 的既有行為（`shared:false` 讓呼叫端走原路徑），還沒有明確的純 CPU 池。
+
+## 12. 真機一次（2026-11-18，hetero-matmul.eval.js）
+
+- 機器：CPU 4 個邏輯核心（`navigator.hardwareConcurrency = 4`，分工用 4 個 Worker）；GPU：WebGPU 回報 vendor `nvidia`、architecture `kepler`（device、description 空白，我沒查是哪張卡）。
+- 形狀：512×512×512 f32 矩陣乘（268 MFLOP）。量測用 `requestExclusiveGpu`。只跑一次。
+- 結果（中位數，5 次）：只用 GPU 18.9 毫秒；GPU＋CPU 分工 18.7 毫秒；加速比 1.01（**沒有實質加速**）。
+- 最後一次分工的細節：CPU 比例 0.08（40 列給 CPU、472 列給 GPU），GPU 段 17.8 毫秒，CPU 段 21.5 毫秒，總計 22.4 毫秒。也就是 CPU 段比 GPU 段慢，決策的預測沒有成真。
+- 正確性：兩種路徑與參考結果的最大相對誤差都約 2e-6。
+- device 狀態：`deviceReady` 前後都是 true。
+- 我沒有查證的原因（只是推測，請以後續量測為準）：速率是 EMA 平滑後的值，GPU 速率從 6.9e6 flops/ms 推算的 GPU 段時間（約 39 毫秒）與實測（約 18 毫秒）差很多，所以比例的計算本身就偏了；CPU 段的固定成本（送訊息、拷貝 B 矩陣）可能被低估（決策用 0.5 毫秒）。
+- 結論：在這台機器與這個形狀，分攤沒有帶來加速。GPU 很快，CPU 段的固定成本與預測誤差吃掉了收益。要改善，需要先修正速率估計（用純 GPU 路徑的實測時間回饋）與固定成本的量測，再決定是否值得分攤。這次真機已經用掉一次，依規定不再重跑。
