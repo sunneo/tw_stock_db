@@ -115,12 +115,17 @@ function createCpuShare(o) {
   // 比例：兩邊速率都量到了，就用分攤決策（含固定成本與 15% margin，見 hetero_split）；還沒量到就做小份探測。
   // 決策說不切時，每 PROBE_EVERY 次探測一次，免得 CPU 速率過期。未給尺寸時當作大運算（測試與舊呼叫端用）。
   let sinceProbe = 0;
+  let fbFrac = null;   // 上一次分工的實測段耗時回饋（null＝還沒有）
   function ratioNow(m, k, n) {
     const probe = Math.min(MAX_CPU_RATIO, want * FIRST_RATIO_PER_CORE);
     if (!(rate.gpu > 0 && rate.cpu > 0)) return probe;
     const work = (m && k && n) ? 2 * m * k * n : 1e9;
     const d = HS.decideSplit({ work, gpuAvailable: true, cpuAvailable: want > 0, gpuRate: rate.gpu, cpuRate: rate.cpu, gpuOverheadMs: 0, cpuOverheadMs: CPU_OVERHEAD_MS });
-    if (d.mode === 'split') { sinceProbe = 0; return Math.min(MAX_CPU_RATIO, d.fraction); }
+    if (d.mode === 'split') {
+      sinceProbe = 0;
+      const f = fbFrac == null ? d.fraction : Math.min(d.fraction, fbFrac);   // 實測段耗時的回饋只會往下修
+      return Math.min(MAX_CPU_RATIO, f);
+    }
     if (++sinceProbe >= PROBE_EVERY) { sinceProbe = 0; return probe; }
     return 0;
   }
@@ -172,6 +177,8 @@ function createCpuShare(o) {
     const y = new Float32Array(m * n);
     y.set(yG.length === mG * n ? yG : yG.subarray(0, mG * n), 0);
     let off = mG * n; cpuParts.forEach((c) => { y.set(c, off); off += c.length; });
+    // 段耗時回饋：這次實測的 GPU 段與 CPU 段耗時，算出讓兩段相等的比例；下一次的比例不會超過它（CPU 段慢 → 往下修）
+    fbFrac = HS.feedbackFraction(mC / m, gpuMs, cpuMs, MAX_CPU_RATIO);
     // 回饋：兩邊各自的速率（用各自完成的時間，不是總時間），下一次的比例據此調整
     if (gpuMs > 0) rate.gpu = ema(rate.gpu, (2 * mG * k * n) / gpuMs);
     if (cpuMs > 0) rate.cpu = ema(rate.cpu, (2 * mC * k * n) / cpuMs);
@@ -179,10 +186,10 @@ function createCpuShare(o) {
     return { shared: true, y, info: last };
   }
 
-  function stats() { return { cores: want, workers: pool.length, broken, rate: { gpu: rate.gpu, cpu: rate.cpu }, last }; }
+  function stats() { return { cores: want, workers: pool.length, broken, rate: { gpu: rate.gpu, cpu: rate.cpu }, feedback: fbFrac, last }; }
   function dispose() { want = 0; ensurePool(); }
   // _setRates／_ratioNow 只給測試用（底線開頭）：直接設定兩邊速率，讓決策可以確定地走到切分或不切
-  return { setCores, cores: () => want, run, stats, dispose, _ratioNow: ratioNow, _setRates: (g, c) => { rate.gpu = Number(g) || 0; rate.cpu = Number(c) || 0; } };
+  return { setCores, cores: () => want, run, stats, dispose, _ratioNow: ratioNow, _setRates: (g, c) => { rate.gpu = Number(g) || 0; rate.cpu = Number(c) || 0; fbFrac = null; } };
 }
 
 // 全域單例：mm_ops 與設定頁共用

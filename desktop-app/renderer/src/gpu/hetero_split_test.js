@@ -150,5 +150,32 @@ const same = (a, b) => a.length === b.length && a.every((v, i) => v === b[i]);
     console.log('ok 13 無裝置與 cpu 模式錯誤');
   }
 
+  // 14. 保守閘：總收益 20%（扣掉 15% margin 後淨 5%，低於 10%）→ 全給 GPU；總收益 33%（淨 18%）→ 切分
+  {
+    const low = H.decideSplit({ work: 100, gpuAvailable: true, cpuAvailable: true, gpuRate: 1, cpuRate: 0.25, gpuOverheadMs: 0, cpuOverheadMs: 0 });
+    assert.strictEqual(low.mode, 'gpu', '淨收益 5% 應全給 GPU（實際 ' + low.mode + '，saving=' + low.saving + '）');
+    assert.match(low.reason, /低於 10%/);
+    const high = H.decideSplit({ work: 100, gpuAvailable: true, cpuAvailable: true, gpuRate: 1, cpuRate: 0.5, gpuOverheadMs: 0, cpuOverheadMs: 0 });
+    assert.strictEqual(high.mode, 'split', '淨收益 18% 應切分');
+    assert.ok(high.net >= H.NET_MIN - 1e-9);
+    console.log('ok 14 保守閘（淨收益低於 10% 全給 GPU）');
+  }
+
+  // 15. 實測段耗時回饋：CPU 段比 GPU 段慢 → 比例往下修；CPU 快 → 往上修；資料不足或超出上限時的行為
+  {
+    const down = H.feedbackFraction(0.08, 17.8, 21.5);
+    assert.ok(down < 0.08, 'CPU 段慢，比例應下修（實際 ' + down + '）');
+    // 兩段實測相等時，比例應該不變（平衡點）
+    const same = H.feedbackFraction(0.2, 10, 10);  // 兩段耗時相等時，平衡點就是原比例 0.2（kc·f = kg·(1−f)）
+    assert.ok(Math.abs(same - 0.2) < 1e-9, '平衡時比例不變（實際 ' + same + '）');
+    const up = H.feedbackFraction(0.1, 5, 1);
+    assert.ok(up > 0.1, 'CPU 很快，比例應上修（實際 ' + up + '）');
+    assert.ok(H.feedbackFraction(0.4, 1, 0.0001) <= H.MAX_CPU_FRAC + 1e-9, '不超過上限');
+    assert.strictEqual(H.feedbackFraction(0.05, 0.001, 100), 0, 'CPU 段極慢（GPU 段極快），算出來不到 2% 就取 0');
+    assert.strictEqual(H.feedbackFraction(0.3, 0, 5), 0.3, '段耗時為 0 時資料不足，保留原比例');
+    assert.strictEqual(H.feedbackFraction(0, 5, 5), 0, '原比例為 0 時保持 0');
+    console.log('ok 15 段耗時回饋');
+  }
+
   console.log('hetero_split：全部通過');
 })().catch((e) => { console.error('失敗：', (e && e.stack) || e); process.exit(1); });

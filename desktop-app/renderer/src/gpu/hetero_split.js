@@ -5,6 +5,22 @@
 
 const MAX_CPU_FRAC = 0.5;   // CPU 最多分擔一半（與 cpu_share 的 MAX_CPU_RATIO 一致）
 const MARGIN = 0.15;        // 切分至少要比只給 GPU 快 15%，否則全給 GPU（保守）
+const NET_MIN = 0.10;       // 保守閘：扣掉 margin 後的淨收益要至少 10%（也就是切分總共要省 25%）
+
+// 實測段耗時回饋：上一次的比例 f、GPU 段與 CPU 段實測毫秒（GPU 段 = (1−f) 的列，CPU 段 = f 的列），
+// 假設各段時間與各自的列數成正比，算出讓兩段耗時相等的新比例。CPU 段慢 → 比例往下修；快 → 往上修。
+// 結果限制在 [0, maxF]；小於 2% 直接取 0（不值得分攤）。資料不足（段耗時非正）時回傳原比例。
+function feedbackFraction(f, gpuSegMs, cpuSegMs, maxF) {
+  const cap = maxF == null ? MAX_CPU_FRAC : Number(maxF);
+  const x = Number(f) || 0;
+  const tg = Number(gpuSegMs), tc = Number(cpuSegMs);
+  if (!(x > 0 && x < 1) || !(tg > 0) || !(tc > 0)) return x;
+  const kc = tc / x;            // CPU 每單位比例的耗時
+  const kg = tg / (1 - x);      // GPU 每單位比例的耗時
+  let nf = kg / (kc + kg);      // 讓 kc·f = kg·(1−f) 的 f
+  nf = Math.min(cap, Math.max(0, nf));
+  return nf < 0.02 ? 0 : nf;
+}
 
 // 分攤決策。
 // o: { work, gpuAvailable, cpuAvailable, gpuRate, cpuRate, gpuOverheadMs, cpuOverheadMs, margin?, maxCpuFrac?, minCpuMs? }
@@ -36,8 +52,11 @@ function decideSplit(o) {
   const cpuSegMs = f * C + co;
   if (f * C < minCpuMs) return { mode: 'gpu', fraction: 0, gpuOnlyMs, reason: 'CPU 段太小，固定成本划不來，全給 GPU' };
   const predictedMs = Math.max((1 - f) * G + go, cpuSegMs);
-  if (predictedMs > (1 - margin) * gpuOnlyMs) return { mode: 'gpu', fraction: 0, gpuOnlyMs, predictedMs, reason: '切分省不到 ' + Math.round(margin * 100) + '%，全給 GPU' };
-  return { mode: 'split', fraction: f, predictedMs, gpuOnlyMs, reason: '切分預測省 ' + Math.round((1 - predictedMs / gpuOnlyMs) * 100) + '%' };
+  // 保守閘：預估收益（已扣固定成本）減去 margin 後，要至少 NET_MIN；否則全給 GPU
+  const saving = (gpuOnlyMs - predictedMs) / gpuOnlyMs;
+  const net = saving - margin;
+  if (net < NET_MIN) return { mode: 'gpu', fraction: 0, gpuOnlyMs, predictedMs, saving, net, reason: '扣掉 margin 後淨收益 ' + Math.round(net * 100) + '%，低於 ' + Math.round(NET_MIN * 100) + '%，全給 GPU' };
+  return { mode: 'split', fraction: f, predictedMs, gpuOnlyMs, saving, net, reason: '切分預測省 ' + Math.round(saving * 100) + '%（淨 ' + Math.round(net * 100) + '%）' };
 }
 
 // 依列切分：GPU 拿前面的列，CPU 拿後面的列（與 cpu_share 相同的順序）。至少給 GPU 一列。
@@ -121,4 +140,4 @@ async function runSplit(o) {
   return finish(merged, info);
 }
 
-module.exports = { decideSplit, splitRows, mergeParts, runSplit, MAX_CPU_FRAC, MARGIN };
+module.exports = { decideSplit, splitRows, mergeParts, runSplit, feedbackFraction, MAX_CPU_FRAC, MARGIN, NET_MIN };

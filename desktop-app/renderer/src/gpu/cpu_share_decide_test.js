@@ -57,5 +57,17 @@ let t = 0; const now = () => (t += 1);
   assert.strictEqual(r2.shared, false, '小運算不分工');
   console.log('ok 5 小運算執行路徑 shared:false');
 
+  // 6. 段耗時回饋：分工後 stats().feedback 等於依實測段耗時算出的比例；下一次的決策比例不會超過它
+  {
+    const H2 = require('./hetero_split.js');
+    const s = on.stats();
+    assert.ok(s.last && s.last.shared, '前面的分工應該留下 last');
+    const expect = H2.feedbackFraction(s.last.mCpu / s.last.m, s.last.gpuMs, s.last.cpuMs, CS.MAX_CPU_RATIO);
+    assert.ok(Math.abs(s.feedback - expect) < 1e-9, '回饋比例應等於依實測段耗時算出的值（' + s.feedback + ' vs ' + expect + '）');
+    const nxt = on._ratioNow(M, K, N);
+    assert.ok(nxt <= s.feedback + 1e-9 || nxt === 0, '下一次比例不應超過回饋比例（' + nxt + ' > ' + s.feedback + '）');
+    console.log('ok 6 段耗時回饋（回饋 ' + s.feedback.toFixed(3) + '，下一次 ' + nxt.toFixed(3) + '）');
+  }
+
   console.log('cpu_share_decide_test：全部通過');
 })().catch((e) => { console.error('失敗：', (e && e.stack) || e); process.exit(1); });
