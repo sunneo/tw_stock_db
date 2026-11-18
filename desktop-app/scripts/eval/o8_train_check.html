@@ -9,7 +9,7 @@
   按「跑 1 步」（先跑這個）；確認沒問題再按「跑 20 步」（每步之間會讓出主執行緒，避免凍結）。
 結果在 window.__out；把整段文字貼回即可。沒有 WebGPU 或裝置失敗時，頁面會照實寫原因。
 </div>
-<p><button id="b1">跑 1 步</button> <button id="b20">跑 20 步</button> <span id="st"></span></p>
+<p><button id="b1">跑 1 步</button> <button id="b20">跑 20 步</button> <button id="bc">對照：舊路徑／整步 f32／整步 f16（20 步，同機）</button> <span id="st"></span></p>
 <pre id="log"></pre>
 <script>
 // O8 真 Chrome 驗證頁：整步一次提交（train_step_device.js）對 CPU f64（lora_ref_train.js 的同步路徑）。
@@ -81,13 +81,74 @@ async function run(nSteps) {
   say('完成。最差 loss 相對差 ' + out.worstLossRelDiff.toExponential(3) + '；每步單次提交：' + out.allSingleSubmit + '。硬體請另外標註（本機 Kepler 14 W Intel iGPU）。');
 }
 
+// ===== 同機對照（O8）：同一模型、同一批序列、同步數。路徑：舊（逐 matmul 回讀，cudaweb 執行期＋trainerOps）、整步 f32、整步 f16；參考：CPU f64。
+// 每條路徑先做一次不計時的暖機（用另一組模型），再量 20 步。時間是 performance.now() 包住一整步（含 CPU 端的 Adam 與讀回）。
+const CMP_N = 20;
+function avgGrads(rs) {
+  return rs[0].grads.map((_, l) => { const o = {}; for (const k of ['q', 'k', 'v', 'o']) { o[k] = {}; for (const w of ['A', 'B']) { const n = rs[0].grads[l][k][w].length, a = new Float64Array(n); for (const r of rs) for (let i = 0; i < n; i++) a[i] += r.grads[l][k][w][i] / rs.length; o[k][w] = a; } } return o; });
+}
+async function stepLegacy(LR, NN, rt, m, st) {
+  const be = LR.cudawebMatmulBackend(rt), ops = NN.trainerOps({ navigator: navigator });
+  const rs = []; for (const tk of seqs) { rs.push(await LR.lossAndGradsAsync(m, tk, { backend: be, ops: ops })); }
+  const loss = (rs[0].loss + rs[1].loss) / 2;
+  await LR.adamStepAsync(m, avgGrads(rs), st, LRATE, ops);
+  return loss;
+}
+async function runCompareBtn() {
+  const b = document.getElementById('bc'), bb1 = document.getElementById('b1'), bb20 = document.getElementById('b20');
+  b.disabled = true; bb1.disabled = true; bb20.disabled = true;
+  try { await runCompare(); } catch (e) { out.compare = { error: String((e && e.stack) || e) }; say('對照錯誤：' + out.compare.error); }
+  finally { b.disabled = false; bb1.disabled = false; bb20.disabled = false; }
+}
+async function runCompare() {
+  const NN = mods.nn_ops.exports, TS = mods.train_step_device.exports, LR = mods.lora_ref_train.exports, MM = mods.mm_ops.exports, RT = mods.cudaweb_runtime.exports;
+  const g = await NN.getDevice(navigator); if (!g.dev) { say('沒有 WebGPU 裝置：' + g.reason); return; }
+  const dev = g.dev;
+  const rt = RT.createRuntime({ nn: NN, mm: MM, navigator: navigator, device: dev });
+  const subsBox = { n: 0 }; const orig = dev.queue.submit.bind(dev.queue); dev.queue.submit = (c) => { subsBox.n++; return orig(c); };
+  const tm = () => new Promise((r) => setTimeout(r, 0));
+  // 暖機（不計時、不記錄）：各路徑各跑一步，用另一組模型
+  const wm = LR.makeModel(cfg, 17), ws = LR.adamInit(wm);
+  await stepLegacy(LR, NN, rt, wm, ws); await TS.trainStepDevice({ nn: NN, device: dev, model: wm, seqs, st: ws, lr: LRATE, f16: false });
+  await TS.trainStepDevice({ nn: NN, device: dev, model: wm, seqs, st: ws, lr: LRATE, f16: true });
+  say('暖機完成，開始 ' + CMP_N + ' 步對照…'); await tm();
+  const SEED = 9;
+  const P = { cpu: LR.makeModel(cfg, SEED), leg: LR.makeModel(cfg, SEED), f32: LR.makeModel(cfg, SEED), f16: LR.makeModel(cfg, SEED) };
+  const S = { cpu: LR.adamInit(P.cpu), leg: LR.adamInit(P.leg), f32: LR.adamInit(P.f32), f16: LR.adamInit(P.f16) };
+  const rec = { cpu: [], leg: [], f32: [], f16: [] }, tms = { leg: [], f32: [], f16: [] }, subs = { leg: [], f32: [], f16: [] };
+  for (let step = 0; step < CMP_N; step++) {
+    rec.cpu.push(await cpuStep(LR, P.cpu, S.cpu)); await tm();
+    subsBox.n = 0; let t0 = performance.now(); rec.leg.push(await stepLegacy(LR, NN, rt, P.leg, S.leg)); tms.leg.push(performance.now() - t0); subs.leg.push(subsBox.n); await tm();
+    subsBox.n = 0; t0 = performance.now(); const a = await TS.trainStepDevice({ nn: NN, device: dev, model: P.f32, seqs, st: S.f32, lr: LRATE, f16: false }); tms.f32.push(performance.now() - t0); subs.f32.push(subsBox.n); rec.f32.push(a.loss); await tm();
+    subsBox.n = 0; t0 = performance.now(); const c = await TS.trainStepDevice({ nn: NN, device: dev, model: P.f16, seqs, st: S.f16, lr: LRATE, f16: true }); tms.f16.push(performance.now() - t0); subs.f16.push(subsBox.n); rec.f16.push(c.loss); await tm();
+    say('對照第 ' + (step + 1) + ' 步：cpu ' + rec.cpu[step].toFixed(6) + '，舊 ' + rec.leg[step].toFixed(6) + '（' + tms.leg[step].toFixed(0) + ' ms），f32 ' + rec.f32[step].toFixed(6) + '（' + tms.f32[step].toFixed(1) + ' ms），f16 ' + rec.f16[step].toFixed(6) + '（' + tms.f16[step].toFixed(1) + ' ms）');
+  }
+  dev.queue.submit = orig;
+  const med = (x) => { const y = x.slice().sort((p, q) => p - q); return y[Math.floor(y.length / 2)]; };
+  const worstRel = (k) => Math.max(...rec[k].map((v, i) => Math.abs(v - rec.cpu[i]) / Math.abs(rec.cpu[i])));
+  const pdiff = (k) => { const pc = paramsOf(P.cpu), pk = paramsOf(P[k]); let d = 0, sc = 0; for (let i = 0; i < pc.length; i++) { d = Math.max(d, maxAbsDiff(pc[i], pk[i])); sc = Math.max(sc, maxAbs(pc[i])); } return { abs: d, scale: sc }; };
+  out.compare = {
+    hardware: 'intel xe-lpg（真 Chrome）', steps: CMP_N, shaderF16: !!(dev.features && dev.features.has && dev.features.has('shader-f16')),
+    warmup: 'each path once, not timed',
+    loss: { cpuF64: rec.cpu, legacy: rec.leg, f32: rec.f32, f16: rec.f16 },
+    worstLossRelVsCpu: { legacy: worstRel('leg'), f32: worstRel('f32'), f16: worstRel('f16') },
+    paramMaxAbsVsCpuAfterN: { legacy: pdiff('leg'), f32: pdiff('f32'), f16: pdiff('f16') },
+    msPerStep: { legacy: tms.leg, f32: tms.f32, f16: tms.f16 },
+    medianMs: { legacy: med(tms.leg), f32: med(tms.f32), f16: med(tms.f16) },
+    submitsPerStep: { legacy: subs.leg, f32: subs.f32, f16: subs.f16 },
+    f16VsF32WorstLossRel: Math.max(...rec.f16.map((v, i) => Math.abs(v - rec.f32[i]) / Math.abs(rec.f32[i]))),
+  };
+  say('對照完成。中位數 ms：舊 ' + out.compare.medianMs.legacy.toFixed(1) + '，f32 ' + out.compare.medianMs.f32.toFixed(1) + '，f16 ' + out.compare.medianMs.f16.toFixed(1) + '；最差 loss 相對差（對 CPU f64）：舊 ' + out.compare.worstLossRelVsCpu.legacy.toExponential(2) + '，f32 ' + out.compare.worstLossRelVsCpu.f32.toExponential(2) + '，f16 ' + out.compare.worstLossRelVsCpu.f16.toExponential(2));
+}
+
 (async () => {
   try {
-    for (const [k, u] of [['gpu_pool', '../../renderer/src/gpu/gpu_pool.js'], ['kernel_gen', '../../renderer/src/gpu/kernel_gen.js'], ['gpu_core', '../../renderer/src/gpu/gpu_core.js'], ['nn_ops', '../../renderer/src/gpu/nn_ops.js'], ['train_fused', '../../renderer/src/gpu/train_fused.js'], ['train_step_device', '../../renderer/src/gpu/train_step_device.js'], ['lora_ref_train', '../../renderer/src/studio/lora_ref_train.js']]) await loadMod(k, u);
+    for (const [k, u] of [['gpu_pool', '../../renderer/src/gpu/gpu_pool.js'], ['kernel_gen', '../../renderer/src/gpu/kernel_gen.js'], ['gpu_core', '../../renderer/src/gpu/gpu_core.js'], ['nn_ops', '../../renderer/src/gpu/nn_ops.js'], ['train_fused', '../../renderer/src/gpu/train_fused.js'], ['train_step_device', '../../renderer/src/gpu/train_step_device.js'], ['lora_ref_train', '../../renderer/src/studio/lora_ref_train.js'], ['kernel_select', '../../renderer/src/gpu/kernel_select.js'], ['profile_priors', '../../renderer/src/gpu/profile_priors.js'], ['variant_race', '../../renderer/src/gpu/variant_race.js'], ['mm_ops', '../../renderer/src/gpu/mm_ops.js'], ['cudaweb_runtime', '../../renderer/src/gpu/cudaweb_runtime.js']]) await loadMod(k, u);
     out.loaded = true;
     const runBtn = async (n) => { document.getElementById('b1').disabled = true; document.getElementById('b20').disabled = true; try { await run(n); } catch (e) { out.error = String((e && e.message) || e); say('錯誤：' + out.error); } finally { document.getElementById('b1').disabled = false; document.getElementById('b20').disabled = false; } };
     document.getElementById('b1').onclick = () => runBtn(1);
     document.getElementById('b20').onclick = () => runBtn(20);
+    document.getElementById('bc').onclick = () => runCompareBtn();
     say('模組已載入。按按鈕開始。');
   } catch (e) { out.error = String((e && e.message) || e); say('載入失敗：' + out.error); }
 })();
