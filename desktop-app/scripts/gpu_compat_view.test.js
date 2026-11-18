@@ -40,9 +40,9 @@ ok(/約為 CPU 的 8 倍快/.test(L.faGpuCompatSummary({ deviceReady: true }, ro
 ok(/GPU 可用，矩陣乘速度跟 CPU 差不多/.test(L.faGpuCompatSummary({ deviceReady: true }, [row('a', 'cudaweb', 10), row('a', 'ort-wasm', 10)])), '結論：差不多');
 ok(/比 CPU 慢/.test(L.faGpuCompatSummary({ deviceReady: true }, [row('a', 'cudaweb', 40), row('a', 'ort-wasm', 10)])), '結論：比 CPU 慢要明說');
 ok(/不能用.*原因X.*CPU/.test(L.faGpuCompatSummary({ deviceReady: false, probeReason: '原因X' }, rows)), '結論：GPU 不可用寫原因與退路，即使有舊結果');
-ok(/按「跑基準」/.test(L.faGpuCompatSummary({ deviceReady: true }, [])), '結論：可用但還沒量測，引導按跑基準');
+ok(/按「Profile」/.test(L.faGpuCompatSummary({ deviceReady: true }, [])), '結論：可用但還沒量測，引導按跑基準');
 ok(/不知道/.test(L.faGpuCompatSummary(null, null)), '結論：完全沒資料，不亂講可用');
-ok(/按「跑基準」/.test(L.faGpuCompatSummary({ deviceReady: true }, [row('a', 'cudaweb', 10, 2), row('a', 'ort-wasm', 80)])), '結論：有錯誤的量測不採用');
+ok(/按「Profile」/.test(L.faGpuCompatSummary({ deviceReady: true }, [row('a', 'cudaweb', 10, 2), row('a', 'ort-wasm', 80)])), '結論：有錯誤的量測不採用');
 ok(/約為 CPU 的 \d+ 倍/.test(L.faGpuCompatSummary(null, rows)), '結論：沒偵測資訊但有量測，也能給倍數');
 
 console.log('通過 ' + pass + '，失敗 ' + fail); process.exit(fail ? 1 : 0);

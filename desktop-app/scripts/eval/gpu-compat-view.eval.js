@@ -15,7 +15,7 @@ const snap = () => {
   return { view: pane.firstElementChild && pane.dataset.gpuView || (pane.firstElementChild || {}).dataset && pane.firstElementChild.dataset.gpuView, blocks, viewBarShown: !!bar && bar.style.display !== 'none',
     summary: (pane.querySelector('#ai-gpu-compat-summary') || {}).textContent,
     hasVariantTable: /變體競賽|套用最佳|匯出剖析/.test(visibleText), hasBenchTable: /median ms/.test(visibleText), hasFloat64: /float64/.test(visibleText), hasCpuShare: /分擔矩陣乘/.test(visibleText), hasKernelTune: /運算變體（自動調校/.test(visibleText),
-    hasMainSwitch: /開啟 GPU 相容層/.test(visibleText), hasDevice: /用什麼算/.test(visibleText), hasQuickBtn: Array.from(pane.querySelectorAll('button')).some((b) => b.textContent === '跑基準' && vis(b.closest('[data-gpu-block]'))) };
+    hasMainSwitch: /開啟 GPU 相容層/.test(visibleText), hasDevice: /用什麼算/.test(visibleText), hasQuickBtn: Array.from(pane.querySelectorAll('button')).some((b) => b.textContent === 'Profile' && vis(b.closest('[data-gpu-block]'))) };
 };
 fa.advancedSettings.engineeringMode = false; fa.advancedSettings.gpuCompatView = 'pro'; fa._renderAdvancedSettings(); await wait(300);
 R.engOff_prefPro = snap();
