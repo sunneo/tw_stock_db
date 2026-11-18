@@ -4730,6 +4730,19 @@ function faCrossoverFromPoints(gpuPts, cpuPts) {
     }
     return Infinity;                                    // 量測範圍內 CPU 都較快
 }
+// Profile 量 GPU 時強制走 GPU：卸載交界點暫時設為 0（永不卸載），回傳還原函式（還原為量測前的交界點，含 null／Infinity）。
+function faForceGpuRoute(mm) {
+    const st = mm && typeof mm.getOffloadStatus === 'function' ? mm.getOffloadStatus() : null;
+    const prev = st ? st.crossover : null;
+    if (mm && typeof mm.setOffloadCrossover === 'function') mm.setOffloadCrossover(0);
+    return function restore() { if (mm && typeof mm.setOffloadCrossover === 'function') mm.setOffloadCrossover(prev); };
+}
+// GPU 量測的有效性：有 WebGPU 卻沒有至少兩個 GPU 形狀的端到端時間，視為量測無效（不是「GPU 不可用」），不存結果。
+function faGpuPointsVerdict(hasGpu, gpuPts) {
+    if (!hasGpu) return { valid: true, reason: '' };
+    if (Array.isArray(gpuPts) && gpuPts.length >= 2) return { valid: true, reason: '' };
+    return { valid: false, reason: 'GPU 量測無效：有 WebGPU，但只有 ' + (Array.isArray(gpuPts) ? gpuPts.length : 0) + ' 個形狀真的走 GPU（至少要 2 個）。' };
+}
 // o: { gpuPts, cpuPts, gpuVariant, cpuCores, decideSplit（hetero_split.decideSplit）, shapes: [{ label, W }]（由小到大） }
 // 回傳 { gpu, cpu, ratio, crossoverFlops, perShape, lines }；lines 是給人看的白話（每句的數字都來自實測）
 function faProfilePlan(o) {
@@ -131223,9 +131236,11 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         const med = (a) => { const t = a.slice().sort((x, y) => x - y); return t[Math.floor(t.length / 2)]; };
         const shapes = [32, 64, 128, 256, 384, 512].map((N) => ({ M: N, K: N, N, W: 2 * N * N * N, label: N + '×' + N + '×' + N }));   // 方形，涵蓋交界點（舊的三個大形狀讓線性擬合失真）
         const notes = [];
+        let restoreRoute = null;   // 量 GPU 期間強制走 GPU 的還原函式（finally 也會還原）
         try {
             const QM = this._qwenModule(); const BR = QM.bench;
             const env = await this._gpuVariantCaps();
+            restoreRoute = faForceGpuRoute(QM.mm);
             let hasGpu = typeof navigator !== 'undefined' && !!navigator.gpu; let variant = ''; const gpuPts = [];
             if (hasGpu) {
                 QM.mm.setMatmulCaps(env.caps, env.desc);
@@ -131251,10 +131266,11 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                             await yieldTo(); if (cancelled()) break;
                         }
                         if (!bad && t.length) gpuPts.push({ W: s.W, ms: med(t) });
-                        if (bad || (t.length && med(t) > 3000)) break;
+                        if (t.length && med(t) > 3000) break;   // 這個形狀沒走 GPU（bad）只跳過它，不中斷後面的形狀
                     }
                 });
             }
+            if (restoreRoute) { restoreRoute(); restoreRoute = null; }   // GPU 量完，還原卸載交界點，CPU 量測不受影響
             const cpuPts = []; let cores = 0;
             if (!cancelled()) {
                 const sh = QM.cpuShare.getShared(); const hw = Math.max(1, Math.floor((typeof navigator !== 'undefined' && navigator.hardwareConcurrency) || 1));
@@ -131277,6 +131293,8 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                 } finally { if (prior === 0) sh.setCores(0); }
             }
             if (cancelled()) return { ok: false, cancelled: true, reason: '已取消（沒有存任何結果）' };
+            const gv = faGpuPointsVerdict(hasGpu, gpuPts);
+            if (!gv.valid) { log(gv.reason); return { ok: false, invalid: true, notes: notes, reason: gv.reason + ' 沒有存新結果，保留先前的 fa_gpu_profile。' }; }
             const plan = faProfilePlan({ gpuPts: gpuPts, cpuPts: cpuPts, gpuVariant: variant, cpuCores: cores, decideSplit: QM.hetero.decideSplit, shapes: shapes.map((s) => ({ label: s.label, W: s.W })) });
             // 存：速率（hetero_rates，IndexedDB）＋結論（localStorage）。變體勝者已由競賽存進變體快取。
             let saved = '';
@@ -131292,7 +131310,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
             try { localStorage.setItem('fa_gpu_profile', JSON.stringify(rec)); } catch (_) { /* 沒有 localStorage：只是不會在重開後顯示 */ }
             this._gpuProfileLast = rec;
             return { ok: true, rec: rec, plan: plan };
-        } finally { this._gpuProfileBusy = false; this._gpuProfileCancel = false; }
+        } finally { if (restoreRoute) { try { restoreRoute(); } catch (_) { /* 還原失敗不影響後續 */ } } this._gpuProfileBusy = false; this._gpuProfileCancel = false; }
     }
     _gpuProfileLoad() { if (this._gpuProfileLast) return this._gpuProfileLast; try { const v = localStorage.getItem('fa_gpu_profile'); return v ? JSON.parse(v) : null; } catch (_) { return null; } }
     async _gpuBenchRestore() {

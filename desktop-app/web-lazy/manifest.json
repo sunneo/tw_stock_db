@@ -58,10 +58,12 @@
     "faGpuCompatSummary",
     "faProfileFit",
     "faCrossoverFromPoints",
+    "faForceGpuRoute",
+    "faGpuPointsVerdict",
     "faProfilePlan"
    ],
-   "size": 5328,
-   "md5": "361b5c4d11076afd69f243ca0069977a"
+   "size": 5868,
+   "md5": "3f32fe154577c49e99e34639a7034974"
   },
   "qwengpu": {
    "file": "chunks/qwengpu.js",
@@ -1909,7 +1911,7 @@
   }
  },
  "core": {
-  "size": 6132096,
-  "md5": "b5348a2c43b6cdb4761443b283639b11"
+  "size": 6132370,
+  "md5": "bc0814aaea5f4db2f48dd983cc89dd91"
  }
 }
