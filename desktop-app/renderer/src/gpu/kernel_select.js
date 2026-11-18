@@ -166,4 +166,78 @@ function chooseWinner(timings) {
   return best;
 }
 
-module.exports = { DEFAULT_CAPS, probeCaps, tierOf, pickVariant, VARIANTS, meets, capsHash, shapeBucket, cacheKey, pickWithCache, medianOf, chooseWinner };
+// ---------- 競賽執行器（O9 整合：kernel_race.race 與 variant_race.race 共用這一份）----------
+// opts：
+//   ids：依優先序的變體 id 清單（呼叫端先做能力／形狀過濾）
+//   device：{ run(id) → 毫秒（或 Promise）, verify(id) → 相對誤差（可省） }
+//   clock：{ now() → 毫秒 }；yieldFn：每個停止點先呼叫（讓出執行緒）；cancel：{ cancelled() } 或回傳布林的函式
+//   budgetMs（2000）、runs（3）、tol（1e-5）、K（驗證＋計時的變體數上限，預設不限）、allowPartial（未跑滿的次數是否計入勝負，預設否）
+// 規則：驗證先於計時；每次量測若「已用＋最長一次耗時」會超過預算就不開始；取消時 winner 為 null。
+// 回傳 { winner: {id, median}|null, timings: {id: [ms×runs]}, partial: {id: [ms]}, bad: [{id, reason}], skipped: [id], budgetHit, cancelled, ms }。
+async function raceVariants(opts) {
+  opts = opts || {};
+  const device = opts.device;
+  if (!device || typeof device.run !== 'function') throw new Error('kernel_select：競賽需要 device.run');
+  const ids = opts.ids || [];
+  const clock = opts.clock || { now: function () { return typeof performance !== 'undefined' ? performance.now() : Date.now(); } };
+  const yieldFn = opts.yieldFn || function () { return new Promise(function (r) { setTimeout(r, 0); }); };
+  const budget = opts.budgetMs || 2000;
+  const runs = opts.runs || 3;
+  const tol = opts.tol || 1e-5;
+  const K = opts.K || Infinity;
+  const cancelSrc = opts.cancel;
+  const cancelObj = typeof cancelSrc === 'function' ? { cancelled: cancelSrc } : (cancelSrc || { cancelled: function () { return false; } });
+  const t0 = clock.now();
+  const res = { winner: null, timings: {}, partial: {}, bad: [], skipped: [], budgetHit: false, cancelled: false, ms: 0 };
+  if (opts.op !== undefined) res.op = opts.op;
+  let lastMs = 0;  // 量到的最長單次耗時：下一次只在「已用＋這個耗時」不超過預算時才開始
+  let stop = null;
+  let tried = 0;
+  function setStop(s) {
+    stop = s;
+    if (s === 'cancel') res.cancelled = true;
+    if (s === 'budget') res.budgetHit = true;
+  }
+  async function gate() {
+    await yieldFn();
+    if (cancelObj.cancelled()) return 'cancel';
+    if (clock.now() - t0 + lastMs > budget) return 'budget';
+    return null;
+  }
+  for (const id of ids) {
+    if (stop === null && tried < K) setStop(await gate());
+    if (stop === 'cancel') break;
+    if (stop === 'budget' || tried >= K) { res.skipped.push(id); continue; }
+    tried++;
+
+    if (device.verify) {
+      let err;
+      try { err = await device.verify(id); } catch (e) { res.bad.push({ id: id, reason: '驗證丟錯：' + msgOf(e) }); continue; }
+      if (!(typeof err === 'number' && err <= tol)) { res.bad.push({ id: id, reason: '相對誤差 ' + err + ' 超過 ' + tol }); continue; }
+    }
+
+    const xs = [];
+    let failed = false;
+    for (let r = 0; r < runs; r++) {
+      setStop(await gate());
+      if (stop) break;
+      let ms;
+      try { ms = await device.run(id); } catch (e) { res.bad.push({ id: id, reason: '執行丟錯：' + msgOf(e) }); failed = true; break; }
+      if (typeof ms !== 'number' || !isFinite(ms) || ms < 0) { res.bad.push({ id: id, reason: '計時無效：' + ms }); failed = true; break; }
+      xs.push(ms);
+      if (ms > lastMs) lastMs = ms;
+    }
+    if (failed) continue;
+    if (xs.length === runs) res.timings[id] = xs;
+    else if (xs.length) res.partial[id] = xs;
+  }
+
+  res.ms = clock.now() - t0;
+  const counted = opts.allowPartial ? Object.assign({}, res.timings, res.partial) : res.timings;
+  if (opts.allowPartial) res.timings = counted;
+  if (!res.cancelled) res.winner = chooseWinner(counted);
+  return res;
+}
+function msgOf(e) { return String((e && e.message) || e); }
+
+module.exports = { DEFAULT_CAPS, probeCaps, tierOf, pickVariant, VARIANTS, meets, capsHash, shapeBucket, cacheKey, pickWithCache, medianOf, chooseWinner, raceVariants };

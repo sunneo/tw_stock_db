@@ -49,61 +49,9 @@
   // 回傳 { op, winner: {id, median}|null, timings: {id: [ms×runs]}（只含跑滿的）, partial: {id: [ms]}, bad: [{id, reason}],
   //        skipped: [id], budgetHit, cancelled, ms }。取消時 winner 一律為 null。
   async function race(opts) {
-    const clock = opts.clock || defaultClock();
-    const yieldFn = opts.yieldFn || defaultYield;
-    const budget = opts.budgetMs || BUDGET_MS;
-    const runs = opts.runs || RUNS;
-    const tol = opts.tol || TOL;
-    const cancel = opts.cancel || createCancel();
-    const device = opts.device;
-    if (!device || typeof device.run !== 'function') throw new Error('kernel_race：race 需要 device.run');
+    if (!opts || !opts.device || typeof opts.device.run !== 'function') throw new Error('kernel_race：race 需要 device.run');
     const ids = eligibleVariants(opts.op, opts.shape, opts.caps);
-    const t0 = clock.now();
-    const res = { op: opts.op, winner: null, timings: {}, partial: {}, bad: [], skipped: [], budgetHit: false, cancelled: false, ms: 0 };
-    let lastMs = 0;  // 量到的最長單次耗時：下一次只在「已用＋這個耗時」不超過預算時才開始
-    let stop = null;
-    function setStop(s) {
-      stop = s;
-      if (s === 'cancel') res.cancelled = true;
-      if (s === 'budget') res.budgetHit = true;
-    }
-    async function gate() {
-      await yieldFn();
-      if (cancel.cancelled()) return 'cancel';
-      if (clock.now() - t0 + lastMs > budget) return 'budget';
-      return null;
-    }
-
-    for (const id of ids) {
-      if (stop === null) setStop(await gate());
-      if (stop === 'cancel') break;
-      if (stop === 'budget') { res.skipped.push(id); continue; }
-
-      if (device.verify) {
-        let err;
-        try { err = await device.verify(id); } catch (e) { res.bad.push({ id: id, reason: '驗證丟錯：' + msg(e) }); continue; }
-        if (!(typeof err === 'number' && err <= tol)) { res.bad.push({ id: id, reason: '相對誤差 ' + err + ' 超過 ' + tol }); continue; }
-      }
-
-      const xs = [];
-      let failed = false;
-      for (let r = 0; r < runs; r++) {
-        setStop(await gate());
-        if (stop) break;
-        let ms;
-        try { ms = await device.run(id); } catch (e) { res.bad.push({ id: id, reason: '執行丟錯：' + msg(e) }); failed = true; break; }
-        if (typeof ms !== 'number' || !isFinite(ms) || ms < 0) { res.bad.push({ id: id, reason: '計時無效：' + ms }); failed = true; break; }
-        xs.push(ms);
-        if (ms > lastMs) lastMs = ms;
-      }
-      if (failed) continue;
-      if (xs.length === runs) res.timings[id] = xs;
-      else if (xs.length) res.partial[id] = xs;
-    }
-
-    res.ms = clock.now() - t0;
-    if (!res.cancelled) res.winner = KS.chooseWinner(res.timings);
-    return res;
+    return KS.raceVariants(Object.assign({}, opts, { ids: ids }));  // 競賽引擎在 kernel_select.raceVariants（與 variant_race 共用）
   }
 
   // 本機快取 ＋ 強制覆蓋 ＋ 競賽入口。opts：

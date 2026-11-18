@@ -5,9 +5,9 @@
  * UMD：node 用 module.exports；瀏覽器用 self.FaVariantRace。
  */
 (function (root, factory) {
-  if (typeof module === 'object' && module.exports) { module.exports = factory(); }
-  else { root.FaVariantRace = factory(); }
-}(typeof self !== 'undefined' ? self : this, function () {
+  if (typeof module === 'object' && module.exports) { module.exports = factory(require('./kernel_select.js')); }
+  else { root.FaVariantRace = factory(root.FaKernelSelect); }
+}(typeof self !== 'undefined' ? self : this, function (KS) {
   'use strict';
 
   var DEFAULT_TOL = 1e-5;     // 驗證的相對誤差上限（f32 累加順序不同，與 CPU 參考的合理容差）
@@ -29,43 +29,28 @@
   }
 
   // 競賽：candidates = [{ id, verify: async () => relErr, run: async () => ms }]，已依優先序排好（第一名為 priors 首選）。
+  // 引擎與 kernel_race 共用（kernel_select.raceVariants）；這裡只做轉接：K 上限、未跑滿的次數也計入勝負、取消用函式。
   // 回傳 { winner: { id, median } | null, timings, bad: [{ id, reason }], skipped: [id], budgetHit, cancelled, ms }
   async function race(candidates, opts) {
     opts = opts || {};
-    var tol = opts.tol || DEFAULT_TOL, budget = opts.budgetMs || DEFAULT_BUDGET_MS, runs = opts.runs || DEFAULT_RUNS;
-    var K = opts.K || DEFAULT_K, now = opts.now || function () { return Date.now(); };
-    var cancelled = opts.cancel || function () { return false; };
-    var t0 = now();
-    var res = { winner: null, timings: {}, bad: [], skipped: [], budgetHit: false, cancelled: false, ms: 0 };
-    var tried = 0;
-    for (var i = 0; i < candidates.length; i++) {
-      var c = candidates[i];
-      if (cancelled()) { res.cancelled = true; break; }
-      if (tried >= K) { res.skipped.push(c.id); continue; }
-      if (now() - t0 > budget) { res.budgetHit = true; res.skipped.push(c.id); continue; }
-      tried++;
-      // 驗證：不過就標壞、退下一名（驅動行為不同，不能只信 priors）
-      var err;
-      try { err = await c.verify(); } catch (e) { res.bad.push({ id: c.id, reason: '驗證丟錯：' + String(e && e.message || e) }); continue; }
-      if (!(typeof err === 'number' && err <= tol)) { res.bad.push({ id: c.id, reason: '相對誤差 ' + err + ' 超過 ' + tol }); continue; }
-      // 計時：取中位數；超過預算就停止加量（已量到的仍有效）
-      var xs = [];
-      for (var r = 0; r < runs; r++) {
-        if (cancelled()) { res.cancelled = true; break; }
-        if (now() - t0 > budget) { res.budgetHit = true; break; }
-        try { xs.push(await c.run()); } catch (e2) { res.bad.push({ id: c.id, reason: '執行丟錯：' + String(e2 && e2.message || e2) }); xs = []; break; }
-      }
-      res.timings[c.id] = xs;
-      if (res.cancelled) break;
-    }
-    var best = null;
-    Object.keys(res.timings).forEach(function (id) {
-      var m = medianOf(res.timings[id]);
-      if (m !== null && (!best || m < best.median)) best = { id: id, median: m };
+    const byId = {};
+    candidates.forEach(function (c) { byId[c.id] = c; });
+    const now = opts.now || function () { return Date.now(); };
+    return KS.raceVariants({
+      ids: candidates.map(function (c) { return c.id; }),
+      device: {
+        run: function (id) { return byId[id].run(); },
+        verify: function (id) { return byId[id].verify(); }
+      },
+      clock: { now: now },
+      cancel: opts.cancel || function () { return false; },
+      tol: opts.tol || DEFAULT_TOL,
+      budgetMs: opts.budgetMs || DEFAULT_BUDGET_MS,
+      runs: opts.runs || DEFAULT_RUNS,
+      K: opts.K || DEFAULT_K,
+      allowPartial: true,
+      yieldFn: opts.yieldFn
     });
-    res.winner = best;
-    res.ms = now() - t0;
-    return res;
   }
 
   // 儲存：get(key) → 值或 null；set(key, value)。IndexedDB 失敗或不存在就退記憶體。
