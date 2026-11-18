@@ -15,6 +15,24 @@
   // 防止編譯器把 a + v*v 融合成 fma（融合會讓平方和差一個 ulp，量化邊界就會翻轉）：經過 bitcast 來回
   const NF = 'fn nf(v: f32) -> f32 { return bitcast<f32>(bitcast<u32>(v)); }\n';
 
+  // ---------- Qwen3 覆寫集合（O12c）----------
+  // 覆寫＝只在某些條件下才換掉的通用運算序列（目前只有 rmsq1 融合）。預設全部開；opts.useOverrides:false 一次全關（量「覆寫有沒有比通用快」用），
+  // 個別覆寫可用 opts[opt]:false 關。這裡沒有改任何運算的內容：預設路徑的派發與位元與改動前相同。
+  const OVERRIDES = {
+    rmsq1: { opt: 'fuseRmsQuant', desc: 'RMSNorm＋動態量化一次派發（O7，只解碼 M=1）' },
+  };
+  function overrideOn(name, o) {
+    const d = OVERRIDES[name];
+    if (!d) throw new Error('qwen_gpu：沒有這個覆寫：' + name);
+    if (o && o.useOverrides === false) return false;
+    return !(o && o[d.opt] === false);
+  }
+  // 描述表（llm_arch.js 的一份 supported 描述）與權重（Q.loadWeights 的 W）的尺寸是否相符；回傳不符的項目清單（空＝相符）。
+  function archMatches(arch, W) {
+    const want = { D: arch.hidden, H: arch.heads, Hkv: arch.kvHeads, hd: arch.headDim, I: arch.ffn, V: arch.vocab, L: arch.layers, eps: arch.eps };
+    return Object.keys(want).filter((k) => W[k] !== want[k]).map((k) => k + ' 描述 ' + want[k] + ' ≠ 權重 ' + W[k]);
+  }
+
   // 每列 RMSNorm：一個執行緒算一列（平方和依序以 f32 累加，與參考版／ORT 的 f32 順序一致，量化整數才不會在邊界翻轉）。
   // last=1：只算最後一列（輸出寫到第 0 列），給 lm_head 前的 final norm。
   WGSL.rms = NF + STEP + `
@@ -426,6 +444,7 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
   // opts.residentLayers：直接指定常駐層數（測試用）。opts.trace:true 才配置逐層追蹤緩衝區（診斷用；分層模式不支援 trace）。
   async function createGpuEngine(dev, W, opts) {
     const o = opts || {}, maxT = o.maxT || 512, maxM = o.maxM || 64;
+    if (o.arch) { const bad = archMatches(o.arch, W); if (bad.length) throw new Error('qwen_gpu：描述表與權重不符：' + bad.join('；')); }
     const D = W.D, H = W.H, Hkv = W.Hkv, hd = W.hd, Nq = H * hd, Nk = Hkv * hd, I = W.I, V = W.V;
     if (hd > 128 || hd % 2) throw new Error('qwen_gpu：head 維度 ' + hd + ' 不支援（需為 ≤128 的偶數）');
     if (D % 4) throw new Error('qwen_gpu：隱藏維度必須是 4 的倍數');
@@ -504,7 +523,7 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
     const quantAdd = (src, K, mode) => q4 ? 0 : add('quant', [src, qi, qs, ubuf((d) => d.setUint32(0, K, true)), stBuf], () => [1, 1], mode);
     const rmsAdd = (src, g, dst, last, mode) => add('rms', [src, g, dst, ubuf((d) => { d.setUint32(0, D, true); d.setUint32(4, last ? 1 : 0, true); d.setFloat32(8, W.eps, true); }), stBuf], last ? () => [1, 1] : rowsG, mode);
     // 層內的「RMSNorm＋動態量化」：fuse 時解碼用一次派發的融合核心，prefill 維持兩段；q4 不量化，維持原樣
-    const fuse = !q4 && o.fuseRmsQuant !== false;
+    const fuse = !q4 && overrideOn('rmsq1', o);
     const rmsQuantAdd = (src, g) => {
       if (!fuse) { rmsAdd(src, g, xn, false); quantAdd(xn, D); return; }
       add('rmsq1', [src, g, qi, qs, ubuf((d) => { d.setUint32(0, D, true); d.setUint32(4, 0, true); d.setFloat32(8, W.eps, true); }), stBuf], () => [1, 1], 'm1');
@@ -636,5 +655,5 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
     return eng;
   }
 
-  return { createGpuEngine, estimateEngineBytes, planLayers, WGSL: WGSL_ALL };
+  return { createGpuEngine, estimateEngineBytes, planLayers, WGSL: WGSL_ALL, OVERRIDES, overrideOn, archMatches };
 });
