@@ -157,6 +157,21 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 `;
 
+// f32 → f16 儲存（只在 shader-f16 時使用）。輸出是 array<f16>，句柄帶 f16:true，給 f16 矩陣乘當輸入。
+const WGSL_CAST16 = `enable f16;
+struct P { n: u32 }
+@group(0) @binding(0) var<storage, read> src: array<f32>;
+@group(0) @binding(1) var<storage, read_write> dst: array<f16>;
+@group(0) @binding(2) var<uniform> u: P;
+// @kernel cast_f16
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let i = gid.x;
+  if (i >= u.n) { return; }
+  dst[i] = f16(src[i]);
+}
+`;
+
 // ---------- f64 參考（與 lora_ref_train.js 的 lossAndGrads 逐式相同） ----------
 function attnFwdRef(q, k, v, T, H, hd) {
   const d = H * hd, sc = 1 / Math.sqrt(hd), pm = new Float64Array(H * T * T), ao = new Float64Array(T * d);
@@ -236,9 +251,16 @@ function extend(b) {
     b.dispatchRaw(TF.WGSL_ADAMW_ACCUM, [p.buf, g.buf, m.buf, v.buf], uni, Math.ceil(n / 64));
   };
   // LoRA 投影（前向）：y＝X·W＋s·(X·A)·B；X、A、B、W 都是句柄。回傳 y 與 xA。
-  r.loraFwd = (x, Wh, Ah, Bh, s, T, din, dout, rr) => {
+  // x16、W16（選用）：f16 版的輸入與權重，有的話基底 X·W 走 f16 矩陣乘（只影響前向；XA 仍用 f32）
+  r.cast16 = (x) => {
+    const o = b.alloc(x.n);
+    const uni = new ArrayBuffer(16); new Uint32Array(uni, 0, 1)[0] = x.n;
+    b.dispatchRaw(WGSL_CAST16, [x.buf, o.buf], uni, Math.ceil(x.n / 64));
+    return { buf: o.buf, n: x.n, f16: true };
+  };
+  r.loraFwd = (x, Wh, Ah, Bh, s, T, din, dout, rr, x16, W16) => {
     const xA = b.matmul(x, Ah, T, din, rr);
-    const base = b.matmul(x, Wh, T, din, dout);
+    const base = x16 && W16 ? b.matmul(x16, W16, T, din, dout, { f16: true }) : b.matmul(x, Wh, T, din, dout);
     const br = b.matmul(xA, Bh, T, rr, dout);
     return { y: b.axpy(base, br, s), xA: xA };
   };
@@ -261,6 +283,8 @@ function extend(b) {
 async function trainStepDevice(o) {
   const { nn, device, model: m, seqs, st, lr } = o;
   const B = nn.createBatch(device), X = extend(B);
+  // f16 能力分支：呼叫端要求（o.f16）且裝置真的有 shader-f16；否則整步全部 f32
+  const f16 = !!o.f16 && !!device.features && typeof device.features.has === 'function' && device.features.has('shader-f16');
   const { V, d, L, H, F, r } = m.cfg; const hd = d / H; const s = (m.cfg.alpha || r) / r; const K = seqs.length;
   const t = st.t + 1, b1 = 0.9, b2 = 0.999, eps = 1e-8;
   const c1 = 1 - Math.pow(b1, t), c2 = 1 - Math.pow(b2, t);
@@ -268,6 +292,7 @@ async function trainStepDevice(o) {
   const up = (a) => B.upload(a instanceof Float32Array ? a : Float32Array.from(a));
   // 參數句柄（所有序列共用；AdamW 會原地更新，所以要在步末回讀）
   const LW = m.layers.map((P) => ({ Wq: up(P.Wq), Wk: up(P.Wk), Wv: up(P.Wv), Wo: up(P.Wo), Wg: up(P.Wg), Wu: up(P.Wu), Wd: up(P.Wd), n1: up(P.n1), n2: up(P.n2) }));
+  if (f16) m.layers.forEach((P, l) => { Object.assign(LW[l], { Wq16: B.uploadF16(P.Wq), Wk16: B.uploadF16(P.Wk), Wv16: B.uploadF16(P.Wv), Wg16: B.uploadF16(P.Wg), Wu16: B.uploadF16(P.Wu) }); });
   const LH = m.lora.map((lo) => { const o2 = {}; for (const key of ['q', 'k', 'v', 'o']) o2[key] = { A: up(lo[key].A), B: up(lo[key].B) }; return o2; });
   const nfH = up(m.nf), embH = up(m.emb);
   const mats = []; // 用於 AdamW 與回讀：{ l, key, w, p, rawLen }
@@ -283,9 +308,10 @@ async function trainStepDevice(o) {
     for (let l = 0; l < L; l++) {
       const P = LW[l], lo = LH[l], c = { hIn: h };
       c.n1 = B.rmsnorm(h, P.n1, T, d, 1e-6);
-      const q0 = X.loraFwd(c.n1, P.Wq, lo.q.A, lo.q.B, s, T, d, d, lo.q.A.n / d);
-      const k0 = X.loraFwd(c.n1, P.Wk, lo.k.A, lo.k.B, s, T, d, d, lo.k.A.n / d);
-      const v0 = X.loraFwd(c.n1, P.Wv, lo.v.A, lo.v.B, s, T, d, d, lo.v.A.n / d);
+      const x16 = f16 ? X.cast16(c.n1) : null;
+      const q0 = X.loraFwd(c.n1, P.Wq, lo.q.A, lo.q.B, s, T, d, d, lo.q.A.n / d, x16, P.Wq16);
+      const k0 = X.loraFwd(c.n1, P.Wk, lo.k.A, lo.k.B, s, T, d, d, lo.k.A.n / d, x16, P.Wk16);
+      const v0 = X.loraFwd(c.n1, P.Wv, lo.v.A, lo.v.B, s, T, d, d, lo.v.A.n / d, x16, P.Wv16);
       c.qXA = q0.xA; c.kXA = k0.xA; c.vXA = v0.xA;
       c.q = B.rope(q0.y, T, H, hd, 1); c.k = B.rope(k0.y, T, H, hd, 1); c.v = v0.y;
       const at = X.attnFwd(c.q, c.k, c.v, T, H, hd); c.ao = at.ao; c.pm = at.pm;
@@ -293,7 +319,8 @@ async function trainStepDevice(o) {
       c.oXA = o2.xA;
       c.h1 = B.axpy(h, o2.y, 1);
       c.n2 = B.rmsnorm(c.h1, P.n2, T, d, 1e-6);
-      c.g = B.matmul(c.n2, P.Wg, T, d, F); c.u = B.matmul(c.n2, P.Wu, T, d, F);
+      if (f16) { const n216 = X.cast16(c.n2); c.g = B.matmul(n216, P.Wg16, T, d, F, { f16: true }); c.u = B.matmul(n216, P.Wu16, T, d, F, { f16: true }); }
+      else { c.g = B.matmul(c.n2, P.Wg, T, d, F); c.u = B.matmul(c.n2, P.Wu, T, d, F); }
       c.a = B.mul(B.silu(c.g), c.u);
       const dn = B.matmul(c.a, P.Wd, T, F, d);
       h = B.axpy(c.h1, dn, 1);
@@ -346,7 +373,7 @@ async function trainStepDevice(o) {
     const sl = st.z[x.l][x.key][x.w]; sl.m.set(mv); sl.v.set(vv);
   });
   st.t = t;
-  return { loss: loss, t: t };
+  return { loss: loss, t: t, precision: f16 ? 'f16' : 'f32' };
 }
 
 module.exports = { trainStepDevice, WGSL_ATTN_FWD, WGSL_ATTN_BWD_KV, WGSL_ATTN_BWD_Q, WGSL_RMS_BWD, WGSL_MLP_BWD,

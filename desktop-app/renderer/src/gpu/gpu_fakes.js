@@ -161,6 +161,11 @@ function fakeNavigator(opts) {
       const TS = require('./train_step_device.js');
       const n = u32(e[5])[0], r = TS.mlpBwdRef(f32(e[0], n), f32(e[1], n), f32(e[2], n));
       f32(e[3], n).set(r.dg); f32(e[4], n).set(r.du);
+    } else if (k === 'cast_f16') {
+      // O8 整步 f16：綁定 0 src(f32 讀)、1 dst(array<f16> 寫，以 u16 位元儲存)、2 uniform（n 為 u32）
+      const NN3 = require('./nn_ops.js');
+      const n = u32(e[2])[0], src = f32(e[0], n), dst = new Uint16Array(e[1].data);
+      for (let i = 0; i < n; i++) dst[i] = NN3.f32ToF16Bits(src[i]);
     } else if (k === 'axpy_batch' || k === 'mul_batch' || k === 'scal_batch') {
       // O8 批次逐元素：axpy 綁定 (xa, xb, yo, uniform{n,s})；mul 同；scal 綁定 (xa, yo, uniform)。全部 f32、與 WGSL 同一運算順序（一次乘、一次加）
       const n = u32(k === 'scal_batch' ? e[2] : e[3])[0];

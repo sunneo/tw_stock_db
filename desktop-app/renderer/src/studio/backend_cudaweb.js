@@ -6,6 +6,7 @@
 const B = require('./backend_core.js');
 const T = require('./lora_ref_train.js');
 const NN = require('../gpu/nn_ops.js');
+const TS = require('../gpu/train_step_device.js');
 
 function layerText(bi) {
   const last = bi && bi.last;
@@ -54,11 +55,36 @@ function createCudawebBackend(o) {
       // 五個逐元素／列運算與 AdamW 走 nn_ops 的三層降級（T1 → T3 → cpu-js）；矩陣乘走 cudaweb 執行期
       const nav = opts.navigator !== undefined ? opts.navigator : (typeof navigator !== 'undefined' ? navigator : undefined);
       const ops = NN.trainerOps({ navigator: nav, gl: opts.gl });
-      st = { m, adam: T.adamInit(m), lr: s.lr || 0.01, be: T.cudawebMatmulBackend(rt), ops: ops };
+      // 整步一次提交路徑（O8）：預設關。開啟條件：spec.deviceStep 或 opts.deviceStep 為 true，且拿得到 WebGPU 裝置。
+      // 失敗（或沒有裝置）就永久退回舊路徑；舊路徑的行為與沒有這個選項時完全相同。
+      const want = s.deviceStep !== undefined ? s.deviceStep === true : opts.deviceStep === true;
+      const f16Want = s.f16Forward !== undefined ? s.f16Forward === true : opts.f16Forward === true;
+      st = { m, adam: T.adamInit(m), lr: s.lr || 0.01, be: T.cudawebMatmulBackend(rt), ops: ops,
+        dev: { want: want, f16: f16Want, device: null, disabled: false, reason: null, used: 0, precision: null } };
+      if (want) {
+        const g = await NN.getDevice(nav);
+        if (g.dev) st.dev.device = g.dev; else { st.dev.disabled = true; st.dev.reason = g.reason; }
+      }
       return { ok: true, layer: null };
+    },
+    // 純資料：整步路徑的狀態（給設定頁與測試讀）
+    deviceStepStatus() {
+      if (!st) return { want: false, active: false, disabled: false, reason: '尚未 init', used: 0, precision: null };
+      const d = st.dev;
+      return { want: d.want, active: d.want && !d.disabled, disabled: d.disabled, reason: d.reason, used: d.used, precision: d.precision };
     },
     async step(tokens) {
       if (!st) throw new Error('cudaweb：尚未 init');
+      if (st.dev.want && !st.dev.disabled && st.dev.device) {
+        try {
+          const R = await TS.trainStepDevice({ nn: NN, device: st.dev.device, model: st.m, seqs: [tokens], st: st.adam, lr: st.lr, f16: st.dev.f16 });
+          st.dev.used++; st.dev.precision = R.precision;
+          return { loss: R.loss, layer: 'T1', reason: null, path: 'device-step', precision: R.precision, opsLayer: null, opsReason: null, opsCalls: st.ops.stats.calls };
+        } catch (e) {
+          // 整步路徑失敗：這一步的模型與狀態還沒被寫回（寫回只在步末），所以可以安全地改跑舊路徑
+          st.dev.disabled = true; st.dev.reason = '整步路徑失敗，永久退回舊路徑：' + String((e && e.message) || e);
+        }
+      }
       const r = await T.lossAndGradsAsync(st.m, tokens, { backend: st.be, ops: st.ops });
       await T.adamStepAsync(st.m, r.grads, st.adam, st.lr, st.ops);
       return layerReport(r.loss);
