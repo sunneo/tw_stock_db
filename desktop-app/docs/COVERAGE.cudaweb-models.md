@@ -52,3 +52,22 @@
 - **Qwen 桌面原生的完整路徑**（不只是 lm_head）沒有追到底。
 - **物件偵測**的搜尋範圍只涵蓋 `renderer/src`、`main-ext.js`、`nr-*.js`、`native-slot-model.js`；`renderer/vendor` 與 `web-lazy` 沒有以偵測關鍵字搜尋。
 - 原始 `renderer/src/vlm/vlm_core.js` 與 `floating-assistant.js` 內嵌副本之間的同步性沒有檢查。
+
+## 2026-11-18 更新：O15b 現況（取代上面「結論」第 2 點）
+
+上面的表是 O15a 當時（改程式之前）的盤點。之後的狀態如下；沒有真 GPU 的路徑一律標「未量測」，預設都是關的。
+
+| 模型 | 這台（無 f16、無 CUDA）現在的裝置 | WebGPU 路徑 | 狀態（2026-11-18） |
+|---|---|---|---|
+| **MoveNet Thunder**（姿態） | CPU（預設） | `poseGpu` 開關（預設關）：fp32、無 f16 閘門，WebGPU 失敗永久退回 CPU（`FaVlm.poseDevicePlan`，commit 39dd8fe42） | 有 opt-in 路徑，**未量測**，沒有對拍 |
+| **Depth Anything V2 Small**（深度） | CPU fp32 | `f32Gpu` 開關（預設關）：CPU 權重是 fp32 且任務在白名單時，GPU 改用 fp32（`FaVlm.f32GpuVariant`，commit 123237790） | 有 opt-in 路徑，**未量測**，沒有對拍 |
+| Florence-2 base、SmolVLM 256M、LLaVA-Interleave 0.5B | CPU（WASM q8） | 未接 | **未完成：原因**：登記的 GPU 權重是 fp16／q4f16，這台沒有 shader-f16；沒有查證有沒有對應的 fp32 權重檔，所以不能照 Depth 的做法放行 |
+| Qwen3 網頁版（0.6B～1.7B） | CPU（WASM q8） | q4f16 需要 f16；q8 整段 GPU 解碼是 `qwenGpuDecode`（預設關） | **未完成：原因**：q4f16 這台不能用；q8 GPU 解碼在真卡上沒有量測 |
+| SlimSAM 77（分割） | CPU（q8） | 登記的 GPU 權重是 fp16 | **未完成：原因**：CPU 權重是 q8，沒有 fp32 證據，不放行 |
+| multilingual-e5-small（語意向量） | WASM（寫死） | 未接 | **未完成：原因**：沒有 WebGPU 的對拍紀錄；`transformers.js` 的 q8 在 WebGPU 上是否正確沒有查證 |
+| 離線翻譯（英中、中英） | WASM（寫死） | 未接 | **未完成：原因**：同上，沒有 WebGPU 的對拍紀錄 |
+| Kokoro TTS | WASM（`device` 寫死） | 另有 cudaweb 圖形 session（`kokoroGpu`，預設關） | **未完成：原因**：整圖 CPU 對 ORT 的頻譜餘弦只有 0.942，Chrome 整圖 GPU 沒有跑過；`transformers.js` 的 `device:'webgpu'` 沒有測過，不接 |
+| Whisper 編碼器、YAMNet／Demucs／Basic Pitch、SDXS、MOSS、midigen | 各自的 cudaweb opt-in（預設關） | 見各自的開關 | 已有 opt-in，**未在真 GPU 量測**（見清單 O14b、O14c） |
+| 物件偵測 | — | — | **不適用**：這個專案裡沒有偵測模型（見上方表格的註記） |
+
+**結論（2026-11-18）**：這一輪只有 MoveNet 與 Depth Anything 有 opt-in 的 GPU 路徑，都預設關且未量測。其餘模型都沒有對拍證據，沒有接線，原因如上表。

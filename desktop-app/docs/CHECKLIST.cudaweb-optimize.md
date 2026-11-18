@@ -196,5 +196,7 @@ O1m 到 O11 做完後不結束，進入迴圈。完整規則與交接見 `docs/H
     - **未驗證**：這台沒有真 GPU，兩條 WebGPU 路徑都沒有量測，也沒有對拍 WebGPU 與 CPU 的輸出；預設關。
     - **沒選 SlimSAM**：它的 CPU 權重是 q8，沒有 fp32 證據，所以不放行。
     - **桌面版設定頁**：`bootstrap.js` 的 `desktop` 分組沒有掛這兩個開關。該處註解記載 GPU 相容層刻意只放一處，所以只接在 AI 助理設定，這點與 O9 一致。
-    - **未完成**：web-lazy 與 renderer bundle 還沒用 `build-assistant.js` 重建（另一個 session 正在重寫 web-lazy 產物，本次未碰）；發布前要先建置。
+    - **已重建（2026-11-18，由 O11 建置 9bc921dd9 包含）**：web-lazy 與 renderer bundle 已由 `build-assistant.js` 重建；再次重建的結果見下一條。
+    - **第三步（2026-11-18，評估，不接線）**：Kokoro、e5 嵌入、離線翻譯這三個寫死 wasm 的，都沒有對拍證據，全部不接 WebGPU。Kokoro：整圖 CPU 對 ORT 的頻譜餘弦只有 0.942，Chrome 整圖 GPU 沒跑過；e5 與翻譯：沒有任何 WebGPU 對拍紀錄。其餘模型的「未完成：原因」見 `docs/COVERAGE.cudaweb-models.md` 最後一節。
+    - **O11 建置重跑**：`embed-code-ui.js`、`build-assistant.js`（含 web-lazy）依現況重跑並提交，見提交訊息。
 - [ ] 範圍外要如實標：沒有真權重、載入太重、或遇到 cudaweb 缺的算子（例如特殊卷積、非常規操作）的，記「未完成：原因」，不要宣稱全部完成。
