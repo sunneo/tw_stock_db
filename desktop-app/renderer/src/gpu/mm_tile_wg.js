@@ -65,6 +65,91 @@ ${wr.join('\n')}
 }`;
   }
 
+  // R2 軟體預取（雙緩衝）：下一個 K 塊的全域記憶體讀取先放進暫存器（ra、rb），與本塊的計算重疊；共用記憶體兩份，以 kidx 的奇偶選擇。
+  // 每個 K 塊只一個屏障。k 的累加順序不變，所以結果與 wgsl() 逐位相同。
+  function wgslPrefetch(TM, TN, KB, WG) {
+    const RB = geometry(TM, TN, WG).RB;
+    const SA = TM * KB, SB = KB * TN;
+    const NA = Math.ceil(SA / WG), NB = Math.ceil(SB / WG);
+    const pos = [];
+    for (let j = 0; j < RB; j++) pos.push('  let idx' + j + ': u32 = t + ' + (j * WG) + 'u; let r' + j + ': u32 = idx' + j + ' / ' + TN + 'u; let c' + j + ': u32 = idx' + j + ' % ' + TN + 'u;');
+    const fma = [];
+    for (let j = 0; j < RB; j++) fma.push('      acc[' + j + '] = acc[' + j + '] + As[offA + r' + j + ' * ' + KB + 'u + kk] * Bs[offB + kk * ' + TN + 'u + c' + j + '];');
+    const wr = [];
+    for (let j = 0; j < RB; j++) wr.push('  if (row0 + r' + j + ' < p.M && col0 + c' + j + ' < p.N) { y[(row0 + r' + j + ') * p.N + col0 + c' + j + '] = acc[' + j + ']; }');
+    return `struct P { B: u32, M: u32, K: u32, N: u32, Bb: u32, azp: i32, bzp: i32, p0: u32 }
+@group(0) @binding(0) var<storage, read> a: array<f32>;
+@group(0) @binding(1) var<storage, read> b: array<f32>;
+@group(0) @binding(2) var<storage, read_write> y: array<f32>;
+@group(0) @binding(3) var<uniform> p: P;
+var<workgroup> As: array<f32, ${2 * SA}>;
+var<workgroup> Bs: array<f32, ${2 * SB}>;
+@compute @workgroup_size(${WG})
+fn main(@builtin(local_invocation_id) lid: vec3<u32>, @builtin(workgroup_id) wid: vec3<u32>) {
+  let t = lid.x;
+  let row0 = wid.y * ${TM}u;
+  let col0 = wid.x * ${TN}u;
+  var acc: array<f32, ${RB}>;
+${pos.join('\n')}
+  var ra: array<f32, ${NA}>;
+  var rb: array<f32, ${NB}>;
+  // 把 K 塊 k0 的全域讀取放進暫存器（邊界外為 0）
+  for (var i: u32 = 0u; i < ${NA}u; i = i + 1u) {
+    let e = t + i * ${WG}u;
+    var v: f32 = 0.0;
+    if (e < ${SA}u) {
+      let rr = e / ${KB}u; let gr = row0 + rr; let gk = e % ${KB}u;
+      if (gr < p.M && gk < p.K) { v = a[gr * p.K + gk]; }
+    }
+    ra[i] = v;
+  }
+  for (var i: u32 = 0u; i < ${NB}u; i = i + 1u) {
+    let e = t + i * ${WG}u;
+    var v: f32 = 0.0;
+    if (e < ${SB}u) {
+      let kk1 = e / ${TN}u; let cc = e % ${TN}u; let gc = col0 + cc;
+      if (kk1 < p.K && gc < p.N) { v = b[kk1 * p.N + gc]; }
+    }
+    rb[i] = v;
+  }
+  var kidx: u32 = 0u;
+  for (var k0: u32 = 0u; k0 < p.K; k0 = k0 + ${KB}u) {
+    let offA = (kidx & 1u) * ${SA}u;
+    let offB = (kidx & 1u) * ${SB}u;
+    for (var i: u32 = 0u; i < ${NA}u; i = i + 1u) { let e = t + i * ${WG}u; if (e < ${SA}u) { As[offA + e] = ra[i]; } }
+    for (var i: u32 = 0u; i < ${NB}u; i = i + 1u) { let e = t + i * ${WG}u; if (e < ${SB}u) { Bs[offB + e] = rb[i]; } }
+    workgroupBarrier();
+    // 預取下一塊（與下面的計算重疊）
+    let kn = k0 + ${KB}u;
+    if (kn < p.K) {
+      for (var i: u32 = 0u; i < ${NA}u; i = i + 1u) {
+        let e = t + i * ${WG}u;
+        var v: f32 = 0.0;
+        if (e < ${SA}u) {
+          let rr = e / ${KB}u; let gr = row0 + rr; let gk = kn + e % ${KB}u;
+          if (gr < p.M && gk < p.K) { v = a[gr * p.K + gk]; }
+        }
+        ra[i] = v;
+      }
+      for (var i: u32 = 0u; i < ${NB}u; i = i + 1u) {
+        let e = t + i * ${WG}u;
+        var v: f32 = 0.0;
+        if (e < ${SB}u) {
+          let kk1 = kn + e / ${TN}u; let cc = e % ${TN}u; let gc = col0 + cc;
+          if (kk1 < p.K && gc < p.N) { v = b[kk1 * p.N + gc]; }
+        }
+        rb[i] = v;
+      }
+    }
+    for (var kk: u32 = 0u; kk < ${KB}u; kk = kk + 1u) {
+${fma.join('\n')}
+    }
+    kidx = kidx + 1u;
+  }
+${wr.join('\n')}
+}`;
+  }
+
   // CPU 模擬：同一個分塊順序（k 依序累加；邊界外為 0），供測試與對照
   function simulate(a, b, M, K, N, TM, TN, KB, WG) {
     geometry(TM, TN, WG);
@@ -77,5 +162,5 @@ ${wr.join('\n')}
     return y;
   }
 
-  return { geometry, dispatch, wgsl, simulate };
+  return { geometry, dispatch, wgsl, wgslPrefetch, simulate };
 }));

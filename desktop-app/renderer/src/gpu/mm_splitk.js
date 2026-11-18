@@ -12,7 +12,7 @@
   'use strict';
 
   const WGSL_SPLITK_PARTIAL = `
-struct P { M: u32, K: u32, N: u32, S: u32 }
+struct P { M: u32, K: u32, N: u32, S: u32, fl: u32, p1: u32, p2: u32, p3: u32 }
 @group(0) @binding(0) var<storage, read> a: array<f32>;
 @group(0) @binding(1) var<storage, read> b: array<f32>;
 @group(0) @binding(2) var<storage, read_write> part: array<f32>;
@@ -27,7 +27,12 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>, @builtin(workgroup_id) wid
   let k0 = min(p.K, s * c);
   let k1 = min(p.K, k0 + c);
   var acc: f32 = 0.0;
-  for (var k: u32 = k0; k < k1; k = k + 1u) { acc = acc + a[m * p.K + k] * b[k * p.N + n]; }
+  // fl：bit0＝transA（a 以 K×M 儲存）、bit1＝transB（b 以 N×K 儲存），與 gpu_core 的 matmulTRef 相同
+  for (var k: u32 = k0; k < k1; k = k + 1u) {
+    let av = select(a[m * p.K + k], a[k * p.M + m], (p.fl & 1u) != 0u);
+    let bv = select(b[k * p.N + n], b[n * p.K + k], (p.fl & 2u) != 0u);
+    acc = acc + av * bv;
+  }
   part[(s * p.M + m) * p.N + n] = acc;
 }`;
 
@@ -62,12 +67,13 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>, @builtin(workgroup_id) wid
   function splitkApplies(M, K, N) { return K >= 1024 && (M === 1 || (N <= 64 && M <= 64)); }
 
   // CPU 模擬（與兩段核心的 f32 順序相同），供測試與參考
-  function simulate(a, b, M, K, N, S) {
+  function simulate(a, b, M, K, N, S, flags) {
+    const fl = flags || 0, tA = !!(fl & 1), tB = !!(fl & 2);
     const part = new Float32Array(S * M * N), y = new Float32Array(M * N);
     const rs = sliceRanges(K, S);
     for (let s = 0; s < S; s++) for (let m = 0; m < M; m++) for (let n = 0; n < N; n++) {
       let acc = 0; const [k0, k1] = rs[s];
-      for (let k = k0; k < k1; k++) acc = Math.fround(acc + Math.fround(a[m * K + k] * b[k * N + n]));
+      for (let k = k0; k < k1; k++) acc = Math.fround(acc + Math.fround((tA ? a[k * M + m] : a[m * K + k]) * (tB ? b[n * K + k] : b[k * N + n])));
       part[(s * M + m) * N + n] = acc;
     }
     for (let m = 0; m < M; m++) for (let n = 0; n < N; n++) {

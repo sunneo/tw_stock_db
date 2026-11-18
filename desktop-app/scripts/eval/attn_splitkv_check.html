@@ -1,0 +1,80 @@
+<!doctype html><meta charset="utf-8"><title>attn splitkv check</title>
+<body style="font:13px monospace;white-space:pre">
+<script>
+// R5 注意力（真 Chrome，intel xe-lpg）：decode（S=1）的 split-KV（attn_splitkv.js）對 現行 attn_flash（attn_gpu.WGSL_ATTN_FLASH）。
+// 正確性：兩者對 attn_ops.attnCore（CPU，Float64）的相對誤差（判準 ≤1e-5）。
+// 計時：純核心，同一 pass 內連續 20 次（split-KV 為部分核心＋合併一組），onSubmittedWorkDone 後量牆鐘，5 次中位數除以 20。只標 intel xe-lpg。
+// 一次一個形狀：?H=&Hkv=&hd=&past=&v=
+const mods = {};
+const loadMod = async (key, url) => {
+  const src = await (await fetch(url, { cache: 'no-store' })).text();
+  const m = { exports: {} }; mods[key] = m;
+  new Function('module', 'exports', 'require', src)(m, m.exports, (p) => { const k = p.replace(/^\.\//, '').replace(/\.js$/, ''); if (!mods[k]) throw new Error('missing ' + k); return mods[k].exports; });
+};
+const relErr = (x, y) => { let mx = 0, sc = 1e-9; for (let i = 0; i < x.length; i++) { mx = Math.max(mx, Math.abs(x[i] - y[i])); sc = Math.max(sc, Math.abs(y[i])); } return mx / sc; };
+(async () => {
+  const q0 = new URLSearchParams(location.search);
+  const H = +q0.get('H'), Hkv = +q0.get('Hkv'), hd = +q0.get('hd'), past = +q0.get('past');
+  const out = { shape: 'H' + H + 'Hkv' + Hkv + 'hd' + hd + 'past' + past, error: null, done: false };
+  try {
+    await loadMod('gpu_core', '../../renderer/src/gpu/gpu_core.js');
+    await loadMod('gpu_pool', '../../renderer/src/gpu/gpu_pool.js');
+    await loadMod('nn_ops', '../../renderer/src/gpu/nn_ops.js');
+    await loadMod('attn_ops', '../../renderer/src/gpu/attn_ops.js');
+    await loadMod('attn_gpu', '../../renderer/src/gpu/attn_gpu.js');
+    await loadMod('attn_splitkv', '../../renderer/src/gpu/attn_splitkv.js');
+    const A = mods.attn_ops.exports, AG = mods.attn_gpu.exports, SKV = mods.attn_splitkv.exports;
+    let seed = 43; const rr = () => { seed = (Math.imul(seed, 1664525) + 1013904223) | 0; return (seed >>> 0) / 4294967296 - 0.5; };
+    const cache = A.createKvCache(Hkv, hd, past + 1);
+    for (let t = 0; t <= past; t++) A.kvAppend(cache, Float32Array.from({ length: Hkv * hd }, rr), Float32Array.from({ length: Hkv * hd }, rr), 1);
+    const q = Float32Array.from({ length: H * hd }, rr);
+    const scale = 1 / Math.sqrt(hd);
+    const ref = A.attnCore(q, 1, past, cache, H, scale);
+    const adapter = await navigator.gpu.requestAdapter();
+    const dev = await adapter.requestDevice({ requiredLimits: { maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize, maxBufferSize: adapter.limits.maxBufferSize } });
+    const U = { STORAGE: 0x0080, COPY_SRC: 0x0004, COPY_DST: 0x0008, UNIFORM: 0x0040, MAP_READ: 0x0001 };
+    const buf = (size, u) => dev.createBuffer({ size: Math.max(16, size), usage: u });
+    const mkPipe = (code) => dev.createComputePipelineAsync({ layout: 'auto', compute: { module: dev.createShaderModule({ code }), entryPoint: 'main' } });
+    const bindOf = (pipe, bufs) => dev.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries: bufs.map((b, i) => ({ binding: i, resource: { buffer: b } })) });
+    const timeSeq = async (steps) => {
+      const once = async () => { const t0 = performance.now(); const enc = dev.createCommandEncoder(); const pass = enc.beginComputePass();
+        for (let r = 0; r < 20; r++) for (const s of steps) { pass.setPipeline(s.pipe); pass.setBindGroup(0, s.bg); pass.dispatchWorkgroups(s.dispatch[0], s.dispatch[1] || 1, 1); }
+        pass.end(); dev.queue.submit([enc.finish()]); await dev.queue.onSubmittedWorkDone(); return (performance.now() - t0) / 20; };
+      await once(); const ts = []; for (let i = 0; i < 5; i++) ts.push(await once()); ts.sort((a, b) => a - b); return Math.round(ts[2] * 1000) / 1000;
+    };
+    const readBack = async (b, n) => { const rB = buf(n * 4, U.MAP_READ | U.COPY_DST); const enc = dev.createCommandEncoder(); enc.copyBufferToBuffer(b, 0, rB, 0, n * 4); dev.queue.submit([enc.finish()]); await rB.mapAsync(1); const y = new Float32Array(rB.getMappedRange().slice(0)); rB.unmap(); rB.destroy(); return y; };
+    const kc = cache.k.subarray(0, (past + 1) * Hkv * hd), vc = cache.v.subarray(0, (past + 1) * Hkv * hd);
+    const qB = buf(q.byteLength, U.STORAGE | U.COPY_DST); dev.queue.writeBuffer(qB, 0, q);
+    const kB = buf(kc.byteLength, U.STORAGE | U.COPY_DST); dev.queue.writeBuffer(kB, 0, kc);
+    const vB = buf(vc.byteLength, U.STORAGE | U.COPY_DST); dev.queue.writeBuffer(vB, 0, vc);
+    // (a) 現行 attn_flash：uniform = S, past, H, Hkv, hd, scale（與 attn_gpu.attnCoreGpu 相同）
+    const yA = buf(H * hd * 4, U.STORAGE | U.COPY_SRC);
+    const uA = buf(32, U.UNIFORM | U.COPY_DST);
+    const av = new DataView(new ArrayBuffer(32)); av.setUint32(0, 1, true); av.setUint32(4, past, true); av.setUint32(8, H, true); av.setUint32(12, Hkv, true); av.setUint32(16, hd, true); av.setFloat32(20, Math.fround(scale), true);
+    dev.queue.writeBuffer(uA, 0, av.buffer);
+    const pA = await mkPipe(AG.WGSL_ATTN_FLASH);
+    const bA = bindOf(pA, [qB, kB, vB, yA, uA]);
+    { const enc = dev.createCommandEncoder(); const pass = enc.beginComputePass(); pass.setPipeline(pA); pass.setBindGroup(0, bA); pass.dispatchWorkgroups(H, 1, 1); pass.end(); dev.queue.submit([enc.finish()]); }
+    const gotA = await readBack(yA, H * hd);
+    out.relErr_flash = relErr(gotA, ref);
+    out.ms_flash = await timeSeq([{ pipe: pA, bg: bA, dispatch: [H, 1] }]);
+    // (b) split-KV：部分核心（H, nC）＋合併核心（H）
+    const nC = SKV.nChunks(past);
+    const pmB = buf(H * nC * 4, U.STORAGE), plB = buf(H * nC * 4, U.STORAGE), paB = buf(H * nC * hd * 4, U.STORAGE), yB = buf(H * hd * 4, U.STORAGE | U.COPY_SRC);
+    const uP = buf(32, U.UNIFORM | U.COPY_DST);
+    const pv = new DataView(new ArrayBuffer(32)); pv.setUint32(0, H, true); pv.setUint32(4, Hkv, true); pv.setUint32(8, hd, true); pv.setUint32(12, past, true); pv.setUint32(16, nC, true); pv.setFloat32(20, Math.fround(scale), true);
+    dev.queue.writeBuffer(uP, 0, pv.buffer);
+    const pP = await mkPipe(SKV.WGSL_SPLITKV_PARTIAL), pC = await mkPipe(SKV.WGSL_SPLITKV_COMBINE);
+    const bP = bindOf(pP, [qB, kB, vB, pmB, plB, paB, uP]);
+    const bC = bindOf(pC, [pmB, plB, paB, yB, uP]);
+    { const enc = dev.createCommandEncoder(); let pass = enc.beginComputePass(); pass.setPipeline(pP); pass.setBindGroup(0, bP); pass.dispatchWorkgroups(H, nC, 1); pass.end(); pass = enc.beginComputePass(); pass.setPipeline(pC); pass.setBindGroup(0, bC); pass.dispatchWorkgroups(H, 1, 1); pass.end(); dev.queue.submit([enc.finish()]); }
+    const gotS = await readBack(yB, H * hd);
+    out.relErr_splitkv = relErr(gotS, ref);
+    out.nChunks = nC;
+    out.ms_splitkv = await timeSeq([{ pipe: pP, bg: bP, dispatch: [H, nC] }, { pipe: pC, bg: bC, dispatch: [H, 1] }]);
+    out.splitkv_faster = out.ms_splitkv < out.ms_flash;
+    out.pass = out.relErr_flash <= 1e-5 && out.relErr_splitkv <= 1e-5;
+  } catch (e) { out.error = String((e && e.stack) || e).replace(/https?:\/\/\S+/g, 'URL').slice(0, 600); }
+  out.done = true; window.__out = out; document.body.textContent = JSON.stringify(out, null, 1); document.title = 'done';
+})();
+</script>

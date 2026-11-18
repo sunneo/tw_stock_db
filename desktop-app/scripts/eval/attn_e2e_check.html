@@ -1,0 +1,44 @@
+<!doctype html><meta charset="utf-8"><title>attn e2e check</title>
+<body style="font:13px monospace;white-space:pre">
+<script>
+// R5 注意力的產品路徑（真 Chrome，intel xe-lpg）：attn_gpu.attnCoreGpu 自動（decode、past≥256 → split-KV）對 強制 attn_flash。
+// 正確性：兩者對 attn_ops.attnCore（CPU）的相對誤差（判準 ≤1e-5）。計時：端到端（含 KV 上傳與讀回）中位數 5 次，第 1 次暖機不算。
+// 一次一個形狀：?H=&Hkv=&hd=&past=&v=
+const mods = {};
+const loadMod = async (key, url) => {
+  const src = await (await fetch(url, { cache: 'no-store' })).text();
+  const m = { exports: {} }; mods[key] = m;
+  new Function('module', 'exports', 'require', src)(m, m.exports, (p) => { const k = p.replace(/^\.\//, '').replace(/\.js$/, ''); if (!mods[k]) throw new Error('missing ' + k); return mods[k].exports; });
+};
+const relErr = (x, y) => { let mx = 0, sc = 1e-9; for (let i = 0; i < x.length; i++) { mx = Math.max(mx, Math.abs(x[i] - y[i])); sc = Math.max(sc, Math.abs(y[i])); } return mx / sc; };
+(async () => {
+  const q0 = new URLSearchParams(location.search);
+  const H = +q0.get('H'), Hkv = +q0.get('Hkv'), hd = +q0.get('hd'), past = +q0.get('past');
+  const out = { shape: 'H' + H + 'Hkv' + Hkv + 'hd' + hd + 'past' + past, error: null, done: false };
+  try {
+    await loadMod('gpu_core', '../../renderer/src/gpu/gpu_core.js');
+    await loadMod('gpu_pool', '../../renderer/src/gpu/gpu_pool.js');
+    await loadMod('nn_ops', '../../renderer/src/gpu/nn_ops.js');
+    await loadMod('attn_ops', '../../renderer/src/gpu/attn_ops.js');
+    await loadMod('attn_splitkv', '../../renderer/src/gpu/attn_splitkv.js');
+    await loadMod('attn_gpu', '../../renderer/src/gpu/attn_gpu.js');
+    const A = mods.attn_ops.exports, AG = mods.attn_gpu.exports;
+    let seed = 47; const rr = () => { seed = (Math.imul(seed, 1664525) + 1013904223) | 0; return (seed >>> 0) / 4294967296 - 0.5; };
+    const cache = A.createKvCache(Hkv, hd, past + 1);
+    for (let t = 0; t <= past; t++) A.kvAppend(cache, Float32Array.from({ length: Hkv * hd }, rr), Float32Array.from({ length: Hkv * hd }, rr), 1);
+    const q = Float32Array.from({ length: H * hd }, rr);
+    const scale = 1 / Math.sqrt(hd);
+    const ref = A.attnCore(q, 1, past, cache, H, scale);
+    const ops = { navigator: navigator };
+    const rA = await AG.attnCoreGpu(q, 1, past, cache, H, scale, ops); const yAuto = rA.result;
+    out.auto_layer = rA.info ? rA.info.layer : null;
+    const yFlash = (await AG.attnCoreGpu(q, 1, past, cache, H, scale, { navigator: navigator, attnVariant: "attn_flash" })).result;
+    out.relErr_auto = relErr(yAuto, ref); out.relErr_flash = relErr(yFlash, ref);
+    const tm = async (opt) => { await AG.attnCoreGpu(q, 1, past, cache, H, scale, opt); const ts = []; for (let i = 0; i < 5; i++) { const t0 = performance.now(); await AG.attnCoreGpu(q, 1, past, cache, H, scale, opt); ts.push(performance.now() - t0); } ts.sort((a, b) => a - b); return Math.round(ts[2] * 10) / 10; };
+    out.e2e_ms_auto = await tm({ navigator: navigator });
+    out.e2e_ms_flash = await tm({ navigator: navigator, attnVariant: 'attn_flash' });
+    out.pass = out.relErr_auto <= 1e-5 && out.relErr_flash <= 1e-5;
+  } catch (e) { out.error = String((e && e.stack) || e).replace(/https?:\/\/\S+/g, 'URL').slice(0, 600); }
+  out.done = true; window.__out = out; document.body.textContent = JSON.stringify(out, null, 1); document.title = 'done';
+})();
+</script>

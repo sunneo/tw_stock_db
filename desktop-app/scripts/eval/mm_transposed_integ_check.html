@@ -1,0 +1,36 @@
+<!doctype html><meta charset="utf-8"><title>mm transposed integ check</title>
+<body style="font:13px monospace;white-space:pre">
+<script>
+// 訓練轉置版整合（真 Chrome）：mm_ops.matmul 的 transA／transB 旗標，M=1、K≥1024 時實際派發 mm_splitk_f32；M=8 仍用平鋪。
+// 正確性：對 gpu_core.matmulTRef 的相對誤差（判準 ≤1e-5）。結果在 window.__out。
+const mods = {};
+const loadMod = async (key, url) => {
+  const src = await (await fetch(url, { cache: 'no-store' })).text();
+  const m = { exports: {} }; mods[key] = m;
+  new Function('module', 'exports', 'require', src)(m, m.exports, (p) => { const k = p.replace(/^\.\//, '').replace(/\.js$/, ''); if (!mods[k]) throw new Error('missing ' + k); return mods[k].exports; });
+};
+const relErr = (x, y) => { let mx = 0, sc = 1e-9; for (let i = 0; i < x.length; i++) { mx = Math.max(mx, Math.abs(x[i] - y[i])); sc = Math.max(sc, Math.abs(y[i])); } return mx / sc; };
+(async () => {
+  const out = { rows: [], error: null, done: false };
+  try {
+    await loadMod('gpu_core', '../../renderer/src/gpu/gpu_core.js');
+    await loadMod('gpu_pool', '../../renderer/src/gpu/gpu_pool.js');
+    await loadMod('nn_ops', '../../renderer/src/gpu/nn_ops.js');
+    await loadMod('kernel_select', '../../renderer/src/gpu/kernel_select.js');
+    await loadMod('mm_splitk', '../../renderer/src/gpu/mm_splitk.js');
+    await loadMod('mm_ops', '../../renderer/src/gpu/mm_ops.js');
+    const MM = mods.mm_ops.exports, G = mods.gpu_core.exports;
+    const adapter = await navigator.gpu.requestAdapter();
+    MM.setMatmulCaps(mods.kernel_select.exports.probeCaps(adapter, null), 'intel');
+    let s = 67; const rnd = () => { s = (Math.imul(s, 1664525) + 1013904223) | 0; return (s >>> 0) / 4294967296 - 0.5; };
+    for (const [M, K, N, flags] of [[1, 1024, 1024, 1], [1, 4096, 1024, 2], [1, 1024, 3072, 3], [8, 1024, 1024, 2]]) {
+      const A = Float32Array.from({ length: M * K }, rnd), B = Float32Array.from({ length: K * N }, rnd);
+      const ops = { navigator: navigator, transA: !!(flags & 1), transB: !!(flags & 2) };
+      const ref = G.matmulTRef(A, B, M, K, N, flags);
+      const r = await MM.matmul(ops.transA ? A : A, [M, K], B, [K, N], ops);
+      out.rows.push({ shape: M + 'x' + K + 'x' + N, flags, kernel: ops.lastKernel, layer: ops.lastInfo ? ops.lastInfo.layer : null, relErr: relErr(r.y, ref), pass: relErr(r.y, ref) <= 1e-5 });
+    }
+  } catch (e) { out.error = String((e && e.stack) || e).replace(/https?:\/\/\S+/g, 'URL').slice(0, 600); }
+  out.done = true; window.__out = out; document.body.textContent = JSON.stringify(out, null, 1); document.title = 'done';
+})();
+</script>

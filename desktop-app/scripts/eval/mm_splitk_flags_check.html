@@ -1,0 +1,69 @@
+<!doctype html><meta charset="utf-8"><title>splitk flags check</title>
+<body style="font:13px monospace;white-space:pre">
+<script>
+// R5 訓練轉置版（真 Chrome，intel xe-lpg）：split-K（mm_splitk.js，支援 transA／transB 旗標）對 現行轉置路徑（mm_ops 強制的平鋪核心，p0＝旗標）。
+// 正確性：兩者對 gpu_core.matmulTRef 的相對誤差（判準 ≤1e-5）。
+// 計時：純核心，同一 pass 內連續 20 次（split-K 為部分核心＋歸約一組），onSubmittedWorkDone 後量牆鐘，5 次中位數除以 20。只標 intel xe-lpg。
+// 一次一個形狀：?M=&K=&N=&fl=0|1|2|3&v=
+const mods = {};
+const loadMod = async (key, url) => {
+  const src = await (await fetch(url, { cache: 'no-store' })).text();
+  const m = { exports: {} }; mods[key] = m;
+  new Function('module', 'exports', 'require', src)(m, m.exports, (p) => { const k = p.replace(/^\.\//, '').replace(/\.js$/, ''); if (!mods[k]) throw new Error('missing ' + k); return mods[k].exports; });
+};
+const relErr = (x, y) => { let mx = 0, sc = 1e-9; for (let i = 0; i < x.length; i++) { mx = Math.max(mx, Math.abs(x[i] - y[i])); sc = Math.max(sc, Math.abs(y[i])); } return mx / sc; };
+(async () => {
+  const q0 = new URLSearchParams(location.search);
+  const M = +q0.get('M'), K = +q0.get('K'), N = +q0.get('N'), fl = +(q0.get('fl') || 0);
+  const out = { shape: 'M' + M + 'K' + K + 'N' + N + 'fl' + fl, error: null, done: false };
+  try {
+    await loadMod('gpu_core', '../../renderer/src/gpu/gpu_core.js');
+    await loadMod('mm_splitk', '../../renderer/src/gpu/mm_splitk.js');
+    const G = mods.gpu_core.exports, SK = mods.mm_splitk.exports;
+    let seed = 59; const rr = () => { seed = (Math.imul(seed, 1664525) + 1013904223) | 0; return (seed >>> 0) / 4294967296 - 0.5; };
+    const A = Float32Array.from({ length: M * K }, rr), B = Float32Array.from({ length: K * N }, rr);
+    const ref = G.matmulTRef(A, B, M, K, N, fl);
+    const adapter = await navigator.gpu.requestAdapter();
+    const dev = await adapter.requestDevice({ requiredLimits: { maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize, maxBufferSize: adapter.limits.maxBufferSize } });
+    const U = { STORAGE: 0x0080, COPY_SRC: 0x0004, COPY_DST: 0x0008, UNIFORM: 0x0040, MAP_READ: 0x0001 };
+    const buf = (size, u) => dev.createBuffer({ size: Math.max(16, size), usage: u });
+    const mkPipe = (code) => dev.createComputePipelineAsync({ layout: 'auto', compute: { module: dev.createShaderModule({ code }), entryPoint: 'main' } });
+    const bindOf = (pipe, bufs) => dev.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries: bufs.map((b, i) => ({ binding: i, resource: { buffer: b } })) });
+    const timeSeq = async (steps) => {
+      const once = async () => { const t0 = performance.now(); const enc = dev.createCommandEncoder(); const pass = enc.beginComputePass();
+        for (let r = 0; r < 20; r++) for (const s of steps) { pass.setPipeline(s.pipe); pass.setBindGroup(0, s.bg); pass.dispatchWorkgroups(s.dispatch[0], s.dispatch[1] || 1, s.dispatch[2] || 1); }
+        pass.end(); dev.queue.submit([enc.finish()]); await dev.queue.onSubmittedWorkDone(); return (performance.now() - t0) / 20; };
+      await once(); const ts = []; for (let i = 0; i < 5; i++) ts.push(await once()); ts.sort((a, b) => a - b); return Math.round(ts[2] * 1000) / 1000;
+    };
+    const readBack = async (b, n) => { const rB = buf(n * 4, U.MAP_READ | U.COPY_DST); const enc = dev.createCommandEncoder(); enc.copyBufferToBuffer(b, 0, rB, 0, n * 4); dev.queue.submit([enc.finish()]); await rB.mapAsync(1); const y = new Float32Array(rB.getMappedRange().slice(0)); rB.unmap(); rB.destroy(); return y; };
+    const aB = buf(A.byteLength, U.STORAGE | U.COPY_DST); dev.queue.writeBuffer(aB, 0, A);
+    const bB = buf(B.byteLength, U.STORAGE | U.COPY_DST); dev.queue.writeBuffer(bB, 0, B);
+    // (a) 現行轉置路徑：mmTileWgsl（flags 在 p0）
+    const yT = buf(M * N * 4, U.STORAGE | U.COPY_SRC);
+    const uT = buf(32, U.UNIFORM | U.COPY_DST); dev.queue.writeBuffer(uT, 0, new Int32Array([1, M, K, N, 1, 0, 0, fl]));
+    const pT = await mkPipe(G.mmTileWgsl({ marker: 'matmul_tiled', dtype: 'f32' }));
+    const bT = bindOf(pT, [aB, bB, yT, uT]);
+    const dT = [Math.ceil(N / 64), Math.ceil(M / 64), 1];
+    { const enc = dev.createCommandEncoder(); const pass = enc.beginComputePass(); pass.setPipeline(pT); pass.setBindGroup(0, bT); pass.dispatchWorkgroups(...dT); pass.end(); dev.queue.submit([enc.finish()]); }
+    const gotT = await readBack(yT, M * N);
+    out.relErr_tiled = relErr(gotT, ref);
+    out.ms_tiled = await timeSeq([{ pipe: pT, bg: bT, dispatch: dT }]);
+    // (b) split-K（S 依 pickSplits(K)，旗標在 fl）
+    const S = SK.pickSplits(K);
+    const part = buf(S * M * N * 4, U.STORAGE | U.COPY_SRC), yS = buf(M * N * 4, U.STORAGE | U.COPY_SRC);
+    const uP = buf(32, U.UNIFORM | U.COPY_DST); dev.queue.writeBuffer(uP, 0, new Uint32Array([M, K, N, S, fl, 0, 0, 0]));
+    const uR = buf(32, U.UNIFORM | U.COPY_DST); dev.queue.writeBuffer(uR, 0, new Uint32Array([M, K, N, S, fl, 0, 0, 0]));
+    const pP = await mkPipe(SK.WGSL_SPLITK_PARTIAL), pR = await mkPipe(SK.WGSL_SPLITK_REDUCE);
+    const bP = bindOf(pP, [aB, bB, part, uP]), bR = bindOf(pR, [part, yS, uR]);
+    const dP = SK.dispatchPartial(M, N, S), dR = SK.dispatchReduce(M, N);
+    { const enc = dev.createCommandEncoder(); let pass = enc.beginComputePass(); pass.setPipeline(pP); pass.setBindGroup(0, bP); pass.dispatchWorkgroups(...dP); pass.end(); pass = enc.beginComputePass(); pass.setPipeline(pR); pass.setBindGroup(0, bR); pass.dispatchWorkgroups(...dR); pass.end(); dev.queue.submit([enc.finish()]); }
+    const gotS = await readBack(yS, M * N);
+    out.relErr_splitK = relErr(gotS, ref);
+    out.splitK_S = S;
+    out.ms_splitK = await timeSeq([{ pipe: pP, bg: bP, dispatch: dP }, { pipe: pR, bg: bR, dispatch: dR }]);
+    out.splitK_faster = out.ms_splitK < out.ms_tiled;
+    out.pass = out.relErr_tiled <= 1e-5 && out.relErr_splitK <= 1e-5;
+  } catch (e) { out.error = String((e && e.stack) || e).replace(/https?:\/\/\S+/g, 'URL').slice(0, 600); }
+  out.done = true; window.__out = out; document.body.textContent = JSON.stringify(out, null, 1); document.title = 'done';
+})();
+</script>

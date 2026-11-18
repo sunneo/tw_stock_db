@@ -104,7 +104,9 @@ async function run(kind, a, aDims, b, bDims, azp, bzp, ops) {
   const ref = () => (isInt ? matmulIntRef(a, aDims, b, bDims, azp, bzp) : (fl ? { y: MM_TILE.matmulTRef(a, b, pl.M, pl.K, pl.N, fl) } : matmulRef(a, aDims, b, bDims))).y;
   if (o.gpu === false) return { y: ref(), dims: pl.dims };
   // 轉置時只有平鋪版讀 p0（簡單版與 vec4 版不讀），所以強制用平鋪版
-  const kernelId = isInt ? 'mm_simple_f32' : (fl ? 'mm_tiled_f32' : pickMatmulKernel(pl.M, pl.K, pl.N, o).id);
+  // 轉置版（訓練）：M=1、K≥1024、單一批次時改走 split-K（支援 transA／transB 旗標；同機 intel xe-lpg 快 22–60%），其餘仍用平鋪
+  const flSplitK = !!fl && !!SK && pl.B === 1 && pl.M === 1 && pl.K >= 1024 && !isInt;
+  const kernelId = isInt ? 'mm_simple_f32' : (fl ? (flSplitK ? 'mm_splitk_f32' : 'mm_tiled_f32') : pickMatmulKernel(pl.M, pl.K, pl.N, o).id);
   const r = await nn.tryLayers(isInt ? 'matmulInt' : 'matmul', { navigator: o.navigator }, async (dev) => {
     // 啟動接線：第一次拿到 GPU 裝置時，背景載入勝者；缺勝者的形狀再背景競賽（本次派發仍用規則，下次才換）
     if (!TUNE.started) {
@@ -122,7 +124,7 @@ async function run(kind, a, aDims, b, bDims, azp, bzp, ops) {
     const kid0 = isInt ? 'mm_simple_f32' : kernelId;
     const sub = kid0 === 'mm_subgroup_f32' && !!SG && pl.B === 1 && !fl;
     // split-K（R3）：單一批次、不轉置、有載入模組、形狀在規則的適用範圍內；兩段核心（部分和＋歸約）在同一個批次、一次 submit 送出
-    const sk = kid0 === 'mm_splitk_f32' && !!SK && pl.B === 1 && !fl && !isInt && SK.splitkApplies(pl.M, pl.K, pl.N);
+    const sk = kid0 === 'mm_splitk_f32' && !!SK && pl.B === 1 && !isInt && (fl ? pl.M === 1 : SK.splitkApplies(pl.M, pl.K, pl.N));
     const kid = sk ? 'mm_splitk_f32' : (sub ? 'mm_subgroup_f32' : ((kid0 === 'mm_subgroup_f32' || kid0 === 'mm_splitk_f32') ? 'mm_simple_f32' : kid0));
     const tiled = kid !== 'mm_simple_f32' && kid !== 'mm_subgroup_f32' && kid !== 'mm_splitk_f32';
     o.lastKernel = kid;
@@ -131,7 +133,7 @@ async function run(kind, a, aDims, b, bDims, azp, bzp, ops) {
       const bt = nn.createBatch(dev);
       const hA = bt.upload(mk(a)), hB = bt.upload(mk(b));
       const hP = bt.alloc(S * pl.M * pl.N), hY = bt.alloc(pl.M * pl.N);
-      const uni = new Uint32Array([pl.M, pl.K, pl.N, S]);
+      const uni = new Uint32Array([pl.M, pl.K, pl.N, S, fl, 0, 0, 0]);
       bt.dispatchRaw(SK.WGSL_SPLITK_PARTIAL, [hA.buf, hB.buf, hP.buf], uni, SK.dispatchPartial(pl.M, pl.N, S));
       bt.dispatchRaw(SK.WGSL_SPLITK_REDUCE, [hP.buf, hY.buf], uni, SK.dispatchReduce(pl.M, pl.N));
       const got = await bt.read([[hY, pl.M * pl.N]]);

@@ -37,4 +37,15 @@ check('演算法（CPU 模擬同一個分塊順序）對 matmulRef 相對誤差 
   }
 });
 
+// R2：軟體預取（雙緩衝）變體
+check('R2 預取：共用記憶體兩份（2·TM·KB、2·KB·TN）、暫存器搬運（ra、rb）、以 kidx 的奇偶選緩衝區、每個 K 塊只一次屏障', () => {
+  const c = TW.wgslPrefetch(48, 64, 16, 256);
+  assert.ok(c.indexOf('array<f32, 1536>') >= 0, 'As 應為 2·48·16 = 1536');
+  assert.ok(c.indexOf('array<f32, 2048>') >= 0, 'Bs 應為 2·16·64 = 2048');
+  assert.ok(c.indexOf('var ra: array<f32, 3>') >= 0 && c.indexOf('var rb: array<f32, 4>') >= 0, 'NA=3、NB=4（WG 256）');
+  assert.ok(/kidx & 1u/.test(c), '奇偶緩衝區');
+  assert.strictEqual((c.match(/workgroupBarrier\(\)/g) || []).length, 1, '每個 K 塊只一個屏障（雙緩衝）');
+});
+// 注意：預取與不預取的位元相同性要在真 GPU 上比（mm_prefetch_check.html），node 沒有 WGSL 執行環境。
+
 console.log(passed + ' 項通過');

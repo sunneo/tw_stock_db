@@ -1,0 +1,84 @@
+<!doctype html><meta charset="utf-8"><title>conv im2col check</title>
+<body style="font:13px monospace;white-space:pre">
+<script>
+// R5 卷積（真 Chrome、真 WebGPU，intel xe-lpg）：3×3、pad 1、stride 1、N=1、groups=1。
+// (a) 直接卷積：conv_ops.WGSL_CONV2D（一個執行緒一個輸出元素）。
+// (b) im2col＋平鋪矩陣乘：conv_im2col.WGSL_IM2COL，再以 mm_ops.WGSL_MM_F32_TILED 計算 W(M×K′)·col(K′×P)。
+// 正確性：兩者對 conv_ops.conv2dRef 的相對誤差（判準 ≤1e-5）。計時：純核心，同一 pass 內連續 20 次（(b) 為 im2col＋矩陣乘一組），5 次中位數除以 20。只標 intel xe-lpg。
+// 一次一個形狀：?C=&H=&W=&M=&v=
+const mods = {};
+const loadMod = async (key, url) => {
+  const src = await (await fetch(url, { cache: 'no-store' })).text();
+  const m = { exports: {} }; mods[key] = m;
+  new Function('module', 'exports', 'require', src)(m, m.exports, (p) => { const k = p.replace(/^\.\//, '').replace(/\.js$/, ''); if (!mods[k]) throw new Error('missing ' + k); return mods[k].exports; });
+};
+const relErr = (x, y) => { let mx = 0, sc = 1e-9; for (let i = 0; i < x.length; i++) { mx = Math.max(mx, Math.abs(x[i] - y[i])); sc = Math.max(sc, Math.abs(y[i])); } return mx / sc; };
+(async () => {
+  const q = new URLSearchParams(location.search);
+  const C = +q.get('C'), H = +q.get('H'), W = +q.get('W'), M = +q.get('M'), KH = 3, KW = 3, reps = 20;
+  const p = { pads: [1, 1, 1, 1] };
+  const out = { shape: 'C' + C + 'H' + H + 'W' + W + 'M' + M + 'k3', error: null, done: false };
+  try {
+    await loadMod('gpu_core', '../../renderer/src/gpu/gpu_core.js');
+    await loadMod('gpu_pool', '../../renderer/src/gpu/gpu_pool.js');
+    await loadMod('nn_ops', '../../renderer/src/gpu/nn_ops.js');
+    await loadMod('kernel_select', '../../renderer/src/gpu/kernel_select.js');
+    await loadMod('mm_ops', '../../renderer/src/gpu/mm_ops.js');
+    await loadMod('conv_ops', '../../renderer/src/gpu/conv_ops.js');
+    await loadMod('conv_im2col', '../../renderer/src/gpu/conv_im2col.js');
+    const CO = mods.conv_ops.exports, I2 = mods.conv_im2col.exports, MM = mods.mm_ops.exports;
+    const adapter = await navigator.gpu.requestAdapter();
+    const dev = await adapter.requestDevice({ requiredLimits: { maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize, maxBufferSize: adapter.limits.maxBufferSize } });
+    const U = { STORAGE: 0x0080, COPY_SRC: 0x0004, COPY_DST: 0x0008, UNIFORM: 0x0040, MAP_READ: 0x0001 };
+    const buf = (size, u) => dev.createBuffer({ size: Math.max(16, size), usage: u });
+    const mkPipe = (code) => dev.createComputePipelineAsync({ layout: 'auto', compute: { module: dev.createShaderModule({ code }), entryPoint: 'main' } });
+    const bindOf = (pipe, bufs) => dev.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries: bufs.map((b, i) => ({ binding: i, resource: { buffer: b } })) });
+    const timeSeq = async (steps) => { // steps: [{pipe,bg,dispatch}]
+      const once = async () => { const t0 = performance.now(); const enc = dev.createCommandEncoder(); const pass = enc.beginComputePass();
+        for (let r = 0; r < reps; r++) for (const s of steps) { pass.setPipeline(s.pipe); pass.setBindGroup(0, s.bg); pass.dispatchWorkgroups(s.dispatch[0], s.dispatch[1] || 1, s.dispatch[2] || 1); }
+        pass.end(); dev.queue.submit([enc.finish()]); await dev.queue.onSubmittedWorkDone(); return (performance.now() - t0) / reps; };
+      await once(); const ts = []; for (let i = 0; i < 5; i++) ts.push(await once()); ts.sort((a, b) => a - b); return Math.round(ts[2] * 1000) / 1000;
+    };
+    const readBack = async (b, n) => { const rB = buf(n * 4, U.MAP_READ | U.COPY_DST); const enc = dev.createCommandEncoder(); enc.copyBufferToBuffer(b, 0, rB, 0, n * 4); dev.queue.submit([enc.finish()]); await rB.mapAsync(1); const y = new Float32Array(rB.getMappedRange().slice(0)); rB.unmap(); rB.destroy(); return y; };
+    let seed = 37; const rr = () => { seed = (Math.imul(seed, 1664525) + 1013904223) | 0; return (seed >>> 0) / 4294967296 - 0.5; };
+    const x = Float32Array.from({ length: C * H * W }, rr), w = Float32Array.from({ length: M * C * KH * KW }, rr);
+    const ref = CO.conv2dRef(x, 1, C, H, W, w, M, C, KH, KW, null, p);
+    const d = I2.dims(C, H, W, KH, KW, p);
+    const xB = buf(x.byteLength, U.STORAGE | U.COPY_DST); dev.queue.writeBuffer(xB, 0, x);
+    const wB = buf(w.byteLength, U.STORAGE | U.COPY_DST); dev.queue.writeBuffer(wB, 0, w);
+    const yD = buf(M * d.P * 4, U.STORAGE | U.COPY_SRC);
+    const colB = buf(d.K * d.P * 4, U.STORAGE | U.COPY_SRC);
+    const yI = buf(M * d.P * 4, U.STORAGE | U.COPY_SRC);
+    // (a) 直接卷積：uniform 20 個 u32（與 conv_ops.conv2d 相同的打包）
+    const uD = buf(80, U.UNIFORM | U.COPY_DST);
+    dev.queue.writeBuffer(uD, 0, new Uint32Array([1, C, H, W, M, C, KH, KW, d.Hout, d.Wout, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0]));
+    const dPipe = await mkPipe(CO.WGSL_CONV2D);
+    const dBg = bindOf(dPipe, [xB, wB, buf(16, U.STORAGE | U.COPY_DST), yD, uD]);
+    const dDisp = [Math.ceil(M * d.P / 64), 1, 1];
+    // (b) im2col＋平鋪矩陣乘
+    const uI = buf(80, U.UNIFORM | U.COPY_DST);
+    dev.queue.writeBuffer(uI, 0, new Uint32Array([C, H, W, KH, KW, d.Hout, d.Wout, 1, 1, 1, 1, 1, 1, d.K * d.P, 0, 0]));
+    const iPipe = await mkPipe(I2.WGSL_IM2COL);
+    const iBg = bindOf(iPipe, [xB, colB, uI]);
+    const iDisp = [Math.ceil(d.K * d.P / 64), 1, 1];
+    const uM = buf(32, U.UNIFORM | U.COPY_DST);
+    dev.queue.writeBuffer(uM, 0, new Int32Array([1, M, d.K, d.P, 0, 0, 0, 0]));
+    const mPipe = await mkPipe(MM.WGSL_MM_F32_TILED);
+    const mBg = bindOf(mPipe, [wB, colB, yI, uM]);
+    const mDisp = [Math.ceil(d.P / 64), Math.ceil(M / 64), 1];
+    // 執行一次並讀回
+    { const enc = dev.createCommandEncoder(); let pass = enc.beginComputePass(); pass.setPipeline(dPipe); pass.setBindGroup(0, dBg); pass.dispatchWorkgroups(...dDisp); pass.end(); dev.queue.submit([enc.finish()]); }
+    const gotD = await readBack(yD, M * d.P);
+    { const enc = dev.createCommandEncoder(); let pass = enc.beginComputePass(); pass.setPipeline(iPipe); pass.setBindGroup(0, iBg); pass.dispatchWorkgroups(...iDisp); pass.end(); pass = enc.beginComputePass(); pass.setPipeline(mPipe); pass.setBindGroup(0, mBg); pass.dispatchWorkgroups(...mDisp); pass.end(); dev.queue.submit([enc.finish()]); }
+    const gotI = await readBack(yI, M * d.P);
+    out.relErr_direct = relErr(gotD, ref);
+    out.relErr_im2col_gemm = relErr(gotI, ref);
+    out.pass = out.relErr_direct <= 1e-5 && out.relErr_im2col_gemm <= 1e-5;
+    out.dims = { K: d.K, P: d.P, M };
+    out.ms_direct = await timeSeq([{ pipe: dPipe, bg: dBg, dispatch: dDisp }]);
+    out.ms_im2col_plus_gemm = await timeSeq([{ pipe: iPipe, bg: iBg, dispatch: iDisp }, { pipe: mPipe, bg: mBg, dispatch: mDisp }]);
+    out.im2col_gemm_faster = out.ms_im2col_plus_gemm < out.ms_direct;
+  } catch (e) { out.error = String((e && e.stack) || e).replace(/https?:\/\/\S+/g, 'URL').slice(0, 600); }
+  out.done = true; window.__out = out; document.body.textContent = JSON.stringify(out, null, 1); document.title = 'done';
+})();
+</script>

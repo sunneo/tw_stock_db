@@ -1,0 +1,44 @@
+<!doctype html><meta charset="utf-8"><title>conv e2e check</title>
+<body style="font:13px monospace;white-space:pre">
+<script>
+// R5 卷積的產品路徑（真 Chrome，intel xe-lpg）：conv_ops.conv2d 的自動選擇（groups=1、N=1 → im2col＋平鋪矩陣乘）對 強制直接卷積（ops.conv='direct'）。
+// 正確性：兩者對 conv2dRef 的相對誤差（判準 ≤1e-5）。計時：端到端（含上傳與讀回）中位數 5 次，第 1 次暖機不算。只標 intel xe-lpg。
+// 一次一個形狀：?C=&H=&W=&M=&v=；3×3、pad 1、stride 1、有偏置。
+const mods = {};
+const loadMod = async (key, url) => {
+  const src = await (await fetch(url, { cache: 'no-store' })).text();
+  const m = { exports: {} }; mods[key] = m;
+  new Function('module', 'exports', 'require', src)(m, m.exports, (p) => { const k = p.replace(/^\.\//, '').replace(/\.js$/, ''); if (!mods[k]) throw new Error('missing ' + k); return mods[k].exports; });
+};
+const relErr = (x, y) => { let mx = 0, sc = 1e-9; for (let i = 0; i < x.length; i++) { mx = Math.max(mx, Math.abs(x[i] - y[i])); sc = Math.max(sc, Math.abs(y[i])); } return mx / sc; };
+(async () => {
+  const q = new URLSearchParams(location.search);
+  const C = +q.get('C'), H = +q.get('H'), W = +q.get('W'), M = +q.get('M'), KH = 3, KW = 3;
+  const p = { pads: [1, 1, 1, 1] };
+  const out = { shape: 'C' + C + 'H' + H + 'W' + W + 'M' + M, error: null, done: false };
+  try {
+    await loadMod('gpu_core', '../../renderer/src/gpu/gpu_core.js');
+    await loadMod('gpu_pool', '../../renderer/src/gpu/gpu_pool.js');
+    await loadMod('nn_ops', '../../renderer/src/gpu/nn_ops.js');
+    await loadMod('conv_im2col', '../../renderer/src/gpu/conv_im2col.js');
+    await loadMod('conv_ops', '../../renderer/src/gpu/conv_ops.js');
+    const CO = mods.conv_ops.exports;
+    let seed = 41; const rr = () => { seed = (Math.imul(seed, 1664525) + 1013904223) | 0; return (seed >>> 0) / 4294967296 - 0.5; };
+    const x = Float32Array.from({ length: C * H * W }, rr), w = Float32Array.from({ length: M * C * KH * KW }, rr), b = Float32Array.from({ length: M }, rr);
+    const ref = CO.conv2dRef(x, 1, C, H, W, w, M, C, KH, KW, b, p);
+    const run = (opts) => CO.conv2d(x, 1, C, H, W, w, M, C, KH, KW, b, p, opts);
+    const ops = { navigator: navigator };
+    const yAuto = await run(ops);
+    const info = ops.lastInfo ? ops.lastInfo.layer : null;
+    const yDir = await run({ navigator: navigator, conv: 'direct' });
+    out.relErr_auto = relErr(yAuto, ref);
+    out.relErr_direct = relErr(yDir, ref);
+    out.auto_layer = info;
+    const tm = async (opt) => { await run(opt); const ts = []; for (let i = 0; i < 5; i++) { const t0 = performance.now(); await run(opt); ts.push(performance.now() - t0); } ts.sort((a, b2) => a - b2); return Math.round(ts[2] * 10) / 10; };
+    out.e2e_ms_auto = await tm({ navigator: navigator });
+    out.e2e_ms_direct = await tm({ navigator: navigator, conv: 'direct' });
+    out.pass = out.relErr_auto <= 1e-5 && out.relErr_direct <= 1e-5;
+  } catch (e) { out.error = String((e && e.stack) || e).replace(/https?:\/\/\S+/g, 'URL').slice(0, 600); }
+  out.done = true; window.__out = out; document.body.textContent = JSON.stringify(out, null, 1); document.title = 'done';
+})();
+</script>

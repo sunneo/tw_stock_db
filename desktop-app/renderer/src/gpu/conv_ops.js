@@ -10,6 +10,10 @@
 // 轉置卷積：MOSS codec 圖中沒有 ConvTranspose（已確認算子清單），暫不實作。
 // Basic Pitch（核 3×3 等 2D）與 Whisper 編碼器（Conv1d，核 3、stride 1／2）的參數都在這兩個函式涵蓋內。
 const nn = require('./nn_ops.js');
+// R5：im2col＋平鋪矩陣乘（conv2d 的 groups=1、N=1 路徑）；載入失敗就退回直接卷積（不會選到不存在的核心）
+let IM2COL = null, MM_TILED_WGSL = null;
+try { IM2COL = require('./conv_im2col.js'); } catch (_) { IM2COL = null; }
+try { MM_TILED_WGSL = require('./gpu_core.js').mmTileWgsl({ marker: 'matmul_tiled', dtype: 'f32' }); } catch (_) { MM_TILED_WGSL = null; }
 
 function norm1(p) {
   const o = p || {};
@@ -170,6 +174,20 @@ async function conv2d(x, N, C, H, W, w, M, Cg, KH, KW, b, p, ops) {
   const total = N * M * Hout * Wout;
   return nn.tryLayers('conv2d', { navigator: o.navigator }, async (dev) => {
     checkFit(total, x.length, w.length);
+    // R5：groups = 1、單一批次時用 im2col＋平鋪矩陣乘（實測 1.9 → 0.37 ms，2.7–5.3 倍，兩者對參考相對誤差都 ≤1e-6）；ops.conv === 'direct' 強制舊的直接卷積
+    if (o.conv !== 'direct' && q.groups === 1 && N === 1 && IM2COL && MM_TILED_WGSL) {
+      const K = C * KH * KW, P = Hout * Wout;
+      const bt = nn.createBatch(dev);
+      const hx = bt.upload(Float32Array.from(x)), hw = bt.upload(Float32Array.from(w));
+      const hcol = bt.alloc(K * P), hy = bt.alloc(M * P);
+      const uI = new Uint32Array([C, H, W, KH, KW, Hout, Wout, q.sh, q.sw, q.pt, q.pl, q.dh, q.dw, K * P, 0, 0]);
+      const uM = new Int32Array([1, M, K, P, 0, 0, 0, 0]);
+      bt.dispatchRaw(IM2COL.WGSL_IM2COL, [hx.buf, hcol.buf], new Uint8Array(uI.buffer), [Math.ceil(K * P / 64), 1, 1]);
+      bt.dispatchRaw(MM_TILED_WGSL, [hw.buf, hcol.buf, hy.buf], new Uint8Array(uM.buffer), [Math.ceil(P / 64), Math.ceil(M / 64), 1]);
+      const got = (await bt.read([[hy, M * P]]))[0];
+      if (b) for (let m = 0; m < M; m++) for (let j = 0; j < P; j++) got[m * P + j] = Math.fround(got[m * P + j] + b[m]);
+      return got;
+    }
     const u = new Uint32Array([N, C, H, W, M, Cg, KH, KW, Hout, Wout, q.sh, q.sw, q.pt, q.pl, q.dh, q.dw, q.groups, b ? 1 : 0, 0, 0]);
     const outs = await nn.runWgsl(dev, WGSL_CONV2D,
       [{ data: Float32Array.from(x) }, { data: Float32Array.from(w) }, { data: b ? Float32Array.from(b) : new Float32Array(1) }, { data: new Float32Array(total), out: true }],

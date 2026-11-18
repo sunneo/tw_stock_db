@@ -74,4 +74,22 @@ check('R4：不合法的工作群組大小丟錯（0、300、非整數）', () =
   assert.throws(() => SK.withWorkgroup(SK.WGSL_SPLITK_PARTIAL, 128.5), /工作群組大小/);
 });
 
+function rng(seed) { let s = seed; return () => { s = (Math.imul(s, 1664525) + 1013904223) | 0; return (s >>> 0) / 4294967296 - 0.5; }; }
+// 訓練轉置版（flags：bit0＝transA、bit1＝transB，與 gpu_core.matmulTRef 相同）
+const G = require('./gpu_core.js');
+for (const flags of [1, 2, 3]) {
+  check('轉置 flags=' + flags + '：simulate 對 matmulTRef 相對誤差 ≤ 1e-5（M=2、K=300、N=40）', () => {
+    const r = rng(40 + flags);
+    const M = 2, K = 300, N = 40;
+    const A = Float32Array.from({ length: M * K }, r), B = Float32Array.from({ length: K * N }, r);
+    const ref = G.matmulTRef(A, B, M, K, N, flags);
+    const got = SK.simulate(A, B, M, K, N, 4, flags);
+    let mx = 0, sc = 1e-9; for (let i = 0; i < ref.length; i++) { mx = Math.max(mx, Math.abs(got[i] - ref[i])); sc = Math.max(sc, Math.abs(ref[i])); }
+    assert.ok(mx / sc <= 1e-5, '相對誤差 ' + (mx / sc));
+  });
+}
+check('轉置：部分核心讀 fl 的旗標（bit0、bit1）', () => {
+  assert.ok(/p\.fl & 1u/.test(SK.WGSL_SPLITK_PARTIAL) && /p\.fl & 2u/.test(SK.WGSL_SPLITK_PARTIAL));
+});
+
 console.log(passed + ' 項通過');

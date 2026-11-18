@@ -1,0 +1,79 @@
+<!doctype html><meta charset="utf-8"><title>nbits splitk check</title>
+<body style="font:13px monospace;white-space:pre">
+<script>
+// R5 MatMulNBits（真 Chrome，intel xe-lpg）：decode M=1 的 split-K（matmulnbits_splitk.js）對 現行 matmulnbits_dec（WGSL_MATMULNBITS_DEC）。
+// 正確性：兩者對 matmulnbits_ref.matmulNBitsRef 的相對誤差（判準 ≤1e-5）。
+// 計時：純核心，同一 pass 內連續 20 次（split-K 為部分核心＋歸約一組），onSubmittedWorkDone 後量牆鐘，5 次中位數除以 20。只標 intel xe-lpg。
+// 一次一個形狀：?K=&N=&S=&v=
+const mods = {};
+const loadMod = async (key, url) => {
+  const src = await (await fetch(url, { cache: 'no-store' })).text();
+  const m = { exports: {} }; mods[key] = m;
+  new Function('module', 'exports', 'require', src)(m, m.exports, (p) => { const k = p.replace(/^\.\//, '').replace(/\.js$/, ''); if (!mods[k]) throw new Error('missing ' + k); return mods[k].exports; });
+};
+const relErr = (x, y) => { let mx = 0, sc = 1e-9; for (let i = 0; i < x.length; i++) { mx = Math.max(mx, Math.abs(x[i] - y[i])); sc = Math.max(sc, Math.abs(y[i])); } return mx / sc; };
+(async () => {
+  const q0 = new URLSearchParams(location.search);
+  const M = 1, K = +q0.get('K'), N = +q0.get('N'), S = +(q0.get('S') || 4);
+  const out = { shape: 'M1K' + K + 'N' + N + 'S' + S, error: null, done: false };
+  try {
+    await loadMod('gpu_core', '../../renderer/src/gpu/gpu_core.js');
+    await loadMod('gpu_pool', '../../renderer/src/gpu/gpu_pool.js');
+    await loadMod('nn_ops', '../../renderer/src/gpu/nn_ops.js');
+    await loadMod('matmulnbits_ref', '../../renderer/src/gpu/matmulnbits_ref.js');
+    await loadMod('matmulnbits_gpu', '../../renderer/src/gpu/matmulnbits_gpu.js');
+    await loadMod('matmulnbits_splitk', '../../renderer/src/gpu/matmulnbits_splitk.js');
+    const REF = mods.matmulnbits_ref.exports, NB = mods.matmulnbits_gpu.exports, SK = mods.matmulnbits_splitk.exports, nn = mods.nn_ops.exports;
+    let seed = 53; const rr = () => { seed = (Math.imul(seed, 1664525) + 1013904223) | 0; return (seed >>> 0) / 4294967296 - 0.5; };
+    const nb = REF.nBlocksOf(K);
+    const A = Float32Array.from({ length: M * K }, rr);
+    const B = Uint8Array.from({ length: N * nb * 16 }, () => (rr() * 4096 + 128) & 255);
+    const scales = Float32Array.from({ length: N * nb }, () => 0.01 + Math.abs(rr()) * 0.02);
+    const ref = REF.matmulNBitsRef(A, M, K, B, scales, N);
+    const adapter = await navigator.gpu.requestAdapter();
+    const dev = await adapter.requestDevice({ requiredLimits: { maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize, maxBufferSize: adapter.limits.maxBufferSize } });
+    const U = { STORAGE: 0x0080, COPY_SRC: 0x0004, COPY_DST: 0x0008, UNIFORM: 0x0040, MAP_READ: 0x0001 };
+    const buf = (size, u) => dev.createBuffer({ size: Math.max(16, size), usage: u });
+    const mkPipe = (code) => dev.createComputePipelineAsync({ layout: 'auto', compute: { module: dev.createShaderModule({ code }), entryPoint: 'main' } });
+    const bindOf = (pipe, bufs) => dev.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries: bufs.map((b, i) => ({ binding: i, resource: { buffer: b } })) });
+    const timeSeq = async (steps) => {
+      const once = async () => { const t0 = performance.now(); const enc = dev.createCommandEncoder(); const pass = enc.beginComputePass();
+        for (let r = 0; r < 20; r++) for (const s of steps) { pass.setPipeline(s.pipe); pass.setBindGroup(0, s.bg); pass.dispatchWorkgroups(s.dispatch[0], s.dispatch[1] || 1, s.dispatch[2] || 1); }
+        pass.end(); dev.queue.submit([enc.finish()]); await dev.queue.onSubmittedWorkDone(); return (performance.now() - t0) / 20; };
+      await once(); const ts = []; for (let i = 0; i < 5; i++) ts.push(await once()); ts.sort((a, b) => a - b); return Math.round(ts[2] * 1000) / 1000;
+    };
+    const readBack = async (b, n) => { const rB = buf(n * 4, U.MAP_READ | U.COPY_DST); const enc = dev.createCommandEncoder(); enc.copyBufferToBuffer(b, 0, rB, 0, n * 4); dev.queue.submit([enc.finish()]); await rB.mapAsync(1); const y = new Float32Array(rB.getMappedRange().slice(0)); rB.unmap(); rB.destroy(); return y; };
+    const bq = new Uint32Array(B.buffer.slice(0));
+    const aB = buf(A.byteLength, U.STORAGE | U.COPY_DST); dev.queue.writeBuffer(aB, 0, A);
+    const bB = buf(bq.byteLength, U.STORAGE | U.COPY_DST); dev.queue.writeBuffer(bB, 0, bq);
+    const sB = buf(scales.byteLength, U.STORAGE | U.COPY_DST); dev.queue.writeBuffer(sB, 0, scales);
+    const yD = buf(M * N * 4, U.STORAGE | U.COPY_SRC);
+    // (a) 現行 dec：uniform P = { M, K, N, nb }
+    const uD = buf(16, U.UNIFORM | U.COPY_DST); dev.queue.writeBuffer(uD, 0, new Uint32Array([M, K, N, nb]));
+    const pD = await mkPipe(NB.WGSL_MATMULNBITS_DEC);
+    const bD = bindOf(pD, [aB, bB, sB, yD, uD]);
+    const dDisp = [Math.ceil(N / 16), M, 1];
+    { const enc = dev.createCommandEncoder(); const pass = enc.beginComputePass(); pass.setPipeline(pD); pass.setBindGroup(0, bD); pass.dispatchWorkgroups(...dDisp); pass.end(); dev.queue.submit([enc.finish()]); }
+    const gotD = await readBack(yD, M * N);
+    out.relErr_dec = relErr(gotD, ref);
+    out.ms_dec = await timeSeq([{ pipe: pD, bg: bD, dispatch: dDisp }]);
+    // (b) split-K：部分核心（N/16, M, S）＋歸約（N/64, M）
+    const Ks = SK.sliceLen(K, S);
+    const part = buf(S * M * N * 4, U.STORAGE | U.COPY_SRC);
+    const yS = buf(M * N * 4, U.STORAGE | U.COPY_SRC);
+    const uP = buf(32, U.UNIFORM | U.COPY_DST); dev.queue.writeBuffer(uP, 0, new Uint32Array([M, K, N, nb, S, Ks, 0, 0]));
+    const pP = await mkPipe(SK.WGSL_NB_SPLITK_PARTIAL), pR = await mkPipe(SK.WGSL_NB_SPLITK_REDUCE);
+    const bP = bindOf(pP, [aB, bB, sB, part, uP]);
+    const bR = bindOf(pR, [part, yS, uP]);
+    const pDisp = [Math.ceil(N / 16), M, S], rDisp = [Math.ceil(N / 64), M, 1];
+    { const enc = dev.createCommandEncoder(); let pass = enc.beginComputePass(); pass.setPipeline(pP); pass.setBindGroup(0, bP); pass.dispatchWorkgroups(...pDisp); pass.end(); pass = enc.beginComputePass(); pass.setPipeline(pR); pass.setBindGroup(0, bR); pass.dispatchWorkgroups(...rDisp); pass.end(); dev.queue.submit([enc.finish()]); }
+    const gotS = await readBack(yS, M * N);
+    out.relErr_splitK = relErr(gotS, ref);
+    out.splitK_S = S;
+    out.ms_splitK = await timeSeq([{ pipe: pP, bg: bP, dispatch: pDisp }, { pipe: pR, bg: bR, dispatch: rDisp }]);
+    out.splitK_faster = out.ms_splitK < out.ms_dec;
+    out.pass = out.relErr_dec <= 1e-5 && out.relErr_splitK <= 1e-5;
+  } catch (e) { out.error = String((e && e.stack) || e).replace(/https?:\/\/\S+/g, 'URL').slice(0, 600); }
+  out.done = true; window.__out = out; document.body.textContent = JSON.stringify(out, null, 1); document.title = 'done';
+})();
+</script>

@@ -8,6 +8,9 @@
   else root.FaAttnGpu = factory(root.FaNnOps, root.FaAttnOps);
 })(typeof self !== 'undefined' ? self : this, function (nn, A) {
   'use strict';
+  // R5：decode（S=1）、past ≥ 256 時用 split-KV（attn_splitkv.js）；載入失敗就不提供，退回 attn_flash
+  let SKV = null;
+  try { SKV = require('./attn_splitkv.js'); } catch (_) { SKV = null; }
   const WGSL_ATTN = `
 struct P { S: u32, past: u32, H: u32, Hkv: u32, hd: u32, scale: f32, pad0: u32, pad1: u32 }
 @group(0) @binding(0) var<storage, read> q: array<f32>;
@@ -159,6 +162,20 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>, @builtin(workgroup_id) wid
     return nn.tryLayers('attn', opts, async (dev) => {
       if (variant === 'attn_flash' && !(hd % 64 === 0 && hd <= 512)) throw new Error('attn_flash：hd=' + hd + ' 必須是 64 的倍數且 ≤ 512');
       if (groups > 65535 && variant === 'attn') throw new Error('attnCoreGpu：工作群組數 ' + groups + ' 超過 65535（請分批）');
+      // R5 split-KV：decode（S=1）、past ≥ 256、自動選擇（未強制 attn_flash）時；兩段在同一個批次送出
+      if (SKV && S === 1 && past >= 256 && variant === 'attn_flash' && !(opts && opts.attnVariant === 'attn_flash')) {
+        const nC = SKV.nChunks(past);
+        const n1 = (past + 1) * Hkv * hd;
+        const bt = nn.createBatch(dev);
+        const hq = bt.upload(Float32Array.from(q)), hk = bt.upload(cache.k.subarray(0, n1)), hv = bt.upload(cache.v.subarray(0, n1));
+        const hpm = bt.alloc(H * nC), hpl = bt.alloc(H * nC), hpa = bt.alloc(H * nC * hd), hy = bt.alloc(H * hd);
+        const uv = new DataView(new ArrayBuffer(32));
+        uv.setUint32(0, H, true); uv.setUint32(4, Hkv, true); uv.setUint32(8, hd, true); uv.setUint32(12, past, true); uv.setUint32(16, nC, true); uv.setFloat32(20, Math.fround(scale), true);
+        const uu = new Uint8Array(uv.buffer);
+        bt.dispatchRaw(SKV.WGSL_SPLITKV_PARTIAL, [hq.buf, hk.buf, hv.buf, hpm.buf, hpl.buf, hpa.buf], uu, [H, nC, 1]);
+        bt.dispatchRaw(SKV.WGSL_SPLITKV_COMBINE, [hpm.buf, hpl.buf, hpa.buf, hy.buf], uu, [H, 1, 1]);
+        return (await bt.read([[hy, H * hd]]))[0];
+      }
       const n = (past + S) * Hkv * hd;
       const qf = Float32Array.from(q);
       const kc = cache.k.subarray(0, n), vc = cache.v.subarray(0, n);
