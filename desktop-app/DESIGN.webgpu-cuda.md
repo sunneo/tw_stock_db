@@ -761,6 +761,39 @@ Python 模擬器與離線模型推論共用同一個 GPU 裝置：
 
 ---
 
+## 11.1 哪些入口享有哪些優化（O14d，2026-11-18）
+
+原則：優化放在函式庫層（`mm_ops`、`infer_ops`、`kernel_gen`、`kernel_select`、`variant_race`、`gpu_pool`），各入口共用，不另留舊核心。下表的核心名稱與位置沿用 O14a 盤點（`docs/CHECKLIST.cudaweb-optimize.md` 的 O14a 表）與 O14b 的接線；**WGSL 在真 GPU 上的逐項驗證都還沒做**（這台沒有 NVIDIA，只有內顯），表中「享有」一律指「程式路徑已接上、假裝置或 CPU 參考測過」，不是「真卡上量過」。
+
+| 入口 | 現在用哪個核心 | 享有的優化 | 選核規則與開關 | 驗證層級 |
+|---|---|---|---|---|
+| `cudaweb.sgemm`（`pybridge/cudaweb.py`） | `gpu_core` 的平鋪矩陣乘（`matmul`，K、N 為 4 的倍數且不轉置時走 `matmul_vec4`） | 平鋪、暫存器分塊、轉置旗標（`p0`）；`alpha`、`beta` 在主機端後處理 | 有競賽勝者才換（O14b）；設定頁「矩陣乘核心」可強制 `mm_vec4_f32`、`mm_tiled_f32`，或 `off`（舊規則）；`auto` 是預設 | node 假裝置與 CPU 參考；WGSL 未在真 GPU 驗證 |
+| `cudaweb.sgemm_batched` | `matmulMany`（一次 submit、一次讀回） | 批次送出 | 同上 | node 假裝置；真機未驗 |
+| `cudaweb.matmul`、模組層 `matmul` | 同 `sgemm` | 同上 | 同上 | 同上 |
+| `cudaweb.sgemv`、`gemv` | `gemv_row`（每列一個工作群組，共用記憶體樹狀歸約） | 分層歸約，不是單執行緒 | 固定，無競賽 | node 假裝置；真機未驗 |
+| `cudaweb.sdot`、`dot`、`snrm2`、`nrm2`、`sum` | 分層 `sum`（每執行緒跨步＋共用記憶體樹狀歸約，逐層縮小） | 分層歸約 | 固定 | node 假裝置；真機未驗 |
+| `cudaweb.saxpy`、`sscal`、`axpy`、`scal`、`vector_add` | 逐元素核心 | 無（記憶體受限，影響小） | 固定 | node 假裝置；真機未驗 |
+| 自寫核心的樣板 `reduce`、`transpose`、`scan` | `renderer/src/gpu/kernel_templates.js`（產生器＋CPU 參考＋索引模擬） | 能力決定工作群組與分塊；轉置用共用記憶體分塊；scan 用區塊掃描加遞迴 | 不接派發，供使用者與範例取用 | node 測試 16 項（索引與階段邏輯）；WGSL 未驗 |
+| 桌面橋接 `_cudawebCall` | matmul（M=1 走 gemv）、matmul_many、gemv、backend_info | 同上 | 同上 | 沿用 O14a 的記錄，本段未重查 |
+
+**沒有享有的**：
+- `numba`、`pycuda` 的自訂核心：O14c 只做了樣板，沒有把使用者自寫的核心接進優化路徑（`pybridge/numba/` 的編譯器只到 WGSL 產生，樣板沒有被它呼叫）。
+- Python 入口沒有 `transpose` 與 `scan`：`cudaweb.py` 只有 `vector_add`、`matmul`、`sum`、`axpy`、`scal`、`dot`、`nrm2`、`gemv` 與 BLAS 形式的 `sgemm` 系列；`transpose` 與 `scan` 只在 JS 的 `rt` 介面上。
+- 桌面橋接只轉送少數操作（見上表最後一列）。
+
+**使用者可用的開關**（矩陣乘）：
+- GPU 相容層設定頁的「矩陣乘核心」下拉：`auto`（預設，有競賽勝者才換）、`off`（舊規則）、`mm_vec4_f32`、`mm_tiled_f32`（強制，優先於勝者）。啟動時套用。
+- 變體表（設定頁 GPU 基準面板下方，G5）：套用最佳、重跑變體競賽（只量 64×1024×1024）、匯出剖析、匯入剖析（heuristic 不接受）、恢復預設。這個面板在這台的真機驗證是通過的（見清單 G5），但**快取的能力簽名在這台是 `sg0`，priors 的實測項是 `sg1`，所以實測剖析在這台沒命中**，待確認 `sg` 的真值。
+
+## 11.2 使用者自寫核心的範例（O14d）
+
+- `renderer/src/gpu/kernel_templates.js`：三個樣板。`pickParams(caps)` 依 `maxInvocations` 與 `maxWgStorage` 選工作群組（不超過 256 的最大 2 的冪次）與轉置分塊（16、8、4、2、1 中最大的可用）；`reduceWgsl(op, wg)`、`transposeWgsl(tile)`、`scanWgsl(wg)` 產生 WGSL 文字；`reduceRef`、`transposeRef`、`scanRef` 是 CPU 參考；`simReduce`、`simTranspose`、`simScan` 照 WGSL 的階段順序在 JS 裡跑一遍（屏障即階段邊界）。
+- JS 範例：`renderer/src/gpu/examples/custom_kernel_templates.js`，`node renderer/src/gpu/examples/custom_kernel_templates.js` 可直接跑（只做 CPU 模擬，不派發到 GPU）。
+- Python 範例：`renderer/src/gpu/examples/custom_kernel_cudaweb.py`，用 `cudaweb.sum`、`dot`、`matmul`，並印出實際用的層與降級原因。
+- 注意：範例裡的效能數字**沒有量**。優化前後的時間要在真 GPU 上量，並標明硬體；這台沒有 NVIDIA，所以這一段寫的是「待量測」，不是數字。
+
+---
+
 ## 附錄 A：檔案與模組索引
 
 | 檔案 | 責任 | 狀態 |
