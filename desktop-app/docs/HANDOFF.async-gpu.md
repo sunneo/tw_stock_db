@@ -181,3 +181,21 @@
   - **取消從 Python 端觸發：沒有做。** `runMap` 支援 `AbortSignal`，但 Python 的 `Pool` 沒有把取消傳到 JS。
   - **真機加速比（2 到 4 個工作者的純 CPU）：還沒跑。** 要等發布結束、embed 與 build 之後；另外要想辦法從評估檔觸發 Python 工作（`_mpSubmit` 需要 pickle 的 payload，JS 端不好產生，要透過 Python 端）。
 - 結論：排程與退回的邏輯已經用 node 測試覆蓋；Python API 的基本用法已經在墊片的單一執行緒退路下測過；真正的平行與工作者內的 GPU 還沒有驗證。
+
+## 九、異質排程器（cudaweb = CPU + GPU）的現況（2026-11-18）
+
+設計與各批次的細節在 `docs/DESIGN.cudaweb-hetero.md`（第 11、12、13 節）。這裡只列交接需要的狀態。
+
+- 已提交（只改來源與測試，embed／build 另外跑過）：
+  - 保守閘（淨收益要至少 10%，也就是總收益至少 25%，否則全給 GPU）與實測段耗時回饋（`hetero_split.js`，測試 15 項）。
+  - IndexedDB 速率後端 `hetero_rates_idb.js`（測試 6 項），`cpu_share` 可選接上速率存取。
+  - 統一句柄：`cpu_share` 的 CPU 段與 GPU 段都是佇列提交（`gpu_async_queue` 的多裝置 op）。
+  - 純 CPU 池 `runCpuOnly`（沒有 WebGPU 時用，測試 4 項）。
+- 真機結論（使用者判讀，已寫入設計文件第 12 節）：分攤只在 CPU／GPU 速率比不懸殊的機器有意義；這台的 GPU 約為 CPU 4 核心的 14 倍，矩陣乘沒有分攤空間。真正已證明的收益是非同步提交的 CPU／GPU 重疊（第六之二節，省約 36%）。不為了數字調參數，也不再為這台機器跑真機。
+- Python 墊片：查證為薄層，不需要新的 Python 程式（決策在 cudaweb 執行層）。
+- 逐元素與規約的通用切分：評估後決定只寫設計、不實作（理由見設計文件第 13 節）。
+- 還沒做（交接給之後的人）：
+  - 純 CPU 池接上 `mm_ops`（沒有 WebGPU 時改走 `runCpuOnly`），還沒有驗證。
+  - IndexedDB 在真瀏覽器的行為（目前只測假的 IDB）。
+  - 段耗時回饋在有分攤空間的機器上的效果（需要那種機器才能驗證）。
+  - 純 GPU 路徑的耗時回饋 GPU 速率（設計文件第 11 節的已知缺口）。
