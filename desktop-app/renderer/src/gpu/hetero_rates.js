@@ -4,11 +4,11 @@
 // 任何讀寫失敗都不丟錯：讀不到或資料壞掉就當作沒有速率（呼叫端會走保守預設）。
 
 // 鍵：裝置環境變了就是新的量測。
-// o: { op, browser, adapter, cores }
+// o: { op, browser, adapter, cores, kernel }。kernel 是 CPU 核心的版本識別（cpu_share.CPU_KERNEL_ID）：核心換了，舊速率自動作廢。
 function rateKey(o) {
   o = o || {};
   const part = (v) => String(v == null ? '' : v).replace(/\|/g, '/');
-  return ['v1', part(o.op), part(o.browser), part(o.adapter), part(o.cores)].join(' | ');
+  return ['v2', part(o.op), part(o.browser), part(o.adapter), part(o.cores), part(o.kernel || 'none')].join(' | ');
 }
 
 // 檢查儲存的速率。只接受 gpu、cpu 都是有限正數的物件；其餘一律視為沒有資料。

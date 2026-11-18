@@ -18,10 +18,10 @@ let t = 0; const now = () => (t += 1);
   const gpu = async (rows, mG) => CS.cpuRowsRef(rows, B, mG, k, n, false);
   let calls = 0; const gpuC = async (r, mG) => { calls++; return gpu(r, mG); };
   // 1. cores=0 → 不分工、gpuFn 不被呼叫（呼叫端走原路徑）
-  const off = CS.createCpuShare({ makeWorker: fakeWorker, now });
+  const off = CS.createCpuShare({ minWorkerFlops: 0, makeWorker: fakeWorker, now });
   let r = await off.run(gpuC, A, B, m, k, n, {}); assert.strictEqual(r.shared, false); assert.strictEqual(calls, 0);
   // 2. 小運算不分工
-  const on = CS.createCpuShare({ makeWorker: fakeWorker, cores: 4, now });
+  const on = CS.createCpuShare({ minWorkerFlops: 0, makeWorker: fakeWorker, cores: 4, now });
   r = await on.run(gpuC, A, B, m, k, n, {}); assert.strictEqual(r.shared, false); assert.strictEqual(r.why, 'small');
   // 3. 夠大：分工，結果等於單一路徑
   const M = 256, K = 256, N = 512, A2 = rnd(M * K), B2 = rnd(K * N), ref2 = CS.cpuRowsRef(A2, B2, M, K, N, false);
@@ -42,7 +42,7 @@ let t = 0; const now = () => (t += 1);
   // 6. GPU 出錯 → shared:false（呼叫端重算原路徑）
   r = await on.run(async () => { throw new Error('boom'); }, A2, B2, M, K, N, {}); assert.strictEqual(r.shared, false); assert.strictEqual(r.why, 'error');
   // 7. 沒有 Worker → shared:false，不丟錯
-  const nw = CS.createCpuShare({ makeWorker: () => null, cores: 2, now }); r = await nw.run(g2, A2, B2, M, K, N, {}); assert.strictEqual(r.shared, false);
+  const nw = CS.createCpuShare({ minWorkerFlops: 0, makeWorker: () => null, cores: 2, now }); r = await nw.run(g2, A2, B2, M, K, N, {}); assert.strictEqual(r.shared, false);
   // 8. 關閉後 Worker 收掉
   on.setCores(0); assert.strictEqual(on.stats().workers, 0);
   console.log('cpu_share_test：8 項通過');

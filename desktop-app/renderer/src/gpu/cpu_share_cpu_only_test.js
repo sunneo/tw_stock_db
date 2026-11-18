@@ -24,7 +24,7 @@ const same = (y) => y.length === ref.length && y.every((v, i) => Math.abs(v - re
 (async () => {
   // 1. Worker 可用：結果與參考一致，走 cpu-workers，列分給多個 Worker
   {
-    const s = CS.createCpuShare({ makeWorker: () => fakeWorker(), cores: 4 });
+    const s = CS.createCpuShare({ minWorkerFlops: 0, makeWorker: () => fakeWorker(), cores: 4 });
     const r = await s.runCpuOnly(A, B, M, K, N, {});
     assert.strictEqual(r.shared, true);
     assert.strictEqual(r.info.mode, 'cpu-workers');
@@ -35,7 +35,7 @@ const same = (y) => y.length === ref.length && y.every((v, i) => Math.abs(v - re
 
   // 2. 還沒開啟（cores=0）：退回主執行緒，結果正確，why=off
   {
-    const s = CS.createCpuShare({ makeWorker: () => fakeWorker(), cores: 0 });
+    const s = CS.createCpuShare({ minWorkerFlops: 0, makeWorker: () => fakeWorker(), cores: 0 });
     const r = await s.runCpuOnly(A, B, M, K, N, {});
     assert.strictEqual(r.info.mode, 'cpu-main');
     assert.strictEqual(r.info.why, 'off');
@@ -45,7 +45,7 @@ const same = (y) => y.length === ref.length && y.every((v, i) => Math.abs(v - re
 
   // 3. 建立不了 Worker：退回主執行緒，結果正確，說明原因
   {
-    const s = CS.createCpuShare({ makeWorker: () => null, cores: 4 });
+    const s = CS.createCpuShare({ minWorkerFlops: 0, makeWorker: () => null, cores: 4 });
     const r = await s.runCpuOnly(A, B, M, K, N, {});
     assert.strictEqual(r.info.mode, 'cpu-main');
     assert.ok(r.info.why, '應說明原因');
@@ -55,7 +55,7 @@ const same = (y) => y.length === ref.length && y.every((v, i) => Math.abs(v - re
 
   // 4. Worker 出錯：退回主執行緒，結果仍正確，記錄 fallback
   {
-    const s = CS.createCpuShare({ makeWorker: () => fakeWorker({ fail: true }), cores: 2 });
+    const s = CS.createCpuShare({ minWorkerFlops: 0, makeWorker: () => fakeWorker({ fail: true }), cores: 2 });
     const r = await s.runCpuOnly(A, B, M, K, N, {});
     assert.strictEqual(r.shared, true);
     assert.strictEqual(r.info.mode, 'cpu-main');

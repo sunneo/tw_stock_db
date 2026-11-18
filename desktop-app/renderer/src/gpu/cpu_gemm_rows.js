@@ -14,7 +14,15 @@ function gemmRowsSimdKernel(A, B, m, k, n, transA, transB, rowStart, rowEnd, was
   const apBytes = Math.ceil(MC / MR) * MR * KC * 4;
   const bpBytes = Math.ceil(NC / NR) * NR * KC * 4;
   const outOff = apBytes + bpBytes;
-  const inst = new WebAssembly.Instance(new WebAssembly.Module(wasmBytes), {});
+  // 編譯與實例化只做一次（工作者的全域快取，以位元組長度與總和為鍵）。每次呼叫都重新編譯會吃掉約 25 ms，這是小尺寸工作者比主執行緒慢的主因。
+  const gl = typeof globalThis !== 'undefined' ? globalThis : self;
+  let sum = 0; for (let i = 0; i < wasmBytes.length; i++) sum = (sum * 31 + wasmBytes[i]) | 0;
+  const cacheKey = wasmBytes.length + ':' + sum;
+  if (!gl.__faGemmInst || gl.__faGemmKey !== cacheKey) {
+    gl.__faGemmInst = new WebAssembly.Instance(new WebAssembly.Module(wasmBytes), {});
+    gl.__faGemmKey = cacheKey;
+  }
+  const inst = gl.__faGemmInst;
   const need = Math.ceil((outOff + 128) / 65536);
   const memory = inst.exports.mem;
   if (memory.buffer.byteLength < need * 65536) memory.grow(need - memory.buffer.byteLength / 65536);

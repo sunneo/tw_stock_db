@@ -61,6 +61,19 @@ function cpuKernel(A, B, m, k, n, transB) {
   return cpuRowsRef(A, B, m, k, n, transB);
 }
 
+// 工作者路徑門檻（純函式）：運算量 2·m·k·n 小於門檻就只用主執行緒。
+// 依據（真機與節點量測）：512³（約 2.7e8 flops）時工作者慢於主執行緒（真機 9.6／9.4／11.4 vs 12.6 GFLOP/s）；
+// 1024³（約 2.1e9）時工作者有加速（節點 1.75× 到 2.7×）。門檻定在兩者之間，768³ 的 2 倍，之後要用真機再校正。
+const MIN_WORKER_FLOPS = 2 * 768 * 768 * 768;
+function cpuPathFor(o) {
+  const m = Number(o.m) || 0, k = Number(o.k) || 0, n = Number(o.n) || 0, w = Math.floor(Number(o.workers) || 0);
+  const flops = 2 * m * k * n;
+  const thr = o.minFlops == null ? MIN_WORKER_FLOPS : Number(o.minFlops);
+  if (w < 1) return { path: 'main', flops, reason: '沒有工作者' };
+  if (flops < thr) return { path: 'main', flops, reason: '運算量 ' + flops + ' 小於門檻 ' + thr + '：傳送與拼接成本划不來，只用主執行緒' };
+  return { path: 'workers', flops, reason: '運算量大於門檻：沿 M 分給工作者' };
+}
+
 function workerSource() {
   return cpuRowsRef.toString() + CR.gemmRowsSimdKernel.toString() + `
 const CACHE = new Map();
@@ -91,6 +104,7 @@ function createCpuShare(o) {
   const makeWorker = opts.makeWorker || defaultMakeWorker;
   const now = opts.now || (() => (typeof performance !== 'undefined' ? performance : Date).now());
   let want = Math.max(0, Math.floor(opts.cores || 0));
+  const minWorkerFlops = opts.minWorkerFlops == null ? MIN_WORKER_FLOPS : Number(opts.minWorkerFlops);   // 測試可設 0 以強制走工作者路徑
   const pool = [];                 // { w, busy, pending: Map id→{resolve,reject}, bKeys:Set }
   let seq = 0;
   let broken = null;               // 建立 Worker 失敗的原因；非 null 就不再嘗試
@@ -111,6 +125,10 @@ function createCpuShare(o) {
     execute: (op, a) => (op.device === 'cpu' ? cpuExec(a) : Promise.resolve(a.fn(a.A, a.mG))),
   });
   async function cpuExec(a) {
+    const rows = a.m - a.mG;
+    if (rows > 0 && cpuPathFor({ m: rows, k: a.k, n: a.n, workers: a.nW, minFlops: minWorkerFlops }).path === 'main') {
+      return [cpuKernel(a.A.slice(a.mG * a.k, a.m * a.k), a.B, rows, a.k, a.n, !!a.transB)];
+    }
     const parts = [];
     for (let w = 0; w < a.nW; w++) {
       const r0 = a.mG + w * a.per, r1 = Math.min(a.m, r0 + a.per); if (r1 <= r0) break;
@@ -225,6 +243,8 @@ function createCpuShare(o) {
     const transB = !!r.transB;
     const mainRun = (why, fallback) => ({ shared: true, y: cpuKernel(A, B, m, k, n, transB), info: { mode: 'cpu-main', workers: 0, why, fallback } });
     if (want <= 0) return mainRun('off');
+    const pick = cpuPathFor({ m, k, n, workers: want, minFlops: minWorkerFlops });
+    if (pick.path === 'main') return { shared: true, y: cpuKernel(A, B, m, k, n, transB), info: { mode: 'cpu-main', workers: 0, why: pick.reason, threshold: true } };
     ensurePool();
     if (broken || !pool.length) return mainRun(broken || 'no-worker');
     const nW = Math.min(pool.length, m);
@@ -253,4 +273,7 @@ function createCpuShare(o) {
 let SHARED = null;
 function getShared() { if (!SHARED) SHARED = createCpuShare({}); return SHARED; }
 
-module.exports = { createCpuShare, cpuRowsRef, workerSource, getShared, MIN_FLOPS, MIN_ROWS, MAX_CPU_RATIO };
+// CPU 核心的版本識別：核心改了（分塊、微核心、工作者協定）就要換這個字串，速率快取的鍵會跟著變，舊速率自動作廢。
+const CPU_KERNEL_ID = 'cpu-simd-pack4x8-v2';
+
+module.exports = { createCpuShare, cpuRowsRef, workerSource, getShared, MIN_FLOPS, MIN_ROWS, MAX_CPU_RATIO, CPU_KERNEL_ID, MIN_WORKER_FLOPS, cpuPathFor };
