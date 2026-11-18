@@ -97062,6 +97062,13 @@ ${fnData.code}
                     try { res = { ok: true, result: this._gpuRecord(String(op), await this._pyBridgeGpu(String(op), JSON.parse(String(argsJson || '{}')))) }; }
                     catch (e) { res = { ok: false, error: String((e && e.message) || e) }; }
                     try { return JSON.stringify(res); } catch (e) { return JSON.stringify({ ok: false, error: '結果無法序列化' }); }
+                },
+                // 非同步提交：aop(name, argsJson)；name 見 _gpuAsync（submit／wait／sync／event_*…）
+                aop: async (name, argsJson) => {
+                    let res;
+                    try { res = { ok: true, result: await this._gpuAsync(String(name), JSON.parse(String(argsJson || '{}'))) }; }
+                    catch (e) { res = { ok: false, error: String((e && e.message) || e) }; }
+                    try { return JSON.stringify(res); } catch (e) { return JSON.stringify({ ok: false, error: '結果無法序列化' }); }
                 }
             });
             try { pyodide.FS.mkdirTree('/fa_cudaweb'); } catch (_) {}
@@ -97213,6 +97220,55 @@ ${fnData.code}
             this._gpuStat.reason = (result && result.reason) || '';
         }
         return result;
+    }
+    // GPU 非同步提交（renderer/src/gpu/gpu_async_queue.js）：submit 立刻回傳句柄，wait／sync／事件才等。
+    // 桌面版與網頁版共用這一段：網頁版經 _fa_gpu.aop；桌面版經 fa_bridge 的 gpu.a.<name>。
+    _gpuAsyncGet() {
+        if (this._gpuAsyncQ) return this._gpuAsyncQ;
+        const G = this._qwenModule().gpuAsync;
+        this._gpuAsyncQ = G.createGpuQueue({
+            maxPending: 64,
+            execute: (name, body) => this._pyBridgeGpu(name, body).then((r) => this._gpuRecord(name, r)),
+        });
+        this._gpuEvents = new Map();
+        this._gpuEvSeq = 0;
+        return this._gpuAsyncQ;
+    }
+    async _gpuAsync(name, a) {
+        const q = this._gpuAsyncGet();
+        a = a || {};
+        const hid = (x) => ({ id: Number(x) });
+        const ev = (x) => {
+            const e = this._gpuEvents.get(Number(x));
+            if (!e) throw new Error('未知的 GPU 事件：' + x);
+            return e;
+        };
+        switch (name) {
+            case 'submit': {
+                if (a.name !== 'call' && a.name !== 'kernel') throw new Error('非同步提交只接受 call 或 kernel：' + a.name);
+                const h = q.submit(String(a.name), a.body || {}, a.stream == null ? 0 : Number(a.stream));
+                return { handle: h.id, stream: h.stream };
+            }
+            case 'wait': return await q.wait(hid(a.handle));
+            case 'query': return q.query(hid(a.handle));
+            case 'forget': q.forget(hid(a.handle)); return { ok: true };
+            case 'sync': await q.synchronize(a.stream == null ? undefined : Number(a.stream)); return { ok: true };
+            case 'reset': q.reset(a.stream == null ? 0 : Number(a.stream)); return { ok: true };
+            case 'event_record': {
+                const e = q.record(a.stream == null ? 0 : Number(a.stream));
+                const id = ++this._gpuEvSeq;
+                this._gpuEvents.set(id, e);
+                return { event: id };
+            }
+            case 'event_sync': await q.eventSynchronize(ev(a.event)); return { ok: true };
+            case 'event_query': return q.eventQuery(ev(a.event));
+            case 'event_elapsed': {
+                const ms = q.eventElapsed(ev(a.start), ev(a.end));
+                return { ms: Number.isNaN(ms) ? null : ms };
+            }
+            case 'stats': return q.stats();
+            default: throw new Error('未知的非同步 GPU 操作：' + name);
+        }
     }
     // opts.gpuOnly：一般 run_command 的 GPU 相容層模式，只接受 gpu.* 操作（LLM、瀏覽器等其他轉接不開）
     _pyBridgeServe(rpc, opts) {
@@ -97483,6 +97539,7 @@ ${fnData.code}
             return r && r.ok === false ? (() => { throw new Error(r.error || '領域執行失敗'); })() : (r.result || r.note || r);
         }
         // gpu.*：GPU 相容層（numba／cupy 墊片）→ cudaweb 執行期（見 _pyBridgeGpu）
+        if (op.indexOf('gpu.a.') === 0) return await this._gpuAsync(op.slice(6), a || {});
         if (op.indexOf('gpu.') === 0) return this._gpuRecord(op.slice(4), await this._pyBridgeGpu(op.slice(4), a || {}));
         if (op === 'llm.info') { const rows = this._getModelRows(); const cfg = this._getApiConfig(); return { model: cfg.apiModel, rows: rows.length }; }
         if (op === 'llm.complete') return await this._pyBridgeComplete(a);
