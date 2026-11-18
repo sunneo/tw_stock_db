@@ -33,6 +33,14 @@
    "size": 120211,
    "md5": "e9610b9761f757d0f8eea8f2f6e620fa"
   },
+  "ktune": {
+   "file": "chunks/ktune.js",
+   "names": [
+    "FA_KERNEL_TUNE_SRC"
+   ],
+   "size": 27584,
+   "md5": "36edd7508a6a620c1c6c74c99f400d01"
+  },
   "qwengpu": {
    "file": "chunks/qwengpu.js",
    "names": [
@@ -1879,7 +1887,7 @@
   }
  },
  "core": {
-  "size": 6092208,
-  "md5": "26133043f1642d20f984cd12986ea978"
+  "size": 6095809,
+  "md5": "7d53f092a0ca7aeeaf76a5acdd6cb896"
  }
 }

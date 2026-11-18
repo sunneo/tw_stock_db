@@ -679,4 +679,15 @@ function embedStudio() {
 embedStudio();
 
 if (crlf) src = src.replace(/\n/g, '\r\n');
+// 運算變體調校設定頁（O9）：kernel_select＋kernel_race 串成一段。瀏覽器沒有 module，用 var module 接住 kernel_select 的匯出並掛到 self.FaKernelSelect，
+// kernel_race 再從那裡取 KS；new Function(FA_KERNEL_TUNE_SRC)() 回傳 self.FaKernelRace（見 floating-assistant.js 的 _kernelTuneLib）。
+{
+    const rdK = (p) => fs.readFileSync(path.join(root, p), 'utf8').replace(/\r\n/g, '\n');
+    const sK = '(function(){ var module = { exports: {} };\n' + rdK('renderer/src/gpu/kernel_select.js') + '\nself.FaKernelSelect = module.exports; })();\n' +
+        '(function(){ var module;\n' + rdK('renderer/src/gpu/kernel_race.js') + '\n})();\nreturn self.FaKernelRace;';
+    const aK = src.indexOf('/* KTUNE-BEGIN */'), bK = src.indexOf('/* KTUNE-END */');
+    if (aK < 0 || bK < 0) throw new Error('找不到 KTUNE 標記');
+    src = src.slice(0, aK) + '/* KTUNE-BEGIN */\nconst FA_KERNEL_TUNE_SRC = ' + lit(sK) + ';\n' + src.slice(bK);
+    console.log('已更新 FA_KERNEL_TUNE_SRC（' + sK.length + ' 字元）');
+}
 fs.writeFileSync(file, src);
