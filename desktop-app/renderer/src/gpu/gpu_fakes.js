@@ -4,6 +4,8 @@
 'use strict';
 const core = require('./gpu_core.js');
 const NN = require('./nn_ops.js');
+// O7 融合核心的參考版（延遲載入，避免循環依賴）
+function FO() { return require('./fused_ops.js'); }
 
 // 用途旗標（與真實 GPUBufferUsage 相同的數值）。假裝置會檢查，缺旗標就丟錯，行為與真實 WebGPU 的驗證錯誤一致。
 const USE = { MAP_READ: 0x1, COPY_SRC: 0x4, COPY_DST: 0x8, UNIFORM: 0x40, STORAGE: 0x80 };
@@ -158,6 +160,40 @@ function fakeNavigator(opts) {
       const n = (past + S) * Hkv * hd;
       const cache = { hd: hd, Hkv: Hkv, len: past + S, k: f32(e[1], n), v: f32(e[2], n) };
       f32(e[3], S * H * hd).set(AG.flashRef(f32(e[0], S * H * hd), S, past, cache, H, scale));
+    } else if (k === 'qdyn_stats') {
+      // O7 對照（nn_ops 的動態量化第一段）：綁定 0 x、1 st、2 uniform（n）
+      const n = u32(e[2])[0];
+      f32(e[1], 4).set(FO().quantStatsRef(f32(e[0], n)));
+    } else if (k === 'qdyn') {
+      // 綁定 0 x、1 st、2 q（i32）、3 uniform（n）
+      const n = u32(e[3])[0];
+      new Int32Array(e[2].data, 0, n).set(FO().qdynRef(f32(e[0], n), f32(e[1], 4)));
+    } else if (k === 'rmsq_fused') {
+      // 綁定 0 x、1 g、2 y、3 q（i32）、4 st、5 uniform（d u32，eps f32 位於位元組 4）
+      const d = u32(e[5])[0], eps = new Float32Array(e[5].data, 4, 1)[0];
+      const r = FO().rmsQuantFusedRef(f32(e[0], d), f32(e[1], d), d, eps);
+      f32(e[2], d).set(r.y);
+      new Int32Array(e[3].data, 0, d).set(r.q);
+      f32(e[4], 4).set(r.st);
+    } else if (k === 'fused_silu_mul') {
+      // 綁定 0 gate、1 up、2 y、3 uniform（n u32）
+      const n = u32(e[3])[0];
+      f32(e[2], n).set(FO().siluMulRef(f32(e[0], n), f32(e[1], n)));
+    } else if (k === 'copy') {
+      // 綁定 0 x、1 y、2 uniform（n u32）
+      const n = u32(e[2])[0];
+      f32(e[1], n).set(f32(e[0], n));
+    } else if (k === 'rope_qkv_fused') {
+      // 綁定 0 q、1 k、2 v、3 qout、4 kout、5 vout、6 uniform（T、H、Hkv、hd 皆 u32）
+      const pu = u32(e[6]); const T = pu[0], H = pu[1], Hkv = pu[2], hd = pu[3];
+      const r = FO().ropeQkvRef(f32(e[0], T * H * hd), f32(e[1], T * Hkv * hd), f32(e[2], T * Hkv * hd), T, H, Hkv, hd);
+      f32(e[3], T * H * hd).set(r.q);
+      f32(e[4], T * Hkv * hd).set(r.k);
+      f32(e[5], T * Hkv * hd).set(r.v);
+    } else if (k === 'softmax_online') {
+      // 綁定 0 x、1 y、2 uniform（rows、cols u32）
+      const rows = u32(e[2])[0], cols = u32(e[2])[1];
+      f32(e[1], rows * cols).set(FO().softmaxOnlineRef(f32(e[0], rows * cols), rows, cols));
     } else {
       throw new Error('假裝置不認得核心：' + k);
     }

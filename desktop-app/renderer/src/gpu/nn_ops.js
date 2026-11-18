@@ -658,6 +658,7 @@ async function adamw(p, g, m, v, t, lr, b1, b2, eps, wd, opts) {
 // 第一段：單一工作群組求全域最小／最大（先含 0，與參考版一致），算出 scale、zp，寫進 st[0..3] = [mn, mx, scale, zp]。
 // 第二段：逐元素 q = clamp(round(x/scale)+zp, 0, 255) − zp（int32）。scale 為 0 時 scale 記 1、zp 記 0（與參考版一致）。
 const WGSL_QDYN_STATS = `
+// @kernel qdyn_stats
 @group(0) @binding(0) var<storage, read> x: array<f32>;
 @group(0) @binding(1) var<storage, read_write> st: array<f32>;
 struct U { n: u32 };
@@ -704,6 +705,7 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
   }
 }`;
 const WGSL_QDYN = `
+// @kernel qdyn
 @group(0) @binding(0) var<storage, read> x: array<f32>;
 @group(0) @binding(1) var<storage, read> st: array<f32>;
 @group(0) @binding(2) var<storage, read_write> q: array<i32>;
@@ -722,6 +724,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 // 步驟：平方和（並行歸約）→ inv → 每個元素 v = x·inv·g（寫進 y，給殘差或需要時用）→ min／max 歸約 → scale、zp 寫進 st → 逐元素量化（重算 v，不讀 y，避免儲存緩衝的跨執行緒可見性問題）。
 // 與「rmsnorm（每列一個執行緒、逐元素串列）＋quantizeDyn（兩段）」比，派發數 1 對 3。
 const WGSL_RMSQ_FUSED = `
+// @kernel rmsq_fused
 struct P { d: u32, eps: f32 }
 @group(0) @binding(0) var<storage, read> x: array<f32>;
 @group(0) @binding(1) var<storage, read> g: array<f32>;
@@ -946,4 +949,4 @@ function trainerOps(opts) {
   };
 }
 
-module.exports = { trainerOps, rmsnormRef, rmsnorm, softmaxRef, softmax, siluRef, silu, ropeRef, rope, adamwCore, adamwRef, adamw, createBatch, runWgsl, getDevice, getGl, glSupport, glRun, tryLayers, nnBackendInfo, withMeasureLock, measureLockState, requestExclusiveGpu, registerIdleGpuHolder, NN_OPS, WGSL_RMSNORM, WGSL_SOFTMAX, WGSL_SILU, WGSL_ROPE, WGSL_ADAMW, NOTE_T3 };
+module.exports = { trainerOps, rmsnormRef, rmsnorm, softmaxRef, softmax, siluRef, silu, ropeRef, rope, adamwCore, adamwRef, adamw, createBatch, runWgsl, getDevice, getGl, glSupport, glRun, tryLayers, nnBackendInfo, withMeasureLock, measureLockState, requestExclusiveGpu, registerIdleGpuHolder, NN_OPS, WGSL_RMSNORM, WGSL_SOFTMAX, WGSL_SILU, WGSL_ROPE, WGSL_ADAMW, WGSL_RMSQ_FUSED, NOTE_T3 };
