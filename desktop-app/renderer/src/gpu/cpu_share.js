@@ -15,10 +15,14 @@
 // 不改變數值語意：兩邊都是 f32 累加（GPU 與 CPU 的累加順序不同，差異在 tolerance 內，與既有的 GPU↔CPU 對拍一致）。
 // 沒有 Worker（makeWorker 回傳 null／丟錯）或 cores=0 → 一律回報 shared:false，由呼叫端走原路徑。
 
+const HS = require('./hetero_split.js');  // 分攤決策公式（見 docs/DESIGN.cudaweb-hetero.md 第 2 節）
 const MIN_FLOPS = 2e7;      // M*K*N 小於這個不分工（派發與搬運的固定成本大於收益）
 const MIN_ROWS = 16;
 const MAX_CPU_RATIO = 0.5;  // CPU 最多分擔一半的列；GPU 慢到比 CPU 還慢時，使用者應直接選 CPU 模式
 const FIRST_RATIO_PER_CORE = 0.02;
+// 還沒有 CPU 速率時的探測比例：只為了量 CPU 速率，會讓 CPU 做一小份（設計文件第 2 節的例外，見第 9 節）
+const PROBE_EVERY = 10;     // 決策說「不切」時，每 10 次強制探測一次，免得 CPU 速率過期
+const CPU_OVERHEAD_MS = 0.5; // 每次分工的 CPU 固定成本（送出／接收訊息、拷貝），用於決策
 
 // Worker 內與主執行緒共用的核心：列區塊 C[m×n] = A[m×k]·B（transB：B 是 n×k）。i-k-j 迴圈讓 B 的列連續讀。
 function cpuRowsRef(A, B, m, k, n, transB) {
@@ -108,9 +112,17 @@ function createCpuShare(o) {
     return new Promise((resolve, reject) => { slot.pending.set(msg.id, { resolve, reject }); try { slot.w.postMessage(msg, transfer || []); } catch (e) { slot.pending.delete(msg.id); reject(e); } });
   }
 
-  function ratioNow() {
-    if (rate.gpu > 0 && rate.cpu > 0) return Math.min(MAX_CPU_RATIO, rate.cpu / (rate.cpu + rate.gpu));
-    return Math.min(MAX_CPU_RATIO, want * FIRST_RATIO_PER_CORE);
+  // 比例：兩邊速率都量到了，就用分攤決策（含固定成本與 15% margin，見 hetero_split）；還沒量到就做小份探測。
+  // 決策說不切時，每 PROBE_EVERY 次探測一次，免得 CPU 速率過期。未給尺寸時當作大運算（測試與舊呼叫端用）。
+  let sinceProbe = 0;
+  function ratioNow(m, k, n) {
+    const probe = Math.min(MAX_CPU_RATIO, want * FIRST_RATIO_PER_CORE);
+    if (!(rate.gpu > 0 && rate.cpu > 0)) return probe;
+    const work = (m && k && n) ? 2 * m * k * n : 1e9;
+    const d = HS.decideSplit({ work, gpuAvailable: true, cpuAvailable: want > 0, gpuRate: rate.gpu, cpuRate: rate.cpu, gpuOverheadMs: 0, cpuOverheadMs: CPU_OVERHEAD_MS });
+    if (d.mode === 'split') { sinceProbe = 0; return Math.min(MAX_CPU_RATIO, d.fraction); }
+    if (++sinceProbe >= PROBE_EVERY) { sinceProbe = 0; return probe; }
+    return 0;
   }
   const ema = (old, v) => (old > 0 ? old * 0.6 + v * 0.4 : v);
 
@@ -121,7 +133,7 @@ function createCpuShare(o) {
     if (m < MIN_ROWS || m * k * n < MIN_FLOPS) return { shared: false, why: 'small' };
     ensurePool();
     if (broken || !pool.length) return { shared: false, why: broken || 'no-worker' };
-    const ratio = ratioNow();
+    const ratio = ratioNow(m, k, n);
     let mC = Math.floor(m * ratio);
     mC = Math.min(mC, m - 1);
     if (mC < 1) return { shared: false, why: 'ratio' };
@@ -169,7 +181,8 @@ function createCpuShare(o) {
 
   function stats() { return { cores: want, workers: pool.length, broken, rate: { gpu: rate.gpu, cpu: rate.cpu }, last }; }
   function dispose() { want = 0; ensurePool(); }
-  return { setCores, cores: () => want, run, stats, dispose, _ratioNow: ratioNow };
+  // _setRates／_ratioNow 只給測試用（底線開頭）：直接設定兩邊速率，讓決策可以確定地走到切分或不切
+  return { setCores, cores: () => want, run, stats, dispose, _ratioNow: ratioNow, _setRates: (g, c) => { rate.gpu = Number(g) || 0; rate.cpu = Number(c) || 0; } };
 }
 
 // 全域單例：mm_ops 與設定頁共用
