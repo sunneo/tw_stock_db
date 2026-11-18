@@ -1,0 +1,56 @@
+<!doctype html><meta charset="utf-8"><title>q8mm f32var check</title>
+<body style="font:13px monospace;white-space:pre">
+<script>
+// 真 Chrome（真 WebGPU）驗證 infer_ops 的 q8mm 變體中，還沒有入庫驗證頁的那幾個：
+//   decr（i32 4 列）、decr8（i32 8 列）、decr8f／decr4f／decr2f（f32 乘加的 8／4／2 列）、pf8x4（f32 預填 4×8 分塊）。
+// 判準：與 q8mmRef 逐位相同（maxAbsDiff === 0）。這些 f32 變體的精確條件是 K ≤ 4096（本頁形狀都在內）。
+// 時間：端到端 q8mm()（含上傳與讀回，只標這台；不是純核心時間）。
+// 用法：desktop-app 資料夾 python -X utf8 -m http.server 8765 --bind 127.0.0.1，開 http://127.0.0.1:8765/scripts/eval/q8mm_f32var_check.html ；結果在 window.__out。
+const mods = {};
+const load = async (name) => {
+  const src = await (await fetch('../../renderer/src/gpu/' + name + '.js', { cache: 'no-store' })).text();
+  const m = { exports: {} }; mods[name] = m;
+  new Function('module', 'exports', 'require', src)(m, m.exports, (p) => { const k = p.replace(/^\.\//, '').replace(/\.js$/, ''); if (!mods[k]) throw new Error('missing ' + k); return mods[k].exports; });
+};
+(async () => {
+  const out = { adapter: null, variants: {}, time: [], error: null, done: false };
+  try {
+    await load('gpu_core'); await load('gpu_pool'); await load('nn_ops'); await load('infer_ops');
+    const Q = mods.infer_ops.exports;
+    if (navigator.gpu) { const a = await navigator.gpu.requestAdapter(); if (a) out.adapter = { vendor: a.info && a.info.vendor, arch: a.info && a.info.architecture, f16: a.features.has('shader-f16'), subgroups: a.features.has('subgroups') }; }
+    let s = 13; const rndInt = (lo, hi) => { s = (Math.imul(s, 1664525) + 1013904223) | 0; return lo + ((s >>> 0) % (hi - lo + 1)); };
+    const mkX = (n) => Int32Array.from({ length: n }, () => rndInt(-255, 255));
+    const mkW = (n) => Uint8Array.from({ length: n }, () => rndInt(0, 255));
+    const maxDiff = (x, y) => { let mx = 0; for (let i = 0; i < x.length; i++) mx = Math.max(mx, Math.abs(x[i] - y[i])); return mx; };
+    const scale = Math.fround(0.0123);
+    const SHAPES = [[2, 1024, 1024], [2, 300, 132], [4, 1024, 1024], [5, 257, 132], [7, 300, 132], [8, 1024, 1024], [8, 256, 128], [16, 1024, 1024], [33, 1024, 256], [64, 256, 128], [64, 1024, 1024], [70, 300, 132], [130, 257, 68]];
+    const VARIANTS = ['decr', 'decr8', 'decr8f', 'decr4f', 'decr2f', 'pf8x4'];
+    // 同一組資料給所有變體（確定性）
+    const cases = SHAPES.map(([M, K, N]) => ({ M, K, N, xq: mkX(M * K), W: mkW(K * N), ref: null }));
+    for (const c of cases) c.ref = Q.q8mmRef(c.xq, c.W, 131, c.M, c.K, c.N, scale);
+    for (const v of VARIANTS) {
+      const rows = [];
+      for (const c of cases) {
+        const r = await Q.q8mm(c.xq, c.W, 131, c.M, c.K, c.N, scale, { q8variant: v });
+        rows.push({ shape: c.M + 'x' + c.K + 'x' + c.N, layer: r.info.layer, reason: r.info.reason || '', maxAbsDiff: maxDiff(r.result, c.ref), exact: r.info.layer === 'T1' && maxDiff(r.result, c.ref) === 0 });
+      }
+      out.variants[v] = { rows, allExact: rows.every((x) => x.exact) };
+    }
+    // 端到端時間（中位數 5 次，第 1 次暖機）：decr8f／decr4f／decr2f 與 i32 的 decr8、decr 對照
+    const med = async (fn) => { await fn(); const ts = []; for (let i = 0; i < 5; i++) { const t0 = performance.now(); await fn(); ts.push(performance.now() - t0); } ts.sort((a, b) => a - b); return Math.round(ts[2] * 100) / 100; };
+    for (const [M, K, N] of [[2, 1024, 1024], [4, 1024, 1024], [8, 1024, 1024]]) {
+      const xq = mkX(M * K), W = mkW(K * N), row = { shape: M + 'x' + K + 'x' + N, endToEndMs: {} };
+      for (const v of ['decr', 'decr8', 'decr8f', 'decr4f', 'decr2f']) {
+        if (v === 'decr2f' && M !== 2) continue;
+        if (v === 'decr4f' && M !== 4) continue;
+        row.endToEndMs[v] = await med(() => Q.q8mm(xq, W, 131, M, K, N, scale, { q8variant: v }));
+      }
+      out.time.push(row);
+    }
+  } catch (e) { out.error = String((e && e.stack) || e).slice(0, 600); }
+  out.done = true;
+  window.__out = out;
+  document.body.textContent = JSON.stringify(out, null, 1);
+  document.title = 'done';
+})();
+</script>

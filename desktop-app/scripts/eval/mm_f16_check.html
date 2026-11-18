@@ -1,0 +1,99 @@
+<!doctype html><meta charset="utf-8"><title>mm f16 check</title>
+<body style="font:13px monospace;white-space:pre">
+<script>
+// O5／O12b 的 f16 變體驗證（真 Chrome、真 WebGPU，需要 shader-f16）。
+// 核心：gpu_core.mmTileWgsl({ dtype:'f16' })（輸入 array<f16>、累加 f32、輸出 f32）對 CPU 參考 matmulTRef。
+// 1) 正確性（整數輸入）：元素是 [-8,8] 的整數，f16 可精確表示，乘積與累加都精確，判準：逐位相同（maxAbsDiff 0）。
+// 2) 正確性（隨機輸入）：輸入先四捨五入成 f16（參考也用同一組 f16 值），判準：相對誤差 ≤ 1e-5（只剩累加順序的差）。
+// 3) 計時（同一台）：f16 核心對 f32 平鋪核心，端到端（上傳＋派發＋讀回），中位數 5 次（第 1 次暖機不算）。標硬體。
+// 用法：desktop-app 資料夾 python -X utf8 -m http.server 8765 --bind 127.0.0.1，開 http://127.0.0.1:8765/scripts/eval/mm_f16_check.html ；結果在 window.__out。
+const mods = {};
+const loadMod = async (key, url) => {
+  const src = await (await fetch(url, { cache: 'no-store' })).text();
+  const m = { exports: {} }; mods[key] = m;
+  new Function('module', 'exports', 'require', src)(m, m.exports, (p) => { const k = p.replace(/^\.\//, '').replace(/\.js$/, ''); if (!mods[k]) throw new Error('missing ' + k); return mods[k].exports; });
+};
+let seed = 11;
+const rnd = () => { seed = (Math.imul(seed, 1664525) + 1013904223) | 0; return (seed >>> 0) / 4294967296 - 0.5; };
+const relErr = (x, y) => { let mx = 0, sc = 1e-9; for (let i = 0; i < x.length; i++) { mx = Math.max(mx, Math.abs(x[i] - y[i])); sc = Math.max(sc, Math.abs(y[i])); } return mx / sc; };
+const maxAbs = (x, y) => { let mx = 0; for (let i = 0; i < x.length; i++) mx = Math.max(mx, Math.abs(x[i] - y[i])); return mx; };
+// f32 → f16 位元（IEEE 半精度，四捨五入到最近偶數）。優先用 DataView.setFloat16，沒有就手算。
+const hasSetF16 = typeof DataView.prototype.setFloat16 === 'function';
+function toF16Bits(v) {
+  if (hasSetF16) { const dv = new DataView(new ArrayBuffer(2)); dv.setFloat16(0, v, true); return dv.getUint16(0, true); }
+  throw new Error('此瀏覽器沒有 DataView.setFloat16');
+}
+function fromF16Bits(bits) {
+  const dv = new DataView(new ArrayBuffer(2)); dv.setUint16(0, bits, true); return dv.getFloat16(0, true);
+}
+const toF16Arr = (f32) => { const u = new Uint16Array(f32.length); for (let i = 0; i < f32.length; i++) u[i] = toF16Bits(f32[i]); return u; };
+const roundF16 = (f32) => { const u = toF16Arr(f32); const o = new Float32Array(f32.length); for (let i = 0; i < f32.length; i++) o[i] = fromF16Bits(u[i]); return o; };
+
+(async () => {
+  const out = { hardware: null, adapter: null, f16Dv: hasSetF16, correct: [], timing: [], allPass: false, error: null };
+  try {
+    const adapter = navigator.gpu && await navigator.gpu.requestAdapter();
+    if (!adapter) throw new Error('沒有 WebGPU 介面卡');
+    out.adapter = { vendor: adapter.info && adapter.info.vendor, arch: adapter.info && adapter.info.architecture, f16: adapter.features.has('shader-f16'), subgroups: adapter.features.has('subgroups'), maxWgStorage: adapter.limits.maxComputeWorkgroupStorageSize, maxInvocations: adapter.limits.maxComputeInvocationsPerWorkgroup };
+    out.hardware = 'Intel xe-lpg（本機 Chrome，WebGPU adapter：' + JSON.stringify({ f16: out.adapter.f16, subgroups: out.adapter.subgroups, maxWgStorage: out.adapter.maxWgStorage }) + '）';
+    if (!out.adapter.f16) throw new Error('介面卡沒有 shader-f16，這頁不量');
+    if (!hasSetF16) throw new Error('瀏覽器沒有 DataView.setFloat16，無法把輸入轉成 f16');
+    await loadMod('gpu_core', '../../renderer/src/gpu/gpu_core.js');
+    await loadMod('gpu_pool', '../../renderer/src/gpu/gpu_pool.js');
+    await loadMod('nn_ops', '../../renderer/src/gpu/nn_ops.js');
+    await loadMod('kernel_select', '../../renderer/src/gpu/kernel_select.js');
+    await loadMod('mm_ops', '../../renderer/src/gpu/mm_ops.js');
+    const core = mods.gpu_core.exports, nn = mods.nn_ops.exports;
+    const uniformOf = (words) => new Uint8Array(new Uint32Array(words).buffer);
+    // 跑一個平鋪矩陣乘核心（dtype f16：A、B 以 Uint16Array 位元上傳；f32：Float32Array）
+    const run = async (code, A, B, M, K, N, flags, dtype) => {
+      const words = [1, M, K, N, 1, 0, 0, flags];
+      const dispatch = core.mmTileDispatch(M, N, 1);
+      // f16 輸入的位元組數要是 4 的倍數（writeBuffer 的限制）：奇數個元素時補一個 0（核心只讀 M*K 個）
+      const pad16 = (u) => (u.length % 2 ? Uint16Array.from([...u, 0]) : u);
+      const ab = dtype === 'f16' ? { data: pad16(A) } : { data: A };
+      if (dtype === 'f16') B = pad16(B);
+      // 直接呼叫 GPU（不經退路）：失敗時把錯誤訊息記下來，層標 error，判失敗
+      const g = await nn.getDevice(navigator);
+      if (!g.dev) return { result: null, layer: 'no-device', info: String(g.reason) };
+      try {
+        const outs = await nn.runWgsl(g.dev, code, [ab, { data: B }, { data: new Float32Array(M * N), out: true }], uniformOf(words), dispatch);
+        return { result: outs[0], layer: 'T1', info: '' };
+      } catch (e) { return { result: null, layer: 'error', info: String((e && e.message) || e).slice(0, 300) }; }
+    };
+    const codeF16 = core.mmTileWgsl({ marker: 'matmul', dtype: 'f16' });
+    const codeF32 = core.mmTileWgsl({ marker: 'matmul', dtype: 'f32' });
+    // 1) 整數輸入：逐位相同
+    const shapes = [[70, 50, 90], [17, 33, 16], [64, 1024, 1024], [130, 7, 129]];
+    for (const [M, K, N] of shapes) {
+      const A = Float32Array.from({ length: M * K }, () => Math.floor(rnd() * 17 + 8.5) - 8);
+      const B = Float32Array.from({ length: K * N }, () => Math.floor(rnd() * 17 + 8.5) - 8);
+      const ref = core.matmulTRef(A, B, M, K, N, 0);
+      const got = await run(codeF16, toF16Arr(A), toF16Arr(B), M, K, N, 0, 'f16');
+      out.correct.push({ kind: 'int', M, K, N, layer: got.layer, info: got.info, maxAbsDiff: got.result ? maxAbs(got.result, ref) : null, pass: got.layer === 'T1' && maxAbs(got.result, ref) === 0 });
+    }
+    // 2) 隨機輸入（先轉成 f16，參考用同一組 f16 值）：相對誤差 ≤ 1e-5
+    for (const [M, K, N] of [[70, 50, 90], [64, 1024, 1024], [512, 1024, 1024]]) {
+      const A = Float32Array.from({ length: M * K }, rnd), B = Float32Array.from({ length: K * N }, rnd);
+      const Ar = roundF16(A), Br = roundF16(B);
+      const ref = core.matmulTRef(Ar, Br, M, K, N, 0);
+      const got = await run(codeF16, toF16Arr(A), toF16Arr(B), M, K, N, 0, 'f16');
+      const re = got.result ? relErr(got.result, ref) : null;
+      out.correct.push({ kind: 'rand', M, K, N, layer: got.layer, info: got.info, relErr: re, pass: got.layer === 'T1' && re <= 1e-5 });
+    }
+    // 3) 計時：f16 對 f32（端到端，中位數 5 次，第 1 次暖機）
+    const med = async (fn) => { await fn(); const ts = []; for (let i = 0; i < 5; i++) { const t0 = performance.now(); await fn(); ts.push(performance.now() - t0); } ts.sort((a, b) => a - b); return Math.round(ts[2] * 10) / 10; };
+    for (const [M, K, N] of [[64, 1024, 1024], [512, 1024, 1024]]) {
+      const A = Float32Array.from({ length: M * K }, rnd), B = Float32Array.from({ length: K * N }, rnd);
+      const A16 = toF16Arr(A), B16 = toF16Arr(B);
+      const f16Ms = await med(() => run(codeF16, A16, B16, M, K, N, 0, 'f16'));
+      const f32Ms = await med(() => run(codeF32, A, B, M, K, N, 0, 'f32'));
+      out.timing.push({ shape: M + 'x' + K + 'x' + N, f16EndToEndMs: f16Ms, f32EndToEndMs: f32Ms, note: '端到端含上傳與讀回，只標這台' });
+    }
+    out.allPass = out.correct.every((c) => c.pass);
+  } catch (e) { out.error = String((e && e.stack) || e); }
+  window.__out = out;
+  document.body.textContent = JSON.stringify(out, null, 1);
+  document.title = 'done';
+})();
+</script>

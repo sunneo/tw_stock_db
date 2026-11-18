@@ -26,8 +26,10 @@ const relErr = (x, y) => { let mx = 0, sc = 1e-9; for (let i = 0; i < x.length; 
     await loadMod('gpu_core', '../../renderer/src/gpu/gpu_core.js');
     await loadMod('gpu_pool', '../../renderer/src/gpu/gpu_pool.js');
     await loadMod('nn_ops', '../../renderer/src/gpu/nn_ops.js');
+    await loadMod('kernel_select', '../../renderer/src/gpu/kernel_select.js');
     await loadMod('mm_ops', '../../renderer/src/gpu/mm_ops.js');
-    await loadMod('before_core', '_tmp_before_gpu_core.js');
+    // 舊核心對照（_tmp_before_gpu_core.js）已不在 repo：有就用，沒有就不量舊核心（如實記在 out.beforeCoreMissing）
+    try { await loadMod('before_core', '_tmp_before_gpu_core.js'); } catch (e) { mods.before_core = { exports: { kernels: { matmul: null } } }; out.beforeCoreMissing = true; }
     const core = mods.gpu_core.exports, nn = mods.nn_ops.exports, before = mods.before_core.exports;
     const adapter = navigator.gpu && await navigator.gpu.requestAdapter();
     if (!adapter) throw new Error('沒有 WebGPU 介面卡');
@@ -91,7 +93,7 @@ const relErr = (x, y) => { let mx = 0, sc = 1e-9; for (let i = 0; i < x.length; 
       row.newMs = await timeIt(() => runTile(code, A, B, M, K, N, 1, 1, 0, core.mmTileDispatch(M, N, 1)));
       row.newLayer = lastLayer;
       row.vec4Ms = await timeIt(() => runTile(v4code, A, B, M, K, N, 1, 1, 0, core.mmTileDispatch(M, N, 1)));
-      if (withOld) {
+      if (withOld && oldCode) {
         row.oldMs = await timeIt(() => nn.tryLayers('matmul', {}, async (dev) => (await nn.runWgsl(dev, oldCode, [{ data: A }, { data: B }, { data: new Float32Array(M * N), out: true }], uniformOf([M, K, N, 0]), [Math.ceil(N / 16), Math.ceil(M / 16), 1]))[0], null, () => new Float32Array(M * N)));
       }
       return row;

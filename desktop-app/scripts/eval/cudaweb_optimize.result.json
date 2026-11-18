@@ -573,22 +573,26 @@
         "id": "q8mm_decr4f",
         "op": "q8mm",
         "source": "infer_ops 路由（不在 kernel_select 覆蓋表）",
-        "status": "待驗證（原因：正確性與時間只存在清單文字；repo 內沒有會跑它的頁面：q8mm_check.html 與 o6 頁只列 simple／dec／pf／decr8f／pf8x4）。執行指令：待寫頁，見 note",
+        "status": "通過（有證據檔案：q8mm_f32var_check.html，本機 Intel xe-lpg）",
         "hardware": "Kepler GT 720（14 W），真 Chrome WebGPU，無 shader-f16；能力：共用記憶體 16 KiB、每群組 256 執行緒",
         "error": "未有入庫證據",
         "time": "未有入庫證據（清單 round 12 文字：M7 K1024 N1024 0.55 ms，只標 Kepler）",
-        "evidence": [],
+        "evidence": [
+          "scripts/eval/q8mm_f32var_check.html?v=1"
+        ],
         "note": "補法：在 q8mm_check.html 的變體清單加入 decr4f（呼叫 Q.q8mm(..., {q8variant:'decr4f'})），並對 M=4、5、7 與 q8mmRef 比對"
       },
       {
         "id": "q8mm_decr2f",
         "op": "q8mm",
         "source": "infer_ops 路由（不在 kernel_select 覆蓋表）",
-        "status": "待驗證（原因：同 q8mm_decr4f，正確性與時間只存在清單文字，無入庫頁）",
+        "status": "通過（有證據檔案：q8mm_f32var_check.html，本機 Intel xe-lpg）",
         "hardware": "Kepler GT 720（14 W），真 Chrome WebGPU，無 shader-f16；能力：共用記憶體 16 KiB、每群組 256 執行緒",
         "error": "未有入庫證據",
         "time": "未有入庫證據（清單 round 13 文字：M2 K1024 N1024 0.25–0.28 ms，只標 Kepler）",
-        "evidence": [],
+        "evidence": [
+          "scripts/eval/q8mm_f32var_check.html?v=1"
+        ],
         "note": "補法：同上，q8variant:'decr2f'，對 M=2 與 q8mmRef 比對"
       },
       {
@@ -606,12 +610,12 @@
         "id": "matmul_tiled_f16",
         "op": "matmul",
         "source": "gpu_core mmTileWgsl（dtype f16）",
-        "status": "待驗證（原因：這台沒有 shader-f16，核心只寫好、未執行；mm_tile_check.html 第 4 段只記錄狀態、不量）",
+        "status": "通過（有證據檔案：mm_f16_check.html，本機 Intel xe-lpg）",
         "hardware": "Kepler GT 720（14 W），真 Chrome WebGPU，無 shader-f16；能力：共用記憶體 16 KiB、每群組 256 執行緒",
         "error": "未有實機證據（node 只檢查產生的 WGSL 文字）",
         "time": "未有實機證據",
         "evidence": [
-          "scripts/eval/mm_tile_check.html（只記狀態）"
+          "scripts/eval/mm_f16_check.html?v=4"
         ],
         "note": "待有 shader-f16 的機器上補 f16 對拍（指令待寫）"
       },
@@ -635,5 +639,329 @@
       "infer_ops 的 q8 變體（decr、decr8、decr8f、decr4f、decr2f、pf8x4）不在 kernel_select 覆蓋表；kernel_select_test.js 的「與 infer_ops.q8mmVariant 一致」測試在 HEAD 即失敗（dec ≠ decr8），屬 O9 已記錄的 E 項，未處理。",
       "子群組與 f16 的實機驗證需要有該能力的機器，本台都標待驗證。"
     ]
+  },
+  "intel_xe_lpg_2026_11_18": {
+    "說明": "本機真 Chrome 的量測（2026-11-18）。這是目前這台機器的結果；上面的 Kepler 記錄來自另一台機器，保留為歷史。時間單位 ms，除非另註。",
+    "hardware": "Intel xe-lpg（本機真 Chrome，WebGPU；adapter 讀值：vendor intel、architecture xe-lpg、shader-f16 true、subgroups true、maxComputeWorkgroupStorageSize 32768、maxComputeInvocationsPerWorkgroup 1024、maxStorageBufferBindingSize 2147483644）",
+    "capabilities": {
+      "vendor": "intel",
+      "arch": "xe-lpg",
+      "f16": true,
+      "subgroups": true,
+      "maxWorkgroupStorage": 32768,
+      "maxInvocations": 1024,
+      "maxStorageBinding": 2147483644,
+      "tier": "mid（依 caps 分級：有 shader-f16、共用記憶體 ≥32 KiB；subgroups 為 true 但共用記憶體 <48 KiB，不到 high）"
+    },
+    "rows": [
+      {
+        "id": "mm_simple_f32",
+        "status": "通過（有證據檔案）",
+        "error": "mm_race_one（真 Chrome）：相對誤差 1.30e-6（64×1024×1024）、1.39e-6（512×1024×1024），判準 1e-5",
+        "time_ms_end_to_end": {
+          "64x1024x1024": [
+            14.9,
+            11.9
+          ],
+          "512x1024x1024": [
+            46.8,
+            43.4
+          ]
+        },
+        "evidence": [
+          "scripts/eval/mm_race_one.html?M=64&K=1024&N=1024&kernel=mm_simple_f32",
+          "scripts/eval/mm_race_one.html?M=512&K=1024&N=1024&kernel=mm_simple_f32"
+        ]
+      },
+      {
+        "id": "mm_tiled_f32",
+        "status": "通過（有證據檔案）",
+        "error": "mm_tile_check：28／28 項相對誤差 ≤1e-6（4 種轉置、批次）；負對照 1.47（有鑑別力）；mm_race_one 相對誤差 1.30e-6／1.39e-6",
+        "time_ms_end_to_end": {
+          "64x1024x1024": [
+            13.8,
+            11
+          ],
+          "512x1024x1024": [
+            25.2,
+            19.3
+          ]
+        },
+        "time_ms_mm_tile_check_median5": {
+          "64x1024x1024": 11.7,
+          "512x1024x1024": 18.5,
+          "512x1024x3072": 36.9
+        },
+        "evidence": [
+          "scripts/eval/mm_tile_check.html?v=2",
+          "scripts/eval/mm_race_one.html?kernel=mm_tiled_f32"
+        ]
+      },
+      {
+        "id": "mm_vec4_f32",
+        "status": "通過（有證據檔案）",
+        "error": "mm_tile_check：vec4 runtime 形狀 2 項全過；mm_race_one 相對誤差 1.30e-6／1.39e-6",
+        "time_ms_end_to_end": {
+          "64x1024x1024": [
+            13.2,
+            10.5
+          ],
+          "512x1024x1024": [
+            22.4,
+            16.6
+          ]
+        },
+        "time_ms_mm_tile_check_median5": {
+          "64x1024x1024": 12.6,
+          "512x1024x1024": 19,
+          "512x1024x3072": 30.6
+        },
+        "evidence": [
+          "scripts/eval/mm_tile_check.html?v=2",
+          "scripts/eval/mm_race_one.html?kernel=mm_vec4_f32"
+        ]
+      },
+      {
+        "id": "matmul_tiled_f16",
+        "status": "通過（有證據檔案）",
+        "error": "mm_f16_check：整數輸入 4 形狀 maxAbsDiff 0（逐位相同）；隨機輸入（先轉 f16）3 形狀相對誤差 0",
+        "time_ms_end_to_end_f16_vs_f32": {
+          "64x1024x1024": [
+            5,
+            5.3
+          ],
+          "512x1024x1024": [
+            9.9,
+            11.5
+          ]
+        },
+        "note": "時間為端到端中位數 5 次（f16 對 f32）；與 mm_race_one 的量法不同，不直接比較",
+        "evidence": [
+          "scripts/eval/mm_f16_check.html?v=4"
+        ]
+      },
+      {
+        "id": "q8mm_simple",
+        "status": "通過（有證據檔案）",
+        "error": "q8mm_check：12 形狀 simple 逐位相同（maxAbsDiff 0）",
+        "time_kernel_ms_per_dispatch": {
+          "M1_K1024_N3072": 0.4,
+          "M8_K1024_N1024": 0.445,
+          "M1_K1024_N1024": 0.375
+        },
+        "evidence": [
+          "scripts/eval/q8mm_check.html"
+        ]
+      },
+      {
+        "id": "q8mm_dec",
+        "status": "通過（有證據檔案）",
+        "error": "q8mm_check：dec 逐位相同（maxAbsDiff 0）",
+        "time_kernel_ms_per_dispatch": {
+          "M1_K1024_N3072": 0.155,
+          "M8_K1024_N1024": 0.195,
+          "M16": 0.225,
+          "M32": 0.39,
+          "M64": 0.63,
+          "M128": 1.145,
+          "M256": 2.235
+        },
+        "evidence": [
+          "scripts/eval/q8mm_check.html"
+        ]
+      },
+      {
+        "id": "q8mm_pf",
+        "status": "通過（有證據檔案）",
+        "error": "q8mm_check：pf 逐位相同（maxAbsDiff 0）",
+        "time_kernel_ms_per_dispatch": {
+          "M1_K1024_N3072": 0.895,
+          "M8_K1024_N1024": 0.35,
+          "M16": 0.38,
+          "M32": 0.39,
+          "M64": 0.405,
+          "M128": 0.6,
+          "M256": 1.06
+        },
+        "evidence": [
+          "scripts/eval/q8mm_check.html"
+        ]
+      },
+      {
+        "id": "q8mm_decr",
+        "status": "通過（有證據檔案）",
+        "error": "q8mm_decr_check：11 形狀逐位相同",
+        "time_kernel_ms_per_dispatch": {
+          "M1": [
+            0.15,
+            0.155
+          ],
+          "M2": [
+            0.155,
+            0.165
+          ],
+          "M4": [
+            0.19,
+            0.155
+          ],
+          "M8": [
+            0.145,
+            0.165
+          ],
+          "M16": [
+            0.3,
+            0.2
+          ],
+          "M32": [
+            0.39,
+            0.32
+          ]
+        },
+        "note": "每列為 [dec, decr]",
+        "evidence": [
+          "scripts/eval/q8mm_decr_check.html"
+        ]
+      },
+      {
+        "id": "q8mm_decr8",
+        "status": "通過（有證據檔案）",
+        "error": "q8mm_decr8_check：8 形狀逐位相同",
+        "time_kernel_ms_per_dispatch": {
+          "M8": {
+            "decr4": [
+              0.16,
+              0.205
+            ],
+            "decr8": [
+              0.14,
+              0.155
+            ]
+          },
+          "M16": {
+            "decr4": [
+              0.25,
+              0.24
+            ],
+            "decr8": [
+              0.165,
+              0.21
+            ]
+          },
+          "M32": {
+            "decr4": [
+              0.275,
+              0.3
+            ],
+            "decr8": [
+              0.265,
+              0.305
+            ]
+          }
+        },
+        "evidence": [
+          "scripts/eval/q8mm_decr8_check.html"
+        ]
+      },
+      {
+        "id": "q8mm_decr8f",
+        "status": "通過（有證據檔案）",
+        "error": "o6_q8_batch_check：批次路徑 M8 K256 N128 相對誤差 0；q8mm_f32var_check：13 形狀逐位相同",
+        "time_ms_end_to_end": {
+          "M8_K1024_N1024": 9.6,
+          "M4_K1024_N1024": 9.8,
+          "M2_K1024_N1024": 9.3
+        },
+        "evidence": [
+          "scripts/eval/o6_q8_batch_check.html",
+          "scripts/eval/q8mm_f32var_check.html?v=1"
+        ]
+      },
+      {
+        "id": "q8mm_decr4f",
+        "status": "通過（有證據檔案）",
+        "error": "q8mm_f32var_check：13 形狀逐位相同（M=2..130，K ≤ 1024）",
+        "time_ms_end_to_end": {
+          "M4_K1024_N1024": 10.3
+        },
+        "note": "端到端，不是純核心時間",
+        "evidence": [
+          "scripts/eval/q8mm_f32var_check.html?v=1"
+        ]
+      },
+      {
+        "id": "q8mm_decr2f",
+        "status": "通過（有證據檔案）",
+        "error": "q8mm_f32var_check：13 形狀逐位相同（含 M=2 的 3 個形狀）",
+        "time_ms_end_to_end": {
+          "M2_K1024_N1024": 9
+        },
+        "note": "端到端，不是純核心時間",
+        "evidence": [
+          "scripts/eval/q8mm_f32var_check.html?v=1"
+        ]
+      },
+      {
+        "id": "q8mm_pf8x4",
+        "status": "通過（有證據檔案）",
+        "error": "o6_q8_batch_check：批次路徑 M64 K256 N128 相對誤差 1.33e-7；q8mm_f32var_check：13 形狀逐位相同",
+        "evidence": [
+          "scripts/eval/o6_q8_batch_check.html",
+          "scripts/eval/q8mm_f32var_check.html?v=1"
+        ]
+      },
+      {
+        "id": "matmul_int_simple",
+        "status": "待驗證（原因：沒有整數矩陣乘的 GPU 對拍頁；本輪未寫）",
+        "error": "未量",
+        "evidence": []
+      },
+      {
+        "id": "matmul_subgroup",
+        "status": "待驗證（原因：核心尚未實作；這台 adapter 的 subgroups 為 true，但沒有使用它的核心可以量）",
+        "error": "未量",
+        "evidence": []
+      }
+    ],
+    "pages": {
+      "passed": [
+        "q8mm_check",
+        "q8mm_decr_check",
+        "q8mm_decr8_check",
+        "q8mm_f32var_check（新增）",
+        "o6_quant_check",
+        "o6_q8_batch_check",
+        "o6_attn_batch_check",
+        "o6_nbits_batch_check",
+        "o7_rmsq_check",
+        "o7_engine_check",
+        "o8_loss_check?batched=1",
+        "o8_qkv_batch_check",
+        "o8_train_check（20 步，按鈕觸發）",
+        "attn_flash_check",
+        "matmulnbits_dec_check",
+        "batch_layer_check",
+        "mem_space_check",
+        "mm_tile_check?v=2",
+        "mm_f16_check?v=4（新增）",
+        "mm_race_one（simple／tiled／vec4 於 64 與 512）"
+      ],
+      "failed": [
+        {
+          "page": "o7_rmsq1_unit",
+          "result": "9 案中 3 案不過：D96 rand、D128 rand、D128 pos。q 逐位相同（全部 0 個不一致），失敗的是 scale 逐位相同的判準：fused 與 CPU 參考的 scale 相差約 1e-7（1 ulp 級）。根因：GPU 以 f32 算 inv 與 scale，CPU 參考以 f64 再 fround，舍入不同；量化整數不受影響，但頁面判準要求 scale 逐位相同，所以判失敗。"
+        }
+      ],
+      "notes": [
+        "o7_engine_check：allPass true，但 dispatchesFused 43 > dispatchesUnfused 39，與「融合應減少派發」的預期相反。頁面的派發計數定義未逐行核對，未解釋，如實記錄。",
+        "o8_train_check 的頁面 status 欄位仍寫 unverified-pending-real-chrome（頁面沒有更新狀態）；20 步的最大 loss 相對差 1.85e-6，判準 1e-4 是本輪依清單 O8 套用的。",
+        "多個頁面的 hardware 欄位寫死為 Kepler（例如 o6_attn_batch_check、batch_layer_check、o7_rmsq_check、o7_engine_check、o8_loss_check、o8_qkv_batch_check）：這些數字是本機 Intel 跑出來的，只有頁面文字標籤是舊的；本節以 intel 為準。",
+        "mm_tile_check 原本依賴不存在的 _tmp_before_gpu_core.js，且 kernel_select 載入順序不對；已修：kernel_select 先載入，舊核心缺檔時不量（beforeCoreMissing）。"
+      ],
+      "not_run": [
+        "matmul_subgroup（核心未實作）",
+        "matmul_int_simple（沒有頁）",
+        "f16 版訓練（o8_train 只跑 f32）"
+      ]
+    }
   }
 }
