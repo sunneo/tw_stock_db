@@ -216,6 +216,8 @@
                 if (b.Npart !== N || b.elem !== s.elem) throw new Error('輸入 ' + s.name + ' 的大小或型別不符');
                 gl.activeTexture(gl.TEXTURE0 + unit); gl.bindTexture(gl.TEXTURE_2D, b.tex);
                 gl.uniform1i(p.loc[s.name], unit);
+                // 輸入是打包的 view：它的資料從紋理的第 rowOffset 列開始
+                gl.uniform1i(p.loc['u_off_' + s.name], b.rowOffset || 0);
             });
             gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
             gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, out.tex, 0);

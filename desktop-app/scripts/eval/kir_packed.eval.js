@@ -48,6 +48,18 @@ if (R.supports) {
     for (let it = 0; it < KI; it++) { names.forEach((n, k) => dev.dispatch(kernels[n], binds, bufs[k], scal, N)); for (const b of bufs) dev.download(b); }
     gl.finish(); const tSep = (performance.now() - t0) / KI;
     R.packed = { N, ms_per_iter_packed_1dl: +tPacked.toFixed(2), ms_per_iter_4dl: +tSep.toFixed(2), err: errs, ok: maxE <= 1e-3, downloads_packed: 1, downloads_separate: 4 };
+    try {
+    // 輸入也是打包的 view（與 nbody IR 相同）：x、y、z、ms 各是一個打包緩衝區 pkIn 的部分 0..3；輸出寫進 packed（部分 0..3）
+    const pkIn = dev.allocPacked(N, 4);
+    const inV = [0, 1, 2, 3].map((k) => dev.view(pkIn, k));
+    dev.upload(inV[0], X); dev.upload(inV[1], Y); dev.upload(inV[2], Z); dev.upload(inV[3], MS);
+    const viewBinds = { x: inV[0], y: inV[1], z: inV[2], ms: inV[3] };
+    for (const n of names) dev.dispatch(kernels[n], viewBinds, views[outIdx[n]], scal, N);
+    const allV = dev.download(packed);
+    const errsV = {}; let maxV = 0;
+    names.forEach((n, k) => { const part = allV.subarray(k * N, (k + 1) * N); errsV[n] = maxErr(part, ref[n]); maxV = Math.max(maxV, errsV[n]); });
+    R.packedInputViews = { err: errsV, ok: maxV <= 1e-3 };
+    } catch (e) { R.packedInputViewsError = String(e && e.stack || e); }
     // 負向：輸出 view 與輸入 x 同一張紋理要被拒絕
     const pk2 = dev.allocPacked(N, 2);
     const inV = dev.view(pk2, 0), outV = dev.view(pk2, 1);

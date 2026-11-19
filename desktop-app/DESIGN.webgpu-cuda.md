@@ -1236,3 +1236,9 @@ Python 模擬器與離線模型推論共用同一個 GPU 裝置：
 - `_gen/_gen_nbody3d_cl.py`：x、y、z、pot 改成兩組打包緩衝區（PACK＋p，四段各 N 個 float）的 view；accpot 的輸出寫進下一組的 pot 段；每幀把下一組的打包一次讀進主機暫存區（`@cl_stage`），再用 IR 迴圈拷到 x、y、z、pot。速度留在平面緩衝區、不讀回。
 - 測試：`llvm_host.test.js` 41 項（新增：打包 view 的 vecadd，JS 路徑與假的打包裝置路徑都正確；裝置路徑一次派送、配置一次、切出 view 一個、上傳 3 次（兩個輸入加打包 root）、讀回 view 一次）；`nbody3d_cl.test.js` 24 項；`kir_test` 30；`fluid3d_cl.test.js` 20。
 - **尚未驗證**：nbody 端到端（需要 embed／build，因為 job 執行的是 app 內嵌的 host；且 floating-assistant 的 kirDev 還要補 `allocPacked`／`view`，補丁在共享筆記）。計時與 llc_hud.eval 的 nbody 輸出一致性，要等這一步之後才能量。
+
+**階段 6 步驟 1c 除錯紀錄（2026-11-20）**：線上整合（a0d382294）的 nbody 叢集中心變成 cx＝cy＝cz＝303.6。原因：打包 view 當作「輸入」時，產生的 GLSL 從紋理第 0 列取值（`texelFetch(sampler, ivec2(i%W, i/W))`），沒有考慮 view 的列偏移；所以 y、z 的輸入都讀到 x 的資料。假裝置的單元測試沒抓到（假裝置的 view 是陣列切片，沒有列偏移的概念）。
+- 修正：`kir_gen.js` 為每個輸入產生 `uniform int u_off_<名>`，texelFetch 加上它；`kir_webgl2.js` 的 dispatch 依輸入 view 的 rowOffset 設定。
+- 驗證（真 Electron）：`kir_packed.eval`（輸入是打包 view）：四個核心誤差從 4445–28550 降到 0；`kir_nbody_chain.eval`（nbody 幀鏈：加速度→速度→位置→每幀一次打包讀回，20 幀，ping-pong）：與 KIR JS 後端的參考逐幀完全一致（誤差 0）；`llvm_packed_device.eval`（llvm_host＋真的 FaKirWebGL2 打包裝置）：vecadd 輸出正確，派送 1、打包 1、view 1、上傳 3、讀回 1。
+- 計時：幀鏈在 SwiftShader 上每幀約 49 ms（10 次派送＋1 次打包讀回）；每次派送的固定成本是主要部分。目標 ≤20 ms 尚未達到；可能的改善是把速度計算併入加速度核心（減少 3 次派送）。
+- 注意：`kir_test` 30、`llvm_host` 41、`nbody3d_cl` 24、`kir_webgl2.eval`、`kir_device.eval` 都仍然通過。
