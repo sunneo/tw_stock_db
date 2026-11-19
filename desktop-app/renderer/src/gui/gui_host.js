@@ -251,7 +251,23 @@
     // the window's current snapshot (for tests and for the caller's own checks)
     function snapshot(winId) { return bridge.snapshot(session, winId); }
 
-    return { apply: apply, wait: wait, poll: poll, close: close, closeAll: closeAll, paint: paint, isOpen: isOpen, snapshot: snapshot, session: session, queueLength: function (winId) { return (queues[winId] || []).length; } };
+    // for a caller that is not the person at the keyboard (an AI driving a job): push an event into a window's queue exactly as the page would
+    // (click on a button node, input into an entry, key/mouse on a canvas ...). Returns false when the window or the event is not valid.
+    function inject(winId, name, nodeId, value) {
+      if (!session.windows[winId]) { return false; }
+      var line = bridge.eventLine(session, winId, nodeId, name, value);
+      if (!line) { return false; }
+      enqueue(winId, name, line);
+      return true;
+    }
+    function windows() { return Object.keys(session.windows || {}).map(function (id) { var w = session.windows[id]; return { id: id, title: w.title, width: w.width, height: w.height || 0 }; }); }
+    // PNG data URL of the nth 2D canvas drawn in a window (null: no such canvas, or a WebGL one whose buffer is not kept)
+    function canvasPng(winId, n) {
+      var v = views[winId]; if (!v || !v.querySelectorAll) { return null; }
+      var c = v.querySelectorAll('canvas')[n || 0]; if (!c) { return null; }
+      try { return c.toDataURL('image/png'); } catch (e) { return null; }
+    }
+    return { apply: apply, wait: wait, poll: poll, close: close, closeAll: closeAll, paint: paint, isOpen: isOpen, snapshot: snapshot, session: session, inject: inject, windows: windows, canvasPng: canvasPng, queueLength: function (winId) { return (queues[winId] || []).length; } };
   }
 
   return { createHost: createHost, QUEUE_MAX: QUEUE_MAX };

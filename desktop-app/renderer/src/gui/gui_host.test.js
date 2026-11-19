@@ -188,5 +188,21 @@ const eventOf = (line) => JSON.parse(line);
     assert.strictEqual(calls[calls.length - 1].floating, false, 'the user docked it: a redraw keeps it docked'); ok();
   }
 
+  // job 層用的：inject（注入事件，與頁面送的一樣先過協定檢查）、windows（列出）
+  {
+    const { host } = newHost();
+    host.apply(msg({ op: 'open', id: 'wj', title: 'job' }));
+    host.apply(msg({ op: 'add', id: 'wj', node: { id: 'b1', kind: 'button', text: 'go' } }));
+    host.apply(msg({ op: 'add', id: 'wj', node: { id: 'en', kind: 'entry', value: '' } }));
+    assert.deepStrictEqual(host.windows().map((w) => [w.id, w.title]), [['wj', 'job']]); ok();
+    assert.strictEqual(host.inject('wj', 'click', 'b1'), true);
+    assert.strictEqual(eventOf(host.poll('wj')).event, 'click'); ok();
+    assert.strictEqual(host.inject('wj', 'input', 'en', 'hello'), true);
+    assert.strictEqual(eventOf(host.poll('wj')).value, 'hello'); ok();
+    assert.strictEqual(host.inject('wj', 'click', 'en'), false, 'an entry does not declare click'); ok();
+    assert.strictEqual(host.inject('wj', 'click', 'nope'), false); assert.strictEqual(host.inject('nowin', 'click', 'b1'), false); ok();
+    assert.strictEqual(host.canvasPng('wj', 0), null, 'no view with a canvas'); ok();
+  }
+
   console.log('gui_host: ' + n + ' assertions passed');
 })().catch((e) => { console.error(e); process.exit(1); });

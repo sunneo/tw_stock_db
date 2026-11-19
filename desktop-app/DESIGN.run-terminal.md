@@ -1616,3 +1616,17 @@ sleep/curl/date/ask-floating-ai-assistant各自踩過的坑。
 - 目錄項超過約 150 個時 `ls`／`find` 只看到前面一部分：這是 wasi-sh 0.11.0 的目錄讀取緩衝限制，純記憶體沙盒也一樣（`readdirSync` 本身是完整的），不是 FAP 掛載造成的。
 - 資料夾不能改名（見上）；`dd`、`head -c`、`od` 這類 busybox 沒編進來的指令仍然沒有。
 - 網頁版（SharedArrayBuffer worker）的傳輸用 OPFS 資料夾（真的 `FileSystemDirectoryHandle`）在 Electron 的 Chromium 裡驗證過（stat、列表、區塊讀、分塊寫入、衝突、force、唯讀、刪除；每次同步呼叫約 1–25 ms）；還沒有用一般瀏覽器經 `showDirectoryPicker` 授權的資料夾驗證，網頁版頁面不是 cross-origin isolated 時是否能用 SharedArrayBuffer 也還沒確認（桌面版有開這個功能）。
+
+## 20. job 執行層：不依賴畫面上的終端機（2026-11-19）
+
+**動機（使用者）**：run terminal 只是「把程式的輸出與視窗顯示出來」的表現層；真正能跑 python／node／LLVM IR／shell 的能力，外面的 AI 也要能用，不必先在對話裡開一個終端機。
+
+**做法**：`_terminalRunCommand` 只要求 session 物件有 `term.write`、`cwd`、`container`（視窗浮層容器）、`_aborts`。`_jobCreateSession` 造一個沒有 xterm 的 headless session（輸出收進緩衝、視窗畫進固定在畫面上的浮層 `.fa-job-layer`，使用者看得到），所以 job 與終端機共用同一套指令、沙盒檔案系統、`/work/examples`、`swap`、`gui`。
+- 工具（`registerOptional`，放進「程式執行環境」領域與理解閘清單）：`job_run`（lang＝python｜node｜llvm｜shell；`code`、`files`、`args`、`detach`、`timeout_s`、`job_id` 重用）、`job_gui`（`snapshot`／`click`／`input`／`key`／`mouse`／`select`／`toggle`／`screenshot`／`close`）、`job_list`、`job_stop`（`dispose` 連沙盒與浮層丟掉）。最多留 8 個 job。
+- `gui_host.js` 新增 `inject(winId, name, nodeId, value)`（與頁面送的事件走同一個協定檢查，不合法回 false）、`windows()`、`canvasPng(winId, n)`（只有 2D 畫布；WebGL 畫布沒保留緩衝）。
+- `job_gui` 回傳的節點清單（id、kind、文字、值）就是 AI 要點的目標；screenshot 存成 job 沙盒的 `/work/shot-<視窗>.png`。
+- `py_async.js`：行首 `import fa_swap` 也走 Worker 路徑（`fa_swap` 轉接層只在 Worker 提供；同時修了 `import numpy as np, gui` 這種帶 as 的多重 import 沒被辨認）。
+
+**限制**：程式結束時它自己開的視窗會被收掉（既有的 `_terminalGuiScope`），所以要看最後畫面請 `detach` 後在程式還跑時截圖；SDL2／OpenGL／GTK3／OpenCL 的 `.ll` 不能在 job 裡跑（沙盒 wasm 只有 WASI，見 `examples/llc/README.md`，下一步做 host import）；job 與 terminal 的 session 互相看不到（job 不在 `terminal_list`）。
+
+**驗證**：`scripts/eval/job_layer.eval.js`（真 Electron）：node／shell／swap 落到 IndexedDB（8 MB）且程式結束後清空、貪食蛇視窗快照→注入方向鍵→截圖→`job_stop`（結束碼 130）、python＋numpy＋`fa_swap`（後端 indexeddb）全過；單元：`gui_host.test.js`（inject／windows）、`py_async.test.js`。
