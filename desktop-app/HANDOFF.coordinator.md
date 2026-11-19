@@ -31,6 +31,7 @@
 - 預設以 `date`、`mcp__ccd_session_mgmt__get_usage` 查額度與 context。
 
 ## 5. 使用者原話（逐字）
+- 2026-11-19：「完成後幫我發布，發布的方式是ssh automation@127.0.0.1接著ssh hungfu.lee@127.0.0.1，然後到這資料夾跑publish」（我們本來就是 automation 帳號，所以是 `ssh hungfu.lee@127.0.0.1` 後 `cd /home/hungfu.lee/下載/SRC/tw_stock_db/desktop-app && scripts/publish.sh …`；工作樹乾淨時直接在該資料夾跑，別人有未提交來源時才用第 6 節的乾淨匯出）
 - 2026-11-19：「你是領導」「領導如果使用sonnet, subsession就用haiku」「領導如果用opus, subsession就用sonnet」（`start_session` 的 `model` 要低一階：領導 Sonnet→`claude-haiku-5-5`，領導 Opus→`claude-sonnet-5-5`；子 session 開的下一棒也照此；領導負責驗證與發布）
 
 - 2026-11-06：「提交並發布」（發布的觸發語；曾誤送到別的 session）
