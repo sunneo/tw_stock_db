@@ -180,7 +180,7 @@
     // registerHost({ 名字: { params:['ptr','i32|i64'（size_t 兩種都收）,…], ret:'i32', varargs:false, async:false } })；可變參數函式在 wasm 端多收一個最後的指標（指向 8 位元組對齊的引數緩衝區）。
     const HOST = {};
     const TYPE_BY_NAME = { i1: T.i1, i8: T.i8, i32: T.i32, i64: T.i64, float: T.float, double: T.double, void: T.void, ptr: T.ptr };
-    function registerHost(table) { for (const name of Object.keys(table)) { const sg = table[name]; HOST[name] = { params: sg.params.map((n) => TYPE_BY_NAME[String(n).split('|')[0]]), alts: sg.params.map((n) => String(n).split('|').map((x) => TYPE_BY_NAME[x])), ret: TYPE_BY_NAME[sg.ret || 'void'], varargs: !!sg.varargs, async: !!sg.async }; } }
+    function registerHost(table) { for (const name of Object.keys(table)) { const sg = table[name]; HOST[name] = { params: sg.params.map((n) => TYPE_BY_NAME[String(n).split('|')[0]]), alts: sg.params.map((n) => String(n).split('|').map((x) => TYPE_BY_NAME[x])), ret: TYPE_BY_NAME[String(sg.ret || 'void').split('|')[0]], retAlts: String(sg.ret || 'void').split('|').map((x) => TYPE_BY_NAME[x]), varargs: !!sg.varargs, async: !!sg.async }; } }
     function unregisterHost(names) { for (const n of names) delete HOST[n]; }
     const isImport = (name) => !!(WASI[name] || HOST[name]);
     const INTRINSICS = { 'llvm.wasm.memory.grow.i32': { params: [T.i32, T.i32], ret: T.i32 }, 'llvm.wasm.memory.size.i32': { params: [T.i32], ret: T.i32 } };
@@ -194,7 +194,7 @@
         const partial = !!(copts && copts.partial);
         const errors = []; const E = (line, msg) => errors.push({ line, msg });
         const globals = new Map(mod.globals.map((g) => [g.name, g])); const funcs = new Map();
-        for (const d of mod.declares) { funcs.set(d.name, { ret: d.ret, params: d.params, declared: true, varargs: d.varargs }); if (INTRINSICS[d.name]) { if (d.params.map(typeStr).join() !== INTRINSICS[d.name].params.map(typeStr).join() || typeStr(d.ret) !== typeStr(INTRINSICS[d.name].ret)) E(d.line, '@' + d.name + ' 的簽名不對'); } else if (HOST[d.name]) { const hs = HOST[d.name], wk = (t) => { try { return wtype(mod, t); } catch (_) { return '?'; } }; if (!!d.varargs !== hs.varargs || d.params.length !== hs.params.length || d.params.some((p, k) => !hs.alts[k].some((t) => wk(t) === wk(p))) || wk(d.ret) !== wk(hs.ret)) E(d.line, '@' + d.name + ' 的宣告跟內建函式庫不符，要是 ' + typeStr(hs.ret) + ' (' + hs.params.map(typeStr).concat(hs.varargs ? ['...'] : []).join(', ') + ')'); } else if (!WASI[d.name]) E(d.line, '宣告的函式 @' + d.name + ' 沒有實作（支援的 WASI：' + Object.keys(WASI).join('、') + '；內建的 libc：puts、putchar、malloc、calloc、free、strlen、memcpy、memset、memcmp、strcmp、abs、exit、getchar；printf 這類可變參數函式不支援）'); else if (!INTRINSICS[d.name] && typeStr(WASI[d.name].ret) !== typeStr(d.ret) || d.params.map(typeStr).join() !== WASI[d.name].params.map(typeStr).join()) E(d.line, '@' + d.name + ' 的簽名要是 ' + typeStr(WASI[d.name].ret) + ' (' + WASI[d.name].params.map(typeStr).join(', ') + ')'); }
+        for (const d of mod.declares) { funcs.set(d.name, { ret: d.ret, params: d.params, declared: true, varargs: d.varargs }); if (INTRINSICS[d.name]) { if (d.params.map(typeStr).join() !== INTRINSICS[d.name].params.map(typeStr).join() || typeStr(d.ret) !== typeStr(INTRINSICS[d.name].ret)) E(d.line, '@' + d.name + ' 的簽名不對'); } else if (HOST[d.name]) { const hs = HOST[d.name], wk = (t) => { try { return wtype(mod, t); } catch (_) { return '?'; } }; if (!!d.varargs !== hs.varargs || d.params.length !== hs.params.length || d.params.some((p, k) => !hs.alts[k].some((t) => wk(t) === wk(p))) || !hs.retAlts.some((t) => wk(t) === wk(d.ret))) E(d.line, '@' + d.name + ' 的宣告跟內建函式庫不符，要是 ' + typeStr(hs.ret) + ' (' + hs.params.map(typeStr).concat(hs.varargs ? ['...'] : []).join(', ') + ')'); } else if (!WASI[d.name]) E(d.line, '宣告的函式 @' + d.name + ' 沒有實作（支援的 WASI：' + Object.keys(WASI).join('、') + '；內建的 libc：puts、putchar、malloc、calloc、free、strlen、memcpy、memset、memcmp、strcmp、abs、exit、getchar；printf 這類可變參數函式不支援）'); else if (!INTRINSICS[d.name] && typeStr(WASI[d.name].ret) !== typeStr(d.ret) || d.params.map(typeStr).join() !== WASI[d.name].params.map(typeStr).join()) E(d.line, '@' + d.name + ' 的簽名要是 ' + typeStr(WASI[d.name].ret) + ' (' + WASI[d.name].params.map(typeStr).join(', ') + ')'); }
         for (const f of mod.funcs) { if (funcs.has(f.name) && !funcs.get(f.name).declared) E(f.line, '函式 @' + f.name + ' 定義了兩次'); funcs.set(f.name, { ret: f.ret, params: f.params.map((p) => p.ty) }); }
         for (const [name, t] of mod.types) { try { layout(mod, t); } catch (e) { E(0, '型別 %' + name + '：' + e.message); } }
         for (const g of mod.globals) { try { layout(mod, g.ty); } catch (e) { E(g.line, '全域 @' + g.name + '：' + e.message); } }
@@ -459,7 +459,7 @@
     // 有主機函式（SDL2／OpenGL／GTK3…）的程式：用 JSPI 讓 wasm 的呼叫「暫停」等 JS 的 Promise（SDL_Delay、SDL_PollEvent、gtk_main 等會等事件的函式），瀏覽器主執行緒不會被卡住。
     // impls：{ 名字: (ctx, ...引數) => 值或 Promise }，ctx＝{ mem(), u8(), dv(), table(), abort }；HOST[名字].async 為真的才包成 Suspending。
     // 沒有 JSPI（舊瀏覽器）就丟出說明清楚的錯誤。abort.flag 設成真，下一次主機呼叫會以結束碼 130 結束。
-    async function runHost(bytes, io, impls, abortRef) {
+    async function runHost(bytes, io, impls, abortRef, declares) {
         let mem = null, inst = null; const abort = abortRef || { flag: false }; const wasi = makeWasi(io, () => mem);
         const ctx = { write: wasi.write, mem: () => mem, u8: () => new Uint8Array(mem.buffer), dv: () => new DataView(mem.buffer), table: () => inst.exports.table, abort, io };
         const module = await WebAssembly.compile(bytes); const used = WebAssembly.Module.imports(module).filter((x) => x.module === 'env').map((x) => x.name);
@@ -468,8 +468,11 @@
         const env = {};
         for (const name of used) {
             const fn = impls[name]; if (!fn) throw new Error('主機函式庫沒有實作 @' + name);
-            const call = (...a) => { if (abort.flag) throw { wasiExit: 130 }; return fn(ctx, ...a); };
-            env[name] = HOST[name].async ? new WebAssembly.Suspending(async (...a) => { if (abort.flag) throw { wasiExit: 130 }; return await fn(ctx, ...a); }) : call;
+            // 宣告成 i64 的參數（size_t、long 在 x86_64）JS 收到的是 BigInt，轉成數字；宣告成 i64 的回傳值要給 BigInt（wasm32 的宣告是 i32，不用轉）
+            const dd = declares && declares[name], i64p = dd ? dd.params.map((t) => t && t.k === 'int' && t.bits === 64) : [], i64r = !!(dd && dd.ret && dd.ret.k === 'int' && dd.ret.bits === 64);
+            const inArgs = (a) => (i64p.some(Boolean) ? a.map((x, k) => (i64p[k] && typeof x === 'bigint' ? Number(x) : x)) : a), outVal = (r) => (i64r && typeof r === 'number' ? BigInt(Math.trunc(r)) : r);
+            const call = (...a) => { if (abort.flag) throw { wasiExit: 130 }; return outVal(fn(ctx, ...inArgs(a))); };
+            env[name] = HOST[name].async ? new WebAssembly.Suspending(async (...a) => { if (abort.flag) throw { wasiExit: 130 }; return outVal(await fn(ctx, ...inArgs(a))); }) : call;
         }
         inst = await WebAssembly.instantiate(module, Object.assign({ env }, wasi.imports)); mem = inst.exports.memory;
         let exitCode = null, trap = null;

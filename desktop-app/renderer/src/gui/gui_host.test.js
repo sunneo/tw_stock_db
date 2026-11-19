@@ -204,5 +204,25 @@ const eventOf = (line) => JSON.parse(line);
     assert.strictEqual(host.canvasPng('wj', 0), null, 'no view with a canvas'); ok();
   }
 
+  // present：零拷貝的 ImageBitmap 直接畫到畫布（沒有視窗／不是 2D 畫布就關掉點陣圖並回 false）
+  {
+    const drawn = [];
+    const { host } = newHost();
+    host.apply(msg({ op: 'open', id: 'wb' }));
+    host.apply(msg({ op: 'add', id: 'wb', node: { id: 'cv', kind: 'canvas', width: 40, height: 30 } }));
+    const view = renders[renders.length - 1];
+    // 假的畫布元素：render 回傳的 view 要能 querySelector 到 data-node
+    const el = { width: 40, height: 30, getContext: () => ({ drawImage: (b, x, y, w, h) => drawn.push([b.id, x, y, w, h]) }) };
+    view.querySelector = (sel) => (sel === '[data-node="cv"]' ? el : null);
+    const b1 = { id: 1, closed: false, close() { this.closed = true; } }, b2 = { id: 2, closed: false, close() { this.closed = true; } };
+    assert.strictEqual(host.present('wb', 'cv', b1), true); assert.deepStrictEqual(drawn[0], [1, 0, 0, 40, 30]); ok();
+    assert.strictEqual(host.present('wb', 'cv', b2), true); assert.strictEqual(b1.closed, true, 'the previous bitmap is closed'); assert.strictEqual(b2.closed, false); ok();
+    const b3 = { id: 3, closed: false, close() { this.closed = true; } };
+    assert.strictEqual(host.present('nowin', 'cv', b3), false); assert.strictEqual(b3.closed, true); ok();
+    const b4 = { id: 4, closed: false, close() { this.closed = true; } };
+    assert.strictEqual(host.present('wb', 'zz', b4), false); assert.strictEqual(b4.closed, true); ok();
+    host.close('wb'); assert.strictEqual(b2.closed, true, 'closing the window releases its bitmap'); ok();
+  }
+
   console.log('gui_host: ' + n + ' assertions passed');
 })().catch((e) => { console.error(e); process.exit(1); });

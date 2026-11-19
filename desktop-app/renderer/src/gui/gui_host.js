@@ -15,6 +15,8 @@
     var doc = opts.doc, container = opts.container, bridge = opts.bridge, render = opts.render;
     var session = bridge.createSession();
     var layer = null, views = {}, queues = {}, waiters = {}, pictures = {}, prevPictures = {}, shells = {};
+    var presentedCount = 0;   // 頁面實際畫出的零拷貝畫面張數（量測用）
+    var bitmaps = {};   // winId/nodeId → 最後一張送來的 ImageBitmap（見 present；視窗重畫時要再畫一次）
 
     function ensureLayer() {
       if (!layer) {
@@ -151,10 +153,34 @@
       var el = view && view.querySelector ? view.querySelector('[data-node="' + nodeId + '"]') : null;
       var win = session.windows[winId], node = win && win.nodes[nodeId];
       if (!el || !node || node.kind !== 'canvas') { return; }
+      var bkey = winId + '/' + nodeId;
+      if (bitmaps[bkey]) {
+        if (node.frame && node.frame.length) { closeBitmap(bkey); }   // 程式後來又用 draw 畫了：以 draw 為準
+        else { drawBitmap(el, bitmaps[bkey]); return; }
+      }
       if (node.gl) { render.paintGl(el, node, function (msg) { var line = bridge.eventLine(session, winId, nodeId, 'glerror', msg); if (line) { enqueue(winId, 'glerror', line); } }); return; }
       var ctx = el.getContext ? el.getContext('2d') : null;
       if (!ctx) { return; }
       render.paintFrame(ctx, node.frame || [], el.width, el.height, function (name) { return picture(winId, nodeId, name); }, !!node.transparent);
+    }
+
+    function closeBitmap(key) { var b = bitmaps[key]; delete bitmaps[key]; if (b && b.close) { try { b.close(); } catch (e) { /* 已經關了 */ } } }
+    function drawBitmap(el, bmp) {
+      var ctx = el.getContext ? el.getContext('2d') : null;
+      if (ctx) { ctx.drawImage(bmp, 0, 0, el.width, el.height); }
+    }
+    // 零拷貝的畫面：程式在 Worker 裡用 WebGL2／SDL 畫好，OffscreenCanvas 的 ImageBitmap（GPU 上的點陣圖，經 postMessage 轉移所有權，沒有編碼也沒有複製）
+    // 直接畫到視窗的畫布上。回傳 true＝畫了；false＝沒有這個視窗或畫布（點陣圖會被關掉）。
+    function present(winId, nodeId, bmp) {
+      var view = views[winId], el = view && view.querySelector ? view.querySelector('[data-node="' + nodeId + '"]') : null;
+      var win = session.windows[winId], node = win && win.nodes[nodeId];
+      if (!el || !node || node.kind !== 'canvas' || node.gl) { if (bmp && bmp.close) { try { bmp.close(); } catch (e) { /* */ } } return false; }
+      var key = winId + '/' + nodeId, old = bitmaps[key];
+      drawBitmap(el, bmp);
+      presentedCount++;
+      bitmaps[key] = bmp;
+      if (old && old.close) { try { old.close(); } catch (e) { /* */ } }
+      return true;
     }
 
     function paint(winId) {
@@ -176,12 +202,14 @@
       enqueue(winId, 'close', JSON.stringify({ v: 1, event: 'close', id: winId }));
       bridge.apply(session, { v: 1, op: 'close', id: winId });
       removeView(winId);
+      Object.keys(bitmaps).forEach(function (k) { if (k.indexOf(winId + '/') === 0) { closeBitmap(k); } });
       if (opts.onClosed) { opts.onClosed(winId); }
     }
     // everything a closed window leaves behind: its view, its queue, a waiting program, and the caller's notice
     function teardown(winId) {
       removeView(winId);
       delete queues[winId];
+      Object.keys(bitmaps).forEach(function (k) { if (k.indexOf(winId + '/') === 0) { closeBitmap(k); } });
       var w = waiters[winId];
       if (w) { delete waiters[winId]; w(null); }
       if (opts.onClosed) { opts.onClosed(winId); }
@@ -267,7 +295,7 @@
       var c = v.querySelectorAll('canvas')[n || 0]; if (!c) { return null; }
       try { return c.toDataURL('image/png'); } catch (e) { return null; }
     }
-    return { apply: apply, wait: wait, poll: poll, close: close, closeAll: closeAll, paint: paint, isOpen: isOpen, snapshot: snapshot, session: session, inject: inject, windows: windows, canvasPng: canvasPng, queueLength: function (winId) { return (queues[winId] || []).length; } };
+    return { apply: apply, present: present, presented: function () { return presentedCount; }, wait: wait, poll: poll, close: close, closeAll: closeAll, paint: paint, isOpen: isOpen, snapshot: snapshot, session: session, inject: inject, windows: windows, canvasPng: canvasPng, queueLength: function (winId) { return (queues[winId] || []).length; } };
   }
 
   return { createHost: createHost, QUEUE_MAX: QUEUE_MAX };

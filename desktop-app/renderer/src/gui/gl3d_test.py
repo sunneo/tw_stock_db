@@ -102,5 +102,56 @@ check('resize resizes the WebGL2 canvas', v.handle({'event': 'resize', 'node': v
 w2 = gui.Window('t2', 300); v.errors.clear(); fk2 = None
 check('a bad shader is reported, not raised', (lambda: (v.program('bad', 'x', 'y'), True)[1])())
 
+# 零拷貝／PNG 的執行期選路（fa_present.Presenter）：用假時鐘與假的頁面確認張數模擬「bitmap 比較快」與「bitmap 比較慢」
+fk.capture_bitmap = lambda: 'BMP'
+class Clock(object):
+    t = 0.0
+    def __call__(self): return Clock.t
+clock = Clock()
+state = {'acked': 0, 'drop_every': 0, 'ready': True, 'n': 0, 'unsupported': False}
+prefs = []
+stub.present_pref = lambda: None; stub.present_pref_set = lambda mode, b, p: prefs.append((mode, b, p))
+stub.can_present = lambda: True; stub.present_ready = lambda: state['ready']; stub.present_acked = lambda: state['acked']
+def fake_present(win, node, bmp):
+    if state['unsupported']: return -1
+    state['n'] += 1
+    if state['drop_every'] == 0 or state['n'] % state['drop_every'] == 0: state['acked'] += 1   # 頁面畫得快：每張都確認；慢：每 N 張才確認一張
+    return 1
+stub.present = fake_present
+def run_frames(view, n, dt=0.02):
+    modes = []
+    for _ in range(n):
+        Clock.t += dt; modes.append(view._p.show(view._r.G.frame_bitmap, view._r.G.frame_image) if False else (lambda: (view.show(view.frame()), view._p.mode or view._p.phase)[1])())
+    return modes
+v._p.now = clock; v._p.mode = None; v._p.phase = None
+calls.clear(); run_frames(v, 120)
+check('bitmap fast: measured, then stays on the zero-copy path (no PNG after the probe)', v._p.mode == 'bitmap' and v._p.rate['bitmap'] >= 0.8 * v._p.rate['png'], (v._p.mode, v._p.rate))
+calls.clear(); run_frames(v, 20); check('zero-copy mode: no gui.image', not [c for c in calls if c[0] == 'gui.image'])
+# bitmap 慢（頁面每 10 張才畫完一張）→ 量測後改走 PNG
+v._p.mode = None; v._p.phase = None; state.update(acked=0, drop_every=10, n=0)
+calls.clear(); run_frames(v, 150)
+check('bitmap slow: measured, then switches to PNG', v._p.mode == 'png' and v._p.rate['bitmap'] < 0.8 * v._p.rate['png'], (v._p.mode, v._p.rate))
+calls.clear(); run_frames(v, 20); check('PNG mode: one picture per frame', len([c for c in calls if c[0] == 'gui.image']) == 20)
+# 不重測：量完就一直用（重測會讓畫面卡一下）；結果有存給頁面（所有程式共用、之後的 process 沿用）
+Clock.t += 120.0; n_before = state['n']; state['drop_every'] = 0; calls.clear(); run_frames(v, 200)
+check('measured once: no re-probe later (stays on PNG, no bitmap tried)', v._p.mode == 'png' and state['n'] == n_before, (v._p.mode, state['n'] - n_before))
+check('the decision was saved for the page (all programs share it)', prefs and prefs[-1][0] == 'png' and prefs[-1][1] < 0.8 * prefs[-1][2], prefs)
+# 已經有結果（這個 process 或這台機器量過）：新的 Presenter 直接用，不量
+import fa_present
+stub.present_pref = lambda: {'mode': 'bitmap', 'bitmap': 60.0, 'png': 40.0}
+p2 = fa_present.Presenter(w, v.nid, now=clock); state['n'] = 0; calls.clear()
+for _ in range(5): Clock.t += 0.02; p2.show(lambda: 'BMP', lambda: (b'x', 'image/png'))
+check('a recorded result is used at once: no probe, no PNG', p2.mode == 'bitmap' and state['n'] == 5 and not [c for c in calls if c[0] == 'gui.image'], (p2.mode, state['n']))
+stub.present_pref = lambda: None
+# 頁面不支援（-1）→ 永遠 PNG
+v._p.mode = None; v._p.phase = None; state['unsupported'] = True; calls.clear(); run_frames(v, 12)
+check('page without present: PNG only', v._p.mode == 'png' and len([c for c in calls if c[0] == 'gui.image']) >= 1, v._p.mode)
+state['unsupported'] = False
+stub.can_present = lambda: False; v._p.mode = None; v._p.phase = None
+calls.clear(); v.show(v.frame()); check('no zero-copy support: PNG as before', len([c for c in calls if c[0] == 'gui.image']) == 1)
+# 在途滿了：這幀丟掉，不做擷取
+stub.can_present = lambda: True; state['ready'] = False; v._p.mode = 'bitmap'; taken = []; fk.capture_bitmap = lambda: taken.append(1)
+calls.clear(); v.show(v.frame()); check('page cannot keep up: the frame is dropped without taking a bitmap', not taken and not [c for c in calls if c[0] == 'gui.image'])
+
 print('gl3d_test：%d 項失敗' % len(fails) if fails else 'gl3d_test：全部通過')
 sys.exit(1 if fails else 0)

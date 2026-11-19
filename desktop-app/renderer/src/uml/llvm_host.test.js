@@ -4,8 +4,9 @@ const fs = require('fs'), path = require('path');
 const L = require('./llvm_core.js'), H = require('./llvm_host.js');
 let ok = 0; const bad = [];
 const check = (n, c, x) => { if (c) ok++; else bad.push(n + (x !== undefined ? ' ' + JSON.stringify(x).slice(0, 240) : '')); };
-const host = H.create({ gui: async () => null }); host.install(L);
-const run = async (ir) => { const r = L.compileIr(ir, {}); if (!r.wasm) return { errors: r.errors }; const o = await L.runHost(r.wasm, { args: ['prog', 'x'] }, host.impls); return o; };
+const memfs = new Map(); const fsx = { read: (p) => (memfs.has(p) ? memfs.get(p) : null), write: (p, b) => { memfs.set(p, new Uint8Array(b)); }, exists: (p) => memfs.has(p), remove: (p) => memfs.delete(p) };
+const host = H.create({ gui: async () => null, fs: fsx }); host.install(L);
+const run = async (ir) => { const r = L.compileIr(ir, {}); if (!r.wasm) return { errors: r.errors }; const dec = {}; for (const d of L.parse(ir).mod.declares) dec[d.name] = d; const o = await L.runHost(r.wasm, { args: ['prog', 'x'] }, host.impls, undefined, dec); return o; };
 (async () => {
   // 簽名要跟內建函式庫一致
   let r = L.compileIr('declare i32 @SDL_Init(i64)\ndefine i32 @main() {\n  call i32 @SDL_Init(i64 1)\n  ret i32 0\n}\n', {});
@@ -64,6 +65,61 @@ define i32 @main() {
   for (const f of ['game/sdl2_pong.ll', 'game/sdl2_piano.ll', 'gui/gtk3_widgets.ll', 'gui/sdl2_gl_triangle.ll']) { const c = L.compileIr(fs.readFileSync(path.join(__dirname, '..', 'examples', 'llc', f), 'utf8'), {}); check('範例 ' + f + ' 編成 wasm', c.stage === 'ok' && !!WebAssembly.validate(c.wasm), c.errors); }
   // 鍵盤對照與格式化小單元
   check('scancode', H.scancodeOf('a') === 4 && H.scancodeOf('ArrowUp') === 82 && H.scancodeOf(' ') === 44 && H.scancodeOf('0') === 39 && H.scancodeOf('F1') === 58);
+  // 檔案（stdio；x86_64 的宣告：size_t／long 是 i64）
+  o = await run(`@path = private constant [6 x i8] c"t.txt\\00"
+@w = private constant [2 x i8] c"w\\00"
+@r = private constant [2 x i8] c"r\\00"
+@data = private constant [13 x i8] c"hello\\0Aworld\\0A\\00"
+@out = private constant [22 x i8] c"%ld %ld %s%d %d %d\\0A\\00"
+declare ptr @fopen(ptr, ptr)
+declare i32 @fclose(ptr)
+declare i64 @fwrite(ptr, i64, i64, ptr)
+declare ptr @fgets(ptr, i32, ptr)
+declare i32 @fseek(ptr, i64, i32)
+declare i64 @ftell(ptr)
+declare i32 @remove(ptr)
+declare i32 @access(ptr, i32)
+declare i32 @printf(ptr, ...)
+define i32 @main() {
+  %buf = alloca [32 x i8]
+  %f = call ptr @fopen(ptr @path, ptr @w)
+  %n = call i64 @fwrite(ptr @data, i64 1, i64 12, ptr %f)
+  call i32 @fclose(ptr %f)
+  %g = call ptr @fopen(ptr @path, ptr @r)
+  call i32 @fseek(ptr %g, i64 6, i32 0)
+  %t = call i64 @ftell(ptr %g)
+  call ptr @fgets(ptr %buf, i32 32, ptr %g)
+  call i32 @fclose(ptr %g)
+  %a1 = call i32 @access(ptr @path, i32 0)
+  call i32 @remove(ptr @path)
+  %a2 = call i32 @access(ptr @path, i32 0)
+  call i32 (ptr, ...) @printf(ptr @out, i64 %n, i64 %t, ptr %buf, i32 %a1, i32 %a2, i32 0)
+  ret i32 0
+}`);
+  check('fopen／fwrite／fseek／ftell／fgets／fclose／access／remove（i64 的 size_t 與 long）', o.stdout === '12 6 world\n0 -1 0\n' && !memfs.has('t.txt'), o);
+  const r0 = fsx.write('in.txt', new Uint8Array([1, 2, 3])); void r0;
+  o = await run(`@p = private constant [7 x i8] c"in.txt\\00"
+@m = private constant [3 x i8] c"rb\\00"
+@s = private constant [8 x i8] c"%d %d\\0A\\00"
+@x = private constant [8 x i8] c"nope.x\\00\\00"
+declare ptr @fopen(ptr, ptr)
+declare i64 @fread(ptr, i64, i64, ptr)
+declare i32 @fgetc(ptr)
+declare i32 @feof(ptr)
+declare i32 @printf(ptr, ...)
+define i32 @main() {
+  %buf = alloca [8 x i8]
+  %f = call ptr @fopen(ptr @p, ptr @m)
+  %n = call i64 @fread(ptr %buf, i64 1, i64 8, ptr %f)
+  %e = call i32 @feof(ptr %f)
+  %n32 = trunc i64 %n to i32
+  call i32 (ptr, ...) @printf(ptr @s, i32 %n32, i32 %e)
+  %z = call ptr @fopen(ptr @x, ptr @m)
+  %isnull = icmp eq ptr %z, null
+  %zz = zext i1 %isnull to i32
+  ret i32 %zz
+}`);
+  check('fread 讀到檔尾（3 個、feof）；開不存在的檔回 NULL', o.stdout === '3 1\n' && o.exitCode === 1, o);
   // 全域陣列的初始值
   o = await run(`@a = private constant [3 x i32] [i32 7, i32 -2, i32 300]
 @s = private constant [9 x i8] c"%d %d %d\\0A\\00"

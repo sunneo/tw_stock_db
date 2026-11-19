@@ -1054,6 +1054,10 @@ class WebGL2Backend(object):
     def resize(self, w, h):
         self.canvas.width, self.canvas.height = int(w), int(h)
 
+    def capture_bitmap(self):
+        """畫面 → ImageBitmap（GPU 上的點陣圖，沒有讀回也沒有編碼）；canvas 的內容隨之換成空白，下一幀要重畫（跟 SwapBuffers 一樣）。"""
+        return self.canvas.transferToImageBitmap()
+
     def capture_image(self, max_bytes=1000000):
         """畫面 → (位元組, mime)：先 PNG；超過上限（雜訊多的 3D 場景）就改 JPEG，品質由高往低試。"""
         from pyodide.ffi import run_sync
@@ -1184,6 +1188,12 @@ def create_context(w, h, backend=None):
 
 def active():
     return _CTX["backend"] is not None
+
+
+def frame_bitmap():
+    """目前畫面 → ImageBitmap（零拷貝路徑用；沒有這個後端能力時回 None）。canvas 的內容隨之換成空白，下一幀要重畫。"""
+    be = _be()
+    return be.capture_bitmap() if hasattr(be, "capture_bitmap") else None
 
 
 def frame_image(max_bytes=1000000):

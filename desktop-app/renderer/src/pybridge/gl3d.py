@@ -463,6 +463,8 @@ class View(object):
         self.camera = camera or Camera()
         self.errors = []
         self._r = _Renderer(self.width, self.height)
+        import fa_present
+        self._p = fa_present.Presenter(w, self.nid, name=self.PICTURE, size=lambda: (self.width, self.height))
         for name, (vs, fs) in PROGRAMS.items():
             self.program(name, vs, fs)
 
@@ -498,6 +500,5 @@ class View(object):
 
     def show(self, frame):
         self._r.run(frame.cmds)
-        data, mime = self._r.G.frame_image()
-        self.w.image(self.nid, data, mime, name=self.PICTURE)
-        self.w.draw(self.nid, [["image", self.PICTURE, 0, 0, self.width, self.height]])
+        G = self._r.G
+        self._p.show(G.frame_bitmap, G.frame_image)   # 零拷貝（ImageBitmap）或 PNG：執行期量測哪一條讓頁面畫得更快（見 fa_present）

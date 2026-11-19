@@ -21,6 +21,39 @@
         sprintf: { params: ['ptr', 'ptr'], ret: 'i32', varargs: true },
         atoi: { params: ['ptr'], ret: 'i32' },
         atof: { params: ['ptr'], ret: 'double' },
+        // 數學（libm）：double 版與 float 版（sinf…）
+        sin: { params: ['double'], ret: 'double' }, sinf: { params: ['float'], ret: 'float' },
+        cos: { params: ['double'], ret: 'double' }, cosf: { params: ['float'], ret: 'float' },
+        tan: { params: ['double'], ret: 'double' }, tanf: { params: ['float'], ret: 'float' },
+        asin: { params: ['double'], ret: 'double' }, asinf: { params: ['float'], ret: 'float' },
+        acos: { params: ['double'], ret: 'double' }, acosf: { params: ['float'], ret: 'float' },
+        atan: { params: ['double'], ret: 'double' }, atanf: { params: ['float'], ret: 'float' },
+        sqrt: { params: ['double'], ret: 'double' }, sqrtf: { params: ['float'], ret: 'float' },
+        exp: { params: ['double'], ret: 'double' }, expf: { params: ['float'], ret: 'float' },
+        log: { params: ['double'], ret: 'double' }, logf: { params: ['float'], ret: 'float' },
+        log2: { params: ['double'], ret: 'double' }, log2f: { params: ['float'], ret: 'float' },
+        log10: { params: ['double'], ret: 'double' }, log10f: { params: ['float'], ret: 'float' },
+        fabs: { params: ['double'], ret: 'double' }, fabsf: { params: ['float'], ret: 'float' },
+        floor: { params: ['double'], ret: 'double' }, floorf: { params: ['float'], ret: 'float' },
+        ceil: { params: ['double'], ret: 'double' }, ceilf: { params: ['float'], ret: 'float' },
+        round: { params: ['double'], ret: 'double' }, roundf: { params: ['float'], ret: 'float' },
+        trunc: { params: ['double'], ret: 'double' }, truncf: { params: ['float'], ret: 'float' },
+        sinh: { params: ['double'], ret: 'double' }, sinhf: { params: ['float'], ret: 'float' },
+        cosh: { params: ['double'], ret: 'double' }, coshf: { params: ['float'], ret: 'float' },
+        tanh: { params: ['double'], ret: 'double' }, tanhf: { params: ['float'], ret: 'float' },
+        cbrt: { params: ['double'], ret: 'double' }, cbrtf: { params: ['float'], ret: 'float' },
+        atan2: { params: ['double', 'double'], ret: 'double' }, atan2f: { params: ['float', 'float'], ret: 'float' },
+        pow: { params: ['double', 'double'], ret: 'double' }, powf: { params: ['float', 'float'], ret: 'float' },
+        fmod: { params: ['double', 'double'], ret: 'double' }, fmodf: { params: ['float', 'float'], ret: 'float' },
+        fmin: { params: ['double', 'double'], ret: 'double' }, fminf: { params: ['float', 'float'], ret: 'float' },
+        fmax: { params: ['double', 'double'], ret: 'double' }, fmaxf: { params: ['float', 'float'], ret: 'float' },
+        hypot: { params: ['double', 'double'], ret: 'double' }, hypotf: { params: ['float', 'float'], ret: 'float' },
+        // 檔案（stdio）：接到呼叫端給的 fs（終端機沙盒的檔案系統，含 /mnt/<名稱>）。寫入在 fclose／fflush／程式結束時才寫回
+        fopen: { params: ['ptr', 'ptr'], ret: 'ptr' }, fclose: { params: ['ptr'], ret: 'i32' }, fflush: { params: ['ptr'], ret: 'i32' },
+        fread: { params: ['ptr', 'i32|i64', 'i32|i64', 'ptr'], ret: 'i32|i64' }, fwrite: { params: ['ptr', 'i32|i64', 'i32|i64', 'ptr'], ret: 'i32|i64' },
+        fgets: { params: ['ptr', 'i32', 'ptr'], ret: 'ptr' }, fputs: { params: ['ptr', 'ptr'], ret: 'i32' }, fgetc: { params: ['ptr'], ret: 'i32' }, fputc: { params: ['i32', 'ptr'], ret: 'i32' },
+        fseek: { params: ['ptr', 'i32|i64', 'i32'], ret: 'i32' }, ftell: { params: ['ptr'], ret: 'i32|i64' }, rewind: { params: ['ptr'], ret: 'void' }, feof: { params: ['ptr'], ret: 'i32' }, ferror: { params: ['ptr'], ret: 'i32' },
+        remove: { params: ['ptr'], ret: 'i32' }, rename: { params: ['ptr', 'ptr'], ret: 'i32' }, access: { params: ['ptr', 'i32'], ret: 'i32' },
         // SDL2：視窗、渲染器、事件、時間
         SDL_Init: { params: ['i32'], ret: 'i32' }, SDL_Quit: { params: [], ret: 'void' },
         SDL_CreateWindow: { params: ['ptr', 'i32', 'i32', 'i32', 'i32', 'i32'], ret: 'ptr' }, SDL_DestroyWindow: { params: ['ptr'], ret: 'void' },
@@ -109,6 +142,8 @@
     function mul4(a, b) { const o = new Array(16); for (let c = 0; c < 4; c++) for (let r = 0; r < 4; r++) { let s = 0; for (let k = 0; k < 4; k++) s += a[k * 4 + r] * b[c * 4 + k]; o[c * 4 + r] = s; } return o; }
     const GL_MODE = { 0: 'points', 1: 'lines', 2: 'line_strip', 3: 'line_strip', 4: 'triangles', 5: 'triangle_strip', 6: 'triangles', 7: 'triangles' };
     const FLAT_VS = '#version 300 es\nin vec3 pos; in vec3 col; uniform mat4 mvp; out vec3 vcol;\nvoid main(){ vcol = col; gl_Position = mvp * vec4(pos, 1.0); }';
+    const POINTS_VS = '#version 300 es\nin vec3 pos; in vec3 col; uniform mat4 mvp; uniform float size; uniform vec3 tint; out vec3 vcol;\nvoid main(){ vcol = col * tint; gl_Position = mvp * vec4(pos, 1.0); gl_PointSize = max(1.0, size); }';
+    const POINTS_FS = '#version 300 es\nprecision mediump float; in vec3 vcol; out vec4 o;\nvoid main(){ vec2 d = gl_PointCoord - vec2(0.5); float r = dot(d, d); if (r > 0.25) discard; o = vec4(vcol * (1.0 - 1.2 * r), 1.0); }';
     const FLAT_FS = '#version 300 es\nprecision mediump float; in vec3 vcol; out vec4 o;\nvoid main(){ o = vec4(vcol, 1.0); }';
 
     let installs = 0;   // 同時有幾個程式在用（登記是全域的：最後一個結束才取消，不然別的 IR 工具會把 printf 之類當成主機函式）
@@ -116,7 +151,7 @@
         o = o || {}; const gui = o.gui, sleep = o.sleep || ((ms) => new Promise((r) => setTimeout(r, ms))), now = o.now || (() => Date.now()), warn = o.warn || (() => {});
         const t0 = now(); let handleSeq = 0x1000, winSeq = 0, nodeSeq = 0; const handles = new Map();   // 不透明指標（SDL_Window*、SDL_Renderer*、SDL_GLContext）→ 狀態
         const mk = (obj) => { const h = (handleSeq += 16); handles.set(h, obj); return h; };
-        const gl = { clear: [0.05, 0.06, 0.09, 1], mode: 'MV', stacks: { MV: [I4()], P: [I4()] }, begin: null, color: [1, 1, 1], batches: [], depth: false, warned: {} };
+        const gl = { clear: [0.05, 0.06, 0.09, 1], mode: 'MV', stacks: { MV: [I4()], P: [I4()] }, begin: null, color: [1, 1, 1], batches: [], depth: false, pointSize: 1, warned: {} };
         const top = (n) => gl.stacks[n][gl.stacks[n].length - 1];
         const setTop = (n, m) => { gl.stacks[n][gl.stacks[n].length - 1] = m; };
         const cur = () => (gl.mode === 'P' ? 'P' : 'MV');
@@ -125,7 +160,7 @@
             if (w.opened) return; w.opened = true; w.id = 'sdl' + (++winSeq) + '_' + Math.random().toString(36).slice(2, 6); w.nid = 'c' + (++nodeSeq);
             await gui('open', { id: w.id, title: w.title, width: Math.min(1200, w.w + 24) });
             await gui('add', { id: w.id, parent: 'root', node: Object.assign({ id: w.nid, kind: 'canvas', width: Math.min(1200, w.w), height: Math.min(1200, w.h), fps: 0, fit: true }, w.gl ? { gl: true } : {}) });
-            if (w.gl) await gui('glprog', { id: w.id, node: w.nid, name: 'flat', vs: FLAT_VS, fs: FLAT_FS });
+            if (w.gl) { await gui('glprog', { id: w.id, node: w.nid, name: 'flat', vs: FLAT_VS, fs: FLAT_FS }); await gui('glprog', { id: w.id, node: w.nid, name: 'points', vs: POINTS_VS, fs: POINTS_FS }); }
         }
         const winOf = (p) => { const w = handles.get(p); return w && w.kind === 'renderer' ? w.win : w && w.kind === 'window' ? w : null; };
         const rend = (p) => { const r = handles.get(p); return r && r.kind === 'renderer' ? r : null; };
@@ -154,6 +189,12 @@
             return out;
         }
         function b64(u) { let s = ''; for (let i = 0; i < u.length; i += 0x8000) s += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000)); return btoa(s); }
+        // ---- 檔案：FILE* 是不透明的整數（>= 0x2000）；開啟時整個檔案讀進記憶體（寫入模式是空的緩衝），fclose／fflush／結束時寫回
+        const files = new Map(); let fileSeq = 0x2000; const fsys = o.fs || null;
+        const flushFile = (f) => { if (f.dirty && f.canWrite && fsys) { fsys.write(f.path, f.data.slice(0, f.size)); f.dirty = false; } };
+        const ensureCap = (f, n) => { if (n > f.data.length) { const d = new Uint8Array(Math.max(n, f.data.length * 2, 256)); d.set(f.data.subarray(0, f.size)); f.data = d; } };
+        const fileOf = (p) => files.get(p) || null;
+        function closeAllFiles() { for (const f of files.values()) { try { flushFile(f); } catch (_) { /* 寫回失敗：程式已經結束，無處可報 */ } } files.clear(); }
         const queue = [];   // 已經轉成 SDL_Event 的事件
 
         // 把一個 GUI 事件轉成 SDL_Event 的位元組（回傳 true 表示有寫入）。結構的偏移跟 SDL 2.0 的 C 結構一致（見 examples/llc 的註解）。
@@ -188,6 +229,62 @@
             sprintf: (ctx, buf, fmt, args) => writeCStr(ctx, buf, formatC(ctx, fmt, args), 1 << 30),
             atoi: (ctx, p) => { const m = /^\s*[+-]?\d+/.exec(cstr(ctx, p)); return m ? Number(BigInt.asIntN(32, BigInt(m[0]))) : 0; },
             atof: (ctx, p) => { const m = /^\s*[+-]?(\d+\.?\d*|\.\d+)(e[+-]?\d+)?/i.exec(cstr(ctx, p)); return m ? Number(m[0]) : 0; },
+            // ---- 數學
+            sin: (ctx, x) => Math.sin(x), sinf: (ctx, x) => Math.fround(Math.sin(x)),
+            cos: (ctx, x) => Math.cos(x), cosf: (ctx, x) => Math.fround(Math.cos(x)),
+            tan: (ctx, x) => Math.tan(x), tanf: (ctx, x) => Math.fround(Math.tan(x)),
+            asin: (ctx, x) => Math.asin(x), asinf: (ctx, x) => Math.fround(Math.asin(x)),
+            acos: (ctx, x) => Math.acos(x), acosf: (ctx, x) => Math.fround(Math.acos(x)),
+            atan: (ctx, x) => Math.atan(x), atanf: (ctx, x) => Math.fround(Math.atan(x)),
+            sqrt: (ctx, x) => Math.sqrt(x), sqrtf: (ctx, x) => Math.fround(Math.sqrt(x)),
+            exp: (ctx, x) => Math.exp(x), expf: (ctx, x) => Math.fround(Math.exp(x)),
+            log: (ctx, x) => Math.log(x), logf: (ctx, x) => Math.fround(Math.log(x)),
+            log2: (ctx, x) => Math.log2(x), log2f: (ctx, x) => Math.fround(Math.log2(x)),
+            log10: (ctx, x) => Math.log10(x), log10f: (ctx, x) => Math.fround(Math.log10(x)),
+            fabs: (ctx, x) => Math.abs(x), fabsf: (ctx, x) => Math.fround(Math.abs(x)),
+            floor: (ctx, x) => Math.floor(x), floorf: (ctx, x) => Math.fround(Math.floor(x)),
+            ceil: (ctx, x) => Math.ceil(x), ceilf: (ctx, x) => Math.fround(Math.ceil(x)),
+            round: (ctx, x) => Math.round(x), roundf: (ctx, x) => Math.fround(Math.round(x)),
+            trunc: (ctx, x) => Math.trunc(x), truncf: (ctx, x) => Math.fround(Math.trunc(x)),
+            sinh: (ctx, x) => Math.sinh(x), sinhf: (ctx, x) => Math.fround(Math.sinh(x)),
+            cosh: (ctx, x) => Math.cosh(x), coshf: (ctx, x) => Math.fround(Math.cosh(x)),
+            tanh: (ctx, x) => Math.tanh(x), tanhf: (ctx, x) => Math.fround(Math.tanh(x)),
+            cbrt: (ctx, x) => Math.cbrt(x), cbrtf: (ctx, x) => Math.fround(Math.cbrt(x)),
+            atan2: (ctx, x, y) => Math.atan2(x, y), atan2f: (ctx, x, y) => Math.fround(Math.atan2(x, y)),
+            pow: (ctx, x, y) => Math.pow(x, y), powf: (ctx, x, y) => Math.fround(Math.pow(x, y)),
+            fmod: (ctx, x, y) => x % y, fmodf: (ctx, x, y) => Math.fround(x % y),
+            fmin: (ctx, x, y) => Math.min(x, y), fminf: (ctx, x, y) => Math.fround(Math.min(x, y)),
+            fmax: (ctx, x, y) => Math.max(x, y), fmaxf: (ctx, x, y) => Math.fround(Math.max(x, y)),
+            hypot: (ctx, x, y) => Math.hypot(x, y), hypotf: (ctx, x, y) => Math.fround(Math.hypot(x, y)),
+            // ---- 檔案
+            fopen: (ctx, path, mode) => {
+                if (!fsys) return 0;
+                const p = cstr(ctx, path), m = cstr(ctx, mode), plus = m.includes('+'), kind = m[0];
+                let data = null;
+                if (kind === 'r' || kind === 'a') { data = fsys.read(p); if (data === null || data === undefined) { if (kind === 'r') return 0; data = new Uint8Array(0); } }
+                else if (kind === 'w') data = new Uint8Array(0); else return 0;
+                const f = { path: p, data: new Uint8Array(data), size: data.length, pos: kind === 'a' ? data.length : 0, canRead: kind === 'r' || plus, canWrite: kind !== 'r' || plus, append: kind === 'a', dirty: kind === 'w', eof: false };
+                files.set(++fileSeq, f); return fileSeq;
+            },
+            fclose: (ctx, h) => { const f = fileOf(h); if (!f) return -1; flushFile(f); files.delete(h); return 0; },
+            fflush: (ctx, h) => { if (!h) { for (const f of files.values()) flushFile(f); return 0; } const f = fileOf(h); if (!f) return -1; flushFile(f); return 0; },
+            fread: (ctx, buf, size, n, h) => { const f = fileOf(h); size = Number(size); n = Number(n); if (!f || !f.canRead || !size) return 0; const want = Math.min(n * size, f.size - f.pos), items = Math.floor(want / size), bytes = items * size; ctx.u8().set(f.data.subarray(f.pos, f.pos + bytes), buf); f.pos += bytes; if (items < n) f.eof = true; return items; },
+            fwrite: (ctx, buf, size, n, h) => {
+                const f = fileOf(h); size = Number(size); n = Number(n); if (!f || !f.canWrite) return 0;
+                if (h === 1 || h === 2) return 0;
+                const bytes = size * n; if (f.append) f.pos = f.size; ensureCap(f, f.pos + bytes); f.data.set(ctx.u8().subarray(buf, buf + bytes), f.pos); f.pos += bytes; f.size = Math.max(f.size, f.pos); f.dirty = true; return n;
+            },
+            fgets: (ctx, buf, n, h) => { const f = fileOf(h); if (!f || !f.canRead || n <= 0 || f.pos >= f.size) { if (f) f.eof = true; return 0; } let e = f.pos; while (e < f.size && e - f.pos < n - 1) { if (f.data[e++] === 10) break; } ctx.u8().set(f.data.subarray(f.pos, e), buf); ctx.u8()[buf + (e - f.pos)] = 0; f.pos = e; return buf; },
+            fputs: (ctx, str, h) => { const f = fileOf(h); if (!f || !f.canWrite) return -1; const b = new TextEncoder().encode(cstr(ctx, str)); if (f.append) f.pos = f.size; ensureCap(f, f.pos + b.length); f.data.set(b, f.pos); f.pos += b.length; f.size = Math.max(f.size, f.pos); f.dirty = true; return b.length; },
+            fgetc: (ctx, h) => { const f = fileOf(h); if (!f || !f.canRead || f.pos >= f.size) { if (f) f.eof = true; return -1; } return f.data[f.pos++]; },
+            fputc: (ctx, c, h) => { const f = fileOf(h); if (!f || !f.canWrite) return -1; if (f.append) f.pos = f.size; ensureCap(f, f.pos + 1); f.data[f.pos++] = c & 255; f.size = Math.max(f.size, f.pos); f.dirty = true; return c & 255; },
+            fseek: (ctx, h, off, whence) => { const f = fileOf(h); if (!f) return -1; off = Number(off); const base = whence === 0 ? 0 : whence === 1 ? f.pos : f.size, np = base + off; if (np < 0) return -1; f.pos = np; if (f.pos > f.size && f.canWrite) { ensureCap(f, f.pos); f.size = f.pos; } f.eof = false; return 0; },
+            ftell: (ctx, h) => { const f = fileOf(h); return f ? f.pos : -1; },
+            rewind: (ctx, h) => { const f = fileOf(h); if (f) { f.pos = 0; f.eof = false; } },
+            feof: (ctx, h) => { const f = fileOf(h); return f && f.eof ? 1 : 0; }, ferror: () => 0,
+            remove: (ctx, path) => (fsys && fsys.remove(cstr(ctx, path)) ? 0 : -1),
+            rename: (ctx, a, b) => { if (!fsys) return -1; const x = cstr(ctx, a), data = fsys.read(x); if (data === null || data === undefined) return -1; fsys.write(cstr(ctx, b), data); fsys.remove(x); return 0; },
+            access: (ctx, path) => (fsys && fsys.exists(cstr(ctx, path)) ? 0 : -1),
             // ---- SDL2
             SDL_Init: () => 0, SDL_Quit: () => {},
             SDL_CreateWindow: (ctx, title, x, y, w, h, flags) => mk({ kind: 'window', title: cstr(ctx, title), w, h, gl: !!(flags & 2), opened: false }),
@@ -259,7 +356,7 @@
             glVertex2f: (ctx, x, y) => { if (gl.begin) gl.begin.verts.push(x, y, 0, gl.color[0], gl.color[1], gl.color[2]); },
             glVertex3f: (ctx, x, y, z) => { if (gl.begin) gl.begin.verts.push(x, y, z, gl.color[0], gl.color[1], gl.color[2]); },
             glEnable: (ctx, cap) => { if (cap === 0x0B71) gl.depth = true; }, glDisable: (ctx, cap) => { if (cap === 0x0B71) gl.depth = false; },
-            glPointSize: () => {}, glLineWidth: () => {},
+            glPointSize: (ctx, sz) => { gl.pointSize = sz; }, glLineWidth: () => {},
         };
 
         // ---- GTK3：widget 樹在 gtk_widget_show_all 時一次送成 GUI 節點；之後的屬性變更（gtk_label_set_text…）排進佇列送 set。gtk_main 輪詢事件、呼叫訊號處理函式（wasm 函式表格）。
@@ -365,12 +462,13 @@
                 else if (b.mode === 2 && N > 1) v = v.concat(vtx(0));
                 const name = 'b' + (n++), data = new Float32Array(v), bytes = new Uint8Array(data.buffer); let s = ''; for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
                 await gui('glbuf', { id: w.id, node: w.nid, name, type: 'f32', data: btoa(s) });
-                cmds.push(['uf', 'mvp'].concat(b.mvp), ['attr', 'pos', name, 3, 24, 0, 0], ['attr', 'col', name, 3, 24, 12, 0], ['draw', GL_MODE[b.mode] || 'triangles', 0, v.length / 6, 1]);
+                if (b.mode === 0) cmds.push(['use', 'points'], ['uf', 'mvp'].concat(b.mvp), ['uf', 'size', gl.pointSize], ['uf', 'tint', 1, 1, 1], ['attr', 'pos', name, 3, 24, 0, 0], ['attr', 'col', name, 3, 24, 12, 0], ['draw', 'points', 0, v.length / 6, 1], ['use', 'flat']);
+                else cmds.push(['uf', 'mvp'].concat(b.mvp), ['attr', 'pos', name, 3, 24, 0, 0], ['attr', 'col', name, 3, 24, 12, 0], ['draw', GL_MODE[b.mode] || 'triangles', 0, v.length / 6, 1]);
             }
             await gui('glframe', { id: w.id, node: w.nid, cmds });
             gl.batches = [];
         }
-        return { impls, SIGS, toS16, install(FaLlvm) { installs++; FaLlvm.registerHost(SIGS); }, uninstall(FaLlvm) { if (--installs <= 0) { installs = 0; FaLlvm.unregisterHost(Object.keys(SIGS)); } }, close() { handles.clear(); Array.from(audioDevs.values()).forEach((d) => { gui('audio', { cmd: 'stream_close', id: d.id }); }); audioDevs.clear(); } };
+        return { impls, SIGS, toS16, install(FaLlvm) { installs++; FaLlvm.registerHost(SIGS); }, uninstall(FaLlvm) { if (--installs <= 0) { installs = 0; FaLlvm.unregisterHost(Object.keys(SIGS)); } }, close() { closeAllFiles(); handles.clear(); Array.from(audioDevs.values()).forEach((d) => { gui('audio', { cmd: 'stream_close', id: d.id }); }); audioDevs.clear(); } };
     }
     return { create, SIGS, formatC, scancodeOf, keycodeOf };
 });

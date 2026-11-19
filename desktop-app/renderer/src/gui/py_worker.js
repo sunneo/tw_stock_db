@@ -10,7 +10,7 @@
   // 送進 Worker 的主程式。用 Function.prototype.toString 取出原始碼，所以函式內不能用外部變數，只能用參數 base（Pyodide 的網址）。
   // 訊息：主執行緒 → Worker：init（檔案、程式、Python 前置程式）、reply（對 call 的回覆）；Worker → 主執行緒：out／err（輸出）、call（橋接請求）、done（結束碼）。
   function workerMain(base) {
-    var pending = {}, nextId = 1;
+    var pending = {}, nextId = 1, inflight = 0, acked = 0;   // inflight：已送出、頁面還沒確認畫完的點陣圖張數
     function request(op, args) {
       return new Promise(function (resolve) {
         var id = nextId++;
@@ -28,6 +28,18 @@
         // _fa_pybridge：fa_bridge.call 在網頁版直接呼叫它（同步的 run_sync 會等這裡的 Promise）
         py.registerJsModule('_fa_pybridge', {
           call: function (op, argsJson) { return request(String(op), JSON.parse(String(argsJson || '{}'))); },
+          // present(win, node, bitmap)：零拷貝送一張畫面（OffscreenCanvas 的 ImageBitmap，轉移所有權）。不等頁面回覆：在途的張數有上限（頁面畫完會回 present_ack），
+          // 超過就把這張丟掉（回 0，程式照常往下跑、下一幀再送）。回 1＝已送出。頁面端不認得這個訊息的舊版本不會有這個函式（Python 用 hasattr 判斷後退回 PNG）。
+          ready: function () { return inflight < 2 ? 1 : 0; },
+          acked: function () { return acked; },   // 頁面確認畫完的張數（Python 用它量頁面實際畫出的幀率）
+          // tick()：讓出一下事件迴圈（Promise，用 MessageChannel，不受計時器 4 ms 下限限制），Worker 才收得到頁面的 present_ack。Python 迴圈是同步的（Clock.tick 這類阻塞呼叫不會讓出），所以要主動讓。
+          tick: function () { return new Promise(function (r) { var c = new MessageChannel(); c.port1.onmessage = function () { c.port1.close(); r(); }; c.port2.postMessage(0); }); },   // 在途張數還沒滿（滿了就不必白做一次擷取）
+          present: function (win, node, bmp) {
+            if (inflight >= 2) { try { bmp.close(); } catch (e) { /* */ } return 0; }
+            inflight++;
+            self.postMessage({ type: 'present', win: String(win), node: String(node), bitmap: bmp }, [bmp]);
+            return 1;
+          },
           sleep: function (ms) { return new Promise(function (r) { setTimeout(r, Number(ms) || 0); }); }
         });
         Object.keys(m.files).forEach(function (k) {
@@ -83,6 +95,7 @@
     self.onmessage = function (ev) {
       var m = ev.data || {};
       if (m.type === 'reply') { var p = pending[m.id]; delete pending[m.id]; if (p) p(m.raw); return; }
+      if (m.type === 'present_ack') { inflight = Math.max(0, inflight - 1); acked++; return; }
       if (m.type === 'init') run(m);
     };
   }

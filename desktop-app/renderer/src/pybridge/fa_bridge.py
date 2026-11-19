@@ -100,6 +100,67 @@ def call(op, args=None, timeout=240.0):
         delay = min(0.2, delay * 1.5)
 
 
+def can_present():
+    """零拷貝送畫面（ImageBitmap）可不可用：只有網頁版（Worker 的 Pyodide）而且頁面端新到認得 present 才可以。"""
+    if not IN_BROWSER:
+        return False
+    try:
+        import _fa_pybridge
+        return hasattr(_fa_pybridge, "present")
+    except Exception:
+        return False
+
+
+def present_ready():
+    """在途的畫面還沒滿（頁面還來得及畫）。滿了就別白做一次擷取。
+    Python 迴圈是同步的，Worker 的事件迴圈不會自己轉，頁面回的確認（present_ack）就收不到；所以在途滿的時候主動讓出幾次事件迴圈等確認，還是沒空才回 False（這一幀丟掉）。"""
+    try:
+        import _fa_pybridge
+        if _fa_pybridge.ready():
+            return True
+        from pyodide.ffi import run_sync
+        for _ in range(6):
+            run_sync(_fa_pybridge.tick())
+            if _fa_pybridge.ready():
+                return True
+        return False
+    except Exception:
+        return False
+
+
+def present_acked():
+    """頁面確認畫完的畫面張數（累計）。"""
+    try:
+        import _fa_pybridge
+        return int(_fa_pybridge.acked())
+    except Exception:
+        return 0
+
+
+def present_pref():
+    """這個 process（頁面）已經量好的畫面路徑：{'mode': 'bitmap'|'png', 'bitmap': 幀率, 'png': 幀率}，還沒量過是 None。同一台機器之後的 process 也會沿用（存在 GPU 相容層的速率紀錄）。"""
+    try:
+        return call("gui.present_path", {})
+    except Exception:
+        return None
+
+
+def present_pref_set(mode, bitmap_fps, png_fps):
+    try:
+        call("gui.present_path", {"set": True, "mode": mode, "bitmap_fps": float(bitmap_fps), "png_fps": float(png_fps)})
+    except Exception:
+        pass
+
+
+def present(win_id, node_id, bitmap):
+    """把一張 ImageBitmap（OffscreenCanvas 擷取的，所有權轉移給頁面）畫到視窗的畫布上，不等頁面回覆。
+    回傳 1＝已送出、0＝在途太多被丟掉（照常往下跑，下一幀再送）、-1＝不支援（呼叫端退回 PNG 的 image＋draw）。"""
+    if not can_present():
+        return -1
+    import _fa_pybridge
+    return int(_fa_pybridge.present(str(win_id), str(node_id), bitmap))
+
+
 async def acall(op, args=None, timeout=240.0):
     """call 的 async 版：網頁版直接 await 助理頁面的 JS（不會卡住事件迴圈）；桌面版把檔案信箱的等待丟到執行緒，不擋住別的 async 工作。"""
     if IN_BROWSER:

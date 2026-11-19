@@ -24,7 +24,7 @@ except Exception:  # pragma: no cover
 
 IN_BROWSER = sys.platform == "emscripten"
 _ST = {"patched": False, "window": None, "canvas": None, "size": None, "caption": "pygame", "flags": 0, "last_crc": None, "keys": set(), "mods": 0,
-       "mouse_pos": (0, 0), "mouse_buttons": [False, False, False], "rel": (0, 0), "repeat": None, "held": {}, "pic": "screen", "gl": None}
+       "presenter": None, "mouse_pos": (0, 0), "mouse_buttons": [False, False, False], "rel": (0, 0), "repeat": None, "held": {}, "pic": "screen", "gl": None}
 MAX_PICTURE = 1000000
 
 
@@ -84,16 +84,19 @@ def _present(pygame):
     if surf is None:
         return
     w, h = surf.get_size()
-    if _ST["gl"]:   # OPENGL 視窗：畫面在 WebGL2（OffscreenCanvas），擷取成 PNG（每幀都送：3D 場景幾乎每幀都在變）
+    if _ST["presenter"] is None:
+        import fa_present
+        _ST["presenter"] = fa_present.Presenter(win, cv, name=_ST["pic"], size=lambda: pygame.display.get_surface().get_size())
+    if _ST["gl"]:
         import fa_opengl_platform as G
-        data, mime = G.frame_image()
-    else:
-        enc = _encode(pygame, surf)
-        if enc is None:
-            return
-        data, mime = enc
-    win.image(cv, data, mime, name=_ST["pic"])
-    win.draw(cv, [["image", _ST["pic"], 0, 0, w, h]])
+        _ST["presenter"].show(G.frame_bitmap, G.frame_image)
+        return
+    def grab_bitmap():
+        import js
+        from pyodide.ffi import run_sync
+        return run_sync(js.createImageBitmap(js.__fa_canvas))
+    _ST["presenter"].show(grab_bitmap, lambda: _encode(pygame, surf))   # 零拷貝或 PNG：執行期量測哪一條快（見 fa_present）
+    return
 
 
 # ---------------------------------------------------------------- 事件：視窗 → 真的 pygame 事件
@@ -435,6 +438,7 @@ def patch(pygame):
             resizable = bool(flags & pygame.RESIZABLE)
             _ST["window"] = gui.Window(_ST["caption"], width=max(160, w + 24), resizable=resizable, maximizable=resizable)
             _ST["canvas"] = _ST["window"].canvas(width=w, height=h, fps=0)
+            _ST["presenter"] = None
         elif _ST["size"] != (w, h):
             _ST["window"].set(_ST["canvas"], width=w, height=h)
             _ST["last_crc"] = None
@@ -486,6 +490,7 @@ def patch(pygame):
         _ST["window"] = None
         _ST["canvas"] = None
         _ST["size"] = None
+        _ST["presenter"] = None
         _ST["last_crc"] = None
         if win is not None:
             try:
