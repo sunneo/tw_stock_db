@@ -25,6 +25,8 @@
             download: (b) => { count('download'); try { const r = dev.download(b); if (r && typeof r.then === 'function') return r.catch((e) => fail('download', e)); return r; } catch (e) { return fail('download', e); } },
             dispatch: (k, binds, out, scal, N) => { try { dev.dispatch(k, binds, out, scal, N); st.dispatches[kind]++; } catch (e) { fail('dispatch', e); } },
             free: (b) => { try { dev.free(b); } catch (_) { /* 釋放失敗不影響結果 */ } },
+            // 只有 WebGPU 裝置有點精靈（drawPoints）；失敗就記下原因，呼叫端退回讀回＋GL 點
+            ...(dev.drawPoints ? { drawPoints: (pos, n, q) => { count('drawPoints'); try { return dev.drawPoints(pos, n, q); } catch (e) { return fail('drawPoints', e); } } } : {}),
         };
     }
 
