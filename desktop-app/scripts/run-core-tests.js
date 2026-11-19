@@ -477,6 +477,13 @@ if (py.status === 0) {
 const pq = spawnSync('python', [path.join(root, 'scripts/test_fa_sqlite.py')], { encoding: 'utf8' });
 if (pq.error) console.log('略過 fa_sqlite（Python）：沒有 python');
 else { const last = String(pq.stdout || '').trim().split('\n').filter(Boolean).pop() || ''; const ok = pq.status === 0 && /0 failed/.test(last); if (!ok) failed++; console.log((ok ? 'PASS ' : 'FAIL ') + 'fa_sqlite（Python 的 sqlite3 相容介面）：' + last); }
+// 真的 pygame-ce／PyOpenGL 接橋接的後端（fa_pygame、fa_opengl_platform、gl3d）：假橋接與假 WebGL2 後端；沒有 pip 套件時各自印「略過」並以 0 結束
+for (const [label, rel] of [['fa_pygame（pip 的 pygame-ce＋橋接後端）', 'renderer/src/pybridge/fa_pygame_test.py'], ['fa_opengl_platform（pip 的 PyOpenGL＋WebGL2 平台後端）', 'renderer/src/pybridge/fa_opengl_test.py'], ['gl3d（建在 PyOpenGL 上）', 'renderer/src/gui/gl3d_test.py']]) {
+    const pr = spawnSync('python3', [path.join(root, rel)], { encoding: 'utf-8', env: Object.assign({}, process.env, { SDL_VIDEODRIVER: 'dummy', SDL_AUDIODRIVER: 'dummy' }) });
+    const last = String(pr.stdout || '').trim().split('\n').filter(Boolean).pop() || '';
+    if (pr.error) console.log('略過 ' + label + '：沒有 python3');
+    else { const ok = pr.status === 0; if (!ok) failed++; console.log((ok ? (/略過/.test(last) ? 'SKIP ' : 'PASS ') : 'FAIL ') + label + '：' + last + (ok ? '' : String(pr.stderr || '').slice(-300))); }
+}
 // fa_swap（Python 的 IndexedDB-as-swap 陣列）：假橋接＋numpy，有 python 與 numpy 才跑
 const ps = spawnSync('python3', [path.join(root, 'renderer/src/pybridge/fa_swap_test.py')], { encoding: 'utf8' });
 if (ps.error || /No module named 'numpy'/.test(String(ps.stderr || ''))) console.log('略過 fa_swap（Python）：沒有 python 或缺 numpy');

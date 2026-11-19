@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
-# gl3d（與 gui.py 的 glbuf／glprog／glframe）對假 fa_bridge 的測試：矩陣數學、幾何、指令內容；
-# 並把送出的訊息交給真正的 JS 橋接層（renderer/src/gui/gui_bridge.js）驗證，確認 Python 端送出的東西都會被橋接層接受。
+# gl3d（建在真的 PyOpenGL 之上）的測試：矩陣數學、幾何、FrameBuilder 的指令，以及 View 用 PyOpenGL 把一幀跑出來（假的 WebGL2 後端記錄呼叫），
+# 畫面以 PNG 經橋接的 image 與 draw 送到視窗畫布。需要 pip 的 PyOpenGL（沒有就只測數學與幾何）。
 # 執行：python3 renderer/src/gui/gl3d_test.py
 import json, math, os, subprocess, sys, types, array
 
@@ -8,14 +8,14 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, '..', 'pybridge'))
 calls = []
 stub = types.ModuleType('fa_bridge')
-stub.call = lambda op, args=None, timeout=240.0: (calls.append((op, args)) or {'ok': True})
+stub.call = lambda op, args=None, timeout=240.0: (calls.append((op, args)) or ({'w': 8, 'h': 8} if op == 'gui.image' else {'ok': True})); stub.sleep = lambda s: None; stub.ACTIVE = True
 sys.modules['fa_bridge'] = stub
 import gui, gl3d  # noqa: E402
 
 fails = []
-def check(name, cond):
+def check(name, cond, extra=None):
     if not cond:
-        fails.append(name); print('FAIL', name)
+        fails.append(name); print('FAIL', name, '' if extra is None else repr(extra)[:240])
 def near(a, b, e=1e-6): return all(abs(x - y) < e for x, y in zip(a, b))
 
 # 矩陣
@@ -44,43 +44,62 @@ d0 = cam.dist; cam.handle({'event': 'wheel', 'value': {'x': 1, 'y': 1, 'dy': -10
 cu = gl3d.cube(2.0); check('cube 24 vertices 36 indices', len(cu.vertices) == 24 * 9 and cu.index_count == 36)
 sp = gl3d.sphere(1.0, 16); check('sphere normals unit', all(abs(math.sqrt(sp.vertices[i+3]**2 + sp.vertices[i+4]**2 + sp.vertices[i+5]**2) - 1) < 1e-5 for i in range(0, len(sp.vertices), 9)))
 check('grid/axes sizes', len(gl3d.axes_lines()) == 36 and len(gl3d.grid_lines(2, 1)) % 6 == 0)
-# View 與訊息
-w = gui.Window('t', 300)
-v = gl3d.View(w, 320, 240, fps=30)
-names = [c[1]['name'] for c in calls if c[0] == 'gui.glprog']
-check('five built-in programs registered', sorted(names) == ['dots', 'flat', 'glow', 'lit', 'points'])
-v.buffer('cube', cu.vertices); v.buffer('cube_i', cu.indices, cu.index_type)
-f = v.frame(); f.mesh('lit', 'cube', 'cube_i', cu.index_count, color=(1, 0.5, 0.2)); f.lines('flat', 'cube', 6) if False else None
-v.buffer('axes', gl3d.axes_lines()); f.lines('flat', 'axes', 6)
-v.buffer('pts', array.array('f', [0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 1, 0]))
-f.points('pts', 2, stride=24, color_offset=12, size=8); f.points('pts', 2, stride=24, size=8)
-f.glow('pts', 'pts', 2, size=20)
-v.show(f)
-fr = [c for c in calls if c[0] == 'gui.glframe'][-1][1]['cmds']
+# FrameBuilder 的指令（不需要 PyOpenGL）
+cu_f = gl3d.FrameBuilder(gl3d.mat4_identity(), 1.0)
+cu_f.clear(0, 0, 0, 1).state('depth', True).mesh('lit', 'cube', 'cube_i', cu.index_count, color=(1, 0.5, 0.2)).lines('flat', 'axes', 6).glow('pts', 'pts', 2, size=20)
+fr = cu_f.cmds
 check('frame starts with clear + depth', fr[0][0] == 'clear' and fr[1] == ['state', 'depth', 1])
 check('glow switches additive on then off', ['state', 'additive', 1] in fr and fr[-1] == ['state', 'depth', 1])
 check('mesh draw is indexed triangles 36', ['draw', 'triangles', 0, 36, 1] in fr)
-check('event routing', v.handle({'event': 'frame', 'node': v.nid}) == 'frame' and v.handle({'event': 'glerror', 'node': v.nid, 'value': 'x'}) == 'glerror' and v.errors == ['x'])
-check('other node ignored', v.handle({'event': 'frame', 'node': 'zzz'}) is None)
-check('numpy-free list upload works', True)
-try:
-    import numpy as np
-    w.glbuf(v.nid, 'np', np.zeros(9, dtype=np.float64))
-    raw = calls[-1][1]['data']
-    import base64
-    check('numpy float64 converted to float32', len(base64.b64decode(raw)) == 36)
-except ImportError:
-    pass
 
-# 交給真正的 JS 橋接層驗證（沒有 node 就略過）
-js = os.path.join(HERE, 'gui_bridge.js')
-msgs = [dict(args, op=op[4:], v=1) for op, args in calls if op.startswith('gui.') and op[4:] in ('open', 'add', 'glbuf', 'glprog', 'glframe')]
-script = "const G=require(%r);const s=G.createSession();const m=JSON.parse(require('fs').readFileSync(0,'utf8'));let bad=[];m.forEach((x,i)=>{const r=G.apply(s,x);if(!r.ok)bad.append?0:bad.push(i+':'+x.op+':'+r.error)});console.log(JSON.stringify(bad))" % os.path.abspath(js)
+# View：用真的 PyOpenGL 執行（假的 WebGL2 後端記錄呼叫）
 try:
-    out = subprocess.run(['node', '-e', script], input=json.dumps(msgs), capture_output=True, text=True, timeout=30)
-    check('JS bridge accepts every message (%s)' % (out.stdout.strip() or out.stderr.strip()[:200]), out.stdout.strip() == '[]')
-except FileNotFoundError:
-    print('（沒有 node，略過 JS 橋接層驗證）')
+    import OpenGL  # noqa: F401
+except ImportError:
+    print('（沒有 PyOpenGL，略過 View 的測試）')
+    print('gl3d_test：%d 項失敗' % len(fails) if fails else 'gl3d_test：全部通過')
+    sys.exit(1 if fails else 0)
+import fa_opengl_platform as P
+class Fake(object):
+    def __init__(self): self.calls = []; self.n = 0
+    def log(self, name): return [c[1] for c in self.calls if c[0] == name]
+    def __getattr__(self, name):
+        def f(*a, **k):
+            self.calls.append((name, a))
+            if name.startswith('create_'): self.n += 1; return 'h%d' % self.n
+            if name in ('get_shader_parameter', 'get_program_parameter'): return True
+            if name in ('get_shader_info_log', 'get_program_info_log'): return ''
+            if name == 'get_attrib_location': return 0
+            if name == 'get_uniform_location': return 'loc'
+            return None
+        return f
+    def capture_png(self): return b'\x89PNG\r\n\x1a\nfake'
+fk = Fake(); P.reset(); P.register(); P.create_context(320, 240, backend=fk)
+calls.clear()
+w = gui.Window('t', 300)
+v = gl3d.View(w, 320, 240, fps=30)
+check('the canvas is a plain (picture) canvas, not a gl canvas', [c for c in calls if c[0] == 'gui.add'][-1][1]['node'].get('gl') is None)
+check('five built-in programs compiled with PyOpenGL', len(fk.log('link_program')) == 5 and len(fk.log('compile_shader')) == 10, (len(fk.log('link_program')), len(fk.log('compile_shader'))))
+check('no shader errors', v.errors == [], v.errors)
+v.buffer('cube', cu.vertices); v.buffer('cube_i', cu.indices, cu.index_type)
+v.buffer('axes', gl3d.axes_lines()); v.buffer('pts', array.array('f', [0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 1, 0]))
+bd = fk.log('buffer_data')
+check('buffers uploaded with glBufferData (array and element targets)', len(bd) == 4 and bd[0][0] == 0x8892 and bd[1][0] == 0x8893 and len(bd[0][1]) == 24 * 36, [(b[0], len(b[1])) for b in bd])
+f = v.frame(); f.mesh('lit', 'cube', 'cube_i', cu.index_count, color=(1, 0.5, 0.2)); f.lines('flat', 'axes', 6)
+f.points('pts', 2, stride=24, color_offset=12, size=8); f.glow('pts', 'pts', 2, size=20)
+fk.calls.clear(); calls.clear(); v.show(f)
+check('clear + depth test + program uniforms', fk.log('clear_color') and fk.log('clear') and (0x0B71,) in fk.log('enable') and len(fk.log('uniform_matrix')) >= 3)
+check('indexed draw of 36 (glDrawElements, unsigned short)', (4, 36, 0x1403, 0) in fk.log('draw_elements'), fk.log('draw_elements'))
+check('lines and points are glDrawArrays', (1, 0, 6) in fk.log('draw_arrays') and (0, 0, 2) in fk.log('draw_arrays'), fk.log('draw_arrays'))
+check('glow: additive blend on then off', (0x0302, 1) in fk.log('blend_func') and fk.log('disable').count((0x0BE2,)) >= 1, (fk.log('blend_func'), fk.log('disable')))
+check('vertex attributes use the bound buffer with offsets', (0, 3, 0x1406, False, 36, 0) in fk.log('vertex_attrib_pointer') or any(a[2] == 0x1406 and a[4] == 36 for a in fk.log('vertex_attrib_pointer')), fk.log('vertex_attrib_pointer')[:3])
+imgs = [c for c in calls if c[0] == 'gui.image']; drws = [c for c in calls if c[0] == 'gui.draw']
+check('the frame goes to the window as one PNG picture and one image draw', len(imgs) == 1 and imgs[0][1]['name'] == 'gl3d' and len(drws) == 1 and drws[0][1]['ops'] == [['image', 'gl3d', 0, 0, 320, 240]], (len(imgs), drws))
+check('event routing', v.handle({'event': 'frame', 'node': v.nid}) == 'frame')
+check('other node ignored', v.handle({'event': 'frame', 'node': 'zzz'}) is None)
+check('resize resizes the WebGL2 canvas', v.handle({'event': 'resize', 'node': v.nid, 'value': {'width': 200, 'height': 100}}) == 'resize' and v.width == 200 and (0, 0, 200, 100) in fk.log('viewport'), fk.log('viewport')[-2:])
+w2 = gui.Window('t2', 300); v.errors.clear(); fk2 = None
+check('a bad shader is reported, not raised', (lambda: (v.program('bad', 'x', 'y'), True)[1])())
 
 print('gl3d_test：%d 項失敗' % len(fails) if fails else 'gl3d_test：全部通過')
 sys.exit(1 if fails else 0)

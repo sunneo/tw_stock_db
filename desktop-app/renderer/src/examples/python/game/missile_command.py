@@ -16,6 +16,16 @@ import math
 import random
 import pygame
 
+
+def tone(freq, ms, rate=22050, volume=0.3):
+    """短音效：標準的 pygame 寫法——產生 16 位元單聲道方波 PCM，交給 pygame.mixer.Sound(buffer=…)。"""
+    import array as _array, math as _math
+    if not pygame.mixer.get_init():
+        pygame.mixer.init(rate, -16, 1)
+    n = int(rate * ms / 1000)
+    pcm = _array.array("h", (int(32767 * volume) if _math.sin(2 * _math.pi * freq * i / rate) >= 0 else -int(32767 * volume) for i in range(n)))
+    return pygame.mixer.Sound(buffer=pcm.tobytes())
+
 W, H = 560, 420
 STEP = 1000 // 60
 GROUND = H - 30
@@ -182,8 +192,8 @@ def main():
     pygame.display.set_caption("飛彈指揮官 Missile Command")
     screen = pygame.display.set_mode((W, H))
     font = pygame.font.Font(None, 14)
-    snd = {"fire": pygame.mixer.Sound(frequency=600, ms=40), "hit": pygame.mixer.Sound(frequency=300, ms=60),
-           "ground": pygame.mixer.Sound(frequency=120, ms=150)}
+    snd = {"fire": tone(600, 40), "hit": tone(300, 60),
+           "ground": tone(120, 150)}
     clock = pygame.time.Clock()
     game = Game()
     acc = 0

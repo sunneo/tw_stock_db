@@ -127,6 +127,16 @@ def install_hooks():
             fa_fs.install()
         except Exception as e:
             sys.stderr.write("[fa-bridge] fs hook: %s\n" % e)
+    try:  # 程式有 import OpenGL（Worker 會預先用 micropip 裝 PyOpenGL）：先登記平台後端，之後 import OpenGL.GL 才會選到它
+        import fa_opengl_platform
+        fa_opengl_platform.register()
+    except Exception as e:
+        sys.stderr.write("[fa-bridge] opengl hook: %s\n" % e)
+    try:  # 程式有 import pygame（Worker 會預先載入 pygame-ce）才接上真 pygame 的後端；其他程式什麼都不會發生
+        import fa_pygame
+        fa_pygame.install()
+    except Exception as e:
+        sys.stderr.write("[fa-bridge] pygame hook: %s\n" % e)
 
 
 def tool(name, **args):

@@ -22,6 +22,16 @@ from collections import deque
 
 import pygame
 
+
+def tone(freq, ms, rate=22050, volume=0.3):
+    """短音效：標準的 pygame 寫法——產生 16 位元單聲道方波 PCM，交給 pygame.mixer.Sound(buffer=…)。"""
+    import array as _array, math as _math
+    if not pygame.mixer.get_init():
+        pygame.mixer.init(rate, -16, 1)
+    n = int(rate * ms / 1000)
+    pcm = _array.array("h", (int(32767 * volume) if _math.sin(2 * _math.pi * freq * i / rate) >= 0 else -int(32767 * volume) for i in range(n)))
+    return pygame.mixer.Sound(buffer=pcm.tobytes())
+
 W, H = 480, 360
 VIEW_H = 336                      # 地圖畫面高度，底下 24 像素是狀態列
 STEP = 1000 // 60
@@ -506,9 +516,9 @@ def main():
     pygame.display.set_caption("ARPG 地城探索")
     screen = pygame.display.set_mode((W, H))
     font = pygame.font.Font(None, 14)
-    beep = {"hit": pygame.mixer.Sound(frequency=380, ms=40), "kill": pygame.mixer.Sound(frequency=560, ms=70),
-            "hurt": pygame.mixer.Sound(frequency=140, ms=90), "magic": pygame.mixer.Sound(frequency=800, ms=60),
-            "pickup": pygame.mixer.Sound(frequency=900, ms=50), "stairs": pygame.mixer.Sound(frequency=500, ms=200)}
+    beep = {"hit": tone(380, 40), "kill": tone(560, 70),
+            "hurt": tone(140, 90), "magic": tone(800, 60),
+            "pickup": tone(900, 50), "stairs": tone(500, 200)}
     clock = pygame.time.Clock()
     game = Game()
     acc = 0

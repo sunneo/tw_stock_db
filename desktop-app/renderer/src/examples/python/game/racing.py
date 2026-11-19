@@ -17,6 +17,16 @@ import math
 import random
 import pygame
 
+
+def tone(freq, ms, rate=22050, volume=0.3):
+    """短音效：標準的 pygame 寫法——產生 16 位元單聲道方波 PCM，交給 pygame.mixer.Sound(buffer=…)。"""
+    import array as _array, math as _math
+    if not pygame.mixer.get_init():
+        pygame.mixer.init(rate, -16, 1)
+    n = int(rate * ms / 1000)
+    pcm = _array.array("h", (int(32767 * volume) if _math.sin(2 * _math.pi * freq * i / rate) >= 0 else -int(32767 * volume) for i in range(n)))
+    return pygame.mixer.Sound(buffer=pcm.tobytes())
+
 W, H = 480, 360
 STEP = 1000 // 60
 HY = 150                          # 地平線的 y
@@ -217,7 +227,7 @@ def main():
     pygame.display.set_caption("賽車 Racing")
     screen = pygame.display.set_mode((W, H))
     font = pygame.font.Font(None, 14)
-    snd = {"crash": pygame.mixer.Sound(frequency=110, ms=180), "checkpoint": pygame.mixer.Sound(frequency=880, ms=120)}
+    snd = {"crash": tone(110, 180), "checkpoint": tone(880, 120)}
     clock = pygame.time.Clock()
     game = Game()
     acc = 0

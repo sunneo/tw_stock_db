@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
-"""無頭測試台：用假的 fa_bridge 跑 run terminal 的 Python 範例，照橋接層的上限檢查，不開視窗。
+"""無頭測試台（pygame 範例要先 pip install pygame-ce）：用假的 fa_bridge 跑 run terminal 的 Python 範例，照橋接層的上限檢查，不開視窗。
 用法：python3 _harness.py game/breakout.py [--frames 180] [--seed 1] [--keys random|none] [--quiet] [腳本自己的參數…]
-檢查：每幀 draw 指令 ≤ 200 且指令種類合法、圖片每視窗 ≤ 16 張且每張 ≤ 256 KB、畫布大小 ≤ 1200、程式沒有丟例外、跑滿 frames 幀後送出 close 能正常結束。
+檢查：每幀 draw 指令 ≤ 200 且指令種類合法、圖片每視窗 ≤ 16 張且每張 ≤ 1 MB、畫布大小 ≤ 1200、程式沒有丟例外、跑滿 frames 幀後送出 close 能正常結束。
 GUI 程式（用 w.wait()）：依序送出每個按鈕的 click、輸入框的 input，最後送 close。
 結束碼 0＝通過；非 0＝有違規（訊息印在 stderr）。"""
 import argparse, base64, os, random, runpy, sys, types, time
@@ -45,7 +45,7 @@ def call(op, a=None, timeout=240.0):
         return {'ok': True}
     if op == 'gui.image':
         raw = a['data'].split(',', 1)[1]; size = len(base64.b64decode(raw))
-        if size > 262144: fail('圖片 %d 位元組超過 256 KB' % size)
+        if size > 1048576: fail('圖片 %d 位元組超過 1 MB' % size)
         S['images'][a['name']] = size
         if len(S['images']) > 16: fail('圖片超過 16 張')
         return {'w': 64, 'h': 64}
@@ -99,8 +99,15 @@ def call(op, a=None, timeout=240.0):
     return {'ok': True}
 
 
-stub = types.ModuleType('fa_bridge'); stub.call = call
+stub = types.ModuleType('fa_bridge'); stub.call = call; stub.sleep = lambda s: None; stub.ACTIVE = True
 sys.modules['fa_bridge'] = stub
+# pygame 是 pip 的真套件（pygame-ce）；SDL 用 dummy 驅動，後端 fa_pygame 把畫面與事件接到上面的假橋接。沒有安裝就只能跑不用 pygame 的範例
+os.environ.setdefault('SDL_VIDEODRIVER', 'dummy'); os.environ.setdefault('SDL_AUDIODRIVER', 'dummy'); os.environ.setdefault('PYGAME_HIDE_SUPPORT_PROMPT', '1')
+try:
+    import pygame, fa_pygame
+    fa_pygame.patch(pygame)
+except ImportError:
+    pass
 script = os.path.join(HERE, args.script) if not os.path.isabs(args.script) else args.script
 sys.argv = [script] + rest
 import signal

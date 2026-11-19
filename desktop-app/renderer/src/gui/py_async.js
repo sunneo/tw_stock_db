@@ -1,5 +1,5 @@
 // 判斷 Python 原始碼要不要走非同步路徑（只有會開視窗的程式才走，既有的 python 行為不動）。
-// 做法：先把字串與註解抹成空白（保留換行，讓行首的比對仍然有效），再只看「行首的 import／from」有沒有 gui、pygame 或 fa_swap（swap 的轉接層只在 Worker 路徑提供）。
+// 做法：先把字串與註解抹成空白（保留換行，讓行首的比對仍然有效），再只看「行首的 import／from」有沒有 gui、pygame、OpenGL 或 fa_swap（swap 的轉接層只在 Worker 路徑提供）。
 // 所以字串或註解裡出現 import gui 不會誤判，import guitar 也不會（比對到單字邊界為止）。
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) { module.exports = factory(); } else { root.AiChatPyAsync = factory(); }
@@ -36,7 +36,7 @@
   }
 
   // 行首（允許縮排）的 import：import gui／import os, pygame.locals；行首的 from：from gui import …／from pygame.locals import …
-  var GUI_IMPORT = /^[ \t]*(?:import[ \t]+(?:[\w.]+(?:[ \t]+as[ \t]+\w+)?[ \t]*,[ \t]*)*(?:gui|pygame|fa_swap)(?![\w])|from[ \t]+(?:gui|pygame|fa_swap)(?![\w]))/m;
+  var GUI_IMPORT = /^[ \t]*(?:import[ \t]+(?:[\w.]+(?:[ \t]+as[ \t]+\w+)?[ \t]*,[ \t]*)*(?:gui|pygame|fa_swap|OpenGL)(?![\w])|from[ \t]+(?:gui|pygame|fa_swap|OpenGL)(?![\w]))/m;
 
   // 讀使用者輸入（input()、sys.stdin）也要走 Worker：同步的 python 沒辦法在呼叫處等一行輸入
   var STDIN_USE = /(?:^|[^\w.])input[ \t]*\(|\bsys\.stdin\b/;

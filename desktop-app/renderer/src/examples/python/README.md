@@ -8,15 +8,20 @@
 
 | 資料夾 | 內容 |
 |---|---|
-| `game/` | 打磚塊、飛彈指揮官、賽車、類馬力歐闖關、RPG、類暗黑破壞神的地圖探索（2D，`import pygame` 小子集） |
+| `game/` | 打磚塊、飛彈指揮官、賽車、類馬力歐闖關、RPG、類暗黑破壞神的地圖探索（標準的 pygame-ce 寫法） |
 | `gui/` | 讀檔寫檔編輯器、音樂、MIDI、照片檢視器（viewport、縮放、翻轉）、曼德博、碎形、3D 場景（`gl_scene.py`） |
 | `gpgpu/` | `swap_stream.py`（IndexedDB 當 swap 的 out-of-core 處理）、3D N-body（照 `sdlmm/exams/nbody3d.c` 移植：同物理、同隨機化、同控制與覆蓋層、加成混合的光點）、3D SPH 流體：計算來源可在視窗內或用 `--device cpu|gpu|auto` 切換 |
 
-## 3D／OpenGL：`gl3d`
+## pygame 與 OpenGL：都是 pip 的真套件
 
-`import gl3d` 提供 OpenGL 風格的 3D：視窗裡的 WebGL2 畫布，在你的真 GPU 上繪圖。上傳頂點緩衝區、登記 GLSL ES 3.00 著色器、每幀送一串指令
-（clear、use、uniform、attr、draw）。內建 flat、lit、points、dots 四個程式，附矩陣數學、軌道相機、立方體／球／格線。
-從 `gui/gl_scene.py` 開始看；自訂著色器的寫法也在那裡。不是 PyOpenGL：沒有全域 GL 環境，也沒有 `glXxx` 函式名。
+`import pygame` 是真的 pygame-ce，`from OpenGL.GL import *` 是真的 PyOpenGL（第一次用時 Worker 會從 PyPI 裝，要有網路）；我們只接後端
+（視窗、事件、WebGL2），API 與 pip 的一樣，所以標準的 pygame／PyOpenGL 範例原封不動能跑。`pygame.display.set_mode((w, h), DOUBLEBUF | OPENGL)` 開 WebGL2 視窗。
+聲音：沒有真的音訊情境，`pygame.mixer.Sound(buffer=PCM)` 會依 PCM 的主頻率與長度發一聲嗶。
+
+## 3D 小工具：`gl3d`
+
+`import gl3d` 是建在 PyOpenGL 之上的小工具庫：軌道相機、矩陣數學、立方體／球／格線，內建 flat、lit、points、dots、glow 著色器；`View.show(frame)` 用 PyOpenGL 的函式
+（`glCreateShader`、`glBufferData`、`glUniform*`、`glDrawArrays`…）畫一幀。從 `gui/gl_scene.py` 開始看；自訂著色器的寫法也在那裡。
 
 ## 計算來源（gpgpu）
 
@@ -28,7 +33,7 @@
 
 ## 限制（來自圖形橋接層）
 
-- 2D 畫布每幀最多 200 道指令；GL 畫布每幀最多 256 道指令，單一緩衝區 4 MB、24 個緩衝區、12 個程式。
+- 2D 畫布每幀最多 200 道指令；pygame／OpenGL 的畫面是一幀一張 PNG（至多 1 MB），所以沒有指令數與緩衝區數的上限。
 - 聲音只有短嗶聲（`tone`）。
 - 鍵盤要先點一下視窗；滾輪縮放要按 Ctrl。
 

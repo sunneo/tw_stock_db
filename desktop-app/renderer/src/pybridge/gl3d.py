@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
 """
-gl3d -- 3D drawing on a WebGL2 canvas of a skill window (gui.py). An OpenGL-style retained API: you upload vertex buffers, register GLSL
-programs, then send one frame of commands (clear, use, uniforms, attributes, draw). It runs on the user's real GPU through the page's WebGL2;
-nothing is software-rendered. This is not PyOpenGL: there is no global GL context and no gl* function names; the frame is a command list
-(see gui.Window.glframe) and gl3d builds it for you.
+gl3d -- small 3D helpers on top of PyOpenGL (the real pip package): an orbit camera, matrix math, geometry (cube, sphere, grid, axes),
+a few built-in GLSL programs, and a retained "frame" of commands (clear, use, uniforms, attributes, draw) that View executes with PyOpenGL
+calls (glCreateShader, glGenBuffers, glBufferData, glUniform*, glVertexAttribPointer, glDrawArrays …). The calls go to WebGL2 through the
+fa_opengl_platform backend, so a program that uses gl3d and one that calls OpenGL.GL directly draw the same way; gl3d adds no protocol of its own.
 
     import gui, gl3d
     w = gui.Window("cube", width=520)
-    view = gl3d.View(w, 480, 360, fps=30)               # a gl canvas with an orbit camera (drag to turn, Ctrl+wheel to zoom)
+    view = gl3d.View(w, 480, 360, fps=30)               # an orbit camera (drag to turn, Ctrl+wheel to zoom) and a WebGL2 context
     cube = gl3d.cube(1.0)
     view.buffer("cube", cube.vertices)                  # interleaved: x y z  nx ny nz  r g b
     view.buffer("cube_i", cube.indices, "u16")
@@ -16,11 +16,10 @@ nothing is software-rendered. This is not PyOpenGL: there is no global GL contex
         if ev and view.handle(ev) == "frame":
             f = view.frame()                             # starts a frame: clear + depth test + the camera's matrices
             f.mesh("lit", "cube", "cube_i", cube.index_count, color=(0.9, 0.6, 0.2))
-            view.show(f)
+            view.show(f)                                 # runs the frame with PyOpenGL, then shows the picture in the window
 
-Contents: math (mat4_* functions, column-major lists of 16 floats, as WebGL wants them), Camera (orbit), geometry (cube, sphere, grid, axes),
-built-in programs (flat, lit, points), FrameBuilder (commands), View (canvas + camera + buffers + frame).
-Limits (from the bridge): 4 MB per buffer, 24 buffers, 12 programs, 256 commands per frame, a draw of at most 4 million vertices.
+Contents: math (mat4_* functions, column-major lists of 16 floats, as OpenGL wants them), Camera (orbit), geometry, built-in programs (flat, lit,
+points, dots, glow), FrameBuilder (commands), View (window canvas + camera + buffers + frame). Limits: the picture of a frame is a PNG of at most 1 MB.
 Shaders run on the GPU unchecked beyond the browser's own validation: a shader with an endless loop can hang the GPU.
 """
 import array as _array
@@ -317,30 +316,166 @@ class FrameBuilder(object):
         return self
 
 
-# ---------------------------------------------------------------- the view: a gl canvas with a camera
+# ---------------------------------------------------------------- the view: a window canvas, a WebGL2 context (PyOpenGL) and a camera
+
+_DRAW_MODES = {"points": 0x0000, "lines": 0x0001, "line_strip": 0x0003, "triangles": 0x0004, "triangle_strip": 0x0005}
+_BUFFER_KINDS = {"f32": 4, "u16": 2, "u32": 4}
+
+
+class _Renderer(object):
+    """Executes gl3d's buffers, programs and frame commands with real PyOpenGL calls."""
+
+    def __init__(self, width, height):
+        import fa_opengl_platform as G
+        G.register()
+        G.create_context(width, height)
+        import ctypes
+        from OpenGL import GL
+        self.G, self.GL, self.ct = G, GL, ctypes
+        self.programs, self.buffers, self.locs = {}, {}, {}
+        self.current = None
+        self.errors = []
+
+    def resize(self, width, height):
+        self.G.create_context(width, height)
+
+    def program(self, name, vs, fs):
+        GL = self.GL
+        shaders = []
+        for kind, src in ((GL.GL_VERTEX_SHADER, vs), (GL.GL_FRAGMENT_SHADER, fs)):
+            sh = GL.glCreateShader(kind)
+            GL.glShaderSource(sh, src)
+            GL.glCompileShader(sh)
+            if not GL.glGetShaderiv(sh, GL.GL_COMPILE_STATUS):
+                log = GL.glGetShaderInfoLog(sh)
+                self.errors.append("shader %s: %s" % (name, log.decode("utf-8", "replace") if isinstance(log, bytes) else log))
+                return False
+            shaders.append(sh)
+        prog = GL.glCreateProgram()
+        for sh in shaders:
+            GL.glAttachShader(prog, sh)
+        GL.glLinkProgram(prog)
+        if not GL.glGetProgramiv(prog, GL.GL_LINK_STATUS):
+            log = GL.glGetProgramInfoLog(prog)
+            self.errors.append("program %s: %s" % (name, log.decode("utf-8", "replace") if isinstance(log, bytes) else log))
+            return False
+        self.programs[name] = prog
+        self.locs = {k: v for k, v in self.locs.items() if k[0] != name}
+        return True
+
+    def buffer(self, name, data, kind):
+        GL, ct = self.GL, self.ct
+        if data is None:
+            old = self.buffers.pop(name, None)
+            if old:
+                GL.glDeleteBuffers(1, [old[0]])
+            return
+        raw = gui._gl_bytes(data, kind)
+        buf = (ct.c_ubyte * len(raw)).from_buffer_copy(raw)
+        vbo = self.buffers[name][0] if name in self.buffers else GL.glGenBuffers(1)
+        target = GL.GL_ELEMENT_ARRAY_BUFFER if kind in ("u16", "u32") else GL.GL_ARRAY_BUFFER
+        GL.glBindBuffer(target, vbo)
+        GL.glBufferData(target, len(raw), buf, GL.GL_STATIC_DRAW)
+        self.buffers[name] = (vbo, kind, target)
+
+    def _loc(self, kind, name):
+        key = (self.current, kind, name)
+        if key not in self.locs:
+            prog = self.programs[self.current]
+            self.locs[key] = (self.GL.glGetUniformLocation(prog, name) if kind == "u" else self.GL.glGetAttribLocation(prog, name))
+        return self.locs[key]
+
+    def run(self, cmds):
+        GL, ct = self.GL, self.ct
+        enabled, index = [], None
+        for c in cmds:
+            op = c[0]
+            if op == "clear":
+                GL.glClearColor(c[1], c[2], c[3], c[4]); GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)
+            elif op == "state":
+                name, on = c[1], bool(c[2])
+                if name == "depth":
+                    (GL.glEnable if on else GL.glDisable)(GL.GL_DEPTH_TEST)
+                elif name == "cull":
+                    (GL.glEnable if on else GL.glDisable)(GL.GL_CULL_FACE)
+                elif name in ("blend", "additive"):
+                    (GL.glEnable if on else GL.glDisable)(GL.GL_BLEND)
+                    if on:
+                        GL.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE if name == "additive" else GL.GL_ONE_MINUS_SRC_ALPHA)
+            elif op == "use":
+                self.current = c[1]
+                GL.glUseProgram(self.programs[c[1]])
+            elif op == "uf":
+                loc, vals = self._loc("u", c[1]), [float(x) for x in c[2:]]
+                if loc is None or loc < 0:
+                    continue
+                n = len(vals)
+                if n == 16:
+                    GL.glUniformMatrix4fv(loc, 1, False, vals)
+                elif n == 9:
+                    GL.glUniformMatrix3fv(loc, 1, False, vals)
+                else:
+                    {1: GL.glUniform1f, 2: GL.glUniform2f, 3: GL.glUniform3f, 4: GL.glUniform4f}[n](loc, *vals)
+            elif op == "ui":
+                loc = self._loc("u", c[1])
+                if loc is not None and loc >= 0:
+                    GL.glUniform1i(loc, int(c[2]))
+            elif op == "attr":
+                _, name, buf, size, stride, offset, divisor = c
+                loc = self._loc("a", name)
+                if loc is None or loc < 0:
+                    continue
+                vbo = self.buffers[buf][0]
+                GL.glBindBuffer(GL.GL_ARRAY_BUFFER, vbo)
+                GL.glEnableVertexAttribArray(loc)
+                GL.glVertexAttribPointer(loc, size, GL.GL_FLOAT, False, stride, ct.c_void_p(offset))
+                GL.glVertexAttribDivisor(loc, divisor)
+                enabled.append(loc)
+            elif op == "index":
+                index = self.buffers[c[1]]
+            elif op == "draw":
+                _, mode, first, count, instances = c
+                m = _DRAW_MODES[mode]
+                if index is not None:
+                    typ = GL.GL_UNSIGNED_SHORT if index[1] == "u16" else GL.GL_UNSIGNED_INT
+                    GL.glBindBuffer(GL.GL_ELEMENT_ARRAY_BUFFER, index[0])
+                    off = ct.c_void_p(first * _BUFFER_KINDS[index[1]])
+                    (GL.glDrawElementsInstanced(m, count, typ, off, instances) if instances > 1 else GL.glDrawElements(m, count, typ, off))
+                    index = None
+                else:
+                    (GL.glDrawArraysInstanced(m, first, count, instances) if instances > 1 else GL.glDrawArrays(m, first, count))
+        for loc in enabled:
+            GL.glVertexAttribDivisor(loc, 0)
+            GL.glDisableVertexAttribArray(loc)
+        GL.glUseProgram(0)
+
 
 class View(object):
-    """A gl canvas in window w, an orbit camera, and the three built-in programs already registered."""
+    """A canvas in window w, an orbit camera, a WebGL2 context driven through PyOpenGL, and the built-in programs already compiled."""
+
+    PICTURE = "gl3d"
 
     def __init__(self, w, width=480, height=360, fps=30, parent=None, camera=None, grow=None, fit=False):
         self.w = w
         kw = {"grow": grow} if grow else {}
-        self.nid = w.canvas(width, height, fps=fps, parent=parent, fit=fit, gl=True, **kw)
+        self.nid = w.canvas(width, height, fps=fps, parent=parent, fit=fit, **kw)   # the page shows each rendered frame as a picture on this canvas
         self.width, self.height = int(width), int(height)
         self.camera = camera or Camera()
         self.errors = []
+        self._r = _Renderer(self.width, self.height)
         for name, (vs, fs) in PROGRAMS.items():
-            w.glprog(self.nid, name, vs, fs)
+            self.program(name, vs, fs)
 
     def program(self, name, vs, fs):
-        self.w.glprog(self.nid, name, vs, fs)
+        if not self._r.program(name, vs, fs):
+            self.errors.append(self._r.errors[-1])
 
     def buffer(self, name, data, kind="f32"):
-        self.w.glbuf(self.nid, name, data, kind)
+        self._r.buffer(name, data, kind)
 
     def handle(self, ev):
         """Pass any window event here. Returns "frame" on the canvas's frame tick (time to draw), "camera" if the camera moved,
-        "resize" if the canvas changed size, "glerror" for a shader error (the text is in self.errors), else None."""
+        "resize" if the canvas changed size, else None. Shader errors are in self.errors."""
         if not ev or ev.get("node") != self.nid:
             return None
         kind = ev.get("event")
@@ -349,10 +484,8 @@ class View(object):
         if kind == "resize":
             v = ev.get("value") or {}
             self.width, self.height = int(v.get("width", self.width)), int(v.get("height", self.height))
+            self._r.resize(self.width, self.height)
             return "resize"
-        if kind == "glerror":
-            self.errors.append(str(ev.get("value")))
-            return "glerror"
         if self.camera.handle(ev):
             return "camera"
         return None
@@ -364,4 +497,6 @@ class View(object):
         return f
 
     def show(self, frame):
-        self.w.glframe(self.nid, frame.cmds)
+        self._r.run(frame.cmds)
+        self.w.image(self.nid, self._r.G.frame_png(), "image/png", name=self.PICTURE)
+        self.w.draw(self.nid, [["image", self.PICTURE, 0, 0, self.width, self.height]])

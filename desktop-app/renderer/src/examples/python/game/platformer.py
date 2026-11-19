@@ -17,6 +17,16 @@
 #   最壞合計 = 1+2+100+30+2+20+2+2 = 159 道，低於 200。
 import pygame
 
+
+def tone(freq, ms, rate=22050, volume=0.3):
+    """短音效：標準的 pygame 寫法——產生 16 位元單聲道方波 PCM，交給 pygame.mixer.Sound(buffer=…)。"""
+    import array as _array, math as _math
+    if not pygame.mixer.get_init():
+        pygame.mixer.init(rate, -16, 1)
+    n = int(rate * ms / 1000)
+    pcm = _array.array("h", (int(32767 * volume) if _math.sin(2 * _math.pi * freq * i / rate) >= 0 else -int(32767 * volume) for i in range(n)))
+    return pygame.mixer.Sound(buffer=pcm.tobytes())
+
 W, H = 480, 312
 STEP = 1000 // 60
 T = 24                            # 一格的像素大小
@@ -293,9 +303,9 @@ def main():
     pygame.display.set_caption("類馬力歐闖關 Platformer")
     screen = pygame.display.set_mode((W, H))
     font = pygame.font.Font(None, 14)
-    snd = {"jump": pygame.mixer.Sound(frequency=440, ms=50), "coin": pygame.mixer.Sound(frequency=990, ms=50),
-           "stomp": pygame.mixer.Sound(frequency=250, ms=70), "hurt": pygame.mixer.Sound(frequency=120, ms=200),
-           "clear": pygame.mixer.Sound(frequency=700, ms=250)}
+    snd = {"jump": tone(440, 50), "coin": tone(990, 50),
+           "stomp": tone(250, 70), "hurt": tone(120, 200),
+           "clear": tone(700, 250)}
     clock = pygame.time.Clock()
     game = Game()
     acc = 0

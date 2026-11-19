@@ -18,6 +18,16 @@
 import random
 import pygame
 
+
+def tone(freq, ms, rate=22050, volume=0.3):
+    """短音效：標準的 pygame 寫法——產生 16 位元單聲道方波 PCM，交給 pygame.mixer.Sound(buffer=…)。"""
+    import array as _array, math as _math
+    if not pygame.mixer.get_init():
+        pygame.mixer.init(rate, -16, 1)
+    n = int(rate * ms / 1000)
+    pcm = _array.array("h", (int(32767 * volume) if _math.sin(2 * _math.pi * freq * i / rate) >= 0 else -int(32767 * volume) for i in range(n)))
+    return pygame.mixer.Sound(buffer=pcm.tobytes())
+
 W, H = 480, 360
 STEP = 1000 // 60
 T = 24
@@ -499,8 +509,8 @@ def main():
     pygame.display.set_caption("RPG 小村莊冒險")
     screen = pygame.display.set_mode((W, H))
     font = pygame.font.Font(None, 14)
-    beep = {"encounter": pygame.mixer.Sound(frequency=200, ms=120), "hit": pygame.mixer.Sound(frequency=400, ms=50),
-            "magic": pygame.mixer.Sound(frequency=700, ms=80), "hurt": pygame.mixer.Sound(frequency=150, ms=100)}
+    beep = {"encounter": tone(200, 120), "hit": tone(400, 50),
+            "magic": tone(700, 80), "hurt": tone(150, 100)}
     keymap = {pygame.K_UP: "up", pygame.K_DOWN: "down", pygame.K_SPACE: "ok", pygame.K_RETURN: "ok",
               pygame.K_ESCAPE: "cancel", ord("i"): "menu", ord("y"): "y", ord("n"): "n"}
     clock = pygame.time.Clock()

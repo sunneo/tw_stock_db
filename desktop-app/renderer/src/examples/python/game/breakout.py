@@ -12,6 +12,16 @@
 #   最壞合計約 60 道，遠低於 200。
 import pygame
 
+
+def tone(freq, ms, rate=22050, volume=0.3):
+    """短音效：標準的 pygame 寫法——產生 16 位元單聲道方波 PCM，交給 pygame.mixer.Sound(buffer=…)。"""
+    import array as _array, math as _math
+    if not pygame.mixer.get_init():
+        pygame.mixer.init(rate, -16, 1)
+    n = int(rate * ms / 1000)
+    pcm = _array.array("h", (int(32767 * volume) if _math.sin(2 * _math.pi * freq * i / rate) >= 0 else -int(32767 * volume) for i in range(n)))
+    return pygame.mixer.Sound(buffer=pcm.tobytes())
+
 W, H = 480, 400
 STEP = 1000 // 60                 # 固定邏輯步長（毫秒）
 COLS, ROWS = 12, 8
@@ -156,8 +166,8 @@ def main():
     pygame.display.set_caption("打磚塊 Breakout")
     screen = pygame.display.set_mode((W, H))
     font = pygame.font.Font(None, 14)
-    beep = {"paddle": pygame.mixer.Sound(frequency=330, ms=40), "brick": pygame.mixer.Sound(frequency=520, ms=40),
-            "miss": pygame.mixer.Sound(frequency=150, ms=200)}
+    beep = {"paddle": tone(330, 40), "brick": tone(520, 40),
+            "miss": tone(150, 200)}
     clock = pygame.time.Clock()
     game = Game()
     acc = 0

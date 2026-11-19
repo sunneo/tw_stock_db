@@ -44,6 +44,11 @@
         py.FS.chdir('/work');
         // 程式 import 了 numpy 等 Pyodide 內建套件就先載入（失敗不擋：程式自己 import 時會得到原本的錯誤訊息）
         try { await py.loadPackagesFromImports(m.src); } catch (e) { self.postMessage({ type: 'err', text: '[提示] 載入內建套件失敗：' + String((e && e.message) || e).slice(0, 200) + '\n' }); }
+        // PyOpenGL 不是 Pyodide 內建的套件（純 Python）：程式 import OpenGL 或 gl3d（建在 PyOpenGL 上）時用 micropip 從 PyPI 裝（要有網路）；平台後端（fa_opengl_platform）接 WebGL2
+        if (/^[ \t]*(?:import[ \t]+(?:[\w.]+(?:[ \t]+as[ \t]+\w+)?[ \t]*,[ \t]*)*(?:OpenGL|gl3d)|from[ \t]+(?:OpenGL|gl3d))(?![\w])/m.test(m.src)) {
+          try { await py.loadPackage('micropip'); await py.pyimport('micropip').install('PyOpenGL'); }
+          catch (e) { self.postMessage({ type: 'err', text: '[提示] 安裝 PyOpenGL 失敗（需要網路連到 PyPI）：' + String((e && e.message) || e).slice(0, 200) + '\n' }); }
+        }
         py.runPython(m.prelude);
         py.globals.set('__fa_src__', m.src);
         py.globals.set('__fa_path__', '/work/' + m.scriptName);
