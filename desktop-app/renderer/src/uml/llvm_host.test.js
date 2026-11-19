@@ -61,9 +61,30 @@ define i32 @main() {
   const hasJspi = typeof WebAssembly.Suspending === 'function';
   if (!hasJspi) { const c = L.compileIr('declare void @SDL_Delay(i32)\ndefine i32 @main() {\n  call void @SDL_Delay(i32 1)\n  ret i32 0\n}\n', {}); let msg = ''; try { await L.runHost(c.wasm, {}, host.impls); } catch (e) { msg = e.message; } check('沒有 JSPI 的錯誤說明', /JSPI/.test(msg), msg); }
   // 範例（sdl2_pong／gtk3_widgets／sdl2_gl_triangle）都能編成 wasm
-  for (const f of ['game/sdl2_pong.ll', 'gui/gtk3_widgets.ll', 'gui/sdl2_gl_triangle.ll']) { const c = L.compileIr(fs.readFileSync(path.join(__dirname, '..', 'examples', 'llc', f), 'utf8'), {}); check('範例 ' + f + ' 編成 wasm', c.stage === 'ok' && !!WebAssembly.validate(c.wasm), c.errors); }
+  for (const f of ['game/sdl2_pong.ll', 'game/sdl2_piano.ll', 'gui/gtk3_widgets.ll', 'gui/sdl2_gl_triangle.ll']) { const c = L.compileIr(fs.readFileSync(path.join(__dirname, '..', 'examples', 'llc', f), 'utf8'), {}); check('範例 ' + f + ' 編成 wasm', c.stage === 'ok' && !!WebAssembly.validate(c.wasm), c.errors); }
   // 鍵盤對照與格式化小單元
   check('scancode', H.scancodeOf('a') === 4 && H.scancodeOf('ArrowUp') === 82 && H.scancodeOf(' ') === 44 && H.scancodeOf('0') === 39 && H.scancodeOf('F1') === 58);
+  // 全域陣列的初始值
+  o = await run(`@a = private constant [3 x i32] [i32 7, i32 -2, i32 300]
+@s = private constant [9 x i8] c"%d %d %d\\0A\\00"
+declare i32 @printf(ptr, ...)
+define i32 @main() {
+  %p0 = getelementptr [3 x i32], ptr @a, i32 0, i32 0
+  %v0 = load i32, ptr %p0
+  %p1 = getelementptr [3 x i32], ptr @a, i32 0, i32 1
+  %v1 = load i32, ptr %p1
+  %p2 = getelementptr [3 x i32], ptr @a, i32 0, i32 2
+  %v2 = load i32, ptr %p2
+  call i32 (ptr, ...) @printf(ptr @s, i32 %v0, i32 %v1, i32 %v2)
+  ret i32 0
+}`);
+  check('全域陣列的初始值 [i32 …]', o.stdout === '7 -2 300\n', o);
+  // SDL 音訊的取樣格式轉換（→ 16 位元有號小端）
+  const f32 = new Float32Array([0, 1, -1, 0.5]), s16 = host.toS16(new Uint8Array(f32.buffer), 0x8120);
+  check('F32 → S16', Array.from(new Int16Array(s16.buffer, s16.byteOffset, 4)).join() === '0,32767,-32767,16384', Array.from(new Int16Array(s16.buffer)));
+  check('U8 → S16（128＝0）', Array.from(new Int16Array(host.toS16(new Uint8Array([128, 255, 0]), 0x0008).buffer)).join() === '0,32512,-32768');
+  check('U16 → S16', Array.from(new Int16Array(host.toS16(new Uint8Array(new Uint16Array([32768, 65535, 0]).buffer), 0x0010).buffer)).join() === '0,32767,-32768');
+  check('S16 原樣', Array.from(host.toS16(new Uint8Array([1, 2, 3, 4]), 0x8010)).join() === '1,2,3,4');
   // 登記是暫時的：uninstall 之後 printf 又是「沒有實作」
   host.uninstall(L); r = L.compileIr('declare i32 @printf(ptr, ...)\ndefine i32 @main() {\n  call i32 (ptr, ...) @printf(ptr null)\n  ret i32 0\n}\n', {});
   check('uninstall 後取消登記', r.stage === 'check' && !L.HOST.printf, r.errors);

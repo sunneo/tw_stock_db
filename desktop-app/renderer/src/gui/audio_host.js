@@ -11,6 +11,8 @@
 //   pause／resume                                                                                        整個 AudioContext 暫停／繼續
 //   channels {n}                                                                                         聲道數（1..32，預設 8）
 //   info   {name}                                                                                        → {duration} 或 null
+//   串流（SDL_QueueAudio 這類「一直送 PCM」的來源）：stream_open {id, rate, channels, volume?}；stream_queue {id, data}（16 位元 PCM，接在已排程的後面、不中斷）；
+//          stream_pause {id, on}（暫停：靜音並把新資料先留著；繼續才排程）；stream_queued {id} → {seconds}；stream_clear {id}；stream_close {id}
 // 限制：一個聲音至多 8 MB 的 PCM（編碼檔 12 MB）、同時至多 64 個聲音、總計 64 MB；聲道至多 32。owner（呼叫的終端機／job）結束時 stopOwner 收掉它的聲音。
 // 瀏覽器的自動播放政策：AudioContext 可能是 suspended（還沒有使用者操作過頁面）；play 會嘗試 resume，仍不行就回傳 suspended:true（聲音排在 context 上，resume 後才響）。
 (function (root, factory) {
@@ -65,6 +67,56 @@
       var dv = new DataView(raw.buffer, raw.byteOffset, raw.byteLength), buf = c.createBuffer(chans, frames, rate), k, i, d;
       for (k = 0; k < chans; k++) { d = buf.getChannelData(k); for (i = 0; i < frames; i++) { d[i] = dv.getInt16((i * chans + k) * 2, true) / 32768; } }
       return store(name, buf, frames * chans * 4);
+    }
+    // ---- 串流：一直送進來的 PCM 依序接著播（用 AudioBufferSource 排程在上一段結束的時間點）
+    var streams = {};
+    function pcmBuffer(c, b64, rate, chans) {
+      var raw = b64bytes(b64); if (raw.length > MAX_PCM) { throw new Error('PCM 超過 ' + (MAX_PCM >> 20) + ' MB'); }
+      var frames = Math.floor(raw.length / (2 * chans)); if (frames < 1) { return null; }
+      var dv = new DataView(raw.buffer, raw.byteOffset, raw.byteLength), buf = c.createBuffer(chans, frames, rate), k, i, d;
+      for (k = 0; k < chans; k++) { d = buf.getChannelData(k); for (i = 0; i < frames; i++) { d[i] = dv.getInt16((i * chans + k) * 2, true) / 32768; } }
+      return buf;
+    }
+    function streamOf(a) { var st = streams[String(a.id)]; if (!st) { throw new Error('沒有這個串流：' + a.id + '（先 stream_open）'); } return st; }
+    function schedule(st, buf) {
+      var c = ctx, src = c.createBufferSource(), t = Math.max(c.currentTime + 0.02, st.nextTime);
+      src.buffer = buf; src.connect(st.gain); src.start(t); st.nextTime = t + buf.duration; st.sources.push(src);
+      src.onended = function () { var k = st.sources.indexOf(src); if (k >= 0) { st.sources.splice(k, 1); } };
+    }
+    function streamOpen(a, owner) {
+      var c = ensure(), id = String(a.id); if (streams[id]) { streamClose({ id: id }); }
+      if (Object.keys(streams).length >= 16) { throw new Error('最多同時開 16 個串流'); }
+      var rate = Number(a.rate) || 44100; if (rate < 3000 || rate > 192000) { throw new Error('取樣率要在 3000~192000'); }
+      var gain = c.createGain(); gain.gain.value = a.volume === undefined ? 1 : Math.max(0, Math.min(1, Number(a.volume))); gain.connect(master);
+      streams[id] = { rate: rate, channels: Number(a.channels) === 2 ? 2 : 1, gain: gain, nextTime: 0, paused: false, pending: [], sources: [], owner: owner || '', vol: gain.gain.value };
+      return { ok: true, suspended: resume() };
+    }
+    function streamQueue(a) {
+      var st = streamOf(a), c = ensure(), buf = pcmBuffer(c, a.data, st.rate, st.channels);
+      if (!buf) { return { ok: true }; }
+      if (st.paused) { st.pending.push(buf); } else { schedule(st, buf); resume(); }
+      return { ok: true };
+    }
+    function streamPause(a) {
+      var st = streamOf(a), on = !!a.on; if (on === st.paused) { return { ok: true }; }
+      st.paused = on;
+      if (on) { st.gain.gain.value = 0; }
+      else { st.gain.gain.value = st.vol; var p = st.pending; st.pending = []; p.forEach(function (b) { schedule(st, b); }); resume(); }
+      return { ok: true };
+    }
+    function streamQueued(a) {
+      var st = streamOf(a), sec = ctx ? Math.max(0, st.nextTime - ctx.currentTime) : 0;
+      st.pending.forEach(function (b) { sec += b.duration; });
+      return { seconds: sec, rate: st.rate, channels: st.channels };
+    }
+    function streamClear(a) {
+      var st = streamOf(a); st.sources.slice().forEach(function (s) { try { s.stop(); } catch (e) { /* 已經停了 */ } }); st.sources = []; st.pending = []; st.nextTime = 0;
+      return { ok: true };
+    }
+    function streamClose(a) {
+      var id = String(a.id), st = streams[id]; if (!st) { return { ok: true }; }
+      st.sources.slice().forEach(function (s) { try { s.stop(); } catch (e) { /* */ } }); try { st.gain.disconnect(); } catch (e) { /* */ }
+      delete streams[id]; return { ok: true };
     }
     function ensureChannels() { while (channels.length < nch) { channels.push(null); } if (channels.length > nch) { channels.length = nch; } }
     function stopSlot(slot, fadeMs) {
@@ -139,13 +191,19 @@
         case 'pause': if (ctx && ctx.suspend) { ctx.suspend(); } return { ok: true };
         case 'resume': if (ctx && ctx.resume) { ctx.resume(); } return { ok: true };
         case 'channels': nch = Math.max(1, Math.min(MAX_CH, Number(a.n) | 0 || 8)); ensureChannels(); return { n: nch };
+        case 'stream_open': return streamOpen(a, owner);
+        case 'stream_queue': return streamQueue(a);
+        case 'stream_pause': return streamPause(a);
+        case 'stream_queued': return streamQueued(a);
+        case 'stream_clear': return streamClear(a);
+        case 'stream_close': return streamClose(a);
         case 'info': return sounds[String(a.name || '')] ? { duration: sounds[String(a.name)].buffer.duration } : null;
         default: throw new Error('不認得的 audio 指令：' + a.cmd);
       }
     }
     // 程式結束：收掉這個 owner 的聲音（沒有 owner 就全部）
-    function stopOwner(owner) { stop({ all: true }, owner); }
-    return { handle: handle, stopOwner: stopOwner, stats: function () { return { sounds: Object.keys(sounds).length, bytes: total, channels: nch, state: ctx ? ctx.state : 'none' }; }, close: function () { stop({ all: true }); sounds = {}; total = 0; if (ctx && ctx.close) { try { ctx.close(); } catch (e) { /* */ } } ctx = null; } };
+    function stopOwner(owner) { stop({ all: true }, owner); Object.keys(streams).forEach(function (id) { if (!owner || streams[id].owner === owner) { streamClose({ id: id }); } }); }
+    return { handle: handle, stopOwner: stopOwner, stats: function () { return { sounds: Object.keys(sounds).length, bytes: total, channels: nch, streams: Object.keys(streams).length, state: ctx ? ctx.state : 'none' }; }, close: function () { stop({ all: true }); Object.keys(streams).forEach(function (id) { streamClose({ id: id }); }); sounds = {}; total = 0; if (ctx && ctx.close) { try { ctx.close(); } catch (e) { /* */ } } ctx = null; } };
   }
   return { create: create, LIMITS: { MAX_PCM: MAX_PCM, MAX_ENC: MAX_ENC, MAX_SOUNDS: MAX_SOUNDS, MAX_TOTAL: MAX_TOTAL, MAX_CH: MAX_CH } };
 }));

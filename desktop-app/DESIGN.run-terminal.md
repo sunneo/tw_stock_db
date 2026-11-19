@@ -1642,3 +1642,6 @@ sleep/curl/date/ask-floating-ai-assistant各自踩過的坑。
 
 **限制**：沒有 `phi`（用 alloca）；一幀 SDL 最多 200 道繪圖指令；GL 沒有光照、紋理、著色器；沒有音訊與影片；`gtk_main` 在所有視窗關閉後會結束（真 GTK 會一直等）；沙盒沒有 OpenCL（`opencl_vecadd.ll` 只能在真機器跑）；需要 JSPI（Chrome／Edge 137 以上、桌面版）。
 **驗證**：`llvm_host.test.js`（12 項，node）、`llvm_core.test.js`（103 項沒壞）；真 Electron：`scripts/eval/llc_host.eval.js`（pong、GTK 自動／互動、GL、錯誤路徑，全過）。
+
+## 22. LLVM IR 的 SDL 音訊與全域陣列初始值（2026-11-19）
+`llvm_host.js` 新增 SDL2 音訊（佇列模式）：`SDL_OpenAudioDevice／OpenAudio／QueueAudio／GetQueuedAudioSize／ClearQueuedAudio／PauseAudioDevice／PauseAudio／CloseAudioDevice／CloseAudio`，每個裝置對應頁面端 `AiChatAudioHost` 的一個串流（`gui.audio` 的 `stream_*`）；取樣格式 U8／S8／U16／S16／S32／F32 轉成 16 位元有號 PCM 再送；裝置一開始暫停。callback 模式（`SDL_AudioSpec.callback` 非 NULL）回 0 並說明，因為主機端無法在 wasm 記憶體配置緩衝區。`llvm_core.js` 新增全域陣列初始值（`[i32 1, i32 2, …]`、float／double 的一維陣列）。範例 `examples/llc/game/sdl2_piano.ll`（原生用 llvmlite＋gcc＋SDL 的 dummy 音訊驅動驗證；wasm 版真 Electron 驗證：串流開啟、鍵盤注入、結束後串流收掉）。

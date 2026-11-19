@@ -35,6 +35,17 @@ const pcm = (n, v) => { const b = Buffer.alloc(n * 2); for (let i = 0; i < n; i+
   H.stopOwner('o1'); check('stopOwner 收掉該 owner 的聲音', (await H.handle({ cmd: 'busy' })).busy === false && (await H.handle({ cmd: 'busy', music: true })).busy === false);
   r = await H.handle({ cmd: 'load', name: 'song', encoded: Buffer.from('RIFFxxxx').toString('base64'), mime: 'audio/wav' }); check('編碼檔經 decodeAudioData', Math.abs(r.duration - 0.1) < 1e-6, r);
   check('info', (await H.handle({ cmd: 'info', name: 'song' })).duration > 0 && (await H.handle({ cmd: 'info', name: 'nope' })) === null);
+  // 串流
+  const sr = await H.handle({ cmd: 'stream_open', id: 's1', rate: 22050, channels: 1 }, 'o2'); check('stream_open', sr.ok === true, sr);
+  const nsrc = buf.sources.length; await H.handle({ cmd: 'stream_queue', id: 's1', data: pcm(2205, 8000) }); await H.handle({ cmd: 'stream_queue', id: 's1', data: pcm(2205, 8000) });
+  check('stream_queue：兩段接著排程', buf.sources.length === nsrc + 2 && buf.sources[nsrc + 1].started === true);
+  Ctx.last.currentTime = 0; const q1 = (await H.handle({ cmd: 'stream_queued', id: 's1' })).seconds; check('stream_queued：兩段共約 0.2 秒', q1 > 0.19 && q1 < 0.25, q1);
+  await H.handle({ cmd: 'stream_pause', id: 's1', on: true }); await H.handle({ cmd: 'stream_queue', id: 's1', data: pcm(2205, 8000) });
+  check('暫停時新資料先留著，不排程', buf.sources.length === nsrc + 2 && (await H.handle({ cmd: 'stream_queued', id: 's1' })).seconds > q1);
+  await H.handle({ cmd: 'stream_pause', id: 's1', on: false }); check('繼續後把留著的排進去', buf.sources.length === nsrc + 3);
+  await H.handle({ cmd: 'stream_clear', id: 's1' }); check('stream_clear 清空', (await H.handle({ cmd: 'stream_queued', id: 's1' })).seconds === 0);
+  H.stopOwner('o2'); check('stopOwner 收掉串流', H.stats().streams === 0, H.stats());
+  let em = ''; try { await H.handle({ cmd: 'stream_queue', id: 'nope', data: pcm(10, 1) }); } catch (e) { em = e.message; } check('沒開的串流有明確錯誤', /沒有這個串流/.test(em), em);
   // 限制與錯誤
   const err = async (a) => { try { await H.handle(a); return ''; } catch (e) { return e.message; } };
   check('沒載入的聲音', /沒有載入/.test(await err({ cmd: 'play', name: 'zzz' })));

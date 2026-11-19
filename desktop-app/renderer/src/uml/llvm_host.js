@@ -32,6 +32,11 @@
         SDL_RenderPresent: { params: ['ptr'], ret: 'void', async: true },
         SDL_PollEvent: { params: ['ptr'], ret: 'i32', async: true },
         SDL_Delay: { params: ['i32'], ret: 'void', async: true }, SDL_GetTicks: { params: [], ret: 'i32' },
+        // SDL2 音訊（佇列模式：callback 給 NULL，用 SDL_QueueAudio 送 PCM）；SDL_AudioSpec 的欄位偏移：freq 0、format 4、channels 6、silence 7、samples 8、size 12、callback 16
+        SDL_OpenAudioDevice: { params: ['ptr', 'i32', 'ptr', 'ptr', 'i32'], ret: 'i32', async: true }, SDL_OpenAudio: { params: ['ptr', 'ptr'], ret: 'i32', async: true },
+        SDL_QueueAudio: { params: ['i32', 'ptr', 'i32'], ret: 'i32', async: true }, SDL_GetQueuedAudioSize: { params: ['i32'], ret: 'i32', async: true },
+        SDL_ClearQueuedAudio: { params: ['i32'], ret: 'void', async: true }, SDL_PauseAudioDevice: { params: ['i32', 'i32'], ret: 'void', async: true },
+        SDL_PauseAudio: { params: ['i32'], ret: 'void', async: true }, SDL_CloseAudioDevice: { params: ['i32'], ret: 'void', async: true }, SDL_CloseAudio: { params: [], ret: 'void', async: true },
         // SDL2 的 OpenGL 視窗
         SDL_GL_SetAttribute: { params: ['i32', 'i32'], ret: 'i32' }, SDL_GL_CreateContext: { params: ['ptr'], ret: 'ptr' }, SDL_GL_DeleteContext: { params: ['ptr'], ret: 'void' },
         SDL_GL_SetSwapInterval: { params: ['i32'], ret: 'i32' }, SDL_GL_SwapWindow: { params: ['ptr'], ret: 'void', async: true },
@@ -124,6 +129,31 @@
         }
         const winOf = (p) => { const w = handles.get(p); return w && w.kind === 'renderer' ? w.win : w && w.kind === 'window' ? w : null; };
         const rend = (p) => { const r = handles.get(p); return r && r.kind === 'renderer' ? r : null; };
+        const audioDevs = new Map(); let audioSeq = 1;   // 裝置號 → {id（頁面端的串流名）, rate, channels, fmt, bps}；SDL_OpenAudio 用 1，SDL_OpenAudioDevice 從 2 起
+        async function openAudio(ctx, capture, spec, obt, legacy) {
+            if (capture || !spec) return 0;
+            const dv = ctx.dv(), u8 = ctx.u8(), rate = dv.getInt32(spec, true), fmt = dv.getUint16(spec + 4, true), ch = u8[spec + 6], samples = dv.getUint16(spec + 8, true), cb = dv.getUint32(spec + 16, true);
+            if (cb) { warn('SDL 音訊：不支援 callback 模式（audio callback）；請把 SDL_AudioSpec 的 callback 設成 NULL，用 SDL_QueueAudio 送資料\n'); return 0; }
+            const bps = { 0x0008: 1, 0x8008: 1, 0x0010: 2, 0x8010: 2, 0x8020: 4, 0x8120: 4 }[fmt];
+            if (!bps || (ch !== 1 && ch !== 2) || rate < 3000 || rate > 192000) { warn('SDL 音訊：不支援的格式（支援 U8、S8、U16LSB、S16LSB、S32LSB、F32LSB，1 或 2 聲道，3000~192000 Hz）\n'); return 0; }
+            const dev = legacy ? 1 : (audioSeq = Math.max(audioSeq, 1) + 1), id = 'sdla' + dev + '_' + Math.random().toString(36).slice(2, 6);
+            await gui('audio', { cmd: 'stream_open', id, rate, channels: ch }); await gui('audio', { cmd: 'stream_pause', id, on: true });
+            audioDevs.set(dev, { id, rate, channels: ch, fmt, bps });
+            if (obt) { u8.copyWithin(obt, spec, spec + 16); u8[obt + 7] = (fmt === 0x0008 ? 128 : 0); dv.setUint32(obt + 12, (samples || 4096) * ch * bps, true); dv.setUint32(obt + 16, 0, true); }
+            return dev;
+        }
+        function toS16(src, fmt) {   // SDL 的取樣格式 → 16 位元有號小端 PCM
+            const dv = new DataView(src.buffer, src.byteOffset, src.byteLength), out = new Uint8Array(src.length / ({ 0x0008: 1, 0x8008: 1, 0x0010: 2, 0x8010: 2, 0x8020: 4, 0x8120: 4 }[fmt]) * 2), od = new DataView(out.buffer);
+            if (fmt === 0x8010) return src.slice();
+            let n = 0;
+            if (fmt === 0x0008) for (let i = 0; i < src.length; i++, n++) od.setInt16(n * 2, (src[i] - 128) << 8, true);
+            else if (fmt === 0x8008) for (let i = 0; i < src.length; i++, n++) od.setInt16(n * 2, dv.getInt8(i) << 8, true);
+            else if (fmt === 0x0010) for (let i = 0; i + 1 < src.length; i += 2, n++) od.setInt16(n * 2, dv.getUint16(i, true) - 32768, true);
+            else if (fmt === 0x8020) for (let i = 0; i + 3 < src.length; i += 4, n++) od.setInt16(n * 2, dv.getInt32(i, true) >> 16, true);
+            else for (let i = 0; i + 3 < src.length; i += 4, n++) od.setInt16(n * 2, Math.max(-32768, Math.min(32767, Math.round(dv.getFloat32(i, true) * 32767))), true);
+            return out;
+        }
+        function b64(u) { let s = ''; for (let i = 0; i < u.length; i += 0x8000) s += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000)); return btoa(s); }
         const queue = [];   // 已經轉成 SDL_Event 的事件
 
         // 把一個 GUI 事件轉成 SDL_Event 的位元組（回傳 true 表示有寫入）。結構的偏移跟 SDL 2.0 的 C 結構一致（見 examples/llc 的註解）。
@@ -186,6 +216,21 @@
             },
             SDL_Delay: async (ctx, ms) => { await sleep(Math.max(0, ms)); },
             SDL_GetTicks: () => (now() - t0) >>> 0,
+            // ---- SDL2 音訊（佇列模式）：每個裝置對應頁面端的一個串流；裝置一開始是暫停的（SDL 的規則），PauseAudioDevice(dev, 0) 才開始播
+            SDL_OpenAudioDevice: async (ctx, name, capture, desired, obtained) => openAudio(ctx, capture, desired, obtained, 0),
+            SDL_OpenAudio: async (ctx, desired, obtained) => (await openAudio(ctx, 0, desired, obtained, 1)) ? 0 : -1,
+            SDL_QueueAudio: async (ctx, dev, data, len) => {
+                const d = audioDevs.get(dev); if (!d || len < 0) return -1;
+                const u8 = ctx.u8(); let pos = data, left = len - (len % (d.bps * d.channels));
+                while (left > 0) { const n = Math.min(left, 524288 - (524288 % (d.bps * d.channels))); await gui('audio', { cmd: 'stream_queue', id: d.id, data: b64(toS16(u8.subarray(pos, pos + n), d.fmt)) }); pos += n; left -= n; }
+                return 0;
+            },
+            SDL_GetQueuedAudioSize: async (ctx, dev) => { const d = audioDevs.get(dev); if (!d) return 0; const r = await gui('audio', { cmd: 'stream_queued', id: d.id }); return Math.round(r.seconds * d.rate) * d.channels * d.bps; },
+            SDL_ClearQueuedAudio: async (ctx, dev) => { const d = audioDevs.get(dev); if (d) await gui('audio', { cmd: 'stream_clear', id: d.id }); },
+            SDL_PauseAudioDevice: async (ctx, dev, on) => { const d = audioDevs.get(dev); if (d) await gui('audio', { cmd: 'stream_pause', id: d.id, on: !!on }); },
+            SDL_PauseAudio: async (ctx, on) => { const d = audioDevs.get(1); if (d) await gui('audio', { cmd: 'stream_pause', id: d.id, on: !!on }); },
+            SDL_CloseAudioDevice: async (ctx, dev) => { const d = audioDevs.get(dev); if (d) { audioDevs.delete(dev); await gui('audio', { cmd: 'stream_close', id: d.id }); } },
+            SDL_CloseAudio: async () => { const d = audioDevs.get(1); if (d) { audioDevs.delete(1); await gui('audio', { cmd: 'stream_close', id: d.id }); } },
             // ---- SDL 的 OpenGL
             SDL_GL_SetAttribute: () => 0, SDL_GL_SetSwapInterval: () => 0,
             SDL_GL_CreateContext: (ctx, p) => { const w = handles.get(p); if (!w || !w.gl) return 0; return mk({ kind: 'glctx', win: w }); },
@@ -325,7 +370,7 @@
             await gui('glframe', { id: w.id, node: w.nid, cmds });
             gl.batches = [];
         }
-        return { impls, SIGS, install(FaLlvm) { installs++; FaLlvm.registerHost(SIGS); }, uninstall(FaLlvm) { if (--installs <= 0) { installs = 0; FaLlvm.unregisterHost(Object.keys(SIGS)); } }, close() { handles.clear(); } };
+        return { impls, SIGS, toS16, install(FaLlvm) { installs++; FaLlvm.registerHost(SIGS); }, uninstall(FaLlvm) { if (--installs <= 0) { installs = 0; FaLlvm.unregisterHost(Object.keys(SIGS)); } }, close() { handles.clear(); Array.from(audioDevs.values()).forEach((d) => { gui('audio', { cmd: 'stream_close', id: d.id }); }); audioDevs.clear(); } };
     }
     return { create, SIGS, formatC, scancodeOf, keycodeOf };
 });

@@ -15,10 +15,12 @@ IR 裡 `declare` 了 SDL2／OpenGL／GTK3／printf 的函式、又沒有自己�
 程式結束或 Ctrl+C 會收掉它開的視窗。
 
 編譯器為此新增：`float`（f32）、`fpext`／`fptrunc`、可變參數呼叫（`call i32 (ptr, ...) @printf(...)`，額外引數放進 8 位元組對齊的緩衝區）、函式指標當值（只能傳給主機函式當回呼，不能在 wasm 裡間接呼叫）、`main(argc, argv)`。
-**仍然不支援**：`phi`（用 alloca／load／store）、定義可變參數函式、wasm 內的間接呼叫。簽名要跟 C 原型一致（`SDL_SetRenderDrawColor` 的 `Uint8` 是 `i8`；`snprintf` 的 `size_t` 可以是 `i32` 或 `i64`；GTK 的 `g_signal_connect_data` 回傳值宣告成 `i32`）；宣告了沒實作的函式，檢查階段會明確說「沒有實作」。
+**仍然不支援**：`phi`（用 alloca／load／store）、定義可變參數函式、wasm 內的間接呼叫。全域陣列的初始值支援整數與浮點的一維陣列（`[i32 1, i32 2]`）。
+**音訊**：SDL 的音訊裝置對應頁面端的一個串流（`gui.audio` 的 `stream_*`，見 `DESIGN.pygame-opengl-standard.md`「音訊」）；裝置一開始是暫停的（SDL 的規則）、`SDL_PauseAudioDevice(dev, 0)` 才開始播；暫停時新資料先留著、繼續才排程（暫停中已排程的不會倒回）。callback 模式需要主機在 wasm 記憶體配置緩衝區，目前辦不到。簽名要跟 C 原型一致（`SDL_SetRenderDrawColor` 的 `Uint8` 是 `i8`；`snprintf` 的 `size_t` 可以是 `i32` 或 `i64`；GTK 的 `g_signal_connect_data` 回傳值宣告成 `i32`）；宣告了沒實作的函式，檢查階段會明確說「沒有實作」。
 
 | 檔案 | 表現方式 | 實作範圍 |
 |---|---|---|
+| `game/sdl2_piano.ll` | SDL2 音訊＋影像＋鍵盤：8 鍵小鋼琴（A S D F G H J K），方波 PCM 經 `SDL_QueueAudio` | `SDL_OpenAudioDevice／QueueAudio／GetQueuedAudioSize／ClearQueuedAudio／PauseAudioDevice／CloseAudioDevice`、`SDL_OpenAudio／PauseAudio／CloseAudio`；**只支援佇列模式**（`SDL_AudioSpec` 的 callback 要是 NULL，否則回 0 並說明）；格式 U8、S8、U16LSB、S16LSB、S32LSB、F32LSB，1 或 2 聲道；第一個參數＝自動彈奏並跑幾幀 |
 | `game/sdl2_pong.ll` | SDL2：視窗、渲染器、填色矩形、鍵盤、滑鼠、計時 | `SDL_Init／CreateWindow／CreateRenderer／SetRenderDrawColor／RenderClear／RenderFillRect／RenderDrawRect／RenderDrawLine／RenderDrawPoint／RenderPresent／PollEvent（QUIT、KEYDOWN／UP、MOUSEMOTION、MOUSEBUTTONDOWN／UP、MOUSEWHEEL）／Delay／GetTicks`；一幀最多 200 道繪圖指令（橋接上限） |
 | `gui/gtk3_widgets.ll` | GTK3 widget：視窗、盒子、標籤、輸入框、勾選框、按鈕、進度條、訊號、計時器 | `gtk_init／window／box／label／entry／button／check_button／progress_bar／container_add／widget_show_all／main／main_quit／g_signal_connect_data（clicked、changed、toggled、destroy、delete-event）／g_timeout_add` |
 | `gui/sdl2_gl_triangle.ll` | SDL2＋OpenGL 固定管線 | `SDL_GL_CreateContext／SwapWindow`、`glBegin／End／Vertex2f／3f／Color3f／4f`、矩陣（`glMatrixMode／LoadIdentity／Push／Pop／Translatef／Rotatef／Scalef／Ortho／Frustum／gluPerspective`）、`glClearColor／Clear／Enable(DEPTH_TEST)`；沒有光照、紋理、著色器 |
@@ -31,4 +33,4 @@ IR 裡 `declare` 了 SDL2／OpenGL／GTK3／printf 的函式、又沒有自己�
 
 驗證現況：原生（llvmlite 編成物件檔、gcc 連結）pong、GTK3、GL 在 Xvfb 實跑通過（SDL2 在無頭環境要設 `SDL_IM_MODULE=none`，否則初始化輸入法就段錯誤，純 C 也一樣）；
 wasm 版在真 Electron 驗證（`scripts/eval/llc_host.eval.js`）：pong 開視窗、注入鍵盤與滑鼠、截圖、跑完 150 幀；GTK3 的輸入／勾選／點擊讓標籤更新、關視窗後程式結束；GL 視窗與滑鼠事件、跑完 400 幀。
-**沒驗證**：OpenGL 的畫面內容（WebGL2 畫布無法截圖，只確認沒有 trap 與 glerror）、真 GPU、網頁版、音訊與影片（沒有範例）。
+**沒驗證**：OpenGL 的畫面內容在 wasm 版（只確認沒有 trap 與 glerror）、真 GPU、網頁版、影片（沒有範例）、實際聽到聲音（驗證環境沒有音訊輸出裝置，只驗證到頁面的串流與排程）。

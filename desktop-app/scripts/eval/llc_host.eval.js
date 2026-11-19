@@ -40,9 +40,20 @@ R.gl = { windows: g.windows.length, canvas: !!glc };
 if (glc) { const m = await tool('job_gui', { job_id: lj, action: 'mouse', node: glc.id, value: { kind: 'down', x: 10, y: 10, button: 0 }, wait_ms: 50 }); await tool('job_gui', { job_id: lj, action: 'mouse', node: glc.id, value: { kind: 'move', x: 60, y: 10, button: 0 }, wait_ms: 50 }); R.gl.mouse = m.ok === true; }
 waited = 0; while (waited < 15000 && (await tool('job_list', {})).jobs.find((j) => j.job_id === lj).running) { await wait(250); waited += 250; }
 const le = (await tool('job_list', {})).jobs.find((j) => j.job_id === lj); g = await tool('job_gui', { job_id: lj, action: 'snapshot' }); R.gl.done = { running: le.running, exit: le.exit_code, out: (g.output || '').trim().slice(-160) };
+// 4b. SDL2 音訊（佇列模式）＋影像＋鍵盤：小鋼琴；自動模式每 20 幀彈一個音（150 ms 方波經 SDL_QueueAudio）
+r = await tool('job_run', { lang: 'llvm', code: ex('game/sdl2_piano.ll'), args: ['500'], detach: true, timeout_s: 60 }); const aj = r.job_id; await wait(300);
+g = await tool('job_gui', { job_id: aj, action: 'snapshot' }); const acv = g.windows[0] && g.windows[0].nodes.find((n) => n.kind === 'canvas'); const mid = fa._audioHost ? fa._audioHost.stats() : null;
+R.audio = { windows: g.windows.length, canvas: !!acv, streams_mid: mid && mid.streams, state: mid && mid.state };
+if (acv) { const k = await tool('job_gui', { job_id: aj, action: 'key', node: acv.id, value: { key: 'g', down: true }, wait_ms: 200 }); R.audio.key_ok = k.ok === true; }
+waited = 0; while (waited < 15000 && (await tool('job_list', {})).jobs.find((j) => j.job_id === aj).running) { await wait(250); waited += 250; }
+const ae = (await tool('job_list', {})).jobs.find((j) => j.job_id === aj); g = await tool('job_gui', { job_id: aj, action: 'snapshot' });
+R.audio.done = { running: ae.running, exit: ae.exit_code, out: (g.output || '').trim().slice(-80) }; R.audio.streams_after = fa._audioHost.stats().streams;
+// 4c. 不支援的 callback 模式要明確報錯（不是悄悄沒聲音）
+r = await tool('job_run', { lang: 'llvm', timeout_s: 30, code: 'declare i32 @SDL_OpenAudioDevice(ptr, i32, ptr, ptr, i32)\ndeclare i32 @printf(ptr, ...)\n@s = private constant [8 x i8] c"dev=%d\\0A\\00"\ndefine i32 @main() {\n  %spec = alloca [32 x i8], align 8\n  store i64 0, ptr %spec\n  %a = getelementptr i8, ptr %spec, i32 8\n  store i64 0, ptr %a\n  %b = getelementptr i8, ptr %spec, i32 16\n  store i64 0, ptr %b\n  %c = getelementptr i8, ptr %spec, i32 24\n  store i64 0, ptr %c\n  store i32 22050, ptr %spec\n  %f0 = getelementptr i8, ptr %spec, i32 4\n  store i8 16, ptr %f0\n  %f1 = getelementptr i8, ptr %spec, i32 5\n  store i8 -128, ptr %f1\n  %ch = getelementptr i8, ptr %spec, i32 6\n  store i8 1, ptr %ch\n  %cb = getelementptr i8, ptr %spec, i32 16\n  store i32 1, ptr %cb\n  %d = call i32 @SDL_OpenAudioDevice(ptr null, i32 0, ptr %spec, ptr null, i32 0)\n  call i32 (ptr, ...) @printf(ptr @s, i32 %d)\n  ret i32 0\n}\n' });
+R.audio.callback_mode = { out: (r.output || '').trim().slice(0, 200) };
 // 5. 錯誤路徑：宣告了主機函式但簽名不對、用了沒有實作的函式
 r = await tool('job_run', { lang: 'llvm', code: 'declare i32 @SDL_Init(i64)\ndeclare void @SDL_NoSuchThing()\ndefine i32 @main() {\n  call i32 @SDL_Init(i64 1)\n  ret i32 0\n}\n' });
 R.errors = { exit: r.exit_code, out: (r.output || '').slice(0, 300) };
-R.ok = R.seeded && R.host_api && R.pong.windows === 1 && !!R.pong.canvas && R.pong.done.exit === 0 && /frames=150/.test(R.pong.done.out) && R.gtk_auto.exit === 0 && /count=3/.test(R.gtk_auto.out) && /Pressed 2 times, entry: hello/.test(R.gtk.label1 || '') && R.gtk.stopped && R.gl.canvas && R.gl.done.exit === 0 && R.errors.exit !== 0;
+R.ok = R.seeded && R.host_api && R.pong.windows === 1 && !!R.pong.canvas && R.pong.done.exit === 0 && /frames=150/.test(R.pong.done.out) && R.gtk_auto.exit === 0 && /count=3/.test(R.gtk_auto.out) && /Pressed 2 times, entry: hello/.test(R.gtk.label1 || '') && R.gtk.stopped && R.gl.canvas && R.gl.done.exit === 0 && R.errors.exit !== 0 && R.audio.canvas && R.audio.streams_mid === 1 && R.audio.done.exit === 0 && /notes=\d+ queued=\d+ ok/.test(R.audio.done.out) && R.audio.streams_after === 0 && /callback/.test(R.audio.callback_mode.out) && /dev=0/.test(R.audio.callback_mode.out);
 console.log('LLC_RESULT ' + JSON.stringify(R));
 return R;

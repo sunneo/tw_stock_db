@@ -77,6 +77,17 @@
     }
     function parseTyped(s) { const r = parseTypeAt(s, 0); return { ty: r.ty, v: parseValue(s.slice(r.end), r.ty) }; }
 
+    // 全域陣列的初始值 [i32 1, i32 2, …]（整數、float、double 的一維陣列）→ 位元組
+    function arrayInitBytes(init) {
+        const items = splitTop(init.slice(1, -1)).filter((x) => x.trim()), out = [];
+        for (const it of items) {
+            const e = parseTyped(it), t = e.ty, v = e.v;
+            if (t.k === 'int') { const size = t.bits <= 8 ? 1 : t.bits === 32 ? 4 : t.bits === 64 ? 8 : 2; let x = BigInt.asUintN(size * 8, v.k === 'int' ? v.v : 0n); for (let k = 0; k < size; k++) { out.push(Number(x & 0xffn)); x >>= 8n; } }
+            else if (t.k === 'float' || t.k === 'double') { const dv = new DataView(new ArrayBuffer(t.k === 'float' ? 4 : 8)); const x = v.k === 'float' ? v.v : 0; if (t.k === 'float') dv.setFloat32(0, x, true); else dv.setFloat64(0, x, true); out.push.apply(out, Array.from(new Uint8Array(dv.buffer))); }
+            else throw new Error('全域陣列的初始值只支援整數與浮點的一維陣列：' + it.trim().slice(0, 30));
+        }
+        return out;
+    }
     function parse(text) {
         const mod = { types: new Map(), globals: [], funcs: [], declares: [], triple: '' }; const errors = [];
         const lines = String(text).split(/\r?\n/); let f = null, blk = null;
@@ -100,7 +111,7 @@
                     let rest = m[2].replace(/\b(private|internal|external|common|linkonce_odr|weak|dso_local|unnamed_addr|local_unnamed_addr|hidden)\b/g, ' ').replace(/,\s*align\s+\d+/g, '').replace(/\s+/g, ' ').trim();
                     const isConst = /^constant\b/.test(rest); rest = rest.replace(/^(constant|global)\s+/, '');
                     const r = parseTypeAt(rest, 0); const init = rest.slice(r.end).trim(); let g = { name: m[1], ty: r.ty, isConst, bytes: null, line: n + 1, init: null, external: /\bexternal\b/.test(m[2]) };
-                    if ((m = /^c"(.*)"$/.exec(init))) g.bytes = decodeCString(m[1]); else if (init) g.init = parseValue(init, r.ty);
+                    if ((m = /^c"(.*)"$/.exec(init))) g.bytes = decodeCString(m[1]); else if (/^\[.*\]$/.test(init)) g.bytes = arrayInitBytes(init); else if (init) g.init = parseValue(init, r.ty);
                     mod.globals.push(g); continue;
                 }
                 if ((m = /^declare\s+(.*)$/.exec(raw))) { const h = parseHeader(m[1].replace(ATTRS, ' ')); mod.declares.push({ name: h.name, ret: h.ret, params: h.params.map((p) => p.ty), varargs: h.varargs, line: n + 1 }); continue; }

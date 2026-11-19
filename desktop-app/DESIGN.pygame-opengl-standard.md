@@ -39,7 +39,8 @@ Worker 的 Pyodide 裡真的 pygame-ce 用 SDL 的 emscripten 驅動，會去找
 - 橋接新增一個操作 **`gui.audio`**（不屬於哪個視窗；`_pyBridgeGui` 在查視窗之前就先處理）：`cmd` ＝ `load`（16 位元有號 PCM 的 base64＋rate＋channels，或整個聲音檔 `encoded` 交給瀏覽器解碼）、`unload`、`play`（`loops`、`volume`、`fade_ms`、`maxtime_ms`、`ch`、`music`）、`stop`、`volume`、`busy`、`pause`／`resume`、`channels`、`info`。頁面端 `AiChatAudioHost` 用 Web Audio 播：預設 8 個聲道（至多 32）、一個獨立的音樂聲道、同名聲音取代、限制 8 MB PCM／12 MB 檔案、64 個聲音、總計 64 MB。
 - 程式結束、Ctrl+C、`job_stop` 時，頁面收掉這支程式（session）播的聲音。瀏覽器的自動播放政策：沒有使用者操作過頁面時 `AudioContext` 可能是 suspended，`play` 會嘗試 resume 並回報 `suspended`。
 - Python：`fa_audio`（`load_pcm`／`load_file`／`play`／`stop`／`set_volume`／`busy`／`count`／`channels`…）；`pygame.mixer` 接在它上面。node：全域 `audio`（`load`／`loadFile`／`play`／`stop`／`busy`／`volume`／`master`）。
-- 限制：`mixer.music.pause／unpause` 暫停的是整個音訊情境（Web Audio 的來源不能個別暫停）；沒有 `set_pos`／`get_pos`；不做 3D 空間音效與串流（整個檔案先解碼進記憶體）；LLVM IR 的 SDL 音訊（`SDL_OpenAudioDevice`）還沒接。
+- 串流（SDL_QueueAudio 這類一直送 PCM 的來源）：`stream_open`／`stream_queue`／`stream_pause`／`stream_queued`／`stream_clear`／`stream_close`，依序接著排程在上一段結束的時間點。
+- 限制：`mixer.music.pause／unpause` 暫停的是整個音訊情境（Web Audio 的來源不能個別暫停）；沒有 `set_pos`／`get_pos`；不做 3D 空間音效與串流（整個檔案先解碼進記憶體）；LLVM IR 的 SDL 音訊已接（佇列模式，見 `examples/llc/README.md`）；callback 模式沒有。
 
 ## 驗證
 - 單元（對假橋接、假 WebGL2 後端）：`fa_pygame_test.py`（真 pygame-ce、SDL dummy）、`fa_opengl_test.py`（真 PyOpenGL）、`gui/gl3d_test.py`；沒裝 pip 套件時各自「略過」。
