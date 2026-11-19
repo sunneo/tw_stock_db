@@ -96,38 +96,6 @@
       if (!(name in cur.locs)) { cur.locs[name] = gl2.getUniformLocation(cur.prog, name); }
       return cur.locs[name];
     }
-    // extern：宿主給的來源（lookupExtern 的回傳；沒有就什麼都不畫）整張鋪上；先關深度與混合，畫完還原，並把程式還原成目前的程式
-    function extSetup() {
-      if (st.extProg !== undefined) { return st.extProg; }
-      st.extProg = null; st.exts = st.exts || {};
-      try {
-        var vs = gl2.createShader(gl2.VERTEX_SHADER), fs = gl2.createShader(gl2.FRAGMENT_SHADER), pr = gl2.createProgram();
-        gl2.shaderSource(vs, EXT_VS); gl2.compileShader(vs); gl2.shaderSource(fs, EXT_FS); gl2.compileShader(fs);
-        if (!gl2.getShaderParameter(vs, gl2.COMPILE_STATUS) || !gl2.getShaderParameter(fs, gl2.COMPILE_STATUS)) { throw new Error((gl2.getShaderInfoLog(vs) || '') + (gl2.getShaderInfoLog(fs) || '')); }
-        gl2.attachShader(pr, vs); gl2.attachShader(pr, fs); gl2.linkProgram(pr);
-        if (!gl2.getProgramParameter(pr, gl2.LINK_STATUS)) { throw new Error(gl2.getProgramInfoLog(pr) || 'link failed'); }
-        st.extProg = { prog: pr, tex: gl2.getUniformLocation(pr, 'tex') };
-      } catch (e) { if (onError) { onError('extern: ' + String((e && e.message) || e).slice(0, 300)); } }
-      return st.extProg;
-    }
-    function drawExtern(name) {
-      var src = lookupExtern ? lookupExtern(name) : null;
-      if (!src) { return; }
-      var ex = extSetup();
-      if (!ex) { return; }
-      var blendWas = gl2.isEnabled(gl2.BLEND), depthWas = gl2.isEnabled(gl2.DEPTH_TEST);
-      gl2.disable(gl2.BLEND); gl2.disable(gl2.DEPTH_TEST);
-      var t = st.exts[name] || (st.exts[name] = gl2.createTexture());
-      gl2.activeTexture(gl2.TEXTURE0); gl2.bindTexture(gl2.TEXTURE_2D, t);
-      gl2.pixelStorei(gl2.UNPACK_FLIP_Y_WEBGL, true); gl2.pixelStorei(gl2.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
-      gl2.texImage2D(gl2.TEXTURE_2D, 0, gl2.RGBA, gl2.RGBA, gl2.UNSIGNED_BYTE, src);
-      gl2.pixelStorei(gl2.UNPACK_FLIP_Y_WEBGL, false);
-      gl2.useProgram(ex.prog); gl2.uniform1i(ex.tex, 0);
-      gl2.drawArrays(gl2.TRIANGLES, 0, 3);
-      if (blendWas) { gl2.enable(gl2.BLEND); }
-      if (depthWas) { gl2.enable(gl2.DEPTH_TEST); }
-      if (cur && cur.prog) { gl2.useProgram(cur.prog); }
-    }
     cmds.forEach(function (c) {
       var op = c[0];
       if (op === 'clear') { gl2.clearColor(c[1], c[2], c[3], c[4]); gl2.clearDepth(1); gl2.clear(gl2.COLOR_BUFFER_BIT | gl2.DEPTH_BUFFER_BIT); }
@@ -160,7 +128,6 @@
         if (cur && cur.prog) { gl2.useProgram(cur.prog); }
       }
       else if (op === 'use') { cur = st.progs[c[1]]; if (cur && cur.prog) { gl2.useProgram(cur.prog); } else { cur = null; } }
-      else if (op === 'extern') { drawExtern(c[1]); }
       else if (!cur) { return; }   // the commands below need a working program; a failed one was reported at compile time
       else if (op === 'uf') {
         var l = loc(c[1]); if (l === null) { return; }

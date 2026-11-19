@@ -498,7 +498,7 @@ assert.strictEqual(violations.length, 0); ok();
   const node = { glbufs: {}, glprogs: {}, glframe: [['clear', 0, 0, 0, 1], ['extern', 'clpts']] };
   const errs = [], src = { fake: 'offscreen canvas' };
   R.paintGl(el, node, (m) => errs.push(m), (name) => (name === 'clpts' ? src : null));
-  assert.deepStrictEqual(errs, []); ok();
+  assert.deepStrictEqual(errs, [], 'errs: ' + JSON.stringify(errs)); ok();
   assert.ok(calls.indexOf('texImage2D') >= 0 && calls.lastIndexOf('drawArrays') > calls.indexOf('texImage2D')); ok();
   calls.length = 0; R.paintGl(el, node, (m) => errs.push(m), () => null);
   assert.ok(calls.indexOf('texImage2D') < 0 && calls.indexOf('drawArrays') < 0); ok();

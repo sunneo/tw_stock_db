@@ -390,9 +390,6 @@
       case 'draw':
         if (c.length < 4 || c.length > 5 || GL_MODES.indexOf(c[1]) < 0) { throw new Error(what + ' draw needs a mode (' + GL_MODES.join(', ') + '), first and count'); }
         return ['draw', c[1], Math.floor(f(2, 0, MAX_GL_COUNT)), Math.floor(f(3, 0, MAX_GL_COUNT)), c.length === 5 ? Math.floor(f(4, 1, 1e6)) : 1];
-      case 'extern':
-        if (c.length !== 2) { throw new Error(what + ' extern needs one source name'); }
-        return ['extern', id(c[1], what + '[1]')];
       default: throw new Error(what + ' command "' + c[0] + '" is not supported');
     }
   }
