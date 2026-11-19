@@ -1,6 +1,14 @@
 # HANDOFF：OpenCL 與 OpenGL 的標準互通（cl_khr_gl_sharing）與執行期優化（2026-11-20，交給其他遠端帳號）
 
-## 1. 開場提示（接手者收到的話）
+## 0. 狀態（2026-11-20 更新）：階段 A 到 F 已由遠端帳號做完並發布（v495）
+
+遠端提交 `1f7159093`、`e93631041`、`4dcabc790` 完成標準 GL 頂點緩衝區、`cl_khr_gl_sharing`、執行期優化、移除 `fa_cl_points`、標準互通範例 `examples/llc/gpgpu/interop_cl_gl.ll`、一致性套件 `examples/llc/conformance/`，並修了 WebGL2 輸入寬度與 sin/cos 精度。已確認：已發布的程式裡沒有 `fa_cl_points`，宿主有 `glGenBuffers`、`glDrawArrays`、`clCreateFromGLBuffer`、`clEnqueueAcquireGLObjects`、`clGetGLObjectInfo`。
+
+**尚未驗證（待真機）：** 沒有人在有 GPU 的機器上跑過這批：標準互通的像素與基準是否一致、執行期優化是否真的讀回為 0、一致性套件各後端對照、每幀毫秒。這些由管理者在有 GPU 的那台執行後補結果；結果出來前，不得把它們寫成已驗證。
+
+以下第 1 到 6 節保留作為歷史記錄與使用者原則，不再是待辦。
+
+## 1. 開場提示（接手者收到的話，歷史）
 
 讀完本文件（含使用者原話），接手第 3 節的階段 A 到 F，依序做、每階段通過節點測試就 commit（沒有 GPU，見 1.5）。不要寫評估文件；遇到歧義自決。發布（`scripts/publish.sh`）只有管理者做，你只提交。回報第一行寫 commit hash 與通過項數。
 
