@@ -98,7 +98,53 @@
         gtk_check_button_new_with_label: { params: ['ptr'], ret: 'ptr' }, gtk_toggle_button_get_active: { params: ['ptr'], ret: 'i32' }, gtk_toggle_button_set_active: { params: ['ptr', 'i32'], ret: 'void' },
         gtk_progress_bar_new: { params: [], ret: 'ptr' }, gtk_progress_bar_set_fraction: { params: ['ptr', 'double'], ret: 'void' },
         g_signal_connect_data: { params: ['ptr', 'ptr', 'ptr', 'ptr', 'ptr', 'i32'], ret: 'i32' }, g_timeout_add: { params: ['i32', 'ptr', 'ptr'], ret: 'i32' }, g_source_remove: { params: ['i32'], ret: 'i32' },
+        // OpenCL 1.2 最小子集（CPU 後備：核心用 JS 執行，見 clCompile）。size_t／cl_ulong 收 i32 或 i64（x86_64 風格的 IR 用 i64）
+        clGetPlatformIDs: { params: ['i32', 'ptr', 'ptr'], ret: 'i32' }, clGetDeviceIDs: { params: ['ptr', 'i32|i64', 'i32', 'ptr', 'ptr'], ret: 'i32' },
+        clGetPlatformInfo: { params: ['ptr', 'i32', 'i32|i64', 'ptr', 'ptr'], ret: 'i32' }, clGetDeviceInfo: { params: ['ptr', 'i32', 'i32|i64', 'ptr', 'ptr'], ret: 'i32' },
+        clCreateContext: { params: ['ptr', 'i32', 'ptr', 'ptr', 'ptr', 'ptr'], ret: 'ptr' }, clCreateCommandQueue: { params: ['ptr', 'ptr', 'i32|i64', 'ptr'], ret: 'ptr' },
+        clCreateCommandQueueWithProperties: { params: ['ptr', 'ptr', 'ptr', 'ptr'], ret: 'ptr' },
+        clCreateBuffer: { params: ['ptr', 'i32|i64', 'i32|i64', 'ptr', 'ptr'], ret: 'ptr' },
+        clEnqueueWriteBuffer: { params: ['ptr', 'ptr', 'i32', 'i32|i64', 'i32|i64', 'ptr', 'i32', 'ptr', 'ptr'], ret: 'i32' }, clEnqueueReadBuffer: { params: ['ptr', 'ptr', 'i32', 'i32|i64', 'i32|i64', 'ptr', 'i32', 'ptr', 'ptr'], ret: 'i32' },
+        clCreateProgramWithSource: { params: ['ptr', 'i32', 'ptr', 'ptr', 'ptr'], ret: 'ptr' }, clBuildProgram: { params: ['ptr', 'i32', 'ptr', 'ptr', 'ptr', 'ptr'], ret: 'i32' },
+        clGetProgramBuildInfo: { params: ['ptr', 'ptr', 'i32', 'i32|i64', 'ptr', 'ptr'], ret: 'i32' },
+        clCreateKernel: { params: ['ptr', 'ptr', 'ptr'], ret: 'ptr' }, clSetKernelArg: { params: ['ptr', 'i32', 'i32|i64', 'ptr'], ret: 'i32' },
+        clEnqueueNDRangeKernel: { params: ['ptr', 'ptr', 'i32', 'ptr', 'ptr', 'ptr', 'i32', 'ptr', 'ptr'], ret: 'i32' }, clFinish: { params: ['ptr'], ret: 'i32' }, clFlush: { params: ['ptr'], ret: 'i32' },
+        clWaitForEvents: { params: ['i32', 'ptr'], ret: 'i32' }, clReleaseEvent: { params: ['ptr'], ret: 'i32' },
+        clReleaseMemObject: { params: ['ptr'], ret: 'i32' }, clReleaseKernel: { params: ['ptr'], ret: 'i32' }, clReleaseProgram: { params: ['ptr'], ret: 'i32' },
+        clReleaseCommandQueue: { params: ['ptr'], ret: 'i32' }, clReleaseContext: { params: ['ptr'], ret: 'i32' },
     };
+
+    // ---- OpenCL C 子集 → JS（CPU 後備）。回傳 { kernels:{名字:{params:[{name,type,ptr}], run(gs,off,args)}} } 或 { error }
+    const CL_ELEM = { float: Float32Array, int: Int32Array, uint: Uint32Array, char: Int8Array, uchar: Uint8Array, short: Int16Array, ushort: Uint16Array, double: Float64Array };
+    const CL_SCALAR = { float: 'getFloat32', int: 'getInt32', uint: 'getUint32', char: 'getInt8', uchar: 'getUint8', short: 'getInt16', ushort: 'getUint16', double: 'getFloat64' };
+    const CL_TYPES = 'float|int|uint|uchar|char|short|ushort|double|size_t|bool';
+    function clCompile(src) {
+        let t = String(src).replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/\/\/[^\n]*/g, ' ').replace(/^\s*#pragma[^\n]*/gm, ' ');
+        const kernels = {}, re = /(?:__kernel|\bkernel)\s+void\s+(\w+)\s*\(([^)]*)\)\s*\{/g; let m, rest = '', last = 0;
+        while ((m = re.exec(t))) {
+            let d = 1, i = re.lastIndex; while (i < t.length && d) { if (t[i] === '{') d++; else if (t[i] === '}') d--; i++; }
+            if (d) return { error: 'kernel ' + m[1] + '：大括號不成對' };
+            rest += t.slice(last, m.index); last = re.lastIndex = i; let body = t.slice(m.index + m[0].length, i - 1);
+            if (/\b(__local|local|barrier|mem_fence|struct|image\w*|atomic_\w+|__private)\b|\b(float|int|uint|char|uchar|short|ushort|double)(2|3|4|8|16)\b/.test(body + ' ' + m[2])) return { error: 'kernel ' + m[1] + '：用到本墊片沒有的功能（__local／barrier／向量型別／struct／image／atomic）' };
+            const params = []; const ints = new Set();
+            for (const raw of m[2].split(',').map((x) => x.trim()).filter(Boolean)) {
+                const q = raw.replace(/\b(__global|global|__constant|constant|const|restrict|__restrict|volatile)\b/g, ' ').replace(/\s+/g, ' ').trim(), pm = /^(\w+)\s*(\*)?\s*(\w+)$/.exec(q.replace(/\*\s*/g, '* ').replace(/(\w)\*/g, '$1 *'));
+                if (!pm || !CL_ELEM[pm[1]]) return { error: 'kernel ' + m[1] + '：不支援的參數 "' + raw + '"（支援 float／int／uint／char／uchar／short／ushort／double 與其指標）' };
+                params.push({ name: pm[3], type: pm[1], ptr: !!pm[2] }); if (!pm[2] && /^(int|uint|short|ushort|char|uchar)$/.test(pm[1])) ints.add(pm[3]);
+            }
+            body = body.replace(/\b(__global|global|__constant|constant|const|restrict|__restrict)\b/g, ' ').replace(/(\d(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?[fF]\b/g, (x) => x.slice(0, -1));
+            body = body.replace(new RegExp('\\b(' + CL_TYPES + ')\\s+(?=[A-Za-z_])', 'g'), (x, ty, off) => { const dm = /^\s*(\w+)/.exec(body.slice(off + x.length)); if (dm && /^(int|uint|short|ushort|char|uchar|size_t|bool)$/.test(ty)) ints.add(dm[1]); return 'let '; });
+            body = body.replace(/\((?:float|double)\)/g, '').replace(/\((int|uint|short|ushort|char|uchar|size_t)\)\s*(\w+(?:\[[^\]]*\])?|\([^()]*\))/g, 'Math.trunc($2)');
+            const isInt = (x) => /^\d+$/.test(x) || ints.has(x) || /^get_(global|local|group)_id\(\d\)$/.test(x);
+            body = body.replace(/(get_\w+\(\d\)|\w+)\s*\/\s*(get_\w+\(\d\)|\w+)(?!\s*=)/g, (x, a, b) => (isInt(a) && isInt(b) ? '((' + a + '/' + b + ')|0)' : x));
+            const names = params.map((p) => p.name), code = 'let [' + names.join(',') + ']=__a;const __g=[0,0,0];const get_global_id=(d)=>__g[d],get_group_id=(d)=>__g[d],get_global_size=(d)=>__gs[d],get_num_groups=(d)=>__gs[d],get_local_id=()=>0,get_local_size=()=>1,get_work_dim=()=>__dim,get_global_offset=(d)=>__off[d],sqrt=Math.sqrt,native_sqrt=Math.sqrt,rsqrt=(x)=>1/Math.sqrt(x),fabs=Math.abs,abs=Math.abs,sin=Math.sin,cos=Math.cos,tan=Math.tan,exp=Math.exp,log=Math.log,pow=Math.pow,floor=Math.floor,ceil=Math.ceil,fmin=Math.min,fmax=Math.max,min=Math.min,max=Math.max,atan2=Math.atan2,hypot=Math.hypot,fmod=(a,b)=>a%b,mad=(a,b,c)=>a*b+c,fma=(a,b,c)=>a*b+c,clamp=(x,a,b)=>Math.min(Math.max(x,a),b),M_PI=Math.PI,M_PI_F=Math.PI;const __k=()=>{' + body + '\n};for(let z=0;z<__gs[2];z++){__g[2]=__off[2]+z;for(let y=0;y<__gs[1];y++){__g[1]=__off[1]+y;for(let x=0;x<__gs[0];x++){__g[0]=__off[0]+x;__k();}}}';
+            let fn; try { fn = new Function('__gs', '__off', '__dim', '__a', code); } catch (e) { return { error: 'kernel ' + m[1] + '：翻譯後語法錯誤（' + e.message + '）；本墊片只支援簡單的 OpenCL C 子集' }; }
+            kernels[m[1]] = { params, run: fn };
+        }
+        rest += t.slice(last); if (rest.replace(/\s+/g, '')) return { error: '除了 __kernel 函式之外還有程式碼（輔助函式、全域變數、巨集）——本墊片不支援：' + rest.trim().slice(0, 60) };
+        if (!Object.keys(kernels).length) return { error: '原始碼裡沒有 __kernel void 函式' };
+        return { kernels };
+    }
 
     // ---- 小工具
     const css = (r, g, b) => '#' + [r, g, b].map((x) => ('0' + (x & 255).toString(16)).slice(-2)).join('');
@@ -480,7 +526,58 @@
             await gui('glframe', { id: w.id, node: w.nid, cmds });
             gl.batches = [];
         }
+        // ---- OpenCL（CPU 後備）：平台／裝置各一個；buffer 是 JS 端的 Uint8Array（寫入、讀回時跟 wasm 記憶體互相複製，跟真裝置一樣）；核心在 clEnqueueNDRangeKernel 當下同步執行（in-order queue，clFinish 不用等）
+        {
+            const cl = { plat: mk({ kind: 'clplat' }), dev: mk({ kind: 'cldev' }) }, errOut = (ctx, p, v) => { if (p) ctx.dv().setInt32(p, v, true); };
+            const clH = (p, k) => { const h = handles.get(p); return h && h.kind === k ? h : null; };
+            const setStr = (ctx, str, size, p, retp) => { const b = new TextEncoder().encode(str + '\0'); if (retp) ctx.dv().setUint32(retp, b.length, true); if (p) ctx.u8().set(b.subarray(0, Math.min(b.length, Number(size) || b.length)), p); return 0; };
+            const copyOut = (ctx, buf, off, n, p) => { ctx.u8().set(buf.data.subarray(off, off + n), p); };
+            Object.assign(impls, {
+                clGetPlatformIDs: (ctx, n, p, num) => { if (!n && p) return -30; if (p && n) ctx.dv().setUint32(p, cl.plat, true); if (num) ctx.dv().setUint32(num, 1, true); return 0; },
+                clGetDeviceIDs: (ctx, plat, type, n, p, num) => { if (plat !== cl.plat) return -32; type = Number(type); if (!(type & (2 | 4 | 1 | 0xFFFFFFFF))) return -31; if (type === 4 && !(type & 2)) return -1;   // 沒有 GPU 裝置（CPU 後備只有一個 CPU 裝置）：呼叫端通常會退回 CPU
+                    if (p && n) ctx.dv().setUint32(p, cl.dev, true); if (num) ctx.dv().setUint32(num, 1, true); return 0; },
+                clGetPlatformInfo: (ctx, p, name, size, v, ret) => { if (p !== cl.plat) return -32; const S = { 0x902: 'FULL_PROFILE', 0x903: 'OpenCL 1.2 FaLlvmHost-CPU', 0x904: 'FaLlvmHost CPU emulation', 0x905: 'fa', 0x0900: 'x' }; return setStr(ctx, S[name] || 'FaLlvmHost CPU emulation', size, v, ret); },
+                clGetDeviceInfo: (ctx, d, name, size, v, ret) => { if (d !== cl.dev) return -33; if (name === 0x1000) { if (v) ctx.dv().setBigUint64(v, 2n, true); if (ret) ctx.dv().setUint32(ret, 8, true); return 0; }   // CL_DEVICE_TYPE＝CPU
+                    if (name === 0x1004 || name === 0x1002 || name === 0x1003) { if (v) ctx.dv().setBigUint64(v, name === 0x1004 ? 1n : 1n, true); if (ret) ctx.dv().setUint32(ret, 8, true); return 0; }   // MAX_WORK_GROUP_SIZE／MAX_COMPUTE_UNITS／MAX_WORK_ITEM_DIMENSIONS 都回 1（本墊片的工作群組大小固定 1）
+                    return setStr(ctx, name === 0x102B ? 'FaLlvmHost CPU (JS)' : 'FaLlvmHost', size, v, ret); },
+                clCreateContext: (ctx, props, n, devs, cb, ud, err) => { errOut(ctx, err, 0); return mk({ kind: 'clctx' }); },
+                clCreateCommandQueue: (ctx, c, d, props, err) => { if (!clH(c, 'clctx')) { errOut(ctx, err, -34); return 0; } errOut(ctx, err, 0); return mk({ kind: 'clq' }); },
+                clCreateCommandQueueWithProperties: (ctx, c, d, props, err) => { if (!clH(c, 'clctx')) { errOut(ctx, err, -34); return 0; } errOut(ctx, err, 0); return mk({ kind: 'clq' }); },
+                clCreateBuffer: (ctx, c, flags, size, host, err) => {
+                    flags = Number(flags); size = Number(size); if (!clH(c, 'clctx')) { errOut(ctx, err, -34); return 0; } if (!size) { errOut(ctx, err, -61); return 0; }
+                    if ((flags & (8 | 32)) && !host) { errOut(ctx, err, -37); return 0; } const data = new Uint8Array(new ArrayBuffer(size));
+                    if (flags & (8 | 32)) data.set(ctx.u8().subarray(host, host + size)); errOut(ctx, err, 0); return mk({ kind: 'clmem', size, data });
+                },
+                clEnqueueWriteBuffer: (ctx, q, b, blocking, off, size, ptr) => { const buf = clH(b, 'clmem'); off = Number(off); size = Number(size); if (!clH(q, 'clq')) return -36; if (!buf) return -38; if (off + size > buf.size || !ptr) return -30; buf.data.set(ctx.u8().subarray(ptr, ptr + size), off); return 0; },
+                clEnqueueReadBuffer: (ctx, q, b, blocking, off, size, ptr) => { const buf = clH(b, 'clmem'); off = Number(off); size = Number(size); if (!clH(q, 'clq')) return -36; if (!buf) return -38; if (off + size > buf.size || !ptr) return -30; copyOut(ctx, buf, off, size, ptr); return 0; },
+                clCreateProgramWithSource: (ctx, c, count, strs, lens, err) => {
+                    if (!clH(c, 'clctx')) { errOut(ctx, err, -34); return 0; } const dv = ctx.dv(); let src = '';
+                    for (let i = 0; i < count; i++) { const sp = dv.getUint32(strs + 4 * i, true); src += cstr(ctx, sp); }
+                    errOut(ctx, err, 0); return mk({ kind: 'clprog', src, built: null, log: '' });
+                },
+                clBuildProgram: (ctx, p) => { const pr = clH(p, 'clprog'); if (!pr) return -44; const r = clCompile(pr.src); if (r.error) { pr.log = r.error; pr.built = null; warn('OpenCL 建置失敗：' + r.error + '\n'); return -11; } pr.built = r.kernels; pr.log = ''; return 0; },
+                clGetProgramBuildInfo: (ctx, p, d, name, size, v, ret) => { const pr = clH(p, 'clprog'); if (!pr) return -44; if (name === 0x1181) { if (v) ctx.dv().setInt32(v, pr.built ? 0 : -2, true); if (ret) ctx.dv().setUint32(ret, 4, true); return 0; } return setStr(ctx, pr.log, size, v, ret); },
+                clCreateKernel: (ctx, p, name, err) => { const pr = clH(p, 'clprog'); if (!pr) { errOut(ctx, err, -44); return 0; } if (!pr.built) { errOut(ctx, err, -45); return 0; } const n = cstr(ctx, name), k = pr.built[n]; if (!k) { errOut(ctx, err, -46); return 0; } errOut(ctx, err, 0); return mk({ kind: 'clkernel', name: n, def: k, args: new Array(k.params.length).fill(undefined) }); },
+                clSetKernelArg: (ctx, kp, idx, size, ptr) => {
+                    const k = clH(kp, 'clkernel'); if (!k) return -48; if (idx >= k.def.params.length) return -49; const pa = k.def.params[idx]; size = Number(size);
+                    if (pa.ptr) { if (!ptr) return -50; const h = ctx.dv().getUint32(ptr, true), buf = clH(h, 'clmem'); if (!buf) return -38; k.args[idx] = { mem: buf }; return 0; }
+                    const w = CL_ELEM[pa.type].BYTES_PER_ELEMENT; if (size !== w || !ptr) return -51; k.args[idx] = { scalar: new DataView(ctx.mem().buffer.slice(ptr, ptr + w))[CL_SCALAR[pa.type]](0, true) }; return 0;
+                },
+                clEnqueueNDRangeKernel: (ctx, q, kp, dim, offp, gsp, lsp) => {
+                    const k = clH(kp, 'clkernel'); if (!clH(q, 'clq')) return -36; if (!k) return -48; if (dim < 1 || dim > 3) return -53; if (!gsp) return -63;
+                    const dv = ctx.dv(), gs = [1, 1, 1], off = [0, 0, 0]; for (let d = 0; d < dim; d++) { gs[d] = Number(dv.getBigUint64(gsp + 8 * d, true)); if (offp) off[d] = Number(dv.getBigUint64(offp + 8 * d, true)); }
+                    if (lsp) for (let d = 0; d < dim; d++) { const l = Number(dv.getBigUint64(lsp + 8 * d, true)); if (l && gs[d] % l) return -54; }
+                    if (k.args.some((a) => a === undefined)) return -52; const args = k.def.params.map((pa, i) => { const a = k.args[i]; if (a.mem) { const E = CL_ELEM[pa.type]; return new E(a.mem.data.buffer, 0, Math.floor(a.mem.size / E.BYTES_PER_ELEMENT)); } return a.scalar; });
+                    try { k.def.run(gs, off, dim, args); } catch (e) { warn('OpenCL 核心執行錯誤：' + e.message + '\n'); return -9999; } return 0;
+                },
+                clFinish: (ctx, q) => (clH(q, 'clq') ? 0 : -36), clFlush: (ctx, q) => (clH(q, 'clq') ? 0 : -36), clWaitForEvents: () => 0, clReleaseEvent: () => 0,
+                clReleaseMemObject: (ctx, p) => { if (!clH(p, 'clmem')) return -38; handles.delete(p); return 0; }, clReleaseKernel: (ctx, p) => { if (!clH(p, 'clkernel')) return -48; handles.delete(p); return 0; },
+                clReleaseProgram: (ctx, p) => { if (!clH(p, 'clprog')) return -44; handles.delete(p); return 0; }, clReleaseCommandQueue: (ctx, p) => { if (!clH(p, 'clq')) return -36; handles.delete(p); return 0; },
+                clReleaseContext: (ctx, p) => { if (!clH(p, 'clctx')) return -34; handles.delete(p); return 0; },
+            });
+        }
+
         return { impls, SIGS, toS16, install(FaLlvm) { installs++; FaLlvm.registerHost(SIGS); }, uninstall(FaLlvm) { if (--installs <= 0) { installs = 0; FaLlvm.unregisterHost(Object.keys(SIGS)); } }, close() { closeAllFiles(); handles.clear(); Array.from(audioDevs.values()).forEach((d) => { gui('audio', { cmd: 'stream_close', id: d.id }); }); audioDevs.clear(); } };
     }
-    return { create, SIGS, formatC, scancodeOf, keycodeOf };
+    return { create, SIGS, clCompile, formatC, scancodeOf, keycodeOf };
 });

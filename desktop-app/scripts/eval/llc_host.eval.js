@@ -64,9 +64,12 @@ for (const [name, file, args, expect] of [['nbody3d', 'gpgpu/nbody3d.ll', ['3072
 r = await tool('job_run', { lang: 'shell', code: 'ls examples/llc/gui; lli examples/llc/gui/midi_player.ll examples/llc/gui/demo.mid 100', timeout_s: 120 });
 R.more.midi_player_file = { exit: r.exit_code, out: (r.output || '').trim().slice(-120), ok: /notes=45 tempos=1 div=480 seconds=30/.test(r.output || '') };
 r = await tool('job_run', { lang: 'shell', code: 'lli examples/llc/gui/midi_player.ll nope.mid 5', timeout_s: 60 }); R.more.midi_player_missing = { out: (r.output || '').trim().slice(-60), ok: /cannot open nope\.mid/.test(r.output || '') };
+// 4e. OpenCL（CPU 後備墊片）：opencl_vecadd.ll 在 job 裡跑；輸出是真的計算結果（c[999]＝3×999）
+r = await tool('job_run', { lang: 'llvm', code: ex('gpgpu/opencl_vecadd.ll'), args: ['1000'], timeout_s: 60 });
+R.opencl = { exit: r.exit_code, out: (r.output || '').trim().slice(-120), ok: r.exit_code === 0 && /^vadd OK, n=1000 c=2997\.000000$/m.test((r.output || '').trim()) };
 // 5. 錯誤路徑：宣告了主機函式但簽名不對、用了沒有實作的函式
 r = await tool('job_run', { lang: 'llvm', code: 'declare i32 @SDL_Init(i64)\ndeclare void @SDL_NoSuchThing()\ndefine i32 @main() {\n  call i32 @SDL_Init(i64 1)\n  ret i32 0\n}\n' });
 R.errors = { exit: r.exit_code, out: (r.output || '').slice(0, 300) };
-R.ok = R.seeded && R.host_api && R.pong.windows === 1 && !!R.pong.canvas && R.pong.done.exit === 0 && /frames=150/.test(R.pong.done.out) && R.gtk_auto.exit === 0 && /count=3/.test(R.gtk_auto.out) && /Pressed 2 times, entry: hello/.test(R.gtk.label1 || '') && R.gtk.stopped && R.gl.canvas && R.gl.done.exit === 0 && R.errors.exit !== 0 && R.audio.canvas && R.audio.streams_mid === 1 && R.audio.done.exit === 0 && /notes=\d+ queued=\d+ ok/.test(R.audio.done.out) && R.audio.streams_after === 0 && /callback/.test(R.audio.callback_mode.out) && /dev=0/.test(R.audio.callback_mode.out) && Object.values(R.more).every((e) => e.ok);
+R.ok = R.seeded && R.host_api && R.pong.windows === 1 && !!R.pong.canvas && R.pong.done.exit === 0 && /frames=150/.test(R.pong.done.out) && R.gtk_auto.exit === 0 && /count=3/.test(R.gtk_auto.out) && /Pressed 2 times, entry: hello/.test(R.gtk.label1 || '') && R.gtk.stopped && R.gl.canvas && R.gl.done.exit === 0 && R.errors.exit !== 0 && R.opencl.ok && R.audio.canvas && R.audio.streams_mid === 1 && R.audio.done.exit === 0 && /notes=\d+ queued=\d+ ok/.test(R.audio.done.out) && R.audio.streams_after === 0 && /callback/.test(R.audio.callback_mode.out) && /dev=0/.test(R.audio.callback_mode.out) && Object.values(R.more).every((e) => e.ok);
 console.log('LLC_RESULT ' + JSON.stringify(R));
 return R;

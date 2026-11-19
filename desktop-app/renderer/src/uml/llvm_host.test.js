@@ -141,6 +141,15 @@ define i32 @main() {
   check('U8 → S16（128＝0）', Array.from(new Int16Array(host.toS16(new Uint8Array([128, 255, 0]), 0x0008).buffer)).join() === '0,32512,-32768');
   check('U16 → S16', Array.from(new Int16Array(host.toS16(new Uint8Array(new Uint16Array([32768, 65535, 0]).buffer), 0x0010).buffer)).join() === '0,32767,-32768');
   check('S16 原樣', Array.from(host.toS16(new Uint8Array([1, 2, 3, 4]), 0x8010)).join() === '1,2,3,4');
+  // OpenCL 墊片（CPU 後備）：opencl_vecadd.ll 真的跑——核心字串在執行時翻成 JS，buffer／NDRange／讀回
+  { const ir = fs.readFileSync(path.join(__dirname, '../examples/llc/gpgpu/opencl_vecadd.ll'), 'utf8'); const c = L.compileIr(ir, {}); check('opencl_vecadd.ll 編得出來', !!c.wasm, c.errors);
+    if (c.wasm) { const dec = {}; for (const d of L.parse(ir).mod.declares) dec[d.name] = d; const o2 = await L.runHost(c.wasm, { args: ['prog', '1000'] }, host.impls, undefined, dec);
+      check('opencl_vecadd.ll 真輸出：n=1000 c[999]=2997', o2.stdout === 'vadd OK, n=1000 c=2997.000000\n' && o2.exitCode === 0, o2);
+      const o3 = await L.runHost(c.wasm, { args: ['prog'] }, host.impls, undefined, dec); check('opencl_vecadd.ll 預設 n=1048576', /^vadd OK, n=1048576 c=3145725\.000000\n$/.test(o3.stdout) && o3.exitCode === 0, o3); } }
+  { const k = H.clCompile('__kernel void f(__global const float*a,__global float*c,int n,float s){int i=get_global_id(0);if(i>=n)return;float t=0.0f;for(int j=0;j<3;j++)t+=a[i]*s;c[i]=sqrt(t)+(float)(n/2)+fabs(-1.0f)+(i%2);}');
+    check('clCompile：多語句核心（for、return、型別轉換、整數除法）', !!k.kernels && !!k.kernels.f, k);
+    if (k.kernels) { const a = new Float32Array([1, 4, 9]), cc = new Float32Array(3); k.kernels.f.run([3, 1, 1], [0, 0, 0], 1, [a, cc, 3, 3]); check('clCompile 執行結果（t＝9a，sqrt(9a)+1+1+(i%2)：5, 9, 11）', Array.from(cc).join() === '5,9,11', Array.from(cc)); } }
+  for (const [why, src, re] of [['__local', '__kernel void f(__global float*a){__local float t[4];a[0]=1;}', /__local/], ['向量型別', '__kernel void f(__global float4*a){a[0]=a[0];}', /不支援的參數|沒有的功能/], ['輔助函式', 'float h(float x){return x;}\n__kernel void f(__global float*a){a[0]=h(1.0f);}', /輔助函式/], ['沒有核心', 'int x;', /除了 __kernel/]]) { const k = H.clCompile(src); check('clCompile 拒絕 ' + why + ' 並說明原因', !!k.error && re.test(k.error), k); }
   // 登記是暫時的：uninstall 之後 printf 又是「沒有實作」
   host.uninstall(L); r = L.compileIr('declare i32 @printf(ptr, ...)\ndefine i32 @main() {\n  call i32 (ptr, ...) @printf(ptr null)\n  ret i32 0\n}\n', {});
   check('uninstall 後取消登記', r.stage === 'check' && !L.HOST.printf, r.errors);

@@ -1,7 +1,8 @@
 ; OpenCL 向量相加（GPGPU）：c[i] = a[i] + b[i]，N 個 float（預設 1048576，可由第一個參數指定），用 OpenCL C 核心字串在執行時編譯。
 ; 流程：平台 → 裝置（GPU 優先、沒有就 CPU）→ context → queue → program（編譯核心）→ kernel → buffer → 執行 → 讀回 → 驗證。
-; 這台開發機沒有 OpenCL 廠商驅動，所以這個範例只驗證到「IR 能編譯、能連結 libOpenCL」，沒有真的跑過；
-; 模擬環境的 OpenCL 層（接 cudaweb）完成後才會在 run terminal 內跑。建置：見 ../README.md。
+; 在 run terminal／job 的模擬環境：OpenCL 由 renderer/src/uml/llvm_host.js 的 CPU 後備提供（核心字串用 JS 執行，不需要 GPU 或驅動）。
+; 真機器（有 OpenCL 驅動）：clang／lli 照常連結 libOpenCL，同一份 IR 直接跑。建置：見 ../README.md。
+; 注意：本墊片的核心只支援簡單子集（見 DESIGN.run-terminal.md §21）；這個範例的核心（get_global_id＋算術＋if）在子集內。
 target triple = "x86_64-pc-linux-gnu"
 
 @src = private constant [136 x i8] c"__kernel void vadd(__global const float*a,__global const float*b,__global float*c,int n){int i=get_global_id(0);if(i<n)c[i]=a[i]+b[i];}\00"
@@ -23,7 +24,7 @@ declare i32 @clSetKernelArg(ptr, i32, i64, ptr)
 declare i32 @clEnqueueNDRangeKernel(ptr, ptr, i32, ptr, ptr, ptr, i32, ptr, ptr)
 declare i32 @clEnqueueReadBuffer(ptr, ptr, i32, i64, i64, ptr, i32, ptr, ptr)
 declare i32 @clFinish(ptr)
-declare ptr @malloc(i64)
+declare ptr @malloc(i32)
 declare i32 @atoi(ptr)
 declare i32 @printf(ptr, ...)
 
@@ -45,6 +46,8 @@ entry:
   %da = alloca ptr
   %db = alloca ptr
   %dc = alloca ptr
+  %iv = alloca i32
+  %jv = alloca i32
   store i32 1048576, ptr %n
   %many = icmp sgt i32 %argc, 1
   br i1 %many, label %getn, label %platform
@@ -90,12 +93,14 @@ kern:
   %nn = load i32, ptr %n
   %n64 = sext i32 %nn to i64
   %bytes = mul i64 %n64, 4
-  %ha = call ptr @malloc(i64 %bytes)
-  %hb = call ptr @malloc(i64 %bytes)
-  %hc = call ptr @malloc(i64 %bytes)
+  %b32 = trunc i64 %bytes to i32
+  %ha = call ptr @malloc(i32 %b32)
+  %hb = call ptr @malloc(i32 %b32)
+  %hc = call ptr @malloc(i32 %b32)
+  store i32 0, ptr %iv
   br label %fill
 fill:
-  %i = phi i32 [ 0, %kern ], [ %i1, %fillbody ]
+  %i = load i32, ptr %iv
   %more = icmp slt i32 %i, %nn
   br i1 %more, label %fillbody, label %bufs
 fillbody:
@@ -106,6 +111,7 @@ fillbody:
   %fb = fmul float %fi, 0x4000000000000000
   store float %fb, ptr %pb
   %i1 = add i32 %i, 1
+  store i32 %i1, ptr %iv
   br label %fill
 bufs:
   %ba = call ptr @clCreateBuffer(ptr %c, i64 36, i64 %bytes, ptr %ha, ptr %rc)    ; READ_ONLY|COPY_HOST_PTR
@@ -128,9 +134,10 @@ f4:
 readback:
   %r5 = call i32 @clEnqueueReadBuffer(ptr %q, ptr %bc, i32 1, i64 0, i64 %bytes, ptr %hc, i32 0, ptr null, ptr null)
   call i32 @clFinish(ptr %q)
+  store i32 0, ptr %jv
   br label %check
 check:
-  %j = phi i32 [ 0, %readback ], [ %j1, %checkbody ]
+  %j = load i32, ptr %jv
   %jm = icmp slt i32 %j, %nn
   br i1 %jm, label %checkbody, label %good
 checkbody:
@@ -140,6 +147,7 @@ checkbody:
   %want = fmul float %fj, 0x4008000000000000
   %same = fcmp oeq float %got, %want
   %j1 = add i32 %j, 1
+  store i32 %j1, ptr %jv
   br i1 %same, label %check, label %mismatch
 mismatch:
   %gd = fpext float %got to double

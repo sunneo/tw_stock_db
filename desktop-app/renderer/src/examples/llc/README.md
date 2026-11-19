@@ -28,7 +28,7 @@ IR 裡 `declare` 了 SDL2／OpenGL／GTK3／printf 的函式、又沒有自己�
 | `gpgpu/fluid3d.ll` | 照 Python 版（fluid3d.py）：1000 顆 SPH（H=0.1、ρ0=1000、K=200、μ=3、dt=0.003、反射牆），依速度上色的球形點精靈＋外框＋資訊列；拖曳旋轉、滾輪縮放、空白＝晃一下、P 暫停、R 重置 | `glPointSize`、`gluPerspective`、`glOrtho`；**計算在 wasm 的 CPU 上**（GPU 要等 OpenCL 墊片） |
 | `gui/music_player.ll` | 音樂盒：內建〈歡樂頌〉即時合成（方波／三角／正弦），兩個八度的琴鍵與進度；空白暫停、↑↓速度、1 2 3 波形、R 從頭 | `SDL_QueueAudio` 佇列模式；`pow／floor／sin`；合成的音高用 FFT 驗證（E4 量到 330.8 Hz） |
 | `gui/midi_player.ll` | MIDI 播放器：在 IR 裡解析標準 MIDI（SMF 0／1、變長時間、running status、tempo 表），12 聲部正弦合成，捲動的 piano roll | **檔案**：`lli gui/midi_player.ll gui/demo.mid`（用 `fopen／fread` 讀終端機沙盒，`/mnt/<名稱>` 也行）；參數 `-` 或不給＝內嵌示範曲；第二個參數＝跑幾幀後離開 |
-| `gpgpu/opencl_vecadd.ll` | OpenCL：執行時編譯核心字串、buffer、NDRange | 沒有 OpenCL 層——只能在有驅動的真機器上跑（下一步：接 cudaweb） |
+| `gpgpu/opencl_vecadd.ll` | OpenCL：執行時編譯核心字串、buffer、NDRange、讀回驗證 | **CPU 後備**（`llvm_host.js` 的 OpenCL 墊片）：run terminal／job 內可跑，`lli opencl_vecadd.ll [N]` 印 `vadd OK`；真機器有驅動時同一份 IR 也能跑。限制見 `DESIGN.run-terminal.md` §21 |
 
 ## ② 在真機器上編成原生執行檔
 

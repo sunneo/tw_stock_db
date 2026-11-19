@@ -1627,7 +1627,7 @@ sleep/curl/date/ask-floating-ai-assistant各自踩過的坑。
 - `job_gui` 回傳的節點清單（id、kind、文字、值）就是 AI 要點的目標；screenshot 存成 job 沙盒的 `/work/shot-<視窗>.png`。
 - `py_async.js`：行首 `import fa_swap` 也走 Worker 路徑（`fa_swap` 轉接層只在 Worker 提供；同時修了 `import numpy as np, gui` 這種帶 as 的多重 import 沒被辨認）。
 
-**限制**：程式結束時它自己開的視窗會被收掉（既有的 `_terminalGuiScope`），所以要看最後畫面請 `detach` 後在程式還跑時截圖；SDL2／OpenGL／GTK3／OpenCL 的 `.ll` 不能在 job 裡跑（沙盒 wasm 只有 WASI，見 `examples/llc/README.md`，下一步做 host import）；job 與 terminal 的 session 互相看不到（job 不在 `terminal_list`）。
+**限制**：程式結束時它自己開的視窗會被收掉（既有的 `_terminalGuiScope`），所以要看最後畫面請 `detach` 後在程式還跑時截圖；（OpenCL 已由 CPU 後備墊片支援，見 §21；SDL2／OpenGL／GTK3 的 `.ll` 也由 host import 支援，見 §21）；job 與 terminal 的 session 互相看不到（job 不在 `terminal_list`）。
 
 **驗證**：`scripts/eval/job_layer.eval.js`（真 Electron）：node／shell／swap 落到 IndexedDB（8 MB）且程式結束後清空、貪食蛇視窗快照→注入方向鍵→截圖→`job_stop`（結束碼 130）、python＋numpy＋`fa_swap`（後端 indexeddb）全過；單元：`gui_host.test.js`（inject／windows）、`py_async.test.js`。
 
@@ -1640,8 +1640,18 @@ sleep/curl/date/ask-floating-ai-assistant各自踩過的坑。
 - 接線：`lli` 加進 `TERMINAL_COMPOUND_INTERCEPT_NAMES` 與 `TERMINAL_VIRTUAL_SCRIPT_COMMANDS`；`_terminalTryLliHost` 在 IR 用到主機函式時走非同步路徑（登記只在程式執行期間，用計數保護，結束就取消，不影響別的 IR 工具），不適用就退回原本的同步 `lli`（wasi-sh host builtin）。結束碼、Ctrl+C、逾時、視窗收尾跟 python／node 一致；job_run 的 `lang: 'llvm'` 直接可用。`job_gui` 新增 `change`（勾選框）、`wheel`。
 - 同時：`pygame.locals`（`from pygame.locals import *` 的慣用寫法，墊片是單一檔案，改成登記在 `sys.modules` 的模組）。
 
-**限制**：沒有 `phi`（用 alloca）；一幀 SDL 最多 200 道繪圖指令；GL 沒有光照、紋理、著色器；沒有音訊與影片；`gtk_main` 在所有視窗關閉後會結束（真 GTK 會一直等）；沙盒沒有 OpenCL（`opencl_vecadd.ll` 只能在真機器跑）；需要 JSPI（Chrome／Edge 137 以上、桌面版）。
+**限制**：沒有 `phi`（用 alloca）；一幀 SDL 最多 200 道繪圖指令；GL 沒有光照、紋理、著色器；沒有音訊與影片；`gtk_main` 在所有視窗關閉後會結束（真 GTK 會一直等）；OpenCL 只有 CPU 後備（見 §21 的限制）；需要 JSPI（Chrome／Edge 137 以上、桌面版）。
 **驗證**：`llvm_host.test.js`（12 項，node）、`llvm_core.test.js`（103 項沒壞）；真 Electron：`scripts/eval/llc_host.eval.js`（pong、GTK 自動／互動、GL、錯誤路徑，全過）。
+
+**OpenCL 墊片（2026-11-19，CPU 後備）**：`llvm_host.js` 的 `SIGS` 加上 OpenCL 1.2 最小子集的 host import（`clGetPlatformIDs／clGetPlatformInfo／clGetDeviceIDs／clGetDeviceInfo／clCreateContext／clCreateCommandQueue(WithProperties)／clCreateBuffer／clEnqueueWriteBuffer／clEnqueueReadBuffer／clCreateProgramWithSource／clBuildProgram／clGetProgramBuildInfo／clCreateKernel／clSetKernelArg／clEnqueueNDRangeKernel／clFinish／clFlush／clWaitForEvents／clRelease*`）。**後端選 CPU 後備**，理由：沙盒（wasm＋WASI）沒有 GPU 也沒有 OpenCL 驅動，而 WebGPU／cudaweb 要另外的裝置與權限，不能保證 run terminal 內一定有；CPU 後備在任何環境都能跑，結果可以比對。
+- 平台：一個；裝置：一個 CPU（`CL_DEVICE_TYPE_GPU` 查詢回 `CL_DEVICE_NOT_FOUND`，呼叫端退回 CPU 就會拿到它）。
+- buffer 是 JS 端的 `Uint8Array`，寫入、讀回時跟 wasm 記憶體複製（和真裝置的行為一樣）；`CL_MEM_USE_HOST_PTR` 與 `CL_MEM_COPY_HOST_PTR` 都當成「把主機資料複製進 buffer」（不會同步回主機記憶體，這是限制）。
+- 核心：`clBuildProgram` 把 OpenCL C 子集翻成 JS 函式（`clCompile`，`new Function`），`clEnqueueNDRangeKernel` 在當下**同步**逐一執行（工作群組大小固定 1，所以 `get_local_id`＝0、`get_local_size`＝1），`clFinish` 直接回傳；因此沒有非同步的 event 語意，`cl_event` 都是空的。
+- **核心語言子集**：`__kernel void` 函式（一個或多個），參數是純量（`int／uint／float／double／char／uchar／short／ushort`）或 `__global`／`const` 指標；本體支援宣告、`if／for／while`、算術、比較、`return`、`(int)`／`(float)` 等轉型、`get_global_id／get_global_size／get_group_id／get_num_groups／get_work_dim`、`sqrt／fabs／sin／cos／exp／log／pow／floor／ceil／fmin／fmax／min／max／mad／clamp` 等數學。`f` 字尾的浮點常數可用。
+- **不支援（明確報錯，不會悄悄算錯）**：`__local`、`barrier`、向量型別（`float4` 等）、`struct`、`image`、`atomic_*`、輔助函式、全域變數、巨集（`#define`；`#pragma` 會被忽略）、`goto`（翻譯後是 JS 語法錯誤，會回報建置失敗）。
+- **驗證**：`llvm_host.test.js` 跑 `opencl_vecadd.ll`（真輸出：`vadd OK, n=1000 c=2997.000000`；預設 N＝1048576 時 `c=3145725.000000`），並測 `clCompile` 的執行結果與四種拒絕訊息。
+- **限制（誠實）**：沒有真的 GPU 效能（JS 逐元素執行，N 很大時會慢）；不會用到 GPU 上的 `cl_khr_*` 擴充；`clEnqueueReadBuffer` 的 `blocking_read` 永遠視同 blocking；沒有 `clGetEventProfilingInfo`；沒有 `clCreateSubBuffer`、`clEnqueueCopyBuffer`、`clEnqueueMapBuffer`；沒有 `clCreateImage`。WebGPU／cudaweb 的後端另案（`DESIGN.webgpu-cuda.md`）。
+- **範例**：`gpgpu/opencl_vecadd.ll` 把 `phi` 改成 alloca／load／store（本 llc 版本不支援 `phi`），`malloc` 改用 `i32` 參數（wasm32 的 libc 簽名）。nbody3d／fluid3d 還是 CPU 計算（與 OpenCL 無關）。
 
 ## 22. LLVM IR 的 SDL 音訊與全域陣列初始值（2026-11-19）
 `llvm_host.js` 新增 SDL2 音訊（佇列模式）：`SDL_OpenAudioDevice／OpenAudio／QueueAudio／GetQueuedAudioSize／ClearQueuedAudio／PauseAudioDevice／PauseAudio／CloseAudioDevice／CloseAudio`，每個裝置對應頁面端 `AiChatAudioHost` 的一個串流（`gui.audio` 的 `stream_*`）；取樣格式 U8／S8／U16／S16／S32／F32 轉成 16 位元有號 PCM 再送；裝置一開始暫停。callback 模式（`SDL_AudioSpec.callback` 非 NULL）回 0 並說明，因為主機端無法在 wasm 記憶體配置緩衝區。`llvm_core.js` 新增全域陣列初始值（`[i32 1, i32 2, …]`、float／double 的一維陣列）。範例 `examples/llc/game/sdl2_piano.ll`（原生用 llvmlite＋gcc＋SDL 的 dummy 音訊驅動驗證；wasm 版真 Electron 驗證：串流開啟、鍵盤注入、結束後串流收掉）。
