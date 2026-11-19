@@ -22,16 +22,16 @@
    "names": [
     "FA_PYBRIDGE_FILES"
    ],
-   "size": 559991,
-   "md5": "6c945f5eb2ecd9caa73a34f0e1d77109"
+   "size": 560920,
+   "md5": "ea35d392cc9de2f70e91bc3ad4cf256c"
   },
   "pyexamples": {
    "file": "chunks/pyexamples.js",
    "names": [
     "FA_PY_EXAMPLES"
    ],
-   "size": 261028,
-   "md5": "619fd7820e8d04fea41be53503bebfe7"
+   "size": 263543,
+   "md5": "b2981cc183793c4414ce1c389207a7e7"
   },
   "headsvc": {
    "file": "chunks/headsvc.js",
@@ -1122,8 +1122,16 @@
    "names": [
     "FaLlvm"
    ],
-   "size": 50511,
-   "md5": "48ac4eb251f83ec78af262205b0b8bf0"
+   "size": 55500,
+   "md5": "c4f26963e24bf396281ea10e1e67300f"
+  },
+  "llvmhost": {
+   "file": "chunks/llvmhost.js",
+   "names": [
+    "FaLlvmHost"
+   ],
+   "size": 20212,
+   "md5": "12adac3f0419070cf4f9e3f75136fc05"
   },
   "trans": {
    "file": "chunks/trans.js",
@@ -1911,7 +1919,7 @@
   }
  },
  "core": {
-  "size": 6154037,
-  "md5": "932e6e596e90ce344eb1fd7789d9f3cb"
+  "size": 6156759,
+  "md5": "b58fb1d6956cb912f2eeeaa1989379fa"
  }
 }
