@@ -1124,3 +1124,10 @@ Python 模擬器與離線模型推論共用同一個 GPU 裝置：
 **階段 4b：host 接線（2026-11-19，node 測試通過；呼叫端尚未接）**：`llvm_host.js` 的 `create({ kirTranslate, kirRun })`。`clBuildProgram` 用 `kirTranslate(src)` 把核心翻成 KIR（不支援就 null）；`clEnqueueNDRangeKernel` 在一維且有 KIR 版本時呼叫 `kirRun(核心, 緩衝區, 純量, N)`，把 out 結果複製回 `cl_mem`，失敗就退回 JS 後備並警告。緩衝區目前每次派送都複製進出（**尚未做成留在 GPU 紋理**）。
 - `llvm_host.test.js`：opencl_vecadd.ll 用 KIR 的 JS 後端當假 GPU 跑，輸出同 JS 後備，kirRun 被呼叫一次（34 項全過）。
 - **還沒接**：`renderer/src/floating-assistant.js` 的 `FaLlvmHost.create(...)` 呼叫點（約 llc 執行處）要傳入 `kirTranslate`／`kirRun`（用 offscreen WebGL2 呼叫 `FaKirWebGL2.runGl`）；另外 KIR 模組（kir.js、kir_gen.js、kir_webgl2.js、cl_front.js）要進 renderer（embed-code-ui.js 與 build-assistant.js，需要 hungfu.lee 帳號執行）。nbody3d／fluid3d 的真 Electron 每幀計時與截圖要等這兩步完成。
+
+**階段 4c：呼叫點與嵌入（2026-11-19，只做了來源與 node 檢查，尚未 embed／build／真 Electron）**
+- `renderer/src/floating-assistant.js`：`/* KIR-BEGIN */…/* KIR-END */` 標記（佔位 `FA_KIR_SRC = ""`）；`_terminalTryLliHostRun` 的 `FaLlvmHost.create` 傳入 `_kirHostHooks()`（kirTranslate、kirRun）；`_kirLoad()` 用 `new Function('module','require','self', FA_KIR_SRC)` 載入到 holder。沒有 WebGL2 或 KIR 載入失敗就不傳掛鉤，全部走 JS。執行後若有 GPU 派送，會印 `[OpenCL 後端：WebGL2（KIR），GPU 派送 N 次…]`。
+- `scripts/embed-code-ui.js`：`embedKir()` 把 kir.js、kir_gen.js、kir_webgl2.js、cl_front.js 串成一段（順序 kir → kir_gen → kir_webgl2 → cl_front）寫進 `FA_KIR_SRC`。
+- `scripts/build-web-lazy.js`：`KIR` 加入 EXCLUDE（開頁的 llc 路徑會用到，留在核心，同 GPUCORE 的做法）。
+- 檢查：三個檔 `node --check` 通過；把四個模組串成同一段後在 node 載入，確認 FaKir、FaKirGen、FaKirWebGL2、FaClFront 都掛上，vadd 能翻譯；llvm_host 34 項、kir 30 項通過。
+- **未做**：embed、build、真 Electron 驗證 llc 路徑的 KIR 派送；nbody3d／fluid3d 的 OpenCL 版本（`*_cl.ll`）與計時 eval；CUDA 前端；HUD。

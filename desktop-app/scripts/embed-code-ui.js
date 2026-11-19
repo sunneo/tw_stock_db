@@ -376,6 +376,16 @@ function embedExportSrc() {
 embedFapWorker(); // 先把 worker 程式內嵌進傳輸檔，才會連同傳輸檔內嵌進 floating-assistant.js
 embedWasmWorker(); // 網頁版 SQLite 引擎的 worker 程式內嵌進 wasm_engine.js
 embedExportSrc();
+// KIR（DESIGN.webgpu-cuda.md §13 階段 4）：kir.js、kir_gen.js、kir_webgl2.js、cl_front.js 串成一段 UMD 原始碼（同一個 holder 掛 FaKir、FaKirGen、FaKirWebGL2、FaClFront）。
+// 執行時 new Function('module', 'require', 'self', FA_KIR_SRC)(undefined, undefined, holder)。順序有依賴：kir 在前、kir_gen 與 kir_webgl2 依序、cl_front 最後。
+function embedKir() {
+    const rd = (f) => fs.readFileSync(path.join(root, f), 'utf8').replace(/\r\n/g, '\n');
+    const code = ['kir.js', 'kir_gen.js', 'kir_webgl2.js', 'cl_front.js'].map((f) => rd('renderer/src/gpu/' + f)).join('\n;\n');
+    const a = src.indexOf('/* KIR-BEGIN */'), b = src.indexOf('/* KIR-END */'); if (a < 0 || b < 0) throw new Error('找不到 KIR 標記');
+    src = src.slice(0, a) + '/* KIR-BEGIN */\nconst FA_KIR_SRC = ' + lit(code) + ';\n' + src.slice(b);
+    console.log('已更新 FA_KIR_SRC（' + code.length + ' 字元）');
+}
+embedKir();
 embedLrCfgl();
 // Knowledge Inventory 的 app 轉接層：原文放進去（定義 const FaKnowledgeHost）
 function embedKnowledgeHost() {
