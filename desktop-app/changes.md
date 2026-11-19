@@ -68,7 +68,7 @@
 | `DESIGN.pygame-opengl-standard.md` | pygame／OpenGL 以 pip 真套件只接後端 | 已進 renderer |
 | `DESIGN.python-api-bridge.md` | Python 的 API 橋接（`fa_bridge`、`swap.*` 等） | 已進 renderer |
 | `DESIGN.parallel-domain.md`、`DESIGN.sandbox-worker.md` | 多工作者／沙盒工作者 | 見各文件 |
-| `DESIGN.blockly-curriculum.md`、`HANDOFF.blockly-teach.md` | Blockly 教學範本（本期暫停，使用者指示「blockly 那邊可以不用管了」） | 暫停 |
+| `DESIGN.blockly-curriculum.md`、`HANDOFF.blockly-teach.md` | Blockly 教學範本（演算法／資料結構／作業系統／Linux programming 等領域包） | **已完成**，領域包（DSP、algo2、os、ds、linuxtext 等）已進 renderer；本期不再動 |
 | `DESIGN.matrix-fallback.md`、`HANDOFF.matrix-fallback.md` | 矩陣層後備（交給 stevenyc.huang 的 session） | 另一條線 |
 
 尚無獨立計劃書的待辦（寫在 changes.md「待辦摘要」與上列文件內）：互動範例 HUD 文字、CUDA runtime API 前端。
