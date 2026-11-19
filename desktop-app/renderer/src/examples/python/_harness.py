@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """無頭測試台（pygame 範例要先 pip install pygame-ce）：用假的 fa_bridge 跑 run terminal 的 Python 範例，照橋接層的上限檢查，不開視窗。
 用法：python3 _harness.py game/breakout.py [--frames 180] [--seed 1] [--keys random|none] [--quiet] [腳本自己的參數…]
-檢查：每幀 draw 指令 ≤ 200 且指令種類合法、圖片每視窗 ≤ 16 張且每張 ≤ 1 MB、畫布大小 ≤ 1200、程式沒有丟例外、跑滿 frames 幀後送出 close 能正常結束。
+檢查：每幀 draw 指令 ≤ 100000 且指令種類合法、圖片每視窗 ≤ 16 張（大小不限）、畫布大小 ≤ 1200、程式沒有丟例外、跑滿 frames 幀後送出 close 能正常結束。
 GUI 程式（用 w.wait()）：依序送出每個按鈕的 click、輸入框的 input，最後送 close。
 結束碼 0＝通過；非 0＝有違規（訊息印在 stderr）。"""
 import argparse, base64, os, random, runpy, sys, types, time
@@ -38,14 +38,18 @@ def call(op, a=None, timeout=240.0):
         S['sets'] += 1; return {'ok': True}
     if op == 'gui.draw':
         ops = a['ops']; S['frames'] += 1; S['maxops'] = max(S['maxops'], len(ops))
-        if len(ops) > 200: fail('一幀 %d 道指令，超過 200' % len(ops))
+        if len(ops) > 100000: fail('一幀 %d 道指令，超過 100000' % len(ops))
         for o in ops:
             if not o or o[0] not in DRAW_OPS: fail('不認得的繪圖指令 %r' % (o[:1],))
             if o[0] == 'image' and o[1] not in S['images']: fail('image 未註冊 %s' % o[1])
         return {'ok': True}
     if op == 'gui.image':
-        raw = a['data'].split(',', 1)[1]; size = len(base64.b64decode(raw))
-        if size > 1048576: fail('圖片 %d 位元組超過 1 MB' % size)
+        if 'parts' in a:   # 大圖分段傳送：最後一段才註冊
+            S.setdefault('pending', {}).setdefault(a['name'], []).append(base64.b64decode(a['chunk']))
+            if a['part'] < a['parts'] - 1: return {'w': 0, 'h': 0}
+            size = sum(len(p) for p in S['pending'].pop(a['name']))
+        else:
+            raw = a['data'].split(',', 1)[1]; size = len(base64.b64decode(raw))   # 圖片不設大小上限
         S['images'][a['name']] = size
         if len(S['images']) > 16: fail('圖片超過 16 張')
         return {'w': 64, 'h': 64}

@@ -10,10 +10,9 @@
 # 用到的限制與繞法（需要 numpy，Pyodide 內建；PIL 有的話會用來解碼 JPEG／GIF／WebP）：
 #   * 畫布沒有旋轉指令，所以旋轉要自己改像素：PNG 用內建解碼器（支援 8 位元、非交錯、灰階／RGB／RGBA／調色盤）；
 #     其他格式要有 PIL 才能旋轉，沒有的話旋轉按鈕只會提示，翻轉與縮放仍可用（翻轉用畫布 image 指令的 flip 參數，不改像素）。
-#   * 每張圖註冊上限 1 MB：太大的圖會先縮小（取每 k×k 區塊平均）再編成 PNG 當底圖；放大後另外送「可見範圍的原始解析度裁切」疊在上面，所以放大看到的是真正的像素，不是放大的縮圖。
+#   * 圖片註冊沒有大小上限（大圖由 gui 函式庫自動分段傳送）：沒旋轉時直接送原檔位元組，原樣顯示、放大看到的是真正的像素；旋轉後才重新編成 PNG。
 #   * 註冊同一個名字（name="view"）會取代舊圖，不佔 16 張的額度；只有旋轉或換圖時才重新註冊，平移縮放只改繪圖座標。
 #   * 畫布每幀只送 ≤ 200 道指令；這裡每幀不到 10 道。
-import math
 import os
 import struct
 import time
@@ -23,7 +22,6 @@ import gui
 import numpy as np
 
 CW, CH = 640, 420          # 畫布的繪圖座標系大小（fit=True，會自動縮放到視窗大小）
-MAX_PNG = 960000           # 註冊的 PNG 位元組上限（留一點餘裕給 1 MB）
 MIN_ZOOM, MAX_ZOOM = 0.05, 32.0
 
 
@@ -122,18 +120,6 @@ def sample_image(w=320, h=240):
     return img
 
 
-def fit_for_register(arr):
-    """縮小到 PNG 不超過 MAX_PNG。回傳 (png 位元組, 縮小倍數 k)；k = 1 表示沒縮。"""
-    k = 1
-    while True:
-        small = arr if k == 1 else arr[:arr.shape[0] // k * k, :arr.shape[1] // k * k].reshape(
-            arr.shape[0] // k, k, arr.shape[1] // k, k, 3).mean(axis=(1, 3)).astype(np.uint8)
-        png = encode_png(small)
-        if len(png) <= MAX_PNG or min(small.shape[:2]) < 8:
-            return png, k
-        k += 1
-
-
 # ---------- 視埠數學（純函式；view = (zoom, offx, offy)，offx／offy 是圖片左上角在畫布上的位置） ----------
 def fit_zoom(iw, ih, vw=CW, vh=CH, margin=10):
     return min((vw - margin) / float(iw), (vh - margin) / float(ih))
@@ -186,8 +172,7 @@ class Viewer(object):
         self.mime = "image/png"
         self.rot = 0             # 0..3，順時針轉幾個 90 度
         self.flip = [0, 0]       # 畫面上的水平、垂直翻轉
-        self.shrink = 1
-        self.detail = None       # 放大時另外註冊的「可見範圍原始解析度裁切」
+        self.orig = None         # (原檔位元組, mime)：沒旋轉時直接送原檔
         self.name = "範例圖"
         self.view = (1.0, 0.0, 0.0)
         self.dragging = None
@@ -207,8 +192,9 @@ class Viewer(object):
         h, w = self.src.shape[:2]
         return (h, w) if self.rot % 2 else (w, h)
 
-    def set_image(self, arr, name):
+    def set_image(self, arr, name, orig=None):
         self.src, self.name, self.rot, self.flip, self.raw = arr, name, 0, [0, 0], None
+        self.orig = orig
         self.message = ""
         self.dims = (arr.shape[1], arr.shape[0])
         self.register()
@@ -217,58 +203,13 @@ class Viewer(object):
     def register(self):
         """把目前（旋轉後）的像素編成 PNG 註冊成 "view"；可能縮小，縮小時顯示座標仍用原尺寸。"""
         if self.src is not None:
-            png, self.shrink = fit_for_register(np.ascontiguousarray(self.work_array()))
-            mime, data = "image/png", png
+            if self.rot == 0 and self.orig is not None:
+                data, mime = self.orig
+            else:
+                mime, data = "image/png", encode_png(np.ascontiguousarray(self.work_array()))
         else:
-            mime, data, self.shrink = self.mime, self.raw, 1
+            mime, data = self.mime, self.raw
         self.w.image(self.cv, data, mime, name="view")
-        self.detail = None
-        self.dirty = True
-
-    def update_detail(self):
-        """底圖被縮小過、而且現在放大到比底圖解析度還大時，把「畫面上看得到的那一塊」從原圖裁出來，
-        用原始解析度（太大才再縮）另外註冊成 "detail" 疊在底圖上，放大看到的就是真正的像素。"""
-        if self.src is None or self.shrink <= 1:
-            self.detail = None
-            return
-        z, ox, oy = self.view
-        if z <= 1.0 / self.shrink * 1.0001:
-            self.detail = None
-            return
-        iw, ih = self.size()
-        # 畫面上看得到的範圍（顯示座標，已含翻轉前的位置），多留一圈讓小幅拖曳不必重切
-        padx, pady = (CW / z) * 0.25, (CH / z) * 0.25
-        x0 = int(max(0, math.floor(-ox / z - padx)))
-        y0 = int(max(0, math.floor(-oy / z - pady)))
-        x1 = int(min(iw, math.ceil((CW - ox) / z + padx)))
-        y1 = int(min(ih, math.ceil((CH - oy) / z + pady)))
-        if x1 - x0 < 1 or y1 - y0 < 1:
-            self.detail = None
-            return
-        kd = max(1, int(1.0 / z))            # 縮小檢視時，每個畫面像素對應 kd × kd 個原圖像素就夠了
-        d = self.detail
-        if d is not None and d[4] == kd and d[5] == self.rot and d[6] == self.flip[0] and d[7] == self.flip[1] \
-                and d[0] <= int(max(0, -ox / z)) and d[1] <= int(max(0, -oy / z)) \
-                and d[2] >= min(iw, (CW - ox) / z) and d[3] >= min(ih, (CH - oy) / z) and z <= d[8] * 1.2:
-            return                           # 目前看得到的範圍還在已送的裁切裡
-        # 翻轉只在顯示時套用：顯示座標的範圍要換回「沒翻轉」的陣列座標去裁
-        ax0, ax1 = (iw - x1, iw - x0) if self.flip[0] else (x0, x1)
-        ay0, ay1 = (ih - y1, ih - y0) if self.flip[1] else (y0, y1)
-        crop = np.ascontiguousarray(self.work_array()[ay0:ay1, ax0:ax1])
-        if kd > 1:
-            ch, cw = crop.shape[0] // kd * kd, crop.shape[1] // kd * kd
-            if ch < kd or cw < kd:
-                self.detail = None
-                return
-            crop = crop[:ch, :cw].reshape(ch // kd, kd, cw // kd, kd, 3).mean(axis=(1, 3)).astype(np.uint8)
-        png, ksh = fit_for_register(crop)
-        try:
-            self.w.image(self.cv, png, "image/png", name="detail")
-        except Exception:
-            self.detail = None
-            return
-        # 顯示範圍 (x0..x1, y0..y1) 以顯示座標記；ksh 是再縮的倍數（目前只用來決定要不要畫）
-        self.detail = (x0, y0, x1, y1, kd, self.rot, self.flip[0], self.flip[1], z)
         self.dirty = True
 
     def open_file(self, ev):
@@ -284,10 +225,7 @@ class Viewer(object):
             data = fh.read()
         arr = decode_any(data, f["mime"])
         if arr is not None:
-            self.set_image(arr, f["name"])
-            return
-        if len(data) > 262144:
-            self.note("%s：無法解碼且超過 256 KB，無法顯示（缺少 PIL）" % f["name"])
+            self.set_image(arr, f["name"], (data, f["mime"] or "image/jpeg"))
             return
         self.src, self.raw, self.mime, self.name, self.rot, self.flip = None, data, f["mime"] or "image/jpeg", f["name"], 0, [0, 0]
         try:
@@ -358,16 +296,11 @@ class Viewer(object):
         z, ox, oy = self.view
         shown_w = iw * z
         shown_h = ih * z
-        self.update_detail()
         ops = [["clear", "#2b2b30"], ["image", "view", int(ox), int(oy), int(shown_w), int(shown_h), self.flip[0], self.flip[1]]]
-        d = self.detail
-        if d is not None:
-            ops.append(["image", "detail", int(ox + d[0] * z), int(oy + d[1] * z),
-                        int(math.ceil((d[2] - d[0]) * z)), int(math.ceil((d[3] - d[1]) * z)), self.flip[0], self.flip[1]])
         self.w.draw(self.cv, ops)
         if self.dirty:
             mx, my = screen_to_image(self.view, *self.mouse)
-            extra = "（已縮小顯示 1/%d）" % self.shrink if self.shrink > 1 else ""
+            extra = ""
             flips = "".join(s for s, f in (("　水平翻轉", self.flip[0]), ("　垂直翻轉", self.flip[1])) if f)
             msg = self.message
             self.w.set(self.status, text="%s　%d × %d 像素　縮放 %d%%　旋轉 %d°%s%s　游標在圖片 (%d, %d)%s%s" % (

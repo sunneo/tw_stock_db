@@ -161,7 +161,33 @@
       if (node.gl) { render.paintGl(el, node, function (msg) { var line = bridge.eventLine(session, winId, nodeId, 'glerror', msg); if (line) { enqueue(winId, 'glerror', line); } }); return; }
       var ctx = el.getContext ? el.getContext('2d') : null;
       if (!ctx) { return; }
-      render.paintFrame(ctx, node.frame || [], el.width, el.height, function (name) { return picture(winId, nodeId, name); }, !!node.transparent);
+      var ops = node.frame || [];
+      // adaptive: a frame whose measured cost (ops x the page's own ms-per-op, learned from earlier frames) would take longer than a few
+      // milliseconds is painted at most once per animation frame, the newest one, so a program that draws faster than the screen refreshes
+      // (or draws huge frames) cannot freeze the window. Small frames are painted at once, as before.
+      var raf = (doc.defaultView || root).requestAnimationFrame;
+      if (typeof raf === 'function' && ops.length * opCostMs > BIG_FRAME_MS) {
+        var key = winId + '/' + nodeId;
+        if (!framePending[key]) {
+          framePending[key] = true;
+          raf.call(doc.defaultView || root, function () {
+            delete framePending[key];
+            var w2 = session.windows[winId], n2 = w2 && w2.nodes[nodeId];
+            if (!n2 || !views[winId]) { return; }
+            paintNow(ctx, winId, nodeId, el, n2);
+          });
+        }
+        return;
+      }
+      paintNow(ctx, winId, nodeId, el, node);
+    }
+
+    var opCostMs = 0.01, framePending = {}, BIG_FRAME_MS = 6;   // opCostMs: learned milliseconds per drawing command (starts at a guess)
+    function nowMs() { var p = (doc.defaultView || root).performance; return p && p.now ? p.now() : Date.now(); }
+    function paintNow(ctx, winId, nodeId, el, node) {
+      var ops = node.frame || [], t0 = nowMs();
+      render.paintFrame(ctx, ops, el.width, el.height, function (name) { return picture(winId, nodeId, name); }, !!node.transparent);
+      if (ops.length >= 20) { opCostMs = opCostMs * 0.8 + 0.2 * ((nowMs() - t0) / ops.length); }
     }
 
     function closeBitmap(key) { var b = bitmaps[key]; delete bitmaps[key]; if (b && b.close) { try { b.close(); } catch (e) { /* 已經關了 */ } } }

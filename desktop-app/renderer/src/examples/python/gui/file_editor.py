@@ -9,7 +9,7 @@
 # 用到的限制與繞法：
 #   * 視窗沒有「確認對話框」可以在不開新視窗的情況下用，所以「內容尚未儲存」改成「再按一次同樣動作才放棄」。
 #   * 選單項目建立後不能刪除，所以最近檔案先建好 5 個空位，之後用 set(text=, visible=) 改字或隱藏。
-#   * pick_file 讀進來的內容有大小上限（max_bytes，這裡是 256 KB）；檔案內容以 UTF-8 解碼，壞字元以 ? 取代。
+#   * pick_file 讀進來的內容不限大小；檔案內容以 UTF-8 解碼，壞字元以 ? 取代。
 #   * 視窗只在 wait() 回傳時才有機會更新畫面，所以用 wait(also=("input",)) 讓每次打字都喚醒迴圈、更新修改標記。
 import json
 import os
@@ -20,7 +20,6 @@ import gui
 WORK = "/work" if os.path.isdir("/work") else tempfile.gettempdir()
 RECENT_FILE = os.path.join(WORK, ".file_editor_recent.json")
 RECENT_MAX = 5
-MAX_BYTES = 262144
 LANGS = {".py": "python", ".js": "javascript", ".json": "json", ".md": "markdown", ".html": "html", ".css": "css"}
 WELCOME = "歡迎使用簡易文字編輯器。\n\n試試看：\n1. 直接輸入文字，標題列會出現「● 未儲存」。\n2. 按 Ctrl+S 存成檔案。\nHello, this is a tiny editor.\n"
 
@@ -166,8 +165,8 @@ class Editor(object):
         if not self.guard("open"):
             return
         try:
-            f = gui.pick_file("開啟文字檔", accept=".txt,.md,.py,.json,.js,.html,.css,.csv,.log", max_bytes=MAX_BYTES)
-        except Exception as e:  # 檔案太大（ValueError）或環境不支援對話框
+            f = gui.pick_file("開啟文字檔", accept=".txt,.md,.py,.json,.js,.html,.css,.csv,.log")
+        except Exception as e:  # 環境不支援對話框或讀不了檔案
             self.refresh_status("無法開啟：%s" % e)
             return
         if not f:

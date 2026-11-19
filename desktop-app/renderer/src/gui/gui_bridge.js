@@ -23,7 +23,7 @@
 }(typeof self !== 'undefined' ? self : this, function () {
   'use strict';
   var VERSION = 1, PREFIX = '@gui ';
-  var MAX_LINE = 8192, MAX_BULK_LINE = 6 * 1024 * 1024, BULK_OP_RE = /"op"\s*:\s*"(image|glbuf|set|add)"/, MAX_EDITOR_TEXT = 1000000, MAX_WINDOWS = 4, MAX_NODES = 200, MAX_TEXT = 2000, MAX_ITEMS = 500, MAX_DEPTH = 8;
+  var MAX_LINE = 8192, MAX_BULK_LINE = 6 * 1024 * 1024, BULK_OP_RE = /"op"\s*:\s*"(image|glbuf|set|add|draw)"/, MAX_EDITOR_TEXT = 1000000, MAX_WINDOWS = 4, MAX_NODES = 200, MAX_TEXT = 2000, MAX_ITEMS = 500, MAX_DEPTH = 8;
   var ID_RE = /^[A-Za-z0-9_-]{1,40}$/;
   var OPS = ['open', 'add', 'set', 'remove', 'close', 'draw', 'image', 'theme', 'shortcut', 'tone', 'glbuf', 'glprog', 'glframe'];
   // window-level look: palette (five named colors), font family, size, corner radius; shortcuts: "Ctrl+Shift+Alt+<key>" -> a name the
@@ -37,8 +37,9 @@
   // where a kind may be added: tab pages only inside tabs (and tabs hold only tab pages); menus only in a menubar, menu items only in a menu
   var PARENT_OF = { tab: 'tabs', menu: 'menubar', menuitem: 'menu' };
   var ONLY_CHILDREN = { tabs: ['tab'], menubar: ['menu'], menu: ['menuitem'] };
-  var MAX_COLUMNS = 30, MAX_DRAW = 200, MAX_CANVAS = 1200, MAX_FPS = 60;
-  var MAX_IMAGES = 16, MAX_IMAGE_BYTES = 1024 * 1024;
+  var MAX_COLUMNS = 30, MAX_DRAW = 100000, // a frame of any ordinary size; the page paints big frames adaptively (see gui_host.js), so there is no small fixed cap
+     MAX_CANVAS = 1200, MAX_FPS = 60;
+  var MAX_IMAGES = 16; // pictures have no size limit: a big one is sent in parts (see the image op)
   var COLOR_RE = /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
   var IMAGE_RE = /^data:image\/(png|jpeg|gif|webp);base64,([A-Za-z0-9+/]+={0,2})$/;
   // a draw command and its length (name included): every command ends with its color, except clear, which is only the color
@@ -277,7 +278,7 @@
     return v.map(function (r, i) { return cellList(r, 'rows[' + i + ']', 0, MAX_COLUMNS); });
   }
 
-  // a picture registered on the canvas: data is a PNG, JPEG, GIF or WebP data URL of at most MAX_IMAGE_BYTES (decoded)
+  // a picture registered on the canvas: data is a PNG, JPEG, GIF or WebP data URL (any size that fits one message; a bigger one is sent in parts)
   function imageData(v) {
     var bad = 'data must be a data:image/png, jpeg, gif or webp;base64 URL';
     if (typeof v !== 'string') { throw new Error(bad); }
@@ -285,7 +286,6 @@
     if (!m) { throw new Error(bad); }
     var b64 = m[2], pad = (b64.match(/=+$/) || [''])[0].length;
     if (b64.length % 4 !== 0) { throw new Error('data is not valid base64'); }
-    if (b64.length / 4 * 3 - pad > MAX_IMAGE_BYTES) { throw new Error('image is larger than ' + (MAX_IMAGE_BYTES / 1024) + ' KB'); }
     return v;
   }
 
@@ -484,7 +484,7 @@
       if (msg.op === 'tone') {
         // validated and then played by the page; the bridge keeps nothing (the host reads the message)
         num(msg.freq, 'freq', 40, 8000);
-        num(msg.ms, 'ms', 10, 2000);
+        num(msg.ms, 'ms', 10, 600000);
         if (msg.wave !== undefined && WAVES.indexOf(msg.wave) < 0) { return fail('wave must be one of ' + WAVES.join(', ')); }
         return { ok: true };
       }
@@ -544,7 +544,26 @@
         if (target.kind !== 'canvas' || target.gl) { return fail('node "' + nid + '" is a ' + target.kind + ', not a canvas'); }
         var name = id(msg.name, 'name');
         target.images = target.images || {};
-        if (msg.data === null) { delete target.images[name]; return { ok: true }; }
+        if (msg.data === null) { delete target.images[name]; if (target.pending) { delete target.pending[name]; } return { ok: true }; }
+        // a picture of any size: sent as parts (part 0..parts-1, in order, each a base64 piece of whole 3-byte groups except the last),
+        // put together here; only the last part registers it
+        if (msg.parts !== undefined) {
+          var parts = num(msg.parts, 'parts', 2, 1e6), part = num(msg.part, 'part', 0, 1e6);
+          if (Math.floor(parts) !== parts || Math.floor(part) !== part || part >= parts) { return fail('part must be a whole number below parts'); }
+          if (['png', 'jpeg', 'gif', 'webp'].indexOf(msg.mime) < 0) { return fail('mime must be png, jpeg, gif or webp'); }
+          if (typeof msg.chunk !== 'string' || !/^[A-Za-z0-9+/]*={0,2}$/.test(msg.chunk) || msg.chunk.length % 4 !== 0) { return fail('chunk must be base64 text'); }
+          target.pending = target.pending || {};
+          if (part === 0) { target.pending[name] = { mime: msg.mime, parts: parts, next: 0, bits: [] }; }
+          var pend = target.pending[name];
+          if (!pend || pend.next !== part || pend.parts !== parts || pend.mime !== msg.mime) { delete target.pending[name]; return fail('picture parts must come in order, starting at part 0'); }
+          if (part < parts - 1 && /=/.test(msg.chunk)) { delete target.pending[name]; return fail('only the last part may end with ='); }
+          pend.bits.push(msg.chunk); pend.next++;
+          if (pend.next < parts) { return { ok: true, pending: true }; }
+          delete target.pending[name];
+          if (!Object.prototype.hasOwnProperty.call(target.images, name) && Object.keys(target.images).length >= MAX_IMAGES) { return fail('at most ' + MAX_IMAGES + ' pictures per canvas'); }
+          target.images[name] = 'data:image/' + pend.mime + ';base64,' + pend.bits.join('');
+          return { ok: true };
+        }
         var known = Object.prototype.hasOwnProperty.call(target.images, name);
         if (!known && Object.keys(target.images).length >= MAX_IMAGES) { return fail('at most ' + MAX_IMAGES + ' pictures per canvas'); }
         target.images[name] = imageData(msg.data);

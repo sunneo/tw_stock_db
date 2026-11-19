@@ -147,7 +147,7 @@ assert.match(G.parseWait('wait w1 a=b').error, /shell variable name/); ok();
   assert.deepStrictEqual(run(S, msg({ op: 'tone', id: 'wt', freq: 440, ms: 120, wave: 'square' })), { ok: true }); ok();
   assert.deepStrictEqual(run(S, msg({ op: 'tone', id: 'wt', freq: 440, ms: 120 })), { ok: true }); ok();
   assert.match(run(S, msg({ op: 'tone', id: 'wt', freq: 10, ms: 120 })).error, /freq/); ok();
-  assert.match(run(S, msg({ op: 'tone', id: 'wt', freq: 440, ms: 99999 })).error, /ms/); ok();
+  assert.match(run(S, msg({ op: 'tone', id: 'wt', freq: 440, ms: 700000 })).error, /ms/); ok();
   assert.match(run(S, msg({ op: 'tone', id: 'wt', freq: 440, ms: 100, wave: 'noise' })).error, /wave/); ok();
   assert.match(run(S, msg({ op: 'tone', id: 'nope', freq: 440, ms: 100 })).error, /not open/); ok();
   assert.ok(G.OPS.indexOf('theme') >= 0 && G.OPS.indexOf('shortcut') >= 0 && G.OPS.indexOf('tone') >= 0); ok();
@@ -372,6 +372,28 @@ assert.match(G.parseWait('wait w1 a=b').error, /shell variable name/); ok();
   assert.strictEqual(JSON.parse(G.eventLine(T, 'ed', 'e1', 'input', longText)).value.length, 200000); ok();
   assert.ok(G.apply(T, { op: 'add', id: 'ed', node: { id: 'l1', kind: 'label' } }).ok);
   assert.match(G.apply(T, { op: 'set', id: 'ed', node: 'l1', props: { text: 'z'.repeat(2001) } }).error, /longer than 2000/); ok();
+}
+
+// 大圖分段傳送：不設大小上限，依序接起來，最後一段才註冊
+{
+  const P = G.createSession();
+  G.apply(P, { op: 'open', id: 'pw' });
+  G.apply(P, { op: 'add', id: 'pw', node: { id: 'c', kind: 'canvas', width: 100, height: 100 } });
+  const piece = (n) => Buffer.alloc(n, 7).toString('base64');
+  const send = (i, parts, chunk, mime) => G.apply(P, { op: 'image', id: 'pw', node: 'c', name: 'big', mime: mime || 'png', part: i, parts, chunk });
+  assert.deepStrictEqual(send(0, 3, piece(3000)), { ok: true, pending: true }); ok();
+  assert.deepStrictEqual(send(1, 3, piece(3000)), { ok: true, pending: true }); ok();
+  assert.deepStrictEqual(send(2, 3, piece(10)), { ok: true }); ok();
+  const url = P.windows.pw.nodes.c.images.big;
+  assert.ok(url.startsWith('data:image/png;base64,') && url.length === 'data:image/png;base64,'.length + piece(3000).length * 2 + piece(10).length); ok();
+  // 順序錯、中途缺段、不是 base64、格式不對都被拒絕，且不留下半張圖
+  assert.match(send(1, 3, piece(30)).error, /in order/); ok();
+  send(0, 2, piece(30));
+  assert.match(send(0, 2, piece(30), 'bmp').error, /mime/); ok();
+  assert.match(G.apply(P, { op: 'image', id: 'pw', node: 'c', name: 'big', mime: 'png', part: 0, parts: 2, chunk: 'not base64!' }).error, /base64/); ok();
+  // 超過舊上限（1 MB）的單張圖不再被拒
+  const huge = 'data:image/png;base64,' + Buffer.alloc(2 * 1024 * 1024, 1).toString('base64');
+  assert.ok(G.apply(P, { op: 'image', id: 'pw', node: 'c', name: 'h2', data: huge }).ok); ok();
 }
 
 console.log('gui_bridge: ' + n + ' assertions passed');

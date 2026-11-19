@@ -5,7 +5,7 @@
 # 操作方式：
 #   * 「寫出 format 0」「寫出 format 1」：把內建的兩聲部小曲（旋律＋低音，中途有 tempo 變化）編成 .mid 存到工作資料夾，
 #     接著立刻從檔案讀回來解析（等於一次往返驗證），事件列在左側表格，音符畫在右側捲簾。
-#   * 「開啟 .mid」：用檔案選擇對話框讀別人的 MIDI 檔（上限 256 KB）。
+#   * 「開啟 .mid」：用檔案選擇對話框讀別人的 MIDI 檔（不限大小）。
 #   * 「播放／停止」用 tone 的嗶聲演奏；波形清單可換音色。「◀ ▶」左右捲動捲簾，「速度」不影響檔案只影響播放。
 #
 # 用到的限制與繞法：
@@ -298,9 +298,6 @@ class MidiTool(object):
         if not got or not got[0]:
             return
         f = got[0][0]
-        if f["size"] > 262144:
-            self.w.set(self.info, text="檔案超過 256 KB 上限")
-            return
         with open(f["ref"], "rb") as fh:
             self.load(fh.read(), f["name"])
 

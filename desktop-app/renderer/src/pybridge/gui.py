@@ -37,6 +37,9 @@ import os
 import fa_bridge
 
 
+_IMAGE_PART = 3 * 1024 * 1024   # bytes of a picture sent in one message
+
+
 class Window(object):
     def __init__(self, title, width=360, resizable=False, maximizable=False, height=None):
         # resizable: the user can drag the window's corner bigger or smaller; maximizable: a button fills the terminal's area.
@@ -296,7 +299,7 @@ class Window(object):
         fa_bridge.call("gui.shortcut", {"id": self.id, "keys": str(keys), "name": None if name is None else str(name)})
 
     def tone(self, freq=440, ms=120, wave="sine"):
-        """Play a short beep in the page: freq 40-8000 Hz, ms 10-2000, wave "sine", "square", "triangle" or "sawtooth".
+        """Play a short beep in the page: freq 40-8000 Hz, ms 10-600000, wave "sine", "square", "triangle" or "sawtooth".
         It returns at once and stays silent if the page cannot play sound (nothing is raised)."""
         fa_bridge.call("gui.tone", {"id": self.id, "freq": float(freq), "ms": int(ms), "wave": str(wave)})
 
@@ -344,11 +347,12 @@ class Window(object):
 
     def draw(self, nid, ops):
         """Paint one frame on a canvas. ops: lists such as ["rect", x, y, w, h, "#rrggbb"], ["circle", x, y, r, color],
-        ["line", x1, y1, x2, y2, color], ["text", x, y, text, color], ["clear", color], ["image", name, x, y, w, h]. At most 200 ops."""
+        ["line", x1, y1, x2, y2, color], ["text", x, y, text, color], ["clear", color], ["image", name, x, y, w, h]. Any number of ops (up to 100000 in one frame); the page measures how long a frame takes and paints
+        big frames at most once per screen refresh, so a program does not have to count its commands."""
         fa_bridge.call("gui.draw", {"id": self.id, "node": nid, "ops": ops})
 
     def image(self, nid, data, mime, name=None):
-        """Register a picture (PNG, JPEG, GIF or WebP bytes, at most 1 MB) on a canvas. Returns (name, w, h): draw it with
+        """Register a picture (PNG, JPEG, GIF or WebP bytes, any size) on a canvas. Returns (name, w, h): draw it with
         ["image", name, x, y] or ["image", name, x, y, w, h] or ["image", name, x, y, w, h, flip_x, flip_y] (flip flags 0 or 1).
         name (optional, letters, digits, _ and -, at most 40): registering the same name again replaces the picture and does not count
         against the 16 pictures of a canvas, so a program can redraw a rendered picture every frame. The page decodes it; a picture it
@@ -357,8 +361,17 @@ class Window(object):
             self._images += 1
             name = "i%d" % self._images
         name = str(name)
-        url = "data:%s;base64,%s" % (mime, base64.b64encode(data).decode("ascii"))
-        size = fa_bridge.call("gui.image", {"id": self.id, "node": nid, "name": name, "data": url})
+        if len(data) <= _IMAGE_PART:
+            url = "data:%s;base64,%s" % (mime, base64.b64encode(data).decode("ascii"))
+            size = fa_bridge.call("gui.image", {"id": self.id, "node": nid, "name": name, "data": url})
+            return name, int(size["w"]), int(size["h"])
+        # a big picture goes in parts of 3 MB (whole 3-byte groups, so each part is plain base64); the page puts them together
+        kind = mime.split("/")[-1].lower()
+        parts = (len(data) + _IMAGE_PART - 1) // _IMAGE_PART
+        size = None
+        for i in range(parts):
+            piece = base64.b64encode(data[i * _IMAGE_PART:(i + 1) * _IMAGE_PART]).decode("ascii")
+            size = fa_bridge.call("gui.image", {"id": self.id, "node": nid, "name": name, "mime": kind, "part": i, "parts": parts, "chunk": piece})
         return name, int(size["w"]), int(size["h"])
 
     def poll(self):
@@ -525,12 +538,13 @@ def _tree_row(r):
     return out
 
 
-def pick_file(title="Choose a file", accept="", max_bytes=262144):
+def pick_file(title="Choose a file", accept="", max_bytes=None):
     """Ask the user to choose a file. The page shows a small panel with a button (the browser or desktop file chooser opens when the user
     presses it). Returns None when the user cancels, else {"name", "size", "mime", "data" (bytes), "path"} - path is the real path on the
-    desktop app and "" in the browser. accept is an html accept text such as "image/*" or ".txt,.md"; a file bigger than max_bytes
-    (default 256 KB, at most 8 MB) raises ValueError. To show a picture on a canvas use Window.image(canvas, data, mime) (at most 1 MB)."""
-    r = fa_bridge.call("gui.pickfile", {"title": str(title), "accept": str(accept), "max_bytes": int(max_bytes)}, timeout=330)
+    desktop app and "" in the browser. accept is an html accept text such as "image/*" or ".txt,.md"; max_bytes (default None = no limit)
+    is only for a program that wants to refuse a bigger file: a file bigger than it raises ValueError. To show a picture on a canvas use
+    Window.image(canvas, data, mime) (any size)."""
+    r = fa_bridge.call("gui.pickfile", {"title": str(title), "accept": str(accept), "max_bytes": int(max_bytes) if max_bytes else 0}, timeout=330)
     if not r:
         return None
     if r.get("error"):

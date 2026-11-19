@@ -118134,11 +118134,14 @@ ${sourceTool.handlerScript}
         if (op === 'close') { host.close(a.id); return null; }
         if (op === 'image') {
             send('image', a);
+            // 分段傳來的大圖：前面幾段只回報「收到了」，最後一段才解碼並回報尺寸（接好的資料網址在視窗工作階段裡）
+            if (a.parts !== undefined && a.part < a.parts - 1) return { w: 0, h: 0, pending: true };
+            const picSrc = a.parts !== undefined ? host.session.windows[a.id].nodes[a.node].images[a.name] : a.data;
             return await new Promise((resolve, reject) => {
                 const img = new Image();
                 img.onload = () => resolve({ w: img.naturalWidth, h: img.naturalHeight });
                 img.onerror = () => reject(new Error('圖片無法解碼（只接受 PNG、JPEG、GIF、WebP）'));
-                img.src = a.data;
+                img.src = picSrc;
             });
         }
         send(op, a);
@@ -137600,7 +137603,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
         if (typeof this._guiPickFileHook === 'function') return await this._guiPickFileHook(a);
         const accept = String((a && a.accept) || '');
         const title = String((a && a.title) || '選擇檔案');
-        const maxBytes = Math.max(1024, Math.min(8 * 1024 * 1024, Number(a && a.max_bytes) || 262144));
+        const maxBytes = Number(a && a.max_bytes) > 0 ? Number(a.max_bytes) : Infinity;   // 沒指定就不設上限
         return await new Promise((resolve) => {
             const box = document.createElement('div');
             box.className = 'gui-pickfile';
