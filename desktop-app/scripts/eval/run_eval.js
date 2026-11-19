@@ -13,7 +13,8 @@ fs.writeFileSync(path.join(ud, 'main-ext-rev.txt'), m[1]);
 const exe = path.join(root, 'node_modules', 'electron', 'dist', process.platform === 'win32' ? 'electron.exe' : 'electron');
 const env = Object.assign({}, process.env, { FA_DISABLE_MAIN_OVERLAY: '1', FA_DEBUG_EVAL_FILE: evalFile, FA_BROWSER_CONTROL_PORT: String(process.argv[3] || 17931) });
 // FA_EVAL_GL=swiftshader：評測才用軟體 GL（WebGL2 浮點渲染，OpenCL 的 KIR 路徑需要）；產品啟動參數不變（預設仍是 --disable-gpu）。
-const glArgs = process.env.FA_EVAL_GL === 'swiftshader' ? ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] : ['--disable-gpu'];
+// FA_EVAL_GL=gpu：不加任何 GL 旗標（真 GPU 基準用，gpgpu_bench.eval.js）。
+const glArgs = process.env.FA_EVAL_GL === 'swiftshader' ? ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] : process.env.FA_EVAL_GL === 'gpu' ? [] : ['--disable-gpu'];
 const r = cp.spawnSync(exe, [root, '--no-sandbox'].concat(glArgs, ['--user-data-dir=' + ud]), { env, encoding: 'utf8', timeout: Number(process.env.FA_EVAL_TIMEOUT_MS) || 170000, maxBuffer: 1 << 26 });
 const out = String(r.stdout || '') + String(r.stderr || '');
 out.split('\n').filter((l) => /\[eval-file\]/.test(l)).forEach((l) => console.log(l));

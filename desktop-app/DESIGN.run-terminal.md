@@ -1692,3 +1692,32 @@ sleep/curl/date/ask-floating-ai-assistant各自踩過的坑。
 **驗證計畫（實作時）**：`fa_swap_core.test.js`（記憶體後端與假 store，語意與 Python 一致：沒寫過的頁讀出 0、髒頁寫回、LRU 踢出順序）；`llvm_host.test.js` 加一個用 `fa_swap_*` 的 IR 範例（寫入一大塊、讀回比對）；真 Electron 的 job eval（IndexedDB 內頁數、程式結束後為空）。
 
 **現況**：本節是設計（2026-11-19），尚未實作。Python 的 `fa_swap` 不變。
+
+### 21.x 真 GPU 基準：`scripts/eval/gpgpu_bench.eval.js`（2026-11-19）
+
+目的：在有獨立顯示卡的機器上量 llc 的 nbody3d、fluid3d 每幀耗時（CPU 版 wasm 對 OpenCL 版），並印出 WebGL2 的 renderer／vendor、`EXT_color_buffer_float`。
+這個評測**不加任何軟體 GL 旗標**，所以一定要在有真 GPU 的機器上跑；在沒有 GPU 的機器上跑出來的數字，`renderer` 會是 SwiftShader，不能當作真 GPU 的結果。
+
+**執行（在桌面版的專案根目錄）**——把下面這行直接貼進終端機：
+
+```bash
+node scripts/eval/gpgpu_bench.build.js /tmp/gpgpu_bench.js && FA_EVAL_GL=gpu FA_EVAL_TIMEOUT_MS=3000000 node scripts/eval/run_eval.js /tmp/gpgpu_bench.js
+```
+
+約需 10–30 分鐘（N＝3072 的 CPU 版最慢）。執行中會開一個視窗，不要關掉。
+
+**預期輸出格式**：最後會有一行 `[eval-file] result: {…}`，內容是 JSON：
+
+```
+[eval-file] result: {"env":{"webgl2":true,"renderer":"…（真 GPU 的名稱）","vendor":"…","ext_color_buffer_float":true,"max_texture_size":16384,"webgpu":"adapter"|"no adapter",…},
+ "nbody":{"512":{"cpu":{"ms_per_frame":…,"backend":"none"},"opencl":{"ms_per_frame":…,"backend":"webgl2"|"js-shim"}},"1024":{…},"3072":{…}},
+ "fluid":{"1000":{"cpu":{…},"opencl":{…}}},
+ "nbody_512_opencl_forced_js":{"ms_per_frame":…,"backend":"js-shim"}}
+```
+
+- `ms_per_frame`：斜率（10 幀與 40 幀的差）；`null` 代表那個執行失敗（看 `exit`）。
+- `backend`：`webgl2`＝OpenCL 核心真的在 GPU 上跑（有 `gpu_dispatch` 次數）；`js-shim`＝退回 JS 墊片（有 `fallback` 次警告）；`none`＝CPU 版。
+- 如果 `env.ext_color_buffer_float` 是 false，OpenCL 只會是 `js-shim`，那就不是 GPU 加速的數字。
+- fluid 的粒子數寫死在產生器裡（1000），所以只有一個 N。
+
+**已知限制**：目前 OpenCL 版每幀仍有寫入與讀回（見 DESIGN.webgpu-cuda.md §13 階段 6），所以真 GPU 上的加速也會被傳輸成本限制住；這個基準正是用來量這個差距。

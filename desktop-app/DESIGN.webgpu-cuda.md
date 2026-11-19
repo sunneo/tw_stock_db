@@ -1149,3 +1149,14 @@ Python 模擬器與離線模型推論共用同一個 GPU 裝置：
 - fluid3d N=1000（20／120 幀）：CPU 30.33 ms／幀；JS 墊片 30.98 ms／幀；WebGL2（480 次派送）210.53 ms／幀。平均 y 三者相同（0.109）。
 - 解讀：JS 墊片（核心被翻成 JIT 的 JavaScript）跟 CPU 的 wasm 版差不多；WebGL2 在軟體 GL 下慢很多，是軟體光柵化加上每幀讀寫的成本。要看真 GPU 的加速，需要有真 GPU 的機器。
 - `run_eval.js` 新增 `FA_EVAL_GL=swiftshader`（只給評測，預設仍是 `--disable-gpu`）。
+
+**階段 6（規劃，尚未實作；2026-11-19）：緩衝區留在 GPU、每幀只讀回一次、GL 直接讀位置紋理**
+- **現況的成本（已量）**：每幀 `clEnqueueWriteBuffer`×4（nbody）或×6（fluid）、`clEnqueueReadBuffer`×4、每個核心都從 CPU 重新上傳紋理與讀回 framebuffer。計算本身只佔一小部分。
+- **兩個 context 的事實（已查）**：WebGL2 紋理不能跨 context 共用。GUI 畫布的 context 建在 `renderer/src/gui/gui_render.js:48`（`getContext('webgl2', {preserveDrawingBuffer:true})`），KIR 的離屏 context 建在 `floating-assistant.js` 的 `_kirHostHooks`（另一個 canvas）。所以目前 OpenCL 的紋理與 GL 點精靈不在同一個 context，**不能直接 texelFetch 位置紋理**。
+- **共用方案（要做的話）**：KIR 裝置（`kir_webgl2.js` 的 device）改用 GUI 畫布那個 context：gui_render 提供一個 `glctx` 查詢（由 gui host 的 op 取得），kir 在同一個 context 上配置紋理與 framebuffer；執行前後保存並還原 framebuffer、viewport、program、texture unit 綁定（避免影響 gl3d 的繪圖狀態）。
+- **分階段**：
+  1. 持久紋理＋雙緩衝（ping-pong）：`kir_webgl2.js` 的 device 配置一次、跨核心保留；host 的 `cl_mem` 記錄「GPU 上是最新」的旗標；`clEnqueueReadBuffer` 才 `readPixels`，`clEnqueueWriteBuffer` 才上傳。nbody／fluid 的 IR 改成：每幀 accel×4、積分 kernel（速度、位置，各一個輸出，因此要拆成多個核心；KIR 每核心一個輸出）、只在畫面需要時讀位置一次。
+  2. 每幀 1 次讀回（位置，給 GL 點精靈的現有 glBegin 路徑）。
+  3. interop（需要共用 context）：點精靈的頂點著色器用 `texelFetch(positions, gl_VertexID)` 直接讀，完全不讀回。
+- **風險**：積分在 GPU 上要拆成多個單一輸出核心（vx、vy、vz、x、y、z 各一個），必須用雙緩衝避免就地讀寫；clamp 與 `dt` 的順序要與 CPU 版逐項一致，才能用同一組容差比對。
+- **未做之前的誠實結論**：目前 OpenCL 版在軟體 GL 下比 CPU 慢；要看加速，要在真 GPU 上跑 `scripts/eval/gpgpu_bench.eval.js`（見 DESIGN.run-terminal.md §21）。
