@@ -1,4 +1,4 @@
-# HANDOFF：協調 session（發布、驗證、分派）— 2026-11-07
+# HANDOFF：協調 session（發布、驗證、分派）— 2026-11-07（2026-11-20 更新現況）
 
 ## 1. 開場提示（接手者收到的話）
 
@@ -6,6 +6,7 @@
 
 ## 2. 概況
 
+- **2026-11-20 更新**：目前發布到 **patch v490**（桌面版，`--no-web`）。本期範圍縮小為 llc gpgpu 的 OpenCL／GPU 加速，Blockly 教學範本已完成、本期不再動。現況與待辦見 `HANDOFF.llc-opencl.md`（現況、第 3 節）、`changes.md`（近期更新總結）、`DESIGN.TODO.md` 現況總覽。自動 swap 只有設計（`DESIGN.run-terminal.md` §24），實作在 `wip/auto-swap`，未發布。發布驗證若遇 tree-sitter 測試假失敗，先重建 `FA_TS_DIR`（見 `HANDOFF.llc-opencl.md`）。下方第 2 節的 v317 是 11-07 的舊紀錄。
 - 專案：`/home/hungfu.lee/下載/SRC/tw_stock_db/desktop-app`，分支 `desktop-app`。目前發布到 **patch v317**（HEAD `2d7d64a2`）。v314 作廢（發布時 sparse checkout 漏檔，被 v315 取代）。
 - 已在使用者端：Blockly 範式骨架、Linux 工具題（cat／grep／xxd／tar／gzip／xz／BMP，train 37/37、holdout 21/27）、35 個位元積木、領域包 DSP／algo2／os／ds／linuxtext、離線各層 rounds 帶回、矩陣層宿主接線（`FaMatrixSynth`，只過範例標 `verified:false`）。
 - 矩陣層實測價值很小：保留題庫 48 題（沒教過）Blockly 17、加矩陣 21。矩陣補齊交給 stevenyc.huang 的 session（交接：`HANDOFF.matrix-fallback.md`、`DESIGN.matrix-fallback.md` §9.7／§12）。

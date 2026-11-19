@@ -11,6 +11,16 @@ Continue from the handoff document at desktop-app/HANDOFF.llc-opencl.md. Read it
 - **提交與 push 用 `ssh -o BatchMode=yes hungfu.lee@127.0.0.1`**，在 `/home/hungfu.lee/下載/SRC/tw_stock_db` 下 `git add desktop-app/<自己的檔>` 再 commit（不要 `git add -A`）。commit 訊息結尾 `Co-Authored-By: Claude Haiku 5.5 <noreply@anthropic.com>`。
 - **領導**：協調 session `local_aa2d0534-d9c3-41a6-8c95-9c3591567ef0`（FloatingAssistant，Sonnet）。每個階段提交後用 `SendMessage` 回報它一次（第一行寫清楚是哪個階段與 hash）；它驗證並發布。我們是子 session，用 haiku。發布（`scripts/publish.sh`）只有領導做。
 
+### 現況（2026-11-20，領導更新）
+
+- 已發布到 **patch v490**（桌面版，`desktop-app` a11a0ae8b）。後續 commit 只有文件（`changes.md`、DESIGN §24、現況總覽）。
+- v484–v490 內容：KIR WebGL2 執行層與常駐裝置層（`dd01eaec9`）、host 接 KIR（`1a7772f36`）、nbody3d／fluid3d 的 `_cl` 版（`9a27a6526`）、HUD 與 CPU／GPU 按鈕（v487–v489）、打包紋理裝置層與 host 匯入（`17864b490`、`a0d382294`、`e8f4f2d14`）。
+- **nbody 維持 v489 的逐部分讀回版**（`75d1fbfb4` 還原）。打包版修了兩個 bug：`u_off` 列偏移（`e8f4f2d14`），以及 `accel_cl` 拷貝迴圈計數器 `%ci` 每幀沒歸零（第 2 幀起輸出凍結）。
+- 真機（使用者）：nbody GPU 0.063 s／step 對 CPU 0.961 s／step；GPU 使用率 <2% → 70%。軟體 GL（這台）沒有加速，已如實記錄。
+- 驗證：`llvm_host` 41、`kir` 30、`nbody3d_cl` 24、`fluid3d_cl` 20、`llc_hud.eval.js` 22/22。受影響測試有 3 組失敗（`lora_route_wiring`、`studio_embed`、`gpu-mem-settings`），在 lora／studio／transformers 快取，與本批無關，未追根因。
+- 測試環境：`FA_TS_DIR=/tmp/fa-ts-cache`（需把 `renderer/vendor/tree-sitter/*` 複製進去，`/tmp` 被清過就要重建）。
+- 這個 session 的模型規則：領導 Sonnet → 子 session 用 Haiku；領導 Opus → 子 session 用 Sonnet。
+
 ### 已提交（新到舊）
 
 | hash | 內容 |
@@ -33,20 +43,16 @@ Continue from the handoff document at desktop-app/HANDOFF.llc-opencl.md. Read it
 ### 環境事實（已驗證）
 - 真 Electron（xvfb＋SwiftShader）：`navigator.gpu` 存在，`requestAdapter()` 回 **null**；WebGL2 可用。WebGPU 在這台**不能真的驗證**。
 
-## 3. 待辦（依序；下一步先做第 3 項）
+## 3. 待辦（依序；2026-11-20 領導更新，取代 handoff 1 的舊待辦）
 
-1. （已完成）階段 0–3：KIR、JS 後端、OpenCL C 解析器、WGSL 與 GLSL 產生器，附測試。
-2. （已完成）`kir_gen.js` 的 GLSL 只做了結構檢查，還沒在真 WebGL2 編譯。
-3. **下一步＝階段 4：WebGL2 執行層（真 Electron 驗證）**。
-   - 新檔 `renderer/src/gpu/kir_webgl2.js`（UMD，瀏覽器掛 `FaKirWebGL2`，gl 由呼叫端傳入）：用 `toGlsl` 的 vs／fs 編譯連結；每個 in 緩衝區建 RGBA32F 紋理（寬 uW、高 ceil(N/uW)）；out 緩衝區掛到 framebuffer 的 RGBA32F 紋理（需要 `EXT_color_buffer_float`）；全螢幕三角形；讀回用 `readPixels`（只在 clEnqueueReadBuffer 時）。
-   - **先在真 Electron 檢查** `EXT_color_buffer_float` 與浮點紋理能不能渲染。不行就在 DESIGN §13 寫明「WebGL2 不可用」，退回 JS，並回報領導。
-   - 驗證：vecadd、N 體、SPH 三個核心，WebGL2 的結果與 `runJs` 比對（容差用 `gpu_core.tolerance`）。
-4. **階段 4b：host 接線**：`renderer/src/uml/llvm_host.js` 的 `clEnqueueNDRangeKernel` 改走 KIR 派送：後端順序 WebGL2（有 EXT_color_buffer_float）→ JS；緩衝區留在 GPU 紋理，`clEnqueueReadBuffer` 才讀回；GL 點精靈（nbody3d 繪圖）用 `texelFetch` 直接讀位置紋理（interop，不讀回）。目前 `llvm_host.js` 的 CL 實作（`clCompile` 直接翻成 JS）要改成走 KIR，或保留為 CPU 後備，二擇一並寫清楚。
-5. **階段 5（nbody3d／fluid3d 實測）**：計算核心改用 OpenCL（`*_cl.ll` 版本，保留 CPU 版）；真 Electron 量每幀耗時 CPU vs WebGL2，同樣 N；軟體 GL（SwiftShader）要在報告寫明，可能不會比 CPU 快，要如實說。截圖確認畫面正常。提交後回報領導。
-6. **cudaweb 接線**：領導要求 OpenCL 的 GPU 後端接到 cudaweb 的實作（`renderer/src/gpu/gpu_core.js`、`backend_core.js` 登錄表、`kernel_gen.js`）。目前 gpu_core 沒有任意核心派送，KIR 是新功能；要不要掛進 gpu_core 的 run() 還沒決定，先在 DESIGN §13 寫方案，必要時問領導。
-7. **CUDA 前端**：`cuda_vecadd.ll`（cudaMalloc／cudaMemcpy／cudaLaunchKernel 子集，接 KIR）。NVPTX 路線只有文件（DESIGN.webgpu-cuda.md §4），沒有 PTX 解析器；先做 host API 子集＋KIR，限制寫明。
-8. **B：WebGPU 計算後端**：這台沒有 adapter。先試 Electron 旗標找軟體 adapter（例如 `enable-unsafe-webgpu`、`use-webgpu-adapter=swiftshader`）；不可行就標「已實作、未在真 GPU 驗證」。
-9. **HUD 文字（領導決定 A，最後做）**：SDL 每幀上限 200 道繪圖指令（`llvm_host.js` 約第 352 行 `ops.slice(0,200)`）。改成：上限 **2000**，做成具名常數寫進 DESIGN §21；確認 GUI 橋接端（`gui_host.js`／主程序傳輸）沒有第二個上限與單幀訊息大小問題；`draw_text` 在產生器裡把每列連續像素合併成一個矩形（共用輔助放 `_gen/_irb.py`）；7×13 字型；文字只在變動時重組；每個範例 HUD ≤600 道指令。範例：music_player、midi_player（控制說明＋波形名稱＋速度＋狀態＋音名）、sdl2_piano（每鍵字母與音名，按下時顯示音）、sdl2_pong（操作鍵與比分）、sdl2_gl_triangle（用 nbody 的點陣字做法）、gtk3_widgets（若有同樣問題）。真 Electron 逐一截圖，文字要清楚；回報列出「有／沒有螢幕說明」的檢查表。
+階段 0–5、4b、1a（常駐裝置層）、1c（打包裝置層）、nbody／fluid 的 HUD 與 CPU／GPU 按鈕都**已完成並發布到 v490**（見上面「現況」）。剩下：
+
+1. **OpenCL↔OpenGL interop（步驟 2）**：先讓使用者拍板 `DESIGN.webgpu-cuda.md` §13 階段 6 的 4 個決定（領導建議：KIR 共用 GUI 畫布 context `gui_render.js:48`；context lost 退回 CPU 路徑並在 HUD 說明；GL 批次上限具名常數 1024，目前 `llvm_host.js:518` 只取前 20；不等 1c）。實作：位置紋理直接當點精靈來源，不讀回；軟體 GL 與真 GPU 的數字分開寫。
+2. **KIR 的 WebGPU 裝置層（步驟 3）**：同 `createDevice` 介面，重用 `gpu_core.js` 的 `probeAdapter`／`profileOf`；這台 `requestAdapter()` 是 null，只能做靜態檢查，標「未在真 GPU 驗證」。
+3. **CUDA runtime API 前端**：`cudaMalloc／cudaMemcpy／cudaLaunchKernel` 子集＋`gpgpu/cuda_vecadd.ll`，走 cudaweb／KIR。NVPTX 路線沒有 PTX 解析器，限制寫明。
+4. **HUD 文字（互動範例）**：music_player、midi_player、sdl2_piano、sdl2_pong、sdl2_gl_triangle（gtk3_widgets 若有同樣問題）。上限 **2000**（具名常數，寫進 DESIGN §21）、`draw_text` 合併同列連續像素、每個 HUD ≤600 道指令、7×13 字型（`_gen/_font_data.py`，只有 ASCII，中文不會顯示）、手寫 `.ll` 用 `_gen_*.py` 產生；`llc_hud.eval.js` 擴充成「有／沒有螢幕說明」檢查表。
+5. **打包版 nbody 的真 GPU 量測**（使用者機器）：生成器在 `renderer/src/examples/llc/_gen/_wip_nbody3d_cl_packed.py.txt`（輸出已與 CPU 一致，軟體 GL 約 60 ms／幀、慢於 v489 的 20 ms）；真 GPU 若明顯更快再換上。
+6. **自動 swap／configure**：設計在 `DESIGN.run-terminal.md` §24；實作在分支 `wip/auto-swap`（f8dc80375，未審、未發布）。使用者要求「先寫下設計書就好」，所以先不接，等使用者說要做。
 
 ## 4. 工作風格（使用者與領導的規則）
 
