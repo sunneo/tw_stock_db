@@ -88,6 +88,12 @@ const NB = ['512', '100000', '0'];
     await stopJob(id);
 }
 // 2. nbody3d_cl（OpenCL 版）：預設 GPU；狀態行與按鈕底色（選中＝綠、未選中＝灰）隨模式變；GPU 不可用時退回 CPU 並說明
+// 完全吻合：候選中只有一個的覆蓋率 ≥ 0.999，其餘 < 0.999（WebGL2 與 WebGPU 的字只差幾個像素，0.95 的門檻分不出來）
+const exactBest = (cands, x, y, cv) => {
+    const img = grab(cv);
+    const sc = cands.map((t) => ({ text: t, coverage: coverage(img, glyphPts(t, x, y)) })).sort((p, q) => q.coverage - p.coverage);
+    return { best: sc[0], second: sc[1], ok: sc[0].coverage >= 0.999 && sc[1].coverage < 0.999 };
+};
 const GREEN_PX = [143, 139], CPU_BTN = [143, 139], GPU_BTN = [203, 139];
 const isGreen = (img, x, y) => { const i = pixIdx(img, x, y); const r = img.a[i], g = img.a[i + 1], b = img.a[i + 2]; return g > 100 && g > r + 40 && g > b + 40; };
 const btnRow = (example, state, img) => {
@@ -100,14 +106,11 @@ const btnRow = (example, state, img) => {
     const cv = findCanvas(800, 560); const node = await canvasNode(id);
     if (!cv || !node) R.rows.push({ example: 'nbody3d_cl', label: 'canvas', pass: false, note: '找不到畫布或節點' });
     else {
-        const CANDS = ['GPU: OpenCL kernels (WebGL2 backend)', 'GPU: OpenCL JS shim (not GPU)', 'GPU: OpenCL not dispatched yet', 'GPU unavailable: WebGL2 float render not supported', 'CPU: wasm integration'];
-        const st0 = check('nbody3d_cl', '開場（預設）', '狀態行', 5, 145, CANDS, cv);
-        const defaultGpu = st0.text.startsWith('GPU');
-        R.rows[R.rows.length - 1].pass = defaultGpu || st0.text.startsWith('GPU unavailable') ? (st0.coverage >= 0.95) : false;
-        R.rows[R.rows.length - 1].note = defaultGpu ? '預設是 GPU' : '預設 GPU 不可用，已退回 CPU（應顯示原因）';
+        const CANDS = ['GPU: OpenCL kernels (WebGPU backend)', 'GPU: OpenCL kernels (WebGL2 backend)', 'GPU: OpenCL JS shim (not GPU)', 'GPU: OpenCL not dispatched yet', 'GPU unavailable: WebGL2 float render not supported', 'CPU: wasm integration'];
+        const ex0 = exactBest(CANDS, 5, 145, cv); const defaultGpu = ex0.best.text.startsWith('GPU');
+        R.rows.push({ example: 'nbody3d_cl', state: '開場（預設）', label: '狀態行（完全吻合）', shown: ex0.best.text, best_coverage: ex0.best.coverage, pass: ex0.ok && defaultGpu });
         const img0 = grab(cv); const b0 = btnRow('nbody3d_cl', '開場（預設）', img0);
-        if (defaultGpu) R.rows[R.rows.length - 1].pass = b0.gpuG && !b0.cpuG;
-        else R.rows[R.rows.length - 1].pass = b0.cpuG && !b0.gpuG;
+        R.rows[R.rows.length - 1].pass = defaultGpu ? (b0.gpuG && !b0.cpuG) : (b0.cpuG && !b0.gpuG);
 
         await click(id, node, 165, 132); await wait(2500);
         const img1 = grab(findCanvas(800, 560));
@@ -117,7 +120,8 @@ const btnRow = (example, state, img) => {
 
         await click(id, node, 225, 132); await wait(3500);
         const img2 = grab(findCanvas(800, 560));
-        const st2 = check('nbody3d_cl', '再點 GPU 後', '狀態行', 5, 145, CANDS.slice(0, 4), findCanvas(800, 560));
+        const ex2 = exactBest(CANDS.slice(0, 4), 5, 145, findCanvas(800, 560));
+        R.rows.push({ example: 'nbody3d_cl', state: '再點 GPU 後', label: '狀態行（完全吻合）', shown: ex2.best.text, best_coverage: ex2.best.coverage, pass: ex2.ok && ex2.best.text.startsWith('GPU') });
         const b2 = btnRow('nbody3d_cl', '再點 GPU 後', img2);
         R.rows[R.rows.length - 1].pass = b2.gpuG && !b2.cpuG;
     }
@@ -128,18 +132,21 @@ const btnRow = (example, state, img) => {
     const P = window.WebGL2RenderingContext && WebGL2RenderingContext.prototype;
     const origGet = P.getExtension;
     P.getExtension = function (n) { return n === 'EXT_color_buffer_float' ? null : origGet.call(this, n); };
+    // WebGPU 也要藏起來：只藏浮點擴充的話，v492 之後後端會走 WebGPU（不需要那個擴充），就不會退回 CPU
+    const NAVGPU = Object.getOwnPropertyDescriptor(navigator, 'gpu'); Object.defineProperty(navigator, 'gpu', { value: undefined, configurable: true });
     try {
         const id = await startJob('nbody3d_cl', NB); await wait(6000);
         const cv = findCanvas(800, 560); const node = await canvasNode(id);
         if (!cv || !node) R.rows.push({ example: 'nbody3d_cl', state: '無浮點渲染', label: 'canvas', pass: false, note: '找不到畫布' });
         else {
-            const st = check('nbody3d_cl', '無浮點渲染（模擬）', '狀態行（應說明退回 CPU 的原因）', 5, 145, ['GPU unavailable: WebGL2 float render not supported', 'CPU: wasm integration'], cv);
+            const ex = exactBest(['GPU unavailable: WebGL2 float render not supported', 'CPU: wasm integration'], 5, 145, cv);
+            R.rows.push({ example: 'nbody3d_cl', state: '無浮點渲染（模擬）', label: '狀態行（應說明退回 CPU 的原因，完全吻合）', shown: ex.best.text, best_coverage: ex.best.coverage, pass: ex.ok && ex.best.text.startsWith('GPU unavailable') });
             const b = btnRow('nbody3d_cl', '無浮點渲染（模擬）', grab(cv));
             R.rows[R.rows.length - 1].pass = b.cpuG && !b.gpuG;
             R.rows[R.rows.length - 1].note = '退回 CPU 後，CPU 按鈕應為綠色';
         }
         await stopJob(id);
-    } finally { P.getExtension = origGet; }
+    } finally { P.getExtension = origGet; if (NAVGPU) Object.defineProperty(navigator, 'gpu', NAVGPU); else delete navigator.gpu; }
 }
 // 3. 輸出一致性：CPU 版 vs OpenCL 版（預設 GPU，不點按鈕）；結束行印出叢集中心
 {
@@ -152,8 +159,10 @@ const btnRow = (example, state, img) => {
 // 4. fluid3d（CPU，純 CPU 版）與 fluid3d_cl（OpenCL 版：預設 GPU、底部 CPU／GPU 按鈕）
 const FB_CPU = [495, 450], FB_GPU = [555, 450], FBTN_CPU_PX = [474, 457], FBTN_GPU_PX = [534, 457];
 const fluidState = async (example, state, cv) => {
-    const cands = ['1000 particles | source: GPU (OpenCL WebGL2) | step ', '1000 particles | source: GPU (OpenCL JS shim, not GPU) | step ', '1000 particles | source: GPU (OpenCL, not dispatched) | step ', '1000 particles | source: CPU (wasm) | step ', '1000 particles | source: CPU, GPU unavailable (no WebGL2 float) | step '];
-    const st = check(example, state, '狀態行前綴（實際後端）', 5, 5, cands, cv);
+    const cands = ['1000 particles | source: GPU (OpenCL WebGPU) | step ', '1000 particles | source: GPU (OpenCL WebGL2) | step ', '1000 particles | source: GPU (OpenCL JS shim, not GPU) | step ', '1000 particles | source: GPU (OpenCL, not dispatched) | step ', '1000 particles | source: CPU (wasm) | step ', '1000 particles | source: CPU, GPU unavailable (no WebGL2 float) | step '];
+    const ex = exactBest(cands, 5, 5, cv);
+    R.rows.push({ example, state, label: '狀態行前綴（完全吻合）', shown: ex.best.text, best_coverage: ex.best.coverage, pass: ex.ok });
+    const st = { text: ex.best.text, coverage: ex.best.coverage, exact: ex.ok };
     const img = grab(cv);
     const cpuG = isGreen(img, FBTN_CPU_PX[0], FBTN_CPU_PX[1]), gpuG = isGreen(img, FBTN_GPU_PX[0], FBTN_GPU_PX[1]);
     R.rows.push({ example, state, label: '按鈕底色（CPU 按鈕、GPU 按鈕）', shown: (cpuG ? 'CPU 綠' : 'CPU 非綠') + '、' + (gpuG ? 'GPU 綠' : 'GPU 非綠'), best_coverage: null, pass: null, cpu_green: cpuG, gpu_green: gpuG });
@@ -174,13 +183,13 @@ const fluidState = async (example, state, cv) => {
     if (!cvB || !node) R.rows.push({ example: 'fluid3d_cl', label: 'canvas', pass: false, note: '找不到 640×480 的畫布或節點' });
     else {
         const d = await fluidState('fluid3d_cl', '開場（預設）', cvB);
-        R.rows[R.rows.length - 1].pass = d.st.coverage >= 0.95 && (d.st.text.indexOf('GPU') >= 0 || d.st.text.indexOf('CPU, GPU unavailable') >= 0) && (d.st.text.indexOf('GPU') >= 0 ? (d.gpuG && !d.cpuG) : (d.cpuG && !d.gpuG));
+        R.rows[R.rows.length - 1].pass = d.st.exact && (d.st.text.indexOf('GPU') >= 0 || d.st.text.indexOf('CPU, GPU unavailable') >= 0) && (d.st.text.indexOf('GPU') >= 0 ? (d.gpuG && !d.cpuG) : (d.cpuG && !d.gpuG));
         await click(b, node, FB_CPU[0], FB_CPU[1]); await wait(2500);
         const c1 = await fluidState('fluid3d_cl', '點 CPU 後', findCanvas(640, 480));
-        R.rows[R.rows.length - 1].pass = c1.st.coverage >= 0.95 && c1.st.text.indexOf('CPU (wasm)') >= 0 && c1.cpuG && !c1.gpuG;
+        R.rows[R.rows.length - 1].pass = c1.st.exact && c1.st.text.indexOf('CPU (wasm)') >= 0 && c1.cpuG && !c1.gpuG;
         await click(b, node, FB_GPU[0], FB_GPU[1]); await wait(3000);
         const c2 = await fluidState('fluid3d_cl', '再點 GPU 後', findCanvas(640, 480));
-        R.rows[R.rows.length - 1].pass = c2.st.coverage >= 0.95 && c2.st.text.indexOf('GPU') >= 0 && c2.gpuG && !c2.cpuG;
+        R.rows[R.rows.length - 1].pass = c2.st.exact && c2.st.text.indexOf('GPU') >= 0 && c2.gpuG && !c2.cpuG;
     }
     await stopJob(b);
 }
@@ -189,17 +198,19 @@ const fluidState = async (example, state, cv) => {
     const P = window.WebGL2RenderingContext && WebGL2RenderingContext.prototype;
     const origGet = P.getExtension;
     P.getExtension = function (n) { return n === 'EXT_color_buffer_float' ? null : origGet.call(this, n); };
+    // WebGPU 也要藏起來：只藏浮點擴充的話，v492 之後後端會走 WebGPU（不需要那個擴充），就不會退回 CPU
+    const NAVGPU = Object.getOwnPropertyDescriptor(navigator, 'gpu'); Object.defineProperty(navigator, 'gpu', { value: undefined, configurable: true });
     try {
         const b = await startJob('fluid3d_cl', ['100000']); await wait(6000);
         const cvB = await waitCanvas(640, 480, 8000);
         if (!cvB) R.rows.push({ example: 'fluid3d_cl', state: '無浮點渲染（模擬）', label: 'canvas', pass: false, note: '找不到畫布' });
         else {
             const f = await fluidState('fluid3d_cl', '無浮點渲染（模擬）', cvB);
-            R.rows[R.rows.length - 1].pass = f.st.text.indexOf('CPU, GPU unavailable') >= 0 && f.cpuG && !f.gpuG;
+            R.rows[R.rows.length - 1].pass = f.st.exact && f.st.text.indexOf('CPU, GPU unavailable') >= 0 && f.cpuG && !f.gpuG;
             R.rows[R.rows.length - 1].note = '應顯示 CPU, GPU unavailable，CPU 按鈕綠';
         }
         await stopJob(b);
-    } finally { P.getExtension = origGet; }
+    } finally { P.getExtension = origGet; if (NAVGPU) Object.defineProperty(navigator, 'gpu', NAVGPU); else delete navigator.gpu; }
 }
 // 輸出：CPU 版（200 幀）vs OpenCL 版（200 幀，預設 GPU）vs OpenCL 版途中切到 CPU 再切回 GPU；y_mean 都要一致
 {
