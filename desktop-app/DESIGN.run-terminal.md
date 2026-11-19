@@ -1630,3 +1630,15 @@ sleep/curl/date/ask-floating-ai-assistant各自踩過的坑。
 **限制**：程式結束時它自己開的視窗會被收掉（既有的 `_terminalGuiScope`），所以要看最後畫面請 `detach` 後在程式還跑時截圖；SDL2／OpenGL／GTK3／OpenCL 的 `.ll` 不能在 job 裡跑（沙盒 wasm 只有 WASI，見 `examples/llc/README.md`，下一步做 host import）；job 與 terminal 的 session 互相看不到（job 不在 `terminal_list`）。
 
 **驗證**：`scripts/eval/job_layer.eval.js`（真 Electron）：node／shell／swap 落到 IndexedDB（8 MB）且程式結束後清空、貪食蛇視窗快照→注入方向鍵→截圖→`job_stop`（結束碼 130）、python＋numpy＋`fa_swap`（後端 indexeddb）全過；單元：`gui_host.test.js`（inject／windows）、`py_async.test.js`。
+
+## 21. LLVM IR 的主機函式庫：SDL2／OpenGL／GTK3 走 wasm host import（2026-11-19）
+
+**動機（使用者）**：llc 的範例（SDL2 遊戲、GTK3 視窗、OpenGL）不只能在真機器編成原生執行，在 run terminal／job 的模擬環境也要能跑。
+**做法**：
+- `uml/llvm_core.js`（FaLlvm）新增 `registerHost`（主機函式的簽名表；IR 宣告了又沒定義就編成 wasm 匯入 `env`，簽名不符或沒實作在檢查階段就報）、`float`（f32、`fpext`／`fptrunc`）、可變參數呼叫（多出來的引數放影子堆疊上 8 位元組對齊的緩衝區，多傳一個指標）、函式指標當值（函式表格索引從 1 起、匯出 `table`；給主機函式當回呼，wasm 內不能間接呼叫）、`runHost`（JSPI：`WebAssembly.Suspending`／`promising`；只有用到 async 主機函式才要求 JSPI；`main(argc, argv)` 的參數寫進保留區 800..1024）。
+- `uml/llvm_host.js`（FaLlvmHost，純邏輯，gui／sleep／now 由呼叫端傳入）實作 SDL2（視窗、渲染器、事件轉成 `SDL_Event` 位元組、計時）、OpenGL 固定管線（矩陣堆疊在 JS，`glBegin／End` 收成批次 → 上傳成緩衝區 → `flat` 程式的 `glframe`；QUADS／FAN 拆三角形）、GTK3（widget 樹在 `gtk_widget_show_all` 時一次送成 GUI 節點；`gtk_main` 輪詢事件、經函式表格呼叫訊號處理函式與 `g_timeout_add`；回傳字串用 wasm 保留區 64..784 的暫存環）、printf 家族。事件用 `gui('wait', {timeout: 0})` 讀（視窗已關閉會得到 close 事件）。
+- 接線：`lli` 加進 `TERMINAL_COMPOUND_INTERCEPT_NAMES` 與 `TERMINAL_VIRTUAL_SCRIPT_COMMANDS`；`_terminalTryLliHost` 在 IR 用到主機函式時走非同步路徑（登記只在程式執行期間，用計數保護，結束就取消，不影響別的 IR 工具），不適用就退回原本的同步 `lli`（wasi-sh host builtin）。結束碼、Ctrl+C、逾時、視窗收尾跟 python／node 一致；job_run 的 `lang: 'llvm'` 直接可用。`job_gui` 新增 `change`（勾選框）、`wheel`。
+- 同時：`pygame.locals`（`from pygame.locals import *` 的慣用寫法，墊片是單一檔案，改成登記在 `sys.modules` 的模組）。
+
+**限制**：沒有 `phi`（用 alloca）；一幀 SDL 最多 200 道繪圖指令；GL 沒有光照、紋理、著色器；沒有音訊與影片；`gtk_main` 在所有視窗關閉後會結束（真 GTK 會一直等）；沙盒沒有 OpenCL（`opencl_vecadd.ll` 只能在真機器跑）；需要 JSPI（Chrome／Edge 137 以上、桌面版）。
+**驗證**：`llvm_host.test.js`（12 項，node）、`llvm_core.test.js`（103 項沒壞）；真 Electron：`scripts/eval/llc_host.eval.js`（pong、GTK 自動／互動、GL、錯誤路徑，全過）。

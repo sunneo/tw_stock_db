@@ -288,6 +288,7 @@ const suites = [
     ['瀏覽器控制穩定生成（動作檢查、狀態接線、副作用標記、UML 來回、計畫一批、等擴充功能連上、執行驗證重試、整個任務）', 'renderer/src/browser/bcplan_core.test.js'],
     ['資料離線精準查詢（SPDX／工作表：結構、讀問題、計畫、檢查、執行、SQL、放寬與最接近的值、歧義問字母、題庫）', 'renderer/src/dataview/dataquery_core.test.js'],
     ['UML → LLVM IR → wasm32-wasi（IR 解析與型別檢查、wasm 產生、真的執行、運算／迴圈／遞迴／struct／全域／字串、檢查器擋錯、UML 軌跡一致）', 'renderer/src/uml/llvm_core.test.js'],
+    ['LLVM IR 主機函式庫（SDL2／OpenGL／GTK3 的 wasm host import）：簽名檢查、printf 家族、float、可變參數、函式指標、main(argc, argv)、三個 .ll 範例都編得成 wasm', 'renderer/src/uml/llvm_host.test.js'],
     ['探索時的反思（錯字：英文編輯距離／中文同音近形字、不認得的字、概念再找、可能是新的需求、整份計畫反思：問使用者／統一走建議／上限）', 'renderer/src/catalog/reflect_core.test.js'],
     ['CoLU 的 ReLU 形式（relu／sat／max2、可達性逐位元等於位元版、ReLU 層疊網路、最佳接線分數等於 findPipelines、矩陣連乘後端一致性檢查）', 'renderer/src/catalog/relu_core.test.js'],
     ['CoLU 接線題（出題、評分、退化偵測、假模型跑整套、建議 self／guided／auto／unknown、使用時的提示）', 'renderer/src/catalog/colu_bench_core.test.js'],

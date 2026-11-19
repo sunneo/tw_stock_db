@@ -21,12 +21,12 @@
     // 型別
     // =====================================================================
     const T = {
-        i1: { k: 'int', bits: 1 }, i8: { k: 'int', bits: 8 }, i32: { k: 'int', bits: 32 }, i64: { k: 'int', bits: 64 }, double: { k: 'double' }, void: { k: 'void' }, ptr: { k: 'ptr', to: null }
+        i1: { k: 'int', bits: 1 }, i8: { k: 'int', bits: 8 }, i32: { k: 'int', bits: 32 }, i64: { k: 'int', bits: 64 }, float: { k: 'float' }, double: { k: 'double' }, void: { k: 'void' }, ptr: { k: 'ptr', to: null }
     };
     const ptrTo = (to) => ({ k: 'ptr', to });
     function typeStr(t) {
         if (!t) return '?';
-        switch (t.k) { case 'int': return 'i' + t.bits; case 'double': return 'double'; case 'void': return 'void'; case 'ptr': return t.to ? typeStr(t.to) + '*' : 'ptr'; case 'named': return '%' + t.name; case 'array': return '[' + t.n + ' x ' + typeStr(t.of) + ']'; case 'struct': return '{ ' + t.fields.map(typeStr).join(', ') + ' }'; }
+        switch (t.k) { case 'int': return 'i' + t.bits; case 'float': return 'float'; case 'double': return 'double'; case 'void': return 'void'; case 'ptr': return t.to ? typeStr(t.to) + '*' : 'ptr'; case 'named': return '%' + t.name; case 'array': return '[' + t.n + ' x ' + typeStr(t.of) + ']'; case 'struct': return '{ ' + t.fields.map(typeStr).join(', ') + ' }'; }
         return '?';
     }
     const sameType = (a, b) => { if (a && b && a.k === 'ptr' && b.k === 'ptr') return !a.to || !b.to || sameType(a.to, b.to); return typeStr(a) === typeStr(b); };
@@ -41,7 +41,7 @@
         } else if (s[i] === '%') {
             const m = /^%([\w.$-]+)/.exec(s.slice(i)); if (!m) throw new Error('型別名稱格式錯誤：' + s); i += m[0].length; t = { k: 'named', name: m[1] };
         } else {
-            const m = /^(i1|i8|i32|i64|double|void|ptr)\b/.exec(s.slice(i)); if (!m) throw new Error('不支援的型別：' + s.slice(i, i + 12)); i += m[0].length; t = T[m[1]];
+            const m = /^(i1|i8|i32|i64|float|double|void|ptr)\b/.exec(s.slice(i)); if (!m) throw new Error('不支援的型別：' + s.slice(i, i + 12)); i += m[0].length; t = T[m[1]];
         }
         for (;;) { let j = i; while (s[j] === ' ') j++; if (s[j] === '*') { t = ptrTo(t); i = j + 1; } else break; }
         return { ty: t, end: i };
@@ -103,8 +103,8 @@
                     if ((m = /^c"(.*)"$/.exec(init))) g.bytes = decodeCString(m[1]); else if (init) g.init = parseValue(init, r.ty);
                     mod.globals.push(g); continue;
                 }
-                if ((m = /^declare\s+(.*)$/.exec(raw))) { const h = parseHeader(m[1].replace(ATTRS, ' ')); mod.declares.push({ name: h.name, ret: h.ret, params: h.params.map((p) => p.ty), line: n + 1 }); continue; }
-                if ((m = /^define\s+(.*)\{$/.exec(raw))) { const h = parseHeader(m[1].replace(ATTRS, ' ')); f = { name: h.name, ret: h.ret, params: h.params, blocks: [], line: n + 1 }; blk = null; continue; }
+                if ((m = /^declare\s+(.*)$/.exec(raw))) { const h = parseHeader(m[1].replace(ATTRS, ' ')); mod.declares.push({ name: h.name, ret: h.ret, params: h.params.map((p) => p.ty), varargs: h.varargs, line: n + 1 }); continue; }
+                if ((m = /^define\s+(.*)\{$/.exec(raw))) { const h = parseHeader(m[1].replace(ATTRS, ' ')); if (h.varargs) throw new Error('不支援定義可變參數函式（只能宣告外部的，例如 printf）：' + h.name); f = { name: h.name, ret: h.ret, params: h.params, blocks: [], line: n + 1 }; blk = null; continue; }
                 err(n, '看不懂這一行：' + raw.slice(0, 60));
             } catch (e) { err(n, String((e && e.message) || e)); }
         }
@@ -114,8 +114,7 @@
     function parseHeader(s) {
         s = s.trim(); const r = parseTypeAt(s, 0); const rest = s.slice(r.end).trim(); const m = /^@([\w.$-]+)\s*\((.*)\)\s*$/.exec(rest); if (!m) throw new Error('函式標頭格式錯誤：' + s.slice(0, 60));
         const params = splitTop(m[2]).filter((x) => x && x !== '...').map((p, i) => { const pr = parseTypeAt(p, 0); const nm = /^\s*%([\w.$-]+)/.exec(p.slice(pr.end)); return { ty: pr.ty, name: nm ? nm[1] : null }; });
-        if (/\.\.\./.test(m[2])) throw new Error('不支援可變參數函式：' + m[1]);
-        return { ret: r.ty, name: m[1], params };
+        return { ret: r.ty, name: m[1], params, varargs: /\.\.\./.test(m[2]) };
     }
     function parseInst(s) {
         let m, res = null;
@@ -130,9 +129,9 @@
             case 'add': case 'sub': case 'mul': case 'sdiv': case 'udiv': case 'srem': case 'urem': case 'and': case 'or': case 'xor': case 'shl': case 'ashr': case 'lshr':
             case 'fadd': case 'fsub': case 'fmul': case 'fdiv': { const r = parseTypeAt(rest, 0); const p = splitTop(rest.slice(r.end)); return { op, res, ty: r.ty, a: parseValue(p[0], r.ty), b: parseValue(p[1], r.ty) }; }
             case 'icmp': case 'fcmp': { const pm = /^([a-z]+)\s+(.*)$/.exec(rest); const r = parseTypeAt(pm[2], 0); const p = splitTop(pm[2].slice(r.end)); return { op, res, pred: pm[1], ty: r.ty, a: parseValue(p[0], r.ty), b: parseValue(p[1], r.ty) }; }
-            case 'bitcast': case 'zext': case 'sext': case 'trunc': case 'sitofp': case 'uitofp': case 'fptosi': case 'ptrtoint': case 'inttoptr': { const cm = /^(.*)\s+to\s+(.*)$/.exec(rest); const v = parseTyped(cm[1]); return { op, res, from: v.ty, v: v.v, to: parseType(cm[2]) }; }
+            case 'bitcast': case 'zext': case 'sext': case 'trunc': case 'sitofp': case 'uitofp': case 'fptosi': case 'fpext': case 'fptrunc': case 'ptrtoint': case 'inttoptr': { const cm = /^(.*)\s+to\s+(.*)$/.exec(rest); const v = parseTyped(cm[1]); return { op, res, from: v.ty, v: v.v, to: parseType(cm[2]) }; }
             case 'select': { const p = splitTop(rest); const c = parseTyped(p[0]); const a = parseTyped(p[1]); const b = parseTyped(p[2]); return { op, res, cond: c.v, ty: a.ty, a: a.v, b: b.v }; }
-            case 'call': { const r = parseTypeAt(rest, 0); const cm = /^\s*@([\w.$-]+)\s*\((.*)\)\s*$/.exec(rest.slice(r.end)); if (!cm) throw new Error('只支援直接呼叫 @函式(...)：' + rest.slice(0, 50)); return { op, res, ret: r.ty, callee: cm[1], args: splitTop(cm[2]).map(parseTyped) }; }
+            case 'call': { const r = parseTypeAt(rest, 0); const cm = /^\s*(?:\([^@]*\)\s*)?@([\w.$-]+)\s*\((.*)\)\s*$/.exec(rest.slice(r.end)); if (!cm) throw new Error('只支援直接呼叫 @函式(...)：' + rest.slice(0, 50)); return { op, res, ret: r.ty, callee: cm[1], args: splitTop(cm[2]).map(parseTyped) }; }
             case 'br': { let bm; if ((bm = /^label\s+%([\w.$-]+)$/.exec(rest))) return { op, to: bm[1] }; bm = /^i1\s+(.*?),\s*label\s+%([\w.$-]+),\s*label\s+%([\w.$-]+)$/.exec(rest); if (!bm) throw new Error('br 格式錯誤：' + rest); return { op, cond: parseValue(bm[1]), then: bm[2], else: bm[3] }; }
             case 'ret': { if (rest.trim() === 'void') return { op, ty: T.void }; const v = parseTyped(rest); return { op, ty: v.ty, val: v.v }; }
             case 'unreachable': return { op };
@@ -150,6 +149,7 @@
         switch (t.k) {
             case 'int': return t.bits <= 8 ? { size: 1, align: 1 } : t.bits === 32 ? { size: 4, align: 4 } : { size: 8, align: 8 };
             case 'double': return { size: 8, align: 8 };
+            case 'float': return { size: 4, align: 4 };
             case 'ptr': return { size: 4, align: 4 };
             case 'array': { const e = layout(mod, t.of); return { size: e.size * t.n, align: e.align }; }
             case 'struct': { let off = 0, al = 1; const offs = []; for (const f of t.fields) { const l = layout(mod, f); off = Math.ceil(off / l.align) * l.align; offs.push(off); off += l.size; al = Math.max(al, l.align); } return { size: Math.ceil(off / al) * al || 0, align: al, offsets: offs }; }
@@ -165,6 +165,13 @@
         args_sizes_get: { params: [T.i32, T.i32], ret: T.i32 }, args_get: { params: [T.i32, T.i32], ret: T.i32 }, environ_sizes_get: { params: [T.i32, T.i32], ret: T.i32 }, environ_get: { params: [T.i32, T.i32], ret: T.i32 },
         clock_time_get: { params: [T.i32, T.i64, T.i32], ret: T.i32 }, random_get: { params: [T.i32, T.i32], ret: T.i32 }
     };
+    // 主機函式庫（host import）：IR 宣告了這些函式、又沒有自己定義，就編成 wasm 匯入（模組 env），由執行端用 JS 實作（SDL2、OpenGL、GTK3、printf…，見 llvm_host.js）。
+    // registerHost({ 名字: { params:['ptr','i32|i64'（size_t 兩種都收）,…], ret:'i32', varargs:false, async:false } })；可變參數函式在 wasm 端多收一個最後的指標（指向 8 位元組對齊的引數緩衝區）。
+    const HOST = {};
+    const TYPE_BY_NAME = { i1: T.i1, i8: T.i8, i32: T.i32, i64: T.i64, float: T.float, double: T.double, void: T.void, ptr: T.ptr };
+    function registerHost(table) { for (const name of Object.keys(table)) { const sg = table[name]; HOST[name] = { params: sg.params.map((n) => TYPE_BY_NAME[String(n).split('|')[0]]), alts: sg.params.map((n) => String(n).split('|').map((x) => TYPE_BY_NAME[x])), ret: TYPE_BY_NAME[sg.ret || 'void'], varargs: !!sg.varargs, async: !!sg.async }; } }
+    function unregisterHost(names) { for (const n of names) delete HOST[n]; }
+    const isImport = (name) => !!(WASI[name] || HOST[name]);
     const INTRINSICS = { 'llvm.wasm.memory.grow.i32': { params: [T.i32, T.i32], ret: T.i32 }, 'llvm.wasm.memory.size.i32': { params: [T.i32], ret: T.i32 } };
     const INT_BIN = new Set(['add', 'sub', 'mul', 'sdiv', 'udiv', 'srem', 'urem', 'and', 'or', 'xor', 'shl', 'ashr', 'lshr']);
     const F_BIN = new Set(['fadd', 'fsub', 'fmul', 'fdiv']);
@@ -176,7 +183,7 @@
         const partial = !!(copts && copts.partial);
         const errors = []; const E = (line, msg) => errors.push({ line, msg });
         const globals = new Map(mod.globals.map((g) => [g.name, g])); const funcs = new Map();
-        for (const d of mod.declares) { funcs.set(d.name, { ret: d.ret, params: d.params, declared: true }); if (INTRINSICS[d.name]) { if (d.params.map(typeStr).join() !== INTRINSICS[d.name].params.map(typeStr).join() || typeStr(d.ret) !== typeStr(INTRINSICS[d.name].ret)) E(d.line, '@' + d.name + ' 的簽名不對'); } else if (!WASI[d.name]) E(d.line, '宣告的函式 @' + d.name + ' 沒有實作（支援的 WASI：' + Object.keys(WASI).join('、') + '；內建的 libc：puts、putchar、malloc、calloc、free、strlen、memcpy、memset、memcmp、strcmp、abs、exit、getchar；printf 這類可變參數函式不支援）'); else if (!INTRINSICS[d.name] && typeStr(WASI[d.name].ret) !== typeStr(d.ret) || d.params.map(typeStr).join() !== WASI[d.name].params.map(typeStr).join()) E(d.line, '@' + d.name + ' 的簽名要是 ' + typeStr(WASI[d.name].ret) + ' (' + WASI[d.name].params.map(typeStr).join(', ') + ')'); }
+        for (const d of mod.declares) { funcs.set(d.name, { ret: d.ret, params: d.params, declared: true, varargs: d.varargs }); if (INTRINSICS[d.name]) { if (d.params.map(typeStr).join() !== INTRINSICS[d.name].params.map(typeStr).join() || typeStr(d.ret) !== typeStr(INTRINSICS[d.name].ret)) E(d.line, '@' + d.name + ' 的簽名不對'); } else if (HOST[d.name]) { const hs = HOST[d.name], wk = (t) => { try { return wtype(mod, t); } catch (_) { return '?'; } }; if (!!d.varargs !== hs.varargs || d.params.length !== hs.params.length || d.params.some((p, k) => !hs.alts[k].some((t) => wk(t) === wk(p))) || wk(d.ret) !== wk(hs.ret)) E(d.line, '@' + d.name + ' 的宣告跟內建函式庫不符，要是 ' + typeStr(hs.ret) + ' (' + hs.params.map(typeStr).concat(hs.varargs ? ['...'] : []).join(', ') + ')'); } else if (!WASI[d.name]) E(d.line, '宣告的函式 @' + d.name + ' 沒有實作（支援的 WASI：' + Object.keys(WASI).join('、') + '；內建的 libc：puts、putchar、malloc、calloc、free、strlen、memcpy、memset、memcmp、strcmp、abs、exit、getchar；printf 這類可變參數函式不支援）'); else if (!INTRINSICS[d.name] && typeStr(WASI[d.name].ret) !== typeStr(d.ret) || d.params.map(typeStr).join() !== WASI[d.name].params.map(typeStr).join()) E(d.line, '@' + d.name + ' 的簽名要是 ' + typeStr(WASI[d.name].ret) + ' (' + WASI[d.name].params.map(typeStr).join(', ') + ')'); }
         for (const f of mod.funcs) { if (funcs.has(f.name) && !funcs.get(f.name).declared) E(f.line, '函式 @' + f.name + ' 定義了兩次'); funcs.set(f.name, { ret: f.ret, params: f.params.map((p) => p.ty) }); }
         for (const [name, t] of mod.types) { try { layout(mod, t); } catch (e) { E(0, '型別 %' + name + '：' + e.message); } }
         for (const g of mod.globals) { try { layout(mod, g.ty); } catch (e) { E(g.line, '全域 @' + g.name + '：' + e.message); } }
@@ -187,7 +194,7 @@
             if (!f.blocks.length) E(f.line, '函式 @' + f.name + ' 沒有內容');
             const defined = new Set(f.params.map((p, i) => p.name || String(i)));
             // 先收集所有結果型別（讓跨區塊的使用查得到），再檢查
-            const typeOfRes = (i) => { switch (i.op) { case 'alloca': return ptrTo(i.ty); case 'load': return i.ty; case 'getelementptr': return gepResult(i); case 'icmp': case 'fcmp': return T.i1; case 'bitcast': case 'zext': case 'sext': case 'trunc': case 'sitofp': case 'uitofp': case 'fptosi': case 'ptrtoint': case 'inttoptr': return i.to; case 'select': return i.ty; case 'call': return i.ret; default: return i.ty; } };
+            const typeOfRes = (i) => { switch (i.op) { case 'alloca': return ptrTo(i.ty); case 'load': return i.ty; case 'getelementptr': return gepResult(i); case 'icmp': case 'fcmp': return T.i1; case 'bitcast': case 'zext': case 'sext': case 'trunc': case 'sitofp': case 'uitofp': case 'fptosi': case 'fpext': case 'fptrunc': case 'ptrtoint': case 'inttoptr': return i.to; case 'select': return i.ty; case 'call': return i.ret; default: return i.ty; } };
             const gepResult = (i) => { try { const r = gepType(mod, i.ty, i.idx, (m) => E(i.line, m)); return i.baseTy && !i.baseTy.to ? T.ptr : r; } catch (_) { return null; } };
             for (const b of f.blocks) for (const i of b.insts) if (i.res) { if (regs.has(i.res)) E(i.line, '%' + i.res + ' 定義了兩次'); regs.set(i.res, typeOfRes(i)); }
             for (const b of f.blocks) {
@@ -196,9 +203,9 @@
                     if (!v) return; let have = null;
                     switch (v.k) {
                         case 'reg': if (!regs.has(v.name)) { E(line, what + '：%' + v.name + ' 沒有定義'); return; } have = regs.get(v.name); if (!defined.has(v.name) && !seenHere.has(v.name) && !f.blocks.some((bb) => bb !== b && bb.insts.some((x) => x.res === v.name))) E(line, what + '：%' + v.name + ' 在定義之前就使用了'); break;
-                        case 'global': { const g = globals.get(v.name); if (!g) { if (funcs.has(v.name)) { E(line, what + '：第一版不支援函式指標 @' + v.name); return; } E(line, what + '：沒有全域 @' + v.name); return; } have = ptrTo(g.ty); break; }
+                        case 'global': { const g = globals.get(v.name); if (!g) { if (funcs.has(v.name)) { have = T.ptr; break; } E(line, what + '：沒有全域 @' + v.name); return; } have = ptrTo(g.ty); break; }   // 函式當值＝函式指標（表格索引；只能傳給主機函式當回呼，不能在 wasm 裡間接呼叫）
                         case 'int': if (want && !isInt(resolve(mod, want)) && !isPtr(resolve(mod, want))) E(line, what + '：整數常數不能當 ' + typeStr(want)); return;
-                        case 'float': if (want && want.k !== 'double') E(line, what + '：小數常數不能當 ' + typeStr(want)); return;
+                        case 'float': if (want && want.k !== 'double' && want.k !== 'float') E(line, what + '：小數常數不能當 ' + typeStr(want)); return;
                         case 'null': if (want && !isPtr(resolve(mod, want))) E(line, what + '：null 不能當 ' + typeStr(want)); return;
                         case 'zero': return;
                         case 'cgep': { const g = v.base && v.base.k === 'global' && globals.get(v.base.name); if (!g) { E(line, what + '：常數 getelementptr 的底必須是全域'); return; } try { have = gepType(mod, v.ty, v.idx, (m) => E(line, m)); } catch (e) { E(line, what + '：' + e.message); return; } break; }
@@ -214,22 +221,24 @@
                         case 'store': val(i.val, i.ty, L, 'store 的值'); val(i.ptr, i.ptrTy, L, 'store 的指標'); need(isPtr(i.ptrTy) && (!i.ptrTy.to || sameType(resolveShallow(mod, i.ptrTy.to), resolveShallow(mod, i.ty))), 'store：不能把 ' + typeStr(i.ty) + ' 存到 ' + typeStr(i.ptrTy)); break;
                         case 'getelementptr': val(i.base, i.baseTy, L, 'gep 的底'); need(isPtr(i.baseTy) && (!i.baseTy.to || sameType(resolveShallow(mod, i.baseTy.to), resolveShallow(mod, i.ty))), 'getelementptr：底的型別 ' + typeStr(i.baseTy) + ' 跟 ' + typeStr(i.ty) + ' 不合'); i.idx.forEach((x) => val(x.v, x.ty, L, 'gep 的索引')); gepResult(i); break;
                         case 'icmp': val(i.a, i.ty, L, 'icmp'); val(i.b, i.ty, L, 'icmp'); need(ICMP.has(i.pred), '不認得的 icmp 條件：' + i.pred); need(isInt(i.ty) || isPtr(i.ty), 'icmp 只能比整數或指標'); if (isInt(i.ty) && i.ty.bits < 32 && /^s(lt|le|gt|ge)$/.test(i.pred)) E(L, '第一版不支援 ' + typeStr(i.ty) + ' 的有號比較（先 sext 成 i32）'); break;
-                        case 'fcmp': val(i.a, i.ty, L, 'fcmp'); val(i.b, i.ty, L, 'fcmp'); need(FCMP.has(i.pred), '不認得的 fcmp 條件：' + i.pred); need(i.ty.k === 'double', 'fcmp 只支援 double'); break;
+                        case 'fcmp': val(i.a, i.ty, L, 'fcmp'); val(i.b, i.ty, L, 'fcmp'); need(FCMP.has(i.pred), '不認得的 fcmp 條件：' + i.pred); need(i.ty.k === 'double' || i.ty.k === 'float', 'fcmp 只支援 float／double'); break;
                         case 'select': val(i.cond, T.i1, L, 'select 的條件'); val(i.a, i.ty, L, 'select'); val(i.b, i.ty, L, 'select'); break;
                         case 'bitcast': val(i.v, i.from, L, 'bitcast'); need(isPtr(i.from) && isPtr(i.to), 'bitcast 第一版只支援指標轉指標'); break;
                         case 'zext': case 'sext': val(i.v, i.from, L, i.op); need(isInt(i.from) && isInt(i.to) && i.from.bits < i.to.bits, i.op + '：要從小的整數到大的整數'); break;
                         case 'trunc': val(i.v, i.from, L, 'trunc'); need(isInt(i.from) && isInt(i.to) && i.from.bits > i.to.bits, 'trunc：要從大的整數到小的整數'); break;
-                        case 'sitofp': case 'uitofp': val(i.v, i.from, L, i.op); need(isInt(i.from) && i.to.k === 'double' && i.from.bits >= 32, i.op + '：要從 i32／i64 到 double'); break;
-                        case 'fptosi': val(i.v, i.from, L, 'fptosi'); need(i.from.k === 'double' && isInt(i.to) && i.to.bits >= 32, 'fptosi：要從 double 到 i32／i64'); break;
+                        case 'sitofp': case 'uitofp': val(i.v, i.from, L, i.op); need(isInt(i.from) && (i.to.k === 'double' || i.to.k === 'float') && i.from.bits >= 32, i.op + '：要從 i32／i64 到 float／double'); break;
+                        case 'fpext': val(i.v, i.from, L, 'fpext'); need(i.from.k === 'float' && i.to.k === 'double', 'fpext：要從 float 到 double'); break;
+                        case 'fptrunc': val(i.v, i.from, L, 'fptrunc'); need(i.from.k === 'double' && i.to.k === 'float', 'fptrunc：要從 double 到 float'); break;
+                        case 'fptosi': val(i.v, i.from, L, 'fptosi'); need((i.from.k === 'double' || i.from.k === 'float') && isInt(i.to) && i.to.bits >= 32, 'fptosi：要從 float／double 到 i32／i64'); break;
                         case 'ptrtoint': val(i.v, i.from, L, 'ptrtoint'); need(isPtr(i.from) && isInt(i.to) && i.to.bits >= 32, 'ptrtoint：要從指標到 i32／i64'); break;
                         case 'inttoptr': val(i.v, i.from, L, 'inttoptr'); need(isInt(i.from) && i.from.bits >= 32 && isPtr(i.to), 'inttoptr：要從 i32／i64 到指標'); break;
-                        case 'call': { const fn = funcs.get(i.callee); if (!fn) { E(L, '呼叫沒有定義的函式 @' + i.callee); break; } if (i.args.length !== fn.params.length) { E(L, '@' + i.callee + ' 要 ' + fn.params.length + ' 個參數，給了 ' + i.args.length + ' 個'); break; } need(sameType(resolveShallow(mod, fn.ret), resolveShallow(mod, i.ret)), '@' + i.callee + ' 回傳 ' + typeStr(fn.ret) + '，不是 ' + typeStr(i.ret)); i.args.forEach((a, k) => { need(sameType(resolveShallow(mod, a.ty), resolveShallow(mod, fn.params[k])), '@' + i.callee + ' 的第 ' + (k + 1) + ' 個參數要 ' + typeStr(fn.params[k]) + '，給的是 ' + typeStr(a.ty)); val(a.v, a.ty, L, '@' + i.callee + ' 的參數 ' + (k + 1)); }); need(!(i.res && i.ret.k === 'void'), 'void 函式沒有回傳值可以指定給 %' + i.res); break; }
+                        case 'call': { const fn = funcs.get(i.callee); if (!fn) { E(L, '呼叫沒有定義的函式 @' + i.callee); break; } if (fn.varargs ? i.args.length < fn.params.length : i.args.length !== fn.params.length) { E(L, '@' + i.callee + ' 要 ' + (fn.varargs ? '至少 ' : '') + fn.params.length + ' 個參數，給了 ' + i.args.length + ' 個'); break; } need(sameType(resolveShallow(mod, fn.ret), resolveShallow(mod, i.ret)), '@' + i.callee + ' 回傳 ' + typeStr(fn.ret) + '，不是 ' + typeStr(i.ret)); i.args.forEach((a, k) => { need(k >= fn.params.length || sameType(resolveShallow(mod, a.ty), resolveShallow(mod, fn.params[k])), '@' + i.callee + ' 的第 ' + (k + 1) + ' 個參數要 ' + typeStr(fn.params[k]) + '，給的是 ' + typeStr(a.ty)); val(a.v, a.ty, L, '@' + i.callee + ' 的參數 ' + (k + 1)); }); need(!(i.res && i.ret.k === 'void'), 'void 函式沒有回傳值可以指定給 %' + i.res); break; }
                         case 'br': if (i.cond) { val(i.cond, T.i1, L, 'br 的條件'); need(labels.has(i.then), 'br：沒有標籤 ' + i.then); need(labels.has(i.else), 'br：沒有標籤 ' + i.else); } else need(labels.has(i.to), 'br：沒有標籤 ' + i.to); break;
                         case 'ret': need(sameType(resolveShallow(mod, i.ty), resolveShallow(mod, f.ret)), '函式 @' + f.name + ' 要回傳 ' + typeStr(f.ret) + '，ret 給的是 ' + typeStr(i.ty)); if (i.val) val(i.val, i.ty, L, 'ret'); break;
                         case 'unreachable': break;
                         default:
                             if (INT_BIN.has(i.op)) { val(i.a, i.ty, L, i.op); val(i.b, i.ty, L, i.op); need(isInt(i.ty) && i.ty.bits >= 1, i.op + ' 只能用在整數'); }
-                            else if (F_BIN.has(i.op)) { val(i.a, i.ty, L, i.op); val(i.b, i.ty, L, i.op); need(i.ty.k === 'double', i.op + ' 只支援 double'); }
+                            else if (F_BIN.has(i.op)) { val(i.a, i.ty, L, i.op); val(i.b, i.ty, L, i.op); need(i.ty.k === 'double' || i.ty.k === 'float', i.op + ' 只支援 float／double'); }
                     }
                     if (i.res) seenHere.add(i.res);
                 }
@@ -251,22 +260,24 @@
     // =====================================================================
     // wasm 二進位
     // =====================================================================
-    const VT = { i32: 0x7f, i64: 0x7e, f64: 0x7c };
-    function wtype(mod, t) { t = resolve(mod, t); if (t.k === 'int') return t.bits === 64 ? 'i64' : 'i32'; if (t.k === 'double') return 'f64'; if (t.k === 'ptr') return 'i32'; if (t.k === 'void') return null; throw new Error('不能放進暫存器的型別：' + typeStr(t)); }
+    const VT = { i32: 0x7f, i64: 0x7e, f32: 0x7d, f64: 0x7c };
+    function wtype(mod, t) { t = resolve(mod, t); if (t.k === 'int') return t.bits === 64 ? 'i64' : 'i32'; if (t.k === 'double') return 'f64'; if (t.k === 'float') return 'f32'; if (t.k === 'ptr') return 'i32'; if (t.k === 'void') return null; throw new Error('不能放進暫存器的型別：' + typeStr(t)); }
     function uleb(n) { n = Number(n); const o = []; do { let b = n & 0x7f; n = Math.floor(n / 128); if (n) b |= 0x80; o.push(b); } while (n); return o; }
     function sleb(n) { n = BigInt(n); const o = []; for (;;) { const b = Number(n & 0x7fn); n >>= 7n; if ((n === 0n && !(b & 0x40)) || (n === -1n && (b & 0x40))) { o.push(b); return o; } o.push(b | 0x80); } }
     const wrap32 = (v) => Number(BigInt.asIntN(32, BigInt(v)));
+    function f32bytes(x) { const dv = new DataView(new ArrayBuffer(4)); dv.setFloat32(0, x, true); return Array.from(new Uint8Array(dv.buffer)); }
     function f64bytes(x) { const dv = new DataView(new ArrayBuffer(8)); dv.setFloat64(0, x, true); return Array.from(new Uint8Array(dv.buffer)); }
     const str = (s) => { const b = Array.from(new TextEncoder().encode(s)); return uleb(b.length).concat(b); };
     const section = (id, body) => [id].concat(uleb(body.length), body);
     const vec = (items) => uleb(items.length).concat([].concat.apply([], items));
-    const OP = { unreachable: 0x00, block: 0x02, loop: 0x03, if: 0x04, else: 0x05, end: 0x0b, br: 0x0c, br_table: 0x0e, return: 0x0f, call: 0x10, drop: 0x1a, select: 0x1b, local_get: 0x20, local_set: 0x21, local_tee: 0x22, global_get: 0x23, global_set: 0x24, i32_const: 0x41, i64_const: 0x42, f64_const: 0x44 };
+    const OP = { unreachable: 0x00, block: 0x02, loop: 0x03, if: 0x04, else: 0x05, end: 0x0b, br: 0x0c, br_table: 0x0e, return: 0x0f, call: 0x10, drop: 0x1a, select: 0x1b, local_get: 0x20, local_set: 0x21, local_tee: 0x22, global_get: 0x23, global_set: 0x24, i32_const: 0x41, i64_const: 0x42, f32_const: 0x43, f64_const: 0x44 };
     const BIN = {
         i32: { add: 0x6a, sub: 0x6b, mul: 0x6c, sdiv: 0x6d, udiv: 0x6e, srem: 0x6f, urem: 0x70, and: 0x71, or: 0x72, xor: 0x73, shl: 0x74, ashr: 0x75, lshr: 0x76 },
         i64: { add: 0x7c, sub: 0x7d, mul: 0x7e, sdiv: 0x7f, udiv: 0x80, srem: 0x81, urem: 0x82, and: 0x83, or: 0x84, xor: 0x85, shl: 0x86, ashr: 0x87, lshr: 0x88 },
+        f32: { fadd: 0x92, fsub: 0x93, fmul: 0x94, fdiv: 0x95 },
         f64: { fadd: 0xa0, fsub: 0xa1, fmul: 0xa2, fdiv: 0xa3 }
     };
-    const CMP = { i32: { eq: 0x46, ne: 0x47, slt: 0x48, ult: 0x49, sgt: 0x4a, ugt: 0x4b, sle: 0x4c, ule: 0x4d, sge: 0x4e, uge: 0x4f }, i64: { eq: 0x51, ne: 0x52, slt: 0x53, ult: 0x54, sgt: 0x55, ugt: 0x56, sle: 0x57, ule: 0x58, sge: 0x59, uge: 0x5a }, f64: { oeq: 0x61, ueq: 0x61, one: 0x62, une: 0x62, olt: 0x63, ogt: 0x64, ole: 0x65, oge: 0x66 } };
+    const CMP = { i32: { eq: 0x46, ne: 0x47, slt: 0x48, ult: 0x49, sgt: 0x4a, ugt: 0x4b, sle: 0x4c, ule: 0x4d, sge: 0x4e, uge: 0x4f }, i64: { eq: 0x51, ne: 0x52, slt: 0x53, ult: 0x54, sgt: 0x55, ugt: 0x56, sle: 0x57, ule: 0x58, sge: 0x59, uge: 0x5a }, f32: { oeq: 0x5b, ueq: 0x5b, one: 0x5c, une: 0x5c, olt: 0x5d, ogt: 0x5e, ole: 0x5f, oge: 0x60 }, f64: { oeq: 0x61, ueq: 0x61, one: 0x62, une: 0x62, olt: 0x63, ogt: 0x64, ole: 0x65, oge: 0x66 } };
     const DATA_BASE = 1024, STACK_TOP = 65536, PAGES = 16;
 
     function toWasm(mod, opts) {
@@ -278,7 +289,7 @@
             const l = layout(mod, g.ty); off = Math.ceil(off / l.align) * l.align; addr.set(g.name, off); let bytes = null;
             if (g.bytes) { bytes = g.bytes.slice(); while (bytes.length < l.size) bytes.push(0); }
             else if (g.init && g.init.k === 'int') { bytes = []; let v = BigInt.asUintN(l.size * 8, g.init.v); for (let k = 0; k < l.size; k++) { bytes.push(Number(v & 0xffn)); v >>= 8n; } }
-            else if (g.init && g.init.k === 'float') bytes = f64bytes(g.init.v);
+            else if (g.init && g.init.k === 'float') bytes = resolve(mod, g.ty).k === 'float' ? f32bytes(g.init.v) : f64bytes(g.init.v);
             if (bytes && bytes.some((x) => x)) segs.push({ at: off, bytes });
             off += l.size;
         }
@@ -286,21 +297,24 @@
         const stackSize = Math.max(4096, Math.floor(opts.stackSize || 1048576)); const stackStart = Math.ceil(off / 16) * 16; const stackTop = stackStart + stackSize; const heapBase = stackTop;
         addr.set('__heap_base', heapBase); const initPages = Math.ceil((heapBase + 65536) / 65536); if (initPages >= 65536) throw new Error('全域資料加堆疊太大，超過 wasm32 的 4GB 上限');
         // 函式索引：匯入在前
-        const imports = mod.declares.filter((d) => WASI[d.name]); const fidx = new Map(); imports.forEach((d, i) => fidx.set(d.name, i)); mod.funcs.forEach((f, i) => fidx.set(f.name, imports.length + i));
+        const imports = mod.declares.filter((d) => isImport(d.name)); const fidx = new Map(); imports.forEach((d, i) => fidx.set(d.name, i)); mod.funcs.forEach((f, i) => fidx.set(f.name, imports.length + i));
         const sigs = []; const sigOf = (params, ret) => { const key = params.map((p) => wtype(mod, p)).join() + '>' + (wtype(mod, ret) || ''); let i = sigs.findIndex((s) => s.key === key); if (i < 0) { sigs.push({ key, params: params.map((p) => wtype(mod, p)), ret: wtype(mod, ret) }); i = sigs.length - 1; } return i; };
-        const impSig = imports.map((d) => sigOf(d.params, d.ret)); const fnSig = mod.funcs.map((f) => sigOf(f.params.map((p) => p.ty), f.ret));
+        const impSig = imports.map((d) => sigOf(d.varargs ? d.params.concat([T.ptr]) : d.params, d.ret)); const fnSig = mod.funcs.map((f) => sigOf(f.params.map((p) => p.ty), f.ret));
         const bodies = mod.funcs.map((f) => emitFunction(mod, f, addr, fidx, !!(opts.fuel), stackStart));
         const typeSec = section(1, vec(sigs.map((s) => [0x60].concat(vec(s.params.map((p) => [VT[p]])), s.ret ? vec([[VT[s.ret]]]) : [0]))));
-        const impSec = section(2, vec(imports.map((d, i) => str('wasi_snapshot_preview1').concat(str(d.name), [0x00], uleb(impSig[i])))));
+        const impSec = section(2, vec(imports.map((d, i) => str(WASI[d.name] ? 'wasi_snapshot_preview1' : 'env').concat(str(d.name), [0x00], uleb(impSig[i])))));
         const funcSec = section(3, vec(fnSig.map((i) => uleb(i))));
+        const nFn = imports.length + mod.funcs.length;   // 函式表格：索引 0 留給 null，函式 k 在 k+1（函式指標＝索引，給主機函式當回呼）
+        const tableSec = section(4, vec([[0x70, 0x00].concat(uleb(nFn + 1))]));
+        const elemSec = section(9, vec([[0x00, OP.i32_const, 1, OP.end].concat(vec(Array.from({ length: nFn }, (_, k) => uleb(k))))]));
         const memSec = section(5, vec([[0x00].concat(uleb(initPages))]));
         const fuel = opts.fuel ? Math.min(Math.floor(opts.fuel), 2147483000) : 0;
         const globSec = section(6, vec([[VT.i32, 0x01, OP.i32_const].concat(sleb(stackTop), [OP.end]), [VT.i32, 0x00, OP.i32_const].concat(sleb(stackStart), [OP.end])].concat(fuel ? [[VT.i32, 0x01, OP.i32_const].concat(sleb(fuel), [OP.end])] : [])));
         const entry = mod.funcs.find((f) => f.name === (opts.entry || '_start')) || mod.funcs.find((f) => f.name === 'main');
-        const expSec = section(7, vec([str('memory').concat([0x02], uleb(0)), str(entry.name === 'main' ? 'main' : '_start').concat([0x00], uleb(fidx.get(entry.name))), str('__sp').concat([0x03], uleb(0)), str('__stack_limit').concat([0x03], uleb(1))].concat(fuel ? [str('__fuel').concat([0x03], uleb(2))] : [])));
+        const expSec = section(7, vec([str('memory').concat([0x02], uleb(0)), str('table').concat([0x01], uleb(0)), str(entry.name === 'main' ? 'main' : '_start').concat([0x00], uleb(fidx.get(entry.name))), str('__sp').concat([0x03], uleb(0)), str('__stack_limit').concat([0x03], uleb(1))].concat(fuel ? [str('__fuel').concat([0x03], uleb(2))] : [])));
         const codeSec = section(10, vec(bodies.map((b) => uleb(b.length).concat(b))));
         const dataSec = section(11, vec(segs.map((s) => [0x00, OP.i32_const].concat(sleb(s.at), [OP.end], uleb(s.bytes.length), s.bytes))));
-        const bytes = [0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00].concat(typeSec, impSec, funcSec, memSec, globSec, expSec, codeSec, segs.length ? dataSec : []);
+        const bytes = [0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00].concat(typeSec, impSec, funcSec, tableSec, memSec, globSec, expSec, elemSec, codeSec, segs.length ? dataSec : []);
         return new Uint8Array(bytes);
     }
 
@@ -322,9 +336,10 @@
             switch (v.k) {
                 case 'reg': emit(OP.local_get, uleb(regIdx.get(v.name))); return;
                 case 'int': if (w === 'i64') emit(OP.i64_const, sleb(v.v)); else emit(OP.i32_const, sleb(wrap32(v.v))); return;
-                case 'float': emit(OP.f64_const, f64bytes(v.v)); return;
+                case 'float': if (w === 'f32') emit(OP.f32_const, f32bytes(v.v)); else emit(OP.f64_const, f64bytes(v.v)); return;
                 case 'null': emit(OP.i32_const, sleb(0)); return;
-                case 'zero': if (w === 'i64') emit(OP.i64_const, 0); else if (w === 'f64') emit(OP.f64_const, f64bytes(0)); else emit(OP.i32_const, 0); return;
+                case 'zero': if (w === 'i64') emit(OP.i64_const, 0); else if (w === 'f64') emit(OP.f64_const, f64bytes(0)); else if (w === 'f32') emit(OP.f32_const, f32bytes(0)); else emit(OP.i32_const, 0); return;
+                case 'global': if (!addr.has(v.name) && fidx.has(v.name)) { emit(OP.i32_const, sleb(fidx.get(v.name) + 1)); return; } emit(OP.i32_const, sleb(constAddr(v))); return;
                 default: emit(OP.i32_const, sleb(constAddr(v))); return;
             }
         };
@@ -350,8 +365,8 @@
         function emitInst(i) {
             switch (i.op) {
                 case 'alloca': return;
-                case 'load': { push(i.ptr, i.ptrTy); const r = resolve(mod, i.ty); const w = wt(i.ty); if (r.k === 'int' && r.bits <= 8) emit(0x2d, 0, 0); else if (w === 'i32') emit(0x28, 0, 0); else if (w === 'i64') emit(0x29, 0, 0); else emit(0x2b, 0, 0); setRes(i); return; }
-                case 'store': { push(i.ptr, i.ptrTy); push(i.val, i.ty); const r = resolve(mod, i.ty); const w = wt(i.ty); if (r.k === 'int' && r.bits <= 8) emit(0x3a, 0, 0); else if (w === 'i32') emit(0x36, 0, 0); else if (w === 'i64') emit(0x37, 0, 0); else emit(0x39, 0, 0); return; }
+                case 'load': { push(i.ptr, i.ptrTy); const r = resolve(mod, i.ty); const w = wt(i.ty); if (r.k === 'int' && r.bits <= 8) emit(0x2d, 0, 0); else if (w === 'i32') emit(0x28, 0, 0); else if (w === 'i64') emit(0x29, 0, 0); else if (w === 'f32') emit(0x2a, 0, 0); else emit(0x2b, 0, 0); setRes(i); return; }
+                case 'store': { push(i.ptr, i.ptrTy); push(i.val, i.ty); const r = resolve(mod, i.ty); const w = wt(i.ty); if (r.k === 'int' && r.bits <= 8) emit(0x3a, 0, 0); else if (w === 'i32') emit(0x36, 0, 0); else if (w === 'i64') emit(0x37, 0, 0); else if (w === 'f32') emit(0x38, 0, 0); else emit(0x39, 0, 0); return; }
                 case 'getelementptr': {
                     push(i.base, i.baseTy); let cur = i.ty; let cst = 0; const dyn = [];
                     const step = (ix, size) => { if (ix.v.k === 'int') cst += Number(ix.v.v) * size; else dyn.push([ix, size]); };
@@ -361,21 +376,35 @@
                     if (cst) emit(OP.i32_const, sleb(cst), 0x6a); setRes(i); return;
                 }
                 case 'icmp': { push(i.a, i.ty); push(i.b, i.ty); emit(CMP[wt(i.ty) === 'i64' ? 'i64' : 'i32'][i.pred]); setRes(i); return; }
-                case 'fcmp': { push(i.a, i.ty); push(i.b, i.ty); emit(CMP.f64[i.pred]); setRes(i); return; }
+                case 'fcmp': { push(i.a, i.ty); push(i.b, i.ty); emit(CMP[wt(i.ty) === 'f32' ? 'f32' : 'f64'][i.pred]); setRes(i); return; }
                 case 'select': { push(i.a, i.ty); push(i.b, i.ty); push(i.cond, T.i1); emit(OP.select); setRes(i); return; }
                 case 'bitcast': push(i.v, i.from); setRes(i); return;
                 case 'zext': { push(i.v, i.from); if (wt(i.to) === 'i64') emit(0xad); setRes(i); return; }
                 case 'sext': { push(i.v, i.from); const fb = resolve(mod, i.from).bits; if (fb < 32) emit(OP.i32_const, sleb(32 - fb), 0x74, OP.i32_const, sleb(32 - fb), 0x75); if (wt(i.to) === 'i64') emit(0xac); setRes(i); return; }
                 case 'trunc': { push(i.v, i.from); if (wt(i.from) === 'i64') emit(0xa7); const tb = resolve(mod, i.to).bits; if (tb < 32) emit(OP.i32_const, sleb((1 << tb) - 1), 0x71); setRes(i); return; }
-                case 'sitofp': { push(i.v, i.from); emit(wt(i.from) === 'i64' ? 0xb9 : 0xb7); setRes(i); return; }
-                case 'uitofp': { push(i.v, i.from); emit(wt(i.from) === 'i64' ? 0xba : 0xb8); setRes(i); return; }
-                case 'fptosi': { push(i.v, i.from); emit(wt(i.to) === 'i64' ? 0xb0 : 0xaa); setRes(i); return; }
+                case 'sitofp': { push(i.v, i.from); const f32 = wt(i.to) === 'f32'; emit(wt(i.from) === 'i64' ? (f32 ? 0xb4 : 0xb9) : (f32 ? 0xb2 : 0xb7)); setRes(i); return; }
+                case 'uitofp': { push(i.v, i.from); const f32 = wt(i.to) === 'f32'; emit(wt(i.from) === 'i64' ? (f32 ? 0xb5 : 0xba) : (f32 ? 0xb3 : 0xb8)); setRes(i); return; }
+                case 'fptosi': { push(i.v, i.from); const f32 = wt(i.from) === 'f32'; emit(wt(i.to) === 'i64' ? (f32 ? 0xae : 0xb0) : (f32 ? 0xa8 : 0xaa)); setRes(i); return; }
+                case 'fpext': { push(i.v, i.from); emit(0xbb); setRes(i); return; }
+                case 'fptrunc': { push(i.v, i.from); emit(0xb6); setRes(i); return; }
                 case 'ptrtoint': { push(i.v, i.from); if (wt(i.to) === 'i64') emit(0xad); setRes(i); return; }
                 case 'inttoptr': { push(i.v, i.from); if (wt(i.from) === 'i64') emit(0xa7); setRes(i); return; }
-                case 'call': { if (i.callee === 'llvm.wasm.memory.grow.i32') { push(i.args[1].v, i.args[1].ty); emit(0x40, 0x00); if (i.res) setRes(i); else emit(OP.drop); return; } if (i.callee === 'llvm.wasm.memory.size.i32') { emit(0x3f, 0x00); if (i.res) setRes(i); else emit(OP.drop); return; } for (const a of i.args) push(a.v, a.ty); emit(OP.call, uleb(fidx.get(i.callee))); if (i.ret.k !== 'void') { if (i.res) setRes(i); else emit(OP.drop); } return; }
+                case 'call': { if (i.callee === 'llvm.wasm.memory.grow.i32') { push(i.args[1].v, i.args[1].ty); emit(0x40, 0x00); if (i.res) setRes(i); else emit(OP.drop); return; } if (i.callee === 'llvm.wasm.memory.size.i32') { emit(0x3f, 0x00); if (i.res) setRes(i); else emit(OP.drop); return; } const decl = mod.declares.find((d) => d.name === i.callee);
+                    if (decl && decl.varargs) {
+                        // 可變參數：固定引數照常，多出來的引數存進影子堆疊上 8 位元組對齊的緩衝區，最後多傳一個指向它的指標（沒有多的就傳 0）
+                        const nfix = decl.params.length, extra = i.args.slice(nfix); for (const a of i.args.slice(0, nfix)) push(a.v, a.ty);
+                        if (extra.length) {
+                            const tmp = newLocal('i32'), size = extra.length * 8;
+                            emit(OP.global_get, 0, OP.i32_const, sleb(size), 0x6b, OP.local_tee, uleb(tmp), OP.global_set, 0);
+                            extra.forEach((a, k) => { emit(OP.local_get, uleb(tmp)); push(a.v, a.ty); const w = wt(a.ty); emit(w === 'i64' ? 0x37 : w === 'f64' ? 0x39 : w === 'f32' ? 0x38 : 0x36, w === 'i64' || w === 'f64' ? 3 : 2, uleb(k * 8)); });
+                            emit(OP.local_get, uleb(tmp), OP.call, uleb(fidx.get(i.callee)));
+                            emit(OP.local_get, uleb(tmp), OP.i32_const, sleb(size), 0x6a, OP.global_set, 0);   // 放回堆疊指標（結果還在 wasm 堆疊上）
+                        } else emit(OP.i32_const, 0, OP.call, uleb(fidx.get(i.callee)));
+                    } else { for (const a of i.args) push(a.v, a.ty); emit(OP.call, uleb(fidx.get(i.callee))); }
+                    if (i.ret.k !== 'void') { if (i.res) setRes(i); else emit(OP.drop); } return; }
                 default:
                     if (INT_BIN.has(i.op)) { push(i.a, i.ty); push(i.b, i.ty); emit(BIN[wt(i.ty) === 'i64' ? 'i64' : 'i32'][i.op]); const bits = resolve(mod, i.ty).bits; if (bits < 32 && !['and', 'or', 'xor'].includes(i.op)) emit(OP.i32_const, sleb((1 << bits) - 1), 0x71); setRes(i); return; }
-                    if (F_BIN.has(i.op)) { push(i.a, i.ty); push(i.b, i.ty); emit(BIN.f64[i.op]); setRes(i); return; }
+                    if (F_BIN.has(i.op)) { push(i.a, i.ty); push(i.b, i.ty); emit(BIN[wt(i.ty) === 'f32' ? 'f32' : 'f64'][i.op]); setRes(i); return; }
                     throw new Error('emit：不支援 ' + i.op);
             }
         }
@@ -404,7 +433,7 @@
             proc_exit(code) { throw { wasiExit: code }; }
         };
         const cat = (list) => { let t = 0; for (const c of list) t += c.length; const all = new Uint8Array(t); let o = 0; for (const c of list) { all.set(c, o); o += c.length; } return all; };
-        return { imports: { wasi_snapshot_preview1: W }, stdout: () => cat(out), stderr: () => cat(err) };
+        return { imports: { wasi_snapshot_preview1: W }, stdout: () => cat(out), stderr: () => cat(err), write: (fd, b) => { (fd === 2 ? err : out).push(b); } };
     }
     function finishRun(instance, wasi, args0) {
         let exitCode = null, trap = null;
@@ -415,6 +444,39 @@
     }
     async function run(bytes, io) {
         let mem = null; const wasi = makeWasi(io, () => mem); const { instance } = await WebAssembly.instantiate(bytes, wasi.imports); mem = instance.exports.memory; return finishRun(instance, wasi);
+    }
+    // 有主機函式（SDL2／OpenGL／GTK3…）的程式：用 JSPI 讓 wasm 的呼叫「暫停」等 JS 的 Promise（SDL_Delay、SDL_PollEvent、gtk_main 等會等事件的函式），瀏覽器主執行緒不會被卡住。
+    // impls：{ 名字: (ctx, ...引數) => 值或 Promise }，ctx＝{ mem(), u8(), dv(), table(), abort }；HOST[名字].async 為真的才包成 Suspending。
+    // 沒有 JSPI（舊瀏覽器）就丟出說明清楚的錯誤。abort.flag 設成真，下一次主機呼叫會以結束碼 130 結束。
+    async function runHost(bytes, io, impls, abortRef) {
+        let mem = null, inst = null; const abort = abortRef || { flag: false }; const wasi = makeWasi(io, () => mem);
+        const ctx = { write: wasi.write, mem: () => mem, u8: () => new Uint8Array(mem.buffer), dv: () => new DataView(mem.buffer), table: () => inst.exports.table, abort, io };
+        const module = await WebAssembly.compile(bytes); const used = WebAssembly.Module.imports(module).filter((x) => x.module === 'env').map((x) => x.name);
+        const needJspi = used.some((n) => HOST[n] && HOST[n].async);
+        if (needJspi && (typeof WebAssembly.Suspending !== 'function' || typeof WebAssembly.promising !== 'function')) throw new Error('這個瀏覽器沒有 JSPI（WebAssembly.Suspending），不能執行會等事件的程式（SDL2／GTK3）；請用 Chrome／Edge 137 以上或桌面版');
+        const env = {};
+        for (const name of used) {
+            const fn = impls[name]; if (!fn) throw new Error('主機函式庫沒有實作 @' + name);
+            const call = (...a) => { if (abort.flag) throw { wasiExit: 130 }; return fn(ctx, ...a); };
+            env[name] = HOST[name].async ? new WebAssembly.Suspending(async (...a) => { if (abort.flag) throw { wasiExit: 130 }; return await fn(ctx, ...a); }) : call;
+        }
+        inst = await WebAssembly.instantiate(module, Object.assign({ env }, wasi.imports)); mem = inst.exports.memory;
+        let exitCode = null, trap = null;
+        try {
+            const entry = inst.exports._start || inst.exports.main; if (!entry) throw new Error('wasm 沒有匯出 _start 或 main');
+            // main(argc, argv)：把參數寫進 wasm 的保留區（位址 800..1024；0..800 是主機函式的暫存環），傳 argc 與 argv 指標
+            let callArgs = [];
+            if (entry.length >= 1 && inst.exports.main === entry) {
+                const argv = (io && io.args || []).map(String), enc = new TextEncoder(), strs = argv.map((a) => enc.encode(a + String.fromCharCode(0))); let off = 800 + 4 * (argv.length + 1); const u8 = new Uint8Array(mem.buffer), dv = new DataView(mem.buffer);
+                if (off + strs.reduce((n, b) => n + b.length, 0) > 1024) throw new Error('命令列參數太長（wasm 保留區只放得下約 200 位元組）');
+                strs.forEach((b, k) => { dv.setUint32(800 + 4 * k, off, true); u8.set(b, off); off += b.length; }); dv.setUint32(800 + 4 * argv.length, 0, true);
+                callArgs = entry.length >= 2 ? [argv.length, 800] : [argv.length];
+            }
+            const r = needJspi ? await WebAssembly.promising(entry)(...callArgs) : entry(...callArgs); exitCode = typeof r === 'number' ? r : 0;
+        }
+        catch (e) { if (e && e.wasiExit !== undefined) exitCode = e.wasiExit; else trap = String((e && e.message) || e); }
+        const dec = new TextDecoder();
+        return { stdout: dec.decode(wasi.stdout()), stderr: dec.decode(wasi.stderr()), stdoutBytes: wasi.stdout(), stderrBytes: wasi.stderr(), exitCode, trap, abort };
     }
     // 同步版（終端機的指令必須同步）：編譯與執行都同步。瀏覽器主執行緒對較大的 wasm 會拒絕同步編譯，這時丟出說明清楚的錯誤
     function runSync(bytes, io) {
@@ -483,7 +545,7 @@
     function compileObject(text) {
         const p = parse(text); if (p.errors.length) return { errors: p.errors, stage: 'parse' };
         const errs = check(p.mod, { partial: true }); if (errs.length) return { errors: errs, stage: 'check' };
-        return { obj: serializeModule(p.mod), mod: p.mod, stage: 'ok', undefinedSymbols: p.mod.declares.filter((d) => !WASI[d.name] && !INTRINSICS[d.name] && !LIBC_NAMES.includes(d.name) && !p.mod.funcs.some((f) => f.name === d.name)).map((d) => d.name) };
+        return { obj: serializeModule(p.mod), mod: p.mod, stage: 'ok', undefinedSymbols: p.mod.declares.filter((d) => !isImport(d.name) && !INTRINSICS[d.name] && !LIBC_NAMES.includes(d.name) && !p.mod.funcs.some((f) => f.name === d.name)).map((d) => d.name) };
     }
     function linkModules(mods) {
         const out = { types: new Map(), globals: [], funcs: [], declares: [], triple: '' }; const errors = []; const E = (line, msg) => errors.push({ line, msg });
@@ -500,7 +562,7 @@
             if (f) { if (!sameType(f.ret, d.ret) || f.params.length !== d.params.length || f.params.some((p, i) => !sameType(p.ty, d.params[i]))) E(d.line, '@' + d.name + ' 的宣告跟定義的簽名不一致'); continue; }
             if (!seen.has(d.name)) { seen.add(d.name); out.declares.push(d); }
         }
-        for (const d of out.declares) if (!WASI[d.name] && !INTRINSICS[d.name] && !LIBC_NAMES.includes(d.name)) E(d.line, '未定義的符號 @' + d.name + '（沒有任何檔案定義它，也不是內建的 libc 或 WASI 函式）');
+        for (const d of out.declares) if (!isImport(d.name) && !INTRINSICS[d.name] && !LIBC_NAMES.includes(d.name)) E(d.line, '未定義的符號 @' + d.name + '（沒有任何檔案定義它，也不是內建的 libc 或 WASI 函式）');
         for (const g of out.globals) if (g.external && g.name !== '__heap_base') E(g.line, '全域 @' + g.name + ' 宣告成 external，但沒有任何檔案定義它');
         return { mod: out, errors };
     }
@@ -602,5 +664,5 @@
         return { ok: match, stage: match ? 'done' : 'verify', ir: g.ir, wasm, warnings: g.warnings, expected: g.expected, stdout: r.stdout, exitCode: r.exitCode, trap: r.trap, bytes: wasm.length };
     }
 
-    return { parse, check, toWasm, run, runSync, serializeModule, deserializeModule, isObjectText, compileObject, linkModules, loadAndLink, compileModule, compileMany, makeWasi, linkLibc, compileIr, LIBC_NAMES, WASI_NAMES: Object.keys(WASI), fromModel, build, parseType, typeStr, layout, DATA_BASE, STACK_TOP, RUNTIME_IR };
+    return { parse, check, toWasm, run, runSync, runHost, registerHost, unregisterHost, HOST, isImport, serializeModule, deserializeModule, isObjectText, compileObject, linkModules, loadAndLink, compileModule, compileMany, makeWasi, linkLibc, compileIr, LIBC_NAMES, WASI_NAMES: Object.keys(WASI), fromModel, build, parseType, typeStr, layout, DATA_BASE, STACK_TOP, RUNTIME_IR };
 });

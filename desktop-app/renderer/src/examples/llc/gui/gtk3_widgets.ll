@@ -38,7 +38,7 @@ declare void @gtk_box_pack_start(ptr, ptr, i32, i32, i32)
 declare void @gtk_widget_show_all(ptr)
 declare void @gtk_main()
 declare void @gtk_main_quit()
-declare i64 @g_signal_connect_data(ptr, ptr, ptr, ptr, ptr, i32)
+declare i32 @g_signal_connect_data(ptr, ptr, ptr, ptr, ptr, i32)   ; 回傳的 gulong 沒用到，宣告成 i32（native 與 wasm 的 host import 都適用）
 declare i32 @g_timeout_add(i32, ptr, ptr)
 declare i32 @atoi(ptr)
 declare i32 @snprintf(ptr, i64, ptr, ...)
@@ -93,8 +93,8 @@ define i32 @main(i32 %argc, ptr %argv) {
   call void @gtk_box_pack_start(ptr %box, ptr %ent, i32 0, i32 0, i32 0)
   call void @gtk_box_pack_start(ptr %box, ptr %ck, i32 0, i32 0, i32 0)
   call void @gtk_box_pack_start(ptr %box, ptr %bt, i32 0, i32 0, i32 0)
-  call i64 @g_signal_connect_data(ptr %bt, ptr @sig_clicked, ptr @on_click, ptr null, ptr null, i32 0)
-  call i64 @g_signal_connect_data(ptr %win, ptr @sig_destroy, ptr @on_destroy, ptr null, ptr null, i32 0)
+  call i32 @g_signal_connect_data(ptr %bt, ptr @sig_clicked, ptr @on_click, ptr null, ptr null, i32 0)
+  call i32 @g_signal_connect_data(ptr %win, ptr @sig_destroy, ptr @on_destroy, ptr null, ptr null, i32 0)
   call void @gtk_widget_show_all(ptr %win)
   %auto = icmp sgt i32 %argc, 1
   br i1 %auto, label %test, label %run
@@ -102,14 +102,17 @@ test:
   %ap = getelementptr ptr, ptr %argv, i32 1
   %a1 = load ptr, ptr %ap
   %n = call i32 @atoi(ptr %a1)
+  %iv = alloca i32
+  store i32 0, ptr %iv
   br label %clicks
 clicks:
-  %i = phi i32 [ 0, %test ], [ %i1, %click ]
+  %i = load i32, ptr %iv
   %more = icmp slt i32 %i, %n
   br i1 %more, label %click, label %arm
 click:
   call void @gtk_button_clicked(ptr %bt)
   %i1 = add i32 %i, 1
+  store i32 %i1, ptr %iv
   br label %clicks
 arm:
   call i32 @g_timeout_add(i32 200, ptr @quit_cb, ptr null)

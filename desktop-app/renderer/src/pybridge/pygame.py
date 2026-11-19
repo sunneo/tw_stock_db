@@ -535,3 +535,22 @@ font = _Font_()
 image = _Image_()
 mouse = _Mouse()
 transform = _Transform()
+
+
+# pygame.locals：`from pygame.locals import *` 的慣用寫法。這個墊片是單一檔案（不是套件），所以把定義好的常數收進一個登記在 sys.modules 的模組，
+# `import pygame.locals`／`from pygame.locals import QUIT, K_LEFT` 才找得到。DOUBLEBUF、OPENGL、FULLSCREEN 只是旗標常數（沒有 OpenGL 繪圖，set_mode 會忽略）。
+def _make_locals():
+    import sys as _sys
+    import types as _types
+    m = _types.ModuleType("pygame.locals")
+    for k, v in list(globals().items()):
+        if not k.startswith("_") and isinstance(v, int) and k.upper() == k:
+            setattr(m, k, v)
+    for k, v in (("DOUBLEBUF", 1073741824), ("OPENGL", 2), ("FULLSCREEN", -2147483648), ("HWSURFACE", 1), ("SCALED", 512), ("NOFRAME", 32)):
+        if not hasattr(m, k):
+            setattr(m, k, v)
+    _sys.modules["pygame.locals"] = m
+    return m
+
+
+locals = _make_locals()
