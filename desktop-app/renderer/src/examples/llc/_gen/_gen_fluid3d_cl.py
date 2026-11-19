@@ -325,6 +325,8 @@ def build():
         "    _bk = c('fa_cl_backend')\n"
         "    with draw.if_(_bk.eq(1)):\n"
         "        c('snprintf', buf, 160, '%d particles | source: GPU (OpenCL WebGL2) | step %d', N, step_no)\n"
+        "    with draw.if_(_bk.eq(3)):\n"
+        "        c('snprintf', buf, 160, '%d particles | source: GPU (OpenCL WebGPU) | step %d', N, step_no)\n"
         "    with draw.if_(_bk.eq(2)):\n"
         "        c('snprintf', buf, 160, '%d particles | source: GPU (OpenCL JS shim, not GPU) | step %d', N, step_no)\n"
         "    with draw.if_(_bk.eq(0)):\n"

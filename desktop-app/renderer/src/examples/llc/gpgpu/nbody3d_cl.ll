@@ -63,16 +63,17 @@ declare i32 @fa_cl_backend()
 @.s10 = private constant [51 x i8] c"GPU unavailable: WebGL2 float render not supported\00"
 @.s11 = private constant [22 x i8] c"CPU: wasm integration\00"
 @.s12 = private constant [37 x i8] c"GPU: OpenCL kernels (WebGL2 backend)\00"
-@.s13 = private constant [30 x i8] c"GPU: OpenCL JS shim (not GPU)\00"
-@.s14 = private constant [31 x i8] c"GPU: OpenCL not dispatched yet\00"
-@.s15 = private constant [33 x i8] c"MAX_X:%.1f MAX_Y:%.1f MAX_Z:%.1f\00"
-@.s16 = private constant [33 x i8] c"MAX_Vel:%.1f Grav:%.1f Soft:%.1f\00"
-@.s17 = private constant [48 x i8] c"[h]help [+/-]zoom [arrows/mouse]rotate [C]track\00"
-@.s18 = private constant [4 x i8] c"CPU\00"
-@.s19 = private constant [4 x i8] c"GPU\00"
-@.s20 = private constant [47 x i8] c"[3D] NBody-Simulation (OpenCL, GPU by default)\00"
-@.s21 = private constant [7 x i8] c"%d %f\0A\00"
-@.s22 = private constant [45 x i8] c"frames=%d bodies=%d cx=%.1f cy=%.1f cz=%.1f\0A\00"
+@.s13 = private constant [37 x i8] c"GPU: OpenCL kernels (WebGPU backend)\00"
+@.s14 = private constant [30 x i8] c"GPU: OpenCL JS shim (not GPU)\00"
+@.s15 = private constant [31 x i8] c"GPU: OpenCL not dispatched yet\00"
+@.s16 = private constant [33 x i8] c"MAX_X:%.1f MAX_Y:%.1f MAX_Z:%.1f\00"
+@.s17 = private constant [33 x i8] c"MAX_Vel:%.1f Grav:%.1f Soft:%.1f\00"
+@.s18 = private constant [48 x i8] c"[h]help [+/-]zoom [arrows/mouse]rotate [C]track\00"
+@.s19 = private constant [4 x i8] c"CPU\00"
+@.s20 = private constant [4 x i8] c"GPU\00"
+@.s21 = private constant [47 x i8] c"[3D] NBody-Simulation (OpenCL, GPU by default)\00"
+@.s22 = private constant [7 x i8] c"%d %f\0A\00"
+@.s23 = private constant [45 x i8] c"frames=%d bodies=%d cx=%.1f cy=%.1f cz=%.1f\0A\00"
 @font = private constant [1235 x i32] [i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 8, i32 8, i32 8, i32 8, i32 8, i32 8, i32 0, i32 8, i32 0, i32 0, i32 0, i32 0, i32 0, i32 20, i32 20, i32 20, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 10, i32 20, i32 63, i32 20, i32 20, i32 126, i32 40, i32 40, i32 0, i32 0, i32 0, i32 0, i32 0, i32 8, i32 28, i32 40, i32 40, i32 28, i32 10, i32 10, i32 60, i32 8, i32 8, i32 0, i32 0, i32 0, i32 48, i32 72, i32 50, i32 4, i32 24, i32 46, i32 10, i32 14, i32 0, i32 0, i32 0, i32 0, i32 0, i32 28, i32 32, i32 32, i32 48, i32 74, i32 70, i32 98, i32 62, i32 0, i32 0, i32 0, i32 0, i32 0, i32 8, i32 8, i32 8, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 8, i32 8, i32 8, i32 16, i32 16, i32 16, i32 16, i32 8, i32 8, i32 8, i32 0, i32 0, i32 0, i32 16, i32 8, i32 8, i32 8, i32 8, i32 8, i32 8, i32 8, i32 8, i32 16, i32 0, i32 0, i32 0, i32 0, i32 8, i32 42, i32 28, i32 28, i32 42, i32 8, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 8, i32 8, i32 126, i32 8, i32 8, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 8, i32 8, i32 16, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 28, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 8, i32 8, i32 0, i32 0, i32 0, i32 0, i32 0, i32 2, i32 4, i32 4, i32 8, i32 8, i32 16, i32 16, i32 32, i32 32, i32 0, i32 0, i32 0, i32 0, i32 28, i32 38, i32 34, i32 34, i32 42, i32 34, i32 38, i32 28, i32 0, i32 0, i32 0, i32 0, i32 0, i32 56, i32 8, i32 8, i32 8, i32 8, i32 8, i32 8, i32 62, i32 0, i32 0, i32 0, i32 0, i32 0, i32 28, i32 38, i32 2, i32 4, i32 8, i32 16, i32 32, i32 62, i32 0, i32 0, i32 0, i32 0, i32 0, i32 28, i32 38, i32 6, i32 24, i32 6, i32 2, i32 38, i32 60, i32 0, i32 0, i32 0, i32 0, i32 0, i32 12, i32 12, i32 20, i32 36, i32 36, i32 62, i32 4, i32 4, i32 0, i32 0, i32 0, i32 0, i32 0, i32 60, i32 32, i32 32, i32 60, i32 6, i32 2, i32 6, i32 60, i32 0, i32 0, i32 0, i32 0, i32 0, i32 28, i32 48, i32 32, i32 60, i32 34, i32 34, i32 34, i32 28, i32 0, i32 0, i32 0, i32 0, i32 0, i32 62, i32 4, i32 4, i32 4, i32 8, i32 8, i32 16, i32 16, i32 0, i32 0, i32 0, i32 0, i32 0, i32 28, i32 34, i32 34, i32 28, i32 38, i32 34, i32 34, i32 28, i32 0, i32 0, i32 0, i32 0, i32 0, i32 28, i32 38, i32 34, i32 38, i32 58, i32 2, i32 4, i32 60, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 8, i32 8, i32 0, i32 0, i32 8, i32 8, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 8, i32 8, i32 0, i32 0, i32 8, i32 8, i32 16, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 2, i32 28, i32 96, i32 24, i32 6, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 126, i32 0, i32 126, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 96, i32 28, i32 2, i32 28, i32 96, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 60, i32 6, i32 4, i32 8, i32 8, i32 8, i32 0, i32 8, i32 0, i32 0, i32 0, i32 0, i32 0, i32 28, i32 34, i32 66, i32 78, i32 82, i32 82, i32 78, i32 32, i32 32, i32 30, i32 0, i32 0, i32 0, i32 8, i32 24, i32 20, i32 20, i32 36, i32 62, i32 34, i32 66, i32 0, i32 0, i32 0, i32 0, i32 0, i32 60, i32 34, i32 34, i32 60, i32 34, i32 34, i32 34, i32 60, i32 0, i32 0, i32 0, i32 0, i32 0, i32 28, i32 50, i32 32, i32 32, i32 32, i32 32, i32 50, i32 28, i32 0, i32 0, i32 0, i32 0, i32 0, i32 56, i32 36, i32 34, i32 34, i32 34, i32 34, i32 36, i32 60, i32 0, i32 0, i32 0, i32 0, i32 0, i32 62, i32 32, i32 32, i32 62, i32 32, i32 32, i32 32, i32 62, i32 0, i32 0, i32 0, i32 0, i32 0, i32 62, i32 32, i32 32, i32 62, i32 32, i32 32, i32 32, i32 32, i32 0, i32 0, i32 0, i32 0, i32 0, i32 28, i32 34, i32 32, i32 32, i32 38, i32 34, i32 34, i32 28, i32 0, i32 0, i32 0, i32 0, i32 0, i32 34, i32 34, i32 34, i32 62, i32 34, i32 34, i32 34, i32 34, i32 0, i32 0, i32 0, i32 0, i32 0, i32 62, i32 8, i32 8, i32 8, i32 8, i32 8, i32 8, i32 62, i32 0, i32 0, i32 0, i32 0, i32 0, i32 28, i32 4, i32 4, i32 4, i32 4, i32 4, i32 36, i32 56, i32 0, i32 0, i32 0, i32 0, i32 0, i32 34, i32 36, i32 40, i32 56, i32 40, i32 36, i32 38, i32 34, i32 0, i32 0, i32 0, i32 0, i32 0, i32 32, i32 32, i32 32, i32 32, i32 32, i32 32, i32 32, i32 62, i32 0, i32 0, i32 0, i32 0, i32 0, i32 98, i32 102, i32 86, i32 90, i32 74, i32 66, i32 66, i32 66, i32 0, i32 0, i32 0, i32 0, i32 0, i32 34, i32 50, i32 50, i32 42, i32 42, i32 42, i32 38, i32 38, i32 0, i32 0, i32 0, i32 0, i32 0, i32 28, i32 38, i32 34, i32 34, i32 34, i32 34, i32 38, i32 28, i32 0, i32 0, i32 0, i32 0, i32 0, i32 60, i32 34, i32 34, i32 34, i32 60, i32 32, i32 32, i32 32, i32 0, i32 0, i32 0, i32 0, i32 0, i32 28, i32 38, i32 34, i32 34, i32 34, i32 34, i32 38, i32 28, i32 4, i32 0, i32 0, i32 0, i32 0, i32 60, i32 38, i32 34, i32 38, i32 56, i32 36, i32 34, i32 34, i32 0, i32 0, i32 0, i32 0, i32 0, i32 28, i32 36, i32 32, i32 48, i32 12, i32 2, i32 34, i32 28, i32 0, i32 0, i32 0, i32 0, i32 0, i32 126, i32 8, i32 8, i32 8, i32 8, i32 8, i32 8, i32 8, i32 0, i32 0, i32 0, i32 0, i32 0, i32 34, i32 34, i32 34, i32 34, i32 34, i32 34, i32 34, i32 28, i32 0, i32 0, i32 0, i32 0, i32 0, i32 98, i32 34, i32 34, i32 36, i32 20, i32 20, i32 24, i32 8, i32 0, i32 0, i32 0, i32 0, i32 0, i32 65, i32 66, i32 74, i32 90, i32 58, i32 54, i32 54, i32 36, i32 0, i32 0, i32 0, i32 0, i32 0, i32 34, i32 52, i32 20, i32 8, i32 24, i32 20, i32 34, i32 98, i32 0, i32 0, i32 0, i32 0, i32 0, i32 98, i32 38, i32 20, i32 24, i32 8, i32 8, i32 8, i32 8, i32 0, i32 0, i32 0, i32 0, i32 0, i32 62, i32 2, i32 4, i32 8, i32 8, i32 16, i32 32, i32 62, i32 0, i32 0, i32 0, i32 0, i32 28, i32 16, i32 16, i32 16, i32 16, i32 16, i32 16, i32 16, i32 16, i32 28, i32 0, i32 0, i32 0, i32 0, i32 32, i32 32, i32 16, i32 16, i32 8, i32 8, i32 4, i32 4, i32 2, i32 0, i32 0, i32 0, i32 24, i32 8, i32 8, i32 8, i32 8, i32 8, i32 8, i32 8, i32 8, i32 24, i32 0, i32 0, i32 0, i32 0, i32 24, i32 20, i32 34, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 16, i32 8, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 60, i32 2, i32 62, i32 34, i32 38, i32 58, i32 0, i32 0, i32 0, i32 0, i32 32, i32 32, i32 32, i32 60, i32 34, i32 34, i32 34, i32 34, i32 60, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 30, i32 48, i32 32, i32 32, i32 48, i32 30, i32 0, i32 0, i32 0, i32 0, i32 2, i32 2, i32 2, i32 26, i32 38, i32 34, i32 34, i32 38, i32 26, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 28, i32 34, i32 62, i32 32, i32 32, i32 30, i32 0, i32 0, i32 0, i32 0, i32 14, i32 8, i32 8, i32 62, i32 8, i32 8, i32 8, i32 8, i32 8, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 26, i32 38, i32 34, i32 34, i32 38, i32 26, i32 4, i32 60, i32 0, i32 0, i32 32, i32 32, i32 32, i32 60, i32 38, i32 34, i32 34, i32 34, i32 34, i32 0, i32 0, i32 0, i32 0, i32 8, i32 0, i32 0, i32 56, i32 8, i32 8, i32 8, i32 8, i32 62, i32 0, i32 0, i32 0, i32 0, i32 8, i32 0, i32 0, i32 24, i32 8, i32 8, i32 8, i32 8, i32 8, i32 8, i32 56, i32 0, i32 0, i32 32, i32 32, i32 32, i32 38, i32 44, i32 56, i32 44, i32 36, i32 34, i32 0, i32 0, i32 0, i32 0, i32 48, i32 16, i32 16, i32 16, i32 16, i32 16, i32 16, i32 8, i32 14, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 54, i32 42, i32 42, i32 42, i32 42, i32 42, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 60, i32 38, i32 34, i32 34, i32 34, i32 34, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 28, i32 38, i32 34, i32 34, i32 38, i32 28, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 60, i32 34, i32 34, i32 34, i32 34, i32 60, i32 32, i32 32, i32 0, i32 0, i32 0, i32 0, i32 0, i32 26, i32 38, i32 34, i32 34, i32 38, i32 26, i32 2, i32 2, i32 0, i32 0, i32 0, i32 0, i32 0, i32 30, i32 16, i32 16, i32 16, i32 16, i32 16, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 28, i32 32, i32 48, i32 12, i32 6, i32 60, i32 0, i32 0, i32 0, i32 0, i32 0, i32 16, i32 16, i32 62, i32 16, i32 16, i32 16, i32 16, i32 14, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 34, i32 34, i32 34, i32 34, i32 38, i32 26, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 34, i32 34, i32 36, i32 20, i32 24, i32 24, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 65, i32 66, i32 42, i32 58, i32 58, i32 52, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 34, i32 20, i32 24, i32 24, i32 20, i32 34, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 34, i32 34, i32 20, i32 20, i32 24, i32 8, i32 24, i32 48, i32 0, i32 0, i32 0, i32 0, i32 0, i32 62, i32 4, i32 8, i32 16, i32 16, i32 62, i32 0, i32 0, i32 0, i32 0, i32 12, i32 8, i32 8, i32 8, i32 48, i32 8, i32 8, i32 8, i32 8, i32 12, i32 0, i32 0, i32 0, i32 8, i32 8, i32 8, i32 8, i32 8, i32 8, i32 8, i32 8, i32 8, i32 8, i32 8, i32 0, i32 0, i32 48, i32 8, i32 8, i32 8, i32 4, i32 8, i32 8, i32 8, i32 8, i32 48, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 48, i32 78, i32 0, i32 0, i32 0, i32 0]
 @colr = private constant [10 x float] [float 0x0000000000000000, float 0x3FD0101020000000, float 0x3FE0101020000000, float 0x3FE8181820000000, float 0x3FF0000000000000, float 0x0000000000000000, float 0x0000000000000000, float 0x3FD8181820000000, float 0x3FE4141420000000, float 0x3FEC1C1C20000000]
 @colg = private constant [10 x float] [float 0x3FF0000000000000, float 0x3FF0000000000000, float 0x3FF0000000000000, float 0x3FF0000000000000, float 0x3FF0000000000000, float 0x3FEC1C1C20000000, float 0x3FE8181820000000, float 0x3FF0000000000000, float 0x3FF0000000000000, float 0x3FF0000000000000]
@@ -1295,7 +1296,7 @@ then9:
   call void @text(ptr %a1, i32 5, i32 145)
   br label %endif10
 endif10:
-  %t34 = icmp eq i32 %t31, 2
+  %t34 = icmp eq i32 %t31, 3
   br i1 %t34, label %then11, label %endif12
 then11:
   call void @glColor3f(float 0x3FF0000000000000, float 0x3FE99999A0000000, float 0x3FD99999A0000000)
@@ -1303,7 +1304,7 @@ then11:
   call void @text(ptr %a1, i32 5, i32 145)
   br label %endif12
 endif12:
-  %t36 = icmp eq i32 %t31, 0
+  %t36 = icmp eq i32 %t31, 2
   br i1 %t36, label %then13, label %endif14
 then13:
   call void @glColor3f(float 0x3FF0000000000000, float 0x3FE99999A0000000, float 0x3FD99999A0000000)
@@ -1311,91 +1312,99 @@ then13:
   call void @text(ptr %a1, i32 5, i32 145)
   br label %endif14
 endif14:
+  %t38 = icmp eq i32 %t31, 0
+  br i1 %t38, label %then15, label %endif16
+then15:
+  call void @glColor3f(float 0x3FF0000000000000, float 0x3FE99999A0000000, float 0x3FD99999A0000000)
+  %t39 = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %a1, i64 128, ptr @.s15)
+  call void @text(ptr %a1, i32 5, i32 145)
+  br label %endif16
+endif16:
   br label %endif8
 endif8:
-  %t38 = getelementptr float, ptr %par, i32 0
-  %t39 = load float, ptr %t38
-  %t40 = fpext float %t39 to double
-  %t41 = getelementptr float, ptr %par, i32 1
-  %t42 = load float, ptr %t41
-  %t43 = fpext float %t42 to double
-  %t44 = getelementptr float, ptr %par, i32 2
-  %t45 = load float, ptr %t44
-  %t46 = fpext float %t45 to double
+  %t40 = getelementptr float, ptr %par, i32 0
+  %t41 = load float, ptr %t40
+  %t42 = fpext float %t41 to double
+  %t43 = getelementptr float, ptr %par, i32 1
+  %t44 = load float, ptr %t43
+  %t45 = fpext float %t44 to double
+  %t46 = getelementptr float, ptr %par, i32 2
+  %t47 = load float, ptr %t46
+  %t48 = fpext float %t47 to double
   call void @glColor3f(float 0x3FE5581060000000, float 0x3FE5581060000000, float 0x3FE5581060000000)
-  %t47 = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %a1, i64 128, ptr @.s15, double %t40, double %t43, double %t46)
+  %t49 = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %a1, i64 128, ptr @.s16, double %t42, double %t45, double %t48)
   call void @text(ptr %a1, i32 5, i32 165)
-  %t48 = getelementptr float, ptr %par, i32 3
-  %t49 = load float, ptr %t48
-  %t50 = fpext float %t49 to double
-  %t51 = getelementptr float, ptr %par, i32 4
-  %t52 = load float, ptr %t51
-  %t53 = fpext float %t52 to double
-  %t54 = getelementptr float, ptr %par, i32 5
-  %t55 = load float, ptr %t54
-  %t56 = fpext float %t55 to double
+  %t50 = getelementptr float, ptr %par, i32 3
+  %t51 = load float, ptr %t50
+  %t52 = fpext float %t51 to double
+  %t53 = getelementptr float, ptr %par, i32 4
+  %t54 = load float, ptr %t53
+  %t55 = fpext float %t54 to double
+  %t56 = getelementptr float, ptr %par, i32 5
+  %t57 = load float, ptr %t56
+  %t58 = fpext float %t57 to double
   call void @glColor3f(float 0x3FE5581060000000, float 0x3FE5581060000000, float 0x3FE5581060000000)
-  %t57 = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %a1, i64 128, ptr @.s16, double %t50, double %t53, double %t56)
+  %t59 = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %a1, i64 128, ptr @.s17, double %t52, double %t55, double %t58)
   call void @text(ptr %a1, i32 5, i32 185)
   call void @glColor3f(float 0x3FE5581060000000, float 0x3FE5581060000000, float 0x3FE5581060000000)
-  %t58 = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %a1, i64 128, ptr @.s17)
+  %t60 = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %a1, i64 128, ptr @.s18)
   call void @text(ptr %a1, i32 5, i32 205)
   call void @glColor3f(float 0x3FF0000000000000, float 0x3FF0000000000000, float 0x3FF0000000000000)
   call void @glEnd()
   call void @glBegin(i32 7)
-  %t59 = icmp eq i32 %t23, 0
-  %t60 = select i1 %t59, float 0x3FBEB851E0000000, float 0x3FC851EB80000000
-  %t61 = select i1 %t59, float 0x3FDEB851E0000000, float 0x3FC851EB80000000
-  %t62 = select i1 %t59, float 0x3FBEB851E0000000, float 0x3FC851EB80000000
-  call void @glColor3f(float %t60, float %t61, float %t62)
+  %t61 = icmp eq i32 %t23, 0
+  %t62 = select i1 %t61, float 0x3FBEB851E0000000, float 0x3FC851EB80000000
+  %t63 = select i1 %t61, float 0x3FDEB851E0000000, float 0x3FC851EB80000000
+  %t64 = select i1 %t61, float 0x3FBEB851E0000000, float 0x3FC851EB80000000
+  call void @glColor3f(float %t62, float %t63, float %t64)
   call void @glVertex2f(float 0x4061800000000000, float 0x405E800000000000)
   call void @glVertex2f(float 0x4067C00000000000, float 0x405E800000000000)
   call void @glVertex2f(float 0x4067C00000000000, float 0x4061C00000000000)
   call void @glVertex2f(float 0x4061800000000000, float 0x4061C00000000000)
-  %t63 = icmp ne i32 %t23, 0
-  %t64 = select i1 %t63, float 0x3FBEB851E0000000, float 0x3FC851EB80000000
-  %t65 = select i1 %t63, float 0x3FDEB851E0000000, float 0x3FC851EB80000000
-  %t66 = select i1 %t63, float 0x3FBEB851E0000000, float 0x3FC851EB80000000
-  call void @glColor3f(float %t64, float %t65, float %t66)
+  %t65 = icmp ne i32 %t23, 0
+  %t66 = select i1 %t65, float 0x3FBEB851E0000000, float 0x3FC851EB80000000
+  %t67 = select i1 %t65, float 0x3FDEB851E0000000, float 0x3FC851EB80000000
+  %t68 = select i1 %t65, float 0x3FBEB851E0000000, float 0x3FC851EB80000000
+  call void @glColor3f(float %t66, float %t67, float %t68)
   call void @glVertex2f(float 0x4069000000000000, float 0x405E800000000000)
   call void @glVertex2f(float 0x406F400000000000, float 0x405E800000000000)
   call void @glVertex2f(float 0x406F400000000000, float 0x4061C00000000000)
   call void @glVertex2f(float 0x4069000000000000, float 0x4061C00000000000)
-  %t67 = getelementptr float, ptr %par, i32 6
-  %t68 = load float, ptr %t67
-  %t69 = fdiv float %t68, 0x4000000000000000
-  %t70 = fmul float %t69, 0x4079000000000000
+  %t69 = getelementptr float, ptr %par, i32 6
+  %t70 = load float, ptr %t69
+  %t71 = fdiv float %t70, 0x4000000000000000
+  %t72 = fmul float %t71, 0x4079000000000000
   call void @glColor3f(float 0x3FEFAE1480000000, float 0x3FEFAE1480000000, float 0x0000000000000000)
-  %t71 = fmul float %t70, 0x0000000000000000
-  %t72 = fadd float 0x4074000000000000, %t71
-  call void @glVertex2f(float %t72, float 0x4039000000000000)
-  %t73 = fmul float %t70, 0x3FF0000000000000
+  %t73 = fmul float %t72, 0x0000000000000000
   %t74 = fadd float 0x4074000000000000, %t73
   call void @glVertex2f(float %t74, float 0x4039000000000000)
-  %t75 = fmul float %t70, 0x3FF0000000000000
+  %t75 = fmul float %t72, 0x3FF0000000000000
   %t76 = fadd float 0x4074000000000000, %t75
-  call void @glVertex2f(float %t76, float 0x4044000000000000)
-  %t77 = fmul float %t70, 0x0000000000000000
+  call void @glVertex2f(float %t76, float 0x4039000000000000)
+  %t77 = fmul float %t72, 0x3FF0000000000000
   %t78 = fadd float 0x4074000000000000, %t77
   call void @glVertex2f(float %t78, float 0x4044000000000000)
-  %t79 = getelementptr float, ptr %par, i32 7
-  %t80 = load float, ptr %t79
-  %t81 = fsub float %t80, 0x4014000000000000
-  %t82 = fdiv float %t81, 0x4068600000000000
-  %t83 = fmul float %t82, 0x4079000000000000
+  %t79 = fmul float %t72, 0x0000000000000000
+  %t80 = fadd float 0x4074000000000000, %t79
+  call void @glVertex2f(float %t80, float 0x4044000000000000)
+  %t81 = getelementptr float, ptr %par, i32 7
+  %t82 = load float, ptr %t81
+  %t83 = fsub float %t82, 0x4014000000000000
+  %t84 = fdiv float %t83, 0x4068600000000000
+  %t85 = fmul float %t84, 0x4079000000000000
   call void @glColor3f(float 0x0000000000000000, float 0x3FF0000000000000, float 0x0000000000000000)
-  %t84 = fmul float %t83, 0x0000000000000000
-  %t85 = fadd float 0x4074000000000000, %t84
-  call void @glVertex2f(float %t85, float 0x4050400000000000)
-  %t86 = fmul float %t83, 0x3FF0000000000000
+  %t86 = fmul float %t85, 0x0000000000000000
   %t87 = fadd float 0x4074000000000000, %t86
   call void @glVertex2f(float %t87, float 0x4050400000000000)
-  %t88 = fmul float %t83, 0x3FF0000000000000
+  %t88 = fmul float %t85, 0x3FF0000000000000
   %t89 = fadd float 0x4074000000000000, %t88
-  call void @glVertex2f(float %t89, float 0x4054000000000000)
-  %t90 = fmul float %t83, 0x0000000000000000
+  call void @glVertex2f(float %t89, float 0x4050400000000000)
+  %t90 = fmul float %t85, 0x3FF0000000000000
   %t91 = fadd float 0x4074000000000000, %t90
   call void @glVertex2f(float %t91, float 0x4054000000000000)
+  %t92 = fmul float %t85, 0x0000000000000000
+  %t93 = fadd float 0x4074000000000000, %t92
+  call void @glVertex2f(float %t93, float 0x4054000000000000)
   call void @glEnd()
   call void @glBegin(i32 1)
   call void @glColor3f(float 0x3FF0000000000000, float 0x3FF0000000000000, float 0x3FF0000000000000)
@@ -1434,8 +1443,8 @@ endif8:
   call void @glEnd()
   call void @glColor3f(float 0x3FF0000000000000, float 0x3FF0000000000000, float 0x3FF0000000000000)
   call void @glBegin(i32 0)
-  call void @text(ptr @.s18, i32 152, i32 125)
-  call void @text(ptr @.s19, i32 212, i32 125)
+  call void @text(ptr @.s19, i32 152, i32 125)
+  call void @text(ptr @.s20, i32 212, i32 125)
   call void @glEnd()
   ret void
 }
@@ -1525,7 +1534,7 @@ then9:
 endif10:
   %t17 = load i32, ptr %a15
   %t18 = call i32 @SDL_Init(i32 32)
-  %t19 = call ptr @SDL_CreateWindow(ptr @.s20, i32 805240832, i32 805240832, i32 800, i32 560, i32 2)
+  %t19 = call ptr @SDL_CreateWindow(ptr @.s21, i32 805240832, i32 805240832, i32 800, i32 560, i32 2)
   %t20 = call ptr @SDL_GL_CreateContext(ptr %t19)
   %t21 = icmp eq ptr %t20, null
   br i1 %t21, label %then11, label %endif12
@@ -2034,7 +2043,7 @@ then83:
   %t297 = sub i32 %t295, %t296
   %t298 = sitofp i32 %t297 to double
   %t299 = fdiv double %t298, 0x408F400000000000
-  %t300 = call i32 (ptr, ...) @printf(ptr @.s21, i32 %t17, double %t299)
+  %t300 = call i32 (ptr, ...) @printf(ptr @.s22, i32 %t17, double %t299)
   %t301 = call i32 @SDL_GetTicks()
   store i32 %t301, ptr %a36
   %t302 = load i32, ptr %a21
@@ -2162,7 +2171,7 @@ we15:
   %t376 = getelementptr float, ptr %a12, i32 2
   %t377 = load float, ptr %t376
   %t378 = fpext float %t377 to double
-  %t379 = call i32 (ptr, ...) @printf(ptr @.s22, i32 %t369, i32 %t17, double %t372, double %t375, double %t378)
+  %t379 = call i32 (ptr, ...) @printf(ptr @.s23, i32 %t369, i32 %t17, double %t372, double %t375, double %t378)
   call void @SDL_GL_DeleteContext(ptr %t20)
   call void @SDL_DestroyWindow(ptr %t19)
   call void @SDL_Quit()

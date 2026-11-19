@@ -114,6 +114,8 @@ const suites = [
     ['gpu_core 固定運算層（T1 WGSL、T3 WebGL2、T5 JS）：假裝置、能力檔、登錄表探測、backendInfo', 'renderer/src/gpu/gpu_core.test.js'],
     ['KIR 通用逐元素核心：OpenCL C 子集解析、驗證、JS 後端、WGSL 與 GLSL 結構（vecadd、N 體、SPH；拒絕超出子集的寫法）', 'renderer/src/gpu/kir_test.js'],
     ['KIR 的 WebGPU 裝置層：假裝置的流程（綁定偏移、uniform 佈局、不讀回、打包 view、用法衝突拒絕、工作群實測快取）與分塊 WGSL 結構', 'renderer/src/gpu/kir_webgpu_test.js'],
+    ['KIR 主機掛鉤：WebGPU → WebGL2 → JS 的選擇與每一步的原因（假裝置）', 'renderer/src/gpu/kir_host_hooks_test.js'],
+    ['llvm_host 非同步讀回（WebGPU）：SIGS 旗標、沒有 JSPI 的說明；有 JSPI 時跑假的非同步裝置＋真 wasm', 'renderer/src/uml/llvm_host_async_test.js'],
     ['midigenai 假 session（cudaweb 解碼）：KV 佈局轉換、重放重建、錯誤傳遞', 'renderer/src/gpu/midi_session_test.js'],
     ['midigenai GPU 運算（RMSNorm／RoPE／注意力／SiLU·up）：沒有 WebGPU 退 cpu-js 且與參考一致', 'renderer/src/gpu/midi_gpu_test.js'],
     ['Whisper 編碼器（q8）參考與 GPU 運算：DQL 規格值、整數矩陣乘、無 WebGPU 退 cpu-js', 'renderer/src/gpu/whisper_enc_test.js'],

@@ -49,13 +49,14 @@ declare i32 @fa_cl_backend()
 @.s1 = private constant [44 x i8] c"%d particles | source: CPU (wasm) | step %d\00"
 @.s2 = private constant [72 x i8] c"%d particles | source: CPU, GPU unavailable (no WebGL2 float) | step %d\00"
 @.s3 = private constant [53 x i8] c"%d particles | source: GPU (OpenCL WebGL2) | step %d\00"
-@.s4 = private constant [63 x i8] c"%d particles | source: GPU (OpenCL JS shim, not GPU) | step %d\00"
-@.s5 = private constant [62 x i8] c"%d particles | source: GPU (OpenCL, not dispatched) | step %d\00"
-@.s6 = private constant [57 x i8] c"[drag]rotate [wheel]zoom [space]splash [P]pause [R]reset\00"
-@.s7 = private constant [4 x i8] c"CPU\00"
-@.s8 = private constant [4 x i8] c"GPU\00"
-@.s9 = private constant [22 x i8] c"IR fluid3d (SPH, CPU)\00"
-@.s10 = private constant [28 x i8] c"frames=%d n=%d y_mean=%.3f\0A\00"
+@.s4 = private constant [53 x i8] c"%d particles | source: GPU (OpenCL WebGPU) | step %d\00"
+@.s5 = private constant [63 x i8] c"%d particles | source: GPU (OpenCL JS shim, not GPU) | step %d\00"
+@.s6 = private constant [62 x i8] c"%d particles | source: GPU (OpenCL, not dispatched) | step %d\00"
+@.s7 = private constant [57 x i8] c"[drag]rotate [wheel]zoom [space]splash [P]pause [R]reset\00"
+@.s8 = private constant [4 x i8] c"CPU\00"
+@.s9 = private constant [4 x i8] c"GPU\00"
+@.s10 = private constant [22 x i8] c"IR fluid3d (SPH, CPU)\00"
+@.s11 = private constant [28 x i8] c"frames=%d n=%d y_mean=%.3f\0A\00"
 @sph_src = private constant [3646 x i8] c"__kernel void krho(__global const float* x, __global const float* y, __global const float* z, __global float* rho, int n, float h2, float c0) {\0A  int i = get_global_id(0);\0A  float xi = x[i]; float yi = y[i]; float zi = z[i];\0A  float s = 0.0f;\0A  for (int j = 0; j < n; j++) {\0A    float dx = xi - x[j]; float dy = yi - y[j]; float dz = zi - z[j];\0A    float mm = h2 - (dx * dx + dy * dy + dz * dz);\0A    if (mm > 0.0f) {\0A      s += mm * mm * mm;\0A    }\0A  }\0A  rho[i] = s * c0;\0A}\0A\0A__kernel void kfx(__global const float* x, __global const float* y, __global const float* z, __global const float* vx, __global const float* vy, __global const float* vz, __global const float* rho, __global float* ax, int n, float h2, float h, float K, float rho0, float cs, float cv, float g) {\0A  int i = get_global_id(0);\0A  float xi = x[i]; float yi = y[i]; float zi = z[i]; float vxi = vx[i];\0A  float rhoi = rho[i];\0A  float pi = (rhoi - rho0) * K;\0A  if (pi < 0.0f) { pi = 0.0f; }\0A  float f = 0.0f;\0A  for (int j = 0; j < n; j++) {\0A    float dx = xi - x[j]; float dy = yi - y[j]; float dz = zi - z[j];\0A    float r2 = dx * dx + dy * dy + dz * dz;\0A    if (r2 < h2) {\0A      if (r2 > 0.000000000001f) {\0A        float r = sqrt(r2);\0A        float w = h - r;\0A        float rhoj = rho[j];\0A        float pj = (rhoj - rho0) * K;\0A        if (pj < 0.0f) { pj = 0.0f; }\0A        float cp = ((pi + pj) / (rhoj * 2.0f)) * (w * w / r) * cs;\0A        float cvv = (w / rhoj) * cv;\0A        f += dx * cp + (vx[j] - vxi) * cvv;\0A      }\0A    }\0A  }\0A  ax[i] = f * (1.0f / rhoi);\0A}\0A\0A__kernel void kfy(__global const float* x, __global const float* y, __global const float* z, __global const float* vx, __global const float* vy, __global const float* vz, __global const float* rho, __global float* ay, int n, float h2, float h, float K, float rho0, float cs, float cv, float g) {\0A  int i = get_global_id(0);\0A  float xi = x[i]; float yi = y[i]; float zi = z[i]; float vyi = vy[i];\0A  float rhoi = rho[i];\0A  float pi = (rhoi - rho0) * K;\0A  if (pi < 0.0f) { pi = 0.0f; }\0A  float f = 0.0f;\0A  for (int j = 0; j < n; j++) {\0A    float dx = xi - x[j]; float dy = yi - y[j]; float dz = zi - z[j];\0A    float r2 = dx * dx + dy * dy + dz * dz;\0A    if (r2 < h2) {\0A      if (r2 > 0.000000000001f) {\0A        float r = sqrt(r2);\0A        float w = h - r;\0A        float rhoj = rho[j];\0A        float pj = (rhoj - rho0) * K;\0A        if (pj < 0.0f) { pj = 0.0f; }\0A        float cp = ((pi + pj) / (rhoj * 2.0f)) * (w * w / r) * cs;\0A        float cvv = (w / rhoj) * cv;\0A        f += dy * cp + (vy[j] - vyi) * cvv;\0A      }\0A    }\0A  }\0A  ay[i] = f * (1.0f / rhoi) + g;\0A}\0A\0A__kernel void kfz(__global const float* x, __global const float* y, __global const float* z, __global const float* vx, __global const float* vy, __global const float* vz, __global const float* rho, __global float* az, int n, float h2, float h, float K, float rho0, float cs, float cv, float g) {\0A  int i = get_global_id(0);\0A  float xi = x[i]; float yi = y[i]; float zi = z[i]; float vzi = vz[i];\0A  float rhoi = rho[i];\0A  float pi = (rhoi - rho0) * K;\0A  if (pi < 0.0f) { pi = 0.0f; }\0A  float f = 0.0f;\0A  for (int j = 0; j < n; j++) {\0A    float dx = xi - x[j]; float dy = yi - y[j]; float dz = zi - z[j];\0A    float r2 = dx * dx + dy * dy + dz * dz;\0A    if (r2 < h2) {\0A      if (r2 > 0.000000000001f) {\0A        float r = sqrt(r2);\0A        float w = h - r;\0A        float rhoj = rho[j];\0A        float pj = (rhoj - rho0) * K;\0A        if (pj < 0.0f) { pj = 0.0f; }\0A        float cp = ((pi + pj) / (rhoj * 2.0f)) * (w * w / r) * cs;\0A        float cvv = (w / rhoj) * cv;\0A        f += dz * cp + (vz[j] - vzi) * cvv;\0A      }\0A    }\0A  }\0A  az[i] = f * (1.0f / rhoi);\0A}\0A\00"
 @sph_n_krho = private constant [5 x i8] c"krho\00"
 @sph_n_kfx = private constant [4 x i8] c"kfx\00"
@@ -1104,39 +1105,45 @@ then12:
   %t66 = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %a2, i64 160, ptr @.s3, i32 1000, i32 %step_no)
   br label %endif13
 endif13:
-  %t67 = icmp eq i32 %t64, 2
+  %t67 = icmp eq i32 %t64, 3
   br i1 %t67, label %then14, label %endif15
 then14:
   %t68 = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %a2, i64 160, ptr @.s4, i32 1000, i32 %step_no)
   br label %endif15
 endif15:
-  %t69 = icmp eq i32 %t64, 0
+  %t69 = icmp eq i32 %t64, 2
   br i1 %t69, label %then16, label %endif17
 then16:
   %t70 = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %a2, i64 160, ptr @.s5, i32 1000, i32 %step_no)
   br label %endif17
 endif17:
+  %t71 = icmp eq i32 %t64, 0
+  br i1 %t71, label %then18, label %endif19
+then18:
+  %t72 = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %a2, i64 160, ptr @.s6, i32 1000, i32 %step_no)
+  br label %endif19
+endif19:
   br label %endif11
 endif11:
   call void @text(ptr %a2, i32 5, i32 5)
-  call void @text(ptr @.s6, i32 5, i32 25)
+  call void @text(ptr @.s7, i32 5, i32 25)
   call void @glEnd()
-  %t71 = call i32 @cl_mode()
+  %t73 = call i32 @cl_mode()
   call void @glBegin(i32 7)
-  %t72 = icmp eq i32 %t71, 0
-  %t73 = icmp ne i32 %t71, 0
-  %t74 = select i1 %t72, float 0x3FBEB851E0000000, float 0x3FC851EB80000000
-  %t75 = select i1 %t72, float 0x3FDEB851E0000000, float 0x3FC851EB80000000
-  %t76 = select i1 %t72, float 0x3FBEB851E0000000, float 0x3FC851EB80000000
-  call void @glColor3f(float %t74, float %t75, float %t76)
+  %t74 = icmp eq i32 %t73, 0
+  %t75 = icmp ne i32 %t73, 0
+  %t76 = select i1 %t74, float 0x3FBEB851E0000000, float 0x3FC851EB80000000
+  %t77 = select i1 %t74, float 0x3FDEB851E0000000, float 0x3FC851EB80000000
+  %t78 = select i1 %t74, float 0x3FBEB851E0000000, float 0x3FC851EB80000000
+  call void @glColor3f(float %t76, float %t77, float %t78)
   call void @glVertex2f(float 0x407D600000000000, float 0x407B800000000000)
   call void @glVertex2f(float 0x4080400000000000, float 0x407B800000000000)
   call void @glVertex2f(float 0x4080400000000000, float 0x407CC00000000000)
   call void @glVertex2f(float 0x407D600000000000, float 0x407CC00000000000)
-  %t77 = select i1 %t73, float 0x3FBEB851E0000000, float 0x3FC851EB80000000
-  %t78 = select i1 %t73, float 0x3FDEB851E0000000, float 0x3FC851EB80000000
-  %t79 = select i1 %t73, float 0x3FBEB851E0000000, float 0x3FC851EB80000000
-  call void @glColor3f(float %t77, float %t78, float %t79)
+  %t79 = select i1 %t75, float 0x3FBEB851E0000000, float 0x3FC851EB80000000
+  %t80 = select i1 %t75, float 0x3FDEB851E0000000, float 0x3FC851EB80000000
+  %t81 = select i1 %t75, float 0x3FBEB851E0000000, float 0x3FC851EB80000000
+  call void @glColor3f(float %t79, float %t80, float %t81)
   call void @glVertex2f(float 0x4080900000000000, float 0x407B800000000000)
   call void @glVertex2f(float 0x4082200000000000, float 0x407B800000000000)
   call void @glVertex2f(float 0x4082200000000000, float 0x407CC00000000000)
@@ -1144,8 +1151,8 @@ endif11:
   call void @glEnd()
   call void @glBegin(i32 0)
   call void @glColor3f(float 0x3FF0000000000000, float 0x3FF0000000000000, float 0x3FF0000000000000)
-  call void @text(ptr @.s7, i32 482, i32 444)
-  call void @text(ptr @.s8, i32 542, i32 444)
+  call void @text(ptr @.s8, i32 482, i32 444)
+  call void @text(ptr @.s9, i32 542, i32 444)
   call void @glEnd()
   ret void
 }
@@ -1190,7 +1197,7 @@ then1:
   br label %endif2
 endif2:
   %t5 = call i32 @SDL_Init(i32 32)
-  %t6 = call ptr @SDL_CreateWindow(ptr @.s9, i32 805240832, i32 805240832, i32 640, i32 480, i32 2)
+  %t6 = call ptr @SDL_CreateWindow(ptr @.s10, i32 805240832, i32 805240832, i32 640, i32 480, i32 2)
   %t7 = call ptr @SDL_GL_CreateContext(ptr %t6)
   %t8 = icmp eq ptr %t7, null
   br i1 %t8, label %then3, label %endif4
@@ -1442,7 +1449,7 @@ le50:
   %t127 = load i32, ptr %a8
   %t128 = load double, ptr %a18
   %t129 = fdiv double %t128, 0x408F400000000000
-  %t130 = call i32 (ptr, ...) @printf(ptr @.s10, i32 %t127, i32 1000, double %t129)
+  %t130 = call i32 (ptr, ...) @printf(ptr @.s11, i32 %t127, i32 1000, double %t129)
   call void @SDL_GL_DeleteContext(ptr %t7)
   call void @SDL_DestroyWindow(ptr %t6)
   call void @SDL_Quit()

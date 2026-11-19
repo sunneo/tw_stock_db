@@ -201,13 +201,13 @@
 
     let installs = 0;   // 同時有幾個程式在用（登記是全域的：最後一個結束才取消，不然別的 IR 工具會把 printf 之類當成主機函式）
     function create(o) {
-        o = o || {}; const gui = o.gui, sleep = o.sleep || ((ms) => new Promise((r) => setTimeout(r, ms))), now = o.now || (() => Date.now()), warn = o.warn || (() => {});
+        o = o || {}; const asyncRb = !!o.asyncReadback; const sigs = Object.assign({}, SIGS, { clEnqueueReadBuffer: Object.assign({}, SIGS.clEnqueueReadBuffer, { async: !!o.asyncReadback }), clEnqueueNDRangeKernel: Object.assign({}, SIGS.clEnqueueNDRangeKernel, { async: !!o.asyncReadback }) }); const gui = o.gui, sleep = o.sleep || ((ms) => new Promise((r) => setTimeout(r, ms))), now = o.now || (() => Date.now()), warn = o.warn || (() => {});
         // OpenCL → KIR 接線（DESIGN.webgpu-cuda.md §13 階段 4）：kirTranslate(src) → { 核心名: KIR 核心 } 或 null（不支援）；kirRun(核心, { 參數名: 型別化陣列 }, { 純量名: 數字 }, N) → { out: { 名: Float32Array } }（失敗就丟例外）。
         // 沒有提供、或翻譯／執行失敗，就退回 JS 後備（clCompile 的核心）。
         const kirTranslate = o.kirTranslate || null, kirRun = o.kirRun || null;
         // 常駐裝置（DESIGN.webgpu-cuda.md §13 階段 6 步驟 1b）：kirDev＝{ alloc(N,elem), upload(b, arr), download(b), dispatch(核心, binds, out, scal, N), free(b) }。
         // 有它且有 kirTranslate 時，核心在裝置上跑；緩衝區記錄「主機副本是否最新」（hostOk）與「裝置副本是否最新」（devOk），讀寫時才同步。
-        const kirDev = o.kirDev || null;
+        const kirDev = o.kirDev || null; const kirDevKind = o.kirBackend === 'webgpu' ? 'webgpu' : 'webgl2';
         let clBackend = 0;   // fa_cl_backend 的值（見 SIGS）
         const t0 = now(); let handleSeq = 0x1000, winSeq = 0, nodeSeq = 0; const handles = new Map();   // 不透明指標（SDL_Window*、SDL_Renderer*、SDL_GLContext）→ 狀態
         const mk = (obj) => { const h = (handleSeq += 16); handles.set(h, obj); return h; };
@@ -547,7 +547,7 @@
             // 打包與 view（DESIGN.webgpu-cuda.md §13 階段 6 步驟 1c）：fa_cl_pack 把一個緩衝區標成 parts 個部分；fa_cl_view 得到第 k 部分（與 root 共用資料）。
             // 狀態（hostOk／devOk）記在 root 上；裝置物件：root 是 allocPacked／alloc，view 是 kirDev.view(root 的裝置, k)。
             const rootOf = (m) => m.parentMem || m;
-            const syncHost = (m) => { const r = rootOf(m); if (r.hostOk) return true; if (!kirDev || !r.dev) return false; const N = r.size / 4; const res = kirDev.download(r.dev); if (!res || res.length < N) return false; new Float32Array(r.data.buffer, r.data.byteOffset, N).set(res.subarray(0, N)); r.hostOk = true; return true; };
+            const syncHost = (m) => { const r = rootOf(m); if (r.hostOk) return true; if (!kirDev || !r.dev) return false; const N = r.size / 4; const got = kirDev.download(r.dev); const apply = (res) => { if (!res || res.length < N) return false; new Float32Array(r.data.buffer, r.data.byteOffset, N).set(res.subarray(0, N)); r.hostOk = true; return true; }; if (got && typeof got.then === 'function') { if (!asyncRb) throw new Error('讀回是非同步的（WebGPU），但這個 host 沒有開 asyncReadback（需要 JSPI）'); return got.then(apply); } return apply(got); };
             const setHostNew = (m) => { const r = rootOf(m); r.hostOk = true; r.devOk = false; };
             const setDevNew = (m) => { const r = rootOf(m); r.devOk = true; r.hostOk = false; };
             // 配置 root 的裝置緩衝區（不上傳）；回傳 m 的裝置物件
@@ -580,13 +580,13 @@
                     if (flags & (8 | 32)) data.set(ctx.u8().subarray(host, host + size)); errOut(ctx, err, 0); return mk({ kind: 'clmem', size, data, dev: null, hostOk: true, devOk: false });
                 },
                 clEnqueueWriteBuffer: (ctx, q, b, blocking, off, size, ptr) => { const buf = clH(b, 'clmem'); off = Number(off); size = Number(size); if (!clH(q, 'clq')) return -36; if (!buf) return -38; if (off + size > buf.size || !ptr) return -30; if (!syncHost(buf)) return -9999; buf.data.set(ctx.u8().subarray(ptr, ptr + size), off); setHostNew(buf); return 0; },
-                clEnqueueReadBuffer: (ctx, q, b, blocking, off, size, ptr) => { const buf = clH(b, 'clmem'); off = Number(off); size = Number(size); if (!clH(q, 'clq')) return -36; if (!buf) return -38; if (off + size > buf.size || !ptr) return -30; if (!syncHost(buf)) return -9999; copyOut(ctx, buf, off, size, ptr); return 0; },
+                clEnqueueReadBuffer: (ctx, q, b, blocking, off, size, ptr) => { const buf = clH(b, 'clmem'); off = Number(off); size = Number(size); if (!clH(q, 'clq')) return -36; if (!buf) return -38; if (off + size > buf.size || !ptr) return -30; const fin = (ok) => { if (!ok) return -9999; copyOut(ctx, buf, off, size, ptr); return 0; }; const sr = syncHost(buf); return sr && typeof sr.then === 'function' ? sr.then(fin) : fin(sr); },
                 clCreateProgramWithSource: (ctx, c, count, strs, lens, err) => {
                     if (!clH(c, 'clctx')) { errOut(ctx, err, -34); return 0; } const dv = ctx.dv(); let src = '';
                     for (let i = 0; i < count; i++) { const sp = dv.getUint32(strs + 4 * i, true); src += cstr(ctx, sp); }
                     errOut(ctx, err, 0); return mk({ kind: 'clprog', src, built: null, log: '' });
                 },
-                clBuildProgram: (ctx, p) => { const pr = clH(p, 'clprog'); if (!pr) return -44; const r = clCompile(pr.src); if (r.error) { pr.log = r.error; pr.built = null; warn('OpenCL 建置失敗：' + r.error + '\n'); return -11; } pr.built = r.kernels; pr.log = ''; pr.kir = null; if (kirTranslate && kirRun) { try { pr.kir = kirTranslate(pr.src) || null; } catch (e) { pr.kir = null; } } return 0; },
+                clBuildProgram: (ctx, p) => { const pr = clH(p, 'clprog'); if (!pr) return -44; const r = clCompile(pr.src); if (r.error) { pr.log = r.error; pr.built = null; warn('OpenCL 建置失敗：' + r.error + '\n'); return -11; } pr.built = r.kernels; pr.log = ''; pr.kir = null; if (kirTranslate && (kirRun || kirDev)) { try { pr.kir = kirTranslate(pr.src) || null; } catch (e) { pr.kir = null; } } return 0; },
                 clGetProgramBuildInfo: (ctx, p, d, name, size, v, ret) => { const pr = clH(p, 'clprog'); if (!pr) return -44; if (name === 0x1181) { if (v) ctx.dv().setInt32(v, pr.built ? 0 : -2, true); if (ret) ctx.dv().setUint32(ret, 4, true); return 0; } return setStr(ctx, pr.log, size, v, ret); },
                 clCreateKernel: (ctx, p, name, err) => { const pr = clH(p, 'clprog'); if (!pr) { errOut(ctx, err, -44); return 0; } if (!pr.built) { errOut(ctx, err, -45); return 0; } const n = cstr(ctx, name), k = pr.built[n]; if (!k) { errOut(ctx, err, -46); return 0; } errOut(ctx, err, 0); return mk({ kind: 'clkernel', name: n, def: k, prog: pr, args: new Array(k.params.length).fill(undefined) }); },
                 clSetKernelArg: (ctx, kp, idx, size, ptr) => {
@@ -600,7 +600,7 @@
                     if (lsp) for (let d = 0; d < dim; d++) { const l = Number(dv.getBigUint64(lsp + 8 * d, true)); if (l && gs[d] % l) return -54; }
                     if (k.args.some((a) => a === undefined)) return -52; const args = k.def.params.map((pa, i) => { const a = k.args[i]; if (a.mem) { const E = CL_ELEM[pa.type]; return new E(a.mem.data.buffer, a.mem.data.byteOffset, Math.floor(a.mem.size / E.BYTES_PER_ELEMENT)); } return a.scalar; });
                     // 有 KIR 版本且一維：走 kirRun（緩衝區複製進出；之後階段改成留在 GPU 紋理）；失敗就退回 JS
-                    const kirK = dim === 1 && kirRun && k.prog && k.prog.kir && k.prog.kir[k.name];
+                    const kirK = dim === 1 && (kirRun || kirDev) && k.prog && k.prog.kir && k.prog.kir[k.name];
                     // 常駐裝置路徑：所有指標參數都是 float（f32），輸出只有一個，且不與輸入同一個緩衝區；任何一步失敗就同步主機副本、退回 JS
                     if (kirK && kirDev && kirTranslate) {
                         const ptrs = k.def.params.map((pa, i) => ({ pa, i, a: k.args[i] })).filter((x) => x.pa.ptr);
@@ -628,15 +628,17 @@
                                 }
                                 for (const q of kirK.params) if (q.kind === 'scalar') { const pa = k.def.params.find((z) => z.name === q.name); scal[q.name] = k.args[k.def.params.indexOf(pa)].scalar; }
                                 kirDev.dispatch(kirK, binds, binds[outName], scal, N);
-                                setDevNew(outMem); clBackend = 1;
+                                setDevNew(outMem); clBackend = kirDevKind === 'webgpu' ? 3 : 1;
                                 return 0;
-                            } catch (e) { warn('OpenCL：常駐裝置執行失敗，退回主機：' + e.message + '\n'); for (const x of ptrs) if (x.a.mem) syncHost(x.a.mem); }
+                            } catch (e) { warn('OpenCL：常駐裝置執行失敗，退回主機：' + e.message + '\n'); }
                         }
                     }
                     // 非裝置路徑：先把裝置上較新的資料拉回主機；執行後主機副本就是最新的（裝置副本過期）
-                    if (kirDev) for (const a of k.args) if (a && a.mem) syncHost(a.mem);
+                    const waits = [];
+                    if (kirDev) for (const a of k.args) if (a && a.mem) { const sr = syncHost(a.mem); if (sr && typeof sr.then === 'function') waits.push(sr); }
                     const markHost = () => { for (const a of k.args) if (a && a.mem) setHostNew(a.mem); };
-                    if (kirK) {
+                    const runRest = () => {
+                    if (kirK && kirRun) {
                         try {
                             const N = gs[0], bufs = {}, scal = {}, backs = [];
                             k.def.params.forEach((pa, i) => {
@@ -650,6 +652,8 @@
                         } catch (e) { warn('OpenCL：KIR 執行失敗，退回 JS：' + e.message + '\n'); }
                     }
                     try { k.def.run(gs, off, dim, args); } catch (e) { warn('OpenCL 核心執行錯誤：' + e.message + '\n'); return -9999; } markHost(); clBackend = 2; return 0;
+                    };
+                    return waits.length ? Promise.all(waits).then(() => runRest()) : runRest();
                 },
                 fa_cl_backend: () => clBackend,
                 // 打包：把緩衝區標成 parts 個等長部分（大小要是 parts×部分長度×4）；回傳 0 成功，-30 參數錯
@@ -663,7 +667,7 @@
             });
         }
 
-        return { impls, SIGS, toS16, install(FaLlvm) { installs++; FaLlvm.registerHost(SIGS); }, uninstall(FaLlvm) { if (--installs <= 0) { installs = 0; FaLlvm.unregisterHost(Object.keys(SIGS)); } }, close() { closeAllFiles(); handles.clear(); Array.from(audioDevs.values()).forEach((d) => { gui('audio', { cmd: 'stream_close', id: d.id }); }); audioDevs.clear(); } };
+        return { impls, SIGS: sigs, toS16, install(FaLlvm) { installs++; FaLlvm.registerHost(sigs); }, uninstall(FaLlvm) { if (--installs <= 0) { installs = 0; FaLlvm.unregisterHost(Object.keys(sigs)); } }, close() { closeAllFiles(); handles.clear(); Array.from(audioDevs.values()).forEach((d) => { gui('audio', { cmd: 'stream_close', id: d.id }); }); audioDevs.clear(); } };
     }
     return { create, SIGS, clCompile, formatC, scancodeOf, keycodeOf };
 });

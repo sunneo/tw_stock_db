@@ -218,6 +218,8 @@ else:
         _bk = c('fa_cl_backend')  # 0＝尚未派送、1＝WebGL2（KIR）、2＝JS 墊片
         with hud.if_(_bk.eq(1)):
             line(145, Y3, 'GPU: OpenCL kernels (WebGL2 backend)')
+        with hud.if_(_bk.eq(3)):
+            line(145, Y3, 'GPU: OpenCL kernels (WebGPU backend)')
         with hud.if_(_bk.eq(2)):
             line(145, Y3, 'GPU: OpenCL JS shim (not GPU)')
         with hud.if_(_bk.eq(0)):
