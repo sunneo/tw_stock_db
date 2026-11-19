@@ -1362,3 +1362,49 @@ Python 模擬器與離線模型推論共用同一個 GPU 裝置：
 **context 遺失**：`kir_webgl2.js` 的 `createDevice` 監聽 `webglcontextlost`，並在 `mkTex`／`upload`／`download`／`dispatch` 入口丟出「WebGL2 context 已遺失…改退回 JS」。之前遺失後的讀回會靜默回傳 0。真 GPU 與 swiftshader 都用 `WEBGL_lose_context` 強制遺失測過：`isContextLost` 為真，讀回與配置都丟例外。host 既有的裝置路徑 catch 會 `warn`（含原因）並退回 JS（`llvm_host.js` 的 `clEnqueueNDRangeKernel`）；這段只由讀程式碼確認，沒有在 app 端到端跑。WebGPU 遺失：`kir_webgpu.js` 的 `lost` 會記錄原因，這次真 GPU 上 `lost` 為 null（未遺失）。
 
 **沒有做**：app 接線（路線 A）；`cluster()` 的 GPU 化；f32x4、subgroups（依指示本輪不做）。
+
+### 階段 10：interop 接進 app（步驟 1–5，2026-11-20）
+
+**做了什麼**（每步一個 commit，第一行「interop 步驟 N」）
+- 步驟 1（GUI extern 指令）：`gui_bridge.js`、`gui_render.js`、`gui_host.js` 由管理者工作階段完成（`4576c38b9`，重複清除 `09d92352b`）。介面：`host.setExtern(winId, nodeId, name, source)`；GL 指令 `['extern', name]`。
+- 步驟 2：`kir_webgpu.drawPoints(pos, count, q)`，位置 buffer 直接當頂點輸入、不讀回；回傳 OffscreenCanvas。`f4e472edb`（`kir_points_test.js` 30 項通過）。
+- 步驟 3：宿主函式 `fa_cl_points`（`llvm_host.js`）。WebGPU 且有 `setExtern` 時：位置留在 GPU、畫到畫布、GL 批次送 `['extern','clpts']` 交給 GUI，回傳 1；任一條件不符回傳 0，產生器退回讀回＋GL 點。`fc4947b28`（`llvm_points_test.js` 18 項通過）。
+- 步驟 4：nbody 產生器（`_gen_nbody3d_cl.py`、`_gen_nbody3d.py`）先試 `fa_cl_points`；位置每 30 幀讀回一次（統計量與 cluster 用）；其他後端行為不變；`.ll` 重產。`ef047707f`（`nbody3d_cl.test.js` 24 項通過）。**fluid3d 沒改**：本輪只驗證 nbody 路徑，fluid 的產生器還沒盤點讀回點。
+- 步驟 5 前置：`window.FA_KIR_NO_POINTS` 讀回對照開關；`globalThis.FA_GUI_AFTER_GLFRAME(winId, nodeId, seq)` 每畫完一幀的鉤子。`94f884494`。
+
+**真機量測**（真 Electron，`FA_EVAL_GL=gpu`，NVIDIA，`scripts/eval/llc_interop.eval.js`，3072 顆、40 幀；每步毫秒＝每 10 幀週期÷10，取週期 2–4 的中位數）
+
+| 路徑 | 每步 ms | 每 40 幀 mapAsync | 每 40 幀 beginRenderPass | 每 40 幀 writeBuffer |
+|---|---|---|---|---|
+| 點精靈（WebGPU，位置不讀回） | 16.7 | 26 | 40 | 468 |
+| WebGPU 讀回＋GL 點 | 31.0 | 169 | 0 | 428 |
+| WebGL2 後端（讀回＋GL 點） | 74.6 | 不適用 | 不適用 | 不適用 |
+| CPU wasm | 977.9 | 0 | 0 | 0 |
+
+- 同一組程式先跑一次（沒有 lit 計數）得到 15.7／31.5／75.5／987 ms，所以每步時間的雜訊約 ±1 ms 以上。
+- 計數器只包 WebGPU 的 `GPUBuffer.mapAsync`、`GPUCommandEncoder.beginRenderPass`、`GPUQueue.writeBuffer`、`GPUQueue.submit`。WebGL2 後端的讀回不在計數內，所以「不適用」不代表沒有讀回。
+
+**像素**（同一幀 3，800×560 GUI 畫布 `readPixels`，448000 個像素）
+- 點精靈 vs WebGPU 讀回：最大通道差 255（孤立像素），平均 0.060，差 >32 的像素 24 個（0.005%）。
+- 點精靈 vs WebGL2：平均 0.084，差 >32 的像素 67 個。
+- WebGPU 讀回 vs WebGL2：兩者都是 GL 點、只有位置來源不同，平均 0.031，差 >32 的像素 55 個。這是同一條繪圖路徑的雜訊底線。
+- 容差（本輪自訂，不是既有規格）：平均通道差 ≤ 0.1，且差 >32 的像素 < 0.01%。點精靈 vs 讀回通過。
+- 四種路徑抓到的畫面都有內容：非黑像素（任一通道 > 20）約 224.5k。
+
+**已知差異（如實）**
+- 相機中心：點精靈路徑在 40 幀時 cx=97.5，讀回與 CPU 為 97.0。原因：`cluster()` 只在讀回幀（`cl_fresh≠0`）執行，所以相機中心更新比每幀少。這是新路徑的行為差異。點精靈 vs CPU 的 2638 個差異像素主要來自這裡與繪圖方式不同。
+- 點精靈 vs 讀回的 24 個差異像素來自不同的光柵化方式（WebGPU 點精靈與 GL 點），不是位元相同。
+- writeBuffer 每 40 幀仍有 468 次，與讀回路徑（428）同量級：新路徑沒有減少上傳。還沒歸因是哪些 buffer。
+- mapAsync 每 40 幀 26 次：統計量每 30 幀讀回一次，解釋不了 26 次，還沒歸因。
+- 每步毫秒是整個週期平均（模擬＋繪圖），沒有分段計時，所以「哪一步還經 CPU」只到計數器層級的證明。
+
+**沒有證明**
+- 沒有 timestamp-query 或分段計時。
+- `drawImage`／`texImage2D` 是否全在 GPU 內：沒有直接證據（計數器只計 WebGPU 那一側）。
+- WebGL2 context 遺失在 app 內的行為：沒測。
+- `llc_hud.eval.js` 真 GPU 50/50 通過。但它輸出的 nbody「CPU 與 GPU 預設 cx」不同（cpu cx=293.7，cl cx=284.2，`same: false`）。這不在 50 項清單內，還沒查明是否與上面的相機中心更新頻率有關。
+
+**還沒做**
+- 步驟 4 的 fluid3d。
+- `cluster()` 的 GPU 化（要讓相機中心每幀更新又不讀回，需要 GPU 歸約）。
+- 歸因 writeBuffer／mapAsync 的來源；分段計時。

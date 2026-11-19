@@ -131,3 +131,14 @@ Continue from the handoff document at desktop-app/HANDOFF.llc-opencl.md. Read it
 - **GL 批次上限**：`llvm_host.js` 的 `slice(0, 20)` 改為 `GL_MAX_BATCHES_PER_FRAME = 1024`，超過會 `console.warn`；實際幀批次數還沒量。
 - **沒有做**：app 接線、cluster 的 GPU 化、f32x4、subgroups。
 - **評測指令**：`node scripts/eval/kir_interop.build.js <輸出>`，再 `FA_EVAL_GL=gpu node scripts/eval/run_eval.js <輸出>`（軟體 GL 用 `FA_EVAL_GL=swiftshader`，此模式沒有 WebGPU）。
+
+## 11. 2026-11-20 補充：interop 接進 app（步驟 1–5，已驗證 nbody）
+
+- 詳細數字與限制見 `DESIGN.webgpu-cuda.md` §13「階段 10」。
+- **已接進 app**：nbody3d_cl 在 WebGPU 後端走 `fa_cl_points`（位置留在 GPU、點精靈畫到畫布、GUI extern 顯示）。其他後端不變。`f4e472edb`、`fc4947b28`、`ef047707f`、`94f884494`。
+- **真 GPU 量測**（3072 顆、40 幀）：點精靈 16.7 ms／步，WebGPU 讀回版 31 ms，WebGL2 74.6 ms，CPU 978 ms。像素與讀回版差 24 個像素（>32），平均 0.060，在自訂容差內。
+- **已知差異**：點精靈路徑的相機中心只在讀回幀更新（`cluster()` 用 `cl_fresh` 守門），所以 cx 與讀回版不同（97.5 vs 97.0 at 40 幀）。`llc_hud.eval.js` 50/50 通過，但其 nbody「CPU 與 GPU 預設」比對 `same: false`，還沒查明。
+- **沒做**：fluid3d 產生器的 fa_cl_points 路徑；`cluster()` 的 GPU 歸約；writeBuffer／mapAsync 來源歸因；分段計時。
+- **沒證明**：`drawImage`／`texImage2D` 是否全在 GPU 內；WebGL2 context 遺失在 app 內的行為。
+- **評測指令**：`node scripts/eval/llc_interop.build.js <輸出>`，再 `FA_EVAL_GL=gpu FA_EVAL_TIMEOUT_MS=3000000 node scripts/eval/run_eval.js <輸出> 17994`。
+- **建置輸出不 add**：`renderer/floating-assistant.js`、`.min.js`、`update-manifest.json`、`web-lazy/` 由管理者重產。
