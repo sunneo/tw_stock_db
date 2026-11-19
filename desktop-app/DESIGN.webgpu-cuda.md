@@ -1120,3 +1120,7 @@ Python 模擬器與離線模型推論共用同一個 GPU 裝置：
 - 注意：一開始輸出紋理與最後一個輸入紋理共用紋理單元，造成 feedback loop，繪圖失敗（結果全 0）。已改成輸出用獨立單元。
 - 耗時（17–20 ms）包含編譯 shader 與上傳紋理，且是軟體 GL，**不是效能數字**；CPU vs WebGL2 的每幀耗時留到 nbody3d／fluid3d 實測。
 - 尚未做：host import 接線（`llvm_host.js` 仍是 JS 後備）、WGSL 真 GPU 驗證（沒有 adapter）、CUDA runtime 前端。
+
+**階段 4b：host 接線（2026-11-19，node 測試通過；呼叫端尚未接）**：`llvm_host.js` 的 `create({ kirTranslate, kirRun })`。`clBuildProgram` 用 `kirTranslate(src)` 把核心翻成 KIR（不支援就 null）；`clEnqueueNDRangeKernel` 在一維且有 KIR 版本時呼叫 `kirRun(核心, 緩衝區, 純量, N)`，把 out 結果複製回 `cl_mem`，失敗就退回 JS 後備並警告。緩衝區目前每次派送都複製進出（**尚未做成留在 GPU 紋理**）。
+- `llvm_host.test.js`：opencl_vecadd.ll 用 KIR 的 JS 後端當假 GPU 跑，輸出同 JS 後備，kirRun 被呼叫一次（34 項全過）。
+- **還沒接**：`renderer/src/floating-assistant.js` 的 `FaLlvmHost.create(...)` 呼叫點（約 llc 執行處）要傳入 `kirTranslate`／`kirRun`（用 offscreen WebGL2 呼叫 `FaKirWebGL2.runGl`）；另外 KIR 模組（kir.js、kir_gen.js、kir_webgl2.js、cl_front.js）要進 renderer（embed-code-ui.js 與 build-assistant.js，需要 hungfu.lee 帳號執行）。nbody3d／fluid3d 的真 Electron 每幀計時與截圖要等這兩步完成。

@@ -198,6 +198,9 @@
     let installs = 0;   // 同時有幾個程式在用（登記是全域的：最後一個結束才取消，不然別的 IR 工具會把 printf 之類當成主機函式）
     function create(o) {
         o = o || {}; const gui = o.gui, sleep = o.sleep || ((ms) => new Promise((r) => setTimeout(r, ms))), now = o.now || (() => Date.now()), warn = o.warn || (() => {});
+        // OpenCL → KIR 接線（DESIGN.webgpu-cuda.md §13 階段 4）：kirTranslate(src) → { 核心名: KIR 核心 } 或 null（不支援）；kirRun(核心, { 參數名: 型別化陣列 }, { 純量名: 數字 }, N) → { out: { 名: Float32Array } }（失敗就丟例外）。
+        // 沒有提供、或翻譯／執行失敗，就退回 JS 後備（clCompile 的核心）。
+        const kirTranslate = o.kirTranslate || null, kirRun = o.kirRun || null;
         const t0 = now(); let handleSeq = 0x1000, winSeq = 0, nodeSeq = 0; const handles = new Map();   // 不透明指標（SDL_Window*、SDL_Renderer*、SDL_GLContext）→ 狀態
         const mk = (obj) => { const h = (handleSeq += 16); handles.set(h, obj); return h; };
         const gl = { clear: [0.05, 0.06, 0.09, 1], mode: 'MV', stacks: { MV: [I4()], P: [I4()] }, begin: null, color: [1, 1, 1], batches: [], depth: false, pointSize: 1, blend: false, blendAdd: false, alpha: 1, atten: 0, warned: {} };
@@ -555,9 +558,9 @@
                     for (let i = 0; i < count; i++) { const sp = dv.getUint32(strs + 4 * i, true); src += cstr(ctx, sp); }
                     errOut(ctx, err, 0); return mk({ kind: 'clprog', src, built: null, log: '' });
                 },
-                clBuildProgram: (ctx, p) => { const pr = clH(p, 'clprog'); if (!pr) return -44; const r = clCompile(pr.src); if (r.error) { pr.log = r.error; pr.built = null; warn('OpenCL 建置失敗：' + r.error + '\n'); return -11; } pr.built = r.kernels; pr.log = ''; return 0; },
+                clBuildProgram: (ctx, p) => { const pr = clH(p, 'clprog'); if (!pr) return -44; const r = clCompile(pr.src); if (r.error) { pr.log = r.error; pr.built = null; warn('OpenCL 建置失敗：' + r.error + '\n'); return -11; } pr.built = r.kernels; pr.log = ''; pr.kir = null; if (kirTranslate && kirRun) { try { pr.kir = kirTranslate(pr.src) || null; } catch (e) { pr.kir = null; } } return 0; },
                 clGetProgramBuildInfo: (ctx, p, d, name, size, v, ret) => { const pr = clH(p, 'clprog'); if (!pr) return -44; if (name === 0x1181) { if (v) ctx.dv().setInt32(v, pr.built ? 0 : -2, true); if (ret) ctx.dv().setUint32(ret, 4, true); return 0; } return setStr(ctx, pr.log, size, v, ret); },
-                clCreateKernel: (ctx, p, name, err) => { const pr = clH(p, 'clprog'); if (!pr) { errOut(ctx, err, -44); return 0; } if (!pr.built) { errOut(ctx, err, -45); return 0; } const n = cstr(ctx, name), k = pr.built[n]; if (!k) { errOut(ctx, err, -46); return 0; } errOut(ctx, err, 0); return mk({ kind: 'clkernel', name: n, def: k, args: new Array(k.params.length).fill(undefined) }); },
+                clCreateKernel: (ctx, p, name, err) => { const pr = clH(p, 'clprog'); if (!pr) { errOut(ctx, err, -44); return 0; } if (!pr.built) { errOut(ctx, err, -45); return 0; } const n = cstr(ctx, name), k = pr.built[n]; if (!k) { errOut(ctx, err, -46); return 0; } errOut(ctx, err, 0); return mk({ kind: 'clkernel', name: n, def: k, prog: pr, args: new Array(k.params.length).fill(undefined) }); },
                 clSetKernelArg: (ctx, kp, idx, size, ptr) => {
                     const k = clH(kp, 'clkernel'); if (!k) return -48; if (idx >= k.def.params.length) return -49; const pa = k.def.params[idx]; size = Number(size);
                     if (pa.ptr) { if (!ptr) return -50; const h = ctx.dv().getUint32(ptr, true), buf = clH(h, 'clmem'); if (!buf) return -38; k.args[idx] = { mem: buf }; return 0; }
@@ -568,6 +571,21 @@
                     const dv = ctx.dv(), gs = [1, 1, 1], off = [0, 0, 0]; for (let d = 0; d < dim; d++) { gs[d] = Number(dv.getBigUint64(gsp + 8 * d, true)); if (offp) off[d] = Number(dv.getBigUint64(offp + 8 * d, true)); }
                     if (lsp) for (let d = 0; d < dim; d++) { const l = Number(dv.getBigUint64(lsp + 8 * d, true)); if (l && gs[d] % l) return -54; }
                     if (k.args.some((a) => a === undefined)) return -52; const args = k.def.params.map((pa, i) => { const a = k.args[i]; if (a.mem) { const E = CL_ELEM[pa.type]; return new E(a.mem.data.buffer, 0, Math.floor(a.mem.size / E.BYTES_PER_ELEMENT)); } return a.scalar; });
+                    // 有 KIR 版本且一維：走 kirRun（緩衝區複製進出；之後階段改成留在 GPU 紋理）；失敗就退回 JS
+                    const kirK = dim === 1 && kirRun && k.prog && k.prog.kir && k.prog.kir[k.name];
+                    if (kirK) {
+                        try {
+                            const N = gs[0], bufs = {}, scal = {}, backs = [];
+                            k.def.params.forEach((pa, i) => {
+                                const a = k.args[i];
+                                if (pa.ptr) { const E = CL_ELEM[pa.type]; const v = new E(a.mem.data.buffer, a.mem.data.byteOffset, Math.floor(a.mem.size / E.BYTES_PER_ELEMENT)); bufs[pa.name] = v; backs.push({ name: pa.name, v }); }
+                                else scal[pa.name] = a.scalar;
+                            });
+                            const res = kirRun(kirK, bufs, scal, N);
+                            for (const b of backs) if (res && res.out && res.out[b.name]) b.v.set(res.out[b.name].subarray(0, b.v.length));
+                            return 0;
+                        } catch (e) { warn('OpenCL：KIR 執行失敗，退回 JS：' + e.message + '\n'); }
+                    }
                     try { k.def.run(gs, off, dim, args); } catch (e) { warn('OpenCL 核心執行錯誤：' + e.message + '\n'); return -9999; } return 0;
                 },
                 clFinish: (ctx, q) => (clH(q, 'clq') ? 0 : -36), clFlush: (ctx, q) => (clH(q, 'clq') ? 0 : -36), clWaitForEvents: () => 0, clReleaseEvent: () => 0,

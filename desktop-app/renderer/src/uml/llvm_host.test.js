@@ -146,6 +146,15 @@ define i32 @main() {
     if (c.wasm) { const dec = {}; for (const d of L.parse(ir).mod.declares) dec[d.name] = d; const o2 = await L.runHost(c.wasm, { args: ['prog', '1000'] }, host.impls, undefined, dec);
       check('opencl_vecadd.ll 真輸出：n=1000 c[999]=2997', o2.stdout === 'vadd OK, n=1000 c=2997.000000\n' && o2.exitCode === 0, o2);
       const o3 = await L.runHost(c.wasm, { args: ['prog'] }, host.impls, undefined, dec); check('opencl_vecadd.ll 預設 n=1048576', /^vadd OK, n=1048576 c=3145725\.000000\n$/.test(o3.stdout) && o3.exitCode === 0, o3); } }
+  // OpenCL → KIR 接線（階段 4）：同一份 opencl_vecadd.ll 改走 kirRun（這裡用 KIR 的 JS 後端當假的 GPU），結果要跟 JS 後備一樣，且 kirRun 真的被呼叫
+  { const CF = require('../gpu/cl_front.js'), KIR = require('../gpu/kir.js'); let kirCalls = 0;
+    const kh = H.create({ gui: async () => null, fs: fsx, kirTranslate: (src) => { const r = CF.parseKernels(src); if (!r.ok) return null; const m = {}; for (const k of r.kernels) { if (!KIR.validate(k).ok) return null; m[k.name] = k; } return m; },
+      kirRun: (k, bufs, scal, N) => { kirCalls++; const out = {}; const B = {}; for (const p of k.params) if (p.kind === 'buf') B[p.name] = p.access === 'out' ? (out[p.name] = new Float32Array(N)) : bufs[p.name]; KIR.runJs(k, B, scal, N); return { out }; } });
+    kh.install(L);
+    const ir = fs.readFileSync(path.join(__dirname, '../examples/llc/gpgpu/opencl_vecadd.ll'), 'utf8'); const c = L.compileIr(ir, {});
+    if (c.wasm) { const dec = {}; for (const d of L.parse(ir).mod.declares) dec[d.name] = d; const o = await L.runHost(c.wasm, { args: ['prog', '1000'] }, kh.impls, undefined, dec);
+      check('opencl_vecadd.ll 走 KIR：輸出同 JS 後備，kirRun 被呼叫', o.stdout === 'vadd OK, n=1000 c=2997.000000\n' && o.exitCode === 0 && kirCalls === 1, { o, kirCalls }); }
+    kh.uninstall(L); }
   { const k = H.clCompile('__kernel void f(__global const float*a,__global float*c,int n,float s){int i=get_global_id(0);if(i>=n)return;float t=0.0f;for(int j=0;j<3;j++)t+=a[i]*s;c[i]=sqrt(t)+(float)(n/2)+fabs(-1.0f)+(i%2);}');
     check('clCompile：多語句核心（for、return、型別轉換、整數除法）', !!k.kernels && !!k.kernels.f, k);
     if (k.kernels) { const a = new Float32Array([1, 4, 9]), cc = new Float32Array(3); k.kernels.f.run([3, 1, 1], [0, 0, 0], 1, [a, cc, 3, 3]); check('clCompile 執行結果（t＝9a，sqrt(9a)+1+1+(i%2)：5, 9, 11）', Array.from(cc).join() === '5,9,11', Array.from(cc)); } }
