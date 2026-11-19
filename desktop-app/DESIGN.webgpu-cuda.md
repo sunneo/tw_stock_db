@@ -1242,3 +1242,55 @@ Python 模擬器與離線模型推論共用同一個 GPU 裝置：
 - 驗證（真 Electron）：`kir_packed.eval`（輸入是打包 view）：四個核心誤差從 4445–28550 降到 0；`kir_nbody_chain.eval`（nbody 幀鏈：加速度→速度→位置→每幀一次打包讀回，20 幀，ping-pong）：與 KIR JS 後端的參考逐幀完全一致（誤差 0）；`llvm_packed_device.eval`（llvm_host＋真的 FaKirWebGL2 打包裝置）：vecadd 輸出正確，派送 1、打包 1、view 1、上傳 3、讀回 1。
 - 計時：幀鏈在 SwiftShader 上每幀約 49 ms（10 次派送＋1 次打包讀回）；每次派送的固定成本是主要部分。目標 ≤20 ms 尚未達到；可能的改善是把速度計算併入加速度核心（減少 3 次派送）。
 - 注意：`kir_test` 30、`llvm_host` 41、`nbody3d_cl` 24、`kir_webgl2.eval`、`kir_device.eval` 都仍然通過。
+
+### 階段 7：WebGPU 裝置層（`renderer/src/gpu/kir_webgpu.js`，2026-11-20）
+
+**狀態一覽（誠實分開）**
+
+| 項目 | 狀態 |
+|---|---|
+| WebGPU 裝置層（alloc／打包 view／upload／download／dispatch／free／prepare／tune） | 已寫；node 假裝置測試 34 項通過；**真 GPU 驗證過**（nbody、fluid 的核心在真 Electron 編譯、執行、讀回） |
+| WGSL 分塊版（workgroup 共享記憶體，預設開） | 已寫；**真 GPU 驗證過**（nbody、fluid 正確性與計時） |
+| 內層迴圈展開（`setTiling(k, U)`） | 已寫；**真 GPU 量到沒有改善**，預設關 |
+| 工作群大小自適應（`ensureTuned`，結果可存 store） | 已寫；**真 GPU 量到整步時間沒有可重現的改善**，只存結果、不宣稱加速 |
+| 派送不讀回（`dispatch` 不讀回，`download` 才讀） | 已寫；**真 GPU 量到**：每步讀回 4 個輸出，比不讀回多 11–13 ms |
+| f32x4 向量載入 | **未做**：nbody／fluid 的 `.ll` 用分開的 f32 陣列，要向量化需要改核心佈局 |
+| subgroups | 這台介面卡回報有 `subgroups` 功能（見下），**KIR 沒有子群組產生器，未使用** |
+| shader-f16 | 這台沒有（介面卡功能清單沒有 `shader-f16`），不使用 |
+| host 接線（`llvm_host.js` 的 WebGPU 讀回、`floating-assistant.js` 掛鉤、HUD 標示實際後端） | **未做**，原因見下「卡住的地方」 |
+
+**這台的介面卡（真 Electron 探測）**：NVIDIA，架構 kepler，非軟體介面卡；功能清單含 `subgroups`、`timestamp-query`、`float32-filterable`，不含 `shader-f16`；`maxComputeInvocationsPerWorkgroup`＝1024、`maxComputeWorkgroupsPerDimension`＝65535、`maxStorageBufferBindingSize`＝約 2 GB。
+
+**分塊版的做法（`kir_gen.toWgsl(kernel, { wg, tile, unroll })`）**：頂層的 `for v in [0, bound)`，本體沒有寫入、而且讀 `in` 緩衝區的 `buf[v]`，就把每 WG 個元素搬進 `var<workgroup>` 共享記憶體，迴圈內改讀共享記憶體，外層每塊有兩道 `workgroupBarrier()`。所有執行緒都要進迴圈（barrier 的要求），所以分塊版不用 early return，寫入改用 `in_range` 守衛。`active` 是 WGSL 保留字（第一次真 GPU 編譯就被拒絕，改名為 `in_range`）。
+
+**真 GPU 數字（同一次執行，Electron，NVIDIA Kepler；每步＝核心依序執行一次；單位 ms／步）**
+
+| 變體 | nbody N=3072（4 個核心） | fluid N=1000（4 個核心） |
+|---|---|---|
+| WebGPU 未分塊 wg 64，不讀回 | 23.9 | 3.37 |
+| WebGPU 未分塊 wg 64，每步讀回 4 個輸出 | 35.8 | 14.7 |
+| WebGPU 未分塊，自適應工作群，不讀回 | 24.0（沒有改善） | 3.03（沒有可重現的改善） |
+| **WebGPU 分塊 wg 64，不讀回（預設）** | **9.96** | **2.00** |
+| WebGPU 分塊 wg 64，每步讀回 | 21.0 | 14.9 |
+| WebGPU 分塊，自適應工作群，不讀回 | 9.82（與 wg 64 的差在雜訊內） | 2.12（雜訊內） |
+| WebGPU 分塊，內層展開 4 次 | 10.06（沒有改善） | 1.90（雜訊內） |
+| WebGL2（v490 路徑），不讀回 | 54.0 | 5.62 |
+| CPU：KIR 的 JS 後端（單執行緒） | 1148 | 60.3 |
+
+- 注意：這是 KIR 的 JS 後端，**不是** app 的 wasm CPU 路徑（使用者在真機量到的 wasm CPU 是 0.96–0.99 s／步，數字不能直接互比）。
+- 同一台機器的兩次獨立執行：nbody 未分塊 23.9／24.1、分塊 9.94／9.96；fluid 未分塊 2.75／3.14／3.37（雜訊約 15%），分塊 1.84／2.00。分塊的加速在兩次都穩定（nbody 約 2.4 倍，fluid 約 1.5–1.7 倍）。
+- 工作群自適應的最快候選每次執行不同（例如 accx 在一次是 128、另一次是 256），所以結果不穩定。
+- 正確性（對 KIR JS 後端）：nbody 的最大相對誤差 4.8e-5（分塊與未分塊相同）；fluid 的 rho 完全相同，其他輸出的最大相對誤差約 3e-6（絕對值很大，最大絕對誤差 12）。容差依 `gpu_core.tolerance` 的量級，數字都在內。
+
+**安全與流程**：每個派送約 1–10 ms，遠低於 100 ms；`device.lost` 記錄，之後拒絕派送；`uncapturederror` 收集，這次量測沒有任何錯誤。派送數 2984、提交 484 次、讀回 1344 次（大多來自計時中的每步讀回）。
+
+**卡住的地方（需要管理者決定）**
+- `clEnqueueReadBuffer` 要在 WebGPU 上讀回，必須是非同步（`mapAsync`）。`llvm_host.js` 的 `syncHost` 目前是同步的；改成非同步要把這個 import 標成 `async`（JSPI）。
+- 但 node 16 沒有 JSPI（`WebAssembly.Suspending` 不存在），`llvm_host.test.js` 跑 `opencl_vecadd.ll` 會直接失敗。所以這一步要先決定：要不要讓 OpenCL 的測試改在 Electron 跑，或是給 WebGPU 路徑另一個同步的讀回方式。
+- `_kirHostHooks` 在 `renderer/floating-assistant.js`，本階段不改它（使用者規則：那是建置輸出）。之後要改的話，建議做成新模組 `renderer/src/gpu/kir_host_hooks.js`（UMD），`floating-assistant.js` 只換一行呼叫。WebGPU 失敗時的退路順序：WebGPU → WebGL2（`kir_webgl2`）→ JS；HUD 的後端字樣由 `fa_cl_backend` 回傳的值決定，要再加一個值表示 WebGPU。
+
+**測試與 eval**
+- `renderer/src/gpu/kir_webgpu_test.js`（34 項，已加入 `scripts/run-core-tests.js`）：假裝置用 KIR JS 後端執行，只驗證流程（綁定偏移 256 對齊、uniform 佈局、派送不讀回、打包 view、輸出與輸入位元組重疊時拒絕、裝置遺失後拒絕、工作群實測的快取、分塊與展開的 WGSL 結構）。**這不是 WGSL 的結果驗證**，WGSL 的結果由下面的真 GPU eval 驗證。
+- `scripts/eval/kir_webgpu.eval.js`（內嵌產生器 `scripts/eval/kir_webgpu.build.js`）：`FA_EVAL_GL=gpu FA_EVAL_TIMEOUT_MS=500000 node scripts/eval/run_eval.js <輸出檔> 17994`，結果在 `[eval-file] result:`。
+
+**未做／下一步**：(1) host 接線（見上）；(2) HUD 標示實際後端（WebGPU／WebGL2／JS）；(3) 把 nbody 的四個讀回合成一次（目前每步 4 次 `mapAsync`，約 11–13 ms）；(4) 在使用者的真機（不同於這台）重測，因為工作群結果不穩定。

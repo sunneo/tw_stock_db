@@ -97,3 +97,16 @@ Continue from the handoff document at desktop-app/HANDOFF.llc-opencl.md. Read it
 - `git diff` 要在倉庫根目錄跑（`/home/hungfu.lee/下載/SRC/tw_stock_db`），在 desktop-app 子目錄會因 safe.directory 失敗；用 ssh 跑 git 比較穩。
 - 網頁版倉庫 `videos-嗨投資` 不在這台機器（舊事實）；發布用 `--no-web`（領導決定）。
 - 子 session 的數字是轉述，要自己驗證。
+
+## 8. 2026-11-20 補充：WebGPU 裝置層（子 session 完成的部分）
+
+完整數字與狀態表見 `DESIGN.webgpu-cuda.md` §13「階段 7」。摘要：
+
+- **已提交**：`a46cfcfd5`（裝置層 `kir_webgpu.js` 與假裝置測試）、`964245a3e`（真 GPU eval 與內嵌產生器）、`46b517ddf`（workgroup 共享記憶體分塊預設開、展開選項、量測數字）。
+- **真 GPU 驗證過**（這台 NVIDIA Kepler，Electron）：nbody3d_cl 與 fluid3d_cl 的四個核心都能在 WebGPU 編譯、執行、讀回；對 KIR JS 後端的相對誤差 nbody 4.8e-5、fluid 3e-6。
+- **真 GPU 數字（每步、4 個核心）**：nbody N=3072 分塊 WebGPU 9.96 ms、未分塊 23.9 ms、WebGL2 54 ms；fluid N=1000 分塊 2.00 ms、未分塊 3.37 ms、WebGL2 5.6 ms。分塊的加速在兩次獨立執行都穩定。
+- **沒有改善、只留選項**：工作群自適應（結果每次不一致）、內層展開 4 次。f32x4 向量化與 subgroups 沒做（見 §13 階段 7 表）。
+- **未做（卡住，需要管理者決定）**：host 接線。`clEnqueueReadBuffer` 在 WebGPU 上要非同步讀回（JSPI 的 `async` import），但 node 16 沒有 JSPI，`llvm_host.test.js` 會失敗；`_kirHostHooks` 在 `floating-assistant.js`，這次規則不准改。建議：新模組 `renderer/src/gpu/kir_host_hooks.js`，並決定 OpenCL 的測試是否改在 Electron 跑。
+- **不要做**：不要 `git push`，不要跑 `scripts/publish.sh`（管理者做）。
+
+**下一步順序**：(1) 決定 JSPI 與 node 測試的做法；(2) 寫 `kir_host_hooks.js`（WebGPU → WebGL2 → JS，失敗要有具體原因）；(3) `llvm_host.js` 的 `clEnqueueReadBuffer` 改非同步（只有 WebGPU 裝置時）；(4) HUD 的後端字樣加上 WebGPU；(5) 在使用者真機重測（這台的工作群結果不穩定）。
