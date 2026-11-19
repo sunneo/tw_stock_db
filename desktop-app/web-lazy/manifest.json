@@ -22,16 +22,16 @@
    "names": [
     "FA_PYBRIDGE_FILES"
    ],
-   "size": 542101,
-   "md5": "5e7ff1123815265f0c379c64a478dd38"
+   "size": 559991,
+   "md5": "6c945f5eb2ecd9caa73a34f0e1d77109"
   },
   "pyexamples": {
    "file": "chunks/pyexamples.js",
    "names": [
     "FA_PY_EXAMPLES"
    ],
-   "size": 222215,
-   "md5": "99b40c15cc1700829a6d8e0bf3b1382d"
+   "size": 261028,
+   "md5": "619fd7820e8d04fea41be53503bebfe7"
   },
   "headsvc": {
    "file": "chunks/headsvc.js",
@@ -95,7 +95,7 @@
     "FA_STUDIO_HOST_FILES"
    ],
    "size": 888261,
-   "md5": "587ab6cd8c4e58adc72c80b49d04037c"
+   "md5": "77ace6ed81c1bdf2b2de733227176d7c"
   },
   "studioview": {
    "file": "chunks/studioview.js",
@@ -1911,7 +1911,7 @@
   }
  },
  "core": {
-  "size": 6132638,
-  "md5": "5be206c5e9f9c341e25ef0eabd14c0e7"
+  "size": 6142780,
+  "md5": "fce8bf32e8e3607e648b1b882c649e9f"
  }
 }
