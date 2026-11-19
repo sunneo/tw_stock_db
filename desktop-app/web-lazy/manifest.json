@@ -1138,8 +1138,8 @@
    "names": [
     "FaLlvmHost"
    ],
-   "size": 45144,
-   "md5": "2a7b9fdd9fc36894608dbb9da220359c"
+   "size": 46013,
+   "md5": "bbaa68c85c9b50cb66b13286273ffc85"
   },
   "trans": {
    "file": "chunks/trans.js",
@@ -1927,7 +1927,7 @@
   }
  },
  "core": {
-  "size": 6226311,
-  "md5": "e5b93a5e49fadf1a38e0c737c5496296"
+  "size": 6229817,
+  "md5": "4ede535bc9c911270051e1a018588704"
  }
 }
