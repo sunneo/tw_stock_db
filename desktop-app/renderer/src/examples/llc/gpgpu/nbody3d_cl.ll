@@ -891,8 +891,6 @@ endif2:
   %t45 = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %a1, i64 128, ptr @.s13)
   call void @text(ptr %a1, i32 5, i32 205)
   call void @glColor3f(float 0x3FF0000000000000, float 0x3FF0000000000000, float 0x3FF0000000000000)
-  call void @text(ptr @.s14, i32 152, i32 125)
-  call void @text(ptr @.s15, i32 212, i32 125)
   call void @glEnd()
   call void @glBegin(i32 7)
   call void @glColor3f(float 0x3FBEB851E0000000, float 0x3FDEB851E0000000, float 0x3FBEB851E0000000)
@@ -975,6 +973,11 @@ endif2:
   call void @glVertex2f(float 0x4074000000000000, float 0x4054000000000000)
   call void @glVertex2f(float 0x4086800000000000, float 0x4050400000000000)
   call void @glVertex2f(float 0x4086800000000000, float 0x4054000000000000)
+  call void @glEnd()
+  call void @glColor3f(float 0x3FF0000000000000, float 0x3FF0000000000000, float 0x3FF0000000000000)
+  call void @glBegin(i32 0)
+  call void @text(ptr @.s14, i32 152, i32 125)
+  call void @text(ptr @.s15, i32 212, i32 125)
   call void @glEnd()
   ret void
 }

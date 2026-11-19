@@ -208,8 +208,6 @@ line(165, G3, 'MAX_X:%.1f MAX_Y:%.1f MAX_Z:%.1f', par[0].to('double'), par[1].to
 line(185, G3, 'MAX_Vel:%.1f Grav:%.1f Soft:%.1f', par[3].to('double'), par[4].to('double'), par[5].to('double'))
 line(205, G3, '[h]help [+/-]zoom [arrows/mouse]rotate [C]track')
 c('glColor3f', *W3)
-c('text', 'CPU', 152, 125)      # 按鈕上的字（CPU 按鈕在 (140,122,50,20)、GPU 在 (200,122,50,20)）
-c('text', 'GPU', 212, 125)
 c('glEnd')
 # 滑桿與按鈕：填色的方塊（GL_QUADS）＋白色外框（GL_LINES）
 c('glBegin', 7)
@@ -226,6 +224,12 @@ c('glBegin', 1); c('glColor3f', *W3)
 for (rx, ry, rw, rh) in ((140.0, 122.0, 50.0, 20.0), (200.0, 122.0, 50.0, 20.0), (320.0, 25.0, 400.0, 15.0), (320.0, 65.0, 400.0, 15.0)):
     for (a1, b1, a2, b2) in ((0, 0, 1, 0), (0, 1, 1, 1), (0, 0, 0, 1), (1, 0, 1, 1)):
         c('glVertex2f', rx + rw * a1, ry + rh * b1); c('glVertex2f', rx + rw * a2, ry + rh * b2)
+c('glEnd')
+# 按鈕上的字要最後畫（在填色方塊之後）：否則方塊會蓋住文字（先前的順序造成文字看不到）
+c('glColor3f', *W3)
+c('glBegin', 0)
+c('text', 'CPU', 152, 125)      # 按鈕在 (140,122,50,20)、GPU 在 (200,122,50,20)
+c('text', 'GPU', 212, 125)
 c('glEnd')
 hud.ret()
 
