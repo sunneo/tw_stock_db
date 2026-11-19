@@ -22,16 +22,16 @@
    "names": [
     "FA_PYBRIDGE_FILES"
    ],
-   "size": 634903,
-   "md5": "bbc08ec555776edf446408be1e4e0543"
+   "size": 650613,
+   "md5": "bcda4c6a77ea7c7969f2397320fa397e"
   },
   "pyexamples": {
    "file": "chunks/pyexamples.js",
    "names": [
     "FA_PY_EXAMPLES"
    ],
-   "size": 266539,
-   "md5": "cd150f38ca8b3af0c836725718a21db5"
+   "size": 266699,
+   "md5": "3cdb61c49dcd2fd86f8967ba2c371360"
   },
   "headsvc": {
    "file": "chunks/headsvc.js",
@@ -72,6 +72,14 @@
    ],
    "size": 583910,
    "md5": "57ad3931c12aa42ac72269cc66e065f5"
+  },
+  "guiaudio": {
+   "file": "chunks/guiaudio.js",
+   "names": [
+    "FA_GUI_AUDIO_SRC"
+   ],
+   "size": 11440,
+   "md5": "337de9efab0fbae706bcffcf79f3c2b8"
   },
   "aidocview": {
    "file": "chunks/aidocview.js",
@@ -1919,7 +1927,7 @@
   }
  },
  "core": {
-  "size": 6157464,
-  "md5": "64624c202edf9b1645a72479038ba547"
+  "size": 6159971,
+  "md5": "9294f5d901b53c418515663dc27b3d85"
  }
 }
