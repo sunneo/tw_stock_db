@@ -4638,3 +4638,15 @@ UMD、無 DOM、無 I/O、可 `new Function` 載入（跟 `read_ledger.js` 一�
 5. **積木庫擴充（越大越好）**：字串處理、二維走訪、DP 表、圖演算法、遞迴、類別方法；scipy、pandas、matplotlib 子圖、3D；每個新積木補型別表（`py_blocks_lib_core.js` 的 `TYPES`／`ETYPES`／`REQ`）與反推測試；槽位型別再細（list 元素型別）。
 6. **其他語言**：tree-sitter 的 wasm 已有（nodejs、c、c++、java、ruby、perl、bash、C#）；每個語言各自一份區塊庫、規則、課與 codegen，不共用。
 7. **效能與大模型**：選擇題每題 2 次前向、提示每次重新編碼，之後用 KV 快取共用前綴；開發期間步數上限維持無限大，做完再 profile。wasm 跑不動較大的模型（除非 transformer 的記憶體能用 IndexedDB 模擬分頁）；Qwen2.5-Coder-1.5B 已下載驗證但目前不用。
+
+## swap（IndexedDB 當交換區）：python／node／llvm 自動啟用（2026-11-20）
+- [x] 共用核心 `renderer/src/env/fa_swap_core.js`＋統一設定（預設總量 4096 MB、熱區 4096 MB，超過 wasm 上限夾住）；測試 `fa_swap_core.test.js`。
+- [x] node：沙盒的 `swap` 改用核心（本來就不必 require）；`js_program_swap.test.js` 通過。
+- [x] Python：預設 4096 MB、總量上限 `SwapError`、`py_worker` 自動注入 `fa_swap`、`py_async` 偵測 `fa_swap`；`fa_swap_test.py` 通過。
+- [x] LLVM：`fa_swap_open／read／write／close` host import；`examples/llc/swap/swap_big.ll`（編譯通過）；`llvm_host.test.js` 通過。
+- [ ] **接線 floating-assistant.js**（SWAPCORE marker、`_faGuiModule('swapcore')`、`_swapConfig()`、`_swapHostOpts()`、`_pyBridgeSwap('config')`、`_terminalTryLliHost` 與 `_terminalNodeRun` 傳入設定）。步驟見 `local_aa2d0534…/swap-auto-handover.md`。原因：該檔 01:32 起無寫入權。
+- [ ] `scripts/embed-code-ui.js` 加 `fa_swap_core.js` 的 embed 行（接線後再加，否則 embed 會失敗）；然後 embed 與 build（build 走 ssh）。
+- [ ] 真 Electron 驗證：job 的 IndexedDB 頁數、結束後為空；swap_big.ll 實跑（需要 JSPI）；Pyodide 裡不 import 直接 `fa_swap.array`。
+- [ ] LLVM malloc 透明換頁（需要改 wasm allocator）：待評估。
+- [ ] 限制（不做）：node 的 TypedArray 同步語法（IDB 非同步）、numpy 陣列自動換頁（buffer 必須常駐）。見 DESIGN.run-terminal.md §24。
+

@@ -1664,34 +1664,64 @@ sleep/curl/date/ask-floating-ai-assistant各自踩過的坑。
 `llvm_host.js` 新增 stdio 檔案函式（見 `examples/llc/README.md`「檔案系統」）：`create({ fs })` 的 `fs` 由 `_terminalTryLliHostRun` 接到終端機沙盒（`_terminalSandboxFileBytes`／`_writeBytesToTerminalFs`），程式結束後 `_terminalFlushLive` 寫回 `/mnt`。`llvm_core.runHost` 新增第五個參數 `declares`：宣告成 `i64` 的參數（`size_t`／`long`）JS 收到 BigInt，轉成數字；宣告成 `i64` 的回傳值轉成 BigInt。主機簽名的回傳型別也可以有替代（`'i32|i64'`）。另有 libm（`sin／cos／sqrt／pow／floor／fmod／atan2…` 與 `…f` 版）、`GL_POINTS` 依 `glPointSize` 畫圓點。
 範例：`gpgpu/nbody3d.ll`、`gpgpu/fluid3d.ll`（CPU 計算＋OpenGL 點精靈）、`gui/music_player.ll`、`gui/midi_player.ll`（解析 SMF；`gui/demo.mid` 是二進位檔，嵌入時存成 `.b64`，播種時還原成位元組）。真 Electron 驗證：`scripts/eval/llc_host.eval.js` 的 `R.more`（四個範例＋ `.mid` 經 `fopen` 讀沙盒＋找不到檔案的錯誤）。
 
-## 24. node／LLVM 的 IndexedDB swap（設計，尚未實作；2026-11-19）
+## 24. 自動 swap：python／node／LLVM 執行前自動啟用（設計；2026-11-19 立案，2026-11-20 定稿；尚未實作）
 
-**動機（使用者）**：「我希望不只 python、node、llvm（lli/llc）也要有 indexdb as swap」。Python 已有（`renderer/src/pybridge/fa_swap.py`），node 與 LLVM 還沒有：資料比記憶體大時，程式會被瀏覽器殺掉或直接 OOM。
+**動機（使用者）**：「我希望不只 python、node、llvm（lli/llc）也要有 indexdb as swap」；「我希望都是執行前自動設定，不要明確 import」；「讓它就像原生的一樣」；「16MB 太小了」。資料比記憶體大時，程式會被瀏覽器殺掉或 OOM。Python 現在有 `fa_swap`（熱區預設 16 MB，要 `import fa_swap`）；node 有 `swap.hotMB(n)`（全域，不必 require，但熱區預設 16 MB）；LLVM 完全沒有。
 
-**現有的三個零件（都要重用，不另寫一套）**
-- Python：`fa_swap.py` 的 `Swap` 管熱區（LRU、髒頁寫回、頁大小 256 KB、預設熱區 16 MB），後端是 `_BridgeBackend`，經 `fa_bridge.call("swap.put"|"swap.get"|"swap.drop"|"swap.close"|"swap.stats", {space, …})` 走 base64；沒有橋接就退回記憶體字典（`backend=='memory'`，不省記憶體）。
-- 頁面端：`renderer/src/floating-assistant.js` 內的 `FaSwap`（UMD，`create({ store, hotBytes, now })`，store 介面 `put(id, blob)／get(id)／del(id)／clear()`，預設是 IndexedDB `fa_swap`）。這是「助理頁面的 FaSwap 熱區＋IndexedDB」那一層。
-- job 層（§20）：node／shell 的 job 沙盒已經能把 swap 落到 IndexedDB，程式結束後清空（`job_layer.eval.js` 驗證過 8 MB）。
+**設計目標**
+1. 三種執行器（python、node、lli/llc）**執行前自動啟用** swap，使用者程式**不必 import／require／宣告**。
+2. 「像原生一樣」的程度：各執行器能做到的範圍如下（做不到的寫在限制，不假裝透明）。
+3. **統一設定**（一處定義，三種執行器共用）。
+4. 共用分頁核心（一份演算法，三種執行器用同一組統計欄位）。
 
-**設計**
-1. **共用的分頁核心**：把 `fa_swap.py` 的 `Swap`（分頁、LRU、髒頁、統計）翻成 JS 模組 `fa_swap_core.js`（UMD，無 DOM）。Python 與 node 與 LLVM 共用同一個演算法與同一組統計欄位（`pages_hot`、`pages_total`、`reads`、`writes`、`hot_bytes`、`backend`），測試也共用語意。
-2. **儲存層**注入：`store` 用頁面端 `FaSwap` 的 store（IndexedDB `fa_swap`），每個 swap 空間用 `space` 前綴隔開（`node-<id>`、`llvm-<id>`、`py-<id>`），結束時 `close(space)` 丟掉自己的頁。沒有 IndexedDB 時退回記憶體，統計標 `backend:'memory'`。
-3. **node**：job 沙盒的 JS 執行環境提供全域 `fa_swap`：`fa_swap.array(length, 'f64'|'f32'|'i32'|…)` 回傳類型化陣列的分頁視圖（`get(i)`、`set(i,v)`、`slice(a,b)`、`blocks(n)`，與 Python 的 `SwapArray` 語意一致）；另有 `fa_swap.stats()`、`fa_swap.close()`。job 的 worker 與頁面不同執行緒時，改走 postMessage 版的橋接（同 Python 的 `fa_bridge.call` 協定）。
-4. **LLVM**：llvm host import 新增（`renderer/src/uml/llvm_host.js` 的 `SIGS` 與實作）：
-   - `i32 fa_swap_open(i64 bytes, i32 page_bytes)` → 句柄（0＝失敗）；
-   - `i32 fa_swap_read(i32 h, i64 off, ptr dst, i64 n)`、`i32 fa_swap_write(i32 h, i64 off, ptr src, i64 n)`：以位元組為單位的**複製式**存取（不給指標別名，因為頁會被換出；IndexedDB 是非同步，所以這兩個呼叫走 JSPI，與 SDL_Delay 同樣的做法）；
-   - `void fa_swap_close(i32 h)`。
-   IR 端用 `declare` 宣告即可（與 SDL、OpenCL 一樣由 host 提供）。範例：超過 wasm 記憶體的矩陣用分頁讀寫。
-5. **生命週期**：job 結束（正常、逾時、`job_stop`）一律關閉它開的空間（與既有的 `_terminalGuiScope` 同一個清理點）；啟動時清掉上次沒清乾淨的 `node-*`、`llvm-*`、`py-*`（沿用 `FaSwap.clear()` 的做法）。
-6. **限制（要寫進說明）**：不是 mmap（沒有指標視圖，讀寫都是複本）；不是執行緒安全；熱區與頁大小可由環境變數 `FA_SWAP_HOT_MB` 調（Python 已有此變數，node 與 LLVM 沿用）；效能是磁碟級，不是記憶體級。
+### 24.1 共用分頁核心與統一設定（一處定義）
+- 核心：`renderer/src/env/fa_swap_core.js`（UMD、無 DOM）。把 swap 空間切成固定頁（預設 256 KB），熱區（記憶體）用 LRU，髒頁被踢出時寫回儲存層，沒寫過的頁讀出來是 0。儲存層注入（`put／get／drop／close`，預設是頁面橋接到 IndexedDB；沒有儲存層就是記憶體，統計標 `backend:'memory'`，功能一樣但不省記憶體）。
+- 統計欄位（三種執行器一致）：`pages_hot、pages_total、reads、writes、hits、hot_bytes、limit、size_limit、size_used、arrays、page_bytes、backend、disk_bytes`。
+- 設定 `resolveConfig`（唯一的預設來源）：
 
-**待決定（給領導）**
-- node 的全域名稱用 `fa_swap`，還是只在 `require('fa_swap')` 下提供？（建議後者，與 Python 的 `import fa_swap` 對稱。）
-- LLVM 的 `fa_swap_*` 是否要進 `SIGS` 的 libc 清單（像 `malloc` 那樣能直接被 `declare`），或只在 host 清單裡？（建議 host 清單，避免混淆 libc 與擴充。）
+| 設定 | 預設 | 環境變數 | 說明 |
+|---|---|---|---|
+| swap 總量 `size` | **4096 MB** | `FA_SWAP_SIZE_MB` | 所有還活著的 swap 陣列加起來的上限；超過就明確丟錯，不靜默丟資料 |
+| 熱區 `hot` | **4096 MB** | `FA_SWAP_HOT_MB` | 記憶體裡最多留多少；**wasm32 線性記憶體上限 4 GB，超過就夾到 4 GB**（標 `hot_capped`） |
+| 頁大小 | 256 KB | — | 不對外開放 |
 
-**驗證計畫（實作時）**：`fa_swap_core.test.js`（記憶體後端與假 store，語意與 Python 一致：沒寫過的頁讀出 0、髒頁寫回、LRU 踢出順序）；`llvm_host.test.js` 加一個用 `fa_swap_*` 的 IR 範例（寫入一大塊、讀回比對）；真 Electron 的 job eval（IndexedDB 內頁數、程式結束後為空）。
+- 優先序：**助理設定**（`advancedSettings.envOverrides` 的 `swapSizeMB`／`swapHotMB`）＞ **環境變數** ＞ 預設。環境變數只對 Python 直接跑（有 OS 環境）有效；瀏覽器內沒有 OS 環境變數，實際上以助理設定為準。
+- **Python 預設 16 MB 要改成 4096 MB**（`fa_swap.py` 的 `HOT_BYTES`，現在是 `FA_SWAP_HOT_MB` 預設 "16"）。Python 先問橋接 `swap.config`（由 JS 的 `resolveConfig` 回傳），橋接不通才讀環境變數，所以只有一份預設值（在 JS）。
+- **node 的 `swap.hot(MB)` 與 `FA_SWAP_HOT_MB` 的關係**：`swap.hot(MB)` 是「熱區的執行期設定」，對應環境變數的熱區設定；啟動時的預設來自統一設定（4096 MB），不是 16 MB。現行 API 名稱是 `swap.hotMB(n)`，本設計決定：正名為 `swap.hot(MB)`，保留 `hotMB` 作為別名（相容既有的 `life_swap.js`、`swap_demo.js`）。`swap.hot()` 不帶參數回傳目前的熱區（MB）。
+- 總量超過時的錯誤訊息要指出 `FA_SWAP_SIZE_MB`（或助理設定），而不是只說「超過」。
 
-**現況**：本節是設計（2026-11-19），尚未實作。Python 的 `fa_swap` 不變。
+### 24.2 三種執行器：執行前自動啟用、不需 import
+- **python**：Worker 執行前在 `builtins` 放一個延後載入的 `fa_swap` 代理（第一次用到才 import 真的 `fa_swap.py`，沒用到就不付 numpy 的載入成本）。`py_async.js` 判斷要不要走 Worker 時，程式只要提到 `fa_swap`（不是字串或註解裡的字）就走 Worker，橋接才接得上。既有的 `import fa_swap` 仍然可用（相容）。
+- **node**：沙盒 iframe 的全域 `swap` 本來就不必 require（`gui/js_program.js` 的 shim）；設計是讓它的分頁改用共用核心（核心原始碼放進 iframe 的 script 裡），API 不變。
+- **LLVM**：host 自動提供 `fa_swap_*`，IR 只要 `declare`，不需要任何 import。`llvm_host.js` 的 `create` 收 `swap` 選項（核心模組、頁面橋接、設定）；H.close() 丟掉這次程式的空間。
+
+### 24.3 「像原生一樣」的透明程度與限制
+| 執行器 | 能做到的透明 | 做不到／限制 |
+|---|---|---|
+| python | 不必 import；`fa_swap.array(shape, dtype)` 像 numpy 一樣索引、切片、`blocks`、`apply`；超過熱區自動換頁；超過總量明確丟 `SwapError` | **numpy 陣列的 buffer 必須常駐記憶體**，不能讓 `np.zeros(...)` 變成換頁陣列；要用 swap 必須寫 `fa_swap.array`。複本式讀寫（不是 mmap）；不是執行緒安全 |
+| node | 不必 require；`swap.array(len, type)` 任意長度型別化陣列；超過熱區自動換頁；`swap.hot(MB)` 調熱區 | **IndexedDB 是非同步**，TypedArray 的同步語法（`a[i]`）做不到，只能 `await a.get／set／map`。要 `a[i]` 需要 JSPI 或 Worker＋Atomics，iframe 無法同步等 IDB。 |
+| LLVM | 不必 import（`fa_swap_*` 由 host 提供）；超過 wasm 記憶體的資料用分頁讀寫 | 要**明確呼叫** `fa_swap_read／write`，不是一般指標。`malloc` 透明換頁見 24.4。 |
+
+共通限制：效能是磁碟級，不是記憶體級；沒有 IndexedDB 時退回記憶體（不省記憶體，會標 `backend:'memory'`）；程式結束或 `close` 時一律丟掉自己的空間，啟動時清掉上次沒清乾淨的。
+
+### 24.4 LLVM：`fa_swap_*` 與 malloc 透明換頁的評估
+- **`fa_swap_*`（採用）**：`i32 fa_swap_open(i64 bytes, i64 page_bytes)`（0＝失敗）；`i32 fa_swap_read(i32 h, i64 off, ptr dst, i64 n)`、`i32 fa_swap_write(i32 h, i64 off, ptr src, i64 n)`（成功 0、失敗 -1；複製式，因為頁會被換出，不給指標別名；IndexedDB 非同步，所以走 JSPI，與 SDL_Delay 同做法）；`void fa_swap_close(i32 h)`。不進 libc 清單，只在 host 清單（避免混淆 libc 與擴充）。範例：超過 wasm 記憶體的陣列分頁讀寫（`examples/llc/swap/`，由 `_gen` 產生）。
+- **malloc 透明換頁（評估：不做）**：C 語意的指標是 wasm 線性記憶體的絕對位址，程式可以任意保存、比較、算術運算。要透明換頁，等於要在 wasm 裡做虛擬記憶體（缺頁時中斷、換入、重映射），wasm 沒有這個能力，只能在每次存取前插入檢查（會讓所有程式變慢，且要改編譯器產生的每一個 load／store）。替代：明確的 `fa_swap_*` API，加上 `malloc` 超過某大小時回傳 `fa_swap` 不透明句柄的新 API（需要 IR 改寫，不是 libc 的原樣行為）。結論：**透明的 malloc 不可行，只提供明確 API**。若之後真的需要，再以「大型陣列專用的 `fa_swap_array` IR 型別」評估。
+
+### 24.5 驗證計畫（實作時）
+- `fa_swap_core.test.js`：統一設定（預設 4096、夾到 4096、覆寫優先序）、零頁、髒頁寫回與 LRU、總量上限、釋放與關閉、統計欄位與 Python 一致。
+- `fa_swap_test.py`：預設 4096、環境變數、總量 `SwapError`；`js_program_swap.test.js`：`swap.hot`／`hotMB` 別名、node 的讀寫與結束清空；`llvm_host.test.js`：`fa_swap_*` IR 編譯、host 實作（node 沒有 JSPI，read／write 直接呼叫 impls）。
+- 真 Electron：job 內 IndexedDB 頁數、結束後為空；`swap_big.ll` 實跑（JSPI）；Pyodide 不 import 直接用 `fa_swap.array`。
+
+### 24.6 現況與 WIP（2026-11-20）
+- 本節是設計，**尚未實作為正式功能**；`desktop-app` 上只應有設計文件的 commit。
+- 已先寫、**未 commit、未接線**的程式碼（工作樹未追蹤或修改）：
+  - 新增：`renderer/src/env/fa_swap_core.js`、`renderer/src/env/fa_swap_core.test.js`、`renderer/src/examples/llc/swap/swap_big.ll`、`renderer/src/examples/llc/_gen/_gen_swap_big.py`
+  - 修改：`renderer/src/gui/js_program.js`（node 的 swap 改用核心）、`renderer/src/gui/js_program.test.js`、`renderer/src/gui/js_program_swap.test.js`、`renderer/src/gui/py_async.js`（偵測 fa_swap）、`renderer/src/gui/py_worker.js`（builtins 注入）、`renderer/src/pybridge/fa_swap.py`（預設 4096、總量上限）、`renderer/src/pybridge/fa_swap_test.py`、`renderer/src/uml/llvm_host.js`（`fa_swap_*`）、`renderer/src/uml/llvm_host.test.js`、`renderer/src/examples/llc/README.md`、`scripts/run-core-tests.js`
+- 已驗證（只在工作樹上，node／python）：`fa_swap_core.test.js` 23 項、`js_program_swap.test.js` 11 項、`js_program.test.js`、`llvm_host.test.js` 51 項、`fa_swap_test.py` OK。`swap_big.ll` 只驗證編譯（需 JSPI 才能實跑）。
+- **未做**：`renderer/src/floating-assistant.js` 接線（該檔無寫入權）、embed、build、真 Electron 驗證、Pyodide 端到端。
+- **WIP 分支**：建議把上面的改動 commit 到 `wip/auto-swap`（不進 `desktop-app`、不發布），之後 `desktop-app` 只留設計文件。目前這個 session 無法執行 git（dubious ownership；ssh 到 hungfu.lee 被拒），所以**還沒有 WIP 分支，工作樹也還沒還原**。
+- 接線步驟寫在 `local_aa2d0534…/swap-auto-handover.md`（side-session-notes）。
 
 ### 21.x 真 GPU 基準：`scripts/eval/gpgpu_bench.eval.js`（2026-11-19）
 
