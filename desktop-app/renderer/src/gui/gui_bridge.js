@@ -38,7 +38,7 @@
   var PARENT_OF = { tab: 'tabs', menu: 'menubar', menuitem: 'menu' };
   var ONLY_CHILDREN = { tabs: ['tab'], menubar: ['menu'], menu: ['menuitem'] };
   var MAX_COLUMNS = 30, MAX_DRAW = 200, MAX_CANVAS = 1200, MAX_FPS = 60;
-  var MAX_IMAGES = 16, MAX_IMAGE_BYTES = 256 * 1024;
+  var MAX_IMAGES = 16, MAX_IMAGE_BYTES = 1024 * 1024;
   var COLOR_RE = /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
   var IMAGE_RE = /^data:image\/(png|jpeg|gif|webp);base64,([A-Za-z0-9+/]+={0,2})$/;
   // a draw command and its length (name included): every command ends with its color, except clear, which is only the color

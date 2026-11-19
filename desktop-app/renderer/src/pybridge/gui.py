@@ -348,7 +348,7 @@ class Window(object):
         fa_bridge.call("gui.draw", {"id": self.id, "node": nid, "ops": ops})
 
     def image(self, nid, data, mime, name=None):
-        """Register a picture (PNG, JPEG, GIF or WebP bytes, at most 256 KB) on a canvas. Returns (name, w, h): draw it with
+        """Register a picture (PNG, JPEG, GIF or WebP bytes, at most 1 MB) on a canvas. Returns (name, w, h): draw it with
         ["image", name, x, y] or ["image", name, x, y, w, h] or ["image", name, x, y, w, h, flip_x, flip_y] (flip flags 0 or 1).
         name (optional, letters, digits, _ and -, at most 40): registering the same name again replaces the picture and does not count
         against the 16 pictures of a canvas, so a program can redraw a rendered picture every frame. The page decodes it; a picture it
@@ -529,7 +529,7 @@ def pick_file(title="Choose a file", accept="", max_bytes=262144):
     """Ask the user to choose a file. The page shows a small panel with a button (the browser or desktop file chooser opens when the user
     presses it). Returns None when the user cancels, else {"name", "size", "mime", "data" (bytes), "path"} - path is the real path on the
     desktop app and "" in the browser. accept is an html accept text such as "image/*" or ".txt,.md"; a file bigger than max_bytes
-    (default 256 KB, at most 8 MB) raises ValueError. To show a picture on a canvas use Window.image(canvas, data, mime) (at most 256 KB)."""
+    (default 256 KB, at most 8 MB) raises ValueError. To show a picture on a canvas use Window.image(canvas, data, mime) (at most 1 MB)."""
     r = fa_bridge.call("gui.pickfile", {"title": str(title), "accept": str(accept), "max_bytes": int(max_bytes)}, timeout=330)
     if not r:
         return None
