@@ -1131,3 +1131,15 @@ Python 模擬器與離線模型推論共用同一個 GPU 裝置：
 - `scripts/build-web-lazy.js`：`KIR` 加入 EXCLUDE（開頁的 llc 路徑會用到，留在核心，同 GPUCORE 的做法）。
 - 檢查：三個檔 `node --check` 通過；把四個模組串成同一段後在 node 載入，確認 FaKir、FaKirGen、FaKirWebGL2、FaClFront 都掛上，vadd 能翻譯；llvm_host 34 項、kir 30 項通過。
 - **未做**：embed、build、真 Electron 驗證 llc 路徑的 KIR 派送；nbody3d／fluid3d 的 OpenCL 版本（`*_cl.ll`）與計時 eval；CUDA 前端；HUD。
+
+**階段 5：nbody3d／fluid3d 的 OpenCL 版（2026-11-19）**
+- 產生器：`examples/llc/_gen/_gen_nbody3d_cl.py` → `gpgpu/nbody3d_cl.ll`；`_gen_fluid3d_cl.py` → `gpgpu/fluid3d_cl.ll`。兩者都 exec 原本的產生器（同一份物理與畫面），只換掉 O(N²) 段：nbody 換成 `accel_cl`（4 個核心：accx、accy、accz、accpot）；fluid 換成 `sph_gpu`（krho 密度，kfx／kfy／kfz 力，壓力在核心裡由密度算）。CPU 版原檔不動。
+- 一個核心只能寫一個輸出（KIR 與 GLSL 都限制），所以每個分量一個核心；這是成本（nbody 每幀 4 次 N²，fluid 4 次 N²）。
+- fluid 的核心是 float32；CPU 版是 double。
+- 測試（node）：`renderer/src/uml/nbody3d_cl.test.js` 20 項、`fluid3d_cl.test.js` 20 項：從 .ll 讀出 @cl_src／@sph_src，JS 墊片與 KIR（runJs）都與 double 的 CPU 參考一致；`.ll` 用 llvm_core＋llvm_host 編得出 wasm。
+- **真 Electron 計時**（建置後的 app，內含 KIR→WebGL2 路徑；SwiftShader 軟體 GL；斜率法）：
+  - nbody3d N=512：CPU 19.3 ms/幀，OpenCL 107.7 ms/幀；GPU 派送 600 次（4×150）；最後的叢集中心兩邊相同（282.1, 104.3, 244.5）。
+  - fluid3d N=1000：CPU 27.0 ms/幀，OpenCL 205.7 ms/幀；GPU 派送 480 次（4×120）；平均 y 兩邊相同（0.109）。
+  - **結論**：軟體 GL 下 OpenCL 版比 CPU 版慢，主因是每幀 4 次寫入、4 次讀回與 WebGL 的逐片段 N 迴圈。這不是真 GPU 的數字；沒有真 GPU 就不能說加速。
+- 計時腳本：`scripts/eval/nbody3d_cl_timing.eval.js`、`scripts/eval/fluid3d_cl_timing.eval.js`（需要 examples 已 embed；目前用的是把 .ll 內嵌進去的臨時版本量的數字）。
+- **未做**：緩衝區留在 GPU 紋理（目前每幀複製進出）；HUD；CUDA 前端；WGSL 真 GPU 驗證。
