@@ -33,6 +33,7 @@ class V(object):
         return self.name
 
     def _c(self, o):
+        o = val(o)
         if isinstance(o, V):
             return o
         return self.f.const(self.ty, o)
@@ -85,6 +86,7 @@ class V(object):
         return self.f.tmp_v("ptr", "getelementptr %s, ptr %s, %s %s" % (self.elem, self.name, idx.ty, idx.name), elem=self.elem)
 
     def sel(self, a, b):   # 條件（i1）選一個
+        a, b = val(a), val(b)
         a = a if isinstance(a, V) else self.f.const(b.ty if isinstance(b, V) else "i32", a)
         b = b if isinstance(b, V) else self.f.const(a.ty, b)
         return self.f.tmp_v(a.ty, "select i1 %s, %s %s, %s %s" % (self.name, a.ty, a.name, b.ty, b.name))
@@ -100,8 +102,7 @@ class Var(object):
         self.f.store(self.ty, x if isinstance(x, V) else self.f.const(self.ty, x), self.ptr)
     def _upd(self, op, o):
         cur = self.get()
-        r = {"+": cur + o, "-": cur - o, "*": cur * o, "/": cur / o}[op]
-        self.set(r)
+        self.set(cur + o if op == "+" else cur - o if op == "-" else cur * o if op == "*" else cur / o)   # 只算要的那一個（不能把四個都算出來：多餘的除法會在除數是 0 時 trap）
         return self
     def __iadd__(s, o): return s._upd("+", o)
     def __isub__(s, o): return s._upd("-", o)

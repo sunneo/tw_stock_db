@@ -62,7 +62,7 @@ define i32 @main() {
   const hasJspi = typeof WebAssembly.Suspending === 'function';
   if (!hasJspi) { const c = L.compileIr('declare void @SDL_Delay(i32)\ndefine i32 @main() {\n  call void @SDL_Delay(i32 1)\n  ret i32 0\n}\n', {}); let msg = ''; try { await L.runHost(c.wasm, {}, host.impls); } catch (e) { msg = e.message; } check('沒有 JSPI 的錯誤說明', /JSPI/.test(msg), msg); }
   // 範例（sdl2_pong／gtk3_widgets／sdl2_gl_triangle）都能編成 wasm
-  for (const f of ['game/sdl2_pong.ll', 'game/sdl2_piano.ll', 'gui/gtk3_widgets.ll', 'gui/sdl2_gl_triangle.ll']) { const c = L.compileIr(fs.readFileSync(path.join(__dirname, '..', 'examples', 'llc', f), 'utf8'), {}); check('範例 ' + f + ' 編成 wasm', c.stage === 'ok' && !!WebAssembly.validate(c.wasm), c.errors); }
+  for (const f of ['game/sdl2_pong.ll', 'game/sdl2_piano.ll', 'gui/gtk3_widgets.ll', 'gui/sdl2_gl_triangle.ll', 'gpgpu/nbody3d.ll', 'gpgpu/fluid3d.ll', 'gui/music_player.ll', 'gui/midi_player.ll']) { const c = L.compileIr(fs.readFileSync(path.join(__dirname, '..', 'examples', 'llc', f), 'utf8'), {}); check('範例 ' + f + ' 編成 wasm', c.stage === 'ok' && !!WebAssembly.validate(c.wasm), c.errors); }
   // 鍵盤對照與格式化小單元
   check('scancode', H.scancodeOf('a') === 4 && H.scancodeOf('ArrowUp') === 82 && H.scancodeOf(' ') === 44 && H.scancodeOf('0') === 39 && H.scancodeOf('F1') === 58);
   // 檔案（stdio；x86_64 的宣告：size_t／long 是 i64）

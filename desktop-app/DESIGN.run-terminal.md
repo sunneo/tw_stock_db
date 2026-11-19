@@ -1645,3 +1645,7 @@ sleep/curl/date/ask-floating-ai-assistant各自踩過的坑。
 
 ## 22. LLVM IR 的 SDL 音訊與全域陣列初始值（2026-11-19）
 `llvm_host.js` 新增 SDL2 音訊（佇列模式）：`SDL_OpenAudioDevice／OpenAudio／QueueAudio／GetQueuedAudioSize／ClearQueuedAudio／PauseAudioDevice／PauseAudio／CloseAudioDevice／CloseAudio`，每個裝置對應頁面端 `AiChatAudioHost` 的一個串流（`gui.audio` 的 `stream_*`）；取樣格式 U8／S8／U16／S16／S32／F32 轉成 16 位元有號 PCM 再送；裝置一開始暫停。callback 模式（`SDL_AudioSpec.callback` 非 NULL）回 0 並說明，因為主機端無法在 wasm 記憶體配置緩衝區。`llvm_core.js` 新增全域陣列初始值（`[i32 1, i32 2, …]`、float／double 的一維陣列）。範例 `examples/llc/game/sdl2_piano.ll`（原生用 llvmlite＋gcc＋SDL 的 dummy 音訊驅動驗證；wasm 版真 Electron 驗證：串流開啟、鍵盤注入、結束後串流收掉）。
+
+## 23. LLVM IR 的檔案系統、libm 與四個新範例（2026-11-19）
+`llvm_host.js` 新增 stdio 檔案函式（見 `examples/llc/README.md`「檔案系統」）：`create({ fs })` 的 `fs` 由 `_terminalTryLliHostRun` 接到終端機沙盒（`_terminalSandboxFileBytes`／`_writeBytesToTerminalFs`），程式結束後 `_terminalFlushLive` 寫回 `/mnt`。`llvm_core.runHost` 新增第五個參數 `declares`：宣告成 `i64` 的參數（`size_t`／`long`）JS 收到 BigInt，轉成數字；宣告成 `i64` 的回傳值轉成 BigInt。主機簽名的回傳型別也可以有替代（`'i32|i64'`）。另有 libm（`sin／cos／sqrt／pow／floor／fmod／atan2…` 與 `…f` 版）、`GL_POINTS` 依 `glPointSize` 畫圓點。
+範例：`gpgpu/nbody3d.ll`、`gpgpu/fluid3d.ll`（CPU 計算＋OpenGL 點精靈）、`gui/music_player.ll`、`gui/midi_player.ll`（解析 SMF；`gui/demo.mid` 是二進位檔，嵌入時存成 `.b64`，播種時還原成位元組）。真 Electron 驗證：`scripts/eval/llc_host.eval.js` 的 `R.more`（四個範例＋ `.mid` 經 `fopen` 讀沙盒＋找不到檔案的錯誤）。

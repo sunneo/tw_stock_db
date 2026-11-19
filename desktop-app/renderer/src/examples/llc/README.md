@@ -24,6 +24,10 @@ IR 裡 `declare` 了 SDL2／OpenGL／GTK3／printf 的函式、又沒有自己�
 | `game/sdl2_pong.ll` | SDL2：視窗、渲染器、填色矩形、鍵盤、滑鼠、計時 | `SDL_Init／CreateWindow／CreateRenderer／SetRenderDrawColor／RenderClear／RenderFillRect／RenderDrawRect／RenderDrawLine／RenderDrawPoint／RenderPresent／PollEvent（QUIT、KEYDOWN／UP、MOUSEMOTION、MOUSEBUTTONDOWN／UP、MOUSEWHEEL）／Delay／GetTicks`；一幀最多 200 道繪圖指令（橋接上限） |
 | `gui/gtk3_widgets.ll` | GTK3 widget：視窗、盒子、標籤、輸入框、勾選框、按鈕、進度條、訊號、計時器 | `gtk_init／window／box／label／entry／button／check_button／progress_bar／container_add／widget_show_all／main／main_quit／g_signal_connect_data（clicked、changed、toggled、destroy、delete-event）／g_timeout_add` |
 | `gui/sdl2_gl_triangle.ll` | SDL2＋OpenGL 固定管線 | `SDL_GL_CreateContext／SwapWindow`、`glBegin／End／Vertex2f／3f／Color3f／4f`、矩陣（`glMatrixMode／LoadIdentity／Push／Pop／Translatef／Rotatef／Scalef／Ortho／Frustum／gluPerspective`）、`glClearColor／Clear／Enable(DEPTH_TEST)`；沒有光照、紋理、著色器 |
+| `gpgpu/nbody3d.ll` | 3D N-body（300 體，O(N²) 引力，double）＋ OpenGL 點精靈；滑鼠拖曳旋轉、滾輪縮放、空白暫停、R 重置 | `glBegin(GL_POINTS)`、`glPointSize`、`gluPerspective`、`sqrt／sin／cos`；**計算在 wasm 的 CPU 上**（不是 GPGPU，要等 OpenCL 墊片） |
+| `gpgpu/fluid3d.ll` | 3D SPH 流體（500 粒子，poly6／spiky／黏滯核，O(N²)）；空白＝晃一下、R 重置 | 同上；原生與 numpy 原型的穩定值吻合（`y_mean≈0.04`） |
+| `gui/music_player.ll` | 音樂盒：內建〈歡樂頌〉即時合成（方波／三角／正弦），兩個八度的琴鍵與進度；空白暫停、↑↓速度、1 2 3 波形、R 從頭 | `SDL_QueueAudio` 佇列模式；`pow／floor／sin`；合成的音高用 FFT 驗證（E4 量到 330.8 Hz） |
+| `gui/midi_player.ll` | MIDI 播放器：在 IR 裡解析標準 MIDI（SMF 0／1、變長時間、running status、tempo 表），12 聲部正弦合成，捲動的 piano roll | **檔案**：`lli gui/midi_player.ll gui/demo.mid`（用 `fopen／fread` 讀終端機沙盒，`/mnt/<名稱>` 也行）；參數 `-` 或不給＝內嵌示範曲；第二個參數＝跑幾幀後離開 |
 | `gpgpu/opencl_vecadd.ll` | OpenCL：執行時編譯核心字串、buffer、NDRange | 沒有 OpenCL 層——只能在有驅動的真機器上跑（下一步：接 cudaweb） |
 
 ## ② 在真機器上編成原生執行檔
@@ -34,3 +38,14 @@ IR 裡 `declare` 了 SDL2／OpenGL／GTK3／printf 的函式、又沒有自己�
 驗證現況：原生（llvmlite 編成物件檔、gcc 連結）pong、GTK3、GL 在 Xvfb 實跑通過（SDL2 在無頭環境要設 `SDL_IM_MODULE=none`，否則初始化輸入法就段錯誤，純 C 也一樣）；
 wasm 版在真 Electron 驗證（`scripts/eval/llc_host.eval.js`）：pong 開視窗、注入鍵盤與滑鼠、截圖、跑完 150 幀；GTK3 的輸入／勾選／點擊讓標籤更新、關視窗後程式結束；GL 視窗與滑鼠事件、跑完 400 幀。
 **沒驗證**：OpenGL 的畫面內容在 wasm 版（只確認沒有 trap 與 glerror）、真 GPU、網頁版、影片（沒有範例）、實際聽到聲音（驗證環境沒有音訊輸出裝置，只驗證到頁面的串流與排程）。
+
+## 檔案系統（stdio）
+
+`lli` 跑的程式可以用 `fopen／fclose／fread／fwrite／fgets／fputs／fgetc／fputc／fseek／ftell／rewind／feof／fflush／remove／rename／access`，接到**這個終端機的沙盒檔案系統**（相對路徑從目前目錄起算；`/mnt/<名稱>` 是即時的 File Access Point 檔案系統，程式結束時寫回）。
+開啟時整個檔案讀進記憶體；寫入在 `fclose／fflush`／程式結束時才寫回。`size_t`、`long` 在 x86_64 的 IR 宣告成 `i64`、wasm32 宣告成 `i32`，兩種都收。
+注意：`/mnt/<名稱>` 要先被指令提到過才會掛載（例如先 `ls /mnt/<名稱>`）；程式內自己組出的 `/mnt` 路徑不會觸發掛載。
+
+## 範例的產生器
+
+`_gen/_irb.py` 是一個極小的 IR 產生器（運算子重載的 `V`、變數、迴圈、if；不是編譯器），`_gen/_gen_*.py` 用它寫出上面的 `.ll`（輸出是普通的 `.ll`，原生與 wasm 都能用）。改範例請改產生器再重新產生。
+（教訓：產生器曾在 `+=` 時多算了一個除法，原生編譯器最佳化掉了，但我們的 wasm 編譯器照單全收，除數是 0 就 trap——原生通過不代表 wasm 沒問題，所以每個範例兩邊都要驗。）

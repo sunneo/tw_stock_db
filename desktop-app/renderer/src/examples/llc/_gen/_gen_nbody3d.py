@@ -93,7 +93,8 @@ ev = f.array('i8', 56)
 running, frames, maxf, drag, paused = (f.var('i32', 1), f.var('i32', 0), f.var('i32', 0), f.var('i32', 0), f.var('i32', 0))
 yaw, pitch, dist = f.var('double', 20.0), f.var('double', 25.0), f.var('double', 26.0)
 with f.if_(argc > 1):
-    maxf.set(c('atoi', argv.at(1).__class__ and f.load('ptr', argv.at(1) if False else f.gep8(argv, 4))))
+    argv.elem = 'ptr'
+    maxf.set(c('atoi', f.load('ptr', argv.at(1))))
 c('SDL_Init', 32)
 win = c('SDL_CreateWindow', 'IR nbody3d (CPU)', 805240832, 805240832, 640, 480, 2)
 ctx = c('SDL_GL_CreateContext', win)

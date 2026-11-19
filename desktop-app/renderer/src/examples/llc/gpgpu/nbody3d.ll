@@ -200,103 +200,94 @@ then7:
   %t43 = fmul double %t16, %t42
   %t44 = load double, ptr %a3
   %t45 = fadd double %t44, %t43
-  %t46 = fsub double %t44, %t43
-  %t47 = fmul double %t44, %t43
-  %t48 = fdiv double %t44, %t43
   store double %t45, ptr %a3
-  %t49 = fmul double %t23, %t42
-  %t50 = load double, ptr %a4
+  %t46 = fmul double %t23, %t42
+  %t47 = load double, ptr %a4
+  %t48 = fadd double %t47, %t46
+  store double %t48, ptr %a4
+  %t49 = fmul double %t30, %t42
+  %t50 = load double, ptr %a5
   %t51 = fadd double %t50, %t49
-  %t52 = fsub double %t50, %t49
-  %t53 = fmul double %t50, %t49
-  %t54 = fdiv double %t50, %t49
-  store double %t51, ptr %a4
-  %t55 = fmul double %t30, %t42
-  %t56 = load double, ptr %a5
-  %t57 = fadd double %t56, %t55
-  %t58 = fsub double %t56, %t55
-  %t59 = fmul double %t56, %t55
-  %t60 = fdiv double %t56, %t55
-  store double %t57, ptr %a5
+  store double %t51, ptr %a5
   br label %endif8
 endif8:
-  %t61 = load i32, ptr %a2
-  %t62 = add i32 %t61, 1
-  store i32 %t62, ptr %a2
+  %t52 = load i32, ptr %a2
+  %t53 = add i32 %t52, 1
+  store i32 %t53, ptr %a2
   br label %lc4
 le6:
-  %t63 = getelementptr double, ptr %vx, i32 %t4
-  %t64 = load double, ptr %t63
-  %t65 = load double, ptr %a3
-  %t66 = fmul double %t65, %dt
-  %t67 = fadd double %t64, %t66
-  %t68 = getelementptr double, ptr %vx, i32 %t4
-  store double %t67, ptr %t68
-  %t69 = add i32 %t4, 1
-  %t70 = getelementptr double, ptr %vx, i32 %t69
-  %t71 = load double, ptr %t70
-  %t72 = load double, ptr %a4
-  %t73 = fmul double %t72, %dt
-  %t74 = fadd double %t71, %t73
-  %t75 = add i32 %t4, 1
-  %t76 = getelementptr double, ptr %vx, i32 %t75
-  store double %t74, ptr %t76
-  %t77 = add i32 %t4, 2
-  %t78 = getelementptr double, ptr %vx, i32 %t77
-  %t79 = load double, ptr %t78
-  %t80 = load double, ptr %a5
-  %t81 = fmul double %t80, %dt
-  %t82 = fadd double %t79, %t81
-  %t83 = add i32 %t4, 2
-  %t84 = getelementptr double, ptr %vx, i32 %t83
-  store double %t82, ptr %t84
-  %t85 = load i32, ptr %a1
-  %t86 = add i32 %t85, 1
-  store i32 %t86, ptr %a1
+  %t54 = getelementptr double, ptr %vx, i32 %t4
+  %t55 = load double, ptr %t54
+  %t56 = load double, ptr %a3
+  %t57 = fmul double %t56, %dt
+  %t58 = fadd double %t55, %t57
+  %t59 = getelementptr double, ptr %vx, i32 %t4
+  store double %t58, ptr %t59
+  %t60 = add i32 %t4, 1
+  %t61 = getelementptr double, ptr %vx, i32 %t60
+  %t62 = load double, ptr %t61
+  %t63 = load double, ptr %a4
+  %t64 = fmul double %t63, %dt
+  %t65 = fadd double %t62, %t64
+  %t66 = add i32 %t4, 1
+  %t67 = getelementptr double, ptr %vx, i32 %t66
+  store double %t65, ptr %t67
+  %t68 = add i32 %t4, 2
+  %t69 = getelementptr double, ptr %vx, i32 %t68
+  %t70 = load double, ptr %t69
+  %t71 = load double, ptr %a5
+  %t72 = fmul double %t71, %dt
+  %t73 = fadd double %t70, %t72
+  %t74 = add i32 %t4, 2
+  %t75 = getelementptr double, ptr %vx, i32 %t74
+  store double %t73, ptr %t75
+  %t76 = load i32, ptr %a1
+  %t77 = add i32 %t76, 1
+  store i32 %t77, ptr %a1
   br label %lc1
 le3:
   store i32 0, ptr %a1
   br label %lc9
 lc9:
-  %t87 = load i32, ptr %a1
-  %t88 = icmp slt i32 %t87, 300
-  br i1 %t88, label %lb10, label %le11
+  %t78 = load i32, ptr %a1
+  %t79 = icmp slt i32 %t78, 300
+  br i1 %t79, label %lb10, label %le11
 lb10:
-  %t89 = load i32, ptr %a1
-  %t90 = mul i32 %t89, 3
-  %t91 = getelementptr double, ptr %px, i32 %t90
-  %t92 = load double, ptr %t91
-  %t93 = getelementptr double, ptr %vx, i32 %t90
+  %t80 = load i32, ptr %a1
+  %t81 = mul i32 %t80, 3
+  %t82 = getelementptr double, ptr %px, i32 %t81
+  %t83 = load double, ptr %t82
+  %t84 = getelementptr double, ptr %vx, i32 %t81
+  %t85 = load double, ptr %t84
+  %t86 = fmul double %t85, %dt
+  %t87 = fadd double %t83, %t86
+  %t88 = getelementptr double, ptr %px, i32 %t81
+  store double %t87, ptr %t88
+  %t89 = add i32 %t81, 1
+  %t90 = getelementptr double, ptr %px, i32 %t89
+  %t91 = load double, ptr %t90
+  %t92 = add i32 %t81, 1
+  %t93 = getelementptr double, ptr %vx, i32 %t92
   %t94 = load double, ptr %t93
   %t95 = fmul double %t94, %dt
-  %t96 = fadd double %t92, %t95
-  %t97 = getelementptr double, ptr %px, i32 %t90
-  store double %t96, ptr %t97
-  %t98 = add i32 %t90, 1
-  %t99 = getelementptr double, ptr %px, i32 %t98
-  %t100 = load double, ptr %t99
-  %t101 = add i32 %t90, 1
-  %t102 = getelementptr double, ptr %vx, i32 %t101
-  %t103 = load double, ptr %t102
-  %t104 = fmul double %t103, %dt
-  %t105 = fadd double %t100, %t104
-  %t106 = add i32 %t90, 1
-  %t107 = getelementptr double, ptr %px, i32 %t106
-  store double %t105, ptr %t107
-  %t108 = add i32 %t90, 2
-  %t109 = getelementptr double, ptr %px, i32 %t108
-  %t110 = load double, ptr %t109
-  %t111 = add i32 %t90, 2
-  %t112 = getelementptr double, ptr %vx, i32 %t111
-  %t113 = load double, ptr %t112
-  %t114 = fmul double %t113, %dt
-  %t115 = fadd double %t110, %t114
-  %t116 = add i32 %t90, 2
-  %t117 = getelementptr double, ptr %px, i32 %t116
-  store double %t115, ptr %t117
-  %t118 = load i32, ptr %a1
-  %t119 = add i32 %t118, 1
-  store i32 %t119, ptr %a1
+  %t96 = fadd double %t91, %t95
+  %t97 = add i32 %t81, 1
+  %t98 = getelementptr double, ptr %px, i32 %t97
+  store double %t96, ptr %t98
+  %t99 = add i32 %t81, 2
+  %t100 = getelementptr double, ptr %px, i32 %t99
+  %t101 = load double, ptr %t100
+  %t102 = add i32 %t81, 2
+  %t103 = getelementptr double, ptr %vx, i32 %t102
+  %t104 = load double, ptr %t103
+  %t105 = fmul double %t104, %dt
+  %t106 = fadd double %t101, %t105
+  %t107 = add i32 %t81, 2
+  %t108 = getelementptr double, ptr %px, i32 %t107
+  store double %t106, ptr %t108
+  %t109 = load i32, ptr %a1
+  %t110 = add i32 %t109, 1
+  store i32 %t110, ptr %a1
   br label %lc9
 le11:
   ret void
@@ -417,18 +408,17 @@ entry:
   %t1 = icmp sgt i32 %argc, 1
   br i1 %t1, label %then1, label %endif2
 then1:
-  %t2 = getelementptr None, ptr %argv, i32 1
-  %t3 = getelementptr i8, ptr %argv, i32 4
-  %t4 = load ptr, ptr %t3
-  %t5 = call i32 @atoi(ptr %t4)
-  store i32 %t5, ptr %a8
+  %t2 = getelementptr ptr, ptr %argv, i32 1
+  %t3 = load ptr, ptr %t2
+  %t4 = call i32 @atoi(ptr %t3)
+  store i32 %t4, ptr %a8
   br label %endif2
 endif2:
-  %t6 = call i32 @SDL_Init(i32 32)
-  %t7 = call ptr @SDL_CreateWindow(ptr @.s1, i32 805240832, i32 805240832, i32 640, i32 480, i32 2)
-  %t8 = call ptr @SDL_GL_CreateContext(ptr %t7)
-  %t9 = icmp eq ptr %t8, null
-  br i1 %t9, label %then3, label %endif4
+  %t5 = call i32 @SDL_Init(i32 32)
+  %t6 = call ptr @SDL_CreateWindow(ptr @.s1, i32 805240832, i32 805240832, i32 640, i32 480, i32 2)
+  %t7 = call ptr @SDL_GL_CreateContext(ptr %t6)
+  %t8 = icmp eq ptr %t7, null
+  br i1 %t8, label %then3, label %endif4
 then3:
   call void @SDL_Quit()
   ret i32 1
@@ -436,107 +426,98 @@ endif4:
   call void @init(ptr %a1, ptr %a2, ptr %a3, ptr %a4)
   br label %wc5
 wc5:
-  %t10 = load i32, ptr %a6
-  %t11 = icmp ne i32 %t10, 0
-  br i1 %t11, label %wb6, label %we7
+  %t9 = load i32, ptr %a6
+  %t10 = icmp ne i32 %t9, 0
+  br i1 %t10, label %wb6, label %we7
 wb6:
   br label %wc8
 wc8:
-  %t12 = call i32 @SDL_PollEvent(ptr %a5)
-  %t13 = icmp ne i32 %t12, 0
-  br i1 %t13, label %wb9, label %we10
+  %t11 = call i32 @SDL_PollEvent(ptr %a5)
+  %t12 = icmp ne i32 %t11, 0
+  br i1 %t12, label %wb9, label %we10
 wb9:
-  %t14 = load i32, ptr %a5
-  %t15 = icmp eq i32 %t14, 256
-  br i1 %t15, label %then11, label %endif12
+  %t13 = load i32, ptr %a5
+  %t14 = icmp eq i32 %t13, 256
+  br i1 %t14, label %then11, label %endif12
 then11:
   store i32 0, ptr %a6
   br label %endif12
 endif12:
-  %t16 = icmp eq i32 %t14, 768
-  br i1 %t16, label %then13, label %endif14
+  %t15 = icmp eq i32 %t13, 768
+  br i1 %t15, label %then13, label %endif14
 then13:
-  %t17 = getelementptr i8, ptr %a5, i32 16
-  %t18 = load i32, ptr %t17
-  %t19 = icmp eq i32 %t18, 41
-  br i1 %t19, label %then15, label %endif16
+  %t16 = getelementptr i8, ptr %a5, i32 16
+  %t17 = load i32, ptr %t16
+  %t18 = icmp eq i32 %t17, 41
+  br i1 %t18, label %then15, label %endif16
 then15:
   store i32 0, ptr %a6
   br label %endif16
 endif16:
-  %t20 = icmp eq i32 %t18, 44
-  br i1 %t20, label %then17, label %endif18
+  %t19 = icmp eq i32 %t17, 44
+  br i1 %t19, label %then17, label %endif18
 then17:
-  %t21 = load i32, ptr %a10
-  %t22 = sub i32 1, %t21
-  store i32 %t22, ptr %a10
+  %t20 = load i32, ptr %a10
+  %t21 = sub i32 1, %t20
+  store i32 %t21, ptr %a10
   br label %endif18
 endif18:
-  %t23 = icmp eq i32 %t18, 21
-  br i1 %t23, label %then19, label %endif20
+  %t22 = icmp eq i32 %t17, 21
+  br i1 %t22, label %then19, label %endif20
 then19:
   call void @init(ptr %a1, ptr %a2, ptr %a3, ptr %a4)
   br label %endif20
 endif20:
   br label %endif14
 endif14:
-  %t24 = icmp eq i32 %t14, 1025
-  br i1 %t24, label %then21, label %endif22
+  %t23 = icmp eq i32 %t13, 1025
+  br i1 %t23, label %then21, label %endif22
 then21:
   store i32 1, ptr %a9
   br label %endif22
 endif22:
-  %t25 = icmp eq i32 %t14, 1026
-  br i1 %t25, label %then23, label %endif24
+  %t24 = icmp eq i32 %t13, 1026
+  br i1 %t24, label %then23, label %endif24
 then23:
   store i32 0, ptr %a9
   br label %endif24
 endif24:
-  %t26 = icmp eq i32 %t14, 1024
-  %t27 = load i32, ptr %a9
-  %t28 = icmp ne i32 %t27, 0
-  %t29 = and i1 %t26, %t28
-  br i1 %t29, label %then25, label %endif26
+  %t25 = icmp eq i32 %t13, 1024
+  %t26 = load i32, ptr %a9
+  %t27 = icmp ne i32 %t26, 0
+  %t28 = and i1 %t25, %t27
+  br i1 %t28, label %then25, label %endif26
 then25:
-  %t30 = getelementptr i8, ptr %a5, i32 28
-  %t31 = load i32, ptr %t30
-  %t32 = sitofp i32 %t31 to double
-  %t33 = fmul double %t32, 0x3FD999999999999A
-  %t34 = load double, ptr %a11
-  %t35 = fadd double %t34, %t33
-  %t36 = fsub double %t34, %t33
-  %t37 = fmul double %t34, %t33
-  %t38 = fdiv double %t34, %t33
-  store double %t35, ptr %a11
-  %t39 = getelementptr i8, ptr %a5, i32 32
-  %t40 = load i32, ptr %t39
-  %t41 = sitofp i32 %t40 to double
-  %t42 = fmul double %t41, 0x3FD999999999999A
-  %t43 = load double, ptr %a12
-  %t44 = fadd double %t43, %t42
-  %t45 = fsub double %t43, %t42
-  %t46 = fmul double %t43, %t42
-  %t47 = fdiv double %t43, %t42
-  store double %t44, ptr %a12
+  %t29 = getelementptr i8, ptr %a5, i32 28
+  %t30 = load i32, ptr %t29
+  %t31 = sitofp i32 %t30 to double
+  %t32 = fmul double %t31, 0x3FD999999999999A
+  %t33 = load double, ptr %a11
+  %t34 = fadd double %t33, %t32
+  store double %t34, ptr %a11
+  %t35 = getelementptr i8, ptr %a5, i32 32
+  %t36 = load i32, ptr %t35
+  %t37 = sitofp i32 %t36 to double
+  %t38 = fmul double %t37, 0x3FD999999999999A
+  %t39 = load double, ptr %a12
+  %t40 = fadd double %t39, %t38
+  store double %t40, ptr %a12
   br label %endif26
 endif26:
-  %t48 = icmp eq i32 %t14, 1027
-  br i1 %t48, label %then27, label %endif28
+  %t41 = icmp eq i32 %t13, 1027
+  br i1 %t41, label %then27, label %endif28
 then27:
-  %t49 = getelementptr i8, ptr %a5, i32 20
-  %t50 = load i32, ptr %t49
-  %t51 = sitofp i32 %t50 to double
-  %t52 = fsub double 0x0000000000000000, %t51
-  %t53 = fmul double %t52, 0x3FF8000000000000
-  %t54 = load double, ptr %a13
-  %t55 = fadd double %t54, %t53
-  %t56 = fsub double %t54, %t53
-  %t57 = fmul double %t54, %t53
-  %t58 = fdiv double %t54, %t53
-  store double %t55, ptr %a13
-  %t59 = load double, ptr %a13
-  %t60 = fcmp olt double %t59, 0x4010000000000000
-  br i1 %t60, label %then29, label %endif30
+  %t42 = getelementptr i8, ptr %a5, i32 20
+  %t43 = load i32, ptr %t42
+  %t44 = sitofp i32 %t43 to double
+  %t45 = fsub double 0x0000000000000000, %t44
+  %t46 = fmul double %t45, 0x3FF8000000000000
+  %t47 = load double, ptr %a13
+  %t48 = fadd double %t47, %t46
+  store double %t48, ptr %a13
+  %t49 = load double, ptr %a13
+  %t50 = fcmp olt double %t49, 0x4010000000000000
+  br i1 %t50, label %then29, label %endif30
 then29:
   store double 0x4010000000000000, ptr %a13
   br label %endif30
@@ -545,33 +526,30 @@ endif30:
 endif28:
   br label %wc8
 we10:
-  %t61 = load i32, ptr %a10
-  %t62 = icmp eq i32 %t61, 0
-  br i1 %t62, label %then31, label %endif32
+  %t51 = load i32, ptr %a10
+  %t52 = icmp eq i32 %t51, 0
+  br i1 %t52, label %then31, label %endif32
 then31:
   call void @step(ptr %a1, ptr %a2, ptr %a3, double 0x3F847AE147AE147B)
   call void @step(ptr %a1, ptr %a2, ptr %a3, double 0x3F847AE147AE147B)
   br label %endif32
 endif32:
-  %t63 = load double, ptr %a11
-  %t64 = load double, ptr %a12
-  %t65 = load double, ptr %a13
-  call void @draw(ptr %a1, ptr %a2, double %t63, double %t64, double %t65)
-  call void @SDL_GL_SwapWindow(ptr %t7)
+  %t53 = load double, ptr %a11
+  %t54 = load double, ptr %a12
+  %t55 = load double, ptr %a13
+  call void @draw(ptr %a1, ptr %a2, double %t53, double %t54, double %t55)
+  call void @SDL_GL_SwapWindow(ptr %t6)
   call void @SDL_Delay(i32 16)
-  %t66 = load i32, ptr %a7
-  %t67 = add i32 %t66, 1
-  %t68 = sub i32 %t66, 1
-  %t69 = mul i32 %t66, 1
-  %t70 = sdiv i32 %t66, 1
-  store i32 %t67, ptr %a7
-  %t71 = load i32, ptr %a8
-  %t72 = icmp sgt i32 %t71, 0
-  %t73 = load i32, ptr %a7
-  %t74 = load i32, ptr %a8
-  %t75 = icmp sge i32 %t73, %t74
-  %t76 = and i1 %t72, %t75
-  br i1 %t76, label %then33, label %endif34
+  %t56 = load i32, ptr %a7
+  %t57 = add i32 %t56, 1
+  store i32 %t57, ptr %a7
+  %t58 = load i32, ptr %a8
+  %t59 = icmp sgt i32 %t58, 0
+  %t60 = load i32, ptr %a7
+  %t61 = load i32, ptr %a8
+  %t62 = icmp sge i32 %t60, %t61
+  %t63 = and i1 %t59, %t62
+  br i1 %t63, label %then33, label %endif34
 then33:
   store i32 0, ptr %a6
   br label %endif34
@@ -583,34 +561,31 @@ we7:
   store i32 0, ptr %a15
   br label %lc35
 lc35:
-  %t77 = load i32, ptr %a15
-  %t78 = icmp slt i32 %t77, 900
-  br i1 %t78, label %lb36, label %le37
+  %t64 = load i32, ptr %a15
+  %t65 = icmp slt i32 %t64, 900
+  br i1 %t65, label %lb36, label %le37
 lb36:
-  %t79 = load i32, ptr %a15
-  %t80 = getelementptr double, ptr %a2, i32 %t79
-  %t81 = load double, ptr %t80
-  %t82 = fmul double 0x3FE0000000000000, %t81
-  %t83 = load i32, ptr %a15
-  %t84 = getelementptr double, ptr %a2, i32 %t83
-  %t85 = load double, ptr %t84
-  %t86 = fmul double %t82, %t85
-  %t87 = load double, ptr %a14
-  %t88 = fadd double %t87, %t86
-  %t89 = fsub double %t87, %t86
-  %t90 = fmul double %t87, %t86
-  %t91 = fdiv double %t87, %t86
-  store double %t88, ptr %a14
-  %t92 = load i32, ptr %a15
-  %t93 = add i32 %t92, 1
-  store i32 %t93, ptr %a15
+  %t66 = load i32, ptr %a15
+  %t67 = getelementptr double, ptr %a2, i32 %t66
+  %t68 = load double, ptr %t67
+  %t69 = fmul double 0x3FE0000000000000, %t68
+  %t70 = load i32, ptr %a15
+  %t71 = getelementptr double, ptr %a2, i32 %t70
+  %t72 = load double, ptr %t71
+  %t73 = fmul double %t69, %t72
+  %t74 = load double, ptr %a14
+  %t75 = fadd double %t74, %t73
+  store double %t75, ptr %a14
+  %t76 = load i32, ptr %a15
+  %t77 = add i32 %t76, 1
+  store i32 %t77, ptr %a15
   br label %lc35
 le37:
-  %t94 = load i32, ptr %a7
-  %t95 = load double, ptr %a14
-  %t96 = call i32 (ptr, ...) @printf(ptr @.s2, i32 %t94, double %t95)
-  call void @SDL_GL_DeleteContext(ptr %t8)
-  call void @SDL_DestroyWindow(ptr %t7)
+  %t78 = load i32, ptr %a7
+  %t79 = load double, ptr %a14
+  %t80 = call i32 (ptr, ...) @printf(ptr @.s2, i32 %t78, double %t79)
+  call void @SDL_GL_DeleteContext(ptr %t7)
+  call void @SDL_DestroyWindow(ptr %t6)
   call void @SDL_Quit()
   ret i32 0
 }

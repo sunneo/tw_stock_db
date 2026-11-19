@@ -51,9 +51,22 @@ R.audio.done = { running: ae.running, exit: ae.exit_code, out: (g.output || '').
 // 4c. 不支援的 callback 模式要明確報錯（不是悄悄沒聲音）
 r = await tool('job_run', { lang: 'llvm', timeout_s: 30, code: 'declare i32 @SDL_OpenAudioDevice(ptr, i32, ptr, ptr, i32)\ndeclare i32 @printf(ptr, ...)\n@s = private constant [8 x i8] c"dev=%d\\0A\\00"\ndefine i32 @main() {\n  %spec = alloca [32 x i8], align 8\n  store i64 0, ptr %spec\n  %a = getelementptr i8, ptr %spec, i32 8\n  store i64 0, ptr %a\n  %b = getelementptr i8, ptr %spec, i32 16\n  store i64 0, ptr %b\n  %c = getelementptr i8, ptr %spec, i32 24\n  store i64 0, ptr %c\n  store i32 22050, ptr %spec\n  %f0 = getelementptr i8, ptr %spec, i32 4\n  store i8 16, ptr %f0\n  %f1 = getelementptr i8, ptr %spec, i32 5\n  store i8 -128, ptr %f1\n  %ch = getelementptr i8, ptr %spec, i32 6\n  store i8 1, ptr %ch\n  %cb = getelementptr i8, ptr %spec, i32 16\n  store i32 1, ptr %cb\n  %d = call i32 @SDL_OpenAudioDevice(ptr null, i32 0, ptr %spec, ptr null, i32 0)\n  call i32 (ptr, ...) @printf(ptr @s, i32 %d)\n  ret i32 0\n}\n' });
 R.audio.callback_mode = { out: (r.output || '').trim().slice(0, 200) };
+// 4d. 四個新範例：nbody3d／fluid3d（CPU 的 3D 模擬＋OpenGL 點精靈）、music_player（即時合成）、midi_player（解析 MIDI；檔案走 fopen 讀沙盒）
+R.more = {};
+for (const [name, file, args, expect] of [['nbody3d', 'gpgpu/nbody3d.ll', ['200'], /frames=200 kinetic=[\d.]+/], ['fluid3d', 'gpgpu/fluid3d.ll', ['150'], /frames=150 y_mean=0\.\d+/], ['music_player', 'gui/music_player.ll', ['400'], /frames=400 samples=\d+ bpm=110 ok/], ['midi_player_demo', 'gui/midi_player.ll', ['-', '400'], /notes=45 tempos=1 div=480 seconds=30 played=\d+ ok/]]) {
+  const jr = await tool('job_run', { lang: 'llvm', code: ex(file), args, detach: true, timeout_s: 120 }); const jid = jr.job_id; await wait(1200);
+  const sn = await tool('job_gui', { job_id: jid, action: 'snapshot' }); const e = { windows: sn.windows.length, streams_mid: (name === 'nbody3d' || name === 'fluid3d') ? undefined : fa._audioHost.stats().streams }; if (e.streams_mid !== undefined && e.streams_mid !== 1) e.stream_err = true;
+  let wt = 0; while (wt < 40000 && (await tool('job_list', {})).jobs.find((j) => j.job_id === jid).running) { await wait(300); wt += 300; }
+  const fin = await tool('job_gui', { job_id: jid, action: 'snapshot' }); e.exit = (await tool('job_list', {})).jobs.find((j) => j.job_id === jid).exit_code; e.out = (fin.output || '').trim().slice(-90); e.ok = e.exit === 0 && expect.test(e.out) && e.windows === 1 && !e.stream_err;
+  R.more[name] = e;
+}
+// 檔案系統：沙盒裡的 .mid 經 fopen／fread 讀進來（shell 的 lli 走同一條路）
+r = await tool('job_run', { lang: 'shell', code: 'ls examples/llc/gui; lli examples/llc/gui/midi_player.ll examples/llc/gui/demo.mid 100', timeout_s: 120 });
+R.more.midi_player_file = { exit: r.exit_code, out: (r.output || '').trim().slice(-120), ok: /notes=45 tempos=1 div=480 seconds=30/.test(r.output || '') };
+r = await tool('job_run', { lang: 'shell', code: 'lli examples/llc/gui/midi_player.ll nope.mid 5', timeout_s: 60 }); R.more.midi_player_missing = { out: (r.output || '').trim().slice(-60), ok: /cannot open nope\.mid/.test(r.output || '') };
 // 5. 錯誤路徑：宣告了主機函式但簽名不對、用了沒有實作的函式
 r = await tool('job_run', { lang: 'llvm', code: 'declare i32 @SDL_Init(i64)\ndeclare void @SDL_NoSuchThing()\ndefine i32 @main() {\n  call i32 @SDL_Init(i64 1)\n  ret i32 0\n}\n' });
 R.errors = { exit: r.exit_code, out: (r.output || '').slice(0, 300) };
-R.ok = R.seeded && R.host_api && R.pong.windows === 1 && !!R.pong.canvas && R.pong.done.exit === 0 && /frames=150/.test(R.pong.done.out) && R.gtk_auto.exit === 0 && /count=3/.test(R.gtk_auto.out) && /Pressed 2 times, entry: hello/.test(R.gtk.label1 || '') && R.gtk.stopped && R.gl.canvas && R.gl.done.exit === 0 && R.errors.exit !== 0 && R.audio.canvas && R.audio.streams_mid === 1 && R.audio.done.exit === 0 && /notes=\d+ queued=\d+ ok/.test(R.audio.done.out) && R.audio.streams_after === 0 && /callback/.test(R.audio.callback_mode.out) && /dev=0/.test(R.audio.callback_mode.out);
+R.ok = R.seeded && R.host_api && R.pong.windows === 1 && !!R.pong.canvas && R.pong.done.exit === 0 && /frames=150/.test(R.pong.done.out) && R.gtk_auto.exit === 0 && /count=3/.test(R.gtk_auto.out) && /Pressed 2 times, entry: hello/.test(R.gtk.label1 || '') && R.gtk.stopped && R.gl.canvas && R.gl.done.exit === 0 && R.errors.exit !== 0 && R.audio.canvas && R.audio.streams_mid === 1 && R.audio.done.exit === 0 && /notes=\d+ queued=\d+ ok/.test(R.audio.done.out) && R.audio.streams_after === 0 && /callback/.test(R.audio.callback_mode.out) && /dev=0/.test(R.audio.callback_mode.out) && Object.values(R.more).every((e) => e.ok);
 console.log('LLC_RESULT ' + JSON.stringify(R));
 return R;
