@@ -30,8 +30,8 @@
    "names": [
     "FA_PY_EXAMPLES"
    ],
-   "size": 439649,
-   "md5": "db999de052bc89a654b03134ea0ba2fc"
+   "size": 570547,
+   "md5": "1b51ea91b17bd0718c1ca03c63cb24b3"
   },
   "headsvc": {
    "file": "chunks/headsvc.js",
@@ -102,8 +102,8 @@
     "FA_WEBTRAIN_WORKER_SRC",
     "FA_STUDIO_HOST_FILES"
    ],
-   "size": 888261,
-   "md5": "77ace6ed81c1bdf2b2de733227176d7c"
+   "size": 888363,
+   "md5": "7a48e413cc358f5d2f403b15598b5400"
   },
   "studioview": {
    "file": "chunks/studioview.js",
@@ -1138,8 +1138,8 @@
    "names": [
     "FaLlvmHost"
    ],
-   "size": 42781,
-   "md5": "292c87c99d2c9fe7a30e8037b441eb51"
+   "size": 43430,
+   "md5": "41a5ac08192b1138800e3f0624afa987"
   },
   "trans": {
    "file": "chunks/trans.js",
@@ -1927,7 +1927,7 @@
   }
  },
  "core": {
-  "size": 6165593,
-  "md5": "672560fbfeca6efcd35fe26826ee111d"
+  "size": 6219567,
+  "md5": "495d93a6b1ca8a87299b73bbe2434b77"
  }
 }
