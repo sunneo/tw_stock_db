@@ -1741,3 +1741,9 @@ node scripts/eval/gpgpu_bench.build.js /tmp/gpgpu_bench.js && FA_EVAL_GL=gpu FA_
 輸出：nbody CPU 與 OpenCL（途中切到 GPU）的 `cx=293.7 cy=108.2 cz=269.0` 相同；fluid CPU 與 OpenCL 的 `y_mean=0.090` 相同。
 
 **發現並修正的問題**：`nbody3d.ll`、`nbody3d_cl.ll` 在改成 ASCII 字串之後沒有重產，檔案裡仍是舊的中文提示，檢查時顯示為空白。已重產。
+
+**2026-11-20 補充（預設 GPU、按鈕底色、自動退回）**
+- `nbody3d_cl.ll` 預設 `cl_mode＝1`（GPU）。第一幀後若 `fa_cl_backend()` 是 2（JS 墊片，也就是沒有 WebGL2 浮點渲染），自動退回 CPU（`cl_pull` 讀回狀態），`cl_fb` 旗標讓狀態行寫出「GPU unavailable: WebGL2 float render not supported」。
+- 按鈕底色：選中的（CPU 或 GPU）是綠色（0.12, 0.48, 0.12），未選中的是灰色（0.19）；顏色是 i1 的 select，依 `cl_mode` 即時變。字仍然畫在填色之後。CPU 版的顏色維持原本的配置。
+- `fluid3d_cl.ll` 沒有按鈕，一律走 OpenCL；狀態文字依真正的後端。`nbody3d.ll`（CPU）維持 CPU，視窗標題與狀態行都推薦改跑 `nbody3d_cl.ll`。
+- 驗證（`scripts/eval/llc_hud.eval.js`，SwiftShader）：開場預設 GPU（狀態行 `GPU: OpenCL kernels (WebGL2 backend)`，GPU 按鈕綠、CPU 按鈕灰）；點 CPU → CPU 綠、GPU 灰；再點 GPU → GPU 綠；模擬沒有浮點渲染 → 狀態行 `GPU unavailable: WebGL2 float render not supported`、CPU 綠；CPU 版與 OpenCL 版（預設 GPU）的最終叢集中心相同（293.7, 108.2, 269.0）；fluid 的 y_mean 相同（0.090）。

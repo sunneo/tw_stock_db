@@ -208,8 +208,12 @@ if not CL_VARIANT:
     line(145, Y3, 'GPU: run nbody3d_cl.ll (OpenCL) instead')
 else:
     _mode = c('cl_mode')          # 0＝CPU（wasm 內積分）、非 0＝GPU（OpenCL 核心）
+    _fb = c('cl_fb')              # 1＝自動退回 CPU（GPU 後端不可用）
     with hud.if_(_mode.eq(0)):
-        line(145, W3, 'CPU: wasm integration')
+        with hud.if_(_fb.ne(0)):
+            line(145, Y3, 'GPU unavailable: WebGL2 float render not supported')
+        with hud.if_(_fb.eq(0)):
+            line(145, W3, 'CPU: wasm integration')
     with hud.if_(_mode.ne(0)):
         _bk = c('fa_cl_backend')  # 0＝尚未派送、1＝WebGL2（KIR）、2＝JS 墊片
         with hud.if_(_bk.eq(1)):
@@ -229,8 +233,18 @@ def quad(x1, y1, w_, h_, color):
     c('glColor3f', *color)
     for dx_, dy_ in ((0, 0), (1, 0), (1, 1), (0, 1)):
         c('glVertex2f', (x1 + w_ * dx_), (y1 + h_ * dy_))
-quad(140.0, 122.0, 50.0, 20.0, (0.12, 0.48, 0.12))            # CPU 按鈕（目前的計算來源，綠色）
-quad(200.0, 122.0, 50.0, 20.0, (0.19, 0.19, 0.19))            # GPU 按鈕（沒有）
+def _btn_color(sel):
+    # sel＝i1：選中就是綠色（0.12, 0.48, 0.12），沒選中是灰色（0.19）；CPU 版沒有 cl_mode，用常數
+    if sel is None:
+        return (0.12, 0.48, 0.12)
+    on, off = (0.12, 0.48, 0.12), (0.19, 0.19, 0.19)
+    return tuple(sel.sel(hud.const('float', a_), hud.const('float', b_)) for a_, b_ in zip(on, off))
+if not CL_VARIANT:
+    quad(140.0, 122.0, 50.0, 20.0, _btn_color(None))           # CPU 按鈕（CPU 版永遠是 CPU）
+    quad(200.0, 122.0, 50.0, 20.0, (0.19, 0.19, 0.19))         # GPU 按鈕（CPU 版沒有）
+else:
+    quad(140.0, 122.0, 50.0, 20.0, _btn_color(_mode.eq(0)))    # CPU 按鈕：目前是 CPU 時綠色
+    quad(200.0, 122.0, 50.0, 20.0, _btn_color(_mode.ne(0)))    # GPU 按鈕：目前是 GPU 時綠色
 quad(320.0, 25.0, (par[6] / 2.0 * 400.0), 15.0, (0.99, 0.99, 0.0))       # 模擬係數滑桿（0..2）
 quad(320.0, 65.0, ((par[7] - 5.0) / 195.0 * 400.0), 15.0, (0.0, 1.0, 0.0))  # 粒子大小滑桿（5..200）
 c('glEnd')
@@ -264,7 +278,7 @@ with f.if_(argc > 2): loops.set(c('atoi', f.load('ptr', argv.at(2))))
 with f.if_(argc > 3): maxf.set(c('atoi', f.load('ptr', argv.at(3))))
 n = nv.get()
 c('SDL_Init', 32)
-win = c('SDL_CreateWindow', '[3D] NBody-Simulation', 805240832, 805240832, SCREENX, SCREENY, 2)
+win = c('SDL_CreateWindow', '[3D] NBody-Simulation (OpenCL, GPU by default)' if CL_VARIANT else '[3D] NBody-Simulation (CPU; recommended: nbody3d_cl.ll)', 805240832, 805240832, SCREENX, SCREENY, 2)
 ctx = c('SDL_GL_CreateContext', win)
 with f.if_(ctx.eq(f.const('ptr', 0))):
     f.call('SDL_Quit'); f.ret(1)

@@ -2,7 +2,7 @@
 // 做法：跑範例的 job，等幾幀，從畫布（preserveDrawingBuffer）讀出像素，與「依 _gen 的 text() 規則算出的期望像素」比對。
 //   期望像素：字串每個字元是 7×13 點陣（字型＝_font_data.py），第 k 個字元的第 r 列第 c 欄（最高位在左）畫在 (x0+7k+c, y0+r−2)。
 //   覆蓋率＝期望像素中「夠亮」（R+G+B 平均 > 100）的比例；≥ 0.95 視為文字正確顯示。
-// 另外：nbody3d_cl 用 gui 的滑鼠事件點 CPU／GPU 按鈕，檢查狀態行真的變；最後用 Esc 結束，比對 CPU 與 OpenCL（切到 GPU 後）的最終叢集中心。
+// 另外：nbody3d_cl 預設 GPU（開場檢查狀態行與按鈕底色）；用 gui 的滑鼠事件點 CPU／GPU 按鈕，檢查狀態行與按鈕底色（選中＝綠）真的變；比對 CPU 與 OpenCL（預設 GPU）的最終叢集中心。
 // 由 scripts/eval/llc_hud.build.js 產生。結果：LLC_HUD {…} 一行 JSON。
 const SRC = __SRC__;
 const fa = window.fa; const R = { rows: [], output: {} };
@@ -80,31 +80,67 @@ const NB = ['512', '100000', '0'];
     }
     await stopJob(id);
 }
-// 2. nbody3d_cl（OpenCL 版）：狀態行隨模式與後端變；點按鈕切換
+// 2. nbody3d_cl（OpenCL 版）：預設 GPU；狀態行與按鈕底色（選中＝綠、未選中＝灰）隨模式變；GPU 不可用時退回 CPU 並說明
+const GREEN_PX = [143, 139], CPU_BTN = [143, 139], GPU_BTN = [203, 139];
+const isGreen = (img, x, y) => { const i = ((img.h - 1 - y) * img.w + x) * 4; const r = img.a[i], g = img.a[i + 1], b = img.a[i + 2]; return g > 100 && g > r + 40 && g > b + 40; };
+const btnRow = (example, state, img) => {
+    const cpuG = isGreen(img, CPU_BTN[0], CPU_BTN[1]), gpuG = isGreen(img, GPU_BTN[0], GPU_BTN[1]);
+    R.rows.push({ example, state, label: '按鈕底色（CPU 按鈕、GPU 按鈕）', shown: (cpuG ? 'CPU 綠' : 'CPU 非綠') + '、' + (gpuG ? 'GPU 綠' : 'GPU 非綠'), best_coverage: null, pass: null, cpu_green: cpuG, gpu_green: gpuG });
+    return { cpuG, gpuG };
+};
 {
     const id = await startJob('nbody3d_cl', NB); await wait(5000);
     const cv = findCanvas(800, 560); const node = await canvasNode(id);
     if (!cv || !node) R.rows.push({ example: 'nbody3d_cl', label: 'canvas', pass: false, note: '找不到畫布或節點' });
     else {
-        check('nbody3d_cl', '啟動（預設 CPU）', '狀態行', 5, 145, ['CPU: wasm integration'], cv);
-        await click(id, node, 225, 132); await wait(4000);
-        const g = check('nbody3d_cl', '點 GPU 後', '狀態行', 5, 145, ['GPU: OpenCL kernels (WebGL2 backend)', 'GPU: OpenCL JS shim (not GPU)', 'GPU: OpenCL not dispatched yet'], findCanvas(800, 560));
-        R.rows[R.rows.length - 1].best_coverage = g.coverage;
-        await click(id, node, 165, 132); await wait(2000);
+        const CANDS = ['GPU: OpenCL kernels (WebGL2 backend)', 'GPU: OpenCL JS shim (not GPU)', 'GPU: OpenCL not dispatched yet', 'GPU unavailable: WebGL2 float render not supported', 'CPU: wasm integration'];
+        const st0 = check('nbody3d_cl', '開場（預設）', '狀態行', 5, 145, CANDS, cv);
+        const defaultGpu = st0.text.startsWith('GPU');
+        R.rows[R.rows.length - 1].pass = defaultGpu || st0.text.startsWith('GPU unavailable') ? (st0.coverage >= 0.95) : false;
+        R.rows[R.rows.length - 1].note = defaultGpu ? '預設是 GPU' : '預設 GPU 不可用，已退回 CPU（應顯示原因）';
+        const img0 = grab(cv); const b0 = btnRow('nbody3d_cl', '開場（預設）', img0);
+        if (defaultGpu) R.rows[R.rows.length - 1].pass = b0.gpuG && !b0.cpuG;
+        else R.rows[R.rows.length - 1].pass = b0.cpuG && !b0.gpuG;
+
+        await click(id, node, 165, 132); await wait(2500);
+        const img1 = grab(findCanvas(800, 560));
         check('nbody3d_cl', '點 CPU 後', '狀態行', 5, 145, ['CPU: wasm integration'], findCanvas(800, 560));
-        await click(id, node, 225, 132); await wait(3000);
-        check('nbody3d_cl', '再點 GPU 後', '狀態行', 5, 145, ['GPU: OpenCL kernels (WebGL2 backend)', 'GPU: OpenCL JS shim (not GPU)'], findCanvas(800, 560));
+        const b1 = btnRow('nbody3d_cl', '點 CPU 後', img1);
+        R.rows[R.rows.length - 1].pass = b1.cpuG && !b1.gpuG;
+
+        await click(id, node, 225, 132); await wait(3500);
+        const img2 = grab(findCanvas(800, 560));
+        const st2 = check('nbody3d_cl', '再點 GPU 後', '狀態行', 5, 145, CANDS.slice(0, 4), findCanvas(800, 560));
+        const b2 = btnRow('nbody3d_cl', '再點 GPU 後', img2);
+        R.rows[R.rows.length - 1].pass = b2.gpuG && !b2.cpuG;
     }
     await stopJob(id);
 }
-// 3. 輸出一致性：CPU 版 vs OpenCL（開始在 CPU、途中點 GPU、再跑到結束）；結束行印出叢集中心
+// 2b. 模擬沒有 WebGL2 浮點渲染（把 EXT_color_buffer_float 藏起來）：應該自動退回 CPU，狀態行寫出原因，CPU 按鈕綠
+{
+    const P = window.WebGL2RenderingContext && WebGL2RenderingContext.prototype;
+    const origGet = P.getExtension;
+    P.getExtension = function (n) { return n === 'EXT_color_buffer_float' ? null : origGet.call(this, n); };
+    try {
+        const id = await startJob('nbody3d_cl', NB); await wait(6000);
+        const cv = findCanvas(800, 560); const node = await canvasNode(id);
+        if (!cv || !node) R.rows.push({ example: 'nbody3d_cl', state: '無浮點渲染', label: 'canvas', pass: false, note: '找不到畫布' });
+        else {
+            const st = check('nbody3d_cl', '無浮點渲染（模擬）', '狀態行（應說明退回 CPU 的原因）', 5, 145, ['GPU unavailable: WebGL2 float render not supported', 'CPU: wasm integration'], cv);
+            const b = btnRow('nbody3d_cl', '無浮點渲染（模擬）', grab(cv));
+            R.rows[R.rows.length - 1].pass = b.cpuG && !b.gpuG;
+            R.rows[R.rows.length - 1].note = '退回 CPU 後，CPU 按鈕應為綠色';
+        }
+        await stopJob(id);
+    } finally { P.getExtension = origGet; }
+}
+// 3. 輸出一致性：CPU 版 vs OpenCL 版（預設 GPU，不點按鈕）；結束行印出叢集中心
 {
     const FR = ['512', '100000', '200'];
     const a = await startJob('nbody3d', FR); await waitExit(a, 240000); const outA = await jobOutput(a); await stopJob(a);
-    const b = await startJob('nbody3d_cl', FR); await wait(2000); const node = await canvasNode(b); if (node) await click(b, node, 225, 132);
-    await waitExit(b, 240000); const outB = await jobOutput(b); await stopJob(b);
+    const b = await startJob('nbody3d_cl', FR); await waitExit(b, 240000); const outB = await jobOutput(b); await stopJob(b);
     const cen = (s) => (s.match(/cx=[-0-9.]+ cy=[-0-9.]+ cz=[-0-9.]+/) || [null])[0];
-    R.output.nbody = { cpu: cen(outA), cl_switched_to_gpu: cen(outB), same: !!cen(outA) && cen(outA) === cen(outB) };
+    R.output.nbody = { cpu: cen(outA), cl_default: cen(outB), same: !!cen(outA) && cen(outA) === cen(outB) };
 }
 // 4. fluid3d（CPU）與 fluid3d_cl（OpenCL）：狀態文字（不限幀數，檢查完再停）；輸出另外用 200 幀比對
 {

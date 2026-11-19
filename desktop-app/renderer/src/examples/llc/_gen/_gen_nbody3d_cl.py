@@ -221,9 +221,24 @@ def glue_ir():
         A('  %%rr_%s = call i32 @clEnqueueReadBuffer(ptr %%q, ptr %s, i32 1, i64 0, i64 %%bytes, ptr %s, i32 0, ptr null, ptr null)' % (c_, h, dst))
     A('  %fin = call i32 @clFinish(ptr %q)')
     A('  store i32 %nx, ptr %spp')
+    # 後端檢查：本幀若實際走 JS 墊片（fa_cl_backend＝2，不是 WebGL2），退回 CPU 並記下原因（HUD 會顯示）
+    A('  %be = call i32 @fa_cl_backend()')
+    A('  %isjs = icmp eq i32 %be, 2')
+    A('  br i1 %isjs, label %fallback, label %okend')
+    A('fallback:')
+    A('  call void @cl_pull(ptr %x, ptr %y, ptr %z, ptr %vx, ptr %vy, ptr %vz)')
+    A('  store i32 0, ptr @cl_mode')
+    A('  store i32 1, ptr @cl_fb')
+    A('  br label %okend')
+    A('okend:')
     A('  ret void')
     A('}')
     A('')
+
+    # ---- cl_fb()：1＝因為 GPU 後端不可用而自動退回 CPU
+    A('define i32 @cl_fb() {')
+    A('entry:')
+    A('  %fv = load i32, ptr @cl_fb'); A('  ret i32 %fv'); A('}'); A('')
 
     # ---- cl_mode()：目前的計算來源（0＝CPU、1＝GPU）
     A('define i32 @cl_mode() {')
@@ -260,7 +275,7 @@ def glue_ir():
     A('tocpu:')
     A('  call void @cl_pull(ptr %x, ptr %y, ptr %z, ptr %vx, ptr %vy, ptr %vz)'); A('  br label %setm')
     A('setm:')
-    A('  store i32 %m, ptr @cl_mode'); A('  br label %fin')
+    A('  store i32 %m, ptr @cl_mode'); A('  store i32 0, ptr @cl_fb'); A('  br label %fin')
     A('fin:')
     A('  ret void'); A('}'); A('')
     return '\n'.join(L) + '\n'
@@ -280,8 +295,10 @@ for _k in __KNAMES__:
     _kb = _k.encode('ascii') + b'\\0'
     m.globs.append('@cl_n_%s = private constant [%d x i8] c"%s"' % (_k, len(_kb), esc(_kb)))
 m.globs.append('@cl_h = global [40 x ptr] zeroinitializer')
-m.globs.append('@cl_st = global [4 x i32] zeroinitializer')
-m.globs.append('@cl_mode = global i32 0')
+m.globs.append('@cl_st = global [4 x i32] [i32 0, i32 0, i32 0, i32 1]')
+m.globs.append('@cl_mode = global i32 1')
+m.globs.append('@cl_fb = global i32 0')
+m.sigs['cl_fb'] = ('i32', [], False)
 m.sigs['cl_mode'] = ('i32', [], False)
 m.sigs['cl_set_mode'] = ('void', ['i32', 'ptr', 'ptr', 'ptr', 'ptr', 'ptr', 'ptr'], False)
 m.sigs['accel_cl'] = ('void', ['ptr'] * 8 + ['float', 'float', 'float', 'float', 'i32'], False)
