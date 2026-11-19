@@ -1094,7 +1094,7 @@ Python 模擬器與離線模型推論共用同一個 GPU 裝置：
 - 一維全域索引空間（`gid` ＝ 0..N-1）。二維與 work-group 不支援。
 - 緩衝區元素：`f32`（一個分量）或 `f32x4`（四個分量，RGBA，給位置／速度用）。讀寫用 `buf[expr]`。
 - 純量參數：`f32`、`i32`。
-- 語句：`let`（區域變數）、賦值、`buf[expr] = expr`（只寫自己的 `gid`，或同一 kernel 內 out 緩衝區）、`for v in [0, bound)`（bound 是常數或 i32 純量）、`if`（只能用 `select` 形式，不做任意分支）。
+- 語句：`let`（區域變數）、賦值、`buf[expr] = expr`（寫入 out 緩衝區）、`for v in [0, bound)`（bound 是常數或 i32 純量）、`if (比較) { … }`（**沒有 else**；用來守邊界，如 `if (i < n)`）。條件運算子 `c ? a : b`（c 要是比較式）轉成 select。
 - 運算式：字面值、變數、參數、`+ - * /`、比較（`< <= > >= == !=`）、`select(c, a, b)`、`floor`、`sqrt`、`rsqrt`、`min`、`max`、`abs`、`pow`、`exp`、`sin`、`cos`、`int(x)`、`float(x)`、`get_global_id(0)`。
 - **不支援**：`__local`／workgroup 記憶體、barrier、atomics、`double`、指標運算、函式呼叫（自定義）、遞迴、動態長度陣列、回傳值。超出就報錯，host 退回 CPU 並標示。
 

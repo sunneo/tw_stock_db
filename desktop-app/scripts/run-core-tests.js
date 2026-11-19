@@ -112,6 +112,7 @@ const suites = [
     ['離線模型 Thinking 開關：預設關、只對 qwen3-0.6b 一般回答、白名單、原生略過', 'scripts/offline-thinking.test.js'],
     ['cudaweb pipeline 快取與退路（假 WebGPU 裝置：第二次不重建、沒有 GPU／裝置遺失退 cpu-js）', 'renderer/src/gpu/gpu_cache_fallback_test.js'],
     ['gpu_core 固定運算層（T1 WGSL、T3 WebGL2、T5 JS）：假裝置、能力檔、登錄表探測、backendInfo', 'renderer/src/gpu/gpu_core.test.js'],
+    ['KIR 通用逐元素核心：OpenCL C 子集解析、驗證、JS 後端（vecadd、N 體、SPH 對照手寫 JS；拒絕超出子集的寫法）', 'renderer/src/gpu/kir_test.js'],
     ['midigenai 假 session（cudaweb 解碼）：KV 佈局轉換、重放重建、錯誤傳遞', 'renderer/src/gpu/midi_session_test.js'],
     ['midigenai GPU 運算（RMSNorm／RoPE／注意力／SiLU·up）：沒有 WebGPU 退 cpu-js 且與參考一致', 'renderer/src/gpu/midi_gpu_test.js'],
     ['Whisper 編碼器（q8）參考與 GPU 運算：DQL 規格值、整數矩陣乘、無 WebGPU 退 cpu-js', 'renderer/src/gpu/whisper_enc_test.js'],
