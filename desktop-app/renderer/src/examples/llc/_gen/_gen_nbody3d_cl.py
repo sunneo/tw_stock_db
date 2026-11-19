@@ -213,13 +213,26 @@ def glue_ir():
         A('  %%pe_%s = call i32 @clSetKernelArg(ptr %s, i32 4, i64 4, ptr %%dtv)' % (c_, kh))
         A('  %%pf_%s = call i32 @clSetKernelArg(ptr %s, i32 5, i64 4, ptr %%vmv)' % (c_, kh))
         A('  %%pn_%s = call i32 @clEnqueueNDRangeKernel(ptr %%q, ptr %s, i32 1, ptr null, ptr %%gs, ptr null, i32 0, ptr null, ptr null)' % (c_, kh))
-    # 讀回：pot，以及下一組的位置（阻塞）
+    # 讀回（只在需要時）：每 30 幀一次，或後端不是 WebGPU（主機一定要有位置與 pot）。讀回後 cl_st[5]＝1（主機的位置與 pot 是新的）。
+    # WebGPU 時其餘幀位置留在裝置上：draw_scene 用 fa_cl_points 直接畫（DESIGN.webgpu-cuda.md §13 階段 9）。
+    A('  %fr_p = getelementptr [4 x i32], ptr @cl_st, i32 0, i32 4'); A('  %fr_v = load i32, ptr %fr_p'); A('  %fr_n = add i32 %fr_v, 1'); A('  store i32 %fr_n, ptr %fr_p')
+    A('  %fr_m = urem i32 %fr_v, 30'); A('  %fr_z = icmp eq i32 %fr_m, 0')
+    A('  %be0 = call i32 @fa_cl_backend()'); A('  %nb = icmp ne i32 %be0, 3')
+    A('  %need = or i1 %fr_z, %nb')
+    A('  br i1 %need, label %rd, label %nord')
+    A('rd:')
     poth = load_handle(static_slot(SL['pot']))
     A('  %%rp = call i32 @clEnqueueReadBuffer(ptr %%q, ptr %s, i32 1, i64 0, i64 %%bytes, ptr %%pot, i32 0, ptr null, ptr null)' % poth)
     for c_, dst in [('x', '%x'), ('y', '%y'), ('z', '%z')]:
         h = load_handle(dyn_slot(PAIR[c_], '%nx'))
         A('  %%rr_%s = call i32 @clEnqueueReadBuffer(ptr %%q, ptr %s, i32 1, i64 0, i64 %%bytes, ptr %s, i32 0, ptr null, ptr null)' % (c_, h, dst))
     A('  %fin = call i32 @clFinish(ptr %q)')
+    A('  %fz = getelementptr [4 x i32], ptr @cl_st, i32 0, i32 5'); A('  store i32 1, ptr %fz')
+    A('  br label %swap')
+    A('nord:')
+    A('  %fz2 = getelementptr [4 x i32], ptr @cl_st, i32 0, i32 5'); A('  store i32 0, ptr %fz2')
+    A('  br label %swap')
+    A('swap:')
     A('  store i32 %nx, ptr %spp')
     # 後端檢查：本幀若實際走 JS 墊片（fa_cl_backend＝2，不是 WebGL2），退回 CPU 並記下原因（HUD 會顯示）
     A('  %be = call i32 @fa_cl_backend()')
@@ -229,6 +242,7 @@ def glue_ir():
     A('  call void @cl_pull(ptr %x, ptr %y, ptr %z, ptr %vx, ptr %vy, ptr %vz)')
     A('  store i32 0, ptr @cl_mode')
     A('  store i32 1, ptr @cl_fb')
+    A('  %fzf = getelementptr [4 x i32], ptr @cl_st, i32 0, i32 5'); A('  store i32 1, ptr %fzf')   # cl_pull 已把位置與速度讀回主機
     A('  br label %okend')
     A('okend:')
     A('  ret void')
@@ -278,6 +292,35 @@ def glue_ir():
     A('  store i32 %m, ptr @cl_mode'); A('  store i32 0, ptr @cl_fb'); A('  br label %fin')
     A('fin:')
     A('  ret void'); A('}'); A('')
+    # ---- cl_fresh()：本幀主機的位置與 pot 是不是新的（1＝是；本幀有做讀回）
+    A('define i32 @cl_fresh() {'); A('entry:')
+    A('  %fz = getelementptr [4 x i32], ptr @cl_st, i32 0, i32 5'); A('  %fv = load i32, ptr %fz'); A('  ret i32 %fv'); A('}'); A('')
+
+    # ---- cl_posx()、cl_posy()、cl_posz()：目前（最新）位置緩衝區的 cl 記憶體句柄（給 fa_cl_points）
+    for c_ in ['x', 'y', 'z']:
+        A('define ptr @cl_pos%s() {' % c_); A('entry:')
+        A('  %spp = getelementptr [4 x i32], ptr @cl_st, i32 0, i32 2'); A('  %p = load i32, ptr %spp')
+        A('  %t1 = add i32 %p, ' + str(PAIR[c_]))
+        A('  %t2 = getelementptr ptr, ptr @cl_h, i32 %t1'); A('  %h = load ptr, ptr %t2'); A('  ret ptr %h')
+        A('}'); A('')
+
+    # ---- cl_pull_pos(x,y,z)：只把目前的位置讀回主機（沒有 WebGPU 畫圖、退回 GL 點時用；pot 與速度不動）
+    A('define void @cl_pull_pos(ptr %x, ptr %y, ptr %z) {')
+    A('entry:')
+    A('  %sf = getelementptr [4 x i32], ptr @cl_st, i32 0, i32 0'); A('  %rdy = load i32, ptr %sf')
+    A('  %ok = icmp ne i32 %rdy, 0'); A('  br i1 %ok, label %go, label %done')
+    A('go:')
+    A('  %sn = getelementptr [4 x i32], ptr @cl_st, i32 0, i32 1'); A('  %nv = load i32, ptr %sn')
+    A('  %n64 = sext i32 %nv to i64'); A('  %bytes = mul i64 %n64, 4')
+    A('  %spp = getelementptr [4 x i32], ptr @cl_st, i32 0, i32 2'); A('  %p = load i32, ptr %spp')
+    A('  %hq = getelementptr ptr, ptr @cl_h, i32 1'); A('  %q = load ptr, ptr %hq')
+    for name, dst in [('x', '%x'), ('y', '%y'), ('z', '%z')]:
+        h = load_handle(dyn_slot(PAIR[name], '%p'))
+        A('  %%pr_%s = call i32 @clEnqueueReadBuffer(ptr %%q, ptr %s, i32 1, i64 0, i64 %%bytes, ptr %s, i32 0, ptr null, ptr null)' % (name, h, dst))
+    A('  %pfin = call i32 @clFinish(ptr %q)')
+    A('  br label %done')
+    A('done:')
+    A('  ret void'); A('}'); A('')
     return '\n'.join(L) + '\n'
 
 
@@ -304,6 +347,11 @@ m.sigs['cl_set_mode'] = ('void', ['i32', 'ptr', 'ptr', 'ptr', 'ptr', 'ptr', 'ptr
 m.sigs['accel_cl'] = ('void', ['ptr'] * 8 + ['float', 'float', 'float', 'float', 'i32'], False)
 m.sigs['accel_setup'] = ('void', ['i32'], False)
 m.sigs['cl_reset'] = ('void', [], False)
+m.sigs['cl_fresh'] = ('i32', [], False)
+m.sigs['cl_posx'] = ('ptr', [], False)
+m.sigs['cl_posy'] = ('ptr', [], False)
+m.sigs['cl_posz'] = ('ptr', [], False)
+m.sigs['cl_pull_pos'] = ('void', ['ptr', 'ptr', 'ptr'], False)
 m.funcs.append(_RawFn(__GLUE__))
 
 """
@@ -341,9 +389,11 @@ def build():
     assert src.count(old_init) == 2, src.count(old_init)
     src = src.replace(old_init, old_init + "; c('cl_reset')")
     # 3. 膠水插在 step 之前
-    glue = glue_ir()
+    glue = glue_ir().replace('[4 x i32]', '[6 x i32]')
     inject = (INJECT.replace('__DECLS__', repr(DECLS)).replace('__SRC__', repr(SRC_ALL))
               .replace('__KNAMES__', repr(KNAMES)).replace('__GLUE__', repr(glue)))
+    # 狀態槽 cl_st 由 4 個擴成 6 個（[4]＝幀計數、[5]＝主機是否新）；膠水裡所有 [4 x i32] 都換成 [6 x i32]
+    inject = inject.replace('[4 x i32] [i32 0, i32 0, i32 0, i32 1]', '[6 x i32] [i32 0, i32 0, i32 0, i32 1, i32 0, i32 0]')
     marker = "st = m.fn('void', 'step'"
     assert src.count(marker) == 1
     src = src.replace(marker, inject + marker, 1)
