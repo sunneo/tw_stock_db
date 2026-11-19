@@ -53,7 +53,7 @@ r = await tool('job_run', { lang: 'llvm', timeout_s: 30, code: 'declare i32 @SDL
 R.audio.callback_mode = { out: (r.output || '').trim().slice(0, 200) };
 // 4d. 四個新範例：nbody3d／fluid3d（CPU 的 3D 模擬＋OpenGL 點精靈）、music_player（即時合成）、midi_player（解析 MIDI；檔案走 fopen 讀沙盒）
 R.more = {};
-for (const [name, file, args, expect] of [['nbody3d', 'gpgpu/nbody3d.ll', ['200'], /frames=200 kinetic=[\d.]+/], ['fluid3d', 'gpgpu/fluid3d.ll', ['150'], /frames=150 y_mean=0\.\d+/], ['music_player', 'gui/music_player.ll', ['400'], /frames=400 samples=\d+ bpm=110 ok/], ['midi_player_demo', 'gui/midi_player.ll', ['-', '400'], /notes=45 tempos=1 div=480 seconds=30 played=\d+ ok/]]) {
+for (const [name, file, args, expect] of [['nbody3d', 'gpgpu/nbody3d.ll', ['3072','100000','60'], /frames=60 bodies=3072 cx=/], ['fluid3d', 'gpgpu/fluid3d.ll', ['150'], /frames=150 n=1000 y_mean=0\.\d+/], ['music_player', 'gui/music_player.ll', ['400'], /frames=400 samples=\d+ bpm=110 ok/], ['midi_player_demo', 'gui/midi_player.ll', ['-', '400'], /notes=45 tempos=1 div=480 seconds=30 played=\d+ ok/]]) {
   const jr = await tool('job_run', { lang: 'llvm', code: ex(file), args, detach: true, timeout_s: 120 }); const jid = jr.job_id; await wait(1200);
   const sn = await tool('job_gui', { job_id: jid, action: 'snapshot' }); const e = { windows: sn.windows.length, streams_mid: (name === 'nbody3d' || name === 'fluid3d') ? undefined : fa._audioHost.stats().streams }; if (e.streams_mid !== undefined && e.streams_mid !== 1) e.stream_err = true;
   let wt = 0; while (wt < 40000 && (await tool('job_list', {})).jobs.find((j) => j.job_id === jid).running) { await wait(300); wt += 300; }

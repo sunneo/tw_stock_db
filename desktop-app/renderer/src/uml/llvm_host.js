@@ -85,6 +85,7 @@
         glVertex2f: { params: ['float', 'float'], ret: 'void' }, glVertex3f: { params: ['float', 'float', 'float'], ret: 'void' },
         glEnable: { params: ['i32'], ret: 'void' }, glDisable: { params: ['i32'], ret: 'void' },
         glPointSize: { params: ['float'], ret: 'void' }, glLineWidth: { params: ['float'], ret: 'void' },
+        glBlendFunc: { params: ['i32', 'i32'], ret: 'void' }, glPointParameterfv: { params: ['i32', 'ptr'], ret: 'void' }, gluLookAt: { params: ['double', 'double', 'double', 'double', 'double', 'double', 'double', 'double', 'double'], ret: 'void' },
         // GTK3：widget（視窗、盒子、標籤、輸入框、按鈕、勾選框、進度條）與訊號、計時器。函式指標是 wasm 函式表格的索引（見 llvm_core 的函式指標）
         gtk_init: { params: ['ptr', 'ptr'], ret: 'void' }, gtk_main: { params: [], ret: 'void', async: true }, gtk_main_quit: { params: [], ret: 'void' },
         gtk_window_new: { params: ['i32'], ret: 'ptr' }, gtk_window_set_title: { params: ['ptr', 'ptr'], ret: 'void' }, gtk_window_set_default_size: { params: ['ptr', 'i32', 'i32'], ret: 'void' },
@@ -142,6 +143,8 @@
     function mul4(a, b) { const o = new Array(16); for (let c = 0; c < 4; c++) for (let r = 0; r < 4; r++) { let s = 0; for (let k = 0; k < 4; k++) s += a[k * 4 + r] * b[c * 4 + k]; o[c * 4 + r] = s; } return o; }
     const GL_MODE = { 0: 'points', 1: 'lines', 2: 'line_strip', 3: 'line_strip', 4: 'triangles', 5: 'triangle_strip', 6: 'triangles', 7: 'triangles' };
     const FLAT_VS = '#version 300 es\nin vec3 pos; in vec3 col; uniform mat4 mvp; out vec3 vcol;\nvoid main(){ vcol = col; gl_Position = mvp * vec4(pos, 1.0); }';
+    const GLOW_VS = '#version 300 es\nin vec3 pos; in vec3 col; uniform mat4 mvp; uniform float size; uniform float ref; out vec3 vcol;\nvoid main(){ vcol = col; gl_Position = mvp * vec4(pos, 1.0); gl_PointSize = max(1.0, ref > 0.0 ? size * ref / max(gl_Position.w, 0.2) : size); }';
+    const GLOW_FS = '#version 300 es\nprecision mediump float; in vec3 vcol; uniform float gain; out vec4 o;\nvoid main(){ vec2 d = gl_PointCoord - vec2(0.5); float r2 = dot(d, d) * 4.0; if (r2 > 1.0) discard; o = vec4(vcol, gain * exp(-4.0 * r2)); }';
     const POINTS_VS = '#version 300 es\nin vec3 pos; in vec3 col; uniform mat4 mvp; uniform float size; uniform vec3 tint; out vec3 vcol;\nvoid main(){ vcol = col * tint; gl_Position = mvp * vec4(pos, 1.0); gl_PointSize = max(1.0, size); }';
     const POINTS_FS = '#version 300 es\nprecision mediump float; in vec3 vcol; out vec4 o;\nvoid main(){ vec2 d = gl_PointCoord - vec2(0.5); float r = dot(d, d); if (r > 0.25) discard; o = vec4(vcol * (1.0 - 1.2 * r), 1.0); }';
     const FLAT_FS = '#version 300 es\nprecision mediump float; in vec3 vcol; out vec4 o;\nvoid main(){ o = vec4(vcol, 1.0); }';
@@ -151,7 +154,7 @@
         o = o || {}; const gui = o.gui, sleep = o.sleep || ((ms) => new Promise((r) => setTimeout(r, ms))), now = o.now || (() => Date.now()), warn = o.warn || (() => {});
         const t0 = now(); let handleSeq = 0x1000, winSeq = 0, nodeSeq = 0; const handles = new Map();   // 不透明指標（SDL_Window*、SDL_Renderer*、SDL_GLContext）→ 狀態
         const mk = (obj) => { const h = (handleSeq += 16); handles.set(h, obj); return h; };
-        const gl = { clear: [0.05, 0.06, 0.09, 1], mode: 'MV', stacks: { MV: [I4()], P: [I4()] }, begin: null, color: [1, 1, 1], batches: [], depth: false, pointSize: 1, warned: {} };
+        const gl = { clear: [0.05, 0.06, 0.09, 1], mode: 'MV', stacks: { MV: [I4()], P: [I4()] }, begin: null, color: [1, 1, 1], batches: [], depth: false, pointSize: 1, blend: false, blendAdd: false, alpha: 1, atten: 0, warned: {} };
         const top = (n) => gl.stacks[n][gl.stacks[n].length - 1];
         const setTop = (n, m) => { gl.stacks[n][gl.stacks[n].length - 1] = m; };
         const cur = () => (gl.mode === 'P' ? 'P' : 'MV');
@@ -160,7 +163,7 @@
             if (w.opened) return; w.opened = true; w.id = 'sdl' + (++winSeq) + '_' + Math.random().toString(36).slice(2, 6); w.nid = 'c' + (++nodeSeq);
             await gui('open', { id: w.id, title: w.title, width: Math.min(1200, w.w + 24) });
             await gui('add', { id: w.id, parent: 'root', node: Object.assign({ id: w.nid, kind: 'canvas', width: Math.min(1200, w.w), height: Math.min(1200, w.h), fps: 0, fit: true }, w.gl ? { gl: true } : {}) });
-            if (w.gl) { await gui('glprog', { id: w.id, node: w.nid, name: 'flat', vs: FLAT_VS, fs: FLAT_FS }); await gui('glprog', { id: w.id, node: w.nid, name: 'points', vs: POINTS_VS, fs: POINTS_FS }); }
+            if (w.gl) { await gui('glprog', { id: w.id, node: w.nid, name: 'flat', vs: FLAT_VS, fs: FLAT_FS }); await gui('glprog', { id: w.id, node: w.nid, name: 'points', vs: POINTS_VS, fs: POINTS_FS }); await gui('glprog', { id: w.id, node: w.nid, name: 'glow', vs: GLOW_VS, fs: GLOW_FS }); }
         }
         const winOf = (p) => { const w = handles.get(p); return w && w.kind === 'renderer' ? w.win : w && w.kind === 'window' ? w : null; };
         const rend = (p) => { const r = handles.get(p); return r && r.kind === 'renderer' ? r : null; };
@@ -350,13 +353,21 @@
             glOrtho: (ctx, l, r, b, t, n, f) => setTop(cur(), mul4(top(cur()), [2 / (r - l), 0, 0, 0, 0, 2 / (t - b), 0, 0, 0, 0, -2 / (f - n), 0, -(r + l) / (r - l), -(t + b) / (t - b), -(f + n) / (f - n), 1])),
             glFrustum: (ctx, l, r, b, t, n, f) => setTop(cur(), mul4(top(cur()), [2 * n / (r - l), 0, 0, 0, 0, 2 * n / (t - b), 0, 0, (r + l) / (r - l), (t + b) / (t - b), -(f + n) / (f - n), -1, 0, 0, -2 * f * n / (f - n), 0])),
             gluPerspective: (ctx, fovy, aspect, n, f) => { const k = 1 / Math.tan(fovy * Math.PI / 360); setTop(cur(), mul4(top(cur()), [k / aspect, 0, 0, 0, 0, k, 0, 0, 0, 0, (f + n) / (n - f), -1, 0, 0, 2 * f * n / (n - f), 0])); },
-            glBegin: (ctx, mode) => { gl.begin = { mode, verts: [], mvp: mul4(top('P'), top('MV')) }; },
+            glBegin: (ctx, mode) => { gl.begin = { mode, verts: [], mvp: mul4(top('P'), top('MV')), additive: gl.blend && gl.blendAdd, size: gl.pointSize, ref: gl.atten > 0 ? 1 / Math.sqrt(gl.atten) : 0, gain: gl.alpha }; },
             glEnd: () => { const b = gl.begin; gl.begin = null; if (b && b.verts.length) gl.batches.push(b); },
             glColor3f: (ctx, r, g, b) => { gl.color = [r, g, b]; }, glColor4f: (ctx, r, g, b) => { gl.color = [r, g, b]; },
             glVertex2f: (ctx, x, y) => { if (gl.begin) gl.begin.verts.push(x, y, 0, gl.color[0], gl.color[1], gl.color[2]); },
             glVertex3f: (ctx, x, y, z) => { if (gl.begin) gl.begin.verts.push(x, y, z, gl.color[0], gl.color[1], gl.color[2]); },
-            glEnable: (ctx, cap) => { if (cap === 0x0B71) gl.depth = true; }, glDisable: (ctx, cap) => { if (cap === 0x0B71) gl.depth = false; },
+            glEnable: (ctx, cap) => { if (cap === 0x0B71) gl.depth = true; else if (cap === 0x0BE2) gl.blend = true; }, glDisable: (ctx, cap) => { if (cap === 0x0B71) gl.depth = false; else if (cap === 0x0BE2) gl.blend = false; },
             glPointSize: (ctx, sz) => { gl.pointSize = sz; }, glLineWidth: () => {},
+            glBlendFunc: (ctx, sf, df) => { gl.blendAdd = (df === 1); },
+            glPointParameterfv: (ctx, pname, p) => { if (pname === 0x8129) { const c = new DataView(ctx.mem().buffer).getFloat32(p + 8, true); gl.atten = c > 0 ? c : 0; } },   // GL_POINT_DISTANCE_ATTENUATION：只用 (0, 0, c)＝大小隨距離反比
+            gluLookAt: (ctx, ex, ey, ez, cx, cy, cz, ux, uy, uz) => {
+                let fx = cx - ex, fy = cy - ey, fz = cz - ez; const fl = Math.hypot(fx, fy, fz) || 1; fx /= fl; fy /= fl; fz /= fl;
+                let sx = fy * uz - fz * uy, sy = fz * ux - fx * uz, sz = fx * uy - fy * ux; const sl = Math.hypot(sx, sy, sz) || 1; sx /= sl; sy /= sl; sz /= sl;
+                const u2x = sy * fz - sz * fy, u2y = sz * fx - sx * fz, u2z = sx * fy - sy * fx;
+                setTop(cur(), mul4(mul4(top(cur()), [sx, u2x, -fx, 0, sy, u2y, -fy, 0, sz, u2z, -fz, 0, 0, 0, 0, 1]), [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, -ex, -ey, -ez, 1]));
+            },
         };
 
         // ---- GTK3：widget 樹在 gtk_widget_show_all 時一次送成 GUI 節點；之後的屬性變更（gtk_label_set_text…）排進佇列送 set。gtk_main 輪詢事件、呼叫訊號處理函式（wasm 函式表格）。
@@ -462,7 +473,8 @@
                 else if (b.mode === 2 && N > 1) v = v.concat(vtx(0));
                 const name = 'b' + (n++), data = new Float32Array(v), bytes = new Uint8Array(data.buffer); let s = ''; for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
                 await gui('glbuf', { id: w.id, node: w.nid, name, type: 'f32', data: btoa(s) });
-                if (b.mode === 0) cmds.push(['use', 'points'], ['uf', 'mvp'].concat(b.mvp), ['uf', 'size', gl.pointSize], ['uf', 'tint', 1, 1, 1], ['attr', 'pos', name, 3, 24, 0, 0], ['attr', 'col', name, 3, 24, 12, 0], ['draw', 'points', 0, v.length / 6, 1], ['use', 'flat']);
+                if (b.mode === 0 && b.additive) cmds.push(['state', 'additive', 1], ['use', 'glow'], ['uf', 'mvp'].concat(b.mvp), ['uf', 'size', b.size], ['uf', 'ref', b.ref], ['uf', 'gain', b.gain], ['attr', 'pos', name, 3, 24, 0, 0], ['attr', 'col', name, 3, 24, 12, 0], ['draw', 'points', 0, v.length / 6, 1], ['state', 'additive', 0], ['use', 'flat']);
+                else if (b.mode === 0) cmds.push(['use', 'points'], ['uf', 'mvp'].concat(b.mvp), ['uf', 'size', b.size], ['uf', 'tint', 1, 1, 1], ['attr', 'pos', name, 3, 24, 0, 0], ['attr', 'col', name, 3, 24, 12, 0], ['draw', 'points', 0, v.length / 6, 1], ['use', 'flat']);
                 else cmds.push(['uf', 'mvp'].concat(b.mvp), ['attr', 'pos', name, 3, 24, 0, 0], ['attr', 'col', name, 3, 24, 12, 0], ['draw', GL_MODE[b.mode] || 'triangles', 0, v.length / 6, 1]);
             }
             await gui('glframe', { id: w.id, node: w.nid, cmds });

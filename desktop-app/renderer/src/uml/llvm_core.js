@@ -183,7 +183,10 @@
     function registerHost(table) { for (const name of Object.keys(table)) { const sg = table[name]; HOST[name] = { params: sg.params.map((n) => TYPE_BY_NAME[String(n).split('|')[0]]), alts: sg.params.map((n) => String(n).split('|').map((x) => TYPE_BY_NAME[x])), ret: TYPE_BY_NAME[String(sg.ret || 'void').split('|')[0]], retAlts: String(sg.ret || 'void').split('|').map((x) => TYPE_BY_NAME[x]), varargs: !!sg.varargs, async: !!sg.async }; } }
     function unregisterHost(names) { for (const n of names) delete HOST[n]; }
     const isImport = (name) => !!(WASI[name] || HOST[name]);
-    const INTRINSICS = { 'llvm.wasm.memory.grow.i32': { params: [T.i32, T.i32], ret: T.i32 }, 'llvm.wasm.memory.size.i32': { params: [T.i32], ret: T.i32 } };
+    // 浮點內建函式：wasm 有原生指令（f32.sqrt 等），不必繞到主機的 libm（一次 wasm→JS 呼叫的成本比一個指令高幾十倍）
+    const FP_INTRIN = {};
+    for (const [nm, f32, f64] of [['sqrt', 0x91, 0x9f], ['fabs', 0x8b, 0x99], ['ceil', 0x8d, 0x9b], ['floor', 0x8e, 0x9c], ['trunc', 0x8f, 0x9d]]) { FP_INTRIN['llvm.' + nm + '.f32'] = { op: f32, ty: 'float' }; FP_INTRIN['llvm.' + nm + '.f64'] = { op: f64, ty: 'double' }; }
+    const INTRINSICS = Object.assign({}, (() => { const o = {}; for (const k of Object.keys(FP_INTRIN)) o[k] = { params: [T[FP_INTRIN[k].ty]], ret: T[FP_INTRIN[k].ty] }; return o; })(), { 'llvm.wasm.memory.grow.i32': { params: [T.i32, T.i32], ret: T.i32 }, 'llvm.wasm.memory.size.i32': { params: [T.i32], ret: T.i32 } });
     const INT_BIN = new Set(['add', 'sub', 'mul', 'sdiv', 'udiv', 'srem', 'urem', 'and', 'or', 'xor', 'shl', 'ashr', 'lshr']);
     const F_BIN = new Set(['fadd', 'fsub', 'fmul', 'fdiv']);
     const ICMP = new Set(['eq', 'ne', 'slt', 'sle', 'sgt', 'sge', 'ult', 'ule', 'ugt', 'uge']);
@@ -400,7 +403,7 @@
                 case 'fptrunc': { push(i.v, i.from); emit(0xb6); setRes(i); return; }
                 case 'ptrtoint': { push(i.v, i.from); if (wt(i.to) === 'i64') emit(0xad); setRes(i); return; }
                 case 'inttoptr': { push(i.v, i.from); if (wt(i.from) === 'i64') emit(0xa7); setRes(i); return; }
-                case 'call': { if (i.callee === 'llvm.wasm.memory.grow.i32') { push(i.args[1].v, i.args[1].ty); emit(0x40, 0x00); if (i.res) setRes(i); else emit(OP.drop); return; } if (i.callee === 'llvm.wasm.memory.size.i32') { emit(0x3f, 0x00); if (i.res) setRes(i); else emit(OP.drop); return; } const decl = mod.declares.find((d) => d.name === i.callee);
+                case 'call': { if (FP_INTRIN[i.callee]) { push(i.args[0].v, i.args[0].ty); emit(FP_INTRIN[i.callee].op); if (i.res) setRes(i); else emit(OP.drop); return; } if (i.callee === 'llvm.wasm.memory.grow.i32') { push(i.args[1].v, i.args[1].ty); emit(0x40, 0x00); if (i.res) setRes(i); else emit(OP.drop); return; } if (i.callee === 'llvm.wasm.memory.size.i32') { emit(0x3f, 0x00); if (i.res) setRes(i); else emit(OP.drop); return; } const decl = mod.declares.find((d) => d.name === i.callee);
                     if (decl && decl.varargs) {
                         // 可變參數：固定引數照常，多出來的引數存進影子堆疊上 8 位元組對齊的緩衝區，最後多傳一個指向它的指標（沒有多的就傳 0）
                         const nfix = decl.params.length, extra = i.args.slice(nfix); for (const a of i.args.slice(0, nfix)) push(a.v, a.ty);
