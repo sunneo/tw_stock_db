@@ -521,9 +521,12 @@
         });
 
         // 一幀的 OpenGL：每個 glBegin／glEnd 批次上傳成一個緩衝區（x y z r g b），用 flat 程式畫。QUADS／TRIANGLE_FAN 先拆成三角形。
+        // 一幀最多畫的 glBegin／glEnd 批次數（DESIGN.webgpu-cuda.md §13 階段 9）。超過的批次不畫，並在 console 警告（不靜默丟棄）。
+        const GL_MAX_BATCHES_PER_FRAME = 1024;
         async function flushGl(w) {
             const cmds = [['clear', gl.clear[0], gl.clear[1], gl.clear[2], gl.clear[3]], ['state', 'depth', gl.depth ? 1 : 0], ['use', 'flat']]; let n = 0;
-            for (const b of gl.batches.slice(0, 20)) {
+            if (gl.batches.length > GL_MAX_BATCHES_PER_FRAME) { const over = gl.batches.length - GL_MAX_BATCHES_PER_FRAME; gl.droppedBatches = (gl.droppedBatches || 0) + over; console.warn('[llvm_host] 一幀 ' + gl.batches.length + ' 個 glBegin 批次，超過上限 ' + GL_MAX_BATCHES_PER_FRAME + '，多出的 ' + over + ' 個不畫'); }
+            for (const b of gl.batches.slice(0, GL_MAX_BATCHES_PER_FRAME)) {
                 let v = b.verts; const N = v.length / 6, vtx = (i) => v.slice(i * 6, i * 6 + 6);
                 if (b.mode === 7) { const o = []; for (let q = 0; q + 3 < N; q += 4) for (const i of [0, 1, 2, 0, 2, 3]) o.push(...vtx(q + i)); v = o; }
                 else if (b.mode === 6) { const o = []; for (let i = 1; i + 1 < N; i++) o.push(...vtx(0), ...vtx(i), ...vtx(i + 1)); v = o; }

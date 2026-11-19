@@ -119,3 +119,15 @@ Continue from the handoff document at desktop-app/HANDOFF.llc-opencl.md. Read it
 - **已修正的 bug**：`llvm_host` 只在有同步 `kirRun` 時翻譯核心，WebGPU 因此全部退回 CPU。
 - **還沒做**：讀回合併（4 次 `mapAsync`）、WebGPU 中途失敗時換成 WebGL2、f32x4 與 subgroups。
 - **建置輸出不 add**：`renderer/floating-assistant.js`、`.min.js`、`update-manifest.json`、`web-lazy/` 由管理者重產。
+
+## 10. 2026-11-20 補充：OpenCL 與繪圖的 interop（階段 6 步驟 2）
+
+- 詳細數字與限制見 `DESIGN.webgpu-cuda.md` §13「階段 9」。
+- **選擇：路線 A（WebGPU 直接畫位置 buffer，經 `drawImage` 進 2D 畫布）**，只用在 WebGPU 後端。真 GPU 上每幀約比讀回版快 6.6 ms（經 2D 橋接）；路線 B（WebGL2 `texelFetch`）只省約 2.5 ms，且要求 KIR 與 GUI 共用 GL context，目前做不到。
+- **已驗證（真 GPU，NVIDIA Kepler）**：路線 A 的像素與讀回版相同（最大差 0）；路線 B 同樣相同；WebGL2 context 遺失會丟例外（真 GPU 與 swiftshader）。
+- **未驗證**：`drawImage` 是否在 GPU 內完成（只有時間與像素證據）；2D 畫布到 GUI 的 WebGL2 畫布這一段沒量；`transferToImageBitmap` 在 WebGPU 畫布上不存在。
+- **沒有接進 app**：GUI 的 `glframe` 協定還沒有「從 GPU 點雲來源畫點」的操作。
+- **nbody 仍要讀回**：`cluster()` 每幀讀 x、y、z、ms、pot 算攝影機中心，任何路線都避不開；要解掉要在 GPU 上做歸約（另外排）。
+- **GL 批次上限**：`llvm_host.js` 的 `slice(0, 20)` 改為 `GL_MAX_BATCHES_PER_FRAME = 1024`，超過會 `console.warn`；實際幀批次數還沒量。
+- **沒有做**：app 接線、cluster 的 GPU 化、f32x4、subgroups。
+- **評測指令**：`node scripts/eval/kir_interop.build.js <輸出>`，再 `FA_EVAL_GL=gpu node scripts/eval/run_eval.js <輸出>`（軟體 GL 用 `FA_EVAL_GL=swiftshader`，此模式沒有 WebGPU）。

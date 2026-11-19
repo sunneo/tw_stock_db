@@ -118,9 +118,15 @@
         const maxTex = gl.getParameter(gl.MAX_TEXTURE_SIZE);
         const fb = gl.createFramebuffer();
         const progs = new WeakMap();
+        // context 遺失（webglcontextlost）後，之後的 GL 呼叫會變成空操作，讀回會拿到 0（靜默錯誤）。
+        // 這裡改成明確丟例外：呼叫端記下原因並退回 JS（llvm_host 裝置路徑的 catch 會 warn 這句話）。
+        let ctxLost = false;
+        if (gl.canvas && gl.canvas.addEventListener) gl.canvas.addEventListener('webglcontextlost', () => { ctxLost = true; });
+        const live = () => { if (ctxLost || (gl.isContextLost && gl.isContextLost())) throw new Error('WebGL2 context 已遺失（webglcontextlost），之後的派送改退回 JS'); };
         const stats = { allocs: 0, uploads: 0, downloads: 0, dispatches: 0 };
         const dims = (N) => { const uW = Math.max(1, Math.min(N, maxTex)), rows = Math.ceil(N / uW); if (rows > maxTex) throw new Error('N 太大，超過紋理上限'); return { uW, rows }; };
         const mkTex = (uW, rows) => {
+            live();
             const tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, tex);
             gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, uW, rows, 0, gl.RGBA, gl.FLOAT, null);
             gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
@@ -148,6 +154,7 @@
         // 元素 e 在紋理上的 (列, 欄)：部分 k＝floor(e/Npart)，第 i＝e−k·Npart 個元素在部分內的列＝k·rowsPer＋floor(i/uW)
         const texelOf = (b, e) => { const k = Math.floor(e / b.Npart), i = e - k * b.Npart; return ((k * b.rowsPer + Math.floor(i / b.uW)) * b.uW + (i % b.uW)) * 4; };
         const upload = (b, src) => {
+            live();
             if (b.freed) throw new Error('緩衝區已釋放');
             const comps = b.elem === 'f32x4' ? 4 : 1;
             // 寫入的範圍：整個緩衝區（一般或打包）或 view（只有它的部分；列偏移 rowOffset）
@@ -168,6 +175,7 @@
         };
         // 讀回：整張紋理（打包緩衝區＝一次 readPixels 讀全部部分）；一般緩衝區與 view 讀它自己的列
         const download = (b) => {
+            live();
             if (b.freed) throw new Error('緩衝區已釋放');
             const rowLo = b.parent ? b.rowOffset : 0, rowsR = b.parent ? b.rowsPer : b.rows;
             const px = new Float32Array(b.uW * rowsR * 4);
@@ -205,6 +213,7 @@
         };
         // 派送：輸入 binds（名字 → 緩衝區）、輸出 out（一般緩衝區或 view）。輸出的紋理不能是任何輸入的紋理（feedback）。不讀回。
         const dispatch = (kernel, binds, out, scalars, N) => {
+            live();
             const p = program(kernel);
             if (out.freed || out.Npart !== N) throw new Error('輸出緩衝區大小不符或已釋放');
             if (out.elem !== p.g.out.elem) throw new Error('輸出型別不符');

@@ -1323,3 +1323,42 @@ Python 模擬器與離線模型推論共用同一個 GPU 裝置：
 - 建置輸出（`renderer/floating-assistant.js`、`.min.js`、`update-manifest.json`、`web-lazy/`）只在本機重產來測試，已還原，未 commit。
 
 **測試**：`kir_host_hooks_test` 16、`llvm_host_async_test` 4（JSPI 段在 node 16 略過，由上面的真 Electron 涵蓋）、`llvm_host` 41、`kir_webgpu_test` 34、`nbody3d_cl` 24、`fluid3d_cl` 20、`gpu_core` 44。
+
+### 階段 9：OpenCL 與繪圖的 interop（階段 6 的步驟 2，2026-11-20）
+
+**問題**：nbody 每幀要把位置畫成點。現行做法是每幀讀回 x、y、z，再上傳成頂點。評估兩條路：
+- 路線 A（WebGPU）：位置的 storage buffer 直接當頂點來源，畫到 WebGPU 畫布；再用 `drawImage` 畫進 2D 畫布（不讀回 CPU）。
+- 路線 B（WebGL2）：頂點著色器用 `texelFetch` 直接讀位置紋理（同一個 GL context）。
+
+**量測**：`scripts/eval/kir_interop.eval.js`，`kir_interop.build.js` 內嵌 `nbody3d_cl.ll` 的核心與 KIR 模組。N＝3072、4 個加速度核心、點精靈繪圖、20 幀（暖機 3 幀）。每幀計時前都等 GPU 完成（WebGPU 用 `onSubmittedWorkDone`；WebGL2 用 1×1 `readPixels`，因為 `gl.finish()` 在這台會提早返回，量到 1.7 ms，與 KIR 評測的約 54 ms 不合，已改掉）。
+
+真 GPU（NVIDIA Kepler，真 Electron）每幀毫秒數：
+
+| 項目 | 每幀（ms） | 備註 |
+|---|---|---|
+| WebGPU 只跑核心 | 11.8 | 三次量測 11.8–11.9 |
+| WebGPU 讀回後上傳再畫（現行） | 15.5 | 三次量測 15.5–21.3，變異大 |
+| WebGPU 路線 A：storage 直接畫到畫布 | 11.9 | 三次量測 11.9–12.3 |
+| WebGPU 路線 A＋`drawImage` 到 2D 畫布 | 12.8 | 同條件的讀回對照 19.4 |
+| WebGL2 只跑核心 | 49.9 | KIR 評測量過約 54 |
+| WebGL2 讀回後上傳再畫（現行） | 52.8 | |
+| WebGL2 路線 B：`texelFetch` 直接畫 | 50.2 | |
+
+軟體 GL（swiftshader，只有 WebGL2；這個模式沒有 WebGPU）：核心 4266、路線 B 4231、讀回 4143 ms。路線 B 沒有可辨的改善（差 −2%，在雜訊內）。
+
+像素比對：WebGPU 路線 A（直接與經 2D 橋接）對讀回版，最大差 0（白點 3056 個）。WebGL2 路線 B 對讀回版，最大差 0（真 GPU 的 lit 位元組 271309；swiftshader 271306）。
+
+**選擇：路線 A（只用在 WebGPU 後端）**。理由：真 GPU 上省得較多（經 2D 橋接的版本約 6.6 ms／幀，約 34%）；不需要跨 API 共用 context。路線 B 只省約 2.5 ms（約 5%），軟體 GL 沒有改善，而且要求 KIR 的裝置與 GUI 畫布共用同一個 GL context，目前 GUI（`gui_render.js`）與 KIR 的 WebGL2 裝置各自有 context，無法共用。
+
+**沒有證明的地方**（不要當成已完成）：
+- `drawImage`（WebGPU 畫布→2D 畫布）是否在 GPU 內完成沒有直接證據。這裡只有時間（多 0.9 ms）與像素證據，沒有 `mapAsync` 呼叫。
+- 2D 畫布到 GUI 的 WebGL2 畫布（`texImage2D`）沒有量。
+- `transferToImageBitmap` 在 WebGPU 畫布上不存在（TypeError），所以 ImageBitmap 版本沒有通過。
+- nbody 的 `cluster()` 每幀仍要讀回 x、y、z、ms、pot 來算攝影機中心。所以 nbody 在目前的程式裡，任何路線都避不開讀回；interop 只省掉繪圖那一半。
+- 還沒接進 app。GUI 的 `glframe` 協定要新增「從 GPU 點雲來源畫點」的操作，本輪只做決定與量測。
+
+**GL 批次上限**：`llvm_host.js` 的 `flushGl` 由 `slice(0, 20)` 改為具名常數 `GL_MAX_BATCHES_PER_FRAME = 1024`；超過時 `console.warn`，並累計在 `gl.droppedBatches`（不再靜默丟棄）。nbody 的 `draw_scene` 每幀是一個 `glBegin`／`glEnd`（由程式碼判斷；沒有用計數器量測）。所以 20 的上限對 nbody 本來就不會丟點。實際幀的批次數還沒量。`llvm_host.test.js` 41 通過；沒有在 app 端到端驗證。
+
+**context 遺失**：`kir_webgl2.js` 的 `createDevice` 監聽 `webglcontextlost`，並在 `mkTex`／`upload`／`download`／`dispatch` 入口丟出「WebGL2 context 已遺失…改退回 JS」。之前遺失後的讀回會靜默回傳 0。真 GPU 與 swiftshader 都用 `WEBGL_lose_context` 強制遺失測過：`isContextLost` 為真，讀回與配置都丟例外。host 既有的裝置路徑 catch 會 `warn`（含原因）並退回 JS（`llvm_host.js` 的 `clEnqueueNDRangeKernel`）；這段只由讀程式碼確認，沒有在 app 端到端跑。WebGPU 遺失：`kir_webgpu.js` 的 `lost` 會記錄原因，這次真 GPU 上 `lost` 為 null（未遺失）。
+
+**沒有做**：app 接線（路線 A）；`cluster()` 的 GPU 化；f32x4、subgroups（依指示本輪不做）。
