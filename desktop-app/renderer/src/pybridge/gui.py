@@ -91,7 +91,7 @@ class Window(object):
         return self._node("grid", parent, columns=int(columns))
 
     def scroll(self, height=200, parent=None):
-        """A column at most `height` pixels high (40-1200); what does not fit scrolls."""
+        """A column at most `height` pixels high (40-100000); what does not fit scrolls."""
         return self._node("scroll", parent, height=int(height))
 
     def tabs(self, parent=None):
@@ -183,7 +183,7 @@ class Window(object):
         {"t": "title", "text", "badge", "tone"}, {"t": "p", "text", "tone"}, {"t": "h", "text"}, {"t": "pre", "text", "wrap"},
         {"t": "list", "items", "tone"}, {"t": "table", "columns", "rows"}, {"t": "kv", "rows": [[key, value, highlight, mono], ...]},
         {"t": "ref", "text", "ref"}. tone is "pass", "fail", "warn" or "muted". A click on a ref block gives a "ref" event (value = its ref).
-        set(nid, blocks=...) replaces the page. One block up to 300000 characters, the whole page 400000."""
+        set(nid, blocks=...) replaces the page. Blocks and the whole page have no small cap."""
         nid = self._node("doc", parent, blocks=_doc_blocks(blocks))
         self._docs.add(nid)
         return nid
@@ -334,12 +334,12 @@ class Window(object):
         fa_bridge.call("gui.glbuf", {"id": self.id, "node": nid, "name": name, "type": kind, "data": base64.b64encode(raw).decode("ascii")})
 
     def glprog(self, nid, name, vs, fs):
-        """Register a named GLSL ES 3.00 program (vertex and fragment source, each starting with "#version 300 es"; at most 12 per canvas).
+        """Register a named GLSL ES 3.00 program (vertex and fragment source, each starting with "#version 300 es").
         A compile or link error comes back later as a "glerror" event on the canvas (the page compiles it when it draws)."""
         fa_bridge.call("gui.glprog", {"id": self.id, "node": nid, "name": name, "vs": vs, "fs": fs})
 
     def glframe(self, nid, cmds):
-        """Draw one frame on a gl canvas: a list of at most 256 commands, in order. ["clear", r, g, b, a] (0..1, clears color and depth),
+        """Draw one frame on a gl canvas: a list of commands (up to 100000), in order. ["clear", r, g, b, a] (0..1, clears color and depth),
         ["state", "depth"|"blend"|"additive"|"cull", 0|1] (blend: alpha blending; additive: glow, overlapping sprites add up), ["use", program], ["uf", uniform, v...] (1, 2, 3, 4, 9 or 16 floats: float, vec2, vec3,
         vec4, mat3, mat4), ["ui", uniform, int], ["attr", attribute, buffer, size, strideBytes, offsetBytes, divisor], ["index", buffer] (used by the next draw only),
         ["draw", "points"|"lines"|"line_strip"|"triangles"|"triangle_strip", first, count, instances]."""
@@ -355,7 +355,7 @@ class Window(object):
         """Register a picture (PNG, JPEG, GIF or WebP bytes, any size) on a canvas. Returns (name, w, h): draw it with
         ["image", name, x, y] or ["image", name, x, y, w, h] or ["image", name, x, y, w, h, flip_x, flip_y] (flip flags 0 or 1).
         name (optional, letters, digits, _ and -, at most 40): registering the same name again replaces the picture and does not count
-        against the 16 pictures of a canvas, so a program can redraw a rendered picture every frame. The page decodes it; a picture it
+        against the pictures of a canvas (up to 4096), so a program can redraw a rendered picture every frame. The page decodes it; a picture it
         cannot decode raises an error."""
         if name is None:
             self._images += 1

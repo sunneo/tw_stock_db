@@ -23,7 +23,7 @@
 }(typeof self !== 'undefined' ? self : this, function () {
   'use strict';
   var VERSION = 1, PREFIX = '@gui ';
-  var MAX_LINE = 8192, MAX_BULK_LINE = 6 * 1024 * 1024, BULK_OP_RE = /"op"\s*:\s*"(image|glbuf|set|add|draw)"/, MAX_EDITOR_TEXT = 1000000, MAX_WINDOWS = 4, MAX_NODES = 200, MAX_TEXT = 2000, MAX_ITEMS = 500, MAX_DEPTH = 8;
+  var MAX_LINE = 64 * 1024 * 1024, MAX_BULK_LINE = 64 * 1024 * 1024, BULK_OP_RE = /"op"\s*:\s*"(image|glbuf|set|add|draw)"/, MAX_EDITOR_TEXT = 50000000, MAX_WINDOWS = 64, MAX_NODES = 100000, MAX_TEXT = 50000000, MAX_ITEMS = 100000, MAX_DEPTH = 64;
   var ID_RE = /^[A-Za-z0-9_-]{1,40}$/;
   var OPS = ['open', 'add', 'set', 'remove', 'close', 'draw', 'image', 'theme', 'shortcut', 'tone', 'glbuf', 'glprog', 'glframe'];
   // window-level look: palette (five named colors), font family, size, corner radius; shortcuts: "Ctrl+Shift+Alt+<key>" -> a name the
@@ -32,14 +32,14 @@
   var FONTS = ['sans-serif', 'serif', 'monospace'];
   var WAVES = ['sine', 'square', 'triangle', 'sawtooth'];
   var SHORTCUT_RE = /^(Ctrl\+)?(Shift\+)?(Alt\+)?([A-Z0-9]|F([1-9]|1[0-2])|Enter|Esc|Space|Up|Down|Left|Right|Delete|Backspace|Tab)$/;
-  var MAX_SHORTCUTS = 40;
+  var MAX_SHORTCUTS = 1000;
   var CONTAINERS = ['column', 'row', 'expander', 'grid', 'stack', 'scroll', 'tabs', 'tab', 'split', 'menubar', 'menu'];
   // where a kind may be added: tab pages only inside tabs (and tabs hold only tab pages); menus only in a menubar, menu items only in a menu
   var PARENT_OF = { tab: 'tabs', menu: 'menubar', menuitem: 'menu' };
   var ONLY_CHILDREN = { tabs: ['tab'], menubar: ['menu'], menu: ['menuitem'] };
-  var MAX_COLUMNS = 30, MAX_DRAW = 100000, // a frame of any ordinary size; the page paints big frames adaptively (see gui_host.js), so there is no small fixed cap
-     MAX_CANVAS = 1200, MAX_FPS = 60;
-  var MAX_IMAGES = 16; // pictures have no size limit: a big one is sent in parts (see the image op)
+  var MAX_COLUMNS = 1000, MAX_DRAW = 100000, // a frame of any ordinary size; the page paints big frames adaptively (see gui_host.js), so there is no small fixed cap
+     MAX_CANVAS = 16384, MAX_FPS = 240;
+  var MAX_IMAGES = 4096; // pictures have no size limit: a big one is sent in parts (see the image op)
   var COLOR_RE = /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
   var IMAGE_RE = /^data:image\/(png|jpeg|gif|webp);base64,([A-Za-z0-9+/]+={0,2})$/;
   // a draw command and its length (name included): every command ends with its color, except clear, which is only the color
@@ -121,7 +121,7 @@
       case 'text': case 'value': case 'placeholder': case 'lang': case 'keys': return text(v, name);
       case 'icon': if (typeof v !== 'string' || v.length > 8) { throw new Error('icon must be a short text (a symbol or emoji, at most 8 characters)'); } return v;
       case 'enabled': case 'checked': case 'visible': case 'secret': case 'expanded': case 'numbers': case 'fit': case 'gl': case 'transparent': case 'prose': case 'wrap': return bool(v, name);
-      case 'rows': return num(v, name, 1, 30);
+      case 'rows': return num(v, name, 1, 1000);
       case 'grow': return num(v, name, 0, 10);
       case 'gap': case 'pad': return num(v, name, 0, 32);
       case 'role': if (ROLES.indexOf(v) < 0) { throw new Error('role must be one of ' + ROLES.join(', ')); } return v;
@@ -146,7 +146,7 @@
     }
     if (kind === 'split' && name === 'direction') { if (v !== 'row' && v !== 'column') { throw new Error('direction must be row or column'); } return v; }
     if (kind === 'menuitem' && name === 'keys') { return text(v, name); }
-    if (kind === 'scroll' && name === 'height') { return num(v, name, 40, 1200); }
+    if (kind === 'scroll' && name === 'height') { return num(v, name, 40, 100000); }
     if (kind === 'canvas' && (name === 'width' || name === 'height')) { return num(v, name, 1, MAX_CANVAS); }
     if (kind === 'canvas' && name === 'fps') { return num(v, name, 0, MAX_FPS); }
     if (kind === 'table' && name === 'columns') { return cellList(v, 'columns', 1, MAX_COLUMNS); }
@@ -166,7 +166,7 @@
 
   // tree columns: [{title, width (20-2000 px), align (left, right, center)}]
   var TREE_TONES = ['pass', 'fail', 'warn', 'muted'];
-  var MAX_TREE_ROWS = 3000, MAX_TREE_DEPTH = 20;
+  var MAX_TREE_ROWS = 1000000, MAX_TREE_DEPTH = 100;
   function treeColumns(v) {
     if (!Array.isArray(v) || v.length < 1 || v.length > MAX_COLUMNS) { throw new Error('columns must be an array of 1 to ' + MAX_COLUMNS + ' columns'); }
     return v.map(function (c, i) {
@@ -221,7 +221,7 @@
     title: ['text', 'badge', 'tone'], p: ['text', 'tone'], h: ['text'], pre: ['text', 'wrap'],
     list: ['items', 'tone'], table: ['columns', 'rows'], kv: ['rows'], ref: ['text', 'ref']
   };
-  var MAX_DOC_BLOCKS = 2000, MAX_DOC_TEXT = 300000, MAX_DOC_TOTAL = 400000, MAX_DOC_ROWS = 3000;
+  var MAX_DOC_BLOCKS = 200000, MAX_DOC_TEXT = 50000000, MAX_DOC_TOTAL = 50000000, MAX_DOC_ROWS = 1000000;
   function docBlocks(v) {
     if (!Array.isArray(v) || v.length > MAX_DOC_BLOCKS) { throw new Error('blocks must be an array of at most ' + MAX_DOC_BLOCKS + ' blocks'); }
     var total = 0;
@@ -321,7 +321,7 @@
   // The program sends three kinds of messages: glbuf (a named vertex or index buffer as base64 bytes), glprog (a named GLSL ES 3.00 vertex +
   // fragment shader pair) and glframe (one whole frame of commands, like draw does for 2D). The bridge checks shapes and limits and keeps the
   // data; the page compiles and draws it with its own WebGL2 context. Nothing here is ever evaluated as script.
-  var MAX_GL_BUFS = 24, MAX_GL_BUF_BYTES = 4 * 1024 * 1024, MAX_GL_PROGS = 12, MAX_GL_SRC = 16000, MAX_GL_CMDS = 256, MAX_GL_COUNT = 4000000;
+  var MAX_GL_BUFS = 1000, MAX_GL_BUF_BYTES = 48 * 1024 * 1024, MAX_GL_PROGS = 500, MAX_GL_SRC = 1000000, MAX_GL_CMDS = 100000, MAX_GL_COUNT = 1000000000;
   var GL_MODES = ['points', 'lines', 'line_strip', 'triangles', 'triangle_strip'];
   var GL_STATES = ['depth', 'blend', 'additive', 'cull'];
   var GL_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]{0,40}$/;
@@ -417,7 +417,8 @@
   }
 
   function createSession() { return { windows: {} }; }
-  function nodeCount(win) { return Object.keys(win.nodes).length; }
+  // kept as a counter: counting the keys on every add would make adding many nodes slow (n x n)
+  function nodeCount(win) { if (typeof win.nodeTotal !== 'number') { win.nodeTotal = Object.keys(win.nodes).length; } return win.nodeTotal; }
   function depthOf(win, nid) { var d = 0, cur = win.nodes[nid]; while (cur && cur.parent !== null) { d++; cur = win.nodes[cur.parent]; } return d; }
 
   // Parse one output line from the program. Returns null for ordinary output (not a GUI message),
@@ -501,6 +502,7 @@
         if (nodeCount(win) >= MAX_NODES) { return fail('at most ' + MAX_NODES + ' nodes per window'); }
         n.parent = parent;
         win.nodes[n.id] = n;
+        win.nodeTotal = nodeCount(win) + 1;
         p.children.push(n.id);
         return { ok: true };
       }
@@ -573,7 +575,7 @@
         (function drop(nodeId) {
           var node = win.nodes[nodeId];
           node.children.forEach(drop);
-          delete win.nodes[nodeId];
+          nodeCount(win); delete win.nodes[nodeId]; win.nodeTotal -= 1;
         }(nid));
         var par = win.nodes[target.parent];
         par.children = par.children.filter(function (c) { return c !== nid; });

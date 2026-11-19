@@ -14,14 +14,14 @@ assert.ok(G.parseLine(G.PREFIX + '{not json}').error); ok();
 assert.ok(G.parseLine(G.PREFIX + JSON.stringify({ v: 2, op: 'open', id: 'w' })).error); ok();
 assert.ok(G.parseLine(G.PREFIX + JSON.stringify({ v: 1, op: 'exec', id: 'w' })).error); ok();
 assert.ok(G.parseLine(G.PREFIX + 'x'.repeat(G.LIMITS.MAX_LINE)).error); ok();
-// data-carrying ops (image, glbuf) may exceed the ordinary line limit; any other op may not; nothing may exceed 6 MB
+// every op may be long (no small per-message cap); only a runaway line above MAX_LINE is refused
 {
   const big = (op, n) => G.PREFIX + JSON.stringify({ v: 1, op, id: 'w1', node: 'c', name: 'a', data: 'A'.repeat(n) });
   assert.ok(G.parseLine(big('image', 20000)).msg); ok();
   assert.ok(G.parseLine(big('glbuf', 20000)).msg); ok();
   assert.ok(G.parseLine(big('set', 20000)).msg); ok(); // set and add may carry a long editor text; the value limit is checked later
-  assert.match(G.parseLine(big('remove', 20000)).error, /longer than 8192/); ok();
-  assert.match(G.parseLine(big('glbuf', 6 * 1024 * 1024)).error, /longer than 8192/); ok();
+  assert.ok(G.parseLine(big('remove', 20000)).msg); ok();
+  assert.match(G.parseLine(big('glbuf', G.LIMITS.MAX_LINE + 1)).error, /longer than/); ok();
 }
 
 // 3. open / add / set / remove / close happy path, and the snapshot a renderer reads
@@ -79,11 +79,11 @@ assert.ok(JSON.stringify(G.snapshot(t, 'w')).indexOf(before.slice(0, 20)) >= 0);
 // 5. limits
 const L = G.createSession();
 for (let i = 0; i < G.LIMITS.MAX_WINDOWS; i++) { assert.ok(G.apply(L, { op: 'open', id: 'w' + i }).ok); ok(); }
-assert.match(G.apply(L, { op: 'open', id: 'extra' }).error, /at most 4 windows/); ok();
+assert.match(G.apply(L, { op: 'open', id: 'extra' }).error, /at most [0-9]+ windows/); ok();
 assert.match(G.apply(L, { op: 'add', id: 'w0', node: { id: 'big', kind: 'label', text: 'x'.repeat(G.LIMITS.MAX_TEXT + 1) } }).error, /longer than/); ok();
-assert.match(G.apply(L, { op: 'add', id: 'w0', node: { id: 'l', kind: 'list', items: new Array(G.LIMITS.MAX_ITEMS + 1).fill('a') } }).error, /at most 500/); ok();
+assert.match(G.apply(L, { op: 'add', id: 'w0', node: { id: 'l', kind: 'list', items: new Array(G.LIMITS.MAX_ITEMS + 1).fill('a') } }).error, /at most [0-9]+/); ok();
 for (let i = 0; i < G.LIMITS.MAX_NODES - 1; i++) { assert.ok(G.apply(L, { op: 'add', id: 'w1', node: { id: 'n' + i, kind: 'label' } }).ok); }
-assert.match(G.apply(L, { op: 'add', id: 'w1', node: { id: 'over', kind: 'label' } }).error, /at most 200 nodes/); ok();
+assert.match(G.apply(L, { op: 'add', id: 'w1', node: { id: 'over', kind: 'label' } }).error, /at most [0-9]+ nodes/); ok();
 let deep = G.createSession(); G.apply(deep, { op: 'open', id: 'd' }); let parent = 'root';
 for (let i = 0; i < G.LIMITS.MAX_DEPTH; i++) { assert.ok(G.apply(deep, { op: 'add', id: 'd', parent: parent, node: { id: 'c' + i, kind: 'column' } }).ok); parent = 'c' + i; ok(); }
 assert.match(G.apply(deep, { op: 'add', id: 'd', parent: parent, node: { id: 'too', kind: 'column' } }).error, /nesting deeper/); ok();
@@ -136,7 +136,7 @@ assert.match(G.parseWait('wait w1 a=b').error, /shell variable name/); ok();
   run(S, msg({ op: 'shortcut', id: 'wt', keys: 'F5', name: null }));
   assert.strictEqual(G.snapshot(S, 'wt').shortcuts.F5, undefined); ok();
   for (let i = 0; i < 40; i++) { run(S, msg({ op: 'shortcut', id: 'wt', keys: (i < 36 ? 'Alt+' : 'Ctrl+Alt+') + 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'[i % 36], name: 'n' + i })); }
-  assert.match(run(S, msg({ op: 'shortcut', id: 'wt', keys: 'Ctrl+Alt+Q', name: 'more' })).error || '', /at most 40/); ok();
+  assert.ok(run(S, msg({ op: 'shortcut', id: 'wt', keys: 'Ctrl+Alt+Q', name: 'more' })).ok); ok(); // no small fixed cap on shortcuts
 
   // the event: only for a registered name, on the window ("root")
   assert.deepStrictEqual(JSON.parse(G.eventLine(S, 'wt', 'root', 'shortcut', 'save')), { v: 1, event: 'shortcut', id: 'wt', node: 'root', value: 'save' }); ok();
@@ -253,7 +253,7 @@ assert.match(G.parseWait('wait w1 a=b').error, /shell variable name/); ok();
   // Redmine 版的程式用空字串表示沒有色調：樹的 tones 與文件區塊的 tone 都要收（回傳 null／省略）
   assert.strictEqual(G.apply(S, { op: 'add', id: 'wt', node: { id: 'emp', kind: 'tree', columns: cols, rows: [{ id: 'r', cells: ['1', '2'], tones: ['', 'muted'] }] } }).error, undefined); ok();
   assert.match(G.apply(S, { op: 'add', id: 'wt', node: { id: 'bad2', kind: 'tree', columns: cols, rows: [{ id: 'r', cells: ['1', '2'], tones: ['loud', null] }] } }).error, /tones\[0\]/); ok();
-  assert.match(G.apply(S, { op: 'add', id: 'wt', node: { id: 'bad3', kind: 'tree', columns: cols, rows: [{ id: 'r', depth: 99, cells: ['1', '2'] }] } }).error, /depth must be/); ok();
+  assert.match(G.apply(S, { op: 'add', id: 'wt', node: { id: 'bad3', kind: 'tree', columns: cols, rows: [{ id: 'r', depth: 101, cells: ['1', '2'] }] } }).error, /depth must be/); ok();
   assert.match(G.apply(S, { op: 'add', id: 'wt', node: { id: 'bad4', kind: 'tree', columns: [{ title: 'x', align: 'justify' }] } }).error, /align must be/); ok();
   assert.match(G.apply(S, { op: 'set', id: 'wt', node: 'tr', props: { rows: [{ id: 'r', cells: ['only one'] }] } }).error, /1 cells, the tree has 2/); ok();
   assert.strictEqual(G.eventLine(S, 'wt', 'tr', 'select', 'b').indexOf('"value":"b"') > 0, true); ok();
@@ -289,9 +289,7 @@ assert.match(G.parseWait('wait w1 a=b').error, /shell variable name/); ok();
   assert.match(ap({ op: 'add', id: 'wd', node: { id: 'x3', kind: 'doc', blocks: [{ t: 'table', columns: ['a', 'b'], rows: [['1']] }] } }).error, /one cell per column/); ok();
   assert.match(ap({ op: 'add', id: 'wd', node: { id: 'x4', kind: 'doc', blocks: [{ t: 'p', text: 'a', tone: 'loud' }] } }).error, /pass, fail, warn or muted/); ok();
   assert.match(ap({ op: 'add', id: 'wd', node: { id: 'x5', kind: 'doc', blocks: [{ t: 'kv', rows: [['only']] }] } }).error, /key, value, highlight, mono/); ok();
-  assert.match(ap({ op: 'add', id: 'wd', node: { id: 'x6', kind: 'doc', blocks: [{ t: 'pre', text: 'y'.repeat(300001) }] } }).error, /longer than 300000/); ok();
-  const big = []; for (let i = 0; i < 3; i++) { big.push({ t: 'pre', text: 'z'.repeat(200000) }); }
-  assert.match(ap({ op: 'add', id: 'wd', node: { id: 'x7', kind: 'doc', blocks: big } }).error, /the doc is longer than 400000/); ok();
+  assert.strictEqual(ap({ op: 'add', id: 'wd', node: { id: 'x6', kind: 'doc', blocks: [{ t: 'pre', text: 'y'.repeat(300001) }] } }).error, undefined); ok(); // no small cap on a block of text
   assert.strictEqual(G.eventLine(S, 'wd', 'dd', 'ref', 'c1').indexOf('"value":"c1"') > 0, true); ok();
   assert.strictEqual(G.eventLine(S, 'wd', 'dd', 'ref', 'nope'), null); ok();
   assert.strictEqual(G.eventLine(S, 'wd', 'dd', 'ref', undefined), null); ok();
@@ -333,9 +331,9 @@ assert.match(G.parseWait('wait w1 a=b').error, /shell variable name/); ok();
   assert.match(G.apply(S, { op: 'glframe', id: 'wg', node: 'cv', cmds: [['draw', 'quads', 0, 3]] }).error, /draw needs a mode/); ok();
   assert.match(G.apply(S, { op: 'glframe', id: 'wg', node: 'cv', cmds: [['bogus']] }).error, /not supported/); ok();
   assert.deepStrictEqual(G.apply(S, { op: 'glframe', id: 'wg', node: 'cv', cmds: [['state', 'additive', 1], ['state', 'additive', 0]] }), { ok: true }); ok();
-  assert.match(G.apply(S, { op: 'glframe', id: 'wg', node: 'cv', cmds: new Array(257).fill(['clear', 0, 0, 0, 1]) }).error, /at most 256/); ok();
+  assert.match(G.apply(S, { op: 'glframe', id: 'wg', node: 'cv', cmds: new Array(100001).fill(['clear', 0, 0, 0, 1]) }).error, /at most 100000/); ok();
   assert.match(G.apply(S, { op: 'glbuf', id: 'wg', node: 'cv', name: 'bad', type: 'f32', data: Buffer.from([1, 2, 3]).toString('base64') }).error, /multiple of 4/); ok();
-  assert.match(G.apply(S, { op: 'glbuf', id: 'wg', node: 'cv', name: 'big', type: 'f32', data: Buffer.alloc(4 * 1024 * 1024 + 4).toString('base64') }).error, /larger than 4 MB/); ok();
+  assert.match(G.apply(S, { op: 'glbuf', id: 'wg', node: 'cv', name: 'big', type: 'f32', data: Buffer.alloc(48 * 1024 * 1024 + 4).toString('base64') }).error, /larger than 48 MB/); ok();
   assert.match(G.apply(S, { op: 'glprog', id: 'wg', node: 'cv', name: 'x', vs: 'void main(){}  // no version line', fs }).error, /#version 300 es/); ok();
   assert.match(G.apply(S, { op: 'glframe', id: 'wg', node: 'cv', cmds: [['attr', 'pos', 'missing', 3, 12, 0]] }).error, /attr needs/); ok();
   assert.match(G.apply(S, { op: 'glframe', id: 'wg', node: 'cv', cmds: [['uf', 'u', 1, 2, 3, 4, 5]] }).error, /uf needs/); ok();
@@ -368,10 +366,10 @@ assert.match(G.parseWait('wait w1 a=b').error, /shell variable name/); ok();
   assert.ok(G.apply(T, { op: 'add', id: 'ed', node: { id: 'e1', kind: 'editor', value: 'a' } }).ok); ok();
   const longText = 'x'.repeat(200000);
   assert.ok(G.apply(T, { op: 'set', id: 'ed', node: 'e1', props: { value: longText } }).ok); ok();
-  assert.match(G.apply(T, { op: 'set', id: 'ed', node: 'e1', props: { value: 'y'.repeat(1000001) } }).error, /longer than 1000000/); ok();
+  assert.match(G.apply(T, { op: 'set', id: 'ed', node: 'e1', props: { value: 'y'.repeat(G.LIMITS.MAX_TEXT + 1) } }).error, /longer than/); ok();
   assert.strictEqual(JSON.parse(G.eventLine(T, 'ed', 'e1', 'input', longText)).value.length, 200000); ok();
   assert.ok(G.apply(T, { op: 'add', id: 'ed', node: { id: 'l1', kind: 'label' } }).ok);
-  assert.match(G.apply(T, { op: 'set', id: 'ed', node: 'l1', props: { text: 'z'.repeat(2001) } }).error, /longer than 2000/); ok();
+  assert.match(G.apply(T, { op: 'set', id: 'ed', node: 'l1', props: { text: 'z'.repeat(G.LIMITS.MAX_TEXT + 1) } }).error, /longer than/); ok();
 }
 
 // 大圖分段傳送：不設大小上限，依序接起來，最後一段才註冊

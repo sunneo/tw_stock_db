@@ -33,9 +33,9 @@ const eventOf = (line) => JSON.parse(line);
   assert.strictEqual(host.isOpen('w1'), true); ok();
   assert.strictEqual(container.children.length, 1, 'layer is added to the container'); ok();
   assert.strictEqual(host.apply(msg({ op: 'open', id: 'w1' })).ok, false); ok();
-  for (const id of ['w2', 'w3', 'w4']) assert.strictEqual(host.apply(msg({ op: 'open', id })).ok, true); ok();
-  const r = host.apply(msg({ op: 'open', id: 'w5' }));
-  assert.strictEqual(r.ok, false); assert.ok(/at most 4/.test(r.error)); ok();
+  const LW = host.session && 64; for (let i = 2; i <= LW; i++) assert.strictEqual(host.apply(msg({ op: 'open', id: 'w' + i })).ok, true); ok();
+  const r = host.apply(msg({ op: 'open', id: 'wover' }));
+  assert.strictEqual(r.ok, false); assert.ok(/at most 64/.test(r.error)); ok();
 }
 
 // 2. a non-GUI line is reported as not a GUI line and changes nothing
