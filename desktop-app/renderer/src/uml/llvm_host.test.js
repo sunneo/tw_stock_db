@@ -171,6 +171,44 @@ define i32 @main() {
       check('常駐裝置：一次派送、讀回只有 c（不多做）', st.dispatch === 1 && st.download === 1 && st.upload === 2, st);
       check('fa_cl_backend：裝置派送後回報 1（WebGL2）', dh.impls.fa_cl_backend() === 1, dh.impls.fa_cl_backend()); }
     dh.uninstall(L); }
+  // 打包與 view（階段 6 步驟 1c）：vecadd 的輸出是一個兩部分打包緩衝區的第 1 部分（view）；讀回 view。
+  // JS 路徑與假的打包裝置（allocPacked／view）都要得到 vadd OK，且裝置路徑只有一次派送、沒有多餘的上傳。
+  { const CF = require('../gpu/cl_front.js'), KIR = require('../gpu/kir.js');
+    const src = fs.readFileSync(path.join(__dirname, '../examples/llc/gpgpu/opencl_vecadd.ll'), 'utf8');
+    const rep = (t, a, b) => { if (t.split(a).length !== 2) throw new Error('測試替換失敗：' + a); return t.replace(a, b); };
+    let ir = rep(src, 'declare ptr @malloc(i32)', 'declare ptr @malloc(i32)\ndeclare i32 @fa_cl_pack(ptr, i32)\ndeclare ptr @fa_cl_view(ptr, i32)');
+    ir = rep(ir, '  %bc = call ptr @clCreateBuffer(ptr %c, i64 2, i64 %bytes, ptr null, ptr %rc)    ; WRITE_ONLY',
+      '  %bytes2 = mul i64 %bytes, 2\n  %bc = call ptr @clCreateBuffer(ptr %c, i64 2, i64 %bytes2, ptr null, ptr %rc)    ; WRITE_ONLY\n  %pk = call i32 @fa_cl_pack(ptr %bc, i32 2)\n  %vc = call ptr @fa_cl_view(ptr %bc, i32 1)');
+    ir = rep(ir, '  store ptr %bc, ptr %dc', '  store ptr %vc, ptr %dc');
+    ir = rep(ir, 'call i32 @clEnqueueReadBuffer(ptr %q, ptr %bc,', 'call i32 @clEnqueueReadBuffer(ptr %q, ptr %vc,');
+    const cc = L.compileIr(ir, {});
+    check('打包 view 的 vecadd 編得出來', !!cc.wasm, cc.errors);
+    const mkPackDev = () => { const st = { packed: 0, view: 0, dispatch: 0, upload: 0, download: 0 };
+      const dev = { st, alloc: (N) => ({ N, Npart: N, parts: 1, v: new Float32Array(N) }),
+        allocPacked: (Npart, parts) => { st.packed++; return { N: Npart * parts, Npart, parts, packed: true, v: new Float32Array(Npart * parts) }; },
+        view: (p, k) => { st.view++; return { N: p.Npart, Npart: p.Npart, parts: 1, v: p.v.subarray(k * p.Npart, (k + 1) * p.Npart) }; },
+        upload: (b, arr) => { st.upload++; b.v.set(arr.subarray(0, b.v.length)); }, download: (b) => { st.download++; return b.v.slice(); },
+        dispatch: (k, binds, out, scal, N) => { st.dispatch++; const B = {}; for (const p of k.params) if (p.kind === 'buf') B[p.name] = p.access === 'out' ? out.v : binds[p.name].v; KIR.runJs(k, B, scal, N); },
+        free: () => {} };
+      return dev; };
+    const warnsDbg = []; const mkHost = (dev) => H.create({ gui: async () => null, fs: fsx, warn: (t) => warnsDbg.push(String(t)),
+      kirTranslate: (src2) => { const r = CF.parseKernels(src2); if (!r.ok) return null; const m = {}; for (const k of r.kernels) { if (!KIR.validate(k).ok) return null; m[k.name] = k; } return m; },
+      kirRun: () => { throw new Error('不應該走 kirRun'); }, kirDev: dev });
+    const dec = {}; for (const d of L.parse(ir).mod.declares) dec[d.name] = d;
+    // JS 路徑（沒有裝置）
+    if (cc.wasm) {
+      const jh = mkHost(null); jh.install(L);
+      const o = await L.runHost(cc.wasm, { args: ['prog', '1000'] }, jh.impls, undefined, dec);
+      check('打包 view：JS 路徑輸出正確', o.stdout === 'vadd OK, n=1000 c=2997.000000\n' && o.exitCode === 0, o.stdout);
+      jh.uninstall(L);
+      // 假的打包裝置
+      const dev = mkPackDev(); const ph = mkHost(dev); ph.install(L);
+      const o2 = await L.runHost(cc.wasm, { args: ['prog', '1000'] }, ph.impls, undefined, dec);
+      check('打包 view：裝置路徑輸出正確', o2.stdout === 'vadd OK, n=1000 c=2997.000000\n' && o2.exitCode === 0, { out: o2.stdout, st: dev.st });
+      check('打包 view：裝置路徑一次派送、打包配置一次、view 切出 1 個、輸入上傳 2 次加上打包 root 1 次（輸出 view 要求整張紋理同步）、讀回只有 view（1 次）', dev.st.dispatch === 1 && dev.st.packed === 1 && dev.st.view === 1 && dev.st.upload === 3 && dev.st.download === 1, { st: dev.st, warns: warnsDbg });
+      ph.uninstall(L);
+    }
+  }
   { const k = H.clCompile('__kernel void f(__global const float*a,__global float*c,int n,float s){int i=get_global_id(0);if(i>=n)return;float t=0.0f;for(int j=0;j<3;j++)t+=a[i]*s;c[i]=sqrt(t)+(float)(n/2)+fabs(-1.0f)+(i%2);}');
     check('clCompile：多語句核心（for、return、型別轉換、整數除法）', !!k.kernels && !!k.kernels.f, k);
     if (k.kernels) { const a = new Float32Array([1, 4, 9]), cc = new Float32Array(3); k.kernels.f.run([3, 1, 1], [0, 0, 0], 1, [a, cc, 3, 3]); check('clCompile 執行結果（t＝9a，sqrt(9a)+1+1+(i%2)：5, 9, 11）', Array.from(cc).join() === '5,9,11', Array.from(cc)); } }

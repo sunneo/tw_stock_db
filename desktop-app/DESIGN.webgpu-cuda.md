@@ -1193,3 +1193,46 @@ Python 模擬器與離線模型推論共用同一個 GPU 裝置：
 - 驗證（`scripts/eval/kir_packed.eval.js`，SwiftShader）：nbody 四個加速度核心寫進同一張打包紋理的四個 view，讀回一次，四個部分與 KIR JS 後端的最大誤差都是 0；輸入與輸出 view 同一張紋理時正確被拒絕（feedback）。計時（每次迭代＝4 次派送＋讀回）：打包 1 次讀回 19.6–20.3 ms；各自讀回 4 次 40.8–42.6 ms（軟體 GL，readPixels 的同步成本是主要差距）。
 - 回歸：kir_test 30、llvm_host 37、nbody3d_cl 24、fluid3d_cl 20 通過；kir_device.eval（既有裝置層）仍正確。
 - **尚未做**：host（llvm_host）與 nbody 的 IR 還沒用打包緩衝區（目前 nbody 仍是讀回 x、y、z、pot 各一次）；這需要 host 有「打包的 cl_mem 與 view」的概念與 IR 的讀回順序改寫；步驟 2（interop 與 llvm_host.js:518 的批次上限）還沒開始。
+
+### 階段 6 步驟 2（interop）設計草案（待審，尚未實作；2026-11-20）
+
+目標：nbody 的點精靈（GL）直接從 KIR 的位置紋理拉頂點，每幀不讀回位置給 GL。
+
+**1. 取得共用的 WebGL2 context（gui_render.js:48）**
+- 現況：`paintGl(el, node)` 在 GUI 畫布元素上 `el.getContext('webgl2', {antialias:true, alpha:false, preserveDrawingBuffer:true})`，狀態存在 `el.__fa_gl = {gl, bufs, progs, vao, failed}`。KIR 目前用另一個離屏畫布的 context，兩者的紋理不能共用（WebGL 規定）。
+- 方案：新增一個經過檢查的 bridge 操作 `glctx`（與 `glframe`、`glbuf` 同一套協定）：參數 `{id, node}`，回傳「同一個頁面」裡該節點的 WebGL2 context（實際上就是 `el.getContext('webgl2')`，WebGL 會回傳既有的 context，不會建立新的）。gui_host 在 `glframe` 之前確保畫布已建立（SDL 視窗開啟後才有節點）。
+- 注意：bridge 傳的是 JSON 式的檢查過資料，不能傳 WebGL 物件；所以 `glctx` 只能由 renderer 內部的 host 端取用（同一個 realm），不走一般的 bridge 訊息，或用「回傳代號、物件留在 renderer 的登記表」的做法。**需要你決定**：(a) 同 realm 直接取用（較簡單、要求 llvm host 與 gui_render 在同一個頁面）；(b) 登記表（代號→物件）。
+
+**2. context lost 的處理**
+- 監聽 `webglcontextlost`／`webglcontextrestored`（畫布上）。遺失時：`preventDefault()` 允許還原；KIR 裝置標成「死」，所有紋理與程式視為失效，host 的 `devOk` 全部清掉。
+- 風險：位置在裝置上（速度 vx 只在裝置上）。遺失時速度會丟失，無法從主機還原。**需要你決定的政策**：(a) 重設模擬（重新隨機化，HUD 寫「GPU 內容遺失，已重設」）；(b) 定期把速度讀回一次做檢查點（每 N 幀一次讀回，成本換取可還原）。目前建議 (a)，因為遺失很少見，檢查點的成本每幀都要付。
+- 還原後：裝置重建（`createDevice`），主機狀態從最後一次的檢查點或重設後的初值上傳。
+
+**3. 紋理與 GL 狀態的互相污染（KIR 要保存／還原）**
+- KIR 的 `dispatch` 會改：FRAMEBUFFER 綁定、VIEWPORT、CURRENT_PROGRAM、ACTIVE_TEXTURE 與各單元的 TEXTURE_2D 綁定、uniform 值（程式內）、`VERTEX_ARRAY_BINDING`（KIR 需要一個空的 VAO 才能 `drawArrays`）、以及 blend／depth／scissor／color mask 等（KIR 沒有關閉它們，要先保存再關掉，結束後還原）。
+- 方案：`withGlState(gl, fn)`：進入時保存上面的狀態（`getParameter` 與 `isEnabled`），離開時完整還原；KIR 只在 gui 不繪圖的時候執行（同一個 JS 執行緒、`glframe` 的繪製是非同步訊息，所以 KIR 的 `dispatch` 不會與 gui 的繪製交錯，但仍要還原，因為 gui_render 的快取（`st.vao`、程式快取）假設狀態不變）。
+- 驗證：在 eval 裡比較 `dispatch` 前後的 `getParameter` 全部值相同。
+
+**4. 點精靈從位置紋理拉頂點（繪製路徑）**
+- 現況：nbody 的 `draw_scene` 用 `glBegin(GL_POINTS)` 逐點送頂點，`llvm_host` 收成批次（`gl.batches`），`glframe` 把頂點資料用 `glbuf` 上傳，`gui_render` 用 `glow` 程式（有 `size`、`ref`、`gain` 的距離衰減與加法混合）畫。
+- 方案：不改 `glow` 程式的光柵化部分，只改「頂點來源」：新增批次型態 `texpoints`，`glframe` 命令 `['attr-tex', 'pos', texId, W, rowsPer]`（取代 `['attr','pos',…]`）。`glow` 的頂點著色器把 `in vec3 pos` 換成 `uniform sampler2D posTex`＋`texelFetch(posTex, ivec2(i % W, rowX + i / W), 0).r`（x 在部分 0、y 在部分 1、z 在部分 2，與 KIR 打包的版面一致）。頂點數＝N，用 `drawArrays(GL_POINTS, 0, N)` 與 `gl_VertexID` 取得索引，不需要頂點緩衝區。顏色仍用既有的 `col`（每點常數，可由 `gl_VertexID` 從調色盤算出，與目前的 GLOW 表一致）。
+- 紋理的來源：KIR 裝置的打包緩衝區（步驟 1c 的 `allocPacked`）。它與 gui 畫布共用 context，所以 `texId` 指的是同一個 WebGLTexture（登記表代號）。
+- 這樣位置完全不讀回；只有 `cluster()` 需要的 `pot` 與 HUD 需要的統計還是要讀（每幀一次，就是步驟 1c 的打包讀回，但只讀 pot 一段）。
+
+**5. 無法共用時的退回**
+- 條件：沒有 `glctx`（舊版 bridge）、畫布不是 WebGL2、EXT_color_buffer_float 不可用、context 遺失且重建失敗、或 gui 的畫布與 job 不在同一頁。
+- 退回：維持現在的路徑（KIR 用離屏 context、步驟 1c 的打包讀回位置），點精靈仍走 `glBegin` 的頂點陣列。HUD 狀態行要寫明「interop: off（獨立 context）」。
+- 以上都要有測試：共用成功、context 遺失後退回、共用不可用時退回；並比較 interop 與退回路徑的畫面（像素差在容差內）。
+
+**6. llvm_host.js:524 的批次上限**
+- 現況：`gl.batches.slice(0, 20)`，超過 20 個批次就靜默丟掉（沒有警告）。
+- 計畫：先量：在 eval 裡用 instrumentation（暫時的計數）量 nbody、fluid、gui 範例每幀的批次數；如果 nbody 超過 20，那是現在就有的繪製缺陷（之前的螢幕文字與按鈕有時會丟）。把 20 改成具名常數 `GL_MAX_BATCHES_PER_FRAME`，並在超過時 warn 一次（與 SDL 的 `SDL_MAX_OPS_PER_FRAME` 一樣）。數值由量測決定，不是猜的。
+
+**待決定事項（給你）**：(1) 共用 context 的取得方式（同 realm 直接取用 vs 登記表）；(2) context 遺失的政策（重設 vs 檢查點）；(3) 批次上限的數值與是否先量再定；(4) 步驟 2 是否要等步驟 1c 的 host 整合上線（建議：是，因為 interop 的紋理來源是打包緩衝區）。
+
+**階段 6 步驟 1c 的 host／IR 整合（2026-11-20，來源完成；端到端尚未驗證）**
+- `llvm_host.js`：`fa_cl_pack(mem, parts)`、`fa_cl_view(mem, part)` 兩個新的 host import（SIGS 已登記）。root 的狀態（hostOk／devOk）統一記在 root 上；view 與 root 共用資料。讀回 view 先同步 root；寫入 view 先同步 root 再寫（避免覆蓋同一張紋理上其他部分的裝置新資料）。裝置路徑：root 用 `kirDev.allocPacked`，view 用 `kirDev.view`；`kirDev` 沒有這兩個方法就退回複製路徑（結果仍正確）。
+- 順帶修正：JS 墊片的參數陣列原本從 buffer 的 offset 0 開始，對 view 是錯的，已改為 `byteOffset`。
+- `_gen/_gen_nbody3d_cl.py`：x、y、z、pot 改成兩組打包緩衝區（PACK＋p，四段各 N 個 float）的 view；accpot 的輸出寫進下一組的 pot 段；每幀把下一組的打包一次讀進主機暫存區（`@cl_stage`），再用 IR 迴圈拷到 x、y、z、pot。速度留在平面緩衝區、不讀回。
+- 測試：`llvm_host.test.js` 41 項（新增：打包 view 的 vecadd，JS 路徑與假的打包裝置路徑都正確；裝置路徑一次派送、配置一次、切出 view 一個、上傳 3 次（兩個輸入加打包 root）、讀回 view 一次）；`nbody3d_cl.test.js` 24 項；`kir_test` 30；`fluid3d_cl.test.js` 20。
+- **尚未驗證**：nbody 端到端（需要 embed／build，因為 job 執行的是 app 內嵌的 host；且 floating-assistant 的 kirDev 還要補 `allocPacked`／`view`，補丁在共享筆記）。計時與 llc_hud.eval 的 nbody 輸出一致性，要等這一步之後才能量。

@@ -117866,6 +117866,8 @@ ${sourceTool.handlerScript}
                 };
                 return {
                     alloc: (N, elem) => getDev().alloc(N, elem),
+                    allocPacked: (Npart, parts) => getDev().allocPacked(Npart, parts),
+                    view: (parent, k) => getDev().view(parent, k),
                     upload: (b, arr) => getDev().upload(b, arr),
                     download: (b) => getDev().download(b),
                     dispatch: (k, binds, out, scal, N) => { getDev().dispatch(k, binds, out, scal, N); this._kirStats.webgl2++; },

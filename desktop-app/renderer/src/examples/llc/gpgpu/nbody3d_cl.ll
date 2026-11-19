@@ -50,6 +50,9 @@ declare i32 @clEnqueueReadBuffer(ptr, ptr, i32, i64, i64, ptr, i32, ptr, ptr)
 declare i32 @clEnqueueWriteBuffer(ptr, ptr, i32, i64, i64, ptr, i32, ptr, ptr)
 declare i32 @clFinish(ptr)
 declare i32 @fa_cl_backend()
+declare ptr @malloc(i32)
+declare i32 @fa_cl_pack(ptr, i32)
+declare ptr @fa_cl_view(ptr, i32)
 
 @.s1 = private constant [3 x i8] c"on\00"
 @.s2 = private constant [4 x i8] c"off\00"
@@ -91,6 +94,7 @@ declare i32 @fa_cl_backend()
 @cl_h = global [40 x ptr] zeroinitializer
 @cl_st = global [4 x i32] [i32 0, i32 0, i32 0, i32 1]
 @cl_mode = global i32 1
+@cl_stage = global ptr null
 @cl_fb = global i32 0
 
 define float @rnd(ptr %seed) {
@@ -284,45 +288,59 @@ ctx:
   %b_az = call ptr @clCreateBuffer(ptr %c, i64 1, i64 %bytes, ptr null, ptr %rc)
   %hb_az = getelementptr ptr, ptr @cl_h, i32 16
   store ptr %b_az, ptr %hb_az
-  %b_pot = call ptr @clCreateBuffer(ptr %c, i64 1, i64 %bytes, ptr null, ptr %rc)
-  %hb_pot = getelementptr ptr, ptr @cl_h, i32 17
-  store ptr %b_pot, ptr %hb_pot
-  %b_x0 = call ptr @clCreateBuffer(ptr %c, i64 1, i64 %bytes, ptr null, ptr %rc)
-  %hb_x0 = getelementptr ptr, ptr @cl_h, i32 18
-  store ptr %b_x0, ptr %hb_x0
-  %b_x1 = call ptr @clCreateBuffer(ptr %c, i64 1, i64 %bytes, ptr null, ptr %rc)
-  %hb_x1 = getelementptr ptr, ptr @cl_h, i32 19
-  store ptr %b_x1, ptr %hb_x1
-  %b_y0 = call ptr @clCreateBuffer(ptr %c, i64 1, i64 %bytes, ptr null, ptr %rc)
-  %hb_y0 = getelementptr ptr, ptr @cl_h, i32 20
-  store ptr %b_y0, ptr %hb_y0
-  %b_y1 = call ptr @clCreateBuffer(ptr %c, i64 1, i64 %bytes, ptr null, ptr %rc)
-  %hb_y1 = getelementptr ptr, ptr @cl_h, i32 21
-  store ptr %b_y1, ptr %hb_y1
-  %b_z0 = call ptr @clCreateBuffer(ptr %c, i64 1, i64 %bytes, ptr null, ptr %rc)
-  %hb_z0 = getelementptr ptr, ptr @cl_h, i32 22
-  store ptr %b_z0, ptr %hb_z0
-  %b_z1 = call ptr @clCreateBuffer(ptr %c, i64 1, i64 %bytes, ptr null, ptr %rc)
-  %hb_z1 = getelementptr ptr, ptr @cl_h, i32 23
-  store ptr %b_z1, ptr %hb_z1
   %b_vx0 = call ptr @clCreateBuffer(ptr %c, i64 1, i64 %bytes, ptr null, ptr %rc)
-  %hb_vx0 = getelementptr ptr, ptr @cl_h, i32 24
+  %hb_vx0 = getelementptr ptr, ptr @cl_h, i32 28
   store ptr %b_vx0, ptr %hb_vx0
   %b_vx1 = call ptr @clCreateBuffer(ptr %c, i64 1, i64 %bytes, ptr null, ptr %rc)
-  %hb_vx1 = getelementptr ptr, ptr @cl_h, i32 25
+  %hb_vx1 = getelementptr ptr, ptr @cl_h, i32 29
   store ptr %b_vx1, ptr %hb_vx1
   %b_vy0 = call ptr @clCreateBuffer(ptr %c, i64 1, i64 %bytes, ptr null, ptr %rc)
-  %hb_vy0 = getelementptr ptr, ptr @cl_h, i32 26
+  %hb_vy0 = getelementptr ptr, ptr @cl_h, i32 30
   store ptr %b_vy0, ptr %hb_vy0
   %b_vy1 = call ptr @clCreateBuffer(ptr %c, i64 1, i64 %bytes, ptr null, ptr %rc)
-  %hb_vy1 = getelementptr ptr, ptr @cl_h, i32 27
+  %hb_vy1 = getelementptr ptr, ptr @cl_h, i32 31
   store ptr %b_vy1, ptr %hb_vy1
   %b_vz0 = call ptr @clCreateBuffer(ptr %c, i64 1, i64 %bytes, ptr null, ptr %rc)
-  %hb_vz0 = getelementptr ptr, ptr @cl_h, i32 28
+  %hb_vz0 = getelementptr ptr, ptr @cl_h, i32 32
   store ptr %b_vz0, ptr %hb_vz0
   %b_vz1 = call ptr @clCreateBuffer(ptr %c, i64 1, i64 %bytes, ptr null, ptr %rc)
-  %hb_vz1 = getelementptr ptr, ptr @cl_h, i32 29
+  %hb_vz1 = getelementptr ptr, ptr @cl_h, i32 33
   store ptr %b_vz1, ptr %hb_vz1
+  %bytes4 = mul i64 %bytes, 4
+  %b_pk0 = call ptr @clCreateBuffer(ptr %c, i64 1, i64 %bytes4, ptr null, ptr %rc)
+  %pk_r0 = call i32 @fa_cl_pack(ptr %b_pk0, i32 4)
+  %hpk0 = getelementptr ptr, ptr @cl_h, i32 18
+  store ptr %b_pk0, ptr %hpk0
+  %vw_x0 = call ptr @fa_cl_view(ptr %b_pk0, i32 0)
+  %hvw_x0 = getelementptr ptr, ptr @cl_h, i32 20
+  store ptr %vw_x0, ptr %hvw_x0
+  %vw_y0 = call ptr @fa_cl_view(ptr %b_pk0, i32 1)
+  %hvw_y0 = getelementptr ptr, ptr @cl_h, i32 22
+  store ptr %vw_y0, ptr %hvw_y0
+  %vw_z0 = call ptr @fa_cl_view(ptr %b_pk0, i32 2)
+  %hvw_z0 = getelementptr ptr, ptr @cl_h, i32 24
+  store ptr %vw_z0, ptr %hvw_z0
+  %vw_pot0 = call ptr @fa_cl_view(ptr %b_pk0, i32 3)
+  %hvw_pot0 = getelementptr ptr, ptr @cl_h, i32 26
+  store ptr %vw_pot0, ptr %hvw_pot0
+  %b_pk1 = call ptr @clCreateBuffer(ptr %c, i64 1, i64 %bytes4, ptr null, ptr %rc)
+  %pk_r1 = call i32 @fa_cl_pack(ptr %b_pk1, i32 4)
+  %hpk1 = getelementptr ptr, ptr @cl_h, i32 19
+  store ptr %b_pk1, ptr %hpk1
+  %vw_x1 = call ptr @fa_cl_view(ptr %b_pk1, i32 0)
+  %hvw_x1 = getelementptr ptr, ptr @cl_h, i32 21
+  store ptr %vw_x1, ptr %hvw_x1
+  %vw_y1 = call ptr @fa_cl_view(ptr %b_pk1, i32 1)
+  %hvw_y1 = getelementptr ptr, ptr @cl_h, i32 23
+  store ptr %vw_y1, ptr %hvw_y1
+  %vw_z1 = call ptr @fa_cl_view(ptr %b_pk1, i32 2)
+  %hvw_z1 = getelementptr ptr, ptr @cl_h, i32 25
+  store ptr %vw_z1, ptr %hvw_z1
+  %vw_pot1 = call ptr @fa_cl_view(ptr %b_pk1, i32 3)
+  %hvw_pot1 = getelementptr ptr, ptr @cl_h, i32 27
+  store ptr %vw_pot1, ptr %hvw_pot1
+  %stb = call ptr @malloc(i32 131072)
+  store ptr %stb, ptr @cl_stage
   %sf = getelementptr [4 x i32], ptr @cl_st, i32 0, i32 0
   store i32 1, ptr %sf
   %sn = getelementptr [4 x i32], ptr @cl_st, i32 0, i32 1
@@ -347,8 +365,12 @@ entry:
   %vmv = alloca float
   %nn = alloca i32
   %gs = alloca i64
+  %ci = alloca i32
   %n64 = sext i32 %n to i64
   %bytes = mul i64 %n64, 4
+  %bytes4 = mul i64 %bytes, 4
+  %n2 = add i32 %n, %n
+  %n3 = add i32 %n2, %n
   %sf = getelementptr [4 x i32], ptr @cl_st, i32 0, i32 0
   %rdy = load i32, ptr %sf
   %z0 = icmp eq i32 %rdy, 0
@@ -373,27 +395,27 @@ run:
   %needup = icmp ne i32 %rs, 0
   br i1 %needup, label %upload, label %compute
 upload:
-  %di1 = add i32 %p, 18
+  %di1 = add i32 %p, 20
   %ds2 = getelementptr ptr, ptr @cl_h, i32 %di1
   %h3 = load ptr, ptr %ds2
   %uw_x = call i32 @clEnqueueWriteBuffer(ptr %q, ptr %h3, i32 1, i64 0, i64 %bytes, ptr %x, i32 0, ptr null, ptr null)
-  %di4 = add i32 %p, 20
+  %di4 = add i32 %p, 22
   %ds5 = getelementptr ptr, ptr @cl_h, i32 %di4
   %h6 = load ptr, ptr %ds5
   %uw_y = call i32 @clEnqueueWriteBuffer(ptr %q, ptr %h6, i32 1, i64 0, i64 %bytes, ptr %y, i32 0, ptr null, ptr null)
-  %di7 = add i32 %p, 22
+  %di7 = add i32 %p, 24
   %ds8 = getelementptr ptr, ptr @cl_h, i32 %di7
   %h9 = load ptr, ptr %ds8
   %uw_z = call i32 @clEnqueueWriteBuffer(ptr %q, ptr %h9, i32 1, i64 0, i64 %bytes, ptr %z, i32 0, ptr null, ptr null)
-  %di10 = add i32 %p, 24
+  %di10 = add i32 %p, 28
   %ds11 = getelementptr ptr, ptr @cl_h, i32 %di10
   %h12 = load ptr, ptr %ds11
   %uw_vx = call i32 @clEnqueueWriteBuffer(ptr %q, ptr %h12, i32 1, i64 0, i64 %bytes, ptr %vx, i32 0, ptr null, ptr null)
-  %di13 = add i32 %p, 26
+  %di13 = add i32 %p, 30
   %ds14 = getelementptr ptr, ptr @cl_h, i32 %di13
   %h15 = load ptr, ptr %ds14
   %uw_vy = call i32 @clEnqueueWriteBuffer(ptr %q, ptr %h15, i32 1, i64 0, i64 %bytes, ptr %vy, i32 0, ptr null, ptr null)
-  %di16 = add i32 %p, 28
+  %di16 = add i32 %p, 32
   %ds17 = getelementptr ptr, ptr @cl_h, i32 %di16
   %h18 = load ptr, ptr %ds17
   %uw_vz = call i32 @clEnqueueWriteBuffer(ptr %q, ptr %h18, i32 1, i64 0, i64 %bytes, ptr %vz, i32 0, ptr null, ptr null)
@@ -403,182 +425,203 @@ upload:
   store i32 0, ptr %srs
   br label %compute
 compute:
-  %sl21 = getelementptr ptr, ptr @cl_h, i32 3
-  %h22 = load ptr, ptr %sl21
-  %di23 = add i32 %p, 18
-  %ds24 = getelementptr ptr, ptr @cl_h, i32 %di23
-  %ka_accx = call i32 @clSetKernelArg(ptr %h22, i32 0, i64 8, ptr %ds24)
+  %oax = getelementptr ptr, ptr @cl_h, i32 14
+  %oay = getelementptr ptr, ptr @cl_h, i32 15
+  %oaz = getelementptr ptr, ptr @cl_h, i32 16
+  %di21 = add i32 %nx, 26
+  %ds22 = getelementptr ptr, ptr @cl_h, i32 %di21
+  %sl23 = getelementptr ptr, ptr @cl_h, i32 3
+  %h24 = load ptr, ptr %sl23
   %di25 = add i32 %p, 20
   %ds26 = getelementptr ptr, ptr @cl_h, i32 %di25
-  %kb_accx = call i32 @clSetKernelArg(ptr %h22, i32 1, i64 8, ptr %ds26)
+  %ka_accx = call i32 @clSetKernelArg(ptr %h24, i32 0, i64 8, ptr %ds26)
   %di27 = add i32 %p, 22
   %ds28 = getelementptr ptr, ptr @cl_h, i32 %di27
-  %kc_accx = call i32 @clSetKernelArg(ptr %h22, i32 2, i64 8, ptr %ds28)
-  %sl29 = getelementptr ptr, ptr @cl_h, i32 13
-  %kd_accx = call i32 @clSetKernelArg(ptr %h22, i32 3, i64 8, ptr %sl29)
-  %sl30 = getelementptr ptr, ptr @cl_h, i32 14
-  %ke_accx = call i32 @clSetKernelArg(ptr %h22, i32 4, i64 8, ptr %sl30)
-  %kf_accx = call i32 @clSetKernelArg(ptr %h22, i32 5, i64 4, ptr %nn)
-  %kg_accx = call i32 @clSetKernelArg(ptr %h22, i32 6, i64 4, ptr %g)
-  %kh_accx = call i32 @clSetKernelArg(ptr %h22, i32 7, i64 4, ptr %ee)
-  %en_accx = call i32 @clEnqueueNDRangeKernel(ptr %q, ptr %h22, i32 1, ptr null, ptr %gs, ptr null, i32 0, ptr null, ptr null)
-  %sl31 = getelementptr ptr, ptr @cl_h, i32 4
-  %h32 = load ptr, ptr %sl31
-  %di33 = add i32 %p, 18
-  %ds34 = getelementptr ptr, ptr @cl_h, i32 %di33
-  %ka_accy = call i32 @clSetKernelArg(ptr %h32, i32 0, i64 8, ptr %ds34)
-  %di35 = add i32 %p, 20
-  %ds36 = getelementptr ptr, ptr @cl_h, i32 %di35
-  %kb_accy = call i32 @clSetKernelArg(ptr %h32, i32 1, i64 8, ptr %ds36)
-  %di37 = add i32 %p, 22
-  %ds38 = getelementptr ptr, ptr @cl_h, i32 %di37
-  %kc_accy = call i32 @clSetKernelArg(ptr %h32, i32 2, i64 8, ptr %ds38)
-  %sl39 = getelementptr ptr, ptr @cl_h, i32 13
-  %kd_accy = call i32 @clSetKernelArg(ptr %h32, i32 3, i64 8, ptr %sl39)
-  %sl40 = getelementptr ptr, ptr @cl_h, i32 15
-  %ke_accy = call i32 @clSetKernelArg(ptr %h32, i32 4, i64 8, ptr %sl40)
-  %kf_accy = call i32 @clSetKernelArg(ptr %h32, i32 5, i64 4, ptr %nn)
-  %kg_accy = call i32 @clSetKernelArg(ptr %h32, i32 6, i64 4, ptr %g)
-  %kh_accy = call i32 @clSetKernelArg(ptr %h32, i32 7, i64 4, ptr %ee)
-  %en_accy = call i32 @clEnqueueNDRangeKernel(ptr %q, ptr %h32, i32 1, ptr null, ptr %gs, ptr null, i32 0, ptr null, ptr null)
+  %kb_accx = call i32 @clSetKernelArg(ptr %h24, i32 1, i64 8, ptr %ds28)
+  %di29 = add i32 %p, 24
+  %ds30 = getelementptr ptr, ptr @cl_h, i32 %di29
+  %kc_accx = call i32 @clSetKernelArg(ptr %h24, i32 2, i64 8, ptr %ds30)
+  %sl31 = getelementptr ptr, ptr @cl_h, i32 13
+  %kd_accx = call i32 @clSetKernelArg(ptr %h24, i32 3, i64 8, ptr %sl31)
+  %ke_accx = call i32 @clSetKernelArg(ptr %h24, i32 4, i64 8, ptr %oax)
+  %kf_accx = call i32 @clSetKernelArg(ptr %h24, i32 5, i64 4, ptr %nn)
+  %kg_accx = call i32 @clSetKernelArg(ptr %h24, i32 6, i64 4, ptr %g)
+  %kh_accx = call i32 @clSetKernelArg(ptr %h24, i32 7, i64 4, ptr %ee)
+  %en_accx = call i32 @clEnqueueNDRangeKernel(ptr %q, ptr %h24, i32 1, ptr null, ptr %gs, ptr null, i32 0, ptr null, ptr null)
+  %sl32 = getelementptr ptr, ptr @cl_h, i32 4
+  %h33 = load ptr, ptr %sl32
+  %di34 = add i32 %p, 20
+  %ds35 = getelementptr ptr, ptr @cl_h, i32 %di34
+  %ka_accy = call i32 @clSetKernelArg(ptr %h33, i32 0, i64 8, ptr %ds35)
+  %di36 = add i32 %p, 22
+  %ds37 = getelementptr ptr, ptr @cl_h, i32 %di36
+  %kb_accy = call i32 @clSetKernelArg(ptr %h33, i32 1, i64 8, ptr %ds37)
+  %di38 = add i32 %p, 24
+  %ds39 = getelementptr ptr, ptr @cl_h, i32 %di38
+  %kc_accy = call i32 @clSetKernelArg(ptr %h33, i32 2, i64 8, ptr %ds39)
+  %sl40 = getelementptr ptr, ptr @cl_h, i32 13
+  %kd_accy = call i32 @clSetKernelArg(ptr %h33, i32 3, i64 8, ptr %sl40)
+  %ke_accy = call i32 @clSetKernelArg(ptr %h33, i32 4, i64 8, ptr %oay)
+  %kf_accy = call i32 @clSetKernelArg(ptr %h33, i32 5, i64 4, ptr %nn)
+  %kg_accy = call i32 @clSetKernelArg(ptr %h33, i32 6, i64 4, ptr %g)
+  %kh_accy = call i32 @clSetKernelArg(ptr %h33, i32 7, i64 4, ptr %ee)
+  %en_accy = call i32 @clEnqueueNDRangeKernel(ptr %q, ptr %h33, i32 1, ptr null, ptr %gs, ptr null, i32 0, ptr null, ptr null)
   %sl41 = getelementptr ptr, ptr @cl_h, i32 5
   %h42 = load ptr, ptr %sl41
-  %di43 = add i32 %p, 18
+  %di43 = add i32 %p, 20
   %ds44 = getelementptr ptr, ptr @cl_h, i32 %di43
   %ka_accz = call i32 @clSetKernelArg(ptr %h42, i32 0, i64 8, ptr %ds44)
-  %di45 = add i32 %p, 20
+  %di45 = add i32 %p, 22
   %ds46 = getelementptr ptr, ptr @cl_h, i32 %di45
   %kb_accz = call i32 @clSetKernelArg(ptr %h42, i32 1, i64 8, ptr %ds46)
-  %di47 = add i32 %p, 22
+  %di47 = add i32 %p, 24
   %ds48 = getelementptr ptr, ptr @cl_h, i32 %di47
   %kc_accz = call i32 @clSetKernelArg(ptr %h42, i32 2, i64 8, ptr %ds48)
   %sl49 = getelementptr ptr, ptr @cl_h, i32 13
   %kd_accz = call i32 @clSetKernelArg(ptr %h42, i32 3, i64 8, ptr %sl49)
-  %sl50 = getelementptr ptr, ptr @cl_h, i32 16
-  %ke_accz = call i32 @clSetKernelArg(ptr %h42, i32 4, i64 8, ptr %sl50)
+  %ke_accz = call i32 @clSetKernelArg(ptr %h42, i32 4, i64 8, ptr %oaz)
   %kf_accz = call i32 @clSetKernelArg(ptr %h42, i32 5, i64 4, ptr %nn)
   %kg_accz = call i32 @clSetKernelArg(ptr %h42, i32 6, i64 4, ptr %g)
   %kh_accz = call i32 @clSetKernelArg(ptr %h42, i32 7, i64 4, ptr %ee)
   %en_accz = call i32 @clEnqueueNDRangeKernel(ptr %q, ptr %h42, i32 1, ptr null, ptr %gs, ptr null, i32 0, ptr null, ptr null)
-  %sl51 = getelementptr ptr, ptr @cl_h, i32 6
-  %h52 = load ptr, ptr %sl51
-  %di53 = add i32 %p, 18
-  %ds54 = getelementptr ptr, ptr @cl_h, i32 %di53
-  %ka_accpot = call i32 @clSetKernelArg(ptr %h52, i32 0, i64 8, ptr %ds54)
-  %di55 = add i32 %p, 20
-  %ds56 = getelementptr ptr, ptr @cl_h, i32 %di55
-  %kb_accpot = call i32 @clSetKernelArg(ptr %h52, i32 1, i64 8, ptr %ds56)
-  %di57 = add i32 %p, 22
-  %ds58 = getelementptr ptr, ptr @cl_h, i32 %di57
-  %kc_accpot = call i32 @clSetKernelArg(ptr %h52, i32 2, i64 8, ptr %ds58)
-  %sl59 = getelementptr ptr, ptr @cl_h, i32 13
-  %kd_accpot = call i32 @clSetKernelArg(ptr %h52, i32 3, i64 8, ptr %sl59)
-  %sl60 = getelementptr ptr, ptr @cl_h, i32 17
-  %ke_accpot = call i32 @clSetKernelArg(ptr %h52, i32 4, i64 8, ptr %sl60)
-  %kf_accpot = call i32 @clSetKernelArg(ptr %h52, i32 5, i64 4, ptr %nn)
-  %kg_accpot = call i32 @clSetKernelArg(ptr %h52, i32 6, i64 4, ptr %g)
-  %kh_accpot = call i32 @clSetKernelArg(ptr %h52, i32 7, i64 4, ptr %ee)
-  %en_accpot = call i32 @clEnqueueNDRangeKernel(ptr %q, ptr %h52, i32 1, ptr null, ptr %gs, ptr null, i32 0, ptr null, ptr null)
-  %sl61 = getelementptr ptr, ptr @cl_h, i32 7
-  %h62 = load ptr, ptr %sl61
-  %di63 = add i32 %p, 24
-  %ds64 = getelementptr ptr, ptr @cl_h, i32 %di63
-  %va_x = call i32 @clSetKernelArg(ptr %h62, i32 0, i64 8, ptr %ds64)
-  %sl65 = getelementptr ptr, ptr @cl_h, i32 14
-  %vb_x = call i32 @clSetKernelArg(ptr %h62, i32 1, i64 8, ptr %sl65)
-  %di66 = add i32 %nx, 24
-  %ds67 = getelementptr ptr, ptr @cl_h, i32 %di66
-  %vc_x = call i32 @clSetKernelArg(ptr %h62, i32 2, i64 8, ptr %ds67)
-  %vd_x = call i32 @clSetKernelArg(ptr %h62, i32 3, i64 4, ptr %nn)
-  %ve_x = call i32 @clSetKernelArg(ptr %h62, i32 4, i64 4, ptr %dtv)
-  %vn_x = call i32 @clEnqueueNDRangeKernel(ptr %q, ptr %h62, i32 1, ptr null, ptr %gs, ptr null, i32 0, ptr null, ptr null)
-  %sl68 = getelementptr ptr, ptr @cl_h, i32 8
-  %h69 = load ptr, ptr %sl68
-  %di70 = add i32 %p, 26
-  %ds71 = getelementptr ptr, ptr @cl_h, i32 %di70
-  %va_y = call i32 @clSetKernelArg(ptr %h69, i32 0, i64 8, ptr %ds71)
-  %sl72 = getelementptr ptr, ptr @cl_h, i32 15
-  %vb_y = call i32 @clSetKernelArg(ptr %h69, i32 1, i64 8, ptr %sl72)
-  %di73 = add i32 %nx, 26
-  %ds74 = getelementptr ptr, ptr @cl_h, i32 %di73
-  %vc_y = call i32 @clSetKernelArg(ptr %h69, i32 2, i64 8, ptr %ds74)
-  %vd_y = call i32 @clSetKernelArg(ptr %h69, i32 3, i64 4, ptr %nn)
-  %ve_y = call i32 @clSetKernelArg(ptr %h69, i32 4, i64 4, ptr %dtv)
-  %vn_y = call i32 @clEnqueueNDRangeKernel(ptr %q, ptr %h69, i32 1, ptr null, ptr %gs, ptr null, i32 0, ptr null, ptr null)
-  %sl75 = getelementptr ptr, ptr @cl_h, i32 9
-  %h76 = load ptr, ptr %sl75
-  %di77 = add i32 %p, 28
-  %ds78 = getelementptr ptr, ptr @cl_h, i32 %di77
-  %va_z = call i32 @clSetKernelArg(ptr %h76, i32 0, i64 8, ptr %ds78)
-  %sl79 = getelementptr ptr, ptr @cl_h, i32 16
-  %vb_z = call i32 @clSetKernelArg(ptr %h76, i32 1, i64 8, ptr %sl79)
-  %di80 = add i32 %nx, 28
-  %ds81 = getelementptr ptr, ptr @cl_h, i32 %di80
-  %vc_z = call i32 @clSetKernelArg(ptr %h76, i32 2, i64 8, ptr %ds81)
-  %vd_z = call i32 @clSetKernelArg(ptr %h76, i32 3, i64 4, ptr %nn)
-  %ve_z = call i32 @clSetKernelArg(ptr %h76, i32 4, i64 4, ptr %dtv)
-  %vn_z = call i32 @clEnqueueNDRangeKernel(ptr %q, ptr %h76, i32 1, ptr null, ptr %gs, ptr null, i32 0, ptr null, ptr null)
-  %sl82 = getelementptr ptr, ptr @cl_h, i32 10
-  %h83 = load ptr, ptr %sl82
-  %di84 = add i32 %p, 18
+  %sl50 = getelementptr ptr, ptr @cl_h, i32 6
+  %h51 = load ptr, ptr %sl50
+  %di52 = add i32 %p, 20
+  %ds53 = getelementptr ptr, ptr @cl_h, i32 %di52
+  %ka_accpot = call i32 @clSetKernelArg(ptr %h51, i32 0, i64 8, ptr %ds53)
+  %di54 = add i32 %p, 22
+  %ds55 = getelementptr ptr, ptr @cl_h, i32 %di54
+  %kb_accpot = call i32 @clSetKernelArg(ptr %h51, i32 1, i64 8, ptr %ds55)
+  %di56 = add i32 %p, 24
+  %ds57 = getelementptr ptr, ptr @cl_h, i32 %di56
+  %kc_accpot = call i32 @clSetKernelArg(ptr %h51, i32 2, i64 8, ptr %ds57)
+  %sl58 = getelementptr ptr, ptr @cl_h, i32 13
+  %kd_accpot = call i32 @clSetKernelArg(ptr %h51, i32 3, i64 8, ptr %sl58)
+  %ke_accpot = call i32 @clSetKernelArg(ptr %h51, i32 4, i64 8, ptr %ds22)
+  %kf_accpot = call i32 @clSetKernelArg(ptr %h51, i32 5, i64 4, ptr %nn)
+  %kg_accpot = call i32 @clSetKernelArg(ptr %h51, i32 6, i64 4, ptr %g)
+  %kh_accpot = call i32 @clSetKernelArg(ptr %h51, i32 7, i64 4, ptr %ee)
+  %en_accpot = call i32 @clEnqueueNDRangeKernel(ptr %q, ptr %h51, i32 1, ptr null, ptr %gs, ptr null, i32 0, ptr null, ptr null)
+  %sl59 = getelementptr ptr, ptr @cl_h, i32 7
+  %h60 = load ptr, ptr %sl59
+  %di61 = add i32 %p, 28
+  %ds62 = getelementptr ptr, ptr @cl_h, i32 %di61
+  %va_x = call i32 @clSetKernelArg(ptr %h60, i32 0, i64 8, ptr %ds62)
+  %sl63 = getelementptr ptr, ptr @cl_h, i32 14
+  %vb_x = call i32 @clSetKernelArg(ptr %h60, i32 1, i64 8, ptr %sl63)
+  %di64 = add i32 %nx, 28
+  %ds65 = getelementptr ptr, ptr @cl_h, i32 %di64
+  %vc_x = call i32 @clSetKernelArg(ptr %h60, i32 2, i64 8, ptr %ds65)
+  %vd_x = call i32 @clSetKernelArg(ptr %h60, i32 3, i64 4, ptr %nn)
+  %ve_x = call i32 @clSetKernelArg(ptr %h60, i32 4, i64 4, ptr %dtv)
+  %vn_x = call i32 @clEnqueueNDRangeKernel(ptr %q, ptr %h60, i32 1, ptr null, ptr %gs, ptr null, i32 0, ptr null, ptr null)
+  %sl66 = getelementptr ptr, ptr @cl_h, i32 8
+  %h67 = load ptr, ptr %sl66
+  %di68 = add i32 %p, 30
+  %ds69 = getelementptr ptr, ptr @cl_h, i32 %di68
+  %va_y = call i32 @clSetKernelArg(ptr %h67, i32 0, i64 8, ptr %ds69)
+  %sl70 = getelementptr ptr, ptr @cl_h, i32 15
+  %vb_y = call i32 @clSetKernelArg(ptr %h67, i32 1, i64 8, ptr %sl70)
+  %di71 = add i32 %nx, 30
+  %ds72 = getelementptr ptr, ptr @cl_h, i32 %di71
+  %vc_y = call i32 @clSetKernelArg(ptr %h67, i32 2, i64 8, ptr %ds72)
+  %vd_y = call i32 @clSetKernelArg(ptr %h67, i32 3, i64 4, ptr %nn)
+  %ve_y = call i32 @clSetKernelArg(ptr %h67, i32 4, i64 4, ptr %dtv)
+  %vn_y = call i32 @clEnqueueNDRangeKernel(ptr %q, ptr %h67, i32 1, ptr null, ptr %gs, ptr null, i32 0, ptr null, ptr null)
+  %sl73 = getelementptr ptr, ptr @cl_h, i32 9
+  %h74 = load ptr, ptr %sl73
+  %di75 = add i32 %p, 32
+  %ds76 = getelementptr ptr, ptr @cl_h, i32 %di75
+  %va_z = call i32 @clSetKernelArg(ptr %h74, i32 0, i64 8, ptr %ds76)
+  %sl77 = getelementptr ptr, ptr @cl_h, i32 16
+  %vb_z = call i32 @clSetKernelArg(ptr %h74, i32 1, i64 8, ptr %sl77)
+  %di78 = add i32 %nx, 32
+  %ds79 = getelementptr ptr, ptr @cl_h, i32 %di78
+  %vc_z = call i32 @clSetKernelArg(ptr %h74, i32 2, i64 8, ptr %ds79)
+  %vd_z = call i32 @clSetKernelArg(ptr %h74, i32 3, i64 4, ptr %nn)
+  %ve_z = call i32 @clSetKernelArg(ptr %h74, i32 4, i64 4, ptr %dtv)
+  %vn_z = call i32 @clEnqueueNDRangeKernel(ptr %q, ptr %h74, i32 1, ptr null, ptr %gs, ptr null, i32 0, ptr null, ptr null)
+  %sl80 = getelementptr ptr, ptr @cl_h, i32 10
+  %h81 = load ptr, ptr %sl80
+  %di82 = add i32 %p, 20
+  %ds83 = getelementptr ptr, ptr @cl_h, i32 %di82
+  %pa_x = call i32 @clSetKernelArg(ptr %h81, i32 0, i64 8, ptr %ds83)
+  %di84 = add i32 %nx, 28
   %ds85 = getelementptr ptr, ptr @cl_h, i32 %di84
-  %pa_x = call i32 @clSetKernelArg(ptr %h83, i32 0, i64 8, ptr %ds85)
-  %di86 = add i32 %nx, 24
+  %pb_x = call i32 @clSetKernelArg(ptr %h81, i32 1, i64 8, ptr %ds85)
+  %di86 = add i32 %nx, 20
   %ds87 = getelementptr ptr, ptr @cl_h, i32 %di86
-  %pb_x = call i32 @clSetKernelArg(ptr %h83, i32 1, i64 8, ptr %ds87)
-  %di88 = add i32 %nx, 18
-  %ds89 = getelementptr ptr, ptr @cl_h, i32 %di88
-  %pc_x = call i32 @clSetKernelArg(ptr %h83, i32 2, i64 8, ptr %ds89)
-  %pd_x = call i32 @clSetKernelArg(ptr %h83, i32 3, i64 4, ptr %nn)
-  %pe_x = call i32 @clSetKernelArg(ptr %h83, i32 4, i64 4, ptr %dtv)
-  %pf_x = call i32 @clSetKernelArg(ptr %h83, i32 5, i64 4, ptr %vmv)
-  %pn_x = call i32 @clEnqueueNDRangeKernel(ptr %q, ptr %h83, i32 1, ptr null, ptr %gs, ptr null, i32 0, ptr null, ptr null)
-  %sl90 = getelementptr ptr, ptr @cl_h, i32 11
-  %h91 = load ptr, ptr %sl90
-  %di92 = add i32 %p, 20
+  %pc_x = call i32 @clSetKernelArg(ptr %h81, i32 2, i64 8, ptr %ds87)
+  %pd_x = call i32 @clSetKernelArg(ptr %h81, i32 3, i64 4, ptr %nn)
+  %pe_x = call i32 @clSetKernelArg(ptr %h81, i32 4, i64 4, ptr %dtv)
+  %pf_x = call i32 @clSetKernelArg(ptr %h81, i32 5, i64 4, ptr %vmv)
+  %pn_x = call i32 @clEnqueueNDRangeKernel(ptr %q, ptr %h81, i32 1, ptr null, ptr %gs, ptr null, i32 0, ptr null, ptr null)
+  %sl88 = getelementptr ptr, ptr @cl_h, i32 11
+  %h89 = load ptr, ptr %sl88
+  %di90 = add i32 %p, 22
+  %ds91 = getelementptr ptr, ptr @cl_h, i32 %di90
+  %pa_y = call i32 @clSetKernelArg(ptr %h89, i32 0, i64 8, ptr %ds91)
+  %di92 = add i32 %nx, 30
   %ds93 = getelementptr ptr, ptr @cl_h, i32 %di92
-  %pa_y = call i32 @clSetKernelArg(ptr %h91, i32 0, i64 8, ptr %ds93)
-  %di94 = add i32 %nx, 26
+  %pb_y = call i32 @clSetKernelArg(ptr %h89, i32 1, i64 8, ptr %ds93)
+  %di94 = add i32 %nx, 22
   %ds95 = getelementptr ptr, ptr @cl_h, i32 %di94
-  %pb_y = call i32 @clSetKernelArg(ptr %h91, i32 1, i64 8, ptr %ds95)
-  %di96 = add i32 %nx, 20
-  %ds97 = getelementptr ptr, ptr @cl_h, i32 %di96
-  %pc_y = call i32 @clSetKernelArg(ptr %h91, i32 2, i64 8, ptr %ds97)
-  %pd_y = call i32 @clSetKernelArg(ptr %h91, i32 3, i64 4, ptr %nn)
-  %pe_y = call i32 @clSetKernelArg(ptr %h91, i32 4, i64 4, ptr %dtv)
-  %pf_y = call i32 @clSetKernelArg(ptr %h91, i32 5, i64 4, ptr %vmv)
-  %pn_y = call i32 @clEnqueueNDRangeKernel(ptr %q, ptr %h91, i32 1, ptr null, ptr %gs, ptr null, i32 0, ptr null, ptr null)
-  %sl98 = getelementptr ptr, ptr @cl_h, i32 12
-  %h99 = load ptr, ptr %sl98
-  %di100 = add i32 %p, 22
+  %pc_y = call i32 @clSetKernelArg(ptr %h89, i32 2, i64 8, ptr %ds95)
+  %pd_y = call i32 @clSetKernelArg(ptr %h89, i32 3, i64 4, ptr %nn)
+  %pe_y = call i32 @clSetKernelArg(ptr %h89, i32 4, i64 4, ptr %dtv)
+  %pf_y = call i32 @clSetKernelArg(ptr %h89, i32 5, i64 4, ptr %vmv)
+  %pn_y = call i32 @clEnqueueNDRangeKernel(ptr %q, ptr %h89, i32 1, ptr null, ptr %gs, ptr null, i32 0, ptr null, ptr null)
+  %sl96 = getelementptr ptr, ptr @cl_h, i32 12
+  %h97 = load ptr, ptr %sl96
+  %di98 = add i32 %p, 24
+  %ds99 = getelementptr ptr, ptr @cl_h, i32 %di98
+  %pa_z = call i32 @clSetKernelArg(ptr %h97, i32 0, i64 8, ptr %ds99)
+  %di100 = add i32 %nx, 32
   %ds101 = getelementptr ptr, ptr @cl_h, i32 %di100
-  %pa_z = call i32 @clSetKernelArg(ptr %h99, i32 0, i64 8, ptr %ds101)
-  %di102 = add i32 %nx, 28
+  %pb_z = call i32 @clSetKernelArg(ptr %h97, i32 1, i64 8, ptr %ds101)
+  %di102 = add i32 %nx, 24
   %ds103 = getelementptr ptr, ptr @cl_h, i32 %di102
-  %pb_z = call i32 @clSetKernelArg(ptr %h99, i32 1, i64 8, ptr %ds103)
-  %di104 = add i32 %nx, 22
-  %ds105 = getelementptr ptr, ptr @cl_h, i32 %di104
-  %pc_z = call i32 @clSetKernelArg(ptr %h99, i32 2, i64 8, ptr %ds105)
-  %pd_z = call i32 @clSetKernelArg(ptr %h99, i32 3, i64 4, ptr %nn)
-  %pe_z = call i32 @clSetKernelArg(ptr %h99, i32 4, i64 4, ptr %dtv)
-  %pf_z = call i32 @clSetKernelArg(ptr %h99, i32 5, i64 4, ptr %vmv)
-  %pn_z = call i32 @clEnqueueNDRangeKernel(ptr %q, ptr %h99, i32 1, ptr null, ptr %gs, ptr null, i32 0, ptr null, ptr null)
-  %sl106 = getelementptr ptr, ptr @cl_h, i32 17
-  %h107 = load ptr, ptr %sl106
-  %rp = call i32 @clEnqueueReadBuffer(ptr %q, ptr %h107, i32 1, i64 0, i64 %bytes, ptr %pot, i32 0, ptr null, ptr null)
-  %di108 = add i32 %nx, 18
-  %ds109 = getelementptr ptr, ptr @cl_h, i32 %di108
-  %h110 = load ptr, ptr %ds109
-  %rr_x = call i32 @clEnqueueReadBuffer(ptr %q, ptr %h110, i32 1, i64 0, i64 %bytes, ptr %x, i32 0, ptr null, ptr null)
-  %di111 = add i32 %nx, 20
-  %ds112 = getelementptr ptr, ptr @cl_h, i32 %di111
-  %h113 = load ptr, ptr %ds112
-  %rr_y = call i32 @clEnqueueReadBuffer(ptr %q, ptr %h113, i32 1, i64 0, i64 %bytes, ptr %y, i32 0, ptr null, ptr null)
-  %di114 = add i32 %nx, 22
-  %ds115 = getelementptr ptr, ptr @cl_h, i32 %di114
-  %h116 = load ptr, ptr %ds115
-  %rr_z = call i32 @clEnqueueReadBuffer(ptr %q, ptr %h116, i32 1, i64 0, i64 %bytes, ptr %z, i32 0, ptr null, ptr null)
+  %pc_z = call i32 @clSetKernelArg(ptr %h97, i32 2, i64 8, ptr %ds103)
+  %pd_z = call i32 @clSetKernelArg(ptr %h97, i32 3, i64 4, ptr %nn)
+  %pe_z = call i32 @clSetKernelArg(ptr %h97, i32 4, i64 4, ptr %dtv)
+  %pf_z = call i32 @clSetKernelArg(ptr %h97, i32 5, i64 4, ptr %vmv)
+  %pn_z = call i32 @clEnqueueNDRangeKernel(ptr %q, ptr %h97, i32 1, ptr null, ptr %gs, ptr null, i32 0, ptr null, ptr null)
+  %stg = load ptr, ptr @cl_stage
+  %pkslot = add i32 %nx, 18
+  %pkaddr = getelementptr ptr, ptr @cl_h, i32 %pkslot
+  %pkv = load ptr, ptr %pkaddr
+  %rd = call i32 @clEnqueueReadBuffer(ptr %q, ptr %pkv, i32 1, i64 0, i64 %bytes4, ptr %stg, i32 0, ptr null, ptr null)
   %fin = call i32 @clFinish(ptr %q)
+  br label %cl
+cl:
+  %iv = load i32, ptr %ci
+  %cc = icmp slt i32 %iv, %n
+  br i1 %cc, label %cb, label %ce
+cb:
+  %si_x = add i32 %iv, 0
+  %sg_x = getelementptr float, ptr %stg, i32 %si_x
+  %sv_x = load float, ptr %sg_x
+  %dg_x = getelementptr float, ptr %x, i32 %iv
+  store float %sv_x, ptr %dg_x
+  %si_y = add i32 %iv, %n
+  %sg_y = getelementptr float, ptr %stg, i32 %si_y
+  %sv_y = load float, ptr %sg_y
+  %dg_y = getelementptr float, ptr %y, i32 %iv
+  store float %sv_y, ptr %dg_y
+  %si_z = add i32 %iv, %n2
+  %sg_z = getelementptr float, ptr %stg, i32 %si_z
+  %sv_z = load float, ptr %sg_z
+  %dg_z = getelementptr float, ptr %z, i32 %iv
+  store float %sv_z, ptr %dg_z
+  %si_pot = add i32 %iv, %n3
+  %sg_pot = getelementptr float, ptr %stg, i32 %si_pot
+  %sv_pot = load float, ptr %sg_pot
+  %dg_pot = getelementptr float, ptr %pot, i32 %iv
+  store float %sv_pot, ptr %dg_pot
+  %ivn = add i32 %iv, 1
+  store i32 %ivn, ptr %ci
+  br label %cl
+ce:
   store i32 %nx, ptr %spp
   %be = call i32 @fa_cl_backend()
   %isjs = icmp eq i32 %be, 2
@@ -619,30 +662,30 @@ go:
   %p = load i32, ptr %spp
   %hq = getelementptr ptr, ptr @cl_h, i32 1
   %q = load ptr, ptr %hq
-  %di117 = add i32 %p, 18
-  %ds118 = getelementptr ptr, ptr @cl_h, i32 %di117
-  %h119 = load ptr, ptr %ds118
-  %pr_x = call i32 @clEnqueueReadBuffer(ptr %q, ptr %h119, i32 1, i64 0, i64 %bytes, ptr %x, i32 0, ptr null, ptr null)
-  %di120 = add i32 %p, 20
-  %ds121 = getelementptr ptr, ptr @cl_h, i32 %di120
-  %h122 = load ptr, ptr %ds121
-  %pr_y = call i32 @clEnqueueReadBuffer(ptr %q, ptr %h122, i32 1, i64 0, i64 %bytes, ptr %y, i32 0, ptr null, ptr null)
-  %di123 = add i32 %p, 22
-  %ds124 = getelementptr ptr, ptr @cl_h, i32 %di123
-  %h125 = load ptr, ptr %ds124
-  %pr_z = call i32 @clEnqueueReadBuffer(ptr %q, ptr %h125, i32 1, i64 0, i64 %bytes, ptr %z, i32 0, ptr null, ptr null)
-  %di126 = add i32 %p, 24
-  %ds127 = getelementptr ptr, ptr @cl_h, i32 %di126
-  %h128 = load ptr, ptr %ds127
-  %pr_vx = call i32 @clEnqueueReadBuffer(ptr %q, ptr %h128, i32 1, i64 0, i64 %bytes, ptr %vx, i32 0, ptr null, ptr null)
-  %di129 = add i32 %p, 26
-  %ds130 = getelementptr ptr, ptr @cl_h, i32 %di129
-  %h131 = load ptr, ptr %ds130
-  %pr_vy = call i32 @clEnqueueReadBuffer(ptr %q, ptr %h131, i32 1, i64 0, i64 %bytes, ptr %vy, i32 0, ptr null, ptr null)
-  %di132 = add i32 %p, 28
-  %ds133 = getelementptr ptr, ptr @cl_h, i32 %di132
-  %h134 = load ptr, ptr %ds133
-  %pr_vz = call i32 @clEnqueueReadBuffer(ptr %q, ptr %h134, i32 1, i64 0, i64 %bytes, ptr %vz, i32 0, ptr null, ptr null)
+  %di104 = add i32 %p, 20
+  %ds105 = getelementptr ptr, ptr @cl_h, i32 %di104
+  %h106 = load ptr, ptr %ds105
+  %pr_x = call i32 @clEnqueueReadBuffer(ptr %q, ptr %h106, i32 1, i64 0, i64 %bytes, ptr %x, i32 0, ptr null, ptr null)
+  %di107 = add i32 %p, 22
+  %ds108 = getelementptr ptr, ptr @cl_h, i32 %di107
+  %h109 = load ptr, ptr %ds108
+  %pr_y = call i32 @clEnqueueReadBuffer(ptr %q, ptr %h109, i32 1, i64 0, i64 %bytes, ptr %y, i32 0, ptr null, ptr null)
+  %di110 = add i32 %p, 24
+  %ds111 = getelementptr ptr, ptr @cl_h, i32 %di110
+  %h112 = load ptr, ptr %ds111
+  %pr_z = call i32 @clEnqueueReadBuffer(ptr %q, ptr %h112, i32 1, i64 0, i64 %bytes, ptr %z, i32 0, ptr null, ptr null)
+  %di113 = add i32 %p, 28
+  %ds114 = getelementptr ptr, ptr @cl_h, i32 %di113
+  %h115 = load ptr, ptr %ds114
+  %pr_vx = call i32 @clEnqueueReadBuffer(ptr %q, ptr %h115, i32 1, i64 0, i64 %bytes, ptr %vx, i32 0, ptr null, ptr null)
+  %di116 = add i32 %p, 30
+  %ds117 = getelementptr ptr, ptr @cl_h, i32 %di116
+  %h118 = load ptr, ptr %ds117
+  %pr_vy = call i32 @clEnqueueReadBuffer(ptr %q, ptr %h118, i32 1, i64 0, i64 %bytes, ptr %vy, i32 0, ptr null, ptr null)
+  %di119 = add i32 %p, 32
+  %ds120 = getelementptr ptr, ptr @cl_h, i32 %di119
+  %h121 = load ptr, ptr %ds120
+  %pr_vz = call i32 @clEnqueueReadBuffer(ptr %q, ptr %h121, i32 1, i64 0, i64 %bytes, ptr %vz, i32 0, ptr null, ptr null)
   %pfin = call i32 @clFinish(ptr %q)
   br label %done
 done:
