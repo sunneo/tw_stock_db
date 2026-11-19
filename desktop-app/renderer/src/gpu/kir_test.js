@@ -139,5 +139,26 @@ for (const [why, src, re] of rejects) {
   const v2 = K.validate(bad2); check('KIR：let 型別與初值不符被拒', !v2.ok, v2.errors);
 }
 
+// ---- 6. 產生器（DESIGN.webgpu-cuda.md §13）：WGSL 只做結構檢查（本機沒有 naga／tint，未在真 GPU 驗證）；GLSL 結構檢查，編譯由真 Electron 的 WebGL2 驗證。
+const G = require('./kir_gen.js');
+{
+  const pv = parse1('__kernel void vadd(__global const float* a, __global const float* b, __global float* c, int n){int i=get_global_id(0); if(i<n) c[i]=a[i]+b[i];}').kernel;
+  const w = G.toWgsl(pv);
+  check('WGSL：vecadd 產生', w.ok, w.error);
+  check('WGSL：結構（workgroup 64、gid 守衛、storage 讀寫權限、uniform 結構）', w.ok && /@compute @workgroup_size\(64\)/.test(w.code) && /if \(gid >= P\._count\) \{ return; \}/.test(w.code) && /var<storage, read_write> c: array<f32>/.test(w.code) && /var<storage, read> a: array<f32>/.test(w.code) && /var<uniform> P: Params/.test(w.code), w.code);
+  const g = G.toGlsl(pv);
+  check('GLSL：vecadd 產生（render-to-texture 結構）', g.ok, g.error);
+  check('GLSL：結構（#version 300 es、gl_FragCoord、守邊界 discard、texelFetch、fragColor）', g.ok && /#version 300 es/.test(g.fs) && /gl_FragCoord/.test(g.fs) && /discard/.test(g.fs) && /texelFetch\(a,/.test(g.fs) && /fragColor = vec4\(/.test(g.fs) && !/uniform highp sampler2D c;/.test(g.fs), g.fs);
+  const pn = parse1(NBODY_CL).kernel;
+  const wn = G.toWgsl(pn), gn = G.toGlsl(pn);
+  check('WGSL：N 體（f32x4 緩衝區）產生', wn.ok && /array<vec4<f32>>/.test(wn.code) && /\.w\b/.test(wn.code), wn.error);
+  check('GLSL：N 體（f32x4 讀分量）產生', gn.ok && /\.w;/.test(gn.fs) && gn.samplers.length === 1, gn.error);
+  const multi = parse1('__kernel void f(__global const float* a, __global float* c, __global float* d, int n){int i=get_global_id(0); c[i]=a[i]; d[i]=a[i];}').kernel;
+  const gm = G.toGlsl(multi);
+  check('GLSL：多個輸出緩衝區明確拒絕（需要 MRT）', !gm.ok && /只支援恰好一個輸出/.test(gm.error), gm.error);
+  const wm = G.toWgsl(multi);
+  check('WGSL：多個輸出緩衝區可以產生（storage buffer 不受限）', wm.ok, wm.error);
+}
+
 console.log(bad.length ? 'FAILED:\n  ' + bad.join('\n  ') : 'kir: ' + ok + ' passed');
 process.exit(bad.length ? 1 : 0);
