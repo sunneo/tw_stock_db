@@ -59,6 +59,17 @@ def _addr(x):
             return 0
 
 
+def _cname(name):
+    """PyOpenGL 傳進來的名字是以 NUL 結尾的緩衝區（bytes、c_char_p 或 char 陣列）：取到第一個 NUL 為止。"""
+    if hasattr(name, "value") and not isinstance(name, (bytes, str)):
+        name = name.value
+    if isinstance(name, (bytes, bytearray)):
+        return bytes(name).split(b"\0", 1)[0].decode("utf-8", "replace")
+    if isinstance(name, str):
+        return name.split("\0", 1)[0]
+    return ctypes.string_at(_addr(name)).decode("utf-8", "replace")
+
+
 def _read(ptr, nbytes):
     a = _addr(ptr)
     return ctypes.string_at(a, nbytes) if a and nbytes > 0 else b""
@@ -272,7 +283,7 @@ def _attach_shader(prog, shader):
 
 @gl("glBindAttribLocation")
 def _bind_attrib_location(prog, index, name):
-    _be().bind_attrib_location(_OBJ["program"].get(int(_v(prog))), int(_v(index)), (name.value if hasattr(name, "value") else name).decode())
+    _be().bind_attrib_location(_OBJ["program"].get(int(_v(prog))), int(_v(index)), _cname(name))
 
 
 @gl("glLinkProgram")
@@ -307,12 +318,12 @@ def _delete_program(prog):
 
 @gl("glGetAttribLocation")
 def _get_attrib_location(prog, name):
-    return _be().get_attrib_location(_OBJ["program"].get(int(_v(prog))), (name.value if hasattr(name, "value") else name).decode())
+    return _be().get_attrib_location(_OBJ["program"].get(int(_v(prog))), _cname(name))
 
 
 @gl("glGetUniformLocation")
 def _get_uniform_location(prog, name):
-    loc = _be().get_uniform_location(_OBJ["program"].get(int(_v(prog))), (name.value if hasattr(name, "value") else name).decode())
+    loc = _be().get_uniform_location(_OBJ["program"].get(int(_v(prog))), _cname(name))
     return _OBJ["uloc"].new(loc) if loc is not None else -1
 
 
@@ -934,6 +945,17 @@ class WebGL2Backend(object):
         if self.g is None:
             raise RuntimeError("這個環境沒有 WebGL2（OffscreenCanvas.getContext('webgl2') 回傳空值）")
 
+    @staticmethod
+    def _nn(x):
+        """JS 的 null（Pyodide 的 jsnull）→ Python 的 None。"""
+        if x is None:
+            return None
+        try:
+            from pyodide.ffi import jsnull
+            return None if x is jsnull else x
+        except Exception:
+            return None if str(x) == "null" else x
+
     def _u8(self, data):
         return self.js.Uint8Array.new(self.to_js(bytes(data)))
 
@@ -987,8 +1009,8 @@ class WebGL2Backend(object):
     def use_program(self, p): self.g.useProgram(p)
     def get_program_parameter(self, p, n): return self.g.getProgramParameter(p, n)
     def get_program_info_log(self, p): return self.g.getProgramInfoLog(p)
-    def get_attrib_location(self, p, n): return self.g.getAttribLocation(p, n)
-    def get_uniform_location(self, p, n): return self.g.getUniformLocation(p, n)
+    def get_attrib_location(self, p, n): return int(self.g.getAttribLocation(p, n))
+    def get_uniform_location(self, p, n): return self._nn(self.g.getUniformLocation(p, n))
 
     def uniform(self, kind, n, loc, vals, vector=False):
         if loc is None:
@@ -1031,6 +1053,17 @@ class WebGL2Backend(object):
 
     def resize(self, w, h):
         self.canvas.width, self.canvas.height = int(w), int(h)
+
+    def capture_image(self, max_bytes=1000000):
+        """畫面 → (位元組, mime)：先 PNG；超過上限（雜訊多的 3D 場景）就改 JPEG，品質由高往低試。"""
+        from pyodide.ffi import run_sync
+        for typ, q in (("image/png", None), ("image/jpeg", 0.92), ("image/jpeg", 0.8), ("image/jpeg", 0.6)):
+            opts = {"type": typ} if q is None else {"type": typ, "quality": q}
+            blob = run_sync(self.canvas.convertToBlob(self.to_js(opts, dict_converter=self.js.Object.fromEntries)))
+            data = bytes(run_sync(blob.arrayBuffer()).to_bytes())
+            if len(data) <= max_bytes:
+                return data, typ
+        raise RuntimeError("畫面編碼後仍超過 %d 位元組（橋接的圖片上限）；縮小視窗" % max_bytes)
 
     def capture_png(self):
         """畫面 → PNG 位元組（同步等 convertToBlob；Worker 的程式在 JSPI 裡，可以等 Promise）。"""
@@ -1151,6 +1184,12 @@ def create_context(w, h, backend=None):
 
 def active():
     return _CTX["backend"] is not None
+
+
+def frame_image(max_bytes=1000000):
+    """目前畫面 → (位元組, mime)，不超過橋接的圖片上限（PNG，太大改 JPEG）。"""
+    be = _be()
+    return be.capture_image(max_bytes) if hasattr(be, "capture_image") else (be.capture_png(), "image/png")
 
 
 def frame_png():

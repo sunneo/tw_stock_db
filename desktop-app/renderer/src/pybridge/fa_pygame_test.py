@@ -9,10 +9,18 @@ except ImportError:
     print("fa_pygame: 略過（沒有安裝 pygame-ce）"); sys.exit(0)
 assert os.path.dirname(os.path.abspath(pygame.__file__)) != HERE, "pybridge 裡有 pygame.py 遮住真套件"
 calls, queue = [], []
+audio_state = {"ch": -1, "busy": True}
 def fake_call(op, args=None, timeout=240.0):
     calls.append((op, args))
     if op == "gui.poll": return queue.pop(0) if queue else None
     if op == "gui.image": return {"w": 0, "h": 0}
+    if op == "gui.audio":
+        c = args["cmd"]
+        if c == "load": return {"name": args["name"], "duration": 0.1}
+        if c == "play": audio_state["ch"] = (audio_state["ch"] + 1) % 8 if args.get("ch") is None else args["ch"]; return {"ch": -2 if args.get("music") else audio_state["ch"]}
+        if c == "busy": return {"busy": audio_state["busy"], "count": 1 if audio_state["busy"] else 0}
+        if c == "stop": return {"stopped": 1}
+        return {"ok": True}
     return None
 stub = types.ModuleType("fa_bridge"); stub.call = fake_call; stub.sleep = lambda s: None; stub.ACTIVE = True; sys.modules["fa_bridge"] = stub
 import gui, fa_pygame
@@ -64,9 +72,28 @@ pygame.event.post(pygame.event.Event(pygame.USEREVENT, code=7)); check("event.po
 import array, math
 pygame.mixer.init(22050, -16, 1)
 pcm = array.array("h", (12000 if math.sin(2 * math.pi * 440 * i / 22050) >= 0 else -12000 for i in range(2205)))   # 440 Hz、100 ms
-snd = pygame.mixer.Sound(buffer=pcm.tobytes()); snd.play()
-tones = [c for c in calls if c[0] == "gui.tone"]
-check("mixer：標準的 Sound(buffer=PCM)，依 PCM 的主頻率與長度發嗶", pygame.mixer.get_init() and tones and abs(tones[-1][1]["freq"] - 440) < 30 and 80 <= tones[-1][1]["ms"] <= 120, tones[-1:] )
-pygame.mixer.music.load("x.ogg"); pygame.mixer.music.play(); pygame.mixer.music.set_volume(0.5)
+snd = pygame.mixer.Sound(buffer=pcm.tobytes()); chn = snd.play(loops=2, fade_ms=10)
+au = [c[1] for c in calls if c[0] == "gui.audio"]
+ld = [a for a in au if a["cmd"] == "load"][-1]; pl = [a for a in au if a["cmd"] == "play"][-1]
+check("Sound(buffer=PCM)：載入 16 位元 PCM（取樣率、聲道、資料）", ld["rate"] == 22050 and ld["channels"] == 1 and len(base64.b64decode(ld["data"])) == 4410, {k: ld[k] for k in ("rate", "channels")})
+check("play(loops, fade_ms) 轉給頁面並回傳 Channel", pl["loops"] == 2 and pl["fade_ms"] == 10 and isinstance(chn, pygame.mixer.Channel) and abs(snd.get_length() - 0.1) < 1e-6, pl)
+check("Channel.get_busy 讀頁面的狀態", chn.get_busy() is True and (audio_state.update(busy=False) or True) and chn.get_busy() is False)
+snd.set_volume(0.4); snd.play(); check("Sound 音量帶進 play", [c[1] for c in calls if c[0] == "gui.audio" and c[1]["cmd"] == "play"][-1]["volume"] == 0.4)
+pygame.mixer.set_num_channels(4); check("set_num_channels → channels 指令", [c[1] for c in calls if c[0] == "gui.audio" and c[1]["cmd"] == "channels"][-1]["n"] == 4 and pygame.mixer.get_num_channels() == 4)
+pygame.mixer.pre_init(44100, 8, 1); u8 = pygame.mixer.Sound(buffer=bytes([128, 255, 0, 128])); pygame.mixer.pre_init(22050, -16, 1)
+u8.play(); ld8 = [c[1] for c in calls if c[0] == "gui.audio" and c[1]["cmd"] == "load"][-1]
+check("u8 → s16 的值（128→0、255→32512、0→-32768）", __import__("struct").unpack("<4h", base64.b64decode(ld8["data"])) == (0, 32512, -32768, 0), __import__("struct").unpack("<4h", base64.b64decode(ld8["data"])))
+import tempfile, wave
+with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tf: wp = tf.name
+with wave.open(wp, "wb") as wf: wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(8000); wf.writeframes(array.array("h", [1000, -1000] * 400).tobytes())
+ws = pygame.mixer.Sound(wp); ws.play(); lw = [c[1] for c in calls if c[0] == "gui.audio" and c[1]["cmd"] == "load"][-1]
+check("Sound(wav 檔)：用 wave 解成 PCM（取樣率 8000、0.1 秒）", lw["rate"] == 8000 and abs(ws.get_length() - 0.1) < 1e-6, lw["rate"])
+open(wp + ".ogg", "wb").write(b"OggS" + b"\0" * 20); es = pygame.mixer.Sound(wp + ".ogg"); es.play(); le = [c[1] for c in calls if c[0] == "gui.audio" and c[1]["cmd"] == "load"][-1]
+check("非 PCM 的檔案（ogg、mp3…）整檔交給瀏覽器解碼", "encoded" in le and "data" not in le)
+pygame.mixer.music.load(wp + ".ogg"); pygame.mixer.music.set_volume(0.5); pygame.mixer.music.play(loops=-1)
+mp = [c[1] for c in calls if c[0] == "gui.audio" and c[1]["cmd"] == "play"][-1]
+check("mixer.music：音樂聲道、無限循環", mp["music"] is True and mp["loops"] == -1 and mp["volume"] == 0.5, mp)
+pygame.mixer.music.stop(); pygame.mixer.stop(); check("music.stop／mixer.stop", len([c for c in calls if c[0] == "gui.audio" and c[1]["cmd"] == "stop"]) >= 2)
+os.unlink(wp); os.unlink(wp + ".ogg")
 pygame.quit(); check("pygame.quit 收掉視窗狀態（視窗已因 close 事件關閉，不重複送 gui.close）", fa_pygame._ST["window"] is None and not any(c[0] == "gui.close" for c in calls))
 print("FAILED:\n  " + "\n  ".join(bad) if bad else "fa_pygame: OK"); sys.exit(1 if bad else 0)

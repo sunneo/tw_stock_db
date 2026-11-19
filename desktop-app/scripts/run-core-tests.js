@@ -333,6 +333,7 @@ const suites = [
     ['遠端共筆 patch 模式（id 定址的 JSON 差異、套用與略過、逐行 diff3）', 'scripts/remote-tests/rg_patch.test.js'],
     ['環境基準線（檔位判斷、政策、OOM 辨識、資源治理：讓位／排隊／跑完卸載／壓力／降級）', 'scripts/env-tests/env_profile.test.js'],
     ['模擬 swap（熱區上限、最久沒用的先寫出、讀回、丟掉）', 'scripts/env-tests/swap.test.js'],
+    ['音訊主機（Web Audio：PCM／編碼檔載入、聲道配置、循環、停止立即釋放、音量、busy、限制、owner 收尾；假的 AudioContext）', 'renderer/src/gui/audio_host.test.js'],
     ['node 程式的 swap 與 canvas（頁面讀寫一致、越界、結束清掉）＋ examples/node 三支範例', 'renderer/src/gui/js_program_swap.test.js'],
     ['文件類編輯器核心：markdown／純文字（往返位元組一致、區塊解析、封閉動作）', 'scripts/edit-tests/text_core.test.js'],
     ['動畫簡報：格式、驗證、時間軸、渲染（deck_core）', 'scripts/deck-tests/deck_core.test.js'],

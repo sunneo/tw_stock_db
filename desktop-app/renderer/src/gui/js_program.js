@@ -210,6 +210,21 @@
     };
     window.swap.__space = SW.space;
 
+    // audio: real sound through the page's Web Audio. audio.load(name, pcm, rate, channels): pcm is an Int16Array (16-bit signed samples, mono or stereo interleaved);
+    // audio.loadFile(name, bytes): wav/mp3/ogg bytes (Uint8Array). audio.play(name, {loops: 0|n|-1, volume: 0..1, fade_ms, music}) -> channel number (-1: no free channel);
+    // audio.stop({ch} | {name} | {all: true} | {music: true}), audio.busy(ch), audio.volume(ch, v), audio.master(v). Everything is async. The sounds stop when the program ends.
+    function bytesB64(u8) { return b64of(u8); }
+    window.audio = {
+      load: function (name, pcm, rate, channels) { var u = pcm instanceof Int16Array ? new Uint8Array(pcm.buffer, pcm.byteOffset, pcm.byteLength) : new Uint8Array(pcm); return call('gui.audio', { cmd: 'load', name: String(name), rate: Number(rate) || 44100, channels: Number(channels) || 1, data: bytesB64(u) }).then(function (r) { return r.duration; }); },
+      loadFile: function (name, bytes) { return call('gui.audio', { cmd: 'load', name: String(name), encoded: bytesB64(new Uint8Array(bytes)) }).then(function (r) { return r.duration; }); },
+      unload: function (name) { return call('gui.audio', { cmd: 'unload', name: String(name) }); },
+      play: function (name, o) { o = o || {}; return call('gui.audio', { cmd: 'play', name: String(name), loops: o.loops === undefined ? 0 : o.loops, volume: o.volume === undefined ? 1 : o.volume, fade_ms: o.fade_ms || 0, maxtime_ms: o.maxtime_ms || 0, music: !!o.music, ch: o.ch }).then(function (r) { return r.ch; }); },
+      stop: function (o) { return call('gui.audio', Object.assign({ cmd: 'stop' }, o || { all: true })).then(function (r) { return r.stopped; }); },
+      busy: function (ch) { return call('gui.audio', ch === undefined ? { cmd: 'busy' } : { cmd: 'busy', ch: ch }).then(function (r) { return r.busy; }); },
+      volume: function (ch, v) { return call('gui.audio', { cmd: 'volume', ch: ch, volume: v }); },
+      master: function (v) { return call('gui.audio', { cmd: 'volume', master: v }); }
+    };
+
     window.gui = {
       open: function (title, width) {
         var id = 'w' + Math.random().toString(36).slice(2, 10);

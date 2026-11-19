@@ -74,6 +74,7 @@ class Fake(object):
             return None
         return f
     def capture_png(self): return b'\x89PNG\r\n\x1a\nfake'
+    def capture_image(self, max_bytes=1000000): return self.capture_png(), 'image/png'
 fk = Fake(); P.reset(); P.register(); P.create_context(320, 240, backend=fk)
 calls.clear()
 w = gui.Window('t', 300)

@@ -498,5 +498,6 @@ class View(object):
 
     def show(self, frame):
         self._r.run(frame.cmds)
-        self.w.image(self.nid, self._r.G.frame_png(), "image/png", name=self.PICTURE)
+        data, mime = self._r.G.frame_image()
+        self.w.image(self.nid, data, mime, name=self.PICTURE)
         self.w.draw(self.nid, [["image", self.PICTURE, 0, 0, self.width, self.height]])

@@ -25,6 +25,7 @@ class Fake(object):
             return None
         return f
     def capture_png(self): return b"\x89PNG\r\n\x1a\nfake"
+    def capture_image(self, max_bytes=1000000): return self.capture_png(), "image/png"
 check("register 成功", P.register() is True and os.environ.get("PYOPENGL_PLATFORM") == "fa")
 from OpenGL.GL import *   # noqa: F401,F403
 from OpenGL.GLU import *  # noqa: F401,F403
@@ -47,7 +48,8 @@ sh = glCreateShader(GL_VERTEX_SHADER); glShaderSource(sh, "#version 300 es\nvoid
 check("glShaderSource 取回原始碼", "gl_Position" in fk.log("shader_source")[-1][1][1], fk.log("shader_source"))
 check("glGetShaderiv 編譯狀態", glGetShaderiv(sh, GL_COMPILE_STATUS) == 1)
 prog = glCreateProgram(); glAttachShader(prog, sh); glLinkProgram(prog); glUseProgram(prog)
-loc = glGetUniformLocation(prog, "uMVP"); glUniformMatrix4fv(loc, 1, GL_FALSE, [1.0] * 16); glUniform3f(glGetUniformLocation(prog, "c"), 1, 2, 3)
+glBindAttribLocation(prog, 2, "aCol"); loc = glGetUniformLocation(prog, "uMVP"); glGetAttribLocation(prog, "aPos"); glUniformMatrix4fv(loc, 1, GL_FALSE, [1.0] * 16); glUniform3f(glGetUniformLocation(prog, "c"), 1, 2, 3)
+check("名字沒有結尾的 NUL（PyOpenGL 傳的是 NUL 結尾的緩衝區）", "uMVP" in [x[1][1] for x in fk.log("get_uniform_location")] and "aPos" in [x[1][1] for x in fk.log("get_attrib_location")] and fk.log("bind_attrib_location")[-1][1][2] == "aCol", (fk.log("get_uniform_location"), fk.log("get_attrib_location"), fk.log("bind_attrib_location")))
 um = fk.log("uniform_matrix")[-1][1]; check("glUniformMatrix4fv", um[0] == 4 and len(um[3]) == 16, um)
 check("glUniform3f", fk.log("uniform")[-1][1][:2] == ("f", 3) and fk.log("uniform")[-1][1][3] == [1.0, 2.0, 3.0], fk.log("uniform")[-1])
 glEnableVertexAttribArray(0); glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, ctypes.c_void_p(0)); glDrawArrays(GL_TRIANGLES, 0, 3)
@@ -82,5 +84,5 @@ try:
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, 0, 0); check("未實作要丟錯", False)
 except Exception as e:
     check("未實作要丟錯", "undefined function" in str(e) or type(e).__name__ == "NullFunctionError", type(e).__name__ + str(e)[:80])
-check("frame_png", P.frame_png().startswith(b"\x89PNG"))
+check("frame_image", P.frame_image() == (b"\x89PNG\r\n\x1a\nfake", "image/png"))
 print("FAILED:\n  " + "\n  ".join(bad) if bad else "fa_opengl: OK"); sys.exit(1 if bad else 0)

@@ -86,7 +86,7 @@ def _present(pygame):
     w, h = surf.get_size()
     if _ST["gl"]:   # OPENGL 視窗：畫面在 WebGL2（OffscreenCanvas），擷取成 PNG（每幀都送：3D 場景幾乎每幀都在變）
         import fa_opengl_platform as G
-        data, mime = G.frame_png(), "image/png"
+        data, mime = G.frame_image()
     else:
         enc = _encode(pygame, surf)
         if enc is None:
@@ -204,13 +204,63 @@ class _Pressed(object):
         return iter(())
 
 
-# ---------------------------------------------------------------- 聲音（沒有音訊情境）
-def _patch_mixer(pygame):
-    mixer = pygame.mixer
-    st = {"init": None}
+# ---------------------------------------------------------------- 聲音：pygame.mixer → fa_audio（頁面的 Web Audio）
+def _to_s16(raw, size, channels):
+    """mixer 格式的 PCM（size：-16 有號 16 位元、16 無號 16、8 無號 8、-32 浮點 32）→ 16 位元有號 PCM 位元組。"""
+    import array as _array
+    if size == -16:
+        return bytes(raw)
+    if size == 16:
+        a = _array.array("H"); a.frombytes(bytes(raw)[: len(raw) // 2 * 2]); return _array.array("h", (x - 32768 for x in a)).tobytes()
+    if size == 8:
+        return _array.array("h", ((x - 128) << 8 for x in bytes(raw))).tobytes()
+    if size == -32:
+        a = _array.array("f"); a.frombytes(bytes(raw)[: len(raw) // 4 * 4]); return _array.array("h", (max(-32768, min(32767, int(x * 32767))) for x in a)).tobytes()
+    raise ValueError("不支援的 mixer 取樣格式 size=%r" % (size,))
 
-    def init(frequency=44100, size=-16, channels=2, buffer=512, *a, **k):
-        st["init"] = (frequency, size, channels)
+
+def _array_to_s16(arr):
+    """numpy 陣列（sndarray 風格：(n,) 或 (n, 2)）→ (PCM 位元組, 聲道數)。"""
+    import array as _array
+    ch = 2 if getattr(arr, "ndim", 1) == 2 and arr.shape[1] == 2 else 1
+    dt = str(getattr(arr, "dtype", "int16"))
+    flat = arr.reshape(-1)
+    if dt == "int16":
+        return flat.tobytes(), ch
+    if dt == "uint8":
+        return _array.array("h", ((int(x) - 128) << 8 for x in flat)).tobytes(), ch
+    if dt.startswith("float"):
+        return _array.array("h", (max(-32768, min(32767, int(float(x) * 32767))) for x in flat)).tobytes(), ch
+    return _array.array("h", (max(-32768, min(32767, int(x))) for x in flat)).tobytes(), ch
+
+
+def _read_source(file):
+    if hasattr(file, "read"):
+        return file.read()
+    with open(file, "rb") as f:
+        return f.read()
+
+
+def _patch_mixer(pygame):
+    import fa_audio
+    mixer = pygame.mixer
+    st = {"init": None, "seq": 0, "ok": None}
+
+    def fmt():
+        return st["init"] or (44100, -16, 2)
+
+    def guard(fn, default=None):
+        """頁面沒有音訊（舊頁面、沒有 AudioContext）時不讓程式當掉：只留一聲短嗶當後備。"""
+        try:
+            r = fn()
+            st["ok"] = True
+            return r
+        except Exception as e:
+            if st["ok"] is None:
+                import sys
+                sys.stderr.write("[fa-pygame] 沒有可用的音訊（%s）；聲音改成短嗶\n" % str(e)[:120])
+            st["ok"] = False
+            return default
 
     def beep(freq=440, ms=120):
         try:
@@ -219,81 +269,146 @@ def _patch_mixer(pygame):
         except Exception:
             pass
 
-    def _analyse(raw, rate, channels):
-        """16 位元 PCM → (主頻率 Hz, 長度 ms)：用過零點估頻率，供 Sound.play 發一聲對應的嗶（沒有真的音訊情境）。"""
+    def _analyse(pcm, rate, ch):
         import array as _array
-        smp = _array.array("h")
-        try:
-            smp.frombytes(bytes(raw)[: len(raw) // 2 * 2])
-        except Exception:
-            return 440, 120
-        if channels > 1:
-            smp = smp[::channels]
+        smp = _array.array("h"); smp.frombytes(bytes(pcm)[: len(pcm) // 2 * 2])
+        if ch > 1:
+            smp = smp[::ch]
         n = len(smp)
         if n < 2:
             return 440, 60
-        ms = int(n * 1000 / max(1, rate))
         cross = sum(1 for i in range(1, n) if (smp[i - 1] >= 0) != (smp[i] >= 0))
-        freq = int(cross * rate / (2.0 * n)) if cross else 0
-        return max(40, min(4000, freq or 220)), max(20, min(1500, ms))
+        return max(40, min(4000, int(cross * rate / (2.0 * n)) or 220)), max(20, min(1500, int(n * 1000 / max(1, rate))))
+
+    def init(frequency=44100, size=-16, channels=2, buffer=512, devicename=None, allowedchanges=0):
+        st["init"] = (int(frequency), int(size), int(channels))
 
     class Sound(object):
         def __init__(self, file=None, buffer=None, array=None):
-            self._vol = 1.0
-            self._beep = (440, 120)
-            fr, size, ch = st["init"] or (44100, -16, 2)
-            try:
-                if buffer is not None:
-                    self._beep = _analyse(buffer, fr, ch)
-                elif array is not None:
-                    self._beep = _analyse(array.tobytes(), fr, ch if getattr(array, "ndim", 1) == 1 else array.shape[1])
-                elif isinstance(file, str) and file.lower().endswith(".wav"):
-                    import wave
-                    with wave.open(file, "rb") as wf:
-                        self._beep = _analyse(wf.readframes(min(wf.getnframes(), 44100 * 2)), wf.getframerate(), wf.getnchannels())
-            except Exception:
-                pass
+            st["seq"] += 1
+            self._name, self._vol, self._pcm, self._rate, self._ch, self._enc, self._len, self._loaded = "s%d" % st["seq"], 1.0, None, 44100, 1, None, 0.0, False
+            fr, size, chs = fmt()
+            if buffer is not None:
+                self._pcm, self._rate, self._ch = _to_s16(buffer, size, chs), fr, 1 if chs == 1 else 2
+            elif array is not None:
+                self._pcm, self._ch = _array_to_s16(array); self._rate = fr
+            elif file is not None:
+                data = _read_source(file)
+                if data[:4] == b"RIFF" and data[8:12] == b"WAVE":
+                    try:
+                        import io, wave
+                        with wave.open(io.BytesIO(data), "rb") as wf:
+                            if wf.getsampwidth() in (1, 2) and wf.getnchannels() in (1, 2) and wf.getcomptype() == "NONE":
+                                raw = wf.readframes(wf.getnframes())
+                                self._pcm = _to_s16(raw, -16 if wf.getsampwidth() == 2 else 8, wf.getnchannels())
+                                self._rate, self._ch = wf.getframerate(), wf.getnchannels()
+                    except Exception:
+                        self._pcm = None
+                if self._pcm is None:
+                    self._enc = data
+            else:
+                raise TypeError("Sound() 需要 file、buffer 或 array")
+            if self._pcm is not None:
+                self._len = len(self._pcm) / (2.0 * self._ch) / self._rate
+
+        def _ensure(self):
+            if self._loaded:
+                return
+            self._len = fa_audio.load_pcm(self._name, self._pcm, self._rate, self._ch) if self._pcm is not None else fa_audio.load_file(self._name, self._enc)
+            self._loaded = True
 
         def play(self, loops=0, maxtime=0, fade_ms=0):
-            beep(*self._beep)
-            return None
+            def go():
+                self._ensure()
+                c = fa_audio.play(self._name, loops=loops, volume=self._vol, fade_ms=fade_ms, maxtime_ms=maxtime)
+                return Channel(c) if c >= 0 else None
+            r = guard(go, False)
+            if r is False:   # 沒有音訊：短嗶後備
+                if self._pcm is not None:
+                    beep(*_analyse(self._pcm, self._rate, self._ch))
+                return None
+            return r
 
-        def stop(self): pass
-        def fadeout(self, ms): pass
-        def set_volume(self, v): self._vol = float(v)
+        def stop(self):
+            guard(lambda: fa_audio.stop(name=self._name))
+
+        def fadeout(self, ms):
+            guard(lambda: fa_audio.stop(name=self._name, fade_ms=ms))
+
+        def set_volume(self, v): self._vol = max(0.0, min(1.0, float(v)))
         def get_volume(self): return self._vol
-        def get_length(self): return self._beep[1] / 1000.0
-        def get_num_channels(self): return 0
-        def get_raw(self): return b""
+        def get_length(self): return float(self._len)
+        def get_num_channels(self): return guard(lambda: fa_audio.count(), 0) if self._loaded else 0
+        def get_raw(self): return self._pcm if self._pcm is not None else b""
 
-    class _Music(object):
-        def __init__(self): self._vol = 1.0; self._busy = False
-        def load(self, *a, **k): pass
-        def unload(self): pass
-        def play(self, loops=0, start=0.0, fade_ms=0): beep(330, 150); self._busy = False
-        def stop(self): self._busy = False
+    class Channel(object):
+        def __init__(self, id):
+            self.id, self._vol, self._sound = int(id), 1.0, None
+
+        def play(self, sound, loops=0, maxtime=0, fade_ms=0):
+            sound._ensure()
+            fa_audio.play(sound._name, ch=self.id, loops=loops, volume=sound._vol * self._vol, fade_ms=fade_ms, maxtime_ms=maxtime)
+            self._sound = sound
+
+        def stop(self): guard(lambda: fa_audio.stop(ch=self.id))
         def pause(self): pass
         def unpause(self): pass
-        def fadeout(self, ms): pass
-        def set_volume(self, v): self._vol = float(v)
+        def fadeout(self, ms): guard(lambda: fa_audio.stop(ch=self.id, fade_ms=ms))
+        def set_volume(self, left, right=None): self._vol = max(0.0, min(1.0, float(left))); guard(lambda: fa_audio.set_volume(self.id, self._vol * (self._sound._vol if self._sound else 1.0)))
         def get_volume(self): return self._vol
-        def get_busy(self): return self._busy
+        def get_busy(self): return bool(guard(lambda: fa_audio.busy(self.id), False))
+        def get_sound(self): return self._sound if self.get_busy() else None
+        def queue(self, sound):
+            if not self.get_busy():
+                self.play(sound)
+        def get_queue(self): return None
+        def set_endevent(self, *a): pass
+        def get_endevent(self): return 0
+
+    class _Music(object):
+        def __init__(self): self._loaded, self._vol, self._file = False, 1.0, None
+
+        def load(self, filename, namehint=""):
+            data = _read_source(filename)
+            self._file = data
+            self._loaded = False
+            self._len = guard(lambda: fa_audio.load_file("music", data), 0.0)
+            self._loaded = True
+
+        def unload(self): self.stop(); self._loaded = False
+        def play(self, loops=0, start=0.0, fade_ms=0): guard(lambda: fa_audio.play("music", music=True, loops=loops, volume=self._vol, fade_ms=fade_ms))
+        def stop(self): guard(lambda: fa_audio.stop(music=True))
+        def pause(self): guard(lambda: fa_audio.pause())     # 限制：暫停整個音訊情境（所有聲音），不只音樂
+        def unpause(self): guard(lambda: fa_audio.resume())
+        def fadeout(self, ms): guard(lambda: fa_audio.stop(music=True, fade_ms=ms))
+        def rewind(self): pass
+        def set_pos(self, pos): pass
         def get_pos(self): return -1
-        def queue(self, *a, **k): pass
+        def set_volume(self, v): self._vol = max(0.0, min(1.0, float(v))); guard(lambda: fa_audio.set_volume(None, self._vol, music=True))
+        def get_volume(self): return self._vol
+        def get_busy(self): return bool(guard(lambda: fa_audio.busy(music=True), False))
+        def queue(self, filename, namehint="", loops=0): pass
+
+    def num_channels(n=None):
+        if n is not None:
+            guard(lambda: fa_audio.channels(n))
+            st["n"] = int(n)
+        return st.get("n", 8)
 
     mixer.init = init
-    mixer.pre_init = lambda *a, **k: None
-    mixer.quit = lambda: st.update(init=None)
+    mixer.pre_init = lambda frequency=44100, size=-16, channels=2, buffer=512, *a, **k: st.update(init=(frequency, size, channels))
+    mixer.quit = lambda: (guard(lambda: fa_audio.stop(all=True)), st.update(init=None))[1]
     mixer.get_init = lambda: st["init"]
-    mixer.set_num_channels = lambda n: None
-    mixer.get_num_channels = lambda: 8
-    mixer.stop = lambda: None
-    mixer.pause = lambda: None
-    mixer.unpause = lambda: None
-    mixer.fadeout = lambda ms: None
-    mixer.get_busy = lambda: False
-    mixer.Sound = Sound
-    mixer.music = _Music()
+    mixer.set_num_channels = lambda n: num_channels(n)
+    mixer.get_num_channels = lambda: num_channels()
+    mixer.set_reserved = lambda n: 0
+    mixer.stop = lambda: guard(lambda: fa_audio.stop(all=True))
+    mixer.pause = lambda: guard(lambda: fa_audio.pause())
+    mixer.unpause = lambda: guard(lambda: fa_audio.resume())
+    mixer.fadeout = lambda ms: guard(lambda: fa_audio.stop(all=True, fade_ms=ms))
+    mixer.get_busy = lambda: bool(guard(lambda: fa_audio.count() > 0, False))
+    mixer.find_channel = lambda force=False: next((Channel(i) for i in range(num_channels()) if not guard(lambda: fa_audio.busy(i), False)), Channel(0) if force else None)
+    mixer.Sound, mixer.Channel, mixer.music = Sound, Channel, _Music()
 
 
 # ---------------------------------------------------------------- 安裝

@@ -16,7 +16,7 @@
 
 `import pygame` 是真的 pygame-ce，`from OpenGL.GL import *` 是真的 PyOpenGL（第一次用時 Worker 會從 PyPI 裝，要有網路）；我們只接後端
 （視窗、事件、WebGL2），API 與 pip 的一樣，所以標準的 pygame／PyOpenGL 範例原封不動能跑。`pygame.display.set_mode((w, h), DOUBLEBUF | OPENGL)` 開 WebGL2 視窗。
-聲音：沒有真的音訊情境，`pygame.mixer.Sound(buffer=PCM)` 會依 PCM 的主頻率與長度發一聲嗶。
+聲音：`pygame.mixer`（`Sound`、`Channel`、`music`）會真的出聲，由頁面的 Web Audio 播放（多聲道、循環、音量）；`import fa_audio` 可以直接用。`gui` 的 `tone()` 仍是最簡單的單音嗶聲（`music_player.py`、`midi_tool.py` 用它）。
 
 ## 3D 小工具：`gl3d`
 

@@ -105,6 +105,8 @@ embed('renderer/src/gpu/gpu_preload.js', 'GPUPRE-BEGIN', 'GPUPRE-END', 'FA_GPU_P
 })();
 // 視窗主機（renderer/src/gui/gui_host.js，不直接碰 DOM 細節，render 與 bridge 由呼叫端傳入）：同上。
 embed('renderer/src/gui/gui_host.js', 'GUIHOST-BEGIN', 'GUIHOST-END', 'FA_GUI_HOST_SRC');
+// 音訊主機（renderer/src/gui/audio_host.js）：程式（pygame.mixer、fa_audio、node 的 audio）送來的 PCM／聲音檔，頁面用 Web Audio 真的播出來
+embed('renderer/src/gui/audio_host.js', 'GUIAUDIO-BEGIN', 'GUIAUDIO-END', 'FA_GUI_AUDIO_SRC');
 // GUI 的 Python 工作者（renderer/src/gui/py_worker.js）與非同步判斷（py_async.js）：同上，嵌入後執行時載入。
 embed('renderer/src/gui/py_worker.js', 'GUIPYWORKER-BEGIN', 'GUIPYWORKER-END', 'FA_GUI_PYWORKER_SRC');
 embed('renderer/src/gui/py_async.js', 'GUIPYASYNC-BEGIN', 'GUIPYASYNC-END', 'FA_GUI_PYASYNC_SRC');
