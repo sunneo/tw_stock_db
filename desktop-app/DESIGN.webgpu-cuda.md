@@ -1294,3 +1294,32 @@ Python 模擬器與離線模型推論共用同一個 GPU 裝置：
 - `scripts/eval/kir_webgpu.eval.js`（內嵌產生器 `scripts/eval/kir_webgpu.build.js`）：`FA_EVAL_GL=gpu FA_EVAL_TIMEOUT_MS=500000 node scripts/eval/run_eval.js <輸出檔> 17994`，結果在 `[eval-file] result:`。
 
 **未做／下一步**：(1) host 接線（見上）；(2) HUD 標示實際後端（WebGPU／WebGL2／JS）；(3) 把 nbody 的四個讀回合成一次（目前每步 4 次 `mapAsync`，約 11–13 ms）；(4) 在使用者的真機（不同於這台）重測，因為工作群結果不穩定。
+
+### 階段 8：host 接線與端到端（2026-11-20）
+
+**做了什麼**
+- `renderer/src/gpu/kir_host_hooks.js`（新）：選擇後端 WebGPU → WebGL2 → JS，每一步失敗都記下具體原因；`describe()` 說明實際後端與未使用 WebGPU 的原因；`force` 是評測用的強制開關（`window.FA_KIR_FORCE_BACKEND`）。
+- `renderer/src/uml/llvm_host.js`：`asyncReadback` 時 `clEnqueueReadBuffer` 與 `clEnqueueNDRangeKernel` 標成 async（JSPI），讀回可回傳 Promise；沒有 JSPI 時維持同步。翻譯與一維 KIR 派送的條件改為「有 `kirRun` 或 `kirDev`」（修正：WebGPU 沒有同步的 `kirRun`，第一次端到端評測因此全部退回 CPU）。`fa_cl_backend` 回報 3＝WebGPU（0 尚未派送、1 WebGL2、2 JS 墊片）。
+- `renderer/src/floating-assistant.js`（源碼）：KIR 區塊（`FA_KIR_SRC`，由 `embed-code-ui.js` 重新內嵌，已加入 `kir_webgpu.js` 與 `kir_host_hooks.js`）；`_kirHostSetup()` 取代 `_kirHostHooks()`；終端機訊息改為顯示實際後端、派送數與最後錯誤。
+- HUD：`_gen_nbody3d.py`、`_gen_fluid3d_cl.py` 新增 WebGPU 分支（ASCII 文字）；`nbody3d_cl.ll`、`fluid3d_cl.ll` 已重產。
+
+**真 Electron 端到端（`scripts/eval/llc_kir_e2e.eval.js`，app 的 lli job，N=3072，20 幀，每 10 步一個週期；單位是週期時間÷10，含繪圖）**
+
+| 後端 | nbody 每步（穩態） | 輸出（中心） | HUD 實際顯示 |
+|---|---|---|---|
+| WebGPU（預設） | 約 35 ms（第一週期 79 ms 含暖機） | 344 / 234.4 / 148.7，與 CPU 相同 | 「GPU: OpenCL kernels (WebGPU backend)」覆蓋率 1.00 |
+| WebGL2（`force=webgl2`） | 約 83 ms | 同上 | 「…(WebGL2 backend)」覆蓋率 1.00 |
+| JS 墊片（`force=js`） | 約 950 ms（退回 CPU 積分，與 CPU 版相同） | 同上 | 未對上任何標籤（墊片偵測後退回 CPU，HUD 顯示 CPU 與原因，未逐字驗證） |
+| CPU wasm（nbody3d） | 約 1000 ms | 344 / 234.4 / 148.7 | — |
+
+- fluid3d：三種後端與 CPU 的 y_mean 都是 0.556（輸出一致）。fluid 的程式只印最後結果，**沒有量到 fluid 的每步耗時**。
+- 這些是整個幀（含繪圖）的時間，不是純核心時間；真機的數字（使用者量到 0.06 s／步）要另外比較。
+- 這台是 NVIDIA Kepler；只在這台的 Electron 驗證過，沒有其他機器。
+
+**沒有做／要注意**
+- f32x4 向量載入與 subgroups：依指示本輪不做。
+- 讀回 4 個輸出仍是 4 次 `mapAsync`（約 11–13 ms／步），還沒有合併。
+- WebGPU 裝置在執行時失敗（例如遺失）時，該次派送退回 JS，不會中途換成 WebGL2。
+- 建置輸出（`renderer/floating-assistant.js`、`.min.js`、`update-manifest.json`、`web-lazy/`）只在本機重產來測試，已還原，未 commit。
+
+**測試**：`kir_host_hooks_test` 16、`llvm_host_async_test` 4（JSPI 段在 node 16 略過，由上面的真 Electron 涵蓋）、`llvm_host` 41、`kir_webgpu_test` 34、`nbody3d_cl` 24、`fluid3d_cl` 20、`gpu_core` 44。

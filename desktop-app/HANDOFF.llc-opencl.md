@@ -110,3 +110,12 @@ Continue from the handoff document at desktop-app/HANDOFF.llc-opencl.md. Read it
 - **不要做**：不要 `git push`，不要跑 `scripts/publish.sh`（管理者做）。
 
 **下一步順序**：(1) 決定 JSPI 與 node 測試的做法；(2) 寫 `kir_host_hooks.js`（WebGPU → WebGL2 → JS，失敗要有具體原因）；(3) `llvm_host.js` 的 `clEnqueueReadBuffer` 改非同步（只有 WebGPU 裝置時）；(4) HUD 的後端字樣加上 WebGPU；(5) 在使用者真機重測（這台的工作群結果不穩定）。
+
+## 9. 2026-11-20 補充：host 接線與端到端（子 session 第二批）
+
+- 詳細數字與限制見 `DESIGN.webgpu-cuda.md` §13「階段 8」。
+- **真 Electron 驗證過**：nbody3d_cl 在 WebGPU 與 WebGL2 上都實際派送，輸出與 CPU 版相同，HUD 顯示實際後端；JS 墊片會退回 CPU 積分。
+- **沒有量到**：fluid3d 的每步耗時；JS 墊片路徑的 HUD 文字未逐字驗證。
+- **已修正的 bug**：`llvm_host` 只在有同步 `kirRun` 時翻譯核心，WebGPU 因此全部退回 CPU。
+- **還沒做**：讀回合併（4 次 `mapAsync`）、WebGPU 中途失敗時換成 WebGL2、f32x4 與 subgroups。
+- **建置輸出不 add**：`renderer/floating-assistant.js`、`.min.js`、`update-manifest.json`、`web-lazy/` 由管理者重產。
