@@ -1085,3 +1085,32 @@ Python 模擬器與離線模型推論共用同一個 GPU 裝置：
 - **小形狀與「誰贏」（v443）**：預設形狀清單加上 `64x1024x1024`（約 6.7 千萬乘加，比 512 的小得多），看 GPU 從哪個規模開始贏。設定頁每個形狀一列，下方的摘要（`FaGpuBench.winner`）列出每個形狀的最快後端、median 與相對 cudaweb 的差距（快或慢幾%）；沒有有效的 cudaweb 就不列差距數字。小形狀量不出明顯優勢時，遲滯規則（15%）維持預設 cudaweb。
 - **派發門檻**：`onnx_interp` 的 `minMacs`（預設 1<<20，約 1 百萬乘加）只是預先過濾掉極小的矩陣乘（那些一定不值得問路由器）。它**不決定**誰贏：路由只會對量測過（並且有效）的形狀換後端；它遠小於最小的量測形狀（6.7 千萬），所以不會擋掉任何量到的形狀。
 - **版本**：v442 在 peer 加入小形狀的要求前已經發出（`0afda2138`，清單是兩個大形狀），所以小形狀改發 v443，不是併入 v442。測試：`bench_core` 38、`bench_wiring` 49（9d 預設清單改成三個）、`bench_run` 28；其他相關套件全部通過。
+
+## 13. 通用逐元素核心派送（KIR，2026-11-19）
+
+**動機**：cudaweb 原本只有固定運算（矩陣乘、sum、axpy…），沒有「任意核心」的派送；OpenCL 的 `__kernel`、nbody3d 的 O(N²) 引力、fluid3d 的 SPH 都要通用派送。本節加一個小的核心中間表示（KIR），讓 OpenCL C 子集與之後的 CUDA 前端都翻到同一份 KIR，再由三個產生器對應到 cudaweb 的三層。
+
+**範圍（一定要寫清楚，超出就明確報錯）**
+- 一維全域索引空間（`gid` ＝ 0..N-1）。二維與 work-group 不支援。
+- 緩衝區元素：`f32`（一個分量）或 `f32x4`（四個分量，RGBA，給位置／速度用）。讀寫用 `buf[expr]`。
+- 純量參數：`f32`、`i32`。
+- 語句：`let`（區域變數）、賦值、`buf[expr] = expr`（只寫自己的 `gid`，或同一 kernel 內 out 緩衝區）、`for v in [0, bound)`（bound 是常數或 i32 純量）、`if`（只能用 `select` 形式，不做任意分支）。
+- 運算式：字面值、變數、參數、`+ - * /`、比較（`< <= > >= == !=`）、`select(c, a, b)`、`floor`、`sqrt`、`rsqrt`、`min`、`max`、`abs`、`pow`、`exp`、`sin`、`cos`、`int(x)`、`float(x)`、`get_global_id(0)`。
+- **不支援**：`__local`／workgroup 記憶體、barrier、atomics、`double`、指標運算、函式呼叫（自定義）、遞迴、動態長度陣列、回傳值。超出就報錯，host 退回 CPU 並標示。
+
+**三個產生器**
+- `KIR → WGSL`（T1，`storage` buffer＋`@compute @workgroup_size(64)`，每個 invocation 一個 gid）。
+- `KIR → GLSL ES 3.00 片段著色器`（T3）：緩衝區是 RGBA32F 紋理（`f32` 用 R，`f32x4` 用 RGBA，寬度 W＝min(N, 4096)、高度＝ceil(N/W)）。寫出用 render-to-texture：一個全螢幕三角形，每個片段＝一個 gid（`gid = floor(y)*W + floor(x)`，只在 gid<N 時寫）。讀用 `texelFetch`。需要 `EXT_color_buffer_float`；沒有就退回 T5。
+- `KIR → JS 函式`（T5，同時是 CPU 對照）：`for (gid…) body(gid)`，用 `Float32Array`，與 GPU 結果比對用 `tolerance(k)`（gpu_core 的既有容差）。
+
+**OpenCL C 子集 → KIR**：小遞迴下降解析器（`cl_front.js`），只接受上面的語句與運算式；`__kernel void f(__global const float4* p, __global float4* q, int n, float dt)` 形式；`get_global_id(0)` 轉成 `gid`。解析失敗＝`clBuildProgram` 回傳錯誤訊息，不靜默改算。
+
+**緩衝區與 interop**：裝置緩衝區＝紋理（WebGL2）或 storage buffer（WGSL）。`clEnqueueNDRangeKernel` 不讀回；`clEnqueueReadBuffer` 才讀回。GL 點精靈（nbody3d 的繪圖）在頂點著色器用 `texelFetch` 直接讀位置紋理，不經 CPU（零拷貝的 CL-GL interop）。
+
+**驗證**
+- 單元測試（node）：KIR 的 JS 後端與手寫 JS 對照（vecadd、N 體加速度、SPH 密度／力）。
+- WGSL：只能靜態檢查，**未在真 GPU 驗證**（這台沒有 WebGPU adapter）。
+- WebGL2：Electron（xvfb＋SwiftShader）實測，與 JS 比對容差；每幀耗時 CPU vs WebGL2 路徑，軟體 GL 要註明。
+- 沒有 EXT_color_buffer_float 或浮點紋理不能渲染時，WebGL2 路徑標為「不可用」並退回 T5，如實回報。
+
+**現況**：本節是設計（2026-11-19），實作依序：KIR＋JS＋OpenCL 解析器＋單元測試 → WGSL／GLSL 產生器 → host import 接線 → nbody3d／fluid3d 實測。
