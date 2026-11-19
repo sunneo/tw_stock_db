@@ -1780,3 +1780,23 @@ node scripts/eval/gpgpu_bench.build.js /tmp/gpgpu_bench.js && FA_EVAL_GL=gpu FA_
 
 **fluid3d_cl 的 CPU／GPU 切換（2026-11-20）**：與 nbody3d_cl 一致。預設 GPU（`cl_mode＝1`）；底部兩個按鈕（CPU 在 x=470、GPU 在 x=530，y=440..460），選中的是綠色底，字畫在填色之後。切換不需要讀回或上傳（粒子狀態一直在主機上，每步由 `sph_gpu` 暫存）。GPU 那一步後若 `fa_cl_backend()` 是 2（JS 墊片），`cl_check` 退回 CPU 並設 `cl_fb`，狀態行寫「source: CPU, GPU unavailable (no WebGL2 float)」。狀態行的後端文字：`GPU (OpenCL WebGL2)`、`GPU (OpenCL JS shim, not GPU)`、`GPU (OpenCL, not dispatched)`、`CPU (wasm)`。`fluid3d.ll` 維持純 CPU。
 - 驗證（`scripts/eval/llc_hud.eval.js`，SwiftShader，22 項全部通過）：開場 GPU 綠；點 CPU → CPU 綠；點 GPU → GPU 綠；模擬無浮點 → 退回 CPU 並顯示原因；y_mean 在 CPU 版、預設 GPU 版、途中 CPU→GPU 切換的版本上都是 0.090。
+
+### 21.y（續）互動範例的螢幕說明：music_player、midi_player、sdl2_piano、sdl2_pong、sdl2_gl_triangle（2026-11-20）
+
+做法（`renderer/src/examples/llc/_gen/_hud.py`）：
+- 字型沿用 `_font_data.py` 的 7×13 點陣（只有 ASCII，說明一律用英文）。`hud_text` 把整串每列的連續亮像素合併成一段（跨字元也合併），每段一次 `SDL_RenderFillRect`；`hud_int` 畫 0..999 的整數，不足三位補空白。
+- GL 版 `hud_text_gl` 每段一個四邊形，整段說明包在一個 `glBegin(GL_QUADS)`／`glEnd` 批次裡。
+- 產生器（music、midi）用 DSL 呼叫 `install_dsl(m)`；手寫的 piano、pong、gl_triangle 由 `_hud_patch.py` 插入（模組層級與畫面層級各一段標記區塊，重跑會先移除舊的再插入）。
+- 每個 HUD 的繪圖次數上界（最壞狀態，依 `_hud.runs` 計算）：music_player 600、midi_player 588、sdl2_piano 402、sdl2_pong 472、sdl2_gl_triangle 416（GL 四邊形）。都在 600 以內。
+- 狀態文字都是真實狀態：music 的播放／暫停、目前波形、BPM；midi 的播放／暫停、音符數、來源（內嵌示範曲或 .mid 檔）；piano 已彈音符數；pong 回擊數與最佳紀錄；gl_triangle 拖曳中／閒置。
+- gtk3_widgets 是真的 GTK 控制項（有標題、標籤「Not pressed yet.」與按鈕文字），不補。
+
+發現並修正的問題：
+- `llvm_core` 解析 `c"…"` 字串常數時會吃掉相鄰的空白（`"A  B"` 讀成 `"A B"`），造成「SPACE PAUSE  R」這類雙空白字串整段錯位 7 像素。修法：`_irb.esc` 把相鄰的空白寫成 `\20`（只影響相鄰空白，已提交的其他 .ll 不變，重產時才會變）。
+- 數字用 `hud_int` 時，不足三位補空白（0 畫成「  0」），檢查表的期望值要照這個寫。
+
+驗證（分開寫）：
+- **node（不需要視窗）**：`renderer/src/uml/llvm_hud.test.js` 6 項全過，IR 畫出的矩形與字型逐一相同（位置、長度、順序），包含雙空白、數字與非 ASCII 位元組（畫成空白）。`llvm_host.test.js` 41 項全過；五個改過的 .ll 都能編成 wasm。
+- **真 Electron（SDL 2D 畫布與 GL 畫布，預設 GL，未設 `FA_EVAL_GL=swiftshader`）**：`scripts/eval/llc_hud.eval.js` 第 5 節，50 項中 47 項通過。音樂盒、MIDI、piano、pong、gl_triangle 的說明文字與狀態（按鍵後會變）全部通過。
+- **未過的 3 項**是舊的 nbody3d_cl、fluid3d_cl 按鈕底色與狀態行檢查，原因尚未查明，不屬於這次的 HUD 範例。
+- **軟體繪圖與真 GPU 的差異**：這次的 SDL 文字是軟體 2D 畫布畫的；GL 三角形的疊加也是在這台機器的 GL 後端上檢查。真 GPU 的畫面未另外驗證。

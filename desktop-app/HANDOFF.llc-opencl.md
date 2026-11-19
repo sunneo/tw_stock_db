@@ -50,7 +50,7 @@ Continue from the handoff document at desktop-app/HANDOFF.llc-opencl.md. Read it
 1. **OpenCL↔OpenGL interop（步驟 2）**：先讓使用者拍板 `DESIGN.webgpu-cuda.md` §13 階段 6 的 4 個決定（領導建議：KIR 共用 GUI 畫布 context `gui_render.js:48`；context lost 退回 CPU 路徑並在 HUD 說明；GL 批次上限具名常數 1024，目前 `llvm_host.js:518` 只取前 20；不等 1c）。實作：位置紋理直接當點精靈來源，不讀回；軟體 GL 與真 GPU 的數字分開寫。
 2. **KIR 的 WebGPU 裝置層（步驟 3）**：同 `createDevice` 介面，重用 `gpu_core.js` 的 `probeAdapter`／`profileOf`；這台 `requestAdapter()` 是 null，只能做靜態檢查，標「未在真 GPU 驗證」。
 3. **CUDA runtime API 前端**：`cudaMalloc／cudaMemcpy／cudaLaunchKernel` 子集＋`gpgpu/cuda_vecadd.ll`，走 cudaweb／KIR。NVPTX 路線沒有 PTX 解析器，限制寫明。
-4. **HUD 文字（互動範例）**：music_player、midi_player、sdl2_piano、sdl2_pong、sdl2_gl_triangle（gtk3_widgets 若有同樣問題）。上限 **2000**（具名常數，寫進 DESIGN §21）、`draw_text` 合併同列連續像素、每個 HUD ≤600 道指令、7×13 字型（`_gen/_font_data.py`，只有 ASCII，中文不會顯示）、手寫 `.ll` 用 `_gen_*.py` 產生；`llc_hud.eval.js` 擴充成「有／沒有螢幕說明」檢查表。
+4. **HUD 文字（互動範例）：已完成（2026-11-20）**。music_player、midi_player、sdl2_piano、sdl2_pong、sdl2_gl_triangle 都有螢幕說明，狀態文字反映真實狀態；gtk3_widgets 是原生控制項，不補。每個 HUD 繪圖次數上界 600（依使用者指示；未採用舊的「上限 2000」，那是早先的草案數字）。做法與數字見 `DESIGN.run-terminal.md` §21.y（續）。真 Electron 檢查表 50 項過 47 項，未過的 3 項是舊的 nbody3d_cl／fluid3d_cl 按鈕底色與狀態行，原因未查，接手者先處理。
 5. **打包版 nbody 的真 GPU 量測**（使用者機器）：生成器在 `renderer/src/examples/llc/_gen/_wip_nbody3d_cl_packed.py.txt`（輸出已與 CPU 一致，軟體 GL 約 60 ms／幀、慢於 v489 的 20 ms）；真 GPU 若明顯更快再換上。
 6. **自動 swap／configure**：設計在 `DESIGN.run-terminal.md` §24；實作在分支 `wip/auto-swap`（f8dc80375，未審、未發布）。使用者要求「先寫下設計書就好」，所以先不接，等使用者說要做。
 
