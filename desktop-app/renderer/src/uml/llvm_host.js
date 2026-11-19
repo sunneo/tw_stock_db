@@ -86,6 +86,10 @@
         glColor3f: { params: ['float', 'float', 'float'], ret: 'void' }, glColor4f: { params: ['float', 'float', 'float', 'float'], ret: 'void' },
         glVertex2f: { params: ['float', 'float'], ret: 'void' }, glVertex3f: { params: ['float', 'float', 'float'], ret: 'void' },
         glEnable: { params: ['i32'], ret: 'void' }, glDisable: { params: ['i32'], ret: 'void' },
+        // OpenGL 1.5 頂點緩衝區（VBO）與頂點陣列
+        glGenBuffers: { params: ['i32', 'ptr'], ret: 'void' }, glDeleteBuffers: { params: ['i32', 'ptr'], ret: 'void' }, glBindBuffer: { params: ['i32', 'i32'], ret: 'void' },
+        glBufferData: { params: ['i32', 'i32|i64', 'ptr', 'i32'], ret: 'void' }, glBufferSubData: { params: ['i32', 'i32|i64', 'i32|i64', 'ptr'], ret: 'void' },
+        glEnableClientState: { params: ['i32'], ret: 'void' }, glDisableClientState: { params: ['i32'], ret: 'void' }, glVertexPointer: { params: ['i32', 'i32', 'i32', 'ptr'], ret: 'void' }, glDrawArrays: { params: ['i32', 'i32', 'i32'], ret: 'void' },
         glPointSize: { params: ['float'], ret: 'void' }, glLineWidth: { params: ['float'], ret: 'void' },
         glBlendFunc: { params: ['i32', 'i32'], ret: 'void' }, glPointParameterfv: { params: ['i32', 'ptr'], ret: 'void' }, gluLookAt: { params: ['double', 'double', 'double', 'double', 'double', 'double', 'double', 'double', 'double'], ret: 'void' },
         // GTK3：widget（視窗、盒子、標籤、輸入框、按鈕、勾選框、進度條）與訊號、計時器。函式指標是 wasm 函式表格的索引（見 llvm_core 的函式指標）
@@ -111,9 +115,12 @@
         clGetProgramBuildInfo: { params: ['ptr', 'ptr', 'i32', 'i32|i64', 'ptr', 'ptr'], ret: 'i32' },
         clCreateKernel: { params: ['ptr', 'ptr', 'ptr'], ret: 'ptr' }, clSetKernelArg: { params: ['ptr', 'i32', 'i32|i64', 'ptr'], ret: 'i32' },
         fa_cl_backend: { params: [], ret: 'i32' },
-        fa_cl_pack: { params: ['ptr', 'i32'], ret: 'i32' }, fa_cl_view: { params: ['ptr', 'i32'], ret: 'ptr' }, fa_cl_points: { params: ['ptr', 'ptr', 'ptr', 'i32', 'ptr', 'ptr'], ret: 'i32' }, fa_cl_nopoints: { params: [], ret: 'i32' },   // 本程式最後一次 OpenCL 派送用的後端：0＝尚未派送、1＝WebGL2（KIR，裝置或複製）、2＝JS 墊片
+        fa_cl_pack: { params: ['ptr', 'i32'], ret: 'i32' }, fa_cl_view: { params: ['ptr', 'i32'], ret: 'ptr' },    // 本程式最後一次 OpenCL 派送用的後端：0＝尚未派送、1＝WebGL2（KIR，裝置或複製）、2＝JS 墊片
         clEnqueueNDRangeKernel: { params: ['ptr', 'ptr', 'i32', 'ptr', 'ptr', 'ptr', 'i32', 'ptr', 'ptr'], ret: 'i32' }, clFinish: { params: ['ptr'], ret: 'i32' }, clFlush: { params: ['ptr'], ret: 'i32' },
         clWaitForEvents: { params: ['i32', 'ptr'], ret: 'i32' }, clReleaseEvent: { params: ['ptr'], ret: 'i32' },
+        // cl_khr_gl_sharing
+        clCreateFromGLBuffer: { params: ['ptr', 'i32|i64', 'i32', 'ptr'], ret: 'ptr' }, clGetGLObjectInfo: { params: ['ptr', 'ptr', 'ptr'], ret: 'i32' },
+        clEnqueueAcquireGLObjects: { params: ['ptr', 'i32', 'ptr', 'i32', 'ptr', 'ptr'], ret: 'i32' }, clEnqueueReleaseGLObjects: { params: ['ptr', 'i32', 'ptr', 'i32', 'ptr', 'ptr'], ret: 'i32' },
         clReleaseMemObject: { params: ['ptr'], ret: 'i32' }, clReleaseKernel: { params: ['ptr'], ret: 'i32' }, clReleaseProgram: { params: ['ptr'], ret: 'i32' },
         clReleaseCommandQueue: { params: ['ptr'], ret: 'i32' }, clReleaseContext: { params: ['ptr'], ret: 'i32' },
     };
@@ -201,7 +208,7 @@
 
     let installs = 0;   // 同時有幾個程式在用（登記是全域的：最後一個結束才取消，不然別的 IR 工具會把 printf 之類當成主機函式）
     function create(o) {
-        o = o || {}; const asyncRb = !!o.asyncReadback; const sigs = Object.assign({}, SIGS, { clEnqueueReadBuffer: Object.assign({}, SIGS.clEnqueueReadBuffer, { async: !!o.asyncReadback }), clEnqueueNDRangeKernel: Object.assign({}, SIGS.clEnqueueNDRangeKernel, { async: !!o.asyncReadback }) }); const gui = o.gui, sleep = o.sleep || ((ms) => new Promise((r) => setTimeout(r, ms))), now = o.now || (() => Date.now()), warn = o.warn || (() => {});
+        o = o || {}; const asyncRb = !!o.asyncReadback; const sigs = Object.assign({}, SIGS, { clEnqueueReadBuffer: Object.assign({}, SIGS.clEnqueueReadBuffer, { async: !!o.asyncReadback }), clEnqueueNDRangeKernel: Object.assign({}, SIGS.clEnqueueNDRangeKernel, { async: !!o.asyncReadback }), glDrawArrays: Object.assign({}, SIGS.glDrawArrays, { async: !!o.asyncReadback }), glBufferSubData: Object.assign({}, SIGS.glBufferSubData, { async: !!o.asyncReadback }), clEnqueueReleaseGLObjects: Object.assign({}, SIGS.clEnqueueReleaseGLObjects, { async: !!o.asyncReadback }) }); const gui = o.gui, sleep = o.sleep || ((ms) => new Promise((r) => setTimeout(r, ms))), now = o.now || (() => Date.now()), warn = o.warn || (() => {});
         // OpenCL → KIR 接線（DESIGN.webgpu-cuda.md §13 階段 4）：kirTranslate(src) → { 核心名: KIR 核心 } 或 null（不支援）；kirRun(核心, { 參數名: 型別化陣列 }, { 純量名: 數字 }, N) → { out: { 名: Float32Array } }（失敗就丟例外）。
         // 沒有提供、或翻譯／執行失敗，就退回 JS 後備（clCompile 的核心）。
         const kirTranslate = o.kirTranslate || null, kirRun = o.kirRun || null;
@@ -211,7 +218,9 @@
         let clBackend = 0;   // fa_cl_backend 的值（見 SIGS）
         const t0 = now(); let handleSeq = 0x1000, winSeq = 0, nodeSeq = 0; const handles = new Map();   // 不透明指標（SDL_Window*、SDL_Renderer*、SDL_GLContext）→ 狀態
         const mk = (obj) => { const h = (handleSeq += 16); handles.set(h, obj); return h; };
-        const gl = { clear: [0.05, 0.06, 0.09, 1], mode: 'MV', stacks: { MV: [I4()], P: [I4()] }, begin: null, color: [1, 1, 1], batches: [], depth: false, pointSize: 1, blend: false, blendAdd: false, alpha: 1, atten: 0, warned: {} };
+        let glMaterialize = () => {}, glFastEligible = () => false, glFastPoints = () => false;   // 由 OpenCL 區塊填入
+        const glStats = { drawFast: 0, drawCopy: 0, releaseDeferred: 0, releaseSync: 0 };   // 執行期優化的計數（測試與量測用）
+        const gl = { clear: [0.05, 0.06, 0.09, 1], mode: 'MV', stacks: { MV: [I4()], P: [I4()] }, begin: null, color: [1, 1, 1], batches: [], bufs: new Map(), nextBuf: 1, arrayBuf: 0, va: false, otherAttr: 0, vp: null, depth: false, pointSize: 1, blend: false, blendAdd: false, alpha: 1, atten: 0, warned: {} };
         const top = (n) => gl.stacks[n][gl.stacks[n].length - 1];
         const setTop = (n, m) => { gl.stacks[n][gl.stacks[n].length - 1] = m; };
         const cur = () => (gl.mode === 'P' ? 'P' : 'MV');
@@ -415,7 +424,38 @@
             glColor3f: (ctx, r, g, b) => { gl.color = [r, g, b]; }, glColor4f: (ctx, r, g, b) => { gl.color = [r, g, b]; },
             glVertex2f: (ctx, x, y) => { if (gl.begin) gl.begin.verts.push(x, y, 0, gl.color[0], gl.color[1], gl.color[2]); },
             glVertex3f: (ctx, x, y, z) => { if (gl.begin) gl.begin.verts.push(x, y, z, gl.color[0], gl.color[1], gl.color[2]); },
-            glEnable: (ctx, cap) => { if (cap === 0x0B71) gl.depth = true; else if (cap === 0x0BE2) gl.blend = true; }, glDisable: (ctx, cap) => { if (cap === 0x0B71) gl.depth = false; else if (cap === 0x0BE2) gl.blend = false; },
+            glEnable: (ctx, cap) => { if (cap === 0x0B71) gl.depth = true; else if (cap === 0x0BE2) gl.blend = true; else if (cap === 0x0B50 || cap === 0x0DE1) gl.otherAttr++; }, glDisable: (ctx, cap) => { if (cap === 0x0B71) gl.depth = false; else if (cap === 0x0BE2) gl.blend = false; else if (cap === 0x0B50 || cap === 0x0DE1) gl.otherAttr = Math.max(0, gl.otherAttr - 1); },
+            // ---- VBO：緩衝區資料在主機端（Uint8Array）；glDrawArrays 依 glVertexPointer 取出 xyz（顏色用目前的 glColor）併入一個批次，之後跟 glBegin 批次同路徑。
+            // b.rev 是 GL 端的寫入版本（cl_khr_gl_sharing 的別名用它判斷要不要重新上傳）；b.pend 是 CL 共享物件，裝置上的內容比 b.data 新（執行期優化：還沒讀回）。
+            glGenBuffers: (ctx, n, p) => { for (let i = 0; i < n; i++) { const id = gl.nextBuf++; gl.bufs.set(id, { id, data: new Uint8Array(0), rev: 0, pend: null }); ctx.dv().setUint32(p + 4 * i, id, true); } },
+            glDeleteBuffers: (ctx, n, p) => { for (let i = 0; i < n; i++) { const id = ctx.dv().getUint32(p + 4 * i, true); if (gl.arrayBuf === id) gl.arrayBuf = 0; gl.bufs.delete(id); } },
+            glBindBuffer: (ctx, target, id) => { if (target === 0x8892) gl.arrayBuf = gl.bufs.has(id) ? id : 0; },
+            glBufferData: (ctx, target, size, ptr) => {
+                const b = target === 0x8892 ? gl.bufs.get(gl.arrayBuf) : null; if (!b) return; size = Number(size);
+                if (b.data.length !== size) b.data = new Uint8Array(size);   // 同大小就重用同一塊記憶體（CL 別名要靠它）
+                if (ptr) b.data.set(ctx.u8().subarray(ptr, ptr + size)); b.rev++; b.pend = null;
+            },
+            glBufferSubData: (ctx, target, off, size, ptr) => {
+                const b = target === 0x8892 ? gl.bufs.get(gl.arrayBuf) : null; if (!b) return; off = Number(off); size = Number(size); if (off < 0 || off + size > b.data.length) return;
+                const go = () => { b.data.set(ctx.u8().subarray(ptr, ptr + size), off); b.rev++; };
+                const r = glMaterialize(b); return r && typeof r.then === 'function' ? r.then(go) : go();
+            },
+            glEnableClientState: (ctx, c) => { if (c === 0x8074) gl.va = true; else gl.otherAttr++; }, glDisableClientState: (ctx, c) => { if (c === 0x8074) gl.va = false; else gl.otherAttr = Math.max(0, gl.otherAttr - 1); },
+            glVertexPointer: (ctx, size, type, stride, ptr) => { gl.vp = { size, type, stride, ptr, buf: gl.arrayBuf }; },
+            glDrawArrays: (ctx, mode, first, count) => {
+                if (!gl.va || !gl.vp || count < 1 || first < 0) return; const vp = gl.vp, b = vp.buf ? gl.bufs.get(vp.buf) : null;
+                if (vp.type !== 0x1406 || (vp.size !== 2 && vp.size !== 3)) { if (!gl.warned.vp) { gl.warned.vp = 1; warn('glVertexPointer：只支援 GL_FLOAT 的 2 或 3 個分量\n'); } return; }
+                const stride = vp.stride || vp.size * 4;
+                // 執行期優化（DESIGN.webgpu-cuda.md §13 階段 10）：緩衝區是 CL 共享物件、最後由 WebGPU 核心寫入，且這次是加法混合的 GL_POINTS、沒有其他屬性 → 位置不讀回，直接當頂點畫
+                if (b && b.pend && mode === 0 && vp.size === 3 && stride % 4 === 0 && vp.ptr % 4 === 0 && glFastPoints(b, vp, stride, first, count)) { glStats.drawFast++; return; }
+                const go = () => {
+                    let src, base; if (b) { src = b.data; base = Number(vp.ptr); } else { src = ctx.u8(); base = Number(vp.ptr); }
+                    const dv = new DataView(src.buffer, src.byteOffset, src.byteLength), verts = [], c = gl.color;
+                    for (let i = 0; i < count; i++) { const o = base + (first + i) * stride; if (o + vp.size * 4 > src.byteLength) break; verts.push(dv.getFloat32(o, true), dv.getFloat32(o + 4, true), vp.size === 3 ? dv.getFloat32(o + 8, true) : 0, c[0], c[1], c[2]); }
+                    if (verts.length) gl.batches.push({ mode, verts, mvp: mul4(top('P'), top('MV')), additive: gl.blend && gl.blendAdd, size: gl.pointSize, ref: gl.atten > 0 ? 1 / Math.sqrt(gl.atten) : 0, gain: gl.alpha }); glStats.drawCopy++;
+                };
+                const r = b ? glMaterialize(b) : null; return r && typeof r.then === 'function' ? r.then(go) : go();
+            },
             glPointSize: (ctx, sz) => { gl.pointSize = sz; }, glLineWidth: () => {},
             glBlendFunc: (ctx, sf, df) => { gl.blendAdd = (df === 1); },
             glPointParameterfv: (ctx, pname, p) => { if (pname === 0x8129) { const c = new DataView(ctx.mem().buffer).getFloat32(p + 8, true); gl.atten = c > 0 ? c : 0; } },   // GL_POINT_DISTANCE_ATTENUATION：只用 (0, 0, c)＝大小隨距離反比
@@ -567,6 +607,17 @@
                 if (!r.devOk) { if (!r.hostOk) return null; kirDev.upload(r.dev, new Float32Array(r.data.buffer, r.data.byteOffset, r.size / 4)); r.devOk = true; }
                 return m.parentMem ? m.dev : r.dev;
             };
+            // GL 緩衝區的內容在裝置上較新（b.pend）時，把它讀回 b.data（別名到 CL 記憶體的 data）。回傳 undefined 或 Promise
+            glMaterialize = (b) => { const m = b.pend; if (!m) return; b.pend = null; const sr = syncHost(m); return sr && typeof sr.then === 'function' ? sr : undefined; };
+            glFastEligible = () => !o.noInterop && !!kirDev && !!kirDev.drawPoints && kirDevKind === 'webgpu' && !!gl.win && !!o.setExtern;
+            glFastPoints = (b, vp, stride, first, count) => {
+                if (!glFastEligible() || gl.otherAttr || !(gl.blend && gl.blendAdd) || b.pend.glBuf !== b) return false;
+                try {
+                    const m = b.pend, dev = ensureDev(m); if (!dev) return false; const win = gl.win, c = gl.color;
+                    const canvas = kirDev.drawPoints({ xyz: dev, stride: stride / 4, base: vp.ptr / 4 + first * (stride / 4) }, count, { mvp: Array.from(mul4(top('P'), top('MV'))), offset: [0, 0, 0], scale: 1, sizePx: gl.pointSize, ref: gl.atten > 0 ? 1 / Math.sqrt(gl.atten) : 0, gain: gl.alpha, colors: Array.from({ length: 10 }, () => [c[0], c[1], c[2]]), width: win.w, height: win.h, makeCanvas: o.makeCanvas });
+                    gl.batches.push({ extern: 'clpts', canvas }); return true;
+                } catch (e) { warn('OpenCL／GL 互通：裝置直接畫點失敗，退回讀回：' + e.message + '\n'); return false; }
+            };
             Object.assign(impls, {
                 clGetPlatformIDs: (ctx, n, p, num) => { if (!n && p) return -30; if (p && n) ctx.dv().setUint32(p, cl.plat, true); if (num) ctx.dv().setUint32(num, 1, true); return 0; },
                 clGetDeviceIDs: (ctx, plat, type, n, p, num) => { if (plat !== cl.plat) return -32; type = Number(type); if (!(type & (2 | 4 | 1 | 0xFFFFFFFF))) return -31; if (type === 4 && !(type & 2)) return -1;   // 沒有 GPU 裝置（CPU 後備只有一個 CPU 裝置）：呼叫端通常會退回 CPU
@@ -664,33 +715,33 @@
                 fa_cl_pack: (ctx, b, parts) => { const m = clH(b, 'clmem'); parts = Number(parts); if (!m || m.parentMem || parts < 1 || m.size % (parts * 4) || m.packParts) return -30; m.packParts = parts; return 0; },
                 // 第 part 部分（與 root 共用資料；寫入與讀回都通過 root 的狀態）；失敗回傳 0
                 fa_cl_view: (ctx, b, part) => { const m = clH(b, 'clmem'); part = Number(part); if (!m || m.parentMem || !m.packParts || part < 0 || part >= m.packParts) return 0; const sz = m.size / m.packParts; return mk({ kind: 'clmem', size: sz, data: m.data.subarray(part * sz, (part + 1) * sz), parentMem: m, part, dev: null, hostOk: true, devOk: false }); },
-                // 點精靈（DESIGN.webgpu-cuda.md §13 階段 9）：只有 WebGPU 裝置才走這裡。位置留在裝置上，drawPoints 直接畫到一張畫布；
-                // 畫布放進本幀的 GL 批次（flushGl 會交給 GUI 的 extern 記號），不讀回。回傳 1＝已畫（呼叫端不要讀回）；0＝不能畫（沒有 WebGPU、沒有 GL 視窗、或失敗），呼叫端退回讀回＋GL 點。
-                // 參數：x、y、z 的 cl 記憶體；n 點數；pal＝10 色×3 個 float 接著縮放 1 個 float（共 31 個，GL 路徑也是 ×0.1）；ctr＝盒子中心 3 個 float（點的位置是 (x−ctr)·縮放）。
-                fa_cl_points: (ctx, xb, yb, zb, n, pal, ctr) => {
-                    const mx = clH(xb, 'clmem'), my = clH(yb, 'clmem'), mz = clH(zb, 'clmem'), count = Number(n) | 0;
-                    if (!mx || !my || !mz || count < 1 || o.noPoints || !kirDev || !kirDev.drawPoints || kirDevKind !== 'webgpu' || !gl.win || !o.setExtern) return 0;
-                    try {
-                        const dx = ensureDev(mx), dy = ensureDev(my), dz = ensureDev(mz);
-                        if (!dx || !dy || !dz) return 0;
-                        const dv = ctx.dv(), colors = [];
-                        for (let i = 0; i < 10; i++) colors.push([dv.getFloat32(pal + 12 * i, true), dv.getFloat32(pal + 12 * i + 4, true), dv.getFloat32(pal + 12 * i + 8, true)]);
-                        const scale = dv.getFloat32(pal + 120, true), offset = [dv.getFloat32(ctr, true), dv.getFloat32(ctr + 4, true), dv.getFloat32(ctr + 8, true)];
-                        const win = gl.win;
-                        const canvas = kirDev.drawPoints({ x: dx, y: dy, z: dz }, count, { mvp: Array.from(mul4(top('P'), top('MV'))), offset, scale, sizePx: gl.pointSize, ref: gl.atten > 0 ? 1 / Math.sqrt(gl.atten) : 0, gain: gl.alpha, colors, width: win.w, height: win.h, makeCanvas: o.makeCanvas });
-                        gl.batches.push({ extern: 'clpts', canvas });
-                    } catch (e) { warn('OpenCL：點精靈畫圖失敗，退回讀回＋GL 點：' + e.message + '\n'); return 0; }
-                    return 1;
+                // ---- cl_khr_gl_sharing：CL 記憶體物件的 data 與 GL 緩衝區共用同一塊 Uint8Array（別名）。
+                // Acquire：GL 端有新寫入（rev 不同）→ 主機副本是新的，裝置副本作廢；Release：內容要回到 GL 緩衝區——能優化就留在裝置（b.pend），否則讀回主機（別名，GL 立即看到）。
+                clCreateFromGLBuffer: (ctx, c, flags, name, err) => { if (!clH(c, 'clctx')) { errOut(ctx, err, -34); return 0; } const b = gl.bufs.get(name); if (!b || !b.data.length) { errOut(ctx, err, -60); return 0; } errOut(ctx, err, 0); return mk({ kind: 'clmem', size: b.data.length, data: b.data, dev: null, hostOk: true, devOk: false, glBuf: b, glRev: b.rev }); },
+                clGetGLObjectInfo: (ctx, mp, typep, namep) => { const m = clH(mp, 'clmem'); if (!m || !m.glBuf) return -60; if (typep) ctx.dv().setUint32(typep, 0x2000, true); if (namep) ctx.dv().setUint32(namep, m.glBuf.id, true); return 0; },
+                clEnqueueAcquireGLObjects: (ctx, q, n, objs) => {
+                    if (!clH(q, 'clq')) return -36; const ms = []; for (let i = 0; i < n; i++) { const m = clH(ctx.dv().getUint32(objs + 4 * i, true), 'clmem'); if (!m || !m.glBuf) return -60; ms.push(m); }
+                    for (const m of ms) { const b = m.glBuf; if (b.pend === m) { b.pend = null; continue; } if (m.glRev !== b.rev || m.data !== b.data) { m.data = b.data; m.size = b.data.length; m.glRev = b.rev; setHostNew(m); } }
+                    return 0;
                 },
-                // 量測用（o.noPoints）：1＝不走點精靈，每幀照舊讀回（讀回路徑的對照組）
-                fa_cl_nopoints: () => (o.noPoints ? 1 : 0),                clFinish: (ctx, q) => (clH(q, 'clq') ? 0 : -36), clFlush: (ctx, q) => (clH(q, 'clq') ? 0 : -36), clWaitForEvents: () => 0, clReleaseEvent: () => 0,
+                clEnqueueReleaseGLObjects: (ctx, q, n, objs) => {
+                    if (!clH(q, 'clq')) return -36; const ms = []; for (let i = 0; i < n; i++) { const m = clH(ctx.dv().getUint32(objs + 4 * i, true), 'clmem'); if (!m || !m.glBuf) return -60; ms.push(m); }
+                    const waits = [];
+                    for (const m of ms) {
+                        const r = rootOf(m), b = m.glBuf;
+                        if (r.devOk && !r.hostOk && glFastEligible()) { b.pend = m; glStats.releaseDeferred++; continue; }   // 裝置上較新：先不讀回，等 GL 真的需要（glDrawArrays 退回路徑、glBufferSubData）才物化
+                        const sr = syncHost(m); glStats.releaseSync++; if (sr && typeof sr.then === 'function') waits.push(sr);
+                    }
+                    return waits.length ? Promise.all(waits).then(() => 0) : 0;
+                },
+                clFinish: (ctx, q) => (clH(q, 'clq') ? 0 : -36), clFlush: (ctx, q) => (clH(q, 'clq') ? 0 : -36), clWaitForEvents: () => 0, clReleaseEvent: () => 0,
                 clReleaseMemObject: (ctx, p) => { const m = clH(p, 'clmem'); if (!m) return -38; if (!m.parentMem && m.dev && kirDev) kirDev.free(m.dev); m.dev = null; handles.delete(p); return 0; }, clReleaseKernel: (ctx, p) => { if (!clH(p, 'clkernel')) return -48; handles.delete(p); return 0; },
                 clReleaseProgram: (ctx, p) => { if (!clH(p, 'clprog')) return -44; handles.delete(p); return 0; }, clReleaseCommandQueue: (ctx, p) => { if (!clH(p, 'clq')) return -36; handles.delete(p); return 0; },
                 clReleaseContext: (ctx, p) => { if (!clH(p, 'clctx')) return -34; handles.delete(p); return 0; },
             });
         }
 
-        return { impls, SIGS: sigs, toS16, install(FaLlvm) { installs++; FaLlvm.registerHost(sigs); }, uninstall(FaLlvm) { if (--installs <= 0) { installs = 0; FaLlvm.unregisterHost(Object.keys(sigs)); } }, close() { closeAllFiles(); handles.clear(); Array.from(audioDevs.values()).forEach((d) => { gui('audio', { cmd: 'stream_close', id: d.id }); }); audioDevs.clear(); } };
+        return { impls, SIGS: sigs, glStats, glState: gl, toS16, install(FaLlvm) { installs++; FaLlvm.registerHost(sigs); }, uninstall(FaLlvm) { if (--installs <= 0) { installs = 0; FaLlvm.unregisterHost(Object.keys(sigs)); } }, close() { closeAllFiles(); handles.clear(); Array.from(audioDevs.values()).forEach((d) => { gui('audio', { cmd: 'stream_close', id: d.id }); }); audioDevs.clear(); } };
     }
     return { create, SIGS, clCompile, formatC, scancodeOf, keycodeOf };
 });

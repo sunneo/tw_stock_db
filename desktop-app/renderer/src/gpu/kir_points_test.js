@@ -127,5 +127,17 @@ expectErr('已釋放的 buffer', () => G.drawPoints(pos2, 10, base), /未釋放�
 const posV = { x: G.alloc(10, 'f32x4'), y: G.alloc(10, 'f32'), z: G.alloc(10, 'f32') };
 expectErr('f32x4 位置被拒絕', () => G.drawPoints(posV, 10, base), /未釋放的 f32/);
 
+// 8. 交錯頂點（標準 glVertexPointer）：{ xyz, stride, base }——三個綁定都是同一個 buffer，uniform 帶 stride 與 base
+{
+    const aos = G.alloc(3 * 20 + 9, 'f32'), nb = dev.binds.length;
+    G.drawPoints({ xyz: aos, stride: 3, base: 9 }, 20, base);
+    const e = dev.binds[nb], u = e[3].resource.buffer, g = new Float32Array(u.u8.buffer, u.u8.byteOffset, 68);
+    check('AoS：綁定 0／1／2 都是 xyz 那個 buffer', e[0].resource.buffer === aos.gbuf && e[1].resource.buffer === aos.gbuf && e[2].resource.buffer === aos.gbuf);
+    check('AoS：uniform stride＝3、base＝9', g[26] === 3 && g[27] === 9, [g[26], g[27]]);
+    check('AoS：一般路徑 stride 欄位維持 0', (() => { const nb2 = dev.binds.length; G.drawPoints(pos, 100, base); const u2 = dev.binds[nb2][3].resource.buffer; const g2 = new Float32Array(u2.u8.buffer, u2.u8.byteOffset, 68); return g2[26] === 0 && g2[27] === 0; })());
+    expectErr('AoS：buffer 不夠大', () => G.drawPoints({ xyz: aos, stride: 3, base: 9 }, 21, base), /小於點數/);
+    expectErr('AoS：stride 小於 3', () => G.drawPoints({ xyz: aos, stride: 2 }, 5, base), /stride 要/);
+}
+
 console.log('kir_points: ' + ok + ' passed' + (bad.length ? ', ' + bad.length + ' FAILED: ' + bad.join(' | ') : ''));
 if (bad.length) process.exitCode = 1;

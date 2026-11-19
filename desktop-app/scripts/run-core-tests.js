@@ -117,7 +117,7 @@ const suites = [
     ['KIR 主機掛鉤：WebGPU → WebGL2 → JS 的選擇與每一步的原因（假裝置）', 'renderer/src/gpu/kir_host_hooks_test.js'],
     ['KIR 點精靈 drawPoints（階段 9）：參數檢查、uniform 佈局、一次 draw、加法混合管線、不讀回、畫布只建一次（假裝置）', 'renderer/src/gpu/kir_points_test.js'],
     ['KIR／OpenCL 一致性套件（JS 參考後端，137 項：逐元素、邊界、迴圈與歸約、全對全、積分、f32x4、多輸出）', 'renderer/src/gpu/kir_conformance_test.js'],
-    ['llvm_host 點精靈 fa_cl_points（階段 9）：WebGPU 時 drawPoints 參數與 flush 的 extern 記號；WebGL2、沒有視窗、畫圖失敗時回傳 0（假記憶體與假裝置）', 'renderer/src/uml/llvm_points_test.js'],
+    ['llvm_host 標準 GL 頂點緩衝區（VBO）、cl_khr_gl_sharing、執行期優化（階段 A、B、C、D）：真 wasm＋軟體光柵比對像素；假 WebGPU 裝置驗證讀回次數為 0 與各退回路徑', 'renderer/src/uml/llvm_vbo_test.js'],
     ['llvm_host 非同步讀回（WebGPU）：SIGS 旗標、沒有 JSPI 的說明；有 JSPI 時跑假的非同步裝置＋真 wasm', 'renderer/src/uml/llvm_host_async_test.js'],
     ['midigenai 假 session（cudaweb 解碼）：KV 佈局轉換、重放重建、錯誤傳遞', 'renderer/src/gpu/midi_session_test.js'],
     ['midigenai GPU 運算（RMSNorm／RoPE／注意力／SiLU·up）：沒有 WebGPU 退 cpu-js 且與參考一致', 'renderer/src/gpu/midi_gpu_test.js'],

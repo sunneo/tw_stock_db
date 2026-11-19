@@ -267,7 +267,7 @@ struct Pm {
   mvp: mat4x4<f32>,
   off: vec4<f32>,
   scl: f32, size: f32, rf: f32, gain: f32,
-  vw: f32, vh: f32, pad0: f32, pad1: f32,
+  vw: f32, vh: f32, stride: f32, base: f32,
   col: array<vec4<f32>, 10>,
 };
 @group(0) @binding(0) var<storage, read> PX: array<f32>;
@@ -283,7 +283,9 @@ struct VOut {
 fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VOut {
   var cs = array<vec2<f32>, 4>(vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, -1.0), vec2<f32>(-1.0, 1.0), vec2<f32>(1.0, 1.0));
   let c = cs[vi];
-  let w = (vec3<f32>(PX[ii], PY[ii], PZ[ii]) - U.off.xyz) * U.scl;
+  var pp: vec3<f32>;
+  if (U.stride > 0.0) { let b = u32(U.base) + ii * u32(U.stride); pp = vec3<f32>(PX[b], PX[b + 1u], PX[b + 2u]); } else { pp = vec3<f32>(PX[ii], PY[ii], PZ[ii]); }
+  let w = (pp - U.off.xyz) * U.scl;
   let clip = U.mvp * vec4<f32>(w, 1.0);
   var ps = U.size;
   if (U.rf > 0.0) { ps = U.size * U.rf / max(clip.w, 0.2); }
@@ -339,11 +341,13 @@ fn fs(@location(0) uv: vec2<f32>, @location(1) @interpolate(flat) ci: u32) -> @l
         const drawPoints = (pos, count, q) => {
             live();
             const o = q || {};
+            const aos = !!(pos && pos.xyz);   // 交錯的頂點緩衝區（標準 glVertexPointer）：xyz 一個緩衝區，每點 stride 個 f32，從 base 起
+            if (aos) { pos = { x: pos.xyz, y: pos.xyz, z: pos.xyz, stride: pos.stride || 3, base: pos.base || 0 }; if (!(pos.stride >= 3) || !Number.isInteger(pos.stride) || !(pos.base >= 0) || !Number.isInteger(pos.base)) throw new Error('drawPoints：stride 要 ≥3 的整數、base 要非負整數'); }
             if (!pos || !pos.x || !pos.y || !pos.z) throw new Error('drawPoints：要 {x, y, z} 三個位置緩衝區');
             for (const k of ['x', 'y', 'z']) {
                 const b = pos[k];
                 if (b.freed || b.elem !== 'f32') throw new Error('drawPoints：' + k + ' 要是未釋放的 f32 緩衝區');
-                if (b.N < count) throw new Error('drawPoints：' + k + ' 的大小 ' + b.N + ' 小於點數 ' + count);
+                if (b.N < (aos ? pos.base + (count - 1) * pos.stride + 3 : count)) throw new Error('drawPoints：' + k + ' 的大小 ' + b.N + ' 小於點數 ' + count);
             }
             if (!Number.isInteger(count) || count < 1 || count > 1000000) throw new Error('drawPoints：點數要是 1 到 1000000 的整數');
             if (!Array.isArray(o.mvp) || o.mvp.length !== 16 || o.mvp.some((v) => !Number.isFinite(v))) throw new Error('drawPoints：mvp 要是 16 個有限數字');
@@ -358,7 +362,7 @@ fn fs(@location(0) uv: vec2<f32>, @location(1) @interpolate(flat) ci: u32) -> @l
             const f = new Float32Array(PTS_UNI_BYTES / 4);
             f.set(o.mvp, 0);
             f[16] = o.offset[0]; f[17] = o.offset[1]; f[18] = o.offset[2];
-            f[20] = o.scale; f[21] = o.sizePx; f[22] = o.ref || 0; f[23] = o.gain; f[24] = W; f[25] = H;
+            f[20] = o.scale; f[21] = o.sizePx; f[22] = o.ref || 0; f[23] = o.gain; f[24] = W; f[25] = H; if (aos) { f[26] = pos.stride; f[27] = pos.base; }
             o.colors.forEach((col, i) => { f[28 + 4 * i] = col[0]; f[28 + 4 * i + 1] = col[1]; f[28 + 4 * i + 2] = col[2]; });
             gdev.queue.writeBuffer(p.ubuf, 0, f);
             const bg = gdev.createBindGroup({ layout: p.bgl, entries: [

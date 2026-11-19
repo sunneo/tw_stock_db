@@ -1,5 +1,5 @@
 // node scripts/eval/llc_consistency.build.js <輸出檔>：內嵌 gpgpu/nbody3d、nbody3d_cl、fluid3d、fluid3d_cl 的 .ll 到 llc_consistency.eval.js。
-// 執行（app 要是最新 build 的，因為 OpenCL 的 fa_cl_points 掛在 app 的 llvm_host 上）：
+// 執行（app 要是最新 build 的，因為 OpenCL／GL 的互通掛在 app 的 llvm_host 上）：
 //   FA_EVAL_GL=gpu FA_EVAL_TIMEOUT_MS=3000000 node scripts/eval/run_eval.js <輸出檔> 17994
 const fs = require('fs'), path = require('path');
 const root = path.join(__dirname, '..', '..');

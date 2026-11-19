@@ -31,6 +31,7 @@
                 case 'cmp': return `(${ex(x.a)} ${x.op} ${ex(x.b)})`;
                 case 'sel': return `select(${ex(x.b)}, ${ex(x.a)}, ${ex(x.c)})`;
                 case 'call': {
+                    if ((x.fn === 'sin' || x.fn === 'cos') && x.args.length === 1) return `fa_trig(${ex(x.args[0])}, ${x.fn === 'cos' ? 'true' : 'false'})`;
                     const map = { rsqrt: 'inverseSqrt' };
                     return `${map[x.fn] || x.fn}(${x.args.map(ex).join(', ')})`;
                 }
@@ -139,7 +140,7 @@
         const fields = uni.map((p) => `  ${p.name}: ${p.type === 'f32' ? 'f32' : 'i32'},`).concat(['  _count: i32,']);
         const uniLine = `struct Params {\n${fields.join('\n')}\n}\n@group(0) @binding(${bi}) var<uniform> P: Params;`;
         bindings.push({ name: 'P', kind: 'uniform', binding: bi });
-        const code = `${bufLines.join('\n')}\n${uniLine}\n${decls.join('\n')}\n\n@compute @workgroup_size(${wg})\nfn main(@builtin(global_invocation_id) gid3: vec3<u32>, @builtin(local_invocation_id) lid3: vec3<u32>) {\n  let gid: i32 = i32(gid3.x) + i32(gid3.y) * ${65535 * wg};\n  let in_range: bool = gid < P._count;\n  let li: i32 = i32(lid3.x);\n${parts.join('')}}\n`;
+        const code = `${WGSL_TRIG}${bufLines.join('\n')}\n${uniLine}\n${decls.join('\n')}\n\n@compute @workgroup_size(${wg})\nfn main(@builtin(global_invocation_id) gid3: vec3<u32>, @builtin(local_invocation_id) lid3: vec3<u32>) {\n  let gid: i32 = i32(gid3.x) + i32(gid3.y) * ${65535 * wg};\n  let in_range: bool = gid < P._count;\n  let li: i32 = i32(lid3.x);\n${parts.join('')}}\n`;
         return { ok: true, code, workgroupSize: wg, bindings, uniformFields: uni.map((p) => ({ name: p.name, type: p.type })).concat([{ name: '_count', type: 'i32' }]), tiles: [...tiles.values()].reduce((n, t) => n + t.bufs.length, 0) };
     }
 
@@ -180,9 +181,55 @@
         // 工作群大小由呼叫端決定（自適應量測用）；超過一維上限 65535 個工作群時，派送改用 y 維，gid＝x＋y×(65535×wg)
         const wg = opts && opts.wg !== undefined ? opts.wg : 64;
         if (!Number.isInteger(wg) || wg < 1 || wg > 1024) return { ok: false, error: '工作群大小 ' + wg + ' 不合法' };
-        const code = `${bufLines.join('\n')}\n${uniLine}\n\n@compute @workgroup_size(${wg})\nfn main(@builtin(global_invocation_id) gid3: vec3<u32>) {\n  let gid: i32 = i32(gid3.x) + i32(gid3.y) * ${65535 * wg};\n  if (gid >= P._count) { return; }\n${body}}\n`;
+        const code = `${WGSL_TRIG}${bufLines.join('\n')}\n${uniLine}\n\n@compute @workgroup_size(${wg})\nfn main(@builtin(global_invocation_id) gid3: vec3<u32>) {\n  let gid: i32 = i32(gid3.x) + i32(gid3.y) * ${65535 * wg};\n  if (gid >= P._count) { return; }\n${body}}\n`;
         return { ok: true, code, workgroupSize: wg, bindings, uniformFields: uni.map((p) => ({ name: p.name, type: p.type })).concat([{ name: '_count', type: 'i32' }]) };
     }
+
+    // WGSL 的 sin／cos 精度也依實作而不同（軟體 Vulkan 約 2e-4）：同樣自己做範圍縮減＋cephes 多項式（與 GLSL_TRIG 逐行對應）。
+    const WGSL_TRIG = [
+        'fn fa_trig(x: f32, c: bool) -> f32 {',
+        '  let ax = abs(x);',
+        '  if (ax > 8192.0) { if (c) { return cos(x); } return sin(x); }',
+        '  var sg: f32 = 1.0;',
+        '  if (!c && x < 0.0) { sg = -1.0; }',
+        '  var j: i32 = i32(ax * 1.27323954473516);',
+        '  if ((j & 1) != 0) { j = j + 1; }',
+        '  let y = f32(j);',
+        '  j = j & 7;',
+        '  if (j > 3) { sg = -sg; j = j - 4; }',
+        '  if (c && j > 1) { sg = -sg; }',
+        '  let z = ((ax - y * 0.78515625) - y * 2.4187564849853515625e-4) - y * 3.77489497744594108e-8;',
+        '  let zz = z * z;',
+        '  let polyCos = ((j == 1 || j == 2) != c);',
+        '  var r: f32;',
+        '  if (polyCos) { r = 1.0 - 0.5 * zz + zz * zz * ((2.443315711809948e-5 * zz - 1.388731625493765e-3) * zz + 4.166664568298827e-2); }',
+        '  else { r = z + z * zz * ((-1.9515295891e-4 * zz + 8.3321608736e-3) * zz - 1.6666654611e-1); }',
+        '  return sg * r;',
+        '}',
+        ''
+    ].join('\n');
+    // GLSL 的 sin／cos 精度依驅動而不同（軟體 GL 約 2e-4，不合 OpenCL 的要求）：自己做範圍縮減（Cody-Waite，三段 π/4）＋ cephes 的 sinf／cosf 多項式，
+    // 只用加減乘，所有驅動結果一致，誤差 < 1e-7（相對）。|x| 超過 8192 才退回內建函式（範圍縮減的常數在那之後不夠準）。
+    const GLSL_TRIG = [
+        'float fa_trig(float x, bool c) {',
+        '  float ax = abs(x);',
+        '  if (ax > 8192.0) { return c ? cos(x) : sin(x); }',
+        '  float sg = (!c && x < 0.0) ? -1.0 : 1.0;',
+        '  int j = int(ax * 1.27323954473516);',
+        '  if ((j & 1) != 0) { j += 1; }',
+        '  float y = float(j);',
+        '  j = j & 7;',
+        '  if (j > 3) { sg = -sg; j -= 4; }',
+        '  if (c && j > 1) { sg = -sg; }',
+        '  float z = ((ax - y * 0.78515625) - y * 2.4187564849853515625e-4) - y * 3.77489497744594108e-8;',
+        '  float zz = z * z;',
+        '  bool polyCos = ((j == 1 || j == 2) != c);',
+        '  float r = polyCos ? (1.0 - 0.5 * zz + zz * zz * ((2.443315711809948e-5 * zz - 1.388731625493765e-3) * zz + 4.166664568298827e-2))',
+        '                    : (z + z * zz * ((-1.9515295891e-4 * zz + 8.3321608736e-3) * zz - 1.6666654611e-1));',
+        '  return sg * r;',
+        '}',
+        ''
+    ].join('\n');
 
     function toGlsl(kernel) {
         const v = K.validate(kernel); if (!v.ok) return { ok: false, error: 'KIR 不合法：' + v.errors.join('；') };
@@ -198,7 +245,7 @@
                 case 'bin': return `(${ex(x.a)} ${x.op} ${ex(x.b)})`;
                 case 'cmp': return `(${ex(x.a)} ${x.op} ${ex(x.b)})`;
                 case 'sel': return `((${ex(x.c)}) ? ${ex(x.a)} : ${ex(x.b)})`;
-                case 'call': { const map = { rsqrt: 'inversesqrt' }; return `${map[x.fn] || x.fn}(${x.args.map(ex).join(', ')})`; }
+                case 'call': { if ((x.fn === 'sin' || x.fn === 'cos') && x.args.length === 1) return `fa_trig(${ex(x.args[0])}, ${x.fn === 'cos' ? 'true' : 'false'})`; const map = { rsqrt: 'inversesqrt' }; return `${map[x.fn] || x.fn}(${x.args.map(ex).join(', ')})`; }
                 case 'cast': return x.to === 'f32' ? `float(${ex(x.a)})` : `int(${ex(x.a)})`;
                 case 'load': {
                     const p = kernel.params.find((q) => q.name === x.buf);
@@ -258,7 +305,7 @@
         const uniforms = kernel.params.filter((p) => p.kind === 'scalar').map((p) => ({ name: 'u_' + p.name, type: p.type === 'f32' ? 'float' : 'int' }));
         const ins = kernel.params.filter((p) => p.kind === 'buf' && p.access === 'in');
         const fragLine = constIdx === null ? `  fragColor = vec4(${vals.join(', ')});\n` : `  fragColor = (gid == ${constIdx}) ? vec4(${vals.join(', ')}) : vec4(0.0);\n`;
-        const fs = `#version 300 es\nprecision highp float;\nprecision highp int;\nuniform int u_W;\nuniform int u_count;\nuniform int u_base;\n${uniforms.map((u) => `uniform ${u.type} ${u.name};`).join('\n')}\n${ins.map((p) => `uniform highp sampler2D ${p.name};\nuniform int u_off_${p.name};\nuniform int u_W_${p.name};`).join('\n')}\nout vec4 fragColor;\nvoid main() {\n  int gid = int(floor(gl_FragCoord.y)) * u_W + int(floor(gl_FragCoord.x)) - u_base;\n  if (gid >= u_count) { discard; }\n${lines.join('')}${fragLine}}\n`;
+        const fs = `#version 300 es\nprecision highp float;\nprecision highp int;\n${GLSL_TRIG}uniform int u_W;\nuniform int u_count;\nuniform int u_base;\n${uniforms.map((u) => `uniform ${u.type} ${u.name};`).join('\n')}\n${ins.map((p) => `uniform highp sampler2D ${p.name};\nuniform int u_off_${p.name};\nuniform int u_W_${p.name};`).join('\n')}\nout vec4 fragColor;\nvoid main() {\n  int gid = int(floor(gl_FragCoord.y)) * u_W + int(floor(gl_FragCoord.x)) - u_base;\n  if (gid >= u_count) { discard; }\n${lines.join('')}${fragLine}}\n`;
         const vs = `#version 300 es\nconst vec2 P[3] = vec2[3](vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));\nvoid main() { gl_Position = vec4(P[gl_VertexID], 0.0, 1.0); }\n`;
         return { ok: true, vs, fs, uniforms: ['u_W', 'u_count', 'u_base'].concat(ins.flatMap((p) => ['u_off_' + p.name, 'u_W_' + p.name]), uniforms.map((u) => u.name)), samplers: ins.map((p) => ({ name: p.name, elem: p.elem })), out: { name: out.name, elem: out.elem } };
     }

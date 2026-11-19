@@ -66,6 +66,7 @@
                 gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
                 gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
                 gl.uniform1i(gl.getUniformLocation(prog, s.name), unit);
+                gl.uniform1i(gl.getUniformLocation(prog, 'u_W_' + s.name), uW);   // 輸入自己的紋理寬（kir_gen 的 load 用 u_W_<名字>）
                 unit++;
             }
             // 輸出紋理（掛在 framebuffer）
@@ -234,11 +235,12 @@
                 const b = binds[s.name];
                 if (!b || b.freed) throw new Error('缺少輸入緩衝區 ' + s.name);
                 if (b.tex === out.tex) throw new Error('輸出不能同時是輸入（feedback loop）：' + s.name);
-                if (b.Npart !== N || b.elem !== s.elem) throw new Error('輸入 ' + s.name + ' 的大小或型別不符');
+                if (b.Npart < N || b.elem !== s.elem) throw new Error('輸入 ' + s.name + ' 的大小不足或型別不符');   // 輸入可以比輸出長（例如 a[i*k+j]），與 WebGPU 一致
                 gl.activeTexture(gl.TEXTURE0 + unit); gl.bindTexture(gl.TEXTURE_2D, b.tex);
                 gl.uniform1i(p.loc[s.name], unit);
                 // 輸入是打包的 view：它的資料從紋理的第 rowOffset 列開始
                 gl.uniform1i(p.loc['u_off_' + s.name], b.rowOffset || 0);
+                gl.uniform1i(p.loc['u_W_' + s.name], b.uW);   // 輸入自己的紋理寬（輸入長度可以和輸出 N 不同）
             });
             gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
             gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, out.tex, 0);

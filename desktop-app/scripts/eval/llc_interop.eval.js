@@ -1,12 +1,11 @@
-// nbody3d_cl 的 interop 真機量測（DESIGN.webgpu-cuda.md §13 階段 9，步驟 5）：走 app 的 lli job（同 llc_kir_e2e.eval.js）。
-// 三種模式：
-//   points_webgpu   ：WebGPU 裝置，點精靈（fa_cl_points）；位置留在 GPU，每 30 幀讀回統計量
-//   readback_webgpu ：同一顆 WebGPU 裝置，但每幀讀回位置再 glVertex（window.FA_KIR_NO_POINTS＝true；讀回對照組）
-//   webgl2_readback ：WebGL2 後端（window.FA_KIR_FORCE_BACKEND＝'webgl2'），每幀讀回再 glVertex
-//   cpu_wasm        ：CPU 版（nbody3d，不走 OpenCL）
-// 量的東西：每步毫秒（每 10 步的週期時間÷10，含繪圖，穩態取第 2 個以後的週期中位數）；同一幀（第 3 幀）的畫布像素（三種路徑互相比對）；
-// 頁面計數器：GPUBuffer.mapAsync（＝讀回）、GPUCommandEncoder.beginRenderPass（＝點精靈繪圖）、GPUQueue.writeBuffer（＝上傳）、GPUQueue.submit。
-// 由 scripts/eval/llc_interop.build.js 產生。結果：LLC_INTEROP {…}。
+// 標準互通範例 gpgpu/interop_cl_gl.ll 的真 Electron 評測（DESIGN.webgpu-cuda.md §13 階段 10）：走 app 的 lli job。
+// 三種模式（同一份標準 .ll，不改寫）：
+//   fast_webgpu ：WebGPU 裝置，框架執行期優化開（共享緩衝區由 WebGPU 核心寫、glDrawArrays(GL_POINTS) 加法混合 → 不讀回直接畫）
+//   copy_webgpu ：同一顆 WebGPU 裝置，優化關（window.FA_KIR_NO_INTEROP＝true）：Release 時讀回、GL 走複製路徑（標準語意的基準）
+//   webgl2      ：WebGL2 後端（window.FA_KIR_FORCE_BACKEND＝'webgl2'）：優化不適用，走複製路徑
+// 量的東西：程式自己印的 "interop OK frames=… n=… checksum=…"（結尾讀回總和，三種模式要相同）；頁面計數器 GPUBuffer.mapAsync（＝讀回）、
+// GPUCommandEncoder.beginRenderPass（＝裝置直接畫點）、GPUQueue.writeBuffer、GPUQueue.submit；整段 N 幀的耗時；第 3 幀的畫布像素互相比對。
+// 由 scripts/eval/llc_interop.build.js 產生。結果：LLC_INTEROP {…}。沒有真 GPU 時 WebGPU 是軟體 Vulkan（swiftshader），數字只代表正確性，不代表速度。
 const SRC = __SRC__;
 const fa = window.fa; const R = { errors: [] };
 const tool = async (name, args) => JSON.parse(await fa.tools[name].callback.call(fa, JSON.stringify(args)));
@@ -22,11 +21,7 @@ const runJob = async (file, args, maxMs) => {
     if (!ok) await stopJob(id);
     return { ok, out };
 };
-const parseNbody = (out) => {
-    const m = /frames=(\d+) bodies=(\d+) cx=([-\d.]+) cy=([-\d.]+) cz=([-\d.]+)/.exec(out);
-    const cyc = [...out.matchAll(/^(\d+) ([\d.]+)$/gm)].map((x) => +x[2]);
-    return m ? { frames: +m[1], bodies: +m[2], cen: [+m[3], +m[4], +m[5]], cycles_s: cyc } : { raw: out.slice(-300) };
-};
+const parseOut = (out) => { const m = /interop OK frames=(\d+) n=(\d+) checksum=([-\d.]+)/.exec(out); return m ? { frames: +m[1], n: +m[2], checksum: +m[3] } : { raw: out.slice(-300) }; };
 const median = (xs) => { const s = xs.slice().sort((a, b) => a - b); return s.length ? s[s.length >> 1] : null; };
 const findCanvas = (w, h) => [...document.querySelectorAll('canvas')].find((c) => c.width === w && c.height === h && c.getContext('webgl2'));
 
@@ -44,7 +39,7 @@ const installCounters = () => {
 const resetCounters = () => { for (const k of Object.keys(counters)) counters[k] = 0; };
 
 // 同一幀的畫布像素：GUI 每畫完一幀就呼叫 FA_GUI_AFTER_GLFRAME；第 CAP_SEQ 幀時讀下來
-const CAP_SEQ = 3, W = 800, H = 560;
+const CAP_SEQ = 3, W = 640, H = 480;
 window.__capDone = false; window.__cap = null;
 window.FA_GUI_AFTER_GLFRAME = (winId, nodeId, seq) => {
     if (seq !== CAP_SEQ || window.__capDone) return;
@@ -56,13 +51,11 @@ window.FA_GUI_AFTER_GLFRAME = (winId, nodeId, seq) => {
 };
 
 const MODES = [
-    { name: 'points_webgpu', file: 'nbody3d_cl', force: '', noPoints: false },
-    { name: 'readback_webgpu', file: 'nbody3d_cl', force: '', noPoints: true },
-    { name: 'webgl2_readback', file: 'nbody3d_cl', force: 'webgl2', noPoints: false },
-    { name: 'cpu_wasm', file: 'nbody3d', force: '', noPoints: false }
+    { name: 'fast_webgpu', force: '', noInterop: false },
+    { name: 'copy_webgpu', force: '', noInterop: true },
+    { name: 'webgl2', force: 'webgl2', noInterop: false }
 ];
-const TIME_ARGS = ['3072', '10', '40'];   // 40 幀＝4 個週期（每 10 幀印一行）
-const CAP_ARGS = ['3072', '10', '6'];     // 6 幀後結束；第 3 幀抓像素
+const FILE = 'interop_cl_gl', TIME_ARGS = ['4096', '60'], CAP_ARGS = ['4096', '6'];
 const pix = {};
 try {
     R.webgpu = !!navigator.gpu;
@@ -70,31 +63,23 @@ try {
     R.by = {};
     for (const m of MODES) {
         window.FA_KIR_FORCE_BACKEND = m.force;
-        window.FA_KIR_NO_POINTS = m.noPoints;
+        window.FA_KIR_NO_INTEROP = m.noInterop;
         resetCounters();
-        const t = await runJob(m.file, TIME_ARGS, 900000);
+        const t0 = Date.now();
+        const t = await runJob(FILE, TIME_ARGS, 300000);
+        const ms = Date.now() - t0;
         const perRun = Object.assign({}, counters);
-        const tp = parseNbody(t.out);
+        const tp = parseOut(t.out);
         window.__capDone = false; window.__cap = null;
-        const c = await runJob(m.file, CAP_ARGS, 900000);
+        const c = await runJob(FILE, CAP_ARGS, 300000);
         pix[m.name] = window.__cap;
-        // 有沒有畫東西：非黑像素數（任一通道 > 20）；全黑就代表這次抓到的是空畫面，像素比對不算數
         let lit = 0; if (window.__cap) { const a = window.__cap; for (let i = 0; i < a.length; i += 4) if (a[i] > 20 || a[i + 1] > 20 || a[i + 2] > 20) lit++; }
-        const cyc = tp.cycles_s || [];
-        R.by[m.name] = {
-            ok: t.ok && c.ok, cen_40: tp.cen, cycles_s: cyc,
-            per_step_ms_median: cyc.length > 1 ? +(median(cyc.slice(1)) / 10 * 1000).toFixed(2) : null,
-            per_step_ms_first: cyc.length ? +(cyc[0] / 10 * 1000).toFixed(2) : null,
-            counters_40_frames: perRun,
-            captured: !!window.__cap, lit_pixels: lit
-        };
+        R.by[m.name] = { ok: t.ok && c.ok, out: tp, total_ms_60_frames: ms, counters_60_frames: perRun, captured: !!window.__cap, lit_pixels: lit };
     }
-    window.FA_KIR_FORCE_BACKEND = ''; window.FA_KIR_NO_POINTS = false;
-    // 輸出一致性：每條 GPU 路徑印出的最後叢集中心，必須與 CPU 版逐字相同（程式印的是 %.1f）
-    const cpuCen = JSON.stringify(R.by.cpu_wasm.cen_40);
-    R.same = {};
-    for (const k of ['points_webgpu', 'readback_webgpu', 'webgl2_readback']) R.same[k] = JSON.stringify(R.by[k].cen_40) === cpuCen;
-    // 像素比對（同一幀、同一個 GUI 畫布）
+    window.FA_KIR_FORCE_BACKEND = ''; window.FA_KIR_NO_INTEROP = false;
+    const base = R.by.copy_webgpu.out;
+    R.same_checksum = {};
+    for (const k of ['fast_webgpu', 'webgl2']) R.same_checksum[k] = !!(R.by[k].out.checksum !== undefined && base.checksum !== undefined && Math.abs(R.by[k].out.checksum - base.checksum) < 0.05);
     const diffStats = (a, b) => {
         if (!a || !b) return null;
         let max = 0, sum = 0, over8 = 0, over32 = 0;
@@ -106,12 +91,9 @@ try {
         const n = a.length / 4;
         return { max_channel_diff: max, mean_channel_diff: +(sum / n).toFixed(4), pixels_over_8: over8, pixels_over_32: over32, pixels: n };
     };
-    R.pixels = {
-        points_vs_readback_webgpu: diffStats(pix.points_webgpu, pix.readback_webgpu),
-        points_vs_webgl2: diffStats(pix.points_webgpu, pix.webgl2_readback),
-        readback_webgpu_vs_webgl2: diffStats(pix.readback_webgpu, pix.webgl2_readback),
-        points_vs_cpu: diffStats(pix.points_webgpu, pix.cpu_wasm)
-    };
+    R.pixels = { fast_vs_copy_webgpu: diffStats(pix.fast_webgpu, pix.copy_webgpu), fast_vs_webgl2: diffStats(pix.fast_webgpu, pix.webgl2), copy_webgpu_vs_webgl2: diffStats(pix.copy_webgpu, pix.webgl2) };
+    // 判定：快速路徑 mapAsync 只有結尾那一次讀回（每個 job 一次，計時＋截圖兩個 job 共 2 次內）、有畫點精靈的 render pass；複製路徑每幀讀回
+    R.verdict = { fast_no_per_frame_readback: R.by.fast_webgpu.counters_60_frames.map <= 4, fast_used_device_draw: R.by.fast_webgpu.counters_60_frames.rp >= 60, copy_reads_back_each_frame: R.by.copy_webgpu.counters_60_frames.map >= 60 };
 } catch (e) { R.errors.push(String((e && e.stack) || e).slice(0, 400)); }
 console.log('LLC_INTEROP ' + JSON.stringify(R));
 return R;

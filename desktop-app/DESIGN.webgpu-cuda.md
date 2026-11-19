@@ -1408,3 +1408,18 @@ Python 模擬器與離線模型推論共用同一個 GPU 裝置：
 - 步驟 4 的 fluid3d。
 - `cluster()` 的 GPU 化（要讓相機中心每幀更新又不讀回，需要 GPU 歸約）。
 - 歸因 writeBuffer／mapAsync 的來源；分段計時。
+
+### 階段 11：標準互通與執行期優化（HANDOFF.interop-standard.md 的 A 到 F，2026-11-20）
+
+原則（使用者）：擴充只存在框架的實作；使用者寫標準 OpenCL／OpenGL，加速由框架在執行期偵測模式後自己做；範例只是標準寫法的參考。
+
+- **A 標準 GL 頂點緩衝區**（`llvm_host.js`）：`glGenBuffers／DeleteBuffers／BindBuffer／BufferData／BufferSubData`、`glEnableClientState／DisableClientState(GL_VERTEX_ARRAY)`、`glVertexPointer`（GL_FLOAT，2 或 3 分量，stride／offset）、`glDrawArrays`（任何 glBegin 支援的模式）。`glDrawArrays` 把頂點取出併成一個批次，之後走跟 `glBegin` 一樣的 glbuf／glframe 路徑。
+- **B 標準 cl_khr_gl_sharing**：`clCreateFromGLBuffer／clGetGLObjectInfo／clEnqueueAcquireGLObjects／clEnqueueReleaseGLObjects`。CL 記憶體物件的 `data` 與 GL 緩衝區共用同一塊 `Uint8Array`（別名）；Release 時裝置上較新的內容讀回主機（別名，GL 立刻看到）＝正確但慢的基準。GL 端寫入（`rev` 版本號）→ Acquire 時裝置副本作廢。
+- **C 執行期優化**：Release 時若共享物件在 WebGPU 裝置上較新且 `glFastEligible`，不讀回，記成 `b.pend`；之後 `glDrawArrays(GL_POINTS)` 若「加法混合（＝本來會走 glow 點精靈）、沒有光照／紋理／其他陣列屬性、float×3」→ `kirDev.drawPoints({ xyz, stride, base })`（`kir_webgpu` 新增交錯頂點支援）直接把共享緩衝區當頂點，畫到 extern 畫布；任何條件不吻合 → `glMaterialize` 讀回後走複製路徑（像素與 B 相同）。`glBufferSubData`、`glBufferData` 也會物化／作廢。`host.glStats` 有 drawFast／drawCopy／releaseDeferred／releaseSync 計數；`noInterop` 選項（頁面旗標 `window.FA_KIR_NO_INTEROP`）關掉優化當對照組。
+- **D 移除自創介面**：`fa_cl_points`、`fa_cl_nopoints` 已從宿主匯入表與實作刪除（`llvm_points_test.js` 一併刪，涵蓋移到 `llvm_vbo_test.js`）。`fa_cl_backend／fa_cl_pack／fa_cl_view` 不在本次範圍，仍在。
+- **E 標準互通範例**：`examples/llc/gpgpu/interop_cl_gl.ll`（核心寫進共享 VBO、`glDrawArrays(GL_POINTS)` 畫），README 有說明。
+- **F 一致性套件**：`examples/llc/conformance/`（README、`kernels.cl`）；套件本身（`gpu/kir_conformance_cases.js`）在軟體 GL／軟體 Vulkan 的真 Electron 四個後端 137／137，過程中修掉兩個框架問題：WebGL2 的輸入寬度 uniform `u_W_<名字>` 沒設（N＞1 全錯）、GLSL／WGSL 的 sin／cos 精度（改自製範圍縮減＋cephes 多項式）。
+
+**驗證與沒驗證**
+- 驗證：`llvm_vbo_test.js` 25 項（真 wasm＋軟體光柵比像素；假 WebGPU 裝置量到讀回 0 次與各退回路徑）；範例在 node 與假裝置各跑一次，結尾 checksum 相同；真 Electron（軟體）`copy_webgpu` 與 `webgl2` 兩條複製路徑的 checksum 與 307200 像素逐位元相同；一致性套件四個後端 137／137。
+- **沒驗證**：快速路徑（`drawPoints` 畫到畫布）在真 Electron——這台機器只有軟體 Vulkan，畫布 render pass 時 WebGPU 裝置遺失（`A valid external Instance reference no longer exists`），無法比像素與量時間；沒有真 GPU 上的每幀毫秒。有真 GPU 的機器請跑 `scripts/eval/llc_interop.build.js`＋`run_eval.js`（指令在檔頭）。標準的 `nbody3d_cl`（每幀讀回再 `glVertex3f`）沒有改動，框架層沒有新增讀回優化（HANDOFF 說先不做）。
