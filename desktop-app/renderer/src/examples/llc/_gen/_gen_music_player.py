@@ -4,6 +4,7 @@
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _irb import *
+from _hud import install_dsl
 
 NOTES = [64, 64, 65, 67, 67, 65, 64, 62, 60, 60, 62, 64, 64, 62, 62, 64, 64, 65, 67, 67, 65, 64, 62, 60, 60, 62, 64, 62, 60, 60,
          62, 62, 64, 60, 62, 64, 65, 64, 60, 62, 64, 65, 64, 62, 60, 62, 55, 64, 64, 65, 67, 67, 65, 64, 62, 60, 60, 62, 64, 62, 60, 60]
@@ -15,6 +16,7 @@ RATE = 22050
 m = Mod('; 音樂盒（SDL2 音訊＋影像＋鍵盤）：內建〈歡樂頌〉，即時合成，經 SDL_QueueAudio 送出（佇列模式）。空白＝暫停／繼續、↑↓＝速度、1 2 3＝波形、R＝從頭、Esc 離開。\n'
         '; 第一個參數＝跑幾幀後離開（測試用）。（由 _gen/_gen_music_player.py 產生）\ntarget triple = "x86_64-pc-linux-gnu"')
 D = m.decl
+install_dsl(m)   # 螢幕說明（HUD）的字型與 hud_text／hud_int（_hud.py）
 D('i32', 'SDL_Init', 'i32'); D('void', 'SDL_Quit'); D('ptr', 'SDL_CreateWindow', 'ptr', 'i32', 'i32', 'i32', 'i32', 'i32'); D('ptr', 'SDL_CreateRenderer', 'ptr', 'i32', 'i32')
 D('i32', 'SDL_PollEvent', 'ptr'); D('i32', 'SDL_SetRenderDrawColor', 'ptr', 'i8', 'i8', 'i8', 'i8'); D('i32', 'SDL_RenderClear', 'ptr'); D('i32', 'SDL_RenderFillRect', 'ptr', 'ptr')
 D('void', 'SDL_RenderPresent', 'ptr'); D('void', 'SDL_Delay', 'i32'); D('void', 'SDL_DestroyRenderer', 'ptr'); D('void', 'SDL_DestroyWindow', 'ptr')
@@ -73,8 +75,8 @@ def synth_fn():
 synth_fn()
 
 # 畫面：兩個八度（C4..B5）的琴鍵；目前的音亮起；上方進度條；下方顯示波形（3 個小方塊亮起其中一個）
-ui = m.fn('void', 'draw_ui', ('ptr', 'ren'), ('i32', 'midi'), ('i32', 'prog'), ('i32', 'wave'), ('i32', 'paused'))
-ren, midi, prog, wave, paused = ui.args
+ui = m.fn('void', 'draw_ui', ('ptr', 'ren'), ('i32', 'midi'), ('i32', 'prog'), ('i32', 'wave'), ('i32', 'paused'), ('i32', 'bpm'))
+ren, midi, prog, wave, paused, bpm = ui.args
 rc = ui.array('i32', 4)
 c = ui.call
 
@@ -106,6 +108,21 @@ with ui.loop(w, 0, 3):
     rect(w.get() * 40 + 8, 220, 32, 12, on.sel(ui.const('i32', 120), ui.const('i32', 50)).to('i8'), on.sel(ui.const('i32', 220), ui.const('i32', 54)).to('i8'), on.sel(ui.const('i32', 255), ui.const('i32', 70)).to('i8'))
 with ui.if_(paused.ne(0)):
     rect(560, 215, 12, 24, 255, 180, 60); rect(580, 215, 12, 24, 255, 180, 60)
+# 螢幕說明（HUD）：第 1 行＝真實狀態（播放／暫停、目前波形、BPM），第 2、3 行＝操作。狀態文字每幀依 paused／wave／bpm 重畫。
+with ui.if_(paused.eq(0)):
+    c('hud_text', ren, 8, 198, 'PLAYING', 7, 255, 210, 90)
+with ui.if_(paused.ne(0)):
+    c('hud_text', ren, 8, 198, 'PAUSED ', 7, 255, 210, 90)
+with ui.if_(wave.eq(0)):
+    c('hud_text', ren, 64, 198, 'SQUARE  ', 8, 255, 210, 90)
+with ui.if_(wave.eq(1)):
+    c('hud_text', ren, 64, 198, 'TRIANGLE', 8, 255, 210, 90)
+with ui.if_(wave.eq(2)):
+    c('hud_text', ren, 64, 198, 'SINE    ', 8, 255, 210, 90)
+c('hud_int', ren, 127, 198, bpm, 255, 210, 90)
+c('hud_text', ren, 155, 198, 'BPM', 3, 255, 210, 90)
+c('hud_text', ren, 8, 244, 'SPACE PAUSE  1 2 3 WAVE', len('SPACE PAUSE  1 2 3 WAVE'), 220, 220, 220)
+c('hud_text', ren, 8, 262, 'UP DOWN TEMPO', len('UP DOWN TEMPO'), 220, 220, 220)
 ui.ret()
 
 f = m.fn('i32', 'main', ('i32', 'argc'), ('ptr', 'argv'))
@@ -119,7 +136,7 @@ with f.if_(argc > 1):
     argv.elem = 'ptr'
     maxf.set(c('atoi', f.load('ptr', argv.at(1))))
 c('SDL_Init', 48)
-win = c('SDL_CreateWindow', 'IR music player', 805240832, 805240832, 640, 250, 0)
+win = c('SDL_CreateWindow', 'IR music player', 805240832, 805240832, 640, 280, 0)
 ren = c('SDL_CreateRenderer', win, -1, 1)
 for off in (0, 8, 16, 24):
     f.store('i64', 0, f.gep8(spec, off))
@@ -162,7 +179,7 @@ with f.while_(lambda: running.get().ne(0)):
     idx = c('note_idx', tt / spb2, accp)
     nt = V(f, '@notes', 'ptr', 'i32')
     prog_px = (tt * 640) / (spb2 * TOTAL)
-    c('draw_ui', ren, nt[idx], prog_px, wave.get(), paused.get())
+    c('draw_ui', ren, nt[idx], prog_px, wave.get(), paused.get(), bpm.get())
     c('SDL_RenderPresent', ren); c('SDL_Delay', 16)
     frames += 1
     with f.if_((maxf.get() > 0) & (frames.get() >= maxf.get())): running.set(0)

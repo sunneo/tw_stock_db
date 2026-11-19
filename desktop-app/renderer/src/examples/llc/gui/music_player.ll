@@ -2,14 +2,14 @@
 ; 第一個參數＝跑幾幀後離開（測試用）。（由 _gen/_gen_music_player.py 產生）
 target triple = "x86_64-pc-linux-gnu"
 
+declare i32 @SDL_SetRenderDrawColor(ptr, i8, i8, i8, i8)
+declare i32 @SDL_RenderFillRect(ptr, ptr)
 declare i32 @SDL_Init(i32)
 declare void @SDL_Quit()
 declare ptr @SDL_CreateWindow(ptr, i32, i32, i32, i32, i32)
 declare ptr @SDL_CreateRenderer(ptr, i32, i32)
 declare i32 @SDL_PollEvent(ptr)
-declare i32 @SDL_SetRenderDrawColor(ptr, i8, i8, i8, i8)
 declare i32 @SDL_RenderClear(ptr)
-declare i32 @SDL_RenderFillRect(ptr, ptr)
 declare void @SDL_RenderPresent(ptr)
 declare void @SDL_Delay(i32)
 declare void @SDL_DestroyRenderer(ptr)
@@ -25,10 +25,127 @@ declare double @floor(double)
 declare i32 @atoi(ptr)
 declare i32 @printf(ptr, ...)
 
-@.s1 = private constant [16 x i8] c"IR music player\00"
-@.s2 = private constant [32 x i8] c"frames=%d samples=%d bpm=%d ok\0A\00"
+@.s1 = private constant [8 x i8] c"PLAYING\00"
+@.s2 = private constant [8 x i8] c"PAUSED \00"
+@.s3 = private constant [9 x i8] c"SQUARE  \00"
+@.s4 = private constant [9 x i8] c"TRIANGLE\00"
+@.s5 = private constant [9 x i8] c"SINE    \00"
+@.s6 = private constant [4 x i8] c"BPM\00"
+@.s7 = private constant [24 x i8] c"SPACE PAUSE  1 2 3 WAVE\00"
+@.s8 = private constant [25 x i8] c"UP DOWN TEMPO  R RESTART\00"
+@.s9 = private constant [16 x i8] c"IR music player\00"
+@.s10 = private constant [32 x i8] c"frames=%d samples=%d bpm=%d ok\0A\00"
+@hud_font = private constant [1235 x i32] [i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 8, i32 8, i32 8, i32 8, i32 8, i32 8, i32 0, i32 8, i32 0, i32 0, i32 0, i32 0, i32 0, i32 20, i32 20, i32 20, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 10, i32 20, i32 63, i32 20, i32 20, i32 126, i32 40, i32 40, i32 0, i32 0, i32 0, i32 0, i32 0, i32 8, i32 28, i32 40, i32 40, i32 28, i32 10, i32 10, i32 60, i32 8, i32 8, i32 0, i32 0, i32 0, i32 48, i32 72, i32 50, i32 4, i32 24, i32 46, i32 10, i32 14, i32 0, i32 0, i32 0, i32 0, i32 0, i32 28, i32 32, i32 32, i32 48, i32 74, i32 70, i32 98, i32 62, i32 0, i32 0, i32 0, i32 0, i32 0, i32 8, i32 8, i32 8, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 8, i32 8, i32 8, i32 16, i32 16, i32 16, i32 16, i32 8, i32 8, i32 8, i32 0, i32 0, i32 0, i32 16, i32 8, i32 8, i32 8, i32 8, i32 8, i32 8, i32 8, i32 8, i32 16, i32 0, i32 0, i32 0, i32 0, i32 8, i32 42, i32 28, i32 28, i32 42, i32 8, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 8, i32 8, i32 126, i32 8, i32 8, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 8, i32 8, i32 16, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 28, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 8, i32 8, i32 0, i32 0, i32 0, i32 0, i32 0, i32 2, i32 4, i32 4, i32 8, i32 8, i32 16, i32 16, i32 32, i32 32, i32 0, i32 0, i32 0, i32 0, i32 28, i32 38, i32 34, i32 34, i32 42, i32 34, i32 38, i32 28, i32 0, i32 0, i32 0, i32 0, i32 0, i32 56, i32 8, i32 8, i32 8, i32 8, i32 8, i32 8, i32 62, i32 0, i32 0, i32 0, i32 0, i32 0, i32 28, i32 38, i32 2, i32 4, i32 8, i32 16, i32 32, i32 62, i32 0, i32 0, i32 0, i32 0, i32 0, i32 28, i32 38, i32 6, i32 24, i32 6, i32 2, i32 38, i32 60, i32 0, i32 0, i32 0, i32 0, i32 0, i32 12, i32 12, i32 20, i32 36, i32 36, i32 62, i32 4, i32 4, i32 0, i32 0, i32 0, i32 0, i32 0, i32 60, i32 32, i32 32, i32 60, i32 6, i32 2, i32 6, i32 60, i32 0, i32 0, i32 0, i32 0, i32 0, i32 28, i32 48, i32 32, i32 60, i32 34, i32 34, i32 34, i32 28, i32 0, i32 0, i32 0, i32 0, i32 0, i32 62, i32 4, i32 4, i32 4, i32 8, i32 8, i32 16, i32 16, i32 0, i32 0, i32 0, i32 0, i32 0, i32 28, i32 34, i32 34, i32 28, i32 38, i32 34, i32 34, i32 28, i32 0, i32 0, i32 0, i32 0, i32 0, i32 28, i32 38, i32 34, i32 38, i32 58, i32 2, i32 4, i32 60, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 8, i32 8, i32 0, i32 0, i32 8, i32 8, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 8, i32 8, i32 0, i32 0, i32 8, i32 8, i32 16, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 2, i32 28, i32 96, i32 24, i32 6, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 126, i32 0, i32 126, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 96, i32 28, i32 2, i32 28, i32 96, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 60, i32 6, i32 4, i32 8, i32 8, i32 8, i32 0, i32 8, i32 0, i32 0, i32 0, i32 0, i32 0, i32 28, i32 34, i32 66, i32 78, i32 82, i32 82, i32 78, i32 32, i32 32, i32 30, i32 0, i32 0, i32 0, i32 8, i32 24, i32 20, i32 20, i32 36, i32 62, i32 34, i32 66, i32 0, i32 0, i32 0, i32 0, i32 0, i32 60, i32 34, i32 34, i32 60, i32 34, i32 34, i32 34, i32 60, i32 0, i32 0, i32 0, i32 0, i32 0, i32 28, i32 50, i32 32, i32 32, i32 32, i32 32, i32 50, i32 28, i32 0, i32 0, i32 0, i32 0, i32 0, i32 56, i32 36, i32 34, i32 34, i32 34, i32 34, i32 36, i32 60, i32 0, i32 0, i32 0, i32 0, i32 0, i32 62, i32 32, i32 32, i32 62, i32 32, i32 32, i32 32, i32 62, i32 0, i32 0, i32 0, i32 0, i32 0, i32 62, i32 32, i32 32, i32 62, i32 32, i32 32, i32 32, i32 32, i32 0, i32 0, i32 0, i32 0, i32 0, i32 28, i32 34, i32 32, i32 32, i32 38, i32 34, i32 34, i32 28, i32 0, i32 0, i32 0, i32 0, i32 0, i32 34, i32 34, i32 34, i32 62, i32 34, i32 34, i32 34, i32 34, i32 0, i32 0, i32 0, i32 0, i32 0, i32 62, i32 8, i32 8, i32 8, i32 8, i32 8, i32 8, i32 62, i32 0, i32 0, i32 0, i32 0, i32 0, i32 28, i32 4, i32 4, i32 4, i32 4, i32 4, i32 36, i32 56, i32 0, i32 0, i32 0, i32 0, i32 0, i32 34, i32 36, i32 40, i32 56, i32 40, i32 36, i32 38, i32 34, i32 0, i32 0, i32 0, i32 0, i32 0, i32 32, i32 32, i32 32, i32 32, i32 32, i32 32, i32 32, i32 62, i32 0, i32 0, i32 0, i32 0, i32 0, i32 98, i32 102, i32 86, i32 90, i32 74, i32 66, i32 66, i32 66, i32 0, i32 0, i32 0, i32 0, i32 0, i32 34, i32 50, i32 50, i32 42, i32 42, i32 42, i32 38, i32 38, i32 0, i32 0, i32 0, i32 0, i32 0, i32 28, i32 38, i32 34, i32 34, i32 34, i32 34, i32 38, i32 28, i32 0, i32 0, i32 0, i32 0, i32 0, i32 60, i32 34, i32 34, i32 34, i32 60, i32 32, i32 32, i32 32, i32 0, i32 0, i32 0, i32 0, i32 0, i32 28, i32 38, i32 34, i32 34, i32 34, i32 34, i32 38, i32 28, i32 4, i32 0, i32 0, i32 0, i32 0, i32 60, i32 38, i32 34, i32 38, i32 56, i32 36, i32 34, i32 34, i32 0, i32 0, i32 0, i32 0, i32 0, i32 28, i32 36, i32 32, i32 48, i32 12, i32 2, i32 34, i32 28, i32 0, i32 0, i32 0, i32 0, i32 0, i32 126, i32 8, i32 8, i32 8, i32 8, i32 8, i32 8, i32 8, i32 0, i32 0, i32 0, i32 0, i32 0, i32 34, i32 34, i32 34, i32 34, i32 34, i32 34, i32 34, i32 28, i32 0, i32 0, i32 0, i32 0, i32 0, i32 98, i32 34, i32 34, i32 36, i32 20, i32 20, i32 24, i32 8, i32 0, i32 0, i32 0, i32 0, i32 0, i32 65, i32 66, i32 74, i32 90, i32 58, i32 54, i32 54, i32 36, i32 0, i32 0, i32 0, i32 0, i32 0, i32 34, i32 52, i32 20, i32 8, i32 24, i32 20, i32 34, i32 98, i32 0, i32 0, i32 0, i32 0, i32 0, i32 98, i32 38, i32 20, i32 24, i32 8, i32 8, i32 8, i32 8, i32 0, i32 0, i32 0, i32 0, i32 0, i32 62, i32 2, i32 4, i32 8, i32 8, i32 16, i32 32, i32 62, i32 0, i32 0, i32 0, i32 0, i32 28, i32 16, i32 16, i32 16, i32 16, i32 16, i32 16, i32 16, i32 16, i32 28, i32 0, i32 0, i32 0, i32 0, i32 32, i32 32, i32 16, i32 16, i32 8, i32 8, i32 4, i32 4, i32 2, i32 0, i32 0, i32 0, i32 24, i32 8, i32 8, i32 8, i32 8, i32 8, i32 8, i32 8, i32 8, i32 24, i32 0, i32 0, i32 0, i32 0, i32 24, i32 20, i32 34, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 16, i32 8, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 60, i32 2, i32 62, i32 34, i32 38, i32 58, i32 0, i32 0, i32 0, i32 0, i32 32, i32 32, i32 32, i32 60, i32 34, i32 34, i32 34, i32 34, i32 60, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 30, i32 48, i32 32, i32 32, i32 48, i32 30, i32 0, i32 0, i32 0, i32 0, i32 2, i32 2, i32 2, i32 26, i32 38, i32 34, i32 34, i32 38, i32 26, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 28, i32 34, i32 62, i32 32, i32 32, i32 30, i32 0, i32 0, i32 0, i32 0, i32 14, i32 8, i32 8, i32 62, i32 8, i32 8, i32 8, i32 8, i32 8, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 26, i32 38, i32 34, i32 34, i32 38, i32 26, i32 4, i32 60, i32 0, i32 0, i32 32, i32 32, i32 32, i32 60, i32 38, i32 34, i32 34, i32 34, i32 34, i32 0, i32 0, i32 0, i32 0, i32 8, i32 0, i32 0, i32 56, i32 8, i32 8, i32 8, i32 8, i32 62, i32 0, i32 0, i32 0, i32 0, i32 8, i32 0, i32 0, i32 24, i32 8, i32 8, i32 8, i32 8, i32 8, i32 8, i32 56, i32 0, i32 0, i32 32, i32 32, i32 32, i32 38, i32 44, i32 56, i32 44, i32 36, i32 34, i32 0, i32 0, i32 0, i32 0, i32 48, i32 16, i32 16, i32 16, i32 16, i32 16, i32 16, i32 8, i32 14, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 54, i32 42, i32 42, i32 42, i32 42, i32 42, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 60, i32 38, i32 34, i32 34, i32 34, i32 34, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 28, i32 38, i32 34, i32 34, i32 38, i32 28, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 60, i32 34, i32 34, i32 34, i32 34, i32 60, i32 32, i32 32, i32 0, i32 0, i32 0, i32 0, i32 0, i32 26, i32 38, i32 34, i32 34, i32 38, i32 26, i32 2, i32 2, i32 0, i32 0, i32 0, i32 0, i32 0, i32 30, i32 16, i32 16, i32 16, i32 16, i32 16, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 28, i32 32, i32 48, i32 12, i32 6, i32 60, i32 0, i32 0, i32 0, i32 0, i32 0, i32 16, i32 16, i32 62, i32 16, i32 16, i32 16, i32 16, i32 14, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 34, i32 34, i32 34, i32 34, i32 38, i32 26, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 34, i32 34, i32 36, i32 20, i32 24, i32 24, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 65, i32 66, i32 42, i32 58, i32 58, i32 52, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 34, i32 20, i32 24, i32 24, i32 20, i32 34, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 34, i32 34, i32 20, i32 20, i32 24, i32 8, i32 24, i32 48, i32 0, i32 0, i32 0, i32 0, i32 0, i32 62, i32 4, i32 8, i32 16, i32 16, i32 62, i32 0, i32 0, i32 0, i32 0, i32 12, i32 8, i32 8, i32 8, i32 48, i32 8, i32 8, i32 8, i32 8, i32 12, i32 0, i32 0, i32 0, i32 8, i32 8, i32 8, i32 8, i32 8, i32 8, i32 8, i32 8, i32 8, i32 8, i32 8, i32 0, i32 0, i32 48, i32 8, i32 8, i32 8, i32 4, i32 8, i32 8, i32 8, i32 8, i32 48, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 48, i32 78, i32 0, i32 0, i32 0, i32 0]
 @notes = private constant [62 x i32] [i32 64, i32 64, i32 65, i32 67, i32 67, i32 65, i32 64, i32 62, i32 60, i32 60, i32 62, i32 64, i32 64, i32 62, i32 62, i32 64, i32 64, i32 65, i32 67, i32 67, i32 65, i32 64, i32 62, i32 60, i32 60, i32 62, i32 64, i32 62, i32 60, i32 60, i32 62, i32 62, i32 64, i32 60, i32 62, i32 64, i32 65, i32 64, i32 60, i32 62, i32 64, i32 65, i32 64, i32 62, i32 60, i32 62, i32 55, i32 64, i32 64, i32 65, i32 67, i32 67, i32 65, i32 64, i32 62, i32 60, i32 60, i32 62, i32 64, i32 62, i32 60, i32 60]
 @durs = private constant [62 x i32] [i32 2, i32 2, i32 2, i32 2, i32 2, i32 2, i32 2, i32 2, i32 2, i32 2, i32 2, i32 2, i32 3, i32 1, i32 4, i32 2, i32 2, i32 2, i32 2, i32 2, i32 2, i32 2, i32 2, i32 2, i32 2, i32 2, i32 2, i32 3, i32 1, i32 4, i32 2, i32 2, i32 2, i32 2, i32 2, i32 2, i32 2, i32 2, i32 2, i32 2, i32 2, i32 2, i32 2, i32 2, i32 2, i32 2, i32 4, i32 2, i32 2, i32 2, i32 2, i32 2, i32 2, i32 2, i32 2, i32 2, i32 2, i32 2, i32 2, i32 3, i32 1, i32 4]
+
+define void @hud_text(ptr %ren, i32 %x, i32 %y, ptr %s, i32 %n, i8 %r, i8 %g, i8 %b) {
+entry:
+  %rc = alloca [4 x i32], align 4
+  %row = alloca i32
+  %xi = alloca i32
+  %st = alloca i32
+  %w = mul i32 %n, 7
+  %cr = call i32 @SDL_SetRenderDrawColor(ptr %ren, i8 %r, i8 %g, i8 %b, i8 -1)
+  store i32 0, ptr %row
+  br label %rowloop
+rowloop:
+  %rv = load i32, ptr %row
+  %rdone = icmp eq i32 %rv, 13
+  br i1 %rdone, label %exit, label %rowbody
+rowbody:
+  store i32 0, ptr %xi
+  store i32 -1, ptr %st
+  br label %col
+col:
+  %xv = load i32, ptr %xi
+  %inside = icmp slt i32 %xv, %w
+  %ci0 = udiv i32 %xv, 7
+  %ci = select i1 %inside, i32 %ci0, i32 0
+  %cm = urem i32 %xv, 7
+  %cp = getelementptr i8, ptr %s, i32 %ci
+  %cb = load i8, ptr %cp
+  %cv = zext i8 %cb to i32
+  %lo = icmp slt i32 %cv, 32
+  %hi = icmp sgt i32 %cv, 126
+  %bad = or i1 %lo, %hi
+  %cv2 = select i1 %bad, i32 32, i32 %cv
+  %gi = sub i32 %cv2, 32
+  %gb = mul i32 %gi, 13
+  %gidx = add i32 %gb, %rv
+  %gp = getelementptr [1235 x i32], ptr @hud_font, i32 0, i32 %gidx
+  %gv = load i32, ptr %gp
+  %sh = sub i32 6, %cm
+  %shv = lshr i32 %gv, %sh
+  %bit = and i32 %shv, 1
+  %bitb = icmp ne i32 %bit, 0
+  %lit = and i1 %bitb, %inside
+  %stv = load i32, ptr %st
+  %sn = icmp slt i32 %stv, 0
+  %begin = and i1 %lit, %sn
+  %newst = select i1 %begin, i32 %xv, i32 %stv
+  %nlit = xor i1 %lit, 1
+  %nsn = xor i1 %sn, 1
+  %endrun = and i1 %nlit, %nsn
+  %stfin = select i1 %endrun, i32 -1, i32 %newst
+  store i32 %stfin, ptr %st
+  br i1 %endrun, label %draw, label %cont
+draw:
+  %dx = add i32 %x, %stv
+  %dy = add i32 %y, %rv
+  %dl = sub i32 %xv, %stv
+  %p0 = getelementptr [4 x i32], ptr %rc, i32 0, i32 0
+  %p1 = getelementptr [4 x i32], ptr %rc, i32 0, i32 1
+  %p2 = getelementptr [4 x i32], ptr %rc, i32 0, i32 2
+  %p3 = getelementptr [4 x i32], ptr %rc, i32 0, i32 3
+  store i32 %dx, ptr %p0
+  store i32 %dy, ptr %p1
+  store i32 %dl, ptr %p2
+  store i32 1, ptr %p3
+  %fr = call i32 @SDL_RenderFillRect(ptr %ren, ptr %rc)
+  br label %cont
+cont:
+  %x1 = add i32 %xv, 1
+  store i32 %x1, ptr %xi
+  %more = icmp slt i32 %xv, %w
+  br i1 %more, label %col, label %rowend
+rowend:
+  %r1 = add i32 %rv, 1
+  store i32 %r1, ptr %row
+  br label %rowloop
+exit:
+  ret void
+}
+
+
+define void @hud_int(ptr %ren, i32 %x, i32 %y, i32 %v, i8 %r, i8 %g, i8 %b) {
+entry:
+  %buf = alloca [3 x i8], align 1
+  %hq = udiv i32 %v, 100
+  %hd = urem i32 %hq, 10
+  %tq = udiv i32 %v, 10
+  %td = urem i32 %tq, 10
+  %od = urem i32 %v, 10
+  %hge = icmp uge i32 %v, 100
+  %tge = icmp uge i32 %v, 10
+  %hc0 = add i32 %hd, 48
+  %hc1 = select i1 %hge, i32 %hc0, i32 32
+  %tc0 = add i32 %td, 48
+  %tc1 = select i1 %tge, i32 %tc0, i32 32
+  %oc0 = add i32 %od, 48
+  %hc = trunc i32 %hc1 to i8
+  %tc = trunc i32 %tc1 to i8
+  %oc = trunc i32 %oc0 to i8
+  %p0 = getelementptr [3 x i8], ptr %buf, i32 0, i32 0
+  %p1 = getelementptr [3 x i8], ptr %buf, i32 0, i32 1
+  %p2 = getelementptr [3 x i8], ptr %buf, i32 0, i32 2
+  store i8 %hc, ptr %p0
+  store i8 %tc, ptr %p1
+  store i8 %oc, ptr %p2
+  call void @hud_text(ptr %ren, i32 %x, i32 %y, ptr %buf, i32 3, i8 %r, i8 %g, i8 %b)
+  ret void
+}
+
 
 define i32 @note_idx(i32 %hb, ptr %accp) {
 entry:
@@ -152,7 +269,7 @@ le3:
   ret void
 }
 
-define void @draw_ui(ptr %ren, i32 %midi, i32 %prog, i32 %wave, i32 %paused) {
+define void @draw_ui(ptr %ren, i32 %midi, i32 %prog, i32 %wave, i32 %paused, i32 %bpm) {
 entry:
   %a1 = alloca [4 x i32]
   %a2 = alloca i32
@@ -288,6 +405,40 @@ then7:
   %t85 = call i32 @SDL_RenderFillRect(ptr %ren, ptr %a1)
   br label %endif8
 endif8:
+  %t86 = icmp eq i32 %paused, 0
+  br i1 %t86, label %then9, label %endif10
+then9:
+  call void @hud_text(ptr %ren, i32 8, i32 198, ptr @.s1, i32 7, i8 255, i8 210, i8 90)
+  br label %endif10
+endif10:
+  %t87 = icmp ne i32 %paused, 0
+  br i1 %t87, label %then11, label %endif12
+then11:
+  call void @hud_text(ptr %ren, i32 8, i32 198, ptr @.s2, i32 7, i8 255, i8 210, i8 90)
+  br label %endif12
+endif12:
+  %t88 = icmp eq i32 %wave, 0
+  br i1 %t88, label %then13, label %endif14
+then13:
+  call void @hud_text(ptr %ren, i32 64, i32 198, ptr @.s3, i32 8, i8 255, i8 210, i8 90)
+  br label %endif14
+endif14:
+  %t89 = icmp eq i32 %wave, 1
+  br i1 %t89, label %then15, label %endif16
+then15:
+  call void @hud_text(ptr %ren, i32 64, i32 198, ptr @.s4, i32 8, i8 255, i8 210, i8 90)
+  br label %endif16
+endif16:
+  %t90 = icmp eq i32 %wave, 2
+  br i1 %t90, label %then17, label %endif18
+then17:
+  call void @hud_text(ptr %ren, i32 64, i32 198, ptr @.s5, i32 8, i8 255, i8 210, i8 90)
+  br label %endif18
+endif18:
+  call void @hud_int(ptr %ren, i32 127, i32 198, i32 %bpm, i8 255, i8 210, i8 90)
+  call void @hud_text(ptr %ren, i32 155, i32 198, ptr @.s6, i32 3, i8 255, i8 210, i8 90)
+  call void @hud_text(ptr %ren, i32 8, i32 244, ptr @.s7, i32 23, i8 220, i8 220, i8 220)
+  call void @hud_text(ptr %ren, i32 8, i32 262, ptr @.s8, i32 24, i8 220, i8 220, i8 220)
   ret void
 }
 
@@ -324,7 +475,7 @@ then1:
   br label %endif2
 endif2:
   %t5 = call i32 @SDL_Init(i32 48)
-  %t6 = call ptr @SDL_CreateWindow(ptr @.s1, i32 805240832, i32 805240832, i32 640, i32 250, i32 0)
+  %t6 = call ptr @SDL_CreateWindow(ptr @.s9, i32 805240832, i32 805240832, i32 640, i32 280, i32 0)
   %t7 = call ptr @SDL_CreateRenderer(ptr %t6, i32 -1, i32 1)
   %t8 = getelementptr i8, ptr %a2, i32 0
   store i64 0, ptr %t8
@@ -478,31 +629,32 @@ endif32:
   %t73 = load i32, ptr %t72
   %t74 = load i32, ptr %a10
   %t75 = load i32, ptr %a8
-  call void @draw_ui(ptr %t7, i32 %t73, i32 %t71, i32 %t74, i32 %t75)
+  %t76 = load i32, ptr %a9
+  call void @draw_ui(ptr %t7, i32 %t73, i32 %t71, i32 %t74, i32 %t75, i32 %t76)
   call void @SDL_RenderPresent(ptr %t7)
   call void @SDL_Delay(i32 16)
-  %t76 = load i32, ptr %a6
-  %t77 = add i32 %t76, 1
-  store i32 %t77, ptr %a6
-  %t78 = load i32, ptr %a7
-  %t79 = icmp sgt i32 %t78, 0
-  %t80 = load i32, ptr %a6
-  %t81 = load i32, ptr %a7
-  %t82 = icmp sge i32 %t80, %t81
-  %t83 = and i1 %t79, %t82
-  br i1 %t83, label %then35, label %endif36
+  %t77 = load i32, ptr %a6
+  %t78 = add i32 %t77, 1
+  store i32 %t78, ptr %a6
+  %t79 = load i32, ptr %a7
+  %t80 = icmp sgt i32 %t79, 0
+  %t81 = load i32, ptr %a6
+  %t82 = load i32, ptr %a7
+  %t83 = icmp sge i32 %t81, %t82
+  %t84 = and i1 %t80, %t83
+  br i1 %t84, label %then35, label %endif36
 then35:
   store i32 0, ptr %a5
   br label %endif36
 endif36:
   br label %wc5
 we7:
-  %t84 = load i32, ptr %a6
-  %t85 = load i32, ptr %a12
-  %t86 = load i32, ptr %a9
-  %t87 = call i32 (ptr, ...) @printf(ptr @.s2, i32 %t84, i32 %t85, i32 %t86)
-  %t88 = icmp ne i32 %t16, 0
-  br i1 %t88, label %then37, label %endif38
+  %t85 = load i32, ptr %a6
+  %t86 = load i32, ptr %a12
+  %t87 = load i32, ptr %a9
+  %t88 = call i32 (ptr, ...) @printf(ptr @.s10, i32 %t85, i32 %t86, i32 %t87)
+  %t89 = icmp ne i32 %t16, 0
+  br i1 %t89, label %then37, label %endif38
 then37:
   call void @SDL_CloseAudioDevice(i32 %t16)
   br label %endif38

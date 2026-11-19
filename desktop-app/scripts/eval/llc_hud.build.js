@@ -6,6 +6,10 @@ const rd = (p) => fs.readFileSync(path.join(root, p), 'utf8');
 const dir = path.join(root, 'renderer/src/examples/llc/gpgpu');
 const LL = {};
 for (const f of ['nbody3d.ll', 'nbody3d_cl.ll', 'fluid3d.ll', 'fluid3d_cl.ll']) LL[f.replace(/\.ll$/, '')] = fs.readFileSync(path.join(dir, f), 'utf8');
+// 螢幕說明（HUD）檢查表用的互動範例（DESIGN.run-terminal.md §21.y）：鍵名就是檔名（不含副檔名）
+for (const rel of ['gui/music_player.ll', 'gui/midi_player.ll', 'gui/sdl2_gl_triangle.ll', 'game/sdl2_piano.ll', 'game/sdl2_pong.ll']) {
+    LL[path.basename(rel, '.ll')] = fs.readFileSync(path.join(root, 'renderer/src/examples/llc', rel), 'utf8');
+}
 const fontSrc = rd('renderer/src/examples/llc/_gen/_font_data.py');
 const m = fontSrc.match(/ROWS = \[([\s\S]*?)\]/);
 if (!m) throw new Error('找不到 ROWS');

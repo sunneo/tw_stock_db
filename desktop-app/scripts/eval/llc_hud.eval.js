@@ -26,20 +26,27 @@ const glyphPts = (str, x0, y0) => {
 };
 // 畫布像素（GL 原點在左下；畫面座標 y 向下）
 const grab = (cv) => {
-    const gl = cv.getContext('webgl2'); const w = cv.width, h = cv.height;
-    const a = new Uint8Array(w * h * 4); gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, a);
-    return { a, w, h };
+    const w = cv.width, h = cv.height;
+    const gl = cv.getContext('webgl2');
+    if (gl) { const a = new Uint8Array(w * h * 4); gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, a); return { a, w, h, flip: true }; }
+    // SDL 的 2D 畫布（gui_render.js）：原點在左上，不翻轉
+    const a = cv.getContext('2d').getImageData(0, 0, w, h).data;
+    return { a, w, h, flip: false };
 };
+const pixIdx = (img, x, y) => ((img.flip ? img.h - 1 - y : y) * img.w + x) * 4;
 const coverage = (img, pts) => {
     let lit = 0;
     for (const [x, y] of pts) {
         if (x < 0 || y < 0 || x >= img.w || y >= img.h) continue;
-        const i = ((img.h - 1 - y) * img.w + x) * 4;
+        const i = pixIdx(img, x, y);
         if ((img.a[i] + img.a[i + 1] + img.a[i + 2]) / 3 > 100) lit++;
     }
     return pts.length ? +(lit / pts.length).toFixed(3) : 0;
 };
 const findCanvas = (w, h) => [...document.querySelectorAll('canvas')].find((c) => c.width === w && c.height === h && c.getContext('webgl2'));
+// 任何種類的畫布（SDL 是 2D、GL 是 webgl2）：取最後建立的（同尺寸的舊畫布可能還在）
+const findAnyCanvas = (w, h) => [...document.querySelectorAll('canvas')].filter((c) => c.width === w && c.height === h).pop() || null;
+const waitAnyCanvas = async (w, h, ms) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { const c = findAnyCanvas(w, h); if (c) return c; await wait(300); } return null; };
 // 等畫布出現（新的 job 建立視窗需要時間）
 const waitCanvas = async (w, h, ms) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { const c = findCanvas(w, h); if (c) return c; await wait(300); } return null; };
 const canvasNode = async (jobId) => {
@@ -82,7 +89,7 @@ const NB = ['512', '100000', '0'];
 }
 // 2. nbody3d_cl（OpenCL 版）：預設 GPU；狀態行與按鈕底色（選中＝綠、未選中＝灰）隨模式變；GPU 不可用時退回 CPU 並說明
 const GREEN_PX = [143, 139], CPU_BTN = [143, 139], GPU_BTN = [203, 139];
-const isGreen = (img, x, y) => { const i = ((img.h - 1 - y) * img.w + x) * 4; const r = img.a[i], g = img.a[i + 1], b = img.a[i + 2]; return g > 100 && g > r + 40 && g > b + 40; };
+const isGreen = (img, x, y) => { const i = pixIdx(img, x, y); const r = img.a[i], g = img.a[i + 1], b = img.a[i + 2]; return g > 100 && g > r + 40 && g > b + 40; };
 const btnRow = (example, state, img) => {
     const cpuG = isGreen(img, CPU_BTN[0], CPU_BTN[1]), gpuG = isGreen(img, GPU_BTN[0], GPU_BTN[1]);
     R.rows.push({ example, state, label: '按鈕底色（CPU 按鈕、GPU 按鈕）', shown: (cpuG ? 'CPU 綠' : 'CPU 非綠') + '、' + (gpuG ? 'GPU 綠' : 'GPU 非綠'), best_coverage: null, pass: null, cpu_green: cpuG, gpu_green: gpuG });
@@ -204,5 +211,118 @@ const fluidState = async (example, state, cv) => {
     const ym = (t) => (t.match(/y_mean=[-0-9.]+/) || [null])[0];
     R.output.fluid = { cpu: ym(outA), cl_default_gpu: ym(outB), cl_switched_cpu_then_gpu: ym(outC), same: !!ym(outA) && ym(outA) === ym(outB) && ym(outA) === ym(outC) };
 }
+// 5. 螢幕說明（HUD）有無檢查表：手寫與產生的互動範例，畫面上都要有可讀的操作說明；狀態文字要跟真實狀態一致（按鍵後會變）。
+//    文字位置（與 _gen/_hud.py 的 hud_text 相同）：字串第 k 字元的第 r 列畫在 (x+7k+c, y+r)。
+//    通過＝期望字串的覆蓋率 ≥ 0.95，且在候選字串中覆蓋率最高。
+const hudPts = (str, x0, y0) => {
+    const pts = [];
+    for (let k = 0; k < str.length; k++) {
+        let code = str.charCodeAt(k) & 255; if (code < 32 || code > 126) code = 32;
+        const base = (code - 32) * 13;
+        for (let r = 0; r < 13; r++) {
+            const bits = SRC.ROWS[base + r];
+            for (let c = 0; c < 7; c++) if (bits & (1 << (6 - c))) pts.push([x0 + k * 7 + c, y0 + r]);
+        }
+    }
+    return pts;
+};
+const hudRow = (example, state, label, x, y, expected, alts, cv) => {
+    const img = grab(cv);
+    const cands = [expected, ...(alts || [])].map((t) => ({ text: t, coverage: coverage(img, hudPts(t, x, y)) }));
+    const best = cands.slice().sort((p, q) => q.coverage - p.coverage)[0];
+    const exp = cands[0];
+    R.rows.push({ example, state, label, expected, shown: best.coverage >= 0.95 ? best.text : null, expected_coverage: exp.coverage, best_coverage: best.coverage, pass: best.text === expected && exp.coverage >= 0.95 });
+};
+const hudStatic = (example, state, label, x, y, text, cv) => {
+    const img = grab(cv); const c = coverage(img, hudPts(text, x, y));
+    R.rows.push({ example, state, label, expected: text, best_coverage: c, pass: c >= 0.95 });
+};
+const pressKey = async (id, node, k) => {
+    await tool('job_gui', { job_id: id, action: 'key', node, value: { key: k, down: true }, wait_ms: 200 });
+    await wait(300);
+};
+
+// 5a. music_player（640×280）：狀態（播放／暫停、波形、BPM）每幀重畫；按 2、空白、↑ 後要變
+{
+    const id = await startJob('music_player', ['0']); await wait(4000);
+    const cv = await waitAnyCanvas(640, 280, 8000); const node = cv ? await canvasNode(id) : null;
+    if (!cv || !node) R.rows.push({ example: 'music_player', label: 'canvas', pass: false, note: '找不到 640×280 的畫布或節點' });
+    else {
+        hudStatic('music_player', '開場', '操作說明（第 2 行）', 8, 244, 'SPACE PAUSE  1 2 3 WAVE', cv);
+        hudStatic('music_player', '開場', '操作說明（第 3 行）', 8, 262, 'UP DOWN TEMPO', cv);
+        hudRow('music_player', '開場', '播放狀態', 8, 198, 'PLAYING', ['PAUSED '], cv);
+        hudRow('music_player', '開場', '目前波形', 64, 198, 'SQUARE  ', ['TRIANGLE', 'SINE    '], cv);
+        hudRow('music_player', '開場', 'BPM 數字', 127, 198, '110', ['120', '100'], cv);
+        await pressKey(id, node, '2');
+        hudRow('music_player', '按 2 後', '目前波形', 64, 198, 'TRIANGLE', ['SQUARE  ', 'SINE    '], findAnyCanvas(640, 280));
+        await pressKey(id, node, ' ');
+        hudRow('music_player', '按空白後', '播放狀態', 8, 198, 'PAUSED ', ['PLAYING'], findAnyCanvas(640, 280));
+        await pressKey(id, node, 'ArrowUp');
+        hudRow('music_player', '按 ↑ 後（暫停中）', 'BPM 數字', 127, 198, '120', ['110'], findAnyCanvas(640, 280));
+    }
+    await stopJob(id);
+}
+// 5b. midi_player（640×320）：內嵌示範曲；狀態（播放／暫停、音符數、來源）
+{
+    const id = await startJob('midi_player', ['-', '0']); await wait(4000);
+    const cv = await waitAnyCanvas(640, 320, 8000); const node = cv ? await canvasNode(id) : null;
+    if (!cv || !node) R.rows.push({ example: 'midi_player', label: 'canvas', pass: false, note: '找不到 640×320 的畫布或節點' });
+    else {
+        hudRow('midi_player', '開場', '播放狀態', 8, 262, 'PLAYING', ['PAUSED '], cv);
+        hudRow('midi_player', '開場', '音符數', 106, 262, '045', ['000', '100'], cv);
+        hudStatic('midi_player', '開場', '操作說明（第 2 行）', 8, 280, 'SPACE PAUSE  R RESTART  ESC QUIT', cv);
+        hudRow('midi_player', '開場', '來源（沒有檔案參數＝示範曲）', 8, 298, 'SOURCE: DEMO', ['SOURCE: FILE'], cv);
+        await pressKey(id, node, ' ');
+        hudRow('midi_player', '按空白後', '播放狀態', 8, 262, 'PAUSED ', ['PLAYING'], findAnyCanvas(640, 320));
+    }
+    await stopJob(id);
+}
+// 5c. sdl2_piano（640×250）：琴鍵下方的說明；按 A 後已彈音符數加一
+{
+    const id = await startJob('sdl2_piano', ['0']); await wait(3500);
+    const cv = await waitAnyCanvas(640, 250, 8000); const node = cv ? await canvasNode(id) : null;
+    if (!cv || !node) R.rows.push({ example: 'sdl2_piano', label: 'canvas', pass: false, note: '找不到 640×250 的畫布或節點' });
+    else {
+        hudStatic('sdl2_piano', '開場', '操作說明（第 1 行）', 8, 200, 'A S D F G H J K = C4 TO C5', cv);
+        hudStatic('sdl2_piano', '開場', '操作說明（第 2 行）', 8, 218, 'ESC QUIT  NOTES PLAYED ', cv);
+        hudRow('sdl2_piano', '開場', '已彈音符數', 169, 218, '000', ['001'], cv);
+        await pressKey(id, node, 'a');
+        hudRow('sdl2_piano', '按 A 後', '已彈音符數', 169, 218, '001', ['000'], findAnyCanvas(640, 250));
+    }
+    await stopJob(id);
+}
+// 5d. sdl2_pong（640×440）：底部的說明與回擊數（RALLY）、最佳紀錄（BEST）
+{
+    const id = await startJob('sdl2_pong', ['0']); await wait(3500);
+    const cv = await waitAnyCanvas(640, 440, 8000);
+    if (!cv) R.rows.push({ example: 'sdl2_pong', label: 'canvas', pass: false, note: '找不到 640×440 的畫布' });
+    else {
+        hudStatic('sdl2_pong', '開場', '操作說明', 8, 412, 'W/S OR UP DOWN: MOVE', cv);
+        hudStatic('sdl2_pong', '開場', '回擊數標籤', 8, 428, 'RALLY ', cv);
+        hudRow('sdl2_pong', '開場', '回擊數', 50, 428, '000', ['001', '002'], cv);
+        hudStatic('sdl2_pong', '開場', '最佳紀錄標籤', 77, 428, 'BEST ', cv);
+        hudRow('sdl2_pong', '開場', '最佳紀錄', 112, 428, '000', ['001'], cv);
+        hudStatic('sdl2_pong', '開場', 'ESC 說明', 147, 428, 'ESC QUIT', cv);
+    }
+    await stopJob(id);
+}
+// 5e. sdl2_gl_triangle（640×480，OpenGL）：底部操作說明；左上角狀態（拖曳中／閒置）跟著滑鼠按下與放開變
+{
+    const id = await startJob('sdl2_gl_triangle', ['0']); await wait(4000);
+    const cv = await waitAnyCanvas(640, 480, 8000); const node = cv ? await canvasNode(id) : null;
+    if (!cv || !node) R.rows.push({ example: 'sdl2_gl_triangle', label: 'canvas', pass: false, note: '找不到 640×480 的 OpenGL 畫布或節點' });
+    else {
+        hudStatic('sdl2_gl_triangle', '開場', '操作說明（第 1 行）', 8, 440, 'DRAG: ROTATE   WHEEL: ZOOM', cv);
+        hudStatic('sdl2_gl_triangle', '開場', '操作說明（第 2 行）', 8, 458, 'ESC QUIT', cv);
+        hudRow('sdl2_gl_triangle', '開場', '拖曳狀態', 8, 8, 'IDLE', ['DRAGGING'], cv);
+        await tool('job_gui', { job_id: id, action: 'mouse', node, value: { kind: 'down', x: 320, y: 240, button: 0 }, wait_ms: 200 });
+        await tool('job_gui', { job_id: id, action: 'mouse', node, value: { kind: 'move', x: 340, y: 240, button: 0 }, wait_ms: 300 });
+        hudRow('sdl2_gl_triangle', '滑鼠按下拖曳後', '拖曳狀態', 8, 8, 'DRAGGING', ['IDLE'], findAnyCanvas(640, 480));
+        await tool('job_gui', { job_id: id, action: 'mouse', node, value: { kind: 'up', x: 340, y: 240, button: 0 }, wait_ms: 300 });
+        hudRow('sdl2_gl_triangle', '滑鼠放開後', '拖曳狀態', 8, 8, 'IDLE', ['DRAGGING'], findAnyCanvas(640, 480));
+    }
+    await stopJob(id);
+}
+R.output.hud_checklist = { total: R.rows.filter((r) => r.pass !== null && r.pass !== undefined).length, passed: R.rows.filter((r) => r.pass === true).length };
 console.log('LLC_HUD ' + JSON.stringify(R));
 return R;

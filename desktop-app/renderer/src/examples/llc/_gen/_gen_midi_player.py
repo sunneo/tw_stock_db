@@ -5,6 +5,7 @@
 import sys, os, struct
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _irb import *
+from _hud import install_dsl
 
 RATE = 22050
 MAXN, MAXT, MAXFILE, VOICES = 2048, 64, 24576, 12
@@ -45,6 +46,7 @@ m = Mod('; MIDI 播放器（SDL2 音訊＋影像＋鍵盤＋檔案）：在 IR �
         '; 經 SDL_QueueAudio 送出，視窗畫捲動的 piano roll。第一個參數＝.mid 檔（fopen 讀沙盒或 /mnt/<名稱>）；沒給就播內嵌示範曲。空白＝暫停、R＝從頭、Esc 離開；第二個參數＝跑幾幀後離開（測試用）。\n'
         '; （由 _gen/_gen_midi_player.py 產生）\ntarget triple = "x86_64-pc-linux-gnu"')
 D = m.decl
+install_dsl(m)   # 螢幕說明（HUD）的字型與 hud_text／hud_int（_hud.py）
 D('i32', 'SDL_Init', 'i32'); D('void', 'SDL_Quit'); D('ptr', 'SDL_CreateWindow', 'ptr', 'i32', 'i32', 'i32', 'i32', 'i32'); D('ptr', 'SDL_CreateRenderer', 'ptr', 'i32', 'i32')
 D('i32', 'SDL_PollEvent', 'ptr'); D('i32', 'SDL_SetRenderDrawColor', 'ptr', 'i8', 'i8', 'i8', 'i8'); D('i32', 'SDL_RenderClear', 'ptr'); D('i32', 'SDL_RenderFillRect', 'ptr', 'ptr')
 D('void', 'SDL_RenderPresent', 'ptr'); D('void', 'SDL_Delay', 'i32'); D('void', 'SDL_DestroyRenderer', 'ptr'); D('void', 'SDL_DestroyWindow', 'ptr')
@@ -190,8 +192,8 @@ with synth.loop(s, 0, n):
 synth.ret()
 
 # piano roll：播放位置在 x=100，一秒 60 像素；音高 36..96 對應 y 240..0
-ui = m.fn('void', 'draw_ui', ('ptr', 'ren'), ('i32', 'cur'), ('ptr', 'ss'), ('ptr', 'se'), ('ptr', 'nk'), ('i32', 'cnt'), ('i32', 'total'), ('i32', 'paused'))
-ren, cur, ss, se, nk, cnt, total, paused = ui.args
+ui = m.fn('void', 'draw_ui', ('ptr', 'ren'), ('i32', 'cur'), ('ptr', 'ss'), ('ptr', 'se'), ('ptr', 'nk'), ('i32', 'cnt'), ('i32', 'total'), ('i32', 'paused'), ('i32', 'srcfile'))
+ren, cur, ss, se, nk, cnt, total, paused, srcfile = ui.args
 ss.elem = se.elem = nk.elem = 'i32'
 rc = ui.array('i32', 4)
 c = ui.call
@@ -217,6 +219,18 @@ rect(100, 0, 1, 250, 255, 255, 255)
 rect(0, 246, (cur * 640) / (total + 1), 4, 90, 200, 120)
 with ui.if_(paused.ne(0)):
     rect(590, 10, 8, 20, 255, 180, 60); rect(606, 10, 8, 20, 255, 180, 60)
+# 螢幕說明（HUD）：視窗下方的文字區。第 1 行＝播放／暫停與音符數，第 2 行＝操作，第 3 行＝來源（內嵌示範曲或命令列的 .mid 檔）
+with ui.if_(paused.eq(0)):
+    c('hud_text', ren, 8, 262, 'PLAYING', 7, 255, 210, 90)
+with ui.if_(paused.ne(0)):
+    c('hud_text', ren, 8, 262, 'PAUSED ', 7, 255, 210, 90)
+c('hud_text', ren, 64, 262, 'NOTES', 5, 255, 210, 90)
+c('hud_int', ren, 106, 262, cnt, 255, 210, 90)
+c('hud_text', ren, 8, 280, 'SPACE PAUSE  R RESTART  ESC QUIT', len('SPACE PAUSE  R RESTART  ESC QUIT'), 220, 220, 220)
+with ui.if_(srcfile.ne(0)):
+    c('hud_text', ren, 8, 298, 'SOURCE: FILE', 12, 220, 220, 220)
+with ui.if_(srcfile.eq(0)):
+    c('hud_text', ren, 8, 298, 'SOURCE: DEMO', 12, 220, 220, 220)
 ui.ret()
 
 f = m.fn('i32', 'main', ('i32', 'argc'), ('ptr', 'argv'))
@@ -261,7 +275,7 @@ with f.loop(i, 0, cnt):
     se[i.get()] = c('t2s', ne[i.get()], tt, tm, info[1], info[0])
     with f.if_(se[i.get()] > total.get()): total.set(se[i.get()])
 c('SDL_Init', 48)
-win = c('SDL_CreateWindow', 'IR MIDI player', 805240832, 805240832, 640, 250, 0)
+win = c('SDL_CreateWindow', 'IR MIDI player', 805240832, 805240832, 640, 320, 0)
 ren = c('SDL_CreateRenderer', win, -1, 1)
 for off in (0, 8, 16, 24):
     f.store('i64', 0, f.gep8(spec, off))
@@ -291,7 +305,7 @@ with f.while_(lambda: running.get().ne(0)):
             cur += 1024
             qtotal += 1024
             with f.if_(cur.get() > total.get() + RATE): cur.set(0)   # 播完從頭
-    c('draw_ui', ren, cur.get(), ss, se, nk, cnt, total.get(), paused.get())
+    c('draw_ui', ren, cur.get(), ss, se, nk, cnt, total.get(), paused.get(), usefile.get())
     c('SDL_RenderPresent', ren); c('SDL_Delay', 16)
     frames += 1
     with f.if_((maxf.get() > 0) & (frames.get() >= maxf.get())): running.set(0)
