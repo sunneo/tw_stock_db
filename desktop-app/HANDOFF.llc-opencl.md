@@ -32,6 +32,7 @@ Continue from the handoff document at desktop-app/HANDOFF.llc-opencl.md. Read it
 - 不擴大範圍；不碰他人未提交檔：`features/FEATURES.md`、`skills/image-decompose-redraw/data/parts_builtin.json`、`DESIGN.edit-docs.md`、`DESIGN.edit-remote.md`、`DESIGN.env-baseline.md`、`HANDOFF.edit-remote.md`、`skills/weak-model-harness/scripts/bridge/`、`72d21a0c-84c8-409b-b2aa-0bdb5628ec1e`、`test-reports/`。
 
 ## 5. 使用者原話（逐字，含日期）
+- 2026-11-19：「你是領導」「領導如果使用sonnet, subsession就用haiku」「領導如果用opus, subsession就用sonnet」（`start_session` 的 `model` 要低一階：領導 Sonnet→`claude-haiku-5-5`，領導 Opus→`claude-sonnet-5-5`；子 session 開的下一棒也照此；領導負責驗證與發布）
 
 - 2026-11-19：「接手前面的工作，完成後要publish」／「接上run terminal的llc的opencl墊片」
 - 2026-11-06：「提交並發布」（發布觸發語）；「個別完成都要回來發布」

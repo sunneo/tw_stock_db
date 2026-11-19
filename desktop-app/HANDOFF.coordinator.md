@@ -31,6 +31,7 @@
 - 預設以 `date`、`mcp__ccd_session_mgmt__get_usage` 查額度與 context。
 
 ## 5. 使用者原話（逐字）
+- 2026-11-19：「你是領導」「領導如果使用sonnet, subsession就用haiku」「領導如果用opus, subsession就用sonnet」（`start_session` 的 `model` 要低一階：領導 Sonnet→`claude-haiku-5-5`，領導 Opus→`claude-sonnet-5-5`；子 session 開的下一棒也照此；領導負責驗證與發布）
 
 - 2026-11-06：「提交並發布」（發布的觸發語；曾誤送到別的 session）
 - 2026-11-06：「週額度要重啟了，請放心用光」／「這個週額度可以用光的規則僅用於禮拜五晚上7點後」／「平時禮拜六七點後，到隔週的禮拜五晚上七點前，不能這樣做」
