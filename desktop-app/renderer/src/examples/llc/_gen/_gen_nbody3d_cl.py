@@ -75,12 +75,10 @@ SRC_ALL = '\n'.join([acc_kernel('x'), acc_kernel('y'), acc_kernel('z'), acc_kern
 
 # 句柄槽（@cl_h，40 個）：0 ctx、1 queue、2 prog、3..12 核心（KNAMES 順序）、13 ms、14..16 ax/ay/az、17 pot、
 # 18..29：x、y、z、vx、vy、vz 各兩個（ping-pong）
-SL = {'ctx': 0, 'q': 1, 'prog': 2, 'ms': 13, 'ax': 14, 'ay': 15, 'az': 16}
+SL = {'ctx': 0, 'q': 1, 'prog': 2, 'ms': 13, 'ax': 14, 'ay': 15, 'az': 16, 'pot': 17}
 for _i, _k in enumerate(KNAMES):
-    SL[_k] = 3 + _i                       # 3..12
-PACK = 18                                  # PACK＋p：第 p 組的打包緩衝區（x、y、z、pot 四個部分，各 N 個 float）
-PAIR = {'x': 20, 'y': 22, 'z': 24, 'pot': 26, 'vx': 28, 'vy': 30, 'vz': 32}   # PAIR[名]＋p：x、y、z、pot 是打包的 view；速度是平面緩衝區
-PART = {'x': 0, 'y': 1, 'z': 2, 'pot': 3}
+    SL[_k] = 3 + _i
+PAIR = {'x': 18, 'y': 20, 'z': 22, 'vx': 24, 'vy': 26, 'vz': 28}   # PAIR[名]＋0 或＋1
 FLAG_RW = 1
 
 
@@ -141,27 +139,13 @@ def glue_ir():
         A('  %%k_%s = call ptr @clCreateKernel(ptr %%prog, ptr @cl_n_%s, ptr %%rc)' % (k, k))
         static_slot(SL[k], 'hk_' + k)
         A('  store ptr %%k_%s, ptr %%hk_%s' % (k, k))
-    bufs = [('ms', SL['ms']), ('ax', SL['ax']), ('ay', SL['ay']), ('az', SL['az'])]
-    for name in ['vx', 'vy', 'vz']:
-        bufs += [(name + '0', PAIR[name]), (name + '1', PAIR[name] + 1)]
+    bufs = [('ms', SL['ms']), ('ax', SL['ax']), ('ay', SL['ay']), ('az', SL['az']), ('pot', SL['pot'])]
+    for name, base in PAIR.items():
+        bufs += [(name + '0', base), (name + '1', base + 1)]
     for name, slot in bufs:
         A('  %%b_%s = call ptr @clCreateBuffer(ptr %%c, i64 %d, i64 %%bytes, ptr null, ptr %%rc)' % (name, FLAG_RW))
         static_slot(slot, 'hb_' + name)
         A('  store ptr %%b_%s, ptr %%hb_%s' % (name, name))
-    # 打包：一個緩衝區 4N（x、y、z、pot 各 N）；fa_cl_pack 標成四個部分；fa_cl_view 切出每個部分（與打包共用資料）
-    A('  %bytes4 = mul i64 %bytes, 4')
-    for pp in (0, 1):
-        A('  %%b_pk%d = call ptr @clCreateBuffer(ptr %%c, i64 %d, i64 %%bytes4, ptr null, ptr %%rc)' % (pp, FLAG_RW))
-        A('  %%pk_r%d = call i32 @fa_cl_pack(ptr %%b_pk%d, i32 4)' % (pp, pp))
-        static_slot(PACK + pp, 'hpk%d' % pp)
-        A('  store ptr %%b_pk%d, ptr %%hpk%d' % (pp, pp))
-        for name, part in PART.items():
-            A('  %%vw_%s%d = call ptr @fa_cl_view(ptr %%b_pk%d, i32 %d)' % (name, pp, pp, part))
-            static_slot(PAIR[name] + pp, 'hvw_%s%d' % (name, pp))
-            A('  store ptr %%vw_%s%d, ptr %%hvw_%s%d' % (name, pp, name, pp))
-    # 暫存區（主機）：一次讀回打包的 4N 個 float 後，從這裡拷到 x、y、z、pot
-    A('  %stb = call ptr @malloc(i32 131072)')
-    A('  store ptr %stb, ptr @cl_stage')
     A('  %sf = getelementptr [4 x i32], ptr @cl_st, i32 0, i32 0'); A('  store i32 1, ptr %sf')
     A('  %sn = getelementptr [4 x i32], ptr @cl_st, i32 0, i32 1'); A('  store i32 %n, ptr %sn')
     A('  %sp = getelementptr [4 x i32], ptr @cl_st, i32 0, i32 2'); A('  store i32 0, ptr %sp')
@@ -176,9 +160,8 @@ def glue_ir():
     A('define void @accel_cl(ptr %x, ptr %y, ptr %z, ptr %ms, ptr %vx, ptr %vy, ptr %vz, ptr %pot, float %G, float %e2, float %dt, float %vmax, i32 %n) {')
     A('entry:')
     A('  %g = alloca float'); A('  %ee = alloca float'); A('  %dtv = alloca float'); A('  %vmv = alloca float')
-    A('  %nn = alloca i32'); A('  %gs = alloca i64'); A('  %ci = alloca i32')
-    A('  %n64 = sext i32 %n to i64'); A('  %bytes = mul i64 %n64, 4'); A('  %bytes4 = mul i64 %bytes, 4')
-    A('  %n2 = add i32 %n, %n'); A('  %n3 = add i32 %n2, %n')
+    A('  %nn = alloca i32'); A('  %gs = alloca i64')
+    A('  %n64 = sext i32 %n to i64'); A('  %bytes = mul i64 %n64, 4')
     A('  %sf = getelementptr [4 x i32], ptr @cl_st, i32 0, i32 0'); A('  %rdy = load i32, ptr %sf')
     A('  %z0 = icmp eq i32 %rdy, 0'); A('  br i1 %z0, label %setup, label %run')
     A('setup:'); A('  call void @accel_setup(i32 %n)'); A('  br label %run')
@@ -191,7 +174,6 @@ def glue_ir():
     A('  %srs = getelementptr [4 x i32], ptr @cl_st, i32 0, i32 3'); A('  %rs = load i32, ptr %srs')
     A('  %needup = icmp ne i32 %rs, 0'); A('  br i1 %needup, label %upload, label %compute')
     A('upload:')
-    # 重設：x、y、z 寫進目前組的 view（打包），速度與 ms 寫進平面緩衝區
     for name, src in [('x', '%x'), ('y', '%y'), ('z', '%z'), ('vx', '%vx'), ('vy', '%vy'), ('vz', '%vz')]:
         h = load_handle(dyn_slot(PAIR[name], '%p'))
         A('  %%uw_%s = call i32 @clEnqueueWriteBuffer(ptr %%q, ptr %s, i32 1, i64 0, i64 %%bytes, ptr %s, i32 0, ptr null, ptr null)' % (name, h, src))
@@ -200,15 +182,14 @@ def glue_ir():
     A('  store i32 0, ptr %srs')
     A('  br label %compute')
     A('compute:')
-    # 加速度：x,y,z（目前組的 view）、ms、out、n、G、e2；accpot 的輸出是下一組打包的 pot 部分
-    accel_outs = [('accx', static_slot(SL['ax'], 'oax')), ('accy', static_slot(SL['ay'], 'oay')), ('accz', static_slot(SL['az'], 'oaz')), ('accpot', dyn_slot(PAIR['pot'], '%nx'))]
-    for kname, out_h in accel_outs:
+    # 加速度：x,y,z,ms,out,n,G,e2
+    for kname, out_slot in [('accx', SL['ax']), ('accy', SL['ay']), ('accz', SL['az']), ('accpot', SL['pot'])]:
         kh = load_handle(static_slot(SL[kname]))
         A('  %%ka_%s = call i32 @clSetKernelArg(ptr %s, i32 0, i64 8, ptr %s)' % (kname, kh, dyn_slot(PAIR['x'], '%p')))
         A('  %%kb_%s = call i32 @clSetKernelArg(ptr %s, i32 1, i64 8, ptr %s)' % (kname, kh, dyn_slot(PAIR['y'], '%p')))
         A('  %%kc_%s = call i32 @clSetKernelArg(ptr %s, i32 2, i64 8, ptr %s)' % (kname, kh, dyn_slot(PAIR['z'], '%p')))
         A('  %%kd_%s = call i32 @clSetKernelArg(ptr %s, i32 3, i64 8, ptr %s)' % (kname, kh, static_slot(SL['ms'])))
-        A('  %%ke_%s = call i32 @clSetKernelArg(ptr %s, i32 4, i64 8, ptr %s)' % (kname, kh, out_h))
+        A('  %%ke_%s = call i32 @clSetKernelArg(ptr %s, i32 4, i64 8, ptr %s)' % (kname, kh, static_slot(out_slot)))
         A('  %%kf_%s = call i32 @clSetKernelArg(ptr %s, i32 5, i64 4, ptr %%nn)' % (kname, kh))
         A('  %%kg_%s = call i32 @clSetKernelArg(ptr %s, i32 6, i64 4, ptr %%g)' % (kname, kh))
         A('  %%kh_%s = call i32 @clSetKernelArg(ptr %s, i32 7, i64 4, ptr %%ee)' % (kname, kh))
@@ -222,7 +203,7 @@ def glue_ir():
         A('  %%vd_%s = call i32 @clSetKernelArg(ptr %s, i32 3, i64 4, ptr %%nn)' % (c_, kh))
         A('  %%ve_%s = call i32 @clSetKernelArg(ptr %s, i32 4, i64 4, ptr %%dtv)' % (c_, kh))
         A('  %%vn_%s = call i32 @clEnqueueNDRangeKernel(ptr %%q, ptr %s, i32 1, ptr null, ptr %%gs, ptr null, i32 0, ptr null, ptr null)' % (c_, kh))
-    # 位置：x（目前 view）, v（下一組）, x（下一組 view）, n, dt, vmax
+    # 位置：x（目前）, v（下一組）, x（下一組）, n, dt, vmax
     for c_ in ['x', 'y', 'z']:
         kh = load_handle(static_slot(SL['kp' + c_]))
         A('  %%pa_%s = call i32 @clSetKernelArg(ptr %s, i32 0, i64 8, ptr %s)' % (c_, kh, dyn_slot(PAIR[c_], '%p')))
@@ -232,26 +213,13 @@ def glue_ir():
         A('  %%pe_%s = call i32 @clSetKernelArg(ptr %s, i32 4, i64 4, ptr %%dtv)' % (c_, kh))
         A('  %%pf_%s = call i32 @clSetKernelArg(ptr %s, i32 5, i64 4, ptr %%vmv)' % (c_, kh))
         A('  %%pn_%s = call i32 @clEnqueueNDRangeKernel(ptr %%q, ptr %s, i32 1, ptr null, ptr %%gs, ptr null, i32 0, ptr null, ptr null)' % (c_, kh))
-    # 每幀一次讀回：下一組的打包（x、y、z、pot 四段，4N 個 float）一次讀進暫存區
-    A('  %stg = load ptr, ptr @cl_stage')
-    A('  %pkslot = add i32 %nx, 18')
-    A('  %pkaddr = getelementptr ptr, ptr @cl_h, i32 %pkslot')
-    A('  %pkv = load ptr, ptr %pkaddr')
-    A('  %rd = call i32 @clEnqueueReadBuffer(ptr %q, ptr %pkv, i32 1, i64 0, i64 %bytes4, ptr %stg, i32 0, ptr null, ptr null)')
+    # 讀回：pot，以及下一組的位置（阻塞）
+    poth = load_handle(static_slot(SL['pot']))
+    A('  %%rp = call i32 @clEnqueueReadBuffer(ptr %%q, ptr %s, i32 1, i64 0, i64 %%bytes, ptr %%pot, i32 0, ptr null, ptr null)' % poth)
+    for c_, dst in [('x', '%x'), ('y', '%y'), ('z', '%z')]:
+        h = load_handle(dyn_slot(PAIR[c_], '%nx'))
+        A('  %%rr_%s = call i32 @clEnqueueReadBuffer(ptr %%q, ptr %s, i32 1, i64 0, i64 %%bytes, ptr %s, i32 0, ptr null, ptr null)' % (c_, h, dst))
     A('  %fin = call i32 @clFinish(ptr %q)')
-    A('  br label %cl')
-    # 拷貝：stg[i]→x[i]、stg[n+i]→y[i]、stg[2n+i]→z[i]、stg[3n+i]→pot[i]
-    A('cl:')
-    A('  %iv = load i32, ptr %ci'); A('  %cc = icmp slt i32 %iv, %n'); A('  br i1 %cc, label %cb, label %ce')
-    A('cb:')
-    for tag, dst, off in [('x', '%x', '0'), ('y', '%y', '%n'), ('z', '%z', '%n2'), ('pot', '%pot', '%n3')]:
-        A('  %%si_%s = add i32 %%iv, %s' % (tag, off))
-        A('  %%sg_%s = getelementptr float, ptr %%stg, i32 %%si_%s' % (tag, tag))
-        A('  %%sv_%s = load float, ptr %%sg_%s' % (tag, tag))
-        A('  %%dg_%s = getelementptr float, ptr %s, i32 %%iv' % (tag, dst))
-        A('  store float %%sv_%s, ptr %%dg_%s' % (tag, tag))
-    A('  %ivn = add i32 %iv, 1'); A('  store i32 %ivn, ptr %ci'); A('  br label %cl')
-    A('ce:')
     A('  store i32 %nx, ptr %spp')
     # 後端檢查：本幀若實際走 JS 墊片（fa_cl_backend＝2，不是 WebGL2），退回 CPU 並記下原因（HUD 會顯示）
     A('  %be = call i32 @fa_cl_backend()')
@@ -329,7 +297,6 @@ for _k in __KNAMES__:
 m.globs.append('@cl_h = global [40 x ptr] zeroinitializer')
 m.globs.append('@cl_st = global [4 x i32] [i32 0, i32 0, i32 0, i32 1]')
 m.globs.append('@cl_mode = global i32 1')
-m.globs.append('@cl_stage = global ptr null')
 m.globs.append('@cl_fb = global i32 0')
 m.sigs['cl_fb'] = ('i32', [], False)
 m.sigs['cl_mode'] = ('i32', [], False)
@@ -354,10 +321,7 @@ declare i32 @clEnqueueNDRangeKernel(ptr, ptr, i32, ptr, ptr, ptr, i32, ptr, ptr)
 declare i32 @clEnqueueReadBuffer(ptr, ptr, i32, i64, i64, ptr, i32, ptr, ptr)
 declare i32 @clEnqueueWriteBuffer(ptr, ptr, i32, i64, i64, ptr, i32, ptr, ptr)
 declare i32 @clFinish(ptr)
-declare i32 @fa_cl_backend()
-declare ptr @malloc(i32)
-declare i32 @fa_cl_pack(ptr, i32)
-declare ptr @fa_cl_view(ptr, i32)'''
+declare i32 @fa_cl_backend()'''
 
 
 def build():
