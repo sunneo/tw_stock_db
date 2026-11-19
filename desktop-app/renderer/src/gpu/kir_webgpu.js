@@ -10,6 +10,8 @@
  *   tune(kernel, N, {scalars, reps, wgCandidates})  實測候選工作群大小（32／64／128／256），回傳最快的與各自耗時。
  *   ensureTuned(kernel, N, {store, adapterKey, scalars})  先查 store（非同步，例如 IndexedDB），沒有就 tune 後存回。
  *   free(b)
+ *   drawPoints({x, y, z}, count, o)  點精靈（DESIGN §13 階段 9）：x、y、z 的 storage buffer 直接當頂點來源（每點一個實例、四個頂點的三角帶），
+ *                        畫到一個 OffscreenCanvas 的 webgpu context（同一個 device）。不讀回。回傳那個畫布。
  * 輸入與輸出不能是同一塊重疊的位元組範圍（WebGPU 的用法衝突）；拒絕並說明。
  * 注意：這個檔案的 WGSL 只能在真的 GPU 上編譯與執行，node 測試用假裝置（只驗證綁定、偏移、提交順序與 uniform 佈局）。 */
 (function (root, factory) {
@@ -257,8 +259,124 @@
         // 送出所有排著的派送並等它們完成（給量測與測試用）
         const sync = async () => { flush(); await gdev.queue.onSubmittedWorkDone(); };
 
+        // ---- 點精靈（DESIGN §13 階段 9）：位置留在 GPU。外觀照 llvm_host 的 GLOW 著色器：高斯、加法混合、大小 = size·ref／w（距離反比）。
+        // 數字與 WGSL 只能在真 GPU 上確認（node 測試是假裝置）；這裡的參數佈局（272 位元組）與 llvm_host 的 GL 路徑一致。
+        const PTS_UNI_BYTES = 272;       // mvp(64) off(16) scl size rf gain vw vh pad pad(32) col[10](160)
+        const PTS_WGSL = `
+struct Pm {
+  mvp: mat4x4<f32>,
+  off: vec4<f32>,
+  scl: f32, size: f32, rf: f32, gain: f32,
+  vw: f32, vh: f32, pad0: f32, pad1: f32,
+  col: array<vec4<f32>, 10>,
+};
+@group(0) @binding(0) var<storage, read> PX: array<f32>;
+@group(0) @binding(1) var<storage, read> PY: array<f32>;
+@group(0) @binding(2) var<storage, read> PZ: array<f32>;
+@group(0) @binding(3) var<uniform> U: Pm;
+struct VOut {
+  @builtin(position) pos: vec4<f32>,
+  @location(0) uv: vec2<f32>,
+  @location(1) @interpolate(flat) ci: u32,
+};
+@vertex
+fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VOut {
+  var cs = array<vec2<f32>, 4>(vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, -1.0), vec2<f32>(-1.0, 1.0), vec2<f32>(1.0, 1.0));
+  let c = cs[vi];
+  let w = (vec3<f32>(PX[ii], PY[ii], PZ[ii]) - U.off.xyz) * U.scl;
+  let clip = U.mvp * vec4<f32>(w, 1.0);
+  var ps = U.size;
+  if (U.rf > 0.0) { ps = U.size * U.rf / max(clip.w, 0.2); }
+  ps = max(1.0, ps);
+  var o: VOut;
+  o.pos = vec4<f32>(clip.xy + c * vec2<f32>(ps / U.vw, ps / U.vh) * clip.w, clip.z, clip.w);
+  o.uv = c;
+  o.ci = ii % 10u;
+  return o;
+}
+@fragment
+fn fs(@location(0) uv: vec2<f32>, @location(1) @interpolate(flat) ci: u32) -> @location(0) vec4<f32> {
+  let r2 = dot(uv, uv);
+  if (r2 > 1.0) { discard; }
+  let a = U.gain * exp(-4.0 * r2);
+  return vec4<f32>(U.col[ci].xyz, a);
+}
+`;
+        const ptsPipes = new Map();      // 畫布格式 → { pipe, bgl, ubuf }
+        const ptsCanvases = new Map();   // 大小＋格式 → { canvas, ctx }
+        const pointsPipe = (format) => {
+            let p = ptsPipes.get(format); if (p) return p;
+            const mod = gdev.createShaderModule({ code: PTS_WGSL, label: 'kir:points' });
+            const bgl = gdev.createBindGroupLayout({ entries: [
+                { binding: 0, visibility: 1, buffer: { type: 'read-only-storage' } },
+                { binding: 1, visibility: 1, buffer: { type: 'read-only-storage' } },
+                { binding: 2, visibility: 1, buffer: { type: 'read-only-storage' } },
+                { binding: 3, visibility: 3, buffer: { type: 'uniform' } }
+            ] });
+            const pipe = gdev.createRenderPipeline({
+                layout: gdev.createPipelineLayout({ bindGroupLayouts: [bgl] }),
+                vertex: { module: mod, entryPoint: 'vs' },
+                fragment: { module: mod, entryPoint: 'fs', targets: [{ format, blend: {
+                    color: { srcFactor: 'src-alpha', dstFactor: 'one', operation: 'add' },
+                    alpha: { srcFactor: 'one', dstFactor: 'one', operation: 'add' } } }] },
+                primitive: { topology: 'triangle-strip' }
+            });
+            const ubuf = gdev.createBuffer({ size: PTS_UNI_BYTES, usage: USAGE.UNIFORM | USAGE.COPY_DST });
+            stats.pipelines++;
+            p = { pipe, bgl, ubuf, format }; ptsPipes.set(format, p);
+            return p;
+        };
+        const pointsCanvas = (W, H, format, makeCanvas) => {
+            const key = W + 'x' + H + ':' + format;
+            let c = ptsCanvases.get(key); if (c) return c;
+            const canvas = makeCanvas ? makeCanvas(W, H) : new OffscreenCanvas(W, H);
+            const ctx = canvas.getContext('webgpu');
+            if (!ctx) throw new Error('drawPoints：這個畫布拿不到 webgpu context');
+            ctx.configure({ device: gdev, format, alphaMode: 'opaque' });
+            c = { canvas, ctx }; ptsCanvases.set(key, c);
+            return c;
+        };
+        const drawPoints = (pos, count, q) => {
+            live();
+            const o = q || {};
+            if (!pos || !pos.x || !pos.y || !pos.z) throw new Error('drawPoints：要 {x, y, z} 三個位置緩衝區');
+            for (const k of ['x', 'y', 'z']) {
+                const b = pos[k];
+                if (b.freed || b.elem !== 'f32') throw new Error('drawPoints：' + k + ' 要是未釋放的 f32 緩衝區');
+                if (b.N < count) throw new Error('drawPoints：' + k + ' 的大小 ' + b.N + ' 小於點數 ' + count);
+            }
+            if (!Number.isInteger(count) || count < 1 || count > 1000000) throw new Error('drawPoints：點數要是 1 到 1000000 的整數');
+            if (!Array.isArray(o.mvp) || o.mvp.length !== 16 || o.mvp.some((v) => !Number.isFinite(v))) throw new Error('drawPoints：mvp 要是 16 個有限數字');
+            if (!Array.isArray(o.offset) || o.offset.length !== 3 || o.offset.some((v) => !Number.isFinite(v))) throw new Error('drawPoints：offset 要是 3 個有限數字');
+            if (!Array.isArray(o.colors) || o.colors.length !== 10 || o.colors.some((c) => !Array.isArray(c) || c.length !== 3 || c.some((v) => !Number.isFinite(v)))) throw new Error('drawPoints：colors 要是 10 組 [r, g, b]');
+            const W = Math.round(o.width), H = Math.round(o.height);
+            if (!(W >= 1 && W <= 4096 && H >= 1 && H <= 4096)) throw new Error('drawPoints：畫布大小 ' + o.width + '×' + o.height + ' 不合法');
+            for (const v of [o.scale, o.sizePx, o.ref || 0, o.gain]) if (!Number.isFinite(v)) throw new Error('drawPoints：scale、sizePx、ref、gain 要是有限數字');
+            flush();   // 之前排好的派送先提交：位置是它們的輸出
+            const p = pointsPipe(o.format || 'bgra8unorm');
+            const c = pointsCanvas(W, H, p.format, o.makeCanvas);
+            const f = new Float32Array(PTS_UNI_BYTES / 4);
+            f.set(o.mvp, 0);
+            f[16] = o.offset[0]; f[17] = o.offset[1]; f[18] = o.offset[2];
+            f[20] = o.scale; f[21] = o.sizePx; f[22] = o.ref || 0; f[23] = o.gain; f[24] = W; f[25] = H;
+            o.colors.forEach((col, i) => { f[28 + 4 * i] = col[0]; f[28 + 4 * i + 1] = col[1]; f[28 + 4 * i + 2] = col[2]; });
+            gdev.queue.writeBuffer(p.ubuf, 0, f);
+            const bg = gdev.createBindGroup({ layout: p.bgl, entries: [
+                { binding: 0, resource: { buffer: pos.x.gbuf, offset: pos.x.offset, size: pos.x.bytes } },
+                { binding: 1, resource: { buffer: pos.y.gbuf, offset: pos.y.offset, size: pos.y.bytes } },
+                { binding: 2, resource: { buffer: pos.z.gbuf, offset: pos.z.offset, size: pos.z.bytes } },
+                { binding: 3, resource: { buffer: p.ubuf, size: PTS_UNI_BYTES } }
+            ] });
+            const e = gdev.createCommandEncoder();
+            const pass = e.beginRenderPass({ colorAttachments: [{ view: c.ctx.getCurrentTexture().createView(), clearValue: { r: 0, g: 0, b: 0, a: 1 }, loadOp: 'clear', storeOp: 'store' }] });
+            pass.setPipeline(p.pipe); pass.setBindGroup(0, bg); pass.draw(4, count); pass.end();
+            gdev.queue.submit([e.finish()]);
+            stats.submits++; stats.draws = (stats.draws || 0) + 1;
+            return c.canvas;
+        };
+
         return {
-            alloc, allocPacked, view, upload, download, dispatch, free, prepare, tune, ensureTuned, setWorkgroup, setTiling, wgFor, flush, sync, tuneKey,
+            alloc, allocPacked, view, upload, download, dispatch, free, prepare, tune, ensureTuned, setWorkgroup, setTiling, wgFor, flush, sync, tuneKey, drawPoints,
             stats, get lost() { return lost; }, wgCandidates: cands.slice()
         };
     }
