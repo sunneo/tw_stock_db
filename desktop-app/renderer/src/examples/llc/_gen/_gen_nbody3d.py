@@ -30,8 +30,6 @@ D('void', 'glColor3f', 'float', 'float', 'float'); D('void', 'glColor4f', 'float
 D('void', 'glEnable', 'i32'); D('void', 'glDisable', 'i32'); D('void', 'glBlendFunc', 'i32', 'i32'); D('void', 'glPointParameterfv', 'i32', 'ptr')
 D('float', 'sqrtf', 'float'); D('double', 'sin', 'double'); D('double', 'cos', 'double'); D('i32', 'atoi', 'ptr'); D('i32', 'printf', 'ptr', varargs=True)
 D('i32', 'snprintf', 'ptr', 'i64', 'ptr', varargs=True)
-if CL_VARIANT:
-    D('i32', 'fa_cl_points', 'ptr', 'ptr', 'ptr', 'i32', 'ptr', 'ptr')   # 點精靈（DESIGN.webgpu-cuda.md §13 階段 9）：WebGPU 時位置留在裝置上直接畫
 font = m.const_array('font', 'i32', FD.ROWS)
 colr = m.const_array('colr', 'float', [((c & 0xFF) / 255.0) for c in GLOW])
 colg = m.const_array('colg', 'float', [(((c >> 8) & 0xFF) / 255.0) for c in GLOW])
@@ -169,35 +167,15 @@ c('gluLookAt', dd * c('sin', ayd) * c('cos', axd), dd * c('sin', axd), -dd * c('
 att = dr.array('float', 3)
 att[0] = 0.0; att[1] = 0.0; att[2] = 1.0 / 2500.0
 c('glEnable', 0x0BE2); c('glBlendFunc', 0x0302, 1); c('glEnable', 0x0B10); c('glPointSize', size); c('glPointParameterfv', 0x8129, att)
-def _gl_points():
-    c('glBegin', 0)
-    i = dr.var('i32', 0)
-    cr, cg, cb = V(dr, '@colr', 'ptr', 'float'), V(dr, '@colg', 'ptr', 'float'), V(dr, '@colb', 'ptr', 'float')
-    with dr.loop(i, 0, n):
-        k = i.get()
-        ci = k % 10
-        c('glColor4f', cr[ci], cg[ci], cb[ci], 0.5)
-        c('glVertex3f', (x[k] - ctr[0]) * 0.1, (y[k] - ctr[1]) * 0.1, (z[k] - ctr[2]) * 0.1)
-    c('glEnd')
-if not CL_VARIANT:
-    _gl_points()
-else:
-    # OpenCL 版：後端是 WebGPU 時位置留在裝置上，fa_cl_points 直接畫（不讀回）；回傳 0（沒有 WebGPU、沒有視窗、畫圖失敗）才退回「讀回＋GL 點」
-    _pal = dr.array('float', 31)   # 10 色（與 GLOW 的 colr／colg／colb 相同）接著縮放 0.1
-    for _i, _cc in enumerate(GLOW[:10]):
-        _pal[3 * _i] = (_cc & 0xFF) / 255.0
-        _pal[3 * _i + 1] = ((_cc >> 8) & 0xFF) / 255.0
-        _pal[3 * _i + 2] = ((_cc >> 16) & 0xFF) / 255.0
-    _pal[30] = 0.1
-    _done = dr.var('i32', 0)
-    with dr.if_(c('cl_mode').ne(0)):
-        _done.set(c('fa_cl_points', c('cl_posx'), c('cl_posy'), c('cl_posz'), n, _pal, ctr))
-    with dr.if_(_done.get().eq(0)):
-        with dr.if_(c('cl_mode').ne(0)):
-            with dr.if_(c('cl_fresh').eq(0)):
-                c('cl_pull_pos', x, y, z)   # 這幀沒有讀回過：先把位置讀回主機，GL 點才是對的
-        _gl_points()
-c('glDisable', 0x0BE2)
+c('glBegin', 0)
+i = dr.var('i32', 0)
+cr, cg, cb = V(dr, '@colr', 'ptr', 'float'), V(dr, '@colg', 'ptr', 'float'), V(dr, '@colb', 'ptr', 'float')
+with dr.loop(i, 0, n):
+    k = i.get()
+    ci = k % 10
+    c('glColor4f', cr[ci], cg[ci], cb[ci], 0.5)
+    c('glVertex3f', (x[k] - ctr[0]) * 0.1, (y[k] - ctr[1]) * 0.1, (z[k] - ctr[2]) * 0.1)
+c('glEnd'); c('glDisable', 0x0BE2)
 dr.ret()
 
 # 覆蓋層（draw3D() 的文字、滑桿、按鈕）：2D 正投影，座標與 Python 版一致
@@ -390,11 +368,7 @@ with f.while_(lambda: running.get().ne(0)):
         tax.set(cax.get()); tay.set(cay.get()); tdist.set(dist.get())
     ta = c('SDL_GetTicks')
     c('step', X, Y, Z, VX, VY, VZ, MS, POT, par, n)
-    if CL_VARIANT:
-        with f.if_((c('cl_mode').eq(0)) | (c('cl_fresh').ne(0))):   # 主機位置與 pot 是新的才統計（OpenCL 版每 30 幀讀回一次；CPU 模式每幀）
-            c('cluster', X, Y, Z, MS, POT, n, cen)
-    else:
-        c('cluster', X, Y, Z, MS, POT, n, cen)
+    c('cluster', X, Y, Z, MS, POT, n, cen)
     msv.set((c('SDL_GetTicks') - ta).to('float'))
     loop += 1
     with f.if_(loop.get() >= loops.get()):           # 一個週期結束：印 "N 秒數"，換新的隨機參數重來
