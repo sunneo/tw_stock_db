@@ -487,4 +487,22 @@ assert.strictEqual(violations.length, 0); ok();
   assert.ok(/gui-canvas-clear/.test(byNode(view, 'b').className) && !/gui-canvas-clear/.test(byNode(view, 'a').className)); ok();
 }
 
+
+// extern: a picture the host supplies (another API's canvas) is uploaded and drawn over the whole canvas; no source means nothing is drawn
+{
+  const calls = [];
+  const gl = new Proxy({ COMPILE_STATUS: 1, LINK_STATUS: 2, TRIANGLES: 5, DEPTH_TEST: 13, BLEND: 14, CULL_FACE: 15, VERTEX_SHADER: 17, FRAGMENT_SHADER: 18, COLOR_BUFFER_BIT: 1, DEPTH_BUFFER_BIT: 2, TEXTURE0: 30, TEXTURE_2D: 31, RGBA: 32, UNSIGNED_BYTE: 33, UNPACK_FLIP_Y_WEBGL: 34 }, {
+    get: (t, k) => (k in t ? t[k] : (...a) => { calls.push(String(k)); return /^get(Shader|Program)Parameter$/.test(k) ? true : k === 'isEnabled' ? false : {}; }),
+  });
+  const el = { width: 64, height: 48, getContext: (t) => (t === 'webgl2' ? gl : null) };
+  const node = { glbufs: {}, glprogs: {}, glframe: [['clear', 0, 0, 0, 1], ['extern', 'clpts']] };
+  const errs = [], src = { fake: 'offscreen canvas' };
+  R.paintGl(el, node, (m) => errs.push(m), (name) => (name === 'clpts' ? src : null));
+  assert.deepStrictEqual(errs, []); ok();
+  assert.ok(calls.indexOf('texImage2D') >= 0 && calls.lastIndexOf('drawArrays') > calls.indexOf('texImage2D')); ok();
+  calls.length = 0; R.paintGl(el, node, (m) => errs.push(m), () => null);
+  assert.ok(calls.indexOf('texImage2D') < 0 && calls.indexOf('drawArrays') < 0); ok();
+  calls.length = 0; R.paintGl(el, node, (m) => errs.push(m));   // no lookup at all
+  assert.ok(calls.indexOf('texImage2D') < 0); ok();
+}
 console.log('gui_render: ' + n + ' assertions passed');

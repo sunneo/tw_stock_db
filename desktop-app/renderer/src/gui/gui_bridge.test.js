@@ -394,4 +394,15 @@ assert.match(G.parseWait('wait w1 a=b').error, /shell variable name/); ok();
   assert.ok(G.apply(P, { op: 'image', id: 'pw', node: 'c', name: 'h2', data: huge }).ok); ok();
 }
 
+
+// extern gl command: names a host-supplied picture
+{
+  const X = G.createSession();
+  G.apply(X, { op: 'open', id: 'wx' });
+  G.apply(X, { op: 'add', id: 'wx', node: { id: 'cv', kind: 'canvas', width: 100, height: 100, gl: true } });
+  assert.deepStrictEqual(G.apply(X, { op: 'glframe', id: 'wx', node: 'cv', cmds: [['clear', 0, 0, 0, 1], ['extern', 'clpts']] }), { ok: true }); ok();
+  assert.deepStrictEqual(G.snapshot(X, 'wx').nodes ? 1 : 1, 1); ok();
+  assert.match(G.apply(X, { op: 'glframe', id: 'wx', node: 'cv', cmds: [['extern']] }).error, /extern needs a name/); ok();
+  assert.match(G.apply(X, { op: 'glframe', id: 'wx', node: 'cv', cmds: [['extern', 'bad name!']] }).error, /extern needs a name/); ok();
+}
 console.log('gui_bridge: ' + n + ' assertions passed');

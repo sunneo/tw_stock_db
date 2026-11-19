@@ -42,7 +42,7 @@
     for (var i = 0; i < bin.length; i++) { out[i] = bin.charCodeAt(i); }
     return out;
   }
-  function paintGl(el, node, onError) {
+  function paintGl(el, node, onError, lookupExtern) {
     var st = el.__fa_gl;
     if (!st) {
       var gl = el.getContext && el.getContext('webgl2', { antialias: true, alpha: false, preserveDrawingBuffer: true });
@@ -96,6 +96,38 @@
       if (!(name in cur.locs)) { cur.locs[name] = gl2.getUniformLocation(cur.prog, name); }
       return cur.locs[name];
     }
+    // extern：宿主給的來源（lookupExtern 的回傳；沒有就什麼都不畫）整張鋪上；先關深度與混合，畫完還原，並把程式還原成目前的程式
+    function extSetup() {
+      if (st.extProg !== undefined) { return st.extProg; }
+      st.extProg = null; st.exts = st.exts || {};
+      try {
+        var vs = gl2.createShader(gl2.VERTEX_SHADER), fs = gl2.createShader(gl2.FRAGMENT_SHADER), pr = gl2.createProgram();
+        gl2.shaderSource(vs, EXT_VS); gl2.compileShader(vs); gl2.shaderSource(fs, EXT_FS); gl2.compileShader(fs);
+        if (!gl2.getShaderParameter(vs, gl2.COMPILE_STATUS) || !gl2.getShaderParameter(fs, gl2.COMPILE_STATUS)) { throw new Error((gl2.getShaderInfoLog(vs) || '') + (gl2.getShaderInfoLog(fs) || '')); }
+        gl2.attachShader(pr, vs); gl2.attachShader(pr, fs); gl2.linkProgram(pr);
+        if (!gl2.getProgramParameter(pr, gl2.LINK_STATUS)) { throw new Error(gl2.getProgramInfoLog(pr) || 'link failed'); }
+        st.extProg = { prog: pr, tex: gl2.getUniformLocation(pr, 'tex') };
+      } catch (e) { if (onError) { onError('extern: ' + String((e && e.message) || e).slice(0, 300)); } }
+      return st.extProg;
+    }
+    function drawExtern(name) {
+      var src = lookupExtern ? lookupExtern(name) : null;
+      if (!src) { return; }
+      var ex = extSetup();
+      if (!ex) { return; }
+      var blendWas = gl2.isEnabled(gl2.BLEND), depthWas = gl2.isEnabled(gl2.DEPTH_TEST);
+      gl2.disable(gl2.BLEND); gl2.disable(gl2.DEPTH_TEST);
+      var t = st.exts[name] || (st.exts[name] = gl2.createTexture());
+      gl2.activeTexture(gl2.TEXTURE0); gl2.bindTexture(gl2.TEXTURE_2D, t);
+      gl2.pixelStorei(gl2.UNPACK_FLIP_Y_WEBGL, true); gl2.pixelStorei(gl2.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+      gl2.texImage2D(gl2.TEXTURE_2D, 0, gl2.RGBA, gl2.RGBA, gl2.UNSIGNED_BYTE, src);
+      gl2.pixelStorei(gl2.UNPACK_FLIP_Y_WEBGL, false);
+      gl2.useProgram(ex.prog); gl2.uniform1i(ex.tex, 0);
+      gl2.drawArrays(gl2.TRIANGLES, 0, 3);
+      if (blendWas) { gl2.enable(gl2.BLEND); }
+      if (depthWas) { gl2.enable(gl2.DEPTH_TEST); }
+      if (cur && cur.prog) { gl2.useProgram(cur.prog); }
+    }
     cmds.forEach(function (c) {
       var op = c[0];
       if (op === 'clear') { gl2.clearColor(c[1], c[2], c[3], c[4]); gl2.clearDepth(1); gl2.clear(gl2.COLOR_BUFFER_BIT | gl2.DEPTH_BUFFER_BIT); }
@@ -104,7 +136,31 @@
         var cap = c[1] === 'depth' ? gl2.DEPTH_TEST : (c[1] === 'blend' || c[1] === 'additive') ? gl2.BLEND : gl2.CULL_FACE;
         if (c[2]) { gl2.enable(cap); if (c[1] === 'blend') { gl2.blendFunc(gl2.SRC_ALPHA, gl2.ONE_MINUS_SRC_ALPHA); } else if (c[1] === 'additive') { gl2.blendFunc(gl2.SRC_ALPHA, gl2.ONE); } } else { gl2.disable(cap); }
       }
+      else if (op === 'extern') {
+        // a picture from the host (another canvas: for example a WebGPU one): upload it and draw it over the whole canvas, then put GL's state back
+        var src = lookupExtern ? lookupExtern(c[1]) : null; if (!src) { return; }
+        if (!st.ext) {
+          var vsx = gl2.createShader(gl2.VERTEX_SHADER); gl2.shaderSource(vsx, '#version 300 es\nout vec2 v;\nvoid main(){vec2 p=vec2(float((gl_VertexID<<1)&2),float(gl_VertexID&2));v=p;gl_Position=vec4(p*2.0-1.0,0.0,1.0);}'); gl2.compileShader(vsx);
+          var fsx = gl2.createShader(gl2.FRAGMENT_SHADER); gl2.shaderSource(fsx, '#version 300 es\nprecision mediump float;\nin vec2 v;\nuniform sampler2D t;\nout vec4 o;\nvoid main(){o=vec4(texture(t,v).rgb,1.0);}'); gl2.compileShader(fsx);
+          var px = gl2.createProgram(); gl2.attachShader(px, vsx); gl2.attachShader(px, fsx); gl2.linkProgram(px);
+          if (!gl2.getProgramParameter(px, gl2.LINK_STATUS)) { if (onError) { onError('extern picture program: ' + gl2.getProgramInfoLog(px)); } st.ext = { prog: null }; } else { st.ext = { prog: px, tex: gl2.createTexture() }; }
+        }
+        if (!st.ext.prog) { return; }
+        var eDepth = gl2.isEnabled(gl2.DEPTH_TEST), eBlend = gl2.isEnabled(gl2.BLEND), eCull = gl2.isEnabled(gl2.CULL_FACE);
+        gl2.disable(gl2.DEPTH_TEST); gl2.disable(gl2.BLEND); gl2.disable(gl2.CULL_FACE);
+        gl2.activeTexture(gl2.TEXTURE0); gl2.bindTexture(gl2.TEXTURE_2D, st.ext.tex);
+        gl2.pixelStorei(gl2.UNPACK_FLIP_Y_WEBGL, true);
+        try { gl2.texImage2D(gl2.TEXTURE_2D, 0, gl2.RGBA, gl2.RGBA, gl2.UNSIGNED_BYTE, src); } catch (e) { gl2.pixelStorei(gl2.UNPACK_FLIP_Y_WEBGL, false); if (onError) { onError('extern picture "' + c[1] + '": ' + e.message); } return; }
+        gl2.pixelStorei(gl2.UNPACK_FLIP_Y_WEBGL, false);
+        gl2.texParameteri(gl2.TEXTURE_2D, gl2.TEXTURE_MIN_FILTER, gl2.LINEAR); gl2.texParameteri(gl2.TEXTURE_2D, gl2.TEXTURE_MAG_FILTER, gl2.LINEAR);
+        gl2.texParameteri(gl2.TEXTURE_2D, gl2.TEXTURE_WRAP_S, gl2.CLAMP_TO_EDGE); gl2.texParameteri(gl2.TEXTURE_2D, gl2.TEXTURE_WRAP_T, gl2.CLAMP_TO_EDGE);
+        gl2.useProgram(st.ext.prog); gl2.drawArrays(gl2.TRIANGLES, 0, 3);
+        gl2.bindTexture(gl2.TEXTURE_2D, null);
+        if (eDepth) { gl2.enable(gl2.DEPTH_TEST); } if (eBlend) { gl2.enable(gl2.BLEND); } if (eCull) { gl2.enable(gl2.CULL_FACE); }
+        if (cur && cur.prog) { gl2.useProgram(cur.prog); }
+      }
       else if (op === 'use') { cur = st.progs[c[1]]; if (cur && cur.prog) { gl2.useProgram(cur.prog); } else { cur = null; } }
+      else if (op === 'extern') { drawExtern(c[1]); }
       else if (!cur) { return; }   // the commands below need a working program; a failed one was reported at compile time
       else if (op === 'uf') {
         var l = loc(c[1]); if (l === null) { return; }
@@ -970,7 +1026,7 @@
           };
           if (typeof ResizeObserver !== 'undefined') { new ResizeObserver(fit).observe(el); }
         }
-        if (n.gl) { paintGl(el, n, function (msg) { onEvent('glerror', n.id, msg); }); }
+        if (n.gl) { paintGl(el, n, function (msg) { onEvent('glerror', n.id, msg); }, opts && opts.extern ? function (name) { return opts.extern(n.id, name); } : null); }
         else { paintFrame(el.getContext('2d'), n.frame || [], el.width, el.height, function (name) { return opts && opts.image ? opts.image(n.id, name) : null; }, !!n.transparent); }
         on('keydown', function (e) {
           if (GAME_KEYS.indexOf(e.key) >= 0) { e.preventDefault(); }

@@ -326,6 +326,8 @@
   var GL_STATES = ['depth', 'blend', 'additive', 'cull'];
   var GL_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]{0,40}$/;
   var GL_B64_RE = /^[A-Za-z0-9+/]*={0,2}$/;
+  // extern：把宿主給的外部來源（例如 WebGPU 畫好的畫布）整張鋪在目前的畫面上；一幀最多這麼多次（DESIGN.webgpu-cuda.md §13 階段 9）
+  var MAX_GL_EXTERNS_PER_FRAME = 4;
   function glBuffer(msg, target) {
     var name = id(msg.name, 'name');
     target.glbufs = target.glbufs || {};
@@ -380,15 +382,26 @@
       case 'index':
         if (c.length !== 2 || !Object.prototype.hasOwnProperty.call(bufs, c[1]) || bufs[c[1]].type === 'f32') { throw new Error(what + ' index needs a u16 or u32 buffer'); }
         return ['index', c[1]];
+      case 'extern':
+        // draw a texture the host supplies (setExtern in gui_host.js) as a full-canvas picture at this place in the frame: the result of another
+        // GPU API (for example WebGPU points drawn from a compute buffer) shown inside this canvas without going through the program
+        if (c.length !== 2 || !GL_NAME_RE.test(c[1])) { throw new Error(what + ' extern needs a name'); }
+        return ['extern', c[1]];
       case 'draw':
         if (c.length < 4 || c.length > 5 || GL_MODES.indexOf(c[1]) < 0) { throw new Error(what + ' draw needs a mode (' + GL_MODES.join(', ') + '), first and count'); }
         return ['draw', c[1], Math.floor(f(2, 0, MAX_GL_COUNT)), Math.floor(f(3, 0, MAX_GL_COUNT)), c.length === 5 ? Math.floor(f(4, 1, 1e6)) : 1];
+      case 'extern':
+        if (c.length !== 2) { throw new Error(what + ' extern needs one source name'); }
+        return ['extern', id(c[1], what + '[1]')];
       default: throw new Error(what + ' command "' + c[0] + '" is not supported');
     }
   }
   function glFrame(v, target) {
     if (!Array.isArray(v) || v.length > MAX_GL_CMDS) { throw new Error('cmds must be an array of at most ' + MAX_GL_CMDS + ' commands'); }
-    return v.map(function (c, i) { return glCommand(c, 'cmds[' + i + ']', target); });
+    var externs = 0;
+    var out = v.map(function (c, i) { var r = glCommand(c, 'cmds[' + i + ']', target); if (r[0] === 'extern') { externs++; } return r; });
+    if (externs > MAX_GL_EXTERNS_PER_FRAME) { throw new Error('at most ' + MAX_GL_EXTERNS_PER_FRAME + ' extern commands per frame'); }
+    return out;
   }
 
   function drawOps(v, images) {

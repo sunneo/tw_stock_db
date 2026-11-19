@@ -14,7 +14,7 @@
   function createHost(opts) {
     var doc = opts.doc, container = opts.container, bridge = opts.bridge, render = opts.render;
     var session = bridge.createSession();
-    var layer = null, views = {}, queues = {}, waiters = {}, pictures = {}, prevPictures = {}, shells = {};
+    var layer = null, views = {}, queues = {}, waiters = {}, pictures = {}, prevPictures = {}, shells = {}, externs = {};
     var presentedCount = 0;   // 頁面實際畫出的零拷貝畫面張數（量測用）
     var bitmaps = {};   // winId/nodeId → 最後一張送來的 ImageBitmap（見 present；視窗重畫時要再畫一次）
 
@@ -158,7 +158,7 @@
         if (node.frame && node.frame.length) { closeBitmap(bkey); }   // 程式後來又用 draw 畫了：以 draw 為準
         else { drawBitmap(el, bitmaps[bkey]); return; }
       }
-      if (node.gl) { render.paintGl(el, node, function (msg) { var line = bridge.eventLine(session, winId, nodeId, 'glerror', msg); if (line) { enqueue(winId, 'glerror', line); } }); return; }
+      if (node.gl) { render.paintGl(el, node, function (msg) { var line = bridge.eventLine(session, winId, nodeId, 'glerror', msg); if (line) { enqueue(winId, 'glerror', line); } }, function (name) { return externs[winId + '/' + nodeId + '/' + name] || null; }); return; }
       var ctx = el.getContext ? el.getContext('2d') : null;
       if (!ctx) { return; }
       var ops = node.frame || [];
@@ -321,7 +321,10 @@
       var c = v.querySelectorAll('canvas')[n || 0]; if (!c) { return null; }
       try { return c.toDataURL('image/png'); } catch (e) { return null; }
     }
-    return { apply: apply, present: present, presented: function () { return presentedCount; }, wait: wait, poll: poll, close: close, closeAll: closeAll, paint: paint, isOpen: isOpen, snapshot: snapshot, session: session, inject: inject, windows: windows, canvasPng: canvasPng, queueLength: function (winId) { return (queues[winId] || []).length; } };
+    // setExtern(winId, nodeId, name, source): the picture a gl canvas draws for its ["extern", name] command (an OffscreenCanvas, canvas or ImageBitmap);
+    // null removes it. The page's code, not the program, supplies it (the program only names it), so no program data reaches it.
+    function setExtern(winId, nodeId, name, source) { var k = winId + '/' + nodeId + '/' + name; if (source) { externs[k] = source; } else { delete externs[k]; } }
+    return { setExtern: setExtern, apply: apply, present: present, presented: function () { return presentedCount; }, wait: wait, poll: poll, close: close, closeAll: closeAll, paint: paint, isOpen: isOpen, snapshot: snapshot, session: session, inject: inject, windows: windows, canvasPng: canvasPng, queueLength: function (winId) { return (queues[winId] || []).length; } };
   }
 
   return { createHost: createHost, QUEUE_MAX: QUEUE_MAX };
