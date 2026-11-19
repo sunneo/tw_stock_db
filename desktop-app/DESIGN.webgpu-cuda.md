@@ -1114,3 +1114,9 @@ Python 模擬器與離線模型推論共用同一個 GPU 裝置：
 - 沒有 EXT_color_buffer_float 或浮點紋理不能渲染時，WebGL2 路徑標為「不可用」並退回 T5，如實回報。
 
 **現況**：本節是設計（2026-11-19），實作依序：KIR＋JS＋OpenCL 解析器＋單元測試 → WGSL／GLSL 產生器 → host import 接線 → nbody3d／fluid3d 實測。
+
+**階段 4 的 WebGL2 執行層（2026-11-19，已在真 Electron 實測）**：`renderer/src/gpu/kir_webgl2.js`（`FaKirWebGL2`）用 `kir_gen.toGlsl` 的 vs／fs 編譯連結，輸入→RGBA32F 紋理、輸出→掛在 framebuffer 的 RGBA32F 紋理（需要 `EXT_color_buffer_float`，`supportsWebGL2` 檢查）。讀回只在 `runGl` 的 `readPixels`。
+- 實測（`scripts/eval/kir_webgl2.build.js` 內嵌模組後用 `FA_DEBUG_EVAL_FILE` 跑，SwiftShader 軟體 GL）：vecadd N=1000 最大誤差 0；N 體 N=256 最大誤差 5.7e-6（容差 tolerance(N)×100＝1.5e-3）；SPH N=512 最大誤差 0（容差 2.2e-5）。
+- 注意：一開始輸出紋理與最後一個輸入紋理共用紋理單元，造成 feedback loop，繪圖失敗（結果全 0）。已改成輸出用獨立單元。
+- 耗時（17–20 ms）包含編譯 shader 與上傳紋理，且是軟體 GL，**不是效能數字**；CPU vs WebGL2 的每幀耗時留到 nbody3d／fluid3d 實測。
+- 尚未做：host import 接線（`llvm_host.js` 仍是 JS 後備）、WGSL 真 GPU 驗證（沒有 adapter）、CUDA runtime 前端。
