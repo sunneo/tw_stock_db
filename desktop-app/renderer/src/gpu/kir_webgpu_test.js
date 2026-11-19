@@ -115,6 +115,16 @@ check('測試核心通過 KIR 驗證', K.validate(vadd).ok && K.validate(sumk).o
     check('WGSL 可指定 128／256', w128.ok && /@workgroup_size\(128\)/.test(w128.code) && w256.ok && /@workgroup_size\(256\)/.test(w256.code) && w128.workgroupSize === 128);
     check('WGSL 二維派送公式（y×65535×wg）', /i32\(gid3\.y\) \* 8388480/.test(w128.code) === true, w128.code.slice(0, 300));
     check('WGSL 拒絕不合法工作群 0／2048', GEN.toWgsl(vadd, { wg: 0 }).ok === false && GEN.toWgsl(vadd, { wg: 2048 }).ok === false);
+    // 分塊版（workgroup 共享記憶體）：sumk 的 for 迴圈讀 p[j] → 產生分塊；沒有迴圈的 vadd 退回一般版
+    const ts = GEN.toWgsl(sumk, { wg: 64, tile: true });
+    check('分塊 WGSL：sumk 產生共享記憶體與兩道 barrier', ts.ok && ts.tiles === 1 && /var<workgroup> T\d+_p: array<vec4<f32>, 64>;/.test(ts.code) && (ts.code.match(/workgroupBarrier\(\)/g) || []).length === 2, ts.code && ts.code.slice(0, 200));
+    check('分塊 WGSL：沒有 early return（所有執行緒進迴圈）、寫入用 in_range 守衛', ts.ok && !/return;/.test(ts.code) && /if \(in_range\) \{ out\[/.test(ts.code));
+    check('分塊 WGSL：迴圈內的 p[v] 改讀共享記憶體（T?_p[jj?].x）', ts.ok && /T\d+_p\[jj\d+\]\.x/.test(ts.code) && !/p\[v_j\]/.test(ts.code), ts.ok && ts.code);
+    const tu = GEN.toWgsl(sumk, { wg: 64, tile: true, unroll: 4 });
+    check('分塊展開 4 次：內層副本各自讀 jj＋k，共享記憶體讀取 4 處', tu.ok && (tu.code.match(/T\d+_p\[\(jj\d+ \+ [0-3]i\)\]/g) || []).length === 4, tu.ok ? '' : tu.error);
+    check('分塊展開：不整除工作群大小會拒絕（wg 64、展開 3）', GEN.toWgsl(sumk, { wg: 64, tile: true, unroll: 3 }).ok === false);
+    const tv = GEN.toWgsl(vadd, { wg: 64, tile: true });
+    check('分塊：沒有符合迴圈的核心退回一般版（tiles＝0）', tv.ok && tv.tiles === undefined && /if \(gid >= P\._count\) \{ return; \}/.test(tv.code));
 }
 
 // ---- 2. 基本流程：上傳一次、連續派送、只在 download 讀回（非同步）

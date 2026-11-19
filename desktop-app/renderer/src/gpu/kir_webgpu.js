@@ -51,6 +51,7 @@
         let enc = null, pending = 0, slot = 0, nextId = 1;
         const progs = new WeakMap();   // kernel → Map(wg → 程式)
         const wgOf = new WeakMap();    // kernel → 選定的工作群大小（ensureTuned／setWorkgroup）
+        const tileOf = new WeakMap();  // kernel → 是否用分塊版（setTiling）
         const layouts = new Map();     // 綁定佈局的關鍵字 → GPUBindGroupLayout
         const allProgs = [];           // 所有已建立的程式（free 時清綁定群組快取用）
 
@@ -121,9 +122,11 @@
         // ---- 程式（pipeline）
         const build = (kernel, wg) => {
             let m = progs.get(kernel); if (!m) { m = new Map(); progs.set(kernel, m); }
-            const got = m.get(wg); if (got) return got;
+            const tlv = effTile(kernel), tl = tlv > 0;   // 分塊版（workgroup 共享記憶體）；沒有符合的迴圈時 toWgsl 會退回一般版，p.tiles 會是 0
+            const mk = wg + (tl ? 't' + tlv : '');
+            const got = m.get(mk); if (got) return got;
             const v = K.validate(kernel); if (!v.ok) throw new Error('KIR 不合法：' + v.errors.join('；'));
-            const w = GEN.toWgsl(kernel, { wg });
+            const w = GEN.toWgsl(kernel, { wg, tile: tl, unroll: tlv || 1 });
             if (!w.ok) throw new Error(w.error);
             const scalars = kernel.params.filter((q) => q.kind === 'scalar');
             if (scalars.length + 1 > SLOT / 4) throw new Error('純量太多（超過 ' + (SLOT / 4 - 1) + ' 個）');
@@ -139,7 +142,8 @@
             const pipeline = gdev.createComputePipeline({ layout: gdev.createPipelineLayout({ bindGroupLayouts: [bgl] }), compute: { module: mod, entryPoint: 'main' } });
             stats.pipelines++;
             const p = { name: kernel.name, wg, pipeline, bgl, scalars, uniformBytes, bufs: bufs.map((b) => ({ name: b.name, binding: b.binding, access: b.access, elem: b.elem })), uniBinding: uni.binding, bg: new Map() };
-            m.set(wg, p); allProgs.push(p);
+            p.tiles = w.tiles || 0;
+            m.set(mk, p); allProgs.push(p);
             return p;
         };
         // 非同步版：用 validation error scope 確認 WGSL 與 pipeline 真的通過（失敗丟例外）
@@ -206,6 +210,11 @@
         const wgFor = (kernel) => wgOf.get(kernel) || wgDefault;
         // 呼叫格式與 runGl／WebGL2 裝置相同：out 必須就是 binds 裡輸出參數的那個緩衝區
         const dispatch = (kernel, binds, out, scalars, N) => dispatchWg(kernel, binds, scalars, N, wgFor(kernel), out);
+        // on：false＝一般版；true＝分塊（展開 1）；數字 U＝分塊且內層展開 U 次（要整除工作群大小）
+        // 預設分塊（tile）：o.tile 為 false 關掉，或數字 U 指定展開次數；單一核心可用 setTiling 覆寫
+        const defTile = o.tile === undefined || o.tile === true ? 1 : (o.tile === false ? 0 : (Number(o.tile) || 0));
+        const effTile = (kernel) => (tileOf.has(kernel) ? tileOf.get(kernel) : defTile);
+        const setTiling = (kernel, on) => { tileOf.set(kernel, on === true ? 1 : (Number(on) || 0)); };
         const setWorkgroup = (kernel, wg) => { if (!cands.includes(wg) && !(o.allowAnyWg)) throw new Error('工作群大小 ' + wg + ' 不在候選中'); wgOf.set(kernel, wg); };
 
         // ---- 實測（只在呼叫時做；每個候選都先 prepare，再計時）
@@ -238,7 +247,7 @@
         };
         const tuneKey = (adapterKey, kernel, N) => 'kirwg:' + adapterKey + ':' + kernel.name + ':' + Math.ceil(Math.log2(Math.max(1, N)));
         const ensureTuned = async (kernel, N, t) => {
-            const st = t && t.store, key = tuneKey((t && t.adapterKey) || 'unknown', kernel, N);
+            const st = t && t.store, key = tuneKey((t && t.adapterKey) || 'unknown', kernel, N) + (effTile(kernel) ? ':tile' + effTile(kernel) : '');
             if (st) { const hit = await st.get(key); if (hit && cands.includes(hit.best)) { wgOf.set(kernel, hit.best); return { best: hit.best, cached: true, times: hit.times }; } }
             const r = await tune(kernel, N, t);
             wgOf.set(kernel, r.best);
@@ -249,7 +258,7 @@
         const sync = async () => { flush(); await gdev.queue.onSubmittedWorkDone(); };
 
         return {
-            alloc, allocPacked, view, upload, download, dispatch, free, prepare, tune, ensureTuned, setWorkgroup, wgFor, flush, sync, tuneKey,
+            alloc, allocPacked, view, upload, download, dispatch, free, prepare, tune, ensureTuned, setWorkgroup, setTiling, wgFor, flush, sync, tuneKey,
             stats, get lost() { return lost; }, wgCandidates: cands.slice()
         };
     }

@@ -87,6 +87,7 @@ async function devStep(devLayer, kernels, shared, N, wg, readback) {
 
 async function runFamily(label, kernels, N, steps, warm) {
   const out = { label, N };
+  for (const k of kernels) dev.setTiling(k, false);   // 「未分塊」的變體要明確關掉（裝置預設是分塊）
   const data = makeData(kernels, N);
   // 形狀要先在 WebGPU 上建好；每個 buffer name 一塊
   const shared = {};
@@ -123,6 +124,38 @@ async function runFamily(label, kernels, N, steps, warm) {
   }
   out.webgpu_tuned_noreadback_ms = +(await time(-1, false)).toFixed(3);
   out.webgpu_tuned_readback_ms = +(await time(-1, true)).toFixed(3);
+  // (c/b) 分塊版（workgroup 共享記憶體）：先正確性（對 CPU 參考），再計時（wg 64 固定與自適應）
+  for (const k of kernels) dev.setTiling(k, true);
+  await devStep(dev, kernels, shared, N, 64, false); await dev.sync();
+  out.correct_tiled = {};
+  for (const k of kernels) for (const p of bufParams(k)) if (p.access === 'out') {
+    const got = await dev.download(shared[p.name]);
+    let m = 0, rmax = 0; const want = ref[p.name];
+    for (let i = 0; i < want.length; i++) { const d = Math.abs(got[i] - want[i]); if (d > m) m = d; const r = Math.abs(want[i]) || 1; if (d / r > rmax) rmax = d / r; }
+    out.correct_tiled[p.name] = { maxAbs: +m.toExponential(3), maxRel: +rmax.toExponential(3), n: want.length };
+  }
+  out.tiled_wg64_noreadback_ms = +(await time(64, false)).toFixed(3);
+  out.tiled_wg64_readback_ms = +(await time(64, true)).toFixed(3);
+  out.tune_tiled = {};
+  for (const k of kernels) {
+    const r = await withTimeout(dev.ensureTuned(k, N, { store, adapterKey, scalars: Object.fromEntries(scalParams(k).map((p) => [p.name, scalarVal(p.name, N)])), reps: 4 }), 60000, 'tune tiled ' + k.name);
+    out.tune_tiled[k.name] = { best: r.best, cached: r.cached, times: r.times ? Object.fromEntries(Object.entries(r.times).map(([w, t]) => [w, +t.toFixed(3)])) : null };
+  }
+  out.tiled_tuned_noreadback_ms = +(await time(-1, false)).toFixed(3);
+  out.tiled_tuned_readback_ms = +(await time(-1, true)).toFixed(3);
+  // (c) 內層迴圈展開 4 次（分塊版，wg 64 固定；與展開 1 比較）
+  for (const k of kernels) dev.setTiling(k, 4);
+  await devStep(dev, kernels, shared, N, 64, false); await dev.sync();
+  out.correct_tiled_u4 = {};
+  for (const k of kernels) for (const p of bufParams(k)) if (p.access === 'out') {
+    const got = await dev.download(shared[p.name]);
+    let m = 0; const want = ref[p.name];
+    for (let i = 0; i < want.length; i++) m = Math.max(m, Math.abs(got[i] - want[i]));
+    out.correct_tiled_u4[p.name] = { maxAbs: +m.toExponential(3), n: want.length };
+  }
+  out.tiled_u4_wg64_noreadback_ms = +(await time(64, false)).toFixed(3);
+  out.tiled_u4_wg64_readback_ms = +(await time(64, true)).toFixed(3);
+  for (const k of kernels) dev.setTiling(k, false);
   // CPU（KIR JS，單執行緒）：每步 steps 次太慢時只跑 2 次
   const cpuSteps = 2, B = {}; for (const k of kernels) for (const p of bufParams(k)) B[p.name] = B[p.name] || data.arrs[p.name].slice();
   const t0 = performance.now();

@@ -20,7 +20,7 @@
     const SCALAR_MARK = (k) => k;
 
     // 共用：把運算式轉成 WGSL 字串
-    function wgslExpr(kernel, e) {
+    function wgslExpr(kernel, e, tc) {
         const scal = new Set((kernel.params || []).filter((p) => p.kind === 'scalar').map((p) => p.name));
         const ex = (x) => {
             switch (x.k) {
@@ -36,6 +36,12 @@
                 }
                 case 'cast': return x.to === 'f32' ? `f32(${ex(x.a)})` : `i32(${ex(x.a)})`;
                 case 'load': {
+                    // 分塊版（toWgslTiled）：tc.map 裡的緩衝區、索引就是迴圈變數 → 讀共享記憶體的 jj 槽
+                    if (tc && tc.map.has(x.buf) && x.idx.k === 'var' && x.idx.name === tc.v) {
+                        const arr = `${tc.map.get(x.buf)}[${tc.jj}]`;
+                        const p0 = kernel.params.find((q) => q.name === x.buf);
+                        return p0.elem === 'f32x4' ? `${arr}.${'xyzw'[x.comp]}` : arr;
+                    }
                     const p = kernel.params.find((q) => q.name === x.buf);
                     return p.elem === 'f32x4' ? `${x.buf}[${ex(x.idx)}].${'xyzw'[x.comp]}` : `${x.buf}[${ex(x.idx)}]`;
                 }
@@ -45,7 +51,100 @@
         return ex(e);
     }
 
+    // 分塊（tile，DESIGN.webgpu-cuda.md §13 階段 6）：頂層的 for v in [0, bound)，若本體沒有寫入，
+    // 而且有讀 in 緩衝區的 buf[v]，就把每 WG 個元素搬進 workgroup 共享記憶體，再用 WG 次迭代讀共享記憶體。
+    // 所有執行緒都必須進入迴圈（barrier），所以分塊版不用 early return；寫入改用 in_range 守衛。
+    // 沒有符合的迴圈回傳 null（呼叫端走一般版本）。
+    function toWgslTiled(kernel, opts) {
+        const v = K.validate(kernel); if (!v.ok) return { ok: false, error: 'KIR 不合法：' + v.errors.join('；') };
+        const wg = opts.wg !== undefined ? opts.wg : 64;
+        if (!Number.isInteger(wg) || wg < 1 || wg > 1024) return { ok: false, error: '工作群大小 ' + wg + ' 不合法' };
+        const U = opts.unroll || 1;   // 內層迴圈展開次數（必須整除工作群大小）
+        if (!Number.isInteger(U) || U < 1 || wg % U) return { ok: false, error: '展開次數 ' + U + ' 不合法（要整除工作群大小 ' + wg + '）' };
+        const bufParam = (n) => kernel.params.find((q) => q.kind === 'buf' && q.name === n);
+        const hasStore = (stmts) => stmts.some((s) => s.k === 'store' || (s.body && hasStore(s.body)));
+        const walkLoads = (node, fn) => {
+            if (Array.isArray(node)) { for (const n of node) walkLoads(n, fn); return; }
+            if (!node || typeof node !== 'object') return;
+            if (node.k === 'load') fn(node);
+            for (const key of Object.keys(node)) if (key !== 'k') { const val = node[key]; if (val && typeof val === 'object') walkLoads(val, fn); }
+        };
+        // 候選：頂層 for、本體沒有寫入、有讀 in 緩衝區的 buf[v]
+        const tiles = new Map();   // 頂層語句的索引 → { loop, bufs }
+        kernel.body.forEach((s, i) => {
+            if (s.k !== 'for' || hasStore(s.body)) return;
+            const bufs = [];
+            walkLoads(s.body, (n) => { const p = bufParam(n.buf); if (p && p.access === 'in' && n.idx.k === 'var' && n.idx.name === s.v && !bufs.includes(n.buf)) bufs.push(n.buf); });
+            if (bufs.length) tiles.set(i, { loop: s, bufs });
+        });
+        if (tiles.size === 0) return null;
+        const scal = new Set(kernel.params.filter((p) => p.kind === 'scalar').map((p) => p.name));
+        const boundOf = (s) => (typeof s.bound === 'number' ? `${s.bound}i` : `P.${s.bound}`);
+        const decls = [];
+        for (const [i, t] of tiles) for (const b of t.bufs) {
+            const ty = bufParam(b).elem === 'f32x4' ? 'vec4<f32>' : 'f32';
+            decls.push(`var<workgroup> T${i}_${b}: array<${ty}, ${wg}>;`);
+        }
+        // 表達式與語句（tc：分塊迴圈的上下文；一般語句用 null）
+        const stT = (s, ind, tc) => {
+            switch (s.k) {
+                case 'let': return `${ind}var v_${s.name}: ${s.t} = ${wgslExpr(kernel, s.e, tc)};\n`;
+                case 'set': return `${ind}v_${s.name} = ${wgslExpr(kernel, s.e, tc)};\n`;
+                case 'store': {
+                    const p = bufParam(s.buf);
+                    const line = p.elem === 'f32x4'
+                        ? `${s.buf}[${wgslExpr(kernel, s.idx, tc)}] = vec4<f32>(${s.e.es.map((x) => wgslExpr(kernel, x, tc)).join(', ')});`
+                        : `${s.buf}[${wgslExpr(kernel, s.idx, tc)}] = ${wgslExpr(kernel, s.e, tc)};`;
+                    return `${ind}if (in_range) { ${line} }\n`;
+                }
+                case 'for': return `${ind}for (var v_${s.v}: i32 = 0i; v_${s.v} < ${boundOf(s)}; v_${s.v} = v_${s.v} + 1i) {\n${s.body.map((x) => stT(x, ind + '  ', tc)).join('')}${ind}}\n`;
+                case 'if': return `${ind}if (${wgslExpr(kernel, s.c, tc)}) {\n${s.body.map((x) => stT(x, ind + '  ', tc)).join('')}${ind}}\n`;
+                default: throw new Error('wgsl：不支援的語句 ' + s.k);
+            }
+        };
+        const parts = [];
+        kernel.body.forEach((s, i) => {
+            const t = tiles.get(i);
+            if (!t) { parts.push(stT(s, '  ', null)); return; }
+            const map = new Map(t.bufs.map((b) => [b, `T${i}_${b}`]));
+            const tc = { v: s.v, map, jj: `jj${i}` };
+            let out = `  for (var t${i}: i32 = 0i; t${i} < ${boundOf(s)}; t${i} = t${i} + ${wg}i) {\n`;
+            out += `    let src${i}: i32 = t${i} + li;\n`;
+            for (const b of t.bufs) {
+                const zero = bufParam(b).elem === 'f32x4' ? 'vec4<f32>(0.0, 0.0, 0.0, 0.0)' : '0.0';
+                out += `    if (src${i} < ${boundOf(s)}) { T${i}_${b}[li] = ${b}[src${i}]; } else { T${i}_${b}[li] = ${zero}; }\n`;
+            }
+            out += `    workgroupBarrier();\n`;
+            // 內層迴圈展開 U 次（每個副本一個區塊，各自的 let 不衝突）：副本 k 讀 jj＋k
+            out += `    for (var ${tc.jj}: i32 = 0i; ${tc.jj} < ${wg}i; ${tc.jj} = ${tc.jj} + ${U}i) {\n`;
+            for (let k = 0; k < U; k++) {
+                const ex = U === 1 ? tc.jj : `(${tc.jj} + ${k}i)`;
+                const tck = { v: s.v, map, jj: ex };
+                out += `      {\n        var v_${s.v}: i32 = t${i} + ${ex};\n        if (v_${s.v} < ${boundOf(s)}) {\n`;
+                out += s.body.map((x) => stT(x, '          ', tck)).join('');
+                out += `        }\n      }\n`;
+            }
+            out += `    }\n`;
+            out += `    workgroupBarrier();\n  }\n`;
+            parts.push(out);
+        });
+        const bindings = []; let bi = 0; const bufLines = [];
+        for (const p of kernel.params) if (p.kind === 'buf') {
+            const ty = p.elem === 'f32x4' ? 'vec4<f32>' : 'f32';
+            const acc = p.access === 'in' ? 'read' : 'read_write';
+            bufLines.push(`@group(0) @binding(${bi}) var<storage, ${acc}> ${p.name}: array<${ty}>;`);
+            bindings.push({ name: p.name, kind: 'buf', binding: bi, elem: p.elem, access: p.access }); bi++;
+        }
+        const uni = kernel.params.filter((p) => p.kind === 'scalar');
+        const fields = uni.map((p) => `  ${p.name}: ${p.type === 'f32' ? 'f32' : 'i32'},`).concat(['  _count: i32,']);
+        const uniLine = `struct Params {\n${fields.join('\n')}\n}\n@group(0) @binding(${bi}) var<uniform> P: Params;`;
+        bindings.push({ name: 'P', kind: 'uniform', binding: bi });
+        const code = `${bufLines.join('\n')}\n${uniLine}\n${decls.join('\n')}\n\n@compute @workgroup_size(${wg})\nfn main(@builtin(global_invocation_id) gid3: vec3<u32>, @builtin(local_invocation_id) lid3: vec3<u32>) {\n  let gid: i32 = i32(gid3.x) + i32(gid3.y) * ${65535 * wg};\n  let in_range: bool = gid < P._count;\n  let li: i32 = i32(lid3.x);\n${parts.join('')}}\n`;
+        return { ok: true, code, workgroupSize: wg, bindings, uniformFields: uni.map((p) => ({ name: p.name, type: p.type })).concat([{ name: '_count', type: 'i32' }]), tiles: [...tiles.values()].reduce((n, t) => n + t.bufs.length, 0) };
+    }
+
     function toWgsl(kernel, opts) {
+        if (opts && opts.tile) { const t = toWgslTiled(kernel, opts); if (t) return t; }
         const v = K.validate(kernel); if (!v.ok) return { ok: false, error: 'KIR 不合法：' + v.errors.join('；') };
         const bindings = []; let bi = 0;
         const bufLines = [];
