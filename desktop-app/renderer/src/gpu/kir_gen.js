@@ -45,7 +45,7 @@
         return ex(e);
     }
 
-    function toWgsl(kernel) {
+    function toWgsl(kernel, opts) {
         const v = K.validate(kernel); if (!v.ok) return { ok: false, error: 'KIR 不合法：' + v.errors.join('；') };
         const bindings = []; let bi = 0;
         const bufLines = [];
@@ -78,8 +78,11 @@
             }
         };
         const body = kernel.body.map((s) => st(s, '  ')).join('');
-        const code = `${bufLines.join('\n')}\n${uniLine}\n\n@compute @workgroup_size(64)\nfn main(@builtin(global_invocation_id) gid3: vec3<u32>) {\n  let gid: i32 = i32(gid3.x);\n  if (gid >= P._count) { return; }\n${body}}\n`;
-        return { ok: true, code, workgroupSize: 64, bindings, uniformFields: uni.map((p) => ({ name: p.name, type: p.type })).concat([{ name: '_count', type: 'i32' }]) };
+        // 工作群大小由呼叫端決定（自適應量測用）；超過一維上限 65535 個工作群時，派送改用 y 維，gid＝x＋y×(65535×wg)
+        const wg = opts && opts.wg !== undefined ? opts.wg : 64;
+        if (!Number.isInteger(wg) || wg < 1 || wg > 1024) return { ok: false, error: '工作群大小 ' + wg + ' 不合法' };
+        const code = `${bufLines.join('\n')}\n${uniLine}\n\n@compute @workgroup_size(${wg})\nfn main(@builtin(global_invocation_id) gid3: vec3<u32>) {\n  let gid: i32 = i32(gid3.x) + i32(gid3.y) * ${65535 * wg};\n  if (gid >= P._count) { return; }\n${body}}\n`;
+        return { ok: true, code, workgroupSize: wg, bindings, uniformFields: uni.map((p) => ({ name: p.name, type: p.type })).concat([{ name: '_count', type: 'i32' }]) };
     }
 
     function toGlsl(kernel) {
