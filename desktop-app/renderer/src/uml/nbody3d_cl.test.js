@@ -82,10 +82,10 @@ if (src) {
 
     // 2b. 同一份原始碼：cl_front→KIR→runJs（與 GPU 的 WebGL2 路徑用同一個翻譯結果）
     const pr = CF.parseKernels(src);
-    check('cl_front 解析四個核心', pr.ok && pr.kernels.length === 4, pr.error || pr.kernels && pr.kernels.length);
+    check('cl_front 解析全部核心（4 個加速度＋3 個速度＋3 個位置）', pr.ok && pr.kernels.length === 10, pr.error || pr.kernels && pr.kernels.length);
     if (pr.ok) {
         const outName = { accx: 'ax', accy: 'ay', accz: 'az', accpot: 'pot' };
-        for (const k of pr.kernels) {
+        for (const k of pr.kernels.filter((q) => names.includes(q.name))) {
             const v = KIR.validate(k); check('KIR 驗證 ' + k.name, v.ok, v.errors);
             const B = {}; for (const p of k.params) if (p.kind === 'buf') B[p.name] = p.access === 'out' ? new Float32Array(N) : ({ x: X, y: Y, z: Z, ms: MS })[p.name];
             KIR.runJs(k, B, { n: N, G, e2 }, N);
@@ -94,6 +94,32 @@ if (src) {
             let err = 0; for (let i = 0; i < N; i++) err = Math.max(err, Math.abs(B[outBuf][i] - want[i]));
             check('KIR ' + k.name + ' 與 CPU 參考一致（最大誤差 ' + err.toExponential(2) + '）', err <= tolOf(want), { err });
         }
+    }
+}
+
+// 積分核心（步驟 1b）：vx' = vx + ax·dt；x' = x + clampf(vx', 1, vmax)·dt（clampf：超過上限移回一半，再看下限）
+const prI = src ? CF.parseKernels(src) : { ok: false, kernels: [] };
+if (src && prI.ok) {
+    const N = 48, dt = 0.01, vmax = 5.0;
+    let seed = 2024; const rnd = () => ((seed = (seed * 1103515245 + 12345) >>> 0) / 4294967296);
+    const V = new Float32Array(N), A = new Float32Array(N), P = new Float32Array(N);
+    for (let i = 0; i < N; i++) { V[i] = (rnd() - 0.5) * 20; A[i] = (rnd() - 0.5) * 3; P[i] = rnd() * 10; }
+    const clampRef = (v) => { let x = v; if (x > vmax) x = (x + vmax) * 0.5; if (x < 1) x = (x + 1) * 0.5; return x; };
+    const wantV = new Float64Array(N), wantP = new Float64Array(N);
+    for (let i = 0; i < N; i++) { wantV[i] = V[i] + A[i] * dt; wantP[i] = P[i] + clampRef(wantV[i]) * dt; }
+    const byName = Object.fromEntries(prI.kernels.map((k) => [k.name, k]));
+    const cases = [['kvx', 'vx', 'ax', 'ovx', wantV], ['kpx', 'x', 'vx', 'ox', wantP]];
+    // 速度核心的第二個輸入是加速度（ax）；位置核心的第二個輸入是新速度，這裡用參考的新速度當輸入
+    for (const [kn, in1, in2, outn, want] of cases) {
+        const k = byName[kn];
+        check('積分核心 ' + kn + ' 存在', !!k, Object.keys(byName));
+        if (!k) continue;
+        const B = { [in1]: kn === 'kvx' ? V : P, [in2]: kn === 'kvx' ? A : wantV, [outn]: new Float32Array(N) };
+        const sc = kn === 'kvx' ? { n: N, dt } : { n: N, dt, vmax };
+        const kk = { ...k, params: k.params.map((p) => (p.name === 'vx' && kn === 'kpx' ? { ...p, name: 'vx' } : p)) };
+        KIR.runJs(k, Object.fromEntries(k.params.filter((p) => p.kind === 'buf').map((p) => [p.name, B[p.name]])), sc, N);
+        const got = B[outn]; let err = 0; for (let i = 0; i < N; i++) err = Math.max(err, Math.abs(got[i] - want[i]));
+        check('KIR ' + kn + ' 與參考公式一致（最大誤差 ' + err.toExponential(2) + '）', err <= 1e-4 * Math.max(1, ...want.map(Math.abs)), { err });
     }
 }
 

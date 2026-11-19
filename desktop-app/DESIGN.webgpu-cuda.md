@@ -1165,3 +1165,9 @@ Python 模擬器與離線模型推論共用同一個 GPU 裝置：
 - 驗證（`scripts/eval/kir_device.eval.js`，SwiftShader）：nbody3d_cl 的四個核心，上傳一次、連續派送 20 次（80 次派送）、讀回一次：最大誤差 0（與 KIR JS 後端完全一致）；負向測試（輸出＝輸入）正確被拒絕。
 - 計時（每次迭代＝四個核心，N=512）：裝置連續派送 1.12–1.21 ms；每次都走 `runGl`（每次上傳＋讀回）84–97 ms。差距主要是傳輸與讀回，不是計算（軟體 GL 的計算成本也包含在 1.2 ms 內）。
 - **尚未做**：host（llvm_host）的髒旗標與 GPU 上的積分流程（步驟 1b）；interop（步驟 2）；llvm_host.js:518 的批次上限。
+
+**階段 6 步驟 1b（2026-11-20，部分完成）**
+- `llvm_host.js`：緩衝區記錄 `hostOk`（主機副本最新）與 `devOk`（裝置副本最新）。`clEnqueueWriteBuffer` 只改主機副本；`clEnqueueReadBuffer` 先把裝置的新資料拉回（`syncHost`）；`clEnqueueNDRangeKernel` 有 `kirDev` 且全部指標參數是 float、輸出只有一個時走裝置路徑（輸入確保上傳、輸出只配置不上傳，派送後主機副本過期）；任何退回路徑（kirRun、JS）前先同步主機副本，執行後標記主機為最新。
+- 驗證：`llvm_host.test.js` 36 項（含假裝置的常駐路徑測試：輸出正確、一次派送、上傳 2 次、讀回 1 次）；真 Electron（`scripts/eval/llvm_device.eval.js`，內嵌新版 llvm_host）：opencl_vecadd 輸出正確，派送 1 次、上傳 2 次（a、b）、讀回 1 次（c）、配置 3 次，無警告。
+- `_gen/_gen_nbody3d_cl.py`：積分（速度、位置、clampf）改成裝置核心（kvx/y/z、kpx/y/z），x、y、z、vx、vy、vz 各兩組 ping-pong；`cl_reset()` 在 init_bodies 之後設旗標，下一幀整組上傳；每幀讀回 x'、y'、z'、pot（4 次），vx 從不讀回。`nbody3d_cl_test.js` 24 項（含積分核心對參考公式）。真 Electron（app 既有的 kirRun 複製路徑）：cluster 中心與 CPU 版相同（282.1, 104.3, 244.5），派送 1500 次（10 核心 × 150 幀）。
+- **未完成**：(a) app 的 `_kirHostHooks` 還沒加 `kirDev`（檔案唯讀，補丁在 `side-session-notes/…/step1b-floating-assistant-kirdev.md`）；(b) nbody 整支程式在裝置路徑上的端到端驗證與計時（等 (a) 與 embed／build）；(c) 「每幀一次讀回」目前是 4 次（x、y、z、pot）；要做到 1 次需要把四個陣列打包到同一張紋理。

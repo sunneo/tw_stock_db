@@ -155,6 +155,22 @@ define i32 @main() {
     if (c.wasm) { const dec = {}; for (const d of L.parse(ir).mod.declares) dec[d.name] = d; const o = await L.runHost(c.wasm, { args: ['prog', '1000'] }, kh.impls, undefined, dec);
       check('opencl_vecadd.ll 走 KIR：輸出同 JS 後備，kirRun 被呼叫', o.stdout === 'vadd OK, n=1000 c=2997.000000\n' && o.exitCode === 0 && kirCalls === 1, { o, kirCalls }); }
     kh.uninstall(L); }
+  // 常駐裝置（階段 6 步驟 1b）：同一份 opencl_vecadd.ll 改走 kirDev（假的裝置＝KIR 的 JS 後端，記錄上傳／讀回／派送次數）。
+  // 要的：輸出與 JS 後備一樣；只有一次派送；讀回只發生在 clEnqueueReadBuffer（沒有多餘的上傳）。
+  { const CF = require('../gpu/cl_front.js'), KIR = require('../gpu/kir.js'); const st = { alloc: 0, upload: 0, download: 0, dispatch: 0 };
+    const fakeDev = { alloc: (N, elem) => { st.alloc++; return { N, elem, v: new Float32Array(N * (elem === 'f32x4' ? 4 : 1)) }; },
+      upload: (b, arr) => { st.upload++; b.v.set(arr.subarray(0, b.v.length)); }, download: (b) => { st.download++; return b.v.slice(); },
+      dispatch: (k, binds, out, scal, N) => { st.dispatch++; const B = {}; for (const p of k.params) if (p.kind === 'buf') B[p.name] = p.access === 'out' ? out.v : binds[p.name].v; KIR.runJs(k, B, scal, N); },
+      free: () => {} };
+    const dh = H.create({ gui: async () => null, fs: fsx, kirTranslate: (src) => { const r = CF.parseKernels(src); if (!r.ok) return null; const m = {}; for (const k of r.kernels) { if (!KIR.validate(k).ok) return null; m[k.name] = k; } return m; },
+      kirRun: () => { throw new Error('不應該走 kirRun'); }, kirDev: fakeDev });
+    dh.install(L);
+    const ir = fs.readFileSync(path.join(__dirname, '../examples/llc/gpgpu/opencl_vecadd.ll'), 'utf8'); const c = L.compileIr(ir, {});
+    if (c.wasm) { const dec = {}; for (const d of L.parse(ir).mod.declares) dec[d.name] = d; const o = await L.runHost(c.wasm, { args: ['prog', '1000'] }, dh.impls, undefined, dec);
+      check('opencl_vecadd.ll 常駐裝置：輸出正確', o.stdout === 'vadd OK, n=1000 c=2997.000000\n' && o.exitCode === 0, { o: o.stdout, st });
+      check('常駐裝置：一次派送、讀回只有 c（不多做）', st.dispatch === 1 && st.download === 1 && st.upload === 2, st);
+      check('fa_cl_backend：裝置派送後回報 1（WebGL2）', dh.impls.fa_cl_backend() === 1, dh.impls.fa_cl_backend()); }
+    dh.uninstall(L); }
   { const k = H.clCompile('__kernel void f(__global const float*a,__global float*c,int n,float s){int i=get_global_id(0);if(i>=n)return;float t=0.0f;for(int j=0;j<3;j++)t+=a[i]*s;c[i]=sqrt(t)+(float)(n/2)+fabs(-1.0f)+(i%2);}');
     check('clCompile：多語句核心（for、return、型別轉換、整數除法）', !!k.kernels && !!k.kernels.f, k);
     if (k.kernels) { const a = new Float32Array([1, 4, 9]), cc = new Float32Array(3); k.kernels.f.run([3, 1, 1], [0, 0, 0], 1, [a, cc, 3, 3]); check('clCompile 執行結果（t＝9a，sqrt(9a)+1+1+(i%2)：5, 9, 11）', Array.from(cc).join() === '5,9,11', Array.from(cc)); } }

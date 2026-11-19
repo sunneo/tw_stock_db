@@ -1,5 +1,5 @@
 ; 3D N-body（照 examples/python/gpgpu/nbody3d.py，即 sdlmm/exams/nbody3d.c 的移植）：float32 物理、發光點精靈（加法混合）、攝影機追蹤、覆蓋層與滑桿。
-; 用法：lli nbody3d.ll [N] [LOOP] [frames]。滑鼠拖曳／方向鍵旋轉、＋－縮放、C 追蹤、R 隨機係數、H 覆蓋層。（OpenCL 版，由 _gen/_gen_nbody3d_cl.py 產生；加速度用 OpenCL 核心，積分與畫面同 CPU 版）
+; 用法：lli nbody3d.ll [N] [LOOP] [frames]。滑鼠拖曳／方向鍵旋轉、＋－縮放、C 追蹤、R 隨機係數、H 覆蓋層。（OpenCL 版：整個物理步在裝置上，由 _gen/_gen_nbody3d_cl.py 產生）
 target triple = "x86_64-pc-linux-gnu"
 
 declare i32 @SDL_Init(i32)
@@ -49,36 +49,47 @@ declare i32 @clEnqueueNDRangeKernel(ptr, ptr, i32, ptr, ptr, ptr, i32, ptr, ptr)
 declare i32 @clEnqueueReadBuffer(ptr, ptr, i32, i64, i64, ptr, i32, ptr, ptr)
 declare i32 @clEnqueueWriteBuffer(ptr, ptr, i32, i64, i64, ptr, i32, ptr, ptr)
 declare i32 @clFinish(ptr)
+declare i32 @fa_cl_backend()
 
 @.s1 = private constant [3 x i8] c"on\00"
 @.s2 = private constant [4 x i8] c"off\00"
-@.s3 = private constant [32 x i8] c"[%-3d/%-3d] tm:%-3.3f bodies:%d\00"
+@.s3 = private constant [36 x i8] c"[%-3d/%-3d] step: %.3f s  bodies:%d\00"
 @.s4 = private constant [24 x i8] c"simulate factor: %-3.5f\00"
 @.s5 = private constant [21 x i8] c"random factor: %s[r]\00"
 @.s6 = private constant [22 x i8] c"particle size: %-3.1f\00"
 @.s7 = private constant [32 x i8] c"cam dist:%.1f angle:(%.2f,%.2f)\00"
 @.s8 = private constant [23 x i8] c"camera tracking: %s[C]\00"
 @.s9 = private constant [16 x i8] c"compute source:\00"
-@.s10 = private constant [71 x i8] c"GPU source: needs the OpenCL layer (not available yet); staying on CPU\00"
-@.s11 = private constant [33 x i8] c"MAX_X:%.1f MAX_Y:%.1f MAX_Z:%.1f\00"
-@.s12 = private constant [33 x i8] c"MAX_Vel:%.1f Grav:%.1f Soft:%.1f\00"
-@.s13 = private constant [48 x i8] c"[h]help [+/-]zoom [arrows/mouse]rotate [C]track\00"
-@.s14 = private constant [4 x i8] c"CPU\00"
-@.s15 = private constant [4 x i8] c"GPU\00"
-@.s16 = private constant [22 x i8] c"[3D] NBody-Simulation\00"
-@.s17 = private constant [7 x i8] c"%d %f\0A\00"
-@.s18 = private constant [45 x i8] c"frames=%d bodies=%d cx=%.1f cy=%.1f cz=%.1f\0A\00"
+@.s10 = private constant [24 x i8] c"CPU\EF\BC\88wasm \E5\85\A7\E7\A9\8D\E5\88\86\EF\BC\89\00"
+@.s11 = private constant [39 x i8] c"GPU\EF\BC\9AOpenCL \E6\A0\B8\E5\BF\83\EF\BC\88WebGL2 \E5\BE\8C\E7\AB\AF\EF\BC\89\00"
+@.s12 = private constant [40 x i8] c"GPU\EF\BC\9AOpenCL \E7\9A\84 JS \E5\A2\8A\E7\89\87\EF\BC\88\E9\9D\9E GPU\EF\BC\89\00"
+@.s13 = private constant [26 x i8] c"GPU\EF\BC\9AOpenCL \E5\B0\9A\E6\9C\AA\E6\B4\BE\E9\80\81\00"
+@.s14 = private constant [33 x i8] c"MAX_X:%.1f MAX_Y:%.1f MAX_Z:%.1f\00"
+@.s15 = private constant [33 x i8] c"MAX_Vel:%.1f Grav:%.1f Soft:%.1f\00"
+@.s16 = private constant [48 x i8] c"[h]help [+/-]zoom [arrows/mouse]rotate [C]track\00"
+@.s17 = private constant [4 x i8] c"CPU\00"
+@.s18 = private constant [4 x i8] c"GPU\00"
+@.s19 = private constant [22 x i8] c"[3D] NBody-Simulation\00"
+@.s20 = private constant [7 x i8] c"%d %f\0A\00"
+@.s21 = private constant [45 x i8] c"frames=%d bodies=%d cx=%.1f cy=%.1f cz=%.1f\0A\00"
 @font = private constant [1235 x i32] [i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 8, i32 8, i32 8, i32 8, i32 8, i32 8, i32 0, i32 8, i32 0, i32 0, i32 0, i32 0, i32 0, i32 20, i32 20, i32 20, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 10, i32 20, i32 63, i32 20, i32 20, i32 126, i32 40, i32 40, i32 0, i32 0, i32 0, i32 0, i32 0, i32 8, i32 28, i32 40, i32 40, i32 28, i32 10, i32 10, i32 60, i32 8, i32 8, i32 0, i32 0, i32 0, i32 48, i32 72, i32 50, i32 4, i32 24, i32 46, i32 10, i32 14, i32 0, i32 0, i32 0, i32 0, i32 0, i32 28, i32 32, i32 32, i32 48, i32 74, i32 70, i32 98, i32 62, i32 0, i32 0, i32 0, i32 0, i32 0, i32 8, i32 8, i32 8, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 8, i32 8, i32 8, i32 16, i32 16, i32 16, i32 16, i32 8, i32 8, i32 8, i32 0, i32 0, i32 0, i32 16, i32 8, i32 8, i32 8, i32 8, i32 8, i32 8, i32 8, i32 8, i32 16, i32 0, i32 0, i32 0, i32 0, i32 8, i32 42, i32 28, i32 28, i32 42, i32 8, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 8, i32 8, i32 126, i32 8, i32 8, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 8, i32 8, i32 16, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 28, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 8, i32 8, i32 0, i32 0, i32 0, i32 0, i32 0, i32 2, i32 4, i32 4, i32 8, i32 8, i32 16, i32 16, i32 32, i32 32, i32 0, i32 0, i32 0, i32 0, i32 28, i32 38, i32 34, i32 34, i32 42, i32 34, i32 38, i32 28, i32 0, i32 0, i32 0, i32 0, i32 0, i32 56, i32 8, i32 8, i32 8, i32 8, i32 8, i32 8, i32 62, i32 0, i32 0, i32 0, i32 0, i32 0, i32 28, i32 38, i32 2, i32 4, i32 8, i32 16, i32 32, i32 62, i32 0, i32 0, i32 0, i32 0, i32 0, i32 28, i32 38, i32 6, i32 24, i32 6, i32 2, i32 38, i32 60, i32 0, i32 0, i32 0, i32 0, i32 0, i32 12, i32 12, i32 20, i32 36, i32 36, i32 62, i32 4, i32 4, i32 0, i32 0, i32 0, i32 0, i32 0, i32 60, i32 32, i32 32, i32 60, i32 6, i32 2, i32 6, i32 60, i32 0, i32 0, i32 0, i32 0, i32 0, i32 28, i32 48, i32 32, i32 60, i32 34, i32 34, i32 34, i32 28, i32 0, i32 0, i32 0, i32 0, i32 0, i32 62, i32 4, i32 4, i32 4, i32 8, i32 8, i32 16, i32 16, i32 0, i32 0, i32 0, i32 0, i32 0, i32 28, i32 34, i32 34, i32 28, i32 38, i32 34, i32 34, i32 28, i32 0, i32 0, i32 0, i32 0, i32 0, i32 28, i32 38, i32 34, i32 38, i32 58, i32 2, i32 4, i32 60, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 8, i32 8, i32 0, i32 0, i32 8, i32 8, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 8, i32 8, i32 0, i32 0, i32 8, i32 8, i32 16, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 2, i32 28, i32 96, i32 24, i32 6, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 126, i32 0, i32 126, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 96, i32 28, i32 2, i32 28, i32 96, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 60, i32 6, i32 4, i32 8, i32 8, i32 8, i32 0, i32 8, i32 0, i32 0, i32 0, i32 0, i32 0, i32 28, i32 34, i32 66, i32 78, i32 82, i32 82, i32 78, i32 32, i32 32, i32 30, i32 0, i32 0, i32 0, i32 8, i32 24, i32 20, i32 20, i32 36, i32 62, i32 34, i32 66, i32 0, i32 0, i32 0, i32 0, i32 0, i32 60, i32 34, i32 34, i32 60, i32 34, i32 34, i32 34, i32 60, i32 0, i32 0, i32 0, i32 0, i32 0, i32 28, i32 50, i32 32, i32 32, i32 32, i32 32, i32 50, i32 28, i32 0, i32 0, i32 0, i32 0, i32 0, i32 56, i32 36, i32 34, i32 34, i32 34, i32 34, i32 36, i32 60, i32 0, i32 0, i32 0, i32 0, i32 0, i32 62, i32 32, i32 32, i32 62, i32 32, i32 32, i32 32, i32 62, i32 0, i32 0, i32 0, i32 0, i32 0, i32 62, i32 32, i32 32, i32 62, i32 32, i32 32, i32 32, i32 32, i32 0, i32 0, i32 0, i32 0, i32 0, i32 28, i32 34, i32 32, i32 32, i32 38, i32 34, i32 34, i32 28, i32 0, i32 0, i32 0, i32 0, i32 0, i32 34, i32 34, i32 34, i32 62, i32 34, i32 34, i32 34, i32 34, i32 0, i32 0, i32 0, i32 0, i32 0, i32 62, i32 8, i32 8, i32 8, i32 8, i32 8, i32 8, i32 62, i32 0, i32 0, i32 0, i32 0, i32 0, i32 28, i32 4, i32 4, i32 4, i32 4, i32 4, i32 36, i32 56, i32 0, i32 0, i32 0, i32 0, i32 0, i32 34, i32 36, i32 40, i32 56, i32 40, i32 36, i32 38, i32 34, i32 0, i32 0, i32 0, i32 0, i32 0, i32 32, i32 32, i32 32, i32 32, i32 32, i32 32, i32 32, i32 62, i32 0, i32 0, i32 0, i32 0, i32 0, i32 98, i32 102, i32 86, i32 90, i32 74, i32 66, i32 66, i32 66, i32 0, i32 0, i32 0, i32 0, i32 0, i32 34, i32 50, i32 50, i32 42, i32 42, i32 42, i32 38, i32 38, i32 0, i32 0, i32 0, i32 0, i32 0, i32 28, i32 38, i32 34, i32 34, i32 34, i32 34, i32 38, i32 28, i32 0, i32 0, i32 0, i32 0, i32 0, i32 60, i32 34, i32 34, i32 34, i32 60, i32 32, i32 32, i32 32, i32 0, i32 0, i32 0, i32 0, i32 0, i32 28, i32 38, i32 34, i32 34, i32 34, i32 34, i32 38, i32 28, i32 4, i32 0, i32 0, i32 0, i32 0, i32 60, i32 38, i32 34, i32 38, i32 56, i32 36, i32 34, i32 34, i32 0, i32 0, i32 0, i32 0, i32 0, i32 28, i32 36, i32 32, i32 48, i32 12, i32 2, i32 34, i32 28, i32 0, i32 0, i32 0, i32 0, i32 0, i32 126, i32 8, i32 8, i32 8, i32 8, i32 8, i32 8, i32 8, i32 0, i32 0, i32 0, i32 0, i32 0, i32 34, i32 34, i32 34, i32 34, i32 34, i32 34, i32 34, i32 28, i32 0, i32 0, i32 0, i32 0, i32 0, i32 98, i32 34, i32 34, i32 36, i32 20, i32 20, i32 24, i32 8, i32 0, i32 0, i32 0, i32 0, i32 0, i32 65, i32 66, i32 74, i32 90, i32 58, i32 54, i32 54, i32 36, i32 0, i32 0, i32 0, i32 0, i32 0, i32 34, i32 52, i32 20, i32 8, i32 24, i32 20, i32 34, i32 98, i32 0, i32 0, i32 0, i32 0, i32 0, i32 98, i32 38, i32 20, i32 24, i32 8, i32 8, i32 8, i32 8, i32 0, i32 0, i32 0, i32 0, i32 0, i32 62, i32 2, i32 4, i32 8, i32 8, i32 16, i32 32, i32 62, i32 0, i32 0, i32 0, i32 0, i32 28, i32 16, i32 16, i32 16, i32 16, i32 16, i32 16, i32 16, i32 16, i32 28, i32 0, i32 0, i32 0, i32 0, i32 32, i32 32, i32 16, i32 16, i32 8, i32 8, i32 4, i32 4, i32 2, i32 0, i32 0, i32 0, i32 24, i32 8, i32 8, i32 8, i32 8, i32 8, i32 8, i32 8, i32 8, i32 24, i32 0, i32 0, i32 0, i32 0, i32 24, i32 20, i32 34, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 16, i32 8, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 60, i32 2, i32 62, i32 34, i32 38, i32 58, i32 0, i32 0, i32 0, i32 0, i32 32, i32 32, i32 32, i32 60, i32 34, i32 34, i32 34, i32 34, i32 60, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 30, i32 48, i32 32, i32 32, i32 48, i32 30, i32 0, i32 0, i32 0, i32 0, i32 2, i32 2, i32 2, i32 26, i32 38, i32 34, i32 34, i32 38, i32 26, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 28, i32 34, i32 62, i32 32, i32 32, i32 30, i32 0, i32 0, i32 0, i32 0, i32 14, i32 8, i32 8, i32 62, i32 8, i32 8, i32 8, i32 8, i32 8, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 26, i32 38, i32 34, i32 34, i32 38, i32 26, i32 4, i32 60, i32 0, i32 0, i32 32, i32 32, i32 32, i32 60, i32 38, i32 34, i32 34, i32 34, i32 34, i32 0, i32 0, i32 0, i32 0, i32 8, i32 0, i32 0, i32 56, i32 8, i32 8, i32 8, i32 8, i32 62, i32 0, i32 0, i32 0, i32 0, i32 8, i32 0, i32 0, i32 24, i32 8, i32 8, i32 8, i32 8, i32 8, i32 8, i32 56, i32 0, i32 0, i32 32, i32 32, i32 32, i32 38, i32 44, i32 56, i32 44, i32 36, i32 34, i32 0, i32 0, i32 0, i32 0, i32 48, i32 16, i32 16, i32 16, i32 16, i32 16, i32 16, i32 8, i32 14, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 54, i32 42, i32 42, i32 42, i32 42, i32 42, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 60, i32 38, i32 34, i32 34, i32 34, i32 34, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 28, i32 38, i32 34, i32 34, i32 38, i32 28, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 60, i32 34, i32 34, i32 34, i32 34, i32 60, i32 32, i32 32, i32 0, i32 0, i32 0, i32 0, i32 0, i32 26, i32 38, i32 34, i32 34, i32 38, i32 26, i32 2, i32 2, i32 0, i32 0, i32 0, i32 0, i32 0, i32 30, i32 16, i32 16, i32 16, i32 16, i32 16, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 28, i32 32, i32 48, i32 12, i32 6, i32 60, i32 0, i32 0, i32 0, i32 0, i32 0, i32 16, i32 16, i32 62, i32 16, i32 16, i32 16, i32 16, i32 14, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 34, i32 34, i32 34, i32 34, i32 38, i32 26, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 34, i32 34, i32 36, i32 20, i32 24, i32 24, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 65, i32 66, i32 42, i32 58, i32 58, i32 52, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 34, i32 20, i32 24, i32 24, i32 20, i32 34, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 34, i32 34, i32 20, i32 20, i32 24, i32 8, i32 24, i32 48, i32 0, i32 0, i32 0, i32 0, i32 0, i32 62, i32 4, i32 8, i32 16, i32 16, i32 62, i32 0, i32 0, i32 0, i32 0, i32 12, i32 8, i32 8, i32 8, i32 48, i32 8, i32 8, i32 8, i32 8, i32 12, i32 0, i32 0, i32 0, i32 8, i32 8, i32 8, i32 8, i32 8, i32 8, i32 8, i32 8, i32 8, i32 8, i32 8, i32 0, i32 0, i32 48, i32 8, i32 8, i32 8, i32 4, i32 8, i32 8, i32 8, i32 8, i32 48, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 48, i32 78, i32 0, i32 0, i32 0, i32 0]
 @colr = private constant [10 x float] [float 0x0000000000000000, float 0x3FD0101020000000, float 0x3FE0101020000000, float 0x3FE8181820000000, float 0x3FF0000000000000, float 0x0000000000000000, float 0x0000000000000000, float 0x3FD8181820000000, float 0x3FE4141420000000, float 0x3FEC1C1C20000000]
 @colg = private constant [10 x float] [float 0x3FF0000000000000, float 0x3FF0000000000000, float 0x3FF0000000000000, float 0x3FF0000000000000, float 0x3FF0000000000000, float 0x3FEC1C1C20000000, float 0x3FE8181820000000, float 0x3FF0000000000000, float 0x3FF0000000000000, float 0x3FF0000000000000]
 @colb = private constant [10 x float] [float 0x3FF0000000000000, float 0x3FF0000000000000, float 0x3FF0000000000000, float 0x3FF0000000000000, float 0x3FF0000000000000, float 0x3FEC1C1C20000000, float 0x3FE8181820000000, float 0x3FF0000000000000, float 0x3FF0000000000000, float 0x3FF0000000000000]
-@cl_src = private constant [2185 x i8] c"__kernel void accx(__global const float* x, __global const float* y, __global const float* z, __global const float* ms, __global float* ax, int n, float G, float e2) {\0A  int i = get_global_id(0);\0A  float xi = x[i]; float yi = y[i]; float zi = z[i];\0A  float a = 0.0f;\0A  for (int j = 0; j < n; j++) {\0A    if (j != i) {\0A      float dx = x[j] - xi; float dy = y[j] - yi; float dz = z[j] - zi;\0A      float inv = 1.0f / sqrt(dx * dx + dy * dy + dz * dz + e2);\0A      float s = G * ms[j] * inv * inv * inv;\0A      a += s * dx;\0A    }\0A  }\0A  ax[i] = a;\0A}\0A\0A__kernel void accy(__global const float* x, __global const float* y, __global const float* z, __global const float* ms, __global float* ay, int n, float G, float e2) {\0A  int i = get_global_id(0);\0A  float xi = x[i]; float yi = y[i]; float zi = z[i];\0A  float a = 0.0f;\0A  for (int j = 0; j < n; j++) {\0A    if (j != i) {\0A      float dx = x[j] - xi; float dy = y[j] - yi; float dz = z[j] - zi;\0A      float inv = 1.0f / sqrt(dx * dx + dy * dy + dz * dz + e2);\0A      float s = G * ms[j] * inv * inv * inv;\0A      a += s * dy;\0A    }\0A  }\0A  ay[i] = a;\0A}\0A\0A__kernel void accz(__global const float* x, __global const float* y, __global const float* z, __global const float* ms, __global float* az, int n, float G, float e2) {\0A  int i = get_global_id(0);\0A  float xi = x[i]; float yi = y[i]; float zi = z[i];\0A  float a = 0.0f;\0A  for (int j = 0; j < n; j++) {\0A    if (j != i) {\0A      float dx = x[j] - xi; float dy = y[j] - yi; float dz = z[j] - zi;\0A      float inv = 1.0f / sqrt(dx * dx + dy * dy + dz * dz + e2);\0A      float s = G * ms[j] * inv * inv * inv;\0A      a += s * dz;\0A    }\0A  }\0A  az[i] = a;\0A}\0A\0A__kernel void accpot(__global const float* x, __global const float* y, __global const float* z, __global const float* ms, __global float* pot, int n, float G, float e2) {\0A  int i = get_global_id(0);\0A  float xi = x[i]; float yi = y[i]; float zi = z[i];\0A  float p = 0.0f;\0A  for (int j = 0; j < n; j++) {\0A    if (j != i) {\0A      float dx = x[j] - xi; float dy = y[j] - yi; float dz = z[j] - zi;\0A      float inv = 1.0f / sqrt(dx * dx + dy * dy + dz * dz + e2);\0A      float s = G * ms[j] * inv * inv * inv;\0A      p += ms[j] * inv;\0A    }\0A  }\0A  pot[i] = p;\0A}\0A\00"
-@cl_n_x = private constant [5 x i8] c"accx\00"
-@cl_n_y = private constant [5 x i8] c"accy\00"
-@cl_n_z = private constant [5 x i8] c"accz\00"
-@cl_n_pot = private constant [7 x i8] c"accpot\00"
-@cl_h = global [16 x ptr] zeroinitializer
-@cl_st = global [2 x i32] zeroinitializer
+@cl_src = private constant [3523 x i8] c"__kernel void accx(__global const float* x, __global const float* y, __global const float* z, __global const float* ms, __global float* ax, int n, float G, float e2) {\0A  int i = get_global_id(0);\0A  float xi = x[i]; float yi = y[i]; float zi = z[i];\0A  float a = 0.0f;\0A  for (int j = 0; j < n; j++) {\0A    if (j != i) {\0A      float dx = x[j] - xi; float dy = y[j] - yi; float dz = z[j] - zi;\0A      float inv = 1.0f / sqrt(dx * dx + dy * dy + dz * dz + e2);\0A      float s = G * ms[j] * inv * inv * inv;\0A      a += s * dx;\0A    }\0A  }\0A  ax[i] = a;\0A}\0A\0A__kernel void accy(__global const float* x, __global const float* y, __global const float* z, __global const float* ms, __global float* ay, int n, float G, float e2) {\0A  int i = get_global_id(0);\0A  float xi = x[i]; float yi = y[i]; float zi = z[i];\0A  float a = 0.0f;\0A  for (int j = 0; j < n; j++) {\0A    if (j != i) {\0A      float dx = x[j] - xi; float dy = y[j] - yi; float dz = z[j] - zi;\0A      float inv = 1.0f / sqrt(dx * dx + dy * dy + dz * dz + e2);\0A      float s = G * ms[j] * inv * inv * inv;\0A      a += s * dy;\0A    }\0A  }\0A  ay[i] = a;\0A}\0A\0A__kernel void accz(__global const float* x, __global const float* y, __global const float* z, __global const float* ms, __global float* az, int n, float G, float e2) {\0A  int i = get_global_id(0);\0A  float xi = x[i]; float yi = y[i]; float zi = z[i];\0A  float a = 0.0f;\0A  for (int j = 0; j < n; j++) {\0A    if (j != i) {\0A      float dx = x[j] - xi; float dy = y[j] - yi; float dz = z[j] - zi;\0A      float inv = 1.0f / sqrt(dx * dx + dy * dy + dz * dz + e2);\0A      float s = G * ms[j] * inv * inv * inv;\0A      a += s * dz;\0A    }\0A  }\0A  az[i] = a;\0A}\0A\0A__kernel void accpot(__global const float* x, __global const float* y, __global const float* z, __global const float* ms, __global float* pot, int n, float G, float e2) {\0A  int i = get_global_id(0);\0A  float xi = x[i]; float yi = y[i]; float zi = z[i];\0A  float p = 0.0f;\0A  for (int j = 0; j < n; j++) {\0A    if (j != i) {\0A      float dx = x[j] - xi; float dy = y[j] - yi; float dz = z[j] - zi;\0A      float inv = 1.0f / sqrt(dx * dx + dy * dy + dz * dz + e2);\0A      p += ms[j] * inv;\0A    }\0A  }\0A  pot[i] = p;\0A}\0A\0A__kernel void kvx(__global const float* vx, __global const float* ax, __global float* ovx, int n, float dt) {\0A  int i = get_global_id(0);\0A  ovx[i] = vx[i] + ax[i] * dt;\0A}\0A\0A__kernel void kvy(__global const float* vy, __global const float* ay, __global float* ovy, int n, float dt) {\0A  int i = get_global_id(0);\0A  ovy[i] = vy[i] + ay[i] * dt;\0A}\0A\0A__kernel void kvz(__global const float* vz, __global const float* az, __global float* ovz, int n, float dt) {\0A  int i = get_global_id(0);\0A  ovz[i] = vz[i] + az[i] * dt;\0A}\0A\0A__kernel void kpx(__global const float* x, __global const float* vx, __global float* ox, int n, float dt, float vmax) {\0A  int i = get_global_id(0);\0A  float cv = vx[i];\0A  if (cv > vmax) { cv = (cv + vmax) * 0.5f; }\0A  if (cv < 1.0f) { cv = (cv + 1.0f) * 0.5f; }\0A  ox[i] = x[i] + cv * dt;\0A}\0A\0A__kernel void kpy(__global const float* y, __global const float* vy, __global float* oy, int n, float dt, float vmax) {\0A  int i = get_global_id(0);\0A  float cv = vy[i];\0A  if (cv > vmax) { cv = (cv + vmax) * 0.5f; }\0A  if (cv < 1.0f) { cv = (cv + 1.0f) * 0.5f; }\0A  oy[i] = y[i] + cv * dt;\0A}\0A\0A__kernel void kpz(__global const float* z, __global const float* vz, __global float* oz, int n, float dt, float vmax) {\0A  int i = get_global_id(0);\0A  float cv = vz[i];\0A  if (cv > vmax) { cv = (cv + vmax) * 0.5f; }\0A  if (cv < 1.0f) { cv = (cv + 1.0f) * 0.5f; }\0A  oz[i] = z[i] + cv * dt;\0A}\0A\00"
+@cl_n_accx = private constant [5 x i8] c"accx\00"
+@cl_n_accy = private constant [5 x i8] c"accy\00"
+@cl_n_accz = private constant [5 x i8] c"accz\00"
+@cl_n_accpot = private constant [7 x i8] c"accpot\00"
+@cl_n_kvx = private constant [4 x i8] c"kvx\00"
+@cl_n_kvy = private constant [4 x i8] c"kvy\00"
+@cl_n_kvz = private constant [4 x i8] c"kvz\00"
+@cl_n_kpx = private constant [4 x i8] c"kpx\00"
+@cl_n_kpy = private constant [4 x i8] c"kpy\00"
+@cl_n_kpz = private constant [4 x i8] c"kpz\00"
+@cl_h = global [40 x ptr] zeroinitializer
+@cl_st = global [4 x i32] zeroinitializer
+@cl_mode = global i32 0
 
 define float @rnd(ptr %seed) {
 entry:
@@ -220,67 +231,123 @@ cpu:
 ctx:
   %d = load ptr, ptr %dev
   %c = call ptr @clCreateContext(ptr null, i32 1, ptr %dev, ptr null, ptr null, ptr %rc)
-  %hc = getelementptr ptr, ptr @cl_h, i32 0
-  store ptr %c, ptr %hc
+  %hctx = getelementptr ptr, ptr @cl_h, i32 0
+  store ptr %c, ptr %hctx
   %q = call ptr @clCreateCommandQueue(ptr %c, ptr %d, i64 0, ptr %rc)
   %hq = getelementptr ptr, ptr @cl_h, i32 1
   store ptr %q, ptr %hq
   %prog = call ptr @clCreateProgramWithSource(ptr %c, i32 1, ptr %srcp, ptr null, ptr %rc)
-  %hp = getelementptr ptr, ptr @cl_h, i32 2
-  store ptr %prog, ptr %hp
+  %hprog = getelementptr ptr, ptr @cl_h, i32 2
+  store ptr %prog, ptr %hprog
   %rb = call i32 @clBuildProgram(ptr %prog, i32 1, ptr %dev, ptr null, ptr null, ptr null)
-  %kx = call ptr @clCreateKernel(ptr %prog, ptr @cl_n_x, ptr %rc)
-  %hx = getelementptr ptr, ptr @cl_h, i32 3
-  store ptr %kx, ptr %hx
-  %ky = call ptr @clCreateKernel(ptr %prog, ptr @cl_n_y, ptr %rc)
-  %hy = getelementptr ptr, ptr @cl_h, i32 4
-  store ptr %ky, ptr %hy
-  %kz = call ptr @clCreateKernel(ptr %prog, ptr @cl_n_z, ptr %rc)
-  %hz = getelementptr ptr, ptr @cl_h, i32 5
-  store ptr %kz, ptr %hz
-  %kpot = call ptr @clCreateKernel(ptr %prog, ptr @cl_n_pot, ptr %rc)
-  %hpot = getelementptr ptr, ptr @cl_h, i32 6
-  store ptr %kpot, ptr %hpot
-  %bx = call ptr @clCreateBuffer(ptr %c, i64 4, i64 %bytes, ptr null, ptr %rc)
-  %hbx = getelementptr ptr, ptr @cl_h, i32 7
-  store ptr %bx, ptr %hbx
-  %by = call ptr @clCreateBuffer(ptr %c, i64 4, i64 %bytes, ptr null, ptr %rc)
-  %hby = getelementptr ptr, ptr @cl_h, i32 8
-  store ptr %by, ptr %hby
-  %bz = call ptr @clCreateBuffer(ptr %c, i64 4, i64 %bytes, ptr null, ptr %rc)
-  %hbz = getelementptr ptr, ptr @cl_h, i32 9
-  store ptr %bz, ptr %hbz
-  %bm = call ptr @clCreateBuffer(ptr %c, i64 4, i64 %bytes, ptr null, ptr %rc)
-  %hbm = getelementptr ptr, ptr @cl_h, i32 10
-  store ptr %bm, ptr %hbm
-  %bax = call ptr @clCreateBuffer(ptr %c, i64 2, i64 %bytes, ptr null, ptr %rc)
-  %hbax = getelementptr ptr, ptr @cl_h, i32 11
-  store ptr %bax, ptr %hbax
-  %bay = call ptr @clCreateBuffer(ptr %c, i64 2, i64 %bytes, ptr null, ptr %rc)
-  %hbay = getelementptr ptr, ptr @cl_h, i32 12
-  store ptr %bay, ptr %hbay
-  %baz = call ptr @clCreateBuffer(ptr %c, i64 2, i64 %bytes, ptr null, ptr %rc)
-  %hbaz = getelementptr ptr, ptr @cl_h, i32 13
-  store ptr %baz, ptr %hbaz
-  %bpot = call ptr @clCreateBuffer(ptr %c, i64 2, i64 %bytes, ptr null, ptr %rc)
-  %hbpot = getelementptr ptr, ptr @cl_h, i32 14
-  store ptr %bpot, ptr %hbpot
-  %sf = getelementptr [2 x i32], ptr @cl_st, i32 0, i32 0
+  %k_accx = call ptr @clCreateKernel(ptr %prog, ptr @cl_n_accx, ptr %rc)
+  %hk_accx = getelementptr ptr, ptr @cl_h, i32 3
+  store ptr %k_accx, ptr %hk_accx
+  %k_accy = call ptr @clCreateKernel(ptr %prog, ptr @cl_n_accy, ptr %rc)
+  %hk_accy = getelementptr ptr, ptr @cl_h, i32 4
+  store ptr %k_accy, ptr %hk_accy
+  %k_accz = call ptr @clCreateKernel(ptr %prog, ptr @cl_n_accz, ptr %rc)
+  %hk_accz = getelementptr ptr, ptr @cl_h, i32 5
+  store ptr %k_accz, ptr %hk_accz
+  %k_accpot = call ptr @clCreateKernel(ptr %prog, ptr @cl_n_accpot, ptr %rc)
+  %hk_accpot = getelementptr ptr, ptr @cl_h, i32 6
+  store ptr %k_accpot, ptr %hk_accpot
+  %k_kvx = call ptr @clCreateKernel(ptr %prog, ptr @cl_n_kvx, ptr %rc)
+  %hk_kvx = getelementptr ptr, ptr @cl_h, i32 7
+  store ptr %k_kvx, ptr %hk_kvx
+  %k_kvy = call ptr @clCreateKernel(ptr %prog, ptr @cl_n_kvy, ptr %rc)
+  %hk_kvy = getelementptr ptr, ptr @cl_h, i32 8
+  store ptr %k_kvy, ptr %hk_kvy
+  %k_kvz = call ptr @clCreateKernel(ptr %prog, ptr @cl_n_kvz, ptr %rc)
+  %hk_kvz = getelementptr ptr, ptr @cl_h, i32 9
+  store ptr %k_kvz, ptr %hk_kvz
+  %k_kpx = call ptr @clCreateKernel(ptr %prog, ptr @cl_n_kpx, ptr %rc)
+  %hk_kpx = getelementptr ptr, ptr @cl_h, i32 10
+  store ptr %k_kpx, ptr %hk_kpx
+  %k_kpy = call ptr @clCreateKernel(ptr %prog, ptr @cl_n_kpy, ptr %rc)
+  %hk_kpy = getelementptr ptr, ptr @cl_h, i32 11
+  store ptr %k_kpy, ptr %hk_kpy
+  %k_kpz = call ptr @clCreateKernel(ptr %prog, ptr @cl_n_kpz, ptr %rc)
+  %hk_kpz = getelementptr ptr, ptr @cl_h, i32 12
+  store ptr %k_kpz, ptr %hk_kpz
+  %b_ms = call ptr @clCreateBuffer(ptr %c, i64 1, i64 %bytes, ptr null, ptr %rc)
+  %hb_ms = getelementptr ptr, ptr @cl_h, i32 13
+  store ptr %b_ms, ptr %hb_ms
+  %b_ax = call ptr @clCreateBuffer(ptr %c, i64 1, i64 %bytes, ptr null, ptr %rc)
+  %hb_ax = getelementptr ptr, ptr @cl_h, i32 14
+  store ptr %b_ax, ptr %hb_ax
+  %b_ay = call ptr @clCreateBuffer(ptr %c, i64 1, i64 %bytes, ptr null, ptr %rc)
+  %hb_ay = getelementptr ptr, ptr @cl_h, i32 15
+  store ptr %b_ay, ptr %hb_ay
+  %b_az = call ptr @clCreateBuffer(ptr %c, i64 1, i64 %bytes, ptr null, ptr %rc)
+  %hb_az = getelementptr ptr, ptr @cl_h, i32 16
+  store ptr %b_az, ptr %hb_az
+  %b_pot = call ptr @clCreateBuffer(ptr %c, i64 1, i64 %bytes, ptr null, ptr %rc)
+  %hb_pot = getelementptr ptr, ptr @cl_h, i32 17
+  store ptr %b_pot, ptr %hb_pot
+  %b_x0 = call ptr @clCreateBuffer(ptr %c, i64 1, i64 %bytes, ptr null, ptr %rc)
+  %hb_x0 = getelementptr ptr, ptr @cl_h, i32 18
+  store ptr %b_x0, ptr %hb_x0
+  %b_x1 = call ptr @clCreateBuffer(ptr %c, i64 1, i64 %bytes, ptr null, ptr %rc)
+  %hb_x1 = getelementptr ptr, ptr @cl_h, i32 19
+  store ptr %b_x1, ptr %hb_x1
+  %b_y0 = call ptr @clCreateBuffer(ptr %c, i64 1, i64 %bytes, ptr null, ptr %rc)
+  %hb_y0 = getelementptr ptr, ptr @cl_h, i32 20
+  store ptr %b_y0, ptr %hb_y0
+  %b_y1 = call ptr @clCreateBuffer(ptr %c, i64 1, i64 %bytes, ptr null, ptr %rc)
+  %hb_y1 = getelementptr ptr, ptr @cl_h, i32 21
+  store ptr %b_y1, ptr %hb_y1
+  %b_z0 = call ptr @clCreateBuffer(ptr %c, i64 1, i64 %bytes, ptr null, ptr %rc)
+  %hb_z0 = getelementptr ptr, ptr @cl_h, i32 22
+  store ptr %b_z0, ptr %hb_z0
+  %b_z1 = call ptr @clCreateBuffer(ptr %c, i64 1, i64 %bytes, ptr null, ptr %rc)
+  %hb_z1 = getelementptr ptr, ptr @cl_h, i32 23
+  store ptr %b_z1, ptr %hb_z1
+  %b_vx0 = call ptr @clCreateBuffer(ptr %c, i64 1, i64 %bytes, ptr null, ptr %rc)
+  %hb_vx0 = getelementptr ptr, ptr @cl_h, i32 24
+  store ptr %b_vx0, ptr %hb_vx0
+  %b_vx1 = call ptr @clCreateBuffer(ptr %c, i64 1, i64 %bytes, ptr null, ptr %rc)
+  %hb_vx1 = getelementptr ptr, ptr @cl_h, i32 25
+  store ptr %b_vx1, ptr %hb_vx1
+  %b_vy0 = call ptr @clCreateBuffer(ptr %c, i64 1, i64 %bytes, ptr null, ptr %rc)
+  %hb_vy0 = getelementptr ptr, ptr @cl_h, i32 26
+  store ptr %b_vy0, ptr %hb_vy0
+  %b_vy1 = call ptr @clCreateBuffer(ptr %c, i64 1, i64 %bytes, ptr null, ptr %rc)
+  %hb_vy1 = getelementptr ptr, ptr @cl_h, i32 27
+  store ptr %b_vy1, ptr %hb_vy1
+  %b_vz0 = call ptr @clCreateBuffer(ptr %c, i64 1, i64 %bytes, ptr null, ptr %rc)
+  %hb_vz0 = getelementptr ptr, ptr @cl_h, i32 28
+  store ptr %b_vz0, ptr %hb_vz0
+  %b_vz1 = call ptr @clCreateBuffer(ptr %c, i64 1, i64 %bytes, ptr null, ptr %rc)
+  %hb_vz1 = getelementptr ptr, ptr @cl_h, i32 29
+  store ptr %b_vz1, ptr %hb_vz1
+  %sf = getelementptr [4 x i32], ptr @cl_st, i32 0, i32 0
   store i32 1, ptr %sf
-  %sn = getelementptr [2 x i32], ptr @cl_st, i32 0, i32 1
+  %sn = getelementptr [4 x i32], ptr @cl_st, i32 0, i32 1
   store i32 %n, ptr %sn
+  %sp = getelementptr [4 x i32], ptr @cl_st, i32 0, i32 2
+  store i32 0, ptr %sp
   ret void
 }
 
-define void @accel_cl(ptr %x, ptr %y, ptr %z, ptr %ms, ptr %ax, ptr %ay, ptr %az, ptr %pot, float %G, float %e2, i32 %n) {
+define void @cl_reset() {
+entry:
+  %sr = getelementptr [4 x i32], ptr @cl_st, i32 0, i32 3
+  store i32 1, ptr %sr
+  ret void
+}
+
+define void @accel_cl(ptr %x, ptr %y, ptr %z, ptr %ms, ptr %vx, ptr %vy, ptr %vz, ptr %pot, float %G, float %e2, float %dt, float %vmax, i32 %n) {
 entry:
   %g = alloca float
   %ee = alloca float
+  %dtv = alloca float
+  %vmv = alloca float
   %nn = alloca i32
   %gs = alloca i64
   %n64 = sext i32 %n to i64
   %bytes = mul i64 %n64, 4
-  %sf = getelementptr [2 x i32], ptr @cl_st, i32 0, i32 0
+  %sf = getelementptr [4 x i32], ptr @cl_st, i32 0, i32 0
   %rdy = load i32, ptr %sf
   %z0 = icmp eq i32 %rdy, 0
   br i1 %z0, label %setup, label %run
@@ -290,99 +357,300 @@ setup:
 run:
   store float %G, ptr %g
   store float %e2, ptr %ee
+  store float %dt, ptr %dtv
+  store float %vmax, ptr %vmv
   store i32 %n, ptr %nn
   store i64 %n64, ptr %gs
   %hq = getelementptr ptr, ptr @cl_h, i32 1
   %q = load ptr, ptr %hq
-  %hbx = getelementptr ptr, ptr @cl_h, i32 7
-  %bx = load ptr, ptr %hbx
-  %wx = call i32 @clEnqueueWriteBuffer(ptr %q, ptr %bx, i32 1, i64 0, i64 %bytes, ptr %x, i32 0, ptr null, ptr null)
-  %hby = getelementptr ptr, ptr @cl_h, i32 8
-  %by = load ptr, ptr %hby
-  %wy = call i32 @clEnqueueWriteBuffer(ptr %q, ptr %by, i32 1, i64 0, i64 %bytes, ptr %y, i32 0, ptr null, ptr null)
-  %hbz = getelementptr ptr, ptr @cl_h, i32 9
-  %bz = load ptr, ptr %hbz
-  %wz = call i32 @clEnqueueWriteBuffer(ptr %q, ptr %bz, i32 1, i64 0, i64 %bytes, ptr %z, i32 0, ptr null, ptr null)
-  %hbm = getelementptr ptr, ptr @cl_h, i32 10
-  %bm = load ptr, ptr %hbm
-  %wm = call i32 @clEnqueueWriteBuffer(ptr %q, ptr %bm, i32 1, i64 0, i64 %bytes, ptr %ms, i32 0, ptr null, ptr null)
-  %hkx = getelementptr ptr, ptr @cl_h, i32 3
-  %kx = load ptr, ptr %hkx
-  %ax0 = getelementptr ptr, ptr @cl_h, i32 7
-  %rx0 = call i32 @clSetKernelArg(ptr %kx, i32 0, i64 8, ptr %ax0)
-  %ax1 = getelementptr ptr, ptr @cl_h, i32 8
-  %rx1 = call i32 @clSetKernelArg(ptr %kx, i32 1, i64 8, ptr %ax1)
-  %ax2 = getelementptr ptr, ptr @cl_h, i32 9
-  %rx2 = call i32 @clSetKernelArg(ptr %kx, i32 2, i64 8, ptr %ax2)
-  %ax3 = getelementptr ptr, ptr @cl_h, i32 10
-  %rx3 = call i32 @clSetKernelArg(ptr %kx, i32 3, i64 8, ptr %ax3)
-  %ax4 = getelementptr ptr, ptr @cl_h, i32 11
-  %rx4 = call i32 @clSetKernelArg(ptr %kx, i32 4, i64 8, ptr %ax4)
-  %rx5 = call i32 @clSetKernelArg(ptr %kx, i32 5, i64 4, ptr %nn)
-  %rx6 = call i32 @clSetKernelArg(ptr %kx, i32 6, i64 4, ptr %g)
-  %rx7 = call i32 @clSetKernelArg(ptr %kx, i32 7, i64 4, ptr %ee)
-  %ex = call i32 @clEnqueueNDRangeKernel(ptr %q, ptr %kx, i32 1, ptr null, ptr %gs, ptr null, i32 0, ptr null, ptr null)
-  %hky = getelementptr ptr, ptr @cl_h, i32 4
-  %ky = load ptr, ptr %hky
-  %ay0 = getelementptr ptr, ptr @cl_h, i32 7
-  %ry0 = call i32 @clSetKernelArg(ptr %ky, i32 0, i64 8, ptr %ay0)
-  %ay1 = getelementptr ptr, ptr @cl_h, i32 8
-  %ry1 = call i32 @clSetKernelArg(ptr %ky, i32 1, i64 8, ptr %ay1)
-  %ay2 = getelementptr ptr, ptr @cl_h, i32 9
-  %ry2 = call i32 @clSetKernelArg(ptr %ky, i32 2, i64 8, ptr %ay2)
-  %ay3 = getelementptr ptr, ptr @cl_h, i32 10
-  %ry3 = call i32 @clSetKernelArg(ptr %ky, i32 3, i64 8, ptr %ay3)
-  %ay4 = getelementptr ptr, ptr @cl_h, i32 12
-  %ry4 = call i32 @clSetKernelArg(ptr %ky, i32 4, i64 8, ptr %ay4)
-  %ry5 = call i32 @clSetKernelArg(ptr %ky, i32 5, i64 4, ptr %nn)
-  %ry6 = call i32 @clSetKernelArg(ptr %ky, i32 6, i64 4, ptr %g)
-  %ry7 = call i32 @clSetKernelArg(ptr %ky, i32 7, i64 4, ptr %ee)
-  %ey = call i32 @clEnqueueNDRangeKernel(ptr %q, ptr %ky, i32 1, ptr null, ptr %gs, ptr null, i32 0, ptr null, ptr null)
-  %hkz = getelementptr ptr, ptr @cl_h, i32 5
-  %kz = load ptr, ptr %hkz
-  %az0 = getelementptr ptr, ptr @cl_h, i32 7
-  %rz0 = call i32 @clSetKernelArg(ptr %kz, i32 0, i64 8, ptr %az0)
-  %az1 = getelementptr ptr, ptr @cl_h, i32 8
-  %rz1 = call i32 @clSetKernelArg(ptr %kz, i32 1, i64 8, ptr %az1)
-  %az2 = getelementptr ptr, ptr @cl_h, i32 9
-  %rz2 = call i32 @clSetKernelArg(ptr %kz, i32 2, i64 8, ptr %az2)
-  %az3 = getelementptr ptr, ptr @cl_h, i32 10
-  %rz3 = call i32 @clSetKernelArg(ptr %kz, i32 3, i64 8, ptr %az3)
-  %az4 = getelementptr ptr, ptr @cl_h, i32 13
-  %rz4 = call i32 @clSetKernelArg(ptr %kz, i32 4, i64 8, ptr %az4)
-  %rz5 = call i32 @clSetKernelArg(ptr %kz, i32 5, i64 4, ptr %nn)
-  %rz6 = call i32 @clSetKernelArg(ptr %kz, i32 6, i64 4, ptr %g)
-  %rz7 = call i32 @clSetKernelArg(ptr %kz, i32 7, i64 4, ptr %ee)
-  %ez = call i32 @clEnqueueNDRangeKernel(ptr %q, ptr %kz, i32 1, ptr null, ptr %gs, ptr null, i32 0, ptr null, ptr null)
-  %hkpot = getelementptr ptr, ptr @cl_h, i32 6
-  %kpot = load ptr, ptr %hkpot
-  %apot0 = getelementptr ptr, ptr @cl_h, i32 7
-  %rpot0 = call i32 @clSetKernelArg(ptr %kpot, i32 0, i64 8, ptr %apot0)
-  %apot1 = getelementptr ptr, ptr @cl_h, i32 8
-  %rpot1 = call i32 @clSetKernelArg(ptr %kpot, i32 1, i64 8, ptr %apot1)
-  %apot2 = getelementptr ptr, ptr @cl_h, i32 9
-  %rpot2 = call i32 @clSetKernelArg(ptr %kpot, i32 2, i64 8, ptr %apot2)
-  %apot3 = getelementptr ptr, ptr @cl_h, i32 10
-  %rpot3 = call i32 @clSetKernelArg(ptr %kpot, i32 3, i64 8, ptr %apot3)
-  %apot4 = getelementptr ptr, ptr @cl_h, i32 14
-  %rpot4 = call i32 @clSetKernelArg(ptr %kpot, i32 4, i64 8, ptr %apot4)
-  %rpot5 = call i32 @clSetKernelArg(ptr %kpot, i32 5, i64 4, ptr %nn)
-  %rpot6 = call i32 @clSetKernelArg(ptr %kpot, i32 6, i64 4, ptr %g)
-  %rpot7 = call i32 @clSetKernelArg(ptr %kpot, i32 7, i64 4, ptr %ee)
-  %epot = call i32 @clEnqueueNDRangeKernel(ptr %q, ptr %kpot, i32 1, ptr null, ptr %gs, ptr null, i32 0, ptr null, ptr null)
-  %hrax = getelementptr ptr, ptr @cl_h, i32 11
-  %brax = load ptr, ptr %hrax
-  %rrax = call i32 @clEnqueueReadBuffer(ptr %q, ptr %brax, i32 1, i64 0, i64 %bytes, ptr %ax, i32 0, ptr null, ptr null)
-  %hray = getelementptr ptr, ptr @cl_h, i32 12
-  %bray = load ptr, ptr %hray
-  %rray = call i32 @clEnqueueReadBuffer(ptr %q, ptr %bray, i32 1, i64 0, i64 %bytes, ptr %ay, i32 0, ptr null, ptr null)
-  %hraz = getelementptr ptr, ptr @cl_h, i32 13
-  %braz = load ptr, ptr %hraz
-  %rraz = call i32 @clEnqueueReadBuffer(ptr %q, ptr %braz, i32 1, i64 0, i64 %bytes, ptr %az, i32 0, ptr null, ptr null)
-  %hrpot = getelementptr ptr, ptr @cl_h, i32 14
-  %brpot = load ptr, ptr %hrpot
-  %rrpot = call i32 @clEnqueueReadBuffer(ptr %q, ptr %brpot, i32 1, i64 0, i64 %bytes, ptr %pot, i32 0, ptr null, ptr null)
-  call i32 @clFinish(ptr %q)
+  %spp = getelementptr [4 x i32], ptr @cl_st, i32 0, i32 2
+  %p = load i32, ptr %spp
+  %nx = sub i32 1, %p
+  %srs = getelementptr [4 x i32], ptr @cl_st, i32 0, i32 3
+  %rs = load i32, ptr %srs
+  %needup = icmp ne i32 %rs, 0
+  br i1 %needup, label %upload, label %compute
+upload:
+  %di1 = add i32 %p, 18
+  %ds2 = getelementptr ptr, ptr @cl_h, i32 %di1
+  %h3 = load ptr, ptr %ds2
+  %uw_x = call i32 @clEnqueueWriteBuffer(ptr %q, ptr %h3, i32 1, i64 0, i64 %bytes, ptr %x, i32 0, ptr null, ptr null)
+  %di4 = add i32 %p, 20
+  %ds5 = getelementptr ptr, ptr @cl_h, i32 %di4
+  %h6 = load ptr, ptr %ds5
+  %uw_y = call i32 @clEnqueueWriteBuffer(ptr %q, ptr %h6, i32 1, i64 0, i64 %bytes, ptr %y, i32 0, ptr null, ptr null)
+  %di7 = add i32 %p, 22
+  %ds8 = getelementptr ptr, ptr @cl_h, i32 %di7
+  %h9 = load ptr, ptr %ds8
+  %uw_z = call i32 @clEnqueueWriteBuffer(ptr %q, ptr %h9, i32 1, i64 0, i64 %bytes, ptr %z, i32 0, ptr null, ptr null)
+  %di10 = add i32 %p, 24
+  %ds11 = getelementptr ptr, ptr @cl_h, i32 %di10
+  %h12 = load ptr, ptr %ds11
+  %uw_vx = call i32 @clEnqueueWriteBuffer(ptr %q, ptr %h12, i32 1, i64 0, i64 %bytes, ptr %vx, i32 0, ptr null, ptr null)
+  %di13 = add i32 %p, 26
+  %ds14 = getelementptr ptr, ptr @cl_h, i32 %di13
+  %h15 = load ptr, ptr %ds14
+  %uw_vy = call i32 @clEnqueueWriteBuffer(ptr %q, ptr %h15, i32 1, i64 0, i64 %bytes, ptr %vy, i32 0, ptr null, ptr null)
+  %di16 = add i32 %p, 28
+  %ds17 = getelementptr ptr, ptr @cl_h, i32 %di16
+  %h18 = load ptr, ptr %ds17
+  %uw_vz = call i32 @clEnqueueWriteBuffer(ptr %q, ptr %h18, i32 1, i64 0, i64 %bytes, ptr %vz, i32 0, ptr null, ptr null)
+  %sl19 = getelementptr ptr, ptr @cl_h, i32 13
+  %h20 = load ptr, ptr %sl19
+  %uw_ms = call i32 @clEnqueueWriteBuffer(ptr %q, ptr %h20, i32 1, i64 0, i64 %bytes, ptr %ms, i32 0, ptr null, ptr null)
+  store i32 0, ptr %srs
+  br label %compute
+compute:
+  %sl21 = getelementptr ptr, ptr @cl_h, i32 3
+  %h22 = load ptr, ptr %sl21
+  %di23 = add i32 %p, 18
+  %ds24 = getelementptr ptr, ptr @cl_h, i32 %di23
+  %ka_accx = call i32 @clSetKernelArg(ptr %h22, i32 0, i64 8, ptr %ds24)
+  %di25 = add i32 %p, 20
+  %ds26 = getelementptr ptr, ptr @cl_h, i32 %di25
+  %kb_accx = call i32 @clSetKernelArg(ptr %h22, i32 1, i64 8, ptr %ds26)
+  %di27 = add i32 %p, 22
+  %ds28 = getelementptr ptr, ptr @cl_h, i32 %di27
+  %kc_accx = call i32 @clSetKernelArg(ptr %h22, i32 2, i64 8, ptr %ds28)
+  %sl29 = getelementptr ptr, ptr @cl_h, i32 13
+  %kd_accx = call i32 @clSetKernelArg(ptr %h22, i32 3, i64 8, ptr %sl29)
+  %sl30 = getelementptr ptr, ptr @cl_h, i32 14
+  %ke_accx = call i32 @clSetKernelArg(ptr %h22, i32 4, i64 8, ptr %sl30)
+  %kf_accx = call i32 @clSetKernelArg(ptr %h22, i32 5, i64 4, ptr %nn)
+  %kg_accx = call i32 @clSetKernelArg(ptr %h22, i32 6, i64 4, ptr %g)
+  %kh_accx = call i32 @clSetKernelArg(ptr %h22, i32 7, i64 4, ptr %ee)
+  %en_accx = call i32 @clEnqueueNDRangeKernel(ptr %q, ptr %h22, i32 1, ptr null, ptr %gs, ptr null, i32 0, ptr null, ptr null)
+  %sl31 = getelementptr ptr, ptr @cl_h, i32 4
+  %h32 = load ptr, ptr %sl31
+  %di33 = add i32 %p, 18
+  %ds34 = getelementptr ptr, ptr @cl_h, i32 %di33
+  %ka_accy = call i32 @clSetKernelArg(ptr %h32, i32 0, i64 8, ptr %ds34)
+  %di35 = add i32 %p, 20
+  %ds36 = getelementptr ptr, ptr @cl_h, i32 %di35
+  %kb_accy = call i32 @clSetKernelArg(ptr %h32, i32 1, i64 8, ptr %ds36)
+  %di37 = add i32 %p, 22
+  %ds38 = getelementptr ptr, ptr @cl_h, i32 %di37
+  %kc_accy = call i32 @clSetKernelArg(ptr %h32, i32 2, i64 8, ptr %ds38)
+  %sl39 = getelementptr ptr, ptr @cl_h, i32 13
+  %kd_accy = call i32 @clSetKernelArg(ptr %h32, i32 3, i64 8, ptr %sl39)
+  %sl40 = getelementptr ptr, ptr @cl_h, i32 15
+  %ke_accy = call i32 @clSetKernelArg(ptr %h32, i32 4, i64 8, ptr %sl40)
+  %kf_accy = call i32 @clSetKernelArg(ptr %h32, i32 5, i64 4, ptr %nn)
+  %kg_accy = call i32 @clSetKernelArg(ptr %h32, i32 6, i64 4, ptr %g)
+  %kh_accy = call i32 @clSetKernelArg(ptr %h32, i32 7, i64 4, ptr %ee)
+  %en_accy = call i32 @clEnqueueNDRangeKernel(ptr %q, ptr %h32, i32 1, ptr null, ptr %gs, ptr null, i32 0, ptr null, ptr null)
+  %sl41 = getelementptr ptr, ptr @cl_h, i32 5
+  %h42 = load ptr, ptr %sl41
+  %di43 = add i32 %p, 18
+  %ds44 = getelementptr ptr, ptr @cl_h, i32 %di43
+  %ka_accz = call i32 @clSetKernelArg(ptr %h42, i32 0, i64 8, ptr %ds44)
+  %di45 = add i32 %p, 20
+  %ds46 = getelementptr ptr, ptr @cl_h, i32 %di45
+  %kb_accz = call i32 @clSetKernelArg(ptr %h42, i32 1, i64 8, ptr %ds46)
+  %di47 = add i32 %p, 22
+  %ds48 = getelementptr ptr, ptr @cl_h, i32 %di47
+  %kc_accz = call i32 @clSetKernelArg(ptr %h42, i32 2, i64 8, ptr %ds48)
+  %sl49 = getelementptr ptr, ptr @cl_h, i32 13
+  %kd_accz = call i32 @clSetKernelArg(ptr %h42, i32 3, i64 8, ptr %sl49)
+  %sl50 = getelementptr ptr, ptr @cl_h, i32 16
+  %ke_accz = call i32 @clSetKernelArg(ptr %h42, i32 4, i64 8, ptr %sl50)
+  %kf_accz = call i32 @clSetKernelArg(ptr %h42, i32 5, i64 4, ptr %nn)
+  %kg_accz = call i32 @clSetKernelArg(ptr %h42, i32 6, i64 4, ptr %g)
+  %kh_accz = call i32 @clSetKernelArg(ptr %h42, i32 7, i64 4, ptr %ee)
+  %en_accz = call i32 @clEnqueueNDRangeKernel(ptr %q, ptr %h42, i32 1, ptr null, ptr %gs, ptr null, i32 0, ptr null, ptr null)
+  %sl51 = getelementptr ptr, ptr @cl_h, i32 6
+  %h52 = load ptr, ptr %sl51
+  %di53 = add i32 %p, 18
+  %ds54 = getelementptr ptr, ptr @cl_h, i32 %di53
+  %ka_accpot = call i32 @clSetKernelArg(ptr %h52, i32 0, i64 8, ptr %ds54)
+  %di55 = add i32 %p, 20
+  %ds56 = getelementptr ptr, ptr @cl_h, i32 %di55
+  %kb_accpot = call i32 @clSetKernelArg(ptr %h52, i32 1, i64 8, ptr %ds56)
+  %di57 = add i32 %p, 22
+  %ds58 = getelementptr ptr, ptr @cl_h, i32 %di57
+  %kc_accpot = call i32 @clSetKernelArg(ptr %h52, i32 2, i64 8, ptr %ds58)
+  %sl59 = getelementptr ptr, ptr @cl_h, i32 13
+  %kd_accpot = call i32 @clSetKernelArg(ptr %h52, i32 3, i64 8, ptr %sl59)
+  %sl60 = getelementptr ptr, ptr @cl_h, i32 17
+  %ke_accpot = call i32 @clSetKernelArg(ptr %h52, i32 4, i64 8, ptr %sl60)
+  %kf_accpot = call i32 @clSetKernelArg(ptr %h52, i32 5, i64 4, ptr %nn)
+  %kg_accpot = call i32 @clSetKernelArg(ptr %h52, i32 6, i64 4, ptr %g)
+  %kh_accpot = call i32 @clSetKernelArg(ptr %h52, i32 7, i64 4, ptr %ee)
+  %en_accpot = call i32 @clEnqueueNDRangeKernel(ptr %q, ptr %h52, i32 1, ptr null, ptr %gs, ptr null, i32 0, ptr null, ptr null)
+  %sl61 = getelementptr ptr, ptr @cl_h, i32 7
+  %h62 = load ptr, ptr %sl61
+  %di63 = add i32 %p, 24
+  %ds64 = getelementptr ptr, ptr @cl_h, i32 %di63
+  %va_x = call i32 @clSetKernelArg(ptr %h62, i32 0, i64 8, ptr %ds64)
+  %sl65 = getelementptr ptr, ptr @cl_h, i32 14
+  %vb_x = call i32 @clSetKernelArg(ptr %h62, i32 1, i64 8, ptr %sl65)
+  %di66 = add i32 %nx, 24
+  %ds67 = getelementptr ptr, ptr @cl_h, i32 %di66
+  %vc_x = call i32 @clSetKernelArg(ptr %h62, i32 2, i64 8, ptr %ds67)
+  %vd_x = call i32 @clSetKernelArg(ptr %h62, i32 3, i64 4, ptr %nn)
+  %ve_x = call i32 @clSetKernelArg(ptr %h62, i32 4, i64 4, ptr %dtv)
+  %vn_x = call i32 @clEnqueueNDRangeKernel(ptr %q, ptr %h62, i32 1, ptr null, ptr %gs, ptr null, i32 0, ptr null, ptr null)
+  %sl68 = getelementptr ptr, ptr @cl_h, i32 8
+  %h69 = load ptr, ptr %sl68
+  %di70 = add i32 %p, 26
+  %ds71 = getelementptr ptr, ptr @cl_h, i32 %di70
+  %va_y = call i32 @clSetKernelArg(ptr %h69, i32 0, i64 8, ptr %ds71)
+  %sl72 = getelementptr ptr, ptr @cl_h, i32 15
+  %vb_y = call i32 @clSetKernelArg(ptr %h69, i32 1, i64 8, ptr %sl72)
+  %di73 = add i32 %nx, 26
+  %ds74 = getelementptr ptr, ptr @cl_h, i32 %di73
+  %vc_y = call i32 @clSetKernelArg(ptr %h69, i32 2, i64 8, ptr %ds74)
+  %vd_y = call i32 @clSetKernelArg(ptr %h69, i32 3, i64 4, ptr %nn)
+  %ve_y = call i32 @clSetKernelArg(ptr %h69, i32 4, i64 4, ptr %dtv)
+  %vn_y = call i32 @clEnqueueNDRangeKernel(ptr %q, ptr %h69, i32 1, ptr null, ptr %gs, ptr null, i32 0, ptr null, ptr null)
+  %sl75 = getelementptr ptr, ptr @cl_h, i32 9
+  %h76 = load ptr, ptr %sl75
+  %di77 = add i32 %p, 28
+  %ds78 = getelementptr ptr, ptr @cl_h, i32 %di77
+  %va_z = call i32 @clSetKernelArg(ptr %h76, i32 0, i64 8, ptr %ds78)
+  %sl79 = getelementptr ptr, ptr @cl_h, i32 16
+  %vb_z = call i32 @clSetKernelArg(ptr %h76, i32 1, i64 8, ptr %sl79)
+  %di80 = add i32 %nx, 28
+  %ds81 = getelementptr ptr, ptr @cl_h, i32 %di80
+  %vc_z = call i32 @clSetKernelArg(ptr %h76, i32 2, i64 8, ptr %ds81)
+  %vd_z = call i32 @clSetKernelArg(ptr %h76, i32 3, i64 4, ptr %nn)
+  %ve_z = call i32 @clSetKernelArg(ptr %h76, i32 4, i64 4, ptr %dtv)
+  %vn_z = call i32 @clEnqueueNDRangeKernel(ptr %q, ptr %h76, i32 1, ptr null, ptr %gs, ptr null, i32 0, ptr null, ptr null)
+  %sl82 = getelementptr ptr, ptr @cl_h, i32 10
+  %h83 = load ptr, ptr %sl82
+  %di84 = add i32 %p, 18
+  %ds85 = getelementptr ptr, ptr @cl_h, i32 %di84
+  %pa_x = call i32 @clSetKernelArg(ptr %h83, i32 0, i64 8, ptr %ds85)
+  %di86 = add i32 %nx, 24
+  %ds87 = getelementptr ptr, ptr @cl_h, i32 %di86
+  %pb_x = call i32 @clSetKernelArg(ptr %h83, i32 1, i64 8, ptr %ds87)
+  %di88 = add i32 %nx, 18
+  %ds89 = getelementptr ptr, ptr @cl_h, i32 %di88
+  %pc_x = call i32 @clSetKernelArg(ptr %h83, i32 2, i64 8, ptr %ds89)
+  %pd_x = call i32 @clSetKernelArg(ptr %h83, i32 3, i64 4, ptr %nn)
+  %pe_x = call i32 @clSetKernelArg(ptr %h83, i32 4, i64 4, ptr %dtv)
+  %pf_x = call i32 @clSetKernelArg(ptr %h83, i32 5, i64 4, ptr %vmv)
+  %pn_x = call i32 @clEnqueueNDRangeKernel(ptr %q, ptr %h83, i32 1, ptr null, ptr %gs, ptr null, i32 0, ptr null, ptr null)
+  %sl90 = getelementptr ptr, ptr @cl_h, i32 11
+  %h91 = load ptr, ptr %sl90
+  %di92 = add i32 %p, 20
+  %ds93 = getelementptr ptr, ptr @cl_h, i32 %di92
+  %pa_y = call i32 @clSetKernelArg(ptr %h91, i32 0, i64 8, ptr %ds93)
+  %di94 = add i32 %nx, 26
+  %ds95 = getelementptr ptr, ptr @cl_h, i32 %di94
+  %pb_y = call i32 @clSetKernelArg(ptr %h91, i32 1, i64 8, ptr %ds95)
+  %di96 = add i32 %nx, 20
+  %ds97 = getelementptr ptr, ptr @cl_h, i32 %di96
+  %pc_y = call i32 @clSetKernelArg(ptr %h91, i32 2, i64 8, ptr %ds97)
+  %pd_y = call i32 @clSetKernelArg(ptr %h91, i32 3, i64 4, ptr %nn)
+  %pe_y = call i32 @clSetKernelArg(ptr %h91, i32 4, i64 4, ptr %dtv)
+  %pf_y = call i32 @clSetKernelArg(ptr %h91, i32 5, i64 4, ptr %vmv)
+  %pn_y = call i32 @clEnqueueNDRangeKernel(ptr %q, ptr %h91, i32 1, ptr null, ptr %gs, ptr null, i32 0, ptr null, ptr null)
+  %sl98 = getelementptr ptr, ptr @cl_h, i32 12
+  %h99 = load ptr, ptr %sl98
+  %di100 = add i32 %p, 22
+  %ds101 = getelementptr ptr, ptr @cl_h, i32 %di100
+  %pa_z = call i32 @clSetKernelArg(ptr %h99, i32 0, i64 8, ptr %ds101)
+  %di102 = add i32 %nx, 28
+  %ds103 = getelementptr ptr, ptr @cl_h, i32 %di102
+  %pb_z = call i32 @clSetKernelArg(ptr %h99, i32 1, i64 8, ptr %ds103)
+  %di104 = add i32 %nx, 22
+  %ds105 = getelementptr ptr, ptr @cl_h, i32 %di104
+  %pc_z = call i32 @clSetKernelArg(ptr %h99, i32 2, i64 8, ptr %ds105)
+  %pd_z = call i32 @clSetKernelArg(ptr %h99, i32 3, i64 4, ptr %nn)
+  %pe_z = call i32 @clSetKernelArg(ptr %h99, i32 4, i64 4, ptr %dtv)
+  %pf_z = call i32 @clSetKernelArg(ptr %h99, i32 5, i64 4, ptr %vmv)
+  %pn_z = call i32 @clEnqueueNDRangeKernel(ptr %q, ptr %h99, i32 1, ptr null, ptr %gs, ptr null, i32 0, ptr null, ptr null)
+  %sl106 = getelementptr ptr, ptr @cl_h, i32 17
+  %h107 = load ptr, ptr %sl106
+  %rp = call i32 @clEnqueueReadBuffer(ptr %q, ptr %h107, i32 1, i64 0, i64 %bytes, ptr %pot, i32 0, ptr null, ptr null)
+  %di108 = add i32 %nx, 18
+  %ds109 = getelementptr ptr, ptr @cl_h, i32 %di108
+  %h110 = load ptr, ptr %ds109
+  %rr_x = call i32 @clEnqueueReadBuffer(ptr %q, ptr %h110, i32 1, i64 0, i64 %bytes, ptr %x, i32 0, ptr null, ptr null)
+  %di111 = add i32 %nx, 20
+  %ds112 = getelementptr ptr, ptr @cl_h, i32 %di111
+  %h113 = load ptr, ptr %ds112
+  %rr_y = call i32 @clEnqueueReadBuffer(ptr %q, ptr %h113, i32 1, i64 0, i64 %bytes, ptr %y, i32 0, ptr null, ptr null)
+  %di114 = add i32 %nx, 22
+  %ds115 = getelementptr ptr, ptr @cl_h, i32 %di114
+  %h116 = load ptr, ptr %ds115
+  %rr_z = call i32 @clEnqueueReadBuffer(ptr %q, ptr %h116, i32 1, i64 0, i64 %bytes, ptr %z, i32 0, ptr null, ptr null)
+  %fin = call i32 @clFinish(ptr %q)
+  store i32 %nx, ptr %spp
+  ret void
+}
+
+define i32 @cl_mode() {
+entry:
+  %mv = load i32, ptr @cl_mode
+  ret i32 %mv
+}
+
+define void @cl_pull(ptr %x, ptr %y, ptr %z, ptr %vx, ptr %vy, ptr %vz) {
+entry:
+  %sf = getelementptr [4 x i32], ptr @cl_st, i32 0, i32 0
+  %rdy = load i32, ptr %sf
+  %ok = icmp ne i32 %rdy, 0
+  br i1 %ok, label %go, label %done
+go:
+  %sn = getelementptr [4 x i32], ptr @cl_st, i32 0, i32 1
+  %nv = load i32, ptr %sn
+  %n64 = sext i32 %nv to i64
+  %bytes = mul i64 %n64, 4
+  %spp = getelementptr [4 x i32], ptr @cl_st, i32 0, i32 2
+  %p = load i32, ptr %spp
+  %hq = getelementptr ptr, ptr @cl_h, i32 1
+  %q = load ptr, ptr %hq
+  %di117 = add i32 %p, 18
+  %ds118 = getelementptr ptr, ptr @cl_h, i32 %di117
+  %h119 = load ptr, ptr %ds118
+  %pr_x = call i32 @clEnqueueReadBuffer(ptr %q, ptr %h119, i32 1, i64 0, i64 %bytes, ptr %x, i32 0, ptr null, ptr null)
+  %di120 = add i32 %p, 20
+  %ds121 = getelementptr ptr, ptr @cl_h, i32 %di120
+  %h122 = load ptr, ptr %ds121
+  %pr_y = call i32 @clEnqueueReadBuffer(ptr %q, ptr %h122, i32 1, i64 0, i64 %bytes, ptr %y, i32 0, ptr null, ptr null)
+  %di123 = add i32 %p, 22
+  %ds124 = getelementptr ptr, ptr @cl_h, i32 %di123
+  %h125 = load ptr, ptr %ds124
+  %pr_z = call i32 @clEnqueueReadBuffer(ptr %q, ptr %h125, i32 1, i64 0, i64 %bytes, ptr %z, i32 0, ptr null, ptr null)
+  %di126 = add i32 %p, 24
+  %ds127 = getelementptr ptr, ptr @cl_h, i32 %di126
+  %h128 = load ptr, ptr %ds127
+  %pr_vx = call i32 @clEnqueueReadBuffer(ptr %q, ptr %h128, i32 1, i64 0, i64 %bytes, ptr %vx, i32 0, ptr null, ptr null)
+  %di129 = add i32 %p, 26
+  %ds130 = getelementptr ptr, ptr @cl_h, i32 %di129
+  %h131 = load ptr, ptr %ds130
+  %pr_vy = call i32 @clEnqueueReadBuffer(ptr %q, ptr %h131, i32 1, i64 0, i64 %bytes, ptr %vy, i32 0, ptr null, ptr null)
+  %di132 = add i32 %p, 28
+  %ds133 = getelementptr ptr, ptr @cl_h, i32 %di132
+  %h134 = load ptr, ptr %ds133
+  %pr_vz = call i32 @clEnqueueReadBuffer(ptr %q, ptr %h134, i32 1, i64 0, i64 %bytes, ptr %vz, i32 0, ptr null, ptr null)
+  %pfin = call i32 @clFinish(ptr %q)
+  br label %done
+done:
+  ret void
+}
+
+define void @cl_set_mode(i32 %m, ptr %x, ptr %y, ptr %z, ptr %vx, ptr %vy, ptr %vz) {
+entry:
+  %old = load i32, ptr @cl_mode
+  %same = icmp eq i32 %old, %m
+  br i1 %same, label %fin, label %chg
+chg:
+  %isgpu = icmp ne i32 %m, 0
+  br i1 %isgpu, label %togpu, label %tocpu
+togpu:
+  %sr = getelementptr [4 x i32], ptr @cl_st, i32 0, i32 3
+  store i32 1, ptr %sr
+  br label %setm
+tocpu:
+  call void @cl_pull(ptr %x, ptr %y, ptr %z, ptr %vx, ptr %vy, ptr %vz)
+  br label %setm
+setm:
+  store i32 %m, ptr @cl_mode
+  br label %fin
+fin:
   ret void
 }
 
@@ -414,77 +682,196 @@ entry:
   store float 0x0000000000000000, ptr %a4
   store float 0x0000000000000000, ptr %a5
   store float 0x0000000000000000, ptr %a6
-  call void @accel_cl(ptr %x, ptr %y, ptr %z, ptr %ms, ptr %a7, ptr %a8, ptr %a9, ptr %pot, float %t7, float %t5, i32 %n)
+  %t10 = call i32 @cl_mode()
+  %t11 = icmp ne i32 %t10, 0
+  br i1 %t11, label %then1, label %endif2
+then1:
+  %t12 = getelementptr float, ptr %par, i32 3
+  %t13 = load float, ptr %t12
+  call void @accel_cl(ptr %x, ptr %y, ptr %z, ptr %ms, ptr %vx, ptr %vy, ptr %vz, ptr %pot, float %t7, float %t5, float %t9, float %t13, i32 %n)
+  br label %endif2
+endif2:
+  %t14 = icmp eq i32 %t10, 0
+  br i1 %t14, label %then3, label %endif4
+then3:
   store i32 0, ptr %a1
-  br label %lc1
-lc1:
-  %t10 = load i32, ptr %a1
-  %t11 = icmp slt i32 %t10, %n
-  br i1 %t11, label %lb2, label %le3
-lb2:
-  %t12 = load i32, ptr %a1
-  %t13 = getelementptr float, ptr %vx, i32 %t12
-  %t14 = load float, ptr %t13
-  %t15 = getelementptr float, ptr %a7, i32 %t12
-  %t16 = load float, ptr %t15
-  %t17 = fmul float %t16, %t9
-  %t18 = fadd float %t14, %t17
-  %t19 = getelementptr float, ptr %vx, i32 %t12
-  store float %t18, ptr %t19
-  %t20 = getelementptr float, ptr %vy, i32 %t12
-  %t21 = load float, ptr %t20
-  %t22 = getelementptr float, ptr %a8, i32 %t12
-  %t23 = load float, ptr %t22
-  %t24 = fmul float %t23, %t9
-  %t25 = fadd float %t21, %t24
-  %t26 = getelementptr float, ptr %vy, i32 %t12
-  store float %t25, ptr %t26
-  %t27 = getelementptr float, ptr %vz, i32 %t12
-  %t28 = load float, ptr %t27
-  %t29 = getelementptr float, ptr %a9, i32 %t12
-  %t30 = load float, ptr %t29
-  %t31 = fmul float %t30, %t9
-  %t32 = fadd float %t28, %t31
-  %t33 = getelementptr float, ptr %vz, i32 %t12
-  store float %t32, ptr %t33
-  %t34 = getelementptr float, ptr %x, i32 %t12
-  %t35 = load float, ptr %t34
-  %t36 = getelementptr float, ptr %vx, i32 %t12
+  br label %lc5
+lc5:
+  %t15 = load i32, ptr %a1
+  %t16 = icmp slt i32 %t15, %n
+  br i1 %t16, label %lb6, label %le7
+lb6:
+  store float 0x0000000000000000, ptr %a3
+  store float 0x0000000000000000, ptr %a4
+  store float 0x0000000000000000, ptr %a5
+  store float 0x0000000000000000, ptr %a6
+  %t17 = load i32, ptr %a1
+  %t18 = getelementptr float, ptr %x, i32 %t17
+  %t19 = load float, ptr %t18
+  %t20 = load i32, ptr %a1
+  %t21 = getelementptr float, ptr %y, i32 %t20
+  %t22 = load float, ptr %t21
+  %t23 = load i32, ptr %a1
+  %t24 = getelementptr float, ptr %z, i32 %t23
+  %t25 = load float, ptr %t24
+  store i32 0, ptr %a2
+  br label %lc8
+lc8:
+  %t26 = load i32, ptr %a2
+  %t27 = icmp slt i32 %t26, %n
+  br i1 %t27, label %lb9, label %le10
+lb9:
+  %t28 = load i32, ptr %a1
+  %t29 = load i32, ptr %a2
+  %t30 = icmp ne i32 %t28, %t29
+  br i1 %t30, label %then11, label %endif12
+then11:
+  %t31 = load i32, ptr %a2
+  %t32 = getelementptr float, ptr %x, i32 %t31
+  %t33 = load float, ptr %t32
+  %t34 = fsub float %t33, %t19
+  %t35 = load i32, ptr %a2
+  %t36 = getelementptr float, ptr %y, i32 %t35
   %t37 = load float, ptr %t36
-  %t38 = getelementptr float, ptr %par, i32 3
-  %t39 = load float, ptr %t38
-  %t40 = call float @clampf(float %t37, float 0x3FF0000000000000, float %t39)
-  %t41 = fmul float %t40, %t9
-  %t42 = fadd float %t35, %t41
-  %t43 = getelementptr float, ptr %x, i32 %t12
-  store float %t42, ptr %t43
-  %t44 = getelementptr float, ptr %y, i32 %t12
-  %t45 = load float, ptr %t44
-  %t46 = getelementptr float, ptr %vy, i32 %t12
-  %t47 = load float, ptr %t46
-  %t48 = getelementptr float, ptr %par, i32 3
-  %t49 = load float, ptr %t48
-  %t50 = call float @clampf(float %t47, float 0x3FF0000000000000, float %t49)
-  %t51 = fmul float %t50, %t9
-  %t52 = fadd float %t45, %t51
-  %t53 = getelementptr float, ptr %y, i32 %t12
-  store float %t52, ptr %t53
-  %t54 = getelementptr float, ptr %z, i32 %t12
-  %t55 = load float, ptr %t54
-  %t56 = getelementptr float, ptr %vz, i32 %t12
-  %t57 = load float, ptr %t56
-  %t58 = getelementptr float, ptr %par, i32 3
-  %t59 = load float, ptr %t58
-  %t60 = call float @clampf(float %t57, float 0x3FF0000000000000, float %t59)
-  %t61 = fmul float %t60, %t9
-  %t62 = fadd float %t55, %t61
-  %t63 = getelementptr float, ptr %z, i32 %t12
-  store float %t62, ptr %t63
-  %t64 = load i32, ptr %a1
-  %t65 = add i32 %t64, 1
-  store i32 %t65, ptr %a1
-  br label %lc1
-le3:
+  %t38 = fsub float %t37, %t22
+  %t39 = load i32, ptr %a2
+  %t40 = getelementptr float, ptr %z, i32 %t39
+  %t41 = load float, ptr %t40
+  %t42 = fsub float %t41, %t25
+  %t43 = fmul float %t34, %t34
+  %t44 = fmul float %t38, %t38
+  %t45 = fadd float %t43, %t44
+  %t46 = fmul float %t42, %t42
+  %t47 = fadd float %t45, %t46
+  %t48 = fadd float %t47, %t5
+  %t49 = call float @sqrtf(float %t48)
+  %t50 = fdiv float 0x3FF0000000000000, %t49
+  %t51 = load i32, ptr %a2
+  %t52 = getelementptr float, ptr %ms, i32 %t51
+  %t53 = load float, ptr %t52
+  %t54 = fmul float %t7, %t53
+  %t55 = fmul float %t54, %t50
+  %t56 = fmul float %t55, %t50
+  %t57 = fmul float %t56, %t50
+  %t58 = fmul float %t57, %t34
+  %t59 = load float, ptr %a3
+  %t60 = fadd float %t59, %t58
+  store float %t60, ptr %a3
+  %t61 = fmul float %t57, %t38
+  %t62 = load float, ptr %a4
+  %t63 = fadd float %t62, %t61
+  store float %t63, ptr %a4
+  %t64 = fmul float %t57, %t42
+  %t65 = load float, ptr %a5
+  %t66 = fadd float %t65, %t64
+  store float %t66, ptr %a5
+  %t67 = load i32, ptr %a2
+  %t68 = getelementptr float, ptr %ms, i32 %t67
+  %t69 = load float, ptr %t68
+  %t70 = fmul float %t69, %t50
+  %t71 = load float, ptr %a6
+  %t72 = fadd float %t71, %t70
+  store float %t72, ptr %a6
+  br label %endif12
+endif12:
+  %t73 = load i32, ptr %a2
+  %t74 = add i32 %t73, 1
+  store i32 %t74, ptr %a2
+  br label %lc8
+le10:
+  %t75 = load float, ptr %a3
+  %t76 = load i32, ptr %a1
+  %t77 = getelementptr float, ptr %a7, i32 %t76
+  store float %t75, ptr %t77
+  %t78 = load float, ptr %a4
+  %t79 = load i32, ptr %a1
+  %t80 = getelementptr float, ptr %a8, i32 %t79
+  store float %t78, ptr %t80
+  %t81 = load float, ptr %a5
+  %t82 = load i32, ptr %a1
+  %t83 = getelementptr float, ptr %a9, i32 %t82
+  store float %t81, ptr %t83
+  %t84 = load float, ptr %a6
+  %t85 = load i32, ptr %a1
+  %t86 = getelementptr float, ptr %pot, i32 %t85
+  store float %t84, ptr %t86
+  %t87 = load i32, ptr %a1
+  %t88 = add i32 %t87, 1
+  store i32 %t88, ptr %a1
+  br label %lc5
+le7:
+  store i32 0, ptr %a1
+  br label %lc13
+lc13:
+  %t89 = load i32, ptr %a1
+  %t90 = icmp slt i32 %t89, %n
+  br i1 %t90, label %lb14, label %le15
+lb14:
+  %t91 = load i32, ptr %a1
+  %t92 = getelementptr float, ptr %vx, i32 %t91
+  %t93 = load float, ptr %t92
+  %t94 = getelementptr float, ptr %a7, i32 %t91
+  %t95 = load float, ptr %t94
+  %t96 = fmul float %t95, %t9
+  %t97 = fadd float %t93, %t96
+  %t98 = getelementptr float, ptr %vx, i32 %t91
+  store float %t97, ptr %t98
+  %t99 = getelementptr float, ptr %vy, i32 %t91
+  %t100 = load float, ptr %t99
+  %t101 = getelementptr float, ptr %a8, i32 %t91
+  %t102 = load float, ptr %t101
+  %t103 = fmul float %t102, %t9
+  %t104 = fadd float %t100, %t103
+  %t105 = getelementptr float, ptr %vy, i32 %t91
+  store float %t104, ptr %t105
+  %t106 = getelementptr float, ptr %vz, i32 %t91
+  %t107 = load float, ptr %t106
+  %t108 = getelementptr float, ptr %a9, i32 %t91
+  %t109 = load float, ptr %t108
+  %t110 = fmul float %t109, %t9
+  %t111 = fadd float %t107, %t110
+  %t112 = getelementptr float, ptr %vz, i32 %t91
+  store float %t111, ptr %t112
+  %t113 = getelementptr float, ptr %x, i32 %t91
+  %t114 = load float, ptr %t113
+  %t115 = getelementptr float, ptr %vx, i32 %t91
+  %t116 = load float, ptr %t115
+  %t117 = getelementptr float, ptr %par, i32 3
+  %t118 = load float, ptr %t117
+  %t119 = call float @clampf(float %t116, float 0x3FF0000000000000, float %t118)
+  %t120 = fmul float %t119, %t9
+  %t121 = fadd float %t114, %t120
+  %t122 = getelementptr float, ptr %x, i32 %t91
+  store float %t121, ptr %t122
+  %t123 = getelementptr float, ptr %y, i32 %t91
+  %t124 = load float, ptr %t123
+  %t125 = getelementptr float, ptr %vy, i32 %t91
+  %t126 = load float, ptr %t125
+  %t127 = getelementptr float, ptr %par, i32 3
+  %t128 = load float, ptr %t127
+  %t129 = call float @clampf(float %t126, float 0x3FF0000000000000, float %t128)
+  %t130 = fmul float %t129, %t9
+  %t131 = fadd float %t124, %t130
+  %t132 = getelementptr float, ptr %y, i32 %t91
+  store float %t131, ptr %t132
+  %t133 = getelementptr float, ptr %z, i32 %t91
+  %t134 = load float, ptr %t133
+  %t135 = getelementptr float, ptr %vz, i32 %t91
+  %t136 = load float, ptr %t135
+  %t137 = getelementptr float, ptr %par, i32 3
+  %t138 = load float, ptr %t137
+  %t139 = call float @clampf(float %t136, float 0x3FF0000000000000, float %t138)
+  %t140 = fmul float %t139, %t9
+  %t141 = fadd float %t134, %t140
+  %t142 = getelementptr float, ptr %z, i32 %t91
+  store float %t141, ptr %t142
+  %t143 = load i32, ptr %a1
+  %t144 = add i32 %t143, 1
+  store i32 %t144, ptr %a1
+  br label %lc13
+le15:
+  br label %endif4
+endif4:
   ret void
 }
 
@@ -855,40 +1242,71 @@ entry:
   call void @glColor3f(float 0x3FF0000000000000, float 0x3FF0000000000000, float 0x3FF0000000000000)
   %t22 = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %a1, i64 128, ptr @.s9)
   call void @text(ptr %a1, i32 5, i32 125)
-  %t23 = icmp ne i32 %note, 0
-  br i1 %t23, label %then1, label %endif2
+  %t23 = call i32 @cl_mode()
+  %t24 = icmp eq i32 %t23, 0
+  br i1 %t24, label %then1, label %endif2
 then1:
-  call void @glColor3f(float 0x3FF0000000000000, float 0x3FE99999A0000000, float 0x3FD99999A0000000)
-  %t24 = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %a1, i64 128, ptr @.s10)
+  call void @glColor3f(float 0x3FF0000000000000, float 0x3FF0000000000000, float 0x3FF0000000000000)
+  %t25 = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %a1, i64 128, ptr @.s10)
   call void @text(ptr %a1, i32 5, i32 145)
   br label %endif2
 endif2:
-  %t25 = getelementptr float, ptr %par, i32 0
-  %t26 = load float, ptr %t25
-  %t27 = fpext float %t26 to double
-  %t28 = getelementptr float, ptr %par, i32 1
-  %t29 = load float, ptr %t28
-  %t30 = fpext float %t29 to double
-  %t31 = getelementptr float, ptr %par, i32 2
-  %t32 = load float, ptr %t31
-  %t33 = fpext float %t32 to double
+  %t26 = icmp ne i32 %t23, 0
+  br i1 %t26, label %then3, label %endif4
+then3:
+  %t27 = call i32 @fa_cl_backend()
+  %t28 = icmp eq i32 %t27, 1
+  br i1 %t28, label %then5, label %endif6
+then5:
+  call void @glColor3f(float 0x3FF0000000000000, float 0x3FE99999A0000000, float 0x3FD99999A0000000)
+  %t29 = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %a1, i64 128, ptr @.s11)
+  call void @text(ptr %a1, i32 5, i32 145)
+  br label %endif6
+endif6:
+  %t30 = icmp eq i32 %t27, 2
+  br i1 %t30, label %then7, label %endif8
+then7:
+  call void @glColor3f(float 0x3FF0000000000000, float 0x3FE99999A0000000, float 0x3FD99999A0000000)
+  %t31 = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %a1, i64 128, ptr @.s12)
+  call void @text(ptr %a1, i32 5, i32 145)
+  br label %endif8
+endif8:
+  %t32 = icmp eq i32 %t27, 0
+  br i1 %t32, label %then9, label %endif10
+then9:
+  call void @glColor3f(float 0x3FF0000000000000, float 0x3FE99999A0000000, float 0x3FD99999A0000000)
+  %t33 = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %a1, i64 128, ptr @.s13)
+  call void @text(ptr %a1, i32 5, i32 145)
+  br label %endif10
+endif10:
+  br label %endif4
+endif4:
+  %t34 = getelementptr float, ptr %par, i32 0
+  %t35 = load float, ptr %t34
+  %t36 = fpext float %t35 to double
+  %t37 = getelementptr float, ptr %par, i32 1
+  %t38 = load float, ptr %t37
+  %t39 = fpext float %t38 to double
+  %t40 = getelementptr float, ptr %par, i32 2
+  %t41 = load float, ptr %t40
+  %t42 = fpext float %t41 to double
   call void @glColor3f(float 0x3FE5581060000000, float 0x3FE5581060000000, float 0x3FE5581060000000)
-  %t34 = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %a1, i64 128, ptr @.s11, double %t27, double %t30, double %t33)
+  %t43 = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %a1, i64 128, ptr @.s14, double %t36, double %t39, double %t42)
   call void @text(ptr %a1, i32 5, i32 165)
-  %t35 = getelementptr float, ptr %par, i32 3
-  %t36 = load float, ptr %t35
-  %t37 = fpext float %t36 to double
-  %t38 = getelementptr float, ptr %par, i32 4
-  %t39 = load float, ptr %t38
-  %t40 = fpext float %t39 to double
-  %t41 = getelementptr float, ptr %par, i32 5
-  %t42 = load float, ptr %t41
-  %t43 = fpext float %t42 to double
+  %t44 = getelementptr float, ptr %par, i32 3
+  %t45 = load float, ptr %t44
+  %t46 = fpext float %t45 to double
+  %t47 = getelementptr float, ptr %par, i32 4
+  %t48 = load float, ptr %t47
+  %t49 = fpext float %t48 to double
+  %t50 = getelementptr float, ptr %par, i32 5
+  %t51 = load float, ptr %t50
+  %t52 = fpext float %t51 to double
   call void @glColor3f(float 0x3FE5581060000000, float 0x3FE5581060000000, float 0x3FE5581060000000)
-  %t44 = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %a1, i64 128, ptr @.s12, double %t37, double %t40, double %t43)
+  %t53 = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %a1, i64 128, ptr @.s15, double %t46, double %t49, double %t52)
   call void @text(ptr %a1, i32 5, i32 185)
   call void @glColor3f(float 0x3FE5581060000000, float 0x3FE5581060000000, float 0x3FE5581060000000)
-  %t45 = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %a1, i64 128, ptr @.s13)
+  %t54 = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %a1, i64 128, ptr @.s16)
   call void @text(ptr %a1, i32 5, i32 205)
   call void @glColor3f(float 0x3FF0000000000000, float 0x3FF0000000000000, float 0x3FF0000000000000)
   call void @glEnd()
@@ -903,41 +1321,41 @@ endif2:
   call void @glVertex2f(float 0x406F400000000000, float 0x405E800000000000)
   call void @glVertex2f(float 0x406F400000000000, float 0x4061C00000000000)
   call void @glVertex2f(float 0x4069000000000000, float 0x4061C00000000000)
-  %t46 = getelementptr float, ptr %par, i32 6
-  %t47 = load float, ptr %t46
-  %t48 = fdiv float %t47, 0x4000000000000000
-  %t49 = fmul float %t48, 0x4079000000000000
+  %t55 = getelementptr float, ptr %par, i32 6
+  %t56 = load float, ptr %t55
+  %t57 = fdiv float %t56, 0x4000000000000000
+  %t58 = fmul float %t57, 0x4079000000000000
   call void @glColor3f(float 0x3FEFAE1480000000, float 0x3FEFAE1480000000, float 0x0000000000000000)
-  %t50 = fmul float %t49, 0x0000000000000000
-  %t51 = fadd float 0x4074000000000000, %t50
-  call void @glVertex2f(float %t51, float 0x4039000000000000)
-  %t52 = fmul float %t49, 0x3FF0000000000000
-  %t53 = fadd float 0x4074000000000000, %t52
-  call void @glVertex2f(float %t53, float 0x4039000000000000)
-  %t54 = fmul float %t49, 0x3FF0000000000000
-  %t55 = fadd float 0x4074000000000000, %t54
-  call void @glVertex2f(float %t55, float 0x4044000000000000)
-  %t56 = fmul float %t49, 0x0000000000000000
-  %t57 = fadd float 0x4074000000000000, %t56
-  call void @glVertex2f(float %t57, float 0x4044000000000000)
-  %t58 = getelementptr float, ptr %par, i32 7
-  %t59 = load float, ptr %t58
-  %t60 = fsub float %t59, 0x4014000000000000
-  %t61 = fdiv float %t60, 0x4068600000000000
-  %t62 = fmul float %t61, 0x4079000000000000
-  call void @glColor3f(float 0x0000000000000000, float 0x3FF0000000000000, float 0x0000000000000000)
-  %t63 = fmul float %t62, 0x0000000000000000
+  %t59 = fmul float %t58, 0x0000000000000000
+  %t60 = fadd float 0x4074000000000000, %t59
+  call void @glVertex2f(float %t60, float 0x4039000000000000)
+  %t61 = fmul float %t58, 0x3FF0000000000000
+  %t62 = fadd float 0x4074000000000000, %t61
+  call void @glVertex2f(float %t62, float 0x4039000000000000)
+  %t63 = fmul float %t58, 0x3FF0000000000000
   %t64 = fadd float 0x4074000000000000, %t63
-  call void @glVertex2f(float %t64, float 0x4050400000000000)
-  %t65 = fmul float %t62, 0x3FF0000000000000
+  call void @glVertex2f(float %t64, float 0x4044000000000000)
+  %t65 = fmul float %t58, 0x0000000000000000
   %t66 = fadd float 0x4074000000000000, %t65
-  call void @glVertex2f(float %t66, float 0x4050400000000000)
-  %t67 = fmul float %t62, 0x3FF0000000000000
-  %t68 = fadd float 0x4074000000000000, %t67
-  call void @glVertex2f(float %t68, float 0x4054000000000000)
-  %t69 = fmul float %t62, 0x0000000000000000
-  %t70 = fadd float 0x4074000000000000, %t69
-  call void @glVertex2f(float %t70, float 0x4054000000000000)
+  call void @glVertex2f(float %t66, float 0x4044000000000000)
+  %t67 = getelementptr float, ptr %par, i32 7
+  %t68 = load float, ptr %t67
+  %t69 = fsub float %t68, 0x4014000000000000
+  %t70 = fdiv float %t69, 0x4068600000000000
+  %t71 = fmul float %t70, 0x4079000000000000
+  call void @glColor3f(float 0x0000000000000000, float 0x3FF0000000000000, float 0x0000000000000000)
+  %t72 = fmul float %t71, 0x0000000000000000
+  %t73 = fadd float 0x4074000000000000, %t72
+  call void @glVertex2f(float %t73, float 0x4050400000000000)
+  %t74 = fmul float %t71, 0x3FF0000000000000
+  %t75 = fadd float 0x4074000000000000, %t74
+  call void @glVertex2f(float %t75, float 0x4050400000000000)
+  %t76 = fmul float %t71, 0x3FF0000000000000
+  %t77 = fadd float 0x4074000000000000, %t76
+  call void @glVertex2f(float %t77, float 0x4054000000000000)
+  %t78 = fmul float %t71, 0x0000000000000000
+  %t79 = fadd float 0x4074000000000000, %t78
+  call void @glVertex2f(float %t79, float 0x4054000000000000)
   call void @glEnd()
   call void @glBegin(i32 1)
   call void @glColor3f(float 0x3FF0000000000000, float 0x3FF0000000000000, float 0x3FF0000000000000)
@@ -976,8 +1394,8 @@ endif2:
   call void @glEnd()
   call void @glColor3f(float 0x3FF0000000000000, float 0x3FF0000000000000, float 0x3FF0000000000000)
   call void @glBegin(i32 0)
-  call void @text(ptr @.s14, i32 152, i32 125)
-  call void @text(ptr @.s15, i32 212, i32 125)
+  call void @text(ptr @.s17, i32 152, i32 125)
+  call void @text(ptr @.s18, i32 212, i32 125)
   call void @glEnd()
   ret void
 }
@@ -1067,7 +1485,7 @@ then9:
 endif10:
   %t17 = load i32, ptr %a15
   %t18 = call i32 @SDL_Init(i32 32)
-  %t19 = call ptr @SDL_CreateWindow(ptr @.s16, i32 805240832, i32 805240832, i32 800, i32 560, i32 2)
+  %t19 = call ptr @SDL_CreateWindow(ptr @.s19, i32 805240832, i32 805240832, i32 800, i32 560, i32 2)
   %t20 = call ptr @SDL_GL_CreateContext(ptr %t19)
   %t21 = icmp eq ptr %t20, null
   br i1 %t21, label %then11, label %endif12
@@ -1081,6 +1499,7 @@ endif12:
   store float 0x402E000000000000, ptr %t23
   call void @randomize(ptr %a9, ptr %a14)
   call void @init_bodies(ptr %a1, ptr %a2, ptr %a3, ptr %a4, ptr %a5, ptr %a6, ptr %a7, ptr %a9, ptr %a14, i32 %t17)
+  call void @cl_reset()
   %t24 = getelementptr float, ptr %a9, i32 0
   %t25 = load float, ptr %t24
   %t26 = fmul float %t25, 0x3FE0000000000000
@@ -1373,324 +1792,337 @@ then55:
   %t182 = and i1 %t180, %t181
   br i1 %t182, label %then57, label %endif58
 then57:
-  store i32 1, ptr %a25
+  call void @cl_set_mode(i32 1, ptr %a1, ptr %a2, ptr %a3, ptr %a4, ptr %a5, ptr %a6)
   br label %endif58
 endif58:
+  %t183 = icmp sge i32 %t100, 140
+  %t184 = icmp sle i32 %t100, 190
+  %t185 = and i1 %t183, %t184
+  %t186 = icmp sge i32 %t102, 122
+  %t187 = and i1 %t185, %t186
+  %t188 = icmp sle i32 %t102, 142
+  %t189 = and i1 %t187, %t188
+  br i1 %t189, label %then59, label %endif60
+then59:
+  call void @cl_set_mode(i32 0, ptr %a1, ptr %a2, ptr %a3, ptr %a4, ptr %a5, ptr %a6)
+  br label %endif60
+endif60:
   br label %endif56
 endif56:
-  %t183 = load i32, ptr %a23
-  %t184 = icmp ne i32 %t183, 0
-  %t185 = icmp sge i32 %t100, 140
-  %t186 = icmp sle i32 %t100, 190
-  %t187 = and i1 %t185, %t186
-  %t188 = icmp sge i32 %t102, 122
-  %t189 = and i1 %t187, %t188
-  %t190 = icmp sle i32 %t102, 142
-  %t191 = and i1 %t189, %t190
-  %t192 = icmp sge i32 %t100, 200
-  %t193 = icmp sle i32 %t100, 250
+  %t190 = load i32, ptr %a23
+  %t191 = icmp ne i32 %t190, 0
+  %t192 = icmp sge i32 %t100, 140
+  %t193 = icmp sle i32 %t100, 190
   %t194 = and i1 %t192, %t193
   %t195 = icmp sge i32 %t102, 122
   %t196 = and i1 %t194, %t195
   %t197 = icmp sle i32 %t102, 142
   %t198 = and i1 %t196, %t197
-  %t199 = or i1 %t191, %t198
-  %t200 = and i1 %t184, %t199
-  %t201 = icmp eq i1 %t200, false
-  br i1 %t201, label %then59, label %endif60
-then59:
+  %t199 = icmp sge i32 %t100, 200
+  %t200 = icmp sle i32 %t100, 250
+  %t201 = and i1 %t199, %t200
+  %t202 = icmp sge i32 %t102, 122
+  %t203 = and i1 %t201, %t202
+  %t204 = icmp sle i32 %t102, 142
+  %t205 = and i1 %t203, %t204
+  %t206 = or i1 %t198, %t205
+  %t207 = and i1 %t191, %t206
+  %t208 = icmp eq i1 %t207, false
+  br i1 %t208, label %then61, label %endif62
+then61:
   store i32 2, ptr %a24
   store i32 %t100, ptr %a32
   store i32 %t102, ptr %a33
-  br label %endif60
-endif60:
+  br label %endif62
+endif62:
   br label %endif54
 endif54:
   br label %endif46
 endif46:
-  %t202 = icmp eq i32 %t51, 1026
-  br i1 %t202, label %then61, label %endif62
-then61:
-  store i32 0, ptr %a24
-  br label %endif62
-endif62:
-  %t203 = icmp eq i32 %t51, 1024
-  br i1 %t203, label %then63, label %endif64
+  %t209 = icmp eq i32 %t51, 1026
+  br i1 %t209, label %then63, label %endif64
 then63:
-  %t204 = load i32, ptr %a24
-  %t205 = icmp eq i32 %t204, 1
-  br i1 %t205, label %then65, label %endif66
+  store i32 0, ptr %a24
+  br label %endif64
+endif64:
+  %t210 = icmp eq i32 %t51, 1024
+  br i1 %t210, label %then65, label %endif66
 then65:
-  %t206 = icmp sgt i32 %t102, 25
-  %t207 = icmp slt i32 %t102, 40
-  %t208 = and i1 %t206, %t207
-  %t209 = icmp sge i32 %t100, 320
-  %t210 = and i1 %t208, %t209
-  %t211 = icmp sle i32 %t100, 720
-  %t212 = and i1 %t210, %t211
+  %t211 = load i32, ptr %a24
+  %t212 = icmp eq i32 %t211, 1
   br i1 %t212, label %then67, label %endif68
 then67:
-  %t213 = sub i32 %t100, 320
-  %t214 = sitofp i32 %t213 to float
-  %t215 = fmul float %t214, 0x4000000000000000
-  %t216 = fdiv float %t215, 0x4079000000000000
-  %t217 = getelementptr float, ptr %a9, i32 6
-  store float %t216, ptr %t217
-  br label %endif68
-endif68:
-  %t218 = icmp sgt i32 %t102, 65
-  %t219 = icmp slt i32 %t102, 80
-  %t220 = and i1 %t218, %t219
-  %t221 = icmp sge i32 %t100, 320
-  %t222 = and i1 %t220, %t221
-  %t223 = icmp sle i32 %t100, 720
-  %t224 = and i1 %t222, %t223
-  br i1 %t224, label %then69, label %endif70
+  %t213 = icmp sgt i32 %t102, 25
+  %t214 = icmp slt i32 %t102, 40
+  %t215 = and i1 %t213, %t214
+  %t216 = icmp sge i32 %t100, 320
+  %t217 = and i1 %t215, %t216
+  %t218 = icmp sle i32 %t100, 720
+  %t219 = and i1 %t217, %t218
+  br i1 %t219, label %then69, label %endif70
 then69:
-  %t225 = sub i32 %t100, 320
-  %t226 = sitofp i32 %t225 to float
-  %t227 = fmul float 0x4068600000000000, %t226
-  %t228 = fdiv float %t227, 0x4079000000000000
-  %t229 = fadd float 0x4014000000000000, %t228
-  %t230 = getelementptr float, ptr %a9, i32 7
-  store float %t229, ptr %t230
+  %t220 = sub i32 %t100, 320
+  %t221 = sitofp i32 %t220 to float
+  %t222 = fmul float %t221, 0x4000000000000000
+  %t223 = fdiv float %t222, 0x4079000000000000
+  %t224 = getelementptr float, ptr %a9, i32 6
+  store float %t223, ptr %t224
   br label %endif70
 endif70:
-  br label %endif66
-endif66:
-  %t231 = load i32, ptr %a24
-  %t232 = icmp eq i32 %t231, 2
-  %t233 = getelementptr i8, ptr %a13, i32 16
-  %t234 = load i32, ptr %t233
-  %t235 = and i32 %t234, 1
-  %t236 = icmp ne i32 %t235, 0
-  %t237 = and i1 %t232, %t236
-  br i1 %t237, label %then71, label %endif72
+  %t225 = icmp sgt i32 %t102, 65
+  %t226 = icmp slt i32 %t102, 80
+  %t227 = and i1 %t225, %t226
+  %t228 = icmp sge i32 %t100, 320
+  %t229 = and i1 %t227, %t228
+  %t230 = icmp sle i32 %t100, 720
+  %t231 = and i1 %t229, %t230
+  br i1 %t231, label %then71, label %endif72
 then71:
-  %t238 = load i32, ptr %a32
-  %t239 = sub i32 %t100, %t238
-  %t240 = sitofp i32 %t239 to float
-  %t241 = fmul float %t240, 0x3F747AE140000000
-  %t242 = load float, ptr %a28
-  %t243 = fadd float %t242, %t241
-  store float %t243, ptr %a28
-  %t244 = load i32, ptr %a33
-  %t245 = sub i32 %t102, %t244
-  %t246 = sitofp i32 %t245 to float
-  %t247 = fmul float %t246, 0x3F747AE140000000
-  %t248 = load float, ptr %a27
-  %t249 = fsub float %t248, %t247
-  store float %t249, ptr %a27
-  %t250 = load float, ptr %a27
-  %t251 = fcmp ogt float %t250, 0x3FF8000000000000
-  br i1 %t251, label %then73, label %endif74
+  %t232 = sub i32 %t100, 320
+  %t233 = sitofp i32 %t232 to float
+  %t234 = fmul float 0x4068600000000000, %t233
+  %t235 = fdiv float %t234, 0x4079000000000000
+  %t236 = fadd float 0x4014000000000000, %t235
+  %t237 = getelementptr float, ptr %a9, i32 7
+  store float %t236, ptr %t237
+  br label %endif72
+endif72:
+  br label %endif68
+endif68:
+  %t238 = load i32, ptr %a24
+  %t239 = icmp eq i32 %t238, 2
+  %t240 = getelementptr i8, ptr %a13, i32 16
+  %t241 = load i32, ptr %t240
+  %t242 = and i32 %t241, 1
+  %t243 = icmp ne i32 %t242, 0
+  %t244 = and i1 %t239, %t243
+  br i1 %t244, label %then73, label %endif74
 then73:
-  store float 0x3FF8000000000000, ptr %a27
-  br label %endif74
-endif74:
-  %t252 = load float, ptr %a27
-  %t253 = fcmp olt float %t252, 0xBFF8000000000000
-  br i1 %t253, label %then75, label %endif76
+  %t245 = load i32, ptr %a32
+  %t246 = sub i32 %t100, %t245
+  %t247 = sitofp i32 %t246 to float
+  %t248 = fmul float %t247, 0x3F747AE140000000
+  %t249 = load float, ptr %a28
+  %t250 = fadd float %t249, %t248
+  store float %t250, ptr %a28
+  %t251 = load i32, ptr %a33
+  %t252 = sub i32 %t102, %t251
+  %t253 = sitofp i32 %t252 to float
+  %t254 = fmul float %t253, 0x3F747AE140000000
+  %t255 = load float, ptr %a27
+  %t256 = fsub float %t255, %t254
+  store float %t256, ptr %a27
+  %t257 = load float, ptr %a27
+  %t258 = fcmp ogt float %t257, 0x3FF8000000000000
+  br i1 %t258, label %then75, label %endif76
 then75:
-  store float 0xBFF8000000000000, ptr %a27
+  store float 0x3FF8000000000000, ptr %a27
   br label %endif76
 endif76:
+  %t259 = load float, ptr %a27
+  %t260 = fcmp olt float %t259, 0xBFF8000000000000
+  br i1 %t260, label %then77, label %endif78
+then77:
+  store float 0xBFF8000000000000, ptr %a27
+  br label %endif78
+endif78:
   store i32 %t100, ptr %a32
   store i32 %t102, ptr %a33
   store i32 0, ptr %a22
-  br label %endif72
-endif72:
-  br label %endif64
-endif64:
+  br label %endif74
+endif74:
+  br label %endif66
+endif66:
   br label %wc16
 we18:
-  %t254 = load i32, ptr %a22
-  %t255 = icmp ne i32 %t254, 0
-  br i1 %t255, label %then77, label %endif78
-then77:
-  %t256 = load float, ptr %a30
-  %t257 = load float, ptr %a27
-  %t258 = fsub float %t256, %t257
-  %t259 = fmul float %t258, 0x3FB99999A0000000
-  %t260 = load float, ptr %a27
-  %t261 = fadd float %t260, %t259
-  store float %t261, ptr %a27
-  %t262 = load float, ptr %a31
-  %t263 = load float, ptr %a28
-  %t264 = fsub float %t262, %t263
-  %t265 = fmul float %t264, 0x3FB99999A0000000
-  %t266 = load float, ptr %a28
-  %t267 = fadd float %t266, %t265
-  store float %t267, ptr %a28
-  %t268 = load float, ptr %a29
-  %t269 = load float, ptr %a26
-  %t270 = fsub float %t268, %t269
-  %t271 = fmul float %t270, 0x3FB99999A0000000
-  %t272 = load float, ptr %a26
-  %t273 = fadd float %t272, %t271
-  store float %t273, ptr %a26
-  br label %endif78
-endif78:
-  %t274 = load i32, ptr %a22
-  %t275 = icmp eq i32 %t274, 0
-  br i1 %t275, label %then79, label %endif80
+  %t261 = load i32, ptr %a22
+  %t262 = icmp ne i32 %t261, 0
+  br i1 %t262, label %then79, label %endif80
 then79:
-  %t276 = load float, ptr %a27
-  store float %t276, ptr %a30
-  %t277 = load float, ptr %a28
-  store float %t277, ptr %a31
-  %t278 = load float, ptr %a26
-  store float %t278, ptr %a29
+  %t263 = load float, ptr %a30
+  %t264 = load float, ptr %a27
+  %t265 = fsub float %t263, %t264
+  %t266 = fmul float %t265, 0x3FB99999A0000000
+  %t267 = load float, ptr %a27
+  %t268 = fadd float %t267, %t266
+  store float %t268, ptr %a27
+  %t269 = load float, ptr %a31
+  %t270 = load float, ptr %a28
+  %t271 = fsub float %t269, %t270
+  %t272 = fmul float %t271, 0x3FB99999A0000000
+  %t273 = load float, ptr %a28
+  %t274 = fadd float %t273, %t272
+  store float %t274, ptr %a28
+  %t275 = load float, ptr %a29
+  %t276 = load float, ptr %a26
+  %t277 = fsub float %t275, %t276
+  %t278 = fmul float %t277, 0x3FB99999A0000000
+  %t279 = load float, ptr %a26
+  %t280 = fadd float %t279, %t278
+  store float %t280, ptr %a26
   br label %endif80
 endif80:
-  %t279 = call i32 @SDL_GetTicks()
-  call void @step(ptr %a1, ptr %a2, ptr %a3, ptr %a4, ptr %a5, ptr %a6, ptr %a7, ptr %a8, ptr %a9, i32 %t17)
-  call void @cluster(ptr %a1, ptr %a2, ptr %a3, ptr %a7, ptr %a8, i32 %t17, ptr %a12)
-  %t280 = call i32 @SDL_GetTicks()
-  %t281 = sub i32 %t280, %t279
-  %t282 = sitofp i32 %t281 to float
-  store float %t282, ptr %a34
-  %t283 = load i32, ptr %a20
-  %t284 = add i32 %t283, 1
-  store i32 %t284, ptr %a20
-  %t285 = load i32, ptr %a20
-  %t286 = load i32, ptr %a16
-  %t287 = icmp sge i32 %t285, %t286
-  br i1 %t287, label %then81, label %endif82
+  %t281 = load i32, ptr %a22
+  %t282 = icmp eq i32 %t281, 0
+  br i1 %t282, label %then81, label %endif82
 then81:
-  %t288 = call i32 @SDL_GetTicks()
-  %t289 = load i32, ptr %a36
-  %t290 = sub i32 %t288, %t289
-  %t291 = sitofp i32 %t290 to double
-  %t292 = fdiv double %t291, 0x408F400000000000
-  %t293 = call i32 (ptr, ...) @printf(ptr @.s17, i32 %t17, double %t292)
-  %t294 = call i32 @SDL_GetTicks()
-  store i32 %t294, ptr %a36
-  %t295 = load i32, ptr %a21
-  %t296 = icmp ne i32 %t295, 0
-  br i1 %t296, label %then83, label %endif84
-then83:
-  %t297 = call float @urand(ptr %a14, float 0x0000000000000000, float 0x3FF0000000000000)
-  %t298 = getelementptr float, ptr %a9, i32 6
-  store float %t297, ptr %t298
-  br label %endif84
-endif84:
-  call void @randomize(ptr %a9, ptr %a14)
-  call void @init_bodies(ptr %a1, ptr %a2, ptr %a3, ptr %a4, ptr %a5, ptr %a6, ptr %a7, ptr %a9, ptr %a14, i32 %t17)
-  store i32 0, ptr %a20
-  %t299 = load i32, ptr %a22
-  %t300 = icmp ne i32 %t299, 0
-  br i1 %t300, label %then85, label %endif86
-then85:
-  %t301 = getelementptr float, ptr %a9, i32 0
-  %t302 = load float, ptr %t301
-  %t303 = fmul float %t302, 0x3FE0000000000000
-  %t304 = getelementptr float, ptr %a11, i32 0
-  store float %t303, ptr %t304
-  %t305 = getelementptr float, ptr %a9, i32 1
-  %t306 = load float, ptr %t305
-  %t307 = fmul float %t306, 0x3FE0000000000000
-  %t308 = getelementptr float, ptr %a11, i32 1
-  store float %t307, ptr %t308
-  %t309 = getelementptr float, ptr %a9, i32 2
-  %t310 = load float, ptr %t309
-  %t311 = fmul float %t310, 0x3FE0000000000000
-  %t312 = getelementptr float, ptr %a11, i32 2
-  store float %t311, ptr %t312
-  br label %endif86
-endif86:
+  %t283 = load float, ptr %a27
+  store float %t283, ptr %a30
+  %t284 = load float, ptr %a28
+  store float %t284, ptr %a31
+  %t285 = load float, ptr %a26
+  store float %t285, ptr %a29
   br label %endif82
 endif82:
-  %t313 = load i32, ptr %a22
-  %t314 = icmp ne i32 %t313, 0
-  br i1 %t314, label %then87, label %endif88
+  %t286 = call i32 @SDL_GetTicks()
+  call void @step(ptr %a1, ptr %a2, ptr %a3, ptr %a4, ptr %a5, ptr %a6, ptr %a7, ptr %a8, ptr %a9, i32 %t17)
+  call void @cluster(ptr %a1, ptr %a2, ptr %a3, ptr %a7, ptr %a8, i32 %t17, ptr %a12)
+  %t287 = call i32 @SDL_GetTicks()
+  %t288 = sub i32 %t287, %t286
+  %t289 = sitofp i32 %t288 to float
+  store float %t289, ptr %a34
+  %t290 = load i32, ptr %a20
+  %t291 = add i32 %t290, 1
+  store i32 %t291, ptr %a20
+  %t292 = load i32, ptr %a20
+  %t293 = load i32, ptr %a16
+  %t294 = icmp sge i32 %t292, %t293
+  br i1 %t294, label %then83, label %endif84
+then83:
+  %t295 = call i32 @SDL_GetTicks()
+  %t296 = load i32, ptr %a36
+  %t297 = sub i32 %t295, %t296
+  %t298 = sitofp i32 %t297 to double
+  %t299 = fdiv double %t298, 0x408F400000000000
+  %t300 = call i32 (ptr, ...) @printf(ptr @.s20, i32 %t17, double %t299)
+  %t301 = call i32 @SDL_GetTicks()
+  store i32 %t301, ptr %a36
+  %t302 = load i32, ptr %a21
+  %t303 = icmp ne i32 %t302, 0
+  br i1 %t303, label %then85, label %endif86
+then85:
+  %t304 = call float @urand(ptr %a14, float 0x0000000000000000, float 0x3FF0000000000000)
+  %t305 = getelementptr float, ptr %a9, i32 6
+  store float %t304, ptr %t305
+  br label %endif86
+endif86:
+  call void @randomize(ptr %a9, ptr %a14)
+  call void @init_bodies(ptr %a1, ptr %a2, ptr %a3, ptr %a4, ptr %a5, ptr %a6, ptr %a7, ptr %a9, ptr %a14, i32 %t17)
+  call void @cl_reset()
+  store i32 0, ptr %a20
+  %t306 = load i32, ptr %a22
+  %t307 = icmp ne i32 %t306, 0
+  br i1 %t307, label %then87, label %endif88
 then87:
-  %t315 = getelementptr float, ptr %a11, i32 0
-  %t316 = load float, ptr %t315
-  %t317 = getelementptr float, ptr %a10, i32 0
-  store float %t316, ptr %t317
-  %t318 = getelementptr float, ptr %a11, i32 1
-  %t319 = load float, ptr %t318
-  %t320 = getelementptr float, ptr %a10, i32 1
-  store float %t319, ptr %t320
-  %t321 = getelementptr float, ptr %a11, i32 2
-  %t322 = load float, ptr %t321
-  %t323 = getelementptr float, ptr %a10, i32 2
-  store float %t322, ptr %t323
+  %t308 = getelementptr float, ptr %a9, i32 0
+  %t309 = load float, ptr %t308
+  %t310 = fmul float %t309, 0x3FE0000000000000
+  %t311 = getelementptr float, ptr %a11, i32 0
+  store float %t310, ptr %t311
+  %t312 = getelementptr float, ptr %a9, i32 1
+  %t313 = load float, ptr %t312
+  %t314 = fmul float %t313, 0x3FE0000000000000
+  %t315 = getelementptr float, ptr %a11, i32 1
+  store float %t314, ptr %t315
+  %t316 = getelementptr float, ptr %a9, i32 2
+  %t317 = load float, ptr %t316
+  %t318 = fmul float %t317, 0x3FE0000000000000
+  %t319 = getelementptr float, ptr %a11, i32 2
+  store float %t318, ptr %t319
   br label %endif88
 endif88:
-  %t324 = load i32, ptr %a22
-  %t325 = icmp eq i32 %t324, 0
-  br i1 %t325, label %then89, label %endif90
+  br label %endif84
+endif84:
+  %t320 = load i32, ptr %a22
+  %t321 = icmp ne i32 %t320, 0
+  br i1 %t321, label %then89, label %endif90
 then89:
-  %t326 = getelementptr float, ptr %a9, i32 0
-  %t327 = load float, ptr %t326
-  %t328 = fmul float %t327, 0x3FE0000000000000
-  %t329 = getelementptr float, ptr %a10, i32 0
-  store float %t328, ptr %t329
-  %t330 = getelementptr float, ptr %a9, i32 1
-  %t331 = load float, ptr %t330
-  %t332 = fmul float %t331, 0x3FE0000000000000
-  %t333 = getelementptr float, ptr %a10, i32 1
-  store float %t332, ptr %t333
-  %t334 = getelementptr float, ptr %a9, i32 2
-  %t335 = load float, ptr %t334
-  %t336 = fmul float %t335, 0x3FE0000000000000
-  %t337 = getelementptr float, ptr %a10, i32 2
-  store float %t336, ptr %t337
+  %t322 = getelementptr float, ptr %a11, i32 0
+  %t323 = load float, ptr %t322
+  %t324 = getelementptr float, ptr %a10, i32 0
+  store float %t323, ptr %t324
+  %t325 = getelementptr float, ptr %a11, i32 1
+  %t326 = load float, ptr %t325
+  %t327 = getelementptr float, ptr %a10, i32 1
+  store float %t326, ptr %t327
+  %t328 = getelementptr float, ptr %a11, i32 2
+  %t329 = load float, ptr %t328
+  %t330 = getelementptr float, ptr %a10, i32 2
+  store float %t329, ptr %t330
   br label %endif90
 endif90:
-  %t338 = load float, ptr %a26
-  %t339 = load float, ptr %a27
-  %t340 = load float, ptr %a28
-  %t341 = getelementptr float, ptr %a9, i32 7
-  %t342 = load float, ptr %t341
-  call void @draw_scene(ptr %a1, ptr %a2, ptr %a3, i32 %t17, ptr %a10, float %t338, float %t339, float %t340, float %t342)
-  %t343 = load i32, ptr %a23
-  %t344 = icmp ne i32 %t343, 0
-  br i1 %t344, label %then91, label %endif92
+  %t331 = load i32, ptr %a22
+  %t332 = icmp eq i32 %t331, 0
+  br i1 %t332, label %then91, label %endif92
 then91:
-  %t345 = load i32, ptr %a20
-  %t346 = load i32, ptr %a16
-  %t347 = load float, ptr %a34
-  %t348 = load i32, ptr %a21
-  %t349 = load float, ptr %a26
-  %t350 = load float, ptr %a27
-  %t351 = load float, ptr %a28
-  %t352 = load i32, ptr %a22
-  %t353 = load i32, ptr %a25
-  call void @draw_hud(i32 %t17, i32 %t345, i32 %t346, float %t347, ptr %a9, i32 %t348, float %t349, float %t350, float %t351, i32 %t352, i32 %t353)
+  %t333 = getelementptr float, ptr %a9, i32 0
+  %t334 = load float, ptr %t333
+  %t335 = fmul float %t334, 0x3FE0000000000000
+  %t336 = getelementptr float, ptr %a10, i32 0
+  store float %t335, ptr %t336
+  %t337 = getelementptr float, ptr %a9, i32 1
+  %t338 = load float, ptr %t337
+  %t339 = fmul float %t338, 0x3FE0000000000000
+  %t340 = getelementptr float, ptr %a10, i32 1
+  store float %t339, ptr %t340
+  %t341 = getelementptr float, ptr %a9, i32 2
+  %t342 = load float, ptr %t341
+  %t343 = fmul float %t342, 0x3FE0000000000000
+  %t344 = getelementptr float, ptr %a10, i32 2
+  store float %t343, ptr %t344
   br label %endif92
 endif92:
-  call void @SDL_GL_SwapWindow(ptr %t19)
-  call void @SDL_Delay(i32 1)
-  %t354 = load i32, ptr %a19
-  %t355 = add i32 %t354, 1
-  store i32 %t355, ptr %a19
-  %t356 = load i32, ptr %a17
-  %t357 = icmp sgt i32 %t356, 0
-  %t358 = load i32, ptr %a19
-  %t359 = load i32, ptr %a17
-  %t360 = icmp sge i32 %t358, %t359
-  %t361 = and i1 %t357, %t360
-  br i1 %t361, label %then93, label %endif94
+  %t345 = load float, ptr %a26
+  %t346 = load float, ptr %a27
+  %t347 = load float, ptr %a28
+  %t348 = getelementptr float, ptr %a9, i32 7
+  %t349 = load float, ptr %t348
+  call void @draw_scene(ptr %a1, ptr %a2, ptr %a3, i32 %t17, ptr %a10, float %t345, float %t346, float %t347, float %t349)
+  %t350 = load i32, ptr %a23
+  %t351 = icmp ne i32 %t350, 0
+  br i1 %t351, label %then93, label %endif94
 then93:
-  store i32 0, ptr %a18
+  %t352 = load i32, ptr %a20
+  %t353 = load i32, ptr %a16
+  %t354 = load float, ptr %a34
+  %t355 = load i32, ptr %a21
+  %t356 = load float, ptr %a26
+  %t357 = load float, ptr %a27
+  %t358 = load float, ptr %a28
+  %t359 = load i32, ptr %a22
+  %t360 = load i32, ptr %a25
+  call void @draw_hud(i32 %t17, i32 %t352, i32 %t353, float %t354, ptr %a9, i32 %t355, float %t356, float %t357, float %t358, i32 %t359, i32 %t360)
   br label %endif94
 endif94:
+  call void @SDL_GL_SwapWindow(ptr %t19)
+  call void @SDL_Delay(i32 1)
+  %t361 = load i32, ptr %a19
+  %t362 = add i32 %t361, 1
+  store i32 %t362, ptr %a19
+  %t363 = load i32, ptr %a17
+  %t364 = icmp sgt i32 %t363, 0
+  %t365 = load i32, ptr %a19
+  %t366 = load i32, ptr %a17
+  %t367 = icmp sge i32 %t365, %t366
+  %t368 = and i1 %t364, %t367
+  br i1 %t368, label %then95, label %endif96
+then95:
+  store i32 0, ptr %a18
+  br label %endif96
+endif96:
   br label %wc13
 we15:
-  %t362 = load i32, ptr %a19
-  %t363 = getelementptr float, ptr %a12, i32 0
-  %t364 = load float, ptr %t363
-  %t365 = fpext float %t364 to double
-  %t366 = getelementptr float, ptr %a12, i32 1
-  %t367 = load float, ptr %t366
-  %t368 = fpext float %t367 to double
-  %t369 = getelementptr float, ptr %a12, i32 2
-  %t370 = load float, ptr %t369
-  %t371 = fpext float %t370 to double
-  %t372 = call i32 (ptr, ...) @printf(ptr @.s18, i32 %t362, i32 %t17, double %t365, double %t368, double %t371)
+  %t369 = load i32, ptr %a19
+  %t370 = getelementptr float, ptr %a12, i32 0
+  %t371 = load float, ptr %t370
+  %t372 = fpext float %t371 to double
+  %t373 = getelementptr float, ptr %a12, i32 1
+  %t374 = load float, ptr %t373
+  %t375 = fpext float %t374 to double
+  %t376 = getelementptr float, ptr %a12, i32 2
+  %t377 = load float, ptr %t376
+  %t378 = fpext float %t377 to double
+  %t379 = call i32 (ptr, ...) @printf(ptr @.s21, i32 %t369, i32 %t17, double %t372, double %t375, double %t378)
   call void @SDL_GL_DeleteContext(ptr %t20)
   call void @SDL_DestroyWindow(ptr %t19)
   call void @SDL_Quit()

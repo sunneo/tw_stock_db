@@ -108,6 +108,7 @@
         clCreateProgramWithSource: { params: ['ptr', 'i32', 'ptr', 'ptr', 'ptr'], ret: 'ptr' }, clBuildProgram: { params: ['ptr', 'i32', 'ptr', 'ptr', 'ptr', 'ptr'], ret: 'i32' },
         clGetProgramBuildInfo: { params: ['ptr', 'ptr', 'i32', 'i32|i64', 'ptr', 'ptr'], ret: 'i32' },
         clCreateKernel: { params: ['ptr', 'ptr', 'ptr'], ret: 'ptr' }, clSetKernelArg: { params: ['ptr', 'i32', 'i32|i64', 'ptr'], ret: 'i32' },
+        fa_cl_backend: { params: [], ret: 'i32' },   // 本程式最後一次 OpenCL 派送用的後端：0＝尚未派送、1＝WebGL2（KIR，裝置或複製）、2＝JS 墊片
         clEnqueueNDRangeKernel: { params: ['ptr', 'ptr', 'i32', 'ptr', 'ptr', 'ptr', 'i32', 'ptr', 'ptr'], ret: 'i32' }, clFinish: { params: ['ptr'], ret: 'i32' }, clFlush: { params: ['ptr'], ret: 'i32' },
         clWaitForEvents: { params: ['i32', 'ptr'], ret: 'i32' }, clReleaseEvent: { params: ['ptr'], ret: 'i32' },
         clReleaseMemObject: { params: ['ptr'], ret: 'i32' }, clReleaseKernel: { params: ['ptr'], ret: 'i32' }, clReleaseProgram: { params: ['ptr'], ret: 'i32' },
@@ -201,6 +202,10 @@
         // OpenCL → KIR 接線（DESIGN.webgpu-cuda.md §13 階段 4）：kirTranslate(src) → { 核心名: KIR 核心 } 或 null（不支援）；kirRun(核心, { 參數名: 型別化陣列 }, { 純量名: 數字 }, N) → { out: { 名: Float32Array } }（失敗就丟例外）。
         // 沒有提供、或翻譯／執行失敗，就退回 JS 後備（clCompile 的核心）。
         const kirTranslate = o.kirTranslate || null, kirRun = o.kirRun || null;
+        // 常駐裝置（DESIGN.webgpu-cuda.md §13 階段 6 步驟 1b）：kirDev＝{ alloc(N,elem), upload(b, arr), download(b), dispatch(核心, binds, out, scal, N), free(b) }。
+        // 有它且有 kirTranslate 時，核心在裝置上跑；緩衝區記錄「主機副本是否最新」（hostOk）與「裝置副本是否最新」（devOk），讀寫時才同步。
+        const kirDev = o.kirDev || null;
+        let clBackend = 0;   // fa_cl_backend 的值（見 SIGS）
         const t0 = now(); let handleSeq = 0x1000, winSeq = 0, nodeSeq = 0; const handles = new Map();   // 不透明指標（SDL_Window*、SDL_Renderer*、SDL_GLContext）→ 狀態
         const mk = (obj) => { const h = (handleSeq += 16); handles.set(h, obj); return h; };
         const gl = { clear: [0.05, 0.06, 0.09, 1], mode: 'MV', stacks: { MV: [I4()], P: [I4()] }, begin: null, color: [1, 1, 1], batches: [], depth: false, pointSize: 1, blend: false, blendAdd: false, alpha: 1, atten: 0, warned: {} };
@@ -535,6 +540,10 @@
             const clH = (p, k) => { const h = handles.get(p); return h && h.kind === k ? h : null; };
             const setStr = (ctx, str, size, p, retp) => { const b = new TextEncoder().encode(str + '\0'); if (retp) ctx.dv().setUint32(retp, b.length, true); if (p) ctx.u8().set(b.subarray(0, Math.min(b.length, Number(size) || b.length)), p); return 0; };
             const copyOut = (ctx, buf, off, n, p) => { ctx.u8().set(buf.data.subarray(off, off + n), p); };
+            // 主機副本過期（裝置是新的）→ 從裝置讀回；失敗回傳 false
+            const syncHost = (m) => { if (m.hostOk) return true; if (!kirDev || !m.dev) return false; const N = m.size / 4; const r = kirDev.download(m.dev); if (!r || r.length < N) return false; new Float32Array(m.data.buffer, m.data.byteOffset, N).set(r.subarray(0, N)); m.hostOk = true; return true; };
+            // 裝置副本過期（主機是新的）→ 上傳；需要時配置
+            const ensureDev = (m) => { const N = m.size / 4; if (!m.dev) m.dev = kirDev.alloc(N, 'f32'); if (!m.devOk) { if (!m.hostOk) return false; kirDev.upload(m.dev, new Float32Array(m.data.buffer, m.data.byteOffset, N)); m.devOk = true; } return true; };
             Object.assign(impls, {
                 clGetPlatformIDs: (ctx, n, p, num) => { if (!n && p) return -30; if (p && n) ctx.dv().setUint32(p, cl.plat, true); if (num) ctx.dv().setUint32(num, 1, true); return 0; },
                 clGetDeviceIDs: (ctx, plat, type, n, p, num) => { if (plat !== cl.plat) return -32; type = Number(type); if (!(type & (2 | 4 | 1 | 0xFFFFFFFF))) return -31; if (type === 4 && !(type & 2)) return -1;   // 沒有 GPU 裝置（CPU 後備只有一個 CPU 裝置）：呼叫端通常會退回 CPU
@@ -549,10 +558,10 @@
                 clCreateBuffer: (ctx, c, flags, size, host, err) => {
                     flags = Number(flags); size = Number(size); if (!clH(c, 'clctx')) { errOut(ctx, err, -34); return 0; } if (!size) { errOut(ctx, err, -61); return 0; }
                     if ((flags & (8 | 32)) && !host) { errOut(ctx, err, -37); return 0; } const data = new Uint8Array(new ArrayBuffer(size));
-                    if (flags & (8 | 32)) data.set(ctx.u8().subarray(host, host + size)); errOut(ctx, err, 0); return mk({ kind: 'clmem', size, data });
+                    if (flags & (8 | 32)) data.set(ctx.u8().subarray(host, host + size)); errOut(ctx, err, 0); return mk({ kind: 'clmem', size, data, dev: null, hostOk: true, devOk: false });
                 },
-                clEnqueueWriteBuffer: (ctx, q, b, blocking, off, size, ptr) => { const buf = clH(b, 'clmem'); off = Number(off); size = Number(size); if (!clH(q, 'clq')) return -36; if (!buf) return -38; if (off + size > buf.size || !ptr) return -30; buf.data.set(ctx.u8().subarray(ptr, ptr + size), off); return 0; },
-                clEnqueueReadBuffer: (ctx, q, b, blocking, off, size, ptr) => { const buf = clH(b, 'clmem'); off = Number(off); size = Number(size); if (!clH(q, 'clq')) return -36; if (!buf) return -38; if (off + size > buf.size || !ptr) return -30; copyOut(ctx, buf, off, size, ptr); return 0; },
+                clEnqueueWriteBuffer: (ctx, q, b, blocking, off, size, ptr) => { const buf = clH(b, 'clmem'); off = Number(off); size = Number(size); if (!clH(q, 'clq')) return -36; if (!buf) return -38; if (off + size > buf.size || !ptr) return -30; buf.data.set(ctx.u8().subarray(ptr, ptr + size), off); buf.hostOk = true; buf.devOk = false; return 0; },
+                clEnqueueReadBuffer: (ctx, q, b, blocking, off, size, ptr) => { const buf = clH(b, 'clmem'); off = Number(off); size = Number(size); if (!clH(q, 'clq')) return -36; if (!buf) return -38; if (off + size > buf.size || !ptr) return -30; if (!syncHost(buf)) return -9999; copyOut(ctx, buf, off, size, ptr); return 0; },
                 clCreateProgramWithSource: (ctx, c, count, strs, lens, err) => {
                     if (!clH(c, 'clctx')) { errOut(ctx, err, -34); return 0; } const dv = ctx.dv(); let src = '';
                     for (let i = 0; i < count; i++) { const sp = dv.getUint32(strs + 4 * i, true); src += cstr(ctx, sp); }
@@ -573,6 +582,32 @@
                     if (k.args.some((a) => a === undefined)) return -52; const args = k.def.params.map((pa, i) => { const a = k.args[i]; if (a.mem) { const E = CL_ELEM[pa.type]; return new E(a.mem.data.buffer, 0, Math.floor(a.mem.size / E.BYTES_PER_ELEMENT)); } return a.scalar; });
                     // 有 KIR 版本且一維：走 kirRun（緩衝區複製進出；之後階段改成留在 GPU 紋理）；失敗就退回 JS
                     const kirK = dim === 1 && kirRun && k.prog && k.prog.kir && k.prog.kir[k.name];
+                    // 常駐裝置路徑：所有指標參數都是 float（f32），輸出只有一個，且不與輸入同一個緩衝區；任何一步失敗就同步主機副本、退回 JS
+                    if (kirK && kirDev && kirTranslate) {
+                        const ptrs = k.def.params.map((pa, i) => ({ pa, i, a: k.args[i] })).filter((x) => x.pa.ptr);
+                        const okTypes = ptrs.every((x) => x.pa.type === 'float' && x.a.mem);
+                        const outDecl = kirK.params.filter((q) => q.kind === 'buf' && q.access === 'out');
+                        if (okTypes && outDecl.length === 1) {
+                            try {
+                                const N = gs[0], binds = {}, scal = {};
+                                let outDev = null, outMem = null;
+                                // 輸出只需要配置（它馬上會被覆寫，不必上傳）；輸入要確保裝置副本是最新的
+                                const outDeclName = outDecl[0].name;
+                                for (const x of ptrs) { if (x.pa.name === outDeclName) { if (!x.a.mem.dev) x.a.mem.dev = kirDev.alloc(gs[0], 'f32'); } else if (!ensureDev(x.a.mem)) throw new Error('緩衝區沒有有效的資料'); binds[x.pa.name] = x.a.mem.dev; }
+                                for (const q of kirK.params) if (q.kind === 'scalar') { const pa = k.def.params.find((z) => z.name === q.name); scal[q.name] = k.args[k.def.params.indexOf(pa)].scalar; }
+                                // 輸出＝kirK 的 out 參數對應的 cl 參數
+                                const outName = outDecl[0].name; const ox = ptrs.find((x) => x.pa.name === outName); if (!ox) throw new Error('找不到輸出參數');
+                                outMem = ox.a.mem; outDev = outMem.dev;
+                                for (const x of ptrs) if (x.a.mem === outMem && x.pa.name !== outName) throw new Error('輸出與輸入是同一個緩衝區');
+                                kirDev.dispatch(kirK, binds, outDev, scal, N);
+                                outMem.devOk = true; outMem.hostOk = false; clBackend = 1;
+                                return 0;
+                            } catch (e) { warn('OpenCL：常駐裝置執行失敗，退回主機：' + e.message + '\n'); for (const x of ptrs) if (x.a.mem) syncHost(x.a.mem); }
+                        }
+                    }
+                    // 非裝置路徑：先把裝置上較新的資料拉回主機；執行後主機副本就是最新的（裝置副本過期）
+                    if (kirDev) for (const a of k.args) if (a && a.mem) syncHost(a.mem);
+                    const markHost = () => { for (const a of k.args) if (a && a.mem) { a.mem.hostOk = true; a.mem.devOk = false; } };
                     if (kirK) {
                         try {
                             const N = gs[0], bufs = {}, scal = {}, backs = [];
@@ -583,13 +618,14 @@
                             });
                             const res = kirRun(kirK, bufs, scal, N);
                             for (const b of backs) if (res && res.out && res.out[b.name]) b.v.set(res.out[b.name].subarray(0, b.v.length));
-                            return 0;
+                            markHost(); clBackend = 1; return 0;
                         } catch (e) { warn('OpenCL：KIR 執行失敗，退回 JS：' + e.message + '\n'); }
                     }
-                    try { k.def.run(gs, off, dim, args); } catch (e) { warn('OpenCL 核心執行錯誤：' + e.message + '\n'); return -9999; } return 0;
+                    try { k.def.run(gs, off, dim, args); } catch (e) { warn('OpenCL 核心執行錯誤：' + e.message + '\n'); return -9999; } markHost(); clBackend = 2; return 0;
                 },
+                fa_cl_backend: () => clBackend,
                 clFinish: (ctx, q) => (clH(q, 'clq') ? 0 : -36), clFlush: (ctx, q) => (clH(q, 'clq') ? 0 : -36), clWaitForEvents: () => 0, clReleaseEvent: () => 0,
-                clReleaseMemObject: (ctx, p) => { if (!clH(p, 'clmem')) return -38; handles.delete(p); return 0; }, clReleaseKernel: (ctx, p) => { if (!clH(p, 'clkernel')) return -48; handles.delete(p); return 0; },
+                clReleaseMemObject: (ctx, p) => { const m = clH(p, 'clmem'); if (!m) return -38; if (m.dev && kirDev) kirDev.free(m.dev); m.dev = null; handles.delete(p); return 0; }, clReleaseKernel: (ctx, p) => { if (!clH(p, 'clkernel')) return -48; handles.delete(p); return 0; },
                 clReleaseProgram: (ctx, p) => { if (!clH(p, 'clprog')) return -44; handles.delete(p); return 0; }, clReleaseCommandQueue: (ctx, p) => { if (!clH(p, 'clq')) return -36; handles.delete(p); return 0; },
                 clReleaseContext: (ctx, p) => { if (!clH(p, 'clctx')) return -34; handles.delete(p); return 0; },
             });
