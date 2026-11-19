@@ -12,6 +12,8 @@
     else root.FaLlvmHost = factory();
 })(typeof self !== 'undefined' ? self : this, function () {
     'use strict';
+    // 每幀繪圖指令上限：與 GUI 橋接的 MAX_DRAW 一致（視窗依實測成本自適應繪製，不再是 200）
+    const SDL_MAX_OPS = 100000;
 
     // ---- 簽名（跟 C 的原型一致；float＝'float'、指標＝'ptr'、Uint8＝'i8'）。async：會等 JS 的 Promise（用 JSPI 暫停 wasm）
     const SIGS = {
@@ -358,7 +360,7 @@
             SDL_RenderDrawPoint: (ctx, p, x, y) => { const R = rend(p); if (!R) return -1; R.ops.push(['rect', x, y, 1, 1, R.color]); return 0; },
             SDL_RenderPresent: async (ctx, p) => {
                 const R = rend(p); if (!R) return; const w = R.win; await ensureWindow(w);
-                let ops = R.ops; if (ops.length > 200) { if (!R.truncated) { R.truncated = true; warn('SDL：一幀超過 200 道繪圖指令（GUI 橋接的上限），多的被丟掉\n'); } ops = ops.slice(0, 200); }
+                let ops = R.ops; if (ops.length > SDL_MAX_OPS) { if (!R.truncated) { R.truncated = true; warn('SDL：一幀超過 ' + SDL_MAX_OPS + ' 道繪圖指令（GUI 橋接的上限），多的被丟掉\n'); } ops = ops.slice(0, SDL_MAX_OPS); }
                 await gui('draw', { id: w.id, node: w.nid, ops }); R.ops = [];
             },
             SDL_PollEvent: async (ctx, ptr) => {
