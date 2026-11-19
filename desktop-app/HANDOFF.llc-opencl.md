@@ -1,5 +1,10 @@
 # HANDOFF：接手前面的工作＋接上 run terminal 的 llc OpenCL 墊片（2026-11-19）
 
+
+## 0. 範圍更新（2026-11-19，使用者）
+
+使用者原話：「我們這個session已經離很久，source code已經前進很遠了, blockly那邊可以不用管了」「要確保examples裡面的llc的gpgpu可以用opencl加速跑nbody3d, fluid3d」。**Blockly 相關與第 3 節的待辦 3、4 全部作廢。** 唯一目標：`renderer/src/examples/llc/gpgpu/nbody3d.ll`、`fluid3d.ll` 能在 run terminal／job 用 OpenCL 墊片加速跑（後端 WebGPU／cudaweb，沒有 WebGPU 時 CPU 後備），要有真輸出與實測加速數字，沒有加速也如實報告。完成後提交、回報領導，由領導發布。子 session 用 haiku（領導 Sonnet）。
+
 ## 1. 開場提示（接手者收到的話）
 
 Continue from the handoff document at desktop-app/HANDOFF.llc-opencl.md. Read it fully, including the verbatim user words and the working style, and follow them. Run the low-context-long-run skill (THRESHOLD 30%): do the next todo item, and when your context reaches the threshold, write the next handoff and start your own successor. As your first message, confirm in one line that you read the document and which todo item you are starting. 使用者原話：「接手前面的工作，完成後要publish」「接上run terminal的llc的opencl墊片」。
