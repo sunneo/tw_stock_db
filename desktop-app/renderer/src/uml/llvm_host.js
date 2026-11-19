@@ -111,7 +111,7 @@
         clGetProgramBuildInfo: { params: ['ptr', 'ptr', 'i32', 'i32|i64', 'ptr', 'ptr'], ret: 'i32' },
         clCreateKernel: { params: ['ptr', 'ptr', 'ptr'], ret: 'ptr' }, clSetKernelArg: { params: ['ptr', 'i32', 'i32|i64', 'ptr'], ret: 'i32' },
         fa_cl_backend: { params: [], ret: 'i32' },
-        fa_cl_pack: { params: ['ptr', 'i32'], ret: 'i32' }, fa_cl_view: { params: ['ptr', 'i32'], ret: 'ptr' }, fa_cl_points: { params: ['ptr', 'ptr', 'ptr', 'i32', 'ptr', 'ptr'], ret: 'i32' },   // 本程式最後一次 OpenCL 派送用的後端：0＝尚未派送、1＝WebGL2（KIR，裝置或複製）、2＝JS 墊片
+        fa_cl_pack: { params: ['ptr', 'i32'], ret: 'i32' }, fa_cl_view: { params: ['ptr', 'i32'], ret: 'ptr' }, fa_cl_points: { params: ['ptr', 'ptr', 'ptr', 'i32', 'ptr', 'ptr'], ret: 'i32' }, fa_cl_nopoints: { params: [], ret: 'i32' },   // 本程式最後一次 OpenCL 派送用的後端：0＝尚未派送、1＝WebGL2（KIR，裝置或複製）、2＝JS 墊片
         clEnqueueNDRangeKernel: { params: ['ptr', 'ptr', 'i32', 'ptr', 'ptr', 'ptr', 'i32', 'ptr', 'ptr'], ret: 'i32' }, clFinish: { params: ['ptr'], ret: 'i32' }, clFlush: { params: ['ptr'], ret: 'i32' },
         clWaitForEvents: { params: ['i32', 'ptr'], ret: 'i32' }, clReleaseEvent: { params: ['ptr'], ret: 'i32' },
         clReleaseMemObject: { params: ['ptr'], ret: 'i32' }, clReleaseKernel: { params: ['ptr'], ret: 'i32' }, clReleaseProgram: { params: ['ptr'], ret: 'i32' },
@@ -669,7 +669,7 @@
                 // 參數：x、y、z 的 cl 記憶體；n 點數；pal＝10 色×3 個 float 接著縮放 1 個 float（共 31 個，GL 路徑也是 ×0.1）；ctr＝盒子中心 3 個 float（點的位置是 (x−ctr)·縮放）。
                 fa_cl_points: (ctx, xb, yb, zb, n, pal, ctr) => {
                     const mx = clH(xb, 'clmem'), my = clH(yb, 'clmem'), mz = clH(zb, 'clmem'), count = Number(n) | 0;
-                    if (!mx || !my || !mz || count < 1 || !kirDev || !kirDev.drawPoints || kirDevKind !== 'webgpu' || !gl.win || !o.setExtern) return 0;
+                    if (!mx || !my || !mz || count < 1 || o.noPoints || !kirDev || !kirDev.drawPoints || kirDevKind !== 'webgpu' || !gl.win || !o.setExtern) return 0;
                     try {
                         const dx = ensureDev(mx), dy = ensureDev(my), dz = ensureDev(mz);
                         if (!dx || !dy || !dz) return 0;
@@ -682,6 +682,8 @@
                     } catch (e) { warn('OpenCL：點精靈畫圖失敗，退回讀回＋GL 點：' + e.message + '\n'); return 0; }
                     return 1;
                 },
+                // 量測用（o.noPoints）：1＝不走點精靈，每幀照舊讀回（讀回路徑的對照組）
+                fa_cl_nopoints: () => (o.noPoints ? 1 : 0),
                 clFinish: (ctx, q) => (clH(q, 'clq') ? 0 : -36), clFlush: (ctx, q) => (clH(q, 'clq') ? 0 : -36), clWaitForEvents: () => 0, clReleaseEvent: () => 0,
                 clReleaseMemObject: (ctx, p) => { const m = clH(p, 'clmem'); if (!m) return -38; if (!m.parentMem && m.dev && kirDev) kirDev.free(m.dev); m.dev = null; handles.delete(p); return 0; }, clReleaseKernel: (ctx, p) => { if (!clH(p, 'clkernel')) return -48; handles.delete(p); return 0; },
                 clReleaseProgram: (ctx, p) => { if (!clH(p, 'clprog')) return -44; handles.delete(p); return 0; }, clReleaseCommandQueue: (ctx, p) => { if (!clH(p, 'clq')) return -36; handles.delete(p); return 0; },

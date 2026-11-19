@@ -158,7 +158,12 @@
         if (node.frame && node.frame.length) { closeBitmap(bkey); }   // 程式後來又用 draw 畫了：以 draw 為準
         else { drawBitmap(el, bitmaps[bkey]); return; }
       }
-      if (node.gl) { render.paintGl(el, node, function (msg) { var line = bridge.eventLine(session, winId, nodeId, 'glerror', msg); if (line) { enqueue(winId, 'glerror', line); } }, function (name) { return externs[winId + '/' + nodeId + '/' + name] || null; }); return; }
+      if (node.gl) {
+        render.paintGl(el, node, function (msg) { var line = bridge.eventLine(session, winId, nodeId, 'glerror', msg); if (line) { enqueue(winId, 'glerror', line); } }, function (name) { return externs[winId + '/' + nodeId + '/' + name] || null; });
+        // 量測用的鉤子（沒有就什麼都不做）：每畫完一幀 GL，呼叫 FA_GUI_AFTER_GLFRAME(視窗, 節點, 第幾幀)，評測要在同一幀比像素
+        if (typeof globalThis.FA_GUI_AFTER_GLFRAME === 'function') { globalThis.FA_GUI_AFTER_GLFRAME(winId, nodeId, node.glframeSeq); }
+        return;
+      }
       var ctx = el.getContext ? el.getContext('2d') : null;
       if (!ctx) { return; }
       var ops = node.frame || [];

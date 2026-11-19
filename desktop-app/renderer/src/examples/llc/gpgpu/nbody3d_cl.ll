@@ -51,6 +51,7 @@ declare i32 @clEnqueueReadBuffer(ptr, ptr, i32, i64, i64, ptr, i32, ptr, ptr)
 declare i32 @clEnqueueWriteBuffer(ptr, ptr, i32, i64, i64, ptr, i32, ptr, ptr)
 declare i32 @clFinish(ptr)
 declare i32 @fa_cl_backend()
+declare i32 @fa_cl_nopoints()
 
 @.s1 = private constant [3 x i8] c"on\00"
 @.s2 = private constant [4 x i8] c"off\00"
@@ -573,7 +574,10 @@ compute:
   %fr_z = icmp eq i32 %fr_m, 0
   %be0 = call i32 @fa_cl_backend()
   %nb = icmp ne i32 %be0, 3
-  %need = or i1 %fr_z, %nb
+  %np = call i32 @fa_cl_nopoints()
+  %npz = icmp ne i32 %np, 0
+  %need0 = or i1 %fr_z, %nb
+  %need = or i1 %need0, %npz
   br i1 %need, label %rd, label %nord
 rd:
   %sl106 = getelementptr ptr, ptr @cl_h, i32 17

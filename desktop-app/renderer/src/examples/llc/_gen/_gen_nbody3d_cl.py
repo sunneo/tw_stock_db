@@ -218,7 +218,8 @@ def glue_ir():
     A('  %fr_p = getelementptr [4 x i32], ptr @cl_st, i32 0, i32 4'); A('  %fr_v = load i32, ptr %fr_p'); A('  %fr_n = add i32 %fr_v, 1'); A('  store i32 %fr_n, ptr %fr_p')
     A('  %fr_m = urem i32 %fr_v, 30'); A('  %fr_z = icmp eq i32 %fr_m, 0')
     A('  %be0 = call i32 @fa_cl_backend()'); A('  %nb = icmp ne i32 %be0, 3')
-    A('  %need = or i1 %fr_z, %nb')
+    A('  %np = call i32 @fa_cl_nopoints()'); A('  %npz = icmp ne i32 %np, 0')   # 量測的讀回對照組：每幀讀回
+    A('  %need0 = or i1 %fr_z, %nb'); A('  %need = or i1 %need0, %npz')
     A('  br i1 %need, label %rd, label %nord')
     A('rd:')
     poth = load_handle(static_slot(SL['pot']))
@@ -369,7 +370,8 @@ declare i32 @clEnqueueNDRangeKernel(ptr, ptr, i32, ptr, ptr, ptr, i32, ptr, ptr)
 declare i32 @clEnqueueReadBuffer(ptr, ptr, i32, i64, i64, ptr, i32, ptr, ptr)
 declare i32 @clEnqueueWriteBuffer(ptr, ptr, i32, i64, i64, ptr, i32, ptr, ptr)
 declare i32 @clFinish(ptr)
-declare i32 @fa_cl_backend()'''
+declare i32 @fa_cl_backend()
+declare i32 @fa_cl_nopoints()'''
 
 
 def build():
