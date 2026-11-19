@@ -23,7 +23,7 @@
 }(typeof self !== 'undefined' ? self : this, function () {
   'use strict';
   var VERSION = 1, PREFIX = '@gui ';
-  var MAX_LINE = 8192, MAX_BULK_LINE = 6 * 1024 * 1024, BULK_OP_RE = /"op"\s*:\s*"(image|glbuf)"/, MAX_WINDOWS = 4, MAX_NODES = 200, MAX_TEXT = 2000, MAX_ITEMS = 500, MAX_DEPTH = 8;
+  var MAX_LINE = 8192, MAX_BULK_LINE = 6 * 1024 * 1024, BULK_OP_RE = /"op"\s*:\s*"(image|glbuf|set|add)"/, MAX_EDITOR_TEXT = 1000000, MAX_WINDOWS = 4, MAX_NODES = 200, MAX_TEXT = 2000, MAX_ITEMS = 500, MAX_DEPTH = 8;
   var ID_RE = /^[A-Za-z0-9_-]{1,40}$/;
   var OPS = ['open', 'add', 'set', 'remove', 'close', 'draw', 'image', 'theme', 'shortcut', 'tone', 'glbuf', 'glprog', 'glframe'];
   // window-level look: palette (five named colors), font family, size, corner radius; shortcuts: "Ctrl+Shift+Alt+<key>" -> a name the
@@ -99,9 +99,9 @@
 
   function fail(error) { return { ok: false, error: error }; }
   function isObj(v) { return v !== null && typeof v === 'object' && !Array.isArray(v); }
-  function text(v, field) {
+  function text(v, field, max) {
     if (typeof v !== 'string') { throw new Error(field + ' must be a string'); }
-    if (v.length > MAX_TEXT) { throw new Error(field + ' is longer than ' + MAX_TEXT + ' characters'); }
+    if (v.length > (max || MAX_TEXT)) { throw new Error(field + ' is longer than ' + (max || MAX_TEXT) + ' characters'); }
     return v;
   }
   function id(v, field) {
@@ -135,6 +135,7 @@
 
   // progress takes a number for value; everything else with a value is text
   function propValue(kind, name, v) {
+    if (kind === 'editor' && name === 'value') { return text(v, name, MAX_EDITOR_TEXT); } // a file being edited is far longer than a label
     if (kind === 'progress' && name === 'value') { return num(v, 'value', 0, 1e12); }
     if (kind === 'grid' && name === 'columns') { return num(v, name, 1, 12); }
     if (kind === 'split' && name === 'ratio') { return num(v, name, 10, 90); }
@@ -653,7 +654,7 @@
         if (!Number.isInteger(row) || !Number.isInteger(col) || row < 0 || col < 0 || !node.rows || row >= node.rows.length || col >= (node.columns || []).length) { return null; }
         ev.value = { row: row, col: col, text: String(value.text).slice(0, MAX_TEXT) };
       } else if (Array.isArray(value)) { ev.value = value.slice(0, MAX_ITEMS).map(function (s) { return String(s).slice(0, MAX_TEXT); }); }
-      else { ev.value = String(value).slice(0, MAX_TEXT); }
+      else { ev.value = String(value).slice(0, node.kind === 'editor' && eventName === 'input' ? MAX_EDITOR_TEXT : MAX_TEXT); }
       remember(node, eventName, ev.value);
     }
     return JSON.stringify(ev);

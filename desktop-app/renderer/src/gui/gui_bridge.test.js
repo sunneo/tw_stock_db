@@ -19,7 +19,8 @@ assert.ok(G.parseLine(G.PREFIX + 'x'.repeat(G.LIMITS.MAX_LINE)).error); ok();
   const big = (op, n) => G.PREFIX + JSON.stringify({ v: 1, op, id: 'w1', node: 'c', name: 'a', data: 'A'.repeat(n) });
   assert.ok(G.parseLine(big('image', 20000)).msg); ok();
   assert.ok(G.parseLine(big('glbuf', 20000)).msg); ok();
-  assert.match(G.parseLine(big('set', 20000)).error, /longer than 8192/); ok();
+  assert.ok(G.parseLine(big('set', 20000)).msg); ok(); // set and add may carry a long editor text; the value limit is checked later
+  assert.match(G.parseLine(big('remove', 20000)).error, /longer than 8192/); ok();
   assert.match(G.parseLine(big('glbuf', 6 * 1024 * 1024)).error, /longer than 8192/); ok();
 }
 
@@ -358,6 +359,19 @@ assert.match(G.parseWait('wait w1 a=b').error, /shell variable name/); ok();
   assert.deepStrictEqual(G.snapshot(S, 'ws').root.children[0].children.map((c) => c.id), ['g', 'h']); ok();   // order = stacking order, the last is on top
   assert.strictEqual(G.snapshot(S, 'ws').root.children[0].children[1].transparent, true); ok();
   assert.match(G.apply(S, { op: 'add', id: 'ws', parent: 'st', node: { id: 'x', kind: 'label', text: 'a', transparent: true } }).error, /not allowed on label/); ok();
+}
+
+// 長文字編輯器：整個檔案能放進編輯器，編輯後的內容回傳不被截成 2000 字
+{
+  const T = G.createSession();
+  G.apply(T, { op: 'open', id: 'ed' });
+  assert.ok(G.apply(T, { op: 'add', id: 'ed', node: { id: 'e1', kind: 'editor', value: 'a' } }).ok); ok();
+  const longText = 'x'.repeat(200000);
+  assert.ok(G.apply(T, { op: 'set', id: 'ed', node: 'e1', props: { value: longText } }).ok); ok();
+  assert.match(G.apply(T, { op: 'set', id: 'ed', node: 'e1', props: { value: 'y'.repeat(1000001) } }).error, /longer than 1000000/); ok();
+  assert.strictEqual(JSON.parse(G.eventLine(T, 'ed', 'e1', 'input', longText)).value.length, 200000); ok();
+  assert.ok(G.apply(T, { op: 'add', id: 'ed', node: { id: 'l1', kind: 'label' } }).ok);
+  assert.match(G.apply(T, { op: 'set', id: 'ed', node: 'l1', props: { text: 'z'.repeat(2001) } }).error, /longer than 2000/); ok();
 }
 
 console.log('gui_bridge: ' + n + ' assertions passed');
