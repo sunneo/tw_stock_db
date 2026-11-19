@@ -1160,3 +1160,8 @@ Python 模擬器與離線模型推論共用同一個 GPU 裝置：
   3. interop（需要共用 context）：點精靈的頂點著色器用 `texelFetch(positions, gl_VertexID)` 直接讀，完全不讀回。
 - **風險**：積分在 GPU 上要拆成多個單一輸出核心（vx、vy、vz、x、y、z 各一個），必須用雙緩衝避免就地讀寫；clamp 與 `dt` 的順序要與 CPU 版逐項一致，才能用同一組容差比對。
 - **未做之前的誠實結論**：目前 OpenCL 版在軟體 GL 下比 CPU 慢；要看加速，要在真 GPU 上跑 `scripts/eval/gpgpu_bench.eval.js`（見 DESIGN.run-terminal.md §21）。
+
+**階段 6 步驟 1a（2026-11-19，已實作裝置層並在真 Electron 驗證）**：`kir_webgl2.js` 新增 `createDevice(gl)`：`alloc(N, elem)`、`upload(buf, arr)`、`download(buf)`、`dispatch(kernel, binds, out, scalars, N)`（不讀回）、`free(buf)`。緩衝區是常駐的 RGBA32F 紋理，跨多次派送保留；GLSL 依核心物件快取。`out` 與輸入相同時拒絕（feedback loop）。
+- 驗證（`scripts/eval/kir_device.eval.js`，SwiftShader）：nbody3d_cl 的四個核心，上傳一次、連續派送 20 次（80 次派送）、讀回一次：最大誤差 0（與 KIR JS 後端完全一致）；負向測試（輸出＝輸入）正確被拒絕。
+- 計時（每次迭代＝四個核心，N=512）：裝置連續派送 1.12–1.21 ms；每次都走 `runGl`（每次上傳＋讀回）84–97 ms。差距主要是傳輸與讀回，不是計算（軟體 GL 的計算成本也包含在 1.2 ms 內）。
+- **尚未做**：host（llvm_host）的髒旗標與 GPU 上的積分流程（步驟 1b）；interop（步驟 2）；llvm_host.js:518 的批次上限。
