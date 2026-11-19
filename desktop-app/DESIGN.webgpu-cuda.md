@@ -1143,3 +1143,9 @@ Python 模擬器與離線模型推論共用同一個 GPU 裝置：
   - **結論**：軟體 GL 下 OpenCL 版比 CPU 版慢，主因是每幀 4 次寫入、4 次讀回與 WebGL 的逐片段 N 迴圈。這不是真 GPU 的數字；沒有真 GPU 就不能說加速。
 - 計時腳本：`scripts/eval/nbody3d_cl_timing.eval.js`、`scripts/eval/fluid3d_cl_timing.eval.js`（需要 examples 已 embed；目前用的是把 .ll 內嵌進去的臨時版本量的數字）。
 - **未做**：緩衝區留在 GPU 紋理（目前每幀複製進出）；HUD；CUDA 前端；WGSL 真 GPU 驗證。
+
+**階段 5 補充：三種後端的計時（真 Electron，`scripts/eval/llc_gpu_timing.eval.js`，`FA_EVAL_GL=swiftshader` 啟動，軟體 GL）**
+- nbody3d N=512（斜率法，30／150 幀）：CPU 18.04 ms／幀；OpenCL 的 JS 墊片（評測時藏起 `EXT_color_buffer_float`，每次派送都退回，99 次警告）16.71 ms／幀；OpenCL 的 WebGL2（KIR，600 次派送）104.04 ms／幀。叢集中心三者相同（282.1, 104.3, 244.5）。
+- fluid3d N=1000（20／120 幀）：CPU 30.33 ms／幀；JS 墊片 30.98 ms／幀；WebGL2（480 次派送）210.53 ms／幀。平均 y 三者相同（0.109）。
+- 解讀：JS 墊片（核心被翻成 JIT 的 JavaScript）跟 CPU 的 wasm 版差不多；WebGL2 在軟體 GL 下慢很多，是軟體光柵化加上每幀讀寫的成本。要看真 GPU 的加速，需要有真 GPU 的機器。
+- `run_eval.js` 新增 `FA_EVAL_GL=swiftshader`（只給評測，預設仍是 `--disable-gpu`）。

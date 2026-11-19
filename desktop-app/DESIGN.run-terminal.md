@@ -1663,3 +1663,32 @@ sleep/curl/date/ask-floating-ai-assistant各自踩過的坑。
 ## 23. LLVM IR 的檔案系統、libm 與四個新範例（2026-11-19）
 `llvm_host.js` 新增 stdio 檔案函式（見 `examples/llc/README.md`「檔案系統」）：`create({ fs })` 的 `fs` 由 `_terminalTryLliHostRun` 接到終端機沙盒（`_terminalSandboxFileBytes`／`_writeBytesToTerminalFs`），程式結束後 `_terminalFlushLive` 寫回 `/mnt`。`llvm_core.runHost` 新增第五個參數 `declares`：宣告成 `i64` 的參數（`size_t`／`long`）JS 收到 BigInt，轉成數字；宣告成 `i64` 的回傳值轉成 BigInt。主機簽名的回傳型別也可以有替代（`'i32|i64'`）。另有 libm（`sin／cos／sqrt／pow／floor／fmod／atan2…` 與 `…f` 版）、`GL_POINTS` 依 `glPointSize` 畫圓點。
 範例：`gpgpu/nbody3d.ll`、`gpgpu/fluid3d.ll`（CPU 計算＋OpenGL 點精靈）、`gui/music_player.ll`、`gui/midi_player.ll`（解析 SMF；`gui/demo.mid` 是二進位檔，嵌入時存成 `.b64`，播種時還原成位元組）。真 Electron 驗證：`scripts/eval/llc_host.eval.js` 的 `R.more`（四個範例＋ `.mid` 經 `fopen` 讀沙盒＋找不到檔案的錯誤）。
+
+## 24. node／LLVM 的 IndexedDB swap（設計，尚未實作；2026-11-19）
+
+**動機（使用者）**：「我希望不只 python、node、llvm（lli/llc）也要有 indexdb as swap」。Python 已有（`renderer/src/pybridge/fa_swap.py`），node 與 LLVM 還沒有：資料比記憶體大時，程式會被瀏覽器殺掉或直接 OOM。
+
+**現有的三個零件（都要重用，不另寫一套）**
+- Python：`fa_swap.py` 的 `Swap` 管熱區（LRU、髒頁寫回、頁大小 256 KB、預設熱區 16 MB），後端是 `_BridgeBackend`，經 `fa_bridge.call("swap.put"|"swap.get"|"swap.drop"|"swap.close"|"swap.stats", {space, …})` 走 base64；沒有橋接就退回記憶體字典（`backend=='memory'`，不省記憶體）。
+- 頁面端：`renderer/src/floating-assistant.js` 內的 `FaSwap`（UMD，`create({ store, hotBytes, now })`，store 介面 `put(id, blob)／get(id)／del(id)／clear()`，預設是 IndexedDB `fa_swap`）。這是「助理頁面的 FaSwap 熱區＋IndexedDB」那一層。
+- job 層（§20）：node／shell 的 job 沙盒已經能把 swap 落到 IndexedDB，程式結束後清空（`job_layer.eval.js` 驗證過 8 MB）。
+
+**設計**
+1. **共用的分頁核心**：把 `fa_swap.py` 的 `Swap`（分頁、LRU、髒頁、統計）翻成 JS 模組 `fa_swap_core.js`（UMD，無 DOM）。Python 與 node 與 LLVM 共用同一個演算法與同一組統計欄位（`pages_hot`、`pages_total`、`reads`、`writes`、`hot_bytes`、`backend`），測試也共用語意。
+2. **儲存層**注入：`store` 用頁面端 `FaSwap` 的 store（IndexedDB `fa_swap`），每個 swap 空間用 `space` 前綴隔開（`node-<id>`、`llvm-<id>`、`py-<id>`），結束時 `close(space)` 丟掉自己的頁。沒有 IndexedDB 時退回記憶體，統計標 `backend:'memory'`。
+3. **node**：job 沙盒的 JS 執行環境提供全域 `fa_swap`：`fa_swap.array(length, 'f64'|'f32'|'i32'|…)` 回傳類型化陣列的分頁視圖（`get(i)`、`set(i,v)`、`slice(a,b)`、`blocks(n)`，與 Python 的 `SwapArray` 語意一致）；另有 `fa_swap.stats()`、`fa_swap.close()`。job 的 worker 與頁面不同執行緒時，改走 postMessage 版的橋接（同 Python 的 `fa_bridge.call` 協定）。
+4. **LLVM**：llvm host import 新增（`renderer/src/uml/llvm_host.js` 的 `SIGS` 與實作）：
+   - `i32 fa_swap_open(i64 bytes, i32 page_bytes)` → 句柄（0＝失敗）；
+   - `i32 fa_swap_read(i32 h, i64 off, ptr dst, i64 n)`、`i32 fa_swap_write(i32 h, i64 off, ptr src, i64 n)`：以位元組為單位的**複製式**存取（不給指標別名，因為頁會被換出；IndexedDB 是非同步，所以這兩個呼叫走 JSPI，與 SDL_Delay 同樣的做法）；
+   - `void fa_swap_close(i32 h)`。
+   IR 端用 `declare` 宣告即可（與 SDL、OpenCL 一樣由 host 提供）。範例：超過 wasm 記憶體的矩陣用分頁讀寫。
+5. **生命週期**：job 結束（正常、逾時、`job_stop`）一律關閉它開的空間（與既有的 `_terminalGuiScope` 同一個清理點）；啟動時清掉上次沒清乾淨的 `node-*`、`llvm-*`、`py-*`（沿用 `FaSwap.clear()` 的做法）。
+6. **限制（要寫進說明）**：不是 mmap（沒有指標視圖，讀寫都是複本）；不是執行緒安全；熱區與頁大小可由環境變數 `FA_SWAP_HOT_MB` 調（Python 已有此變數，node 與 LLVM 沿用）；效能是磁碟級，不是記憶體級。
+
+**待決定（給領導）**
+- node 的全域名稱用 `fa_swap`，還是只在 `require('fa_swap')` 下提供？（建議後者，與 Python 的 `import fa_swap` 對稱。）
+- LLVM 的 `fa_swap_*` 是否要進 `SIGS` 的 libc 清單（像 `malloc` 那樣能直接被 `declare`），或只在 host 清單裡？（建議 host 清單，避免混淆 libc 與擴充。）
+
+**驗證計畫（實作時）**：`fa_swap_core.test.js`（記憶體後端與假 store，語意與 Python 一致：沒寫過的頁讀出 0、髒頁寫回、LRU 踢出順序）；`llvm_host.test.js` 加一個用 `fa_swap_*` 的 IR 範例（寫入一大塊、讀回比對）；真 Electron 的 job eval（IndexedDB 內頁數、程式結束後為空）。
+
+**現況**：本節是設計（2026-11-19），尚未實作。Python 的 `fa_swap` 不變。
