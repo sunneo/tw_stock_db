@@ -237,7 +237,8 @@ declare i32 @clSetKernelArg(ptr, i32, i64, ptr)
 declare i32 @clEnqueueNDRangeKernel(ptr, ptr, i32, ptr, ptr, ptr, i32, ptr, ptr)
 declare i32 @clEnqueueReadBuffer(ptr, ptr, i32, i64, i64, ptr, i32, ptr, ptr)
 declare i32 @clEnqueueWriteBuffer(ptr, ptr, i32, i64, i64, ptr, i32, ptr, ptr)
-declare i32 @clFinish(ptr)'''
+declare i32 @clFinish(ptr)
+declare i32 @fa_cl_backend()'''
 
 
 # step 裡換掉的段落：密度與力（兩個 O(N²) 迴圈）。替換成：DSL 把 double 轉 float 進暫存陣列 → sph_gpu → 轉回 double。
@@ -277,6 +278,18 @@ def build():
     old_hdr = "（由 _gen/_gen_fluid3d.py 產生；GPGPU 版要等 OpenCL 墊片）"
     assert src.count(old_hdr) == 1
     src = src.replace(old_hdr, "（OpenCL 版：密度與力用 OpenCL 核心（float32），由 _gen/_gen_fluid3d_cl.py 產生）")
+    # 3b. HUD 的來源文字：依真正的後端顯示（0＝尚未派送、1＝WebGL2、2＝JS 墊片；不是寫死的 CPU）
+    old_txt = "c('snprintf', buf, 160, '%d particles | source: CPU (wasm) | step %d', N, step_no)"
+    assert src.count(old_txt) == 1
+    ladder = (
+        "_bk = c('fa_cl_backend')\n"
+        "with draw.if_(_bk.eq(1)):\n"
+        "    c('snprintf', buf, 160, '%d particles | source: OpenCL WebGL2 | step %d', N, step_no)\n"
+        "with draw.if_(_bk.eq(2)):\n"
+        "    c('snprintf', buf, 160, '%d particles | source: OpenCL JS shim (not GPU) | step %d', N, step_no)\n"
+        "with draw.if_(_bk.eq(0)):\n"
+        "    c('snprintf', buf, 160, '%d particles | source: OpenCL not dispatched yet | step %d', N, step_no)")
+    src = src.replace(old_txt, ladder)
     return src
 
 

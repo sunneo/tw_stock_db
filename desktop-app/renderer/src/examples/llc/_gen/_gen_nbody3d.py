@@ -13,6 +13,8 @@ import _font_data as FD
 
 SCREENX, SCREENY = 800, 560
 MAXN = 8192
+# 由 _gen_nbody3d_cl.py 執行時設為 True（OpenCL 版：HUD 顯示真正的後端、按鈕會切換計算來源）
+CL_VARIANT = globals().get('CL_VARIANT', False)
 FONT_W, FONT_H = FD.W, FD.H
 GLOW = (0xFFFF00, 0xFFFF40, 0xFFFF80, 0xFFFFC0, 0xFFFFFF, 0xE0E000, 0xC0C000, 0xFFFF60, 0xFFFFA0, 0xFFFFE0)
 m = Mod('; 3D N-body（照 examples/python/gpgpu/nbody3d.py，即 sdlmm/exams/nbody3d.c 的移植）：float32 物理、發光點精靈（加法混合）、攝影機追蹤、覆蓋層與滑桿。\n'
@@ -195,15 +197,27 @@ def line(y, color, fmt, *args):
 
 
 c('glBegin', 0)
-line(5, W3, '[%-3d/%-3d] tm:%-3.3f bodies:%d', loop, loops, (ms / 1000.0).to('double'), n)
+line(5, W3, '[%-3d/%-3d] step: %.3f s  bodies:%d', loop, loops, (ms / 1000.0).to('double'), n)   # ms 是一步的毫秒，這裡換成秒
 line(25, W3, 'simulate factor: %-3.5f', par[6].to('double'))
 line(45, W3, 'random factor: %s[r]', rnd_on.ne(0).sel(S_ON, S_OFF))
 line(65, W3, 'particle size: %-3.1f', par[7].to('double'))
 line(85, W3, 'cam dist:%.1f angle:(%.2f,%.2f)', dist.to('double'), ax.to('double'), ay.to('double'))
 line(105, W3, 'camera tracking: %s[C]', tracking.ne(0).sel(S_ON, S_OFF))
 line(125, W3, 'compute source:')
-with hud.if_(note.ne(0)):
-    line(145, Y3, 'GPU source: needs the OpenCL layer (not available yet); staying on CPU')
+if not CL_VARIANT:
+    line(145, Y3, 'GPU: run nbody3d_cl.ll (OpenCL) instead')
+else:
+    _mode = c('cl_mode')          # 0＝CPU（wasm 內積分）、非 0＝GPU（OpenCL 核心）
+    with hud.if_(_mode.eq(0)):
+        line(145, W3, 'CPU: wasm integration')
+    with hud.if_(_mode.ne(0)):
+        _bk = c('fa_cl_backend')  # 0＝尚未派送、1＝WebGL2（KIR）、2＝JS 墊片
+        with hud.if_(_bk.eq(1)):
+            line(145, Y3, 'GPU: OpenCL kernels (WebGL2 backend)')
+        with hud.if_(_bk.eq(2)):
+            line(145, Y3, 'GPU: OpenCL JS shim (not GPU)')
+        with hud.if_(_bk.eq(0)):
+            line(145, Y3, 'GPU: OpenCL not dispatched yet')
 line(165, G3, 'MAX_X:%.1f MAX_Y:%.1f MAX_Z:%.1f', par[0].to('double'), par[1].to('double'), par[2].to('double'))
 line(185, G3, 'MAX_Vel:%.1f Grav:%.1f Soft:%.1f', par[3].to('double'), par[4].to('double'), par[5].to('double'))
 line(205, G3, '[h]help [+/-]zoom [arrows/mouse]rotate [C]track')
@@ -315,7 +329,11 @@ with f.while_(lambda: running.get().ne(0)):
             with f.if_((show.get().ne(0) & in_slider(mx, my)).eq(0)):
                 with f.if_(show.get().ne(0) & (in_btn(mx, my, 140) | in_btn(mx, my, 200))):
                     pressed.set(3); note.set(0)
-                    with f.if_(in_btn(mx, my, 200)): note.set(1)                             # GPU 按鈕：說明還沒有
+                    if not CL_VARIANT:
+                        with f.if_(in_btn(mx, my, 200)): note.set(1)                         # CPU 版：GPU 按鈕只是說明（請改跑 _cl）
+                    else:
+                        with f.if_(in_btn(mx, my, 200)): c('cl_set_mode', 1, X, Y, Z, VX, VY, VZ)   # GPU＝OpenCL 核心
+                        with f.if_(in_btn(mx, my, 140)): c('cl_set_mode', 0, X, Y, Z, VX, VY, VZ)   # CPU＝wasm 內積分
                 with f.if_((show.get().ne(0) & (in_btn(mx, my, 140) | in_btn(mx, my, 200))).eq(0)):
                     pressed.set(2); lastx.set(mx); lasty.set(my)
         with f.if_(ty.eq(1026)): pressed.set(0)

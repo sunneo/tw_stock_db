@@ -39,14 +39,14 @@ declare i32 @snprintf(ptr, i64, ptr, ...)
 
 @.s1 = private constant [3 x i8] c"on\00"
 @.s2 = private constant [4 x i8] c"off\00"
-@.s3 = private constant [32 x i8] c"[%-3d/%-3d] tm:%-3.3f bodies:%d\00"
+@.s3 = private constant [36 x i8] c"[%-3d/%-3d] step: %.3f s  bodies:%d\00"
 @.s4 = private constant [24 x i8] c"simulate factor: %-3.5f\00"
 @.s5 = private constant [21 x i8] c"random factor: %s[r]\00"
 @.s6 = private constant [22 x i8] c"particle size: %-3.1f\00"
 @.s7 = private constant [32 x i8] c"cam dist:%.1f angle:(%.2f,%.2f)\00"
 @.s8 = private constant [23 x i8] c"camera tracking: %s[C]\00"
 @.s9 = private constant [16 x i8] c"compute source:\00"
-@.s10 = private constant [71 x i8] c"GPU source: needs the OpenCL layer (not available yet); staying on CPU\00"
+@.s10 = private constant [42 x i8] c"GPU\EF\BC\9A\E8\AB\8B\E6\94\B9\E8\B7\91 nbody3d_cl.ll\EF\BC\88OpenCL\EF\BC\89\00"
 @.s11 = private constant [33 x i8] c"MAX_X:%.1f MAX_Y:%.1f MAX_Z:%.1f\00"
 @.s12 = private constant [33 x i8] c"MAX_Vel:%.1f Grav:%.1f Soft:%.1f\00"
 @.s13 = private constant [48 x i8] c"[h]help [+/-]zoom [arrows/mouse]rotate [C]track\00"
@@ -752,40 +752,35 @@ entry:
   call void @glColor3f(float 0x3FF0000000000000, float 0x3FF0000000000000, float 0x3FF0000000000000)
   %t22 = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %a1, i64 128, ptr @.s9)
   call void @text(ptr %a1, i32 5, i32 125)
-  %t23 = icmp ne i32 %note, 0
-  br i1 %t23, label %then1, label %endif2
-then1:
   call void @glColor3f(float 0x3FF0000000000000, float 0x3FE99999A0000000, float 0x3FD99999A0000000)
-  %t24 = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %a1, i64 128, ptr @.s10)
+  %t23 = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %a1, i64 128, ptr @.s10)
   call void @text(ptr %a1, i32 5, i32 145)
-  br label %endif2
-endif2:
-  %t25 = getelementptr float, ptr %par, i32 0
-  %t26 = load float, ptr %t25
-  %t27 = fpext float %t26 to double
-  %t28 = getelementptr float, ptr %par, i32 1
-  %t29 = load float, ptr %t28
-  %t30 = fpext float %t29 to double
-  %t31 = getelementptr float, ptr %par, i32 2
-  %t32 = load float, ptr %t31
-  %t33 = fpext float %t32 to double
+  %t24 = getelementptr float, ptr %par, i32 0
+  %t25 = load float, ptr %t24
+  %t26 = fpext float %t25 to double
+  %t27 = getelementptr float, ptr %par, i32 1
+  %t28 = load float, ptr %t27
+  %t29 = fpext float %t28 to double
+  %t30 = getelementptr float, ptr %par, i32 2
+  %t31 = load float, ptr %t30
+  %t32 = fpext float %t31 to double
   call void @glColor3f(float 0x3FE5581060000000, float 0x3FE5581060000000, float 0x3FE5581060000000)
-  %t34 = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %a1, i64 128, ptr @.s11, double %t27, double %t30, double %t33)
+  %t33 = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %a1, i64 128, ptr @.s11, double %t26, double %t29, double %t32)
   call void @text(ptr %a1, i32 5, i32 165)
-  %t35 = getelementptr float, ptr %par, i32 3
-  %t36 = load float, ptr %t35
-  %t37 = fpext float %t36 to double
-  %t38 = getelementptr float, ptr %par, i32 4
-  %t39 = load float, ptr %t38
-  %t40 = fpext float %t39 to double
-  %t41 = getelementptr float, ptr %par, i32 5
-  %t42 = load float, ptr %t41
-  %t43 = fpext float %t42 to double
+  %t34 = getelementptr float, ptr %par, i32 3
+  %t35 = load float, ptr %t34
+  %t36 = fpext float %t35 to double
+  %t37 = getelementptr float, ptr %par, i32 4
+  %t38 = load float, ptr %t37
+  %t39 = fpext float %t38 to double
+  %t40 = getelementptr float, ptr %par, i32 5
+  %t41 = load float, ptr %t40
+  %t42 = fpext float %t41 to double
   call void @glColor3f(float 0x3FE5581060000000, float 0x3FE5581060000000, float 0x3FE5581060000000)
-  %t44 = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %a1, i64 128, ptr @.s12, double %t37, double %t40, double %t43)
+  %t43 = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %a1, i64 128, ptr @.s12, double %t36, double %t39, double %t42)
   call void @text(ptr %a1, i32 5, i32 185)
   call void @glColor3f(float 0x3FE5581060000000, float 0x3FE5581060000000, float 0x3FE5581060000000)
-  %t45 = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %a1, i64 128, ptr @.s13)
+  %t44 = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %a1, i64 128, ptr @.s13)
   call void @text(ptr %a1, i32 5, i32 205)
   call void @glColor3f(float 0x3FF0000000000000, float 0x3FF0000000000000, float 0x3FF0000000000000)
   call void @glEnd()
@@ -800,41 +795,41 @@ endif2:
   call void @glVertex2f(float 0x406F400000000000, float 0x405E800000000000)
   call void @glVertex2f(float 0x406F400000000000, float 0x4061C00000000000)
   call void @glVertex2f(float 0x4069000000000000, float 0x4061C00000000000)
-  %t46 = getelementptr float, ptr %par, i32 6
-  %t47 = load float, ptr %t46
-  %t48 = fdiv float %t47, 0x4000000000000000
-  %t49 = fmul float %t48, 0x4079000000000000
+  %t45 = getelementptr float, ptr %par, i32 6
+  %t46 = load float, ptr %t45
+  %t47 = fdiv float %t46, 0x4000000000000000
+  %t48 = fmul float %t47, 0x4079000000000000
   call void @glColor3f(float 0x3FEFAE1480000000, float 0x3FEFAE1480000000, float 0x0000000000000000)
-  %t50 = fmul float %t49, 0x0000000000000000
-  %t51 = fadd float 0x4074000000000000, %t50
-  call void @glVertex2f(float %t51, float 0x4039000000000000)
-  %t52 = fmul float %t49, 0x3FF0000000000000
-  %t53 = fadd float 0x4074000000000000, %t52
-  call void @glVertex2f(float %t53, float 0x4039000000000000)
-  %t54 = fmul float %t49, 0x3FF0000000000000
-  %t55 = fadd float 0x4074000000000000, %t54
-  call void @glVertex2f(float %t55, float 0x4044000000000000)
-  %t56 = fmul float %t49, 0x0000000000000000
-  %t57 = fadd float 0x4074000000000000, %t56
-  call void @glVertex2f(float %t57, float 0x4044000000000000)
-  %t58 = getelementptr float, ptr %par, i32 7
-  %t59 = load float, ptr %t58
-  %t60 = fsub float %t59, 0x4014000000000000
-  %t61 = fdiv float %t60, 0x4068600000000000
-  %t62 = fmul float %t61, 0x4079000000000000
+  %t49 = fmul float %t48, 0x0000000000000000
+  %t50 = fadd float 0x4074000000000000, %t49
+  call void @glVertex2f(float %t50, float 0x4039000000000000)
+  %t51 = fmul float %t48, 0x3FF0000000000000
+  %t52 = fadd float 0x4074000000000000, %t51
+  call void @glVertex2f(float %t52, float 0x4039000000000000)
+  %t53 = fmul float %t48, 0x3FF0000000000000
+  %t54 = fadd float 0x4074000000000000, %t53
+  call void @glVertex2f(float %t54, float 0x4044000000000000)
+  %t55 = fmul float %t48, 0x0000000000000000
+  %t56 = fadd float 0x4074000000000000, %t55
+  call void @glVertex2f(float %t56, float 0x4044000000000000)
+  %t57 = getelementptr float, ptr %par, i32 7
+  %t58 = load float, ptr %t57
+  %t59 = fsub float %t58, 0x4014000000000000
+  %t60 = fdiv float %t59, 0x4068600000000000
+  %t61 = fmul float %t60, 0x4079000000000000
   call void @glColor3f(float 0x0000000000000000, float 0x3FF0000000000000, float 0x0000000000000000)
-  %t63 = fmul float %t62, 0x0000000000000000
-  %t64 = fadd float 0x4074000000000000, %t63
-  call void @glVertex2f(float %t64, float 0x4050400000000000)
-  %t65 = fmul float %t62, 0x3FF0000000000000
-  %t66 = fadd float 0x4074000000000000, %t65
-  call void @glVertex2f(float %t66, float 0x4050400000000000)
-  %t67 = fmul float %t62, 0x3FF0000000000000
-  %t68 = fadd float 0x4074000000000000, %t67
-  call void @glVertex2f(float %t68, float 0x4054000000000000)
-  %t69 = fmul float %t62, 0x0000000000000000
-  %t70 = fadd float 0x4074000000000000, %t69
-  call void @glVertex2f(float %t70, float 0x4054000000000000)
+  %t62 = fmul float %t61, 0x0000000000000000
+  %t63 = fadd float 0x4074000000000000, %t62
+  call void @glVertex2f(float %t63, float 0x4050400000000000)
+  %t64 = fmul float %t61, 0x3FF0000000000000
+  %t65 = fadd float 0x4074000000000000, %t64
+  call void @glVertex2f(float %t65, float 0x4050400000000000)
+  %t66 = fmul float %t61, 0x3FF0000000000000
+  %t67 = fadd float 0x4074000000000000, %t66
+  call void @glVertex2f(float %t67, float 0x4054000000000000)
+  %t68 = fmul float %t61, 0x0000000000000000
+  %t69 = fadd float 0x4074000000000000, %t68
+  call void @glVertex2f(float %t69, float 0x4054000000000000)
   call void @glEnd()
   call void @glBegin(i32 1)
   call void @glColor3f(float 0x3FF0000000000000, float 0x3FF0000000000000, float 0x3FF0000000000000)

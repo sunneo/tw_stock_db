@@ -1171,3 +1171,18 @@ Python 模擬器與離線模型推論共用同一個 GPU 裝置：
 - 驗證：`llvm_host.test.js` 36 項（含假裝置的常駐路徑測試：輸出正確、一次派送、上傳 2 次、讀回 1 次）；真 Electron（`scripts/eval/llvm_device.eval.js`，內嵌新版 llvm_host）：opencl_vecadd 輸出正確，派送 1 次、上傳 2 次（a、b）、讀回 1 次（c）、配置 3 次，無警告。
 - `_gen/_gen_nbody3d_cl.py`：積分（速度、位置、clampf）改成裝置核心（kvx/y/z、kpx/y/z），x、y、z、vx、vy、vz 各兩組 ping-pong；`cl_reset()` 在 init_bodies 之後設旗標，下一幀整組上傳；每幀讀回 x'、y'、z'、pot（4 次），vx 從不讀回。`nbody3d_cl_test.js` 24 項（含積分核心對參考公式）。真 Electron（app 既有的 kirRun 複製路徑）：cluster 中心與 CPU 版相同（282.1, 104.3, 244.5），派送 1500 次（10 核心 × 150 幀）。
 - **未完成**：(a) app 的 `_kirHostHooks` 還沒加 `kirDev`（檔案唯讀，補丁在 `side-session-notes/…/step1b-floating-assistant-kirdev.md`）；(b) nbody 整支程式在裝置路徑上的端到端驗證與計時（等 (a) 與 embed／build）；(c) 「每幀一次讀回」目前是 4 次（x、y、z、pot）；要做到 1 次需要把四個陣列打包到同一張紋理。
+
+**階段 5 真 GPU 數字（使用者的機器，2026-11-20）**：來源＝使用者自己的機器（顯卡型號未知）。HUD 的 `step:` 是 step() 前後 SDL_GetTicks 差，單位是**秒**（修正前的 `tm:` 標籤容易被誤讀成毫秒）。N＝3072（預設）。
+- nbody3d_cl.ll（OpenCL）：0.060–0.099 s／步（端到端，含每步上傳與讀回）。
+- nbody3d.ll（CPU，wasm）：0.990 s／步。
+- 約 10–16 倍。這是第一個真 GPU 數字；它也代表使用者的 WebGL2 浮點渲染可用，走的是 WebGL2 GPU 路徑。1b、2 完成後要重新量。
+
+**HUD 修正（2026-11-20）**：
+- 原本 nbody3d.ll 與 nbody3d_cl.ll 共用寫死的「GPU source: needs the OpenCL layer (not available yet)」，即使已在 OpenCL 上跑也顯示這句過期的訊息。
+- nbody3d.ll（CPU）：GPU 按鈕行固定顯示「GPU: run nbody3d_cl.ll (OpenCL) instead」。
+- nbody3d_cl.ll（OpenCL）：`cl_mode()`（0＝CPU、1＝GPU）與 `fa_cl_backend()`（0＝尚未派送、1＝WebGL2、2＝JS 墊片）決定狀態行。CPU／GPU 按鈕真的切換：切到 GPU 時 `cl_set_mode` 讓下一幀整組上傳（`cl_reset` 的做法）；切到 CPU 時 `cl_pull` 先把裝置上的 x、y、z、vx、vy、vz 讀回主機。
+- fluid3d_cl.ll：來源文字依 `fa_cl_backend()` 顯示；fluid3d.ll（CPU）維持「source: CPU (wasm)」。
+- HUD 字型只有 ASCII（7×13 點陣），所以新增的文字全部用 ASCII；中文會看不到（這正是之前的按鈕文字問題）。
+- llvm_host：`fa_cl_backend` 是新的 host import（SIGS 登記）；裝置派送與 kirRun 派送回報 1，JS 墊片回報 2。
+- 驗證：llvm_core 編譯四個 .ll 都通過；llvm_host 37 項（含 fa_cl_backend 測試）、nbody3d_cl 24 項、fluid3d_cl 20 項通過。**真 Electron 的 HUD 點擊切換與狀態行文字尚未驗證**：app 內嵌的 host 還是舊版（沒有 fa_cl_backend），要等 embed／build 之後才能測。
+- Python 版（只查不改）：renderer/src/examples/python/gpgpu/nbody3d.py、fluid3d.py 的 GPU 來源需要 WebGPU 相容層（fa_gpu）；相容層不在或 kernel 跑不起來時，GPU 來源不提供或自動退回 CPU。

@@ -44,11 +44,14 @@ declare i32 @clEnqueueNDRangeKernel(ptr, ptr, i32, ptr, ptr, ptr, i32, ptr, ptr)
 declare i32 @clEnqueueReadBuffer(ptr, ptr, i32, i64, i64, ptr, i32, ptr, ptr)
 declare i32 @clEnqueueWriteBuffer(ptr, ptr, i32, i64, i64, ptr, i32, ptr, ptr)
 declare i32 @clFinish(ptr)
+declare i32 @fa_cl_backend()
 
-@.s1 = private constant [44 x i8] c"%d particles | source: CPU (wasm) | step %d\00"
-@.s2 = private constant [57 x i8] c"[drag]rotate [wheel]zoom [space]splash [P]pause [R]reset\00"
-@.s3 = private constant [22 x i8] c"IR fluid3d (SPH, CPU)\00"
-@.s4 = private constant [28 x i8] c"frames=%d n=%d y_mean=%.3f\0A\00"
+@.s1 = private constant [47 x i8] c"%d particles | source: OpenCL WebGL2 | step %d\00"
+@.s2 = private constant [58 x i8] c"%d particles | source: OpenCL JS shim (not GPU) | step %d\00"
+@.s3 = private constant [59 x i8] c"%d particles | source: OpenCL not dispatched yet | step %d\00"
+@.s4 = private constant [57 x i8] c"[drag]rotate [wheel]zoom [space]splash [P]pause [R]reset\00"
+@.s5 = private constant [22 x i8] c"IR fluid3d (SPH, CPU)\00"
+@.s6 = private constant [28 x i8] c"frames=%d n=%d y_mean=%.3f\0A\00"
 @sph_src = private constant [3646 x i8] c"__kernel void krho(__global const float* x, __global const float* y, __global const float* z, __global float* rho, int n, float h2, float c0) {\0A  int i = get_global_id(0);\0A  float xi = x[i]; float yi = y[i]; float zi = z[i];\0A  float s = 0.0f;\0A  for (int j = 0; j < n; j++) {\0A    float dx = xi - x[j]; float dy = yi - y[j]; float dz = zi - z[j];\0A    float mm = h2 - (dx * dx + dy * dy + dz * dz);\0A    if (mm > 0.0f) {\0A      s += mm * mm * mm;\0A    }\0A  }\0A  rho[i] = s * c0;\0A}\0A\0A__kernel void kfx(__global const float* x, __global const float* y, __global const float* z, __global const float* vx, __global const float* vy, __global const float* vz, __global const float* rho, __global float* ax, int n, float h2, float h, float K, float rho0, float cs, float cv, float g) {\0A  int i = get_global_id(0);\0A  float xi = x[i]; float yi = y[i]; float zi = z[i]; float vxi = vx[i];\0A  float rhoi = rho[i];\0A  float pi = (rhoi - rho0) * K;\0A  if (pi < 0.0f) { pi = 0.0f; }\0A  float f = 0.0f;\0A  for (int j = 0; j < n; j++) {\0A    float dx = xi - x[j]; float dy = yi - y[j]; float dz = zi - z[j];\0A    float r2 = dx * dx + dy * dy + dz * dz;\0A    if (r2 < h2) {\0A      if (r2 > 0.000000000001f) {\0A        float r = sqrt(r2);\0A        float w = h - r;\0A        float rhoj = rho[j];\0A        float pj = (rhoj - rho0) * K;\0A        if (pj < 0.0f) { pj = 0.0f; }\0A        float cp = ((pi + pj) / (rhoj * 2.0f)) * (w * w / r) * cs;\0A        float cvv = (w / rhoj) * cv;\0A        f += dx * cp + (vx[j] - vxi) * cvv;\0A      }\0A    }\0A  }\0A  ax[i] = f * (1.0f / rhoi);\0A}\0A\0A__kernel void kfy(__global const float* x, __global const float* y, __global const float* z, __global const float* vx, __global const float* vy, __global const float* vz, __global const float* rho, __global float* ay, int n, float h2, float h, float K, float rho0, float cs, float cv, float g) {\0A  int i = get_global_id(0);\0A  float xi = x[i]; float yi = y[i]; float zi = z[i]; float vyi = vy[i];\0A  float rhoi = rho[i];\0A  float pi = (rhoi - rho0) * K;\0A  if (pi < 0.0f) { pi = 0.0f; }\0A  float f = 0.0f;\0A  for (int j = 0; j < n; j++) {\0A    float dx = xi - x[j]; float dy = yi - y[j]; float dz = zi - z[j];\0A    float r2 = dx * dx + dy * dy + dz * dz;\0A    if (r2 < h2) {\0A      if (r2 > 0.000000000001f) {\0A        float r = sqrt(r2);\0A        float w = h - r;\0A        float rhoj = rho[j];\0A        float pj = (rhoj - rho0) * K;\0A        if (pj < 0.0f) { pj = 0.0f; }\0A        float cp = ((pi + pj) / (rhoj * 2.0f)) * (w * w / r) * cs;\0A        float cvv = (w / rhoj) * cv;\0A        f += dy * cp + (vy[j] - vyi) * cvv;\0A      }\0A    }\0A  }\0A  ay[i] = f * (1.0f / rhoi) + g;\0A}\0A\0A__kernel void kfz(__global const float* x, __global const float* y, __global const float* z, __global const float* vx, __global const float* vy, __global const float* vz, __global const float* rho, __global float* az, int n, float h2, float h, float K, float rho0, float cs, float cv, float g) {\0A  int i = get_global_id(0);\0A  float xi = x[i]; float yi = y[i]; float zi = z[i]; float vzi = vz[i];\0A  float rhoi = rho[i];\0A  float pi = (rhoi - rho0) * K;\0A  if (pi < 0.0f) { pi = 0.0f; }\0A  float f = 0.0f;\0A  for (int j = 0; j < n; j++) {\0A    float dx = xi - x[j]; float dy = yi - y[j]; float dz = zi - z[j];\0A    float r2 = dx * dx + dy * dy + dz * dz;\0A    if (r2 < h2) {\0A      if (r2 > 0.000000000001f) {\0A        float r = sqrt(r2);\0A        float w = h - r;\0A        float rhoj = rho[j];\0A        float pj = (rhoj - rho0) * K;\0A        if (pj < 0.0f) { pj = 0.0f; }\0A        float cp = ((pi + pj) / (rhoj * 2.0f)) * (w * w / r) * cs;\0A        float cvv = (w / rhoj) * cv;\0A        f += dz * cp + (vz[j] - vzi) * cvv;\0A      }\0A    }\0A  }\0A  az[i] = f * (1.0f / rhoi);\0A}\0A\00"
 @sph_n_krho = private constant [5 x i8] c"krho\00"
 @sph_n_kfx = private constant [4 x i8] c"kfx\00"
@@ -790,9 +793,27 @@ le3:
   call void @glPointSize(float 0x3FF0000000000000)
   call void @glBegin(i32 0)
   call void @glColor3f(float 0x3FE8000000000000, float 0x3FE99999A0000000, float 0x3FECCCCCC0000000)
-  %t56 = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %a2, i64 160, ptr @.s1, i32 1000, i32 %step_no)
+  %t56 = call i32 @fa_cl_backend()
+  %t57 = icmp eq i32 %t56, 1
+  br i1 %t57, label %then4, label %endif5
+then4:
+  %t58 = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %a2, i64 160, ptr @.s1, i32 1000, i32 %step_no)
+  br label %endif5
+endif5:
+  %t59 = icmp eq i32 %t56, 2
+  br i1 %t59, label %then6, label %endif7
+then6:
+  %t60 = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %a2, i64 160, ptr @.s2, i32 1000, i32 %step_no)
+  br label %endif7
+endif7:
+  %t61 = icmp eq i32 %t56, 0
+  br i1 %t61, label %then8, label %endif9
+then8:
+  %t62 = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %a2, i64 160, ptr @.s3, i32 1000, i32 %step_no)
+  br label %endif9
+endif9:
   call void @text(ptr %a2, i32 5, i32 5)
-  call void @text(ptr @.s2, i32 5, i32 25)
+  call void @text(ptr @.s4, i32 5, i32 25)
   call void @glEnd()
   ret void
 }
@@ -837,7 +858,7 @@ then1:
   br label %endif2
 endif2:
   %t5 = call i32 @SDL_Init(i32 32)
-  %t6 = call ptr @SDL_CreateWindow(ptr @.s3, i32 805240832, i32 805240832, i32 640, i32 480, i32 2)
+  %t6 = call ptr @SDL_CreateWindow(ptr @.s5, i32 805240832, i32 805240832, i32 640, i32 480, i32 2)
   %t7 = call ptr @SDL_GL_CreateContext(ptr %t6)
   %t8 = icmp eq ptr %t7, null
   br i1 %t8, label %then3, label %endif4
@@ -1041,7 +1062,7 @@ le44:
   %t93 = load i32, ptr %a8
   %t94 = load double, ptr %a18
   %t95 = fdiv double %t94, 0x408F400000000000
-  %t96 = call i32 (ptr, ...) @printf(ptr @.s4, i32 %t93, i32 1000, double %t95)
+  %t96 = call i32 (ptr, ...) @printf(ptr @.s6, i32 %t93, i32 1000, double %t95)
   call void @SDL_GL_DeleteContext(ptr %t7)
   call void @SDL_DestroyWindow(ptr %t6)
   call void @SDL_Quit()
