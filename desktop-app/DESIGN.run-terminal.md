@@ -1653,6 +1653,10 @@ sleep/curl/date/ask-floating-ai-assistant各自踩過的坑。
 - **限制（誠實）**：沒有真的 GPU 效能（JS 逐元素執行，N 很大時會慢）；不會用到 GPU 上的 `cl_khr_*` 擴充；`clEnqueueReadBuffer` 的 `blocking_read` 永遠視同 blocking；沒有 `clGetEventProfilingInfo`；沒有 `clCreateSubBuffer`、`clEnqueueCopyBuffer`、`clEnqueueMapBuffer`；沒有 `clCreateImage`。WebGPU／cudaweb 的後端另案（`DESIGN.webgpu-cuda.md`）。
 - **範例**：`gpgpu/opencl_vecadd.ll` 把 `phi` 改成 alloca／load／store（本 llc 版本不支援 `phi`），`malloc` 改用 `i32` 參數（wasm32 的 libc 簽名）。nbody3d／fluid3d 還是 CPU 計算（與 OpenCL 無關）。
 
+**2026-11-19 補充（OpenCL GPU 後端與 SDL 文字 HUD 的方案，未實作）**：
+- **WebGPU 在這台不可用**：真 Electron（xvfb＋SwiftShader）裡 `navigator.gpu` 存在，但 `requestAdapter()` 回 `null`，WebGL2 可用。所以 nbody3d／fluid3d 的 OpenCL「真加速」沒有地方能驗證，本批只能驗證 CPU 後備；要在有 GPU adapter 的機器才能量加速。另一條路 WebGL2 transform feedback 做計算，工作量大、尚未評估。
+- **SDL 文字的阻礙**：`llvm_host.js` 的 SDL 每幀最多 200 道繪圖指令（超過的丟掉）。每個字元用矩形畫點陣，一行約幾百個矩形，遠超上限。方案：(A) 提高上限（例如 800）並確認 GUI 橋接端沒有另一個上限，需要改 `llvm_host.js` 的 slice 與 renderer 的 draw 處理，並在本節與 examples/llc/README.md 寫明；(B) 不提高上限，改用 3×5 精簡字型，每行只畫關鍵字，文字仍可能太多，要再量；(C) 新增 SDL_CreateTexture／SDL_UpdateTexture／SDL_RenderCopy 主機函式（文字只畫一次），範圍最大。建議先 A 並實測每幀 ops 數。
+
 ## 22. LLVM IR 的 SDL 音訊與全域陣列初始值（2026-11-19）
 `llvm_host.js` 新增 SDL2 音訊（佇列模式）：`SDL_OpenAudioDevice／OpenAudio／QueueAudio／GetQueuedAudioSize／ClearQueuedAudio／PauseAudioDevice／PauseAudio／CloseAudioDevice／CloseAudio`，每個裝置對應頁面端 `AiChatAudioHost` 的一個串流（`gui.audio` 的 `stream_*`）；取樣格式 U8／S8／U16／S16／S32／F32 轉成 16 位元有號 PCM 再送；裝置一開始暫停。callback 模式（`SDL_AudioSpec.callback` 非 NULL）回 0 並說明，因為主機端無法在 wasm 記憶體配置緩衝區。`llvm_core.js` 新增全域陣列初始值（`[i32 1, i32 2, …]`、float／double 的一維陣列）。範例 `examples/llc/game/sdl2_piano.ll`（原生用 llvmlite＋gcc＋SDL 的 dummy 音訊驅動驗證；wasm 版真 Electron 驗證：串流開啟、鍵盤注入、結束後串流收掉）。
 
