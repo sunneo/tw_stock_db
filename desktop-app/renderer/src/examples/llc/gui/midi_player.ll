@@ -31,7 +31,7 @@ declare i32 @printf(ptr, ...)
 @.s1 = private constant [8 x i8] c"PLAYING\00"
 @.s2 = private constant [8 x i8] c"PAUSED \00"
 @.s3 = private constant [6 x i8] c"NOTES\00"
-@.s4 = private constant [33 x i8] c"SPACE PAUSE  R RESTART  ESC QUIT\00"
+@.s4 = private constant [33 x i8] c"SPACE PAUSE\20\20R RESTART\20\20ESC QUIT\00"
 @.s5 = private constant [13 x i8] c"SOURCE: FILE\00"
 @.s6 = private constant [13 x i8] c"SOURCE: DEMO\00"
 @.s7 = private constant [3 x i8] c"rb\00"

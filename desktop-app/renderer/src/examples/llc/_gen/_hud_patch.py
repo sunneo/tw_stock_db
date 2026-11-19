@@ -69,8 +69,10 @@ def patch(cfg):
     text = '\n'.join(lines)
     # 視窗高度
     if 'win_old' in cfg:
-        assert text.count(cfg['win_old']) == 1, cfg['file']
-        text = text.replace(cfg['win_old'], cfg['win_new'])
+        if text.count(cfg['win_old']) == 1:
+            text = text.replace(cfg['win_old'], cfg['win_new'])
+        else:   # 已經改過（重跑）
+            assert text.count(cfg['win_new']) == 1, cfg['file']
     # 模組層級的 declare（缺才加）
     decls = ''
     for name, line in cfg['decls']:

@@ -207,7 +207,7 @@ def str_global(name, s):
 
 
 # ---- 單元測試用的固定 IR（renderer/src/uml/llvm_hud.test.js 讀它）：python _hud.py 會重產 _hud_test.ll
-TEST_STRINGS = [('t1', 'MUSIC BOX'), ('t2', 'UP DOWN TEMPO')]
+TEST_STRINGS = [('t1', 'MUSIC BOX'), ('t2', 'UP DOWN TEMPO'), ('t4', 'ESC QUIT  NOTES PLAYED '), ('t5', '000')]
 
 
 def test_fixture_text():
@@ -225,6 +225,8 @@ def test_fixture_text():
              '  call void @hud_int(ptr null, i32 70, i32 5, i32 7, i8 255, i8 255, i8 255)\n'
              '  call void @hud_text(ptr null, i32 3, i32 40, ptr @t2, i32 13, i8 255, i8 255, i8 255)\n'
              '  call void @hud_text(ptr null, i32 3, i32 60, ptr @t3, i32 3, i8 255, i8 255, i8 255)\n'
+             '  call void @hud_text(ptr null, i32 3, i32 80, ptr @t4, i32 24, i8 255, i8 255, i8 255)\n'
+             '  call void @hud_text(ptr null, i32 3, i32 100, ptr @t5, i32 3, i8 255, i8 255, i8 255)\n'
              '  ret i32 0\n}')
     return '\n'.join(L) + '\n'
 

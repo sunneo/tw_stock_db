@@ -251,10 +251,10 @@ const pressKey = async (id, node, k) => {
         hudStatic('music_player', '開場', '操作說明（第 2 行）', 8, 244, 'SPACE PAUSE  1 2 3 WAVE', cv);
         hudStatic('music_player', '開場', '操作說明（第 3 行）', 8, 262, 'UP DOWN TEMPO', cv);
         hudRow('music_player', '開場', '播放狀態', 8, 198, 'PLAYING', ['PAUSED '], cv);
-        hudRow('music_player', '開場', '目前波形', 64, 198, 'SQUARE  ', ['TRIANGLE', 'SINE    '], cv);
+        hudRow('music_player', '開場', '目前波形（預設 TRIANGLE）', 64, 198, 'TRIANGLE', ['SQUARE  ', 'SINE    '], cv);
         hudRow('music_player', '開場', 'BPM 數字', 127, 198, '110', ['120', '100'], cv);
-        await pressKey(id, node, '2');
-        hudRow('music_player', '按 2 後', '目前波形', 64, 198, 'TRIANGLE', ['SQUARE  ', 'SINE    '], findAnyCanvas(640, 280));
+        await pressKey(id, node, '1');
+        hudRow('music_player', '按 1 後', '目前波形', 64, 198, 'SQUARE  ', ['TRIANGLE', 'SINE    '], findAnyCanvas(640, 280));
         await pressKey(id, node, ' ');
         hudRow('music_player', '按空白後', '播放狀態', 8, 198, 'PAUSED ', ['PLAYING'], findAnyCanvas(640, 280));
         await pressKey(id, node, 'ArrowUp');
@@ -269,7 +269,7 @@ const pressKey = async (id, node, k) => {
     if (!cv || !node) R.rows.push({ example: 'midi_player', label: 'canvas', pass: false, note: '找不到 640×320 的畫布或節點' });
     else {
         hudRow('midi_player', '開場', '播放狀態', 8, 262, 'PLAYING', ['PAUSED '], cv);
-        hudRow('midi_player', '開場', '音符數', 106, 262, '045', ['000', '100'], cv);
+        hudRow('midi_player', '開場', '音符數（hud_int 補空白）', 106, 262, ' 45', ['  0', '100'], cv);
         hudStatic('midi_player', '開場', '操作說明（第 2 行）', 8, 280, 'SPACE PAUSE  R RESTART  ESC QUIT', cv);
         hudRow('midi_player', '開場', '來源（沒有檔案參數＝示範曲）', 8, 298, 'SOURCE: DEMO', ['SOURCE: FILE'], cv);
         await pressKey(id, node, ' ');
@@ -285,9 +285,9 @@ const pressKey = async (id, node, k) => {
     else {
         hudStatic('sdl2_piano', '開場', '操作說明（第 1 行）', 8, 200, 'A S D F G H J K = C4 TO C5', cv);
         hudStatic('sdl2_piano', '開場', '操作說明（第 2 行）', 8, 218, 'ESC QUIT  NOTES PLAYED ', cv);
-        hudRow('sdl2_piano', '開場', '已彈音符數', 169, 218, '000', ['001'], cv);
+        hudRow('sdl2_piano', '開場', '已彈音符數（hud_int 補空白）', 169, 218, '  0', ['  1'], cv);
         await pressKey(id, node, 'a');
-        hudRow('sdl2_piano', '按 A 後', '已彈音符數', 169, 218, '001', ['000'], findAnyCanvas(640, 250));
+        hudRow('sdl2_piano', '按 A 後', '已彈音符數', 169, 218, '  1', ['  0'], findAnyCanvas(640, 250));
     }
     await stopJob(id);
 }
@@ -299,9 +299,9 @@ const pressKey = async (id, node, k) => {
     else {
         hudStatic('sdl2_pong', '開場', '操作說明', 8, 412, 'W/S OR UP DOWN: MOVE', cv);
         hudStatic('sdl2_pong', '開場', '回擊數標籤', 8, 428, 'RALLY ', cv);
-        hudRow('sdl2_pong', '開場', '回擊數', 50, 428, '000', ['001', '002'], cv);
+        hudRow('sdl2_pong', '開場', '回擊數', 50, 428, '  0', ['  1', '  2'], cv);
         hudStatic('sdl2_pong', '開場', '最佳紀錄標籤', 77, 428, 'BEST ', cv);
-        hudRow('sdl2_pong', '開場', '最佳紀錄', 112, 428, '000', ['001'], cv);
+        hudRow('sdl2_pong', '開場', '最佳紀錄', 112, 428, '  0', ['  1'], cv);
         hudStatic('sdl2_pong', '開場', 'ESC 說明', 147, 428, 'ESC QUIT', cv);
     }
     await stopJob(id);

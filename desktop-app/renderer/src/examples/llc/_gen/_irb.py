@@ -19,9 +19,14 @@ FLT = ("float", "double")
 
 
 def esc(data):
+    # 相鄰的兩個空白寫成 \20：llvm_core 解析 c"…" 時會吃掉連續空白（"A  B" 讀成 "A B"），跳脫就不會
     out = []
-    for b in data:
-        out.append(chr(b) if 32 <= b < 127 and b not in (34, 92) else "\\%02X" % b)
+    n = len(data)
+    for i, b in enumerate(data):
+        if b == 32 and ((i + 1 < n and data[i + 1] == 32) or (i > 0 and data[i - 1] == 32)):
+            out.append("\\20")
+        else:
+            out.append(chr(b) if 32 <= b < 127 and b not in (34, 92) else "\\%02X" % b)
     return "".join(out)
 
 

@@ -55,13 +55,16 @@ const expectRuns = (str, x0, y0) => {
         ...expectRuns('  7', 70, 5),
         ...expectRuns('UP DOWN TEMPO', 3, 40),
         ...expectRuns('A B', 3, 60),
+        ...expectRuns('ESC QUIT  NOTES PLAYED ', 3, 80),
+        ...expectRuns('000', 3, 100),
     ];
     check('矩形的數量與順序', rects.length === exp.length, { got: rects.length, want: exp.length });
     let firstDiff = -1;
     for (let i = 0; i < Math.min(rects.length, exp.length); i++) if (rects[i].join(',') !== exp[i].join(',')) { firstDiff = i; break; }
     check('每個矩形逐一相同（位置與長度）', firstDiff < 0 && rects.length === exp.length, firstDiff >= 0 ? { i: firstDiff, got: rects[firstDiff], want: exp[firstDiff] } : undefined);
     // 非 ASCII 位元組（0xE4）不應出現在任何矩形之外的地方：空白字不畫，所以 "A\xE4B" 的矩形＝ "A B" 的矩形
-    const abExp = expectRuns('A B', 3, 60), abGot = rects.slice(-abExp.length);
+    const tailLen = expectRuns('ESC QUIT  NOTES PLAYED ', 0, 0).length + expectRuns('000', 0, 0).length;
+    const abExp = expectRuns('A B', 3, 60), abGot = rects.slice(rects.length - tailLen - abExp.length, rects.length - tailLen);
     check('非 ASCII 位元組畫成空白', abGot.length === abExp.length && abGot.every((r, i) => r.join(',') === abExp[i].join(',')), abGot);
     check('繪圖次數＝同列連續亮像素段數（MUSIC BOX 應為 103 段）', expectRuns('MUSIC BOX', 0, 0).length === 103, expectRuns('MUSIC BOX', 0, 0).length);
 
