@@ -120,35 +120,71 @@
         const progs = new WeakMap();
         const stats = { allocs: 0, uploads: 0, downloads: 0, dispatches: 0 };
         const dims = (N) => { const uW = Math.max(1, Math.min(N, maxTex)), rows = Math.ceil(N / uW); if (rows > maxTex) throw new Error('N 太大，超過紋理上限'); return { uW, rows }; };
-        const alloc = (N, elem) => {
-            const { uW, rows } = dims(N);
+        const mkTex = (uW, rows) => {
             const tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, tex);
             gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, uW, rows, 0, gl.RGBA, gl.FLOAT, null);
             gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
             gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
             stats.allocs++;
-            return { N, elem, uW, rows, tex, freed: false };
+            return tex;
         };
+        // 一般緩衝區：一張紋理、一個部分。
+        // 打包緩衝區（allocPacked）：一張紋理裝 parts 個長度 Npart 的部分，每部分佔 rowsPer 列；N＝Npart×parts。
+        // view(打包, k)：第 k 個部分，寫入時用列偏移（viewport＋u_base），讀寫都在同一張紋理上。
+        const alloc = (N, elem) => {
+            const { uW, rows } = dims(N);
+            return { N, Npart: N, parts: 1, elem, uW, rows, rowsPer: rows, rowOffset: 0, tex: mkTex(uW, rows), freed: false, packed: false, parent: null };
+        };
+        const allocPacked = (Npart, parts) => {
+            const { uW, rows: rowsPer } = dims(Npart);
+            const rows = rowsPer * parts;
+            if (rows > maxTex) throw new Error('打包後的列數超過紋理上限');
+            return { N: Npart * parts, Npart, parts, elem: 'f32', uW, rows, rowsPer, rowOffset: 0, tex: mkTex(uW, rows), freed: false, packed: true, parent: null };
+        };
+        const view = (parent, k) => {
+            if (!parent.packed || k < 0 || k >= parent.parts) throw new Error('view：不是打包緩衝區或部分編號超出');
+            return { N: parent.Npart, Npart: parent.Npart, parts: 1, elem: 'f32', uW: parent.uW, rows: parent.rowsPer, rowsPer: parent.rowsPer, rowOffset: k * parent.rowsPer, tex: parent.tex, freed: false, packed: false, parent };
+        };
+        // 元素 e 在紋理上的 (列, 欄)：部分 k＝floor(e/Npart)，第 i＝e−k·Npart 個元素在部分內的列＝k·rowsPer＋floor(i/uW)
+        const texelOf = (b, e) => { const k = Math.floor(e / b.Npart), i = e - k * b.Npart; return ((k * b.rowsPer + Math.floor(i / b.uW)) * b.uW + (i % b.uW)) * 4; };
         const upload = (b, src) => {
             if (b.freed) throw new Error('緩衝區已釋放');
             const comps = b.elem === 'f32x4' ? 4 : 1;
-            const data = new Float32Array(b.uW * b.rows * 4);
-            for (let i = 0; i < b.N; i++) for (let c = 0; c < 4; c++) data[i * 4 + c] = comps === 4 ? src[i * 4 + c] : (c === 0 ? src[i] : 0);
+            // 寫入的範圍：整個緩衝區（一般或打包）或 view（只有它的部分；列偏移 rowOffset）
+            const rowLo = b.parent ? b.rowOffset : 0, rowsW = b.parent ? b.rowsPer : b.rows;
+            const data = new Float32Array(b.uW * rowsW * 4);
+            if (b.parent) {
+                for (let i = 0; i < b.Npart; i++) data[(Math.floor(i / b.uW) * b.uW + (i % b.uW)) * 4] = src[i];
+            } else {
+                for (let e = 0; e < b.N; e++) {
+                    const t = texelOf(b, e);
+                    if (comps === 4) for (let c = 0; c < 4; c++) data[t + c] = src[e * 4 + c];
+                    else data[t] = src[e];
+                }
+            }
             gl.bindTexture(gl.TEXTURE_2D, b.tex);
-            gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, b.uW, b.rows, gl.RGBA, gl.FLOAT, data);
+            gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, rowLo, b.uW, rowsW, gl.RGBA, gl.FLOAT, data);
             stats.uploads++;
         };
+        // 讀回：整張紋理（打包緩衝區＝一次 readPixels 讀全部部分）；一般緩衝區與 view 讀它自己的列
         const download = (b) => {
             if (b.freed) throw new Error('緩衝區已釋放');
-            const px = new Float32Array(b.uW * b.rows * 4);
+            const rowLo = b.parent ? b.rowOffset : 0, rowsR = b.parent ? b.rowsPer : b.rows;
+            const px = new Float32Array(b.uW * rowsR * 4);
             gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
             gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, b.tex, 0);
             if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) { gl.bindFramebuffer(gl.FRAMEBUFFER, null); throw new Error('framebuffer 不完整'); }
-            gl.readPixels(0, 0, b.uW, b.rows, gl.RGBA, gl.FLOAT, px);
+            gl.readPixels(0, rowLo, b.uW, rowsR, gl.RGBA, gl.FLOAT, px);
             gl.bindFramebuffer(gl.FRAMEBUFFER, null);
             stats.downloads++;
-            const res = new Float32Array(b.elem === 'f32x4' ? b.N * 4 : b.N);
-            for (let i = 0; i < b.N; i++) { if (b.elem === 'f32x4') for (let c = 0; c < 4; c++) res[i * 4 + c] = px[i * 4 + c]; else res[i] = px[i * 4]; }
+            const n = b.parent ? b.Npart : b.N;
+            const res = new Float32Array(n * (b.elem === 'f32x4' ? 4 : 1));
+            const comps = b.elem === 'f32x4' ? 4 : 1;
+            for (let e = 0; e < n; e++) {
+                // view：px 從它自己的第一列開始（列偏移已扣掉）；一般與打包：px 從第 0 列開始
+                const t = b.parent ? (Math.floor(e / b.uW) * b.uW + (e % b.uW)) * 4 : texelOf(b, e);
+                if (comps === 4) for (let c = 0; c < 4; c++) res[e * 4 + c] = px[t + c]; else res[e] = px[t];
+            }
             return res;
         };
         const program = (kernel) => {
@@ -167,25 +203,28 @@
             progs.set(kernel, p);
             return p;
         };
+        // 派送：輸入 binds（名字 → 緩衝區）、輸出 out（一般緩衝區或 view）。輸出的紋理不能是任何輸入的紋理（feedback）。不讀回。
         const dispatch = (kernel, binds, out, scalars, N) => {
             const p = program(kernel);
-            if (out.freed || out.N !== N) throw new Error('輸出緩衝區大小不符或已釋放');
+            if (out.freed || out.Npart !== N) throw new Error('輸出緩衝區大小不符或已釋放');
             if (out.elem !== p.g.out.elem) throw new Error('輸出型別不符');
             gl.useProgram(p.prog);
             p.g.samplers.forEach((s, unit) => {
                 const b = binds[s.name];
                 if (!b || b.freed) throw new Error('缺少輸入緩衝區 ' + s.name);
-                if (b === out) throw new Error('輸出不能同時是輸入（feedback loop）：' + s.name);
-                if (b.N !== N || b.elem !== s.elem) throw new Error('輸入 ' + s.name + ' 的大小或型別不符');
+                if (b.tex === out.tex) throw new Error('輸出不能同時是輸入（feedback loop）：' + s.name);
+                if (b.Npart !== N || b.elem !== s.elem) throw new Error('輸入 ' + s.name + ' 的大小或型別不符');
                 gl.activeTexture(gl.TEXTURE0 + unit); gl.bindTexture(gl.TEXTURE_2D, b.tex);
                 gl.uniform1i(p.loc[s.name], unit);
             });
             gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
             gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, out.tex, 0);
             if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) { gl.bindFramebuffer(gl.FRAMEBUFFER, null); throw new Error('framebuffer 不完整'); }
-            gl.viewport(0, 0, out.uW, out.rows);
+            const rowOff = out.rowOffset || 0;
+            gl.viewport(0, rowOff, out.uW, out.rows);
             gl.uniform1i(p.loc.u_W, out.uW);
             gl.uniform1i(p.loc.u_count, N);
+            gl.uniform1i(p.loc.u_base, rowOff * out.uW);
             for (const pr of (kernel.params || []).filter((q) => q.kind === 'scalar')) {
                 if (!(pr.name in scalars)) throw new Error('缺少純量 ' + pr.name);
                 if (pr.type === 'i32') gl.uniform1i(p.loc['u_' + pr.name], scalars[pr.name] | 0); else gl.uniform1f(p.loc['u_' + pr.name], Math.fround(scalars[pr.name]));
@@ -194,8 +233,8 @@
             gl.bindFramebuffer(gl.FRAMEBUFFER, null);
             stats.dispatches++;
         };
-        const free = (b) => { if (!b.freed) { gl.deleteTexture(b.tex); b.freed = true; } };
-        return { alloc, upload, download, dispatch, free, stats, maxTex };
+        const free = (b) => { if (!b.freed && !b.parent) { gl.deleteTexture(b.tex); } b.freed = true; };
+        return { alloc, allocPacked, view, upload, download, dispatch, free, stats, maxTex };
     }
 
     return { supportsWebGL2, runGl, compile, createDevice };

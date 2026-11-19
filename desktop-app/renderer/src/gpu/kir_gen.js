@@ -151,9 +151,9 @@
         if (!outStore) return { ok: false, error: 'GLSL（T3）：核心沒有寫入輸出' };
         const vals = out.elem === 'f32x4' ? outStore.e.es.map(ex) : [ex(outStore.e), '0.0', '0.0', '0.0'];
         const uniforms = kernel.params.filter((p) => p.kind === 'scalar').map((p) => ({ name: 'u_' + p.name, type: p.type === 'f32' ? 'float' : 'int' }));
-        const fs = `#version 300 es\nprecision highp float;\nprecision highp int;\nuniform int u_W;\nuniform int u_count;\n${uniforms.map((u) => `uniform ${u.type} ${u.name};`).join('\n')}\n${kernel.params.filter((p) => p.kind === 'buf' && p.access === 'in').map((p) => `uniform highp sampler2D ${p.name};`).join('\n')}\nout vec4 fragColor;\nvoid main() {\n  int gid = int(floor(gl_FragCoord.y)) * u_W + int(floor(gl_FragCoord.x));\n  if (gid >= u_count) { discard; }\n${lines.join('')}  fragColor = vec4(${vals.join(', ')});\n}\n`;
+        const fs = `#version 300 es\nprecision highp float;\nprecision highp int;\nuniform int u_W;\nuniform int u_count;\nuniform int u_base;\n${uniforms.map((u) => `uniform ${u.type} ${u.name};`).join('\n')}\n${kernel.params.filter((p) => p.kind === 'buf' && p.access === 'in').map((p) => `uniform highp sampler2D ${p.name};`).join('\n')}\nout vec4 fragColor;\nvoid main() {\n  int gid = int(floor(gl_FragCoord.y)) * u_W + int(floor(gl_FragCoord.x)) - u_base;\n  if (gid >= u_count) { discard; }\n${lines.join('')}  fragColor = vec4(${vals.join(', ')});\n}\n`;
         const vs = `#version 300 es\nconst vec2 P[3] = vec2[3](vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));\nvoid main() { gl_Position = vec4(P[gl_VertexID], 0.0, 1.0); }\n`;
-        return { ok: true, vs, fs, uniforms: ['u_W', 'u_count'].concat(uniforms.map((u) => u.name)), samplers: kernel.params.filter((p) => p.kind === 'buf' && p.access === 'in').map((p) => ({ name: p.name, elem: p.elem })), out: { name: out.name, elem: out.elem } };
+        return { ok: true, vs, fs, uniforms: ['u_W', 'u_count', 'u_base'].concat(uniforms.map((u) => u.name)), samplers: kernel.params.filter((p) => p.kind === 'buf' && p.access === 'in').map((p) => ({ name: p.name, elem: p.elem })), out: { name: out.name, elem: out.elem } };
     }
 
     return { toWgsl, toGlsl, fl, SCALAR_MARK };

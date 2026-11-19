@@ -1186,3 +1186,10 @@ Python 模擬器與離線模型推論共用同一個 GPU 裝置：
 - llvm_host：`fa_cl_backend` 是新的 host import（SIGS 登記）；裝置派送與 kirRun 派送回報 1，JS 墊片回報 2。
 - 驗證：llvm_core 編譯四個 .ll 都通過；llvm_host 37 項（含 fa_cl_backend 測試）、nbody3d_cl 24 項、fluid3d_cl 20 項通過。**真 Electron 的 HUD 點擊切換與狀態行文字尚未驗證**：app 內嵌的 host 還是舊版（沒有 fa_cl_backend），要等 embed／build 之後才能測。
 - Python 版（只查不改）：renderer/src/examples/python/gpgpu/nbody3d.py、fluid3d.py 的 GPU 來源需要 WebGPU 相容層（fa_gpu）；相容層不在或 kernel 跑不起來時，GPU 來源不提供或自動退回 CPU。
+
+**階段 6 步驟 1c（2026-11-20，裝置層完成；主機與 IR 的整合尚未做）**：每幀一次讀回的第一塊積木。
+- `kir_gen.js`：GLSL 多一個 `u_base` uniform；`gid = floor(y)·u_W + floor(x) − u_base`。runGl 的預設值是 0，行為不變。
+- `kir_webgl2.js` 裝置層：`allocPacked(Npart, parts)` 一張紋理裝多個部分；`view(打包, k)` 是第 k 個部分，寫入時用 viewport 的列偏移與 `u_base`；`download(打包)` 一次 `readPixels` 讀回全部部分；`dispatch` 的 feedback 檢查改成比較紋理（view 與它的 parent 是同一張紋理）。
+- 驗證（`scripts/eval/kir_packed.eval.js`，SwiftShader）：nbody 四個加速度核心寫進同一張打包紋理的四個 view，讀回一次，四個部分與 KIR JS 後端的最大誤差都是 0；輸入與輸出 view 同一張紋理時正確被拒絕（feedback）。計時（每次迭代＝4 次派送＋讀回）：打包 1 次讀回 19.6–20.3 ms；各自讀回 4 次 40.8–42.6 ms（軟體 GL，readPixels 的同步成本是主要差距）。
+- 回歸：kir_test 30、llvm_host 37、nbody3d_cl 24、fluid3d_cl 20 通過；kir_device.eval（既有裝置層）仍正確。
+- **尚未做**：host（llvm_host）與 nbody 的 IR 還沒用打包緩衝區（目前 nbody 仍是讀回 x、y、z、pot 各一次）；這需要 host 有「打包的 cl_mem 與 view」的概念與 IR 的讀回順序改寫；步驟 2（interop 與 llvm_host.js:518 的批次上限）還沒開始。
