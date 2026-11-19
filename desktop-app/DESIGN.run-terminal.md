@@ -1747,3 +1747,6 @@ node scripts/eval/gpgpu_bench.build.js /tmp/gpgpu_bench.js && FA_EVAL_GL=gpu FA_
 - 按鈕底色：選中的（CPU 或 GPU）是綠色（0.12, 0.48, 0.12），未選中的是灰色（0.19）；顏色是 i1 的 select，依 `cl_mode` 即時變。字仍然畫在填色之後。CPU 版的顏色維持原本的配置。
 - `fluid3d_cl.ll` 沒有按鈕，一律走 OpenCL；狀態文字依真正的後端。`nbody3d.ll`（CPU）維持 CPU，視窗標題與狀態行都推薦改跑 `nbody3d_cl.ll`。
 - 驗證（`scripts/eval/llc_hud.eval.js`，SwiftShader）：開場預設 GPU（狀態行 `GPU: OpenCL kernels (WebGL2 backend)`，GPU 按鈕綠、CPU 按鈕灰）；點 CPU → CPU 綠、GPU 灰；再點 GPU → GPU 綠；模擬沒有浮點渲染 → 狀態行 `GPU unavailable: WebGL2 float render not supported`、CPU 綠；CPU 版與 OpenCL 版（預設 GPU）的最終叢集中心相同（293.7, 108.2, 269.0）；fluid 的 y_mean 相同（0.090）。
+
+**fluid3d_cl 的 CPU／GPU 切換（2026-11-20）**：與 nbody3d_cl 一致。預設 GPU（`cl_mode＝1`）；底部兩個按鈕（CPU 在 x=470、GPU 在 x=530，y=440..460），選中的是綠色底，字畫在填色之後。切換不需要讀回或上傳（粒子狀態一直在主機上，每步由 `sph_gpu` 暫存）。GPU 那一步後若 `fa_cl_backend()` 是 2（JS 墊片），`cl_check` 退回 CPU 並設 `cl_fb`，狀態行寫「source: CPU, GPU unavailable (no WebGL2 float)」。狀態行的後端文字：`GPU (OpenCL WebGL2)`、`GPU (OpenCL JS shim, not GPU)`、`GPU (OpenCL, not dispatched)`、`CPU (wasm)`。`fluid3d.ll` 維持純 CPU。
+- 驗證（`scripts/eval/llc_hud.eval.js`，SwiftShader，22 項全部通過）：開場 GPU 綠；點 CPU → CPU 綠；點 GPU → GPU 綠；模擬無浮點 → 退回 CPU 並顯示原因；y_mean 在 CPU 版、預設 GPU 版、途中 CPU→GPU 切換的版本上都是 0.090。

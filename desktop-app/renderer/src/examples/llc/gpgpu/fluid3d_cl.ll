@@ -46,12 +46,16 @@ declare i32 @clEnqueueWriteBuffer(ptr, ptr, i32, i64, i64, ptr, i32, ptr, ptr)
 declare i32 @clFinish(ptr)
 declare i32 @fa_cl_backend()
 
-@.s1 = private constant [47 x i8] c"%d particles | source: OpenCL WebGL2 | step %d\00"
-@.s2 = private constant [58 x i8] c"%d particles | source: OpenCL JS shim (not GPU) | step %d\00"
-@.s3 = private constant [59 x i8] c"%d particles | source: OpenCL not dispatched yet | step %d\00"
-@.s4 = private constant [57 x i8] c"[drag]rotate [wheel]zoom [space]splash [P]pause [R]reset\00"
-@.s5 = private constant [22 x i8] c"IR fluid3d (SPH, CPU)\00"
-@.s6 = private constant [28 x i8] c"frames=%d n=%d y_mean=%.3f\0A\00"
+@.s1 = private constant [44 x i8] c"%d particles | source: CPU (wasm) | step %d\00"
+@.s2 = private constant [72 x i8] c"%d particles | source: CPU, GPU unavailable (no WebGL2 float) | step %d\00"
+@.s3 = private constant [53 x i8] c"%d particles | source: GPU (OpenCL WebGL2) | step %d\00"
+@.s4 = private constant [63 x i8] c"%d particles | source: GPU (OpenCL JS shim, not GPU) | step %d\00"
+@.s5 = private constant [62 x i8] c"%d particles | source: GPU (OpenCL, not dispatched) | step %d\00"
+@.s6 = private constant [57 x i8] c"[drag]rotate [wheel]zoom [space]splash [P]pause [R]reset\00"
+@.s7 = private constant [4 x i8] c"CPU\00"
+@.s8 = private constant [4 x i8] c"GPU\00"
+@.s9 = private constant [22 x i8] c"IR fluid3d (SPH, CPU)\00"
+@.s10 = private constant [28 x i8] c"frames=%d n=%d y_mean=%.3f\0A\00"
 @sph_src = private constant [3646 x i8] c"__kernel void krho(__global const float* x, __global const float* y, __global const float* z, __global float* rho, int n, float h2, float c0) {\0A  int i = get_global_id(0);\0A  float xi = x[i]; float yi = y[i]; float zi = z[i];\0A  float s = 0.0f;\0A  for (int j = 0; j < n; j++) {\0A    float dx = xi - x[j]; float dy = yi - y[j]; float dz = zi - z[j];\0A    float mm = h2 - (dx * dx + dy * dy + dz * dz);\0A    if (mm > 0.0f) {\0A      s += mm * mm * mm;\0A    }\0A  }\0A  rho[i] = s * c0;\0A}\0A\0A__kernel void kfx(__global const float* x, __global const float* y, __global const float* z, __global const float* vx, __global const float* vy, __global const float* vz, __global const float* rho, __global float* ax, int n, float h2, float h, float K, float rho0, float cs, float cv, float g) {\0A  int i = get_global_id(0);\0A  float xi = x[i]; float yi = y[i]; float zi = z[i]; float vxi = vx[i];\0A  float rhoi = rho[i];\0A  float pi = (rhoi - rho0) * K;\0A  if (pi < 0.0f) { pi = 0.0f; }\0A  float f = 0.0f;\0A  for (int j = 0; j < n; j++) {\0A    float dx = xi - x[j]; float dy = yi - y[j]; float dz = zi - z[j];\0A    float r2 = dx * dx + dy * dy + dz * dz;\0A    if (r2 < h2) {\0A      if (r2 > 0.000000000001f) {\0A        float r = sqrt(r2);\0A        float w = h - r;\0A        float rhoj = rho[j];\0A        float pj = (rhoj - rho0) * K;\0A        if (pj < 0.0f) { pj = 0.0f; }\0A        float cp = ((pi + pj) / (rhoj * 2.0f)) * (w * w / r) * cs;\0A        float cvv = (w / rhoj) * cv;\0A        f += dx * cp + (vx[j] - vxi) * cvv;\0A      }\0A    }\0A  }\0A  ax[i] = f * (1.0f / rhoi);\0A}\0A\0A__kernel void kfy(__global const float* x, __global const float* y, __global const float* z, __global const float* vx, __global const float* vy, __global const float* vz, __global const float* rho, __global float* ay, int n, float h2, float h, float K, float rho0, float cs, float cv, float g) {\0A  int i = get_global_id(0);\0A  float xi = x[i]; float yi = y[i]; float zi = z[i]; float vyi = vy[i];\0A  float rhoi = rho[i];\0A  float pi = (rhoi - rho0) * K;\0A  if (pi < 0.0f) { pi = 0.0f; }\0A  float f = 0.0f;\0A  for (int j = 0; j < n; j++) {\0A    float dx = xi - x[j]; float dy = yi - y[j]; float dz = zi - z[j];\0A    float r2 = dx * dx + dy * dy + dz * dz;\0A    if (r2 < h2) {\0A      if (r2 > 0.000000000001f) {\0A        float r = sqrt(r2);\0A        float w = h - r;\0A        float rhoj = rho[j];\0A        float pj = (rhoj - rho0) * K;\0A        if (pj < 0.0f) { pj = 0.0f; }\0A        float cp = ((pi + pj) / (rhoj * 2.0f)) * (w * w / r) * cs;\0A        float cvv = (w / rhoj) * cv;\0A        f += dy * cp + (vy[j] - vyi) * cvv;\0A      }\0A    }\0A  }\0A  ay[i] = f * (1.0f / rhoi) + g;\0A}\0A\0A__kernel void kfz(__global const float* x, __global const float* y, __global const float* z, __global const float* vx, __global const float* vy, __global const float* vz, __global const float* rho, __global float* az, int n, float h2, float h, float K, float rho0, float cs, float cv, float g) {\0A  int i = get_global_id(0);\0A  float xi = x[i]; float yi = y[i]; float zi = z[i]; float vzi = vz[i];\0A  float rhoi = rho[i];\0A  float pi = (rhoi - rho0) * K;\0A  if (pi < 0.0f) { pi = 0.0f; }\0A  float f = 0.0f;\0A  for (int j = 0; j < n; j++) {\0A    float dx = xi - x[j]; float dy = yi - y[j]; float dz = zi - z[j];\0A    float r2 = dx * dx + dy * dy + dz * dz;\0A    if (r2 < h2) {\0A      if (r2 > 0.000000000001f) {\0A        float r = sqrt(r2);\0A        float w = h - r;\0A        float rhoj = rho[j];\0A        float pj = (rhoj - rho0) * K;\0A        if (pj < 0.0f) { pj = 0.0f; }\0A        float cp = ((pi + pj) / (rhoj * 2.0f)) * (w * w / r) * cs;\0A        float cvv = (w / rhoj) * cv;\0A        f += dz * cp + (vz[j] - vzi) * cvv;\0A      }\0A    }\0A  }\0A  az[i] = f * (1.0f / rhoi);\0A}\0A\00"
 @sph_n_krho = private constant [5 x i8] c"krho\00"
 @sph_n_kfx = private constant [4 x i8] c"kfx\00"
@@ -59,6 +63,8 @@ declare i32 @fa_cl_backend()
 @sph_n_kfz = private constant [4 x i8] c"kfz\00"
 @sph_h = global [20 x ptr] zeroinitializer
 @sph_st = global [2 x i32] zeroinitializer
+@cl_mode = global i32 1
+@cl_fb = global i32 0
 @font = private constant [1235 x i32] [i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 8, i32 8, i32 8, i32 8, i32 8, i32 8, i32 0, i32 8, i32 0, i32 0, i32 0, i32 0, i32 0, i32 20, i32 20, i32 20, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 10, i32 20, i32 63, i32 20, i32 20, i32 126, i32 40, i32 40, i32 0, i32 0, i32 0, i32 0, i32 0, i32 8, i32 28, i32 40, i32 40, i32 28, i32 10, i32 10, i32 60, i32 8, i32 8, i32 0, i32 0, i32 0, i32 48, i32 72, i32 50, i32 4, i32 24, i32 46, i32 10, i32 14, i32 0, i32 0, i32 0, i32 0, i32 0, i32 28, i32 32, i32 32, i32 48, i32 74, i32 70, i32 98, i32 62, i32 0, i32 0, i32 0, i32 0, i32 0, i32 8, i32 8, i32 8, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 8, i32 8, i32 8, i32 16, i32 16, i32 16, i32 16, i32 8, i32 8, i32 8, i32 0, i32 0, i32 0, i32 16, i32 8, i32 8, i32 8, i32 8, i32 8, i32 8, i32 8, i32 8, i32 16, i32 0, i32 0, i32 0, i32 0, i32 8, i32 42, i32 28, i32 28, i32 42, i32 8, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 8, i32 8, i32 126, i32 8, i32 8, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 8, i32 8, i32 16, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 28, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 8, i32 8, i32 0, i32 0, i32 0, i32 0, i32 0, i32 2, i32 4, i32 4, i32 8, i32 8, i32 16, i32 16, i32 32, i32 32, i32 0, i32 0, i32 0, i32 0, i32 28, i32 38, i32 34, i32 34, i32 42, i32 34, i32 38, i32 28, i32 0, i32 0, i32 0, i32 0, i32 0, i32 56, i32 8, i32 8, i32 8, i32 8, i32 8, i32 8, i32 62, i32 0, i32 0, i32 0, i32 0, i32 0, i32 28, i32 38, i32 2, i32 4, i32 8, i32 16, i32 32, i32 62, i32 0, i32 0, i32 0, i32 0, i32 0, i32 28, i32 38, i32 6, i32 24, i32 6, i32 2, i32 38, i32 60, i32 0, i32 0, i32 0, i32 0, i32 0, i32 12, i32 12, i32 20, i32 36, i32 36, i32 62, i32 4, i32 4, i32 0, i32 0, i32 0, i32 0, i32 0, i32 60, i32 32, i32 32, i32 60, i32 6, i32 2, i32 6, i32 60, i32 0, i32 0, i32 0, i32 0, i32 0, i32 28, i32 48, i32 32, i32 60, i32 34, i32 34, i32 34, i32 28, i32 0, i32 0, i32 0, i32 0, i32 0, i32 62, i32 4, i32 4, i32 4, i32 8, i32 8, i32 16, i32 16, i32 0, i32 0, i32 0, i32 0, i32 0, i32 28, i32 34, i32 34, i32 28, i32 38, i32 34, i32 34, i32 28, i32 0, i32 0, i32 0, i32 0, i32 0, i32 28, i32 38, i32 34, i32 38, i32 58, i32 2, i32 4, i32 60, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 8, i32 8, i32 0, i32 0, i32 8, i32 8, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 8, i32 8, i32 0, i32 0, i32 8, i32 8, i32 16, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 2, i32 28, i32 96, i32 24, i32 6, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 126, i32 0, i32 126, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 96, i32 28, i32 2, i32 28, i32 96, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 60, i32 6, i32 4, i32 8, i32 8, i32 8, i32 0, i32 8, i32 0, i32 0, i32 0, i32 0, i32 0, i32 28, i32 34, i32 66, i32 78, i32 82, i32 82, i32 78, i32 32, i32 32, i32 30, i32 0, i32 0, i32 0, i32 8, i32 24, i32 20, i32 20, i32 36, i32 62, i32 34, i32 66, i32 0, i32 0, i32 0, i32 0, i32 0, i32 60, i32 34, i32 34, i32 60, i32 34, i32 34, i32 34, i32 60, i32 0, i32 0, i32 0, i32 0, i32 0, i32 28, i32 50, i32 32, i32 32, i32 32, i32 32, i32 50, i32 28, i32 0, i32 0, i32 0, i32 0, i32 0, i32 56, i32 36, i32 34, i32 34, i32 34, i32 34, i32 36, i32 60, i32 0, i32 0, i32 0, i32 0, i32 0, i32 62, i32 32, i32 32, i32 62, i32 32, i32 32, i32 32, i32 62, i32 0, i32 0, i32 0, i32 0, i32 0, i32 62, i32 32, i32 32, i32 62, i32 32, i32 32, i32 32, i32 32, i32 0, i32 0, i32 0, i32 0, i32 0, i32 28, i32 34, i32 32, i32 32, i32 38, i32 34, i32 34, i32 28, i32 0, i32 0, i32 0, i32 0, i32 0, i32 34, i32 34, i32 34, i32 62, i32 34, i32 34, i32 34, i32 34, i32 0, i32 0, i32 0, i32 0, i32 0, i32 62, i32 8, i32 8, i32 8, i32 8, i32 8, i32 8, i32 62, i32 0, i32 0, i32 0, i32 0, i32 0, i32 28, i32 4, i32 4, i32 4, i32 4, i32 4, i32 36, i32 56, i32 0, i32 0, i32 0, i32 0, i32 0, i32 34, i32 36, i32 40, i32 56, i32 40, i32 36, i32 38, i32 34, i32 0, i32 0, i32 0, i32 0, i32 0, i32 32, i32 32, i32 32, i32 32, i32 32, i32 32, i32 32, i32 62, i32 0, i32 0, i32 0, i32 0, i32 0, i32 98, i32 102, i32 86, i32 90, i32 74, i32 66, i32 66, i32 66, i32 0, i32 0, i32 0, i32 0, i32 0, i32 34, i32 50, i32 50, i32 42, i32 42, i32 42, i32 38, i32 38, i32 0, i32 0, i32 0, i32 0, i32 0, i32 28, i32 38, i32 34, i32 34, i32 34, i32 34, i32 38, i32 28, i32 0, i32 0, i32 0, i32 0, i32 0, i32 60, i32 34, i32 34, i32 34, i32 60, i32 32, i32 32, i32 32, i32 0, i32 0, i32 0, i32 0, i32 0, i32 28, i32 38, i32 34, i32 34, i32 34, i32 34, i32 38, i32 28, i32 4, i32 0, i32 0, i32 0, i32 0, i32 60, i32 38, i32 34, i32 38, i32 56, i32 36, i32 34, i32 34, i32 0, i32 0, i32 0, i32 0, i32 0, i32 28, i32 36, i32 32, i32 48, i32 12, i32 2, i32 34, i32 28, i32 0, i32 0, i32 0, i32 0, i32 0, i32 126, i32 8, i32 8, i32 8, i32 8, i32 8, i32 8, i32 8, i32 0, i32 0, i32 0, i32 0, i32 0, i32 34, i32 34, i32 34, i32 34, i32 34, i32 34, i32 34, i32 28, i32 0, i32 0, i32 0, i32 0, i32 0, i32 98, i32 34, i32 34, i32 36, i32 20, i32 20, i32 24, i32 8, i32 0, i32 0, i32 0, i32 0, i32 0, i32 65, i32 66, i32 74, i32 90, i32 58, i32 54, i32 54, i32 36, i32 0, i32 0, i32 0, i32 0, i32 0, i32 34, i32 52, i32 20, i32 8, i32 24, i32 20, i32 34, i32 98, i32 0, i32 0, i32 0, i32 0, i32 0, i32 98, i32 38, i32 20, i32 24, i32 8, i32 8, i32 8, i32 8, i32 0, i32 0, i32 0, i32 0, i32 0, i32 62, i32 2, i32 4, i32 8, i32 8, i32 16, i32 32, i32 62, i32 0, i32 0, i32 0, i32 0, i32 28, i32 16, i32 16, i32 16, i32 16, i32 16, i32 16, i32 16, i32 16, i32 28, i32 0, i32 0, i32 0, i32 0, i32 32, i32 32, i32 16, i32 16, i32 8, i32 8, i32 4, i32 4, i32 2, i32 0, i32 0, i32 0, i32 24, i32 8, i32 8, i32 8, i32 8, i32 8, i32 8, i32 8, i32 8, i32 24, i32 0, i32 0, i32 0, i32 0, i32 24, i32 20, i32 34, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 16, i32 8, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 60, i32 2, i32 62, i32 34, i32 38, i32 58, i32 0, i32 0, i32 0, i32 0, i32 32, i32 32, i32 32, i32 60, i32 34, i32 34, i32 34, i32 34, i32 60, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 30, i32 48, i32 32, i32 32, i32 48, i32 30, i32 0, i32 0, i32 0, i32 0, i32 2, i32 2, i32 2, i32 26, i32 38, i32 34, i32 34, i32 38, i32 26, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 28, i32 34, i32 62, i32 32, i32 32, i32 30, i32 0, i32 0, i32 0, i32 0, i32 14, i32 8, i32 8, i32 62, i32 8, i32 8, i32 8, i32 8, i32 8, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 26, i32 38, i32 34, i32 34, i32 38, i32 26, i32 4, i32 60, i32 0, i32 0, i32 32, i32 32, i32 32, i32 60, i32 38, i32 34, i32 34, i32 34, i32 34, i32 0, i32 0, i32 0, i32 0, i32 8, i32 0, i32 0, i32 56, i32 8, i32 8, i32 8, i32 8, i32 62, i32 0, i32 0, i32 0, i32 0, i32 8, i32 0, i32 0, i32 24, i32 8, i32 8, i32 8, i32 8, i32 8, i32 8, i32 56, i32 0, i32 0, i32 32, i32 32, i32 32, i32 38, i32 44, i32 56, i32 44, i32 36, i32 34, i32 0, i32 0, i32 0, i32 0, i32 48, i32 16, i32 16, i32 16, i32 16, i32 16, i32 16, i32 8, i32 14, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 54, i32 42, i32 42, i32 42, i32 42, i32 42, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 60, i32 38, i32 34, i32 34, i32 34, i32 34, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 28, i32 38, i32 34, i32 34, i32 38, i32 28, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 60, i32 34, i32 34, i32 34, i32 34, i32 60, i32 32, i32 32, i32 0, i32 0, i32 0, i32 0, i32 0, i32 26, i32 38, i32 34, i32 34, i32 38, i32 26, i32 2, i32 2, i32 0, i32 0, i32 0, i32 0, i32 0, i32 30, i32 16, i32 16, i32 16, i32 16, i32 16, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 28, i32 32, i32 48, i32 12, i32 6, i32 60, i32 0, i32 0, i32 0, i32 0, i32 0, i32 16, i32 16, i32 62, i32 16, i32 16, i32 16, i32 16, i32 14, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 34, i32 34, i32 34, i32 34, i32 38, i32 26, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 34, i32 34, i32 36, i32 20, i32 24, i32 24, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 65, i32 66, i32 42, i32 58, i32 58, i32 52, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 34, i32 20, i32 24, i32 24, i32 20, i32 34, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 34, i32 34, i32 20, i32 20, i32 24, i32 8, i32 24, i32 48, i32 0, i32 0, i32 0, i32 0, i32 0, i32 62, i32 4, i32 8, i32 16, i32 16, i32 62, i32 0, i32 0, i32 0, i32 0, i32 12, i32 8, i32 8, i32 8, i32 48, i32 8, i32 8, i32 8, i32 8, i32 12, i32 0, i32 0, i32 0, i32 8, i32 8, i32 8, i32 8, i32 8, i32 8, i32 8, i32 8, i32 8, i32 8, i32 8, i32 0, i32 0, i32 48, i32 8, i32 8, i32 8, i32 4, i32 8, i32 8, i32 8, i32 8, i32 48, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 0, i32 48, i32 78, i32 0, i32 0, i32 0, i32 0]
 
 define void @init(ptr %pos, ptr %vel) {
@@ -384,6 +390,38 @@ run:
   ret void
 }
 
+define i32 @cl_mode() {
+entry:
+  %mv = load i32, ptr @cl_mode
+  ret i32 %mv
+}
+
+define i32 @cl_fb() {
+entry:
+  %fv = load i32, ptr @cl_fb
+  ret i32 %fv
+}
+
+define void @cl_set_mode(i32 %m) {
+entry:
+  store i32 %m, ptr @cl_mode
+  store i32 0, ptr @cl_fb
+  ret void
+}
+
+define void @cl_check() {
+entry:
+  %be = call i32 @fa_cl_backend()
+  %isjs = icmp eq i32 %be, 2
+  br i1 %isjs, label %fb, label %ok
+fb:
+  store i32 0, ptr @cl_mode
+  store i32 1, ptr @cl_fb
+  br label %ok
+ok:
+  ret void
+}
+
 
 
 define void @step(ptr %pos, ptr %vel, ptr %rho, ptr %prs, ptr %acc) {
@@ -402,178 +440,422 @@ entry:
   %a12 = alloca [1000 x float]
   %a13 = alloca [1000 x float]
   %a14 = alloca [1000 x float]
+  %a15 = alloca double
+  %a16 = alloca double
+  %a17 = alloca double
   store i32 0, ptr %a1
   store i32 0, ptr %a2
   store i32 0, ptr %a3
   store double 0x0000000000000000, ptr %a4
+  %t1 = call i32 @cl_mode()
+  %t2 = icmp ne i32 %t1, 0
+  br i1 %t2, label %then1, label %endif2
+then1:
   store i32 0, ptr %a1
-  br label %lc1
-lc1:
-  %t1 = load i32, ptr %a1
-  %t2 = icmp slt i32 %t1, 1000
-  br i1 %t2, label %lb2, label %le3
-lb2:
+  br label %lc3
+lc3:
   %t3 = load i32, ptr %a1
-  %t4 = mul i32 %t3, 3
-  %t5 = getelementptr double, ptr %pos, i32 %t4
-  %t6 = load double, ptr %t5
-  %t7 = fptrunc double %t6 to float
-  %t8 = load i32, ptr %a1
-  %t9 = getelementptr float, ptr %a5, i32 %t8
-  store float %t7, ptr %t9
-  %t10 = add i32 %t4, 1
-  %t11 = getelementptr double, ptr %pos, i32 %t10
-  %t12 = load double, ptr %t11
-  %t13 = fptrunc double %t12 to float
-  %t14 = load i32, ptr %a1
-  %t15 = getelementptr float, ptr %a6, i32 %t14
-  store float %t13, ptr %t15
-  %t16 = add i32 %t4, 2
-  %t17 = getelementptr double, ptr %pos, i32 %t16
-  %t18 = load double, ptr %t17
-  %t19 = fptrunc double %t18 to float
-  %t20 = load i32, ptr %a1
-  %t21 = getelementptr float, ptr %a7, i32 %t20
-  store float %t19, ptr %t21
-  %t22 = getelementptr double, ptr %vel, i32 %t4
-  %t23 = load double, ptr %t22
-  %t24 = fptrunc double %t23 to float
-  %t25 = load i32, ptr %a1
-  %t26 = getelementptr float, ptr %a8, i32 %t25
-  store float %t24, ptr %t26
-  %t27 = add i32 %t4, 1
-  %t28 = getelementptr double, ptr %vel, i32 %t27
-  %t29 = load double, ptr %t28
-  %t30 = fptrunc double %t29 to float
-  %t31 = load i32, ptr %a1
-  %t32 = getelementptr float, ptr %a9, i32 %t31
-  store float %t30, ptr %t32
-  %t33 = add i32 %t4, 2
-  %t34 = getelementptr double, ptr %vel, i32 %t33
-  %t35 = load double, ptr %t34
-  %t36 = fptrunc double %t35 to float
-  %t37 = load i32, ptr %a1
-  %t38 = getelementptr float, ptr %a10, i32 %t37
-  store float %t36, ptr %t38
+  %t4 = icmp slt i32 %t3, 1000
+  br i1 %t4, label %lb4, label %le5
+lb4:
+  %t5 = load i32, ptr %a1
+  %t6 = mul i32 %t5, 3
+  %t7 = getelementptr double, ptr %pos, i32 %t6
+  %t8 = load double, ptr %t7
+  %t9 = fptrunc double %t8 to float
+  %t10 = load i32, ptr %a1
+  %t11 = getelementptr float, ptr %a5, i32 %t10
+  store float %t9, ptr %t11
+  %t12 = add i32 %t6, 1
+  %t13 = getelementptr double, ptr %pos, i32 %t12
+  %t14 = load double, ptr %t13
+  %t15 = fptrunc double %t14 to float
+  %t16 = load i32, ptr %a1
+  %t17 = getelementptr float, ptr %a6, i32 %t16
+  store float %t15, ptr %t17
+  %t18 = add i32 %t6, 2
+  %t19 = getelementptr double, ptr %pos, i32 %t18
+  %t20 = load double, ptr %t19
+  %t21 = fptrunc double %t20 to float
+  %t22 = load i32, ptr %a1
+  %t23 = getelementptr float, ptr %a7, i32 %t22
+  store float %t21, ptr %t23
+  %t24 = getelementptr double, ptr %vel, i32 %t6
+  %t25 = load double, ptr %t24
+  %t26 = fptrunc double %t25 to float
+  %t27 = load i32, ptr %a1
+  %t28 = getelementptr float, ptr %a8, i32 %t27
+  store float %t26, ptr %t28
+  %t29 = add i32 %t6, 1
+  %t30 = getelementptr double, ptr %vel, i32 %t29
+  %t31 = load double, ptr %t30
+  %t32 = fptrunc double %t31 to float
+  %t33 = load i32, ptr %a1
+  %t34 = getelementptr float, ptr %a9, i32 %t33
+  store float %t32, ptr %t34
+  %t35 = add i32 %t6, 2
+  %t36 = getelementptr double, ptr %vel, i32 %t35
+  %t37 = load double, ptr %t36
+  %t38 = fptrunc double %t37 to float
   %t39 = load i32, ptr %a1
-  %t40 = add i32 %t39, 1
-  store i32 %t40, ptr %a1
-  br label %lc1
-le3:
+  %t40 = getelementptr float, ptr %a10, i32 %t39
+  store float %t38, ptr %t40
+  %t41 = load i32, ptr %a1
+  %t42 = add i32 %t41, 1
+  store i32 %t42, ptr %a1
+  br label %lc3
+le5:
   call void @sph_gpu(ptr %a5, ptr %a6, ptr %a7, ptr %a8, ptr %a9, ptr %a10, ptr %a11, ptr %a12, ptr %a13, ptr %a14, i32 1000, float 0x3F847AE140000000, float 0x3FB99999A0000000, float 0x41A7586A60000000, float 0x4069000000000000, float 0x408F400000000000, float 0x413B521D20000000, float 0x41547D95E0000000, float 0xC0239999A0000000)
   store i32 0, ptr %a1
-  br label %lc4
-lc4:
-  %t41 = load i32, ptr %a1
-  %t42 = icmp slt i32 %t41, 1000
-  br i1 %t42, label %lb5, label %le6
-lb5:
+  br label %lc6
+lc6:
   %t43 = load i32, ptr %a1
-  %t44 = mul i32 %t43, 3
+  %t44 = icmp slt i32 %t43, 1000
+  br i1 %t44, label %lb7, label %le8
+lb7:
   %t45 = load i32, ptr %a1
-  %t46 = getelementptr float, ptr %a11, i32 %t45
-  %t47 = load float, ptr %t46
-  %t48 = fpext float %t47 to double
-  %t49 = load i32, ptr %a1
-  %t50 = getelementptr double, ptr %rho, i32 %t49
-  store double %t48, ptr %t50
+  %t46 = mul i32 %t45, 3
+  %t47 = load i32, ptr %a1
+  %t48 = getelementptr float, ptr %a11, i32 %t47
+  %t49 = load float, ptr %t48
+  %t50 = fpext float %t49 to double
   %t51 = load i32, ptr %a1
-  %t52 = getelementptr float, ptr %a12, i32 %t51
-  %t53 = load float, ptr %t52
-  %t54 = fpext float %t53 to double
-  %t55 = getelementptr double, ptr %acc, i32 %t44
-  store double %t54, ptr %t55
-  %t56 = load i32, ptr %a1
-  %t57 = getelementptr float, ptr %a13, i32 %t56
-  %t58 = load float, ptr %t57
-  %t59 = fpext float %t58 to double
-  %t60 = add i32 %t44, 1
-  %t61 = getelementptr double, ptr %acc, i32 %t60
-  store double %t59, ptr %t61
-  %t62 = load i32, ptr %a1
-  %t63 = getelementptr float, ptr %a14, i32 %t62
-  %t64 = load float, ptr %t63
-  %t65 = fpext float %t64 to double
-  %t66 = add i32 %t44, 2
-  %t67 = getelementptr double, ptr %acc, i32 %t66
-  store double %t65, ptr %t67
-  %t68 = load i32, ptr %a1
-  %t69 = add i32 %t68, 1
-  store i32 %t69, ptr %a1
-  br label %lc4
-le6:
-  store i32 0, ptr %a1
-  br label %lc7
-lc7:
+  %t52 = getelementptr double, ptr %rho, i32 %t51
+  store double %t50, ptr %t52
+  %t53 = load i32, ptr %a1
+  %t54 = getelementptr float, ptr %a12, i32 %t53
+  %t55 = load float, ptr %t54
+  %t56 = fpext float %t55 to double
+  %t57 = getelementptr double, ptr %acc, i32 %t46
+  store double %t56, ptr %t57
+  %t58 = load i32, ptr %a1
+  %t59 = getelementptr float, ptr %a13, i32 %t58
+  %t60 = load float, ptr %t59
+  %t61 = fpext float %t60 to double
+  %t62 = add i32 %t46, 1
+  %t63 = getelementptr double, ptr %acc, i32 %t62
+  store double %t61, ptr %t63
+  %t64 = load i32, ptr %a1
+  %t65 = getelementptr float, ptr %a14, i32 %t64
+  %t66 = load float, ptr %t65
+  %t67 = fpext float %t66 to double
+  %t68 = add i32 %t46, 2
+  %t69 = getelementptr double, ptr %acc, i32 %t68
+  store double %t67, ptr %t69
   %t70 = load i32, ptr %a1
-  %t71 = icmp slt i32 %t70, 1000
-  br i1 %t71, label %lb8, label %le9
-lb8:
-  store i32 0, ptr %a3
-  br label %lc10
-lc10:
-  %t72 = load i32, ptr %a3
-  %t73 = icmp slt i32 %t72, 3
-  br i1 %t73, label %lb11, label %le12
-lb11:
-  %t74 = load i32, ptr %a1
-  %t75 = mul i32 %t74, 3
-  %t76 = load i32, ptr %a3
-  %t77 = add i32 %t75, %t76
-  %t78 = getelementptr double, ptr %vel, i32 %t77
-  %t79 = load double, ptr %t78
-  %t80 = getelementptr double, ptr %acc, i32 %t77
-  %t81 = load double, ptr %t80
-  %t82 = fmul double %t81, 0x3F689374BC6A7EFA
-  %t83 = fadd double %t79, %t82
-  %t84 = getelementptr double, ptr %vel, i32 %t77
-  store double %t83, ptr %t84
-  %t85 = getelementptr double, ptr %pos, i32 %t77
-  %t86 = load double, ptr %t85
-  %t87 = getelementptr double, ptr %vel, i32 %t77
+  %t71 = add i32 %t70, 1
+  store i32 %t71, ptr %a1
+  br label %lc6
+le8:
+  call void @cl_check()
+  br label %endif2
+endif2:
+  %t72 = icmp eq i32 %t1, 0
+  br i1 %t72, label %then9, label %endif10
+then9:
+  store i32 0, ptr %a1
+  br label %lc11
+lc11:
+  %t73 = load i32, ptr %a1
+  %t74 = icmp slt i32 %t73, 1000
+  br i1 %t74, label %lb12, label %le13
+lb12:
+  store double 0x0000000000000000, ptr %a4
+  %t75 = load i32, ptr %a1
+  %t76 = mul i32 %t75, 3
+  store i32 0, ptr %a2
+  br label %lc14
+lc14:
+  %t77 = load i32, ptr %a2
+  %t78 = icmp slt i32 %t77, 1000
+  br i1 %t78, label %lb15, label %le16
+lb15:
+  %t79 = load i32, ptr %a2
+  %t80 = mul i32 %t79, 3
+  %t81 = getelementptr double, ptr %pos, i32 %t76
+  %t82 = load double, ptr %t81
+  %t83 = getelementptr double, ptr %pos, i32 %t80
+  %t84 = load double, ptr %t83
+  %t85 = fsub double %t82, %t84
+  %t86 = add i32 %t76, 1
+  %t87 = getelementptr double, ptr %pos, i32 %t86
   %t88 = load double, ptr %t87
-  %t89 = fmul double %t88, 0x3F689374BC6A7EFA
-  %t90 = fadd double %t86, %t89
-  %t91 = getelementptr double, ptr %pos, i32 %t77
-  store double %t90, ptr %t91
-  %t92 = getelementptr double, ptr %pos, i32 %t77
-  %t93 = load double, ptr %t92
-  %t94 = fcmp olt double %t93, 0x3F947AE147AE147B
-  br i1 %t94, label %then13, label %endif14
-then13:
-  %t95 = getelementptr double, ptr %pos, i32 %t77
-  store double 0x3F947AE147AE147B, ptr %t95
-  %t96 = getelementptr double, ptr %vel, i32 %t77
-  %t97 = load double, ptr %t96
-  %t98 = fmul double %t97, 0xBFD3333333333333
-  %t99 = getelementptr double, ptr %vel, i32 %t77
-  store double %t98, ptr %t99
-  br label %endif14
-endif14:
-  %t100 = getelementptr double, ptr %pos, i32 %t77
-  %t101 = load double, ptr %t100
-  %t102 = fcmp ogt double %t101, 0x3FEF5C28F5C28F5C
-  br i1 %t102, label %then15, label %endif16
-then15:
-  %t103 = getelementptr double, ptr %pos, i32 %t77
-  store double 0x3FEF5C28F5C28F5C, ptr %t103
-  %t104 = getelementptr double, ptr %vel, i32 %t77
-  %t105 = load double, ptr %t104
-  %t106 = fmul double %t105, 0xBFD3333333333333
-  %t107 = getelementptr double, ptr %vel, i32 %t77
-  store double %t106, ptr %t107
-  br label %endif16
-endif16:
-  %t108 = load i32, ptr %a3
-  %t109 = add i32 %t108, 1
-  store i32 %t109, ptr %a3
-  br label %lc10
-le12:
-  %t110 = load i32, ptr %a1
-  %t111 = add i32 %t110, 1
-  store i32 %t111, ptr %a1
-  br label %lc7
-le9:
+  %t89 = add i32 %t80, 1
+  %t90 = getelementptr double, ptr %pos, i32 %t89
+  %t91 = load double, ptr %t90
+  %t92 = fsub double %t88, %t91
+  %t93 = add i32 %t76, 2
+  %t94 = getelementptr double, ptr %pos, i32 %t93
+  %t95 = load double, ptr %t94
+  %t96 = add i32 %t80, 2
+  %t97 = getelementptr double, ptr %pos, i32 %t96
+  %t98 = load double, ptr %t97
+  %t99 = fsub double %t95, %t98
+  %t100 = fmul double %t85, %t85
+  %t101 = fmul double %t92, %t92
+  %t102 = fadd double %t100, %t101
+  %t103 = fmul double %t99, %t99
+  %t104 = fadd double %t102, %t103
+  %t105 = fsub double 0x3F847AE147AE147C, %t104
+  %t106 = fcmp ogt double %t105, 0x0000000000000000
+  br i1 %t106, label %then17, label %endif18
+then17:
+  %t107 = fmul double %t105, %t105
+  %t108 = fmul double %t107, %t105
+  %t109 = load double, ptr %a4
+  %t110 = fadd double %t109, %t108
+  store double %t110, ptr %a4
+  br label %endif18
+endif18:
+  %t111 = load i32, ptr %a2
+  %t112 = add i32 %t111, 1
+  store i32 %t112, ptr %a2
+  br label %lc14
+le16:
+  %t113 = load double, ptr %a4
+  %t114 = fmul double %t113, 0x41A7586A5FC3E4E0
+  %t115 = load i32, ptr %a1
+  %t116 = getelementptr double, ptr %rho, i32 %t115
+  store double %t114, ptr %t116
+  %t117 = load i32, ptr %a1
+  %t118 = getelementptr double, ptr %rho, i32 %t117
+  %t119 = load double, ptr %t118
+  %t120 = fsub double %t119, 0x408F400000000000
+  %t121 = fmul double %t120, 0x4069000000000000
+  %t122 = fcmp ogt double %t121, 0x0000000000000000
+  %t123 = select i1 %t122, double %t121, double 0x0000000000000000
+  %t124 = load i32, ptr %a1
+  %t125 = getelementptr double, ptr %prs, i32 %t124
+  store double %t123, ptr %t125
+  %t126 = load i32, ptr %a1
+  %t127 = add i32 %t126, 1
+  store i32 %t127, ptr %a1
+  br label %lc11
+le13:
+  store double 0x0000000000000000, ptr %a15
+  store double 0x0000000000000000, ptr %a16
+  store double 0x0000000000000000, ptr %a17
+  store i32 0, ptr %a1
+  br label %lc19
+lc19:
+  %t128 = load i32, ptr %a1
+  %t129 = icmp slt i32 %t128, 1000
+  br i1 %t129, label %lb20, label %le21
+lb20:
+  store double 0x0000000000000000, ptr %a15
+  store double 0x0000000000000000, ptr %a16
+  store double 0x0000000000000000, ptr %a17
+  %t130 = load i32, ptr %a1
+  %t131 = mul i32 %t130, 3
+  store i32 0, ptr %a2
+  br label %lc22
+lc22:
+  %t132 = load i32, ptr %a2
+  %t133 = icmp slt i32 %t132, 1000
+  br i1 %t133, label %lb23, label %le24
+lb23:
+  %t134 = load i32, ptr %a2
+  %t135 = mul i32 %t134, 3
+  %t136 = getelementptr double, ptr %pos, i32 %t131
+  %t137 = load double, ptr %t136
+  %t138 = getelementptr double, ptr %pos, i32 %t135
+  %t139 = load double, ptr %t138
+  %t140 = fsub double %t137, %t139
+  %t141 = add i32 %t131, 1
+  %t142 = getelementptr double, ptr %pos, i32 %t141
+  %t143 = load double, ptr %t142
+  %t144 = add i32 %t135, 1
+  %t145 = getelementptr double, ptr %pos, i32 %t144
+  %t146 = load double, ptr %t145
+  %t147 = fsub double %t143, %t146
+  %t148 = add i32 %t131, 2
+  %t149 = getelementptr double, ptr %pos, i32 %t148
+  %t150 = load double, ptr %t149
+  %t151 = add i32 %t135, 2
+  %t152 = getelementptr double, ptr %pos, i32 %t151
+  %t153 = load double, ptr %t152
+  %t154 = fsub double %t150, %t153
+  %t155 = fmul double %t140, %t140
+  %t156 = fmul double %t147, %t147
+  %t157 = fadd double %t155, %t156
+  %t158 = fmul double %t154, %t154
+  %t159 = fadd double %t157, %t158
+  %t160 = fcmp olt double %t159, 0x3F847AE147AE147C
+  %t161 = fcmp ogt double %t159, 0x3D719799812DEA11
+  %t162 = and i1 %t160, %t161
+  br i1 %t162, label %then25, label %endif26
+then25:
+  %t163 = call double @sqrt(double %t159)
+  %t164 = fsub double 0x3FB999999999999A, %t163
+  %t165 = load i32, ptr %a1
+  %t166 = getelementptr double, ptr %prs, i32 %t165
+  %t167 = load double, ptr %t166
+  %t168 = load i32, ptr %a2
+  %t169 = getelementptr double, ptr %prs, i32 %t168
+  %t170 = load double, ptr %t169
+  %t171 = fadd double %t167, %t170
+  %t172 = load i32, ptr %a2
+  %t173 = getelementptr double, ptr %rho, i32 %t172
+  %t174 = load double, ptr %t173
+  %t175 = fmul double %t174, 0x4000000000000000
+  %t176 = fdiv double %t171, %t175
+  %t177 = fmul double %t164, %t164
+  %t178 = fdiv double %t177, %t163
+  %t179 = fmul double %t176, %t178
+  %t180 = fmul double %t179, 0x413B521D1C1ACAE7
+  %t181 = fmul double %t140, %t180
+  %t182 = load double, ptr %a15
+  %t183 = fadd double %t182, %t181
+  store double %t183, ptr %a15
+  %t184 = fmul double %t147, %t180
+  %t185 = load double, ptr %a16
+  %t186 = fadd double %t185, %t184
+  store double %t186, ptr %a16
+  %t187 = fmul double %t154, %t180
+  %t188 = load double, ptr %a17
+  %t189 = fadd double %t188, %t187
+  store double %t189, ptr %a17
+  %t190 = load i32, ptr %a2
+  %t191 = getelementptr double, ptr %rho, i32 %t190
+  %t192 = load double, ptr %t191
+  %t193 = fdiv double %t164, %t192
+  %t194 = fmul double %t193, 0x41547D95D514182D
+  %t195 = getelementptr double, ptr %vel, i32 %t135
+  %t196 = load double, ptr %t195
+  %t197 = getelementptr double, ptr %vel, i32 %t131
+  %t198 = load double, ptr %t197
+  %t199 = fsub double %t196, %t198
+  %t200 = fmul double %t199, %t194
+  %t201 = load double, ptr %a15
+  %t202 = fadd double %t201, %t200
+  store double %t202, ptr %a15
+  %t203 = add i32 %t135, 1
+  %t204 = getelementptr double, ptr %vel, i32 %t203
+  %t205 = load double, ptr %t204
+  %t206 = add i32 %t131, 1
+  %t207 = getelementptr double, ptr %vel, i32 %t206
+  %t208 = load double, ptr %t207
+  %t209 = fsub double %t205, %t208
+  %t210 = fmul double %t209, %t194
+  %t211 = load double, ptr %a16
+  %t212 = fadd double %t211, %t210
+  store double %t212, ptr %a16
+  %t213 = add i32 %t135, 2
+  %t214 = getelementptr double, ptr %vel, i32 %t213
+  %t215 = load double, ptr %t214
+  %t216 = add i32 %t131, 2
+  %t217 = getelementptr double, ptr %vel, i32 %t216
+  %t218 = load double, ptr %t217
+  %t219 = fsub double %t215, %t218
+  %t220 = fmul double %t219, %t194
+  %t221 = load double, ptr %a17
+  %t222 = fadd double %t221, %t220
+  store double %t222, ptr %a17
+  br label %endif26
+endif26:
+  %t223 = load i32, ptr %a2
+  %t224 = add i32 %t223, 1
+  store i32 %t224, ptr %a2
+  br label %lc22
+le24:
+  %t225 = load i32, ptr %a1
+  %t226 = getelementptr double, ptr %rho, i32 %t225
+  %t227 = load double, ptr %t226
+  %t228 = fdiv double 0x3FF0000000000000, %t227
+  %t229 = load double, ptr %a15
+  %t230 = fmul double %t229, %t228
+  %t231 = getelementptr double, ptr %acc, i32 %t131
+  store double %t230, ptr %t231
+  %t232 = load double, ptr %a16
+  %t233 = fmul double %t232, %t228
+  %t234 = fadd double %t233, 0xC02399999999999A
+  %t235 = add i32 %t131, 1
+  %t236 = getelementptr double, ptr %acc, i32 %t235
+  store double %t234, ptr %t236
+  %t237 = load double, ptr %a17
+  %t238 = fmul double %t237, %t228
+  %t239 = add i32 %t131, 2
+  %t240 = getelementptr double, ptr %acc, i32 %t239
+  store double %t238, ptr %t240
+  %t241 = load i32, ptr %a1
+  %t242 = add i32 %t241, 1
+  store i32 %t242, ptr %a1
+  br label %lc19
+le21:
+  br label %endif10
+endif10:
+  store i32 0, ptr %a1
+  br label %lc27
+lc27:
+  %t243 = load i32, ptr %a1
+  %t244 = icmp slt i32 %t243, 1000
+  br i1 %t244, label %lb28, label %le29
+lb28:
+  store i32 0, ptr %a3
+  br label %lc30
+lc30:
+  %t245 = load i32, ptr %a3
+  %t246 = icmp slt i32 %t245, 3
+  br i1 %t246, label %lb31, label %le32
+lb31:
+  %t247 = load i32, ptr %a1
+  %t248 = mul i32 %t247, 3
+  %t249 = load i32, ptr %a3
+  %t250 = add i32 %t248, %t249
+  %t251 = getelementptr double, ptr %vel, i32 %t250
+  %t252 = load double, ptr %t251
+  %t253 = getelementptr double, ptr %acc, i32 %t250
+  %t254 = load double, ptr %t253
+  %t255 = fmul double %t254, 0x3F689374BC6A7EFA
+  %t256 = fadd double %t252, %t255
+  %t257 = getelementptr double, ptr %vel, i32 %t250
+  store double %t256, ptr %t257
+  %t258 = getelementptr double, ptr %pos, i32 %t250
+  %t259 = load double, ptr %t258
+  %t260 = getelementptr double, ptr %vel, i32 %t250
+  %t261 = load double, ptr %t260
+  %t262 = fmul double %t261, 0x3F689374BC6A7EFA
+  %t263 = fadd double %t259, %t262
+  %t264 = getelementptr double, ptr %pos, i32 %t250
+  store double %t263, ptr %t264
+  %t265 = getelementptr double, ptr %pos, i32 %t250
+  %t266 = load double, ptr %t265
+  %t267 = fcmp olt double %t266, 0x3F947AE147AE147B
+  br i1 %t267, label %then33, label %endif34
+then33:
+  %t268 = getelementptr double, ptr %pos, i32 %t250
+  store double 0x3F947AE147AE147B, ptr %t268
+  %t269 = getelementptr double, ptr %vel, i32 %t250
+  %t270 = load double, ptr %t269
+  %t271 = fmul double %t270, 0xBFD3333333333333
+  %t272 = getelementptr double, ptr %vel, i32 %t250
+  store double %t271, ptr %t272
+  br label %endif34
+endif34:
+  %t273 = getelementptr double, ptr %pos, i32 %t250
+  %t274 = load double, ptr %t273
+  %t275 = fcmp ogt double %t274, 0x3FEF5C28F5C28F5C
+  br i1 %t275, label %then35, label %endif36
+then35:
+  %t276 = getelementptr double, ptr %pos, i32 %t250
+  store double 0x3FEF5C28F5C28F5C, ptr %t276
+  %t277 = getelementptr double, ptr %vel, i32 %t250
+  %t278 = load double, ptr %t277
+  %t279 = fmul double %t278, 0xBFD3333333333333
+  %t280 = getelementptr double, ptr %vel, i32 %t250
+  store double %t279, ptr %t280
+  br label %endif36
+endif36:
+  %t281 = load i32, ptr %a3
+  %t282 = add i32 %t281, 1
+  store i32 %t282, ptr %a3
+  br label %lc30
+le32:
+  %t283 = load i32, ptr %a1
+  %t284 = add i32 %t283, 1
+  store i32 %t284, ptr %a1
+  br label %lc27
+le29:
   ret void
 }
 
@@ -793,27 +1075,77 @@ le3:
   call void @glPointSize(float 0x3FF0000000000000)
   call void @glBegin(i32 0)
   call void @glColor3f(float 0x3FE8000000000000, float 0x3FE99999A0000000, float 0x3FECCCCCC0000000)
-  %t56 = call i32 @fa_cl_backend()
-  %t57 = icmp eq i32 %t56, 1
-  br i1 %t57, label %then4, label %endif5
+  %t56 = call i32 @cl_mode()
+  %t57 = call i32 @cl_fb()
+  %t58 = icmp eq i32 %t56, 0
+  br i1 %t58, label %then4, label %endif5
 then4:
-  %t58 = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %a2, i64 160, ptr @.s1, i32 1000, i32 %step_no)
-  br label %endif5
-endif5:
-  %t59 = icmp eq i32 %t56, 2
+  %t59 = icmp eq i32 %t57, 0
   br i1 %t59, label %then6, label %endif7
 then6:
-  %t60 = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %a2, i64 160, ptr @.s2, i32 1000, i32 %step_no)
+  %t60 = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %a2, i64 160, ptr @.s1, i32 1000, i32 %step_no)
   br label %endif7
 endif7:
-  %t61 = icmp eq i32 %t56, 0
+  %t61 = icmp ne i32 %t57, 0
   br i1 %t61, label %then8, label %endif9
 then8:
-  %t62 = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %a2, i64 160, ptr @.s3, i32 1000, i32 %step_no)
+  %t62 = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %a2, i64 160, ptr @.s2, i32 1000, i32 %step_no)
   br label %endif9
 endif9:
+  br label %endif5
+endif5:
+  %t63 = icmp ne i32 %t56, 0
+  br i1 %t63, label %then10, label %endif11
+then10:
+  %t64 = call i32 @fa_cl_backend()
+  %t65 = icmp eq i32 %t64, 1
+  br i1 %t65, label %then12, label %endif13
+then12:
+  %t66 = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %a2, i64 160, ptr @.s3, i32 1000, i32 %step_no)
+  br label %endif13
+endif13:
+  %t67 = icmp eq i32 %t64, 2
+  br i1 %t67, label %then14, label %endif15
+then14:
+  %t68 = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %a2, i64 160, ptr @.s4, i32 1000, i32 %step_no)
+  br label %endif15
+endif15:
+  %t69 = icmp eq i32 %t64, 0
+  br i1 %t69, label %then16, label %endif17
+then16:
+  %t70 = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %a2, i64 160, ptr @.s5, i32 1000, i32 %step_no)
+  br label %endif17
+endif17:
+  br label %endif11
+endif11:
   call void @text(ptr %a2, i32 5, i32 5)
-  call void @text(ptr @.s4, i32 5, i32 25)
+  call void @text(ptr @.s6, i32 5, i32 25)
+  call void @glEnd()
+  %t71 = call i32 @cl_mode()
+  call void @glBegin(i32 7)
+  %t72 = icmp eq i32 %t71, 0
+  %t73 = icmp ne i32 %t71, 0
+  %t74 = select i1 %t72, float 0x3FBEB851E0000000, float 0x3FC851EB80000000
+  %t75 = select i1 %t72, float 0x3FDEB851E0000000, float 0x3FC851EB80000000
+  %t76 = select i1 %t72, float 0x3FBEB851E0000000, float 0x3FC851EB80000000
+  call void @glColor3f(float %t74, float %t75, float %t76)
+  call void @glVertex2f(float 0x407D600000000000, float 0x407B800000000000)
+  call void @glVertex2f(float 0x4080400000000000, float 0x407B800000000000)
+  call void @glVertex2f(float 0x4080400000000000, float 0x407CC00000000000)
+  call void @glVertex2f(float 0x407D600000000000, float 0x407CC00000000000)
+  %t77 = select i1 %t73, float 0x3FBEB851E0000000, float 0x3FC851EB80000000
+  %t78 = select i1 %t73, float 0x3FDEB851E0000000, float 0x3FC851EB80000000
+  %t79 = select i1 %t73, float 0x3FBEB851E0000000, float 0x3FC851EB80000000
+  call void @glColor3f(float %t77, float %t78, float %t79)
+  call void @glVertex2f(float 0x4080900000000000, float 0x407B800000000000)
+  call void @glVertex2f(float 0x4082200000000000, float 0x407B800000000000)
+  call void @glVertex2f(float 0x4082200000000000, float 0x407CC00000000000)
+  call void @glVertex2f(float 0x4080900000000000, float 0x407CC00000000000)
+  call void @glEnd()
+  call void @glBegin(i32 0)
+  call void @glColor3f(float 0x3FF0000000000000, float 0x3FF0000000000000, float 0x3FF0000000000000)
+  call void @text(ptr @.s7, i32 482, i32 444)
+  call void @text(ptr @.s8, i32 542, i32 444)
   call void @glEnd()
   ret void
 }
@@ -858,7 +1190,7 @@ then1:
   br label %endif2
 endif2:
   %t5 = call i32 @SDL_Init(i32 32)
-  %t6 = call ptr @SDL_CreateWindow(ptr @.s5, i32 805240832, i32 805240832, i32 640, i32 480, i32 2)
+  %t6 = call ptr @SDL_CreateWindow(ptr @.s9, i32 805240832, i32 805240832, i32 640, i32 480, i32 2)
   %t7 = call ptr @SDL_GL_CreateContext(ptr %t6)
   %t8 = icmp eq ptr %t7, null
   br i1 %t8, label %then3, label %endif4
@@ -924,145 +1256,193 @@ endif14:
   %t24 = icmp eq i32 %t13, 1025
   br i1 %t24, label %then23, label %endif24
 then23:
-  store i32 1, ptr %a10
-  br label %endif24
-endif24:
-  %t25 = icmp eq i32 %t13, 1026
-  br i1 %t25, label %then25, label %endif26
+  %t25 = getelementptr i8, ptr %a6, i32 20
+  %t26 = load i32, ptr %t25
+  %t27 = getelementptr i8, ptr %a6, i32 24
+  %t28 = load i32, ptr %t27
+  %t29 = icmp sge i32 %t26, 470
+  %t30 = icmp slt i32 %t26, 520
+  %t31 = and i1 %t29, %t30
+  %t32 = icmp sge i32 %t28, 440
+  %t33 = and i1 %t31, %t32
+  %t34 = icmp slt i32 %t28, 460
+  %t35 = and i1 %t33, %t34
+  br i1 %t35, label %then25, label %endif26
 then25:
-  store i32 0, ptr %a10
+  call void @cl_set_mode(i32 0)
   br label %endif26
 endif26:
-  %t26 = icmp eq i32 %t13, 1024
-  %t27 = load i32, ptr %a10
-  %t28 = icmp ne i32 %t27, 0
-  %t29 = and i1 %t26, %t28
-  br i1 %t29, label %then27, label %endif28
+  %t36 = icmp sge i32 %t26, 530
+  %t37 = icmp slt i32 %t26, 580
+  %t38 = and i1 %t36, %t37
+  %t39 = icmp sge i32 %t28, 440
+  %t40 = and i1 %t38, %t39
+  %t41 = icmp slt i32 %t28, 460
+  %t42 = and i1 %t40, %t41
+  br i1 %t42, label %then27, label %endif28
 then27:
-  %t30 = getelementptr i8, ptr %a6, i32 28
-  %t31 = load i32, ptr %t30
-  %t32 = sitofp i32 %t31 to double
-  %t33 = fmul double %t32, 0x3FD999999999999A
-  %t34 = load double, ptr %a12
-  %t35 = fadd double %t34, %t33
-  store double %t35, ptr %a12
-  %t36 = getelementptr i8, ptr %a6, i32 32
-  %t37 = load i32, ptr %t36
-  %t38 = sitofp i32 %t37 to double
-  %t39 = fmul double %t38, 0x3FD999999999999A
-  %t40 = load double, ptr %a13
-  %t41 = fadd double %t40, %t39
-  store double %t41, ptr %a13
+  call void @cl_set_mode(i32 1)
   br label %endif28
 endif28:
-  %t42 = icmp eq i32 %t13, 1027
-  br i1 %t42, label %then29, label %endif30
+  %t43 = icmp sge i32 %t26, 470
+  %t44 = icmp slt i32 %t26, 520
+  %t45 = and i1 %t43, %t44
+  %t46 = icmp sge i32 %t28, 440
+  %t47 = and i1 %t45, %t46
+  %t48 = icmp slt i32 %t28, 460
+  %t49 = and i1 %t47, %t48
+  %t50 = icmp sge i32 %t26, 530
+  %t51 = icmp slt i32 %t26, 580
+  %t52 = and i1 %t50, %t51
+  %t53 = icmp sge i32 %t28, 440
+  %t54 = and i1 %t52, %t53
+  %t55 = icmp slt i32 %t28, 460
+  %t56 = and i1 %t54, %t55
+  %t57 = or i1 %t49, %t56
+  %t58 = icmp eq i1 %t57, false
+  br i1 %t58, label %then29, label %endif30
 then29:
-  %t43 = getelementptr i8, ptr %a6, i32 20
-  %t44 = load i32, ptr %t43
-  %t45 = sitofp i32 %t44 to double
-  %t46 = fsub double 0x0000000000000000, %t45
-  %t47 = fmul double %t46, 0x3FC3333333333333
-  %t48 = load double, ptr %a14
-  %t49 = fadd double %t48, %t47
-  store double %t49, ptr %a14
-  %t50 = load double, ptr %a14
-  %t51 = fcmp olt double %t50, 0x3FE999999999999A
-  br i1 %t51, label %then31, label %endif32
-then31:
-  store double 0x3FE999999999999A, ptr %a14
-  br label %endif32
-endif32:
+  store i32 1, ptr %a10
   br label %endif30
 endif30:
-  br label %wc8
-we10:
-  %t52 = load i32, ptr %a11
-  %t53 = icmp ne i32 %t52, 0
-  br i1 %t53, label %then33, label %endif34
+  br label %endif24
+endif24:
+  %t59 = icmp eq i32 %t13, 1026
+  br i1 %t59, label %then31, label %endif32
+then31:
+  store i32 0, ptr %a10
+  br label %endif32
+endif32:
+  %t60 = icmp eq i32 %t13, 1024
+  %t61 = load i32, ptr %a10
+  %t62 = icmp ne i32 %t61, 0
+  %t63 = and i1 %t60, %t62
+  br i1 %t63, label %then33, label %endif34
 then33:
-  store i32 0, ptr %a17
-  br label %lc35
-lc35:
-  %t54 = load i32, ptr %a17
-  %t55 = icmp slt i32 %t54, 1000
-  br i1 %t55, label %lb36, label %le37
-lb36:
-  %t56 = load i32, ptr %a17
-  %t57 = mul i32 %t56, 3
-  %t58 = getelementptr double, ptr %a2, i32 %t57
-  %t59 = load double, ptr %t58
-  %t60 = fadd double %t59, 0x4004000000000000
-  %t61 = load i32, ptr %a17
-  %t62 = mul i32 %t61, 3
-  %t63 = getelementptr double, ptr %a2, i32 %t62
-  store double %t60, ptr %t63
-  %t64 = load i32, ptr %a17
-  %t65 = add i32 %t64, 1
-  store i32 %t65, ptr %a17
-  br label %lc35
-le37:
-  store i32 0, ptr %a11
+  %t64 = getelementptr i8, ptr %a6, i32 28
+  %t65 = load i32, ptr %t64
+  %t66 = sitofp i32 %t65 to double
+  %t67 = fmul double %t66, 0x3FD999999999999A
+  %t68 = load double, ptr %a12
+  %t69 = fadd double %t68, %t67
+  store double %t69, ptr %a12
+  %t70 = getelementptr i8, ptr %a6, i32 32
+  %t71 = load i32, ptr %t70
+  %t72 = sitofp i32 %t71 to double
+  %t73 = fmul double %t72, 0x3FD999999999999A
+  %t74 = load double, ptr %a13
+  %t75 = fadd double %t74, %t73
+  store double %t75, ptr %a13
   br label %endif34
 endif34:
-  %t66 = load i32, ptr %a15
-  %t67 = icmp eq i32 %t66, 0
-  br i1 %t67, label %then38, label %endif39
-then38:
+  %t76 = icmp eq i32 %t13, 1027
+  br i1 %t76, label %then35, label %endif36
+then35:
+  %t77 = getelementptr i8, ptr %a6, i32 20
+  %t78 = load i32, ptr %t77
+  %t79 = sitofp i32 %t78 to double
+  %t80 = fsub double 0x0000000000000000, %t79
+  %t81 = fmul double %t80, 0x3FC3333333333333
+  %t82 = load double, ptr %a14
+  %t83 = fadd double %t82, %t81
+  store double %t83, ptr %a14
+  %t84 = load double, ptr %a14
+  %t85 = fcmp olt double %t84, 0x3FE999999999999A
+  br i1 %t85, label %then37, label %endif38
+then37:
+  store double 0x3FE999999999999A, ptr %a14
+  br label %endif38
+endif38:
+  br label %endif36
+endif36:
+  br label %wc8
+we10:
+  %t86 = load i32, ptr %a11
+  %t87 = icmp ne i32 %t86, 0
+  br i1 %t87, label %then39, label %endif40
+then39:
+  store i32 0, ptr %a17
+  br label %lc41
+lc41:
+  %t88 = load i32, ptr %a17
+  %t89 = icmp slt i32 %t88, 1000
+  br i1 %t89, label %lb42, label %le43
+lb42:
+  %t90 = load i32, ptr %a17
+  %t91 = mul i32 %t90, 3
+  %t92 = getelementptr double, ptr %a2, i32 %t91
+  %t93 = load double, ptr %t92
+  %t94 = fadd double %t93, 0x4004000000000000
+  %t95 = load i32, ptr %a17
+  %t96 = mul i32 %t95, 3
+  %t97 = getelementptr double, ptr %a2, i32 %t96
+  store double %t94, ptr %t97
+  %t98 = load i32, ptr %a17
+  %t99 = add i32 %t98, 1
+  store i32 %t99, ptr %a17
+  br label %lc41
+le43:
+  store i32 0, ptr %a11
+  br label %endif40
+endif40:
+  %t100 = load i32, ptr %a15
+  %t101 = icmp eq i32 %t100, 0
+  br i1 %t101, label %then44, label %endif45
+then44:
   call void @step(ptr %a1, ptr %a2, ptr %a3, ptr %a4, ptr %a5)
-  %t68 = load i32, ptr %a16
-  %t69 = add i32 %t68, 1
-  store i32 %t69, ptr %a16
-  br label %endif39
-endif39:
-  %t70 = load double, ptr %a12
-  %t71 = load double, ptr %a13
-  %t72 = load double, ptr %a14
-  %t73 = load i32, ptr %a16
-  call void @draw(ptr %a1, ptr %a2, double %t70, double %t71, double %t72, i32 %t73)
+  %t102 = load i32, ptr %a16
+  %t103 = add i32 %t102, 1
+  store i32 %t103, ptr %a16
+  br label %endif45
+endif45:
+  %t104 = load double, ptr %a12
+  %t105 = load double, ptr %a13
+  %t106 = load double, ptr %a14
+  %t107 = load i32, ptr %a16
+  call void @draw(ptr %a1, ptr %a2, double %t104, double %t105, double %t106, i32 %t107)
   call void @SDL_GL_SwapWindow(ptr %t6)
   call void @SDL_Delay(i32 16)
-  %t74 = load i32, ptr %a8
-  %t75 = add i32 %t74, 1
-  store i32 %t75, ptr %a8
-  %t76 = load i32, ptr %a9
-  %t77 = icmp sgt i32 %t76, 0
-  %t78 = load i32, ptr %a8
-  %t79 = load i32, ptr %a9
-  %t80 = icmp sge i32 %t78, %t79
-  %t81 = and i1 %t77, %t80
-  br i1 %t81, label %then40, label %endif41
-then40:
+  %t108 = load i32, ptr %a8
+  %t109 = add i32 %t108, 1
+  store i32 %t109, ptr %a8
+  %t110 = load i32, ptr %a9
+  %t111 = icmp sgt i32 %t110, 0
+  %t112 = load i32, ptr %a8
+  %t113 = load i32, ptr %a9
+  %t114 = icmp sge i32 %t112, %t113
+  %t115 = and i1 %t111, %t114
+  br i1 %t115, label %then46, label %endif47
+then46:
   store i32 0, ptr %a7
-  br label %endif41
-endif41:
+  br label %endif47
+endif47:
   br label %wc5
 we7:
   store double 0x0000000000000000, ptr %a18
   store i32 0, ptr %a17
-  br label %lc42
-lc42:
-  %t82 = load i32, ptr %a17
-  %t83 = icmp slt i32 %t82, 1000
-  br i1 %t83, label %lb43, label %le44
-lb43:
-  %t84 = load i32, ptr %a17
-  %t85 = mul i32 %t84, 3
-  %t86 = add i32 %t85, 1
-  %t87 = getelementptr double, ptr %a1, i32 %t86
-  %t88 = load double, ptr %t87
-  %t89 = load double, ptr %a18
-  %t90 = fadd double %t89, %t88
-  store double %t90, ptr %a18
-  %t91 = load i32, ptr %a17
-  %t92 = add i32 %t91, 1
-  store i32 %t92, ptr %a17
-  br label %lc42
-le44:
-  %t93 = load i32, ptr %a8
-  %t94 = load double, ptr %a18
-  %t95 = fdiv double %t94, 0x408F400000000000
-  %t96 = call i32 (ptr, ...) @printf(ptr @.s6, i32 %t93, i32 1000, double %t95)
+  br label %lc48
+lc48:
+  %t116 = load i32, ptr %a17
+  %t117 = icmp slt i32 %t116, 1000
+  br i1 %t117, label %lb49, label %le50
+lb49:
+  %t118 = load i32, ptr %a17
+  %t119 = mul i32 %t118, 3
+  %t120 = add i32 %t119, 1
+  %t121 = getelementptr double, ptr %a1, i32 %t120
+  %t122 = load double, ptr %t121
+  %t123 = load double, ptr %a18
+  %t124 = fadd double %t123, %t122
+  store double %t124, ptr %a18
+  %t125 = load i32, ptr %a17
+  %t126 = add i32 %t125, 1
+  store i32 %t126, ptr %a17
+  br label %lc48
+le50:
+  %t127 = load i32, ptr %a8
+  %t128 = load double, ptr %a18
+  %t129 = fdiv double %t128, 0x408F400000000000
+  %t130 = call i32 (ptr, ...) @printf(ptr @.s10, i32 %t127, i32 1000, double %t129)
   call void @SDL_GL_DeleteContext(ptr %t7)
   call void @SDL_DestroyWindow(ptr %t6)
   call void @SDL_Quit()

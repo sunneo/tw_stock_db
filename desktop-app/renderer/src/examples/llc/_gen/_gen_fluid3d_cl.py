@@ -201,6 +201,17 @@ def _build_glue():
     A('  ret void')
     A('}')
     A('')
+    # ---- 模式與 fallback 旗標（粒子狀態一直在主機上，切換不需要讀回或上傳）
+    A('define i32 @cl_mode() {'); A('entry:'); A('  %mv = load i32, ptr @cl_mode'); A('  ret i32 %mv'); A('}'); A('')
+    A('define i32 @cl_fb() {'); A('entry:'); A('  %fv = load i32, ptr @cl_fb'); A('  ret i32 %fv'); A('}'); A('')
+    A('define void @cl_set_mode(i32 %m) {'); A('entry:')
+    A('  store i32 %m, ptr @cl_mode'); A('  store i32 0, ptr @cl_fb'); A('  ret void'); A('}'); A('')
+    # cl_check()：剛剛那次 sph_gpu 實際走 JS 墊片（不是 WebGL2）→ 退回 CPU 並記下原因
+    A('define void @cl_check() {'); A('entry:')
+    A('  %be = call i32 @fa_cl_backend()'); A('  %isjs = icmp eq i32 %be, 2')
+    A('  br i1 %isjs, label %fb, label %ok')
+    A('fb:'); A('  store i32 0, ptr @cl_mode'); A('  store i32 1, ptr @cl_fb'); A('  br label %ok')
+    A('ok:'); A('  ret void'); A('}'); A('')
     return '\n'.join(L) + '\n'
 
 
@@ -221,6 +232,15 @@ m.globs.append('@sph_h = global [20 x ptr] zeroinitializer')
 m.globs.append('@sph_st = global [2 x i32] zeroinitializer')
 m.sigs['sph_gpu'] = ('void', ['ptr'] * 10 + ['i32'] + ['float'] * 8, False)
 m.sigs['sph_setup'] = ('void', ['i32'], False)
+m.globs.append('@cl_mode = global i32 1')
+m.globs.append('@cl_fb = global i32 0')
+m.sigs['cl_mode'] = ('i32', [], False)
+m.sigs['cl_fb'] = ('i32', [], False)
+m.sigs['cl_set_mode'] = ('void', ['i32'], False)
+m.sigs['cl_check'] = ('void', [], False)
+def _in_fbtn(xv, yv, bx):
+    # 底部的兩個按鈕（CPU 在 x=470、GPU 在 x=530，寬 50、高 20，y=440..460）
+    return (xv >= bx) & (xv < bx + 50) & (yv >= 440) & (yv < 460)
 m.funcs.append(_RawFn(__GLUE__))
 
 """
@@ -263,7 +283,19 @@ def build():
     # 1. 換掉密度＋力兩段（從第一個 step 迴圈到積分迴圈之前）
     a = src.index("with step.loop(i, 0, N):\n    acc.set(0.0)")
     b = src.index("with step.loop(i, 0, N):\n    with step.loop(a, 0, 3):")
-    src = src[:a] + NEW_STEP + src[b:]
+    cpu_region = src[a:b]
+    cpu_ind = ''.join(('    ' + ln) if ln.strip() else ln for ln in cpu_region.splitlines(True))
+    gpu_code = NEW_STEP + "c('cl_check')\n"
+    gpu_ind = ''.join(('    ' + ln) if ln.strip() else ln for ln in gpu_code.splitlines(True))
+    src = src[:a] + "mode = c('cl_mode')\nwith step.if_(mode.ne(0)):\n" + gpu_ind + "with step.if_(mode.eq(0)):\n" + cpu_ind + src[b:]
+    # 滑鼠：按在按鈕上就切換計算來源（不開始拖曳）
+    old_ev = "        with f.if_(ty.eq(1025)): drag.set(1)"
+    assert src.count(old_ev) == 1, src.count(old_ev)
+    src = src.replace(old_ev, """        with f.if_(ty.eq(1025)):
+            _bx, _by = rd(20), rd(24)
+            with f.if_(_in_fbtn(_bx, _by, 470)): c('cl_set_mode', 0)     # 左邊的 CPU 按鈕（x=470）＝wasm（原本的 step）
+            with f.if_(_in_fbtn(_bx, _by, 530)): c('cl_set_mode', 1)     # 右邊的 GPU 按鈕（x=530）＝OpenCL
+            with f.if_((_in_fbtn(_bx, _by, 470) | _in_fbtn(_bx, _by, 530)).eq(0)): drag.set(1)""")
     # 2. 膠水（宣告、全域、核心原始碼、sph_setup／sph_gpu 的 IR 文字）插在 step 之前
     glue = _build_glue()
     inject = (INJECT.replace('__DECLS__', repr(DECLS)).replace('__SRC__', repr(SRC_ALL))
@@ -278,18 +310,46 @@ def build():
     old_hdr = "（由 _gen/_gen_fluid3d.py 產生；GPGPU 版要等 OpenCL 墊片）"
     assert src.count(old_hdr) == 1
     src = src.replace(old_hdr, "（OpenCL 版：密度與力用 OpenCL 核心（float32），由 _gen/_gen_fluid3d_cl.py 產生）")
-    # 3b. HUD 的來源文字：依真正的後端顯示（0＝尚未派送、1＝WebGL2、2＝JS 墊片；不是寫死的 CPU）
+    # 3b. HUD：來源文字依真正的模式與後端（0＝尚未派送、1＝WebGL2、2＝JS 墊片）；底部兩個按鈕（CPU／GPU，選中是綠色）
     old_txt = "c('snprintf', buf, 160, '%d particles | source: CPU (wasm) | step %d', N, step_no)"
     assert src.count(old_txt) == 1
     ladder = (
-        "_bk = c('fa_cl_backend')\n"
-        "with draw.if_(_bk.eq(1)):\n"
-        "    c('snprintf', buf, 160, '%d particles | source: OpenCL WebGL2 | step %d', N, step_no)\n"
-        "with draw.if_(_bk.eq(2)):\n"
-        "    c('snprintf', buf, 160, '%d particles | source: OpenCL JS shim (not GPU) | step %d', N, step_no)\n"
-        "with draw.if_(_bk.eq(0)):\n"
-        "    c('snprintf', buf, 160, '%d particles | source: OpenCL not dispatched yet | step %d', N, step_no)")
+        "_dm = c('cl_mode')\n"
+        "_dfb = c('cl_fb')\n"
+        "with draw.if_(_dm.eq(0)):\n"
+        "    with draw.if_(_dfb.eq(0)):\n"
+        "        c('snprintf', buf, 160, '%d particles | source: CPU (wasm) | step %d', N, step_no)\n"
+        "    with draw.if_(_dfb.ne(0)):\n"
+        "        c('snprintf', buf, 160, '%d particles | source: CPU, GPU unavailable (no WebGL2 float) | step %d', N, step_no)\n"
+        "with draw.if_(_dm.ne(0)):\n"
+        "    _bk = c('fa_cl_backend')\n"
+        "    with draw.if_(_bk.eq(1)):\n"
+        "        c('snprintf', buf, 160, '%d particles | source: GPU (OpenCL WebGL2) | step %d', N, step_no)\n"
+        "    with draw.if_(_bk.eq(2)):\n"
+        "        c('snprintf', buf, 160, '%d particles | source: GPU (OpenCL JS shim, not GPU) | step %d', N, step_no)\n"
+        "    with draw.if_(_bk.eq(0)):\n"
+        "        c('snprintf', buf, 160, '%d particles | source: GPU (OpenCL, not dispatched) | step %d', N, step_no)")
     src = src.replace(old_txt, ladder)
+    # 按鈕：選中的綠色底、未選中的灰色底；字畫在填色之後（同 nbody 的順序）
+    old_end = "c('text', '[drag]rotate [wheel]zoom [space]splash [P]pause [R]reset', 5, 25)\nc('glEnd')\ndraw.ret()"
+    assert src.count(old_end) == 1, src.count(old_end)
+    buttons = (
+        "c('text', '[drag]rotate [wheel]zoom [space]splash [P]pause [R]reset', 5, 25)\nc('glEnd')\n"
+        "_bm = c('cl_mode')\n"
+        "def _fbtn_color(sel):\n"
+        "    on, off = (0.12, 0.48, 0.12), (0.19, 0.19, 0.19)\n"
+        "    return tuple(sel.sel(draw.const('float', a_), draw.const('float', b_)) for a_, b_ in zip(on, off))\n"
+        "c('glBegin', 7)\n"
+        "for _x0, _sel in ((470.0, _bm.eq(0)), (530.0, _bm.ne(0))):\n"
+        "    c('glColor3f', *_fbtn_color(_sel))\n"
+        "    for _dx, _dy in ((0, 0), (1, 0), (1, 1), (0, 1)):\n"
+        "        c('glVertex2f', _x0 + 50.0 * _dx, 440.0 + 20.0 * _dy)\n"
+        "c('glEnd')\n"
+        "c('glBegin', 0); c('glColor3f', 1.0, 1.0, 1.0)\n"
+        "c('text', 'CPU', 482, 444); c('text', 'GPU', 542, 444)\n"
+        "c('glEnd')\n"
+        "draw.ret()")
+    src = src.replace(old_end, buttons)
     return src
 
 

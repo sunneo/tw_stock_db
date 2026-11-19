@@ -142,25 +142,67 @@ const btnRow = (example, state, img) => {
     const cen = (s) => (s.match(/cx=[-0-9.]+ cy=[-0-9.]+ cz=[-0-9.]+/) || [null])[0];
     R.output.nbody = { cpu: cen(outA), cl_default: cen(outB), same: !!cen(outA) && cen(outA) === cen(outB) };
 }
-// 4. fluid3d（CPU）與 fluid3d_cl（OpenCL）：狀態文字（不限幀數，檢查完再停）；輸出另外用 200 幀比對
+// 4. fluid3d（CPU，純 CPU 版）與 fluid3d_cl（OpenCL 版：預設 GPU、底部 CPU／GPU 按鈕）
+const FB_CPU = [495, 450], FB_GPU = [555, 450], FBTN_CPU_PX = [474, 457], FBTN_GPU_PX = [534, 457];
+const fluidState = async (example, state, cv) => {
+    const cands = ['1000 particles | source: GPU (OpenCL WebGL2) | step ', '1000 particles | source: GPU (OpenCL JS shim, not GPU) | step ', '1000 particles | source: GPU (OpenCL, not dispatched) | step ', '1000 particles | source: CPU (wasm) | step ', '1000 particles | source: CPU, GPU unavailable (no WebGL2 float) | step '];
+    const st = check(example, state, '狀態行前綴（實際後端）', 5, 5, cands, cv);
+    const img = grab(cv);
+    const cpuG = isGreen(img, FBTN_CPU_PX[0], FBTN_CPU_PX[1]), gpuG = isGreen(img, FBTN_GPU_PX[0], FBTN_GPU_PX[1]);
+    R.rows.push({ example, state, label: '按鈕底色（CPU 按鈕、GPU 按鈕）', shown: (cpuG ? 'CPU 綠' : 'CPU 非綠') + '、' + (gpuG ? 'GPU 綠' : 'GPU 非綠'), best_coverage: null, pass: null, cpu_green: cpuG, gpu_green: gpuG });
+    return { st, cpuG, gpuG };
+};
 {
-    const FL = ['100000'];
-    const a = await startJob('fluid3d', FL); await wait(4000);
+    const a = await startJob('fluid3d', ['100000']); await wait(4000);
     const cvA = await waitCanvas(640, 480, 8000);
     if (cvA) {
         check('fluid3d', '4 s 後', '狀態行前綴', 5, 5, ['1000 particles | source: CPU (wasm) | step '], cvA);
         check('fluid3d', '4 s 後', '操作說明行', 5, 25, ['[drag]rotate [wheel]zoom [space]splash [P]pause [R]reset'], cvA);
     } else R.rows.push({ example: 'fluid3d', label: 'canvas', pass: false, note: '找不到 640×480 的 WebGL 畫布' });
     await stopJob(a);
-    const b = await startJob('fluid3d_cl', FL); await wait(4000);
-    const cvB = await waitCanvas(640, 480, 8000);
-    if (cvB) check('fluid3d_cl', '4 s 後', '狀態行前綴', 5, 5, ['1000 particles | source: OpenCL WebGL2 | step ', '1000 particles | source: OpenCL JS shim (not GPU) | step ', '1000 particles | source: OpenCL not dispatched yet | step '], cvB);
-    else R.rows.push({ example: 'fluid3d_cl', label: 'canvas', pass: false, note: '找不到 640×480 的 WebGL 畫布' });
+}
+{
+    const b = await startJob('fluid3d_cl', ['100000']); await wait(4000);
+    const cvB = await waitCanvas(640, 480, 8000); const node = await canvasNode(b);
+    if (!cvB || !node) R.rows.push({ example: 'fluid3d_cl', label: 'canvas', pass: false, note: '找不到 640×480 的畫布或節點' });
+    else {
+        const d = await fluidState('fluid3d_cl', '開場（預設）', cvB);
+        R.rows[R.rows.length - 1].pass = d.st.coverage >= 0.95 && (d.st.text.indexOf('GPU') >= 0 || d.st.text.indexOf('CPU, GPU unavailable') >= 0) && (d.st.text.indexOf('GPU') >= 0 ? (d.gpuG && !d.cpuG) : (d.cpuG && !d.gpuG));
+        await click(b, node, FB_CPU[0], FB_CPU[1]); await wait(2500);
+        const c1 = await fluidState('fluid3d_cl', '點 CPU 後', findCanvas(640, 480));
+        R.rows[R.rows.length - 1].pass = c1.st.coverage >= 0.95 && c1.st.text.indexOf('CPU (wasm)') >= 0 && c1.cpuG && !c1.gpuG;
+        await click(b, node, FB_GPU[0], FB_GPU[1]); await wait(3000);
+        const c2 = await fluidState('fluid3d_cl', '再點 GPU 後', findCanvas(640, 480));
+        R.rows[R.rows.length - 1].pass = c2.st.coverage >= 0.95 && c2.st.text.indexOf('GPU') >= 0 && c2.gpuG && !c2.cpuG;
+    }
     await stopJob(b);
-    const ym = (s) => (s.match(/y_mean=[-0-9.]+/) || [null])[0];
+}
+// 4b. fluid3d_cl 模擬沒有浮點渲染：應退回 CPU，狀態行寫出原因，CPU 按鈕綠
+{
+    const P = window.WebGL2RenderingContext && WebGL2RenderingContext.prototype;
+    const origGet = P.getExtension;
+    P.getExtension = function (n) { return n === 'EXT_color_buffer_float' ? null : origGet.call(this, n); };
+    try {
+        const b = await startJob('fluid3d_cl', ['100000']); await wait(6000);
+        const cvB = await waitCanvas(640, 480, 8000);
+        if (!cvB) R.rows.push({ example: 'fluid3d_cl', state: '無浮點渲染（模擬）', label: 'canvas', pass: false, note: '找不到畫布' });
+        else {
+            const f = await fluidState('fluid3d_cl', '無浮點渲染（模擬）', cvB);
+            R.rows[R.rows.length - 1].pass = f.st.text.indexOf('CPU, GPU unavailable') >= 0 && f.cpuG && !f.gpuG;
+            R.rows[R.rows.length - 1].note = '應顯示 CPU, GPU unavailable，CPU 按鈕綠';
+        }
+        await stopJob(b);
+    } finally { P.getExtension = origGet; }
+}
+// 輸出：CPU 版（200 幀）vs OpenCL 版（200 幀，預設 GPU）vs OpenCL 版途中切到 CPU 再切回 GPU；y_mean 都要一致
+{
     const a2 = await startJob('fluid3d', ['200']); await waitExit(a2, 240000); const outA = await jobOutput(a2); await stopJob(a2);
     const b2 = await startJob('fluid3d_cl', ['200']); await waitExit(b2, 240000); const outB = await jobOutput(b2); await stopJob(b2);
-    R.output.fluid = { cpu: ym(outA), cl: ym(outB), same: !!ym(outA) && ym(outA) === ym(outB) };
+    const c3 = await startJob('fluid3d_cl', ['200']); await wait(1000); const node3 = await canvasNode(c3);
+    if (node3) { await click(c3, node3, FB_CPU[0], FB_CPU[1]); await wait(1500); await click(c3, node3, FB_GPU[0], FB_GPU[1]); }
+    await waitExit(c3, 240000); const outC = await jobOutput(c3); await stopJob(c3);
+    const ym = (t) => (t.match(/y_mean=[-0-9.]+/) || [null])[0];
+    R.output.fluid = { cpu: ym(outA), cl_default_gpu: ym(outB), cl_switched_cpu_then_gpu: ym(outC), same: !!ym(outA) && ym(outA) === ym(outB) && ym(outA) === ym(outC) };
 }
 console.log('LLC_HUD ' + JSON.stringify(R));
 return R;
