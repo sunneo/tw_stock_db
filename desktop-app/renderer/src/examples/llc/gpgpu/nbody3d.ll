@@ -46,7 +46,7 @@ declare i32 @snprintf(ptr, i64, ptr, ...)
 @.s7 = private constant [32 x i8] c"cam dist:%.1f angle:(%.2f,%.2f)\00"
 @.s8 = private constant [23 x i8] c"camera tracking: %s[C]\00"
 @.s9 = private constant [16 x i8] c"compute source:\00"
-@.s10 = private constant [42 x i8] c"GPU\EF\BC\9A\E8\AB\8B\E6\94\B9\E8\B7\91 nbody3d_cl.ll\EF\BC\88OpenCL\EF\BC\89\00"
+@.s10 = private constant [40 x i8] c"GPU: run nbody3d_cl.ll (OpenCL) instead\00"
 @.s11 = private constant [33 x i8] c"MAX_X:%.1f MAX_Y:%.1f MAX_Z:%.1f\00"
 @.s12 = private constant [33 x i8] c"MAX_Vel:%.1f Grav:%.1f Soft:%.1f\00"
 @.s13 = private constant [48 x i8] c"[h]help [+/-]zoom [arrows/mouse]rotate [C]track\00"

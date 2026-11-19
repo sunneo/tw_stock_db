@@ -1721,3 +1721,23 @@ node scripts/eval/gpgpu_bench.build.js /tmp/gpgpu_bench.js && FA_EVAL_GL=gpu FA_
 - fluid 的粒子數寫死在產生器裡（1000），所以只有一個 N。
 
 **已知限制**：目前 OpenCL 版每幀仍有寫入與讀回（見 DESIGN.webgpu-cuda.md §13 階段 6），所以真 GPU 上的加速也會被傳輸成本限制住；這個基準正是用來量這個差距。
+
+### 21.y 螢幕說明（HUD）的真 Electron 檢查：`scripts/eval/llc_hud.eval.js`（2026-11-20）
+
+做法：跑範例的 job，從畫布（preserveDrawingBuffer）讀像素，與依 `_gen` 的 `text()` 規則算出的期望像素比對（7×13 點陣，第 k 字元第 r 列第 c 欄畫在 (x0+7k+c, y0+r−2)）。覆蓋率＝期望像素中夠亮（RGB 平均 > 100）的比例，≥ 0.95 才算正確顯示。
+- 按鈕與狀態行：nbody3d_cl 用 gui 的 `mouse` 事件（move／down／up）點 CPU、GPU 按鈕，檢查狀態行的文字真的變。
+- 輸出：CPU 版與 OpenCL 版（途中點 GPU）的最終叢集中心、fluid 的平均 y 逐字比對。
+- 執行：`node scripts/eval/llc_hud.build.js <檔>`，然後 `FA_EVAL_GL=swiftshader FA_EVAL_TIMEOUT_MS=1500000 node scripts/eval/run_eval.js <檔>`。
+
+結果（SwiftShader，app 為 eab9cd930 之後重產的 .ll）：
+
+| 範例 | 螢幕上有說明文字 | 狀態文字（顯示的內容） |
+|---|---|---|
+| nbody3d（CPU） | 有（標題、CPU／GPU 按鈕字、GPU 行） | `GPU: run nbody3d_cl.ll (OpenCL) instead` |
+| nbody3d_cl（OpenCL） | 有 | 啟動：`CPU: wasm integration`；點 GPU：`GPU: OpenCL kernels (WebGL2 backend)`；點 CPU 再變回 CPU；再點 GPU 又變回 GPU |
+| fluid3d（CPU） | 有（狀態行、操作說明行） | `1000 particles \| source: CPU (wasm) \| step …` |
+| fluid3d_cl（OpenCL） | 有 | `1000 particles \| source: OpenCL WebGL2 \| step …` |
+
+輸出：nbody CPU 與 OpenCL（途中切到 GPU）的 `cx=293.7 cy=108.2 cz=269.0` 相同；fluid CPU 與 OpenCL 的 `y_mean=0.090` 相同。
+
+**發現並修正的問題**：`nbody3d.ll`、`nbody3d_cl.ll` 在改成 ASCII 字串之後沒有重產，檔案裡仍是舊的中文提示，檢查時顯示為空白。已重產。
