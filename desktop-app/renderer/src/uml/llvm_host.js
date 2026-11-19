@@ -392,7 +392,7 @@
             SDL_GL_SetAttribute: () => 0, SDL_GL_SetSwapInterval: () => 0,
             SDL_GL_CreateContext: (ctx, p) => { const w = handles.get(p); if (!w || !w.gl) return 0; gl.win = w; return mk({ kind: 'glctx', win: w }); },
             SDL_GL_DeleteContext: (ctx, p) => { handles.delete(p); },
-            SDL_GL_SwapWindow: async (ctx, p) => { const w = handles.get(p); if (!w) return; await ensureWindow(w); await flushGl(w); },
+            SDL_GL_SwapWindow: async (ctx, p) => { const w = handles.get(p); if (!w) return; await ensureWindow(w); const fh = globalThis.FA_FRAME_HOOK; if (typeof fh === 'function') fh(gl.batches.map((b) => ({ mode: b.mode, verts: b.verts ? b.verts.slice() : null }))); await flushGl(w); },   // 檢查用：每幀交換前把本幀的 GL 批次（頂點 x y z r g b）交給 globalThis.FA_FRAME_HOOK（沒有掛鉤就什麼都不做）
             // ---- OpenGL（固定管線的子集）
             glClearColor: (ctx, r, g, b, a) => { gl.clear = [r, g, b, a]; },
             glClear: (ctx, mask) => { if (mask & 0x4000) gl.batches = []; },
@@ -683,8 +683,7 @@
                     return 1;
                 },
                 // 量測用（o.noPoints）：1＝不走點精靈，每幀照舊讀回（讀回路徑的對照組）
-                fa_cl_nopoints: () => (o.noPoints ? 1 : 0),
-                clFinish: (ctx, q) => (clH(q, 'clq') ? 0 : -36), clFlush: (ctx, q) => (clH(q, 'clq') ? 0 : -36), clWaitForEvents: () => 0, clReleaseEvent: () => 0,
+                fa_cl_nopoints: () => (o.noPoints ? 1 : 0),                clFinish: (ctx, q) => (clH(q, 'clq') ? 0 : -36), clFlush: (ctx, q) => (clH(q, 'clq') ? 0 : -36), clWaitForEvents: () => 0, clReleaseEvent: () => 0,
                 clReleaseMemObject: (ctx, p) => { const m = clH(p, 'clmem'); if (!m) return -38; if (!m.parentMem && m.dev && kirDev) kirDev.free(m.dev); m.dev = null; handles.delete(p); return 0; }, clReleaseKernel: (ctx, p) => { if (!clH(p, 'clkernel')) return -48; handles.delete(p); return 0; },
                 clReleaseProgram: (ctx, p) => { if (!clH(p, 'clprog')) return -44; handles.delete(p); return 0; }, clReleaseCommandQueue: (ctx, p) => { if (!clH(p, 'clq')) return -36; handles.delete(p); return 0; },
                 clReleaseContext: (ctx, p) => { if (!clH(p, 'clctx')) return -34; handles.delete(p); return 0; },

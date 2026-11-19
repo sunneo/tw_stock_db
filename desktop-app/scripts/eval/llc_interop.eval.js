@@ -90,6 +90,10 @@ try {
         };
     }
     window.FA_KIR_FORCE_BACKEND = ''; window.FA_KIR_NO_POINTS = false;
+    // 輸出一致性：每條 GPU 路徑印出的最後叢集中心，必須與 CPU 版逐字相同（程式印的是 %.1f）
+    const cpuCen = JSON.stringify(R.by.cpu_wasm.cen_40);
+    R.same = {};
+    for (const k of ['points_webgpu', 'readback_webgpu', 'webgl2_readback']) R.same[k] = JSON.stringify(R.by[k].cen_40) === cpuCen;
     // 像素比對（同一幀、同一個 GUI 畫布）
     const diffStats = (a, b) => {
         if (!a || !b) return null;

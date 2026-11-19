@@ -212,7 +212,19 @@
             return p;
         };
         // 派送：輸入 binds（名字 → 緩衝區）、輸出 out（一般緩衝區或 view）。輸出的紋理不能是任何輸入的紋理（feedback）。不讀回。
+        // 多個輸出：每個輸出拆成一個單一輸出的核心依序派送（GLSL 沒有 MRT；拆法見 kir_gen.singleOutKernels）。N＝0 不派送。
+        const splitCache = new WeakMap();
+        const splitOf = (kernel) => { if (!splitCache.has(kernel)) splitCache.set(kernel, GEN.singleOutKernels(kernel)); return splitCache.get(kernel); };
         const dispatch = (kernel, binds, out, scalars, N) => {
+            if (!(N >= 1)) return;
+            const subs = splitOf(kernel);
+            if (subs.length === 1) { dispatchOne(kernel, binds, out, scalars, N); return; }
+            for (const sk of subs) {
+                const on = sk.params.find((q) => q.kind === 'buf' && q.access === 'out').name;
+                dispatchOne(sk, binds, binds[on], scalars, N);
+            }
+        };
+        const dispatchOne = (kernel, binds, out, scalars, N) => {
             live();
             const p = program(kernel);
             if (out.freed || out.Npart !== N) throw new Error('輸出緩衝區大小不符或已釋放');

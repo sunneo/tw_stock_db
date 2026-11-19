@@ -211,7 +211,7 @@
         };
         const wgFor = (kernel) => wgOf.get(kernel) || wgDefault;
         // 呼叫格式與 runGl／WebGL2 裝置相同：out 必須就是 binds 裡輸出參數的那個緩衝區
-        const dispatch = (kernel, binds, out, scalars, N) => dispatchWg(kernel, binds, scalars, N, wgFor(kernel), out);
+        const dispatch = (kernel, binds, out, scalars, N) => { if (!(N >= 1)) return; dispatchWg(kernel, binds, scalars, N, wgFor(kernel), out); };   // N＝0：空派送，不做事（一致性套件 bound_empty）
         // on：false＝一般版；true＝分塊（展開 1）；數字 U＝分塊且內層展開 U 次（要整除工作群大小）
         // 預設分塊（tile）：o.tile 為 false 關掉，或數字 U 指定展開次數；單一核心可用 setTiling 覆寫
         const defTile = o.tile === undefined || o.tile === true ? 1 : (o.tile === false ? 0 : (Number(o.tile) || 0));

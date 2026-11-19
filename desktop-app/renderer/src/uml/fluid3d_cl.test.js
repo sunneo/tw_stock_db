@@ -73,12 +73,14 @@ function ref(X, Y, Z, VX, VY, VZ, N) {
 if (src) {
     const N = 60;
     let seed = 4242; const rnd = () => ((seed = (seed * 1103515245 + 12345) >>> 0) / 4294967296);
-    const X = new Float32Array(N), Y = new Float32Array(N), Z = new Float32Array(N), VX = new Float32Array(N), VY = new Float32Array(N), VZ = new Float32Array(N);
+    // 位置用 double（與 CPU 參考同精度）；GPU 收到的是 hi（float）與 lo（float(pos − hi)）兩個陣列，dx 由兩者合成
+    const X = new Float64Array(N), Y = new Float64Array(N), Z = new Float64Array(N), VX = new Float32Array(N), VY = new Float32Array(N), VZ = new Float32Array(N);
     for (let i = 0; i < N; i++) { X[i] = rnd() * 0.3; Y[i] = rnd() * 0.3; Z[i] = rnd() * 0.3; VX[i] = (rnd() - 0.5) * 0.2; VY[i] = (rnd() - 0.5) * 0.2; VZ[i] = (rnd() - 0.5) * 0.2; }
     const R = ref(X, Y, Z, VX, VY, VZ, N);
     const tolOf = (arr) => 2e-3 * Math.max(1, ...arr.map(Math.abs));
     const scalars = { n: N, h2: H2, h: Hh, c0: C0, K, rho0: RHO0, cs: CS, cv: CV, g: G };
-    const ARG_BUF = { x: X, y: Y, z: Z, vx: VX, vy: VY, vz: VZ };
+    const hiOf = (A) => Float32Array.from(A), loOf = (A) => Float32Array.from(A, (v, i) => v - Math.fround(v));
+    const ARG_BUF = { x: hiOf(X), y: hiOf(Y), z: hiOf(Z), xl: loOf(X), yl: loOf(Y), zl: loOf(Z), vx: VX, vy: VY, vz: VZ };
 
     // 2a. JS 墊片（clCompile）
     const cc = H.clCompile(src);

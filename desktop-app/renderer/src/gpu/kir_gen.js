@@ -203,7 +203,8 @@
                 case 'load': {
                     const p = kernel.params.find((q) => q.name === x.buf);
                     const idx = ex(x.idx);
-                    const tex = `texelFetch(${x.buf}, ivec2((${idx}) % u_W, (${idx}) / u_W + u_off_${x.buf}), 0)`;
+                    // 輸入用它自己的寬度 u_W_<名字>（輸入長度可以和輸出 N 不同，例如 a[i*k+j]）
+                    const tex = `texelFetch(${x.buf}, ivec2((${idx}) % u_W_${x.buf}, (${idx}) / u_W_${x.buf} + u_off_${x.buf}), 0)`;
                     return p.elem === 'f32x4' ? `${tex}.${'xyzw'[x.comp]}` : `${tex}.r`;
                 }
                 default: throw new Error('glsl：不支援的運算式 ' + x.k);
@@ -227,7 +228,7 @@
             }
         };
         // 最外層：允許 if(守邊界) { lets…; store }。守邊界的失敗＝discard（紋理保留原值）；寫入值是片段輸出。
-        let outStore = null; const lines = [];
+        let outStore = null, constIdx = null; const lines = [];
         const seenLet = new Set();
         const setTargets = new Set(); const collectSets = (stmts) => { for (const s of stmts) { if (s.k === 'set') setTargets.add(s.name); if (s.body) collectSets(s.body); } }; collectSets(kernel.body);
         const gidVars = new Set();   // 只賦值一次、初值是 gid 的區域變數（例如 int i = get_global_id(0)）視同 gid
@@ -237,7 +238,9 @@
                     if (outStore) throw new Error('GLSL（T3）要求輸出只寫一次');
                     if (s.buf !== out.name) throw new Error('GLSL：寫入的緩衝區不是唯一的輸出');
                     outStore = s;
-                    if (!(s.idx.k === 'gid' || (s.idx.k === 'var' && gidVars.has(s.idx.name)))) throw new Error('GLSL（T3）要求寫入位置就是 gid（每個片段寫自己的 texel）');
+                    // 寫入位置：gid（每個片段寫自己的 texel），或固定常數 c（只有 texel c 得到值，其餘 texel 寫 0）
+                    if (s.idx.k === 'num') constIdx = Number(s.idx.v) | 0;
+                    else if (!(s.idx.k === 'gid' || (s.idx.k === 'var' && gidVars.has(s.idx.name)))) throw new Error('GLSL（T3）要求寫入位置是 gid 或固定常數');
                     continue;
                 }
                 if (s.k === 'if' && hasStore(s.body)) {
@@ -253,10 +256,28 @@
         if (!outStore) return { ok: false, error: 'GLSL（T3）：核心沒有寫入輸出' };
         const vals = out.elem === 'f32x4' ? outStore.e.es.map(ex) : [ex(outStore.e), '0.0', '0.0', '0.0'];
         const uniforms = kernel.params.filter((p) => p.kind === 'scalar').map((p) => ({ name: 'u_' + p.name, type: p.type === 'f32' ? 'float' : 'int' }));
-        const fs = `#version 300 es\nprecision highp float;\nprecision highp int;\nuniform int u_W;\nuniform int u_count;\nuniform int u_base;\n${uniforms.map((u) => `uniform ${u.type} ${u.name};`).join('\n')}\n${kernel.params.filter((p) => p.kind === 'buf' && p.access === 'in').map((p) => `uniform highp sampler2D ${p.name};\nuniform int u_off_${p.name};`).join('\n')}\nout vec4 fragColor;\nvoid main() {\n  int gid = int(floor(gl_FragCoord.y)) * u_W + int(floor(gl_FragCoord.x)) - u_base;\n  if (gid >= u_count) { discard; }\n${lines.join('')}  fragColor = vec4(${vals.join(', ')});\n}\n`;
+        const ins = kernel.params.filter((p) => p.kind === 'buf' && p.access === 'in');
+        const fragLine = constIdx === null ? `  fragColor = vec4(${vals.join(', ')});\n` : `  fragColor = (gid == ${constIdx}) ? vec4(${vals.join(', ')}) : vec4(0.0);\n`;
+        const fs = `#version 300 es\nprecision highp float;\nprecision highp int;\nuniform int u_W;\nuniform int u_count;\nuniform int u_base;\n${uniforms.map((u) => `uniform ${u.type} ${u.name};`).join('\n')}\n${ins.map((p) => `uniform highp sampler2D ${p.name};\nuniform int u_off_${p.name};\nuniform int u_W_${p.name};`).join('\n')}\nout vec4 fragColor;\nvoid main() {\n  int gid = int(floor(gl_FragCoord.y)) * u_W + int(floor(gl_FragCoord.x)) - u_base;\n  if (gid >= u_count) { discard; }\n${lines.join('')}${fragLine}}\n`;
         const vs = `#version 300 es\nconst vec2 P[3] = vec2[3](vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));\nvoid main() { gl_Position = vec4(P[gl_VertexID], 0.0, 1.0); }\n`;
-        return { ok: true, vs, fs, uniforms: ['u_W', 'u_count', 'u_base'].concat(kernel.params.filter((p) => p.kind === 'buf' && p.access === 'in').map((p) => 'u_off_' + p.name), uniforms.map((u) => u.name)), samplers: kernel.params.filter((p) => p.kind === 'buf' && p.access === 'in').map((p) => ({ name: p.name, elem: p.elem })), out: { name: out.name, elem: out.elem } };
+        return { ok: true, vs, fs, uniforms: ['u_W', 'u_count', 'u_base'].concat(ins.flatMap((p) => ['u_off_' + p.name, 'u_W_' + p.name]), uniforms.map((u) => u.name)), samplers: ins.map((p) => ({ name: p.name, elem: p.elem })), out: { name: out.name, elem: out.elem } };
     }
 
-    return { toWgsl, toGlsl, fl, SCALAR_MARK };
+    // 多個輸出的核心（GLSL 沒有 MRT）：每個輸出拆成一個單一輸出的核心。那個核心保留自己輸出的 store，其餘輸出的 store 刪掉，
+    // 其餘運算（let／set／if／for）照原樣保留；參數只留下那個輸出（其餘輸出參數不再綁定）。只有一個輸出時回傳 [原核心]。
+    function singleOutKernels(kernel) {
+        const outs = kernel.params.filter((p) => p.kind === 'buf' && p.access === 'out');
+        if (outs.length <= 1) return [kernel];
+        const dropStores = (stmts, keep) => stmts.flatMap((s) => {
+            if (s.k === 'store') return s.buf === keep ? [s] : [];
+            if (s.k === 'if' || s.k === 'for') return [Object.assign({}, s, { body: dropStores(s.body, keep) })];
+            return [s];
+        });
+        return outs.map((o) => ({
+            name: kernel.name + '__' + o.name,
+            params: kernel.params.filter((p) => p.kind !== 'buf' || p.access !== 'out' || p.name === o.name),
+            body: dropStores(kernel.body, o.name)
+        }));
+    }
+    return { toWgsl, toGlsl, fl, SCALAR_MARK, singleOutKernels };
 });
