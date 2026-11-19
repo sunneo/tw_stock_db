@@ -332,6 +332,7 @@ const suites = [
     ['遠端共筆 patch 模式（id 定址的 JSON 差異、套用與略過、逐行 diff3）', 'scripts/remote-tests/rg_patch.test.js'],
     ['環境基準線（檔位判斷、政策、OOM 辨識、資源治理：讓位／排隊／跑完卸載／壓力／降級）', 'scripts/env-tests/env_profile.test.js'],
     ['模擬 swap（熱區上限、最久沒用的先寫出、讀回、丟掉）', 'scripts/env-tests/swap.test.js'],
+    ['node 程式的 swap 與 canvas（頁面讀寫一致、越界、結束清掉）＋ examples/node 三支範例', 'renderer/src/gui/js_program_swap.test.js'],
     ['文件類編輯器核心：markdown／純文字（往返位元組一致、區塊解析、封閉動作）', 'scripts/edit-tests/text_core.test.js'],
     ['動畫簡報：格式、驗證、時間軸、渲染（deck_core）', 'scripts/deck-tests/deck_core.test.js'],
     ['動畫簡報：字幕可以跟念的不一樣（caption）、配音失敗／逾時的備援、聲音清單', 'scripts/deck-tests/deck_voice.test.js'],
@@ -475,6 +476,10 @@ if (py.status === 0) {
 const pq = spawnSync('python', [path.join(root, 'scripts/test_fa_sqlite.py')], { encoding: 'utf8' });
 if (pq.error) console.log('略過 fa_sqlite（Python）：沒有 python');
 else { const last = String(pq.stdout || '').trim().split('\n').filter(Boolean).pop() || ''; const ok = pq.status === 0 && /0 failed/.test(last); if (!ok) failed++; console.log((ok ? 'PASS ' : 'FAIL ') + 'fa_sqlite（Python 的 sqlite3 相容介面）：' + last); }
+// fa_swap（Python 的 IndexedDB-as-swap 陣列）：假橋接＋numpy，有 python 與 numpy 才跑
+const ps = spawnSync('python3', [path.join(root, 'renderer/src/pybridge/fa_swap_test.py')], { encoding: 'utf8' });
+if (ps.error || /No module named 'numpy'/.test(String(ps.stderr || ''))) console.log('略過 fa_swap（Python）：沒有 python 或缺 numpy');
+else { const last = String(ps.stdout || '').trim().split('\n').filter(Boolean).pop() || ''; const ok = ps.status === 0 && /OK/.test(last); if (!ok) failed++; console.log((ok ? 'PASS ' : 'FAIL ') + 'fa_swap（Python）：' + last); }
 // 離線訓練工作室的匯出 smoke（DESIGN.lora-training.md §25）：用隨機初始化的迷你 Qwen3 跑完合併→ONNX→GGUF→完整微調（暫停、續訓）整條路，
 // 不需要 Qwen3-0.6B 權重。需要：匯出環境 python（FA_EXPORT_PYTHON，預設 lora-train/.venv-export）、Qwen3 基底資料夾（FA_QWEN3_TOKENIZER，只取 tokenizer 與 config）、
 // 訓練環境（FA_TRAIN_PYTHON，預設 lora-train/.venv，有 peft）、llama.cpp（FA_LLAMA_SRC＋FA_LLAMA_BIN）。缺哪個就在腳本裡略過該段並印出原因。

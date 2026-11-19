@@ -70,6 +70,16 @@
       var self = this, sel = (selected || []).map(String);
       return this._node('multilist', parent, { items: (items || []).map(String), selected: sel }).then(function (nid) { self.values[nid] = sel.slice(); return nid; });
     };
+    // canvas: a drawing area for frames (games). draw(nid, ops) paints one whole frame (ops as in the Python gui: ["rect", x, y, w, h, color], ...).
+    // fps > 0 makes wait() return {event: "frame"} events; key presses come as {event: "key", value: {key, down}}; the pointer as "mouse".
+    Win.prototype.canvas = function (width, height, fps, parent, fit) {
+      var f = { width: Number(width) || 320, height: Number(height) || 240, fps: Number(fps) || 0 };
+      if (fit) { f.fit = true; }
+      return this._node('canvas', parent, f);
+    };
+    Win.prototype.draw = function (nid, ops) { return call('gui.draw', { id: this.id, node: nid, ops: ops }); };
+    Win.prototype.set = function (nid, props) { return call('gui.set', { id: this.id, node: nid, props: props }); };
+    Win.prototype.poll = function () { return call('gui.poll', { id: this.id }); };
     Win.prototype.value = function (nid) { return this.values[nid]; };
     // value-changing events only update value(); click and close are returned to the program
     function valueEvent(self, ev) {
@@ -95,6 +105,111 @@
       this.closed = true;
       return call('gui.close', { id: this.id });
     };
+    // swap: IndexedDB as swap. swap.array(length, "f32"|"f64"|"i32"|"u32"|"u8"|"i16"|"u16"|"i8") is a typed array of any length kept in pages: only the most
+    // recently used pages (hotMB, default 16) stay in this program's memory, the rest lives in IndexedDB (via the page). Everything is async:
+    //   var a = swap.array(50e6, "f32");  await a.set(0, new Float32Array([1, 2, 3]));  var x = await a.get(0, 3);  await a.map(function (blk, start) { ... });
+    // a.fill(v), a.free(); swap.stats(); swap.hotMB(n). Pages not written yet read as 0. The pages are dropped when the program ends.
+    var SW = { space: 'js-' + Math.random().toString(36).slice(2, 10), hot: 16 * 1048576, page: 256 * 1024, arrays: {}, seq: 0, reads: 0, writes: 0, hits: 0, cache: [] };
+    var TYPES = { f32: Float32Array, f64: Float64Array, i32: Int32Array, u32: Uint32Array, u8: Uint8Array, i8: Int8Array, i16: Int16Array, u16: Uint16Array };
+    function b64of(u8) { var s = ''; for (var i = 0; i < u8.length; i += 0x8000) { s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); } return btoa(s); }
+    function u8of(b64) { var bin = atob(b64), u = new Uint8Array(bin.length); for (var i = 0; i < bin.length; i++) { u[i] = bin.charCodeAt(i); } return u; }
+    function hotSize() { var n = 0; SW.cache.forEach(function (e) { n += e.data.byteLength; }); return n; }
+    function evict(keep) {
+      var chain = Promise.resolve();
+      while (SW.cache.length > 1 && hotSize() > SW.hot) {
+        var i = SW.cache[0] === keep ? 1 : 0, e = SW.cache.splice(i, 1)[0];
+        if (!e) { break; }
+        chain = chain.then((function (e) { return function () { return flushEntry(e); }; })(e));
+      }
+      return chain;
+    }
+    function flushEntry(e) {
+      if (!e.dirty && e.arr.disk[e.pno] !== undefined) { return Promise.resolve(); }
+      var old = e.arr.disk[e.pno];
+      return call('swap.put', { space: SW.space, b64: b64of(new Uint8Array(e.data.buffer, e.data.byteOffset, e.data.byteLength)) }).then(function (r) {
+        e.arr.disk[e.pno] = r.id; e.dirty = false; SW.writes++;
+        if (old !== undefined) { return call('swap.drop', { space: SW.space, id: old }); }
+      });
+    }
+    function pageOf(arr, pno, forWrite) {
+      var found = null;
+      for (var i = 0; i < SW.cache.length; i++) { if (SW.cache[i].arr === arr && SW.cache[i].pno === pno) { found = SW.cache.splice(i, 1)[0]; break; } }
+      var got;
+      if (found) { SW.hits++; got = Promise.resolve(found); }
+      else {
+        var n = Math.min(arr.perPage, arr.length - pno * arr.perPage);
+        if (arr.disk[pno] !== undefined) {
+          got = call('swap.get', { space: SW.space, id: arr.disk[pno] }).then(function (r) { SW.reads++; var u = u8of(r.b64); return { arr: arr, pno: pno, dirty: false, data: new arr.T(u.buffer, 0, n) }; });
+        } else { got = Promise.resolve({ arr: arr, pno: pno, dirty: false, data: new arr.T(n) }); }
+      }
+      return got.then(function (e) { if (forWrite) { e.dirty = true; } SW.cache.push(e); return evict(e).then(function () { return e; }); });
+    }
+    function SwapArr(length, type) {
+      var T = TYPES[type || 'f32'];
+      if (!T) { throw new Error('swap.array: unknown type ' + type + ' (use ' + Object.keys(TYPES).join(', ') + ')'); }
+      this.id = ++SW.seq; this.length = Math.floor(Number(length)); this.T = T; this.disk = {}; this.freed = false;
+      if (!(this.length >= 0)) { throw new Error('swap.array: bad length'); }
+      this.perPage = Math.max(1, Math.floor(SW.page / T.BYTES_PER_ELEMENT)); SW.arrays[this.id] = this;
+    }
+    SwapArr.prototype._chk = function (start, count) {
+      if (this.freed) { throw new Error('swap array was freed'); }
+      if (start < 0 || count < 0 || start + count > this.length) { throw new Error('swap array range ' + start + '..' + (start + count) + ' is outside 0..' + this.length); }
+    };
+    SwapArr.prototype.get = function (start, count) {
+      var self = this; start = Math.floor(start); count = count === undefined ? self.length - start : Math.floor(count); self._chk(start, count);
+      var out = new self.T(count), p = Math.floor(start / self.perPage), chain = Promise.resolve();
+      for (; p * self.perPage < start + count; p++) {
+        chain = chain.then((function (p) { return function () {
+          return pageOf(self, p, false).then(function (e) {
+            var from = Math.max(start, p * self.perPage), to = Math.min(start + count, (p + 1) * self.perPage);
+            out.set(e.data.subarray(from - p * self.perPage, to - p * self.perPage), from - start);
+          });
+        }; })(p));
+      }
+      return chain.then(function () { return out; });
+    };
+    SwapArr.prototype.set = function (start, data) {
+      var self = this; start = Math.floor(start); var count = data.length; self._chk(start, count);
+      var src = data instanceof self.T ? data : new self.T(data), p = Math.floor(start / self.perPage), chain = Promise.resolve();
+      for (; p * self.perPage < start + count; p++) {
+        chain = chain.then((function (p) { return function () {
+          return pageOf(self, p, true).then(function (e) {
+            var from = Math.max(start, p * self.perPage), to = Math.min(start + count, (p + 1) * self.perPage);
+            e.data.set(src.subarray(from - start, to - start), from - p * self.perPage);
+          });
+        }; })(p));
+      }
+      return chain;
+    };
+    SwapArr.prototype.fill = function (v) {
+      var self = this, chain = Promise.resolve(), pages = Math.ceil(self.length / self.perPage);
+      for (var p = 0; p < pages; p++) { chain = chain.then((function (p) { return function () { return pageOf(self, p, true).then(function (e) { e.data.fill(v); }); }; })(p)); }
+      return chain;
+    };
+    // map(fn(block, startIndex) -> optional replacement block): one page at a time, written back
+    SwapArr.prototype.map = function (fn, blockLen) {
+      var self = this, step = blockLen || self.perPage, chain = Promise.resolve();
+      for (var s = 0; s < self.length; s += step) {
+        chain = chain.then((function (s) { return function () {
+          return self.get(s, Math.min(step, self.length - s)).then(function (b) { var r = fn(b, s); return self.set(s, r || b); });
+        }; })(s));
+      }
+      return chain;
+    };
+    SwapArr.prototype.free = function () {
+      var self = this, ids = Object.keys(self.disk).map(function (k) { return self.disk[k]; });
+      SW.cache = SW.cache.filter(function (e) { return e.arr !== self; }); self.freed = true; delete SW.arrays[self.id];
+      return ids.reduce(function (c, id) { return c.then(function () { return call('swap.drop', { space: SW.space, id: id }); }); }, Promise.resolve());
+    };
+    window.swap = {
+      array: function (length, type) { return new SwapArr(length, type); },
+      hotMB: function (n) { SW.hot = Math.max(0, Number(n)) * 1048576; return evict(null); },
+      flush: function () { return Promise.all(SW.cache.map(flushEntry)); },
+      stats: function () { return call('swap.stats', { space: SW.space }).then(function (h) { return { pagesHot: SW.cache.length, hotBytes: hotSize(), limit: SW.hot, reads: SW.reads, writes: SW.writes, hits: SW.hits, arrays: Object.keys(SW.arrays).length, host: h }; }); },
+      close: function () { SW.cache = []; SW.arrays = {}; return call('swap.close', { space: SW.space }); }
+    };
+    window.swap.__space = SW.space;
+
     window.gui = {
       open: function (title, width) {
         var id = 'w' + Math.random().toString(36).slice(2, 10);
@@ -103,10 +218,11 @@
     };
 
     var run = new Function('return (async function () {\n' + code + '\n})();');
+    function closeSwap() { return Promise.resolve().then(function () { return window.swap.close(); }).catch(function () {}); }
     Promise.resolve().then(run).then(function () {
-      parent.postMessage({ __done: { ok: true } }, '*');
+      return closeSwap().then(function () { parent.postMessage({ __done: { ok: true } }, '*'); });
     }, function (e) {
-      parent.postMessage({ __done: { ok: false, error: String((e && e.stack) || e) } }, '*');
+      return closeSwap().then(function () { parent.postMessage({ __done: { ok: false, error: String((e && e.stack) || e) } }, '*'); });
     });
   }
 

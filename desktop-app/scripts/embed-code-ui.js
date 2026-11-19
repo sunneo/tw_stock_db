@@ -40,11 +40,11 @@ function embedPyBridge() {
     console.log('已更新 FA_PYBRIDGE_FILES（' + Object.keys(out).join('、') + '）');
 }
 embedPyBridge();
-// run terminal 預設資料夾的 Python 範例（renderer/src/examples/python/**；不含測試台 _harness.py）→ FA_PY_EXAMPLES（相對路徑 → 內容）
+// run terminal 預設資料夾的範例（renderer/src/examples/{python,node,llc}/**；不含 _ 開頭的測試台）→ FA_PY_EXAMPLES（相對 examples 的路徑 → 內容）
 function embedPyExamples() {
-    const dir = path.join(root, 'renderer/src/examples/python');
+    const dir = path.join(root, 'renderer/src/examples');
     const out = {};
-    (function walk(d, rel) { for (const n of fs.readdirSync(d).sort()) { const p = path.join(d, n), r = rel ? rel + '/' + n : n; if (fs.statSync(p).isDirectory()) { if (n !== '__pycache__') walk(p, r); } else if ((n.endsWith('.py') || n === 'README.md') && !n.startsWith('_')) out[r] = fs.readFileSync(p, 'utf8').replace(/\r\n/g, '\n'); } })(dir, '');
+    (function walk(d, rel) { for (const n of fs.readdirSync(d).sort()) { const p = path.join(d, n), r = rel ? rel + '/' + n : n; if (fs.statSync(p).isDirectory()) { if (n !== '__pycache__') walk(p, r); } else if ((/\.(py|js|ll)$/.test(n) || n === 'README.md') && !n.startsWith('_') && !/\.test\.js$/.test(n)) out[r] = fs.readFileSync(p, 'utf8').replace(/\r\n/g, '\n'); } })(dir, '');
     const a = src.indexOf('/* PYEXAMPLES-BEGIN */'), b = src.indexOf('/* PYEXAMPLES-END */');
     if (a < 0 || b < 0) throw new Error('找不到 PYEXAMPLES 標記');
     src = src.slice(0, a) + '/* PYEXAMPLES-BEGIN */\nconst FA_PY_EXAMPLES = ' + lit(out) + ';\n' + src.slice(b);

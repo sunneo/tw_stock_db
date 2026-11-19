@@ -10,7 +10,7 @@
 |---|---|
 | `game/` | 打磚塊、飛彈指揮官、賽車、類馬力歐闖關、RPG、類暗黑破壞神的地圖探索（2D，`import pygame` 小子集） |
 | `gui/` | 讀檔寫檔編輯器、音樂、MIDI、照片檢視器（viewport、縮放、翻轉）、曼德博、碎形、3D 場景（`gl_scene.py`） |
-| `gpgpu/` | 3D N-body（照 `sdlmm/exams/nbody3d.c` 移植：同物理、同隨機化、同控制與覆蓋層、加成混合的光點）、3D SPH 流體：計算來源可在視窗內或用 `--device cpu|gpu|auto` 切換 |
+| `gpgpu/` | `swap_stream.py`（IndexedDB 當 swap 的 out-of-core 處理）、3D N-body（照 `sdlmm/exams/nbody3d.c` 移植：同物理、同隨機化、同控制與覆蓋層、加成混合的光點）、3D SPH 流體：計算來源可在視窗內或用 `--device cpu|gpu|auto` 切換 |
 
 ## 3D／OpenGL：`gl3d`
 
@@ -31,3 +31,9 @@
 - 2D 畫布每幀最多 200 道指令；GL 畫布每幀最多 256 道指令，單一緩衝區 4 MB、24 個緩衝區、12 個程式。
 - 聲音只有短嗶聲（`tone`）。
 - 鍵盤要先點一下視窗；滾輪縮放要按 Ctrl。
+
+## IndexedDB 當 swap：`fa_swap`
+
+`import fa_swap`：陣列比記憶體大也能用。`a = fa_swap.array((100000, 256), 'float32')` 沿第 0 軸分頁，Python 只留熱區（預設 16 MB，`FA_SWAP_HOT_MB` 或 `fa_swap.set_hot_mb(n)` 調整），其餘經橋接放進 IndexedDB。
+`a[i]`、`a[s:e]`、`a[[1,5,9]]`、`a[s:e, 3]` 讀寫都像 numpy；`a.blocks(n)`／`a.apply(fn)` 一塊一塊處理；`fa_swap.stats()` 看讀寫次數。沒寫過的頁讀出來是 0；程式結束就丟掉。
+沒有橋接（或沒有 IndexedDB）時退回記憶體字典，功能一樣但不省記憶體（`stats()['backend']=='memory'`）。範例：`gpgpu/swap_stream.py`。
