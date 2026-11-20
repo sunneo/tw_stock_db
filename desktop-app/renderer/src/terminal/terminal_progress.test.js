@@ -17,7 +17,7 @@ const METHODS = ['_fetchAssetBytesWithBackup', '_bashReadBody', '_bashWasmEmit',
     '_terminalBashProgressWriter', '_bashCacheOpen', '_bashCacheKey', '_bashCacheGet', '_bashCachePut', '_bashLoadJsModules',
     '_ensureBashWasmLoaded', '_fetchAssetBackupFile', '_fetchViaProxyThenDirect', '_scheduleBashWasmPreload', '_terminalDiagText',
     '_terminalFsFastPath', '_terminalCd', '_termTimed', '_runTerminalCommand', '_bashDownloading', '_bashCancelLoads', '_bashRetryWait', '_terminalRecordInput', '_terminalBuildTag', '_terminalPrintDiag',
-    '_terminalVirtualFs', '_terminalFsView', '_terminalWithBashProgress', '_terminalLoadRuntime', '_pyodidePrefetch', '_termBeginLoad', '_terminalTryLliHost', '_bashBundleSource', '_ensureTerminalFsStore', '_bashSettings', '_bashStallMs', '_bashJoin', '_bashFetchBytes', '_bashWithStall', '_bashJsSourceList', '_bashLoadOneJsSource', '_normalizeTerminalSettings', '_terminalResolvePath', '_terminalIsDir', '_terminalSandboxFileBytes'];
+    '_terminalVirtualFs', '_terminalFsView', '_terminalWithBashProgress', '_terminalLoadRuntime', '_pyodidePrefetch', '_termBeginLoad', '_terminalTryLliHost', '_bashBundleSource', '_ensureTerminalFsStore', '_fapWarm', '_terminalKnownCommand', '_bashSettings', '_bashStallMs', '_bashJoin', '_bashFetchBytes', '_bashWithStall', '_bashJsSourceList', '_bashLoadOneJsSource', '_normalizeTerminalSettings', '_terminalResolvePath', '_terminalIsDir', '_terminalSandboxFileBytes'];
 const CLASS_SRC = '({' + METHODS.map(methodSource).join(',\n') + '})';
 
 const PRIMARY = 'https://cdn.example/wasi/dist/busybox.wasm';
@@ -342,7 +342,7 @@ const tick = () => new Promise((r) => setImmediate(r));
         const self = makeSelf(ctx);
         const s = sink(); s.sess._inputLog = [];
         const empty = self._terminalDiagText(s.sess);
-        check('T16 diag 有版本與「沒有輸入事件」的明說', empty.includes('版本：v509') && empty.includes('沒有任何輸入事件到達終端機'), empty);
+        check('T16 diag 有版本與「沒有輸入事件」的明說', empty.includes('版本：v510') && empty.includes('沒有任何輸入事件到達終端機'), empty);
         for (let i = 0; i < 12; i++) self._terminalRecordInput(s.sess, 'keydown', { key: 'e', keyCode: 229 });
         self._terminalRecordInput(s.sess, 'data', { data: 'e' });
         const txt = self._terminalDiagText(s.sess);
@@ -354,7 +354,7 @@ const tick = () => new Promise((r) => setImmediate(r));
         const self = makeSelf(ctx);
         const s = sink(); s.sess._inputLog = [];
         self._terminalPrintDiag(s.sess);
-        check('T17 診斷按鈕印出版本與輸入紀錄', s.out.join('').includes('版本：v509') && s.out.join('').includes('最後 10 個輸入事件'), s.out.length);
+        check('T17 診斷按鈕印出版本與輸入紀錄', s.out.join('').includes('版本：v510') && s.out.join('').includes('最後 10 個輸入事件'), s.out.length);
     }
     // T18：設定白名單：來源只收已知值、自訂網址只收 http(s)、逾時秒數夾在 5–120、預載預設開
     {
@@ -491,16 +491,40 @@ const tick = () => new Promise((r) => setImmediate(r));
         const handled = await self._terminalTryLliHost(a.sess, 'nope.ll');
         check('T29 lli 找不到檔案：明確中文錯誤、視為已處理', handled === true && a.out.join('').includes('找不到這個檔案') && a.sess.exit === 1, a.out);
     }
-    // T30：掛載清單（IndexedDB）永不回：3 秒後退回記憶體檔案系統，印出警告，不卡住
+    // T31：打錯的指令（llo）：JS 端直接回答 command not found，不等任何載入或掛載
+    {
+        const ctx = makeCtx({ fetch: fakeNet({}).fetch });
+        const never = () => new Promise(() => {});
+        const self = makeSelf(ctx, {
+            _terminalGroupCompoundLine: () => [{ type: 'shell', text: '' }], _terminalSplitAiPipe: () => null, _terminalSplitPyPipe: () => null,
+            _terminalSetExit: (sess, code) => { sess.exit = code; },
+            _ensureBashWasmLoaded: never, _ensureTerminalFsStore: never, _listAllFapAccessPoints: never, _ensureTerminalProgramLoaded: never,
+        });
+        const a = sink();
+        await self._runTerminalCommand(a.sess, 'llo');
+        check('T31 打錯的指令：立即顯示 command not found 與 127', a.out.join('').includes('llo: command not found') && a.sess.exit === 127, a.out);
+        check('T31 已知指令不會被誤判（cd 走自己的路徑）', self._terminalKnownCommand(a.sess, 'cd') && self._terminalKnownCommand(a.sess, 'lli') && !self._terminalKnownCommand(a.sess, 'llo'));
+        a.sess.userFunctionDefs = new Map([['myfn', 'myfn() { :; }']]);
+        check('T31 使用者定義的函式也算已知', self._terminalKnownCommand(a.sess, 'myfn'));
+    }
+    // T32：掛載清單還沒讀到：指令路徑立即用空清單執行（不等、不印警告）
     {
         const ctx = makeCtx({ fetch: fakeNet({}).fetch });
         const self = makeSelf(ctx, { _listAllFapAccessPoints: () => new Promise(() => {}) });
         const a = sink();
-        const p = self._ensureTerminalFsStore(a.sess, { memoryFs: (seed) => ({ seeded: Object.keys(seed).length }) });
-        ctx.timers[ctx.timers.length - 1]();
-        const store = await p;
-        check('T30 掛載清單逾時：仍回傳檔案系統，並印出警告', store && store.seeded > 0 && a.out.join('').includes('掛載清單讀取超過 3 秒'), a.out.map((x) => x.slice(0, 30)));
-        check('T30 階段停在可辨識的名稱', a.sess._stage === '開啟檔案系統（讀取掛載清單）', a.sess._stage);
+        const store = await Promise.race([self._ensureTerminalFsStore(a.sess, { memoryFs: () => ({ ok: true }) }), new Promise((r) => setTimeout(() => r('TIMEOUT'), 0))]);
+        check('T32 掛載清單未就緒：立即回傳檔案系統，不等', store !== 'TIMEOUT' && store.ok === true, store);
+        check('T32 不印掛載清單警告，只標記待讀', !a.out.join('').includes('掛載清單') && a.sess._fapPending === true, a.out);
+    }
+    // T33：掛載清單背景只讀一次（60 秒內重複呼叫不重讀）；diag 顯示耗時
+    {
+        const ctx = makeCtx({ fetch: fakeNet({}).fetch });
+        let calls = 0;
+        const self = makeSelf(ctx, { _listAllFapAccessPoints: async () => { calls++; self._fapTiming = { getAllMs: 1, permMs: 2, opfsMs: 3 }; return [{ label: 'docs' }]; } });
+        await self._fapWarm(); await self._fapWarm();
+        check('T33 背景只讀一次', calls === 1, calls);
+        const dg = self._terminalDiagText({ term: { write() {} }, _stage: 'x' });
+        check('T33 diag 顯示掛載清單數量與分段耗時', dg.includes('掛載清單：1 個') && dg.includes('IndexedDB 讀取 1ms'), dg.split('\n').filter((x) => x.includes('掛載清單')));
     }
     console.log('terminal_progress.test.js: ' + ok + ' passed, ' + bad + ' failed');
     process.exit(bad ? 1 : 0);

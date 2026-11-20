@@ -2053,3 +2053,21 @@ node scripts/eval/gpgpu_bench.build.js /tmp/gpgpu_bench.js && FA_EVAL_GL=gpu FA_
 **測試（模擬）**：`terminal_progress.test.js` 79 passed。T27 用 node 重現 blob 基底的 Invalid URL，並確認替換後能解析到 CDN 上的檔案；T28 已載入時階段仍會更新；T29 lli 找不到檔案時明確報錯；T30 掛載清單永不回時 3 秒後退回記憶體檔案系統並印出警告；T25 lli 分派後載入永不結束，階段與準備行都可見。`terminal_hang` 23、`terminal_input` 28、`terminal_fastpath` 5 passed。
 
 **未驗證**：真機上 lli 與 python 的實際執行、IndexedDB 在 Android Chrome 的行為、備份 bundle 替換後在真實瀏覽器中的載入（只用 node 驗證了 URL 解析）。python 的 Worker 路徑仍未回報進度。
+
+### 打錯指令會卡住、掛載清單 IndexedDB 很慢（v510，2026-11-20）
+
+使用者實測 v509：輸入 `llo`（打錯）會卡一陣子，然後出現「掛載清單讀取超過 3 秒」。
+
+**修正**
+- **打錯的指令立即回應**：不在任何已知命令表裡（JS 攔截、shell 關鍵字、內建、busybox applet、程式套件、已註冊的執行環境、使用者定義的函式）、也沒有 `/`、`=`、shell 運算子的指令，直接印 `llo: command not found` 並以 127 結束，不送進 shell、不等任何載入。
+- **掛載清單改為背景讀一次**：終端機掛載後延後 1 秒讀取（`_fapWarm`），60 秒內重複使用快取。指令路徑只讀記憶體；清單還沒讀到時，指令用空清單立即執行，不等也不警告。
+- **只有存取 `/mnt` 才等**：等待超過 3 秒才提示「仍在讀取掛載清單…可按 Ctrl-C 取消」。一般指令不再出現這個警告。
+- **diag 分段計時**：「掛載清單」一行顯示狀態、總耗時，以及 IndexedDB 讀取（`getAll`）、權限查詢（`queryPermission`）、OPFS 工作區枚舉各自的毫秒數。
+
+**沒有解決的部分**
+- **真正慢在哪裡，還沒有確定**：我從程式碼看到的三個可能是 IndexedDB 的 `getAll`、逐一的 `queryPermission`（手機上可能需要權限互動）、以及 OPFS 根目錄的枚舉。還沒有手機上的分段數字，所以不能說是哪一段。請用 diag 的「掛載清單」那一行回報。
+- **掛載變更的即時性**：快取 60 秒後才會重讀。新增或移除掛載的程式碼路徑還沒有接上快取失效（`_fapInvalidate` 未被呼叫），所以新掛載最多要 60 秒才會出現在 `/mnt`。
+- **打錯指令的清單可能不完整**：busybox 的 applet 清單是靠 `TERMINAL_BUSYBOX_APPLETS` 寫死的；若 busybox 支援但清單沒有的指令，會被誤判成 command not found。
+- **IndexedDB 的連線共用與 `onblocked`／`onversionchange`**：沒有逐一檢查，這一版沒有改。
+
+**測試（模擬）**：`terminal_progress.test.js` 84 passed。T31：`llo` 立即 command not found、127；已知指令與使用者函式不被誤判。T32：掛載清單未就緒時，指令立即用空清單執行，不等、不警告。T33：掛載清單背景只讀一次；diag 顯示分段耗時。`terminal_hang` 23、`terminal_input` 28、`terminal_fastpath` 5 passed。**未在真機驗證。**

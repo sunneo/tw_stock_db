@@ -93128,12 +93128,20 @@ ${fnData.code}
     }
 
     async _listAllFapAccessPoints() {
+        const t = { getAllMs: 0, permMs: 0, opfsMs: 0 };
+        let a = Date.now();
         const all = await this.fileAccessPoints.getAll();
-        return Promise.all(all.map(async (r) => {
+        t.getAllMs = Date.now() - a; a = Date.now();
+        const list = await Promise.all(all.map(async (r) => {
             let permission = 'unknown';
             try { permission = await r.handle.queryPermission({ mode: 'readwrite' }); } catch (_) {}
             return { id: r.id, label: r.label, real_path_hint: r.realPathHint || null, permission };
-        })).then(async (list) => list.concat(await this._opfsListWorkspaces()));
+        }));
+        t.permMs = Date.now() - a; a = Date.now();
+        const opfs = await this._opfsListWorkspaces();
+        t.opfsMs = Date.now() - a;
+        this._fapTiming = t;
+        return list.concat(opfs);
     }
 
     async _fapListFiles(ref) {
@@ -113960,7 +113968,7 @@ ${sourceTool.handlerScript}
         session.term.write('\r\n' + this._terminalDiagText(session).replace(/\n/g, '\r\n') + '\r\n');
     }
     // 終端機的版本標記：每次發版時改這裡（與 PATCH_VERSION、發版 commit 對得上），終端機開頭與 diag 會印出來。
-    _terminalBuildTag() { return 'v509'; }
+    _terminalBuildTag() { return 'v510'; }
     _terminalRecordInput(session, type, ev) {
         if (!session || !session._inputLog) return;
         let detail = '';
@@ -113981,6 +113989,17 @@ ${sourceTool.handlerScript}
         setTimeout(() => d.remove(), 5000);
     }
     // 下載中（JS 模組或 wasm 尚未載入完成）。看門狗據此順延，不在下載中砍指令。
+    // tw_stock_db客製: 2026-11-20 掛載清單快取：背景讀一次（不在指令路徑上等 IndexedDB），60 秒後下次用到時才重讀。
+    _fapWarm() {
+        const st = this._fapState;
+        if (st && (!st.ready || Date.now() - st.at < 60000)) return st.promise;
+        const ns = { ready: false, points: [], error: null, ms: null, at: Date.now(), timing: null };
+        const t0 = Date.now();
+        ns.promise = this._listAllFapAccessPoints().then((p) => { ns.points = p; ns.ready = true; ns.ms = Date.now() - t0; ns.timing = this._fapTiming || null; return p; },
+            (e) => { ns.error = String((e && e.message) || e); ns.ready = true; ns.ms = Date.now() - t0; return []; });
+        this._fapState = ns;
+        return ns.promise;
+    }
     _bashDownloading() { return !!((this._bashWasmLoadPromise && !this._bashWasmRuntime) || (this._bashJsPromise && !this._bashJsRuntime) || (this._pyodideLoadPromise && !this._pyodideInstance)); }
     // 使用者按 Ctrl-C：讓進行中的下載與自動重試迴圈結束（代數加一，舊迴圈檢查到就丟出「已取消」）。
     _bashCancelLoads() { this._bashGen = (this._bashGen || 0) + 1; this._bashWasmLoadPromise = null; this._bashJsPromise = null; this._pyodideLoadPromise = null; }
@@ -113991,6 +114010,14 @@ ${sourceTool.handlerScript}
         if (gen !== (this._bashGen || 0)) throw new Error('已取消（使用者按下 Ctrl-C）');
     }
     // diag 指令的內容：bash 執行環境狀態、下載／快取紀錄、最近一次主要來源失敗、本終端機各階段耗時（_termTimed 記的）。
+    // 已知指令：JS 攔截、shell 關鍵字與內建、busybox applet、程式套件、已註冊的執行環境、使用者定義的函式。都不是 → 不是指令。
+    _terminalKnownCommand(session, name) {
+        const JS_OR_KEYWORDS = ['clear', 'exit', 'pwd', 'help', 'diag', 'cd', 'which', 'chmod', 'sync', 'sh', 'bash', 'ask-floating-ai-assistant', 'ask-ai-chat', 'time', 'echo', 'ls', 'cat', 'sleep', 'curl', 'wget', 'httping', 'python', 'python3', 'lli', 'zenity', 'node', 'gui', 'sqlite3', 'sqlite', 'sqlitebrowser', 'top', 'if', 'then', 'else', 'elif', 'fi', 'for', 'while', 'until', 'do', 'done', 'case', 'esac', 'function', 'select', 'in', '{', '}', '!', '[[', ']]', '[', 'test', 'true', 'false', 'printf', 'export', 'unset', 'set', 'read', 'source', '.', 'alias', 'type', 'command', 'exec', 'eval', 'shift', 'return', 'break', 'continue', 'local', 'readonly', 'trap', 'wait', 'jobs', 'kill', 'umask', 'ulimit', 'getopts', 'hash'];
+        return JS_OR_KEYWORDS.includes(name)
+            || TERMINAL_SHELL_BUILTINS.includes(name) || TERMINAL_BUSYBOX_APPLETS.includes(name)
+            || !!(this._terminalProgramBundles && this._terminalProgramBundles[name]) || !!SANDBOX_COMMAND_REGISTRY[name]
+            || !!(session && session.userFunctionDefs && typeof session.userFunctionDefs.has === 'function' && session.userFunctionDefs.has(name));
+    }
     _terminalDiagText(session) {
         const mb = (n) => (n / 1048576).toFixed(1);
         const lines = [];
@@ -114008,6 +114035,8 @@ ${sourceTool.handlerScript}
         lines.push('python（Pyodide）：' + (this._pyodideInstance ? '已載入' : (this._pyodideLoadPromise ? '載入中' : '未載入')));
         lines.push('lli（LLVM，內建）：' + (typeof FaLlvm !== 'undefined' ? '可用' : '不可用'));
         lines.push('最後一次指令錯誤：' + ((session && session._lastError) || '無'));
+        const fs0 = this._fapState;
+        lines.push('掛載清單：' + (!fs0 ? '尚未讀取' : !fs0.ready ? '讀取中（指令不等它）' : fs0.error ? '讀取失敗：' + fs0.error : `${fs0.points.length} 個，總耗時 ${fs0.ms}ms` + (fs0.timing ? `（IndexedDB 讀取 ${fs0.timing.getAllMs}ms、權限查詢 ${fs0.timing.permMs}ms、OPFS 枚舉 ${fs0.timing.opfsMs}ms）` : '')));
         lines.push('目前來源：' + (this._bashCurrentSource || '尚未開始'));
         const evs = this._bashWasmDiag || [];
         const recent = evs.filter((e) => e.kind === 'cache' || e.kind === 'done').slice(-4);
@@ -114086,6 +114115,18 @@ ${sourceTool.handlerScript}
     async _terminalFsView(session, paths) {
         const abs = paths.map((p) => this._terminalResolvePath(session.cwd, p || '.'));
         const needsMnt = abs.some((a) => a === '/mnt' || a.startsWith('/mnt/'));
+        if (needsMnt && session.fsStore && session._fapPending) {
+            session._stage = '讀取掛載清單（IndexedDB，存取 /mnt 才等）';
+            const warn = setTimeout(() => { if (session.term) session.term.write('\x1b[33m仍在讀取掛載清單（IndexedDB 較慢）…可按 Ctrl-C 取消\x1b[0m\r\n'); }, 3000);
+            const pts = await this._fapWarm();
+            clearTimeout(warn);
+            session._fapPending = false;
+            for (const p of (pts || [])) {
+                if (session.fapLabels.includes(p.label)) continue;
+                session.fapLabels.push(p.label);
+                try { this._writeBytesToTerminalFs(session.fsStore, `/mnt/${p.label}/.keep`, new Uint8Array(0)); } catch (_) { /* 掛載目錄寫不進去就只影響 ls /mnt */ }
+            }
+        }
         if (session.fsStore) {
             if (needsMnt) { session._stage = '掛載資料夾（讀取檔案）'; await this._hydrateReferencedFapMounts(session, session.fsStore, abs.join(' ')); }
             return session.fsStore;
@@ -114616,6 +114657,7 @@ ${sourceTool.handlerScript}
         this._guardWheel(container);
         await this._ensureXtermLoaded();
         this._scheduleBashWasmPreload();
+        setTimeout(() => this._fapWarm(), 1000);
         const termSettings = this.advancedSettings.terminal || this._createDefaultAdvancedSettings().terminal;
         const term = new Terminal({
             convertEol: true, cursorBlink: true,
@@ -116374,6 +116416,11 @@ ${sourceTool.handlerScript}
         if (cmdName === 'httping') { await this._terminalHttping(session, restArgs); return; }
 
         // tw_stock_db客製: 2026-11-20 ls／cat 快路徑（見_terminalFsFastPath）：只需要 JS 檔案系統，不等 busybox.wasm；不符合條件或失敗就交給 shell。
+        if (!cmdName.includes('/') && !cmdName.includes('=') && !this._terminalHasShellOps(trimmed) && !this._terminalKnownCommand(session, cmdName)) {
+            session.term.write(`\x1b[31m${cmdName}: command not found\x1b[0m\r\n`);
+            this._terminalSetExit(session, 127);
+            return;
+        }
         if (cmdName === 'ls' || cmdName === 'cat') {
             let fastDone = false;
             try { fastDone = await this._terminalFsFastPath(session, cmdName, restArgs); }
@@ -116437,12 +116484,12 @@ ${sourceTool.handlerScript}
             // _hydrateFapMount本來就會呼叫_checkFapPermission，權限不是
             // granted時自動跳授權對話框，這裡不用另外寫觸發邏輯。
             session.fapLabels = [];
-            session._stage = '開啟檔案系統（讀取掛載清單）';
+            session._stage = '掛載清單（記憶體快取）';
             try {
-                // tw_stock_db客製: 2026-11-20 掛載清單（IndexedDB）最多等 3 秒；逾時只警告，記憶體中的檔案系統照常可用，/mnt 暫時沒有內容。
-                const points = await Promise.race([this._listAllFapAccessPoints(), new Promise((r) => setTimeout(() => r(null), 3000))]);
-                if (points === null && session.term) session.term.write('\x1b[33m掛載清單讀取超過 3 秒（IndexedDB 可能很慢或被擋），先只提供記憶體中的檔案系統；/mnt 暫時沒有內容。\x1b[0m\r\n');
-                for (const p of (points || [])) {
+                this._fapWarm();
+                const ready = this._fapState && this._fapState.ready ? this._fapState.points : null;
+                session._fapPending = ready === null;   // 還沒讀到：這次先用空清單，存取 /mnt 時才等
+                for (const p of (ready || [])) {
                     session.fapLabels.push(p.label);
                     seedFiles[`/mnt/${p.label}/.keep`] = '';
                 }
