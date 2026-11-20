@@ -2071,3 +2071,22 @@ node scripts/eval/gpgpu_bench.build.js /tmp/gpgpu_bench.js && FA_EVAL_GL=gpu FA_
 - **IndexedDB 的連線共用與 `onblocked`／`onversionchange`**：沒有逐一檢查，這一版沒有改。
 
 **測試（模擬）**：`terminal_progress.test.js` 84 passed。T31：`llo` 立即 command not found、127；已知指令與使用者函式不被誤判。T32：掛載清單未就緒時，指令立即用空清單執行，不等、不警告。T33：掛載清單背景只讀一次；diag 顯示分段耗時。`terminal_hang` 23、`terminal_input` 28、`terminal_fastpath` 5 passed。**未在真機驗證。**
+
+### 「command not found」誤判修正（v511，2026-11-20）
+
+v510 引入的 JS 端「command not found」判定有誤判：已知表漏了 busybox 的真正 applet（手寫清單缺 `ash`、`echo`、`false`、`true`、`pwd`、`sh`、`unlink`、`xargs`）。
+
+**修正**
+- **applet 清單改為從 busybox.wasm 生成**：`scripts/gen-busybox-applets.js` 直接讀 wasm 裡的 applet 名稱表（字典序、NUL 分隔的連續字串），目前生成 54 個。`TERMINAL_BUSYBOX_APPLETS` 以生成結果取代手寫版本，註解註明不要手改。
+- **shell 內建補齊**：cd、export、alias、unalias、source、.、type、command、read、set、unset、eval、exec、test、[、[[、wait、jobs、trap、umask、ulimit、times、local、return、exit、true、false、:。
+- **保守判定**（`_terminalNotFoundBasis`）：只有同時滿足「純單字（字母開頭，無路徑、~、.、$、=、引號、數字開頭）、沒有任何 shell 語法（管線、重導向、`&&`、`;`、括號、`$()`、反引號、萬用字元、井字號）、不在任何已知表」才在 JS 端直接回 not found。其餘全部交給 shell。
+- **diag**：新增「最近一次被 JS 判為 not found」，顯示指令與判定依據。
+
+**沒有做的部分**
+- **alias**：本終端機沒有 alias 功能，所以「session 的 alias」不存在可以查。
+- **PATH 內可執行檔、shebang 檔、/mnt 裡的程式**：判定規則中，這些都不是純單字（或不在已知表）時才會落到 shell，所以不會被 JS 誤判；但沒有實作「在 PATH 中找可執行檔」的查詢。
+- **`py`**：沒有註冊為執行環境，所以 `py` 會被判為 not found。這跟 python 的別名處理是同一件事，還沒做。
+
+**測試（模擬）**：`terminal_progress.test.js` 117 passed。T34：內建、applet（含 xargs、unlink 等舊清單會漏的）、session 函式、已註冊執行環境、路徑形式、賦值前綴、管線、`&&`、重導向、`$()`、反引號、括號、引號、斜線指令，全部不被誤判。T35：`llo` 立即印 `llo: command not found`、exit 127，不碰儲存、掛載、bash 載入；diag 顯示依據。`terminal_hang` 23、`terminal_input` 28、`terminal_fastpath` 5 passed。**未在真機驗證。**
+
+**尚未處理（下一版）**：python 的 Pyodide 串流下載與 Worker 進度、設定頁下載狀態列表（C 版）。

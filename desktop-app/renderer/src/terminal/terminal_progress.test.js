@@ -17,7 +17,7 @@ const METHODS = ['_fetchAssetBytesWithBackup', '_bashReadBody', '_bashWasmEmit',
     '_terminalBashProgressWriter', '_bashCacheOpen', '_bashCacheKey', '_bashCacheGet', '_bashCachePut', '_bashLoadJsModules',
     '_ensureBashWasmLoaded', '_fetchAssetBackupFile', '_fetchViaProxyThenDirect', '_scheduleBashWasmPreload', '_terminalDiagText',
     '_terminalFsFastPath', '_terminalCd', '_termTimed', '_runTerminalCommand', '_bashDownloading', '_bashCancelLoads', '_bashRetryWait', '_terminalRecordInput', '_terminalBuildTag', '_terminalPrintDiag',
-    '_terminalVirtualFs', '_terminalFsView', '_terminalWithBashProgress', '_terminalLoadRuntime', '_pyodidePrefetch', '_termBeginLoad', '_terminalTryLliHost', '_bashBundleSource', '_ensureTerminalFsStore', '_fapWarm', '_terminalKnownCommand', '_bashSettings', '_bashStallMs', '_bashJoin', '_bashFetchBytes', '_bashWithStall', '_bashJsSourceList', '_bashLoadOneJsSource', '_normalizeTerminalSettings', '_terminalResolvePath', '_terminalIsDir', '_terminalSandboxFileBytes'];
+    '_terminalVirtualFs', '_terminalFsView', '_terminalWithBashProgress', '_terminalLoadRuntime', '_pyodidePrefetch', '_termBeginLoad', '_terminalTryLliHost', '_bashBundleSource', '_ensureTerminalFsStore', '_fapWarm', '_terminalKnownCommand', '_terminalNotFoundBasis', '_bashSettings', '_bashStallMs', '_bashJoin', '_bashFetchBytes', '_bashWithStall', '_bashJsSourceList', '_bashLoadOneJsSource', '_normalizeTerminalSettings', '_terminalResolvePath', '_terminalIsDir', '_terminalSandboxFileBytes'];
 const CLASS_SRC = '({' + METHODS.map(methodSource).join(',\n') + '})';
 
 const PRIMARY = 'https://cdn.example/wasi/dist/busybox.wasm';
@@ -75,7 +75,7 @@ function makeCtx(extra) {
         timers: [], intervals: [], setInterval: (fn) => { ctx.intervals.push(fn); return ctx.intervals.length; }, clearInterval() {},
         caches: undefined, navigator: undefined, requestIdleCallback: undefined, fetch: undefined,
         Date: { now: () => (ctx.tick += 150) }, tick: 0,
-        TERMINAL_SHELL_BUILTINS: ['cd', 'pwd'], TERMINAL_BUSYBOX_APPLETS: ['ls', 'cat'], SANDBOX_COMMAND_REGISTRY: { sleep: {} }, FA_PY_EXAMPLES: { 'demo.py': 'print(1)', 'llc/gpgpu/nbody3d_cl.ll': 'define i32 @main() { ret i32 0 }' }, FaLlvm: {}, FaLlvmHost: { create() { return {}; } },
+        TERMINAL_SHELL_BUILTINS: ['cd', 'pwd'], TERMINAL_BUSYBOX_APPLETS: ['ls', 'cat', 'ash', 'xargs', 'awk', 'sh', 'true', 'false', 'unlink', 'echo', 'pwd'], SANDBOX_COMMAND_REGISTRY: { sleep: {} }, FA_PY_EXAMPLES: { 'demo.py': 'print(1)', 'llc/gpgpu/nbody3d_cl.ll': 'define i32 @main() { ret i32 0 }' }, FaLlvm: {}, FaLlvmHost: { create() { return {}; } },
     }, extra || {});
     vm.createContext(ctx);
     return ctx;
@@ -342,7 +342,7 @@ const tick = () => new Promise((r) => setImmediate(r));
         const self = makeSelf(ctx);
         const s = sink(); s.sess._inputLog = [];
         const empty = self._terminalDiagText(s.sess);
-        check('T16 diag 有版本與「沒有輸入事件」的明說', empty.includes('版本：v510') && empty.includes('沒有任何輸入事件到達終端機'), empty);
+        check('T16 diag 有版本與「沒有輸入事件」的明說', empty.includes('版本：v511') && empty.includes('沒有任何輸入事件到達終端機'), empty);
         for (let i = 0; i < 12; i++) self._terminalRecordInput(s.sess, 'keydown', { key: 'e', keyCode: 229 });
         self._terminalRecordInput(s.sess, 'data', { data: 'e' });
         const txt = self._terminalDiagText(s.sess);
@@ -354,7 +354,7 @@ const tick = () => new Promise((r) => setImmediate(r));
         const self = makeSelf(ctx);
         const s = sink(); s.sess._inputLog = [];
         self._terminalPrintDiag(s.sess);
-        check('T17 診斷按鈕印出版本與輸入紀錄', s.out.join('').includes('版本：v510') && s.out.join('').includes('最後 10 個輸入事件'), s.out.length);
+        check('T17 診斷按鈕印出版本與輸入紀錄', s.out.join('').includes('版本：v511') && s.out.join('').includes('最後 10 個輸入事件'), s.out.length);
     }
     // T18：設定白名單：來源只收已知值、自訂網址只收 http(s)、逾時秒數夾在 5–120、預載預設開
     {
@@ -525,6 +525,47 @@ const tick = () => new Promise((r) => setImmediate(r));
         check('T33 背景只讀一次', calls === 1, calls);
         const dg = self._terminalDiagText({ term: { write() {} }, _stage: 'x' });
         check('T33 diag 顯示掛載清單數量與分段耗時', dg.includes('掛載清單：1 個') && dg.includes('IndexedDB 讀取 1ms'), dg.split('\n').filter((x) => x.includes('掛載清單')));
+    }
+    // T34：誤判防線：每一類都不能被判成 not found（回傳 null＝交給 shell 或已知）
+    {
+        const ctx = makeCtx({ fetch: fakeNet({}).fetch });
+        const self = makeSelf(ctx);
+        const sess = { cwd: '/work', userFunctionDefs: new Map([['myfn', 'myfn() { :; }']]) };
+        const cases = [
+            ['busybox applet（ash、xargs、unlink，舊清單會漏）', 'xargs', 'xargs -n1'], ['busybox applet：sh', 'sh', 'sh x.sh'], ['busybox applet：true', 'true', 'true'],
+            ['shell 內建：cd', 'cd', 'cd /work'], ['shell 內建：export', 'export', 'export A=1'], ['shell 內建：source', 'source', 'source x'],
+            ['shell 內建：eval', 'eval', 'eval x'], ['shell 內建：read', 'read', 'read x'], ['shell 內建：wait', 'wait', 'wait'],
+            ['shell 內建：:', ':', ':'], ['shell 內建：exit', 'exit', 'exit'], ['shell 內建：test', 'test', 'test -f x'],
+            ['session 函式', 'myfn', 'myfn'], ['已註冊執行環境：python', 'python', 'python -c 1'], ['程式：lli', 'lli', 'lli x.ll'],
+            ['路徑：./x.sh', './x.sh', './x.sh'], ['路徑：/bin/ls', 'ls', '/bin/ls'], ['路徑：~/x', '~/x', '~/x'],
+            ['有副檔名的腳本：my.sh', 'my.sh', 'my.sh'], ['賦值前綴：FOO=1 ls', 'FOO=1', 'FOO=1 ls'],
+            ['管線：llo | cat', 'llo', 'llo | cat'], ['邏輯運算：llo && ls', 'llo', 'llo && ls'], ['重導向：llo > out', 'llo', 'llo > out'],
+            ['command substitution：$(llo)', 'llo', 'echo $(llo)'], ['反引號：`llo`', 'llo', 'echo `llo`'], ['括號：(llo)', 'llo', '(llo)'],
+            ['引號：llo "x"', 'llo', 'llo "x"'], ['斜線指令：/xxx', '', '/xxx'],
+        ];
+        for (const [name, cmd, line] of cases) {
+            const basis = self._terminalNotFoundBasis(sess, line, cmd);
+            const expectNull = !(name.startsWith('path') || false);
+            if (!name.startsWith('__')) check('T34 不誤判：' + name, basis === null, { cmd, line, basis: basis && basis.slice(0, 40) });
+        }
+        check('T34 不存在的單字 llo 才判為 not found', self._terminalNotFoundBasis(sess, 'llo', 'llo') !== null);
+        check('T34 依據文字寫出判定規則與 applet 數量', String(self._terminalNotFoundBasis(sess, 'llo', 'llo')).includes('busybox applet（11 個'));
+    }
+    // T35：llo 立即回應：不碰儲存、不碰掛載、不印掛載警告；diag 記下依據
+    {
+        const ctx = makeCtx({ fetch: fakeNet({}).fetch });
+        let storageCalls = 0; const never = () => { storageCalls++; return new Promise(() => {}); };
+        const self = makeSelf(ctx, {
+            _terminalGroupCompoundLine: () => [{ type: 'shell', text: '' }], _terminalSplitAiPipe: () => null, _terminalSplitPyPipe: () => null,
+            _terminalSetExit: (sess, code) => { sess.exit = code; },
+            _ensureBashWasmLoaded: never, _ensureTerminalFsStore: never, _listAllFapAccessPoints: never, _fapWarm: never, _ensureTerminalProgramLoaded: never,
+        });
+        const a = sink();
+        await self._runTerminalCommand(a.sess, 'llo');
+        check('T35 llo：立即印出 llo: command not found、exit 127', a.out.join('').includes('llo: command not found') && a.sess.exit === 127, a.out);
+        check('T35 llo：不碰儲存、掛載、bash 載入', storageCalls === 0, storageCalls);
+        const dg = self._terminalDiagText(a.sess);
+        check('T35 diag 顯示最近一次被判為 not found 的指令與依據', dg.includes('最近一次被 JS 判為 not found：llo（依據：純單字'), dg.split('\n').filter((x) => x.includes('not found')));
     }
     console.log('terminal_progress.test.js: ' + ok + ' passed, ' + bad + ' failed');
     process.exit(bad ? 1 : 0);

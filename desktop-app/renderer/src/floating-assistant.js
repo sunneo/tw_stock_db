@@ -78499,13 +78499,13 @@ const TERMINAL_PROGRAM_BUNDLES = {
 // 一個名稱是不是busybox applet、(2)在_ensureTerminalFsStore()裡塞進
 // /bin、/usr/bin底下當佔位檔案讓`ls /bin`能看到。真正執行still都是交給
 // _runTerminalShellLine()丟給run()，這裡不重新實作任何applet本身。
+// 由 busybox.wasm 萃取（scripts/gen-busybox-applets.js），不要手改；busybox 更新後重新生成。
 const TERMINAL_BUSYBOX_APPLETS = [
-    'cat', 'ls', 'stat', 'touch', 'mkdir', 'rmdir', 'rm', 'cp', 'mv', 'find', 'du', 'mktemp',
-    'grep', 'sed', 'awk', 'sort', 'uniq', 'cut', 'tr', 'head', 'tail', 'wc', 'seq', 'paste',
-    'fold', 'tac', 'expr', 'hexdump', 'xxd',
-    'md5sum', 'sha1sum', 'sha256sum', 'cksum', 'crc32',
-    'date', 'env', 'printenv', 'basename', 'dirname', 'realpath', 'test', 'printf', 'getopt',
-    'uname', 'nproc', 'stty',
+    'ash', 'awk', 'basename', 'cat', 'cksum', 'cp', 'crc32', 'cut', 'date', 'dirname', 'du', 'echo',
+    'env', 'expr', 'false', 'find', 'fold', 'getopt', 'grep', 'head', 'hexdump', 'ls', 'md5sum',
+    'mkdir', 'mktemp', 'mv', 'nproc', 'paste', 'printenv', 'printf', 'pwd', 'realpath', 'rm',
+    'rmdir', 'sed', 'seq', 'sh', 'sha1sum', 'sha256sum', 'sort', 'stat', 'stty', 'tac', 'tail',
+    'test', 'touch', 'tr', 'true', 'uname', 'uniq', 'unlink', 'wc', 'xargs', 'xxd',
 ];
 
 // JS層攔截的shell內建指令（跟busybox applet分開列，因為這些是
@@ -113968,7 +113968,7 @@ ${sourceTool.handlerScript}
         session.term.write('\r\n' + this._terminalDiagText(session).replace(/\n/g, '\r\n') + '\r\n');
     }
     // 終端機的版本標記：每次發版時改這裡（與 PATCH_VERSION、發版 commit 對得上），終端機開頭與 diag 會印出來。
-    _terminalBuildTag() { return 'v510'; }
+    _terminalBuildTag() { return 'v511'; }
     _terminalRecordInput(session, type, ev) {
         if (!session || !session._inputLog) return;
         let detail = '';
@@ -114010,9 +114010,16 @@ ${sourceTool.handlerScript}
         if (gen !== (this._bashGen || 0)) throw new Error('已取消（使用者按下 Ctrl-C）');
     }
     // diag 指令的內容：bash 執行環境狀態、下載／快取紀錄、最近一次主要來源失敗、本終端機各階段耗時（_termTimed 記的）。
+    // 保守判定（寧可慢也不誤判）：只有同時滿足「純單字（無路徑、~、.、$、=、引號、數字開頭）、沒有任何 shell 語法、不在任何已知表」才回傳依據，讓 JS 端直接回 not found；其餘全部交給 shell。
+    _terminalNotFoundBasis(session, trimmed, cmdName) {
+        if (!/^[a-z][a-z0-9_+-]*$/i.test(cmdName)) return null;
+        if (this._terminalHasShellOps(trimmed) || /["'`$\\=\[\]{}*?~()|&;<>#]/.test(trimmed)) return null;
+        if (this._terminalKnownCommand(session, cmdName)) return null;
+        return `純單字；不在 JS 攔截、shell 內建、busybox applet（${TERMINAL_BUSYBOX_APPLETS.length} 個，取自 busybox.wasm）、程式套件、已註冊的執行環境、session 函式；本終端機沒有 alias 功能`;
+    }
     // 已知指令：JS 攔截、shell 關鍵字與內建、busybox applet、程式套件、已註冊的執行環境、使用者定義的函式。都不是 → 不是指令。
     _terminalKnownCommand(session, name) {
-        const JS_OR_KEYWORDS = ['clear', 'exit', 'pwd', 'help', 'diag', 'cd', 'which', 'chmod', 'sync', 'sh', 'bash', 'ask-floating-ai-assistant', 'ask-ai-chat', 'time', 'echo', 'ls', 'cat', 'sleep', 'curl', 'wget', 'httping', 'python', 'python3', 'lli', 'zenity', 'node', 'gui', 'sqlite3', 'sqlite', 'sqlitebrowser', 'top', 'if', 'then', 'else', 'elif', 'fi', 'for', 'while', 'until', 'do', 'done', 'case', 'esac', 'function', 'select', 'in', '{', '}', '!', '[[', ']]', '[', 'test', 'true', 'false', 'printf', 'export', 'unset', 'set', 'read', 'source', '.', 'alias', 'type', 'command', 'exec', 'eval', 'shift', 'return', 'break', 'continue', 'local', 'readonly', 'trap', 'wait', 'jobs', 'kill', 'umask', 'ulimit', 'getopts', 'hash'];
+        const JS_OR_KEYWORDS = ['cd', 'export', 'alias', 'unalias', 'source', '.', 'type', 'command', 'read', 'set', 'unset', 'eval', 'exec', 'test', '[', '[[', 'wait', 'jobs', 'trap', 'umask', 'ulimit', 'times', 'local', 'return', 'true', 'false', ':', 'clear', 'exit', 'pwd', 'help', 'diag', 'cd', 'which', 'chmod', 'sync', 'sh', 'bash', 'ask-floating-ai-assistant', 'ask-ai-chat', 'time', 'echo', 'ls', 'cat', 'sleep', 'curl', 'wget', 'httping', 'python', 'python3', 'lli', 'zenity', 'node', 'gui', 'sqlite3', 'sqlite', 'sqlitebrowser', 'top', 'if', 'then', 'else', 'elif', 'fi', 'for', 'while', 'until', 'do', 'done', 'case', 'esac', 'function', 'select', 'in', '{', '}', '!', '[[', ']]', '[', 'test', 'true', 'false', 'printf', 'export', 'unset', 'set', 'read', 'source', '.', 'alias', 'type', 'command', 'exec', 'eval', 'shift', 'return', 'break', 'continue', 'local', 'readonly', 'trap', 'wait', 'jobs', 'kill', 'umask', 'ulimit', 'getopts', 'hash'];
         return JS_OR_KEYWORDS.includes(name)
             || TERMINAL_SHELL_BUILTINS.includes(name) || TERMINAL_BUSYBOX_APPLETS.includes(name)
             || !!(this._terminalProgramBundles && this._terminalProgramBundles[name]) || !!SANDBOX_COMMAND_REGISTRY[name]
@@ -114035,6 +114042,7 @@ ${sourceTool.handlerScript}
         lines.push('python（Pyodide）：' + (this._pyodideInstance ? '已載入' : (this._pyodideLoadPromise ? '載入中' : '未載入')));
         lines.push('lli（LLVM，內建）：' + (typeof FaLlvm !== 'undefined' ? '可用' : '不可用'));
         lines.push('最後一次指令錯誤：' + ((session && session._lastError) || '無'));
+        lines.push('最近一次被 JS 判為 not found：' + (session && session._lastNotFound ? `${session._lastNotFound.cmd}（依據：${session._lastNotFound.basis}）` : '無'));
         const fs0 = this._fapState;
         lines.push('掛載清單：' + (!fs0 ? '尚未讀取' : !fs0.ready ? '讀取中（指令不等它）' : fs0.error ? '讀取失敗：' + fs0.error : `${fs0.points.length} 個，總耗時 ${fs0.ms}ms` + (fs0.timing ? `（IndexedDB 讀取 ${fs0.timing.getAllMs}ms、權限查詢 ${fs0.timing.permMs}ms、OPFS 枚舉 ${fs0.timing.opfsMs}ms）` : '')));
         lines.push('目前來源：' + (this._bashCurrentSource || '尚未開始'));
@@ -116416,7 +116424,9 @@ ${sourceTool.handlerScript}
         if (cmdName === 'httping') { await this._terminalHttping(session, restArgs); return; }
 
         // tw_stock_db客製: 2026-11-20 ls／cat 快路徑（見_terminalFsFastPath）：只需要 JS 檔案系統，不等 busybox.wasm；不符合條件或失敗就交給 shell。
-        if (!cmdName.includes('/') && !cmdName.includes('=') && !this._terminalHasShellOps(trimmed) && !this._terminalKnownCommand(session, cmdName)) {
+        const nfBasis = this._terminalNotFoundBasis(session, trimmed, cmdName);
+        if (nfBasis) {
+            session._lastNotFound = { cmd: cmdName, basis: nfBasis };
             session.term.write(`\x1b[31m${cmdName}: command not found\x1b[0m\r\n`);
             this._terminalSetExit(session, 127);
             return;
