@@ -66,6 +66,7 @@ function makeSelf(gen, modelErr) {
     const self = makeSelf();
     self._planLocalSummarize = M2._planLocalSummarize;
     self._planReadText = M2._planReadText;
+    self._gpuDecodeCapOn = () => false; self._gpuChunkCap = (x) => x;   // 非 Qwen 模型：不套 GPU 分段上限（與產品行為相同）
     self._planFinish = M2._planFinish;
     const trace = FaRecipe.newTrace('看今天有哪些黃仁勳新聞', { recipe: 'plan' });
     const userText = '看今天有哪些黃仁勳新聞';

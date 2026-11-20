@@ -111158,6 +111158,19 @@ ${sourceTool.handlerScript}
                 border-right: 1px solid #334155;
                 overflow-y: auto;
             }
+            /* 手機（窄螢幕，約 360–412px）：設定頁改成單欄——分類列在上面（可捲動，高度有上限），內容在下面單欄；
+               外框不再有 480px 的最小寬度（那會超出螢幕，分類點不到）；表格（例如 GPU 基準表）在自己的容器裡橫向捲動。桌面版不受影響。 */
+            @media (max-width: 600px) {
+                .ai-advanced-overlay { padding: 0; align-items: stretch; }
+                .ai-advanced-dialog { min-width: 0; width: 100vw; max-width: 100vw; min-height: 0; max-height: 100vh; border-radius: 0; padding: 8px; resize: none; box-sizing: border-box; }
+                .ai-advanced-dialog.ai-adv-sized .ai-advanced-body { flex: none; }
+                .ai-advanced-body { flex-direction: column; min-height: 0; max-height: none; overflow: visible; }
+                .ai-advanced-sidebar { width: auto; flex-shrink: 1; max-height: 34vh; border-right: 0; border-bottom: 1px solid #334155; }
+                .ai-advanced-content { padding: 10px; min-width: 0; overflow-y: visible; }
+                .ai-advanced-row, .ai-advanced-tools-header, .ai-advanced-tool-item, .ai-advanced-footer { flex-wrap: wrap; }
+                .ai-advanced-dialog input, .ai-advanced-dialog select, .ai-advanced-dialog textarea { max-width: 100%; box-sizing: border-box; }
+                .ai-advanced-splitter { display: none; }
+            }
             .ai-advanced-cat {
                 padding: 10px 12px;
                 font-size: 12px;
@@ -114120,6 +114133,29 @@ ${sourceTool.handlerScript}
     // 重新掛載，不是第一次開），先把這段畫面回放印出來，再照常開一個全新
     // 的session/prompt——不嘗試恢復WASM shell的process狀態（那本來就沒有
     // 真的被持久化過、也沒必要，使用者原話「不用保留process狀態」）。
+    // 手機輸入（Android 螢幕鍵盤）：xterm 的隱藏 textarea 關掉自動大寫、自動更正、拼字檢查（否則 Gboard 會把 ls 改成 Ls），
+    // Enter 鍵標示成「傳送」。觸控裝置另外在終端機下方放一列快捷鍵（Enter、Tab、方向鍵、Ctrl+C、⌫、常用符號），
+    // 按鍵直接送進 _handleTerminalInput，不經過輸入法的組字（composition）。按鈕 mousedown 不搶焦點，鍵盤不會收起來。
+    _terminalMobileInputSetup(container, session) {
+        const ta = container && container.querySelector ? container.querySelector('textarea') : null;
+        if (ta) { ta.setAttribute('autocapitalize', 'off'); ta.setAttribute('autocorrect', 'off'); ta.setAttribute('autocomplete', 'off'); ta.setAttribute('spellcheck', 'false'); ta.setAttribute('enterkeyhint', 'send'); }
+        const touch = typeof window !== 'undefined' && (('ontouchstart' in window) || (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0));
+        if (!touch || !container || !container.parentNode) return null;
+        const bar = document.createElement('div'); bar.className = 'fa-term-keys'; bar.style.cssText = 'display:flex; gap:4px; overflow-x:auto; padding:4px 0; -webkit-overflow-scrolling:touch;';
+        for (const k of this._terminalKeyBarKeys()) {
+            const b = document.createElement('button'); b.type = 'button'; b.textContent = k.label; b.dataset.seq = k.seq;
+            b.style.cssText = 'flex:0 0 auto; min-width:36px; padding:6px 8px; font-size:13px; border-radius:6px; cursor:pointer;';
+            b.addEventListener('mousedown', (e) => e.preventDefault());
+            b.addEventListener('click', () => { if (!session.ended) this._handleTerminalInput(session, k.seq); if (session.term && session.term.focus) session.term.focus(); });
+            bar.appendChild(b);
+        }
+        container.insertAdjacentElement('afterend', bar);
+        return bar;
+    }
+    _terminalKeyBarKeys() {
+        return [{ label: 'Enter', seq: '\r' }, { label: 'Tab', seq: '\t' }, { label: '↑', seq: '\x1b[A' }, { label: '↓', seq: '\x1b[B' }, { label: '←', seq: '\x1b[D' }, { label: '→', seq: '\x1b[C' },
+            { label: '⌫', seq: '\x7f' }, { label: 'Ctrl+C', seq: '\x03' }, { label: '|', seq: '|' }, { label: '~', seq: '~' }, { label: '/', seq: '/' }, { label: '-', seq: '-' }, { label: '>', seq: '>' }, { label: '&', seq: '&' }, { label: ';', seq: ';' }];
+    }
     async _mountTerminalWidget(container, initialCommand, msg) {
         this._guardWheel(container);
         await this._ensureXtermLoaded();
@@ -114224,6 +114260,7 @@ ${sourceTool.handlerScript}
             term.write('\r\n\x1b[90m[以上是重新整理前保留的畫面內容——這是全新的session，不是恢復原本執行到一半的程式，需要的指令請重新輸入]\x1b[0m');
         }
         term.onData((data) => { if (!session.ended) this._handleTerminalInput(session, data); });
+        this._terminalMobileInputSetup(container, session);   // 手機：輸入法設定＋不靠輸入法的快捷鍵列
 
         if (initialCommand) {
             await this._runTerminalInitialCommand(session, initialCommand);
@@ -114343,7 +114380,7 @@ ${sourceTool.handlerScript}
         if (session.activeProgram) { session.activeProgram.feed(data); return; }
         if (session._stdinWaiter && data !== '\x03') { this._terminalStdinFeed(session, data); return; }   // 程式正在等一行輸入（input()）
         // 指令執行中（例如第一次cd進大的/mnt資料夾要讀很久）忽略鍵盤輸入，避免第二個指令跟第一個交錯執行
-        if (session.busy && data !== '\x03') return;
+        if (session.busy && data !== '\x03') { if (!session._busyHinted) { session._busyHinted = true; session.term.write('\x1b[90m（指令還在執行，鍵盤輸入先不送出；按 Ctrl+C 可以中斷，或等它結束）\x1b[0m\r\n'); } return; }
         if (session.cursorPos == null) session.cursorPos = session.line.length;
         // 貼上多行文字：xterm一次送來一整段（換行是\r）。拆成「文字」跟「Enter」逐一處理，效果等同使用者一行一行打，
         // 這樣引號沒結束、heredoc之類的續行判斷才會照常運作（不然整段換行字元被塞進同一行，指令被切壞）。
@@ -114372,11 +114409,17 @@ ${sourceTool.handlerScript}
             if (combined.trim() && !combined.includes('\n')) session.history.push(combined);
             session.historyIndex = session.history.length;
             session.busy = true;
-            try { await this._terminalRunUnits(session, scan.units); }
-            catch (err) { session.term.write(`\x1b[31m指令執行失敗：${String((err && err.message) || err)}\x1b[0m
-
-`); }
-            finally { session.busy = false; if (session._sigint) { session._sigint = false; this._terminalSetExit(session, 130); } }
+            // 看門狗：指令超過 _terminalWatchdogMs（預設 45 秒）還沒結束，就放開 busy 鎖、寫出說明，讓使用者可以繼續輸入（指令本身可能還在背景）。
+            // 沒有這個，指令永遠不結束時 busy 會一直是 true，之後的鍵盤輸入全部被吃掉，畫面看起來就是「卡住」。
+            session._busyHinted = false; session._timedOut = false;
+            const wdMs = this._terminalWatchdogMs || 45000; let wdTimer = null;
+            const watchdog = new Promise((_, rej) => { wdTimer = setTimeout(() => rej(new Error('__TERMINAL_WATCHDOG__')), wdMs); });
+            try { await Promise.race([this._terminalRunUnits(session, scan.units), watchdog]); }
+            catch (err) {
+                if (err && err.message === '__TERMINAL_WATCHDOG__') { session._timedOut = true; session.term.write('\x1b[33m指令 ' + Math.round(wdMs / 1000) + ' 秒沒有結束，先放手（它可能還在背景執行；按 Ctrl+C 可中斷，或直接繼續輸入）\x1b[0m\r\n'); }
+                else session.term.write(`\x1b[31m指令執行失敗：${String((err && err.message) || err)}\x1b[0m\n\n`);
+            }
+            finally { clearTimeout(wdTimer); session.busy = false; session._busyHinted = false; if (session._sigint) { session._sigint = false; this._terminalSetExit(session, 130); } }
             if (!session.activeProgram) this._writeTerminalPrompt(session);
             await this._persistTerminalSnapshot(session);
             return;

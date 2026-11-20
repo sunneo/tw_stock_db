@@ -1800,3 +1800,22 @@ node scripts/eval/gpgpu_bench.build.js /tmp/gpgpu_bench.js && FA_EVAL_GL=gpu FA_
 - **真 Electron（SDL 2D 畫布與 GL 畫布，預設 GL，未設 `FA_EVAL_GL=swiftshader`）**：`scripts/eval/llc_hud.eval.js` 第 5 節，50 項中 47 項通過。音樂盒、MIDI、piano、pong、gl_triangle 的說明文字與狀態（按鍵後會變）全部通過。
 - **未過的 3 項**是舊的 nbody3d_cl、fluid3d_cl 按鈕底色與狀態行檢查，原因尚未查明，不屬於這次的 HUD 範例。
 - **軟體繪圖與真 GPU 的差異**：這次的 SDL 文字是軟體 2D 畫布畫的；GL 三角形的疊加也是在這台機器的 GL 後端上檢查。真 GPU 的畫面未另外驗證。
+
+## 手機：設定頁窄螢幕與終端機卡住（2026-11-20）
+
+**使用者回報**：Galaxy A54（約 360–412 CSS px）上分類太多，設定頁到不了；`run-terminal` 輸入簡單的 `ls` 就卡住。
+
+**設定頁**：原本 `.ai-advanced-dialog` 有 `min-width: 480px`，窄螢幕會超出畫面，分類點不到。修法是 `@media (max-width: 600px)`：外框 100vw、無最小寬度；分類列在上面、高度上限 34vh 可捲動；內容單欄；表格（例如 GPU 基準表）在自己的容器裡橫向捲動；桌面不變（`renderer/src/terminal/settings_narrow.test.js` 檢查 CSS 文字）。
+
+**終端機卡住的根因（從程式確認的部分）**：`_handleTerminalInput` 在 `session.busy` 為真時把所有鍵盤輸入直接 `return`（只有 Ctrl+C 例外），而且不顯示任何東西。指令如果永遠不結束（例如等待沒有掛載的檔案系統），`busy` 就一直是真，之後的輸入全部被吃掉，畫面看起來就是「打字沒有反應」。修法：
+1. **看門狗**：指令超過 `_terminalWatchdogMs`（預設 45 秒）還沒結束，就放開 `busy`、寫出說明（指令可能還在背景跑，按 Ctrl+C 或直接繼續輸入）。
+2. **不再默默吃輸入**：指令執行中的輸入只提示一次「指令還在執行…」。
+3. **手機輸入**：xterm 的隱藏 textarea 關掉自動大寫、自動更正、拼字檢查（否則 Gboard 會把 `ls` 改成 `Ls`），Enter 標示成「傳送」；觸控裝置在終端機下方加一列快捷鍵（Enter、Tab、↑↓←→、⌫、Ctrl+C、`| ~ / - > & ;`），按鍵直接送進 `_handleTerminalInput`，不經過輸入法組字；按鈕 `mousedown` 不搶焦點，鍵盤不會收起。
+
+**沒有從程式確認、因此沒有宣稱已修的部分**：(a) `ls` 本身為什麼在手機上不結束（沒有在真的 Android 上重現；看門狗只保證不會永久卡住，不保證 `ls` 會成功）；(b) Android 的 IME 組字（keyCode 229）在真手機上是否還有別的問題（組字結束時 xterm 送來的整段文字，測試用假資料模擬）。
+
+**測試（假的 session、假的 shell、假的 DOM）**：`renderer/src/terminal/terminal_input.test.js` 16 passed：組字結果＋Enter 執行 `ls`；指令永不結束時 40 ms 內逾時、寫出說明、busy 解除、之後的輸入照常；執行中的輸入只提示一次；正常結束沒有逾時訊息；textarea 屬性與快捷鍵列（快捷鍵 Enter 真的執行 `ls`）；桌面不加快捷鍵列。
+
+**只在模擬上驗過的／沒驗過的**：設定頁的窄螢幕版面沒有在瀏覽器裡量到（這次的瀏覽器工具不能操作本機檔案，而且本機伺服器的啟動被拒絕），只有 CSS 文字檢查；真的 Galaxy A54、Gboard 的組字行為沒有驗證。
+
+**附帶發現**：同一個分支上有別的 session 的提交改了 `_planLocalSummarize`（改用 `_gpuDecodeCapOn`／`_gpuChunkCap`），兩個計畫測試的假 `this` 因此少了這兩個方法；已在測試裡補上（非 Qwen 模型不套上限，與產品行為相同）。

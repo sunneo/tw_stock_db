@@ -35,6 +35,7 @@ function makeSelf() {
     };
     self._planLocalSummarize = C._planLocalSummarize.bind(self);
     self._planReadText = C._planReadText.bind(self);
+    self._gpuDecodeCapOn = () => false; self._gpuChunkCap = (x) => x;   // 非 Qwen 模型：不套 GPU 分段上限（與產品行為相同）
     self._planEnv = C._planEnv.bind(self);
     return self;
 }
