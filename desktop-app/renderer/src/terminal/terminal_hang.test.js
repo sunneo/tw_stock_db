@@ -16,7 +16,7 @@ function methodSource(name) {
     const chunk = SRC.slice(m.index + 1, n ? n.index : SRC.length); const close = chunk.lastIndexOf('}');
     return chunk.slice(0, close + 1);
 }
-const NAMES = ['_handleTerminalInput', '_terminalCapFor', '_termTimed', '_termStalled', '_terminalInterrupt', '_terminalRunWasmLine'];
+const NAMES = ['_handleTerminalInput', '_terminalCapFor', '_termTimed', '_terminalInterrupt', '_terminalRunWasmLine'];
 const ctx = { console, Promise, JSON, Date, Math, Number, Array, Object, String, Error, Set, Map, Uint8Array, TextDecoder, TextEncoder, setTimeout, clearTimeout, setInterval, clearInterval, performance: { now: () => Date.now() } };
 vm.createContext(ctx);
 const M = vm.runInContext('({' + NAMES.map(methodSource).join(',\n') + '})', ctx);
@@ -35,6 +35,8 @@ function makeSelf(over) {
         _setTerminalLine: () => {}, _guiAudioStop: () => {},
         _ensureBashWasmLoaded: async () => ({ wasmBytes: new Uint8Array(4), run: never }),
         _terminalBashProgressWriter: () => () => {},
+        _bashDownloading: () => false,
+        _bashCancelLoads: () => {},
         _ensureTerminalFsStore: async () => ({}),
         _hydrateReferencedFapMounts: async () => {},
         _buildTerminalSandboxBuiltins: async () => ({}),
@@ -84,13 +86,13 @@ function makeSession(self) {
         check('3 shell 執行卡住：回傳錯誤（不是永遠等）', r && r.ok === false && r.error.includes('指令執行（shell）'), r);
         check('3 逾時後丟掉執行環境，下次重新載入', self._bashWasmRuntime === null, self._bashWasmRuntime);
     }
-    {   // 3b. bash 載入卡住：錯誤寫出「bash 執行環境載入」，載入的 promise 被清掉（下次重試）
+    {   // 3b. bash 下載中絕不自動中斷：載入一直沒完成，指令仍在等（不因任何逾時結束），只有 Ctrl-C 才會放開
         const self = makeSelf({ _ensureBashWasmLoaded: never });
-        self._termTimed = (sess, stage, p, ms) => M._termTimed.call(self, sess, stage, p, 20);
-        self._termStalled = (sess, stage, p, ms) => M._termStalled.call(self, sess, stage, p, 20);   // bash 載入改用「沒有新下載進度」判定，這裡縮成 20ms
         self._bashWasmLoadPromise = Promise.resolve(); self._bashWasmRuntime = null;
-        const r = await self._terminalRunWasmLine(makeSession(self), 'ls');
-        check('3b bash 載入卡住：錯誤指出階段', r.ok === false && r.error.includes('bash 執行環境載入'), r);
+        let finished = false;
+        self._terminalRunWasmLine(makeSession(self), 'ls').then(() => { finished = true; });
+        await sleep(80);
+        check('3b 下載中不自動中斷：80ms 後指令仍在等', finished === false, finished);
     }
     {   // 3c. 檔案系統（例如 IndexedDB 開啟被擋）卡住：錯誤指出「檔案系統初始化」
         const self = makeSelf({ _ensureTerminalFsStore: never });
@@ -132,6 +134,19 @@ function makeSession(self) {
         await self._handleTerminalInput(session, '\x03'); await enter;
         await self._handleTerminalInput(session, 'c');
         check('5 中斷後的新按鍵照常，卡住時打的字不補進來', session.line === 'c', session.line);
+    }
+    // 6b. 下載中看門狗順延：下載期間指令不被砍；下載結束後才照常觸發
+    {
+        let dl = true;
+        const self = makeSelf({ _terminalRunUnits: () => never(), _terminalWatchdogMs: 20, _bashDownloading: () => dl });
+        const session = makeSession(self);
+        session.line = 'ls';
+        const run = self._handleTerminalInput(session, '\r');
+        await sleep(90);
+        check('6b 下載中：看門狗不砍指令', session.busy === true && !self.out.some((x) => String(x).includes('超過')), self.out);
+        dl = false;
+        await run;
+        check('6b 下載結束後：看門狗照常觸發', self.out.some((x) => String(x).includes('超過')), self.out);
     }
     // 6. 看門狗：逾時的訊息寫出指令、上限、卡住的階段；之後能再輸入
     {

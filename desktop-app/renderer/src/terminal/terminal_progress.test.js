@@ -16,7 +16,7 @@ function methodSource(name) {
 const METHODS = ['_fetchAssetBytesWithBackup', '_bashReadBody', '_bashWasmEmit', '_bashFileLabel', '_bashProgressText',
     '_terminalBashProgressWriter', '_bashCacheOpen', '_bashCacheKey', '_bashCacheGet', '_bashCachePut', '_bashLoadJsModules',
     '_ensureBashWasmLoaded', '_fetchAssetBackupFile', '_fetchViaProxyThenDirect', '_scheduleBashWasmPreload', '_terminalDiagText',
-    '_terminalFsFastPath', '_terminalCd', '_termTimed', '_termStalled', '_runTerminalCommand', '_terminalRecordInput', '_terminalBuildTag', '_terminalPrintDiag',
+    '_terminalFsFastPath', '_terminalCd', '_termTimed', '_runTerminalCommand', '_bashDownloading', '_bashCancelLoads', '_bashRetryWait', '_terminalRecordInput', '_terminalBuildTag', '_terminalPrintDiag',
     '_bashSettings', '_bashStallMs', '_bashJoin', '_bashFetchBytes', '_bashWithStall', '_bashJsSourceList', '_bashLoadOneJsSource', '_normalizeTerminalSettings', '_terminalResolvePath', '_terminalIsDir', '_terminalSandboxFileBytes'];
 const CLASS_SRC = '({' + METHODS.map(methodSource).join(',\n') + '})';
 
@@ -141,14 +141,22 @@ const tick = () => new Promise((r) => setImmediate(r));
         check('T3 終端機顯示切換備份來源', out.some((s) => s.includes('切換備份來源')));
         check('T3 diag 可看到最近的主要來源失敗', self._terminalDiagText({}).includes('最近一次主要來源失敗：jsDelivr（' + PRIMARY));
     }
-    // T4：主要與備份都失敗 → 錯誤訊息同時列出兩邊的網址與原因
+    // T4：主要與備份都失敗 → 不丟錯、列出每個來源的網址與原因、排程 15 秒後自動重試；Ctrl-C（_bashCancelLoads）後才以已取消結束
     {
         const net = fakeNet({ [PRIMARY]: { status: 500 } });
         const ctx = makeCtx({ fetch: net.fetch });
-        const self = makeSelf(ctx); let msg = '';
-        await self._fetchAssetBytesWithBackup(PRIMARY, BACKUP, REL, null).catch((e) => { msg = e.message; });
-        check('T4 失敗訊息含主要網址、階段、HTTP 狀態', msg.includes(PRIMARY) && msg.includes('階段：下載') && msg.includes('HTTP 500'), msg);
-        check('T4 失敗訊息含備份分支的原因', msg.includes('備份分支') && msg.includes('HTTP 404'), msg);
+        const self = makeSelf(ctx); const evs = []; self._bashWasmSubs = new Set([(ev) => evs.push(ev)]);
+        let settled = false; let msg = '';
+        const p = self._fetchAssetBytesWithBackup(PRIMARY, BACKUP, REL, null).then(() => { settled = true; }, (e) => { settled = true; msg = e.message; });
+        await tick(); await tick();
+        check('T4 全部失敗：不丟錯，排程自動重試', !settled && ctx.timers.length >= 1 && evs.some((e) => e.kind === 'notice' && e.text.includes('15 秒後自動重試')), evs.map((e) => e.kind));
+        const f = evs.filter((e) => e.kind === 'fallback').map((e) => e.reason).join(' | ');
+        check('T4 每個來源的失敗都寫明網址與原因', f.includes(PRIMARY) && f.includes('HTTP 500') && f.includes('備份分支（GitHub）') && f.includes('HTTP 404'), f);
+        self._bashCancelLoads();
+        ctx.timers[ctx.timers.length - 1]();
+        await p;
+        check('T4 Ctrl-C 後才結束，訊息為已取消', settled && msg.includes('已取消'), msg);
+        check('T4 取消後不再算下載中', self._bashDownloading() === false);
     }
     // T5：快取命中：第二次不打網路，事件為 cache；寫入與讀出都走 Cache API
     {
@@ -182,12 +190,22 @@ const tick = () => new Promise((r) => setImmediate(r));
         check('T7 備份 bundle 可用（原生 import 不需要）', rt.run() === 'bundle-run', rt);
         check('T7 完成事件標來源備份', evs.some((e) => e.kind === 'done' && e.source === '備份' && e.file === 'wasi-sh.bundle.mjs'), evs.map((e) => e.kind));
     }
-    // T7b：所有 JS 來源都失敗 → 錯誤逐一列出網址與原因，不是無聲卡住
+    // T7b：JS 模組全部來源失敗 → 列出各來源網址與原因、排程重試，不中斷；Ctrl-C 後才結束
     {
         const ctx = makeCtx({ fetch: fakeNet({ [BACKUP + 'wasi-sh.bundle.mjs']: { status: 500 } }).fetch });
         const self = makeSelf(ctx, { _bashImportModule: async () => { throw new Error('import 被擋'); } });
-        let msg = ''; await self._bashLoadJsModules().catch((e) => { msg = e.message; });
-        check('T7b 全部失敗：列出備份與 jsDelivr 的網址與原因', msg.includes(BACKUP + 'wasi-sh.bundle.mjs') && msg.includes('HTTP 500') && msg.includes('src/index.mjs') && msg.includes('import 被擋'), msg);
+        const evs = []; self._bashWasmSubs = new Set([(ev) => evs.push(ev)]);
+        let settled = false; let msg = '';
+        const p = self._bashLoadJsModules().then(() => { settled = true; }, (e) => { settled = true; msg = e.message; });
+        await tick(); await tick();
+        check('T7b 下載中：看門狗會順延', self._bashDownloading() === true);
+        const f = evs.filter((e) => e.kind === 'fallback').map((e) => e.reason).join(' | ');
+        check('T7b 全部失敗：不中斷、排程重試，原因列出備份網址與原生 import', !settled && ctx.timers.length >= 1 && f.includes(BACKUP + 'wasi-sh.bundle.mjs') && f.includes('src/index.mjs') && f.includes('import 被擋'), f);
+        self._bashCancelLoads();
+        ctx.timers[ctx.timers.length - 1]();
+        await p;
+        check('T7b Ctrl-C 後才以已取消結束', settled && msg.includes('已取消'), msg);
+        check('T7b 取消後不再算下載中（看門狗可以正常生效）', self._bashDownloading() === false);
     }
     // T7c：設定指定來源（bashSource=jsdelivr）→ 不嘗試備份；自訂網址先於備份
     {
@@ -276,27 +294,27 @@ const tick = () => new Promise((r) => setImmediate(r));
         check('T12 session 已結束：不寫入', ended.out.length === 0);
     }
 
-    // T13：停滯判定：沒有新的下載活動超過門檻才逾時，訊息寫明階段、已等秒數與最後的下載量
+    // T13：停滯換源：來源 N 秒沒有新位元組就放棄它（呼叫端換下一個來源），訊息寫明秒數
     {
         const ctx = makeCtx({ fetch: fakeNet({}).fetch });
         const self = makeSelf(ctx);
-        const p = self._termStalled(null, '測試階段', new Promise(() => {}), 30000);
-        ctx.tick += 40000;
+        const p = self._bashWithStall(new Promise(() => {}), 20000, '測試來源');
+        ctx.tick += 25000;
         ctx.intervals[0]();
         let err = null; await p.catch((e) => { err = e; });
-        check('T13 無進展超過門檻：逾時並寫明階段與原因', !!err && err.timedOut && err.message.includes('「測試階段」已 ') && err.message.includes('沒有新的下載進度') && err.message.includes('尚未收到任何下載資料'), err && err.message);
+        check('T13 無位元組超過門檻：放棄此來源並寫明原因', !!err && err.message.includes('測試來源') && err.message.includes('20 秒沒有新的位元組'), err && err.message);
     }
-    // T14：有下載活動就不算卡住：即使總時間超過門檻，只要最近有進度就繼續等，完成後正常回傳
+    // T14：有新位元組就不放棄；完成後正常回傳
     {
         const ctx = makeCtx({ fetch: fakeNet({}).fetch });
         const self = makeSelf(ctx);
         let resolveP; const work = new Promise((r) => { resolveP = r; });
-        const p = self._termStalled(null, '測試階段', work, 30000);
-        ctx.tick += 40000;
+        const p = self._bashWithStall(work, 20000, '測試來源');
+        ctx.tick += 25000;
         self._bashWasmEmit({ kind: 'progress', file: REL, source: '主要', loaded: 5, total: 10, elapsedMs: 1 });
         ctx.intervals[0]();
         resolveP(42);
-        check('T14 有新位元組：不逾時，正常回傳', (await p) === 42);
+        check('T14 有新位元組：不放棄，正常回傳', (await p) === 42);
     }
     // T15：互動路徑的 echo：在任何載入（_ensureTerminalProgramLoaded 永不回）之前就輸出
     {
@@ -321,7 +339,7 @@ const tick = () => new Promise((r) => setImmediate(r));
         const self = makeSelf(ctx);
         const s = sink(); s.sess._inputLog = [];
         const empty = self._terminalDiagText(s.sess);
-        check('T16 diag 有版本與「沒有輸入事件」的明說', empty.includes('版本：v504') && empty.includes('沒有任何輸入事件到達終端機'), empty);
+        check('T16 diag 有版本與「沒有輸入事件」的明說', empty.includes('版本：v505') && empty.includes('沒有任何輸入事件到達終端機'), empty);
         for (let i = 0; i < 12; i++) self._terminalRecordInput(s.sess, 'keydown', { key: 'e', keyCode: 229 });
         self._terminalRecordInput(s.sess, 'data', { data: 'e' });
         const txt = self._terminalDiagText(s.sess);
@@ -333,7 +351,7 @@ const tick = () => new Promise((r) => setImmediate(r));
         const self = makeSelf(ctx);
         const s = sink(); s.sess._inputLog = [];
         self._terminalPrintDiag(s.sess);
-        check('T17 診斷按鈕印出版本與輸入紀錄', s.out.join('').includes('版本：v504') && s.out.join('').includes('最後 10 個輸入事件'), s.out.length);
+        check('T17 診斷按鈕印出版本與輸入紀錄', s.out.join('').includes('版本：v505') && s.out.join('').includes('最後 10 個輸入事件'), s.out.length);
     }
     // T18：設定白名單：來源只收已知值、自訂網址只收 http(s)、逾時秒數夾在 5–120、預載預設開
     {

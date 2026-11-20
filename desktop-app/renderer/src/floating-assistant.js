@@ -113708,41 +113708,46 @@ ${sourceTool.handlerScript}
     // 單純二進位資源（例如busybox.wasm）的「主要來源直接fetch，失敗才退到
     // 自家backup分支」共用邏輯——不涉及script執行/mimetype問題，直接
     // fetch()+arrayBuffer()即可，兩邊都一樣。
-    // tw_stock_db客製: 2026-11-20 wasm 來源依序嘗試（見 _bashSettings 與 DESIGN.run-terminal.md）：匯入的檔案 → 快取 → 自訂網址 → jsDelivr → GitHub 備份。
-    // 每個來源有「N 秒沒有新位元組」逾時，失敗就換下一個，並記下網址與原因。
+    // busybox.wasm 來源（依序）：匯入的檔案 → 快取 → jsDelivr → fastly → unpkg → GitHub 備份。每個來源有停滯換源（不中斷）；全部失敗就列出原因、等待後自動重試，直到成功或 Ctrl-C。
     async _fetchAssetBytesWithBackup(primaryUrl, backupBase, relPath, emit) {
         const emitEv = (ev) => this._bashWasmEmit(ev);
+        const gen = this._bashGen || 0;
         const s = this._bashSettings();
         const cands = [
             { key: 'imported', short: '匯入', name: '匯入的檔案', url: 'imported:' + relPath, kind: 'cache' },
             { key: 'cache', short: '快取', name: '快取', url: primaryUrl, kind: 'cache' },
-            { key: 'custom', short: '自訂', name: '自訂網址', url: this._bashJoin(s.customUrl, relPath), kind: 'fetch', skip: !s.customUrl },
             { key: 'jsdelivr', short: '主要', name: 'jsDelivr', url: primaryUrl, kind: 'fetch' },
+            { key: 'fastly', short: 'fastly', name: 'fastly.jsdelivr', url: primaryUrl.replace('https://cdn.jsdelivr.net/', 'https://fastly.jsdelivr.net/'), kind: 'fetch' },
+            { key: 'unpkg', short: 'unpkg', name: 'unpkg', url: primaryUrl.replace('https://cdn.jsdelivr.net/npm/', 'https://unpkg.com/'), kind: 'fetch' },
             { key: 'backup', short: '備份', name: '備份分支（GitHub）', url: backupBase + relPath, kind: 'backup' },
-        ].filter((c) => !c.skip && (s.source === 'auto' || c.key === s.source || c.kind === 'cache'));
-        const errs = [];
-        for (const c of cands) {
-            if (c.kind === 'cache') {
-                const hit = await this._bashCacheGet(c.url);
-                if (hit) { emitEv({ kind: 'cache', file: relPath, source: c.short, bytes: hit.byteLength }); return hit; }
-                continue;
+        ].filter((c, i, arr) => arr.findIndex((x) => x.url === c.url && x.kind === c.kind) === i);
+        for (let round = 1; ; round++) {
+            const errs = [];
+            for (const c of cands) {
+                if (gen !== (this._bashGen || 0)) throw new Error('已取消（使用者按下 Ctrl-C）');
+                if (c.kind === 'cache') {
+                    const hit = await this._bashCacheGet(c.url);
+                    if (hit) { this._bashCurrentSource = '快取'; emitEv({ kind: 'cache', file: relPath, source: c.short, bytes: hit.byteLength }); return hit; }
+                    continue;
+                }
+                this._bashCurrentSource = c.short;
+                emitEv({ kind: 'stage', text: `下載 ${this._bashFileLabel(relPath)}：嘗試 ${c.name}（${c.url}）` });
+                const t0 = Date.now();
+                try {
+                    const buf = await this._bashWithStall(
+                        c.kind === 'backup' ? this._fetchAssetBackupFile(backupBase, relPath, emitEv) : this._bashFetchBytes(c.url, relPath, c.short, emitEv),
+                        this._bashStallMs(), c.name);
+                    await this._bashCachePut(primaryUrl, buf);
+                    emitEv({ kind: 'done', file: relPath, source: c.short, bytes: buf.byteLength, elapsedMs: Date.now() - t0 });
+                    return buf;
+                } catch (e) {
+                    const reason = `${c.name}（${c.url.slice(0, 200)}，階段：下載）：${(e && e.message) || e}`;
+                    errs.push(reason);
+                    emitEv({ kind: 'fallback', file: relPath, source: c.short, reason });
+                }
             }
-            emitEv({ kind: 'stage', text: `下載 ${this._bashFileLabel(relPath)}：嘗試 ${c.name}（${c.url}）` });
-            const t0 = Date.now();
-            try {
-                const buf = await this._bashWithStall(
-                    c.kind === 'backup' ? this._fetchAssetBackupFile(backupBase, relPath, emitEv) : this._bashFetchBytes(c.url, relPath, c.short, emitEv),
-                    this._bashStallMs(), c.name);
-                await this._bashCachePut(primaryUrl, buf);
-                emitEv({ kind: 'done', file: relPath, source: c.short, bytes: buf.byteLength, elapsedMs: Date.now() - t0 });
-                return buf;
-            } catch (e) {
-                const reason = `${c.name}（${c.url.slice(0, 200)}，階段：下載）：${(e && e.message) || e}`;
-                errs.push(reason);
-                emitEv({ kind: 'fallback', file: relPath, source: c.short, reason });
-            }
+            await this._bashRetryWait(gen, `${relPath} 第 ${round} 輪所有來源都失敗（${errs.length} 個來源）`);
         }
-        throw new Error(`抓 ${relPath} 失敗——` + errs.join('；'));
     }
 
     _bashSettings() {
@@ -113801,26 +113806,31 @@ ${sourceTool.handlerScript}
         try { const mod = await this._bashImportModule(blobUrl); return { run: mod.run, memoryFs: mod.memoryFs }; }
         finally { URL.revokeObjectURL(blobUrl); }
     }
-    // JS 執行環境（wasi-sh 的 run、memoryFs；不含 busybox.wasm）。依 _bashJsSourceList 的順序嘗試，每個來源都有停滯逾時；全部失敗時錯誤列出每個來源的網址與原因。同一個 session 只載一次。
+    // JS 執行環境（wasi-sh 的 run、memoryFs；不含 busybox.wasm）。依 _bashJsSourceList 逐一嘗試（停滯就換來源、不中斷）；全部失敗就列出原因、等待後自動重試，直到成功或 Ctrl-C。同一個 session 只載一次。
     _bashLoadJsModules() {
         if (this._bashJsRuntime) return Promise.resolve(this._bashJsRuntime);
         if (!this._bashJsPromise) {
+            const gen = this._bashGen || 0;
             this._bashJsPromise = (async () => {
                 const emitEv = (ev) => this._bashWasmEmit(ev);
-                const errs = [];
-                for (const src of this._bashJsSourceList()) {
-                    emitEv({ kind: 'stage', text: `載入 JS 模組：嘗試 ${src.name}（${src.url}）` });
-                    try {
-                        const mod = await this._bashWithStall(this._bashLoadOneJsSource(src, emitEv), this._bashStallMs(), src.name);
-                        this._bashJsRuntime = { run: mod.run, memoryFs: mod.memoryFs };
-                        return this._bashJsRuntime;
-                    } catch (e) {
-                        const reason = `${src.name}（${src.url}，階段：載入 JS 模組）：${(e && e.message) || e}`;
-                        errs.push(reason);
-                        emitEv({ kind: 'fallback', file: 'wasi-sh.bundle.mjs', source: src.short, reason });
+                for (let round = 1; ; round++) {
+                    const errs = [];
+                    for (const src of this._bashJsSourceList()) {
+                        if (gen !== (this._bashGen || 0)) throw new Error('已取消（使用者按下 Ctrl-C）');
+                        this._bashCurrentSource = src.short;
+                        emitEv({ kind: 'stage', text: `載入 JS 模組：嘗試 ${src.name}（${src.url}）` });
+                        try {
+                            const mod = await this._bashWithStall(this._bashLoadOneJsSource(src, emitEv), this._bashStallMs(), src.name);
+                            this._bashJsRuntime = { run: mod.run, memoryFs: mod.memoryFs };
+                            return this._bashJsRuntime;
+                        } catch (e) {
+                            const reason = `${src.name}（${src.url}，階段：載入 JS 模組）：${(e && e.message) || e}`;
+                            errs.push(reason);
+                            emitEv({ kind: 'fallback', file: 'wasi-sh.bundle.mjs', source: src.short, reason });
+                        }
                     }
+                    await this._bashRetryWait(gen, `JS 模組第 ${round} 輪所有來源都失敗`);
                 }
-                throw new Error('bash 執行環境 JS 模組載入失敗——' + (errs.length ? errs.join('；') : '沒有可用的來源'));
             })().catch((e) => { this._bashJsPromise = null; throw e; });
         }
         return this._bashJsPromise;
@@ -113886,6 +113896,7 @@ ${sourceTool.handlerScript}
         return (ev) => {
             if (!session || session.ended || !session.term) return;
             if (ev.kind === 'stage') { session.term.write('\r\x1b[2K' + ev.text); open = true; return; }
+            if (ev.kind === 'notice') { session.term.write((open ? '\r\x1b[2K' : '') + '\x1b[33m' + ev.text + '\x1b[0m\r\n'); open = false; return; }
             if (ev.kind === 'progress') {
                 if (ev.final) return;
                 session.term.write('\r\x1b[2K' + this._bashProgressText(ev));
@@ -113941,32 +113952,13 @@ ${sourceTool.handlerScript}
         if (typeof requestIdleCallback === 'function') requestIdleCallback(go, { timeout: 3000 });
         else setTimeout(go, 1500);
     }
-    // tw_stock_db客製: 2026-11-20 以「有沒有新的下載活動」判定卡住（取代 bash 載入的固定秒數上限）：距離最後一次下載活動超過 stallMs 才逾時。
-    // 逾時訊息寫明階段、已等秒數、最後一次下載量與來源。下載慢但持續有進展就一直等（整體看門狗另有 120 秒保險絲）。
-    _termStalled(session, stage, promise, stallMs) {
-        if (session) session._stage = stage;
-        const t0 = Date.now();
-        this._bashLastActivityAt = t0;
-        this._bashLastProgressText = '';
-        const rec = (ok) => { if (!session) return; (session._timings = session._timings || []).push({ stage, ms: Date.now() - t0, ok }); if (session._timings.length > 40) session._timings.shift(); };
-        let iv = null;
-        const guard = new Promise((_, rej) => {
-            iv = setInterval(() => {
-                const idle = Date.now() - (this._bashLastActivityAt || t0);
-                if (idle < stallMs) return;
-                const last = this._bashLastProgressText ? `最後：${this._bashLastProgressText}` : '尚未收到任何下載資料';
-                rej(Object.assign(new Error(`「${stage}」已 ${Math.round(idle / 1000)} 秒沒有新的下載進度（已等 ${Math.round((Date.now() - t0) / 1000)} 秒；${last}）。網路或 CDN 可能很慢，可以按 Ctrl+C 中斷後再試。`), { stage, timedOut: true }));
-            }, 1000);
-        });
-        return Promise.race([promise, guard]).then((v) => { rec(true); return v; }, (e) => { rec(false); throw e; }).finally(() => clearInterval(iv));
-    }
     // 快捷列「診斷」按鈕：直接把 diag 印在終端機上（不送進指令，不影響正在跑的程式）。
     _terminalPrintDiag(session) {
         if (!session || !session.term) return;
         session.term.write('\r\n' + this._terminalDiagText(session).replace(/\n/g, '\r\n') + '\r\n');
     }
     // 終端機的版本標記：每次發版時改這裡（與 PATCH_VERSION、發版 commit 對得上），終端機開頭與 diag 會印出來。
-    _terminalBuildTag() { return 'v504'; }
+    _terminalBuildTag() { return 'v505'; }
     _terminalRecordInput(session, type, ev) {
         if (!session || !session._inputLog) return;
         let detail = '';
@@ -113986,6 +113978,16 @@ ${sourceTool.handlerScript}
         container.appendChild(d);
         setTimeout(() => d.remove(), 5000);
     }
+    // 下載中（JS 模組或 wasm 尚未載入完成）。看門狗據此順延，不在下載中砍指令。
+    _bashDownloading() { return !!((this._bashWasmLoadPromise && !this._bashWasmRuntime) || (this._bashJsPromise && !this._bashJsRuntime)); }
+    // 使用者按 Ctrl-C：讓進行中的下載與自動重試迴圈結束（代數加一，舊迴圈檢查到就丟出「已取消」）。
+    _bashCancelLoads() { this._bashGen = (this._bashGen || 0) + 1; this._bashWasmLoadPromise = null; this._bashJsPromise = null; }
+    // 所有來源都失敗：列出摘要、等 15 秒後自動重試（不中斷指令）。
+    async _bashRetryWait(gen, title) {
+        this._bashWasmEmit({ kind: 'notice', text: `${title}。15 秒後自動重試；可按 Ctrl-C 取消，或到 設定 > 終端機 從檔案匯入。` });
+        await new Promise((r) => setTimeout(r, 15000));
+        if (gen !== (this._bashGen || 0)) throw new Error('已取消（使用者按下 Ctrl-C）');
+    }
     // diag 指令的內容：bash 執行環境狀態、下載／快取紀錄、最近一次主要來源失敗、本終端機各階段耗時（_termTimed 記的）。
     _terminalDiagText(session) {
         const mb = (n) => (n / 1048576).toFixed(1);
@@ -114000,6 +114002,7 @@ ${sourceTool.handlerScript}
         const inp = (session && session._inputLog) || [];
         lines.push(inp.length ? inp.map((s) => '  ' + s).join('\n') : '  無（沒有任何輸入事件到達終端機）');
         lines.push('bash 執行環境：' + (this._bashWasmRuntime ? '已載入' : this._bashWasmLoadPromise ? '載入中' : '尚未載入（第一個需要 shell 的指令才會下載，或背景預載）'));
+        lines.push('目前來源：' + (this._bashCurrentSource || '尚未開始'));
         const evs = this._bashWasmDiag || [];
         const recent = evs.filter((e) => e.kind === 'cache' || e.kind === 'done').slice(-4);
         lines.push('下載／快取：' + (recent.length ? recent.map((e) => e.kind === 'cache' ? `${this._bashFileLabel(e.file)} 快取命中（${mb(e.bytes)} MB）` : `${this._bashFileLabel(e.file)} 來源${e.source} ${mb(e.bytes)} MB ${Math.round(e.elapsedMs)}ms`).join('；') : '尚無紀錄'));
@@ -114788,7 +114791,8 @@ ${sourceTool.handlerScript}
             // 沒有這個，指令永遠不結束時 busy 會一直是 true，之後的鍵盤輸入全部被吃掉，畫面看起來就是「卡住」。
             session._busyHinted = false; session._timedOut = false; session._stage = '剖析指令';
             const cap = this._terminalCapFor(combined); const wdMs = this._terminalWatchdogMs || 120000; let wdTimer = null;   // 整體的保險絲：各階段（載入、下載、掛載）各有自己的上限；5 秒只限 shell 執行本身，不能套在第一次的下載上
-            const watchdog = new Promise((_, rej) => { wdTimer = setTimeout(() => rej(new Error('__TERMINAL_WATCHDOG__')), wdMs); });
+            // tw_stock_db客製: 2026-11-20 下載中（bash 執行環境載入）絕不自動中斷：看門狗到期時若還在下載就順延，只有下載完成後的指令執行才會被砍。使用者按 Ctrl-C 由 abortP 處理。
+            const watchdog = new Promise((_, rej) => { const arm = () => { wdTimer = setTimeout(() => { if (this._bashDownloading()) { arm(); return; } rej(new Error('__TERMINAL_WATCHDOG__')); }, wdMs); }; arm(); });
             const abortP = new Promise((_, rej) => { session._runAbortReject = rej; });   // Ctrl+C 用來立刻放開
             try { await Promise.race([this._terminalRunUnits(session, scan.units), watchdog, abortP]); }
             catch (err) {
@@ -116286,7 +116290,7 @@ ${sourceTool.handlerScript}
         if (cmdName === 'ls' || cmdName === 'cat') {
             if (!this._bashJsRuntime) session.term.write('\x1b[90m準備中…（第一次使用需要下載 shell，下方會顯示進度）\x1b[0m\r\n');
             let fastDone = false;
-            try { fastDone = await this._termStalled(session, '檔案系統快路徑（載入 JS 模組）', this._terminalFsFastPath(session, cmdName, restArgs), 30000); }
+            try { fastDone = await this._terminalFsFastPath(session, cmdName, restArgs); }
             catch (err) { session.term.write(`\x1b[31m${String((err && err.message) || err)}\x1b[0m\r\n`); return; }
             if (fastDone) return;
         }
@@ -117136,9 +117140,8 @@ ${sourceTool.handlerScript}
     async _terminalRunWasmLine(session, line, opts = {}) {
         let runtime;
         if (!this._bashWasmRuntime && session.term) session.term.write('\x1b[90m準備中…（第一次使用需要下載 shell，下方會顯示進度）\x1b[0m\r\n');
-        try { runtime = await this._termStalled(session, 'bash 執行環境載入', this._ensureBashWasmLoaded(this._terminalBashProgressWriter(session)), 30000); } catch (err) {
-            if (err && err.timedOut) this._bashWasmLoadPromise = null;   // 下次重新載入
-            return { ok: false, error: String(err.message || err) + '（可到 設定 > 終端機 換來源或匯入檔案）' };
+        try { runtime = await this._ensureBashWasmLoaded(this._terminalBashProgressWriter(session)); } catch (err) {
+            return { ok: false, error: String(err.message || err) };
         }
         let fsStore;
         try { fsStore = await this._termTimed(session, '檔案系統初始化', this._ensureTerminalFsStore(session, runtime), 10000); } catch (err) {
@@ -118392,6 +118395,7 @@ ${sourceTool.handlerScript}
         return Promise.race([promise, guard]).then((v) => { rec(true); return v; }, (e) => { rec(false); throw e; }).finally(() => clearTimeout(t));
     }
     _terminalInterrupt(session) {
+        this._bashCancelLoads();   // 只有使用者按 Ctrl-C 才取消下載與自動重試
         if (session._runAbortReject) { const f = session._runAbortReject; session._runAbortReject = null; f(new Error('__TERMINAL_INTERRUPT__')); }   // 立刻放開 busy，不管卡在哪一個階段
         session._sigint = true;
         session._stdinWaiter = null; session._stdinBuf = ''; session._stdinQueue = [];

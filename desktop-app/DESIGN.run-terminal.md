@@ -1966,3 +1966,28 @@ node scripts/eval/gpgpu_bench.build.js /tmp/gpgpu_bench.js && FA_EVAL_GL=gpu FA_
 - **網頁版版本顯示與 SHA 釘點**：這個 repo 的 main 沒有 pin 腳本，`web/index.html` 也沒有 `SHA = '…'`，所以這次無法自動釘版。`/tmp/claude-1001/qwen/pub.sh` 會用 `grep "SHA = '…'"` 取得舊值再 `sed` 替換；舊值為空時 `sed` 會替換空字串，腳本不能直接用。
 
 **測試（模擬）**：`terminal_progress.test.js` 49 passed（新增：來源順序、自訂網址、全部失敗時的錯誤內容、白名單）、`terminal_hang` 21、`terminal_input` 28、`terminal_fastpath` 5 passed。
+
+### 下載不中斷、單檔 bundle 優先、全部失敗自動重試（v505，2026-11-20）
+
+使用者實測：輸入 `ls` 後停在「載入 JS 模組」，沒有進度，指令被自動中斷。**「CDN 太慢」目前只是推測，沒有量測證據**；要判斷哪一段慢，請使用者在卡住時按快捷列「診斷」，看各階段耗時與「目前來源」。
+
+**行為變更（A）**
+- 下載中絕不自動中斷指令。`_handleTerminalInput` 的 120 秒看門狗到期時，若 `_bashDownloading()` 為真就順延；只有下載完成後的指令執行才會被砍（並印出明確訊息）。
+- 移除 `_termStalled`（bash 載入的 30 秒逾時）與 ls／cat 快路徑的 30 秒逾時。
+- Ctrl-C（`_terminalInterrupt`）是唯一會取消下載的動作：`_bashCancelLoads()` 讓進行中的重試迴圈在下一次檢查時以「已取消」結束。
+- 仍保留的上限：shell 指令執行本身（`_terminalCapFor`，快速指令 5 秒、一般 30 秒、長時間 120 秒）與 FAP 掛載讀取（15 秒）、檔案系統初始化（10 秒）。這些都在下載完成之後，逾時會印出卡在哪一個階段。
+
+**來源與重試（B）**
+- JS 模組：匯入的檔案（快取）→ GitHub 備份的單檔 `wasi-sh.bundle.mjs`（fetch 串流、有位元組進度，Blob URL 後 import）→ jsDelivr 原生 import（多檔，沒有位元組進度，最後一個）。
+- busybox.wasm：匯入的檔案 → 快取 → jsDelivr → fastly.jsdelivr → unpkg → GitHub 備份。
+- 每個來源有「20 秒沒有新位元組就換下一個來源」（`_bashWithStall`）；被放棄的 fetch 不會真的中止，只是不再等它。
+- 所有來源都失敗：每個來源的網址與原因都印出來，然後等 15 秒自動重試（不中斷指令），直到成功或 Ctrl-C。
+- 快取：bundle 與 busybox.wasm 都以完整網址為 key 存進 Cache API（`fa-bash-wasm-v1`，開啟加 3 秒逾時），失敗就退回無快取。沒有用 IndexedDB。
+
+**測試（模擬）**
+- `terminal_progress.test.js` 54 passed：停滯換源（有無新位元組）、全部失敗不丟錯而是排程重試、Ctrl-C 後才以「已取消」結束、JS 模組的來源順序與自訂網址（自訂網址仍保留，C 版會移除）。
+- `terminal_hang.test.js` 23 passed：下載中指令仍在等（不被砍）、下載中看門狗順延、下載結束後看門狗照常觸發。
+- `terminal_input.test.js` 28、`terminal_fastpath.test.js` 5 passed。
+- **未驗證**：真實的 120 秒以上慢下載（模擬用的是假的時間）、手機上 Ctrl-C 或快捷列「中斷」是否真的走到 `_terminalInterrupt`、15 秒重試在手機背景分頁是否被節流。
+
+**未做（C 版）**：設定頁目前仍有來源下拉、自訂網址、逾時秒數等變數，要依需求精簡成「下載狀態＋下載／重試＋清除快取＋從檔案匯入＋預載開關」。
