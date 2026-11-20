@@ -114459,7 +114459,7 @@ ${sourceTool.handlerScript}
             // 看門狗：指令超過 _terminalWatchdogMs（預設 45 秒）還沒結束，就放開 busy 鎖、寫出說明，讓使用者可以繼續輸入（指令本身可能還在背景）。
             // 沒有這個，指令永遠不結束時 busy 會一直是 true，之後的鍵盤輸入全部被吃掉，畫面看起來就是「卡住」。
             session._busyHinted = false; session._timedOut = false; session._stage = '剖析指令';
-            const cap = this._terminalCapFor(combined); const wdMs = this._terminalWatchdogMs || cap.ms; let wdTimer = null;
+            const cap = this._terminalCapFor(combined); const wdMs = this._terminalWatchdogMs || 120000; let wdTimer = null;   // 整體的保險絲：各階段（載入、下載、掛載）各有自己的上限；5 秒只限 shell 執行本身，不能套在第一次的下載上
             const watchdog = new Promise((_, rej) => { wdTimer = setTimeout(() => rej(new Error('__TERMINAL_WATCHDOG__')), wdMs); });
             const abortP = new Promise((_, rej) => { session._runAbortReject = rej; });   // Ctrl+C 用來立刻放開
             try { await Promise.race([this._terminalRunUnits(session, scan.units), watchdog, abortP]); }
