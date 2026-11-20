@@ -113879,7 +113879,7 @@ ${sourceTool.handlerScript}
         if (!this._bashWasmSubs) return;
         for (const fn of Array.from(this._bashWasmSubs)) { try { fn(ev); } catch (_) { /* 單一訂閱者出錯不影響下載 */ } }
     }
-    _bashFileLabel(file) { return ({ 'dist/busybox.wasm': 'shell', 'wasi-sh.bundle.mjs': 'shell 套件' })[file] || file; }
+    _bashFileLabel(file) { return ({ 'dist/busybox.wasm': 'shell', 'wasi-sh.bundle.mjs': 'shell 套件', 'pyodide.asm.wasm': 'python 核心', 'python_stdlib.zip': 'python 標準庫' })[file] || file; }
     // 進行中或完成的一行中文（不含換行），例：下載 shell 1.2/4.8 MB 25% 已用 6s 來源：主要
     _bashProgressText(ev) {
         const label = this._bashFileLabel(ev.file);
@@ -113958,7 +113958,7 @@ ${sourceTool.handlerScript}
         session.term.write('\r\n' + this._terminalDiagText(session).replace(/\n/g, '\r\n') + '\r\n');
     }
     // 終端機的版本標記：每次發版時改這裡（與 PATCH_VERSION、發版 commit 對得上），終端機開頭與 diag 會印出來。
-    _terminalBuildTag() { return 'v506'; }
+    _terminalBuildTag() { return 'v507'; }
     _terminalRecordInput(session, type, ev) {
         if (!session || !session._inputLog) return;
         let detail = '';
@@ -113979,9 +113979,9 @@ ${sourceTool.handlerScript}
         setTimeout(() => d.remove(), 5000);
     }
     // 下載中（JS 模組或 wasm 尚未載入完成）。看門狗據此順延，不在下載中砍指令。
-    _bashDownloading() { return !!((this._bashWasmLoadPromise && !this._bashWasmRuntime) || (this._bashJsPromise && !this._bashJsRuntime)); }
+    _bashDownloading() { return !!((this._bashWasmLoadPromise && !this._bashWasmRuntime) || (this._bashJsPromise && !this._bashJsRuntime) || (this._pyodideLoadPromise && !this._pyodideInstance)); }
     // 使用者按 Ctrl-C：讓進行中的下載與自動重試迴圈結束（代數加一，舊迴圈檢查到就丟出「已取消」）。
-    _bashCancelLoads() { this._bashGen = (this._bashGen || 0) + 1; this._bashWasmLoadPromise = null; this._bashJsPromise = null; }
+    _bashCancelLoads() { this._bashGen = (this._bashGen || 0) + 1; this._bashWasmLoadPromise = null; this._bashJsPromise = null; this._pyodideLoadPromise = null; }
     // 所有來源都失敗：列出摘要、等 15 秒後自動重試（不中斷指令）。
     async _bashRetryWait(gen, title) {
         this._bashWasmEmit({ kind: 'notice', text: `${title}。15 秒後自動重試；可按 Ctrl-C 取消，或到 設定 > 終端機 從檔案匯入。` });
@@ -114094,6 +114094,13 @@ ${sourceTool.handlerScript}
         session._stage = '掛載資料夾（讀取檔案）';
         await this._hydrateReferencedFapMounts(session, fsStore, abs.join(' '));
         return fsStore;
+    }
+    // 第一次使用才要下載的執行環境（shell、python、jq、程式套件）：未載入時先印「準備中」，再把下載進度訂閱到這個終端機，階段名稱寫進 session._stage。
+    // 下載中不設逾時；只有使用者按 Ctrl-C 才取消（見 _terminalInterrupt → _bashCancelLoads）。
+    async _terminalLoadRuntime(session, label, loaded, fn) {
+        if (!loaded && session && session.term) session.term.write(`\x1b[90m準備中：載入 ${label}…（第一次使用需要下載；下方顯示進度，Ctrl-C 可取消）\x1b[0m\r\n`);
+        if (session) session._stage = `載入 ${label}`;
+        return await this._terminalWithBashProgress(session, fn);
     }
     // 讓下載進度（_bashWasmEmit 的事件）在這段工作期間顯示在這個終端機；結束就退訂。
     async _terminalWithBashProgress(session, fn) {
@@ -114222,11 +114229,21 @@ ${sourceTool.handlerScript}
             return mod;
         } catch (relErr) {
             const relPath = url.replace(/^\.\//, '');
-            const fallbackUrl = this._viaAssetProxy(FA_ASSET_URLS.terminalProgramsBackupBase + relPath);
-            const mod = await import(/* webpackIgnore: true */ fallbackUrl);
-            if (typeof mod.run !== 'function') throw new Error(`terminal program bundle「${name}」沒有匯出run(ctx)函式`);
-            this._terminalProgramModules[name] = mod;
-            return mod;
+            const gen = this._bashGen || 0;
+            for (let round = 1; ; round++) {
+                try {
+                    const bytes = await this._fetchAssetBackupFile(FA_ASSET_URLS.terminalProgramsBackupBase, relPath, (ev) => this._bashWasmEmit(ev));
+                    const blobUrl = URL.createObjectURL(new Blob([new TextDecoder('utf-8').decode(bytes)], { type: 'text/javascript' }));
+                    let mod;
+                    try { mod = await this._bashImportModule(blobUrl); } finally { URL.revokeObjectURL(blobUrl); }
+                    if (typeof mod.run !== 'function') throw new Error(`terminal program bundle「${name}」沒有匯出run(ctx)函式`);
+                    this._terminalProgramModules[name] = mod;
+                    return mod;
+                } catch (e) {
+                    this._bashWasmEmit({ kind: 'fallback', file: relPath, source: '備份', reason: `${name}（${FA_ASSET_URLS.terminalProgramsBackupBase}${relPath}，階段：載入程式套件）：${(e && e.message) || e}` });
+                    await this._bashRetryWait(gen, `程式套件 ${name} 載入失敗`);
+                }
+            }
         }
     }
 
@@ -116350,7 +116367,8 @@ ${sourceTool.handlerScript}
 
         let bundleMod = null;
         try {
-            bundleMod = await this._ensureTerminalProgramLoaded(cmdName);
+            const hasBundle = !!(this._terminalProgramBundles && this._terminalProgramBundles[cmdName]);
+            bundleMod = hasBundle ? await this._terminalLoadRuntime(session, `程式 ${cmdName}`, !!(this._terminalProgramModules && this._terminalProgramModules[cmdName]), () => this._ensureTerminalProgramLoaded(cmdName)) : await this._ensureTerminalProgramLoaded(cmdName);
         } catch (err) {
             session.term.write(`\x1b[31m${cmdName}: bundle載入失敗：${String(err.message || err)}\x1b[0m\r\n`);
             return;
@@ -116877,7 +116895,7 @@ ${sourceTool.handlerScript}
     // 正則掃描script文字→只await真的用到的引擎→組成純同步的builtins
     // map——wasi-sh的host builtins handler必須是同步函式，不能臨時await，
     // 見bash_execute那邊的說明），三個呼叫點共用。
-    async _buildTerminalSandboxBuiltins(script) {
+    async _buildTerminalSandboxBuiltins(script, session) {
         script = this._terminalRewriteBuiltinPaths(script);
         const neededCommands = Object.keys(SANDBOX_COMMAND_REGISTRY).filter(name => (
             new RegExp(`(^|[\\s;|&()\`])${name}(?=[\\s;|&()\`]|$)`).test(script)
@@ -116886,8 +116904,8 @@ ${sourceTool.handlerScript}
         const resolvedEngines = {};
         for (const name of neededCommands) {
             const kind = SANDBOX_COMMAND_REGISTRY[name].kind;
-            if (kind === 'pyodide' && !resolvedEngines.pyodide) resolvedEngines.pyodide = await this._ensurePyodideLoaded();
-            if (kind === 'jq' && !resolvedEngines.jq) resolvedEngines.jq = await this._ensureJqLoaded();
+            if (kind === 'pyodide' && !resolvedEngines.pyodide) resolvedEngines.pyodide = await this._terminalLoadRuntime(session, 'python', !!this._pyodideInstance, () => this._ensurePyodideLoaded());
+            if (kind === 'jq' && !resolvedEngines.jq) resolvedEngines.jq = await this._terminalLoadRuntime(session, 'jq', !!this._jqLoaded, () => this._ensureJqLoaded());
             if (kind === 'xq') {
                 if (!resolvedEngines.jq) resolvedEngines.jq = await this._ensureJqLoaded();
                 if (!resolvedEngines.xmlParser) resolvedEngines.xmlParser = await this._ensureXqXmlParserLoaded();
@@ -116913,7 +116931,7 @@ ${sourceTool.handlerScript}
         }
         const script = this._terminalRewriteBuiltinPaths(`cd ${this._shQuote(session.cwd)} 2>/dev/null; ${line}`);
         let builtins;
-        try { builtins = await this._termTimed(session, '指令內建工具載入', this._buildTerminalSandboxBuiltins(script), 10000); } catch (err) {
+        try { builtins = await this._buildTerminalSandboxBuiltins(script, session); } catch (err) {
             session.term.write(`\x1b[31m指令需要的執行環境載入失敗：${String(err.message || err)}\x1b[0m\r\n`);
             return;
         }
@@ -117227,7 +117245,7 @@ ${sourceTool.handlerScript}
         const specialVarsPrefix = Object.entries(specialVars).map(([k, v]) => `${k}=${this._shQuote(v)}`).join('\n') + '\n';
         const script = this._terminalRewriteBuiltinPaths(`${specialVarsPrefix}${envDefsPrefix}${funcDefsPrefix}cd ${this._shQuote(session.cwd)} 2>/dev/null; ${session.lastExitCode ? `_fa_rc() { return ${session.lastExitCode | 0}; }; _fa_rc; ` : ''}${line}`);
         let builtins;
-        try { builtins = await this._termTimed(session, '指令內建工具載入', this._buildTerminalSandboxBuiltins(script), 10000); } catch (err) {
+        try { builtins = await this._buildTerminalSandboxBuiltins(script, session); } catch (err) {
             return { ok: false, error: `指令需要的執行環境載入失敗：${String(err.message || err)}` };
         }
         const fsStack = this._activeSandboxFsStack || (this._activeSandboxFsStack = []);
@@ -118466,7 +118484,7 @@ ${sourceTool.handlerScript}
     // 回傳 false＝這支程式用不到主機函式（交給原本的同步 lli）。結束碼放 session.lastExitCode。
     async _terminalTryLliHost(session, argsText, guiTimeoutSec) {
         if (typeof FaLlvm === 'undefined' || typeof FaLlvmHost === 'undefined') return false;
-        const fsStore0 = await this._ensureTerminalFsStore(session, await this._ensureBashWasmLoaded());
+        const fsStore0 = await this._ensureTerminalFsStore(session, await this._terminalLoadRuntime(session, 'shell 執行環境', !!this._bashWasmRuntime, () => this._ensureBashWasmLoaded()));
         const abs = (p) => this._terminalResolvePath(session.cwd, p);
         const llFs = {   // 程式的 fopen 等函式用的檔案系統：就是這個終端機的沙盒（含 /mnt/<名稱> 的即時 FAP 檔案系統）；相對路徑從目前目錄起算
             read: (p) => { try { return this._terminalSandboxFileBytes(fsStore0, abs(p)); } catch (_) { return null; } },
@@ -118817,7 +118835,7 @@ ${sourceTool.handlerScript}
         let i = 0;
         while (i < words.length && /^-[uBOqEsS]+$/.test(words[i])) i++;
         if (i >= words.length || words[i] === '-') return false;
-        const runtime = await this._ensureBashWasmLoaded();
+        const runtime = await this._terminalLoadRuntime(session, 'shell 執行環境', !!this._bashWasmRuntime, () => this._ensureBashWasmLoaded());
         const fsStore = await this._ensureTerminalFsStore(session, runtime);
         let src, scriptName;
         if (words[i] === '-c') {
@@ -120059,6 +120077,10 @@ ${sourceTool.handlerScript}
     // 把indexURL設成「經過_viaAssetProxy處理過的完整base URL」，桌面版的
     // 本地proxy轉發會自動對pyodide內部的每一個後續請求都生效，不需要另外
     // 攔截處理。回傳的pyodide instance快取在this._pyodideInstance。
+    // python 的大檔（核心 wasm、標準庫）先用串流下載，讓進度與停滯判定看得到；之後 loadPyodide 從 HTTP 快取取得（快取是否生效未在真機驗證）。
+    async _pyodidePrefetch(base, emitEv) {
+        for (const file of ['pyodide.asm.wasm', 'python_stdlib.zip']) await this._bashFetchBytes(base + file, file, '主要', emitEv);
+    }
     async _ensurePyodideLoaded() {
         if (this._pyodideInstance) return this._pyodideInstance;
         if (this._pyodideLoadPromise) return this._pyodideLoadPromise;
@@ -120070,18 +120092,29 @@ ${sourceTool.handlerScript}
                 this._viaAssetProxy(FA_ASSET_URLS.pyodideJsBase), FA_ASSET_URLS.pyodideJsBase,
                 this._viaAssetProxy(FA_ASSET_URLS.pyodideBackupBase), FA_ASSET_URLS.pyodideBackupBase,
             ])];
-            const errs = [];
             let indexURL = null, instance = null;
-            for (const base of bases) {
-                const t0 = Date.now();
-                try {
-                    if (typeof loadPyodide !== 'function') await _faLoadScriptOnceRaw(base + 'pyodide.js');
-                    instance = await loadPyodide({ indexURL: base });
-                    indexURL = base;
-                    break;
-                } catch (e) {
-                    errs.push(`${base.slice(0, 160)} → ${(e && e.message) || e}（${Date.now() - t0}ms）`);
+            const gen = this._bashGen || 0;
+            const emitEv = (ev) => this._bashWasmEmit(ev);
+            for (let round = 1; !instance; round++) {
+                const errs = [];
+                for (const base of bases) {
+                    if (gen !== (this._bashGen || 0)) throw new Error('已取消（使用者按下 Ctrl-C）');
+                    const t0 = Date.now();
+                    this._bashCurrentSource = 'python';
+                    emitEv({ kind: 'stage', text: `載入 python：嘗試 ${base.slice(0, 120)}` });
+                    try {
+                        await this._bashWithStall(this._pyodidePrefetch(base, emitEv), this._bashStallMs(), 'python 檔案');
+                        if (typeof loadPyodide !== 'function') await _faLoadScriptOnceRaw(base + 'pyodide.js');
+                        instance = await loadPyodide({ indexURL: base });
+                        indexURL = base;
+                        break;
+                    } catch (e) {
+                        const reason = `${base.slice(0, 160)}（階段：載入 python）→ ${(e && e.message) || e}（${Date.now() - t0}ms）`;
+                        errs.push(reason);
+                        emitEv({ kind: 'fallback', file: 'pyodide.asm.wasm', source: 'python', reason });
+                    }
                 }
+                if (!instance) await this._bashRetryWait(gen, `python 第 ${round} 輪所有來源都失敗`);
             }
             if (!instance) throw new Error(`python 執行環境載入失敗（試了 ${bases.length} 個來源）：` + errs.join('；'));
             // tw_stock_db客製: 2026-09-16——見PYODIDE_SUBPROCESS_SHIM_SRC的

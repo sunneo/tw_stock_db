@@ -17,13 +17,14 @@ const METHODS = ['_fetchAssetBytesWithBackup', '_bashReadBody', '_bashWasmEmit',
     '_terminalBashProgressWriter', '_bashCacheOpen', '_bashCacheKey', '_bashCacheGet', '_bashCachePut', '_bashLoadJsModules',
     '_ensureBashWasmLoaded', '_fetchAssetBackupFile', '_fetchViaProxyThenDirect', '_scheduleBashWasmPreload', '_terminalDiagText',
     '_terminalFsFastPath', '_terminalCd', '_termTimed', '_runTerminalCommand', '_bashDownloading', '_bashCancelLoads', '_bashRetryWait', '_terminalRecordInput', '_terminalBuildTag', '_terminalPrintDiag',
-    '_terminalVirtualFs', '_terminalFsView', '_terminalWithBashProgress', '_bashSettings', '_bashStallMs', '_bashJoin', '_bashFetchBytes', '_bashWithStall', '_bashJsSourceList', '_bashLoadOneJsSource', '_normalizeTerminalSettings', '_terminalResolvePath', '_terminalIsDir', '_terminalSandboxFileBytes'];
+    '_terminalVirtualFs', '_terminalFsView', '_terminalWithBashProgress', '_terminalLoadRuntime', '_pyodidePrefetch', '_bashSettings', '_bashStallMs', '_bashJoin', '_bashFetchBytes', '_bashWithStall', '_bashJsSourceList', '_bashLoadOneJsSource', '_normalizeTerminalSettings', '_terminalResolvePath', '_terminalIsDir', '_terminalSandboxFileBytes'];
 const CLASS_SRC = '({' + METHODS.map(methodSource).join(',\n') + '})';
 
 const PRIMARY = 'https://cdn.example/wasi/dist/busybox.wasm';
 const BACKUP = 'https://backup.example/bash/';
 const REL = 'dist/busybox.wasm';
 const MB12 = 1200000;
+const PRIMARY_PY = 'https://cdn.example/pyodide/v1/';
 
 class FakeResponse { constructor(buf) { this._b = buf; } arrayBuffer() { return Promise.resolve(this._b); } }
 class FakeBlob { constructor(parts) { this.parts = parts; } }
@@ -340,7 +341,7 @@ const tick = () => new Promise((r) => setImmediate(r));
         const self = makeSelf(ctx);
         const s = sink(); s.sess._inputLog = [];
         const empty = self._terminalDiagText(s.sess);
-        check('T16 diag 有版本與「沒有輸入事件」的明說', empty.includes('版本：v506') && empty.includes('沒有任何輸入事件到達終端機'), empty);
+        check('T16 diag 有版本與「沒有輸入事件」的明說', empty.includes('版本：v507') && empty.includes('沒有任何輸入事件到達終端機'), empty);
         for (let i = 0; i < 12; i++) self._terminalRecordInput(s.sess, 'keydown', { key: 'e', keyCode: 229 });
         self._terminalRecordInput(s.sess, 'data', { data: 'e' });
         const txt = self._terminalDiagText(s.sess);
@@ -352,7 +353,7 @@ const tick = () => new Promise((r) => setImmediate(r));
         const self = makeSelf(ctx);
         const s = sink(); s.sess._inputLog = [];
         self._terminalPrintDiag(s.sess);
-        check('T17 診斷按鈕印出版本與輸入紀錄', s.out.join('').includes('版本：v506') && s.out.join('').includes('最後 10 個輸入事件'), s.out.length);
+        check('T17 診斷按鈕印出版本與輸入紀錄', s.out.join('').includes('版本：v507') && s.out.join('').includes('最後 10 個輸入事件'), s.out.length);
     }
     // T18：設定白名單：來源只收已知值、自訂網址只收 http(s)、逾時秒數夾在 5–120、預載預設開
     {
@@ -408,6 +409,31 @@ const tick = () => new Promise((r) => setImmediate(r));
         const before = a.out.length;
         self._bashWasmEmit({ kind: 'progress', file: REL, source: '備份', loaded: 1, total: 2, elapsedMs: 1 });
         check('T22 結束後退訂：之後的事件不再寫入這個終端機', a.out.length === before);
+    }
+    // T23：統一的「第一次使用才下載」入口：未載入時先印準備行，下載進度與階段都進到終端機；已載入就不印
+    {
+        const ctx = makeCtx({ fetch: fakeNet({}).fetch });
+        const self = makeSelf(ctx);
+        const a = sink();
+        const got = await self._terminalLoadRuntime(a.sess, 'python', false, async () => {
+            self._bashWasmEmit({ kind: 'progress', file: 'pyodide.asm.wasm', source: '主要', loaded: 500000, total: 1000000, elapsedMs: 3000 });
+            return 7;
+        });
+        check('T23 未載入：先印準備行，進度顯示，回傳值保留', got === 7 && a.out.some((x) => x.includes('準備中：載入 python')) && a.out.some((x) => x.includes('python 核心 0.5/1.0 MB 50%')), a.out.map((x) => x.slice(0, 40)));
+        check('T23 階段名稱寫進 session', a.sess._stage === '載入 python', a.sess._stage);
+        const b = sink();
+        await self._terminalLoadRuntime(b.sess, 'python', true, async () => 1);
+        check('T23 已載入：不印準備行', b.out.length === 0, b.out);
+    }
+    // T24：python 大檔先串流下載（進度可見）；停滯的來源會被放棄（不中斷）
+    {
+        const net = fakeNet({ [PRIMARY_PY + 'pyodide.asm.wasm']: { chunks: [new Uint8Array(1000)], len: 1000 }, [PRIMARY_PY + 'python_stdlib.zip']: { chunks: [new Uint8Array(500)], len: 500 } });
+        const ctx = makeCtx({ fetch: net.fetch });
+        const self = makeSelf(ctx);
+        const evs = [];
+        await self._pyodidePrefetch(PRIMARY_PY, (ev) => evs.push(ev));
+        const files = [...new Set(evs.filter((e) => e.kind === 'progress').map((e) => e.file))];
+        check('T24 python 核心與標準庫都經過串流下載', files.includes('pyodide.asm.wasm') && files.includes('python_stdlib.zip'), files);
     }
     console.log('terminal_progress.test.js: ' + ok + ' passed, ' + bad + ' failed');
     process.exit(bad ? 1 : 0);

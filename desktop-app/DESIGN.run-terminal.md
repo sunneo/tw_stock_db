@@ -2010,3 +2010,15 @@ node scripts/eval/gpgpu_bench.build.js /tmp/gpgpu_bench.js && FA_EVAL_GL=gpu FA_
 
 **測試（模擬）**：`terminal_progress.test.js` 64 passed。T20：FAP、IndexedDB、bash 載入都是永不回的假物件時，ls／cat／cd 在無掛載情況下立即完成。T21：有掛載且卡住時不自動結束，階段名稱與 diag 會指出「開啟儲存」。T22：下載進度與階段會寫進終端機，結束後退訂。
 **未驗證**：真機上 Android Chrome 的 IndexedDB 行為、真實下載進度的觀感。
+
+### 統一的「第一次使用才下載」入口（v507，2026-11-20）
+
+使用者實測 v506：`lli`、`python` 完全沒有輸出，也沒有進度。
+
+**根因**：python 與 lli 的路徑在 shell 載入（bash）之前，或在 `_buildTerminalSandboxBuiltins` 裡 `await` 了 Pyodide／jq，這些地方沒有掛上進度訂閱者，也沒有準備行；而 `_buildTerminalSandboxBuiltins` 外面包著 10 秒上限，會在下載中把指令砍掉。
+
+**修正**：所有第一次使用才下載的入口都走同一個函式 `_terminalLoadRuntime(session, label, loaded, fn)`：未載入時印「準備中」，把進度訂閱到這個終端機，階段寫進 `session._stage`，沒有逾時。涵蓋：shell（python、lli、cd）、Pyodide、jq、程式套件（bundle）。Pyodide 的大檔（`pyodide.asm.wasm`、`python_stdlib.zip`）先串流下載，每個來源有停滯換源，全部失敗就等 15 秒重試；Ctrl-C 取消。程式套件的備份路徑改用串流並重試。
+
+**未做**：`python` 有 GUI 或 async 需求時走 Worker（`_terminalRunPythonWorker`），Worker 裡面自己載入 Pyodide，這段下載的進度目前沒有回報到終端機。設定頁的下載狀態列表（C 版）也還沒做。
+
+**測試（模擬）**：`terminal_progress.test.js` 68 passed（T23：準備行、進度、階段、已載入不印準備行；T24：python 大檔串流下載）。`terminal_hang` 23、`terminal_input` 28、`terminal_fastpath` 5 passed。**未在真機驗證**。
