@@ -113965,13 +113965,48 @@ ${sourceTool.handlerScript}
         if (typeof requestIdleCallback === 'function') requestIdleCallback(go, { timeout: 3000 });
         else setTimeout(go, 1500);
     }
+    // tw_stock_db客製: 2026-11-20 selftest examples：依序跑內建範例（無視窗模式），每個有逾時與進度，印出通過／失敗／原因／耗時。`selftest examples <名稱>` 只跑一個。
+    async _terminalSelfTest(session, restArgs) {
+        const words = this._terminalTokenizeArgs(restArgs);
+        const only = words[1] || null;
+        const EX = [
+            { name: 'nbody3d', cmd: 'python /work/examples/python/gpgpu/nbody3d.py --bench 256', expect: /cpu:\s*[\d.]+ ms per step/, note: '3D N-body（無視窗 CPU 基準）' },
+            { name: 'fluid3d', cmd: 'python /work/examples/python/gpgpu/fluid3d.py --bench', expect: /cpu:\s*[\d.]+ ms per step/, note: 'SPH 流體（無視窗 CPU 基準）' },
+            { name: 'swap_stream', cmd: 'python /work/examples/python/gpgpu/swap_stream.py', expect: /swap：/, note: 'fa_swap 串流' },
+            { name: 'nbody3d_cl', cmd: 'lli /work/examples/llc/gpgpu/nbody3d_cl.ll', expect: null, note: 'LLVM IR（可能需要視窗；無視窗時失敗屬預期）' },
+        ].filter((e) => !only || e.name === only);
+        if (!EX.length) { session.term.write(`selftest：沒有這個範例：${only}\r\n`); return; }
+        session.term.write(`selftest examples：${EX.length} 項（無視窗模式，每項上限 240 秒）\r\n`);
+        let pass = 0;
+        for (const ex of EX) {
+            session._stage = `selftest ${ex.name}`;
+            session.term.write(`▶ ${ex.name}（${ex.note}）…\r\n`);
+            const t0 = Date.now();
+            let cap = null, timedOut = false;
+            const job = this._terminalCaptureWrites(session, () => this._runTerminalCommand(session, ex.cmd)).then((r) => { cap = r; });
+            await Promise.race([job, new Promise((r) => setTimeout(() => { timedOut = true; r(); }, 240000))]);
+            const sec = ((Date.now() - t0) / 1000).toFixed(1);
+            if (timedOut) { session.term.write(`  ✘ 逾時（${sec} 秒仍未結束；指令仍在背景，可按 Ctrl-C）\r\n`); continue; }
+            const text = cap.text || '';
+            const tb = (text.match(/Traceback[\s\S]*/) || [null])[0];
+            const ok = !cap.hadError && !tb && (ex.expect ? ex.expect.test(text) : true);
+            if (ok) { pass++; session.term.write(`  ✔ 通過（${sec} 秒）\r\n`); }
+            else {
+                const lines = (tb || text).trim().split('\n').filter((x) => x.trim());
+                const reason = lines[lines.length - 1] || (ex.expect ? '沒有輸出預期的結果行' : '發生錯誤');
+                session.term.write(`  ✘ 失敗（${sec} 秒）：${reason.slice(0, 200)}\r\n`);
+            }
+        }
+        session.term.write(`selftest：通過 ${pass}／${EX.length}\r\n`);
+        session._stage = 'selftest 完成';
+    }
     // 快捷列「診斷」按鈕：直接把 diag 印在終端機上（不送進指令，不影響正在跑的程式）。
     _terminalPrintDiag(session) {
         if (!session || !session.term) return;
         session.term.write('\r\n' + this._terminalDiagText(session).replace(/\n/g, '\r\n') + '\r\n');
     }
     // 終端機的版本標記：每次發版時改這裡（與 PATCH_VERSION、發版 commit 對得上），終端機開頭與 diag 會印出來。
-    _terminalBuildTag() { return 'v512'; }
+    _terminalBuildTag() { return 'v513'; }
     _terminalRecordInput(session, type, ev) {
         if (!session || !session._inputLog) return;
         let detail = '';
@@ -116274,6 +116309,7 @@ ${sourceTool.handlerScript}
             }
         }
         // tw_stock_db客製: 2026-11-20 diag：列出 bash 執行環境的下載／快取狀態與各階段耗時，給使用者截圖回報。
+        if (cmdName === 'selftest') { await this._terminalSelfTest(session, restArgs); return; }
         if (cmdName === 'diag' && !restArgs) { session.term.write(this._terminalDiagText(session).replace(/\n/g, '\r\n') + '\r\n'); return; }
         if (cmdName === 'help') {
             session.term.write([
@@ -120231,6 +120267,13 @@ ${sourceTool.handlerScript}
                 runPython: (scriptText, stdinBytes) => this._pyodideBridgeRunPython(scriptText, stdinBytes),
             });
             instance.runPython(PYODIDE_SUBPROCESS_SHIM_SRC);
+            // tw_stock_db客製: 2026-11-20 fa_swap（App 的 pybridge 模組）注入到終端機的 Pyodide：放在 /fa_terminal 並加入 sys.path。
+            // 沒有 fa_bridge（IndexedDB 橋接）時 fa_swap 自動退回記憶體後端，範例仍能跑。
+            try {
+                instance.FS.mkdirTree('/fa_terminal');
+                instance.FS.writeFile('/fa_terminal/fa_swap.py', FA_PYBRIDGE_FILES['fa_swap.py']);
+                instance.runPython("import sys\nif '/fa_terminal' not in sys.path:\n    sys.path.insert(0, '/fa_terminal')");
+            } catch (e) { console.warn('fa_swap 注入失敗', e); }
             instance.registerJsModule('_fa_http_bridge', this._ytDlpHttpBridge());
             try { instance.runPython(PYODIDE_URLLIB_SHIM_SRC); } catch (err) { console.warn('urllib橋接安裝失敗（python的urllib連網不可用）:', err); }
             this._pyodideIndexURL = indexURL;

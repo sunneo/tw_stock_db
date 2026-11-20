@@ -17,7 +17,7 @@ const METHODS = ['_fetchAssetBytesWithBackup', '_bashReadBody', '_bashWasmEmit',
     '_terminalBashProgressWriter', '_bashCacheOpen', '_bashCacheKey', '_bashCacheGet', '_bashCachePut', '_bashLoadJsModules',
     '_ensureBashWasmLoaded', '_fetchAssetBackupFile', '_fetchViaProxyThenDirect', '_scheduleBashWasmPreload', '_terminalDiagText',
     '_terminalFsFastPath', '_terminalCd', '_termTimed', '_runTerminalCommand', '_bashDownloading', '_bashCancelLoads', '_bashRetryWait', '_terminalRecordInput', '_terminalBuildTag', '_terminalPrintDiag',
-    '_terminalVirtualFs', '_terminalFsView', '_terminalWithBashProgress', '_terminalLoadRuntime', '_pyodidePrefetch', '_termBeginLoad', '_terminalTryLliHost', '_bashBundleSource', '_ensureTerminalFsStore', '_fapWarm', '_terminalKnownCommand', '_terminalNotFoundBasis', '_bashSettings', '_bashStallMs', '_bashJoin', '_bashFetchBytes', '_bashWithStall', '_bashJsSourceList', '_bashLoadOneJsSource', '_normalizeTerminalSettings', '_terminalResolvePath', '_terminalIsDir', '_terminalSandboxFileBytes'];
+    '_terminalVirtualFs', '_terminalFsView', '_terminalWithBashProgress', '_terminalLoadRuntime', '_pyodidePrefetch', '_termBeginLoad', '_terminalTryLliHost', '_bashBundleSource', '_ensureTerminalFsStore', '_fapWarm', '_terminalKnownCommand', '_terminalNotFoundBasis', '_terminalSelfTest', '_bashSettings', '_bashStallMs', '_bashJoin', '_bashFetchBytes', '_bashWithStall', '_bashJsSourceList', '_bashLoadOneJsSource', '_normalizeTerminalSettings', '_terminalResolvePath', '_terminalIsDir', '_terminalSandboxFileBytes'];
 const CLASS_SRC = '({' + METHODS.map(methodSource).join(',\n') + '})';
 
 const PRIMARY = 'https://cdn.example/wasi/dist/busybox.wasm';
@@ -342,7 +342,7 @@ const tick = () => new Promise((r) => setImmediate(r));
         const self = makeSelf(ctx);
         const s = sink(); s.sess._inputLog = [];
         const empty = self._terminalDiagText(s.sess);
-        check('T16 diag 有版本與「沒有輸入事件」的明說', empty.includes('版本：v512') && empty.includes('沒有任何輸入事件到達終端機'), empty);
+        check('T16 diag 有版本與「沒有輸入事件」的明說', empty.includes('版本：v513') && empty.includes('沒有任何輸入事件到達終端機'), empty);
         for (let i = 0; i < 12; i++) self._terminalRecordInput(s.sess, 'keydown', { key: 'e', keyCode: 229 });
         self._terminalRecordInput(s.sess, 'data', { data: 'e' });
         const txt = self._terminalDiagText(s.sess);
@@ -354,7 +354,7 @@ const tick = () => new Promise((r) => setImmediate(r));
         const self = makeSelf(ctx);
         const s = sink(); s.sess._inputLog = [];
         self._terminalPrintDiag(s.sess);
-        check('T17 診斷按鈕印出版本與輸入紀錄', s.out.join('').includes('版本：v512') && s.out.join('').includes('最後 10 個輸入事件'), s.out.length);
+        check('T17 診斷按鈕印出版本與輸入紀錄', s.out.join('').includes('版本：v513') && s.out.join('').includes('最後 10 個輸入事件'), s.out.length);
     }
     // T18：設定白名單：來源只收已知值、自訂網址只收 http(s)、逾時秒數夾在 5–120、預載預設開
     {
@@ -566,6 +566,29 @@ const tick = () => new Promise((r) => setImmediate(r));
         check('T35 llo：不碰儲存、掛載、bash 載入', storageCalls === 0, storageCalls);
         const dg = self._terminalDiagText(a.sess);
         check('T35 diag 顯示最近一次被判為 not found 的指令與依據', dg.includes('最近一次被 JS 判為 not found：llo（依據：純單字'), dg.split('\n').filter((x) => x.includes('not found')));
+    }
+    // T36：selftest examples：每項有進度行與結果（通過／失敗＋原因）；單項篩選；失敗時 Traceback 的最後一行當原因
+    {
+        const ctx = makeCtx({ fetch: fakeNet({}).fetch });
+        const outputs = { 'nbody3d': 'cpu: 1.0 ms per step (median)\n', 'fluid3d': 'cpu: 24.0 ms per step (median)\n', 'swap_stream': 'swap：熱頁 1\n', 'nbody3d_cl': 'trap: window not open\n' };
+        const self = makeSelf(ctx, {
+            _runTerminalCommand: async () => {},
+            _terminalCaptureWrites: async (sess, fn) => {
+                await fn();
+                const name = Object.keys(outputs).find((k) => sess._stage === 'selftest ' + k);
+                if (name === 'fluid3d') return { text: 'Traceback (most recent call last):\nValueError: bad\n', hadError: false };
+                return { text: outputs[name] || '', hadError: false };
+            },
+        });
+        const a = sink();
+        await self._terminalSelfTest(a.sess, 'examples');
+        const txt = a.out.join('');
+        check('T36 進度行：每項有開始與結果', txt.includes('▶ nbody3d') && txt.includes('✔ 通過') && txt.includes('▶ fluid3d'), txt.slice(0, 200));
+        check('T36 失敗項：列出 Traceback 最後一行當原因', txt.includes('✘ 失敗') && txt.includes('ValueError: bad'), txt);
+        check('T36 尾端彙總：通過數', /selftest：通過 \d／4/.test(txt) || /selftest：通過 \d\／4/.test(txt), txt.slice(-120));
+        const b = sink();
+        await self._terminalSelfTest(b.sess, 'examples swap_stream');
+        check('T36 單項篩選只跑一項', b.out.join('').includes('▶ swap_stream') && !b.out.join('').includes('▶ nbody3d'), b.out.join('').slice(0, 120));
     }
     console.log('terminal_progress.test.js: ' + ok + ' passed, ' + bad + ' failed');
     process.exit(bad ? 1 : 0);

@@ -2105,3 +2105,13 @@ v510 引入的 JS 端「command not found」判定有誤判：已知表漏了 bu
 **測試（模擬）**：`terminal_hang` 7 passed（改寫：卡住的指令不會被自動結束、Ctrl-C 才放開、bash 載入／檔案系統／FAP 掛載／shell 執行卡住時都一直等、正常指令沒有多餘訊息）。`terminal_input` 25、`terminal_progress` 117、`terminal_fastpath` 5 passed。**未在真機驗證。**
 
 **仍然沒有做的**：python 的 Worker 路徑進度與 micropip 安裝的逐包進度；IndexedDB 開啟為什麼慢的確切原因（diag 已加「IndexedDB 開啟」耗時，但需要手機上的數字）；設定頁的下載狀態區（C 版）。
+
+### selftest examples 與 fa_swap 注入（v513，2026-11-20）
+
+- **`selftest examples [名稱]`**：依序跑內建範例（無視窗模式）：`nbody3d`（`--bench 256`）、`fluid3d`（`--bench`）、`swap_stream`、`nbody3d_cl`（lli，可能需要視窗）。每項先印「▶」，完成印「✔ 通過（秒）」或「✘ 失敗（秒）：原因」（取 Traceback 或錯誤的最後一行）；超過 240 秒印「逾時」但不中斷指令（仍可 Ctrl-C）。尾端彙總「通過 N／M」。
+- **fa_swap**：`_ensurePyodideLoaded` 在初始化時把 `pybridge/fa_swap.py` 寫進 `/fa_terminal/` 並加入 `sys.path`。fa_swap 沒有 fa_bridge 時退回記憶體後端。之前只有技能包執行或 Worker 路徑會注入。
+
+**驗證**
+- 模擬：`terminal_progress` 121 passed（T36：進度行、失敗原因取 Traceback 最後一行、單項篩選）；`terminal_hang` 7、`terminal_input` 25、`terminal_fastpath` 5 passed。
+- **node 版 Pyodide 0.27.7 實跑**（暫存目錄，不在 repo）：`swap_stream.py` 注入 fa_swap 後完整跑完（退出碼 0，後端 memory，總和校驗一致）；`nbody3d.py --bench 256` 仍通過。
+- **未驗證**：手機終端機上實際執行 selftest；`nbody3d_cl`（lli）的結果；視窗式範例。
