@@ -87289,6 +87289,11 @@ class FloatingAssistant {
             theme: ['system', ...Object.keys(TERMINAL_THEME_PRESETS)].includes(raw.theme) ? raw.theme : defaults.theme,
             resourcePolicy: ['focus', 'viewport', 'count', 'unlimited'].includes(raw.resourcePolicy) ? raw.resourcePolicy : defaults.resourcePolicy,
             resourceCountLimit: Number.isFinite(countLimitNum) && countLimitNum >= 1 ? Math.round(countLimitNum) : defaults.resourceCountLimit,
+            // tw_stock_db客製: 2026-11-20 bash 執行環境的來源與下載（見 _bashSettings）
+            bashSource: ['auto', 'imported', 'custom', 'jsdelivr', 'backup'].includes(raw.bashSource) ? raw.bashSource : 'auto',
+            bashCustomUrl: /^https?:\/\//i.test(String(raw.bashCustomUrl || '').trim()) ? String(raw.bashCustomUrl).trim() : '',
+            bashStallSec: Number.isFinite(Number(raw.bashStallSec)) && Number(raw.bashStallSec) >= 5 && Number(raw.bashStallSec) <= 120 ? Math.round(Number(raw.bashStallSec)) : 20,
+            bashPreload: raw.bashPreload !== false,
         };
     }
 
@@ -112513,6 +112518,12 @@ ${sourceTool.handlerScript}
         if (terminalResourcePolicySelect) terminalResourcePolicySelect.value = term.resourcePolicy;
         const terminalResourceCountLimitInput = document.getElementById('ai-terminal-resource-count-limit');
         if (terminalResourceCountLimitInput) terminalResourceCountLimitInput.value = term.resourceCountLimit;
+        // tw_stock_db客製: 2026-11-20 bash 執行環境的來源設定回填（設定 > 終端機 的下載區）
+        const bsCfg = this._bashSettings();
+        const bsSrc = document.getElementById('ai-bash-source'); if (bsSrc) bsSrc.value = bsCfg.source;
+        const bsUrl = document.getElementById('ai-bash-custom-url'); if (bsUrl) bsUrl.value = bsCfg.customUrl;
+        const bsStall = document.getElementById('ai-bash-stall'); if (bsStall) bsStall.value = bsCfg.stallSec;
+        const bsPre = document.getElementById('ai-bash-preload-chk'); if (bsPre) bsPre.checked = bsCfg.preload;
         const multiSubAgentModeSelect = document.getElementById('ai-multi-subagent-mode');
         if (multiSubAgentModeSelect) multiSubAgentModeSelect.value = this.multiSubAgentMode;
         try { this._amMode = null; this._agentModelRender(); } catch (e) { console.warn('Agent Model Configure 畫面失敗', e); }
@@ -113697,33 +113708,123 @@ ${sourceTool.handlerScript}
     // 單純二進位資源（例如busybox.wasm）的「主要來源直接fetch，失敗才退到
     // 自家backup分支」共用邏輯——不涉及script執行/mimetype問題，直接
     // fetch()+arrayBuffer()即可，兩邊都一樣。
+    // tw_stock_db客製: 2026-11-20 wasm 來源依序嘗試（見 _bashSettings 與 DESIGN.run-terminal.md）：匯入的檔案 → 快取 → 自訂網址 → jsDelivr → GitHub 備份。
+    // 每個來源有「N 秒沒有新位元組」逾時，失敗就換下一個，並記下網址與原因。
     async _fetchAssetBytesWithBackup(primaryUrl, backupBase, relPath, emit) {
-        const cached = await this._bashCacheGet(primaryUrl);
-        if (cached) { if (emit) emit({ kind: 'cache', file: relPath, bytes: cached.byteLength }); return cached; }
-        const t0 = Date.now();
-        const primaryFetchUrl = this._viaAssetProxy(primaryUrl);
-        try {
-            const r = await fetch(primaryFetchUrl, { cache: 'no-cache' });
-            if (!r.ok) throw new Error(`HTTP ${r.status}`);
-            const buf = await this._bashReadBody(r, relPath, '主要', emit, { loaded: 0, total: 0, t0 });
-            await this._bashCachePut(primaryUrl, buf);
-            if (emit) emit({ kind: 'done', file: relPath, source: '主要', bytes: buf.byteLength, elapsedMs: Date.now() - t0 });
-            return buf;
-        } catch (primaryErr) {
-            const reason = `網址 ${primaryFetchUrl.slice(0, 200)}（階段：下載）：${primaryErr.message}`;
-            if (emit) emit({ kind: 'fallback', file: relPath, source: '備份', reason });
-            const t1 = Date.now();
+        const emitEv = (ev) => this._bashWasmEmit(ev);
+        const s = this._bashSettings();
+        const cands = [
+            { key: 'imported', short: '匯入', name: '匯入的檔案', url: 'imported:' + relPath, kind: 'cache' },
+            { key: 'cache', short: '快取', name: '快取', url: primaryUrl, kind: 'cache' },
+            { key: 'custom', short: '自訂', name: '自訂網址', url: this._bashJoin(s.customUrl, relPath), kind: 'fetch', skip: !s.customUrl },
+            { key: 'jsdelivr', short: '主要', name: 'jsDelivr', url: primaryUrl, kind: 'fetch' },
+            { key: 'backup', short: '備份', name: '備份分支（GitHub）', url: backupBase + relPath, kind: 'backup' },
+        ].filter((c) => !c.skip && (s.source === 'auto' || c.key === s.source || c.kind === 'cache'));
+        const errs = [];
+        for (const c of cands) {
+            if (c.kind === 'cache') {
+                const hit = await this._bashCacheGet(c.url);
+                if (hit) { emitEv({ kind: 'cache', file: relPath, source: c.short, bytes: hit.byteLength }); return hit; }
+                continue;
+            }
+            emitEv({ kind: 'stage', text: `下載 ${this._bashFileLabel(relPath)}：嘗試 ${c.name}（${c.url}）` });
+            const t0 = Date.now();
             try {
-                const buf = await this._fetchAssetBackupFile(backupBase, relPath, emit);
+                const buf = await this._bashWithStall(
+                    c.kind === 'backup' ? this._fetchAssetBackupFile(backupBase, relPath, emitEv) : this._bashFetchBytes(c.url, relPath, c.short, emitEv),
+                    this._bashStallMs(), c.name);
                 await this._bashCachePut(primaryUrl, buf);
-                if (emit) emit({ kind: 'done', file: relPath, source: '備份', bytes: buf.byteLength, elapsedMs: Date.now() - t1 });
+                emitEv({ kind: 'done', file: relPath, source: c.short, bytes: buf.byteLength, elapsedMs: Date.now() - t0 });
                 return buf;
-            } catch (backupErr) {
-                throw new Error(`抓 ${relPath} 失敗——主要來源：${reason}；備份分支：${backupErr.message}`);
+            } catch (e) {
+                const reason = `${c.name}（${c.url.slice(0, 200)}，階段：下載）：${(e && e.message) || e}`;
+                errs.push(reason);
+                emitEv({ kind: 'fallback', file: relPath, source: c.short, reason });
             }
         }
+        throw new Error(`抓 ${relPath} 失敗——` + errs.join('；'));
     }
 
+    _bashSettings() {
+        const t = (this.advancedSettings && this.advancedSettings.terminal) || {};
+        return { source: t.bashSource || 'auto', customUrl: String(t.bashCustomUrl || '').trim(), stallSec: Number(t.bashStallSec) || 20, preload: t.bashPreload !== false };
+    }
+    _bashStallMs() { return this._bashSettings().stallSec * 1000; }
+    _bashJoin(base, rel) { return base ? String(base).replace(/\/?$/, '/') + rel : ''; }
+    // 單一來源的抓取（串流＋進度）。
+    async _bashFetchBytes(url, file, label, emit) {
+        const r = await fetch(this._viaAssetProxy(url), { cache: 'no-cache' });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return await this._bashReadBody(r, file, label, emit, { loaded: 0, total: 0, t0: Date.now() });
+    }
+    // 包住一段非同步工作：距離最後一次下載活動（_bashLastActivityAt，每個進度／階段事件都會更新）超過 stallMs 就放棄，改由呼叫端換來源。
+    _bashWithStall(promise, stallMs, label) {
+        let iv = null;
+        const guard = new Promise((_, rej) => {
+            iv = setInterval(() => {
+                const idle = Date.now() - (this._bashLastActivityAt || 0);
+                if (idle >= stallMs) rej(new Error(`${label}：${Math.round(stallMs / 1000)} 秒沒有新的位元組，已放棄此來源`));
+            }, 1000);
+        });
+        return Promise.race([promise, guard]).finally(() => clearInterval(iv));
+    }
+    // JS 模組來源（依序）：匯入的檔案 → 自訂網址（單檔 bundle）→ GitHub 備份（單檔 bundle，有 manifest 就分塊）→ jsDelivr 原生 import（多檔，沒有位元組進度）。
+    _bashJsSourceList() {
+        const s = this._bashSettings();
+        const base = FA_ASSET_URLS.bashWasmBackupBase;
+        const list = [
+            { key: 'imported', short: '匯入', name: '匯入的檔案', url: 'imported:wasi-sh.bundle.mjs', kind: 'cache' },
+            { key: 'custom', short: '自訂', name: '自訂網址', url: this._bashJoin(s.customUrl, 'wasi-sh.bundle.mjs'), kind: 'bundle', skip: !s.customUrl },
+            { key: 'backup', short: '備份', name: '備份分支（GitHub）', url: base + 'wasi-sh.bundle.mjs', kind: 'backup', base },
+            { key: 'jsdelivr', short: '主要', name: 'jsDelivr（原生 import）', url: FA_ASSET_URLS.bashWasmJsBase + 'src/index.mjs', kind: 'native' },
+        ];
+        return list.filter((c) => !c.skip && (s.source === 'auto' || c.key === s.source || c.kind === 'cache'));
+    }
+    async _bashLoadOneJsSource(src, emitEv) {
+        if (src.kind === 'native') {
+            const [runMod, fsMod] = await Promise.all([
+                this._bashImportModule(this._viaAssetProxy(src.url)),
+                this._bashImportModule(this._viaAssetProxy(FA_ASSET_URLS.bashWasmJsBase + 'src/fs.mjs')),
+            ]);
+            return { run: runMod.run, memoryFs: fsMod.memoryFs };
+        }
+        let buf = await this._bashCacheGet(src.url);
+        if (buf) emitEv({ kind: 'cache', file: 'wasi-sh.bundle.mjs', source: src.short, bytes: buf.byteLength });
+        else if (src.kind === 'cache') throw new Error('沒有匯入的檔案');
+        else {
+            const t0 = Date.now();
+            buf = src.kind === 'backup' ? await this._fetchAssetBackupFile(src.base, 'wasi-sh.bundle.mjs', emitEv) : await this._bashFetchBytes(src.url, 'wasi-sh.bundle.mjs', src.short, emitEv);
+            await this._bashCachePut(src.url, buf);
+            emitEv({ kind: 'done', file: 'wasi-sh.bundle.mjs', source: src.short, bytes: buf.byteLength, elapsedMs: Date.now() - t0 });
+        }
+        const blobUrl = URL.createObjectURL(new Blob([new TextDecoder('utf-8').decode(buf)], { type: 'text/javascript' }));
+        try { const mod = await this._bashImportModule(blobUrl); return { run: mod.run, memoryFs: mod.memoryFs }; }
+        finally { URL.revokeObjectURL(blobUrl); }
+    }
+    // JS 執行環境（wasi-sh 的 run、memoryFs；不含 busybox.wasm）。依 _bashJsSourceList 的順序嘗試，每個來源都有停滯逾時；全部失敗時錯誤列出每個來源的網址與原因。同一個 session 只載一次。
+    _bashLoadJsModules() {
+        if (this._bashJsRuntime) return Promise.resolve(this._bashJsRuntime);
+        if (!this._bashJsPromise) {
+            this._bashJsPromise = (async () => {
+                const emitEv = (ev) => this._bashWasmEmit(ev);
+                const errs = [];
+                for (const src of this._bashJsSourceList()) {
+                    emitEv({ kind: 'stage', text: `載入 JS 模組：嘗試 ${src.name}（${src.url}）` });
+                    try {
+                        const mod = await this._bashWithStall(this._bashLoadOneJsSource(src, emitEv), this._bashStallMs(), src.name);
+                        this._bashJsRuntime = { run: mod.run, memoryFs: mod.memoryFs };
+                        return this._bashJsRuntime;
+                    } catch (e) {
+                        const reason = `${src.name}（${src.url}，階段：載入 JS 模組）：${(e && e.message) || e}`;
+                        errs.push(reason);
+                        emitEv({ kind: 'fallback', file: 'wasi-sh.bundle.mjs', source: src.short, reason });
+                    }
+                }
+                throw new Error('bash 執行環境 JS 模組載入失敗——' + (errs.length ? errs.join('；') : '沒有可用的來源'));
+            })().catch((e) => { this._bashJsPromise = null; throw e; });
+        }
+        return this._bashJsPromise;
+    }
     // tw_stock_db客製: 2026-11-20 下載進度。有 body 串流就一塊一塊讀，約每 100ms 回報一次「已下載／總量」；
     // 沒有 Content-Length 只回報已下載量；沒有串流就整包讀完、只回報一次。acc＝{loaded, total, t0}，跨分塊累加
     // （備份分塊時 total 用 manifest 的 size）。注意：伺服器若 gzip 壓縮，Content-Length 是壓縮後的大小，
@@ -113784,6 +113885,7 @@ ${sourceTool.handlerScript}
         let open = false;
         return (ev) => {
             if (!session || session.ended || !session.term) return;
+            if (ev.kind === 'stage') { session.term.write('\r\x1b[2K' + ev.text); open = true; return; }
             if (ev.kind === 'progress') {
                 if (ev.final) return;
                 session.term.write('\r\x1b[2K' + this._bashProgressText(ev));
@@ -113827,44 +113929,13 @@ ${sourceTool.handlerScript}
         catch (_) { /* 寫不進去就下次再下載 */ }
     }
     _bashImportModule(url) { return import(/* webpackIgnore: true */ url); }
-    // JS 執行環境（wasi-sh 的 run、memoryFs；不含 busybox.wasm）。主要來源用原生 import()，失敗退到備份分支的單一檔案 bundle。同一個 session 只載一次。
-    _bashLoadJsModules(emit) {
-        if (this._bashJsRuntime) return Promise.resolve(this._bashJsRuntime);
-        if (!this._bashJsPromise) {
-            this._bashJsPromise = (async () => {
-                let run, memoryFs;
-                try {
-                    const [runMod, fsMod] = await Promise.all([
-                        this._bashImportModule(this._viaAssetProxy(FA_ASSET_URLS.bashWasmJsBase + 'src/index.mjs')),
-                        this._bashImportModule(this._viaAssetProxy(FA_ASSET_URLS.bashWasmJsBase + 'src/fs.mjs')),
-                    ]);
-                    run = runMod.run;
-                    memoryFs = fsMod.memoryFs;
-                } catch (primaryErr) {
-                    const reason = `網址 ${FA_ASSET_URLS.bashWasmJsBase}src/index.mjs（階段：載入 JS 模組）：${primaryErr.message}`;
-                    if (emit) emit({ kind: 'fallback', file: 'wasi-sh.bundle.mjs', source: '備份', reason });
-                    let bundleBuffer;
-                    try {
-                        bundleBuffer = await this._fetchAssetBackupFile(FA_ASSET_URLS.bashWasmBackupBase, 'wasi-sh.bundle.mjs', emit);
-                    } catch (backupErr) {
-                        throw new Error(`bash 執行環境載入失敗——主要來源：${reason}；備份分支：${backupErr.message}`);
-                    }
-                    const blobUrl = URL.createObjectURL(new Blob([new TextDecoder('utf-8').decode(bundleBuffer)], { type: 'text/javascript' }));
-                    try { const mod = await this._bashImportModule(blobUrl); run = mod.run; memoryFs = mod.memoryFs; }
-                    finally { URL.revokeObjectURL(blobUrl); }
-                }
-                this._bashJsRuntime = { run, memoryFs };
-                return this._bashJsRuntime;
-            })().catch((e) => { this._bashJsPromise = null; throw e; });
-        }
-        return this._bashJsPromise;
-    }
     // 閒置時背景預載 bash 執行環境（終端機掛載時排程；不支援 requestIdleCallback 就 1.5 秒後）。省流量模式（saveData）不預載。
     // 前景需要時直接共用進行中的載入，不會重複下載；預載本身不搶佔前景的網路以外的資源，但網路頻寬是共用的。
     _scheduleBashWasmPreload() {
         if (this._bashWasmRuntime || this._bashWasmLoadPromise || this._bashWasmPreloadScheduled) return;
         const conn = typeof navigator !== 'undefined' ? navigator.connection : null;
         if (conn && conn.saveData) return;
+        if (!this._bashSettings().preload) return;
         this._bashWasmPreloadScheduled = true;
         const go = () => { this._bashWasmPreloadScheduled = false; this._ensureBashWasmLoaded(null).catch(() => { /* 預載失敗不影響，前景再試 */ }); };
         if (typeof requestIdleCallback === 'function') requestIdleCallback(go, { timeout: 3000 });
@@ -113895,7 +113966,7 @@ ${sourceTool.handlerScript}
         session.term.write('\r\n' + this._terminalDiagText(session).replace(/\n/g, '\r\n') + '\r\n');
     }
     // 終端機的版本標記：每次發版時改這裡（與 PATCH_VERSION、發版 commit 對得上），終端機開頭與 diag 會印出來。
-    _terminalBuildTag() { return 'v503'; }
+    _terminalBuildTag() { return 'v504'; }
     _terminalRecordInput(session, type, ev) {
         if (!session || !session._inputLog) return;
         let detail = '';
@@ -117067,7 +117138,7 @@ ${sourceTool.handlerScript}
         if (!this._bashWasmRuntime && session.term) session.term.write('\x1b[90m準備中…（第一次使用需要下載 shell，下方會顯示進度）\x1b[0m\r\n');
         try { runtime = await this._termStalled(session, 'bash 執行環境載入', this._ensureBashWasmLoaded(this._terminalBashProgressWriter(session)), 30000); } catch (err) {
             if (err && err.timedOut) this._bashWasmLoadPromise = null;   // 下次重新載入
-            return { ok: false, error: String(err.message || err) };
+            return { ok: false, error: String(err.message || err) + '（可到 設定 > 終端機 換來源或匯入檔案）' };
         }
         let fsStore;
         try { fsStore = await this._termTimed(session, '檔案系統初始化', this._ensureTerminalFsStore(session, runtime), 10000); } catch (err) {
@@ -140831,6 +140902,28 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                                     <label class="ai-advanced-label" for="ai-terminal-resource-count-limit" style="font-weight:normal; margin-top:8px;">數量上限政策的N</label>
                                     <input type="number" id="ai-terminal-resource-count-limit" class="ai-advanced-input" min="1" step="1">
                                     <p class="ai-advanced-hint">只有選「數量上限」政策時才有作用。</p>
+                                    <div class="ai-bash-dl-box" style="margin-top:12px; border-top:1px solid #334155; padding-top:10px;">
+                                        <div style="font-weight:600; margin-bottom:4px;">bash 執行環境（ls、cat、shell 指令）：下載來源與快取</div>
+                                        <label class="ai-advanced-label" for="ai-bash-source" style="font-weight:normal;">來源</label>
+                                        <select id="ai-bash-source" class="ai-advanced-input">
+                                            <option value="auto">自動（匯入 → 快取 → 自訂 → jsDelivr → GitHub 備份）</option>
+                                            <option value="imported">只用匯入的檔案</option>
+                                            <option value="custom">只用自訂網址</option>
+                                            <option value="jsdelivr">只用 jsDelivr</option>
+                                            <option value="backup">只用 GitHub 備份</option>
+                                        </select>
+                                        <label class="ai-advanced-label" for="ai-bash-custom-url" style="font-weight:normal; margin-top:8px;">自訂網址（資料夾，內含 wasi-sh.bundle.mjs 與 dist/busybox.wasm）</label>
+                                        <input type="url" id="ai-bash-custom-url" class="ai-advanced-input" placeholder="https://…/">
+                                        <label class="ai-advanced-label" for="ai-bash-stall" style="font-weight:normal; margin-top:8px;">N 秒沒有新位元組就換下一個來源（5–120）</label>
+                                        <input type="number" id="ai-bash-stall" class="ai-advanced-input" min="5" max="120" step="1">
+                                        <label class="ai-advanced-label" style="font-weight:normal; margin-top:8px;"><input type="checkbox" id="ai-bash-preload-chk"> 終端機開啟時閒置預先下載（省流量模式不預載）</label>
+                                        <div style="display:flex; flex-wrap:wrap; gap:6px; margin-top:8px;">
+                                            <button type="button" id="ai-bash-retry" class="ai-advanced-btn">重試載入</button>
+                                            <button type="button" id="ai-bash-clear" class="ai-advanced-btn">清除快取</button>
+                                            <label class="ai-advanced-btn" style="cursor:pointer;">從檔案匯入 wasi-sh.bundle.mjs<input type="file" id="ai-bash-import" accept=".mjs,.js,text/javascript" style="display:none;"></label>
+                                        </div>
+                                        <div id="ai-bash-status" style="font-size:12px; margin-top:8px; white-space:pre-wrap; word-break:break-all;"></div>
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -143914,6 +144007,39 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                 if (Number.isFinite(n) && n >= 1) updateTerminalSetting({ resourceCountLimit: n });
             });
         }
+        // tw_stock_db客製: 2026-11-20 bash 執行環境的來源與快取管理（設定 > 終端機）：來源、自訂網址、逾時、預載、重試、清除快取、從檔案匯入。
+        const bashSrcSel = document.getElementById('ai-bash-source');
+        if (bashSrcSel) bashSrcSel.addEventListener('change', () => updateTerminalSetting({ bashSource: bashSrcSel.value }));
+        const bashUrlIn = document.getElementById('ai-bash-custom-url');
+        if (bashUrlIn) bashUrlIn.addEventListener('change', () => updateTerminalSetting({ bashCustomUrl: bashUrlIn.value.trim() }));
+        const bashStallIn = document.getElementById('ai-bash-stall');
+        if (bashStallIn) bashStallIn.addEventListener('change', () => updateTerminalSetting({ bashStallSec: Number(bashStallIn.value) }));
+        const bashPreloadChk = document.getElementById('ai-bash-preload-chk');
+        if (bashPreloadChk) bashPreloadChk.addEventListener('change', () => updateTerminalSetting({ bashPreload: bashPreloadChk.checked }));
+        const bashStatusEl = document.getElementById('ai-bash-status');
+        const bashSetStatus = (t) => { if (bashStatusEl) bashStatusEl.textContent = t; };
+        const bashReset = () => { this._bashWasmRuntime = null; this._bashWasmLoadPromise = null; this._bashJsRuntime = null; this._bashJsPromise = null; };
+        const bashRetryBtn = document.getElementById('ai-bash-retry');
+        if (bashRetryBtn) bashRetryBtn.addEventListener('click', () => {
+            bashReset(); bashSetStatus('重試中…（進度會顯示在開著的終端機裡）');
+            this._ensureBashWasmLoaded(null).then(() => bashSetStatus('載入成功'), (e) => bashSetStatus('載入失敗：' + ((e && e.message) || e)));
+        });
+        const bashClearBtn = document.getElementById('ai-bash-clear');
+        if (bashClearBtn) bashClearBtn.addEventListener('click', async () => {
+            bashReset();
+            try { if (typeof caches !== 'undefined') await caches.delete('fa-bash-wasm-v1'); this._bashCachePromise = null; bashSetStatus('已清除快取（下次使用會重新下載）'); }
+            catch (e) { bashSetStatus('清除快取失敗：' + ((e && e.message) || e)); }
+        });
+        const bashImportIn = document.getElementById('ai-bash-import');
+        if (bashImportIn) bashImportIn.addEventListener('change', async () => {
+            const f = bashImportIn.files && bashImportIn.files[0]; if (!f) return;
+            try {
+                const buf = await f.arrayBuffer();
+                await this._bashCachePut('imported:wasi-sh.bundle.mjs', buf);
+                if (!(await this._bashCacheGet('imported:wasi-sh.bundle.mjs'))) { bashSetStatus('匯入失敗：快取無法寫入（可能是私密瀏覽或儲存空間不足）'); return; }
+                bashReset(); bashSetStatus(`已匯入 ${f.name}（${(buf.byteLength / 1048576).toFixed(2)} MB），下次載入會優先使用`);
+            } catch (e) { bashSetStatus('匯入失敗：' + ((e && e.message) || e)); }
+        });
         // tw_stock_db客製: 2026-09-20——「瀏覽器控制」分頁：測試連線／下載擴充功能／桌面版配對碼。
         const bcEnabledChk = document.getElementById('ai-bc-enabled-chk');
         if (bcEnabledChk) bcEnabledChk.addEventListener('change', () => {

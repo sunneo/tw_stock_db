@@ -1946,3 +1946,23 @@ node scripts/eval/gpgpu_bench.build.js /tmp/gpgpu_bench.js && FA_EVAL_GL=gpu FA_
 - **兩條輸入路徑**：實體鍵盤經 xterm 的 `onData` 進 `_handleTerminalInput`；快捷列按鍵直接呼叫 `send` 再進 `_handleTerminalInput`。兩者都記錄進 `_inputLog`（來源分別是 `data` 與 `keybar`），diag 可以比對是哪一條路徑沒有到達。快捷列與鍵盤在攔截器之後走同一條路，所以若只有其中一條失效，問題在它們之前（xterm 或 DOM 事件）。
 - **版本**：`_terminalBuildTag()` 目前 v503，發版時要手動改。
 - **未做**：網頁版固定位置的版本顯示與 SHA 釘點。這個 repo 的 main 沒有 pin 腳本，`web/index.html` 也沒有 jsDelivr SHA 釘點，所以無法照要求把版本寫進 pin 流程；需要先確定 pin 機制在哪一個 repo。
+
+### bash 執行環境：來源清單、停滯逾時、設定頁下載區（v504 追加，2026-11-20）
+
+使用者實測卡在「載入 JS 模組」沒有任何進度，懷疑 CDN 太慢。
+
+- **JS 模組來源依序嘗試**（`_bashJsSourceList`）：匯入的檔案（快取）→ 自訂網址（單檔 bundle）→ GitHub 備份（`wasi-sh.bundle.mjs`，單檔，有 bundle 才分塊）→ jsDelivr 原生 import（多檔，沒有位元組進度）。原本是 jsDelivr 原生 import 在最前面，現在改為單檔 bundle 優先，因為單檔才能顯示位元組進度、才能用 fetch 串流。
+- **wasm 來源依序嘗試**（`_fetchAssetBytesWithBackup`）：匯入的檔案 → 快取 → 自訂網址 → jsDelivr → GitHub 備份。
+- **停滯逾時**：每個來源有「N 秒沒有新位元組就換下一個」（`_bashWithStall`，預設 20 秒，設定可調 5–120）。每個進度或階段事件都會更新活動時間；逾時後放棄該來源，記下網址與原因，換下一個。注意：被放棄的 fetch 不會真的中止，只是不再等它。
+- **錯誤訊息**：全部來源失敗時，訊息逐一列出來源名、網址、階段、原因，並提示去 設定 > 終端機 換來源。
+- **設定**：白名單新增 `bashSource`（auto／imported／custom／jsdelivr／backup）、`bashCustomUrl`（只收 http(s)）、`bashStallSec`（5–120，預設 20）、`bashPreload`（預設開）。設定頁「終端機」下方新增下載區：來源、自訂網址、逾時、預載開關、重試載入、清除快取、從檔案匯入 `wasi-sh.bundle.mjs`。
+- **備份資源**：GitHub `bash-wasm-backup` 分支已有 `wasi-sh.bundle.mjs`（75KB）與 `dist/busybox.wasm`，實測 HTTP 200，所以不需要另外上傳。
+
+**未做**
+- 「立即下載（全部或單項）」與「取消」按鈕：沒做。目前只有重試、清除快取、匯入、換來源。
+- 下載區的「狀態列表」（每個資源的未下載／下載中／已快取大小與時間）：沒做，只有一行狀態文字。
+- 窄螢幕版面：只用 inline 樣式與 flex wrap，沒有在 375px 模擬上確認。
+- 匯入只支援 `wasi-sh.bundle.mjs`，不支援 busybox.wasm 的匯入。
+- **網頁版版本顯示與 SHA 釘點**：這個 repo 的 main 沒有 pin 腳本，`web/index.html` 也沒有 `SHA = '…'`，所以這次無法自動釘版。`/tmp/claude-1001/qwen/pub.sh` 會用 `grep "SHA = '…'"` 取得舊值再 `sed` 替換；舊值為空時 `sed` 會替換空字串，腳本不能直接用。
+
+**測試（模擬）**：`terminal_progress.test.js` 49 passed（新增：來源順序、自訂網址、全部失敗時的錯誤內容、白名單）、`terminal_hang` 21、`terminal_input` 28、`terminal_fastpath` 5 passed。
