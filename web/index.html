@@ -1712,10 +1712,10 @@ select:focus { outline: 2px solid var(--acc); }
         放進 window.__FA_PREFETCH；沒有預抓到的區塊照舊由核心同步載入（行為不變）。
      3. preconnect／preload 讓核心下載在這段 script 執行前就開始。 -->
 <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
-<link rel="preload" as="fetch" crossorigin href="https://cdn.jsdelivr.net/gh/sunneo/tw_stock_db@92b067cda7d6efe1f44ecb855a7a3e48bbf7493c/desktop-app/web-lazy/core.js">
+<link rel="preload" as="fetch" crossorigin href="https://cdn.jsdelivr.net/gh/sunneo/tw_stock_db@b05e8a5a1e010009847dcb14780bfd9e4448ab0c/desktop-app/web-lazy/core.js">
 <script>
 (function () {
-  var SHA = '92b067cda7d6efe1f44ecb855a7a3e48bbf7493c';
+  var SHA = 'b05e8a5a1e010009847dcb14780bfd9e4448ab0c';
   var JSD = 'https://cdn.jsdelivr.net/gh/sunneo/tw_stock_db@' + SHA + '/desktop-app/web-lazy/';
   var RAWB = 'https://raw.githubusercontent.com/sunneo/tw_stock_db/' + SHA + '/desktop-app/web-lazy/';
   var TIMEOUT_MS = 8000;
@@ -15669,6 +15669,6 @@ async function main() {
 
 main().catch(e => console.error('App crash:', e));
 </script>
-<div id="web-build-tag" title="點一下複製版本" onclick="navigator.clipboard && navigator.clipboard.writeText('v512 92b067cda7d6efe1f44ecb855a7a3e48bbf7493c')" style="position:fixed; right:6px; bottom:4px; font:11px monospace; opacity:.6; z-index:99999; background:rgba(0,0,0,.35); color:#fff; padding:1px 5px; border-radius:4px;">網頁版 v512 · 92b067cd</div>
+<div id="web-build-tag" title="點一下複製版本" onclick="navigator.clipboard && navigator.clipboard.writeText('v513 b05e8a5a1e010009847dcb14780bfd9e4448ab0c')" style="position:fixed; right:6px; bottom:4px; font:11px monospace; opacity:.6; z-index:99999; background:rgba(0,0,0,.35); color:#fff; padding:1px 5px; border-radius:4px;">網頁版 v513 · b05e8a5a</div>
 </body>
 </html>
