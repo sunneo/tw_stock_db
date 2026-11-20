@@ -17,7 +17,7 @@ const METHODS = ['_fetchAssetBytesWithBackup', '_bashReadBody', '_bashWasmEmit',
     '_terminalBashProgressWriter', '_bashCacheOpen', '_bashCacheKey', '_bashCacheGet', '_bashCachePut', '_bashLoadJsModules',
     '_ensureBashWasmLoaded', '_fetchAssetBackupFile', '_fetchViaProxyThenDirect', '_scheduleBashWasmPreload', '_terminalDiagText',
     '_terminalFsFastPath', '_terminalCd', '_termTimed', '_runTerminalCommand', '_bashDownloading', '_bashCancelLoads', '_bashRetryWait', '_terminalRecordInput', '_terminalBuildTag', '_terminalPrintDiag',
-    '_terminalVirtualFs', '_terminalFsView', '_terminalWithBashProgress', '_terminalLoadRuntime', '_pyodidePrefetch', '_bashSettings', '_bashStallMs', '_bashJoin', '_bashFetchBytes', '_bashWithStall', '_bashJsSourceList', '_bashLoadOneJsSource', '_normalizeTerminalSettings', '_terminalResolvePath', '_terminalIsDir', '_terminalSandboxFileBytes'];
+    '_terminalVirtualFs', '_terminalFsView', '_terminalWithBashProgress', '_terminalLoadRuntime', '_pyodidePrefetch', '_termBeginLoad', '_terminalTryLliHost', '_bashSettings', '_bashStallMs', '_bashJoin', '_bashFetchBytes', '_bashWithStall', '_bashJsSourceList', '_bashLoadOneJsSource', '_normalizeTerminalSettings', '_terminalResolvePath', '_terminalIsDir', '_terminalSandboxFileBytes'];
 const CLASS_SRC = '({' + METHODS.map(methodSource).join(',\n') + '})';
 
 const PRIMARY = 'https://cdn.example/wasi/dist/busybox.wasm';
@@ -75,7 +75,7 @@ function makeCtx(extra) {
         timers: [], intervals: [], setInterval: (fn) => { ctx.intervals.push(fn); return ctx.intervals.length; }, clearInterval() {},
         caches: undefined, navigator: undefined, requestIdleCallback: undefined, fetch: undefined,
         Date: { now: () => (ctx.tick += 150) }, tick: 0,
-        TERMINAL_SHELL_BUILTINS: ['cd', 'pwd'], TERMINAL_BUSYBOX_APPLETS: ['ls', 'cat'], SANDBOX_COMMAND_REGISTRY: { sleep: {} }, FA_PY_EXAMPLES: { 'demo.py': 'print(1)' },
+        TERMINAL_SHELL_BUILTINS: ['cd', 'pwd'], TERMINAL_BUSYBOX_APPLETS: ['ls', 'cat'], SANDBOX_COMMAND_REGISTRY: { sleep: {} }, FA_PY_EXAMPLES: { 'demo.py': 'print(1)' }, FaLlvm: {}, FaLlvmHost: { create() { return {}; } },
     }, extra || {});
     vm.createContext(ctx);
     return ctx;
@@ -341,7 +341,7 @@ const tick = () => new Promise((r) => setImmediate(r));
         const self = makeSelf(ctx);
         const s = sink(); s.sess._inputLog = [];
         const empty = self._terminalDiagText(s.sess);
-        check('T16 diag 有版本與「沒有輸入事件」的明說', empty.includes('版本：v507') && empty.includes('沒有任何輸入事件到達終端機'), empty);
+        check('T16 diag 有版本與「沒有輸入事件」的明說', empty.includes('版本：v508') && empty.includes('沒有任何輸入事件到達終端機'), empty);
         for (let i = 0; i < 12; i++) self._terminalRecordInput(s.sess, 'keydown', { key: 'e', keyCode: 229 });
         self._terminalRecordInput(s.sess, 'data', { data: 'e' });
         const txt = self._terminalDiagText(s.sess);
@@ -353,7 +353,7 @@ const tick = () => new Promise((r) => setImmediate(r));
         const self = makeSelf(ctx);
         const s = sink(); s.sess._inputLog = [];
         self._terminalPrintDiag(s.sess);
-        check('T17 診斷按鈕印出版本與輸入紀錄', s.out.join('').includes('版本：v507') && s.out.join('').includes('最後 10 個輸入事件'), s.out.length);
+        check('T17 診斷按鈕印出版本與輸入紀錄', s.out.join('').includes('版本：v508') && s.out.join('').includes('最後 10 個輸入事件'), s.out.length);
     }
     // T18：設定白名單：來源只收已知值、自訂網址只收 http(s)、逾時秒數夾在 5–120、預載預設開
     {
@@ -434,6 +434,35 @@ const tick = () => new Promise((r) => setImmediate(r));
         await self._pyodidePrefetch(PRIMARY_PY, (ev) => evs.push(ev));
         const files = [...new Set(evs.filter((e) => e.kind === 'progress').map((e) => e.file))];
         check('T24 python 核心與標準庫都經過串流下載', files.includes('pyodide.asm.wasm') && files.includes('python_stdlib.zip'), files);
+    }
+    // T25：分派之後載入永不結束（lli）：階段必須變成具體名稱，畫面有準備行，之後的下載進度也顯示
+    {
+        const ctx = makeCtx({ fetch: fakeNet({}).fetch });
+        const never = () => new Promise(() => {});
+        const self = makeSelf(ctx, { _bashLoadJsModules: never, _ensureBashWasmLoaded: never });
+        const a = sink();
+        a.sess._stage = '派送指令（尚未進入任何階段）';
+        self._termCurrent = a.sess;
+        let done = false;
+        self._terminalTryLliHost(a.sess, 'x.ll').then(() => { done = true; });
+        await tick();
+        check('T25 分派之後載入永不結束：階段變成具體名稱', a.sess._stage === '載入 shell 執行環境', a.sess._stage);
+        check('T25 畫面有準備行（不是空白）', a.out.some((x) => x.includes('準備中：載入 shell 執行環境')), a.out.map((x) => x.slice(0, 30)));
+        check('T25 載入中不自動結束', done === false);
+    }
+    // T26：不論呼叫端是誰（沒有傳進度對象），目前執行中的終端機都會收到進度與準備行，且只印一次
+    {
+        const ctx = makeCtx({ fetch: fakeNet({}).fetch });
+        const self = makeSelf(ctx, { _bashLoadJsModules: async () => { throw new Error('unused'); } });
+        const a = sink();
+        self._termCurrent = a.sess; a.sess._prepLabels = new Set();
+        const p = self._ensureBashWasmLoaded(null).catch(() => {});
+        self._bashWasmEmit({ kind: 'progress', file: REL, source: '主要', loaded: 300000, total: 1200000, elapsedMs: 1000 });
+        const prepCount = a.out.filter((x) => x.includes('準備中：載入 shell 執行環境')).length;
+        check('T26 目前執行中的終端機收到準備行（只一次）與進度', prepCount === 1 && a.out.some((x) => x.includes('25%')), a.out.map((x) => x.slice(0, 30)));
+        await self._ensureBashWasmLoaded(null).catch(() => {});
+        check('T26 同一指令再次呼叫不重複印準備行', a.out.filter((x) => x.includes('準備中：載入 shell 執行環境')).length === 1);
+        self._termCurrent = null;
     }
     console.log('terminal_progress.test.js: ' + ok + ' passed, ' + bad + ' failed');
     process.exit(bad ? 1 : 0);

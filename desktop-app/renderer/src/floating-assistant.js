@@ -113958,7 +113958,7 @@ ${sourceTool.handlerScript}
         session.term.write('\r\n' + this._terminalDiagText(session).replace(/\n/g, '\r\n') + '\r\n');
     }
     // 終端機的版本標記：每次發版時改這裡（與 PATCH_VERSION、發版 commit 對得上），終端機開頭與 diag 會印出來。
-    _terminalBuildTag() { return 'v507'; }
+    _terminalBuildTag() { return 'v508'; }
     _terminalRecordInput(session, type, ev) {
         if (!session || !session._inputLog) return;
         let detail = '';
@@ -114098,9 +114098,16 @@ ${sourceTool.handlerScript}
     // 第一次使用才要下載的執行環境（shell、python、jq、程式套件）：未載入時先印「準備中」，再把下載進度訂閱到這個終端機，階段名稱寫進 session._stage。
     // 下載中不設逾時；只有使用者按 Ctrl-C 才取消（見 _terminalInterrupt → _bashCancelLoads）。
     async _terminalLoadRuntime(session, label, loaded, fn) {
-        if (!loaded && session && session.term) session.term.write(`\x1b[90m準備中：載入 ${label}…（第一次使用需要下載；下方顯示進度，Ctrl-C 可取消）\x1b[0m\r\n`);
-        if (session) session._stage = `載入 ${label}`;
+        this._termBeginLoad(label, loaded, session);
         return await this._terminalWithBashProgress(session, fn);
+    }
+    // 統一入口（任何「第一次使用才下載」的載入都會呼叫）：沒載入時，在目前執行中的終端機印一次準備行、設定階段名稱。
+    _termBeginLoad(label, loaded, session) {
+        session = session || this._termCurrent;
+        if (loaded || !session || !session.term) return;
+        if (!session._prepLabels) session._prepLabels = new Set();
+        if (!session._prepLabels.has(label)) { session._prepLabels.add(label); session.term.write(`\x1b[90m準備中：載入 ${label}…（第一次使用需要下載；下方顯示進度，Ctrl-C 可取消）\x1b[0m\r\n`); }
+        session._stage = `載入 ${label}`;
     }
     // 讓下載進度（_bashWasmEmit 的事件）在這段工作期間顯示在這個終端機；結束就退訂。
     async _terminalWithBashProgress(session, fn) {
@@ -114123,7 +114130,9 @@ ${sourceTool.handlerScript}
     // onProgress（可省略）：收到下載／快取／來源切換事件（見_bashWasmEmit）。呼叫期間訂閱、結束就退訂；多個呼叫共用同一個載入，每個訂閱者都收得到。
     async _ensureBashWasmLoaded(onProgress) {
         if (this._bashWasmRuntime) return this._bashWasmRuntime;
-        const sub = typeof onProgress === 'function' ? onProgress : null;
+        this._termBeginLoad('shell 執行環境', false);
+        const cur = this._termCurrent;
+        const sub = typeof onProgress === 'function' ? onProgress : (cur && cur.term ? this._terminalBashProgressWriter(cur) : null);
         if (sub) { if (!this._bashWasmSubs) this._bashWasmSubs = new Set(); this._bashWasmSubs.add(sub); }
         const emit = (ev) => this._bashWasmEmit(ev);
         try {
@@ -114858,6 +114867,7 @@ ${sourceTool.handlerScript}
             if (combined.trim() && !combined.includes('\n')) session.history.push(combined);
             session.historyIndex = session.history.length;
             session.busy = true;
+            session._prepLabels = new Set(); this._termCurrent = session;   // 統一入口：載入函式用它找到目前執行中的終端機
             // 看門狗：指令超過 _terminalWatchdogMs（預設 45 秒）還沒結束，就放開 busy 鎖、寫出說明，讓使用者可以繼續輸入（指令本身可能還在背景）。
             // 沒有這個，指令永遠不結束時 busy 會一直是 true，之後的鍵盤輸入全部被吃掉，畫面看起來就是「卡住」。
             session._busyHinted = false; session._timedOut = false; session._stage = '派送指令（尚未進入任何階段）';
@@ -114871,7 +114881,7 @@ ${sourceTool.handlerScript}
                 else if (err && err.message === '__TERMINAL_INTERRUPT__') { session.term.write('\x1b[33m已中斷（Ctrl+C）' + (session._stage ? '；中斷前卡在：' + session._stage : '') + '\x1b[0m\r\n'); }
                 else session.term.write(`\x1b[31m指令執行失敗：${String((err && err.message) || err)}\x1b[0m\n\n`);
             }
-            finally { clearTimeout(wdTimer); session._runAbortReject = null; session.busy = false; session._busyHinted = false; if (session._sigint) { session._sigint = false; this._terminalSetExit(session, 130); } }
+            finally { if (this._termCurrent === session) this._termCurrent = null; clearTimeout(wdTimer); session._runAbortReject = null; session.busy = false; session._busyHinted = false; if (session._sigint) { session._sigint = false; this._terminalSetExit(session, 130); } }
             if (!session.activeProgram) this._writeTerminalPrompt(session);
             await this._persistTerminalSnapshot(session);
             return;
@@ -118515,6 +118525,7 @@ ${sourceTool.handlerScript}
     }
     // KIR 主機掛鉤（DESIGN.webgpu-cuda.md §13 階段 7）：WebGPU → WebGL2 → JS；選擇與每一步的原因在 renderer/src/gpu/kir_host_hooks.js。每次 lli 執行重新建立。
     async _kirHostSetup() {
+        if (this._termCurrent) this._termCurrent._stage = 'GPU 後端偵測（WebGPU／WebGL）';
         const M = this._kirLoad();
         const jspi = typeof WebAssembly !== 'undefined' && typeof WebAssembly.Suspending === 'function' && typeof WebAssembly.promising === 'function';
         const makeCanvas = () => { const c = document.createElement('canvas'); c.width = 4; c.height = 4; return c; };
@@ -120084,6 +120095,9 @@ ${sourceTool.handlerScript}
     async _ensurePyodideLoaded() {
         if (this._pyodideInstance) return this._pyodideInstance;
         if (this._pyodideLoadPromise) return this._pyodideLoadPromise;
+        this._termBeginLoad('python', false);
+        const pySub = this._termCurrent && this._termCurrent.term ? this._terminalBashProgressWriter(this._termCurrent) : null;
+        if (pySub) { if (!this._bashWasmSubs) this._bashWasmSubs = new Set(); this._bashWasmSubs.add(pySub); }
         this._pyodideLoadPromise = (async () => {
             // tw_stock_db客製: 2026-11-15——四個候選依序試：[主要來源經proxy、主要來源直連、備份分支經proxy、備份直連]
             // （同一網址只試一次；沒設proxy時就只剩直連兩個）。每個候選分兩步：先載pyodide.js（尚未有loadPyodide時），
@@ -120142,6 +120156,8 @@ ${sourceTool.handlerScript}
             this._pyodideInstance = instance;
             return this._pyodideInstance;
         })().catch(e => { this._pyodideLoadPromise = null; this._pyodideInstance = null; throw e; });
+        const pyDel = () => { if (pySub) this._bashWasmSubs.delete(pySub); };
+        this._pyodideLoadPromise.then(pyDel, pyDel);
         return this._pyodideLoadPromise;
     }
 

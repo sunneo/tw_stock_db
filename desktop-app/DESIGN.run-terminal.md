@@ -2022,3 +2022,16 @@ node scripts/eval/gpgpu_bench.build.js /tmp/gpgpu_bench.js && FA_EVAL_GL=gpu FA_
 **未做**：`python` 有 GUI 或 async 需求時走 Worker（`_terminalRunPythonWorker`），Worker 裡面自己載入 Pyodide，這段下載的進度目前沒有回報到終端機。設定頁的下載狀態列表（C 版）也還沒做。
 
 **測試（模擬）**：`terminal_progress.test.js` 68 passed（T23：準備行、進度、階段、已載入不印準備行；T24：python 大檔串流下載）。`terminal_hang` 23、`terminal_input` 28、`terminal_fastpath` 5 passed。**未在真機驗證**。
+
+### 「分派指令」之後卡住：統一的載入通報（v508，2026-11-20）
+
+使用者實測 v507：lli、python 卡在「分派指令」，沒有輸出、沒有進度。
+
+**根因**：`_handleTerminalInput` 設定的入口階段是「派送指令（尚未進入任何階段）」。分派之後，直接呼叫 `_ensureBashWasmLoaded()` 的地方（約 40 處）沒有經過 `_terminalLoadRuntime`，所以階段永遠停在入口值，也沒有準備行與進度。
+
+**修正（一次處理所有呼叫端）**：不再逐一修改呼叫端，改在載入函式本身通報：
+- 指令開始時記下 `this._termCurrent`（目前執行中的終端機），結束時清除。
+- `_ensureBashWasmLoaded`、`_ensurePyodideLoaded` 在未載入時呼叫 `_termBeginLoad`：在目前終端機印一次準備行、設定階段名稱（「載入 shell 執行環境」「載入 python」）；同時把進度訂閱到該終端機。同一指令、同一執行環境只印一次。
+- lli 的 GPU 後端偵測設定階段「GPU 後端偵測（WebGPU／WebGL）」。
+
+**測試（模擬）**：`terminal_progress.test.js` 73 passed（T25：lli 分派後載入永不結束，階段變具體名稱、畫面有準備行；T26：不論呼叫端是誰，目前終端機都收到準備行與進度，且只印一次）。hang 23、input 28、fastpath 5 passed。**未在真機驗證。**
