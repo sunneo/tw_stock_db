@@ -1,12 +1,12 @@
 {
   "schema": 1,
   "baseVersion": "1.1.0",
-  "generatedAt": "2026-11-20T08:45:34.199Z",
+  "generatedAt": "2026-11-20T09:03:44.802Z",
   "files": {
     "renderer/index.html": "039acc67493d2d42bae493dc9822621a",
     "renderer/bootstrap.js": "b3ce098ef750e0e1f152461abe0d8920",
-    "renderer/floating-assistant.js": "8d5122ab8ebcc9457a56a5b25a03180d",
-    "renderer/floating-assistant.min.js": "8d5122ab8ebcc9457a56a5b25a03180d",
+    "renderer/floating-assistant.js": "4aec9e0152f2fdd0aff827d4da31c84f",
+    "renderer/floating-assistant.min.js": "4aec9e0152f2fdd0aff827d4da31c84f",
     "renderer/vendor/midigenai/LICENSE": "99eb9c75e3dddbe23104e4cb8e5d8168",
     "renderer/vendor/midigenai/attributes.mjs": "1596c456f30ac128b844544d0ddcc47e",
     "renderer/vendor/midigenai/generator.mjs": "09f3c65bda0308b5f4998301edda2c8c",
