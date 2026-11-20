@@ -113889,10 +113889,40 @@ ${sourceTool.handlerScript}
         });
         return Promise.race([promise, guard]).then((v) => { rec(true); return v; }, (e) => { rec(false); throw e; }).finally(() => clearInterval(iv));
     }
+    // 終端機的版本標記：每次發版時改這裡（與 PATCH_VERSION、發版 commit 對得上），終端機開頭與 diag 會印出來。
+    _terminalBuildTag() { return 'v502'; }
+    _terminalRecordInput(session, type, ev) {
+        if (!session || !session._inputLog) return;
+        let detail = '';
+        if (type === 'keydown') detail = `${ev.key}/keyCode=${ev.keyCode}`;
+        else if (type === 'input') detail = `${ev.inputType || ''} ${JSON.stringify(ev.data || '')}`;
+        else detail = JSON.stringify(ev.data || '');
+        session._inputLog.push(`${Date.now() % 100000} ${type} ${detail}`);
+        if (session._inputLog.length > 10) session._inputLog.shift();
+    }
+    // 小提示（紅色、5 秒後自動消失）：用在按鈕按了沒有反應的情況，讓失敗看得見。
+    _ttToast(container, msg) {
+        if (!container || typeof document === 'undefined') return;
+        const d = document.createElement('div');
+        d.textContent = msg;
+        d.style.cssText = 'position:absolute; left:8px; right:8px; top:8px; z-index:5; background:#b00020; color:#fff; font-size:12px; padding:8px 10px; border-radius:6px;';
+        if (typeof getComputedStyle === 'function' && getComputedStyle(container).position === 'static') container.style.position = 'relative';
+        container.appendChild(d);
+        setTimeout(() => d.remove(), 5000);
+    }
     // diag 指令的內容：bash 執行環境狀態、下載／快取紀錄、最近一次主要來源失敗、本終端機各階段耗時（_termTimed 記的）。
     _terminalDiagText(session) {
         const mb = (n) => (n / 1048576).toFixed(1);
         const lines = [];
+        const term = session && session.term;
+        const el = term && term.element;
+        const rect = el && typeof el.getBoundingClientRect === 'function' ? el.getBoundingClientRect() : null;
+        lines.push('版本：' + this._terminalBuildTag());
+        lines.push(`xterm：${term && term.cols != null ? term.cols : '?'}×${term && term.rows != null ? term.rows : '?'}（欄×列）；容器 ${rect ? Math.round(rect.width) + '×' + Math.round(rect.height) : '未掛載'} px；devicePixelRatio=${typeof devicePixelRatio === 'number' ? devicePixelRatio : '?'}`);
+        lines.push('渲染器：' + (el && el.querySelector && el.querySelector('canvas') ? 'canvas' : (el && el.querySelector && el.querySelector('.xterm-rows') ? 'DOM' : '未知')));
+        lines.push('最後 10 個輸入事件（keydown／input／composition／data）：');
+        const inp = (session && session._inputLog) || [];
+        lines.push(inp.length ? inp.map((s) => '  ' + s).join('\n') : '  無（沒有任何輸入事件到達終端機）');
         lines.push('bash 執行環境：' + (this._bashWasmRuntime ? '已載入' : this._bashWasmLoadPromise ? '載入中' : '尚未載入（第一個需要 shell 的指令才會下載，或背景預載）'));
         const evs = this._bashWasmDiag || [];
         const recent = evs.filter((e) => e.kind === 'cache' || e.kind === 'done').slice(-4);
@@ -114520,8 +114550,15 @@ ${sourceTool.handlerScript}
             term.write(savedScreen.replace(/\n/g, '\r\n'));
             term.write('\r\n\x1b[90m[以上是重新整理前保留的畫面內容——這是全新的session，不是恢復原本執行到一半的程式，需要的指令請重新輸入]\x1b[0m');
         }
-        term.onData((data) => { if (!session.ended) this._handleTerminalInput(session, data); });
+        term.onData((data) => { this._terminalRecordInput(session, 'data', { data }); if (!session.ended) this._handleTerminalInput(session, data); });
         this._terminalMobileInputSetup(container, session);   // 手機：輸入法設定＋不靠輸入法的快捷鍵列
+        // tw_stock_db客製: 2026-11-20 就緒行：掛載後立刻寫出版本與實際欄列數。沒有這一行＝整個終端機沒有渲染（見 diag）。
+        // 同時記錄最後 10 個輸入事件（keydown／input／composition／data），用來判斷輸入有沒有進到終端機。
+        session._inputLog = [];
+        if (term.textarea) {
+            ['keydown', 'input', 'compositionstart', 'compositionend'].forEach((t) => term.textarea.addEventListener(t, (ev) => this._terminalRecordInput(session, t, ev)));
+        }
+        term.write(`\r\n終端機已就緒 ${this._terminalBuildTag()}　${term.cols}×${term.rows}\r\n`);
 
         if (initialCommand) {
             await this._runTerminalInitialCommand(session, initialCommand);
@@ -117368,9 +117405,12 @@ ${sourceTool.handlerScript}
         btn.style.cssText = 'border:none; background:rgba(0,0,0,0.08); border-radius:6px; cursor:pointer; font-size:13px; padding:3px 7px; line-height:1.4;';
         btn.addEventListener('click', (e) => {
             e.stopPropagation();
+            btn.style.background = 'rgba(0,120,255,0.25)';   // 立即視覺回饋
+            setTimeout(() => { btn.style.background = 'rgba(0,0,0,0.08)'; }, 300);
             const session = getSessionFn();
-            if (!session) return;
-            this._openTerminalTransferDialog(session);
+            if (!session) { this._ttToast(container, '檔案傳輸：終端機還沒有就緒，請稍等再按（終端機開頭應該會出現「終端機已就緒」）'); return; }
+            try { this._openTerminalTransferDialog(session); }
+            catch (err) { this._ttToast(container, '檔案傳輸開啟失敗：' + String((err && err.message) || err)); }
         });
         container.appendChild(btn);
     }

@@ -1922,3 +1922,20 @@ node scripts/eval/gpgpu_bench.build.js /tmp/gpgpu_bench.js && FA_EVAL_GL=gpu FA_
 - **先出現「準備中…」**：要載入 shell 或 JS 模組時，先印一行「準備中…（第一次使用需要下載 shell，下方會顯示進度）」。
 - **未做**：頁面上沒有版本號的顯示。bundle 裡沒有版本常數（版本號只在 `PATCH_VERSION` 檔與 commit）。要確認新版是否載入，請看 main 的 `web/index.html` 裡釘的 SHA 是否為新 commit，或用瀏覽器的網路面板看 jsDelivr 網址。
 - **網頁版要重新整理**：發版並 pin 之後，手機要硬重新整理（或清快取）才會拿到新的 `floating-assistant` 檔。
+
+### 手機「什麼都不顯示」與檔案傳輸按鈕（v502 追加，2026-11-20）
+
+使用者實測：`ls`、`echo` 不論電腦版或手機版版面都「什麼都不顯示」；檔案傳輸按鈕按了沒有任何反應。
+
+- **就緒行**：終端機掛載後立刻寫出「終端機已就緒 vNNN 欄×列」。沒有這行＝整個終端機沒有渲染（不是指令的問題）。
+- **輸入紀錄**：`term.onData` 與隱藏 textarea 的 keydown／input／composition 事件都記進 `session._inputLog`（最後 10 筆）。diag 會列出。沒有任何事件＝輸入沒進到終端機（例如 IME 或焦點問題），跟「指令被中斷」是兩回事。
+- **diag 新欄位**：版本、xterm 欄×列、容器寬高、devicePixelRatio、渲染器種類（canvas／DOM）、最後 10 個輸入事件。
+- **檔案傳輸按鈕**：找到的問題是 `session` 不存在時直接 `return`，完全無聲。現在按下有立即的視覺回饋；沒有就緒或開啟失敗會顯示紅色中文提示（5 秒後消失）。
+
+**未做／未能驗證**
+- **根因未確認**：「echo 什麼都不顯示」沒有在模擬或真機重現。node 測試證明 echo 的快路徑會寫出文字，但沒有證明文字有畫到 xterm 上。新加的就緒行與 diag 就是為了讓使用者截圖後判斷是哪一種情況。
+- **電腦版網站 + 觸控的版面**（`pointer: coarse`、980px 版面、40px 觸控目標、快捷列常駐切換按鈕）：沒有做。這是獨立的 CSS 工作，建議另開 session 做，並用 resize_window 980×1800 + 觸控模擬驗證。
+- **檔案傳輸彈窗**本身的手機版面、選檔後的進度與錯誤訊息：沒有深入改，只修了按鈕的無聲失敗。
+- **版本標記**是手動改的常數（`_terminalBuildTag`，這次是 v502），發版時要跟著改。
+
+測試：`terminal_progress.test.js` 42 passed（新增 T16：diag 的版本與輸入紀錄），`terminal_hang` 21、`terminal_input` 28、`terminal_fastpath` 5 passed。
