@@ -17,7 +17,7 @@ const METHODS = ['_fetchAssetBytesWithBackup', '_bashReadBody', '_bashWasmEmit',
     '_terminalBashProgressWriter', '_bashCacheOpen', '_bashCacheKey', '_bashCacheGet', '_bashCachePut', '_bashLoadJsModules',
     '_ensureBashWasmLoaded', '_fetchAssetBackupFile', '_fetchViaProxyThenDirect', '_scheduleBashWasmPreload', '_terminalDiagText',
     '_terminalFsFastPath', '_terminalCd', '_termTimed', '_runTerminalCommand', '_bashDownloading', '_bashCancelLoads', '_bashRetryWait', '_terminalRecordInput', '_terminalBuildTag', '_terminalPrintDiag',
-    '_bashSettings', '_bashStallMs', '_bashJoin', '_bashFetchBytes', '_bashWithStall', '_bashJsSourceList', '_bashLoadOneJsSource', '_normalizeTerminalSettings', '_terminalResolvePath', '_terminalIsDir', '_terminalSandboxFileBytes'];
+    '_terminalVirtualFs', '_terminalFsView', '_terminalWithBashProgress', '_bashSettings', '_bashStallMs', '_bashJoin', '_bashFetchBytes', '_bashWithStall', '_bashJsSourceList', '_bashLoadOneJsSource', '_normalizeTerminalSettings', '_terminalResolvePath', '_terminalIsDir', '_terminalSandboxFileBytes'];
 const CLASS_SRC = '({' + METHODS.map(methodSource).join(',\n') + '})';
 
 const PRIMARY = 'https://cdn.example/wasi/dist/busybox.wasm';
@@ -74,6 +74,7 @@ function makeCtx(extra) {
         timers: [], intervals: [], setInterval: (fn) => { ctx.intervals.push(fn); return ctx.intervals.length; }, clearInterval() {},
         caches: undefined, navigator: undefined, requestIdleCallback: undefined, fetch: undefined,
         Date: { now: () => (ctx.tick += 150) }, tick: 0,
+        TERMINAL_SHELL_BUILTINS: ['cd', 'pwd'], TERMINAL_BUSYBOX_APPLETS: ['ls', 'cat'], SANDBOX_COMMAND_REGISTRY: { sleep: {} }, FA_PY_EXAMPLES: { 'demo.py': 'print(1)' },
     }, extra || {});
     vm.createContext(ctx);
     return ctx;
@@ -227,13 +228,13 @@ const tick = () => new Promise((r) => setImmediate(r));
             _ensureBashWasmLoaded: () => { wasmCalls++; return new Promise(() => {}); },
             _fetchAssetBytesWithBackup: () => new Promise(() => {}),
         });
-        const a = sink();
+        const a = sink(); a.sess.fsStore = fsA;
         check('T8 ls 列出可見檔案（隱藏檔不列）', (await self._terminalFsFastPath(a.sess, 'ls', '')) === true && a.out.join('') === 'a.txt\r\nsub\r\n', a.out);
-        const b = sink();
+        const b = sink(); b.sess.fsStore = fsA;
         check('T8 cat 直接輸出檔案內容', (await self._terminalFsFastPath(b.sess, 'cat', 'a.txt')) === true && b.out.join('') === 'hello\r\n', b.out);
-        const c = sink();
+        const c = sink(); c.sess.fsStore = fsA;
         check('T8 ls 子目錄', (await self._terminalFsFastPath(c.sess, 'ls', 'sub')) === true && c.out.join('') === 'b.txt\r\n', c.out);
-        const d = sink();
+        const d = sink(); d.sess.fsStore = fsA;
         check('T8 有旗標、shell 運算子、不存在的路徑都交給 shell', (await self._terminalFsFastPath(d.sess, 'ls', '-a')) === false
             && (await self._terminalFsFastPath(d.sess, 'cat', 'a.txt | wc')) === false
             && (await self._terminalFsFastPath(d.sess, 'cat', 'nope.txt')) === false
@@ -249,7 +250,7 @@ const tick = () => new Promise((r) => setImmediate(r));
             _ensureTerminalFsStore: async () => fsA,
             _ensureBashWasmLoaded: () => { wasmCalls++; return new Promise(() => {}); },
         });
-        const s = sink();
+        const s = sink(); s.sess.fsStore = fsA;
         const r = await self._terminalCd(s.sess, 'sub');
         check('T9 cd 到現成目錄：立即換 cwd、不等 wasm', r.ok === true && s.sess.cwd === '/work/sub' && wasmCalls === 0, { r, cwd: s.sess.cwd, wasmCalls });
         self._terminalCd(s.sess, 'nope');
@@ -339,7 +340,7 @@ const tick = () => new Promise((r) => setImmediate(r));
         const self = makeSelf(ctx);
         const s = sink(); s.sess._inputLog = [];
         const empty = self._terminalDiagText(s.sess);
-        check('T16 diag 有版本與「沒有輸入事件」的明說', empty.includes('版本：v505') && empty.includes('沒有任何輸入事件到達終端機'), empty);
+        check('T16 diag 有版本與「沒有輸入事件」的明說', empty.includes('版本：v506') && empty.includes('沒有任何輸入事件到達終端機'), empty);
         for (let i = 0; i < 12; i++) self._terminalRecordInput(s.sess, 'keydown', { key: 'e', keyCode: 229 });
         self._terminalRecordInput(s.sess, 'data', { data: 'e' });
         const txt = self._terminalDiagText(s.sess);
@@ -351,7 +352,7 @@ const tick = () => new Promise((r) => setImmediate(r));
         const self = makeSelf(ctx);
         const s = sink(); s.sess._inputLog = [];
         self._terminalPrintDiag(s.sess);
-        check('T17 診斷按鈕印出版本與輸入紀錄', s.out.join('').includes('版本：v505') && s.out.join('').includes('最後 10 個輸入事件'), s.out.length);
+        check('T17 診斷按鈕印出版本與輸入紀錄', s.out.join('').includes('版本：v506') && s.out.join('').includes('最後 10 個輸入事件'), s.out.length);
     }
     // T18：設定白名單：來源只收已知值、自訂網址只收 http(s)、逾時秒數夾在 5–120、預載預設開
     {
@@ -362,6 +363,51 @@ const tick = () => new Promise((r) => setImmediate(r));
         check('T18 逾時秒數夾在 5–120（超過回到預設 20）', ok.bashStallSec === 20 && self._normalizeTerminalSettings({ bashStallSec: 3 }).bashStallSec === 20 && self._normalizeTerminalSettings({ bashStallSec: 45 }).bashStallSec === 45);
         const bad = self._normalizeTerminalSettings({ bashSource: 'evil', bashCustomUrl: 'javascript:alert(1)' });
         check('T18 未知來源退回自動；非 http(s) 網址清空；預載預設開', bad.bashSource === 'auto' && bad.bashCustomUrl === '' && bad.bashPreload === true, bad);
+    }
+    // T20：沒有掛載時 ls／cat／cd 立即完成：不碰 FAP、IndexedDB、bash 下載（它們在這裡都是永不回的假物件）
+    {
+        const ctx = makeCtx({ fetch: fakeNet({}).fetch });
+        const never = () => new Promise(() => {});
+        const self = makeSelf(ctx, { _ensureTerminalFsStore: never, _bashLoadJsModules: never, _ensureBashWasmLoaded: never, _listAllFapAccessPoints: never });
+        const a = sink();
+        const r1 = await self._terminalFsFastPath(a.sess, 'ls', '/work');
+        check('T20 ls /work（無掛載）立即輸出虛擬目錄', r1 === true && a.out.join('') === 'examples\r\n', a.out);
+        const b = sink();
+        check('T20 ls /bin 列出內建指令名稱', (await self._terminalFsFastPath(b.sess, 'ls', '/bin')) === true && b.out.join('').includes('cd\r\n') && b.out.join('').includes('ls\r\n'), b.out.join('').slice(0, 80));
+        const c = sink();
+        check('T20 cat 範例檔立即輸出', (await self._terminalFsFastPath(c.sess, 'cat', '/work/examples/demo.py')) === true && c.out.join('') === 'print(1)', c.out);
+        const d = sink();
+        const cdr = await self._terminalCd(d.sess, '/work/examples');
+        check('T20 cd 到虛擬目錄：立即換 cwd，不等載入', cdr.ok === true && d.sess.cwd === '/work/examples', cdr);
+        check('T20 虛擬目錄階段名稱清楚', d.sess._stage === '虛擬目錄（記憶體，不需下載）', d.sess._stage);
+    }
+    // T21：有掛載（/mnt）時：顯示階段名稱，卡住也不自動結束（只有 Ctrl-C 或看門狗在下載完成後的指令執行才會處理）
+    {
+        const ctx = makeCtx({ fetch: fakeNet({}).fetch });
+        const never = () => new Promise(() => {});
+        const self = makeSelf(ctx, { _ensureTerminalFsStore: never, _listAllFapAccessPoints: never });
+        const a = sink();
+        let done = false;
+        self._terminalFsFastPath(a.sess, 'ls', '/mnt').then(() => { done = true; });
+        await tick(); await tick();
+        check('T21 有掛載且卡住：不自動結束', done === false);
+        check('T21 卡住時階段名稱指出「開啟儲存」', a.sess._stage.startsWith('開啟儲存'), a.sess._stage);
+        const dg = self._terminalDiagText(a.sess);
+        check('T21 diag 顯示目前階段', dg.includes('目前階段：開啟儲存'), dg.split('\n').slice(0, 6));
+    }
+    // T22：下載進度確實顯示在這個終端機：_terminalWithBashProgress 期間，bash 事件會寫進 session.term
+    {
+        const ctx = makeCtx({ fetch: fakeNet({}).fetch });
+        const self = makeSelf(ctx);
+        const a = sink();
+        await self._terminalWithBashProgress(a.sess, async () => {
+            self._bashWasmEmit({ kind: 'progress', file: REL, source: '備份', loaded: 300000, total: 1200000, elapsedMs: 6000 });
+            self._bashWasmEmit({ kind: 'stage', text: '載入 JS 模組：嘗試 備份分支（GitHub）' });
+        });
+        check('T22 下載進度與階段顯示在終端機', a.out.some((x) => x.includes('25%') && x.includes('來源：備份')) && a.out.some((x) => x.includes('載入 JS 模組：嘗試')), a.out);
+        const before = a.out.length;
+        self._bashWasmEmit({ kind: 'progress', file: REL, source: '備份', loaded: 1, total: 2, elapsedMs: 1 });
+        check('T22 結束後退訂：之後的事件不再寫入這個終端機', a.out.length === before);
     }
     console.log('terminal_progress.test.js: ' + ok + ' passed, ' + bad + ' failed');
     process.exit(bad ? 1 : 0);

@@ -113958,7 +113958,7 @@ ${sourceTool.handlerScript}
         session.term.write('\r\n' + this._terminalDiagText(session).replace(/\n/g, '\r\n') + '\r\n');
     }
     // 終端機的版本標記：每次發版時改這裡（與 PATCH_VERSION、發版 commit 對得上），終端機開頭與 diag 會印出來。
-    _terminalBuildTag() { return 'v505'; }
+    _terminalBuildTag() { return 'v506'; }
     _terminalRecordInput(session, type, ev) {
         if (!session || !session._inputLog) return;
         let detail = '';
@@ -114002,6 +114002,7 @@ ${sourceTool.handlerScript}
         const inp = (session && session._inputLog) || [];
         lines.push(inp.length ? inp.map((s) => '  ' + s).join('\n') : '  無（沒有任何輸入事件到達終端機）');
         lines.push('bash 執行環境：' + (this._bashWasmRuntime ? '已載入' : this._bashWasmLoadPromise ? '載入中' : '尚未載入（第一個需要 shell 的指令才會下載，或背景預載）'));
+        lines.push('目前階段：' + ((session && session._stage) || '—'));
         lines.push('目前來源：' + (this._bashCurrentSource || '尚未開始'));
         const evs = this._bashWasmDiag || [];
         const recent = evs.filter((e) => e.kind === 'cache' || e.kind === 'done').slice(-4);
@@ -114019,15 +114020,16 @@ ${sourceTool.handlerScript}
     // ls／cat 快路徑：只處理最單純、一定會成功的形式（沒有旗標、沒有 shell 運算子、路徑都存在、cat 的目標不是目錄）。
     // 只需要 JS 檔案系統，不載入 busybox.wasm。其餘回傳 false，交給 shell 照舊處理（包括錯誤訊息）。
     // ls 一行一個（busybox 非終端輸出的樣子）；跟 shell 版的排版是否完全一致，尚未在實機比對。
+    // tw_stock_db客製: 2026-11-20 ls／cat 快路徑（見 _terminalFsView）：只處理最單純、一定會成功的形式（沒有旗標、沒有 shell 運算子、路徑都存在、cat 的目標不是目錄）。
+    // 沒有掛載（不碰 /mnt）時完全用記憶體中的虛擬目錄，不等任何載入；其餘交給 shell 照舊處理（包括錯誤訊息）。ls 一行一個。
     async _terminalFsFastPath(session, cmdName, restArgs) {
         if (this._terminalHasShellOps(restArgs)) return false;
         const args = this._terminalTokenizeArgs(restArgs);
         if (args.some((a) => a.startsWith('-'))) return false;
         if (cmdName === 'cat' && !args.length) return false;
         if (cmdName === 'ls' && args.length > 1) return false;
-        const jsRt = await this._bashLoadJsModules(null);
-        const fsStore = await this._ensureTerminalFsStore(session, jsRt);
-        await this._hydrateReferencedFapMounts(session, fsStore, restArgs || session.cwd);
+        session._stage = `${cmdName}（讀取檔案）`;
+        const fsStore = await this._terminalFsView(session, args.length ? args : [session.cwd]);
         if (cmdName === 'cat') {
             const chunks = [];
             for (const a of args) {
@@ -114036,7 +114038,7 @@ ${sourceTool.handlerScript}
                 if (this._terminalIsDir(fsStore, abs)) return false;
                 chunks.push(this._terminalSandboxFileBytes(fsStore, abs));
             }
-            const all = new Uint8Array(chunks.reduce((s, b) => s + b.byteLength, 0));
+            const all = new Uint8Array(chunks.reduce((t, b) => t + b.byteLength, 0));
             let off = 0;
             for (const c of chunks) { all.set(c, off); off += c.byteLength; }
             session.term.write(new TextDecoder('utf-8').decode(all).replace(/\r?\n/g, '\r\n'));
@@ -114049,6 +114051,58 @@ ${sourceTool.handlerScript}
         session.term.write(names.map((n) => n + '\r\n').join(''));
         return true;
     }
+    // 記憶體中的虛擬目錄（唯讀）：與 _ensureTerminalFsStore 的種子檔案一致（/work/examples、/bin、/usr/bin 的名稱）。只給沒有掛載、也還沒有檔案系統時的 ls／cat／cd 用，完全不碰 FAP、IndexedDB 或 bash 下載。
+    _terminalVirtualFs() {
+        if (this._terminalVfs) return this._terminalVfs;
+        const files = new Map();
+        const dirs = new Set(['/', '/work', '/work/examples', '/bin', '/usr/bin', '/mnt']);
+        for (const [rel, text] of Object.entries(FA_PY_EXAMPLES)) {
+            if (rel.endsWith('.b64')) continue;
+            const full = '/work/examples/' + rel; const parts = full.split('/');
+            for (let i = 2; i < parts.length; i++) dirs.add(parts.slice(0, i).join('/'));
+            files.set(full, new TextEncoder().encode(String(text)));
+        }
+        const names = new Set([...TERMINAL_SHELL_BUILTINS, ...TERMINAL_BUSYBOX_APPLETS, ...Object.keys(this._terminalProgramBundles || {}), ...Object.keys(SANDBOX_COMMAND_REGISTRY)]);
+        for (const n of names) { files.set('/bin/' + n, new Uint8Array(0)); files.set('/usr/bin/' + n, new Uint8Array(0)); }
+        const kids = (p) => {
+            const pre = p === '/' ? '/' : p + '/'; const out = new Set();
+            for (const x of [...dirs, ...files.keys()]) { if (x !== p && x.startsWith(pre)) { const rest = x.slice(pre.length); if (rest && !rest.includes('/')) out.add(rest); } }
+            return [...out];
+        };
+        this._terminalVfs = {
+            statSync(p) { if (dirs.has(p)) return { mode: 0o40755, size: 0 }; if (files.has(p)) return { mode: 0o100644, size: files.get(p).byteLength }; throw new Error('ENOENT ' + p); },
+            readdirSync(p) { if (!dirs.has(p)) throw new Error('ENOTDIR ' + p); return kids(p); },
+            readSync(p, buf, off, len) { const d = files.get(p); buf.set(d.subarray(0, len), off); return len; },
+        };
+        return this._terminalVfs;
+    }
+    // 這次要用的檔案系統（同時設定 session._stage，讓卡住時 diag 與看門狗訊息能指出階段）：
+    // 已有 session.fsStore 就直接用；路徑不碰 /mnt 就用虛擬目錄（不等任何載入）；碰到 /mnt 才依序：載入 JS 模組（下載進度顯示在終端機）→ 開啟儲存 → 讀掛載清單與檔案。
+    async _terminalFsView(session, paths) {
+        const abs = paths.map((p) => this._terminalResolvePath(session.cwd, p || '.'));
+        const needsMnt = abs.some((a) => a === '/mnt' || a.startsWith('/mnt/'));
+        if (session.fsStore) {
+            if (needsMnt) { session._stage = '掛載資料夾（讀取檔案）'; await this._hydrateReferencedFapMounts(session, session.fsStore, abs.join(' ')); }
+            return session.fsStore;
+        }
+        if (!needsMnt) { session._stage = '虛擬目錄（記憶體，不需下載）'; return this._terminalVirtualFs(); }
+        if (!this._bashJsRuntime) session.term.write('\x1b[90m準備中…（第一次使用需要下載 shell，下方會顯示進度）\x1b[0m\r\n');
+        session._stage = '載入 JS 模組（需要掛載資料夾）';
+        const jsRt = await this._terminalWithBashProgress(session, () => this._bashLoadJsModules(null));
+        session._stage = '開啟儲存（讀取掛載清單）';
+        const fsStore = await this._ensureTerminalFsStore(session, jsRt);
+        session._stage = '掛載資料夾（讀取檔案）';
+        await this._hydrateReferencedFapMounts(session, fsStore, abs.join(' '));
+        return fsStore;
+    }
+    // 讓下載進度（_bashWasmEmit 的事件）在這段工作期間顯示在這個終端機；結束就退訂。
+    async _terminalWithBashProgress(session, fn) {
+        const sub = this._terminalBashProgressWriter(session);
+        if (!this._bashWasmSubs) this._bashWasmSubs = new Set();
+        this._bashWasmSubs.add(sub);
+        try { return await fn(); } finally { this._bashWasmSubs.delete(sub); }
+    }
+
 
     // tw_stock_db客製: 2026-09-16使用者要求——內建bash執行環境。見
     // FA_ASSET_URLS.bashWasmJsBase的詳細說明：JS runtime主要來源走jsDelivr
@@ -114789,7 +114843,7 @@ ${sourceTool.handlerScript}
             session.busy = true;
             // 看門狗：指令超過 _terminalWatchdogMs（預設 45 秒）還沒結束，就放開 busy 鎖、寫出說明，讓使用者可以繼續輸入（指令本身可能還在背景）。
             // 沒有這個，指令永遠不結束時 busy 會一直是 true，之後的鍵盤輸入全部被吃掉，畫面看起來就是「卡住」。
-            session._busyHinted = false; session._timedOut = false; session._stage = '剖析指令';
+            session._busyHinted = false; session._timedOut = false; session._stage = '派送指令（尚未進入任何階段）';
             const cap = this._terminalCapFor(combined); const wdMs = this._terminalWatchdogMs || 120000; let wdTimer = null;   // 整體的保險絲：各階段（載入、下載、掛載）各有自己的上限；5 秒只限 shell 執行本身，不能套在第一次的下載上
             // tw_stock_db客製: 2026-11-20 下載中（bash 執行環境載入）絕不自動中斷：看門狗到期時若還在下載就順延，只有下載完成後的指令執行才會被砍。使用者按 Ctrl-C 由 abortP 處理。
             const watchdog = new Promise((_, rej) => { const arm = () => { wdTimer = setTimeout(() => { if (this._bashDownloading()) { arm(); return; } rej(new Error('__TERMINAL_WATCHDOG__')); }, wdMs); }; arm(); });
@@ -116288,7 +116342,6 @@ ${sourceTool.handlerScript}
 
         // tw_stock_db客製: 2026-11-20 ls／cat 快路徑（見_terminalFsFastPath）：只需要 JS 檔案系統，不等 busybox.wasm；不符合條件或失敗就交給 shell。
         if (cmdName === 'ls' || cmdName === 'cat') {
-            if (!this._bashJsRuntime) session.term.write('\x1b[90m準備中…（第一次使用需要下載 shell，下方會顯示進度）\x1b[0m\r\n');
             let fastDone = false;
             try { fastDone = await this._terminalFsFastPath(session, cmdName, restArgs); }
             catch (err) { session.term.write(`\x1b[31m${String((err && err.message) || err)}\x1b[0m\r\n`); return; }
@@ -116902,15 +116955,13 @@ ${sourceTool.handlerScript}
         // ~、-、shell 運算子、不存在的目錄照舊交給 shell 判斷與報錯。
         if (!this._terminalHasShellOps(target) && !/^[~-]/.test(target)) {
             try {
-                const jsRt = await this._bashLoadJsModules(null);
-                const fsJs = await this._ensureTerminalFsStore(session, jsRt);
-                await this._hydrateReferencedFapMounts(session, fsJs, target);
+                const fsJs = await this._terminalFsView(session, [target]);
                 const abs = this._terminalResolvePath(session.cwd, target);
                 if (this._terminalIsDir(fsJs, abs)) { session.cwd = abs; return { ok: true, cwd: abs }; }
-            } catch (_) { /* 快路徑失敗就走下面的 shell 路徑 */ }
+            } catch (_) { /* 快路徑失敗就走下面的 shell 路徑（會顯示錯誤） */ }
         }
         let runtime;
-        try { runtime = await this._ensureBashWasmLoaded(); } catch (err) {
+        try { runtime = await this._ensureBashWasmLoaded(this._terminalBashProgressWriter(session)); } catch (err) {
             const msg = String(err.message || err);
             session.term.write(`\x1b[31m${msg}\x1b[0m\r\n`);
             return { ok: false, error: msg };

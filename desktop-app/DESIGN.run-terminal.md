@@ -1991,3 +1991,22 @@ node scripts/eval/gpgpu_bench.build.js /tmp/gpgpu_bench.js && FA_EVAL_GL=gpu FA_
 - **未驗證**：真實的 120 秒以上慢下載（模擬用的是假的時間）、手機上 Ctrl-C 或快捷列「中斷」是否真的走到 `_terminalInterrupt`、15 秒重試在手機背景分頁是否被節流。
 
 **未做（C 版）**：設定頁目前仍有來源下拉、自訂網址、逾時秒數等變數，要依需求精簡成「下載狀態＋下載／重試＋清除快取＋從檔案匯入＋預載開關」。
+
+### ls「卡在剖析指令」：根因與修正（v506，2026-11-20）
+
+使用者實測 v505：輸入 `ls` 後畫面一直停在「剖析指令」，沒有下載進度、沒有輸出。
+
+**根因（程式碼層面的推論，未在手機上重現）**
+1. `_terminalFsFastPath` 與 `_terminalCd` 呼叫 `_bashLoadJsModules(null)`，沒有掛上這個終端機的進度訂閱者。下載在背景進行，畫面上什麼都沒有，所以看起來像「沒有進度」。
+2. 這段路徑上的 await 沒有設定階段名稱。`session._stage` 一直停在入口的「剖析指令」，卡住時無從判斷卡在哪裡。
+3. 沒有掛載時，`ls`／`cd` 其實不需要 FAP、IndexedDB 或 bash 下載，卻仍然走了完整的檔案系統初始化。
+
+**修正**
+- `_terminalVirtualFs()`：記憶體中的唯讀虛擬目錄（與種子檔一致：`/work/examples`、`/bin`、`/usr/bin`）。沒有掛載、session 還沒有檔案系統時，ls／cat／cd 直接用它，不等任何載入。
+- `_terminalFsView()`：只有路徑碰到 `/mnt` 才載入：JS 模組（下載進度顯示在終端機）→ 開啟儲存 → 掛載資料夾。每一步都設定 `session._stage`。
+- `_terminalWithBashProgress()`：讓下載的進度事件在那段工作期間顯示在這個終端機，結束即退訂。
+- 入口的階段名稱改為「派送指令（尚未進入任何階段）」；diag 新增「目前階段」一行。
+- **沒有自動逾時**：有掛載而卡住時不會自動結束，只有 Ctrl-C 或看門狗（只在下載完成後的指令執行才會觸發）會處理。
+
+**測試（模擬）**：`terminal_progress.test.js` 64 passed。T20：FAP、IndexedDB、bash 載入都是永不回的假物件時，ls／cat／cd 在無掛載情況下立即完成。T21：有掛載且卡住時不自動結束，階段名稱與 diag 會指出「開啟儲存」。T22：下載進度與階段會寫進終端機，結束後退訂。
+**未驗證**：真機上 Android Chrome 的 IndexedDB 行為、真實下載進度的觀感。
