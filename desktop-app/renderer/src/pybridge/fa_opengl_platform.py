@@ -184,16 +184,28 @@ def _is_enabled(cap):
 
 
 # 緩衝區
+# 每個緩衝區記下大小與「修訂號」（每次 glBufferData／glBufferSubData／interop_write 加一）。pyopencl 的 GLBuffer 靠它判斷 GL 端有沒有新內容，
+# 沒變就不必把緩衝區從 GPU 讀回（見 interop_* 與 DESIGN.pyopencl.md §9）。
+_BUF = {}   # 緩衝區 id → {"size": 位元組數, "rev": 修訂號}
+
+
+def _buf_of(target):
+    t = int(target)
+    return _BOUND["array"] if t == 0x8892 else _BOUND["element"] if t == 0x8893 else _BOUND.get("other", 0)
+
+
 @gl("glGenBuffers")
 def _gen_buffers(n, out):
     ids = [_OBJ["buffer"].new(_be().create_buffer()) for _ in range(int(_v(n)))]
+    for i in ids:
+        _BUF[i] = {"size": 0, "rev": 0}
     _write(out, b"".join(i.to_bytes(4, "little") for i in ids))
 
 
 @gl("glDeleteBuffers")
 def _del_buffers(n, ids):
     for i in _ints(ids, int(_v(n))):
-        _be().delete_buffer(_OBJ["buffer"].get(i)); _OBJ["buffer"].drop(i)
+        _be().delete_buffer(_OBJ["buffer"].get(i)); _OBJ["buffer"].drop(i); _BUF.pop(i, None)
 
 
 @gl("glBindBuffer")
@@ -207,11 +219,70 @@ def _bind_buffer(target, buf):
 def _buffer_data(target, size, data, usage):
     s = int(_v(size)); p = _addr(data)
     _be().buffer_data(int(_v(target)), _read(p, s) if p else s, int(_v(usage)))
+    e = _BUF.get(_buf_of(_v(target)))
+    if e is not None:
+        e["size"], e["rev"] = s, e["rev"] + 1
 
 
 @gl("glBufferSubData")
 def _buffer_sub_data(target, offset, size, data):
     _be().buffer_sub_data(int(_v(target)), int(_v(offset)), _read(data, int(_v(size))))
+    e = _BUF.get(_buf_of(_v(target)))
+    if e is not None:
+        e["rev"] += 1
+
+
+@gl("glGetBufferSubData")
+def _get_buffer_sub_data(target, offset, size, data):
+    name = _buf_of(_v(target))
+    if name not in _BUF:
+        from OpenGL import error
+        raise error.GLError(err=0x0502, baseOperation=None, description="glGetBufferSubData：目標上沒有綁定緩衝區")
+    _write(data, interop_read(name, int(_v(offset)), int(_v(size))))
+
+
+@gl("glGetBufferParameteriv")
+def _get_buffer_parameteriv(target, pname, params):
+    e = _BUF.get(_buf_of(_v(target)))
+    p = int(_v(pname))
+    if e is None or p not in (0x8764,):   # GL_BUFFER_SIZE；其餘（USAGE 等）這個後端沒有紀錄
+        from OpenGL import error
+        raise error.GLError(err=0x0500, baseOperation=None, description="glGetBufferParameteriv：不支援的 pname 或沒有綁定緩衝區")
+    _write(params, e["size"].to_bytes(4, "little"))
+
+
+# ---- interop：給 pyopencl 的 GLBuffer 用的鉤子（OpenCL 與 OpenGL 共享緩衝區）。標準 GL 呼叫之外的最小介面，名字是緩衝區 id（glGenBuffers 回傳的整數）。
+def interop_context_handle():
+    """目前 GL 上下文的代號（整數；沒有上下文回 0）。pyopencl 的 get_gl_sharing_context_properties 用它當 GL_CONTEXT_KHR 的值：
+    網頁沒有 GLX／WGL，GL 上下文就是這個後端（OffscreenCanvas 的 WebGL2）。"""
+    b = _CTX.get("backend")
+    return (id(b) & 0x7FFFFFFFFFFF) if b is not None else 0
+
+
+def interop_display_handle():
+    """「顯示」的代號：網頁沒有 X／Win32 顯示，WebGL 在瀏覽器的 EGL（ANGLE）之上，所以固定回 1 當作 EGL_DISPLAY_KHR 的值。"""
+    return 1
+
+
+def interop_buffer_info(name):
+    """→ (大小位元組, 修訂號)；沒有這個緩衝區回 None。"""
+    e = _BUF.get(int(name))
+    return (e["size"], e["rev"]) if e is not None else None
+
+
+def interop_read(name, offset=0, size=None):
+    """把緩衝區的內容（從 GPU）讀成 bytes；不動目前的綁定。"""
+    e = _BUF[int(name)]
+    n = e["size"] - offset if size is None else size
+    return _be().read_buffer(_OBJ["buffer"].get(int(name)), int(offset), int(n))
+
+
+def interop_write(name, data, offset=0):
+    """把 bytes 寫進緩衝區（不動目前的綁定）；修訂號加一並回傳新的修訂號。"""
+    e = _BUF[int(name)]
+    _be().write_buffer(_OBJ["buffer"].get(int(name)), int(offset), bytes(data))
+    e["rev"] += 1
+    return e["rev"]
 
 
 # 頂點陣列物件
@@ -1045,6 +1116,19 @@ class WebGL2Backend(object):
 
     def tex_sub_image_2d(self, target, level, x, y, w, h, fmt, typ, data):
         self.g.texSubImage2D(target, level, x, y, w, h, fmt, typ, self._u8(data))
+
+    # 緩衝區讀寫：用 COPY_READ／COPY_WRITE 綁定點，不動 ARRAY_BUFFER 等使用者目前的綁定（interop 用）
+    def read_buffer(self, handle, offset, size):
+        buf = self.js.Uint8Array.new(size)
+        self.g.bindBuffer(0x8F36, handle)
+        self.g.getBufferSubData(0x8F36, offset, buf)
+        self.g.bindBuffer(0x8F36, None)
+        return bytes(buf.to_py())
+
+    def write_buffer(self, handle, offset, data):
+        self.g.bindBuffer(0x8F37, handle)
+        self.g.bufferSubData(0x8F37, offset, self._u8(data))
+        self.g.bindBuffer(0x8F37, None)
 
     def read_pixels(self, x, y, w, h, fmt, typ):
         buf = self.js.Uint8Array.new(w * h * FMT_COMP.get(fmt, 4) * TYPE_SIZE.get(typ, 1))

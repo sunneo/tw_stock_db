@@ -30,7 +30,7 @@ embed('renderer/src/catalog/data/unit_intents.json', 'CATINTENTS-BEGIN', 'CATINT
 function embedPyBridge() {
     const dir = path.join(root, 'renderer/src/pybridge');
     const out = {};
-    (function walk(d, rel) { for (const n of fs.readdirSync(d).sort()) { const p = path.join(d, n), r = rel ? rel + '/' + n : n; if (fs.statSync(p).isDirectory()) { if (n !== '__pycache__') walk(p, r); } else if (/\.py$/.test(n)) out[r] = fs.readFileSync(p, 'utf8').replace(/\r\n/g, '\n'); } })(dir, '');
+    (function walk(d, rel) { for (const n of fs.readdirSync(d).sort()) { const p = path.join(d, n), r = rel ? rel + '/' + n : n; if (fs.statSync(p).isDirectory()) { if (n !== '__pycache__') walk(p, r); } else if (/\.py$/.test(n) && !/^pyopencl_backend\/(?:.*_test\.py|gen_cl_enums\.py|verify_enums\.py|fixtures\/.*)$/.test(r)) out[r] = fs.readFileSync(p, 'utf8').replace(/\r\n/g, '\n'); } })(dir, '');   // pyopencl_backend 的測試與產生器工具不嵌入
     // GUI 範本庫（renderer/src/guitpl/lib 的 .jsonl 與 .py）也放進同一份：模擬器裡 guitpl.py 預設到同層的 guitpl_lib/ 找範本
     const libDir = path.join(root, 'renderer/src/guitpl/lib');
     if (fs.existsSync(libDir)) (function walk(d, rel) { for (const n of fs.readdirSync(d).sort()) { const p = path.join(d, n), r = rel ? rel + '/' + n : n; if (fs.statSync(p).isDirectory()) { if (n !== '__pycache__') walk(p, r); } else if (/\.(py|jsonl|ya?ml)$/.test(n)) out['guitpl_lib/' + r] = fs.readFileSync(p, 'utf8').replace(/\r\n/g, '\n'); } })(libDir, '');
@@ -376,11 +376,11 @@ function embedExportSrc() {
 embedFapWorker(); // 先把 worker 程式內嵌進傳輸檔，才會連同傳輸檔內嵌進 floating-assistant.js
 embedWasmWorker(); // 網頁版 SQLite 引擎的 worker 程式內嵌進 wasm_engine.js
 embedExportSrc();
-// KIR（DESIGN.webgpu-cuda.md §13 階段 4、7）：kir.js、kir_gen.js、kir_webgl2.js、kir_webgpu.js、cl_front.js、kir_host_hooks.js 串成一段 UMD 原始碼（同一個 holder 掛 FaKir、FaKirGen、FaKirWebGL2、FaClFront）。
+// KIR（DESIGN.webgpu-cuda.md §13 階段 4、7）＋ OpenCL 載入器與驅動（DESIGN.pyopencl.md §10：cl_icd.js、clc_js.js、cl_host_ops.js、cl_host_page.js，掛 FaClIcd、FaClc、FaClHostOps、FaClHostPage）：kir.js、kir_gen.js、kir_webgl2.js、kir_webgpu.js、cl_front.js、kir_host_hooks.js 串成一段 UMD 原始碼（同一個 holder 掛 FaKir、FaKirGen、FaKirWebGL2、FaClFront）。
 // 執行時 new Function('module', 'require', 'self', FA_KIR_SRC)(undefined, undefined, holder)。順序有依賴：kir 在前、kir_gen 與 kir_webgl2 依序、cl_front 最後。
 function embedKir() {
     const rd = (f) => fs.readFileSync(path.join(root, f), 'utf8').replace(/\r\n/g, '\n');
-    const code = ['kir.js', 'kir_gen.js', 'kir_webgl2.js', 'kir_webgpu.js', 'cl_front.js', 'kir_host_hooks.js'].map((f) => rd('renderer/src/gpu/' + f)).join('\n;\n');
+    const code = ['kir.js', 'kir_gen.js', 'kir_webgl2.js', 'kir_webgpu.js', 'cl_front.js', 'kir_host_hooks.js', 'cl_icd.js', 'clc_js.js', 'cl_host_ops.js', 'cl_host_page.js'].map((f) => rd('renderer/src/gpu/' + f)).join('\n;\n');
     const a = src.indexOf('/* KIR-BEGIN */'), b = src.indexOf('/* KIR-END */'); if (a < 0 || b < 0) throw new Error('找不到 KIR 標記');
     src = src.slice(0, a) + '/* KIR-BEGIN */\nconst FA_KIR_SRC = ' + lit(code) + ';\n' + src.slice(b);
     console.log('已更新 FA_KIR_SRC（' + code.length + ' 字元）');

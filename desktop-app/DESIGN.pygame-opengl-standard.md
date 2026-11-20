@@ -58,3 +58,7 @@ Worker 的 Pyodide 裡真的 pygame-ce 用 SDL 的 emscripten 驅動，會去找
 - **畫面驗證要看像素，不能只看位元組數**：全黑的 PNG 也只有幾 KB。`gl3d_real.eval.js` 現在會解開截圖數「跟背景不同的像素」。
 - **PyOpenGL 傳給驅動的名字是以 NUL 結尾的緩衝區**（`glGetUniformLocation`、`glGetAttribLocation`、`glBindAttribLocation`），沒去掉結尾的 `\x00` 會讓所有 uniform／attribute 找不到、什麼都畫不出來；假後端測試不會暴露，所以 `fa_opengl_test.py` 檢查驅動收到的名字不含 NUL。
 - OpenGL 畫面也有 JPEG 後備（PNG 超過橋接的 1 MB 時），`fa_opengl_platform.frame_image()`。
+
+## 補充：緩衝區讀回與 interop 鉤子（2026-11-20）
+
+`fa_opengl_platform` 新增 `glGetBufferSubData`、`glGetBufferParameteriv(GL_BUFFER_SIZE)`，並替每個緩衝區記大小與修訂號（`glBufferData`／`glBufferSubData` 加一），另有鉤子 `interop_buffer_info／interop_read／interop_write` 給 pyopencl 的 `GLBuffer` 用（OpenCL↔OpenGL 互通，見 `DESIGN.pyopencl.md` §9）。後端介面多了 `read_buffer(handle, offset, size)`、`write_buffer(handle, offset, data)`（WebGL2 用 `COPY_READ_BUFFER`／`COPY_WRITE_BUFFER`，不動使用者的綁定）；`WebGL2Backend` 的這兩個方法**沒在真 WebGL2 跑過**，只在假後端測過（`fa_opengl_test.py`）。

@@ -47,6 +47,14 @@
           py.FS.mkdirTree(dir);
           py.FS.writeFile(full, m.files[k]);
         });
+        // 標準 pyopencl：程式 import pyopencl 時，在 Worker 裡建立 OpenCL 載入器（GPU 用 Worker 自己的 navigator.gpu／OffscreenCanvas，資料不跨執行緒）並取得真的 pyopencl
+        // （m.clSrc＝頁面嵌入的 OpenCL 模組原始碼，頁面只在程式用到 pyopencl 時才送）。失敗不擋：程式自己 import 時會得到原本的錯誤。
+        if (m.clSrc) {
+          try {
+            var clh = {}; new Function('module', 'require', 'self', m.clSrc)(undefined, undefined, clh);
+            await clh.FaClHostPage.prepare(py, { mods: clh, nav: self.navigator, makeCanvas: function () { return new OffscreenCanvas(4, 4); }, jspi: typeof WebAssembly !== 'undefined' && typeof WebAssembly.Suspending === 'function' && typeof WebAssembly.promising === 'function', files: m.files, onProgress: function (t) { self.postMessage({ type: 'err', text: '[pyopencl] ' + t + '\n' }); } });
+          } catch (e) { self.postMessage({ type: 'err', text: '[提示] pyopencl 準備失敗：' + String((e && e.message) || e).slice(0, 300) + '\n' }); }
+        }
         py.FS.mkdirTree('/work');
         m.inputs.forEach(function (f) {
           var full = '/work/' + f.rel, dir = full.slice(0, full.lastIndexOf('/'));

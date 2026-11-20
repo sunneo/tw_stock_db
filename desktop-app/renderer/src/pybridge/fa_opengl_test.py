@@ -85,4 +85,27 @@ try:
 except Exception as e:
     check("未實作要丟錯", "undefined function" in str(e) or type(e).__name__ == "NullFunctionError", type(e).__name__ + str(e)[:80])
 check("frame_image", P.frame_image() == (b"\x89PNG\r\n\x1a\nfake", "image/png"))
+# ---- 緩衝區讀回與 interop 鉤子（pyopencl 的 GLBuffer 用）：用一個把緩衝區存在記憶體的假後端
+class MemStore(Fake):
+    def __init__(self): Fake.__init__(self); self.bufs = {}; self.cur = {}; self.reads = 0; self.writes = 0
+    def create_buffer(self): self.n += 1; h = "m%d" % self.n; self.bufs[h] = bytearray(); return h
+    def bind_buffer(self, t, h): self.cur[t] = h
+    def buffer_data(self, t, data, usage): self.bufs[self.cur[t]] = bytearray(data if not isinstance(data, int) else data)
+    def buffer_sub_data(self, t, off, data): self.bufs[self.cur[t]][off:off + len(data)] = data
+    def read_buffer(self, h, off, size): self.reads += 1; return bytes(self.bufs[h][off:off + size])
+    def write_buffer(self, h, off, data): self.writes += 1; self.bufs[h][off:off + len(data)] = data
+ms = MemStore(); P._CTX["backend"] = ms
+vb = int(glGenBuffers(1)); glBindBuffer(GL_ARRAY_BUFFER, vb)
+check("interop_buffer_info：剛建立大小 0、修訂號 0", P.interop_buffer_info(vb) == (0, 0), P.interop_buffer_info(vb))
+arr = (ctypes.c_float * 4)(1, 2, 3, 4); glBufferData(GL_ARRAY_BUFFER, 16, arr, GL_STATIC_DRAW)
+check("glBufferData 記下大小並加修訂號", P.interop_buffer_info(vb) == (16, 1), P.interop_buffer_info(vb))
+check("glGetBufferParameteriv(GL_BUFFER_SIZE)", int(glGetBufferParameteriv(GL_ARRAY_BUFFER, GL_BUFFER_SIZE)) == 16)
+check("glGetBufferSubData 讀回", struct.unpack("<4f", bytes(glGetBufferSubData(GL_ARRAY_BUFFER, 0, 16).tobytes())) == (1, 2, 3, 4))
+check("glGetBufferSubData 取部分範圍", struct.unpack("<2f", bytes(glGetBufferSubData(GL_ARRAY_BUFFER, 8, 8).tobytes())) == (3, 4))
+sub = (ctypes.c_float * 1)(9); glBufferSubData(GL_ARRAY_BUFFER, 4, 4, sub)
+check("glBufferSubData 加修訂號、內容變了", P.interop_buffer_info(vb)[1] == 2 and struct.unpack("<4f", P.interop_read(vb)) == (1, 9, 3, 4))
+rv = P.interop_write(vb, struct.pack("<4f", 5, 6, 7, 8))
+check("interop_write 寫入並回傳新修訂號（不動使用者的綁定）", rv == 3 and ms.cur.get(0x8F37) is None and struct.unpack("<4f", P.interop_read(vb)) == (5, 6, 7, 8) and ms.cur.get(GL_ARRAY_BUFFER) is not None)
+check("interop_read 不動 ARRAY_BUFFER 綁定", ms.cur.get(GL_ARRAY_BUFFER) == ms.cur.get(GL_ARRAY_BUFFER) and ms.reads >= 1)
+glDeleteBuffers(1, [vb]); check("glDeleteBuffers 清掉紀錄", P.interop_buffer_info(vb) is None)
 print("FAILED:\n  " + "\n  ".join(bad) if bad else "fa_opengl: OK"); sys.exit(1 if bad else 0)

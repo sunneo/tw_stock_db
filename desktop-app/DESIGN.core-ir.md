@@ -419,3 +419,23 @@ c++／c#／ruby／perl 的輸出器與樣板實跑；java／c 的「進」；浮
 1. 管理者：嵌入（16.5），然後建置 `renderer/floating-assistant.js`。
 2. Windows（有文法快取）：依 16.4 的 qrun 規則，逐一重跑 16.5 列出的所有測試，比對 16.2 的數字；舊文法的部分一併確認。
 3. 依 16.3 的第 1、2、3、4 點補下一批（每項一個提交、每項要有測試、補完回寫本節）。
+
+## 17. OpenCL C 輸出器（2026-11-20）
+
+使用者原話：「opencl輸出器要做，這是目前我們最貼近原生效率的平行運算，就是如果我們要加速運算，就是這條。或者也要補python+opencl+opengl」。
+
+- 檔案：`renderer/src/ir/ir_out_opencl_core.js`（`FaIrOutOpenCL.emit(ir, opts) → {code, kernels, diags}`）；測試 `ir_out_opencl.test.js`（已登記進 `scripts/run-core-tests.js`）。
+- 輸出目標是 `renderer/src/gpu/cl_front.js` 能解析的子集，再往下走既有的 KIR → WebGL2／WebGPU／JS，所以**不另造 GPU 後端**。
+- 核心函式的形狀：本體只有一個最外層 `for i in range(n)`（起點 0、步長 1，n 是整數參數或整數字面值）；參數是 `list[float]`、`int`、`float`。
+- 平行安全檢查（不過就報 error、不產出程式）：寫入只能是 `buf[i]`；迴圈外的變數不能在迴圈內被改（歸約、前綴和不是逐元素核心）；同一個緩衝區不能又讀又寫（KIR 的限制）；沒有 int 緩衝區。
+- 語句與運算式：區域變數、`x op= e`、`buf[i] = e`、內層 `for j in range(常數或整數參數)`、沒有 else 的 if、`+ - * /`、一元負號、比較、條件式、`abs／min／max／math.sqrt／math.floor／int()／float()`；混合 int 與 float 時輸出器明確插入 cast。
+- **不支援（明確報錯）**：`%`、`//`（Python 向下取整與 C 向零取整不同）、and／or／not、else、while、foreach、字串、串列、使用者函式、`math.sin／cos／exp／pow`（標準操作目錄還沒有這幾個，Python 進來是 native；補進目錄要動 8 個語言的一致性測試，這一輪沒做）。
+- **精度**：核心用 float32，Python 是 float64；對照用容差（相對 1e-4），不是逐位元相同。
+- 驗證（Linux、node 20、python 3.10，2026-11-20）：`node renderer/src/ir/ir_out_opencl.test.js` 18 項全過——5 個核心（vecadd、saxpy、區域變數＋if＋內層迴圈＋數學、條件式、矩陣乘向量）在 KIR 的 JS 後端執行，結果與真 Python 在容差內一致；12 種越界寫法被拒絕；另做過破壞對照（故意把輸出器的加法換成減法，4 個執行測試轉為失敗，還原後 18/18）。**沒驗證**：WebGL2／WebGPU 後端（只跑了 KIR 的 JS 後端）、真 GPU、接進宿主工具與 `convert_code`。
+- **還沒做**：(1) 接進 `convert_code`（目標語言 `opencl`）與 llc 的 `clCreateProgramWithSource` 呼叫（把產出的核心字串嵌進 `.ll`）；(2) 補 `math.sin／cos／exp／pow` 與整數 `%`／`//` 的受限版本；(3) Python 端的 OpenCL 主機介面——見下。
+
+### 17.1 Python＋OpenCL＋OpenGL 的決定點（未決）
+
+- 現況：專案裡沒有 `pyopencl` 的任何實作；Python 要用 OpenCL，現在只能走「Python → Core IR → LLVM IR（`.ll` 呼叫 `cl*`）→ llvm_host」這條尚未接起來的路，或自己寫 JS 端橋接。
+- 使用者的既有規則：Python 介面以 pip 真套件為標準，只接後端，不出貨同名墊片（見 `DESIGN.pygame-opengl-standard.md`）。真的 `pyopencl` 是 C 擴充、Pyodide 沒有 wheel，所以不能像 PyOpenGL 那樣直接裝來用——這和 PyOpenGL 的處境不同，需要使用者決定：(a) 出貨一個相容 `pyopencl` 主要 API 的後端模組（遮住真套件的風險要處理）；(b) 只提供不同名字的小介面；(c) 只走編譯路線（Python 核心函式 → 本節輸出器 → 宿主派送），Python 端不暴露 OpenCL API。
+- OpenCL↔OpenGL：宿主端已有 `cl_khr_gl_sharing`、標準 GL VBO（`HANDOFF.interop-standard.md`），Python 端的 PyOpenGL 後端也已接 WebGL2；缺的只是 Python 端的 OpenCL 入口，所以決定 (a)／(b)／(c) 之後才能接。

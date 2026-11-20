@@ -193,6 +193,11 @@ def install_hooks():
         fa_opengl_platform.register()
     except Exception as e:
         sys.stderr.write("[fa-bridge] opengl hook: %s\n" % e)
+    try:  # 標準 pyopencl：網頁上沒有 GLX／WGL，get_gl_sharing_context_properties 改用我們的 GL 上下文回應屬性（不改 pyopencl 的檔案）
+        import fa_pyopencl
+        fa_pyopencl.install()
+    except Exception as e:
+        sys.stderr.write("[fa-bridge] pyopencl hook: %s\n" % e)
     try:  # 程式有 import pygame（Worker 會預先載入 pygame-ce）才接上真 pygame 的後端；其他程式什麼都不會發生
         import fa_pygame
         fa_pygame.install()
