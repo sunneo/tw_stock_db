@@ -16,7 +16,7 @@ function methodSource(name) {
 const METHODS = ['_fetchAssetBytesWithBackup', '_bashReadBody', '_bashWasmEmit', '_bashFileLabel', '_bashProgressText',
     '_terminalBashProgressWriter', '_bashCacheOpen', '_bashCacheKey', '_bashCacheGet', '_bashCachePut', '_bashLoadJsModules',
     '_ensureBashWasmLoaded', '_fetchAssetBackupFile', '_fetchViaProxyThenDirect', '_scheduleBashWasmPreload', '_terminalDiagText',
-    '_terminalFsFastPath', '_terminalCd', '_termTimed', '_termStalled', '_runTerminalCommand', '_terminalRecordInput', '_terminalBuildTag', '_terminalResolvePath', '_terminalIsDir', '_terminalSandboxFileBytes'];
+    '_terminalFsFastPath', '_terminalCd', '_termTimed', '_termStalled', '_runTerminalCommand', '_terminalRecordInput', '_terminalBuildTag', '_terminalPrintDiag', '_terminalResolvePath', '_terminalIsDir', '_terminalSandboxFileBytes'];
 const CLASS_SRC = '({' + METHODS.map(methodSource).join(',\n') + '})';
 
 const PRIMARY = 'https://cdn.example/wasi/dist/busybox.wasm';
@@ -301,11 +301,19 @@ const tick = () => new Promise((r) => setImmediate(r));
         const self = makeSelf(ctx);
         const s = sink(); s.sess._inputLog = [];
         const empty = self._terminalDiagText(s.sess);
-        check('T16 diag 有版本與「沒有輸入事件」的明說', empty.includes('版本：v502') && empty.includes('沒有任何輸入事件到達終端機'), empty);
+        check('T16 diag 有版本與「沒有輸入事件」的明說', empty.includes('版本：v503') && empty.includes('沒有任何輸入事件到達終端機'), empty);
         for (let i = 0; i < 12; i++) self._terminalRecordInput(s.sess, 'keydown', { key: 'e', keyCode: 229 });
         self._terminalRecordInput(s.sess, 'data', { data: 'e' });
         const txt = self._terminalDiagText(s.sess);
         check('T16 輸入紀錄只留最後 10 筆', s.sess._inputLog.length === 10 && txt.includes('data "e"') && txt.includes('keydown e/keyCode=229'), s.sess._inputLog.length);
+    }
+    // T17：快捷列「診斷」：直接把 diag 印到終端機，不送進指令
+    {
+        const ctx = makeCtx({ fetch: fakeNet({}).fetch });
+        const self = makeSelf(ctx);
+        const s = sink(); s.sess._inputLog = [];
+        self._terminalPrintDiag(s.sess);
+        check('T17 診斷按鈕印出版本與輸入紀錄', s.out.join('').includes('版本：v503') && s.out.join('').includes('最後 10 個輸入事件'), s.out.length);
     }
     console.log('terminal_progress.test.js: ' + ok + ' passed, ' + bad + ' failed');
     process.exit(bad ? 1 : 0);

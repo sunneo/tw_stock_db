@@ -39,6 +39,7 @@ const M = vm.runInContext('({' + NAMES.map(methodSource).join(',\n') + '})', ctx
 function makeSelf(runUnits) {
     const out = [];
     const self = Object.assign({
+        _terminalRecordInput: () => {},
         _terminalScanInput: (text) => ({ incomplete: false, units: [text] }),
         _terminalRunUnits: runUnits,
         _writeTerminalPrompt: () => out.push('<PROMPT>'),

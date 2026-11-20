@@ -1939,3 +1939,10 @@ node scripts/eval/gpgpu_bench.build.js /tmp/gpgpu_bench.js && FA_EVAL_GL=gpu FA_
 - **版本標記**是手動改的常數（`_terminalBuildTag`，這次是 v502），發版時要跟著改。
 
 測試：`terminal_progress.test.js` 42 passed（新增 T16：diag 的版本與輸入紀錄），`terminal_hang` 21、`terminal_input` 28、`terminal_fastpath` 5 passed。
+
+### 快捷列診斷按鈕與兩條輸入路徑（v503 追加，2026-11-20）
+
+- **快捷列「診斷」按鈕**：一鍵把 diag 印在終端機上，不送進指令、不影響正在跑的程式。
+- **兩條輸入路徑**：實體鍵盤經 xterm 的 `onData` 進 `_handleTerminalInput`；快捷列按鍵直接呼叫 `send` 再進 `_handleTerminalInput`。兩者都記錄進 `_inputLog`（來源分別是 `data` 與 `keybar`），diag 可以比對是哪一條路徑沒有到達。快捷列與鍵盤在攔截器之後走同一條路，所以若只有其中一條失效，問題在它們之前（xterm 或 DOM 事件）。
+- **版本**：`_terminalBuildTag()` 目前 v503，發版時要手動改。
+- **未做**：網頁版固定位置的版本顯示與 SHA 釘點。這個 repo 的 main 沒有 pin 腳本，`web/index.html` 也沒有 jsDelivr SHA 釘點，所以無法照要求把版本寫進 pin 流程；需要先確定 pin 機制在哪一個 repo。

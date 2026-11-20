@@ -113889,8 +113889,13 @@ ${sourceTool.handlerScript}
         });
         return Promise.race([promise, guard]).then((v) => { rec(true); return v; }, (e) => { rec(false); throw e; }).finally(() => clearInterval(iv));
     }
+    // 快捷列「診斷」按鈕：直接把 diag 印在終端機上（不送進指令，不影響正在跑的程式）。
+    _terminalPrintDiag(session) {
+        if (!session || !session.term) return;
+        session.term.write('\r\n' + this._terminalDiagText(session).replace(/\n/g, '\r\n') + '\r\n');
+    }
     // 終端機的版本標記：每次發版時改這裡（與 PATCH_VERSION、發版 commit 對得上），終端機開頭與 diag 會印出來。
-    _terminalBuildTag() { return 'v502'; }
+    _terminalBuildTag() { return 'v503'; }
     _terminalRecordInput(session, type, ev) {
         if (!session || !session._inputLog) return;
         let detail = '';
@@ -114397,6 +114402,7 @@ ${sourceTool.handlerScript}
         // 送出一個鍵：和實體鍵盤走同一條路（_handleTerminalInput：指令攔截、歷史、補全都有效）。修飾鍵：Ctrl＋單一字元 → 控制字元；Alt＋單一字元 → ESC 前綴
         const send = (seq) => {
             let out = seq;
+            this._terminalRecordInput(session, 'keybar', { data: out });   // 快捷列送出的按鍵也記錄，diag 可以比對兩條路徑
             if (out.length === 1) {
                 if (mod.ctrl.armed) out = String.fromCharCode(out.charCodeAt(0) & 0x1f);
                 if (mod.alt.armed) out = '\x1b' + out;
@@ -114415,7 +114421,7 @@ ${sourceTool.handlerScript}
             b.style.cssText = 'flex:0 0 auto; min-width:40px; height:40px; padding:0 8px; font-size:13px; border-radius:6px; cursor:pointer; background:#1e293b; color:#e2e8f0; border:1px solid #334155;';
             const keepFocus = (e) => e.preventDefault();   // 按鈕不搶焦點，虛擬鍵盤不會收起來
             b.addEventListener('pointerdown', keepFocus); b.addEventListener('mousedown', keepFocus);
-            b.addEventListener('click', () => { if (k.mod) tapMod(k.mod); else send(k.seq); });
+            b.addEventListener('click', () => { if (k.action === 'diag') this._terminalPrintDiag(session); else if (k.mod) tapMod(k.mod); else send(k.seq); });
             bar.appendChild(b);
         }
         refreshMods();
@@ -114443,7 +114449,7 @@ ${sourceTool.handlerScript}
         return [{ label: 'Esc', seq: '\x1b' }, { label: 'Tab', seq: '\t' }, { label: 'Ctrl', mod: 'ctrl' }, { label: 'Alt', mod: 'alt' },
             { label: '↑', seq: '\x1b[A' }, { label: '↓', seq: '\x1b[B' }, { label: '←', seq: '\x1b[D' }, { label: '→', seq: '\x1b[C' },
             { label: 'Home', seq: '\x1b[H' }, { label: 'End', seq: '\x1b[F' }, { label: 'PgUp', seq: '\x1b[5~' }, { label: 'PgDn', seq: '\x1b[6~' },
-            { label: 'Enter', seq: '\r' }, { label: '⌫', seq: '\x7f' }, { label: 'Ctrl+C', seq: '\x03' },
+            { label: 'Enter', seq: '\r' }, { label: '⌫', seq: '\x7f' }, { label: 'Ctrl+C', seq: '\x03' }, { label: '診斷', action: 'diag' },
             { label: '|', seq: '|' }, { label: '/', seq: '/' }, { label: '~', seq: '~' }, { label: '-', seq: '-' }, { label: '_', seq: '_' }, { label: '>', seq: '>' }, { label: '&', seq: '&' }, { label: ';', seq: ';' }];
     }
     async _mountTerminalWidget(container, initialCommand, msg) {
