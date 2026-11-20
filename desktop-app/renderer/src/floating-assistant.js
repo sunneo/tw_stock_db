@@ -113785,6 +113785,8 @@ ${sourceTool.handlerScript}
         ];
         return list.filter((c) => !c.skip && (s.source === 'auto' || c.key === s.source || c.kind === 'cache'));
     }
+    // bundle 裡的 new URL('./x', import.meta.url) 在 Blob URL（blob:）基底下會拋 Invalid URL。換成真實的 CDN 基底（src/index.mjs），相對檔案才解析得到。
+    _bashBundleSource(text) { return String(text).split('import.meta.url').join(JSON.stringify(FA_ASSET_URLS.bashWasmJsBase + 'src/index.mjs')); }
     async _bashLoadOneJsSource(src, emitEv) {
         if (src.kind === 'native') {
             const [runMod, fsMod] = await Promise.all([
@@ -113802,7 +113804,7 @@ ${sourceTool.handlerScript}
             await this._bashCachePut(src.url, buf);
             emitEv({ kind: 'done', file: 'wasi-sh.bundle.mjs', source: src.short, bytes: buf.byteLength, elapsedMs: Date.now() - t0 });
         }
-        const blobUrl = URL.createObjectURL(new Blob([new TextDecoder('utf-8').decode(buf)], { type: 'text/javascript' }));
+        const blobUrl = URL.createObjectURL(new Blob([this._bashBundleSource(new TextDecoder('utf-8').decode(buf))], { type: 'text/javascript' }));
         try { const mod = await this._bashImportModule(blobUrl); return { run: mod.run, memoryFs: mod.memoryFs }; }
         finally { URL.revokeObjectURL(blobUrl); }
     }
@@ -113958,7 +113960,7 @@ ${sourceTool.handlerScript}
         session.term.write('\r\n' + this._terminalDiagText(session).replace(/\n/g, '\r\n') + '\r\n');
     }
     // 終端機的版本標記：每次發版時改這裡（與 PATCH_VERSION、發版 commit 對得上），終端機開頭與 diag 會印出來。
-    _terminalBuildTag() { return 'v508'; }
+    _terminalBuildTag() { return 'v509'; }
     _terminalRecordInput(session, type, ev) {
         if (!session || !session._inputLog) return;
         let detail = '';
@@ -114003,6 +114005,9 @@ ${sourceTool.handlerScript}
         lines.push(inp.length ? inp.map((s) => '  ' + s).join('\n') : '  無（沒有任何輸入事件到達終端機）');
         lines.push('bash 執行環境：' + (this._bashWasmRuntime ? '已載入' : this._bashWasmLoadPromise ? '載入中' : '尚未載入（第一個需要 shell 的指令才會下載，或背景預載）'));
         lines.push('目前階段：' + ((session && session._stage) || '—'));
+        lines.push('python（Pyodide）：' + (this._pyodideInstance ? '已載入' : (this._pyodideLoadPromise ? '載入中' : '未載入')));
+        lines.push('lli（LLVM，內建）：' + (typeof FaLlvm !== 'undefined' ? '可用' : '不可用'));
+        lines.push('最後一次指令錯誤：' + ((session && session._lastError) || '無'));
         lines.push('目前來源：' + (this._bashCurrentSource || '尚未開始'));
         const evs = this._bashWasmDiag || [];
         const recent = evs.filter((e) => e.kind === 'cache' || e.kind === 'done').slice(-4);
@@ -114104,10 +114109,11 @@ ${sourceTool.handlerScript}
     // 統一入口（任何「第一次使用才下載」的載入都會呼叫）：沒載入時，在目前執行中的終端機印一次準備行、設定階段名稱。
     _termBeginLoad(label, loaded, session) {
         session = session || this._termCurrent;
-        if (loaded || !session || !session.term) return;
+        if (!session || !session.term) return;
+        session._stage = loaded ? `檢查 ${label}` : `載入 ${label}`;
+        if (loaded) return;
         if (!session._prepLabels) session._prepLabels = new Set();
         if (!session._prepLabels.has(label)) { session._prepLabels.add(label); session.term.write(`\x1b[90m準備中：載入 ${label}…（第一次使用需要下載；下方顯示進度，Ctrl-C 可取消）\x1b[0m\r\n`); }
-        session._stage = `載入 ${label}`;
     }
     // 讓下載進度（_bashWasmEmit 的事件）在這段工作期間顯示在這個終端機；結束就退訂。
     async _terminalWithBashProgress(session, fn) {
@@ -114879,7 +114885,7 @@ ${sourceTool.handlerScript}
             catch (err) {
                 if (err && err.message === '__TERMINAL_WATCHDOG__') { session._timedOut = true; session.term.write('\x1b[33m' + cap.label + '「' + combined.trim().split(/\s+/)[0] + '」超過 ' + Math.round(wdMs / 1000) + ' 秒沒有結束' + (session._stage ? '，卡在：' + session._stage : '') + '。已放開輸入（指令可能還在背景；按 Ctrl+C 可中斷）\x1b[0m\r\n'); }
                 else if (err && err.message === '__TERMINAL_INTERRUPT__') { session.term.write('\x1b[33m已中斷（Ctrl+C）' + (session._stage ? '；中斷前卡在：' + session._stage : '') + '\x1b[0m\r\n'); }
-                else session.term.write(`\x1b[31m指令執行失敗：${String((err && err.message) || err)}\x1b[0m\n\n`);
+                else { session._lastError = String((err && err.message) || err); session.term.write(`\x1b[31m指令執行失敗：${session._lastError}\x1b[0m\n\n`); }
             }
             finally { if (this._termCurrent === session) this._termCurrent = null; clearTimeout(wdTimer); session._runAbortReject = null; session.busy = false; session._busyHinted = false; if (session._sigint) { session._sigint = false; this._terminalSetExit(session, 130); } }
             if (!session.activeProgram) this._writeTerminalPrompt(session);
@@ -116431,9 +116437,12 @@ ${sourceTool.handlerScript}
             // _hydrateFapMount本來就會呼叫_checkFapPermission，權限不是
             // granted時自動跳授權對話框，這裡不用另外寫觸發邏輯。
             session.fapLabels = [];
+            session._stage = '開啟檔案系統（讀取掛載清單）';
             try {
-                const points = await this._listAllFapAccessPoints();
-                for (const p of points) {
+                // tw_stock_db客製: 2026-11-20 掛載清單（IndexedDB）最多等 3 秒；逾時只警告，記憶體中的檔案系統照常可用，/mnt 暫時沒有內容。
+                const points = await Promise.race([this._listAllFapAccessPoints(), new Promise((r) => setTimeout(() => r(null), 3000))]);
+                if (points === null && session.term) session.term.write('\x1b[33m掛載清單讀取超過 3 秒（IndexedDB 可能很慢或被擋），先只提供記憶體中的檔案系統；/mnt 暫時沒有內容。\x1b[0m\r\n');
+                for (const p of (points || [])) {
                     session.fapLabels.push(p.label);
                     seedFiles[`/mnt/${p.label}/.keep`] = '';
                 }
@@ -118494,6 +118503,12 @@ ${sourceTool.handlerScript}
     // 回傳 false＝這支程式用不到主機函式（交給原本的同步 lli）。結束碼放 session.lastExitCode。
     async _terminalTryLliHost(session, argsText, guiTimeoutSec) {
         if (typeof FaLlvm === 'undefined' || typeof FaLlvmHost === 'undefined') return false;
+        const lliFile = this._terminalTokenizeArgs(argsText).find((w) => !w.startsWith('-'));
+        if (lliFile) {
+            const fsChk = await this._terminalFsView(session, [lliFile]);
+            try { fsChk.statSync(this._terminalResolvePath(session.cwd, lliFile)); }
+            catch (_) { session.term.write(`\x1b[31mlli: ${lliFile}: 找不到這個檔案（目前目錄 ${session.cwd}）\x1b[0m\r\n`); this._terminalSetExit(session, 1); return true; }
+        }
         const fsStore0 = await this._ensureTerminalFsStore(session, await this._terminalLoadRuntime(session, 'shell 執行環境', !!this._bashWasmRuntime, () => this._ensureBashWasmLoaded()));
         const abs = (p) => this._terminalResolvePath(session.cwd, p);
         const llFs = {   // 程式的 fopen 等函式用的檔案系統：就是這個終端機的沙盒（含 /mnt/<名稱> 的即時 FAP 檔案系統）；相對路徑從目前目錄起算

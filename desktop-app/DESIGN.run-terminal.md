@@ -2035,3 +2035,21 @@ node scripts/eval/gpgpu_bench.build.js /tmp/gpgpu_bench.js && FA_EVAL_GL=gpu FA_
 - lli 的 GPU 後端偵測設定階段「GPU 後端偵測（WebGPU／WebGL）」。
 
 **測試（模擬）**：`terminal_progress.test.js` 73 passed（T25：lli 分派後載入永不結束，階段變具體名稱、畫面有準備行；T26：不論呼叫端是誰，目前終端機都收到準備行與進度，且只印一次）。hang 23、input 28、fastpath 5 passed。**未在真機驗證。**
+
+### lli 卡在「派送指令」與備份 bundle 的 Invalid URL（v509，2026-11-20）
+
+使用者實測 v508（手機）：diag 顯示 bash、JS 都已載入，但執行 `lli nbody3d_cl.ll` 時階段一直是「派送指令」，沒有輸出。另外「最近一次主要來源失敗」是備份 bundle 的「Failed to construct 'URL': Invalid URL」。
+
+**Invalid URL（確定的 bug，已用 node 重現）**：備份的 `wasi-sh.bundle.mjs` 內有 4 處 `new URL(…, import.meta.url)`。包成 Blob URL 後 `import.meta.url` 是 `blob:` 網址，相對網址在這個基底下解析失敗（node 的 `new URL('./busybox.wasm', 'blob:https://example.com/abc')` 同樣拋出 Invalid URL）。修正：匯入前把 `import.meta.url` 換成 CDN 上的 `src/index.mjs` 網址（`_bashBundleSource`）。這讓快取清掉之後，備份 bundle 來源真的能用。
+
+**lli 卡住（根因）**：`_termBeginLoad` 在 shell 已載入時直接 return，所以階段名稱從來沒有更新，停在入口的「派送指令」。真正卡住的，很可能是 `_ensureTerminalFsStore` 裡的掛載清單讀取（`_listAllFapAccessPoints`，IndexedDB），它沒有階段標記、也沒有時限，而 lli 的每次執行都會經過它。
+
+**修正**
+- 階段名稱每次載入都更新（已載入時為「檢查 …」，未載入時為「載入 …」），不再停在入口值。
+- 掛載清單讀取最多等 3 秒；逾時就印出警告，只提供記憶體中的檔案系統，/mnt 暫時沒有內容，不卡住。
+- lli 執行前先確認檔案存在；找不到就印「lli: <檔案>: 找不到這個檔案（目前目錄 …）」並結束，不進入執行。
+- diag 新增 python（Pyodide）與 lli（LLVM）的狀態，以及「最後一次指令錯誤」。「目前階段」在指令結束後保留最後的值。
+
+**測試（模擬）**：`terminal_progress.test.js` 79 passed。T27 用 node 重現 blob 基底的 Invalid URL，並確認替換後能解析到 CDN 上的檔案；T28 已載入時階段仍會更新；T29 lli 找不到檔案時明確報錯；T30 掛載清單永不回時 3 秒後退回記憶體檔案系統並印出警告；T25 lli 分派後載入永不結束，階段與準備行都可見。`terminal_hang` 23、`terminal_input` 28、`terminal_fastpath` 5 passed。
+
+**未驗證**：真機上 lli 與 python 的實際執行、IndexedDB 在 Android Chrome 的行為、備份 bundle 替換後在真實瀏覽器中的載入（只用 node 驗證了 URL 解析）。python 的 Worker 路徑仍未回報進度。

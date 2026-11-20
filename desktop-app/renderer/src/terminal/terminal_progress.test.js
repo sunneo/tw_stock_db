@@ -17,7 +17,7 @@ const METHODS = ['_fetchAssetBytesWithBackup', '_bashReadBody', '_bashWasmEmit',
     '_terminalBashProgressWriter', '_bashCacheOpen', '_bashCacheKey', '_bashCacheGet', '_bashCachePut', '_bashLoadJsModules',
     '_ensureBashWasmLoaded', '_fetchAssetBackupFile', '_fetchViaProxyThenDirect', '_scheduleBashWasmPreload', '_terminalDiagText',
     '_terminalFsFastPath', '_terminalCd', '_termTimed', '_runTerminalCommand', '_bashDownloading', '_bashCancelLoads', '_bashRetryWait', '_terminalRecordInput', '_terminalBuildTag', '_terminalPrintDiag',
-    '_terminalVirtualFs', '_terminalFsView', '_terminalWithBashProgress', '_terminalLoadRuntime', '_pyodidePrefetch', '_termBeginLoad', '_terminalTryLliHost', '_bashSettings', '_bashStallMs', '_bashJoin', '_bashFetchBytes', '_bashWithStall', '_bashJsSourceList', '_bashLoadOneJsSource', '_normalizeTerminalSettings', '_terminalResolvePath', '_terminalIsDir', '_terminalSandboxFileBytes'];
+    '_terminalVirtualFs', '_terminalFsView', '_terminalWithBashProgress', '_terminalLoadRuntime', '_pyodidePrefetch', '_termBeginLoad', '_terminalTryLliHost', '_bashBundleSource', '_ensureTerminalFsStore', '_bashSettings', '_bashStallMs', '_bashJoin', '_bashFetchBytes', '_bashWithStall', '_bashJsSourceList', '_bashLoadOneJsSource', '_normalizeTerminalSettings', '_terminalResolvePath', '_terminalIsDir', '_terminalSandboxFileBytes'];
 const CLASS_SRC = '({' + METHODS.map(methodSource).join(',\n') + '})';
 
 const PRIMARY = 'https://cdn.example/wasi/dist/busybox.wasm';
@@ -75,7 +75,7 @@ function makeCtx(extra) {
         timers: [], intervals: [], setInterval: (fn) => { ctx.intervals.push(fn); return ctx.intervals.length; }, clearInterval() {},
         caches: undefined, navigator: undefined, requestIdleCallback: undefined, fetch: undefined,
         Date: { now: () => (ctx.tick += 150) }, tick: 0,
-        TERMINAL_SHELL_BUILTINS: ['cd', 'pwd'], TERMINAL_BUSYBOX_APPLETS: ['ls', 'cat'], SANDBOX_COMMAND_REGISTRY: { sleep: {} }, FA_PY_EXAMPLES: { 'demo.py': 'print(1)' }, FaLlvm: {}, FaLlvmHost: { create() { return {}; } },
+        TERMINAL_SHELL_BUILTINS: ['cd', 'pwd'], TERMINAL_BUSYBOX_APPLETS: ['ls', 'cat'], SANDBOX_COMMAND_REGISTRY: { sleep: {} }, FA_PY_EXAMPLES: { 'demo.py': 'print(1)', 'llc/gpgpu/nbody3d_cl.ll': 'define i32 @main() { ret i32 0 }' }, FaLlvm: {}, FaLlvmHost: { create() { return {}; } },
     }, extra || {});
     vm.createContext(ctx);
     return ctx;
@@ -93,7 +93,8 @@ function makeSelf(ctx, over) {
         _terminalHasShellOps: (t) => /[|&;<>$`()]/.test(String(t || '')),
         _terminalTokenizeArgs: (t) => (String(t || '').trim() ? String(t).trim().split(/\s+/) : []),
         _hydrateReferencedFapMounts: async () => {},
-        _ensureTerminalFsStore: async () => fakeFs({}),
+        _terminalSetExit: (sess, code) => { sess.exit = code; },
+        _terminalLiveSupported: () => false,
     };
     return Object.assign({}, M, stubs, over || {});
 }
@@ -341,7 +342,7 @@ const tick = () => new Promise((r) => setImmediate(r));
         const self = makeSelf(ctx);
         const s = sink(); s.sess._inputLog = [];
         const empty = self._terminalDiagText(s.sess);
-        check('T16 diag 有版本與「沒有輸入事件」的明說', empty.includes('版本：v508') && empty.includes('沒有任何輸入事件到達終端機'), empty);
+        check('T16 diag 有版本與「沒有輸入事件」的明說', empty.includes('版本：v509') && empty.includes('沒有任何輸入事件到達終端機'), empty);
         for (let i = 0; i < 12; i++) self._terminalRecordInput(s.sess, 'keydown', { key: 'e', keyCode: 229 });
         self._terminalRecordInput(s.sess, 'data', { data: 'e' });
         const txt = self._terminalDiagText(s.sess);
@@ -353,7 +354,7 @@ const tick = () => new Promise((r) => setImmediate(r));
         const self = makeSelf(ctx);
         const s = sink(); s.sess._inputLog = [];
         self._terminalPrintDiag(s.sess);
-        check('T17 診斷按鈕印出版本與輸入紀錄', s.out.join('').includes('版本：v508') && s.out.join('').includes('最後 10 個輸入事件'), s.out.length);
+        check('T17 診斷按鈕印出版本與輸入紀錄', s.out.join('').includes('版本：v509') && s.out.join('').includes('最後 10 個輸入事件'), s.out.length);
     }
     // T18：設定白名單：來源只收已知值、自訂網址只收 http(s)、逾時秒數夾在 5–120、預載預設開
     {
@@ -444,7 +445,7 @@ const tick = () => new Promise((r) => setImmediate(r));
         a.sess._stage = '派送指令（尚未進入任何階段）';
         self._termCurrent = a.sess;
         let done = false;
-        self._terminalTryLliHost(a.sess, 'x.ll').then(() => { done = true; });
+        self._terminalTryLliHost(a.sess, '/work/examples/llc/gpgpu/nbody3d_cl.ll').then(() => { done = true; });
         await tick();
         check('T25 分派之後載入永不結束：階段變成具體名稱', a.sess._stage === '載入 shell 執行環境', a.sess._stage);
         check('T25 畫面有準備行（不是空白）', a.out.some((x) => x.includes('準備中：載入 shell 執行環境')), a.out.map((x) => x.slice(0, 30)));
@@ -463,6 +464,43 @@ const tick = () => new Promise((r) => setImmediate(r));
         await self._ensureBashWasmLoaded(null).catch(() => {});
         check('T26 同一指令再次呼叫不重複印準備行', a.out.filter((x) => x.includes('準備中：載入 shell 執行環境')).length === 1);
         self._termCurrent = null;
+    }
+    // T27：Invalid URL：備份 bundle 的 import.meta.url 換成 CDN 基底後，相對路徑能解析（blob: 基底會拋 Invalid URL，這裡先確認那個失敗點）
+    {
+        let blobErr = ''; try { new URL('./busybox.wasm', 'blob:https://example.com/abc'); } catch (e) { blobErr = e.message; }
+        check('T27 對照：blob: 基底的相對網址確實拋 Invalid URL', blobErr.includes('Invalid URL'), blobErr);
+        const ctx = makeCtx({ fetch: fakeNet({}).fetch });
+        const self = makeSelf(ctx);
+        const src = self._bashBundleSource("new URL('./busybox.wasm', import.meta.url).href");
+        const val = new Function('return ' + src)();
+        check('T27 替換後能解析到 CDN 上的同目錄檔案', val === 'https://cdn.example/wasi/src/busybox.wasm', { src, val });
+    }
+    // T28：shell 已載入時，階段名稱仍會更新（不再停在「派送指令」），而且不印準備行
+    {
+        const ctx = makeCtx({ fetch: fakeNet({}).fetch });
+        const self = makeSelf(ctx);
+        const a = sink();
+        self._termBeginLoad('shell 執行環境', true, a.sess);
+        check('T28 已載入：階段更新為具體名稱、不印準備行', a.sess._stage === '檢查 shell 執行環境' && a.out.length === 0, a.sess._stage);
+    }
+    // T29：lli 的檔案不存在：明確報錯、不進入執行
+    {
+        const ctx = makeCtx({ fetch: fakeNet({}).fetch });
+        const self = makeSelf(ctx, { _ensureTerminalFsStore: async () => { throw new Error('should not reach'); } });
+        const a = sink();
+        const handled = await self._terminalTryLliHost(a.sess, 'nope.ll');
+        check('T29 lli 找不到檔案：明確中文錯誤、視為已處理', handled === true && a.out.join('').includes('找不到這個檔案') && a.sess.exit === 1, a.out);
+    }
+    // T30：掛載清單（IndexedDB）永不回：3 秒後退回記憶體檔案系統，印出警告，不卡住
+    {
+        const ctx = makeCtx({ fetch: fakeNet({}).fetch });
+        const self = makeSelf(ctx, { _listAllFapAccessPoints: () => new Promise(() => {}) });
+        const a = sink();
+        const p = self._ensureTerminalFsStore(a.sess, { memoryFs: (seed) => ({ seeded: Object.keys(seed).length }) });
+        ctx.timers[ctx.timers.length - 1]();
+        const store = await p;
+        check('T30 掛載清單逾時：仍回傳檔案系統，並印出警告', store && store.seeded > 0 && a.out.join('').includes('掛載清單讀取超過 3 秒'), a.out.map((x) => x.slice(0, 30)));
+        check('T30 階段停在可辨識的名稱', a.sess._stage === '開啟檔案系統（讀取掛載清單）', a.sess._stage);
     }
     console.log('terminal_progress.test.js: ' + ok + ' passed, ' + bad + ' failed');
     process.exit(bad ? 1 : 0);
