@@ -113661,7 +113661,7 @@ ${sourceTool.handlerScript}
     // 自己決定要當bytes（wasm）還是文字（JS runtime bundle）用。manifest
     // 本身依backupBase快取（this._assetBackupManifestCache），同一次session
     // 對同一個backupBase不會重複打manifest.json。
-    async _fetchAssetBackupFile(backupBase, relPath) {
+    async _fetchAssetBackupFile(backupBase, relPath, emit) {
         if (!this._assetBackupManifestCache) this._assetBackupManifestCache = new Map();
         let manifest = this._assetBackupManifestCache.get(backupBase);
         if (manifest === undefined) {
@@ -113675,10 +113675,11 @@ ${sourceTool.handlerScript}
         const partCount = entry && Number.isInteger(entry.parts) && entry.parts > 0 ? entry.parts : null;
         if (partCount) {
             const buffers = [];
+            const acc = { loaded: 0, total: entry.size || 0, t0: Date.now() };
             for (let i = 0; i < partCount; i++) {
                 const partUrl = backupBase + relPath + '.part' + String(i).padStart(3, '0');
                 const r = await this._fetchViaProxyThenDirect(partUrl, { cache: 'no-cache' });
-                buffers.push(await r.arrayBuffer());
+                buffers.push(await this._bashReadBody(r, relPath, '備份', emit, acc));
             }
             const total = buffers.reduce((s, b) => s + b.byteLength, 0);
             const merged = new Uint8Array(total);
@@ -113690,24 +113691,254 @@ ${sourceTool.handlerScript}
             return merged.buffer;
         }
         const r = await this._fetchViaProxyThenDirect(backupBase + relPath, { cache: 'no-cache' });
-        return await r.arrayBuffer();
+        return await this._bashReadBody(r, relPath, '備份', emit, { loaded: 0, total: 0, t0: Date.now() });
     }
 
     // 單純二進位資源（例如busybox.wasm）的「主要來源直接fetch，失敗才退到
     // 自家backup分支」共用邏輯——不涉及script執行/mimetype問題，直接
     // fetch()+arrayBuffer()即可，兩邊都一樣。
-    async _fetchAssetBytesWithBackup(primaryUrl, backupBase, relPath) {
+    async _fetchAssetBytesWithBackup(primaryUrl, backupBase, relPath, emit) {
+        const cached = await this._bashCacheGet(primaryUrl);
+        if (cached) { if (emit) emit({ kind: 'cache', file: relPath, bytes: cached.byteLength }); return cached; }
+        const t0 = Date.now();
+        const primaryFetchUrl = this._viaAssetProxy(primaryUrl);
         try {
-            const r = await fetch(this._viaAssetProxy(primaryUrl), { cache: 'no-cache' });
+            const r = await fetch(primaryFetchUrl, { cache: 'no-cache' });
             if (!r.ok) throw new Error(`HTTP ${r.status}`);
-            return await r.arrayBuffer();
+            const buf = await this._bashReadBody(r, relPath, '主要', emit, { loaded: 0, total: 0, t0 });
+            await this._bashCachePut(primaryUrl, buf);
+            if (emit) emit({ kind: 'done', file: relPath, source: '主要', bytes: buf.byteLength, elapsedMs: Date.now() - t0 });
+            return buf;
         } catch (primaryErr) {
+            const reason = `網址 ${primaryFetchUrl.slice(0, 200)}（階段：下載）：${primaryErr.message}`;
+            if (emit) emit({ kind: 'fallback', file: relPath, source: '備份', reason });
+            const t1 = Date.now();
             try {
-                return await this._fetchAssetBackupFile(backupBase, relPath);
+                const buf = await this._fetchAssetBackupFile(backupBase, relPath, emit);
+                await this._bashCachePut(primaryUrl, buf);
+                if (emit) emit({ kind: 'done', file: relPath, source: '備份', bytes: buf.byteLength, elapsedMs: Date.now() - t1 });
+                return buf;
             } catch (backupErr) {
-                throw new Error(`抓 ${relPath} 失敗——主要來源：${primaryErr.message}；備份分支：${backupErr.message}`);
+                throw new Error(`抓 ${relPath} 失敗——主要來源：${reason}；備份分支：${backupErr.message}`);
             }
         }
+    }
+
+    // tw_stock_db客製: 2026-11-20 下載進度。有 body 串流就一塊一塊讀，約每 100ms 回報一次「已下載／總量」；
+    // 沒有 Content-Length 只回報已下載量；沒有串流就整包讀完、只回報一次。acc＝{loaded, total, t0}，跨分塊累加
+    // （備份分塊時 total 用 manifest 的 size）。注意：伺服器若 gzip 壓縮，Content-Length 是壓縮後的大小，
+    // 解碼後的 loaded 可能超過它，此時不顯示百分比，只顯示已下載量。
+    async _bashReadBody(r, file, source, emit, acc) {
+        if (!acc.t0) acc.t0 = Date.now();
+        const headerLen = Number(r.headers && typeof r.headers.get === 'function' ? r.headers.get('content-length') : 0) || 0;
+        const total = acc.total || headerLen;
+        const report = (extra, final) => { if (emit) emit({ kind: 'progress', file, source, loaded: acc.loaded + extra, total, elapsedMs: Date.now() - acc.t0, final: !!final }); };
+        if (!r.body || typeof r.body.getReader !== 'function') {
+            const buf = await r.arrayBuffer();
+            acc.loaded += buf.byteLength;
+            report(0, true);
+            return buf;
+        }
+        const reader = r.body.getReader();
+        const chunks = [];
+        let got = 0;
+        let lastAt = 0;
+        for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            chunks.push(value);
+            got += value.byteLength;
+            if (Date.now() - lastAt >= 100) { lastAt = Date.now(); report(got, false); }
+        }
+        const out = new Uint8Array(got);
+        let off = 0;
+        for (const c of chunks) { out.set(c, off); off += c.byteLength; }
+        acc.loaded += got;
+        report(0, true);
+        return out.buffer;
+    }
+
+    // 進度事件：{kind:'progress'|'cache'|'fallback'|'done', file, source, loaded, total, bytes, elapsedMs, reason, final}。
+    // 送給所有訂閱者（_ensureBashWasmLoaded(onProgress)），非進度事件另外留一份給 diag 指令看。
+    _bashWasmEmit(ev) {
+        this._bashLastActivityAt = Date.now();
+        if (ev.kind === 'progress') this._bashLastProgressText = this._bashProgressText(ev);
+        if (!this._bashWasmDiag) this._bashWasmDiag = [];
+        if (ev.kind !== 'progress') { this._bashWasmDiag.push(Object.assign({ at: Date.now() }, ev)); if (this._bashWasmDiag.length > 30) this._bashWasmDiag.shift(); }
+        if (!this._bashWasmSubs) return;
+        for (const fn of Array.from(this._bashWasmSubs)) { try { fn(ev); } catch (_) { /* 單一訂閱者出錯不影響下載 */ } }
+    }
+    _bashFileLabel(file) { return ({ 'dist/busybox.wasm': 'shell', 'wasi-sh.bundle.mjs': 'shell 套件' })[file] || file; }
+    // 進行中或完成的一行中文（不含換行），例：下載 shell 1.2/4.8 MB 25% 已用 6s 來源：主要
+    _bashProgressText(ev) {
+        const label = this._bashFileLabel(ev.file);
+        const mb = (n) => (n / 1048576).toFixed(1);
+        const secs = Math.round((ev.elapsedMs || 0) / 1000);
+        if (ev.kind === 'done') return `下載 ${label} 完成 ${mb(ev.bytes)} MB 已用 ${secs}s 來源：${ev.source}`;
+        const known = ev.total > 0 && ev.loaded <= ev.total;
+        const amount = known ? `${mb(ev.loaded)}/${mb(ev.total)} MB ${Math.floor(ev.loaded * 100 / ev.total)}%` : `已下載 ${mb(ev.loaded)} MB`;
+        return `下載 ${label} ${amount} 已用 ${secs}s 來源：${ev.source}`;
+    }
+    // 終端機的進度行：進行中用 \r 在同一行就地更新（不洗版）；完成、快取命中、切換來源時換行定稿。session 已結束就不寫。
+    _terminalBashProgressWriter(session) {
+        let open = false;
+        return (ev) => {
+            if (!session || session.ended || !session.term) return;
+            if (ev.kind === 'progress') {
+                if (ev.final) return;
+                session.term.write('\r\x1b[2K' + this._bashProgressText(ev));
+                open = true;
+                return;
+            }
+            let text = null;
+            if (ev.kind === 'cache') text = `${this._bashFileLabel(ev.file)} 已使用快取（${(ev.bytes / 1048576).toFixed(1)} MB）`;
+            else if (ev.kind === 'done') text = this._bashProgressText(ev);
+            else if (ev.kind === 'fallback') text = `\x1b[33m${this._bashFileLabel(ev.file)} 切換備份來源：${ev.reason}\x1b[0m`;
+            if (text === null) return;
+            session.term.write((open ? '\r\x1b[2K' : '') + text + '\r\n');
+            open = false;
+        };
+    }
+    // 快取（Cache API，key＝完整網址；網址含 wasi-sh 版本，升版自然失效）。開啟加 3 秒逾時；不支援或失敗就退回無快取，不影響載入。
+    _bashCacheOpen() {
+        if (!this._bashCachePromise) {
+            this._bashCachePromise = (async () => {
+                if (typeof caches === 'undefined' || !caches || typeof caches.open !== 'function') return null;
+                let t = null;
+                const guard = new Promise((_, rej) => { t = setTimeout(() => rej(new Error('逾時')), 3000); });
+                try { return await Promise.race([caches.open('fa-bash-wasm-v1'), guard]); }
+                catch (_) { return null; }
+                finally { clearTimeout(t); }
+            })();
+        }
+        return this._bashCachePromise;
+    }
+    _bashCacheKey(url) { return 'https://fa-bash-cache.local/?u=' + encodeURIComponent(url); }
+    async _bashCacheGet(url) {
+        try {
+            const c = await this._bashCacheOpen();
+            if (!c) return null;
+            const hit = await c.match(this._bashCacheKey(url));
+            return hit ? await hit.arrayBuffer() : null;
+        } catch (_) { return null; }
+    }
+    async _bashCachePut(url, buf) {
+        try { const c = await this._bashCacheOpen(); if (c) await c.put(this._bashCacheKey(url), new Response(buf)); }
+        catch (_) { /* 寫不進去就下次再下載 */ }
+    }
+    _bashImportModule(url) { return import(/* webpackIgnore: true */ url); }
+    // JS 執行環境（wasi-sh 的 run、memoryFs；不含 busybox.wasm）。主要來源用原生 import()，失敗退到備份分支的單一檔案 bundle。同一個 session 只載一次。
+    _bashLoadJsModules(emit) {
+        if (this._bashJsRuntime) return Promise.resolve(this._bashJsRuntime);
+        if (!this._bashJsPromise) {
+            this._bashJsPromise = (async () => {
+                let run, memoryFs;
+                try {
+                    const [runMod, fsMod] = await Promise.all([
+                        this._bashImportModule(this._viaAssetProxy(FA_ASSET_URLS.bashWasmJsBase + 'src/index.mjs')),
+                        this._bashImportModule(this._viaAssetProxy(FA_ASSET_URLS.bashWasmJsBase + 'src/fs.mjs')),
+                    ]);
+                    run = runMod.run;
+                    memoryFs = fsMod.memoryFs;
+                } catch (primaryErr) {
+                    const reason = `網址 ${FA_ASSET_URLS.bashWasmJsBase}src/index.mjs（階段：載入 JS 模組）：${primaryErr.message}`;
+                    if (emit) emit({ kind: 'fallback', file: 'wasi-sh.bundle.mjs', source: '備份', reason });
+                    let bundleBuffer;
+                    try {
+                        bundleBuffer = await this._fetchAssetBackupFile(FA_ASSET_URLS.bashWasmBackupBase, 'wasi-sh.bundle.mjs', emit);
+                    } catch (backupErr) {
+                        throw new Error(`bash 執行環境載入失敗——主要來源：${reason}；備份分支：${backupErr.message}`);
+                    }
+                    const blobUrl = URL.createObjectURL(new Blob([new TextDecoder('utf-8').decode(bundleBuffer)], { type: 'text/javascript' }));
+                    try { const mod = await this._bashImportModule(blobUrl); run = mod.run; memoryFs = mod.memoryFs; }
+                    finally { URL.revokeObjectURL(blobUrl); }
+                }
+                this._bashJsRuntime = { run, memoryFs };
+                return this._bashJsRuntime;
+            })().catch((e) => { this._bashJsPromise = null; throw e; });
+        }
+        return this._bashJsPromise;
+    }
+    // 閒置時背景預載 bash 執行環境（終端機掛載時排程；不支援 requestIdleCallback 就 1.5 秒後）。省流量模式（saveData）不預載。
+    // 前景需要時直接共用進行中的載入，不會重複下載；預載本身不搶佔前景的網路以外的資源，但網路頻寬是共用的。
+    _scheduleBashWasmPreload() {
+        if (this._bashWasmRuntime || this._bashWasmLoadPromise || this._bashWasmPreloadScheduled) return;
+        const conn = typeof navigator !== 'undefined' ? navigator.connection : null;
+        if (conn && conn.saveData) return;
+        this._bashWasmPreloadScheduled = true;
+        const go = () => { this._bashWasmPreloadScheduled = false; this._ensureBashWasmLoaded(null).catch(() => { /* 預載失敗不影響，前景再試 */ }); };
+        if (typeof requestIdleCallback === 'function') requestIdleCallback(go, { timeout: 3000 });
+        else setTimeout(go, 1500);
+    }
+    // tw_stock_db客製: 2026-11-20 以「有沒有新的下載活動」判定卡住（取代 bash 載入的固定秒數上限）：距離最後一次下載活動超過 stallMs 才逾時。
+    // 逾時訊息寫明階段、已等秒數、最後一次下載量與來源。下載慢但持續有進展就一直等（整體看門狗另有 120 秒保險絲）。
+    _termStalled(session, stage, promise, stallMs) {
+        if (session) session._stage = stage;
+        const t0 = Date.now();
+        this._bashLastActivityAt = t0;
+        this._bashLastProgressText = '';
+        const rec = (ok) => { if (!session) return; (session._timings = session._timings || []).push({ stage, ms: Date.now() - t0, ok }); if (session._timings.length > 40) session._timings.shift(); };
+        let iv = null;
+        const guard = new Promise((_, rej) => {
+            iv = setInterval(() => {
+                const idle = Date.now() - (this._bashLastActivityAt || t0);
+                if (idle < stallMs) return;
+                const last = this._bashLastProgressText ? `最後：${this._bashLastProgressText}` : '尚未收到任何下載資料';
+                rej(Object.assign(new Error(`「${stage}」已 ${Math.round(idle / 1000)} 秒沒有新的下載進度（已等 ${Math.round((Date.now() - t0) / 1000)} 秒；${last}）。網路或 CDN 可能很慢，可以按 Ctrl+C 中斷後再試。`), { stage, timedOut: true }));
+            }, 1000);
+        });
+        return Promise.race([promise, guard]).then((v) => { rec(true); return v; }, (e) => { rec(false); throw e; }).finally(() => clearInterval(iv));
+    }
+    // diag 指令的內容：bash 執行環境狀態、下載／快取紀錄、最近一次主要來源失敗、本終端機各階段耗時（_termTimed 記的）。
+    _terminalDiagText(session) {
+        const mb = (n) => (n / 1048576).toFixed(1);
+        const lines = [];
+        lines.push('bash 執行環境：' + (this._bashWasmRuntime ? '已載入' : this._bashWasmLoadPromise ? '載入中' : '尚未載入（第一個需要 shell 的指令才會下載，或背景預載）'));
+        const evs = this._bashWasmDiag || [];
+        const recent = evs.filter((e) => e.kind === 'cache' || e.kind === 'done').slice(-4);
+        lines.push('下載／快取：' + (recent.length ? recent.map((e) => e.kind === 'cache' ? `${this._bashFileLabel(e.file)} 快取命中（${mb(e.bytes)} MB）` : `${this._bashFileLabel(e.file)} 來源${e.source} ${mb(e.bytes)} MB ${Math.round(e.elapsedMs)}ms`).join('；') : '尚無紀錄'));
+        const fb = evs.filter((e) => e.kind === 'fallback');
+        lines.push('最近一次主要來源失敗：' + (fb.length ? fb[fb.length - 1].reason : '無'));
+        lines.push('JS 執行環境：' + (this._bashJsRuntime ? '已載入' : '未載入'));
+        lines.push('本終端機各階段耗時（最近 15 筆）：');
+        const st = (session && session._timings) || [];
+        if (!st.length) lines.push('  尚無紀錄');
+        st.slice(-15).forEach((t) => lines.push(`  ${t.stage}：${t.ms}ms（${t.ok ? '完成' : '失敗或逾時'}）`));
+        lines.push(`FAP 掛載：已讀取 ${session && session.fapHydrated ? session.fapHydrated.size : 0} 個`);
+        return lines.join('\n');
+    }
+    // ls／cat 快路徑：只處理最單純、一定會成功的形式（沒有旗標、沒有 shell 運算子、路徑都存在、cat 的目標不是目錄）。
+    // 只需要 JS 檔案系統，不載入 busybox.wasm。其餘回傳 false，交給 shell 照舊處理（包括錯誤訊息）。
+    // ls 一行一個（busybox 非終端輸出的樣子）；跟 shell 版的排版是否完全一致，尚未在實機比對。
+    async _terminalFsFastPath(session, cmdName, restArgs) {
+        if (this._terminalHasShellOps(restArgs)) return false;
+        const args = this._terminalTokenizeArgs(restArgs);
+        if (args.some((a) => a.startsWith('-'))) return false;
+        if (cmdName === 'cat' && !args.length) return false;
+        if (cmdName === 'ls' && args.length > 1) return false;
+        const jsRt = await this._bashLoadJsModules(null);
+        const fsStore = await this._ensureTerminalFsStore(session, jsRt);
+        await this._hydrateReferencedFapMounts(session, fsStore, restArgs || session.cwd);
+        if (cmdName === 'cat') {
+            const chunks = [];
+            for (const a of args) {
+                const abs = this._terminalResolvePath(session.cwd, a);
+                try { fsStore.statSync(abs); } catch (_) { return false; }
+                if (this._terminalIsDir(fsStore, abs)) return false;
+                chunks.push(this._terminalSandboxFileBytes(fsStore, abs));
+            }
+            const all = new Uint8Array(chunks.reduce((s, b) => s + b.byteLength, 0));
+            let off = 0;
+            for (const c of chunks) { all.set(c, off); off += c.byteLength; }
+            session.term.write(new TextDecoder('utf-8').decode(all).replace(/\r?\n/g, '\r\n'));
+            return true;
+        }
+        const abs = this._terminalResolvePath(session.cwd, args.length ? args[0] : '.');
+        try { fsStore.statSync(abs); } catch (_) { return false; }
+        if (!this._terminalIsDir(fsStore, abs)) { session.term.write(args[0] + '\r\n'); return true; }
+        const names = fsStore.readdirSync(abs).filter((n) => !n.startsWith('.')).sort();
+        session.term.write(names.map((n) => n + '\r\n').join(''));
+        return true;
     }
 
     // tw_stock_db客製: 2026-09-16使用者要求——內建bash執行環境。見
@@ -113719,43 +113950,25 @@ ${sourceTool.handlerScript}
     // raw.githubusercontent.com對.mjs送出text/plain+nosniff、原生import()
     // 會直接拒絕執行的問題。回傳{run, memoryFs, wasmBytes}，快取在
     // this._bashWasmRuntime，同一個session只會真的載入一次。
-    async _ensureBashWasmLoaded() {
+    // onProgress（可省略）：收到下載／快取／來源切換事件（見_bashWasmEmit）。呼叫期間訂閱、結束就退訂；多個呼叫共用同一個載入，每個訂閱者都收得到。
+    async _ensureBashWasmLoaded(onProgress) {
         if (this._bashWasmRuntime) return this._bashWasmRuntime;
-        if (this._bashWasmLoadPromise) return this._bashWasmLoadPromise;
-        this._bashWasmLoadPromise = (async () => {
-            let run, memoryFs;
-            try {
-                const [runMod, fsMod] = await Promise.all([
-                    import(this._viaAssetProxy(FA_ASSET_URLS.bashWasmJsBase + 'src/index.mjs')),
-                    import(this._viaAssetProxy(FA_ASSET_URLS.bashWasmJsBase + 'src/fs.mjs')),
-                ]);
-                run = runMod.run;
-                memoryFs = fsMod.memoryFs;
-            } catch (primaryErr) {
-                let bundleBuffer;
-                try {
-                    bundleBuffer = await this._fetchAssetBackupFile(FA_ASSET_URLS.bashWasmBackupBase, 'wasi-sh.bundle.mjs');
-                } catch (backupErr) {
-                    throw new Error(`bash 執行環境載入失敗——主要來源：${primaryErr.message}；備份分支：${backupErr.message}`);
-                }
-                const text = new TextDecoder('utf-8').decode(bundleBuffer);
-                const blob = new Blob([text], { type: 'text/javascript' });
-                const blobUrl = URL.createObjectURL(blob);
-                try {
-                    const mod = await import(blobUrl);
-                    run = mod.run;
-                    memoryFs = mod.memoryFs;
-                } finally {
-                    URL.revokeObjectURL(blobUrl);
-                }
+        const sub = typeof onProgress === 'function' ? onProgress : null;
+        if (sub) { if (!this._bashWasmSubs) this._bashWasmSubs = new Set(); this._bashWasmSubs.add(sub); }
+        const emit = (ev) => this._bashWasmEmit(ev);
+        try {
+            if (!this._bashWasmLoadPromise) {
+                this._bashWasmLoadPromise = (async () => {
+                    const { run, memoryFs } = await this._bashLoadJsModules(emit);
+                    const wasmBytes = await this._fetchAssetBytesWithBackup(FA_ASSET_URLS.bashWasmJsBase + 'dist/busybox.wasm', FA_ASSET_URLS.bashWasmBackupBase, 'dist/busybox.wasm', emit);
+                    this._bashWasmRuntime = { run, memoryFs, wasmBytes };
+                    return this._bashWasmRuntime;
+                })().catch((e) => { this._bashWasmLoadPromise = null; throw e; });
             }
-            const wasmBytes = await this._fetchAssetBytesWithBackup(
-                FA_ASSET_URLS.bashWasmJsBase + 'dist/busybox.wasm', FA_ASSET_URLS.bashWasmBackupBase, 'dist/busybox.wasm'
-            );
-            this._bashWasmRuntime = { run, memoryFs, wasmBytes };
-            return this._bashWasmRuntime;
-        })().catch(e => { this._bashWasmLoadPromise = null; throw e; });
-        return this._bashWasmLoadPromise;
+            return await this._bashWasmLoadPromise;
+        } finally {
+            if (sub) this._bashWasmSubs.delete(sub);
+        }
     }
 
     // ============================================================
@@ -114206,6 +114419,7 @@ ${sourceTool.handlerScript}
     async _mountTerminalWidget(container, initialCommand, msg) {
         this._guardWheel(container);
         await this._ensureXtermLoaded();
+        this._scheduleBashWasmPreload();
         const termSettings = this.advancedSettings.terminal || this._createDefaultAdvancedSettings().terminal;
         const term = new Terminal({
             convertEol: true, cursorBlink: true,
@@ -115782,6 +115996,20 @@ ${sourceTool.handlerScript}
             return;
         }
         if (cmdName === 'pwd') { session.term.write(session.cwd + '\r\n'); return; }
+        // tw_stock_db客製: 2026-11-20 echo 快路徑放在任何載入／await 之前（v499 的 echo 快路徑在 AST 路徑，前面還要先 _ensureTerminalProgramLoaded，手機上因此仍會等）。
+        // 只處理沒有 shell 運算子、第一個參數不是旗標（-n 除外）的寫法；其餘照舊交給 shell。
+        if (cmdName === 'echo' && !this._terminalHasShellOps(restArgs)) {
+            let eargs = this._terminalTokenizeArgs(restArgs);
+            let newline = true;
+            if (eargs[0] === '-n') { newline = false; eargs = eargs.slice(1); }
+            if (!(eargs.length && eargs[0].startsWith('-'))) {
+                session.term.write(eargs.join(' ') + (newline ? '\r\n' : ''));
+                this._terminalSetExit(session, 0);
+                return;
+            }
+        }
+        // tw_stock_db客製: 2026-11-20 diag：列出 bash 執行環境的下載／快取狀態與各階段耗時，給使用者截圖回報。
+        if (cmdName === 'diag' && !restArgs) { session.term.write(this._terminalDiagText(session).replace(/\n/g, '\r\n') + '\r\n'); return; }
         if (cmdName === 'help') {
             session.term.write([
                 '內建指令：cd/pwd/clear/exit/help（這幾個在JS層處理，維護跨指令的工作目錄狀態）',
@@ -115794,6 +116022,7 @@ ${sourceTool.handlerScript}
                 'sync [FAP別名]：把/mnt底下的變更寫回真正的FAP（不會自動flush，留空＝全部已讀取過的都flush）',
                 'ask-ai-chat（同ask-floating-ai-assistant）[--format text|json] <問題>：問這個AI助理本身一個問題，阻塞等待回應；可接管線：cat log.txt | ask-ai-chat "摘要"',
                 '其餘指令交給busybox ash執行（ls/cat/grep/sed/awk/find/管線/重導向等都支援）',
+                'diag：列出 bash 執行環境的下載／快取狀態與各階段耗時（可截圖回報）',
                 'top：只顯示這個終端機session自己（沒有真正的process可以列），每秒重繪，按q離開',
             ].join('\r\n') + '\r\n');
             return;
@@ -115938,6 +116167,15 @@ ${sourceTool.handlerScript}
         if (cmdName === 'curl') { await this._terminalCurl(session, restArgs); return; }
         if (cmdName === 'wget') { await this._terminalWget(session, restArgs); return; }
         if (cmdName === 'httping') { await this._terminalHttping(session, restArgs); return; }
+
+        // tw_stock_db客製: 2026-11-20 ls／cat 快路徑（見_terminalFsFastPath）：只需要 JS 檔案系統，不等 busybox.wasm；不符合條件或失敗就交給 shell。
+        if (cmdName === 'ls' || cmdName === 'cat') {
+            if (!this._bashJsRuntime) session.term.write('\x1b[90m準備中…（第一次使用需要下載 shell，下方會顯示進度）\x1b[0m\r\n');
+            let fastDone = false;
+            try { fastDone = await this._termStalled(session, '檔案系統快路徑（載入 JS 模組）', this._terminalFsFastPath(session, cmdName, restArgs), 30000); }
+            catch (err) { session.term.write(`\x1b[31m${String((err && err.message) || err)}\x1b[0m\r\n`); return; }
+            if (fastDone) return;
+        }
 
         let bundleMod = null;
         try {
@@ -116542,6 +116780,17 @@ ${sourceTool.handlerScript}
     // 現在共用同一份邏輯，不會出現「互動打cd有效、AI呼叫terminal_run
     // 跑cd卻沒有更新cwd」這種不一致）。
     async _terminalCd(session, target) {
+        // tw_stock_db客製: 2026-11-20 快路徑：目標是現成的目錄時，只用 JS 檔案系統（不載入 busybox.wasm）就換 cwd。
+        // ~、-、shell 運算子、不存在的目錄照舊交給 shell 判斷與報錯。
+        if (!this._terminalHasShellOps(target) && !/^[~-]/.test(target)) {
+            try {
+                const jsRt = await this._bashLoadJsModules(null);
+                const fsJs = await this._ensureTerminalFsStore(session, jsRt);
+                await this._hydrateReferencedFapMounts(session, fsJs, target);
+                const abs = this._terminalResolvePath(session.cwd, target);
+                if (this._terminalIsDir(fsJs, abs)) { session.cwd = abs; return { ok: true, cwd: abs }; }
+            } catch (_) { /* 快路徑失敗就走下面的 shell 路徑 */ }
+        }
         let runtime;
         try { runtime = await this._ensureBashWasmLoaded(); } catch (err) {
             const msg = String(err.message || err);
@@ -116772,7 +117021,8 @@ ${sourceTool.handlerScript}
     // 跑完後對累積好的stdout/stderr統一寫檔一次），避免每個group各寫一次。
     async _terminalRunWasmLine(session, line, opts = {}) {
         let runtime;
-        try { runtime = await this._termTimed(session, 'bash 執行環境載入', this._ensureBashWasmLoaded(), 30000); } catch (err) {
+        if (!this._bashWasmRuntime && session.term) session.term.write('\x1b[90m準備中…（第一次使用需要下載 shell，下方會顯示進度）\x1b[0m\r\n');
+        try { runtime = await this._termStalled(session, 'bash 執行環境載入', this._ensureBashWasmLoaded(this._terminalBashProgressWriter(session)), 30000); } catch (err) {
             if (err && err.timedOut) this._bashWasmLoadPromise = null;   // 下次重新載入
             return { ok: false, error: String(err.message || err) };
         }
@@ -118020,7 +118270,9 @@ ${sourceTool.handlerScript}
         if (session) session._stage = stage;
         let t = null;
         const guard = new Promise((_, rej) => { t = setTimeout(() => rej(Object.assign(new Error('「' + stage + '」超過 ' + Math.round(ms / 1000) + ' 秒沒有完成'), { stage, timedOut: true })), ms); });
-        return Promise.race([promise, guard]).finally(() => clearTimeout(t));
+        const t0 = Date.now();
+        const rec = (ok) => { if (!session) return; (session._timings = session._timings || []).push({ stage, ms: Date.now() - t0, ok }); if (session._timings.length > 40) session._timings.shift(); };
+        return Promise.race([promise, guard]).then((v) => { rec(true); return v; }, (e) => { rec(false); throw e; }).finally(() => clearTimeout(t));
     }
     _terminalInterrupt(session) {
         if (session._runAbortReject) { const f = session._runAbortReject; session._runAbortReject = null; f(new Error('__TERMINAL_INTERRUPT__')); }   // 立刻放開 busy，不管卡在哪一個階段

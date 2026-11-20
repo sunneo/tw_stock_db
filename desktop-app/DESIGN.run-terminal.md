@@ -1880,3 +1880,45 @@ node scripts/eval/gpgpu_bench.build.js /tmp/gpgpu_bench.js && FA_EVAL_GL=gpu FA_
 - 5 秒中斷的原因：整體看門狗用的是指令的快速上限（ls 5 秒），第一次要下載 bash，所以在下載途中就被切斷。修正：整體看門狗改成 120 秒的保險絲；各階段仍有自己的上限，5 秒只限 shell 執行本身。
 - `echo` 應該走快路徑、不進檔案系統初始化；若還看到這個階段，代表手機還沒套用 v499（請在設定更新，或重新整理）。
 - 下載進度仍未做（見上面的交接項目 8）。
+
+## bash 下載進度、快取、背景預載與快路徑（v501，2026-11-20）
+
+**使用者需求**：第一次開終端機要下載 bash（wasi-sh 的 `index.mjs`、`fs.mjs`，加 `busybox.wasm`），手機上等很久卻沒有任何進度；`ls`、`echo hi` 也要等。
+
+**1. 位元組級下載進度**（`_bashReadBody`、`_fetchAssetBytesWithBackup`、`_fetchAssetBackupFile`）
+- 有 body 串流就一塊一塊讀，約每 100ms 回報一次。有 Content-Length 顯示 `下載 shell 1.2/4.8 MB 25% 已用 6s 來源：主要`；沒有就顯示 `已下載 X MB`。
+- 進度事件走 `_bashWasmEmit`，訂閱者由 `_ensureBashWasmLoaded(onProgress)` 傳入（呼叫期間訂閱，同一個進行中的載入多個呼叫共用）。終端機用 `_terminalBashProgressWriter` 以 `\r\x1b[2K` 就地更新同一行，完成、快取命中、切換來源時換行定稿。
+- 主要來源失敗：顯示 `切換備份來源`，錯誤寫明網址、階段（下載／載入 JS 模組）、原因；兩邊都失敗時訊息列出兩邊。
+- 已知限制：伺服器若 gzip 壓縮，Content-Length 是壓縮後大小，解碼後的已下載量可能超過它，此時不顯示百分比。
+- 分界：JS 模組（`index.mjs`、`fs.mjs`）仍用原生 `import()`，不經串流，所以沒有位元組進度，只有失敗時的切換提示。
+
+**2. 快取與背景預載**
+- 快取：Cache API（`fa-bash-wasm-v1`），key 是完整網址（含 wasi-sh 版本，升版自然失效）。只快取 wasm 位元組。開啟加 3 秒逾時，不支援或被拒就退回無快取，不影響載入。**注意：原規格提到「編譯結果」與 IndexedDB，這一版沒做**：編譯結果快取需要改 `run()` 的介面（目前吃位元組），留給下一版。
+- 背景預載：`_scheduleBashWasmPreload` 在終端機掛載時排程，`requestIdleCallback`（不支援就 1.5 秒後）執行；`navigator.connection.saveData` 時不預載。前景需要時共用進行中的載入，不重複下載。預載不會讓前景「插隊」到網路頻寬之上，頻寬是共用的。
+- JS 模組與 wasm 位元組分開：`_bashLoadJsModules` 只載 `run`／`memoryFs`，所以 ls／cat／cd 不必等 `busybox.wasm`。
+
+**3. 快路徑（不等 bash wasm）**
+- `echo`（含 `-n`）、`pwd`、`clear`、`help`：v499 以來或原本就是 JS。
+- `cd`：目標是現成目錄時用 JS 檔案系統直接換 cwd；`~`、`-`、shell 運算子、不存在的目錄照舊交給 shell。
+- `ls`、`cat`：只處理無旗標、無 shell 運算子、路徑存在（cat 的目標不是目錄）的形式，只需要 JS 檔案系統（`_terminalFsFastPath`，FAP 掛載照常 hydrate）。其餘交給 shell，錯誤訊息仍由 shell 產生。
+- **未驗證的差異**：`ls` 輸出為一行一個（busybox 非終端輸出的樣子），跟 shell 版本的排版是否完全一致，還沒在實機比對。
+
+**4. `diag` 指令**：列出 bash 執行環境是否已載入、最近的下載／快取紀錄、最近一次主要來源失敗的原因、本終端機各階段耗時與成敗（`_termTimed` 記下的，最近 15 筆）、FAP 已讀取數。給使用者截圖回報用。
+- 階段上限：bash 執行環境載入的上限從 30 秒改成 120 秒，因為第一次下載在慢網路上可能超過 30 秒，原本會被切斷然後重來。
+
+**測試（模擬，不是實機）**
+- `renderer/src/terminal/terminal_progress.test.js` 40 passed：分塊串流進度單調遞增、有／無 Content-Length 的顯示、\r 就地更新、主要失敗切備份（事件與終端機文字含網址、階段、原因）、兩邊都失敗的錯誤訊息、快取命中不再下載、Cache API 開啟被拒仍可載入、JS 主要失敗切 bundle、ls／cat／cd 在 wasm 永遠不回的情況下仍立即完成、背景預載只排程一次、前景加入預載共用同一次下載、saveData 不預載、diag 階段列表、session 結束後不寫入、停滯判定（無進展才逾時、有進展就續等）、互動 echo 在載入永不回時仍立即輸出。
+- `terminal_hang.test.js` 21 passed（假 `self` 補上 `_terminalBashProgressWriter`）、`terminal_input.test.js` 28 passed、`terminal_fastpath.test.js` 5 passed。
+
+**未驗證（只在模擬上驗過）**：Galaxy A54／Chrome 上的實際下載進度觀感、真實 CDN 回傳的 Content-Length 是否存在（jsDelivr 通常有 gzip，見上面限制）、快取在行動 Chrome 的實際命中行為、背景預載在手機上會不會影響其他頁面操作。使用者請截圖 `diag` 的輸出回報。
+
+### 手機回報的修正（v501 追加，2026-11-20）
+
+使用者實測（Galaxy A54、網頁版）：沒有下載進度、沒有任何輸出，`ls` 與 `echo` 被「自動中斷」。原因與處理：
+
+- **echo 仍會等**：v499 的 echo 快路徑在 AST 路徑，前面的 `_runTerminalCommand` 還會先 `await _ensureTerminalProgramLoaded`（手機上慢）。現在 echo 快路徑放在所有 `await` 之前（只收沒有 shell 運算子、第一個參數不是旗標的寫法，`-n` 例外）。
+- **逾時看的是「有沒有新位元組」**：bash 載入不再用固定秒數上限（原本 30 秒，手機上第一次下載可能更久）。`_termStalled` 每秒檢查，距離最後一次下載活動超過 30 秒才逾時；有位元組進展就一直等。
+- **逾時一定會印出訊息**：寫明階段、已等秒數、最後的下載量與來源（例如「bash 執行環境載入」已 30 秒沒有新的下載進度（…最後：下載 shell 1.2/4.8 MB 25% …））。ls／cat 的快路徑逾時也會印錯誤，不再無聲。
+- **先出現「準備中…」**：要載入 shell 或 JS 模組時，先印一行「準備中…（第一次使用需要下載 shell，下方會顯示進度）」。
+- **未做**：頁面上沒有版本號的顯示。bundle 裡沒有版本常數（版本號只在 `PATCH_VERSION` 檔與 commit）。要確認新版是否載入，請看 main 的 `web/index.html` 裡釘的 SHA 是否為新 commit，或用瀏覽器的網路面板看 jsDelivr 網址。
+- **網頁版要重新整理**：發版並 pin 之後，手機要硬重新整理（或清快取）才會拿到新的 `floating-assistant` 檔。
