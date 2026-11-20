@@ -10,7 +10,7 @@
 |---|---|
 | `game/` | 打磚塊、飛彈指揮官、賽車、類馬力歐闖關、RPG、類暗黑破壞神的地圖探索（標準的 pygame-ce 寫法） |
 | `gui/` | 讀檔寫檔編輯器、音樂、MIDI、照片檢視器（viewport、縮放、翻轉）、曼德博、碎形、3D 場景（`gl_scene.py`） |
-| `opencl/` | **標準的 pyopencl**（pip 的真套件，我們只接後端）：`device_info.py`（平台與裝置）、`vector_add.py`（官方 Getting started 原封不動）、`array_ops.py`（pyopencl.array：逐元素、歸約、前綴和、複數、ElementwiseKernel／ReductionKernel）、`local_memory_reduction.py`（`__local`＋`barrier`：樹狀歸約與前綴和）、`matmul_tiled.py`（分塊矩陣乘法）、`nbody_float4.py`（float4 向量）、`complex_mandelbrot.py`（複數型別）、`gl_interop.py`（OpenCL↔OpenGL 互通，需要 pygame＋PyOpenGL 視窗） |
+| `opencl/` | **標準的 pyopencl**（pip 的真套件，我們只接後端）：`device_info.py`（平台與裝置）、`vector_add.py`（官方 Getting started 原封不動）、`array_ops.py`（pyopencl.array：逐元素、歸約、前綴和、複數、ElementwiseKernel／ReductionKernel）、`local_memory_reduction.py`（`__local`＋`barrier`：樹狀歸約與前綴和）、`matmul_tiled.py`（分塊矩陣乘法）、`nbody_float4.py`（float4 向量）、`complex_mandelbrot.py`（複數型別）、`image_filter.py`（圖像＋取樣器的 3×3 模糊）、`image_formats_1d_buffer.py`（打包格式 RGB565、IMAGE1D_BUFFER、查詢格式）、`svm_demo.py`（SVM）、`pipe_demo.py`（Pipe 生產者／消費者）、`gl_interop.py`（OpenCL↔OpenGL 緩衝區互通）、`gl_texture_interop.py`（OpenCL↔OpenGL 紋理互通；兩個 GL 範例需要 pygame＋PyOpenGL 視窗） |
 | `gpgpu/` | `swap_stream.py`（IndexedDB 當 swap 的 out-of-core 處理）、3D N-body（照 `sdlmm/exams/nbody3d.c` 移植：同物理、同隨機化、同控制與覆蓋層、加成混合的光點）、3D SPH 流體：計算來源可在視窗內或用 `--device cpu|gpu|auto` 切換 |
 
 ## pygame 與 OpenGL：都是 pip 的真套件
@@ -48,5 +48,5 @@
 
 `import pyopencl` 是 pip 的真 pyopencl（第一次用時從 PyPI 取得純 Python 檔案，要有網路；`pytools`、`platformdirs`、`mako` 用 micropip 裝）。C 擴充 `_cl` 那一層由我們提供，底下是 ICD 載入器與驅動：
 平台 0 是 **GPU**（WebGPU → WebGL2，用 cudaweb 的 KIR 裝置層；很小的問題會自動改走 CPU），平台 1 是 **CPU**（我們的 OpenCL C 前端 → JS，支援 `__local`＋`barrier`、struct、向量型別、複數、原子操作）。
-`cl.create_some_context()` 預設選第一個。限制見 `DESIGN.pyopencl.md` §10–§11（圖像、SVM、Pipe 尚未支援，會得到標準的 OpenCL 錯誤）。
-OpenCL↔OpenGL 互通用標準寫法（`cl.GLBuffer`、`enqueue_acquire_gl_objects`、`get_gl_sharing_context_properties`）；GL 緩衝區與 OpenCL 緩衝區是兩塊記憶體，acquire／release 是同步點。
+`cl.create_some_context()` 預設選第一個。限制見 `DESIGN.pyopencl.md` §10–§11（圖像／取樣器、SVM［粗粒度］、Pipe、GLTexture／GLRenderBuffer 都已支援；細粒度 SVM、mip 層級、`work_group_*` 的 pipe 函式會得到標準的 OpenCL 錯誤）。
+OpenCL↔OpenGL 互通用標準寫法（`cl.GLBuffer`、`cl.GLTexture`、`cl.GLRenderBuffer`、`enqueue_acquire_gl_objects`、`get_gl_sharing_context_properties`）；GL 緩衝區與 OpenCL 緩衝區是兩塊記憶體，acquire／release 是同步點。

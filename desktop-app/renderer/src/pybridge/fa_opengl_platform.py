@@ -120,8 +120,11 @@ class _Names(object):
         self.t.pop(int(i), None)
 
 
-_OBJ = {k: _Names() for k in ("buffer", "shader", "program", "texture", "vao", "uloc")}
-_BOUND = {"array": 0, "element": 0, "program": 0, "vao": 0}
+_OBJ = {k: _Names() for k in ("buffer", "shader", "program", "texture", "vao", "uloc", "renderbuffer", "framebuffer")}
+_BOUND = {"array": 0, "element": 0, "program": 0, "vao": 0, "tex2d": 0, "rbo": 0, "fbo": 0}
+_TEX = {}   # 紋理 id → {"levels": {level: (w, h, internal)}, "rev": 修訂號}（pyopencl 的 GLTexture 用）
+_RBO = {}   # renderbuffer id → {"w", "h", "internal", "rev"}
+_FBO = {}   # framebuffer id → {附著點: ("tex", id, level) | ("rbo", id)}
 _PROG = {}   # program id → {"attribs": {name: loc}}
 
 
@@ -462,44 +465,56 @@ def _attr_divisor(index, divisor):
 def _draw_arrays(mode, first, count):
     ff = _CTX["ff"]
     if ff is not None and _BOUND["program"] == 0:
-        return ff.draw_arrays(int(_v(mode)), int(_v(first)), int(_v(count)))
+        ff.draw_arrays(int(_v(mode)), int(_v(first)), int(_v(count)))
+        _touch_fbo()
+        return None
     _be().draw_arrays(int(_v(mode)), int(_v(first)), int(_v(count)))
+    _touch_fbo()
 
 
 @gl("glDrawElements")
 def _draw_elements(mode, count, typ, indices):
     ff = _CTX["ff"]
     if ff is not None and _BOUND["program"] == 0:
-        return ff.draw_elements(int(_v(mode)), int(_v(count)), int(_v(typ)), indices)
+        ff.draw_elements(int(_v(mode)), int(_v(count)), int(_v(typ)), indices)
+        _touch_fbo()
+        return None
     _be().draw_elements(int(_v(mode)), int(_v(count)), int(_v(typ)), _addr(indices))
+    _touch_fbo()
 
 
 @gl("glDrawArraysInstanced")
 def _draw_arrays_instanced(mode, first, count, instances):
     _be().draw_arrays_instanced(int(_v(mode)), int(_v(first)), int(_v(count)), int(_v(instances)))
+    _touch_fbo()
 
 
 @gl("glDrawElementsInstanced")
 def _draw_elements_instanced(mode, count, typ, indices, instances):
     _be().draw_elements_instanced(int(_v(mode)), int(_v(count)), int(_v(typ)), _addr(indices), int(_v(instances)))
+    _touch_fbo()
 
 
 # 紋理
 @gl("glGenTextures")
 def _gen_textures(n, out):
     ids = [_OBJ["texture"].new(_be().create_texture()) for _ in range(int(_v(n)))]
+    for i in ids:
+        _TEX[i] = {"levels": {}, "rev": 0}
     _write(out, b"".join(i.to_bytes(4, "little") for i in ids))
 
 
 @gl("glBindTexture")
 def _bind_texture(target, tex):
+    if int(_v(target)) == 0x0DE1:
+        _BOUND["tex2d"] = int(_v(tex))
     _be().bind_texture(int(_v(target)), _OBJ["texture"].get(int(_v(tex))))
 
 
 @gl("glDeleteTextures")
 def _del_textures(n, ids):
     for i in _ints(ids, int(_v(n))):
-        _be().delete_texture(_OBJ["texture"].get(i)); _OBJ["texture"].drop(i)
+        _be().delete_texture(_OBJ["texture"].get(i)); _OBJ["texture"].drop(i); _TEX.pop(i, None)
 
 
 @gl("glTexImage2D")
@@ -510,12 +525,161 @@ def _tex_image_2d(target, level, internal, width, height, border, fmt, typ, pixe
     if internal in (3, 4, 1, 2):   # 舊式的元件數 → 對應的 sized 格式
         internal = {1: 0x1909, 2: 0x190A, 3: 0x1907, 4: 0x1908}[internal]
     _be().tex_image_2d(int(_v(target)), int(_v(level)), internal, w, h, int(_v(border)), f, t, data)
+    e = _TEX.get(_BOUND["tex2d"]) if int(_v(target)) == 0x0DE1 else None
+    if e is not None:
+        e["levels"][int(_v(level))], e["rev"] = (w, h, internal), e["rev"] + 1
 
 
 @gl("glTexSubImage2D")
 def _tex_sub_image_2d(target, level, x, y, width, height, fmt, typ, pixels):
     w, h, f, t = int(_v(width)), int(_v(height)), int(_v(fmt)), int(_v(typ))
     _be().tex_sub_image_2d(int(_v(target)), int(_v(level)), int(_v(x)), int(_v(y)), w, h, f, t, _read(pixels, w * h * FMT_COMP.get(f, 4) * TYPE_SIZE.get(t, 1)))
+    e = _TEX.get(_BOUND["tex2d"]) if int(_v(target)) == 0x0DE1 else None
+    if e is not None:
+        e["rev"] += 1
+
+
+# renderbuffer 與 framebuffer（也是 pyopencl 的 GLRenderBuffer 與「渲染到紋理」的基礎）
+@gl("glGenRenderbuffers")
+def _gen_renderbuffers(n, out):
+    ids = [_OBJ["renderbuffer"].new(_be().create_renderbuffer()) for _ in range(int(_v(n)))]
+    for i in ids:
+        _RBO[i] = {"w": 0, "h": 0, "internal": 0, "rev": 0}
+    _write(out, b"".join(i.to_bytes(4, "little") for i in ids))
+
+
+@gl("glBindRenderbuffer")
+def _bind_renderbuffer(target, rb):
+    _BOUND["rbo"] = int(_v(rb))
+    _be().bind_renderbuffer(int(_v(target)), _OBJ["renderbuffer"].get(int(_v(rb))))
+
+
+@gl("glDeleteRenderbuffers")
+def _del_renderbuffers(n, ids):
+    for i in _ints(ids, int(_v(n))):
+        _be().delete_renderbuffer(_OBJ["renderbuffer"].get(i)); _OBJ["renderbuffer"].drop(i); _RBO.pop(i, None)
+
+
+@gl("glRenderbufferStorage")
+def _renderbuffer_storage(target, internal, width, height):
+    _be().renderbuffer_storage(int(_v(target)), int(_v(internal)), int(_v(width)), int(_v(height)))
+    e = _RBO.get(_BOUND["rbo"])
+    if e is not None:
+        e["w"], e["h"], e["internal"], e["rev"] = int(_v(width)), int(_v(height)), int(_v(internal)), e["rev"] + 1
+
+
+@gl("glGenFramebuffers")
+def _gen_framebuffers(n, out):
+    ids = [_OBJ["framebuffer"].new(_be().create_framebuffer()) for _ in range(int(_v(n)))]
+    for i in ids:
+        _FBO[i] = {}
+    _write(out, b"".join(i.to_bytes(4, "little") for i in ids))
+
+
+@gl("glBindFramebuffer")
+def _bind_framebuffer(target, fb):
+    _BOUND["fbo"] = int(_v(fb))
+    _be().bind_framebuffer(int(_v(target)), _OBJ["framebuffer"].get(int(_v(fb))))
+
+
+@gl("glDeleteFramebuffers")
+def _del_framebuffers(n, ids):
+    for i in _ints(ids, int(_v(n))):
+        _be().delete_framebuffer(_OBJ["framebuffer"].get(i)); _OBJ["framebuffer"].drop(i); _FBO.pop(i, None)
+        if _BOUND["fbo"] == i:
+            _BOUND["fbo"] = 0
+
+
+@gl("glFramebufferTexture2D")
+def _framebuffer_texture_2d(target, attachment, textarget, tex, level):
+    t = int(_v(tex))
+    _be().framebuffer_texture_2d(int(_v(target)), int(_v(attachment)), int(_v(textarget)), _OBJ["texture"].get(t), int(_v(level)))
+    if _BOUND["fbo"] in _FBO:
+        _FBO[_BOUND["fbo"]][int(_v(attachment))] = ("tex", t, int(_v(level))) if t else None
+
+
+@gl("glFramebufferRenderbuffer")
+def _framebuffer_renderbuffer(target, attachment, rbtarget, rb):
+    r = int(_v(rb))
+    _be().framebuffer_renderbuffer(int(_v(target)), int(_v(attachment)), int(_v(rbtarget)), _OBJ["renderbuffer"].get(r))
+    if _BOUND["fbo"] in _FBO:
+        _FBO[_BOUND["fbo"]][int(_v(attachment))] = ("rbo", r) if r else None
+
+
+@gl("glCheckFramebufferStatus")
+def _check_framebuffer_status(target):
+    return _be().check_framebuffer_status(int(_v(target)))
+
+
+def _touch_fbo():
+    """畫到目前綁定的 framebuffer 之後：附著的紋理／renderbuffer 內容變了，修訂號加一（GLTexture／GLRenderBuffer 靠它知道要重新讀）。
+    追蹤 glDraw*（含固定管線的頂點陣列繪製）與 glClear；glBegin／glEnd 的立即模式不追蹤。"""
+    for att in _FBO.get(_BOUND["fbo"], {}).values():
+        if att is None:
+            continue
+        e = _TEX.get(att[1]) if att[0] == "tex" else _RBO.get(att[1])
+        if e is not None:
+            e["rev"] += 1
+
+
+_clear_orig = _FN["glClear"]
+
+
+def _clear_touch(*a):
+    _clear_orig(*a)
+    _touch_fbo()
+
+
+_FN["glClear"] = _clear_touch
+
+
+# ---- interop：紋理與 renderbuffer（pyopencl 的 GLTexture／GLRenderBuffer）。格式對照：GL sized 內部格式 → (CL 通道順序, CL 通道型別, 讀回的 GL 格式, GL 型別, 每像素位元組)
+GL_INTEROP_FORMATS = {
+    0x1908: ("RGBA", "UNORM_INT8", 0x1908, 0x1401, 4), 0x8058: ("RGBA", "UNORM_INT8", 0x1908, 0x1401, 4),   # RGBA（未定大小）、RGBA8
+    0x8814: ("RGBA", "FLOAT", 0x1908, 0x1406, 16), 0x881A: ("RGBA", "HALF_FLOAT", 0x1908, 0x140B, 8),        # RGBA32F、RGBA16F
+    0x8229: ("R", "UNORM_INT8", 0x1903, 0x1401, 1), 0x822E: ("R", "FLOAT", 0x1903, 0x1406, 4),              # R8、R32F
+    0x822B: ("RG", "UNORM_INT8", 0x8227, 0x1401, 2), 0x8230: ("RG", "FLOAT", 0x8227, 0x1406, 8),            # RG8、RG32F
+}
+
+
+def interop_texture_info(name, level=0):
+    """→ (寬, 高, 內部格式, 修訂號)；沒有這個紋理或這一層沒有資料回 None。"""
+    e = _TEX.get(int(name))
+    lv = e["levels"].get(int(level)) if e is not None else None
+    return (lv[0], lv[1], lv[2], e["rev"]) if lv is not None else None
+
+
+def interop_texture_read(name, level=0):
+    w, h, internal, _ = interop_texture_info(name, level)
+    f = GL_INTEROP_FORMATS[internal]
+    return _be().read_texture(_OBJ["texture"].get(int(name)), int(level), w, h, f[2], f[3])
+
+
+def interop_texture_write(name, data, level=0):
+    w, h, internal, _ = interop_texture_info(name, level)
+    f = GL_INTEROP_FORMATS[internal]
+    _be().write_texture(_OBJ["texture"].get(int(name)), int(level), w, h, f[2], f[3], bytes(data))
+    _TEX[int(name)]["rev"] += 1
+    return _TEX[int(name)]["rev"]
+
+
+def interop_renderbuffer_info(name):
+    e = _RBO.get(int(name))
+    return (e["w"], e["h"], e["internal"], e["rev"]) if e is not None and e["w"] > 0 else None
+
+
+def interop_renderbuffer_read(name):
+    w, h, internal, _ = interop_renderbuffer_info(name)
+    f = GL_INTEROP_FORMATS[internal]
+    return _be().read_renderbuffer(_OBJ["renderbuffer"].get(int(name)), w, h, f[2], f[3])
+
+
+def interop_renderbuffer_write(name, data):
+    w, h, internal, _ = interop_renderbuffer_info(name)
+    f = GL_INTEROP_FORMATS[internal]
+    _be().write_renderbuffer(_OBJ["renderbuffer"].get(int(name)), w, h, internal, f[2], f[3], bytes(data))
+    _RBO[int(name)]["rev"] += 1
+    return _RBO[int(name)]["rev"]
 
 
 @gl("glReadPixels")
@@ -1106,7 +1270,10 @@ class WebGL2Backend(object):
     def draw_elements_instanced(self, mode, count, typ, off, n): self.g.drawElementsInstanced(mode, count, typ, off, n)
     def create_texture(self): return self.g.createTexture()
     def delete_texture(self, t): self.g.deleteTexture(t)
-    def bind_texture(self, target, t): self.g.bindTexture(target, t)
+    def bind_texture(self, target, t):
+        if target == 0x0DE1:
+            self._tex2d = t
+        self.g.bindTexture(target, t)
     def active_texture(self, unit): self.g.activeTexture(unit)
     def generate_mipmap(self, target): self.g.generateMipmap(target)
     def tex_parameteri(self, target, p, v): self.g.texParameteri(target, p, int(v))
@@ -1116,6 +1283,83 @@ class WebGL2Backend(object):
 
     def tex_sub_image_2d(self, target, level, x, y, w, h, fmt, typ, data):
         self.g.texSubImage2D(target, level, x, y, w, h, fmt, typ, self._u8(data))
+
+    # ---- renderbuffer／framebuffer
+    def create_renderbuffer(self): return self.g.createRenderbuffer()
+    def delete_renderbuffer(self, r): self.g.deleteRenderbuffer(r)
+    def bind_renderbuffer(self, target, r): self.g.bindRenderbuffer(target, r)
+    def renderbuffer_storage(self, target, internal, w, h): self.g.renderbufferStorage(target, internal, w, h)
+    def create_framebuffer(self): return self.g.createFramebuffer()
+    def delete_framebuffer(self, f): self.g.deleteFramebuffer(f)
+
+    def bind_framebuffer(self, target, f):
+        self._fbo = f
+        self.g.bindFramebuffer(target, f)
+
+    def framebuffer_texture_2d(self, target, attachment, textarget, tex, level): self.g.framebufferTexture2D(target, attachment, textarget, tex, level)
+    def framebuffer_renderbuffer(self, target, attachment, rbtarget, rb): self.g.framebufferRenderbuffer(target, attachment, rbtarget, rb)
+    def check_framebuffer_status(self, target): return int(self.g.checkFramebufferStatus(target))
+
+    # ---- interop 的像素讀寫（不動使用者的綁定）。WebGL2 要求型別化陣列與像素型別一致：FLOAT→Float32Array、HALF_FLOAT→Uint16Array、UBYTE→Uint8Array
+    def _typed(self, data, typ):
+        u8 = self._u8(data)
+        if typ == 0x1406:
+            return self.js.Float32Array.new(u8.buffer, u8.byteOffset, u8.byteLength // 4)
+        if typ == 0x140B:
+            return self.js.Uint16Array.new(u8.buffer, u8.byteOffset, u8.byteLength // 2)
+        return u8
+
+    def _blank(self, n, typ):
+        if typ == 0x1406:
+            return self.js.Float32Array.new(n // 4)
+        if typ == 0x140B:
+            return self.js.Uint16Array.new(n // 2)
+        return self.js.Uint8Array.new(n)
+
+    def _read_attached(self, attach, w, h, fmt, typ):
+        fb = self.g.createFramebuffer()
+        self.g.bindFramebuffer(0x8D40, fb)
+        attach()
+        out = self._blank(w * h * FMT_COMP.get(fmt, 4) * TYPE_SIZE.get(typ, 2 if typ == 0x140B else 1), typ)
+        self.g.readPixels(0, 0, w, h, fmt, typ, out)
+        self.g.bindFramebuffer(0x8D40, getattr(self, "_fbo", None))
+        self.g.deleteFramebuffer(fb)
+        return bytes(self.js.Uint8Array.new(out.buffer).to_py())
+
+    def read_texture(self, handle, level, w, h, fmt, typ):
+        return self._read_attached(lambda: self.g.framebufferTexture2D(0x8D40, 0x8CE0, 0x0DE1, handle, level), w, h, fmt, typ)
+
+    def read_renderbuffer(self, handle, w, h, fmt, typ):
+        return self._read_attached(lambda: self.g.framebufferRenderbuffer(0x8D40, 0x8CE0, 0x8D41, handle), w, h, fmt, typ)
+
+    def write_texture(self, handle, level, w, h, fmt, typ, data):
+        prev = getattr(self, "_tex2d", None)
+        self.g.bindTexture(0x0DE1, handle)
+        self.g.texSubImage2D(0x0DE1, level, 0, 0, w, h, fmt, typ, self._typed(data, typ))
+        self.g.bindTexture(0x0DE1, prev)
+
+    def write_renderbuffer(self, handle, w, h, internal, fmt, typ, data):
+        """renderbuffer 不能直接上傳像素：放進暫時的紋理，再用 blitFramebuffer 複製進去"""
+        g, prev_tex, prev_fbo = self.g, getattr(self, "_tex2d", None), getattr(self, "_fbo", None)
+        tex = g.createTexture()
+        g.bindTexture(0x0DE1, tex)
+        g.texImage2D(0x0DE1, 0, internal, w, h, 0, fmt, typ, self._typed(data, typ))
+        src, dst = g.createFramebuffer(), g.createFramebuffer()
+        g.bindFramebuffer(0x8CA8, src)
+        g.framebufferTexture2D(0x8CA8, 0x8CE0, 0x0DE1, tex, 0)
+        g.bindFramebuffer(0x8CA9, dst)
+        g.framebufferRenderbuffer(0x8CA9, 0x8CE0, 0x8D41, handle)
+        scissor = bool(g.isEnabled(0x0C11))
+        if scissor:
+            g.disable(0x0C11)
+        g.blitFramebuffer(0, 0, w, h, 0, 0, w, h, 0x4000, 0x2600)
+        if scissor:
+            g.enable(0x0C11)
+        g.bindFramebuffer(0x8D40, prev_fbo)
+        g.deleteFramebuffer(src)
+        g.deleteFramebuffer(dst)
+        g.bindTexture(0x0DE1, prev_tex)
+        g.deleteTexture(tex)
 
     # 緩衝區讀寫：用 COPY_READ／COPY_WRITE 綁定點，不動 ARRAY_BUFFER 等使用者目前的綁定（interop 用）
     def read_buffer(self, handle, offset, size):

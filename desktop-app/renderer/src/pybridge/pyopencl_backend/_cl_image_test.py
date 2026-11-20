@@ -63,7 +63,7 @@ def _():
     fs = cl.get_supported_image_formats(ctx, mf.READ_WRITE, cl.mem_object_type.IMAGE2D)
     names = {(f.channel_order, f.channel_data_type) for f in fs}
     assert (int(co.RGBA), int(ct.FLOAT)) in names and (int(co.RGBA), int(ct.UNORM_INT8)) in names
-    assert not any(f.channel_data_type == int(ct.UNORM_SHORT_565) or f.channel_order == int(co.RGB) for f in fs)
+    assert not any((f.channel_order in (int(co.RGB), 0x10bc)) != (f.channel_data_type in (int(ct.UNORM_SHORT_565), int(ct.UNORM_SHORT_555), int(ct.UNORM_INT_101010))) for f in fs)   # RGB 只配打包型別
 
 
 @t("Image：info、shape、写入再讀回（含 host 的 row_pitch）")
@@ -133,7 +133,7 @@ def _():
     assert rd(a, (0, 0, 0), (2, 2, 2), np.uint16, (2, 2, 2))[1, 1, 1] == 99
 
 
-@t("錯誤：格式不符、越界、不支援的格式與 IMAGE1D_BUFFER、型別對不上")
+@t("錯誤：格式不符、越界、不合法的格式組合、型別對不上")
 def _():
     a, b = img2d((2, 2)), img2d((2, 2), fmt=cl.ImageFormat(co.RGBA, ct.FLOAT))
     for fn, name in ((lambda: cl._enqueue_copy_image(queue, a, b, (0, 0), (0, 0), (2, 2)), "IMAGE_FORMAT_MISMATCH"),
@@ -145,11 +145,11 @@ def _():
         else:
             raise AssertionError("沒有丟出 " + name)
     try:
-        img2d((2, 2), fmt=cl.ImageFormat(co.RGB, ct.UNORM_SHORT_565))
+        img2d((2, 2), fmt=cl.ImageFormat(co.RGB, ct.FLOAT))
     except cl.Error as e:
         assert e.code == cl.status_code.IMAGE_FORMAT_NOT_SUPPORTED, e.code
     else:
-        raise AssertionError("打包格式應該被拒絕")
+        raise AssertionError("RGB 配 FLOAT 應該被拒絕")
     prg = cl._Program(ctx, "__kernel void k(__read_only image2d_t a, __global float* o) { o[0] = 1.0f; }")
     prg._build()
     k = cl.Kernel(prg, "k")
@@ -213,6 +213,202 @@ def _():
         assert e.code == cl.status_code.INVALID_VALUE
     else:
         raise AssertionError("細粒度應該被拒絕（裝置沒有回報這個能力）")
+
+
+@t("打包格式 565／555／101010（RGB）往返與核心讀取；RGB 只能配打包型別")
+def _():
+    for ctype, bpp, vals in ((ct.UNORM_SHORT_565, 2, (1.0, 0.0, 1.0)), (ct.UNORM_SHORT_555, 2, (0.0, 1.0, 0.0)), (ct.UNORM_INT_101010, 4, (1.0, 0.0, 1.0))):
+        im = img2d((2, 1), fmt=cl.ImageFormat(co.RGB, ctype))
+        assert im.element_size == bpp
+        o = cl.Buffer(ctx, mf.READ_WRITE, 32)
+        run("""__kernel void w(__write_only image2d_t im) { write_imagef(im, (int2)(get_global_id(0), 0), (float4)(%ff, %ff, %ff, 1.0f)); }""" % vals, "w", (2,), im)
+        run("""__kernel void r(__read_only image2d_t im, __global float* o) { float4 p = read_imagef(im, (int2)(1, 0)); o[0] = p.x; o[1] = p.y; o[2] = p.z; o[3] = p.w; }""", "r", (1,), im, o)
+        r = np.zeros(4, np.float32)
+        cl._enqueue_read_buffer(queue, o, r)
+        assert r.tolist() == [vals[0], vals[1], vals[2], 1.0], (ctype, r)
+    assert any(f.channel_order == int(co.RGB) and f.channel_data_type == int(ct.UNORM_SHORT_565) for f in cl.get_supported_image_formats(ctx, mf.READ_WRITE, cl.mem_object_type.IMAGE2D))
+    try:
+        img2d((2, 2), fmt=cl.ImageFormat(co.RGB, ct.FLOAT))
+    except cl.Error as e:
+        assert e.code == cl.status_code.IMAGE_FORMAT_NOT_SUPPORTED
+    else:
+        raise AssertionError("RGB 配 FLOAT 應該被拒絕")
+    raw = np.array([0x07E0, 0xF800], np.uint16)   # 565：綠、紅
+    im = img2d((2, 1), fmt=cl.ImageFormat(co.RGB, ct.UNORM_SHORT_565), host=raw)
+    o = cl.Buffer(ctx, mf.READ_WRITE, 32)
+    run("""__kernel void r(__read_only image2d_t im, __global float* o) { float4 a = read_imagef(im, (int2)(0, 0)); float4 b = read_imagef(im, (int2)(1, 0)); o[0] = a.y; o[1] = a.x; o[2] = b.x; }""", "r", (1,), im, o)
+    r = np.zeros(3, np.float32)
+    cl._enqueue_read_buffer(queue, o, r)
+    assert r.tolist() == [1.0, 0.0, 1.0]
+
+
+@t("IMAGE1D_BUFFER：與緩衝區共用記憶體（雙向可見）")
+def _():
+    buf = cl.Buffer(ctx, mf.READ_WRITE | mf.COPY_HOST_PTR, hostbuf=np.arange(8, dtype=np.float32))
+    d = cl.ImageDescriptor()
+    d.image_type, d.shape, d.buffer = cl.mem_object_type.IMAGE1D_BUFFER, (8,), buf
+    im = cl.Image(ctx, mf.READ_WRITE, cl.ImageFormat(co.R, ct.FLOAT), desc=d)
+    assert im.type == cl.mem_object_type.IMAGE1D_BUFFER and im.get_image_info(cl.image_info.BUFFER) is buf
+    o = cl.Buffer(ctx, mf.READ_WRITE, 32)
+    run("""__kernel void k(__read_only image1d_buffer_t im, __global float* o) { int i = get_global_id(0); o[i] = read_imagef(im, i).x * 10.0f; }""", "k", (8,), im, o)
+    r = np.zeros(8, np.float32)
+    cl._enqueue_read_buffer(queue, o, r)
+    assert r.tolist() == [i * 10.0 for i in range(8)]
+    run("""__kernel void w(__write_only image1d_buffer_t im) { write_imagef(im, (int)get_global_id(0), (float4)(100.0f + get_global_id(0), 0, 0, 0)); }""", "w", (8,), im)
+    cl._enqueue_read_buffer(queue, buf, r)   # 寫圖像，緩衝區看得到
+    assert r.tolist() == [100.0 + i for i in range(8)]
+    cl._enqueue_write_buffer(queue, buf, np.full(8, 3, np.float32))   # 寫緩衝區，圖像看得到
+    assert rd(im, (0,), (8,), np.float32, (8,)).tolist() == [3.0] * 8
+
+
+@t("Pipe：寫入、讀出、空／滿回 -1、reserve 版本、struct／向量封包、跨啟動保留")
+def _():
+    pipe = cl.Pipe(ctx, 0, 4, 8)
+    assert pipe.get_pipe_info(cl.pipe_info.PACKET_SIZE) == 4 and pipe.get_pipe_info(cl.pipe_info.MAX_PACKETS) == 8 and pipe.type == cl.mem_object_type.PIPE
+    out = cl.Buffer(ctx, mf.READ_WRITE, 64)
+    prod = "__kernel void prod(__write_only pipe float p, __global int* r) { int i = get_global_id(0); float v = 1.5f * i; r[i] = write_pipe(p, &v); }"
+    cons = "__kernel void cons(__read_only pipe float p, __global float* o, __global int* r) { int i = get_global_id(0); float v = -1.0f; r[i] = read_pipe(p, &v); o[i] = v; }"
+    res = cl.Buffer(ctx, mf.READ_WRITE, 64)
+    run(prod, "prod", (10,), pipe, res)   # 容量 8：前 8 個成功，後 2 個滿了
+    r = np.zeros(10, np.int32)
+    cl._enqueue_read_buffer(queue, res, r)
+    assert r.tolist() == [0] * 8 + [-1] * 2, r
+    run(cons, "cons", (10,), pipe, out, res)   # 在另一次啟動讀：8 個成功、2 個空
+    o = np.zeros(10, np.float32)
+    cl._enqueue_read_buffer(queue, out, o)
+    cl._enqueue_read_buffer(queue, res, r)
+    assert r.tolist() == [0] * 8 + [-1] * 2 and o[:8].tolist() == [1.5 * i for i in range(8)] and o[8] == -1.0, (r, o)
+    vp = cl.Pipe(ctx, 0, 16, 4)
+    src = """__kernel void k(__write_only pipe float4 w, __read_only pipe float4 rd, __global float* o) {
+      float4 v = (float4)(1.0f, 2.0f, 3.0f, 4.0f); write_pipe(w, &v);
+      reserve_id_t id = reserve_write_pipe(w, 2); if (is_valid_reserve_id(id)) { float4 a = v * 2.0f; float4 b = v * 3.0f; write_pipe(w, id, 0, &a); write_pipe(w, id, 1, &b); commit_write_pipe(w, id); }
+      o[0] = get_pipe_num_packets(w); o[1] = get_pipe_max_packets(w); }"""
+    run(src.replace("__read_only pipe float4 rd, ", ""), "k", (1,), vp, out)
+    o2 = np.zeros(2, np.float32)
+    cl._enqueue_read_buffer(queue, out, o2)
+    assert o2.tolist() == [3.0, 4.0], o2
+    run("""__kernel void d(__read_only pipe float4 p, __global float* o) { reserve_id_t id = reserve_read_pipe(p, 3); float4 x, y, z; read_pipe(p, id, 0, &x); read_pipe(p, id, 1, &y); read_pipe(p, id, 2, &z); o[0] = x.w; o[1] = y.w; o[2] = z.w; }""", "d", (1,), vp, out)
+    o3 = np.zeros(3, np.float32)
+    cl._enqueue_read_buffer(queue, out, o3)
+    assert o3.tolist() == [4.0, 8.0, 12.0], o3
+    try:
+        _p = cl._Program(ctx, prod)
+        _p._build()
+        k = cl.Kernel(_p, "prod")
+        k.set_arg(0, cl.Buffer(ctx, mf.READ_WRITE, 16))
+    except cl.Error as e:
+        assert e.code == cl.status_code.INVALID_MEM_OBJECT
+    else:
+        raise AssertionError("緩衝區不能傳給 pipe 參數")
+    try:
+        cl.Pipe(ctx, 0, 0, 4)
+    except cl.Error as e:
+        assert e.code == cl.status_code.INVALID_PIPE_SIZE
+    else:
+        raise AssertionError("packet_size 0 應該被拒絕")
+
+
+try:
+    import OpenGL  # noqa: F401
+    _HAVE_GL = True
+except ImportError:
+    _HAVE_GL = False
+
+
+@t("GLTexture／GLRenderBuffer：acquire／release 同步、修訂號跳過、尺寸變更與不支援的目標")
+def _():
+    if not _HAVE_GL:
+        return
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    import fa_opengl_platform as P
+    P.register()
+    from OpenGL.GL import (glGenTextures, glBindTexture, glTexImage2D, glGenRenderbuffers, glBindRenderbuffer, glRenderbufferStorage, GL_TEXTURE_2D,
+                           GL_RGBA, GL_RGBA8, GL_UNSIGNED_BYTE, GL_RENDERBUFFER)
+    import ctypes
+
+    class Store(object):
+        def __init__(self):
+            self.n, self.px, self.rb, self.tex2d, self.reads, self.writes = 0, {}, {}, None, 0, 0
+
+        def __getattr__(self, name):
+            return lambda *a, **k: ("h%d" % self.__dict__.setdefault("n", 0)) if name.startswith("create_") else None
+
+        def create_texture(self):
+            self.n += 1
+            return "t%d" % self.n
+
+        def create_renderbuffer(self):
+            self.n += 1
+            return "r%d" % self.n
+
+        def bind_texture(self, tg, h):
+            self.tex2d = h
+
+        def tex_image_2d(self, tg, level, internal, w, h, border, fmt, typ, data):
+            self.px[(self.tex2d, level)] = bytearray(data)
+
+        def read_texture(self, h, level, w, ht, fmt, typ):
+            self.reads += 1
+            return bytes(self.px[(h, level)])
+
+        def write_texture(self, h, level, w, ht, fmt, typ, data):
+            self.writes += 1
+            self.px[(h, level)][:] = data
+
+        def read_renderbuffer(self, h, w, ht, fmt, typ):
+            self.reads += 1
+            return bytes(self.rb.get(h) or bytearray(w * ht * 4))
+
+        def write_renderbuffer(self, h, w, ht, internal, fmt, typ, data):
+            self.writes += 1
+            self.rb[h] = bytearray(data)
+
+    st = Store()
+    P._CTX["backend"] = st
+    tx = int(glGenTextures(1))
+    glBindTexture(GL_TEXTURE_2D, tx)
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 4, 2, 0, GL_RGBA, GL_UNSIGNED_BYTE, (ctypes.c_ubyte * 32)(*range(32)))
+    im = cl.GLTexture(ctx, mf.READ_WRITE, 0x0DE1, 0, tx, 2)
+    assert im.type == cl.mem_object_type.IMAGE2D and (im.width, im.height) == (4, 2) and im.get_gl_object_info() == (cl.gl_object_type.TEXTURE2D, tx)
+    assert im.get_gl_texture_info(cl.gl_texture_info.TEXTURE_TARGET) == 0x0DE1
+    cl.enqueue_acquire_gl_objects(queue, [im])
+    assert rd(im, (0, 0), (4, 2), np.uint8, (2, 4, 4)).reshape(-1).tolist() == list(range(32))
+    run("""__kernel void inv(__read_write image2d_t im) { int x = get_global_id(0), y = get_global_id(1); float4 p = read_imagef(im, (int2)(x, y)); write_imagef(im, (int2)(x, y), (float4)(1.0f - p.x, p.y, p.z, p.w)); }""", "inv", (4, 2), im)
+    cl.enqueue_release_gl_objects(queue, [im])
+    got = np.frombuffer(P.interop_texture_read(tx), np.uint8)
+    assert got[0] == 255 and got[1] == 1 and got[4] == 251, got[:8]   # 第一個像素 r：0 → 255；第二個 4 → 251（UNORM 換算誤差 ≤1）
+    assert st.writes == 1
+    reads = st.reads
+    cl.enqueue_acquire_gl_objects(queue, [im])   # GL 端沒變（修訂號是我們自己寫回後的）→ 不會再讀
+    cl.enqueue_release_gl_objects(queue, [im])   # CL 端沒寫 → 不會再寫
+    assert st.reads == reads and st.writes == 1
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 4, 2, 0, GL_RGBA, GL_UNSIGNED_BYTE, (ctypes.c_ubyte * 32)(*([7] * 32)))   # GL 端重新指定內容
+    cl.enqueue_acquire_gl_objects(queue, [im])
+    assert (rd(im, (0, 0), (4, 2), np.uint8, (2, 4, 4)) == 7).all()
+    cl.enqueue_release_gl_objects(queue, [im])
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 8, 8, 0, GL_RGBA, GL_UNSIGNED_BYTE, (ctypes.c_ubyte * 256)())   # 尺寸變了
+    try:
+        cl.enqueue_acquire_gl_objects(queue, [im])
+    except cl.Error as e:
+        assert e.code == cl.status_code.INVALID_GL_OBJECT
+    else:
+        raise AssertionError("尺寸改變要丟 INVALID_GL_OBJECT")
+    for fn in (lambda: cl.GLTexture(ctx, mf.READ_WRITE, 0x8513, 0, tx, 2), lambda: cl.GLTexture(ctx, mf.READ_WRITE, 0x0DE1, 3, tx, 2), lambda: cl.GLTexture(ctx, mf.READ_WRITE, 0x0DE1, 0, 9999, 2)):
+        try:
+            fn()
+        except cl.Error as e:
+            assert e.code in (cl.status_code.INVALID_VALUE, cl.status_code.INVALID_GL_OBJECT)
+        else:
+            raise AssertionError("不支援的目標／層／物件要被拒絕")
+    rbo = int(glGenRenderbuffers(1))
+    glBindRenderbuffer(GL_RENDERBUFFER, rbo)
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_RGBA8, 2, 2)
+    rim = cl.GLRenderBuffer(ctx, mf.WRITE_ONLY, rbo)
+    assert rim.get_gl_object_info() == (cl.gl_object_type.RENDERBUFFER, rbo) and (rim.width, rim.height) == (2, 2)
+    cl.enqueue_acquire_gl_objects(queue, [rim])
+    run("""__kernel void fill(__write_only image2d_t im) { write_imagef(im, (int2)(get_global_id(0), get_global_id(1)), (float4)(0.0f, 1.0f, 0.0f, 1.0f)); }""", "fill", (2, 2), rim)
+    cl.enqueue_release_gl_objects(queue, [rim])
+    assert P.interop_renderbuffer_read(rbo) == bytes([0, 255, 0, 255] * 4)
 
 
 print("%d passed, %d failed" % (passed, failed))

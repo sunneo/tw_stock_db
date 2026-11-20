@@ -31,7 +31,7 @@
     'use strict';
 
     // 錯誤碼與名稱（與 OpenCL 標頭一致，pyopencl 的例外也用這些）
-    const CODES = { DEVICE_NOT_FOUND: -1, BUILD_PROGRAM_FAILURE: -11, INVALID_VALUE: -30, INVALID_PLATFORM: -32, INVALID_DEVICE: -33, INVALID_CONTEXT: -34, INVALID_COMMAND_QUEUE: -36, INVALID_MEM_OBJECT: -38, INVALID_PROGRAM: -44, INVALID_PROGRAM_EXECUTABLE: -45, INVALID_KERNEL_NAME: -46, INVALID_KERNEL: -48, INVALID_ARG_INDEX: -49, INVALID_ARG_VALUE: -50, INVALID_ARG_SIZE: -51, INVALID_KERNEL_ARGS: -52, INVALID_WORK_DIMENSION: -53, INVALID_WORK_GROUP_SIZE: -54, INVALID_GLOBAL_OFFSET: -56, INVALID_BUFFER_SIZE: -61, INVALID_GLOBAL_WORK_SIZE: -63, OUT_OF_RESOURCES: -5, MEM_OBJECT_ALLOCATION_FAILURE: -4, IMAGE_FORMAT_MISMATCH: -9, IMAGE_FORMAT_NOT_SUPPORTED: -10, INVALID_HOST_PTR: -37, INVALID_IMAGE_SIZE: -40, INVALID_SAMPLER: -41, INVALID_OPERATION: -59, INVALID_IMAGE_DESCRIPTOR: -65 };
+    const CODES = { DEVICE_NOT_FOUND: -1, BUILD_PROGRAM_FAILURE: -11, INVALID_VALUE: -30, INVALID_PLATFORM: -32, INVALID_DEVICE: -33, INVALID_CONTEXT: -34, INVALID_COMMAND_QUEUE: -36, INVALID_MEM_OBJECT: -38, INVALID_PROGRAM: -44, INVALID_PROGRAM_EXECUTABLE: -45, INVALID_KERNEL_NAME: -46, INVALID_KERNEL: -48, INVALID_ARG_INDEX: -49, INVALID_ARG_VALUE: -50, INVALID_ARG_SIZE: -51, INVALID_KERNEL_ARGS: -52, INVALID_WORK_DIMENSION: -53, INVALID_WORK_GROUP_SIZE: -54, INVALID_GLOBAL_OFFSET: -56, INVALID_BUFFER_SIZE: -61, INVALID_GLOBAL_WORK_SIZE: -63, OUT_OF_RESOURCES: -5, MEM_OBJECT_ALLOCATION_FAILURE: -4, IMAGE_FORMAT_MISMATCH: -9, IMAGE_FORMAT_NOT_SUPPORTED: -10, INVALID_HOST_PTR: -37, INVALID_IMAGE_SIZE: -40, INVALID_SAMPLER: -41, INVALID_OPERATION: -59, INVALID_IMAGE_DESCRIPTOR: -65, INVALID_PIPE_SIZE: -69 };
     class ClError extends Error { constructor(name, msg) { super(name + (msg ? '：' + msg : '')); this.name = 'ClError'; this.clName = name; this.code = CODES[name] != null ? CODES[name] : -9999; } }
     const fail = (name, msg) => { throw new ClError(name, msg); };
 
@@ -97,6 +97,17 @@
         function createImage(ctx, flags, meta, hostData) {
             const m = createBuffer(ctx, flags, meta.w * meta.h * meta.d * meta.elem, hostData); m.img = Object.assign({}, meta); m.host.img = m.img; return m;
         }
+        // Pipe（OpenCL 2.0）：一塊緩衝區，[讀計數][寫計數] 各 4 位元組後面接 max 個封包；核心走主機路線（clc 的 read_pipe／write_pipe）。主機端不能直接讀寫 pipe（規格也是）
+        function createPipe(ctx, flags, packetSize, maxPackets) {
+            packetSize = Number(packetSize); maxPackets = Number(maxPackets); if (!(packetSize > 0) || !(maxPackets > 0)) fail('INVALID_PIPE_SIZE', 'packet_size 與 max_packets 要大於 0');
+            const m = createBuffer(ctx, flags, 8 + packetSize * maxPackets, null); m.pipe = { ps: packetSize, max: maxPackets }; m.host.pipe = m.pipe; return m;
+        }
+        // IMAGE1D_BUFFER：圖像與緩衝區共用同一塊記憶體（寫一邊另一邊看得到）；結構同子緩衝區（root＋偏移），另帶 img 描述
+        function createImageOnBuffer(parent, meta) {
+            if (!parent || parent.kind !== 'mem' || parent.released || parent.root || parent.img) fail('INVALID_MEM_OBJECT', 'IMAGE1D_BUFFER 要建在一般緩衝區上');
+            const size = meta.w * meta.elem; if (size > parent.size) fail('INVALID_IMAGE_SIZE', '圖像（' + size + ' 位元組）比緩衝區（' + parent.size + '）大');
+            return { id: nid(), kind: 'mem', ctx: parent.ctx, drv: parent.drv, size, root: parent, offset: 0, flags: parent.flags, released: false, img: Object.assign({}, meta) };
+        }
         // 子緩衝區：與父緩衝區共用同一塊記憶體（父的 [origin, origin+size)）。狀態（主機／裝置副本）都記在父緩衝區上；讀寫複製轉成父＋偏移，
         // 核心參數走主機路線並帶位元組偏移（GPU 路線沒有偏移，所以子緩衝區一律走主機）
         function createSubBuffer(parent, origin, size, flags) {
@@ -159,6 +170,8 @@
             needKern(k); if (!(idx >= 0 && idx < k.def.params.length)) fail('INVALID_ARG_INDEX', '核心 ' + k.name + ' 只有 ' + k.def.params.length + ' 個參數'); const p = k.def.params[idx];
             if (p.kind === 'local') { const n = value && value.local; if (!(n > 0) || !Number.isInteger(n)) fail('INVALID_ARG_SIZE', '__local 參數 ' + p.name + ' 要傳 {local: 位元組數}（pyopencl 的 LocalMemory(size)）'); k.args[idx] = { local: n }; return; }
             if (value && value.local !== undefined) fail('INVALID_ARG_VALUE', '參數 ' + p.name + ' 不是 __local 指標，不能傳 LocalMemory');
+            if (p.kind === 'pipe') { if (!value || value.kind !== 'mem' || !value.pipe) fail('INVALID_MEM_OBJECT', '參數 ' + p.name + ' 要傳 Pipe'); if (value.drv !== k.drv) fail('INVALID_MEM_OBJECT', 'Pipe 屬於別的平台'); if (p.size && value.pipe.ps !== p.size) fail('INVALID_ARG_SIZE', '參數 ' + p.name + ' 的封包是 ' + p.size + ' 位元組，Pipe 的 packet_size 是 ' + value.pipe.ps); k.args[idx] = { mem: value }; return; }
+            if ((p.kind === 'buf' || p.kind === 'image') && value && value.pipe) fail('INVALID_MEM_OBJECT', '參數 ' + p.name + ' 不是 pipe，不能傳 Pipe');
             if (p.kind === 'image') { if (!value || value.kind !== 'mem' || !value.img) fail('INVALID_MEM_OBJECT', '參數 ' + p.name + ' 要傳圖像'); if (value.drv !== k.drv) fail('INVALID_MEM_OBJECT', '圖像屬於別的平台'); if (value.img.type !== p.type) fail('INVALID_MEM_OBJECT', '參數 ' + p.name + ' 是 ' + p.type + '_t，傳進來的是 ' + value.img.type); k.args[idx] = { mem: value }; return; }
             if (p.kind === 'buf' && value && value.img) fail('INVALID_MEM_OBJECT', '參數 ' + p.name + ' 是緩衝區指標，不能傳圖像');
             if (p.kind === 'buf') { if (!value || value.kind !== 'mem') fail('INVALID_MEM_OBJECT', '參數 ' + p.name + ' 要傳緩衝區'); if (value.drv !== k.drv) fail('INVALID_MEM_OBJECT', '緩衝區屬於別的平台'); k.args[idx] = { mem: value }; }
@@ -179,7 +192,7 @@
                 const p = k.def.params[i], a = k.args[i];
                 if (p.kind === 'scalar') { scalars[p.name] = a.scalar; continue; }
                 if (p.kind === 'local') { scalars[p.name] = a.local; continue; }   // __local 指標參數：驅動收到位元組數，每個工作群配一塊
-                const R = a.mem.root || a.mem; if (!R.hostOk && !R.devOk) fail('INVALID_MEM_OBJECT', '緩衝區沒有有效資料'); if (p.kind === 'image') hasImg = true;
+                const R = a.mem.root || a.mem; if (!R.hostOk && !R.devOk) fail('INVALID_MEM_OBJECT', '緩衝區沒有有效資料'); if (p.kind === 'image' || p.kind === 'pipe') hasImg = true;
                 bufArgs.push({ p, m: R, sub: a.mem.root ? a.mem : null });
             }
             // 路由：裝置（GPU）或主機。主機路線直接在主機副本上跑，不配置、不上傳；裝置路線讓緩衝區常駐裝置
@@ -191,7 +204,7 @@
             if (route === 'host') {
                 if (!k.drv.launchHost) fail('INVALID_KERNEL', '驅動沒有主機路線');
                 const hostBinds = {};
-                for (const x of bufArgs) { if (!x.m.hostOk) await toHost(x.m); hostBinds[x.p.name] = x.sub ? x.m.host.subarray(x.sub.offset, x.sub.offset + x.sub.size) : x.m.host; }
+                for (const x of bufArgs) { if (!x.m.hostOk) await toHost(x.m); hostBinds[x.p.name] = x.sub ? x.m.host.subarray(x.sub.offset, x.sub.offset + x.sub.size) : x.m.host; if (x.sub && x.sub.img) hostBinds[x.p.name].img = x.sub.img; }
                 res = await k.drv.launchHost(k.prog.built, k.name, hostBinds, scalars, N, { gs, ls, off });
                 const wr = res && Array.isArray(res.written) ? new Set(res.written) : null;
                 for (const x of bufArgs) if (x.p.access !== 'in' && (!wr || wr.has(x.p.name))) { x.m.hostOk = true; x.m.devOk = false; x.m.hostWritten = true; x.m.lastUp = null; x.m.ver++; }
@@ -219,7 +232,7 @@
         function stats() { return Object.assign({}, st, { driverCount: drivers.length, buildCacheSize: buildCache.size }); }
         function resetStats() { Object.keys(st).forEach((k) => { st[k] = 0; }); }
 
-        return { createImage, createSubBuffer, registerDriver, platforms, probeReport, devices, createContext, createQueue, createBuffer, enqueueWrite, enqueueRead, enqueueCopy, releaseMem, createProgram, build, kernelNames, createKernel, setArg, enqueueNDRange, finish, stats, resetStats };
+        return { createPipe, createImage, createImageOnBuffer, createSubBuffer, registerDriver, platforms, probeReport, devices, createContext, createQueue, createBuffer, enqueueWrite, enqueueRead, enqueueCopy, releaseMem, createProgram, build, kernelNames, createKernel, setArg, enqueueNDRange, finish, stats, resetStats };
     }
 
     // ======================================================================================
@@ -307,7 +320,7 @@
     // 在主機位元組上跑 clc 核心；回傳被寫過的參數名
     function runClc(c, params, hostBinds, scalars, nd) {
         const ptrs = {};
-        const args = params.map((p) => { if (p.kind !== 'buf' && p.kind !== 'image') return scalars[p.name]; const u8 = hostBinds[p.name]; const ptr = c.mkptr(u8.buffer); ptr.o = u8.byteOffset; if (p.kind === 'image') ptr.img = u8.img; ptr.v.w = false; ptrs[p.name] = ptr; return ptr; });   // 子緩衝區：同一塊記憶體、帶位元組偏移（不複製）
+        const args = params.map((p) => { if (p.kind !== 'buf' && p.kind !== 'image' && p.kind !== 'pipe') return scalars[p.name]; const u8 = hostBinds[p.name]; const ptr = c.mkptr(u8.buffer); ptr.o = u8.byteOffset; if (p.kind === 'image') ptr.img = u8.img; if (p.kind === 'pipe') ptr.pipe = u8.pipe; ptr.v.w = false; ptrs[p.name] = ptr; return ptr; });   // 子緩衝區：同一塊記憶體、帶位元組偏移（不複製）
         c.run(nd.name || params.__name, args, nd.gs, nd.ls, nd.off);
         const written = Object.keys(ptrs).filter((n) => ptrs[n].v.w); for (const n of Object.keys(ptrs)) ptrs[n].v.w = false;
         return { written };

@@ -47,7 +47,7 @@
     const SHIFT_OF_VIEW = { i8: 0, u8: 0, i16: 1, u16: 1, i32: 2, u32: 2, f32: 2, f64: 3, i64: 3, u64: 3 };
     const isInt = (t) => typeof t === 'string' && SCALARS.indexOf(t) >= 0 && t !== 'float' && t !== 'double';
     const isFloat = (t) => t === 'float' || t === 'double';
-    const tstr = (t) => (isPtr(t) ? tstr(t.p) + '*' : isStruct(t) ? 'struct ' + t.s : isVec(t) ? t.v + t.n : isImg(t) ? t.im + '_t' : String(t));
+    const tstr = (t) => (isPtr(t) ? tstr(t.p) + '*' : isStruct(t) ? 'struct ' + t.s : isVec(t) ? t.v + t.n : isImg(t) ? t.im + '_t' : isPipe(t) ? 'pipe ' + tstr(t.pipe) : String(t));
     const TYPE_WORDS = new Set(['void', 'char', 'uchar', 'short', 'ushort', 'int', 'uint', 'long', 'ulong', 'float', 'double', 'half', 'size_t', 'ptrdiff_t', 'intptr_t', 'uintptr_t', 'bool', 'unsigned', 'signed']);
     const QUALS = new Set(['const', 'volatile', 'restrict', '__restrict', '__global', 'global', '__local', 'local', '__constant', 'constant', '__private', 'private', 'static', 'inline', '__attribute__']);
     const VECTOR_RE = /^(char|uchar|short|ushort|int|uint|long|ulong|float|double|half)(2|3|4|8|16)$/;
@@ -205,11 +205,12 @@
     CTYPES.forEach((n, i) => { IMG_DEFS['CLK_' + n] = String(0x10D0 + i); });
     const IMG_TYPES = { image1d_t: 'image1d', image2d_t: 'image2d', image3d_t: 'image3d', image1d_array_t: 'image1d_array', image2d_array_t: 'image2d_array', image1d_buffer_t: 'image1d_buffer' };
     const isImg = (t) => t && typeof t === 'object' && t.im !== undefined;
+    const isPipe = (t) => t && typeof t === 'object' && t.pipe !== undefined;   // OpenCL 2.0 的 pipe 型別：{pipe: 封包型別}
 
     function compile(src, options) {
         const log = [];
         try {
-            const defs = { __OPENCL_C_VERSION__: '120', __OPENCL_VERSION__: '120', __ENDIAN_LITTLE__: '1', CLK_LOCAL_MEM_FENCE: '1', CLK_GLOBAL_MEM_FENCE: '2' }; Object.assign(defs, IMG_DEFS); String(options || '').split(/\s+/).forEach((o) => { const m = /^-D(\w+)(?:=(.*))?$/.exec(o); if (m) defs[m[1]] = m[2] === undefined ? '1' : m[2]; });
+            const defs = { __OPENCL_C_VERSION__: '120', __OPENCL_VERSION__: '120', __ENDIAN_LITTLE__: '1', CLK_LOCAL_MEM_FENCE: '1', CLK_GLOBAL_MEM_FENCE: '2' }; Object.assign(defs, IMG_DEFS, { CLK_NULL_RESERVE_ID: '0' }); String(options || '').split(/\s+/).forEach((o) => { const m = /^-D(\w+)(?:=(.*))?$/.exec(o); if (m) defs[m[1]] = m[2] === undefined ? '1' : m[2]; });
             const toks = preprocess(src, defs);
             const kernels = {}, order = [];
             const rt = runtime(); Object.assign(rt, imageRuntime());
@@ -229,7 +230,7 @@
     class Codegen {
         constructor(toks, kernels, order) {
             this.t = toks; this.i = 0; this.kernels = kernels; this.order = order;
-            this.scopes = [new Map()]; this.typedefs = new Map(); for (const k of Object.keys(IMG_TYPES)) this.typedefs.set(k, { im: IMG_TYPES[k] }); this.typedefs.set('sampler_t', 'uint'); this.funcs = new Map(); this.tmp = 0; this.curRet = 'void'; this.out = [];
+            this.scopes = [new Map()]; this.typedefs = new Map(); for (const k of Object.keys(IMG_TYPES)) this.typedefs.set(k, { im: IMG_TYPES[k] }); this.typedefs.set('sampler_t', 'uint'); this.typedefs.set('reserve_id_t', 'uint'); this.funcs = new Map(); this.tmp = 0; this.curRet = 'void'; this.out = [];
             this.enums = new Map(); this.badTypes = new Map(); this.badGlobals = new Map(); this.lkey = 0; this.inKernel = false; this.structs = new Map(); this.anon = 0;
             this.gen = toks.some((x) => x.t === 'id' && x.v === 'barrier');   // 用到 barrier：所有函式編成產生器
         }
@@ -344,6 +345,7 @@
         need(v) { if (!this.eat(v)) this.err('這裡需要「' + v + '」，得到「' + (this.tk ? this.tk.v : '檔案結尾') + '」'); }
         isTypeStart(k) {
             const x = this.t[this.i + (k || 0)]; if (!x || x.t !== 'id') return false;
+            if ((x.v === 'pipe' || x.v === '__pipe') && this.isTypeStart((k || 0) + 1)) return true;
             return TYPE_WORDS.has(x.v) || QUALS.has(x.v) || this.typedefs.has(x.v) || this.badTypes.has(x.v) || VECTOR_RE.test(x.v) || x.v === 'struct' || x.v === 'union' || x.v === 'enum' || x.v === 'typedef';
         }
         // ---- 範圍
@@ -384,6 +386,7 @@
                     if (this.is('{')) tag = this.structDef(tag, v === 'union'); else if (!tag || !this.structs.has(tag)) this.err(v + ' ' + tag + ' 沒有定義');
                     return { t: { s: tag }, isConst, isLocal };
                 }
+                if ((v === 'pipe' || v === '__pipe') && !base) { this.i++; const el = this.parseBase(); if (isPipe(el.t) || isImg(el.t)) this.err('pipe 的封包型別不合法'); return { t: { pipe: el.t }, isConst, isLocal }; }
                 if (v === 'half') this.err('half 不支援');
                 if (TYPE_WORDS.has(v) && v !== 'unsigned' && v !== 'signed') { if (base && !(base === 'long' && v === 'int')) { if (base === 'long' && v === 'long') { this.i++; continue; } break; } base = v === 'int' && base === 'long' ? 'long' : v; this.i++; any = true; continue; }
                 if (this.badTypes.has(v) && !base) this.err('型別 ' + v + ' 不能用（它的定義不支援：' + this.badTypes.get(v) + '）');
@@ -479,7 +482,8 @@
                     const pn = this.tk; if (!pn || pn.t !== 'id') this.err('參數需要名稱'); this.i++;
                     const js = this.declare(pn.v, pt); params.push(js);
                     if (isKernel) {
-                        if (isImg(pt)) pdesc.push({ name: pn.v, kind: 'image', type: pt.im, access: this.acc === 'write_only' ? 'out' : this.acc === 'read_write' ? 'rw' : 'in' });
+                        if (isPipe(pt)) pdesc.push({ name: pn.v, kind: 'pipe', type: tstr(pt.pipe), access: 'rw', size: this.sz(pt.pipe) });
+                        else if (isImg(pt)) pdesc.push({ name: pn.v, kind: 'image', type: pt.im, access: this.acc === 'write_only' ? 'out' : this.acc === 'read_write' ? 'rw' : 'in' });
                         else if (isPtr(pt)) { if (!SCALARS.includes(pt.p) && !isStruct(pt.p) && !isVec(pt.p)) fail('核心的緩衝區參數 ' + pn.v + ' 型別 ' + tstr(pt) + ' 不支援（要是純量、向量或 struct 的指標）', startLine); const et = isStruct(pt.p) ? 'struct' : isVec(pt.p) ? tstr(pt.p) : pt.p; pdesc.push(sawLocal || pb.isLocal ? { name: pn.v, kind: 'local', type: et } : { name: pn.v, kind: 'buf', type: et, access: pb.isConst ? 'in' : 'rw' }); }
                         else if (isStruct(pt)) pdesc.push({ name: pn.v, kind: 'scalar', type: 'struct', size: this.sz(pt) });   // 主機傳位元組（例如複數 cfloat_t）
                         else pdesc.push({ name: pn.v, kind: 'scalar', type: isVec(pt) ? tstr(pt) : pt });
@@ -910,6 +914,22 @@
               }
               const gi = /^get_image_(width|height|depth|array_size|channel_data_type|channel_order|dim)$/.exec(name);
               if (gi) { if (args.length !== 1 || !isImg(args[0].t)) fail(name + ' 需要一個圖像引數', line); return { c: '$rt.gimg(' + args[0].c + ',' + JSON.stringify(gi[1]) + ')', t: gi[1] === 'dim' ? { v: 'int', n: args[0].t.im.indexOf('3d') >= 0 ? 4 : 2 } : 'int' }; } }
+            { const pm = /^(?:(work_group_)?(?:reserve_)?)?(read|write)_pipe$|^(commit_(?:read|write)_pipe|reserve_(?:read|write)_pipe|get_pipe_num_packets|get_pipe_max_packets|is_valid_reserve_id)$/.exec(name);
+              if (pm || /^work_group_(reserve|commit)_/.test(name) || /^sub_group_(reserve|commit)_/.test(name)) {
+                if (/^(work|sub)_group_/.test(name)) fail(name + '（群組版 pipe 函式）不支援；用逐工作項的 reserve_*／read_pipe／write_pipe', line);
+                if (name === 'is_valid_reserve_id') return { c: '((' + args[0].c + ')!==0?1:0)', t: 'int' };
+                if (!args.length || !isPipe(args[0].t)) fail(name + ' 的第一個引數要是 pipe', line);
+                const et = args[0].t.pipe, P = args[0].c, sz = this.sz(et);
+                if (name === 'get_pipe_num_packets' || name === 'get_pipe_max_packets') return { c: '$rt.pipeinfo(' + P + ',' + (name === 'get_pipe_max_packets' ? 1 : 0) + ')', t: 'uint' };
+                if (/^commit_/.test(name)) return { c: '(0)', t: 'void' };
+                if (/^reserve_/.test(name)) return { c: '$rt.pipereserve(' + P + ',' + conv(args[1].c, args[1].t, 'uint') + ',' + (name === 'reserve_read_pipe' ? 0 : 1) + ')', t: 'uint' };
+                const isRead = name === 'read_pipe';   // read_pipe(p, ptr) 或 read_pipe(p, reserve_id, index, ptr)
+                if (args.length !== 2 && args.length !== 4) fail(name + ' 需要 2 或 4 個引數', line);
+                const ptr = args[args.length - 1]; if (!isPtr(ptr.t)) fail(name + ' 的最後一個引數要是指標（例如 &v）', line);
+                const cp = isStruct(et) ? (isRead ? '$rt.cpy(' + ptr.c + ',$q,' + sz + ')' : '$rt.cpy($q,' + ptr.c + ',' + sz + ')') : (isRead ? this.stc(et, ptr.c, '0', this.ldc(et, '$q', '0')) : this.stc(et, '$q', '0', this.ldc(et, ptr.c, '0')));
+                const rid = args.length === 4 ? conv(args[1].c, args[1].t, 'uint') + ',' + conv(args[2].c, args[2].t, 'uint') : '0,0';
+                return { c: '$rt.pipeop(' + P + ',' + sz + ',' + (isRead ? 0 : 1) + ',' + rid + ',' + (args.length === 4 ? 1 : 0) + ',($q)=>{' + cp + '})', t: 'int' };
+              } }
             if (name === 'printf') fail('printf 不支援', line);
             { const m2 = /^(?:native_|half_)?(sincos|modf|fract)$/.exec(name);   // 第二個引數是輸出指標（常見：sincos(x, &c)）
               if (m2 && args.length === 2) { const pt = args[1].t; if (!isPtr(pt) || !isFloat(pt.p)) fail(name + ' 的第二個引數要是 float／double 指標（例如 &c）', line); const t = pt.p; return { c: '$rt.' + (m2[1] === 'fract' ? 'fract2' : m2[1]) + '(' + conv(args[0].c, args[0].t, t) + ',' + args[1].c + ',' + (t === 'float' ? 1 : 0) + ',' + JSON.stringify(VIEW[t]) + ')', t }; } }
@@ -1048,8 +1068,13 @@
         const HAS_A = new Set(['A', 'RA', 'RGBA', 'BGRA', 'ARGB', 'INTENSITY']);
         const info = (img) => { const m = img.img, ct = m.chType; return { m, nch: CH[m.order], isF: ct === 'FLOAT' || ct === 'HALF_FLOAT' || /^[SU]NORM/.test(ct), bits: /8$/.test(ct) ? 8 : /16$/.test(ct) ? 16 : 32 }; };
         // 解出一個像素 → [r,g,b,a]（浮點：UNORM／SNORM 換算成 [0,1]／[-1,1]；整數型別原值）
+        const PACKED = { UNORM_SHORT_565: 1, UNORM_SHORT_555: 1, UNORM_INT_101010: 1 };
         function fetch(img, idx) {
             const { m, nch } = info(img), ct = m.chType, v = img.v, b = img.o + idx * m.elem, s = new Array(nch);
+            if (PACKED[ct]) {   // 打包：565／555 佔 16 位元（r 在高位）；101010 佔 32 位元（高 2 位元填充，r 次高）
+                if (ct === 'UNORM_INT_101010') { const x = rd32(v, b, 'u32'); return [((x >>> 20) & 1023) / 1023, ((x >>> 10) & 1023) / 1023, (x & 1023) / 1023, 1]; }
+                const x = rd16(v, b, false); return ct === 'UNORM_SHORT_565' ? [(x >> 11) / 31, ((x >> 5) & 63) / 63, (x & 31) / 31, 1] : [((x >> 10) & 31) / 31, ((x >> 5) & 31) / 31, (x & 31) / 31, 1];
+            }
             for (let c = 0; c < nch; c++) {
                 switch (ct) {
                     case 'UNORM_INT8': s[c] = v.u8[b + c] / 255; break;
@@ -1078,6 +1103,12 @@
         const rnd = (x) => Math.round(x);   // 數值轉型用「四捨五入到最近偶數」更準；這裡取 JS 的 round（差在 .5 的負數），規格對 write_imagef 允許 ≤0.6 ULP
         function store(img, idx, px, kind) {
             const { m, nch } = info(img), ct = m.chType, v = img.v, b = img.o + idx * m.elem;
+            if (PACKED[ct]) {
+                const q = (x, n) => rnd(clampI(x, 0, 1) * n);
+                if (ct === 'UNORM_INT_101010') wr32(v, b, 'u32', ((q(px[0], 1023) << 20) | (q(px[1], 1023) << 10) | q(px[2], 1023)) >>> 0);
+                else wr16(v, b, ct === 'UNORM_SHORT_565' ? (q(px[0], 31) << 11) | (q(px[1], 63) << 5) | q(px[2], 31) : (q(px[0], 31) << 10) | (q(px[1], 31) << 5) | q(px[2], 31));
+                v.w = true; return;
+            }
             let s;
             switch (m.order) {
                 case 'R': case 'Rx': s = [px[0], 0]; break; case 'A': s = [px[3]]; break; case 'RG': case 'RGx': s = [px[0], px[1], 0]; break; case 'RA': s = [px[0], px[3]]; break;
@@ -1130,7 +1161,23 @@
             if (kind === 'f') return px.map((x) => Math.fround(x));
             return px.map((x) => (kind === 'i' ? (x | 0) : (x >>> 0)));
         };
+        // ---- pipe：記憶體＝ [讀計數 u32][寫計數 u32] 後面接環狀的封包；工作項循序執行，所以不需要同步。回傳 0＝成功、-1＝空／滿／無效
+        const hdr = (p) => ({ u: p.v.u32, h: (p.o >> 2) });
         return {
+            pipeinfo(p, wantMax) { const { u, h } = hdr(p), max = p.pipe.max; return wantMax ? max : ((u[h + 1] - u[h]) >>> 0); },
+            pipereserve(p, n, forWrite) {
+                const { u, h } = hdr(p), max = p.pipe.max; n = n >>> 0; p.v.w = true;
+                if (forWrite) { if (n === 0 || max - ((u[h + 1] - u[h]) >>> 0) < n) return 0; const s = u[h + 1]; u[h + 1] = (s + n) >>> 0; return (s + 1) >>> 0; }
+                if (n === 0 || ((u[h + 1] - u[h]) >>> 0) < n) return 0; const s = u[h]; u[h] = (s + n) >>> 0; return (s + 1) >>> 0;
+            },
+            pipeop(p, sz, isWrite, rid, idx, hasRes, cb) {
+                const { u, h } = hdr(p), max = p.pipe.max; p.v.w = true; let slot;
+                if (hasRes) { if (!rid) return -1; slot = ((rid - 1) + idx) % max; }
+                else if (isWrite) { if (max - ((u[h + 1] - u[h]) >>> 0) <= 0) return -1; slot = u[h + 1] % max; u[h + 1] = (u[h + 1] + 1) >>> 0; }
+                else { if (((u[h + 1] - u[h]) >>> 0) === 0) return -1; slot = u[h] % max; u[h] = (u[h] + 1) >>> 0; }
+                cb({ v: p.v, o: p.o + 8 + slot * sz }); return 0;
+            },
+            cpy(d, s, n) { d.v.w = true; d.v.u8.set(s.v.u8.subarray(s.o, s.o + n), d.o); },
             rimg(img, smp, co, kind, isFC) {
                 if (!img || !img.img) throw new Error('read_image：引數不是圖像');
                 const { m } = info(img), g = geom(m);

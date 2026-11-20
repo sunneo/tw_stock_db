@@ -80,10 +80,8 @@ bd = fk.log("buffer_data")[-1][1]; check("glVertexPointer＋glDrawArrays（clien
 lst = glGenLists(1); fk.calls.clear(); glNewList(lst, GL_COMPILE); glBegin(GL_TRIANGLES); [glVertex3f(*p) for p in ((0, 0, 0), (1, 0, 0), (0, 1, 0))]; glEnd(); glEndList()
 check("display list：錄製時不畫", not fk.log("draw_arrays"))
 glCallList(lst); glCallList(lst); check("glCallList 重播兩次", len(fk.log("draw_arrays")) == 2, fk.log("draw_arrays"))
-try:
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, 0, 0); check("未實作要丟錯", False)
-except Exception as e:
-    check("未實作要丟錯", "undefined function" in str(e) or type(e).__name__ == "NullFunctionError", type(e).__name__ + str(e)[:80])
+fk.calls.clear(); fbo = int(glGenFramebuffers(1)); glBindFramebuffer(GL_FRAMEBUFFER, fbo); glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, 0, 0)
+check("framebuffer 函式轉發到後端", [c[0] for c in fk.calls] == ["create_framebuffer", "bind_framebuffer", "framebuffer_texture_2d"], [c[0] for c in fk.calls])
 check("frame_image", P.frame_image() == (b"\x89PNG\r\n\x1a\nfake", "image/png"))
 # ---- 緩衝區讀回與 interop 鉤子（pyopencl 的 GLBuffer 用）：用一個把緩衝區存在記憶體的假後端
 class MemStore(Fake):
@@ -108,4 +106,35 @@ rv = P.interop_write(vb, struct.pack("<4f", 5, 6, 7, 8))
 check("interop_write 寫入並回傳新修訂號（不動使用者的綁定）", rv == 3 and ms.cur.get(0x8F37) is None and struct.unpack("<4f", P.interop_read(vb)) == (5, 6, 7, 8) and ms.cur.get(GL_ARRAY_BUFFER) is not None)
 check("interop_read 不動 ARRAY_BUFFER 綁定", ms.cur.get(GL_ARRAY_BUFFER) == ms.cur.get(GL_ARRAY_BUFFER) and ms.reads >= 1)
 glDeleteBuffers(1, [vb]); check("glDeleteBuffers 清掉紀錄", P.interop_buffer_info(vb) is None)
+# ---- 紋理與 renderbuffer 的追蹤與 interop 鉤子（pyopencl 的 GLTexture／GLRenderBuffer 用）
+class TexStore(Fake):
+    def __init__(self): Fake.__init__(self); self.px = {}; self.rb = {}; self.tex2d = None
+    def create_texture(self): self.n += 1; return "t%d" % self.n
+    def create_renderbuffer(self): self.n += 1; return "r%d" % self.n
+    def bind_texture(self, t, h): self.tex2d = h
+    def tex_image_2d(self, target, level, internal, w, h, border, fmt, typ, data): self.px[(self.tex2d, level)] = bytearray(data or b"\0" * (w * h * 4))
+    def tex_sub_image_2d(self, target, level, x, y, w, h, fmt, typ, data): self.px[(self.tex2d, level)][:len(data)] = data
+    def read_texture(self, h, level, w, ht, fmt, typ): return bytes(self.px[(h, level)])
+    def write_texture(self, h, level, w, ht, fmt, typ, data): self.px[(h, level)][:] = data
+    def renderbuffer_storage(self, t, internal, w, h): pass
+    def read_renderbuffer(self, h, w, ht, fmt, typ): return bytes(self.rb.get(h, bytearray(w * ht * 4)))
+    def write_renderbuffer(self, h, w, ht, internal, fmt, typ, data): self.rb[h] = bytearray(data)
+ts = TexStore(); P._CTX["backend"] = ts
+tx = int(glGenTextures(1)); check("沒資料的紋理沒有 info", P.interop_texture_info(tx) is None)
+glBindTexture(GL_TEXTURE_2D, tx); img = (ctypes.c_ubyte * 16)(*range(16)); glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 2, 2, 0, GL_RGBA, GL_UNSIGNED_BYTE, img)
+check("glTexImage2D 記下尺寸與修訂號", P.interop_texture_info(tx) == (2, 2, GL_RGBA8, 1), P.interop_texture_info(tx))
+check("interop_texture_read", P.interop_texture_read(tx) == bytes(range(16)))
+rv = P.interop_texture_write(tx, bytes(range(100, 116)))
+check("interop_texture_write 加修訂號、內容變了、不動綁定", rv == 2 and P.interop_texture_read(tx) == bytes(range(100, 116)) and P._BOUND["tex2d"] == tx)
+glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, (ctypes.c_ubyte * 4)(9, 9, 9, 9)); check("glTexSubImage2D 加修訂號", P.interop_texture_info(tx)[3] == 3)
+rb = int(glGenRenderbuffers(1)); check("沒有儲存的 renderbuffer 沒有 info", P.interop_renderbuffer_info(rb) is None)
+glBindRenderbuffer(GL_RENDERBUFFER, rb); glRenderbufferStorage(GL_RENDERBUFFER, GL_RGBA8, 4, 2)
+check("glRenderbufferStorage 記下尺寸", P.interop_renderbuffer_info(rb) == (4, 2, GL_RGBA8, 1), P.interop_renderbuffer_info(rb))
+check("renderbuffer 寫入後讀回、修訂號加一", P.interop_renderbuffer_write(rb, bytes(range(32))) == 2 and P.interop_renderbuffer_read(rb) == bytes(range(32)))
+fb2 = int(glGenFramebuffers(1)); glBindFramebuffer(GL_FRAMEBUFFER, fb2); glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tx, 0)
+r0 = P.interop_texture_info(tx)[3]; glClear(GL_COLOR_BUFFER_BIT); glDrawArrays(GL_TRIANGLES, 0, 3)
+check("畫到綁定的 framebuffer 會讓附著的紋理修訂號增加", P.interop_texture_info(tx)[3] == r0 + 2, P.interop_texture_info(tx))
+glBindFramebuffer(GL_FRAMEBUFFER, 0); r1 = P.interop_texture_info(tx)[3]; glClear(GL_COLOR_BUFFER_BIT)
+check("畫到預設 framebuffer 不影響", P.interop_texture_info(tx)[3] == r1)
+glDeleteTextures(1, [tx]); check("glDeleteTextures 清掉紀錄", P.interop_texture_info(tx) is None)
 print("FAILED:\n  " + "\n  ".join(bad) if bad else "fa_opengl: OK"); sys.exit(1 if bad else 0)

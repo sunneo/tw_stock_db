@@ -375,7 +375,8 @@ class Device(_Handle):
                   device_info.IMAGE2D_MAX_WIDTH: "image2d_max_width", device_info.IMAGE2D_MAX_HEIGHT: "image2d_max_height", device_info.IMAGE3D_MAX_WIDTH: "image3d_max_width",
                   device_info.IMAGE3D_MAX_HEIGHT: "image3d_max_height", device_info.IMAGE3D_MAX_DEPTH: "image3d_max_depth", device_info.IMAGE_MAX_BUFFER_SIZE: "image_max_buffer_size",
                   device_info.IMAGE_MAX_ARRAY_SIZE: "image_max_array_size", device_info.MAX_READ_IMAGE_ARGS: "max_read_image_args", device_info.MAX_WRITE_IMAGE_ARGS: "max_write_image_args",
-                  device_info.MAX_READ_WRITE_IMAGE_ARGS: "max_read_write_image_args", device_info.IMAGE_PITCH_ALIGNMENT: "image_pitch_alignment", device_info.IMAGE_BASE_ADDRESS_ALIGNMENT: "image_base_address_alignment"}
+                  device_info.MAX_READ_WRITE_IMAGE_ARGS: "max_read_write_image_args", device_info.IMAGE_PITCH_ALIGNMENT: "image_pitch_alignment", device_info.IMAGE_BASE_ADDRESS_ALIGNMENT: "image_base_address_alignment",
+                  device_info.PIPE_MAX_ACTIVE_RESERVATIONS: "pipe_max_active_reservations", device_info.PIPE_MAX_PACKET_SIZE: "pipe_max_packet_size", device_info.PIPE_SUPPORT: "pipe_support"}
         if p in simple:
             return r[simple[p]]
         if p == device_info.TYPE:
@@ -958,6 +959,13 @@ class Kernel(_Handle):
             return
         if spec["kind"] == "local":
             _raise("clSetKernelArg", "INVALID_ARG_SIZE", "參數 %s 是 __local 指標，要傳 LocalMemory(位元組數)" % spec["name"])
+        if spec["kind"] == "pipe":
+            if not isinstance(arg, Pipe):
+                _raise("clSetKernelArg", "INVALID_MEM_OBJECT", "參數 %s 要傳 Pipe，得到 %s" % (spec["name"], type(arg).__name__))
+            _call("kernel_set_arg", {"kernel": self._h, "index": index, "mem": arg._h})
+            return
+        if isinstance(arg, Pipe):
+            _raise("clSetKernelArg", "INVALID_MEM_OBJECT", "參數 %s 不是 pipe，不能傳 Pipe" % spec["name"])
         if spec["kind"] == "image":
             if not isinstance(arg, Image):
                 _raise("clSetKernelArg", "INVALID_MEM_OBJECT", "參數 %s 要傳 Image，得到 %s" % (spec["name"], type(arg).__name__))
@@ -1335,15 +1343,23 @@ class UserEvent(Event):
 # ---------------------------------------------------------------------------------------------
 # 圖像與取樣器（OpenCL C 前端的 read_image*／write_image*）。圖像在載入器裡是一塊緊密排列的緩衝區加格式描述；核心只走主機路線（clc）。
 # 支援：IMAGE1D／1D_ARRAY／2D／2D_ARRAY／3D；所有「非打包」的通道型別（UNORM／SNORM 8／16、SIGNED／UNSIGNED 8／16／32、HALF_FLOAT、FLOAT）
-# 與通道順序（R A RG RA RGBA BGRA ARGB INTENSITY LUMINANCE Rx RGx）。不支援（如實回報，不假裝）：打包型別 565／555／101010、RGB／RGBx、
-# IMAGE1D_BUFFER（要與緩衝區共用記憶體）、mip 層級與多重取樣。
+# 與通道順序（R A RG RA RGBA BGRA ARGB INTENSITY LUMINANCE Rx RGx），以及打包型別 565／555／101010（配 RGB／RGBx）；IMAGE1D_BUFFER 與緩衝區共用記憶體。
+# 不支援（如實回報，不假裝）：mip 層級與多重取樣。
 # ---------------------------------------------------------------------------------------------
 _CH_ORDER_NAMES = ["R", "A", "RG", "RA", "RGB", "RGBA", "BGRA", "ARGB", "INTENSITY", "LUMINANCE", "Rx", "RGx", "RGBx"]
 _CH_TYPE_NAMES = ["SNORM_INT8", "SNORM_INT16", "UNORM_INT8", "UNORM_INT16", "UNORM_SHORT_565", "UNORM_SHORT_555", "UNORM_INT_101010",
                   "SIGNED_INT8", "SIGNED_INT16", "SIGNED_INT32", "UNSIGNED_INT8", "UNSIGNED_INT16", "UNSIGNED_INT32", "HALF_FLOAT", "FLOAT"]
 _CH_COUNT = {"R": 1, "A": 1, "RG": 2, "RA": 2, "RGB": 3, "RGBA": 4, "BGRA": 4, "ARGB": 4, "INTENSITY": 1, "LUMINANCE": 1, "Rx": 2, "RGx": 3, "RGBx": 4}
 _CH_BYTES = {"SNORM_INT8": 1, "UNORM_INT8": 1, "SIGNED_INT8": 1, "UNSIGNED_INT8": 1, "SNORM_INT16": 2, "UNORM_INT16": 2, "SIGNED_INT16": 2,
-             "UNSIGNED_INT16": 2, "HALF_FLOAT": 2, "SIGNED_INT32": 4, "UNSIGNED_INT32": 4, "FLOAT": 4}
+             "UNSIGNED_INT16": 2, "HALF_FLOAT": 2, "SIGNED_INT32": 4, "UNSIGNED_INT32": 4, "FLOAT": 4,
+             "UNORM_SHORT_565": 2, "UNORM_SHORT_555": 2, "UNORM_INT_101010": 4}
+_CH_PACKED = ("UNORM_SHORT_565", "UNORM_SHORT_555", "UNORM_INT_101010")
+
+
+def _elem_size(order, ctype):
+    if ctype in _CH_PACKED:
+        return _CH_BYTES[ctype]
+    return _CH_COUNT.get(order, 0) * _CH_BYTES.get(ctype, 0)
 _IMG_TYPE_NAME = {0x10f1: "image2d", 0x10f2: "image3d", 0x10f3: "image2d_array", 0x10f4: "image1d", 0x10f5: "image1d_array", 0x10f6: "image1d_buffer"}
 
 
@@ -1371,7 +1387,7 @@ class ImageFormat(object):
 
     @property
     def itemsize(self):
-        return self.channel_count * self.dtype_size
+        return _elem_size(_order_name(self.channel_order), _type_name(self.channel_data_type))
 
 
 class ImageDescriptor(object):
@@ -1415,9 +1431,9 @@ def _image_geometry(desc):
     sh = tuple(desc._shape)
     if name is None:
         _raise("clCreateImage", "INVALID_IMAGE_DESCRIPTOR", "不認得的圖像型別 0x%x" % t)
-    if name == "image1d_buffer":
-        _raise("clCreateImage", "INVALID_OPERATION", "IMAGE1D_BUFFER 要與緩衝區共用記憶體，這個後端沒有實作（用 IMAGE1D 加 enqueue_copy_buffer_to_image 取代）")
-    need = {"image1d": 1, "image2d": 2, "image3d": 3, "image1d_array": 2, "image2d_array": 3}[name]
+    if name == "image1d_buffer" and desc.buffer is None:
+        _raise("clCreateImage", "INVALID_IMAGE_DESCRIPTOR", "IMAGE1D_BUFFER 要給 buffer")
+    need = {"image1d": 1, "image1d_buffer": 1, "image2d": 2, "image3d": 3, "image1d_array": 2, "image2d_array": 3}[name]
     if len(sh) != need or any(x <= 0 for x in sh):
         _raise("clCreateImage", "INVALID_IMAGE_SIZE", "%s 需要 %d 個正整數的尺寸，得到 %s" % (name, need, sh))
     return name, sh[0], (sh[1] if need >= 2 else 1), (sh[2] if need == 3 else 1)
@@ -1479,10 +1495,9 @@ class Image(MemoryObject):
                     _raise("clCreateImage", "INVALID_VALUE", "'shape' 沒給時要給 hostbuf")
                 shape = tuple(hostbuf.shape)
             shape = tuple(int(x) for x in shape)
-            if buffer is not None:
-                _raise("clCreateImage", "INVALID_OPERATION", "圖像與緩衝區共用記憶體（buffer=）沒有實作")
             desc = ImageDescriptor()
-            desc.image_type = {1: mem_object_type.IMAGE1D, 2: mem_object_type.IMAGE1D_ARRAY if is_array else mem_object_type.IMAGE2D,
+            desc.buffer = buffer
+            desc.image_type = {1: mem_object_type.IMAGE1D_BUFFER if buffer is not None else mem_object_type.IMAGE1D, 2: mem_object_type.IMAGE1D_ARRAY if is_array else mem_object_type.IMAGE2D,
                                3: mem_object_type.IMAGE2D_ARRAY if is_array else mem_object_type.IMAGE3D}.get(len(shape))
             if desc.image_type is None:
                 _raise("clCreateImage", "INVALID_IMAGE_DESCRIPTOR", "圖像不能有 %d 維" % len(shape))
@@ -1505,20 +1520,20 @@ class Image(MemoryObject):
 
     def _init_from(self, context, flags, format, desc, hostbuf):
         flags = int(flags)
-        if desc.buffer is not None:
-            _raise("clCreateImage", "INVALID_OPERATION", "圖像與緩衝區共用記憶體（buffer=）沒有實作")
         name, w, h, d = _image_geometry(desc)
+        if (desc.buffer is not None) != (name == "image1d_buffer"):
+            _raise("clCreateImage", "INVALID_IMAGE_DESCRIPTOR", "只有 IMAGE1D_BUFFER 帶 buffer")
         order, ctype = _order_name(format.channel_order), _type_name(format.channel_data_type)
         data = None
         if hostbuf is not None or flags & (mem_flags.COPY_HOST_PTR | mem_flags.USE_HOST_PTR):
             if hostbuf is None:
                 _raise("clCreateImage", "INVALID_HOST_PTR", "COPY_HOST_PTR／USE_HOST_PTR 需要 hostbuf")
-            elem = _CH_COUNT.get(order, 0) * _CH_BYTES.get(ctype, 0)
+            elem = _elem_size(order, ctype)
             data = _pack_region(_byte_view(hostbuf), (w, h, d), elem, *(tuple(desc.pitches) + (0, 0))[:2]) if elem else None
-        res, _ = _call("img_create", {"ctx": context._h, "flags": flags, "type": name, "w": w, "h": h, "d": d, "order": order, "chType": ctype}, data)
+        res, _ = _call("img_create", {"ctx": context._h, "flags": flags, "type": name, "w": w, "h": h, "d": d, "order": order, "chType": ctype, "buffer": desc.buffer._h if desc.buffer is not None else None}, data)
         self._h, self._ctx, self._flags, self._size = res["h"], context, flags, int(res["size"])
         self._format, self._elem, self._name, self._dims = ImageFormat(format.channel_order, format.channel_data_type), int(res["elem"]), name, (w, h, d)
-        self._mtype = {v: k for k, v in _IMG_TYPE_NAME.items()}[name]
+        self._mtype, self._buffer = {v: k for k, v in _IMG_TYPE_NAME.items()}[name], desc.buffer
 
     def get_info(self, param):
         if int(param) == mem_info.TYPE:
@@ -1547,7 +1562,7 @@ class Image(MemoryObject):
         if p == image_info.ARRAY_SIZE:
             return (h if self._name == "image1d_array" else d) if arr else 0
         if p == image_info.BUFFER:
-            return None
+            return self._buffer
         if p in (image_info.NUM_MIP_LEVELS, image_info.NUM_SAMPLES):
             return 0
         _info_error("clGetImageInfo", param)
@@ -1605,6 +1620,37 @@ class Sampler(_Handle):
 
     def __hash__(self):
         return hash(("Sampler", self._bits))
+
+
+class Pipe(MemoryObject):
+    """OpenCL 2.0 的 Pipe：只有核心能讀寫（規格也是）；核心用 read_pipe／write_pipe（含 reserve 版本）。"""
+    _info_enums = (mem_info, pipe_info)
+
+    def __init__(self, context, flags, packet_size, max_packets, properties=()):
+        _svm_check_pipe(context)
+        res, _ = _call("pipe_create", {"ctx": context._h, "flags": int(flags), "packet_size": int(packet_size), "max_packets": int(max_packets)})
+        self._h, self._ctx, self._flags, self._size = res["h"], context, int(flags), int(res["size"])
+        self._packet_size, self._max_packets, self._mtype = int(packet_size), int(max_packets), mem_object_type.PIPE
+
+    def get_pipe_info(self, param):
+        p = int(param)
+        if p == pipe_info.PACKET_SIZE:
+            return self._packet_size
+        if p == pipe_info.MAX_PACKETS:
+            return self._max_packets
+        if p == pipe_info.PROPERTIES:
+            return []
+        _info_error("clGetPipeInfo", param)
+
+    def get_info(self, param):
+        if 0x1120 <= int(param) <= 0x1122:
+            return self.get_pipe_info(param)
+        return MemoryObjectHolder.get_info(self, param)
+
+
+def _svm_check_pipe(context):
+    if not any(d.get_info(device_info.MAX_PIPE_ARGS) > 0 for d in context.devices):
+        _raise("clCreatePipe", "INVALID_OPERATION", "這個裝置不支援 Pipe（max_pipe_args＝0；用 clc 或 GPU 驅動的裝置）")
 
 
 def _need_image(m, routine):
@@ -1704,7 +1750,7 @@ def get_supported_image_formats(context, flags, image_type):
 
 
 # ---------------------------------------------------------------------------------------------
-# OpenGL 互通（cl_khr_gl_sharing 的 GLBuffer）
+# OpenGL 互通（cl_khr_gl_sharing 的 GLBuffer、GLTexture［GL_TEXTURE_2D］、GLRenderBuffer）
 # GL 的緩衝區在 WebGL2（GPU）裡，OpenCL 的緩衝區在載入器的驅動裡，兩邊是兩塊記憶體；acquire／release 就是兩者之間的同步點（與標準的語意相同：
 # 核心只能在 acquire 與 release 之間使用 GL 緩衝區）。優化：GL 端用修訂號、CL 端用內容版本號，沒變的方向不傳輸——連續多幀「acquire、核心、release」
 # 只有第一次 acquire 會把 GL 內容讀進來，之後只有 CL 真的寫過才寫回 GL。
@@ -1739,25 +1785,116 @@ class GLBuffer(MemoryObject):
         return "<pyopencl.GLBuffer of GL buffer %d, size %d>" % (self._gl_name, self._size)
 
 
+_GL_FMT_NUM = lambda f: (0x10b0 + _CH_ORDER_NAMES.index(f[0]), 0x10d0 + _CH_TYPE_NAMES.index(f[1]))   # noqa: E731
+
+
+class _GLImage(Image):
+    """GL 紋理／renderbuffer 對應的 CL 圖像：一般的 Image，外加 acquire／release 時與 GL 端同步（見上方的修訂號機制）"""
+
+    def _gl_setup(self, context, flags, info, kind, name, level):
+        P = _gl_platform()
+        fmt = P.GL_INTEROP_FORMATS.get(info[2])
+        if fmt is None:
+            _raise("clCreateFromGL" + kind, "INVALID_IMAGE_FORMAT_DESCRIPTOR", "GL 內部格式 0x%x 沒有對應的 CL 圖像格式（支援 RGBA8／RGBA16F／RGBA32F／R8／R32F／RG8／RG32F）" % info[2])
+        desc = ImageDescriptor()
+        desc.image_type, desc.shape = mem_object_type.IMAGE2D, (info[0], info[1])
+        self._init_from(context, flags, ImageFormat(*_GL_FMT_NUM(fmt)), desc, None)
+        self._gl_name, self._gl_level, self._gl_internal, self._gl_rev, self._cl_ver, self._acquired = int(name), int(level), info[2], None, None, False
+
+    def _gl_info(self, P):
+        raise NotImplementedError
+
+
+class GLTexture(_GLImage):
+    def __init__(self, context, flags, texture_target, miplevel, texture, dims=2):
+        P = _gl_platform()
+        if int(texture_target) != 0x0DE1 or int(dims) != 2:
+            _raise("clCreateFromGLTexture", "INVALID_VALUE", "只支援 GL_TEXTURE_2D（texture_target＝0x0DE1、dims＝2）；得到 target 0x%x、dims %s" % (int(texture_target), dims))
+        info = P.interop_texture_info(int(texture), int(miplevel))
+        if info is None:
+            _raise("clCreateFromGLTexture", "INVALID_GL_OBJECT", "GL 紋理 %s 的第 %s 層不存在或還沒有資料（先 glTexImage2D）" % (texture, miplevel))
+        self._gl_setup(context, flags, info, "Texture", texture, miplevel)
+
+    def _gl_info(self, P):
+        return P.interop_texture_info(self._gl_name, self._gl_level)
+
+    def _gl_read(self, P):
+        return P.interop_texture_read(self._gl_name, self._gl_level)
+
+    def _gl_write(self, P, data):
+        return P.interop_texture_write(self._gl_name, data, self._gl_level)
+
+    def get_gl_object_info(self):
+        return (gl_object_type.TEXTURE2D, self._gl_name)
+
+    def get_gl_texture_info(self, param):
+        p = int(param)
+        if p == gl_texture_info.TEXTURE_TARGET:
+            return 0x0DE1
+        if p == gl_texture_info.MIPMAP_LEVEL:
+            return self._gl_level
+        _info_error("clGetGLTextureInfo", param)
+
+    def __repr__(self):
+        return "<pyopencl.GLTexture of GL texture %d level %d, %dx%d>" % (self._gl_name, self._gl_level, self._dims[0], self._dims[1])
+
+
+class GLRenderBuffer(_GLImage):
+    def __init__(self, context, flags, renderbuffer):
+        P = _gl_platform()
+        info = P.interop_renderbuffer_info(int(renderbuffer))
+        if info is None:
+            _raise("clCreateFromGLRenderbuffer", "INVALID_GL_OBJECT", "GL renderbuffer %s 不存在或還沒有 glRenderbufferStorage" % renderbuffer)
+        self._gl_setup(context, flags, info, "Renderbuffer", renderbuffer, 0)
+
+    def _gl_info(self, P):
+        return P.interop_renderbuffer_info(self._gl_name)
+
+    def _gl_read(self, P):
+        return P.interop_renderbuffer_read(self._gl_name)
+
+    def _gl_write(self, P, data):
+        return P.interop_renderbuffer_write(self._gl_name, data)
+
+    def get_gl_object_info(self):
+        return (gl_object_type.RENDERBUFFER, self._gl_name)
+
+    def __repr__(self):
+        return "<pyopencl.GLRenderBuffer of GL renderbuffer %d, %dx%d>" % (self._gl_name, self._dims[0], self._dims[1])
+
+
 def _gl_event(queue, name):
     return Event({"h": -1, "cmd": name, "queued": 0, "start": 0, "end": 0}, queue)
+
+
+_GL_OBJECTS = (GLBuffer, GLTexture, GLRenderBuffer)
 
 
 def enqueue_acquire_gl_objects(queue, mem_objects, wait_for=None):
     P = _gl_platform()
     for m in mem_objects:
-        if not isinstance(m, GLBuffer):
-            _raise("clEnqueueAcquireGLObjects", "INVALID_GL_OBJECT", "只有 GLBuffer 能 acquire（得到 %s）" % type(m).__name__)
+        if not isinstance(m, _GL_OBJECTS):
+            _raise("clEnqueueAcquireGLObjects", "INVALID_GL_OBJECT", "只有 GLBuffer／GLTexture／GLRenderBuffer 能 acquire（得到 %s）" % type(m).__name__)
         if m._acquired:
-            _raise("clEnqueueAcquireGLObjects", "INVALID_OPERATION", "這個 GLBuffer 已經 acquire 過了（要先 release）")
-        info = P.interop_buffer_info(m._gl_name)
-        if info is None:
-            _raise("clEnqueueAcquireGLObjects", "INVALID_GL_OBJECT", "GL 緩衝區 %d 已被刪除" % m._gl_name)
-        if info[0] != m._size:
-            _raise("clEnqueueAcquireGLObjects", "INVALID_GL_OBJECT", "GL 緩衝區 %d 的大小從 %d 變成 %d（glBufferData 重新指定過），要重新建立 GLBuffer" % (m._gl_name, m._size, info[0]))
-        if m._gl_rev != info[1]:   # GL 端有新內容（或第一次）：從 GPU 讀進來；沒變就跳過
-            _call("buf_write", {"queue": queue._h, "mem": m._h, "offset": 0}, P.interop_read(m._gl_name))
-            m._gl_rev = info[1]
+            _raise("clEnqueueAcquireGLObjects", "INVALID_OPERATION", "這個 %s 已經 acquire 過了（要先 release）" % type(m).__name__)
+        if isinstance(m, GLBuffer):
+            info = P.interop_buffer_info(m._gl_name)
+            if info is None:
+                _raise("clEnqueueAcquireGLObjects", "INVALID_GL_OBJECT", "GL 緩衝區 %d 已被刪除" % m._gl_name)
+            if info[0] != m._size:
+                _raise("clEnqueueAcquireGLObjects", "INVALID_GL_OBJECT", "GL 緩衝區 %d 的大小從 %d 變成 %d（glBufferData 重新指定過），要重新建立 GLBuffer" % (m._gl_name, m._size, info[0]))
+            if m._gl_rev != info[1]:   # GL 端有新內容（或第一次）：從 GPU 讀進來；沒變就跳過
+                _call("buf_write", {"queue": queue._h, "mem": m._h, "offset": 0}, P.interop_read(m._gl_name))
+                m._gl_rev = info[1]
+        else:
+            info = m._gl_info(P)
+            if info is None:
+                _raise("clEnqueueAcquireGLObjects", "INVALID_GL_OBJECT", "GL 物件 %d 已被刪除或沒有資料" % m._gl_name)
+            if (info[0], info[1]) != tuple(m._dims[:2]) or info[2] != m._gl_internal:
+                _raise("clEnqueueAcquireGLObjects", "INVALID_GL_OBJECT", "GL 物件 %d 的尺寸或格式改變了（重新指定過儲存），要重新建立 %s" % (m._gl_name, type(m).__name__))
+            if m._gl_rev != info[3]:
+                _call("img_write", {"queue": queue._h, "mem": m._h, "origin": [0, 0, 0], "region": [info[0], info[1], 1]}, m._gl_read(P))
+                m._gl_rev = info[3]
         m._cl_ver = _call("buf_version", {"mem": m._h})[0]["ver"]
         m._acquired = True
     return _gl_event(queue, "acquire_gl")
@@ -1766,13 +1903,17 @@ def enqueue_acquire_gl_objects(queue, mem_objects, wait_for=None):
 def enqueue_release_gl_objects(queue, mem_objects, wait_for=None):
     P = _gl_platform()
     for m in mem_objects:
-        if not isinstance(m, GLBuffer):
-            _raise("clEnqueueReleaseGLObjects", "INVALID_GL_OBJECT", "只有 GLBuffer 能 release（得到 %s）" % type(m).__name__)
+        if not isinstance(m, _GL_OBJECTS):
+            _raise("clEnqueueReleaseGLObjects", "INVALID_GL_OBJECT", "只有 GLBuffer／GLTexture／GLRenderBuffer 能 release（得到 %s）" % type(m).__name__)
         if not m._acquired:
-            _raise("clEnqueueReleaseGLObjects", "INVALID_OPERATION", "這個 GLBuffer 沒有 acquire 過")
+            _raise("clEnqueueReleaseGLObjects", "INVALID_OPERATION", "這個 %s 沒有 acquire 過" % type(m).__name__)
         if _call("buf_version", {"mem": m._h})[0]["ver"] != m._cl_ver:   # CL 端真的寫過：寫回 GL；沒寫過就不傳輸
-            _, data = _call("buf_read", {"queue": queue._h, "mem": m._h, "offset": 0, "size": m._size})
-            m._gl_rev = P.interop_write(m._gl_name, data)
+            if isinstance(m, GLBuffer):
+                _, data = _call("buf_read", {"queue": queue._h, "mem": m._h, "offset": 0, "size": m._size})
+                m._gl_rev = P.interop_write(m._gl_name, data)
+            else:
+                _, data = _call("img_read", {"queue": queue._h, "mem": m._h, "origin": [0, 0, 0], "region": [m._dims[0], m._dims[1], 1]})
+                m._gl_rev = m._gl_write(P, data)
         m._acquired = False
     return _gl_event(queue, "release_gl")
 
@@ -1791,8 +1932,7 @@ def _unsupported_class(name, why):
     return type(name, (MemoryObject,) if name in ("Image", "Pipe") else (object,), ns)
 
 
-for _n, _why in (("Pipe", "OpenCL 2.0 的 Pipe 不支援"), ("DevicePointerEXT", "不支援 cl_ext_buffer_device_address"),
-                 ("GLRenderBuffer", "GL 互通只支援緩衝區（GLBuffer）"), ("GLTexture", "GL 互通只支援緩衝區（GLBuffer）"),
+for _n, _why in (("DevicePointerEXT", "不支援 cl_ext_buffer_device_address"),
                  ("DeviceTopologyAmd", "AMD 擴充，不支援"), ("_TestMemoryPool", "pyopencl 內部測試用")):
     globals()[_n] = _unsupported_class(_n, _why)
 
