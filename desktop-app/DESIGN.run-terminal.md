@@ -1852,3 +1852,20 @@ node scripts/eval/gpgpu_bench.build.js /tmp/gpgpu_bench.js && FA_EVAL_GL=gpu FA_
 **測試（模擬）**：`renderer/src/terminal/terminal_hang.test.js` 21 passed：指令上限分類、階段逾時的錯誤訊息、整條 `_terminalRunWasmLine` 在 bash 載入／檔案系統（例如 IndexedDB 被擋）／FAP 掛載／shell 執行各階段卡住時都會回傳指出階段的錯誤、shell 卡住後丟掉執行環境、Ctrl+C 立刻放開（卡在還沒登記中止函式的階段）、卡住時的按鍵只提示一次且中斷後不補送、看門狗訊息含階段、正常指令沒有多餘訊息。`terminal_input.test.js` 28 passed（既有的看門狗與快捷列測試仍通過）。
 
 **只在模擬上驗過的**：全部。假的永不 resolve 的 Promise 代表「卡住」，但真實的 `ls` 在 Android 上卡在哪一層沒有重現（手機不在這台機器上）。所以「卡住的真正位置」仍需要使用者用新版的提示（「目前在：…」與看門狗的「卡在：…」）截圖確認；若是 FAP 掛載、IndexedDB 或 bash 載入，訊息會直接點名；若都不是，那就是 shell 執行本身，訊息會寫「指令執行（shell）」。
+
+### echo hi 很慢：快路徑（v499）與交接（2026-11-20）
+
+**使用者實測（Galaxy A54，Chrome）**：`echo hi` 也要等很久，所以問題在每個指令前共同的階段，不是某個指令。
+
+**已做（有測試）**：`echo`（含 `-n`）與 `pwd` 在 `_terminalExecSimpleCommand` 直接用 JS 算出結果，不碰 bash wasm、檔案系統或 FAP 掛載。只有沒有重導向、沒有 shell 運算子的簡單寫法才走快路徑。`renderer/src/terminal/terminal_fastpath.test.js` 5 passed（假依賴，證明快路徑完全不呼叫 wasm）。
+
+**未做（交接，下一個 session 接手）**：
+1. **量每個階段的耗時**：bash wasm 下載＋編譯／實例化、檔案系統儲存開啟（`_ensureTerminalFsStore`）、FAP 掛載 hydrate（`_hydrateReferencedFapMounts`）、內建工具（`_buildTerminalSandboxBuiltins`）、shell 啟動、指令本身。在行動 UA＋CPU 降速（6x）＋網路節流（Slow 4G）下量，找最大的一段。
+2. **進度顯示**：在終端機輸出每個階段的進度與已用秒數（例如「載入 shell 12 秒…」），讓使用者看到不是當機。`_termTimed` 已經記下 `session._stage`，可以接上計時。
+3. **快取編譯結果**：bash wasm 的編譯結果存進 IndexedDB（`WebAssembly.compileStreaming` 的結果可以存），第二次開啟幾乎瞬間。
+4. **背景預載**：頁面閒置時非阻塞地預載 bash wasm；行動版（或小記憶體）不要等到第一個指令才開始下載。
+5. **惰性 hydrate**：FAP 掛載的 hydrate 改成惰性＋背景，不阻塞第一個需要 shell 的指令。
+6. **更多快路徑**：`cd`、`cat`、`clear`、`help`、`ls`（沒有掛載時）同樣可以用 JS 處理，只在真的需要檔案內容時才載入對應的那一層。
+7. **測試**：假的慢載入（人為延遲 wasm、hydrate、儲存開啟），驗證 echo 立刻輸出、需要 shell 的指令顯示載入進度、背景預載完成後後續指令不再等。
+
+**真機限制**：Galaxy A54 上的實際耗時只能由使用者用新版的階段計時截圖提供；本段的測試都在模擬上。

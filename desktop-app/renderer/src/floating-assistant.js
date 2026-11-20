@@ -115448,6 +115448,14 @@ ${sourceTool.handlerScript}
         for (const a of node.assignments) this._terminalApplyShellAssignment(session, env, a.name, this._terminalExpandWord(a.valueWordSrc, env).text);
         if (!node.argvWords.length) return { exitCode: 0, stdout: '', stderr: '' };
         const rawCmdName = node.argvWords[0];
+        // 快路徑（手機實測：連 echo hi 都要等很久）：echo／pwd 這種純輸出的指令在 JS 直接算出結果，不碰 bash wasm、檔案系統與 FAP 掛載。
+        // 只有沒有重導向、沒有 shell 運算子的簡單寫法才走這裡；其餘照舊走 shell。
+        if ((rawCmdName === 'echo' || rawCmdName === 'pwd') && !(node.redirects && node.redirects.length) && !node.argvWords.slice(1).some((w) => this._terminalHasShellOps(w))) {
+            if (rawCmdName === 'pwd') return { exitCode: 0, stdout: (session.cwd || '/') + '\n', stderr: '' };
+            const words = node.argvWords.slice(1).map((w) => this._terminalExpandWord(w, env).text);
+            const noNewline = words[0] === '-n'; if (noNewline) words.shift();
+            return { exitCode: 0, stdout: words.join(' ') + (noNewline ? '' : '\n'), stderr: '' };
+        }
         // tw_stock_db客製: 2026-09-28使用者實測回報——test.sh結尾的`time
         // main`過去只有互動輸入路徑（_runTerminalCommand的cmdName==='time'
         // 判斷）有攔截，新的AST執行器（script檔案/貼上多行文字都會走這裡）
