@@ -1869,3 +1869,9 @@ node scripts/eval/gpgpu_bench.build.js /tmp/gpgpu_bench.js && FA_EVAL_GL=gpu FA_
 7. **測試**：假的慢載入（人為延遲 wasm、hydrate、儲存開啟），驗證 echo 立刻輸出、需要 shell 的指令顯示載入進度、背景預載完成後後續指令不再等。
 
 **真機限制**：Galaxy A54 上的實際耗時只能由使用者用新版的階段計時截圖提供；本段的測試都在模擬上。
+
+**追加交接（2026-11-20，使用者原話：「does it requires download,i.e. bash.wasm? i have no progress」）**：是，第一次要下載 bash：jsDelivr 的 wasi-sh@0.11.0 `src/index.mjs`、`src/fs.mjs`，加上 `dist/busybox.wasm`，失敗退回 raw.githubusercontent 備份（`FA_ASSET_URLS.bashWasmJsBase`、`_ensureBashWasmLoaded`、`_fetchAssetBytesWithBackup`、`_viaAssetProxy`）。需要做：
+- 位元組級下載進度：用 fetch 的 ReadableStream 讀 Content-Length，在終端機同一行即時更新「下載 shell 1.2/4.8 MB（25%，已用 3 秒）」；沒有 Content-Length 就只顯示已下載量。
+- 來源與失敗：顯示目前來源（主要或備份）；失敗時寫明網址、階段、錯誤原因；自動切備份時要顯示出來。
+- 快取命中時顯示「已使用快取」。
+- 這一項與上面的階段計時、快取、背景預載合併做，不要各做各的。
