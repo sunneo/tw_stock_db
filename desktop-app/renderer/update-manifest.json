@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "baseVersion": "1.1.0",
-  "generatedAt": "2026-11-20T10:44:34.784Z",
+  "generatedAt": "2026-11-20T10:45:16.142Z",
   "files": {
     "renderer/index.html": "039acc67493d2d42bae493dc9822621a",
     "renderer/bootstrap.js": "b3ce098ef750e0e1f152461abe0d8920",
