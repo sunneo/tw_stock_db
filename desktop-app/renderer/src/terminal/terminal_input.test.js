@@ -70,18 +70,14 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
         check('1 Enter 執行 ls', ran.length === 1 && ran[0][0] === 'ls', ran);
         check('1 執行完回到提示字元、行緩衝清空、busy 解除', out.includes('<PROMPT>') && session.line === '' && session.busy === false, { line: session.line, busy: session.busy });
     }
-    // 2. 指令永不結束：看門狗逾時 → 寫出說明、busy 解除、之後的輸入照常進來
+    // 2. 指令永不結束：沒有看門狗，Enter 的處理一直等，不會自動寫出逾時說明、也不會自動放開 busy（只有 Ctrl-C 才中斷）
     {
-        const { self, session, out } = makeSelf(() => new Promise(() => {}));   // 永遠不 resolve
+        const { self, session, out } = makeSelf(() => new Promise(() => {}));
         session.line = 'ls';
-        const t0 = Date.now();
-        await self._handleTerminalInput(session, '\r');
-        const took = Date.now() - t0;
-        check('2 看門狗讓 Enter 的處理在逾時後結束（不是永遠卡住）', took < 1000, took);
-        check('2 寫出逾時說明', out.some((x) => String(x).includes('沒有結束')), out);
-        check('2 busy 解除、標記逾時', session.busy === false && session._timedOut === true, { busy: session.busy, t: session._timedOut });
-        await self._handleTerminalInput(session, 'p');
-        check('2 逾時後的輸入照常進來', session.line === 'p', session.line);
+        let returned = false;
+        self._handleTerminalInput(session, '\r').then(() => { returned = true; });
+        await new Promise((r) => setTimeout(r, 80));
+        check('2 沒有看門狗：指令仍在等，沒有逾時說明', returned === false && session.busy === true && !out.some((x) => String(x).includes('沒有結束')), { returned, busy: session.busy, out });
     }
     // 3. 指令執行中的輸入：提示一次、不默默吃掉；Ctrl+C 仍然送得進去
     {

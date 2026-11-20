@@ -93128,8 +93128,10 @@ ${fnData.code}
     }
 
     async _listAllFapAccessPoints() {
-        const t = { getAllMs: 0, permMs: 0, opfsMs: 0 };
+        const t = { openMs: 0, getAllMs: 0, permMs: 0, opfsMs: 0 };
         let a = Date.now();
+        await (this.fileAccessPoints && this.fileAccessPoints._ready);
+        t.openMs = Date.now() - a; a = Date.now();
         const all = await this.fileAccessPoints.getAll();
         t.getAllMs = Date.now() - a; a = Date.now();
         const list = await Promise.all(all.map(async (r) => {
@@ -113827,6 +113829,7 @@ ${sourceTool.handlerScript}
                     const errs = [];
                     for (const src of this._bashJsSourceList()) {
                         if (gen !== (this._bashGen || 0)) throw new Error('已取消（使用者按下 Ctrl-C）');
+                        if (src.kind === 'cache' && !(await this._bashCacheGet(src.url))) continue;   // 沒有匯入的檔案＝這個來源不存在，不是失敗
                         this._bashCurrentSource = src.short;
                         emitEv({ kind: 'stage', text: `載入 JS 模組：嘗試 ${src.name}（${src.url}）` });
                         try {
@@ -113968,7 +113971,7 @@ ${sourceTool.handlerScript}
         session.term.write('\r\n' + this._terminalDiagText(session).replace(/\n/g, '\r\n') + '\r\n');
     }
     // 終端機的版本標記：每次發版時改這裡（與 PATCH_VERSION、發版 commit 對得上），終端機開頭與 diag 會印出來。
-    _terminalBuildTag() { return 'v511'; }
+    _terminalBuildTag() { return 'v512'; }
     _terminalRecordInput(session, type, ev) {
         if (!session || !session._inputLog) return;
         let detail = '';
@@ -114044,7 +114047,9 @@ ${sourceTool.handlerScript}
         lines.push('最後一次指令錯誤：' + ((session && session._lastError) || '無'));
         lines.push('最近一次被 JS 判為 not found：' + (session && session._lastNotFound ? `${session._lastNotFound.cmd}（依據：${session._lastNotFound.basis}）` : '無'));
         const fs0 = this._fapState;
-        lines.push('掛載清單：' + (!fs0 ? '尚未讀取' : !fs0.ready ? '讀取中（指令不等它）' : fs0.error ? '讀取失敗：' + fs0.error : `${fs0.points.length} 個，總耗時 ${fs0.ms}ms` + (fs0.timing ? `（IndexedDB 讀取 ${fs0.timing.getAllMs}ms、權限查詢 ${fs0.timing.permMs}ms、OPFS 枚舉 ${fs0.timing.opfsMs}ms）` : '')));
+        lines.push('掛載清單：' + (!fs0 ? '尚未讀取' : !fs0.ready ? '讀取中（指令不等它）' : fs0.error ? '讀取失敗：' + fs0.error : `${fs0.points.length} 個，總耗時 ${fs0.ms}ms` + (fs0.timing ? `（IndexedDB 開啟 ${fs0.timing.openMs}ms、讀取 ${fs0.timing.getAllMs}ms、權限查詢 ${fs0.timing.permMs}ms、OPFS 枚舉 ${fs0.timing.opfsMs}ms）` : '')));
+        lines.push('最後一次輸出：' + (session && session._lastOutputAt ? `${Math.round((Date.now() - session._lastOutputAt) / 1000)} 秒前：${session._lastOutputText || ''}` : '無'));
+        lines.push('檔案系統初始化：' + (session && session._fsInitMs != null ? session._fsInitMs + 'ms' : '尚未進行'));
         lines.push('目前來源：' + (this._bashCurrentSource || '尚未開始'));
         const evs = this._bashWasmDiag || [];
         const recent = evs.filter((e) => e.kind === 'cache' || e.kind === 'done').slice(-4);
@@ -114738,6 +114743,10 @@ ${sourceTool.handlerScript}
         };
         session.container = container; // GUI 視窗主機要畫進這裡（見_terminalGuiHost）
         container._terminalSession = session; // 純debug/檢查用，邏輯上不依賴這個附加屬性
+        { // tw_stock_db客製: 2026-11-20 記錄最後一次輸出的時間與內容（看門狗與 diag 用）
+            const ow = term.write.bind(term);
+            term.write = (d, cb) => { session._lastOutputAt = Date.now(); const last = String(d).replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').replace(/\r/g, '').split('\n').filter((x) => x.trim()).pop(); if (last) session._lastOutputText = last.slice(0, 80); return ow(d, cb); };
+        }
         session.refit = fitTermRows; // 套用字體大小/設定後重新量欄列用（見_applyTerminalAppearance）
         container.addEventListener('contextmenu', (ev) => {
             ev.preventDefault();
@@ -114923,13 +114932,14 @@ ${sourceTool.handlerScript}
             if (combined.trim() && !combined.includes('\n')) session.history.push(combined);
             session.historyIndex = session.history.length;
             session.busy = true;
-            session._prepLabels = new Set(); this._termCurrent = session;   // 統一入口：載入函式用它找到目前執行中的終端機
+            session._prepLabels = new Set(); session._busyAt = Date.now(); this._termCurrent = session;   // 統一入口：載入函式用它找到目前執行中的終端機
             // 看門狗：指令超過 _terminalWatchdogMs（預設 45 秒）還沒結束，就放開 busy 鎖、寫出說明，讓使用者可以繼續輸入（指令本身可能還在背景）。
             // 沒有這個，指令永遠不結束時 busy 會一直是 true，之後的鍵盤輸入全部被吃掉，畫面看起來就是「卡住」。
             session._busyHinted = false; session._timedOut = false; session._stage = '派送指令（尚未進入任何階段）';
             const cap = this._terminalCapFor(combined); const wdMs = this._terminalWatchdogMs || 120000; let wdTimer = null;   // 整體的保險絲：各階段（載入、下載、掛載）各有自己的上限；5 秒只限 shell 執行本身，不能套在第一次的下載上
             // tw_stock_db客製: 2026-11-20 下載中（bash 執行環境載入）絕不自動中斷：看門狗到期時若還在下載就順延，只有下載完成後的指令執行才會被砍。使用者按 Ctrl-C 由 abortP 處理。
-            const watchdog = new Promise((_, rej) => { const arm = () => { wdTimer = setTimeout(() => { if (this._bashDownloading()) { arm(); return; } rej(new Error('__TERMINAL_WATCHDOG__')); }, wdMs); }; arm(); });
+            // 沒有看門狗：指令不會被自動中斷，只有使用者按 Ctrl-C（abortP）才會放開；卡住時用 diag 看目前階段與最後輸出。
+            const watchdog = new Promise(() => {});
             const abortP = new Promise((_, rej) => { session._runAbortReject = rej; });   // Ctrl+C 用來立刻放開
             try { await Promise.race([this._terminalRunUnits(session, scan.units), watchdog, abortP]); }
             catch (err) {
@@ -116803,8 +116813,9 @@ ${sourceTool.handlerScript}
     async _refreshTerminalFapLabels(session, fsStore) {
         if (session.fapLabelsAt && Date.now() - session.fapLabelsAt < 2000) return;
         session.fapLabelsAt = Date.now();
-        let points;
-        try { points = await this._listAllFapAccessPoints(); } catch (_) { return; }
+        // tw_stock_db客製: 2026-11-20 指令路徑不等 IndexedDB：只用背景快取（_fapWarm），快取還沒好就本次不更新。
+        this._fapWarm();
+        const points = this._fapState && this._fapState.ready ? this._fapState.points : [];
         const known = new Set(session.fapLabels || []);
         // tw_stock_db客製: 2026-09-23同_ensureTerminalFsStore的修正——不再
         // 篩permission，失去授權的FAP也要出現在/mnt，cd進去時
@@ -117289,11 +117300,11 @@ ${sourceTool.handlerScript}
             return { ok: false, error: String(err.message || err) };
         }
         let fsStore;
-        try { fsStore = await this._termTimed(session, '檔案系統初始化', this._ensureTerminalFsStore(session, runtime), 10000); } catch (err) {
+        try { fsStore = await this._ensureTerminalFsStore(session, runtime); } catch (err) {
             if (err && err.timedOut) this._bashWasmRuntime = null;
             return { ok: false, error: String(err.message || err) };
         }
-        try { await this._termTimed(session, 'FAP 掛載讀取', this._hydrateReferencedFapMounts(session, fsStore, line), 15000); } catch (err) {
+        try { await this._hydrateReferencedFapMounts(session, fsStore, line); } catch (err) {
             return { ok: false, error: `FAP掛載讀取失敗：${String(err.message || err)}` };
         }
         // tw_stock_db客製: 2026-09-28——見parseFunctionDef()/'FunctionDef'
@@ -117344,7 +117355,7 @@ ${sourceTool.handlerScript}
             // 回頭呼叫shell）。只有真的有傳opts.stdin時才加這個欄位，一般
             // 終端機呼叫（互動輸入/terminal_run）不受影響。
             if (opts.stdin) runOpts.stdin = opts.stdin;
-            result = await this._termTimed(session, '指令執行（shell）', this._terminalRun(session, runtime, runOpts), this._terminalCapFor(line).ms);
+            result = await this._terminalRun(session, runtime, runOpts);
         } catch (err) {
             if (err && err.timedOut) this._bashWasmRuntime = null;   // 執行環境可能已經卡死：丟掉，下次重新載入
             return { ok: false, error: `執行失敗：${String(err.message || err)}` };

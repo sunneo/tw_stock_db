@@ -342,7 +342,7 @@ const tick = () => new Promise((r) => setImmediate(r));
         const self = makeSelf(ctx);
         const s = sink(); s.sess._inputLog = [];
         const empty = self._terminalDiagText(s.sess);
-        check('T16 diag 有版本與「沒有輸入事件」的明說', empty.includes('版本：v511') && empty.includes('沒有任何輸入事件到達終端機'), empty);
+        check('T16 diag 有版本與「沒有輸入事件」的明說', empty.includes('版本：v512') && empty.includes('沒有任何輸入事件到達終端機'), empty);
         for (let i = 0; i < 12; i++) self._terminalRecordInput(s.sess, 'keydown', { key: 'e', keyCode: 229 });
         self._terminalRecordInput(s.sess, 'data', { data: 'e' });
         const txt = self._terminalDiagText(s.sess);
@@ -354,7 +354,7 @@ const tick = () => new Promise((r) => setImmediate(r));
         const self = makeSelf(ctx);
         const s = sink(); s.sess._inputLog = [];
         self._terminalPrintDiag(s.sess);
-        check('T17 診斷按鈕印出版本與輸入紀錄', s.out.join('').includes('版本：v511') && s.out.join('').includes('最後 10 個輸入事件'), s.out.length);
+        check('T17 診斷按鈕印出版本與輸入紀錄', s.out.join('').includes('版本：v512') && s.out.join('').includes('最後 10 個輸入事件'), s.out.length);
     }
     // T18：設定白名單：來源只收已知值、自訂網址只收 http(s)、逾時秒數夾在 5–120、預載預設開
     {
@@ -520,11 +520,11 @@ const tick = () => new Promise((r) => setImmediate(r));
     {
         const ctx = makeCtx({ fetch: fakeNet({}).fetch });
         let calls = 0;
-        const self = makeSelf(ctx, { _listAllFapAccessPoints: async () => { calls++; self._fapTiming = { getAllMs: 1, permMs: 2, opfsMs: 3 }; return [{ label: 'docs' }]; } });
+        const self = makeSelf(ctx, { _listAllFapAccessPoints: async () => { calls++; self._fapTiming = { openMs: 0, getAllMs: 1, permMs: 2, opfsMs: 3 }; return [{ label: 'docs' }]; } });
         await self._fapWarm(); await self._fapWarm();
         check('T33 背景只讀一次', calls === 1, calls);
         const dg = self._terminalDiagText({ term: { write() {} }, _stage: 'x' });
-        check('T33 diag 顯示掛載清單數量與分段耗時', dg.includes('掛載清單：1 個') && dg.includes('IndexedDB 讀取 1ms'), dg.split('\n').filter((x) => x.includes('掛載清單')));
+        check('T33 diag 顯示掛載清單數量與分段耗時', dg.includes('掛載清單：1 個') && dg.includes('讀取 1ms'), dg.split('\n').filter((x) => x.includes('掛載清單')));
     }
     // T34：誤判防線：每一類都不能被判成 not found（回傳 null＝交給 shell 或已知）
     {

@@ -2090,3 +2090,18 @@ v510 引入的 JS 端「command not found」判定有誤判：已知表漏了 bu
 **測試（模擬）**：`terminal_progress.test.js` 117 passed。T34：內建、applet（含 xargs、unlink 等舊清單會漏的）、session 函式、已註冊執行環境、路徑形式、賦值前綴、管線、`&&`、重導向、`$()`、反引號、括號、引號、斜線指令，全部不被誤判。T35：`llo` 立即印 `llo: command not found`、exit 127，不碰儲存、掛載、bash 載入；diag 顯示依據。`terminal_hang` 23、`terminal_input` 28、`terminal_fastpath` 5 passed。**未在真機驗證。**
 
 **尚未處理（下一版）**：python 的 Pyodide 串流下載與 Worker 進度、設定頁下載狀態列表（C 版）。
+
+### 移除看門狗與各階段硬上限（v512，2026-11-20）
+
+使用者實測：python 跑到 120 秒沒有回應就被看門狗砍掉。使用者要求：不要看門狗，現在有 diag 可以診斷。
+
+**修改**
+- `_handleTerminalInput` 的 120 秒看門狗已移除。指令只會被 Ctrl-C（或快捷列「中斷」）中斷。
+- `_terminalRunWasmLine` 內的各階段硬上限也移除：檔案系統初始化（原 10 秒）、FAP 掛載讀取（原 15 秒）、shell 執行（原依指令 5／30／120 秒）。這些同樣會在等待中把指令砍掉。`_termTimed` 函式保留，但指令路徑不再使用。
+- 卡住時的診斷：diag 的「目前階段」、「最後一次輸出」、「掛載清單」、「檔案系統初始化」耗時。
+
+**FAP 15 秒的根因（已確認）**：手機沒有掛載，但 diag 出現「FAP 掛載讀取 15003ms」。原因是 `_refreshTerminalFapLabels` 在**每一個**指令上都 `await _listAllFapAccessPoints()`（讀 IndexedDB）。現在改為只用背景快取（`_fapWarm`），指令路徑不再等 IndexedDB。
+
+**測試（模擬）**：`terminal_hang` 7 passed（改寫：卡住的指令不會被自動結束、Ctrl-C 才放開、bash 載入／檔案系統／FAP 掛載／shell 執行卡住時都一直等、正常指令沒有多餘訊息）。`terminal_input` 25、`terminal_progress` 117、`terminal_fastpath` 5 passed。**未在真機驗證。**
+
+**仍然沒有做的**：python 的 Worker 路徑進度與 micropip 安裝的逐包進度；IndexedDB 開啟為什麼慢的確切原因（diag 已加「IndexedDB 開啟」耗時，但需要手機上的數字）；設定頁的下載狀態區（C 版）。
