@@ -1819,3 +1819,13 @@ node scripts/eval/gpgpu_bench.build.js /tmp/gpgpu_bench.js && FA_EVAL_GL=gpu FA_
 **只在模擬上驗過的／沒驗過的**：設定頁的窄螢幕版面沒有在瀏覽器裡量到（這次的瀏覽器工具不能操作本機檔案，而且本機伺服器的啟動被拒絕），只有 CSS 文字檢查；真的 Galaxy A54、Gboard 的組字行為沒有驗證。
 
 **附帶發現**：同一個分支上有別的 session 的提交改了 `_planLocalSummarize`（改用 `_gpuDecodeCapOn`／`_gpuChunkCap`），兩個計畫測試的假 `this` 因此少了這兩個方法；已在測試裡補上（非 Qwen 模型不套上限，與產品行為相同）。
+
+### 快捷列（v497，2026-11-20 使用者回報：手機沒有 Tab、Esc 鍵）
+
+- **內容**：Esc、Tab、Ctrl、Alt（修飾鍵）、↑↓←→、Home、End、PgUp、PgDn、Enter、⌫、Ctrl+C，以及 `| / ~ - _ > & ;`（手機鍵盤難打的符號）。按鈕送出的序列和實體鍵盤相同，走 `_handleTerminalInput`，所以指令攔截、歷史、Tab 補全都有效；Tab 觸發 `_handleTerminalTabComplete`。
+- **修飾鍵**：Ctrl 點一下＝下一個字元變控制字元（`| → 0x1c`）後自動解除；快速點兩下（450 ms 內）＝鎖定，再點一下解除。Alt 送 ESC 前綴。按鈕顯示目前狀態（亮起、鎖定時加 🔒）。
+- **焦點**：按鈕的 `mousedown`／`pointerdown` 都 `preventDefault`，所以虛擬鍵盤不會收起來；每次按完會把焦點還給終端機。觸控目標高 40px、寬至少 40px。
+- **顯示**：觸控裝置預設顯示，桌面預設隱藏；上方的「快捷列 ▾／▴」可收起或展開，選擇存在 `localStorage`（`fa_term_keybar`，`try/catch`，拿不到就用預設）。
+- **虛擬鍵盤**：用 `visualViewport`：鍵盤跳出（可見高度比視窗少超過 80px）時，快捷列 `position: fixed` 貼在鍵盤上方；鍵盤收起就回到原位。
+- **測試（模擬）**：`renderer/src/terminal/terminal_input.test.js` 28 passed：Esc／Tab／方向鍵／Home／End／PgUp／PgDn 序列、Ctrl 單次與鎖定、Alt 前綴、Tab 觸發補全、按鈕不搶焦點、收起與記住狀態、localStorage 拿不到、鍵盤跳出與收起的定位。
+- **沒有驗證**：截圖（這次的瀏覽器工具不能操作本機檔案，本機伺服器的啟動被拒絕，所以沒有在手機模擬器裡看過版面）；真的 Galaxy A54 與 Gboard 上的實際手感與 `visualViewport` 行為。

@@ -114140,21 +114140,68 @@ ${sourceTool.handlerScript}
         const ta = container && container.querySelector ? container.querySelector('textarea') : null;
         if (ta) { ta.setAttribute('autocapitalize', 'off'); ta.setAttribute('autocorrect', 'off'); ta.setAttribute('autocomplete', 'off'); ta.setAttribute('spellcheck', 'false'); ta.setAttribute('enterkeyhint', 'send'); }
         const touch = typeof window !== 'undefined' && (('ontouchstart' in window) || (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0));
-        if (!touch || !container || !container.parentNode) return null;
-        const bar = document.createElement('div'); bar.className = 'fa-term-keys'; bar.style.cssText = 'display:flex; gap:4px; overflow-x:auto; padding:4px 0; -webkit-overflow-scrolling:touch;';
+        const stored = (() => { try { return localStorage.getItem('fa_term_keybar'); } catch (_) { return null; } })();   // 使用者的選擇（開／關）記在 localStorage；拿不到就用預設
+        if (!container || !container.parentNode || (!touch && stored !== 'on')) return null;   // 桌面預設不顯示
+        const shown = stored === 'on' ? true : stored === 'off' ? false : true;
+        const wrap = document.createElement('div'); wrap.className = 'fa-term-keywrap'; wrap.style.cssText = 'box-sizing:border-box; width:100%;';
+        const toggle = document.createElement('button'); toggle.type = 'button'; toggle.className = 'fa-term-keytoggle';
+        toggle.style.cssText = 'display:block; width:100%; min-height:32px; font-size:12px; border:1px solid #334155; background:#0f172a; color:#94a3b8; border-radius:6px; cursor:pointer; margin:2px 0;';
+        const bar = document.createElement('div'); bar.className = 'fa-term-keys';
+        bar.style.cssText = 'display:' + (shown ? 'flex' : 'none') + '; gap:4px; overflow-x:auto; padding:4px; box-sizing:border-box; background:#0f172a; -webkit-overflow-scrolling:touch;';
+        bar.style.display = shown ? 'flex' : 'none';
+        const mod = { ctrl: { armed: false, locked: false, lastTap: 0, btn: null }, alt: { armed: false, locked: false, lastTap: 0, btn: null } };
+        const refreshMods = () => { for (const k of ['ctrl', 'alt']) { const m = mod[k]; if (!m.btn) continue; const on = m.armed || m.locked; m.btn.style.background = on ? '#76b900' : '#1e293b'; m.btn.style.color = on ? '#0f172a' : '#e2e8f0'; m.btn.setAttribute('aria-pressed', on ? 'true' : 'false'); m.btn.textContent = m.locked ? k.charAt(0).toUpperCase() + k.slice(1) + '🔒' : (k === 'ctrl' ? 'Ctrl' : 'Alt'); } };
+        // 送出一個鍵：和實體鍵盤走同一條路（_handleTerminalInput：指令攔截、歷史、補全都有效）。修飾鍵：Ctrl＋單一字元 → 控制字元；Alt＋單一字元 → ESC 前綴
+        const send = (seq) => {
+            let out = seq;
+            if (out.length === 1) {
+                if (mod.ctrl.armed) out = String.fromCharCode(out.charCodeAt(0) & 0x1f);
+                if (mod.alt.armed) out = '\x1b' + out;
+            }
+            if (!mod.ctrl.locked) mod.ctrl.armed = false;
+            if (!mod.alt.locked) mod.alt.armed = false;
+            refreshMods();
+            if (!session.ended) this._handleTerminalInput(session, out);
+            if (session.term && session.term.focus) session.term.focus();
+        };
+        // 修飾鍵：點一下＝下一個字元生效；快速點兩下＝鎖定（再點一下解除）
+        const tapMod = (name) => { const m = mod[name]; const now = Date.now(); if (m.locked) { m.locked = false; m.armed = false; } else if (now - m.lastTap < 450) { m.locked = true; m.armed = true; } else { m.armed = !m.armed; } m.lastTap = now; refreshMods(); };
         for (const k of this._terminalKeyBarKeys()) {
-            const b = document.createElement('button'); b.type = 'button'; b.textContent = k.label; b.dataset.seq = k.seq;
-            b.style.cssText = 'flex:0 0 auto; min-width:36px; padding:6px 8px; font-size:13px; border-radius:6px; cursor:pointer;';
-            b.addEventListener('mousedown', (e) => e.preventDefault());
-            b.addEventListener('click', () => { if (!session.ended) this._handleTerminalInput(session, k.seq); if (session.term && session.term.focus) session.term.focus(); });
+            const b = document.createElement('button'); b.type = 'button'; b.textContent = k.label;
+            if (k.mod) { b.dataset.mod = k.mod; mod[k.mod].btn = b; } else b.dataset.seq = k.seq;
+            b.style.cssText = 'flex:0 0 auto; min-width:40px; height:40px; padding:0 8px; font-size:13px; border-radius:6px; cursor:pointer; background:#1e293b; color:#e2e8f0; border:1px solid #334155;';
+            const keepFocus = (e) => e.preventDefault();   // 按鈕不搶焦點，虛擬鍵盤不會收起來
+            b.addEventListener('pointerdown', keepFocus); b.addEventListener('mousedown', keepFocus);
+            b.addEventListener('click', () => { if (k.mod) tapMod(k.mod); else send(k.seq); });
             bar.appendChild(b);
         }
-        container.insertAdjacentElement('afterend', bar);
-        return bar;
+        refreshMods();
+        toggle.textContent = shown ? '快捷列 ▾（點一下收起）' : '快捷列 ▴（點一下顯示）';
+        toggle.addEventListener('click', () => {
+            const nowShown = bar.style.display === 'none';
+            bar.style.display = nowShown ? 'flex' : 'none';
+            toggle.textContent = nowShown ? '快捷列 ▾（點一下收起）' : '快捷列 ▴（點一下顯示）';
+            try { localStorage.setItem('fa_term_keybar', nowShown ? 'on' : 'off'); } catch (_) { /* 沒有 localStorage：只是下次回到預設 */ }
+        });
+        wrap.appendChild(toggle); wrap.appendChild(bar);
+        container.insertAdjacentElement('afterend', wrap);
+        // 虛擬鍵盤跳出來時（visualViewport 變小），快捷列貼在鍵盤上方；鍵盤收起來就回到原本的位置
+        const vv = typeof window !== 'undefined' ? window.visualViewport : null;
+        const place = () => {
+            const kb = vv ? Math.max(0, window.innerHeight - vv.height - vv.offsetTop) : 0;
+            if (kb > 80) { wrap.style.position = 'fixed'; wrap.style.left = '0'; wrap.style.right = '0'; wrap.style.bottom = Math.round(kb) + 'px'; wrap.style.zIndex = '2147483000'; wrap.style.background = '#0f172a'; }
+            else { wrap.style.position = ''; wrap.style.left = ''; wrap.style.right = ''; wrap.style.bottom = ''; wrap.style.zIndex = ''; wrap.style.background = ''; }
+        };
+        if (vv && vv.addEventListener) { vv.addEventListener('resize', place); vv.addEventListener('scroll', place); }
+        return wrap;
     }
+    // 快捷鍵：seq＝送出的序列；mod＝修飾鍵（Ctrl、Alt，點一下＝下一個字元生效，點兩下＝鎖定）
     _terminalKeyBarKeys() {
-        return [{ label: 'Enter', seq: '\r' }, { label: 'Tab', seq: '\t' }, { label: '↑', seq: '\x1b[A' }, { label: '↓', seq: '\x1b[B' }, { label: '←', seq: '\x1b[D' }, { label: '→', seq: '\x1b[C' },
-            { label: '⌫', seq: '\x7f' }, { label: 'Ctrl+C', seq: '\x03' }, { label: '|', seq: '|' }, { label: '~', seq: '~' }, { label: '/', seq: '/' }, { label: '-', seq: '-' }, { label: '>', seq: '>' }, { label: '&', seq: '&' }, { label: ';', seq: ';' }];
+        return [{ label: 'Esc', seq: '\x1b' }, { label: 'Tab', seq: '\t' }, { label: 'Ctrl', mod: 'ctrl' }, { label: 'Alt', mod: 'alt' },
+            { label: '↑', seq: '\x1b[A' }, { label: '↓', seq: '\x1b[B' }, { label: '←', seq: '\x1b[D' }, { label: '→', seq: '\x1b[C' },
+            { label: 'Home', seq: '\x1b[H' }, { label: 'End', seq: '\x1b[F' }, { label: 'PgUp', seq: '\x1b[5~' }, { label: 'PgDn', seq: '\x1b[6~' },
+            { label: 'Enter', seq: '\r' }, { label: '⌫', seq: '\x7f' }, { label: 'Ctrl+C', seq: '\x03' },
+            { label: '|', seq: '|' }, { label: '/', seq: '/' }, { label: '~', seq: '~' }, { label: '-', seq: '-' }, { label: '_', seq: '_' }, { label: '>', seq: '>' }, { label: '&', seq: '&' }, { label: ';', seq: ';' }];
     }
     async _mountTerminalWidget(container, initialCommand, msg) {
         this._guardWheel(container);
