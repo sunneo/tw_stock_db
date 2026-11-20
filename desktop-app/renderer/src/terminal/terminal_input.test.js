@@ -30,7 +30,7 @@ function methodSource(name) {
     const chunk = SRC.slice(m.index + 1, n ? n.index : SRC.length); const close = chunk.lastIndexOf('}');
     return chunk.slice(0, close + 1);
 }
-const NAMES = ['_handleTerminalInput', '_terminalMobileInputSetup', '_terminalKeyBarKeys'];
+const NAMES = ['_handleTerminalInput', '_terminalMobileInputSetup', '_terminalKeyBarKeys', '_terminalCapFor'];
 const ctx = { console, Promise, JSON, Date, Math, Number, Array, Object, String, Error, setTimeout, clearTimeout, window: {}, navigator: { maxTouchPoints: 5 } };
 vm.createContext(ctx);
 const M = vm.runInContext('({' + NAMES.map(methodSource).join(',\n') + '})', ctx);

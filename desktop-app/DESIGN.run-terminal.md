@@ -1829,3 +1829,26 @@ node scripts/eval/gpgpu_bench.build.js /tmp/gpgpu_bench.js && FA_EVAL_GL=gpu FA_
 - **虛擬鍵盤**：用 `visualViewport`：鍵盤跳出（可見高度比視窗少超過 80px）時，快捷列 `position: fixed` 貼在鍵盤上方；鍵盤收起就回到原位。
 - **測試（模擬）**：`renderer/src/terminal/terminal_input.test.js` 28 passed：Esc／Tab／方向鍵／Home／End／PgUp／PgDn 序列、Ctrl 單次與鎖定、Alt 前綴、Tab 觸發補全、按鈕不搶焦點、收起與記住狀態、localStorage 拿不到、鍵盤跳出與收起的定位。
 - **沒有驗證**：截圖（這次的瀏覽器工具不能操作本機檔案，本機伺服器的啟動被拒絕，所以沒有在手機模擬器裡看過版面）；真的 Galaxy A54 與 Gboard 上的實際手感與 `visualViewport` 行為。
+
+### 指令卡住：硬上限、階段名稱、Ctrl+C 立刻放開（v498，2026-11-20）
+
+**使用者實測（Galaxy A54，Android Chrome）**：輸入 `ls`，畫面顯示「指令還在執行，鍵盤輸入先不送出；按 Ctrl+C 可以中斷」，ls 一直沒有結束。
+
+**執行路徑（程式碼確認）**：`_handleTerminalInput`（Enter）→ `_terminalRunUnits` → `_terminalExecSimpleCommand` → `_terminalRunShellText`／`_terminalRunWasmLine`。`_terminalRunWasmLine` 依序等待：(1) `_ensureBashWasmLoaded`（載入 bash wasm 模組）、(2) `_ensureTerminalFsStore`（檔案系統）、(3) `_hydrateReferencedFapMounts`（掛載的 FAP 資料夾讀取）、(4) `_buildTerminalSandboxBuiltins`（內建工具）、(5) `_terminalRun` → `runtime.run`（shell 執行）。**以上五個 await 原本都沒有時限。**
+
+**為什麼上一版看門狗沒有擋住**（三個原因，都在程式碼裡確認）：
+1. 看門狗只蓋住 `_terminalRunUnits` 這一層，而且是固定 45 秒；它只放開 `busy`，**沒有**中止卡住的階段，也沒有丟掉執行環境，所以下一個指令會再卡在同一處。
+2. Ctrl+C（`_terminalInterrupt`）只會呼叫已登記的中止函式（`_aborts`）。卡在前面四個階段時還沒有任何中止函式登記，Ctrl+C 等於沒有作用，`busy` 要等 45 秒看門狗才會放開。
+3. 45 秒期間使用者只看到提示文字，沒有任何階段資訊，所以看起來就是「永遠卡住」。
+
+**修法**：
+- **每個階段都有硬上限**（`_termTimed`）：bash 載入 30 秒、檔案系統 10 秒、FAP 掛載 15 秒、內建工具 10 秒；逾時錯誤寫出階段名稱（例如「「FAP 掛載讀取」超過 15 秒沒有完成」），並記在 `session._stage`。
+- **指令上限**（`_terminalCapFor`）：`ls`／`cat`／`cd`／`pwd`／`echo` 等快速指令 5 秒；`python`／`node`／`curl`／`git`／`sleep` 等長時間指令 120 秒；其餘 30 秒。看門狗與 shell 執行的上限都用它。
+- **逾時後丟掉執行環境**（`_bashWasmRuntime = null`，載入失敗則清 `_bashWasmLoadPromise`），下一次重新載入，不會一直沿用卡死的環境。
+- **Ctrl+C 立刻放開**：Enter 時建立 `abortP`，`_terminalInterrupt` 會 reject 它，不管卡在哪一個階段都馬上放開 `busy`，寫出「已中斷（Ctrl+C）；中斷前卡在：…」。快捷列的 Ctrl+C 按鈕就是一鍵中斷（不需要先按 Ctrl 再按 c）。
+- **按鍵**：指令執行中的按鍵不保留（只提示一次），中斷或逾時後直接丟棄，不會在之後無限補送。
+- **看門狗訊息**寫出指令類別、上限秒數與卡住的階段；執行中的提示也會顯示「目前在：…」，讓使用者截圖時有資訊。
+
+**測試（模擬）**：`renderer/src/terminal/terminal_hang.test.js` 21 passed：指令上限分類、階段逾時的錯誤訊息、整條 `_terminalRunWasmLine` 在 bash 載入／檔案系統（例如 IndexedDB 被擋）／FAP 掛載／shell 執行各階段卡住時都會回傳指出階段的錯誤、shell 卡住後丟掉執行環境、Ctrl+C 立刻放開（卡在還沒登記中止函式的階段）、卡住時的按鍵只提示一次且中斷後不補送、看門狗訊息含階段、正常指令沒有多餘訊息。`terminal_input.test.js` 28 passed（既有的看門狗與快捷列測試仍通過）。
+
+**只在模擬上驗過的**：全部。假的永不 resolve 的 Promise 代表「卡住」，但真實的 `ls` 在 Android 上卡在哪一層沒有重現（手機不在這台機器上）。所以「卡住的真正位置」仍需要使用者用新版的提示（「目前在：…」與看門狗的「卡在：…」）截圖確認；若是 FAP 掛載、IndexedDB 或 bash 載入，訊息會直接點名；若都不是，那就是 shell 執行本身，訊息會寫「指令執行（shell）」。

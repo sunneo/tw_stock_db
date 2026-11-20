@@ -114427,7 +114427,7 @@ ${sourceTool.handlerScript}
         if (session.activeProgram) { session.activeProgram.feed(data); return; }
         if (session._stdinWaiter && data !== '\x03') { this._terminalStdinFeed(session, data); return; }   // 程式正在等一行輸入（input()）
         // 指令執行中（例如第一次cd進大的/mnt資料夾要讀很久）忽略鍵盤輸入，避免第二個指令跟第一個交錯執行
-        if (session.busy && data !== '\x03') { if (!session._busyHinted) { session._busyHinted = true; session.term.write('\x1b[90m（指令還在執行，鍵盤輸入先不送出；按 Ctrl+C 可以中斷，或等它結束）\x1b[0m\r\n'); } return; }
+        if (session.busy && data !== '\x03') { if (!session._busyHinted) { session._busyHinted = true; session.term.write('\x1b[90m（指令還在執行' + (session._stage ? '，目前在：' + session._stage : '') + '；鍵盤輸入先不送出；按 Ctrl+C 可以中斷，或等它結束）\x1b[0m\r\n'); } return; }
         if (session.cursorPos == null) session.cursorPos = session.line.length;
         // 貼上多行文字：xterm一次送來一整段（換行是\r）。拆成「文字」跟「Enter」逐一處理，效果等同使用者一行一行打，
         // 這樣引號沒結束、heredoc之類的續行判斷才會照常運作（不然整段換行字元被塞進同一行，指令被切壞）。
@@ -114458,15 +114458,17 @@ ${sourceTool.handlerScript}
             session.busy = true;
             // 看門狗：指令超過 _terminalWatchdogMs（預設 45 秒）還沒結束，就放開 busy 鎖、寫出說明，讓使用者可以繼續輸入（指令本身可能還在背景）。
             // 沒有這個，指令永遠不結束時 busy 會一直是 true，之後的鍵盤輸入全部被吃掉，畫面看起來就是「卡住」。
-            session._busyHinted = false; session._timedOut = false;
-            const wdMs = this._terminalWatchdogMs || 45000; let wdTimer = null;
+            session._busyHinted = false; session._timedOut = false; session._stage = '剖析指令';
+            const cap = this._terminalCapFor(combined); const wdMs = this._terminalWatchdogMs || cap.ms; let wdTimer = null;
             const watchdog = new Promise((_, rej) => { wdTimer = setTimeout(() => rej(new Error('__TERMINAL_WATCHDOG__')), wdMs); });
-            try { await Promise.race([this._terminalRunUnits(session, scan.units), watchdog]); }
+            const abortP = new Promise((_, rej) => { session._runAbortReject = rej; });   // Ctrl+C 用來立刻放開
+            try { await Promise.race([this._terminalRunUnits(session, scan.units), watchdog, abortP]); }
             catch (err) {
-                if (err && err.message === '__TERMINAL_WATCHDOG__') { session._timedOut = true; session.term.write('\x1b[33m指令 ' + Math.round(wdMs / 1000) + ' 秒沒有結束，先放手（它可能還在背景執行；按 Ctrl+C 可中斷，或直接繼續輸入）\x1b[0m\r\n'); }
+                if (err && err.message === '__TERMINAL_WATCHDOG__') { session._timedOut = true; session.term.write('\x1b[33m' + cap.label + '「' + combined.trim().split(/\s+/)[0] + '」超過 ' + Math.round(wdMs / 1000) + ' 秒沒有結束' + (session._stage ? '，卡在：' + session._stage : '') + '。已放開輸入（指令可能還在背景；按 Ctrl+C 可中斷）\x1b[0m\r\n'); }
+                else if (err && err.message === '__TERMINAL_INTERRUPT__') { session.term.write('\x1b[33m已中斷（Ctrl+C）' + (session._stage ? '；中斷前卡在：' + session._stage : '') + '\x1b[0m\r\n'); }
                 else session.term.write(`\x1b[31m指令執行失敗：${String((err && err.message) || err)}\x1b[0m\n\n`);
             }
-            finally { clearTimeout(wdTimer); session.busy = false; session._busyHinted = false; if (session._sigint) { session._sigint = false; this._terminalSetExit(session, 130); } }
+            finally { clearTimeout(wdTimer); session._runAbortReject = null; session.busy = false; session._busyHinted = false; if (session._sigint) { session._sigint = false; this._terminalSetExit(session, 130); } }
             if (!session.activeProgram) this._writeTerminalPrompt(session);
             await this._persistTerminalSnapshot(session);
             return;
@@ -116494,7 +116496,7 @@ ${sourceTool.handlerScript}
         }
         const script = this._terminalRewriteBuiltinPaths(`cd ${this._shQuote(session.cwd)} 2>/dev/null; ${line}`);
         let builtins;
-        try { builtins = await this._buildTerminalSandboxBuiltins(script); } catch (err) {
+        try { builtins = await this._termTimed(session, '指令內建工具載入', this._buildTerminalSandboxBuiltins(script), 10000); } catch (err) {
             session.term.write(`\x1b[31m指令需要的執行環境載入失敗：${String(err.message || err)}\x1b[0m\r\n`);
             return;
         }
@@ -116762,11 +116764,16 @@ ${sourceTool.handlerScript}
     // 跑完後對累積好的stdout/stderr統一寫檔一次），避免每個group各寫一次。
     async _terminalRunWasmLine(session, line, opts = {}) {
         let runtime;
-        try { runtime = await this._ensureBashWasmLoaded(); } catch (err) {
+        try { runtime = await this._termTimed(session, 'bash 執行環境載入', this._ensureBashWasmLoaded(), 30000); } catch (err) {
+            if (err && err.timedOut) this._bashWasmLoadPromise = null;   // 下次重新載入
             return { ok: false, error: String(err.message || err) };
         }
-        const fsStore = await this._ensureTerminalFsStore(session, runtime);
-        try { await this._hydrateReferencedFapMounts(session, fsStore, line); } catch (err) {
+        let fsStore;
+        try { fsStore = await this._termTimed(session, '檔案系統初始化', this._ensureTerminalFsStore(session, runtime), 10000); } catch (err) {
+            if (err && err.timedOut) this._bashWasmRuntime = null;
+            return { ok: false, error: String(err.message || err) };
+        }
+        try { await this._termTimed(session, 'FAP 掛載讀取', this._hydrateReferencedFapMounts(session, fsStore, line), 15000); } catch (err) {
             return { ok: false, error: `FAP掛載讀取失敗：${String(err.message || err)}` };
         }
         // tw_stock_db客製: 2026-09-28——見parseFunctionDef()/'FunctionDef'
@@ -116794,7 +116801,7 @@ ${sourceTool.handlerScript}
         const specialVarsPrefix = Object.entries(specialVars).map(([k, v]) => `${k}=${this._shQuote(v)}`).join('\n') + '\n';
         const script = this._terminalRewriteBuiltinPaths(`${specialVarsPrefix}${envDefsPrefix}${funcDefsPrefix}cd ${this._shQuote(session.cwd)} 2>/dev/null; ${session.lastExitCode ? `_fa_rc() { return ${session.lastExitCode | 0}; }; _fa_rc; ` : ''}${line}`);
         let builtins;
-        try { builtins = await this._buildTerminalSandboxBuiltins(script); } catch (err) {
+        try { builtins = await this._termTimed(session, '指令內建工具載入', this._buildTerminalSandboxBuiltins(script), 10000); } catch (err) {
             return { ok: false, error: `指令需要的執行環境載入失敗：${String(err.message || err)}` };
         }
         const fsStack = this._activeSandboxFsStack || (this._activeSandboxFsStack = []);
@@ -116817,8 +116824,9 @@ ${sourceTool.handlerScript}
             // 回頭呼叫shell）。只有真的有傳opts.stdin時才加這個欄位，一般
             // 終端機呼叫（互動輸入/terminal_run）不受影響。
             if (opts.stdin) runOpts.stdin = opts.stdin;
-            result = await this._terminalRun(session, runtime, runOpts);
+            result = await this._termTimed(session, '指令執行（shell）', this._terminalRun(session, runtime, runOpts), this._terminalCapFor(line).ms);
         } catch (err) {
+            if (err && err.timedOut) this._bashWasmRuntime = null;   // 執行環境可能已經卡死：丟掉，下次重新載入
             return { ok: false, error: `執行失敗：${String(err.message || err)}` };
         } finally {
             fsStack.pop();
@@ -117991,7 +117999,23 @@ ${sourceTool.handlerScript}
         session._aborts.add(fn);
         return () => session._aborts.delete(fn);
     }
+    // 每個指令的硬上限（看門狗與各階段逾時都用它）：快速指令 5 秒，長時間指令 120 秒，其餘 30 秒。逾時只是「不再等」，不保證背景停止。
+    _terminalCapFor(line) {
+        const first = String(line || '').trim().split(/\s+/)[0] || '';
+        const name = first.replace(/^.*\//, '');
+        if (/^(ls|cat|cd|pwd|echo|printf|stat|du|head|tail|wc|true|false|test|\[)$/.test(name)) return { ms: 5000, label: '快速指令' };
+        if (/^(python3?|node|curl|wget|git|npm|pip3?|make|tar|unzip|zip|gcc|cc|sleep)$/.test(name)) return { ms: 120000, label: '長時間指令' };
+        return { ms: 30000, label: '一般指令' };
+    }
+    // 把一個階段包上硬上限：逾時就 reject，錯誤訊息寫出「卡在哪一個階段」，並記在 session._stage 給看門狗用
+    _termTimed(session, stage, promise, ms) {
+        if (session) session._stage = stage;
+        let t = null;
+        const guard = new Promise((_, rej) => { t = setTimeout(() => rej(Object.assign(new Error('「' + stage + '」超過 ' + Math.round(ms / 1000) + ' 秒沒有完成'), { stage, timedOut: true })), ms); });
+        return Promise.race([promise, guard]).finally(() => clearTimeout(t));
+    }
     _terminalInterrupt(session) {
+        if (session._runAbortReject) { const f = session._runAbortReject; session._runAbortReject = null; f(new Error('__TERMINAL_INTERRUPT__')); }   // 立刻放開 busy，不管卡在哪一個階段
         session._sigint = true;
         session._stdinWaiter = null; session._stdinBuf = ''; session._stdinQueue = [];
         session.term.write('^C\r\n');
