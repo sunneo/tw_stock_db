@@ -80,6 +80,7 @@
             log('載入 numpy 與相依套件…');
             // Pyodide 發行版有的套件（名字以 pyodide-lock.json 為準；逐一載入，缺哪個就略過並記下，不讓整個準備失敗）
             for (const name of ['micropip', 'numpy', 'markupsafe', 'typing-extensions', 'platformdirs']) { try { await py.loadPackage(name); } catch (e) { log('套件 ' + name + ' 載入失敗：' + String((e && e.message) || e).slice(0, 120)); } }
+            if (!(py.loadedPackages && py.loadedPackages.numpy)) throw new Error('numpy 載入失敗（多半是下載 Pyodide 套件時網路／CDN 暫時不通）；稍後重新執行會再試一次');   // 不能在 numpy 沒載入時標成「已準備好」，否則之後的執行都會直接略過、腳本 import numpy 失敗
             if (!full) { py.runPython("import sys\nif '/fa_pyopencl_boot' not in sys.path:\n    sys.path.insert(0, '/fa_pyopencl_boot')"); py.__faClCoreReady = true; py.__faClModule = true; log('OpenCL 後端（核心）已準備好'); return; }   // 只有核心：cudaweb 的 CPU 原生路線用 _cl，不下載 pyopencl
             py.__faClModule = true;
             const fetchFn = o.fetch || (typeof fetch === 'function' ? fetch : null); if (!fetchFn) throw new Error('沒有 fetch，無法取得 pyopencl');
