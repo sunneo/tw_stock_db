@@ -201,8 +201,8 @@
             }
             st.builds++; const t0 = now(); let r, ilBytes = null;
             if (prog.il) r = yield drv.compileIL(prog.il, options, prog.spec);
-            else if (C && drv.preferIL && C.frontends.toIL && drv.compileIL && (ilBytes = C.frontends.toIL(prog.src, options))) { r = yield drv.compileIL(ilBytes, options, {}); if (!r.ok) { ilBytes = null; r = drv.compile(prog.src, options); } }   // 吃 IL 的驅動（例如 wasm）：source→SPIR-V（前端不支援就回 null）→產物；clc 驅動不偏好 IL，直接編譯（狀態機式的 JS 比 clc 直接產的慢）
-            else r = drv.compile(prog.src, options);
+            else if (C && drv.preferIL && C.frontends.toIL && drv.compileIL && (ilBytes = C.frontends.toIL(prog.src, options))) { r = yield drv.compileIL(ilBytes, options, {}); if (!r.ok) { ilBytes = null; r = yield drv.compile(prog.src, options); } }   // 吃 IL 的驅動（例如 wasm）：source→SPIR-V（前端不支援就回 null）→產物；clc 驅動不偏好 IL，直接編譯（狀態機式的 JS 比 clc 直接產的慢）
+            else r = yield drv.compile(prog.src, options);   // compile 也可以回 Promise（GPU 驅動的 wasm 主機路線）
             const dt = now() - t0;
             if (C && r.ok && binKey) {
                 if (ilBytes) C.put('il', C.key.il(ilBytes), ilBytes, ilBytes.length, { src: prog.baseKey, opts: optsKey, target });
@@ -361,8 +361,8 @@
     }
     // ---- 快取用的產物（binary）：每個驅動自己決定怎麼序列化（鍵裡的 target 字串含裝置種類與編譯器版本，所以不同裝置／版本不會互相誤用）
     const metaOf = (ks) => { const r = {}; for (const n of Object.keys(ks)) r[n] = { params: ks[n].params }; return r; };
-    const clcArtOf = (r) => (r && r.js ? { kind: r.kind || 'clc', js: r.js, gen: !!r.gen, kernels: metaOf(r.kernels) } : null);
-    function clcFromArt(mods, art) { if (!art) return null; const M = art.kind === 'spv' ? mods.FaSpv : mods.FaClc; return M && M.instantiate ? M.instantiate({ js: art.js, gen: art.gen, kernels: art.kernels }) : null; }
+    const clcArtOf = (r) => (r && r.kind === 'wasm' && r.art ? { kind: 'wasm', art: r.art } : r && r.js ? { kind: r.kind || 'clc', js: r.js, gen: !!r.gen, kernels: metaOf(r.kernels) } : null);
+    function clcFromArt(mods, art) { if (!art) return null; if (art.kind === 'wasm') return mods.FaSpvWasm ? mods.FaSpvWasm.instantiate(art.art) : null; const M = art.kind === 'spv' ? mods.FaSpv : mods.FaClc; return M && M.instantiate ? M.instantiate({ js: art.js, gen: art.gen, kernels: art.kernels }) : null; }   // wasm 的 instantiate 可能回 Promise（模組大於 4 KB）
     function makeKirDriver(o) {
         const { FaClFront, FaKir } = o.mods || {}; if (!FaClFront || !FaKir) throw new Error('makeKirDriver 需要 mods.FaClFront 與 mods.FaKir');
         const dev = o.device || jsDevice(FaKir), kind = o.kind || 'js';
@@ -468,15 +468,27 @@
             // target：後端（webgpu／webgl2）決定 canGenerate 與 shader 種類；compat＝strict 時再納入轉接卡身分（o.targetTag），none 時不分後端
             target: (compat) => 'gpu' + (compat === 'none' ? '' : '-' + backend + (compat === 'strict' && o.targetTag ? '@' + o.targetTag : '')) + ':kir' + (FaKir.VERSION || 1) + ':clc' + ((FaClc && FaClc.VERSION) || 0) + (o.mods.FaSpv ? '.spv' + (o.mods.FaSpv.VERSION || 1) : ''),
             serialize: (b) => ({ kind: 'gpu', clc: clcArtOf(b.clc), kernels: Object.fromEntries(Object.keys(b.kernels).map((n) => [n, { params: b.kernels[n].params, gpu: b.kernels[n].gpu ? { kir: b.kernels[n].gpu.kir, out: b.kernels[n].gpu.out } : null, host: !!b.kernels[n].host }])) }),
-            deserialize: (a) => { if (!a || a.kind !== 'gpu') return null; const c = a.clc ? clcFromArt(o.mods, a.clc) : null; if (a.clc && !c) return null; return { ok: true, kernels: Object.fromEntries(Object.keys(a.kernels).map((n) => [n, { params: a.kernels[n].params, gpu: a.kernels[n].gpu, host: a.kernels[n].host }])), clc: c, log: '' }; },
+            deserialize: (a) => { if (!a || a.kind !== 'gpu') return null; const c = a.clc ? clcFromArt(o.mods, a.clc) : null; const fin = (cc) => { if (a.clc && !cc) return null; return { ok: true, kernels: Object.fromEntries(Object.keys(a.kernels).map((n) => [n, { params: a.kernels[n].params, gpu: a.kernels[n].gpu, host: a.kernels[n].host }])), clc: cc, log: '' }; }; return c && typeof c.then === 'function' ? c.then(fin) : fin(c); },
             compileIL(il, options, spec) {   // SPIR-V：只有主機路線（clc 的執行期）；KIR 的 GPU 路線只收 OpenCL C 轉出的 KIR
                 const SPV = o.mods.FaSpv; if (!SPV) return { ok: false, log: '沒有 SPIR-V 後端（mods.FaSpv）', kernels: {} };
                 const r = SPV.compile(il, { spec }); if (!r.ok) return { ok: false, log: r.log, kernels: {} };
                 const kernels = {}; for (const n of Object.keys(r.kernels)) kernels[n] = { params: r.kernels[n].params, gpu: null, host: true }; return { ok: true, kernels, clc: r, log: '' };
             },
+            // 主機路線（小問題、多維、offset、KIR 不收的核心）的編譯：wasm 優先（source→SPIR-V→wasm，比 clc 直接產的 JS 快 3–5 倍），不支援就退回 clc 直接編譯的 JS。結果可能是 Promise（wasm 模組大於 4 KB）
+            hostCompile(src, options) {
+                const direct = () => (FaClc ? FaClc.compile(src, options) : { ok: false, log: 'clc 前端不存在', kernels: {} });
+                const M = o.mods; if (o.wasm && M.FaClc2Spv && M.FaSpvWasm) {
+                    const il = M.FaClc2Spv.toIL(src, options); const w = il ? M.FaSpvWasm.compile(il, {}) : null;
+                    if (w && w.ok) { try { const x = M.FaSpvWasm.instantiate(M.FaSpvWasm.toArtifact(w)); return x && typeof x.then === 'function' ? x.then((r) => r, () => direct()) : x; } catch (_) { /* wasm 模組有問題：退回 JS */ } }
+                }
+                return direct();
+            },
             compile(src, options) {
+                const cr0 = this.hostCompile(src, options); return cr0 && typeof cr0.then === 'function' ? cr0.then((cr) => this.compileWith(src, options, cr)) : this.compileWith(src, options, cr0);
+            },
+            compileWith(src, options, cr) {
                 const clean = stripDeadGlobals(src);
-                const kr = FaClFront.parseKernels(clean), cr = FaClc ? FaClc.compile(src, options) : { ok: false, log: 'clc 前端不存在', kernels: {} };
+                const kr = FaClFront.parseKernels(clean);
                 if (!kr.ok && !cr.ok) return { ok: false, log: cr.log + (kr.ok === false ? '\n（GPU 路線：' + kr.error + '）' : ''), kernels: {} };
                 const kirBy = {}; if (kr.ok) for (const k of kr.kernels) { if (FaKir.validate(k).ok && (!o.canGenerate || o.canGenerate(k))) kirBy[k.name] = k; }
                 const kernels = {}, names = cr.ok ? Object.keys(cr.kernels) : Object.keys(kirBy);

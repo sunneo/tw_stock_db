@@ -26,7 +26,7 @@
         if (hk.backend !== 'js' && hk.hooks && hk.hooks.kirDev) {
             const gen = M.FaKirGen;
             const canGenerate = (k) => (hk.backend === 'webgpu' ? !!(gen && gen.toWgsl(k, { wg: 64 }).ok) : !!(gen && gen.toGlsl(k).ok));
-            loader.registerDriver(M.FaClIcd.makeGpuDriver({ mods: M, device: hk.hooks.kirDev, backend: hk.backend, canGenerate, smallN: o.smallN }));
+            loader.registerDriver(M.FaClIcd.makeGpuDriver({ mods: M, device: hk.hooks.kirDev, backend: hk.backend, canGenerate, smallN: o.smallN, wasm: true }));   // 主機路線（小問題等）用 wasm
         }
         loader.registerDriver(M.FaClIcd.makeClcDriver({ mods: M, wasm: true }));   // cpu 預設是 wasm（M.FaSpvWasm 不在就等同 clc 直接編譯的 JS）；不支援的核心自動退回
         const host = M.FaClHostOps.create(loader);

@@ -2,7 +2,7 @@
 // 檢查碼、儲存介面卡（記憶體／檔案／模擬的非同步 IndexedDB）、LRU 淘汰與 TTL、多個載入器共用儲存體的索引合併、壞掉的儲存體與損毀的產物都不影響建置、
 // 以及最重要的：同一份 source 第二次起直接拿 binary（不經前端）、IL 層、binary 容器（clCreateProgramWithBinary）、鍵的正確性（選項、展開後的原始碼、目標）。
 const assert = require('assert'), crypto = require('crypto'), os = require('os'), path = require('path'), fs = require('fs');
-const CC = require('./cl_cache.js'), ICD = require('./cl_icd.js'), CLC = require('./clc_js.js'), SPV = require('./spv_js.js'), A = require('./spv_asm.js'), F = require('./spv_fixtures.js'), K = require('./kir.js'), FR = require('./cl_front.js'), WASM = require('./spv_wasm.js'), FE = require('./clc_spv.js');
+const CC = require('./cl_cache.js'), ICD = require('./cl_icd.js'), CLC = require('./clc_js.js'), SPV = require('./spv_js.js'), A = require('./spv_asm.js'), F = require('./spv_fixtures.js'), K = require('./kir.js'), FR = require('./cl_front.js'), WASM = require('./spv_wasm.js'), FE = require('./clc_spv.js'), K2 = require('./kir.js'), FR2 = require('./cl_front.js');
 let pass = 0, fail = 0; const queue = [];
 const t = (name, fn) => queue.push([name, fn]);
 // 模擬非同步的 IndexedDB：每個操作多一個 microtask／macrotask 延遲，可注入失敗；多個實例共用同一份資料（像 Worker 與頁面）
@@ -122,6 +122,18 @@ t('wasm 驅動的 binary 容器往返（clCreateProgramWithBinary）：wasm 位�
   const wd = () => ICD.makeClcDriver({ mods: { FaClc: CLC, FaSpv: SPV, FaSpvWasm: WASM }, wasm: true }); const l1 = mkLoader(CC.createCache({ storage: CC.memoryAdapter(), toIL: FE.toIL }), [wd()]); const { p } = await buildRun(l1, SRC), bin = l1.getBinary(p);
   let fe = 0; const l2 = mkLoader(CC.createCache({ storage: CC.memoryAdapter(), toIL: (s, o) => { fe++; return FE.toIL(s, o); } }), [wd()]); const { c } = ctxOf(l2), q = l2.createQueue(c, null, {}), p2 = l2.createProgramBinary(c, bin); await l2.build(p2, '');
   assert.strictEqual(fe, 0); assert.strictEqual(p2.built.fromCache, 'binary'); assert.strictEqual(p2.built.clc.kind, 'wasm'); const k = l2.createKernel(p2, 'k'), o = l2.createBuffer(c, {}, 16, null); l2.setArg(k, 0, o); l2.setArg(k, 1, 4); await l2.enqueueNDRange(q, k, [4], null, null); const rd = await l2.enqueueRead(q, o, 16, 0); assert.deepStrictEqual(Array.from(new Float32Array(rd.data.buffer, rd.data.byteOffset, 4)), [0, 2, 4, 6]);
+});
+t('★ GPU 驅動的主機路線也用 wasm：小問題（走主機）在 wasm 上跑、大問題（走裝置）仍是 KIR；產物（KIR＋wasm）存進快取並從快取重建', async () => {
+  const cd = { dispatch: 0 }, jd = ICD.jsDevice(K2), dev = { alloc: (...a) => jd.alloc(...a), upload: (...a) => jd.upload(...a), download: (...a) => jd.download(...a), dispatch: (...a) => { cd.dispatch++; return jd.dispatch(...a); }, free: (...a) => jd.free(...a) };
+  const GSRC = '__kernel void sc(__global const float* a, __global float* o, float s, int n) { int i = get_global_id(0); if (i < n) o[i] = a[i] * s; }';
+  const gd = () => ICD.makeGpuDriver({ mods: { FaClFront: FR2, FaKir: K2, FaClc: CLC, FaSpv: SPV, FaSpvWasm: WASM, FaClc2Spv: FE }, device: dev, backend: 'webgpu', smallN: 64, wasm: true }), ad = CC.memoryAdapter();
+  const go = async (l, N, src) => { const { c } = ctxOf(l), q = l.createQueue(c, null, {}), p = l.createProgram(c, src || GSRC); await l.build(p, ''); const k = l.createKernel(p, 'sc'), a = l.createBuffer(c, {}, N * 4, new Float32Array(N).map((_, i) => i)), o = l.createBuffer(c, {}, N * 4, null); l.setArg(k, 0, a); l.setArg(k, 1, o); l.setArg(k, 2, 3); l.setArg(k, 3, N); await l.enqueueNDRange(q, k, [N], null, null); const r = await l.enqueueRead(q, o, N * 4, 0); return { p, out: new Float32Array(r.data.buffer, r.data.byteOffset, N) }; };
+  const l1 = mkLoader(CC.createCache({ storage: ad }), [gd()]); const r1 = await go(l1, 16); await l1.close();
+  assert.strictEqual(r1.p.built.clc.kind, 'wasm', '主機路線的核心是 wasm'); assert.deepStrictEqual(Array.from(r1.out.slice(0, 4)), [0, 3, 6, 9]); assert.strictEqual(cd.dispatch, 0, '小問題沒碰裝置'); assert.ok(l1.stats().routedHost >= 1);
+  const r1b = await go(l1, 4096); assert.ok(cd.dispatch >= 1, '大問題走裝置（KIR）'); assert.strictEqual(r1b.out[100], 300);
+  const l2 = mkLoader(CC.createCache({ storage: ad }), [gd()]); const r2 = await go(l2, 16); assert.strictEqual(r2.p.built.fromCache, 'bin', '從快取重建（KIR＋wasm）'); assert.strictEqual(r2.p.built.clc.kind, 'wasm'); assert.deepStrictEqual(Array.from(r2.out.slice(0, 4)), [0, 3, 6, 9]);
+  const VEC = '__kernel void sc(__global const float* a, __global float* o, float s, int n) { float4 v = (float4)(1.0f); int i = get_global_id(0); if (i < n) o[i] = a[i] * s + v.x; }';   // 向量：clc_spv 不收 → 退回 clc 直接 JS
+  const l3 = mkLoader(CC.createCache({ storage: CC.memoryAdapter() }), [gd()]); const r3 = await go(l3, 8, VEC); assert.strictEqual(r3.p.built.clc.kind, 'clc', '退回 clc 直接編譯'); assert.deepStrictEqual(Array.from(r3.out.slice(0, 3)), [1, 4, 7]);
 });
 t('IL 程式（clCreateProgramWithIL）也走快取：第二次不再解碼轉換', async () => {
   const il = A.assemble(F.REDUCE), ad = CC.memoryAdapter(); let n = 0; const orig = SPV.compile; SPV.compile = (...a) => { n++; return orig.apply(SPV, a); };
