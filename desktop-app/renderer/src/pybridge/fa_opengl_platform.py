@@ -940,15 +940,24 @@ class FixedFunction(object):
         a = self.arrays[kind]
         if a is None or kind not in self.enabled_arrays:
             return None
-        size, typ, stride, ptr = a
+        size, typ, stride, ptr, buf = a
         esz = TYPE_SIZE.get(typ, 4)
         stride = stride or size * esz
         idxs = index if index is not None else range(first, first + count)
         fmt = {0x1406: "f", 0x1404: "i", 0x1402: "h", 0x1401: "B", 0x1400: "b", 0x1403: "H", 0x1405: "I"}[typ]
         import struct
         out = []
-        for i in idxs:
-            out.append(struct.unpack_from("<" + fmt * size, _read(ptr + i * stride, size * esz)))
+        if buf:   # 緩衝區物件（含 OpenCL 互通寫入的內容）：一次讀整段再切
+            idxs = list(idxs)
+            if not idxs:
+                return out
+            lo, hi = min(idxs), max(idxs)
+            blob = interop_read(buf, ptr + lo * stride, (hi - lo) * stride + size * esz)
+            for i in idxs:
+                out.append(struct.unpack_from("<" + fmt * size, blob, (i - lo) * stride))
+        else:
+            for i in idxs:
+                out.append(struct.unpack_from("<" + fmt * size, _read(ptr + i * stride, size * esz)))
         if kind == "color" and typ == 0x1401:
             out = [tuple(c / 255.0 for c in v) for v in out]
         return out
@@ -1114,7 +1123,8 @@ def _set_pointer(kind):
             size = 3
         else:                  # glVertexPointer／glColorPointer／glTexCoordPointer(size, type, stride, pointer)
             size, typ, stride, ptr = a
-        ff.arrays[kind] = (int(_v(size)), int(_v(typ)), int(_v(stride)), _addr(ptr))
+        # 綁著 GL_ARRAY_BUFFER 且 pointer 是 None／整數／c_void_p 時，它是緩衝區內的位元組偏移（glVertexPointer(2, GL_FLOAT, 0, None) 這種）；傳陣列／bytes 仍當記憶體位址
+        ff.arrays[kind] = (int(_v(size)), int(_v(typ)), int(_v(stride)), _addr(ptr), int(_BOUND["array"] or 0) if (ptr is None or isinstance(ptr, (int, ctypes.c_void_p))) else 0)
     return f
 
 

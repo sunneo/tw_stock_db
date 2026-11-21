@@ -77,6 +77,14 @@ glPolygonMode(GL_FRONT_AND_BACK, GL_FILL)
 pos = (ctypes.c_float * 9)(0, 0, 0, 1, 0, 0, 0, 1, 0); fk.calls.clear()
 glEnableClientState(GL_VERTEX_ARRAY); glVertexPointer(3, GL_FLOAT, 0, pos); glDrawArrays(GL_TRIANGLES, 0, 3); glDisableClientState(GL_VERTEX_ARRAY)
 bd = fk.log("buffer_data")[-1][1]; check("glVertexPointer＋glDrawArrays（client 陣列）", fk.log("draw_arrays")[-1][1] == (4, 0, 3) and struct.unpack_from("<3f", bd[1], 48) == (1, 0, 0), fk.log("draw_arrays"))
+# 固定管線的 glVertexPointer 搭配綁定的 VBO（pointer=None 是緩衝區偏移；OpenCL 互通每幀改寫內容的就是這種用法）
+vb = glGenBuffers(1); glBindBuffer(GL_ARRAY_BUFFER, vb); glBufferData(GL_ARRAY_BUFFER, 24, (ctypes.c_float * 6)(0, 0, 1, 0, 0, 1), GL_DYNAMIC_DRAW)
+_ir = P.interop_read; P.interop_read = lambda n, o=0, sz=None: struct.pack("<6f", 0, 0, 1, 0, 0, 1)[o:o + sz]; fk.calls.clear()
+try:
+    glEnableClientState(GL_VERTEX_ARRAY); glVertexPointer(2, GL_FLOAT, 0, None); glDrawArrays(GL_TRIANGLES, 0, 3); glDisableClientState(GL_VERTEX_ARRAY)
+    bd = fk.log("buffer_data")[-1][1]; check("glVertexPointer＋VBO（pointer=None）從緩衝區取頂點", fk.log("draw_arrays")[-1][1] == (4, 0, 3) and struct.unpack_from("<3f", bd[1], 48) == (1, 0, 0), fk.log("draw_arrays"))
+finally:
+    P.interop_read = _ir; glBindBuffer(GL_ARRAY_BUFFER, 0)
 lst = glGenLists(1); fk.calls.clear(); glNewList(lst, GL_COMPILE); glBegin(GL_TRIANGLES); [glVertex3f(*p) for p in ((0, 0, 0), (1, 0, 0), (0, 1, 0))]; glEnd(); glEndList()
 check("display list：錄製時不畫", not fk.log("draw_arrays"))
 glCallList(lst); glCallList(lst); check("glCallList 重播兩次", len(fk.log("draw_arrays")) == 2, fk.log("draw_arrays"))

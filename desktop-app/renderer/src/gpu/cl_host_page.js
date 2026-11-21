@@ -69,7 +69,11 @@
     async function prepare(py, o) {
         o = o || {};
         const full = lastText === null || wantsPy(lastText);   // 沒有記錄（舊的呼叫方式）就當完整
-        if (py.__faClReady || (!full && py.__faClCoreReady)) return; if (py.__faClPreparing) return py.__faClPreparing;
+        if (py.__faClReady || (!full && py.__faClCoreReady)) {   // 已準備好：但 numpy 若不在了（上一次失敗、或環境被重設）要補載，不然腳本 import numpy 會失敗
+            if (!(py.loadedPackages && py.loadedPackages.numpy)) { try { await py.loadPackage('numpy'); } catch (e) { throw new Error('numpy 載入失敗（多半是下載 Pyodide 套件時網路／CDN 暫時不通）；稍後重新執行會再試一次'); } }
+            return;
+        }
+        if (py.__faClPreparing) return py.__faClPreparing;
         py.__faClPreparing = (async () => {
             const log = o.onProgress || (() => {}), files = o.files || {}, FS = py.FS;
             const put = (dst, key) => { if (files[key] == null) throw new Error('缺少 ' + key + '（FA_PYBRIDGE_FILES 沒有嵌入）'); try { FS.mkdirTree(dst.slice(0, dst.lastIndexOf('/'))); } catch (_) { /* 已存在 */ } FS.writeFile(dst, files[key]); };
