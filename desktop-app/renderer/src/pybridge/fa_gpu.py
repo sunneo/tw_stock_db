@@ -491,10 +491,14 @@ def run_kernel(plan, arrays, check=None):
                     op = os.path.join(RPC_DIR, "gpu-k-out-%s.bin" % uid)
                     item["out"] = op
                     outs.append((b, op))
+            elif IN_BROWSER:
+                # 瀏覽器：陣列走 base64（原始位元組），不轉成 Python list 再 JSON（每幀幾萬個數字，序列化與解析比 GPU 計算還慢）
+                import base64
+                item["b64"] = base64.b64encode(flat.astype(dt).tobytes()).decode("ascii")
             else:
                 item["list"] = flat.astype(dt).tolist()
             items.append(item)
-        res = _rpc("kernel", {"wgsl": plan.wgsl, "groups": list(plan.groups), "bindings": items})
+        res = _rpc("kernel", {"wgsl": plan.wgsl, "groups": list(plan.groups), "bindings": items, "b64out": bool(IN_BROWSER)})
     except GpuCompatError as e:
         return False, str(e)
     finally:
@@ -521,6 +525,9 @@ def run_kernel(plan, arrays, check=None):
                 os.remove(o["bin"])
             except OSError:
                 pass
+        elif "b64" in o:
+            import base64
+            vals = np.frombuffer(base64.b64decode(o["b64"]), dtype=dt)
         else:
             vals = np.asarray(o.get("list", []), dtype=dt)
         outs_np[b["param"]] = _unpack_flat(vals, b["dtype"], arr.shape)
