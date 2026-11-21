@@ -36,7 +36,7 @@
   }
 
   // 行首（允許縮排）的 import：import gui／import os, pygame.locals；行首的 from：from gui import …／from pygame.locals import …
-  var GUI_IMPORT = /^[ \t]*(?:import[ \t]+(?:[\w.]+(?:[ \t]+as[ \t]+\w+)?[ \t]*,[ \t]*)*(?:gui|pygame|fa_swap|OpenGL)(?![\w])|from[ \t]+(?:gui|pygame|fa_swap|OpenGL)(?![\w]))/m;
+  var GUI_IMPORT = /^[ \t]*(?:import[ \t]+(?:[\w.]+(?:[ \t]+as[ \t]+\w+)?[ \t]*,[ \t]*)*(?:gui|pygame|fa_swap|OpenGL|pyopencl)(?![\w])|from[ \t]+(?:gui|pygame|fa_swap|OpenGL|pyopencl)(?![\w]))/m;
 
   // 讀使用者輸入（input()、sys.stdin）也要走 Worker：同步的 python 沒辦法在呼叫處等一行輸入
   var STDIN_USE = /(?:^|[^\w.])input[ \t]*\(|\bsys\.stdin\b/;

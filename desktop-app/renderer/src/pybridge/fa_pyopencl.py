@@ -63,6 +63,9 @@ class _Finder(importlib.abc.MetaPathFinder):
 
 def install():
     """裝上鉤子（可重複呼叫）。pyopencl.tools 已經載入就直接替換。"""
+    # pyopencl 自己的磁碟快取（cache.py）在這裡沒有用：載入器有自己的多層快取（source→IL→binary，見 DESIGN.pyopencl.md §14），而且 pyopencl 的快取目錄在瀏覽器裡寫不了
+    import os
+    os.environ.setdefault('PYOPENCL_NO_CACHE', '1')
     if not any(isinstance(f, _Finder) for f in sys.meta_path):
         sys.meta_path.insert(0, _Finder())
     mod = sys.modules.get(_TARGET)

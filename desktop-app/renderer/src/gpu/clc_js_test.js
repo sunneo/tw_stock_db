@@ -219,7 +219,6 @@ const REJECT = [
   ['用到壞掉的全域變數', 'int g = 3;\n__kernel void k(__global int* a) { a[0] = g; }', '全域變數 g 不能用'],
   ['用到壞掉的輔助函式', 'half mk(float x) { half v; return v; }\n__kernel void k(__global float* a) { mk(1.0f); }', '函式 mk 不能用'],
   ['用到壞掉的 typedef', 'typedef half UU;\n__kernel void k(__global float* a) { UU z; }', '型別 UU 不能用'],
-  ['__local 純量', '__kernel void k(__global int* a) { __local int x; }', '__local 純量'],
   ['__local 陣列有初值', '__kernel void k(__global int* a) { __local int x[2] = {1, 2}; }', '不能有初值'],
   ['__local 陣列在輔助函式', 'void h() { __local int x[2]; }\n__kernel void k(__global int* a) { h(); }', '最外層函式'],
   ['barrier 當運算式', '__kernel void k(__global int* a) { int x = barrier(1); }', 'barrier 只能當成獨立的敘述'],
@@ -458,6 +457,10 @@ t('圖像：get_image_* 與 3D／陣列／半精度', () => {
   assert.deepStrictEqual(Array.from(out), [2, 2, 2, 2, 1, 1, 7, 16, 1]);
 });
 
+t('__local 純量變數（多個工作項共用）與「指向 __local 的私有指標變數」（pyopencl 的歸約／掃描核心用）', () => {
+  const r = C.compile('__kernel void k(__global int* o, __local int* t) { __local int x; __local float y; int l = get_local_id(0); if (l == 0) { x = 5; y = 1.5f; } t[l] = l * 2; barrier(CLK_LOCAL_MEM_FENCE); x += 0; __local int *s = (__local int *) &(t[0]); o[l] = x + (int)y + s[(l + 1) % 4]; }', '');
+  assert.ok(r.ok, r.log); const o = new Int32Array(4); r.run('k', [r.mkptr(o.buffer), 16], [4], [4], null); assert.deepStrictEqual(Array.from(o), [8, 10, 12, 6]);
+});
 fs.rmSync(tmpdir, { recursive: true, force: true });
 console.log(pass + ' passed, ' + fail + ' failed' + (skipped ? '（沒有 gcc，略過 ' + skipped + ' 項差分）' : ''));
 process.exit(fail ? 1 : 0);

@@ -17,6 +17,9 @@ let n = 0; const ok = () => { n++; };
   '  import gui\n', // 縮排的 import（例如寫在函式或 try 裡）
   'import gui.sub\n',
   'try:\n    import pygame\nexcept ImportError:\n    pass\n',
+  'import numpy as np\nimport pyopencl as cl\n',
+  'import pyopencl.cltypes as cltypes\n',
+  'from pyopencl import array\n',
 ].forEach((src) => { assert.strictEqual(P.needsAsync(src), true, 'should be async: ' + JSON.stringify(src)); ok(); });
 
 // 一般程式：不走

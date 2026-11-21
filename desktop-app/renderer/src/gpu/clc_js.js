@@ -582,7 +582,13 @@
                     if (this.eat('=')) { if (isStruct(t)) this.err('struct 陣列不支援初值'); this.need('{'); const vals = []; while (!this.is('}')) { vals.push(this.coerce(this.assign(), t)); if (!this.eat(',')) break; } this.need('}'); init = '$rt.arr(' + JSON.stringify(VIEW[t]) + ',' + this.sz(t) * Number(m[1]) + ',[' + vals.join(',') + '])'; }
                     parts.push(js + '=' + init);
                 } else {
-                    if (b.isLocal) this.err('__local 純量變數不支援（請宣告成長度 1 的陣列）');
+                    if (b.isLocal && !isPtr(t)) {   // （指標型別：__local 修飾的是它指向的記憶體，變數本身是私有的，照一般指標處理）__local 純量：當成長度 1 的 local 陣列，名稱的讀寫都走 mem 左值（pyopencl 的歸約／掃描核心會用）
+                        if (!this.inKernel) this.err('__local 變數只能宣告在核心的最外層函式裡（輔助函式要用的話，從核心傳指標進去）');
+                        if (isStruct(t)) this.err('__local struct 變數不支援');
+                        if (this.is('=')) this.err('__local 變數不能有初值（OpenCL 規定）');
+                        const jsl = this.declare(n.v, t); this.scopes[this.scopes.length - 1].get(n.v).mem1 = true;
+                        parts.push(jsl + '=$rt.lmem(' + (++this.lkey) + ',' + this.sz(t) + ')'); if (!this.eat(',')) break; continue;
+                    }
                     const js = this.declare(n.v, t); let init = isPtr(t) ? 'null' : isStruct(t) ? '$rt.alloc(' + this.sz(t) + ')' : '0';
                     if (isVec(t)) init = '$rt.vbc(0,' + t.n + ')';
                     if (isVec(t) && this.is('=') && this.t[this.i + 1] && this.t[this.i + 1].v === '{') { this.i += 2; const as = []; while (!this.is('}')) { as.push(this.assign()); if (!this.eat(',')) break; } this.need('}'); init = this.vecCtor(t, as).c; }
@@ -816,6 +822,7 @@
                 if (this.enums.has(x.v) && !this.look(x.v)) return { c: String(this.enums.get(x.v)), t: 'int' };
                 const v = this.look(x.v); if (!v) fail(this.badGlobals.has(x.v) ? '全域變數 ' + x.v + ' 不能用（它的定義不支援：' + this.badGlobals.get(x.v) + '）' : '未宣告的名稱 ' + x.v, x.line);
                 if (isStruct(v.type)) return { c: v.js, t: v.type, lv: { kind: 'struct', ptr: v.js } };
+                if (v.mem1) return { c: this.ldc(v.type, v.js, '0'), t: v.type, lv: { kind: 'mem', p: v.js, i: '0', et: v.type } };
                 return { c: v.js, t: v.type, lv: { kind: 'var', js: v.js } };
             }
             return this.err('不認得的運算式「' + x.v + '」');
