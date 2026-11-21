@@ -467,13 +467,23 @@
             device: Object.assign({ name: o.deviceName || ('FA GPU（' + (backend === 'webgpu' ? 'WebGPU' : 'WebGL2') + '，cudaweb／KIR）'), type: 'GPU', maxWorkGroupSize: 256, globalMemSize: 2 ** 30, maxMemAllocSize: 2 ** 28, maxComputeUnits: 16 }, o.deviceInfo || {}),
             maxDims: 3, supportsOffset: true, coerceScalar: coerce, probe: o.probe, stats: () => Object.assign({}, st),
             // target：後端（webgpu／webgl2）決定 canGenerate 與 shader 種類；compat＝strict 時再納入轉接卡身分（o.targetTag），none 時不分後端
-            target: (compat) => 'gpu' + (compat === 'none' ? '' : '-' + backend + (compat === 'strict' && o.targetTag ? '@' + o.targetTag : '')) + ':kir' + (FaKir.VERSION || 1) + ':clc' + ((FaClc && FaClc.VERSION) || 0) + (o.mods.FaSpv ? '.spv' + (o.mods.FaSpv.VERSION || 1) : ''),
+            target: (compat) => 'gpu' + (compat === 'none' ? '' : '-' + backend + (compat === 'strict' && o.targetTag ? '@' + o.targetTag : '')) + ':kir' + (FaKir.VERSION || 1) + ':clc' + ((FaClc && FaClc.VERSION) || 0) + (o.mods.FaSpv ? '.spv' + (o.mods.FaSpv.VERSION || 1) : '') + (o.mods.FaSpvKir ? '.sk' + o.mods.FaSpvKir.VERSION : ''),
             serialize: (b) => ({ kind: 'gpu', clc: clcArtOf(b.clc), kernels: Object.fromEntries(Object.keys(b.kernels).map((n) => [n, { params: b.kernels[n].params, gpu: b.kernels[n].gpu ? { kir: b.kernels[n].gpu.kir, out: b.kernels[n].gpu.out } : null, host: !!b.kernels[n].host }])) }),
             deserialize: (a) => { if (!a || a.kind !== 'gpu') return null; const c = a.clc ? clcFromArt(o.mods, a.clc) : null; const fin = (cc) => { if (a.clc && !cc) return null; return { ok: true, kernels: Object.fromEntries(Object.keys(a.kernels).map((n) => [n, { params: a.kernels[n].params, gpu: a.kernels[n].gpu, host: a.kernels[n].host }])), clc: cc, log: '' }; }; return c && typeof c.then === 'function' ? c.then(fin) : fin(c); },
             compileIL(il, options, spec) {   // SPIR-V：只有主機路線（clc 的執行期）；KIR 的 GPU 路線只收 OpenCL C 轉出的 KIR
                 const SPV = o.mods.FaSpv; if (!SPV) return { ok: false, log: '沒有 SPIR-V 後端（mods.FaSpv）', kernels: {} };
                 const r = SPV.compile(il, { spec }); if (!r.ok) return { ok: false, log: r.log, kernels: {} };
-                const kernels = {}; for (const n of Object.keys(r.kernels)) kernels[n] = { params: r.kernels[n].params, gpu: null, host: true }; return { ok: true, kernels, clc: r, log: '' };
+                // SPIR-V→KIR（FaSpvKir）：轉得成、KIR 驗證過、參數名一致、剛好一個輸出的核心走 GPU；其餘走主機路線（clc 執行期）。
+                const KR = o.mods.FaSpvKir ? o.mods.FaSpvKir.compile(il) : null, kernels = {};
+                for (const n of Object.keys(r.kernels)) {
+                    let params = r.kernels[n].params, gpu = null; const kir = KR && KR.ok && KR.kernels[n] ? KR.kernels[n].kir : null;
+                    if (kir && FaKir.validate(kir).ok && (!o.canGenerate || o.canGenerate(kir)) && kir.params.length === params.length && kir.params.every((q, i) => q.name === params[i].name && (q.kind === 'buf') === (params[i].kind === 'buf'))) {
+                        const outs = kir.params.filter((p) => p.kind === 'buf' && p.access === 'out');
+                        if (outs.length === 1) { gpu = { kir, out: outs[0].name }; params = params.map((p) => { const q = p.kind === 'buf' ? kir.params.find((x) => x.name === p.name) : null; return q ? Object.assign({}, p, { access: q.access }) : p; }); }
+                    }
+                    kernels[n] = { params, gpu, host: !gpu };
+                }
+                return { ok: true, kernels, clc: r, log: '' };
             },
             // 主機路線（小問題、多維、offset、KIR 不收的核心）的編譯：wasm 優先（source→SPIR-V→wasm，比 clc 直接產的 JS 快 3–5 倍），不支援就退回 clc 直接編譯的 JS。結果可能是 Promise（wasm 模組大於 4 KB）
             hostCompile(src, options) {

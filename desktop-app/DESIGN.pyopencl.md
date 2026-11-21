@@ -339,3 +339,14 @@ IL 程式（clCreateProgramWithIL）：spv_wasm → 不支援就 spv_js
 
 ### 16.3 頁面接線
 `cl_host_page.js` 的 `wantsPyopencl(text)` 現在也認 `import numba／cudaweb`，並記下腳本；`prepare` 對這類腳本只走「核心」模式：註冊 `_fa_opencl`、放 `_cl.py`、載入 numpy，不從 PyPI 下載 pyopencl／micropip pytools。呼叫端（`wantsPyopencl` 後接 `prepare`）不必修改。
+
+## 17. SPIR-V → KIR：IL 程式也能走 GPU（2026-11-22）
+
+GPU 驅動（§10）原本只有 source→KIR 一條裝置路線，clCreateProgramWithIL 的程式只能走主機。`spv_kir.js` 把 SPIR-V 反編譯成 cudaweb 的 KIR，讓 IL 程式的簡單核心上裝置，裝置層（WebGPU／WebGL2 的 KIR 裝置）原封不動。
+
+- **子集**與 source→KIR 前端相同：一維 gid、f32 緩衝區、f32／i32 純量、一個輸出。吃 clc_spv（O0 風格：Function 變數、Load／Store、結構化合併）的輸出。
+- **轉換**：每個運算結果發一個 `let`；區域變數在核心頂端宣告後用 `set`；參數存進區域變數的別名直接還原成參數；OpPhi 變成頂端宣告的變數，在各來源邊上 `set`；`if/else` 用旗標變數（KIR 沒有 else）；`for (i=0;i<上界;i++)` 認成 KIR 的 for（起點 0、步進 1、上界是常數或 i32 純量；迴圈後把變數設成 max(0, 上界)）；函式最外層的 `if (c) return;` 用旗標包住其餘。
+- **不支援**（回報原因、載入器走主機路線，不影響正確性）：二維 gid、整數／向量緩衝區、while 與一般迴圈、原子、barrier、讀寫同一緩衝區、巢狀區域內的 return、無號運算。
+- **接線**：`makeGpuDriver.compileIL` 對每個核心試 KIR；通過 `FaKir.validate`、參數名一致、剛好一個輸出才有 `gpu`；產物（含 KIR）照 §14 存進快取，target 字串加 `.sk<版本>` 使舊快取失效。
+- **測試**：`spv_kir_test.js` 9 項（與 clc 差分）；`cl_cache_test` 新增 IL 程式在 GPU 驅動的路線與快取重建。
+- **還沒做**：KIR 本身的限制（一維、f32）決定了上限；要讓更多 IL 核心上 GPU，要擴充 KIR 裝置層，不是這裡。

@@ -174,4 +174,15 @@ t('配置不複製、gen（barrier）核心也能從產物重建並正確執行'
   }
 });
 
+t('★ IL 程式（clCreateProgramWithIL）在 GPU 驅動走 SPIR-V→KIR：簡單核心上裝置、小問題留在主機；快取重建後路線不變', async () => {
+  const KK = require('./spv_kir.js'), FEc = require('./clc_spv.js'), cd = { dispatch: 0 }, jd = ICD.jsDevice(K2), dev = { alloc: (...a) => jd.alloc(...a), upload: (...a) => jd.upload(...a), download: (...a) => jd.download(...a), dispatch: (...a) => { cd.dispatch++; return jd.dispatch(...a); }, free: (...a) => jd.free(...a) };
+  const SRC = '__kernel void sc(__global const float* a, __global float* o, float s, int n) { int i = get_global_id(0); if (i < n) o[i] = a[i] * s; }', il = FEc.toIL(SRC, '');
+  const gd = () => ICD.makeGpuDriver({ mods: { FaClFront: FR2, FaKir: K2, FaClc: CLC, FaSpv: SPV, FaSpvKir: KK }, device: dev, backend: 'webgpu', smallN: 64 }), ad = CC.memoryAdapter();
+  const go = async (l, N) => { const { c } = ctxOf(l), q = l.createQueue(c, null, {}), p = l.createProgramIL(c, il); await l.build(p, ''); const k = l.createKernel(p, 'sc'), a = l.createBuffer(c, {}, N * 4, new Float32Array(N).map((_, i) => i)), o = l.createBuffer(c, {}, N * 4, null); l.setArg(k, 0, a); l.setArg(k, 1, o); l.setArg(k, 2, 3); l.setArg(k, 3, N); await l.enqueueNDRange(q, k, [N], null, null); const r = await l.enqueueRead(q, o, N * 4, 0); return { p, out: new Float32Array(r.data.buffer, r.data.byteOffset, N) }; };
+  const l1 = mkLoader(CC.createCache({ storage: ad }), [gd()]); const r1 = await go(l1, 4096); await l1.close();
+  assert.ok(cd.dispatch >= 1, 'IL 核心大問題走裝置（KIR）'); assert.strictEqual(r1.out[100], 300);
+  const n1 = cd.dispatch; const r1s = await go(l1, 16); assert.strictEqual(cd.dispatch, n1, '小問題走主機'); assert.deepStrictEqual(Array.from(r1s.out.slice(0, 3)), [0, 3, 6]);
+  const l2 = mkLoader(CC.createCache({ storage: ad }), [gd()]); const r2 = await go(l2, 4096); assert.strictEqual(r2.p.built.fromCache, 'bin'); assert.ok(cd.dispatch > n1, '重建後仍走裝置'); assert.strictEqual(r2.out[7], 21);
+});
+
 (async () => { for (const [name, fn] of queue) { try { await fn(); pass++; } catch (e) { fail++; console.error('FAIL ' + name + '\n   ' + String(e.stack || e.message).split('\n').slice(0, 7).join('\n   ')); } } console.log(pass + ' passed, ' + fail + ' failed'); process.exit(fail ? 1 : 0); })();
