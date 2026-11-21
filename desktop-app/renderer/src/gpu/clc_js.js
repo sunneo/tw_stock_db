@@ -220,7 +220,7 @@
             const body = prologue + cg.program();
             const mk = new Function('$rt', body);
             const mod = mk(rt);
-            return { ok: true, log: log.join('\n'), kernels, mkptr: rt.mkptr, run: (name, args, gs, ls, off) => runKernel(rt, mod, kernels, name, args, gs, ls, off, cg.gen) };
+            return { ok: true, kind: 'clc', log: log.join('\n'), kernels, mkptr: rt.mkptr, run: (name, args, gs, ls, off) => runKernel(rt, mod, kernels, name, args, gs, ls, off, cg.gen), js: body, gen: cg.gen };   // js／gen：可快取的「產物」（instantiate 用它重建，不經前端）
         } catch (e) {
             if (e instanceof CErr) return { ok: false, log: e.message, kernels: {} };
             throw e;
@@ -1246,5 +1246,12 @@
         }
     }
 
-    return { compile, coerceScalar, SIZE, CErr, imageRuntime, IMG_ORDERS: ORDERS, IMG_TYPES_LIST: CTYPES };
+    // 從快取的產物重建（跳過前處理／詞法／語法／型別檢查）：art＝{ js, kernels:{名:{params}}, gen }。js 的前導 const 依 rt 的 $ 開頭成員產生，所以 VERSION 變了就不能重用（快取鍵含 VERSION）。
+    const VERSION = 1;
+    function instantiate(art) {
+        const rt = runtime(); Object.assign(rt, imageRuntime());
+        const mod = new Function('$rt', art.js)(rt);
+        return { ok: true, kind: 'clc', log: '', kernels: art.kernels, mkptr: rt.mkptr, run: (name, args, gs, ls, off) => runKernel(rt, mod, art.kernels, name, args, gs, ls, off, art.gen), js: art.js, gen: art.gen };
+    }
+    return { VERSION, instantiate, compile, coerceScalar, SIZE, CErr, runtime, runKernel, imageRuntime, IMG_ORDERS: ORDERS, IMG_TYPES_LIST: CTYPES };
 });

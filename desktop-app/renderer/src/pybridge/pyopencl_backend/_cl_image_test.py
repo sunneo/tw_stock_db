@@ -411,6 +411,80 @@ def _():
     assert P.interop_renderbuffer_read(rbo) == bytes([0, 255, 0, 255] * 4)
 
 
+def _fixture(name):
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", name), "rb") as f:
+        return f.read()
+
+
+@t("IL（SPIR-V）程式：clCreateProgramWithIL、build、向量相加與 __local＋barrier 歸約、二進位往返、錯誤")
+def _():
+    assert "SPIR-V" in ctx.devices[0].il_version
+    p = cl._create_program_with_il(ctx, _fixture("spv_vadd.spv"))
+    assert p.kind() == cl.program_kind.IL and p.get_info(cl.program_info.IL) == _fixture("spv_vadd.spv")
+    p._build()
+    assert p.get_info(cl.program_info.KERNEL_NAMES) == "vadd"
+    k = cl.Kernel(p, "vadd")
+    a, b = np.arange(100, dtype=np.float32), np.arange(100, dtype=np.float32) * 2
+    A, B, C = cl.Buffer(ctx, mf.READ_ONLY | mf.COPY_HOST_PTR, hostbuf=a), cl.Buffer(ctx, mf.READ_ONLY | mf.COPY_HOST_PTR, hostbuf=b), cl.Buffer(ctx, mf.WRITE_ONLY, a.nbytes)
+    k(queue, (100,), None, A, B, C, np.uint32(100))
+    out = np.empty_like(a)
+    cl._enqueue_read_buffer(queue, C, out)
+    assert (out == a + b).all()
+    q = cl._create_program_with_il(ctx, _fixture("spv_reduce.spv"))
+    q._build()
+    kr = cl.Kernel(q, "red")
+    x = np.arange(256, dtype=np.float32)
+    X, O = cl.Buffer(ctx, mf.READ_ONLY | mf.COPY_HOST_PTR, hostbuf=x), cl.Buffer(ctx, mf.WRITE_ONLY, 16)
+    kr(queue, (256,), (64,), X, O, cl.LocalMemory(64 * 4))
+    res = np.empty(4, np.float32)
+    cl._enqueue_read_buffer(queue, O, res)
+    assert res.tolist() == [x[i * 64:(i + 1) * 64].sum() for i in range(4)]
+    bins = p.get_info(cl.program_info.BINARIES)   # 「二進位」往返：還原成 IL 程式
+    p2 = cl._Program(ctx, ctx.devices, bins)
+    assert p2.kind() == cl.program_kind.BINARY   # 從載入器的 binary 容器重建（目標相容就不經 SPIR-V 解碼）
+    p2._build()
+    assert p2.get_info(cl.program_info.KERNEL_NAMES) == "vadd"
+    bad = cl._create_program_with_il(ctx, b"\x03\x02\x23\x07" + b"\x00" * 16)   # 只有檔頭、沒有 Kernel 能力
+    try:
+        bad._build()
+    except cl.Error as e:
+        assert e.code == cl.status_code.BUILD_PROGRAM_FAILURE and "Kernel" in str(e) + bad._log, (str(e), bad._log)
+    else:
+        raise AssertionError("壞的 IL 要建置失敗")
+    try:
+        cl._create_program_with_il(ctx, b"xyz")
+    except cl.Error as e:
+        assert e.code == cl.status_code.INVALID_VALUE
+    else:
+        raise AssertionError("太短的 IL 要被拒絕")
+
+
+@t("快取是無痕的：原本的 Program(ctx, source) 寫法，同一個行程裡第二個相同的程式不再編譯；binary 容器往返不經前端")
+def _():
+    src = "__kernel void sq(__global float* x) { int i = get_global_id(0); x[i] = x[i] * x[i]; }"
+    p = cl._Program(ctx, src)
+    p._build()
+    assert p._from_cache in (None, "bin")   # 這個行程的第一次（也可能因為檔案快取而是 bin）
+    bins = p.get_info(cl.program_info.BINARIES)
+    assert bins[0].startswith(b"FAKIRBN1") and p.get_info(cl.program_info.BINARY_SIZES) == [len(bins[0])]
+    q = cl._Program(ctx, ctx.devices, bins)   # pyopencl 的磁碟編譯快取讀回的寫法
+    q._build()
+    assert q._from_cache == "binary" and q.kind() == cl.program_kind.BINARY
+    k = cl.Kernel(q, "sq")
+    x = np.arange(8, dtype=np.float32)
+    X = cl.Buffer(ctx, mf.READ_WRITE | mf.COPY_HOST_PTR, hostbuf=x)
+    k(queue, (8,), None, X)
+    out = np.empty_like(x)
+    cl._enqueue_read_buffer(queue, X, out)
+    assert (out == x * x).all()
+    try:
+        cl._Program(ctx, ctx.devices, [b"FAKIRBN1" + b"\x00" * 20])._build()
+    except cl.Error as e:
+        assert e.code in (cl.status_code.INVALID_BINARY, cl.status_code.INVALID_VALUE), e.code
+    else:
+        raise AssertionError("壞的 binary 要被拒絕")
+
+
 print("%d passed, %d failed" % (passed, failed))
 try:
     cl._get_transport().close()

@@ -21,6 +21,8 @@
 
     const SIGS = {
         clCreateContextFromType: { params: ['ptr', 'i32|i64', 'ptr', 'ptr', 'ptr'], ret: 'ptr' },
+        clCreateProgramWithBinary: { params: ['ptr', 'i32', 'ptr', 'ptr', 'ptr', 'ptr', 'ptr'], ret: 'ptr' },
+        clCreateProgramWithIL: { params: ['ptr', 'ptr', 'i32|i64', 'ptr'], ret: 'ptr' }, clSetProgramSpecializationConstant: { params: ['ptr', 'i32', 'i32|i64', 'ptr'], ret: 'i32' },
         clCreateSubBuffer: { params: ['ptr', 'i32|i64', 'i32', 'ptr', 'ptr'], ret: 'ptr' },
         clEnqueueCopyBuffer: { params: ['ptr', 'ptr', 'ptr', 'i32|i64', 'i32|i64', 'i32|i64', 'i32', 'ptr', 'ptr'], ret: 'i32' },
         clEnqueueFillBuffer: { params: ['ptr', 'ptr', 'ptr', 'i32|i64', 'i32|i64', 'i32|i64', 'i32', 'ptr', 'ptr'], ret: 'i32' },
@@ -94,7 +96,7 @@
             0x1019: ['u32', 'mem_base_addr_align'], 0x101A: ['u32', 'min_data_type_align_size'], 0x101F: ['u64', 'global_mem_size'], 0x1020: ['u64', 'max_constant_buffer_size'], 0x1021: ['u32', 'max_constant_args'],
             0x1022: ['u32', 'local_mem_type'], 0x1023: ['u64', 'local_mem_size'], 0x1024: ['u32', 'error_correction_support'], 0x1025: ['size', 'profiling_timer_resolution'], 0x1026: ['u32', 'endian_little'],
             0x1027: ['u32', 'available'], 0x1028: ['u32', 'compiler_available'], 0x102B: ['str', 'name'], 0x102C: ['str', 'vendor'], 0x102D: ['str', 'driver_version'], 0x102E: ['str', 'profile'], 0x102F: ['str', 'version'],
-            0x1030: ['str', 'extensions'], 0x1053: ['u64', 'svm_capabilities'], 0x1055: ['u32', 'max_pipe_args'], 0x1049: ['size', 'printf_buffer_size'], 0x1057: ['u32', 'pipe_max_packet_size'], 0x1056: ['u32', 'pipe_max_active_reservations'] };
+            0x1030: ['str', 'extensions'], 0x105B: ['str', 'il_version'], 0x1053: ['u64', 'svm_capabilities'], 0x1055: ['u32', 'max_pipe_args'], 0x1049: ['size', 'printf_buffer_size'], 0x1057: ['u32', 'pipe_max_packet_size'], 0x1056: ['u32', 'pipe_max_active_reservations'] };
         const platParam = { 0x0900: 'profile', 0x0901: 'version', 0x0902: 'name', 0x0903: 'vendor', 0x0904: 'extensions' };
 
         // ---- 內核參數：把 clSetKernelArg 的位元組依參數型別轉成載入器要的值
@@ -218,6 +220,18 @@
             clGetPipeInfo: (ctx, p, name, size, v, ret) => { const E = info.get(p); if (!E || !E.pipe) return -38; if (name === 0x1120) return putVal(ctx, 'u32', E.pipe.ps, size, v, ret); if (name === 0x1121) return putVal(ctx, 'u32', E.pipe.max, size, v, ret); return -30; },
 
             // ---- 程式與核心
+            clCreateProgramWithIL: (ctx, c, il, len, err) => {   // SPIR-V：不經 OpenCL C 前端
+                len = U(len); if (!il || !(len >= 20)) { errOut(ctx, err, -30); return 0; }
+                const r = call('prog_create_il', { ctx: c }, ctx.u8().slice(il, il + len)); errOut(ctx, err, errCode(r)); if (errCode(r)) return 0;
+                info.set(r.result.h, { prog: true, src: '', il: true, log: '', built: false }); return r.result.h;
+            },
+            clCreateProgramWithBinary: (ctx, c, ndev, devs, lens, bins, status, err) => {   // 載入器的 binary 容器（clGetProgramInfo(BINARIES) 取得的）：目標相容就不經前端
+                if (!ndev || !lens || !bins) { errOut(ctx, err, -30); return 0; }
+                const len = ctx.dv().getUint32(lens, true), ptr = ctx.dv().getUint32(bins, true); if (!ptr || !len) { errOut(ctx, err, -30); if (status) errOut(ctx, status, -42); return 0; }
+                const r = call('prog_create_binary', { ctx: c }, ctx.u8().slice(ptr, ptr + len)); const code = errCode(r); errOut(ctx, err, code); if (status) errOut(ctx, status, code); if (code) return 0;
+                info.set(r.result.h, { prog: true, src: '', binary: true, log: '', built: false }); return r.result.h;
+            },
+            clSetProgramSpecializationConstant: (ctx, p, id, size, v) => { const E = info.get(p); if (!E || !E.il) return -44; if (!v) return -30; return errCode(call('prog_spec', { prog: p, id }, ctx.u8().slice(v, v + U(size)))); },
             clCreateProgramWithSource: (ctx, c, count, strs, lens, err) => {
                 let src = ''; for (let i = 0; i < count; i++) { const sp = ctx.dv().getUint32(strs + 4 * i, true); let L = -1; if (lens) L = ctx.dv().getInt32(lens + 4 * i, true) | 0; src += L > 0 ? new TextDecoder().decode(ctx.u8().subarray(sp, sp + L)) : cstr(ctx, sp); }
                 const r = call('prog_create', { ctx: c, src }); errOut(ctx, err, errCode(r)); if (errCode(r)) return 0; info.set(r.result.h, { prog: true, src, log: '', built: false }); return r.result.h;
@@ -237,8 +251,14 @@
             clGetProgramInfo: (ctx, p, name, size, v, ret) => {
                 const E = info.get(p); if (!E || !E.prog) return -44;
                 if (name === 0x1164) return putVal(ctx, 'str', E.src, size, v, ret);
-                if (name === 0x1167) return putVal(ctx, 'str', (E.kernels || []).join(';'), size, v, ret);
-                if (name === 0x1165) return putVal(ctx, 'size', (E.kernels || []).length, size, v, ret);
+                if (name === 0x1169) { const r = call('prog_il', { prog: p }); return errCode(r) ? errCode(r) : putVal(ctx, 'raw', r.data, size, v, ret); }
+                if (name === 0x1168) return putVal(ctx, 'str', (E.kernels || []).join(';'), size, v, ret);   // CL_PROGRAM_KERNEL_NAMES
+                if (name === 0x1167) return putVal(ctx, 'size', (E.kernels || []).length, size, v, ret);    // CL_PROGRAM_NUM_KERNELS
+                if (name === 0x1165 || name === 0x1166) {   // CL_PROGRAM_BINARY_SIZES／BINARIES：真的 binary 容器（最終產物＋內嵌 source／IL）
+                    if (!E.built) return -45; const r = call('prog_binary', { prog: p }); if (errCode(r)) return errCode(r); const bin = r.data;
+                    if (name === 0x1165) return putVal(ctx, 'sizes', [bin.length], size, v, ret);
+                    if (!v) return 0; const dst = ctx.dv().getUint32(v, true); if (!dst) return -30; ctx.u8().set(bin, dst); return 0;
+                }
                 return -30;
             },
             clCreateKernel: (ctx, p, name, err) => {

@@ -15,7 +15,14 @@
         const M = o.mods || {};
         for (const k of ['FaClIcd', 'FaClHostOps', 'FaClc', 'FaClFront', 'FaKir']) if (!M[k]) throw new Error('FaClHostPage.create 需要 mods.' + k);
         const hk = o.setup ? o.setup : M.FaKirHostHooks ? await M.FaKirHostHooks.setup({ mods: M, nav: o.nav, makeCanvas: o.makeCanvas, jspi: !!o.jspi, force: o.force }) : { backend: 'js', hooks: {}, reasons: { webgpu: 'KIR 的主機掛鉤沒有嵌入' }, describe: () => '後端：JS（沒有 GPU 掛鉤）' };
-        const loader = M.FaClIcd.createLoader();
+        // 快取永遠開著（無痕）：瀏覽器／Electron 用 IndexedDB（頁面與 Worker 共用同一個庫），開不起來就退記憶體；多層與目標見 cl_cache.js
+        let cache = null;
+        if (M.FaClCache) {
+            let storage = null; try { if (typeof indexedDB !== 'undefined' && indexedDB) storage = M.FaClCache.idbAdapter(indexedDB, 'fa-cl-cache'); } catch (_) { storage = null; }
+            cache = M.FaClCache.createCache({ storage: storage || M.FaClCache.memoryAdapter(), now: o.now });
+            if (typeof addEventListener === 'function') { const k = () => cache.kick(); try { addEventListener('pagehide', k); addEventListener('visibilitychange', () => { if (typeof document !== 'undefined' && document.visibilityState === 'hidden') k(); }); } catch (_) { /* 沒有頁面事件（Worker）：寫入照樣在背景進行 */ } }   // 沖出位置：頁面隱藏／離開
+        }
+        const loader = M.FaClIcd.createLoader({ cache });
         if (hk.backend !== 'js' && hk.hooks && hk.hooks.kirDev) {
             const gen = M.FaKirGen;
             const canGenerate = (k) => (hk.backend === 'webgpu' ? !!(gen && gen.toWgsl(k, { wg: 64 }).ok) : !!(gen && gen.toGlsl(k).ok));
@@ -27,7 +34,7 @@
         return {
             backend: hk.backend, reasons: hk.reasons, loader, hooks: hk,
             describe: () => hk.describe() + '；OpenCL 平台：' + loader.platforms().map((p) => p.name).join('、'),
-            stats: () => Object.assign({}, loader.stats(), { gpu: hk.stats ? hk.stats() : null }),
+            stats: () => Object.assign({}, loader.stats(), { gpu: hk.stats ? hk.stats() : null, cache: cache ? cache.stats() : null }),
             call: async (op, argsJson, bytes) => { const r = await host.call(op, argsJson ? JSON.parse(argsJson) : {}, u8(bytes)); return { json: JSON.stringify(r.result), data: r.data }; }
         };
     }

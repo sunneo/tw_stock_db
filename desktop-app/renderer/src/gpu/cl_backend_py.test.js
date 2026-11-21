@@ -10,4 +10,14 @@ for (const [file, env] of [['_cl_test.py', {}], ['_cl_image_test.py', { FA_CL_DR
     process.stdout.write('[' + file + '] ' + (r.stdout || '')); process.stderr.write(r.stderr || '');
     if (r.status !== 0) bad++;
 }
+// 跨行程：同一個快取檔，第一次編譯、第二次（全新行程）直接拿 binary——原本的寫法，沒有任何開關
+{
+    const os = require('os'), fs = require('fs'), f = path.join(os.tmpdir(), 'fa-cl-cache-py-' + process.pid + '.json'); try { fs.unlinkSync(f); } catch (_) { /* 沒有 */ }
+    const test = path.join(__dirname, '..', 'pybridge', 'pyopencl_backend', '_cl_cache_test.py');
+    for (const phase of ['first', 'second']) {
+        const r = cp.spawnSync(py, ['-I', test, phase], { encoding: 'utf-8', timeout: 120000, env: Object.assign({}, process.env, { FA_OPENCL_HOST: path.join(__dirname, 'cl_host_stdio.js'), FA_CL_DRIVERS: 'clc', FA_CL_CACHE_FILE: f, PYTHONDONTWRITEBYTECODE: '1' }) });
+        process.stdout.write('[_cl_cache_test.py ' + phase + '] ' + (r.stdout || '')); process.stderr.write(r.stderr || ''); if (r.status !== 0) bad++;
+    }
+    try { fs.unlinkSync(f); } catch (_) { /* 沒有 */ }
+}
 process.exit(bad ? 1 : 0);

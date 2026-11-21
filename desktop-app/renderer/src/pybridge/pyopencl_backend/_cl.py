@@ -371,7 +371,7 @@ class Device(_Handle):
                   device_info.GLOBAL_MEM_CACHE_SIZE: "global_mem_cache_size", device_info.GLOBAL_MEM_CACHE_TYPE: "global_mem_cache_type",
                   device_info.MEM_BASE_ADDR_ALIGN: "mem_base_addr_align", device_info.MIN_DATA_TYPE_ALIGN_SIZE: "min_data_type_align_size",
                   device_info.PROFILING_TIMER_RESOLUTION: "profiling_timer_resolution", device_info.MAX_CONSTANT_ARGS: "max_constant_args",
-                  device_info.MAX_SAMPLERS: "max_samplers", device_info.SVM_CAPABILITIES: "svm_capabilities", device_info.MAX_PIPE_ARGS: "max_pipe_args",
+                  device_info.MAX_SAMPLERS: "max_samplers", device_info.SVM_CAPABILITIES: "svm_capabilities", device_info.IL_VERSION: "il_version", device_info.MAX_PIPE_ARGS: "max_pipe_args",
                   device_info.IMAGE2D_MAX_WIDTH: "image2d_max_width", device_info.IMAGE2D_MAX_HEIGHT: "image2d_max_height", device_info.IMAGE3D_MAX_WIDTH: "image3d_max_width",
                   device_info.IMAGE3D_MAX_HEIGHT: "image3d_max_height", device_info.IMAGE3D_MAX_DEPTH: "image3d_max_depth", device_info.IMAGE_MAX_BUFFER_SIZE: "image_max_buffer_size",
                   device_info.IMAGE_MAX_ARRAY_SIZE: "image_max_array_size", device_info.MAX_READ_IMAGE_ARGS: "max_read_image_args", device_info.MAX_WRITE_IMAGE_ARGS: "max_write_image_args",
@@ -719,13 +719,26 @@ def _expand_includes(src, options, _depth=0, _once=None):
     return "\n".join(out)
 
 
+_CONTAINER_MAGIC = b"FAKIRBN1"   # 載入器的 binary 容器（cl_cache.js 的 packBinary）
+_BIN_MAGIC_IL = b"FAKIRIL\n"   # IL（SPIR-V）程式的「二進位」＝魔術標頭＋IL 位元組
 _BIN_MAGIC = b"FAKIR1\n"   # 這個後端的「二進位」＝魔術標頭＋OpenCL C 原始碼（JIT 後端的可攜表示，像 SPIR／PTX 文字）；讓 pyopencl 的磁碟編譯快取能運作
 
 
 class _Program(_Handle):
+    _il, _container, _bin = None, False, None   # _create_program_with_il 不經 __init__，所以要有類別預設值
     def __init__(self, context, src, binaries=None):
         # 兩種建構：_Program(ctx, 原始碼) 與 _Program(ctx, devices, binaries)（pyopencl 的編譯快取從磁碟讀回時用；src 在這裡是 devices）
-        self._from_binary = False
+        self._from_binary, self._il, self._container, self._bin = False, None, False, None
+        if binaries is not None and all(bytes(b).startswith(_CONTAINER_MAGIC) for b in list(binaries)):   # 載入器的 binary 容器：最終產物＋內嵌 source／IL（目標相容就直接重建，不經前端）
+            res, _ = _call("prog_create_binary", {"ctx": context._h}, bytes(list(binaries)[0]))
+            self._h, self._ctx, self._src, self._built, self._log, self._options, self._kernels, self._from_binary, self._container = res["h"], context, "", False, "", "", [], True, True
+            return
+        if binaries is not None and all(bytes(b).startswith(_BIN_MAGIC_IL) for b in list(binaries)):   # 從 IL 的「二進位」還原
+            p = _create_program_with_il(context, bytes(list(binaries)[0])[len(_BIN_MAGIC_IL):])
+            self.__dict__.update(p.__dict__)
+            p._h = None
+            self._from_binary = True
+            return
         if binaries is not None:
             bins = list(binaries)
             if not bins or any(not bytes(b).startswith(_BIN_MAGIC) for b in bins):
@@ -741,12 +754,35 @@ class _Program(_Handle):
     def create_with_built_in_kernels(context, devices, kernel_names):
         _raise("clCreateProgramWithBuiltInKernels", "INVALID_VALUE", "這個後端沒有內建核心")
 
+    def _binary_bytes(self):
+        if self._bin is None:
+            if not self._built:
+                _raise("clGetProgramInfo", "INVALID_PROGRAM_EXECUTABLE", "程式還沒有 build")
+            _, data = _call("prog_binary", {"prog": self._h})
+            self._bin = bytes(data)
+        return self._bin
+
     def kind(self):
-        return program_kind.BINARY if self._from_binary else program_kind.SOURCE
+        return program_kind.IL if self._il is not None else (program_kind.BINARY if self._from_binary else program_kind.SOURCE)
+
+    def set_specialization_constant(self, spec_id, buffer):
+        if self._il is None:
+            _raise("clSetProgramSpecializationConstant", "INVALID_PROGRAM", "只有 IL 程式有規格常數")
+        _call("prog_spec", {"prog": self._h, "id": int(spec_id)}, _as_bytes(buffer))
 
     def _build(self, options=b"", devices=None):
         opt = options.decode("utf-8") if isinstance(options, (bytes, bytearray)) else str(options or "")
         self._options = opt
+        if self._il is not None or self._container:   # IL 與 binary：沒有原始碼，不展開 #include
+            try:
+                res, _ = _call("prog_build", {"prog": self._h, "options": opt})
+            except Error:
+                self._built = False
+                info, _ = _call("prog_info", {"prog": self._h})
+                self._log = info.get("log", "")
+                raise
+            self._built, self._log, self._kernels, self._from_cache = True, res.get("log", ""), list(res["kernels"]), res.get("from_cache")
+            return
         try:
             expanded = _expand_includes(self._src, opt)   # 真的驅動也是在 build 時依 -I 讀標頭
         except Error:
@@ -759,7 +795,7 @@ class _Program(_Handle):
             info, _ = _call("prog_info", {"prog": self._h})   # build log 給 get_build_info(LOG)（真 pyopencl 的 Program.build 會讀它）
             self._log = info.get("log", "")
             raise
-        self._built, self._log, self._kernels = True, res.get("log", ""), list(res["kernels"])
+        self._built, self._log, self._kernels, self._from_cache = True, res.get("log", ""), list(res["kernels"]), res.get("from_cache")   # from_cache：這次建置是從快取來的（'bin'｜'il'｜'binary'）還是真的編譯了（None）；測試與除錯用，使用者不需要管
 
     def get_build_info(self, device, param):
         p = int(param)
@@ -779,12 +815,16 @@ class _Program(_Handle):
             return ";".join(self._kernels)
         if p == program_info.NUM_KERNELS:
             return len(self._kernels)
+        if p == program_info.IL:
+            if self._il is None:
+                return b""
+            return self._il
         if p == program_info.BINARIES:
             if not self._built:
                 _raise("clGetProgramInfo", "INVALID_PROGRAM_EXECUTABLE", "程式還沒有 build")
-            return [_BIN_MAGIC + self._src.encode("utf-8") for _ in self._ctx._devices]
+            return [self._binary_bytes() for _ in self._ctx._devices]   # 真的 binary 容器：pyopencl 的磁碟編譯快取存它，下次 Program(ctx, devices, binaries) 直接重建
         if p == program_info.BINARY_SIZES:
-            return [len(_BIN_MAGIC) + len(self._src.encode("utf-8")) for _ in self._ctx._devices]
+            return [len(self._binary_bytes()) for _ in self._ctx._devices]
         if p == program_info.SOURCE:
             return self._src
         if p == program_info.CONTEXT:
@@ -848,7 +888,14 @@ class _Program(_Handle):
 
 
 def _create_program_with_il(context, il):
-    _raise("clCreateProgramWithIL", "INVALID_VALUE", "不支援 IL（SPIR-V）程式")
+    """clCreateProgramWithIL：IL（SPIR-V）程式。不經 OpenCL C 前端（建置時間只剩二進位解碼加轉 JS）；裝置要回報 IL_VERSION（clc／GPU 驅動有，KIR 驅動沒有）。"""
+    il = bytes(il)
+    if not any(d.get_info(device_info.IL_VERSION) for d in context.devices):
+        _raise("clCreateProgramWithIL", "INVALID_OPERATION", "這個裝置不支援 IL 程式（il_version 是空的；用 clc 或 GPU 驅動的裝置）")
+    res, _ = _call("prog_create_il", {"ctx": context._h}, il)
+    p = _Program.__new__(_Program)
+    p._h, p._ctx, p._src, p._built, p._log, p._options, p._kernels, p._from_binary, p._il = res["h"], context, "", False, "", "", [], False, il
+    return p
 
 
 def _is_vector_type(t):

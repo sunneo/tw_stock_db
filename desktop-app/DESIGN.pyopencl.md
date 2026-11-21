@@ -185,7 +185,7 @@
 3. ~~圖像與取樣器~~——**已完成（2026-11-20／21）**：clc 前端有 `image1d/2d/3d_t`、`image1d/2d_array_t`、`image1d_buffer_t`、`sampler_t`（uint 位元欄位：正規化座標｜定址 NONE／CLAMP_TO_EDGE／CLAMP／REPEAT／MIRRORED_REPEAT｜過濾 NEAREST／LINEAR，含 1D／2D／3D 線性內插）、`read_image{f,i,ui}`／`write_image{f,i,ui}`、`get_image_*`；通道順序 R A RG RA RGBA BGRA ARGB INTENSITY LUMINANCE Rx RGx RGB RGBx，通道型別 UNORM／SNORM 8／16、SIGNED／UNSIGNED 8／16／32、HALF_FLOAT、FLOAT、打包的 565／555／101010（RGB／RGBx 只配打包型別，與規格一致）。主機端：`Image`／`ImageDescriptor`／`ImageFormat`／`Sampler`、`_enqueue_{read,write,copy}_image`、`copy_image_to_buffer`／`buffer_to_image`、`enqueue_fill_image`、`enqueue_map_image`、`get_supported_image_formats`（含 row／slice pitch 的主機陣列）。圖像在載入器裡是「緊密排列的緩衝區＋格式描述」，核心一律走主機路線（clc）；**IMAGE1D_BUFFER** 與緩衝區共用同一塊記憶體（結構同子緩衝區）。不支援：mip 層級、多重取樣（如實回報 0）。裝置只有 clc／GPU 驅動回報 `image_support`；KIR 驅動沒有。
 4. ~~SVM~~——**已完成（粗粒度）**：`SVMAllocation`（主機端是 ctypes 配置的真記憶體，`svm_ptr` 是它的位址，numpy 直接建在上面，`csvm_empty`／`svm_empty`／`SVM(...)`／`SVMPool`／`SVMAllocator` 都照標準運作）、`_enqueue_svm_{memcpy,memfill,map,unmap,migrate_mem}`。同步：帶 SVM 參數的核心啟動前，主機端內容變了（crc32）才推上裝置；啟動後裝置端版本變了才拉回——佇列循序且同步，所以主機端在每次啟動完成後都是最新的，滿足（且超過）粗粒度 SVM 契約。指標位移用子緩衝區。`get_cl_header_version()` 回報 (2, 0)（真 pyopencl 只拿它決定要不要啟用 SVM 程式碼）。能力只回報 `COARSE_GRAIN_BUFFER`；細粒度與 SVM 原子如實拒絕。
 5. ~~Pipe~~——**已完成**：`cl.Pipe(ctx, flags, packet_size, max_packets)`、`get_pipe_info`；clc 有 `pipe T` 型別、`read_pipe`／`write_pipe`（回 0／-1）、帶 reserve 的四引數版本、`reserve_{read,write}_pipe`、`commit_*`、`is_valid_reserve_id`、`get_pipe_{num,max}_packets`，封包可以是純量、向量或 struct。pipe 在載入器裡是 `[讀計數][寫計數]＋環狀封包` 的緩衝區，內容跨核心啟動保留。不支援：`work_group_*`／`sub_group_*` 的 pipe 函式（明確報錯）。**GLTexture／GLRenderBuffer**——**已完成**：`cl.GLTexture(ctx, flags, GL_TEXTURE_2D, level, tex, 2)` 與 `cl.GLRenderBuffer`，`fa_opengl_platform` 新增紋理／renderbuffer／framebuffer 的追蹤（`glGen/Bind/Delete*`、`glRenderbufferStorage`、`glFramebufferTexture2D／Renderbuffer`、`glCheckFramebufferStatus`）與 `interop_texture_*`／`interop_renderbuffer_*`；畫到綁定的 framebuffer（`glDraw*`、`glClear`）會讓附著物件的修訂號加一，acquire／release 與 GLBuffer 一樣只在版本變了的方向傳輸。支援的 GL 內部格式：RGBA8／RGBA16F／RGBA32F／R8／R32F／RG8／RG32F；目標只有 GL_TEXTURE_2D（3D／陣列／立方體紋理平台層沒有追蹤）；`WebGL2Backend` 的 `read/write_texture`／`read/write_renderbuffer`（renderbuffer 寫入走暫時紋理＋`blitFramebuffer`）**沒有在真 WebGL2 驗證**（只用記憶體假後端測過邏輯）。
-6. 其餘：`DevicePointerEXT`、AMD 的 `DeviceTopologyAmd`、`create_with_built_in_kernels`（沒有內建核心，標準行為就是 INVALID_VALUE）、IL／SPIR-V 程式（`_create_program_with_il`、`set_specialization_constant`）。
+6. 其餘：`DevicePointerEXT`、AMD 的 `DeviceTopologyAmd`、`create_with_built_in_kernels`（沒有內建核心，標準行為就是 INVALID_VALUE）、~~IL／SPIR-V 程式~~——**已完成**（§13）。
 7. clc 的 `long` 精確到 2^53；`#include` 以外的真實標頭（`cl_khr_*` 擴充標頭）。
 
 
@@ -199,3 +199,66 @@ run terminal 的 `.ll` 程式（`examples/llc/gpgpu`）呼叫標準的 `clCreate
 - **驗證**：node（`llvm_cl_icd.test.js`：vecadd 與 `__local` 歸約的新範例 `opencl_icd_reduce.ll`）；真 Electron（JSPI）：歸約在 clc 驅動跑通；vecadd 在 SwiftShader 的 WebGL2 上走 GPU 驅動（`routedDev:1`、1 次 GPU 派送、非同步讀回）。真 GPU 沒驗證。
 - **這個模式沒有的**：SVM（wasm 端沒有可給共享位址的配置器）、GL 互通（`clCreateFromGLBuffer` 回 `CL_INVALID_OPERATION` 並提示拿掉註解改用舊墊片）、`fa_cl_pack`／`fa_cl_view`（KIR 打包最佳化是舊墊片的）、事件等待清單（佇列循序，一律視為已滿足）。IL／SPIR-V 輸入與「核心編成 LLVM IR 再 llc」不在範圍內：clc 直接產 JS，不經 LLVM IR。
 - **IR 寫法的注意**：wasm32 的指標與 `size_t` 是 4 位元組；ICD 模式的 `clSetKernelArg` 對緩衝區參數接受 size 4 或 8（舊 IR 照 64 位元寫 8，低 4 位元組就是控制代碼）。
+
+## 13. SPIR-V：clCreateProgramWithIL（2026-11-21）
+
+`cl.Program(ctx, bytes)`（pyopencl 用 bytes 區分 IL 與原始碼 str）與 `.ll` 的 `clCreateProgramWithIL`／`clSetProgramSpecializationConstant` 都能建立 **SPIR-V（OpenCL「Kernel」風格）程式**，執行路徑跟 OpenCL C 程式一樣（載入器、build 快取、clc 的工作群排程與執行期），只是少了 OpenCL C 前端。
+
+- **模組**：`spv_tables.js`（由 Khronos SPIRV-Headers 的 JSON 文法經 `scripts/gen-spv-tables.js` 產生：891 個指令、58 種列舉、162 個 OpenCL.std 指令，是資料不手改）、`spv_js.js`（`FaSpv.compile(il, {spec})`：回傳與 `FaClc.compile` 同形，所以 `runClc`、驅動、`__local`＋`barrier` 的產生器排程、圖像／pipe／原子的執行期全部共用）、`spv_asm.js`（文字組譯器，測試與手寫小核心用；`OpExtInst` 直接寫指令名）。夾具 `spv_fixtures.js`，`scripts/gen-spv-fixtures.js` 寫出 `.spv` 與 Python 範例，`scripts/gen-spv-ll.js` 寫出 `.ll` 範例。
+- **API 管線**：載入器 `createProgramIL`／`setSpec`（build 快取鍵用兩種雜湊加長度）；驅動的 `compileIL`（clc、GPU 驅動有；KIR 驅動沒有→`CL_INVALID_OPERATION`）；host ops `prog_create_il`／`prog_spec`／`prog_il`；`_cl.py` 的 `_create_program_with_il`、`set_specialization_constant`、`program_kind.IL`、`program_info.IL`、「二進位」往返（`FAKIRIL\n` 魔術標頭）；`device_info.IL_VERSION`＝`SPIR-V_1.0 … 1.5`（裝置只有 clc／GPU 驅動回報）。
+- **支援的 SPIR-V**：型別 void／bool／int 8–64／float 32–64／vector／array／struct／pointer（Function、Workgroup、CrossWorkgroup、UniformConstant）／image／sampler／pipe／reserve id；整數與浮點算術、比較、轉換、位元操作、複合值、Select、Phi、分支與 switch、函式呼叫、變數與載入存放複製、AccessChain／PtrAccessChain（結構佈局用 `Offset` 裝飾或自然對齊）、原子、`OpControlBarrier`、OpenCL.std 的常用數學／整數／幾何／`vloadn`／`vstoren`／shuffle、圖像讀寫與查詢、取樣器常數、pipe 的讀寫與保留、規格常數（`OpSpecConstant*`，可覆寫）、內建變數（Global／Local／Workgroup 的 Id 與 Size、NumWorkgroups、GlobalOffset、WorkDim…）。`GlobalInvocationId` 含 global offset（等同 OpenCL C 的 `get_global_id`）。
+- **JS 轉換**：`Function` 變數若只被 Load／Store 用到就提升成 JS 區域變數；有多個基本區塊的函式用 `switch` 狀態機（phi 在分支邊上平行賦值），不還原結構化迴圈；有 `OpControlBarrier` 時所有函式編成產生器。整數是「有號正規形」（8／16／32 位元精確，64 位元精確到 2^53，與 clc 相同）。
+- **不支援（建置時明確回報，不默默算錯）**：Shader（Vulkan）風格模組、GenericPointer、群組操作（`work_group_reduce` 等）、device enqueue、half、printf、指標存進記憶體、`OpSpecConstantOp`、沒有本體的函式（Import linkage，例如 `__spirv_ocl_*`）。
+- **驗證的邊界（要誠實）**：沒有真 clang／llvm-spirv／spirv-val 的產物——測試用組譯器手寫、形狀仿 clang 的輸出（Kernel 能力、Physical64、內建變數為 Input 變數＋BuiltIn 裝飾、`OpInBoundsPtrAccessChain`…）。真實 clang 產物可能用到我沒處理的指令，會得到「SPIR-V 指令 X 尚未支援」；請用 `clang -cl-std=CL1.2 -target spir64 -emit-llvm -c`＋`llvm-spirv` 實測並回報。OpenCL.std 的指令編號來自 SPIRV-Headers（比對過）。
+- **建置時間（實測，node 20，歸約核心）**：OpenCL C（clc）冷啟 4.4 ms／暖機 0.059 ms；SPIR-V 冷啟 2.9 ms／暖機 0.050 ms。**clc 前端本來就很便宜**（單趟、直接產 JS），SPIR-V 少掉的前端時間只佔很小一部分；兩者的建置時間都被「執行期物件建立＋首次 JIT」主導，不是詞法／語法分析。想真正縮短使用者感受到的建置時間，要看的是別處：GPU 路線的 KIR→WGSL／GLSL 管線建立、首次 JIT、Pyodide 啟動與 `prepare`；SPIR-V 的價值在「能跑 clang／clspv 等工具鏈離線產生的核心」與不用出貨 OpenCL C 原始碼，不在速度。跨工作階段的生成碼快取（IndexedDB，以 IL 雜湊為鍵）可以讓重複建置歸零，但還沒做。
+- **GPU**：SPIR-V 程式目前只走主機路線（clc 執行期）；要走 WebGL2／WebGPU 得把 SPIR-V 降成 KIR（只收一維 float 緩衝區的簡單核心），還沒做。
+
+## 14. 無痕的多層快取：source → IL → 最終產物（2026-11-21）
+
+**原則：沒有開關。** 原本的 `clCreateProgramWithSource`／`cl.Program(ctx, source)` 寫法不用改任何東西：第一次編譯，之後同一份 source（＋選項、同一種裝置目標）直接拿最終產物，不經前端。快取永遠開著；儲存體開不起來就悄悄退成記憶體；快取的任何錯誤（寫入失敗、配額滿、內容損毀、版本不合）都當作沒命中，不影響建置結果。容量與期限是自動管理的上限（預設 64 MB／512 筆／30 天，LRU），不是開關；`compat` 只決定裝置目標納入多少 GPU 身分（`backend`［預設］｜`strict`［再加轉接卡身分］｜`none`）。
+
+### 14.1 結構（`cl_cache.js`，在載入器 `build` 裡）
+- **三層**：`bin`＝最終產物（依裝置目標；驅動自己決定怎麼序列化：`target()`／`serialize()`／`deserialize()`）；`il`＝SPIR-V（IL 程式本身，或外掛的 source→IL 前端 `frontends.toIL` 的產物）；`src`＝只存連結（這份 source 有哪些 bin／il），讓命中檢查只看記憶體裡的索引。查找順序：第 0 層（行程內）→ bin → il（轉成產物再寫回 bin）→ 編譯（寫入 bin；有 IL 前端時連 il）。
+- **鍵**：`fast64`（兩條 32 位元乘法雜湊＋長度，以 32 位元字為單位，字串直接吃 charCode；1 MB 原始碼 < 50 ms、35 KB 約 0.05 ms；2 萬個相近字串無碰撞）；也有 `md5`（與 node crypto 對照過）。bin 鍵＝H(程式基底鍵, 選項＋規格常數, 裝置目標, ·)；裝置目標字串含驅動種類與編譯器版本（`cpu-js:clc1.spv1`、`gpu-webgl2:kir1:clc1.spv1`…），所以不同裝置／版本不會互相誤用。**展開 `-I` 之後的 source 才是鍵的依據**（ops 的 `prog_build` 在 build 前改寫 `src`，載入器在 build 時重算鍵）。
+- **儲存體介面卡**：IndexedDB（瀏覽器／Electron；頁面與 Worker 共用同一個庫 `fa-cl-cache`；結構化複製，直接存 Uint8Array）、檔案（node，跨行程測試）、記憶體。開啟時把「索引」整個讀進記憶體，所以「有沒有」是同步的；多個載入器共用儲存體時，寫索引前先讀回別人寫的、取聯集再寫。
+- **產物（目前）**：cpu＝生成的 JS 加核心參數表（clc 與 SPIR-V 後端各自 `instantiate` 重建，不經前端）；GPU 驅動＝KIR JSON＋核心 JS；KIR 驅動＝KIR JSON。產物格式可插拔（`kind`）。
+- **binary 容器（clCreateProgramWithBinary）**：`FAKIRBN1`＋標頭 JSON＋區段（產物、內嵌 source／IL）。`clGetProgramInfo(BINARIES)` 回傳它，`Program(ctx, devices, binaries)`／`clCreateProgramWithBinary` 讀回：目標相容就直接重建，不相容就用內嵌的 source／IL 重建，兩者都沒有才回 `CL_INVALID_BINARY`。這讓 **pyopencl 自己的磁碟編譯快取**也自動變快。
+
+### 14.2 排入佇列（enqueue）與沖出（flush）的位置
+IndexedDB 是非同步的，OpenCL 的建置呼叫是同步的，所以：載入器的 `build`／`enqueue*`／`finish` 寫成「能同步就同步」的 generator（`drive`），只有真的要等 IndexedDB 才回 Promise（`ops.callSync`、`.ll` 的 async 匯入、Python 的 `run_sync` 都能處理）。
+| 動作 | 位置 | 行為 |
+|---|---|---|
+| 讀 | `createProgram`／`createProgramIL` | 算鍵（同步）並**排入背景預取**（把對應目前目標的 bin 讀進熱快取） |
+| 讀 | `build` | 內容已在記憶體就同步用；否則 yield 等（這是唯一會等的地方） |
+| 寫 | `build` 成功後 | **write-behind**：放進待寫表（讀得到自己剛寫的）並排入寫入佇列，不等 IndexedDB |
+| 沖出 | `clFinish`（`finish`） | `kick()`：背景沖出，不等 |
+| 沖出 | 釋放程式／佇列／context | `kick()` |
+| 沖出 | 頁面 `pagehide`／`visibilitychange(hidden)` | `kick()`（best-effort） |
+| 沖出 | 待寫量超過 1 MB | 自動 `kick()` |
+| 沖出 | 結束：`loader.close()`（stdio 主機的 EOF／`exit`） | `flush()`：等到佇列清空、索引落地 |
+| 不需沖出 | 取 binary／`createProgramBinary` | 讀待寫表，不必等落地 |
+
+### 14.3 實測（node 20 與真 Electron 44）
+- 同一個行程內，暖機後：小核心（99 字元）編譯 0.061 ms／命中 0.023 ms；**大核心（35 KB、200 個函式）編譯 4.3 ms／命中 0.12 ms（約 35 倍）**。小核心的前端本來就便宜，快取的好處主要在大 source。
+- 全新行程第一次 build（含編譯器本身未暖機）：小核心 5.1 → 1.5 ms；大核心 25.6 → 4.6 ms。
+- 真 Electron 的 IndexedDB，兩次獨立啟動（同一個使用者資料夾）：小核心 3.3 → 0.8 ms；大核心 14.5 → 2.6 ms（含非同步讀取）；第二次啟動 `from_cache='bin'`。
+- 檢查碼本身 0.0002 ms（小）／0.047 ms（35 KB）。
+- Pyodide 裡的 `cl.Program(ctx, src).build()`（小核心）：新 source 與命中都是約 1.5 ms——這個尺度下時間花在 Python 層（pyopencl 的 Program／`_expand_includes`／呼叫橋接），不是我們的前端，所以同一行程內看不出差別；快取的效益在「大 source」與「跨工作階段的冷啟」。第一次 build 約 50 ms 是 pyopencl 與橋接本身的暖機。
+- 要誠實：能省的是「前端＋首次編譯器暖機」；GPU 路線最貴的 shader 編譯連結（WebGL2 沒有 `getProgramBinary`、WebGPU 的 shader module／pipeline 不能序列化）**這一層快取碰不到**，那部分只能靠讓 WGSL／GLSL 文字保持決定性，讓瀏覽器／驅動自己的 shader 快取命中。
+
+### 14.4 各裝置路線與 interop 的評估
+**共通結論**：interop（`acquire`／`release`、GL 物件綁定）是**執行期的事**，不烘進產物；產物只要帶「緩衝區元素型別、圖像格式」這類佈局資訊（已在核心參數表裡），綁定在執行期做。
+| 路線 | 現在的產物 | 快取能省什麼 | 快取省不了 | 與 OpenCL↔OpenGL interop 的關係 |
+|---|---|---|---|---|
+| **cpu（JS）** clc／SPIR-V | 生成的 JS＋參數表 | 前端與編譯器暖機（上面的數字） | 首次 `new Function` JIT | 主機記憶體與 GL 是兩塊：`GLBuffer` 現在是 `getBufferSubData` 讀回／`bufferSubData` 寫回（已驗證，見 §9）；用版本號跳過沒變的方向。零拷貝做不到 |
+| **cpu（wasm）**（尚未做） | wasm 位元組（可帶 SIMD；本環境 SIMD 可用） | 同上；位元組小、載入快 | 每次載入要 `WebAssembly.compile`——**真 Electron 實測：IndexedDB 不能存 `WebAssembly.Module`**（"can not be serialized for storage"），只能存位元組 | 緩衝區要住在 wasm 線性記憶體（讓主機陣列是它的視圖）才不用每次複製；這樣 GL 上傳讀的就是同一塊位元組。**barrier 要執行緒**：本環境沒有 `SharedArrayBuffer`（`crossOriginIsolated=false`），所以有 barrier 的核心留在 JS。需要新後端 SPIR-V→wasm；source 程式還需要 OpenCL C→SPIR-V 前端（clc 目前直接產 JS）。已有的相關零件：`llvm_core.js`（IR→wasm，給主機程式）、`cpu_gemm_wasm.js`（手組 wasm SIMD 微核心）——但都不是通用的核心編譯器 |
+| **KIR／WebGL2** | KIR JSON（GLSL 由它決定性產生） | KIR 解析與驗證（小） | shader 編譯連結；範圍窄（一維、float32、一個輸出） | 紋理不能跨 context：KIR 裝置用離屏 context，使用者的 GL（PyOpenGL→`WebGL2Backend`）是另一個。緩衝區可以用 `PIXEL_PACK_BUFFER`（把 VBO 綁成 pack buffer 再 `readPixels`）做 GPU→GPU 複製，不經 CPU（**尚未做、未驗證**）；紋理互通要共用 context（規劃：階段 6 的 GUI 畫布 context） |
+| **KIR／WebGPU** | KIR JSON＋決定性的 WGSL 文字 | 同上；WGSL 文字穩定 → 命中瀏覽器自己的 shader 快取 | `GPUShaderModule`／pipeline 不能序列化，建立成本不變 | WebGPU 與 WebGL 沒有共用記憶體：圖像可經畫布橋接（`copyExternalImageToTexture`／`drawImage`，Chromium 內是 GPU 端複製；nbody 的「路線 A」已這樣畫）；緩衝區只能讀回再上傳，或改用 WebGPU 自己畫。本機沒有 WebGPU adapter，**沒驗證** |
+| **cudaweb** | 尚未接進載入器 | — | — | 有自己的型別化 SSA IR 與能力檔（A／B…；f64／i64 展開成 32 位元），會產 WGSL／WebGL2／CPU 解譯。接法：做一個 `fa-cudaweb` 驅動，目標字串 `cudaweb:<能力檔>`（相容性由 `compat` 決定），產物＝IR＋該能力檔的 shader 文字；**SPIR-V→cudaweb IR** 會是 IL 程式上 GPU 的通用降階（比 KIR 的窄範圍好），可行性要先讀 IR 的限制（共享記憶體、barrier、結構化控制流）。interop 限制同 WebGPU／WebGL |
+
+### 14.5 還沒做的（依價值排序）
+1. **source→SPIR-V 前端**（目前 clc 直接產 JS，所以 `il` 層只有外掛前端或 IL 程式才會用到）；沒有它就沒有「source→IL→wasm」。
+2. **SPIR-V→wasm 後端**（無 barrier、無圖像的子集；位元組存快取）。
+3. **SPIR-V→cudaweb IR**，讓 IL／source 程式走 GPU，並讓 cudaweb 成為載入器的驅動。
+4. WebGL2 的 PBO 零 CPU 緩衝區互通；共用 context 的紋理互通。
+5. GPU 路線的 shader 文字決定性檢查（讓瀏覽器 shader 快取穩定命中）。

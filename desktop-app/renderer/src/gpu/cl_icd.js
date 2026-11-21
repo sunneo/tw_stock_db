@@ -31,7 +31,7 @@
     'use strict';
 
     // 錯誤碼與名稱（與 OpenCL 標頭一致，pyopencl 的例外也用這些）
-    const CODES = { DEVICE_NOT_FOUND: -1, BUILD_PROGRAM_FAILURE: -11, INVALID_VALUE: -30, INVALID_PLATFORM: -32, INVALID_DEVICE: -33, INVALID_CONTEXT: -34, INVALID_COMMAND_QUEUE: -36, INVALID_MEM_OBJECT: -38, INVALID_PROGRAM: -44, INVALID_PROGRAM_EXECUTABLE: -45, INVALID_KERNEL_NAME: -46, INVALID_KERNEL: -48, INVALID_ARG_INDEX: -49, INVALID_ARG_VALUE: -50, INVALID_ARG_SIZE: -51, INVALID_KERNEL_ARGS: -52, INVALID_WORK_DIMENSION: -53, INVALID_WORK_GROUP_SIZE: -54, INVALID_GLOBAL_OFFSET: -56, INVALID_BUFFER_SIZE: -61, INVALID_GLOBAL_WORK_SIZE: -63, OUT_OF_RESOURCES: -5, MEM_OBJECT_ALLOCATION_FAILURE: -4, IMAGE_FORMAT_MISMATCH: -9, IMAGE_FORMAT_NOT_SUPPORTED: -10, INVALID_HOST_PTR: -37, INVALID_IMAGE_SIZE: -40, INVALID_SAMPLER: -41, INVALID_OPERATION: -59, INVALID_IMAGE_DESCRIPTOR: -65, INVALID_PIPE_SIZE: -69 };
+    const CODES = { DEVICE_NOT_FOUND: -1, BUILD_PROGRAM_FAILURE: -11, INVALID_VALUE: -30, INVALID_PLATFORM: -32, INVALID_DEVICE: -33, INVALID_CONTEXT: -34, INVALID_COMMAND_QUEUE: -36, INVALID_MEM_OBJECT: -38, INVALID_PROGRAM: -44, INVALID_PROGRAM_EXECUTABLE: -45, INVALID_KERNEL_NAME: -46, INVALID_KERNEL: -48, INVALID_ARG_INDEX: -49, INVALID_ARG_VALUE: -50, INVALID_ARG_SIZE: -51, INVALID_KERNEL_ARGS: -52, INVALID_WORK_DIMENSION: -53, INVALID_WORK_GROUP_SIZE: -54, INVALID_GLOBAL_OFFSET: -56, INVALID_BUFFER_SIZE: -61, INVALID_GLOBAL_WORK_SIZE: -63, OUT_OF_RESOURCES: -5, MEM_OBJECT_ALLOCATION_FAILURE: -4, IMAGE_FORMAT_MISMATCH: -9, IMAGE_FORMAT_NOT_SUPPORTED: -10, INVALID_HOST_PTR: -37, INVALID_IMAGE_SIZE: -40, INVALID_SAMPLER: -41, INVALID_OPERATION: -59, INVALID_IMAGE_DESCRIPTOR: -65, INVALID_PIPE_SIZE: -69, INVALID_BINARY: -42 };
     class ClError extends Error { constructor(name, msg) { super(name + (msg ? '：' + msg : '')); this.name = 'ClError'; this.clName = name; this.code = CODES[name] != null ? CODES[name] : -9999; } }
     const fail = (name, msg) => { throw new ClError(name, msg); };
 
@@ -51,9 +51,12 @@
     function createLoader(o) {
         o = o || {};
         const now = o.now || (() => (typeof performance !== 'undefined' ? performance.now() : Date.now()));
-        const drivers = [], st = { builds: 0, buildHits: 0, uploads: 0, uploadBytes: 0, downloads: 0, downloadBytes: 0, launches: 0, elidedUploads: 0, skippedOutputUploads: 0, lazyReadsServedFromHost: 0, routedDev: 0, routedHost: 0 };
+        const drivers = [], st = { builds: 0, buildHits: 0, cacheBinHits: 0, cacheIlHits: 0, uploads: 0, uploadBytes: 0, downloads: 0, downloadBytes: 0, launches: 0, elidedUploads: 0, skippedOutputUploads: 0, lazyReadsServedFromHost: 0, routedDev: 0, routedHost: 0 };
         let seq = 0; const nid = () => ++seq;
-        const buildCache = new Map();   // 驅動名＋雜湊 → compile 結果
+        const buildCache = new Map();   // 驅動名＋雜湊 → compile 結果（第 0 層：行程內記憶體）
+        const cache = o.cache || null;   // 多層快取（cl_cache.js）：bin（最終產物）／il（SPIR-V）；沒給就只有第 0 層
+        const cacheOn = () => !!cache && cache.enabled;
+        const targetOf = (drv) => (cacheOn() && drv.target && drv.serialize && drv.deserialize ? drv.target(cache.config.compat) : null);
 
         // ---- ICD 登記 ----
         function registerDriver(drv) {
@@ -161,14 +164,90 @@
         function releaseMem(m) { if (!m || m.released) return; m.released = true; if (m.root) return; /* 子緩衝區只是父緩衝區的視圖 */ if (m.dev != null) { try { m.drv.free(m.dev); } catch (_) { /* 釋放失敗不影響結果 */ } m.dev = null; } m.ctx.mems.delete(m); }
 
         // ---- 程式／核心 ----
-        function createProgram(ctx, src) { needCtx(ctx); return { id: nid(), kind: 'program', ctx, drv: ctx.drv, src: String(src), built: null, log: '', options: '' }; }
+        function createProgram(ctx, src) {
+            needCtx(ctx); const p = { id: nid(), kind: 'program', ctx, drv: ctx.drv, src: String(src), built: null, log: '', options: '', baseKey: null };
+            if (cacheOn()) { p.baseKey = cache.key.src(p.src); p.baseSrc = p.src; const t = targetOf(ctx.drv); if (t) cache.prefetch(p.baseKey, t); }   // 排入背景預取：build 時多半已在記憶體
+            return p;
+        }
+        // IL（SPIR-V）程式：clCreateProgramWithIL。IL 位元組複製一份；規格常數用 setSpec（build 之前）。快取鍵用兩種雜湊加長度（壞快取＝跑錯核心，所以比原始碼更保守）
+        function createProgramIL(ctx, il) {
+            needCtx(ctx); const u = il instanceof Uint8Array ? il : new Uint8Array(il.buffer || il, il.byteOffset || 0, il.byteLength); if (u.length < 20 || u.length % 4) fail('INVALID_VALUE', 'IL 長度要是 4 的倍數且至少 20 位元組');
+            const p = { id: nid(), kind: 'program', ctx, drv: ctx.drv, src: '', il: new Uint8Array(u), spec: {}, built: null, log: '', options: '', baseKey: null };
+            if (cacheOn()) { p.baseKey = cache.key.il(p.il); const t = targetOf(ctx.drv); if (t) cache.prefetch(p.baseKey, t); }
+            return p;
+        }
+        function setSpec(prog, specId, bytes) { needProg(prog); if (!prog.il) fail('INVALID_PROGRAM', '只有 IL 程式有規格常數'); prog.spec[Number(specId)] = Array.from(bytes); }
+        const hash2 = (u8) => { let h = 0x9747b28c >>> 0; for (let i = 0; i < u8.length; i++) { h = Math.imul(h ^ u8[i], 0x5bd1e995) >>> 0; h ^= h >>> 15; } return h; };
         const needProg = (p) => { if (!p || p.kind !== 'program') fail('INVALID_PROGRAM'); return p; };
-        function build(prog, options) {
-            needProg(prog); options = String(options || ''); const key = prog.drv.name + '|' + strHash(prog.src + '\u0000' + options);
+        // build：先看第 0 層（行程內），再看多層快取，最後才編譯。寫成 generator（yield＝可能要等 IndexedDB），能同步就同步（見 drive）。
+        //   1. bin 命中（同一份 source／IL＋選項＋裝置目標）→ 直接用最終產物重建，完全不經前端（clCreateProgramWithSource 實質上變成 clCreateProgramWithBinary）
+        //   2. il 命中（source 已有 SPIR-V）且驅動收 IL → 解碼 SPIR-V 轉成產物（沒有 OpenCL C 前端），再寫回 bin
+        //   3. 都沒有 → 編譯；成功就排入寫入佇列（bin；有 source→IL 前端時連 il）
+        function* buildLayered(prog, options) {
+            const drv = prog.drv, C = cacheOn() ? cache : null, target = targetOf(drv);
+            let optsKey = null, binKey = null;
+            if (C && target && !prog.il && prog.baseSrc !== prog.src) { prog.baseKey = C.key.src(prog.src); prog.baseSrc = prog.src; }   // -I 展開後 src 會變（ops 的 prog_build 帶來展開後的原始碼）：鍵要用最後真正編譯的內容
+            if (C && target && prog.baseKey) {
+                optsKey = C.key.options(options + '|' + JSON.stringify(prog.spec || {}));
+                binKey = C.key.bin(prog.baseKey, optsKey, target, '');
+                if (C.has('bin', binKey)) {
+                    let r = null; try { const art = yield C.fetch('bin', binKey); r = art ? drv.deserialize(art) : null; } catch (_) { r = null; C.bump('errors'); }   // 損毀／版本不合：當作沒命中
+                    if (r && r.ok) { st.cacheBinHits++; r.fromCache = 'bin'; return r; }
+                }
+                if (!prog.il && drv.compileIL) {
+                    const ilKey = C.linkedIl(prog.baseKey, optsKey);
+                    if (ilKey) { let il = null, r = null; try { il = yield C.fetch('il', ilKey); r = il ? drv.compileIL(il, options, {}) : null; } catch (_) { r = null; C.bump('errors'); } if (r && r.ok) { st.cacheIlHits++; r.fromCache = 'il'; putBin(C, drv, r, binKey, prog, optsKey, target, 0); return r; } }
+                }
+            }
+            st.builds++; const t0 = now(); let r, ilBytes = null;
+            if (prog.il) r = drv.compileIL(prog.il, options, prog.spec);
+            else if (C && C.frontends.toIL && drv.compileIL && (ilBytes = C.frontends.toIL(prog.src, options))) r = drv.compileIL(ilBytes, options, {});   // 有外掛的 source→SPIR-V 前端才走 IL；內建 clc 直接產 JS，沒有這一步
+            else r = drv.compile(prog.src, options);
+            const dt = now() - t0;
+            if (C && r.ok && binKey) {
+                if (ilBytes) C.put('il', C.key.il(ilBytes), ilBytes, ilBytes.length, { src: prog.baseKey, opts: optsKey, target });
+                putBin(C, drv, r, binKey, prog, optsKey, target, dt);
+            }
+            return r;
+        }
+        const approxSize = (v, d) => { d = d || 0; if (v == null || d > 6) return 8; if (typeof v === 'string') return v.length; if (v instanceof Uint8Array) return v.length; if (typeof v !== 'object') return 8; let n = 0; for (const k of Object.keys(v)) n += k.length + approxSize(v[k], d + 1); return n; };   // 淘汰用的大小估計（字串長度＋位元組）
+        function putBin(C, drv, r, binKey, prog, optsKey, target, dt) {
+            if (dt < C.config.minBuildMs) { if (dt < C.config.minBuildMs) C.bump('skippedFast'); return; }
+            const art = drv.serialize(r); if (!art) return;
+            const size = approxSize(art) + 128;
+            C.put('bin', binKey, art, size, { src: prog.baseKey, opts: optsKey, target });
+        }
+        // clCreateProgramWithBinary／clGetProgramInfo(BINARIES)：binary 容器（cl_cache.js 的 packBinary）＝產物＋（選用）原始碼／IL。目標相容就直接用產物；不相容就用內嵌的 source／IL 重建。
+        function createProgramBinary(ctx, bytes) {
+            needCtx(ctx); const mod = o.cacheMod || (cache && cache.mod); if (!mod) fail('INVALID_OPERATION', '沒有 binary 容器模組（createLoader 的 cacheMod）');
+            const u = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes.buffer || bytes, bytes.byteOffset || 0, bytes.byteLength), b = mod.unpackBinary(u);
+            if (!b) fail('INVALID_BINARY', '不是這個載入器的 binary（要以 ' + mod.MAGIC + ' 開頭）');
+            return { id: nid(), kind: 'program', ctx, drv: ctx.drv, src: b.src || '', il: b.il || null, spec: {}, built: null, log: '', options: '', baseKey: null, binary: b };
+        }
+        function getBinary(prog) {
+            needProg(prog); if (!prog.built) fail('INVALID_PROGRAM_EXECUTABLE', '程式還沒有 build'); const mod = o.cacheMod || (cache && cache.mod); if (!mod) fail('INVALID_OPERATION', '沒有 binary 容器模組');
+            const drv = prog.drv; if (!drv.serialize || !drv.target) fail('INVALID_OPERATION', '驅動不支援 binary');
+            if (prog.binaryBytes && prog.binaryOptions === prog.options) return prog.binaryBytes;
+            const art = drv.serialize(prog.built); if (!art) fail('INVALID_OPERATION', '這個程式沒有可序列化的產物');
+            prog.binaryOptions = prog.options; prog.binaryBytes = mod.packBinary({ v: 1, driver: drv.name, target: drv.target((cache && cache.config.compat) || 'backend'), options: prog.options, il: !!prog.il }, art, prog.il ? null : prog.src, prog.il || null); return prog.binaryBytes;
+        }
+        function* build_g(prog, options) {
+            needProg(prog); options = String(options || '');
+            if (prog.binary) {   // 從 binary 建立：目標相容 → 直接重建產物；否則轉成 source／IL 程式走一般流程
+                const b = prog.binary, drv = prog.drv, tgt = drv.target ? drv.target((cache && cache.config.compat) || 'backend') : null; prog.binary = null;
+                if (tgt && b.header.target === tgt && drv.deserialize) { const r = drv.deserialize(b.art); if (r && r.ok) { st.cacheBinHits++; r.fromCache = 'binary'; prog.options = options; prog.log = ''; prog.built = r; if (b.il) prog.il = b.il; return prog; } }
+                if (b.il) prog.il = b.il; else if (b.src) prog.src = b.src; else fail('INVALID_BINARY', 'binary 的目標（' + b.header.target + '）與這個裝置（' + tgt + '）不相容，而且沒有內嵌的 source／IL 可重建');
+                if (cacheOn()) { prog.baseKey = prog.il ? cache.key.il(prog.il) : cache.key.src(prog.src); prog.baseSrc = prog.src; }
+            }
+            const key = prog.il ? prog.drv.name + '|il|' + hashBytes(prog.il) + ':' + hash2(prog.il) + ':' + prog.il.length + '|' + strHash(options + JSON.stringify(prog.spec)) : prog.drv.name + '|' + strHash(prog.src + '\u0000' + options);
             let r = buildCache.get(key);
-            if (r) st.buildHits++; else { st.builds++; r = prog.drv.compile(prog.src, options); buildCache.set(key, r); }   // 優化 1：失敗的結果也快取（同一份壞原始碼不重編）
+            if (r) st.buildHits++;
+            else {
+                if (prog.il && !prog.drv.compileIL) r = { ok: false, log: '驅動 ' + prog.drv.name + ' 不支援 IL（SPIR-V）程式（clCreateProgramWithIL）', kernels: {}, noIL: true };
+                else { r = yield* buildLayered(prog, options); buildCache.set(key, r); }   // 優化 1：失敗的結果也快取（同一份壞原始碼不重編）
+            }
             prog.options = options; prog.log = r.log || '';
-            if (!r.ok) { prog.built = null; fail('BUILD_PROGRAM_FAILURE', r.log); }
+            if (!r.ok) { prog.built = null; fail(r.noIL ? 'INVALID_OPERATION' : 'BUILD_PROGRAM_FAILURE', r.log); }
             prog.built = r; return prog;
         }
         const kernelNames = (prog) => { if (!prog.built) fail('INVALID_PROGRAM_EXECUTABLE', '程式還沒有 build'); return Object.keys(prog.built.kernels); };
@@ -239,16 +318,17 @@
             const ev = mkEvent(q, 'kernel'); ev.start = t0; ev.end = t1; return ev;
         }
         function mkEvent(q, kind) { const t = now(); const ev = { id: nid(), kind: 'event', cmd: kind, queued: t, start: t, end: t, status: 'complete' }; if (q.profiling) q.events.push(ev); return ev; }
-        function* finish_g(q) { needQ(q); if (q.drv.finish) yield q.drv.finish(); }
+        function* finish_g(q) { needQ(q); if (q.drv.finish) yield q.drv.finish(); if (cache) cache.kick(); }   // 沖出位置：clFinish 時把寫入佇列在背景沖出（不等）
         function stats() { return Object.assign({}, st, { driverCount: drivers.length, buildCacheSize: buildCache.size }); }
         function resetStats() { Object.keys(st).forEach((k) => { st[k] = 0; }); }
 
         // 公開 API：行為不變（回傳值或 Promise，驗證錯誤走 Promise 拒絕）。sync.*：錯誤同步丟出、成功時能同步就直接回傳值（遇到 GPU 才回 Promise），給 wasm 的同步匯入用。
+        const build = (p, o) => drive(build_g(p, o));
         const toHost = (m) => drive(toHost_g(m));
         const safe = (g) => (...a) => { try { return drive(g(...a)); } catch (e) { return Promise.reject(e); } };
         const enqueueWrite = safe(enqueueWrite_g), enqueueRead = safe(enqueueRead_g), enqueueCopy = safe(enqueueCopy_g), enqueueNDRange = safe(enqueueNDRange_g), finish = safe(finish_g);
-        const sync = { enqueueWrite: (...a) => drive(enqueueWrite_g(...a)), enqueueRead: (...a) => drive(enqueueRead_g(...a)), enqueueCopy: (...a) => drive(enqueueCopy_g(...a)), enqueueNDRange: (...a) => drive(enqueueNDRange_g(...a)), finish: (...a) => drive(finish_g(...a)) };
-        return { sync, drive, createPipe, createImage, createImageOnBuffer, createSubBuffer, registerDriver, platforms, probeReport, devices, createContext, createQueue, createBuffer, enqueueWrite, enqueueRead, enqueueCopy, releaseMem, createProgram, build, kernelNames, createKernel, setArg, enqueueNDRange, finish, stats, resetStats };
+        const sync = { build: (p, o) => drive(build_g(p, o)), enqueueWrite: (...a) => drive(enqueueWrite_g(...a)), enqueueRead: (...a) => drive(enqueueRead_g(...a)), enqueueCopy: (...a) => drive(enqueueCopy_g(...a)), enqueueNDRange: (...a) => drive(enqueueNDRange_g(...a)), finish: (...a) => drive(finish_g(...a)) };
+        return { sync, drive, cache, createProgramBinary, getBinary, kick: () => { if (cache) cache.kick(); }, close: () => (cache ? cache.flush() : Promise.resolve()), createProgramIL, setSpec, createPipe, createImage, createImageOnBuffer, createSubBuffer, registerDriver, platforms, probeReport, devices, createContext, createQueue, createBuffer, enqueueWrite, enqueueRead, enqueueCopy, releaseMem, createProgram, build, kernelNames, createKernel, setArg, enqueueNDRange, finish, stats, resetStats };
     }
 
     // ======================================================================================
@@ -279,6 +359,10 @@
         }
         return out;
     }
+    // ---- 快取用的產物（binary）：每個驅動自己決定怎麼序列化（鍵裡的 target 字串含裝置種類與編譯器版本，所以不同裝置／版本不會互相誤用）
+    const metaOf = (ks) => { const r = {}; for (const n of Object.keys(ks)) r[n] = { params: ks[n].params }; return r; };
+    const clcArtOf = (r) => (r && r.js ? { kind: r.kind || 'clc', js: r.js, gen: !!r.gen, kernels: metaOf(r.kernels) } : null);
+    function clcFromArt(mods, art) { if (!art) return null; const M = art.kind === 'spv' ? mods.FaSpv : mods.FaClc; return M && M.instantiate ? M.instantiate({ js: art.js, gen: art.gen, kernels: art.kernels }) : null; }
     function makeKirDriver(o) {
         const { FaClFront, FaKir } = o.mods || {}; if (!FaClFront || !FaKir) throw new Error('makeKirDriver 需要 mods.FaClFront 與 mods.FaKir');
         const dev = o.device || jsDevice(FaKir), kind = o.kind || 'js';
@@ -287,6 +371,9 @@
             name: o.name || ('fa-kir-' + kind), vendor: o.vendor || 'Floating Assistant', version: '1.0', extensions: o.extensions || 'cl_khr_fp32',
             device: Object.assign({ name: o.deviceName || ('FA KIR ' + kind), type: o.type || (kind === 'js' ? 'CPU' : 'GPU'), maxWorkGroupSize: 256, globalMemSize: 1 << 30, maxMemAllocSize: 1 << 28 }, o.deviceInfo || {}),
             probe: o.probe,
+            target: (compat) => 'kir-' + kind + ':kir' + (FaKir.VERSION || 1),
+            serialize: (b) => ({ kind: 'kir', kernels: Object.fromEntries(Object.keys(b.kernels).map((n) => [n, { kir: b.kernels[n].kir, params: b.kernels[n].params }])) }),
+            deserialize: (a) => (a && a.kind === 'kir' ? { ok: true, kernels: a.kernels, log: '' } : null),
             compile(src) {
                 src = stripDeadGlobals(src);
                 const r = FaClFront.parseKernels(src); if (!r.ok) return { ok: false, log: r.error, kernels: {} };
@@ -323,6 +410,14 @@
             name: o.name || 'fa-cpu-clc', vendor: o.vendor || 'Floating Assistant', version: '1.0', extensions: 'cl_khr_fp64',
             device: Object.assign({ name: o.deviceName || 'FA OpenCL C (CPU, JS)', type: 'CPU', maxWorkGroupSize: 256, globalMemSize: 1 << 30, maxMemAllocSize: 1 << 28 }, o.deviceInfo || {}),
             maxDims: 3, supportsOffset: true, coerceScalar: FaClc.coerceScalar, probe: o.probe,
+            target: (compat) => 'cpu-js:clc' + (FaClc.VERSION || 1) + (o.mods.FaSpv ? '.spv' + (o.mods.FaSpv.VERSION || 1) : ''),
+            serialize: (b) => { const c = clcArtOf(b.clc); return c ? { kind: 'cpu-js', clc: c } : null; },
+            deserialize: (a) => { const r = a && a.kind === 'cpu-js' ? clcFromArt(o.mods, a.clc) : null; if (!r) return null; const k = {}; for (const n of Object.keys(a.clc.kernels)) k[n] = { params: a.clc.kernels[n].params, host: true }; return { ok: true, kernels: k, clc: r, log: '' }; },
+            compileIL(il, options, spec) {   // SPIR-V：沒有 OpenCL C 前端（前處理、詞法、語法、型別檢查），直接解碼轉 JS；結果與 compile 同形，所以 runClc／launchHost 照用
+                const SPV = o.mods.FaSpv; if (!SPV) return { ok: false, log: '沒有 SPIR-V 後端（mods.FaSpv）', kernels: {} };
+                const r = SPV.compile(il, { spec }); if (!r.ok) return { ok: false, log: r.log, kernels: {} };
+                const kernels = {}; for (const n of Object.keys(r.kernels)) kernels[n] = { params: r.kernels[n].params, host: true }; return { ok: true, kernels, clc: r, log: '' };
+            },
             compile(src, options) {
                 const r = FaClc.compile(src, options); if (!r.ok) return { ok: false, log: r.log, kernels: {} };
                 const kernels = {}; for (const n of Object.keys(r.kernels)) kernels[n] = { params: r.kernels[n].params, host: true };   // 全部走主機路線：直接在載入器的主機副本上跑，零傳輸
@@ -361,6 +456,15 @@
             name: o.name || ('fa-gpu-' + backend), vendor: 'Floating Assistant', version: '1.0', extensions: 'cl_khr_fp64 cl_khr_global_int32_base_atomics',
             device: Object.assign({ name: o.deviceName || ('FA GPU（' + (backend === 'webgpu' ? 'WebGPU' : 'WebGL2') + '，cudaweb／KIR）'), type: 'GPU', maxWorkGroupSize: 256, globalMemSize: 2 ** 30, maxMemAllocSize: 2 ** 28, maxComputeUnits: 16 }, o.deviceInfo || {}),
             maxDims: 3, supportsOffset: true, coerceScalar: coerce, probe: o.probe, stats: () => Object.assign({}, st),
+            // target：後端（webgpu／webgl2）決定 canGenerate 與 shader 種類；compat＝strict 時再納入轉接卡身分（o.targetTag），none 時不分後端
+            target: (compat) => 'gpu' + (compat === 'none' ? '' : '-' + backend + (compat === 'strict' && o.targetTag ? '@' + o.targetTag : '')) + ':kir' + (FaKir.VERSION || 1) + ':clc' + ((FaClc && FaClc.VERSION) || 0) + (o.mods.FaSpv ? '.spv' + (o.mods.FaSpv.VERSION || 1) : ''),
+            serialize: (b) => ({ kind: 'gpu', clc: clcArtOf(b.clc), kernels: Object.fromEntries(Object.keys(b.kernels).map((n) => [n, { params: b.kernels[n].params, gpu: b.kernels[n].gpu ? { kir: b.kernels[n].gpu.kir, out: b.kernels[n].gpu.out } : null, host: !!b.kernels[n].host }])) }),
+            deserialize: (a) => { if (!a || a.kind !== 'gpu') return null; const c = a.clc ? clcFromArt(o.mods, a.clc) : null; if (a.clc && !c) return null; return { ok: true, kernels: Object.fromEntries(Object.keys(a.kernels).map((n) => [n, { params: a.kernels[n].params, gpu: a.kernels[n].gpu, host: a.kernels[n].host }])), clc: c, log: '' }; },
+            compileIL(il, options, spec) {   // SPIR-V：只有主機路線（clc 的執行期）；KIR 的 GPU 路線只收 OpenCL C 轉出的 KIR
+                const SPV = o.mods.FaSpv; if (!SPV) return { ok: false, log: '沒有 SPIR-V 後端（mods.FaSpv）', kernels: {} };
+                const r = SPV.compile(il, { spec }); if (!r.ok) return { ok: false, log: r.log, kernels: {} };
+                const kernels = {}; for (const n of Object.keys(r.kernels)) kernels[n] = { params: r.kernels[n].params, gpu: null, host: true }; return { ok: true, kernels, clc: r, log: '' };
+            },
             compile(src, options) {
                 const clean = stripDeadGlobals(src);
                 const kr = FaClFront.parseKernels(clean), cr = FaClc ? FaClc.compile(src, options) : { ok: false, log: 'clc 前端不存在', kernels: {} };
