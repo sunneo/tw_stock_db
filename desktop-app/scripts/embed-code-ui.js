@@ -380,7 +380,7 @@ embedExportSrc();
 // 執行時 new Function('module', 'require', 'self', FA_KIR_SRC)(undefined, undefined, holder)。順序有依賴：kir 在前、kir_gen 與 kir_webgl2 依序、cl_front 最後。
 function embedKir() {
     const rd = (f) => fs.readFileSync(path.join(root, f), 'utf8').replace(/\r\n/g, '\n');
-    const code = ['kir.js', 'kir_gen.js', 'kir_webgl2.js', 'kir_webgpu.js', 'cl_front.js', 'kir_host_hooks.js', 'cl_icd.js', 'clc_js.js', 'cl_host_ops.js', 'cl_host_page.js'].map((f) => rd('renderer/src/gpu/' + f)).join('\n;\n');
+    const code = ['kir.js', 'kir_gen.js', 'kir_webgl2.js', 'kir_webgpu.js', 'cl_front.js', 'kir_host_hooks.js', 'cl_icd.js', 'clc_js.js', 'cl_host_ops.js', 'cl_host_page.js'].map((f) => rd('renderer/src/gpu/' + f)).concat([rd('renderer/src/uml/llvm_cl_icd.js')]).join('\n;\n');   // 最後一個是 uml/llvm_cl_icd.js（FaLlvmClIcd：.ll 的 cl* 匯入接載入器）
     const a = src.indexOf('/* KIR-BEGIN */'), b = src.indexOf('/* KIR-END */'); if (a < 0 || b < 0) throw new Error('找不到 KIR 標記');
     src = src.slice(0, a) + '/* KIR-BEGIN */\nconst FA_KIR_SRC = ' + lit(code) + ';\n' + src.slice(b);
     console.log('已更新 FA_KIR_SRC（' + code.length + ' 字元）');

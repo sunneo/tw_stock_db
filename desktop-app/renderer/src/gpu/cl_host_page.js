@@ -14,7 +14,7 @@
     async function create(o) {
         const M = o.mods || {};
         for (const k of ['FaClIcd', 'FaClHostOps', 'FaClc', 'FaClFront', 'FaKir']) if (!M[k]) throw new Error('FaClHostPage.create 需要 mods.' + k);
-        const hk = M.FaKirHostHooks ? await M.FaKirHostHooks.setup({ mods: M, nav: o.nav, makeCanvas: o.makeCanvas, jspi: !!o.jspi, force: o.force }) : { backend: 'js', hooks: {}, reasons: { webgpu: 'KIR 的主機掛鉤沒有嵌入' }, describe: () => '後端：JS（沒有 GPU 掛鉤）' };
+        const hk = o.setup ? o.setup : M.FaKirHostHooks ? await M.FaKirHostHooks.setup({ mods: M, nav: o.nav, makeCanvas: o.makeCanvas, jspi: !!o.jspi, force: o.force }) : { backend: 'js', hooks: {}, reasons: { webgpu: 'KIR 的主機掛鉤沒有嵌入' }, describe: () => '後端：JS（沒有 GPU 掛鉤）' };
         const loader = M.FaClIcd.createLoader();
         if (hk.backend !== 'js' && hk.hooks && hk.hooks.kirDev) {
             const gen = M.FaKirGen;

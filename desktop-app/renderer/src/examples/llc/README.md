@@ -32,6 +32,7 @@ IR 裡 `declare` 了 SDL2／OpenGL／GTK3／printf 的函式、又沒有自己�
 | `gui/music_player.ll` | 音樂盒：內建〈歡樂頌〉即時合成（方波／三角／正弦），兩個八度的琴鍵與進度；空白暫停、↑↓速度、1 2 3 波形、R 從頭 | `SDL_QueueAudio` 佇列模式；`pow／floor／sin`；合成的音高用 FFT 驗證（E4 量到 330.8 Hz） |
 | `gui/midi_player.ll` | MIDI 播放器：在 IR 裡解析標準 MIDI（SMF 0／1、變長時間、running status、tempo 表），12 聲部正弦合成，捲動的 piano roll | **檔案**：`lli gui/midi_player.ll gui/demo.mid`（用 `fopen／fread` 讀終端機沙盒，`/mnt/<名稱>` 也行）；參數 `-` 或不給＝內嵌示範曲；第二個參數＝跑幾幀後離開 |
 | `gpgpu/opencl_vecadd.ll` | OpenCL：執行時編譯核心字串、buffer、NDRange、讀回驗證 | **CPU 後備**（`llvm_host.js` 的 OpenCL 墊片）：run terminal／job 內可跑，`lli opencl_vecadd.ll [N]` 印 `vadd OK`；真機器有驅動時同一份 IR 也能跑。限制見 `DESIGN.run-terminal.md` §21 |
+| `gpgpu/opencl_icd_reduce.ll` | OpenCL：`__local`＋`barrier` 的樹狀歸約（4 個工作群各 64 個 float）。第一行註解 `; fa-opencl: icd` 讓 cl* 呼叫改走 ICD 載入器（完整 OpenCL C；預設墊片不支援 `__local`） | **ICD 模式**（`llvm_cl_icd.js`；見 DESIGN.pyopencl.md §12）：run terminal 內可跑；真機器照常連結 libOpenCL |
 
 ## ② 在真機器上編成原生執行檔
 

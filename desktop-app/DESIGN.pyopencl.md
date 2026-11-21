@@ -188,3 +188,14 @@
 6. 其餘：`DevicePointerEXT`、AMD 的 `DeviceTopologyAmd`、`create_with_built_in_kernels`（沒有內建核心，標準行為就是 INVALID_VALUE）、IL／SPIR-V 程式（`_create_program_with_il`、`set_specialization_constant`）。
 7. clc 的 `long` 精確到 2^53；`#include` 以外的真實標頭（`cl_khr_*` 擴充標頭）。
 
+
+## 12. LLVM IR（.ll／llc）的 OpenCL 也走載入器（2026-11-21）
+
+run terminal 的 `.ll` 程式（`examples/llc/gpgpu`）呼叫標準的 `clCreateBuffer`／`clEnqueueNDRangeKernel`…。預設由 `uml/llvm_host.js` 的舊墊片提供（只收 OpenCL C 的簡單子集，nbody3d／fluid3d 的 KIR 快路徑與打包緩衝區、GL 互通靠它）。新增選用的 **ICD 模式**（`uml/llvm_cl_icd.js`）：把同一批 `cl*` 匯入接到 `cl_icd.js` 載入器（經 `cl_host_ops.js` 的 `callSync`）。
+
+- **啟用**：IR 裡寫一行註解 `; fa-opencl: icd`（真機器上 clang／lli 看它只是註解，同一份 IR 照常連結 libOpenCL）。沒有註解＝舊墊片，既有範例行為不變。`FaLlvmHost.create({ clIcd: { mod, ops } })` 或建立後用 `H.useClIcd(spec, FaLlvm)`。接線腳本：`scripts/apply-llvm-icd-wiring.js`（改 `floating-assistant.js` 的 `_terminalTryLliHost`／`_terminalTryLliHostRun`；要有寫入權限的帳號執行，再 embed／build／發布）。
+- **得到什麼**：完整的 OpenCL C（clc：struct、向量、`__local`＋`barrier`、原子、圖像與取樣器、Pipe）、GPU（WebGL2／WebGPU，KIR 裝置層）／CPU（clc）異質路由、build 快取、子緩衝區、`clEnqueueCopy/Fill*`、圖像的讀寫複製填滿、`clGetXInfo`、事件的 profiling 時間。
+- **同步優先**：載入器的 enqueue／finish 改寫成 generator＋driver（`loader.sync.*`、`ops.callSync`）：clc／主機路線同步完成（node 測試、沒有 JSPI 的環境能跑）；遇到 GPU 的下載與非同步派送才回 Promise，由 JSPI 的 async 匯入等（Pyodide 傳輸的 `call` 仍永遠回 Promise）。沒有 JSPI 又需要等 GPU 時回 `CL_OUT_OF_RESOURCES` 並警告。
+- **驗證**：node（`llvm_cl_icd.test.js`：vecadd 與 `__local` 歸約的新範例 `opencl_icd_reduce.ll`）；真 Electron（JSPI）：歸約在 clc 驅動跑通；vecadd 在 SwiftShader 的 WebGL2 上走 GPU 驅動（`routedDev:1`、1 次 GPU 派送、非同步讀回）。真 GPU 沒驗證。
+- **這個模式沒有的**：SVM（wasm 端沒有可給共享位址的配置器）、GL 互通（`clCreateFromGLBuffer` 回 `CL_INVALID_OPERATION` 並提示拿掉註解改用舊墊片）、`fa_cl_pack`／`fa_cl_view`（KIR 打包最佳化是舊墊片的）、事件等待清單（佇列循序，一律視為已滿足）。IL／SPIR-V 輸入與「核心編成 LLVM IR 再 llc」不在範圍內：clc 直接產 JS，不經 LLVM IR。
+- **IR 寫法的注意**：wasm32 的指標與 `size_t` 是 4 位元組；ICD 模式的 `clSetKernelArg` 對緩衝區參數接受 size 4 或 8（舊 IR 照 64 位元寫 8，低 4 位元組就是控制代碼）。

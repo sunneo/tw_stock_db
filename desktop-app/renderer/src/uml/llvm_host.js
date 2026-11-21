@@ -741,7 +741,16 @@
             });
         }
 
-        return { impls, SIGS: sigs, glStats, glState: gl, toS16, install(FaLlvm) { installs++; FaLlvm.registerHost(sigs); }, uninstall(FaLlvm) { if (--installs <= 0) { installs = 0; FaLlvm.unregisterHost(Object.keys(sigs)); } }, close() { closeAllFiles(); handles.clear(); Array.from(audioDevs.values()).forEach((d) => { gui('audio', { cmd: 'stream_close', id: d.id }); }); audioDevs.clear(); } };
+        // OpenCL → ICD 載入器（選用；見 llvm_cl_icd.js）：o.clIcd＝{ mod: FaLlvmClIcd, ops: FaClHostOps.create(loader) }。有它就把 cl* 匯入換成載入器版（完整的 OpenCL C、圖像、Pipe、異質路由）；
+        // 預設沒有，舊墊片照舊（nbody3d／fluid3d 的 KIR 快路徑靠它）。
+        const useClIcd = (spec, FaLlvm) => {   // 也可以建立之後才啟用（要看 IR 才知道）：之後新增的簽名要再登記一次
+            const X = spec.mod.build({ ops: spec.ops, asyncOk: asyncRb, warn });
+            Object.assign(impls, X.impls); Object.assign(sigs, X.sigs);
+            if (asyncRb) for (const n of X.asyncFns) if (sigs[n]) sigs[n] = Object.assign({}, sigs[n], { async: true });
+            if (FaLlvm && installs > 0) FaLlvm.registerHost(sigs);
+        };
+        if (o.clIcd && o.clIcd.mod && o.clIcd.ops) useClIcd(o.clIcd, null);
+        return { impls, SIGS: sigs, useClIcd, glStats, glState: gl, toS16, install(FaLlvm) { installs++; FaLlvm.registerHost(sigs); }, uninstall(FaLlvm) { if (--installs <= 0) { installs = 0; FaLlvm.unregisterHost(Object.keys(sigs)); } }, close() { closeAllFiles(); handles.clear(); Array.from(audioDevs.values()).forEach((d) => { gui('audio', { cmd: 'stream_close', id: d.id }); }); audioDevs.clear(); } };
     }
     return { create, SIGS, clCompile, formatC, scancodeOf, keycodeOf };
 });

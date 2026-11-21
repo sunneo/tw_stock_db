@@ -124,28 +124,39 @@
             m.drv.upload(m.dev, m.host); m.lastUp = key; m.devOk = true; st.uploads++; st.uploadBytes += m.size;
         }
         // 主機副本過期 → 下載
-        async function toHost(m) {
+        function* toHost_g(m) {
             if (m.hostOk) { st.lazyReadsServedFromHost++; return; }
-            const got = await m.drv.download(m.dev); m.host.set(got.subarray(0, m.size)); m.hostOk = true; m.lastUp = null; st.downloads++; st.downloadBytes += m.size;
+            const got = yield m.drv.download(m.dev); m.host.set(got.subarray(0, m.size)); m.hostOk = true; m.lastUp = null; st.downloads++; st.downloadBytes += m.size;
         }
+        // 「能同步就同步」：下面的 enqueue／finish 寫成 generator（yield＝可能需要等的動作）。drive 逐步執行：全部是同步結果就直接回傳值（clc／主機路線，
+        // 給不能 await 的呼叫者——例如 wasm 的同步匯入）；遇到 Promise（GPU 下載、非同步派送）就回傳 Promise。呼叫者用 await 兩種都能處理。
+        function step(gen, r) {
+            while (!r.done) {
+                const v = r.value;
+                if (v && typeof v.then === 'function') return v.then((x) => step(gen, gen.next(x)), (e) => step(gen, gen.throw(e)));
+                r = gen.next(v);
+            }
+            return r.value;
+        }
+        const drive = (gen) => step(gen, gen.next());
         function checkRange(m, off, n) { if (off < 0 || n < 0 || off + n > m.size) fail('INVALID_VALUE', '範圍超出緩衝區（offset ' + off + ' + ' + n + ' > ' + m.size + '）'); }
 
-        async function enqueueWrite(q, m, data, offset) {
+        function* enqueueWrite_g(q, m, data, offset) {
             needQ(q); needMem(m); offset = Number(offset || 0); const src = data instanceof Uint8Array ? data : new Uint8Array(data.buffer || data, data.byteOffset || 0, data.byteLength); checkRange(m, offset, src.length);
             const R = m.root || m, at = offset + (m.offset || 0);
-            if (!R.hostOk) await toHost(R);          // 部分寫入前要先有最新的主機副本
+            if (!R.hostOk) yield* toHost_g(R);          // 部分寫入前要先有最新的主機副本
             R.host.set(src, at); R.hostOk = true; R.devOk = false; R.hostWritten = true; R.ver++;   // 只動主機副本；裝置副本等核心要用時才上傳（優化 2、3）
             return mkEvent(q, 'write');
         }
-        async function enqueueRead(q, m, size, offset) {
+        function* enqueueRead_g(q, m, size, offset) {
             needQ(q); needMem(m); offset = Number(offset || 0); size = size == null ? m.size - offset : Number(size); checkRange(m, offset, size);
             const R = m.root || m, at = offset + (m.offset || 0);
-            await toHost(R); const ev = mkEvent(q, 'read'); return { data: R.host.slice(at, at + size), event: ev };
+            yield* toHost_g(R); const ev = mkEvent(q, 'read'); return { data: R.host.slice(at, at + size), event: ev };
         }
-        async function enqueueCopy(q, src, dst, size, srcOff, dstOff) {
+        function* enqueueCopy_g(q, src, dst, size, srcOff, dstOff) {
             needQ(q); needMem(src); needMem(dst); size = size == null ? Math.min(src.size, dst.size) : Number(size); srcOff = Number(srcOff || 0); dstOff = Number(dstOff || 0); checkRange(src, srcOff, size); checkRange(dst, dstOff, size);
             const SR = src.root || src, DR = dst.root || dst, so = srcOff + (src.offset || 0), dof = dstOff + (dst.offset || 0);
-            await toHost(SR); if (!DR.hostOk) await toHost(DR); DR.host.set(SR.host.slice(so, so + size), dof); DR.hostOk = true; DR.devOk = false; DR.hostWritten = true; DR.ver++; return mkEvent(q, 'copy');
+            yield* toHost_g(SR); if (!DR.hostOk) yield* toHost_g(DR); DR.host.set(SR.host.slice(so, so + size), dof); DR.hostOk = true; DR.devOk = false; DR.hostWritten = true; DR.ver++; return mkEvent(q, 'copy');
         }
         function releaseMem(m) { if (!m || m.released) return; m.released = true; if (m.root) return; /* 子緩衝區只是父緩衝區的視圖 */ if (m.dev != null) { try { m.drv.free(m.dev); } catch (_) { /* 釋放失敗不影響結果 */ } m.dev = null; } m.ctx.mems.delete(m); }
 
@@ -178,7 +189,7 @@
             else if (Array.isArray(value)) { if (!value.every((x) => Number.isFinite(Number(x)))) fail('INVALID_ARG_VALUE', '向量參數 ' + p.name + ' 的元素要是數字'); k.args[idx] = { scalar: k.drv.coerceScalar ? k.drv.coerceScalar(p.type, value) : value.map(Number) }; }
             else { const v = Number(value); if (!Number.isFinite(v)) fail('INVALID_ARG_VALUE', '參數 ' + p.name + ' 要傳數字'); k.args[idx] = { scalar: k.drv.coerceScalar ? k.drv.coerceScalar(p.type, v) : (p.type === 'i32' ? (v | 0) : Math.fround(v)) }; }
         }
-        async function enqueueNDRange(q, k, globalSize, localSize, globalOffset) {
+        function* enqueueNDRange_g(q, k, globalSize, localSize, globalOffset) {
             needQ(q); needKern(k); if (k.drv !== q.drv) fail('INVALID_KERNEL', '核心與佇列不在同一個平台');
             const maxDims = k.drv.maxDims || 1;
             const gs = (Array.isArray(globalSize) ? globalSize : [globalSize]).map(Number); if (gs.length < 1 || gs.length > 3 || gs.length > maxDims) fail('INVALID_WORK_DIMENSION', '這個驅動最多 ' + maxDims + ' 維（得到 ' + gs.length + ' 維）');
@@ -204,8 +215,8 @@
             if (route === 'host') {
                 if (!k.drv.launchHost) fail('INVALID_KERNEL', '驅動沒有主機路線');
                 const hostBinds = {};
-                for (const x of bufArgs) { if (!x.m.hostOk) await toHost(x.m); hostBinds[x.p.name] = x.sub ? x.m.host.subarray(x.sub.offset, x.sub.offset + x.sub.size) : x.m.host; if (x.sub && x.sub.img) hostBinds[x.p.name].img = x.sub.img; }
-                res = await k.drv.launchHost(k.prog.built, k.name, hostBinds, scalars, N, { gs, ls, off });
+                for (const x of bufArgs) { if (!x.m.hostOk) yield* toHost_g(x.m); hostBinds[x.p.name] = x.sub ? x.m.host.subarray(x.sub.offset, x.sub.offset + x.sub.size) : x.m.host; if (x.sub && x.sub.img) hostBinds[x.p.name].img = x.sub.img; }
+                res = yield k.drv.launchHost(k.prog.built, k.name, hostBinds, scalars, N, { gs, ls, off });
                 const wr = res && Array.isArray(res.written) ? new Set(res.written) : null;
                 for (const x of bufArgs) if (x.p.access !== 'in' && (!wr || wr.has(x.p.name))) { x.m.hostOk = true; x.m.devOk = false; x.m.hostWritten = true; x.m.lastUp = null; x.m.ver++; }
                 st.routedHost++;
@@ -217,7 +228,7 @@
                     else { if (!m.devOk) toDevice(m); if (p.access === 'rw') rws.push({ name: p.name, m }); }
                     binds[p.name] = m.dev;
                 }
-                res = await k.drv.launch(k.prog.built, k.name, binds, scalars, N, { gs, ls, off });
+                res = yield k.drv.launch(k.prog.built, k.name, binds, scalars, N, { gs, ls, off });
                 outs.forEach(mark);
                 // 讀寫參數：驅動能回報哪些緩衝區真的被寫過（res.written＝參數名清單）就只標那些；否則保守地全部當成被改過
                 const written = res && Array.isArray(res.written) ? new Set(res.written) : null;
@@ -228,11 +239,16 @@
             const ev = mkEvent(q, 'kernel'); ev.start = t0; ev.end = t1; return ev;
         }
         function mkEvent(q, kind) { const t = now(); const ev = { id: nid(), kind: 'event', cmd: kind, queued: t, start: t, end: t, status: 'complete' }; if (q.profiling) q.events.push(ev); return ev; }
-        async function finish(q) { needQ(q); if (q.drv.finish) await q.drv.finish(); }
+        function* finish_g(q) { needQ(q); if (q.drv.finish) yield q.drv.finish(); }
         function stats() { return Object.assign({}, st, { driverCount: drivers.length, buildCacheSize: buildCache.size }); }
         function resetStats() { Object.keys(st).forEach((k) => { st[k] = 0; }); }
 
-        return { createPipe, createImage, createImageOnBuffer, createSubBuffer, registerDriver, platforms, probeReport, devices, createContext, createQueue, createBuffer, enqueueWrite, enqueueRead, enqueueCopy, releaseMem, createProgram, build, kernelNames, createKernel, setArg, enqueueNDRange, finish, stats, resetStats };
+        // 公開 API：行為不變（回傳值或 Promise，驗證錯誤走 Promise 拒絕）。sync.*：錯誤同步丟出、成功時能同步就直接回傳值（遇到 GPU 才回 Promise），給 wasm 的同步匯入用。
+        const toHost = (m) => drive(toHost_g(m));
+        const safe = (g) => (...a) => { try { return drive(g(...a)); } catch (e) { return Promise.reject(e); } };
+        const enqueueWrite = safe(enqueueWrite_g), enqueueRead = safe(enqueueRead_g), enqueueCopy = safe(enqueueCopy_g), enqueueNDRange = safe(enqueueNDRange_g), finish = safe(finish_g);
+        const sync = { enqueueWrite: (...a) => drive(enqueueWrite_g(...a)), enqueueRead: (...a) => drive(enqueueRead_g(...a)), enqueueCopy: (...a) => drive(enqueueCopy_g(...a)), enqueueNDRange: (...a) => drive(enqueueNDRange_g(...a)), finish: (...a) => drive(finish_g(...a)) };
+        return { sync, drive, createPipe, createImage, createImageOnBuffer, createSubBuffer, registerDriver, platforms, probeReport, devices, createContext, createQueue, createBuffer, enqueueWrite, enqueueRead, enqueueCopy, releaseMem, createProgram, build, kernelNames, createKernel, setArg, enqueueNDRange, finish, stats, resetStats };
     }
 
     // ======================================================================================

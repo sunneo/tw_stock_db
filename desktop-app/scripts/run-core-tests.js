@@ -225,6 +225,7 @@ const suites = [
     ['「進」與新輸出器接進產品（嵌入版橋：nodejs／java／c 來源→python／perl 實跑一致、→cpp／csharp／ruby 產生、行為卡第二層、/code 路由；需 tree-sitter 文法與 python／perl，沒有就略過）', 'renderer/src/ir/ir_wire2.test.js'],
     ['真 pyopencl 純 Python 層＋我們的 _cl（官方 vector add 範例原封不動、跑兩次含編譯快取命中；真 layer 的 build 錯誤格式、to_string、事件計時、MemoryPool 重用；pyopencl.array 逐元素運算與 ElementwiseKernel 與 numpy 一致；真 PyOpenGL 互通：GLBuffer／acquire／release 的多幀結果、讀寫次數優化、GL 端改動、錯誤碼；需要下載來的 pyopencl 與相依，沒設 FA_PYOPENCL_ROOT／FA_PYOPENCL_DEPS 就略過）', 'renderer/src/gpu/cl_real_layer.test.js'],
     ['pyopencl._cl 後端端到端（一般 Python → _cl.py → stdio → ICD 載入器；vector add 與 numpy 一致、建置失敗與 build log、參數與型別檢查、緩衝區讀寫複製填滿、事件計時、不支援功能的標準例外、優化經 _cl 生效；需 python＋numpy 與 node，沒有就略過）', 'renderer/src/gpu/cl_backend_py.test.js'],
+    ['OpenCL ↔ LLVM IR（llvm_cl_icd：.ll 程式的 cl* 匯入接 ICD 載入器；IR 註解 "; fa-opencl: icd" 才啟用；opencl_vecadd.ll 與 __local＋barrier 的 opencl_icd_reduce.ll 都跑；預設墊片不支援 __local 的對照）', 'renderer/src/uml/llvm_cl_icd.test.js'],
     ['OpenCL C 前端（clc_js：OpenCL C→JS；與 gcc 的差分測試 17 項：整數回繞、uint、除法餘數正負號、long、float 每步 fround、double 提升、轉型、邏輯、控制流、指標與位元組偏移、區域陣列、遞迴、巨集與條件編譯、數學函式；__local＋barrier（歸約、前綴和、磁磚轉置、發散偵測）、struct、switch、原子操作、多維陣列、跨行巨集；超出範圍的寫法必須被明確拒絕；沒有 gcc 就略過差分）', 'renderer/src/gpu/clc_js_test.js'],
     ['OpenCL 頁面端主機（FaClHostPage：驅動註冊順序 GPU→CPU、經 JSON＋位元組介面跑完整流程、GPU 路由；用假 WebGPU 掛鉤與 force:js）', 'renderer/src/gpu/cl_host_page_test.js'],
     ['OpenCL ICD 載入器＋驅動（KIR、clc 主機路線、GPU 驅動的路由：小問題走主機、大問題走裝置、核心鏈留在 GPU、主機改過的緩衝區使 GPU 副本過期；驅動登記與探測、錯誤碼、建置快取、延遲同步、相同內容不重傳、純輸出不上傳且部分寫入保持正確；用裝置層真實呼叫次數證明）', 'renderer/src/gpu/cl_icd_test.js'],
