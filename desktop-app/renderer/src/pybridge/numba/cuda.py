@@ -440,8 +440,59 @@ def _try_gpu(k, blocks, threads, real_args, names, mode, check=None):
         return False, "GPU 執行失敗（%s）" % e
 
 
+_NATIVE = {}   # 程序內快取：OpenCL 環境（context、佇列）與編譯好的核心
+
+
+def _try_native(k, blocks, threads, real_args, reason):
+    """GPU 不能跑時的中間路線：把核心翻成 OpenCL C（numba/openclc.py），交給 pyopencl 後端（載入器：source→SPIR-V→wasm，不支援就退回 JS）在 CPU 以原生速度執行，
+    比本機 Python 逐執行緒模擬快很多；float64 是原生 double，所以 exact 模式也能跑。不能轉譯、或沒有 OpenCL 後端時回傳 False（由呼叫端退回 Python 模擬）。"""
+    try:
+        from . import openclc
+        import _cl
+        import numpy as np
+    except Exception:
+        return False
+    try:
+        plan = openclc.compile_kernel(k.__name__, k._source(), real_args, blocks, threads)
+    except openclc.NotCL as e:
+        _NATIVE.setdefault("why", str(e))
+        return False
+    try:
+        env = _NATIVE.get("env")
+        if env is None:
+            ctx = _cl.Context([_cl.get_platforms()[0].get_devices()[0]])
+            env = _NATIVE["env"] = (ctx, _cl.CommandQueue(ctx), {})
+        ctx, queue, kernels = env
+        kern = kernels.get(plan["code"])
+        if kern is None:
+            prg = _cl._Program(ctx, plan["code"])
+            prg._build()
+            kern = kernels[plan["code"]] = _cl.Kernel(prg, plan["name"])
+        mf = _cl.mem_flags
+        cl_args, bufs = [], {}
+        for (n, kind, dt), v in zip(plan["args"], real_args):
+            if kind == "buf":
+                host = np.ascontiguousarray(v)
+                b = _cl.Buffer(ctx, mf.READ_WRITE | mf.COPY_HOST_PTR, hostbuf=host.reshape(-1))
+                bufs[n] = (b, v)
+                cl_args.append(b)
+            else:
+                cl_args.append(np.int64(int(v)) if dt == "long" else np.float64(float(v)))
+        kern(queue, plan["global"], plan["local"], *cl_args)
+        for n in plan["writes"]:
+            b, v = bufs[n]
+            _cl._enqueue_read_buffer(queue, b, v.reshape(-1))
+    except Exception as e:  # noqa: BLE001  後端沒有、或這個核心在後端失敗：照原本退回 Python 模擬
+        _NATIVE["error"] = "%s: %s" % (type(e).__name__, str(e)[:200])
+        return False
+    fa_gpu.note_native(reason or "沒有說明")
+    return True
+
+
 def _emulate(k, blocks, threads, real_args, src, reason):
-    """退回本機 Python 逐執行緒模擬，並把原因說明給使用者（沒有用到 GPU）。"""
+    """GPU 不能跑時：先試 CPU 原生（OpenCL C→wasm）；不行就退回本機 Python 逐執行緒模擬，並把原因說明給使用者。"""
+    if _try_native(k, blocks, threads, real_args, reason):
+        return
     _launch(k._fn, blocks, threads, real_args, uses_sync="syncthreads" in src)
     fa_gpu.note_fallback(reason or "沒有說明")
 

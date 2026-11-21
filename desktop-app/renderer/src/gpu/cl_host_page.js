@@ -68,17 +68,20 @@
 
     async function prepare(py, o) {
         o = o || {};
-        if (py.__faClReady) return; if (py.__faClPreparing) return py.__faClPreparing;
+        const full = lastText === null || wantsPy(lastText);   // 沒有記錄（舊的呼叫方式）就當完整
+        if (py.__faClReady || (!full && py.__faClCoreReady)) return; if (py.__faClPreparing) return py.__faClPreparing;
         py.__faClPreparing = (async () => {
             const log = o.onProgress || (() => {}), files = o.files || {}, FS = py.FS;
             const put = (dst, key) => { if (files[key] == null) throw new Error('缺少 ' + key + '（FA_PYBRIDGE_FILES 沒有嵌入）'); try { FS.mkdirTree(dst.slice(0, dst.lastIndexOf('/'))); } catch (_) { /* 已存在 */ } FS.writeFile(dst, files[key]); };
             put('/fa_pyopencl_boot/fa_pyopencl.py', 'fa_pyopencl.py'); put('/fa_pyopencl_boot/_cl.py', 'pyopencl_backend/_cl.py'); put('/fa_pyopencl_boot/siphash24.py', 'pyopencl_backend/test_support/siphash24.py');
             if (files['fa_opengl_platform.py'] != null) put('/fa_pyopencl_boot/fa_opengl_platform.py', 'fa_opengl_platform.py');   // GL 互通（GLBuffer）用；沒有 OpenGL 的程式不會載入它
             let hostP = null; const host = () => (hostP = hostP || create(o));
-            py.registerJsModule('_fa_opencl', { call: async (op, argsJson, bytes) => { const H = await host(); return H.call(String(op), String(argsJson || '{}'), bytes == null ? null : bytes); }, describe: async () => (await host()).describe() });
+            if (!py.__faClModule) py.registerJsModule('_fa_opencl', { call: async (op, argsJson, bytes) => { const H = await host(); return H.call(String(op), String(argsJson || '{}'), bytes == null ? null : bytes); }, describe: async () => (await host()).describe() });
             log('載入 numpy 與相依套件…');
             // Pyodide 發行版有的套件（名字以 pyodide-lock.json 為準；逐一載入，缺哪個就略過並記下，不讓整個準備失敗）
             for (const name of ['micropip', 'numpy', 'markupsafe', 'typing-extensions', 'platformdirs']) { try { await py.loadPackage(name); } catch (e) { log('套件 ' + name + ' 載入失敗：' + String((e && e.message) || e).slice(0, 120)); } }
+            if (!full) { py.runPython("import sys\nif '/fa_pyopencl_boot' not in sys.path:\n    sys.path.insert(0, '/fa_pyopencl_boot')"); py.__faClCoreReady = true; py.__faClModule = true; log('OpenCL 後端（核心）已準備好'); return; }   // 只有核心：cudaweb 的 CPU 原生路線用 _cl，不下載 pyopencl
+            py.__faClModule = true;
             const fetchFn = o.fetch || (typeof fetch === 'function' ? fetch : null); if (!fetchFn) throw new Error('沒有 fetch，無法取得 pyopencl');
             const version = o.version || '2026.1.5';
             log('從 PyPI 取得 pyopencl ' + version + '（只取純 Python 檔案）…');
@@ -94,7 +97,12 @@
         try { await py.__faClPreparing; } finally { py.__faClPreparing = null; }
     }
     // 程式原始碼有沒有 import pyopencl（呼叫端用它決定要不要 prepare）
-    const wantsPyopencl = (src) => /(?:^|\n)[ \t]*(?:import|from)[ \t]+pyopencl\b/.test(String(src || ''));
+    // 腳本要不要準備 OpenCL 後端：import pyopencl（要完整的 pyopencl，從 PyPI 取純 Python 檔案）；或用 numba／cudaweb（GPU 不能跑時，cudaweb 的 CPU 原生路線要用，只要 _fa_opencl 與 _cl.py，不下載 pyopencl）。
+    // wantsPyopencl 記下最後一次檢查的腳本，prepare 據此決定完整或只有核心（呼叫端的接線是「先 wantsPyopencl(text)、再 prepare(...)」，不用改）。
+    let lastText = null;
+    const wantsPy = (src) => /(?:^|\n)[ \t]*(?:import|from)[ \t]+pyopencl\b/.test(String(src || ''));
+    const wantsCore = (src) => /(?:^|\n)[ \t]*(?:import|from)[ \t]+(?:numba|cudaweb)\b/.test(String(src || ''));
+    const wantsPyopencl = (src) => { lastText = String(src || ''); return wantsPy(src) || wantsCore(src); };
 
     return { create, prepare, wantsPyopencl, ASSEMBLE_PY };
 });

@@ -401,6 +401,15 @@ def note_precision(text):
     sys.stderr.flush()
 
 
+def note_native(reason):
+    """numba 核心沒有在 GPU 執行、但在 CPU 以原生速度（OpenCL C→wasm）執行時呼叫：說明原因（讓使用者知道這段沒有用到 GPU，也不是慢的 Python 模擬）。"""
+    STATS["natives"] = STATS.get("natives", 0) + 1
+    STATS["layer"] = "CPU 原生（OpenCL C→wasm，沒有用到 GPU）"
+    STATS["reason"] = reason
+    sys.stderr.write("[fa-bridge] 此核心因為 %s 在 CPU 原生（OpenCL C→wasm）執行，沒有用到 GPU\n" % reason)
+    sys.stderr.flush()
+
+
 def note_fallback(reason):
     """numba 核心沒有在 GPU 執行時呼叫：每一次都印出具體原因（不只第一次），讓使用者知道這段沒有用到 GPU。"""
     STATS["fallbacks"] = STATS.get("fallbacks", 0) + 1

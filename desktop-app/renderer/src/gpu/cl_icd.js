@@ -196,12 +196,12 @@
                 }
                 if (!prog.il && drv.compileIL) {
                     const ilKey = C.linkedIl(prog.baseKey, optsKey);
-                    if (ilKey) { let il = null, r = null; try { il = yield C.fetch('il', ilKey); r = il ? yield drv.compileIL(il, options, {}) : null; } catch (_) { r = null; C.bump('errors'); } if (r && r.ok) { st.cacheIlHits++; r.fromCache = 'il'; putBin(C, drv, r, binKey, prog, optsKey, target, 0); return r; } }
+                    if (ilKey) { let il = null, r = null; try { il = yield C.fetch('il', ilKey); r = il ? yield drv.compileIL(il, options, {}, { fromSource: true }) : null; } catch (_) { r = null; C.bump('errors'); } if (r && r.ok) { st.cacheIlHits++; r.fromCache = 'il'; putBin(C, drv, r, binKey, prog, optsKey, target, 0); return r; } }
                 }
             }
             st.builds++; const t0 = now(); let r, ilBytes = null;
             if (prog.il) r = yield drv.compileIL(prog.il, options, prog.spec);
-            else if (C && drv.preferIL && C.frontends.toIL && drv.compileIL && (ilBytes = C.frontends.toIL(prog.src, options))) { r = yield drv.compileIL(ilBytes, options, {}); if (!r.ok) { ilBytes = null; r = yield drv.compile(prog.src, options); } }   // 吃 IL 的驅動（例如 wasm）：source→SPIR-V（前端不支援就回 null）→產物；clc 驅動不偏好 IL，直接編譯（狀態機式的 JS 比 clc 直接產的慢）
+            else if (C && drv.preferIL && C.frontends.toIL && drv.compileIL && (ilBytes = C.frontends.toIL(prog.src, options))) { r = yield drv.compileIL(ilBytes, options, {}, { fromSource: true }); if (!r.ok) { ilBytes = null; r = yield drv.compile(prog.src, options); } }   // 吃 IL 的驅動（例如 wasm）：source→SPIR-V（前端不支援就回 null）→產物；clc 驅動不偏好 IL，直接編譯（狀態機式的 JS 比 clc 直接產的慢）
             else r = yield drv.compile(prog.src, options);   // compile 也可以回 Promise（GPU 驅動的 wasm 主機路線）
             const dt = now() - t0;
             if (C && r.ok && binKey) {
@@ -417,12 +417,13 @@
                 if (a && a.kind === 'cpu-wasm' && o.mods.FaSpvWasm) { const wrap = (r) => { const k = {}; for (const n of Object.keys(a.art.kernels)) k[n] = { params: a.art.kernels[n].params, host: true }; return { ok: true, kernels: k, clc: r, log: '' }; }; const x = o.mods.FaSpvWasm.instantiate(a.art); return x && typeof x.then === 'function' ? x.then(wrap) : wrap(x); }
                 const r = a && a.kind === 'cpu-js' ? clcFromArt(o.mods, a.clc) : null; if (!r) return null; const k = {}; for (const n of Object.keys(a.clc.kernels)) k[n] = { params: a.clc.kernels[n].params, host: true }; return { ok: true, kernels: k, clc: r, log: '' };
             },
-            compileIL(il, options, spec) {   // SPIR-V：沒有 OpenCL C 前端（前處理、詞法、語法、型別檢查）。wasm 驅動先試 wasm 後端（最終產物是 wasm 位元組），不支援就退回 SPIR-V→JS；結果與 compile 同形，所以 runClc／launchHost 照用
+            compileIL(il, options, spec, hint) {   // SPIR-V：沒有 OpenCL C 前端。wasm 驅動先試 wasm 後端；不支援時：來自 source 的（hint.fromSource）回失敗，讓載入器退回 clc 直接編譯（比 SPIR-V→JS 的狀態機快），IL 程式（沒有 source）才退回 SPIR-V→JS；結果與 compile 同形，所以 runClc／launchHost 照用
                 const SPV = o.mods.FaSpv; if (!SPV) return { ok: false, log: '沒有 SPIR-V 後端（mods.FaSpv）', kernels: {} };
                 const wrap = (r) => { const kernels = {}; for (const n of Object.keys(r.kernels)) kernels[n] = { params: r.kernels[n].params, host: true }; return { ok: true, kernels, clc: r, log: '' }; };
                 if (o.wasm && o.mods.FaSpvWasm) {
                     const w = o.mods.FaSpvWasm.compile(il, { spec });
                     if (w.ok) { try { const x = o.mods.FaSpvWasm.instantiate(o.mods.FaSpvWasm.toArtifact(w)); return x && typeof x.then === 'function' ? x.then(wrap) : wrap(x); } catch (e) { /* wasm 模組有問題：退回 JS */ } }
+                    if (hint && hint.fromSource) return { ok: false, log: 'wasm 後端不支援，退回 clc 直接編譯：' + (w.log || ''), kernels: {} };
                 }
                 const r = SPV.compile(il, { spec }); if (!r.ok) return { ok: false, log: r.log, kernels: {} };
                 return wrap(r);

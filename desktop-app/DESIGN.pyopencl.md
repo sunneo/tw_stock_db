@@ -321,4 +321,21 @@ IL 程式（clCreateProgramWithIL）：spv_wasm → 不支援就 spv_js
 2. **WebGL2 的 PBO 零 CPU 緩衝區互通**／共用 context 的紋理互通：還沒做。
 3. wasm 後端可再擴充：SIMD（f32x4）與向量型別、原子、不含 barrier 的 `__local`、緩衝區常駐 wasm 記憶體。
 4. clc_spv 子集擴充（向量、struct、switch、全域常數）——這些核心現在走 clc 直接 JS，不享受 wasm 加速。
-5. KIR→wasm、GPU 驅動 host 路線改 wasm、cudaweb 任意核心的 wasm CPU 路線（§15.5）。
+5. KIR→wasm（評估後略過，見 §15.5）。GPU 驅動 host 路線改 wasm 與 cudaweb 的 wasm CPU 路線已完成（§16）。
+
+## 16. cudaweb 核心的 CPU 原生路線：Python → OpenCL C → wasm（2026-11-22）
+
+**更正**：先前說 cudaweb 核心可以接 `ir_out_opencl_core` 那條鏈，這不成立——那條鏈吃的是 KIR，不吃 cudaweb 的 SIMT 核心（threadIdx／blockIdx／atomic）。所以另寫專用的發射器。
+
+### 16.1 流程
+`numba.cuda` 的 `@cuda.jit` 核心在 GPU（WebGPU／WGSL）不能跑時，原本退到 `_emulate`（Python 逐執行緒模擬，很慢）。現在 `_emulate` 先試原生路線：
+
+1. `pybridge/numba/openclc.py`：Python ast → OpenCL C。型別提升比照 numba（整數 long、浮點 double、float32 保持，long＋float32→double），Python 的 `//`、`%` 語意用 `pfdiv`／`pmod` 保留。不支援的（shared、syncthreads 等）丟 `NotCL`，退回 `_emulate`。
+2. `cuda._try_native`：用標準 `_cl` 後端（Context／CommandQueue／Buffer／Program／Kernel）建置與執行；只寫回計畫中 `writes` 的緩衝區；`fa_gpu.note_native` 記錄走了哪條路。
+3. 載入器照 §15 的多層快取：source→SPIR-V→wasm，快取命中免編譯；wasm 不收的（原子等）自動退到 clc 直接 JS。
+
+### 16.2 結果
+`openclc_test.py` 11 項差分測試（saxpy、2D、float64 逐位元相同、`//` `%` 語意、迴圈、數學函式、條件、atomic 直方圖、int64、shared／syncthreads 不支援、產生碼形狀）全過。
+
+### 16.3 頁面接線
+`cl_host_page.js` 的 `wantsPyopencl(text)` 現在也認 `import numba／cudaweb`，並記下腳本；`prepare` 對這類腳本只走「核心」模式：註冊 `_fa_opencl`、放 `_cl.py`、載入 numpy，不從 PyPI 下載 pyopencl／micropip pytools。呼叫端（`wantsPyopencl` 後接 `prepare`）不必修改。
