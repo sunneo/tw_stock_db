@@ -292,7 +292,7 @@
             // 變數提升：Function 的標量／向量變數若只被 OpLoad／OpStore（當位址）用到，就當成 JS 區域變數
             const varUses = new Map(), promoted = new Set(), allIns = []; for (const b of f.blocks) for (const i of b.ins) allIns.push(i);
             const loadStoreOnly = (i, vid) => (i.op === 'OpLoad' && i.w[2] === vid) || (i.op === 'OpStore' && i.w[0] === vid && i.w[1] !== vid);
-            for (const i of allIns) if (i.op === 'OpVariable' && i.v.sc === 'Function') { const pt = ty(ty(i.v.ty).pointee); if (['bool', 'int', 'float'].includes(pt.k) || (pt.k === 'vec')) varUses.set(i.v.id, true); }
+            for (const i of allIns) if (i.op === 'OpVariable' && i.v.sc === 'Function') { const pt = ty(ty(i.v.ty).pointee); if (['bool', 'int', 'float', 'ptr'].includes(pt.k) || (pt.k === 'vec')) varUses.set(i.v.id, true); }   // 指標值就是 JS 物件，存成區域變數沒問題
             for (const i of allIns) { if (i.op === 'OpVariable') continue; const w = i.w; for (const vid of varUses.keys()) { if (varUses.get(vid) === false) continue; if (!w.includes(vid)) continue; if (loadStoreOnly(i, vid)) continue; if (['OpName', 'OpDecorate'].includes(i.op)) continue; varUses.set(vid, false); } }
             for (const [vid, ok] of varUses) if (ok) promoted.add(vid);
             const bi = (id) => builtinVars.get(id);
@@ -596,5 +596,7 @@
         const mod = new Function('$rt', art.js)(rt);
         return { ok: true, kind: 'spv', log: '', kernels: art.kernels, mkptr: rt.mkptr, run: (name, args, gs, ls, off) => CLC.runKernel(rt, mod, art.kernels, name, args, gs, ls, off, art.gen), js: art.js, gen: art.gen };
     }
-    return { VERSION, instantiate, compile, decode, SpvError, coerceScalar: CLC.coerceScalar };
+    // 內部件（給 spv_wasm.js 共用：解碼、模組分析、型別佈局、常數）
+    const internals = { S, decode, analyze, makeTypes, constValue, zeroLit, EN, OCLN, SpvError, T_HAS_RESULT, constNum, num64 };
+    return { VERSION, instantiate, compile, decode, SpvError, internals, coerceScalar: CLC.coerceScalar };
 });

@@ -781,7 +781,7 @@ class _Program(_Handle):
                 info, _ = _call("prog_info", {"prog": self._h})
                 self._log = info.get("log", "")
                 raise
-            self._built, self._log, self._kernels, self._from_cache = True, res.get("log", ""), list(res["kernels"]), res.get("from_cache")
+            self._built, self._log, self._kernels, self._from_cache, self._backend = True, res.get("log", ""), list(res["kernels"]), res.get("from_cache"), res.get("backend")
             return
         try:
             expanded = _expand_includes(self._src, opt)   # 真的驅動也是在 build 時依 -I 讀標頭
@@ -795,7 +795,7 @@ class _Program(_Handle):
             info, _ = _call("prog_info", {"prog": self._h})   # build log 給 get_build_info(LOG)（真 pyopencl 的 Program.build 會讀它）
             self._log = info.get("log", "")
             raise
-        self._built, self._log, self._kernels, self._from_cache = True, res.get("log", ""), list(res["kernels"]), res.get("from_cache")   # from_cache：這次建置是從快取來的（'bin'｜'il'｜'binary'）還是真的編譯了（None）；測試與除錯用，使用者不需要管
+        self._built, self._log, self._kernels, self._from_cache, self._backend = True, res.get("log", ""), list(res["kernels"]), res.get("from_cache"), res.get("backend")   # from_cache：這次建置是從快取來的（'bin'｜'il'｜'binary'）還是真的編譯了（None）；測試與除錯用，使用者不需要管
 
     def get_build_info(self, device, param):
         p = int(param)

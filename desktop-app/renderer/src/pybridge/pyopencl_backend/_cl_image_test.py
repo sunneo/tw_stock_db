@@ -485,6 +485,69 @@ def _():
         raise AssertionError("壞的 binary 要被拒絕")
 
 
+@t("wasm 核心與 OpenGL 緩衝區互通（GLBuffer）：acquire → wasm 核心 → release，結果回到 GL；沒變的方向不傳輸")
+def _():
+    if not _HAVE_GL:
+        return
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    import fa_opengl_platform as P
+    P.register()
+    from OpenGL.GL import glGenBuffers, glBindBuffer, glBufferData, GL_ARRAY_BUFFER, GL_DYNAMIC_DRAW
+    import ctypes
+
+    class Buf(object):
+        def __init__(self):
+            self.n, self.bufs, self.cur, self.reads, self.writes = 0, {}, {}, 0, 0
+
+        def __getattr__(self, name):
+            return lambda *a, **k: None
+
+        def create_buffer(self):
+            self.n += 1
+            h = "b%d" % self.n
+            self.bufs[h] = bytearray()
+            return h
+
+        def bind_buffer(self, t, h):
+            self.cur[t] = h
+
+        def buffer_data(self, t, data, usage):
+            self.bufs[self.cur[t]] = bytearray(data if not isinstance(data, int) else bytes(data))
+
+        def read_buffer(self, h, off, size):
+            self.reads += 1
+            return bytes(self.bufs[h][off:off + size])
+
+        def write_buffer(self, h, off, data):
+            self.writes += 1
+            self.bufs[h][off:off + len(data)] = data
+
+    be = Buf()
+    P._CTX["backend"] = be
+    pts = np.arange(8, dtype=np.float32)
+    vbo = int(glGenBuffers(1))
+    glBindBuffer(GL_ARRAY_BUFFER, vbo)
+    glBufferData(GL_ARRAY_BUFFER, pts.nbytes, pts.ctypes.data_as(ctypes.c_void_p), GL_DYNAMIC_DRAW)
+    clbuf = cl.GLBuffer(ctx, mf.READ_WRITE, vbo)
+    prg = cl._Program(ctx, "__kernel void scale(__global float* p, float s) { int i = get_global_id(0); p[i] = p[i] * s + 1.0f; }")
+    prg._build()
+    assert prg._backend == "wasm", prg._backend   # 真的走了 wasm 後端
+    k = cl.Kernel(prg, "scale")
+    for frame in range(3):   # 連續三幀：acquire → 核心 → release
+        cl.enqueue_acquire_gl_objects(queue, [clbuf])
+        k(queue, (8,), None, clbuf, np.float32(2))
+        cl.enqueue_release_gl_objects(queue, [clbuf])
+        expect = pts.copy()
+        for _ in range(frame + 1):
+            expect = expect * 2 + 1
+        assert np.frombuffer(bytes(be.bufs[be.cur[GL_ARRAY_BUFFER]]), np.float32).tolist() == expect.tolist(), frame
+    assert be.reads == 1, be.reads   # GL→CL 只在第一次 acquire 讀（之後 GL 沒變，用 CL 這邊最新的）
+    assert be.writes == 3, be.writes   # CL→GL 每幀寫一次（因為核心真的改了）
+    cl.enqueue_acquire_gl_objects(queue, [clbuf])
+    cl.enqueue_release_gl_objects(queue, [clbuf])   # 沒跑核心：release 不寫回
+    assert be.writes == 3
+
+
 print("%d passed, %d failed" % (passed, failed))
 try:
     cl._get_transport().close()

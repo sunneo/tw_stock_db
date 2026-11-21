@@ -19,7 +19,7 @@
         let cache = null;
         if (M.FaClCache) {
             let storage = null; try { if (typeof indexedDB !== 'undefined' && indexedDB) storage = M.FaClCache.idbAdapter(indexedDB, 'fa-cl-cache'); } catch (_) { storage = null; }
-            cache = M.FaClCache.createCache({ storage: storage || M.FaClCache.memoryAdapter(), now: o.now });
+            cache = M.FaClCache.createCache({ storage: storage || M.FaClCache.memoryAdapter(), now: o.now, toIL: M.FaClc2Spv ? M.FaClc2Spv.toIL : null });   // toIL：source→SPIR-V 前端（偏好 IL 的驅動才會用）
             if (typeof addEventListener === 'function') { const k = () => cache.kick(); try { addEventListener('pagehide', k); addEventListener('visibilitychange', () => { if (typeof document !== 'undefined' && document.visibilityState === 'hidden') k(); }); } catch (_) { /* 沒有頁面事件（Worker）：寫入照樣在背景進行 */ } }   // 沖出位置：頁面隱藏／離開
         }
         const loader = M.FaClIcd.createLoader({ cache });
@@ -28,7 +28,7 @@
             const canGenerate = (k) => (hk.backend === 'webgpu' ? !!(gen && gen.toWgsl(k, { wg: 64 }).ok) : !!(gen && gen.toGlsl(k).ok));
             loader.registerDriver(M.FaClIcd.makeGpuDriver({ mods: M, device: hk.hooks.kirDev, backend: hk.backend, canGenerate, smallN: o.smallN }));
         }
-        loader.registerDriver(M.FaClIcd.makeClcDriver({ mods: M }));
+        loader.registerDriver(M.FaClIcd.makeClcDriver({ mods: M, wasm: true }));   // cpu 預設是 wasm（M.FaSpvWasm 不在就等同 clc 直接編譯的 JS）；不支援的核心自動退回
         const host = M.FaClHostOps.create(loader);
         const u8 = (b) => (b == null ? null : b instanceof Uint8Array ? b : new Uint8Array(b.buffer || b, b.byteOffset || 0, b.byteLength));
         return {

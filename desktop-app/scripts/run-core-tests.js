@@ -228,6 +228,8 @@ const suites = [
     ['OpenCL ↔ LLVM IR（llvm_cl_icd：.ll 程式的 cl* 匯入接 ICD 載入器；IR 註解 "; fa-opencl: icd" 才啟用；opencl_vecadd.ll 與 __local＋barrier 的 opencl_icd_reduce.ll 都跑；預設墊片不支援 __local 的對照）', 'renderer/src/uml/llvm_cl_icd.test.js'],
     ['SPIR-V（OpenCL Kernel 風格）→ JS（spv_js：二進位解碼、型別與常數、switch 狀態機、phi、OpenCL.std、原子、__local＋barrier、圖像與取樣器、pipe、規格常數；文字組譯器 spv_asm 手寫模組；Shader 風格與沒有本體的函式明確拒絕；沒有真 clang 產物可驗證）', 'renderer/src/gpu/spv_js_test.js'],
     ['OpenCL 程式的多層快取（cl_cache：fast64／md5、記憶體／檔案／模擬非同步 IndexedDB 介面卡、LRU 與 TTL、多載入器索引合併、壞儲存體與損毀產物不影響建置；★原本的 source 寫法第二次起直接拿 binary；IL 層；binary 容器；鍵的正確性；沖出位置；跨行程）', 'renderer/src/gpu/cl_cache_test.js'],
+    ['source→SPIR-V 前端（clc_spv：共用 clc 前處理；與 clc 直接編譯差分 19 項；子集之外明確回 unsupported）', 'renderer/src/gpu/clc_spv_test.js'],
+    ['SPIR-V→wasm 後端（spv_wasm：手組 wasm、loop＋br_table 狀態機、匯入數學、除以 0 語意對齊 clc；與 clc 差分 17 項；barrier／__local／原子明確退回）', 'renderer/src/gpu/spv_wasm_test.js'],
     ['OpenCL C 前端（clc_js：OpenCL C→JS；與 gcc 的差分測試 17 項：整數回繞、uint、除法餘數正負號、long、float 每步 fround、double 提升、轉型、邏輯、控制流、指標與位元組偏移、區域陣列、遞迴、巨集與條件編譯、數學函式；__local＋barrier（歸約、前綴和、磁磚轉置、發散偵測）、struct、switch、原子操作、多維陣列、跨行巨集；超出範圍的寫法必須被明確拒絕；沒有 gcc 就略過差分）', 'renderer/src/gpu/clc_js_test.js'],
     ['OpenCL 頁面端主機（FaClHostPage：驅動註冊順序 GPU→CPU、經 JSON＋位元組介面跑完整流程、GPU 路由；用假 WebGPU 掛鉤與 force:js）', 'renderer/src/gpu/cl_host_page_test.js'],
     ['OpenCL ICD 載入器＋驅動（KIR、clc 主機路線、GPU 驅動的路由：小問題走主機、大問題走裝置、核心鏈留在 GPU、主機改過的緩衝區使 GPU 副本過期；驅動登記與探測、錯誤碼、建置快取、延遲同步、相同內容不重傳、純輸出不上傳且部分寫入保持正確；用裝置層真實呼叫次數證明）', 'renderer/src/gpu/cl_icd_test.js'],

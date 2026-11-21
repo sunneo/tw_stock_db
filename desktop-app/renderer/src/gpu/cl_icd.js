@@ -191,17 +191,17 @@
                 optsKey = C.key.options(options + '|' + JSON.stringify(prog.spec || {}));
                 binKey = C.key.bin(prog.baseKey, optsKey, target, '');
                 if (C.has('bin', binKey)) {
-                    let r = null; try { const art = yield C.fetch('bin', binKey); r = art ? drv.deserialize(art) : null; } catch (_) { r = null; C.bump('errors'); }   // 損毀／版本不合：當作沒命中
+                    let r = null; try { const art = yield C.fetch('bin', binKey); r = art ? yield drv.deserialize(art) : null; } catch (_) { r = null; C.bump('errors'); }   // deserialize／compileIL 也可以回 Promise（wasm 在主執行緒大於 4 KB 要非同步編譯）   // 損毀／版本不合：當作沒命中
                     if (r && r.ok) { st.cacheBinHits++; r.fromCache = 'bin'; return r; }
                 }
                 if (!prog.il && drv.compileIL) {
                     const ilKey = C.linkedIl(prog.baseKey, optsKey);
-                    if (ilKey) { let il = null, r = null; try { il = yield C.fetch('il', ilKey); r = il ? drv.compileIL(il, options, {}) : null; } catch (_) { r = null; C.bump('errors'); } if (r && r.ok) { st.cacheIlHits++; r.fromCache = 'il'; putBin(C, drv, r, binKey, prog, optsKey, target, 0); return r; } }
+                    if (ilKey) { let il = null, r = null; try { il = yield C.fetch('il', ilKey); r = il ? yield drv.compileIL(il, options, {}) : null; } catch (_) { r = null; C.bump('errors'); } if (r && r.ok) { st.cacheIlHits++; r.fromCache = 'il'; putBin(C, drv, r, binKey, prog, optsKey, target, 0); return r; } }
                 }
             }
             st.builds++; const t0 = now(); let r, ilBytes = null;
-            if (prog.il) r = drv.compileIL(prog.il, options, prog.spec);
-            else if (C && C.frontends.toIL && drv.compileIL && (ilBytes = C.frontends.toIL(prog.src, options))) r = drv.compileIL(ilBytes, options, {});   // 有外掛的 source→SPIR-V 前端才走 IL；內建 clc 直接產 JS，沒有這一步
+            if (prog.il) r = yield drv.compileIL(prog.il, options, prog.spec);
+            else if (C && drv.preferIL && C.frontends.toIL && drv.compileIL && (ilBytes = C.frontends.toIL(prog.src, options))) { r = yield drv.compileIL(ilBytes, options, {}); if (!r.ok) { ilBytes = null; r = drv.compile(prog.src, options); } }   // 吃 IL 的驅動（例如 wasm）：source→SPIR-V（前端不支援就回 null）→產物；clc 驅動不偏好 IL，直接編譯（狀態機式的 JS 比 clc 直接產的慢）
             else r = drv.compile(prog.src, options);
             const dt = now() - t0;
             if (C && r.ok && binKey) {
@@ -235,7 +235,7 @@
             needProg(prog); options = String(options || '');
             if (prog.binary) {   // 從 binary 建立：目標相容 → 直接重建產物；否則轉成 source／IL 程式走一般流程
                 const b = prog.binary, drv = prog.drv, tgt = drv.target ? drv.target((cache && cache.config.compat) || 'backend') : null; prog.binary = null;
-                if (tgt && b.header.target === tgt && drv.deserialize) { const r = drv.deserialize(b.art); if (r && r.ok) { st.cacheBinHits++; r.fromCache = 'binary'; prog.options = options; prog.log = ''; prog.built = r; if (b.il) prog.il = b.il; return prog; } }
+                if (tgt && b.header.target === tgt && drv.deserialize) { const r = yield drv.deserialize(b.art); if (r && r.ok) { st.cacheBinHits++; r.fromCache = 'binary'; prog.options = options; prog.log = ''; prog.built = r; if (b.il) prog.il = b.il; return prog; } }
                 if (b.il) prog.il = b.il; else if (b.src) prog.src = b.src; else fail('INVALID_BINARY', 'binary 的目標（' + b.header.target + '）與這個裝置（' + tgt + '）不相容，而且沒有內嵌的 source／IL 可重建');
                 if (cacheOn()) { prog.baseKey = prog.il ? cache.key.il(prog.il) : cache.key.src(prog.src); prog.baseSrc = prog.src; }
             }
@@ -410,13 +410,22 @@
             name: o.name || 'fa-cpu-clc', vendor: o.vendor || 'Floating Assistant', version: '1.0', extensions: 'cl_khr_fp64',
             device: Object.assign({ name: o.deviceName || 'FA OpenCL C (CPU, JS)', type: 'CPU', maxWorkGroupSize: 256, globalMemSize: 1 << 30, maxMemAllocSize: 1 << 28 }, o.deviceInfo || {}),
             maxDims: 3, supportsOffset: true, coerceScalar: FaClc.coerceScalar, probe: o.probe,
-            target: (compat) => 'cpu-js:clc' + (FaClc.VERSION || 1) + (o.mods.FaSpv ? '.spv' + (o.mods.FaSpv.VERSION || 1) : ''),
-            serialize: (b) => { const c = clcArtOf(b.clc); return c ? { kind: 'cpu-js', clc: c } : null; },
-            deserialize: (a) => { const r = a && a.kind === 'cpu-js' ? clcFromArt(o.mods, a.clc) : null; if (!r) return null; const k = {}; for (const n of Object.keys(a.clc.kernels)) k[n] = { params: a.clc.kernels[n].params, host: true }; return { ok: true, kernels: k, clc: r, log: '' }; },
-            compileIL(il, options, spec) {   // SPIR-V：沒有 OpenCL C 前端（前處理、詞法、語法、型別檢查），直接解碼轉 JS；結果與 compile 同形，所以 runClc／launchHost 照用
+            preferIL: !!(o.preferIL || (o.wasm && o.mods.FaSpvWasm)),
+            target: (compat) => (o.wasm && o.mods.FaSpvWasm ? 'cpu-wasm:spvw' + (o.mods.FaSpvWasm.VERSION || 1) + '.' : o.preferIL ? 'cpu-js-il:' : 'cpu-js:') + 'clc' + (FaClc.VERSION || 1) + (o.mods.FaSpv ? '.spv' + (o.mods.FaSpv.VERSION || 1) : ''),
+            serialize: (b) => { if (b.clc && b.clc.kind === 'wasm') return { kind: 'cpu-wasm', art: b.clc.art }; const c = clcArtOf(b.clc); return c ? { kind: 'cpu-js', clc: c } : null; },
+            deserialize: (a) => {
+                if (a && a.kind === 'cpu-wasm' && o.mods.FaSpvWasm) { const wrap = (r) => { const k = {}; for (const n of Object.keys(a.art.kernels)) k[n] = { params: a.art.kernels[n].params, host: true }; return { ok: true, kernels: k, clc: r, log: '' }; }; const x = o.mods.FaSpvWasm.instantiate(a.art); return x && typeof x.then === 'function' ? x.then(wrap) : wrap(x); }
+                const r = a && a.kind === 'cpu-js' ? clcFromArt(o.mods, a.clc) : null; if (!r) return null; const k = {}; for (const n of Object.keys(a.clc.kernels)) k[n] = { params: a.clc.kernels[n].params, host: true }; return { ok: true, kernels: k, clc: r, log: '' };
+            },
+            compileIL(il, options, spec) {   // SPIR-V：沒有 OpenCL C 前端（前處理、詞法、語法、型別檢查）。wasm 驅動先試 wasm 後端（最終產物是 wasm 位元組），不支援就退回 SPIR-V→JS；結果與 compile 同形，所以 runClc／launchHost 照用
                 const SPV = o.mods.FaSpv; if (!SPV) return { ok: false, log: '沒有 SPIR-V 後端（mods.FaSpv）', kernels: {} };
+                const wrap = (r) => { const kernels = {}; for (const n of Object.keys(r.kernels)) kernels[n] = { params: r.kernels[n].params, host: true }; return { ok: true, kernels, clc: r, log: '' }; };
+                if (o.wasm && o.mods.FaSpvWasm) {
+                    const w = o.mods.FaSpvWasm.compile(il, { spec });
+                    if (w.ok) { try { const x = o.mods.FaSpvWasm.instantiate(o.mods.FaSpvWasm.toArtifact(w)); return x && typeof x.then === 'function' ? x.then(wrap) : wrap(x); } catch (e) { /* wasm 模組有問題：退回 JS */ } }
+                }
                 const r = SPV.compile(il, { spec }); if (!r.ok) return { ok: false, log: r.log, kernels: {} };
-                const kernels = {}; for (const n of Object.keys(r.kernels)) kernels[n] = { params: r.kernels[n].params, host: true }; return { ok: true, kernels, clc: r, log: '' };
+                return wrap(r);
             },
             compile(src, options) {
                 const r = FaClc.compile(src, options); if (!r.ok) return { ok: false, log: r.log, kernels: {} };
@@ -431,7 +440,7 @@
     // 在主機位元組上跑 clc 核心；回傳被寫過的參數名
     function runClc(c, params, hostBinds, scalars, nd) {
         const ptrs = {};
-        const args = params.map((p) => { if (p.kind !== 'buf' && p.kind !== 'image' && p.kind !== 'pipe') return scalars[p.name]; const u8 = hostBinds[p.name]; const ptr = c.mkptr(u8.buffer); ptr.o = u8.byteOffset; if (p.kind === 'image') ptr.img = u8.img; if (p.kind === 'pipe') ptr.pipe = u8.pipe; ptr.v.w = false; ptrs[p.name] = ptr; return ptr; });   // 子緩衝區：同一塊記憶體、帶位元組偏移（不複製）
+        const args = params.map((p) => { if (p.kind !== 'buf' && p.kind !== 'image' && p.kind !== 'pipe') return scalars[p.name]; const u8 = hostBinds[p.name]; const ptr = c.mkptr(u8.buffer); ptr.o = u8.byteOffset; ptr.len = u8.length; if (p.kind === 'image') ptr.img = u8.img; if (p.kind === 'pipe') ptr.pipe = u8.pipe; ptr.v.w = false; ptrs[p.name] = ptr; return ptr; });   // 子緩衝區：同一塊記憶體、帶位元組偏移（不複製）
         c.run(nd.name || params.__name, args, nd.gs, nd.ls, nd.off);
         const written = Object.keys(ptrs).filter((n) => ptrs[n].v.w); for (const n of Object.keys(ptrs)) ptrs[n].v.w = false;
         return { written };

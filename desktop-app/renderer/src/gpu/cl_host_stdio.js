@@ -5,12 +5,13 @@ const ICD = require('./cl_icd.js'), K = require('./kir.js'), F = require('./cl_f
 // 快取永遠開著（無痕）：node 沒有 IndexedDB，預設記憶體；FA_CL_CACHE_FILE 只是測試用的「跨行程持久化」儲存位置（不是開關）
 const CACHE = require('./cl_cache.js'), fs = require('fs');
 const cache = CACHE.createCache({ storage: process.env.FA_CL_CACHE_FILE ? CACHE.fileAdapter(fs, process.env.FA_CL_CACHE_FILE) : CACHE.memoryAdapter() });
+if (process.env.FA_CL_NO_IL_FRONTEND !== '1') { try { cache.frontends.toIL = require('./clc_spv.js').toIL; } catch (_) { /* 沒有前端：il 層只收 IL 程式 */ } }   // source→SPIR-V 前端（只有偏好 IL 的驅動會用到）
 const loader = ICD.createLoader({ cache });
 // FA_CL_DRIVERS＝以逗號分隔、依序登記的驅動（clc＝OpenCL C 前端的 CPU 驅動，kir＝KIR 驅動）；預設只有 kir。create_some_context 會選第一個。
-const CLC = require('./clc_js.js'), SPV = require('./spv_js.js');
+const CLC = require('./clc_js.js'), SPV = require('./spv_js.js'), WASM = require('./spv_wasm.js');
 for (const d of String(process.env.FA_CL_DRIVERS || 'kir').split(',').map((x) => x.trim()).filter(Boolean)) {
     if (d === 'kir') loader.registerDriver(ICD.makeKirDriver({ mods: { FaClFront: F, FaKir: K }, name: 'fa-kir-js', kind: 'js', deviceName: 'FA KIR JS（CPU 參考）' }));
-    else if (d === 'clc') loader.registerDriver(ICD.makeClcDriver({ mods: { FaClc: CLC, FaSpv: SPV } }));
+    else if (d === 'clc') loader.registerDriver(ICD.makeClcDriver({ mods: { FaClc: CLC, FaSpv: SPV, FaSpvWasm: WASM }, wasm: process.env.FA_CL_NO_WASM !== '1' }));   // cpu 預設是 wasm（比 clc 直接產的 JS 快 3–5 倍）；FA_CL_NO_WASM=1 只是除錯用的對照
     else throw new Error('不認得的驅動 ' + d);
 }
 const host = OPS.create(loader);

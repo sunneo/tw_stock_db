@@ -262,3 +262,63 @@ IndexedDB 是非同步的，OpenCL 的建置呼叫是同步的，所以：載入
 3. **SPIR-V→cudaweb IR**，讓 IL／source 程式走 GPU，並讓 cudaweb 成為載入器的驅動。
 4. WebGL2 的 PBO 零 CPU 緩衝區互通；共用 context 的紋理互通。
 5. GPU 路線的 shader 文字決定性檢查（讓瀏覽器 shader 快取穩定命中）。
+
+## 15. source→SPIR-V 前端與 SPIR-V→wasm 後端：cpu 的目標碼是 wasm（2026-11-21）
+
+依 §14.5 的順序做完前兩項。**cpu 路線現在預設走 wasm**（page 與 stdio 主機都是；不支援的核心自動退回），因為實測比 clc 直接產的 JS 快 3–5 倍。
+
+### 15.1 管線與退路
+```
+source ─► clc_spv（source→SPIR-V）─► spv_wasm（SPIR-V→wasm）─► wasm 位元組 ─► 快取（bin）
+  │            │ 不支援（回 null）            │ 不支援（barrier／__local／原子／向量…）
+  │            └────────────┐                └──► spv_js（SPIR-V→JS 狀態機）
+  └────────────────────────►┴──────────────────────► clc 直接編譯成 JS（最快建置、功能最全）
+IL 程式（clCreateProgramWithIL）：spv_wasm → 不支援就 spv_js
+```
+快取鍵與層次不變（§14）：il 層存 SPIR-V，bin 層存最終產物（`kind:'cpu-wasm'`＝wasm 位元組＋核心參數表＋匯入清單；或退回後的 `cpu-js`）。命中 bin 時完全不經前端與 SPIR-V 轉換，只剩 `WebAssembly.compile`＋實例化。
+
+### 15.2 `clc_spv.js`：OpenCL C → SPIR-V
+共用 clc 的前處理與詞法（巨集、`-D`、預定義常數），輸出仿 clang -O0＋llvm-spirv：Kernel 能力、Physical64、OpenCL 記憶體模型、區域變數用 `OpVariable Function`、內建變數用 `Input`＋`BuiltIn`、數學用 OpenCL.std、結構化控制流。size_t 是 64 位元。
+- **支援**：各種純量整數／float／double／bool（當 int）、指標（`__global`／`__local`／`__constant`／`__private`）、一維陣列、輔助函式（含前向宣告）、運算式（四則餘數、位元移位、比較、短路、`?:`、賦值、`++`／`--`、`[]`／`*`／`&`、轉型、`sizeof`）、if／for／while／do-while／break／continue／return、barrier、`get_*_id` 系列、數學、min／max／abs／clamp／select／mad24／popcount／clz、原子操作。
+- **不支援（回 `unsupported`，呼叫端退回 clc 直接編譯）**：向量型別、struct／union／enum／typedef、圖像／取樣器／pipe、全域變數、多維陣列、switch、printf、`convert_*`／`as_*`、字串。語法錯誤不算 unsupported，交回 clc 報行號。
+- **驗證**：`clc_spv_test` 19 項；差分測試（同一份 source 走 clc 直接 JS 與 clc_spv→spv_js，結果一致）。差分時發現 clc 的 `sizeof(陣列)` 回錯、沒有 popcount／clz／mul24／mad24（SPIR-V 路徑有，所以那幾項只驗 SPIR-V 結果）。
+- **限制**：for／while 的條件若含 `&&`／`||`，`OpLoopMerge` 會放在條件的最後一個區塊（spv_js／spv_wasm 不管結構化資訊，但 spirv-val 會抱怨）；沒有真 spirv-val 可驗。
+
+### 15.3 `spv_wasm.js`：SPIR-V → WebAssembly
+手組 wasm 二進位（沒有編譯器）。每個 SPIR-V 函式一個 wasm 函式；指標＝i32 位元組位址；只被 Load／Store 用到的 Function 變數成為 wasm 區域變數，其餘（陣列）放堆疊框；多區塊函式用 `loop`＋`br_table` 狀態機，phi 靠運算元堆疊在分支邊上平行賦值；每核心匯出 `run_<名>(參數…, dim, gs×3, ls×3, off×3)`，工作項的六層迴圈在 wasm 裡，內建變數是可變全域（i64）。數學：原生指令＋匯入 JS 的 Math（sin／cos／exp／log／pow／atan2…）。
+- **語意對齊 clc**：除以 0 回 0、`INT_MIN／-1` 不陷入；浮點轉整數用飽和版（NaN→0）；8／16 位元整數以有號正規形放在 i32。**差異**：記憶體越界 wasm 會 trap（clc 的型別化陣列靜默忽略）。
+- **記憶體**：wasm 有自己的線性記憶體，執行時把緩衝區參數複製進去、跑完把「不是唯讀」的複製回來（同一塊緩衝區傳兩次共用同一份；子緩衝區只複製那一段）。
+- **不支援（回 `unsupported`，驅動退回 spv_js 或 clc）**：向量與 struct 值、`__local`／barrier（工作群協作需要執行緒；本環境沒有 `SharedArrayBuffer`）、原子、圖像、pipe、全域變數、Float16。
+- **主執行緒的同步編譯上限**：模組大於 4 KB 時 `new WebAssembly.Module` 會丟 RangeError，所以 `instantiate` 回 Promise（載入器的 build 直接 yield；真 Electron 上 70 KB 的模組走這條路已驗證）。
+- **驗證**：`spv_wasm_test` 17 項（與 clc 差分、別名、子緩衝區、global offset、不支援的明確回報、產物序列化往返）；`cl_cache_test` 的 wasm 案例。
+
+### 15.4 實測（node 20）
+| 核心 | clc 直接 JS | SPIR-V→JS（狀態機） | **SPIR-V→wasm** |
+|---|---|---|---|
+| vadd，1M 個 float（記憶體密集；wasm 含緩衝區複製） | 15.5 ms | 18.2 ms | **3.6 ms** |
+| mandelbrot 512×512（每點最多 200 次迭代） | 138.8 ms | 201.4 ms | **41.5 ms** |
+| N 體力計算 4096 點×256 | 8.7 ms | 15.3 ms | **1.9 ms** |
+- SPIR-V→JS 的狀態機比 clc 直接產的結構化 JS 慢 1.2–1.8 倍，只當 wasm 的退路。
+- **建置（暖後單次）**：source→SPIR-V 0.72 ms、SPIR-V→wasm 0.72 ms、wasm 編譯＋實例化 0.07 ms；clc 直接 0.64 ms。未命中時建置貴一倍多，但執行快 3–5 倍，命中時只剩約 1 ms 的載入。
+- **真 Electron，IndexedDB 跨兩次啟動**：小核心（wasm 697 B）build 11.5 → 0.8 ms；大核心（wasm 70 KB）42.4 → 1.0 ms；結果一致；存進去的是 wasm 位元組（IndexedDB 不能存 `WebAssembly.Module`）。
+- **真 Pyodide（預設 wasm）**：vector_add、spirv_vector_add、array_ops、local_memory_reduction、matmul_tiled、nbody_float4、complex_mandelbrot、image_filter 全部通過（有 `__local`／向量／struct／圖像的自動退回 JS）；256×256 mandelbrot 與 numpy 逐像素一致。
+
+### 15.5 wasm 與 WebGPU／KIR／cudaweb 的關係（2026-11-21 評估）
+- **wasm 不能「跑在」WebGPU 上，也不能直接呼叫 WebGPU**：wasm 沒有 GPU API，只能經 JS 匯入（emscripten 的 WebGPU 綁定就是這樣）。GPU 上執行的是 WGSL／GLSL，不是 wasm。所以 GPU 路線的產物仍是 shader 文字（§14.4）；wasm 能做的是當「指令編碼端」（JS 匯入呼叫 WebGPU），那不是我們要的。
+- **反過來，KIR／cudaweb 的 CPU 路線可以用 wasm**：
+  - **KIR**：現有 CPU 後端是 KIR→JS（`kir.js` 的 `toJs`／`runJs`）。KIR 很窄（一維、f32／f32x4、`let／set／store／for`、結構化），做 KIR→wasm 比 SPIR-V→wasm 簡單得多，可重用 `spv_wasm.js` 的位元組編碼與迴圈外殼；GPU 驅動的「小問題走主機」路線目前走 clc 的 JS，改成 wasm 只是接線（`makeGpuDriver` 的 host 路線還沒接 wasm）。**尚未實作，未實測。**
+  - **cudaweb**：任意核心是 numba 轉譯成 WGSL（`pybridge/numba/wgsl.py`），只在 WebGPU 執行；`gpu_core.js` 註明「WebGL2 沒有任意核心的執行路徑，CPU 也沒有核心解譯器」。所以 cudaweb 的任意核心**目前沒有 CPU 路線**。已經有可接的鏈：Python 核心 →（`ir_out_opencl_core.js`）OpenCL C →（`clc_spv`）SPIR-V →（`spv_wasm`）wasm，可以補上這個缺口——要先確認 numba 子集能不能落在 `ir_out_opencl` 的子集內（它有 12 種寫法會被明確拒絕）。cudaweb 的 f64／i64 在 WGSL 端要展開成 32 位元對，但走 SPIR-V→wasm 時是原生 i64／f64，不受那個限制。**尚未實作，未實測。**
+- **共用的好處**：同一份產物格式（`kind:'cpu-wasm'`）與快取；wasm 的緩衝區若改成常駐 wasm 記憶體，GL 上傳可以直接用 `new Uint8Array(mem.buffer, addr, len)` 的視圖呼叫 `bufferSubData`，省掉現在每次啟動的複製（interop 的零拷貝路線）。
+
+### 15.5b wasm 結果與 OpenGL interop（2026-11-21，已驗證）
+- **可以，而且對 GL 端透明**：互通發生在載入器的緩衝區層（`GLBuffer`／`GLTexture`／`GLRenderBuffer` 的 acquire／release 讀寫的是載入器的主機副本與版本號）；wasm 核心跑完會把「不是唯讀」的緩衝區複製回主機副本並更新版本號，所以 acquire → wasm 核心 → release 照常運作。測試（`_cl_image_test.py`，真 PyOpenGL＋記憶體假後端）：建置回報 `backend == 'wasm'`，連續三幀 acquire→核心→release，結果每幀正確回到 GL 緩衝區；GL→CL 只在第一次 acquire 讀一次（之後 GL 沒變）、CL→GL 每幀寫一次（核心真的改了）、沒跑核心的 release 不寫回。
+- **成本要講清楚**：wasm 的結果在 CPU 記憶體，所以每幀 CL 端有改動就是一次 CPU→GPU 上傳（`bufferSubData`／`texSubImage2D`）；GL 端有改動、CL 要讀就是一次 GPU→CPU 讀回（`getBufferSubData`，會卡住管線）。**wasm 做不到 GPU 端零拷貝**（記憶體不是 GPU 的）。目前每次啟動還多一次 JS 端複製（主機副本↔wasm 線性記憶體）；之後若讓緩衝區常駐 wasm 記憶體，GL 上傳可以直接用 `new Uint8Array(mem.buffer, addr, len)` 的視圖呼叫 `bufferSubData`，省掉那次複製（仍然是一次 CPU→GPU 上傳）。
+- **要零 CPU 往返的互通**只能走 GPU 路線（WebGL2 的 PBO、共用 context；§14.4），那是 KIR／cudaweb 的 GPU 產物，不是 wasm。
+- **圖像互通**：`GLTexture`／`GLRenderBuffer` 的核心用到圖像，wasm 後端不支援圖像，所以自動退回 JS（clc），互通照常（已在 §10 的測試驗證）。
+
+### 15.6 還沒做
+1. **SPIR-V→cudaweb IR**（讓 IL／source 程式走 GPU，並讓 cudaweb 成為載入器的驅動）：還沒開始。
+2. **WebGL2 的 PBO 零 CPU 緩衝區互通**／共用 context 的紋理互通：還沒做。
+3. wasm 後端可再擴充：SIMD（f32x4）與向量型別、原子、不含 barrier 的 `__local`、緩衝區常駐 wasm 記憶體。
+4. clc_spv 子集擴充（向量、struct、switch、全域常數）——這些核心現在走 clc 直接 JS，不享受 wasm 加速。
+5. KIR→wasm、GPU 驅動 host 路線改 wasm、cudaweb 任意核心的 wasm CPU 路線（§15.5）。

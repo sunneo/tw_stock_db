@@ -2,7 +2,7 @@
 // 檢查碼、儲存介面卡（記憶體／檔案／模擬的非同步 IndexedDB）、LRU 淘汰與 TTL、多個載入器共用儲存體的索引合併、壞掉的儲存體與損毀的產物都不影響建置、
 // 以及最重要的：同一份 source 第二次起直接拿 binary（不經前端）、IL 層、binary 容器（clCreateProgramWithBinary）、鍵的正確性（選項、展開後的原始碼、目標）。
 const assert = require('assert'), crypto = require('crypto'), os = require('os'), path = require('path'), fs = require('fs');
-const CC = require('./cl_cache.js'), ICD = require('./cl_icd.js'), CLC = require('./clc_js.js'), SPV = require('./spv_js.js'), A = require('./spv_asm.js'), F = require('./spv_fixtures.js'), K = require('./kir.js'), FR = require('./cl_front.js');
+const CC = require('./cl_cache.js'), ICD = require('./cl_icd.js'), CLC = require('./clc_js.js'), SPV = require('./spv_js.js'), A = require('./spv_asm.js'), F = require('./spv_fixtures.js'), K = require('./kir.js'), FR = require('./cl_front.js'), WASM = require('./spv_wasm.js'), FE = require('./clc_spv.js');
 let pass = 0, fail = 0; const queue = [];
 const t = (name, fn) => queue.push([name, fn]);
 // 模擬非同步的 IndexedDB：每個操作多一個 microtask／macrotask 延遲，可注入失敗；多個實例共用同一份資料（像 Worker 與頁面）
@@ -82,12 +82,46 @@ t('損毀的產物當作沒命中，照常編譯並覆寫', async () => {
   const l2 = mkLoader(CC.createCache({ storage: ad })); const r = await buildRun(l2, SRC); assert.deepStrictEqual(r.out, [0, 2, 4, 6]); assert.strictEqual(l2.stats().builds, 1);
 });
 t('IL 層：外掛的 source→SPIR-V 前端的產物存進 il，bin 被淘汰後從 IL 重建（不再呼叫前端）', async () => {
-  const il = A.assemble(F.VADD), ad = CC.memoryAdapter(); let toIL = 0; const frontend = () => { toIL++; return il; };
+  const PIL = [ICD.makeClcDriver({ mods: { FaClc: CLC, FaSpv: SPV }, preferIL: true })], il = A.assemble(F.VADD), ad = CC.memoryAdapter(); let toIL = 0; const frontend = () => { toIL++; return il; };
   const VSRC = '__kernel void vadd(__global const float*a,__global const float*b,__global float*c,uint n){ /* 以 SPIR-V 前端編譯 */ }';
-  const c1 = CC.createCache({ storage: ad, toIL: frontend }), l1 = mkLoader(c1); { const { c } = ctxOf(l1), p = l1.createProgram(c, VSRC); await l1.build(p, ''); assert.deepStrictEqual(Object.keys(p.built.kernels), ['vadd']); } await l1.close();
+  const c1 = CC.createCache({ storage: ad, toIL: frontend }), l1 = mkLoader(c1, PIL); { const { c } = ctxOf(l1), p = l1.createProgram(c, VSRC); await l1.build(p, ''); assert.deepStrictEqual(Object.keys(p.built.kernels), ['vadd']); } await l1.close();
   assert.strictEqual(toIL, 1); assert.strictEqual(Object.keys(c1._idx().il).length, 1, 'il 層有存'); for (const k of [...ad._m.bin.keys()]) ad._m.bin.delete(k);   // 模擬 bin 被淘汰（索引還記得）
   const c2 = CC.createCache({ storage: ad, toIL: frontend }); for (const k of Object.keys(c2._idx().bin)) delete c2._idx().bin[k]; for (const r of Object.values(c2._idx().src)) r.bins = {};
-  const l2 = mkLoader(c2); { const { c } = ctxOf(l2), p = l2.createProgram(c, VSRC); await l2.build(p, ''); assert.strictEqual(p.built.fromCache, 'il'); } assert.strictEqual(toIL, 1, 'IL 命中：沒有再呼叫 source→IL 前端'); assert.strictEqual(l2.stats().cacheIlHits, 1);
+  const l2 = mkLoader(c2, PIL); { const { c } = ctxOf(l2), p = l2.createProgram(c, VSRC); await l2.build(p, ''); assert.strictEqual(p.built.fromCache, 'il'); } assert.strictEqual(toIL, 1, 'IL 命中：沒有再呼叫 source→IL 前端'); assert.strictEqual(l2.stats().cacheIlHits, 1);
+});
+t('★ source→IL→binary（偏好 IL 的驅動＋真的 source→SPIR-V 前端）：第一次 source→SPIR-V→產物並存 il 與 bin；第二次 bin；bin 被淘汰後從 il 重建，不再呼叫前端', async () => {
+  const FE = require('./clc_spv.js'); let toIL = 0; const frontend = (src, o) => { toIL++; return FE.toIL(src, o); };
+  const il = [ICD.makeClcDriver({ mods: { FaClc: CLC, FaSpv: SPV }, preferIL: true })], ad = CC.memoryAdapter();
+  const c1 = CC.createCache({ storage: ad, toIL: frontend }), l1 = mkLoader(c1, il); const r1 = await buildRun(l1, SRC); await l1.close();
+  assert.deepStrictEqual(r1.out, [0, 2, 4, 6]); assert.strictEqual(toIL, 1); assert.strictEqual(Object.keys(c1._idx().il).length, 1, 'il 層有存'); assert.strictEqual(Object.keys(c1._idx().bin).length, 1, 'bin 層有存'); assert.strictEqual(r1.p.built.clc.kind, 'spv', '經由 SPIR-V 後端');
+  const c2 = CC.createCache({ storage: ad, toIL: frontend }), l2 = mkLoader(c2, il); const r2 = await buildRun(l2, SRC); assert.strictEqual(toIL, 1, 'bin 命中：沒有前端'); assert.strictEqual(r2.p.built.fromCache, 'bin'); assert.deepStrictEqual(r2.out, [0, 2, 4, 6]);
+  for (const k of [...ad._m.bin.keys()]) ad._m.bin.delete(k); const c3 = CC.createCache({ storage: ad, toIL: frontend }); for (const k of Object.keys(c3._idx().bin)) delete c3._idx().bin[k]; for (const r of Object.values(c3._idx().src)) r.bins = {};
+  const l3 = mkLoader(c3, il); const r3 = await buildRun(l3, SRC); assert.strictEqual(toIL, 1, 'il 命中：沒有再呼叫 source→IL 前端'); assert.strictEqual(r3.p.built.fromCache, 'il'); assert.deepStrictEqual(r3.out, [0, 2, 4, 6]);
+});
+t('前端不支援的 source（向量等）在偏好 IL 的驅動上自動退回直接編譯，結果照常', async () => {
+  const FE = require('./clc_spv.js'), V4 = '__kernel void k(__global float* o, int n) { float4 v = (float4)(1.0f, 2.0f, 3.0f, 4.0f); int i = get_global_id(0); if (i < n) o[i] = v.x + v.w + i; }';
+  assert.strictEqual(FE.toIL(V4, ''), null); const l = mkLoader(CC.createCache({ storage: CC.memoryAdapter(), toIL: FE.toIL }), [ICD.makeClcDriver({ mods: { FaClc: CLC, FaSpv: SPV }, preferIL: true })]);
+  const r = await buildRun(l, V4); assert.deepStrictEqual(r.out, [5, 6, 7, 8]); assert.strictEqual(r.p.built.clc.kind, 'clc', '退回 clc 直接編譯');
+});
+t('★ wasm 目標碼：source→SPIR-V→wasm 位元組，存進快取；第二次從 bin 重建 wasm（不經前端與 SPIR-V 轉換）；不支援的核心退回 JS', async () => {
+  const wd = () => ICD.makeClcDriver({ mods: { FaClc: CLC, FaSpv: SPV, FaSpvWasm: WASM }, wasm: true }), ad = CC.memoryAdapter(); let fe = 0, wc = 0; const wcomp = WASM.compile; WASM.compile = (...a) => { wc++; return wcomp.apply(WASM, a); };
+  const mk = (cache) => mkLoader(cache, [wd()]);
+  try {
+    const c1 = CC.createCache({ storage: ad, toIL: (src, o) => { fe++; return FE.toIL(src, o); } }), l1 = mk(c1); const r1 = await buildRun(l1, SRC); await l1.close();
+    assert.deepStrictEqual(r1.out, [0, 2, 4, 6]); assert.strictEqual(r1.p.built.clc.kind, 'wasm', '目標碼是 wasm'); assert.strictEqual(fe, 1); assert.strictEqual(wc, 1);
+    const arts = [...ad._m.bin.values()]; assert.ok(arts[0].art.wasm instanceof Uint8Array && arts[0].kind === 'cpu-wasm', '存的是 wasm 位元組');
+    const c2 = CC.createCache({ storage: ad, toIL: (src, o) => { fe++; return FE.toIL(src, o); } }), l2 = mk(c2); const r2 = await buildRun(l2, SRC);
+    assert.strictEqual(fe, 1, '第二次沒有前端'); assert.strictEqual(wc, 1, '第二次沒有 SPIR-V→wasm'); assert.strictEqual(r2.p.built.fromCache, 'bin'); assert.strictEqual(r2.p.built.clc.kind, 'wasm'); assert.deepStrictEqual(r2.out, [0, 2, 4, 6]);
+    // 有 barrier／__local 的核心：wasm 後端不支援 → 退回 SPIR-V→JS（或 clc 直接 JS），結果照常
+    const BS = '__kernel void k(__global float* o, __local float* t) { int l = get_local_id(0); t[l] = l + 1.0f; barrier(CLK_LOCAL_MEM_FENCE); o[l] = t[(l + 1) % 4]; }';
+    const l3 = mk(CC.createCache({ storage: CC.memoryAdapter(), toIL: FE.toIL })), { c } = ctxOf(l3), q = l3.createQueue(c, null, {}), p = l3.createProgram(c, BS); await l3.build(p, ''); assert.notStrictEqual(p.built.clc.kind, 'wasm', 'barrier 核心不走 wasm');
+    const k = l3.createKernel(p, 'k'), o = l3.createBuffer(c, {}, 16, null); l3.setArg(k, 0, o); l3.setArg(k, 1, { local: 16 }); await l3.enqueueNDRange(q, k, [4], [4], null); const rd = await l3.enqueueRead(q, o, 16, 0); assert.deepStrictEqual(Array.from(new Float32Array(rd.data.buffer, rd.data.byteOffset, 4)), [2, 3, 4, 1]);
+  } finally { WASM.compile = wcomp; }
+});
+t('wasm 驅動的 binary 容器往返（clCreateProgramWithBinary）：wasm 位元組帶著走，不經前端', async () => {
+  const wd = () => ICD.makeClcDriver({ mods: { FaClc: CLC, FaSpv: SPV, FaSpvWasm: WASM }, wasm: true }); const l1 = mkLoader(CC.createCache({ storage: CC.memoryAdapter(), toIL: FE.toIL }), [wd()]); const { p } = await buildRun(l1, SRC), bin = l1.getBinary(p);
+  let fe = 0; const l2 = mkLoader(CC.createCache({ storage: CC.memoryAdapter(), toIL: (s, o) => { fe++; return FE.toIL(s, o); } }), [wd()]); const { c } = ctxOf(l2), q = l2.createQueue(c, null, {}), p2 = l2.createProgramBinary(c, bin); await l2.build(p2, '');
+  assert.strictEqual(fe, 0); assert.strictEqual(p2.built.fromCache, 'binary'); assert.strictEqual(p2.built.clc.kind, 'wasm'); const k = l2.createKernel(p2, 'k'), o = l2.createBuffer(c, {}, 16, null); l2.setArg(k, 0, o); l2.setArg(k, 1, 4); await l2.enqueueNDRange(q, k, [4], null, null); const rd = await l2.enqueueRead(q, o, 16, 0); assert.deepStrictEqual(Array.from(new Float32Array(rd.data.buffer, rd.data.byteOffset, 4)), [0, 2, 4, 6]);
 });
 t('IL 程式（clCreateProgramWithIL）也走快取：第二次不再解碼轉換', async () => {
   const il = A.assemble(F.REDUCE), ad = CC.memoryAdapter(); let n = 0; const orig = SPV.compile; SPV.compile = (...a) => { n++; return orig.apply(SPV, a); };

@@ -207,11 +207,18 @@
     const isImg = (t) => t && typeof t === 'object' && t.im !== undefined;
     const isPipe = (t) => t && typeof t === 'object' && t.pipe !== undefined;   // OpenCL 2.0 的 pipe 型別：{pipe: 封包型別}
 
+    // 預定義巨集與 -D 選項（compile 與 source→SPIR-V 前端 clc_spv.js 共用）
+    function buildDefs(options) {
+        const defs = { __OPENCL_C_VERSION__: '120', __OPENCL_VERSION__: '120', __ENDIAN_LITTLE__: '1', CLK_LOCAL_MEM_FENCE: '1', CLK_GLOBAL_MEM_FENCE: '2' }; Object.assign(defs, IMG_DEFS, { CLK_NULL_RESERVE_ID: '0' });
+        String(options || '').split(/\s+/).forEach((o) => { const m = /^-D(\w+)(?:=(.*))?$/.exec(o); if (m) defs[m[1]] = m[2] === undefined ? '1' : m[2]; });
+        return defs;
+    }
+    // 前處理後的記號（{t:'id'|'num'|'str'|'chr'|'p', v, line}）；錯誤丟 CErr
+    const tokensOf = (src, options) => preprocess(src, buildDefs(options));
     function compile(src, options) {
         const log = [];
         try {
-            const defs = { __OPENCL_C_VERSION__: '120', __OPENCL_VERSION__: '120', __ENDIAN_LITTLE__: '1', CLK_LOCAL_MEM_FENCE: '1', CLK_GLOBAL_MEM_FENCE: '2' }; Object.assign(defs, IMG_DEFS, { CLK_NULL_RESERVE_ID: '0' }); String(options || '').split(/\s+/).forEach((o) => { const m = /^-D(\w+)(?:=(.*))?$/.exec(o); if (m) defs[m[1]] = m[2] === undefined ? '1' : m[2]; });
-            const toks = preprocess(src, defs);
+            const toks = preprocess(src, buildDefs(options));
             const kernels = {}, order = [];
             const rt = runtime(); Object.assign(rt, imageRuntime());
             // 序言：把執行期的 $ 開頭輔助函式（$W、$u64、$rsqrt…）取成區域常數，生成的程式直接用
@@ -1253,5 +1260,5 @@
         const mod = new Function('$rt', art.js)(rt);
         return { ok: true, kind: 'clc', log: '', kernels: art.kernels, mkptr: rt.mkptr, run: (name, args, gs, ls, off) => runKernel(rt, mod, art.kernels, name, args, gs, ls, off, art.gen), js: art.js, gen: art.gen };
     }
-    return { VERSION, instantiate, compile, coerceScalar, SIZE, CErr, runtime, runKernel, imageRuntime, IMG_ORDERS: ORDERS, IMG_TYPES_LIST: CTYPES };
+    return { VERSION, instantiate, tokensOf, compile, coerceScalar, SIZE, CErr, runtime, runKernel, imageRuntime, IMG_ORDERS: ORDERS, IMG_TYPES_LIST: CTYPES };
 });
