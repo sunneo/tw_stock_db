@@ -1074,21 +1074,52 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>, @builtin(workgroup_id) wid
       });
     }
     // spec: { wgsl, groups:[gx,gy], bindings:[{ name, dtype:'f32'|'i32', n, write, data:TypedArray|null }] }
+    // 每幀都呼叫的核心（numba 的 nbody 這類）：緩衝區用池子重用（不每次配置／遺棄），派送與所有輸出的複製放同一個命令編碼器、只 submit 一次，
+    // 讀回的 mapAsync 一起等（原本是每個輸出各一次 submit＋等待）。
+    var kpool = { free: {}, bytes: 0, maxPerKey: 8 };
+    function poolGet(dev, size, usage) {
+      var key = size + '|' + usage, list = kpool.free[key];
+      if (list && list.length) { kpool.bytes -= size; return list.pop(); }
+      return dev.createBuffer({ size: size, usage: usage });
+    }
+    function poolPut(buf, size, usage) {
+      var key = size + '|' + usage, list = kpool.free[key] || (kpool.free[key] = []);
+      if (list.length >= kpool.maxPerKey || kpool.bytes + size > 64 * 1048576) { try { buf.destroy(); } catch (_) { /* 已釋放 */ } return; }
+      list.push(buf); kpool.bytes += size;
+    }
     function wgKernel(dev, spec) {
       return withScope(dev, async function () {
-        var usage = USAGE.STORAGE | USAGE.COPY_DST | USAGE.COPY_SRC;
-        var bufs = spec.bindings.map(function (b) {
-          if (b.data) return makeBuf(dev, b.data, usage);
-          return dev.createBuffer({ size: Math.max(4, b.n * 4), usage: usage });
-        });
-        var pipe = pipeline(dev, 'kernel:' + spec.wgsl, spec.wgsl);
-        dispatch(dev, pipe, bufs, spec.groups[0], spec.groups[1]);
-        var outs = {};
-        for (var i = 0; i < spec.bindings.length; i++) {
-          var b = spec.bindings[i];
-          if (b.write) outs[b.name] = await readBackBytes(dev, bufs[i], b.n * 4);
+        var usage = USAGE.STORAGE | USAGE.COPY_DST | USAGE.COPY_SRC, rusage = USAGE.MAP_READ | USAGE.COPY_DST;
+        var held = [], ok = false;   // [{ buf, size, usage }]
+        var get = function (size, u) { var buf = poolGet(dev, size, u); held.push({ buf: buf, size: size, usage: u }); return buf; };
+        try {
+          var bufs = spec.bindings.map(function (b) {
+            var size = Math.max(4, b.n * 4), buf = get(size, usage);
+            if (b.data) dev.queue.writeBuffer(buf, 0, b.data); else dev.queue.writeBuffer(buf, 0, new Uint8Array(size));   // 沒給資料＝零（池子裡的緩衝區是舊內容）
+            return buf;
+          });
+          var pipe = pipeline(dev, 'kernel:' + spec.wgsl, spec.wgsl);
+          var bg = dev.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries: bufs.map(function (b, i) { return { binding: i, resource: { buffer: b } }; }) });
+          var enc = dev.createCommandEncoder();
+          var pass = enc.beginComputePass();
+          pass.setPipeline(pipe); pass.setBindGroup(0, bg); pass.dispatchWorkgroups(spec.groups[0], spec.groups[1] || 1, 1); pass.end();
+          var reads = [];
+          for (var i = 0; i < spec.bindings.length; i++) {
+            var b = spec.bindings[i];
+            if (!b.write) continue;
+            var bytes = b.n * 4, rb = get(Math.max(4, bytes), rusage);
+            enc.copyBufferToBuffer(bufs[i], 0, rb, 0, Math.max(4, bytes));
+            reads.push({ name: b.name, rb: rb, bytes: bytes });
+          }
+          dev.queue.submit([enc.finish()]);
+          await Promise.all(reads.map(function (r) { return r.rb.mapAsync(USAGE.MAP_READ); }));
+          var outs = {};
+          reads.forEach(function (r) { outs[r.name] = new Uint8Array(r.rb.getMappedRange().slice(0, r.bytes)); r.rb.unmap(); });
+          ok = true;
+          return outs;
+        } finally {
+          held.forEach(function (h) { if (ok) poolPut(h.buf, h.size, h.usage); else { try { h.buf.destroy(); } catch (_) { /* */ } } });
         }
-        return outs;
       });
     }
     async function runKernel(spec) {

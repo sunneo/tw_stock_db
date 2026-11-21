@@ -134,6 +134,8 @@ function fakeNavigator(opts) {
     } else if (k === 'mul') {
       const n = u32(e[3])[0];
       f32(e[2], n).set(core.mulRef(f32(e[0], n), f32(e[1], n)));
+    } else if (k === 'user_axpb') {   // 任意核心（numba 的 WGSL）測試用：e[0] 輸入、e[1] 輸出（先加上自己原有的值）、e[2] 輸出 2：out = in * 2 + out；out2 = in + 1
+      const n = f32(e[0], 3).length; f32(e[1], n).forEach((v, i, arr) => { arr[i] = f32(e[0], n)[i] * 2 + v; }); f32(e[2], n).forEach((v, i, arr) => { arr[i] = f32(e[0], n)[i] + 1; });
     } else {
       throw new Error('假裝置不認得核心：' + k);
     }
@@ -636,6 +638,16 @@ function seeded(n, seed) {
     assert.strictEqual(p2.available, true);
     assert.ok(!p2.reason, '可用時不應有 reason');
     assert.deepStrictEqual(bc.validateProbeResult(p2), []);
+  });
+
+  await check('任意核心（runKernel）：緩衝區重用不殘留舊資料、多個輸出一起讀回、沒給資料的緩衝區是零', async () => {
+    const f = fakeNavigator(); const rt = core.createRuntime({ navigator: f.nav, webgl2: null });
+    const W = '// @kernel user_axpb\n';
+    const run = (inp, o1) => rt.runKernel({ wgsl: W, groups: [1, 1], bindings: [{ name: 'a', dtype: 'f32', n: 3, write: false, data: Float32Array.from(inp) }, { name: 'o', dtype: 'f32', n: 3, write: true, data: o1 ? Float32Array.from(o1) : null }, { name: 'p', dtype: 'f32', n: 3, write: true, data: null }] });
+    const f32o = (r, k) => Array.from(new Float32Array(r.outputs[k].buffer, r.outputs[k].byteOffset, 3));
+    const r1 = await run([1, 2, 3], [10, 20, 30]); assert.ok(r1.ran, r1.reason); assert.deepStrictEqual(f32o(r1, 'o'), [12, 24, 36]); assert.deepStrictEqual(f32o(r1, 'p'), [2, 3, 4]);
+    const r2 = await run([5, 6, 7], null); assert.deepStrictEqual(f32o(r2, 'o'), [10, 12, 14], '上一次的輸出不能殘留（沒給資料就是零）'); assert.deepStrictEqual(f32o(r2, 'p'), [6, 7, 8]);
+    const r3 = await run([0, 0, 0], [1, 1, 1]); assert.deepStrictEqual(f32o(r3, 'o'), [1, 1, 1]);
   });
 
   console.log('\n' + pass + ' 通過，' + fail + ' 失敗');
