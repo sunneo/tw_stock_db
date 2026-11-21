@@ -52,7 +52,7 @@
         if (m.clSrc) {
           try {
             var clh = {}; new Function('module', 'require', 'self', m.clSrc)(undefined, undefined, clh);
-            await clh.FaClHostPage.prepare(py, { mods: clh, nav: self.navigator, makeCanvas: function () { return new OffscreenCanvas(4, 4); }, jspi: typeof WebAssembly !== 'undefined' && typeof WebAssembly.Suspending === 'function' && typeof WebAssembly.promising === 'function', files: m.files, onProgress: function (t) { self.postMessage({ type: 'err', text: '[pyopencl] ' + t + '\n' }); } });
+            clh.FaClHostPage.wantsPyopencl(m.src); await clh.FaClHostPage.prepare(py, { mods: clh, nav: self.navigator, makeCanvas: function () { return new OffscreenCanvas(4, 4); }, jspi: typeof WebAssembly !== 'undefined' && typeof WebAssembly.Suspending === 'function' && typeof WebAssembly.promising === 'function', files: m.files, onProgress: function (t) { self.postMessage({ type: 'err', text: '[pyopencl] ' + t + '\n' }); } });
           } catch (e) { self.postMessage({ type: 'err', text: '[提示] pyopencl 準備失敗：' + String((e && e.message) || e).slice(0, 300) + '\n' }); }
         }
         py.FS.mkdirTree('/work');
@@ -72,6 +72,7 @@
         py.runPython(m.prelude);
         py.globals.set('__fa_src__', m.src);
         py.globals.set('__fa_path__', '/work/' + m.scriptName);
+        py.globals.set('__fa_argv_json__', JSON.stringify(m.argv && m.argv.length ? m.argv : [m.scriptName]));   // sys.argv：腳本名稱＋命令列參數（python3 x.py --bench 這種）
         py.runPython(m.runner);
         // 程式寫在目前目錄（/work）的檔案送回頁面，讓終端機的 ls 看得到（例如 missile 範例寫出的貼圖）
         function syncBack() {
@@ -129,6 +130,8 @@
     'def go():',
     '    fa_bridge.install_hooks()',
     '    import builtins, io',
+    '    import json',
+    '    sys.argv = [str(a) for a in json.loads(__fa_argv_json__)]',
     '    def _readline(prompt=""):',
     '        return fa_bridge.call("stdin.readline", {"prompt": str(prompt)})',
     '    def _input(prompt=""):',

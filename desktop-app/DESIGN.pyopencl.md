@@ -350,3 +350,9 @@ GPU 驅動（§10）原本只有 source→KIR 一條裝置路線，clCreateProgr
 - **接線**：`makeGpuDriver.compileIL` 對每個核心試 KIR；通過 `FaKir.validate`、參數名一致、剛好一個輸出才有 `gpu`；產物（含 KIR）照 §14 存進快取，target 字串加 `.sk<版本>` 使舊快取失效。
 - **測試**：`spv_kir_test.js` 9 項（與 clc 差分）；`cl_cache_test` 新增 IL 程式在 GPU 驅動的路線與快取重建。
 - **還沒做**：KIR 本身的限制（一維、f32）決定了上限；要讓更多 IL 核心上 GPU，要擴充 KIR 裝置層，不是這裡。
+
+### 16.4 終端機 Worker 的接線（2026-11-22 補）
+- 終端機 `python3 x.py`：腳本 import pygame／gui／OpenGL／pyopencl 才走 Worker（`py_async.js`），其餘走同步內建路徑（不載套件）。Worker 會在腳本 import pyopencl／numba／cudaweb 時收到 OpenCL 模組（`clSrc`），numba／cudaweb 只做核心準備（`wantsPyopencl(src)` 先記腳本、`prepare` 據此跳過 pyopencl 下載）。
+- 沒有 WebGPU 時，cudaweb 核心改走 OpenCL C→wasm（nbody3d.py --bench：256 個天體 13 ms／步；原本是 Python 逐執行緒模擬，120 秒以上跑不完）。
+- Worker 現在帶 `sys.argv`（腳本名稱＋命令列參數）；之前參數被丟掉，`python3 nbody3d.py --bench` 會變成開視窗。
+- 範例在真 Electron 終端機的實跑檢查：`scripts/eval/pyopencl_examples.eval.js`。

@@ -9,9 +9,11 @@ const session = fa._resolveTerminalSession(t.id).session;
 await wait(800);
 await fa._runTerminalCommand(session, 'cd /work/examples/python/opencl');
 const list = ['vector_add', 'nbody_float4', 'array_ops', 'device_info', 'complex_mandelbrot', 'image_filter', 'image_formats_1d_buffer', 'local_memory_reduction', 'matmul_tiled', 'spirv_vector_add', 'gl_interop', 'gl_texture_interop', 'svm_demo', 'pipe_demo'];
+const extra = { 'gpgpu/nbody3d_cl --bench': 'cd ../gpgpu && python3 nbody3d_cl.py --bench 256 --steps 3', 'gpgpu/nbody3d --bench（cudaweb 的 CPU 原生路線）': 'cd ../gpgpu && python3 nbody3d.py --bench 128 --steps 2' };
+list.push(...Object.keys(extra));
 for (const f of list) {
   const t0 = Date.now();
-  try { const r = await fa._terminalRunCommand(session, 'python3 ' + f + '.py', { guiTimeoutSec: 20 }); const o = String(r.stdout || '') + String(r.stderr || ''); R[f] = { code: r.exit_code, ms: Date.now() - t0, tail: o.slice(-260) }; }
+  try { const r = await fa._terminalRunCommand(session, extra[f] || ('python3 ' + f + '.py'), { guiTimeoutSec: 20 }); const o = String(r.stdout || '') + String(r.stderr || ''); R[f] = { code: r.exit_code, ms: Date.now() - t0, tail: o.slice(-260) }; }
   catch (e) { R[f] = { code: -1, error: String(e).slice(0, 200) }; }
 }
 R.all_ok = list.every((f) => R[f].code === 0);
