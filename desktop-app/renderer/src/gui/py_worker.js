@@ -52,7 +52,10 @@
         if (m.clSrc) {
           try {
             var clh = {}; new Function('module', 'require', 'self', m.clSrc)(undefined, undefined, clh);
-            clh.FaClHostPage.wantsPyopencl(m.src); await clh.FaClHostPage.prepare(py, { mods: clh, nav: self.navigator, makeCanvas: function () { return new OffscreenCanvas(4, 4); }, jspi: typeof WebAssembly !== 'undefined' && typeof WebAssembly.Suspending === 'function' && typeof WebAssembly.promising === 'function', files: m.files, onProgress: function (t) { self.postMessage({ type: 'err', text: '[pyopencl] ' + t + '\n' }); } });
+            clh.FaClHostPage.wantsPyopencl(m.src);
+            var skipCore = false;   // 只用 numba／cudaweb 而且有 WebGPU：核心照 WebGPU 跑，不準備 OpenCL 後端（它只是沒有 WebGPU 時的 CPU 退路）
+            if (clh.FaClHostPage.coreOnly && clh.FaClHostPage.coreOnly(m.src)) { try { skipCore = !!(self.navigator && self.navigator.gpu && await self.navigator.gpu.requestAdapter()); } catch (e) { skipCore = false; } }
+            if (!skipCore) await clh.FaClHostPage.prepare(py, { mods: clh, nav: self.navigator, makeCanvas: function () { return new OffscreenCanvas(4, 4); }, jspi: typeof WebAssembly !== 'undefined' && typeof WebAssembly.Suspending === 'function' && typeof WebAssembly.promising === 'function', files: m.files, onProgress: function (t) { self.postMessage({ type: 'err', text: '[pyopencl] ' + t + '\n' }); } });
           } catch (e) { self.postMessage({ type: 'err', text: '[提示] pyopencl 準備失敗：' + String((e && e.message) || e).slice(0, 300) + '\n' }); }
         }
         py.FS.mkdirTree('/work');

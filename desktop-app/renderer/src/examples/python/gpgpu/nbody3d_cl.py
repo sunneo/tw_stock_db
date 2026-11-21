@@ -13,9 +13,9 @@ Run:    python nbody3d_cl.py [N]                     N bodies (default 3072); a 
         python nbody3d_cl.py --seed 5 --loops 500    random seed; frames per cycle (the C program uses 2000)
 
 Same physics, controls and look as nbody3d.py (it imports the camera, overlay and parameter code from there, so keep the two files together).
-The kernels are written so the GPU device can run them: one output buffer per kernel, float buffers, one dimension. The acceleration is
-four kernels (x, y, z, potential), then velocity and position updates per axis; velocity and position buffers ping-pong between two copies so a
-kernel never reads and writes the same buffer.
+The kernels are written so the GPU device can run them: one output buffer per kernel, float buffers, one dimension. Bodies are float4 (x y z mass), so a frame
+is three kernels: one O(N^2) pass for the acceleration and potential, then the velocity and position updates; velocity and position buffers
+ping-pong between two copies so a kernel never reads and writes the same buffer.
 """
 import argparse
 import sys
@@ -27,48 +27,63 @@ import pyopencl as cl
 from nbody3d import (Cam, Sim, NUM_BODY, LOOP, MIN_VELOCITY, PARTICLE_SIZE_DEFAULT, BTN_CPU, BTN_GPU, SLIDER_SIM_Y, SLIDER_PARTICLE_Y,
                      glow_colors, hud_ops, in_slider, inside, slider_hit)
 
-ACCEL = """
-__kernel void %(name)s(__global const float *px, __global const float *py, __global const float *pz, __global const float *m,
-                       __global float *out, int n, float soft2, float g)
+SRC = """
+__kernel void accel(__global const float4 *p, __global float4 *a, int n, float soft2, float g)
 {
     int i = get_global_id(0);
     if (i < n) {
-        float xi = px[i];
-        float yi = py[i];
-        float zi = pz[i];
-        float acc = 0.0f;
+        float xi = p[i].x;
+        float yi = p[i].y;
+        float zi = p[i].z;
+        float ax = 0.0f;
+        float ay = 0.0f;
+        float az = 0.0f;
+        float pt = 0.0f;
         for (int j = 0; j < n; j++) {
             if (j != i) {
-                float dx = px[j] - xi;
-                float dy = py[j] - yi;
-                float dz = pz[j] - zi;
+                float dx = p[j].x - xi;
+                float dy = p[j].y - yi;
+                float dz = p[j].z - zi;
+                float mj = p[j].w;
                 float d2 = dx * dx + dy * dy + dz * dz + soft2;
                 float inv = 1.0f / sqrt(d2);
-                float s = g * m[j] * inv * inv * inv;
-                acc += %(term)s;
+                float s = g * mj * inv * inv * inv;
+                ax += s * dx;
+                ay += s * dy;
+                az += s * dz;
+                pt += mj * inv;
             }
         }
-        out[i] = acc;
+        a[i] = (float4)(ax, ay, az, pt);       /* acceleration sums in x y z, potential in w */
     }
 }
-"""
 
-SRC = "".join(ACCEL % {"name": name, "term": term} for name, term in (
-    ("accx", "s * dx"), ("accy", "s * dy"), ("accz", "s * dz"), ("accpot", "m[j] * inv"))) + """
-__kernel void vel(__global const float *v, __global const float *a, __global float *vout, int n, float dt)
-{
-    int i = get_global_id(0);
-    if (i < n) vout[i] = v[i] + a[i] * dt;
-}
-
-__kernel void pos(__global const float *p, __global const float *v, __global float *pout, int n, float dt, float lo, float hi)
+__kernel void vel(__global const float4 *v, __global const float4 *a, __global float4 *vout, int n, float dt)
 {
     int i = get_global_id(0);
     if (i < n) {
-        float c = v[i];
-        if (c > hi) c = (c + hi) * 0.5f;      /* the C program's clampf: a value past a limit moves halfway back toward it */
-        if (c < lo) c = (c + lo) * 0.5f;
-        pout[i] = p[i] + c * dt;
+        float4 vv = v[i];
+        float4 aa = a[i];
+        vout[i] = (float4)(vv.x + aa.x * dt, vv.y + aa.y * dt, vv.z + aa.z * dt, 0.0f);
+    }
+}
+
+__kernel void pos(__global const float4 *p, __global const float4 *v, __global float4 *pout, int n, float dt, float lo, float hi)
+{
+    int i = get_global_id(0);
+    if (i < n) {
+        float4 pp = p[i];
+        float4 vv = v[i];
+        float cx = vv.x;
+        float cy = vv.y;
+        float cz = vv.z;
+        if (cx > hi) cx = (cx + hi) * 0.5f;      /* the C program's clampf: a value past a limit moves halfway back toward it */
+        if (cx < lo) cx = (cx + lo) * 0.5f;
+        if (cy > hi) cy = (cy + hi) * 0.5f;
+        if (cy < lo) cy = (cy + lo) * 0.5f;
+        if (cz > hi) cz = (cz + hi) * 0.5f;
+        if (cz < lo) cz = (cz + lo) * 0.5f;
+        pout[i] = (float4)(pp.x + cx * dt, pp.y + cy * dt, pp.z + cz * dt, pp.w);
     }
 }
 """
@@ -84,7 +99,7 @@ def find_device(kind):
 
 
 class ClCompute(object):
-    """Bodies in device buffers and the kernels that advance them one frame."""
+    """Bodies in float4 device buffers (x y z mass; velocity; acceleration + potential) and the three kernels that advance them one frame."""
 
     def __init__(self, kind, n):
         dev = find_device(kind)
@@ -94,55 +109,48 @@ class ClCompute(object):
         self.ctx = cl.Context([dev])
         self.q = cl.CommandQueue(self.ctx)
         prg = cl.Program(self.ctx, SRC).build()
-        self.k = {name: cl.Kernel(prg, name) for name in ("accx", "accy", "accz", "accpot", "vel", "pos")}
-        mf = cl.mem_flags
-        nb = n * 4
-        mk = lambda: cl.Buffer(self.ctx, mf.READ_WRITE, nb)
-        self.p = [[mk(), mk()] for _ in range(3)]       # position x, y, z: two copies each (ping-pong)
-        self.v = [[mk(), mk()] for _ in range(3)]
-        self.acc = [mk() for _ in range(3)]
-        self.potb = mk()
-        self.mass = mk()
+        self.k = {name: cl.Kernel(prg, name) for name in ("accel", "vel", "pos")}
+        mk = lambda: cl.Buffer(self.ctx, cl.mem_flags.READ_WRITE, n * 16)
+        self.p = [mk(), mk()]            # x y z mass, two copies (ping-pong)
+        self.v = [mk(), mk()]            # vx vy vz 0
+        self.acc = mk()                  # ax ay az potential
         self.cur = 0
 
-    def _put(self, buf, host):
-        cl.enqueue_copy(self.q, buf, np.ascontiguousarray(host, dtype=np.float32))
-
-    def _get(self, buf):
-        out = np.empty(self.n, np.float32)
+    def _read4(self, buf):
+        out = np.empty((self.n, 4), np.float32)
         cl.enqueue_copy(self.q, out, buf)
         return out
 
     def upload(self, pos, vel, mass):
         self.cur = 0
+        p4 = np.zeros((self.n, 4), np.float32); v4 = np.zeros((self.n, 4), np.float32)
         for a in range(3):
-            self._put(self.p[a][0], pos[a])
-            self._put(self.v[a][0], vel[a])
-        self._put(self.mass, mass)
+            p4[:, a] = pos[a]; v4[:, a] = vel[a]
+        p4[:, 3] = mass
+        cl.enqueue_copy(self.q, self.p[0], p4)
+        cl.enqueue_copy(self.q, self.v[0], v4)
         self.q.finish()
 
     def step(self, dt, soft2, g, vmax):
-        n, c, k = np.int32(self.n), self.cur, self.k
-        px, py, pz = (self.p[a][c] for a in range(3))
-        f32 = np.float32
-        for name, out in (("accx", self.acc[0]), ("accy", self.acc[1]), ("accz", self.acc[2]), ("accpot", self.potb)):
-            k[name].set_args(px, py, pz, self.mass, out, n, f32(soft2), f32(g))
-            cl.enqueue_nd_range_kernel(self.q, k[name], (self.n,), None)
-        for a in range(3):
-            k["vel"].set_args(self.v[a][c], self.acc[a], self.v[a][1 - c], n, f32(dt))
-            cl.enqueue_nd_range_kernel(self.q, k["vel"], (self.n,), None)
-            k["pos"].set_args(self.p[a][c], self.v[a][1 - c], self.p[a][1 - c], n, f32(dt), f32(MIN_VELOCITY), f32(vmax))
-            cl.enqueue_nd_range_kernel(self.q, k["pos"], (self.n,), None)
+        n, c, k, f32 = np.int32(self.n), self.cur, self.k, np.float32
+        k["accel"].set_args(self.p[c], self.acc, n, f32(soft2), f32(g))
+        cl.enqueue_nd_range_kernel(self.q, k["accel"], (self.n,), None)
+        k["vel"].set_args(self.v[c], self.acc, self.v[1 - c], n, f32(dt))
+        cl.enqueue_nd_range_kernel(self.q, k["vel"], (self.n,), None)
+        k["pos"].set_args(self.p[c], self.v[1 - c], self.p[1 - c], n, f32(dt), f32(MIN_VELOCITY), f32(vmax))
+        cl.enqueue_nd_range_kernel(self.q, k["pos"], (self.n,), None)
         self.cur = 1 - c
 
     def positions(self):
-        return tuple(self._get(self.p[a][self.cur]) for a in range(3))
+        p4 = self._read4(self.p[self.cur])                    # one read for all three coordinates
+        return tuple(np.ascontiguousarray(p4[:, a]) for a in range(3))
 
     def velocities(self):
-        return tuple(self._get(self.v[a][self.cur]) for a in range(3))
+        v4 = self._read4(self.v[self.cur])
+        return tuple(np.ascontiguousarray(v4[:, a]) for a in range(3))
 
     def potential(self):
-        return self._get(self.potb)
+        return np.ascontiguousarray(self._read4(self.acc)[:, 3])
 
 
 class ClSim(Sim):
@@ -184,7 +192,7 @@ class ClSim(Sim):
         """One frame on the device, then the three positions come back for drawing. True when a cycle (LOOP frames) has just ended."""
         t0 = time.time()
         a0 = time.perf_counter()
-        self.cl.step(self.dt, self.soft2, self.gravity, self.max_v)      # queues the ten kernels
+        self.cl.step(self.dt, self.soft2, self.gravity, self.max_v)      # queues the three kernels
         a1 = time.perf_counter()
         self.x, self.y, self.z = self.cl.positions()                      # the read waits for them to finish, so this is where the device time shows
         self._center = None

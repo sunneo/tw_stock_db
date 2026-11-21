@@ -465,6 +465,13 @@
             const walk = (stmts) => { let m = 1; for (const s of stmts) { let f = 1; if (s.k === 'for') { const b = typeof s.bound === 'number' ? s.bound : Number(scalars && scalars[s.bound]) || 1; f = Math.max(1, b) * walk(s.body); } else if (s.k === 'if') f = walk(s.body); if (f > m) m = f; } return m; };
             return walk(kir.body || []);
         };
+        const elemCount = (h, kind) => Math.max(1, Math.ceil(h.nbytes / (kind === 'f32x4' ? 16 : 4)));
+        const padTo = (a, h) => { const want = elemCount(h, h.kind) * (h.kind === 'f32x4' ? 4 : 1); if (a.length === want) return a; const o = new Float32Array(want); o.set(a.subarray(0, Math.min(a.length, want))); return o; };
+        const need = async (h, kind) => {
+            if (h.kind === kind) return h.h;
+            if (!h.kind) { h.h = dev.alloc(elemCount(h, kind), kind); h.kind = kind; if (h.pending) { dev.upload(h.h, padTo(h.pending, h)); h.pending = null; } return h.h; }
+            const old = await dev.download(h.h); dev.free(h.h); h.h = dev.alloc(elemCount(h, kind), kind); h.kind = kind; dev.upload(h.h, padTo(old, h)); return h.h;
+        };
         const st = { gpuLaunches: 0, hostLaunches: 0, tuned: 0 };
         const tunedKernels = new Set();
         return {
@@ -528,13 +535,17 @@
                 if (info.N * loopFactor(def.gpu.kir, info.scalars) < smallN && !info.devOnly) return 'host';
                 return 'dev';
             },
-            alloc: (nbytes) => dev.alloc(Math.max(1, Math.ceil(nbytes / 4)), 'f32'),
-            upload: (h, u8) => dev.upload(h, f32(u8)),
-            download: async (h) => { const r = await dev.download(h); return new Uint8Array(r.buffer, r.byteOffset, r.byteLength); },
-            free: (h) => dev.free(h),
+            // 裝置緩衝區的元素型別由用它的核心決定（f32 或 f32x4：N 與每元素大小不同），配置要等到第一次被核心用到才知道。
+            // 句柄＝{ nbytes, kind, h, pending }：kind 還沒定時上傳的資料先存著；同一個緩衝區後來被另一種型別的核心用到就讀回重配（少見）。
+            alloc: (nbytes) => ({ nbytes, kind: null, h: null, pending: null }),
+            upload: (h, u8) => { const a = f32(u8); if (!h.kind) { h.pending = new Float32Array(a); return; } return dev.upload(h.h, padTo(a, h)); },
+            download: async (h) => { if (!h.kind) return h.pending ? new Uint8Array(h.pending.buffer.slice(0, h.nbytes)) : new Uint8Array(h.nbytes); const r = await dev.download(h.h); return new Uint8Array(r.buffer, r.byteOffset, Math.min(r.byteLength, h.nbytes)); },
+            free: (h) => { if (h.h) dev.free(h.h); h.h = null; h.kind = null; h.pending = null; },
             // 裝置路線：同步編碼、不等 GPU 完成（命令編碼器批次提交；讀回或 finish 才同步）
             launch: async (program, name, binds, scalars, N, nd) => {
                 const d = program.kernels[name].gpu;
+                const hb = binds; binds = {};
+                for (const p of d.kir.params) if (p.kind === 'buf') binds[p.name] = await need(hb[p.name], p.elem);   // 句柄 → 這個核心要的元素型別的裝置緩衝區
                 if (nd && nd.ls && dev.setWorkgroup && nd.ls[0] > 0) { try { dev.setWorkgroup(d.kir, nd.ls[0]); } catch (_) { /* 工作群大小不合就用裝置的預設／自動調校 */ } }
                 if (dev.ensureTuned && !tunedKernels.has(d.kir) && N >= 65536) { tunedKernels.add(d.kir); try { await dev.ensureTuned(d.kir, binds, scalars, N); st.tuned++; } catch (_) { /* 調校失敗不影響結果 */ } }   // 大問題第一次：自動調校工作群大小
                 dev.dispatch(d.kir, binds, binds[d.out], scalars, N); st.gpuLaunches++;

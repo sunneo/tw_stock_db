@@ -195,4 +195,15 @@ t('★ GPU 驅動的路由看工作量（工作項數×迴圈次數），不只�
   assert.strictEqual(await run(64, 3000), 3000); assert.ok(cd.dispatch >= 1, '64 個工作項、每個迴圈 3000 次：工作量大，上裝置');
 });
 
+t('★ GPU 驅動：float4 緩衝區的核心在裝置上跑（裝置緩衝區依核心的元素型別配置：f32x4 是 N 個 16 位元組元素）', async () => {
+  const cd = { dispatch: 0, elems: [] }, jd = ICD.jsDevice(K2), dev = { alloc: (n, e) => { cd.elems.push(e + ':' + n); return jd.alloc(n, e); }, upload: (...a) => jd.upload(...a), download: (...a) => jd.download(...a), dispatch: (...a) => { cd.dispatch++; return jd.dispatch(...a); }, free: (...a) => jd.free(...a) };
+  const SRC = '__kernel void sc(__global const float4* p, __global float4* q, int n, float s) { int i = get_global_id(0); if (i < n) { float4 v = p[i]; q[i] = (float4)(v.x * s, v.y * s, v.z * s, v.w); } }';
+  const l = mkLoader(CC.createCache({ storage: CC.memoryAdapter() }), [ICD.makeGpuDriver({ mods: { FaClFront: FR2, FaKir: K2, FaClc: CLC, FaSpv: SPV }, device: dev, backend: 'webgpu', smallN: 64 })]);
+  const { c } = ctxOf(l), q = l.createQueue(c, null, {}), p = l.createProgram(c, SRC); await l.build(p, '');
+  const N = 256, k = l.createKernel(p, 'sc'), a = l.createBuffer(c, {}, N * 16, new Float32Array(N * 4).map((_, i) => i)), o = l.createBuffer(c, {}, N * 16, null);
+  l.setArg(k, 0, a); l.setArg(k, 1, o); l.setArg(k, 2, N); l.setArg(k, 3, 2); await l.enqueueNDRange(q, k, [N], null, null);
+  const r = await l.enqueueRead(q, o, N * 16, 0), out = new Float32Array(r.data.buffer, r.data.byteOffset, N * 4);
+  assert.ok(cd.dispatch >= 1, '上裝置'); assert.ok(cd.elems.every((e) => e === 'f32x4:' + N), JSON.stringify(cd.elems)); assert.deepStrictEqual(Array.from(out.slice(0, 8)), [0, 2, 4, 3, 8, 10, 12, 7]);
+});
+
 (async () => { for (const [name, fn] of queue) { try { await fn(); pass++; } catch (e) { fail++; console.error('FAIL ' + name + '\n   ' + String(e.stack || e.message).split('\n').slice(0, 7).join('\n   ')); } } console.log(pass + ' passed, ' + fail + ' failed'); process.exit(fail ? 1 : 0); })();

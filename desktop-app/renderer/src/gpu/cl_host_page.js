@@ -75,7 +75,7 @@
         }
         if (py.__faClPreparing) return py.__faClPreparing;
         py.__faClPreparing = (async () => {
-            const log = o.onProgress || (() => {}), files = o.files || {}, FS = py.FS;
+            const log0 = o.onProgress || (() => {}), log = (full || !o.onProgress) ? log0 : (() => {}), files = o.files || {}, FS = py.FS;
             const put = (dst, key) => { if (files[key] == null) throw new Error('缺少 ' + key + '（FA_PYBRIDGE_FILES 沒有嵌入）'); try { FS.mkdirTree(dst.slice(0, dst.lastIndexOf('/'))); } catch (_) { /* 已存在 */ } FS.writeFile(dst, files[key]); };
             put('/fa_pyopencl_boot/fa_pyopencl.py', 'fa_pyopencl.py'); put('/fa_pyopencl_boot/_cl.py', 'pyopencl_backend/_cl.py'); put('/fa_pyopencl_boot/siphash24.py', 'pyopencl_backend/test_support/siphash24.py');
             if (files['fa_opengl_platform.py'] != null) put('/fa_pyopencl_boot/fa_opengl_platform.py', 'fa_opengl_platform.py');   // GL 互通（GLBuffer）用；沒有 OpenGL 的程式不會載入它
@@ -83,7 +83,8 @@
             if (!py.__faClModule) py.registerJsModule('_fa_opencl', { call: async (op, argsJson, bytes) => { const H = await host(); return H.call(String(op), String(argsJson || '{}'), bytes == null ? null : bytes); }, describe: async () => (await host()).describe() });
             log('載入 numpy 與相依套件…');
             // Pyodide 發行版有的套件（名字以 pyodide-lock.json 為準；逐一載入，缺哪個就略過並記下，不讓整個準備失敗）
-            for (const name of ['micropip', 'numpy', 'markupsafe', 'typing-extensions', 'platformdirs']) { try { await py.loadPackage(name); } catch (e) { log('套件 ' + name + ' 載入失敗：' + String((e && e.message) || e).slice(0, 120)); } }
+            // 核心模式（numba／cudaweb）只要 numpy，也不印進度（腳本沒有用 pyopencl，不該看到 pyopencl 的訊息）
+            for (const name of (full ? ['micropip', 'numpy', 'markupsafe', 'typing-extensions', 'platformdirs'] : ['numpy'])) { try { await py.loadPackage(name); } catch (e) { log('套件 ' + name + ' 載入失敗：' + String((e && e.message) || e).slice(0, 120)); } }
             if (!(py.loadedPackages && py.loadedPackages.numpy)) throw new Error('numpy 載入失敗（多半是下載 Pyodide 套件時網路／CDN 暫時不通）；稍後重新執行會再試一次');   // 不能在 numpy 沒載入時標成「已準備好」，否則之後的執行都會直接略過、腳本 import numpy 失敗
             if (!full) { py.runPython("import sys\nif '/fa_pyopencl_boot' not in sys.path:\n    sys.path.insert(0, '/fa_pyopencl_boot')"); py.__faClCoreReady = true; py.__faClModule = true; log('OpenCL 後端（核心）已準備好'); return; }   // 只有核心：cudaweb 的 CPU 原生路線用 _cl，不下載 pyopencl
             py.__faClModule = true;
@@ -109,5 +110,7 @@
     const wantsCore = (src) => /(?:^|\n)[ \t]*(?:import|from)[ \t]+(?:numba|cudaweb)\b/.test(String(src || ''));
     const wantsPyopencl = (src) => { lastText = String(src || ''); return wantsPy(src) || wantsCore(src); };
 
-    return { create, prepare, wantsPyopencl, ASSEMBLE_PY };
+    // 只用 numba／cudaweb、沒有 import pyopencl 的腳本：OpenCL 後端只是 cudaweb 沒有 WebGPU 時的 CPU 原生退路。有 WebGPU 時呼叫端不要準備它（不要讓沒用 OpenCL 的程式走 OpenCL）。
+    const coreOnly = (src) => wantsCore(src) && !wantsPy(src);
+    return { create, prepare, wantsPyopencl, coreOnly, ASSEMBLE_PY };
 });
