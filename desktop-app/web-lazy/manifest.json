@@ -22,8 +22,8 @@
    "names": [
     "FA_PYBRIDGE_FILES"
    ],
-   "size": 820850,
-   "md5": "571897c1a2e2997937618120226022da"
+   "size": 860424,
+   "md5": "eef008e334b7c03b38df2fdd65cc39ca"
   },
   "pyexamples": {
    "file": "chunks/pyexamples.js",
@@ -1927,7 +1927,7 @@
   }
  },
  "core": {
-  "size": 6883909,
-  "md5": "325ec24c698bc8fae6350ad2465cd52d"
+  "size": 6885427,
+  "md5": "69e4f067046db09229338f205376f36f"
  }
 }
