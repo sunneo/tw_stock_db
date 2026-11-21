@@ -185,4 +185,14 @@ t('★ IL 程式（clCreateProgramWithIL）在 GPU 驅動走 SPIR-V→KIR：簡�
   const l2 = mkLoader(CC.createCache({ storage: ad }), [gd()]); const r2 = await go(l2, 4096); assert.strictEqual(r2.p.built.fromCache, 'bin'); assert.ok(cd.dispatch > n1, '重建後仍走裝置'); assert.strictEqual(r2.out[7], 21);
 });
 
+t('★ GPU 驅動的路由看工作量（工作項數×迴圈次數），不只看工作項數：O(N²) 的核心 N 小也上裝置', async () => {
+  const cd = { dispatch: 0 }, jd = ICD.jsDevice(K2), dev = { alloc: (...a) => jd.alloc(...a), upload: (...a) => jd.upload(...a), download: (...a) => jd.download(...a), dispatch: (...a) => { cd.dispatch++; return jd.dispatch(...a); }, free: (...a) => jd.free(...a) };
+  const SRC = '__kernel void acc(__global const float* a, __global float* o, int m, int n) { int i = get_global_id(0); if (i < n) { float s = 0.0f; for (int j = 0; j < m; j++) s += a[j]; o[i] = s; } }';
+  const l = mkLoader(CC.createCache({ storage: CC.memoryAdapter() }), [ICD.makeGpuDriver({ mods: { FaClFront: FR2, FaKir: K2, FaClc: CLC, FaSpv: SPV }, device: dev, backend: 'webgpu', smallN: 4096 })]);
+  const { c } = ctxOf(l), q = l.createQueue(c, null, {}), p = l.createProgram(c, SRC); await l.build(p, '');
+  const run = async (n, m) => { const k = l.createKernel(p, 'acc'), a = l.createBuffer(c, {}, 4096 * 4, new Float32Array(4096).fill(1)), o = l.createBuffer(c, {}, n * 4, null); l.setArg(k, 0, a); l.setArg(k, 1, o); l.setArg(k, 2, m); l.setArg(k, 3, n); await l.enqueueNDRange(q, k, [n], null, null); const r = await l.enqueueRead(q, o, n * 4, 0); return new Float32Array(r.data.buffer, r.data.byteOffset, n)[0]; };
+  assert.strictEqual(await run(64, 2), 2); assert.strictEqual(cd.dispatch, 0, '工作量小：主機');
+  assert.strictEqual(await run(64, 3000), 3000); assert.ok(cd.dispatch >= 1, '64 個工作項、每個迴圈 3000 次：工作量大，上裝置');
+});
+
 (async () => { for (const [name, fn] of queue) { try { await fn(); pass++; } catch (e) { fail++; console.error('FAIL ' + name + '\n   ' + String(e.stack || e.message).split('\n').slice(0, 7).join('\n   ')); } } console.log(pass + ' passed, ' + fail + ' failed'); process.exit(fail ? 1 : 0); })();

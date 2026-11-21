@@ -168,6 +168,8 @@ class Sim(object):
         self.random_factor = False
         self.note = ""
         self.last_ms = 0.0
+        self.phase = {}                     # last frame's time per phase in ms (pairwise / integrate / center here; render / hud from the window)
+        self.psum, self.pcount = {}, 0       # sums over the current cycle, for the average printed at its end
         self.cycle_start = time.time()
         self.loop = 0
         self.center = (0.0, 0.0, 0.0)
@@ -204,6 +206,8 @@ class Sim(object):
     def step(self):
         """One frame of Nbody() for every body, then the cluster center. Returns True when a cycle (LOOP frames) has just ended."""
         t0 = time.time()
+        pc = time.perf_counter
+        a0 = pc()
         args = (self.x, self.y, self.z, self.mass, self.soft2, self.gravity)
         if self.device == "gpu":
             before = gpu_fallbacks()
@@ -214,23 +218,42 @@ class Sim(object):
                 sx, sy, sz, pot = pairwise_cpu(*args)
         else:
             sx, sy, sz, pot = pairwise_cpu(*args)
+        a1 = pc()
         self.pot = pot
         dt = np.float32(self.dt)
         self.vx += sx * dt; self.vy += sy * dt; self.vz += sz * dt                     # newX_velocity[i] += sumX * simulatetime_factor
         self.x += clampf(self.vx, MIN_VELOCITY, self.max_v) * dt                         # X_axis[i] += clampf(newX_velocity[i], ...) * factor
         self.y += clampf(self.vy, MIN_VELOCITY, self.max_v) * dt
         self.z += clampf(self.vz, MIN_VELOCITY, self.max_v) * dt
+        a2 = pc()
         self.center = self.cluster_center()
+        a3 = pc()
         self.last_ms = (time.time() - t0) * 1000.0
+        self.note_phases(pairwise=(a1 - a0) * 1000.0, integrate=(a2 - a1) * 1000.0, center=(a3 - a2) * 1000.0)
         self.loop += 1
         if self.loop >= self.loops:
             print("%d %f" % (self.n, time.time() - self.cycle_start))
+            self.print_phases()
             if self.random_factor:
                 self.dt = float(self.rng.uniform(0, 1))
             self.randomize()
             self.init_bodies()
             return True
         return False
+
+    def note_phases(self, **ms):
+        """Record this frame's time per phase (ms); the window adds render / hud with the same call."""
+        self.phase.update(ms)
+        for k, v in ms.items():
+            self.psum[k] = self.psum.get(k, 0.0) + v
+        if "pairwise" in ms or "enqueue" in ms:
+            self.pcount += 1
+
+    def print_phases(self):
+        """The average time per phase over the cycle that just ended (a second line after the "N seconds" line)."""
+        if self.pcount:
+            print("phases (ms/frame, mean of %d): " % self.pcount + "  ".join("%s %.2f" % (k, v / self.pcount) for k, v in self.psum.items()))
+        self.psum, self.pcount = {}, 0
 
     def cluster_center(self):
         """findClusterCenter(): around the body with the highest potential, the mass / (distance + 1) weighted mean of the bodies within 100."""
@@ -363,6 +386,8 @@ def hud_ops(sim, cam, size, ms):
            t(165, "MAX_X:%.1f MAX_Y:%.1f MAX_Z:%.1f" % (sim.max_x, sim.max_y, sim.max_z), G),
            t(185, "MAX_Vel:%.1f Grav:%.1f Soft:%.1f" % (sim.max_v, sim.gravity, sim.softening), G),
            t(205, "[h]help [+/-]zoom [arrows/mouse]rotate [C]track", G)]
+    if getattr(sim, "phase", None):
+        ops.append(t(225, "ms  " + "  ".join("%s %.1f" % (k, v) for k, v in sim.phase.items()), G))
     if sim.note:
         ops.append(t(145, sim.note, "#ffcc66"))
     for r, label, on in ((BTN_CPU, "CPU", sim.device == "cpu"), (BTN_GPU, "GPU", sim.device == "gpu")):
@@ -471,8 +496,11 @@ def run_window(n, device, seed, loops):
             if sim.step() and cam.tracking:                       # a new cycle: a new random box, so center on it
                 cam.snapshot = (sim.max_x / 2.0, sim.max_y / 2.0, sim.max_z / 2.0)
             ms = sim.last_ms
+            r0 = time.perf_counter()
             render()
+            r1 = time.perf_counter()
             draw_hud()
+            sim.note_phases(render=(r1 - r0) * 1000.0, hud=(time.perf_counter() - r1) * 1000.0)
         elif kind == "resize":
             view.handle(ev)
         elif kind == "glerror":

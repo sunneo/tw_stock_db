@@ -183,13 +183,18 @@ class ClSim(Sim):
     def step(self):
         """One frame on the device, then the three positions come back for drawing. True when a cycle (LOOP frames) has just ended."""
         t0 = time.time()
-        self.cl.step(self.dt, self.soft2, self.gravity, self.max_v)
-        self.x, self.y, self.z = self.cl.positions()
+        a0 = time.perf_counter()
+        self.cl.step(self.dt, self.soft2, self.gravity, self.max_v)      # queues the ten kernels
+        a1 = time.perf_counter()
+        self.x, self.y, self.z = self.cl.positions()                      # the read waits for them to finish, so this is where the device time shows
         self._center = None
+        a2 = time.perf_counter()
         self.last_ms = (time.time() - t0) * 1000.0
+        self.note_phases(enqueue=(a1 - a0) * 1000.0, readback=(a2 - a1) * 1000.0)
         self.loop += 1
         if self.loop >= self.loops:
             print("%d %f" % (self.n, time.time() - self.cycle_start))
+            self.print_phases()
             if self.random_factor:
                 self.dt = float(self.rng.uniform(0, 1))
             self.randomize()
@@ -296,8 +301,11 @@ def run_window(n, device, seed, loops):
             if sim.step() and cam.tracking:
                 cam.snapshot = (sim.max_x / 2.0, sim.max_y / 2.0, sim.max_z / 2.0)
             ms = sim.last_ms
+            r0 = time.perf_counter()
             render()
+            r1 = time.perf_counter()
             draw_hud()
+            sim.note_phases(render=(r1 - r0) * 1000.0, hud=(time.perf_counter() - r1) * 1000.0)
         elif kind == "resize":
             view.handle(ev)
         elif kind == "glerror":

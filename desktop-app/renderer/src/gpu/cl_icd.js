@@ -286,7 +286,7 @@
                 bufArgs.push({ p, m: R, sub: a.mem.root ? a.mem : null });
             }
             // 路由：裝置（GPU）或主機。主機路線直接在主機副本上跑，不配置、不上傳；裝置路線讓緩衝區常駐裝置
-            const info = { N, dims: gs.length, offset: !!off, devOnly: bufArgs.some((x) => !x.m.hostOk && x.m.devOk) };
+            const info = { N, scalars, dims: gs.length, offset: !!off, devOnly: bufArgs.some((x) => !x.m.hostOk && x.m.devOk) };
             let route = k.drv.route ? k.drv.route(k.def, info) : (k.def.host ? 'host' : 'dev');
             if (bufArgs.some((x) => x.sub) || hasImg) route = 'host';   // 圖像也只走主機路線   // 子緩衝區（要位元組偏移）一律走主機路線
             const t0 = now(); let res;
@@ -460,6 +460,11 @@
         const f32 = (u8) => new Float32Array(u8.buffer, u8.byteOffset, u8.byteLength >> 2);
         const kirScalar = { i32: 'int', f32: 'float' };
         const coerce = (type, v) => (FaClc ? FaClc.coerceScalar(kirScalar[type] || type, v) : (type === 'i32' ? (Number(v) | 0) : Math.fround(Number(v))));
+        // KIR 核心每個工作項的迴圈次數（巢狀相乘、並列取最大；上界是常數或純量名）
+        const loopFactor = (kir, scalars) => {
+            const walk = (stmts) => { let m = 1; for (const s of stmts) { let f = 1; if (s.k === 'for') { const b = typeof s.bound === 'number' ? s.bound : Number(scalars && scalars[s.bound]) || 1; f = Math.max(1, b) * walk(s.body); } else if (s.k === 'if') f = walk(s.body); if (f > m) m = f; } return m; };
+            return walk(kir.body || []);
+        };
         const st = { gpuLaunches: 0, hostLaunches: 0, tuned: 0 };
         const tunedKernels = new Set();
         return {
@@ -519,7 +524,8 @@
             route(def, info) {
                 if (!def.gpu) return 'host';
                 if (info.dims > 1 || info.offset) return 'host';        // KIR 裝置只有一維、沒有 offset
-                if (info.N < smallN && !info.devOnly) return 'host';    // 小問題：派送與傳輸的成本大於計算，主機直接算
+                // 小問題：派送與傳輸的成本大於計算，主機直接算。工作量＝工作項數 × 每個工作項的迴圈次數（N 體這種 O(N²) 核心 N 不大、工作量很大，不能照 N 判斷）
+                if (info.N * loopFactor(def.gpu.kir, info.scalars) < smallN && !info.devOnly) return 'host';
                 return 'dev';
             },
             alloc: (nbytes) => dev.alloc(Math.max(1, Math.ceil(nbytes / 4)), 'f32'),
