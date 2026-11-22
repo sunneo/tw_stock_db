@@ -41,7 +41,7 @@ var SINE16 = [0, 3, 5, 7, 7, 7, 5, 3, 0, -3, -5, -7, -7, -7, -5, -3];
 // 設定聲道 0 播放位於 $0300 的一個 BRR 區塊（循環到自己），pitch 0x1000 ＝ 32000÷16 ＝ 2000 Hz
 function setupSine(c, pitch, flags, nibbles) {
   c.poke(0x0200, [0x00, 0x03, 0x00, 0x03]);            // 來源目錄 $0200：SRCN 0 的起點與循環點都是 $0300
-  c.poke(0x0300, brrBlock(nibbles || SINE16, flags == null ? 2 : flags));
+  c.poke(0x0300, brrBlock(nibbles || SINE16, flags == null ? 3 : flags));
   c.dspWrite(0x5D, 0x02);
   c.dspWrite(0x0C, 0x7F); c.dspWrite(0x1C, 0x7F);
   c.dspWrite(0x00, 0x7F); c.dspWrite(0x01, 0x7F);
@@ -163,7 +163,7 @@ t('BNE：Z=0 時分支成立，成立時多 2 週期', function () {
   var c = coreAt(0x0400, [0xD0, 0x02, 0x00, 0x00, 0xE8, 0x42], { psw: 0x00 });   // BNE +2 跳過兩個 NOP
   var cyc = c.runCycles(1);
   assert.strictEqual(cyc, 2 + 2, 'BNE 成立：基本 2＋成立 2');
-  assert.strictEqual(c.cpu().pc, 0x0406);
+  assert.strictEqual(c.cpu().pc, 0x0404);
 });
 t('CBNE：A 不等於 dp 時分支', function () {
   var c = coreAt(0x0400, [0x2E, 0x20, 0x02, 0x00, 0x00, 0xE8, 0x11], { a: 0x05 });
@@ -192,11 +192,17 @@ t('計時器 T0：除數 1 時每 8 kHz 加一，讀取後清除', function () {
   assert.ok(c.timerCount(0) <= 15);
 });
 t('計時器讀 $FD 會回傳計數並清零', function () {
-  var c = coreAt(0x0400, [0x8F, 0x01, 0xFA, 0x8F, 0x01, 0xF1, 0xE4, 0xFD], {});  // ...; MOV A,$FD
+  var code = [0x8F, 0x01, 0xFA, 0x8F, 0x01, 0xF1];
+  for (var i = 0; i < 200; i++) code.push(0x00);         // NOP 墊時間
+  var readAt = 0x0400 + code.length;
+  code.push(0xE5, 0xFD, 0x00);                           // MOV A,!$FD
+  var c = coreAt(0x0400, code, {});
   c.runCycles(1); c.runCycles(1);
-  c.runCycles(128 * 3);
-  c.runCycles(1);                                        // MOV A,$FD（讀取）
-  assert.ok(c.cpu().a >= 2 && c.cpu().a <= 4, '讀到 ' + c.cpu().a);
+  while (c.cpu().pc !== readAt) c.runCycles(1);
+  var before = c.timerCount(0);
+  c.runCycles(1);                                        // 讀取
+  assert.ok(before >= 2 && before <= 5, '讀取前計數 ' + before);
+  assert.strictEqual(c.cpu().a, before);
   assert.strictEqual(c.timerCount(0), 0, '讀取後應清零');
 });
 t('通訊埠：SPC 寫 $F4 送到輸出；主 CPU 送來的值由 SPC 讀 $F5', function () {
@@ -210,7 +216,7 @@ t('通訊埠：SPC 寫 $F4 送到輸出；主 CPU 送來的值由 SPC 讀 $F5', 
 // ───── 6. S-DSP：BRR 取樣、頻率、包絡、結束旗標 ─────
 t('DSP：BRR 正弦（16 取樣一週期）、音高 $1000 ＝ 2000 Hz', function () {
   var c = CORE.createCore({});
-  setupSine(c, 0x1000, 2, SINE16);
+  setupSine(c, 0x1000, 3, SINE16);
   c.dspWrite(0x4C, 0x01);                                // KON 聲道 0
   var N = 32000, buf = renderMono(c, N).L;
   var cx = crossings(buf);
@@ -220,7 +226,7 @@ t('DSP：BRR 正弦（16 取樣一週期）、音高 $1000 ＝ 2000 Hz', functio
 });
 t('DSP：音高 $2000 ＝ 4000 Hz（頻率與音高成正比）', function () {
   var c = CORE.createCore({});
-  setupSine(c, 0x2000, 2, SINE16);
+  setupSine(c, 0x2000, 3, SINE16);
   c.dspWrite(0x4C, 0x01);
   var buf = renderMono(c, 32000).L;
   var cx = crossings(buf);
@@ -228,7 +234,7 @@ t('DSP：音高 $2000 ＝ 4000 Hz（頻率與音高成正比）', function () {
 });
 t('DSP：GAIN 線性增加（每取樣 +32）的包絡斜率', function () {
   var c = CORE.createCore({});
-  setupSine(c, 0x1000, 2, SINE16);
+  setupSine(c, 0x1000, 3, SINE16);
   c.dspWrite(0x07, 0xDF);                                // GAIN：線性增加（模式 2），速率 31 ＝ 每取樣一次
   c.dspWrite(0x4C, 0x01);
   renderMono(c, 10);
@@ -238,7 +244,7 @@ t('DSP：GAIN 線性增加（每取樣 +32）的包絡斜率', function () {
 });
 t('DSP：ADSR 攻擊 AR＝15 兩個取樣內到達最大（ENVX＝127）', function () {
   var c = CORE.createCore({});
-  setupSine(c, 0x1000, 2, SINE16);
+  setupSine(c, 0x1000, 3, SINE16);
   c.dspWrite(0x05, 0x8F);                                // ADSR 開啟，AR＝15
   c.dspWrite(0x06, 0xFF);
   c.dspWrite(0x4C, 0x01);
@@ -256,7 +262,7 @@ t('DSP：BRR 結束且不循環時釋放並歸零，ENDX 位元被設定', funct
 });
 t('DSP：KOFF 後包絡釋放並靜音（不是立刻切斷）', function () {
   var c = CORE.createCore({});
-  setupSine(c, 0x1000, 2, SINE16);
+  setupSine(c, 0x1000, 3, SINE16);
   c.dspWrite(0x4C, 0x01);
   renderMono(c, 100);
   c.dspWrite(0x5C, 0x01);
@@ -268,7 +274,7 @@ t('DSP：KOFF 後包絡釋放並靜音（不是立刻切斷）', function () {
 // ───── 7. 噪音、音高調變、回音 ─────
 t('DSP：噪音（NON）的輸出不是 16 取樣的週期（與音高無關）', function () {
   var c = CORE.createCore({});
-  setupSine(c, 0x1000, 2, SINE16);
+  setupSine(c, 0x1000, 3, SINE16);
   c.dspWrite(0x3D, 0x01);                                // 聲道 0 改用噪音
   c.dspWrite(0x6C, 0x20 | 0x10);                         // 噪音速率 16
   c.dspWrite(0x4C, 0x01);
@@ -279,7 +285,7 @@ t('DSP：噪音（NON）的輸出不是 16 取樣的週期（與音高無關）'
 t('DSP：音高調變（PMON）改變第二聲道的頻率', function () {
   function run(pmon) {
     var c = CORE.createCore({});
-    setupSine(c, 0x1000, 2, SINE16);
+    setupSine(c, 0x1000, 3, SINE16);
     c.dspWrite(0x00, 0x7F); c.dspWrite(0x01, 0x7F);
     // 聲道 1 使用同一個樣本，音高相同
     c.dspWrite(0x10 + 0x02, 0x00); c.dspWrite(0x10 + 0x03, 0x10);
@@ -295,7 +301,8 @@ t('DSP：音高調變（PMON）改變第二聲道的頻率', function () {
 });
 t('DSP：回音啟用時把聲音寫入回音緩衝區（ESA 區段有非零資料）', function () {
   var c = CORE.createCore({});
-  setupSine(c, 0x1000, 2, SINE16);
+  setupSine(c, 0x1000, 3, SINE16);
+  c.dspWrite(0x6C, 0x00);                                // 允許回音寫入（setupSine 設了 FLG 的回音停止位）
   c.dspWrite(0x6D, 0x40);                                // ESA ＝ $4000
   c.dspWrite(0x7D, 0x01);                                // EDL ＝ 1（2048 位元組）
   c.dspWrite(0x4D, 0x01);                                // EON：聲道 0 進入回音
@@ -310,7 +317,7 @@ t('DSP：回音啟用時把聲音寫入回音緩衝區（ESA 區段有非零資�
 // ───── 8. 快照與還原 ─────
 t('快照與還原：從中途還原後，再渲染的結果逐位元一致', function () {
   var c = CORE.createCore({});
-  setupSine(c, 0x1100, 2, SINE16);
+  setupSine(c, 0x1100, 3, SINE16);
   c.dspWrite(0x4D, 0x01); c.dspWrite(0x6D, 0x50); c.dspWrite(0x7D, 0x02); c.dspWrite(0x2C, 0x40); c.dspWrite(0x3C, 0x40); c.dspWrite(0x0D, 0x20);
   c.dspWrite(0x4C, 0x01);
   renderMono(c, 3000);
