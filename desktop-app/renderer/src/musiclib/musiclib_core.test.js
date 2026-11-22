@@ -62,13 +62,15 @@ t('辨識種類：副檔名與檔頭', function () {
   assert.equal(M.identifyKind('flash.swf', cat(['CWS', 9])).kind, 'swf');
 });
 
-t('遊戲音樂來源：PCE／SFC 只登記待擷取；NES、RIX、Flash 是可擷取的種類', function () {
+t('遊戲音樂來源：PCE 只登記待擷取；NES、SFC（含 .smc）、RIX、Flash 是可擷取的種類', function () {
   var nes = M.identifyKind('zelda.nes', cat(['NES\u001a', 1, 2]));
   assert.equal(nes.kind, 'nes'); assert.equal(nes.category, 'extract'); assert.equal(nes.pending, false);
   assert.equal(nes.label, 'NES 遊戲音樂，可擷取');
-  ['pce', 'sfc'].forEach(function (ext) {
+  var pce = M.identifyKind('x.pce', null);
+  assert.equal(pce.kind, 'pce'); assert.equal(pce.pending, true);
+  ['sfc', 'smc'].forEach(function (ext) {
     var r = M.identifyKind('x.' + ext, null);
-    assert.equal(r.kind, ext); assert.equal(r.pending, true);
+    assert.equal(r.kind, 'sfc', ext); assert.equal(r.category, 'extract'); assert.equal(r.pending, false, ext + ' 可擷取，不算待擷取');
   });
   ['rix', 'swf', 'nes'].forEach(function (ext) {
     var r = M.identifyKind('x.' + ext, null);
