@@ -130,19 +130,40 @@
   // ───── 整體流程（stages 每段各自說明）─────
   // 目前：ROM 掃描與標頭已做；主 CPU 執行與傾印需要 SNES 核心（見 DESIGN.TODO.music-rom-extract.md）；
   // snes_spc 渲染需要 wasm 工具鏈（emscripten 或 clang）。沒有就明確回報，不假裝完成。
+  // opts.runner(romBytes, opts) → { uploaded, uploadFrame, entry, snapshots:[{frame, ramCopy, dsp, spc:{pc,a,x,y,psw,sp}}], cancelled, reason }
+  //   （宿主用 FaMusicLibSnesBus.runRom 接上）
+  // opts.renderSpc(spcBytes, opts) → { samples:Float32Array, sampleRate, durationSec } 或丟錯；沒有就停在「SPC 渲染」階段並寫明原因
   function sfcExtract(romBytes, opts) {
     opts = opts || {};
-    var out = { ok: false, header: null, stages: [], spcs: [], song: null, reason: null };
+    var out = { ok: false, header: null, stages: [], spcs: [], song: null, reason: null, cancelled: false };
+    function fail(i, why) { out.stages.push({ stage: STAGES[i], ok: false, reason: why }); out.reason = STAGES[i] + '：' + why; return out; }
     var h = parseSnesHeader(asU8(romBytes));
     out.header = h;
     out.stages.push({ stage: STAGES[0], ok: true, note: h.copier ? '已去掉 512 位元組 copier 檔頭' : '' });
-    var runner = opts.runner;
-    if (typeof runner !== 'function') {
-      out.stages.push({ stage: STAGES[1], ok: false, reason: '主 CPU 執行器尚未接上（SNES 核心還沒接進頁面）' });
-      out.reason = STAGES[1] + '：主 CPU 執行器尚未接上';
-      return out;
+    if (typeof opts.runner !== 'function') return fail(1, '主 CPU 執行器沒有接上');
+    var r;
+    try { r = opts.runner(asU8(romBytes), opts); }
+    catch (e) { return fail(1, '執行階段例外：' + String((e && e.message) || e)); }
+    if (r && r.cancelled) { out.cancelled = true; return fail(1, '已取消'); }
+    if (!r || !r.uploaded) return fail(1, (r && r.reason) || '聲音程式上傳沒有完成');
+    out.stages.push({ stage: STAGES[1], ok: true, note: '聲音程式上傳完成於第 ' + r.uploadFrame + ' 個畫面，入口 $' + (r.entry || 0).toString(16).padStart(4, '0') });
+    if (!r.snapshots || !r.snapshots.length) return fail(2, '上傳完成後沒有拍到快照');
+    out.stages.push({ stage: STAGES[2], ok: true, note: '傾印 ' + r.snapshots.length + ' 個時間點' });
+    r.snapshots.forEach(function (s) {
+      var bytes = packSpc({ ram: s.ramCopy, dsp: s.dsp, pc: s.spc.pc, a: s.spc.a, x: s.spc.x, y: s.spc.y, psw: s.spc.psw, sp: s.spc.sp, title: opts.title || '', game: opts.game || '' });
+      out.spcs.push({ frame: s.frame, bytes: bytes });
+    });
+    out.stages.push({ stage: STAGES[3], ok: true, note: out.spcs.length + ' 個 .spc' });
+    if (typeof opts.renderSpc !== 'function') {
+      return fail(4, 'SPC700＋S-DSP 渲染核心沒有接上（ml-spcdsp 的 musiclib_spc_core.js 尚未合併）；' +
+        '目前的聲音埠只跑 IPL 上傳協定，不執行 SPC700，所以 .spc 裡的 DSP 與 SPC700 狀態是占位值，不能當成音樂');
     }
-    out.stages.push({ stage: STAGES[1], ok: true });
+    var rendered;
+    try { rendered = opts.renderSpc(out.spcs[0].bytes, opts); }
+    catch (e) { return fail(4, '渲染失敗：' + String((e && e.message) || e)); }
+    out.stages.push({ stage: STAGES[4], ok: true });
+    out.rendered = rendered;
+    out.ok = true;
     return out;
   }
 
