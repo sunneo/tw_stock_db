@@ -2034,8 +2034,8 @@
    "names": [
     "FaMusicLibSfc"
    ],
-   "size": 6303,
-   "md5": "15538076b9b6f5a283ab516e371f00c4"
+   "size": 7103,
+   "md5": "89910e888eca70dc19ba34660e29e8b1"
   },
   "mlsnescpu": {
    "file": "chunks/mlsnescpu.js",
@@ -2050,8 +2050,8 @@
    "names": [
     "FaMusicLibSnesBus"
    ],
-   "size": 7701,
-   "md5": "67ff8184f4bc7117e3b7f50b51ee5a07"
+   "size": 8362,
+   "md5": "1d9e01ee51585a42fb0c974b784b51d7"
   },
   "mlyt": {
    "file": "chunks/mlyt.js",
@@ -2074,8 +2074,8 @@
    "names": [
     "FaMusicLibSpcCore"
    ],
-   "size": 16152,
-   "md5": "6ca1abc91fc0b7109ac6663c8fe413a9"
+   "size": 16336,
+   "md5": "6d212947cce63ffcb10722e358470b91"
   },
   "mlchipspc": {
    "file": "chunks/mlchipspc.js",
