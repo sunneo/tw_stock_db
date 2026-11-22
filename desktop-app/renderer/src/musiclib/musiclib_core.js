@@ -663,7 +663,119 @@
     return lib;
   }
 
+  // ───────────────────────── 批次輸出（mid／mp3）：純函式，不碰瀏覽器 API
+  // 分鐘數：'whole'（整首）或正數（分鐘）。整首回傳 null，表示不截斷；沒有人為長度上限。
+  function minutesToSec(minutes) {
+    if (minutes === 'whole') return null;
+    var m = Number(minutes);
+    if (!isFinite(m) || m <= 0) throw new Error('分鐘數必須是大於 0 的數字，或選「整首」');
+    return m * 60;
+  }
+
+  // 要截的時間窗：從 0 開始，到 limitSec 或整首結束（取較小者）。
+  function sliceWindow(totalSec, limitSec) {
+    var total = Math.max(0, Number(totalSec) || 0);
+    var end = limitSec == null ? total : Math.min(total, limitSec);
+    return { startSec: 0, endSec: end, truncated: limitSec != null && limitSec < total };
+  }
+
+  // 輸出檔名：原檔名去副檔名＋分鐘標記（整首或 N分）＋新副檔名；檔名不能有路徑分隔字元。
+  function outputName(baseName, format, minutes) {
+    var stem = String(baseName || 'track').replace(/\.[^.\\\/]+$/, '').replace(/[\\\/:*?"<>|]/g, '_');
+    var label = minutes === 'whole' ? '整首' : (Number(minutes) + '分');
+    return stem + '_' + label + '.' + format;
+  }
+
+  var EXPORT_FORMATS = ['mid', 'mp3'];
+  var EXPORT_MAX_ATTEMPTS = 3;
+  var EXPORT_RETRY_BACKOFF_MS = [1000, 3000];
+  // 路由表：來源類別＞輸出格式 → 步驟序列。步驟名稱由呼叫端（host）實作。
+  var EXPORT_ROUTES = {
+    'audio>mp3': ['decode', 'slice', 'encode-mp3'],
+    'mid>mp3': ['parse-mid', 'trim-mid', 'render-synth', 'slice', 'encode-mp3'],
+    'mid>mid': ['parse-mid', 'trim-mid', 'write-mid'],
+    'video>mp3': ['extract-audio', 'slice', 'encode-mp3']
+  };
+  var SOURCE_CLASS = { wav: 'audio', mp3: 'audio', mid: 'mid', midi: 'mid', mp4: 'video', mov: 'video', webm: 'video', m4v: 'video' };
+  var ROM_EXT = { nes: 1, pce: 1, sfc: 1, rix: 1, swf: 1 };
+
+  // 規劃單一檔案的輸出路線。回傳 { ok:true, route, steps, consent? } 或 { ok:false, reason }。
+  // 不支援的組合一律說明原因，不偷偷略過。
+  function planExport(name, format) {
+    var ext = String(name || '').split('.').pop().toLowerCase();
+    if (EXPORT_FORMATS.indexOf(format) < 0) return { ok: false, reason: '不支援的輸出格式：' + format };
+    if (ROM_EXT[ext]) return { ok: false, reason: '尚未支援：' + ext + ' 遊戲檔沒有擷取器（本輪只做音訊、影片、MIDI）' };
+    var cls = SOURCE_CLASS[ext];
+    if (!cls) return { ok: false, reason: '尚未支援這種格式：.' + ext };
+    if (cls === 'audio' && format === 'mid') return { ok: false, reason: '未實作：音訊轉 MIDI 這一輪沒有接上（需要轉譜模型或規則式轉譜，尚未驗證）' };
+    if (cls === 'video' && format === 'mid') return { ok: false, reason: '未實作：影片轉 MIDI 這一輪沒有接上' };
+    var key = cls + '>' + format;
+    var steps = EXPORT_ROUTES[key];
+    if (!steps) return { ok: false, reason: '沒有對應的路線：' + key };
+    return { ok: true, route: key, steps: steps.slice(), consent: key === 'video>mp3' ? 'ffmpeg.wasm（影片要先抽音軌，會先問使用者）' : null };
+  }
+
+  // 批次執行。items: [{ id, name, format }]。opts:
+  //   minutes（'whole' 或分鐘數）、runStep(ctx) → Promise<{path,sizeBytes}>（ctx: item, route, steps, limitSec, isCancelled, onStage）
+  //   verify(out, item) → Promise<{ok, detail}>（可省略）、isCancelled()、onEvent(ev)、sleep(ms)
+  // 每個檔案獨立：單檔失敗不影響其他檔案；暫時性錯誤（TRANSIENT_RE）自動重來，最多 EXPORT_MAX_ATTEMPTS 次。
+  async function runExportBatch(items, opts) {
+    opts = opts || {};
+    var limitSec = minutesToSec(opts.minutes == null ? 'whole' : opts.minutes);
+    var isCancelled = typeof opts.isCancelled === 'function' ? opts.isCancelled : function () { return false; };
+    var emit = typeof opts.onEvent === 'function' ? opts.onEvent : function () {};
+    var sleep = opts.sleep || function (ms) { return new Promise(function (r) { setTimeout(r, ms); }); };
+
+    async function runOne(it) {
+      var rec = { id: it.id, name: it.name, format: it.format, status: 'pending', stage: null, reason: '', attempts: 0, elapsedMs: 0, output: null, verify: null, route: null };
+      var t0 = Date.now();
+      var plan = planExport(it.name, it.format);
+      if (!plan.ok) { rec.status = 'unsupported'; rec.stage = 'plan'; rec.reason = plan.reason; return rec; }
+      rec.route = plan.route;
+      for (;;) {
+        if (isCancelled()) { rec.status = 'cancelled'; break; }
+        rec.attempts++;
+        try {
+          var out = await opts.runStep({
+            item: it, route: plan.route, steps: plan.steps, limitSec: limitSec, isCancelled: isCancelled,
+            onStage: function (s) { rec.stage = s; emit({ id: it.id, stage: s }); }
+          });
+          rec.output = out;
+          if (typeof opts.verify === 'function') {
+            rec.stage = 'verify';
+            rec.verify = await opts.verify(out, it);
+            if (!rec.verify || rec.verify.ok !== true) { rec.status = 'failed'; rec.reason = '輸出檢查未通過：' + ((rec.verify && rec.verify.detail) || '未知'); break; }
+          }
+          rec.status = 'done'; rec.reason = ''; break;
+        } catch (err) {
+          var msg = String((err && err.message) || err);
+          if (isCancelled() || (err && err.cancelled)) { rec.status = 'cancelled'; break; }
+          if (TRANSIENT_RE.test(msg) && rec.attempts < EXPORT_MAX_ATTEMPTS) {
+            emit({ id: it.id, retry: rec.attempts, reason: msg });
+            await sleep(EXPORT_RETRY_BACKOFF_MS[rec.attempts - 1] || EXPORT_RETRY_BACKOFF_MS[EXPORT_RETRY_BACKOFF_MS.length - 1]);
+            continue;
+          }
+          rec.status = 'failed'; rec.reason = msg; break;
+        }
+      }
+      rec.elapsedMs = Date.now() - t0;
+      return rec;
+    }
+
+    var results = [];
+    for (var i = 0; i < items.length; i++) {
+      if (isCancelled()) { results.push({ id: items[i].id, name: items[i].name, format: items[i].format, status: 'cancelled', stage: null, reason: '', attempts: 0, elapsedMs: 0, output: null, verify: null, route: null }); continue; }
+      results.push(await runOne(items[i]));
+      emit({ id: items[i].id, finished: results[results.length - 1].status });
+    }
+    var summary = { done: 0, failed: 0, unsupported: 0, cancelled: 0 };
+    results.forEach(function (r) { summary[r.status] = (summary[r.status] || 0) + 1; });
+    return { results: results, summary: summary };
+  }
+
   return {
+    minutesToSec: minutesToSec, sliceWindow: sliceWindow, outputName: outputName, planExport: planExport, runExportBatch: runExportBatch,
+    EXPORT_ROUTES: EXPORT_ROUTES, EXPORT_FORMATS: EXPORT_FORMATS, EXPORT_MAX_ATTEMPTS: EXPORT_MAX_ATTEMPTS,
     VERSION: VERSION, HEAD_BYTES: HEAD_BYTES, KINDS: KINDS,
     identifyKind: identifyKind, isSupportedName: isSupportedName, albumFromPath: albumFromPath,
     parseMetadata: parseMetadata, formatDuration: formatDuration, normalizeText: normalizeText,

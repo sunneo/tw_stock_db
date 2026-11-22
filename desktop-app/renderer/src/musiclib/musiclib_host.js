@@ -169,6 +169,111 @@ const FaMusicLibHost = (function () {
     return lib;
   }
 
+  // ───── 批次輸出（mid／mp3）：桌面版通道 ─────
+  var exportCancelled = false;
+  function bytesToB64(u8) { var s = '', CH = 0x8000; for (var i = 0; i < u8.length; i += CH) s += String.fromCharCode.apply(null, u8.subarray(i, i + CH)); return btoa(s); }
+  // 用瀏覽器原生解碼器讀 wav／mp3（不經過 Whisper 的 16 kHz 降採樣，保留原取樣率）
+  async function decodeAudioBytes(u8) {
+    var AC = window.AudioContext || window.webkitAudioContext;
+    var ctx = new AC();
+    try { return await ctx.decodeAudioData(u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength)); }
+    finally { try { ctx.close(); } catch (_) { /* */ } }
+  }
+  // 取前 sec 秒的樣本，回傳 _encodeMp3 吃得下的最小介面（numberOfChannels／sampleRate／getChannelData）
+  function viewSeconds(buf, sec) {
+    var n = sec == null ? buf.length : Math.min(buf.length, Math.floor(sec * buf.sampleRate));
+    var chans = []; for (var c = 0; c < buf.numberOfChannels; c++) chans.push(buf.getChannelData(c).subarray(0, n));
+    return { numberOfChannels: buf.numberOfChannels, sampleRate: buf.sampleRate, length: n, duration: n / buf.sampleRate, getChannelData: function (c) { return chans[c]; } };
+  }
+  // 截短 MIDI：只留開始時間在限制內的音符，超出的長度剪到限制
+  function trimSong(song, limitSec) {
+    if (limitSec == null) return song;
+    var lim = FaMidi.secToTicks(song, limitSec);
+    var s = JSON.parse(JSON.stringify(song));
+    s.tracks.forEach(function (tr) { tr.notes = tr.notes.filter(function (n) { return n.t < lim; }).map(function (n) { return { t: n.t, d: Math.min(n.d, lim - n.t), n: n.n, v: n.v }; }); });
+    return s;
+  }
+  function joinPath(dir, name) { var sep = dir.indexOf('\\') >= 0 ? '\\' : '/'; return dir.replace(/[\\\/]+$/, '') + sep + name; }
+
+  // 一個檔案的步驟執行（步驟序列由 FaMusicLib.planExport 決定）
+  async function exportRunStep(ctx) {
+    var a = api(), fa = window.fa, rec = ctx.item.record, st = { expectSec: null, expectNotes: null, bytes: null, buf: null, view: null, song: null };
+    if (!a || !a.rawfs) throw new Error('讀寫檔案的通道不存在（需要桌面版）');
+    function checkCancel() { if (exportCancelled || ctx.isCancelled()) { var e = new Error('已取消'); e.cancelled = true; throw e; } }
+    async function readSource() { var r = await a.rawfs.readFile(rec.path, 'base64'); if (!r || r.base64 == null) throw new Error('讀檔失敗：讀不到這個檔案的內容'); return b64ToBytes(r.base64); }
+    for (var i = 0; i < ctx.steps.length; i++) {
+      checkCancel();
+      var step = ctx.steps[i];
+      ctx.onStage(step);
+      if (step === 'decode') { st.buf = await decodeAudioBytes(await readSource()); }
+      else if (step === 'slice') {
+        var w = FaMusicLib.sliceWindow(st.buf.duration, ctx.limitSec);
+        st.view = viewSeconds(st.buf, ctx.limitSec); st.expectSec = w.endSec;
+      }
+      else if (step === 'encode-mp3') { var blob = await fa._encodeMp3(st.view, 128); st.bytes = new Uint8Array(await blob.arrayBuffer()); }
+      else if (step === 'parse-mid') { st.song = FaMidi.parse(await readSource()); }
+      else if (step === 'trim-mid') {
+        st.song = trimSong(st.song, ctx.limitSec);
+        st.expectNotes = FaMidi.noteCount(st.song);
+        st.expectSec = ctx.limitSec == null ? FaMidi.durationSec(st.song) : Math.min(ctx.limitSec, FaMidi.durationSec(st.song));
+      }
+      else if (step === 'render-synth') {
+        var rb = await FaMidiPlay.renderOffline(st.song, fa._midiSources(), { tail: 0 });
+        st.buf = rb;
+      }
+      else if (step === 'write-mid') { st.bytes = FaMidi.write(st.song); }
+      else if (step === 'extract-audio') { throw new Error('尚未接上影片抽音軌（本輪未驗證；需要 ffmpeg.wasm 同意流程）'); }
+      else { throw new Error('未知步驟：' + step); }
+    }
+    checkCancel();
+    if (!st.bytes) throw new Error('輸出是空的（步驟沒有產生位元組）');
+    var name = FaMusicLib.outputName(rec.name, ctx.item.format, ctx.minutes);
+    var path = joinPath(ctx.outDir, name);
+    ctx.onStage('write');
+    var wr = await a.rawfs.writeFile(path, { base64: bytesToB64(st.bytes) });
+    return { path: path, sizeBytes: wr && wr.sizeBytes, format: ctx.item.format, expectSec: st.expectSec, expectNotes: st.expectNotes };
+  }
+
+  // 寫完後讀回磁碟檢查：大小一致、mp3 用原生解碼器量長度、mid 用 FaMidi 解析並比對音符數
+  async function verifyOutput(out) {
+    var a = api();
+    var r = await a.rawfs.readFile(out.path, 'base64');
+    if (!r || r.base64 == null) return { ok: false, detail: '寫入後讀不回檔案' };
+    var u8 = b64ToBytes(r.base64);
+    if (u8.length === 0) return { ok: false, detail: '檔案大小為 0' };
+    if (out.sizeBytes != null && u8.length !== out.sizeBytes) return { ok: false, detail: '讀回大小 ' + u8.length + ' 與寫入 ' + out.sizeBytes + ' 不一致' };
+    if (out.format === 'mp3') {
+      var head = (u8[0] === 0x49 && u8[1] === 0x44 && u8[2] === 0x33) || (u8[0] === 0xff && (u8[1] & 0xe0) === 0xe0);
+      if (!head) return { ok: false, detail: '檔頭不是 MP3（沒有 ID3 或幀同步）' };
+      var dec = await decodeAudioBytes(u8);
+      if (Math.abs(dec.duration - out.expectSec) > 1.0) return { ok: false, detail: 'MP3 長度 ' + dec.duration.toFixed(2) + ' 秒，預期 ' + out.expectSec.toFixed(2) + ' 秒' };
+      return { ok: true, detail: 'MP3 ' + dec.duration.toFixed(2) + ' 秒（預期 ' + out.expectSec.toFixed(2) + '），' + u8.length + ' 位元組' };
+    }
+    var song = FaMidi.parse(u8);
+    var ns = FaMidi.noteCount(song), dur = FaMidi.durationSec(song);
+    if (out.expectNotes != null && ns !== out.expectNotes) return { ok: false, detail: 'MIDI 音符數 ' + ns + '，預期 ' + out.expectNotes };
+    if (out.expectSec != null && Math.abs(dur - out.expectSec) > 1.0) return { ok: false, detail: 'MIDI 長度 ' + dur.toFixed(2) + ' 秒，預期 ' + out.expectSec.toFixed(2) + ' 秒' };
+    return { ok: true, detail: 'MIDI ' + dur.toFixed(2) + ' 秒，' + ns + ' 個音符' };
+  }
+
+  // 批次輸出入口。records：勾選的曲目；opts: { format:'mid'|'mp3', minutes:'whole'|數字, outDir（省略則跳出資料夾選擇）, onEvent }
+  async function exportBatch(records, opts) {
+    var a = api();
+    if (!a || !a.roots || !a.roots.browse || !a.rawfs) throw new Error('批次輸出需要桌面版');
+    if (typeof FaMidi === 'undefined' || typeof FaMidiPlay === 'undefined') throw new Error('MIDI 模組不存在（需要桌面版）');
+    exportCancelled = false;
+    var outDir = opts.outDir || await a.roots.browse();
+    if (!outDir) return { cancelled: true, results: [], summary: {} };
+    var items = records.map(function (r) { return { id: r.key, name: r.name, format: opts.format, record: r }; });
+    return FaMusicLib.runExportBatch(items, {
+      minutes: opts.minutes,
+      isCancelled: function () { return exportCancelled; },
+      onEvent: opts.onEvent,
+      runStep: function (ctx) { ctx.outDir = outDir; ctx.minutes = opts.minutes; return exportRunStep(ctx); },
+      verify: function (out) { return verifyOutput(out); }
+    }).then(function (res) { res.outDir = outDir; return res; });
+  }
+
   var PICK_HOST = { pickFolder: pickFolder };
 
   var methods = {
@@ -205,6 +310,9 @@ const FaMusicLibHost = (function () {
   };
 
   return { methods: methods, getLib: getLib, pickFolder: pickFolder, walkFolder: walkFolder, whisperTranscribe: whisperTranscribe,
+    exportBatch: exportBatch, verifyOutput: verifyOutput,
+    // 取消批次輸出：正在跑的那個檔案在下一個步驟前中止，之後的檔案標示取消
+    cancelExport: function () { exportCancelled = true; },
     setTranscriber: function (fn) { transcriber = typeof fn === 'function' ? fn : null; },
     // 調整佇列的無進展／重試政策（評測用；正式值見 musiclib_core 的常數）
     setQueuePolicy: function (p) { var L = getLib(); if (L.queue) L.queue.setPolicy(p); },

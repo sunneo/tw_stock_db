@@ -67,6 +67,20 @@
     lyr.appendChild(bLyr); lyr.appendChild(bPause); lyr.appendChild(bCancel); lyr.appendChild(lyrStat);
     if (!queue) { bLyr.disabled = true; bPause.disabled = true; bCancel.disabled = true; lyrStat.textContent = '歌詞轉錄不可用（需要桌面版）'; }
 
+    // 批次輸出列：格式（mp3／mid）、分鐘數（預設 1）或勾「整首」、開始／取消
+    var exp = h('div', 'fml-lyr');
+    var eFmt = h('select'); [['mp3', 'mp3'], ['mid', 'mid']].forEach(function (o) { var op = h('option', null, o[1]); op.value = o[0]; eFmt.appendChild(op); });
+    var eMin = h('input'); eMin.type = 'number'; eMin.min = '0.1'; eMin.step = '0.5'; eMin.value = '1'; eMin.style.width = '70px';
+    var eWhole = h('input'); eWhole.type = 'checkbox';
+    var eWholeLbl = h('label', null, '整首'); eWholeLbl.appendChild(eWhole);
+    var bExp = h('button', null, '批次輸出');
+    var bExpCancel = h('button', null, '取消輸出');
+    var expStat = h('span', 'fml-st');
+    exp.appendChild(eFmt); exp.appendChild(h('span', 'fml-st', '分鐘')); exp.appendChild(eMin); exp.appendChild(eWholeLbl); exp.appendChild(bExp); exp.appendChild(bExpCancel); exp.appendChild(expStat);
+    var expList = h('div', 'fml-foot');
+    if (!host.exportBatch) { bExp.disabled = true; bExpCancel.disabled = true; expStat.textContent = '批次輸出不可用（需要桌面版）'; }
+    bExpCancel.disabled = true;
+
     var wrap = h('div', 'fml-wrap');
     var tbl = h('table', 'fml-tbl');
     var thead = h('thead'), tbody = h('tbody');
@@ -75,7 +89,7 @@
 
     var fIn = h('input'); fIn.type = 'file'; fIn.multiple = true; fIn.style.display = 'none';
     var dIn = h('input'); dIn.type = 'file'; dIn.setAttribute('webkitdirectory', ''); dIn.style.display = 'none';
-    root.appendChild(bar); root.appendChild(lyr); root.appendChild(wrap); root.appendChild(foot); root.appendChild(fIn); root.appendChild(dIn);
+    root.appendChild(bar); root.appendChild(lyr); root.appendChild(exp); root.appendChild(expList); root.appendChild(wrap); root.appendChild(foot); root.appendChild(fIn); root.appendChild(dIn);
     container.appendChild(root);
 
     function visibleRows() {
@@ -185,6 +199,45 @@
     // 取消：清空排隊、中止正在跑的那一首（不算失敗），面板卡住時先按這個
     bCancel.onclick = function () { if (!queue) return; queue.cancelAll(); msg = '已取消轉錄（排隊清空，進行中的那首回到未轉錄）'; render(); };
     bPause.onclick = function () { if (!queue) return; if (queue.state().paused) queue.resume(); else queue.pause(); render(); };
+
+    // 批次輸出：勾選的曲目（沒勾選就全部可用的曲目）；單檔失敗不影響其他檔，結果逐筆列出
+    var expRunning = false;
+    var STAGE_ZH = { decode: '解碼', slice: '截取', 'encode-mp3': '編碼 mp3', 'parse-mid': '解析 MIDI', 'trim-mid': '截短', 'render-synth': '合成渲染', 'write-mid': '寫出 MIDI', write: '寫檔', verify: '讀回校驗', 'extract-audio': '抽音軌' };
+    var STATUS_ZH = { done: '完成', failed: '失敗', unsupported: '不支援', cancelled: '取消' };
+    bExp.onclick = function () {
+      if (!host.exportBatch || expRunning) return;
+      var minutes;
+      if (eWhole.checked) minutes = 'whole';
+      else { minutes = Number(eMin.value); if (!(minutes > 0)) { expStat.textContent = '分鐘數要大於 0，或勾「整首」'; return; } }
+      var recs = lib.records.filter(function (r) { return r.status === 'ok' && !r.pending && (Object.keys(sel).length === 0 || sel[r.key]); });
+      if (!recs.length) { expStat.textContent = '沒有可輸出的曲目（先加入檔案，或勾選要輸出的曲目）'; return; }
+      expRunning = true; bExp.disabled = true; bExpCancel.disabled = false; expList.textContent = '';
+      expStat.textContent = '選擇輸出資料夾…';
+      var fmt = eFmt.value;
+      host.exportBatch(recs, {
+        format: fmt, minutes: minutes,
+        onEvent: function (ev) {
+          if (ev.retry) expStat.textContent = '暫時性失敗，自動重試第 ' + ev.retry + ' 次…';
+          else if (ev.stage) expStat.textContent = '輸出中（' + (STAGE_ZH[ev.stage] || ev.stage) + '）';
+        }
+      }).then(function (res) {
+        expRunning = false; bExp.disabled = !host.exportBatch; bExpCancel.disabled = true;
+        if (res.cancelled) { expStat.textContent = '已取消（沒有選資料夾）'; return; }
+        var s = res.summary || {};
+        expStat.textContent = '完成 ' + (s.done || 0) + '、失敗 ' + (s.failed || 0) + '、不支援 ' + (s.unsupported || 0) + '、取消 ' + (s.cancelled || 0) + '　→ ' + res.outDir;
+        (res.results || []).forEach(function (x) {
+          var line = h('div', x.status === 'done' ? null : 'bad', '[' + (STATUS_ZH[x.status] || x.status) + '] ' + x.name + (x.format ? '（' + x.format + '）' : ''));
+          var detail = x.status === 'done' ? '→ ' + (x.output && x.output.path) + '　' + (x.verify && x.verify.detail || '') : (x.reason ? (x.stage ? '［' + (STAGE_ZH[x.stage] || x.stage) + '］' : '') + x.reason : '');
+          if (x.elapsedMs) detail += '　（' + (x.elapsedMs / 1000).toFixed(1) + ' 秒，嘗試 ' + x.attempts + ' 次）';
+          line.appendChild(document.createTextNode(' ' + detail));
+          expList.appendChild(line);
+        });
+      }, function (e) {
+        expRunning = false; bExp.disabled = !host.exportBatch; bExpCancel.disabled = true;
+        expStat.textContent = '批次輸出出錯：' + String((e && e.message) || e);
+      });
+    };
+    bExpCancel.onclick = function () { if (host.cancelExport) host.cancelExport(); expStat.textContent = '取消中（正在跑的那個檔案會在下一步停止）…'; };
 
     if (queue) unsub = queue.onChange(function () { render(); });
     // 轉錄中每秒更新「已耗時」與重試倒數（只更新歌詞列，不重畫清單）

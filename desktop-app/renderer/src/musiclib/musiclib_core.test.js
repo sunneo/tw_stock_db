@@ -606,6 +606,105 @@ t('取消：清空排隊、中止卡住的那一首（不算失敗、不重試�
   assert.equal(s.counts.none, 4, '四首都回到未轉錄');
 });
 
+// ───── 批次輸出：路由、分鐘切片、檔名、重試、取消 ─────
+t('路由：音訊轉 mp3、MIDI 轉 mp3／mid、影片需先抽音軌並標示同意', function () {
+  assert.equal(M.planExport('a.wav', 'mp3').route, 'audio>mp3');
+  assert.equal(M.planExport('a.MP3', 'mp3').route, 'audio>mp3');
+  assert.equal(M.planExport('song.mid', 'mp3').route, 'mid>mp3');
+  assert.equal(M.planExport('song.mid', 'mid').route, 'mid>mid');
+  var v = M.planExport('clip.mp4', 'mp3');
+  assert.equal(v.route, 'video>mp3');
+  assert.ok(v.consent && /ffmpeg/.test(v.consent), '影片路線必須標示 ffmpeg 同意');
+  assert.equal(M.planExport('a.wav', 'mp3').consent, null, '純音訊不需要同意');
+});
+
+t('路由：不支援的組合說明原因，不默默略過', function () {
+  var a = M.planExport('a.wav', 'mid');
+  assert.equal(a.ok, false); assert.ok(/未實作/.test(a.reason));
+  var r = M.planExport('mario.nes', 'mp3');
+  assert.equal(r.ok, false); assert.ok(/尚未支援/.test(r.reason) && /擷取器/.test(r.reason));
+  assert.equal(M.planExport('x.txt', 'mp3').ok, false);
+  assert.equal(M.planExport('a.wav', 'flac').ok, false);
+});
+
+t('分鐘切片：整首不截、分鐘數截到較小者、標示是否截斷', function () {
+  assert.equal(M.minutesToSec('whole'), null);
+  assert.equal(M.minutesToSec('1'), 60);
+  assert.equal(M.minutesToSec(2.5), 150);
+  assert.throws(function () { M.minutesToSec(0); });
+  assert.throws(function () { M.minutesToSec('abc'); });
+  var w = M.sliceWindow(200, null);
+  assert.deepEqual([w.startSec, w.endSec, w.truncated], [0, 200, false]);
+  var c = M.sliceWindow(200, 60);
+  assert.deepEqual([c.endSec, c.truncated], [60, true]);
+  var s = M.sliceWindow(30, 60);
+  assert.deepEqual([s.endSec, s.truncated], [30, false], '比整首短就不截');
+});
+
+t('檔名：去副檔名、加分鐘標記、去掉路徑分隔字元', function () {
+  assert.equal(M.outputName('晴天.mp3', 'mp3', '1'), '晴天_1分.mp3');
+  assert.equal(M.outputName('a/b:c.wav', 'mid', 'whole'), 'a_b_c_整首.mid');
+});
+
+t('批次：單檔失敗不影響其他檔案，失敗標示階段與原因', async function () {
+  var items = [{ id: 1, name: 'a.wav', format: 'mp3' }, { id: 2, name: 'b.wav', format: 'mp3' }, { id: 3, name: 'c.txt', format: 'mp3' }];
+  var out = await M.runExportBatch(items, {
+    minutes: '1', sleep: function () { return Promise.resolve(); },
+    runStep: async function (ctx) { if (ctx.item.id === 1) throw new Error('解碼失敗：壞檔'); ctx.onStage('encode-mp3'); return { path: 'x', sizeBytes: 9 }; }
+  });
+  assert.equal(out.results[0].status, 'failed');
+  assert.equal(out.results[0].reason, '解碼失敗：壞檔');
+  assert.equal(out.results[1].status, 'done');
+  assert.equal(out.results[2].status, 'unsupported', '不支援的格式不進執行');
+  assert.deepEqual(out.summary, { done: 1, failed: 1, unsupported: 1, cancelled: 0 });
+});
+
+t('批次：暫時性錯誤自動重來，成功後停止；重來次數用完才算失敗', async function () {
+  var n = 0, sleeps = [];
+  var out = await M.runExportBatch([{ id: 1, name: 'a.wav', format: 'mp3' }], {
+    minutes: 'whole', sleep: function (ms) { sleeps.push(ms); return Promise.resolve(); },
+    runStep: async function () { n++; if (n < 2) throw new Error('network error while fetching'); return { path: 'p', sizeBytes: 1 }; }
+  });
+  assert.equal(out.results[0].status, 'done');
+  assert.equal(out.results[0].attempts, 2);
+  assert.deepEqual(sleeps, [1000]);
+  var m = 0;
+  var out2 = await M.runExportBatch([{ id: 2, name: 'a.wav', format: 'mp3' }], {
+    minutes: 'whole', sleep: function () { return Promise.resolve(); },
+    runStep: async function () { m++; throw new Error('連線逾時'); }
+  });
+  assert.equal(out2.results[0].status, 'failed');
+  assert.equal(m, M.EXPORT_MAX_ATTEMPTS);
+});
+
+t('批次：永久錯誤不重試；校驗未通過標示 verify 階段', async function () {
+  var n = 0;
+  var out = await M.runExportBatch([{ id: 1, name: 'a.wav', format: 'mp3' }], {
+    minutes: 'whole', sleep: function () { return Promise.resolve(); },
+    runStep: async function () { n++; throw new Error('解碼失敗：格式不明'); }
+  });
+  assert.equal(n, 1, '永久錯誤只試一次');
+  assert.equal(out.results[0].status, 'failed');
+  var out2 = await M.runExportBatch([{ id: 2, name: 'a.wav', format: 'mp3' }], {
+    minutes: 'whole', runStep: async function () { return { path: 'p', sizeBytes: 0 }; },
+    verify: async function () { return { ok: false, detail: '檔案大小為 0' }; }
+  });
+  assert.equal(out2.results[0].status, 'failed');
+  assert.ok(/大小為 0/.test(out2.results[0].reason));
+});
+
+t('批次：取消後剩下的檔案標示 cancelled，且不再執行', async function () {
+  var ran = [], cancelled = false;
+  var out = await M.runExportBatch([{ id: 1, name: 'a.wav', format: 'mp3' }, { id: 2, name: 'b.wav', format: 'mp3' }], {
+    minutes: 'whole', isCancelled: function () { return cancelled; },
+    runStep: async function (ctx) { ran.push(ctx.item.id); cancelled = true; return { path: 'p', sizeBytes: 1 }; }
+  });
+  assert.deepEqual(ran, [1]);
+  assert.equal(out.results[0].status, 'done');
+  assert.equal(out.results[1].status, 'cancelled');
+  assert.equal(out.summary.cancelled, 1);
+});
+
 // ───── 執行 ─────
 (async function () {
   var pass = 0, failed = [];
