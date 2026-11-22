@@ -29,6 +29,7 @@
   var QUIET_MIN_SEC = 3;           // 聲音停止後至少安靜這麼久才算結束
   var PEAK_EPS = 1e-3;             // 振幅低於這個值視為靜音（約 −60 dBFS）
   var TRAMP_BYTES = 3 * MAX_CALLS + 3 + 16;   // 跳板要佔的 RAM：PLAY 呼叫段 + JMP，加上 INIT 跳板
+  var RESTORE_RAM_EXPERIMENT = null;          // 'before' | 'after' | null：還原遊戲 RAM 的實驗開關（預設關）
 
   // 手組的 iNES 殼：NROM，一個 16KB PRG（$C000 是 JMP $C000），重設與中斷向量都指向 $C000，CHR 8KB。
   function buildRomBytes() {
@@ -108,6 +109,9 @@
     hookWrites(m);
     m.T = pickTramp(nsf);
     if (m.T < 0) throw new Error('NSF 佔滿 $6000–$7FFF，找不到放呼叫跳板的空間');
+    // 遊戲 RAM 影像（擷取時第一次寫聲音之前的低 RAM＋WRAM）：還原音樂引擎的變數。WRAM 會蓋住跳板，所以要在跳板寫入之前還原
+    // 實驗結果：還原擷取時的 RAM 會讓 INIT 卡住（還原前）或讓遊戲跳到 RAM 當掉（還原後）；預設不還原（見報告）
+    if (nsf.ram && RESTORE_RAM_EXPERIMENT === 'before') restoreRam(m, nsf.ram);
     // INIT 跳板：LDA 曲號−1、LDX 地區（0 NTSC、1 PAL）、JSR INIT、JMP 自己
     var T = m.T, W = T + 7, init = nsf.init;
     var stub = [0xA9, (song - 1) & 0xFF, 0xA2, nsf.pal ? 1 : 0, 0x20, init & 0xFF, init >> 8, 0x4C, W & 0xFF, W >> 8];
@@ -134,6 +138,7 @@
       }
     } finally { cpu.emulate = origEmu; }
     m.nes.ppu.f_nmiOnVblank = 0;
+    if (nsf.ram && RESTORE_RAM_EXPERIMENT === 'after') restoreRam(m, nsf.ram);
     m.sinkN = 0; m.qLen = 0; m.qPos = 0; m.acc = 0; m.frames = 0;
     return m;
   }
@@ -159,6 +164,14 @@
       }
       return orig.call(this, addr, value);
     };
+  }
+  // 還原遊戲 RAM 影像：$0000–$07FF 與 $6000–$7FFF（格式見 musiclib_extract_nes.js 的 snapRam）
+  function restoreRam(m, ram) {
+    var mem = m.nes.cpu.mem;
+    // 不還原堆疊（$0100–$01FF）：擷取當下的堆疊裡是舊的返回位址，還原後會讓遊戲跳到資料上當掉（實測 $1F2 無效指令）
+    mem.set(ram.subarray(0, 0x100), 0);
+    mem.set(ram.subarray(0x200, 0x800), 0x200);
+    mem.set(ram.subarray(0x800, 0x2800), 0x6000);
   }
   // 依 MMC1 狀態把 8 個 4KB 頁接到 $8000–$FFFF（同時更新 m.banks，給快照用）
   function applyMmc1(m) {
@@ -271,7 +284,7 @@
         if (!(N.songs >= 1)) throw new Error('NSF 曲目數為 0');
         var nsf = {
           load: N.load, init: N.init, play: N.play, songs: N.songs, data: N.data, pal: N.pal, palSpeed: N.palSpeed, ntscSpeed: N.ntscSpeed,
-          banks: N.banks, banked: N.banks.some(function (x) { return x !== 0; }), mmc1: N.mmc1
+          banks: N.banks, banked: N.banks.some(function (x) { return x !== 0; }), mmc1: N.mmc1, ram: N.ram
         };
         var tracks = [];
         for (var i = 1; i <= N.songs; i++) tracks.push(lazyTrack(NES, nsf, i, i - 1));

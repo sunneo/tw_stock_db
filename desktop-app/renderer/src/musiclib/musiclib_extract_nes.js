@@ -79,7 +79,8 @@
   function packNsf(o) {
     o = o || {};
     var data = o.prg instanceof Uint8Array ? o.prg : Uint8Array.from(o.prg || []);
-    var h = new Uint8Array(0x80 + data.length);
+    var ramLen = o.ram ? o.ram.length : 0;
+    var h = new Uint8Array(0x80 + data.length + ramLen);
     h.set([0x4E, 0x45, 0x53, 0x4D, 0x1A], 0);              // "NESM" 0x1A
     h[5] = 1;                                              // 版本
     h[6] = o.songs || 1;
@@ -95,8 +96,11 @@
     h[0x7A] = o.pal ? 1 : 0;
     h[0x7B] = o.chipBits || 0;
     // 0x7C–0x7F 是 NSF 規格的保留位元組；本專案用來放 MMC1 的銀行狀態（標準播放器會忽略）
-    if (o.mmc1) { h[0x7C] = 1; h[0x7D] = o.mmc1.ctrl & 0x1F; h[0x7E] = o.mmc1.prg & 0x1F; h[0x7F] = o.mmc1.nb16 & 0xFF; }
+    if (o.mmc1) { h[0x7D] = o.mmc1.ctrl & 0x1F; h[0x7E] = o.mmc1.prg & 0x1F; h[0x7F] = o.mmc1.nb16 & 0xFF; }
+    // 0x7C 位元 0 = MMC1 資訊有效；位元 1 = 資料最後 RAM_IMAGE 位元組是遊戲 RAM 影像（播放前還原）
+    h[0x7C] = (o.mmc1 ? 1 : 0) | (o.ram ? 2 : 0);
     h.set(data, 0x80);
+    if (o.ram) h.set(o.ram, 0x80 + data.length);
     return h;
   }
   function parseNsf(bytes) {
@@ -108,8 +112,9 @@
       ok: true, version: b[5], songs: b[6], start: b[7], load: u16(8), init: u16(10), play: u16(12),
       name: s32(0x0E), artist: s32(0x2E), copyright: s32(0x4E), ntscSpeed: u16(0x6E),
       banks: Array.from(b.subarray(0x70, 0x78)), palSpeed: u16(0x78), pal: !!(b[0x7A] & 1),
-      mmc1: (b[0x7C] === 1) ? { ctrl: b[0x7D], prg: b[0x7E], nb16: b[0x7F] } : null,
-      data: b.subarray(0x80)
+      mmc1: (b[0x7C] & 1) ? { ctrl: b[0x7D], prg: b[0x7E], nb16: b[0x7F] } : null,
+      ram: ((b[0x7C] & 2) && b.length - 0x80 >= RAM_IMAGE) ? b.subarray(b.length - RAM_IMAGE) : null,
+      data: ((b[0x7C] & 2) && b.length - 0x80 >= RAM_IMAGE) ? b.subarray(0x80, b.length - RAM_IMAGE) : b.subarray(0x80)
     };
   }
 
@@ -511,12 +516,12 @@
       else {
         out.init = initAddr;
         if (rom.mapper === 0) {
-          pack = packNsf({ prg: dataBytes, load: loadAddr, init: initAddr, play: inf.play, songs: 1, start: 1, name: opts.name || '' });
+          pack = packNsf({ prg: dataBytes, load: loadAddr, init: initAddr, play: inf.play, songs: 1, start: 1, name: opts.name || '', ram: tr.ramSnap });
         } else {
           // MMC1：銀行狀態在第一個播放畫面時的暫存器值放進標頭，播放器用同一套 MMC1 規則接收後續寫入（見 musiclib_chip_nsf.js）
           var mmcRow = tr.mmcRows[inf.firstPlayFrame] || tr.mmcRows[0] || { ctrl: 0x0C, prg: 0 };
           var mmc1 = rom.mapper === 1 ? { ctrl: mmcRow.ctrl, prg: mmcRow.prg, nb16: rom.prgBanks } : null;
-          pack = packNsf({ prg: dataBytes, load: 0x8000, init: initAddr, play: inf.play, songs: 1, start: 1, name: opts.name || '', banks: layout.bankInit, mmc1: mmc1 });
+          pack = packNsf({ prg: dataBytes, load: 0x8000, init: initAddr, play: inf.play, songs: 1, start: 1, name: opts.name || '', banks: layout.bankInit, mmc1: mmc1, ram: tr.ramSnap });
           // 播放中銀行有沒有變：有變就要說明（只有 MMC1 寫入會由播放器模擬；其他 mapper 的銀行切換只有 $5FF8，音樂可能不完整）
           var rowsDiffer = 0, ref = tr.slotHashes[inf.firstPlayFrame] || [];
           (inf.playFrameList || []).forEach(function (fi) {
