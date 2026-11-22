@@ -1930,28 +1930,28 @@
    "names": [
     "FaMusicLib"
    ],
-   "size": 18646,
-   "md5": "00eb82e86eb7ad2c5cc0f2e3c5e36ec8"
+   "size": 22030,
+   "md5": "845bed0d6bb7335465097f7f8aaf8f04"
   },
   "mlui": {
    "file": "chunks/mlui.js",
    "names": [
     "FaMusicLibUI"
    ],
-   "size": 8393,
-   "md5": "21567832069c7a27e7dace53635b2c16"
+   "size": 11183,
+   "md5": "54fa8e16dd836ce7ebc906ddc7d1aa3d"
   },
   "mlhost": {
    "file": "chunks/mlhost.js",
    "names": [
     "FaMusicLibHost"
    ],
-   "size": 7235,
-   "md5": "0dd54e9224a3c4402a2db661404db560"
+   "size": 11796,
+   "md5": "cb4001bc99be6c0c9048e3a8f3fbe99c"
   }
  },
  "core": {
-  "size": 6919763,
-  "md5": "a7624bf1ede7541b1c7277a92fef444a"
+  "size": 6920958,
+  "md5": "7a736513ffaef36e022479a3678ba4b8"
  }
 }
