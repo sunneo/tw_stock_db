@@ -22,7 +22,6 @@
 }(typeof self !== 'undefined' ? self : this, function () {
   'use strict';
   var PRG_BANK = 16384, CHR_BANK = 8192, TRAINER = 512, PAGE = 4096;
-  var RAM_IMAGE = 0x2800;          // 遊戲 RAM 影像大小：$0000–$07FF ＋ $6000–$7FFF（見 snapRam）
   var CPU_NTSC = 1789773;          // NES CPU 時脈（NTSC），脈衝／三角波的頻率換算用
   var FRAME_NTSC = 60.0988;        // 每秒畫面數（NTSC）
   var AUDIO_RATE = 44100;          // wav 取樣率
@@ -79,8 +78,7 @@
   function packNsf(o) {
     o = o || {};
     var data = o.prg instanceof Uint8Array ? o.prg : Uint8Array.from(o.prg || []);
-    var ramLen = o.ram ? o.ram.length : 0;
-    var h = new Uint8Array(0x80 + data.length + ramLen);
+    var h = new Uint8Array(0x80 + data.length);
     h.set([0x4E, 0x45, 0x53, 0x4D, 0x1A], 0);              // "NESM" 0x1A
     h[5] = 1;                                              // 版本
     h[6] = o.songs || 1;
@@ -95,12 +93,7 @@
     le16(h, 0x78, o.palSpeed || 19997);
     h[0x7A] = o.pal ? 1 : 0;
     h[0x7B] = o.chipBits || 0;
-    // 0x7C–0x7F 是 NSF 規格的保留位元組；本專案用來放 MMC1 的銀行狀態（標準播放器會忽略）
-    if (o.mmc1) { h[0x7D] = o.mmc1.ctrl & 0x1F; h[0x7E] = o.mmc1.prg & 0x1F; h[0x7F] = o.mmc1.nb16 & 0xFF; }
-    // 0x7C 位元 0 = MMC1 資訊有效；位元 1 = 資料最後 RAM_IMAGE 位元組是遊戲 RAM 影像（播放前還原）
-    h[0x7C] = (o.mmc1 ? 1 : 0) | (o.ram ? 2 : 0);
     h.set(data, 0x80);
-    if (o.ram) h.set(o.ram, 0x80 + data.length);
     return h;
   }
   function parseNsf(bytes) {
@@ -112,36 +105,8 @@
       ok: true, version: b[5], songs: b[6], start: b[7], load: u16(8), init: u16(10), play: u16(12),
       name: s32(0x0E), artist: s32(0x2E), copyright: s32(0x4E), ntscSpeed: u16(0x6E),
       banks: Array.from(b.subarray(0x70, 0x78)), palSpeed: u16(0x78), pal: !!(b[0x7A] & 1),
-      mmc1: (b[0x7C] & 1) ? { ctrl: b[0x7D], prg: b[0x7E], nb16: b[0x7F] } : null,
-      ram: ((b[0x7C] & 2) && b.length - 0x80 >= RAM_IMAGE) ? b.subarray(b.length - RAM_IMAGE) : null,
-      data: ((b[0x7C] & 2) && b.length - 0x80 >= RAM_IMAGE) ? b.subarray(0x80, b.length - RAM_IMAGE) : b.subarray(0x80)
+      data: b.subarray(0x80)
     };
-  }
-
-  // ───── MMC1（mapper 1）銀行狀態 ─────
-  // 寫入 $8000–$FFFF 一次一位元（bit0），第 5 次寫入時依位址 bit14–13 決定暫存器：0 控制、1/2 CHR（忽略）、3 PRG 銀行。
-  // bit7 = 1：清移位暫存器，並把控制的 bit2–3 設為 1（固定最後一個 16K 銀行）。
-  function mmc1New() { return { shift: 0, count: 0, ctrl: 0x0C, prg: 0 }; }
-  // 回傳 true 表示這次寫入改了暫存器（銀行可能變了）
-  function mmc1Step(st, addr, value) {
-    if (value & 0x80) { st.shift = 0; st.count = 0; st.ctrl |= 0x0C; return true; }
-    st.shift |= (value & 1) << st.count; st.count++;
-    if (st.count < 5) return false;
-    var reg = (addr >> 13) & 3, v = st.shift & 0x1F;
-    st.shift = 0; st.count = 0;
-    if (reg === 0) st.ctrl = v; else if (reg === 3) st.prg = v; else return false;
-    return true;
-  }
-  // 依控制與 PRG 暫存器算出 8 個 4KB 頁（$8000–$FFFF 每 4KB 一格）；頁號是 NSF 資料裡的頁號（ROM 頁依序排在前面）
-  function mmc1Pages(st, nb16) {
-    var n = nb16 > 0 ? nb16 : 1, mode = (st.ctrl >> 2) & 3, p = st.prg & 0x0F, lo, hi;
-    if (mode < 2) { lo = (st.prg & 0x0E) % n; hi = (lo + 1) % n; }      // 32K 模式（忽略 PRG 暫存器 bit0）
-    else if (mode === 2) { lo = 0; hi = p % n; }                         // $8000 固定第 0 銀行
-    else { lo = p % n; hi = (n - 1); }                                   // $C000 固定最後一個銀行
-    var pages = [];
-    for (var s = 0; s < 4; s++) pages.push(lo * 4 + s);
-    for (s = 0; s < 4; s++) pages.push(hi * 4 + s);
-    return pages;
   }
 
   // ───── 推導 PLAY／INIT（事件流 → 入口）─────
@@ -298,13 +263,6 @@
     for (var i = 0; i < PAGE; i++) { h = (h ^ mem[off + i]) >>> 0; h = Math.imul(h, 0x01000193) >>> 0; }
     return h;
   }
-  // 遊戲 RAM 影像：低 2KB（$0000–$07FF）＋ WRAM（$6000–$7FFF），共 RAM_IMAGE 位元組
-  function snapRam(mem) {
-    var out = new Uint8Array(RAM_IMAGE);
-    out.set(mem.subarray(0, 0x800), 0);
-    out.set(mem.subarray(0x6000, 0x8000), 0x800);
-    return out;
-  }
   // 按鍵排程：每 150 畫面 Start（20–25、100–103）與 A（60–65），讓遊戲離開標題畫面
   function padAt(f) { var m = f % 150; return { 3: (m >= 20 && m < 26) || (m >= 100 && m < 104), 0: (m >= 60 && m < 66) }; }
 
@@ -312,7 +270,7 @@
     opts = opts || {};
     var maxFrames = opts.maxFrames || MAX_FRAMES, yieldEvery = opts.yieldEvery || 30;
     var isCancelled = typeof opts.isCancelled === 'function' ? opts.isCancelled : function () { return false; };
-    var events = [], slotHashes = [], pages = new Map(), ramSnap = null, ramSnapFrame = -1;
+    var events = [], slotHashes = [], pages = new Map();
     var audio = new Float32Array(Math.ceil(maxFrames * AUDIO_RATE / FRAME_NTSC) + 4096), audioN = 0;
     var nes = new NES({
       onFrame: function () {}, emulateSound: true, sampleRate: AUDIO_RATE,
@@ -324,18 +282,8 @@
     var apuThisFrame = 0;
     var origWrite = papu.writeReg;
     papu.writeReg = function (addr, value) {
-      // 第一次寫入非零聲音值之前的遊戲 RAM（低 2KB＋WRAM $6000–$7FFF）：播放器用它還原音樂引擎的變數（遊戲的重置程式沒有在 NSF 殼裡跑）
-      if (!ramSnap && (value & 0xFF) !== 0) { ramSnap = snapRam(mem); ramSnapFrame = ran; }
       events.push({ k: 'apu', addr: addr & 0xFFFF, value: value & 0xFF }); apuThisFrame++;
       return origWrite.call(this, addr, value);
-    };
-    // MMC1 狀態：$8000–$FFFF 的寫入即時更新（只有 mapper 1 有意義）；每個畫面結束時記一列，與 slotHashes 同步
-    var mmcLive = mmc1New(), mmcRows = [];
-    var origCpuWrite = cpu.write;
-    cpu.write = function (addr, value) {
-      var a = addr & 0xFFFF;
-      if (a >= 0x8000) mmc1Step(mmcLive, a, value & 0xFF);
-      return origCpuWrite.call(this, addr, value);
     };
     var origEmu = cpu.emulate, inNmi = false;
     cpu.emulate = function () {
@@ -377,14 +325,12 @@
       events.push({ k: 'vblank', f: f, samples: audioN, active: active });
       apuThisFrame = 0;
       slotHashes.push(slotsNow());
-      mmcRows.push({ ctrl: mmcLive.ctrl, prg: mmcLive.prg });
       // 自適應停止：有過活動、而且之後安靜的時間夠長（至少 QUIET_MIN，且不短於活動畫面數的一半）就停
       if (activeFrames >= QUIET_MIN && f - lastApu >= Math.max(QUIET_MIN, activeFrames / 2)) { quit = 'quiet'; break; }
       if (f % yieldEvery === yieldEvery - 1) await yieldNow();
     }
     return {
-      events: events, slotHashes: slotHashes, mmcRows: mmcRows, pages: pages, audio: audio.subarray(0, audioN), sampleRate: AUDIO_RATE,
-      ramSnap: ramSnap, ramSnapFrame: ramSnapFrame,
+      events: events, slotHashes: slotHashes, pages: pages, audio: audio.subarray(0, audioN), sampleRate: AUDIO_RATE,
       frames: ran, activeFrames: activeFrames, quit: quit, crashed: crashed, nmiVector: nmiVec,
       apuWrites: events.reduce(function (n, e) { return n + (e.k === 'apu' ? 1 : 0); }, 0)
     };
@@ -516,20 +462,16 @@
       else {
         out.init = initAddr;
         if (rom.mapper === 0) {
-          pack = packNsf({ prg: dataBytes, load: loadAddr, init: initAddr, play: inf.play, songs: 1, start: 1, name: opts.name || '', ram: tr.ramSnap });
+          pack = packNsf({ prg: dataBytes, load: loadAddr, init: initAddr, play: inf.play, songs: 1, start: 1, name: opts.name || '' });
         } else {
-          // MMC1：銀行狀態在第一個播放畫面時的暫存器值放進標頭，播放器用同一套 MMC1 規則接收後續寫入（見 musiclib_chip_nsf.js）
-          var mmcRow = tr.mmcRows[inf.firstPlayFrame] || tr.mmcRows[0] || { ctrl: 0x0C, prg: 0 };
-          var mmc1 = rom.mapper === 1 ? { ctrl: mmcRow.ctrl, prg: mmcRow.prg, nb16: rom.prgBanks } : null;
-          pack = packNsf({ prg: dataBytes, load: 0x8000, init: initAddr, play: inf.play, songs: 1, start: 1, name: opts.name || '', banks: layout.bankInit, mmc1: mmc1, ram: tr.ramSnap });
-          // 播放中銀行有沒有變：有變就要說明（只有 MMC1 寫入會由播放器模擬；其他 mapper 的銀行切換只有 $5FF8，音樂可能不完整）
+          pack = packNsf({ prg: dataBytes, load: 0x8000, init: initAddr, play: inf.play, songs: 1, start: 1, name: opts.name || '', banks: layout.bankInit });
+          // 播放中銀行有沒有變：有變就要說明（NSF 的切換只有 $5FF8，這類遊戲的音樂可能不完整）
           var rowsDiffer = 0, ref = tr.slotHashes[inf.firstPlayFrame] || [];
           (inf.playFrameList || []).forEach(function (fi) {
             var row = tr.slotHashes[fi]; if (!row) return;
             for (var s = 0; s < 8; s++) if (row[s] !== ref[s]) { rowsDiffer++; break; }
           });
-          if (rowsDiffer && mmc1) out.nsfNote = '播放中銀行切換了 ' + rowsDiffer + ' 個畫面（MMC1 寫入由播放器模擬）';
-          else if (rowsDiffer) out.nsfNote = '播放中銀行切換了 ' + rowsDiffer + ' 個畫面；NSF 只能用 $5FF8 切換，這類遊戲的音樂可能不完整';
+          if (rowsDiffer) out.nsfNote = '播放中銀行切換了 ' + rowsDiffer + ' 個畫面；NSF 只能用 $5FF8 切換，這類遊戲的音樂可能不完整';
         }
         if (stub) out.nsfNote = (out.nsfNote ? out.nsfNote + '；' : '') + 'INIT 找不到返回的音效初始化呼叫，改用 APU 重放存根（只重放第一次播放前頂層寫入的聲音暫存器，不還原遊戲 RAM）';
       }
@@ -545,7 +487,6 @@
     classifyFile: classifyFile, parseInes: parseInes, packNsf: packNsf, parseNsf: parseNsf, inferPlay: inferPlay,
     apuTraceToSong: apuTraceToSong, wav16: wav16, traceRom: traceRom, extractNsf: extractNsf, bankLayout: bankLayout,
     trimToSound: trimToSound, fnvPage: fnvPage, padAt: padAt,
-    mmc1New: mmc1New, mmc1Step: mmc1Step, mmc1Pages: mmc1Pages,
     CORE_MAPPERS: CORE_MAPPERS, NOISE_PERIOD: NOISE_PERIOD, CPU_NTSC: CPU_NTSC, FRAME_NTSC: FRAME_NTSC, AUDIO_RATE: AUDIO_RATE, MAX_FRAMES: MAX_FRAMES
   };
 }));
