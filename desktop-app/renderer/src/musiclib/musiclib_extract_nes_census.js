@@ -144,6 +144,8 @@ async function main() {
   }
   if (mode === 'run') {
     var items = JSON.parse(fs.readFileSync(process.argv[3], 'utf8'));
+    // 慢的 mapper 5（MMC5）排最後：所有其他 mapper 先跑完一輪
+    items.sort(function (a, b) { return ((a.mapper === 5) - (b.mapper === 5)) || (a.idx - b.idx); });
     var workers = Math.min(2, +argOf('--workers', 2));
     var results = await runParent(items, workers, argOf('--json', null));
     console.log('完成：' + results.length + '/' + items.length);

@@ -92,7 +92,7 @@
       write(address, value) {
         if (address < 0x8000) { super.write(address, value); return; }
         var a = address & 0xf003, n = value & 0x0f, hi = (a & 1);
-        if (a >= 0x8000 && a <= 0x8003) this.setPrg(0, hi, n, value);
+        if (a >= 0x8000 && a <= 0x8003) this.setPrg((a >> 1) & 1, hi, n, value);   // $8000/$8001 = 銀行 0，$8002/$8003 = 銀行 1
         else if (a >= 0x9000 && a <= 0x9001) this.setPrg(2, hi, n, value);
         else if (a >= 0xa000 && a <= 0xa003) this.setChr(0 + ((a & 2) ? 1 : 0), hi, n);
         else if (a >= 0xb000 && a <= 0xb003) this.setChr(2 + ((a & 2) ? 1 : 0), hi, n);
@@ -414,7 +414,8 @@
       }
       loadROM() {
         if (!this.nes.rom.valid) throw new Error('ET-4310: Invalid ROM! Unable to load.');
-        load16(this, 0, 0x8000); load16(this, 0, 0xc000);
+        // 上電：$8000 = 第 0 銀行，$C000 = 最後一個銀行（重置向量在最後的銀行，見 ROM 檔頭的 $FFFC）
+        load16(this, 0, 0x8000); load16(this, this.nes.rom.romCount - 1, 0xc000);
         this.loadCHRROM(); this.loadBatteryRam(); this.nes.cpu.requestIrq(this.nes.cpu.IRQ_RESET);
       }
     }

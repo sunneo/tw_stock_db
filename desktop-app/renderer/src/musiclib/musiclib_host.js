@@ -502,7 +502,7 @@ const FaMusicLibHost = (function () {
       if (nr.nsf) outs.push({ kind: 'nsf', name: stem + '.nsf', bytes: nr.nsf, method: method, durationSec: null, title: stem + ' NSF' });
       if (nr.song) {
         var nsong = FaMidi.validate(nr.song);
-        outs.push({ kind: 'mid', name: stem + '_APU.mid', bytes: FaMidi.write(nsong), method: method + '；APU 暫存器→MIDI（退路）', durationSec: nr.stats.seconds, title: stem + ' MIDI' });
+        outs.push({ kind: 'mid', name: stem + '_APU.mid', bytes: FaMidi.write(nsong), method: method + '；APU 暫存器→MIDI（退路）', durationSec: nr.stats.durationSec, title: stem + ' MIDI' });
       }
       if (nr.wav && nr.samples && nr.samples.length) {
         emit('編碼 mp3');

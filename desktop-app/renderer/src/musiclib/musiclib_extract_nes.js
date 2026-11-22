@@ -27,6 +27,7 @@
   var AUDIO_RATE = 44100;          // wav 取樣率
   var MAX_FRAMES = 9000;           // 約 150 秒遊戲時間的上限
   var QUIET_MIN = 900;             // 活動過後至少安靜這麼多畫面才算停（另見 traceRom 的自適應規則）
+  var ACTIVE_TARGET = 1800;        // 有聲音累積約 30 秒遊戲時間（60 幀/秒）就不再放寬幀數上限
   var NOISE_PERIOD = [4, 8, 16, 32, 64, 96, 128, 160, 202, 254, 380, 508, 762, 1016, 2034, 4068];
   // jsnes 的 src/mappers/index.js 有的 mapper 編號（核心不支援的，先回報，不執行）
   var CORE_MAPPERS = [0, 1, 2, 3, 4, 5, 7, 9, 11, 34, 38, 65, 66, 67, 71, 73, 79, 94, 118, 119, 140, 180, 240, 241];
@@ -303,7 +304,14 @@
       return v;
     }
     var held = { 0: false, 3: false }, quit = 'maxFrames', crashed = null, lastApu = -1, activeFrames = 0, ran = 0, f;
-    for (f = 0; f < maxFrames; f++) {
+    // 自適應幀數上限：沒有聲音就逐步放寬（2400 → 4800 → 9000）；有聲音且累積約 30 秒遊戲時間（ACTIVE_TARGET 幀）就不再放寬
+    var stages = opts.maxFrames ? [opts.maxFrames] : [2400, 4800, maxFrames];
+    var stageIdx = 0, cap = stages[0], hardCap = stages[stages.length - 1];
+    for (f = 0; f < hardCap; f++) {
+      if (f >= cap) {
+        if (stageIdx < stages.length - 1 && activeFrames < ACTIVE_TARGET) { stageIdx++; cap = stages[stageIdx]; }
+        else break;
+      }
       if (isCancelled()) { quit = 'cancelled'; break; }
       var want = padAt(f);
       [0, 3].forEach(function (b) {
