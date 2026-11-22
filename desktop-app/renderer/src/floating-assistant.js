@@ -83042,8 +83042,8 @@ const holder = {};
     nes: { category: 'game', label: '遊戲音樂來源，待擷取' },
     pce: { category: 'game', label: '遊戲音樂來源，待擷取' },
     sfc: { category: 'game', label: '遊戲音樂來源，待擷取' },
-    rix: { category: 'game', label: '遊戲音樂來源，待擷取' },
-    swf: { category: 'game', label: '遊戲音樂來源，待擷取' }
+    rix: { category: 'extract', label: 'RIX（OPL2）音樂，可擷取' },
+    swf: { category: 'extract', label: 'Flash（SWF）音樂，可擷取' }
   };
   var EXT_ALIAS = { midi: 'mid' };
 
@@ -83715,14 +83715,16 @@ const holder = {};
     'video>mid': ['decode', 'slice', 'to-song', 'write-mid']
   };
   var SOURCE_CLASS = { wav: 'audio', mp3: 'audio', mid: 'mid', midi: 'mid', mp4: 'video', mov: 'video', webm: 'video', m4v: 'video' };
-  var ROM_EXT = { nes: 1, pce: 1, sfc: 1, rix: 1, swf: 1 };
+  var ROM_EXT = { nes: 1, pce: 1, sfc: 1 };
+  var EXTRACT_EXT = { rix: 1, swf: 1 };
 
   // 規劃單一檔案的輸出路線。回傳 { ok:true, route, steps } 或 { ok:false, reason }。
   // 不支援的組合一律說明原因，不偷偷略過。
   function planExport(name, format) {
     var ext = String(name || '').split('.').pop().toLowerCase();
     if (EXPORT_FORMATS.indexOf(format) < 0) return { ok: false, reason: '不支援的輸出格式：' + format };
-    if (ROM_EXT[ext]) return { ok: false, reason: '尚未支援：' + ext + ' 遊戲檔沒有擷取器（本輪只做音訊、影片、MIDI）' };
+    if (EXTRACT_EXT[ext]) return { ok: false, reason: ext.toUpperCase() + ' 要先按「擷取」產生 MIDI／mp3 子曲目，再批次輸出子曲目' };
+    if (ROM_EXT[ext]) return { ok: false, reason: '尚未支援：' + ext + ' 遊戲檔的音樂需要模擬器驅動，本輪沒有擷取器' };
     var cls = SOURCE_CLASS[ext];
     if (!cls) return { ok: false, reason: '尚未支援這種格式：.' + ext };
     var key = cls + '>' + format;
@@ -83789,7 +83791,33 @@ const holder = {};
     return { results: results, summary: summary };
   }
 
+  // ───────────────────────── 擷取的子曲目（RIX／Flash 擷取出來的 MIDI、mp3、wav）
+  // 子曲目的格式與普通檔案一樣（kind 是 mid／mp3／wav），之後的檔名搜尋、歌詞、哼歌索引、批次輸出都不分辨來源。
+  // 只記下來源：derivedFrom（來源記錄的 key）、derivedIndex（第幾個）、derivedMethod（擷取方式）。
+  function buildDerivedRecord(parent, out, now) {
+    var path = String(out.path), name = basename(path), kind = out.kind;
+    var k = KINDS[kind] || { category: 'audio', label: kind };
+    return {
+      key: 'derived|' + parent.key + '|' + out.index, sourceId: parent.sourceId, sourceType: parent.sourceType, sourceLabel: parent.sourceLabel,
+      path: path, name: name, ext: extOf(name), kind: kind, category: k.category, label: k.label,
+      pending: false, via: 'extract',
+      title: out.title || stripExt(name), titleSource: 'derived', artist: null,
+      album: parent.album || null, albumSource: parent.album ? 'folder' : null,
+      durationSec: out.durationSec == null ? null : out.durationSec, durationApprox: false,
+      sizeBytes: out.sizeBytes || 0, mtimeMs: now, status: 'ok', scannedAt: now,
+      lyrics: null, lyricStatus: 'none', lyricError: null,
+      meta: { format: 'derived', tracks: null, trackName: null, notes: null },
+      derivedFrom: parent.key, derivedIndex: out.index, derivedMethod: out.method || ''
+    };
+  }
+  // 換掉某個來源的子曲目（重新擷取時先把舊的拿掉，避免重複）
+  function replaceDerived(lib, parentKey, newRecs) {
+    lib.records = lib.records.filter(function (r) { return r.derivedFrom !== parentKey; }).concat(newRecs || []);
+    return lib.records.length;
+  }
+
   return {
+    buildDerivedRecord: buildDerivedRecord, replaceDerived: replaceDerived,
     minutesToSec: minutesToSec, sliceWindow: sliceWindow, outputName: outputName, planExport: planExport, runExportBatch: runExportBatch,
     EXPORT_ROUTES: EXPORT_ROUTES, EXPORT_FORMATS: EXPORT_FORMATS, EXPORT_MAX_ATTEMPTS: EXPORT_MAX_ATTEMPTS,
     VERSION: VERSION, HEAD_BYTES: HEAD_BYTES, KINDS: KINDS,
@@ -84077,10 +84105,646 @@ return holder.FaMusicLibAudio;
 })();
 /* MLAUD-END */
 /* MLRIX-BEGIN */
+const FaMusicLibRix = (function () {
+const holder = {};
+(function (module, self) {
+/* RIX（軟體之星，AdLib OPL2 音樂）擷取器：純函式（UMD），不碰 DOM／網路。
+ *   parseRix(bytes) → { ok:true, soundMode, instruments, song, stats } 或丟錯（訊息附階段）
+ *   song 是標準 MIDI 曲子物件（與 FaMidi 同形：ppq／tempos／tracks，音符時間是 tick），之後的寫檔、渲染、曲庫登記都只看到普通 MIDI。
+ * 格式依據（與 AdPlug 的 rix.cpp 一致，見 musiclib_extract_rix.test.js 的說明）：
+ *   檔頭 20 位元組：0x00 u16 = 0x55AA；0x02 soundMode（0 旋律、1 打擊）；0x08 u16 insOffset（預設 0x14）；0x0C u16 patternOffset。
+ *   樂器：insOffset + n*0x40，讀 28 個 u16（56 位元組）：前 13 個是調變器參數、接著 13 個是載波參數、最後兩個是波形（&3）。
+ *   樂譜：u16 字，低位元組是資料、高位元組是控制；控制 0x80 結束；0x9x 選樂器、0xAx 音高彎曲、0xBx 音量、0xCx 音符（0 = 關音）；
+ *     其餘字是延遲（值 = 高×256+低，單位 1/980 秒，由 70 Hz 計時遞減 14 推得）。
+ *   音符：MIDI 音高 = 資料值（≥12；小於 12 的一律當 C0）。頻道 0..8 旋律；soundMode=1 時 6..8 當打擊（底鼓、小鼓、踩鑔）。
+ *   音色：近似。依載波波形挑 GM 音色（正弦→長笛、方波→方波主音、其他→鋸齒主音）。 */
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaMusicLibRix = factory();
+}(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+  var SIG = 0x55AA, HDR_MIN = 0x0E, INS_SIZE = 0x40, INS_WORDS = 28;
+  var PPQ = 480, TEMPO_BPM = 120;
+  var TICKS_PER_BAND = (PPQ * 2) / 980;          // 1 拍 = 0.5 秒 = 480 tick；1 延遲單位 = 1/980 秒 = 0.98 tick（2 拍/秒）
+  var DRUM_NOTE = { 6: 36, 7: 42, 8: 38 };         // 打擊：6 底鼓 36、7 踩鑔 42、8 小鼓 38（GM）
+  var PROGRAM_BY_WAVE = [73, 80, 81, 81];           // 載波波形 0 正弦→長笛 73；1 半正弦→方波主音 80；2/3 →鋸齒主音 81（近似）
+
+  function u16(b, o) { return b[o] | (b[o + 1] << 8); }
+
+  // 讀一個樂器的 28 個字，回傳 { v:[…13 個調變器參數, …13 個載波參數], wave:[調變器, 載波] }
+  function readInstrument(b, base) {
+    var w = [];
+    for (var i = 0; i < INS_WORDS; i++) w.push(u16(b, base + i * 2));
+    var mod = w.slice(0, 13), car = w.slice(13, 26);
+    return { mod: mod, car: car, wave: [w[26] & 3, w[27] & 3] };
+  }
+
+  // 主要解析：回傳標準 MIDI 曲子與統計；任何結構錯誤都丟出附階段的錯誤
+  function parseRix(bytes) {
+    var b = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    var len = b.length;
+    if (len < HDR_MIN) throw new Error('解析失敗（檔頭）：檔案只有 ' + len + ' 位元組，短於 RIX 檔頭的 ' + HDR_MIN + ' 位元組');
+    var sig = u16(b, 0);
+    if (sig !== SIG) throw new Error('解析失敗（檔頭）：開頭不是 RIX 的 0x55AA，實際是 0x' + sig.toString(16));
+    var soundMode = b[2];
+    var insOffset = u16(b, 0x08), musBlock = u16(b, 0x0C);
+    if (musBlock >= len) throw new Error('解析失敗（檔頭）：樂譜位置 ' + musBlock + ' 超出檔案長度 ' + len);
+
+    // 樂器（只讀需要的：樂器表本身的範圍檢查由實際被選用時做）
+    var insCache = {};
+    function instrument(n) {
+      if (insCache[n]) return insCache[n];
+      var base = insOffset + n * INS_SIZE;
+      if (base + INS_SIZE > len) throw new Error('解析失敗（樂器）：樂器 ' + n + ' 的位置 ' + base + ' 超出檔案');
+      return (insCache[n] = readInstrument(b, base));
+    }
+
+    // 樂譜：依序解出各頻道的音符（時間以延遲單位累加）
+    var t = 0, chIns = {}, active = {}, notes = {}, cmds = 0, delays = 0, bends = 0, vols = 0;
+    function trackOf(ch) { return notes[ch] || (notes[ch] = []); }
+    function noteOff(ch, at) {
+      var a = active[ch]; if (!a) return;
+      var d = at - a.t0; if (d > 0) trackOf(ch).push({ t: a.t0, d: d, n: a.n, v: a.v });
+      active[ch] = null;
+    }
+    var pos = musBlock + 1;
+    var guard = 0;
+    while (pos < len && b[pos] !== 0x80) {
+      var data = b[pos - 1], ctrl = b[pos];
+      pos += 2;
+      if (++guard > 2000000) throw new Error('解析失敗（樂譜）：字數超過 200 萬仍沒有結束字，疑似壞檔');
+      var kind = ctrl & 0xF0, ch = ctrl & 0x0F;
+      if (kind === 0x90) {                       // 選樂器
+        if (ch <= 10) { chIns[ch] = data; instrument(data); }
+        cmds++;
+      } else if (kind === 0xA0) {                // 音高彎曲：資料 << 6，中心 0x2000
+        var bend = Math.min(0x3FFF, data << 6);
+        if (ch <= 10) { trackOf(ch).push({ bend: true, t: t, value: bend }); bends++; }
+        cmds++;
+      } else if (kind === 0xB0) {                // 音量（0..0x7F）
+        if (ch <= 10) { trackOf(ch).push({ vol: true, t: t, value: Math.min(0x7F, data) }); vols++; }
+        cmds++;
+      } else if (kind === 0xC0) {                // 音符：先關掉此頻道的音，yy != 0 才開新音
+        if (ch <= 10) {
+          noteOff(ch, t);
+          if (data !== 0) {
+            var midi = data >= 12 ? data : 12;
+            active[ch] = { t0: t, n: midi, v: 100 };
+          }
+        }
+        cmds++;
+      } else {                                   // 其餘（0x00..0x7F、0x81..0x8F、0xD0..0xFF）＝延遲字
+        var delay = (ctrl << 8) + data;
+        if (delay) { t += delay; delays++; }
+      }
+    }
+    var stopped = pos < len && b[pos] === 0x80; // 找到結束字（0x80）才算完整；沒找到就是檔案被截斷
+    // 結束：把還沒關的音在曲尾關掉
+    Object.keys(active).forEach(function (k) { noteOff(+k, t); });
+
+    // 組成 MIDI 曲子（tick）：每個頻道一軌；打擊模式的 6..8 併到一條打擊軌
+    var song = { ppq: PPQ, tempos: [{ t: 0, bpm: TEMPO_BPM }], timesig: { n: 4, d: 4 }, title: '', tracks: [] };
+    var drumNotes = [];
+    var totalNotes = 0;
+    Object.keys(notes).map(Number).sort(function (a, b) { return a - b; }).forEach(function (ch) {
+      var evs = notes[ch];
+      var nlist = [], bendList = [], volList = [];
+      evs.forEach(function (e) {
+        if (e.bend) bendList.push(e); else if (e.vol) volList.push(e); else nlist.push(e);
+      });
+      if (soundMode === 1 && DRUM_NOTE[ch] != null) {
+        nlist.forEach(function (e) { drumNotes.push({ t: Math.round(e.t * TICKS_PER_BAND), d: Math.max(1, Math.round(PPQ / 8)), n: DRUM_NOTE[ch], v: 100 }); });
+        totalNotes += nlist.length;
+        return;
+      }
+      var ins = chIns[ch] != null ? instrument(chIns[ch]) : null;
+      var wave = ins ? ins.wave[1] : 0;
+      var track = {
+        name: '頻道 ' + ch + (ins ? '（樂器 ' + chIns[ch] + '）' : ''),
+        channel: ch, program: PROGRAM_BY_WAVE[wave], drum: false, volume: 100, pan: 64, notes: []
+      };
+      nlist.forEach(function (e) {
+        var t0 = Math.round(e.t * TICKS_PER_BAND), d = Math.max(1, Math.round(e.d * TICKS_PER_BAND));
+        track.notes.push({ t: t0, d: d, n: Math.max(0, Math.min(127, e.n)), v: e.v });
+      });
+      track.notes.sort(function (a, b) { return a.t - b.t || a.n - b.n; });
+      totalNotes += track.notes.length;
+      if (track.notes.length) song.tracks.push(track);
+    });
+    if (drumNotes.length) {
+      drumNotes.sort(function (a, b) { return a.t - b.t || a.n - b.n; });
+      song.tracks.push({ name: '打擊（近似）', channel: 9, program: 0, drum: true, volume: 100, pan: 64, notes: drumNotes });
+      totalNotes += drumNotes.length;
+    }
+    if (!totalNotes) throw new Error('解析完成但沒有任何音符（可能是空的樂譜，或樂譜結構與預期不同）');
+    var durSec = t / 980;
+    return {
+      ok: true, soundMode: soundMode, insOffset: insOffset, patternOffset: musBlock,
+      song: song,
+      stats: { stopped: stopped, commands: cmds, delays: delays, bends: bends, volumes: vols, notes: totalNotes, seconds: Math.round(durSec * 10) / 10, instrumentsUsed: Object.keys(chIns).length }
+    };
+  }
+
+  return { parseRix: parseRix, SIG: SIG, PPQ: PPQ, TICKS_PER_BAND: TICKS_PER_BAND };
+}));
+
+}).call(null, undefined, holder);
+return holder.FaMusicLibRix;
+})();
 /* MLRIX-END */
 /* MLSWF-BEGIN */
+const FaMusicLibSwf = (function () {
+const holder = {};
+(function (module, self) {
+/* Flash（SWF）音樂擷取器：純函式（UMD），不碰 DOM。解壓縮的 zlib／LZMA 由呼叫端注入，node 測試可用 zlib，瀏覽器用 DecompressionStream 與 FaMatrixLzma。
+ *   parseSwf(bytes, deps) → Promise<{ version, sounds:[…], skipped:[…] }>
+ *     deps: { inflate(u8) → Promise<Uint8Array>（zlib 格式）, lzmaDecode(u813) → Uint8Array（13 位元組 LZMA1 檔頭＋資料，已知大小）}
+ *   sounds 每項：{ id, kind:'mp3'|'wav'|'mid', source:'sound'|'stream'|'binary', bytes:Uint8Array, sampleRate, channels, sampleCount, durationSec, format }
+ *   kind mp3：原樣的 MP3 幀（SWF 的 MP3 去掉開頭的 SeekSamples）；wav：PCM 或 ADPCM 解碼後的 16 位元 wav；mid：內嵌的 MIDI。
+ *   其他格式（Nellymoser 等）不解，記到 skipped，附原因。
+ * 格式依據：SWF 規格的 DefineSound（tag 14）、SoundStreamHead（18）／Head2（45）、SoundStreamBlock（19）、DefineBinaryData（87）；
+ *   ADPCM：FFmpeg libavcodec/adpcm.c 的 adpcm_swf_decode（逐字參照的表與迴圈），步進表是 IMA ADPCM 的 89 項。 */
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaMusicLibSwf = factory();
+}(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+  var RATES = [5512, 11025, 22050, 44100];
+  // FFmpeg adpcm.c 的 swf_index_tables（2～5 位元）
+  var SWF_INDEX = [
+    [-1, 2],
+    [-1, -1, 2, 4],
+    [-1, -1, -1, -1, 2, 4, 6, 8],
+    [-1, -1, -1, -1, -1, -1, -1, -1, 1, 2, 4, 6, 8, 10, 13, 16]
+  ];
+  // IMA ADPCM 步進表（89 項）
+  var STEP = [7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 19, 21, 23, 25, 28, 31, 34, 37, 41, 45, 50, 55, 60, 66, 73, 80, 88, 97, 107, 118, 130, 143, 157, 173, 190, 209, 230, 253, 279, 307, 337, 371, 408, 449, 494, 544, 598, 658, 724, 796, 876, 963, 1060, 1166, 1282, 1411, 1552, 1707, 1878, 2066, 2272, 2499, 2749, 3024, 3327, 3660, 4026, 4428, 4871, 5358, 5894, 6484, 7132, 7845, 8630, 9493, 10442, 11487, 12635, 13899, 15289, 16818, 18500, 20350, 22385, 24623, 27086, 29794, 32767];
+
+  function u16(b, o) { return b[o] | (b[o + 1] << 8); }
+  function u32(b, o) { return (b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24)) >>> 0; }
+  function clip16(v) { return v > 32767 ? 32767 : v < -32768 ? -32768 : v; }
+
+  // 解壓縮整個檔案成未壓縮的 FWS 位元組（頭 8 位元組保留，簽章改成 FWS）
+  async function decompressSwf(bytes, deps) {
+    var sig = String.fromCharCode(bytes[0], bytes[1], bytes[2]);
+    if (sig === 'FWS') return bytes;
+    if (sig === 'CWS') {
+      if (!deps.inflate) throw new Error('解壓失敗（CWS）：沒有 zlib 解壓函式');
+      var body = await deps.inflate(bytes.subarray(8));
+      var out = new Uint8Array(8 + body.length); out.set(bytes.subarray(0, 8), 0); out.set(body, 8); out[0] = 0x46; out[1] = 0x57; out[2] = 0x53;
+      return out;
+    }
+    if (sig === 'ZWS') {
+      if (!deps.lzmaDecode) throw new Error('解壓失敗（ZWS）：沒有 LZMA 解壓函式');
+      var uncompLen = u32(bytes, 4);            // 未壓縮的整個檔案長度（含 8 位元組檔頭）
+      var props = bytes.subarray(12, 17);      // 5 位元組：props(1) + dictSize(4)，接著才是 LZMA 資料
+      var data = bytes.subarray(17);
+      var hdr = new Uint8Array(13 + data.length);
+      hdr.set(props, 0);
+      var bodyLen = uncompLen - 8;
+      for (var i = 0; i < 8; i++) hdr[5 + i] = i < 4 ? (bodyLen >>> (8 * i)) & 0xFF : 0;
+      hdr.set(data, 13);
+      var lz = await deps.lzmaDecode(hdr);
+      var z = new Uint8Array(8 + lz.length); z.set(bytes.subarray(0, 8), 0); z.set(lz, 8); z[0] = 0x46; z[1] = 0x57; z[2] = 0x53;
+      return z;
+    }
+    throw new Error('不是 SWF 檔（簽章是 ' + JSON.stringify(sig) + '）');
+  }
+
+  // RECT：前 5 位元是位元數 n，接著 4 個 n 位元的座標；回傳它佔的位元組數（對齊到位元組）
+  function rectBytes(b, o) { var n = b[o] >> 3; return Math.ceil((5 + 4 * n) / 8); }
+
+  // 讀標準 SWF 標籤（短格式或長格式）
+  function* tags(b, start) {
+    var p = start;
+    while (p + 2 <= b.length) {
+      var h = u16(b, p), code = h >> 6, len = h & 0x3F, hdrLen = 2;
+      if (len === 0x3F) { if (p + 6 > b.length) return; len = u32(b, p + 2); hdrLen = 6; }
+      var dataStart = p + hdrLen, dataEnd = dataStart + len;
+      if (dataEnd > b.length) { yield { code: code, data: b.subarray(dataStart), truncated: true }; return; }
+      yield { code: code, data: b.subarray(dataStart, dataEnd), truncated: false };
+      p = dataEnd;
+      if (code === 0) return; // End
+    }
+  }
+
+  // 位元讀取（MSB 在前），給 ADPCM 用
+  function bitReader(b) {
+    var pos = 0, total = b.length * 8;
+    return {
+      total: total,
+      pos: function () { return pos; },
+      bits: function (n) { var v = 0; for (var i = 0; i < n; i++) { var byte = b[pos >> 3], bit = (byte >> (7 - (pos & 7))) & 1; v = (v << 1) | bit; pos++; } return v; },
+      sbits: function (n) { var v = this.bits(n); return v >= (1 << (n - 1)) ? v - (1 << n) : v; }
+    };
+  }
+
+  // SWF ADPCM → Int16 交錯 PCM（照 adpcm_swf_decode）
+  function decodeAdpcmSwf(b, channels) {
+    var br = bitReader(b), out = [];
+    var nb = br.bits(2) + 2, table = SWF_INDEX[nb - 2], k0 = 1 << (nb - 2), signmask = 1 << (nb - 1);
+    var size = br.total;
+    var pred = [], idx = [];
+    for (var c = 0; c < channels; c++) { pred.push(0); idx.push(0); }
+    while (br.pos() <= size - 22 * channels) {
+      for (var i = 0; i < channels; i++) {
+        pred[i] = br.sbits(16); out.push(pred[i]);
+        idx[i] = br.bits(6);
+      }
+      for (var count = 0; br.pos() <= size - nb * channels && count < 4095; count++) {
+        for (var k2 = 0; k2 < channels; k2++) {
+          var delta = br.bits(nb);
+          var step = STEP[idx[k2]], vpdiff = 0, k = k0;
+          do { if (delta & k) vpdiff += step; step >>= 1; k >>= 1; } while (k);
+          vpdiff += step;
+          if (delta & signmask) pred[k2] -= vpdiff; else pred[k2] += vpdiff;
+          idx[k2] += table[delta & ~signmask];
+          idx[k2] = idx[k2] < 0 ? 0 : idx[k2] > 88 ? 88 : idx[k2];
+          pred[k2] = clip16(pred[k2]);
+          out.push(pred[k2]);
+        }
+      }
+    }
+    return Int16Array.from(out);
+  }
+
+  // 16 位元 PCM 包成 wav 位元組
+  function wavBytes(pcm, rate, channels) {
+    var n = pcm.length, data = new Uint8Array(44 + n * 2), dv = new DataView(data.buffer);
+    var w = function (o, s) { for (var i = 0; i < s.length; i++) data[o + i] = s.charCodeAt(i); };
+    w(0, 'RIFF'); dv.setUint32(4, 36 + n * 2, true); w(8, 'WAVE'); w(12, 'fmt '); dv.setUint32(16, 16, true);
+    dv.setUint16(20, 1, true); dv.setUint16(22, channels, true); dv.setUint32(24, rate, true); dv.setUint32(28, rate * channels * 2, true);
+    dv.setUint16(32, channels * 2, true); dv.setUint16(34, 16, true); w(36, 'data'); dv.setUint32(40, n * 2, true);
+    for (var i = 0; i < n; i++) dv.setInt16(44 + i * 2, pcm[i], true);
+    return data;
+  }
+
+  // DefineSound（14）或串流區塊：依格式產生 { kind, bytes, pcm?, rate, ch, count } 或丟「不支援」
+  function decodeSoundData(fmt, rate, sizeBits, stereo, count, data, skipped, id) {
+    var ch = stereo ? 2 : 1;
+    if (fmt === 2) {                              // MP3：開頭 2 位元組是 SeekSamples
+      return { kind: 'mp3', bytes: data.subarray(2), rate: rate, ch: ch, count: count };
+    }
+    if (fmt === 0 || fmt === 3) {                 // 未壓縮 PCM（0 = 原生順序，視為 LE；3 = LE）
+      var n;
+      if (sizeBits) { n = Math.floor(data.length / 2); var p16 = new Int16Array(n); for (var i = 0; i < n; i++) p16[i] = (data[2 * i] | (data[2 * i + 1] << 8)) << 16 >> 16; return { kind: 'wav', pcm: p16, rate: rate, ch: ch, count: count }; }
+      var p8 = new Int16Array(data.length); for (var j = 0; j < data.length; j++) p8[j] = (data[j] - 128) << 8; return { kind: 'wav', pcm: p8, rate: rate, ch: ch, count: count };
+    }
+    if (fmt === 1) return { kind: 'wav', pcm: decodeAdpcmSwf(data, ch), rate: rate, ch: ch, count: count };
+    skipped.push({ id: id, reason: '不支援的音訊格式 ' + fmt + '（Nellymoser 等需要另外的解碼器，本輪未實作）' });
+    return null;
+  }
+
+  async function parseSwf(bytes, deps) {
+    deps = deps || {};
+    var b = await decompressSwf(bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes), deps);
+    var version = b[3];
+    var p = 8 + rectBytes(b, 8);
+    p += 4;                                       // 影格速率（2）＋影格數（2）
+    var sounds = [], skipped = [], streams = {};
+    for (var tg of tags(b, p)) {
+      var d = tg.data;
+      if (tg.code === 14) {                      // DefineSound
+        var id = u16(d, 0), fl = d[2], fmt = fl >> 4, rate = RATES[(fl >> 2) & 3], sizeBits = (fl >> 1) & 1, stereo = fl & 1;
+        var count = u32(d, 3), payload = d.subarray(7);
+        var r = decodeSoundData(fmt, rate, sizeBits, stereo, count, payload, skipped, id);
+        if (r) sounds.push(toSound(r, id, 'sound', fmt));
+      } else if (tg.code === 18 || tg.code === 45) { // SoundStreamHead / Head2
+        var sfl = d[1], scomp = sfl >> 4, srate = RATES[(sfl >> 2) & 3], ssize = (sfl >> 1) & 1, sstereo = sfl & 1;
+        var key = 'stream'; streams[key] = { fmt: scomp, rate: srate, sizeBits: ssize, stereo: sstereo, blocks: [] };
+      } else if (tg.code === 19) {               // SoundStreamBlock
+        var st = streams.stream;
+        if (st) {
+          if (st.fmt === 2) st.blocks.push(d.subarray(4));   // MP3：去掉 SampleCount＋SeekSamples
+          else st.blocks.push(d);
+        }
+      } else if (tg.code === 87) {               // DefineBinaryData：內嵌 MIDI？
+        var bid = u16(d, 0), bd = d.subarray(6);
+        if (bd.length >= 4 && bd[0] === 0x4D && bd[1] === 0x54 && bd[2] === 0x68 && bd[3] === 0x64) sounds.push({ id: bid, kind: 'mid', source: 'binary', bytes: bd, sampleRate: 0, channels: 0, sampleCount: 0, durationSec: 0, format: 'MIDI' });
+      }
+    }
+    // 串流：把所有區塊接成一個來源
+    Object.keys(streams).forEach(function (k) {
+      var st = streams[k];
+      if (!st.blocks.length) return;
+      var ch = st.stereo ? 2 : 1;
+      if (st.fmt === 2) {
+        var total = st.blocks.reduce(function (s, x) { return s + x.length; }, 0), mp3 = new Uint8Array(total), o = 0;
+        st.blocks.forEach(function (x) { mp3.set(x, o); o += x.length; });
+        sounds.push({ id: -1, kind: 'mp3', source: 'stream', bytes: mp3, sampleRate: st.rate, channels: ch, sampleCount: 0, durationSec: 0, format: 'MP3 串流' });
+      } else if (st.fmt === 0 || st.fmt === 3 || st.fmt === 1) {
+        var parts = st.blocks.map(function (x) {
+          if (st.fmt === 1) return decodeAdpcmSwf(x, ch);
+          if (st.sizeBits) { var n = Math.floor(x.length / 2), q = new Int16Array(n); for (var i = 0; i < n; i++) q[i] = (x[2 * i] | (x[2 * i + 1] << 8)) << 16 >> 16; return q; }
+          var m = new Int16Array(x.length); for (var j = 0; j < x.length; j++) m[j] = (x[j] - 128) << 8; return m;
+        });
+        var len = parts.reduce(function (s, x) { return s + x.length; }, 0), pcm = new Int16Array(len), q2 = 0;
+        parts.forEach(function (x) { pcm.set(x, q2); q2 += x.length; });
+        sounds.push(toSound({ kind: 'wav', pcm: pcm, rate: st.rate, ch: ch, count: len / ch }, -1, 'stream', st.fmt));
+      } else {
+        skipped.push({ id: -1, reason: '串流格式 ' + st.fmt + ' 不支援' });
+      }
+    });
+    return { version: version, sounds: sounds, skipped: skipped };
+  }
+
+  function toSound(r, id, source, fmt) {
+    var bytes = r.kind === 'wav' ? wavBytes(r.pcm, r.rate, r.ch) : r.bytes;
+    var count = r.count || 0;
+    return { id: id, kind: r.kind, source: source, bytes: bytes, sampleRate: r.rate, channels: r.ch, sampleCount: count, durationSec: r.rate ? count / r.rate : 0, format: 'fmt ' + fmt };
+  }
+
+  return { parseSwf: parseSwf, decodeAdpcmSwf: decodeAdpcmSwf, wavBytes: wavBytes, STEP: STEP, SWF_INDEX: SWF_INDEX, rectBytes: rectBytes };
+}));
+
+}).call(null, undefined, holder);
+return holder.FaMusicLibSwf;
+})();
 /* MLSWF-END */
 /* MXLZ-BEGIN */
+const FaMatrixLzma = (function () {
+const holder = {};
+(function (module, self) {
+/* G7 算術編碼（DESIGN.matrix-fallback.md §13.4）：LZMA 式的二進位範圍編碼器（自適應機率，11 位元精度，移位 5）。
+ *   ① 範圍編碼器／解碼器（照 LZMA SDK 的 RangeEnc_ShiftLow 與 cache／carry 規則）；
+ *   ② 位元樹（bit tree）：m 位元符號用 2^m 個機率，逐位元沿樹走；
+ *   ③ LZMA1 串流（.lzma，FORMAT_ALONE）的「只有字面量」子集：每個位元組＝isMatch 位元 0＋8 位元字面量（lc=3、lp=0、pb=2）。
+ *      用真的 liblzma（Python lzma 模組）解我們寫的檔，就是外部驗證。
+ *      完整 LZMA（比對、重複距離、shortrep）已在 matrix_lzma_core.js（FaMatrixLzma，依賴本檔），見 DESIGN §13.4。
+ * 純函式（UMD）。 */
+(function (root, factory) {
+    if (typeof module === 'object' && module.exports) module.exports = factory();
+    else root.FaMatrixRange = factory();
+})(typeof self !== 'undefined' ? self : this, function () {
+    'use strict';
+    const TOP = 16777216, TWO32 = 4294967296, INIT = 1024;  // 2^24, 2^32；機率初值 = 2048/2
+
+    class RangeEncoder {
+        constructor() { this.low = 0; this.range = 0xFFFFFFFF; this.cache = 0; this.cacheSize = 1; this.out = []; }
+        shiftLow() {
+            if (this.low < 0xFF000000 || this.low >= TWO32) {
+                const carry = this.low >= TWO32 ? 1 : 0; let temp = this.cache;
+                do { this.out.push((temp + carry) & 0xFF); temp = 0xFF; } while (--this.cacheSize !== 0);
+                this.cache = Math.floor((this.low % TWO32) / TOP) & 0xFF;
+            }
+            this.cacheSize++;
+            this.low = (this.low % TOP) * 256;  // 低 32 位元取低 24 位元再左移 8
+        }
+        encodeBit(probs, i, bit) {
+            const p = probs[i]; const bound = Math.floor(this.range / 2048) * p;
+            if (bit === 0) { this.range = bound; probs[i] = p + ((2048 - p) >> 5); }
+            else { this.low += bound; this.range -= bound; probs[i] = p - (p >> 5); }
+            while (this.range < TOP) { this.range = this.range * 256; this.shiftLow(); }
+        }
+        encodeDirect(v, n) { for (let b = n - 1; b >= 0; b--) { this.range = Math.floor(this.range / 2); if ((v >> b) & 1) this.low += this.range; while (this.range < TOP) { this.range *= 256; this.shiftLow(); } } }
+        finish() { for (let i = 0; i < 5; i++) this.shiftLow(); return Uint8Array.from(this.out); }
+    }
+    class RangeDecoder {
+        constructor(data) {
+            this.data = data; this.pos = 0; this.range = 0xFFFFFFFF; this.code = 0;
+            if (data[this.pos++] !== 0) throw new Error('範圍編碼串流的第一個位元組必須是 0');
+            for (let i = 0; i < 4; i++) this.code = (this.code * 256 + this.next()) % TWO32;
+        }
+        next() { if (this.pos >= this.data.length) throw new Error('範圍編碼串流提早結束'); return this.data[this.pos++]; }
+        decodeBit(probs, i) {
+            const p = probs[i]; const bound = Math.floor(this.range / 2048) * p; let bit;
+            if (this.code < bound) { this.range = bound; probs[i] = p + ((2048 - p) >> 5); bit = 0; }
+            else { this.code -= bound; this.range -= bound; probs[i] = p - (p >> 5); bit = 1; }
+            while (this.range < TOP) { this.range = this.range * 256; this.code = (this.code * 256 + this.next()) % TWO32; }
+            return bit;
+        }
+        decodeDirect(n) { let v = 0; for (let b = 0; b < n; b++) { this.range = Math.floor(this.range / 2); let bit = 0; if (this.code >= this.range) { this.code -= this.range; bit = 1; } v = (v << 1) | bit; while (this.range < TOP) { this.range *= 256; this.code = (this.code * 256 + this.next()) % TWO32; } } return v; }
+    }
+    const newProbs = (n) => new Array(n).fill(INIT);
+    // 位元樹：probs 長 2^m；符號 v（m 位元，高位在前）
+    function bitTreeEncode(enc, probs, m, v) { let idx = 1; for (let b = m - 1; b >= 0; b--) { const bit = (v >> b) & 1; enc.encodeBit(probs, idx, bit); idx = (idx << 1) | bit; } }
+    function bitTreeDecode(dec, probs, m) { let idx = 1; for (let b = 0; b < m; b++) idx = (idx << 1) | dec.decodeBit(probs, idx); return idx - (1 << m); }
+
+    // ③ LZMA1 字面量子集（lc=3, lp=0, pb=2）。檔頭：props(1)＋dictSize(4，LE)＋未壓縮大小(8，LE)。
+    const LC = 3, PB = 2, PROPS = (PB * 5 + 0) * 9 + LC;  // 93
+    function lzmaLiteralsEncode(bytes, dictSize) {
+        const enc = new RangeEncoder(); const isMatch = newProbs(12 << 4); const lit = newProbs(0x300 << LC); let state = 0, prev = 0;
+        for (let pos = 0; pos < bytes.length; pos++) {
+            const posState = pos & ((1 << PB) - 1);
+            enc.encodeBit(isMatch, (state << 4) + posState, 0);
+            const base = 0x300 * (prev >> (8 - LC)); const sym = bytes[pos]; let m = 1;
+            for (let b = 7; b >= 0; b--) { const bit = (sym >> b) & 1; enc.encodeBit(lit, base + m, bit); m = (m << 1) | bit; }
+            state = state < 4 ? 0 : state < 10 ? state - 3 : state - 6; prev = sym;
+        }
+        const body = enc.finish(); const hdr = new Uint8Array(13);
+        hdr[0] = PROPS; for (let i = 0; i < 4; i++) hdr[1 + i] = (dictSize >>> (8 * i)) & 0xFF;
+        let n = bytes.length; for (let i = 0; i < 8; i++) { hdr[5 + i] = n % 256; n = Math.floor(n / 256); }
+        const out = new Uint8Array(13 + body.length); out.set(hdr, 0); out.set(body, 13); return out;
+    }
+    function lzmaLiteralsDecode(file) {
+        if (file[0] !== PROPS) throw new Error('props 不是 lc=3 lp=0 pb=2');
+        let size = 0; for (let i = 7; i >= 0; i--) size = size * 256 + file[5 + i];
+        const dec = new RangeDecoder(file.subarray(13)); const isMatch = newProbs(12 << 4); const lit = newProbs(0x300 << LC);
+        const out = new Uint8Array(size); let state = 0, prev = 0;
+        for (let pos = 0; pos < size; pos++) {
+            const posState = pos & ((1 << PB) - 1);
+            if (dec.decodeBit(isMatch, (state << 4) + posState) !== 0) throw new Error('出現比對位元：這個解碼器只處理字面量子集');
+            const base = 0x300 * (prev >> (8 - LC)); let m = 1;
+            for (let b = 0; b < 8; b++) m = (m << 1) | dec.decodeBit(lit, base + m);
+            const sym = m & 0xFF; out[pos] = sym;
+            state = state < 4 ? 0 : state < 10 ? state - 3 : state - 6; prev = sym;
+        }
+        return out;
+    }
+
+    return { RangeEncoder, RangeDecoder, newProbs, bitTreeEncode, bitTreeDecode, lzmaLiteralsEncode, lzmaLiteralsDecode, PROPS };
+});
+
+}).call(null, undefined, holder);
+(function (module, self) {
+/* G7 完整 LZMA1（DESIGN.matrix-fallback.md §13.4 阻礙 2 的解除）：
+ *   在 matrix_range_core 的範圍編碼器上，補齊 LZMA 的比對（match）、四個重複距離（rep0～rep3）、短重複（shortrep）、
+ *   長度樹（choice／low／mid／high）、距離槽（posSlot）、反向位元樹（posEnc）、對齊位元（align）與比對字面量（matched literal）。
+ *   參數固定 lc=3 lp=0 pb=2（props=93），檔頭 13 位元組（props、dictSize、未壓縮大小）。
+ *   解碼器同時支援「已知大小」與「未知大小＋結束標記」（xz／liblzma 的 FORMAT_ALONE 預設寫法）。
+ *   編碼器：雜湊鏈（3 位元組雜湊、深度 32）找最長比對，先試四個重複距離，再試一般比對，最後才是字面量或 shortrep。
+ *   驗證：我們寫的檔交給真的 liblzma 解；liblzma 壓的檔交給我們的解碼器解（兩個方向都要逐位元組一致）。
+ * 純函式（UMD）。 */
+(function (root, factory) {
+    if (typeof module === 'object' && module.exports) module.exports = factory(require('./matrix_range_core.js'));
+    else root.FaMatrixLzma = factory(root.FaMatrixRange);
+})(typeof self !== 'undefined' ? self : this, function (RC) {
+    'use strict';
+    const PROPS = 93, LC = 3, PB = 2, NSTATE = 12, MATCH_MIN = 2, MATCH_MAX = 273, END_DIST = 0xFFFFFFFF;
+
+    // 位元樹（MSB 在前）、反向位元樹（LSB 在前）；probs 用絕對索引 base + m，m 從 1 起算
+    function treeEnc(enc, probs, base, nb, v) { let m = 1; for (let b = nb - 1; b >= 0; b--) { const bit = (v >> b) & 1; enc.encodeBit(probs, base + m, bit); m = (m << 1) | bit; } }
+    function treeDec(dec, probs, base, nb) { let m = 1; for (let b = 0; b < nb; b++) m = (m << 1) | dec.decodeBit(probs, base + m); return m - (1 << nb); }
+    function revEnc(enc, probs, base, nb, v) { let m = 1; for (let i = 0; i < nb; i++) { const bit = (v >> i) & 1; enc.encodeBit(probs, base + m, bit); m = (m << 1) | bit; } }
+    function revDec(dec, probs, base, nb) { let m = 1, sym = 0; for (let i = 0; i < nb; i++) { const bit = dec.decodeBit(probs, base + m); m = (m << 1) | bit; sym |= bit << i; } return sym; }
+
+    function newLen() { return { c: RC.newProbs(2), low: RC.newProbs(16 * 8), mid: RC.newProbs(16 * 8), high: RC.newProbs(256) }; }
+    function newModel() {
+        return {
+            isMatch: RC.newProbs(NSTATE * 16), isRep: RC.newProbs(NSTATE), isRepG0: RC.newProbs(NSTATE), isRepG1: RC.newProbs(NSTATE),
+            isRepG2: RC.newProbs(NSTATE), isRep0Long: RC.newProbs(NSTATE * 16),
+            lit: RC.newProbs(0x300 << LC), lenM: newLen(), repLen: newLen(),
+            posSlot: RC.newProbs(4 * 64), posEnc: RC.newProbs(128), align: RC.newProbs(16),
+        };
+    }
+    function encLen(enc, L, len0, ps) {
+        if (len0 < 8) { enc.encodeBit(L.c, 0, 0); treeEnc(enc, L.low, ps * 8, 3, len0); }
+        else if (len0 < 16) { enc.encodeBit(L.c, 0, 1); enc.encodeBit(L.c, 1, 0); treeEnc(enc, L.mid, ps * 8, 3, len0 - 8); }
+        else { enc.encodeBit(L.c, 0, 1); enc.encodeBit(L.c, 1, 1); treeEnc(enc, L.high, 0, 8, len0 - 16); }
+    }
+    function decLen(dec, L, ps) {
+        if (dec.decodeBit(L.c, 0) === 0) return treeDec(dec, L.low, ps * 8, 3);
+        if (dec.decodeBit(L.c, 1) === 0) return 8 + treeDec(dec, L.mid, ps * 8, 3);
+        return 16 + treeDec(dec, L.high, 0, 8);
+    }
+    function encDist(enc, M, dist, len0) {
+        const ls = Math.min(len0, 3); let slot;
+        if (dist < 4) slot = dist; else { const nb = 31 - Math.clz32(dist); slot = nb * 2 + ((dist >>> (nb - 1)) & 1); }
+        treeEnc(enc, M.posSlot, ls * 64, 6, slot);
+        if (slot < 4) return;
+        const footer = (slot >> 1) - 1, base = (2 | (slot & 1)) * Math.pow(2, footer), red = dist - base;
+        if (slot < 14) revEnc(enc, M.posEnc, base - slot, footer, red);
+        else { enc.encodeDirect(Math.floor(red / 16), footer - 4); revEnc(enc, M.align, 0, 4, red & 15); }
+    }
+    function decDist(dec, M, len0) {
+        const ls = Math.min(len0, 3), slot = treeDec(dec, M.posSlot, ls * 64, 6);
+        if (slot < 4) return slot;
+        const footer = (slot >> 1) - 1; let dist = (2 | (slot & 1)) * Math.pow(2, footer);
+        if (slot < 14) dist += revDec(dec, M.posEnc, dist - slot, footer);
+        else { dist += dec.decodeDirect(footer - 4) * 16; dist += revDec(dec, M.align, 0, 4); }
+        return dist;
+    }
+    const nextState = { lit: (s) => (s < 4 ? 0 : s < 10 ? s - 3 : s - 6), match: (s) => (s < 7 ? 7 : 10), rep: (s) => (s < 7 ? 8 : 11), shortrep: (s) => (s < 7 ? 9 : 11) };
+    const hash3 = (b, p) => Math.imul(b[p] | (b[p + 1] << 8) | (b[p + 2] << 16), 2654435761) >>> 16;
+
+    // 編碼。opts.dictSize（預設 1<<20）；opts.stats 若給定，會累計各符號種類的次數（給測試檢查覆蓋率）。
+    function lzmaEncode(bytes, opts) {
+        const dictSize = (opts && opts.dictSize) || (1 << 20), stats = (opts && opts.stats) || null;
+        const buf = bytes instanceof Uint8Array ? bytes : Uint8Array.from(bytes), n = buf.length;
+        const enc = new RC.RangeEncoder(), M = newModel();
+        const head = new Int32Array(1 << 16).fill(-1), chain = new Int32Array(Math.max(n, 1));
+        const rep = [0, 0, 0, 0]; let state = 0;
+        const count = (k) => { if (stats) stats[k] = (stats[k] || 0) + 1; };
+        const ins = (p) => { if (p + 2 < n) { const h = hash3(buf, p); chain[p] = head[h]; head[h] = p; } };
+        const matchLen = (a, b, max) => { let k = 0; while (k < max && buf[a + k] === buf[b + k]) k++; return k; };
+        const encLit = (pos, ps) => {
+            enc.encodeBit(M.isMatch, (state << 4) + ps, 0);
+            const base = 0x300 * (pos > 0 ? buf[pos - 1] >> 5 : 0), sym = buf[pos];
+            let m = 1, matched = state >= 7; const mb = matched ? buf[pos - rep[0] - 1] : 0;
+            for (let i = 7; i >= 0; i--) {
+                const bit = (sym >> i) & 1;
+                if (matched) { const mbit = (mb >> i) & 1; enc.encodeBit(M.lit, base + ((1 + mbit) << 8) + m, bit); m = (m << 1) | bit; if (mbit !== bit) matched = false; }
+                else { enc.encodeBit(M.lit, base + m, bit); m = (m << 1) | bit; }
+            }
+            state = nextState.lit(state); count('lit');
+        };
+        const encRep = (r, len, ps) => {
+            enc.encodeBit(M.isMatch, (state << 4) + ps, 1); enc.encodeBit(M.isRep, state, 1);
+            if (r === 0) { enc.encodeBit(M.isRepG0, state, 0); enc.encodeBit(M.isRep0Long, (state << 4) + ps, 1); }
+            else {
+                enc.encodeBit(M.isRepG0, state, 1);
+                if (r === 1) enc.encodeBit(M.isRepG1, state, 0);
+                else { enc.encodeBit(M.isRepG1, state, 1); enc.encodeBit(M.isRepG2, state, r === 3 ? 1 : 0); }
+                const d = rep[r]; for (let k = r; k > 0; k--) rep[k] = rep[k - 1]; rep[0] = d;
+            }
+            encLen(enc, M.repLen, len - 2, ps); state = nextState.rep(state); count('rep' + r);
+        };
+        const encShortRep = (ps) => {
+            enc.encodeBit(M.isMatch, (state << 4) + ps, 1); enc.encodeBit(M.isRep, state, 1);
+            enc.encodeBit(M.isRepG0, state, 0); enc.encodeBit(M.isRep0Long, (state << 4) + ps, 0);
+            state = nextState.shortrep(state); count('shortrep');
+        };
+        const encMatch = (dist, len, ps) => {
+            enc.encodeBit(M.isMatch, (state << 4) + ps, 1); enc.encodeBit(M.isRep, state, 0);
+            encLen(enc, M.lenM, len - 2, ps); encDist(enc, M, dist, len - 2);
+            rep[3] = rep[2]; rep[2] = rep[1]; rep[1] = rep[0]; rep[0] = dist; state = nextState.match(state); count('match');
+        };
+        let pos = 0;
+        while (pos < n) {
+            const ps = pos & ((1 << PB) - 1), maxLen = Math.min(MATCH_MAX, n - pos);
+            let rLen = 0, rIdx = -1;
+            for (let r = 0; r < 4; r++) { const src = pos - rep[r] - 1; if (src < 0) continue; const L = matchLen(src, pos, maxLen); if (L > rLen) { rLen = L; rIdx = r; } }
+            let mLen = 0, mDist = 0;
+            if (pos + 2 < n) {
+                let cand = head[hash3(buf, pos)], depth = 0;
+                while (cand >= 0 && depth < 32) {
+                    const d = pos - cand - 1; if (d >= dictSize) break;
+                    const L = matchLen(cand, pos, maxLen);
+                    if (L > mLen) { mLen = L; mDist = d; if (L === maxLen) break; }
+                    cand = chain[cand]; depth++;
+                }
+            }
+            let adv;
+            if (rLen >= MATCH_MIN && rLen + 1 >= mLen) { encRep(rIdx, rLen, ps); adv = rLen; }
+            else if (mLen >= 3) { encMatch(mDist, mLen, ps); adv = mLen; }
+            else if (pos - rep[0] - 1 >= 0 && buf[pos - rep[0] - 1] === buf[pos]) { encShortRep(ps); adv = 1; }
+            else { encLit(pos, ps); adv = 1; }
+            for (let k = 0; k < adv; k++) ins(pos + k);
+            pos += adv;
+        }
+        const body = enc.finish(), hdr = new Uint8Array(13);
+        hdr[0] = PROPS; for (let i = 0; i < 4; i++) hdr[1 + i] = (dictSize >>> (8 * i)) & 0xFF;
+        let sz = n; for (let i = 0; i < 8; i++) { hdr[5 + i] = sz % 256; sz = Math.floor(sz / 256); }
+        const out = new Uint8Array(13 + body.length); out.set(hdr, 0); out.set(body, 13); return out;
+    }
+
+    // 解碼：支援已知大小，以及未知大小（全 0xFF）＋結束標記。
+    function lzmaDecode(file) {
+        if (file.length < 13 || file[0] !== PROPS) throw new Error('標頭不是 lc=3 lp=0 pb=2（props 應為 93）');
+        let size = 0, allFF = true;
+        for (let i = 7; i >= 0; i--) { size = size * 256 + file[5 + i]; if (file[5 + i] !== 0xFF) allFF = false; }
+        const known = !allFF;
+        const dec = new RC.RangeDecoder(file.subarray(13)), M = newModel();
+        const out = []; let state = 0; const rep = [0, 0, 0, 0];
+        for (;;) {
+            const pos = out.length;
+            if (known && pos >= size) break;
+            const ps = pos & ((1 << PB) - 1);
+            if (dec.decodeBit(M.isMatch, (state << 4) + ps) === 0) {
+                const base = 0x300 * (pos > 0 ? out[pos - 1] >> 5 : 0);
+                let m = 1, matched = state >= 7;
+                if (matched && pos - rep[0] - 1 < 0) throw new Error('比對字面量的來源位置無效');
+                const mb = matched ? out[pos - rep[0] - 1] : 0;
+                for (let i = 0; i < 8; i++) {
+                    if (matched) { const mbit = (mb >> (7 - i)) & 1; const bit = dec.decodeBit(M.lit, base + ((1 + mbit) << 8) + m); m = (m << 1) | bit; if (mbit !== bit) matched = false; }
+                    else m = (m << 1) | dec.decodeBit(M.lit, base + m);
+                }
+                out.push(m & 0xFF); state = nextState.lit(state); continue;
+            }
+            let len;
+            if (dec.decodeBit(M.isRep, state) === 1) {
+                if (pos === 0) throw new Error('第一個符號不能是重複');
+                if (dec.decodeBit(M.isRepG0, state) === 0) {
+                    if (dec.decodeBit(M.isRep0Long, (state << 4) + ps) === 0) {
+                        if (rep[0] >= pos) throw new Error('短重複的距離超出已解碼範圍');
+                        state = nextState.shortrep(state); out.push(out[pos - rep[0] - 1]); continue;
+                    }
+                } else {
+                    let d;
+                    if (dec.decodeBit(M.isRepG1, state) === 0) d = rep[1];
+                    else { if (dec.decodeBit(M.isRepG2, state) === 0) d = rep[2]; else { d = rep[3]; rep[3] = rep[2]; } rep[2] = rep[1]; }
+                    rep[1] = rep[0]; rep[0] = d;
+                }
+                len = decLen(dec, M.repLen, ps); state = nextState.rep(state);
+            } else {
+                len = decLen(dec, M.lenM, ps); state = nextState.match(state);
+                const d = decDist(dec, M, len);
+                if (d === END_DIST) { if (known) throw new Error('已知大小的串流出現結束標記'); break; }
+                rep[3] = rep[2]; rep[2] = rep[1]; rep[1] = rep[0]; rep[0] = d;
+            }
+            const L = len + MATCH_MIN;
+            if (rep[0] >= pos) throw new Error('比對的距離超出已解碼範圍');
+            if (known && pos + L > size) throw new Error('比對超出已宣告的大小');
+            for (let k = 0; k < L; k++) out.push(out[out.length - rep[0] - 1]);
+        }
+        if (known && out.length !== size) throw new Error('解碼長度與標頭不符');
+        return Uint8Array.from(out);
+    }
+
+    return { lzmaEncode, lzmaDecode, PROPS, END_DIST };
+});
+
+}).call(null, undefined, holder);
+return holder.FaMatrixLzma;
+})();
 /* MXLZ-END */
 /* MLUI-BEGIN */
 const FaMusicLibUI = (function () {
@@ -84329,6 +84993,41 @@ const holder = {};
       });
     };
     bExpCancel.onclick = function () { if (host.cancelExport) host.cancelExport(); expStat.textContent = '取消中（正在跑的那個檔案會在下一步停止）…'; };
+
+    // 擷取遊戲音樂來源（RIX、Flash）：輸出 MIDI／mp3／wav 子曲目，登記回曲庫；衍生檔資料夾可指定（留空＝來源旁的「音樂庫衍生檔」）
+    var xBtn = h('button', null, '擷取（RIX／Flash）'), xCancel = h('button', null, '取消擷取');
+    var xRoot = h('input'); xRoot.type = 'text'; xRoot.placeholder = '衍生檔資料夾（留空＝來源旁的「音樂庫衍生檔」）'; xRoot.style.width = '260px';
+    try { xRoot.value = localStorage.getItem('fa.musiclib.derivedDir') || ''; } catch (_) { /* 讀不到就空白 */ }
+    xCancel.disabled = true;
+    exp.appendChild(xRoot); exp.appendChild(xBtn); exp.appendChild(xCancel);
+    if (!host.extract) { xBtn.disabled = true; xCancel.disabled = true; }
+    var STATUS_X = { done: '完成', skipped: '沿用', failed: '失敗', cancelled: '取消' };
+    xBtn.onclick = function () {
+      if (!host.extract) return;
+      var recs = lib.records.filter(function (r) { return (r.kind === 'rix' || r.kind === 'swf') && r.status === 'ok' && (Object.keys(sel).length === 0 || sel[r.key]); });
+      if (!recs.length) { expStat.textContent = '沒有可擷取的 RIX／Flash（先加檔案，或勾選要擷取的來源）'; return; }
+      var root = xRoot.value.trim();
+      try { localStorage.setItem('fa.musiclib.derivedDir', root); } catch (_) { /* 存不了就只對這次有效 */ }
+      xBtn.disabled = true; xCancel.disabled = false; expList.textContent = ''; expStat.textContent = '擷取中…';
+      host.extract.run(recs, {
+        userRoot: root || null,
+        onEvent: function (ev) { expStat.textContent = '擷取中（' + ev.stage + '）'; }
+      }).then(function (res) {
+        xBtn.disabled = false; xCancel.disabled = true;
+        var s = res.summary || {};
+        expStat.textContent = '擷取完成：完成 ' + (s.done || 0) + '、沿用 ' + (s.skipped || 0) + '、失敗 ' + (s.failed || 0) + '、取消 ' + (s.cancelled || 0);
+        (res.results || []).forEach(function (x) {
+          var d;
+          if (x.status === 'done') d = '→ 子曲目 ' + x.children + ' 個：' + x.method + (x.skippedParts && x.skippedParts.length ? '；略過：' + x.skippedParts.join('；') : '') + '　（' + x.dir + '）';
+          else if (x.status === 'skipped') d = '來源沒變，沿用上次的子曲目';
+          else d = (x.stage ? '［' + x.stage + '］' : '') + x.reason;
+          var line = h('div', x.status === 'failed' ? 'bad' : null, '[' + (STATUS_X[x.status] || x.status) + '] ' + x.name + ' ' + d);
+          expList.appendChild(line);
+        });
+        render();
+      }, function (e) { xBtn.disabled = false; xCancel.disabled = true; expStat.textContent = '擷取出錯：' + String((e && e.message) || e); });
+    };
+    xCancel.onclick = function () { if (host.extract) host.extract.cancel(); expStat.textContent = '取消擷取中（目前這個來源的下一步停止）…'; };
 
     // 哼歌找歌：旋律索引（逐首，可暫停續跑、取消）＋錄哼歌或選音檔找相似（找不到時可用 MIDI 演奏查到的旋律）
     var MEL = host.melody || null, melHum = null, melFound = null;
@@ -84835,7 +85534,123 @@ const FaMusicLibHost = (function () {
     basicPitchStatus: function () { return FaAudioModels.status('basic-pitch', FaAudioModels.idbStore()); },
     entries: function () { return melodyEntries(getLib()); }
   };
-  var PICK_HOST = { pickFolder: pickFolder, melody: MELODY_HOST };
+  // ───── 遊戲音樂來源擷取（RIX、Flash）：輸出標準 MIDI／mp3／wav，登記成來源的子曲目 ─────
+  // 衍生檔預設放在「來源檔所在資料夾的旁邊」的「音樂庫衍生檔」資料夾（不寫進 repo）；面板可指定別的根資料夾。
+  // 來源沒變（大小與修改時間相同）且子曲目已在 → 略過（子曲目記著 derivedSig）。
+  var extractCancelled = false;
+  var DERIVED_DIR_NAME = '音樂庫衍生檔';
+  function stemOf(name) { return String(name || 'track').replace(/\.[^.]+$/, '').replace(/[\\\/:*?"<>|]/g, '_'); }
+  function dirOf(p) { var s = String(p), i = Math.max(s.lastIndexOf('\\'), s.lastIndexOf('/')); return i >= 0 ? s.slice(0, i) : '.'; }
+  function sepOf(p) { return /\\/.test(String(p)) ? '\\' : '/'; }
+  function derivedDirFor(rec, userRoot) {
+    var stem = stemOf(rec.name);
+    if (userRoot) return joinPath(userRoot, stem);
+    var parent = dirOf(rec.path), beside = dirOf(parent);   // 來源檔所在資料夾的旁邊
+    return joinPath(joinPath(beside, DERIVED_DIR_NAME), stem);
+  }
+  // zlib 解壓（瀏覽器原生 DecompressionStream；SWF 的 CWS 用）
+  async function inflateZlib(u8) {
+    if (typeof DecompressionStream === 'undefined') throw new Error('這個環境沒有 DecompressionStream（無法解 zlib）');
+    var s = new Blob([u8]).stream().pipeThrough(new DecompressionStream('deflate'));
+    return new Uint8Array(await new Response(s).arrayBuffer());
+  }
+  async function writeDerivedFile(dir, name, bytes) {
+    var full = joinPath(dir, name);
+    await api().rawfs.writeFile(full, { base64: bytesToB64(bytes) });
+    return { path: full, sizeBytes: bytes.length };
+  }
+
+  // 擷取一個來源（rec 是 kind 為 rix 或 swf 的曲庫記錄）。回傳 { skipped, children, skippedParts, method, dir }；失敗丟錯，訊息附階段
+  async function extractGameSource(rec, opts) {
+    opts = opts || {};
+    var L = getLib(); await L.ready;
+    var fa = window.fa, a = api(), now = Date.now();
+    var sig = FaMusicLibMelody.sigOf(rec);
+    var existing = L.records.filter(function (r) { return r.derivedFrom === rec.key; });
+    if (!opts.force && existing.length && existing.every(function (r) { return r.derivedSig === sig; })) {
+      return { skipped: true, reason: '來源沒變，沿用上次的子曲目', children: existing.map(function (r) { return r.key; }), skippedParts: [], method: existing[0].derivedMethod, dir: dirOf(existing[0].path) };
+    }
+    var r;
+    try { r = await a.rawfs.readFile(rec.path, 'base64'); } catch (e) { throw new Error('讀檔失敗（讀取階段）：' + String((e && e.message) || e)); }
+    if (!r || r.base64 == null) throw new Error('讀檔失敗（讀取階段）：讀不到這個檔案的內容');
+    var u8 = b64ToBytes(r.base64);
+    var dir = derivedDirFor(rec, opts.userRoot), stem = stemOf(rec.name);
+    var outs = [], method = '', skippedParts = [];
+    var emit = opts.onStage || function () {};
+    var cancelled = function () { return extractCancelled; };
+    if (rec.kind === 'rix') {
+      emit('解析 RIX');
+      var px;
+      try { px = FaMusicLibRix.parseRix(u8); } catch (e) { throw new Error('RIX 解析失敗：' + String((e && e.message) || e)); }
+      method = 'RIX（OPL2 暫存器序列）→ MIDI（GM 音色近似）';
+      var song = FaMidi.validate(px.song);
+      emit('寫出 MIDI');
+      outs.push({ kind: 'mid', name: stem + '.mid', bytes: FaMidi.write(song), method: method, durationSec: px.stats.seconds, title: stem });
+      if (cancelled()) throw Object.assign(new Error('已取消'), { cancelled: true });
+      emit('合成音訊（既有 GM 合成器）');
+      var buf;
+      try { buf = await FaMidiPlay.renderOffline(song, fa._midiSources(), { tail: 1.5 }); } catch (e) { throw new Error('合成失敗（合成階段）：' + String((e && e.message) || e)); }
+      emit('編碼 mp3');
+      var mp3 = await fa._encodeMp3(buf, 160);
+      outs.push({ kind: 'mp3', name: stem + '.mp3', bytes: new Uint8Array(await mp3.arrayBuffer()), method: method, durationSec: buf.duration, title: stem });
+      outs.push({ kind: 'wav', name: stem + '.wav', bytes: new Uint8Array(await _faEncodeWav(buf).arrayBuffer()), method: method, durationSec: buf.duration, title: stem });
+    } else if (rec.kind === 'swf') {
+      emit('解析 Flash');
+      var sw;
+      try {
+        sw = await FaMusicLibSwf.parseSwf(u8, {
+          inflate: inflateZlib,
+          lzmaDecode: function (hdr) { if (typeof FaMatrixLzma === 'undefined') throw new Error('沒有 LZMA 解碼器（FaMatrixLzma 未嵌入）'); return FaMatrixLzma.lzmaDecode(hdr); }
+        });
+      } catch (e) { throw new Error('SWF 解析失敗：' + String((e && e.message) || e)); }
+      method = 'Flash（SWF）音訊標籤解出（' + (String.fromCharCode(u8[0], u8[1], u8[2]) === 'FWS' ? '未壓縮' : '已解壓') + '）';
+      sw.sounds.forEach(function (s, i) {
+        var ext = s.kind === 'mid' ? 'mid' : s.kind === 'mp3' ? 'mp3' : 'wav';
+        var tag = s.source === 'stream' ? '串流' : ('聲音' + s.id);
+        outs.push({ kind: ext, name: stem + '_' + (i + 1) + '_' + tag + '.' + ext, bytes: s.bytes, method: method + '，' + s.format, durationSec: s.durationSec, title: stem + ' ' + tag });
+      });
+      skippedParts = sw.skipped.map(function (x) { return (x.id >= 0 ? '聲音' + x.id : '串流') + '：' + x.reason; });
+      if (!outs.length) throw new Error('SWF 內沒有可擷取的音訊' + (skippedParts.length ? '（' + skippedParts.join('；') + '）' : ''));
+    } else {
+      throw new Error('這個種類不支援擷取：' + rec.kind);
+    }
+    // 寫檔 → 子曲目記錄（record 與普通檔案同形，只多 derivedFrom／derivedSig）
+    var recs = [];
+    for (var i = 0; i < outs.length; i++) {
+      if (cancelled()) throw Object.assign(new Error('已取消'), { cancelled: true });
+      emit('寫檔 ' + (i + 1) + '/' + outs.length);
+      var w = await writeDerivedFile(dir, outs[i].name, outs[i].bytes);
+      var c = FaMusicLib.buildDerivedRecord(rec, { index: i, kind: outs[i].kind, path: w.path, sizeBytes: w.sizeBytes, method: outs[i].method, durationSec: outs[i].durationSec, title: outs[i].title }, now);
+      c.derivedSig = sig;
+      recs.push(c);
+    }
+    FaMusicLib.replaceDerived(L, rec.key, recs);
+    await L.save();
+    return { skipped: false, children: recs.map(function (x) { return x.key; }), skippedParts: skippedParts, method: method, dir: dir };
+  }
+  // 批次擷取（勾選的 rix／swf，沒勾就全部）：單一來源失敗不影響其他來源；結果逐筆回傳
+  async function extractSources(recs, opts) {
+    opts = opts || {};
+    extractCancelled = false;
+    var results = [];
+    for (var i = 0; i < recs.length; i++) {
+      var rec = recs[i], t0 = Date.now();
+      if (extractCancelled) { results.push({ name: rec.name, status: 'cancelled', reason: '', stage: null, elapsedMs: 0 }); continue; }
+      var stage = null;
+      try {
+        var out = await extractGameSource(rec, Object.assign({}, opts, { onStage: function (s) { stage = s; if (opts.onEvent) opts.onEvent({ key: rec.key, stage: s }); } }));
+        results.push({ name: rec.name, kind: rec.kind, status: out.skipped ? 'skipped' : 'done', reason: out.reason || '', stage: stage, children: out.children.length, skippedParts: out.skippedParts, method: out.method, dir: out.dir, elapsedMs: Date.now() - t0 });
+      } catch (e) {
+        var cancelledNow = !!(e && e.cancelled) || extractCancelled;
+        results.push({ name: rec.name, kind: rec.kind, status: cancelledNow ? 'cancelled' : 'failed', reason: String((e && e.message) || e), stage: stage, children: 0, elapsedMs: Date.now() - t0 });
+      }
+    }
+    var summary = { done: 0, skipped: 0, failed: 0, cancelled: 0 };
+    results.forEach(function (x) { summary[x.status] = (summary[x.status] || 0) + 1; });
+    return { results: results, summary: summary };
+  }
+
+  var PICK_HOST = { pickFolder: pickFolder, melody: MELODY_HOST, extract: { run: extractSources, cancel: function () { extractCancelled = true; } } };
 
   var methods = {
     _mlLib() { return getLib(); },
@@ -84870,7 +85685,7 @@ const FaMusicLibHost = (function () {
     }
   };
 
-  return { methods: methods, getLib: getLib, pickFolder: pickFolder, walkFolder: walkFolder, whisperTranscribe: whisperTranscribe, melody: MELODY_HOST,
+  return { methods: methods, getLib: getLib, pickFolder: pickFolder, walkFolder: walkFolder, whisperTranscribe: whisperTranscribe, melody: MELODY_HOST, extract: PICK_HOST.extract,
     exportBatch: exportBatch, verifyOutput: verifyOutput,
     // 取消批次輸出：正在跑的那個檔案在下一個步驟前中止，之後的檔案標示取消
     cancelExport: function () { exportCancelled = true; },
