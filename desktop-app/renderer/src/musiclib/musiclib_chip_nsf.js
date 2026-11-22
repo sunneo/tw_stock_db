@@ -29,6 +29,7 @@
   var QUIET_MIN_SEC = 3;           // 聲音停止後至少安靜這麼久才算結束
   var PEAK_EPS = 1e-3;             // 振幅低於這個值視為靜音（約 −60 dBFS）
   var TRAMP_BYTES = 3 * MAX_CALLS + 3 + 16;   // 跳板要佔的 RAM：PLAY 呼叫段 + JMP，加上 INIT 跳板
+  var RESTORE_RAM_EXPERIMENT = null;          // 'before' | 'after' | null：還原遊戲 RAM 的實驗開關（預設關）
 
   // 手組的 iNES 殼：NROM，一個 16KB PRG（$C000 是 JMP $C000），重設與中斷向量都指向 $C000，CHR 8KB。
   function buildRomBytes() {
@@ -72,6 +73,19 @@
     return -1;
   }
 
+  // INIT 逾時的診斷字串：目前 PC 與暫存器、最常執行的位址（前 5 個）、最近 8 條指令位址，以及那些位址的位元組
+  function stuckReport(m) {
+    var cpu = m.nes.cpu, hex = function (x) { return '$' + (x & 0xFFFF).toString(16); };
+    var top = Object.keys(m.diag.pcCount).map(function (k) { return [+k, m.diag.pcCount[k]]; })
+      .sort(function (a, b) { return b[1] - a[1]; }).slice(0, 5);
+    var recent = m.diag.pcRing.slice(-8);
+    var bytes = function (a) { var s = []; for (var i = 0; i < 3; i++) s.push(cpu.mem[(a + i) & 0xFFFF].toString(16)); return s.join(' '); };
+    return '停在 PC=' + hex(cpu.REG_PC) + ' A=' + (cpu.REG_ACC & 0xFF).toString(16) + ' X=' + (cpu.REG_X & 0xFF).toString(16) +
+      ' Y=' + (cpu.REG_Y & 0xFF).toString(16) + ' SP=' + (cpu.REG_SP & 0xFF).toString(16) +
+      '；最常執行：' + top.map(function (p) { return hex(p[0]) + '×' + p[1] + '[' + bytes(p[0]) + ']'; }).join(' ') +
+      '；最近：' + recent.map(hex).join(' ') + '；銀行=' + (m.banks.length ? m.banks.join(',') : '無');
+  }
+
   // 一台執行中的 NSF：jsnes 實例 + 播放狀態。INIT 在建立時就跑完，時間 0 = INIT 返回的那一刻。
   function makeMachine(NES, nsf, song, sr) {
     var m = {
@@ -90,30 +104,64 @@
     var cpu = m.nes.cpu;
     layoutData(nsf, cpu.mem);
     m.banks = nsf.banked ? nsf.banks.slice() : [];
+    m.mmc = null;                        // MMC1 狀態（標頭有 MMC1 銀行資訊時才有）
+    if (nsf.mmc1) { m.mmc = NESX.mmc1New(); m.mmc.ctrl = nsf.mmc1.ctrl; m.mmc.prg = nsf.mmc1.prg; applyMmc1(m); }
     hookWrites(m);
     m.T = pickTramp(nsf);
     if (m.T < 0) throw new Error('NSF 佔滿 $6000–$7FFF，找不到放呼叫跳板的空間');
+    // 遊戲 RAM 影像（擷取時第一次寫聲音之前的低 RAM＋WRAM）：還原音樂引擎的變數。WRAM 會蓋住跳板，所以要在跳板寫入之前還原
+    // 實驗結果：還原擷取時的 RAM 會讓 INIT 卡住（還原前）或讓遊戲跳到 RAM 當掉（還原後）；預設不還原（見報告）
+    if (nsf.ram && RESTORE_RAM_EXPERIMENT === 'before') restoreRam(m, nsf.ram);
     // INIT 跳板：LDA 曲號−1、LDX 地區（0 NTSC、1 PAL）、JSR INIT、JMP 自己
     var T = m.T, W = T + 7, init = nsf.init;
     var stub = [0xA9, (song - 1) & 0xFF, 0xA2, nsf.pal ? 1 : 0, 0x20, init & 0xFF, init >> 8, 0x4C, W & 0xFF, W >> 8];
     for (var i = 0; i < stub.length; i++) cpu.mem[T + i] = stub[i];
     cpu.REG_PC = T; cpu.REG_SP = 0xFD; m.waitAddr = W;
     var f = 0, maxF = Math.ceil(INIT_MAX_SEC / FRAME_SEC);
-    while (cpu.REG_PC !== m.waitAddr) {
-      if (f++ >= maxF) throw new Error('INIT（$' + init.toString(16) + '）在 ' + INIT_MAX_SEC + ' 秒遊戲時間內沒有返回');
-      stepFrame(m, false);
-      if (m.crashed) throw new Error('INIT 執行時當掉：' + m.crashed);
-    }
+    // 診斷用：INIT 期間記下最近的指令位址與計數（逾時時回報卡在哪裡）；INIT 返回後還原
+    var pcCount = Object.create(null), pcRing = [], origEmu = cpu.emulate;
+    cpu.emulate = function () {
+      var pc = this.REG_PC;
+      pcCount[pc] = (pcCount[pc] || 0) + 1;
+      pcRing.push(pc); if (pcRing.length > 256) pcRing.shift();
+      return origEmu.call(this);
+    };
+    m.diag = { pcCount: pcCount, pcRing: pcRing };
+    // 遊戲的 INIT 常在等「畫面中斷處理器」清掉的旗標（實測：Bomberman 2 的 INIT 停在 CMP $14／BEQ 迴圈）。
+    // 真遊戲的 INIT 是在 NMI 開啟的狀態下呼叫的，所以 INIT 期間開啟 NMI；播放時關閉（PLAY 已由跳板呼叫，不能讓遊戲的 NMI 重複播放）。
+    // 只有 NSF 資料本身蓋到 $FFFA（真遊戲的向量）、而且向量指向程式（$8000 以上）才開。
+    // 否則向量是殼的 JMP 迴圈（$C000）：開了會留下待處理的 NMI，播放第一個畫面就跳進迴圈，PLAY 永遠不執行（實測：手組測試 NSF）。
+    var nmiVec = cpu.mem[0xFFFA] | (cpu.mem[0xFFFB] << 8);
+    var vecFromNsf = nsf.banked || (nsf.load + nsf.data.length > 0xFFFB);
+    m.nes.ppu.f_nmiOnVblank = (vecFromNsf && nmiVec >= 0x8000) ? 1 : 0;
+    try {
+      while (cpu.REG_PC !== m.waitAddr) {
+        if (f++ >= maxF) throw new Error('INIT（$' + init.toString(16) + '）在 ' + INIT_MAX_SEC + ' 秒遊戲時間內沒有返回；' + stuckReport(m));
+        stepFrame(m, false);
+        if (m.crashed) throw new Error('INIT 執行時當掉：' + m.crashed);
+      }
+    } finally { cpu.emulate = origEmu; }
+    m.nes.ppu.f_nmiOnVblank = 0;
+    m.nes.ppu.nmiOutput = false; m.nes.ppu.nmiAtPoll = false;   // 清掉 INIT 期間已經排好的 NMI 輸出
+    if (nsf.ram && RESTORE_RAM_EXPERIMENT === 'after') restoreRam(m, nsf.ram);
     m.sinkN = 0; m.qLen = 0; m.qPos = 0; m.acc = 0; m.frames = 0;
     return m;
   }
 
   // 攔截銀行切換寫入（只有有銀行的 NSF）。重設後 CPU 會換新，所以每次還原都要重新掛。
   function hookWrites(m) {
-    if (!m.nsf.banked) return;
-    var cpu = m.nes.cpu, orig = cpu.write;
+    if (!m.nsf.banked && !m.mmc) return;
+    var cpu = m.nes.cpu;
+    // 原始寫入函式只存一次：還原快照時會重掛，若每次都包住「已包過的」函式，MMC1 的移位會被算兩次
+    if (!cpu.faOrigWrite) cpu.faOrigWrite = cpu.write;
+    var orig = cpu.faOrigWrite;
     cpu.write = function (addr, value) {
-      if (addr >= 0x5FF8 && addr <= 0x5FFF) {
+      if (m.mmc && addr >= 0x8000) {
+        // MMC1 暫存器：寫入不進 ROM（殼是 NROM），只更新銀行狀態；暫存器改變時重新排列 $8000–$FFFF
+        if (NESX.mmc1Step(m.mmc, addr, value & 0xFF)) applyMmc1(m);
+        return;
+      }
+      if (addr >= 0x5FF8 && addr <= 0x5FFF && m.nsf.banked) {
         var s = addr - 0x5FF8, v = value & 0xFF;
         m.banks[s] = v;
         m.nes.cpu.mem.set(pageBytes(m.nsf, v), 0x8000 + s * PAGE);
@@ -121,6 +169,20 @@
       }
       return orig.call(this, addr, value);
     };
+  }
+  // 還原遊戲 RAM 影像：$0000–$07FF 與 $6000–$7FFF（格式見 musiclib_extract_nes.js 的 snapRam）
+  function restoreRam(m, ram) {
+    var mem = m.nes.cpu.mem;
+    // 不還原堆疊（$0100–$01FF）：擷取當下的堆疊裡是舊的返回位址，還原後會讓遊戲跳到資料上當掉（實測 $1F2 無效指令）
+    mem.set(ram.subarray(0, 0x100), 0);
+    mem.set(ram.subarray(0x200, 0x800), 0x200);
+    mem.set(ram.subarray(0x800, 0x2800), 0x6000);
+  }
+  // 依 MMC1 狀態把 8 個 4KB 頁接到 $8000–$FFFF（同時更新 m.banks，給快照用）
+  function applyMmc1(m) {
+    var pages = NESX.mmc1Pages(m.mmc, m.nsf.mmc1.nb16), mem = m.nes.cpu.mem;
+    m.banks = pages.slice();
+    for (var s = 0; s < 8; s++) mem.set(pageBytes(m.nsf, pages[s]), 0x8000 + s * PAGE);
   }
 
   function appendQ(m, src, n) {
@@ -178,11 +240,13 @@
       snapshot: function () {
         return {
           nes: JSON.stringify(m.nes.toJSON()), banks: m.banks.slice(), acc: m.acc, overruns: m.overruns, crashed: m.crashed,
-          waitAddr: m.waitAddr, T: m.T, frames: m.frames, q: m.q.slice(m.qPos, m.qLen)
+          waitAddr: m.waitAddr, T: m.T, frames: m.frames, q: m.q.slice(m.qPos, m.qLen),
+          mmc: m.mmc ? { shift: m.mmc.shift, count: m.mmc.count, ctrl: m.mmc.ctrl, prg: m.mmc.prg } : null
         };
       },
       restore: function (s) {
         m.nes.fromJSON(JSON.parse(s.nes));
+        m.mmc = s.mmc ? { shift: s.mmc.shift, count: s.mmc.count, ctrl: s.mmc.ctrl, prg: s.mmc.prg } : null;
         hookWrites(m);
         m.banks = s.banks.slice(); m.acc = s.acc; m.overruns = s.overruns; m.crashed = s.crashed;
         m.waitAddr = s.waitAddr; m.T = s.T; m.frames = s.frames;
@@ -225,7 +289,7 @@
         if (!(N.songs >= 1)) throw new Error('NSF 曲目數為 0');
         var nsf = {
           load: N.load, init: N.init, play: N.play, songs: N.songs, data: N.data, pal: N.pal, palSpeed: N.palSpeed, ntscSpeed: N.ntscSpeed,
-          banks: N.banks, banked: N.banks.some(function (x) { return x !== 0; })
+          banks: N.banks, banked: N.banks.some(function (x) { return x !== 0; }), mmc1: N.mmc1, ram: N.ram
         };
         var tracks = [];
         for (var i = 1; i <= N.songs; i++) tracks.push(lazyTrack(NES, nsf, i, i - 1));
