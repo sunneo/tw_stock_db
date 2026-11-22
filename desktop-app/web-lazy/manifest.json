@@ -1930,8 +1930,8 @@
    "names": [
     "FaMusicLib"
    ],
-   "size": 22498,
-   "md5": "ac2886f1f6fe5fec429540e3c8a321a0"
+   "size": 22688,
+   "md5": "082e4d485d1692465b7880d4393e28de"
   },
   "mlmel": {
    "file": "chunks/mlmel.js",
@@ -1957,6 +1957,30 @@
    "size": 5705,
    "md5": "5cfeccd9eb52aa0922e9cd13c63980e5"
   },
+  "mlnes": {
+   "file": "chunks/mlnes.js",
+   "names": [
+    "FaMusicLibNes"
+   ],
+   "size": 16085,
+   "md5": "845185798f0194da3cc02ab2321ba9c4"
+  },
+  "jsnes": {
+   "file": "chunks/jsnes.js",
+   "names": [
+    "FaJsnes"
+   ],
+   "size": 139342,
+   "md5": "86961bf1aaab7a4f08f3ae2dd4d2c7f3"
+  },
+  "mlnesmap": {
+   "file": "chunks/mlnesmap.js",
+   "names": [
+    "FaMusicLibNesMappers"
+   ],
+   "size": 21008,
+   "md5": "c93ebbe753caa1d263ecfc2b6d00ca90"
+  },
   "mxlz": {
    "file": "chunks/mxlz.js",
    "names": [
@@ -1970,20 +1994,20 @@
    "names": [
     "FaMusicLibUI"
    ],
-   "size": 17929,
-   "md5": "b38482dc53721ba6345b4920a37de6eb"
+   "size": 17957,
+   "md5": "fa34e54fff46512eecb892f218424b8f"
   },
   "mlhost": {
    "file": "chunks/mlhost.js",
    "names": [
     "FaMusicLibHost"
    ],
-   "size": 20963,
-   "md5": "b7d1b8771f5d8453521b531cbf46e723"
+   "size": 22808,
+   "md5": "6320088c65ec22fe7f21e9cffb0b4be5"
   }
  },
  "core": {
-  "size": 6922485,
-  "md5": "9e29d9b267007933a058b95fd43fce92"
+  "size": 6922618,
+  "md5": "41604915ab886507a7116ccd68ac00a5"
  }
 }
