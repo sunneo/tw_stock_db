@@ -23,6 +23,8 @@
     sfc: { category: 'extract', label: 'SNES 遊戲音樂，可擷取' },
     rix: { category: 'extract', label: 'RIX（OPL2）音樂，可擷取' },
     swf: { category: 'extract', label: 'Flash（SWF）音樂，可擷取' },
+    // 獨立可播放的音樂檔（不需擷取）：晶片播放器的 spc 後端直接播放
+    spc: { category: 'chip', label: 'SNES 音效檔（.spc），可晶片播放' },
     // 只由擷取產生的子曲目用（不從掃描辨識）
     nsf: { category: 'game', label: 'NSF 音樂（擷取產生，需 NSF 播放器）' }
   };
