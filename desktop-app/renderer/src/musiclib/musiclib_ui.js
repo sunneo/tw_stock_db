@@ -92,7 +92,7 @@
 
     var fIn = h('input'); fIn.type = 'file'; fIn.multiple = true; fIn.style.display = 'none';
     var dIn = h('input'); dIn.type = 'file'; dIn.setAttribute('webkitdirectory', ''); dIn.style.display = 'none';
-    root.appendChild(bar); root.appendChild(lyr); root.appendChild(exp); root.appendChild(expList); root.appendChild(wrap); root.appendChild(foot); root.appendChild(fIn); root.appendChild(dIn);
+    root.appendChild(bar); root.appendChild(lyr); root.appendChild(exp); root.appendChild(chipBox); root.appendChild(expList); root.appendChild(wrap); root.appendChild(foot); root.appendChild(fIn); root.appendChild(dIn);
     container.appendChild(root);
 
     function visibleRows() {
@@ -248,6 +248,38 @@
     try { xRoot.value = localStorage.getItem('fa.musiclib.derivedDir') || ''; } catch (_) { /* 讀不到就空白 */ }
     xCancel.disabled = true;
     exp.appendChild(xRoot); exp.appendChild(xBtn); exp.appendChild(xCancel);
+    // 晶片播放（RIX，OPL2 真模擬）：取第一個勾選的 RIX（沒勾就取第一個），掛上控制卡片（重播、seek、goto、曲目、匯出 mp3／MIDI）
+    var cBtn = h('button', null, '▶ 晶片播放（RIX）'), chipBox = h('div');
+    chipBox.style.marginTop = '8px';
+    exp.appendChild(cBtn);
+    if (typeof FaChipPlayer === 'undefined' || typeof FaChipPlayerUI === 'undefined') cBtn.disabled = true;
+    var CHIP_HOST = {
+      encodeMp3: function (view, kbps) { return window.fa._encodeMp3(view, kbps); },
+      midiBytes: function (song) { return FaMidi.write(song); },
+      download: function (name, bytes, mime) {
+        var url = URL.createObjectURL(new Blob([bytes], { type: mime })), la = document.createElement('a');
+        la.href = url; la.download = name; document.body.appendChild(la); la.click(); la.remove();
+        setTimeout(function () { URL.revokeObjectURL(url); }, 4000);
+      }
+    };
+    cBtn.onclick = async function () {
+      var recs = lib.records.filter(function (r) { return r.kind === 'rix' && r.status === 'ok' && (Object.keys(sel).length === 0 || sel[r.key]); });
+      if (!recs.length) { expStat.textContent = '沒有可播放的 RIX（先加 RIX 檔案，或勾選一個）'; return; }
+      var rec = recs[0];
+      expStat.textContent = '讀取 ' + rec.name + '…';
+      try {
+        var a = window.desktopAPI;
+        if (!a || !a.rawfs || !a.rawfs.readFile) throw new Error('讀取音檔的通道不存在（需要桌面版）');
+        var rd = await a.rawfs.readFile(rec.path, 'base64');
+        if (!rd || rd.base64 == null) throw new Error('讀不到這個檔案的內容');
+        var bin = atob(rd.base64), bytes = new Uint8Array(bin.length);
+        for (var bi = 0; bi < bin.length; bi++) bytes[bi] = bin.charCodeAt(bi);
+        var player = FaChipPlayer.createPlayer('rix', bytes, { sampleRate: 44100 });
+        chipBox.textContent = '';
+        chipBox.appendChild(FaChipPlayerUI.mount({ player: player, title: rec.name, host: CHIP_HOST }));
+        expStat.textContent = '已開啟晶片播放器：' + rec.name;
+      } catch (e) { expStat.textContent = '⚠️ 晶片播放失敗：' + String((e && e.message) || e); }
+    };
     if (!host.extract) { xBtn.disabled = true; xCancel.disabled = true; }
     var STATUS_X = { done: '完成', skipped: '沿用', failed: '失敗', cancelled: '取消' };
     xBtn.onclick = function () {

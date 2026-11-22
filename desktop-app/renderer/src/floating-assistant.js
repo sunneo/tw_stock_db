@@ -84134,6 +84134,17 @@ const holder = {};
   var DRUM_NOTE = { 6: 36, 7: 42, 8: 38 };         // 打擊：6 底鼓 36、7 踩鑔 42、8 小鼓 38（GM）
   var PROGRAM_BY_WAVE = [73, 80, 81, 81];           // 載波波形 0 正弦→長笛 73；1 半正弦→方波主音 80；2/3 →鋸齒主音 81（近似）
 
+  var OPL_MOD_OFF = [0, 1, 2, 8, 9, 10, 16, 17, 18];
+  // MIDI 音高 → OPL2 的 block／F-number（頻率 = fnum × 49716 ÷ 2^(20−block)）；取能放進 10 位元 F-number 的最小 block（精度最高）
+  function oplFreq(midi) {
+    var hz = 440 * Math.pow(2, (midi - 69) / 12);
+    for (var b = 0; b < 8; b++) {
+      var fn = Math.round(hz * Math.pow(2, 20 - b) / 49716);
+      if (fn <= 1023) return { block: b, fnum: Math.max(1, fn) };
+    }
+    return { block: 7, fnum: 1023 };
+  }
+
   function u16(b, o) { return b[o] | (b[o + 1] << 8); }
 
   // 讀一個樂器的 28 個字，回傳 { v:[…13 個調變器參數, …13 個載波參數], wave:[調變器, 載波] }
@@ -84167,8 +84178,36 @@ const holder = {};
     // 樂譜：依序解出各頻道的音符（時間以延遲單位累加）
     var t = 0, chIns = {}, active = {}, notes = {}, cmds = 0, delays = 0, bends = 0, vols = 0;
     function trackOf(ch) { return notes[ch] || (notes[ch] = []); }
+    // OPL2 暫存器寫入序列（給晶片播放器用）。t 單位同延遲字（1/980 秒）；運算元位址 MOD_OFF[ch]，載波 +3。頻道 0..8 直接對應 OPL2 的 9 個頻道
+    var regs = [], voice = {}, carTL = {};
+    function reg(r, v) { regs.push({ t: t, r: r & 0xFF, v: v & 0xFF }); }
+    function loadIns(c, n) {
+      var ins = instrument(n), mo = OPL_MOD_OFF[c], co = mo + 3, m = ins.mod, k = ins.car;
+      reg(0x20 + mo, m[0]); reg(0x40 + mo, m[1]); reg(0x60 + mo, m[2]); reg(0x80 + mo, m[3]); reg(0xE0 + mo, ins.wave[0]);
+      reg(0x20 + co, k[0]); reg(0x40 + co, k[1]); reg(0x60 + co, k[2]); reg(0x80 + co, k[3]); reg(0xE0 + co, ins.wave[1]);
+      reg(0xC0 + c, ((m[10] & 7) << 1) | ((m[10] >> 3) & 1));   // 回授與連接：由 mod 第 10 字推得（對應未驗證，見報告）
+      carTL[c] = k[1] & 0x3F;
+    }
+    function setVolume(c, vol) {               // 音量 0..127 → 載波總音量：樂器基準值加上衰減，最多 40 級
+      if (carTL[c] == null) return;
+      var tl = Math.min(63, carTL[c] + Math.round((127 - vol) / 127 * 40));
+      reg(0x40 + OPL_MOD_OFF[c] + 3, tl);
+    }
+    function keyOn(c, midi) {
+      var f = oplFreq(midi);
+      voice[c] = f;
+      reg(0xB0 + c, (f.block << 2) | ((f.fnum >> 8) & 3));   // 先確保關閉
+      reg(0xA0 + c, f.fnum & 0xFF);
+      reg(0xB0 + c, 0x20 | (f.block << 2) | ((f.fnum >> 8) & 3));
+    }
+    function keyOff(c) {
+      var f = voice[c]; if (!f) return;
+      reg(0xB0 + c, (f.block << 2) | ((f.fnum >> 8) & 3));
+      voice[c] = null;
+    }
     function noteOff(ch, at) {
       var a = active[ch]; if (!a) return;
+      if (ch <= 8) keyOff(ch);
       var d = at - a.t0; if (d > 0) trackOf(ch).push({ t: a.t0, d: d, n: a.n, v: a.v });
       active[ch] = null;
     }
@@ -84180,14 +84219,14 @@ const holder = {};
       if (++guard > 2000000) throw new Error('解析失敗（樂譜）：字數超過 200 萬仍沒有結束字，疑似壞檔');
       var kind = ctrl & 0xF0, ch = ctrl & 0x0F;
       if (kind === 0x90) {                       // 選樂器
-        if (ch <= 10) { chIns[ch] = data; instrument(data); }
+        if (ch <= 10) { chIns[ch] = data; instrument(data); if (ch <= 8) loadIns(ch, data); }
         cmds++;
       } else if (kind === 0xA0) {                // 音高彎曲：資料 << 6，中心 0x2000
         var bend = Math.min(0x3FFF, data << 6);
         if (ch <= 10) { trackOf(ch).push({ bend: true, t: t, value: bend }); bends++; }
         cmds++;
       } else if (kind === 0xB0) {                // 音量（0..0x7F）
-        if (ch <= 10) { trackOf(ch).push({ vol: true, t: t, value: Math.min(0x7F, data) }); vols++; }
+        if (ch <= 10) { trackOf(ch).push({ vol: true, t: t, value: Math.min(0x7F, data) }); vols++; if (ch <= 8) setVolume(ch, Math.min(0x7F, data)); }
         cmds++;
       } else if (kind === 0xC0) {                // 音符：先關掉此頻道的音，yy != 0 才開新音
         if (ch <= 10) {
@@ -84195,6 +84234,7 @@ const holder = {};
           if (data !== 0) {
             var midi = data >= 12 ? data : 12;
             active[ch] = { t0: t, n: midi, v: 100 };
+            if (ch <= 8) keyOn(ch, midi);
           }
         }
         cmds++;
@@ -84246,6 +84286,7 @@ const holder = {};
     return {
       ok: true, soundMode: soundMode, insOffset: insOffset, patternOffset: musBlock,
       song: song,
+      regs: [{ t: 0, r: 0x01, v: 0x20 }].concat(regs), durationSec: durSec,
       stats: { stopped: stopped, commands: cmds, delays: delays, bends: bends, volumes: vols, notes: totalNotes, seconds: Math.round(durSec * 10) / 10, instrumentsUsed: Object.keys(chIns).length }
     };
   }
@@ -84257,6 +84298,581 @@ const holder = {};
 return holder.FaMusicLibRix;
 })();
 /* MLRIX-END */
+/* MLOPL2-BEGIN */
+const FaOpl2 = (function () {
+const holder = {};
+(function (module, self) {
+/* OPL2（Yamaha YM3812）數位模擬：純函式（UMD），不碰 DOM／網路。授權：MIT（自寫）。
+ *   依據：Yamaha YM3812 公開的暫存器位址表（0x01 波形致能、0x20 AM/VIB/EGT/KSR/倍頻、0x40 KSL/總音量、0x60 AR/DR、0x80 SL/RR、
+ *   0xE0 波形選擇、0xA0 F-number 低位、0xB0 按鍵/八度/F-number 高位、0xC0 回授/連接）。
+ *   沒有抄貼任何 GPL 程式（DOSBox、AdPlug 等）；細節是「近似」：包絡用指數衰減、KSL 與 Tremolo／Vibrato 用簡化公式。
+ *   用法：
+ *     var chip = FaOpl2.create(sampleRate); chip.write(reg, val); chip.render(outFloat32, count) → 單聲道 −1..1 附近的樣本
+ *     chip.snapshot() / chip.restore(s)：整個晶片狀態的複製（給分段快取用）
+ *   介面的 reg 是 0x00..0xFF 的 OPL 暫存器位址。 */
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaOpl2 = factory();
+}(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+  var CHIP_RATE = 49716;                         // OPL2 的內部更新率（時脈 3.579545 MHz ÷ 72）
+  var MULT = [0.5, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 10, 12, 12, 15, 15];
+  var MOD_OFF = [0, 1, 2, 8, 9, 10, 16, 17, 18];  // 九個頻道的調變器運算元位址（載波＝+3）
+  var KSL_DB = [0, 3, 1.5, 6];                   // KSL 每級的衰減係數（dB，依八度放大）
+  var TWO_PI = Math.PI * 2;
+
+  function rateTau(r) { return r === 0 ? Infinity : 0.002 * Math.pow(2, (15 - r) / 1.5); }   // 秒，越大越慢
+  function wave(ph, ws) {
+    var s = Math.sin(TWO_PI * ph);
+    switch (ws) {
+      case 1: return s > 0 ? s : 0;              // 半波正弦
+      case 2: return Math.abs(s);                // 絕對值正弦
+      case 3: return ph < 0.5 ? Math.abs(s) : 0; // 脈衝式（近似）
+      default: return s;
+    }
+  }
+
+  // 一個晶片的全部狀態都放在 state（型別陣列），snapshot 只要複製它們
+  function newState() {
+    return {
+      reg: new Uint8Array(256),
+      phase: new Float64Array(32), env: new Float64Array(32), stage: new Uint8Array(32),
+      fbHist: new Float64Array(9 * 2), chPhaseDummy: new Float64Array(9),
+      t: 0
+    };
+  }
+
+  function create(sampleRate) {
+    var sr = sampleRate || 44100;
+    var st = newState();
+    // 由暫存器衍生的參數（寫入時重算，不必每個取樣都重解）
+    var op = {};                                  // op[offset] = { mult, ksr, egt, vib, am, ksl, tl, ar, dr, sl, rr, ws }
+    var ch = [];                                  // ch[c] = { hz, keyOn, fb, cnt, block, fnum }
+    for (var c = 0; c < 9; c++) ch.push({ hz: 0, keyOn: 0, fb: 0, cnt: 0, block: 0, fnum: 0 });
+
+    function deriveOp(o) {
+      var r = st.reg, m = r[0x20 + o], k = r[0x40 + o], a = r[0x60 + o], s = r[0x80 + o], w = r[0xE0 + o];
+      op[o] = {
+        mult: m & 0x0F, ksr: (m >> 4) & 1, egt: (m >> 5) & 1, vib: (m >> 6) & 1, am: (m >> 7) & 1,
+        ksl: (k >> 6) & 3, tl: k & 0x3F,
+        ar: (a >> 4) & 0x0F, dr: a & 0x0F, sl: (s >> 4) & 0x0F, rr: s & 0x0F,
+        ws: (r[0x01] & 0x20) ? (w & 3) : 0
+      };
+    }
+    function deriveChannel(c) {
+      var fa = st.reg[0xA0 + c], fb = st.reg[0xB0 + c], cc = st.reg[0xC0 + c];
+      var fnum = fa | ((fb & 3) << 8), block = (fb >> 2) & 7;
+      ch[c].fnum = fnum; ch[c].block = block; ch[c].keyOn = (fb >> 5) & 1;
+      ch[c].fb = (cc >> 1) & 7; ch[c].cnt = cc & 1;
+      ch[c].hz = fnum * CHIP_RATE / Math.pow(2, 20 - block);
+    }
+    function deriveAll() {
+      for (var o = 0; o < 32; o++) if (st.reg[0x20 + o] || st.reg[0x40 + o] || st.reg[0x60 + o] || st.reg[0x80 + o] || st.reg[0xE0 + o]) deriveOp(o);
+      for (var c = 0; c < 9; c++) deriveChannel(c);
+    }
+
+    function write(reg, val) {
+      reg &= 0xFF; val &= 0xFF; st.reg[reg] = val;
+      if (reg === 0x01) { deriveAll(); return; }
+      if (reg >= 0x20 && reg <= 0x35) return deriveOp(reg - 0x20);
+      if (reg >= 0x40 && reg <= 0x55) return deriveOp(reg - 0x40);
+      if (reg >= 0x60 && reg <= 0x75) return deriveOp(reg - 0x60);
+      if (reg >= 0x80 && reg <= 0x95) return deriveOp(reg - 0x80);
+      if (reg >= 0xE0 && reg <= 0xF5) return deriveOp(reg - 0xE0);
+      if (reg >= 0xA0 && reg <= 0xA8) { var c1 = reg - 0xA0; deriveChannel(c1); return keyChange(c1); }
+      if (reg >= 0xB0 && reg <= 0xB8) { var c2 = reg - 0xB0; deriveChannel(c2); return keyChange(c2); }
+      if (reg >= 0xC0 && reg <= 0xC8) { deriveChannel(reg - 0xC0); }
+    }
+    // 按鍵：0→1 開始攻擊，1→0 進入釋放
+    function keyChange(c) {
+      var mo = MOD_OFF[c], co = mo + 3, want = ch[c].keyOn;
+      if (want && !ch[c].prevKey) { st.stage[mo] = 1; st.stage[co] = 1; }   // 0→1：重新攻擊
+      if (!want && ch[c].prevKey) { if (st.stage[mo]) st.stage[mo] = 4; if (st.stage[co]) st.stage[co] = 4; }
+      ch[c].prevKey = want;
+    }
+
+    // 單一運算元：回傳 { y: 輸出（已乘包絡與音量） }
+    function stepOp(o, ph, dt, keyScale) {
+      var p = op[o]; if (!p) return 0;
+      // 包絡推進
+      var ksrEff = p.ksr ? keyScale : (keyScale >> 2);
+      var scale = Math.pow(2, -ksrEff / 4);
+      var sus = Math.pow(10, -(p.sl * 3) / 20); if (p.sl === 15) sus = 0;
+      var s = st.stage[o], e = st.env[o];
+      if (s === 1) {                                // 攻擊
+        var ta = rateTau(p.ar) * 0.3 * scale;
+        if (!isFinite(ta) || ta <= 0) { e = 1; s = 2; }
+        else { e += (1 - e) * (1 - Math.exp(-dt / ta)); if (e > 0.998) { e = 1; s = 2; } }
+      } else if (s === 2) {                         // 衰減到持續位準
+        var td = rateTau(p.dr) * scale;
+        if (!isFinite(td) || td <= 0) { /* 不衰減 */ }
+        else { e = sus + (e - sus) * Math.exp(-dt / td); }
+        if (e - sus < 0.002) { e = sus; s = p.egt ? 3 : 4; }
+      } else if (s === 3) {                         // 持續（EGT 開，按住期間不動）
+        e = sus;
+      } else if (s === 4) {                         // 釋放
+        var tr = rateTau(p.rr) * scale;
+        if (isFinite(tr) && tr > 0) e *= Math.exp(-dt / tr); else e = 0;
+        if (e < 0.0005) { e = 0; s = 0; }
+      }
+      st.stage[o] = s; st.env[o] = e;
+      if (s === 0) return 0;
+      // 音量：TL 每級 0.75 dB；KSL 依八度
+      var kdb = p.ksl ? KSL_DB[p.ksl] * Math.max(0, (keyScale >> 1) - 2) : 0;
+      var att = Math.pow(10, -(p.tl * 0.75 + kdb) / 20);
+      if (p.am) att *= Math.pow(10, -(4.8 * (0.5 + 0.5 * Math.sin(TWO_PI * 3.7 * st.t))) / 20);
+      return wave(ph, p.ws) * e * att;
+    }
+
+    // 產生 count 個取樣到 out（從 out[start] 開始）
+    function render(out, start, count) {
+      start = start || 0;
+      var dt = 1 / sr;
+      var anyOn = false, c, o;
+      for (c = 0; c < 9; c++) if (ch[c].keyOn || st.stage[MOD_OFF[c] + 3]) { anyOn = true; break; }
+      for (var i = 0; i < count; i++) {
+        var mix = 0;
+        var vib = Math.sin(TWO_PI * 6.1 * st.t);   // 顫音 LFO（約 6 Hz）
+        for (c = 0; c < 9; c++) {
+          var mo = MOD_OFF[c], co = mo + 3, C = ch[c];
+          if (st.stage[mo] === 0 && st.stage[co] === 0) continue;
+          var keyScale = (C.block << 1) | ((C.fnum >> 9) & 1);
+          var pm = op[mo] ? op[mo].vib : 0, pc = op[co] ? op[co].vib : 0;
+          var vf = (pm || pc) ? Math.pow(2, (7 / 1200) * vib) : 1;
+          var hz = C.hz * vf;
+          // 調變器（含回授）
+          var mp = op[mo] ? MULT[op[mo].mult] : 1, cp = op[co] ? MULT[op[co].mult] : 1;
+          var fbk = C.fb ? Math.PI / Math.pow(2, 8 - C.fb) : 0;
+          var h = st.fbHist, y1 = h[c * 2], y2 = h[c * 2 + 1];
+          st.phase[mo] = (st.phase[mo] + hz * (mp === 0.5 ? 0.5 : mp) * dt) % 1;
+          var modPh = st.phase[mo] + (fbk * (y1 + y2) / 2) / TWO_PI;
+          var my = stepOp(mo, modPh - Math.floor(modPh), dt, keyScale);
+          h[c * 2 + 1] = y1; h[c * 2] = my;
+          st.phase[co] = (st.phase[co] + hz * cp * dt) % 1;
+          var carPh = st.phase[co];
+          if (C.cnt === 0) {                         // FM：調變器調相到載波
+            var cy = stepOp(co, (carPh + my * 0.5) - Math.floor(carPh + my * 0.5), dt, keyScale);
+            mix += cy;
+          } else {                                   // 加法
+            mix += my + stepOp(co, carPh, dt, keyScale);
+          }
+        }
+        out[start + i] = mix * 0.25;
+        st.t += dt;
+      }
+      return anyOn;
+    }
+
+    function snapshot() {
+      return { reg: st.reg.slice(), phase: st.phase.slice(), env: st.env.slice(), stage: st.stage.slice(), fbHist: st.fbHist.slice(), t: st.t };
+    }
+    function restore(s) {
+      st.reg.set(s.reg); st.phase.set(s.phase); st.env.set(s.env); st.stage.set(s.stage); st.fbHist.set(s.fbHist); st.t = s.t;
+      deriveAll();
+    }
+    function reset() { st = newState(); deriveAll(); }
+    return { write: write, render: render, snapshot: snapshot, restore: restore, reset: reset, sampleRate: sr };
+  }
+
+  return { create: create, CHIP_RATE: CHIP_RATE, MOD_OFF: MOD_OFF };
+}));
+
+}).call(null, undefined, holder);
+return holder.FaOpl2;
+})();
+/* MLOPL2-END */
+/* MLCHIP-BEGIN */
+const FaChipPlayer = (function () {
+const holder = {};
+(function (module, self) {
+/* 晶片音樂播放器：共用介面與播放核心（純邏輯，UMD，不碰 DOM／網路／音訊裝置）。
+ *   後端註冊：FaChipPlayer.registerBackend(backend)。後端介面（RIX、NSF、SPC、PCE 各接一個）：
+ *     backend.kind          字串，例如 'rix'
+ *     backend.label         顯示名稱
+ *     backend.parse(bytes)  → loaded：{ title, tracks: [{ title, durationSec }], …後端自己要留的東西 }
+ *     backend.openStream(loaded, trackIndex, sampleRate) → stream：{ read(out, off, n)、snapshot()、restore(s) }
+ *         stream.read 每次產生 n 個單聲道樣本（Float32，約 −1..1）；snapshot／restore 保存完整晶片狀態（給 seek 用）。
+ *     backend.toMidi(loaded, trackIndex) → 標準 MIDI 曲子（可選；沒有就不能匯出 MIDI，要說明原因）
+ *   播放器（createPlayer）：load、曲目列表、render(曲目, 起點秒, 長度秒) → PCM、durationSec、seek(秒)。
+ *   晶片不能任意跳轉：seek 從最近的「檢查點」還原狀態，再靜音快速模擬到目標時間（檢查點每 checkpointSec 秒記一次）。
+ *   parseGoto(文字)：「1:23」「83」「1:02:03」→ 時間；「曲目 3」「t3」「#3」→ 曲目編號（從 1 起算）。 */
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaChipPlayer = factory();
+}(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+  var backends = {};
+  var DEFAULT_RATE = 44100, DEFAULT_CHECKPOINT_SEC = 5;
+
+  function registerBackend(b) {
+    if (!b || !b.kind || typeof b.parse !== 'function' || typeof b.openStream !== 'function') throw new Error('晶片後端缺少 kind／parse／openStream');
+    backends[b.kind] = b;
+    return b;
+  }
+  function getBackend(kind) { if (!backends[kind]) throw new Error('沒有這個晶片格式的播放後端：' + kind); return backends[kind]; }
+  function listBackends() { return Object.keys(backends).map(function (k) { return { kind: k, label: backends[k].label || k }; }); }
+
+  // 從 bytes 建立播放器（load）。opts: { sampleRate, checkpointSec }
+  function createPlayer(kind, bytes, opts) {
+    opts = opts || {};
+    var be = getBackend(kind);
+    var loaded = be.parse(bytes);
+    if (!loaded || !loaded.tracks || !loaded.tracks.length) throw new Error('解析完成但沒有曲目');
+    var sr = opts.sampleRate || DEFAULT_RATE;
+    var cpSamples = Math.round((opts.checkpointSec || DEFAULT_CHECKPOINT_SEC) * sr);
+    var cur = { track: 0, stream: null, pos: 0, cps: [] };   // cps：檢查點 { pos, snap }，依 pos 遞增
+
+    function trackInfo(i) {
+      var tr = loaded.tracks[i]; if (!tr) throw new Error('沒有第 ' + (i + 1) + ' 首曲目（共 ' + loaded.tracks.length + ' 首）');
+      return tr;
+    }
+    function durationSec(i) { return trackInfo(i == null ? cur.track : i).durationSec; }
+    function totalSamples(i) { return Math.round(durationSec(i) * sr); }
+
+    // 切換曲目：重開串流、清檢查點
+    function setTrack(i) {
+      trackInfo(i);
+      cur.track = i; cur.stream = be.openStream(loaded, i, sr); cur.pos = 0; cur.cps = [];
+      cur.cps.push({ pos: 0, snap: cur.stream.snapshot() });
+    }
+    // 從目前位置讀 n 個樣本，途中記錄檢查點
+    function readInto(out, off, n) {
+      var k = 0;
+      while (k < n) {
+        var toCp = cpSamples - (cur.pos % cpSamples);
+        var span = Math.min(n - k, toCp);
+        cur.stream.read(out, off + k, span);
+        k += span; cur.pos += span;
+        if (cur.pos % cpSamples === 0 && cur.cps[cur.cps.length - 1].pos < cur.pos) cur.cps.push({ pos: cur.pos, snap: cur.stream.snapshot() });
+      }
+      return n;
+    }
+    // seek：回到最近的檢查點（pos ≤ 目標），再靜音快速模擬到目標
+    function seekSamples(target) {
+      var lo = 0, hi = cur.cps.length - 1;
+      while (lo < hi) { var m = (lo + hi + 1) >> 1; if (cur.cps[m].pos <= target) lo = m; else hi = m - 1; }
+      var cp = cur.cps[lo];
+      cur.stream = be.openStream(loaded, cur.track, sr);
+      cur.stream.restore(cp.snap); cur.pos = cp.pos;
+      var scratch = new Float32Array(Math.min(8192, Math.max(1, target - cur.pos)));
+      while (cur.pos < target) readInto(scratch, 0, Math.min(scratch.length, target - cur.pos));
+    }
+    setTrack(0);
+
+    var api = {
+      kind: kind, label: be.label || kind, title: loaded.title || '', loaded: loaded, sampleRate: sr,
+      tracks: function () { return loaded.tracks.map(function (t, i) { return { index: i, title: t.title || ('曲目 ' + (i + 1)), durationSec: t.durationSec }; }); },
+      trackCount: function () { return loaded.tracks.length; },
+      currentTrack: function () { return cur.track; },
+      durationSec: durationSec,
+      // 切曲目（跳過的檢查點都清掉）
+      selectTrack: function (i) { if (i !== cur.track) setTrack(i); return api; },
+      // 目前播放位置（秒）
+      positionSec: function () { return cur.pos / sr; },
+      // seek(秒)：之後 read 會從那裡開始
+      seek: function (sec) { var t = Math.max(0, Math.min(Math.round(sec * sr), totalSamples())); seekSamples(t); return cur.pos / sr; },
+      // 從目前位置讀 n 個樣本（播放用）；超過曲長就只回傳到曲尾（回傳實際樣本數）
+      read: function (out, n) { var left = totalSamples() - cur.pos; var m = Math.max(0, Math.min(n, left)); readInto(out, 0, m); return m; },
+      atEnd: function () { return cur.pos >= totalSamples(); },
+      // render(曲目, 起點秒, 長度秒) → 單聲道 Float32Array；不影響目前播放位置
+      render: function (track, startSec, lenSec) {
+        var ti = track == null ? cur.track : track;
+        var saveTrack = cur.track, savePos = cur.pos;
+        var out;
+        try {
+          if (ti !== cur.track) setTrack(ti);
+          var total = totalSamples(ti), s0 = Math.max(0, Math.min(Math.round(startSec * sr), total));
+          var want = lenSec == null ? total - s0 : Math.max(0, Math.round(lenSec * sr));
+          want = Math.min(want, total - s0);
+          seekSamples(s0);
+          out = new Float32Array(want);
+          var got = 0;
+          while (got < want) { var c = Math.min(8192, want - got); readInto(out, got, c); got += c; }
+        } finally {
+          // 還原原本的曲目與位置
+          if (saveTrack !== cur.track || cur.pos !== savePos) { setTrack(saveTrack); seekSamples(savePos); }
+        }
+        return out;
+      },
+      // 匯出 MIDI（後端沒有就丟錯，訊息說明原因）
+      toMidi: function (track) {
+        if (typeof be.toMidi !== 'function') throw new Error('這個晶片格式目前沒有 MIDI 擷取結果，無法匯出 MIDI');
+        return be.toMidi(loaded, track == null ? cur.track : track);
+      }
+    };
+    return api;
+  }
+
+  // 解析使用者輸入的 goto 文字。回傳 { kind:'time', sec } 或 { kind:'track', index }（index 從 0 起算）；無法解析回傳 null
+  function parseGoto(text) {
+    var s = String(text == null ? '' : text).trim();
+    var m = /^(?:曲目\s*|t|#)\s*(\d+)$/i.exec(s);
+    if (m) { var n = parseInt(m[1], 10); return n >= 1 ? { kind: 'track', index: n - 1 } : null; }
+    if (/^\d+(:\d{1,2}){1,2}$/.test(s)) {
+      var parts = s.split(':').map(Number), sec = 0;
+      parts.forEach(function (p) { sec = sec * 60 + p; });
+      return { kind: 'time', sec: sec };
+    }
+    if (/^\d+(\.\d+)?$/.test(s)) return { kind: 'time', sec: parseFloat(s) };
+    return null;
+  }
+
+  return { registerBackend: registerBackend, getBackend: getBackend, listBackends: listBackends, createPlayer: createPlayer, parseGoto: parseGoto, DEFAULT_RATE: DEFAULT_RATE };
+}));
+
+}).call(null, undefined, holder);
+return holder.FaChipPlayer;
+})();
+/* MLCHIP-END */
+/* MLCHIPRIX-BEGIN */
+const FaChipRix = (function () {
+const holder = {};
+(function (module, self) {
+/* RIX 晶片後端：把 RIX 解析器產出的 OPL2 暫存器寫入序列，餵給 OPL2 模擬，輸出 PCM。純邏輯（UMD）。
+ *   註冊到 FaChipPlayer（kind = 'rix'）。曲尾多留 1.5 秒讓釋放段播完。
+ *   MIDI 匯出沿用解析器的 song（GM 近似，與原曲音色無關）。 */
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) {
+    module.exports = factory(require('./musiclib_extract_rix.js'), require('./musiclib_opl2.js'), require('./musiclib_chipplayer.js'));
+  } else {
+    // 嵌入到 floating-assistant.js 時依賴是同一段程式的頂層 const，要用 typeof 取到（同 midi_play.js 的寫法）
+    root.FaChipRix = factory(root.FaMusicLibRix || (typeof FaMusicLibRix !== 'undefined' ? FaMusicLibRix : undefined),
+      root.FaOpl2 || (typeof FaOpl2 !== 'undefined' ? FaOpl2 : undefined),
+      root.FaChipPlayer || (typeof FaChipPlayer !== 'undefined' ? FaChipPlayer : undefined));
+  }
+}(typeof self !== 'undefined' ? self : this, function (RIX, OPL2, CP) {
+  'use strict';
+  var TAIL_SEC = 1.5;
+
+  // 解析後的曲子：只保留播放需要的東西
+  function parse(bytes) {
+    var px = RIX.parseRix(bytes);
+    return { title: (px.song && px.song.title) || 'RIX', song: px.song, regs: px.regs, lengthSec: px.durationSec, stats: px.stats, tracks: [{ title: 'RIX 曲子', durationSec: px.durationSec + TAIL_SEC }] };
+  }
+
+  // 串流：依暫存器寫入的時間戳（1/980 秒）把寫入送進晶片，中間以晶片渲染
+  function openStream(loaded, trackIndex, sr) {
+    var chip = OPL2.create(sr), regs = loaded.regs, idx = 0, pos = 0;
+    // 時基：暫存器的 t 單位是 1/980 秒
+    function evSample(e) { return Math.round(e.t * sr / 980); }
+    return {
+      read: function (out, off, n) {
+        var k = 0;
+        while (k < n) {
+          while (idx < regs.length && evSample(regs[idx]) <= pos) { chip.write(regs[idx].r, regs[idx].v); idx++; }
+          var next = idx < regs.length ? evSample(regs[idx]) : Infinity;
+          var span = Math.min(n - k, next - pos);
+          if (!(span >= 1)) span = n - k;
+          chip.render(out, off + k, span);
+          k += span; pos += span;
+        }
+        return n;
+      },
+      snapshot: function () { return { chip: chip.snapshot(), idx: idx, pos: pos }; },
+      restore: function (s) { chip.restore(s.chip); idx = s.idx; pos = s.pos; }
+    };
+  }
+
+  function toMidi(loaded) { return loaded.song; }
+
+  var backend = { kind: 'rix', label: 'RIX（OPL2 真模擬）', parse: parse, openStream: openStream, toMidi: toMidi };
+  if (CP && typeof CP.registerBackend === 'function') CP.registerBackend(backend);
+  return backend;
+}));
+
+}).call(null, undefined, holder);
+return holder.FaChipRix;
+})();
+/* MLCHIPRIX-END */
+/* MLCHIPUI-BEGIN */
+const FaChipPlayerUI = (function () {
+const holder = {};
+(function (module, self) {
+// 晶片音樂播放器的控制卡片（DOM，只依賴注入的 player 與 host，不碰聊天主程式）。
+//   FaChipPlayerUI.mount({ player, title, host }) → DOM 節點
+//   player = FaChipPlayer.createPlayer(...) 的回傳（seek／read／render／toMidi／tracks…）
+//   host   = { createAudioContext(), download(name, bytes, mime), encodeMp3(view, kbps) → Promise<Blob>, midiBytes(song) → Uint8Array, onStatus? }
+//   版面與操作對齊 FaMidiUI（播放／暫停、停止、重播、進度條跳轉、音軌列、下載、轉 mp3），但不綁合成器：晶片要 seek 就重新模擬。
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory(require('./musiclib_chipplayer.js'));
+  else root.FaChipPlayerUI = factory(root.FaChipPlayer || (typeof FaChipPlayer !== 'undefined' ? FaChipPlayer : undefined));
+}(typeof self !== 'undefined' ? self : this, function (CP) {
+  'use strict';
+  var BLOCK_SEC = 0.5, AHEAD_SEC = 0.6, TICK_MS = 150;
+  var BTN = 'cursor:pointer;border:1px solid rgba(128,128,128,.5);background:transparent;color:inherit;border-radius:6px;padding:3px 9px;font-size:13px;';
+  function fmt(s) { s = Math.max(0, Math.round(s)); var h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), x = s % 60; var p = function (v) { return String(v).padStart(2, '0'); }; return h ? h + ':' + p(m) + ':' + p(x) : m + ':' + p(x); }
+  function el(tag, css, text) { var e = document.createElement(tag); if (css) e.style.cssText = css; if (text != null) e.textContent = text; return e; }
+  function safeName(s) { return String(s || 'song').replace(/[\\/:*?"<>|]/g, '_'); }
+
+  function mount(opts) {
+    var P = opts.player, host = opts.host || {};
+    var sr = P.sampleRate, track = P.currentTrack();
+    var card = el('div', 'border:1px solid rgba(128,128,128,.4);border-radius:10px;padding:10px;max-width:560px;font-size:13px;');
+    card.className = 'fa-chip-card';
+
+    var head = el('div', 'display:flex;align-items:center;gap:8px;flex-wrap:wrap;');
+    head.appendChild(el('span', 'font-size:18px', '🎮'));
+    head.appendChild(el('b', 'flex:1;min-width:80px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;', opts.title || P.title || '晶片音樂'));
+    head.appendChild(el('span', 'opacity:.7', P.label + '・' + P.trackCount() + ' 首'));
+    card.appendChild(head);
+
+    var bar = el('div', 'display:flex;align-items:center;gap:6px;margin:8px 0;flex-wrap:wrap;');
+    var prevBtn = el('button', BTN, '⏮'); prevBtn.title = '上一首';
+    var playBtn = el('button', BTN, '▶ 播放'); playBtn.title = '播放／暫停';
+    var stopBtn = el('button', BTN, '■'); stopBtn.title = '停止（回到開頭）';
+    var replayBtn = el('button', BTN, '↺'); replayBtn.title = '重播（從頭開始）';
+    var nextBtn = el('button', BTN, '⏭'); nextBtn.title = '下一首';
+    var seek = el('input', 'flex:1;min-width:80px;'); seek.type = 'range'; seek.min = 0; seek.max = 1000; seek.value = 0;
+    var time = el('span', 'font-variant-numeric:tabular-nums;opacity:.8;white-space:nowrap;');
+    bar.append(prevBtn, playBtn, stopBtn, replayBtn, nextBtn, seek, time); card.appendChild(bar);
+
+    var gotoRow = el('div', 'display:flex;align-items:center;gap:6px;margin-bottom:6px;');
+    var gIn = el('input', 'flex:1;min-width:90px;'); gIn.placeholder = '跳到 1:23、83 秒，或 曲目 3';
+    var gBtn = el('button', BTN, '前往');
+    var loopLbl = el('label', 'display:flex;align-items:center;gap:4px;margin-left:auto;');
+    var loopCb = el('input'); loopCb.type = 'checkbox';
+    loopLbl.append(loopCb, document.createTextNode('重複'));
+    gotoRow.append(gIn, gBtn, loopLbl); card.appendChild(gotoRow);
+
+    var status = el('div', 'opacity:.75;min-height:1.2em;font-size:12px;'); card.appendChild(status);
+    function say(m) { status.textContent = m || ''; }
+
+    // ───── 播放（排程 AudioBuffer，播放位置由 AudioContext 時鐘推算） ─────
+    var ctx = null, playing = false, sources = [], t0 = 0, base = 0, timer = null, pausedAt = 0, schedEnd = 0;
+    function ensureCtx() { if (!ctx) ctx = host.createAudioContext ? host.createAudioContext() : new (window.AudioContext || window.webkitAudioContext)(); return ctx; }
+    function nowSec() { return playing ? Math.min(P.durationSec(), base + (ensureCtx().currentTime - t0)) : pausedAt; }
+    function scheduleAhead() {
+      if (!playing) return;
+      var c = ensureCtx();
+      while (playing && !P.atEnd() && schedEnd < c.currentTime + AHEAD_SEC) {
+        var n = Math.round(BLOCK_SEC * sr), buf = new Float32Array(n);
+        var got = P.read(buf, n); if (!got) break;
+        var ab = c.createBuffer(1, got, sr); ab.copyToChannel(buf.subarray(0, got), 0);
+        var s = c.createBufferSource(); s.buffer = ab; s.connect(c.destination);
+        var at = Math.max(c.currentTime, schedEnd);
+        s.start(at); schedEnd = at + got / sr;
+        sources.push({ node: s });
+        s.onended = function () { sources = sources.filter(function (x) { return x.node !== s; }); };
+      }
+      if (playing && P.atEnd() && sources.length === 0) finish();
+    }
+    function stopSources() { sources.forEach(function (x) { try { x.node.onended = null; x.node.stop(); } catch (_) { /* */ } }); sources = []; }
+    function finish() {
+      playing = false; stopSources(); clearInterval(timer); timer = null;
+      if (loopCb.checked) { P.seek(0); pausedAt = 0; play(); return; }
+      pausedAt = 0; P.seek(0); playBtn.textContent = '▶ 播放'; say('播完了');
+    }
+    function play() {
+      var c = ensureCtx();
+      if (c.state === 'suspended' && c.resume) c.resume();
+      P.seek(pausedAt);
+      base = pausedAt; t0 = c.currentTime + 0.05; schedEnd = t0;
+      playing = true; playBtn.textContent = '❚❚ 暫停';
+      sources = []; scheduleAhead();
+      clearInterval(timer); timer = setInterval(tick, TICK_MS);
+    }
+    function pause() {
+      if (!playing) return;
+      pausedAt = nowSec(); playing = false; stopSources(); clearInterval(timer); timer = null;
+      P.seek(pausedAt); playBtn.textContent = '▶ 播放'; tick();
+    }
+    function tick() {
+      if (playing) { scheduleAhead(); }
+      var cur = nowSec(), total = P.durationSec();
+      if (!seekDragging) seek.value = total ? Math.round(cur / total * 1000) : 0;
+      time.textContent = fmt(cur) + ' / ' + fmt(total);
+    }
+    var seekDragging = false;
+    function stopAll() { playing = false; stopSources(); clearInterval(timer); timer = null; pausedAt = 0; P.seek(0); playBtn.textContent = '▶ 播放'; tick(); }
+    function seekTo(sec) {
+      var was = playing;
+      if (was) { playing = false; stopSources(); clearInterval(timer); timer = null; }
+      pausedAt = Math.max(0, Math.min(P.durationSec(), sec)); P.seek(pausedAt); tick();
+      if (was) play();
+    }
+    function switchTrack(i) {
+      var was = playing; stopAll();
+      P.selectTrack(i); track = i; renderTracks(); tick();
+      say('曲目 ' + (i + 1) + '：' + P.tracks()[i].title);
+      if (was) play();
+    }
+
+    playBtn.onclick = function () { try { if (playing) pause(); else play(); } catch (e) { say('⚠️ 無法播放：' + String((e && e.message) || e)); playing = false; playBtn.textContent = '▶ 播放'; } };
+    stopBtn.onclick = function () { stopAll(); say(''); };
+    replayBtn.onclick = function () { pausedAt = 0; stopAll(); play(); };
+    prevBtn.onclick = function () { if (P.currentTrack() > 0) switchTrack(P.currentTrack() - 1); };
+    nextBtn.onclick = function () { if (P.currentTrack() < P.trackCount() - 1) switchTrack(P.currentTrack() + 1); };
+    seek.oninput = function () { seekDragging = true; var total = P.durationSec(); time.textContent = fmt(seek.value / 1000 * total) + ' / ' + fmt(total); };
+    seek.onchange = function () { seekDragging = false; seekTo(seek.value / 1000 * P.durationSec()); };
+    function doGoto() {
+      var g = CP.parseGoto(gIn.value);
+      if (!g) { say('看不懂：請輸入 1:23、83（秒）或 曲目 3'); return; }
+      if (g.kind === 'track') { if (g.index >= P.trackCount()) { say('沒有第 ' + (g.index + 1) + ' 首（共 ' + P.trackCount() + ' 首）'); return; } switchTrack(g.index); return; }
+      if (g.sec > P.durationSec()) { say('超過曲長（' + fmt(P.durationSec()) + '）'); return; }
+      seekTo(g.sec); say('跳到 ' + fmt(g.sec));
+    }
+    gBtn.onclick = doGoto;
+    gIn.onkeydown = function (e) { if (e.key === 'Enter') doGoto(); };
+
+    // 音軌列（RIX 只有一首；NSF、SPC 等多首的後端會用到）
+    var list = el('div', 'margin-top:6px;');
+    function renderTracks() {
+      list.textContent = '';
+      P.tracks().forEach(function (tr) {
+        var row = el('div', 'display:flex;align-items:center;gap:6px;padding:2px 0;cursor:pointer;' + (tr.index === P.currentTrack() ? 'font-weight:600;' : ''));
+        row.appendChild(el('span', 'flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;', (tr.index + 1) + '. ' + tr.title));
+        row.appendChild(el('span', 'opacity:.7;font-variant-numeric:tabular-nums;', fmt(tr.durationSec)));
+        row.onclick = function () { if (tr.index !== P.currentTrack()) switchTrack(tr.index); };
+        list.appendChild(row);
+      });
+    }
+    renderTracks();
+    if (P.trackCount() <= 1) { prevBtn.disabled = true; nextBtn.disabled = true; }
+    card.appendChild(list);
+
+    // ───── 匯出：mp3（預設一分鐘，可指定分鐘數）與 MIDI ─────
+    var exp = el('div', 'display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px;');
+    var minIn = el('input', 'width:56px;'); minIn.type = 'number'; minIn.min = 0.1; minIn.step = 0.5; minIn.value = 1;
+    var mp3Btn = el('button', BTN, '⬇ mp3'); mp3Btn.title = '從目前曲目的開頭渲染，長度由分鐘數決定';
+    var midBtn = el('button', BTN, '⬇ MIDI');
+    exp.append(el('span', '', '分鐘'), minIn, mp3Btn, midBtn); card.appendChild(exp);
+    var expStat = el('div', 'opacity:.75;font-size:12px;min-height:1.2em;'); card.appendChild(expStat);
+    function expSay(m) { expStat.textContent = m || ''; }
+
+    mp3Btn.onclick = async function () {
+      var min = Number(minIn.value);
+      if (!(min > 0)) { expSay('⚠️ 分鐘數要大於 0'); return; }
+      mp3Btn.disabled = true; var old = mp3Btn.textContent; mp3Btn.textContent = '渲染中…';
+      try {
+        var sec = Math.min(min * 60, P.durationSec());
+        expSay('渲染晶片聲音（' + fmt(sec) + '）…');
+        var pcm = P.render(P.currentTrack(), 0, sec);
+        var view = { numberOfChannels: 1, sampleRate: sr, length: pcm.length, duration: pcm.length / sr, getChannelData: function () { return pcm; } };
+        expSay('編碼 mp3…');
+        var blob = await host.encodeMp3(view, 160);
+        var bytes = new Uint8Array(await blob.arrayBuffer());
+        host.download(safeName(opts.title || P.title) + '_' + (P.currentTrack() + 1) + '.mp3', bytes, 'audio/mpeg');
+        expSay('已輸出 mp3（' + fmt(sec) + '，' + Math.round(bytes.length / 1024) + ' KB）');
+      } catch (e) { expSay('⚠️ 匯出 mp3 失敗：' + String((e && e.message) || e)); }
+      mp3Btn.disabled = false; mp3Btn.textContent = old;
+    };
+    midBtn.onclick = function () {
+      try {
+        var song = P.toMidi(P.currentTrack());
+        host.download(safeName(opts.title || P.title) + '_' + (P.currentTrack() + 1) + '.mid', host.midiBytes(song), 'audio/midi');
+        expSay('已輸出 MIDI');
+      } catch (e) { expSay('⚠️ ' + String((e && e.message) || e)); }
+    };
+
+    card._chip = { destroy: function () { stopAll(); if (ctx && ctx.close) { try { ctx.close(); } catch (_) { /* */ } } } };
+    tick();
+    return card;
+  }
+  return { mount: mount, fmt: fmt };
+}));
+
+}).call(null, undefined, holder);
+return holder.FaChipPlayerUI;
+})();
+/* MLCHIPUI-END */
 /* MLSWF-BEGIN */
 const FaMusicLibSwf = (function () {
 const holder = {};
@@ -97673,7 +98289,7 @@ const holder = {};
 
     var fIn = h('input'); fIn.type = 'file'; fIn.multiple = true; fIn.style.display = 'none';
     var dIn = h('input'); dIn.type = 'file'; dIn.setAttribute('webkitdirectory', ''); dIn.style.display = 'none';
-    root.appendChild(bar); root.appendChild(lyr); root.appendChild(exp); root.appendChild(expList); root.appendChild(wrap); root.appendChild(foot); root.appendChild(fIn); root.appendChild(dIn);
+    root.appendChild(bar); root.appendChild(lyr); root.appendChild(exp); root.appendChild(chipBox); root.appendChild(expList); root.appendChild(wrap); root.appendChild(foot); root.appendChild(fIn); root.appendChild(dIn);
     container.appendChild(root);
 
     function visibleRows() {
@@ -97829,6 +98445,38 @@ const holder = {};
     try { xRoot.value = localStorage.getItem('fa.musiclib.derivedDir') || ''; } catch (_) { /* 讀不到就空白 */ }
     xCancel.disabled = true;
     exp.appendChild(xRoot); exp.appendChild(xBtn); exp.appendChild(xCancel);
+    // 晶片播放（RIX，OPL2 真模擬）：取第一個勾選的 RIX（沒勾就取第一個），掛上控制卡片（重播、seek、goto、曲目、匯出 mp3／MIDI）
+    var cBtn = h('button', null, '▶ 晶片播放（RIX）'), chipBox = h('div');
+    chipBox.style.marginTop = '8px';
+    exp.appendChild(cBtn);
+    if (typeof FaChipPlayer === 'undefined' || typeof FaChipPlayerUI === 'undefined') cBtn.disabled = true;
+    var CHIP_HOST = {
+      encodeMp3: function (view, kbps) { return window.fa._encodeMp3(view, kbps); },
+      midiBytes: function (song) { return FaMidi.write(song); },
+      download: function (name, bytes, mime) {
+        var url = URL.createObjectURL(new Blob([bytes], { type: mime })), la = document.createElement('a');
+        la.href = url; la.download = name; document.body.appendChild(la); la.click(); la.remove();
+        setTimeout(function () { URL.revokeObjectURL(url); }, 4000);
+      }
+    };
+    cBtn.onclick = async function () {
+      var recs = lib.records.filter(function (r) { return r.kind === 'rix' && r.status === 'ok' && (Object.keys(sel).length === 0 || sel[r.key]); });
+      if (!recs.length) { expStat.textContent = '沒有可播放的 RIX（先加 RIX 檔案，或勾選一個）'; return; }
+      var rec = recs[0];
+      expStat.textContent = '讀取 ' + rec.name + '…';
+      try {
+        var a = window.desktopAPI;
+        if (!a || !a.rawfs || !a.rawfs.readFile) throw new Error('讀取音檔的通道不存在（需要桌面版）');
+        var rd = await a.rawfs.readFile(rec.path, 'base64');
+        if (!rd || rd.base64 == null) throw new Error('讀不到這個檔案的內容');
+        var bin = atob(rd.base64), bytes = new Uint8Array(bin.length);
+        for (var bi = 0; bi < bin.length; bi++) bytes[bi] = bin.charCodeAt(bi);
+        var player = FaChipPlayer.createPlayer('rix', bytes, { sampleRate: 44100 });
+        chipBox.textContent = '';
+        chipBox.appendChild(FaChipPlayerUI.mount({ player: player, title: rec.name, host: CHIP_HOST }));
+        expStat.textContent = '已開啟晶片播放器：' + rec.name;
+      } catch (e) { expStat.textContent = '⚠️ 晶片播放失敗：' + String((e && e.message) || e); }
+    };
     if (!host.extract) { xBtn.disabled = true; xCancel.disabled = true; }
     var STATUS_X = { done: '完成', skipped: '沿用', failed: '失敗', cancelled: '取消' };
     xBtn.onclick = function () {
