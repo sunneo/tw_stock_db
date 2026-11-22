@@ -1842,8 +1842,8 @@
    "names": [
     "FaTranscodeFallback"
    ],
-   "size": 3679,
-   "md5": "c23ddfec1d82d039202729aef7c610cf"
+   "size": 3673,
+   "md5": "ae956cb4b0eb08c54014f1d0c068e80c"
   },
   "explain": {
    "file": "chunks/explain.js",
@@ -1930,24 +1930,24 @@
    "names": [
     "FaMusicLib"
    ],
-   "size": 11595,
-   "md5": "3fd247dbf9b84219a15f848169d1f945"
+   "size": 18646,
+   "md5": "00eb82e86eb7ad2c5cc0f2e3c5e36ec8"
   },
   "mlui": {
    "file": "chunks/mlui.js",
    "names": [
     "FaMusicLibUI"
    ],
-   "size": 5042,
-   "md5": "3daec712ab96e06af80468a022e08830"
+   "size": 8393,
+   "md5": "21567832069c7a27e7dace53635b2c16"
   },
   "mlhost": {
    "file": "chunks/mlhost.js",
    "names": [
     "FaMusicLibHost"
    ],
-   "size": 3644,
-   "md5": "9c739dde595831cb0565c336ce35f755"
+   "size": 7235,
+   "md5": "0dd54e9224a3c4402a2db661404db560"
   }
  },
  "core": {

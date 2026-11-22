@@ -62281,7 +62281,7 @@ return holder.FaFileSource;
 /* FILESOURCE-END */
 /* TRANSCODEFB-BEGIN */
 const FaTranscodeFallback = (function () {
-const holder = {};
+const holder = {}, mod = { exports: {} };
 (function (module, self) {
 // /media-transcribe 的解碼退路（純函式，無 DOM、無網路）。
 // 流程：先看檔頭判斷格式 → 瀏覽器原生解碼（Web Audio decodeAudioData）→ 解不了才用 ffmpeg.wasm
@@ -62410,8 +62410,8 @@ const FaTranscodeFallback = (function () {
 
 if (typeof module !== 'undefined' && module.exports) module.exports = FaTranscodeFallback;
 
-}).call(null, undefined, holder);
-return holder.FaTranscodeFallback;
+}).call(null, mod, holder);
+return mod.exports;
 })();
 /* TRANSCODEFB-END */
 /* MESHGEN-BEGIN */
@@ -83328,6 +83328,8 @@ const holder = {};
       album: album, albumSource: meta.album ? 'tag' : (album ? 'folder' : null),
       durationSec: meta.durationSec == null ? null : meta.durationSec, durationApprox: !!meta.durationApprox,
       sizeBytes: e.size, mtimeMs: e.mtimeMs, status: 'ok', scannedAt: now,
+      // 歌詞（轉錄結果）：檔案變更時這筆會被重建，歌詞跟著清掉，所以「檔案變了才重做」自然成立
+      lyrics: null, lyricStatus: 'none', lyricError: null,
       meta: { format: meta.format, tracks: meta.tracks, trackName: meta.trackName, notes: meta.notes }
     };
   }
@@ -83379,28 +83381,258 @@ const holder = {};
 
   // ───── 搜尋：多關鍵字（空白分隔，全部都要命中），每個關鍵字在任一欄位命中即可；欄位權重 檔名＝標題 3、專輯＝演出者 2、路徑 1；
   // 檔名完全相同 +5、檔名開頭相同 +2；依分數高到低，同分依路徑排序 ─────
+  // 範圍 opts.scope：'all'（預設：檔名中繼資料＋歌詞）、'meta'（不含歌詞）、'lyrics'（只查歌詞）。
+  // 歌詞命中的權重 1.2（每個關鍵字），低於檔名／標題的 3，所以檔名命中仍排前面；歌詞命中回傳 lyricHits（命中的段落與時間點，最多 8 段）。
+  var LYRIC_WEIGHT = 1.2, LYRIC_HITS_MAX = 8;
   function searchRecords(records, query, opts) {
     opts = opts || {};
+    var scope = opts.scope || 'all';
     var words = normalizeText(query).split(/\s+/).filter(Boolean), out = [];
     (records || []).forEach(function (r) {
       if (r.status === 'missing' && !opts.includeMissing) return;
-      if (!words.length) { out.push({ record: r, score: 0 }); return; }
-      var name = normalizeText(r.name), score = 0;
-      var fields = [[name, 3], [normalizeText(r.title), 3], [normalizeText(r.album), 2], [normalizeText(r.artist), 2], [normalizeText(r.path), 1]];
+      if (!words.length) { out.push({ record: r, score: 0, lyricHits: [] }); return; }
+      var name = normalizeText(r.name), score = 0, segs = null, segNorm = null;
+      if (scope !== 'meta' && r.lyrics && r.lyrics.segments) {
+        segs = r.lyrics.segments;
+        segNorm = segs.map(function (s) { return normalizeText(s.text); });
+      }
+      var fields = scope === 'lyrics' ? [] : [[name, 3], [normalizeText(r.title), 3], [normalizeText(r.album), 2], [normalizeText(r.artist), 2], [normalizeText(r.path), 1]];
+      var hitSet = {};
       for (var i = 0; i < words.length; i++) {
         var w = words[i], best = 0;
         for (var j = 0; j < fields.length; j++) if (fields[j][0].indexOf(w) >= 0 && fields[j][1] > best) best = fields[j][1];
+        if (segNorm) {
+          var lyricHit = false;
+          for (var k = 0; k < segNorm.length; k++) if (segNorm[k].indexOf(w) >= 0) { lyricHit = true; hitSet[k] = true; }
+          if (lyricHit && LYRIC_WEIGHT > best) best = LYRIC_WEIGHT;
+        }
         if (!best) return;
         score += best;
         if (name === w) score += 5; else if (name.indexOf(w) === 0) score += 2;
       }
-      out.push({ record: r, score: score });
+      var lyricHits = segs ? Object.keys(hitSet).map(Number).sort(function (a, b) { return a - b; }).slice(0, LYRIC_HITS_MAX).map(function (k) { return { start: segs[k].start, end: segs[k].end, text: segs[k].text }; }) : [];
+      out.push({ record: r, score: score, lyricHits: lyricHits });
     });
     out.sort(function (x, y) {
       if (y.score !== x.score) return y.score - x.score;
       return x.record.path < y.record.path ? -1 : (x.record.path > y.record.path ? 1 : 0);
     });
     return out;
+  }
+
+  // ───── 歌詞轉錄佇列（含無進展偵測、暫時性失敗自動重試）─────
+  // 狀態（每筆曲目的 lyricStatus）：none 未轉錄、queued 排隊、running 轉錄中、done 完成、failed 失敗（lyricError 記具體原因）。
+  // transcriber(record, { language, report(stage, { detail, units, window }), onProgress(0~1), shouldPause() }) → Promise<{ segments, language, durationSeconds }>
+  //   report 是進展回報：每回報一次就重新計時。stage 用 decode（解碼）、load（載入模型）、infer（推論）。
+  //   units：這個階段完成的工作量（累計用來學習每單位耗時，例如解碼用 MB、推論用音訊秒）；window：本次回報對應的「無進展」判斷單位。
+  // 無進展偵測：某階段在 STALL_FACTOR × 每單位預估耗時 × window 之內沒有任何回報，就中止這次嘗試（StallError，附階段名、已耗時、最後進度）。
+  //   每單位預估耗時一開始用保守的先驗值，之後依實測（指數移動平均）自動更新：長檔、慢機器自動放寬，短檔自動收緊。STALL_FLOOR_MS 只是最短保底。
+  // 暫時性失敗（無進展、逾時、網路、GPU 裝置遺失）：全新再試一次（會重新建立轉錄器），最多重試 3 次，間隔 2、6、14 秒（遞增）。
+  //   其餘失敗（例如這個格式解不了）不重試，立刻標失敗。3 次重試後仍失敗才標失敗，原因寫明嘗試次數。
+  // 暫停：轉錄函式可在分段之間檢查 shouldPause()，要停就丟出 err.paused = true；那首退回排隊，續跑時從頭做。
+  // 每轉完一首就 lib.save()，中途關掉 app，已完成的不會丟；已完成的不重做；檔案變更時曲目重建、歌詞清掉。
+  var STALL_FACTOR = 3, STALL_FLOOR_MS = 20000, EMA_ALPHA = 0.3;
+  var STAGE_PRIOR_MS_PER_UNIT = { decode: 1500, load: 60000, infer: 3000 }; // 每單位先驗：解碼＝MB、載入＝1、推論＝音訊秒
+  var RETRY_BACKOFF_MS = [2000, 6000, 14000];
+  var USER_WAIT_TIMEOUT_MS = 10 * 60 * 1000; // 等使用者確認（例如同意下載 ffmpeg.wasm）的上限；超過就放棄這首，不是無進展偵測
+  var TRANSIENT_RE = /無進展|timed? ?out|逾時|network|fetch|load failed|networkerror|connection|device lost|context lost|gpu|連線|網路/i;
+  var STAGE_NAME = { start: '準備', decode: '解碼', load: '載入模型', infer: '推論', consent: '等待使用者確認下載' };
+
+  function createLyricQueue(lib, transcriber, opts) {
+    opts = opts || {};
+    if (typeof transcriber !== 'function') throw new Error('createLyricQueue 需要轉錄函式');
+    var P = Object.assign({ floorMs: STALL_FLOOR_MS, factor: STALL_FACTOR, backoffMs: RETRY_BACKOFF_MS, prior: STAGE_PRIOR_MS_PER_UNIT, userTimeoutMs: USER_WAIT_TIMEOUT_MS }, opts.policy || {});
+    var ema = { decode: P.prior.decode, load: P.prior.load, infer: P.prior.infer }; // 每單位毫秒，實測後更新
+    var st = { running: false, paused: false, current: null, progress: null, queue: [], doneRun: 0, failedRun: 0, saveError: null,
+      stage: null, stageSince: null, stageDetail: '', attempt: 0, retry: null };
+    var listeners = [], pauseWaiters = [];
+    lib.records.forEach(function (r) { if (r.lyricStatus === 'running' || r.lyricStatus === 'queued') r.lyricStatus = 'none'; }); // 重開後沒有在跑的工作
+
+    function find(key) { for (var i = 0; i < lib.records.length; i++) if (lib.records[i].key === key) return lib.records[i]; return null; }
+    function emit() { var s = q.state(); listeners.forEach(function (fn) { try { fn(s); } catch (_) { /* 監聽者出錯不影響佇列 */ } }); }
+    function sanitize(res) {
+      var segs = Array.isArray(res && res.segments) ? res.segments : [];
+      return {
+        segments: segs.map(function (s) { return { start: typeof s.start === 'number' ? s.start : null, end: typeof s.end === 'number' ? s.end : null, text: String(s.text == null ? '' : s.text).trim() }; }).filter(function (s) { return s.text; }),
+        language: (res && res.language) || opts.language || 'zh',
+        durationSec: res && typeof res.durationSeconds === 'number' ? res.durationSeconds : null
+      };
+    }
+    function defaultWindow(stage, r) {
+      if (stage === 'decode') return Math.max(1, (r.sizeBytes || 0) / 1048576);
+      if (stage === 'load') return 1;
+      if (stage === 'infer') return 30;
+      return 1;
+    }
+    function stallLimitMs(stage, windowUnits) {
+      var per = ema[stage] != null ? ema[stage] : P.prior.infer;
+      return Math.max(P.floorMs, Math.round(P.factor * per * Math.max(1, windowUnits || 1)));
+    }
+    function learn(stage, elapsedMs, units) {
+      if (!stage || !(units > 0) || ema[stage] == null || !(elapsedMs >= 0)) return;
+      ema[stage] = (1 - EMA_ALPHA) * ema[stage] + EMA_ALPHA * (elapsedMs / units);
+    }
+    function stallError(stage, elapsedMs, detail, limitMs) {
+      var e = new Error('階段「' + (STAGE_NAME[stage] || stage) + '」無進展超過 ' + Math.round(limitMs / 1000) + ' 秒（已耗時 ' + Math.round(elapsedMs / 1000) + ' 秒，最後進度：' + (detail || '無') + '）');
+      e.stall = true; e.stage = stage; e.elapsedMs = elapsedMs; e.lastDetail = detail;
+      return e;
+    }
+    function isTransient(err) { if (!err || err.userWait) return false; if (err.stall) return true; return TRANSIENT_RE.test(String(err.message || '')); }
+
+    // 單一次嘗試：監看進展；超過無進展上限就中止這次（底層工作可能還在跑，但結果會被忽略）
+    function runAttempt(r) {
+      return new Promise(function (resolve, reject) {
+        var done = false, timer = null, stage = 'start', stageAt = Date.now(), stageUnits = 0, detail = '', win = 1;
+        function finish(fn, v) { if (done) return; done = true; clearTimeout(timer); pauseWaiters = pauseWaiters.filter(function (w) { return w !== onPause; }); fn(v); }
+        // 暫停要立刻生效：正在跑的這次嘗試直接以「已暫停」結束（底層工作若還在跑，它的結果會被忽略）
+        function onPause() { var e = new Error(st.cancelRequested ? '已取消' : '已暫停'); e.paused = true; e.cancelled = !!st.cancelRequested; finish(reject, e); }
+        pauseWaiters.push(onPause);
+        function arm() {
+          clearTimeout(timer);
+          if (win === Infinity) {
+            // 等待使用者確認（例如同意下載）：不算無進展，只有等太久才失敗
+            timer = setTimeout(function () { var e = new Error('等待使用者確認超過 ' + Math.round(P.userTimeoutMs / 60000) + ' 分鐘，沒有回應，已放棄這首（階段：' + (STAGE_NAME[stage] || stage) + '）'); e.userWait = true; finish(reject, e); }, P.userTimeoutMs);
+            return;
+          }
+          var limit = stallLimitMs(stage, win);
+          timer = setTimeout(function () { finish(reject, stallError(stage, Date.now() - stageAt, detail, limit)); }, limit);
+        }
+        function report(s, d) {
+          if (done) return;
+          d = d || {};
+          var now = Date.now();
+          if (s && s !== stage) { learn(stage, now - stageAt, stageUnits); stage = s; stageAt = now; stageUnits = 0; win = defaultWindow(s, r); }
+          if (d.units > 0) stageUnits += d.units;
+          if (d.waitUser) win = Infinity; // 等使用者：不計無進展
+          else if (d.window > 0) win = d.window;
+          if (d.detail != null) detail = String(d.detail).slice(0, 200);
+          st.stage = stage; st.stageSince = stageAt; st.stageDetail = detail;
+          emit(); arm();
+        }
+        arm();
+        var p;
+        try {
+          p = Promise.resolve(transcriber(r, {
+            language: opts.language || 'zh',
+            report: report,
+            onProgress: function (f) { st.progress = Math.max(0, Math.min(1, Number(f) || 0)); emit(); },
+            shouldPause: function () { return st.paused; }
+          }));
+        } catch (e) { p = Promise.reject(e); }
+        p.then(function (v) { if (!done) learn(stage, Date.now() - stageAt, stageUnits); finish(resolve, v); }, function (e) { finish(reject, e); });
+      });
+    }
+    function waitWithPause(ms) {
+      return new Promise(function (resolve, reject) {
+        var end = Date.now() + ms;
+        (function tick() {
+          if (st.paused || st.cancelRequested) { var e = new Error(st.cancelRequested ? '已取消' : '已暫停'); e.paused = true; e.cancelled = !!st.cancelRequested; return reject(e); }
+          var left = end - Date.now();
+          if (left <= 0) return resolve();
+          setTimeout(tick, Math.min(200, left));
+        })();
+      });
+    }
+    // 暫時性失敗：全新重試（每次都重新呼叫轉錄函式），間隔遞增；其餘失敗或重試用完就丟出
+    async function transcribeWithRetry(r) {
+      var backoff = P.backoffMs;
+      for (var attempt = 1; ; attempt++) {
+        st.attempt = attempt; emit();
+        try {
+          return await runAttempt(r);
+        } catch (err) {
+          if (err && err.paused) throw err;
+          var exhausted = attempt > backoff.length;
+          if (exhausted || !isTransient(err)) {
+            var fin = new Error('第 ' + attempt + ' 次嘗試失敗' + (attempt > 1 ? '（已自動重試 ' + (attempt - 1) + ' 次）' : '') + '：' + String((err && err.message) || err || '未知錯誤'));
+            fin.attempts = attempt;
+            throw fin;
+          }
+          var wait = backoff[attempt - 1];
+          st.retry = { afterAttempt: attempt, waitMs: wait, untilAt: Date.now() + wait, reason: String((err && err.message) || err) };
+          emit();
+          await waitWithPause(wait);
+          st.retry = null; emit();
+        }
+      }
+    }
+
+    async function loop() {
+      st.running = true; emit();
+      try {
+        while (!st.paused && st.queue.length) {
+          var key = st.queue.shift(), r = find(key);
+          if (!r || r.status !== 'ok' || r.lyricStatus === 'done') continue;
+          st.current = key; st.progress = 0; r.lyricStatus = 'running'; r.lyricError = null; emit();
+          try {
+            var res = await transcribeWithRetry(r);
+            r.lyrics = Object.assign(sanitize(res), { transcribedAt: Date.now() });
+            r.lyricStatus = 'done'; r.lyricError = null; st.doneRun++;
+          } catch (err) {
+            if (err && err.cancelled) { r.lyricStatus = 'none'; r.lyricError = null; break; } // 取消：不記失敗，也不再排隊
+            if (err && err.paused) { r.lyricStatus = 'queued'; st.queue.unshift(key); break; }
+            r.lyricStatus = 'failed';
+            r.lyricError = String((err && err.message) || err || '未知錯誤') || '未知錯誤';
+            st.failedRun++;
+          }
+          st.current = null; st.progress = null; st.stage = null; st.stageSince = null; st.stageDetail = ''; st.attempt = 0; st.retry = null;
+          try { await lib.save(); st.saveError = null; } catch (e) { st.saveError = String((e && e.message) || e); }
+          emit();
+        }
+      } finally {
+        st.current = null; st.progress = null; st.running = false; st.stage = null; st.stageSince = null; st.stageDetail = ''; st.attempt = 0; st.retry = null;
+        // 暫停時還在佇列裡的曲目標成排隊中（顯示用）
+        st.queue.forEach(function (k) { var x = find(k); if (x && x.lyricStatus !== 'done') x.lyricStatus = 'queued'; });
+        emit();
+      }
+    }
+    function kick() { if (!st.running && !st.paused && st.queue.length) loop(); }
+
+    var q = {
+      // keys 為空＝全部還沒完成的（none／failed／queued）；遊戲來源（pending）不排進佇列
+      enqueue: function (keys) {
+        st.cancelRequested = false;
+        var list = keys && keys.length ? keys : lib.records.filter(function (r) { return r.status === 'ok' && !r.pending; }).map(function (r) { return r.key; });
+        list.forEach(function (k) {
+          var r = find(k);
+          if (!r || r.status !== 'ok' || r.pending || r.lyricStatus === 'done' || st.queue.indexOf(k) >= 0 || st.current === k) return;
+          st.queue.push(k); r.lyricStatus = 'queued'; r.lyricError = null;
+        });
+        emit(); kick();
+        return st.queue.length;
+      },
+      pause: function () { st.paused = true; pauseWaiters.slice().forEach(function (f) { f(); }); emit(); },
+      // 執行期調整政策（測試與評測用；正式值是常數）。prior 會同時更新目前的每單位估計。
+      setPolicy: function (p) {
+        p = p || {};
+        Object.keys(p).forEach(function (k) { if (k !== 'prior') P[k] = p[k]; });
+        if (p.prior) { P.prior = Object.assign({}, P.prior, p.prior); Object.keys(p.prior).forEach(function (k) { if (ema[k] != null) ema[k] = p.prior[k]; }); }
+        emit();
+      },
+      resume: function () { st.paused = false; emit(); kick(); },
+      // 取消：清空排隊、中止正在跑的那一首（不算失敗、不重試），曲目回到未轉錄。評測結束前與面板卡住時用。
+      cancelAll: function () {
+        st.cancelRequested = true;
+        st.queue.forEach(function (k) { var x = find(k); if (x && x.lyricStatus === 'queued') x.lyricStatus = 'none'; });
+        st.queue = [];
+        pauseWaiters.slice().forEach(function (f) { f(); });
+        emit();
+      },
+      // 等目前這一輪結束（測試與關閉前用）
+      idle: function () { return new Promise(function (res) { (function wait() { if (!st.running) res(); else setTimeout(wait, 5); })(); }); },
+      onChange: function (fn) { listeners.push(fn); return function () { listeners = listeners.filter(function (x) { return x !== fn; }); }; },
+      state: function () {
+        var c = { none: 0, queued: 0, running: 0, done: 0, failed: 0 };
+        lib.records.forEach(function (r) { if (r.status === 'ok' && !r.pending && c[r.lyricStatus] != null) c[r.lyricStatus]++; });
+        return {
+          running: st.running, paused: st.paused, current: st.current, progress: st.progress, queued: st.queue.length,
+          doneRun: st.doneRun, failedRun: st.failedRun, saveError: st.saveError, counts: c,
+          stage: st.stage, stageLabel: st.stage ? (STAGE_NAME[st.stage] || st.stage) : null, stageSince: st.stageSince, stageDetail: st.stageDetail,
+          attempt: st.attempt, retry: st.retry
+        };
+      }
+    };
+    return q;
   }
 
   // ───── 儲存後端：只要求 load() → { sources, records } 或 null、save(data) ─────
@@ -83456,7 +83688,7 @@ const holder = {};
     VERSION: VERSION, HEAD_BYTES: HEAD_BYTES, KINDS: KINDS,
     identifyKind: identifyKind, isSupportedName: isSupportedName, albumFromPath: albumFromPath,
     parseMetadata: parseMetadata, formatDuration: formatDuration, normalizeText: normalizeText,
-    scanSource: scanSource, searchRecords: searchRecords,
+    scanSource: scanSource, searchRecords: searchRecords, createLyricQueue: createLyricQueue, LYRIC_WEIGHT: LYRIC_WEIGHT,
     createMemoryBackend: createMemoryBackend, createJsonBackend: createJsonBackend, createLibrary: createLibrary
   };
 });
@@ -83469,27 +83701,31 @@ return holder.FaMusicLib;
 const FaMusicLibUI = (function () {
 const holder = {};
 (function (module, self) {
-/* 音樂庫的最小畫面（UMD）：像 library 的清單，不做輸出。
- *   上方工具列：＋加檔案、＋加資料夾、搜尋框（多關鍵字，檔名／專輯／標題／演出者都查）、筆數統計。
- *   中間清單：路徑、檔名、專輯、種類、長度；每列有勾選框（多選，給之後的批次輸出預留；這階段不輸出）。
- *   已消失的檔案用刪除線顯示，搜尋時不出現。
- * 只依賴：core（musiclib_core.js）與 library（M.createLibrary 的結果，需已 load()）。
- * host 可以不給（瀏覽器用 <input type=file>，只拿得到檔名，拿不到完整路徑）；桌面版可以給 host.pickFiles／pickFolder，
- * 回傳 null（取消）或 { label, entries:[{path,size,mtimeMs}], readHead(path, n) → Promise<Uint8Array|null> }，這樣路徑才是真的磁碟路徑。
- * 掛載：FaMusicLibUI.mount(container, { library, host }) → { refresh(), destroy() }。 */
+/* 音樂庫的畫面（UMD）：像 library 的清單。
+ *   上方工具列：＋加檔案、＋加資料夾、搜尋框、範圍（全部／不含歌詞／只查歌詞）、筆數統計。
+ *   歌詞列：轉錄歌詞（勾選的曲目；沒勾選就全部未轉錄）、暫停／續跑、進度（完成、排隊、轉錄中＋百分比、失敗數）。
+ *   清單：路徑、檔名、專輯、種類、長度、歌詞狀態（失敗會顯示具體原因）；每列有勾選框（多選）。
+ *   搜尋時，歌詞命中的段落與時間點列在該曲目下面。已消失的檔案用刪除線顯示，搜尋時不出現。
+ * 依賴：core（musiclib_core.js）、library（M.createLibrary 的結果，需已 load()）、queue（M.createLyricQueue 的結果，可不給）。
+ * host 可以不給（瀏覽器用 <input type=file>，只拿得到檔名）；桌面版給 host.pickFolder：回傳 null（取消）或
+ * { label, entries:[{path,size,mtimeMs}], readHead(path, n) → Promise<Uint8Array|null> }。
+ * 掛載：FaMusicLibUI.mount(container, { library, host, queue }) → { refresh(), destroy() }。 */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) module.exports = factory(require('./musiclib_core.js')); else root.FaMusicLibUI = factory(root.FaMusicLib || (typeof FaMusicLib !== 'undefined' ? FaMusicLib : undefined));
 })(typeof self !== 'undefined' ? self : this, function (M) {
   'use strict';
   var CSS = '.fml{font:13px system-ui,"Microsoft JhengHei",sans-serif;color:#1f2328;background:#fff;border:1px solid #d0d7de;border-radius:8px;overflow:hidden;max-width:100%}'
-    + '.fml-bar{display:flex;gap:6px;align-items:center;flex-wrap:wrap;padding:6px 8px;background:#f6f8fa;border-bottom:1px solid #d0d7de}'
-    + '.fml-bar button{background:#f6f8fa;border:1px solid #d0d7de;border-radius:5px;padding:3px 9px;cursor:pointer;font:inherit}'
+    + '.fml-bar,.fml-lyr{display:flex;gap:6px;align-items:center;flex-wrap:wrap;padding:6px 8px;background:#f6f8fa;border-bottom:1px solid #d0d7de}'
+    + '.fml button,.fml select{background:#f6f8fa;border:1px solid #d0d7de;border-radius:5px;padding:3px 9px;cursor:pointer;font:inherit}'
+    + '.fml button:disabled{opacity:.45;cursor:default}'
     + '.fml-bar input[type=search]{flex:1;min-width:160px;padding:4px 6px;border:1px solid #d0d7de;border-radius:5px;font:inherit}'
-    + '.fml-st{color:#59636e;font-size:12px}.fml-wrap{overflow:auto;max-height:520px}'
+    + '.fml-st{color:#59636e;font-size:12px}.fml-wrap{overflow:auto;max-height:520px}.fml-lyr .fml-st{flex:1}'
     + '.fml-tbl{width:100%;border-collapse:collapse}.fml-tbl th,.fml-tbl td{padding:4px 6px;border-bottom:1px solid #eaeef2;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:260px}'
     + '.fml-tbl th{background:#f6f8fa;position:sticky;top:0}.fml-tbl tr.gone td{color:#8c959f;text-decoration:line-through}'
+    + '.fml-tbl td.bad{color:#cf222e}.fml-hit td{white-space:normal;color:#59636e;font-size:12px;padding-left:28px}'
     + '.fml-foot{padding:6px 8px;color:#59636e;font-size:12px;border-top:1px solid #d0d7de}';
-  var COLS = ['路徑', '檔名', '專輯', '種類', '長度'];
+  var COLS = ['路徑', '檔名', '專輯', '種類', '長度', '歌詞'];
+  var LYRIC_TEXT = { none: '未轉錄', queued: '排隊中', running: '轉錄中', done: '完成', failed: '失敗' };
 
   function h(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
 
@@ -83512,17 +83748,27 @@ const holder = {};
 
   function mount(container, opts) {
     opts = opts || {};
-    var lib = opts.library, host = opts.host || {};
-    var q = '', msg = '', sel = {};
+    var lib = opts.library, host = opts.host || {}, queue = opts.queue || null;
+    var q = '', scope = 'all', msg = '', sel = {}, unsub = null;
     var root = h('div', 'fml');
     var style = h('style'); style.textContent = CSS; root.appendChild(style);
 
     var bar = h('div', 'fml-bar');
     var bFile = h('button', null, '＋加檔案');
     var bFolder = h('button', null, '＋加資料夾');
-    var search = h('input'); search.type = 'search'; search.placeholder = '搜尋：檔名、專輯、標題、演出者（空白分隔多個關鍵字）';
+    var search = h('input'); search.type = 'search'; search.placeholder = '搜尋：檔名、專輯、標題、演出者、歌詞（空白分隔多個關鍵字）';
+    var sSel = h('select');
+    [['all', '全部（含歌詞）'], ['meta', '不含歌詞'], ['lyrics', '只查歌詞']].forEach(function (o) { var op = h('option', null, o[1]); op.value = o[0]; sSel.appendChild(op); });
     var stat = h('span', 'fml-st');
-    bar.appendChild(bFile); bar.appendChild(bFolder); bar.appendChild(search); bar.appendChild(stat);
+    bar.appendChild(bFile); bar.appendChild(bFolder); bar.appendChild(search); bar.appendChild(sSel); bar.appendChild(stat);
+
+    var lyr = h('div', 'fml-lyr');
+    var bLyr = h('button', null, '轉錄歌詞');
+    var bPause = h('button', null, '暫停');
+    var bCancel = h('button', null, '取消轉錄');
+    var lyrStat = h('span', 'fml-st');
+    lyr.appendChild(bLyr); lyr.appendChild(bPause); lyr.appendChild(bCancel); lyr.appendChild(lyrStat);
+    if (!queue) { bLyr.disabled = true; bPause.disabled = true; bCancel.disabled = true; lyrStat.textContent = '歌詞轉錄不可用（需要桌面版）'; }
 
     var wrap = h('div', 'fml-wrap');
     var tbl = h('table', 'fml-tbl');
@@ -83532,27 +83778,36 @@ const holder = {};
 
     var fIn = h('input'); fIn.type = 'file'; fIn.multiple = true; fIn.style.display = 'none';
     var dIn = h('input'); dIn.type = 'file'; dIn.setAttribute('webkitdirectory', ''); dIn.style.display = 'none';
-    root.appendChild(bar); root.appendChild(wrap); root.appendChild(foot); root.appendChild(fIn); root.appendChild(dIn);
+    root.appendChild(bar); root.appendChild(lyr); root.appendChild(wrap); root.appendChild(foot); root.appendChild(fIn); root.appendChild(dIn);
     container.appendChild(root);
 
     function visibleRows() {
-      if (q.trim()) return lib.search(q).map(function (x) { return x.record; });
+      if (q.trim()) return lib.search(q, { scope: scope }).map(function (x) { return { r: x.record, hits: x.lyricHits || [] }; });
       return lib.records.slice().sort(function (a, b) {
         return (a.album || '').localeCompare(b.album || '') || a.name.localeCompare(b.name);
-      });
+      }).map(function (r) { return { r: r, hits: [] }; });
+    }
+    function lyricCell(r) {
+      if (r.pending) return '—（遊戲來源，待擷取）';
+      var st = r.lyricStatus || 'none';
+      if (st === 'running' && queue) { var s = queue.state(); return '轉錄中 ' + (s.progress != null ? Math.round(s.progress * 100) + '%' : ''); }
+      if (st === 'done') return '完成（' + ((r.lyrics && r.lyrics.segments) || []).length + ' 段）';
+      if (st === 'failed') return '失敗：' + (r.lyricError || '未知原因');
+      return LYRIC_TEXT[st] || st;
     }
     function render() {
       var rows = visibleRows();
       thead.innerHTML = '';
       var htr = h('tr'); var all = h('input'); all.type = 'checkbox';
-      all.checked = rows.length > 0 && rows.every(function (r) { return !!sel[r.key]; });
-      all.onchange = function () { rows.forEach(function (r) { if (all.checked) sel[r.key] = true; else delete sel[r.key]; }); render(); };
+      all.checked = rows.length > 0 && rows.every(function (x) { return !!sel[x.r.key]; });
+      all.onchange = function () { rows.forEach(function (x) { if (all.checked) sel[x.r.key] = true; else delete sel[x.r.key]; }); render(); };
       var th0 = h('th'); th0.appendChild(all); htr.appendChild(th0);
       COLS.forEach(function (c) { htr.appendChild(h('th', null, c)); });
       thead.appendChild(htr);
 
       tbody.innerHTML = '';
-      rows.forEach(function (r) {
+      rows.forEach(function (x) {
+        var r = x.r;
         var tr = h('tr'); if (r.status === 'missing') tr.className = 'gone';
         var cb = h('input'); cb.type = 'checkbox'; cb.checked = !!sel[r.key];
         cb.onchange = function () { if (cb.checked) sel[r.key] = true; else delete sel[r.key]; foot.textContent = selText(); };
@@ -83562,13 +83817,38 @@ const holder = {};
         tr.appendChild(h('td', null, r.album || ''));
         tr.appendChild(h('td', null, r.label || r.kind));
         tr.appendChild(h('td', null, M.formatDuration(r.durationSec) + (r.durationApprox ? '≈' : '')));
+        var lc = h('td', (r.lyricStatus === 'failed' ? 'bad' : null), lyricCell(r)); lc.title = r.lyricStatus === 'failed' ? (r.lyricError || '') : '';
+        tr.appendChild(lc);
         tbody.appendChild(tr);
+        x.hits.forEach(function (hit) {
+          var ht = h('tr', 'fml-hit'); var td = h('td'); td.colSpan = COLS.length + 1;
+          td.textContent = '〔' + M.formatDuration(hit.start) + '–' + M.formatDuration(hit.end) + '〕' + hit.text;
+          ht.appendChild(td); tbody.appendChild(ht);
+        });
       });
       var total = lib.records.filter(function (r) { return r.status !== 'missing'; }).length;
       stat.textContent = (q.trim() ? '找到 ' + rows.length + ' 首' : '共 ' + total + ' 個檔案') + (msg ? '　' + msg : '');
+      renderLyr();
       foot.textContent = selText();
     }
-    function selText() { var n = Object.keys(sel).length; return '已選 ' + n + ' 個（批次輸出之後的階段才做）'; }
+    function renderLyr() {
+      if (!queue) return;
+      var s = queue.state(), c = s.counts;
+      var parts = ['完成 ' + c.done, '排隊 ' + c.queued, '未轉錄 ' + c.none, '失敗 ' + c.failed];
+      if (s.running) {
+        var cur = s.current ? (lib.records.filter(function (r) { return r.key === s.current; })[0] || {}) : {};
+        var line = '轉錄中：' + (cur.name || '') + (s.progress != null ? '（' + Math.round(s.progress * 100) + '%）' : '');
+        if (s.retry) line += '｜第 ' + s.retry.afterAttempt + ' 次失敗，' + Math.max(0, Math.ceil((s.retry.untilAt - Date.now()) / 1000)) + ' 秒後自動重試';
+        else if (s.stage) line += '｜階段：' + (s.stageLabel || s.stage) + '（已 ' + Math.max(0, Math.round((Date.now() - s.stageSince) / 1000)) + ' 秒）' + (s.attempt > 1 ? '｜第 ' + s.attempt + ' 次嘗試' : '') + (s.stageDetail ? '｜' + s.stageDetail : '');
+        parts.push(line);
+      }
+      if (s.paused) parts.push('已暫停');
+      if (s.saveError) parts.push('⚠️ 存檔失敗：' + s.saveError);
+      lyrStat.textContent = '歌詞：' + parts.join('、');
+      bPause.textContent = s.paused ? '續跑' : '暫停';
+      bCancel.disabled = !(s.running || s.queued > 0);
+    }
+    function selText() { var n = Object.keys(sel).length; return '已選 ' + n + ' 首' + (n ? '（轉錄歌詞會只跑勾選的未完成曲目）' : '（沒勾選時，轉錄歌詞會跑全部未完成曲目）'); }
 
     async function addFrom(type, src) {
       if (!src || !src.entries || !src.entries.length) { msg = '沒有可加入的檔案'; render(); return; }
@@ -83584,8 +83864,8 @@ const holder = {};
       render();
     }
     async function pick(kind) {
-      var fn = kind === 'folder' ? host.pickFolder : host.pickFiles;
-      if (fn) { var src = await fn(); if (src) addFrom(kind === 'folder' ? 'folder' : 'file', src); return; } // 取消（null）就什麼都不做
+      var fn = kind === 'folder' ? host.pickFolder : null;
+      if (fn) { var src = await fn(); if (src) addFrom('folder', src); return; } // 取消（null）就什麼都不做
       (kind === 'folder' ? dIn : fIn).click();
     }
 
@@ -83594,11 +83874,31 @@ const holder = {};
     fIn.onchange = function () { var src = fromFileList(fIn.files, false); fIn.value = ''; addFrom('file', src); };
     dIn.onchange = function () { var src = fromFileList(dIn.files, true); dIn.value = ''; addFrom('folder', src); };
     search.oninput = function () { q = search.value; render(); };
+    sSel.onchange = function () { scope = sSel.value; render(); };
 
+    // 轉錄：勾選的未完成曲目；沒勾選就全部未完成（佇列自己跳過已完成的）
+    bLyr.onclick = function () {
+      if (!queue) return;
+      var keys = Object.keys(sel).filter(function (k) { var r = lib.records.filter(function (x) { return x.key === k; })[0]; return r && r.status === 'ok' && !r.pending && r.lyricStatus !== 'done'; });
+      var n = queue.enqueue(keys);
+      msg = keys.length ? '已排入 ' + keys.length + ' 首' : '已排入全部未完成曲目（佇列共 ' + n + ' 首）';
+      if (queue.state().paused) msg += '；目前是暫停中，按「續跑」開始';
+      render();
+    };
+    // 取消：清空排隊、中止正在跑的那一首（不算失敗），面板卡住時先按這個
+    bCancel.onclick = function () { if (!queue) return; queue.cancelAll(); msg = '已取消轉錄（排隊清空，進行中的那首回到未轉錄）'; render(); };
+    bPause.onclick = function () { if (!queue) return; if (queue.state().paused) queue.resume(); else queue.pause(); render(); };
+
+    if (queue) unsub = queue.onChange(function () { render(); });
+    // 轉錄中每秒更新「已耗時」與重試倒數（只更新歌詞列，不重畫清單）
+    var ticker = setInterval(function () {
+      if (!root.isConnected) { clearInterval(ticker); if (unsub) unsub(); return; } // 面板已從對話移除：停掉計時與監聽
+      if (queue && queue.state().running) renderLyr();
+    }, 1000);
     render();
     return {
       refresh: render,
-      destroy: function () { if (root.parentNode) root.parentNode.removeChild(root); }
+      destroy: function () { clearInterval(ticker); if (unsub) unsub(); if (root.parentNode) root.parentNode.removeChild(root); }
     };
   }
 
@@ -83611,15 +83911,17 @@ return holder.FaMusicLibUI;
 /* MLUI-END */
 /* MLHOST-BEGIN */
 /* 音樂庫的 app 轉接層（原文嵌入 floating-assistant.js，定義 const FaMusicLibHost；依賴先嵌入的 FaMusicLib、FaMusicLibUI）。
- *   資料夾：用桌面版既有的資料夾瀏覽器（desktopAPI.roots.browse），遞迴走訪用 desktopAPI.rawfs.readdir（回傳名稱、類型、大小、修改時間）。
- *   檔頭：desktopAPI.rawfs.readHead（只讀前幾 MB，不整檔讀進來）。
- *   儲存：IndexedDB（資料庫 fa-musiclib）。關掉重開後還在；沒有 IndexedDB 時退回記憶體（重開會不見，畫面會說明）。
- *   走訪一次讓出一次執行緒（每 200 筆 setTimeout 0），大資料夾不卡畫面。沒有筆數上限。
- *   網頁版沒有 desktopAPI：資料夾按鈕會說明只能在桌面版使用；加檔案仍可用瀏覽器的檔案選取（畫面本身處理）。 */
+ *   資料夾：用桌面版既有的資料夾瀏覽器（desktopAPI.roots.browse），遞迴走訪用 desktopAPI.rawfs.readdir（每 200 筆讓出執行緒，沒有上限）。
+ *   檔頭：desktopAPI.rawfs.readHead（只讀前幾 MB）。
+ *   儲存：IndexedDB（資料庫 fa-musiclib，鍵 library）。沒有 IndexedDB 時退回記憶體（畫面會提醒）。
+ *   歌詞轉錄：預設接 app 既有的 Whisper 流程（window.fa 上的 _decodeAudioForWhisperWithFallback、_getWhisperTranscriber、_runWhisperWindowed，
+ *     與 transcribe_media 工具用同一套；裝置順序同樣是 WebGPU 失敗退回 CPU）。音訊整檔解碼後，每 CHUNK_SEC 秒切一段跑，段與段之間檢查暫停。
+ *     可用 FaMusicLibHost.setTranscriber(fn) 換成別的轉錄函式（評測用假轉錄）。 */
 const FaMusicLibHost = (function () {
   'use strict';
   var DB_NAME = 'fa-musiclib', STORE = 'kv', KEY = 'library';
-  var lib = null;
+  var CHUNK_SEC = 600; // 長音檔每 10 分鐘一段跑（只是分段的大小，不是長度上限；超過的檔案會分成更多段）
+  var lib = null, transcriber = null;
 
   function idbOpen() {
     return new Promise(function (res, rej) {
@@ -83645,15 +83947,6 @@ const FaMusicLibHost = (function () {
     read: function () { return idbRun('readonly', function (st) { return st.get(KEY); }).then(function (v) { return v == null ? null : v; }); },
     write: function (s) { return idbRun('readwrite', function (st) { return st.put(s, KEY); }).then(function () { /* 寫入完成 */ }); }
   };
-
-  function getLib() {
-    if (lib) return lib;
-    var hasIdb = typeof indexedDB !== 'undefined';
-    lib = FaMusicLib.createLibrary(hasIdb ? FaMusicLib.createJsonBackend(io) : FaMusicLib.createMemoryBackend());
-    lib.persistent = hasIdb;
-    lib.ready = lib.load().catch(function (e) { lib.loadError = e; });
-    return lib;
-  }
 
   function api() { return (typeof window !== 'undefined' && window.desktopAPI) || null; }
   function hasDesktopFs() { var a = api(); return !!(a && a.roots && a.roots.browse && a.rawfs && a.rawfs.readdir && a.rawfs.readHead); }
@@ -83690,6 +83983,104 @@ const FaMusicLibHost = (function () {
     };
   }
 
+  // ───── 預設轉錄：接 app 既有的 Whisper 流程 ─────
+  // 回傳 { segments:[{start,end,text}], language, durationSeconds, device }；暫停時丟出 err.paused = true
+  // 下載 ffmpeg.wasm 的同意：已同意過（localStorage 簽章相符）就直接過；沒同意就把「等待使用者確認下載」做成明確階段（來源與大小寫進階段說明），
+  // 再呼叫 app 原本的同意流程（對話裡的卡片）。等待期間不計無進展逾時；使用者拒絕或佇列的等待上限到了才失敗。不替使用者按、不預先寫入同意。
+  function consentAlreadyGiven() {
+    var sig = FaTranscodeFallback.consentSignature(FA_ASSET_URLS.ffmpegJs, FA_ASSET_URLS.ffmpegCore), saved = null;
+    try { saved = localStorage.getItem('fa.ffmpeg.wasmConsent'); } catch (_) { saved = null; }
+    return saved === sig;
+  }
+  function consentDetail() {
+    try {
+      return FaTranscodeFallback.consentText({ jsUrl: FA_ASSET_URLS.ffmpegJs, coreUrl: FA_ASSET_URLS.ffmpegCore });
+    } catch (_) { return '下載 ffmpeg.wasm（約 30 MB）'; }
+  }
+
+  // 預設轉錄：每個階段都回報進展（report），讓佇列的無進展偵測知道目前在哪一段、做到哪裡。
+  // 階段：decode（讀檔與解碼，單位 MB）、load（載入模型，模型下載的進度也算進展）、infer（推論，每段 CHUNK_SEC 秒，window 30 秒）。
+  async function whisperTranscribe(record, opts) {
+    var fa = (typeof window !== 'undefined' && window.fa) || null;
+    if (!fa || typeof fa._decodeAudioForWhisperWithFallback !== 'function') throw new Error('找不到 Whisper 轉錄（需要桌面版的 app）');
+    var a = api();
+    if (!a || !a.rawfs || !a.rawfs.readFile) throw new Error('讀取音檔的通道不存在（需要桌面版）');
+    var report = typeof opts.report === 'function' ? opts.report : function () {};
+    var sizeMB = Math.max(1, (record.sizeBytes || 0) / 1048576);
+    report('decode', { detail: '讀取檔案（' + Math.round(sizeMB) + ' MB）', units: sizeMB, window: sizeMB });
+    var r;
+    try { r = await a.rawfs.readFile(record.path, 'base64'); } catch (e) { throw new Error('讀檔失敗：' + String((e && e.message) || e)); }
+    if (!r || r.base64 == null) throw new Error('讀檔失敗：讀不到這個檔案的內容');
+    report('decode', { detail: '解碼音訊' });
+    var blob = new Blob([b64ToBytes(r.base64)]);
+    var audio, cstate = { consentDenied: false }, origConsent = fa._ffmpegWasmConsent;
+    fa._ffmpegWasmConsent = async function () { // 只在這次解碼期間生效，之後還原
+      if (consentAlreadyGiven()) return true;
+      report('consent', { detail: consentDetail(), waitUser: true });
+      var ans = await origConsent.call(fa);
+      if (!ans) { cstate.consentDenied = true; return false; }
+      report('decode', { detail: '已同意下載，載入 ffmpeg.wasm' });
+      return true;
+    };
+    try {
+      audio = await fa._decodeAudioForWhisperWithFallback({ filename: record.name, blob: blob }, function (m) { report('decode', { detail: m }); });
+    } catch (e) {
+      if (cstate.consentDenied) throw new Error('解碼失敗：使用者拒絕下載 ffmpeg.wasm（來源見上一段說明），這個格式無法解碼');
+      throw new Error('解碼失敗：' + String((e && e.message) || e));
+    } finally {
+      fa._ffmpegWasmConsent = origConsent;
+    }
+    var language = opts.language || 'zh';
+    var cpuOnly = fa.advancedSettings && (fa.advancedSettings.whisperDevicePreference === 'cpu' || fa.advancedSettings.offlineDevicePreference === 'cpu');
+    var wantGpu = !cpuOnly && await fa._isWebGpuAvailable();
+    var order = wantGpu ? ['webgpu', 'wasm'] : ['wasm'];
+    var pcm = audio.pcm, rate = audio.sampleRate || 16000, chunk = CHUNK_SEC * rate, nChunks = Math.max(1, Math.ceil(pcm.length / chunk));
+    var lastErr = null;
+    for (var d = 0; d < order.length; d++) {
+      var device = order[d];
+      try {
+        var segs = [];
+        var label = device === 'webgpu' ? 'WebGPU' : 'CPU';
+        report('load', { detail: '載入模型（' + label + '）' });
+        var tr = await fa._getWhisperTranscriber(device, function (m) { report('load', { detail: m }); });
+        for (var c = 0; c < nChunks; c++) {
+          if (opts.shouldPause && opts.shouldPause()) { var pe = new Error('已暫停'); pe.paused = true; throw pe; }
+          if (opts.onProgress) opts.onProgress(c / nChunks);
+          var part = pcm.subarray(c * chunk, Math.min(pcm.length, (c + 1) * chunk));
+          var partSec = part.length / rate;
+          report('infer', { detail: label + ' 第 ' + (c + 1) + '/' + nChunks + ' 段', units: partSec, window: 30 });
+          var merged = await fa._runWhisperWindowed(tr, part, language, device, function (m) { report('infer', { detail: m }); });
+          var offset = (c * chunk) / rate;
+          (merged && Array.isArray(merged.chunks) ? merged.chunks : []).forEach(function (ch) {
+            var text = String((ch && ch.text) || '').trim();
+            if (!text) return;
+            var ts = Array.isArray(ch.timestamp) ? ch.timestamp : [null, null];
+            segs.push({ start: ts[0] == null ? null : ts[0] + offset, end: ts[1] == null ? null : ts[1] + offset, text: text });
+          });
+        }
+        if (opts.onProgress) opts.onProgress(1);
+        return { segments: segs, language: language, durationSeconds: audio.durationSeconds, device: device };
+      } catch (err) {
+        if (err && err.paused) throw err;
+        lastErr = err;
+        fa._whisperTranscriber = null; fa._whisperTranscriberDevice = null;
+      }
+    }
+    throw new Error('轉錄失敗：' + ((lastErr && lastErr.message) || lastErr || '未知錯誤'));
+  }
+
+  function getLib() {
+    if (lib) return lib;
+    var hasIdb = typeof indexedDB !== 'undefined';
+    lib = FaMusicLib.createLibrary(hasIdb ? FaMusicLib.createJsonBackend(io) : FaMusicLib.createMemoryBackend());
+    lib.persistent = hasIdb;
+    lib.ready = lib.load().then(function () {
+      // 佇列在載入後才建（建的時候會把上次沒跑完的「轉錄中」退回未轉錄）
+      lib.queue = FaMusicLib.createLyricQueue(lib, function (rec, o) { return (transcriber || whisperTranscribe)(rec, o); }, { language: 'zh' });
+    }, function (e) { lib.loadError = e; });
+    return lib;
+  }
+
   var PICK_HOST = { pickFolder: pickFolder };
 
   var methods = {
@@ -83701,27 +84092,36 @@ const FaMusicLibHost = (function () {
         var wrap = document.createElement('div');
         code.parentElement.replaceWith(wrap);
         var L = getLib();
-        var panel = FaMusicLibUI.mount(wrap, { library: L, host: PICK_HOST });
-        L.ready.then(function () { panel.refresh(); });
-        if (!L.persistent) { var note = document.createElement('div'); note.style.cssText = 'font-size:12px;color:#9a6700;padding:4px 8px'; note.textContent = '注意：這個環境沒有 IndexedDB，音樂庫只存在記憶體，重新開啟會不見。'; wrap.appendChild(note); }
-        if (L.loadError) { var er = document.createElement('div'); er.style.cssText = 'font-size:12px;color:#cf222e;padding:4px 8px'; er.textContent = '讀取音樂庫失敗：' + (L.loadError.message || L.loadError); wrap.appendChild(er); }
+        var note = document.createElement('div'); note.style.cssText = 'font-size:12px;color:#59636e;padding:6px 8px'; note.textContent = '載入音樂庫…';
+        wrap.appendChild(note);
+        L.ready.then(function () {
+          note.remove();
+          if (L.loadError) { var er = document.createElement('div'); er.style.cssText = 'font-size:12px;color:#cf222e;padding:4px 8px'; er.textContent = '讀取音樂庫失敗：' + (L.loadError.message || L.loadError); wrap.appendChild(er); }
+          if (!L.persistent) { var pn = document.createElement('div'); pn.style.cssText = 'font-size:12px;color:#9a6700;padding:4px 8px'; pn.textContent = '注意：這個環境沒有 IndexedDB，音樂庫只存在記憶體，重新開啟會不見。'; wrap.appendChild(pn); }
+          FaMusicLibUI.mount(wrap, { library: L, host: PICK_HOST, queue: L.queue || null });
+        });
       });
     },
     // 對話裡開音樂庫面板（一則 assistant 訊息，裡面掛畫面）
     _mlOpen() {
       var id = 'm' + Date.now().toString(36);
-      this._pushAssistantMessage('🎵 音樂庫：加檔案、加資料夾，掃描後可以用檔名、專輯、標題、演出者搜尋（資料存在這台電腦）。\n\n```fa-musiclib\n' + JSON.stringify({ id: id }) + '\n```', null);
+      this._pushAssistantMessage('🎵 音樂庫：加檔案、加資料夾，掃描後可以用檔名、專輯、標題、演出者，以及轉錄出來的歌詞搜尋（資料存在這台電腦）。\n\n```fa-musiclib\n' + JSON.stringify({ id: id }) + '\n```', null);
       try { this._persistChatHistory(); this._renderMessageHistory(); } catch (_) { /* 顯示失敗不影響資料 */ }
     },
     _registerMusicLibCommand() {
       var self = this;
-      this.register_slash_command('/musiclib', '', '音樂庫：加檔案或資料夾、掃描、用檔名／專輯／標題／演出者搜尋；資料存在本機，重新開啟還在。', async function (argsText, run) {
+      this.register_slash_command('/musiclib', '', '音樂庫：加檔案或資料夾、掃描、用檔名／專輯／標題／演出者／歌詞搜尋；資料存在本機，重新開啟還在。', async function (argsText, run) {
         (run || self)._mlOpen();
       });
     }
   };
 
-  return { methods: methods, getLib: getLib, pickFolder: pickFolder, walkFolder: walkFolder };
+  return { methods: methods, getLib: getLib, pickFolder: pickFolder, walkFolder: walkFolder, whisperTranscribe: whisperTranscribe,
+    setTranscriber: function (fn) { transcriber = typeof fn === 'function' ? fn : null; },
+    // 調整佇列的無進展／重試政策（評測用；正式值見 musiclib_core 的常數）
+    setQueuePolicy: function (p) { var L = getLib(); if (L.queue) L.queue.setPolicy(p); },
+    // 取消所有歌詞轉錄工作（評測結束前、面板卡住時）
+    cancelTranscribe: function () { var L = getLib(); if (L.queue) L.queue.cancelAll(); } };
 })();
 
 /* MLHOST-END */
