@@ -18,6 +18,17 @@
   var DRUM_NOTE = { 6: 36, 7: 42, 8: 38 };         // 打擊：6 底鼓 36、7 踩鑔 42、8 小鼓 38（GM）
   var PROGRAM_BY_WAVE = [73, 80, 81, 81];           // 載波波形 0 正弦→長笛 73；1 半正弦→方波主音 80；2/3 →鋸齒主音 81（近似）
 
+  var OPL_MOD_OFF = [0, 1, 2, 8, 9, 10, 16, 17, 18];
+  // MIDI 音高 → OPL2 的 block／F-number（頻率 = fnum × 49716 ÷ 2^(20−block)）；取能放進 10 位元 F-number 的最小 block（精度最高）
+  function oplFreq(midi) {
+    var hz = 440 * Math.pow(2, (midi - 69) / 12);
+    for (var b = 0; b < 8; b++) {
+      var fn = Math.round(hz * Math.pow(2, 20 - b) / 49716);
+      if (fn <= 1023) return { block: b, fnum: Math.max(1, fn) };
+    }
+    return { block: 7, fnum: 1023 };
+  }
+
   function u16(b, o) { return b[o] | (b[o + 1] << 8); }
 
   // 讀一個樂器的 28 個字，回傳 { v:[…13 個調變器參數, …13 個載波參數], wave:[調變器, 載波] }
@@ -51,8 +62,36 @@
     // 樂譜：依序解出各頻道的音符（時間以延遲單位累加）
     var t = 0, chIns = {}, active = {}, notes = {}, cmds = 0, delays = 0, bends = 0, vols = 0;
     function trackOf(ch) { return notes[ch] || (notes[ch] = []); }
+    // OPL2 暫存器寫入序列（給晶片播放器用）。t 單位同延遲字（1/980 秒）；運算元位址 MOD_OFF[ch]，載波 +3。頻道 0..8 直接對應 OPL2 的 9 個頻道
+    var regs = [], voice = {}, carTL = {};
+    function reg(r, v) { regs.push({ t: t, r: r & 0xFF, v: v & 0xFF }); }
+    function loadIns(c, n) {
+      var ins = instrument(n), mo = OPL_MOD_OFF[c], co = mo + 3, m = ins.mod, k = ins.car;
+      reg(0x20 + mo, m[0]); reg(0x40 + mo, m[1]); reg(0x60 + mo, m[2]); reg(0x80 + mo, m[3]); reg(0xE0 + mo, ins.wave[0]);
+      reg(0x20 + co, k[0]); reg(0x40 + co, k[1]); reg(0x60 + co, k[2]); reg(0x80 + co, k[3]); reg(0xE0 + co, ins.wave[1]);
+      reg(0xC0 + c, ((m[10] & 7) << 1) | ((m[10] >> 3) & 1));   // 回授與連接：由 mod 第 10 字推得（對應未驗證，見報告）
+      carTL[c] = k[1] & 0x3F;
+    }
+    function setVolume(c, vol) {               // 音量 0..127 → 載波總音量：樂器基準值加上衰減，最多 40 級
+      if (carTL[c] == null) return;
+      var tl = Math.min(63, carTL[c] + Math.round((127 - vol) / 127 * 40));
+      reg(0x40 + OPL_MOD_OFF[c] + 3, tl);
+    }
+    function keyOn(c, midi) {
+      var f = oplFreq(midi);
+      voice[c] = f;
+      reg(0xB0 + c, (f.block << 2) | ((f.fnum >> 8) & 3));   // 先確保關閉
+      reg(0xA0 + c, f.fnum & 0xFF);
+      reg(0xB0 + c, 0x20 | (f.block << 2) | ((f.fnum >> 8) & 3));
+    }
+    function keyOff(c) {
+      var f = voice[c]; if (!f) return;
+      reg(0xB0 + c, (f.block << 2) | ((f.fnum >> 8) & 3));
+      voice[c] = null;
+    }
     function noteOff(ch, at) {
       var a = active[ch]; if (!a) return;
+      if (ch <= 8) keyOff(ch);
       var d = at - a.t0; if (d > 0) trackOf(ch).push({ t: a.t0, d: d, n: a.n, v: a.v });
       active[ch] = null;
     }
@@ -64,14 +103,14 @@
       if (++guard > 2000000) throw new Error('解析失敗（樂譜）：字數超過 200 萬仍沒有結束字，疑似壞檔');
       var kind = ctrl & 0xF0, ch = ctrl & 0x0F;
       if (kind === 0x90) {                       // 選樂器
-        if (ch <= 10) { chIns[ch] = data; instrument(data); }
+        if (ch <= 10) { chIns[ch] = data; instrument(data); if (ch <= 8) loadIns(ch, data); }
         cmds++;
       } else if (kind === 0xA0) {                // 音高彎曲：資料 << 6，中心 0x2000
         var bend = Math.min(0x3FFF, data << 6);
         if (ch <= 10) { trackOf(ch).push({ bend: true, t: t, value: bend }); bends++; }
         cmds++;
       } else if (kind === 0xB0) {                // 音量（0..0x7F）
-        if (ch <= 10) { trackOf(ch).push({ vol: true, t: t, value: Math.min(0x7F, data) }); vols++; }
+        if (ch <= 10) { trackOf(ch).push({ vol: true, t: t, value: Math.min(0x7F, data) }); vols++; if (ch <= 8) setVolume(ch, Math.min(0x7F, data)); }
         cmds++;
       } else if (kind === 0xC0) {                // 音符：先關掉此頻道的音，yy != 0 才開新音
         if (ch <= 10) {
@@ -79,6 +118,7 @@
           if (data !== 0) {
             var midi = data >= 12 ? data : 12;
             active[ch] = { t0: t, n: midi, v: 100 };
+            if (ch <= 8) keyOn(ch, midi);
           }
         }
         cmds++;
@@ -130,6 +170,7 @@
     return {
       ok: true, soundMode: soundMode, insOffset: insOffset, patternOffset: musBlock,
       song: song,
+      regs: [{ t: 0, r: 0x01, v: 0x20 }].concat(regs), durationSec: durSec,
       stats: { stopped: stopped, commands: cmds, delays: delays, bends: bends, volumes: vols, notes: totalNotes, seconds: Math.round(durSec * 10) / 10, instrumentsUsed: Object.keys(chIns).length }
     };
   }
