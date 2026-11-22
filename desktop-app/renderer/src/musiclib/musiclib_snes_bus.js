@@ -28,7 +28,7 @@
 }(typeof self !== 'undefined' ? self : this, function () {
   'use strict';
   var DMA_PAT = [[0], [0, 1], [0, 0], [0, 0, 1, 1], [0, 1, 2, 3], [0, 1, 0, 1], [0, 0], [0, 0, 1, 1]];
-  var LINES = 262, VBLANK_LINE = 225, INSTR_PER_LINE = 60;
+  var LINES = 262, VBLANK_LINE = 225, INSTR_PER_LINE = 60, SPC_CYCLES_PER_LINE = 65;
   var IPL_HANDSHAKE_A = 0xAA, IPL_HANDSHAKE_B = 0xBB, IPL_START = 0xCC;
 
   function u8(x) { return x instanceof Uint8Array ? x : new Uint8Array(x); }
@@ -86,7 +86,41 @@
         }
         if (st.mode === 'data') { ram[(st.base + st.off) & 0xFFFF] = st.pend1; st.off++; st.bytes++; }
       },
-      run: function () { /* 替身沒有 SPC700 可跑 */ }
+      run: function () { /* 替身沒有 SPC700 可跑 */ },
+      dumpSpc: function () {
+        return { ram: ram.slice(), dsp: dsp.slice(), spc: { pc: st.entry, a: 0, x: 0, y: 0, psw: 0, sp: 0xEF }, placeholder: true };
+      }
+    };
+  }
+
+  // ───── 真的 SPC700＋S-DSP 核心的轉接層（musiclib_spc_core.js 的 createCore 物件）─────
+  // 埠：65816 寫 $2140+p → core.setPortIn(p)；65816 讀 → core.portOut(p)（核心內建 IPL 負責上傳協定）。
+  // 上傳完成：核心的 PC 從 IPL 區（$FFC0 以上）跳出去執行使用者程式 → state='running'，entry＝跳出去的位址。
+  // run(cycles)：每條掃描線由畫面迴圈呼叫，讓 SPC 與主 CPU 大致同步（1.024 MHz ÷ 60 ÷ 262 ≈ 65 個週期／線）。
+  function createSpcApu(core) {
+    var st = { sawIpl: false, state: 'ipl', entry: 0, portWrites: 0 };
+    function check() {
+      var pc = core.cpu().pc;
+      if (st.state !== 'ipl') return;
+      if (pc >= 0xFFC0) st.sawIpl = true;
+      else if (st.sawIpl) { st.state = 'running'; st.entry = pc; }
+    }
+    return {
+      read: function (p) { return core.portOut(p & 3); },
+      write: function (p, v) { st.portWrites++; core.setPortIn(p & 3, v & 0xFF); },
+      run: function (cycles) { core.runCycles(cycles); check(); },
+      get state() { return st.state; },
+      get entry() { return st.entry; },
+      get portWrites() { return st.portWrites; },
+      get blocks() { return 0; },
+      get bytes() { return 0; },
+      dumpSpc: function () {
+        var ram = new Uint8Array(0x10000), dsp = new Uint8Array(128), i;
+        for (i = 0; i < 0x10000; i++) ram[i] = core.peek(i);
+        for (i = 0; i < 128; i++) dsp[i] = core.dspRead(i);
+        var c = core.cpu();
+        return { ram: ram, dsp: dsp, spc: { pc: c.pc, a: c.a, x: c.x, y: c.y, psw: c.psw, sp: c.sp }, placeholder: false };
+      }
     };
   }
 
@@ -284,6 +318,7 @@
         }
         if (line > 0 && line < VBLANK_LINE) bus.hdmaLine();
         for (var k = 0; k < perLine; k++) { if (cpu.step() === 0 && cpu.halted && !cpu.nmiPending) break; }
+        bus.apu.run(SPC_CYCLES_PER_LINE);
       }
       m.frames++;
     };
@@ -308,10 +343,8 @@
       if (opts.onProgress && m.frames % 60 === 0) opts.onProgress(m.frames);
       if (upAt < 0 && m.apu.state === 'running') { upAt = m.frames; res.uploaded = true; res.uploadFrame = m.frames; res.entry = m.apu.entry; }
       if (upAt >= 0 && nextSnap < offsets.length && m.frames >= upAt + offsets[nextSnap]) {
-        res.snapshots.push({
-          frame: m.frames, ramCopy: m.apu.ram.slice(), dsp: m.apu.dsp.slice(),
-          spc: { pc: m.apu.entry, a: 0, x: 0, y: 0, psw: 0, sp: 0xEF }
-        });
+        var d = m.apu.dumpSpc();
+        res.snapshots.push({ frame: m.frames, ramCopy: d.ram, dsp: d.dsp, spc: d.spc, placeholder: d.placeholder });
         nextSnap++;
       }
       if (upAt >= 0 && nextSnap >= offsets.length) break;
@@ -327,5 +360,5 @@
     return res;
   }
 
-  return { createBus: createBus, createIplStub: createIplStub, createMachine: createMachine, runRom: runRom, headerInfo: headerInfo, DMA_PAT: DMA_PAT };
+  return { createBus: createBus, createIplStub: createIplStub, createSpcApu: createSpcApu, createMachine: createMachine, runRom: runRom, headerInfo: headerInfo, DMA_PAT: DMA_PAT };
 }));

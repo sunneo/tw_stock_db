@@ -158,11 +158,15 @@
       return fail(4, 'SPC700＋S-DSP 渲染核心沒有接上（ml-spcdsp 的 musiclib_spc_core.js 尚未合併）；' +
         '目前的聲音埠只跑 IPL 上傳協定，不執行 SPC700，所以 .spc 裡的 DSP 與 SPC700 狀態是占位值，不能當成音樂');
     }
-    var rendered;
-    try { rendered = opts.renderSpc(out.spcs[0].bytes, opts); }
-    catch (e) { return fail(4, '渲染失敗：' + String((e && e.message) || e)); }
-    out.stages.push({ stage: STAGES[4], ok: true });
-    out.rendered = rendered;
+    // 每個時間點各自渲染成一首；單一時間點失敗不影響其他（逐筆記錄）
+    out.rendered = [];
+    var errs = [];
+    out.spcs.forEach(function (sp, i) {
+      try { out.rendered.push({ index: i, frame: sp.frame, bytes: sp.bytes, out: opts.renderSpc(sp.bytes, opts) }); }
+      catch (e) { errs.push('第 ' + i + ' 個：' + String((e && e.message) || e)); }
+    });
+    if (!out.rendered.length) return fail(4, '渲染失敗：' + errs.join('；'));
+    out.stages.push({ stage: STAGES[4], ok: true, note: out.rendered.length + ' 首渲染成功' + (errs.length ? '；' + errs.join('；') : '') });
     out.ok = true;
     return out;
   }

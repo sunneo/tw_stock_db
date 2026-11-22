@@ -546,12 +546,47 @@ const FaMusicLibHost = (function () {
       if (!pr.wav) skippedParts.push('wav 沒有：' + (pr.wavReason || pr.reason || ''));
       if (!outs.length) throw new Error('PCE 擷取失敗：' + skippedParts.join('；'));
     } else if (rec.kind === 'sfc') {
-      // SFC：先做標頭與分類；主 CPU 執行、.spc 傾印、snes_spc 渲染尚未接上，各階段的結果見 stages（沒有產物就明確報錯）
-      emit('解析 SNES 標頭');
-      if (typeof FaMusicLibSfc === 'undefined') throw new Error('SFC 模組沒有嵌入（FaMusicLibSfc 不存在）');
-      var sr = FaMusicLibSfc.sfcExtract(u8, {});
-      skippedParts = sr.stages.filter(function (s) { return !s.ok; }).map(function (s) { return s.stage + '：' + s.reason; });
-      throw new Error('SFC 擷取失敗：' + (skippedParts.join('；') || sr.reason || '未知'));
+      // SFC：自寫 65816 跑 ROM → 聲音埠接 SPC700＋S-DSP 核心 → 每個時間點傾印 .spc → 同一個核心渲成 wav → 編 mp3
+      emit('執行 ROM（超任主 CPU）');
+      if (typeof FaMusicLibSfc === 'undefined' || typeof FaMusicLibSnesBus === 'undefined' || typeof FaMusicLibSnesCpu === 'undefined') {
+        throw new Error('SFC 模組沒有嵌入（FaMusicLibSfc／FaMusicLibSnesBus／FaMusicLibSnesCpu 其中之一不存在）');
+      }
+      if (typeof FaMusicLibSpcCore === 'undefined') {
+        throw new Error('SFC 擷取失敗：SPC700＋S-DSP 核心（FaMusicLibSpcCore）沒有嵌入，無法執行聲音程式，也無法渲染 .spc');
+      }
+      var sfcRes = FaMusicLibSfc.sfcExtract(u8, {
+        title: stem, game: stem,
+        runner: function (rom) {
+          return FaMusicLibSnesBus.runRom(rom, {
+            Cpu: FaMusicLibSnesCpu, apu: FaMusicLibSnesBus.createSpcApu(FaMusicLibSpcCore.createCore({})),
+            maxFrames: 3600, isCancelled: cancelled,
+            onProgress: function (f) { if (f % 300 === 0) emit('執行 ROM（第 ' + f + ' 個畫面）'); }
+          });
+        },
+        renderSpc: function (spcBytes) {
+          var core = FaMusicLibSpcCore.fromSpc(FaMusicLibSfc.parseSpc(spcBytes));
+          var n = 32000 * 60, L = new Float32Array(n), R = new Float32Array(n);
+          core.renderStereo(L, R, 0, n);
+          return { L: L, R: R, sampleRate: 32000, durationSec: 60 };
+        }
+      });
+      if (sfcRes.cancelled) throw Object.assign(new Error('已取消'), { cancelled: true });
+      skippedParts = sfcRes.stages.filter(function (s) { return !s.ok; }).map(function (s) { return s.stage + '：' + s.reason; });
+      if (!sfcRes.ok) throw new Error('SFC 擷取失敗：' + (skippedParts.join('；') || sfcRes.reason || '未知'));
+      method = '超任（自寫 65816 執行 ROM，SPC700＋S-DSP 核心渲染）';
+      for (var ri = 0; ri < (sfcRes.rendered || []).length; ri++) {
+        var rd = sfcRes.rendered[ri], sname = stem + '_' + (rd.index + 1), o = rd.out;
+        outs.push({ kind: 'spc', name: sname + '.spc', bytes: rd.bytes, method: method + '；傾印自第 ' + rd.frame + ' 個畫面', durationSec: null, title: sname });
+        var mono = new Float32Array(o.L.length);
+        for (var si = 0; si < mono.length; si++) mono[si] = (o.L[si] + o.R[si]) / 2;
+        emit('編碼 mp3');
+        var sbuf = new AudioBuffer({ length: mono.length, sampleRate: o.sampleRate, numberOfChannels: 1 });
+        sbuf.copyToChannel(mono, 0);
+        var smp3 = await fa._encodeMp3(sbuf, 160);
+        outs.push({ kind: 'mp3', name: sname + '.mp3', bytes: new Uint8Array(await smp3.arrayBuffer()), method: method + '；SPC700 渲染', durationSec: o.durationSec, title: sname });
+      }
+      skippedParts = skippedParts.concat(sfcRes.rendered && sfcRes.rendered.length ? [] : ['沒有任何時間點渲染成功']);
+      if (!outs.length) throw new Error('SFC 擷取失敗：' + skippedParts.join('；'));
     } else {
       throw new Error('這個種類不支援擷取：' + rec.kind);
     }
