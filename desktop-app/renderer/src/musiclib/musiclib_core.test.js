@@ -607,15 +607,17 @@ t('取消：清空排隊、中止卡住的那一首（不算失敗、不重試�
 });
 
 // ───── 批次輸出：路由、分鐘切片、檔名、重試、取消 ─────
-t('路由：音訊轉 mp3、MIDI 轉 mp3／mid、影片需先抽音軌並標示同意', function () {
+t('路由：音訊轉 mp3、MIDI 轉 mp3／mid、影片走原生解碼（不需要 ffmpeg 同意）', function () {
   assert.equal(M.planExport('a.wav', 'mp3').route, 'audio>mp3');
   assert.equal(M.planExport('a.MP3', 'mp3').route, 'audio>mp3');
   assert.equal(M.planExport('song.mid', 'mp3').route, 'mid>mp3');
   assert.equal(M.planExport('song.mid', 'mid').route, 'mid>mid');
   var v = M.planExport('clip.mp4', 'mp3');
   assert.equal(v.route, 'video>mp3');
-  assert.ok(v.consent && /ffmpeg/.test(v.consent), '影片路線必須標示 ffmpeg 同意');
-  assert.equal(M.planExport('a.wav', 'mp3').consent, null, '純音訊不需要同意');
+  assert.deepEqual(v.steps, ['decode', 'slice', 'encode-mp3'], '影片與音訊同一條解碼路線');
+  assert.equal(v.consent, undefined, '影片路線不走 ffmpeg.wasm，沒有同意欄位');
+  assert.equal(M.planExport('clip.mov', 'mp3').route, 'video>mp3');
+  assert.equal(M.planExport('clip.webm', 'mp3').route, 'video>mp3');
 });
 
 t('路由：不支援的組合說明原因，不默默略過', function () {

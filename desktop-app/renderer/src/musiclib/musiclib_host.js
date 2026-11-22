@@ -73,18 +73,8 @@ const FaMusicLibHost = (function () {
 
   // ───── 預設轉錄：接 app 既有的 Whisper 流程 ─────
   // 回傳 { segments:[{start,end,text}], language, durationSeconds, device }；暫停時丟出 err.paused = true
-  // 下載 ffmpeg.wasm 的同意：已同意過（localStorage 簽章相符）就直接過；沒同意就把「等待使用者確認下載」做成明確階段（來源與大小寫進階段說明），
-  // 再呼叫 app 原本的同意流程（對話裡的卡片）。等待期間不計無進展逾時；使用者拒絕或佇列的等待上限到了才失敗。不替使用者按、不預先寫入同意。
-  function consentAlreadyGiven() {
-    var sig = FaTranscodeFallback.consentSignature(FA_ASSET_URLS.ffmpegJs, FA_ASSET_URLS.ffmpegCore), saved = null;
-    try { saved = localStorage.getItem('fa.ffmpeg.wasmConsent'); } catch (_) { saved = null; }
-    return saved === sig;
-  }
-  function consentDetail() {
-    try {
-      return FaTranscodeFallback.consentText({ jsUrl: FA_ASSET_URLS.ffmpegJs, coreUrl: FA_ASSET_URLS.ffmpegCore });
-    } catch (_) { return '下載 ffmpeg.wasm（約 30 MB）'; }
-  }
+  // ffmpeg.wasm 的同意完全沿用 app 既有流程（_decodeAudioForWhisperWithFallback → _ffmpegWasmConsent，
+  // localStorage fa.ffmpeg.wasmConsent 記住一次同意）；音樂庫不另加同意階段，也不替換那個函式。
 
   // 預設轉錄：每個階段都回報進展（report），讓佇列的無進展偵測知道目前在哪一段、做到哪裡。
   // 階段：decode（讀檔與解碼，單位 MB）、load（載入模型，模型下載的進度也算進展）、infer（推論，每段 CHUNK_SEC 秒，window 30 秒）。
@@ -101,22 +91,11 @@ const FaMusicLibHost = (function () {
     if (!r || r.base64 == null) throw new Error('讀檔失敗：讀不到這個檔案的內容');
     report('decode', { detail: '解碼音訊' });
     var blob = new Blob([b64ToBytes(r.base64)]);
-    var audio, cstate = { consentDenied: false }, origConsent = fa._ffmpegWasmConsent;
-    fa._ffmpegWasmConsent = async function () { // 只在這次解碼期間生效，之後還原
-      if (consentAlreadyGiven()) return true;
-      report('consent', { detail: consentDetail(), waitUser: true });
-      var ans = await origConsent.call(fa);
-      if (!ans) { cstate.consentDenied = true; return false; }
-      report('decode', { detail: '已同意下載，載入 ffmpeg.wasm' });
-      return true;
-    };
+    var audio;
     try {
       audio = await fa._decodeAudioForWhisperWithFallback({ filename: record.name, blob: blob }, function (m) { report('decode', { detail: m }); });
     } catch (e) {
-      if (cstate.consentDenied) throw new Error('解碼失敗：使用者拒絕下載 ffmpeg.wasm（來源見上一段說明），這個格式無法解碼');
       throw new Error('解碼失敗：' + String((e && e.message) || e));
-    } finally {
-      fa._ffmpegWasmConsent = origConsent;
     }
     var language = opts.language || 'zh';
     var cpuOnly = fa.advancedSettings && (fa.advancedSettings.whisperDevicePreference === 'cpu' || fa.advancedSettings.offlineDevicePreference === 'cpu');
@@ -172,13 +151,8 @@ const FaMusicLibHost = (function () {
   // ───── 批次輸出（mid／mp3）：桌面版通道 ─────
   var exportCancelled = false;
   function bytesToB64(u8) { var s = '', CH = 0x8000; for (var i = 0; i < u8.length; i += CH) s += String.fromCharCode.apply(null, u8.subarray(i, i + CH)); return btoa(s); }
-  // 用瀏覽器原生解碼器讀 wav／mp3（不經過 Whisper 的 16 kHz 降採樣，保留原取樣率）
-  async function decodeAudioBytes(u8) {
-    var AC = window.AudioContext || window.webkitAudioContext;
-    var ctx = new AC();
-    try { return await ctx.decodeAudioData(u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength)); }
-    finally { try { ctx.close(); } catch (_) { /* */ } }
-  }
+  // 解碼一律用 app 既有的 _decodeAudioBuffer（extract_audio 同一條：瀏覽器原生 decodeAudioData，保留原取樣率，不碰 ffmpeg.wasm）
+  async function decodeAudioBytes(u8) { return await window.fa._decodeAudioBuffer(new Blob([u8])); }
   // 取前 sec 秒的樣本，回傳 _encodeMp3 吃得下的最小介面（numberOfChannels／sampleRate／getChannelData）
   function viewSeconds(buf, sec) {
     var n = sec == null ? buf.length : Math.min(buf.length, Math.floor(sec * buf.sampleRate));
@@ -222,7 +196,6 @@ const FaMusicLibHost = (function () {
         st.buf = rb;
       }
       else if (step === 'write-mid') { st.bytes = FaMidi.write(st.song); }
-      else if (step === 'extract-audio') { throw new Error('尚未接上影片抽音軌（本輪未驗證；需要 ffmpeg.wasm 同意流程）'); }
       else { throw new Error('未知步驟：' + step); }
     }
     checkCancel();

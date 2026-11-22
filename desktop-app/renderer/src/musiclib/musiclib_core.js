@@ -413,14 +413,13 @@
   var STALL_FACTOR = 3, STALL_FLOOR_MS = 20000, EMA_ALPHA = 0.3;
   var STAGE_PRIOR_MS_PER_UNIT = { decode: 1500, load: 60000, infer: 3000 }; // 每單位先驗：解碼＝MB、載入＝1、推論＝音訊秒
   var RETRY_BACKOFF_MS = [2000, 6000, 14000];
-  var USER_WAIT_TIMEOUT_MS = 10 * 60 * 1000; // 等使用者確認（例如同意下載 ffmpeg.wasm）的上限；超過就放棄這首，不是無進展偵測
   var TRANSIENT_RE = /無進展|timed? ?out|逾時|network|fetch|load failed|networkerror|connection|device lost|context lost|gpu|連線|網路/i;
-  var STAGE_NAME = { start: '準備', decode: '解碼', load: '載入模型', infer: '推論', consent: '等待使用者確認下載' };
+  var STAGE_NAME = { start: '準備', decode: '解碼', load: '載入模型', infer: '推論' };
 
   function createLyricQueue(lib, transcriber, opts) {
     opts = opts || {};
     if (typeof transcriber !== 'function') throw new Error('createLyricQueue 需要轉錄函式');
-    var P = Object.assign({ floorMs: STALL_FLOOR_MS, factor: STALL_FACTOR, backoffMs: RETRY_BACKOFF_MS, prior: STAGE_PRIOR_MS_PER_UNIT, userTimeoutMs: USER_WAIT_TIMEOUT_MS }, opts.policy || {});
+    var P = Object.assign({ floorMs: STALL_FLOOR_MS, factor: STALL_FACTOR, backoffMs: RETRY_BACKOFF_MS, prior: STAGE_PRIOR_MS_PER_UNIT }, opts.policy || {});
     var ema = { decode: P.prior.decode, load: P.prior.load, infer: P.prior.infer }; // 每單位毫秒，實測後更新
     var st = { running: false, paused: false, current: null, progress: null, queue: [], doneRun: 0, failedRun: 0, saveError: null,
       stage: null, stageSince: null, stageDetail: '', attempt: 0, retry: null };
@@ -468,11 +467,6 @@
         pauseWaiters.push(onPause);
         function arm() {
           clearTimeout(timer);
-          if (win === Infinity) {
-            // 等待使用者確認（例如同意下載）：不算無進展，只有等太久才失敗
-            timer = setTimeout(function () { var e = new Error('等待使用者確認超過 ' + Math.round(P.userTimeoutMs / 60000) + ' 分鐘，沒有回應，已放棄這首（階段：' + (STAGE_NAME[stage] || stage) + '）'); e.userWait = true; finish(reject, e); }, P.userTimeoutMs);
-            return;
-          }
           var limit = stallLimitMs(stage, win);
           timer = setTimeout(function () { finish(reject, stallError(stage, Date.now() - stageAt, detail, limit)); }, limit);
         }
@@ -482,8 +476,7 @@
           var now = Date.now();
           if (s && s !== stage) { learn(stage, now - stageAt, stageUnits); stage = s; stageAt = now; stageUnits = 0; win = defaultWindow(s, r); }
           if (d.units > 0) stageUnits += d.units;
-          if (d.waitUser) win = Infinity; // 等使用者：不計無進展
-          else if (d.window > 0) win = d.window;
+          if (d.window > 0) win = d.window;
           if (d.detail != null) detail = String(d.detail).slice(0, 200);
           st.stage = stage; st.stageSince = stageAt; st.stageDetail = detail;
           emit(); arm();
@@ -694,12 +687,13 @@
     'audio>mp3': ['decode', 'slice', 'encode-mp3'],
     'mid>mp3': ['parse-mid', 'trim-mid', 'render-synth', 'slice', 'encode-mp3'],
     'mid>mid': ['parse-mid', 'trim-mid', 'write-mid'],
-    'video>mp3': ['extract-audio', 'slice', 'encode-mp3']
+    // 影片與音訊同一條：extract_audio 用的 _decodeAudioBuffer 會原生解出 mp4/mov/webm 的音軌，不需要 ffmpeg.wasm
+    'video>mp3': ['decode', 'slice', 'encode-mp3']
   };
   var SOURCE_CLASS = { wav: 'audio', mp3: 'audio', mid: 'mid', midi: 'mid', mp4: 'video', mov: 'video', webm: 'video', m4v: 'video' };
   var ROM_EXT = { nes: 1, pce: 1, sfc: 1, rix: 1, swf: 1 };
 
-  // 規劃單一檔案的輸出路線。回傳 { ok:true, route, steps, consent? } 或 { ok:false, reason }。
+  // 規劃單一檔案的輸出路線。回傳 { ok:true, route, steps } 或 { ok:false, reason }。
   // 不支援的組合一律說明原因，不偷偷略過。
   function planExport(name, format) {
     var ext = String(name || '').split('.').pop().toLowerCase();
@@ -712,7 +706,7 @@
     var key = cls + '>' + format;
     var steps = EXPORT_ROUTES[key];
     if (!steps) return { ok: false, reason: '沒有對應的路線：' + key };
-    return { ok: true, route: key, steps: steps.slice(), consent: key === 'video>mp3' ? 'ffmpeg.wasm（影片要先抽音軌，會先問使用者）' : null };
+    return { ok: true, route: key, steps: steps.slice() };
   }
 
   // 批次執行。items: [{ id, name, format }]。opts:
