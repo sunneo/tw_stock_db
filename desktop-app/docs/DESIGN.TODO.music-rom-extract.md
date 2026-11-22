@@ -70,6 +70,7 @@ NSF、SPC、HES 是別人整理好的音樂包（含初始化位址、播放位�
 - 晶片不能任意跳轉：seek 用「靜音快速模擬到那個時間點」再開始出聲；曲目很長時用分段快取。
 - 匯出：mp3（重用批次輸出的 mp3 編碼與一分鐘預設、可指定分鐘數）與 MIDI（沿用各格式的擷取結果：RIX 與 NES 的暫存器寫入轉 MIDI、SPC 的 DSP 事件轉 MIDI；轉不出來要明確說明原因）。
 - RIX 目前是「轉 MIDI 再用 GM 音色合成」，音色是近似；真正的 OPL2 模擬才是原曲音色，列為這個播放器的第一個後端。
+- 實作狀態（2026-11-22）：OPL2 模擬 `musiclib_opl2.js`（自寫，MIT）、播放核心 `musiclib_chipplayer.js`（後端註冊、檢查點 seek、render 範圍、goto 解析）、RIX 後端 `musiclib_chip_rix.js`、控制卡片 `musiclib_chipplayer_ui.js`、曲庫面板的「▶ 晶片播放（RIX）」按鈕。單元測試 `musiclib_chipplayer.test.js` 14 項全過。未驗證：RIX 樂器位元組到 OPL2 暫存器的對應（只依 .ins 常見欄位推測）、回授與連接由 mod 第 10 字推得、真桌面版的 UI 與 mp3 匯出（只能在桌面版實機確認）。NSF、SPC、PCE 後端尚未做。
 
 ## YouTube 清單（使用者原話：「可以加youtube list(if possible)」）調查事實（2026-11-22，讀程式）
 

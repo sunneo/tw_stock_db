@@ -5,7 +5,10 @@
   if (typeof module === 'object' && module.exports) {
     module.exports = factory(require('./musiclib_extract_rix.js'), require('./musiclib_opl2.js'), require('./musiclib_chipplayer.js'));
   } else {
-    factory(root.FaMusicLibRix, root.FaOpl2, root.FaChipPlayer);
+    // 嵌入到 floating-assistant.js 時依賴是同一段程式的頂層 const，要用 typeof 取到（同 midi_play.js 的寫法）
+    root.FaChipRix = factory(root.FaMusicLibRix || (typeof FaMusicLibRix !== 'undefined' ? FaMusicLibRix : undefined),
+      root.FaOpl2 || (typeof FaOpl2 !== 'undefined' ? FaOpl2 : undefined),
+      root.FaChipPlayer || (typeof FaChipPlayer !== 'undefined' ? FaChipPlayer : undefined));
   }
 }(typeof self !== 'undefined' ? self : this, function (RIX, OPL2, CP) {
   'use strict';
