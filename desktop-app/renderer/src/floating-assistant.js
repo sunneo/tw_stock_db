@@ -83434,14 +83434,13 @@ const holder = {};
   var STALL_FACTOR = 3, STALL_FLOOR_MS = 20000, EMA_ALPHA = 0.3;
   var STAGE_PRIOR_MS_PER_UNIT = { decode: 1500, load: 60000, infer: 3000 }; // 每單位先驗：解碼＝MB、載入＝1、推論＝音訊秒
   var RETRY_BACKOFF_MS = [2000, 6000, 14000];
-  var USER_WAIT_TIMEOUT_MS = 10 * 60 * 1000; // 等使用者確認（例如同意下載 ffmpeg.wasm）的上限；超過就放棄這首，不是無進展偵測
   var TRANSIENT_RE = /無進展|timed? ?out|逾時|network|fetch|load failed|networkerror|connection|device lost|context lost|gpu|連線|網路/i;
-  var STAGE_NAME = { start: '準備', decode: '解碼', load: '載入模型', infer: '推論', consent: '等待使用者確認下載' };
+  var STAGE_NAME = { start: '準備', decode: '解碼', load: '載入模型', infer: '推論' };
 
   function createLyricQueue(lib, transcriber, opts) {
     opts = opts || {};
     if (typeof transcriber !== 'function') throw new Error('createLyricQueue 需要轉錄函式');
-    var P = Object.assign({ floorMs: STALL_FLOOR_MS, factor: STALL_FACTOR, backoffMs: RETRY_BACKOFF_MS, prior: STAGE_PRIOR_MS_PER_UNIT, userTimeoutMs: USER_WAIT_TIMEOUT_MS }, opts.policy || {});
+    var P = Object.assign({ floorMs: STALL_FLOOR_MS, factor: STALL_FACTOR, backoffMs: RETRY_BACKOFF_MS, prior: STAGE_PRIOR_MS_PER_UNIT }, opts.policy || {});
     var ema = { decode: P.prior.decode, load: P.prior.load, infer: P.prior.infer }; // 每單位毫秒，實測後更新
     var st = { running: false, paused: false, current: null, progress: null, queue: [], doneRun: 0, failedRun: 0, saveError: null,
       stage: null, stageSince: null, stageDetail: '', attempt: 0, retry: null };
@@ -83489,11 +83488,6 @@ const holder = {};
         pauseWaiters.push(onPause);
         function arm() {
           clearTimeout(timer);
-          if (win === Infinity) {
-            // 等待使用者確認（例如同意下載）：不算無進展，只有等太久才失敗
-            timer = setTimeout(function () { var e = new Error('等待使用者確認超過 ' + Math.round(P.userTimeoutMs / 60000) + ' 分鐘，沒有回應，已放棄這首（階段：' + (STAGE_NAME[stage] || stage) + '）'); e.userWait = true; finish(reject, e); }, P.userTimeoutMs);
-            return;
-          }
           var limit = stallLimitMs(stage, win);
           timer = setTimeout(function () { finish(reject, stallError(stage, Date.now() - stageAt, detail, limit)); }, limit);
         }
@@ -83503,8 +83497,7 @@ const holder = {};
           var now = Date.now();
           if (s && s !== stage) { learn(stage, now - stageAt, stageUnits); stage = s; stageAt = now; stageUnits = 0; win = defaultWindow(s, r); }
           if (d.units > 0) stageUnits += d.units;
-          if (d.waitUser) win = Infinity; // 等使用者：不計無進展
-          else if (d.window > 0) win = d.window;
+          if (d.window > 0) win = d.window;
           if (d.detail != null) detail = String(d.detail).slice(0, 200);
           st.stage = stage; st.stageSince = stageAt; st.stageDetail = detail;
           emit(); arm();
@@ -83715,12 +83708,13 @@ const holder = {};
     'audio>mp3': ['decode', 'slice', 'encode-mp3'],
     'mid>mp3': ['parse-mid', 'trim-mid', 'render-synth', 'slice', 'encode-mp3'],
     'mid>mid': ['parse-mid', 'trim-mid', 'write-mid'],
-    'video>mp3': ['extract-audio', 'slice', 'encode-mp3']
+    // 影片與音訊同一條：extract_audio 用的 _decodeAudioBuffer 會原生解出 mp4/mov/webm 的音軌，不需要 ffmpeg.wasm
+    'video>mp3': ['decode', 'slice', 'encode-mp3']
   };
   var SOURCE_CLASS = { wav: 'audio', mp3: 'audio', mid: 'mid', midi: 'mid', mp4: 'video', mov: 'video', webm: 'video', m4v: 'video' };
   var ROM_EXT = { nes: 1, pce: 1, sfc: 1, rix: 1, swf: 1 };
 
-  // 規劃單一檔案的輸出路線。回傳 { ok:true, route, steps, consent? } 或 { ok:false, reason }。
+  // 規劃單一檔案的輸出路線。回傳 { ok:true, route, steps } 或 { ok:false, reason }。
   // 不支援的組合一律說明原因，不偷偷略過。
   function planExport(name, format) {
     var ext = String(name || '').split('.').pop().toLowerCase();
@@ -83733,7 +83727,7 @@ const holder = {};
     var key = cls + '>' + format;
     var steps = EXPORT_ROUTES[key];
     if (!steps) return { ok: false, reason: '沒有對應的路線：' + key };
-    return { ok: true, route: key, steps: steps.slice(), consent: key === 'video>mp3' ? 'ffmpeg.wasm（影片要先抽音軌，會先問使用者）' : null };
+    return { ok: true, route: key, steps: steps.slice() };
   }
 
   // 批次執行。items: [{ id, name, format }]。opts:
@@ -84150,18 +84144,8 @@ const FaMusicLibHost = (function () {
 
   // ───── 預設轉錄：接 app 既有的 Whisper 流程 ─────
   // 回傳 { segments:[{start,end,text}], language, durationSeconds, device }；暫停時丟出 err.paused = true
-  // 下載 ffmpeg.wasm 的同意：已同意過（localStorage 簽章相符）就直接過；沒同意就把「等待使用者確認下載」做成明確階段（來源與大小寫進階段說明），
-  // 再呼叫 app 原本的同意流程（對話裡的卡片）。等待期間不計無進展逾時；使用者拒絕或佇列的等待上限到了才失敗。不替使用者按、不預先寫入同意。
-  function consentAlreadyGiven() {
-    var sig = FaTranscodeFallback.consentSignature(FA_ASSET_URLS.ffmpegJs, FA_ASSET_URLS.ffmpegCore), saved = null;
-    try { saved = localStorage.getItem('fa.ffmpeg.wasmConsent'); } catch (_) { saved = null; }
-    return saved === sig;
-  }
-  function consentDetail() {
-    try {
-      return FaTranscodeFallback.consentText({ jsUrl: FA_ASSET_URLS.ffmpegJs, coreUrl: FA_ASSET_URLS.ffmpegCore });
-    } catch (_) { return '下載 ffmpeg.wasm（約 30 MB）'; }
-  }
+  // ffmpeg.wasm 的同意完全沿用 app 既有流程（_decodeAudioForWhisperWithFallback → _ffmpegWasmConsent，
+  // localStorage fa.ffmpeg.wasmConsent 記住一次同意）；音樂庫不另加同意階段，也不替換那個函式。
 
   // 預設轉錄：每個階段都回報進展（report），讓佇列的無進展偵測知道目前在哪一段、做到哪裡。
   // 階段：decode（讀檔與解碼，單位 MB）、load（載入模型，模型下載的進度也算進展）、infer（推論，每段 CHUNK_SEC 秒，window 30 秒）。
@@ -84178,22 +84162,11 @@ const FaMusicLibHost = (function () {
     if (!r || r.base64 == null) throw new Error('讀檔失敗：讀不到這個檔案的內容');
     report('decode', { detail: '解碼音訊' });
     var blob = new Blob([b64ToBytes(r.base64)]);
-    var audio, cstate = { consentDenied: false }, origConsent = fa._ffmpegWasmConsent;
-    fa._ffmpegWasmConsent = async function () { // 只在這次解碼期間生效，之後還原
-      if (consentAlreadyGiven()) return true;
-      report('consent', { detail: consentDetail(), waitUser: true });
-      var ans = await origConsent.call(fa);
-      if (!ans) { cstate.consentDenied = true; return false; }
-      report('decode', { detail: '已同意下載，載入 ffmpeg.wasm' });
-      return true;
-    };
+    var audio;
     try {
       audio = await fa._decodeAudioForWhisperWithFallback({ filename: record.name, blob: blob }, function (m) { report('decode', { detail: m }); });
     } catch (e) {
-      if (cstate.consentDenied) throw new Error('解碼失敗：使用者拒絕下載 ffmpeg.wasm（來源見上一段說明），這個格式無法解碼');
       throw new Error('解碼失敗：' + String((e && e.message) || e));
-    } finally {
-      fa._ffmpegWasmConsent = origConsent;
     }
     var language = opts.language || 'zh';
     var cpuOnly = fa.advancedSettings && (fa.advancedSettings.whisperDevicePreference === 'cpu' || fa.advancedSettings.offlineDevicePreference === 'cpu');
@@ -84249,13 +84222,8 @@ const FaMusicLibHost = (function () {
   // ───── 批次輸出（mid／mp3）：桌面版通道 ─────
   var exportCancelled = false;
   function bytesToB64(u8) { var s = '', CH = 0x8000; for (var i = 0; i < u8.length; i += CH) s += String.fromCharCode.apply(null, u8.subarray(i, i + CH)); return btoa(s); }
-  // 用瀏覽器原生解碼器讀 wav／mp3（不經過 Whisper 的 16 kHz 降採樣，保留原取樣率）
-  async function decodeAudioBytes(u8) {
-    var AC = window.AudioContext || window.webkitAudioContext;
-    var ctx = new AC();
-    try { return await ctx.decodeAudioData(u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength)); }
-    finally { try { ctx.close(); } catch (_) { /* */ } }
-  }
+  // 解碼一律用 app 既有的 _decodeAudioBuffer（extract_audio 同一條：瀏覽器原生 decodeAudioData，保留原取樣率，不碰 ffmpeg.wasm）
+  async function decodeAudioBytes(u8) { return await window.fa._decodeAudioBuffer(new Blob([u8])); }
   // 取前 sec 秒的樣本，回傳 _encodeMp3 吃得下的最小介面（numberOfChannels／sampleRate／getChannelData）
   function viewSeconds(buf, sec) {
     var n = sec == null ? buf.length : Math.min(buf.length, Math.floor(sec * buf.sampleRate));
@@ -84299,7 +84267,6 @@ const FaMusicLibHost = (function () {
         st.buf = rb;
       }
       else if (step === 'write-mid') { st.bytes = FaMidi.write(st.song); }
-      else if (step === 'extract-audio') { throw new Error('尚未接上影片抽音軌（本輪未驗證；需要 ffmpeg.wasm 同意流程）'); }
       else { throw new Error('未知步驟：' + step); }
     }
     checkCancel();

@@ -1930,8 +1930,8 @@
    "names": [
     "FaMusicLib"
    ],
-   "size": 22030,
-   "md5": "845bed0d6bb7335465097f7f8aaf8f04"
+   "size": 21628,
+   "md5": "c5880b64c75545216c717390923d7617"
   },
   "mlui": {
    "file": "chunks/mlui.js",
@@ -1946,8 +1946,8 @@
    "names": [
     "FaMusicLibHost"
    ],
-   "size": 11796,
-   "md5": "cb4001bc99be6c0c9048e3a8f3fbe99c"
+   "size": 10776,
+   "md5": "6dd059afc97f77a171d107caff8f0046"
   }
  },
  "core": {
