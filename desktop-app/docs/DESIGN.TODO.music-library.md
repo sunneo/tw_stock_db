@@ -69,3 +69,40 @@
 ### 下一步（待使用者排序）
 
 最小可行順序建議：庫的資料表與掃描（mid／wav／mp3／mp4 等現成格式）→ 檔名與歌詞文字搜尋（接知識庫與轉錄）→ 批次輸出（先 mid／mp3）→ 哼歌比對（音高輪廓＋節奏）→ 各平台 ROM／RIX／Flash 擷取（最重，各需新解析器）。
+
+## 第一階段現況（庫與掃描，2026-11-22）
+
+狀態：已實作純邏輯核心與最小畫面，單元測試全過；**尚未接進 `floating-assistant.js`，也未在瀏覽器或桌面版實際執行過畫面**。
+
+### 做了什麼
+
+- `renderer/src/musiclib/musiclib_core.js`（UMD，不碰 DOM、不碰檔案系統）
+  - 種類辨識：先看檔頭（MThd、RIFF/WAVE、ID3 或 MPEG 音框、ftyp／qt、EBML、NES 標頭、FWS／CWS／ZWS），認不出來才看副檔名；兩者不同以檔頭為準（結果的 `via` 欄位註明來源）。
+  - 種類：mid（含 midi）、wav、mp3、mp4、mov、webm 為音訊或影片；nes、pce、sfc、rix、swf 只登記成「遊戲音樂來源，待擷取」（`pending: true`），不做擷取。
+  - 專輯：有專輯標籤用標籤（`albumSource: 'tag'`），沒有就用上一層資料夾名（`'folder'`）。
+  - 中繼資料（能解析多少算多少，失敗只記在 `meta.notes`，不丟例外）：mp3 的 ID3v2（標題、演出者、專輯、TLEN）、ID3v1 尾端標籤、Xing／Info 精確長度或位元率估計長度（標 `≈`）；wav 的 fmt 與 data 區塊長度、LIST/INFO 標題與專輯；mid 的軌數、第一軌名稱、依速度變化算的長度；mp4／mov 的 moov／mvhd 長度。
+  - 增量掃描 `scanSource`：路徑＋大小＋修改時間都不變就沿用、不重讀檔頭；新增、變更重新解析；這次沒看到的標成 `missing`（不刪，再出現時重新解析）；辨識不出來的檔案記住大小與修改時間，下次不重讀。
+  - 搜尋 `searchRecords`：空白分隔多關鍵字（全部都要命中）；欄位權重：檔名與標題 3、專輯與演出者 2、路徑 1；檔名完全相同 +5、開頭相同 +2；同分依路徑排序；文字先做 NFKC 與小寫（全形英數會折成半形）。中文、日文、英文都用子字串比對。
+  - 儲存：`createLibrary(backend)`，backend 只要求 `load()`／`save(data)`；提供 `createMemoryBackend`（記憶體）與 `createJsonBackend({ read, write })`（任何地方存 JSON 字串，例如 IndexedDB 或磁碟）。沒有筆數上限。
+- `renderer/src/musiclib/musiclib_ui.js`（UMD）：`FaMusicLibUI.mount(容器, { library, host })`，工具列（加檔案、加資料夾、搜尋框、統計），清單欄位為路徑、檔名、專輯、種類、長度，每列有勾選框（多選，只預留，不輸出）。
+- `renderer/src/musiclib/musiclib_core.test.js`：用手組位元組測試，共 19 項。
+
+### 為什麼沒借用 knowledge_store
+
+`knowledge_store.js` 的表（sources、sections、chunks、FTS5、vectors、links、summaries、digests）是為文字片段與全文索引設計的，音樂的欄位與增量判斷（路徑＋大小＋修改時間）對應不上，所以另寫一個小儲存層（backend 介面）。`knowledge_core.js` 的斷詞也沒借用：音樂搜尋用的是欄位子字串比對，較簡單，且與文字片段無關。
+
+### 接線點（尚未接）
+
+- 桌面版的 host：`pickFiles()`／`pickFolder()` 回傳 `{ label, entries:[{path,size,mtimeMs}], readHead(path, n) }`，路徑用磁碟真路徑（用 Electron 的檔案對話框與 fs.stat）。取消回傳 null。
+- 持久化：`createLibrary(createJsonBackend({ read, write }))`，`read`／`write` 由 app 提供（例如 IndexedDB 或 FAP 磁碟）。
+- 畫面：`FaMusicLibUI.mount(容器, { library, host })`，容器由 floating-assistant 的面板提供；入口與按鈕位置尚未決定。
+- 若要嵌入 `floating-assistant.js`：在 `scripts/embed-code-ui.js` 登記（參照 knowledge 那幾行的做法）；本階段沒有做，也沒有重產任何建置產物。
+
+### 沒做與已知限制
+
+- **未驗證的部分**：畫面（`musiclib_ui.js`）沒有在瀏覽器或桌面版跑過，只有語法層級的載入；核心只跑 node 單元測試（19/19 通過），沒有用真的 mp3、wav、mid、mp4 檔案，全部是手組位元組。
+- 瀏覽器的 File 拿不到完整路徑：只能用檔名與資料夾的相對路徑；路徑與專輯推導要用桌面版的 host 才準。
+- 讀檔頭上限為每檔 2 MB（`HEAD_BYTES`）：mp4／mov 的 moov 若在檔尾，讀不到，長度留空；webm 長度未解析（留空）。
+- mp3 沒有 Xing 標頭時長度為位元率估計（CBR 準，VBR 有誤差，標 `≈`）；mid 的 SMPTE 時間碼不算長度。
+- 搜尋不做簡繁轉換、不做假名互通、不做詞幹化。
+- 遊戲音樂來源（nes、pce、sfc、rix、swf）只辨識，不擷取；哼歌比對、歌詞轉錄、批次輸出、YouTube 都未做。
