@@ -97904,6 +97904,8 @@ const holder = {};
 return holder.FaMusicLibNesMappers;
 })();
 /* MLNESMAP-END */
+/* MLPLAY-BEGIN */
+/* MLPLAY-END */
 /* MLPCECPU-BEGIN */
 const FaMusicLibPceCpu = (function () {
 const holder = {};
@@ -100757,6 +100759,55 @@ const FaMusicLibHost = (function () {
       this._pushAssistantMessage('🎵 音樂庫：加檔案、加資料夾，掃描後可以用檔名、專輯、標題、演出者，以及轉錄出來的歌詞搜尋（資料存在這台電腦）。\n\n```fa-musiclib\n' + JSON.stringify({ id: id }) + '\n```', null);
       try { this._persistChatHistory(); this._renderMessageHistory(); } catch (_) { /* 顯示失敗不影響資料 */ }
     },
+    // /media-play：任何音樂或影片檔，不用進音樂庫。每個檔案一張播放卡片（```fa-mediaplay 區塊，見 _mpMount）
+    _mpExt(name) { var m = /\.([^.\\\/]+)$/.exec(String(name || '')); return m ? m[1].toLowerCase() : ''; },
+    _mpOpen(argsText) {
+      var paths = (typeof FaMediaPlay !== 'undefined') ? FaMediaPlay.parseArgs(argsText).filter(Boolean) : [];
+      if (!paths.length) { this._mpPickFiles(); return; }
+      var self = this;
+      paths.forEach(function (p) { self._mpPushItem({ path: p, name: p.split(/[\\\/]/).pop(), kind: self._mpExt(p) }); });
+    },
+    // 沒給路徑：開檔案選擇器（renderer 的 <input type=file>，拿到的是 File，不是實體路徑）
+    _mpPickFiles() {
+      var self = this, inp = document.createElement('input');
+      inp.type = 'file'; inp.multiple = true;
+      inp.onchange = function () {
+        Array.prototype.slice.call(inp.files || []).forEach(function (f) { self._mpPushItem({ file: f, name: f.name, kind: self._mpExt(f.name) }); });
+      };
+      inp.click();
+    },
+    _mpPushItem(item) {
+      this._mpItems = this._mpItems || new Map();
+      var id = 'mp' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+      this._mpItems.set(id, item);
+      var ref = { id: id, name: item.name, kind: item.kind, path: item.path || null };
+      this._pushAssistantMessage('🎵 播放：' + item.name + '\n\n```fa-mediaplay\n' + JSON.stringify(ref) + '\n```', null);
+      try { this._persistChatHistory(); this._renderMessageHistory(); } catch (_) { /* 顯示失敗不影響資料 */ }
+    },
+    // 把 ```fa-mediaplay 區塊換成通用播放卡片（每次對話重新渲染時都會掛一次）
+    _mpMount(mdDiv) {
+      if (typeof FaMediaPlay === 'undefined' || typeof FaMusicLibHost === 'undefined') return;
+      var self = this;
+      mdDiv.querySelectorAll('pre > code.language-fa-mediaplay').forEach(function (code) {
+        var ref = null; try { ref = JSON.parse(code.textContent); } catch (_) { /* */ }
+        var holder = code.parentElement;
+        var item = ref && self._mpItems && self._mpItems.get(ref.id);
+        if (!item && ref && ref.path) item = { path: ref.path, name: ref.name, kind: ref.kind };
+        if (!item) {
+          var w = document.createElement('div'); w.style.cssText = 'padding:8px;opacity:.8;font-size:12px';
+          w.textContent = '⚠️ 這張播放卡片是用選檔拿到的，重新整理後檔案要重選（請用 /media-play 加完整路徑，就能一直播）。';
+          holder.replaceWith(w); return;
+        }
+        var rec = { key: null, name: item.name, kind: item.kind, path: item.path || null, file: item.file || null, status: 'ok', pending: false, derivedFrom: null };
+        holder.replaceWith(FaMediaPlay.mount(rec, FaMusicLibHost.play));
+      });
+    },
+    _registerMediaPlayCommand() {
+      var self = this;
+      this.register_slash_command('/media-play', '[檔案路徑…]', '播放任何音樂或影片檔（不用進音樂庫）。可以一次列出多個路徑（路徑有空白就加引號）；不給路徑就開檔案選擇器。', async function (argsText, run) {
+        (run || self)._mpOpen(argsText);
+      });
+    },
     _registerMusicLibCommand() {
       var self = this;
       this.register_slash_command('/musiclib', '', '音樂庫：加檔案或資料夾、掃描、用檔名／專輯／標題／演出者／歌詞搜尋；資料存在本機，重新開啟還在。', async function (argsText, run) {
@@ -102287,7 +102338,7 @@ class FloatingAssistant {
         // /edit-html：網頁編輯器（HTML 編輯＋預覽＋模擬後端、AI 對話修改）的好記名字；跟 /webedit 是同一個
         this.register_slash_command('/edit-html', '[起手式｜一句話描述]', '網頁編輯器（HTML 編輯器）：/webedit 的別名。不帶參數＝接著開最近一份；/edit-html todo 從起手式開始；/edit-html 做一個記帳網站 由 AI 做出第一版。',
             async (argsText, run) => { const base = this.slashCommands.get('/webedit'); if (!base) return; return base.handler(argsText, run); });
-        this._registerKnowledgeCommand(); this._registerMusicLibCommand();
+        this._registerKnowledgeCommand(); this._registerMusicLibCommand(); this._registerMediaPlayCommand();
         this._registerEditCommands();
         this._registerComputerCommands && this._registerComputerCommands();
         this._cuListen && this._cuListen();
@@ -160991,7 +161042,7 @@ ${sel.script === 'cjk' ? '<div style="opacity:.8;margin-bottom:2px">每格的部
                     try { this._mountWebEditors(mdDiv); } catch (e) { console.warn('網頁編輯器掛載失敗', e); }
                     try { this._mountEditEditors(mdDiv); } catch (e) { console.warn('SVG／圖片／3D 編輯器掛載失敗', e); }
                     try { this._mountKnowledgePanels(mdDiv); } catch (e) { console.warn('知識庫面板掛載失敗', e); }
-                    try { this._mlMount(mdDiv); } catch (e) { console.warn('音樂庫面板掛載失敗', e); }
+                    try { this._mlMount(mdDiv); } catch (e) { console.warn('音樂庫面板掛載失敗', e); } try { this._mpMount(mdDiv); } catch (e) { console.warn('播放卡片掛載失敗', e); }
                     try { this._mountWidgets(mdDiv); } catch (e) { console.warn('專屬視窗掛載失敗', e); }
                 } catch (_) {
                     mdDiv.textContent = answerText;
