@@ -82,15 +82,19 @@ const FaMusicLibHost = (function () {
     var fa = (typeof window !== 'undefined' && window.fa) || null;
     if (!fa || typeof fa._decodeAudioForWhisperWithFallback !== 'function') throw new Error('找不到 Whisper 轉錄（需要桌面版的 app）');
     var a = api();
-    if (!a || !a.rawfs || !a.rawfs.readFile) throw new Error('讀取音檔的通道不存在（需要桌面版）');
     var report = typeof opts.report === 'function' ? opts.report : function () {};
-    var sizeMB = Math.max(1, (record.sizeBytes || 0) / 1048576);
-    report('decode', { detail: '讀取檔案（' + Math.round(sizeMB) + ' MB）', units: sizeMB, window: sizeMB });
-    var r;
-    try { r = await a.rawfs.readFile(record.path, 'base64'); } catch (e) { throw new Error('讀檔失敗：' + String((e && e.message) || e)); }
-    if (!r || r.base64 == null) throw new Error('讀檔失敗：讀不到這個檔案的內容');
+    var sizeMB = Math.max(1, (record.sizeBytes || record.blob && record.blob.size || 0) / 1048576);
+    var blob;
+    if (record.blob) { blob = record.blob; } // 哼歌錄音：已經在記憶體裡，不用讀檔
+    else {
+      if (!a || !a.rawfs || !a.rawfs.readFile) throw new Error('讀取音檔的通道不存在（需要桌面版）');
+      report('decode', { detail: '讀取檔案（' + Math.round(sizeMB) + ' MB）', units: sizeMB, window: sizeMB });
+      var r;
+      try { r = await a.rawfs.readFile(record.path, 'base64'); } catch (e) { throw new Error('讀檔失敗：' + String((e && e.message) || e)); }
+      if (!r || r.base64 == null) throw new Error('讀檔失敗：讀不到這個檔案的內容');
+      blob = new Blob([b64ToBytes(r.base64)]);
+    }
     report('decode', { detail: '解碼音訊' });
-    var blob = new Blob([b64ToBytes(r.base64)]);
     var audio;
     try {
       audio = await fa._decodeAudioForWhisperWithFallback({ filename: record.name, blob: blob }, function (m) { report('decode', { detail: m }); });
@@ -196,11 +200,10 @@ const FaMusicLibHost = (function () {
         st.buf = rb;
       }
       else if (step === 'write-mid') { st.bytes = FaMidi.write(st.song); }
-      else if (step === 'pitch-track') { st.notes = notesFromBuffer(st.view); }
-      else if (step === 'build-mid') {
-        // 同 audio_to_midi 的 buildSong（單音旋律分軌，速度用它自己的估計）；結果標「簡易轉譜」
-        st.song = FaAudioToMidi.buildSong({ other: [{ name: '旋律（簡易轉譜）', program: 0, notes: st.notes }] }, { title: basename(rec.name) }).song;
-        st.bytes = FaMidi.write(st.song);
+      else if (step === 'to-song') {
+        // 既有 FaAudioPipeline：ctx.useModel 才試 Basic Pitch（沒模型或失敗就單音追蹤，並記在 st.method）
+        var sg = await songFromMedia(chansOf(st.view), st.view.sampleRate, !!ctx.useModel, basename(rec.name), !!ctx.allowDownload);
+        st.song = sg.song; st.method = sg.method;
         st.expectNotes = FaMidi.noteCount(st.song);
         st.expectSec = st.view.duration;
       }
@@ -212,7 +215,7 @@ const FaMusicLibHost = (function () {
     var path = joinPath(ctx.outDir, name);
     ctx.onStage('write');
     var wr = await a.rawfs.writeFile(path, { base64: bytesToB64(st.bytes) });
-    return { path: path, sizeBytes: wr && wr.sizeBytes, format: ctx.item.format, expectSec: st.expectSec, expectNotes: st.expectNotes };
+    return { path: path, sizeBytes: wr && wr.sizeBytes, format: ctx.item.format, expectSec: st.expectSec, expectNotes: st.expectNotes, method: st.method || null };
   }
 
   // 寫完後讀回磁碟檢查：大小一致、mp3 用原生解碼器量長度、mid 用 FaMidi 解析並比對音符數
@@ -250,24 +253,41 @@ const FaMusicLibHost = (function () {
       minutes: opts.minutes,
       isCancelled: function () { return exportCancelled; },
       onEvent: opts.onEvent,
-      runStep: function (ctx) { ctx.outDir = outDir; ctx.minutes = opts.minutes; return exportRunStep(ctx); },
+      runStep: function (ctx) { ctx.outDir = outDir; ctx.minutes = opts.minutes; ctx.useModel = !!opts.useModel; ctx.allowDownload = !!opts.useModel; return exportRunStep(ctx); },
       verify: function (out) { return verifyOutput(out); }
     }).then(function (res) { res.outDir = outDir; return res; });
   }
 
   // ───── 旋律找歌：轉接層 ─────
   // 音訊轉音符一律用既有的 audio_to_midi（FaAudioToMidi.pitchTrack／framesToNotes），不用模型，所以索引標「簡易轉譜」。
-  function monoOf(buf) {
-    var n = buf.length, nc = buf.numberOfChannels, out = new Float32Array(n);
-    for (var c = 0; c < nc; c++) { var d = buf.getChannelData(c); for (var i = 0; i < n; i++) out[i] += d[i] / nc; }
-    return out;
+  // Basic Pitch（既有 FaAudioModels／FaAudioRuntime 的載入方式，與 _audioToMidi 相同）。
+  // 模型沒下載過：allowDownload 為 false 就回傳 null（呼叫端退回單音追蹤並標明）；為 true 才用既有 fetchModel 下載。
+  async function basicPitchTranscriber(allowDownload) {
+    var store = FaAudioModels.idbStore(), id = 'basic-pitch';
+    var st = await FaAudioModels.status(id, store);
+    if (!st.complete && !allowDownload) return { transcriber: null, note: 'Basic Pitch 模型還沒下載' };
+    var bytes = await FaAudioModels.fetchModel(id, {
+      fetchFn: function (u, h) { return fetch(u, { headers: h }); }, store: store,
+      sha256: FaAudioModels.webSha256, sleep: function (ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+    });
+    var ort = await FaAudioRuntime.loadOrt();
+    var s = await FaAudioRuntime.createSession(ort, bytes, ['wasm'], {});
+    return { transcriber: FaAudioRuntime.makeTranscriber(ort, s.session), note: '' };
   }
-  function notesFromBuffer(buf) {
-    var x = monoOf(buf);
-    return FaAudioToMidi.framesToNotes(FaAudioToMidi.pitchTrack(x, buf.sampleRate));
+  // 音訊（已解碼的 AudioBuffer 或 Blob）→ 歌曲：走既有 FaAudioPipeline；useModel 才試 Basic Pitch
+  async function songFromMedia(channelsBuf, sr, useModel, title, allowDownload) {
+    var tr = { transcriber: null, note: '' };
+    if (useModel) tr = await basicPitchTranscriber(!!allowDownload);
+    var chans = Array.isArray(channelsBuf) ? channelsBuf : [];
+    var r = await FaMusicLibAudio.songFromAudio({ channels: chans, sampleRate: sr }, {
+      Pipeline: FaAudioPipeline, transcriber: tr.transcriber, title: title,
+      modelNote: useModel ? tr.note : ''
+    });
+    return r;
   }
-  // 索引用：mid 直接取旋律；音訊先用 _decodeAudioBuffer（既有解碼）再單音追蹤。失敗丟錯，訊息附階段
-  async function extractMelody(rec) {
+  function chansOf(buf) { var out = []; for (var c = 0; c < buf.numberOfChannels; c++) out.push(buf.getChannelData(c)); return out; }
+  // 索引用：mid 直接取旋律；音訊先用既有 _decodeAudioBuffer 解碼，再 songFromMedia（可選 Basic Pitch）。失敗丟錯，訊息附階段
+  async function extractMelody(rec, useModel) {
     var a = api(), fa = window.fa;
     var r;
     try { r = await a.rawfs.readFile(rec.path, 'base64'); } catch (e) { throw new Error('讀檔失敗：' + String((e && e.message) || e)); }
@@ -279,12 +299,26 @@ const FaMusicLibHost = (function () {
     }
     var buf;
     try { buf = await fa._decodeAudioBuffer(new Blob([u8])); } catch (e) { throw new Error('解碼失敗：' + String((e && e.message) || e)); }
-    return { notes: notesFromBuffer(buf), method: '簡易轉譜（單音音高追蹤）' };
+    var sg;
+    try { sg = await songFromMedia(chansOf(buf), buf.sampleRate, !!useModel, rec.name, !!useModel); } catch (e) { throw new Error('轉譜失敗：' + String((e && e.message) || e)); }
+    return { notes: FaMusicLibMelody.melodyFromSong(sg.song), method: sg.method };
   }
-  // 查詢用：錄下的哼歌或選的音檔 → 音符
-  async function notesFromHum(blob) {
+  // 查詢用：錄下的哼歌或選的音檔 → 音符（同索引的音訊路線）
+  async function notesFromHum(blob, useModel) {
     var buf = await window.fa._decodeAudioBuffer(blob);
-    return notesFromBuffer(buf);
+    var sg = await songFromMedia(chansOf(buf), buf.sampleRate, !!useModel, '哼歌', !!useModel);
+    return { notes: FaMusicLibMelody.melodyFromSong(sg.song), method: sg.method };
+  }
+  // 試聽：從音樂庫的檔案讀出來，用 new Audio(objectURL)（與 app 的 TTS 試聽同一寫法），從 startSec 開始，endSec 後停
+  async function playClip(path, startSec, endSec) {
+    var a = api(); var r = await a.rawfs.readFile(path, 'base64');
+    if (!r || r.base64 == null) throw new Error('讀不到這個檔案');
+    var url = URL.createObjectURL(new Blob([b64ToBytes(r.base64)]));
+    var au = new Audio(url);
+    au.onloadedmetadata = function () { try { au.currentTime = Math.max(0, startSec - 0.3); } catch (_) { /* */ } };
+    await au.play();
+    setTimeout(function () { try { au.pause(); } catch (_) { /* */ } URL.revokeObjectURL(url); }, Math.max(1, (endSec - startSec) + 1) * 1000);
+    return au;
   }
   // 麥克風錄音：getUserMedia（同 app 其他錄音的寫法），錄 seconds 秒，回傳 Blob
   async function recordHum(seconds) {
@@ -306,7 +340,7 @@ const FaMusicLibHost = (function () {
   function melodyResume() { melodyState.paused = false; var w = melodyState.resumeWaiters.splice(0); w.forEach(function (f) { f(); }); }
 
   // 建立（或續跑）旋律索引：已建且檔案沒變的跳過；結果寫進音樂庫的紀錄（record.melody），再 lib.save()
-  async function buildMelodyIndex(onEvent) {
+  async function buildMelodyIndex(onEvent, useModel) {
     var L = getLib(); await L.ready;
     if (melodyState.running) throw new Error('旋律索引已在建立中');
     melodyState.running = true; melodyState.cancelled = false;
@@ -314,7 +348,7 @@ const FaMusicLibHost = (function () {
     var saveCount = 0;
     try {
       var sum = await FaMusicLibMelody.runMelodyIndex(recs, {
-        extract: function (rec) { return extractMelody(rec); },
+        extract: function (rec) { return extractMelody(rec, !!useModel); },
         save: async function () { if (++saveCount % 10 === 0) await L.save(); },
         onEvent: onEvent || function () {},
         isCancelled: function () { return melodyState.cancelled; },
@@ -330,14 +364,23 @@ const FaMusicLibHost = (function () {
       return { key: r.key, name: r.name, contour: r.melody.contour, method: r.melody.method, path: r.path };
     });
   }
-  // 找歌：notes（查詢音符）＋可選的文字（歌詞搜尋當加分）
-  function searchHum(notes, opts) {
-    var L = getLib(), entries = melodyEntries(L), textHits = null;
+  // 哼歌的文字：先用既有轉錄（whisperTranscribe，同歌詞轉錄的 Whisper 流程）取文字；面板手動填的文字優先
+  async function transcribeHum(blob) {
+    var r = await whisperTranscribe({ blob: blob, name: 'hum.webm', sizeBytes: blob.size }, { report: function () {} });
+    return ((r && r.segments) || []).map(function (s) { return s.text; }).join(' ').trim();
+  }
+  // 找歌：notes（查詢音符）＋可選的文字加分（可關閉）。文字來源：手動填的，或從哼歌錄音轉錄
+  async function searchHum(notes, opts) {
+    var L = getLib(), entries = melodyEntries(L), textHits = null, text = '';
     opts = opts || {};
-    if (opts.textQuery && opts.useText) {
-      textHits = new Set(L.search(opts.textQuery, { scope: 'lyrics' }).map(function (x) { return x.record.key; }));
+    if (opts.useText) {
+      text = String(opts.textQuery || '').trim();
+      if (!text && opts.blob) text = await transcribeHum(opts.blob);
+      if (text) textHits = new Set(L.search(text, { scope: 'lyrics' }).map(function (x) { return x.record.key; }));
     }
-    return FaMusicLibMelody.searchMelody(notes, entries, { minScore: opts.minScore, limit: opts.limit || 10, textHits: textHits, textWeight: 0.15 });
+    var res = FaMusicLibMelody.searchMelody(notes, entries, { minScore: opts.minScore, limit: opts.limit || 10, textHits: textHits, textWeight: 0.15 });
+    res.textUsed = text;
+    return res;
   }
   // 找不到時：把查到的旋律用 MIDI 演奏出來（用既有的 MIDI 編輯器與播放）
   function humAsMidi(notes, title) {
@@ -360,6 +403,8 @@ const FaMusicLibHost = (function () {
     notesFromHum: notesFromHum,
     search: searchHum,
     humAsMidi: humAsMidi,
+    playClip: playClip,
+    basicPitchStatus: function () { return FaAudioModels.status('basic-pitch', FaAudioModels.idbStore()); },
     entries: function () { return melodyEntries(getLib()); }
   };
   var PICK_HOST = { pickFolder: pickFolder, melody: MELODY_HOST };
@@ -397,7 +442,7 @@ const FaMusicLibHost = (function () {
     }
   };
 
-  return { methods: methods, getLib: getLib, pickFolder: pickFolder, walkFolder: walkFolder, whisperTranscribe: whisperTranscribe,
+  return { methods: methods, getLib: getLib, pickFolder: pickFolder, walkFolder: walkFolder, whisperTranscribe: whisperTranscribe, melody: MELODY_HOST,
     exportBatch: exportBatch, verifyOutput: verifyOutput,
     // 取消批次輸出：正在跑的那個檔案在下一個步驟前中止，之後的檔案標示取消
     cancelExport: function () { exportCancelled = true; },

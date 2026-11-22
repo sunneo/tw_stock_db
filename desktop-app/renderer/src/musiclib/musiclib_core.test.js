@@ -623,7 +623,7 @@ t('路由：音訊轉 mp3、MIDI 轉 mp3／mid、影片走原生解碼（不需�
 t('路由：不支援的組合說明原因，不默默略過', function () {
   var a = M.planExport('a.wav', 'mid');
   assert.equal(a.route, 'audio>mid', '音訊轉 mid 走 audio_to_midi 單音追蹤');
-  assert.deepEqual(a.steps, ['decode', 'slice', 'pitch-track', 'build-mid']);
+  assert.deepEqual(a.steps, ['decode', 'slice', 'to-song', 'write-mid']);
   assert.equal(M.planExport('clip.mp4', 'mid').route, 'video>mid');
   var r = M.planExport('mario.nes', 'mp3');
   assert.equal(r.ok, false); assert.ok(/尚未支援/.test(r.reason) && /擷取器/.test(r.reason));

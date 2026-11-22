@@ -116,6 +116,7 @@ t('mid 直接取旋律：鼓軌不算、同群起音取最高音', function () {
   ] };
   var mel = MM.melodyFromSong(song);
   assert.deepEqual(mel.map(function (x) { return x.n; }), [67, 62], '同時起音取最高音，鼓不算');
+  assert.ok(Math.abs(mel[1].t - 0.5) < 1e-9, 'tick 480 在 120 BPM 是 0.5 秒（時間要換成秒，不是 tick）');
 });
 
 t('索引：建好的跳過；檔案變了重建；暫時性失敗重試後成功；永久失敗附原因；取消後剩下的不跑', async function () {

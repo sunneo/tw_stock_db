@@ -689,9 +689,9 @@
     'mid>mid': ['parse-mid', 'trim-mid', 'write-mid'],
     // 影片與音訊同一條：extract_audio 用的 _decodeAudioBuffer 會原生解出 mp4/mov/webm 的音軌，不需要 ffmpeg.wasm
     'video>mp3': ['decode', 'slice', 'encode-mp3'],
-    // 音訊（與影片）轉 MIDI：走 audio_to_midi 的單音音高追蹤（pitchTrack→framesToNotes→buildSong），不用模型，所以索引與批次結果都要標「簡易轉譜」
-    'audio>mid': ['decode', 'slice', 'pitch-track', 'build-mid'],
-    'video>mid': ['decode', 'slice', 'pitch-track', 'build-mid']
+    // 音訊（與影片）轉 MIDI：to-song 走既有 FaAudioPipeline（有 Basic Pitch 就用，沒有或失敗就單音音高追蹤並標明）
+    'audio>mid': ['decode', 'slice', 'to-song', 'write-mid'],
+    'video>mid': ['decode', 'slice', 'to-song', 'write-mid']
   };
   var SOURCE_CLASS = { wav: 'audio', mp3: 'audio', mid: 'mid', midi: 'mid', mp4: 'video', mov: 'video', webm: 'video', m4v: 'video' };
   var ROM_EXT = { nes: 1, pce: 1, sfc: 1, rix: 1, swf: 1 };

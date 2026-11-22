@@ -73,6 +73,9 @@
     var eMin = h('input'); eMin.type = 'number'; eMin.min = '0.1'; eMin.step = '0.5'; eMin.value = '1'; eMin.style.width = '70px';
     var eWhole = h('input'); eWhole.type = 'checkbox';
     var eWholeLbl = h('label', null, '整首'); eWholeLbl.appendChild(eWhole);
+    var eModel = h('input'); eModel.type = 'checkbox';
+    var eModelLbl = h('label', null, '音訊轉 mid 用 Basic Pitch'); eModelLbl.appendChild(eModel);
+    exp.appendChild(eModelLbl);
     var bExp = h('button', null, '批次輸出');
     var bExpCancel = h('button', null, '取消輸出');
     var expStat = h('span', 'fml-st');
@@ -215,7 +218,7 @@
       expStat.textContent = '選擇輸出資料夾…';
       var fmt = eFmt.value;
       host.exportBatch(recs, {
-        format: fmt, minutes: minutes,
+        format: fmt, minutes: minutes, useModel: eModel.checked,
         onEvent: function (ev) {
           if (ev.retry) expStat.textContent = '暫時性失敗，自動重試第 ' + ev.retry + ' 次…';
           else if (ev.stage) expStat.textContent = '輸出中（' + (STAGE_ZH[ev.stage] || ev.stage) + '）';
@@ -227,7 +230,7 @@
         expStat.textContent = '完成 ' + (s.done || 0) + '、失敗 ' + (s.failed || 0) + '、不支援 ' + (s.unsupported || 0) + '、取消 ' + (s.cancelled || 0) + '　→ ' + res.outDir;
         (res.results || []).forEach(function (x) {
           var line = h('div', x.status === 'done' ? null : 'bad', '[' + (STATUS_ZH[x.status] || x.status) + '] ' + x.name + (x.format ? '（' + x.format + '）' : ''));
-          var detail = x.status === 'done' ? '→ ' + (x.output && x.output.path) + '　' + (x.verify && x.verify.detail || '') : (x.reason ? (x.stage ? '［' + (STAGE_ZH[x.stage] || x.stage) + '］' : '') + x.reason : '');
+          var detail = x.status === 'done' ? '→ ' + (x.output && x.output.path) + '　' + (x.verify && x.verify.detail || '') + (x.output && x.output.method ? '　［' + x.output.method + '］' : '') : (x.reason ? (x.stage ? '［' + (STAGE_ZH[x.stage] || x.stage) + '］' : '') + x.reason : '');
           if (x.elapsedMs) detail += '　（' + (x.elapsedMs / 1000).toFixed(1) + ' 秒，嘗試 ' + x.attempts + ' 次）';
           line.appendChild(document.createTextNode(' ' + detail));
           expList.appendChild(line);
@@ -247,11 +250,13 @@
     var mText = h('input'); mText.type = 'text'; mText.placeholder = '歌詞文字（選填，用來加分）'; mText.style.width = '160px';
     var mUseText = h('input'); mUseText.type = 'checkbox'; mUseText.checked = true;
     var mUseLbl = h('label', null, '用文字加分'); mUseLbl.appendChild(mUseText);
+    var mModel = h('input'); mModel.type = 'checkbox';
+    var mModelLbl = h('label', null, '用 Basic Pitch（沒有模型會下載，走既有流程；不勾就用單音追蹤）'); mModelLbl.appendChild(mModel);
     var mFind = h('button', null, '找相似'), mStat = h('span', 'fml-st');
     var mFile = h('input'); mFile.type = 'file'; mFile.accept = 'audio/*,video/*'; mFile.style.display = 'none';
     var mRes = h('div', 'fml-foot'), mMidi = h('button', null, '找不到？用 MIDI 演奏這段旋律'); mMidi.style.display = 'none';
     melBox.appendChild(mIdx); melBox.appendChild(mPause); melBox.appendChild(mIdxCancel);
-    melBox.appendChild(mRec); melBox.appendChild(mPick); melBox.appendChild(mText); melBox.appendChild(mUseLbl); melBox.appendChild(mFind);
+    melBox.appendChild(mModelLbl); melBox.appendChild(mRec); melBox.appendChild(mPick); melBox.appendChild(mText); melBox.appendChild(mUseLbl); melBox.appendChild(mFind);
     melBox.appendChild(mStat); melBox.appendChild(mFile);
     if (!MEL) { [mIdx, mPause, mIdxCancel, mRec, mPick, mFind].forEach(function (b) { b.disabled = true; }); mStat.textContent = '哼歌找歌不可用（需要桌面版）'; }
     mPause.disabled = true; mIdxCancel.disabled = true;
@@ -265,36 +270,50 @@
     mIdx.onclick = function () {
       if (!MEL || MEL.indexState().running) return;
       mIdx.disabled = true; mPause.disabled = false; mIdxCancel.disabled = false; melStatus('旋律索引：開始…');
-      MEL.buildIndex(idxLine).then(function (sum) {
+      MEL.buildIndex(idxLine, mModel.checked).then(function (sum) {
         mIdx.disabled = false; mPause.disabled = true; mIdxCancel.disabled = true;
         melStatus('旋律索引：完成 ' + sum.done + '、跳過 ' + sum.skipped + '、失敗 ' + sum.failed + '、取消 ' + sum.cancelled + '（失敗的會寫明原因）');
       }, function (e) { mIdx.disabled = false; mPause.disabled = true; mIdxCancel.disabled = true; melStatus('旋律索引出錯：' + String((e && e.message) || e)); });
     };
     mPause.onclick = function () { if (!MEL) return; if (mPause.textContent === '暫停索引') { MEL.pauseIndex(); mPause.textContent = '續跑索引'; melStatus('旋律索引：已暫停（目前這首做完後停）'); } else { MEL.resumeIndex(); mPause.textContent = '暫停索引'; melStatus('旋律索引：續跑'); } };
     mIdxCancel.onclick = function () { if (MEL) MEL.cancelIndex(); melStatus('旋律索引：取消中…'); };
-    function showHum(notes) { melHum = notes; mStat.textContent = '哼歌已取得 ' + notes.length + ' 個音'; }
+    var melBlob = null, melMethod = '';
+    function showHum(r, blob) { melHum = r.notes; melBlob = blob || null; melMethod = r.method || ''; mStat.textContent = '哼歌已取得 ' + r.notes.length + ' 個音（' + melMethod + '）'; }
     mRec.onclick = function () {
       if (!MEL) return; mRec.disabled = true; melStatus('錄音中（8 秒）…');
-      MEL.recordHum(8).then(function (blob) { return MEL.notesFromHum(blob); }).then(function (notes) { showHum(notes); }, function (e) { melStatus('錄音或轉譜失敗：' + String((e && e.message) || e)); }).then(function () { mRec.disabled = false; });
+      var blobNow = null;
+      MEL.recordHum(8).then(function (blob) { blobNow = blob; melStatus('轉譜中…'); return MEL.notesFromHum(blob, mModel.checked); })
+        .then(function (r) { showHum(r, blobNow); }, function (e) { melStatus('錄音或轉譜失敗：' + String((e && e.message) || e)); })
+        .then(function () { mRec.disabled = false; });
     };
     mPick.onclick = function () { mFile.value = ''; mFile.click(); };
-    mFile.onchange = function () { var f = mFile.files && mFile.files[0]; if (!f || !MEL) return; melStatus('解碼並轉譜 ' + f.name + '…'); MEL.notesFromHum(f).then(showHum, function (e) { melStatus('轉譜失敗：' + String((e && e.message) || e)); }); };
+    mFile.onchange = function () {
+      var f = mFile.files && mFile.files[0]; if (!f || !MEL) return; melStatus('解碼並轉譜 ' + f.name + '…');
+      MEL.notesFromHum(f, mModel.checked).then(function (r) { showHum(r, f); }, function (e) { melStatus('轉譜失敗：' + String((e && e.message) || e)); });
+    };
     mFind.onclick = function () {
       if (!MEL) return;
       if (!melHum) { melStatus('先錄哼歌或選音檔'); return; }
-      var r = MEL.search(melHum, { textQuery: mText.value, useText: mUseText.checked });
-      mRes.textContent = ''; mMidi.style.display = 'none'; melFound = null;
-      if (!r.ok) { melStatus(r.reason); return; }
-      if (!r.results.length) {
-        var n = MEL.entries().length;
-        melStatus(n ? '找不到相似的歌（' + n + ' 首已建索引）' : '還沒有旋律索引，請先按「建立旋律索引」');
-        mMidi.style.display = ''; melFound = melHum; return;
-      }
-      melStatus('找到 ' + r.results.length + ' 首（分數越高越像；命中時間是曲中的秒數）');
-      r.results.forEach(function (x) {
-        var line = h('div', null, '[' + x.score.toFixed(2) + '] ' + x.name + '　音高 ' + x.pitchScore.toFixed(2) + '、節奏 ' + x.rhythmScore.toFixed(2) + (x.textBonus ? '、文字加分' : '') + '　命中 ' + x.startSec.toFixed(1) + '–' + x.endSec.toFixed(1) + ' 秒');
-        mRes.appendChild(line);
-      });
+      mFind.disabled = true; mRes.textContent = ''; mMidi.style.display = 'none'; melFound = null;
+      MEL.search(melHum, { textQuery: mText.value, useText: mUseText.checked, blob: melBlob }).then(function (r) {
+        mFind.disabled = false;
+        if (!r.ok) { melStatus(r.reason); return; }
+        var textNote = mUseText.checked ? (r.textUsed ? '；文字加分用「' + r.textUsed.slice(0, 30) + '」' : '；沒有文字可加分') : '';
+        if (!r.results.length) {
+          var n = MEL.entries().length;
+          melStatus(n ? '找不到相似的歌（' + n + ' 首已建索引' + textNote + '）' : '還沒有旋律索引，請先按「建立旋律索引」');
+          mMidi.style.display = ''; melFound = melHum; return;
+        }
+        melStatus('找到 ' + r.results.length + ' 首（分數越高越像；命中時間是曲中的秒數' + textNote + '）');
+        var paths = {}; MEL.entries().forEach(function (e) { paths[e.key] = e.path; });
+        r.results.forEach(function (x) {
+          var line = h('div', null, '[' + x.score.toFixed(2) + '] ' + x.name + '　音高 ' + x.pitchScore.toFixed(2) + '、節奏 ' + x.rhythmScore.toFixed(2) + (x.textBonus ? '、文字加分' : '') + '　命中 ' + x.startSec.toFixed(1) + '–' + x.endSec.toFixed(1) + ' 秒');
+          var play = h('button', null, '試聽命中段');
+          play.onclick = function () { MEL.playClip(paths[x.key], x.startSec, x.endSec).catch(function (e) { melStatus('試聽失敗：' + String((e && e.message) || e)); }); };
+          line.appendChild(document.createTextNode(' ')); line.appendChild(play);
+          mRes.appendChild(line);
+        });
+      }, function (e) { mFind.disabled = false; melStatus('找歌失敗：' + String((e && e.message) || e)); });
     };
     mMidi.onclick = function () { if (!MEL || !melFound) return; try { MEL.humAsMidi(melFound, '哼歌旋律'); melStatus('已開啟 MIDI 編輯器演奏哼歌旋律'); } catch (e) { melStatus('演奏失敗：' + String((e && e.message) || e)); } };
 

@@ -83805,6 +83805,8 @@ return holder.FaMusicLib;
 /* MLCORE-END */
 /* MLMEL-BEGIN */
 /* MLMEL-END */
+/* MLAUD-BEGIN */
+/* MLAUD-END */
 /* MLUI-BEGIN */
 const FaMusicLibUI = (function () {
 const holder = {};

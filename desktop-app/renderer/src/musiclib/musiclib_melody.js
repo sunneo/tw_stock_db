@@ -39,10 +39,23 @@
     }
     return out;
   }
-  // song（FaMidi 曲子）→ 主旋律：所有非鼓軌音符合併後取旋律
+  // 與 FaMidi.ticksToSec 相同的速度表換算（這裡不依賴 midi_core，好讓這個檔可以獨立載入）
+  function ticksToSec(song, tick) {
+    var tp = song.tempos && song.tempos.length ? song.tempos : [{ t: 0, bpm: 120 }], ppq = song.ppq || 480;
+    var sec = 0, last = 0, bpm = tp[0].bpm;
+    for (var i = 1; i < tp.length && tp[i].t < tick; i++) { sec += (tp[i].t - last) / ppq * 60 / bpm; last = tp[i].t; bpm = tp[i].bpm; }
+    return sec + (tick - last) / ppq * 60 / bpm;
+  }
+  // song（FaMidi 曲子，音符時間是 tick）→ 主旋律（秒）：所有非鼓軌音符合併後取旋律
   function melodyFromSong(song) {
     var all = [];
-    ((song && song.tracks) || []).forEach(function (tr) { if (tr.drum) return; (tr.notes || []).forEach(function (n) { all.push(n); }); });
+    ((song && song.tracks) || []).forEach(function (tr) {
+      if (tr.drum) return;
+      (tr.notes || []).forEach(function (n) {
+        var t0 = ticksToSec(song, n.t), t1 = ticksToSec(song, n.t + n.d);
+        all.push({ t: t0, d: t1 - t0, n: n.n, v: n.v });
+      });
+    });
     return melodyNotes(all);
   }
 
