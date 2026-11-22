@@ -84752,6 +84752,234 @@ const holder = {};
 return holder.FaMatrixLzma;
 })();
 /* MXLZ-END */
+/* MLYT-BEGIN */
+const FaMusicLibYoutube = (function () {
+const holder = {};
+(function (module, self) {
+/* 音樂庫的 YouTube 清單來源（純函式，UMD）：不碰 DOM、不碰網路、不碰磁碟。
+ *   parseInput(text) → { mode:'playlist', listId } 或 { mode:'video', videoId } 或 { error }
+ *       清單網址（含 list=）優先；沒有 list= 才當單支影片。
+ *   buildFlatPlaylistScript(listId) → 要交給 Pyodide 的 yt-dlp 腳本（extract_flat，只列清單，不下載）。
+ *   parseFlatPlaylist(jsonText 或物件) → { title, entries:[{ videoId, title, channel, durationSec }] }；去掉重複與無效 ID。
+ *   createJob(opts) → 工作物件：每支影片一個項目（pending／skipped／failed／done），狀態只在記憶體裡。
+ *   markDuplicates(job, existingIds) → 已在曲庫的影片直接標成略過（不重複下載）。
+ *   runJob(job, deps, hooks) → 逐支：範圍驗證 → 下載 → 寫入與登記。單支失敗不影響其他；可暫停、續跑、取消。
+ *       deps 由 host 提供：verify(videoId) → { ok, reason, title, verification_skipped }（沿用 app 既有的範圍驗證，不另外放寬）
+ *                          download(videoId, report) → { title, files:[{ kind, ext, bytes }] }
+ *                          store(item, title, files) → Promise（寫檔＋登記；丟錯時附 err.stage 的話就用它，否則算「寫入」階段）
+ *       hooks.onChange(job) 每次狀態改變時呼叫（畫面重繪用）。
+ *   fileNameFor(title, videoId, kind, ext, multi) → 下載檔名，一律帶 [影片ID]，之後用來去重。
+ *   videoIdFromName(name) → 從檔名拿回影片 ID（沒有就 null）。
+ *   summarize(job) → 計數與一行摘要文字。
+ * 失敗訊息格式：「階段失敗：原因（HTTP 狀態）」，階段是：展開、驗證、下載、寫入。 */
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaMusicLibYoutube = factory();
+})(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+
+  var ID_RE = /^[A-Za-z0-9_-]{11}$/;
+  var LIST_RE = /^[A-Za-z0-9_-]{2,64}$/;
+
+  function errText(err) { return String((err && err.message) || err || '未知錯誤'); }
+  // 訊息裡已經有 HTTP 狀態就不再重複附上
+  function httpSuffix(err) { return err && err.status && errText(err).indexOf('HTTP ' + err.status) < 0 ? '（HTTP ' + err.status + '）' : ''; }
+
+  // ───── 輸入解析 ─────
+  function parseInput(text) {
+    var s = String(text || '');
+    var lm = /[?&]list=([A-Za-z0-9_-]+)/.exec(s);
+    if (lm && LIST_RE.test(lm[1])) return { mode: 'playlist', listId: lm[1] };
+    var pats = [/youtube\.com\/watch\?(?:[^\s"'<>]*&)?v=([A-Za-z0-9_-]{11})/, /youtu\.be\/([A-Za-z0-9_-]{11})/, /youtube\.com\/embed\/([A-Za-z0-9_-]{11})/, /youtube\.com\/shorts\/([A-Za-z0-9_-]{11})/];
+    for (var i = 0; i < pats.length; i++) {
+      var m = pats[i].exec(s);
+      if (m) return { mode: 'video', videoId: m[1] };
+    }
+    return { error: '找不到 YouTube 清單網址（含 list=）或影片連結' };
+  }
+
+  // ───── 清單展開（yt-dlp flat-playlist，不下載） ─────
+  function buildFlatPlaylistScript(listId) {
+    if (!LIST_RE.test(String(listId || ''))) throw new Error('清單 ID 格式不對：' + listId);
+    return [
+      'import yt_dlp, json as _fa_json_ml',
+      "ydl_opts = {'quiet': True, 'no_warnings': True, 'skip_download': True, 'extract_flat': 'in_playlist'}",
+      'with yt_dlp.YoutubeDL(ydl_opts) as ydl:',
+      "    info = ydl.extract_info('https://www.youtube.com/playlist?list=" + String(listId) + "', download=False)",
+      'out = []',
+      "for e in (info.get('entries') or []):",
+      '    if not e:',
+      '        continue',
+      "    out.append({'id': e.get('id'), 'title': e.get('title'), 'channel': e.get('channel') or e.get('uploader'), 'duration': e.get('duration')})",
+      "_result = _fa_json_ml.dumps({'title': info.get('title'), 'entries': out})",
+      '_result',
+    ].join('\n');
+  }
+
+  function parseFlatPlaylist(raw) {
+    var obj;
+    if (typeof raw === 'string') {
+      try { obj = JSON.parse(raw); } catch (e) { throw new Error('展開結果不是合法的 JSON：' + errText(e)); }
+    } else obj = raw || {};
+    var list = Array.isArray(obj.entries) ? obj.entries : [];
+    var seen = {}, entries = [];
+    list.forEach(function (e) {
+      var id = e && typeof e.id === 'string' ? e.id : '';
+      if (!ID_RE.test(id) || seen[id]) return;
+      seen[id] = true;
+      var d = e.duration == null ? null : Number(e.duration);
+      entries.push({ videoId: id, title: e.title ? String(e.title) : null, channel: e.channel ? String(e.channel) : null, durationSec: d != null && isFinite(d) ? d : null });
+    });
+    if (!entries.length) throw new Error('展開後沒有任何影片（清單可能是空的、私人、或需要登入）');
+    return { title: obj.title ? String(obj.title) : null, entries: entries };
+  }
+
+  // ───── 檔名與去重 ─────
+  function safeName(s) { return String(s || '').replace(/[\\\/:*?"<>|\x00-\x1f]/g, '_').replace(/\s+/g, ' ').trim().slice(0, 100) || 'video'; }
+  function fileNameFor(title, videoId, kind, ext, multi) {
+    var base = safeName(title) + ' [' + videoId + ']';
+    return multi ? base + '.' + kind + '.' + ext : base + '.' + ext;
+  }
+  function videoIdFromName(name) {
+    var m = /\[([A-Za-z0-9_-]{11})\](?:\.[^.\\\/]+)+$/.exec(String(name || ''));
+    return m ? m[1] : null;
+  }
+  // 曲庫記錄 → 已存在的影片 ID（只算 ok 的記錄；消失的檔案不算，讓使用者可以重新下載）
+  function existingIdsFrom(records) {
+    var out = {};
+    (records || []).forEach(function (r) {
+      if (r.sourceType !== 'youtube' || r.status !== 'ok') return;
+      var id = videoIdFromName(r.name || r.path);
+      if (id) out[id] = true;
+    });
+    return out;
+  }
+
+  // ───── 工作 ─────
+  function createJob(opts) {
+    opts = opts || {};
+    var entries = Array.isArray(opts.entries) ? opts.entries : [];
+    return {
+      id: 'yt' + Date.now().toString(36),
+      source: { mode: opts.mode || 'playlist', listId: opts.listId || null, videoId: opts.videoId || null },
+      title: opts.title || null,
+      items: entries.map(function (e) {
+        return { videoId: e.videoId, title: e.title || null, channel: e.channel || null, durationSec: e.durationSec == null ? null : e.durationSec,
+          status: 'pending', stage: null, reason: null, verificationSkipped: false, path: null };
+      }),
+      state: 'idle',          // idle → running → done／cancelled
+      paused: false,
+      cancelled: false,
+      verificationSkipped: false,
+      _wake: null,
+    };
+  }
+
+  function markDuplicates(job, existingIds) {
+    job.items.forEach(function (it) {
+      if (it.status === 'pending' && existingIds && existingIds[it.videoId]) {
+        it.status = 'skipped'; it.reason = '已在曲庫（重複，略過）';
+      }
+    });
+    return job;
+  }
+
+  function summarize(job) {
+    var c = { total: job.items.length, done: 0, skipped: 0, failed: 0, pending: 0, working: 0 };
+    job.items.forEach(function (it) {
+      if (it.status === 'done') c.done++;
+      else if (it.status === 'skipped') c.skipped++;
+      else if (it.status === 'failed') c.failed++;
+      else if (it.status === 'working') c.working++;
+      else c.pending++;
+    });
+    var state = job.cancelled ? '已取消' : job.state === 'done' ? '完成' : job.paused ? '已暫停' : job.state === 'running' ? '進行中' : '待開始';
+    c.state = state;
+    c.verificationSkipped = !!job.verificationSkipped;
+    c.text = state + '：成功 ' + c.done + '、略過 ' + c.skipped + '、失敗 ' + c.failed + '、待處理 ' + (c.pending + c.working) + '（共 ' + c.total + '）'
+      + (job.verificationSkipped ? '｜⚠️ 沒有設定 YouTube Data API 金鑰／頻道 ID，這次沒有做範圍驗證' : '');
+    return c;
+  }
+
+  function pauseJob(job) { if (job.state === 'running' && !job.cancelled) job.paused = true; return job; }
+  function resumeJob(job) {
+    job.paused = false;
+    if (job._wake) { var w = job._wake; job._wake = null; w(); }
+    return job;
+  }
+  function cancelJob(job) {
+    job.cancelled = true;
+    job.paused = false;
+    if (job._wake) { var w = job._wake; job._wake = null; w(); }
+    return job;
+  }
+
+  function waitWhilePaused(job) {
+    if (!job.paused || job.cancelled) return Promise.resolve();
+    return new Promise(function (resolve) { job._wake = resolve; });
+  }
+
+  // 逐支執行。單支失敗只標記該支，繼續下一支；暫停時等目前這支做完才停；取消時在下一支開始前停。
+  async function runJob(job, deps, hooks) {
+    hooks = hooks || {};
+    var change = function () { if (typeof hooks.onChange === 'function') { try { hooks.onChange(job); } catch (_) { /* 畫面出錯不影響工作 */ } } };
+    job.state = 'running';
+    change();
+    for (var i = 0; i < job.items.length; i++) {
+      await waitWhilePaused(job);
+      if (job.cancelled) break;
+      var it = job.items[i];
+      if (it.status !== 'pending') continue;
+      var stage = '驗證';
+      try {
+        it.status = 'working'; change();
+        var v = await deps.verify(it.videoId);
+        if (v && v.title && !it.title) it.title = v.title;
+        if (v && v.verification_skipped) { it.verificationSkipped = true; job.verificationSkipped = true; }
+        if (!v || !v.ok) {
+          it.status = 'skipped'; it.reason = (v && v.reason) || '跳過：未通過下載範圍驗證'; change();
+          continue;
+        }
+        stage = '下載';
+        var got = await deps.download(it.videoId, function (frac, text) { it.progressText = text; change(); });
+        stage = '寫入';
+        var title = it.title || (got && got.title) || it.videoId;
+        it.title = title;
+        await deps.store(it, title, (got && got.files) || []);
+        it.status = 'done'; it.reason = null; it.stage = null;
+      } catch (err) {
+        var st = (err && err.stage) || stage;
+        it.status = 'failed'; it.stage = st;
+        it.reason = st + '失敗：' + errText(err) + httpSuffix(err);
+      }
+      it.progressText = null;
+      change();
+    }
+    job.state = job.cancelled ? 'cancelled' : 'done';
+    change();
+    return job;
+  }
+
+  return {
+    parseInput: parseInput,
+    buildFlatPlaylistScript: buildFlatPlaylistScript,
+    parseFlatPlaylist: parseFlatPlaylist,
+    fileNameFor: fileNameFor,
+    videoIdFromName: videoIdFromName,
+    existingIdsFrom: existingIdsFrom,
+    createJob: createJob,
+    markDuplicates: markDuplicates,
+    summarize: summarize,
+    pauseJob: pauseJob,
+    resumeJob: resumeJob,
+    cancelJob: cancelJob,
+    runJob: runJob,
+  };
+});
+
+}).call(null, undefined, holder);
+return holder.FaMusicLibYoutube;
+})();
+/* MLYT-END */
 /* MLUI-BEGIN */
 const FaMusicLibUI = (function () {
 const holder = {};
@@ -84773,6 +85001,7 @@ const holder = {};
     + '.fml-bar,.fml-lyr{display:flex;gap:6px;align-items:center;flex-wrap:wrap;padding:6px 8px;background:#f6f8fa;border-bottom:1px solid #d0d7de}'
     + '.fml button,.fml select{background:#f6f8fa;border:1px solid #d0d7de;border-radius:5px;padding:3px 9px;cursor:pointer;font:inherit}'
     + '.fml button:disabled{opacity:.45;cursor:default}'
+    + '.fml-lyr input[type=text]{flex:1;min-width:180px;padding:4px 6px;border:1px solid #d0d7de;border-radius:5px;font:inherit}'
     + '.fml-bar input[type=search]{flex:1;min-width:160px;padding:4px 6px;border:1px solid #d0d7de;border-radius:5px;font:inherit}'
     + '.fml-st{color:#59636e;font-size:12px}.fml-wrap{overflow:auto;max-height:520px}.fml-lyr .fml-st{flex:1}'
     + '.fml-tbl{width:100%;border-collapse:collapse}.fml-tbl th,.fml-tbl td{padding:4px 6px;border-bottom:1px solid #eaeef2;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:260px}'
@@ -84842,6 +85071,19 @@ const holder = {};
     if (!host.exportBatch) { bExp.disabled = true; bExpCancel.disabled = true; expStat.textContent = '批次輸出不可用（需要桌面版）'; }
     bExpCancel.disabled = true;
 
+    // YouTube 清單列：貼清單網址（或單支影片連結）→ 展開 → 逐支驗證、下載、登記；暫停／續跑／取消；逐支結果列在下面
+    var yt = h('div', 'fml-lyr');
+    var ytIn = h('input'); ytIn.type = 'text'; ytIn.placeholder = '貼 YouTube 清單網址（或單支影片連結）';
+    var bYt = h('button', null, '＋加入 YouTube 清單');
+    var bYtPause = h('button', null, '暫停');
+    var bYtCancel = h('button', null, '取消');
+    var ytStat = h('span', 'fml-st');
+    yt.appendChild(ytIn); yt.appendChild(bYt); yt.appendChild(bYtPause); yt.appendChild(bYtCancel); yt.appendChild(ytStat);
+    var ytList = h('div', 'fml-foot');
+    ytList.style.display = 'none';
+    bYtPause.disabled = true; bYtCancel.disabled = true;
+    if (!host.startYoutubeList) { bYt.disabled = true; ytIn.disabled = true; ytStat.textContent = 'YouTube 清單不可用（需要桌面版）'; }
+
     var wrap = h('div', 'fml-wrap');
     var tbl = h('table', 'fml-tbl');
     var thead = h('thead'), tbody = h('tbody');
@@ -84850,7 +85092,7 @@ const holder = {};
 
     var fIn = h('input'); fIn.type = 'file'; fIn.multiple = true; fIn.style.display = 'none';
     var dIn = h('input'); dIn.type = 'file'; dIn.setAttribute('webkitdirectory', ''); dIn.style.display = 'none';
-    root.appendChild(bar); root.appendChild(lyr); root.appendChild(exp); root.appendChild(expList); root.appendChild(wrap); root.appendChild(foot); root.appendChild(fIn); root.appendChild(dIn);
+    root.appendChild(bar); root.appendChild(yt); root.appendChild(ytList); root.appendChild(lyr); root.appendChild(exp); root.appendChild(expList); root.appendChild(wrap); root.appendChild(foot); root.appendChild(fIn); root.appendChild(dIn);
     container.appendChild(root);
 
     function visibleRows() {
@@ -85000,8 +85242,8 @@ const holder = {};
     };
     bExpCancel.onclick = function () { if (host.cancelExport) host.cancelExport(); expStat.textContent = '取消中（正在跑的那個檔案會在下一步停止）…'; };
 
-    // 擷取遊戲音樂來源（RIX、Flash）：輸出 MIDI／mp3／wav 子曲目，登記回曲庫；衍生檔資料夾可指定（留空＝來源旁的「音樂庫衍生檔」）
-    var xBtn = h('button', null, '擷取（RIX／Flash）'), xCancel = h('button', null, '取消擷取');
+    // 擷取遊戲音樂來源（RIX、Flash、NES）：輸出 MIDI／mp3／wav 子曲目，登記回曲庫；衍生檔資料夾可指定（留空＝來源旁的「音樂庫衍生檔」）
+    var xBtn = h('button', null, '擷取（RIX／Flash／NES）'), xCancel = h('button', null, '取消擷取');
     var xRoot = h('input'); xRoot.type = 'text'; xRoot.placeholder = '衍生檔資料夾（留空＝來源旁的「音樂庫衍生檔」）'; xRoot.style.width = '260px';
     try { xRoot.value = localStorage.getItem('fa.musiclib.derivedDir') || ''; } catch (_) { /* 讀不到就空白 */ }
     xCancel.disabled = true;
@@ -85010,8 +85252,8 @@ const holder = {};
     var STATUS_X = { done: '完成', skipped: '沿用', failed: '失敗', cancelled: '取消' };
     xBtn.onclick = function () {
       if (!host.extract) return;
-      var recs = lib.records.filter(function (r) { return (r.kind === 'rix' || r.kind === 'swf') && r.status === 'ok' && (Object.keys(sel).length === 0 || sel[r.key]); });
-      if (!recs.length) { expStat.textContent = '沒有可擷取的 RIX／Flash（先加檔案，或勾選要擷取的來源）'; return; }
+      var recs = lib.records.filter(function (r) { return (r.kind === 'rix' || r.kind === 'swf' || r.kind === 'nes') && r.status === 'ok' && (Object.keys(sel).length === 0 || sel[r.key]); });
+      if (!recs.length) { expStat.textContent = '沒有可擷取的 RIX／Flash／NES（先加檔案，或勾選要擷取的來源）'; return; }
       var root = xRoot.value.trim();
       try { localStorage.setItem('fa.musiclib.derivedDir', root); } catch (_) { /* 存不了就只對這次有效 */ }
       xBtn.disabled = true; xCancel.disabled = false; expList.textContent = ''; expStat.textContent = '擷取中…';
@@ -85110,6 +85352,54 @@ const holder = {};
     };
     mMidi.onclick = function () { if (!MEL || !melFound) return; try { MEL.humAsMidi(melFound, '哼歌旋律'); melStatus('已開啟 MIDI 編輯器演奏哼歌旋律'); } catch (e) { melStatus('演奏失敗：' + String((e && e.message) || e)); } };
 
+    // YouTube 清單的按鈕與進度（進行中只更新這一列與結果清單；完成時才重畫曲目清單，因為新登記的曲目在那裡）
+    var ytRunning = false, YT_LIST_MAX = 200;
+    function ytShowItems(job) {
+      ytList.textContent = '';
+      var shown = 0, rest = 0;
+      job.items.forEach(function (it) {
+        if (it.status === 'pending') return;
+        if (shown >= YT_LIST_MAX) { rest++; return; }
+        var line = (it.status === 'done' ? '✅ ' : it.status === 'skipped' ? '⏭ ' : it.status === 'failed' ? '❌ ' : '⏳ ')
+          + (it.title || it.videoId) + (it.reason ? '：' + it.reason : '') + (it.status === 'working' && it.progressText ? '（' + it.progressText + '）' : '');
+        var d = h('div', it.status === 'failed' ? 'bad' : null, line);
+        d.style.color = it.status === 'failed' ? '#cf222e' : '';
+        ytList.appendChild(d);
+        shown++;
+      });
+      if (rest) ytList.appendChild(h('div', null, '…還有 ' + rest + ' 筆，完整結果看完成後的摘要'));
+      ytList.style.display = shown || rest ? '' : 'none';
+    }
+    function ytControlsFor(job) {
+      var live = job.state === 'running' || job.state === 'idle';
+      bYtPause.disabled = !live; bYtCancel.disabled = !live;
+      bYtPause.textContent = job.paused ? '續跑' : '暫停';
+    }
+    bYt.onclick = function () {
+      if (!host.startYoutubeList || ytRunning) return;
+      ytRunning = true; bYt.disabled = true; ytStat.textContent = '展開清單中…（第一次會載入 yt-dlp，可能要 1～2 分鐘）';
+      ytList.style.display = 'none'; ytList.textContent = '';
+      host.startYoutubeList(ytIn.value, function (job, sum) {
+        ytStat.textContent = sum.text;
+        ytControlsFor(job);
+        ytShowItems(job);
+      }).then(function (res) {
+        ytRunning = false; bYt.disabled = false; bYtPause.disabled = true; bYtCancel.disabled = true;
+        ytStat.textContent = res.ok ? res.summary.text : (res.cancelled ? res.error : '⚠️ ' + res.error);
+        if (res.ok && res.job) ytShowItems(res.job);
+        render();
+      }, function (e) {
+        ytRunning = false; bYt.disabled = false; bYtPause.disabled = true; bYtCancel.disabled = true;
+        ytStat.textContent = '⚠️ ' + String((e && e.message) || e);
+      });
+    };
+    bYtPause.onclick = function () {
+      if (!host.youtubeJob || !host.youtubeControl) return;
+      var j = host.youtubeJob(); if (!j) return;
+      host.youtubeControl(j.job.paused ? 'resume' : 'pause');
+    };
+    bYtCancel.onclick = function () { if (host.youtubeControl) host.youtubeControl('cancel'); };
+
     if (queue) unsub = queue.onChange(function () { render(); });
     // 轉錄中每秒更新「已耗時」與重試倒數（只更新歌詞列，不重畫清單）
     var ticker = setInterval(function () {
@@ -85131,7 +85421,7 @@ return holder.FaMusicLibUI;
 })();
 /* MLUI-END */
 /* MLHOST-BEGIN */
-/* 音樂庫的 app 轉接層（原文嵌入 floating-assistant.js，定義 const FaMusicLibHost；依賴先嵌入的 FaMusicLib、FaMusicLibUI）。
+/* 音樂庫的 app 轉接層（原文嵌入 floating-assistant.js，定義 const FaMusicLibHost；依賴先嵌入的 FaMusicLib、FaMusicLibUI、FaMusicLibYoutube）。
  *   資料夾：用桌面版既有的資料夾瀏覽器（desktopAPI.roots.browse），遞迴走訪用 desktopAPI.rawfs.readdir（每 200 筆讓出執行緒，沒有上限）。
  *   檔頭：desktopAPI.rawfs.readHead（只讀前幾 MB）。
  *   儲存：IndexedDB（資料庫 fa-musiclib，鍵 library）。沒有 IndexedDB 時退回記憶體（畫面會提醒）。
@@ -85540,7 +85830,7 @@ const FaMusicLibHost = (function () {
     basicPitchStatus: function () { return FaAudioModels.status('basic-pitch', FaAudioModels.idbStore()); },
     entries: function () { return melodyEntries(getLib()); }
   };
-  // ───── 遊戲音樂來源擷取（RIX、Flash）：輸出標準 MIDI／mp3／wav，登記成來源的子曲目 ─────
+  // ───── 遊戲音樂來源擷取（RIX、Flash、NES）：輸出標準 MIDI／mp3／wav，登記成來源的子曲目 ─────
   // 衍生檔預設放在「來源檔所在資料夾的旁邊」的「音樂庫衍生檔」資料夾（不寫進 repo）；面板可指定別的根資料夾。
   // 來源沒變（大小與修改時間相同）且子曲目已在 → 略過（子曲目記著 derivedSig）。
   var extractCancelled = false;
@@ -85566,7 +85856,7 @@ const FaMusicLibHost = (function () {
     return { path: full, sizeBytes: bytes.length };
   }
 
-  // 擷取一個來源（rec 是 kind 為 rix 或 swf 的曲庫記錄）。回傳 { skipped, children, skippedParts, method, dir }；失敗丟錯，訊息附階段
+  // 擷取一個來源（rec 是 kind 為 rix、swf 或 nes 的曲庫記錄）。回傳 { skipped, children, skippedParts, method, dir }；失敗丟錯，訊息附階段
   async function extractGameSource(rec, opts) {
     opts = opts || {};
     var L = getLib(); await L.ready;
@@ -85617,6 +85907,38 @@ const FaMusicLibHost = (function () {
       });
       skippedParts = sw.skipped.map(function (x) { return (x.id >= 0 ? '聲音' + x.id : '串流') + '：' + x.reason; });
       if (!outs.length) throw new Error('SWF 內沒有可擷取的音訊' + (skippedParts.length ? '（' + skippedParts.join('；') + '）' : ''));
+    } else if (rec.kind === 'nes') {
+      // NES：用 jsnes 真的執行 ROM，同時錄 APU 寫入（退路 MIDI）、錄 APU 音訊（wav／mp3），能找到入口就產生 NSF
+      emit('執行 ROM（jsnes）');
+      if (typeof FaJsnes === 'undefined' || typeof FaMusicLibNes === 'undefined' || typeof FaMusicLibNesMappers === 'undefined') throw new Error('NES 模組沒有嵌入（FaJsnes／FaMusicLibNes 不存在）');
+      var nr;
+      try {
+        if (FaMusicLibNesMappers && FaMusicLibNesMappers.install) FaMusicLibNesMappers.install(FaJsnes.NES);
+        nr = await FaMusicLibNes.extractNsf(u8, FaJsnes.NES, {
+          name: stem, isCancelled: cancelled,
+          onProgress: function (fr) { if (fr % 900 === 0) emit('執行 ROM（第 ' + fr + ' 個畫面）'); }
+        });
+      } catch (e) { throw new Error('NES 執行失敗（執行階段）：' + String((e && e.message) || e)); }
+      if (nr.cancelled) throw Object.assign(new Error('已取消'), { cancelled: true });
+      var modeLabel = nr.mode === 'nsf+midi' ? '有 NSF，並有退路 MIDI' : nr.mode === 'nsf' ? '有 NSF' : nr.mode === 'midi' ? '只有退路 MIDI' : '兩者都沒有';
+      method = 'NES（jsnes 執行 ROM，' + modeLabel + '）' + (nr.nsfNote ? '；' + nr.nsfNote : '');
+      if (nr.nsf) outs.push({ kind: 'nsf', name: stem + '.nsf', bytes: nr.nsf, method: method, durationSec: null, title: stem + ' NSF' });
+      if (nr.song) {
+        var nsong = FaMidi.validate(nr.song);
+        outs.push({ kind: 'mid', name: stem + '_APU.mid', bytes: FaMidi.write(nsong), method: method + '；APU 暫存器→MIDI（退路）', durationSec: nr.stats.durationSec, title: stem + ' MIDI' });
+      }
+      if (nr.wav && nr.samples && nr.samples.length) {
+        emit('編碼 mp3');
+        outs.push({ kind: 'wav', name: stem + '_APU.wav', bytes: nr.wav, method: method + '；APU 音訊', durationSec: nr.stats.durationSec, title: stem + ' APU' });
+        var abuf = new AudioBuffer({ length: nr.samples.length, sampleRate: nr.sampleRate, numberOfChannels: 1 });
+        abuf.copyToChannel(nr.samples, 0);
+        var nmp3 = await fa._encodeMp3(abuf, 160);
+        outs.push({ kind: 'mp3', name: stem + '_APU.mp3', bytes: new Uint8Array(await nmp3.arrayBuffer()), method: method + '；APU 音訊', durationSec: nr.stats.durationSec, title: stem + ' APU' });
+      }
+      skippedParts = [];
+      if (!nr.nsf) skippedParts.push('NSF 沒有產生［' + (nr.nsfStage || '?') + '］' + (nr.nsfReason || ''));
+      if (!nr.song) skippedParts.push('退路 MIDI 沒有：' + (nr.midiReason || ''));
+      if (!outs.length) throw new Error('NES 擷取失敗：' + skippedParts.join('；'));
     } else {
       throw new Error('這個種類不支援擷取：' + rec.kind);
     }
@@ -85634,7 +85956,7 @@ const FaMusicLibHost = (function () {
     await L.save();
     return { skipped: false, children: recs.map(function (x) { return x.key; }), skippedParts: skippedParts, method: method, dir: dir };
   }
-  // 批次擷取（勾選的 rix／swf，沒勾就全部）：單一來源失敗不影響其他來源；結果逐筆回傳
+  // 批次擷取（勾選的 rix／swf／nes，沒勾就全部）：單一來源失敗不影響其他來源；結果逐筆回傳
   async function extractSources(recs, opts) {
     opts = opts || {};
     extractCancelled = false;
@@ -85656,7 +85978,8 @@ const FaMusicLibHost = (function () {
     return { results: results, summary: summary };
   }
 
-  var PICK_HOST = { pickFolder: pickFolder, melody: MELODY_HOST, extract: { run: extractSources, cancel: function () { extractCancelled = true; } } };
+  var PICK_HOST = { pickFolder: pickFolder, melody: MELODY_HOST, extract: { run: extractSources, cancel: function () { extractCancelled = true; } },
+    startYoutubeList: function (text, onUpdate) { return startYoutubeList(text, onUpdate); }, youtubeControl: function (a) { return youtubeControl(a); }, youtubeJob: function () { return youtubeJob(); } };
 
   var methods = {
     _mlLib() { return getLib(); },
@@ -85691,7 +86014,105 @@ const FaMusicLibHost = (function () {
     }
   };
 
+  // ───── YouTube 清單：展開 → 逐支「既有範圍驗證 → 下載 → 寫進資料夾 → 登記」（純邏輯在 musiclib_youtube.js）─────
+  // 驗證與下載都直接呼叫 app 既有的 _youtubeCheckLicenseAndOwnership、_youtubeDownloadOne（同一套範圍限制，不另外放寬）。
+  // 只能在桌面版做（寫檔＋曲庫登記都要磁碟路徑）。同一時間只跑一個清單；暫停、續跑、取消由 youtubeControl 控制。
+  var ytJob = null, ytOnUpdate = null, ytBusy = false;
+  function ytNotify() { if (ytOnUpdate && ytJob) { try { ytOnUpdate(ytJob, FaMusicLibYoutube.summarize(ytJob)); } catch (_) { /* 畫面出錯不影響工作 */ } } }
+  function ytBridge() {
+    var fa = (typeof window !== 'undefined' && window.fa) || null;
+    if (!fa || !fa._youtubeCheckLicenseAndOwnership || !fa._youtubeDownloadOne || !fa._ensureYtDlpLoaded) throw new Error('YouTube 功能還沒準備好（範圍驗證或 yt-dlp 不可用）');
+    return fa;
+  }
+  function ytErr(stage, err) { var e = new Error(String((err && err.message) || err || '未知錯誤')); e.stage = stage; if (err && err.status) e.status = err.status; return e; }
+
+  // 展開清單：用 app 既有的 yt-dlp（Pyodide）列出影片，不下載
+  async function ytExpand(listId) {
+    var fa = ytBridge(), instance;
+    try { instance = await fa._ensureYtDlpLoaded(); } catch (e) { throw ytErr('展開', e); }
+    var raw;
+    try { raw = await instance.runPythonAsync(FaMusicLibYoutube.buildFlatPlaylistScript(listId)); } catch (e) { throw ytErr('展開', e); }
+    try { return FaMusicLibYoutube.parseFlatPlaylist(String(raw)); } catch (e) { throw ytErr('展開', e); }
+  }
+
+  // 開始一個 YouTube 清單（或單支影片）。回傳 { ok, summary, error }；onUpdate(job, summary) 在每次狀態改變時呼叫。
+  async function startYoutubeList(text, onUpdate) {
+    if (ytBusy) return { ok: false, error: '已有一個 YouTube 清單在進行中，等它完成或先取消' };
+    var parsed = FaMusicLibYoutube.parseInput(text);
+    if (parsed.error) return { ok: false, error: parsed.error };
+    if (!hasDesktopFs()) return { ok: false, error: 'YouTube 清單只能在桌面版使用（影片要寫進你選的資料夾，曲庫才能登記）' };
+    ytBusy = true;
+    try {
+      var folder = await api().roots.browse();
+      if (!folder) return { ok: false, cancelled: true, error: '已取消（沒有選下載資料夾）' };
+      ytOnUpdate = typeof onUpdate === 'function' ? onUpdate : null;
+      var L = getLib();
+      await L.ready;
+      var entries, listTitle = null;
+      if (parsed.mode === 'playlist') {
+        var pl = await ytExpand(parsed.listId);
+        entries = pl.entries; listTitle = pl.title;
+      } else {
+        entries = [{ videoId: parsed.videoId, title: null }];
+      }
+      var label = listTitle || (parsed.mode === 'video' ? parsed.videoId : parsed.listId);
+      ytJob = FaMusicLibYoutube.createJob({ mode: parsed.mode, listId: parsed.listId || null, videoId: parsed.videoId || null, title: label, entries: entries });
+      FaMusicLibYoutube.markDuplicates(ytJob, FaMusicLibYoutube.existingIdsFrom(L.records));
+      var sid = L.addSource('youtube', 'YT清單：' + label);
+      ytNotify();
+      var fa = ytBridge();
+      var deps = {
+        verify: async function (id) {
+          var checks = await fa._youtubeCheckLicenseAndOwnership([id]);
+          return checks[id] || { ok: false, reason: '跳過：驗證沒有回傳結果' };
+        },
+        download: async function (id, report) {
+          var rep = function (frac, text) { report(frac, text); return Promise.resolve(); };
+          return await fa._youtubeDownloadOne(id, false, rep);
+        },
+        store: async function (item, title, files) {
+          if (!files || !files.length) throw ytErr('下載', new Error('下載沒有回傳任何檔案'));
+          var multi = files.length > 1, written = [];
+          for (var i = 0; i < files.length; i++) {
+            var f = files[i], name = FaMusicLibYoutube.fileNameFor(title, item.videoId, f.kind, f.ext, multi);
+            try { var w = await writeDerivedFile(folder, name, f.bytes); } catch (e) { throw ytErr('寫入', e); }
+            written.push({ path: w.path, size: w.sizeBytes, mtimeMs: Date.now() });
+          }
+          // 登記：同一來源目前的檔案＋剛寫的一起交給 lib.scan（沒變的沿用，不重讀）
+          try {
+            var known = L.records.filter(function (r) { return r.sourceId === sid && r.status === 'ok'; })
+              .map(function (r) { return { path: r.path, size: r.sizeBytes, mtimeMs: r.mtimeMs }; });
+            await L.scan(sid, known.concat(written), ytReadHead);
+            await L.save();
+          } catch (e) { throw ytErr('登記', e); }
+          item.path = written[0].path;
+        },
+      };
+      await FaMusicLibYoutube.runJob(ytJob, deps, { onChange: ytNotify });
+      ytNotify();
+      return { ok: true, summary: FaMusicLibYoutube.summarize(ytJob), job: ytJob };
+    } catch (e) {
+      ytNotify();
+      return { ok: false, error: (e && e.stage ? e.stage + '失敗：' : '') + String((e && e.message) || e) };
+    } finally {
+      ytBusy = false;
+    }
+  }
+  function ytReadHead(path, n) { return api().rawfs.readHead(path, n).then(function (r) { return r && r.base64 != null ? b64ToBytes(r.base64) : null; }); }
+  // action：'pause'｜'resume'｜'cancel'；沒有進行中的清單回傳 false
+  function youtubeControl(action) {
+    if (!ytJob) return false;
+    if (action === 'pause') FaMusicLibYoutube.pauseJob(ytJob);
+    else if (action === 'resume') FaMusicLibYoutube.resumeJob(ytJob);
+    else if (action === 'cancel') FaMusicLibYoutube.cancelJob(ytJob);
+    else return false;
+    ytNotify();
+    return true;
+  }
+  function youtubeJob() { return ytJob ? { job: ytJob, summary: FaMusicLibYoutube.summarize(ytJob) } : null; }
+
   return { methods: methods, getLib: getLib, pickFolder: pickFolder, walkFolder: walkFolder, whisperTranscribe: whisperTranscribe, melody: MELODY_HOST, extract: PICK_HOST.extract,
+    startYoutubeList: startYoutubeList, youtubeControl: youtubeControl, youtubeJob: youtubeJob,
     exportBatch: exportBatch, verifyOutput: verifyOutput,
     // 取消批次輸出：正在跑的那個檔案在下一個步驟前中止，之後的檔案標示取消
     cancelExport: function () { exportCancelled = true; },

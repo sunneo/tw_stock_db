@@ -1,4 +1,4 @@
-/* 音樂庫的 app 轉接層（原文嵌入 floating-assistant.js，定義 const FaMusicLibHost；依賴先嵌入的 FaMusicLib、FaMusicLibUI）。
+/* 音樂庫的 app 轉接層（原文嵌入 floating-assistant.js，定義 const FaMusicLibHost；依賴先嵌入的 FaMusicLib、FaMusicLibUI、FaMusicLibYoutube）。
  *   資料夾：用桌面版既有的資料夾瀏覽器（desktopAPI.roots.browse），遞迴走訪用 desktopAPI.rawfs.readdir（每 200 筆讓出執行緒，沒有上限）。
  *   檔頭：desktopAPI.rawfs.readHead（只讀前幾 MB）。
  *   儲存：IndexedDB（資料庫 fa-musiclib，鍵 library）。沒有 IndexedDB 時退回記憶體（畫面會提醒）。
@@ -555,7 +555,8 @@ const FaMusicLibHost = (function () {
     return { results: results, summary: summary };
   }
 
-  var PICK_HOST = { pickFolder: pickFolder, melody: MELODY_HOST, extract: { run: extractSources, cancel: function () { extractCancelled = true; } } };
+  var PICK_HOST = { pickFolder: pickFolder, melody: MELODY_HOST, extract: { run: extractSources, cancel: function () { extractCancelled = true; } },
+    startYoutubeList: function (text, onUpdate) { return startYoutubeList(text, onUpdate); }, youtubeControl: function (a) { return youtubeControl(a); }, youtubeJob: function () { return youtubeJob(); } };
 
   var methods = {
     _mlLib() { return getLib(); },
@@ -590,7 +591,105 @@ const FaMusicLibHost = (function () {
     }
   };
 
+  // ───── YouTube 清單：展開 → 逐支「既有範圍驗證 → 下載 → 寫進資料夾 → 登記」（純邏輯在 musiclib_youtube.js）─────
+  // 驗證與下載都直接呼叫 app 既有的 _youtubeCheckLicenseAndOwnership、_youtubeDownloadOne（同一套範圍限制，不另外放寬）。
+  // 只能在桌面版做（寫檔＋曲庫登記都要磁碟路徑）。同一時間只跑一個清單；暫停、續跑、取消由 youtubeControl 控制。
+  var ytJob = null, ytOnUpdate = null, ytBusy = false;
+  function ytNotify() { if (ytOnUpdate && ytJob) { try { ytOnUpdate(ytJob, FaMusicLibYoutube.summarize(ytJob)); } catch (_) { /* 畫面出錯不影響工作 */ } } }
+  function ytBridge() {
+    var fa = (typeof window !== 'undefined' && window.fa) || null;
+    if (!fa || !fa._youtubeCheckLicenseAndOwnership || !fa._youtubeDownloadOne || !fa._ensureYtDlpLoaded) throw new Error('YouTube 功能還沒準備好（範圍驗證或 yt-dlp 不可用）');
+    return fa;
+  }
+  function ytErr(stage, err) { var e = new Error(String((err && err.message) || err || '未知錯誤')); e.stage = stage; if (err && err.status) e.status = err.status; return e; }
+
+  // 展開清單：用 app 既有的 yt-dlp（Pyodide）列出影片，不下載
+  async function ytExpand(listId) {
+    var fa = ytBridge(), instance;
+    try { instance = await fa._ensureYtDlpLoaded(); } catch (e) { throw ytErr('展開', e); }
+    var raw;
+    try { raw = await instance.runPythonAsync(FaMusicLibYoutube.buildFlatPlaylistScript(listId)); } catch (e) { throw ytErr('展開', e); }
+    try { return FaMusicLibYoutube.parseFlatPlaylist(String(raw)); } catch (e) { throw ytErr('展開', e); }
+  }
+
+  // 開始一個 YouTube 清單（或單支影片）。回傳 { ok, summary, error }；onUpdate(job, summary) 在每次狀態改變時呼叫。
+  async function startYoutubeList(text, onUpdate) {
+    if (ytBusy) return { ok: false, error: '已有一個 YouTube 清單在進行中，等它完成或先取消' };
+    var parsed = FaMusicLibYoutube.parseInput(text);
+    if (parsed.error) return { ok: false, error: parsed.error };
+    if (!hasDesktopFs()) return { ok: false, error: 'YouTube 清單只能在桌面版使用（影片要寫進你選的資料夾，曲庫才能登記）' };
+    ytBusy = true;
+    try {
+      var folder = await api().roots.browse();
+      if (!folder) return { ok: false, cancelled: true, error: '已取消（沒有選下載資料夾）' };
+      ytOnUpdate = typeof onUpdate === 'function' ? onUpdate : null;
+      var L = getLib();
+      await L.ready;
+      var entries, listTitle = null;
+      if (parsed.mode === 'playlist') {
+        var pl = await ytExpand(parsed.listId);
+        entries = pl.entries; listTitle = pl.title;
+      } else {
+        entries = [{ videoId: parsed.videoId, title: null }];
+      }
+      var label = listTitle || (parsed.mode === 'video' ? parsed.videoId : parsed.listId);
+      ytJob = FaMusicLibYoutube.createJob({ mode: parsed.mode, listId: parsed.listId || null, videoId: parsed.videoId || null, title: label, entries: entries });
+      FaMusicLibYoutube.markDuplicates(ytJob, FaMusicLibYoutube.existingIdsFrom(L.records));
+      var sid = L.addSource('youtube', 'YT清單：' + label);
+      ytNotify();
+      var fa = ytBridge();
+      var deps = {
+        verify: async function (id) {
+          var checks = await fa._youtubeCheckLicenseAndOwnership([id]);
+          return checks[id] || { ok: false, reason: '跳過：驗證沒有回傳結果' };
+        },
+        download: async function (id, report) {
+          var rep = function (frac, text) { report(frac, text); return Promise.resolve(); };
+          return await fa._youtubeDownloadOne(id, false, rep);
+        },
+        store: async function (item, title, files) {
+          if (!files || !files.length) throw ytErr('下載', new Error('下載沒有回傳任何檔案'));
+          var multi = files.length > 1, written = [];
+          for (var i = 0; i < files.length; i++) {
+            var f = files[i], name = FaMusicLibYoutube.fileNameFor(title, item.videoId, f.kind, f.ext, multi);
+            try { var w = await writeDerivedFile(folder, name, f.bytes); } catch (e) { throw ytErr('寫入', e); }
+            written.push({ path: w.path, size: w.sizeBytes, mtimeMs: Date.now() });
+          }
+          // 登記：同一來源目前的檔案＋剛寫的一起交給 lib.scan（沒變的沿用，不重讀）
+          try {
+            var known = L.records.filter(function (r) { return r.sourceId === sid && r.status === 'ok'; })
+              .map(function (r) { return { path: r.path, size: r.sizeBytes, mtimeMs: r.mtimeMs }; });
+            await L.scan(sid, known.concat(written), ytReadHead);
+            await L.save();
+          } catch (e) { throw ytErr('登記', e); }
+          item.path = written[0].path;
+        },
+      };
+      await FaMusicLibYoutube.runJob(ytJob, deps, { onChange: ytNotify });
+      ytNotify();
+      return { ok: true, summary: FaMusicLibYoutube.summarize(ytJob), job: ytJob };
+    } catch (e) {
+      ytNotify();
+      return { ok: false, error: (e && e.stage ? e.stage + '失敗：' : '') + String((e && e.message) || e) };
+    } finally {
+      ytBusy = false;
+    }
+  }
+  function ytReadHead(path, n) { return api().rawfs.readHead(path, n).then(function (r) { return r && r.base64 != null ? b64ToBytes(r.base64) : null; }); }
+  // action：'pause'｜'resume'｜'cancel'；沒有進行中的清單回傳 false
+  function youtubeControl(action) {
+    if (!ytJob) return false;
+    if (action === 'pause') FaMusicLibYoutube.pauseJob(ytJob);
+    else if (action === 'resume') FaMusicLibYoutube.resumeJob(ytJob);
+    else if (action === 'cancel') FaMusicLibYoutube.cancelJob(ytJob);
+    else return false;
+    ytNotify();
+    return true;
+  }
+  function youtubeJob() { return ytJob ? { job: ytJob, summary: FaMusicLibYoutube.summarize(ytJob) } : null; }
+
   return { methods: methods, getLib: getLib, pickFolder: pickFolder, walkFolder: walkFolder, whisperTranscribe: whisperTranscribe, melody: MELODY_HOST, extract: PICK_HOST.extract,
+    startYoutubeList: startYoutubeList, youtubeControl: youtubeControl, youtubeJob: youtubeJob,
     exportBatch: exportBatch, verifyOutput: verifyOutput,
     // 取消批次輸出：正在跑的那個檔案在下一個步驟前中止，之後的檔案標示取消
     cancelExport: function () { exportCancelled = true; },

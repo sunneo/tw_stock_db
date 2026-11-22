@@ -77,3 +77,20 @@ NSF、SPC、HES 是別人整理好的音樂包（含初始化位址、播放位�
 - 它有**範圍限制**：設定了「YouTube Data API 金鑰」與「我的 YouTube 頻道 ID」時，只允許自己頻道的影片或授權欄位標示 Creative Commons 的影片；沒設定這兩個欄位會跳過驗證、直接放行（回傳 `verification_skipped: true`，要提醒使用者）。音樂庫接它時**不能繞過這個限制**，要沿用同一個驗證與回報。
 - 只能下載 progressive 格式（沙盒沒有 ffmpeg 合併）；底層是 Pyodide 跑的 yt-dlp。
 - 待辦：播放清單展開（yt-dlp 的 flat-playlist 或 Data API 的 playlistItems，擇一並寫明）、展開後逐支走既有驗證與下載、下載完登記成曲目（來源記為 YouTube 清單）；清單很大時背景進行、可暫停續跑。
+
+### 決定（2026-11-22）：播放清單展開用 yt-dlp flat-playlist
+
+- **選 yt-dlp `extract_flat: 'in_playlist'`**，不選 Data API `playlistItems`。理由：
+  1. 不需要 YouTube Data API 金鑰（金鑰是選填的，沒設定時清單功能仍要能用）；
+  2. 直接重用既有的 `_ensureYtDlpLoaded()` Pyodide 執行環境（`_youtubeDownloadOne` 同一條），不另外引入新的網路路徑；
+  3. flat 模式就回傳每支影片的 id、標題、頻道、長度，符合「標題、頻道、長度」的需求；Data API 的 `playlistItems` 不給長度，還要多一次 `videos.list`。
+- 代價（如實記錄）：展開走的是 yt-dlp 讀播放清單頁，**沒有實機驗證**（本次不連網）；若 YouTube 對清單頁也要求 PO Token，展開會失敗，失敗會附階段與原因，不會默默漏掉。
+- 單支影片連結不經過展開，直接當成一筆清單項目（標題在驗證時由 Data API 取得，沒金鑰時標題用影片 ID）。
+
+### 實作邊界（2026-11-22）
+
+- 範圍驗證**沿用** `floating-assistant.js` 的 `_youtubeCheckLicenseAndOwnership`，逐支、下載前呼叫；沒設金鑰時仍走它的 `verification_skipped` 路徑，結果與 UI 都要明講；不另寫一套放寬的判斷。
+- 純邏輯在 `renderer/src/musiclib/musiclib_youtube.js`（UMD，可單元測試）：輸入解析、展開腳本與結果解析、工作（job）狀態、逐支執行（驗證→下載→寫檔→登記）、暫停／續跑／取消。
+- 去重：下載檔名帶 `[影片ID]`，登記前檢查曲庫裡 `sourceType === 'youtube'` 的記錄是否已有同一 ID；跨清單也去重。
+- 儲存：只有桌面版能寫入資料夾（曲庫記錄是磁碟路徑），網頁版不提供此功能，會明講。檔案寫進使用者選的資料夾，之後用既有的 `lib.scan` 登記，來源類型 `youtube`，來源名稱為清單標題。
+- 續跑：同一程序內可暫停、續跑；跨重新開啟時，重新加入同一清單會靠檔名去重略過已完成的影片。
