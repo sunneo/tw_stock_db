@@ -1,0 +1,4 @@
+jspce（MIT）
+來源：https://github.com/yhzmr442/jspce
+版本（commit）：d4339bae5fb2253b8b3d110e256405d928a3afc4（master，2026-11-22 抓取）
+用途：只移植 PSG 的暫存器規則（PCE.js 的 SetPSG、PSGRun、SoundSet、PSGInit 段落）到 renderer/src/musiclib/musiclib_extract_pce.js；CPU 與影像部分未使用，HuC6280 處理器是自寫的（renderer/src/musiclib/musiclib_pce_cpu.js）。
