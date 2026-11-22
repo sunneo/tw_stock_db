@@ -99144,19 +99144,44 @@ const holder = {};
   // ───── 整體流程（stages 每段各自說明）─────
   // 目前：ROM 掃描與標頭已做；主 CPU 執行與傾印需要 SNES 核心（見 DESIGN.TODO.music-rom-extract.md）；
   // snes_spc 渲染需要 wasm 工具鏈（emscripten 或 clang）。沒有就明確回報，不假裝完成。
+  // opts.runner(romBytes, opts) → { uploaded, uploadFrame, entry, snapshots:[{frame, ramCopy, dsp, spc:{pc,a,x,y,psw,sp}}], cancelled, reason }
+  //   （宿主用 FaMusicLibSnesBus.runRom 接上）
+  // opts.renderSpc(spcBytes, opts) → { samples:Float32Array, sampleRate, durationSec } 或丟錯；沒有就停在「SPC 渲染」階段並寫明原因
   function sfcExtract(romBytes, opts) {
     opts = opts || {};
-    var out = { ok: false, header: null, stages: [], spcs: [], song: null, reason: null };
+    var out = { ok: false, header: null, stages: [], spcs: [], song: null, reason: null, cancelled: false };
+    function fail(i, why) { out.stages.push({ stage: STAGES[i], ok: false, reason: why }); out.reason = STAGES[i] + '：' + why; return out; }
     var h = parseSnesHeader(asU8(romBytes));
     out.header = h;
     out.stages.push({ stage: STAGES[0], ok: true, note: h.copier ? '已去掉 512 位元組 copier 檔頭' : '' });
-    var runner = opts.runner;
-    if (typeof runner !== 'function') {
-      out.stages.push({ stage: STAGES[1], ok: false, reason: '主 CPU 執行器尚未接上（SNES 核心還沒接進頁面）' });
-      out.reason = STAGES[1] + '：主 CPU 執行器尚未接上';
-      return out;
+    if (typeof opts.runner !== 'function') return fail(1, '主 CPU 執行器沒有接上');
+    var r;
+    try { r = opts.runner(asU8(romBytes), opts); }
+    catch (e) { return fail(1, '執行階段例外：' + String((e && e.message) || e)); }
+    if (r && r.cancelled) { out.cancelled = true; return fail(1, '已取消'); }
+    if (!r || !r.uploaded) return fail(1, (r && r.reason) || '聲音程式上傳沒有完成');
+    out.stages.push({ stage: STAGES[1], ok: true, note: '聲音程式上傳完成於第 ' + r.uploadFrame + ' 個畫面，入口 $' + (r.entry || 0).toString(16).padStart(4, '0') });
+    if (!r.snapshots || !r.snapshots.length) return fail(2, '上傳完成後沒有拍到快照');
+    out.stages.push({ stage: STAGES[2], ok: true, note: '傾印 ' + r.snapshots.length + ' 個時間點' });
+    r.snapshots.forEach(function (s) {
+      var bytes = packSpc({ ram: s.ramCopy, dsp: s.dsp, pc: s.spc.pc, a: s.spc.a, x: s.spc.x, y: s.spc.y, psw: s.spc.psw, sp: s.spc.sp, title: opts.title || '', game: opts.game || '' });
+      out.spcs.push({ frame: s.frame, bytes: bytes });
+    });
+    out.stages.push({ stage: STAGES[3], ok: true, note: out.spcs.length + ' 個 .spc' });
+    if (typeof opts.renderSpc !== 'function') {
+      return fail(4, 'SPC700＋S-DSP 渲染核心沒有接上（ml-spcdsp 的 musiclib_spc_core.js 尚未合併）；' +
+        '目前的聲音埠只跑 IPL 上傳協定，不執行 SPC700，所以 .spc 裡的 DSP 與 SPC700 狀態是占位值，不能當成音樂');
     }
-    out.stages.push({ stage: STAGES[1], ok: true });
+    // 每個時間點各自渲染成一首；單一時間點失敗不影響其他（逐筆記錄）
+    out.rendered = [];
+    var errs = [];
+    out.spcs.forEach(function (sp, i) {
+      try { out.rendered.push({ index: i, frame: sp.frame, bytes: sp.bytes, out: opts.renderSpc(sp.bytes, opts) }); }
+      catch (e) { errs.push('第 ' + i + ' 個：' + String((e && e.message) || e)); }
+    });
+    if (!out.rendered.length) return fail(4, '渲染失敗：' + errs.join('；'));
+    out.stages.push({ stage: STAGES[4], ok: true, note: out.rendered.length + ' 首渲染成功' + (errs.length ? '；' + errs.join('；') : '') });
+    out.ok = true;
     return out;
   }
 
@@ -99170,6 +99195,826 @@ const holder = {};
 return holder.FaMusicLibSfc;
 })();
 /* MLSFC-END */
+/* MLSNESCPU-BEGIN */
+const FaMusicLibSnesCpu = (function () {
+const holder = {};
+(function (module, self) {
+/* 超任主處理器 65816（UMD，純邏輯；不碰 DOM、不用網路）。
+ *   new Cpu(bus)         bus 需提供 read(addr24) → 0–255、write(addr24, v)
+ *   cpu.reset()          E=1、I=1、M=X=1、S=$01FF，PC 取自 $FFFC
+ *   cpu.step()           執行一道指令（或一次中斷進入）；回傳實際執行的步數（停住時為 0）
+ *   cpu.nmiPending = true  請求 NMI（邊緣觸發，執行一次後自動清除）；cpu.irqLine = true 為電位式 IRQ
+ *
+ * 參考來源（自己從公開文件寫，沒有抄任何程式）：WDC W65C816 資料手冊的指令表與旗標定義、
+ * fullsnes（nocash，SNES 硬體文件）的 65816 章節（中斷向量、模式切換、堆疊與直接頁行為）。
+ *
+ * 範圍與限制（會在報告裡一併寫）：
+ *   · 256 個運算碼全部實作（含 WAI、STP、WDM、MVN／MVP 區塊搬移、COP、BRK、RTI、XCE 模式切換）。
+ *   · 沒有逐週期計時；step() 每次回傳 1，時序由宿主（musiclib_snes_bus.js）依指令數粗估。
+ *   · 十進位（D 旗標）模式的 ADC／SBC 結果與 C 旗標正確；V 旗標用二進位算法，這是近似（真機的 V 在十進位下也不同）。
+ *   · 直接頁在 E=1 且 DL=0 時的頁內回繞有處理；其餘硬體的時序邊界（跨頁多一週期）不模擬。 */
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaMusicLibSnesCpu = factory();
+}(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+  var F_C = 0x01, F_Z = 0x02, F_I = 0x04, F_D = 0x08, F_X = 0x10, F_M = 0x20, F_V = 0x40, F_N = 0x80;
+  // ALU 群組（運算碼高 3 位元）：0x0_ ORA、0x2_ AND、0x4_ EOR、0x6_ ADC、0x8_ STA、0xA_ LDA、0xC_ CMP、0xE_ SBC
+  var ALU = ['ORA', 'AND', 'EOR', 'ADC', 'STA', 'LDA', 'CMP', 'SBC'];
+
+  function Cpu(bus) {
+    this.bus = bus;
+    this.A = 0; this.X = 0; this.Y = 0; this.S = 0x1FF; this.D = 0;
+    this.DBR = 0; this.PBR = 0; this.PC = 0; this.P = F_I | F_M | F_X; this.E = true;
+    this.halted = false; this.stopped = false; this.nmiPending = false; this.irqLine = false;
+    this.instructions = 0;
+    this.reset();
+  }
+
+  // ───── 匯流排存取（位址一律 24 位元）─────
+  Cpu.prototype.r8 = function (a) { return this.bus.read(a & 0xFFFFFF) & 0xFF; };
+  Cpu.prototype.w8 = function (a, v) { this.bus.write(a & 0xFFFFFF, v & 0xFF); };
+  Cpu.prototype.rw = function (a, w) { return w === 1 ? this.r8(a) : (this.r8(a) | (this.r8(a + 1) << 8)); };
+  Cpu.prototype.ww = function (a, v, w) { this.w8(a, v); if (w === 2) this.w8(a + 1, v >> 8); };
+
+  Cpu.prototype.fetch8 = function () { var v = this.r8((this.PBR << 16) | this.PC); this.PC = (this.PC + 1) & 0xFFFF; return v; };
+  Cpu.prototype.fetch16 = function () { var lo = this.fetch8(); return lo | (this.fetch8() << 8); };
+  Cpu.prototype.fetch24 = function () { var lo = this.fetch16(); return (lo | (this.fetch8() << 16)) >>> 0; };
+  Cpu.prototype.fetchW = function (w) { return w === 1 ? this.fetch8() : this.fetch16(); };
+
+  // ───── 寬度與旗標 ─────
+  Cpu.prototype.mw = function () { return (this.P & F_M) ? 1 : 2; };
+  Cpu.prototype.xw = function () { return (this.P & F_X) ? 1 : 2; };
+  Cpu.prototype.nz = function (v, w) {
+    var m = w === 1 ? 0xFF : 0xFFFF, msb = w === 1 ? 0x80 : 0x8000;
+    this.P = (this.P & ~(F_N | F_Z)) | ((v & msb) ? F_N : 0) | (((v & m) === 0) ? F_Z : 0);
+  };
+  Cpu.prototype.getA = function (w) { return w === 1 ? (this.A & 0xFF) : (this.A & 0xFFFF); };
+  Cpu.prototype.setA = function (v, w) { this.A = w === 1 ? ((this.A & 0xFF00) | (v & 0xFF)) : (v & 0xFFFF); };
+  Cpu.prototype.setX = function (v, w) { this.X = w === 1 ? (v & 0xFF) : (v & 0xFFFF); };
+  Cpu.prototype.setY = function (v, w) { this.Y = w === 1 ? (v & 0xFF) : (v & 0xFFFF); };
+  // 模式切換後的固定規則：E=1 時 M、X 固定為 1、S 高位元組固定為 1、X／Y 高位元組清零
+  Cpu.prototype.fixup = function () {
+    if (this.E) { this.P |= F_M | F_X; this.S = 0x100 | (this.S & 0xFF); this.X &= 0xFF; this.Y &= 0xFF; }
+    else if (this.P & F_X) { this.X &= 0xFF; this.Y &= 0xFF; }
+  };
+
+  // ───── 堆疊（E=1 時堆疊固定在第一頁）─────
+  Cpu.prototype.push8 = function (v) {
+    this.w8(this.S, v);
+    this.S = this.E ? (0x100 | ((this.S - 1) & 0xFF)) : ((this.S - 1) & 0xFFFF);
+  };
+  Cpu.prototype.pull8 = function () {
+    this.S = this.E ? (0x100 | ((this.S + 1) & 0xFF)) : ((this.S + 1) & 0xFFFF);
+    return this.r8(this.S);
+  };
+  Cpu.prototype.push = function (v, w) { if (w === 2) this.push8(v >> 8); this.push8(v & 0xFF); };
+  Cpu.prototype.pull = function (w) { var lo = this.pull8(); return w === 1 ? lo : (lo | (this.pull8() << 8)); };
+
+  // ───── 直接頁與指標 ─────
+  Cpu.prototype.wrapPtr = function () { return this.E && (this.D & 0xFF) === 0; };
+  Cpu.prototype.dpAddr = function (off) { return (this.D + off) & 0xFFFF; };
+  Cpu.prototype.dpIdx = function (off, idx) {
+    if (this.wrapPtr()) return this.D | ((off + idx) & 0xFF);   // E=1 且 DL=0：頁內回繞
+    return (this.D + off + idx) & 0xFFFF;
+  };
+  // 指標（bank 0 內的 16 位元）；wrap 為真時第二個位元組也在同一頁內取
+  Cpu.prototype.ptr16 = function (a, wrap) {
+    var hi = wrap ? ((a & 0xFF00) | ((a + 1) & 0xFF)) : ((a + 1) & 0xFFFF);
+    return this.r8(a) | (this.r8(hi) << 8);
+  };
+  Cpu.prototype.ptr24 = function (a) {
+    return (this.r8(a) | (this.r8((a + 1) & 0xFFFF) << 8) | (this.r8((a + 2) & 0xFFFF) << 16)) >>> 0;
+  };
+
+  // 取出有效位址（會前進 PC）。模式名稱見 aluMode／exec 的呼叫點
+  Cpu.prototype.ea = function (mode) {
+    var t;
+    switch (mode) {
+      case 'dp': return this.dpAddr(this.fetch8());
+      case 'dpx': return this.dpIdx(this.fetch8(), this.X);
+      case 'dpy': return this.dpIdx(this.fetch8(), this.Y);
+      case 'abs': return ((this.DBR << 16) | this.fetch16()) & 0xFFFFFF;
+      case 'absx': return ((this.DBR << 16) + this.fetch16() + this.X) & 0xFFFFFF;
+      case 'absy': return ((this.DBR << 16) + this.fetch16() + this.Y) & 0xFFFFFF;
+      case 'long': return this.fetch24();
+      case 'longx': return (this.fetch24() + this.X) & 0xFFFFFF;
+      case 'sr': return (this.S + this.fetch8()) & 0xFFFF;
+      case 'sry': t = (this.S + this.fetch8()) & 0xFFFF; return ((this.DBR << 16) + this.ptr16(t, false) + this.Y) & 0xFFFFFF;
+      case 'idp': t = this.dpAddr(this.fetch8()); return ((this.DBR << 16) | this.ptr16(t, this.wrapPtr())) & 0xFFFFFF;
+      case 'idpy': t = this.dpAddr(this.fetch8()); return ((this.DBR << 16) + this.ptr16(t, this.wrapPtr()) + this.Y) & 0xFFFFFF;
+      case 'idl': return this.ptr24(this.dpAddr(this.fetch8()));
+      case 'idly': return (this.ptr24(this.dpAddr(this.fetch8())) + this.Y) & 0xFFFFFF;
+      case 'idx': t = this.dpIdx(this.fetch8(), this.X); return ((this.DBR << 16) | this.ptr16(t, this.wrapPtr())) & 0xFFFFFF;
+      default: throw new Error('未知定址模式：' + mode);
+    }
+  };
+  // 運算碼低 4 位元與高 4 位元的奇偶，決定 ALU 群組的定址模式（見 fullsnes 的指令表排列）
+  function aluMode(L, odd) {
+    switch (L) {
+      case 0x1: return odd ? 'idpy' : 'idx';
+      case 0x2: return 'idp';
+      case 0x3: return odd ? 'sry' : 'sr';
+      case 0x5: return odd ? 'dpx' : 'dp';
+      case 0x7: return odd ? 'idly' : 'idl';
+      case 0x9: return odd ? 'absy' : 'imm';
+      case 0xD: return odd ? 'absx' : 'abs';
+      case 0xF: return odd ? 'longx' : 'long';
+      default: return null;
+    }
+  }
+
+  // ───── 算術與邏輯 ─────
+  Cpu.prototype.adc = function (v, w) {
+    var m = w === 1 ? 0xFF : 0xFFFF, msb = w === 1 ? 0x80 : 0x8000;
+    var a = this.getA(w), c = (this.P & F_C) ? 1 : 0, res, carry, bin, ov;
+    v &= m;
+    bin = a + v + c;                                   // 二進位結果：V 旗標用它算
+    ov = ((~(a ^ v)) & (a ^ bin) & msb) ? F_V : 0;
+    if (this.P & F_D) {
+      var nibs = w === 1 ? 2 : 4, cn = c, out = 0;
+      for (var k = 0; k < nibs; k++) {
+        var d = ((a >> (4 * k)) & 0xF) + ((v >> (4 * k)) & 0xF) + cn;
+        cn = 0;
+        if (d > 9) d += 6;
+        if (d > 15) cn = 1;
+        out |= (d & 0xF) << (4 * k);
+      }
+      res = out; carry = cn;
+    } else {
+      res = bin & m; carry = bin > m ? 1 : 0;
+    }
+    this.P = (this.P & ~(F_C | F_V)) | (carry ? F_C : 0) | ov;
+    this.nz(res, w);
+    this.setA(res, w);
+  };
+  Cpu.prototype.sbc = function (v, w) {
+    var m = w === 1 ? 0xFF : 0xFFFF;
+    if (!(this.P & F_D)) { this.adc((v & m) ^ m, w); return; }
+    var nibs = w === 1 ? 2 : 4, a = this.getA(w), borrow = (this.P & F_C) ? 0 : 1, out = 0;
+    // V 旗標（二進位近似）：與二進位 SBC 同算法
+    var bin = a - (v & m) - borrow, msb = w === 1 ? 0x80 : 0x8000;
+    var ovFlag = ((a ^ (v & m)) & (a ^ bin) & msb) ? F_V : 0;
+    for (var k = 0; k < nibs; k++) {
+      var d = ((a >> (4 * k)) & 0xF) - ((v >> (4 * k)) & 0xF) - borrow;
+      if (d < 0) { d -= 6; borrow = 1; } else borrow = 0;
+      out |= (d & 0xF) << (4 * k);
+    }
+    this.P = (this.P & ~(F_C | F_V)) | (borrow ? 0 : F_C) | ovFlag;
+    this.nz(out, w);
+    this.setA(out, w);
+  };
+  Cpu.prototype.cmp = function (reg, v, w) {
+    var m = w === 1 ? 0xFF : 0xFFFF;
+    var r = (reg & m) - (v & m);
+    this.P = (this.P & ~F_C) | (((reg & m) >= (v & m)) ? F_C : 0);
+    this.nz(r & m, w);
+  };
+  Cpu.prototype.shift = function (kind, v, w) {
+    var m = w === 1 ? 0xFF : 0xFFFF, msb = w === 1 ? 0x80 : 0x8000, cin = (this.P & F_C) ? 1 : 0, r, c;
+    switch (kind) {
+      case 'asl': c = (v & msb) ? 1 : 0; r = (v << 1) & m; break;
+      case 'lsr': c = v & 1; r = (v >> 1) & m; break;
+      case 'rol': c = (v & msb) ? 1 : 0; r = ((v << 1) | cin) & m; break;
+      default:    c = v & 1; r = ((v >> 1) | (cin ? msb : 0)) & m; break; // ror
+    }
+    this.P = (this.P & ~F_C) | (c ? F_C : 0);
+    this.nz(r, w);
+    return r;
+  };
+  Cpu.prototype.rmw = function (kind, mode) {
+    var w = this.mw(), a = this.ea(mode);
+    this.ww(a, this.shift(kind, this.rw(a, w), w), w);
+  };
+  Cpu.prototype.alu = function (name, v, w) {
+    var a;
+    switch (name) {
+      case 'ORA': this.setA(this.getA(w) | v, w); this.nz(this.getA(w), w); break;
+      case 'AND': this.setA(this.getA(w) & v, w); this.nz(this.getA(w), w); break;
+      case 'EOR': this.setA(this.getA(w) ^ v, w); this.nz(this.getA(w), w); break;
+      case 'ADC': this.adc(v, w); break;
+      case 'SBC': this.sbc(v, w); break;
+      case 'CMP': this.cmp(this.getA(w), v, w); break;
+      case 'LDA': this.setA(v, w); this.nz(v, w); break;
+      default: throw new Error('未知 ALU：' + name);
+    }
+  };
+
+  // ───── 分支與中斷 ─────
+  Cpu.prototype.branch = function (cond) {
+    var rel = this.fetch8(); if (rel & 0x80) rel -= 256;
+    if (cond) this.PC = (this.PC + rel) & 0xFFFF;
+  };
+  // 硬體中斷與 BRK／COP 共用：E=0 推 PBR、PC、P；E=1 推 PC、P（BRK／COP 的 B 位元為 1，硬體中斷為 0）
+  Cpu.prototype.interrupt = function (vecNative, vecEmu, soft) {
+    if (!this.E) { this.push8(this.PBR); this.push(this.PC, 2); this.push8(this.P); }
+    else { this.push(this.PC, 2); this.push8(soft ? (this.P | F_X) : (this.P & ~F_X)); }
+    this.P |= F_I; this.P &= ~F_D;
+    this.PBR = 0;
+    this.PC = this.rw(this.E ? vecEmu : vecNative, 2);
+  };
+  Cpu.prototype.reset = function () {
+    this.E = true; this.P = F_I | F_M | F_X; this.D = 0; this.DBR = 0; this.PBR = 0; this.S = 0x1FF;
+    this.halted = false; this.stopped = false; this.nmiPending = false; this.irqLine = false;
+    this.X &= 0xFF; this.Y &= 0xFF;
+    this.PC = this.rw(0xFFFC, 2);
+  };
+
+  // ───── 單步 ─────
+  Cpu.prototype.step = function () {
+    if (this.stopped) return 0;
+    if (this.halted && (this.nmiPending || this.irqLine)) this.halted = false;
+    if (this.nmiPending) {
+      this.nmiPending = false;
+      this.interrupt(0xFFEA, 0xFFFA, false);
+      this.instructions++;
+      return 1;
+    }
+    if (this.irqLine && !(this.P & F_I)) {
+      this.interrupt(0xFFEE, 0xFFFE, false);
+      this.instructions++;
+      return 1;
+    }
+    if (this.halted) return 0;
+    var op = this.fetch8();
+    this.exec(op);
+    this.instructions++;
+    return 1;
+  };
+
+  Cpu.prototype.exec = function (op) {
+    var L = op & 0xF, hi = op >> 4, mw, xw, a, v, t;
+    // 1) ALU 群組（ORA／AND／EOR／ADC／STA／LDA／CMP／SBC 的各種定址）；0x89 是 BIT 立即，不在群組內
+    if (op !== 0x89 && ((L === 1 || L === 3 || L === 5 || L === 7 || L === 9 || L === 0xD || L === 0xF) || (L === 2 && (hi & 1)))) {
+      var name = ALU[op >> 5], mode = aluMode(L, hi & 1);
+      mw = this.mw();
+      if (name === 'STA') { a = this.ea(mode); this.ww(a, this.getA(mw), mw); return; }
+      if (mode === 'imm') v = this.fetchW(mw);
+      else { a = this.ea(mode); v = this.rw(a, mw); }
+      this.alu(name, v, mw);
+      return;
+    }
+    mw = this.mw(); xw = this.xw();
+    switch (op) {
+      // 控制與中斷
+      case 0x00: this.fetch8(); this.interrupt(0xFFE6, 0xFFFE, true); return;   // BRK（後面還有一個記號位元組）
+      case 0x02: this.fetch8(); this.interrupt(0xFFE4, 0xFFF4, true); return;   // COP
+      case 0x40:                                                                 // RTI
+        this.P = this.pull8(); this.fixup(); this.PC = this.pull(2);
+        if (!this.E) this.PBR = this.pull8();
+        return;
+      case 0x60: this.PC = (this.pull(2) + 1) & 0xFFFF; return;                 // RTS
+      case 0x6B: t = this.pull(2); this.PBR = this.pull8(); this.PC = (t + 1) & 0xFFFF; return; // RTL
+      case 0xCB: this.halted = true; return;                                    // WAI
+      case 0xDB: this.stopped = true; return;                                   // STP
+      case 0xEA: return;                                                        // NOP
+      case 0x42: this.fetch8(); return;                                         // WDM（保留）
+      case 0x18: this.P &= ~F_C; return;                                        // CLC
+      case 0x38: this.P |= F_C; return;                                         // SEC
+      case 0x58: this.P &= ~F_I; return;                                        // CLI
+      case 0x78: this.P |= F_I; return;                                         // SEI
+      case 0xD8: this.P &= ~F_D; return;                                        // CLD
+      case 0xF8: this.P |= F_D; return;                                         // SED
+      case 0xB8: this.P &= ~F_V; return;                                        // CLV
+      case 0xFB: // XCE：C 與 E 互換
+        t = this.E ? 1 : 0; this.E = !!(this.P & F_C);
+        this.P = (this.P & ~F_C) | (t ? F_C : 0);
+        this.fixup(); return;
+      case 0xC2: this.P &= ~this.fetch8(); this.fixup(); return;               // REP
+      case 0xE2: this.P |= this.fetch8(); this.fixup(); return;                // SEP
+
+      // 分支與跳躍
+      case 0x10: this.branch(!(this.P & F_N)); return;                         // BPL
+      case 0x30: this.branch(this.P & F_N); return;                            // BMI
+      case 0x50: this.branch(!(this.P & F_V)); return;                         // BVC
+      case 0x70: this.branch(this.P & F_V); return;                            // BVS
+      case 0x90: this.branch(!(this.P & F_C)); return;                         // BCC
+      case 0xB0: this.branch(this.P & F_C); return;                            // BCS
+      case 0xD0: this.branch(!(this.P & F_Z)); return;                         // BNE
+      case 0xF0: this.branch(this.P & F_Z); return;                            // BEQ
+      case 0x80: this.branch(true); return;                                    // BRA
+      case 0x82: t = this.fetch16(); if (t & 0x8000) t -= 0x10000; this.PC = (this.PC + t) & 0xFFFF; return; // BRL
+      case 0x4C: this.PC = this.fetch16(); return;                             // JMP abs
+      case 0x5C: t = this.fetch24(); this.PBR = t >>> 16; this.PC = t & 0xFFFF; return; // JML long
+      case 0x6C: this.PC = this.rw(this.fetch16(), 2); return;                 // JMP (abs)
+      case 0x7C: t = (this.PBR << 16) | ((this.fetch16() + this.X) & 0xFFFF); this.PC = this.rw(t, 2); return; // JMP (abs,X)
+      case 0xDC: t = this.ptr24(this.fetch16()); this.PBR = t >>> 16; this.PC = t & 0xFFFF; return; // JML [abs]
+      case 0x20: t = this.fetch16(); this.push((this.PC - 1) & 0xFFFF, 2); this.PC = t; return; // JSR abs
+      case 0xFC: t = this.fetch16(); this.push((this.PC - 1) & 0xFFFF, 2); this.PC = this.rw((this.PBR << 16) | ((t + this.X) & 0xFFFF), 2); return; // JSR (abs,X)
+      case 0x22: t = this.fetch24(); this.push8(this.PBR); this.push((this.PC - 1) & 0xFFFF, 2); this.PBR = t >>> 16; this.PC = t & 0xFFFF; return; // JSL
+
+      // 堆疊
+      case 0x08: this.push8(this.P); return;                                   // PHP
+      case 0x28: this.P = this.pull8(); this.fixup(); return;                  // PLP
+      case 0x48: this.push(this.getA(mw), mw); return;                         // PHA
+      case 0x68: v = this.pull(mw); this.setA(v, mw); this.nz(v, mw); return;  // PLA
+      case 0xDA: this.push(this.X, xw); return;                                // PHX
+      case 0xFA: v = this.pull(xw); this.setX(v, xw); this.nz(v, xw); return;  // PLX
+      case 0x5A: this.push(this.Y, xw); return;                                // PHY
+      case 0x7A: v = this.pull(xw); this.setY(v, xw); this.nz(v, xw); return;  // PLY
+      case 0x0B: this.push(this.D, 2); return;                                 // PHD
+      case 0x2B: this.D = this.pull(2); this.nz(this.D, 2); return;            // PLD
+      case 0x4B: this.push8(this.PBR); return;                                 // PHK
+      case 0x8B: this.push8(this.DBR); return;                                 // PHB
+      case 0xAB: this.DBR = this.pull8(); this.nz(this.DBR, 1); return;        // PLB
+      case 0xF4: this.push(this.fetch16(), 2); return;                         // PEA
+      case 0xD4: this.push(this.ptr16(this.dpAddr(this.fetch8()), this.wrapPtr()), 2); return; // PEI
+      case 0x62: t = this.fetch16(); if (t & 0x8000) t -= 0x10000; this.push((this.PC + t) & 0xFFFF, 2); return; // PER
+
+      // 暫存器傳送
+      case 0xAA: this.setX(this.getA(xw), xw); this.nz(this.X, xw); return;    // TAX
+      case 0xA8: this.setY(this.getA(xw), xw); this.nz(this.Y, xw); return;    // TAY
+      case 0x8A: this.setA(this.X, mw); this.nz(this.getA(mw), mw); return;    // TXA
+      case 0x98: this.setA(this.Y, mw); this.nz(this.getA(mw), mw); return;    // TYA
+      case 0xBA: this.setX(this.S, xw); this.nz(this.X, xw); return;           // TSX
+      case 0x9A: this.S = this.E ? (0x100 | (this.X & 0xFF)) : (this.X & 0xFFFF); return; // TXS
+      case 0x9B: this.setY(this.X, xw); this.nz(this.Y, xw); return;           // TXY
+      case 0xBB: this.setX(this.Y, xw); this.nz(this.X, xw); return;           // TYX
+      case 0x1B: this.S = this.E ? (0x100 | (this.A & 0xFF)) : (this.A & 0xFFFF); return; // TCS
+      case 0x3B: this.A = this.S; this.nz(this.A, 2); return;                  // TSC
+      case 0x5B: this.D = this.A & 0xFFFF; this.nz(this.D, 2); return;         // TCD
+      case 0x7B: this.A = this.D; this.nz(this.A, 2); return;                  // TDC
+      case 0xEB: t = this.A & 0xFFFF; this.A = ((t & 0xFF) << 8) | (t >> 8); this.nz(this.A & 0xFF, 1); return; // XBA
+
+      // 遞增、遞減（暫存器）
+      case 0xE8: this.setX(this.X + 1, xw); this.nz(this.X, xw); return;       // INX
+      case 0xC8: this.setY(this.Y + 1, xw); this.nz(this.Y, xw); return;       // INY
+      case 0xCA: this.setX(this.X - 1, xw); this.nz(this.X, xw); return;       // DEX
+      case 0x88: this.setY(this.Y - 1, xw); this.nz(this.Y, xw); return;       // DEY
+      case 0x1A: this.setA(this.getA(mw) + 1, mw); this.nz(this.getA(mw), mw); return; // INC A
+      case 0x3A: this.setA(this.getA(mw) - 1, mw); this.nz(this.getA(mw), mw); return; // DEC A
+
+      // 移位（累加器）
+      case 0x0A: this.setA(this.shift('asl', this.getA(mw), mw), mw); return;
+      case 0x4A: this.setA(this.shift('lsr', this.getA(mw), mw), mw); return;
+      case 0x2A: this.setA(this.shift('rol', this.getA(mw), mw), mw); return;
+      case 0x6A: this.setA(this.shift('ror', this.getA(mw), mw), mw); return;
+
+      // 移位與遞增、遞減（記憶體）
+      case 0x06: this.rmw('asl', 'dp'); return;   case 0x16: this.rmw('asl', 'dpx'); return;
+      case 0x0E: this.rmw('asl', 'abs'); return;  case 0x1E: this.rmw('asl', 'absx'); return;
+      case 0x46: this.rmw('lsr', 'dp'); return;   case 0x56: this.rmw('lsr', 'dpx'); return;
+      case 0x4E: this.rmw('lsr', 'abs'); return;  case 0x5E: this.rmw('lsr', 'absx'); return;
+      case 0x26: this.rmw('rol', 'dp'); return;   case 0x36: this.rmw('rol', 'dpx'); return;
+      case 0x2E: this.rmw('rol', 'abs'); return;  case 0x3E: this.rmw('rol', 'absx'); return;
+      case 0x66: this.rmw('ror', 'dp'); return;   case 0x76: this.rmw('ror', 'dpx'); return;
+      case 0x6E: this.rmw('ror', 'abs'); return;  case 0x7E: this.rmw('ror', 'absx'); return;
+      case 0xE6: this.incMem('dp', 1); return;    case 0xF6: this.incMem('dpx', 1); return;
+      case 0xEE: this.incMem('abs', 1); return;   case 0xFE: this.incMem('absx', 1); return;
+      case 0xC6: this.incMem('dp', -1); return;   case 0xD6: this.incMem('dpx', -1); return;
+      case 0xCE: this.incMem('abs', -1); return;  case 0xDE: this.incMem('absx', -1); return;
+
+      // 位元測試與設定／清除
+      case 0x04: this.tsbtrb('dp', true); return;   case 0x0C: this.tsbtrb('abs', true); return;
+      case 0x14: this.tsbtrb('dp', false); return;  case 0x1C: this.tsbtrb('abs', false); return;
+      case 0x89: v = this.fetchW(mw); this.P = (this.P & ~F_Z) | (((this.getA(mw) & v) === 0) ? F_Z : 0); return; // BIT #
+      case 0x24: this.bit('dp'); return;   case 0x2C: this.bit('abs'); return;
+      case 0x34: this.bit('dpx'); return;  case 0x3C: this.bit('absx'); return;
+
+      // 比較（X、Y）
+      case 0xE0: this.cmp(this.X, this.fetchW(xw), xw); return;                  // CPX #
+      case 0xE4: this.cmp(this.X, this.rw(this.ea('dp'), xw), xw); return;
+      case 0xEC: this.cmp(this.X, this.rw(this.ea('abs'), xw), xw); return;
+      case 0xC0: this.cmp(this.Y, this.fetchW(xw), xw); return;                  // CPY #
+      case 0xC4: this.cmp(this.Y, this.rw(this.ea('dp'), xw), xw); return;
+      case 0xCC: this.cmp(this.Y, this.rw(this.ea('abs'), xw), xw); return;
+
+      // 載入（X、Y）
+      case 0xA2: v = this.fetchW(xw); this.setX(v, xw); this.nz(v, xw); return; // LDX #
+      case 0xA0: v = this.fetchW(xw); this.setY(v, xw); this.nz(v, xw); return; // LDY #
+      case 0xA6: this.loadXY('X', 'dp', xw); return;   case 0xB6: this.loadXY('X', 'dpy', xw); return;
+      case 0xAE: this.loadXY('X', 'abs', xw); return;  case 0xBE: this.loadXY('X', 'absy', xw); return;
+      case 0xA4: this.loadXY('Y', 'dp', xw); return;   case 0xB4: this.loadXY('Y', 'dpx', xw); return;
+      case 0xAC: this.loadXY('Y', 'abs', xw); return;  case 0xBC: this.loadXY('Y', 'absx', xw); return;
+
+      // 儲存（X、Y、零）
+      case 0x86: this.ww(this.ea('dp'), this.X, xw); return;   case 0x96: this.ww(this.ea('dpy'), this.X, xw); return;
+      case 0x8E: this.ww(this.ea('abs'), this.X, xw); return;
+      case 0x84: this.ww(this.ea('dp'), this.Y, xw); return;   case 0x94: this.ww(this.ea('dpx'), this.Y, xw); return;
+      case 0x8C: this.ww(this.ea('abs'), this.Y, xw); return;
+      case 0x64: this.ww(this.ea('dp'), 0, mw); return;        case 0x74: this.ww(this.ea('dpx'), 0, mw); return;
+      case 0x9C: this.ww(this.ea('abs'), 0, mw); return;       case 0x9E: this.ww(this.ea('absx'), 0, mw); return;
+
+      // 區塊搬移
+      case 0x44: this.blockMove(-1); return;   // MVP
+      case 0x54: this.blockMove(1); return;    // MVN
+
+      default:
+        throw new Error('未實作的運算碼 $' + op.toString(16).toUpperCase());
+    }
+  };
+
+  Cpu.prototype.incMem = function (mode, d) {
+    var w = this.mw(), a = this.ea(mode), v = (this.rw(a, w) + d) & (w === 1 ? 0xFF : 0xFFFF);
+    this.ww(a, v, w); this.nz(v, w);
+  };
+  Cpu.prototype.tsbtrb = function (mode, set) {
+    var w = this.mw(), a = this.ea(mode), v = this.rw(a, w), acc = this.getA(w), m = w === 1 ? 0xFF : 0xFFFF;
+    this.P = (this.P & ~F_Z) | (((acc & v) & m) === 0 ? F_Z : 0);
+    this.ww(a, set ? (v | acc) : (v & ~acc), w);
+  };
+  Cpu.prototype.bit = function (mode) {
+    var w = this.mw(), a = this.ea(mode), v = this.rw(a, w), acc = this.getA(w), m = w === 1 ? 0xFF : 0xFFFF;
+    var msb = w === 1 ? 0x80 : 0x8000, ov = w === 1 ? 0x40 : 0x4000;
+    this.P = (this.P & ~(F_Z | F_N | F_V)) | (((acc & v) & m) === 0 ? F_Z : 0) | ((v & msb) ? F_N : 0) | ((v & ov) ? F_V : 0);
+  };
+  Cpu.prototype.loadXY = function (reg, mode, xw) {
+    var v = this.rw(this.ea(mode), xw);
+    if (reg === 'X') this.setX(v, xw); else this.setY(v, xw);
+    this.nz(v, xw);
+  };
+  // MVN（dir=1，往上）與 MVP（dir=-1，往下）：一次跑完 C+1 個位元組；operand 為 目的銀行、來源銀行
+  Cpu.prototype.blockMove = function (dir) {
+    var dst = this.fetch8(), src = this.fetch8(), n = (this.A & 0xFFFF) + 1, xm = (this.P & F_X) ? 0xFF : 0xFFFF;
+    while (n-- > 0) {
+      this.w8((dst << 16) | this.Y, this.r8((src << 16) | this.X));
+      this.X = (this.X + dir) & xm;
+      this.Y = (this.Y + dir) & xm;
+    }
+    this.A = 0xFFFF;
+    this.DBR = dst;
+  };
+
+  Cpu.F = { C: F_C, Z: F_Z, I: F_I, D: F_D, X: F_X, M: F_M, V: F_V, N: F_N };
+  return { Cpu: Cpu, create: function (bus) { return new Cpu(bus); }, F: Cpu.F };
+}));
+
+}).call(null, undefined, holder);
+return holder.FaMusicLibSnesCpu;
+})();
+/* MLSNESCPU-END */
+/* MLSNESBUS-BEGIN */
+const FaMusicLibSnesBus = (function () {
+const holder = {};
+(function (module, self) {
+/* 超任最小匯流排＋畫面迴圈＋聲音埠替身（UMD，純邏輯；不碰 DOM、不用網路）。
+ *   createBus(rom, opts)            → { read(addr24), write(addr24, v), frameStart(), hdmaLine(), regs }
+ *   createIplStub()                 → 聲音埠替身：只實作 IPL 上傳協定（$AA／$BB 握手、$CC 啟動、區塊寫入、跳轉），記下 64KB RAM
+ *   createMachine(rom, opts)        → { cpu, bus, apu, runFrame(), frames }；opts.Cpu 需提供 create(bus)（即 musiclib_snes_cpu.js）
+ *   runRom(rom, opts)               → Promise 不需要；同步回傳 { ok, uploaded, uploadFrame, entry, snapshots, reason, … }
+ *   headerInfo(rom)                 → { ok, hirom, offset }（沒有 parseHeader 時的退路，與 musiclib_extract_sfc.js 同判準）
+ *
+ * 位址對應（簡化，寫明白）：
+ *   · 銀行 00–3F／80–BF 的 $0000–$1FFF 是 WRAM 鏡像；$2100–$213F PPU：寫入吞掉，讀出給固定值；$2140–$217F 聲音埠（4 個埠，鏡像）；
+ *     $2180–$2183 WRAM 資料埠；$4016–$4017 手把串列：讀 0；$4200–$43FF 內部暫存器與 DMA／HDMA 通道；$4210 NMI 旗標；$4212 垂直空白＋水平空白。
+ *   · 銀行 7E／7F 是 128KB WRAM。
+ *   · LoROM：ROM 在 $8000–$FFFF（銀行 00–7D／80–FF）；HiROM：ROM 是整個銀行（銀行 40–7D／C0–FF，00–3F 的 $8000 以上）。
+ *     512 位元組 copier 檔頭會先去掉（與 musiclib_extract_sfc.js 的判斷一致）。
+ *   · SRAM：LoROM 在銀行 70–7D 的 $0000–$7FFF；HiROM 在銀行 20–3F／A0–BF 的 $6000–$7FFF；大小取內部標頭 $18。
+ *   · 手把讀 0（沒有按鍵）；乘除法暫存器完整（除以 0 的結果依硬體：商 $FFFF、餘數為被除數）。
+ *   · 所有時序（水平掃描線 262 條、每條跑固定指令數）是粗估，不是真機時序。
+ *   · HDMA 逐條掃描線執行（每條可見線一次），沒有 H-IRQ 與 HDMA 的精確時序。
+ *   · DMA 一次跑完，不計時間。
+ *
+ * 聲音埠替身的限制（很重要）：它**不執行** SPC700 程式，只模擬 IPL 協定把 RAM 寫進去。
+ * 所以替身能判斷「上傳完成」，但沒有 DSP 狀態、也不會產生聲音；要真的抽出音樂，需要 SPC700＋S-DSP 核心（ml-spcdsp 的 musiclib_spc_core.js）
+ * 接在同一個 apu 介面上（apu.read(p)／apu.write(p, v)／apu.run(cycles)／apu.ram／apu.dsp／apu.entry）。
+ *
+ * 參考來源（自己從公開文件寫）：fullsnes（nocash，SNES 硬體文件：記憶體對應、DMA／HDMA 傳輸模式、乘除法、內部暫存器）、
+ * SNES IPL 上傳協定（SPC700 boot ROM 的公開說明）。沒有抄任何程式。 */
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaMusicLibSnesBus = factory();
+}(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+  var DMA_PAT = [[0], [0, 1], [0, 0], [0, 0, 1, 1], [0, 1, 2, 3], [0, 1, 0, 1], [0, 0], [0, 0, 1, 1]];
+  var LINES = 262, VBLANK_LINE = 225, INSTR_PER_LINE = 60, SPC_CYCLES_PER_LINE = 65;
+  var IPL_HANDSHAKE_A = 0xAA, IPL_HANDSHAKE_B = 0xBB, IPL_START = 0xCC;
+
+  function u8(x) { return x instanceof Uint8Array ? x : new Uint8Array(x); }
+
+  // 內部標頭（退路）：LoROM 在 $7FC0、HiROM 在 $FFC0；校驗和補數吻合者優先
+  function headerInfo(rom) {
+    var b = u8(rom), best = null;
+    [[0x7FC0, false], [0xFFC0, true]].forEach(function (c) {
+      var o = c[0];
+      if (b.length < o + 0x20) return;
+      var comp = b[o + 0x1C] | (b[o + 0x1D] << 8), sum = b[o + 0x1E] | (b[o + 0x1F] << 8);
+      var ok = ((comp ^ sum) & 0xFFFF) === 0xFFFF;
+      if (!best || (ok && !best.ok)) best = { ok: ok, hirom: c[1], offset: o };
+    });
+    return best || { ok: false, hirom: false, offset: 0x7FC0 };
+  }
+
+  // ───── 聲音埠替身（只跑 IPL 上傳協定，不執行 SPC700）─────
+  function createIplStub() {
+    var st = {
+      state: 'ipl',                       // ipl → xfer → running
+      echo0: IPL_HANDSHAKE_A,
+      last: [0, 0, 0, 0],                 // CPU 最後寫入各埠的值
+      dest: 0, hdrPending: false, pend1: 0, mode: 'none', base: 0, off: 0,
+      entry: 0, blocks: 0, bytes: 0, portWrites: 0
+    };
+    var ram = new Uint8Array(0x10000), dsp = new Uint8Array(128);
+    return {
+      ram: ram, dsp: dsp,
+      get state() { return st.state; },
+      get entry() { return st.entry; },
+      get blocks() { return st.blocks; },
+      get bytes() { return st.bytes; },
+      get portWrites() { return st.portWrites; },
+      read: function (p) {
+        p &= 3;
+        if (st.state === 'ipl') return p === 0 ? IPL_HANDSHAKE_A : (p === 1 ? IPL_HANDSHAKE_B : 0);
+        if (p === 0) return st.echo0;
+        if (p === 1) return IPL_HANDSHAKE_B;
+        return 0;
+      },
+      write: function (p, v) {
+        p &= 3; v &= 0xFF; st.portWrites++; st.last[p] = v;
+        if (st.state === 'ipl') { if (p === 0 && v === IPL_START) { st.state = 'xfer'; st.echo0 = v; } return; }
+        if (st.state !== 'xfer') return;
+        if (p === 2 || p === 3) { st.dest = p === 2 ? ((st.dest & 0xFF00) | v) : ((st.dest & 0xFF) | (v << 8)); st.hdrPending = true; return; }
+        if (p === 1) { st.pend1 = v; return; }
+        // p === 0：區塊標頭（剛寫完位址）或資料位元組的計數器
+        st.echo0 = v;
+        if (st.hdrPending) {
+          st.hdrPending = false;
+          if (st.pend1 === 0) { st.state = 'running'; st.entry = st.dest & 0xFFFF; return; }   // 指令 0＝跳到位址
+          st.mode = 'data'; st.base = st.dest & 0xFFFF; st.off = 0; st.blocks++;
+          return;
+        }
+        if (st.mode === 'data') { ram[(st.base + st.off) & 0xFFFF] = st.pend1; st.off++; st.bytes++; }
+      },
+      run: function () { /* 替身沒有 SPC700 可跑 */ },
+      dumpSpc: function () {
+        return { ram: ram.slice(), dsp: dsp.slice(), spc: { pc: st.entry, a: 0, x: 0, y: 0, psw: 0, sp: 0xEF }, placeholder: true };
+      }
+    };
+  }
+
+  // ───── 真的 SPC700＋S-DSP 核心的轉接層（musiclib_spc_core.js 的 createCore 物件）─────
+  // 埠：65816 寫 $2140+p → core.setPortIn(p)；65816 讀 → core.portOut(p)（核心內建 IPL 負責上傳協定）。
+  // 上傳完成：核心的 PC 從 IPL 區（$FFC0 以上）跳出去執行使用者程式 → state='running'，entry＝跳出去的位址。
+  // run(cycles)：每條掃描線由畫面迴圈呼叫，讓 SPC 與主 CPU 大致同步（1.024 MHz ÷ 60 ÷ 262 ≈ 65 個週期／線）。
+  function createSpcApu(core) {
+    var st = { sawIpl: false, state: 'ipl', entry: 0, portWrites: 0 };
+    function check() {
+      var pc = core.cpu().pc;
+      if (st.state !== 'ipl') return;
+      if (pc >= 0xFFC0) st.sawIpl = true;
+      else if (st.sawIpl) { st.state = 'running'; st.entry = pc; }
+    }
+    return {
+      read: function (p) { return core.portOut(p & 3); },
+      write: function (p, v) { st.portWrites++; core.setPortIn(p & 3, v & 0xFF); },
+      run: function (cycles) { core.runCycles(cycles); check(); },
+      get state() { return st.state; },
+      get entry() { return st.entry; },
+      get portWrites() { return st.portWrites; },
+      get blocks() { return 0; },
+      get bytes() { return 0; },
+      dumpSpc: function () {
+        var ram = new Uint8Array(0x10000), dsp = new Uint8Array(128), i;
+        for (i = 0; i < 0x10000; i++) ram[i] = core.peek(i);
+        for (i = 0; i < 128; i++) dsp[i] = core.dspRead(i);
+        var c = core.cpu();
+        return { ram: ram, dsp: dsp, spc: { pc: c.pc, a: c.a, x: c.x, y: c.y, psw: c.psw, sp: c.sp }, placeholder: false };
+      }
+    };
+  }
+
+  // ───── 匯流排 ─────
+  function createBus(romBytes, opts) {
+    opts = opts || {};
+    var raw = u8(romBytes), copier = raw.length % 1024 === 512;
+    var rom = copier ? raw.subarray(512) : raw;
+    var hdr = opts.parseHeader ? opts.parseHeader(raw) : headerInfo(rom);
+    var hirom = (opts.hirom !== undefined) ? !!opts.hirom : !!hdr.hirom;
+    var sramCode = rom[(hdr.offset || 0) + 0x18] || 0;
+    var sramBytes = sramCode ? Math.min(0x20000, 1024 << sramCode) : 0;
+    var wram = new Uint8Array(0x20000), sram = new Uint8Array(sramBytes), R = new Uint8Array(0x200);
+    var apu = opts.apu || createIplStub();
+    var openBus = 0, wmadd = 0, hbAlt = 0, nmiFlag = false, vblank = false;
+    var hd = [];
+    for (var hc = 0; hc < 8; hc++) hd.push({ on: false, tbl: 0, cnt: 0, data: 0, done: false, first: false });
+
+    function sramIndex(bank, off) {
+      if (!sramBytes) return -1;
+      if (!hirom) {
+        if ((bank >= 0x70 && bank <= 0x7D) || (bank >= 0xF0 && bank <= 0xFF)) {
+          if (off < 0x8000) return ((bank & 0x0F) * 0x8000 + off) % sramBytes;
+        }
+      } else if ((bank >= 0x20 && bank <= 0x3F) || (bank >= 0xA0 && bank <= 0xBF)) {
+        if (off >= 0x6000 && off < 0x8000) return ((bank & 0x1F) * 0x2000 + (off - 0x6000)) % sramBytes;
+      }
+      return -1;
+    }
+    function romIndex(bank, off) {
+      if (!hirom) {
+        if (off < 0x8000) return -1;
+        return ((bank & 0x7F) * 0x8000 + (off & 0x7FFF));
+      }
+      if (off >= 0x8000 || (bank >= 0x40 && bank < 0x80) || bank >= 0xC0) return (((bank & 0x3F) << 16) | off);
+      return -1;
+    }
+
+    function sysRead(off) {
+      if (off >= 0x2100 && off <= 0x213F) {
+        if (off === 0x213E) return 0x01;          // PPU1 版本
+        if (off === 0x213F) return 0x03;          // PPU2 版本
+        return 0;
+      }
+      if (off >= 0x2140 && off <= 0x217F) return apu.read(off & 3);
+      if (off === 0x2180) { var v = wram[wmadd]; wmadd = (wmadd + 1) & 0x1FFFF; return v; }
+      if (off === 0x4016 || off === 0x4017) return 0;
+      if (off >= 0x4200 && off <= 0x43FF) return regRead(off);
+      return openBus;
+    }
+    function regRead(off) {
+      var i = off - 0x4200;
+      if (off === 0x4210) { var f = (nmiFlag ? 0x80 : 0) | 0x02; nmiFlag = false; return f; }
+      if (off === 0x4211) return 0;
+      if (off === 0x4212) { hbAlt ^= 1; return (vblank ? 0x80 : 0) | (hbAlt ? 0x40 : 0); }   // 水平空白交替，等待迴圈兩種寫法都能過
+      if (off >= 0x4218 && off <= 0x421F) return 0;                                           // 自動讀手把：沒有按鍵
+      return R[i];
+    }
+    function sysWrite(off, v) {
+      if (off >= 0x2100 && off <= 0x213F) return;                 // PPU：吞掉
+      if (off >= 0x2140 && off <= 0x217F) { apu.write(off & 3, v); return; }
+      if (off === 0x2180) { wram[wmadd] = v; wmadd = (wmadd + 1) & 0x1FFFF; return; }
+      if (off === 0x2181) { wmadd = (wmadd & 0x1FF00) | v; return; }
+      if (off === 0x2182) { wmadd = (wmadd & 0x100FF) | (v << 8); return; }
+      if (off === 0x2183) { wmadd = (wmadd & 0x0FFFF) | ((v & 1) << 16); return; }
+      if (off >= 0x4200 && off <= 0x43FF) regWrite(off, v & 0xFF);
+    }
+    function regWrite(off, v) {
+      var i = off - 0x4200;
+      if (off >= 0x4210 && off <= 0x421F) return;                 // 唯讀
+      R[i] = v;
+      if (off === 0x4202) { return; }
+      if (off === 0x4203) { var p = (R[0x02] * v) & 0xFFFF; R[0x16] = p & 0xFF; R[0x17] = p >> 8; return; }
+      if (off === 0x4206) {
+        var dvd = R[0x04] | (R[0x05] << 8), q, rem;
+        if (v === 0) { q = 0xFFFF; rem = dvd; } else { q = Math.floor(dvd / v) & 0xFFFF; rem = dvd % v; }
+        R[0x14] = q & 0xFF; R[0x15] = q >> 8; R[0x16] = rem & 0xFF; R[0x17] = rem >> 8;
+        return;
+      }
+      if (off === 0x420B) {                                       // MDMAEN：一般 DMA
+        for (var c = 0; c < 8; c++) if ((v >> c) & 1) dma(c);
+        R[i] = 0; return;
+      }
+      if (off === 0x420C) return;                                 // HDMAEN：每張畫面開始時套用
+    }
+
+    function readMem(bank, off) {
+      if (bank === 0x7E || bank === 0x7F) return wram[((bank & 1) << 16) | off];
+      if (bank < 0x40 || (bank >= 0x80 && bank < 0xC0)) {
+        if (off < 0x2000) return wram[off];
+        if (off < 0x6000) return sysRead(off);
+      }
+      var si = sramIndex(bank, off);
+      if (si >= 0) return sram[si];
+      var ri = romIndex(bank, off);
+      if (ri >= 0 && rom.length) return rom[ri % rom.length];
+      return openBus;
+    }
+    function writeMem(bank, off, v) {
+      if (bank === 0x7E || bank === 0x7F) { wram[((bank & 1) << 16) | off] = v; return; }
+      if (bank < 0x40 || (bank >= 0x80 && bank < 0xC0)) {
+        if (off < 0x2000) { wram[off] = v; return; }
+        if (off < 0x6000) { sysWrite(off, v); return; }
+      }
+      var si = sramIndex(bank, off);
+      if (si >= 0) sram[si] = v;
+      // ROM 寫入忽略
+    }
+
+    function read(addr) { addr &= 0xFFFFFF; var v = readMem(addr >>> 16, addr & 0xFFFF); openBus = v; return v; }
+    function write(addr, v) { addr &= 0xFFFFFF; writeMem(addr >>> 16, addr & 0xFFFF, v & 0xFF); }
+
+    // 一般 DMA（通道 c）：一次跑完；A 位址遞增／遞減／固定由 DMAP 決定
+    function dma(c) {
+      var b = 0x100 + c * 0x10, dmap = R[b], bbad = R[b + 1];   // 通道 c 的暫存器在 $4300+c*$10（R 的索引＝位址－$4200）
+      var a = ((R[b + 4] << 16) | (R[b + 3] << 8) | R[b + 2]) >>> 0;
+      var cnt = (R[b + 5] | (R[b + 6] << 8)) || 0x10000;
+      // DMAP：bit 7＝方向（1＝B→A）、bit 4＝A 位址固定、bit 3＝A 位址遞減（0＝遞增）、bits 2–0＝傳輸模式
+      var pat = DMA_PAT[dmap & 7], toA = (dmap & 0x80) !== 0, fixed = (dmap & 0x10) !== 0, dec = (dmap & 0x08) !== 0;
+      var n = 0;
+      while (n < cnt) {
+        for (var i = 0; i < pat.length && n < cnt; i++, n++) {
+          var bAddr = 0x2100 + ((bbad + pat[i]) & 0xFF);
+          if (toA) write(a, readB(bAddr));     // B→A：讀 B 寫 A
+          else writeB(bAddr, read(a));         // A→B：讀 A 寫 B
+          if (!fixed) a = (a & 0xFF0000) | (((a & 0xFFFF) + (dec ? -1 : 1)) & 0xFFFF);
+        }
+      }
+      R[b + 2] = a & 0xFF; R[b + 3] = (a >> 8) & 0xFF; R[b + 4] = (a >> 16) & 0xFF;
+      R[b + 5] = 0; R[b + 6] = 0;
+    }
+    function readB(addr) { return readMem(0, addr & 0xFFFF); }
+    function writeB(addr, v) { writeMem(0, addr & 0xFFFF, v); }
+
+    // HDMA：每張畫面開始時載入表格位址；每條可見掃描線執行一次
+    function frameStart() {
+      for (var c = 0; c < 8; c++) {
+        var h = hd[c], b = 0x100 + c * 0x10;
+        h.on = ((R[0x0C] >> c) & 1) !== 0;
+        h.done = false; h.cnt = 0; h.first = false;
+        h.tbl = ((R[b + 4] << 16) | R[b + 8] | (R[b + 9] << 8)) >>> 0;
+      }
+    }
+    function hdmaLine() {
+      for (var c = 0; c < 8; c++) {
+        var h = hd[c];
+        if (!h.on || h.done) continue;
+        var b = 0x100 + c * 0x10, indirect = (R[b] & 0x40) !== 0;
+        if ((h.cnt & 0x7F) === 0) {
+          var k = read(h.tbl); h.tbl = (h.tbl + 1) & 0xFFFFFF;
+          if (k === 0) { h.done = true; continue; }
+          h.cnt = k; h.first = true;
+          if (indirect) {
+            h.data = ((R[b + 7] << 16) | read(h.tbl) | (read((h.tbl + 1) & 0xFFFFFF) << 8)) >>> 0;
+            h.tbl = (h.tbl + 2) & 0xFFFFFF;
+          }
+        }
+        if (h.first || (h.cnt & 0x80)) {
+          var pat = DMA_PAT[R[b] & 7];
+          for (var i = 0; i < pat.length; i++) {
+            var v;
+            if (indirect) { v = read(h.data); h.data = (h.data + 1) & 0xFFFFFF; }
+            else { v = read(h.tbl); h.tbl = (h.tbl + 1) & 0xFFFFFF; }
+            writeB(0x2100 + ((R[b + 1] + pat[i]) & 0xFF), v);
+          }
+        }
+        h.first = false;
+        h.cnt = (h.cnt & 0x80) | ((h.cnt & 0x7F) - 1);
+      }
+    }
+
+    return {
+      read: read, write: write, frameStart: frameStart, hdmaLine: hdmaLine,
+      setVblank: function (on) { vblank = on; if (on) nmiFlag = true; },
+      nmiEnabled: function () { return (R[0] & 0x80) !== 0; },
+      apu: apu, hirom: hirom, copier: copier, sramBytes: sramBytes,
+      mapMode: rom[(hdr.offset || 0) + 0x15] || 0, romBytes: rom.length
+    };
+  }
+
+  // ───── 畫面迴圈（掃描線＝262 條；每條跑固定指令數）─────
+  function createMachine(romBytes, opts) {
+    opts = opts || {};
+    if (!opts.Cpu || typeof opts.Cpu.create !== 'function') throw new Error('createMachine：需要 opts.Cpu（musiclib_snes_cpu.js）');
+    var bus = createBus(romBytes, opts);
+    var cpu = opts.Cpu.create(bus);
+    var perLine = opts.instrPerLine || INSTR_PER_LINE;
+    var m = { cpu: cpu, bus: bus, apu: bus.apu, frames: 0 };
+    m.runFrame = function () {
+      for (var line = 0; line < LINES; line++) {
+        if (line === 0) { bus.setVblank(false); bus.frameStart(); }
+        if (line === VBLANK_LINE) {
+          bus.setVblank(true);
+          if (bus.nmiEnabled()) cpu.nmiPending = true;
+        }
+        if (line > 0 && line < VBLANK_LINE) bus.hdmaLine();
+        for (var k = 0; k < perLine; k++) { if (cpu.step() === 0 && cpu.halted && !cpu.nmiPending) break; }
+        bus.apu.run(SPC_CYCLES_PER_LINE);
+      }
+      m.frames++;
+    };
+    return m;
+  }
+
+  // ───── 整體：跑 ROM 直到聲音程式上傳完成，之後每隔一段時間拍一次快照 ─────
+  // opts: { Cpu, parseHeader?, hirom?, maxFrames?（預設 3600）, snapshotFrames?（上傳後的畫面數，預設 [120, 600, 1800]）,
+  //         isCancelled?(), onProgress?(frame), apu? }
+  // 注意：預設的替身 apu 不執行 SPC700，快照的 DSP 與 SPC700 暫存器只是占位，不能當成音樂用（呼叫端要自己判斷）。
+  function runRom(romBytes, opts) {
+    opts = opts || {};
+    var maxFrames = opts.maxFrames || 3600;
+    var offsets = opts.snapshotFrames || [120, 600, 1800];
+    var m = createMachine(romBytes, opts);
+    var res = { ok: false, uploaded: false, uploadFrame: null, entry: null, snapshots: [], cancelled: false, reason: '', boot: null, cpu: null, apu: null };
+    res.boot = { hirom: m.bus.hirom, copier: m.bus.copier, mapMode: m.bus.mapMode, romBytes: m.bus.romBytes, sramBytes: m.bus.sramBytes };
+    var upAt = -1, nextSnap = 0;
+    while (m.frames < maxFrames) {
+      if (opts.isCancelled && opts.isCancelled()) { res.cancelled = true; break; }
+      m.runFrame();
+      if (opts.onProgress && m.frames % 60 === 0) opts.onProgress(m.frames);
+      if (upAt < 0 && m.apu.state === 'running') { upAt = m.frames; res.uploaded = true; res.uploadFrame = m.frames; res.entry = m.apu.entry; }
+      if (upAt >= 0 && nextSnap < offsets.length && m.frames >= upAt + offsets[nextSnap]) {
+        var d = m.apu.dumpSpc();
+        res.snapshots.push({ frame: m.frames, ramCopy: d.ram, dsp: d.dsp, spc: d.spc, placeholder: d.placeholder });
+        nextSnap++;
+      }
+      if (upAt >= 0 && nextSnap >= offsets.length) break;
+    }
+    res.cpu = { pc: m.cpu.PC, pbr: m.cpu.PBR, e: m.cpu.E, halted: m.cpu.halted, stopped: m.cpu.stopped, instructions: m.cpu.instructions };
+    res.apu = { state: m.apu.state, portWrites: m.apu.portWrites, blocks: m.apu.blocks, bytes: m.apu.bytes };
+    res.frames = m.frames;
+    res.ok = res.uploaded && res.snapshots.length > 0;
+    if (!res.uploaded && !res.cancelled) {
+      res.reason = '聲音程式上傳沒有完成（跑了 ' + m.frames + ' 個畫面；主 CPU PC=$' + m.cpu.PBR.toString(16).padStart(2, '0') + ':' + m.cpu.PC.toString(16).padStart(4, '0') +
+        '，SPC 埠狀態=' + m.apu.state + '，埠寫入 ' + m.apu.portWrites + ' 次）';
+    }
+    return res;
+  }
+
+  return { createBus: createBus, createIplStub: createIplStub, createSpcApu: createSpcApu, createMachine: createMachine, runRom: runRom, headerInfo: headerInfo, DMA_PAT: DMA_PAT };
+}));
+
+}).call(null, undefined, holder);
+return holder.FaMusicLibSnesBus;
+})();
+/* MLSNESBUS-END */
 /* MLYT-BEGIN */
 const FaMusicLibYoutube = (function () {
 const holder = {};
@@ -101816,12 +102661,47 @@ const FaMusicLibHost = (function () {
       if (!pr.wav) skippedParts.push('wav 沒有：' + (pr.wavReason || pr.reason || ''));
       if (!outs.length) throw new Error('PCE 擷取失敗：' + skippedParts.join('；'));
     } else if (rec.kind === 'sfc') {
-      // SFC：先做標頭與分類；主 CPU 執行、.spc 傾印、snes_spc 渲染尚未接上，各階段的結果見 stages（沒有產物就明確報錯）
-      emit('解析 SNES 標頭');
-      if (typeof FaMusicLibSfc === 'undefined') throw new Error('SFC 模組沒有嵌入（FaMusicLibSfc 不存在）');
-      var sr = FaMusicLibSfc.sfcExtract(u8, {});
-      skippedParts = sr.stages.filter(function (s) { return !s.ok; }).map(function (s) { return s.stage + '：' + s.reason; });
-      throw new Error('SFC 擷取失敗：' + (skippedParts.join('；') || sr.reason || '未知'));
+      // SFC：自寫 65816 跑 ROM → 聲音埠接 SPC700＋S-DSP 核心 → 每個時間點傾印 .spc → 同一個核心渲成 wav → 編 mp3
+      emit('執行 ROM（超任主 CPU）');
+      if (typeof FaMusicLibSfc === 'undefined' || typeof FaMusicLibSnesBus === 'undefined' || typeof FaMusicLibSnesCpu === 'undefined') {
+        throw new Error('SFC 模組沒有嵌入（FaMusicLibSfc／FaMusicLibSnesBus／FaMusicLibSnesCpu 其中之一不存在）');
+      }
+      if (typeof FaMusicLibSpcCore === 'undefined') {
+        throw new Error('SFC 擷取失敗：SPC700＋S-DSP 核心（FaMusicLibSpcCore）沒有嵌入，無法執行聲音程式，也無法渲染 .spc');
+      }
+      var sfcRes = FaMusicLibSfc.sfcExtract(u8, {
+        title: stem, game: stem,
+        runner: function (rom) {
+          return FaMusicLibSnesBus.runRom(rom, {
+            Cpu: FaMusicLibSnesCpu, apu: FaMusicLibSnesBus.createSpcApu(FaMusicLibSpcCore.createCore({})),
+            maxFrames: 3600, isCancelled: cancelled,
+            onProgress: function (f) { if (f % 300 === 0) emit('執行 ROM（第 ' + f + ' 個畫面）'); }
+          });
+        },
+        renderSpc: function (spcBytes) {
+          var core = FaMusicLibSpcCore.fromSpc(FaMusicLibSfc.parseSpc(spcBytes));
+          var n = 32000 * 60, L = new Float32Array(n), R = new Float32Array(n);
+          core.renderStereo(L, R, 0, n);
+          return { L: L, R: R, sampleRate: 32000, durationSec: 60 };
+        }
+      });
+      if (sfcRes.cancelled) throw Object.assign(new Error('已取消'), { cancelled: true });
+      skippedParts = sfcRes.stages.filter(function (s) { return !s.ok; }).map(function (s) { return s.stage + '：' + s.reason; });
+      if (!sfcRes.ok) throw new Error('SFC 擷取失敗：' + (skippedParts.join('；') || sfcRes.reason || '未知'));
+      method = '超任（自寫 65816 執行 ROM，SPC700＋S-DSP 核心渲染）';
+      for (var ri = 0; ri < (sfcRes.rendered || []).length; ri++) {
+        var rd = sfcRes.rendered[ri], sname = stem + '_' + (rd.index + 1), o = rd.out;
+        outs.push({ kind: 'spc', name: sname + '.spc', bytes: rd.bytes, method: method + '；傾印自第 ' + rd.frame + ' 個畫面', durationSec: null, title: sname });
+        var mono = new Float32Array(o.L.length);
+        for (var si = 0; si < mono.length; si++) mono[si] = (o.L[si] + o.R[si]) / 2;
+        emit('編碼 mp3');
+        var sbuf = new AudioBuffer({ length: mono.length, sampleRate: o.sampleRate, numberOfChannels: 1 });
+        sbuf.copyToChannel(mono, 0);
+        var smp3 = await fa._encodeMp3(sbuf, 160);
+        outs.push({ kind: 'mp3', name: sname + '.mp3', bytes: new Uint8Array(await smp3.arrayBuffer()), method: method + '；SPC700 渲染', durationSec: o.durationSec, title: sname });
+      }
+      skippedParts = skippedParts.concat(sfcRes.rendered && sfcRes.rendered.length ? [] : ['沒有任何時間點渲染成功']);
+      if (!outs.length) throw new Error('SFC 擷取失敗：' + skippedParts.join('；'));
     } else {
       throw new Error('這個種類不支援擷取：' + rec.kind);
     }
