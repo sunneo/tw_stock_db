@@ -239,6 +239,65 @@
     };
     bExpCancel.onclick = function () { if (host.cancelExport) host.cancelExport(); expStat.textContent = '取消中（正在跑的那個檔案會在下一步停止）…'; };
 
+    // 哼歌找歌：旋律索引（逐首，可暫停續跑、取消）＋錄哼歌或選音檔找相似（找不到時可用 MIDI 演奏查到的旋律）
+    var MEL = host.melody || null, melHum = null, melFound = null;
+    var melBox = h('div', 'fml-lyr');
+    var mIdx = h('button', null, '建立旋律索引'), mPause = h('button', null, '暫停索引'), mIdxCancel = h('button', null, '取消索引');
+    var mRec = h('button', null, '錄哼歌（8 秒）'), mPick = h('button', null, '選音檔找');
+    var mText = h('input'); mText.type = 'text'; mText.placeholder = '歌詞文字（選填，用來加分）'; mText.style.width = '160px';
+    var mUseText = h('input'); mUseText.type = 'checkbox'; mUseText.checked = true;
+    var mUseLbl = h('label', null, '用文字加分'); mUseLbl.appendChild(mUseText);
+    var mFind = h('button', null, '找相似'), mStat = h('span', 'fml-st');
+    var mFile = h('input'); mFile.type = 'file'; mFile.accept = 'audio/*,video/*'; mFile.style.display = 'none';
+    var mRes = h('div', 'fml-foot'), mMidi = h('button', null, '找不到？用 MIDI 演奏這段旋律'); mMidi.style.display = 'none';
+    melBox.appendChild(mIdx); melBox.appendChild(mPause); melBox.appendChild(mIdxCancel);
+    melBox.appendChild(mRec); melBox.appendChild(mPick); melBox.appendChild(mText); melBox.appendChild(mUseLbl); melBox.appendChild(mFind);
+    melBox.appendChild(mStat); melBox.appendChild(mFile);
+    if (!MEL) { [mIdx, mPause, mIdxCancel, mRec, mPick, mFind].forEach(function (b) { b.disabled = true; }); mStat.textContent = '哼歌找歌不可用（需要桌面版）'; }
+    mPause.disabled = true; mIdxCancel.disabled = true;
+    root.appendChild(melBox); root.appendChild(mRes); root.appendChild(mMidi);
+    function melStatus(s) { mStat.textContent = s; }
+    function idxLine(ev) {
+      var t = { done: '完成', skipped: '已建過、跳過', failed: '失敗', retry: '暫時性失敗重試', running: '建立中', cancelled: '取消' }[ev.status] || ev.status;
+      if (ev.status === 'running') melStatus('旋律索引：建立中…');
+      else if (ev.status === 'failed') melStatus('旋律索引：有一首失敗（' + ev.reason + '）');
+    }
+    mIdx.onclick = function () {
+      if (!MEL || MEL.indexState().running) return;
+      mIdx.disabled = true; mPause.disabled = false; mIdxCancel.disabled = false; melStatus('旋律索引：開始…');
+      MEL.buildIndex(idxLine).then(function (sum) {
+        mIdx.disabled = false; mPause.disabled = true; mIdxCancel.disabled = true;
+        melStatus('旋律索引：完成 ' + sum.done + '、跳過 ' + sum.skipped + '、失敗 ' + sum.failed + '、取消 ' + sum.cancelled + '（失敗的會寫明原因）');
+      }, function (e) { mIdx.disabled = false; mPause.disabled = true; mIdxCancel.disabled = true; melStatus('旋律索引出錯：' + String((e && e.message) || e)); });
+    };
+    mPause.onclick = function () { if (!MEL) return; if (mPause.textContent === '暫停索引') { MEL.pauseIndex(); mPause.textContent = '續跑索引'; melStatus('旋律索引：已暫停（目前這首做完後停）'); } else { MEL.resumeIndex(); mPause.textContent = '暫停索引'; melStatus('旋律索引：續跑'); } };
+    mIdxCancel.onclick = function () { if (MEL) MEL.cancelIndex(); melStatus('旋律索引：取消中…'); };
+    function showHum(notes) { melHum = notes; mStat.textContent = '哼歌已取得 ' + notes.length + ' 個音'; }
+    mRec.onclick = function () {
+      if (!MEL) return; mRec.disabled = true; melStatus('錄音中（8 秒）…');
+      MEL.recordHum(8).then(function (blob) { return MEL.notesFromHum(blob); }).then(function (notes) { showHum(notes); }, function (e) { melStatus('錄音或轉譜失敗：' + String((e && e.message) || e)); }).then(function () { mRec.disabled = false; });
+    };
+    mPick.onclick = function () { mFile.value = ''; mFile.click(); };
+    mFile.onchange = function () { var f = mFile.files && mFile.files[0]; if (!f || !MEL) return; melStatus('解碼並轉譜 ' + f.name + '…'); MEL.notesFromHum(f).then(showHum, function (e) { melStatus('轉譜失敗：' + String((e && e.message) || e)); }); };
+    mFind.onclick = function () {
+      if (!MEL) return;
+      if (!melHum) { melStatus('先錄哼歌或選音檔'); return; }
+      var r = MEL.search(melHum, { textQuery: mText.value, useText: mUseText.checked });
+      mRes.textContent = ''; mMidi.style.display = 'none'; melFound = null;
+      if (!r.ok) { melStatus(r.reason); return; }
+      if (!r.results.length) {
+        var n = MEL.entries().length;
+        melStatus(n ? '找不到相似的歌（' + n + ' 首已建索引）' : '還沒有旋律索引，請先按「建立旋律索引」');
+        mMidi.style.display = ''; melFound = melHum; return;
+      }
+      melStatus('找到 ' + r.results.length + ' 首（分數越高越像；命中時間是曲中的秒數）');
+      r.results.forEach(function (x) {
+        var line = h('div', null, '[' + x.score.toFixed(2) + '] ' + x.name + '　音高 ' + x.pitchScore.toFixed(2) + '、節奏 ' + x.rhythmScore.toFixed(2) + (x.textBonus ? '、文字加分' : '') + '　命中 ' + x.startSec.toFixed(1) + '–' + x.endSec.toFixed(1) + ' 秒');
+        mRes.appendChild(line);
+      });
+    };
+    mMidi.onclick = function () { if (!MEL || !melFound) return; try { MEL.humAsMidi(melFound, '哼歌旋律'); melStatus('已開啟 MIDI 編輯器演奏哼歌旋律'); } catch (e) { melStatus('演奏失敗：' + String((e && e.message) || e)); } };
+
     if (queue) unsub = queue.onChange(function () { render(); });
     // 轉錄中每秒更新「已耗時」與重試倒數（只更新歌詞列，不重畫清單）
     var ticker = setInterval(function () {

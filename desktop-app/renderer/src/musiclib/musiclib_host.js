@@ -196,6 +196,14 @@ const FaMusicLibHost = (function () {
         st.buf = rb;
       }
       else if (step === 'write-mid') { st.bytes = FaMidi.write(st.song); }
+      else if (step === 'pitch-track') { st.notes = notesFromBuffer(st.view); }
+      else if (step === 'build-mid') {
+        // 同 audio_to_midi 的 buildSong（單音旋律分軌，速度用它自己的估計）；結果標「簡易轉譜」
+        st.song = FaAudioToMidi.buildSong({ other: [{ name: '旋律（簡易轉譜）', program: 0, notes: st.notes }] }, { title: basename(rec.name) }).song;
+        st.bytes = FaMidi.write(st.song);
+        st.expectNotes = FaMidi.noteCount(st.song);
+        st.expectSec = st.view.duration;
+      }
       else { throw new Error('未知步驟：' + step); }
     }
     checkCancel();
@@ -247,7 +255,114 @@ const FaMusicLibHost = (function () {
     }).then(function (res) { res.outDir = outDir; return res; });
   }
 
-  var PICK_HOST = { pickFolder: pickFolder };
+  // ───── 旋律找歌：轉接層 ─────
+  // 音訊轉音符一律用既有的 audio_to_midi（FaAudioToMidi.pitchTrack／framesToNotes），不用模型，所以索引標「簡易轉譜」。
+  function monoOf(buf) {
+    var n = buf.length, nc = buf.numberOfChannels, out = new Float32Array(n);
+    for (var c = 0; c < nc; c++) { var d = buf.getChannelData(c); for (var i = 0; i < n; i++) out[i] += d[i] / nc; }
+    return out;
+  }
+  function notesFromBuffer(buf) {
+    var x = monoOf(buf);
+    return FaAudioToMidi.framesToNotes(FaAudioToMidi.pitchTrack(x, buf.sampleRate));
+  }
+  // 索引用：mid 直接取旋律；音訊先用 _decodeAudioBuffer（既有解碼）再單音追蹤。失敗丟錯，訊息附階段
+  async function extractMelody(rec) {
+    var a = api(), fa = window.fa;
+    var r;
+    try { r = await a.rawfs.readFile(rec.path, 'base64'); } catch (e) { throw new Error('讀檔失敗：' + String((e && e.message) || e)); }
+    if (!r || r.base64 == null) throw new Error('讀檔失敗：讀不到這個檔案的內容');
+    var u8 = b64ToBytes(r.base64);
+    if (/\.midi?$/i.test(rec.name)) {
+      var song = FaMidi.parse(u8);
+      return { notes: FaMusicLibMelody.melodyFromSong(song), method: 'mid' };
+    }
+    var buf;
+    try { buf = await fa._decodeAudioBuffer(new Blob([u8])); } catch (e) { throw new Error('解碼失敗：' + String((e && e.message) || e)); }
+    return { notes: notesFromBuffer(buf), method: '簡易轉譜（單音音高追蹤）' };
+  }
+  // 查詢用：錄下的哼歌或選的音檔 → 音符
+  async function notesFromHum(blob) {
+    var buf = await window.fa._decodeAudioBuffer(blob);
+    return notesFromBuffer(buf);
+  }
+  // 麥克風錄音：getUserMedia（同 app 其他錄音的寫法），錄 seconds 秒，回傳 Blob
+  async function recordHum(seconds) {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error('這個環境沒有麥克風權限 API');
+    var stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
+    return new Promise(function (resolve, reject) {
+      var chunks = [], rec;
+      try { rec = new MediaRecorder(stream); } catch (e) { stream.getTracks().forEach(function (t) { t.stop(); }); reject(e); return; }
+      rec.ondataavailable = function (ev) { if (ev.data && ev.data.size) chunks.push(ev.data); };
+      rec.onstop = function () { stream.getTracks().forEach(function (t) { t.stop(); }); resolve(new Blob(chunks, { type: rec.mimeType || 'audio/webm' })); };
+      rec.start();
+      setTimeout(function () { try { rec.stop(); } catch (_) { /* */ } }, Math.max(1, seconds) * 1000);
+    });
+  }
+
+  // 索引狀態：暫停用一個共用的 gate，取消用旗標（同歌詞轉錄的做法，但這裡是逐首序列跑）
+  var melodyState = { running: false, paused: false, cancelled: false, resumeWaiters: [], counts: {} };
+  function melodyGate() { if (!melodyState.paused) return Promise.resolve(); return new Promise(function (r) { melodyState.resumeWaiters.push(r); }); }
+  function melodyResume() { melodyState.paused = false; var w = melodyState.resumeWaiters.splice(0); w.forEach(function (f) { f(); }); }
+
+  // 建立（或續跑）旋律索引：已建且檔案沒變的跳過；結果寫進音樂庫的紀錄（record.melody），再 lib.save()
+  async function buildMelodyIndex(onEvent) {
+    var L = getLib(); await L.ready;
+    if (melodyState.running) throw new Error('旋律索引已在建立中');
+    melodyState.running = true; melodyState.cancelled = false;
+    var recs = L.records.filter(function (r) { return r.status === 'ok' && !r.pending; });
+    var saveCount = 0;
+    try {
+      var sum = await FaMusicLibMelody.runMelodyIndex(recs, {
+        extract: function (rec) { return extractMelody(rec); },
+        save: async function () { if (++saveCount % 10 === 0) await L.save(); },
+        onEvent: onEvent || function () {},
+        isCancelled: function () { return melodyState.cancelled; },
+        waitIfPaused: melodyGate
+      });
+      await L.save();
+      return sum;
+    } finally { melodyState.running = false; melodyState.paused = false; }
+  }
+  // 查詢用的索引項目（只取建好的）
+  function melodyEntries(L) {
+    return L.records.filter(function (r) { return r.melody && r.melody.status === 'ok'; }).map(function (r) {
+      return { key: r.key, name: r.name, contour: r.melody.contour, method: r.melody.method, path: r.path };
+    });
+  }
+  // 找歌：notes（查詢音符）＋可選的文字（歌詞搜尋當加分）
+  function searchHum(notes, opts) {
+    var L = getLib(), entries = melodyEntries(L), textHits = null;
+    opts = opts || {};
+    if (opts.textQuery && opts.useText) {
+      textHits = new Set(L.search(opts.textQuery, { scope: 'lyrics' }).map(function (x) { return x.record.key; }));
+    }
+    return FaMusicLibMelody.searchMelody(notes, entries, { minScore: opts.minScore, limit: opts.limit || 10, textHits: textHits, textWeight: 0.15 });
+  }
+  // 找不到時：把查到的旋律用 MIDI 演奏出來（用既有的 MIDI 編輯器與播放）
+  function humAsMidi(notes, title) {
+    var fa = window.fa, s = FaMidi.emptySong();
+    s.title = title || '哼歌旋律';
+    var mel = FaMusicLibMelody.melodyNotes(notes);
+    s = FaMidi.addTrack(s, '哼歌旋律', 0, false);
+    var ti = s.tracks.length - 1;
+    mel.forEach(function (x) { s = FaMidi.addNote(s, ti, { t: FaMidi.secToTicks(s, x.t), d: Math.max(1, FaMidi.secToTicks(s, x.t + x.d) - FaMidi.secToTicks(s, x.t)), n: Math.round(x.n), v: 90 }); });
+    return fa._midiPushEditor(FaMidi.validate(s), s.title, '🎵 哼歌找歌找不到，這是你哼的旋律（' + mel.length + ' 個音）。可以按「試聽」。');
+  }
+
+  var MELODY_HOST = {
+    buildIndex: buildMelodyIndex,
+    cancelIndex: function () { melodyState.cancelled = true; melodyResume(); },
+    pauseIndex: function () { melodyState.paused = true; },
+    resumeIndex: function () { melodyResume(); },
+    indexState: function () { return { running: melodyState.running, paused: melodyState.paused }; },
+    recordHum: recordHum,
+    notesFromHum: notesFromHum,
+    search: searchHum,
+    humAsMidi: humAsMidi,
+    entries: function () { return melodyEntries(getLib()); }
+  };
+  var PICK_HOST = { pickFolder: pickFolder, melody: MELODY_HOST };
 
   var methods = {
     _mlLib() { return getLib(); },

@@ -688,7 +688,10 @@
     'mid>mp3': ['parse-mid', 'trim-mid', 'render-synth', 'slice', 'encode-mp3'],
     'mid>mid': ['parse-mid', 'trim-mid', 'write-mid'],
     // 影片與音訊同一條：extract_audio 用的 _decodeAudioBuffer 會原生解出 mp4/mov/webm 的音軌，不需要 ffmpeg.wasm
-    'video>mp3': ['decode', 'slice', 'encode-mp3']
+    'video>mp3': ['decode', 'slice', 'encode-mp3'],
+    // 音訊（與影片）轉 MIDI：走 audio_to_midi 的單音音高追蹤（pitchTrack→framesToNotes→buildSong），不用模型，所以索引與批次結果都要標「簡易轉譜」
+    'audio>mid': ['decode', 'slice', 'pitch-track', 'build-mid'],
+    'video>mid': ['decode', 'slice', 'pitch-track', 'build-mid']
   };
   var SOURCE_CLASS = { wav: 'audio', mp3: 'audio', mid: 'mid', midi: 'mid', mp4: 'video', mov: 'video', webm: 'video', m4v: 'video' };
   var ROM_EXT = { nes: 1, pce: 1, sfc: 1, rix: 1, swf: 1 };
@@ -701,8 +704,6 @@
     if (ROM_EXT[ext]) return { ok: false, reason: '尚未支援：' + ext + ' 遊戲檔沒有擷取器（本輪只做音訊、影片、MIDI）' };
     var cls = SOURCE_CLASS[ext];
     if (!cls) return { ok: false, reason: '尚未支援這種格式：.' + ext };
-    if (cls === 'audio' && format === 'mid') return { ok: false, reason: '未實作：音訊轉 MIDI 這一輪沒有接上（需要轉譜模型或規則式轉譜，尚未驗證）' };
-    if (cls === 'video' && format === 'mid') return { ok: false, reason: '未實作：影片轉 MIDI 這一輪沒有接上' };
     var key = cls + '>' + format;
     var steps = EXPORT_ROUTES[key];
     if (!steps) return { ok: false, reason: '沒有對應的路線：' + key };

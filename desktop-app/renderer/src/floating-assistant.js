@@ -83803,6 +83803,8 @@ const holder = {};
 return holder.FaMusicLib;
 })();
 /* MLCORE-END */
+/* MLMEL-BEGIN */
+/* MLMEL-END */
 /* MLUI-BEGIN */
 const FaMusicLibUI = (function () {
 const holder = {};
