@@ -59,3 +59,21 @@ NSF、SPC、HES 是別人整理好的音樂包（含初始化位址、播放位�
 - 不同遊戲的聲音驅動差異大，NES→NSF 的入口推導不保證全自動；要用樣本目錄實測成功率並如實回報。
 - SnesJs、jspce 是個人專案，ROM 相容性與音效時序要實測。
 - 擷取很吃時間，要背景進行、可暫停續跑、可取消，失敗附階段與原因；不設人為上限（遊戲數量、單首長度）。
+
+## 晶片音樂播放器（使用者 2026-11-22 追加，待辦）
+
+使用者原話：「還是我們也有辦法做出rix播放器, spc, nsf 播放器?」「讓播放器可以支援重播，seek, goto , 像是midi播放器介面, 加上匯出mp3, midi」
+
+做法：
+- 一個共用的晶片音樂播放器介面：`load(來源) → 曲目列表`、`render(曲目, 起點秒, 長度秒) → PCM`、`durationSec`、`seek(秒)`；後端各一：RIX（OPL2 模擬）、NSF（NES APU，jsnes 的 APU 或自寫渲染）、SPC（`snes_spc`，LGPL，以可分離 wasm 載入）、之後 PCE（PSG）。
+- 控制介面重用既有 MIDI 播放卡片的元件（`renderer/src/music/midi_ui.js`、`midi_play.js`）：播放、暫停、重播、進度條 seek、goto（輸入時間或曲目編號）、曲目清單與上一首／下一首。
+- 晶片不能任意跳轉：seek 用「靜音快速模擬到那個時間點」再開始出聲；曲目很長時用分段快取。
+- 匯出：mp3（重用批次輸出的 mp3 編碼與一分鐘預設、可指定分鐘數）與 MIDI（沿用各格式的擷取結果：RIX 與 NES 的暫存器寫入轉 MIDI、SPC 的 DSP 事件轉 MIDI；轉不出來要明確說明原因）。
+- RIX 目前是「轉 MIDI 再用 GM 音色合成」，音色是近似；真正的 OPL2 模擬才是原曲音色，列為這個播放器的第一個後端。
+
+## YouTube 清單（使用者原話：「可以加youtube list(if possible)」）調查事實（2026-11-22，讀程式）
+
+- 既有工具 `youtube_download`（`renderer/src/floating-assistant.js` 約 93216 行）只吃影片連結或影片 ID（`_youtubeExtractVideoIds`），**不認播放清單**，不會把一個清單展開成多支影片。
+- 它有**範圍限制**：設定了「YouTube Data API 金鑰」與「我的 YouTube 頻道 ID」時，只允許自己頻道的影片或授權欄位標示 Creative Commons 的影片；沒設定這兩個欄位會跳過驗證、直接放行（回傳 `verification_skipped: true`，要提醒使用者）。音樂庫接它時**不能繞過這個限制**，要沿用同一個驗證與回報。
+- 只能下載 progressive 格式（沙盒沒有 ffmpeg 合併）；底層是 Pyodide 跑的 yt-dlp。
+- 待辦：播放清單展開（yt-dlp 的 flat-playlist 或 Data API 的 playlistItems，擇一並寫明）、展開後逐支走既有驗證與下載、下載完登記成曲目（來源記為 YouTube 清單）；清單很大時背景進行、可暫停續跑。
