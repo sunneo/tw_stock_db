@@ -167,7 +167,53 @@
     return { song: song, stats: stats };
   }
 
+  // ───── 執行 ROM（jsnes，由呼叫端注入 NES 類別）─────
+  // 掛鉤：APU 寫入（nes.papu.writeReg，mapper 會動態呼叫它）；指令層（cpu.emulate 包一層，記下 JSR／RTS／RTI 與 NMI 進入）。
+  function romToBinaryString(b) { var s = ''; for (var i = 0; i < b.length; i += 0x8000) s += String.fromCharCode.apply(null, b.subarray(i, Math.min(b.length, i + 0x8000))); return s; }
+  function traceRom(romBytes, NES, opts) {
+    opts = opts || {};
+    var frames = opts.frames || 600, events = [], crashed = null, ran = 0;
+    var nes = new NES({ onFrame: function () {}, onAudioSample: null });
+    nes.loadROM(romToBinaryString(romBytes));
+    var cpu = nes.cpu, mem = cpu.mem;
+    var nmiVec = mem[0xFFFA] | (mem[0xFFFB] << 8);
+    var papu = nes.papu, origWrite = papu.writeReg;
+    papu.writeReg = function (addr, value) { events.push({ k: 'apu', addr: addr & 0xFFFF, value: value & 0xFF }); return origWrite.call(this, addr, value); };
+    var origEmu = cpu.emulate, inHandler = false;
+    cpu.emulate = function () {
+      var pc = this.REG_PC, op = this.mem[pc];
+      if (pc === nmiVec && !inHandler) { events.push({ k: 'frame', handler: nmiVec }); inHandler = true; }
+      if (op === 0x20) events.push({ k: 'call', target: this.mem[(pc + 1) & 0xFFFF] | (this.mem[(pc + 2) & 0xFFFF] << 8) });
+      else if (op === 0x60) events.push({ k: 'ret' });
+      else if (op === 0x40) inHandler = false;          // RTI：NMI 結束
+      return origEmu.call(this);
+    };
+    try { for (ran = 0; ran < frames; ran++) nes.frame(); }
+    catch (e) { crashed = String((e && e.message) || e); }
+    return { events: events, nmiVector: nmiVec, framesRun: ran, crashed: crashed };
+  }
+
+  // 抽出 NSF（mapper 0）；同時產生退路 MIDI。回傳 { ok, mode:'nsf'|'midi', nsf?, play?, init?, song, stats, reason? }
+  function extractNsf(romBytes, NES, opts) {
+    opts = opts || {};
+    var rom = parseInes(romBytes);
+    if (!rom.ok) return { ok: false, stage: '檔頭', reason: rom.reason };
+    var tr;
+    try { tr = traceRom(romBytes, NES, { frames: opts.frames || 600 }); }
+    catch (e) { return { ok: false, stage: '執行', reason: 'ROM 執行失敗：' + String((e && e.message) || e) }; }
+    var midi = apuTraceToSong(tr.events, { title: opts.title || '' });
+    var base = { song: midi.song, stats: Object.assign({ framesRun: tr.framesRun, crashed: tr.crashed }, midi.stats), mapper: rom.mapper };
+    var inf = inferPlay(tr.events, {});
+    if (!inf.ok) return Object.assign(base, { ok: false, stage: '入口', mode: 'midi', reason: inf.reason });
+    if (inf.init == null) return Object.assign(base, { ok: false, stage: '入口', mode: 'midi', play: inf.play, reason: inf.initReason });
+    if (rom.mapper !== 0) return Object.assign(base, { ok: false, stage: '打包', mode: 'midi', play: inf.play, init: inf.init, reason: 'NSF 打包目前只支援 mapper 0（NROM）；這個 ROM 是 mapper ' + rom.mapper + '，需要銀行初值（未實作）' });
+    var load = rom.prgBanks === 1 ? 0xC000 : 0x8000;
+    var nsf = packNsf({ prg: rom.prg, load: load, init: inf.init, play: inf.play, songs: 1, start: 1, name: opts.name || '' });
+    return Object.assign(base, { ok: true, mode: 'nsf', nsf: nsf, play: inf.play, init: inf.init, load: load });
+  }
+
   return {
+    traceRom: traceRom, extractNsf: extractNsf,
     parseInes: parseInes, packNsf: packNsf, parseNsf: parseNsf, inferPlay: inferPlay, apuTraceToSong: apuTraceToSong,
     NOISE_PERIOD: NOISE_PERIOD, CPU_NTSC: CPU_NTSC, FRAME_NTSC: FRAME_NTSC
   };
