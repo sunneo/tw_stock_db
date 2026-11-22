@@ -83040,15 +83040,15 @@ const holder = {};
     mov: { category: 'video', label: 'MOV 影片' },
     webm: { category: 'video', label: 'WebM 影片' },
     nes: { category: 'extract', label: 'NES 遊戲音樂，可擷取' },
-    pce: { category: 'game', label: '遊戲音樂來源，待擷取' },
-    sfc: { category: 'game', label: '遊戲音樂來源，待擷取' },
+    pce: { category: 'extract', label: 'PC Engine 遊戲音樂，可擷取' },
+    sfc: { category: 'extract', label: 'SNES 遊戲音樂，可擷取' },
     rix: { category: 'extract', label: 'RIX（OPL2）音樂，可擷取' },
     swf: { category: 'extract', label: 'Flash（SWF）音樂，可擷取' },
     // 只由擷取產生的子曲目用（不從掃描辨識）
     nsf: { category: 'game', label: 'NSF 音樂（擷取產生，需 NSF 播放器）' }
   };
   var DERIVED_ONLY = { nsf: 1 };
-  var EXT_ALIAS = { midi: 'mid' };
+  var EXT_ALIAS = { midi: 'mid', smc: 'sfc' };
 
   // ───── 文字小工具 ─────
   function normalizeText(s) { return String(s == null ? '' : s).normalize('NFKC').toLowerCase().trim(); }
@@ -83721,8 +83721,8 @@ const holder = {};
     'video>mid': ['decode', 'slice', 'to-song', 'write-mid']
   };
   var SOURCE_CLASS = { wav: 'audio', mp3: 'audio', mid: 'mid', midi: 'mid', mp4: 'video', mov: 'video', webm: 'video', m4v: 'video' };
-  var ROM_EXT = { pce: 1, sfc: 1 };
-  var EXTRACT_EXT = { rix: 1, swf: 1, nes: 1 };
+  var ROM_EXT = {};
+  var EXTRACT_EXT = { rix: 1, swf: 1, nes: 1, pce: 1, sfc: 1, smc: 1 };
 
   // 規劃單一檔案的輸出路線。回傳 { ok:true, route, steps } 或 { ok:false, reason }。
   // 不支援的組合一律說明原因，不偷偷略過。
@@ -97904,6 +97904,1193 @@ const holder = {};
 return holder.FaMusicLibNesMappers;
 })();
 /* MLNESMAP-END */
+/* MLPCECPU-BEGIN */
+const FaMusicLibPceCpu = (function () {
+const holder = {};
+(function (module, self) {
+/* PC Engine（TurboGrafx-16）HuC6280 處理器與匯流排（UMD，純邏輯；不碰 DOM、不用網路）。
+ * 本檔是自寫的：指令表依 HuC6280 規格（65C02 指令集加上 TAM／TMA、TST、TII／TDD／TIN／TIA／TAI、SAX／SAY／SXY、CLA／CLX／CLY、CSL／CSH、ST0／ST1／ST2、BSR、SMB／RMB、BBS／BBR）。
+ *   createMachine(romBytes, opts)  → { cpu, bus, run(maxMasterTicks), psgWrites }
+ *   stripHeader(bytes)             → 去掉 512 位元組的 ROM 檔頭（大小 % 8192 == 512 時）
+ *
+ * 記憶體對映（MPR 八個銀行，每個 8KB）：
+ *   銀行 0x00–0x7F：ROM（超出 ROM 大小時取模，與真機鏡像相同）；0xF8–0xFB：8KB 工作 RAM；0xFF：硬體 I/O；其他：開放匯流排（0xFF）。
+ *   重置後 MPR 為 FF F8 F9 FA FB FC FD 00。零頁固定在 $2000、堆疊在 $2100（PCE 的慣例，即 MPR1＝RAM 時的位址）。
+ * I/O（銀行 0xFF 內的偏移）：$0000–$03FF VDC（只做狀態與暫存器，不畫面）；$0800–$0BFF PSG（回呼記錄）；$0C00–$0FFF 計時器；$1000–$13FF 搖桿（全部放開＝0xFF）；$1400–$17FF 中斷控制。
+ * 時序：主時脈 7159090 Hz。CSH＝1 個 CPU 週期 1 個主時脈；CSL＝4 個主時脈。指令週期數是近似值（依定址方式估計，不逐指令對過真機）。
+ * 中斷向量：RESET $FFFE、IRQ2／BRK $FFF6、IRQ1（VDC 垂直消隱）$FFF8、TIQ（計時器）$FFFA。
+ * 限制（會寫進擷取報告）：T 旗標的記憶體對記憶體運算尚未實作（SET 只設旗標）；未文件化的操作碼當成單位元組空指令並計數。 */
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaMusicLibPceCpu = factory();
+}(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+  var MASTER_HZ = 7159090;         // 高速主時脈
+  var LOW_DIV = 4;                 // 低速（CSL）時每個 CPU 週期佔的主時脈數
+  var FRAME_TICKS = 119318;        // 一個畫面（約 60 Hz）的主時脈數
+  var TIMER_TICKS = 1024;          // 計時器每跳一次的主時脈數（近似）
+  var ZP = 0x2000, STK = 0x2100;
+  var F_N = 0x80, F_V = 0x40, F_T = 0x20, F_B = 0x10, F_D = 0x08, F_I = 0x04, F_Z = 0x02, F_C = 0x01;
+
+  function stripHeader(bytes) {
+    var b = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    return (b.length % 8192 === 512) ? b.subarray(512) : b;
+  }
+
+  // ───── 匯流排 ─────
+  function Bus(rom, hooks) {
+    this.rom = rom;
+    this.pages = Math.floor(rom.length / 8192);
+    this.ram = new Uint8Array(8192);
+    this.mpr = [0xFF, 0xF8, 0xF9, 0xFA, 0xFB, 0xFC, 0xFD, 0x00];
+    this.hooks = hooks || {};
+    // VDC（只留狀態與暫存器）
+    this.vdcSel = 0; this.vdcStatus = 0; this.vdcRegs = new Uint16Array(32);
+    // 計時器與中斷
+    this.timerReload = 0; this.timerCount = 0; this.timerOn = false; this.timerAcc = 0;
+    this.irqDisable = 0; this.irqPend = 0;   // 位元：0＝IRQ2、1＝IRQ1、2＝TIQ
+    this.ioUnknown = 0;
+  }
+  Bus.prototype.read = function (a) {
+    a &= 0xFFFF;
+    var bank = this.mpr[a >> 13], off = a & 0x1FFF;
+    if (bank < 0x80) return this.pages ? this.rom[((bank % this.pages) << 13) | off] : 0xFF;
+    if (bank >= 0xF8 && bank <= 0xFB) return this.ram[off];
+    if (bank === 0xFF) return this.ioRead(off);
+    return 0xFF;
+  };
+  Bus.prototype.write = function (a, v) {
+    a &= 0xFFFF; v &= 0xFF;
+    var bank = this.mpr[a >> 13], off = a & 0x1FFF;
+    if (bank >= 0xF8 && bank <= 0xFB) this.ram[off] = v;
+    else if (bank === 0xFF) this.ioWrite(off, v);
+  };
+  Bus.prototype.ioRead = function (off) {
+    if (off < 0x0400) {
+      if ((off & 3) === 0) { var s = this.vdcStatus; this.vdcStatus = 0; return s; }
+      return 0;
+    }
+    if (off < 0x1000) {
+      if (off >= 0x0C00) return this.timerCount & 0x7F;
+      return 0xFF;
+    }
+    if (off < 0x1400) return 0xFF;               // 搖桿：全部放開
+    if (off === 0x1402) return this.irqDisable;
+    if (off === 0x1403) return this.irqPend;
+    return 0xFF;
+  };
+  Bus.prototype.ioWrite = function (off, v) {
+    if (off < 0x0400) {
+      var p = off & 3;
+      if (p === 0) this.vdcSel = v & 0x1F;
+      else if (p === 2) this.vdcRegs[this.vdcSel] = (this.vdcRegs[this.vdcSel] & 0xFF00) | v;
+      else if (p === 3) this.vdcRegs[this.vdcSel] = (this.vdcRegs[this.vdcSel] & 0x00FF) | (v << 8);
+      return;
+    }
+    if (off < 0x0800) return;                    // CPU 速度暫存器：時脈由 CSL／CSH 指令決定，這裡不改
+    if (off < 0x0C00) { if (this.hooks.psg) this.hooks.psg(off & 0x0F, v); return; }
+    if (off < 0x1000) {
+      if ((off & 1) === 0) this.timerReload = v & 0x7F;
+      else { var on = !!(v & 1); if (on && !this.timerOn) { this.timerCount = this.timerReload; this.timerAcc = 0; } this.timerOn = on; }
+      return;
+    }
+    if (off < 0x1400) return;                    // 搖桿選擇：忽略
+    if (off === 0x1402) this.irqDisable = v & 7;
+    else if (off === 0x1403) this.irqPend &= ~4; // 寫入清除 TIQ
+  };
+  Bus.prototype.vector = function (addr) { return this.read(addr) | (this.read(addr + 1) << 8); };
+
+  // ───── 處理器 ─────
+  function Cpu(bus) {
+    this.bus = bus;
+    this.A = 0; this.X = 0; this.Y = 0; this.S = 0xFF; this.P = F_I; this.PC = 0;
+    this.div = 1;                   // 1 ＝高速，LOW_DIV ＝低速
+    this.unknown = 0; this.unknownOps = {};
+    this.halted = false;
+  }
+  Cpu.prototype.reset = function () { this.PC = this.bus.vector(0xFFFE); this.P = F_I; this.S = 0xFF; this.div = LOW_DIV; };
+  Cpu.prototype.push = function (v) { this.bus.write(STK | this.S, v); this.S = (this.S - 1) & 0xFF; };
+  Cpu.prototype.pull = function () { this.S = (this.S + 1) & 0xFF; return this.bus.read(STK | this.S); };
+  Cpu.prototype.fetch = function () { var v = this.bus.read(this.PC); this.PC = (this.PC + 1) & 0xFFFF; return v; };
+  Cpu.prototype.fetch16 = function () { var lo = this.fetch(); return lo | (this.fetch() << 8); };
+  Cpu.prototype.zpRead16 = function (zp) { return this.bus.read(ZP | (zp & 0xFF)) | (this.bus.read(ZP | ((zp + 1) & 0xFF)) << 8); };
+  Cpu.prototype.setNZ = function (v) { this.P = (this.P & ~(F_N | F_Z)) | (v & F_N) | ((v & 0xFF) === 0 ? F_Z : 0); };
+  Cpu.prototype.adcBin = function (v) {
+    var c = this.P & F_C, a = this.A, sum = a + v + c;
+    this.P = (this.P & ~(F_C | F_V)) | (sum > 0xFF ? F_C : 0) | ((~(a ^ v) & (a ^ sum) & 0x80) ? F_V : 0);
+    this.A = sum & 0xFF; this.setNZ(this.A);
+  };
+  Cpu.prototype.adcDec = function (v) {
+    var c = this.P & F_C;
+    var lo = (this.A & 0x0F) + (v & 0x0F) + c, hi = (this.A >> 4) + (v >> 4);
+    if (lo > 9) { lo += 6; hi++; }
+    lo &= 0x0F;
+    var carry = 0;
+    if (hi > 9) { hi += 6; carry = 1; }
+    this.A = ((hi & 0x0F) << 4) | lo;
+    this.P = (this.P & ~F_C) | (carry ? F_C : 0);
+    this.setNZ(this.A);
+  };
+  Cpu.prototype.sbcDec = function (v) {
+    var borrow = (this.P & F_C) ? 0 : 1;
+    var lo = (this.A & 0x0F) - (v & 0x0F) - borrow, hi = (this.A >> 4) - (v >> 4);
+    if (lo < 0) { lo -= 6; hi--; }
+    var carry = 1;
+    if (hi < 0) { hi -= 6; carry = 0; }
+    this.A = ((hi & 0x0F) << 4) | (lo & 0x0F);
+    this.P = (this.P & ~F_C) | (carry ? F_C : 0);
+    this.setNZ(this.A);
+  };
+  Cpu.prototype.adc = function (v) { if (this.P & F_D) this.adcDec(v); else this.adcBin(v); };
+  Cpu.prototype.sbc = function (v) { if (this.P & F_D) this.sbcDec(v); else this.adcBin(v ^ 0xFF); };
+  Cpu.prototype.cmp = function (r, v) { var t = r - v; this.P = (this.P & ~F_C) | (r >= v ? F_C : 0); this.setNZ(t & 0xFF); };
+  Cpu.prototype.branch = function (cond) {
+    var rel = this.fetch(); if (rel & 0x80) rel -= 256;
+    if (cond) { this.PC = (this.PC + rel) & 0xFFFF; return 4; }
+    return 2;
+  };
+  Cpu.prototype.asl = function (v) { this.P = (this.P & ~F_C) | (v >> 7); v = (v << 1) & 0xFF; this.setNZ(v); return v; };
+  Cpu.prototype.lsr = function (v) { this.P = (this.P & ~F_C) | (v & 1); v >>= 1; this.setNZ(v); return v; };
+  Cpu.prototype.rol = function (v) { var c = this.P & F_C; this.P = (this.P & ~F_C) | (v >> 7); v = ((v << 1) | c) & 0xFF; this.setNZ(v); return v; };
+  Cpu.prototype.ror = function (v) { var c = this.P & F_C; this.P = (this.P & ~F_C) | (v & 1); v = (v >> 1) | (c << 7); this.setNZ(v); return v; };
+  Cpu.prototype.irqVector = function () {
+    var b = this.bus;
+    if ((this.P & F_I) === 0) {
+      if ((b.irqPend & 2) && !(b.irqDisable & 2)) { return 0xFFF8; }
+      if ((b.irqPend & 4) && !(b.irqDisable & 4)) { return 0xFFFA; }
+      if ((b.irqPend & 1) && !(b.irqDisable & 1)) { return 0xFFF6; }
+    }
+    return 0;
+  };
+  Cpu.prototype.takeIrq = function (vec) {
+    var bitFor = { 0xFFF8: 2, 0xFFFA: 4, 0xFFF6: 1 }[vec];
+    this.halted = false;
+    this.push(this.PC >> 8); this.push(this.PC & 0xFF); this.push(this.P & ~F_B);
+    this.P = (this.P | F_I) & ~(F_D | F_T);
+    this.bus.irqPend &= ~bitFor;
+    this.PC = this.bus.vector(vec);
+    return 8;
+  };
+
+  // 單一指令；回傳主時脈數以外的 CPU 週期數（近似）
+  Cpu.prototype.step = function () {
+    var vec = this.irqVector();
+    if (vec) return this.takeIrq(vec) * this.div;
+    var op = this.fetch(), b = this.bus, c = 2, t, a, v;
+    switch (op) {
+      // —— 載入／儲存 ——
+      case 0xA9: this.A = this.fetch(); this.setNZ(this.A); break;                                    // LDA #
+      case 0xA5: this.A = b.read(ZP | this.fetch()); this.setNZ(this.A); c = 4; break;                 // LDA zp
+      case 0xB5: this.A = b.read(ZP | ((this.fetch() + this.X) & 0xFF)); this.setNZ(this.A); c = 4; break;
+      case 0xAD: this.A = b.read(this.fetch16()); this.setNZ(this.A); c = 5; break;                    // LDA abs
+      case 0xBD: this.A = b.read((this.fetch16() + this.X) & 0xFFFF); this.setNZ(this.A); c = 5; break;
+      case 0xB9: this.A = b.read((this.fetch16() + this.Y) & 0xFFFF); this.setNZ(this.A); c = 5; break;
+      case 0xB2: this.A = b.read(this.zpRead16(this.fetch())); this.setNZ(this.A); c = 6; break;      // LDA (zp)
+      case 0xA1: this.A = b.read(this.zpRead16((this.fetch() + this.X) & 0xFF)); this.setNZ(this.A); c = 7; break;
+      case 0xB1: this.A = b.read((this.zpRead16(this.fetch()) + this.Y) & 0xFFFF); this.setNZ(this.A); c = 7; break;
+      case 0xA2: this.X = this.fetch(); this.setNZ(this.X); break;                                    // LDX #
+      case 0xA6: this.X = b.read(ZP | this.fetch()); this.setNZ(this.X); c = 4; break;
+      case 0xB6: this.X = b.read(ZP | ((this.fetch() + this.Y) & 0xFF)); this.setNZ(this.X); c = 4; break;
+      case 0xAE: this.X = b.read(this.fetch16()); this.setNZ(this.X); c = 5; break;
+      case 0xBE: this.X = b.read((this.fetch16() + this.Y) & 0xFFFF); this.setNZ(this.X); c = 5; break;
+      case 0xA0: this.Y = this.fetch(); this.setNZ(this.Y); break;                                    // LDY #
+      case 0xA4: this.Y = b.read(ZP | this.fetch()); this.setNZ(this.Y); c = 4; break;
+      case 0xB4: this.Y = b.read(ZP | ((this.fetch() + this.X) & 0xFF)); this.setNZ(this.Y); c = 4; break;
+      case 0xAC: this.Y = b.read(this.fetch16()); this.setNZ(this.Y); c = 5; break;
+      case 0xBC: this.Y = b.read((this.fetch16() + this.X) & 0xFFFF); this.setNZ(this.Y); c = 5; break;
+      case 0x85: b.write(ZP | this.fetch(), this.A); c = 4; break;                                    // STA
+      case 0x95: b.write(ZP | ((this.fetch() + this.X) & 0xFF), this.A); c = 4; break;
+      case 0x8D: b.write(this.fetch16(), this.A); c = 5; break;
+      case 0x9D: b.write((this.fetch16() + this.X) & 0xFFFF, this.A); c = 5; break;
+      case 0x99: b.write((this.fetch16() + this.Y) & 0xFFFF, this.A); c = 5; break;
+      case 0x92: b.write(this.zpRead16(this.fetch()), this.A); c = 6; break;
+      case 0x81: b.write(this.zpRead16((this.fetch() + this.X) & 0xFF), this.A); c = 7; break;
+      case 0x91: b.write((this.zpRead16(this.fetch()) + this.Y) & 0xFFFF, this.A); c = 7; break;
+      case 0x86: b.write(ZP | this.fetch(), this.X); c = 4; break;                                    // STX
+      case 0x96: b.write(ZP | ((this.fetch() + this.Y) & 0xFF), this.X); c = 4; break;
+      case 0x8E: b.write(this.fetch16(), this.X); c = 5; break;
+      case 0x84: b.write(ZP | this.fetch(), this.Y); c = 4; break;                                    // STY
+      case 0x94: b.write(ZP | ((this.fetch() + this.X) & 0xFF), this.Y); c = 4; break;
+      case 0x8C: b.write(this.fetch16(), this.Y); c = 5; break;
+      case 0x64: b.write(ZP | this.fetch(), 0); c = 4; break;                                         // STZ
+      case 0x74: b.write(ZP | ((this.fetch() + this.X) & 0xFF), 0); c = 4; break;
+      case 0x9C: b.write(this.fetch16(), 0); c = 5; break;
+      case 0x9E: b.write((this.fetch16() + this.X) & 0xFFFF, 0); c = 5; break;
+      // —— 轉移 ——
+      case 0xAA: this.X = this.A; this.setNZ(this.X); break;                                          // TAX
+      case 0xA8: this.Y = this.A; this.setNZ(this.Y); break;
+      case 0x8A: this.A = this.X; this.setNZ(this.A); break;
+      case 0x98: this.A = this.Y; this.setNZ(this.A); break;
+      case 0xBA: this.X = this.S; this.setNZ(this.X); break;
+      case 0x9A: this.S = this.X; break;                                                              // TXS 不改旗標
+      case 0x02: t = this.X; this.X = this.Y; this.Y = t; break;                                      // SXY
+      case 0x22: t = this.A; this.A = this.X; this.X = t; break;                                      // SAX
+      case 0x42: t = this.A; this.A = this.Y; this.Y = t; break;                                      // SAY
+      case 0x62: this.A = 0; c = 2; break;                                                            // CLA
+      case 0x82: this.X = 0; break;                                                                   // CLX
+      case 0xC2: this.Y = 0; break;                                                                   // CLY
+      // —— 堆疊 ——
+      case 0x48: this.push(this.A); c = 3; break;                                                     // PHA
+      case 0x68: this.A = this.pull(); this.setNZ(this.A); c = 4; break;                              // PLA
+      case 0xDA: this.push(this.X); c = 3; break;                                                     // PHX
+      case 0xFA: this.X = this.pull(); this.setNZ(this.X); c = 4; break;
+      case 0x5A: this.push(this.Y); c = 3; break;                                                     // PHY
+      case 0x7A: this.Y = this.pull(); this.setNZ(this.Y); c = 4; break;
+      case 0x08: this.push(this.P | F_B); c = 3; break;                                               // PHP
+      case 0x28: this.P = this.pull(); c = 4; break;                                                  // PLP
+      // —— 算術與邏輯 ——
+      case 0x69: this.adc(this.fetch()); break;                                                       // ADC #
+      case 0x65: this.adc(b.read(ZP | this.fetch())); c = 4; break;
+      case 0x75: this.adc(b.read(ZP | ((this.fetch() + this.X) & 0xFF))); c = 4; break;
+      case 0x6D: this.adc(b.read(this.fetch16())); c = 5; break;
+      case 0x7D: this.adc(b.read((this.fetch16() + this.X) & 0xFFFF)); c = 5; break;
+      case 0x79: this.adc(b.read((this.fetch16() + this.Y) & 0xFFFF)); c = 5; break;
+      case 0x72: this.adc(b.read(this.zpRead16(this.fetch()))); c = 6; break;
+      case 0x61: this.adc(b.read(this.zpRead16((this.fetch() + this.X) & 0xFF))); c = 7; break;
+      case 0x71: this.adc(b.read((this.zpRead16(this.fetch()) + this.Y) & 0xFFFF)); c = 7; break;
+      case 0xE9: this.sbc(this.fetch()); break;                                                       // SBC #
+      case 0xE5: this.sbc(b.read(ZP | this.fetch())); c = 4; break;
+      case 0xF5: this.sbc(b.read(ZP | ((this.fetch() + this.X) & 0xFF))); c = 4; break;
+      case 0xED: this.sbc(b.read(this.fetch16())); c = 5; break;
+      case 0xFD: this.sbc(b.read((this.fetch16() + this.X) & 0xFFFF)); c = 5; break;
+      case 0xF9: this.sbc(b.read((this.fetch16() + this.Y) & 0xFFFF)); c = 5; break;
+      case 0xF2: this.sbc(b.read(this.zpRead16(this.fetch()))); c = 6; break;
+      case 0xE1: this.sbc(b.read(this.zpRead16((this.fetch() + this.X) & 0xFF))); c = 7; break;
+      case 0xF1: this.sbc(b.read((this.zpRead16(this.fetch()) + this.Y) & 0xFFFF)); c = 7; break;
+      case 0x29: this.A &= this.fetch(); this.setNZ(this.A); break;                                   // AND #
+      case 0x25: this.A &= b.read(ZP | this.fetch()); this.setNZ(this.A); c = 4; break;
+      case 0x35: this.A &= b.read(ZP | ((this.fetch() + this.X) & 0xFF)); this.setNZ(this.A); c = 4; break;
+      case 0x2D: this.A &= b.read(this.fetch16()); this.setNZ(this.A); c = 5; break;
+      case 0x3D: this.A &= b.read((this.fetch16() + this.X) & 0xFFFF); this.setNZ(this.A); c = 5; break;
+      case 0x39: this.A &= b.read((this.fetch16() + this.Y) & 0xFFFF); this.setNZ(this.A); c = 5; break;
+      case 0x32: this.A &= b.read(this.zpRead16(this.fetch())); this.setNZ(this.A); c = 6; break;
+      case 0x21: this.A &= b.read(this.zpRead16((this.fetch() + this.X) & 0xFF)); this.setNZ(this.A); c = 7; break;
+      case 0x31: this.A &= b.read((this.zpRead16(this.fetch()) + this.Y) & 0xFFFF); this.setNZ(this.A); c = 7; break;
+      case 0x09: this.A |= this.fetch(); this.setNZ(this.A); break;                                   // ORA #
+      case 0x05: this.A |= b.read(ZP | this.fetch()); this.setNZ(this.A); c = 4; break;
+      case 0x15: this.A |= b.read(ZP | ((this.fetch() + this.X) & 0xFF)); this.setNZ(this.A); c = 4; break;
+      case 0x0D: this.A |= b.read(this.fetch16()); this.setNZ(this.A); c = 5; break;
+      case 0x1D: this.A |= b.read((this.fetch16() + this.X) & 0xFFFF); this.setNZ(this.A); c = 5; break;
+      case 0x19: this.A |= b.read((this.fetch16() + this.Y) & 0xFFFF); this.setNZ(this.A); c = 5; break;
+      case 0x12: this.A |= b.read(this.zpRead16(this.fetch())); this.setNZ(this.A); c = 6; break;
+      case 0x01: this.A |= b.read(this.zpRead16((this.fetch() + this.X) & 0xFF)); this.setNZ(this.A); c = 7; break;
+      case 0x11: this.A |= b.read((this.zpRead16(this.fetch()) + this.Y) & 0xFFFF); this.setNZ(this.A); c = 7; break;
+      case 0x49: this.A ^= this.fetch(); this.setNZ(this.A); break;                                   // EOR #
+      case 0x45: this.A ^= b.read(ZP | this.fetch()); this.setNZ(this.A); c = 4; break;
+      case 0x55: this.A ^= b.read(ZP | ((this.fetch() + this.X) & 0xFF)); this.setNZ(this.A); c = 4; break;
+      case 0x4D: this.A ^= b.read(this.fetch16()); this.setNZ(this.A); c = 5; break;
+      case 0x5D: this.A ^= b.read((this.fetch16() + this.X) & 0xFFFF); this.setNZ(this.A); c = 5; break;
+      case 0x59: this.A ^= b.read((this.fetch16() + this.Y) & 0xFFFF); this.setNZ(this.A); c = 5; break;
+      case 0x52: this.A ^= b.read(this.zpRead16(this.fetch())); this.setNZ(this.A); c = 6; break;
+      case 0x41: this.A ^= b.read(this.zpRead16((this.fetch() + this.X) & 0xFF)); this.setNZ(this.A); c = 7; break;
+      case 0x51: this.A ^= b.read((this.zpRead16(this.fetch()) + this.Y) & 0xFFFF); this.setNZ(this.A); c = 7; break;
+      case 0xC9: this.cmp(this.A, this.fetch()); break;                                               // CMP
+      case 0xC5: this.cmp(this.A, b.read(ZP | this.fetch())); c = 4; break;
+      case 0xD5: this.cmp(this.A, b.read(ZP | ((this.fetch() + this.X) & 0xFF))); c = 4; break;
+      case 0xCD: this.cmp(this.A, b.read(this.fetch16())); c = 5; break;
+      case 0xDD: this.cmp(this.A, b.read((this.fetch16() + this.X) & 0xFFFF)); c = 5; break;
+      case 0xD9: this.cmp(this.A, b.read((this.fetch16() + this.Y) & 0xFFFF)); c = 5; break;
+      case 0xD2: this.cmp(this.A, b.read(this.zpRead16(this.fetch()))); c = 6; break;
+      case 0xC1: this.cmp(this.A, b.read(this.zpRead16((this.fetch() + this.X) & 0xFF))); c = 7; break;
+      case 0xD1: this.cmp(this.A, b.read((this.zpRead16(this.fetch()) + this.Y) & 0xFFFF)); c = 7; break;
+      case 0xE0: this.cmp(this.X, this.fetch()); break;                                               // CPX
+      case 0xE4: this.cmp(this.X, b.read(ZP | this.fetch())); c = 4; break;
+      case 0xEC: this.cmp(this.X, b.read(this.fetch16())); c = 5; break;
+      case 0xC0: this.cmp(this.Y, this.fetch()); break;                                               // CPY
+      case 0xC4: this.cmp(this.Y, b.read(ZP | this.fetch())); c = 4; break;
+      case 0xCC: this.cmp(this.Y, b.read(this.fetch16())); c = 5; break;
+      case 0x89: v = this.fetch(); this.P = (this.P & ~F_Z) | ((this.A & v) === 0 ? F_Z : 0); break;   // BIT #（只影響 Z）
+      case 0x24: v = b.read(ZP | this.fetch()); this.bitFlags(v); c = 4; break;
+      case 0x34: v = b.read(ZP | ((this.fetch() + this.X) & 0xFF)); this.bitFlags(v); c = 4; break;
+      case 0x2C: v = b.read(this.fetch16()); this.bitFlags(v); c = 5; break;
+      case 0x3C: v = b.read((this.fetch16() + this.X) & 0xFFFF); this.bitFlags(v); c = 5; break;
+      // —— 遞增、遞減、移位（累加器與記憶體）——
+      case 0x1A: this.A = (this.A + 1) & 0xFF; this.setNZ(this.A); break;                             // INC A
+      case 0x3A: this.A = (this.A - 1) & 0xFF; this.setNZ(this.A); break;                             // DEC A
+      case 0xE8: this.X = (this.X + 1) & 0xFF; this.setNZ(this.X); break;
+      case 0xCA: this.X = (this.X - 1) & 0xFF; this.setNZ(this.X); break;
+      case 0xC8: this.Y = (this.Y + 1) & 0xFF; this.setNZ(this.Y); break;
+      case 0x88: this.Y = (this.Y - 1) & 0xFF; this.setNZ(this.Y); break;
+      case 0x0A: this.A = this.asl(this.A); break;
+      case 0x4A: this.A = this.lsr(this.A); break;
+      case 0x2A: this.A = this.rol(this.A); break;
+      case 0x6A: this.A = this.ror(this.A); break;
+      case 0xE6: a = ZP | this.fetch(); v = (b.read(a) + 1) & 0xFF; b.write(a, v); this.setNZ(v); c = 6; break;   // INC zp
+      case 0xF6: a = ZP | ((this.fetch() + this.X) & 0xFF); v = (b.read(a) + 1) & 0xFF; b.write(a, v); this.setNZ(v); c = 6; break;
+      case 0xEE: a = this.fetch16(); v = (b.read(a) + 1) & 0xFF; b.write(a, v); this.setNZ(v); c = 7; break;
+      case 0xFE: a = (this.fetch16() + this.X) & 0xFFFF; v = (b.read(a) + 1) & 0xFF; b.write(a, v); this.setNZ(v); c = 7; break;
+      case 0xC6: a = ZP | this.fetch(); v = (b.read(a) - 1) & 0xFF; b.write(a, v); this.setNZ(v); c = 6; break;   // DEC zp
+      case 0xD6: a = ZP | ((this.fetch() + this.X) & 0xFF); v = (b.read(a) - 1) & 0xFF; b.write(a, v); this.setNZ(v); c = 6; break;
+      case 0xCE: a = this.fetch16(); v = (b.read(a) - 1) & 0xFF; b.write(a, v); this.setNZ(v); c = 7; break;
+      case 0xDE: a = (this.fetch16() + this.X) & 0xFFFF; v = (b.read(a) - 1) & 0xFF; b.write(a, v); this.setNZ(v); c = 7; break;
+      case 0x06: this.rmw(ZP | this.fetch(), this.asl); c = 6; break;                               // ASL／LSR／ROL／ROR 記憶體
+      case 0x16: this.rmw(ZP | ((this.fetch() + this.X) & 0xFF), this.asl); c = 6; break;
+      case 0x0E: this.rmw(this.fetch16(), this.asl); c = 7; break;
+      case 0x1E: this.rmw((this.fetch16() + this.X) & 0xFFFF, this.asl); c = 7; break;
+      case 0x46: this.rmw(ZP | this.fetch(), this.lsr); c = 6; break;
+      case 0x56: this.rmw(ZP | ((this.fetch() + this.X) & 0xFF), this.lsr); c = 6; break;
+      case 0x4E: this.rmw(this.fetch16(), this.lsr); c = 7; break;
+      case 0x5E: this.rmw((this.fetch16() + this.X) & 0xFFFF, this.lsr); c = 7; break;
+      case 0x26: this.rmw(ZP | this.fetch(), this.rol); c = 6; break;
+      case 0x36: this.rmw(ZP | ((this.fetch() + this.X) & 0xFF), this.rol); c = 6; break;
+      case 0x2E: this.rmw(this.fetch16(), this.rol); c = 7; break;
+      case 0x3E: this.rmw((this.fetch16() + this.X) & 0xFFFF, this.rol); c = 7; break;
+      case 0x66: this.rmw(ZP | this.fetch(), this.ror); c = 6; break;
+      case 0x76: this.rmw(ZP | ((this.fetch() + this.X) & 0xFF), this.ror); c = 6; break;
+      case 0x6E: this.rmw(this.fetch16(), this.ror); c = 7; break;
+      case 0x7E: this.rmw((this.fetch16() + this.X) & 0xFFFF, this.ror); c = 7; break;
+      case 0x04: a = ZP | this.fetch(); v = b.read(a); this.P = (this.P & ~F_Z) | ((this.A & v) === 0 ? F_Z : 0); b.write(a, v | this.A); c = 6; break;   // TSB
+      case 0x0C: a = this.fetch16(); v = b.read(a); this.P = (this.P & ~F_Z) | ((this.A & v) === 0 ? F_Z : 0); b.write(a, v | this.A); c = 7; break;
+      case 0x14: a = ZP | this.fetch(); v = b.read(a); this.P = (this.P & ~F_Z) | ((this.A & v) === 0 ? F_Z : 0); b.write(a, v & ~this.A); c = 6; break;  // TRB
+      case 0x1C: a = this.fetch16(); v = b.read(a); this.P = (this.P & ~F_Z) | ((this.A & v) === 0 ? F_Z : 0); b.write(a, v & ~this.A); c = 7; break;
+      // —— 旗標 ——
+      case 0x18: this.P &= ~F_C; break;                                                              // CLC
+      case 0x38: this.P |= F_C; break;                                                               // SEC
+      case 0x58: this.P &= ~F_I; break;                                                              // CLI
+      case 0x78: this.P |= F_I; break;                                                               // SEI
+      case 0xD8: this.P &= ~F_D; break;                                                              // CLD
+      case 0xF8: this.P |= F_D; break;                                                               // SED
+      case 0xB8: this.P &= ~F_V; break;                                                              // CLV
+      case 0xF4: this.P |= F_T; break;                                                               // SET（T 旗標：見檔頭限制）
+      case 0x54: this.div = 1; break;                                                                // CSL：低速
+      case 0xD4: this.div = LOW_DIV; break;                                                          // CSH：高速（依 HuC6280 的對應）
+      case 0xEA: break;                                                                              // NOP
+      // —— 跳躍與分支 ——
+      case 0x10: c = this.branch(!(this.P & F_N)); break;                                            // BPL
+      case 0x30: c = this.branch(this.P & F_N); break;                                               // BMI
+      case 0x50: c = this.branch(!(this.P & F_V)); break;                                            // BVC
+      case 0x70: c = this.branch(this.P & F_V); break;                                               // BVS
+      case 0x90: c = this.branch(!(this.P & F_C)); break;                                            // BCC
+      case 0xB0: c = this.branch(this.P & F_C); break;                                               // BCS
+      case 0xD0: c = this.branch(!(this.P & F_Z)); break;                                            // BNE
+      case 0xF0: c = this.branch(this.P & F_Z); break;                                               // BEQ
+      case 0x80: c = this.branch(true); break;                                                       // BRA
+      case 0x44: { var rel = this.fetch(); if (rel & 0x80) rel -= 256; var ret = (this.PC - 1) & 0xFFFF; this.push(ret >> 8); this.push(ret & 0xFF); this.PC = (this.PC + rel) & 0xFFFF; c = 8; break; }   // BSR
+      case 0x4C: this.PC = this.fetch16(); c = 3; break;                                             // JMP abs
+      case 0x6C: this.PC = this.jmpInd(this.fetch16()); c = 6; break;                                // JMP (abs)
+      case 0x7C: a = (this.fetch16() + this.X) & 0xFFFF; this.PC = b.read(a) | (b.read((a + 1) & 0xFFFF) << 8); c = 7; break;   // JMP (abs,X)
+      case 0x20: a = this.fetch16(); this.push(((this.PC - 1) & 0xFFFF) >> 8); this.push((this.PC - 1) & 0xFF); this.PC = a; c = 7; break;   // JSR
+      case 0x60: this.PC = ((this.pull() | (this.pull() << 8)) + 1) & 0xFFFF; c = 7; break;          // RTS
+      case 0x40: this.P = this.pull() | 0; { var lo = this.pull(), hi = this.pull(); this.PC = lo | (hi << 8); } c = 7; break;   // RTI
+      case 0x00: this.fetch(); this.push(this.PC >> 8); this.push(this.PC & 0xFF); this.push(this.P | F_B); this.P = (this.P | F_I) & ~(F_D | F_T); this.PC = b.vector(0xFFF6); c = 8; break;   // BRK
+      // —— 位元與 TST、TAM、TMA、RMB／SMB、BBR／BBS ——
+      case 0x43: { v = this.fetch(); for (t = 0; t < 8; t++) if (v & (1 << t)) this.A = b.mpr[t]; c = 4; break; }   // TMA
+      case 0x53: { v = this.fetch(); for (t = 0; t < 8; t++) if (v & (1 << t)) b.mpr[t] = this.A; c = 5; break; }      // TAM
+      case 0x83: case 0xA3: case 0x93: case 0xB3: {
+        var mask = this.fetch(), addr = (op === 0x83) ? (ZP | this.fetch()) : (op === 0xA3) ? (ZP | ((this.fetch() + this.X) & 0xFF)) : (op === 0x93) ? this.fetch16() : (this.fetch16() + this.X) & 0xFFFF;
+        v = b.read(addr); this.P = (this.P & ~(F_N | F_V | F_Z)) | (v & mask ? 0 : F_Z) | (v & 0xC0);
+        c = 6; break;
+      }
+      case 0x73: case 0xC3: case 0xD3: case 0xE3: case 0xF3: c = this.blockTransfer(op); break;     // TII TDD TIN TIA TAI
+      case 0x07: case 0x17: case 0x27: case 0x37: case 0x47: case 0x57: case 0x67: case 0x77:      // RMB0..7
+        a = ZP | this.fetch(); b.write(a, b.read(a) & ~(1 << ((op >> 4) & 7))); c = 7; break;
+      case 0x87: case 0x97: case 0xA7: case 0xB7: case 0xC7: case 0xD7: case 0xE7: case 0xF7:      // SMB0..7
+        a = ZP | this.fetch(); b.write(a, b.read(a) | (1 << ((op >> 4) & 7))); c = 7; break;
+      case 0x0F: case 0x1F: case 0x2F: case 0x3F: case 0x4F: case 0x5F: case 0x6F: case 0x7F:      // BBR0..7
+        c = this.bitBranch(op, false, ZP | this.fetch(), 7); break;
+      case 0x8F: case 0x9F: case 0xAF: case 0xBF: case 0xCF: case 0xDF: case 0xEF: case 0xFF:      // BBS0..7
+        c = this.bitBranch(op, true, ZP | this.fetch(), 7); break;
+      // —— ST0／ST1／ST2：寫 VDC 暫存器（I/O 銀行的 $0000、$0002、$0003）——
+      case 0x03: this.bus.ioWrite(0, this.fetch()); c = 4; break;                                    // ST0
+      case 0x13: this.bus.ioWrite(2, this.fetch()); c = 4; break;                                    // ST1
+      case 0x23: this.bus.ioWrite(3, this.fetch()); c = 4; break;                                    // ST2
+      default:
+        // 未文件化或未實作的操作碼：當單位元組空指令，計數，不讓整個執行中斷
+        this.unknown++; this.unknownOps[op] = (this.unknownOps[op] || 0) + 1;
+        c = 2;
+    }
+    return c * this.div;
+  };
+  Cpu.prototype.bitFlags = function (v) { this.P = (this.P & ~(F_N | F_V | F_Z)) | (v & 0xC0) | ((this.A & v) === 0 ? F_Z : 0); };
+  Cpu.prototype.rmw = function (addr, fn) { var b = this.bus; var v = fn.call(this, b.read(addr)); b.write(addr, v); };
+  Cpu.prototype.jmpInd = function (addr) { return this.bus.read(addr) | (this.bus.read((addr + 1) & 0xFFFF) << 8); };
+  Cpu.prototype.bitBranch = function (op, want, zpAddr, c0) {
+    var bit = (op >> 4) & 7, v = this.bus.read(zpAddr), rel = this.fetch();
+    if (rel & 0x80) rel -= 256;
+    var set = !!(v & (1 << bit));
+    if (set === want) { this.PC = (this.PC + rel) & 0xFFFF; return c0 + 2; }
+    return c0;
+  };
+  // 區塊搬移：源與目的、長度（0 ＝ 65536）；TII 源遞增目的遞增、TDD 兩者遞減、TIN 源遞增目的固定、TIA 源遞增目的交替、TAI 源交替目的遞增
+  Cpu.prototype.blockTransfer = function (op) {
+    var src = this.fetch16(), dst = this.fetch16(), len = this.fetch16();
+    if (len === 0) len = 0x10000;
+    var b = this.bus;
+    for (var i = 0; i < len; i++) {
+      var sa = (op === 0xF3) ? ((src + (i & 1)) & 0xFFFF) : src;      // TAI：來源交替
+      var da = (op === 0xE3) ? ((dst + (i & 1)) & 0xFFFF) : dst;      // TIA：目的交替
+      b.write(da, b.read(sa));
+      if (op === 0x73) { src = (src + 1) & 0xFFFF; dst = (dst + 1) & 0xFFFF; }        // TII
+      else if (op === 0xC3) { src = (src - 1) & 0xFFFF; dst = (dst - 1) & 0xFFFF; }  // TDD
+      else if (op === 0xD3) { src = (src + 1) & 0xFFFF; }                             // TIN：目的固定
+      else if (op === 0xE3) { src = (src + 1) & 0xFFFF; }                             // TIA
+      else if (op === 0xF3) { dst = (dst + 1) & 0xFFFF; }                             // TAI
+    }
+    return 6 + 6 * len;
+  };
+
+  // ───── 機器：處理器、匯流排、VDC 垂直消隱、計時器、IRQ ─────
+  // 執行 maxTicks 個主時脈（或到 stop 回傳真）。回傳執行的畫面數與停止原因。
+  function createMachine(romBytes, opts) {
+    opts = opts || {};
+    var rom = stripHeader(romBytes);
+    var psgWrites = [];
+    var masterNow = 0;
+    var hooks = {
+      psg: function (reg, v) { if (opts.onPsg) opts.onPsg(masterNow, reg, v); else psgWrites.push({ t: masterNow, r: reg, v: v }); }
+    };
+    var bus = new Bus(rom, hooks);
+    var cpu = new Cpu(bus);
+    cpu.reset();
+    var nextVbl = FRAME_TICKS, frames = 0;
+    var timerDue = TIMER_TICKS;
+    function advance(ticks) {
+      masterNow += ticks;
+      if (masterNow >= nextVbl) {
+        nextVbl += FRAME_TICKS; frames++;
+        bus.vdcStatus |= 0x20;
+        if (bus.vdcRegs[5] & 0x0008) bus.irqPend |= 2;
+        if (opts.onFrame) opts.onFrame(frames);
+      }
+      if (bus.timerOn) {
+        while (masterNow >= timerDue) {
+          timerDue += TIMER_TICKS;
+          if (bus.timerCount === 0) { bus.timerCount = bus.timerReload; bus.irqPend |= 4; }
+          else bus.timerCount--;
+        }
+      } else timerDue = masterNow + TIMER_TICKS;
+    }
+    function run(maxFrames, shouldStop) {
+      var stopAt = 0;
+      while (frames < maxFrames) {
+        if (shouldStop && shouldStop()) return { frames: frames, reason: 'cancelled', ticks: masterNow };
+        var c = cpu.step();
+        advance(c);
+        if (cpu.unknown > 2000000) { return { frames: frames, reason: 'unknown-ops', ticks: masterNow }; }
+      }
+      return { frames: frames, reason: 'frames', ticks: masterNow };
+    }
+    return {
+      cpu: cpu, bus: bus, run: run, psgWrites: psgWrites,
+      frames: function () { return frames; }, ticks: function () { return masterNow; }
+    };
+  }
+
+  return {
+    stripHeader: stripHeader, Bus: Bus, Cpu: Cpu, createMachine: createMachine,
+    MASTER_HZ: MASTER_HZ, FRAME_TICKS: FRAME_TICKS, LOW_DIV: LOW_DIV
+  };
+}));
+
+}).call(null, undefined, holder);
+return holder.FaMusicLibPceCpu;
+})();
+/* MLPCECPU-END */
+/* MLPCE-BEGIN */
+const FaMusicLibPce = (function () {
+const holder = {};
+(function (module, self) {
+/* PC Engine（TurboGrafx-16）遊戲音樂擷取（UMD，純邏輯；不碰 DOM、不用網路）。
+ *   classifyPce(name, bytes)        → { cls:'rom', kind:'pce', label, headerBytes }   .pce 有或沒有 512 位元組檔頭都認
+ *   psgNew() / psgWrite(st, r, v) / psgTick(st) / psgMix(st)   六聲道 PSG（依 jspce 的暫存器規則移植，見下）
+ *   psgRender(writes, opts)         → Float32Array（單聲道，44100 Hz）：用記錄下來的 PSG 寫入重播出來
+ *   psgToSong(writes, opts)         → { song（FaMidi 同形）, stats }：退路 MIDI（脈衝與噪音音符）
+ *   traceRom(romBytes, opts)        → Promise<trace>：用 HuC6280 真的執行 ROM，錄下 PSG 寫入（時間單位：主時脈）
+ *   extractPce(romBytes, opts)      → Promise<結果>：MIDI 與 wav（mp3 由宿主用既有編碼器）；每個輸出都寫明成功或失敗原因
+ *
+ * PSG 來源與授權：暫存器規則（$0800 選聲道、$0802–$0803 頻率、$0804 控制、$0805 左右音量、$0806 波形、$0807 噪音、$0808–$0809 LFO）
+ * 與混音方式移植自 jspce（MIT，yhzmr442/jspce，commit d4339bae5fb2253b8b3d110e256405d928a3afc4）的 PCE.js；授權全文見 renderer/vendor/jspce/LICENSE。
+ * jspce 的音訊輸出綁在 Web Audio 上，這裡改成離線重播（不需要 AudioContext），其餘行為一致。
+ *
+ * 限制（會寫進結果）：沒有按鍵輸入，遊戲停在標題畫面時就只錄到標題音樂；Hudson 的 T 旗標記憶體運算與影像未實作（見 musiclib_pce_cpu.js）。 */
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaMusicLibPce = factory();
+}(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+  var PSG_HZ = 3579545;             // PSG 時脈（主時脈的一半）
+  var MASTER_HZ = 7159090;          // 主時脈（與 musiclib_pce_cpu.js 同）
+  var FRAME_TICKS = 119318;         // 一個畫面的主時脈數
+  var AUDIO_RATE = 44100;
+  var MAX_FRAMES = 3600;            // 約 60 秒遊戲時間的上限（每幀約 1/60 秒）
+  var CHUNK = 30;                   // 每跑這麼多畫面讓出一次執行緒
+  var TAIL_SEC = 1.5;               // 最後一次寫入之後多錄的尾音
+  // 正規化：六聲道、訊號最大 ±16、音量最大 15*31、全域音量最大 15
+  var NORM = 6 * 16 * (15 * 31) * 15;
+  var PSG_PPQ = 480;
+
+  // ───── 分類 ─────
+  function asU8(x) { return x instanceof Uint8Array ? x : new Uint8Array(x || []); }
+  function classifyPce(name, bytes) {
+    var b = asU8(bytes), ext = String(name || '').split('.').pop().toLowerCase();
+    if (ext !== 'pce') return { cls: 'nonrom', kind: 'other', label: '非 PC Engine ROM' };
+    var hdr = (b.length % 8192 === 512) ? 512 : 0;
+    if (b.length < 8192 + hdr) return { cls: 'rom', kind: 'pce', label: 'PC Engine ROM（檔案太短）', headerBytes: hdr };
+    return { cls: 'rom', kind: 'pce', label: 'PC Engine ROM' + (hdr ? '（含 512 位元組檔頭）' : ''), headerBytes: hdr };
+  }
+
+  // ───── PSG（移植自 jspce）─────
+  function psgNew() {
+    var ch = [];
+    for (var i = 0; i < 6; i++) {
+      ch.push({ R: new Array(10).fill(0), keyon: false, dda: false, freq: 0, count: 0, vol: 0, leftvol: 0, rightvol: 0,
+        noiseon: false, noisefreq: 0, noise: 0x8000, index: 0, wave: new Array(32).fill(0) });
+    }
+    return { ch: ch, sel: 0, wl: 0, wr: 0, lfoOn: false, lfoCtl: 0, lfoFreq: 0 };
+  }
+  // 寫入一個 PSG 暫存器（r 為 $0800 起算的偏移 0–9）；對應 jspce 的 SetPSG
+  function psgWrite(st, r, data) {
+    data &= 0xFF;
+    if (r === 0) { st.sel = data & 7; return; }
+    if (st.sel > 5) return;
+    var c = st.ch[st.sel];
+    c.R[r] = data;
+    switch (r) {
+      case 1: st.wl = (data & 0xF0) >> 4; st.wr = data & 0x0F; return;
+      case 2: case 3: c.freq = ((c.R[3] << 8) | c.R[2]) & 0x0FFF; return;
+      case 4:
+        c.keyon = (data & 0x80) === 0x80;
+        c.dda = (data & 0x40) === 0x40;
+        if (data & 0x40) c.index = 0;
+        c.vol = data & 0x1F;
+        psgBalance(c); return;
+      case 5: psgBalance(c); return;
+      case 6:
+        if (!c.dda) { c.wave[c.index] = data & 0x1F; c.index = (c.index + 1) & 0x1F; }
+        return;
+      case 7: c.noiseon = (data & 0x80) === 0x80; c.noisefreq = (data & 0x1F) ^ 0x1F; return;
+      case 8: st.lfoFreq = data; return;
+      case 9: st.lfoOn = (data & 0x80) === 0x80; st.lfoCtl = data & 0x03; return;
+    }
+  }
+  function psgBalance(c) {
+    var vol = c.R[4] & 0x1F;
+    c.leftvol = ((c.R[5] & 0xF0) >> 4) * vol;
+    c.rightvol = (c.R[5] & 0x0F) * vol;
+  }
+  // 一個 PSG 時脈（對應 jspce 的 PSGRun 內迴圈的一次）
+  function psgTick(st) {
+    var j0 = 0, c0, c1, ft, j, c;
+    if (st.lfoOn) {
+      c0 = st.ch[0]; c1 = st.ch[1];
+      if (c0.keyon) {
+        if (c0.count === 0) {
+          c0.index = (c0.index + 1) & 0x1F;
+          ft = 0;
+          if (st.lfoCtl !== 0) {
+            ft = c1.wave[c1.index];
+            ft = ft > 0x0F ? ft - 0x20 : ft & 0x0F;
+            ft <<= 4 * (st.lfoCtl - 1);
+          }
+          ft = c0.freq + ft;
+          if (ft < 0) ft = 0;
+          c0.count = ft;
+        } else c0.count--;
+        if (c1.count === 0) { c1.index = (c1.index + 1) & 0x1F; c1.count = c1.freq * st.lfoFreq; } else c1.count--;
+      }
+      j0 = 2;
+    }
+    for (j = j0; j < 6; j++) {
+      c = st.ch[j];
+      if (j < 4 || !c.noiseon) {
+        if (c.keyon && !c.dda) {
+          if (c.count === 0) { c.index = (c.index + 1) & 0x1F; c.count = c.freq; } else c.count--;
+        }
+      } else if (c.keyon && !c.dda) {
+        if (c.count === 0) {
+          c.index = (c.index + 1) & 0x1F;
+          if (c.index === 0) c.noise = (c.noise >> 1) | (((c.noise << 12) ^ (c.noise << 15)) & 0x8000);
+          c.count = c.noisefreq;
+        } else c.count--;
+      }
+    }
+  }
+  // 混音：回傳左右聲道（已正規化到約 ±1 的範圍，未截波）；對應 jspce 的 SoundSet
+  function psgMix(st) {
+    var L = 0, R = 0, j, c, out, sgn;
+    for (j = 0; j < 6; j++) {
+      if (j === 1 && st.lfoOn) continue;
+      c = st.ch[j];
+      if (j < 4 || !c.noiseon) out = c.keyon ? (c.dda ? (c.R[6] & 0x1F) : c.wave[c.index]) : 16;
+      else out = (c.noise & 1) ? 31 : 0;
+      sgn = out - 16;
+      L += sgn * c.leftvol; R += sgn * c.rightvol;
+    }
+    return { l: (L * st.wl) / NORM, r: (R * st.wr) / NORM };
+  }
+
+  // ───── 重播（離線）─────
+  // writes：[{t（主時脈，已扣掉起點）, r, v}]，依時間排序。回傳單聲道 Float32Array（左右平均）。
+  function psgRender(writes, opts) {
+    opts = opts || {};
+    var rate = opts.sampleRate || AUDIO_RATE;
+    var endT = opts.endTicks != null ? opts.endTicks : (writes.length ? writes[writes.length - 1].t : 0) + TAIL_SEC * MASTER_HZ;
+    var n = Math.ceil(endT / (MASTER_HZ / rate)) + 1;
+    var out = new Float32Array(n), st = psgNew(), wi = 0, acc = 0;
+    var psgPerSample = PSG_HZ / rate, masterPerSample = MASTER_HZ / rate;
+    for (var k = 0; k < n; k++) {
+      var tm = k * masterPerSample;
+      while (wi < writes.length && writes[wi].t <= tm) { psgWrite(st, writes[wi].r, writes[wi].v); wi++; }
+      acc += psgPerSample;
+      var ticks = Math.floor(acc); acc -= ticks;
+      for (var q = 0; q < ticks; q++) psgTick(st);
+      var m = psgMix(st);
+      var s = (m.l + m.r) * 0.5;
+      out[k] = s > 1 ? 1 : s < -1 ? -1 : s;
+    }
+    return out;
+  }
+  function wav16(samples, rate) {
+    var n = samples.length, buf = new Uint8Array(44 + n * 2), dv = new DataView(buf.buffer);
+    function put(o, s) { for (var i = 0; i < s.length; i++) buf[o + i] = s.charCodeAt(i); }
+    put(0, 'RIFF'); dv.setUint32(4, 36 + n * 2, true); put(8, 'WAVE'); put(12, 'fmt ');
+    dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 1, true); dv.setUint32(24, rate, true);
+    dv.setUint32(28, rate * 2, true); dv.setUint16(32, 2, true); dv.setUint16(34, 16, true); put(36, 'data'); dv.setUint32(40, n * 2, true);
+    for (var i = 0; i < n; i++) {
+      var s = Math.max(-1, Math.min(1, samples[i]));
+      dv.setInt16(44 + i * 2, s < 0 ? Math.round(s * 32768) : Math.round(s * 32767), true);
+    }
+    return buf;
+  }
+
+  // ───── 退路 MIDI：重播寫入，依每次寫入後的音高／音量狀態開音、關音 ─────
+  function pitchOf(freq) {
+    var f = PSG_HZ / (32 * (freq + 1));
+    return Math.round(69 + 12 * Math.log(f / 440) / Math.LN2);
+  }
+  function psgToSong(writes, opts) {
+    opts = opts || {};
+    var ticksPerSec = PSG_PPQ * 2;     // 120 BPM：每秒 2 拍
+    var st = psgNew();
+    var active = [null, null, null, null, null, null], notes = [[], [], [], [], [], []], drum = [];
+    var stats = { writes: writes.length, keyOn: 0, ddaWrites: 0, lfoWrites: 0, notes: 0, drumNotes: 0 };
+    function toTicks(t) { return Math.round((t / MASTER_HZ) * ticksPerSec); }
+    function endAt(j, t) {
+      var a = active[j]; if (!a) return;
+      var t0 = toTicks(a.t), t1 = toTicks(t);
+      var rec = { t: t0, d: Math.max(1, t1 - t0), n: Math.max(0, Math.min(127, a.n)), v: a.v };
+      if (a.drum) drum.push(rec); else notes[j].push(rec);
+      active[j] = null;
+    }
+    function desiredFor(j) {
+      var c = st.ch[j];
+      if (j >= 4 && c.noiseon) {
+        if (!c.keyon || c.dda) return null;
+        return { key: 'N' + c.noisefreq, n: 36 + (c.noisefreq % 24), v: velOf(c), drum: true };
+      }
+      if (!c.keyon || c.dda || c.freq === 0) return null;
+      var n = pitchOf(c.freq);
+      if (n < 0 || n > 127) return null;
+      return { key: 'P' + n, n: n, v: velOf(c), drum: false };
+    }
+    function velOf(c) { var m = Math.max(c.leftvol, c.rightvol); return Math.max(1, Math.min(127, Math.round(m / (15 * 31) * 127))); }
+    var last = 0;
+    writes.forEach(function (w) {
+      last = w.t;
+      if (w.r === 4 && (w.v & 0x80)) stats.keyOn++;
+      if (w.r === 6 && st.ch[st.sel] && st.ch[st.sel].dda) stats.ddaWrites++;
+      if (w.r === 9 && (w.v & 0x80)) stats.lfoWrites++;
+      psgWrite(st, w.r, w.v);
+      for (var j = 0; j < 6; j++) {
+        var want = desiredFor(j), a = active[j];
+        var key = want ? want.key : null;
+        var curKey = a ? a.key : null;
+        if (key === curKey) continue;
+        if (a) endAt(j, w.t);
+        if (want) active[j] = { key: want.key, n: want.n, v: want.v, t: w.t, drum: want.drum };
+      }
+    });
+    for (var j2 = 0; j2 < 6; j2++) endAt(j2, last + TAIL_SEC * MASTER_HZ);
+    var endLast = last + TAIL_SEC * MASTER_HZ;
+    var song = { ppq: PSG_PPQ, tempos: [{ t: 0, bpm: 120 }], timesig: { n: 4, d: 4 }, title: opts.title || '', tracks: [] };
+    var names = ['PSG 聲道 1', 'PSG 聲道 2', 'PSG 聲道 3', 'PSG 聲道 4', 'PSG 聲道 5', 'PSG 聲道 6'];
+    for (var k = 0; k < 6; k++) {
+      if (!notes[k].length) continue;
+      song.tracks.push({ name: names[k], channel: k, program: 80, drum: false, volume: 100, pan: 64, notes: notes[k] });
+      stats.notes += notes[k].length;
+    }
+    if (drum.length) { song.tracks.push({ name: '雜訊（打擊，近似）', channel: 9, program: 0, drum: true, volume: 100, pan: 64, notes: drum }); stats.drumNotes = drum.length; }
+    stats.notes += drum.length;
+    stats.seconds = Math.round((endLast / MASTER_HZ) * 10) / 10;
+    return { song: song, stats: stats };
+  }
+
+  // ───── 執行 ROM（HuC6280，自寫；cpu 模組由呼叫端注入）─────
+  // 錄下每次 PSG 寫入（$0800–$0809）與畫面結束；停止規則：到 maxFrames，或有過聲音之後安靜 900 幀（至少 300 幀有聲音）。
+  async function traceRom(romBytes, opts) {
+    opts = opts || {};
+    var CPU = opts.cpu;
+    if (!CPU || !CPU.createMachine) throw new Error('沒有注入 HuC6280 模組（opts.cpu）');
+    var maxFrames = opts.maxFrames || MAX_FRAMES;
+    var isCancelled = typeof opts.isCancelled === 'function' ? opts.isCancelled : function () { return false; };
+    var writes = [], activeSet = {}, nAct = 0, lastAct = -1;
+    var m = CPU.createMachine(romBytes, {
+      onPsg: function (t, r, v) {
+        writes.push({ t: t, r: r, v: v });
+        var fr = Math.floor(t / FRAME_TICKS);
+        if (!activeSet[fr]) { activeSet[fr] = 1; nAct++; if (fr > lastAct) lastAct = fr; }
+      }
+    });
+    var quit = 'maxFrames', crashed = null;
+    try {
+      while (true) {
+        if (isCancelled()) { quit = 'cancelled'; break; }
+        var target = Math.min(maxFrames, m.frames() + CHUNK);
+        var res = m.run(target, isCancelled);
+        if (res.reason === 'cancelled') { quit = 'cancelled'; break; }
+        if (res.reason === 'unknown-ops') { quit = 'unknown-ops'; break; }
+        if (m.frames() >= maxFrames) break;
+        if (nAct >= 300 && m.frames() - lastAct >= 900) { quit = 'quiet'; break; }
+        if (typeof opts.onProgress === 'function') opts.onProgress(m.frames());
+        await new Promise(function (r) { setTimeout(r, 0); });
+      }
+    } catch (e) { crashed = String((e && e.message) || e); quit = 'crashed'; }
+    return { writes: writes, frames: m.frames(), quit: quit, crashed: crashed, cpu: m.cpu, unknown: m.cpu.unknown, unknownOps: m.cpu.unknownOps, activeFrames: nAct };
+  }
+
+  // ───── 抽出（結果逐項說明）─────
+  // out.song（MIDI）、out.midiReason；out.wav（Uint8Array）、out.samples（Float32Array）、out.sampleRate、out.wavReason；out.stats
+  async function extractPce(romBytes, opts) {
+    opts = opts || {};
+    var out = { ok: false, mode: 'none', song: null, midiReason: null, wav: null, samples: null, sampleRate: AUDIO_RATE, wavReason: null, reason: null, cancelled: false, stats: {} };
+    var info = classifyPce(opts.name || 'x.pce', romBytes);
+    var body = asU8(romBytes);
+    if (info.headerBytes) body = body.subarray(info.headerBytes);
+    if (body.length < 8192) { out.reason = 'ROM 太短（' + body.length + ' 位元組）'; return out; }
+    var tr;
+    try { tr = await traceRom(romBytes, { cpu: opts.cpu, maxFrames: opts.maxFrames, isCancelled: opts.isCancelled, onProgress: opts.onProgress }); }
+    catch (e) { out.reason = 'ROM 執行失敗：' + String((e && e.message) || e); return out; }
+    out.stats = { frames: tr.frames, quit: tr.quit, crashed: tr.crashed, psgWrites: tr.writes.length, activeFrames: tr.activeFrames, unknownOps: tr.unknown };
+    if (tr.quit === 'cancelled') { out.cancelled = true; out.reason = '已取消'; return out; }
+    if (tr.crashed) out.stats.note = '執行中斷：' + tr.crashed;
+    if (tr.quit === 'unknown-ops') out.stats.note = '執行到太多未實作的操作碼，提前停止';
+    if (!tr.writes.length) {
+      out.midiReason = '執行 ' + tr.frames + ' 個畫面，沒有任何 PSG 寫入（$0800–$0809）';
+      out.wavReason = out.midiReason;
+      out.reason = out.midiReason;
+      return out;
+    }
+    // 起點：第一次按音（r=4、bit7）所在的畫面起；之前的寫入只保留狀態（時間壓到 0）
+    var firstKey = null;
+    for (var i = 0; i < tr.writes.length; i++) { var w = tr.writes[i]; if (w.r === 4 && (w.v & 0x80)) { firstKey = w; break; } }
+    var t0 = firstKey ? Math.floor(firstKey.t / FRAME_TICKS) * FRAME_TICKS : 0;
+    var shifted = tr.writes.map(function (w) { return { t: Math.max(0, w.t - t0), r: w.r, v: w.v }; });
+    if (!firstKey) {
+      out.midiReason = '有 PSG 寫入，但沒有按音（$0804 bit 7 從未設定）';
+      out.wavReason = out.midiReason;
+      out.reason = out.midiReason;
+      return out;
+    }
+    var mid = psgToSong(shifted, { title: opts.name || '' });
+    if (mid.stats.notes > 0) { out.song = mid.song; out.stats.notes = mid.stats.notes; out.stats.seconds = mid.stats.seconds; out.stats.ddaWrites = mid.stats.ddaWrites; out.stats.keyOn = mid.stats.keyOn; }
+    else out.midiReason = '有按音但沒有可轉成音符的聲音（頻率為 0 或只有 DDA 取樣）';
+    var samples = psgRender(shifted, {});
+    out.samples = samples; out.wav = wav16(samples, AUDIO_RATE);
+    out.stats.durationSec = Math.round(samples.length / AUDIO_RATE * 10) / 10;
+    out.mode = out.song ? 'midi+wav' : 'wav';
+    out.ok = !!(out.song || samples.length);
+    return out;
+  }
+
+  return {
+    classifyPce: classifyPce, psgNew: psgNew, psgWrite: psgWrite, psgTick: psgTick, psgMix: psgMix,
+    psgRender: psgRender, psgToSong: psgToSong, wav16: wav16, traceRom: traceRom, extractPce: extractPce,
+    PSG_HZ: PSG_HZ, MASTER_HZ: MASTER_HZ, FRAME_TICKS: FRAME_TICKS, AUDIO_RATE: AUDIO_RATE, MAX_FRAMES: MAX_FRAMES
+  };
+}));
+
+}).call(null, undefined, holder);
+return holder.FaMusicLibPce;
+})();
+/* MLPCE-END */
+/* MLSFC-BEGIN */
+const FaMusicLibSfc = (function () {
+const holder = {};
+(function (module, self) {
+/* SFC（超任）遊戲音樂擷取（UMD，純邏輯；不碰 DOM、不用網路）。
+ *   classifySfc(name, bytes)        → { cls:'rom'|'nonrom', kind, label }   副檔名 .sfc／.smc；有 512 位元組 copier 檔頭也認
+ *   parseSnesHeader(bytes)          → 去掉 copier 檔頭後的內部標頭（LoROM／HiROM、標題、校驗和是否吻合）
+ *   packSpc(opts) / parseSpc(bytes) → 標準 .spc（0x10200 位元組：SPC700 RAM 64KB、DSP 暫存器 128、SPC700 暫存器、ID666 標籤）
+ *   dspEventsToSong(events, opts)   → { song（與 FaMidi 同形）, stats }；退路：DSP 的 KON／KOFF／音高寫入 → MIDI
+ *   sfcExtract(romBytes, opts)      → { stages[], ... }；每一階段各自寫明成功或失敗原因（目前主 CPU 執行器與 snes_spc 渲染器的接線尚未完成，見 stages）
+ *
+ * DSP 事件格式（呼叫端從 SPC700 寫 $F2／$F3 的紀錄整理出來）：
+ *   { t: <DSP 取樣序號，32 kHz>, reg: 0–127, value: 0–255 }
+ * 音高：每個聲道 14 位元（VxPITCHL + VxPITCHH 低 6 位），頻率 = 音高 × 32000 ÷ 4096 Hz（與 SPC 的 DSP 定義相同）。
+ * 限制（會寫進 stats）：音高改變視為換音（不做滑音）；音量只用 VxVOLL／VxVOLR 的平均當力度；音色不還原（MIDI 用程式 80），那是退路。 */
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaMusicLibSfc = factory();
+}(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+  var COPIER = 512, LO_HDR = 0x7FC0, HI_HDR = 0xFFC0, DSP_RATE = 32000;
+  var SPC_SIZE = 0x10200, SPC_RAM = 0x100, SPC_DSP = 0x10100, SPC_EXTRA = 0x101C0;
+  var SPC_SIG = 'SNES-SPC700 Sound File Data v0.30';
+  var REG_KON = 0x4C, REG_KOFF = 0x5C;
+  var STAGES = ['掃描辨識', '執行 ROM（主 CPU）', '偵測聲音上傳完成並傾印', '組成 .spc', 'SPC 渲染成 wav', 'wav 轉 mp3', '退路 MIDI'];
+
+  function asU8(x) { return x instanceof Uint8Array ? x : new Uint8Array(x); }
+  function ascii(b, o, n) { var s = ''; for (var i = 0; i < n; i++) s += String.fromCharCode(b[o + i] == null ? 0 : b[o + i]); return s; }
+  function put(out, off, s, n) { for (var i = 0; i < n; i++) out[off + i] = i < s.length ? (s.charCodeAt(i) & 0xFF) : 0; }
+  function getStr(b, off, n) { var s = ''; for (var i = 0; i < n; i++) { if (!b[off + i]) break; s += String.fromCharCode(b[off + i]); } return s; }
+
+  // ───── 分類：.sfc／.smc；SNES 沒有固定檔頭，只能靠副檔名＋大小＋內部標頭校驗 ─────
+  function classifySfc(name, bytes) {
+    var b = asU8(bytes || []), ext = String(name || '').split('.').pop().toLowerCase();
+    if (ext !== 'sfc' && ext !== 'smc') return { cls: 'nonrom', kind: 'other', label: '非 SNES ROM（副檔名不是 .sfc／.smc）' };
+    if (b.length < 0x8000) return { cls: 'nonrom', kind: 'sfc-small', label: 'SNES 檔案太小（' + b.length + ' 位元組），不是 ROM' };
+    var h = parseSnesHeader(b);
+    return { cls: 'rom', kind: 'sfc', label: 'SNES ROM' + (h.copier ? '（含 512 位元組 copier 檔頭）' : '') + (h.ok ? '（' + (h.hirom ? 'HiROM' : 'LoROM') + '）' : '（內部標頭校驗不吻合，仍視為 ROM）') };
+  }
+
+  // ───── 內部標頭（LoROM 在 0x7FC0、HiROM 在 0xFFC0）─────
+  // 校驗：$1C–$1D 是補數、$1E–$1F 是校驗和，兩者 XOR 要等於 0xFFFF。
+  function parseSnesHeader(bytes) {
+    var raw = asU8(bytes), copier = raw.length % 1024 === COPIER, b = copier ? raw.subarray(COPIER) : raw;
+    var best = null;
+    [[LO_HDR, false], [HI_HDR, true]].forEach(function (c) {
+      var o = c[0];
+      if (b.length < o + 0x20) return;
+      var comp = b[o + 0x1C] | (b[o + 0x1D] << 8), sum = b[o + 0x1E] | (b[o + 0x1F] << 8);
+      var ok = ((comp ^ sum) & 0xFFFF) === 0xFFFF;
+      var mapMode = b[o + 0x15];
+      if (!best || (ok && !best.ok)) best = { ok: ok, hirom: c[1], offset: o, title: ascii(b, o, 21).replace(/\s+$/, ''), mapMode: mapMode, romType: b[o + 0x16], sizeCode: b[o + 0x17] };
+    });
+    if (!best) return { ok: false, copier: copier, reason: '檔案太短，找不到內部標頭' };
+    best.copier = copier; best.size = b.length;
+    if (!best.ok) best.reason = '內部標頭校驗和不吻合（LoROM 與 HiROM 兩個位置都不符）';
+    return best;
+  }
+
+  // ───── .spc 組裝（標準格式，0x10200 位元組）─────
+  // opts: { ram:Uint8Array(65536), dsp:Uint8Array(128), pc, a, x, y, psw, sp, title, game, dumper, comments, artist, lengthSec, fadeMs, extraRam:Uint8Array(64) }
+  function packSpc(o) {
+    o = o || {};
+    var out = new Uint8Array(SPC_SIZE);
+    put(out, 0, SPC_SIG, 33); out[0x21] = 0x1A; out[0x22] = 0x1A; out[0x23] = 0x1A; out[0x24] = 0x1E;
+    out[0x25] = (o.pc || 0) & 0xFF; out[0x26] = ((o.pc || 0) >> 8) & 0xFF;
+    out[0x27] = o.a || 0; out[0x28] = o.x || 0; out[0x29] = o.y || 0; out[0x2A] = o.psw || 0;
+    out[0x2B] = (o.sp || 0) & 0xFF; out[0x2C] = ((o.sp || 0) >> 8) & 0xFF;
+    put(out, 0x2E, o.title || '', 32); put(out, 0x4E, o.game || '', 32); put(out, 0x6E, o.dumper || '', 16);
+    put(out, 0x7E, o.comments || '', 32);
+    put(out, 0xB1, o.artist || '', 32);
+    var len = Math.max(0, Math.min(999, Math.round(o.lengthSec || 0)));
+    put(out, 0xA9, String(len), 3);
+    put(out, 0xAC, String(Math.max(0, Math.min(99999, o.fadeMs || 0))), 5);
+    out.set(asU8(o.ram || new Uint8Array(65536)).subarray(0, 65536), SPC_RAM);
+    out.set(asU8(o.dsp || new Uint8Array(128)).subarray(0, 128), SPC_DSP);
+    if (o.extraRam) out.set(asU8(o.extraRam).subarray(0, 64), SPC_EXTRA);
+    return out;
+  }
+  function parseSpc(bytes) {
+    var b = asU8(bytes);
+    if (b.length < SPC_SIZE || ascii(b, 0, 33) !== SPC_SIG) return { ok: false, reason: '不是 .spc 檔（簽章不符或長度不足 0x10200）' };
+    return {
+      ok: true, pc: b[0x25] | (b[0x26] << 8), a: b[0x27], x: b[0x28], y: b[0x29], psw: b[0x2A], sp: b[0x2B] | (b[0x2C] << 8),
+      title: getStr(b, 0x2E, 32), game: getStr(b, 0x4E, 32), dumper: getStr(b, 0x6E, 16), artist: getStr(b, 0xB1, 32),
+      lengthSec: parseInt(ascii(b, 0xA9, 3), 10) || 0,
+      ram: b.subarray(SPC_RAM, SPC_RAM + 65536), dsp: b.subarray(SPC_DSP, SPC_DSP + 128), extraRam: b.subarray(SPC_EXTRA, SPC_EXTRA + 64)
+    };
+  }
+
+  // ───── DSP 事件 → MIDI（退路）─────
+  function pitchOf(regs, v) { return ((regs[v * 0x10 + 3] & 0x3F) << 8) | regs[v * 0x10 + 2]; }
+  function midiOfPitch(p) { var f = p * DSP_RATE / 4096; return Math.round(69 + 12 * Math.log(f / 440) / Math.LN2); }
+  function dspEventsToSong(events, opts) {
+    opts = opts || {};
+    var ppq = opts.ppq || 480, ticksPerSec = ppq * 2;       // 120 BPM：每秒 2 拍
+    var regs = new Uint8Array(128), cur = [], notes = [], i, stats = { dspWrites: 0, kon: 0, koff: 0, pitchChanges: 0, samples: 0 };
+    for (i = 0; i < 8; i++) { cur.push(null); notes.push([]); }
+    function endVoice(v, t) { var n = cur[v]; if (!n) return; n.end = t; notes[v].push(n); cur[v] = null; }
+    function startVoice(v, t) {
+      var p = pitchOf(regs, v);
+      if (p < 8) return;                                  // 音高太低（靜音或未設定）不轉
+      var vol = (Math.abs((regs[v * 0x10] << 24) >> 24) + Math.abs((regs[v * 0x10 + 1] << 24) >> 24)) / 2;
+      cur[v] = { start: t, n: Math.max(0, Math.min(127, midiOfPitch(p))), vel: Math.max(1, Math.min(127, Math.round(vol / 2))) };
+    }
+    var lastT = 0;
+    (events || []).forEach(function (e) {
+      if (!e || typeof e.reg !== 'number') return;
+      stats.dspWrites++; lastT = Math.max(lastT, e.t | 0);
+      var r = e.reg & 0x7F, val = e.value & 0xFF, t = e.t | 0;
+      regs[r] = val;
+      if (r === REG_KON) { for (var v = 0; v < 8; v++) if (val & (1 << v)) { stats.kon++; endVoice(v, t); startVoice(v, t); } return; }
+      if (r === REG_KOFF) { for (var w = 0; w < 8; w++) if (val & (1 << w)) { stats.koff++; endVoice(w, t); } return; }
+      if ((r & 0x0F) === 2 || (r & 0x0F) === 3) {
+        var pv = r >> 4;
+        if (pv < 8 && cur[pv]) { stats.pitchChanges++; endVoice(pv, t); startVoice(pv, t); }
+      }
+    });
+    for (i = 0; i < 8; i++) endVoice(i, lastT + 1);
+    stats.samples = lastT;
+    var song = { ppq: ppq, tempos: [{ t: 0, bpm: 120 }], timesig: { n: 4, d: 4 }, title: opts.title || '', tracks: [] };
+    for (i = 0; i < 8; i++) {
+      if (!notes[i].length) continue;
+      song.tracks.push({ name: '聲道 ' + i, channel: i, program: 80, drum: false, volume: 100, pan: 64,
+        notes: notes[i].map(function (x) {
+          var t0 = Math.round(x.start / DSP_RATE * ticksPerSec), t1 = Math.round(x.end / DSP_RATE * ticksPerSec);
+          return { t: t0, d: Math.max(1, t1 - t0), n: x.n, v: x.vel };
+        }) });
+    }
+    stats.notes = song.tracks.reduce(function (n, tr) { return n + tr.notes.length; }, 0);
+    stats.seconds = Math.round(stats.samples / DSP_RATE * 10) / 10;
+    return { song: song, stats: stats };
+  }
+
+  // ───── 整體流程（stages 每段各自說明）─────
+  // 目前：ROM 掃描與標頭已做；主 CPU 執行與傾印需要 SNES 核心（見 DESIGN.TODO.music-rom-extract.md）；
+  // snes_spc 渲染需要 wasm 工具鏈（emscripten 或 clang）。沒有就明確回報，不假裝完成。
+  function sfcExtract(romBytes, opts) {
+    opts = opts || {};
+    var out = { ok: false, header: null, stages: [], spcs: [], song: null, reason: null };
+    var h = parseSnesHeader(asU8(romBytes));
+    out.header = h;
+    out.stages.push({ stage: STAGES[0], ok: true, note: h.copier ? '已去掉 512 位元組 copier 檔頭' : '' });
+    var runner = opts.runner;
+    if (typeof runner !== 'function') {
+      out.stages.push({ stage: STAGES[1], ok: false, reason: '主 CPU 執行器尚未接上（SNES 核心還沒接進頁面）' });
+      out.reason = STAGES[1] + '：主 CPU 執行器尚未接上';
+      return out;
+    }
+    out.stages.push({ stage: STAGES[1], ok: true });
+    return out;
+  }
+
+  return {
+    classifySfc: classifySfc, parseSnesHeader: parseSnesHeader, packSpc: packSpc, parseSpc: parseSpc,
+    dspEventsToSong: dspEventsToSong, sfcExtract: sfcExtract, STAGES: STAGES, SPC_SIZE: SPC_SIZE, DSP_RATE: DSP_RATE
+  };
+}));
+
+}).call(null, undefined, holder);
+return holder.FaMusicLibSfc;
+})();
+/* MLSFC-END */
+/* MLYT-BEGIN */
+const FaMusicLibYoutube = (function () {
+const holder = {};
+(function (module, self) {
+/* 音樂庫的 YouTube 清單來源（純函式，UMD）：不碰 DOM、不碰網路、不碰磁碟。
+ *   parseInput(text) → { mode:'playlist', listId } 或 { mode:'video', videoId } 或 { error }
+ *       清單網址（含 list=）優先；沒有 list= 才當單支影片。
+ *   buildFlatPlaylistScript(listId) → 要交給 Pyodide 的 yt-dlp 腳本（extract_flat，只列清單，不下載）。
+ *   parseFlatPlaylist(jsonText 或物件) → { title, entries:[{ videoId, title, channel, durationSec }] }；去掉重複與無效 ID。
+ *   createJob(opts) → 工作物件：每支影片一個項目（pending／skipped／failed／done），狀態只在記憶體裡。
+ *   markDuplicates(job, existingIds) → 已在曲庫的影片直接標成略過（不重複下載）。
+ *   runJob(job, deps, hooks) → 逐支：範圍驗證 → 下載 → 寫入與登記。單支失敗不影響其他；可暫停、續跑、取消。
+ *       deps 由 host 提供：verify(videoId) → { ok, reason, title, verification_skipped }（沿用 app 既有的範圍驗證，不另外放寬）
+ *                          download(videoId, report) → { title, files:[{ kind, ext, bytes }] }
+ *                          store(item, title, files) → Promise（寫檔＋登記；丟錯時附 err.stage 的話就用它，否則算「寫入」階段）
+ *       hooks.onChange(job) 每次狀態改變時呼叫（畫面重繪用）。
+ *   fileNameFor(title, videoId, kind, ext, multi) → 下載檔名，一律帶 [影片ID]，之後用來去重。
+ *   videoIdFromName(name) → 從檔名拿回影片 ID（沒有就 null）。
+ *   summarize(job) → 計數與一行摘要文字。
+ * 失敗訊息格式：「階段失敗：原因（HTTP 狀態）」，階段是：展開、驗證、下載、寫入。 */
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory(); else root.FaMusicLibYoutube = factory();
+})(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+
+  var ID_RE = /^[A-Za-z0-9_-]{11}$/;
+  var LIST_RE = /^[A-Za-z0-9_-]{2,64}$/;
+
+  function errText(err) { return String((err && err.message) || err || '未知錯誤'); }
+  // 訊息裡已經有 HTTP 狀態就不再重複附上
+  function httpSuffix(err) { return err && err.status && errText(err).indexOf('HTTP ' + err.status) < 0 ? '（HTTP ' + err.status + '）' : ''; }
+
+  // ───── 輸入解析 ─────
+  function parseInput(text) {
+    var s = String(text || '');
+    var lm = /[?&]list=([A-Za-z0-9_-]+)/.exec(s);
+    if (lm && LIST_RE.test(lm[1])) return { mode: 'playlist', listId: lm[1] };
+    var pats = [/youtube\.com\/watch\?(?:[^\s"'<>]*&)?v=([A-Za-z0-9_-]{11})/, /youtu\.be\/([A-Za-z0-9_-]{11})/, /youtube\.com\/embed\/([A-Za-z0-9_-]{11})/, /youtube\.com\/shorts\/([A-Za-z0-9_-]{11})/];
+    for (var i = 0; i < pats.length; i++) {
+      var m = pats[i].exec(s);
+      if (m) return { mode: 'video', videoId: m[1] };
+    }
+    return { error: '找不到 YouTube 清單網址（含 list=）或影片連結' };
+  }
+
+  // ───── 清單展開（yt-dlp flat-playlist，不下載） ─────
+  function buildFlatPlaylistScript(listId) {
+    if (!LIST_RE.test(String(listId || ''))) throw new Error('清單 ID 格式不對：' + listId);
+    return [
+      'import yt_dlp, json as _fa_json_ml',
+      "ydl_opts = {'quiet': True, 'no_warnings': True, 'skip_download': True, 'extract_flat': 'in_playlist'}",
+      'with yt_dlp.YoutubeDL(ydl_opts) as ydl:',
+      "    info = ydl.extract_info('https://www.youtube.com/playlist?list=" + String(listId) + "', download=False)",
+      'out = []',
+      "for e in (info.get('entries') or []):",
+      '    if not e:',
+      '        continue',
+      "    out.append({'id': e.get('id'), 'title': e.get('title'), 'channel': e.get('channel') or e.get('uploader'), 'duration': e.get('duration')})",
+      "_result = _fa_json_ml.dumps({'title': info.get('title'), 'entries': out})",
+      '_result',
+    ].join('\n');
+  }
+
+  function parseFlatPlaylist(raw) {
+    var obj;
+    if (typeof raw === 'string') {
+      try { obj = JSON.parse(raw); } catch (e) { throw new Error('展開結果不是合法的 JSON：' + errText(e)); }
+    } else obj = raw || {};
+    var list = Array.isArray(obj.entries) ? obj.entries : [];
+    var seen = {}, entries = [];
+    list.forEach(function (e) {
+      var id = e && typeof e.id === 'string' ? e.id : '';
+      if (!ID_RE.test(id) || seen[id]) return;
+      seen[id] = true;
+      var d = e.duration == null ? null : Number(e.duration);
+      entries.push({ videoId: id, title: e.title ? String(e.title) : null, channel: e.channel ? String(e.channel) : null, durationSec: d != null && isFinite(d) ? d : null });
+    });
+    if (!entries.length) throw new Error('展開後沒有任何影片（清單可能是空的、私人、或需要登入）');
+    return { title: obj.title ? String(obj.title) : null, entries: entries };
+  }
+
+  // ───── 檔名與去重 ─────
+  function safeName(s) { return String(s || '').replace(/[\\\/:*?"<>|\x00-\x1f]/g, '_').replace(/\s+/g, ' ').trim().slice(0, 100) || 'video'; }
+  function fileNameFor(title, videoId, kind, ext, multi) {
+    var base = safeName(title) + ' [' + videoId + ']';
+    return multi ? base + '.' + kind + '.' + ext : base + '.' + ext;
+  }
+  function videoIdFromName(name) {
+    var m = /\[([A-Za-z0-9_-]{11})\](?:\.[^.\\\/]+)+$/.exec(String(name || ''));
+    return m ? m[1] : null;
+  }
+  // 曲庫記錄 → 已存在的影片 ID（只算 ok 的記錄；消失的檔案不算，讓使用者可以重新下載）
+  function existingIdsFrom(records) {
+    var out = {};
+    (records || []).forEach(function (r) {
+      if (r.sourceType !== 'youtube' || r.status !== 'ok') return;
+      var id = videoIdFromName(r.name || r.path);
+      if (id) out[id] = true;
+    });
+    return out;
+  }
+
+  // ───── 工作 ─────
+  function createJob(opts) {
+    opts = opts || {};
+    var entries = Array.isArray(opts.entries) ? opts.entries : [];
+    return {
+      id: 'yt' + Date.now().toString(36),
+      source: { mode: opts.mode || 'playlist', listId: opts.listId || null, videoId: opts.videoId || null },
+      title: opts.title || null,
+      items: entries.map(function (e) {
+        return { videoId: e.videoId, title: e.title || null, channel: e.channel || null, durationSec: e.durationSec == null ? null : e.durationSec,
+          status: 'pending', stage: null, reason: null, verificationSkipped: false, path: null };
+      }),
+      state: 'idle',          // idle → running → done／cancelled
+      paused: false,
+      cancelled: false,
+      verificationSkipped: false,
+      _wake: null,
+    };
+  }
+
+  function markDuplicates(job, existingIds) {
+    job.items.forEach(function (it) {
+      if (it.status === 'pending' && existingIds && existingIds[it.videoId]) {
+        it.status = 'skipped'; it.reason = '已在曲庫（重複，略過）';
+      }
+    });
+    return job;
+  }
+
+  function summarize(job) {
+    var c = { total: job.items.length, done: 0, skipped: 0, failed: 0, pending: 0, working: 0 };
+    job.items.forEach(function (it) {
+      if (it.status === 'done') c.done++;
+      else if (it.status === 'skipped') c.skipped++;
+      else if (it.status === 'failed') c.failed++;
+      else if (it.status === 'working') c.working++;
+      else c.pending++;
+    });
+    var state = job.cancelled ? '已取消' : job.state === 'done' ? '完成' : job.paused ? '已暫停' : job.state === 'running' ? '進行中' : '待開始';
+    c.state = state;
+    c.verificationSkipped = !!job.verificationSkipped;
+    c.text = state + '：成功 ' + c.done + '、略過 ' + c.skipped + '、失敗 ' + c.failed + '、待處理 ' + (c.pending + c.working) + '（共 ' + c.total + '）'
+      + (job.verificationSkipped ? '｜⚠️ 沒有設定 YouTube Data API 金鑰／頻道 ID，這次沒有做範圍驗證' : '');
+    return c;
+  }
+
+  function pauseJob(job) { if (job.state === 'running' && !job.cancelled) job.paused = true; return job; }
+  function resumeJob(job) {
+    job.paused = false;
+    if (job._wake) { var w = job._wake; job._wake = null; w(); }
+    return job;
+  }
+  function cancelJob(job) {
+    job.cancelled = true;
+    job.paused = false;
+    if (job._wake) { var w = job._wake; job._wake = null; w(); }
+    return job;
+  }
+
+  function waitWhilePaused(job) {
+    if (!job.paused || job.cancelled) return Promise.resolve();
+    return new Promise(function (resolve) { job._wake = resolve; });
+  }
+
+  // 逐支執行。單支失敗只標記該支，繼續下一支；暫停時等目前這支做完才停；取消時在下一支開始前停。
+  async function runJob(job, deps, hooks) {
+    hooks = hooks || {};
+    var change = function () { if (typeof hooks.onChange === 'function') { try { hooks.onChange(job); } catch (_) { /* 畫面出錯不影響工作 */ } } };
+    job.state = 'running';
+    change();
+    for (var i = 0; i < job.items.length; i++) {
+      await waitWhilePaused(job);
+      if (job.cancelled) break;
+      var it = job.items[i];
+      if (it.status !== 'pending') continue;
+      var stage = '驗證';
+      try {
+        it.status = 'working'; change();
+        var v = await deps.verify(it.videoId);
+        if (v && v.title && !it.title) it.title = v.title;
+        if (v && v.verification_skipped) { it.verificationSkipped = true; job.verificationSkipped = true; }
+        if (!v || !v.ok) {
+          it.status = 'skipped'; it.reason = (v && v.reason) || '跳過：未通過下載範圍驗證'; change();
+          continue;
+        }
+        stage = '下載';
+        var got = await deps.download(it.videoId, function (frac, text) { it.progressText = text; change(); });
+        stage = '寫入';
+        var title = it.title || (got && got.title) || it.videoId;
+        it.title = title;
+        await deps.store(it, title, (got && got.files) || []);
+        it.status = 'done'; it.reason = null; it.stage = null;
+      } catch (err) {
+        var st = (err && err.stage) || stage;
+        it.status = 'failed'; it.stage = st;
+        it.reason = st + '失敗：' + errText(err) + httpSuffix(err);
+      }
+      it.progressText = null;
+      change();
+    }
+    job.state = job.cancelled ? 'cancelled' : 'done';
+    change();
+    return job;
+  }
+
+  return {
+    parseInput: parseInput,
+    buildFlatPlaylistScript: buildFlatPlaylistScript,
+    parseFlatPlaylist: parseFlatPlaylist,
+    fileNameFor: fileNameFor,
+    videoIdFromName: videoIdFromName,
+    existingIdsFrom: existingIdsFrom,
+    createJob: createJob,
+    markDuplicates: markDuplicates,
+    summarize: summarize,
+    pauseJob: pauseJob,
+    resumeJob: resumeJob,
+    cancelJob: cancelJob,
+    runJob: runJob,
+  };
+});
+
+}).call(null, undefined, holder);
+return holder.FaMusicLibYoutube;
+})();
+/* MLYT-END */
 /* MLCHIPNSF-BEGIN */
 const FaChipNsf = (function () {
 const holder = {};
@@ -98485,6 +99672,7 @@ const holder = {};
     + '.fml-bar,.fml-lyr{display:flex;gap:6px;align-items:center;flex-wrap:wrap;padding:6px 8px;background:#f6f8fa;border-bottom:1px solid #d0d7de}'
     + '.fml button,.fml select{background:#f6f8fa;border:1px solid #d0d7de;border-radius:5px;padding:3px 9px;cursor:pointer;font:inherit}'
     + '.fml button:disabled{opacity:.45;cursor:default}'
+    + '.fml-lyr input[type=text]{flex:1;min-width:180px;padding:4px 6px;border:1px solid #d0d7de;border-radius:5px;font:inherit}'
     + '.fml-bar input[type=search]{flex:1;min-width:160px;padding:4px 6px;border:1px solid #d0d7de;border-radius:5px;font:inherit}'
     + '.fml-st{color:#59636e;font-size:12px}.fml-wrap{overflow:auto;max-height:520px}.fml-lyr .fml-st{flex:1}'
     + '.fml-tbl{width:100%;border-collapse:collapse}.fml-tbl th,.fml-tbl td{padding:4px 6px;border-bottom:1px solid #eaeef2;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:260px}'
@@ -98554,6 +99742,19 @@ const holder = {};
     if (!host.exportBatch) { bExp.disabled = true; bExpCancel.disabled = true; expStat.textContent = '批次輸出不可用（需要桌面版）'; }
     bExpCancel.disabled = true;
 
+    // YouTube 清單列：貼清單網址（或單支影片連結）→ 展開 → 逐支驗證、下載、登記；暫停／續跑／取消；逐支結果列在下面
+    var yt = h('div', 'fml-lyr');
+    var ytIn = h('input'); ytIn.type = 'text'; ytIn.placeholder = '貼 YouTube 清單網址（或單支影片連結）';
+    var bYt = h('button', null, '＋加入 YouTube 清單');
+    var bYtPause = h('button', null, '暫停');
+    var bYtCancel = h('button', null, '取消');
+    var ytStat = h('span', 'fml-st');
+    yt.appendChild(ytIn); yt.appendChild(bYt); yt.appendChild(bYtPause); yt.appendChild(bYtCancel); yt.appendChild(ytStat);
+    var ytList = h('div', 'fml-foot');
+    ytList.style.display = 'none';
+    bYtPause.disabled = true; bYtCancel.disabled = true;
+    if (!host.startYoutubeList) { bYt.disabled = true; ytIn.disabled = true; ytStat.textContent = 'YouTube 清單不可用（需要桌面版）'; }
+
     var wrap = h('div', 'fml-wrap');
     var tbl = h('table', 'fml-tbl');
     var thead = h('thead'), tbody = h('tbody');
@@ -98562,7 +99763,7 @@ const holder = {};
 
     var fIn = h('input'); fIn.type = 'file'; fIn.multiple = true; fIn.style.display = 'none';
     var dIn = h('input'); dIn.type = 'file'; dIn.setAttribute('webkitdirectory', ''); dIn.style.display = 'none';
-    root.appendChild(bar); root.appendChild(lyr); root.appendChild(exp); root.appendChild(chipBox); root.appendChild(expList); root.appendChild(wrap); root.appendChild(foot); root.appendChild(fIn); root.appendChild(dIn);
+    root.appendChild(bar); root.appendChild(yt); root.appendChild(ytList); root.appendChild(lyr); root.appendChild(exp); root.appendChild(chipBox); root.appendChild(expList); root.appendChild(wrap); root.appendChild(foot); root.appendChild(fIn); root.appendChild(dIn);
     container.appendChild(root);
 
     function visibleRows() {
@@ -98724,7 +99925,7 @@ const holder = {};
     bExpCancel.onclick = function () { if (host.cancelExport) host.cancelExport(); expStat.textContent = '取消中（正在跑的那個檔案會在下一步停止）…'; };
 
     // 擷取遊戲音樂來源（RIX、Flash、NES）：輸出 MIDI／mp3／wav 子曲目，登記回曲庫；衍生檔資料夾可指定（留空＝來源旁的「音樂庫衍生檔」）
-    var xBtn = h('button', null, '擷取（RIX／Flash／NES）'), xCancel = h('button', null, '取消擷取');
+    var xBtn = h('button', null, '擷取（RIX／Flash／NES／PCE）'), xCancel = h('button', null, '取消擷取');
     var xRoot = h('input'); xRoot.type = 'text'; xRoot.placeholder = '衍生檔資料夾（留空＝來源旁的「音樂庫衍生檔」）'; xRoot.style.width = '260px';
     try { xRoot.value = localStorage.getItem('fa.musiclib.derivedDir') || ''; } catch (_) { /* 讀不到就空白 */ }
     xCancel.disabled = true;
@@ -98765,8 +99966,8 @@ const holder = {};
     var STATUS_X = { done: '完成', skipped: '沿用', failed: '失敗', cancelled: '取消' };
     xBtn.onclick = function () {
       if (!host.extract) return;
-      var recs = lib.records.filter(function (r) { return (r.kind === 'rix' || r.kind === 'swf' || r.kind === 'nes') && r.status === 'ok' && (Object.keys(sel).length === 0 || sel[r.key]); });
-      if (!recs.length) { expStat.textContent = '沒有可擷取的 RIX／Flash／NES（先加檔案，或勾選要擷取的來源）'; return; }
+      var recs = lib.records.filter(function (r) { return (r.kind === 'rix' || r.kind === 'swf' || r.kind === 'nes' || r.kind === 'pce' || r.kind === 'sfc') && r.status === 'ok' && (Object.keys(sel).length === 0 || sel[r.key]); });
+      if (!recs.length) { expStat.textContent = '沒有可擷取的 RIX／Flash／NES／PCE／SFC（先加檔案，或勾選要擷取的來源）'; return; }
       var root = xRoot.value.trim();
       try { localStorage.setItem('fa.musiclib.derivedDir', root); } catch (_) { /* 存不了就只對這次有效 */ }
       xBtn.disabled = true; xCancel.disabled = false; expList.textContent = ''; expStat.textContent = '擷取中…';
@@ -98865,6 +100066,54 @@ const holder = {};
     };
     mMidi.onclick = function () { if (!MEL || !melFound) return; try { MEL.humAsMidi(melFound, '哼歌旋律'); melStatus('已開啟 MIDI 編輯器演奏哼歌旋律'); } catch (e) { melStatus('演奏失敗：' + String((e && e.message) || e)); } };
 
+    // YouTube 清單的按鈕與進度（進行中只更新這一列與結果清單；完成時才重畫曲目清單，因為新登記的曲目在那裡）
+    var ytRunning = false, YT_LIST_MAX = 200;
+    function ytShowItems(job) {
+      ytList.textContent = '';
+      var shown = 0, rest = 0;
+      job.items.forEach(function (it) {
+        if (it.status === 'pending') return;
+        if (shown >= YT_LIST_MAX) { rest++; return; }
+        var line = (it.status === 'done' ? '✅ ' : it.status === 'skipped' ? '⏭ ' : it.status === 'failed' ? '❌ ' : '⏳ ')
+          + (it.title || it.videoId) + (it.reason ? '：' + it.reason : '') + (it.status === 'working' && it.progressText ? '（' + it.progressText + '）' : '');
+        var d = h('div', it.status === 'failed' ? 'bad' : null, line);
+        d.style.color = it.status === 'failed' ? '#cf222e' : '';
+        ytList.appendChild(d);
+        shown++;
+      });
+      if (rest) ytList.appendChild(h('div', null, '…還有 ' + rest + ' 筆，完整結果看完成後的摘要'));
+      ytList.style.display = shown || rest ? '' : 'none';
+    }
+    function ytControlsFor(job) {
+      var live = job.state === 'running' || job.state === 'idle';
+      bYtPause.disabled = !live; bYtCancel.disabled = !live;
+      bYtPause.textContent = job.paused ? '續跑' : '暫停';
+    }
+    bYt.onclick = function () {
+      if (!host.startYoutubeList || ytRunning) return;
+      ytRunning = true; bYt.disabled = true; ytStat.textContent = '展開清單中…（第一次會載入 yt-dlp，可能要 1～2 分鐘）';
+      ytList.style.display = 'none'; ytList.textContent = '';
+      host.startYoutubeList(ytIn.value, function (job, sum) {
+        ytStat.textContent = sum.text;
+        ytControlsFor(job);
+        ytShowItems(job);
+      }).then(function (res) {
+        ytRunning = false; bYt.disabled = false; bYtPause.disabled = true; bYtCancel.disabled = true;
+        ytStat.textContent = res.ok ? res.summary.text : (res.cancelled ? res.error : '⚠️ ' + res.error);
+        if (res.ok && res.job) ytShowItems(res.job);
+        render();
+      }, function (e) {
+        ytRunning = false; bYt.disabled = false; bYtPause.disabled = true; bYtCancel.disabled = true;
+        ytStat.textContent = '⚠️ ' + String((e && e.message) || e);
+      });
+    };
+    bYtPause.onclick = function () {
+      if (!host.youtubeJob || !host.youtubeControl) return;
+      var j = host.youtubeJob(); if (!j) return;
+      host.youtubeControl(j.job.paused ? 'resume' : 'pause');
+    };
+    bYtCancel.onclick = function () { if (host.youtubeControl) host.youtubeControl('cancel'); };
+
     if (queue) unsub = queue.onChange(function () { render(); });
     // 轉錄中每秒更新「已耗時」與重試倒數（只更新歌詞列，不重畫清單）
     var ticker = setInterval(function () {
@@ -98886,7 +100135,7 @@ return holder.FaMusicLibUI;
 })();
 /* MLUI-END */
 /* MLHOST-BEGIN */
-/* 音樂庫的 app 轉接層（原文嵌入 floating-assistant.js，定義 const FaMusicLibHost；依賴先嵌入的 FaMusicLib、FaMusicLibUI）。
+/* 音樂庫的 app 轉接層（原文嵌入 floating-assistant.js，定義 const FaMusicLibHost；依賴先嵌入的 FaMusicLib、FaMusicLibUI、FaMusicLibYoutube）。
  *   資料夾：用桌面版既有的資料夾瀏覽器（desktopAPI.roots.browse），遞迴走訪用 desktopAPI.rawfs.readdir（每 200 筆讓出執行緒，沒有上限）。
  *   檔頭：desktopAPI.rawfs.readHead（只讀前幾 MB）。
  *   儲存：IndexedDB（資料庫 fa-musiclib，鍵 library）。沒有 IndexedDB 時退回記憶體（畫面會提醒）。
@@ -99404,6 +100653,42 @@ const FaMusicLibHost = (function () {
       if (!nr.nsf) skippedParts.push('NSF 沒有產生［' + (nr.nsfStage || '?') + '］' + (nr.nsfReason || ''));
       if (!nr.song) skippedParts.push('退路 MIDI 沒有：' + (nr.midiReason || ''));
       if (!outs.length) throw new Error('NES 擷取失敗：' + skippedParts.join('；'));
+    } else if (rec.kind === 'pce') {
+      // PC Engine：自寫 HuC6280 執行 ROM，錄 PSG 寫入；退路 MIDI，並用 PSG 重播成 wav（再編 mp3）
+      emit('執行 ROM（HuC6280）');
+      if (typeof FaMusicLibPce === 'undefined' || typeof FaMusicLibPceCpu === 'undefined') throw new Error('PCE 模組沒有嵌入（FaMusicLibPce／FaMusicLibPceCpu 不存在）');
+      var pr;
+      try {
+        pr = await FaMusicLibPce.extractPce(u8, {
+          name: stem, cpu: FaMusicLibPceCpu, isCancelled: cancelled,
+          onProgress: function (fr) { if (fr % 900 === 0) emit('執行 ROM（第 ' + fr + ' 個畫面）'); }
+        });
+      } catch (e) { throw new Error('PCE 執行失敗（執行階段）：' + String((e && e.message) || e)); }
+      if (pr.cancelled) throw Object.assign(new Error('已取消'), { cancelled: true });
+      method = 'PC Engine（HuC6280 執行 ROM，自寫六聲道 PSG 重播）' + (pr.stats && pr.stats.note ? '；' + pr.stats.note : '');
+      if (pr.song) {
+        var psong = FaMidi.validate(pr.song);
+        outs.push({ kind: 'mid', name: stem + '_PSG.mid', bytes: FaMidi.write(psong), method: method + '；PSG 寫入→MIDI', durationSec: pr.stats.seconds, title: stem + ' MIDI' });
+      }
+      if (pr.wav && pr.samples && pr.samples.length) {
+        outs.push({ kind: 'wav', name: stem + '_PSG.wav', bytes: pr.wav, method: method + '；PSG 重播', durationSec: pr.stats.durationSec, title: stem + ' PSG' });
+        emit('編碼 mp3');
+        var pbuf = new AudioBuffer({ length: pr.samples.length, sampleRate: pr.sampleRate, numberOfChannels: 1 });
+        pbuf.copyToChannel(pr.samples, 0);
+        var pmp3 = await fa._encodeMp3(pbuf, 160);
+        outs.push({ kind: 'mp3', name: stem + '_PSG.mp3', bytes: new Uint8Array(await pmp3.arrayBuffer()), method: method + '；PSG 重播', durationSec: pr.stats.durationSec, title: stem + ' PSG' });
+      }
+      skippedParts = [];
+      if (!pr.song) skippedParts.push('退路 MIDI 沒有：' + (pr.midiReason || pr.reason || ''));
+      if (!pr.wav) skippedParts.push('wav 沒有：' + (pr.wavReason || pr.reason || ''));
+      if (!outs.length) throw new Error('PCE 擷取失敗：' + skippedParts.join('；'));
+    } else if (rec.kind === 'sfc') {
+      // SFC：先做標頭與分類；主 CPU 執行、.spc 傾印、snes_spc 渲染尚未接上，各階段的結果見 stages（沒有產物就明確報錯）
+      emit('解析 SNES 標頭');
+      if (typeof FaMusicLibSfc === 'undefined') throw new Error('SFC 模組沒有嵌入（FaMusicLibSfc 不存在）');
+      var sr = FaMusicLibSfc.sfcExtract(u8, {});
+      skippedParts = sr.stages.filter(function (s) { return !s.ok; }).map(function (s) { return s.stage + '：' + s.reason; });
+      throw new Error('SFC 擷取失敗：' + (skippedParts.join('；') || sr.reason || '未知'));
     } else {
       throw new Error('這個種類不支援擷取：' + rec.kind);
     }
@@ -99443,7 +100728,8 @@ const FaMusicLibHost = (function () {
     return { results: results, summary: summary };
   }
 
-  var PICK_HOST = { pickFolder: pickFolder, melody: MELODY_HOST, extract: { run: extractSources, cancel: function () { extractCancelled = true; } }, openNsf: openNsf };
+  var PICK_HOST = { pickFolder: pickFolder, melody: MELODY_HOST, extract: { run: extractSources, cancel: function () { extractCancelled = true; } }, openNsf: openNsf,
+    startYoutubeList: function (text, onUpdate) { return startYoutubeList(text, onUpdate); }, youtubeControl: function (a) { return youtubeControl(a); }, youtubeJob: function () { return youtubeJob(); } };
 
   var methods = {
     _mlLib() { return getLib(); },
@@ -99500,7 +100786,106 @@ const FaMusicLibHost = (function () {
     return FaChipPlayerUI.mount({ player: player, title: rec.name, host: CHIP_HOST });
   }
 
+
+  // ───── YouTube 清單：展開 → 逐支「既有範圍驗證 → 下載 → 寫進資料夾 → 登記」（純邏輯在 musiclib_youtube.js）─────
+  // 驗證與下載都直接呼叫 app 既有的 _youtubeCheckLicenseAndOwnership、_youtubeDownloadOne（同一套範圍限制，不另外放寬）。
+  // 只能在桌面版做（寫檔＋曲庫登記都要磁碟路徑）。同一時間只跑一個清單；暫停、續跑、取消由 youtubeControl 控制。
+  var ytJob = null, ytOnUpdate = null, ytBusy = false;
+  function ytNotify() { if (ytOnUpdate && ytJob) { try { ytOnUpdate(ytJob, FaMusicLibYoutube.summarize(ytJob)); } catch (_) { /* 畫面出錯不影響工作 */ } } }
+  function ytBridge() {
+    var fa = (typeof window !== 'undefined' && window.fa) || null;
+    if (!fa || !fa._youtubeCheckLicenseAndOwnership || !fa._youtubeDownloadOne || !fa._ensureYtDlpLoaded) throw new Error('YouTube 功能還沒準備好（範圍驗證或 yt-dlp 不可用）');
+    return fa;
+  }
+  function ytErr(stage, err) { var e = new Error(String((err && err.message) || err || '未知錯誤')); e.stage = stage; if (err && err.status) e.status = err.status; return e; }
+
+  // 展開清單：用 app 既有的 yt-dlp（Pyodide）列出影片，不下載
+  async function ytExpand(listId) {
+    var fa = ytBridge(), instance;
+    try { instance = await fa._ensureYtDlpLoaded(); } catch (e) { throw ytErr('展開', e); }
+    var raw;
+    try { raw = await instance.runPythonAsync(FaMusicLibYoutube.buildFlatPlaylistScript(listId)); } catch (e) { throw ytErr('展開', e); }
+    try { return FaMusicLibYoutube.parseFlatPlaylist(String(raw)); } catch (e) { throw ytErr('展開', e); }
+  }
+
+  // 開始一個 YouTube 清單（或單支影片）。回傳 { ok, summary, error }；onUpdate(job, summary) 在每次狀態改變時呼叫。
+  async function startYoutubeList(text, onUpdate) {
+    if (ytBusy) return { ok: false, error: '已有一個 YouTube 清單在進行中，等它完成或先取消' };
+    var parsed = FaMusicLibYoutube.parseInput(text);
+    if (parsed.error) return { ok: false, error: parsed.error };
+    if (!hasDesktopFs()) return { ok: false, error: 'YouTube 清單只能在桌面版使用（影片要寫進你選的資料夾，曲庫才能登記）' };
+    ytBusy = true;
+    try {
+      var folder = await api().roots.browse();
+      if (!folder) return { ok: false, cancelled: true, error: '已取消（沒有選下載資料夾）' };
+      ytOnUpdate = typeof onUpdate === 'function' ? onUpdate : null;
+      var L = getLib();
+      await L.ready;
+      var entries, listTitle = null;
+      if (parsed.mode === 'playlist') {
+        var pl = await ytExpand(parsed.listId);
+        entries = pl.entries; listTitle = pl.title;
+      } else {
+        entries = [{ videoId: parsed.videoId, title: null }];
+      }
+      var label = listTitle || (parsed.mode === 'video' ? parsed.videoId : parsed.listId);
+      ytJob = FaMusicLibYoutube.createJob({ mode: parsed.mode, listId: parsed.listId || null, videoId: parsed.videoId || null, title: label, entries: entries });
+      FaMusicLibYoutube.markDuplicates(ytJob, FaMusicLibYoutube.existingIdsFrom(L.records));
+      var sid = L.addSource('youtube', 'YT清單：' + label);
+      ytNotify();
+      var fa = ytBridge();
+      var deps = {
+        verify: async function (id) {
+          var checks = await fa._youtubeCheckLicenseAndOwnership([id]);
+          return checks[id] || { ok: false, reason: '跳過：驗證沒有回傳結果' };
+        },
+        download: async function (id, report) {
+          var rep = function (frac, text) { report(frac, text); return Promise.resolve(); };
+          return await fa._youtubeDownloadOne(id, false, rep);
+        },
+        store: async function (item, title, files) {
+          if (!files || !files.length) throw ytErr('下載', new Error('下載沒有回傳任何檔案'));
+          var multi = files.length > 1, written = [];
+          for (var i = 0; i < files.length; i++) {
+            var f = files[i], name = FaMusicLibYoutube.fileNameFor(title, item.videoId, f.kind, f.ext, multi);
+            try { var w = await writeDerivedFile(folder, name, f.bytes); } catch (e) { throw ytErr('寫入', e); }
+            written.push({ path: w.path, size: w.sizeBytes, mtimeMs: Date.now() });
+          }
+          // 登記：同一來源目前的檔案＋剛寫的一起交給 lib.scan（沒變的沿用，不重讀）
+          try {
+            var known = L.records.filter(function (r) { return r.sourceId === sid && r.status === 'ok'; })
+              .map(function (r) { return { path: r.path, size: r.sizeBytes, mtimeMs: r.mtimeMs }; });
+            await L.scan(sid, known.concat(written), ytReadHead);
+            await L.save();
+          } catch (e) { throw ytErr('登記', e); }
+          item.path = written[0].path;
+        },
+      };
+      await FaMusicLibYoutube.runJob(ytJob, deps, { onChange: ytNotify });
+      ytNotify();
+      return { ok: true, summary: FaMusicLibYoutube.summarize(ytJob), job: ytJob };
+    } catch (e) {
+      ytNotify();
+      return { ok: false, error: (e && e.stage ? e.stage + '失敗：' : '') + String((e && e.message) || e) };
+    } finally {
+      ytBusy = false;
+    }
+  }
+  function ytReadHead(path, n) { return api().rawfs.readHead(path, n).then(function (r) { return r && r.base64 != null ? b64ToBytes(r.base64) : null; }); }
+  // action：'pause'｜'resume'｜'cancel'；沒有進行中的清單回傳 false
+  function youtubeControl(action) {
+    if (!ytJob) return false;
+    if (action === 'pause') FaMusicLibYoutube.pauseJob(ytJob);
+    else if (action === 'resume') FaMusicLibYoutube.resumeJob(ytJob);
+    else if (action === 'cancel') FaMusicLibYoutube.cancelJob(ytJob);
+    else return false;
+    ytNotify();
+    return true;
+  }
+  function youtubeJob() { return ytJob ? { job: ytJob, summary: FaMusicLibYoutube.summarize(ytJob) } : null; }
+
   return { methods: methods, getLib: getLib, pickFolder: pickFolder, walkFolder: walkFolder, whisperTranscribe: whisperTranscribe, melody: MELODY_HOST, extract: PICK_HOST.extract, openNsf: openNsf,
+    startYoutubeList: startYoutubeList, youtubeControl: youtubeControl, youtubeJob: youtubeJob,
     exportBatch: exportBatch, verifyOutput: verifyOutput,
     // 取消批次輸出：正在跑的那個檔案在下一個步驟前中止，之後的檔案標示取消
     cancelExport: function () { exportCancelled = true; },
