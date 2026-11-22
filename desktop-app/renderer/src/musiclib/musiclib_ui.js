@@ -1,11 +1,15 @@
 /* 音樂庫的畫面（UMD）：像 library 的清單。
- *   上方工具列：＋加檔案、＋加資料夾、搜尋框、範圍（全部／不含歌詞／只查歌詞）、筆數統計。
+ *   上方工具列：＋加檔案、＋加資料夾、搜尋框、範圍（全部／不含歌詞／只查歌詞）、移除勾選、來源管理、筆數統計。
  *   歌詞列：轉錄歌詞（勾選的曲目；沒勾選就全部未轉錄）、暫停／續跑、進度（完成、排隊、轉錄中＋百分比、失敗數）。
- *   清單：路徑、檔名、專輯、種類、長度、歌詞狀態（失敗會顯示具體原因）；每列有勾選框（多選）。
- *   搜尋時，歌詞命中的段落與時間點列在該曲目下面。已消失的檔案用刪除線顯示，搜尋時不出現。
- * 依賴：core（musiclib_core.js）、library（M.createLibrary 的結果，需已 load()）、queue（M.createLyricQueue 的結果，可不給）。
+ *   清單：樹狀。來源列下面可展開擷取產物（derivedFrom 指向來源），子列縮排並標「擷取產物（不是檔案系統上的檔案）」與擷取方式。
+ *     搜尋命中子曲目時，它的來源會自動展開。每列都有「▶ 播放」（走通用播放模組 FaMediaPlay）與「移除」。
+ *   移除：原始檔只從曲庫移除，絕不刪磁碟上的原始檔；擷取產物的衍生檔會刪（只刪衍生資料夾裡的，並確認真的消失）；
+ *     移除來源時會問是否連同擷取產物一併移除（預設連同）；每次移除都先確認並說明會發生什麼。
+ *   搜尋時，歌詞命中的段落列在該曲目下面。已消失的檔案用刪除線顯示，搜尋時不出現。
+ * 依賴：core（musiclib_core.js）、library（M.createLibrary 的結果，需已 load()）、queue（M.createLyricQueue 的結果，可不給）、
+ *   FaMediaPlay（musiclib_play.js，可不給＝播放鈕停用）。
  * host 可以不給（瀏覽器用 <input type=file>，只拿得到檔名）；桌面版給 host.pickFolder：回傳 null（取消）或
- * { label, entries:[{path,size,mtimeMs}], readHead(path, n) → Promise<Uint8Array|null> }。
+ * { label, entries:[{path,size,mtimeMs}], readHead(path, n) → Promise<Uint8Array|null> }。host.play 是通用播放的 host，host.library 是移除用的（isDerivedPath、removeFiles）。
  * 掛載：FaMusicLibUI.mount(container, { library, host, queue }) → { refresh(), destroy() }。 */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) module.exports = factory(require('./musiclib_core.js')); else root.FaMusicLibUI = factory(root.FaMusicLib || (typeof FaMusicLib !== 'undefined' ? FaMusicLib : undefined));
@@ -21,11 +25,14 @@
     + '.fml-tbl{width:100%;border-collapse:collapse}.fml-tbl th,.fml-tbl td{padding:4px 6px;border-bottom:1px solid #eaeef2;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:260px}'
     + '.fml-tbl th{background:#f6f8fa;position:sticky;top:0}.fml-tbl tr.gone td{color:#8c959f;text-decoration:line-through}'
     + '.fml-tbl td.bad{color:#cf222e}.fml-hit td{white-space:normal;color:#59636e;font-size:12px;padding-left:28px}'
+    + '.fml-tbl tr.kid td{background:#fbfcfd}.fml-tbl button.tg{border:none;background:none;padding:0 4px;font-size:12px}'
     + '.fml-foot{padding:6px 8px;color:#59636e;font-size:12px;border-top:1px solid #d0d7de}';
-  var COLS = ['路徑', '檔名', '專輯', '種類', '長度', '歌詞'];
+  var COLS = ['路徑', '檔名', '專輯', '種類', '長度', '歌詞', '操作'];
   var LYRIC_TEXT = { none: '未轉錄', queued: '排隊中', running: '轉錄中', done: '完成', failed: '失敗' };
 
   function h(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+  function errText(e) { return String((e && e.message) || e); }
+  function bySort(a, b) { return (a.album || '').localeCompare(b.album || '') || a.name.localeCompare(b.name); }
 
   // 把瀏覽器的 File 清單轉成掃描用的 { label, entries, readHead }。資料夾用 webkitRelativePath，檔案只有檔名。
   function fromFileList(list, folder) {
@@ -47,7 +54,7 @@
   function mount(container, opts) {
     opts = opts || {};
     var lib = opts.library, host = opts.host || {}, queue = opts.queue || null;
-    var q = '', scope = 'all', msg = '', sel = {}, unsub = null;
+    var q = '', scope = 'all', msg = '', sel = {}, unsub = null, expanded = {}, showSources = false, playTr = null;
     var root = h('div', 'fml');
     var style = h('style'); style.textContent = CSS; root.appendChild(style);
 
@@ -57,8 +64,10 @@
     var search = h('input'); search.type = 'search'; search.placeholder = '搜尋：檔名、專輯、標題、演出者、歌詞（空白分隔多個關鍵字）';
     var sSel = h('select');
     [['all', '全部（含歌詞）'], ['meta', '不含歌詞'], ['lyrics', '只查歌詞']].forEach(function (o) { var op = h('option', null, o[1]); op.value = o[0]; sSel.appendChild(op); });
+    var bDel = h('button', null, '移除勾選');
+    var bSrc = h('button', null, '來源管理');
     var stat = h('span', 'fml-st');
-    bar.appendChild(bFile); bar.appendChild(bFolder); bar.appendChild(search); bar.appendChild(sSel); bar.appendChild(stat);
+    bar.appendChild(bFile); bar.appendChild(bFolder); bar.appendChild(search); bar.appendChild(sSel); bar.appendChild(bDel); bar.appendChild(bSrc); bar.appendChild(stat);
 
     var lyr = h('div', 'fml-lyr');
     var bLyr = h('button', null, '轉錄歌詞');
@@ -95,7 +104,6 @@
     yt.appendChild(ytIn); yt.appendChild(bYt); yt.appendChild(bYtPause); yt.appendChild(bYtCancel); yt.appendChild(ytStat);
     var ytList = h('div', 'fml-foot');
     ytList.style.display = 'none';
-    var chipBox = h('div');   // 晶片播放卡片的容器；要在 root.appendChild(chipBox) 之前建立
     bYtPause.disabled = true; bYtCancel.disabled = true;
     if (!host.startYoutubeList) { bYt.disabled = true; ytIn.disabled = true; ytStat.textContent = 'YouTube 清單不可用（需要桌面版）'; }
 
@@ -104,17 +112,21 @@
     var thead = h('thead'), tbody = h('tbody');
     tbl.appendChild(thead); tbl.appendChild(tbody); wrap.appendChild(tbl);
     var foot = h('div', 'fml-foot');
+    var srcBox = h('div', 'fml-foot'); srcBox.style.display = 'none';
 
     var fIn = h('input'); fIn.type = 'file'; fIn.multiple = true; fIn.style.display = 'none';
     var dIn = h('input'); dIn.type = 'file'; dIn.setAttribute('webkitdirectory', ''); dIn.style.display = 'none';
-    root.appendChild(bar); root.appendChild(yt); root.appendChild(ytList); root.appendChild(lyr); root.appendChild(exp); root.appendChild(chipBox); root.appendChild(expList); root.appendChild(wrap); root.appendChild(foot); root.appendChild(fIn); root.appendChild(dIn);
+    root.appendChild(bar); root.appendChild(yt); root.appendChild(ytList); root.appendChild(lyr); root.appendChild(exp); root.appendChild(expList); root.appendChild(wrap); root.appendChild(foot); root.appendChild(srcBox); root.appendChild(fIn); root.appendChild(dIn);
     container.appendChild(root);
 
-    function visibleRows() {
-      if (q.trim()) return lib.search(q, { scope: scope }).map(function (x) { return { r: x.record, hits: x.lyricHits || [] }; });
-      return lib.records.slice().sort(function (a, b) {
-        return (a.album || '').localeCompare(b.album || '') || a.name.localeCompare(b.name);
-      }).map(function (r) { return { r: r, hits: [] }; });
+    // 要顯示的紀錄：搜尋時＝命中的（子曲目命中就把來源也放進來）；平常＝全部
+    function visibleSet() {
+      if (!q.trim()) return { recs: lib.records.slice().sort(bySort), hits: {}, searching: false, count: 0 };
+      var hits = lib.search(q, { scope: scope }), hitMap = {}, keep = {}, byKey = {};
+      lib.records.forEach(function (r) { byKey[r.key] = r; });
+      hits.forEach(function (x) { keep[x.record.key] = true; hitMap[x.record.key] = x.lyricHits || []; });
+      hits.forEach(function (x) { var p = x.record.derivedFrom; if (p && byKey[p] && !keep[p]) { keep[p] = true; hitMap[p] = []; } });
+      return { recs: lib.records.filter(function (r) { return keep[r.key]; }).sort(bySort), hits: hitMap, searching: true, count: hits.length };
     }
     function lyricCell(r) {
       if (r.pending) return '—（遊戲來源，待擷取）';
@@ -124,52 +136,122 @@
       if (st === 'failed') return '失敗：' + (r.lyricError || '未知原因');
       return LYRIC_TEXT[st] || st;
     }
-    // 晶片播放卡片接在列的下方；重新整理清單時卡片會消失，再按一次按鈕即可
-    function openNsfCard(rec, anchor) {
-      var cardTr = h('tr', 'fml-hit'), td = h('td'); td.colSpan = COLS.length + 1; td.textContent = '載入播放器…';
-      cardTr.appendChild(td); anchor.parentNode.insertBefore(cardTr, anchor.nextSibling);
-      Promise.resolve().then(function () { return host.openNsf(rec); }).then(function (node) { td.textContent = ''; td.appendChild(node); },
-        function (e) { td.textContent = '⚠️ 無法開啟晶片播放器：' + String((e && e.message) || e); });
+    function isDp() { return host.library && host.library.isDerivedPath ? host.library.isDerivedPath : null; }
+
+    // 播放：卡片接在列的下面（一次只開一張）；重新整理清單時卡片會消失，再按一次按鈕即可
+    function playRow(rec, anchor) {
+      if (!host.play || typeof FaMediaPlay === 'undefined') { msg = '播放不可用（需要桌面版）'; render(); return; }
+      if (playTr && playTr.parentNode) playTr.parentNode.removeChild(playTr);
+      playTr = h('tr', 'fml-hit'); var td = h('td'); td.colSpan = COLS.length + 1;
+      td.appendChild(FaMediaPlay.mount(rec, host.play));
+      playTr.appendChild(td);
+      anchor.parentNode.insertBefore(playTr, anchor.nextSibling);
     }
+
+    // 移除：先算計畫（planFn(includeDerived) → plan），說明會發生什麼，再確認；原始檔不刪，衍生檔才刪並確認消失
+    async function removeFlow(planFn, label) {
+      var planAll = planFn(true), planNo = planFn(false);
+      if (!planAll.removeKeys.length) { msg = '沒有要移除的項目'; render(); return; }
+      var kidExtra = planAll.derived - planNo.derived;
+      if (!confirm('確定要移除「' + label + '」嗎？\n\n將從曲庫移除 ' + planAll.removeKeys.length + ' 筆紀錄（原始檔 ' + planAll.originals + ' 個，擷取產物 ' + planAll.derived + ' 個）。\n原始檔不會被刪除，只從曲庫移除；擷取產物的衍生檔會從磁碟刪除。')) return;
+      var plan = planAll;
+      if (kidExtra > 0) {
+        var keepKids = !confirm('這些來源有 ' + kidExtra + ' 個擷取產物。\n\n【確定】＝連同擷取產物一併移除（衍生檔會刪除）\n【取消】＝保留擷取產物（它們會變成沒有來源的獨立列，檔案不動）');
+        if (keepKids) plan = planNo;
+      }
+      var failed = {}, okDel = 0, reasons = [];
+      try {
+        if (plan.deleteFiles.length) {
+          var remover = host.library && host.library.removeFiles;
+          if (!remover) { msg = '刪除衍生檔的通道不存在（需要桌面版），已取消'; render(); return; }
+          msg = '刪除衍生檔中…'; render();
+          var res = await remover(plan.deleteFiles.map(function (f) { return f.path; }));
+          res.forEach(function (x, i) { if (x.ok) okDel++; else { failed[plan.deleteFiles[i].key] = true; reasons.push(x.reason); } });
+        }
+        var keysApply = plan.removeKeys.filter(function (k) { return !failed[k]; });
+        var anyFail = Object.keys(failed).length > 0;
+        lib.applyRemove(plan, { keys: keysApply, dropSource: !anyFail });
+        await lib.save();
+        keysApply.forEach(function (k) { delete sel[k]; });
+        msg = '已移除 ' + keysApply.length + ' 筆紀錄，刪除衍生檔 ' + okDel + ' 個'
+          + (anyFail ? '；' + Object.keys(failed).length + ' 個衍生檔刪不掉，那幾筆保留（' + reasons[0] + '）' : '')
+          + (plan.skipped.length ? '；' + plan.skipped.length + ' 筆的路徑不在衍生資料夾，只移除記錄' : '');
+      } catch (e) {
+        msg = '移除失敗：' + errText(e);
+      }
+      playTr = null;
+      render();
+    }
+    function removeOne(r) { removeFlow(function (inc) { return lib.planRemove([r.key], { includeDerived: inc, isDerivedPath: isDp() }); }, r.name); }
+
     function render() {
-      var rows = visibleRows();
+      var V = visibleSet();
+      var rows = M.buildTreeRows(V.recs, { expanded: expanded, forceExpand: V.searching });
       thead.innerHTML = '';
       var htr = h('tr'); var all = h('input'); all.type = 'checkbox';
-      all.checked = rows.length > 0 && rows.every(function (x) { return !!sel[x.r.key]; });
-      all.onchange = function () { rows.forEach(function (x) { if (all.checked) sel[x.r.key] = true; else delete sel[x.r.key]; }); render(); };
+      all.checked = rows.length > 0 && rows.every(function (x) { return !!sel[x.rec.key]; });
+      all.onchange = function () { rows.forEach(function (x) { if (all.checked) sel[x.rec.key] = true; else delete sel[x.rec.key]; }); render(); };
       var th0 = h('th'); th0.appendChild(all); htr.appendChild(th0);
       COLS.forEach(function (c) { htr.appendChild(h('th', null, c)); });
       thead.appendChild(htr);
 
       tbody.innerHTML = '';
       rows.forEach(function (x) {
-        var r = x.r;
-        var tr = h('tr'); if (r.status === 'missing') tr.className = 'gone';
+        var r = x.rec;
+        var tr = h('tr', x.depth ? 'kid' : null); if (r.status === 'missing') tr.className = (tr.className ? tr.className + ' ' : '') + 'gone';
         var cb = h('input'); cb.type = 'checkbox'; cb.checked = !!sel[r.key];
         cb.onchange = function () { if (cb.checked) sel[r.key] = true; else delete sel[r.key]; foot.textContent = selText(); };
         var td0 = h('td'); td0.appendChild(cb); tr.appendChild(td0);
         tr.appendChild(h('td', null, r.path));
-        var nameTd = h('td', null, r.name + (r.status === 'missing' ? '（已消失）' : ''));
-        // 晶片播放：NSF 子曲目本身；NES 來源則用它擷取出來的 NSF 子曲目（derivedFrom 指向來源）
-        var nsfKid = host.openNsf ? (r.kind === 'nsf' ? r : (r.kind === 'nes' ? lib.records.filter(function (c) { return c.kind === 'nsf' && c.derivedFrom === r.key && c.status !== 'missing'; })[0] : null)) : null;
-        if (nsfKid) { var pbtn = h('button', null, '▶ 晶片播放'); pbtn.onclick = function () { openNsfCard(nsfKid, tr); }; nameTd.appendChild(pbtn); }
+        var nameTd = h('td');
+        nameTd.style.paddingLeft = (6 + x.depth * 22) + 'px';
+        if (x.kidCount) {
+          var tg = h('button', 'tg', x.expanded ? '▾' : '▸'); tg.title = '展開／收合擷取產物';
+          tg.onclick = function () { expanded[r.key] = !x.expanded; render(); };
+          nameTd.appendChild(tg); nameTd.appendChild(document.createTextNode(' '));
+        }
+        nameTd.appendChild(document.createTextNode(r.name + (r.status === 'missing' ? '（已消失）' : '') + (x.orphan ? '（來源已移除）' : '')));
+        if (r.derivedFrom) nameTd.appendChild(h('div', 'fml-st', '擷取產物（不是檔案系統上的檔案）' + (r.derivedMethod ? '｜擷取方式：' + r.derivedMethod : '')));
         tr.appendChild(nameTd);
         tr.appendChild(h('td', null, r.album || ''));
         tr.appendChild(h('td', null, r.label || r.kind));
         tr.appendChild(h('td', null, M.formatDuration(r.durationSec) + (r.durationApprox ? '≈' : '')));
         var lc = h('td', (r.lyricStatus === 'failed' ? 'bad' : null), lyricCell(r)); lc.title = r.lyricStatus === 'failed' ? (r.lyricError || '') : '';
         tr.appendChild(lc);
+        var ops = h('td');
+        var pb = h('button', null, '▶ 播放');
+        pb.disabled = !host.play || typeof FaMediaPlay === 'undefined';
+        pb.onclick = function () { playRow(r, tr); };
+        var rb = h('button', null, '移除'); rb.onclick = function () { removeOne(r); };
+        ops.appendChild(pb); ops.appendChild(rb); tr.appendChild(ops);
         tbody.appendChild(tr);
-        x.hits.forEach(function (hit) {
+        (V.hits[r.key] || []).forEach(function (hit) {
           var ht = h('tr', 'fml-hit'); var td = h('td'); td.colSpan = COLS.length + 1;
           td.textContent = '〔' + M.formatDuration(hit.start) + '–' + M.formatDuration(hit.end) + '〕' + hit.text;
           ht.appendChild(td); tbody.appendChild(ht);
         });
       });
       var total = lib.records.filter(function (r) { return r.status !== 'missing'; }).length;
-      stat.textContent = (q.trim() ? '找到 ' + rows.length + ' 首' : '共 ' + total + ' 個檔案') + (msg ? '　' + msg : '');
+      stat.textContent = (V.searching ? '找到 ' + V.count + ' 首' : '共 ' + total + ' 個檔案') + (msg ? '　' + msg : '');
+      renderSources();
       renderLyr();
       foot.textContent = selText();
+    }
+    // 來源管理：每個來源（加入的檔案或資料夾）一列，可整個移除（addSource 的相反）
+    function renderSources() {
+      srcBox.textContent = '';
+      srcBox.style.display = showSources ? '' : 'none';
+      if (!showSources) return;
+      if (!lib.sources.length) { srcBox.textContent = '還沒有來源（加過的檔案或資料夾會列在這裡）'; return; }
+      srcBox.appendChild(h('div', null, '來源（移除來源會從曲庫移除它的紀錄與擷取產物；原始檔不會被刪除）：'));
+      lib.sources.forEach(function (s) {
+        var n = lib.records.filter(function (r) { return r.sourceId === s.id && !r.derivedFrom; }).length;
+        var line = h('div', null, '・' + s.label + '（' + (s.type === 'folder' ? '資料夾' : '檔案') + '，' + n + ' 個原始檔）　');
+        var b = h('button', null, '移除來源');
+        b.onclick = function () { removeFlow(function (inc) { return lib.planSourceRemove(s.id, { includeDerived: inc, isDerivedPath: isDp() }); }, '來源：' + s.label); };
+        line.appendChild(b);
+        srcBox.appendChild(line);
+      });
     }
     function renderLyr() {
       if (!queue) return;
@@ -215,6 +297,12 @@
     dIn.onchange = function () { var src = fromFileList(dIn.files, true); dIn.value = ''; addFrom('folder', src); };
     search.oninput = function () { q = search.value; render(); };
     sSel.onchange = function () { scope = sSel.value; render(); };
+    bDel.onclick = function () {
+      var keys = Object.keys(sel).filter(function (k) { return lib.records.some(function (r) { return r.key === k; }); });
+      if (!keys.length) { msg = '先勾選要移除的曲目'; render(); return; }
+      removeFlow(function (inc) { return lib.planRemove(keys, { includeDerived: inc, isDerivedPath: isDp() }); }, '勾選的 ' + keys.length + ' 筆');
+    };
+    bSrc.onclick = function () { showSources = !showSources; render(); };
 
     // 轉錄：勾選的未完成曲目；沒勾選就全部未完成（佇列自己跳過已完成的）
     bLyr.onclick = function () {
@@ -268,50 +356,18 @@
     };
     bExpCancel.onclick = function () { if (host.cancelExport) host.cancelExport(); expStat.textContent = '取消中（正在跑的那個檔案會在下一步停止）…'; };
 
-    // 擷取遊戲音樂來源（RIX、Flash、NES）：輸出 MIDI／mp3／wav 子曲目，登記回曲庫；衍生檔資料夾可指定（留空＝來源旁的「音樂庫衍生檔」）
-    var xBtn = h('button', null, '擷取（RIX／Flash／NES／PCE）'), xCancel = h('button', null, '取消擷取');
+    // 擷取來源（RIX、Flash、NES、PCE、SFC）：輸出 MIDI／mp3／wav 子曲目，登記回曲庫；衍生檔資料夾可指定（留空＝來源旁的「音樂庫衍生檔」）
+    var xBtn = h('button', null, '擷取選取的來源'), xCancel = h('button', null, '取消擷取');
     var xRoot = h('input'); xRoot.type = 'text'; xRoot.placeholder = '衍生檔資料夾（留空＝來源旁的「音樂庫衍生檔」）'; xRoot.style.width = '260px';
     try { xRoot.value = localStorage.getItem('fa.musiclib.derivedDir') || ''; } catch (_) { /* 讀不到就空白 */ }
     xCancel.disabled = true;
     exp.appendChild(xRoot); exp.appendChild(xBtn); exp.appendChild(xCancel);
-    // 晶片播放（RIX，OPL2 真模擬）：取第一個勾選的 RIX（沒勾就取第一個），掛上控制卡片（重播、seek、goto、曲目、匯出 mp3／MIDI）
-    var cBtn = h('button', null, '▶ 晶片播放（RIX）');
-    chipBox.style.marginTop = '8px';
-    exp.appendChild(cBtn);
-    if (typeof FaChipPlayer === 'undefined' || typeof FaChipPlayerUI === 'undefined') cBtn.disabled = true;
-    var CHIP_HOST = {
-      encodeMp3: function (view, kbps) { return window.fa._encodeMp3(view, kbps); },
-      midiBytes: function (song) { return FaMidi.write(song); },
-      download: function (name, bytes, mime) {
-        var url = URL.createObjectURL(new Blob([bytes], { type: mime })), la = document.createElement('a');
-        la.href = url; la.download = name; document.body.appendChild(la); la.click(); la.remove();
-        setTimeout(function () { URL.revokeObjectURL(url); }, 4000);
-      }
-    };
-    cBtn.onclick = async function () {
-      var recs = lib.records.filter(function (r) { return r.kind === 'rix' && r.status === 'ok' && (Object.keys(sel).length === 0 || sel[r.key]); });
-      if (!recs.length) { expStat.textContent = '沒有可播放的 RIX（先加 RIX 檔案，或勾選一個）'; return; }
-      var rec = recs[0];
-      expStat.textContent = '讀取 ' + rec.name + '…';
-      try {
-        var a = window.desktopAPI;
-        if (!a || !a.rawfs || !a.rawfs.readFile) throw new Error('讀取音檔的通道不存在（需要桌面版）');
-        var rd = await a.rawfs.readFile(rec.path, 'base64');
-        if (!rd || rd.base64 == null) throw new Error('讀不到這個檔案的內容');
-        var bin = atob(rd.base64), bytes = new Uint8Array(bin.length);
-        for (var bi = 0; bi < bin.length; bi++) bytes[bi] = bin.charCodeAt(bi);
-        var player = FaChipPlayer.createPlayer('rix', bytes, { sampleRate: 44100 });
-        chipBox.textContent = '';
-        chipBox.appendChild(FaChipPlayerUI.mount({ player: player, title: rec.name, host: CHIP_HOST }));
-        expStat.textContent = '已開啟晶片播放器：' + rec.name;
-      } catch (e) { expStat.textContent = '⚠️ 晶片播放失敗：' + String((e && e.message) || e); }
-    };
     if (!host.extract) { xBtn.disabled = true; xCancel.disabled = true; }
     var STATUS_X = { done: '完成', skipped: '沿用', failed: '失敗', cancelled: '取消' };
     xBtn.onclick = function () {
       if (!host.extract) return;
       var recs = lib.records.filter(function (r) { return (r.kind === 'rix' || r.kind === 'swf' || r.kind === 'nes' || r.kind === 'pce' || r.kind === 'sfc') && r.status === 'ok' && (Object.keys(sel).length === 0 || sel[r.key]); });
-      if (!recs.length) { expStat.textContent = '沒有可擷取的 RIX／Flash／NES／PCE／SFC（先加檔案，或勾選要擷取的來源）'; return; }
+      if (!recs.length) { expStat.textContent = '沒有可擷取的來源（先加檔案，或勾選要擷取的來源）'; return; }
       var root = xRoot.value.trim();
       try { localStorage.setItem('fa.musiclib.derivedDir', root); } catch (_) { /* 存不了就只對這次有效 */ }
       xBtn.disabled = true; xCancel.disabled = false; expList.textContent = ''; expStat.textContent = '擷取中…';
@@ -356,7 +412,6 @@
     root.appendChild(melBox); root.appendChild(mRes); root.appendChild(mMidi);
     function melStatus(s) { mStat.textContent = s; }
     function idxLine(ev) {
-      var t = { done: '完成', skipped: '已建過、跳過', failed: '失敗', retry: '暫時性失敗重試', running: '建立中', cancelled: '取消' }[ev.status] || ev.status;
       if (ev.status === 'running') melStatus('旋律索引：建立中…');
       else if (ev.status === 'failed') melStatus('旋律索引：有一首失敗（' + ev.reason + '）');
     }
@@ -365,7 +420,9 @@
       mIdx.disabled = true; mPause.disabled = false; mIdxCancel.disabled = false; melStatus('旋律索引：開始…');
       MEL.buildIndex(idxLine, mModel.checked).then(function (sum) {
         mIdx.disabled = false; mPause.disabled = true; mIdxCancel.disabled = true;
-        melStatus('旋律索引：完成 ' + sum.done + '、跳過 ' + sum.skipped + '、失敗 ' + sum.failed + '、取消 ' + sum.cancelled + '（失敗的會寫明原因）');
+        var why = Object.keys(sum.excludedByReason || {}).map(function (k) { return k + ' ' + sum.excludedByReason[k] + ' 筆'; }).join('；');
+        melStatus('旋律索引：完成 ' + sum.done + '、跳過 ' + sum.skipped + '、失敗 ' + sum.failed + '、取消 ' + sum.cancelled
+          + (sum.excluded ? '、不建索引 ' + sum.excluded + ' 筆（' + why + '）' : '') + '（失敗的會寫明原因）');
       }, function (e) { mIdx.disabled = false; mPause.disabled = true; mIdxCancel.disabled = true; melStatus('旋律索引出錯：' + String((e && e.message) || e)); });
     };
     mPause.onclick = function () { if (!MEL) return; if (mPause.textContent === '暫停索引') { MEL.pauseIndex(); mPause.textContent = '續跑索引'; melStatus('旋律索引：已暫停（目前這首做完後停）'); } else { MEL.resumeIndex(); mPause.textContent = '暫停索引'; melStatus('旋律索引：續跑'); } };
