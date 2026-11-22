@@ -91,6 +91,31 @@ try {
     check('mid→mid 截 1 分：音符數 120', ns === 120, '實際 ' + ns);
   }
 
+  // 4b. 影片類（webm）→ mp3：用頁面自己錄一段 3 秒的音軌 webm，走既有 extract_audio 的原生解碼，不可要求 ffmpeg.wasm
+  {
+    const AC = window.AudioContext || window.webkitAudioContext, actx = new AC(), osc = actx.createOscillator(), dest = actx.createMediaStreamDestination();
+    osc.frequency.value = 330; osc.connect(dest); osc.start();
+    const chunks = [], mr = new MediaRecorder(dest.stream, { mimeType: 'audio/webm;codecs=opus' });
+    mr.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+    const stopped = new Promise((res) => { mr.onstop = res; });
+    mr.start(); await new Promise((r) => setTimeout(r, 3200)); mr.stop(); await stopped; osc.stop(); try { actx.close(); } catch (_) { /* */ }
+    const webm = new Uint8Array(await new Blob(chunks).arrayBuffer());
+    await a.rawfs.writeFile(ROOT + '/clip.webm', { base64: bytesToB64(webm) });
+    let askedFfmpeg = false; const origC = FaMusicLibHost && window.fa && window.fa._ffmpegWasmConsent; // 若有人要求 ffmpeg.wasm 同意，記下來
+    if (window.fa) { window.fa._ffmpegWasmConsent = async function () { askedFfmpeg = true; return false; }; }
+    const RV = rec('clip.webm', ROOT + '/clip.webm');
+    const r5 = await FaMusicLibHost.exportBatch([RV], { format: 'mp3', minutes: 'whole', outDir: OUT });
+    if (window.fa) { window.fa._ffmpegWasmConsent = origC; }
+    const b5 = r5.results[0];
+    out.batch5 = { status: b5.status, reason: b5.reason, stage: b5.stage, askedFfmpeg: askedFfmpeg, webmBytes: webm.length };
+    check('webm→mp3：完成', b5.status === 'done', b5.reason + ' [' + b5.stage + ']');
+    check('webm→mp3：沒有要求 ffmpeg.wasm', askedFfmpeg === false, String(askedFfmpeg));
+    if (b5.status === 'done') {
+      const d = await decodeDuration(b64ToBytes((await a.rawfs.readFile(b5.output.path, 'base64')).base64));
+      check('webm→mp3：獨立解碼長度約 3 秒', d > 2.5 && d < 4.5, d.toFixed(2));
+    }
+  }
+
   // 5. 取消：第一個檔案進入解碼後按取消，之後的檔案都要標示取消，不可繼續跑
   let cancelled = false;
   const r4 = await FaMusicLibHost.exportBatch([RW, RW], { format: 'mp3', minutes: 1, outDir: OUT,
