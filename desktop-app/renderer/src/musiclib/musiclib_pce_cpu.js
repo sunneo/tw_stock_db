@@ -63,7 +63,7 @@
       if (off >= 0x0C00) return this.timerCount & 0x7F;
       return 0xFF;
     }
-    if (off < 0x1400) return 0xFF;               // 搖桿：全部放開
+    if (off < 0x1400) return this.padRead();     // 搖桿（見 padRead）
     if (off === 0x1402) return this.irqDisable;
     if (off === 0x1403) return this.irqPend;
     return 0xFF;
@@ -83,9 +83,16 @@
       else { var on = !!(v & 1); if (on && !this.timerOn) { this.timerCount = this.timerReload; this.timerAcc = 0; } this.timerOn = on; }
       return;
     }
-    if (off < 0x1400) return;                    // 搖桿選擇：忽略
+    if (off < 0x1400) { this.padSel = v & 1; return; }   // 搖桿選擇位元（bit0：0＝方向、1＝按鈕）
     if (off === 0x1402) this.irqDisable = v & 7;
     else if (off === 0x1403) this.irqPend &= ~4; // 寫入清除 TIQ
+  };
+  // 搖桿讀取：低 4 位元為選取的一組（方向：上右下左；按鈕：I、II、SELECT、RUN），低電位＝按下（與硬體相同）。
+  // 按鍵狀態由呼叫端給（hooks.padPressed 回傳 8 位元：低 4 位元方向、高 4 位元 I/II/SELECT/RUN）；沒有給就全部放開。
+  Bus.prototype.padRead = function () {
+    var pr = this.hooks.padPressed ? (this.hooks.padPressed() & 0xFF) : 0;
+    var low = (this.padSel & 1) ? (pr >> 4) & 0x0F : pr & 0x0F;
+    return 0xF0 | ((~low) & 0x0F);
   };
   Bus.prototype.vector = function (addr) { return this.read(addr) | (this.read(addr + 1) << 8); };
 
@@ -426,7 +433,8 @@
     var psgWrites = [];
     var masterNow = 0;
     var hooks = {
-      psg: function (reg, v) { if (opts.onPsg) opts.onPsg(masterNow, reg, v); else psgWrites.push({ t: masterNow, r: reg, v: v }); }
+      psg: function (reg, v) { if (opts.onPsg) opts.onPsg(masterNow, reg, v); else psgWrites.push({ t: masterNow, r: reg, v: v }); },
+      padPressed: function () { return opts.pad ? opts.pad(frames) : 0; }
     };
     var bus = new Bus(rom, hooks);
     var cpu = new Cpu(bus);

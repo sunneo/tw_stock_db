@@ -222,6 +222,11 @@
     return { song: song, stats: stats };
   }
 
+  // 按鍵排程：每 10 畫面依序按 RUN、I、II、SELECT、上、下、左、右（高 4 位元 I/II/SELECT/RUN，低 4 位元 上右下左）。
+  // 實測 P2001：只按 RUN 或 I 不會離開選單（遊戲只輪詢搖桿、不進音樂）；循環按完所有鍵後 2530 次按音。
+  var PAD_SEQ = [0x80, 0x10, 0x20, 0x40, 0x01, 0x04, 0x08, 0x02];
+  function padAt(f) { return PAD_SEQ[Math.floor(f / 10) % PAD_SEQ.length]; }
+
   // ───── 執行 ROM（HuC6280，自寫；cpu 模組由呼叫端注入）─────
   // 錄下每次 PSG 寫入（$0800–$0809）與畫面結束；停止規則：到 maxFrames，或有過聲音之後安靜 900 幀（至少 300 幀有聲音）。
   async function traceRom(romBytes, opts) {
@@ -232,6 +237,7 @@
     var isCancelled = typeof opts.isCancelled === 'function' ? opts.isCancelled : function () { return false; };
     var writes = [], activeSet = {}, nAct = 0, lastAct = -1;
     var m = CPU.createMachine(romBytes, {
+      pad: padAt,
       onPsg: function (t, r, v) {
         writes.push({ t: t, r: r, v: v });
         var fr = Math.floor(t / FRAME_TICKS);
