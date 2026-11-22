@@ -20,14 +20,14 @@
     webm: { category: 'video', label: 'WebM 影片' },
     nes: { category: 'extract', label: 'NES 遊戲音樂，可擷取' },
     pce: { category: 'extract', label: 'PC Engine 遊戲音樂，可擷取' },
-    sfc: { category: 'game', label: '遊戲音樂來源，待擷取' },
+    sfc: { category: 'extract', label: 'SNES 遊戲音樂，可擷取' },
     rix: { category: 'extract', label: 'RIX（OPL2）音樂，可擷取' },
     swf: { category: 'extract', label: 'Flash（SWF）音樂，可擷取' },
     // 只由擷取產生的子曲目用（不從掃描辨識）
     nsf: { category: 'game', label: 'NSF 音樂（擷取產生，需 NSF 播放器）' }
   };
   var DERIVED_ONLY = { nsf: 1 };
-  var EXT_ALIAS = { midi: 'mid' };
+  var EXT_ALIAS = { midi: 'mid', smc: 'sfc' };
 
   // ───── 文字小工具 ─────
   function normalizeText(s) { return String(s == null ? '' : s).normalize('NFKC').toLowerCase().trim(); }
@@ -700,8 +700,8 @@
     'video>mid': ['decode', 'slice', 'to-song', 'write-mid']
   };
   var SOURCE_CLASS = { wav: 'audio', mp3: 'audio', mid: 'mid', midi: 'mid', mp4: 'video', mov: 'video', webm: 'video', m4v: 'video' };
-  var ROM_EXT = { sfc: 1 };
-  var EXTRACT_EXT = { rix: 1, swf: 1, nes: 1, pce: 1 };
+  var ROM_EXT = {};
+  var EXTRACT_EXT = { rix: 1, swf: 1, nes: 1, pce: 1, sfc: 1, smc: 1 };
 
   // 規劃單一檔案的輸出路線。回傳 { ok:true, route, steps } 或 { ok:false, reason }。
   // 不支援的組合一律說明原因，不偷偷略過。

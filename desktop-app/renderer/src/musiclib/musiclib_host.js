@@ -545,6 +545,13 @@ const FaMusicLibHost = (function () {
       if (!pr.song) skippedParts.push('退路 MIDI 沒有：' + (pr.midiReason || pr.reason || ''));
       if (!pr.wav) skippedParts.push('wav 沒有：' + (pr.wavReason || pr.reason || ''));
       if (!outs.length) throw new Error('PCE 擷取失敗：' + skippedParts.join('；'));
+    } else if (rec.kind === 'sfc') {
+      // SFC：先做標頭與分類；主 CPU 執行、.spc 傾印、snes_spc 渲染尚未接上，各階段的結果見 stages（沒有產物就明確報錯）
+      emit('解析 SNES 標頭');
+      if (typeof FaMusicLibSfc === 'undefined') throw new Error('SFC 模組沒有嵌入（FaMusicLibSfc 不存在）');
+      var sr = FaMusicLibSfc.sfcExtract(u8, {});
+      skippedParts = sr.stages.filter(function (s) { return !s.ok; }).map(function (s) { return s.stage + '：' + s.reason; });
+      throw new Error('SFC 擷取失敗：' + (skippedParts.join('；') || sr.reason || '未知'));
     } else {
       throw new Error('這個種類不支援擷取：' + rec.kind);
     }
