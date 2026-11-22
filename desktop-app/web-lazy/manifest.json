@@ -1986,8 +1986,8 @@
    "names": [
     "FaMusicLibNes"
    ],
-   "size": 16085,
-   "md5": "845185798f0194da3cc02ab2321ba9c4"
+   "size": 19633,
+   "md5": "d0ce8a9013bf7279d852082b95ee8cf7"
   },
   "jsnes": {
    "file": "chunks/jsnes.js",
@@ -2018,16 +2018,16 @@
    "names": [
     "FaMusicLibPceCpu"
    ],
-   "size": 18648,
-   "md5": "f0d47c38b043104265b7ab4f7445ac95"
+   "size": 18853,
+   "md5": "c851fcd3756b392dd5c3e3161705212d"
   },
   "mlpce": {
    "file": "chunks/mlpce.js",
    "names": [
     "FaMusicLibPce"
    ],
-   "size": 7802,
-   "md5": "71f5c74562c08949f58574cc9ec38313"
+   "size": 7887,
+   "md5": "306da4901e5963adc016629c0931ebcf"
   },
   "mlsfc": {
    "file": "chunks/mlsfc.js",
@@ -2066,8 +2066,8 @@
    "names": [
     "FaChipNsf"
    ],
-   "size": 6141,
-   "md5": "94a3d9bb954d88d9d34a096ae544970a"
+   "size": 8106,
+   "md5": "a81f644d4f79c15b68c7c4bcbd466391"
   },
   "spccore": {
    "file": "chunks/spccore.js",
