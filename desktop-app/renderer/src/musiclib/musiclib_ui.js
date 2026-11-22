@@ -62,9 +62,10 @@
     var lyr = h('div', 'fml-lyr');
     var bLyr = h('button', null, '轉錄歌詞');
     var bPause = h('button', null, '暫停');
+    var bCancel = h('button', null, '取消轉錄');
     var lyrStat = h('span', 'fml-st');
-    lyr.appendChild(bLyr); lyr.appendChild(bPause); lyr.appendChild(lyrStat);
-    if (!queue) { bLyr.disabled = true; bPause.disabled = true; lyrStat.textContent = '歌詞轉錄不可用（需要桌面版）'; }
+    lyr.appendChild(bLyr); lyr.appendChild(bPause); lyr.appendChild(bCancel); lyr.appendChild(lyrStat);
+    if (!queue) { bLyr.disabled = true; bPause.disabled = true; bCancel.disabled = true; lyrStat.textContent = '歌詞轉錄不可用（需要桌面版）'; }
 
     var wrap = h('div', 'fml-wrap');
     var tbl = h('table', 'fml-tbl');
@@ -142,6 +143,7 @@
       if (s.saveError) parts.push('⚠️ 存檔失敗：' + s.saveError);
       lyrStat.textContent = '歌詞：' + parts.join('、');
       bPause.textContent = s.paused ? '續跑' : '暫停';
+      bCancel.disabled = !(s.running || s.queued > 0);
     }
     function selText() { var n = Object.keys(sel).length; return '已選 ' + n + ' 首' + (n ? '（轉錄歌詞會只跑勾選的未完成曲目）' : '（沒勾選時，轉錄歌詞會跑全部未完成曲目）'); }
 
@@ -180,6 +182,8 @@
       if (queue.state().paused) msg += '；目前是暫停中，按「續跑」開始';
       render();
     };
+    // 取消：清空排隊、中止正在跑的那一首（不算失敗），面板卡住時先按這個
+    bCancel.onclick = function () { if (!queue) return; queue.cancelAll(); msg = '已取消轉錄（排隊清空，進行中的那首回到未轉錄）'; render(); };
     bPause.onclick = function () { if (!queue) return; if (queue.state().paused) queue.resume(); else queue.pause(); render(); };
 
     if (queue) unsub = queue.onChange(function () { render(); });

@@ -587,6 +587,25 @@ t('setPolicy 執行期調整：縮短卡住判定時間後，立刻生效', asyn
   assert.equal(lib.records.filter((x) => x.name === '晴天.mp3')[0].lyricStatus, 'failed');
 });
 
+t('取消：清空排隊、中止卡住的那一首（不算失敗、不重試），曲目回到未轉錄', async function () {
+  const lib = await libWithFixtures();
+  let n = 0;
+  const tr = async () => { n++; return new Promise(() => { /* 卡住 */ }); };
+  const q = M.createLyricQueue(lib, tr, { policy: { floorMs: 60000, factor: 3, prior: { decode: 1, load: 60000, infer: 1 } } });
+  q.enqueue([]);
+  await sleepT(30);
+  const t0 = Date.now();
+  q.cancelAll();
+  await q.idle();
+  assert.ok(Date.now() - t0 < 1000, '取消後很快結束');
+  assert.equal(n, 1, '取消不重試');
+  const s = q.state();
+  assert.equal(s.queued, 0);
+  assert.equal(s.counts.failed, 0, '取消不算失敗');
+  assert.equal(s.counts.queued, 0);
+  assert.equal(s.counts.none, 4, '四首都回到未轉錄');
+});
+
 // ───── 執行 ─────
 (async function () {
   var pass = 0, failed = [];

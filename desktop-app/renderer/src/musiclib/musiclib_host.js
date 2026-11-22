@@ -207,5 +207,7 @@ const FaMusicLibHost = (function () {
   return { methods: methods, getLib: getLib, pickFolder: pickFolder, walkFolder: walkFolder, whisperTranscribe: whisperTranscribe,
     setTranscriber: function (fn) { transcriber = typeof fn === 'function' ? fn : null; },
     // 調整佇列的無進展／重試政策（評測用；正式值見 musiclib_core 的常數）
-    setQueuePolicy: function (p) { var L = getLib(); if (L.queue) L.queue.setPolicy(p); } };
+    setQueuePolicy: function (p) { var L = getLib(); if (L.queue) L.queue.setPolicy(p); },
+    // 取消所有歌詞轉錄工作（評測結束前、面板卡住時）
+    cancelTranscribe: function () { var L = getLib(); if (L.queue) L.queue.cancelAll(); } };
 })();

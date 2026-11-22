@@ -234,3 +234,15 @@
 - 實際看到的錯誤：解碼時 `Cannot read properties of undefined (reading 'decodeForWhisper')`，`_decodeAudioForWhisperWithFallback` 整段失敗。既有的 `transcribe_media` 工具也受影響。
 - 修正：傳入 `mod = { exports: {} }`，核心檔的 `module.exports` 就會寫進 `mod`，包裝回傳 `mod.exports`（只改這一個嵌入函式）。
 - 其他同樣用 `embed(...)` 包裝寫法的模組（我檢查過的）：`renderer/src/gui/*`（8 個）、`renderer/src/chat/*`（6 個）、`renderer/src/agent/*`（3 個），都是標準 UMD（`else { root.X = factory() }`），不受影響。`renderer/src/gpu/gpu_core.js`、`gpu_preload.js` 也用同一個包裝，**這一輪沒有檢查**。
+
+## 評測守則（使用者要求，2026-11-22）
+
+適用：所有 `scripts/eval/musiclib*.eval.js` 的真桌面版評測。檔案開頭的註解也寫了同樣的守則。
+
+1. **每次評測都用全新的 `--user-data-dir`**（空目錄）。開始時佇列與對話狀態必須是空的，不沿用上次評測留下的轉錄工作、佇列、對話。評測腳本開頭會檢查 `out.startClean`（佇列空、沒有排隊或轉錄中的曲目），不符合就不算通過。
+2. **一次只跑一個評測**；同一時間只有一個轉錄工作在跑。新評測開始前，先確認上一個 Electron 與轉錄工作都已結束或已取消（用 PID 確認，不用名稱全殺，因為使用者自己的 `FloatingAssistantApp` 也在跑）。
+3. **評測結束前取消自己產生的佇列**（`FaMusicLibHost.cancelTranscribe()`），並確認沒有殘留行程（只停自己啟動的 PID）。
+4. **面板上若有舊的卡住工作，開新評測不能與它並行**，要先取消。面板的「取消轉錄」按鈕做的事和 `cancelTranscribe()` 相同：清空排隊、中止正在跑的那一首（不算失敗、不重試，曲目回到未轉錄）。
+5. 評測都不需要 GPU。真 Whisper 評測要先確認模型快取是否可用；沒有就明講「未驗證」，不下載大檔，也不替使用者按任何下載同意。
+
+**實際做法的注意**：真 Whisper 評測目前用的 profile（`musiclib-ud-real`）是複製過來的 Service Worker 快取（約 1.8 GB），它不是全新空目錄；守則 1 要求的「全新」目前只對假轉錄評測成立。之後的真 Whisper 評測如果要符合守則 1，需要每次重新複製快取到新目錄，或另外建一個只放模型快取的基底目錄。

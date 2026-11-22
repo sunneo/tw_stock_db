@@ -464,7 +464,7 @@
         var done = false, timer = null, stage = 'start', stageAt = Date.now(), stageUnits = 0, detail = '', win = 1;
         function finish(fn, v) { if (done) return; done = true; clearTimeout(timer); pauseWaiters = pauseWaiters.filter(function (w) { return w !== onPause; }); fn(v); }
         // 暫停要立刻生效：正在跑的這次嘗試直接以「已暫停」結束（底層工作若還在跑，它的結果會被忽略）
-        function onPause() { var e = new Error('已暫停'); e.paused = true; finish(reject, e); }
+        function onPause() { var e = new Error(st.cancelRequested ? '已取消' : '已暫停'); e.paused = true; e.cancelled = !!st.cancelRequested; finish(reject, e); }
         pauseWaiters.push(onPause);
         function arm() {
           clearTimeout(timer);
@@ -505,7 +505,7 @@
       return new Promise(function (resolve, reject) {
         var end = Date.now() + ms;
         (function tick() {
-          if (st.paused) { var e = new Error('已暫停'); e.paused = true; return reject(e); }
+          if (st.paused || st.cancelRequested) { var e = new Error(st.cancelRequested ? '已取消' : '已暫停'); e.paused = true; e.cancelled = !!st.cancelRequested; return reject(e); }
           var left = end - Date.now();
           if (left <= 0) return resolve();
           setTimeout(tick, Math.min(200, left));
@@ -548,6 +548,7 @@
             r.lyrics = Object.assign(sanitize(res), { transcribedAt: Date.now() });
             r.lyricStatus = 'done'; r.lyricError = null; st.doneRun++;
           } catch (err) {
+            if (err && err.cancelled) { r.lyricStatus = 'none'; r.lyricError = null; break; } // 取消：不記失敗，也不再排隊
             if (err && err.paused) { r.lyricStatus = 'queued'; st.queue.unshift(key); break; }
             r.lyricStatus = 'failed';
             r.lyricError = String((err && err.message) || err || '未知錯誤') || '未知錯誤';
@@ -569,6 +570,7 @@
     var q = {
       // keys 為空＝全部還沒完成的（none／failed／queued）；遊戲來源（pending）不排進佇列
       enqueue: function (keys) {
+        st.cancelRequested = false;
         var list = keys && keys.length ? keys : lib.records.filter(function (r) { return r.status === 'ok' && !r.pending; }).map(function (r) { return r.key; });
         list.forEach(function (k) {
           var r = find(k);
@@ -587,6 +589,14 @@
         emit();
       },
       resume: function () { st.paused = false; emit(); kick(); },
+      // 取消：清空排隊、中止正在跑的那一首（不算失敗、不重試），曲目回到未轉錄。評測結束前與面板卡住時用。
+      cancelAll: function () {
+        st.cancelRequested = true;
+        st.queue.forEach(function (k) { var x = find(k); if (x && x.lyricStatus === 'queued') x.lyricStatus = 'none'; });
+        st.queue = [];
+        pauseWaiters.slice().forEach(function (f) { f(); });
+        emit();
+      },
       // 等目前這一輪結束（測試與關閉前用）
       idle: function () { return new Promise(function (res) { (function wait() { if (!st.running) res(); else setTimeout(wait, 5); })(); }); },
       onChange: function (fn) { listeners.push(fn); return function () { listeners = listeners.filter(function (x) { return x !== fn; }); }; },

@@ -1,3 +1,10 @@
+// 評測守則（使用者要求，2026-11-22；適用所有 scripts/eval/musiclib*.eval.js）：
+//  1. 每次評測都用全新的 --user-data-dir（空目錄），開始時佇列與對話狀態必須是空的；不沿用上次評測留下的轉錄工作、佇列、對話。
+//  2. 一次只跑一個評測；同一時間只有一個轉錄工作在跑。新評測開始前，先確認上一個 Electron 與轉錄工作都已結束或已取消。
+//  3. 評測結束前呼叫 FaMusicLibHost.cancelTranscribe() 清掉自己產生的佇列，並確認沒有殘留行程（只停自己啟動的 PID）。
+//  4. 面板上若有舊的卡住工作，開新評測不能與它並行，要先取消（同上，cancelTranscribe）。
+//  5. 這些評測都不需要 GPU；真 Whisper 評測要先確認 Whisper 模型快取是否可用，沒有就明講「未驗證」，不下載大檔。
+// 開始時的檢查（下面 out.startClean）：佇列必須空、沒有排隊或轉錄中的曲目。不符合就不算通過，要換一個全新的 user-data-dir 再跑。
 // 真轉錄評測：不用假轉錄，走 app 既有的 Whisper 流程（同一個 user-data-dir 的快取裡有模型）。
 // 只跑一首短音檔（音樂A 的 wav，1 秒靜音）＋一個 mp3（合成的，預期解碼失敗，原因要具體）。
 const ROOT = 'E:/Temp/claude/1845096e089295dd/9a7c10bd-971c-4190-8bc3-a58c49076b0b/scratchpad/musictest';
@@ -36,4 +43,5 @@ try {
 } catch (e) {
   out.error = String((e && e.stack) || e);
 }
+try { if (typeof FaMusicLibHost !== 'undefined') { FaMusicLibHost.cancelTranscribe(); out.endCancelled = true; } } catch (_) { /* */ }
 return out;
