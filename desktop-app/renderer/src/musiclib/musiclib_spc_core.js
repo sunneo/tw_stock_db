@@ -298,7 +298,7 @@
         case 0x9D: r.x = nz(r.sp); return 0;                      // MOV X,SP
         case 0xBD: r.sp = r.x; return 0;                          // MOV SP,X
         case 0x1F: addr = (fetch16() + r.x) & 0xFFFF; r.pc = rd(addr) | (rd((addr + 1) & 0xFFFF) << 8); return 0;   // JMP [!abs+X]
-        case 0x2F: r.pc = (r.pc + sg8(fetch())) & 0xFFFF; return 0;  // BRA
+        case 0x2F: { var rel2F = fetch(); r.pc = (r.pc + sg8(rel2F)) & 0xFFFF; return 0; }  // BRA（先取運算元，再加到取完後的 PC）
         case 0x3F: addr = fetch16(); push(r.pc >> 8); push(r.pc & 0xFF); r.pc = addr; return 0;   // CALL
         case 0x4F: addr = fetch(); push(r.pc >> 8); push(r.pc & 0xFF); r.pc = 0xFF00 | addr; return 0;  // PCALL
         case 0x5F: r.pc = fetch16(); return 0;                    // JMP !abs
