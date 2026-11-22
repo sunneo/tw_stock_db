@@ -15,6 +15,7 @@
     + '.fml-bar,.fml-lyr{display:flex;gap:6px;align-items:center;flex-wrap:wrap;padding:6px 8px;background:#f6f8fa;border-bottom:1px solid #d0d7de}'
     + '.fml button,.fml select{background:#f6f8fa;border:1px solid #d0d7de;border-radius:5px;padding:3px 9px;cursor:pointer;font:inherit}'
     + '.fml button:disabled{opacity:.45;cursor:default}'
+    + '.fml-lyr input[type=text]{flex:1;min-width:180px;padding:4px 6px;border:1px solid #d0d7de;border-radius:5px;font:inherit}'
     + '.fml-bar input[type=search]{flex:1;min-width:160px;padding:4px 6px;border:1px solid #d0d7de;border-radius:5px;font:inherit}'
     + '.fml-st{color:#59636e;font-size:12px}.fml-wrap{overflow:auto;max-height:520px}.fml-lyr .fml-st{flex:1}'
     + '.fml-tbl{width:100%;border-collapse:collapse}.fml-tbl th,.fml-tbl td{padding:4px 6px;border-bottom:1px solid #eaeef2;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:260px}'
@@ -84,6 +85,19 @@
     if (!host.exportBatch) { bExp.disabled = true; bExpCancel.disabled = true; expStat.textContent = '批次輸出不可用（需要桌面版）'; }
     bExpCancel.disabled = true;
 
+    // YouTube 清單列：貼清單網址（或單支影片連結）→ 展開 → 逐支驗證、下載、登記；暫停／續跑／取消；逐支結果列在下面
+    var yt = h('div', 'fml-lyr');
+    var ytIn = h('input'); ytIn.type = 'text'; ytIn.placeholder = '貼 YouTube 清單網址（或單支影片連結）';
+    var bYt = h('button', null, '＋加入 YouTube 清單');
+    var bYtPause = h('button', null, '暫停');
+    var bYtCancel = h('button', null, '取消');
+    var ytStat = h('span', 'fml-st');
+    yt.appendChild(ytIn); yt.appendChild(bYt); yt.appendChild(bYtPause); yt.appendChild(bYtCancel); yt.appendChild(ytStat);
+    var ytList = h('div', 'fml-foot');
+    ytList.style.display = 'none';
+    bYtPause.disabled = true; bYtCancel.disabled = true;
+    if (!host.startYoutubeList) { bYt.disabled = true; ytIn.disabled = true; ytStat.textContent = 'YouTube 清單不可用（需要桌面版）'; }
+
     var wrap = h('div', 'fml-wrap');
     var tbl = h('table', 'fml-tbl');
     var thead = h('thead'), tbody = h('tbody');
@@ -92,7 +106,7 @@
 
     var fIn = h('input'); fIn.type = 'file'; fIn.multiple = true; fIn.style.display = 'none';
     var dIn = h('input'); dIn.type = 'file'; dIn.setAttribute('webkitdirectory', ''); dIn.style.display = 'none';
-    root.appendChild(bar); root.appendChild(lyr); root.appendChild(exp); root.appendChild(chipBox); root.appendChild(expList); root.appendChild(wrap); root.appendChild(foot); root.appendChild(fIn); root.appendChild(dIn);
+    root.appendChild(bar); root.appendChild(yt); root.appendChild(ytList); root.appendChild(lyr); root.appendChild(exp); root.appendChild(chipBox); root.appendChild(expList); root.appendChild(wrap); root.appendChild(foot); root.appendChild(fIn); root.appendChild(dIn);
     container.appendChild(root);
 
     function visibleRows() {
@@ -394,6 +408,54 @@
       }, function (e) { mFind.disabled = false; melStatus('找歌失敗：' + String((e && e.message) || e)); });
     };
     mMidi.onclick = function () { if (!MEL || !melFound) return; try { MEL.humAsMidi(melFound, '哼歌旋律'); melStatus('已開啟 MIDI 編輯器演奏哼歌旋律'); } catch (e) { melStatus('演奏失敗：' + String((e && e.message) || e)); } };
+
+    // YouTube 清單的按鈕與進度（進行中只更新這一列與結果清單；完成時才重畫曲目清單，因為新登記的曲目在那裡）
+    var ytRunning = false, YT_LIST_MAX = 200;
+    function ytShowItems(job) {
+      ytList.textContent = '';
+      var shown = 0, rest = 0;
+      job.items.forEach(function (it) {
+        if (it.status === 'pending') return;
+        if (shown >= YT_LIST_MAX) { rest++; return; }
+        var line = (it.status === 'done' ? '✅ ' : it.status === 'skipped' ? '⏭ ' : it.status === 'failed' ? '❌ ' : '⏳ ')
+          + (it.title || it.videoId) + (it.reason ? '：' + it.reason : '') + (it.status === 'working' && it.progressText ? '（' + it.progressText + '）' : '');
+        var d = h('div', it.status === 'failed' ? 'bad' : null, line);
+        d.style.color = it.status === 'failed' ? '#cf222e' : '';
+        ytList.appendChild(d);
+        shown++;
+      });
+      if (rest) ytList.appendChild(h('div', null, '…還有 ' + rest + ' 筆，完整結果看完成後的摘要'));
+      ytList.style.display = shown || rest ? '' : 'none';
+    }
+    function ytControlsFor(job) {
+      var live = job.state === 'running' || job.state === 'idle';
+      bYtPause.disabled = !live; bYtCancel.disabled = !live;
+      bYtPause.textContent = job.paused ? '續跑' : '暫停';
+    }
+    bYt.onclick = function () {
+      if (!host.startYoutubeList || ytRunning) return;
+      ytRunning = true; bYt.disabled = true; ytStat.textContent = '展開清單中…（第一次會載入 yt-dlp，可能要 1～2 分鐘）';
+      ytList.style.display = 'none'; ytList.textContent = '';
+      host.startYoutubeList(ytIn.value, function (job, sum) {
+        ytStat.textContent = sum.text;
+        ytControlsFor(job);
+        ytShowItems(job);
+      }).then(function (res) {
+        ytRunning = false; bYt.disabled = false; bYtPause.disabled = true; bYtCancel.disabled = true;
+        ytStat.textContent = res.ok ? res.summary.text : (res.cancelled ? res.error : '⚠️ ' + res.error);
+        if (res.ok && res.job) ytShowItems(res.job);
+        render();
+      }, function (e) {
+        ytRunning = false; bYt.disabled = false; bYtPause.disabled = true; bYtCancel.disabled = true;
+        ytStat.textContent = '⚠️ ' + String((e && e.message) || e);
+      });
+    };
+    bYtPause.onclick = function () {
+      if (!host.youtubeJob || !host.youtubeControl) return;
+      var j = host.youtubeJob(); if (!j) return;
+      host.youtubeControl(j.job.paused ? 'resume' : 'pause');
+    };
+    bYtCancel.onclick = function () { if (host.youtubeControl) host.youtubeControl('cancel'); };
 
     if (queue) unsub = queue.onChange(function () { render(); });
     // 轉錄中每秒更新「已耗時」與重試倒數（只更新歌詞列，不重畫清單）
