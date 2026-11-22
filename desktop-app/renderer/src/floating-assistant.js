@@ -99752,6 +99752,7 @@ const holder = {};
     yt.appendChild(ytIn); yt.appendChild(bYt); yt.appendChild(bYtPause); yt.appendChild(bYtCancel); yt.appendChild(ytStat);
     var ytList = h('div', 'fml-foot');
     ytList.style.display = 'none';
+    var chipBox = h('div');   // 晶片播放卡片的容器；要在 root.appendChild(chipBox) 之前建立
     bYtPause.disabled = true; bYtCancel.disabled = true;
     if (!host.startYoutubeList) { bYt.disabled = true; ytIn.disabled = true; ytStat.textContent = 'YouTube 清單不可用（需要桌面版）'; }
 
@@ -99931,7 +99932,7 @@ const holder = {};
     xCancel.disabled = true;
     exp.appendChild(xRoot); exp.appendChild(xBtn); exp.appendChild(xCancel);
     // 晶片播放（RIX，OPL2 真模擬）：取第一個勾選的 RIX（沒勾就取第一個），掛上控制卡片（重播、seek、goto、曲目、匯出 mp3／MIDI）
-    var cBtn = h('button', null, '▶ 晶片播放（RIX）'), chipBox = h('div');
+    var cBtn = h('button', null, '▶ 晶片播放（RIX）');
     chipBox.style.marginTop = '8px';
     exp.appendChild(cBtn);
     if (typeof FaChipPlayer === 'undefined' || typeof FaChipPlayerUI === 'undefined') cBtn.disabled = true;
