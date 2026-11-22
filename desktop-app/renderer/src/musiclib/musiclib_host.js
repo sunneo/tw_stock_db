@@ -344,7 +344,13 @@ const FaMusicLibHost = (function () {
     var L = getLib(); await L.ready;
     if (melodyState.running) throw new Error('旋律索引已在建立中');
     melodyState.running = true; melodyState.cancelled = false;
-    var recs = L.records.filter(function (r) { return r.status === 'ok' && !r.pending; });
+    // 只收一般音樂檔與擷取產物的 MIDI；來源 ROM（rix／nes／pce／sfc／swf）不是音訊，拿去解碼一定失敗（舊版就是這樣），所以不收，並寫明原因
+    var recs = [], excludedCount = 0, excludedByReason = {};
+    L.records.forEach(function (r) {
+      var e = FaMusicLib.melodyEligible(r);
+      if (e.ok) recs.push(r);
+      else { excludedCount++; excludedByReason[e.reason] = (excludedByReason[e.reason] || 0) + 1; }
+    });
     var saveCount = 0;
     try {
       var sum = await FaMusicLibMelody.runMelodyIndex(recs, {
@@ -355,6 +361,7 @@ const FaMusicLibHost = (function () {
         waitIfPaused: melodyGate
       });
       await L.save();
+      sum.excluded = excludedCount; sum.excludedByReason = excludedByReason;
       return sum;
     } finally { melodyState.running = false; melodyState.paused = false; }
   }
@@ -591,7 +598,103 @@ const FaMusicLibHost = (function () {
     return { results: results, summary: summary };
   }
 
-  var PICK_HOST = { pickFolder: pickFolder, melody: MELODY_HOST, extract: { run: extractSources, cancel: function () { extractCancelled = true; } }, openNsf: openNsf,
+  // ───── 通用播放與曲庫移除的 app 端（給 musiclib_play.js 的 host 介面，與面板的移除流程）─────
+  var MIME_BY_EXT = { mp3: 'audio/mpeg', wav: 'audio/wav', ogg: 'audio/ogg', flac: 'audio/flac', m4a: 'audio/mp4', aac: 'audio/aac', opus: 'audio/ogg',
+    mp4: 'video/mp4', m4v: 'video/mp4', mov: 'video/quicktime', webm: 'video/webm', mkv: 'video/x-matroska' };
+  var DERIVED_SEP_RE = new RegExp('[\\\\/]' + DERIVED_DIR_NAME + '[\\\\/]');
+  function userDerivedRoot() { try { return String(localStorage.getItem('fa.musiclib.derivedDir') || '').trim(); } catch (_) { return ''; } }
+  // 認可刪除的衍生檔：在「音樂庫衍生檔」資料夾裡，或在使用者指定的衍生資料夾底下。原始檔永遠不認可。
+  function isDerivedPath(p) {
+    p = String(p || '');
+    if (!p) return false;
+    if (DERIVED_SEP_RE.test(p)) return true;
+    var root = userDerivedRoot();
+    if (!root) return false;
+    var sep = root.indexOf('\\') >= 0 ? '\\' : '/';
+    return p.indexOf(root.replace(/[\\\/]+$/, '') + sep) === 0;
+  }
+  function readHeadBytes(p, n) { return api().rawfs.readHead(p, n).then(function (r) { return r && r.base64 != null ? b64ToBytes(r.base64) : null; }); }
+  // 讀位元組：選檔拿到的 File，或桌面版的實體路徑
+  async function readBytesOf(rec) {
+    if (rec.file) return new Uint8Array(await rec.file.arrayBuffer());
+    var a = api(); if (!a || !a.rawfs || !a.rawfs.readFile) throw new Error('讀取檔案的通道不存在（需要桌面版）');
+    var r = await a.rawfs.readFile(rec.path, 'base64');
+    if (!r || r.base64 == null) throw new Error('讀不到這個檔案的內容（' + rec.path + '）');
+    return b64ToBytes(r.base64);
+  }
+  // 來源檔要擷取、或要登記時，需要曲庫裡的紀錄（有 key、sourceId）；不在曲庫的實體檔就登記成一個來源（/media-play 的 ROM 會走到這裡）
+  async function ensureLibRecord(rec) {
+    if (!rec || rec.file || !rec.path) return rec;
+    var L = getLib(); await L.ready;
+    if (rec.key) { var hit = L.records.filter(function (r) { return r.key === rec.key; })[0]; if (hit) return hit; }
+    var same = L.records.filter(function (r) { return r.path === rec.path && !r.derivedFrom; })[0];
+    if (same) return same;
+    var a = api(); if (!a || !a.rawfs || !a.rawfs.stat) throw new Error('需要桌面版才能把檔案登記進曲庫');
+    var st = await a.rawfs.stat(rec.path);
+    if (!st || !st.isFile) throw new Error('這不是一個檔案：' + rec.path);
+    var sid = L.addSource('file', rec.name || basename(rec.path));
+    await L.scan(sid, [{ path: rec.path, size: st.size || 0, mtimeMs: st.mtimeMs || 0 }], readHeadBytes);
+    await L.save();
+    return L.records.filter(function (r) { return r.path === rec.path && !r.derivedFrom; })[0] || rec;
+  }
+  function basename(p) { return String(p || '').split(/[\\\/]/).pop(); }
+  var nsfWired = false;
+  // 晶片後端：nsf 的後端要先接上（與 openNsf 同一寫法），之後 createPlayer 才找得到
+  function ensureChipBackends() {
+    if (typeof FaChipPlayer === 'undefined' || typeof FaChipNsf === 'undefined' || typeof FaJsnes === 'undefined') return;
+    if (nsfWired) return;
+    try { FaChipPlayer.getBackend('nsf'); } catch (_) { FaChipPlayer.registerBackend(FaChipNsf.createBackend(FaJsnes.NES)); }
+    nsfWired = true;
+  }
+  function chipKinds() { ensureChipBackends(); return typeof FaChipPlayer === 'undefined' ? [] : FaChipPlayer.listBackends().map(function (b) { return b.kind; }); }
+  var PLAY_HOST = {
+    records: function () { return getLib().records; },
+    chipKinds: chipKinds,
+    resolve: ensureLibRecord,
+    // 來源 ROM 擷取：沒有實體路徑（選檔拿到的）就說明原因；有路徑就登記後擷取（與面板的擷取同一條路）
+    extract: function (rec) {
+      if (rec.file || !rec.path) return Promise.resolve({ results: [{ name: rec.name, status: 'failed', stage: null, reason: '這個檔案是用選檔拿到的（沒有實體路徑），擷取需要完整路徑；請用 /media-play 輸入完整路徑' }] });
+      return ensureLibRecord(rec).then(function (lr) { return extractSources([lr], { userRoot: userDerivedRoot() || null }); });
+    },
+    mountMidi: async function (rec) {
+      if (typeof FaMidi === 'undefined' || typeof FaMidiUI === 'undefined') throw new Error('MIDI 播放器不存在（需要桌面版）');
+      var song = FaMidi.parse(await readBytesOf(rec));
+      var fa = window.fa; if (!fa || !fa._midiHost) throw new Error('MIDI 播放器不存在（需要桌面版）');
+      return FaMidiUI.mount({ song: song, title: rec.name, host: fa._midiHost(), M: FaMidi });
+    },
+    mountChip: async function (rec) {
+      var bytes = await readBytesOf(rec);
+      ensureChipBackends();
+      if (typeof FaChipPlayer === 'undefined' || typeof FaChipPlayerUI === 'undefined') throw new Error('晶片播放器還沒有內嵌（缺 FaChipPlayer／FaChipPlayerUI）');
+      var player = FaChipPlayer.createPlayer(rec.kind, bytes, { sampleRate: 44100 });
+      return FaChipPlayerUI.mount({ player: player, title: rec.name, host: CHIP_HOST });
+    },
+    mediaUrl: async function (rec) {
+      var bytes = await readBytesOf(rec);
+      var k = String(rec.kind || String(rec.name || '').split('.').pop() || '').toLowerCase();
+      var mime = MIME_BY_EXT[k] || '';
+      return URL.createObjectURL(new Blob([bytes], mime ? { type: mime } : undefined));
+    }
+  };
+  // 移除實體檔：只刪衍生資料夾裡的檔案（isDerivedPath 把關），刪完再 stat 確認真的消失
+  var LIB_HOST = {
+    isDerivedPath: isDerivedPath,
+    removeFiles: async function (paths) {
+      var a = api(); if (!a || !a.rawfs || !a.rawfs.remove) throw new Error('刪除檔案的通道不存在（需要桌面版）');
+      var out = [];
+      for (var i = 0; i < paths.length; i++) {
+        var p = paths[i];
+        if (!isDerivedPath(p)) { out.push({ path: p, ok: false, reason: '路徑不在衍生資料夾內，拒絕刪除' }); continue; }
+        try { await a.rawfs.remove(p, false); } catch (e) { out.push({ path: p, ok: false, reason: '刪除失敗：' + String((e && e.message) || e) }); continue; }
+        var gone = false;
+        try { await a.rawfs.stat(p); } catch (_) { gone = true; }
+        out.push(gone ? { path: p, ok: true } : { path: p, ok: false, reason: '刪除後檔案仍然存在' });
+      }
+      return out;
+    }
+  };
+
+  var PICK_HOST = { pickFolder: pickFolder, melody: MELODY_HOST, extract: { run: extractSources, cancel: function () { extractCancelled = true; } }, openNsf: openNsf, play: PLAY_HOST, library: LIB_HOST,
     startYoutubeList: function (text, onUpdate) { return startYoutubeList(text, onUpdate); }, youtubeControl: function (a) { return youtubeControl(a); }, youtubeJob: function () { return youtubeJob(); } };
 
   var methods = {
@@ -747,7 +850,7 @@ const FaMusicLibHost = (function () {
   }
   function youtubeJob() { return ytJob ? { job: ytJob, summary: FaMusicLibYoutube.summarize(ytJob) } : null; }
 
-  return { methods: methods, getLib: getLib, pickFolder: pickFolder, walkFolder: walkFolder, whisperTranscribe: whisperTranscribe, melody: MELODY_HOST, extract: PICK_HOST.extract, openNsf: openNsf,
+  return { methods: methods, getLib: getLib, pickFolder: pickFolder, walkFolder: walkFolder, whisperTranscribe: whisperTranscribe, melody: MELODY_HOST, extract: PICK_HOST.extract, openNsf: openNsf, play: PLAY_HOST, library: LIB_HOST,
     startYoutubeList: startYoutubeList, youtubeControl: youtubeControl, youtubeJob: youtubeJob,
     exportBatch: exportBatch, verifyOutput: verifyOutput,
     // 取消批次輸出：正在跑的那個檔案在下一個步驟前中止，之後的檔案標示取消
