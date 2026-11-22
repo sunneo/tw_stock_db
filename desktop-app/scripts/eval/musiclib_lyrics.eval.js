@@ -6,11 +6,18 @@ const ROOT = 'E:/Temp/claude/1845096e089295dd/9a7c10bd-971c-4190-8bc3-a58c49076b
 const A = ROOT + '/音樂A_中文', B = ROOT + '/音樂B_日本';
 const out = { steps: [] };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-async function waitFor(fn, ms) { const end = Date.now() + (ms || 30000); while (Date.now() < end) { const v = fn(); if (v) return v; await sleep(50); } throw new Error('等待逾時'); }
+const timeouts = [];
+async function waitFor(fn, ms, label) { const end = Date.now() + (ms || 30000); while (Date.now() < end) { const v = fn(); if (v) return v; await sleep(50); } let snap = null; try { snap = FaMusicLibHost.getLib().queue.state(); } catch (_) { snap = 'no state'; } timeouts.push({ label: label || 'unlabeled', state: snap, pageHasPanel: document.querySelectorAll('.fml').length }); return null; }
 const readHead = (p, n) => window.desktopAPI.rawfs.readHead(p, n).then((r) => (r && r.base64 != null ? Uint8Array.from(atob(r.base64), (c) => c.charCodeAt(0)) : null));
 // 假轉錄：每首分 4 段（每段 150 毫秒、段與段之間檢查暫停）；song.mid 故意失敗，附具體原因
+const seenFake = {};
 const fake = async (rec, o) => {
   if (rec.name === 'song.mid') throw new Error('假轉錄失敗：模擬這個檔案的音訊軌損毀');
+  // 卡住：報一次進展後永遠不回 → 無進展偵測應該中止，三次重試後標失敗，原因要有階段名與耗時
+  if (rec.name === 'Autumn Leaves.wav') { o.report('load', { detail: '假：模型下載 3%' }); return new Promise(() => { /* 永遠不回 */ }); }
+  // 暫時性失敗：第一次網路錯誤，重試後成功
+  if (rec.name === '晴天.mp3' && !seenFake[rec.name]) { seenFake[rec.name] = true; throw new Error('network error: 假的網路中斷'); }
+  if (o.report) o.report('decode', { detail: '假：解碼', units: 1, window: 1 });
   for (let i = 0; i < 4; i++) {
     if (o.shouldPause && o.shouldPause()) { const e = new Error('已暫停'); e.paused = true; throw e; }
     if (o.onProgress) o.onProgress(i / 4);
@@ -23,6 +30,8 @@ try {
   const L = FaMusicLibHost.getLib();
   await L.ready;
   out.persistent = L.persistent;
+  // 評測用的縮短政策（正式值較長）：卡住約 4 秒就判定，重試等待仍是正式的 2／6／14 秒
+  FaMusicLibHost.setQueuePolicy({ floorMs: 4000, factor: 2, prior: { decode: 200, load: 1000, infer: 200 } });
   out.beforeCount = L.records.length;
   out.beforeCounts = L.queue.state().counts;
   if (!L.records.length) {
@@ -52,7 +61,7 @@ try {
     out.paused = { paused: s1.paused, running: s1.running, counts: s1.counts, queued: s1.queued };
     out.pausedLine = p.querySelector('.fml-lyr .fml-st').textContent;
     btn(p, '續跑').click();
-    await waitFor(() => !L.queue.state().running && L.queue.state().queued === 0 && !L.queue.state().paused, 60000);
+    await waitFor(() => !L.queue.state().running && L.queue.state().queued === 0 && !L.queue.state().paused, 300000);
     out.afterRun = L.queue.state().counts;
     out.afterRunLine = p.querySelector('.fml-lyr .fml-st').textContent;
     out.statusCells = [...p.querySelectorAll('tbody tr')].filter((tr) => tr.querySelector('td')).map((tr) => tr.lastElementChild.textContent).slice(0, 12);
@@ -79,4 +88,5 @@ try {
 } catch (e) {
   out.error = String((e && e.stack) || e);
 }
+out.timeouts = timeouts;
 return out;

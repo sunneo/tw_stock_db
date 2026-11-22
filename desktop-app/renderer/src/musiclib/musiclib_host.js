@@ -73,19 +73,51 @@ const FaMusicLibHost = (function () {
 
   // ───── 預設轉錄：接 app 既有的 Whisper 流程 ─────
   // 回傳 { segments:[{start,end,text}], language, durationSeconds, device }；暫停時丟出 err.paused = true
+  // 下載 ffmpeg.wasm 的同意：已同意過（localStorage 簽章相符）就直接過；沒同意就把「等待使用者確認下載」做成明確階段（來源與大小寫進階段說明），
+  // 再呼叫 app 原本的同意流程（對話裡的卡片）。等待期間不計無進展逾時；使用者拒絕或佇列的等待上限到了才失敗。不替使用者按、不預先寫入同意。
+  function consentAlreadyGiven() {
+    var sig = FaTranscodeFallback.consentSignature(FA_ASSET_URLS.ffmpegJs, FA_ASSET_URLS.ffmpegCore), saved = null;
+    try { saved = localStorage.getItem('fa.ffmpeg.wasmConsent'); } catch (_) { saved = null; }
+    return saved === sig;
+  }
+  function consentDetail() {
+    try {
+      return FaTranscodeFallback.consentText({ jsUrl: FA_ASSET_URLS.ffmpegJs, coreUrl: FA_ASSET_URLS.ffmpegCore });
+    } catch (_) { return '下載 ffmpeg.wasm（約 30 MB）'; }
+  }
+
+  // 預設轉錄：每個階段都回報進展（report），讓佇列的無進展偵測知道目前在哪一段、做到哪裡。
+  // 階段：decode（讀檔與解碼，單位 MB）、load（載入模型，模型下載的進度也算進展）、infer（推論，每段 CHUNK_SEC 秒，window 30 秒）。
   async function whisperTranscribe(record, opts) {
     var fa = (typeof window !== 'undefined' && window.fa) || null;
     if (!fa || typeof fa._decodeAudioForWhisperWithFallback !== 'function') throw new Error('找不到 Whisper 轉錄（需要桌面版的 app）');
     var a = api();
     if (!a || !a.rawfs || !a.rawfs.readFile) throw new Error('讀取音檔的通道不存在（需要桌面版）');
-    var log = function () { /* 進度由佇列顯示，這裡不另外記 */ };
+    var report = typeof opts.report === 'function' ? opts.report : function () {};
+    var sizeMB = Math.max(1, (record.sizeBytes || 0) / 1048576);
+    report('decode', { detail: '讀取檔案（' + Math.round(sizeMB) + ' MB）', units: sizeMB, window: sizeMB });
     var r;
     try { r = await a.rawfs.readFile(record.path, 'base64'); } catch (e) { throw new Error('讀檔失敗：' + String((e && e.message) || e)); }
     if (!r || r.base64 == null) throw new Error('讀檔失敗：讀不到這個檔案的內容');
+    report('decode', { detail: '解碼音訊' });
     var blob = new Blob([b64ToBytes(r.base64)]);
-    var audio;
-    try { audio = await fa._decodeAudioForWhisperWithFallback({ filename: record.name, blob: blob }, log); }
-    catch (e) { throw new Error('解碼失敗：' + String((e && e.message) || e)); }
+    var audio, cstate = { consentDenied: false }, origConsent = fa._ffmpegWasmConsent;
+    fa._ffmpegWasmConsent = async function () { // 只在這次解碼期間生效，之後還原
+      if (consentAlreadyGiven()) return true;
+      report('consent', { detail: consentDetail(), waitUser: true });
+      var ans = await origConsent.call(fa);
+      if (!ans) { cstate.consentDenied = true; return false; }
+      report('decode', { detail: '已同意下載，載入 ffmpeg.wasm' });
+      return true;
+    };
+    try {
+      audio = await fa._decodeAudioForWhisperWithFallback({ filename: record.name, blob: blob }, function (m) { report('decode', { detail: m }); });
+    } catch (e) {
+      if (cstate.consentDenied) throw new Error('解碼失敗：使用者拒絕下載 ffmpeg.wasm（來源見上一段說明），這個格式無法解碼');
+      throw new Error('解碼失敗：' + String((e && e.message) || e));
+    } finally {
+      fa._ffmpegWasmConsent = origConsent;
+    }
     var language = opts.language || 'zh';
     var cpuOnly = fa.advancedSettings && (fa.advancedSettings.whisperDevicePreference === 'cpu' || fa.advancedSettings.offlineDevicePreference === 'cpu');
     var wantGpu = !cpuOnly && await fa._isWebGpuAvailable();
@@ -96,12 +128,16 @@ const FaMusicLibHost = (function () {
       var device = order[d];
       try {
         var segs = [];
+        var label = device === 'webgpu' ? 'WebGPU' : 'CPU';
+        report('load', { detail: '載入模型（' + label + '）' });
+        var tr = await fa._getWhisperTranscriber(device, function (m) { report('load', { detail: m }); });
         for (var c = 0; c < nChunks; c++) {
           if (opts.shouldPause && opts.shouldPause()) { var pe = new Error('已暫停'); pe.paused = true; throw pe; }
           if (opts.onProgress) opts.onProgress(c / nChunks);
-          var tr = await fa._getWhisperTranscriber(device, log);
           var part = pcm.subarray(c * chunk, Math.min(pcm.length, (c + 1) * chunk));
-          var merged = await fa._runWhisperWindowed(tr, part, language, device, log);
+          var partSec = part.length / rate;
+          report('infer', { detail: label + ' 第 ' + (c + 1) + '/' + nChunks + ' 段', units: partSec, window: 30 });
+          var merged = await fa._runWhisperWindowed(tr, part, language, device, function (m) { report('infer', { detail: m }); });
           var offset = (c * chunk) / rate;
           (merged && Array.isArray(merged.chunks) ? merged.chunks : []).forEach(function (ch) {
             var text = String((ch && ch.text) || '').trim();
@@ -169,5 +205,7 @@ const FaMusicLibHost = (function () {
   };
 
   return { methods: methods, getLib: getLib, pickFolder: pickFolder, walkFolder: walkFolder, whisperTranscribe: whisperTranscribe,
-    setTranscriber: function (fn) { transcriber = typeof fn === 'function' ? fn : null; } };
+    setTranscriber: function (fn) { transcriber = typeof fn === 'function' ? fn : null; },
+    // 調整佇列的無進展／重試政策（評測用；正式值見 musiclib_core 的常數）
+    setQueuePolicy: function (p) { var L = getLib(); if (L.queue) L.queue.setPolicy(p); } };
 })();

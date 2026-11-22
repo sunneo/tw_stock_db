@@ -399,17 +399,32 @@
     return out;
   }
 
-  // ───── 歌詞轉錄佇列 ─────
-  // 狀態（每筆曲目的 lyricStatus）：none 未轉錄、queued 排隊中、running 轉錄中、done 完成、failed 失敗（lyricError 記具體原因）。
-  // transcriber(record, { language, onProgress(0~1), shouldPause() }) → Promise<{ segments:[{start,end,text}], language, durationSeconds }>。
-  // 暫停：轉錄函式可以在它的分段之間檢查 shouldPause()，若要停就丟出 err.paused = true；那首退回排隊（從頭重做）。
-  // 已完成的不重做；檔案變更時曲目會被重建、歌詞清掉，之後轉錄才會再做。
-  // 每轉完一首就 lib.save()，所以中途關掉 app，已完成的不會丟。
+  // ───── 歌詞轉錄佇列（含無進展偵測、暫時性失敗自動重試）─────
+  // 狀態（每筆曲目的 lyricStatus）：none 未轉錄、queued 排隊、running 轉錄中、done 完成、failed 失敗（lyricError 記具體原因）。
+  // transcriber(record, { language, report(stage, { detail, units, window }), onProgress(0~1), shouldPause() }) → Promise<{ segments, language, durationSeconds }>
+  //   report 是進展回報：每回報一次就重新計時。stage 用 decode（解碼）、load（載入模型）、infer（推論）。
+  //   units：這個階段完成的工作量（累計用來學習每單位耗時，例如解碼用 MB、推論用音訊秒）；window：本次回報對應的「無進展」判斷單位。
+  // 無進展偵測：某階段在 STALL_FACTOR × 每單位預估耗時 × window 之內沒有任何回報，就中止這次嘗試（StallError，附階段名、已耗時、最後進度）。
+  //   每單位預估耗時一開始用保守的先驗值，之後依實測（指數移動平均）自動更新：長檔、慢機器自動放寬，短檔自動收緊。STALL_FLOOR_MS 只是最短保底。
+  // 暫時性失敗（無進展、逾時、網路、GPU 裝置遺失）：全新再試一次（會重新建立轉錄器），最多重試 3 次，間隔 2、6、14 秒（遞增）。
+  //   其餘失敗（例如這個格式解不了）不重試，立刻標失敗。3 次重試後仍失敗才標失敗，原因寫明嘗試次數。
+  // 暫停：轉錄函式可在分段之間檢查 shouldPause()，要停就丟出 err.paused = true；那首退回排隊，續跑時從頭做。
+  // 每轉完一首就 lib.save()，中途關掉 app，已完成的不會丟；已完成的不重做；檔案變更時曲目重建、歌詞清掉。
+  var STALL_FACTOR = 3, STALL_FLOOR_MS = 20000, EMA_ALPHA = 0.3;
+  var STAGE_PRIOR_MS_PER_UNIT = { decode: 1500, load: 60000, infer: 3000 }; // 每單位先驗：解碼＝MB、載入＝1、推論＝音訊秒
+  var RETRY_BACKOFF_MS = [2000, 6000, 14000];
+  var USER_WAIT_TIMEOUT_MS = 10 * 60 * 1000; // 等使用者確認（例如同意下載 ffmpeg.wasm）的上限；超過就放棄這首，不是無進展偵測
+  var TRANSIENT_RE = /無進展|timed? ?out|逾時|network|fetch|load failed|networkerror|connection|device lost|context lost|gpu|連線|網路/i;
+  var STAGE_NAME = { start: '準備', decode: '解碼', load: '載入模型', infer: '推論', consent: '等待使用者確認下載' };
+
   function createLyricQueue(lib, transcriber, opts) {
     opts = opts || {};
     if (typeof transcriber !== 'function') throw new Error('createLyricQueue 需要轉錄函式');
-    var st = { running: false, paused: false, current: null, progress: null, queue: [], doneRun: 0, failedRun: 0, saveError: null };
-    var listeners = [];
+    var P = Object.assign({ floorMs: STALL_FLOOR_MS, factor: STALL_FACTOR, backoffMs: RETRY_BACKOFF_MS, prior: STAGE_PRIOR_MS_PER_UNIT, userTimeoutMs: USER_WAIT_TIMEOUT_MS }, opts.policy || {});
+    var ema = { decode: P.prior.decode, load: P.prior.load, infer: P.prior.infer }; // 每單位毫秒，實測後更新
+    var st = { running: false, paused: false, current: null, progress: null, queue: [], doneRun: 0, failedRun: 0, saveError: null,
+      stage: null, stageSince: null, stageDetail: '', attempt: 0, retry: null };
+    var listeners = [], pauseWaiters = [];
     lib.records.forEach(function (r) { if (r.lyricStatus === 'running' || r.lyricStatus === 'queued') r.lyricStatus = 'none'; }); // 重開後沒有在跑的工作
 
     function find(key) { for (var i = 0; i < lib.records.length; i++) if (lib.records[i].key === key) return lib.records[i]; return null; }
@@ -422,6 +437,105 @@
         durationSec: res && typeof res.durationSeconds === 'number' ? res.durationSeconds : null
       };
     }
+    function defaultWindow(stage, r) {
+      if (stage === 'decode') return Math.max(1, (r.sizeBytes || 0) / 1048576);
+      if (stage === 'load') return 1;
+      if (stage === 'infer') return 30;
+      return 1;
+    }
+    function stallLimitMs(stage, windowUnits) {
+      var per = ema[stage] != null ? ema[stage] : P.prior.infer;
+      return Math.max(P.floorMs, Math.round(P.factor * per * Math.max(1, windowUnits || 1)));
+    }
+    function learn(stage, elapsedMs, units) {
+      if (!stage || !(units > 0) || ema[stage] == null || !(elapsedMs >= 0)) return;
+      ema[stage] = (1 - EMA_ALPHA) * ema[stage] + EMA_ALPHA * (elapsedMs / units);
+    }
+    function stallError(stage, elapsedMs, detail, limitMs) {
+      var e = new Error('階段「' + (STAGE_NAME[stage] || stage) + '」無進展超過 ' + Math.round(limitMs / 1000) + ' 秒（已耗時 ' + Math.round(elapsedMs / 1000) + ' 秒，最後進度：' + (detail || '無') + '）');
+      e.stall = true; e.stage = stage; e.elapsedMs = elapsedMs; e.lastDetail = detail;
+      return e;
+    }
+    function isTransient(err) { if (!err || err.userWait) return false; if (err.stall) return true; return TRANSIENT_RE.test(String(err.message || '')); }
+
+    // 單一次嘗試：監看進展；超過無進展上限就中止這次（底層工作可能還在跑，但結果會被忽略）
+    function runAttempt(r) {
+      return new Promise(function (resolve, reject) {
+        var done = false, timer = null, stage = 'start', stageAt = Date.now(), stageUnits = 0, detail = '', win = 1;
+        function finish(fn, v) { if (done) return; done = true; clearTimeout(timer); pauseWaiters = pauseWaiters.filter(function (w) { return w !== onPause; }); fn(v); }
+        // 暫停要立刻生效：正在跑的這次嘗試直接以「已暫停」結束（底層工作若還在跑，它的結果會被忽略）
+        function onPause() { var e = new Error('已暫停'); e.paused = true; finish(reject, e); }
+        pauseWaiters.push(onPause);
+        function arm() {
+          clearTimeout(timer);
+          if (win === Infinity) {
+            // 等待使用者確認（例如同意下載）：不算無進展，只有等太久才失敗
+            timer = setTimeout(function () { var e = new Error('等待使用者確認超過 ' + Math.round(P.userTimeoutMs / 60000) + ' 分鐘，沒有回應，已放棄這首（階段：' + (STAGE_NAME[stage] || stage) + '）'); e.userWait = true; finish(reject, e); }, P.userTimeoutMs);
+            return;
+          }
+          var limit = stallLimitMs(stage, win);
+          timer = setTimeout(function () { finish(reject, stallError(stage, Date.now() - stageAt, detail, limit)); }, limit);
+        }
+        function report(s, d) {
+          if (done) return;
+          d = d || {};
+          var now = Date.now();
+          if (s && s !== stage) { learn(stage, now - stageAt, stageUnits); stage = s; stageAt = now; stageUnits = 0; win = defaultWindow(s, r); }
+          if (d.units > 0) stageUnits += d.units;
+          if (d.waitUser) win = Infinity; // 等使用者：不計無進展
+          else if (d.window > 0) win = d.window;
+          if (d.detail != null) detail = String(d.detail).slice(0, 200);
+          st.stage = stage; st.stageSince = stageAt; st.stageDetail = detail;
+          emit(); arm();
+        }
+        arm();
+        var p;
+        try {
+          p = Promise.resolve(transcriber(r, {
+            language: opts.language || 'zh',
+            report: report,
+            onProgress: function (f) { st.progress = Math.max(0, Math.min(1, Number(f) || 0)); emit(); },
+            shouldPause: function () { return st.paused; }
+          }));
+        } catch (e) { p = Promise.reject(e); }
+        p.then(function (v) { if (!done) learn(stage, Date.now() - stageAt, stageUnits); finish(resolve, v); }, function (e) { finish(reject, e); });
+      });
+    }
+    function waitWithPause(ms) {
+      return new Promise(function (resolve, reject) {
+        var end = Date.now() + ms;
+        (function tick() {
+          if (st.paused) { var e = new Error('已暫停'); e.paused = true; return reject(e); }
+          var left = end - Date.now();
+          if (left <= 0) return resolve();
+          setTimeout(tick, Math.min(200, left));
+        })();
+      });
+    }
+    // 暫時性失敗：全新重試（每次都重新呼叫轉錄函式），間隔遞增；其餘失敗或重試用完就丟出
+    async function transcribeWithRetry(r) {
+      var backoff = P.backoffMs;
+      for (var attempt = 1; ; attempt++) {
+        st.attempt = attempt; emit();
+        try {
+          return await runAttempt(r);
+        } catch (err) {
+          if (err && err.paused) throw err;
+          var exhausted = attempt > backoff.length;
+          if (exhausted || !isTransient(err)) {
+            var fin = new Error('第 ' + attempt + ' 次嘗試失敗' + (attempt > 1 ? '（已自動重試 ' + (attempt - 1) + ' 次）' : '') + '：' + String((err && err.message) || err || '未知錯誤'));
+            fin.attempts = attempt;
+            throw fin;
+          }
+          var wait = backoff[attempt - 1];
+          st.retry = { afterAttempt: attempt, waitMs: wait, untilAt: Date.now() + wait, reason: String((err && err.message) || err) };
+          emit();
+          await waitWithPause(wait);
+          st.retry = null; emit();
+        }
+      }
+    }
+
     async function loop() {
       st.running = true; emit();
       try {
@@ -430,11 +544,7 @@
           if (!r || r.status !== 'ok' || r.lyricStatus === 'done') continue;
           st.current = key; st.progress = 0; r.lyricStatus = 'running'; r.lyricError = null; emit();
           try {
-            var res = await transcriber(r, {
-              language: opts.language || 'zh',
-              onProgress: function (f) { st.progress = Math.max(0, Math.min(1, Number(f) || 0)); emit(); },
-              shouldPause: function () { return st.paused; }
-            });
+            var res = await transcribeWithRetry(r);
             r.lyrics = Object.assign(sanitize(res), { transcribedAt: Date.now() });
             r.lyricStatus = 'done'; r.lyricError = null; st.doneRun++;
           } catch (err) {
@@ -443,12 +553,12 @@
             r.lyricError = String((err && err.message) || err || '未知錯誤') || '未知錯誤';
             st.failedRun++;
           }
-          st.current = null; st.progress = null;
+          st.current = null; st.progress = null; st.stage = null; st.stageSince = null; st.stageDetail = ''; st.attempt = 0; st.retry = null;
           try { await lib.save(); st.saveError = null; } catch (e) { st.saveError = String((e && e.message) || e); }
           emit();
         }
       } finally {
-        st.current = null; st.progress = null; st.running = false;
+        st.current = null; st.progress = null; st.running = false; st.stage = null; st.stageSince = null; st.stageDetail = ''; st.attempt = 0; st.retry = null;
         // 暫停時還在佇列裡的曲目標成排隊中（顯示用）
         st.queue.forEach(function (k) { var x = find(k); if (x && x.lyricStatus !== 'done') x.lyricStatus = 'queued'; });
         emit();
@@ -457,19 +567,25 @@
     function kick() { if (!st.running && !st.paused && st.queue.length) loop(); }
 
     var q = {
-      // keys 為空＝全部還沒完成的（none／failed／queued）
+      // keys 為空＝全部還沒完成的（none／failed／queued）；遊戲來源（pending）不排進佇列
       enqueue: function (keys) {
         var list = keys && keys.length ? keys : lib.records.filter(function (r) { return r.status === 'ok' && !r.pending; }).map(function (r) { return r.key; });
         list.forEach(function (k) {
           var r = find(k);
-          // 遊戲音樂來源（pending）沒有可轉錄的聲音，不排進佇列
           if (!r || r.status !== 'ok' || r.pending || r.lyricStatus === 'done' || st.queue.indexOf(k) >= 0 || st.current === k) return;
           st.queue.push(k); r.lyricStatus = 'queued'; r.lyricError = null;
         });
         emit(); kick();
         return st.queue.length;
       },
-      pause: function () { st.paused = true; emit(); },
+      pause: function () { st.paused = true; pauseWaiters.slice().forEach(function (f) { f(); }); emit(); },
+      // 執行期調整政策（測試與評測用；正式值是常數）。prior 會同時更新目前的每單位估計。
+      setPolicy: function (p) {
+        p = p || {};
+        Object.keys(p).forEach(function (k) { if (k !== 'prior') P[k] = p[k]; });
+        if (p.prior) { P.prior = Object.assign({}, P.prior, p.prior); Object.keys(p.prior).forEach(function (k) { if (ema[k] != null) ema[k] = p.prior[k]; }); }
+        emit();
+      },
       resume: function () { st.paused = false; emit(); kick(); },
       // 等目前這一輪結束（測試與關閉前用）
       idle: function () { return new Promise(function (res) { (function wait() { if (!st.running) res(); else setTimeout(wait, 5); })(); }); },
@@ -477,7 +593,12 @@
       state: function () {
         var c = { none: 0, queued: 0, running: 0, done: 0, failed: 0 };
         lib.records.forEach(function (r) { if (r.status === 'ok' && !r.pending && c[r.lyricStatus] != null) c[r.lyricStatus]++; });
-        return { running: st.running, paused: st.paused, current: st.current, progress: st.progress, queued: st.queue.length, doneRun: st.doneRun, failedRun: st.failedRun, saveError: st.saveError, counts: c };
+        return {
+          running: st.running, paused: st.paused, current: st.current, progress: st.progress, queued: st.queue.length,
+          doneRun: st.doneRun, failedRun: st.failedRun, saveError: st.saveError, counts: c,
+          stage: st.stage, stageLabel: st.stage ? (STAGE_NAME[st.stage] || st.stage) : null, stageSince: st.stageSince, stageDetail: st.stageDetail,
+          attempt: st.attempt, retry: st.retry
+        };
       }
     };
     return q;

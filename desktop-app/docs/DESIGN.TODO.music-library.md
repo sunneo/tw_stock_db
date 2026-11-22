@@ -193,3 +193,44 @@
 - 評測的中文輸出在主控台亂碼，判定以狀態與計數為準。
 - 沒有 GPU 的環境下真轉錄會很慢（這次評測的卡住也可能是這個原因），不能確定是慢還是壞掉。
 - 沒有發布、沒有推送；建置產物（`renderer/floating-assistant.js`、`.min.js`、`web-lazy/`、`update-manifest.json`）未提交。
+
+## 歌詞轉錄：保護機制與真機評測（第二輪，2026-11-22）
+
+狀態：無進展偵測、自動重試、等待同意的階段、暫停即時生效都已做並有單元測試；假轉錄真桌面版評測通過；真 Whisper 評測通過一次（wav，1 秒）。**沒驗證的部分見最後一節。**
+
+### 為什麼 0% 卡住（查證結果）
+
+- 測試用的 1 秒靜音 wav 一開始是壞檔：生成器只寫了標頭、沒寫取樣資料，標頭宣稱 1 秒、檔案實際沒有音訊。既有的 `transcribe_media` 流程（同一個 profile、同一個檔案，對照只跑一次）在解碼就失敗（`Unable to decode audio data`，23 秒）。這是測試資料的錯，已修正（`make_music.js`）。
+- 修正測試檔後，真 Whisper 評測（`musiclib_lyrics_real`）整條流程通過：原生解碼成功（不需要 ffmpeg）、WebGPU 推論、4 段、長度 1 秒，耗時 172 秒（大部分是模型載入）。
+- 更早那次 0% 卡住：解碼退路會走到 `_ffmpegWasmConsent`，對話裡的「下載 ffmpeg.wasm」卡片等使用者按確認；背景佇列沒有人按，所以卡住。這是最可能的解釋，但我沒有從卡片本身證實「等待時間點」與它解開的方式，所以只寫成「最可能」。
+- 快取：這個 profile 的 Cache Storage 裡沒有 Whisper 模型（`caches.keys()` 只有 `kokoro-voices`、`fa-moss-tts-v1`），模型是從網路下載的。
+
+### 這一輪加入的保護（佇列）
+
+- **無進展偵測**（`musiclib_core.js`）：每個階段（decode 解碼、load 載入模型、infer 推論）都要回報進展；超過「3 × 每單位預估耗時 × 本次回報單位」沒有回報就中止這次嘗試，錯誤附階段名、已耗時、最後進度。每單位耗時一開始用保守先驗值，之後用指數移動平均依實測更新。`STALL_FLOOR_MS`（20 秒）只是最短保底。
+- **暫時性失敗自動重試**：無進展、逾時、網路、GPU 裝置遺失這類錯誤，全新再試（重新建立轉錄器），最多重試 3 次，間隔 2、6、14 秒。其餘失敗（例如格式解不了）不重試。重試用完仍失敗才標失敗，原因寫明嘗試次數。
+- **等待使用者確認下載**：解碼退路需要 ffmpeg.wasm 時，宿主把「等待使用者確認下載 ffmpeg.wasm」做成明確階段，說明含來源與大小（取 app 原本的同意文字，估計約 30 MB）；這個階段不計無進展逾時；使用者拒絕、或超過 10 分鐘（`USER_WAIT_TIMEOUT_MS`），才標失敗並附原因。不替使用者按、不預先寫入已同意狀態。**這條路徑只有程式碼與假設，沒有真機驗證**（本輪真 Whisper 只跑 wav，沒有觸發下載）。
+- **暫停立即生效**：暫停會中止正在卡住的那次嘗試，不必等無進展逾時。
+- **面板顯示**：目前階段（中文名）、已耗時（每秒更新）、第幾次嘗試、重試倒數、最後進度。
+- `setPolicy`：執行期調整政策（評測用）；正式值是常數。
+
+### 測試結果
+
+- 單元測試 `musiclib_core.test.js`：**34/34 通過**。新增的項目：卡住的階段被中止並附階段名與耗時、重試 3 次後才標失敗；慢但持續有回報的不算卡住、狀態顯示目前階段；暫時性失敗後重試成功；不可重試的失敗只試一次；卡住的一首不影響其他首；重試等待中暫停；暫停能打斷卡住的那次嘗試；`setPolicy` 執行期生效。
+- 假轉錄真桌面版評測（`musiclib_lyrics.eval`，新 profile，只跑一次）：暫停立即生效（`running: false`，6 首排隊）；續跑後 4 首完成、2 首失敗；「晴天」第一次網路錯誤、重試後成功；「Autumn Leaves.wav」卡住、4 次嘗試後標失敗，原因含階段名、耗時與最後進度；「song.mid」不可重試，立刻失敗；歌詞搜尋與範圍切換正確。
+- 真 Whisper（`musiclib_lyrics_real`，同一個 profile，只跑 wav）：本輪共跑兩次。第一次用的是修正前的截斷檔，解碼失敗（測試資料錯誤）；第二次（重新產生測試檔後）**通過**：WebGPU、4 段、1 秒、172 秒。注意：一段靜音產生 4 段文字，內容可能是 Whisper 的幻覺，這次沒有檢查內容是否合理。
+
+### 沒驗證、沒做到
+
+- 「等待使用者確認下載」的階段與拒絕、逾時的失敗路徑只有程式碼，沒有單元測試也沒有真機驗證。
+- 真 Whisper 只跑了一次短音檔，模型是從網路下載的（約 77 MB）；沒有比較不同模型與不同長度的吞吐。
+- 長檔（分段）與長時間的暫停、續跑，沒有真機驗證。
+- 沒有發布、沒有推送；建置產物未提交。
+
+### 修正 `embed-code-ui.js` 的包裝（證據）
+
+- 原本的包裝是 `(function (module, self) { 核心檔 }).call(null, undefined, holder); return holder.FaTranscodeFallback;`。
+- 核心檔 `renderer/src/media/transcode_fallback_core.js` 的寫法不是 UMD：第 7 行是 `const FaTranscodeFallback = (function () {…})();`，第 126 行是 `if (typeof module !== 'undefined' && module.exports) module.exports = FaTranscodeFallback;`。傳入的 `module` 是 `undefined`，所以第 126 行什麼都不做，`holder` 永遠是空的，`return holder.FaTranscodeFallback` 得到 `undefined`。
+- 實際看到的錯誤：解碼時 `Cannot read properties of undefined (reading 'decodeForWhisper')`，`_decodeAudioForWhisperWithFallback` 整段失敗。既有的 `transcribe_media` 工具也受影響。
+- 修正：傳入 `mod = { exports: {} }`，核心檔的 `module.exports` 就會寫進 `mod`，包裝回傳 `mod.exports`（只改這一個嵌入函式）。
+- 其他同樣用 `embed(...)` 包裝寫法的模組（我檢查過的）：`renderer/src/gui/*`（8 個）、`renderer/src/chat/*`（6 個）、`renderer/src/agent/*`（3 個），都是標準 UMD（`else { root.X = factory() }`），不受影響。`renderer/src/gpu/gpu_core.js`、`gpu_preload.js` 也用同一個包裝，**這一輪沒有檢查**。

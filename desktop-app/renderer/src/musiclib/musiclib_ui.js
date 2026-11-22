@@ -131,7 +131,13 @@
       if (!queue) return;
       var s = queue.state(), c = s.counts;
       var parts = ['完成 ' + c.done, '排隊 ' + c.queued, '未轉錄 ' + c.none, '失敗 ' + c.failed];
-      if (s.running) parts.push('轉錄中：' + (s.current ? (lib.records.filter(function (r) { return r.key === s.current; })[0] || {}).name : '') + (s.progress != null ? '（' + Math.round(s.progress * 100) + '%）' : ''));
+      if (s.running) {
+        var cur = s.current ? (lib.records.filter(function (r) { return r.key === s.current; })[0] || {}) : {};
+        var line = '轉錄中：' + (cur.name || '') + (s.progress != null ? '（' + Math.round(s.progress * 100) + '%）' : '');
+        if (s.retry) line += '｜第 ' + s.retry.afterAttempt + ' 次失敗，' + Math.max(0, Math.ceil((s.retry.untilAt - Date.now()) / 1000)) + ' 秒後自動重試';
+        else if (s.stage) line += '｜階段：' + (s.stageLabel || s.stage) + '（已 ' + Math.max(0, Math.round((Date.now() - s.stageSince) / 1000)) + ' 秒）' + (s.attempt > 1 ? '｜第 ' + s.attempt + ' 次嘗試' : '') + (s.stageDetail ? '｜' + s.stageDetail : '');
+        parts.push(line);
+      }
       if (s.paused) parts.push('已暫停');
       if (s.saveError) parts.push('⚠️ 存檔失敗：' + s.saveError);
       lyrStat.textContent = '歌詞：' + parts.join('、');
@@ -177,10 +183,15 @@
     bPause.onclick = function () { if (!queue) return; if (queue.state().paused) queue.resume(); else queue.pause(); render(); };
 
     if (queue) unsub = queue.onChange(function () { render(); });
+    // 轉錄中每秒更新「已耗時」與重試倒數（只更新歌詞列，不重畫清單）
+    var ticker = setInterval(function () {
+      if (!root.isConnected) { clearInterval(ticker); if (unsub) unsub(); return; } // 面板已從對話移除：停掉計時與監聽
+      if (queue && queue.state().running) renderLyr();
+    }, 1000);
     render();
     return {
       refresh: render,
-      destroy: function () { if (unsub) unsub(); if (root.parentNode) root.parentNode.removeChild(root); }
+      destroy: function () { clearInterval(ticker); if (unsub) unsub(); if (root.parentNode) root.parentNode.removeChild(root); }
     };
   }
 

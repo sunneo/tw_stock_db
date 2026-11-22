@@ -335,7 +335,8 @@ t('歌詞佇列：完成、失敗附具體原因、續跑不重做已完成的',
   assert.equal(byName('晴天.mp3').lyricStatus, 'done');
   assert.equal(byName('晴天.mp3').lyrics.segments.length, 3);
   assert.equal(byName('Autumn Leaves.mp3').lyricStatus, 'failed');
-  assert.equal(byName('Autumn Leaves.mp3').lyricError, '解碼失敗：檔頭不是可辨識的音訊');
+  // 不可重試的失敗：只嘗試一次，原因後面接上具體訊息
+  assert.equal(byName('Autumn Leaves.mp3').lyricError, '第 1 次嘗試失敗：解碼失敗：檔頭不是可辨識的音訊');
   assert.equal(byName('zelda.nes').lyricStatus, 'none', '遊戲來源不排進佇列');
   assert.equal(q.state().counts.failed, 1);
   // 第二輪（續跑）：完成的不重做，失敗的會重試
@@ -458,6 +459,132 @@ t('歌詞佇列：不認的狀態與停止中的計數', async function () {
   assert.equal(s.counts.none, 4, '4 個音訊與影片，遊戲來源不算');
   assert.equal(s.running, false);
   assert.throws(() => M.createLyricQueue(lib, null), /轉錄函式/);
+});
+
+// ───── 無進展偵測與自動重試（假轉錄函式模擬卡住、慢、暫時性失敗）─────
+// 測試用的政策：先驗與保底都縮小，讓「卡住」在幾十毫秒內判定；正式值見 core 的常數
+const FAST = { floorMs: 40, factor: 2, backoffMs: [5, 10, 20], prior: { decode: 1, load: 1, infer: 1 } };
+const sleepT = (ms) => new Promise((r) => setTimeout(r, ms));
+
+t('無進展：卡住的階段會被中止，附階段名、已耗時、最後進度，暫時性失敗會重試 3 次後才標失敗', async function () {
+  const lib = await libWithFixtures();
+  const calls = [];
+  const tr = async (rec, o) => {
+    calls.push(rec.name);
+    if (rec.name !== '晴天.mp3') return { segments: [], language: 'zh', durationSeconds: 1 };
+    o.report('load', { detail: '下載模型 1%' });
+    return new Promise(() => { /* 永遠不回：模擬卡住 */ });
+  };
+  const q = M.createLyricQueue(lib, tr, { policy: FAST });
+  q.enqueue([lib.records.filter((r) => r.name === '晴天.mp3')[0].key]);
+  await q.idle();
+  const r = lib.records.filter((x) => x.name === '晴天.mp3')[0];
+  assert.equal(r.lyricStatus, 'failed');
+  assert.equal(calls.length, 4, '第一次＋重試 3 次');
+  assert.ok(/第 4 次嘗試失敗（已自動重試 3 次）/.test(r.lyricError), r.lyricError);
+  assert.ok(/階段「載入模型」無進展/.test(r.lyricError), r.lyricError);
+  assert.ok(/已耗時 \d+ 秒/.test(r.lyricError), r.lyricError);
+  assert.ok(/最後進度：下載模型 1%/.test(r.lyricError), r.lyricError);
+});
+
+t('無進展：慢但持續有回報的不會被判卡住；佇列狀態顯示目前階段與中文名', async function () {
+  const lib = await libWithFixtures();
+  let seenStage = null, seenLabel = null;
+  const tr = async (rec, o) => {
+    if (rec.name !== '晴天.mp3') return { segments: [], language: 'zh', durationSeconds: 1 };
+    o.report('decode', { detail: '解碼中', units: 1 });
+    await sleepT(30);
+    o.report('infer', { detail: '第 1 段', units: 30, window: 30 });
+    seenStage = q.state().stage; seenLabel = q.state().stageLabel;
+    for (let i = 0; i < 8; i++) { await sleepT(20); o.report('infer', { detail: '第 ' + (i + 2) + ' 段' }); }
+    return { segments: SEG_TIANQING, language: 'zh', durationSeconds: 30 };
+  };
+  const q = M.createLyricQueue(lib, tr, { policy: FAST });
+  q.enqueue([lib.records.filter((r) => r.name === '晴天.mp3')[0].key]);
+  await q.idle();
+  assert.equal(lib.records.filter((x) => x.name === '晴天.mp3')[0].lyricStatus, 'done');
+  assert.equal(seenStage, 'infer');
+  assert.equal(seenLabel, '推論');
+});
+
+t('暫時性失敗：第一次網路錯誤、重試後成功，原因清空', async function () {
+  const lib = await libWithFixtures();
+  let n = 0;
+  const tr = async () => { n++; if (n === 1) throw new Error('network error: fetch failed'); return { segments: SEG_TIANQING, language: 'zh', durationSeconds: 3 }; };
+  const q = M.createLyricQueue(lib, tr, { policy: FAST });
+  q.enqueue([lib.records.filter((r) => r.name === '晴天.mp3')[0].key]);
+  await q.idle();
+  const r = lib.records.filter((x) => x.name === '晴天.mp3')[0];
+  assert.equal(n, 2, '重試一次就成功');
+  assert.equal(r.lyricStatus, 'done');
+  assert.equal(r.lyricError, null);
+});
+
+t('不可重試的失敗（解碼不支援）只嘗試一次，立刻標失敗並附原因', async function () {
+  const lib = await libWithFixtures();
+  let n = 0;
+  const tr = async () => { n++; throw new Error('解碼失敗：格式不支援'); };
+  const q = M.createLyricQueue(lib, tr, { policy: FAST });
+  q.enqueue([lib.records.filter((r) => r.name === '晴天.mp3')[0].key]);
+  await q.idle();
+  const r = lib.records.filter((x) => x.name === '晴天.mp3')[0];
+  assert.equal(n, 1);
+  assert.equal(r.lyricStatus, 'failed');
+  assert.equal(r.lyricError, '第 1 次嘗試失敗：解碼失敗：格式不支援');
+});
+
+t('卡住的一首不影響其他曲目：其他首照常完成', async function () {
+  const lib = await libWithFixtures();
+  const tr = async (rec) => {
+    if (rec.name === '晴天.mp3') return new Promise(() => { /* 卡住 */ });
+    return { segments: SEG_AUTUMN, language: 'zh', durationSeconds: 3 };
+  };
+  const q = M.createLyricQueue(lib, tr, { policy: FAST });
+  q.enqueue([]);
+  await q.idle();
+  const s = q.state();
+  assert.equal(s.counts.failed, 1);
+  assert.equal(s.counts.done, 3);
+  assert.equal(lib.records.filter((x) => x.name === '晴天.mp3')[0].lyricStatus, 'failed');
+});
+
+t('重試等待中按暫停：那首退回排隊，不再重試', async function () {
+  const lib = await libWithFixtures();
+  let n = 0, q;
+  const tr = async () => { n++; q.pause(); throw new Error('network error'); };
+  q = M.createLyricQueue(lib, tr, { policy: Object.assign({}, FAST, { backoffMs: [200, 200, 200] }) });
+  q.enqueue([lib.records.filter((r) => r.name === '晴天.mp3')[0].key]);
+  await q.idle();
+  assert.equal(n, 1);
+  assert.equal(lib.records.filter((x) => x.name === '晴天.mp3')[0].lyricStatus, 'queued');
+  assert.equal(q.state().retry, null);
+});
+
+t('暫停能打斷卡住的那一次嘗試（不必等無進展逾時）', async function () {
+  const lib = await libWithFixtures();
+  let n = 0;
+  const tr = async (rec, o) => { n++; o.report('load', { detail: '下載中' }); return new Promise(() => { /* 卡住 */ }); };
+  const q = M.createLyricQueue(lib, tr, { policy: { floorMs: 60000, factor: 3, prior: { decode: 1, load: 60000, infer: 1 } } });
+  q.enqueue([lib.records.filter((r) => r.name === '晴天.mp3')[0].key]);
+  await sleepT(30);
+  const t0 = Date.now();
+  q.pause();
+  await q.idle();
+  assert.ok(Date.now() - t0 < 1000, '暫停後很快結束，不是等 60 秒');
+  assert.equal(n, 1);
+  assert.equal(lib.records.filter((x) => x.name === '晴天.mp3')[0].lyricStatus, 'queued');
+});
+
+t('setPolicy 執行期調整：縮短卡住判定時間後，立刻生效', async function () {
+  const lib = await libWithFixtures();
+  let n = 0;
+  const tr = async () => { n++; return new Promise(() => { /* 卡住 */ }); };
+  const q = M.createLyricQueue(lib, tr, { policy: { backoffMs: [1, 1, 1], floorMs: 60000, factor: 3, prior: { decode: 1, load: 60000, infer: 1 } } });
+  q.setPolicy({ floorMs: 30, factor: 1, prior: { load: 1, infer: 1, decode: 1 } });
+  q.enqueue([lib.records.filter((r) => r.name === '晴天.mp3')[0].key]);
+  await q.idle();
+  assert.equal(n, 4, '卡住 → 3 次重試後標失敗');
+  assert.equal(lib.records.filter((x) => x.name === '晴天.mp3')[0].lyricStatus, 'failed');
 });
 
 // ───── 執行 ─────
