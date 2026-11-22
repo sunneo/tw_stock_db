@@ -84278,24 +84278,44 @@ const holder = {};
     // OPL2 暫存器寫入序列（給晶片播放器用）。t 單位同延遲字（1/980 秒）；運算元位址 MOD_OFF[ch]，載波 +3。頻道 0..8 直接對應 OPL2 的 9 個頻道
     var regs = [], voice = {}, carTL = {};
     function reg(r, v) { regs.push({ t: t, r: r & 0xFF, v: v & 0xFF }); }
+    // 樂器欄位（每個運算元 13 字，見 RIX_FIELD）打包成 OPL2 暫存器。欄位位置依 RIX 播放器的公開語意整理（見 docs/DESIGN.music-rix-opl.md）
+    var F = { ksl: 0, mult: 1, fb: 2, ar: 3, sl: 4, egt: 5, dr: 6, rr: 7, tl: 8, am: 9, vib: 10, ksr: 11, cnt: 12 };
+    var vol = {}, bendSemi = {};
+    function opVolume(c) { return vol[c] == null ? 127 : vol[c]; }
+    // 總音量（TL）：樂器的 TL 欄位依音量 0..127 縮放：TL = 63 − floor(((63 − tl) × vol × 2 + 127) ÷ 254)
+    function totalLevel(tl, v) { return 63 - Math.floor(((63 - (tl & 0x3F)) * v * 2 + 127) / 254); }
+    function writeOp(o, p, v) {
+      reg(0x20 + o, ((p[F.am] ? 1 : 0) << 7) | ((p[F.vib] ? 1 : 0) << 6) | ((p[F.egt] ? 1 : 0) << 5) | ((p[F.ksr] ? 1 : 0) << 4) | (p[F.mult] & 0x0F));
+      reg(0x40 + o, ((p[F.ksl] & 3) << 6) | totalLevel(p[F.tl], v));
+      reg(0x60 + o, ((p[F.ar] & 0x0F) << 4) | (p[F.dr] & 0x0F));
+      reg(0x80 + o, ((p[F.sl] & 0x0F) << 4) | (p[F.rr] & 0x0F));
+    }
     function loadIns(c, n) {
       var ins = instrument(n), mo = OPL_MOD_OFF[c], co = mo + 3, m = ins.mod, k = ins.car;
-      reg(0x20 + mo, m[0]); reg(0x40 + mo, m[1]); reg(0x60 + mo, m[2]); reg(0x80 + mo, m[3]); reg(0xE0 + mo, ins.wave[0]);
-      reg(0x20 + co, k[0]); reg(0x40 + co, k[1]); reg(0x60 + co, k[2]); reg(0x80 + co, k[3]); reg(0xE0 + co, ins.wave[1]);
-      reg(0xC0 + c, ((m[10] & 7) << 1) | ((m[10] >> 3) & 1));   // 回授與連接：由 mod 第 10 字推得（對應未驗證，見報告）
-      carTL[c] = k[1] & 0x3F;
+      writeOp(mo, m, 127);                     // 調變器不受 B0 音量影響
+      writeOp(co, k, opVolume(c));             // 載波依目前音量
+      reg(0xE0 + mo, ins.wave[0]); reg(0xE0 + co, ins.wave[1]);
+      reg(0xC0 + c, ((m[F.fb] & 7) << 1) | (m[F.cnt] ? 0 : 1));   // 回授；連接：mod 第 12 字為 0 時是加法（CNT=1）
+      carTL[c] = k;
     }
-    function setVolume(c, vol) {               // 音量 0..127 → 載波總音量：樂器基準值加上衰減，最多 40 級
+    function setVolume(c, v) {                 // B0：音量 0..127，只影響載波的總音量
+      vol[c] = v;
       if (carTL[c] == null) return;
-      var tl = Math.min(63, carTL[c] + Math.round((127 - vol) / 127 * 40));
-      reg(0x40 + OPL_MOD_OFF[c] + 3, tl);
+      var k = carTL[c];
+      reg(0x40 + OPL_MOD_OFF[c] + 3, ((k[F.ksl] & 3) << 6) | totalLevel(k[F.tl], v));
     }
-    function keyOn(c, midi) {
+    // 音高彎曲（A0）：中心 0x2000、範圍 ±1 半音（每半音 25 格，見設計文件）
+    function bendOf(v) { return (v - 0x2000) / 0x2000; }
+    function writePitch(c, midi, on) {
       var f = oplFreq(midi);
       voice[c] = f;
-      reg(0xB0 + c, (f.block << 2) | ((f.fnum >> 8) & 3));   // 先確保關閉
       reg(0xA0 + c, f.fnum & 0xFF);
-      reg(0xB0 + c, 0x20 | (f.block << 2) | ((f.fnum >> 8) & 3));
+      reg(0xB0 + c, (on ? 0x20 : 0) | (f.block << 2) | ((f.fnum >> 8) & 3));
+    }
+    function keyOn(c, midi) {
+      if (voice[c] == null) { /* 新音 */ }
+      reg(0xB0 + c, (voice[c] ? voice[c].block << 2 : 0));    // 先關掉（同一頻道重新觸發）
+      writePitch(c, midi + (bendSemi[c] || 0), true);
     }
     function keyOff(c) {
       var f = voice[c]; if (!f) return;
@@ -84321,6 +84341,10 @@ const holder = {};
       } else if (kind === 0xA0) {                // 音高彎曲：資料 << 6，中心 0x2000
         var bend = Math.min(0x3FFF, data << 6);
         if (ch <= 10) { trackOf(ch).push({ bend: true, t: t, value: bend }); bends++; }
+        if (ch <= 8) {
+          bendSemi[ch] = bendOf(bend);
+          if (voice[ch] && active[ch]) writePitch(ch, active[ch].n + bendSemi[ch], true);
+        }
         cmds++;
       } else if (kind === 0xB0) {                // 音量（0..0x7F）
         if (ch <= 10) { trackOf(ch).push({ vol: true, t: t, value: Math.min(0x7F, data) }); vols++; if (ch <= 8) setVolume(ch, Math.min(0x7F, data)); }
@@ -84417,7 +84441,9 @@ const holder = {};
   var KSL_DB = [0, 3, 1.5, 6];                   // KSL 每級的衰減係數（dB，依八度放大）
   var TWO_PI = Math.PI * 2;
 
-  function rateTau(r) { return r === 0 ? Infinity : 0.002 * Math.pow(2, (15 - r) / 1.5); }   // 秒，越大越慢
+  // 包絡速率索引 rk = 4×速率 + 按鍵縮放（KSR 開為 keyScale，關為 keyScale÷4）；rk 每加 4 時間減半。rk=0 不動。
+  function rateTau(rk) { if (rk <= 0) return Infinity; if (rk > 63) rk = 63; return 0.0009 * Math.pow(2, (60 - rk) / 4); }   // 秒，近似
+  function rateIndex(rate, keyScale, ksr) { if (!rate) return 0; var ks = ksr ? keyScale : (keyScale >> 2); return Math.min(63, 4 * rate + ks); }
   function wave(ph, ws) {
     var s = Math.sin(TWO_PI * ph);
     switch (ws) {
@@ -84491,23 +84517,22 @@ const holder = {};
     function stepOp(o, ph, dt, keyScale) {
       var p = op[o]; if (!p) return 0;
       // 包絡推進
-      var ksrEff = p.ksr ? keyScale : (keyScale >> 2);
-      var scale = Math.pow(2, -ksrEff / 4);
       var sus = Math.pow(10, -(p.sl * 3) / 20); if (p.sl === 15) sus = 0;
       var s = st.stage[o], e = st.env[o];
       if (s === 1) {                                // 攻擊
-        var ta = rateTau(p.ar) * 0.3 * scale;
-        if (!isFinite(ta) || ta <= 0) { e = 1; s = 2; }
+        var ta = rateTau(rateIndex(p.ar, keyScale, p.ksr)) * 0.3;
+        if (p.ar === 15) { e = 1; s = 2; }
+        else if (!isFinite(ta) || ta <= 0) { /* AR=0：不攻擊 */ }
         else { e += (1 - e) * (1 - Math.exp(-dt / ta)); if (e > 0.998) { e = 1; s = 2; } }
       } else if (s === 2) {                         // 衰減到持續位準
-        var td = rateTau(p.dr) * scale;
+        var td = rateTau(rateIndex(p.dr, keyScale, p.ksr));
         if (!isFinite(td) || td <= 0) { /* 不衰減 */ }
         else { e = sus + (e - sus) * Math.exp(-dt / td); }
         if (e - sus < 0.002) { e = sus; s = p.egt ? 3 : 4; }
       } else if (s === 3) {                         // 持續（EGT 開，按住期間不動）
         e = sus;
       } else if (s === 4) {                         // 釋放
-        var tr = rateTau(p.rr) * scale;
+        var tr = rateTau(rateIndex(p.rr, keyScale, p.ksr));
         if (isFinite(tr) && tr > 0) e *= Math.exp(-dt / tr); else e = 0;
         if (e < 0.0005) { e = 0; s = 0; }
       }
