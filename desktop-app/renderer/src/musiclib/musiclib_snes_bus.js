@@ -114,6 +114,8 @@
       get portWrites() { return st.portWrites; },
       get blocks() { return 0; },
       get bytes() { return 0; },
+      konCount: function () { return core.konCount(); },
+      activity: function () { return core.activity(); },
       dumpSpc: function () {
         var ram = new Uint8Array(0x10000), dsp = new Uint8Array(128), i;
         for (i = 0; i < 0x10000; i++) ram[i] = core.peek(i);
@@ -325,6 +327,14 @@
     return m;
   }
 
+  // 狀態雜湊（FNV-1a，RAM＋DSP）：同一首曲的重複狀態用來略過
+  function hashState(d) {
+    var h = 0x811C9DC5, i;
+    for (i = 0; i < d.ram.length; i++) { h ^= d.ram[i]; h = Math.imul(h, 16777619) >>> 0; }
+    for (i = 0; i < d.dsp.length; i++) { h ^= d.dsp[i]; h = Math.imul(h, 16777619) >>> 0; }
+    return h >>> 0;
+  }
+
   // ───── 整體：跑 ROM 直到聲音程式上傳完成，之後每隔一段時間拍一次快照 ─────
   // opts: { Cpu, parseHeader?, hirom?, maxFrames?（預設 3600）, snapshotFrames?（上傳後的畫面數，預設 [120, 600, 1800]）,
   //         isCancelled?(), onProgress?(frame), apu? }
@@ -337,17 +347,35 @@
     var res = { ok: false, uploaded: false, uploadFrame: null, entry: null, snapshots: [], cancelled: false, reason: '', boot: null, cpu: null, apu: null };
     res.boot = { hirom: m.bus.hirom, copier: m.bus.copier, mapMode: m.bus.mapMode, romBytes: m.bus.romBytes, sramBytes: m.bus.sramBytes };
     var upAt = -1, nextSnap = 0;
+    // 傾印時機：有 konCount／activity 的核心（真實 SPC）→ 「新的按鍵發生」且「有聲道正在發聲」才傾印，相同狀態（RAM＋DSP 雜湊）略過；
+    // 沒有的（替身）→ 上傳後固定間隔。
+    var byKon = typeof m.apu.konCount === 'function' && typeof m.apu.activity === 'function';
+    var maxDumps = opts.maxDumps || 4, minGap = opts.minGapFrames || 60, lastKon = 0, lastDumpFrame = -1e9, seen = {};
     while (m.frames < maxFrames) {
       if (opts.isCancelled && opts.isCancelled()) { res.cancelled = true; break; }
       m.runFrame();
       if (opts.onProgress && m.frames % 60 === 0) opts.onProgress(m.frames);
       if (upAt < 0 && m.apu.state === 'running') { upAt = m.frames; res.uploaded = true; res.uploadFrame = m.frames; res.entry = m.apu.entry; }
-      if (upAt >= 0 && nextSnap < offsets.length && m.frames >= upAt + offsets[nextSnap]) {
+      if (upAt < 0) continue;
+      if (byKon) {
+        var k = m.apu.konCount();
+        if (k > lastKon && m.apu.activity() > 0 && m.frames - lastDumpFrame >= minGap) {
+          lastKon = k;
+          var dk = m.apu.dumpSpc(), hk = hashState(dk);
+          if (!seen[hk]) {
+            seen[hk] = true; lastDumpFrame = m.frames;
+            res.snapshots.push({ frame: m.frames, ramCopy: dk.ram, dsp: dk.dsp, spc: dk.spc, placeholder: dk.placeholder, kon: k, hash: hk });
+          }
+        }
+        if (res.snapshots.length >= maxDumps) break;
+        continue;
+      }
+      if (nextSnap < offsets.length && m.frames >= upAt + offsets[nextSnap]) {
         var d = m.apu.dumpSpc();
         res.snapshots.push({ frame: m.frames, ramCopy: d.ram, dsp: d.dsp, spc: d.spc, placeholder: d.placeholder });
         nextSnap++;
       }
-      if (upAt >= 0 && nextSnap >= offsets.length) break;
+      if (nextSnap >= offsets.length) break;
     }
     res.cpu = { pc: m.cpu.PC, pbr: m.cpu.PBR, e: m.cpu.E, halted: m.cpu.halted, stopped: m.cpu.stopped, instructions: m.cpu.instructions };
     res.apu = { state: m.apu.state, portWrites: m.apu.portWrites, blocks: m.apu.blocks, bytes: m.apu.bytes };

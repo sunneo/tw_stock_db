@@ -18,6 +18,19 @@
   var SPC_SIG = 'SNES-SPC700 Sound File Data v0.30';
   var REG_KON = 0x4C, REG_KOFF = 0x5C;
   var STAGES = ['掃描辨識', '執行 ROM（主 CPU）', '偵測聲音上傳完成並傾印', '組成 .spc', 'SPC 渲染成 wav', 'wav 轉 mp3', '退路 MIDI'];
+  var SILENCE_RMS = 0.002, SILENCE_RATIO = 0.9;   // 靜音門檻：前 N 秒的均方根，與靜音樣本比例
+
+  // 量測渲染結果的前 sec 秒：{ rms（左右聲道平均）, silentRatio（|L|、|R| 都小於 1e-4 的樣本比例） }
+  function measureOutput(o, sec) {
+    var sr = o.sampleRate || DSP_RATE, n = Math.min(o.L.length, Math.round(sr * sec)), sum = 0, quiet = 0, i;
+    if (!n) return { rms: 0, silentRatio: 1 };
+    for (i = 0; i < n; i++) {
+      var l = o.L[i], r = o.R[i];
+      sum += l * l + r * r;
+      if (Math.abs(l) < 1e-4 && Math.abs(r) < 1e-4) quiet++;
+    }
+    return { rms: Math.sqrt(sum / (2 * n)), silentRatio: quiet / n };
+  }
 
   function asU8(x) { return x instanceof Uint8Array ? x : new Uint8Array(x); }
   function ascii(b, o, n) { var s = ''; for (var i = 0; i < n; i++) s += String.fromCharCode(b[o + i] == null ? 0 : b[o + i]); return s; }
@@ -158,21 +171,32 @@
       return fail(4, 'SPC700＋S-DSP 渲染核心沒有接上（ml-spcdsp 的 musiclib_spc_core.js 尚未合併）；' +
         '目前的聲音埠只跑 IPL 上傳協定，不執行 SPC700，所以 .spc 裡的 DSP 與 SPC700 狀態是占位值，不能當成音樂');
     }
-    // 每個時間點各自渲染成一首；單一時間點失敗不影響其他（逐筆記錄）
-    out.rendered = [];
-    var errs = [];
+    // 每個時間點各自渲染；靜音的傾印不登記（前 5 秒均方根 < 0.002，或靜音比例 > 90%）；單一時間點失敗不影響其他（逐筆記錄）
+    var keep = [], skipped = [], errs = [];
     out.spcs.forEach(function (sp, i) {
-      try { out.rendered.push({ index: i, frame: sp.frame, bytes: sp.bytes, out: opts.renderSpc(sp.bytes, opts) }); }
-      catch (e) { errs.push('第 ' + i + ' 個：' + String((e && e.message) || e)); }
+      var o;
+      try { o = opts.renderSpc(sp.bytes, opts); }
+      catch (e) { errs.push('第 ' + (i + 1) + ' 個：' + String((e && e.message) || e)); return; }
+      var m = measureOutput(o, 5);
+      if (m.rms < SILENCE_RMS || m.silentRatio > SILENCE_RATIO) {
+        skipped.push({ index: i, frame: sp.frame, rms: m.rms, silentRatio: m.silentRatio,
+          note: '第 ' + (i + 1) + ' 個傾印（畫面 ' + sp.frame + '）靜音，已略過（前 5 秒均方根 ' + m.rms.toFixed(4) + '，靜音比例 ' + (m.silentRatio * 100).toFixed(1) + '%）' });
+        return;
+      }
+      keep.push({ index: i, frame: sp.frame, bytes: sp.bytes, out: o, rms: m.rms });
     });
-    if (!out.rendered.length) return fail(4, '渲染失敗：' + errs.join('；'));
-    out.stages.push({ stage: STAGES[4], ok: true, note: out.rendered.length + ' 首渲染成功' + (errs.length ? '；' + errs.join('；') : '') });
+    out.rendered = keep; out.skipped = skipped;
+    if (!keep.length) {
+      return fail(4, '全部 ' + out.spcs.length + ' 個傾印都是靜音：' + skipped.map(function (s) { return '第 ' + (s.index + 1) + ' 個 RMS ' + s.rms.toFixed(4); }).join('；') +
+        (errs.length ? '；渲染錯誤：' + errs.join('；') : ''));
+    }
+    out.stages.push({ stage: STAGES[4], ok: true, note: keep.length + ' 首有聲音' + (skipped.length ? '；' + skipped.map(function (s) { return s.note; }).join('；') : '') + (errs.length ? '；' + errs.join('；') : '') });
     out.ok = true;
     return out;
   }
 
   return {
     classifySfc: classifySfc, parseSnesHeader: parseSnesHeader, packSpc: packSpc, parseSpc: parseSpc,
-    dspEventsToSong: dspEventsToSong, sfcExtract: sfcExtract, STAGES: STAGES, SPC_SIZE: SPC_SIZE, DSP_RATE: DSP_RATE
+    dspEventsToSong: dspEventsToSong, sfcExtract: sfcExtract, measureOutput: measureOutput, STAGES: STAGES, SPC_SIZE: SPC_SIZE, DSP_RATE: DSP_RATE
   };
 }));

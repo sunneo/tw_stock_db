@@ -71,6 +71,7 @@
 
   function createCore(init) {
     init = init || {};
+    var konEvents = 0;
     var ram = new Uint8Array(65536);
     var dspRegs = new Uint8Array(128);
     var unknown = 0;
@@ -416,6 +417,7 @@
     function dspRead(a) { return dspRegs[a & 0x7F]; }
     function keyOn(q) {
       var vo = voices[q], base = q * 16;
+      konEvents++;
       var d = ((dspRegs[0x5D] << 8) + dspRegs[base + 4] * 4) & 0xFFFF;
       vo.addr = rd(d) | (rd(d + 1) << 8);
       vo.loopAddr = rd(d + 2) | (rd(d + 3) << 8);
@@ -606,7 +608,16 @@
         for (var i = 0; i < n; i++) { runSample(); L[off + i] = st.outL; R[off + i] = st.outR; }
         return n;
       },
-      runCycles: function (n) { var done = 0; while (done < n) { var c = step(); tickClock(c); done += c; } return done; },
+      // 執行 n 個 SPC 週期（CPU、計時器、DSP 都前進；DSP 每 32 週期產生一個取樣，按鍵也在這裡生效）
+      runCycles: function (n) {
+        var done = 0;
+        while (done < n) {
+          var c = step(); tickClock(c); done += c;
+          st.dspAcc += c;
+          while (st.dspAcc >= 32) { st.dspAcc -= 32; dspTick(); }
+        }
+        return done;
+      },
       runSamples: function (n) { for (var i = 0; i < n; i++) runSample(); return n; },
       snapshot: function () {
         return {
@@ -638,6 +649,9 @@
       setPortIn: function (i, val) { io.inp[i & 3] = val & 0xFF; },
       cpu: function () { return { a: r.a, x: r.x, y: r.y, sp: r.sp, pc: r.pc, psw: getPSW(), halted: r.halted }; },
       unknownOps: function () { return unknown; },
+      // 按鍵發生次數（KON 寫入後實際啟動的聲道數累計）與目前發聲聲道的包絡總和（靜音＝0）；給擷取器決定傾印時機
+      konCount: function () { return konEvents; },
+      activity: function () { var s = 0; for (var q = 0; q < 8; q++) if (voices[q].mode !== M_OFF) s += voices[q].env; return s; },
       timerCount: function (i) { return io.cnt[i]; },
       voiceMode: function (q) { return voices[q].mode; }
     };
