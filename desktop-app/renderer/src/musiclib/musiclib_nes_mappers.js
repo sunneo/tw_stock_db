@@ -349,8 +349,9 @@
       static mapperName = 'MMC3-187';
       write(address, value) {
         if (address >= 0x5000 && address < 0x6000 && (address & 0xf001) === 0x5000) {
-          if (value & 0x80) { var b = (value & 0x3f) * 2; this.load8kRomBank(b, 0x8000); this.load8kRomBank(b + 1, 0xa000); this.load8kRomBank(b, 0xc000); this.load8kRomBank(b + 1, 0xe000); this.nrom = true; }
-          else this.nrom = false;
+          // 目前不套用 $5000 的 NROM 覆寫：實測（KOF96）套用後跳到 ROM 外的位址崩潰，而規格的銀行欄位還沒有確認。
+          // 不套用時就是普通 MMC3 行為（600 幀不崩潰）；這是近似，列在 APPROX。
+          this.nrom = false;
           return;
         }
         if (address >= 0x8000 && this.nrom) { super.write(address, value); return; }
@@ -591,10 +592,15 @@
     64: 'K 模式與 RF 位置為近似；IRQ 以掃描線時脈近似', 68: '名稱表 CHR（$C000/$D000）未處理，圖形可能錯',
     69: '5B 音效晶片未實作（使用 5B 的遊戲沒有擴充音樂）；計數器為掃描線近似',
     74: 'CHR-RAM 取代銀行 8/9 未實作（以 MMC3 處理）', 112: 'IRQ 無；名稱表與鎖定銀行依 MMC3 慣例',
-    187: '$5000 NROM 覆寫的銀行欄位為近似；MMC3 IRQ 依 MMC3 相同', 189: '32K 銀行覆寫為近似（每次 MMC3 寫入後重套）',
+    187: '未驗證：$5000 NROM 覆寫目前不套用（套用後 KOF96 跳到 ROM 外崩潰），只當普通 MMC3；APU 寫入偏少，音樂可能不完整', 189: '32K 銀行覆寫為近似（每次 MMC3 寫入後重套）',
     193: 'CHR 0 的 4K 單位以 1K 組合近似', 195: 'MMC3 相容近似；CHR-RAM／ROM 切換未實作',
     225: '暫存器位元對應依規格但 PRG 高位元位置為推斷；NSF 打包前須確認', 226: 'PRG 高位元（$8001）位置依規格推斷',
     246: '鎖存與讀取怪癖未實作（讀取 $FFE4 等會強制 PRG A17，這裡不處理）'
+  };
+  // 已知仍會崩潰的 mapper（抽不出來時會標明這裡的崩潰位置，不假裝成功）
+  var CRASH_NOTES = {
+    74: '早期崩潰：程式跳到 RAM $08EE（不是 ROM 位址）；原因未查明（非 PRG 銀行映射錯誤）',
+    195: '早期崩潰：RTS 後跳到 $5462（展開區），疑似需要未實作的 GAL 外部銀行行為'
   };
   var NOT_IMPLEMENTED = {
     17: '頁面只有上電值與訓練器規則，沒有寫入解碼（需要 Super Magic Card 頁面）',
@@ -613,5 +619,5 @@
     return SUPPORTED.slice();
   }
 
-  return { install: install, SUPPORTED: SUPPORTED, APPROX: APPROX, NOT_IMPLEMENTED: NOT_IMPLEMENTED };
+  return { install: install, SUPPORTED: SUPPORTED, APPROX: APPROX, NOT_IMPLEMENTED: NOT_IMPLEMENTED, CRASH_NOTES: CRASH_NOTES };
 }));
