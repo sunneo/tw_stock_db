@@ -114,13 +114,16 @@ t('來源整個移除：planSourceRemove 收齊該來源的原始檔與擷取產
   assert.equal(plan.sourceLabel, 'game');
   assert.deepEqual(plan.removeKeys.sort(), ['S', 'derived|S|0', 'derived|S|1'].sort());
 });
-t('套用移除：記錄與來源登記都拿掉；keepSource 不拿來源', function () {
+t('套用移除：記錄與來源登記都拿掉；dropSource=false 時來源登記保留', function () {
   var lib = fixtureLib();
   var plan = M.planSourceRemove(lib, 'src1', { isDerivedPath: isDerivedDir });
   var r = M.applyRemove(lib, plan);
   assert.equal(r.removed, 3);
   assert.deepEqual(lib.records.map(function (x) { return x.key; }), ['O']);
   assert.deepEqual(lib.sources.map(function (s) { return s.id; }), ['src2']);
+  var lib2 = fixtureLib();
+  M.applyRemove(lib2, M.planSourceRemove(lib2, 'src1', { isDerivedPath: isDerivedDir }), { dropSource: false });
+  assert.deepEqual(lib2.sources.map(function (s) { return s.id; }), ['src1', 'src2'], '來源登記還在');
 });
 t('套用移除：呼叫端指定 keys（衍生檔刪不掉的留著）', function () {
   var lib = fixtureLib();
