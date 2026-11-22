@@ -1,24 +1,28 @@
-/* 音樂庫的最小畫面（UMD）：像 library 的清單，不做輸出。
- *   上方工具列：＋加檔案、＋加資料夾、搜尋框（多關鍵字，檔名／專輯／標題／演出者都查）、筆數統計。
- *   中間清單：路徑、檔名、專輯、種類、長度；每列有勾選框（多選，給之後的批次輸出預留；這階段不輸出）。
- *   已消失的檔案用刪除線顯示，搜尋時不出現。
- * 只依賴：core（musiclib_core.js）與 library（M.createLibrary 的結果，需已 load()）。
- * host 可以不給（瀏覽器用 <input type=file>，只拿得到檔名，拿不到完整路徑）；桌面版可以給 host.pickFiles／pickFolder，
- * 回傳 null（取消）或 { label, entries:[{path,size,mtimeMs}], readHead(path, n) → Promise<Uint8Array|null> }，這樣路徑才是真的磁碟路徑。
- * 掛載：FaMusicLibUI.mount(container, { library, host }) → { refresh(), destroy() }。 */
+/* 音樂庫的畫面（UMD）：像 library 的清單。
+ *   上方工具列：＋加檔案、＋加資料夾、搜尋框、範圍（全部／不含歌詞／只查歌詞）、筆數統計。
+ *   歌詞列：轉錄歌詞（勾選的曲目；沒勾選就全部未轉錄）、暫停／續跑、進度（完成、排隊、轉錄中＋百分比、失敗數）。
+ *   清單：路徑、檔名、專輯、種類、長度、歌詞狀態（失敗會顯示具體原因）；每列有勾選框（多選）。
+ *   搜尋時，歌詞命中的段落與時間點列在該曲目下面。已消失的檔案用刪除線顯示，搜尋時不出現。
+ * 依賴：core（musiclib_core.js）、library（M.createLibrary 的結果，需已 load()）、queue（M.createLyricQueue 的結果，可不給）。
+ * host 可以不給（瀏覽器用 <input type=file>，只拿得到檔名）；桌面版給 host.pickFolder：回傳 null（取消）或
+ * { label, entries:[{path,size,mtimeMs}], readHead(path, n) → Promise<Uint8Array|null> }。
+ * 掛載：FaMusicLibUI.mount(container, { library, host, queue }) → { refresh(), destroy() }。 */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) module.exports = factory(require('./musiclib_core.js')); else root.FaMusicLibUI = factory(root.FaMusicLib || (typeof FaMusicLib !== 'undefined' ? FaMusicLib : undefined));
 })(typeof self !== 'undefined' ? self : this, function (M) {
   'use strict';
   var CSS = '.fml{font:13px system-ui,"Microsoft JhengHei",sans-serif;color:#1f2328;background:#fff;border:1px solid #d0d7de;border-radius:8px;overflow:hidden;max-width:100%}'
-    + '.fml-bar{display:flex;gap:6px;align-items:center;flex-wrap:wrap;padding:6px 8px;background:#f6f8fa;border-bottom:1px solid #d0d7de}'
-    + '.fml-bar button{background:#f6f8fa;border:1px solid #d0d7de;border-radius:5px;padding:3px 9px;cursor:pointer;font:inherit}'
+    + '.fml-bar,.fml-lyr{display:flex;gap:6px;align-items:center;flex-wrap:wrap;padding:6px 8px;background:#f6f8fa;border-bottom:1px solid #d0d7de}'
+    + '.fml button,.fml select{background:#f6f8fa;border:1px solid #d0d7de;border-radius:5px;padding:3px 9px;cursor:pointer;font:inherit}'
+    + '.fml button:disabled{opacity:.45;cursor:default}'
     + '.fml-bar input[type=search]{flex:1;min-width:160px;padding:4px 6px;border:1px solid #d0d7de;border-radius:5px;font:inherit}'
-    + '.fml-st{color:#59636e;font-size:12px}.fml-wrap{overflow:auto;max-height:520px}'
+    + '.fml-st{color:#59636e;font-size:12px}.fml-wrap{overflow:auto;max-height:520px}.fml-lyr .fml-st{flex:1}'
     + '.fml-tbl{width:100%;border-collapse:collapse}.fml-tbl th,.fml-tbl td{padding:4px 6px;border-bottom:1px solid #eaeef2;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:260px}'
     + '.fml-tbl th{background:#f6f8fa;position:sticky;top:0}.fml-tbl tr.gone td{color:#8c959f;text-decoration:line-through}'
+    + '.fml-tbl td.bad{color:#cf222e}.fml-hit td{white-space:normal;color:#59636e;font-size:12px;padding-left:28px}'
     + '.fml-foot{padding:6px 8px;color:#59636e;font-size:12px;border-top:1px solid #d0d7de}';
-  var COLS = ['路徑', '檔名', '專輯', '種類', '長度'];
+  var COLS = ['路徑', '檔名', '專輯', '種類', '長度', '歌詞'];
+  var LYRIC_TEXT = { none: '未轉錄', queued: '排隊中', running: '轉錄中', done: '完成', failed: '失敗' };
 
   function h(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
 
@@ -41,17 +45,26 @@
 
   function mount(container, opts) {
     opts = opts || {};
-    var lib = opts.library, host = opts.host || {};
-    var q = '', msg = '', sel = {};
+    var lib = opts.library, host = opts.host || {}, queue = opts.queue || null;
+    var q = '', scope = 'all', msg = '', sel = {}, unsub = null;
     var root = h('div', 'fml');
     var style = h('style'); style.textContent = CSS; root.appendChild(style);
 
     var bar = h('div', 'fml-bar');
     var bFile = h('button', null, '＋加檔案');
     var bFolder = h('button', null, '＋加資料夾');
-    var search = h('input'); search.type = 'search'; search.placeholder = '搜尋：檔名、專輯、標題、演出者（空白分隔多個關鍵字）';
+    var search = h('input'); search.type = 'search'; search.placeholder = '搜尋：檔名、專輯、標題、演出者、歌詞（空白分隔多個關鍵字）';
+    var sSel = h('select');
+    [['all', '全部（含歌詞）'], ['meta', '不含歌詞'], ['lyrics', '只查歌詞']].forEach(function (o) { var op = h('option', null, o[1]); op.value = o[0]; sSel.appendChild(op); });
     var stat = h('span', 'fml-st');
-    bar.appendChild(bFile); bar.appendChild(bFolder); bar.appendChild(search); bar.appendChild(stat);
+    bar.appendChild(bFile); bar.appendChild(bFolder); bar.appendChild(search); bar.appendChild(sSel); bar.appendChild(stat);
+
+    var lyr = h('div', 'fml-lyr');
+    var bLyr = h('button', null, '轉錄歌詞');
+    var bPause = h('button', null, '暫停');
+    var lyrStat = h('span', 'fml-st');
+    lyr.appendChild(bLyr); lyr.appendChild(bPause); lyr.appendChild(lyrStat);
+    if (!queue) { bLyr.disabled = true; bPause.disabled = true; lyrStat.textContent = '歌詞轉錄不可用（需要桌面版）'; }
 
     var wrap = h('div', 'fml-wrap');
     var tbl = h('table', 'fml-tbl');
@@ -61,27 +74,36 @@
 
     var fIn = h('input'); fIn.type = 'file'; fIn.multiple = true; fIn.style.display = 'none';
     var dIn = h('input'); dIn.type = 'file'; dIn.setAttribute('webkitdirectory', ''); dIn.style.display = 'none';
-    root.appendChild(bar); root.appendChild(wrap); root.appendChild(foot); root.appendChild(fIn); root.appendChild(dIn);
+    root.appendChild(bar); root.appendChild(lyr); root.appendChild(wrap); root.appendChild(foot); root.appendChild(fIn); root.appendChild(dIn);
     container.appendChild(root);
 
     function visibleRows() {
-      if (q.trim()) return lib.search(q).map(function (x) { return x.record; });
+      if (q.trim()) return lib.search(q, { scope: scope }).map(function (x) { return { r: x.record, hits: x.lyricHits || [] }; });
       return lib.records.slice().sort(function (a, b) {
         return (a.album || '').localeCompare(b.album || '') || a.name.localeCompare(b.name);
-      });
+      }).map(function (r) { return { r: r, hits: [] }; });
+    }
+    function lyricCell(r) {
+      if (r.pending) return '—（遊戲來源，待擷取）';
+      var st = r.lyricStatus || 'none';
+      if (st === 'running' && queue) { var s = queue.state(); return '轉錄中 ' + (s.progress != null ? Math.round(s.progress * 100) + '%' : ''); }
+      if (st === 'done') return '完成（' + ((r.lyrics && r.lyrics.segments) || []).length + ' 段）';
+      if (st === 'failed') return '失敗：' + (r.lyricError || '未知原因');
+      return LYRIC_TEXT[st] || st;
     }
     function render() {
       var rows = visibleRows();
       thead.innerHTML = '';
       var htr = h('tr'); var all = h('input'); all.type = 'checkbox';
-      all.checked = rows.length > 0 && rows.every(function (r) { return !!sel[r.key]; });
-      all.onchange = function () { rows.forEach(function (r) { if (all.checked) sel[r.key] = true; else delete sel[r.key]; }); render(); };
+      all.checked = rows.length > 0 && rows.every(function (x) { return !!sel[x.r.key]; });
+      all.onchange = function () { rows.forEach(function (x) { if (all.checked) sel[x.r.key] = true; else delete sel[x.r.key]; }); render(); };
       var th0 = h('th'); th0.appendChild(all); htr.appendChild(th0);
       COLS.forEach(function (c) { htr.appendChild(h('th', null, c)); });
       thead.appendChild(htr);
 
       tbody.innerHTML = '';
-      rows.forEach(function (r) {
+      rows.forEach(function (x) {
+        var r = x.r;
         var tr = h('tr'); if (r.status === 'missing') tr.className = 'gone';
         var cb = h('input'); cb.type = 'checkbox'; cb.checked = !!sel[r.key];
         cb.onchange = function () { if (cb.checked) sel[r.key] = true; else delete sel[r.key]; foot.textContent = selText(); };
@@ -91,13 +113,31 @@
         tr.appendChild(h('td', null, r.album || ''));
         tr.appendChild(h('td', null, r.label || r.kind));
         tr.appendChild(h('td', null, M.formatDuration(r.durationSec) + (r.durationApprox ? '≈' : '')));
+        var lc = h('td', (r.lyricStatus === 'failed' ? 'bad' : null), lyricCell(r)); lc.title = r.lyricStatus === 'failed' ? (r.lyricError || '') : '';
+        tr.appendChild(lc);
         tbody.appendChild(tr);
+        x.hits.forEach(function (hit) {
+          var ht = h('tr', 'fml-hit'); var td = h('td'); td.colSpan = COLS.length + 1;
+          td.textContent = '〔' + M.formatDuration(hit.start) + '–' + M.formatDuration(hit.end) + '〕' + hit.text;
+          ht.appendChild(td); tbody.appendChild(ht);
+        });
       });
       var total = lib.records.filter(function (r) { return r.status !== 'missing'; }).length;
       stat.textContent = (q.trim() ? '找到 ' + rows.length + ' 首' : '共 ' + total + ' 個檔案') + (msg ? '　' + msg : '');
+      renderLyr();
       foot.textContent = selText();
     }
-    function selText() { var n = Object.keys(sel).length; return '已選 ' + n + ' 個（批次輸出之後的階段才做）'; }
+    function renderLyr() {
+      if (!queue) return;
+      var s = queue.state(), c = s.counts;
+      var parts = ['完成 ' + c.done, '排隊 ' + c.queued, '未轉錄 ' + c.none, '失敗 ' + c.failed];
+      if (s.running) parts.push('轉錄中：' + (s.current ? (lib.records.filter(function (r) { return r.key === s.current; })[0] || {}).name : '') + (s.progress != null ? '（' + Math.round(s.progress * 100) + '%）' : ''));
+      if (s.paused) parts.push('已暫停');
+      if (s.saveError) parts.push('⚠️ 存檔失敗：' + s.saveError);
+      lyrStat.textContent = '歌詞：' + parts.join('、');
+      bPause.textContent = s.paused ? '續跑' : '暫停';
+    }
+    function selText() { var n = Object.keys(sel).length; return '已選 ' + n + ' 首' + (n ? '（轉錄歌詞會只跑勾選的未完成曲目）' : '（沒勾選時，轉錄歌詞會跑全部未完成曲目）'); }
 
     async function addFrom(type, src) {
       if (!src || !src.entries || !src.entries.length) { msg = '沒有可加入的檔案'; render(); return; }
@@ -113,8 +153,8 @@
       render();
     }
     async function pick(kind) {
-      var fn = kind === 'folder' ? host.pickFolder : host.pickFiles;
-      if (fn) { var src = await fn(); if (src) addFrom(kind === 'folder' ? 'folder' : 'file', src); return; } // 取消（null）就什麼都不做
+      var fn = kind === 'folder' ? host.pickFolder : null;
+      if (fn) { var src = await fn(); if (src) addFrom('folder', src); return; } // 取消（null）就什麼都不做
       (kind === 'folder' ? dIn : fIn).click();
     }
 
@@ -123,11 +163,24 @@
     fIn.onchange = function () { var src = fromFileList(fIn.files, false); fIn.value = ''; addFrom('file', src); };
     dIn.onchange = function () { var src = fromFileList(dIn.files, true); dIn.value = ''; addFrom('folder', src); };
     search.oninput = function () { q = search.value; render(); };
+    sSel.onchange = function () { scope = sSel.value; render(); };
 
+    // 轉錄：勾選的未完成曲目；沒勾選就全部未完成（佇列自己跳過已完成的）
+    bLyr.onclick = function () {
+      if (!queue) return;
+      var keys = Object.keys(sel).filter(function (k) { var r = lib.records.filter(function (x) { return x.key === k; })[0]; return r && r.status === 'ok' && !r.pending && r.lyricStatus !== 'done'; });
+      var n = queue.enqueue(keys);
+      msg = keys.length ? '已排入 ' + keys.length + ' 首' : '已排入全部未完成曲目（佇列共 ' + n + ' 首）';
+      if (queue.state().paused) msg += '；目前是暫停中，按「續跑」開始';
+      render();
+    };
+    bPause.onclick = function () { if (!queue) return; if (queue.state().paused) queue.resume(); else queue.pause(); render(); };
+
+    if (queue) unsub = queue.onChange(function () { render(); });
     render();
     return {
       refresh: render,
-      destroy: function () { if (root.parentNode) root.parentNode.removeChild(root); }
+      destroy: function () { if (unsub) unsub(); if (root.parentNode) root.parentNode.removeChild(root); }
     };
   }
 

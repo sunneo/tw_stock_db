@@ -297,6 +297,169 @@ t('來源：同名同類型的來源不重複登記；移除來源會一併移�
   assert.equal(lib.records.length, 0); assert.equal(lib.sources.length, 1);
 });
 
+// ───── 歌詞轉錄佇列與歌詞搜尋（假轉錄函式）─────
+async function libWithFixtures() {
+  const fx = fixtures();
+  const lib = M.createLibrary();
+  const sid = lib.addSource('folder', 'Music');
+  await lib.scan(sid, Object.keys(fx.stats).map(function (k) { return fx.stats[k]; }), makeReader(fx.files), { now: 1 });
+  return lib;
+}
+// map：檔名 → 段落陣列，或丟錯的 Error，或函式 (record, opts) => Promise
+function fakeTranscriber(map) {
+  const f = async function (rec, o) {
+    f.calls.push(rec.name);
+    const v = map[rec.name];
+    if (typeof v === 'function') return v(rec, o);
+    if (v instanceof Error) throw v;
+    return { segments: v || [], language: 'zh', durationSeconds: 3 };
+  };
+  f.calls = [];
+  return f;
+}
+const SEG_TIANQING = [
+  { start: 0, end: 2.5, text: '故事的小黃花' },
+  { start: 2.5, end: 6, text: '從出生那年就飄著' },
+  { start: 6, end: 9, text: 'Love is in the air' },
+];
+const SEG_AUTUMN = [{ start: 1, end: 4, text: 'the falling leaves of autumn' }, { start: 4, end: 7, text: 'さくら咲く春' }];
+
+t('歌詞佇列：完成、失敗附具體原因、續跑不重做已完成的', async function () {
+  const lib = await libWithFixtures();
+  const byName = (n) => lib.records.filter((r) => r.name === n)[0];
+  // 第一輪：晴天成功、Autumn Leaves.mp3 失敗（附具體原因），其餘（wav、mp4）給空段落也算完成
+  const tr = fakeTranscriber({ '晴天.mp3': SEG_TIANQING, 'Autumn Leaves.mp3': new Error('解碼失敗：檔頭不是可辨識的音訊') });
+  const q = M.createLyricQueue(lib, tr);
+  q.enqueue([]);
+  await q.idle();
+  assert.equal(byName('晴天.mp3').lyricStatus, 'done');
+  assert.equal(byName('晴天.mp3').lyrics.segments.length, 3);
+  assert.equal(byName('Autumn Leaves.mp3').lyricStatus, 'failed');
+  assert.equal(byName('Autumn Leaves.mp3').lyricError, '解碼失敗：檔頭不是可辨識的音訊');
+  assert.equal(byName('zelda.nes').lyricStatus, 'none', '遊戲來源不排進佇列');
+  assert.equal(q.state().counts.failed, 1);
+  // 第二輪（續跑）：完成的不重做，失敗的會重試
+  const trAgain = fakeTranscriber({ 'Autumn Leaves.mp3': SEG_AUTUMN });
+  const q2 = M.createLyricQueue(lib, trAgain);
+  q2.enqueue([]);
+  await q2.idle();
+  assert.deepEqual(trAgain.calls, ['Autumn Leaves.mp3'], '其他三首第一輪已完成，只重試失敗的那首');
+  assert.equal(byName('Autumn Leaves.mp3').lyricStatus, 'done');
+  assert.equal(byName('Autumn Leaves.mp3').lyricError, null);
+  assert.equal(q2.state().counts.done, 4);
+});
+
+t('歌詞佇列：暫停後退回排隊、續跑從頭做；狀態計數正確', async function () {
+  const lib = await libWithFixtures();
+  let q;
+  let first = true;
+  const tr = fakeTranscriber({
+    '晴天.mp3': async (rec, o) => {
+      if (first) { first = false; q.pause(); if (o.shouldPause()) { const e = new Error('暫停'); e.paused = true; throw e; } }
+      return { segments: SEG_TIANQING, language: 'zh', durationSeconds: 9 };
+    },
+  });
+  q = M.createLyricQueue(lib, tr);
+  q.enqueue([]);
+  await q.idle();
+  const s1 = q.state();
+  assert.equal(s1.paused, true);
+  assert.equal(s1.running, false);
+  assert.equal(lib.records.filter((r) => r.name === '晴天.mp3')[0].lyricStatus, 'queued', '被暫停的那首退回排隊');
+  assert.equal(s1.counts.done, 0);
+  q.resume();
+  await q.idle();
+  const s2 = q.state();
+  assert.equal(s2.paused, false);
+  assert.equal(s2.counts.done, 4, '4 個音訊／影片都完成');
+  assert.equal(s2.counts.none + s2.counts.queued + s2.counts.failed, 0);
+  assert.equal(tr.calls.filter((n) => n === '晴天.mp3').length, 2, '暫停的那首從頭重做一次');
+});
+
+t('歌詞佇列：完成的歌詞會存進後端，重開後仍在；重開時在跑的狀態退回未轉錄', async function () {
+  let stored = null;
+  const io = { read: async () => stored, write: async (s) => { stored = s; } };
+  const lib = await libWithFixtures();
+  lib.backend = M.createJsonBackend(io);
+  // 重新用 JSON 後端保存
+  lib.save = async function () { await M.createJsonBackend(io).save({ sources: lib.sources, records: lib.records }); };
+  const q = M.createLyricQueue(lib, fakeTranscriber({ '晴天.mp3': SEG_TIANQING }));
+  q.enqueue([]);
+  await q.idle();
+  const lib2 = M.createLibrary(M.createJsonBackend(io));
+  await lib2.load();
+  const r = lib2.records.filter((x) => x.name === '晴天.mp3')[0];
+  assert.equal(r.lyricStatus, 'done');
+  assert.equal(r.lyrics.segments[0].text, '故事的小黃花');
+  // 模擬關掉 app 時還在跑：狀態存成 running，重開後要退回 none
+  r.lyricStatus = 'running';
+  M.createLyricQueue(lib2, fakeTranscriber({}));
+  assert.equal(r.lyricStatus, 'none');
+});
+
+t('歌詞佇列：檔案變更後歌詞清掉，再轉錄才會重做', async function () {
+  const fx = fixtures();
+  const lib = M.createLibrary();
+  const sid = lib.addSource('folder', 'Music');
+  const entries = Object.keys(fx.stats).map((k) => fx.stats[k]);
+  await lib.scan(sid, entries, makeReader(fx.files), { now: 1 });
+  const q = M.createLyricQueue(lib, fakeTranscriber({ '晴天.mp3': SEG_TIANQING }));
+  q.enqueue([]); await q.idle();
+  assert.equal(lib.records.filter((r) => r.name === '晴天.mp3')[0].lyricStatus, 'done');
+  const changed = entries.map((e) => (e.path === 'D:/Music/周杰倫/晴天.mp3' ? Object.assign({}, e, { mtimeMs: 2000 }) : e));
+  await lib.scan(sid, changed, makeReader(fx.files), { now: 2 });
+  const r = lib.records.filter((x) => x.name === '晴天.mp3')[0];
+  assert.equal(r.lyrics, null);
+  assert.equal(r.lyricStatus, 'none');
+  // 沒變的（wav）歌詞不受影響
+  q.enqueue([]); await q.idle();
+  assert.equal(r.lyricStatus, 'done');
+});
+
+t('歌詞搜尋：中日英都能查，回傳命中段落與時間點', async function () {
+  const lib = await libWithFixtures();
+  const tr = fakeTranscriber({ '晴天.mp3': SEG_TIANQING, 'Autumn Leaves.wav': [], 'Autumn Leaves.mp3': [] });
+  const q = M.createLyricQueue(lib, fakeTranscriber({ '晴天.mp3': SEG_TIANQING, 'Autumn Leaves.mp3': SEG_AUTUMN, '夜曲.mp3': [] }));
+  q.enqueue([]); await q.idle();
+  const names = (res) => res.map((x) => x.record.name);
+  assert.deepEqual(names(lib.search('小黃花')), ['晴天.mp3'], '中文歌詞');
+  assert.deepEqual(names(lib.search('さくら')), ['Autumn Leaves.mp3'], '日文歌詞');
+  assert.deepEqual(names(lib.search('falling')), ['Autumn Leaves.mp3'], '英文歌詞');
+  assert.deepEqual(names(lib.search('LOVE')), ['晴天.mp3'], '英文不分大小寫');
+  const hit = lib.search('小黃花')[0];
+  assert.equal(hit.lyricHits.length, 1);
+  assert.equal(hit.lyricHits[0].start, 0);
+  assert.equal(hit.lyricHits[0].end, 2.5);
+  assert.equal(hit.lyricHits[0].text, '故事的小黃花');
+  // 多關鍵字：歌詞兩個詞都要命中（同一首）
+  assert.deepEqual(names(lib.search('小黃花 出生')), ['晴天.mp3']);
+  assert.deepEqual(names(lib.search('小黃花 falling')), []);
+  void tr;
+});
+
+t('歌詞搜尋：檔名命中排在歌詞命中前面；範圍切換（不含歌詞／只歌詞）', async function () {
+  const lib = await libWithFixtures();
+  const q = M.createLyricQueue(lib, fakeTranscriber({
+    'Autumn Leaves.mp3': [{ start: 0, end: 3, text: '晴天的雨' }],
+    '晴天.mp3': [{ start: 0, end: 3, text: '沒有別的字' }],
+  }));
+  q.enqueue([]); await q.idle();
+  // 「晴天」：晴天.mp3 檔名命中（分數高）；Autumn Leaves.mp3 只有歌詞命中
+  assert.deepEqual(lib.search('晴天').map((x) => x.record.name), ['晴天.mp3', 'Autumn Leaves.mp3']);
+  assert.deepEqual(lib.search('晴天', { scope: 'meta' }).map((x) => x.record.name), ['晴天.mp3']);
+  assert.deepEqual(lib.search('晴天', { scope: 'lyrics' }).map((x) => x.record.name), ['Autumn Leaves.mp3']);
+  assert.ok(M.LYRIC_WEIGHT < 3, '歌詞權重低於檔名');
+});
+
+t('歌詞佇列：不認的狀態與停止中的計數', async function () {
+  const lib = await libWithFixtures();
+  const q = M.createLyricQueue(lib, fakeTranscriber({}));
+  const s = q.state();
+  assert.equal(s.counts.none, 4, '4 個音訊與影片，遊戲來源不算');
+  assert.equal(s.running, false);
+  assert.throws(() => M.createLyricQueue(lib, null), /轉錄函式/);
+});
+
 // ───── 執行 ─────
 (async function () {
   var pass = 0, failed = [];

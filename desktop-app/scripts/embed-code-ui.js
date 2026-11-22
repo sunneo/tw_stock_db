@@ -588,7 +588,7 @@ function embedTranscodeFallback() {
         src = src.slice(0, cut) + '\n/* ' + mark + '-BEGIN */\n/* ' + mark + '-END */' + src.slice(cut);
         a = src.indexOf('/* ' + mark + '-BEGIN */'); b = src.indexOf('/* ' + mark + '-END */');
     }
-    src = src.slice(0, a) + '/* ' + mark + '-BEGIN */\nconst ' + name + ' = (function () {\nconst holder = {};\n(function (module, self) {\n' + core + '\n}).call(null, undefined, holder);\nreturn holder.' + name + ';\n})();\n' + src.slice(b);
+    src = src.slice(0, a) + '/* ' + mark + '-BEGIN */\nconst ' + name + ' = (function () {\nconst holder = {}, mod = { exports: {} };\n(function (module, self) {\n' + core + '\n}).call(null, mod, holder);\nreturn mod.exports;\n})();\n' + src.slice(b);
     console.log('已更新 ' + name + '(' + core.length + ' 字元)');
 }
 embedTranscodeFallback();

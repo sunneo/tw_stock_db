@@ -307,6 +307,8 @@
       album: album, albumSource: meta.album ? 'tag' : (album ? 'folder' : null),
       durationSec: meta.durationSec == null ? null : meta.durationSec, durationApprox: !!meta.durationApprox,
       sizeBytes: e.size, mtimeMs: e.mtimeMs, status: 'ok', scannedAt: now,
+      // 歌詞（轉錄結果）：檔案變更時這筆會被重建，歌詞跟著清掉，所以「檔案變了才重做」自然成立
+      lyrics: null, lyricStatus: 'none', lyricError: null,
       meta: { format: meta.format, tracks: meta.tracks, trackName: meta.trackName, notes: meta.notes }
     };
   }
@@ -358,28 +360,127 @@
 
   // ───── 搜尋：多關鍵字（空白分隔，全部都要命中），每個關鍵字在任一欄位命中即可；欄位權重 檔名＝標題 3、專輯＝演出者 2、路徑 1；
   // 檔名完全相同 +5、檔名開頭相同 +2；依分數高到低，同分依路徑排序 ─────
+  // 範圍 opts.scope：'all'（預設：檔名中繼資料＋歌詞）、'meta'（不含歌詞）、'lyrics'（只查歌詞）。
+  // 歌詞命中的權重 1.2（每個關鍵字），低於檔名／標題的 3，所以檔名命中仍排前面；歌詞命中回傳 lyricHits（命中的段落與時間點，最多 8 段）。
+  var LYRIC_WEIGHT = 1.2, LYRIC_HITS_MAX = 8;
   function searchRecords(records, query, opts) {
     opts = opts || {};
+    var scope = opts.scope || 'all';
     var words = normalizeText(query).split(/\s+/).filter(Boolean), out = [];
     (records || []).forEach(function (r) {
       if (r.status === 'missing' && !opts.includeMissing) return;
-      if (!words.length) { out.push({ record: r, score: 0 }); return; }
-      var name = normalizeText(r.name), score = 0;
-      var fields = [[name, 3], [normalizeText(r.title), 3], [normalizeText(r.album), 2], [normalizeText(r.artist), 2], [normalizeText(r.path), 1]];
+      if (!words.length) { out.push({ record: r, score: 0, lyricHits: [] }); return; }
+      var name = normalizeText(r.name), score = 0, segs = null, segNorm = null;
+      if (scope !== 'meta' && r.lyrics && r.lyrics.segments) {
+        segs = r.lyrics.segments;
+        segNorm = segs.map(function (s) { return normalizeText(s.text); });
+      }
+      var fields = scope === 'lyrics' ? [] : [[name, 3], [normalizeText(r.title), 3], [normalizeText(r.album), 2], [normalizeText(r.artist), 2], [normalizeText(r.path), 1]];
+      var hitSet = {};
       for (var i = 0; i < words.length; i++) {
         var w = words[i], best = 0;
         for (var j = 0; j < fields.length; j++) if (fields[j][0].indexOf(w) >= 0 && fields[j][1] > best) best = fields[j][1];
+        if (segNorm) {
+          var lyricHit = false;
+          for (var k = 0; k < segNorm.length; k++) if (segNorm[k].indexOf(w) >= 0) { lyricHit = true; hitSet[k] = true; }
+          if (lyricHit && LYRIC_WEIGHT > best) best = LYRIC_WEIGHT;
+        }
         if (!best) return;
         score += best;
         if (name === w) score += 5; else if (name.indexOf(w) === 0) score += 2;
       }
-      out.push({ record: r, score: score });
+      var lyricHits = segs ? Object.keys(hitSet).map(Number).sort(function (a, b) { return a - b; }).slice(0, LYRIC_HITS_MAX).map(function (k) { return { start: segs[k].start, end: segs[k].end, text: segs[k].text }; }) : [];
+      out.push({ record: r, score: score, lyricHits: lyricHits });
     });
     out.sort(function (x, y) {
       if (y.score !== x.score) return y.score - x.score;
       return x.record.path < y.record.path ? -1 : (x.record.path > y.record.path ? 1 : 0);
     });
     return out;
+  }
+
+  // ───── 歌詞轉錄佇列 ─────
+  // 狀態（每筆曲目的 lyricStatus）：none 未轉錄、queued 排隊中、running 轉錄中、done 完成、failed 失敗（lyricError 記具體原因）。
+  // transcriber(record, { language, onProgress(0~1), shouldPause() }) → Promise<{ segments:[{start,end,text}], language, durationSeconds }>。
+  // 暫停：轉錄函式可以在它的分段之間檢查 shouldPause()，若要停就丟出 err.paused = true；那首退回排隊（從頭重做）。
+  // 已完成的不重做；檔案變更時曲目會被重建、歌詞清掉，之後轉錄才會再做。
+  // 每轉完一首就 lib.save()，所以中途關掉 app，已完成的不會丟。
+  function createLyricQueue(lib, transcriber, opts) {
+    opts = opts || {};
+    if (typeof transcriber !== 'function') throw new Error('createLyricQueue 需要轉錄函式');
+    var st = { running: false, paused: false, current: null, progress: null, queue: [], doneRun: 0, failedRun: 0, saveError: null };
+    var listeners = [];
+    lib.records.forEach(function (r) { if (r.lyricStatus === 'running' || r.lyricStatus === 'queued') r.lyricStatus = 'none'; }); // 重開後沒有在跑的工作
+
+    function find(key) { for (var i = 0; i < lib.records.length; i++) if (lib.records[i].key === key) return lib.records[i]; return null; }
+    function emit() { var s = q.state(); listeners.forEach(function (fn) { try { fn(s); } catch (_) { /* 監聽者出錯不影響佇列 */ } }); }
+    function sanitize(res) {
+      var segs = Array.isArray(res && res.segments) ? res.segments : [];
+      return {
+        segments: segs.map(function (s) { return { start: typeof s.start === 'number' ? s.start : null, end: typeof s.end === 'number' ? s.end : null, text: String(s.text == null ? '' : s.text).trim() }; }).filter(function (s) { return s.text; }),
+        language: (res && res.language) || opts.language || 'zh',
+        durationSec: res && typeof res.durationSeconds === 'number' ? res.durationSeconds : null
+      };
+    }
+    async function loop() {
+      st.running = true; emit();
+      try {
+        while (!st.paused && st.queue.length) {
+          var key = st.queue.shift(), r = find(key);
+          if (!r || r.status !== 'ok' || r.lyricStatus === 'done') continue;
+          st.current = key; st.progress = 0; r.lyricStatus = 'running'; r.lyricError = null; emit();
+          try {
+            var res = await transcriber(r, {
+              language: opts.language || 'zh',
+              onProgress: function (f) { st.progress = Math.max(0, Math.min(1, Number(f) || 0)); emit(); },
+              shouldPause: function () { return st.paused; }
+            });
+            r.lyrics = Object.assign(sanitize(res), { transcribedAt: Date.now() });
+            r.lyricStatus = 'done'; r.lyricError = null; st.doneRun++;
+          } catch (err) {
+            if (err && err.paused) { r.lyricStatus = 'queued'; st.queue.unshift(key); break; }
+            r.lyricStatus = 'failed';
+            r.lyricError = String((err && err.message) || err || '未知錯誤') || '未知錯誤';
+            st.failedRun++;
+          }
+          st.current = null; st.progress = null;
+          try { await lib.save(); st.saveError = null; } catch (e) { st.saveError = String((e && e.message) || e); }
+          emit();
+        }
+      } finally {
+        st.current = null; st.progress = null; st.running = false;
+        // 暫停時還在佇列裡的曲目標成排隊中（顯示用）
+        st.queue.forEach(function (k) { var x = find(k); if (x && x.lyricStatus !== 'done') x.lyricStatus = 'queued'; });
+        emit();
+      }
+    }
+    function kick() { if (!st.running && !st.paused && st.queue.length) loop(); }
+
+    var q = {
+      // keys 為空＝全部還沒完成的（none／failed／queued）
+      enqueue: function (keys) {
+        var list = keys && keys.length ? keys : lib.records.filter(function (r) { return r.status === 'ok' && !r.pending; }).map(function (r) { return r.key; });
+        list.forEach(function (k) {
+          var r = find(k);
+          // 遊戲音樂來源（pending）沒有可轉錄的聲音，不排進佇列
+          if (!r || r.status !== 'ok' || r.pending || r.lyricStatus === 'done' || st.queue.indexOf(k) >= 0 || st.current === k) return;
+          st.queue.push(k); r.lyricStatus = 'queued'; r.lyricError = null;
+        });
+        emit(); kick();
+        return st.queue.length;
+      },
+      pause: function () { st.paused = true; emit(); },
+      resume: function () { st.paused = false; emit(); kick(); },
+      // 等目前這一輪結束（測試與關閉前用）
+      idle: function () { return new Promise(function (res) { (function wait() { if (!st.running) res(); else setTimeout(wait, 5); })(); }); },
+      onChange: function (fn) { listeners.push(fn); return function () { listeners = listeners.filter(function (x) { return x !== fn; }); }; },
+      state: function () {
+        var c = { none: 0, queued: 0, running: 0, done: 0, failed: 0 };
+        lib.records.forEach(function (r) { if (r.status === 'ok' && !r.pending && c[r.lyricStatus] != null) c[r.lyricStatus]++; });
+        return { running: st.running, paused: st.paused, current: st.current, progress: st.progress, queued: st.queue.length, doneRun: st.doneRun, failedRun: st.failedRun, saveError: st.saveError, counts: c };
+      }
+    };
+    return q;
   }
 
   // ───── 儲存後端：只要求 load() → { sources, records } 或 null、save(data) ─────
@@ -435,7 +536,7 @@
     VERSION: VERSION, HEAD_BYTES: HEAD_BYTES, KINDS: KINDS,
     identifyKind: identifyKind, isSupportedName: isSupportedName, albumFromPath: albumFromPath,
     parseMetadata: parseMetadata, formatDuration: formatDuration, normalizeText: normalizeText,
-    scanSource: scanSource, searchRecords: searchRecords,
+    scanSource: scanSource, searchRecords: searchRecords, createLyricQueue: createLyricQueue, LYRIC_WEIGHT: LYRIC_WEIGHT,
     createMemoryBackend: createMemoryBackend, createJsonBackend: createJsonBackend, createLibrary: createLibrary
   };
 });

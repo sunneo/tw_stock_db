@@ -160,3 +160,36 @@
 | 批次輸出 mp3（wav、midi、ROM、mp4），預設一分鐘可指定 | 未做 |
 
 整體：十項裡「接進桌面版並真機驗證」的有 3 項（加資料夾與掃描、檔名搜尋，其中加資料夾仍有未驗的按鈕點擊），其餘 7 項未開始。
+
+## 歌詞轉錄與搜尋：現況（2026-11-22）
+
+狀態：佇列、狀態機、歌詞搜尋與面板已做；單元測試與假轉錄真桌面版評測通過；**真 Whisper 轉錄沒有跑完**（見下）。
+
+### 做了什麼
+
+- `musiclib_core.js`：每筆曲目多 `lyrics`（段落 `[{start,end,text}]`、語言、長度、轉錄時間）、`lyricStatus`（none 未轉錄、queued 排隊、running 轉錄中、done 完成、failed 失敗）、`lyricError`（失敗的具體原因）。檔案變更時曲目重建，歌詞跟著清掉。
+- `createLyricQueue(lib, transcriber, opts)`：逐首轉錄；每首完成就存檔；暫停時轉錄函式丟出 `err.paused` 的那首退回排隊、續跑從頭做；已完成的不重做；失敗的下次會重試；遊戲來源（pending）不排進佇列；重開時上次「轉錄中」退回未轉錄。
+- 歌詞搜尋：`searchRecords(…, {scope})`，scope 為 all／meta（不含歌詞）／lyrics（只查歌詞）。歌詞命中權重 1.2（每個關鍵字），檔名與標題 3，所以檔名命中仍排前面。回傳 `lyricHits`（命中的段落與時間點，最多 8 段）。中日英都用子字串比對。多個關鍵字可以分散在不同段落，但不能跨段落連在一起。
+- `musiclib_host.js`：預設轉錄 `whisperTranscribe`，接 app 既有的 Whisper 流程（`_decodeAudioForWhisperWithFallback`、`_getWhisperTranscriber`、`_runWhisperWindowed`），裝置順序同 `transcribe_media`（WebGPU 失敗退回 CPU）。讀整檔進來解碼，每 600 秒分一段跑，段與段之間檢查暫停。`FaMusicLibHost.setTranscriber(fn)` 可換成別的轉錄函式。
+- `musiclib_ui.js`：「轉錄歌詞」（勾選的未完成曲目；沒勾選就全部未完成）、「暫停／續跑」、進度列（完成、排隊、未轉錄、失敗、轉錄中與百分比、已暫停）、歌詞欄（失敗會顯示原因）、範圍下拉、搜尋時列出歌詞命中的段落與時間點。
+
+### 修正既有的 bug（不是這個功能本身）
+
+`scripts/embed-code-ui.js` 嵌入 `transcode_fallback_core.js` 的方式不對：核心檔是 `const … ; module.exports = …` 的寫法，不是 UMD，嵌入後 `FaTranscodeFallback` 是 undefined，所有 Whisper 解碼都會失敗（包括既有的 `transcribe_media` 工具）。已改為傳入 `{ exports: {} }` 的模組物件，重新嵌入並建置。
+
+### 驗證
+
+- 單元測試：`musiclib_core.test.js` 26/26 通過（含假轉錄的狀態機、暫停與續跑、失敗原因、續跑不重做、檔案變更才重做、重開後歌詞還在、中日英歌詞搜尋、命中時間點、檔名優先排序、範圍切換）。
+- 真桌面版（獨立 user-data-dir、FA_BROWSER_CONTROL_PORT=18932）假轉錄評測：第一次掃描 6 首，按「轉錄歌詞」後暫停、續跑，結果 5 完成、1 失敗（`song.mid`，附模擬的具體原因）；搜尋「English lyric」（全部範圍 5 首、只查不含歌詞 0 首、只查歌詞 5 首）與時間點正確。第二次開啟（同一 profile）：5 完成、1 失敗與原因、歌詞仍在。
+- 真 Whisper（`musiclib-ud-real`，複製了本機既有的 Service Worker 快取，約 1.8 GB，未改動使用者的預設 profile）：**沒有跑完**。第一次因上面的嵌入 bug 解碼即失敗；修正後重跑，「Autumn Leaves.wav」（1 秒靜音）停在轉錄中 0%，等了 400 秒沒有進展，也沒有錯誤回報。推測是模型載入（快取是否命中、或網路載入 transformers.js）卡住。**這一項沒有驗證成功**。
+
+### 沒做、已知限制
+
+- 轉錄沒有逾時機制：模型載入卡住時，佇列會一直停在「轉錄中」，要重開 app 才會解除（重開時會退回未轉錄）。下一步應加逾時與明確的錯誤原因。
+- 長檔的分段是 600 秒一段，段與段之間沒有重疊，邊界的字可能被切斷。
+- 整檔讀進記憶體解碼（經 IPC base64），非常大的影片會吃記憶體。
+- 暫停只在段與段之間生效；暫停的那首從頭重做。
+- 歌詞搜尋不做簡繁、假名互通；歌詞的時間點是 Whisper 給的段落時間，不是逐字時間。
+- 評測的中文輸出在主控台亂碼，判定以狀態與計數為準。
+- 沒有 GPU 的環境下真轉錄會很慢（這次評測的卡住也可能是這個原因），不能確定是慢還是壞掉。
+- 沒有發布、沒有推送；建置產物（`renderer/floating-assistant.js`、`.min.js`、`web-lazy/`、`update-manifest.json`）未提交。
