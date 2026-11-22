@@ -24,7 +24,9 @@
   var DEFAULT_RATE = 44100, PAGE = 4096;
   var MAX_CALLS = 8;               // 一畫面最多呼叫幾次 PLAY（速度比畫面快時）
   var INIT_MAX_SEC = 10;           // INIT 最多跑這麼久的遊戲時間，超過就回報沒有返回
-  var SCAN_MAX_SEC = 600;          // 曲長掃描上限（循環的曲子沒有靜音，只能到這裡）
+  var PLAY_MAX_SEC = 10;           // PLAY 連續沒有返回超過這麼久的遊戲時間就丟錯（硬上限，不讓播放器空轉）
+  var PLAY_MAX_FRAMES = Math.ceil(PLAY_MAX_SEC / FRAME_SEC);
+  var SCAN_MAX_SEC = 60;           // 曲長掃描上限（掃描是同步執行，會凍住頁面；循環的曲子沒有靜音，只能到這裡）
   var SILENT_GIVEUP_SEC = 60;      // 從頭到尾都沒聲音超過這麼久，就當作沒有聲音
   var QUIET_MIN_SEC = 3;           // 聲音停止後至少安靜這麼久才算結束
   var PEAK_EPS = 1e-3;             // 振幅低於這個值視為靜音（約 −60 dBFS）
@@ -89,7 +91,7 @@
   // 一台執行中的 NSF：jsnes 實例 + 播放狀態。INIT 在建立時就跑完，時間 0 = INIT 返回的那一刻。
   function makeMachine(NES, nsf, song, sr) {
     var m = {
-      nsf: nsf, song: song, sr: sr, nes: null, banks: [], T: 0, waitAddr: 0, acc: 0, overruns: 0, crashed: null,
+      nsf: nsf, song: song, sr: sr, nes: null, banks: [], T: 0, waitAddr: 0, acc: 0, overruns: 0, stuck: 0, crashed: null,
       periodUs: nsf.pal ? (nsf.palSpeed || 19997) : (nsf.ntscSpeed || 16639),
       sink: new Float32Array(4096), sinkN: 0,
       q: new Float32Array(1 << 15), qLen: 0, qPos: 0, frames: 0
@@ -215,9 +217,14 @@
         if (cpu.REG_PC === m.waitAddr) {
           var n = Math.min(MAX_CALLS, Math.floor(m.acc / m.periodUs));
           m.acc -= n * m.periodUs;
+          m.stuck = 0;
           m.waitAddr = layoutPlay(m, n);
           cpu.REG_PC = m.T;
-        } else m.overruns++;
+        } else {
+          // PLAY 還沒返回：連續超過 PLAY_MAX_SEC 遊戲時間就丟錯（不讓播放器靜默地空轉）
+          m.overruns++;
+          if (++m.stuck > PLAY_MAX_FRAMES) throw new Error('PLAY（$' + m.nsf.play.toString(16) + '）在 ' + PLAY_MAX_SEC + ' 秒遊戲時間內沒有返回（播放中途卡住）');
+        }
       }
       try { m.nes.frame(); }
       catch (e) { m.crashed = String((e && e.message) || e); }
@@ -289,7 +296,7 @@
         if (!(N.songs >= 1)) throw new Error('NSF 曲目數為 0');
         var nsf = {
           load: N.load, init: N.init, play: N.play, songs: N.songs, data: N.data, pal: N.pal, palSpeed: N.palSpeed, ntscSpeed: N.ntscSpeed,
-          banks: N.banks, banked: N.banks.some(function (x) { return x !== 0; }), mmc1: N.mmc1, ram: N.ram
+          banks: N.banks, banked: N.banks.some(function (x) { return x !== 0; }), mmc1: N.mmc1, ram: N.ram, frames: N.frames
         };
         var tracks = [];
         for (var i = 1; i <= N.songs; i++) tracks.push(lazyTrack(NES, nsf, i, i - 1));
@@ -306,6 +313,12 @@
   // 曲長延遲計算：第一次讀 durationSec 才掃描（掃描結果快取在 track 上）
   function lazyTrack(NES, nsf, song, index) {
     var cache = null, tr = { index: index, title: '曲目 ' + song };
+    // APU 重放的 NSF 標頭有畫面數：曲長直接算，不掃描（掃描要跑到最多 SCAN_MAX_SEC，會卡住頁面）
+    if (nsf.frames > 0) {
+      tr.durationSec = nsf.frames * FRAME_SEC;
+      Object.defineProperty(tr, 'durationNote', { enumerable: false, value: 'APU 重放的畫面數（' + nsf.frames + ' 畫面）' });
+      return tr;
+    }
     Object.defineProperty(tr, 'durationSec', {
       enumerable: true,
       get: function () {

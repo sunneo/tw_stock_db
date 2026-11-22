@@ -47,15 +47,17 @@ t('後端執行：PLAY 每畫面一次，寫入位址與順序與事件流完全
   var r = NESX.buildApuReplay(sampleEvents());
   var got = runReplay(r.nsf, 6);
   assert.equal(got.crashed, null, '不應崩潰：' + got.crashed);
-  assert.deepEqual(got.writes, [[0x4000, 0x9F], [0x4002, 0x10], [0x4015, 0x01]], '寫入順序');
+  assert.deepEqual(got.writes.slice(0, 3), [[0x4000, 0x9F], [0x4002, 0x10], [0x4015, 0x01]], '寫入順序');
   assert.deepEqual(got.perFrame.slice(0, 3), [2, 0, 1], '每畫面的寫入數對應事件流');
-  assert.deepEqual(got.perFrame.slice(3), [0, 0, 0], '資料結束後不再寫入（靜音）');
+  // 資料結束後每畫面只寫一次 $4015＝0（關閉所有聲道），之後靜音
+  assert.deepEqual(got.perFrame.slice(3), [1, 1, 1], '資料結束後每畫面只關聲道');
+  assert.deepEqual(got.writes.slice(3), [[0x4015, 0], [0x4015, 0], [0x4015, 0]], '結束後寫入的只有 $4015＝0');
 });
 
 t('沒有任何聲音寫入：明確回報，不產生 NSF', function () {
   var r = NESX.buildApuReplay([{ k: 'vblank', f: 0 }, { k: 'vblank', f: 1 }]);
   assert.equal(r.ok, false);
-  assert.ok(/沒有可重放/.test(r.reason), r.reason);
+  assert.ok(/沒有任何有音/.test(r.reason), r.reason);
 });
 
 var pass = 0, fail = 0;

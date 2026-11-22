@@ -98,7 +98,9 @@
     // 0x7C–0x7F 是 NSF 規格的保留位元組；本專案用來放 MMC1 的銀行狀態（標準播放器會忽略）
     if (o.mmc1) { h[0x7D] = o.mmc1.ctrl & 0x1F; h[0x7E] = o.mmc1.prg & 0x1F; h[0x7F] = o.mmc1.nb16 & 0xFF; }
     // 0x7C 位元 0 = MMC1 資訊有效；位元 1 = 資料最後 RAM_IMAGE 位元組是遊戲 RAM 影像（播放前還原）
-    h[0x7C] = (o.mmc1 ? 1 : 0) | (o.ram ? 2 : 0);
+    h[0x7C] = (o.mmc1 ? 1 : 0) | (o.ram ? 2 : 0) | (o.frames ? 4 : 0);
+    // 位元 2 = 0x7D–0x7E 是曲長的畫面數（APU 重放用；曲長直接取得，不必掃描）
+    if (o.frames && !o.mmc1) { h[0x7D] = o.frames & 0xFF; h[0x7E] = (o.frames >> 8) & 0xFF; }
     h.set(data, 0x80);
     if (o.ram) h.set(o.ram, 0x80 + data.length);
     return h;
@@ -113,6 +115,7 @@
       name: s32(0x0E), artist: s32(0x2E), copyright: s32(0x4E), ntscSpeed: u16(0x6E),
       banks: Array.from(b.subarray(0x70, 0x78)), palSpeed: u16(0x78), pal: !!(b[0x7A] & 1),
       mmc1: (b[0x7C] & 1) ? { ctrl: b[0x7D], prg: b[0x7E], nb16: b[0x7F] } : null,
+      frames: (b[0x7C] & 4) ? (b[0x7D] | (b[0x7E] << 8)) : null,
       ram: ((b[0x7C] & 2) && b.length - 0x80 >= RAM_IMAGE) ? b.subarray(b.length - RAM_IMAGE) : null,
       data: ((b[0x7C] & 2) && b.length - 0x80 >= RAM_IMAGE) ? b.subarray(0x80, b.length - RAM_IMAGE) : b.subarray(0x80)
     };
@@ -167,27 +170,63 @@
       0x9D, 0xFF, 0x3F,           // +25 STA $3FFF,X
       0x4C, L0 & 0xFF, L0 >> 8,   // +28 JMP L0
       0xE6, 0xF8, 0xD0, 0x02, 0xE6, 0xF9,   // +31 FRAMEEND：消耗 0 位元組
-      0x60,                       // +37 RTS                    DONE
+      0x60,                       // +37 RTS
+      0xA9, 0x00, 0x8D, 0x15, 0x40, 0x60,   // +38 DONE：資料結束後關掉所有聲道（否則最後的音會一直響，曲長掃描永遠找不到靜音）
     ];
-    var frameEnd = 31, done = 37;
+    var frameEnd = 31, done = 38;
     code[5] = frameEnd - 6;       // BEQ FRAMEEND：分支位元組在 +5，從 +6 算
     code[9] = done - 10;          // BEQ DONE：從 +10 算
     prg.set(code, p);
     return prg;
   }
   // 把事件流轉成重放表（從第一次寫聲音開始；超過位址空間就停在畫面邊界）
+  // 有音的寫入：音量不為 0 的脈衝／雜訊、三角波的線性計數器不為 0、或 $4015 開啟了聲道
+  function soundingWrite(addr, v) {
+    if (addr === 0x4015) return (v & 0x1F) !== 0;
+    if (addr === 0x4008) return (v & 0x7F) !== 0;
+    if (addr === 0x4000 || addr === 0x4004 || addr === 0x400C) return (v & 0x0F) !== 0;
+    return false;
+  }
+  // 從第一個「有音的寫入」所在的畫面開始重放（前面的靜音不收，擷取的遊戲常在開場幾秒只寫靜音）。
+  // 開始時先寫入每個暫存器的最後值（狀態快照），讓聲道設定不會因為從中間開始而遺失。
   function buildApuReplay(events) {
-    var table = [], started = false, frames = 0, writes = 0, truncated = false, lastEnd = 0;
+    // 每畫面是否有有音的寫入；開始點 = 第一個「之後 60 畫面裡至少一半有音」的畫面（跳過開場的零星音效與靜音）
+    var flags = [], cur = false, anySound = false;
+    for (var j = 0; j < events.length; j++) {
+      var ej = events[j];
+      if (ej.k === 'apu' && soundingWrite(ej.addr, ej.value & 0xFF)) { cur = true; anySound = true; }
+      else if (ej.k === 'vblank') { flags.push(cur ? 1 : 0); cur = false; }
+    }
+    if (!anySound) return { ok: false, reason: '擷取期間沒有任何有音的聲音暫存器寫入（音量全為 0）' };
+    var k = -1, win = 0, WIN = 60;
+    for (var w = 0; w < flags.length && w < WIN; w++) win += flags[w];
+    for (var s = 0; s < flags.length; s++) {
+      if (win * 2 >= WIN) { k = s; break; }
+      win += (s + WIN < flags.length ? flags[s + WIN] : 0) - flags[s];
+    }
+    if (k < 0) k = flags.indexOf(1);      // 沒有連續的段落：從第一個有音的畫面開始
+    var table = [], regs = {}, started = false, frames = 0, writes = 0, truncated = false, lastEnd = 0, fcount = 0;
     for (var i = 0; i < events.length; i++) {
       var e = events[i];
+      if (!started && fcount >= k) {
+        started = true;
+        // 快照：$4015 放最後（先設定各聲道，再開啟）
+        Object.keys(regs).map(Number).sort(function (a, b) { return (a === 0x4015) - (b === 0x4015) || a - b; }).forEach(function (addr) {
+          table.push(addr - 0x3FFF, regs[addr]);
+        });
+      }
       if (e.k === 'apu') {
         var code = e.addr - 0x3FFF;
         if (code < 1 || code > 24) continue;
+        if (!started) { regs[e.addr] = e.value & 0xFF; continue; }
         if (table.length + 2 > REPLAY_MAX - 1) { truncated = true; break; }
-        table.push(code, e.value & 0xFF); started = true; writes++;
-      } else if (e.k === 'vblank' && started) {
-        if (table.length + 1 > REPLAY_MAX - 1) { truncated = true; break; }
-        table.push(0); frames++; lastEnd = table.length;
+        table.push(code, e.value & 0xFF); writes++;
+      } else if (e.k === 'vblank') {
+        fcount++;
+        if (started) {
+          if (table.length + 1 > REPLAY_MAX - 1) { truncated = true; break; }
+          table.push(0); frames++; lastEnd = table.length;
+        }
       }
     }
     if (!writes) return { ok: false, reason: '擷取期間沒有可重放的聲音暫存器寫入' };
@@ -196,7 +235,7 @@
     var prg = new Uint8Array(REPLAY_TABLE + table.length);
     prg.set(apuReplayCode().subarray(0, REPLAY_TABLE), 0);
     prg.set(table, REPLAY_TABLE);
-    var nsf = packNsf({ prg: prg, load: REPLAY_LOAD, init: REPLAY_INIT, play: REPLAY_PLAY, songs: 1, start: 1, name: '' });
+    var nsf = packNsf({ prg: prg, load: REPLAY_LOAD, init: REPLAY_INIT, play: REPLAY_PLAY, songs: 1, start: 1, name: '', frames: frames });
     return { ok: true, nsf: nsf, frames: frames, writes: writes, truncated: truncated };
   }
 
