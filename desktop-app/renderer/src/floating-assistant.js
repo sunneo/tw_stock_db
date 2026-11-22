@@ -99235,6 +99235,19 @@ const holder = {};
   var SPC_SIG = 'SNES-SPC700 Sound File Data v0.30';
   var REG_KON = 0x4C, REG_KOFF = 0x5C;
   var STAGES = ['掃描辨識', '執行 ROM（主 CPU）', '偵測聲音上傳完成並傾印', '組成 .spc', 'SPC 渲染成 wav', 'wav 轉 mp3', '退路 MIDI'];
+  var SILENCE_RMS = 0.002, SILENCE_RATIO = 0.9;   // 靜音門檻：前 N 秒的均方根，與靜音樣本比例
+
+  // 量測渲染結果的前 sec 秒：{ rms（左右聲道平均）, silentRatio（|L|、|R| 都小於 1e-4 的樣本比例） }
+  function measureOutput(o, sec) {
+    var sr = o.sampleRate || DSP_RATE, n = Math.min(o.L.length, Math.round(sr * sec)), sum = 0, quiet = 0, i;
+    if (!n) return { rms: 0, silentRatio: 1 };
+    for (i = 0; i < n; i++) {
+      var l = o.L[i], r = o.R[i];
+      sum += l * l + r * r;
+      if (Math.abs(l) < 1e-4 && Math.abs(r) < 1e-4) quiet++;
+    }
+    return { rms: Math.sqrt(sum / (2 * n)), silentRatio: quiet / n };
+  }
 
   function asU8(x) { return x instanceof Uint8Array ? x : new Uint8Array(x); }
   function ascii(b, o, n) { var s = ''; for (var i = 0; i < n; i++) s += String.fromCharCode(b[o + i] == null ? 0 : b[o + i]); return s; }
@@ -99375,22 +99388,33 @@ const holder = {};
       return fail(4, 'SPC700＋S-DSP 渲染核心沒有接上（ml-spcdsp 的 musiclib_spc_core.js 尚未合併）；' +
         '目前的聲音埠只跑 IPL 上傳協定，不執行 SPC700，所以 .spc 裡的 DSP 與 SPC700 狀態是占位值，不能當成音樂');
     }
-    // 每個時間點各自渲染成一首；單一時間點失敗不影響其他（逐筆記錄）
-    out.rendered = [];
-    var errs = [];
+    // 每個時間點各自渲染；靜音的傾印不登記（前 5 秒均方根 < 0.002，或靜音比例 > 90%）；單一時間點失敗不影響其他（逐筆記錄）
+    var keep = [], skipped = [], errs = [];
     out.spcs.forEach(function (sp, i) {
-      try { out.rendered.push({ index: i, frame: sp.frame, bytes: sp.bytes, out: opts.renderSpc(sp.bytes, opts) }); }
-      catch (e) { errs.push('第 ' + i + ' 個：' + String((e && e.message) || e)); }
+      var o;
+      try { o = opts.renderSpc(sp.bytes, opts); }
+      catch (e) { errs.push('第 ' + (i + 1) + ' 個：' + String((e && e.message) || e)); return; }
+      var m = measureOutput(o, 5);
+      if (m.rms < SILENCE_RMS || m.silentRatio > SILENCE_RATIO) {
+        skipped.push({ index: i, frame: sp.frame, rms: m.rms, silentRatio: m.silentRatio,
+          note: '第 ' + (i + 1) + ' 個傾印（畫面 ' + sp.frame + '）靜音，已略過（前 5 秒均方根 ' + m.rms.toFixed(4) + '，靜音比例 ' + (m.silentRatio * 100).toFixed(1) + '%）' });
+        return;
+      }
+      keep.push({ index: i, frame: sp.frame, bytes: sp.bytes, out: o, rms: m.rms });
     });
-    if (!out.rendered.length) return fail(4, '渲染失敗：' + errs.join('；'));
-    out.stages.push({ stage: STAGES[4], ok: true, note: out.rendered.length + ' 首渲染成功' + (errs.length ? '；' + errs.join('；') : '') });
+    out.rendered = keep; out.skipped = skipped;
+    if (!keep.length) {
+      return fail(4, '全部 ' + out.spcs.length + ' 個傾印都是靜音：' + skipped.map(function (s) { return '第 ' + (s.index + 1) + ' 個 RMS ' + s.rms.toFixed(4); }).join('；') +
+        (errs.length ? '；渲染錯誤：' + errs.join('；') : ''));
+    }
+    out.stages.push({ stage: STAGES[4], ok: true, note: keep.length + ' 首有聲音' + (skipped.length ? '；' + skipped.map(function (s) { return s.note; }).join('；') : '') + (errs.length ? '；' + errs.join('；') : '') });
     out.ok = true;
     return out;
   }
 
   return {
     classifySfc: classifySfc, parseSnesHeader: parseSnesHeader, packSpc: packSpc, parseSpc: parseSpc,
-    dspEventsToSong: dspEventsToSong, sfcExtract: sfcExtract, STAGES: STAGES, SPC_SIZE: SPC_SIZE, DSP_RATE: DSP_RATE
+    dspEventsToSong: dspEventsToSong, sfcExtract: sfcExtract, measureOutput: measureOutput, STAGES: STAGES, SPC_SIZE: SPC_SIZE, DSP_RATE: DSP_RATE
   };
 }));
 
@@ -99965,6 +99989,8 @@ const holder = {};
       get portWrites() { return st.portWrites; },
       get blocks() { return 0; },
       get bytes() { return 0; },
+      konCount: function () { return core.konCount(); },
+      activity: function () { return core.activity(); },
       dumpSpc: function () {
         var ram = new Uint8Array(0x10000), dsp = new Uint8Array(128), i;
         for (i = 0; i < 0x10000; i++) ram[i] = core.peek(i);
@@ -100176,6 +100202,14 @@ const holder = {};
     return m;
   }
 
+  // 狀態雜湊（FNV-1a，RAM＋DSP）：同一首曲的重複狀態用來略過
+  function hashState(d) {
+    var h = 0x811C9DC5, i;
+    for (i = 0; i < d.ram.length; i++) { h ^= d.ram[i]; h = Math.imul(h, 16777619) >>> 0; }
+    for (i = 0; i < d.dsp.length; i++) { h ^= d.dsp[i]; h = Math.imul(h, 16777619) >>> 0; }
+    return h >>> 0;
+  }
+
   // ───── 整體：跑 ROM 直到聲音程式上傳完成，之後每隔一段時間拍一次快照 ─────
   // opts: { Cpu, parseHeader?, hirom?, maxFrames?（預設 3600）, snapshotFrames?（上傳後的畫面數，預設 [120, 600, 1800]）,
   //         isCancelled?(), onProgress?(frame), apu? }
@@ -100188,17 +100222,35 @@ const holder = {};
     var res = { ok: false, uploaded: false, uploadFrame: null, entry: null, snapshots: [], cancelled: false, reason: '', boot: null, cpu: null, apu: null };
     res.boot = { hirom: m.bus.hirom, copier: m.bus.copier, mapMode: m.bus.mapMode, romBytes: m.bus.romBytes, sramBytes: m.bus.sramBytes };
     var upAt = -1, nextSnap = 0;
+    // 傾印時機：有 konCount／activity 的核心（真實 SPC）→ 「新的按鍵發生」且「有聲道正在發聲」才傾印，相同狀態（RAM＋DSP 雜湊）略過；
+    // 沒有的（替身）→ 上傳後固定間隔。
+    var byKon = typeof m.apu.konCount === 'function' && typeof m.apu.activity === 'function';
+    var maxDumps = opts.maxDumps || 4, minGap = opts.minGapFrames || 60, lastKon = 0, lastDumpFrame = -1e9, seen = {};
     while (m.frames < maxFrames) {
       if (opts.isCancelled && opts.isCancelled()) { res.cancelled = true; break; }
       m.runFrame();
       if (opts.onProgress && m.frames % 60 === 0) opts.onProgress(m.frames);
       if (upAt < 0 && m.apu.state === 'running') { upAt = m.frames; res.uploaded = true; res.uploadFrame = m.frames; res.entry = m.apu.entry; }
-      if (upAt >= 0 && nextSnap < offsets.length && m.frames >= upAt + offsets[nextSnap]) {
+      if (upAt < 0) continue;
+      if (byKon) {
+        var k = m.apu.konCount();
+        if (k > lastKon && m.apu.activity() > 0 && m.frames - lastDumpFrame >= minGap) {
+          lastKon = k;
+          var dk = m.apu.dumpSpc(), hk = hashState(dk);
+          if (!seen[hk]) {
+            seen[hk] = true; lastDumpFrame = m.frames;
+            res.snapshots.push({ frame: m.frames, ramCopy: dk.ram, dsp: dk.dsp, spc: dk.spc, placeholder: dk.placeholder, kon: k, hash: hk });
+          }
+        }
+        if (res.snapshots.length >= maxDumps) break;
+        continue;
+      }
+      if (nextSnap < offsets.length && m.frames >= upAt + offsets[nextSnap]) {
         var d = m.apu.dumpSpc();
         res.snapshots.push({ frame: m.frames, ramCopy: d.ram, dsp: d.dsp, spc: d.spc, placeholder: d.placeholder });
         nextSnap++;
       }
-      if (upAt >= 0 && nextSnap >= offsets.length) break;
+      if (nextSnap >= offsets.length) break;
     }
     res.cpu = { pc: m.cpu.PC, pbr: m.cpu.PBR, e: m.cpu.E, halted: m.cpu.halted, stopped: m.cpu.stopped, instructions: m.cpu.instructions };
     res.apu = { state: m.apu.state, portWrites: m.apu.portWrites, blocks: m.apu.blocks, bytes: m.apu.bytes };
@@ -100828,7 +100880,7 @@ const holder = {};
   var IPL = [
     0xCD, 0xEF, 0xBD, 0xE8, 0x00, 0xC6, 0x1D, 0xD0, 0xFC, 0x8F, 0xAA, 0xF4, 0x8F, 0xBB, 0xF5, 0x78,
     0xCC, 0xF4, 0xD0, 0xFB, 0x2F, 0x19, 0xEB, 0xF4, 0xD0, 0xFC, 0x7E, 0xF4, 0xD0, 0x0B, 0xE4, 0xF5,
-    0xCB, 0xF4, 0xD7, 0x00, 0xFC, 0xD0, 0xF9, 0xAB, 0x01, 0x10, 0xEF, 0x7E, 0xF4, 0x10, 0xEB, 0xBA,
+    0xCB, 0xF4, 0xD7, 0x00, 0xFC, 0xD0, 0xF3, 0xAB, 0x01, 0x10, 0xEF, 0x7E, 0xF4, 0x10, 0xEB, 0xBA,
     0xF6, 0xDA, 0x00, 0xBA, 0xF4, 0xC4, 0xF4, 0xDD, 0x5D, 0xD0, 0xDB, 0x1F, 0x00, 0x00, 0xC0, 0xFF
   ];
   // 每個運算碼的基本週期（SPC 時脈，1.024 MHz）。分支成立時另外加 2。
@@ -100873,6 +100925,7 @@ const holder = {};
 
   function createCore(init) {
     init = init || {};
+    var konEvents = 0;
     var ram = new Uint8Array(65536);
     var dspRegs = new Uint8Array(128);
     var unknown = 0;
@@ -101100,7 +101153,7 @@ const holder = {};
         case 0x9D: r.x = nz(r.sp); return 0;                      // MOV X,SP
         case 0xBD: r.sp = r.x; return 0;                          // MOV SP,X
         case 0x1F: addr = (fetch16() + r.x) & 0xFFFF; r.pc = rd(addr) | (rd((addr + 1) & 0xFFFF) << 8); return 0;   // JMP [!abs+X]
-        case 0x2F: r.pc = (r.pc + sg8(fetch())) & 0xFFFF; return 0;  // BRA
+        case 0x2F: { var rel2F = fetch(); r.pc = (r.pc + sg8(rel2F)) & 0xFFFF; return 0; }  // BRA（先取運算元，再加到取完後的 PC）
         case 0x3F: addr = fetch16(); push(r.pc >> 8); push(r.pc & 0xFF); r.pc = addr; return 0;   // CALL
         case 0x4F: addr = fetch(); push(r.pc >> 8); push(r.pc & 0xFF); r.pc = 0xFF00 | addr; return 0;  // PCALL
         case 0x5F: r.pc = fetch16(); return 0;                    // JMP !abs
@@ -101218,6 +101271,7 @@ const holder = {};
     function dspRead(a) { return dspRegs[a & 0x7F]; }
     function keyOn(q) {
       var vo = voices[q], base = q * 16;
+      konEvents++;
       var d = ((dspRegs[0x5D] << 8) + dspRegs[base + 4] * 4) & 0xFFFF;
       vo.addr = rd(d) | (rd(d + 1) << 8);
       vo.loopAddr = rd(d + 2) | (rd(d + 3) << 8);
@@ -101408,7 +101462,16 @@ const holder = {};
         for (var i = 0; i < n; i++) { runSample(); L[off + i] = st.outL; R[off + i] = st.outR; }
         return n;
       },
-      runCycles: function (n) { var done = 0; while (done < n) { var c = step(); tickClock(c); done += c; } return done; },
+      // 執行 n 個 SPC 週期（CPU、計時器、DSP 都前進；DSP 每 32 週期產生一個取樣，按鍵也在這裡生效）
+      runCycles: function (n) {
+        var done = 0;
+        while (done < n) {
+          var c = step(); tickClock(c); done += c;
+          st.dspAcc += c;
+          while (st.dspAcc >= 32) { st.dspAcc -= 32; dspTick(); }
+        }
+        return done;
+      },
       runSamples: function (n) { for (var i = 0; i < n; i++) runSample(); return n; },
       snapshot: function () {
         return {
@@ -101440,6 +101503,9 @@ const holder = {};
       setPortIn: function (i, val) { io.inp[i & 3] = val & 0xFF; },
       cpu: function () { return { a: r.a, x: r.x, y: r.y, sp: r.sp, pc: r.pc, psw: getPSW(), halted: r.halted }; },
       unknownOps: function () { return unknown; },
+      // 按鍵發生次數（KON 寫入後實際啟動的聲道數累計）與目前發聲聲道的包絡總和（靜音＝0）；給擷取器決定傾印時機
+      konCount: function () { return konEvents; },
+      activity: function () { var s = 0; for (var q = 0; q < 8; q++) if (voices[q].mode !== M_OFF) s += voices[q].env; return s; },
       timerCount: function (i) { return io.cnt[i]; },
       voiceMode: function (q) { return voices[q].mode; }
     };
