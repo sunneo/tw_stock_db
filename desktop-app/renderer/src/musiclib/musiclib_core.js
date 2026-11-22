@@ -657,6 +657,9 @@
       lib.sources = lib.sources.filter(function (s) { return s.id !== id; });
       lib.records = lib.records.filter(function (r) { return r.sourceId !== id; });
     };
+    lib.planRemove = function (keys, opts) { return planRemove(lib, keys, opts); };
+    lib.planSourceRemove = function (sourceId, opts) { return planSourceRemove(lib, sourceId, opts); };
+    lib.applyRemove = function (plan, opts) { return applyRemove(lib, plan, opts); };
     lib.scan = function (sourceId, statEntries, readHead, opts) { return scanSource(lib, sourceId, statEntries, readHead, opts); };
     lib.search = function (query, opts) { return searchRecords(lib.records, query, opts); };
     return lib;
@@ -801,7 +804,99 @@
     return lib.records.length;
   }
 
+  // ───────────────────────── 旋律索引的收錄規則（純函式）
+  // 只收一般音樂檔（音訊、影片、MIDI）與擷取產物的 MIDI；來源 ROM（rix／nes／pce／sfc／swf）與 nsf 不收，
+  // 它們本身不是音訊，拿去解碼一定失敗（舊版就是這樣：86 筆全部失敗）。
+  var MEDIA_KINDS = { mid: 1, wav: 1, mp3: 1, mp4: 1, mov: 1, webm: 1 };
+  function melodyEligible(r) {
+    if (!r) return { ok: false, reason: '沒有這筆紀錄' };
+    if (r.pending) return { ok: false, reason: '來源檔（待擷取），不建索引' };
+    if (r.status !== 'ok') return { ok: false, reason: '檔案已消失或不可讀' };
+    if (r.derivedFrom) return r.kind === 'mid' ? { ok: true } : { ok: false, reason: '擷取產物只有 MIDI 建索引（' + r.kind + ' 不建）' };
+    if (isSourceOnly(r)) return { ok: false, reason: '遊戲音樂來源檔，不建索引（請先擷取出 MIDI）' };
+    if (!MEDIA_KINDS[r.kind]) return { ok: false, reason: '種類 ' + r.kind + ' 不建索引' };
+    return { ok: true };
+  }
+
+  // ───────────────────────── 樹狀列（純函式）
+  // records：要顯示的紀錄（呼叫端已篩過；搜尋時要把命中子曲目的來源也放進來）。
+  // derivedFrom 指向清單裡的來源 → 接在來源下面（depth 1）；父不在清單裡 → 當頂層列並標 orphan。
+  // opts.expanded：{ 來源 key: true }；opts.forceExpand：搜尋時一律展開。
+  function buildTreeRows(records, opts) {
+    opts = opts || {};
+    var expanded = opts.expanded || {}, force = !!opts.forceExpand;
+    var byKey = {}, kids = {}, tops = [];
+    (records || []).forEach(function (r) { byKey[r.key] = r; });
+    (records || []).forEach(function (r) {
+      if (r.derivedFrom && byKey[r.derivedFrom]) (kids[r.derivedFrom] = kids[r.derivedFrom] || []).push(r);
+      else tops.push(r);
+    });
+    Object.keys(kids).forEach(function (k) {
+      kids[k].sort(function (a, b) { return (a.derivedIndex || 0) - (b.derivedIndex || 0) || String(a.name).localeCompare(String(b.name)); });
+    });
+    var rows = [];
+    tops.forEach(function (r) {
+      var ks = kids[r.key] || [], open = ks.length > 0 && (force || !!expanded[r.key]);
+      rows.push({ rec: r, depth: 0, orphan: !!r.derivedFrom, kidCount: ks.length, expanded: open });
+      if (open) ks.forEach(function (c) { rows.push({ rec: c, depth: 1, orphan: false, kidCount: 0, expanded: false }); });
+    });
+    return rows;
+  }
+
+  // ───────────────────────── 移除規則（純函式，不碰檔案）
+  // 原始檔：只從曲庫移除，絕不刪磁碟上的原始檔。
+  // 擷取產物（derivedFrom）：移除記錄，並刪除衍生檔——但只刪 opts.isDerivedPath(path, rec) 認可的路徑（不認可＝只移除記錄、檔案留著，並寫明原因）。
+  // 移除原始檔時，opts.includeDerived（預設 true）決定要不要連同它的擷取產物一起移除；不移除的擷取產物會變成沒有來源的獨立列。
+  // 回傳 plan：{ removeKeys, deleteFiles:[{key,path}], skipped:[{key,reason}], originals, derived, orphanedDerived }
+  function planRemove(lib, keys, opts) {
+    opts = opts || {};
+    var includeDerived = opts.includeDerived !== false;
+    var isDerivedPath = typeof opts.isDerivedPath === 'function' ? opts.isDerivedPath : null;
+    var byKey = {}, originalPaths = {};
+    lib.records.forEach(function (r) { byKey[r.key] = r; if (!r.derivedFrom) originalPaths[r.path] = true; });
+    var remove = {}, plan = { removeKeys: [], deleteFiles: [], skipped: [], originals: 0, derived: 0, orphanedDerived: 0 };
+    function addDerived(rec) {
+      if (originalPaths[rec.path]) { plan.skipped.push({ key: rec.key, reason: '這個路徑同時是原始檔，不刪檔（只移除記錄）' }); return; }
+      if (!isDerivedPath || !isDerivedPath(rec.path, rec)) { plan.skipped.push({ key: rec.key, reason: '路徑不在衍生資料夾內，不刪檔（只移除記錄）' }); return; }
+      plan.deleteFiles.push({ key: rec.key, path: rec.path });
+    }
+    (keys || []).forEach(function (k) {
+      var r = byKey[k];
+      if (!r || remove[k]) return;
+      remove[k] = true;
+      if (r.derivedFrom) { plan.derived++; addDerived(r); return; }
+      plan.originals++;
+      if (!includeDerived) return;
+      lib.records.forEach(function (c) {
+        if (c.derivedFrom === k && !remove[c.key]) { remove[c.key] = true; plan.derived++; addDerived(c); }
+      });
+    });
+    plan.removeKeys = Object.keys(remove);
+    plan.orphanedDerived = includeDerived ? 0 : lib.records.filter(function (c) { return c.derivedFrom && remove[c.derivedFrom] && !remove[c.key]; }).length;
+    return plan;
+  }
+  // 來源整個移除（addSource 的相反）：原始檔＝這個來源登記的所有非衍生紀錄；擷取產物照 includeDerived 處理。
+  function planSourceRemove(lib, sourceId, opts) {
+    var keys = lib.records.filter(function (r) { return r.sourceId === sourceId && !r.derivedFrom; }).map(function (r) { return r.key; });
+    var plan = planRemove(lib, keys, opts);
+    var src = lib.sources.filter(function (s) { return s.id === sourceId; })[0];
+    plan.sourceId = sourceId; plan.sourceLabel = src ? src.label : '';
+    return plan;
+  }
+  // 套用：keys 預設 plan.removeKeys（呼叫端可以拿掉衍生檔刪不掉的，讓那筆記錄留著）；dropSource 預設 true（來源登記也拿掉）
+  function applyRemove(lib, plan, opts) {
+    opts = opts || {};
+    var keys = opts.keys || plan.removeKeys, gone = {};
+    keys.forEach(function (k) { gone[k] = true; });
+    var before = lib.records.length;
+    lib.records = lib.records.filter(function (r) { return !gone[r.key]; });
+    if (plan.sourceId && opts.dropSource !== false && !opts.keepSource) lib.sources = lib.sources.filter(function (s) { return s.id !== plan.sourceId; });
+    return { removed: before - lib.records.length };
+  }
+
   return {
+    melodyEligible: melodyEligible, buildTreeRows: buildTreeRows,
+    planRemove: planRemove, planSourceRemove: planSourceRemove, applyRemove: applyRemove,
     buildDerivedRecord: buildDerivedRecord, replaceDerived: replaceDerived,
     minutesToSec: minutesToSec, sliceWindow: sliceWindow, outputName: outputName, planExport: planExport, runExportBatch: runExportBatch,
     EXPORT_ROUTES: EXPORT_ROUTES, EXPORT_FORMATS: EXPORT_FORMATS, EXPORT_MAX_ATTEMPTS: EXPORT_MAX_ATTEMPTS,
