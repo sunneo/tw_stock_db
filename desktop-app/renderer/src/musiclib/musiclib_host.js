@@ -555,7 +555,7 @@ const FaMusicLibHost = (function () {
     return { results: results, summary: summary };
   }
 
-  var PICK_HOST = { pickFolder: pickFolder, melody: MELODY_HOST, extract: { run: extractSources, cancel: function () { extractCancelled = true; } } };
+  var PICK_HOST = { pickFolder: pickFolder, melody: MELODY_HOST, extract: { run: extractSources, cancel: function () { extractCancelled = true; } }, openNsf: openNsf };
 
   var methods = {
     _mlLib() { return getLib(); },
@@ -590,7 +590,29 @@ const FaMusicLibHost = (function () {
     }
   };
 
-  return { methods: methods, getLib: getLib, pickFolder: pickFolder, walkFolder: walkFolder, whisperTranscribe: whisperTranscribe, melody: MELODY_HOST, extract: PICK_HOST.extract,
+  // NSF 晶片播放（曲庫的 NSF 子曲目）：讀檔 → 晶片播放核心建立 nsf 播放器 → 掛上共用卡片。
+  // 需要 FaChipPlayer（核心）、FaChipNsf（後端）、FaChipPlayerUI（卡片）都已內嵌；缺一就丟錯，面板會顯示原因。
+  var CHIP_HOST = {
+    encodeMp3: function (view, kbps) { var fa = window.fa; if (!fa || !fa._encodeMp3) throw new Error('mp3 編碼不可用'); return fa._encodeMp3(view, kbps); },
+    download: function (name, bytes, mime) {
+      var u = URL.createObjectURL(new Blob([bytes], { type: mime })), A = document.createElement('a');
+      A.href = u; A.download = name; document.body.appendChild(A); A.click(); A.remove();
+      setTimeout(function () { URL.revokeObjectURL(u); }, 2000);
+    },
+    midiBytes: function (song) { return FaMidi.write(FaMidi.validate(song)); }
+  };
+  async function openNsf(rec) {
+    var a = api();
+    if (!a || !a.rawfs || !a.rawfs.readFile) throw new Error('讀取檔案的通道不存在（需要桌面版）');
+    if (typeof FaChipPlayer === 'undefined' || typeof FaChipNsf === 'undefined' || typeof FaChipPlayerUI === 'undefined') throw new Error('晶片播放器還沒有內嵌（缺 FaChipPlayer／FaChipNsf／FaChipPlayerUI）');
+    try { FaChipPlayer.getBackend('nsf'); } catch (_) { FaChipPlayer.registerBackend(FaChipNsf.createBackend(FaJsnes.NES)); }
+    var r = await a.rawfs.readFile(rec.path, 'base64');
+    if (!r || r.base64 == null) throw new Error('讀檔失敗：讀不到這個 NSF 的內容');
+    var player = FaChipPlayer.createPlayer('nsf', b64ToBytes(r.base64), { sampleRate: 44100 });
+    return FaChipPlayerUI.mount({ player: player, title: rec.name, host: CHIP_HOST });
+  }
+
+  return { methods: methods, getLib: getLib, pickFolder: pickFolder, walkFolder: walkFolder, whisperTranscribe: whisperTranscribe, melody: MELODY_HOST, extract: PICK_HOST.extract, openNsf: openNsf,
     exportBatch: exportBatch, verifyOutput: verifyOutput,
     // 取消批次輸出：正在跑的那個檔案在下一個步驟前中止，之後的檔案標示取消
     cancelExport: function () { exportCancelled = true; },

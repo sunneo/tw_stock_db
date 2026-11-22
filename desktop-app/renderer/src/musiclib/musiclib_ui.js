@@ -109,6 +109,13 @@
       if (st === 'failed') return '失敗：' + (r.lyricError || '未知原因');
       return LYRIC_TEXT[st] || st;
     }
+    // 晶片播放卡片接在列的下方；重新整理清單時卡片會消失，再按一次按鈕即可
+    function openNsfCard(rec, anchor) {
+      var cardTr = h('tr', 'fml-hit'), td = h('td'); td.colSpan = COLS.length + 1; td.textContent = '載入播放器…';
+      cardTr.appendChild(td); anchor.parentNode.insertBefore(cardTr, anchor.nextSibling);
+      Promise.resolve().then(function () { return host.openNsf(rec); }).then(function (node) { td.textContent = ''; td.appendChild(node); },
+        function (e) { td.textContent = '⚠️ 無法開啟晶片播放器：' + String((e && e.message) || e); });
+    }
     function render() {
       var rows = visibleRows();
       thead.innerHTML = '';
@@ -127,7 +134,11 @@
         cb.onchange = function () { if (cb.checked) sel[r.key] = true; else delete sel[r.key]; foot.textContent = selText(); };
         var td0 = h('td'); td0.appendChild(cb); tr.appendChild(td0);
         tr.appendChild(h('td', null, r.path));
-        tr.appendChild(h('td', null, r.name + (r.status === 'missing' ? '（已消失）' : '')));
+        var nameTd = h('td', null, r.name + (r.status === 'missing' ? '（已消失）' : ''));
+        // 晶片播放：NSF 子曲目本身；NES 來源則用它擷取出來的 NSF 子曲目（derivedFrom 指向來源）
+        var nsfKid = host.openNsf ? (r.kind === 'nsf' ? r : (r.kind === 'nes' ? lib.records.filter(function (c) { return c.kind === 'nsf' && c.derivedFrom === r.key && c.status !== 'missing'; })[0] : null)) : null;
+        if (nsfKid) { var pbtn = h('button', null, '▶ 晶片播放'); pbtn.onclick = function () { openNsfCard(nsfKid, tr); }; nameTd.appendChild(pbtn); }
+        tr.appendChild(nameTd);
         tr.appendChild(h('td', null, r.album || ''));
         tr.appendChild(h('td', null, r.label || r.kind));
         tr.appendChild(h('td', null, M.formatDuration(r.durationSec) + (r.durationApprox ? '≈' : '')));
