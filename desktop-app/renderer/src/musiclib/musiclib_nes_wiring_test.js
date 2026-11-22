@@ -30,7 +30,9 @@ t('路由：NES 來源要先擷取；PCE／SFC 仍是待擷取（沒有擷取器
   var nes = M.planExport('mario.nes', 'mid');
   assert.equal(nes.ok, false); assert.ok(/擷取/.test(nes.reason), nes.reason);
   var pce = M.planExport('x.pce', 'mid');
-  assert.equal(pce.ok, false); assert.ok(/尚未支援/.test(pce.reason), pce.reason);
+  assert.equal(pce.ok, false); assert.ok(/擷取/.test(pce.reason), pce.reason);
+  var sfc = M.planExport('x.sfc', 'mid');
+  assert.equal(sfc.ok, false); assert.ok(/尚未支援/.test(sfc.reason), sfc.reason);
 });
 
 t('子曲目登記：NSF／MIDI／wav／mp3 都是普通記錄（kind 與類別對得上），記著來源與擷取方式', function () {
@@ -59,7 +61,7 @@ t('子曲目登記：重新擷取時先換掉舊子曲目，不重複；其他�
 
 t('歌詞佇列：擷取來源（NES）與待擷取來源都不進佇列；子曲目 mid／mp3 會進', function () {
   var nes = { status: 'ok', pending: false, category: 'extract', kind: 'nes' };
-  var pce = { status: 'ok', pending: true, category: 'game', kind: 'pce' };
+  var pce = { status: 'ok', pending: false, category: 'extract', kind: 'pce' };
   var mp3 = { status: 'ok', pending: false, category: 'audio', kind: 'mp3' };
   assert.equal(M.isSourceOnly(nes), true);
   assert.equal(M.isSourceOnly(pce), true);

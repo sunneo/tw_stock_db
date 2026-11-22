@@ -66,11 +66,11 @@ t('遊戲音樂來源：PCE／SFC 只登記待擷取；NES、RIX、Flash 是可�
   var nes = M.identifyKind('zelda.nes', cat(['NES\u001a', 1, 2]));
   assert.equal(nes.kind, 'nes'); assert.equal(nes.category, 'extract'); assert.equal(nes.pending, false);
   assert.equal(nes.label, 'NES 遊戲音樂，可擷取');
-  ['pce', 'sfc'].forEach(function (ext) {
-    var r = M.identifyKind('x.' + ext, null);
-    assert.equal(r.kind, ext); assert.equal(r.pending, true);
-  });
-  ['rix', 'swf', 'nes'].forEach(function (ext) {
+  var pce = M.identifyKind('x.pce', null);
+  assert.equal(pce.kind, 'pce'); assert.equal(pce.category, 'extract'); assert.equal(pce.pending, false);
+  var sfc = M.identifyKind('x.sfc', null);
+  assert.equal(sfc.kind, 'sfc'); assert.equal(sfc.pending, true);
+  ['rix', 'swf', 'nes', 'pce'].forEach(function (ext) {
     var r = M.identifyKind('x.' + ext, null);
     assert.equal(r.kind, ext); assert.equal(r.category, 'extract'); assert.equal(r.pending, false, ext + ' 可擷取，不算待擷取');
   });

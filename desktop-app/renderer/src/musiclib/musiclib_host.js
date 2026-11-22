@@ -516,6 +516,35 @@ const FaMusicLibHost = (function () {
       if (!nr.nsf) skippedParts.push('NSF 沒有產生［' + (nr.nsfStage || '?') + '］' + (nr.nsfReason || ''));
       if (!nr.song) skippedParts.push('退路 MIDI 沒有：' + (nr.midiReason || ''));
       if (!outs.length) throw new Error('NES 擷取失敗：' + skippedParts.join('；'));
+    } else if (rec.kind === 'pce') {
+      // PC Engine：自寫 HuC6280 執行 ROM，錄 PSG 寫入；退路 MIDI，並用 PSG 重播成 wav（再編 mp3）
+      emit('執行 ROM（HuC6280）');
+      if (typeof FaMusicLibPce === 'undefined' || typeof FaMusicLibPceCpu === 'undefined') throw new Error('PCE 模組沒有嵌入（FaMusicLibPce／FaMusicLibPceCpu 不存在）');
+      var pr;
+      try {
+        pr = await FaMusicLibPce.extractPce(u8, {
+          name: stem, cpu: FaMusicLibPceCpu, isCancelled: cancelled,
+          onProgress: function (fr) { if (fr % 900 === 0) emit('執行 ROM（第 ' + fr + ' 個畫面）'); }
+        });
+      } catch (e) { throw new Error('PCE 執行失敗（執行階段）：' + String((e && e.message) || e)); }
+      if (pr.cancelled) throw Object.assign(new Error('已取消'), { cancelled: true });
+      method = 'PC Engine（HuC6280 執行 ROM，自寫六聲道 PSG 重播）' + (pr.stats && pr.stats.note ? '；' + pr.stats.note : '');
+      if (pr.song) {
+        var psong = FaMidi.validate(pr.song);
+        outs.push({ kind: 'mid', name: stem + '_PSG.mid', bytes: FaMidi.write(psong), method: method + '；PSG 寫入→MIDI', durationSec: pr.stats.seconds, title: stem + ' MIDI' });
+      }
+      if (pr.wav && pr.samples && pr.samples.length) {
+        outs.push({ kind: 'wav', name: stem + '_PSG.wav', bytes: pr.wav, method: method + '；PSG 重播', durationSec: pr.stats.durationSec, title: stem + ' PSG' });
+        emit('編碼 mp3');
+        var pbuf = new AudioBuffer({ length: pr.samples.length, sampleRate: pr.sampleRate, numberOfChannels: 1 });
+        pbuf.copyToChannel(pr.samples, 0);
+        var pmp3 = await fa._encodeMp3(pbuf, 160);
+        outs.push({ kind: 'mp3', name: stem + '_PSG.mp3', bytes: new Uint8Array(await pmp3.arrayBuffer()), method: method + '；PSG 重播', durationSec: pr.stats.durationSec, title: stem + ' PSG' });
+      }
+      skippedParts = [];
+      if (!pr.song) skippedParts.push('退路 MIDI 沒有：' + (pr.midiReason || pr.reason || ''));
+      if (!pr.wav) skippedParts.push('wav 沒有：' + (pr.wavReason || pr.reason || ''));
+      if (!outs.length) throw new Error('PCE 擷取失敗：' + skippedParts.join('；'));
     } else {
       throw new Error('這個種類不支援擷取：' + rec.kind);
     }
